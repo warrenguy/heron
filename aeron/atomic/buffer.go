@@ -2,10 +2,19 @@ package atomic
 
 import (
 	"encoding/binary"
+	"errors"
 	"sync/atomic"
 	"unsafe"
 )
 
+// AtomicBuffer provides typed access to a byte slice, including atomic
+// operations for shared mmap regions.
+//
+// Plain GetInt32/PutInt32 (and int64) are non-atomic loads/stores. Hot paths in
+// ringbuffer that publish record headers across goroutines should use
+// GetInt32Volatile/PutInt32Release. Broadcast pairs plain record writes with
+// ReleaseFence and volatile tail counters (Aeron Java ordering); migrating
+// broadcast to volatile int32 accessors would be a separate change.
 type AtomicBuffer struct {
 	buf []byte
 }
@@ -13,6 +22,17 @@ type AtomicBuffer struct {
 // Caller must keep buf reachable for hot-path use (e.g. hold the mmap Mapping).
 func Wrap(buf []byte) AtomicBuffer {
 	return AtomicBuffer{buf: buf}
+}
+
+// ValidateBackingSlice reports whether buf is non-empty and its base address is aligned.
+func ValidateBackingSlice(buf []byte, alignment int) error {
+	if len(buf) == 0 {
+		return errors.New("atomic: empty buffer")
+	}
+	if uintptr(unsafe.Pointer(&buf[0]))%uintptr(alignment) != 0 {
+		return errors.New("atomic: buffer base address is not aligned")
+	}
+	return nil
 }
 
 func (b AtomicBuffer) Capacity() int {
@@ -40,11 +60,13 @@ func addressAt(buf []byte, offset, size int) unsafe.Pointer {
 }
 
 func (b AtomicBuffer) GetInt32(offset int) int32 {
-	return int32(binary.LittleEndian.Uint32((*[4]byte)(addressAt(b.buf, offset, 4))[:]))
+	boundsCheck(b.buf, offset, 4)
+	return int32(binary.LittleEndian.Uint32(b.buf[offset : offset+4]))
 }
 
 func (b AtomicBuffer) PutInt32(offset int, value int32) {
-	binary.LittleEndian.PutUint32((*[4]byte)(addressAt(b.buf, offset, 4))[:], uint32(value))
+	boundsCheck(b.buf, offset, 4)
+	binary.LittleEndian.PutUint32(b.buf[offset:offset+4], uint32(value))
 }
 
 func (b AtomicBuffer) GetInt32Volatile(offset int) int32 {
@@ -56,11 +78,13 @@ func (b AtomicBuffer) PutInt32Release(offset int, value int32) {
 }
 
 func (b AtomicBuffer) GetInt64(offset int) int64 {
-	return int64(binary.LittleEndian.Uint64((*[8]byte)(addressAt(b.buf, offset, 8))[:]))
+	boundsCheck(b.buf, offset, 8)
+	return int64(binary.LittleEndian.Uint64(b.buf[offset : offset+8]))
 }
 
 func (b AtomicBuffer) PutInt64(offset int, value int64) {
-	binary.LittleEndian.PutUint64((*[8]byte)(addressAt(b.buf, offset, 8))[:], uint64(value))
+	boundsCheck(b.buf, offset, 8)
+	binary.LittleEndian.PutUint64(b.buf[offset:offset+8], uint64(value))
 }
 
 func (b AtomicBuffer) GetInt64Volatile(offset int) int64 {
@@ -77,4 +101,54 @@ func (b AtomicBuffer) CompareAndSwapInt64(offset int, expect, update int64) bool
 
 func (b AtomicBuffer) AddInt64(offset int, delta int64) int64 {
 	return atomic.AddInt64((*int64)(addressAt(b.buf, offset, 8)), delta)
+}
+
+func copyBytes(dst []byte, dstOffset int, src []byte, srcOffset, length int) {
+	boundsCheck(dst, dstOffset, length)
+	boundsCheck(src, srcOffset, length)
+	if length == 0 {
+		return
+	}
+	copy(dst[dstOffset:dstOffset+length], src[srcOffset:srcOffset+length])
+}
+
+func (b AtomicBuffer) PutBytes(offset int, src []byte) {
+	copyBytes(b.buf, offset, src, 0, len(src))
+}
+
+func (b AtomicBuffer) PutBytesFrom(dstOffset int, src AtomicBuffer, srcOffset, length int) {
+	copyBytes(b.buf, dstOffset, src.buf, srcOffset, length)
+}
+
+func (b AtomicBuffer) SetBytes(offset, length int, value byte) {
+	if length == 0 {
+		return
+	}
+	boundsCheck(b.buf, offset, length)
+	seg := b.buf[offset : offset+length]
+	if value == 0 {
+		clear(seg)
+		return
+	}
+	for i := range seg {
+		seg[i] = value
+	}
+}
+
+func (b AtomicBuffer) GetAndAddInt64(offset int, delta int64) int64 {
+	return b.AddInt64(offset, delta) - delta
+}
+
+func (b AtomicBuffer) GetInt64Acquire(offset int) int64 {
+	AcquireFence()
+	return b.GetInt64Volatile(offset)
+}
+
+func (b AtomicBuffer) VerifyAlignment(offset, fieldLength int) {
+	if fieldLength <= 0 || !IsPowerOfTwo(fieldLength) {
+		panic("atomic: field length must be a positive power of two")
+	}
+	if Align(offset, fieldLength) != offset {
+		panic("atomic: index is not aligned")
+	}
 }
