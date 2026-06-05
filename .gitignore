@@ -1,0 +1,36 @@
+worktrees/
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+/dist/
+/vendor/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# Test artifacts
+testdata/rapid/
+coverage.out
+coverage.html
+*.prof
+*.pprof
+
+# Aeron runtime / IPC
+cnc.dat
+*.logbuffer*
+/dev/shm/aeron*/
+aeron-*
+
+# Local build outputs
+build/
+out/
