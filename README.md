@@ -29,6 +29,22 @@ make check              # lint + unit tests (no aeronmd)
 make test-integration   # builds bin/aeronmd if needed (Docker)
 ```
 
+## Benchmarks
+
+```bash
+make bench              # run all benchmarks once
+make bench-baseline     # save .bench/baseline.txt (per machine; gitignored)
+make bench-regression   # compare to baseline via benchstat; exit 1 on regression
+```
+
+Refresh the baseline after pulling `main` or when perf changes are intentional (`make bench-baseline`). Optional env:
+
+- `BENCH_COUNT` (default `10`) - samples per benchmark
+- `BENCH_THRESHOLD` (default `10`) - fail if a benchmark is at least this many percent slower
+- `SKIP_BENCH_REGRESSION=1` - skip the regression script
+
+`benchstat` is a module tool (`go tool benchstat`); it is listed in `go.mod` and fetched automatically.
+
 ## License
 
 MIT - see [LICENSE](LICENSE).

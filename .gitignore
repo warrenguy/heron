@@ -18,6 +18,9 @@ worktrees/
 *.swp
 *~
 
+# Benchmark regression baselines (per machine; make bench-baseline on main)
+.bench/
+
 # Test artifacts
 testdata/rapid/
 coverage.out

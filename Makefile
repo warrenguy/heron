@@ -1,4 +1,4 @@
-.PHONY: check test test-stress coverage clean test-integration aeronmd lint gofumpt
+.PHONY: bench bench-baseline bench-regression check test test-stress coverage clean test-integration aeronmd lint gofumpt
 
 ROOT := $(CURDIR)
 export PATH := $(ROOT)/bin:$(PATH)
@@ -34,6 +34,21 @@ test:
 
 test-stress:
 	go test -tags=stress -count=1 -run Stress ./aeron/ringbuffer/ ./aeron/broadcast/
+
+bench:
+	go test -bench=. -benchmem ./...
+
+BENCH_DIR := .bench
+BENCH_BASELINE := $(BENCH_DIR)/baseline.txt
+BENCH_COUNT ?= 10
+BENCH_PKGS := ./aeron/broadcast/ ./aeron/ringbuffer/
+
+bench-baseline:
+	@mkdir -p $(BENCH_DIR)
+	go test -bench=. -benchmem -count=$(BENCH_COUNT) $(BENCH_PKGS) | tee $(BENCH_BASELINE)
+
+bench-regression:
+	@scripts/bench-regression.sh
 
 coverage: test
 	go tool cover -html=$(COVERAGE_PROFILE) -o coverage.html
