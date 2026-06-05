@@ -154,6 +154,61 @@ func isShortMetadataRead(n int, err error) bool {
 	return n < MetaDataLength && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF))
 }
 
+// ReadMetadataFile parses the CNC metadata header from a driver-ready cnc.dat and
+// checks that the on-disk file length matches the header buffer layout.
+func ReadMetadataFile(path string) (Metadata, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return Metadata{}, fmt.Errorf("cnc: stat %s: %w", path, err)
+	}
+	fileSize := int(info.Size())
+	if fileSize <= MetaDataLength {
+		return Metadata{}, fmt.Errorf("cnc: file too short: %d <= %d", fileSize, MetaDataLength)
+	}
+	metaBuf := make([]byte, MetaDataLength)
+	return readMetadataHeader(path, metaBuf, fileSize)
+}
+
+func readMetadataHeader(path string, metaBuf []byte, fileSize int) (Metadata, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if isRetryableFileErr(err) {
+			return Metadata{}, ErrNotReady
+		}
+		return Metadata{}, fmt.Errorf("cnc: open %s: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+
+	n, err := io.ReadFull(file, metaBuf)
+	if err != nil {
+		if isShortMetadataRead(n, err) {
+			return Metadata{}, ErrNotReady
+		}
+		return Metadata{}, fmt.Errorf("cnc: read %s: %w", path, err)
+	}
+
+	meta, err := ParseMetadata(metaBuf)
+	if err != nil {
+		return Metadata{}, err
+	}
+
+	if fileSize < 0 {
+		fileInfo, err := file.Stat()
+		if err != nil {
+			return Metadata{}, fmt.Errorf("cnc: fstat %s: %w", path, err)
+		}
+		fileSize = int(fileInfo.Size())
+	}
+	if !meta.IsFileLengthSufficient(fileSize) {
+		return Metadata{}, fmt.Errorf(
+			"cnc: file length %d insufficient for metadata (need %d)",
+			fileSize,
+			meta.ComputedLength(),
+		)
+	}
+	return meta, nil
+}
+
 func tryCncReady(path string, metaBuf []byte) (bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -165,42 +220,13 @@ func tryCncReady(path string, metaBuf []byte) (bool, error) {
 	if info.Size() <= int64(MetaDataLength) {
 		return false, nil
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		if isRetryableFileErr(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("cnc: open %s: %w", path, err)
-	}
-	defer func() { _ = file.Close() }()
 
-	n, err := io.ReadFull(file, metaBuf)
-	if err != nil {
-		if isShortMetadataRead(n, err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("cnc: read %s: %w", path, err)
-	}
-
-	meta, err := ParseMetadata(metaBuf)
+	_, err = readMetadataHeader(path, metaBuf, int(info.Size()))
 	if err != nil {
 		if errors.Is(err, ErrNotReady) {
 			return false, nil
 		}
 		return false, err
-	}
-
-	fileInfo, err := file.Stat()
-	if err != nil {
-		return false, fmt.Errorf("cnc: fstat %s: %w", path, err)
-	}
-	fileSize := int(fileInfo.Size())
-	if !meta.IsFileLengthSufficient(fileSize) {
-		return false, fmt.Errorf(
-			"cnc: file length %d insufficient for metadata (need %d)",
-			fileSize,
-			meta.ComputedLength(),
-		)
 	}
 	return true, nil
 }

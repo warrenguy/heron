@@ -221,6 +221,27 @@ func TestIsFileLengthSufficientNegativeLength(t *testing.T) {
 	}
 }
 
+func TestReadMetadataFile_roundtrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), cnc.FileName)
+	writeReadyCncFile(t, path)
+
+	if _, err := cnc.ReadMetadataFile(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadMetadataFile_notReady(t *testing.T) {
+	path := filepath.Join(t.TempDir(), cnc.FileName)
+	buf := make([]byte, cnc.MetaDataLength+1)
+	if err := os.WriteFile(path, buf, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := cnc.ReadMetadataFile(path)
+	if !errors.Is(err, cnc.ErrNotReady) {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestWaitCncReady_readyFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), cnc.FileName)
 	writeReadyCncFile(t, path)
