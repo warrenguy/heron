@@ -1,11 +1,26 @@
-.PHONY: check test coverage clean test-integration test-zero-allocs aeronmd lint gofumpt
+.PHONY: check test test-stress coverage clean test-integration aeronmd lint gofumpt
 
 ROOT := $(CURDIR)
 export PATH := $(ROOT)/bin:$(PATH)
 
+# Little-endian 64-bit targets only (matches Aeron wire layout on host).
+# Canonical arch list — ci.yml matrix goarch values must match.
+# check/test run on host GOARCH; CI sets GOARCH to match the runner (see ci.yml).
+SUPPORTED_GOARCHES := amd64 arm64
+NATIVE_GOARCH := $(shell env -u GOARCH -u GOOS go env GOARCH)
+GOARCH ?= $(NATIVE_GOARCH)
+ifeq ($(filter $(GOARCH),$(SUPPORTED_GOARCHES)),)
+$(error unsupported GOARCH=$(GOARCH); want $(SUPPORTED_GOARCHES))
+endif
+ifneq ($(GOARCH),$(NATIVE_GOARCH))
+ifneq ($(ALLOW_CROSS),1)
+$(error GOARCH=$(GOARCH) != native $(NATIVE_GOARCH); check/test use host arch (ALLOW_CROSS=1 to cross-build))
+endif
+endif
+
 COVERAGE_PROFILE := coverage.out
 
-check: lint test
+check: lint test test-stress
 
 lint:
 	go tool golangci-lint run ./...
@@ -17,6 +32,9 @@ test:
 	go test -race -coverprofile=$(COVERAGE_PROFILE) ./...
 	@go tool cover -func=$(COVERAGE_PROFILE) | tail -1
 
+test-stress:
+	go test -tags=stress -count=1 -run Stress ./aeron/ringbuffer/ ./aeron/broadcast/
+
 coverage: test
 	go tool cover -html=$(COVERAGE_PROFILE) -o coverage.html
 
@@ -26,9 +44,6 @@ clean:
 
 test-integration: bin/aeronmd
 	go test -race ./test/integration/...
-
-test-zero-allocs:
-	go test -run 'ZeroAllocs' ./...
 
 bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd.sh
 	./scripts/build-aeronmd.sh

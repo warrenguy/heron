@@ -125,7 +125,8 @@ func TestBroadcast_rapid_paddingWrap(t *testing.T) {
 			t.Skip("record larger than capacity")
 		}
 
-		beforeWrap := rapid.IntRange(1, messagesBeforeWrap(capacity, int(smallLen))+1).Draw(t, "beforeWrap")
+		maxBefore := messagesBeforeWrap(capacity, int(smallLen)) + 1
+		beforeWrap := rapid.IntRange(1, maxBefore).Draw(t, "beforeWrap")
 		for range beforeWrap {
 			rapidTransmit(t, tx, small)
 			rapidReceiveValid(t, rx, "for small message")

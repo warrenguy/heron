@@ -6,7 +6,9 @@ import (
 	"github.com/warrenguy/heron/aeron/broadcast"
 )
 
-func benchmarkBroadcastWarm(b *testing.B) (*broadcast.BroadcastTransmitter, *broadcast.BroadcastReceiver) {
+func benchmarkBroadcastWarm(
+	b *testing.B,
+) (*broadcast.BroadcastTransmitter, *broadcast.BroadcastReceiver) {
 	b.Helper()
 	tx, rx, _ := newTestBroadcastPair(b)
 	const warm = 1024

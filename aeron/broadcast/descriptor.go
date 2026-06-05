@@ -21,7 +21,7 @@ const (
 )
 
 var (
-	errDataCapacityNotPowerOfTwo = errors.New("broadcast: data capacity must be a positive power of two")
+	errDataCapacityNotPowerOfTwo = errors.New("broadcast: data capacity must be power of two")
 	errDataCapacityTooSmall      = errors.New("broadcast: data capacity below minimum")
 )
 

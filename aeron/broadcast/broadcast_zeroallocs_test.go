@@ -13,7 +13,11 @@ func warmTransmit(tb testing.TB, tx *broadcast.BroadcastTransmitter) {
 	}
 }
 
-func warmTransmitReceive(tb testing.TB, tx *broadcast.BroadcastTransmitter, rx *broadcast.BroadcastReceiver) {
+func warmTransmitReceive(
+	tb testing.TB,
+	tx *broadcast.BroadcastTransmitter,
+	rx *broadcast.BroadcastReceiver,
+) {
 	tb.Helper()
 	warmTransmit(tb, tx)
 	if !rx.ReceiveNext() {

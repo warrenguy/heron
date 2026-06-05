@@ -5,6 +5,7 @@ Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport and cluster client.
 ## Constraints
 
 - **Pure Go** - no cgo. Hot paths use `unsafe`, `sync/atomic`, and `golang.org/x/sys/unix` for mmap.
+- **GOARCH** - `amd64` and `arm64` only (little-endian). `make` rejects other values and requires `GOARCH` to match the host unless `ALLOW_CROSS=1`. CI matrix arches are defined in Makefile `SUPPORTED_GOARCHES` and [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 - **External media driver** - IPC/UDP requires a separately built `aeronmd` binary (C driver), not vendored in this repo.
 
 ## Media driver (`aeronmd`)
@@ -26,10 +27,7 @@ Output is `bin/aeronmd`, pinned via [`specs/versions.yaml`](specs/versions.yaml)
 ```bash
 make check              # lint + unit tests (no aeronmd)
 make test-integration   # builds bin/aeronmd if needed (Docker)
-make test-zero-allocs
 ```
-
-`make` and `make check` are the same. CI runs `make check` and a separate `make test-integration` job.
 
 ## License
 

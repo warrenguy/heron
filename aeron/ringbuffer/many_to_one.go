@@ -160,7 +160,14 @@ func (ring *ManyToOneRingBuffer) TryClaim(msgTypeID, length int) (int, error) {
 	return encodedOffset, nil
 }
 
-func (ring *ManyToOneRingBuffer) claimRecord(msgTypeID, length int) (recordIndex, encodedOffset int, err error) {
+func (ring *ManyToOneRingBuffer) claimRecord(
+	msgTypeID int,
+	length int,
+) (
+	recordIndex int,
+	encodedOffset int,
+	err error,
+) {
 	if err := record.CheckTypeID(msgTypeID); err != nil {
 		return -1, -1, err
 	}
@@ -284,7 +291,14 @@ func (ring *ManyToOneRingBuffer) ControlledReadWithLimit(
 			break
 		}
 		if action == ControlledCommit {
-			headIndex, head = releaseConsumedBlock(buffer, headPositionIndex, headIndex, head, bytesRead, capacity)
+			headIndex, head = releaseConsumedBlock(
+				buffer,
+				headPositionIndex,
+				headIndex,
+				head,
+				bytesRead,
+				capacity,
+			)
 			bytesRead = 0
 			maxBlockLength = capacity - headIndex
 		}
@@ -294,7 +308,8 @@ func (ring *ManyToOneRingBuffer) ControlledReadWithLimit(
 }
 
 // Unblock recovers a stalled consumer on in-flight (negative length) or zeroed-gap records.
-// Idle or recovery only: not safe while TryClaim/Write producers are active (races in-flight length).
+// Idle or recovery only: not safe while TryClaim/Write producers are active
+// (races in-flight length).
 func (ring *ManyToOneRingBuffer) Unblock() bool {
 	buffer := ring.buffer
 	headPositionIndex := ring.headPositionIndex
@@ -348,7 +363,10 @@ func scanBackToConfirmStillZeroed(buffer aeronatomic.AtomicBuffer, from, limit i
 	return true
 }
 
-func (ring *ManyToOneRingBuffer) claimCapacity(buffer aeronatomic.AtomicBuffer, recordLength int) int {
+func (ring *ManyToOneRingBuffer) claimCapacity(
+	buffer aeronatomic.AtomicBuffer,
+	recordLength int,
+) int {
 	requiredCapacity := record.AlignRecordLength(recordLength)
 	capacity := ring.capacity
 	tailPositionIndex := ring.tailPositionIndex

@@ -13,7 +13,11 @@ formatters:
 
 linters:
   default: standard
+  enable:
+    - lll
   settings:
+    lll:
+      line-length: 100
     staticcheck:
       checks:
         - all

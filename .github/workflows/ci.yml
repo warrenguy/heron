@@ -6,9 +6,20 @@ on:
   pull_request:
     branches: [main]
 
+# GOARCH must match runner arch (see Makefile SUPPORTED_GOARCHES).
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy: &go-matrix
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      GOARCH: ${{ matrix.goarch }}
     steps:
       - uses: actions/checkout@v4
 
@@ -21,7 +32,10 @@ jobs:
         run: make check
 
   integration:
-    runs-on: ubuntu-latest
+    strategy: *go-matrix
+    runs-on: ${{ matrix.runner }}
+    env:
+      GOARCH: ${{ matrix.goarch }}
     steps:
       - uses: actions/checkout@v4
 

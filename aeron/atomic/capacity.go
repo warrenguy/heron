@@ -7,7 +7,7 @@ var (
 	errBelowMinimum  = errors.New("atomic: data capacity below minimum")
 )
 
-// ErrDataCapacityNotPowerOfTwo is returned when bufferCapacity - trailerLength is not a positive power of two.
+// ErrDataCapacityNotPowerOfTwo when bufferCapacity minus trailerLength is not a power of two.
 var ErrDataCapacityNotPowerOfTwo = errNotPowerOfTwo
 
 // ErrDataCapacityBelowMinimum is returned when the data region is smaller than minDataCapacity.

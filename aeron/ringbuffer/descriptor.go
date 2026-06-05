@@ -19,7 +19,7 @@ const (
 )
 
 var (
-	errDataCapacityNotPowerOfTwo = errors.New("ringbuffer: capacity must be a positive power of 2 + trailer length")
+	errDataCapacityNotPowerOfTwo = errors.New("ringbuffer: data capacity must be power of two")
 	// errInsufficientCapacity is for bufferCapacity too small at New*. Runtime ring-full
 	// uses record.InsufficientCapacity (-2) from TryClaim/Write, not this error.
 	errInsufficientCapacity = errors.New("ringbuffer: insufficient capacity")

@@ -56,13 +56,16 @@ func TestBroadcastTransmitterIntoEmptyBuffer(t *testing.T) {
 	recordLength := len(src) + broadcast.HeaderLength
 	recordLengthAligned := alignedRecordLength(len(src))
 
-	if got := buf.GetInt64Volatile(broadcast.TailIntentIndex(testCapacity)); got != int64(recordLengthAligned) {
+	tailIntentIdx := broadcast.TailIntentIndex(testCapacity)
+	tailIdx := broadcast.TailIndex(testCapacity)
+	latestIdx := broadcast.LatestIndex(testCapacity)
+	if got := buf.GetInt64Volatile(tailIntentIdx); got != int64(recordLengthAligned) {
 		t.Fatalf("tailIntent=%d want %d", got, recordLengthAligned)
 	}
-	if got := buf.GetInt64Volatile(broadcast.LatestIndex(testCapacity)); got != 0 {
+	if got := buf.GetInt64Volatile(latestIdx); got != 0 {
 		t.Fatalf("latest=%d want 0", got)
 	}
-	if got := buf.GetInt64Volatile(broadcast.TailIndex(testCapacity)); got != int64(recordLengthAligned) {
+	if got := buf.GetInt64Volatile(tailIdx); got != int64(recordLengthAligned) {
 		t.Fatalf("tail=%d want %d", got, recordLengthAligned)
 	}
 	if got := buf.GetInt32(record.LengthOffset(0)); got != int32(recordLength) {
@@ -92,14 +95,18 @@ func TestBroadcastTransmitterIntoUsedBuffer(t *testing.T) {
 	recordLengthAligned := alignedRecordLength(len(src))
 	recordOffset := int(tail)
 
-	if got := buf.GetInt64Volatile(broadcast.TailIntentIndex(testCapacity)); got != tail+int64(recordLengthAligned) {
-		t.Fatalf("tailIntent=%d want %d", got, tail+recordLengthAligned)
+	tailIntentIdx := broadcast.TailIntentIndex(testCapacity)
+	tailIdx := broadcast.TailIndex(testCapacity)
+	latestIdx := broadcast.LatestIndex(testCapacity)
+	wantTail := tail + int64(recordLengthAligned)
+	if got := buf.GetInt64Volatile(tailIntentIdx); got != wantTail {
+		t.Fatalf("tailIntent=%d want %d", got, wantTail)
 	}
-	if got := buf.GetInt64Volatile(broadcast.LatestIndex(testCapacity)); got != tail {
+	if got := buf.GetInt64Volatile(latestIdx); got != tail {
 		t.Fatalf("latest=%d want %d", got, tail)
 	}
-	if got := buf.GetInt64Volatile(broadcast.TailIndex(testCapacity)); got != tail+int64(recordLengthAligned) {
-		t.Fatalf("tail=%d want %d", got, tail+recordLengthAligned)
+	if got := buf.GetInt64Volatile(tailIdx); got != wantTail {
+		t.Fatalf("tail=%d want %d", got, wantTail)
 	}
 	if got := buf.GetInt32(record.TypeOffset(recordOffset)); got != testMsgTypeID {
 		t.Fatalf("typeId=%d want %d", got, testMsgTypeID)
@@ -168,7 +175,8 @@ func TestBroadcastTransmitterPaddingAtEndOfBuffer(t *testing.T) {
 		t.Fatalf("tail=%d want %d", got, wantTail)
 	}
 	expectedTailIntent := tail + int64(recordLengthAligned+toEndOfBuffer)
-	if got := buf.GetInt64Volatile(broadcast.TailIntentIndex(testCapacity)); got != expectedTailIntent {
+	tailIntentIdx := broadcast.TailIntentIndex(testCapacity)
+	if got := buf.GetInt64Volatile(tailIntentIdx); got != expectedTailIntent {
 		t.Fatalf("tailIntent=%d want %d", got, expectedTailIntent)
 	}
 }

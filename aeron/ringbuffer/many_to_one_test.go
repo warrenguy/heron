@@ -16,7 +16,9 @@ const (
 	testDataCapacity = 4096
 )
 
-func newRingBufferBuffer(dataCapacity int) (*ringbuffer.ManyToOneRingBuffer, aeronatomic.AtomicBuffer, error) {
+func newRingBufferBuffer(
+	dataCapacity int,
+) (*ringbuffer.ManyToOneRingBuffer, aeronatomic.AtomicBuffer, error) {
 	buf := make([]byte, ringbuffer.TotalBufferLength(dataCapacity))
 	atomicBuffer := aeronatomic.Wrap(buf)
 	ring, err := ringbuffer.NewManyToOneRingBuffer(atomicBuffer)
@@ -181,7 +183,10 @@ func newRingBufferForTest(
 	return ring, atomicBuffer
 }
 
-func newTestRingBuffer(tb testing.TB, dataCapacity int) (*ringbuffer.ManyToOneRingBuffer, aeronatomic.AtomicBuffer) {
+func newTestRingBuffer(
+	tb testing.TB,
+	dataCapacity int,
+) (*ringbuffer.ManyToOneRingBuffer, aeronatomic.AtomicBuffer) {
 	return newRingBufferForTest(tb, dataCapacity)
 }
 
@@ -680,15 +685,27 @@ func writeHelloWorld(t *testing.T, ring *ringbuffer.ManyToOneRingBuffer) []byte 
 }
 
 func TestManyToOneRingBuffer_ControlledRead(t *testing.T) {
+	type (
+		controlledActionFn func(
+			invocation int,
+			ring *ringbuffer.ManyToOneRingBuffer,
+		) ringbuffer.ControlledAction
+		controlledSetupFn func(
+			t *testing.T,
+			ring *ringbuffer.ManyToOneRingBuffer,
+			buffer aeronatomic.AtomicBuffer,
+		)
+	)
+
 	type controlledCase struct {
 		name         string
 		writeCount   int
 		messageLimit int
-		action       func(invocation int, ring *ringbuffer.ManyToOneRingBuffer) ringbuffer.ControlledAction
+		action       controlledActionFn
 		wantMessages int
 		wantHandler  int
 		checkPayload bool
-		setup        func(t *testing.T, ring *ringbuffer.ManyToOneRingBuffer, buffer aeronatomic.AtomicBuffer)
+		setup        controlledSetupFn
 		assertAfter  func(t *testing.T, ring *ringbuffer.ManyToOneRingBuffer)
 	}
 
@@ -828,7 +845,12 @@ func TestManyToOneRingBuffer_ControlledRead(t *testing.T) {
 				gotPayload                []byte
 				invocations               int
 			)
-			handler := func(msgTypeID int, buffer aeronatomic.AtomicBuffer, index, length int) ringbuffer.ControlledAction {
+			handler := func(
+				msgTypeID int,
+				buffer aeronatomic.AtomicBuffer,
+				index int,
+				length int,
+			) ringbuffer.ControlledAction {
 				invocations++
 				action := tc.action(invocations, ring)
 				if tc.checkPayload && invocations == 1 {
@@ -854,7 +876,8 @@ func TestManyToOneRingBuffer_ControlledRead(t *testing.T) {
 				t.Fatalf("handler invocations=%d want %d", invocations, tc.wantHandler)
 			}
 			if tc.checkPayload {
-				if gotType != testMsgTypeID || gotIndex != ringbuffer.EncodedMsgOffset(0) || gotLen != len(msg) {
+				wantIndex := ringbuffer.EncodedMsgOffset(0)
+				if gotType != testMsgTypeID || gotIndex != wantIndex || gotLen != len(msg) {
 					t.Fatalf("type=%d index=%d len=%d", gotType, gotIndex, gotLen)
 				}
 				if !bytes.Equal(gotPayload, msg) {
@@ -1011,9 +1034,11 @@ func TestManyToOneRingBuffer_ControlledRead_ZeroAllocs(t *testing.T) {
 	}
 
 	if allocs := testing.AllocsPerRun(1000, func() {
-		n := ring.ControlledRead(func(int, aeronatomic.AtomicBuffer, int, int) ringbuffer.ControlledAction {
-			return ringbuffer.ControlledContinue
-		})
+		n := ring.ControlledRead(
+			func(int, aeronatomic.AtomicBuffer, int, int) ringbuffer.ControlledAction {
+				return ringbuffer.ControlledContinue
+			},
+		)
 		ringSink = n
 	}); allocs != 0 {
 		t.Fatalf("ControlledRead allocs=%v want 0", allocs)
@@ -1088,9 +1113,11 @@ func benchmarkManyToOneRead(b *testing.B, controlled bool) {
 	b.SetBytes(int64(len(payload)))
 	for b.Loop() {
 		if controlled {
-			ringSink = ring.ControlledRead(func(int, aeronatomic.AtomicBuffer, int, int) ringbuffer.ControlledAction {
-				return ringbuffer.ControlledContinue
-			})
+			ringSink = ring.ControlledRead(
+				func(int, aeronatomic.AtomicBuffer, int, int) ringbuffer.ControlledAction {
+					return ringbuffer.ControlledContinue
+				},
+			)
 			continue
 		}
 		ringSink = ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {})

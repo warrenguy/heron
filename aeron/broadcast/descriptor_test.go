@@ -50,7 +50,8 @@ func TestBroadcastCheckCapacity(t *testing.T) {
 	if data != testCapacity {
 		t.Fatalf("dataCapacity=%d want %d", data, testCapacity)
 	}
-	if _, err := broadcast.CheckCapacity(broadcast.TotalBufferLength(invalidDataCapacity)); err == nil {
+	totalLen := broadcast.TotalBufferLength(invalidDataCapacity)
+	if _, err := broadcast.CheckCapacity(totalLen); err == nil {
 		t.Fatal("expected error for non-power-of-two data capacity")
 	}
 	if _, err := broadcast.CheckCapacity(broadcast.TrailerLength + testCapacity - 1); err == nil {

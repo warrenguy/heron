@@ -71,7 +71,8 @@ func TestCheckCapacity(t *testing.T) {
 		t.Fatal("expected error for non-power-of-two data capacity")
 	}
 
-	if _, err := ringbuffer.CheckCapacity(ringbuffer.TotalBufferLength(minData-1), minData); err == nil {
+	tooSmall := ringbuffer.TotalBufferLength(minData - 1)
+	if _, err := ringbuffer.CheckCapacity(tooSmall, minData); err == nil {
 		t.Fatal("expected error for insufficient capacity")
 	}
 }
