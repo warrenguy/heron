@@ -23,8 +23,35 @@ func benchmarkBroadcastWarm(
 	return tx, rx
 }
 
-func BenchmarkBroadcastTransmitter_Transmit(b *testing.B) {
+func benchmarkBroadcastWarmTransmit(b *testing.B) *broadcast.BroadcastTransmitter {
+	b.Helper()
 	tx, _, _ := newTestBroadcastPair(b)
+	const warm = 1024
+	for range warm {
+		if err := tx.Transmit(testMsgTypeID, testPayload8); err != nil {
+			b.Fatal(err)
+		}
+	}
+	return tx
+}
+
+func BenchmarkBroadcastTransmitter_Transmit(b *testing.B) {
+	tx := benchmarkBroadcastWarmTransmit(b)
+	b.ResetTimer()
+	for range b.N {
+		if err := tx.Transmit(testMsgTypeID, testPayload8); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBroadcastTransmitter_TransmitLapped(b *testing.B) {
+	tx, _, _ := newTestBroadcastPair(b)
+	for range writesToLap(testCapacity, len(testPayload8), 8) {
+		if err := tx.Transmit(testMsgTypeID, testPayload8); err != nil {
+			b.Fatal(err)
+		}
+	}
 	b.ResetTimer()
 	for range b.N {
 		if err := tx.Transmit(testMsgTypeID, testPayload8); err != nil {
@@ -43,13 +70,5 @@ func BenchmarkBroadcastReceiver_ReceiveNext(b *testing.B) {
 		if !rx.ReceiveNext() {
 			b.Fatal("ReceiveNext=false")
 		}
-	}
-}
-
-func BenchmarkBroadcastReceiver_Validate(b *testing.B) {
-	_, rx := benchmarkBroadcastWarm(b)
-	b.ResetTimer()
-	for range b.N {
-		_ = rx.Validate()
 	}
 }

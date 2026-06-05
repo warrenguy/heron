@@ -1054,7 +1054,84 @@ func TestManyToOneRingBuffer_NextCorrelationId_ZeroAllocs(t *testing.T) {
 	}
 }
 
-func BenchmarkManyToOneRingBuffer_Write(b *testing.B) {
+func benchmarkRingNoopHandler(int, aeronatomic.AtomicBuffer, int, int) {}
+
+func benchmarkDrainRing(b *testing.B, ring *ringbuffer.ManyToOneRingBuffer) {
+	b.Helper()
+	for ring.Read(benchmarkRingNoopHandler) > 0 {
+	}
+}
+
+func benchmarkPublishBatchSize(payloadLen int) int {
+	perRecord := alignedRecordLength(payloadLen)
+	if perRecord <= 0 {
+		return 1
+	}
+	batch := testDataCapacity / perRecord / 2
+	if batch < 1 {
+		return 1
+	}
+	return batch
+}
+
+func benchmarkWriteMessage(
+	b *testing.B,
+	ring *ringbuffer.ManyToOneRingBuffer,
+	src aeronatomic.AtomicBuffer,
+	payloadLen int,
+) {
+	b.Helper()
+	for {
+		ok, err := ring.Write(testMsgTypeID, src, 0, payloadLen)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if ok {
+			return
+		}
+	}
+}
+
+func benchmarkTryClaimMessage(
+	b *testing.B,
+	ring *ringbuffer.ManyToOneRingBuffer,
+	buffer aeronatomic.AtomicBuffer,
+	payload []byte,
+) {
+	b.Helper()
+	for {
+		index, err := ring.TryClaim(testMsgTypeID, len(payload))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if index >= 0 {
+			buffer.PutBytes(index, payload)
+			if err := ring.Commit(index); err != nil {
+				b.Fatal(err)
+			}
+			return
+		}
+	}
+}
+
+func BenchmarkManyToOneRingBuffer_WritePublishBatch(b *testing.B) {
+	ring, _ := newTestRingBuffer(b, testDataCapacity)
+	payload := make([]byte, 64)
+	src := aeronatomic.Wrap(payload)
+	batch := benchmarkPublishBatchSize(len(payload))
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)) * int64(batch))
+	b.ResetTimer()
+	for range b.N {
+		for range batch {
+			benchmarkWriteMessage(b, ring, src, len(payload))
+		}
+		benchmarkDrainRing(b, ring)
+	}
+}
+
+func BenchmarkManyToOneRingBuffer_WriteRoundTrip(b *testing.B) {
 	ring, _ := newTestRingBuffer(b, testDataCapacity)
 	payload := make([]byte, 64)
 	src := aeronatomic.Wrap(payload)
@@ -1062,32 +1139,36 @@ func BenchmarkManyToOneRingBuffer_Write(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload)))
 	for b.Loop() {
-		for {
-			ok, err := ring.Write(testMsgTypeID, src, 0, len(payload))
-			if err == nil && ok {
-				break
-			}
-		}
-		ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {})
+		benchmarkWriteMessage(b, ring, src, len(payload))
+		ring.Read(benchmarkRingNoopHandler)
 	}
 }
 
-func BenchmarkManyToOneRingBuffer_TryClaimCommit(b *testing.B) {
+func BenchmarkManyToOneRingBuffer_TryClaimPublishBatch(b *testing.B) {
+	ring, buffer := newTestRingBuffer(b, testDataCapacity)
+	payload := make([]byte, 64)
+	batch := benchmarkPublishBatchSize(len(payload))
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)) * int64(batch))
+	b.ResetTimer()
+	for range b.N {
+		for range batch {
+			benchmarkTryClaimMessage(b, ring, buffer, payload)
+		}
+		benchmarkDrainRing(b, ring)
+	}
+}
+
+func BenchmarkManyToOneRingBuffer_TryClaimCommitRoundTrip(b *testing.B) {
 	ring, buffer := newTestRingBuffer(b, testDataCapacity)
 	payload := make([]byte, 64)
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload)))
 	for b.Loop() {
-		for {
-			index, err := ring.TryClaim(testMsgTypeID, len(payload))
-			if err == nil && index >= 0 {
-				buffer.PutBytes(index, payload)
-				_ = ring.Commit(index)
-				break
-			}
-		}
-		ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {})
+		benchmarkTryClaimMessage(b, ring, buffer, payload)
+		ring.Read(benchmarkRingNoopHandler)
 	}
 }
 
@@ -1104,14 +1185,11 @@ func benchmarkManyToOneRead(b *testing.B, controlled bool) {
 	ring, _ := newTestRingBuffer(b, testDataCapacity)
 	payload := make([]byte, 64)
 	src := aeronatomic.Wrap(payload)
-	ok, err := ring.Write(testMsgTypeID, src, 0, len(payload))
-	if err != nil || !ok {
-		b.Fatal("seed write failed")
-	}
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload)))
 	for b.Loop() {
+		benchmarkWriteMessage(b, ring, src, len(payload))
 		if controlled {
 			ringSink = ring.ControlledRead(
 				func(int, aeronatomic.AtomicBuffer, int, int) ringbuffer.ControlledAction {
@@ -1120,6 +1198,6 @@ func benchmarkManyToOneRead(b *testing.B, controlled bool) {
 			)
 			continue
 		}
-		ringSink = ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {})
+		ringSink = ring.Read(benchmarkRingNoopHandler)
 	}
 }
