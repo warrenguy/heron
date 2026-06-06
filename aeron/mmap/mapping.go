@@ -2,6 +2,7 @@ package mmap
 
 import (
 	"errors"
+	"fmt"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -12,9 +13,17 @@ type Mapping struct {
 	file *os.File
 }
 
-func Map(path string, length int) (*Mapping, error) {
+func requirePositiveLength(length int) error {
 	if length <= 0 {
-		return nil, errors.New("mmap: length must be positive")
+		return errors.New("mmap: length must be positive")
+	}
+	return nil
+}
+
+// MapCreate truncates path to length before mmap; unsafe on live files larger than length.
+func MapCreate(path string, length int) (*Mapping, error) {
+	if err := requirePositiveLength(length); err != nil {
+		return nil, err
 	}
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
@@ -23,6 +32,33 @@ func Map(path string, length int) (*Mapping, error) {
 	if err := file.Truncate(int64(length)); err != nil {
 		_ = file.Close()
 		return nil, err
+	}
+	return mmapOpenedFile(file, length, false)
+}
+
+// MapExisting rejects files shorter than length; does not truncate.
+func MapExisting(path string, length int) (*Mapping, error) {
+	if err := requirePositiveLength(length); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+	return mmapOpenedFile(file, length, true)
+}
+
+func mmapOpenedFile(file *os.File, length int, validateMinSize bool) (*Mapping, error) {
+	if validateMinSize {
+		info, err := file.Stat()
+		if err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		if info.Size() < int64(length) {
+			_ = file.Close()
+			return nil, fmt.Errorf("mmap: file too short: %d < %d", info.Size(), length)
+		}
 	}
 	data, err := unix.Mmap(int(file.Fd()), 0, length, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
