@@ -2,6 +2,7 @@
 
 ROOT := $(CURDIR)
 export PATH := $(ROOT)/bin:$(PATH)
+SHELL := /bin/bash
 
 # Little-endian 64-bit targets only (matches Aeron wire layout on host).
 SUPPORTED_GOARCHES := amd64 arm64
