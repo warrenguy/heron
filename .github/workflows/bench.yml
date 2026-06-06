@@ -41,7 +41,7 @@ jobs:
 
       - uses: actions/cache/save@v5
         with:
-          key: bench-baseline-${{ matrix.goarch }}
+          key: bench-baseline-${{ matrix.goarch }}-${{ github.run_id }}
           path: .bench
 
   bench-regression:
@@ -60,7 +60,9 @@ jobs:
 
       - uses: actions/cache/restore@v5
         with:
-          key: bench-baseline-${{ matrix.goarch }}
+          key: bench-baseline-${{ matrix.goarch }}-pr-${{ github.event.pull_request.number }}
+          restore-keys: |
+            bench-baseline-${{ matrix.goarch }}
           path: .bench
           fail-on-cache-miss: true
 
