@@ -76,7 +76,5 @@ func TestManyToOneRingBuffer_MPSCStress(t *testing.T) {
 	if read.Load() != total {
 		t.Fatalf("read=%d want %d", read.Load(), total)
 	}
-	if ring.ConsumerPosition() != ring.ProducerPosition() {
-		t.Fatalf("consumer=%d producer=%d", ring.ConsumerPosition(), ring.ProducerPosition())
-	}
+	assertConsumerCaughtUp(t, ring)
 }

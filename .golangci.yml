@@ -15,6 +15,7 @@ linters:
   default: standard
   enable:
     - lll
+    - testifylint
   settings:
     lll:
       line-length: 100

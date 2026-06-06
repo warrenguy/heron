@@ -3,6 +3,7 @@ package harness_test
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/cnc"
@@ -14,71 +15,44 @@ func TestMediaDriver(t *testing.T) {
 	md := harness.Start(t)
 
 	t.Run("StartStop", func(t *testing.T) {
-		if md.Dir == "" {
-			t.Fatal("expected AERON_DIR")
-		}
+		require.NotEmpty(t, md.Dir)
 	})
 
 	t.Run("ParseLiveCncMetadata", func(t *testing.T) {
 		meta, err := cnc.ReadMetadataFile(md.CncPath())
-		if err != nil {
-			t.Fatalf("read metadata: %v", err)
-		}
-		if meta.ToDriverBufferLength <= 0 {
-			t.Fatalf("to-driver length %d", meta.ToDriverBufferLength)
-		}
-		if meta.ToClientsBufferLength <= 0 {
-			t.Fatalf("to-clients length %d", meta.ToClientsBufferLength)
-		}
-		if meta.PID <= 0 {
-			t.Fatalf("pid %d", meta.PID)
-		}
-		if meta.FilePageSize <= 0 || !atomic.IsPowerOfTwo(int(meta.FilePageSize)) {
-			t.Fatalf("file page size %d", meta.FilePageSize)
-		}
-		if meta.ClientLivenessTimeoutNs <= 0 {
-			t.Fatalf("client liveness timeout %d", meta.ClientLivenessTimeoutNs)
-		}
+		require.NoError(t, err, "read metadata")
+		require.Positive(t, meta.ToDriverBufferLength)
+		require.Positive(t, meta.ToClientsBufferLength)
+		require.Positive(t, meta.PID)
+		require.Positive(t, meta.FilePageSize)
+		require.True(t, atomic.IsPowerOfTwo(int(meta.FilePageSize)))
+		require.Positive(t, meta.ClientLivenessTimeoutNs)
 	})
 
 	t.Run("MapLiveCncFile", func(t *testing.T) {
 		mapped, err := cnc.MapCncFile(md.CncPath())
-		if err != nil {
-			t.Fatalf("map cnc file: %v", err)
-		}
+		require.NoError(t, err, "map cnc file")
 		defer func() { _ = mapped.Close() }()
 
 		meta := mapped.Metadata()
 		readMeta, err := cnc.ReadMetadataFile(md.CncPath())
-		if err != nil {
-			t.Fatalf("read metadata: %v", err)
-		}
-		if meta != readMeta {
-			t.Fatalf("mapped metadata %+v != read metadata %+v", meta, readMeta)
-		}
-		if _, err := ringbuffer.CheckCapacity(
+		require.NoError(t, err, "read metadata")
+		require.Equal(t, readMeta, meta)
+		_, err = ringbuffer.CheckCapacity(
 			int(meta.ToDriverBufferLength),
 			ringbuffer.MinCapacity,
-		); err != nil {
-			t.Fatalf("to-driver CheckCapacity: %v", err)
-		}
-		if _, err := broadcast.CheckCapacity(int(meta.ToClientsBufferLength)); err != nil {
-			t.Fatalf("to-clients CheckCapacity: %v", err)
-		}
-		if err := mapped.Close(); err != nil {
-			t.Fatalf("close mapped cnc file: %v", err)
-		}
-		if _, err := cnc.ReadMetadataFile(md.CncPath()); err != nil {
-			t.Fatalf("read metadata after close: %v", err)
-		}
+		)
+		require.NoError(t, err, "to-driver CheckCapacity")
+		_, err = broadcast.CheckCapacity(int(meta.ToClientsBufferLength))
+		require.NoError(t, err, "to-clients CheckCapacity")
+		err = mapped.Close()
+		require.NoError(t, err, "close mapped cnc file")
+		_, err = cnc.ReadMetadataFile(md.CncPath())
+		require.NoError(t, err, "read metadata after close")
 		mappedAgain, err := cnc.MapCncFile(md.CncPath())
-		if err != nil {
-			t.Fatalf("remap cnc file after close: %v", err)
-		}
+		require.NoError(t, err, "remap cnc file after close")
 		defer func() {
-			if err := mappedAgain.Close(); err != nil {
-				t.Errorf("close remapped cnc file: %v", err)
-			}
+			require.NoError(t, mappedAgain.Close(), "close remapped cnc file")
 		}()
 	})
 }

@@ -3,6 +3,7 @@ module github.com/warrenguy/heron
 go 1.26.4
 
 require (
+	github.com/stretchr/testify v1.11.1
 	golang.org/x/sys v0.45.0
 	pgregory.net/rapid v1.3.0
 )
@@ -184,7 +185,6 @@ require (
 	github.com/ssgreg/nlreturn/v2 v2.2.1 // indirect
 	github.com/stbenjam/no-sprintf-host-port v0.3.1 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
-	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/subosito/gotenv v1.4.1 // indirect
 	github.com/tetafro/godot v1.5.6 // indirect
 	github.com/timakin/bodyclose v0.0.0-20260129054331-73d1f95b84b4 // indirect

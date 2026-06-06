@@ -3,6 +3,7 @@ package cnc
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 )
 
@@ -35,22 +36,16 @@ func TestLayoutOffsetChain_rapid(t *testing.T) {
 		for _, length := range regionLens {
 			regionSum += length
 		}
-		if regionSum != totalSpan {
-			t.Fatalf("region sum %d != buffer span %d", regionSum, totalSpan)
-		}
+		require.Equal(t, totalSpan, regionSum, "region sum vs buffer span")
 		for i := range regionLens {
 			regionEnd := offsets[i] + regionLens[i]
-			if i < len(regionLens)-1 && regionEnd != offsets[i+1] {
-				t.Fatalf("region %d end %d != next start %d", i, regionEnd, offsets[i+1])
+			if i < len(regionLens)-1 {
+				require.Equal(t, offsets[i+1], regionEnd, "region %d end vs next start", i)
 			}
 		}
 
-		if err := validateLayoutEnd(meta); err != nil {
-			t.Fatalf("validateLayoutEnd: %v", err)
-		}
-		if err := validateMappedBufferLengths(meta, regions); err != nil {
-			t.Fatalf("validateMappedBufferLengths: %v", err)
-		}
+		require.NoError(t, validateLayoutEnd(meta))
+		require.NoError(t, validateMappedBufferLengths(meta, regions))
 	})
 }
 
@@ -61,9 +56,7 @@ func TestParseMetadata_roundtrip_rapid(t *testing.T) {
 		WriteMetadataFieldsToBuffer(buf, meta)
 
 		got, err := ParseMetadata(buf)
-		if err != nil {
-			t.Fatalf("ParseMetadata: %v", err)
-		}
+		require.NoError(t, err, "ParseMetadata")
 		AssertParsedReadyMetadataEqual(t, got, meta)
 	})
 }
@@ -77,32 +70,30 @@ func TestComputeCncFileLength_rapid(t *testing.T) {
 		align := 1 << shift
 
 		got, err := ComputeCncFileLength(total, align)
-		if err != nil {
-			t.Fatalf("ComputeCncFileLength: %v", err)
-		}
-		if got%align != 0 {
-			t.Fatalf("ComputeCncFileLength(%d,%d)=%d not aligned", total, align, got)
-		}
-		if got < computedLength {
-			t.Fatalf("ComputeCncFileLength(%d,%d)=%d < need %d", total, align, got, computedLength)
-		}
-		if got-computedLength >= align {
-			t.Fatalf("ComputeCncFileLength(%d,%d)=%d overshot", total, align, got)
-		}
-		if meta.IsFileLengthSufficient(computedLength - 1) {
-			t.Fatalf(
-				"file length %d should be insufficient for computed %d",
-				computedLength-1,
-				computedLength,
-			)
-		}
-		if !meta.IsFileLengthSufficient(computedLength) {
-			t.Fatalf(
-				"file length %d should be sufficient for computed %d",
-				computedLength,
-				computedLength,
-			)
-		}
+		require.NoError(t, err, "ComputeCncFileLength")
+		require.Equal(t, 0, got%align, "ComputeCncFileLength(%d,%d)=%d not aligned", total, align, got)
+		require.GreaterOrEqual(
+			t, got, computedLength,
+			"ComputeCncFileLength(%d,%d)=%d < need %d", total, align, got, computedLength,
+		)
+		require.Less(
+			t, got-computedLength, align,
+			"ComputeCncFileLength(%d,%d)=%d overshot", total, align, got,
+		)
+		require.False(
+			t,
+			meta.IsFileLengthSufficient(computedLength-1),
+			"file length %d should be insufficient for computed %d",
+			computedLength-1,
+			computedLength,
+		)
+		require.True(
+			t,
+			meta.IsFileLengthSufficient(computedLength),
+			"file length %d should be sufficient for computed %d",
+			computedLength,
+			computedLength,
+		)
 	})
 }
 
@@ -112,20 +103,17 @@ func TestComputedLength_hugeMetadata_rapid(t *testing.T) {
 
 		header := make([]byte, MetaDataLength)
 		WriteMetadataFieldsToBuffer(header, meta)
-		if _, err := ParseMetadata(header); err != nil {
-			t.Fatalf("ParseMetadata: %v", err)
-		}
+		_, err := ParseMetadata(header)
+		require.NoError(t, err, "ParseMetadata")
 
 		computedLength := meta.ComputedLength()
-		if err := validateLayoutEnd(meta); err != nil {
-			t.Fatalf("validateLayoutEnd: %v", err)
-		}
-		if meta.IsFileLengthSufficient(TestShortCncFileLength) {
-			t.Fatalf(
-				"file length %d should be insufficient for computed %d",
-				TestShortCncFileLength,
-				computedLength,
-			)
-		}
+		require.NoError(t, validateLayoutEnd(meta))
+		require.False(
+			t,
+			meta.IsFileLengthSufficient(TestShortCncFileLength),
+			"file length %d should be insufficient for computed %d",
+			TestShortCncFileLength,
+			computedLength,
+		)
 	})
 }

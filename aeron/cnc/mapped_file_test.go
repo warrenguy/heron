@@ -1,14 +1,13 @@
 package cnc_test
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
 )
@@ -19,9 +18,7 @@ func openFDCount(t *testing.T) int {
 		t.Skip("open FD count requires linux /proc")
 	}
 	entries, err := os.ReadDir("/proc/self/fd")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return len(entries)
 }
 
@@ -30,9 +27,7 @@ func TestMapCncFile_readySynthetic(t *testing.T) {
 	writeReadyCncFile(t, path)
 
 	mapped, err := cnc.MapCncFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = mapped.Close() }()
 
 	cnc.AssertMappedBufferLengths(t, mapped, mapped.Metadata())
@@ -49,14 +44,10 @@ func TestMapCncFile_notReady(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), cnc.FileName)
-			if err := os.WriteFile(path, test.data, 0o644); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(path, test.data, 0o644))
 
 			_, err := cnc.MapCncFile(path)
-			if !errors.Is(err, cnc.ErrNotReady) {
-				t.Fatalf("got %v", err)
-			}
+			require.ErrorIs(t, err, cnc.ErrNotReady)
 		})
 	}
 }
@@ -69,34 +60,22 @@ func TestMapCncFile_insufficientFileLength(t *testing.T) {
 	shortFile := cnc.TestShortCncFileLength
 	const sentinel = 0xAB
 	buf[shortFile-1] = sentinel
-	if err := os.WriteFile(path, buf[:shortFile], 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, buf[:shortFile], 0o644))
 
 	_, err := cnc.MapCncFile(path)
-	if err == nil {
-		t.Fatal("expected insufficient file length error")
-	}
+	require.Error(t, err)
 	wantNeed := cnc.ReadyMetadata().ComputedLength()
 	wantErr := fmt.Sprintf(
 		"cnc: file length %d insufficient for metadata (need %d)",
 		shortFile,
 		wantNeed,
 	)
-	if err.Error() != wantErr {
-		t.Fatalf("got %v want %q", err, wantErr)
-	}
+	require.EqualError(t, err, wantErr)
 
 	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(raw) != shortFile {
-		t.Fatalf("file size %d want %d", len(raw), shortFile)
-	}
-	if raw[shortFile-1] != sentinel {
-		t.Fatalf("file mutated before mmap: sentinel %x", raw[shortFile-1])
-	}
+	require.NoError(t, err)
+	require.Len(t, raw, shortFile)
+	require.Equal(t, byte(sentinel), raw[shortFile-1])
 }
 
 func assertMapCncRejectsInsufficientFile(t *testing.T, path string) {
@@ -104,24 +83,15 @@ func assertMapCncRejectsInsufficientFile(t *testing.T, path string) {
 	before := openFDCount(t)
 	_, err := cnc.MapCncFile(path)
 	after := openFDCount(t)
-	if err == nil {
-		t.Fatal("expected insufficient file length error")
-	}
-	if !strings.Contains(err.Error(), "insufficient for metadata") {
-		t.Fatalf("got %v", err)
-	}
-	if after != before {
-		t.Fatalf("FD count after %d want %d", after, before)
-	}
+	require.ErrorContains(t, err, "insufficient for metadata")
+	require.Equal(t, before, after)
 }
 
 func TestMapCncFile_hugeMetadataShortFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), cnc.FileName)
 	fileLength := writeWrappedPositiveOverflowCncFile(t, path)
 	meta := cnc.WrappedPositiveOverflowMetadata()
-	if meta.ComputedLength() <= fileLength {
-		t.Fatalf("computed %d want > file %d", meta.ComputedLength(), fileLength)
-	}
+	require.Greater(t, meta.ComputedLength(), fileLength)
 
 	assertMapCncRejectsInsufficientFile(t, path)
 }
@@ -138,12 +108,7 @@ func TestMapCncFile_missingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.dat")
 
 	_, err := cnc.MapCncFile(path)
-	if err == nil {
-		t.Fatal("expected error for missing file")
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected os.ErrNotExist, got %v", err)
-	}
+	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestMapCncFile_closeIdempotent(t *testing.T) {
@@ -151,21 +116,11 @@ func TestMapCncFile_closeIdempotent(t *testing.T) {
 	writeReadyCncFile(t, path)
 
 	mapped, err := cnc.MapCncFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := mapped.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := mapped.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if mapped.ToDriverBuffer() != nil {
-		t.Fatal("expected nil to-driver buffer after close")
-	}
-	if mapped.ToDriverAtomic().Capacity() != 0 {
-		t.Fatal("expected zero to-driver atomic capacity after close")
-	}
+	require.NoError(t, err)
+	require.NoError(t, mapped.Close())
+	require.NoError(t, mapped.Close())
+	require.Nil(t, mapped.ToDriverBuffer())
+	require.Equal(t, 0, mapped.ToDriverAtomic().Capacity())
 }
 
 func TestMappedCncFile_atomicViews(t *testing.T) {
@@ -173,28 +128,18 @@ func TestMappedCncFile_atomicViews(t *testing.T) {
 	writeReadyCncFile(t, path)
 
 	mapped, err := cnc.MapCncFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = mapped.Close() }()
 
 	toDriver := mapped.ToDriverBuffer()
 	toDriverAtomic := mapped.ToDriverAtomic()
-	if toDriverAtomic.Capacity() != len(toDriver) {
-		t.Fatalf("to-driver atomic capacity %d want %d", toDriverAtomic.Capacity(), len(toDriver))
-	}
+	require.Equal(t, len(toDriver), toDriverAtomic.Capacity())
 	toDriverAtomic.PutInt32(0, 42)
-	if atomic.Wrap(toDriver).GetInt32(0) != 42 {
-		t.Fatal("to-driver atomic write not visible in byte slice")
-	}
+	require.Equal(t, int32(42), atomic.Wrap(toDriver).GetInt32(0))
 
 	toClients := mapped.ToClientsBuffer()
 	toClientsAtomic := mapped.ToClientsAtomic()
-	if toClientsAtomic.Capacity() != len(toClients) {
-		t.Fatalf("to-clients atomic capacity %d want %d", toClientsAtomic.Capacity(), len(toClients))
-	}
+	require.Equal(t, len(toClients), toClientsAtomic.Capacity())
 	toClientsAtomic.PutInt32(0, 99)
-	if atomic.Wrap(toClients).GetInt32(0) != 99 {
-		t.Fatal("to-clients atomic write not visible in byte slice")
-	}
+	require.Equal(t, int32(99), atomic.Wrap(toClients).GetInt32(0))
 }

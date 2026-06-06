@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
 )
 
@@ -16,9 +17,7 @@ func TestIsPowerOfTwo(t *testing.T) {
 		{1023, false},
 	}
 	for _, test := range tests {
-		if got := atomic.IsPowerOfTwo(test.value); got != test.want {
-			t.Fatalf("IsPowerOfTwo(%d)=%v want %v", test.value, got, test.want)
-		}
+		require.Equal(t, test.want, atomic.IsPowerOfTwo(test.value))
 	}
 }
 
@@ -31,9 +30,7 @@ func TestNumberOfTrailingZeroes(t *testing.T) {
 		{8, 3},
 	}
 	for _, test := range tests {
-		if got := atomic.NumberOfTrailingZeroes(test.value); got != test.want {
-			t.Fatalf("NumberOfTrailingZeroes(%d)=%d want %d", test.value, got, test.want)
-		}
+		require.Equal(t, test.want, atomic.NumberOfTrailingZeroes(test.value))
 	}
 }
 
@@ -53,8 +50,6 @@ func TestFindNextPowerOfTwo(t *testing.T) {
 		{2147483647, math.MinInt32},
 	}
 	for _, test := range tests {
-		if got := atomic.FindNextPowerOfTwo(test.value); got != test.want {
-			t.Fatalf("FindNextPowerOfTwo(%d)=%d want %d", test.value, got, test.want)
-		}
+		require.Equal(t, test.want, atomic.FindNextPowerOfTwo(test.value))
 	}
 }

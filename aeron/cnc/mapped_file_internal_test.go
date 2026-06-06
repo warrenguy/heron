@@ -3,8 +3,9 @@ package cnc
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestMapCncFile_restatRejectsTruncatedFile(t *testing.T) {
@@ -13,32 +14,18 @@ func TestMapCncFile_restatRejectsTruncatedFile(t *testing.T) {
 	computedLength := meta.ComputedLength()
 
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = file.Close() }()
 
 	fileInfo, err := file.Stat()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	headerMeta, err := readMetadataHeaderFromFile(file, path, int(fileInfo.Size()), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if err := os.Truncate(path, int64(computedLength-1)); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Truncate(path, int64(computedLength-1)))
 
 	_, err = mapCncFileAfterHeader(file, path, headerMeta)
-	if err == nil {
-		t.Fatal("expected insufficient file length after truncate")
-	}
-	want := "cnc: file length"
-	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("got %v want substring %q", err, want)
-	}
+	require.ErrorContains(t, err, "cnc: file length")
 }
 
 func TestReadMetadataHeaderFromFile_staleFileSize(t *testing.T) {
@@ -47,17 +34,10 @@ func TestReadMetadataHeaderFromFile_staleFileSize(t *testing.T) {
 	computedLength := meta.ComputedLength()
 
 	file, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = file.Close() }()
 
 	staleSize := computedLength - TestStaleFileSizeShrink
 	_, err = readMetadataHeaderFromFile(file, path, staleSize, nil)
-	if err == nil {
-		t.Fatal("expected insufficient file length for stale fileSize")
-	}
-	if !strings.Contains(err.Error(), "insufficient for metadata") {
-		t.Fatalf("got %v", err)
-	}
+	require.ErrorContains(t, err, "insufficient for metadata")
 }

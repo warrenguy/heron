@@ -1,13 +1,12 @@
 package cnc_test
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
 )
@@ -17,21 +16,13 @@ func TestParseMetadataSmoke(t *testing.T) {
 	writeReadyMetadata(t, buf)
 
 	meta, err := cnc.ParseMetadata(buf)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	cnc.AssertParsedReadyMetadataEqual(t, meta, cnc.ReadyMetadata())
 
 	wantLen := testReadyFileLength()
-	if meta.ComputedLength() != wantLen {
-		t.Fatalf("computed %d want %d", meta.ComputedLength(), wantLen)
-	}
-	if !meta.IsFileLengthSufficient(wantLen) {
-		t.Fatal("should be sufficient")
-	}
-	if meta.IsFileLengthSufficient(wantLen - 1) {
-		t.Fatal("should be insufficient")
-	}
+	require.Equal(t, wantLen, meta.ComputedLength())
+	require.True(t, meta.IsFileLengthSufficient(wantLen), "should be sufficient")
+	require.False(t, meta.IsFileLengthSufficient(wantLen-1), "should be insufficient")
 
 	offsetTests := []struct {
 		name string
@@ -61,29 +52,20 @@ func TestParseMetadataSmoke(t *testing.T) {
 		},
 	}
 	for _, test := range offsetTests {
-		if test.got != test.want {
-			t.Fatalf("%s offset %d want %d", test.name, test.got, test.want)
-		}
+		require.Equal(t, test.want, test.got, test.name)
 	}
 }
 
 func TestParseMetadataBufferTooShort(t *testing.T) {
 	buf := make([]byte, cnc.MetaDataLength-1)
 	_, err := cnc.ParseMetadata(buf)
-	if err == nil {
-		t.Fatal("expected buffer too short error")
-	}
-	if !strings.Contains(err.Error(), "buffer too short") {
-		t.Fatalf("got %v", err)
-	}
+	require.ErrorContains(t, err, "buffer too short")
 }
 
 func TestParseMetadataNotReady(t *testing.T) {
 	buf := make([]byte, cnc.MetaDataLength)
 	_, err := cnc.ParseMetadata(buf)
-	if !errors.Is(err, cnc.ErrNotReady) {
-		t.Fatalf("got %v", err)
-	}
+	require.ErrorIs(t, err, cnc.ErrNotReady)
 }
 
 func TestParseMetadataIncompatibleMajor(t *testing.T) {
@@ -95,12 +77,7 @@ func TestParseMetadataIncompatibleMajor(t *testing.T) {
 	)
 
 	_, err := cnc.ParseMetadata(buf)
-	if err == nil {
-		t.Fatal("expected incompatible major version error")
-	}
-	if !strings.Contains(err.Error(), "incompatible major version") {
-		t.Fatalf("got %v", err)
-	}
+	require.ErrorContains(t, err, "incompatible major version")
 }
 
 func writeMetadataNegativeDriverLength(t *testing.T, buf []byte) {
@@ -114,12 +91,7 @@ func TestParseMetadataNegativeLength(t *testing.T) {
 	writeMetadataNegativeDriverLength(t, buf)
 
 	_, err := cnc.ParseMetadata(buf)
-	if err == nil {
-		t.Fatal("expected error for negative buffer length")
-	}
-	if !strings.Contains(err.Error(), "must be positive") {
-		t.Fatalf("got %v", err)
-	}
+	require.ErrorContains(t, err, "must be positive")
 }
 
 func TestParseMetadata_rejectsZeroRingBuffers(t *testing.T) {
@@ -138,12 +110,7 @@ func TestParseMetadata_rejectsZeroRingBuffers(t *testing.T) {
 			atomic.Wrap(buf).PutInt32(test.offset, 0)
 
 			_, err := cnc.ParseMetadata(buf)
-			if err == nil {
-				t.Fatalf("expected error for zero %s buffer length", test.field)
-			}
-			if !strings.Contains(err.Error(), "must be positive") {
-				t.Fatalf("got %v", err)
-			}
+			require.ErrorContains(t, err, "must be positive")
 		})
 	}
 }
@@ -152,15 +119,11 @@ func TestCncVersionVolatile(t *testing.T) {
 	buf := make([]byte, cnc.MetaDataLength)
 	atomicBuffer := atomic.Wrap(buf)
 	atomicBuffer.PutInt32Release(cnc.OffsetCncVersion, cnc.Version)
-	if got := cnc.CncVersionVolatile(buf); got != cnc.Version {
-		t.Fatalf("volatile version %d", got)
-	}
+	require.Equal(t, cnc.Version, cnc.CncVersionVolatile(buf))
 }
 
 func TestCncVersionVolatile_bufferTooShort(t *testing.T) {
-	if got := cnc.CncVersionVolatile([]byte{0, 0, 0}); got != 0 {
-		t.Fatalf("got %d want 0", got)
-	}
+	require.Equal(t, int32(0), cnc.CncVersionVolatile([]byte{0, 0, 0}))
 }
 
 func TestComputeCncFileLength(t *testing.T) {
@@ -169,18 +132,12 @@ func TestComputeCncFileLength(t *testing.T) {
 	want := atomic.Align(cnc.MetaDataLength+total, int(cnc.TestFilePageSize))
 
 	got, err := cnc.ComputeCncFileLength(total, int(cnc.TestFilePageSize))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != want {
-		t.Fatalf("length %d want %d", got, want)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 
-	if _, err := cnc.ComputeCncFileLength(total, 0); err == nil {
-		t.Fatal("expected error for alignment 0")
-	}
-	if _, err := cnc.ComputeCncFileLength(total, 3); err == nil {
-		t.Fatal("expected error for non-power-of-two alignment")
+	for _, alignment := range []int{0, 3} {
+		_, err = cnc.ComputeCncFileLength(total, alignment)
+		require.Error(t, err)
 	}
 }
 
@@ -188,65 +145,54 @@ func TestIsFileLengthSufficientNegativeLength(t *testing.T) {
 	meta := cnc.Metadata{
 		ToDriverBufferLength: -1,
 	}
-	if meta.IsFileLengthSufficient(cnc.TestLargeFileLength) {
-		t.Fatal("negative length should not be sufficient")
-	}
+	require.False(
+		t,
+		meta.IsFileLengthSufficient(cnc.TestLargeFileLength),
+		"negative length should not be sufficient",
+	)
 }
 
 func TestIsFileLengthSufficient_zeroRingBuffer(t *testing.T) {
 	meta := cnc.Metadata{
 		ToDriverBufferLength: 512,
 	}
-	if meta.IsFileLengthSufficient(cnc.TestLargeFileLength) {
-		t.Fatal("zero to-clients length should not be sufficient")
-	}
+	require.False(
+		t, meta.IsFileLengthSufficient(cnc.TestLargeFileLength),
+		"zero to-clients length should not be sufficient",
+	)
 }
 
 func TestReadMetadataFile_roundtrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), cnc.FileName)
 	writeReadyCncFile(t, path)
 
-	if _, err := cnc.ReadMetadataFile(path); err != nil {
-		t.Fatal(err)
-	}
+	_, err := cnc.ReadMetadataFile(path)
+	require.NoError(t, err)
 }
 
 func TestReadMetadataFile_hugeMetadataShortFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), cnc.FileName)
 	fileLength := writeWrappedPositiveOverflowCncFile(t, path)
 	meta := cnc.WrappedPositiveOverflowMetadata()
-	if meta.ComputedLength() <= fileLength {
-		t.Fatalf("computed %d want > file %d", meta.ComputedLength(), fileLength)
-	}
+	require.Greater(t, meta.ComputedLength(), fileLength)
 
 	_, err := cnc.ReadMetadataFile(path)
-	if err == nil {
-		t.Fatal("expected insufficient file length error")
-	}
-	if !strings.Contains(err.Error(), "insufficient for metadata") {
-		t.Fatalf("got %v", err)
-	}
+	require.ErrorContains(t, err, "insufficient for metadata")
 }
 
 func TestReadMetadataFile_notReady(t *testing.T) {
 	path := filepath.Join(t.TempDir(), cnc.FileName)
 	buf := make([]byte, cnc.MetaDataLength+1)
-	if err := os.WriteFile(path, buf, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, buf, 0o644))
 	_, err := cnc.ReadMetadataFile(path)
-	if !errors.Is(err, cnc.ErrNotReady) {
-		t.Fatalf("got %v", err)
-	}
+	require.ErrorIs(t, err, cnc.ErrNotReady)
 }
 
 func TestWaitCncReady_readyFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), cnc.FileName)
 	writeReadyCncFile(t, path)
 
-	if err := cnc.WaitCncReady(path, time.Second); err != nil {
-		t.Fatalf("ready file: %v", err)
-	}
+	require.NoError(t, cnc.WaitCncReady(path, time.Second))
 }
 
 func TestWaitCncReady_hugeMetadataShortFile(t *testing.T) {
@@ -254,12 +200,7 @@ func TestWaitCncReady_hugeMetadataShortFile(t *testing.T) {
 	writeWrappedPositiveOverflowCncFile(t, path)
 
 	err := cnc.WaitCncReady(path, 100*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected insufficient file length error")
-	}
-	if !strings.Contains(err.Error(), "insufficient for metadata") {
-		t.Fatalf("got %v", err)
-	}
+	require.ErrorContains(t, err, "insufficient for metadata")
 }
 
 func TestWaitCncReady_insufficientFileLength(t *testing.T) {
@@ -268,24 +209,15 @@ func TestWaitCncReady_insufficientFileLength(t *testing.T) {
 	writeReadyMetadata(t, buf)
 
 	shortFile := cnc.TestShortCncFileLength
-	if err := os.WriteFile(path, buf[:shortFile], 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, buf[:shortFile], 0o644))
 
 	err := cnc.WaitCncReady(path, 100*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected insufficient file length error")
-	}
-	if !strings.Contains(err.Error(), "insufficient for metadata") {
-		t.Fatalf("got %v", err)
-	}
+	require.ErrorContains(t, err, "insufficient for metadata")
 }
 
 func TestWaitCncReady_missingFile(t *testing.T) {
 	err := cnc.WaitCncReady(t.TempDir()+"/missing.dat", 10*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected timeout")
-	}
+	require.Error(t, err, "expected timeout")
 }
 
 func TestWaitCncReady_invalidMetadata(t *testing.T) {
@@ -293,15 +225,8 @@ func TestWaitCncReady_invalidMetadata(t *testing.T) {
 	buf := make([]byte, cnc.TestShortCncFileLength)
 	writeMetadataNegativeDriverLength(t, buf)
 
-	if err := os.WriteFile(path, buf, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, buf, 0o644))
 
 	err := cnc.WaitCncReady(path, 100*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected invalid metadata error")
-	}
-	if !strings.Contains(err.Error(), "must be positive") {
-		t.Fatalf("got %v", err)
-	}
+	require.ErrorContains(t, err, "must be positive")
 }

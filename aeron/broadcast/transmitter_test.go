@@ -1,9 +1,9 @@
 package broadcast_test
 
 import (
-	"bytes"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/record"
@@ -11,37 +11,29 @@ import (
 
 func TestBroadcastTransmitterCapacity(t *testing.T) {
 	tx := newTransmitter(t, newTestBuffer(t))
-	if tx.Capacity() != testCapacity {
-		t.Fatalf("capacity=%d want %d", tx.Capacity(), testCapacity)
-	}
+	require.Equal(t, testCapacity, tx.Capacity())
 }
 
 func TestBroadcastTransmitterInvalidCapacity(t *testing.T) {
 	_, err := broadcast.NewBroadcastTransmitter(invalidCapacityBuffer())
-	if err == nil {
-		t.Fatal("expected error for non-power-of-two capacity")
-	}
+	require.Error(t, err)
 	_, err = broadcast.NewBroadcastTransmitter(
 		atomic.Wrap(make([]byte, broadcast.TotalBufferLength(8))),
 	)
-	if err == nil {
-		t.Fatal("expected error for data capacity below minimum")
-	}
+	require.Error(t, err)
 }
 
 func TestBroadcastTransmitterMaxMessageLengthExceeded(t *testing.T) {
 	tx := newTransmitter(t, newTestBuffer(t))
 	src := make([]byte, tx.MaxMsgLength()+1)
-	if err := tx.Transmit(testMsgTypeID, src); err == nil {
-		t.Fatal("expected error when max message length exceeded")
-	}
+	err := tx.Transmit(testMsgTypeID, src)
+	require.Error(t, err)
 }
 
 func TestBroadcastTransmitterInvalidMessageTypeID(t *testing.T) {
 	tx := newTransmitter(t, newTestBuffer(t))
-	if err := tx.Transmit(-1, make([]byte, 32)); err == nil {
-		t.Fatal("expected error for invalid message type id")
-	}
+	err := tx.Transmit(-1, make([]byte, 32))
+	require.Error(t, err)
 }
 
 func TestBroadcastTransmitterIntoEmptyBuffer(t *testing.T) {
@@ -49,9 +41,8 @@ func TestBroadcastTransmitterIntoEmptyBuffer(t *testing.T) {
 	tx := newTransmitter(t, buf)
 
 	src := testPayload8
-	if err := tx.Transmit(testMsgTypeID, src); err != nil {
-		t.Fatal(err)
-	}
+	err := tx.Transmit(testMsgTypeID, src)
+	require.NoError(t, err)
 
 	recordLength := len(src) + broadcast.HeaderLength
 	recordLengthAligned := alignedRecordLength(len(src))
@@ -59,25 +50,13 @@ func TestBroadcastTransmitterIntoEmptyBuffer(t *testing.T) {
 	tailIntentIdx := broadcast.TailIntentIndex(testCapacity)
 	tailIdx := broadcast.TailIndex(testCapacity)
 	latestIdx := broadcast.LatestIndex(testCapacity)
-	if got := buf.GetInt64Volatile(tailIntentIdx); got != int64(recordLengthAligned) {
-		t.Fatalf("tailIntent=%d want %d", got, recordLengthAligned)
-	}
-	if got := buf.GetInt64Volatile(latestIdx); got != 0 {
-		t.Fatalf("latest=%d want 0", got)
-	}
-	if got := buf.GetInt64Volatile(tailIdx); got != int64(recordLengthAligned) {
-		t.Fatalf("tail=%d want %d", got, recordLengthAligned)
-	}
-	if got := buf.GetInt32(record.LengthOffset(0)); got != int32(recordLength) {
-		t.Fatalf("record length=%d want %d", got, recordLength)
-	}
-	if got := buf.GetInt32(record.TypeOffset(0)); got != testMsgTypeID {
-		t.Fatalf("typeId=%d want %d", got, testMsgTypeID)
-	}
+	require.Equal(t, int64(recordLengthAligned), buf.GetInt64Volatile(tailIntentIdx))
+	require.Equal(t, int64(0), buf.GetInt64Volatile(latestIdx))
+	require.Equal(t, int64(recordLengthAligned), buf.GetInt64Volatile(tailIdx))
+	require.Equal(t, int32(recordLength), buf.GetInt32(record.LengthOffset(0)))
+	require.Equal(t, int32(testMsgTypeID), buf.GetInt32(record.TypeOffset(0)))
 	got := buf.Bytes()[broadcast.MsgOffset(0) : broadcast.MsgOffset(0)+len(src)]
-	if !bytes.Equal(got, src) {
-		t.Fatalf("payload=%v want %v", got, src)
-	}
+	require.Equal(t, src, got)
 }
 
 func TestBroadcastTransmitterIntoUsedBuffer(t *testing.T) {
@@ -88,9 +67,8 @@ func TestBroadcastTransmitterIntoUsedBuffer(t *testing.T) {
 	buf.PutInt64(broadcast.TailIndex(testCapacity), tail)
 
 	src := []byte{9, 8, 7, 6, 5, 4, 3, 2}
-	if err := tx.Transmit(testMsgTypeID, src); err != nil {
-		t.Fatal(err)
-	}
+	err := tx.Transmit(testMsgTypeID, src)
+	require.NoError(t, err)
 
 	recordLengthAligned := alignedRecordLength(len(src))
 	recordOffset := int(tail)
@@ -99,18 +77,10 @@ func TestBroadcastTransmitterIntoUsedBuffer(t *testing.T) {
 	tailIdx := broadcast.TailIndex(testCapacity)
 	latestIdx := broadcast.LatestIndex(testCapacity)
 	wantTail := tail + int64(recordLengthAligned)
-	if got := buf.GetInt64Volatile(tailIntentIdx); got != wantTail {
-		t.Fatalf("tailIntent=%d want %d", got, wantTail)
-	}
-	if got := buf.GetInt64Volatile(latestIdx); got != tail {
-		t.Fatalf("latest=%d want %d", got, tail)
-	}
-	if got := buf.GetInt64Volatile(tailIdx); got != wantTail {
-		t.Fatalf("tail=%d want %d", got, wantTail)
-	}
-	if got := buf.GetInt32(record.TypeOffset(recordOffset)); got != testMsgTypeID {
-		t.Fatalf("typeId=%d want %d", got, testMsgTypeID)
-	}
+	require.Equal(t, wantTail, buf.GetInt64Volatile(tailIntentIdx))
+	require.Equal(t, int64(tail), buf.GetInt64Volatile(latestIdx))
+	require.Equal(t, wantTail, buf.GetInt64Volatile(tailIdx))
+	require.Equal(t, int32(testMsgTypeID), buf.GetInt32(record.TypeOffset(recordOffset)))
 }
 
 func TestBroadcastTransmitterIntoEndOfBuffer(t *testing.T) {
@@ -122,18 +92,13 @@ func TestBroadcastTransmitterIntoEndOfBuffer(t *testing.T) {
 	tail := int64(testCapacity - recordLengthAligned)
 
 	buf.PutInt64(broadcast.TailIndex(testCapacity), tail)
-	if err := tx.Transmit(testMsgTypeID, src); err != nil {
-		t.Fatal(err)
-	}
+	err := tx.Transmit(testMsgTypeID, src)
+	require.NoError(t, err)
 
 	recordOffset := int(tail)
 	wantTail := tail + int64(recordLengthAligned)
-	if got := buf.GetInt64Volatile(broadcast.TailIndex(testCapacity)); got != wantTail {
-		t.Fatalf("tail=%d want %d", got, wantTail)
-	}
-	if got := buf.GetInt32(record.TypeOffset(recordOffset)); got != testMsgTypeID {
-		t.Fatalf("typeId=%d want %d", got, testMsgTypeID)
-	}
+	require.Equal(t, wantTail, buf.GetInt64Volatile(broadcast.TailIndex(testCapacity)))
+	require.Equal(t, int32(testMsgTypeID), buf.GetInt32(record.TypeOffset(recordOffset)))
 }
 
 func TestBroadcastTransmitterPaddingAtEndOfBuffer(t *testing.T) {
@@ -148,35 +113,22 @@ func TestBroadcastTransmitterPaddingAtEndOfBuffer(t *testing.T) {
 	for i := range src {
 		src[i] = byte(i)
 	}
-	if err := tx.Transmit(testMsgTypeID, src); err != nil {
-		t.Fatal(err)
-	}
+	err := tx.Transmit(testMsgTypeID, src)
+	require.NoError(t, err)
 
 	recordLengthAligned := alignedRecordLength(length)
 	recordOffset := int(tail)
 	toEndOfBuffer := testCapacity - recordOffset
 
-	if got := buf.GetInt32(record.TypeOffset(recordOffset)); got != broadcast.PaddingMsgTypeID {
-		t.Fatalf("padding typeId=%d want %d", got, broadcast.PaddingMsgTypeID)
-	}
-	if got := buf.GetInt32(record.LengthOffset(recordOffset)); got != int32(toEndOfBuffer) {
-		t.Fatalf("padding length=%d want %d", got, toEndOfBuffer)
-	}
+	require.Equal(t, int32(broadcast.PaddingMsgTypeID), buf.GetInt32(record.TypeOffset(recordOffset)))
+	require.Equal(t, int32(toEndOfBuffer), buf.GetInt32(record.LengthOffset(recordOffset)))
 
 	newTail := tail + int64(toEndOfBuffer)
-	if got := buf.GetInt32(record.TypeOffset(0)); got != testMsgTypeID {
-		t.Fatalf("wrapped typeId=%d want %d", got, testMsgTypeID)
-	}
-	if got := buf.GetInt64Volatile(broadcast.LatestIndex(testCapacity)); got != newTail {
-		t.Fatalf("latest=%d want %d", got, newTail)
-	}
+	require.Equal(t, int32(testMsgTypeID), buf.GetInt32(record.TypeOffset(0)))
+	require.Equal(t, newTail, buf.GetInt64Volatile(broadcast.LatestIndex(testCapacity)))
 	wantTail := newTail + int64(recordLengthAligned)
-	if got := buf.GetInt64Volatile(broadcast.TailIndex(testCapacity)); got != wantTail {
-		t.Fatalf("tail=%d want %d", got, wantTail)
-	}
+	require.Equal(t, wantTail, buf.GetInt64Volatile(broadcast.TailIndex(testCapacity)))
 	expectedTailIntent := tail + int64(recordLengthAligned+toEndOfBuffer)
 	tailIntentIdx := broadcast.TailIntentIndex(testCapacity)
-	if got := buf.GetInt64Volatile(tailIntentIdx); got != expectedTailIntent {
-		t.Fatalf("tailIntent=%d want %d", got, expectedTailIntent)
-	}
+	require.Equal(t, expectedTailIntent, buf.GetInt64Volatile(tailIntentIdx))
 }

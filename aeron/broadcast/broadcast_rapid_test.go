@@ -1,9 +1,10 @@
 package broadcast_test
 
 import (
-	"bytes"
+	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/broadcast"
 	"pgregory.net/rapid"
@@ -22,19 +23,15 @@ func TestBroadcast_rapid_transmitReceiveOrder(t *testing.T) {
 			assertTailIntentOrdering(t, ab, capacity)
 			rapidReceiveAndAssertPayload(t, rx, want, i)
 		}
-		if rx.ReceiveNext() {
-			t.Fatal("unexpected extra message")
-		}
-		if rx.LappedCount() != 0 {
-			t.Fatalf("lappedCount=%d want 0 when keeping up", rx.LappedCount())
-		}
+		require.False(t, rx.ReceiveNext())
+		require.Zero(t, rx.LappedCount())
 	})
 }
 
 func TestBroadcast_rapid_tailIntentOrdering(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		capacity := rapidCapacity(t)
-		ab, tx := rapidTransmitter(t, capacity)
+		ab, tx, _ := rapidBroadcastPair(t, capacity)
 
 		n := rapid.IntRange(1, 64).Draw(t, "messageCount")
 		for range n {
@@ -71,17 +68,11 @@ func TestBroadcast_rapid_lapVsNoLap(t *testing.T) {
 		}
 
 		if stall {
-			if !rx.ReceiveNext() {
-				t.Fatal("expected catch-up receive after stall")
-			}
-			if !rx.Validate() {
-				t.Fatal("expected record to validate after catch-up")
-			}
-			if rx.LappedCount() == 0 {
-				t.Fatal("expected lappedCount > 0 after stall")
-			}
-		} else if rx.LappedCount() != 0 {
-			t.Fatalf("lappedCount=%d want 0 when not stalling", rx.LappedCount())
+			require.True(t, rx.ReceiveNext())
+			require.True(t, rx.Validate())
+			require.Positive(t, rx.LappedCount())
+		} else {
+			require.Zero(t, rx.LappedCount())
 		}
 	})
 }
@@ -105,9 +96,7 @@ func TestBroadcast_rapid_noTornReads(t *testing.T) {
 			validated++
 			assertNoTornRead(t, rx)
 		}
-		if validated == 0 {
-			t.Fatal("expected at least one validated record")
-		}
+		require.Positive(t, validated)
 	})
 }
 
@@ -139,16 +128,10 @@ func TestBroadcast_rapid_paddingWrap(t *testing.T) {
 		}
 		rapidTransmit(t, tx, large)
 		rapidReceiveValid(t, rx, "after wrap")
-		if rx.TypeID() != testMsgTypeID {
-			t.Fatalf("typeId=%d want %d", rx.TypeID(), testMsgTypeID)
-		}
-		if rx.Length() != largeLen {
-			t.Fatalf("length=%d want %d", rx.Length(), largeLen)
-		}
+		require.Equal(t, testMsgTypeID, rx.TypeID())
+		require.Equal(t, largeLen, rx.Length())
 		got := copyPayload(rx)
-		if !bytes.Equal(got, large) {
-			t.Fatal("large payload mismatch after padding wrap")
-		}
+		require.Equal(t, large, got)
 	})
 }
 
@@ -169,7 +152,7 @@ func TestBroadcast_rapid_interleavedSchedule(t *testing.T) {
 			}
 			forceReceive := len(queue) >= messagesBeforeWrap(capacity, maxPlen)
 			if len(queue) > 0 && (rapid.Bool().Draw(t, "receive") || forceReceive) {
-				queue, queueMaxLen = rapidDrainQueueHead(t, rx, queue, queueMaxLen, "on interleaved receive")
+				queue, queueMaxLen = rapidDrainQueueHead(t, rx, queue, "on interleaved receive")
 				continue
 			}
 
@@ -182,14 +165,10 @@ func TestBroadcast_rapid_interleavedSchedule(t *testing.T) {
 		}
 
 		for len(queue) > 0 {
-			queue, queueMaxLen = rapidDrainQueueHead(t, rx, queue, queueMaxLen, "on final drain")
+			queue, _ = rapidDrainQueueHead(t, rx, queue, "on final drain")
 		}
-		if rx.ReceiveNext() {
-			t.Fatal("unexpected extra message after drain")
-		}
-		if rx.LappedCount() != 0 {
-			t.Fatalf("lappedCount=%d want 0 when never falling behind", rx.LappedCount())
-		}
+		require.False(t, rx.ReceiveNext())
+		require.Zero(t, rx.LappedCount())
 	})
 }
 
@@ -210,18 +189,10 @@ func TestBroadcast_rapid_dualReceiver(t *testing.T) {
 			rapidReceiveValid(t, fast, "fast receiver fell behind transmit")
 		}
 
-		if !slow.ReceiveNext() {
-			t.Fatal("slow receiver expected catch-up receive")
-		}
-		if !slow.Validate() {
-			t.Fatal("slow receiver expected record to validate after catch-up")
-		}
-		if slow.LappedCount() == 0 {
-			t.Fatal("slow receiver expected lappedCount > 0")
-		}
-		if fast.LappedCount() != 0 {
-			t.Fatalf("fast lappedCount=%d want 0", fast.LappedCount())
-		}
+		require.True(t, slow.ReceiveNext())
+		require.True(t, slow.Validate())
+		require.Positive(t, slow.LappedCount())
+		require.Zero(t, fast.LappedCount())
 	})
 }
 
@@ -261,15 +232,13 @@ func TestBroadcast_rapid_lappedCountMonotonic(t *testing.T) {
 			}
 
 			lapped := rx.LappedCount()
-			if lapped < prevLapped {
-				t.Fatalf("lappedCount decreased: %d -> %d", prevLapped, lapped)
-			}
+			require.GreaterOrEqual(t, lapped, prevLapped)
 			prevLapped = lapped
 		}
 
 		keptUp := stallRemaining == 0 && txCount == rxCount && unread == 0
-		if keptUp && rx.LappedCount() != 0 {
-			t.Fatalf("lappedCount=%d want 0 when keeping up", rx.LappedCount())
+		if keptUp {
+			require.Zero(t, rx.LappedCount())
 		}
 	})
 }
@@ -291,21 +260,13 @@ func TestBroadcast_rapid_validateImpliesReadable(t *testing.T) {
 				continue
 			}
 			validated++
-			if rx.TypeID() != testMsgTypeID {
-				t.Fatalf("typeId=%d want %d", rx.TypeID(), testMsgTypeID)
-			}
-			if rx.Length() <= 0 {
-				t.Fatalf("length=%d want > 0", rx.Length())
-			}
+			require.Equal(t, testMsgTypeID, rx.TypeID())
+			require.Positive(t, rx.Length())
 			assertNoTornRead(t, rx)
 			got := copyPayload(rx)
-			if len(got) != rx.Length() {
-				t.Fatalf("payload len=%d want length=%d", len(got), rx.Length())
-			}
+			require.Len(t, got, rx.Length())
 		}
-		if validated == 0 {
-			t.Fatal("expected at least one validated record")
-		}
+		require.Positive(t, validated)
 	})
 }
 
@@ -331,19 +292,8 @@ func rapidBroadcastPair(
 	t.Helper()
 	ab := newBufferWithDataCapacity(capacity)
 	tx, rx, err := newBroadcastTXRX(ab)
-	if err != nil {
-		t.Fatalf("broadcast pair: %v", err)
-	}
+	require.NoError(t, err)
 	return ab, tx, rx
-}
-
-func rapidTransmitter(
-	t *rapid.T,
-	capacity int,
-) (atomic.AtomicBuffer, *broadcast.BroadcastTransmitter) {
-	t.Helper()
-	ab, tx, _ := rapidBroadcastPair(t, capacity)
-	return ab, tx
 }
 
 func rapidDualReceiverSetup(
@@ -353,31 +303,22 @@ func rapidDualReceiverSetup(
 	t.Helper()
 	ab := newBufferWithDataCapacity(capacity)
 	tx, fast, err := newBroadcastTXRX(ab)
-	if err != nil {
-		t.Fatalf("broadcast pair: %v", err)
-	}
+	require.NoError(t, err)
 	slow, err := broadcast.NewBroadcastReceiver(ab)
-	if err != nil {
-		t.Fatalf("slow receiver: %v", err)
-	}
+	require.NoError(t, err)
 	return tx, fast, slow
 }
 
 func rapidTransmit(t *rapid.T, tx *broadcast.BroadcastTransmitter, payload []byte) {
 	t.Helper()
-	if err := tx.Transmit(testMsgTypeID, payload); err != nil {
-		t.Fatalf("Transmit: %v", err)
-	}
+	err := tx.Transmit(testMsgTypeID, payload)
+	require.NoError(t, err)
 }
 
 func rapidReceiveValid(t *rapid.T, rx *broadcast.BroadcastReceiver, context string) {
 	t.Helper()
-	if !rx.ReceiveNext() {
-		t.Fatalf("%s: ReceiveNext=false", context)
-	}
-	if !rx.Validate() {
-		t.Fatalf("%s: Validate=false", context)
-	}
+	require.Truef(t, rx.ReceiveNext(), "%s", context)
+	require.Truef(t, rx.Validate(), "%s", context)
 }
 
 func rapidReceiveAndAssertPayload(
@@ -387,40 +328,23 @@ func rapidReceiveAndAssertPayload(
 	msgIndex int,
 ) {
 	t.Helper()
-	if !rx.ReceiveNext() {
-		t.Fatalf("message %d: ReceiveNext=false", msgIndex)
-	}
-	if !rx.Validate() {
-		t.Fatal("expected valid record while keeping up")
-	}
+	rapidReceiveValid(t, rx, fmt.Sprintf("message %d", msgIndex))
 	assertNoTornRead(t, rx)
 	got := copyPayload(rx)
-	if !bytes.Equal(got, want) {
-		t.Fatalf("message %d: payload mismatch", msgIndex)
-	}
-	if rx.TypeID() != testMsgTypeID {
-		t.Fatalf("message %d: typeId=%d", msgIndex, rx.TypeID())
-	}
+	require.Equal(t, want, got)
+	require.Equal(t, testMsgTypeID, rx.TypeID())
 }
 
 func rapidDrainQueueHead(
 	t *rapid.T,
 	rx *broadcast.BroadcastReceiver,
 	queue [][]byte,
-	queueMaxLen int,
 	context string,
 ) ([][]byte, int) {
 	t.Helper()
-	if !rx.ReceiveNext() {
-		t.Fatalf("ReceiveNext=false %s", context)
-	}
-	if !rx.Validate() {
-		t.Fatalf("Validate=false %s", context)
-	}
+	rapidReceiveValid(t, rx, context)
 	got := copyPayload(rx)
-	if !bytes.Equal(got, queue[0]) {
-		t.Fatalf("payload mismatch %s", context)
-	}
+	require.Equal(t, queue[0], got)
 	queue = queue[1:]
 	if len(queue) == 0 {
 		return queue, 0
@@ -438,9 +362,7 @@ func assertTailIntentOrdering(t *rapid.T, ab atomic.AtomicBuffer, capacity int) 
 	t.Helper()
 	tailIntent := ab.GetInt64Volatile(broadcast.TailIntentIndex(capacity))
 	tail := ab.GetInt64Volatile(broadcast.TailIndex(capacity))
-	if tailIntent < tail {
-		t.Fatalf("tailIntent=%d < tail=%d", tailIntent, tail)
-	}
+	require.GreaterOrEqual(t, tailIntent, tail)
 }
 
 func assertNoTornRead(t *rapid.T, rx *broadcast.BroadcastReceiver) {
@@ -455,10 +377,6 @@ func assertNoTornRead(t *rapid.T, rx *broadcast.BroadcastReceiver) {
 	len2 := rx.Length()
 	payload2 := copyPayload(rx)
 
-	if typeID1 != typeID2 || off1 != off2 || len1 != len2 {
-		t.Fatalf("metadata torn: (%d,%d,%d) vs (%d,%d,%d)", typeID1, off1, len1, typeID2, off2, len2)
-	}
-	if !bytes.Equal(payload1, payload2) {
-		t.Fatal("payload torn across reads")
-	}
+	require.True(t, typeID1 == typeID2 && off1 == off2 && len1 == len2, "metadata torn")
+	require.Equal(t, payload1, payload2)
 }

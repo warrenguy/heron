@@ -3,6 +3,7 @@ package broadcast_test
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/record"
@@ -71,18 +72,14 @@ func copyPayload(rx *broadcast.BroadcastReceiver) []byte {
 func newTransmitter(tb testing.TB, buf atomic.AtomicBuffer) *broadcast.BroadcastTransmitter {
 	tb.Helper()
 	tx, err := broadcast.NewBroadcastTransmitter(buf)
-	if err != nil {
-		tb.Fatal(err)
-	}
+	require.NoError(tb, err)
 	return tx
 }
 
 func newReceiver(tb testing.TB, buf atomic.AtomicBuffer) *broadcast.BroadcastReceiver {
 	tb.Helper()
 	rx, err := broadcast.NewBroadcastReceiver(buf)
-	if err != nil {
-		tb.Fatal(err)
-	}
+	require.NoError(tb, err)
 	return rx
 }
 
@@ -94,8 +91,33 @@ func newTestBroadcastPair(tb testing.TB) (
 	tb.Helper()
 	ab := newBufferWithDataCapacity(testCapacity)
 	tx, rx, err := newBroadcastTXRX(ab)
-	if err != nil {
+	require.NoError(tb, err)
+	return tx, rx, ab
+}
+
+func warmTransmit(tb testing.TB, tx *broadcast.BroadcastTransmitter) {
+	tb.Helper()
+	if err := tx.Transmit(testMsgTypeID, testPayload8); err != nil {
 		tb.Fatal(err)
 	}
-	return tx, rx, ab
+}
+
+func warmTransmitReceive(
+	tb testing.TB,
+	tx *broadcast.BroadcastTransmitter,
+	rx *broadcast.BroadcastReceiver,
+) {
+	tb.Helper()
+	warmTransmit(tb, tx)
+	if !rx.ReceiveNext() {
+		tb.Fatal("warm-up receive failed")
+	}
+}
+
+func warmTransmitOnly(
+	tb testing.TB,
+	tx *broadcast.BroadcastTransmitter,
+	_ *broadcast.BroadcastReceiver,
+) {
+	warmTransmit(tb, tx)
 }

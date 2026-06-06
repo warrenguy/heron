@@ -3,6 +3,7 @@ package ringbuffer_test
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
@@ -21,9 +22,7 @@ func TestRingBufferDescriptorConstants(t *testing.T) {
 		{"ConsumerHeartbeatOffset", ringbuffer.ConsumerHeartbeatOffset, 640},
 	}
 	for _, tc := range cases {
-		if tc.got != tc.want {
-			t.Fatalf("%s=%d want %d", tc.name, tc.got, tc.want)
-		}
+		require.Equal(t, tc.want, tc.got, tc.name)
 	}
 }
 
@@ -41,18 +40,14 @@ func TestRingBufferDescriptorIndices(t *testing.T) {
 		{"ConsumerHeartbeatIndex", ringbuffer.ConsumerHeartbeatIndex(capacity), capacity + 640},
 	}
 	for _, tc := range cases {
-		if tc.got != tc.want {
-			t.Fatalf("%s=%d want %d", tc.name, tc.got, tc.want)
-		}
+		require.Equal(t, tc.want, tc.got, tc.name)
 	}
 }
 
 func TestTotalBufferLength(t *testing.T) {
 	for _, dataCapacity := range []int{1024, ringbuffer.MinCapacity} {
 		want := dataCapacity + ringbuffer.TrailerLength
-		if got := ringbuffer.TotalBufferLength(dataCapacity); got != want {
-			t.Fatalf("TotalBufferLength(%d)=%d want %d", dataCapacity, got, want)
-		}
+		require.Equal(t, want, ringbuffer.TotalBufferLength(dataCapacity))
 	}
 }
 
@@ -60,25 +55,17 @@ func TestCheckCapacity(t *testing.T) {
 	const minData = ringbuffer.MinCapacity
 	total := ringbuffer.TotalBufferLength(minData)
 	data, err := ringbuffer.CheckCapacity(total, minData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if data != minData {
-		t.Fatalf("data capacity %d want %d", data, minData)
-	}
+	require.NoError(t, err)
+	require.Equal(t, minData, data)
 
-	if _, err := ringbuffer.CheckCapacity(ringbuffer.TrailerLength+minData-1, minData); err == nil {
-		t.Fatal("expected error for non-power-of-two data capacity")
-	}
+	_, err = ringbuffer.CheckCapacity(ringbuffer.TrailerLength+minData-1, minData)
+	require.Error(t, err)
 
 	tooSmall := ringbuffer.TotalBufferLength(minData - 1)
-	if _, err := ringbuffer.CheckCapacity(tooSmall, minData); err == nil {
-		t.Fatal("expected error for insufficient capacity")
-	}
+	_, err = ringbuffer.CheckCapacity(tooSmall, minData)
+	require.Error(t, err)
 }
 
 func TestMinCapacityPowerOfTwo(t *testing.T) {
-	if !atomic.IsPowerOfTwo(ringbuffer.MinCapacity) {
-		t.Fatalf("MinCapacity %d not power of two", ringbuffer.MinCapacity)
-	}
+	require.True(t, atomic.IsPowerOfTwo(ringbuffer.MinCapacity))
 }

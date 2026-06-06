@@ -90,51 +90,17 @@ type bufferLengthDesc struct {
 }
 
 func validateMetadataLayoutConsistency(headerMeta, liveMeta Metadata) error {
-	for _, check := range []struct {
-		name   string
-		header int32
-		live   int32
-	}{
-		{"to-driver", headerMeta.ToDriverBufferLength, liveMeta.ToDriverBufferLength},
-		{"to-clients", headerMeta.ToClientsBufferLength, liveMeta.ToClientsBufferLength},
-		{
-			"counters metadata",
-			headerMeta.CountersMetaDataBufferLength,
-			liveMeta.CountersMetaDataBufferLength,
-		},
-		{"counters values", headerMeta.CountersValuesBufferLength, liveMeta.CountersValuesBufferLength},
-		{"error log", headerMeta.ErrorLogBufferLength, liveMeta.ErrorLogBufferLength},
-	} {
-		if check.header != check.live {
+	headerDescs := bufferLengthDescriptors(headerMeta)
+	liveDescs := bufferLengthDescriptors(liveMeta)
+	for i := range headerDescs {
+		if headerDescs[i].length != liveDescs[i].length {
 			return fmt.Errorf(
 				"cnc: metadata layout drift: header %s length %d != live %d",
-				check.name,
-				check.header,
-				check.live,
+				headerDescs[i].name,
+				headerDescs[i].length,
+				liveDescs[i].length,
 			)
 		}
-	}
-	return nil
-}
-
-func validateMappableLayout(meta Metadata, dataLen int) error {
-	if err := validateLayoutEnd(meta); err != nil {
-		return err
-	}
-	computedLength := meta.ComputedLength()
-	if dataLen < MetaDataLength {
-		return fmt.Errorf(
-			"cnc: mapped length %d insufficient for metadata header (need %d)",
-			dataLen,
-			MetaDataLength,
-		)
-	}
-	if dataLen < computedLength {
-		return fmt.Errorf(
-			"cnc: mapped length %d insufficient for metadata (need %d)",
-			dataLen,
-			computedLength,
-		)
 	}
 	return nil
 }

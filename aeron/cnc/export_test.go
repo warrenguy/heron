@@ -3,6 +3,7 @@ package cnc
 import (
 	"math"
 
+	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
 	"pgregory.net/rapid"
 )
@@ -117,57 +118,34 @@ func DrawOverflowBufferLengths(t *rapid.T) Metadata {
 	return meta
 }
 
-type testFailer interface {
+type assertReporter interface {
 	Helper()
-	Fatalf(format string, args ...any)
+	Errorf(format string, args ...any)
+	FailNow()
 }
 
-func AssertMetadataBufferLengthsEqual(t testFailer, got, want Metadata) {
+func AssertMetadataBufferLengthsEqual(t assertReporter, got, want Metadata) {
 	t.Helper()
-	for _, check := range []struct {
-		name string
-		got  int32
-		want int32
-	}{
-		{"to-driver", got.ToDriverBufferLength, want.ToDriverBufferLength},
-		{"to-clients", got.ToClientsBufferLength, want.ToClientsBufferLength},
-		{"counters metadata", got.CountersMetaDataBufferLength, want.CountersMetaDataBufferLength},
-		{"counters values", got.CountersValuesBufferLength, want.CountersValuesBufferLength},
-		{"error log", got.ErrorLogBufferLength, want.ErrorLogBufferLength},
-	} {
-		if check.got != check.want {
-			t.Fatalf("%s %d want %d", check.name, check.got, check.want)
-		}
+	gotDescs := bufferLengthDescriptors(got)
+	wantDescs := bufferLengthDescriptors(want)
+	for i := range gotDescs {
+		require.Equal(t, wantDescs[i].length, gotDescs[i].length, gotDescs[i].name)
 	}
 }
 
-func AssertMappedBufferLengths(t testFailer, mapped *MappedCncFile, meta Metadata) {
+func AssertMappedBufferLengths(t assertReporter, mapped *MappedCncFile, meta Metadata) {
 	t.Helper()
 	data := mapped.Bytes()
-	if data == nil {
-		t.Fatalf("mapped file closed or nil")
-	}
-	if err := validateMappedBufferLengths(meta, sliceCncRegions(data, meta)); err != nil {
-		t.Fatalf("%v", err)
-	}
+	require.NotNil(t, data, "mapped file closed or nil")
+	require.NoError(t, validateMappedBufferLengths(meta, sliceCncRegions(data, meta)))
 }
 
-func AssertParsedReadyMetadataEqual(t testFailer, got, want Metadata) {
+func AssertParsedReadyMetadataEqual(t assertReporter, got, want Metadata) {
 	t.Helper()
 	AssertMetadataBufferLengthsEqual(t, got, want)
-	if got.CncVersion != Version {
-		t.Fatalf("version %d want %d", got.CncVersion, Version)
-	}
-	if got.ClientLivenessTimeoutNs != TestClientLivenessTimeoutNs {
-		t.Fatalf("client liveness timeout %d", got.ClientLivenessTimeoutNs)
-	}
-	if got.StartTimestampMs != TestStartTimestampMs {
-		t.Fatalf("start timestamp %d", got.StartTimestampMs)
-	}
-	if got.PID != TestPID {
-		t.Fatalf("pid %d", got.PID)
-	}
-	if got.FilePageSize != TestFilePageSize {
-		t.Fatalf("file page size %d", got.FilePageSize)
-	}
+	require.Equal(t, Version, got.CncVersion)
+	require.Equal(t, TestClientLivenessTimeoutNs, got.ClientLivenessTimeoutNs)
+	require.Equal(t, TestStartTimestampMs, got.StartTimestampMs)
+	require.Equal(t, TestPID, got.PID)
+	require.Equal(t, TestFilePageSize, got.FilePageSize)
 }

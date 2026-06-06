@@ -2,9 +2,9 @@ package cnc_test
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"pgregory.net/rapid"
@@ -18,9 +18,7 @@ func TestMapCncFile_roundtrip_rapid(t *testing.T) {
 		writeCncFile(t, path, meta)
 
 		mapped, err := cnc.MapCncFile(path)
-		if err != nil {
-			rt.Fatalf("MapCncFile: %v", err)
-		}
+		require.NoError(rt, err, "MapCncFile")
 		defer func() { _ = mapped.Close() }()
 
 		cnc.AssertMappedBufferLengths(rt, mapped, meta)
@@ -29,9 +27,10 @@ func TestMapCncFile_roundtrip_rapid(t *testing.T) {
 			toDriver := mapped.ToDriverBuffer()
 			toDriverAtomic := mapped.ToDriverAtomic()
 			toDriverAtomic.PutInt32(0, 7)
-			if atomic.Wrap(toDriver).GetInt32(0) != 7 {
-				rt.Fatal("atomic write not visible in mapped to-driver buffer")
-			}
+			require.Equal(
+				rt, int32(7), atomic.Wrap(toDriver).GetInt32(0),
+				"atomic write not visible in mapped to-driver buffer",
+			)
 		}
 	})
 }
@@ -44,11 +43,6 @@ func TestMapCncFile_hugeMetadataShortFile_rapid(t *testing.T) {
 		writeOverflowCncFile(t, path, meta)
 
 		_, err := cnc.MapCncFile(path)
-		if err == nil {
-			rt.Fatal("MapCncFile should reject short on-disk file for huge metadata")
-		}
-		if !strings.Contains(err.Error(), "insufficient for metadata") {
-			rt.Fatalf("MapCncFile: got %v", err)
-		}
+		require.ErrorContains(rt, err, "insufficient for metadata")
 	})
 }

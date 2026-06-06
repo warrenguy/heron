@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/aeron/record"
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
@@ -61,23 +64,15 @@ func seedCommitAtEndCase(
 	buffer.PutInt32(record.TypeOffset(int(head)), int32(testMsgTypeID))
 }
 
-func comparePayloadSlices(tb ringBufferTestReporter, got, want [][]byte) {
-	tb.Helper()
-	if len(got) != len(want) {
-		tb.Fatalf("read %d messages want %d", len(got), len(want))
-	}
-	for i := range want {
-		if !bytes.Equal(got[i], want[i]) {
-			tb.Fatalf("message %d: payload mismatch", i)
-		}
-	}
+type testReporter interface {
+	Helper()
+	Errorf(string, ...any)
+	FailNow()
 }
 
-func assertConsumerCaughtUp(tb ringBufferTestReporter, ring *ringbuffer.ManyToOneRingBuffer) {
+func assertConsumerCaughtUp(tb testReporter, ring *ringbuffer.ManyToOneRingBuffer) {
 	tb.Helper()
-	if ring.ConsumerPosition() != ring.ProducerPosition() {
-		tb.Fatalf("consumer=%d producer=%d", ring.ConsumerPosition(), ring.ProducerPosition())
-	}
+	require.Equal(tb, ring.ProducerPosition(), ring.ConsumerPosition())
 }
 
 func drainReadMessages(ring *ringbuffer.ManyToOneRingBuffer) [][]byte {
@@ -101,17 +96,15 @@ func readPayload(buffer aeronatomic.AtomicBuffer, index, length int) []byte {
 }
 
 func assertConsumerUnblockedPadding(
-	tb ringBufferTestReporter,
+	tb testReporter,
 	buffer aeronatomic.AtomicBuffer,
 	consumerIndex, wantPaddingLength int,
 ) {
 	tb.Helper()
-	if buffer.GetInt32(record.TypeOffset(consumerIndex)) != ringbuffer.PaddingMsgTypeID {
-		tb.Fatalf("type at %d: want padding", consumerIndex)
-	}
-	if got := buffer.GetInt32(record.LengthOffset(consumerIndex)); got != int32(wantPaddingLength) {
-		tb.Fatalf("padding length at %d: got %d want %d", consumerIndex, got, wantPaddingLength)
-	}
+	require.Equal(
+		tb, int32(ringbuffer.PaddingMsgTypeID), buffer.GetInt32(record.TypeOffset(consumerIndex)),
+	)
+	require.Equal(tb, int32(wantPaddingLength), buffer.GetInt32(record.LengthOffset(consumerIndex)))
 }
 
 type unblockCase struct {
@@ -152,56 +145,38 @@ func seedUnblockCase(
 }
 
 func assertUnblockResult(
-	tb ringBufferTestReporter,
+	tb testReporter,
 	ring *ringbuffer.ManyToOneRingBuffer,
 	buffer aeronatomic.AtomicBuffer,
 	tc unblockCase,
 ) {
 	tb.Helper()
-	if got := ring.Unblock(); got != tc.wantUnblock {
-		tb.Fatalf("Unblock()=%v want %v", got, tc.wantUnblock)
-	}
+	require.Equal(tb, tc.wantUnblock, ring.Unblock())
 	if tc.paddingLength > 0 {
 		assertConsumerUnblockedPadding(tb, buffer, tc.paddingIndex, tc.paddingLength)
 	}
 }
 
-type ringBufferTestReporter interface {
-	Helper()
-	Fatalf(string, ...any)
-}
-
-func newRingBufferForTest(
-	tb ringBufferTestReporter,
+func newTestRingBuffer(
+	tb testReporter,
 	dataCapacity int,
 ) (*ringbuffer.ManyToOneRingBuffer, aeronatomic.AtomicBuffer) {
 	tb.Helper()
 	ring, atomicBuffer, err := newRingBufferBuffer(dataCapacity)
-	if err != nil {
-		tb.Fatalf("NewManyToOneRingBuffer: %v", err)
-	}
+	require.NoError(tb, err)
 	return ring, atomicBuffer
-}
-
-func newTestRingBuffer(
-	tb testing.TB,
-	dataCapacity int,
-) (*ringbuffer.ManyToOneRingBuffer, aeronatomic.AtomicBuffer) {
-	return newRingBufferForTest(tb, dataCapacity)
 }
 
 func TestNewManyToOneRingBuffer_Capacity(t *testing.T) {
 	ring, _ := newTestRingBuffer(t, testDataCapacity)
-	if ring.Capacity() != testDataCapacity {
-		t.Fatalf("Capacity()=%d want %d", ring.Capacity(), testDataCapacity)
-	}
+	require.Equal(t, testDataCapacity, ring.Capacity())
 }
 
 func TestNewManyToOneRingBuffer_InvalidCapacity(t *testing.T) {
 	cases := []struct {
 		name         string
 		dataCapacity int
-		bufferLen    int // 0 → TotalBufferLength(dataCapacity)
+		bufferLen    int // 0 -> TotalBufferLength(dataCapacity)
 	}{
 		{"below min", ringbuffer.MinCapacity - 1, 0},
 		{"not power of two", 777, 777 + ringbuffer.TrailerLength},
@@ -213,9 +188,7 @@ func TestNewManyToOneRingBuffer_InvalidCapacity(t *testing.T) {
 				total = ringbuffer.TotalBufferLength(tc.dataCapacity)
 			}
 			_, err := ringbuffer.NewManyToOneRingBuffer(aeronatomic.Wrap(make([]byte, total)))
-			if err == nil {
-				t.Fatal("expected error")
-			}
+			require.Error(t, err)
 		})
 	}
 }
@@ -233,9 +206,7 @@ func TestManyToOneRingBuffer_MaxMsgLength(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("capacity%d", tc.dataCapacity), func(t *testing.T) {
 			ring, _ := newTestRingBuffer(t, tc.dataCapacity)
-			if got := ring.MaxMsgLength(); got != tc.want {
-				t.Fatalf("MaxMsgLength()=%d want %d", got, tc.want)
-			}
+			require.Equal(t, tc.want, ring.MaxMsgLength())
 		})
 	}
 }
@@ -246,9 +217,8 @@ func TestManyToOneRingBuffer_WriteRead(t *testing.T) {
 	src := aeronatomic.Wrap(payload)
 
 	ok, err := ring.Write(testMsgTypeID, src, 0, len(payload))
-	if err != nil || !ok {
-		t.Fatalf("Write ok=%v err=%v", ok, err)
-	}
+	require.NoError(t, err)
+	require.True(t, ok)
 
 	var gotType int
 	var gotPayload []byte
@@ -256,53 +226,38 @@ func TestManyToOneRingBuffer_WriteRead(t *testing.T) {
 		gotType = msgTypeID
 		gotPayload = readPayload(buffer, index, length)
 	})
-	if n != 1 {
-		t.Fatalf("Read messages=%d want 1", n)
-	}
-	if gotType != testMsgTypeID {
-		t.Fatalf("type=%d want %d", gotType, testMsgTypeID)
-	}
-	if !bytes.Equal(gotPayload, payload) {
-		t.Fatalf("payload=%q want %q", gotPayload, payload)
-	}
-	if ring.ConsumerPosition() != ring.ProducerPosition() {
-		t.Fatalf("consumer=%d producer=%d", ring.ConsumerPosition(), ring.ProducerPosition())
-	}
+	require.Equal(t, 1, n)
+	require.Equal(t, testMsgTypeID, gotType)
+	require.Equal(t, payload, gotPayload)
+	assertConsumerCaughtUp(t, ring)
 }
 
-func TestManyToOneRingBuffer_RejectWriteInsufficientSpace(t *testing.T) {
-	ring, buffer := newTestRingBuffer(t, testDataCapacity)
-	length := 200
-	head := int64(0)
-	tail := head + int64(testDataCapacity-record.AlignRecordLength(length-ringbuffer.Alignment))
-
-	seedTrailerPositions(buffer, testDataCapacity, head, tail)
-
-	src := aeronatomic.Wrap(make([]byte, length))
-	ok, err := ring.Write(testMsgTypeID, src, 0, length)
-	if err != nil {
-		t.Fatal(err)
+func TestManyToOneRingBuffer_RejectWrite(t *testing.T) {
+	cases := []struct {
+		name   string
+		length int
+		tail   int64
+	}{
+		{
+			name:   "insufficient space",
+			length: 200,
+			tail:   int64(testDataCapacity - record.AlignRecordLength(200-ringbuffer.Alignment)),
+		},
+		{
+			name:   "when full",
+			length: 8,
+			tail:   int64(testDataCapacity),
+		},
 	}
-	if ok {
-		t.Fatal("expected write rejection")
-	}
-}
-
-func TestManyToOneRingBuffer_RejectWriteWhenFull(t *testing.T) {
-	ring, buffer := newTestRingBuffer(t, testDataCapacity)
-	length := 8
-	head := int64(0)
-	tail := head + int64(testDataCapacity)
-
-	seedTrailerPositions(buffer, testDataCapacity, head, tail)
-
-	src := aeronatomic.Wrap(make([]byte, length))
-	ok, err := ring.Write(testMsgTypeID, src, 0, length)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok {
-		t.Fatal("expected write rejection when full")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ring, buffer := newTestRingBuffer(t, testDataCapacity)
+			seedTrailerPositions(buffer, testDataCapacity, 0, tc.tail)
+			src := aeronatomic.Wrap(make([]byte, tc.length))
+			ok, err := ring.Write(testMsgTypeID, src, 0, tc.length)
+			require.NoError(t, err)
+			require.False(t, ok)
+		})
 	}
 }
 
@@ -318,29 +273,24 @@ func TestManyToOneRingBuffer_WriteWrapPadding(t *testing.T) {
 	payload := bytes.Repeat([]byte{0xAB}, length)
 	src := aeronatomic.Wrap(payload)
 	ok, err := ring.Write(testMsgTypeID, src, 0, length)
-	if err != nil || !ok {
-		t.Fatalf("Write ok=%v err=%v", ok, err)
-	}
+	require.NoError(t, err)
+	require.True(t, ok)
 
 	paddingIndex := int(tail)
-	if buffer.GetInt32(record.LengthOffset(paddingIndex)) != ringbuffer.HeaderLength {
-		t.Fatalf("padding length at %d", paddingIndex)
-	}
-	if buffer.GetInt32(record.TypeOffset(paddingIndex)) != ringbuffer.PaddingMsgTypeID {
-		t.Fatal("expected padding type at wrap")
-	}
+	require.Equal(
+		t, int32(ringbuffer.HeaderLength), buffer.GetInt32(record.LengthOffset(paddingIndex)),
+	)
+	require.Equal(
+		t, int32(ringbuffer.PaddingMsgTypeID), buffer.GetInt32(record.TypeOffset(paddingIndex)),
+	)
 
 	var got []byte
 	ring.Read(func(_ int, buf aeronatomic.AtomicBuffer, index, msgLen int) {})
 	ring.Read(func(_ int, buf aeronatomic.AtomicBuffer, index, msgLen int) {
 		got = readPayload(buf, index, msgLen)
 	})
-	if !bytes.Equal(got, payload) {
-		t.Fatal("payload mismatch after wrap")
-	}
-	if ring.ProducerPosition() != tail+int64(recordAligned)+int64(ringbuffer.HeaderLength) {
-		t.Fatalf("producer=%d", ring.ProducerPosition())
-	}
+	require.Equal(t, payload, got)
+	require.Equal(t, tail+int64(recordAligned)+int64(ringbuffer.HeaderLength), ring.ProducerPosition())
 }
 
 func TestManyToOneRingBuffer_WriteWrapHeadEqualsTail(t *testing.T) {
@@ -353,12 +303,9 @@ func TestManyToOneRingBuffer_WriteWrapHeadEqualsTail(t *testing.T) {
 
 	payload := bytes.Repeat([]byte{0xCD}, length)
 	ok, err := ring.Write(testMsgTypeID, aeronatomic.Wrap(payload), 0, length)
-	if err != nil || !ok {
-		t.Fatalf("Write ok=%v err=%v", ok, err)
-	}
-	if buffer.GetInt32(record.TypeOffset(int(tail))) != ringbuffer.PaddingMsgTypeID {
-		t.Fatal("expected padding record at buffer end")
-	}
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, int32(ringbuffer.PaddingMsgTypeID), buffer.GetInt32(record.TypeOffset(int(tail))))
 }
 
 func TestManyToOneRingBuffer_ReadEmpty(t *testing.T) {
@@ -366,9 +313,7 @@ func TestManyToOneRingBuffer_ReadEmpty(t *testing.T) {
 	n := ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {
 		t.Fatal("handler should not run")
 	})
-	if n != 0 {
-		t.Fatalf("messages=%d want 0", n)
-	}
+	require.Equal(t, 0, n)
 }
 
 func TestManyToOneRingBuffer_ReadSkipsInFlight(t *testing.T) {
@@ -379,12 +324,8 @@ func TestManyToOneRingBuffer_ReadSkipsInFlight(t *testing.T) {
 	n := ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {
 		t.Fatal("handler should not run")
 	})
-	if n != 0 {
-		t.Fatalf("messages=%d want 0", n)
-	}
-	if ring.ConsumerPosition() != 0 {
-		t.Fatalf("consumer=%d want 0", ring.ConsumerPosition())
-	}
+	require.Equal(t, 0, n)
+	require.Zero(t, ring.ConsumerPosition())
 }
 
 func TestManyToOneRingBuffer_ReadTwoMessages(t *testing.T) {
@@ -394,27 +335,24 @@ func TestManyToOneRingBuffer_ReadTwoMessages(t *testing.T) {
 
 	for range 2 {
 		ok, err := ring.Write(testMsgTypeID, aeronatomic.Wrap(payload), 0, msgLen)
-		if err != nil || !ok {
-			t.Fatalf("Write ok=%v err=%v", ok, err)
-		}
+		require.NoError(t, err)
+		require.True(t, ok)
 	}
 
 	count := 0
 	n := ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {
 		count++
 	})
-	if n != 2 || count != 2 {
-		t.Fatalf("messages=%d handler=%d", n, count)
-	}
+	require.Equal(t, 2, n)
+	require.Equal(t, 2, count)
 }
 
 func TestManyToOneRingBuffer_ReadWithLimit_ZeroAndNegative(t *testing.T) {
 	ring, _ := newTestRingBuffer(t, testDataCapacity)
 	payload := bytes.Repeat([]byte{2}, 16)
 
-	if _, err := ring.Write(testMsgTypeID, aeronatomic.Wrap(payload), 0, len(payload)); err != nil {
-		t.Fatal(err)
-	}
+	_, err := ring.Write(testMsgTypeID, aeronatomic.Wrap(payload), 0, len(payload))
+	require.NoError(t, err)
 
 	cases := []struct {
 		name  string
@@ -429,15 +367,9 @@ func TestManyToOneRingBuffer_ReadWithLimit_ZeroAndNegative(t *testing.T) {
 			n := ring.ReadWithLimit(func(int, aeronatomic.AtomicBuffer, int, int) {
 				called = true
 			}, tc.limit)
-			if n != 0 {
-				t.Fatalf("messages=%d want 0", n)
-			}
-			if called {
-				t.Fatal("handler should not run")
-			}
-			if ring.ConsumerPosition() != 0 {
-				t.Fatalf("consumer=%d want 0", ring.ConsumerPosition())
-			}
+			require.Equal(t, 0, n)
+			require.False(t, called)
+			require.Zero(t, ring.ConsumerPosition())
 		})
 	}
 }
@@ -449,21 +381,16 @@ func TestManyToOneRingBuffer_ReadWithLimit(t *testing.T) {
 
 	for range 2 {
 		_, err := ring.Write(testMsgTypeID, aeronatomic.Wrap(payload), 0, msgLen)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 	}
 
 	count := 0
 	n := ring.ReadWithLimit(func(int, aeronatomic.AtomicBuffer, int, int) {
 		count++
 	}, 1)
-	if n != 1 || count != 1 {
-		t.Fatalf("messages=%d handler=%d", n, count)
-	}
-	if ring.ConsumerPosition() == ring.ProducerPosition() {
-		t.Fatal("expected unread message remaining")
-	}
+	require.Equal(t, 1, n)
+	require.Equal(t, 1, count)
+	require.NotEqual(t, ring.ProducerPosition(), ring.ConsumerPosition())
 }
 
 func TestManyToOneRingBuffer_TryClaimCommitRead(t *testing.T) {
@@ -472,25 +399,17 @@ func TestManyToOneRingBuffer_TryClaimCommitRead(t *testing.T) {
 	payload := bytes.Repeat([]byte{3}, length)
 
 	index, err := ring.TryClaim(testMsgTypeID, length)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if index != ringbuffer.EncodedMsgOffset(0) {
-		t.Fatalf("index=%d want %d", index, ringbuffer.EncodedMsgOffset(0))
-	}
+	require.NoError(t, err)
+	require.Equal(t, ringbuffer.EncodedMsgOffset(0), index)
 
 	buffer.PutBytes(index, payload)
-	if err := ring.Commit(index); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, ring.Commit(index))
 
 	var got []byte
 	ring.Read(func(_ int, buf aeronatomic.AtomicBuffer, off, msgLen int) {
 		got = readPayload(buf, off, msgLen)
 	})
-	if !bytes.Equal(got, payload) {
-		t.Fatalf("payload=%q want %q", got, payload)
-	}
+	require.Equal(t, payload, got)
 }
 
 func TestManyToOneRingBuffer_TryClaimAbortSkippedOnRead(t *testing.T) {
@@ -498,20 +417,15 @@ func TestManyToOneRingBuffer_TryClaimAbortSkippedOnRead(t *testing.T) {
 	length := 10
 
 	index, err := ring.TryClaim(testMsgTypeID, length)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ring.Abort(index); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, ring.Abort(index))
 
 	called := false
 	n := ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {
 		called = true
 	})
-	if n != 0 || called {
-		t.Fatal("aborted claim should not deliver a message")
-	}
+	require.Equal(t, 0, n)
+	require.False(t, called)
 }
 
 func TestManyToOneRingBuffer_ClaimCapacityStaleHeadCache(t *testing.T) {
@@ -526,27 +440,15 @@ func TestManyToOneRingBuffer_ClaimCapacityStaleHeadCache(t *testing.T) {
 
 	wantIndex := ringbuffer.EncodedMsgOffset(int(tail) & (testDataCapacity - 1))
 	index, err := ring.TryClaim(testMsgTypeID, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if index == ringbuffer.InsufficientCapacity {
-		t.Fatal("TryClaim returned InsufficientCapacity with stale head cache but consumer caught up")
-	}
-	if index != wantIndex {
-		t.Fatalf("index=%d want %d", index, wantIndex)
-	}
-	if err := ring.Abort(index); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NotEqual(t, ringbuffer.InsufficientCapacity, index)
+	require.Equal(t, wantIndex, index)
+	require.NoError(t, ring.Abort(index))
 
 	src := aeronatomic.Wrap([]byte("abcdefgh"))
 	ok, err := ring.Write(testMsgTypeID, src, 0, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok {
-		t.Fatal("Write returned false with stale head cache but consumer caught up")
-	}
+	require.NoError(t, err)
+	require.True(t, ok)
 }
 
 func TestManyToOneRingBuffer_TryClaimInsufficientCapacity(t *testing.T) {
@@ -557,12 +459,8 @@ func TestManyToOneRingBuffer_TryClaimInsufficientCapacity(t *testing.T) {
 	seedTrailerPositions(buffer, testDataCapacity, head, tail)
 
 	index, err := ring.TryClaim(testMsgTypeID, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if index != ringbuffer.InsufficientCapacity {
-		t.Fatalf("index=%d want %d", index, ringbuffer.InsufficientCapacity)
-	}
+	require.NoError(t, err)
+	require.Equal(t, ringbuffer.InsufficientCapacity, index)
 }
 
 func TestManyToOneRingBuffer_TryClaimWrapPadding(t *testing.T) {
@@ -577,110 +475,74 @@ func TestManyToOneRingBuffer_TryClaimWrapPadding(t *testing.T) {
 	buffer.PutInt64Release(ringbuffer.TailIndex(testDataCapacity), tail)
 
 	index, err := ring.TryClaim(testMsgTypeID, length)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if index != ringbuffer.EncodedMsgOffset(0) {
-		t.Fatalf("index=%d want encoded offset at 0", index)
-	}
+	require.NoError(t, err)
+	require.Equal(t, ringbuffer.EncodedMsgOffset(0), index)
 
 	paddingIndex := int(tail)
-	if buffer.GetInt32(record.TypeOffset(paddingIndex)) != ringbuffer.PaddingMsgTypeID {
-		t.Fatal("expected padding at end of buffer")
-	}
-	if ring.ProducerPosition() != tail+int64(recordAligned)+int64(padding) {
-		t.Fatalf("producer=%d", ring.ProducerPosition())
-	}
+	require.Equal(
+		t, int32(ringbuffer.PaddingMsgTypeID), buffer.GetInt32(record.TypeOffset(paddingIndex)),
+	)
+	require.Equal(t, tail+int64(recordAligned)+int64(padding), ring.ProducerPosition())
 }
 
 func TestManyToOneRingBuffer_InvalidTypeAndLength(t *testing.T) {
 	ring, _ := newTestRingBuffer(t, testDataCapacity)
 	src := aeronatomic.Wrap(make([]byte, 8))
 
-	if _, err := ring.Write(0, src, 0, 8); err == nil {
-		t.Fatal("expected error for type 0")
-	}
+	_, err := ring.Write(0, src, 0, 8)
+	require.Error(t, err)
 	index, err := ring.TryClaim(-1, 8)
-	if err == nil {
-		t.Fatal("expected error for invalid type")
-	}
-	if index != -1 {
-		t.Fatalf("TryClaim index=%d want -1", index)
-	}
-	if _, err := ring.Write(testMsgTypeID, src, 0, -1); err == nil {
-		t.Fatal("expected error for negative length")
-	}
-	if _, err := ring.Write(testMsgTypeID, src, 0, ring.MaxMsgLength()+1); err == nil {
-		t.Fatal("expected error for length over max")
-	}
+	require.Error(t, err)
+	require.Equal(t, -1, index)
+	_, err = ring.Write(testMsgTypeID, src, 0, -1)
+	require.Error(t, err)
+	_, err = ring.Write(testMsgTypeID, src, 0, ring.MaxMsgLength()+1)
+	require.Error(t, err)
 }
 
 func TestManyToOneRingBuffer_CommitZeroLengthNotInFlight(t *testing.T) {
 	ring, buffer := newTestRingBuffer(t, testDataCapacity)
 	index, err := ring.TryClaim(testMsgTypeID, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	recordIndex := index - ringbuffer.HeaderLength
 	buffer.PutInt32(record.LengthOffset(recordIndex), 0)
 
-	if err := ring.Commit(index); err == nil {
-		t.Fatal("expected error on commit with zero length field")
-	} else if err.Error() != "ringbuffer: claimed space not in flight" {
-		t.Fatalf("Commit err=%v want claimed space not in flight", err)
-	}
+	err = ring.Commit(index)
+	require.ErrorContains(t, err, "ringbuffer: claimed space not in flight")
 }
 
 func TestManyToOneRingBuffer_CommitAbortStateErrors(t *testing.T) {
 	ring, _ := newTestRingBuffer(t, testDataCapacity)
 	index, err := ring.TryClaim(testMsgTypeID, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ring.Commit(index); err != nil {
-		t.Fatal(err)
-	}
-	if err := ring.Commit(index); err == nil {
-		t.Fatal("expected error on double commit")
-	}
+	require.NoError(t, err)
+	require.NoError(t, ring.Commit(index))
+	err = ring.Commit(index)
+	require.Error(t, err)
 
 	index2, err := ring.TryClaim(testMsgTypeID, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ring.Abort(index2); err != nil {
-		t.Fatal(err)
-	}
-	if err := ring.Abort(index2); err == nil {
-		t.Fatal("expected error on double abort")
-	}
+	require.NoError(t, err)
+	require.NoError(t, ring.Abort(index2))
+	err = ring.Abort(index2)
+	require.Error(t, err)
 }
 
 func TestManyToOneRingBuffer_Size(t *testing.T) {
 	ring, _ := newTestRingBuffer(t, testDataCapacity)
-	if ring.Size() != 0 {
-		t.Fatalf("empty size=%d", ring.Size())
-	}
+	require.Equal(t, 0, ring.Size())
 
 	msgLen := 8
 	ok, err := ring.Write(testMsgTypeID, aeronatomic.Wrap(make([]byte, msgLen)), 0, msgLen)
-	if err != nil || !ok {
-		t.Fatalf("Write ok=%v err=%v", ok, err)
-	}
+	require.NoError(t, err)
+	require.True(t, ok)
 
 	want := alignedRecordLength(msgLen)
-	if ring.Size() != want {
-		t.Fatalf("size=%d want %d", ring.Size(), want)
-	}
+	require.Equal(t, want, ring.Size())
 }
 
 func writeHelloWorld(t *testing.T, ring *ringbuffer.ManyToOneRingBuffer) []byte {
 	t.Helper()
 	msg := []byte("Hello World")
-	ok, err := ring.Write(testMsgTypeID, aeronatomic.Wrap(msg), 0, len(msg))
-	if err != nil || !ok {
-		t.Fatalf("Write ok=%v err=%v", ok, err)
-	}
+	seedRingOneMessage(t, ring, msg)
 	return msg
 }
 
@@ -721,9 +583,7 @@ func TestManyToOneRingBuffer_ControlledRead(t *testing.T) {
 			wantHandler:  1,
 			checkPayload: true,
 			assertAfter: func(t *testing.T, ring *ringbuffer.ManyToOneRingBuffer) {
-				if ring.ConsumerPosition() != ring.ProducerPosition() {
-					t.Fatal("expected consumer caught up")
-				}
+				assertConsumerCaughtUp(t, ring)
 			},
 		},
 		{
@@ -736,9 +596,7 @@ func TestManyToOneRingBuffer_ControlledRead(t *testing.T) {
 			wantMessages: 0,
 			wantHandler:  1,
 			assertAfter: func(t *testing.T, ring *ringbuffer.ManyToOneRingBuffer) {
-				if ring.ConsumerPosition() != 0 {
-					t.Fatalf("consumer=%d want 0", ring.ConsumerPosition())
-				}
+				require.Zero(t, ring.ConsumerPosition())
 			},
 		},
 		{
@@ -753,9 +611,7 @@ func TestManyToOneRingBuffer_ControlledRead(t *testing.T) {
 			wantMessages: 1,
 			wantHandler:  2,
 			assertAfter: func(t *testing.T, ring *ringbuffer.ManyToOneRingBuffer) {
-				if ring.ConsumerPosition() == ring.ProducerPosition() {
-					t.Fatal("expected partial consumption")
-				}
+				require.NotEqual(t, ring.ProducerPosition(), ring.ConsumerPosition())
 			},
 		},
 		{
@@ -772,15 +628,11 @@ func TestManyToOneRingBuffer_ControlledRead(t *testing.T) {
 			},
 			assertAfter: func(t *testing.T, ring *ringbuffer.ManyToOneRingBuffer) {
 				t.Helper()
-				if ring.ConsumerPosition() != ring.ProducerPosition() {
-					t.Fatalf("consumer=%d producer=%d", ring.ConsumerPosition(), ring.ProducerPosition())
-				}
+				assertConsumerCaughtUp(t, ring)
 				n := ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {
 					t.Fatal("unexpected message after commit at buffer end")
 				})
-				if n != 0 {
-					t.Fatalf("second read messages=%d want 0", n)
-				}
+				require.Equal(t, 0, n)
 			},
 		},
 		{
@@ -788,21 +640,16 @@ func TestManyToOneRingBuffer_ControlledRead(t *testing.T) {
 			writeCount: 2,
 			action: func(inv int, ring *ringbuffer.ManyToOneRingBuffer) ringbuffer.ControlledAction {
 				if inv == 1 {
-					if ring.ConsumerPosition() != 0 {
-						t.Fatalf("first commit consumer=%d want 0", ring.ConsumerPosition())
-					}
-				} else if ring.ConsumerPosition() != ring.ProducerPosition()/2 {
-					t.Fatalf("second commit consumer=%d producer/2=%d",
-						ring.ConsumerPosition(), ring.ProducerPosition()/2)
+					require.Zero(t, ring.ConsumerPosition())
+				} else {
+					require.Equal(t, ring.ProducerPosition()/2, ring.ConsumerPosition())
 				}
 				return ringbuffer.ControlledCommit
 			},
 			wantMessages: 2,
 			wantHandler:  2,
 			assertAfter: func(t *testing.T, ring *ringbuffer.ManyToOneRingBuffer) {
-				if ring.ConsumerPosition() != ring.ProducerPosition() {
-					t.Fatal("expected full consumption")
-				}
+				assertConsumerCaughtUp(t, ring)
 			},
 		},
 		{
@@ -814,9 +661,7 @@ func TestManyToOneRingBuffer_ControlledRead(t *testing.T) {
 			wantMessages: 1,
 			wantHandler:  1,
 			assertAfter: func(t *testing.T, ring *ringbuffer.ManyToOneRingBuffer) {
-				if ring.ConsumerPosition() == ring.ProducerPosition() {
-					t.Fatal("expected unread message after break")
-				}
+				require.NotEqual(t, ring.ProducerPosition(), ring.ConsumerPosition())
 			},
 		},
 	}
@@ -828,16 +673,13 @@ func TestManyToOneRingBuffer_ControlledRead(t *testing.T) {
 				dataCapacity = 64
 			}
 			ring, buffer := newTestRingBuffer(t, dataCapacity)
+			var msg []byte
 			if tc.setup != nil {
 				tc.setup(t, ring, buffer)
-			}
-			var msg []byte
-			for range tc.writeCount {
-				if tc.setup != nil {
-					msg = []byte("Hello World")
-					continue
+			} else {
+				for range tc.writeCount {
+					msg = writeHelloWorld(t, ring)
 				}
-				msg = writeHelloWorld(t, ring)
 			}
 
 			var (
@@ -869,20 +711,14 @@ func TestManyToOneRingBuffer_ControlledRead(t *testing.T) {
 				messages = ring.ControlledRead(handler)
 			}
 
-			if messages != tc.wantMessages {
-				t.Fatalf("messages=%d want %d", messages, tc.wantMessages)
-			}
-			if invocations != tc.wantHandler {
-				t.Fatalf("handler invocations=%d want %d", invocations, tc.wantHandler)
-			}
+			require.Equal(t, tc.wantMessages, messages)
+			require.Equal(t, tc.wantHandler, invocations)
 			if tc.checkPayload {
 				wantIndex := ringbuffer.EncodedMsgOffset(0)
-				if gotType != testMsgTypeID || gotIndex != wantIndex || gotLen != len(msg) {
-					t.Fatalf("type=%d index=%d len=%d", gotType, gotIndex, gotLen)
-				}
-				if !bytes.Equal(gotPayload, msg) {
-					t.Fatalf("payload=%q want %q", gotPayload, msg)
-				}
+				require.Equal(t, testMsgTypeID, gotType)
+				require.Equal(t, wantIndex, gotIndex)
+				require.Equal(t, len(msg), gotLen)
+				require.Equal(t, msg, gotPayload)
 			}
 			if tc.assertAfter != nil {
 				tc.assertAfter(t, ring)
@@ -947,114 +783,176 @@ func TestManyToOneRingBuffer_Unblock(t *testing.T) {
 
 func TestManyToOneRingBuffer_NextCorrelationId(t *testing.T) {
 	ring, _ := newTestRingBuffer(t, testDataCapacity)
-	if got := ring.NextCorrelationID(); got != 0 {
-		t.Fatalf("first id=%d want 0", got)
-	}
-	if got := ring.NextCorrelationID(); got != 1 {
-		t.Fatalf("second id=%d want 1", got)
-	}
-	if got := ring.NextCorrelationID(); got != 2 {
-		t.Fatalf("third id=%d want 2", got)
-	}
+	require.Zero(t, ring.NextCorrelationID())
+	require.Equal(t, int64(1), ring.NextCorrelationID())
+	require.Equal(t, int64(2), ring.NextCorrelationID())
 }
 
 func TestManyToOneRingBuffer_ConsumerHeartbeatTime(t *testing.T) {
 	ring, _ := newTestRingBuffer(t, testDataCapacity)
-	if ring.ConsumerHeartbeatTime() != 0 {
-		t.Fatalf("initial heartbeat=%d want 0", ring.ConsumerHeartbeatTime())
-	}
+	require.Zero(t, ring.ConsumerHeartbeatTime())
 	want := time.Now().UnixMilli()
 	ring.SetConsumerHeartbeatTime(want)
-	if got := ring.ConsumerHeartbeatTime(); got != want {
-		t.Fatalf("heartbeat=%d want %d", got, want)
-	}
+	require.Equal(t, want, ring.ConsumerHeartbeatTime())
 }
 
-var ringSink any
+var (
+	ringSink      any
+	testPayload64 = make([]byte, 64)
+)
 
-func TestManyToOneRingBuffer_Write_ZeroAllocs(t *testing.T) {
-	ring, _ := newTestRingBuffer(t, testDataCapacity)
-	payload := make([]byte, 64)
-	src := aeronatomic.Wrap(payload)
-
-	if allocs := testing.AllocsPerRun(1000, func() {
-		ok, err := ring.Write(testMsgTypeID, src, 0, len(payload))
-		if err != nil || !ok {
-			panic("write failed")
-		}
-		ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {})
-	}); allocs != 0 {
-		t.Fatalf("Write+Read allocs=%v want 0", allocs)
-	}
-}
-
-func TestManyToOneRingBuffer_TryClaimCommit_ZeroAllocs(t *testing.T) {
-	ring, buffer := newTestRingBuffer(t, testDataCapacity)
-	payload := make([]byte, 64)
-
-	if allocs := testing.AllocsPerRun(1000, func() {
-		index, err := ring.TryClaim(testMsgTypeID, len(payload))
-		if err != nil || index < 0 {
-			panic("tryClaim failed")
-		}
-		buffer.PutBytes(index, payload)
-		if err := ring.Commit(index); err != nil {
-			panic(err)
-		}
-		ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {})
-	}); allocs != 0 {
-		t.Fatalf("TryClaim+Commit+Read allocs=%v want 0", allocs)
-	}
-}
-
-func TestManyToOneRingBuffer_Read_ZeroAllocs(t *testing.T) {
-	ring, _ := newTestRingBuffer(t, testDataCapacity)
-	payload := make([]byte, 64)
+func seedRingOneMessage(tb testing.TB, ring *ringbuffer.ManyToOneRingBuffer, payload []byte) {
+	tb.Helper()
 	src := aeronatomic.Wrap(payload)
 	ok, err := ring.Write(testMsgTypeID, src, 0, len(payload))
-	if err != nil || !ok {
-		t.Fatal("seed write failed")
-	}
-
-	if allocs := testing.AllocsPerRun(1000, func() {
-		n := ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {})
-		ringSink = n
-	}); allocs != 0 {
-		t.Fatalf("Read allocs=%v want 0", allocs)
-	}
-}
-
-func TestManyToOneRingBuffer_ControlledRead_ZeroAllocs(t *testing.T) {
-	ring, _ := newTestRingBuffer(t, testDataCapacity)
-	payload := make([]byte, 64)
-	src := aeronatomic.Wrap(payload)
-	ok, err := ring.Write(testMsgTypeID, src, 0, len(payload))
-	if err != nil || !ok {
-		t.Fatal("seed write failed")
-	}
-
-	if allocs := testing.AllocsPerRun(1000, func() {
-		n := ring.ControlledRead(
-			func(int, aeronatomic.AtomicBuffer, int, int) ringbuffer.ControlledAction {
-				return ringbuffer.ControlledContinue
-			},
-		)
-		ringSink = n
-	}); allocs != 0 {
-		t.Fatalf("ControlledRead allocs=%v want 0", allocs)
-	}
-}
-
-func TestManyToOneRingBuffer_NextCorrelationId_ZeroAllocs(t *testing.T) {
-	ring, _ := newTestRingBuffer(t, testDataCapacity)
-	if allocs := testing.AllocsPerRun(1000, func() {
-		ringSink = ring.NextCorrelationID()
-	}); allocs != 0 {
-		t.Fatalf("NextCorrelationId allocs=%v want 0", allocs)
-	}
+	require.NoError(tb, err)
+	require.True(tb, ok)
 }
 
 func benchmarkRingNoopHandler(int, aeronatomic.AtomicBuffer, int, int) {}
+
+func benchmarkControlledContinue(
+	int,
+	aeronatomic.AtomicBuffer,
+	int,
+	int,
+) ringbuffer.ControlledAction {
+	return ringbuffer.ControlledContinue
+}
+
+func setupEmptyRing(t *testing.T) (*ringbuffer.ManyToOneRingBuffer, aeronatomic.AtomicBuffer) {
+	t.Helper()
+	return newTestRingBuffer(t, testDataCapacity)
+}
+
+func setupRingOneMessage(t *testing.T) (*ringbuffer.ManyToOneRingBuffer, aeronatomic.AtomicBuffer) {
+	t.Helper()
+	ring, buffer := setupEmptyRing(t)
+	seedRingOneMessage(t, ring, testPayload64)
+	return ring, buffer
+}
+
+func setupRingCaughtUp(t *testing.T) (*ringbuffer.ManyToOneRingBuffer, aeronatomic.AtomicBuffer) {
+	t.Helper()
+	ring, buffer := setupRingOneMessage(t)
+	ring.Read(benchmarkRingNoopHandler)
+	return ring, buffer
+}
+
+func setupUnblockEmptyRing(
+	t *testing.T,
+) (*ringbuffer.ManyToOneRingBuffer, aeronatomic.AtomicBuffer) {
+	t.Helper()
+	ring, buffer := setupEmptyRing(t)
+	emptyPos := int64(unblockMessageLength)
+	seedUnblockCase(buffer, testDataCapacity, unblockCase{
+		head: emptyPos,
+		tail: emptyPos,
+	})
+	return ring, buffer
+}
+
+func TestManyToOneRingBuffer_ZeroAllocs(t *testing.T) {
+	src := aeronatomic.Wrap(testPayload64)
+
+	cases := []struct {
+		name  string
+		setup func(t *testing.T) (*ringbuffer.ManyToOneRingBuffer, aeronatomic.AtomicBuffer)
+		fn    func(ring *ringbuffer.ManyToOneRingBuffer, buffer aeronatomic.AtomicBuffer)
+	}{
+		{
+			name:  "Write+Read",
+			setup: setupEmptyRing,
+			fn: func(ring *ringbuffer.ManyToOneRingBuffer, _ aeronatomic.AtomicBuffer) {
+				ok, err := ring.Write(testMsgTypeID, src, 0, len(testPayload64))
+				if err != nil || !ok {
+					panic("write failed")
+				}
+				ring.Read(benchmarkRingNoopHandler)
+			},
+		},
+		{
+			name:  "TryClaim+Commit+Read",
+			setup: setupEmptyRing,
+			fn: func(ring *ringbuffer.ManyToOneRingBuffer, buffer aeronatomic.AtomicBuffer) {
+				index, err := ring.TryClaim(testMsgTypeID, len(testPayload64))
+				if err != nil || index < 0 {
+					panic("tryClaim failed")
+				}
+				buffer.PutBytes(index, testPayload64)
+				if err := ring.Commit(index); err != nil {
+					panic(err)
+				}
+				ring.Read(benchmarkRingNoopHandler)
+			},
+		},
+		{
+			name:  "Read",
+			setup: setupRingOneMessage,
+			fn: func(ring *ringbuffer.ManyToOneRingBuffer, _ aeronatomic.AtomicBuffer) {
+				ringSink = ring.Read(benchmarkRingNoopHandler)
+			},
+		},
+		{
+			name:  "ControlledRead",
+			setup: setupRingOneMessage,
+			fn: func(ring *ringbuffer.ManyToOneRingBuffer, _ aeronatomic.AtomicBuffer) {
+				ringSink = ring.ControlledRead(benchmarkControlledContinue)
+			},
+		},
+		{
+			name:  "NextCorrelationId",
+			setup: setupEmptyRing,
+			fn: func(ring *ringbuffer.ManyToOneRingBuffer, _ aeronatomic.AtomicBuffer) {
+				ringSink = ring.NextCorrelationID()
+			},
+		},
+		{
+			name:  "ReadWithLimit",
+			setup: setupRingOneMessage,
+			fn: func(ring *ringbuffer.ManyToOneRingBuffer, _ aeronatomic.AtomicBuffer) {
+				ringSink = ring.ReadWithLimit(benchmarkRingNoopHandler, 1)
+			},
+		},
+		{
+			name:  "Unblock",
+			setup: setupUnblockEmptyRing,
+			fn: func(ring *ringbuffer.ManyToOneRingBuffer, _ aeronatomic.AtomicBuffer) {
+				ringSink = ring.Unblock()
+			},
+		},
+		{
+			name:  "Abort",
+			setup: setupEmptyRing,
+			fn: func(ring *ringbuffer.ManyToOneRingBuffer, _ aeronatomic.AtomicBuffer) {
+				index, err := ring.TryClaim(testMsgTypeID, len(testPayload64))
+				if err != nil || index < 0 {
+					panic("tryClaim failed")
+				}
+				if err := ring.Abort(index); err != nil {
+					panic(err)
+				}
+				ring.Read(benchmarkRingNoopHandler)
+			},
+		},
+		{
+			name:  "Positions",
+			setup: setupRingCaughtUp,
+			fn: func(ring *ringbuffer.ManyToOneRingBuffer, _ aeronatomic.AtomicBuffer) {
+				ringSink = ring.ConsumerPosition()
+				ringSink = ring.ProducerPosition()
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ring, buffer := tc.setup(t)
+			testutil.AssertZeroAllocs(t, tc.name, 1000, func() {
+				tc.fn(ring, buffer)
+			})
+		})
+	}
+}
 
 func benchmarkDrainRing(b *testing.B, ring *ringbuffer.ManyToOneRingBuffer) {
 	b.Helper()
@@ -1116,16 +1014,15 @@ func benchmarkTryClaimMessage(
 
 func BenchmarkManyToOneRingBuffer_WritePublishBatch(b *testing.B) {
 	ring, _ := newTestRingBuffer(b, testDataCapacity)
-	payload := make([]byte, 64)
-	src := aeronatomic.Wrap(payload)
-	batch := benchmarkPublishBatchSize(len(payload))
+	src := aeronatomic.Wrap(testPayload64)
+	batch := benchmarkPublishBatchSize(len(testPayload64))
 
 	b.ReportAllocs()
-	b.SetBytes(int64(len(payload)) * int64(batch))
+	b.SetBytes(int64(len(testPayload64)) * int64(batch))
 	b.ResetTimer()
 	for range b.N {
 		for range batch {
-			benchmarkWriteMessage(b, ring, src, len(payload))
+			benchmarkWriteMessage(b, ring, src, len(testPayload64))
 		}
 		benchmarkDrainRing(b, ring)
 	}
@@ -1133,28 +1030,26 @@ func BenchmarkManyToOneRingBuffer_WritePublishBatch(b *testing.B) {
 
 func BenchmarkManyToOneRingBuffer_WriteRoundTrip(b *testing.B) {
 	ring, _ := newTestRingBuffer(b, testDataCapacity)
-	payload := make([]byte, 64)
-	src := aeronatomic.Wrap(payload)
+	src := aeronatomic.Wrap(testPayload64)
 
 	b.ReportAllocs()
-	b.SetBytes(int64(len(payload)))
+	b.SetBytes(int64(len(testPayload64)))
 	for b.Loop() {
-		benchmarkWriteMessage(b, ring, src, len(payload))
+		benchmarkWriteMessage(b, ring, src, len(testPayload64))
 		ring.Read(benchmarkRingNoopHandler)
 	}
 }
 
 func BenchmarkManyToOneRingBuffer_TryClaimPublishBatch(b *testing.B) {
 	ring, buffer := newTestRingBuffer(b, testDataCapacity)
-	payload := make([]byte, 64)
-	batch := benchmarkPublishBatchSize(len(payload))
+	batch := benchmarkPublishBatchSize(len(testPayload64))
 
 	b.ReportAllocs()
-	b.SetBytes(int64(len(payload)) * int64(batch))
+	b.SetBytes(int64(len(testPayload64)) * int64(batch))
 	b.ResetTimer()
 	for range b.N {
 		for range batch {
-			benchmarkTryClaimMessage(b, ring, buffer, payload)
+			benchmarkTryClaimMessage(b, ring, buffer, testPayload64)
 		}
 		benchmarkDrainRing(b, ring)
 	}
@@ -1162,12 +1057,11 @@ func BenchmarkManyToOneRingBuffer_TryClaimPublishBatch(b *testing.B) {
 
 func BenchmarkManyToOneRingBuffer_TryClaimCommitRoundTrip(b *testing.B) {
 	ring, buffer := newTestRingBuffer(b, testDataCapacity)
-	payload := make([]byte, 64)
 
 	b.ReportAllocs()
-	b.SetBytes(int64(len(payload)))
+	b.SetBytes(int64(len(testPayload64)))
 	for b.Loop() {
-		benchmarkTryClaimMessage(b, ring, buffer, payload)
+		benchmarkTryClaimMessage(b, ring, buffer, testPayload64)
 		ring.Read(benchmarkRingNoopHandler)
 	}
 }
@@ -1183,19 +1077,14 @@ func BenchmarkManyToOneRingBuffer_ControlledRead(b *testing.B) {
 func benchmarkManyToOneRead(b *testing.B, controlled bool) {
 	b.Helper()
 	ring, _ := newTestRingBuffer(b, testDataCapacity)
-	payload := make([]byte, 64)
-	src := aeronatomic.Wrap(payload)
+	src := aeronatomic.Wrap(testPayload64)
 
 	b.ReportAllocs()
-	b.SetBytes(int64(len(payload)))
+	b.SetBytes(int64(len(testPayload64)))
 	for b.Loop() {
-		benchmarkWriteMessage(b, ring, src, len(payload))
+		benchmarkWriteMessage(b, ring, src, len(testPayload64))
 		if controlled {
-			ringSink = ring.ControlledRead(
-				func(int, aeronatomic.AtomicBuffer, int, int) ringbuffer.ControlledAction {
-					return ringbuffer.ControlledContinue
-				},
-			)
+			ringSink = ring.ControlledRead(benchmarkControlledContinue)
 			continue
 		}
 		ringSink = ring.Read(benchmarkRingNoopHandler)

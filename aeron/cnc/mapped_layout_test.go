@@ -1,19 +1,41 @@
 package cnc
 
 import (
+	"fmt"
 	"os"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
+
+func validateMappableLayout(meta Metadata, dataLen int) error {
+	if err := validateLayoutEnd(meta); err != nil {
+		return err
+	}
+	computedLength := meta.ComputedLength()
+	if dataLen < MetaDataLength {
+		return fmt.Errorf(
+			"cnc: mapped length %d insufficient for metadata header (need %d)",
+			dataLen,
+			MetaDataLength,
+		)
+	}
+	if dataLen < computedLength {
+		return fmt.Errorf(
+			"cnc: mapped length %d insufficient for metadata (need %d)",
+			dataLen,
+			computedLength,
+		)
+	}
+	return nil
+}
 
 func writeReadyCncFileAt(t *testing.T, path string) Metadata {
 	t.Helper()
 	meta := ReadyMetadata()
 	buf := make([]byte, meta.ComputedLength())
 	WriteMetadataFieldsToBuffer(buf, meta)
-	if err := os.WriteFile(path, buf, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, buf, 0o644))
 	return meta
 }
 
@@ -58,12 +80,7 @@ func TestValidateMappedBufferLengths(t *testing.T) {
 			}
 
 			err := validateMappedBufferLengths(meta, mutated)
-			if err == nil {
-				t.Fatal("expected validation error")
-			}
-			if !strings.Contains(err.Error(), test.wantError) {
-				t.Fatalf("got %v", err)
-			}
+			require.ErrorContains(t, err, test.wantError)
 		})
 	}
 }
@@ -71,31 +88,17 @@ func TestValidateMappedBufferLengths(t *testing.T) {
 func TestValidateMappableLayout_insufficientHeaderSpan(t *testing.T) {
 	meta := ReadyMetadata()
 	err := validateMappableLayout(meta, MetaDataLength-1)
-	if err == nil {
-		t.Fatal("expected validation error")
-	}
-	if !strings.Contains(err.Error(), "insufficient for metadata header") {
-		t.Fatalf("got %v", err)
-	}
+	require.ErrorContains(t, err, "insufficient for metadata header")
 }
 
 func TestValidateMappableLayout_hugeMetadata(t *testing.T) {
 	meta := WrappedPositiveOverflowMetadata()
 	computedLength := meta.ComputedLength()
-	if err := validateLayoutEnd(meta); err != nil {
-		t.Fatalf("validateLayoutEnd: %v", err)
-	}
-	if err := validateMappableLayout(meta, computedLength); err != nil {
-		t.Fatalf("full mapped length: %v", err)
-	}
+	require.NoError(t, validateLayoutEnd(meta))
+	require.NoError(t, validateMappableLayout(meta, computedLength))
 
 	err := validateMappableLayout(meta, TestWrappedOverflowOnDiskLength)
-	if err == nil {
-		t.Fatal("expected insufficient mapped length error")
-	}
-	if !strings.Contains(err.Error(), "insufficient for metadata") {
-		t.Fatalf("got %v", err)
-	}
+	require.ErrorContains(t, err, "insufficient for metadata")
 }
 
 func TestValidateLayoutEnd_hugeMetadata(t *testing.T) {
@@ -108,9 +111,7 @@ func TestValidateLayoutEnd_hugeMetadata(t *testing.T) {
 	}
 	for _, fixture := range fixtures {
 		t.Run(fixture.name, func(t *testing.T) {
-			if err := validateLayoutEnd(fixture.meta); err != nil {
-				t.Fatalf("validateLayoutEnd: %v", err)
-			}
+			require.NoError(t, validateLayoutEnd(fixture.meta))
 		})
 	}
 }
@@ -122,13 +123,6 @@ func TestValidateMetadataLayoutConsistency(t *testing.T) {
 	liveMeta.ToClientsBufferLength = headerMeta.ToDriverBufferLength
 
 	err := validateMetadataLayoutConsistency(headerMeta, liveMeta)
-	if err == nil {
-		t.Fatal("expected layout drift error")
-	}
-	if !strings.Contains(err.Error(), "metadata layout drift") {
-		t.Fatalf("got %v", err)
-	}
-	if !strings.Contains(err.Error(), "to-driver") {
-		t.Fatalf("got %v", err)
-	}
+	require.ErrorContains(t, err, "metadata layout drift")
+	require.ErrorContains(t, err, "to-driver")
 }

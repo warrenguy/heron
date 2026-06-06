@@ -1,39 +1,31 @@
 package broadcast_test
 
 import (
-	"bytes"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/record"
 )
 
 func TestBroadcastReceiverCapacity(t *testing.T) {
 	rx := newReceiver(t, newTestBuffer(t))
-	if rx.Capacity() != testCapacity {
-		t.Fatalf("capacity=%d want %d", rx.Capacity(), testCapacity)
-	}
+	require.Equal(t, testCapacity, rx.Capacity())
 }
 
 func TestBroadcastReceiverInvalidCapacity(t *testing.T) {
 	_, err := broadcast.NewBroadcastReceiver(invalidCapacityBuffer())
-	if err == nil {
-		t.Fatal("expected error for non-power-of-two capacity")
-	}
+	require.Error(t, err)
 }
 
 func TestBroadcastReceiverNotLappedBeforeReception(t *testing.T) {
 	rx := newReceiver(t, newTestBuffer(t))
-	if rx.LappedCount() != 0 {
-		t.Fatalf("lappedCount=%d want 0", rx.LappedCount())
-	}
+	require.Zero(t, rx.LappedCount())
 }
 
 func TestBroadcastReceiverEmptyBuffer(t *testing.T) {
 	rx := newReceiver(t, newTestBuffer(t))
-	if rx.ReceiveNext() {
-		t.Fatal("expected no message from empty buffer")
-	}
+	require.False(t, rx.ReceiveNext())
 }
 
 func TestBroadcastReceiverFirstMessage(t *testing.T) {
@@ -42,30 +34,17 @@ func TestBroadcastReceiverFirstMessage(t *testing.T) {
 
 	const length = 8
 	src := []byte{10, 11, 12, 13, 14, 15, 16, 17}
-	if err := tx.Transmit(testMsgTypeID, src); err != nil {
-		t.Fatal(err)
-	}
+	err := tx.Transmit(testMsgTypeID, src)
+	require.NoError(t, err)
 
 	rx := newReceiver(t, buf)
-	if !rx.ReceiveNext() {
-		t.Fatal("expected first message")
-	}
-	if rx.TypeID() != testMsgTypeID {
-		t.Fatalf("typeId=%d want %d", rx.TypeID(), testMsgTypeID)
-	}
-	if rx.Offset() != broadcast.MsgOffset(0) {
-		t.Fatalf("offset=%d want %d", rx.Offset(), broadcast.MsgOffset(0))
-	}
-	if rx.Length() != length {
-		t.Fatalf("length=%d want %d", rx.Length(), length)
-	}
-	if !rx.Validate() {
-		t.Fatal("expected record to validate")
-	}
+	require.True(t, rx.ReceiveNext())
+	require.Equal(t, testMsgTypeID, rx.TypeID())
+	require.Equal(t, broadcast.MsgOffset(0), rx.Offset())
+	require.Equal(t, length, rx.Length())
+	require.True(t, rx.Validate())
 	got := copyPayload(rx)
-	if !bytes.Equal(got, src) {
-		t.Fatalf("payload=%v want %v", got, src)
-	}
+	require.Equal(t, src, got)
 }
 
 func TestBroadcastReceiverTwoMessages(t *testing.T) {
@@ -74,33 +53,19 @@ func TestBroadcastReceiverTwoMessages(t *testing.T) {
 	rx := newReceiver(t, buf)
 
 	src := testPayload8
-	if err := tx.Transmit(testMsgTypeID, src); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Transmit(testMsgTypeID, src); err != nil {
-		t.Fatal(err)
-	}
+	err := tx.Transmit(testMsgTypeID, src)
+	require.NoError(t, err)
+	err = tx.Transmit(testMsgTypeID, src)
+	require.NoError(t, err)
 
-	if !rx.ReceiveNext() {
-		t.Fatal("expected first message")
-	}
-	if rx.Offset() != broadcast.MsgOffset(0) {
-		t.Fatalf("first offset=%d want %d", rx.Offset(), broadcast.MsgOffset(0))
-	}
-	if !rx.Validate() {
-		t.Fatal("expected first record to validate")
-	}
+	require.True(t, rx.ReceiveNext())
+	require.Equal(t, broadcast.MsgOffset(0), rx.Offset())
+	require.True(t, rx.Validate())
 
-	if !rx.ReceiveNext() {
-		t.Fatal("expected second message")
-	}
+	require.True(t, rx.ReceiveNext())
 	recordOffsetTwo := alignedRecordLength(len(src))
-	if rx.Offset() != broadcast.MsgOffset(recordOffsetTwo) {
-		t.Fatalf("second offset=%d want %d", rx.Offset(), broadcast.MsgOffset(recordOffsetTwo))
-	}
-	if !rx.Validate() {
-		t.Fatal("expected second record to validate")
-	}
+	require.Equal(t, broadcast.MsgOffset(recordOffsetTwo), rx.Offset())
+	require.True(t, rx.Validate())
 }
 
 func TestBroadcastReceiverLateJoinTransmission(t *testing.T) {
@@ -109,29 +74,20 @@ func TestBroadcastReceiverLateJoinTransmission(t *testing.T) {
 
 	src := testPayload8
 	for range 3*testCapacity/16 + 1 {
-		if err := tx.Transmit(testMsgTypeID, src); err != nil {
-			t.Fatal(err)
-		}
+		err := tx.Transmit(testMsgTypeID, src)
+		require.NoError(t, err)
 	}
 
 	actualLatest := buf.GetInt64Volatile(broadcast.LatestIndex(testCapacity))
 	buf.PutInt64Release(broadcast.LatestIndex(testCapacity), 0)
 
 	rx, err := broadcast.NewBroadcastReceiver(buf)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	buf.PutInt64Release(broadcast.LatestIndex(testCapacity), actualLatest)
 
-	if !rx.ReceiveNext() {
-		t.Fatal("expected message after late join catch-up")
-	}
-	if rx.LappedCount() == 0 {
-		t.Fatal("expected lapped count > 0 on late join")
-	}
-	if !rx.Validate() {
-		t.Fatal("expected record to validate after catch-up")
-	}
+	require.True(t, rx.ReceiveNext())
+	require.Positive(t, rx.LappedCount())
+	require.True(t, rx.Validate())
 }
 
 func TestBroadcastReceiverPaddingAndWrap(t *testing.T) {
@@ -142,12 +98,9 @@ func TestBroadcastReceiverPaddingAndWrap(t *testing.T) {
 	small := testPayload8
 	beforeWrap := messagesBeforeWrap(testCapacity, len(small))
 	for range beforeWrap {
-		if err := tx.Transmit(testMsgTypeID, small); err != nil {
-			t.Fatal(err)
-		}
-		if !rx.ReceiveNext() {
-			t.Fatal("expected small message before wrap")
-		}
+		err := tx.Transmit(testMsgTypeID, small)
+		require.NoError(t, err)
+		require.True(t, rx.ReceiveNext())
 	}
 
 	const length = 120
@@ -155,22 +108,13 @@ func TestBroadcastReceiverPaddingAndWrap(t *testing.T) {
 	for i := range src {
 		src[i] = byte(i)
 	}
-	if err := tx.Transmit(testMsgTypeID, src); err != nil {
-		t.Fatal(err)
-	}
+	err := tx.Transmit(testMsgTypeID, src)
+	require.NoError(t, err)
 
-	if !rx.ReceiveNext() {
-		t.Fatal("expected message after padding")
-	}
-	if rx.TypeID() != testMsgTypeID {
-		t.Fatalf("typeId=%d want %d", rx.TypeID(), testMsgTypeID)
-	}
-	if rx.Length() != length {
-		t.Fatalf("length=%d want %d", rx.Length(), length)
-	}
-	if !rx.Validate() {
-		t.Fatal("expected record to validate")
-	}
+	require.True(t, rx.ReceiveNext())
+	require.Equal(t, testMsgTypeID, rx.TypeID())
+	require.Equal(t, length, rx.Length())
+	require.True(t, rx.Validate())
 }
 
 func TestBroadcastReceiverLengthDefensive(t *testing.T) {
@@ -178,22 +122,15 @@ func TestBroadcastReceiverLengthDefensive(t *testing.T) {
 	tx := newTransmitter(t, buf)
 
 	src := testPayload8
-	if err := tx.Transmit(testMsgTypeID, src); err != nil {
-		t.Fatal(err)
-	}
+	err := tx.Transmit(testMsgTypeID, src)
+	require.NoError(t, err)
 
 	rx := newReceiver(t, buf)
-	if !rx.ReceiveNext() {
-		t.Fatal("expected first message")
-	}
-	if rx.Length() != len(src) {
-		t.Fatalf("length=%d want %d", rx.Length(), len(src))
-	}
+	require.True(t, rx.ReceiveNext())
+	require.Equal(t, len(src), rx.Length())
 
 	buf.PutInt32(record.LengthOffset(0), broadcast.HeaderLength-1)
-	if rx.Length() != 0 {
-		t.Fatalf("length=%d want 0 for corrupt record length", rx.Length())
-	}
+	require.Equal(t, 0, rx.Length())
 }
 
 func TestBroadcastReceiverRecordInvalidatedByOverwrite(t *testing.T) {
@@ -201,17 +138,12 @@ func TestBroadcastReceiverRecordInvalidatedByOverwrite(t *testing.T) {
 	tx := newTransmitter(t, buf)
 
 	src := testPayload8
-	if err := tx.Transmit(testMsgTypeID, src); err != nil {
-		t.Fatal(err)
-	}
+	err := tx.Transmit(testMsgTypeID, src)
+	require.NoError(t, err)
 
 	rx := newReceiver(t, buf)
-	if !rx.ReceiveNext() {
-		t.Fatal("expected first message")
-	}
-	if rx.TypeID() != testMsgTypeID {
-		t.Fatalf("typeId=%d want %d", rx.TypeID(), testMsgTypeID)
-	}
+	require.True(t, rx.ReceiveNext())
+	require.Equal(t, testMsgTypeID, rx.TypeID())
 
 	recordLengthAligned := alignedRecordLength(len(src))
 	// Advance tailIntent past cursor+capacity without receiver catching up.
@@ -220,7 +152,5 @@ func TestBroadcastReceiverRecordInvalidatedByOverwrite(t *testing.T) {
 		int64(recordLengthAligned)+int64(testCapacity-recordLengthAligned),
 	)
 
-	if rx.Validate() {
-		t.Fatal("expected record to be invalid after overwrite")
-	}
+	require.False(t, rx.Validate())
 }

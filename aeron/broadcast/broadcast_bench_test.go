@@ -6,32 +6,33 @@ import (
 	"github.com/warrenguy/heron/aeron/broadcast"
 )
 
-func benchmarkBroadcastWarm(
+func benchmarkWarmBroadcast(
 	b *testing.B,
+	receive bool,
 ) (*broadcast.BroadcastTransmitter, *broadcast.BroadcastReceiver) {
 	b.Helper()
 	tx, rx, _ := newTestBroadcastPair(b)
 	const warm = 1024
 	for range warm {
-		if err := tx.Transmit(testMsgTypeID, testPayload8); err != nil {
-			b.Fatal(err)
+		if receive {
+			warmTransmitReceive(b, tx, rx)
+			continue
 		}
-		if !rx.ReceiveNext() {
-			b.Fatal("warm-up receive failed")
-		}
+		warmTransmit(b, tx)
 	}
 	return tx, rx
 }
 
+func benchmarkBroadcastWarm(
+	b *testing.B,
+) (*broadcast.BroadcastTransmitter, *broadcast.BroadcastReceiver) {
+	b.Helper()
+	return benchmarkWarmBroadcast(b, true)
+}
+
 func benchmarkBroadcastWarmTransmit(b *testing.B) *broadcast.BroadcastTransmitter {
 	b.Helper()
-	tx, _, _ := newTestBroadcastPair(b)
-	const warm = 1024
-	for range warm {
-		if err := tx.Transmit(testMsgTypeID, testPayload8); err != nil {
-			b.Fatal(err)
-		}
-	}
+	tx, _ := benchmarkWarmBroadcast(b, false)
 	return tx
 }
 

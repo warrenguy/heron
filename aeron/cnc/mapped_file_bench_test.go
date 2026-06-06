@@ -1,7 +1,6 @@
 package cnc_test
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/warrenguy/heron/aeron/cnc"
@@ -9,18 +8,7 @@ import (
 
 func writeBenchmarkCncPath(b *testing.B) string {
 	b.Helper()
-	path := filepath.Join(b.TempDir(), cnc.FileName)
-	writeReadyCncFile(b, path)
-	return path
-}
-
-func benchmarkReadyMappedCncFile(b *testing.B) *cnc.MappedCncFile {
-	b.Helper()
-	mapped, err := cnc.MapCncFile(writeBenchmarkCncPath(b))
-	if err != nil {
-		b.Fatal(err)
-	}
-	return mapped
+	return readyCncFilePath(b)
 }
 
 func BenchmarkMapCncFile(b *testing.B) {
@@ -40,8 +28,7 @@ func BenchmarkMapCncFile(b *testing.B) {
 }
 
 func BenchmarkMappedCncFile_ToDriverAtomic(b *testing.B) {
-	mapped := benchmarkReadyMappedCncFile(b)
-	defer func() { _ = mapped.Close() }()
+	mapped := openReadyMappedCncFile(b)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -51,8 +38,7 @@ func BenchmarkMappedCncFile_ToDriverAtomic(b *testing.B) {
 }
 
 func BenchmarkMappedCncFile_ToDriverBuffer(b *testing.B) {
-	mapped := benchmarkReadyMappedCncFile(b)
-	defer func() { _ = mapped.Close() }()
+	mapped := openReadyMappedCncFile(b)
 
 	b.ReportAllocs()
 	b.ResetTimer()

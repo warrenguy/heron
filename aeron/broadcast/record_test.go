@@ -3,6 +3,8 @@ package broadcast_test
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/warrenguy/heron/aeron/broadcast"
 )
 
@@ -16,8 +18,6 @@ func TestBroadcastMaxMsgLength(t *testing.T) {
 		{8, 0},
 	}
 	for _, tc := range cases {
-		if got := broadcast.MaxMsgLength(tc.capacity); got != tc.want {
-			t.Fatalf("MaxMsgLength(%d)=%d want %d", tc.capacity, got, tc.want)
-		}
+		require.Equal(t, tc.want, broadcast.MaxMsgLength(tc.capacity))
 	}
 }

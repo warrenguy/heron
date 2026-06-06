@@ -1,8 +1,9 @@
 package record_test
 
 import (
-	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/record"
 )
@@ -23,9 +24,7 @@ func TestRecord(t *testing.T) {
 			{"InsufficientCapacity", record.InsufficientCapacity, -2},
 		}
 		for _, tc := range cases {
-			if tc.got != tc.want {
-				t.Fatalf("%s=%d want %d", tc.name, tc.got, tc.want)
-			}
+			require.Equal(t, tc.want, tc.got, tc.name)
 		}
 	})
 
@@ -40,30 +39,19 @@ func TestRecord(t *testing.T) {
 			{"EncodedMsgOffset", record.EncodedMsgOffset(recordOffset), recordOffset + record.HeaderLength},
 		}
 		for _, tc := range cases {
-			if tc.got != tc.want {
-				t.Fatalf("%s=%d want %d", tc.name, tc.got, tc.want)
-			}
+			require.Equal(t, tc.want, tc.got, tc.name)
 		}
 	})
 
 	t.Run("AlignRecordLength", func(t *testing.T) {
-		if got := record.AlignRecordLength(9); got != 16 {
-			t.Fatalf("AlignRecordLength(9)=%d want 16", got)
-		}
+		require.Equal(t, 16, record.AlignRecordLength(9))
 	})
 
 	t.Run("CheckTypeID", func(t *testing.T) {
-		if err := record.CheckTypeID(1); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, record.CheckTypeID(1))
 		for _, id := range []int{0, -1} {
 			err := record.CheckTypeID(id)
-			if err == nil {
-				t.Fatalf("expected error for type id %d", id)
-			}
-			if !errors.Is(err, record.ErrInvalidMessageTypeID) {
-				t.Fatalf("CheckTypeID(%d)=%v want ErrInvalidMessageTypeID", id, err)
-			}
+			require.ErrorIs(t, err, record.ErrInvalidMessageTypeID)
 		}
 	})
 }

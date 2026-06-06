@@ -1,10 +1,11 @@
 package atomic_test
 
 import (
-	"bytes"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 )
 
 const testAtomicBufferSize = 64
@@ -22,23 +23,15 @@ func newTestAtomicBuffer(tb testing.TB, size int) atomic.AtomicBuffer {
 func TestAtomicBuffer_Int32Roundtrip(t *testing.T) {
 	atomicBuffer := newTestAtomicBuffer(t, testAtomicBufferSize)
 	atomicBuffer.PutInt32(0, 0x01020304)
-	if got := atomicBuffer.GetInt32(0); got != 0x01020304 {
-		t.Fatalf("got %x", got)
-	}
+	require.Equal(t, int32(0x01020304), atomicBuffer.GetInt32(0))
 }
 
 func TestAtomicBuffer_Int64VolatileCAS(t *testing.T) {
 	atomicBuffer := newTestAtomicBuffer(t, testAtomicBufferSize)
 	atomicBuffer.PutInt64Release(8, 42)
-	if got := atomicBuffer.GetInt64Volatile(8); got != 42 {
-		t.Fatalf("got %d", got)
-	}
-	if !atomicBuffer.CompareAndSwapInt64(8, 42, 99) {
-		t.Fatal("CAS failed")
-	}
-	if atomicBuffer.GetInt64Volatile(8) != 99 {
-		t.Fatal("CAS did not update")
-	}
+	require.Equal(t, int64(42), atomicBuffer.GetInt64Volatile(8))
+	require.True(t, atomicBuffer.CompareAndSwapInt64(8, 42, 99))
+	require.Equal(t, int64(99), atomicBuffer.GetInt64Volatile(8))
 }
 
 func TestAtomicBuffer_ZeroAllocs(t *testing.T) {
@@ -78,30 +71,22 @@ func TestAtomicBuffer_ZeroAllocs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if allocs := testing.AllocsPerRun(1000, tc.fn); allocs != 0 {
-				t.Fatalf("%s allocs = %v, want 0", tc.name, allocs)
-			}
+			testutil.AssertZeroAllocs(t, tc.name, 1000, tc.fn)
 		})
 	}
 }
 
 func TestAtomicBuffer_EmptyPanics(t *testing.T) {
-	expectPanic(t, "GetInt32Volatile on nil buffer", func() {
+	require.Panics(t, func() {
 		atomic.Wrap(nil).GetInt32Volatile(0)
-	})
+	}, "GetInt32Volatile on nil buffer")
 }
 
 func TestAtomicBuffer_GetAndAddInt64ReturnsPrevious(t *testing.T) {
 	atomicBuffer := newTestAtomicBuffer(t, testAtomicBufferSize)
-	if prev := atomicBuffer.GetAndAddInt64(0, 5); prev != 0 {
-		t.Fatalf("first prev=%d want 0", prev)
-	}
-	if prev := atomicBuffer.GetAndAddInt64(0, 3); prev != 5 {
-		t.Fatalf("second prev=%d want 5", prev)
-	}
-	if got := atomicBuffer.GetInt64Volatile(0); got != 8 {
-		t.Fatalf("value=%d want 8", got)
-	}
+	require.Equal(t, int64(0), atomicBuffer.GetAndAddInt64(0, 5))
+	require.Equal(t, int64(5), atomicBuffer.GetAndAddInt64(0, 3))
+	require.Equal(t, int64(8), atomicBuffer.GetInt64Volatile(0))
 }
 
 func TestAtomicBuffer_PutBytesSetBytes(t *testing.T) {
@@ -111,9 +96,7 @@ func TestAtomicBuffer_PutBytesSetBytes(t *testing.T) {
 	atomicBuffer.SetBytes(4, 4, 0xff)
 	atomicBuffer.PutBytesFrom(8, atomic.Wrap(testPayload2), 0, 2)
 	want := []byte{1, 2, 3, 4, 0xff, 0xff, 0xff, 0xff, 9, 10}
-	if !bytes.Equal(buf[:len(want)], want) {
-		t.Fatalf("buf=%v want %v", buf[:len(want)], want)
-	}
+	require.Equal(t, want, buf[:len(want)])
 }
 
 func TestAtomicBuffer_SetBytes_zeroLength(t *testing.T) {
@@ -125,33 +108,21 @@ func TestAtomicBuffer_VerifyAlignment(t *testing.T) {
 	atomicBuffer := newTestAtomicBuffer(t, testAtomicBufferSize)
 	atomicBuffer.VerifyAlignment(0, 8)
 	atomicBuffer.VerifyAlignment(8, 8)
-	expectPanic(t, "misaligned offset", func() {
+	require.Panics(t, func() {
 		atomicBuffer.VerifyAlignment(4, 8)
-	})
-	expectPanic(t, "non-power-of-two field length", func() {
+	}, "misaligned offset")
+	require.Panics(t, func() {
 		atomicBuffer.VerifyAlignment(0, 6)
-	})
+	}, "non-power-of-two field length")
 }
 
 func TestAtomicBuffer_SliceBounds(t *testing.T) {
 	atomicBuffer := newTestAtomicBuffer(t, 16)
 
 	sub := atomicBuffer.Slice(4, 8)
-	if sub.Capacity() != 8 {
-		t.Fatalf("capacity %d want 8", sub.Capacity())
-	}
+	require.Equal(t, 8, sub.Capacity())
 
-	expectPanic(t, "out-of-bounds slice", func() {
+	require.Panics(t, func() {
 		atomicBuffer.Slice(10, 8)
-	})
-}
-
-func expectPanic(t *testing.T, what string, fn func()) {
-	t.Helper()
-	defer func() {
-		if recover() == nil {
-			t.Fatalf("expected panic: %s", what)
-		}
-	}()
-	fn()
+	}, "out-of-bounds slice")
 }

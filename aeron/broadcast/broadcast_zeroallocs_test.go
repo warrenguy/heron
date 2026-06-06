@@ -4,75 +4,91 @@ import (
 	"testing"
 
 	"github.com/warrenguy/heron/aeron/broadcast"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 )
 
-func warmTransmit(tb testing.TB, tx *broadcast.BroadcastTransmitter) {
-	tb.Helper()
-	if err := tx.Transmit(testMsgTypeID, testPayload8); err != nil {
-		tb.Fatal(err)
+func TestBroadcast_ZeroAllocs(t *testing.T) {
+	cases := []struct {
+		name  string
+		runs  int
+		warm  func(testing.TB, *broadcast.BroadcastTransmitter, *broadcast.BroadcastReceiver)
+		setup func(testing.TB, *broadcast.BroadcastTransmitter, *broadcast.BroadcastReceiver)
+		fn    func(*broadcast.BroadcastTransmitter, *broadcast.BroadcastReceiver)
+	}{
+		{
+			name: "ReceiveNext",
+			warm: warmTransmitOnly,
+			fn: func(tx *broadcast.BroadcastTransmitter, rx *broadcast.BroadcastReceiver) {
+				if err := tx.Transmit(testMsgTypeID, testPayload8); err != nil {
+					panic(err)
+				}
+				if !rx.ReceiveNext() {
+					panic("ReceiveNext=false")
+				}
+			},
+		},
+		{
+			name: "Validate",
+			warm: warmTransmitReceive,
+			fn: func(_ *broadcast.BroadcastTransmitter, rx *broadcast.BroadcastReceiver) {
+				_ = rx.Validate()
+			},
+		},
+		{
+			name: "TypeID/Offset/Length",
+			warm: warmTransmitReceive,
+			fn: func(_ *broadcast.BroadcastTransmitter, rx *broadcast.BroadcastReceiver) {
+				_ = rx.TypeID()
+				_ = rx.Offset()
+				_ = rx.Length()
+			},
+		},
+		{
+			name: "Transmit",
+			warm: warmTransmitOnly,
+			fn: func(tx *broadcast.BroadcastTransmitter, _ *broadcast.BroadcastReceiver) {
+				if err := tx.Transmit(testMsgTypeID, testPayload8); err != nil {
+					panic(err)
+				}
+			},
+		},
+		{
+			name: "LappedCount",
+			warm: warmTransmitReceive,
+			fn: func(_ *broadcast.BroadcastTransmitter, rx *broadcast.BroadcastReceiver) {
+				_ = rx.LappedCount()
+			},
+		},
+		{
+			name: "ReceiveNextOnly",
+			runs: 64,
+			setup: func(tb testing.TB, tx *broadcast.BroadcastTransmitter, _ *broadcast.BroadcastReceiver) {
+				const preFill = 64
+				for range preFill {
+					warmTransmit(tb, tx)
+				}
+			},
+			fn: func(_ *broadcast.BroadcastTransmitter, rx *broadcast.BroadcastReceiver) {
+				_ = rx.ReceiveNext()
+			},
+		},
 	}
-}
-
-func warmTransmitReceive(
-	tb testing.TB,
-	tx *broadcast.BroadcastTransmitter,
-	rx *broadcast.BroadcastReceiver,
-) {
-	tb.Helper()
-	warmTransmit(tb, tx)
-	if !rx.ReceiveNext() {
-		tb.Fatal("warm-up receive failed")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tx, rx, _ := newTestBroadcastPair(t)
+			if tc.warm != nil {
+				tc.warm(t, tx, rx)
+			}
+			if tc.setup != nil {
+				tc.setup(t, tx, rx)
+			}
+			runs := tc.runs
+			if runs == 0 {
+				runs = 1000
+			}
+			testutil.AssertZeroAllocs(t, tc.name, runs, func() {
+				tc.fn(tx, rx)
+			})
+		})
 	}
-}
-
-func assertZeroAllocs(tb testing.TB, label string, n int, fn func()) {
-	tb.Helper()
-	if allocs := testing.AllocsPerRun(n, fn); allocs != 0 {
-		tb.Fatalf("%s allocs = %v, want 0", label, allocs)
-	}
-}
-
-func TestBroadcastReceiver_ReceiveNext_ZeroAllocs(t *testing.T) {
-	tx, rx, _ := newTestBroadcastPair(t)
-	warmTransmit(t, tx)
-
-	assertZeroAllocs(t, "ReceiveNext", 1000, func() {
-		if err := tx.Transmit(testMsgTypeID, testPayload8); err != nil {
-			t.Fatal(err)
-		}
-		if !rx.ReceiveNext() {
-			t.Fatal("ReceiveNext=false")
-		}
-	})
-}
-
-func TestBroadcastReceiver_Validate_ZeroAllocs(t *testing.T) {
-	tx, rx, _ := newTestBroadcastPair(t)
-	warmTransmitReceive(t, tx, rx)
-
-	assertZeroAllocs(t, "Validate", 1000, func() {
-		_ = rx.Validate()
-	})
-}
-
-func TestBroadcastReceiver_TypeID_Offset_Length_ZeroAllocs(t *testing.T) {
-	tx, rx, _ := newTestBroadcastPair(t)
-	warmTransmitReceive(t, tx, rx)
-
-	assertZeroAllocs(t, "TypeID/Offset/Length", 1000, func() {
-		_ = rx.TypeID()
-		_ = rx.Offset()
-		_ = rx.Length()
-	})
-}
-
-func TestBroadcastTransmitter_Transmit_ZeroAllocs(t *testing.T) {
-	tx, _, _ := newTestBroadcastPair(t)
-	warmTransmit(t, tx)
-
-	assertZeroAllocs(t, "Transmit", 1000, func() {
-		if err := tx.Transmit(testMsgTypeID, testPayload8); err != nil {
-			t.Fatal(err)
-		}
-	})
 }
