@@ -59,7 +59,7 @@ clean:
 	rm -f bin/aeronmd
 
 test-integration: bin/aeronmd
-	go test -race ./test/integration/...
+	go test -race -count=1 -tags=integration ./test/integration/...
 
 bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd.sh
 	./scripts/build-aeronmd.sh

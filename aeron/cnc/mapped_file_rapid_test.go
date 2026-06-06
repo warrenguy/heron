@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/cnc/cnctest"
 	"pgregory.net/rapid"
 )
 
@@ -21,7 +22,7 @@ func TestMapCncFile_roundtrip_rapid(t *testing.T) {
 		require.NoError(rt, err, "MapCncFile")
 		defer func() { _ = mapped.Close() }()
 
-		cnc.AssertMappedBufferLengths(rt, mapped, meta)
+		cnctest.AssertMappedBufferLengths(rt, mapped, meta)
 
 		if meta.ToDriverBufferLength >= 4 {
 			toDriver := mapped.ToDriverBuffer()

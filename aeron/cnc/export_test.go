@@ -6,9 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
-	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/mmap"
-	"github.com/warrenguy/heron/aeron/ringbuffer"
 	"pgregory.net/rapid"
 )
 
@@ -152,37 +150,6 @@ func AssertMetadataBufferLengthsEqual(t assertReporter, got, want Metadata) {
 	for i := range gotDescs {
 		require.Equal(t, wantDescs[i].length, gotDescs[i].length, gotDescs[i].name)
 	}
-}
-
-func AssertMappedBufferLengths(t assertReporter, mapped *MappedCncFile, meta Metadata) {
-	t.Helper()
-	data := mapped.Bytes()
-	require.NotNil(t, data, "mapped file closed or nil")
-	require.NoError(t, validateMappedBufferLengths(meta, sliceCncRegions(data, meta)))
-}
-
-func AssertWiredRingsReady(t assertReporter, mapped *MappedCncFile, rings *Rings) {
-	t.Helper()
-	meta := rings.Meta
-	require.NotNil(t, rings.ToDriver)
-	require.NotNil(t, rings.ToClients)
-
-	wantDriverCapacity, err := ringbuffer.CheckCapacity(
-		int(meta.ToDriverBufferLength),
-		ringbuffer.MinCapacity,
-	)
-	require.NoError(t, err)
-	require.Equal(t, wantDriverCapacity, rings.ToDriver.Capacity())
-
-	wantClientsCapacity, err := broadcast.CheckCapacity(int(meta.ToClientsBufferLength))
-	require.NoError(t, err)
-	require.Equal(t, wantClientsCapacity, rings.ToClients.Capacity())
-
-	AssertMappedBufferLengths(t, mapped, meta)
-
-	require.Equal(t, rings.ToDriver.ProducerPosition(), rings.ToDriver.ConsumerPosition())
-	require.False(t, rings.ToClients.ReceiveNext())
-	require.Zero(t, rings.ToClients.LappedCount())
 }
 
 func AssertParsedReadyMetadataEqual(t assertReporter, got, want Metadata) {

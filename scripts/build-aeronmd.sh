@@ -40,12 +40,21 @@ if [[ -z "${repository}" || -z "${ref}" || -z "${artifact}" ]]; then
 fi
 
 echo "heron: building aeronmd (ref ${ref})"
-docker build \
-	-f "${DOCKERFILE}" \
-	--build-arg "AERON_REF=${ref}" \
-	--build-arg "AERON_REPOSITORY=${repository}" \
-	-t "${IMAGE}" \
+docker_build_args=(
+	-f "${DOCKERFILE}"
+	--build-arg "AERON_REF=${ref}"
+	--build-arg "AERON_REPOSITORY=${repository}"
+	-t "${IMAGE}"
 	"${ROOT}"
+)
+if docker buildx version >/dev/null 2>&1; then
+	if ! docker buildx build --load "${docker_build_args[@]}"; then
+		echo "heron: buildx build failed; falling back to docker build" >&2
+		docker build "${docker_build_args[@]}"
+	fi
+else
+	docker build "${docker_build_args[@]}"
+fi
 
 cid="$(docker create "${IMAGE}")"
 trap 'docker rm -f "${cid}" >/dev/null 2>&1 || true' EXIT

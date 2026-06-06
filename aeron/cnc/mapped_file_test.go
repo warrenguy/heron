@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/cnc/cnctest"
 )
 
 func openFDCount(t *testing.T) int {
@@ -30,7 +31,7 @@ func TestMapCncFile_readySynthetic(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = mapped.Close() }()
 
-	cnc.AssertMappedBufferLengths(t, mapped, mapped.Metadata())
+	cnctest.AssertMappedBufferLengths(t, mapped, mapped.Metadata())
 }
 
 func TestMapCncFile_notReady(t *testing.T) {

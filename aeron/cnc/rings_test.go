@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/cnc/cnctest"
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
 
@@ -22,7 +23,7 @@ func TestWireRings_readySynthetic(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rings.Mapping)
 	require.Equal(t, meta, rings.Meta)
-	cnc.AssertWiredRingsReady(t, mapped, rings)
+	cnctest.AssertWiredRingsReady(t, mapped, rings)
 }
 
 func TestWireRings_nilMappedFile(t *testing.T) {
