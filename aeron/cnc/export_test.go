@@ -1,14 +1,28 @@
 package cnc
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/aeron/broadcast"
+	"github.com/warrenguy/heron/aeron/mmap"
+	"github.com/warrenguy/heron/aeron/ringbuffer"
 	"pgregory.net/rapid"
 )
 
+func WireRingsFromMapping(mapping *mmap.Mapping, meta Metadata) (*Rings, error) {
+	if mapping == nil || mapping.Data == nil {
+		return nil, fmt.Errorf("cnc: closed mapped file")
+	}
+	return wireRings(mapping, meta)
+}
+
 const (
+	RingReadyToDriverBufferLength  int32 = 1049344
+	RingReadyToClientsBufferLength int32 = 1048704
+
 	TestToDriverBufferLength         int32 = 512
 	TestToClientsBufferLength        int32 = 256
 	TestCountersMetaDataBufferLength int32 = 128
@@ -41,6 +55,13 @@ func ReadyMetadata() Metadata {
 		CountersValuesBufferLength:   TestCountersValuesBufferLength,
 		ErrorLogBufferLength:         TestErrorLogBufferLength,
 	}
+}
+
+func RingReadyMetadata() Metadata {
+	meta := ReadyMetadata()
+	meta.ToDriverBufferLength = RingReadyToDriverBufferLength
+	meta.ToClientsBufferLength = RingReadyToClientsBufferLength
+	return meta
 }
 
 func WrappedPositiveOverflowMetadata() Metadata {
@@ -138,6 +159,30 @@ func AssertMappedBufferLengths(t assertReporter, mapped *MappedCncFile, meta Met
 	data := mapped.Bytes()
 	require.NotNil(t, data, "mapped file closed or nil")
 	require.NoError(t, validateMappedBufferLengths(meta, sliceCncRegions(data, meta)))
+}
+
+func AssertWiredRingsReady(t assertReporter, mapped *MappedCncFile, rings *Rings) {
+	t.Helper()
+	meta := rings.Meta
+	require.NotNil(t, rings.ToDriver)
+	require.NotNil(t, rings.ToClients)
+
+	wantDriverCapacity, err := ringbuffer.CheckCapacity(
+		int(meta.ToDriverBufferLength),
+		ringbuffer.MinCapacity,
+	)
+	require.NoError(t, err)
+	require.Equal(t, wantDriverCapacity, rings.ToDriver.Capacity())
+
+	wantClientsCapacity, err := broadcast.CheckCapacity(int(meta.ToClientsBufferLength))
+	require.NoError(t, err)
+	require.Equal(t, wantClientsCapacity, rings.ToClients.Capacity())
+
+	AssertMappedBufferLengths(t, mapped, meta)
+
+	require.Equal(t, rings.ToDriver.ProducerPosition(), rings.ToDriver.ConsumerPosition())
+	require.False(t, rings.ToClients.ReceiveNext())
+	require.Zero(t, rings.ToClients.LappedCount())
 }
 
 func AssertParsedReadyMetadataEqual(t assertReporter, got, want Metadata) {

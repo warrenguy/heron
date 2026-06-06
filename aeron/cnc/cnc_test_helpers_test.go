@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/mmap"
 )
 
 func testReadyFileLength() int {
@@ -66,13 +67,34 @@ func readyCncFilePath(tb testing.TB) string {
 	return path
 }
 
-func openReadyMappedCncFile(tb testing.TB) *cnc.MappedCncFile {
+func openMappedCncFile(tb testing.TB, meta cnc.Metadata) *cnc.MappedCncFile {
 	tb.Helper()
-	path := readyCncFilePath(tb)
+	path := filepath.Join(tb.TempDir(), cnc.FileName)
+	writeCncFile(tb, path, meta)
 	mapped, err := cnc.MapCncFile(path)
 	require.NoError(tb, err)
 	tb.Cleanup(func() { _ = mapped.Close() })
 	return mapped
+}
+
+func openReadyMappedCncFile(tb testing.TB) *cnc.MappedCncFile {
+	tb.Helper()
+	return openMappedCncFile(tb, cnc.ReadyMetadata())
+}
+
+func openRingReadyMappedCncFile(tb testing.TB) *cnc.MappedCncFile {
+	tb.Helper()
+	return openMappedCncFile(tb, cnc.RingReadyMetadata())
+}
+
+func openSyntheticMapping(tb testing.TB, fileLen int, meta cnc.Metadata) *mmap.Mapping {
+	tb.Helper()
+	path := filepath.Join(tb.TempDir(), cnc.FileName)
+	mapping, err := mmap.MapCreate(path, fileLen)
+	require.NoError(tb, err)
+	tb.Cleanup(func() { _ = mapping.Close() })
+	writeMetadataToBuffer(tb, mapping.Data, meta)
+	return mapping
 }
 
 func writeWrappedPositiveOverflowCncFile(t testing.TB, path string) int {
