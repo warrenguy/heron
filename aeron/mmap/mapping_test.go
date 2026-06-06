@@ -74,6 +74,57 @@ func TestMapCreate_roundtrip(t *testing.T) {
 	}
 }
 
+func TestMapOpenedFile_nonPositiveLengthCallerCloses(t *testing.T) {
+	path := testMapPath(t, "opened.bin")
+	if err := os.WriteFile(path, make([]byte, 64), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = mmap.MapOpenedFile(file, 0)
+	if err == nil {
+		t.Fatal("expected error for length 0")
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMapOpenedFile_roundtrip(t *testing.T) {
+	path := testMapPath(t, "opened.bin")
+	const length = 4096
+
+	if err := os.WriteFile(path, make([]byte, length), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mapping, err := mmap.MapOpenedFile(file, length)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping.Data[0] = 0xBE
+	if err := mapping.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw[0] != 0xBE {
+		t.Fatalf("persisted byte %x want 0xBE", raw[0])
+	}
+}
+
 func TestMapExisting_missingFile(t *testing.T) {
 	path := testMapPath(t, "missing.bin")
 

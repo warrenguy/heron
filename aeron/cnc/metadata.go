@@ -100,11 +100,17 @@ func parseMetadata(atomicBuffer atomic.AtomicBuffer, version int32) (Metadata, e
 }
 
 func (m Metadata) validate() error {
-	if m.ToDriverBufferLength < 0 {
-		return fmt.Errorf("cnc: negative buffer length %d", m.ToDriverBufferLength)
+	if m.ToDriverBufferLength <= 0 {
+		return fmt.Errorf(
+			"cnc: to-driver buffer length must be positive: %d",
+			m.ToDriverBufferLength,
+		)
 	}
-	if m.ToClientsBufferLength < 0 {
-		return fmt.Errorf("cnc: negative buffer length %d", m.ToClientsBufferLength)
+	if m.ToClientsBufferLength <= 0 {
+		return fmt.Errorf(
+			"cnc: to-clients buffer length must be positive: %d",
+			m.ToClientsBufferLength,
+		)
 	}
 	if m.CountersMetaDataBufferLength < 0 {
 		return fmt.Errorf("cnc: negative buffer length %d", m.CountersMetaDataBufferLength)
@@ -114,6 +120,9 @@ func (m Metadata) validate() error {
 	}
 	if m.ErrorLogBufferLength < 0 {
 		return fmt.Errorf("cnc: negative buffer length %d", m.ErrorLogBufferLength)
+	}
+	if _, err := m.computedLengthInt64(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -169,16 +178,15 @@ func ReadMetadataFile(path string) (Metadata, error) {
 	return readMetadataHeader(path, metaBuf, fileSize)
 }
 
-func readMetadataHeader(path string, metaBuf []byte, fileSize int) (Metadata, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		if isRetryableFileErr(err) {
-			return Metadata{}, ErrNotReady
-		}
-		return Metadata{}, fmt.Errorf("cnc: open %s: %w", path, err)
+func readMetadataHeaderFromFile(
+	file io.Reader,
+	path string,
+	fileSize int,
+	metaBuf []byte,
+) (Metadata, error) {
+	if len(metaBuf) < MetaDataLength {
+		metaBuf = make([]byte, MetaDataLength)
 	}
-	defer func() { _ = file.Close() }()
-
 	n, err := io.ReadFull(file, metaBuf)
 	if err != nil {
 		if isShortMetadataRead(n, err) {
@@ -192,6 +200,53 @@ func readMetadataHeader(path string, metaBuf []byte, fileSize int) (Metadata, er
 		return Metadata{}, err
 	}
 
+	if err := errIfFileLengthInsufficient(meta, fileSize); err != nil {
+		return Metadata{}, err
+	}
+	if err := validateLayoutEnd(meta); err != nil {
+		return Metadata{}, err
+	}
+	return meta, nil
+}
+
+func errIfFileLengthInsufficient(meta Metadata, fileSize int) error {
+	need := meta.ComputedLength()
+	if need < 0 {
+		return fmt.Errorf("cnc: computed length overflow")
+	}
+	if fileSize < need {
+		return fmt.Errorf(
+			"cnc: file length %d insufficient for metadata (need %d)",
+			fileSize,
+			need,
+		)
+	}
+	return nil
+}
+
+func validateLayoutEnd(meta Metadata) error {
+	layoutEnd := ErrorLogOffset(meta) + int(meta.ErrorLogBufferLength)
+	computedLength := meta.ComputedLength()
+	if layoutEnd != computedLength {
+		return fmt.Errorf(
+			"cnc: buffer layout end %d != computed length %d",
+			layoutEnd,
+			computedLength,
+		)
+	}
+	return nil
+}
+
+func readMetadataHeader(path string, metaBuf []byte, fileSize int) (Metadata, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if isRetryableFileErr(err) {
+			return Metadata{}, ErrNotReady
+		}
+		return Metadata{}, fmt.Errorf("cnc: open %s: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+
 	if fileSize < 0 {
 		fileInfo, err := file.Stat()
 		if err != nil {
@@ -199,14 +254,7 @@ func readMetadataHeader(path string, metaBuf []byte, fileSize int) (Metadata, er
 		}
 		fileSize = int(fileInfo.Size())
 	}
-	if !meta.IsFileLengthSufficient(fileSize) {
-		return Metadata{}, fmt.Errorf(
-			"cnc: file length %d insufficient for metadata (need %d)",
-			fileSize,
-			meta.ComputedLength(),
-		)
-	}
-	return meta, nil
+	return readMetadataHeaderFromFile(file, path, fileSize, metaBuf)
 }
 
 func tryCncReady(path string, metaBuf []byte) (bool, error) {
@@ -231,21 +279,43 @@ func tryCncReady(path string, metaBuf []byte) (bool, error) {
 	return true, nil
 }
 
+func maxIntAsInt64() int64 {
+	return int64(^uint(0) >> 1)
+}
+
+func (m Metadata) computedLengthInt64() (int64, error) {
+	sum := int64(m.ToDriverBufferLength) +
+		int64(m.ToClientsBufferLength) +
+		int64(m.CountersMetaDataBufferLength) +
+		int64(m.CountersValuesBufferLength) +
+		int64(m.ErrorLogBufferLength)
+	total := int64(MetaDataLength) + sum
+	if total < int64(MetaDataLength) {
+		return 0, errors.New("cnc: computed length overflow")
+	}
+	if total > maxIntAsInt64() {
+		return 0, errors.New("cnc: computed length overflow")
+	}
+	return total, nil
+}
+
 func (m Metadata) ComputedLength() int {
-	return MetaDataLength + int(
-		m.ToDriverBufferLength+
-			m.ToClientsBufferLength+
-			m.CountersMetaDataBufferLength+
-			m.CountersValuesBufferLength+
-			m.ErrorLogBufferLength,
-	)
+	total, err := m.computedLengthInt64()
+	if err != nil {
+		return -1
+	}
+	return int(total)
 }
 
 func (m Metadata) IsFileLengthSufficient(fileLength int) bool {
 	if err := m.validate(); err != nil {
 		return false
 	}
-	return fileLength >= m.ComputedLength()
+	need := m.ComputedLength()
+	if need < 0 {
+		return false
+	}
+	return fileLength >= need
 }
 
 func ToDriverOffset() int { return MetaDataLength }

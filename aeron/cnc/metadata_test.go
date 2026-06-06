@@ -12,52 +12,6 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 )
 
-const (
-	testToDriverBufferLength         int32 = 512
-	testToClientsBufferLength        int32 = 256
-	testCountersMetaDataBufferLength int32 = 128
-	testCountersValuesBufferLength   int32 = 64
-	testErrorLogBufferLength         int32 = 32
-)
-
-func testReadyMetadata() cnc.Metadata {
-	return cnc.Metadata{
-		ToDriverBufferLength:         testToDriverBufferLength,
-		ToClientsBufferLength:        testToClientsBufferLength,
-		CountersMetaDataBufferLength: testCountersMetaDataBufferLength,
-		CountersValuesBufferLength:   testCountersValuesBufferLength,
-		ErrorLogBufferLength:         testErrorLogBufferLength,
-	}
-}
-
-func testReadyFileLength() int {
-	return testReadyMetadata().ComputedLength()
-}
-
-func writeReadyMetadata(t *testing.T, buf []byte) {
-	t.Helper()
-	atomicBuffer := atomic.Wrap(buf)
-	atomicBuffer.PutInt32(cnc.OffsetToDriverBufferLength, testToDriverBufferLength)
-	atomicBuffer.PutInt32(cnc.OffsetToClientsBufferLength, testToClientsBufferLength)
-	atomicBuffer.PutInt32(cnc.OffsetCountersMetaDataBufferLength, testCountersMetaDataBufferLength)
-	atomicBuffer.PutInt32(cnc.OffsetCountersValuesBufferLength, testCountersValuesBufferLength)
-	atomicBuffer.PutInt32(cnc.OffsetErrorLogBufferLength, testErrorLogBufferLength)
-	atomicBuffer.PutInt64(cnc.OffsetClientLivenessTimeout, 5_000_000_000)
-	atomicBuffer.PutInt64(cnc.OffsetStartTimestamp, 1_700_000_000_000)
-	atomicBuffer.PutInt64(cnc.OffsetPID, 4242)
-	atomicBuffer.PutInt32(cnc.OffsetFilePageSize, 4096)
-	atomicBuffer.PutInt32Release(cnc.OffsetCncVersion, cnc.Version)
-}
-
-func writeReadyCncFile(t *testing.T, path string) {
-	t.Helper()
-	buf := make([]byte, testReadyFileLength())
-	writeReadyMetadata(t, buf)
-	if err := os.WriteFile(path, buf, 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestParseMetadataSmoke(t *testing.T) {
 	buf := make([]byte, cnc.MetaDataLength+1024)
 	writeReadyMetadata(t, buf)
@@ -66,18 +20,7 @@ func TestParseMetadataSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.CncVersion != cnc.Version {
-		t.Fatalf("version %d", meta.CncVersion)
-	}
-	if meta.ToDriverBufferLength != testToDriverBufferLength {
-		t.Fatalf("to-driver %d", meta.ToDriverBufferLength)
-	}
-	if meta.PID != 4242 {
-		t.Fatalf("pid %d", meta.PID)
-	}
-	if meta.FilePageSize != 4096 {
-		t.Fatalf("page size %d", meta.FilePageSize)
-	}
+	cnc.AssertParsedReadyMetadataEqual(t, meta, cnc.ReadyMetadata())
 
 	wantLen := testReadyFileLength()
 	if meta.ComputedLength() != wantLen {
@@ -174,6 +117,35 @@ func TestParseMetadataNegativeLength(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for negative buffer length")
 	}
+	if !strings.Contains(err.Error(), "must be positive") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestParseMetadata_rejectsZeroRingBuffers(t *testing.T) {
+	cases := []struct {
+		name   string
+		offset int
+		field  string
+	}{
+		{"zero to-driver", cnc.OffsetToDriverBufferLength, "to-driver"},
+		{"zero to-clients", cnc.OffsetToClientsBufferLength, "to-clients"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			buf := make([]byte, cnc.MetaDataLength)
+			writeReadyMetadata(t, buf)
+			atomic.Wrap(buf).PutInt32(test.offset, 0)
+
+			_, err := cnc.ParseMetadata(buf)
+			if err == nil {
+				t.Fatalf("expected error for zero %s buffer length", test.field)
+			}
+			if !strings.Contains(err.Error(), "must be positive") {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
 }
 
 func TestCncVersionVolatile(t *testing.T) {
@@ -192,11 +164,11 @@ func TestCncVersionVolatile_bufferTooShort(t *testing.T) {
 }
 
 func TestComputeCncFileLength(t *testing.T) {
-	ready := testReadyMetadata()
+	ready := cnc.ReadyMetadata()
 	total := ready.ComputedLength() - cnc.MetaDataLength
-	want := atomic.Align(cnc.MetaDataLength+total, 4096)
+	want := atomic.Align(cnc.MetaDataLength+total, int(cnc.TestFilePageSize))
 
-	got, err := cnc.ComputeCncFileLength(total, 4096)
+	got, err := cnc.ComputeCncFileLength(total, int(cnc.TestFilePageSize))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,8 +188,17 @@ func TestIsFileLengthSufficientNegativeLength(t *testing.T) {
 	meta := cnc.Metadata{
 		ToDriverBufferLength: -1,
 	}
-	if meta.IsFileLengthSufficient(1 << 20) {
+	if meta.IsFileLengthSufficient(cnc.TestLargeFileLength) {
 		t.Fatal("negative length should not be sufficient")
+	}
+}
+
+func TestIsFileLengthSufficient_zeroRingBuffer(t *testing.T) {
+	meta := cnc.Metadata{
+		ToDriverBufferLength: 512,
+	}
+	if meta.IsFileLengthSufficient(cnc.TestLargeFileLength) {
+		t.Fatal("zero to-clients length should not be sufficient")
 	}
 }
 
@@ -227,6 +208,23 @@ func TestReadMetadataFile_roundtrip(t *testing.T) {
 
 	if _, err := cnc.ReadMetadataFile(path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReadMetadataFile_hugeMetadataShortFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), cnc.FileName)
+	fileLength := writeWrappedPositiveOverflowCncFile(t, path)
+	meta := cnc.WrappedPositiveOverflowMetadata()
+	if meta.ComputedLength() <= fileLength {
+		t.Fatalf("computed %d want > file %d", meta.ComputedLength(), fileLength)
+	}
+
+	_, err := cnc.ReadMetadataFile(path)
+	if err == nil {
+		t.Fatal("expected insufficient file length error")
+	}
+	if !strings.Contains(err.Error(), "insufficient for metadata") {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -251,12 +249,25 @@ func TestWaitCncReady_readyFile(t *testing.T) {
 	}
 }
 
+func TestWaitCncReady_hugeMetadataShortFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), cnc.FileName)
+	writeWrappedPositiveOverflowCncFile(t, path)
+
+	err := cnc.WaitCncReady(path, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected insufficient file length error")
+	}
+	if !strings.Contains(err.Error(), "insufficient for metadata") {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestWaitCncReady_insufficientFileLength(t *testing.T) {
 	path := filepath.Join(t.TempDir(), cnc.FileName)
 	buf := make([]byte, testReadyFileLength())
 	writeReadyMetadata(t, buf)
 
-	const shortFile = cnc.MetaDataLength + 64
+	shortFile := cnc.TestShortCncFileLength
 	if err := os.WriteFile(path, buf[:shortFile], 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +290,7 @@ func TestWaitCncReady_missingFile(t *testing.T) {
 
 func TestWaitCncReady_invalidMetadata(t *testing.T) {
 	path := filepath.Join(t.TempDir(), cnc.FileName)
-	buf := make([]byte, cnc.MetaDataLength+64)
+	buf := make([]byte, cnc.TestShortCncFileLength)
 	writeMetadataNegativeDriverLength(t, buf)
 
 	if err := os.WriteFile(path, buf, 0o644); err != nil {
@@ -290,7 +301,7 @@ func TestWaitCncReady_invalidMetadata(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected invalid metadata error")
 	}
-	if !strings.Contains(err.Error(), "negative buffer length") {
+	if !strings.Contains(err.Error(), "must be positive") {
 		t.Fatalf("got %v", err)
 	}
 }

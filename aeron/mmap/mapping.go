@@ -8,6 +8,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Mapping owns the mmap'd region and underlying file descriptor until Close.
 type Mapping struct {
 	Data []byte
 	file *os.File
@@ -33,7 +34,17 @@ func MapCreate(path string, length int) (*Mapping, error) {
 		_ = file.Close()
 		return nil, err
 	}
-	return mmapOpenedFile(file, length, false)
+	return mmapOpenedFile(file, length, false, true)
+}
+
+// MapOpenedFile mmap's length bytes from offset 0 on an already-open file.
+// Caller must have validated on-disk size >= length before calling.
+// On error the file stays open; caller must close it.
+func MapOpenedFile(file *os.File, length int) (*Mapping, error) {
+	if err := requirePositiveLength(length); err != nil {
+		return nil, err
+	}
+	return mmapOpenedFile(file, length, false, false)
 }
 
 // MapExisting rejects files shorter than length; does not truncate.
@@ -45,24 +56,35 @@ func MapExisting(path string, length int) (*Mapping, error) {
 	if err != nil {
 		return nil, err
 	}
-	return mmapOpenedFile(file, length, true)
+	return mmapOpenedFile(file, length, true, true)
 }
 
-func mmapOpenedFile(file *os.File, length int, validateMinSize bool) (*Mapping, error) {
+func mmapOpenedFile(
+	file *os.File,
+	length int,
+	validateMinSize bool,
+	closeOnError bool,
+) (*Mapping, error) {
 	if validateMinSize {
 		info, err := file.Stat()
 		if err != nil {
-			_ = file.Close()
+			if closeOnError {
+				_ = file.Close()
+			}
 			return nil, err
 		}
 		if info.Size() < int64(length) {
-			_ = file.Close()
+			if closeOnError {
+				_ = file.Close()
+			}
 			return nil, fmt.Errorf("mmap: file too short: %d < %d", info.Size(), length)
 		}
 	}
 	data, err := unix.Mmap(int(file.Fd()), 0, length, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
-		_ = file.Close()
+		if closeOnError {
+			_ = file.Close()
+		}
 		return nil, err
 	}
 	return &Mapping{Data: data, file: file}, nil
