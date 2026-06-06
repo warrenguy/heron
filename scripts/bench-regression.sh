@@ -8,8 +8,87 @@ cd "${ROOT}"
 BASELINE="${BENCH_BASELINE:-${ROOT}/.bench/baseline.txt}"
 COUNT="${BENCH_COUNT:-10}"
 THRESHOLD="${BENCH_THRESHOLD:-10}"
-PACKAGES="${BENCH_PACKAGES:-./aeron/broadcast/ ./aeron/ringbuffer/}"
+PACKAGES="${BENCH_PKGS:-./aeron/broadcast/ ./aeron/ringbuffer/}"
 SKIP="${SKIP_BENCH_REGRESSION:-}"
+
+workflow_notice() {
+	local level="$1"
+	local message="$2"
+	[[ "${GITHUB_ACTIONS:-}" == true ]] || return 0
+	message="${message//'%'/%25}"
+	message="${message//$'\n'/%0A}"
+	message="${message//$'\r'/%0D}"
+	printf '%s\n' "::${level} title=bench-regression::${message}"
+}
+
+workflow_error() {
+	workflow_notice error "$1"
+}
+
+workflow_warn() {
+	workflow_notice warning "$1"
+}
+
+fail() {
+	echo "bench-regression: $1" >&2
+	[[ -n "${2:-}" ]] && echo "bench-regression: $2" >&2
+	workflow_error "${3:-$1}"
+	[[ -n "${4:-}" ]] && write_step_summary "${4}"
+	exit 1
+}
+
+bench_cpus() {
+	[[ -f "$1" ]] || {
+		echo unknown
+		return
+	}
+	grep -m1 '^cpu:' "$1" | sed 's/^cpu:[[:space:]]*//' || echo unknown
+}
+
+write_step_summary() {
+	local status="$1"
+	[[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
+	{
+		echo "## Benchmark regression (${GOARCH:-unknown}): ${status}"
+		echo ""
+		echo "| Field | Value |"
+		echo "|-------|-------|"
+		echo "| Baseline CPU | ${BASELINE_CPU:-unknown} |"
+		echo "| Current CPU | ${NEW_CPU:-unknown} |"
+		if [[ -n "${ALLOC_REGRESSIONS:-}" ]]; then
+			echo ""
+			echo "### allocation regressions"
+			echo ""
+			echo '```text'
+			printf '%s\n' "${ALLOC_REGRESSIONS}"
+			echo '```'
+		fi
+		if [[ -n "${TIME_WARNINGS:-}" ]]; then
+			echo ""
+			echo "### time warnings (>= ${THRESHOLD}% slower, not gated)"
+			echo ""
+			echo '```text'
+			printf '%s\n' "${TIME_WARNINGS}"
+			echo '```'
+		fi
+		if [[ -f "${BENCHSTAT_TEXT:-}" && -s "${BENCHSTAT_TEXT}" ]]; then
+			echo ""
+			echo "### benchstat"
+			echo ""
+			echo '```text'
+			cat "${BENCHSTAT_TEXT}"
+			echo '```'
+		fi
+		if [[ -n "${GO_TEST_LOG:-}" && -s "${GO_TEST_LOG}" ]]; then
+			echo ""
+			echo "### go test stderr"
+			echo ""
+			echo '```text'
+			tail -n 80 "${GO_TEST_LOG}"
+			echo '```'
+		fi
+	} >>"${GITHUB_STEP_SUMMARY}"
+}
 
 if [[ "${SKIP}" == 1 ]]; then
 	echo "bench-regression: skipped (SKIP_BENCH_REGRESSION=1)" >&2
@@ -17,57 +96,119 @@ if [[ "${SKIP}" == 1 ]]; then
 fi
 
 if [[ ! -f "${BASELINE}" ]]; then
-	echo "bench-regression: missing ${BASELINE}" >&2
-	echo "bench-regression: on main, run: make bench-baseline" >&2
-	exit 1
+	fail "missing ${BASELINE}" "on main, run: make bench-baseline" \
+		"missing baseline ${BASELINE}; run make bench-baseline on main first"
 fi
 
+BASELINE_CPU="$(bench_cpus "${BASELINE}")"
+
 if ! command -v go >/dev/null 2>&1; then
-	echo "bench-regression: go not in PATH" >&2
-	exit 1
+	fail 'go not in PATH' "" 'go not in PATH'
 fi
 
 NEW="$(mktemp)"
-trap 'rm -f "${NEW}"' EXIT
+REPORT="$(mktemp)"
+BENCHSTAT_TEXT="$(mktemp)"
+GO_TEST_LOG="$(mktemp)"
+trap 'rm -f "${NEW}" "${REPORT}" "${BENCHSTAT_TEXT}" "${GO_TEST_LOG}"' EXIT
 
 echo "bench-regression: running benchmarks (count=${COUNT})..." >&2
 # shellcheck disable=SC2086
-go test -bench=. -benchmem -count="${COUNT}" ${PACKAGES} >"${NEW}"
-
-echo "bench-regression: vs ${BASELINE}" >&2
-REPORT="$(mktemp)"
-trap 'rm -f "${NEW}" "${REPORT}"' EXIT
-go tool benchstat "${BASELINE}" "${NEW}" | tee "${REPORT}"
-
-REGRESSIONS="$(
-	awk -v threshold="${THRESHOLD}" '
-		/sec\/op|ns\/op/ { in_time = 1; in_alloc = 0; next }
-		/B\/op/ { in_time = 0; in_alloc = 0; next }
-		/allocs\/op/ { in_time = 0; in_alloc = 1; next }
-		/^geomean/ { in_time = 0; in_alloc = 0; next }
-		/^$/ { in_time = 0; in_alloc = 0; next }
-		/Benchmark/ && /vs base/ {
-			if ($0 ~ /~ \(/) {
-				next
-			}
-			if (in_alloc && match($0, /\+Inf%/)) {
-				print $0
-				next
-			}
-			if (match($0, /\+([0-9]+(\.[0-9]+)?)%/, m)) {
-				if (m[1] + 0 >= threshold) {
-					print $0
-				}
-			}
-		}
-	' "${REPORT}"
-)"
-
-if [[ -n "${REGRESSIONS}" ]]; then
-	echo "bench-regression: failed (>= ${THRESHOLD}% slower or new allocs)" >&2
-	echo "${REGRESSIONS}" >&2
-	echo "bench-regression: if intentional, run: make bench-baseline" >&2
-	exit 1
+if ! go test -bench=. -benchmem -count="${COUNT}" ${PACKAGES} \
+	>"${NEW}" 2>"${GO_TEST_LOG}"
+then
+	[[ -s "${GO_TEST_LOG}" ]] && cat "${GO_TEST_LOG}" >&2
+	NEW_CPU="$(bench_cpus "${NEW}")"
+	fail 'go test failed' "" \
+		"go test failed (GOARCH=${GOARCH:-unknown}); see step summary" \
+		'go test failed'
 fi
 
-echo "bench-regression: ok" >&2
+NEW_CPU="$(bench_cpus "${NEW}")"
+echo "bench-regression: baseline cpu: ${BASELINE_CPU}" >&2
+echo "bench-regression: current cpu: ${NEW_CPU}" >&2
+echo "bench-regression: vs ${BASELINE}" >&2
+if ! go tool benchstat -format csv -ignore=cpu \
+	"${BASELINE}" "${NEW}" >"${REPORT}"
+then
+	fail 'benchstat failed' "" "benchstat failed (GOARCH=${GOARCH:-unknown})" \
+		'benchstat failed'
+fi
+if [[ "${GITHUB_ACTIONS:-}" != true ]]; then
+	if ! go tool benchstat -ignore=cpu "${BASELINE}" "${NEW}" \
+		| tee "${BENCHSTAT_TEXT}"
+	then
+		fail 'benchstat failed' "" "benchstat failed (GOARCH=${GOARCH:-unknown})" \
+			'benchstat failed'
+	fi
+else
+	if ! go tool benchstat -ignore=cpu "${BASELINE}" "${NEW}" \
+		>"${BENCHSTAT_TEXT}"
+	then
+		fail 'benchstat failed' "" "benchstat failed (GOARCH=${GOARCH:-unknown})" \
+			'benchstat failed'
+	fi
+fi
+
+while IFS= read -r line; do
+	case "${line}" in
+	time:*)
+		line="${line#time:}"
+		TIME_WARNINGS="${TIME_WARNINGS:+${TIME_WARNINGS}$'\n'}${line}"
+		;;
+	alloc:*)
+		line="${line#alloc:}"
+		ALLOC_REGRESSIONS="${ALLOC_REGRESSIONS:+${ALLOC_REGRESSIONS}$'\n'}${line}"
+		;;
+	esac
+done < <(
+	awk -F, -v threshold="${THRESHOLD}" '
+		function time_regress(vs,    m) {
+			return match(vs, /^\+([0-9.]+)%/, m) && m[1] + 0 >= threshold
+		}
+		function alloc_regress(vs,    m) {
+			if (vs == "?" || vs ~ /^\+Inf%/) {
+				return 1
+			}
+			return match(vs, /^\+([0-9.]+)%/, m) && m[1] + 0 > 0
+		}
+		/^,sec\/op,/ { unit="time"; next }
+		/^,allocs\/op,/ { unit="alloc"; next }
+		/^,[^,]+,CI,/ { unit=""; next }
+		unit == "" || $1 == "" || NF < 6 { next }
+		$6 == "~" || $6 == "" { next }
+		unit == "time" && time_regress($6) {
+			print "time:" $1 "," $6
+			next
+		}
+		unit == "alloc" && alloc_regress($6) {
+			print "alloc:" $1 "," $6
+		}
+	' "${REPORT}"
+)
+
+if [[ -n "${TIME_WARNINGS:-}" ]]; then
+	echo "bench-regression: warning: time >= ${THRESHOLD}% slower (not gated):" >&2
+	echo "${TIME_WARNINGS}" >&2
+	time_count="$(printf '%s\n' "${TIME_WARNINGS}" | grep -c . || true)"
+	time_note="${time_count} time warning(s) >= ${THRESHOLD}% slower"
+	time_note="${time_note} (see step summary)"
+	workflow_warn "${time_note}"
+fi
+
+if [[ -n "${ALLOC_REGRESSIONS:-}" ]]; then
+	echo "${ALLOC_REGRESSIONS}" >&2
+	alloc_count="$(printf '%s\n' "${ALLOC_REGRESSIONS}" | grep -c . || true)"
+	fail 'new or increased allocations' \
+		'if intentional, run: make bench-baseline' \
+		"failed: ${alloc_count} allocation regression(s) (see step summary)" \
+		failed
+fi
+
+if [[ -n "${TIME_WARNINGS:-}" ]]; then
+	echo "bench-regression: ok (time warnings)" >&2
+	write_step_summary "ok (time warnings)"
+else
+	echo "bench-regression: ok" >&2
+	write_step_summary ok
+fi

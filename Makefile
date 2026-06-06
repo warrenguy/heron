@@ -4,8 +4,6 @@ ROOT := $(CURDIR)
 export PATH := $(ROOT)/bin:$(PATH)
 
 # Little-endian 64-bit targets only (matches Aeron wire layout on host).
-# Canonical arch list — ci.yml matrix goarch values must match.
-# check/test run on host GOARCH; CI sets GOARCH to match the runner (see ci.yml).
 SUPPORTED_GOARCHES := amd64 arm64
 NATIVE_GOARCH := $(shell env -u GOARCH -u GOOS go env GOARCH)
 GOARCH ?= $(NATIVE_GOARCH)
@@ -42,10 +40,12 @@ BENCH_DIR := .bench
 BENCH_BASELINE := $(BENCH_DIR)/baseline.txt
 BENCH_COUNT ?= 10
 BENCH_PKGS := ./aeron/broadcast/ ./aeron/ringbuffer/
+export BENCH_PKGS BENCH_COUNT BENCH_BASELINE GOARCH
 
 bench-baseline:
-	@mkdir -p $(BENCH_DIR)
-	go test -bench=. -benchmem -count=$(BENCH_COUNT) $(BENCH_PKGS) | tee $(BENCH_BASELINE)
+	@mkdir -p $(BENCH_DIR) && set -o pipefail && \
+		go test -bench=. -benchmem -count=$(BENCH_COUNT) $(BENCH_PKGS) \
+		| tee $(BENCH_BASELINE)
 
 bench-regression:
 	@scripts/bench-regression.sh

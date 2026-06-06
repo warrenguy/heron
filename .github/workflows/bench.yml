@@ -1,8 +1,5 @@
 name: bench
 
-# Bootstrap: first push to main must save BENCH_CACHE_KEY before PR restore can pass.
-# Fork PRs skip bench-regression (cannot read base repo cache).
-
 on:
   push:
     branches: [main]
@@ -10,24 +7,33 @@ on:
     branches: [main]
 
 env:
-  GOARCH: amd64
-  BENCH_COUNT: 5
+  BENCH_COUNT: 6
+  BENCH_THRESHOLD: 30
   GOMAXPROCS: 4
-  BENCH_CACHE_KEY: bench-baseline-amd64
 
 jobs:
   bench-baseline:
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: &bench-archs
+        include:
+          - goarch: amd64
+            runner: ubuntu-24.04
+          - goarch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     concurrency:
-      group: bench-baseline
+      group: bench-baseline-${{ matrix.goarch }}
       cancel-in-progress: true
+    env: &bench-per-arch-env
+      GOARCH: ${{ matrix.goarch }}
     steps:
       - uses: actions/checkout@v6
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          go-version-file: go.mod
           cache: true
 
       - name: Benchmark baseline
@@ -35,28 +41,32 @@ jobs:
 
       - uses: actions/cache/save@v5
         with:
-          key: ${{ env.BENCH_CACHE_KEY }}
+          key: bench-baseline-${{ matrix.goarch }}
           path: .bench
 
   bench-regression:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: *bench-archs
+    runs-on: ${{ matrix.runner }}
     continue-on-error: true
     concurrency:
-      group: bench-regression-${{ github.event.pull_request.number }}
+      group: bench-regression-${{ github.event.pull_request.number }}-${{ matrix.goarch }}
       cancel-in-progress: true
+    env: *bench-per-arch-env
     steps:
       - uses: actions/checkout@v6
 
       - uses: actions/cache/restore@v5
         with:
-          key: ${{ env.BENCH_CACHE_KEY }}
+          key: bench-baseline-${{ matrix.goarch }}
           path: .bench
           fail-on-cache-miss: true
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          go-version-file: go.mod
           cache: true
 
       - name: Benchmark regression

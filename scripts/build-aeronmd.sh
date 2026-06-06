@@ -34,7 +34,8 @@ ref="$(yaml_field ref)"
 artifact="$(yaml_field driver_artifact)"
 
 if [[ -z "${repository}" || -z "${ref}" || -z "${artifact}" ]]; then
-	echo "heron: aeron.repository, aeron.ref, and aeron.driver_artifact required in ${VERSIONS}" >&2
+	echo "heron: aeron.repository, aeron.ref, and aeron.driver_artifact" \
+		"required in ${VERSIONS}" >&2
 	exit 1
 fi
 
