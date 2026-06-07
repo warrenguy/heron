@@ -9,7 +9,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 )
 
-func rapidDoWorkNTimes(t *rapid.T, client *aeron.Client, count int) {
+func rapidDoWorkNTimes(_ *rapid.T, client *aeron.Client, count int) {
 	for range count {
 		client.DoWork()
 	}

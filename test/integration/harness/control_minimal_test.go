@@ -7,101 +7,345 @@ import (
 
 	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/record"
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
 
 const controlMinimalTestDataCapacity = 4096
 
-func TestOfferClientKeepalive_encodeGolden(t *testing.T) {
+func TestScanPendingToDriverMessages_incompleteRecordAtHead(t *testing.T) {
 	ring, buffer := newControlMinimalTestRingBuffer(t)
 
-	err := offerClientKeepalive(ring, 1)
-	require.NoError(t, err)
+	const clientID int64 = 7
+	conductor.NewDriverProxy(ring, clientID).ClientClose()
 
-	payloadOffset := ringbuffer.EncodedMsgOffset(0)
-	bufferAtomic := aeronatomic.Wrap(buffer.Bytes())
-	require.Equal(
-		t,
-		conductor.CorrelatedMessageBytes(1, -1),
-		bufferAtomic.Bytes()[payloadOffset:payloadOffset+conductor.CorrelatedMessageLength],
-	)
-	got, err := conductor.DecodeCorrelated(bufferAtomic, payloadOffset)
+	buffer.PutInt32(record.LengthOffset(0), 0)
+
+	decoded, ok, err := findPendingClientClose(ring, clientID)
 	require.NoError(t, err)
-	require.Equal(t, conductor.CorrelatedMessage{ClientID: 1, CorrelationID: -1}, got)
+	require.False(t, ok)
+	require.Zero(t, decoded)
 }
 
-func TestOfferGetNextSessionID_encodeGolden(t *testing.T) {
-	ring, buffer := newControlMinimalTestRingBuffer(t)
-
-	err := offerGetNextSessionID(ring, 1, 42, 100)
-	require.NoError(t, err)
-
-	payloadOffset := ringbuffer.EncodedMsgOffset(0)
-	bufferAtomic := aeronatomic.Wrap(buffer.Bytes())
-	correlated, err := conductor.DecodeCorrelated(bufferAtomic, payloadOffset)
-	require.NoError(t, err)
-	require.Equal(t, conductor.CorrelatedMessage{ClientID: 1, CorrelationID: 42}, correlated)
-	require.Equal(
-		t,
-		int32(100),
-		bufferAtomic.GetInt32(payloadOffset+conductor.CorrelatedMessageLength),
-	)
-}
-
-func TestOfferCorrelatedCommand_bodyTooShort(t *testing.T) {
+func TestScanPendingToDriverMessages_clientCloseSkipsOtherClient(t *testing.T) {
 	ring, _ := newControlMinimalTestRingBuffer(t)
 
-	err := offerCorrelatedCommand(
-		ring,
-		conductor.ClientKeepalive,
-		conductor.CorrelatedMessageLength-1,
-		1,
-		-1,
-		nil,
-	)
-	require.ErrorIs(t, err, errCorrelatedBodyTooShort)
+	const otherClientID int64 = 3
+	const clientID int64 = 7
+	conductor.NewDriverProxy(ring, otherClientID).ClientClose()
+	conductor.NewDriverProxy(ring, clientID).ClientClose()
+
+	decoded, ok, err := findPendingClientClose(ring, clientID)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, conductor.CorrelatedMessage{
+		ClientID:      clientID,
+		CorrelationID: conductor.NullCorrelationID,
+	}, decoded)
 }
 
-func TestOfferControlMinimal_insufficientCapacity(t *testing.T) {
+func TestScanPendingToDriverMessages_clientClose(t *testing.T) {
+	ring, _ := newControlMinimalTestRingBuffer(t)
+
+	const clientID int64 = 7
+	conductor.NewDriverProxy(ring, clientID).ClientClose()
+
+	decoded, ok, err := findPendingClientClose(ring, clientID)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, conductor.CorrelatedMessage{
+		ClientID:      clientID,
+		CorrelationID: conductor.NullCorrelationID,
+	}, decoded)
+}
+
+func TestFindOfferedClientCloseAt_beforeOffer(t *testing.T) {
+	ring, _ := newControlMinimalTestRingBuffer(t)
+
+	const clientID int64 = 7
+	decoded, ok, err := findOfferedClientCloseAt(ring, clientID, ring.ProducerPosition())
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Zero(t, decoded)
+}
+
+func TestFindOfferedClientCloseAt_clientClose(t *testing.T) {
+	ring, _ := newControlMinimalTestRingBuffer(t)
+
+	const clientID int64 = 7
+	producerBefore := ring.ProducerPosition()
+	conductor.NewDriverProxy(ring, clientID).ClientClose()
+
+	decoded, ok, err := findOfferedClientCloseAt(ring, clientID, producerBefore)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, conductor.CorrelatedMessage{
+		ClientID:      clientID,
+		CorrelationID: conductor.NullCorrelationID,
+	}, decoded)
+}
+
+func TestFindConsumedClientCloseAt_clientClose(t *testing.T) {
+	ring, buffer := newControlMinimalTestRingBuffer(t)
+
+	const clientID int64 = 7
+	consumerBefore := ring.ConsumerPosition()
+	producerBefore := ring.ProducerPosition()
+
+	conductor.NewDriverProxy(ring, clientID).ClientClose()
+	advanceControlMinimalConsumer(t, ring, buffer, consumerBefore, ring.ProducerPosition())
+
+	decoded, ok, err := findConsumedClientCloseAt(
+		ring,
+		clientID,
+		consumerBefore,
+		ring.ConsumerPosition(),
+		producerBefore,
+		ring.ProducerPosition(),
+		-1,
+	)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, conductor.CorrelatedMessage{
+		ClientID:      clientID,
+		CorrelationID: conductor.NullCorrelationID,
+	}, decoded)
+}
+
+func TestFindConsumedClientCloseAt_clearedAfterConsume(t *testing.T) {
+	ring, buffer := newControlMinimalTestRingBuffer(t)
+
+	const clientID int64 = 7
+	consumerBefore := ring.ConsumerPosition()
+	producerBefore := ring.ProducerPosition()
+
+	conductor.NewDriverProxy(ring, clientID).ClientClose()
+	advanceControlMinimalConsumer(t, ring, buffer, consumerBefore, ring.ProducerPosition())
+	buffer.SetBytes(0, conductor.CorrelatedRingRecordLength(), 0)
+
+	decoded, ok, err := findConsumedClientCloseAt(
+		ring,
+		clientID,
+		consumerBefore,
+		ring.ConsumerPosition(),
+		producerBefore,
+		ring.ProducerPosition(),
+		consumerBefore,
+	)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, conductor.CorrelatedMessage{
+		ClientID:      clientID,
+		CorrelationID: conductor.NullCorrelationID,
+	}, decoded)
+}
+
+func TestFindConsumedClientCloseAt_clearedWithoutProof(t *testing.T) {
+	ring, buffer := newControlMinimalTestRingBuffer(t)
+
+	const clientID int64 = 7
+	consumerBefore := ring.ConsumerPosition()
+	producerBefore := ring.ProducerPosition()
+
+	conductor.NewDriverProxy(ring, clientID).ClientClose()
+	advanceControlMinimalConsumer(t, ring, buffer, consumerBefore, ring.ProducerPosition())
+	buffer.SetBytes(0, conductor.CorrelatedRingRecordLength(), 0)
+
+	decoded, ok, err := findConsumedClientCloseAt(
+		ring,
+		clientID,
+		consumerBefore,
+		ring.ConsumerPosition(),
+		producerBefore,
+		ring.ProducerPosition(),
+		-1,
+	)
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Zero(t, decoded)
+}
+
+func TestFindConsumedClientCloseAt_clientKeepaliveRejected(t *testing.T) {
+	ring, buffer := newControlMinimalTestRingBuffer(t)
+
+	const clientID int64 = 7
+	consumerBefore := ring.ConsumerPosition()
+	producerBefore := ring.ProducerPosition()
+
+	require.NoError(t, conductor.NewDriverProxy(ring, clientID).ClientKeepalive())
+	advanceControlMinimalConsumer(t, ring, buffer, consumerBefore, ring.ProducerPosition())
+
+	decoded, ok, err := findConsumedClientCloseAt(
+		ring,
+		clientID,
+		consumerBefore,
+		ring.ConsumerPosition(),
+		producerBefore,
+		ring.ProducerPosition(),
+		-1,
+	)
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Zero(t, decoded)
+}
+
+func TestObserveClientClose_offeredWithOlderPendingMessage(t *testing.T) {
+	ring, _ := newControlMinimalTestRingBuffer(t)
+
+	const clientID int64 = 7
+	proxy := conductor.NewDriverProxy(ring, clientID)
+	require.NoError(t, proxy.ClientKeepalive())
+
+	consumerBefore := ring.ConsumerPosition()
+	producerBefore := ring.ProducerPosition()
+	proxy.ClientClose()
+
+	proven := int64(-1)
+	decoded, ok, err := observeClientClose(
+		ring,
+		clientID,
+		consumerBefore,
+		producerBefore,
+		&proven,
+	)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, conductor.CorrelatedMessage{
+		ClientID:      clientID,
+		CorrelationID: conductor.NullCorrelationID,
+	}, decoded)
+	require.Equal(t, producerBefore, proven)
+}
+
+func TestObserveClientClose(t *testing.T) {
 	tests := []struct {
-		name    string
-		offer   func(*ringbuffer.ManyToOneRingBuffer) error
-		wantErr error
+		name  string
+		setup func(
+			t *testing.T,
+			ring *ringbuffer.ManyToOneRingBuffer,
+			buffer aeronatomic.AtomicBuffer,
+			consumerBefore int64,
+			producerBefore int64,
+		)
+		seedProven func(consumerBefore, producerBefore int64) int64
 	}{
 		{
-			name: "client keepalive",
-			offer: func(ring *ringbuffer.ManyToOneRingBuffer) error {
-				return offerClientKeepalive(ring, 1)
+			name: "offered",
+			setup: func(
+				t *testing.T,
+				ring *ringbuffer.ManyToOneRingBuffer,
+				_ aeronatomic.AtomicBuffer,
+				_, _ int64,
+			) {
+				t.Helper()
+				conductor.NewDriverProxy(ring, 7).ClientClose()
 			},
-			wantErr: conductor.ErrRingInsufficientCapacity,
 		},
 		{
-			name: "get next session id",
-			offer: func(ring *ringbuffer.ManyToOneRingBuffer) error {
-				return offerGetNextSessionID(ring, 1, 42, 100)
+			name: "consumed",
+			setup: func(
+				t *testing.T,
+				ring *ringbuffer.ManyToOneRingBuffer,
+				buffer aeronatomic.AtomicBuffer,
+				consumerBefore, _ int64,
+			) {
+				t.Helper()
+				conductor.NewDriverProxy(ring, 7).ClientClose()
+				advanceControlMinimalConsumer(t, ring, buffer, consumerBefore, ring.ProducerPosition())
 			},
-			wantErr: errRingInsufficientCapacity,
+		},
+		{
+			name: "clearedAfterConsume",
+			setup: func(
+				t *testing.T,
+				ring *ringbuffer.ManyToOneRingBuffer,
+				buffer aeronatomic.AtomicBuffer,
+				consumerBefore, _ int64,
+			) {
+				t.Helper()
+				conductor.NewDriverProxy(ring, 7).ClientClose()
+				advanceControlMinimalConsumer(t, ring, buffer, consumerBefore, ring.ProducerPosition())
+				buffer.SetBytes(0, conductor.CorrelatedRingRecordLength(), 0)
+			},
+			seedProven: func(consumerBefore, producerBefore int64) int64 {
+				return consumerBefore
+			},
 		},
 	}
-	ring, buffer := newControlMinimalTestRingBuffer(t)
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			seedFullRingBuffer(t, buffer)
 
-			err := tc.offer(ring)
-			require.ErrorIs(t, err, tc.wantErr)
+	const clientID int64 = 7
+	want := conductor.CorrelatedMessage{
+		ClientID:      clientID,
+		CorrelationID: conductor.NullCorrelationID,
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			ring, buffer := newControlMinimalTestRingBuffer(t)
+			consumerBefore := ring.ConsumerPosition()
+			producerBefore := ring.ProducerPosition()
+			testCase.setup(t, ring, buffer, consumerBefore, producerBefore)
+
+			proven := int64(-1)
+			if testCase.seedProven != nil {
+				proven = testCase.seedProven(consumerBefore, producerBefore)
+			}
+			decoded, ok, err := observeClientClose(
+				ring,
+				clientID,
+				consumerBefore,
+				producerBefore,
+				&proven,
+			)
+			require.NoError(t, err)
+			require.True(t, ok)
+			require.Equal(t, want, decoded)
 		})
 	}
 }
 
-func seedFullRingBuffer(t *testing.T, buffer aeronatomic.AtomicBuffer) {
+func TestFindConsumedClientCloseAt_clearedKeepaliveRejected(t *testing.T) {
+	ring, buffer := newControlMinimalTestRingBuffer(t)
+
+	const clientID int64 = 7
+	consumerBefore := ring.ConsumerPosition()
+	producerBefore := ring.ProducerPosition()
+
+	require.NoError(t, conductor.NewDriverProxy(ring, clientID).ClientKeepalive())
+	advanceControlMinimalConsumer(t, ring, buffer, consumerBefore, ring.ProducerPosition())
+	buffer.SetBytes(0, conductor.CorrelatedRingRecordLength(), 0)
+
+	decoded, ok, err := findConsumedClientCloseAt(
+		ring,
+		clientID,
+		consumerBefore,
+		ring.ConsumerPosition(),
+		producerBefore,
+		ring.ProducerPosition(),
+		-1,
+	)
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Zero(t, decoded)
+}
+
+func advanceControlMinimalConsumer(
+	t *testing.T,
+	ring *ringbuffer.ManyToOneRingBuffer,
+	buffer aeronatomic.AtomicBuffer,
+	consumerBefore, producerAfter int64,
+) {
 	t.Helper()
 
-	head := int64(0)
-	tail := int64(controlMinimalTestDataCapacity)
-	buffer.PutInt64Release(ringbuffer.HeadIndex(controlMinimalTestDataCapacity), head)
-	buffer.PutInt64Release(ringbuffer.TailIndex(controlMinimalTestDataCapacity), tail)
-	buffer.PutInt64Release(ringbuffer.HeadCacheIndex(controlMinimalTestDataCapacity), head)
+	require.Equal(
+		t,
+		producerAfter,
+		consumerBefore+int64(conductor.CorrelatedRingRecordLength()),
+	)
+	buffer.PutInt64Release(
+		ringbuffer.HeadIndex(ring.Capacity()),
+		producerAfter,
+	)
 }
 
 func newControlMinimalTestRingBuffer(

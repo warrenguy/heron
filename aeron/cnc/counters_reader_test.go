@@ -363,7 +363,7 @@ func syntheticCountersBuffers(tb testing.TB, counterCount int) ([]byte, []byte) 
 }
 
 func writeDenseCounterPrefix(meta, values []byte, counterID int32) {
-	for id := int32(0); id < counterID; id++ {
+	for id := range counterID {
 		cnc.WriteCounterRecord(meta, values, id, cnc.CounterRecordReclaimed, 0, 0, 0)
 	}
 }

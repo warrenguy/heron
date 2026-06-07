@@ -64,6 +64,22 @@ func (proxy *DriverProxy) OfferCorrelatedSilentForTest(msgTypeID int) error {
 	return proxy.offerCorrelated(msgTypeID, true)
 }
 
+func (proxy *DriverProxy) OfferCorrelatedBodyForTest(
+	msgTypeID int,
+	bodyLength int,
+	correlationID int64,
+	silent bool,
+	afterEncode func(encodedOffset int),
+) error {
+	return proxy.offerCorrelatedBody(
+		msgTypeID,
+		bodyLength,
+		correlationID,
+		silent,
+		afterEncode,
+	)
+}
+
 func (proxy *DriverProxy) EncodeCommitCorrelatedAtForTest(
 	claimOffset int,
 	encodeOffset int,

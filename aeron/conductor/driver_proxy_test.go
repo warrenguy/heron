@@ -85,6 +85,61 @@ func TestDriverProxy_offerCorrelated_encodeGolden(t *testing.T) {
 	}
 }
 
+func TestDriverProxy_GetNextAvailableSessionID_encodeGolden(t *testing.T) {
+	const (
+		clientID      int64 = 1
+		correlationID int64 = 42
+		streamID      int32 = 100
+	)
+
+	ring, buffer := newDriverProxyTestRing(t)
+	proxy := conductor.NewDriverProxy(ring, clientID)
+
+	err := proxy.GetNextAvailableSessionID(correlationID, streamID)
+	require.NoError(t, err)
+
+	payloadOffset := ringbuffer.EncodedMsgOffset(0)
+	bufferAtomic := aeronatomic.Wrap(buffer.Bytes())
+	require.Equal(
+		t,
+		conductor.CorrelatedMessageBytes(clientID, correlationID),
+		bufferAtomic.Bytes()[payloadOffset:payloadOffset+conductor.CorrelatedMessageLength],
+	)
+	require.Equal(
+		t,
+		streamID,
+		bufferAtomic.GetInt32(payloadOffset+conductor.CorrelatedMessageLength),
+	)
+
+	decoded, err := conductor.DecodeCorrelated(bufferAtomic, payloadOffset)
+	require.NoError(t, err)
+	require.Equal(t, conductor.CorrelatedMessage{
+		ClientID:      clientID,
+		CorrelationID: correlationID,
+	}, decoded)
+
+	var gotTypeID int
+	readCount := ring.Read(func(msgTypeID int, buffer aeronatomic.AtomicBuffer, index, length int) {
+		gotTypeID = msgTypeID
+		got, decodeErr := conductor.DecodeCorrelated(buffer, index)
+		require.NoError(t, decodeErr)
+		require.Equal(t, decoded, got)
+		require.Equal(t, streamID, buffer.GetInt32(index+conductor.CorrelatedMessageLength))
+		require.Equal(t, conductor.GetNextAvailableSessionIDBodyLength, length)
+	})
+	require.Equal(t, 1, readCount)
+	require.Equal(t, conductor.GetNextAvailableSessionID, gotTypeID)
+}
+
+func TestDriverProxy_GetNextAvailableSessionID_insufficientCapacity(t *testing.T) {
+	ring, buffer := newDriverProxyTestRing(t)
+	seedFullDriverProxyRing(t, buffer)
+
+	proxy := conductor.NewDriverProxy(ring, 1)
+	err := proxy.GetNextAvailableSessionID(42, 100)
+	require.ErrorIs(t, err, conductor.ErrRingInsufficientCapacity)
+}
+
 func TestDriverProxy_ClientKeepalive_insufficientCapacity(t *testing.T) {
 	ring, buffer := newDriverProxyTestRing(t)
 	seedFullDriverProxyRing(t, buffer)
@@ -92,6 +147,23 @@ func TestDriverProxy_ClientKeepalive_insufficientCapacity(t *testing.T) {
 	proxy := conductor.NewDriverProxy(ring, 1)
 	err := proxy.ClientKeepalive()
 	require.ErrorIs(t, err, conductor.ErrRingInsufficientCapacity)
+}
+
+func TestDriverProxy_offerCorrelatedBody_bodyTooShort(t *testing.T) {
+	ring, _ := newDriverProxyTestRing(t)
+	proxy := conductor.NewDriverProxy(ring, 1)
+
+	err := proxy.OfferCorrelatedBodyForTest(
+		conductor.ClientKeepalive,
+		conductor.CorrelatedMessageLength-1,
+		conductor.NullCorrelationID,
+		false,
+		nil,
+	)
+	require.ErrorIs(t, err, conductor.ErrCorrelatedBodyTooShort)
+	require.Zero(t, ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {
+		t.Fatal("short body should not claim")
+	}))
 }
 
 func TestDriverProxy_offerCorrelated_invalidTypeID(t *testing.T) {

@@ -56,7 +56,7 @@ func boundsCheck(buf []byte, offset, size int) {
 
 func addressAt(buf []byte, offset, size int) unsafe.Pointer {
 	boundsCheck(buf, offset, size)
-	return unsafe.Pointer(uintptr(unsafe.Pointer(&buf[0])) + uintptr(offset))
+	return unsafe.Add(unsafe.Pointer(&buf[0]), offset)
 }
 
 func (b AtomicBuffer) GetInt32(offset int) int32 {

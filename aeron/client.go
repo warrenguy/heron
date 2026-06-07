@@ -17,6 +17,7 @@ const driverHeartbeatPollInterval = 50 * time.Millisecond
 type Client struct {
 	clientID                int64
 	mapped                  *cnc.MappedCncFile
+	countersReader          *cnc.CountersReader
 	conductor               *conductor.Conductor
 	driverProxy             *conductor.DriverProxy
 	nanoClock               conductor.NanoClock
@@ -104,11 +105,12 @@ func Connect(ctx Context) (*Client, error) {
 
 	connected = true
 	return &Client{
-		clientID:    clientID,
-		mapped:      mapped,
-		conductor:   conductorInstance,
-		driverProxy: driverProxy,
-		nanoClock:   ctx.NanoClock,
+		clientID:       clientID,
+		mapped:         mapped,
+		countersReader: countersReader,
+		conductor:      conductorInstance,
+		driverProxy:    driverProxy,
+		nanoClock:      ctx.NanoClock,
 	}, nil
 }
 
@@ -146,6 +148,7 @@ func (client *Client) Close() error {
 		client.mapped = nil
 	}
 	client.conductor = nil
+	client.countersReader = nil
 	client.driverProxy = nil
 	return err
 }
@@ -156,6 +159,42 @@ func (client *Client) ClientId() int64 {
 		return 0
 	}
 	return client.clientID
+}
+
+func (client *Client) CncMetadata() (cnc.Metadata, error) {
+	mapped, err := client.mappedCncFile()
+	if err != nil {
+		return cnc.Metadata{}, err
+	}
+	return mapped.Metadata(), nil
+}
+
+func (client *Client) CountersReader() (cnc.CountersView, error) {
+	if client == nil || client.closed {
+		return nil, errors.New("aeron: client is closed")
+	}
+	if client.countersReader == nil {
+		return nil, errors.New("aeron: client has no counters reader")
+	}
+	return client.countersReader, nil
+}
+
+func (client *Client) ErrorLogBuffer() ([]byte, error) {
+	mapped, err := client.mappedCncFile()
+	if err != nil {
+		return nil, err
+	}
+	return mapped.ErrorLogBuffer(), nil
+}
+
+func (client *Client) mappedCncFile() (*cnc.MappedCncFile, error) {
+	if client == nil || client.closed {
+		return nil, errors.New("aeron: client is closed")
+	}
+	if client.mapped == nil {
+		return nil, errors.New("aeron: client has no mapped cnc file")
+	}
+	return client.mapped, nil
 }
 
 func waitForDriverHeartbeat(
@@ -181,10 +220,7 @@ func waitForDriverHeartbeat(
 		}
 		if heartbeatMs > 0 {
 			sawPositiveHeartbeat = true
-			ageMs := nowMs - heartbeatMs
-			if ageMs < 0 {
-				ageMs = 0
-			}
+			ageMs := max(nowMs-heartbeatMs, 0)
 			if ageMs <= driverTimeoutMs {
 				return nil
 			}
@@ -207,7 +243,7 @@ func validateClientID(clientID int64) error {
 	return nil
 }
 
-func validateControlProtocolVersion(reader *cnc.CountersReader) error {
+func validateControlProtocolVersion(reader cnc.CountersView) error {
 	want := int64(conductor.ControlProtocolVersion)
 	got, err := reader.GetCounterValue(conductor.SystemCounterControlProtocolVersion)
 	if err != nil {

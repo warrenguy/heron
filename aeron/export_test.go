@@ -28,7 +28,7 @@ func WaitForDriverHeartbeatForTest(
 	return waitForDriverHeartbeat(toDriver, timeout, epochClock)
 }
 
-func ValidateControlProtocolVersionForTest(reader *cnc.CountersReader) error {
+func ValidateControlProtocolVersionForTest(reader cnc.CountersView) error {
 	return validateControlProtocolVersion(reader)
 }
 

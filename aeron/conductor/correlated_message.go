@@ -5,12 +5,16 @@ import (
 	"fmt"
 
 	"github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/aeron/record"
+	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
 
-var ErrCorrelatedMessageOutOfBounds = errors.New("conductor: correlated message out of bounds")
-
-var ErrCorrelationAndInt32OutOfBounds = errors.New(
-	"conductor: correlation and int32 body out of bounds",
+var (
+	ErrCorrelatedMessageOutOfBounds   = errors.New("conductor: correlated message out of bounds")
+	ErrCorrelatedBodyTooShort         = errors.New("conductor: correlated body length too short")
+	ErrCorrelationAndInt32OutOfBounds = errors.New(
+		"conductor: correlation and int32 body out of bounds",
+	)
 )
 
 const (
@@ -19,6 +23,10 @@ const (
 	CorrelationAndInt32BodyLength       = sizeOfInt64 + 4
 	GetNextAvailableSessionIDBodyLength = CorrelatedMessageLength + 4
 )
+
+func CorrelatedRingRecordLength() int {
+	return record.AlignRecordLength(CorrelatedMessageLength + ringbuffer.HeaderLength)
+}
 
 type CorrelatedMessage struct {
 	ClientID      int64

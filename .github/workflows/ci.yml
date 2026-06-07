@@ -44,5 +44,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: actions/cache@v4
+        id: aeronmd-cache
+        with:
+          path: bin/aeronmd
+          key: aeronmd-${{ matrix.goarch }}-${{ hashFiles('specs/versions.yaml', 'docker/aeronmd/Dockerfile', 'scripts/build-aeronmd.sh') }}
+
+      - name: Refresh aeronmd mtime
+        if: steps.aeronmd-cache.outputs.cache-hit == 'true'
+        run: touch bin/aeronmd
+
       - name: Integration tests
         run: make test-integration

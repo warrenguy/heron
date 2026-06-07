@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/warrenguy/heron/aeron/conductor"
 )
 
 const driverConsumeWindow = 200 * time.Millisecond
@@ -35,7 +37,7 @@ func TestCncWiring(t *testing.T) {
 	})
 
 	t.Run("RingOfferNoCorruption", func(t *testing.T) {
-		err := offerClientKeepalive(toDriver, 1)
+		err := conductor.NewDriverProxy(toDriver, 1).ClientKeepalive()
 		require.NoError(t, err)
 
 		time.Sleep(driverConsumeWindow)
@@ -51,13 +53,14 @@ func TestCncWiring(t *testing.T) {
 		runSoak(t, soakDuration, soakPollInterval, func() {
 			assertDriverAliveAndPIDMatches(t, md, attach)
 			require.True(t, consumerHeartbeatWithin(toDriver, timeoutMs-marginMs, true))
-			require.False(t, freshToClientsReceiver(t, attach).ReceiveNext())
+			require.False(t, toClients.ReceiveNext())
 		})
 	})
 
 	t.Run("GetNextSessionIDRoundtrip", func(t *testing.T) {
 		const correlationID int64 = 1001
-		err := offerGetNextSessionID(toDriver, 1, correlationID, 100)
+		err := conductor.NewDriverProxy(toDriver, 1).
+			GetNextAvailableSessionID(correlationID, 100)
 		require.NoError(t, err)
 
 		event := waitForNextSessionIDEvent(t, toClients, correlationID)

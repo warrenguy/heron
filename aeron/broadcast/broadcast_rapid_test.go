@@ -147,10 +147,7 @@ func TestBroadcast_rapid_interleavedSchedule(t *testing.T) {
 
 		for range steps {
 			nextLen := rapid.IntRange(1, tx.MaxMsgLength()).Draw(t, "payloadLen")
-			maxPlen := nextLen
-			if queueMaxLen > maxPlen {
-				maxPlen = queueMaxLen
-			}
+			maxPlen := max(queueMaxLen, nextLen)
 			forceReceive := len(queue) >= messagesBeforeWrap(capacity, maxPlen)
 			if len(queue) > 0 && (rapid.Bool().Draw(t, "receive") || forceReceive) {
 				queue, queueMaxLen = rapidDrainQueueHead(t, rx, queue, "on interleaved receive")

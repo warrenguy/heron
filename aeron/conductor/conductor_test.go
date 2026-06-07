@@ -20,6 +20,15 @@ const (
 	conductorTestInterServiceTimeout       = time.Second
 )
 
+var conductorTestWorkNanoNs = (600 * time.Millisecond).Nanoseconds()
+
+func collectConductorErrors() (func(error), *[]error) {
+	var gotErrors []error
+	return func(err error) {
+		gotErrors = append(gotErrors, err)
+	}, &gotErrors
+}
+
 func TestConductor_staleDriverKeepalive(t *testing.T) {
 	var gotErrors []error
 	conductorInstance := newConductorForTestAtWorkNano(

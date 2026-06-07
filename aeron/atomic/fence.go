@@ -2,12 +2,12 @@ package atomic
 
 import "sync/atomic"
 
-var fencePace uint32
+var fencePace atomic.Uint32
 
 func ReleaseFence() {
-	atomic.StoreUint32(&fencePace, 0)
+	fencePace.Store(0)
 }
 
 func AcquireFence() {
-	atomic.LoadUint32(&fencePace)
+	fencePace.Load()
 }

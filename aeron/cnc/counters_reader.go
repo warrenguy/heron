@@ -25,11 +25,31 @@ const (
 	offsetCounterMetadataKey    = 16
 )
 
+type CountersView interface {
+	GetCounterValue(counterID int32) (int64, error)
+
+	FindHeartbeatCounter(
+		registrationID int64,
+		typeID int32,
+	) (
+		counterID int32,
+		ok bool,
+	)
+
+	IsCounterActive(
+		counterID int32,
+		registrationID int64,
+		typeID int32,
+	) bool
+}
+
 type CountersReader struct {
 	metadata     atomic.AtomicBuffer
 	values       atomic.AtomicBuffer
 	maxCounterID int32
 }
+
+var _ CountersView = (*CountersReader)(nil)
 
 func NewCountersReader(meta, values []byte) (*CountersReader, error) {
 	if len(values) == 0 {

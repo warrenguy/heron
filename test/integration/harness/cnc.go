@@ -4,6 +4,7 @@ package harness
 
 import (
 	"fmt"
+	"runtime"
 	"testing"
 	"time"
 
@@ -23,11 +24,16 @@ const (
 	heartbeatFreshMaxAgeMs    = 2_000
 	heartbeatFreshPollTimeout = 4 * time.Second
 	commandPollDeadline       = 2 * time.Second
+	clientClosePollDeadline   = 200 * time.Millisecond
 )
 
 type cncAttach struct {
 	Mapped *cnc.MappedCncFile
 	Rings  *cnc.Rings
+}
+
+func OpenCnc(t testing.TB, md *MediaDriver) *cncAttach {
+	return openCnc(t, md)
 }
 
 func openCnc(t testing.TB, md *MediaDriver) *cncAttach {
@@ -55,14 +61,6 @@ func StartAttachedCnc(t testing.TB) (*MediaDriver, *cncAttach) {
 	return md, openCnc(t, md)
 }
 
-func freshToClientsReceiver(t testing.TB, attach *cncAttach) *broadcast.BroadcastReceiver {
-	t.Helper()
-
-	receiver, err := broadcast.NewBroadcastReceiver(attach.Mapped.ToClientsAtomic())
-	require.NoError(t, err)
-	return receiver
-}
-
 func assertMetadataMatchesMmap(t testing.TB, md *MediaDriver, attach *cncAttach) {
 	t.Helper()
 
@@ -86,9 +84,8 @@ func assertRingConstruct(t testing.TB, attach *cncAttach) {
 func assertDriverAliveAndPIDMatches(t testing.TB, md *MediaDriver, attach *cncAttach) {
 	t.Helper()
 
-	pid, err := md.ProcessPID()
-	require.NoError(t, err)
-	require.Equal(t, attach.Rings.Meta.PID, int64(pid))
+	require.NoError(t, md.aliveError())
+	require.Equal(t, attach.Rings.Meta.PID, int64(md.pid))
 }
 
 func consumerHeartbeatAgeMs(toDriver *ringbuffer.ManyToOneRingBuffer) (ageMs int64, ok bool) {
@@ -210,6 +207,175 @@ func waitForNextSessionIDEvent(
 	return event
 }
 
+func clientCloseObserved(
+	ring *ringbuffer.ManyToOneRingBuffer,
+	clientID int64,
+	consumerBefore, producerBefore int64,
+	provenClientClosePosition *int64,
+) (conductor.CorrelatedMessage, bool, error) {
+	return observeClientClose(
+		ring,
+		clientID,
+		consumerBefore,
+		producerBefore,
+		provenClientClosePosition,
+	)
+}
+
+func latchClientCloseOfferDuringClose(
+	ring *ringbuffer.ManyToOneRingBuffer,
+	clientID int64,
+	consumerBefore, producerBefore int64,
+	closeFn func() error,
+) (
+	int64,
+	error,
+) {
+	latchDeadline := time.Now().Add(commandPollDeadline)
+
+	closeErrCh := make(chan error, 1)
+	go func() {
+		closeErrCh <- closeFn()
+	}()
+
+	provenPosition := int64(-1)
+	deadline := time.Now().Add(clientClosePollDeadline)
+	for time.Now().Before(deadline) {
+		if ring.ProducerPosition() <= producerBefore {
+			runtime.Gosched()
+			continue
+		}
+
+		_, ok, err := observeClientClose(
+			ring,
+			clientID,
+			consumerBefore,
+			producerBefore,
+			&provenPosition,
+		)
+		if err != nil {
+			return -1, err
+		}
+		if ok {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	timeoutErr := fmt.Errorf(
+		"closeFn timed out after %s (provenPosition=%d)",
+		commandPollDeadline,
+		provenPosition,
+	)
+	timer := time.NewTimer(time.Until(latchDeadline))
+	defer timer.Stop()
+
+	select {
+	case closeErr := <-closeErrCh:
+		return provenPosition, closeErr
+	case <-timer.C:
+		return provenPosition, timeoutErr
+	}
+}
+
+func AssertClientCloseOfferedOnRingAfterClose(
+	t testing.TB,
+	ring *ringbuffer.ManyToOneRingBuffer,
+	clientID int64,
+	consumerBefore, producerBefore int64,
+	closeFn func() error,
+) {
+	t.Helper()
+
+	provenClientClosePosition, err := latchClientCloseOfferDuringClose(
+		ring,
+		clientID,
+		consumerBefore,
+		producerBefore,
+		closeFn,
+	)
+	require.NoError(t, err)
+	assertClientCloseOfferedOnRing(
+		t,
+		ring,
+		clientID,
+		consumerBefore,
+		producerBefore,
+		provenClientClosePosition,
+	)
+}
+
+func assertClientCloseOfferedOnRing(
+	t testing.TB,
+	ring *ringbuffer.ManyToOneRingBuffer,
+	clientID int64,
+	consumerBefore, producerBefore int64,
+	initialProvenClientClosePosition int64,
+) {
+	t.Helper()
+
+	want := conductor.CorrelatedMessage{
+		ClientID:      clientID,
+		CorrelationID: conductor.NullCorrelationID,
+	}
+
+	provenClientClosePosition := initialProvenClientClosePosition
+	var decoded conductor.CorrelatedMessage
+	var pollErr error
+	var found bool
+	if initialProvenClientClosePosition >= 0 {
+		var ok bool
+		decoded, ok, pollErr = clientCloseObserved(
+			ring,
+			clientID,
+			consumerBefore,
+			producerBefore,
+			&provenClientClosePosition,
+		)
+		found = ok
+	} else {
+		found = pollUntilBool(clientClosePollDeadline, defaultPollInterval, func() bool {
+			var ok bool
+			decoded, ok, pollErr = clientCloseObserved(
+				ring,
+				clientID,
+				consumerBefore,
+				producerBefore,
+				&provenClientClosePosition,
+			)
+			if pollErr != nil {
+				return false
+			}
+			return ok
+		})
+	}
+
+	if pollErr != nil {
+		require.NoError(t, pollErr, "to-driver ring scan failed after client close poll timeout")
+	}
+	require.True(
+		t,
+		found,
+		"CLIENT_CLOSE not observed on to-driver ring for client %d",
+		clientID,
+	)
+	require.Equal(t, want, decoded)
+}
+
+func pollUntilBool(
+	timeout, interval time.Duration,
+	ok func() bool,
+) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return true
+		}
+		time.Sleep(interval)
+	}
+	return ok()
+}
+
 func pollUntil(
 	t testing.TB,
 	timeout, interval time.Duration,
@@ -218,14 +384,7 @@ func pollUntil(
 ) {
 	t.Helper()
 
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if ok() {
-			return
-		}
-		time.Sleep(interval)
-	}
-	if ok() {
+	if pollUntilBool(timeout, interval, ok) {
 		return
 	}
 	require.FailNow(t, fmt.Sprintf("%s within %s", failMsg, timeout))
