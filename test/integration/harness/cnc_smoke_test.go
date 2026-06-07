@@ -63,7 +63,7 @@ func TestCncWiring(t *testing.T) {
 		event := waitForNextSessionIDEvent(t, toClients, correlationID)
 		// Aeron 1.51.0 seeds next_session_id via aeron_randomised_int32(); values may be
 		// negative. Roundtrip is proven by type, length, decode, and correlation match.
-		t.Logf("next session id: %d", event.NextSessionID)
+		t.Logf("next session id: %d", event.Int32Value)
 		md.AssertProcessAlive(t)
 	})
 }

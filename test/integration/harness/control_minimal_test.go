@@ -5,15 +5,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
 
 const controlMinimalTestDataCapacity = 4096
-
-var wantCorrelatedGolden = []byte{
-	0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-}
 
 func TestOfferClientKeepalive_encodeGolden(t *testing.T) {
 	ring, buffer := newControlMinimalTestRingBuffer(t)
@@ -22,8 +18,9 @@ func TestOfferClientKeepalive_encodeGolden(t *testing.T) {
 	require.NoError(t, err)
 
 	payloadOffset := ringbuffer.EncodedMsgOffset(0)
-	got := buffer.Bytes()[payloadOffset : payloadOffset+correlatedMessageLength]
-	require.Equal(t, wantCorrelatedGolden, got)
+	got, err := conductor.DecodeCorrelated(aeronatomic.Wrap(buffer.Bytes()), payloadOffset)
+	require.NoError(t, err)
+	require.Equal(t, conductor.CorrelatedMessage{ClientID: 1, CorrelationID: -1}, got)
 }
 
 func TestOfferGetNextSessionID_encodeGolden(t *testing.T) {
@@ -33,39 +30,29 @@ func TestOfferGetNextSessionID_encodeGolden(t *testing.T) {
 	require.NoError(t, err)
 
 	payloadOffset := ringbuffer.EncodedMsgOffset(0)
-	got := buffer.Bytes()[payloadOffset : payloadOffset+getNextAvailableSessionIDBodyLength]
-
-	want := []byte{
-		0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x64, 0x00, 0x00, 0x00,
-	}
-	require.Equal(t, want, got)
-}
-
-func TestDecodeNextSessionIDEvent_golden(t *testing.T) {
-	buf := []byte{
-		0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x39, 0x30, 0x00, 0x00,
-	}
-	buffer := aeronatomic.Wrap(buf)
-
-	event, err := decodeNextSessionIDEvent(buffer, 0)
+	bufferAtomic := aeronatomic.Wrap(buffer.Bytes())
+	correlated, err := conductor.DecodeCorrelated(bufferAtomic, payloadOffset)
 	require.NoError(t, err)
-	require.Equal(t, int64(42), event.CorrelationID)
-	require.Equal(t, int32(12345), event.NextSessionID)
+	require.Equal(t, conductor.CorrelatedMessage{ClientID: 1, CorrelationID: 42}, correlated)
+	require.Equal(
+		t,
+		int32(100),
+		bufferAtomic.GetInt32(payloadOffset+conductor.CorrelatedMessageLength),
+	)
 }
 
-func TestDecodeNextSessionIDEvent_outOfBounds(t *testing.T) {
-	buf := make([]byte, 8)
-	buffer := aeronatomic.Wrap(buf)
+func TestOfferCorrelatedCommand_bodyTooShort(t *testing.T) {
+	ring, _ := newControlMinimalTestRingBuffer(t)
 
-	_, err := decodeNextSessionIDEvent(buffer, 0)
-	require.EqualError(
-		t,
-		err,
-		"harness: next session id payload out of bounds: offset=0 capacity=8",
+	err := offerCorrelatedCommand(
+		ring,
+		conductor.ClientKeepalive,
+		conductor.CorrelatedMessageLength-1,
+		1,
+		-1,
+		nil,
 	)
+	require.ErrorIs(t, err, errCorrelatedBodyTooShort)
 }
 
 func TestOfferControlMinimal_insufficientCapacity(t *testing.T) {
@@ -86,9 +73,9 @@ func TestOfferControlMinimal_insufficientCapacity(t *testing.T) {
 			},
 		},
 	}
+	ring, buffer := newControlMinimalTestRingBuffer(t)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			ring, buffer := newControlMinimalTestRingBuffer(t)
 			seedFullRingBuffer(t, buffer)
 
 			err := tc.offer(ring)

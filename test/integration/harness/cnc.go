@@ -11,6 +11,7 @@ import (
 	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/cnc/cnctest"
+	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
 
@@ -21,7 +22,6 @@ const (
 	heartbeatFreshMaxAgeMs    = 2_000
 	heartbeatFreshPollTimeout = 4 * time.Second
 	commandPollDeadline       = 2 * time.Second
-	onErrorTypeID             = 0x0F01
 )
 
 type cncAttach struct {
@@ -133,14 +133,28 @@ func assertConsumerHeartbeatFresh(t testing.TB, attach *cncAttach) {
 	)
 }
 
+func requireDecodeCorrelationAndInt32(
+	t testing.TB,
+	toClients *broadcast.BroadcastReceiver,
+) conductor.CorrelationAndInt32 {
+	t.Helper()
+
+	decoded, err := conductor.DecodeCorrelationAndInt32(
+		toClients.Buffer(),
+		toClients.Offset(),
+	)
+	require.NoError(t, err)
+	return decoded
+}
+
 func waitForNextSessionIDEvent(
 	t testing.TB,
 	toClients *broadcast.BroadcastReceiver,
 	correlationID int64,
-) NextSessionIDEvent {
+) conductor.CorrelationAndInt32 {
 	t.Helper()
 
-	var event NextSessionIDEvent
+	var event conductor.CorrelationAndInt32
 	pollUntil(
 		t,
 		commandPollDeadline,
@@ -154,28 +168,27 @@ func waitForNextSessionIDEvent(
 			}
 
 			switch toClients.TypeID() {
-			case onNextAvailableSessionIDTypeID:
-				require.Equal(t, onNextAvailableSessionIDBodyLength, toClients.Length())
+			case conductor.OnNextAvailableSessionID:
+				require.Equal(t, conductor.CorrelationAndInt32BodyLength, toClients.Length())
 
-				var err error
-				event, err = decodeNextSessionIDEvent(toClients.Buffer(), toClients.Offset())
-				require.NoError(t, err)
+				event = requireDecodeCorrelationAndInt32(t, toClients)
 				require.Equal(t, correlationID, event.CorrelationID)
 				return true
-			case onErrorTypeID:
+			case conductor.OnError:
 				require.GreaterOrEqual(
 					t,
 					toClients.Length(),
-					12,
+					conductor.CorrelationAndInt32BodyLength,
 					"ON_ERROR correlation %d",
 					correlationID,
 				)
+				onError := requireDecodeCorrelationAndInt32(t, toClients)
 				require.NotEqual(
 					t,
 					correlationID,
-					toClients.Buffer().GetInt64(toClients.Offset()),
+					onError.CorrelationID,
 					"ON_ERROR error code %d",
-					toClients.Buffer().GetInt32(toClients.Offset()+8),
+					onError.Int32Value,
 				)
 				return false
 			default:
