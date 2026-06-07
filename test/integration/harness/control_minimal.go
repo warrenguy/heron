@@ -57,16 +57,9 @@ func offerCorrelatedCommand(
 
 func offerClientKeepalive(
 	ring *ringbuffer.ManyToOneRingBuffer,
-	clientID, correlationID int64,
+	clientID int64,
 ) error {
-	return offerCorrelatedCommand(
-		ring,
-		conductor.ClientKeepalive,
-		conductor.CorrelatedMessageLength,
-		clientID,
-		correlationID,
-		nil,
-	)
+	return conductor.NewDriverProxy(ring, clientID).ClientKeepalive()
 }
 
 func offerGetNextSessionID(

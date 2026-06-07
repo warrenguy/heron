@@ -14,11 +14,17 @@ const controlMinimalTestDataCapacity = 4096
 func TestOfferClientKeepalive_encodeGolden(t *testing.T) {
 	ring, buffer := newControlMinimalTestRingBuffer(t)
 
-	err := offerClientKeepalive(ring, 1, -1)
+	err := offerClientKeepalive(ring, 1)
 	require.NoError(t, err)
 
 	payloadOffset := ringbuffer.EncodedMsgOffset(0)
-	got, err := conductor.DecodeCorrelated(aeronatomic.Wrap(buffer.Bytes()), payloadOffset)
+	bufferAtomic := aeronatomic.Wrap(buffer.Bytes())
+	require.Equal(
+		t,
+		conductor.CorrelatedMessageBytes(1, -1),
+		bufferAtomic.Bytes()[payloadOffset:payloadOffset+conductor.CorrelatedMessageLength],
+	)
+	got, err := conductor.DecodeCorrelated(bufferAtomic, payloadOffset)
 	require.NoError(t, err)
 	require.Equal(t, conductor.CorrelatedMessage{ClientID: 1, CorrelationID: -1}, got)
 }
@@ -57,20 +63,23 @@ func TestOfferCorrelatedCommand_bodyTooShort(t *testing.T) {
 
 func TestOfferControlMinimal_insufficientCapacity(t *testing.T) {
 	tests := []struct {
-		name  string
-		offer func(*ringbuffer.ManyToOneRingBuffer) error
+		name    string
+		offer   func(*ringbuffer.ManyToOneRingBuffer) error
+		wantErr error
 	}{
 		{
 			name: "client keepalive",
 			offer: func(ring *ringbuffer.ManyToOneRingBuffer) error {
-				return offerClientKeepalive(ring, 1, -1)
+				return offerClientKeepalive(ring, 1)
 			},
+			wantErr: conductor.ErrRingInsufficientCapacity,
 		},
 		{
 			name: "get next session id",
 			offer: func(ring *ringbuffer.ManyToOneRingBuffer) error {
 				return offerGetNextSessionID(ring, 1, 42, 100)
 			},
+			wantErr: errRingInsufficientCapacity,
 		},
 	}
 	ring, buffer := newControlMinimalTestRingBuffer(t)
@@ -79,7 +88,7 @@ func TestOfferControlMinimal_insufficientCapacity(t *testing.T) {
 			seedFullRingBuffer(t, buffer)
 
 			err := tc.offer(ring)
-			require.ErrorIs(t, err, errRingInsufficientCapacity)
+			require.ErrorIs(t, err, tc.wantErr)
 		})
 	}
 }

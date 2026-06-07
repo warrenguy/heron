@@ -190,6 +190,95 @@ func TestCountersReaderGetCounterValueOutOfRange(t *testing.T) {
 
 	_, err = reader.GetCounterValue(-1)
 	require.EqualError(t, err, "cnc: counter id -1 out of range: maxCounterId=0")
+
+	err = reader.SetCounterValue(1, 1)
+	require.EqualError(t, err, "cnc: counter id 1 out of range: maxCounterId=0")
+}
+
+func TestCountersReaderIsCounterActive(t *testing.T) {
+	tests := []struct {
+		name             string
+		counterID        int32
+		registrationID   int64
+		typeID           int32
+		state            int32
+		recordTypeID     int32
+		recordRegisterID int64
+		wantActive       bool
+	}{
+		{
+			name:             "allocated matching heartbeat",
+			counterID:        0,
+			registrationID:   42,
+			typeID:           cnc.ClientHeartbeatTypeID,
+			state:            cnc.CounterRecordAllocated,
+			recordTypeID:     cnc.ClientHeartbeatTypeID,
+			recordRegisterID: 42,
+			wantActive:       true,
+		},
+		{
+			name:             "reclaimed counter inactive",
+			counterID:        0,
+			registrationID:   42,
+			typeID:           cnc.ClientHeartbeatTypeID,
+			state:            cnc.CounterRecordReclaimed,
+			recordTypeID:     cnc.ClientHeartbeatTypeID,
+			recordRegisterID: 42,
+			wantActive:       false,
+		},
+		{
+			name:             "type mismatch inactive",
+			counterID:        0,
+			registrationID:   42,
+			typeID:           cnc.ClientHeartbeatTypeID,
+			state:            cnc.CounterRecordAllocated,
+			recordTypeID:     cnc.SystemCounterTypeID,
+			recordRegisterID: 42,
+			wantActive:       false,
+		},
+		{
+			name:             "registration mismatch inactive",
+			counterID:        0,
+			registrationID:   42,
+			typeID:           cnc.ClientHeartbeatTypeID,
+			state:            cnc.CounterRecordAllocated,
+			recordTypeID:     cnc.ClientHeartbeatTypeID,
+			recordRegisterID: 99,
+			wantActive:       false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			meta, values := syntheticCountersBuffers(t, 1)
+			cnc.WriteCounterRecord(
+				meta,
+				values,
+				test.counterID,
+				test.state,
+				test.recordTypeID,
+				test.recordRegisterID,
+				0,
+			)
+			reader, err := cnc.NewCountersReader(meta, values)
+			require.NoError(t, err)
+
+			require.Equal(
+				t,
+				test.wantActive,
+				reader.IsCounterActive(test.counterID, test.registrationID, test.typeID),
+			)
+		})
+	}
+}
+
+func TestCountersReaderIsCounterActiveOutOfRangeAndUnused(t *testing.T) {
+	meta, values := syntheticCountersBuffers(t, 1)
+	reader, err := cnc.NewCountersReader(meta, values)
+	require.NoError(t, err)
+	require.False(t, reader.IsCounterActive(0, 1, cnc.ClientHeartbeatTypeID))
+	require.False(t, reader.IsCounterActive(1, 1, cnc.ClientHeartbeatTypeID))
+	require.False(t, reader.IsCounterActive(-1, 1, cnc.ClientHeartbeatTypeID))
 }
 
 func TestCountersReaderNilReceiver(t *testing.T) {
@@ -198,9 +287,13 @@ func TestCountersReaderNilReceiver(t *testing.T) {
 	_, err := reader.GetCounterValue(0)
 	require.EqualError(t, err, "cnc: counters reader is nil")
 
+	err = reader.SetCounterValue(0, 1)
+	require.EqualError(t, err, "cnc: counters reader is nil")
+
 	counterID, ok := reader.FindHeartbeatCounter(1, cnc.ClientHeartbeatTypeID)
 	require.False(t, ok)
 	require.Equal(t, cnc.NullCounterID, counterID)
+	require.False(t, reader.IsCounterActive(0, 1, cnc.ClientHeartbeatTypeID))
 	require.Equal(t, atomic.AtomicBuffer{}, reader.CounterValuesBuffer())
 }
 

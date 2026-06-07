@@ -161,24 +161,3 @@ func AssertParsedReadyMetadataEqual(t assertReporter, got, want Metadata) {
 	require.Equal(t, TestPID, got.PID)
 	require.Equal(t, TestFilePageSize, got.FilePageSize)
 }
-
-func WriteCounterRecord(
-	meta []byte,
-	values []byte,
-	counterID int32,
-	state int32,
-	typeID int32,
-	registrationID int64,
-	value int64,
-) {
-	metaBuffer := atomic.Wrap(meta)
-	valuesBuffer := atomic.Wrap(values)
-
-	metaOffset := counterMetadataOffset(counterID)
-	valuesOffset := counterOffset(counterID)
-
-	metaBuffer.PutInt32(metaOffset+offsetCounterMetadataTypeID, typeID)
-	metaBuffer.PutInt64(metaOffset+offsetCounterMetadataKey, registrationID)
-	valuesBuffer.PutInt64(valuesOffset, value)
-	metaBuffer.PutInt32Release(metaOffset+offsetCounterMetadataState, state)
-}

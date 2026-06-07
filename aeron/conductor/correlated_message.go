@@ -67,6 +67,12 @@ func EncodeCorrelated(
 	return nil
 }
 
+func CorrelatedMessageBytes(clientID, correlationID int64) []byte {
+	buffer := make([]byte, CorrelatedMessageLength)
+	_ = EncodeCorrelated(atomic.Wrap(buffer), 0, clientID, correlationID)
+	return buffer
+}
+
 func DecodeCorrelated(buffer atomic.AtomicBuffer, offset int) (CorrelatedMessage, error) {
 	if err := bodyBoundsError(
 		buffer,

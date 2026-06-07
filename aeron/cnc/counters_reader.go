@@ -74,6 +74,21 @@ func (reader *CountersReader) GetCounterValue(counterID int32) (int64, error) {
 	return reader.values.GetInt64Volatile(counterOffset(counterID)), nil
 }
 
+func (reader *CountersReader) SetCounterValue(counterID int32, value int64) error {
+	if reader == nil {
+		return errors.New("cnc: counters reader is nil")
+	}
+	if counterID < 0 || counterID > reader.maxCounterID {
+		return fmt.Errorf(
+			"cnc: counter id %d out of range: maxCounterId=%d",
+			counterID,
+			reader.maxCounterID,
+		)
+	}
+	reader.values.PutInt64Release(counterOffset(counterID), value)
+	return nil
+}
+
 func (reader *CountersReader) FindHeartbeatCounter(
 	registrationID int64,
 	typeID int32,
@@ -91,19 +106,61 @@ func (reader *CountersReader) FindHeartbeatCounter(
 		if state == CounterRecordUnused {
 			break
 		}
-		if state != CounterRecordAllocated {
-			continue
-		}
-		if reader.metadata.GetInt32(metadataOffset+offsetCounterMetadataTypeID) != typeID {
-			continue
-		}
-		if reader.metadata.GetInt64(metadataOffset+offsetCounterMetadataKey) != registrationID {
+		if !reader.counterRecordMatchesState(id, state, registrationID, typeID) {
 			continue
 		}
 		return id, true
 	}
 
 	return NullCounterID, false
+}
+
+func (reader *CountersReader) IsCounterActive(
+	counterID int32,
+	registrationID int64,
+	typeID int32,
+) bool {
+	if reader == nil {
+		return false
+	}
+	return reader.counterRecordMatches(counterID, registrationID, typeID)
+}
+
+func (reader *CountersReader) counterRecordMatches(
+	counterID int32,
+	registrationID int64,
+	typeID int32,
+) bool {
+	if counterID < 0 || counterID > reader.maxCounterID {
+		return false
+	}
+
+	metadataOffset := counterMetadataOffset(counterID)
+	state := reader.metadata.GetInt32Volatile(metadataOffset + offsetCounterMetadataState)
+	return reader.counterRecordMatchesState(counterID, state, registrationID, typeID)
+}
+
+func (reader *CountersReader) counterRecordMatchesState(
+	counterID int32,
+	state int32,
+	registrationID int64,
+	typeID int32,
+) bool {
+	if counterID < 0 || counterID > reader.maxCounterID {
+		return false
+	}
+	if state != CounterRecordAllocated {
+		return false
+	}
+
+	metadataOffset := counterMetadataOffset(counterID)
+	if reader.metadata.GetInt32(metadataOffset+offsetCounterMetadataTypeID) != typeID {
+		return false
+	}
+	if reader.metadata.GetInt64(metadataOffset+offsetCounterMetadataKey) != registrationID {
+		return false
+	}
+	return true
 }
 
 func (reader *CountersReader) CounterValuesBuffer() atomic.AtomicBuffer {
@@ -119,4 +176,25 @@ func counterOffset(counterID int32) int {
 
 func counterMetadataOffset(counterID int32) int {
 	return int(counterID) * CounterMetadataLength
+}
+
+func WriteCounterRecord(
+	meta []byte,
+	values []byte,
+	counterID int32,
+	state int32,
+	typeID int32,
+	registrationID int64,
+	value int64,
+) {
+	metaBuffer := atomic.Wrap(meta)
+	valuesBuffer := atomic.Wrap(values)
+
+	metaOffset := counterMetadataOffset(counterID)
+	valuesOffset := counterOffset(counterID)
+
+	metaBuffer.PutInt32(metaOffset+offsetCounterMetadataTypeID, typeID)
+	metaBuffer.PutInt64(metaOffset+offsetCounterMetadataKey, registrationID)
+	valuesBuffer.PutInt64(valuesOffset, value)
+	metaBuffer.PutInt32Release(metaOffset+offsetCounterMetadataState, state)
 }

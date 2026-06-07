@@ -35,7 +35,7 @@ func TestCncWiring(t *testing.T) {
 	})
 
 	t.Run("RingOfferNoCorruption", func(t *testing.T) {
-		err := offerClientKeepalive(toDriver, 1, -1)
+		err := offerClientKeepalive(toDriver, 1)
 		require.NoError(t, err)
 
 		time.Sleep(driverConsumeWindow)

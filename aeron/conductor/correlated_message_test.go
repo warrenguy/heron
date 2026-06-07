@@ -8,6 +8,17 @@ import (
 	"github.com/warrenguy/heron/aeron/conductor"
 )
 
+func TestCorrelatedMessageBytes_golden(t *testing.T) {
+	require.Equal(
+		t,
+		[]byte{
+			0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+		},
+		conductor.CorrelatedMessageBytes(1, -1),
+	)
+}
+
 func TestCorrelatedMessageRoundtrip(t *testing.T) {
 	tests := []struct {
 		name          string
