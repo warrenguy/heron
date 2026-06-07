@@ -5,9 +5,10 @@ import (
 	"math"
 
 	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
+
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/mmap"
-	"pgregory.net/rapid"
 )
 
 func WireRingsFromMapping(mapping *mmap.Mapping, meta Metadata) (*Rings, error) {

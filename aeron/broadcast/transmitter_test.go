@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/record"

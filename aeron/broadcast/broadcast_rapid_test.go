@@ -5,9 +5,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
+
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/broadcast"
-	"pgregory.net/rapid"
 )
 
 func TestBroadcast_rapid_transmitReceiveOrder(t *testing.T) {

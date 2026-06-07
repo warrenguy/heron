@@ -1,4 +1,4 @@
-.PHONY: bench bench-baseline bench-regression check test test-stress coverage clean test-integration aeronmd lint gofumpt
+.PHONY: bench bench-baseline bench-regression check test test-stress coverage clean test-integration aeronmd lint gofumpt goimports
 
 ROOT := $(CURDIR)
 export PATH := $(ROOT)/bin:$(PATH)
@@ -18,14 +18,19 @@ endif
 endif
 
 COVERAGE_PROFILE := coverage.out
+GO_MODULE := github.com/warrenguy/heron
+GO_SOURCES := $$(grep -rl --include='*.go' -L 'DO NOT EDIT' .)
 
 check: lint test test-stress
 
 lint:
 	go tool golangci-lint run ./...
 
-gofumpt:
-	go tool gofumpt -extra -w $$(grep -rl --include='*.go' -L 'DO NOT EDIT' .)
+goimports:
+	go tool goimports -local $(GO_MODULE) -w $(GO_SOURCES)
+
+gofumpt: goimports
+	go tool gofumpt -extra -w $(GO_SOURCES)
 
 test:
 	go test -race -coverprofile=$(COVERAGE_PROFILE) ./...

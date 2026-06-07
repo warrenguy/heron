@@ -4,8 +4,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/warrenguy/heron/aeron/atomic"
 	"pgregory.net/rapid"
+
+	"github.com/warrenguy/heron/aeron/atomic"
 )
 
 func TestAlign_rapid(t *testing.T) {

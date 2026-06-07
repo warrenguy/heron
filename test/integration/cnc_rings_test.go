@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
 	"github.com/warrenguy/heron/aeron/cnc/cnctest"
 	"github.com/warrenguy/heron/test/integration/harness"
 )

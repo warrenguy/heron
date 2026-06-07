@@ -5,10 +5,11 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
+
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/cnc/cnctest"
-	"pgregory.net/rapid"
 )
 
 func TestMapCncFile_roundtrip_rapid(t *testing.T) {

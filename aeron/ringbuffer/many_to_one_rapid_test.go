@@ -5,9 +5,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
+
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/ringbuffer"
-	"pgregory.net/rapid"
 )
 
 func rapidWriteMessages(

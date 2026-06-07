@@ -5,8 +5,12 @@ run:
 
 formatters:
   enable:
+    - goimports
     - gofumpt
   settings:
+    goimports:
+      local-prefixes:
+        - github.com/warrenguy/heron
     gofumpt:
       extra-rules: true
       module-path: github.com/warrenguy/heron
