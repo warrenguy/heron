@@ -3,6 +3,7 @@
 package integration_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/record"
+	"github.com/warrenguy/heron/aeron/ringbuffer"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
@@ -134,9 +137,7 @@ func TestClientTwoClientsSameDriver(t *testing.T) {
 	clientIdB := clientB.ClientId()
 	require.GreaterOrEqual(t, clientIdA, int64(0))
 	require.GreaterOrEqual(t, clientIdB, int64(0))
-	if clientIdA != 0 && clientIdB != 0 {
-		require.NotEqual(t, clientIdA, clientIdB)
-	}
+	require.NotEqual(t, clientIdA, clientIdB)
 
 	for range 5 {
 		clientA.DoWork()
@@ -148,4 +149,76 @@ func TestClientTwoClientsSameDriver(t *testing.T) {
 
 	require.NoError(t, clientA.Close())
 	require.NoError(t, clientB.Close())
+}
+
+func TestTwoClientsConcurrentRingOffers(t *testing.T) {
+	md, attach := harness.StartAttachedCnc(t)
+	// Harness attach and each Connect client map the same cnc.dat; ToDriver is one MPSC ring.
+	toDriver := attach.Rings.ToDriver
+
+	clientA, err := aeron.Connect(aeron.Context{AeronDir: md.Dir})
+	require.NoError(t, err)
+	clientB, err := aeron.Connect(aeron.Context{AeronDir: md.Dir})
+	require.NoError(t, err)
+
+	clientIDA := clientA.ClientId()
+	clientIDB := clientB.ClientId()
+	require.GreaterOrEqual(t, clientIDA, int64(0))
+	require.GreaterOrEqual(t, clientIDB, int64(0))
+	require.NotEqual(t, clientIDA, clientIDB)
+
+	t.Cleanup(func() {
+		require.NoError(t, clientA.Close())
+		require.NoError(t, clientB.Close())
+	})
+
+	consumerBefore := toDriver.ConsumerPosition()
+	producerBefore := toDriver.ProducerPosition()
+
+	const offersPerClient = 32
+	const actionsPerType = offersPerClient / 2
+	keepaliveRecordLength := int64(conductor.CorrelatedRingRecordLength())
+	sessionIDRecordLength := int64(record.AlignRecordLength(
+		conductor.GetNextAvailableSessionIDBodyLength + ringbuffer.HeaderLength,
+	))
+	minProducerDelta := int64(2*actionsPerType)*keepaliveRecordLength +
+		int64(2*actionsPerType)*sessionIDRecordLength
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	offerErrs := make(chan error, 2)
+
+	offer := func(clientID, correlationBase int64) {
+		defer wg.Done()
+
+		proxy := conductor.NewDriverProxy(toDriver, clientID)
+		for i := range offersPerClient {
+			var offerErr error
+			if i%2 == 0 {
+				offerErr = proxy.ClientKeepalive()
+			} else {
+				offerErr = proxy.GetNextAvailableSessionID(correlationBase+int64(i), 100)
+			}
+			if offerErr != nil {
+				offerErrs <- offerErr
+				return
+			}
+		}
+	}
+
+	go offer(clientIDA, 10_000)
+	go offer(clientIDB, 20_000)
+	wg.Wait()
+	for len(offerErrs) > 0 {
+		require.NoError(t, <-offerErrs)
+	}
+
+	producerAfter := toDriver.ProducerPosition()
+	require.GreaterOrEqual(t, producerAfter-producerBefore, minProducerDelta)
+
+	harness.WaitForToDriverRingDrained(t, toDriver)
+	require.Greater(t, toDriver.ConsumerPosition(), consumerBefore)
+	require.Equal(t, toDriver.ProducerPosition(), toDriver.ConsumerPosition())
+
+	md.AssertProcessAlive(t)
 }

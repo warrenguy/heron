@@ -155,3 +155,48 @@ func TestBroadcastReceiverRecordInvalidatedByOverwrite(t *testing.T) {
 
 	require.False(t, rx.Validate())
 }
+
+func TestBroadcastReceiver_PendingMessageForTestAtPaddingBoundary(t *testing.T) {
+	buf := newTestBuffer(t)
+	tx := newTransmitter(t, buf)
+	rx := newReceiver(t, buf)
+
+	small := testPayload8
+	beforeWrap := messagesBeforeWrap(testCapacity, len(small))
+	for range beforeWrap {
+		err := tx.Transmit(testMsgTypeID, small)
+		require.NoError(t, err)
+		require.True(t, rx.ReceiveNext())
+	}
+
+	const length = 120
+	src := make([]byte, length)
+	for i := range src {
+		src[i] = byte(i)
+	}
+	err := tx.Transmit(testMsgTypeID, src)
+	require.NoError(t, err)
+
+	pendingTypeID, pendingPayload, ok := rx.PendingMessageForTest()
+	require.True(t, ok)
+	require.Equal(t, testMsgTypeID, pendingTypeID)
+	require.Len(t, pendingPayload, length)
+	require.Equal(t, src, pendingPayload)
+}
+
+func TestBroadcastReceiver_PendingMessageForTest(t *testing.T) {
+	buf := newTestBuffer(t)
+	tx := newTransmitter(t, buf)
+	rx := newReceiver(t, buf)
+
+	require.NoError(t, tx.Transmit(testMsgTypeID, []byte{0x01}))
+	require.NoError(t, tx.Transmit(testMsgTypeID+1, []byte{0x02}))
+
+	require.True(t, rx.ReceiveNext())
+	require.True(t, rx.Validate())
+
+	pendingTypeID, pendingPayload, ok := rx.PendingMessageForTest()
+	require.True(t, ok)
+	require.Equal(t, testMsgTypeID+1, pendingTypeID)
+	require.Equal(t, []byte{0x02}, pendingPayload)
+}

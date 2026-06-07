@@ -222,6 +222,9 @@ func WaitForToDriverRingDrained(
 	)
 }
 
+// AssertClientCloseOfferedOnRingAfterClose requires the caller to drain ToDriver
+// and snapshot consumerBefore and producerBefore on a quiescent ring. Backlog at
+// snapshot makes consumed-path observation reject multi-record driver drains.
 func AssertClientCloseOfferedOnRingAfterClose(
 	t testing.TB,
 	ring *ringbuffer.ManyToOneRingBuffer,

@@ -117,6 +117,29 @@ func TestConductor_unregisteredClientSkipsHeartbeatCounter(t *testing.T) {
 	require.False(t, conductorInstance.IsTerminating())
 }
 
+func TestConductor_oneBroadcastEventPerDoWork(t *testing.T) {
+	errorHandler, gotErrors := collectConductorErrors()
+	conductorInstance := newConductorForTest(
+		t,
+		conductorTestConfig(t, errorHandler, fixedClocks{nanoNs: 0}),
+	)
+	adapter := conductorInstance.EventsAdapterForTest()
+
+	transmitConductorEvent(t, adapter, conductor.OnError, []byte{0x01})
+	transmitConductorEvent(t, adapter, conductor.OnError, []byte{0x02})
+
+	for step, wantErrs := range []int{1, 2} {
+		workCount := conductorInstance.DoWork()
+		require.Equal(t, 1, workCount)
+		require.Len(t, *gotErrors, wantErrs)
+		require.ErrorIs(t, (*gotErrors)[step], conductor.ErrDriverErrorEvent)
+		require.EqualError(t, (*gotErrors)[step], "conductor: driver error event received")
+	}
+
+	receiver := adapter.CopyReceiverForTest().BroadcastReceiver()
+	require.False(t, receiver.ReceiveNext())
+}
+
 func TestConductor_onClientTimeoutEvent(t *testing.T) {
 	var gotErrors []error
 	conductorInstance := newConductorForTest(

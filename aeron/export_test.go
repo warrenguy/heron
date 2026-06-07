@@ -1,9 +1,13 @@
 package aeron
 
 import (
+	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/cnc/cnctest"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
@@ -34,6 +38,23 @@ func ValidateControlProtocolVersionForTest(reader cnc.CountersView) error {
 
 func ValidateClientIDForTest(clientID int64) error {
 	return validateClientID(clientID)
+}
+
+func NewAccessorTestClient(tb testing.TB) *Client {
+	tb.Helper()
+
+	mapped := cnctest.OpenAccessorTestMappedCncFile(tb)
+
+	countersReader, err := cnc.NewCountersReader(
+		mapped.CountersMetaDataBuffer(),
+		mapped.CountersValuesBuffer(),
+	)
+	require.NoError(tb, err)
+
+	return &Client{
+		mapped:         mapped,
+		countersReader: countersReader,
+	}
 }
 
 func NewClientForTest(

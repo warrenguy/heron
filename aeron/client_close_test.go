@@ -41,6 +41,85 @@ func TestClient_closeBehavior(t *testing.T) {
 	require.False(t, client.IsTerminating())
 }
 
+func TestClient_accessorGuardsAfterClose(t *testing.T) {
+	accessorCases := []struct {
+		name   string
+		client func(t *testing.T) *aeron.Client
+	}{
+		{
+			name: "closedClient",
+			client: func(t *testing.T) *aeron.Client {
+				client := aeron.NewAccessorTestClient(t)
+				require.NoError(t, client.Close())
+				return client
+			},
+		},
+		{
+			name: "nilClient",
+			client: func(t *testing.T) *aeron.Client {
+				// Nil accessors share mappedCncFile guard with TestClient_nilGuards.
+				return nil
+			},
+		},
+	}
+	accessorCalls := []struct {
+		name string
+		call func(client *aeron.Client) error
+	}{
+		{
+			name: "CncMetadata",
+			call: func(client *aeron.Client) error {
+				_, err := client.CncMetadata()
+				return err
+			},
+		},
+		{
+			name: "CountersReader",
+			call: func(client *aeron.Client) error {
+				_, err := client.CountersReader()
+				return err
+			},
+		},
+		{
+			name: "ErrorLogBuffer",
+			call: func(client *aeron.Client) error {
+				_, err := client.ErrorLogBuffer()
+				return err
+			},
+		},
+	}
+
+	for _, accessorCase := range accessorCases {
+		t.Run(accessorCase.name, func(t *testing.T) {
+			client := accessorCase.client(t)
+			for _, accessorCall := range accessorCalls {
+				t.Run(accessorCall.name, func(t *testing.T) {
+					require.EqualError(t, accessorCall.call(client), "aeron: client is closed")
+				})
+			}
+		})
+	}
+
+	t.Run("retainedCountersReader", func(t *testing.T) {
+		client := aeron.NewAccessorTestClient(t)
+
+		retained, err := client.CountersReader()
+		require.NoError(t, err)
+		require.NotNil(t, retained)
+
+		_, err = retained.GetCounterValue(0)
+		require.NoError(t, err)
+
+		require.NoError(t, client.Close())
+
+		_, err = client.CountersReader()
+		require.EqualError(t, err, "aeron: client is closed")
+
+		_, err = retained.GetCounterValue(1)
+		require.EqualError(t, err, "cnc: counter id 1 out of range: maxCounterId=0")
+	})
+}
+
 func TestClient_conductorServiceTimeoutAfterInterServiceTimeout(t *testing.T) {
 	nanoNs := clientTestStartNanoNs
 	conductorInstance := newClientTestConductor(t, &nanoNs, clientTestEpochMs, nil)

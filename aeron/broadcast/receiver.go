@@ -76,6 +76,41 @@ func (r *BroadcastReceiver) Buffer() aeronatomic.AtomicBuffer {
 	return r.buffer
 }
 
+func (r *BroadcastReceiver) pendingRecordAt(
+	cursor int64,
+) (recordOffset, recordLength, msgTypeID int, ok bool) {
+	tail := r.buffer.GetInt64Volatile(r.tailCounterIndex)
+	if tail <= cursor {
+		return 0, 0, 0, false
+	}
+
+	aeronatomic.AcquireFence()
+
+	recordOffset = maskedRecordOffset(cursor, r.capacity)
+	if !r.recordValid(cursor, r.buffer.GetInt64Volatile(r.tailIntentIndex)) {
+		return 0, 0, 0, false
+	}
+
+	recordLength = int(r.buffer.GetInt32Volatile(record.LengthOffset(recordOffset)))
+	msgTypeID = int(r.buffer.GetInt32Volatile(record.TypeOffset(recordOffset)))
+	if msgTypeID == PaddingMsgTypeID {
+		cursor += int64(record.AlignRecordLength(recordLength))
+		if tail <= cursor {
+			return 0, 0, 0, false
+		}
+
+		recordOffset = maskedRecordOffset(cursor, r.capacity)
+		recordLength = int(r.buffer.GetInt32Volatile(record.LengthOffset(recordOffset)))
+		msgTypeID = int(r.buffer.GetInt32Volatile(record.TypeOffset(recordOffset)))
+	}
+
+	if msgTypeID == PaddingMsgTypeID || recordLength < HeaderLength {
+		return 0, 0, 0, false
+	}
+
+	return recordOffset, recordLength, msgTypeID, true
+}
+
 func (r *BroadcastReceiver) ReceiveNext() bool {
 	tail := r.buffer.GetInt64Volatile(r.tailCounterIndex)
 	cursor := r.nextRecord
