@@ -103,6 +103,7 @@ func TestFindConsumedClientCloseAt_clientClose(t *testing.T) {
 		producerBefore,
 		ring.ProducerPosition(),
 		-1,
+		false,
 	)
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -131,6 +132,7 @@ func TestFindConsumedClientCloseAt_clearedAfterConsume(t *testing.T) {
 		producerBefore,
 		ring.ProducerPosition(),
 		consumerBefore,
+		false,
 	)
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -159,6 +161,7 @@ func TestFindConsumedClientCloseAt_clearedWithoutProof(t *testing.T) {
 		producerBefore,
 		ring.ProducerPosition(),
 		-1,
+		false,
 	)
 	require.NoError(t, err)
 	require.False(t, ok)
@@ -183,6 +186,7 @@ func TestFindConsumedClientCloseAt_clientKeepaliveRejected(t *testing.T) {
 		producerBefore,
 		ring.ProducerPosition(),
 		-1,
+		false,
 	)
 	require.NoError(t, err)
 	require.False(t, ok)
@@ -271,6 +275,21 @@ func TestObserveClientClose(t *testing.T) {
 				return consumerBefore
 			},
 		},
+		{
+			name: "clearedAfterCloseOnlyOffer",
+			setup: func(
+				t *testing.T,
+				ring *ringbuffer.ManyToOneRingBuffer,
+				buffer aeronatomic.AtomicBuffer,
+				consumerBefore, producerBefore int64,
+			) {
+				t.Helper()
+				require.Equal(t, consumerBefore, producerBefore)
+				conductor.NewDriverProxy(ring, 7).ClientClose()
+				advanceControlMinimalConsumer(t, ring, buffer, consumerBefore, ring.ProducerPosition())
+				buffer.SetBytes(0, conductor.CorrelatedRingRecordLength(), 0)
+			},
+		},
 	}
 
 	const clientID int64 = 7
@@ -323,6 +342,7 @@ func TestFindConsumedClientCloseAt_clearedKeepaliveRejected(t *testing.T) {
 		producerBefore,
 		ring.ProducerPosition(),
 		-1,
+		false,
 	)
 	require.NoError(t, err)
 	require.False(t, ok)

@@ -39,6 +39,8 @@ func TestClientCloseOffersCLIENT_CLOSEOnLiveRing(t *testing.T) {
 		time.Sleep(aeron.DefaultIdleSleepDuration)
 	}
 
+	harness.WaitForToDriverRingDrained(t, toDriver)
+
 	consumerBefore := toDriver.ConsumerPosition()
 	producerBefore := toDriver.ProducerPosition()
 

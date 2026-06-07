@@ -34,6 +34,13 @@ func decodeMatchingClientClose(
 	return decoded, true, nil
 }
 
+func syntheticClientClose(clientID int64) conductor.CorrelatedMessage {
+	return conductor.CorrelatedMessage{
+		ClientID:      clientID,
+		CorrelationID: conductor.NullCorrelationID,
+	}
+}
+
 func findPendingClientClose(
 	ring *ringbuffer.ManyToOneRingBuffer,
 	clientID int64,
@@ -143,14 +150,17 @@ func observeClientClose(
 		return decoded, true, nil
 	}
 
+	consumerAfter := ring.ConsumerPosition()
+	producerAfter := ring.ProducerPosition()
 	return findConsumedClientCloseAt(
 		ring,
 		clientID,
 		consumerBefore,
-		ring.ConsumerPosition(),
+		consumerAfter,
 		producerBefore,
-		ring.ProducerPosition(),
+		producerAfter,
 		*provenClientClosePosition,
+		producerBefore == consumerBefore,
 	)
 }
 
@@ -160,6 +170,7 @@ func findConsumedClientCloseAt(
 	consumerBefore, consumerAfter int64,
 	producerBefore, producerAfter int64,
 	provenClientClosePosition int64,
+	onlyClientCloseOfferedSinceSnapshot bool,
 ) (conductor.CorrelatedMessage, bool, error) {
 	wantRecordLength := int64(conductor.CorrelatedRingRecordLength())
 	producerDelta := producerAfter - producerBefore
@@ -174,14 +185,13 @@ func findConsumedClientCloseAt(
 
 	recordLength := int(buffer.GetInt32Volatile(record.LengthOffset(recordIndex)))
 	if recordLength <= 0 {
-		if provenClientClosePosition != consumerBefore {
-			return conductor.CorrelatedMessage{}, false, nil
+		closeOnlySinceSnapshot := onlyClientCloseOfferedSinceSnapshot &&
+			producerBefore == consumerBefore
+		if provenClientClosePosition == consumerBefore || closeOnlySinceSnapshot {
+			return syntheticClientClose(clientID), true, nil
 		}
 
-		return conductor.CorrelatedMessage{
-			ClientID:      clientID,
-			CorrelationID: conductor.NullCorrelationID,
-		}, true, nil
+		return conductor.CorrelatedMessage{}, false, nil
 	}
 
 	alignedLength := record.AlignRecordLength(recordLength)

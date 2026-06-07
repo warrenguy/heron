@@ -4,7 +4,6 @@ package harness
 
 import (
 	"fmt"
-	"runtime"
 	"testing"
 	"time"
 
@@ -24,7 +23,6 @@ const (
 	heartbeatFreshMaxAgeMs    = 2_000
 	heartbeatFreshPollTimeout = 4 * time.Second
 	commandPollDeadline       = 2 * time.Second
-	clientClosePollDeadline   = 200 * time.Millisecond
 )
 
 type cncAttach struct {
@@ -207,75 +205,21 @@ func waitForNextSessionIDEvent(
 	return event
 }
 
-func clientCloseObserved(
+func WaitForToDriverRingDrained(
+	t testing.TB,
 	ring *ringbuffer.ManyToOneRingBuffer,
-	clientID int64,
-	consumerBefore, producerBefore int64,
-	provenClientClosePosition *int64,
-) (conductor.CorrelatedMessage, bool, error) {
-	return observeClientClose(
-		ring,
-		clientID,
-		consumerBefore,
-		producerBefore,
-		provenClientClosePosition,
-	)
-}
-
-func latchClientCloseOfferDuringClose(
-	ring *ringbuffer.ManyToOneRingBuffer,
-	clientID int64,
-	consumerBefore, producerBefore int64,
-	closeFn func() error,
-) (
-	int64,
-	error,
 ) {
-	latchDeadline := time.Now().Add(commandPollDeadline)
+	t.Helper()
 
-	closeErrCh := make(chan error, 1)
-	go func() {
-		closeErrCh <- closeFn()
-	}()
-
-	provenPosition := int64(-1)
-	deadline := time.Now().Add(clientClosePollDeadline)
-	for time.Now().Before(deadline) {
-		if ring.ProducerPosition() <= producerBefore {
-			runtime.Gosched()
-			continue
-		}
-
-		_, ok, err := observeClientClose(
-			ring,
-			clientID,
-			consumerBefore,
-			producerBefore,
-			&provenPosition,
-		)
-		if err != nil {
-			return -1, err
-		}
-		if ok {
-			break
-		}
-		runtime.Gosched()
-	}
-
-	timeoutErr := fmt.Errorf(
-		"closeFn timed out after %s (provenPosition=%d)",
+	pollUntil(
+		t,
 		commandPollDeadline,
-		provenPosition,
+		defaultPollInterval,
+		func() bool {
+			return ring.ConsumerPosition() == ring.ProducerPosition()
+		},
+		"to-driver ring not drained",
 	)
-	timer := time.NewTimer(time.Until(latchDeadline))
-	defer timer.Stop()
-
-	select {
-	case closeErr := <-closeErrCh:
-		return provenPosition, closeErr
-	case <-timer.C:
-		return provenPosition, timeoutErr
-	}
 }
 
 func AssertClientCloseOfferedOnRingAfterClose(
@@ -287,21 +231,13 @@ func AssertClientCloseOfferedOnRingAfterClose(
 ) {
 	t.Helper()
 
-	provenClientClosePosition, err := latchClientCloseOfferDuringClose(
-		ring,
-		clientID,
-		consumerBefore,
-		producerBefore,
-		closeFn,
-	)
-	require.NoError(t, err)
+	require.NoError(t, closeFn())
 	assertClientCloseOfferedOnRing(
 		t,
 		ring,
 		clientID,
 		consumerBefore,
 		producerBefore,
-		provenClientClosePosition,
 	)
 }
 
@@ -310,7 +246,6 @@ func assertClientCloseOfferedOnRing(
 	ring *ringbuffer.ManyToOneRingBuffer,
 	clientID int64,
 	consumerBefore, producerBefore int64,
-	initialProvenClientClosePosition int64,
 ) {
 	t.Helper()
 
@@ -319,36 +254,23 @@ func assertClientCloseOfferedOnRing(
 		CorrelationID: conductor.NullCorrelationID,
 	}
 
-	provenClientClosePosition := initialProvenClientClosePosition
+	provenClientClosePosition := int64(-1)
 	var decoded conductor.CorrelatedMessage
 	var pollErr error
-	var found bool
-	if initialProvenClientClosePosition >= 0 {
+	found := pollUntilBool(commandPollDeadline, defaultPollInterval, func() bool {
 		var ok bool
-		decoded, ok, pollErr = clientCloseObserved(
+		decoded, ok, pollErr = observeClientClose(
 			ring,
 			clientID,
 			consumerBefore,
 			producerBefore,
 			&provenClientClosePosition,
 		)
-		found = ok
-	} else {
-		found = pollUntilBool(clientClosePollDeadline, defaultPollInterval, func() bool {
-			var ok bool
-			decoded, ok, pollErr = clientCloseObserved(
-				ring,
-				clientID,
-				consumerBefore,
-				producerBefore,
-				&provenClientClosePosition,
-			)
-			if pollErr != nil {
-				return false
-			}
-			return ok
-		})
-	}
+		if pollErr != nil {
+			return false
+		}
+		return ok
+	})
 
 	if pollErr != nil {
 		require.NoError(t, pollErr, "to-driver ring scan failed after client close poll timeout")
