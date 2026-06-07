@@ -1,0 +1,205 @@
+package aeron_test
+
+import (
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/conductor"
+)
+
+func newAdvancingEpochClock(startMs, stepMs int64) conductor.EpochClock {
+	epochMs := startMs
+	return func() int64 {
+		current := epochMs
+		epochMs += stepMs
+		return current
+	}
+}
+
+func requireDriverTimeoutCause(tb clientTestTB, err, wantCause error) {
+	tb.Helper()
+
+	var timeoutErr *aeron.DriverTimeoutError
+	require.ErrorAs(tb, err, &timeoutErr)
+	require.ErrorIs(tb, err, wantCause)
+}
+
+func TestWaitForDriverHeartbeat_timeouts(t *testing.T) {
+	tests := []struct {
+		name       string
+		heartbeat  int64
+		timeout    time.Duration
+		epochStart int64
+		epochStep  int64
+		wantCause  error
+	}{
+		{
+			name:       "not ready",
+			timeout:    time.Millisecond,
+			epochStart: 1_000,
+			epochStep:  100,
+			wantCause:  aeron.ErrDriverHeartbeatNotReady,
+		},
+		{
+			name:       "stale at connect",
+			heartbeat:  1_000,
+			timeout:    time.Second,
+			epochStart: 20_000,
+			epochStep:  100,
+			wantCause:  aeron.ErrDriverHeartbeatStaleAtConnect,
+		},
+		{
+			name:       "driver shutdown",
+			heartbeat:  conductor.DriverShutdownHeartbeat,
+			timeout:    time.Second,
+			epochStart: 1_000,
+			epochStep:  100,
+			wantCause:  conductor.ErrDriverShutdown,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			ring := newClientTestRing(t)
+			if testCase.heartbeat != 0 {
+				ring.SetConsumerHeartbeatTime(testCase.heartbeat)
+			}
+
+			err := aeron.WaitForDriverHeartbeatForTest(
+				ring,
+				testCase.timeout,
+				newAdvancingEpochClock(testCase.epochStart, testCase.epochStep),
+			)
+			requireDriverTimeoutCause(t, err, testCase.wantCause)
+		})
+	}
+}
+
+func TestWaitForDriverHeartbeat_freshHeartbeat(t *testing.T) {
+	ring := newClientTestRing(t)
+	ring.SetConsumerHeartbeatTime(9_500)
+
+	err := aeron.WaitForDriverHeartbeatForTest(
+		ring,
+		time.Second,
+		func() int64 { return 10_000 },
+	)
+	require.NoError(t, err)
+}
+
+func TestWaitForDriverHeartbeat_frozenEpochClockWallBackstop(t *testing.T) {
+	ring := newClientTestRing(t)
+
+	start := time.Now()
+	err := aeron.WaitForDriverHeartbeatForTest(
+		ring,
+		50*time.Millisecond,
+		func() int64 { return 1_000 },
+	)
+	elapsed := time.Since(start)
+
+	requireDriverTimeoutCause(t, err, aeron.ErrDriverHeartbeatNotReady)
+	require.Less(t, elapsed, 2*time.Second)
+}
+
+func TestValidateClientID(t *testing.T) {
+	tests := []struct {
+		name     string
+		clientID int64
+		wantErr  string
+	}{
+		{
+			name:     "zero is valid",
+			clientID: 0,
+		},
+		{
+			name:     "positive is valid",
+			clientID: 1,
+		},
+		{
+			name:     "negative is invalid",
+			clientID: -1,
+			wantErr:  "aeron: invalid client id from driver ring",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := aeron.ValidateClientIDForTest(testCase.clientID)
+			if testCase.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, testCase.wantErr)
+		})
+	}
+}
+
+func TestValidateControlProtocolVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		reader  func(testing.TB) *cnc.CountersReader
+		wantErr string
+	}{
+		{
+			name: "match",
+			reader: func(tb testing.TB) *cnc.CountersReader {
+				return controlProtocolTestReader(tb, int64(conductor.ControlProtocolVersion))
+			},
+		},
+		{
+			name: "mismatch",
+			reader: func(tb testing.TB) *cnc.CountersReader {
+				return controlProtocolTestReader(tb, 2)
+			},
+			wantErr: "aeron: control protocol version mismatch: got 2 want 65536",
+		},
+		{
+			name: "read error",
+			reader: func(tb testing.TB) *cnc.CountersReader {
+				meta := make([]byte, cnc.CounterMetadataLength)
+				values := make([]byte, cnc.CounterValueLength)
+				reader, err := cnc.NewCountersReader(meta, values)
+				require.NoError(tb, err)
+				return reader
+			},
+			wantErr: "aeron: read control protocol version counter: " +
+				"cnc: counter id 43 out of range: maxCounterId=0",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := aeron.ValidateControlProtocolVersionForTest(testCase.reader(t))
+			if testCase.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, testCase.wantErr)
+		})
+	}
+}
+
+func controlProtocolTestReader(tb testing.TB, value int64) *cnc.CountersReader {
+	tb.Helper()
+
+	counterCount := int(conductor.SystemCounterControlProtocolVersion) + 1
+	meta := make([]byte, counterCount*cnc.CounterMetadataLength)
+	values := make([]byte, counterCount*cnc.CounterValueLength)
+	cnc.WriteCounterRecord(
+		meta,
+		values,
+		conductor.SystemCounterControlProtocolVersion,
+		cnc.CounterRecordAllocated,
+		cnc.SystemCounterTypeID,
+		0,
+		value,
+	)
+	reader, err := cnc.NewCountersReader(meta, values)
+	require.NoError(tb, err)
+	return reader
+}

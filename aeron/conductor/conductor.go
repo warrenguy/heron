@@ -64,6 +64,9 @@ type Conductor struct {
 	countersReader        *cnc.CountersReader
 	config                Config
 	driverTimeoutMs       int64
+	idleSleepNs           int64
+	interServiceTimeoutNs int64
+	keepAliveIntervalNs   int64
 	timeOfLastKeepAliveNs int64
 	timeOfLastServiceNs   int64
 	heartbeatCounterID    int32
@@ -77,11 +80,14 @@ func NewConductor(
 	config Config,
 ) *Conductor {
 	conductor := &Conductor{
-		driverProxy:        driverProxy,
-		countersReader:     countersReader,
-		config:             config,
-		driverTimeoutMs:    config.DriverTimeout.Milliseconds(),
-		heartbeatCounterID: cnc.NullCounterID,
+		driverProxy:           driverProxy,
+		countersReader:        countersReader,
+		config:                config,
+		driverTimeoutMs:       config.DriverTimeout.Milliseconds(),
+		idleSleepNs:           config.IdleSleepDuration.Nanoseconds(),
+		interServiceTimeoutNs: config.InterServiceTimeout.Nanoseconds(),
+		keepAliveIntervalNs:   config.KeepAliveInterval.Nanoseconds(),
+		heartbeatCounterID:    cnc.NullCounterID,
 	}
 	copyReceiver := NewCopyBroadcastReceiver(broadcastReceiver)
 	conductor.eventsAdapter = NewDriverEventsAdapter(
@@ -90,6 +96,9 @@ func NewConductor(
 		config.ErrorHandler,
 		conductor.onClientTimeout,
 	)
+	if config.NanoClock != nil {
+		conductor.SeedServiceTimestamps(config.NanoClock())
+	}
 	return conductor
 }
 
@@ -104,6 +113,11 @@ func (conductor *Conductor) IsTerminating() bool {
 	return conductor.isTerminating
 }
 
+func (conductor *Conductor) SeedServiceTimestamps(nowNs int64) {
+	conductor.timeOfLastServiceNs = nowNs
+	conductor.timeOfLastKeepAliveNs = nowNs
+}
+
 func (conductor *Conductor) service() int {
 	workCount := conductor.checkTimeouts(conductor.config.NanoClock())
 	if conductor.isTerminating {
@@ -114,7 +128,7 @@ func (conductor *Conductor) service() int {
 }
 
 func (conductor *Conductor) checkTimeouts(nowNs int64) int {
-	if (conductor.timeOfLastServiceNs+conductor.config.IdleSleepDuration.Nanoseconds())-nowNs >= 0 {
+	if (conductor.timeOfLastServiceNs+conductor.idleSleepNs)-nowNs >= 0 {
 		return 0
 	}
 
@@ -128,7 +142,7 @@ func (conductor *Conductor) checkTimeouts(nowNs int64) int {
 }
 
 func (conductor *Conductor) checkServiceInterval(nowNs int64) {
-	if (conductor.timeOfLastServiceNs+conductor.config.InterServiceTimeout.Nanoseconds())-nowNs >= 0 {
+	if (conductor.timeOfLastServiceNs+conductor.interServiceTimeoutNs)-nowNs >= 0 {
 		return
 	}
 
@@ -136,7 +150,7 @@ func (conductor *Conductor) checkServiceInterval(nowNs int64) {
 }
 
 func (conductor *Conductor) checkLiveness(nowNs int64) int {
-	if (conductor.timeOfLastKeepAliveNs+conductor.config.KeepAliveInterval.Nanoseconds())-nowNs >= 0 {
+	if (conductor.timeOfLastKeepAliveNs+conductor.keepAliveIntervalNs)-nowNs >= 0 {
 		return 0
 	}
 
@@ -182,8 +196,18 @@ func (conductor *Conductor) checkLiveness(nowNs int64) int {
 		return 1
 	}
 
+	return conductor.storeClientHeartbeat(nowNs, nowMs)
+}
+
+func (conductor *Conductor) storeClientHeartbeat(nowNs, nowMs int64) int {
 	// Reclaim may land between the active check above and this store; next tick terminates.
-	_ = conductor.countersReader.SetCounterValue(conductor.heartbeatCounterID, nowMs)
+	if err := conductor.countersReader.SetCounterValue(
+		conductor.heartbeatCounterID,
+		nowMs,
+	); err != nil {
+		conductor.terminateWithError(err)
+		return 1
+	}
 	conductor.timeOfLastKeepAliveNs = nowNs
 	return 1
 }

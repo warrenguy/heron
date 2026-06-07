@@ -81,6 +81,19 @@ func Start(t testing.TB) *MediaDriver {
 	return md
 }
 
+func (md *MediaDriver) Kill() error {
+	proc, err := md.aliveProcess()
+	if err != nil {
+		return err
+	}
+	killErr := proc.Kill()
+	if killErr == nil || errors.Is(killErr, os.ErrProcessDone) {
+		md.waitExited()
+		return nil
+	}
+	return killErr
+}
+
 func (md *MediaDriver) Stop() {
 	if md == nil {
 		return
@@ -88,14 +101,18 @@ func (md *MediaDriver) Stop() {
 	if md.cancel != nil {
 		md.cancel()
 	}
-	if md.exited != nil {
-		<-md.exited
-	}
+	md.waitExited()
 	md.cmd = nil
 	md.cancel = nil
 	if md.Dir != "" {
 		_ = os.RemoveAll(md.Dir)
 		md.Dir = ""
+	}
+}
+
+func (md *MediaDriver) waitExited() {
+	if md.exited != nil {
+		<-md.exited
 	}
 }
 

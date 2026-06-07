@@ -23,13 +23,13 @@ func TestConductor_DoWork_ZeroAllocs(t *testing.T) {
 func TestConductor_DoWork_ZeroAllocsAfterKeepaliveTick(t *testing.T) {
 	var nanoNs int64
 	epochMs := int64(1_700_000_000_123)
-	nanoNs = (600 * time.Millisecond).Nanoseconds()
 
 	conductorInstance := newConductorForTest(
 		t,
 		conductorTestConfigMutableNano(t, func(error) {}, epochMs, &nanoNs),
 		withHeartbeatCounter(t, conductorTestClientID, 0),
 	)
+	nanoNs = (600 * time.Millisecond).Nanoseconds()
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 

@@ -22,16 +22,11 @@ const (
 
 func TestConductor_staleDriverKeepalive(t *testing.T) {
 	var gotErrors []error
-	conductorInstance := newConductorForTest(
+	conductorInstance := newConductorForTestAtWorkNano(
 		t,
-		conductorTestConfig(
-			t,
-			func(err error) { gotErrors = append(gotErrors, err) },
-			fixedClocks{
-				epochMs: 20_000,
-				nanoNs:  (600 * time.Millisecond).Nanoseconds(),
-			},
-		),
+		func(err error) { gotErrors = append(gotErrors, err) },
+		20_000,
+		(600 * time.Millisecond).Nanoseconds(),
 	)
 	conductorInstance.DriverProxyForTest().Ring().SetConsumerHeartbeatTime(1_000)
 
@@ -50,16 +45,11 @@ func TestConductor_staleDriverKeepalive(t *testing.T) {
 
 func TestConductor_unpublishedDriverHeartbeatNotStale(t *testing.T) {
 	var gotErrors []error
-	conductorInstance := newConductorForTest(
+	conductorInstance := newConductorForTestAtWorkNano(
 		t,
-		conductorTestConfig(
-			t,
-			func(err error) { gotErrors = append(gotErrors, err) },
-			fixedClocks{
-				epochMs: 20_000,
-				nanoNs:  (600 * time.Millisecond).Nanoseconds(),
-			},
-		),
+		func(err error) { gotErrors = append(gotErrors, err) },
+		20_000,
+		(600 * time.Millisecond).Nanoseconds(),
 	)
 	conductorInstance.DriverProxyForTest().Ring().SetConsumerHeartbeatTime(0)
 
@@ -71,16 +61,11 @@ func TestConductor_unpublishedDriverHeartbeatNotStale(t *testing.T) {
 
 func TestConductor_driverShutdownHeartbeat(t *testing.T) {
 	var gotErrors []error
-	conductorInstance := newConductorForTest(
+	conductorInstance := newConductorForTestAtWorkNano(
 		t,
-		conductorTestConfig(
-			t,
-			func(err error) { gotErrors = append(gotErrors, err) },
-			fixedClocks{
-				epochMs: 1_000,
-				nanoNs:  (600 * time.Millisecond).Nanoseconds(),
-			},
-		),
+		func(err error) { gotErrors = append(gotErrors, err) },
+		1_000,
+		(600 * time.Millisecond).Nanoseconds(),
 	)
 	conductorInstance.DriverProxyForTest().Ring().SetConsumerHeartbeatTime(conductor.NullCorrelationID)
 
@@ -93,13 +78,12 @@ func TestConductor_driverShutdownHeartbeat(t *testing.T) {
 }
 
 func TestConductor_heartbeatCounterUpdate(t *testing.T) {
-	clocks := fixedClocks{
-		epochMs: 1_700_000_000_123,
-		nanoNs:  (600 * time.Millisecond).Nanoseconds(),
-	}
-	conductorInstance := newConductorForTest(
+	epochMs := int64(1_700_000_000_123)
+	conductorInstance := newConductorForTestAtWorkNano(
 		t,
-		conductorTestConfig(t, func(error) {}, clocks),
+		func(error) {},
+		epochMs,
+		(600 * time.Millisecond).Nanoseconds(),
 		withHeartbeatCounter(t, conductorTestClientID, 0),
 	)
 
@@ -108,15 +92,16 @@ func TestConductor_heartbeatCounterUpdate(t *testing.T) {
 
 	got, err := conductorInstance.CountersReaderForTest().GetCounterValue(0)
 	require.NoError(t, err)
-	require.Equal(t, clocks.epochMs, got)
+	require.Equal(t, epochMs, got)
 }
 
 func TestConductor_unregisteredClientSkipsHeartbeatCounter(t *testing.T) {
-	clocks := fixedClocks{
-		epochMs: 1_700_000_000_123,
-		nanoNs:  (600 * time.Millisecond).Nanoseconds(),
-	}
-	conductorInstance := newConductorForTest(t, conductorTestConfig(t, func(error) {}, clocks))
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		1_700_000_000_123,
+		(600 * time.Millisecond).Nanoseconds(),
+	)
 
 	workCount := conductorInstance.DoWork()
 	require.Equal(t, 1, workCount)
@@ -151,14 +136,11 @@ func TestConductor_onClientTimeoutEvent(t *testing.T) {
 
 func TestConductor_serviceIntervalExceeded(t *testing.T) {
 	var gotErrors []error
-	clocks := fixedClocks{nanoNs: (2 * time.Second).Nanoseconds()}
-	conductorInstance := newConductorForTest(
+	conductorInstance := newConductorForTestAtWorkNano(
 		t,
-		conductorTestConfig(
-			t,
-			func(err error) { gotErrors = append(gotErrors, err) },
-			clocks,
-		),
+		func(err error) { gotErrors = append(gotErrors, err) },
+		0,
+		(2 * time.Second).Nanoseconds(),
 	)
 
 	workCount := conductorInstance.DoWork()
@@ -171,16 +153,11 @@ func TestConductor_serviceIntervalExceeded(t *testing.T) {
 
 func TestConductor_serviceIntervalSkipsLivenessOnSameTick(t *testing.T) {
 	var gotErrors []error
-	conductorInstance := newConductorForTest(
+	conductorInstance := newConductorForTestAtWorkNano(
 		t,
-		conductorTestConfig(
-			t,
-			func(err error) { gotErrors = append(gotErrors, err) },
-			fixedClocks{
-				epochMs: 20_000,
-				nanoNs:  (2 * time.Second).Nanoseconds(),
-			},
-		),
+		func(err error) { gotErrors = append(gotErrors, err) },
+		20_000,
+		(2 * time.Second).Nanoseconds(),
 	)
 	conductorInstance.DriverProxyForTest().Ring().SetConsumerHeartbeatTime(1_000)
 
@@ -273,12 +250,11 @@ func TestConductor_driverTimeoutBoundary(t *testing.T) {
 	timeoutMs := conductorTestDriverTimeout.Milliseconds()
 
 	t.Run("at boundary stays alive", func(t *testing.T) {
-		conductorInstance := newConductorForTest(
+		conductorInstance := newConductorForTestAtWorkNano(
 			t,
-			conductorTestConfig(t, func(error) {}, fixedClocks{
-				epochMs: driverHeartbeatMs + timeoutMs,
-				nanoNs:  (600 * time.Millisecond).Nanoseconds(),
-			}),
+			func(error) {},
+			driverHeartbeatMs+timeoutMs,
+			(600 * time.Millisecond).Nanoseconds(),
 		)
 		conductorInstance.DriverProxyForTest().Ring().SetConsumerHeartbeatTime(driverHeartbeatMs)
 
@@ -289,16 +265,11 @@ func TestConductor_driverTimeoutBoundary(t *testing.T) {
 
 	t.Run("one millisecond past boundary terminates", func(t *testing.T) {
 		var gotErrors []error
-		conductorInstance := newConductorForTest(
+		conductorInstance := newConductorForTestAtWorkNano(
 			t,
-			conductorTestConfig(
-				t,
-				func(err error) { gotErrors = append(gotErrors, err) },
-				fixedClocks{
-					epochMs: driverHeartbeatMs + timeoutMs + 1,
-					nanoNs:  (600 * time.Millisecond).Nanoseconds(),
-				},
-			),
+			func(err error) { gotErrors = append(gotErrors, err) },
+			driverHeartbeatMs+timeoutMs+1,
+			(600 * time.Millisecond).Nanoseconds(),
 		)
 		conductorInstance.DriverProxyForTest().Ring().SetConsumerHeartbeatTime(driverHeartbeatMs)
 
@@ -314,16 +285,11 @@ func TestConductor_driverTimeoutBoundary(t *testing.T) {
 
 func TestConductor_doWorkAfterTerminatingReturnsZero(t *testing.T) {
 	var gotErrors []error
-	conductorInstance := newConductorForTest(
+	conductorInstance := newConductorForTestAtWorkNano(
 		t,
-		conductorTestConfig(
-			t,
-			func(err error) { gotErrors = append(gotErrors, err) },
-			fixedClocks{
-				epochMs: 20_000,
-				nanoNs:  (600 * time.Millisecond).Nanoseconds(),
-			},
-		),
+		func(err error) { gotErrors = append(gotErrors, err) },
+		20_000,
+		(600 * time.Millisecond).Nanoseconds(),
 	)
 	conductorInstance.DriverProxyForTest().Ring().SetConsumerHeartbeatTime(1_000)
 
@@ -393,16 +359,11 @@ func TestConductor_broadcastLappedDuringDoWork(t *testing.T) {
 
 func TestConductor_terminatesBeforeReceiveOnSameTick(t *testing.T) {
 	var gotErrors []error
-	conductorInstance := newConductorForTest(
+	conductorInstance := newConductorForTestAtWorkNano(
 		t,
-		conductorTestConfig(
-			t,
-			func(err error) { gotErrors = append(gotErrors, err) },
-			fixedClocks{
-				epochMs: 20_000,
-				nanoNs:  (600 * time.Millisecond).Nanoseconds(),
-			},
-		),
+		func(err error) { gotErrors = append(gotErrors, err) },
+		20_000,
+		(600 * time.Millisecond).Nanoseconds(),
 	)
 	conductorInstance.DriverProxyForTest().Ring().SetConsumerHeartbeatTime(1_000)
 
@@ -429,6 +390,96 @@ func TestConductor_idleDoWorkNoProgress(t *testing.T) {
 
 	require.Zero(t, conductorInstance.DoWork())
 	require.False(t, conductorInstance.IsTerminating())
+}
+
+func TestConductor_serviceTimestampSeeding(t *testing.T) {
+	tests := []struct {
+		name            string
+		seed            bool
+		advanceDuration time.Duration
+		wantWorkCount   int
+		wantTerminating bool
+		wantErr         error
+	}{
+		{
+			name:            "seeded avoids false service timeout",
+			seed:            true,
+			advanceDuration: conductorTestKeepAliveInterval + time.Nanosecond,
+			wantWorkCount:   1,
+			wantTerminating: false,
+		},
+		{
+			name:            "constructor seed avoids false service timeout",
+			seed:            false,
+			wantWorkCount:   0,
+			wantTerminating: false,
+		},
+		{
+			name:            "service timeout after interServiceTimeout",
+			seed:            false,
+			advanceDuration: conductorTestInterServiceTimeout + time.Nanosecond,
+			wantWorkCount:   1,
+			wantTerminating: true,
+			wantErr:         conductor.ErrConductorServiceTimeout,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			var gotErrors []error
+			nanoNs := (2 * time.Second).Nanoseconds()
+			conductorInstance := newConductorForTest(
+				t,
+				conductorTestConfigMutableNano(
+					t,
+					func(err error) { gotErrors = append(gotErrors, err) },
+					1_700_000_000_123,
+					&nanoNs,
+				),
+			)
+			if testCase.seed {
+				conductorInstance.SeedServiceTimestamps(nanoNs)
+			}
+
+			nanoNs += testCase.advanceDuration.Nanoseconds()
+
+			workCount := conductorInstance.DoWork()
+			require.Equal(t, testCase.wantWorkCount, workCount)
+			require.Equal(t, testCase.wantTerminating, conductorInstance.IsTerminating())
+			if testCase.wantErr == nil {
+				require.Empty(t, gotErrors)
+				return
+			}
+			require.Len(t, gotErrors, 1)
+			require.ErrorIs(t, gotErrors[0], testCase.wantErr)
+		})
+	}
+}
+
+func TestConductor_setCounterValueErrorDoesNotAdvanceKeepaliveTimer(t *testing.T) {
+	var gotErrors []error
+	workNanoNs := (600 * time.Millisecond).Nanoseconds()
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(err error) { gotErrors = append(gotErrors, err) },
+		1_700_000_000_123,
+		workNanoNs,
+	)
+	conductorInstance.SetHeartbeatCounterIDForTest(99)
+
+	workCount := conductorInstance.StoreClientHeartbeatForTest(
+		workNanoNs,
+		1_700_000_000_123,
+	)
+	require.Equal(t, 1, workCount)
+	require.True(t, conductorInstance.IsTerminating())
+	require.Len(t, gotErrors, 1)
+	require.EqualError(
+		t,
+		gotErrors[0],
+		"cnc: counter id 99 out of range: maxCounterId=0",
+	)
+	require.Zero(t, conductorInstance.TimeOfLastKeepAliveNsForTest())
 }
 
 type fixedClocks struct {
@@ -492,12 +543,6 @@ func newConductorForTest(
 ) *conductor.Conductor {
 	tb.Helper()
 
-	ring, _ := newDriverProxyTestRing(tb)
-	ring.SetConsumerHeartbeatTime(config.EpochClock())
-	driverProxy := conductor.NewDriverProxy(ring, config.ClientID)
-
-	_, broadcastReceiver := newCopyBroadcastPair(tb)
-
 	meta := make([]byte, cnc.CounterMetadataLength)
 	values := make([]byte, cnc.CounterValueLength)
 	for _, option := range options {
@@ -507,7 +552,26 @@ func newConductorForTest(
 	countersReader, err := cnc.NewCountersReader(meta, values)
 	require.NoError(tb, err)
 
-	return conductor.NewConductor(driverProxy, broadcastReceiver, countersReader, config)
+	return conductor.NewConductorForTest(tb, config, countersReader)
+}
+
+func newConductorForTestAtWorkNano(
+	tb testing.TB,
+	errorHandler func(error),
+	epochMs int64,
+	workNanoNs int64,
+	options ...conductorTestOption,
+) *conductor.Conductor {
+	tb.Helper()
+
+	var nanoNs int64
+	conductorInstance := newConductorForTest(
+		tb,
+		conductorTestConfigMutableNano(tb, errorHandler, epochMs, &nanoNs),
+		options...,
+	)
+	nanoNs = workNanoNs
+	return conductorInstance
 }
 
 func fillBroadcastUntilLap(

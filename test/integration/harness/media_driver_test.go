@@ -3,6 +3,8 @@
 package harness_test
 
 import (
+	"fmt"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,6 +15,19 @@ import (
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
+
+func TestMediaDriver_Kill(t *testing.T) {
+	md := harness.Start(t)
+
+	pid, err := md.ProcessPID()
+	require.NoError(t, err)
+
+	require.NoError(t, md.Kill())
+
+	err = md.Kill()
+	require.ErrorIs(t, err, os.ErrProcessDone)
+	require.Contains(t, err.Error(), fmt.Sprintf("process %d not alive", pid))
+}
 
 func TestMediaDriver(t *testing.T) {
 	md := harness.Start(t)
