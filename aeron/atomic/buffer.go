@@ -48,8 +48,12 @@ func (b AtomicBuffer) Slice(offset, length int) AtomicBuffer {
 	return AtomicBuffer{buf: b.buf[offset : offset+length]}
 }
 
+func sliceRangeInBounds(capacity, offset, length int) bool {
+	return offset >= 0 && length >= 0 && offset <= capacity-length
+}
+
 func boundsCheck(buf []byte, offset, size int) {
-	if offset < 0 || size < 0 || offset > len(buf)-size {
+	if !sliceRangeInBounds(len(buf), offset, size) {
 		panic("atomic: offset out of bounds")
 	}
 }
@@ -114,6 +118,14 @@ func copyBytes(dst []byte, dstOffset int, src []byte, srcOffset, length int) {
 
 func (b AtomicBuffer) PutBytes(offset int, src []byte) {
 	copyBytes(b.buf, offset, src, 0, len(src))
+}
+
+func (b AtomicBuffer) PutStringBytes(offset int, value string) {
+	n := len(value)
+	if n == 0 {
+		return
+	}
+	copyBytes(b.buf, offset, unsafe.Slice(unsafe.StringData(value), n), 0, n)
 }
 
 func (b AtomicBuffer) PutBytesFrom(dstOffset int, src AtomicBuffer, srcOffset, length int) {

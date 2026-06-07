@@ -109,6 +109,24 @@ func TestCorrelationAndInt32NegativeOffset(t *testing.T) {
 	)
 }
 
+func TestDecodeTrailingStringASCII_stringOffsetBeyondBodyLength(t *testing.T) {
+	buffer := atomic.Wrap(make([]byte, 32))
+
+	_, err := conductor.DecodeTrailingStringASCIIForTest(
+		buffer,
+		0,
+		16,
+		20,
+		conductor.ErrCorrelatedMessageOutOfBounds,
+	)
+	require.ErrorIs(t, err, conductor.ErrCorrelatedMessageOutOfBounds)
+	require.EqualError(
+		t,
+		err,
+		"conductor: correlated message out of bounds: stringOffset=20 bodyLength=16",
+	)
+}
+
 func TestCorrelationAndInt32(t *testing.T) {
 	t.Run("decode golden", func(t *testing.T) {
 		buf := []byte{

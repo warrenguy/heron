@@ -8,7 +8,7 @@ cd "${ROOT}"
 BASELINE="${BENCH_BASELINE:-${ROOT}/.bench/baseline.txt}"
 COUNT="${BENCH_COUNT:-10}"
 THRESHOLD="${BENCH_THRESHOLD:-10}"
-PACKAGES="${BENCH_PKGS:-./aeron/broadcast/ ./aeron/ringbuffer/}"
+PACKAGES="${BENCH_PKGS:-./...}"
 SKIP="${SKIP_BENCH_REGRESSION:-}"
 
 workflow_notice() {
@@ -27,6 +27,11 @@ workflow_error() {
 
 workflow_warn() {
 	workflow_notice warning "$1"
+}
+
+benchstat_fail() {
+	fail 'benchstat failed' "" "benchstat failed (GOARCH=${GOARCH:-unknown})" \
+		'benchstat failed'
 }
 
 fail() {
@@ -114,7 +119,7 @@ trap 'rm -f "${NEW}" "${REPORT}" "${BENCHSTAT_TEXT}" "${GO_TEST_LOG}"' EXIT
 
 echo "bench-regression: running benchmarks (count=${COUNT})..." >&2
 # shellcheck disable=SC2086
-if ! go test -bench=. -benchmem -count="${COUNT}" ${PACKAGES} \
+if ! go test -run '^$' -bench=. -benchmem -count="${COUNT}" ${PACKAGES} \
 	>"${NEW}" 2>"${GO_TEST_LOG}"
 then
 	[[ -s "${GO_TEST_LOG}" ]] && cat "${GO_TEST_LOG}" >&2
@@ -131,24 +136,13 @@ echo "bench-regression: vs ${BASELINE}" >&2
 if ! go tool benchstat -format csv -ignore=cpu \
 	"${BASELINE}" "${NEW}" >"${REPORT}"
 then
-	fail 'benchstat failed' "" "benchstat failed (GOARCH=${GOARCH:-unknown})" \
-		'benchstat failed'
+	benchstat_fail
 fi
-if [[ "${GITHUB_ACTIONS:-}" != true ]]; then
-	if ! go tool benchstat -ignore=cpu "${BASELINE}" "${NEW}" \
-		| tee "${BENCHSTAT_TEXT}"
-	then
-		fail 'benchstat failed' "" "benchstat failed (GOARCH=${GOARCH:-unknown})" \
-			'benchstat failed'
-	fi
-else
-	if ! go tool benchstat -ignore=cpu "${BASELINE}" "${NEW}" \
-		>"${BENCHSTAT_TEXT}"
-	then
-		fail 'benchstat failed' "" "benchstat failed (GOARCH=${GOARCH:-unknown})" \
-			'benchstat failed'
-	fi
+if ! go tool benchstat -ignore=cpu "${BASELINE}" "${NEW}" >"${BENCHSTAT_TEXT}"
+then
+	benchstat_fail
 fi
+[[ "${GITHUB_ACTIONS:-}" != true ]] && cat "${BENCHSTAT_TEXT}"
 
 while IFS= read -r line; do
 	case "${line}" in
@@ -163,14 +157,17 @@ while IFS= read -r line; do
 	esac
 done < <(
 	awk -F, -v threshold="${THRESHOLD}" '
-		function time_regress(vs,    m) {
-			return match(vs, /^\+([0-9.]+)%/, m) && m[1] + 0 >= threshold
+		function pct_delta(vs,    m) {
+			return match(vs, /^\+([0-9.]+)%/, m) ? m[1] + 0 : -1
 		}
-		function alloc_regress(vs,    m) {
+		function time_regress(vs) {
+			return pct_delta(vs) >= threshold
+		}
+		function alloc_regress(vs) {
 			if (vs == "?" || vs ~ /^\+Inf%/) {
 				return 1
 			}
-			return match(vs, /^\+([0-9.]+)%/, m) && m[1] + 0 > 0
+			return pct_delta(vs) > 0
 		}
 		/^,sec\/op,/ { unit="time"; next }
 		/^,allocs\/op,/ { unit="alloc"; next }
@@ -205,10 +202,7 @@ if [[ -n "${ALLOC_REGRESSIONS:-}" ]]; then
 		failed
 fi
 
-if [[ -n "${TIME_WARNINGS:-}" ]]; then
-	echo "bench-regression: ok (time warnings)" >&2
-	write_step_summary "ok (time warnings)"
-else
-	echo "bench-regression: ok" >&2
-	write_step_summary ok
-fi
+status=ok
+[[ -n "${TIME_WARNINGS:-}" ]] && status='ok (time warnings)'
+echo "bench-regression: ${status}" >&2
+write_step_summary "${status}"

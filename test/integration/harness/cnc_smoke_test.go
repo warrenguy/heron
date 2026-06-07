@@ -69,4 +69,43 @@ func TestCncWiring(t *testing.T) {
 		t.Logf("next session id: %d", event.Int32Value)
 		md.AssertProcessAlive(t)
 	})
+
+	t.Run("AddPublicationOfferedOnLiveRing", func(t *testing.T) {
+		const (
+			clientID      int64 = 1
+			correlationID int64 = 2001
+			streamID      int32 = 1001
+			channel             = "aeron:ipc"
+		)
+
+		WaitForToDriverRingDrained(t, toDriver)
+
+		consumerBefore := toDriver.ConsumerPosition()
+		producerBefore := toDriver.ProducerPosition()
+
+		want := conductor.PublicationMessage{
+			ClientID:      clientID,
+			CorrelationID: correlationID,
+			StreamID:      streamID,
+			Channel:       channel,
+		}
+
+		proxy := conductor.NewDriverProxy(toDriver, clientID)
+		err := proxy.AddPublication(correlationID, streamID, channel)
+		require.NoError(t, err)
+
+		assertAddPublicationOfferedOnRing(
+			t,
+			toDriver,
+			want,
+			consumerBefore,
+			producerBefore,
+		)
+
+		WaitForToDriverRingDrained(t, toDriver)
+		require.Greater(t, toDriver.ConsumerPosition(), consumerBefore)
+		require.Equal(t, toDriver.ProducerPosition(), toDriver.ConsumerPosition())
+
+		md.AssertProcessAlive(t)
+	})
 }

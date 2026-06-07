@@ -1,12 +1,14 @@
 # Heron
 
-Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport and cluster client.
+Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport client and Aeron Cluster client and server (consensus module and clustered service container).
+
+IPC/UDP via external media driver (integration tests use C `aeronmd`).
 
 ## Constraints
 
 - **Pure Go** - no cgo; hot paths use `unsafe`, atomics, and `mmap` via `golang.org/x/sys/unix`.
 - **GOARCH** - `amd64` and `arm64` only (little-endian).
-- **Media driver** - IPC/UDP needs a separate `aeronmd` binary (C driver), not vendored here.
+- **Media driver** - IPC/UDP needs a separate media driver (C or Java), not vendored here; integration tests use pinned C `aeronmd`.
 
 ## Media driver (`aeronmd`)
 

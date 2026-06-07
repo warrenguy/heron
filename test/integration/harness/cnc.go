@@ -287,6 +287,47 @@ func assertClientCloseOfferedOnRing(
 	require.Equal(t, want, decoded)
 }
 
+// assertAddPublicationOfferedOnRing requires the caller to drain ToDriver
+// and snapshot consumerBefore and producerBefore on a quiescent ring. Backlog at
+// snapshot makes consumed-path observation reject multi-record driver drains.
+func assertAddPublicationOfferedOnRing(
+	t testing.TB,
+	ring *ringbuffer.ManyToOneRingBuffer,
+	want conductor.PublicationMessage,
+	consumerBefore, producerBefore int64,
+) {
+	t.Helper()
+
+	provenAddPublicationPosition := int64(-1)
+	var decoded conductor.PublicationMessage
+	var pollErr error
+	found := pollUntilBool(commandPollDeadline, defaultPollInterval, func() bool {
+		var ok bool
+		decoded, ok, pollErr = observeAddPublication(
+			ring,
+			want,
+			consumerBefore,
+			producerBefore,
+			&provenAddPublicationPosition,
+		)
+		if pollErr != nil {
+			return false
+		}
+		return ok
+	})
+
+	if pollErr != nil {
+		require.NoError(t, pollErr, "to-driver ring scan failed after add publication poll timeout")
+	}
+	require.True(
+		t,
+		found,
+		"ADD_PUBLICATION not observed on to-driver ring for correlation %d",
+		want.CorrelationID,
+	)
+	require.Equal(t, want, decoded)
+}
+
 func pollUntilBool(
 	timeout, interval time.Duration,
 	ok func() bool,

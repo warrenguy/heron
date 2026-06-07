@@ -69,22 +69,18 @@ func (proxy *DriverProxy) OfferCorrelatedBodyForTest(
 	bodyLength int,
 	correlationID int64,
 	silent bool,
-	afterEncode func(encodedOffset int),
+	afterEncode func(encodedOffset int) error,
 ) error {
-	return proxy.offerCorrelatedBody(
-		msgTypeID,
-		bodyLength,
-		correlationID,
-		silent,
-		afterEncode,
-	)
+	return proxy.offerCorrelatedBody(msgTypeID, bodyLength, correlationID, silent, afterEncode)
 }
 
-func (proxy *DriverProxy) EncodeCommitCorrelatedAtForTest(
-	claimOffset int,
-	encodeOffset int,
+func (proxy *DriverProxy) OfferBodyForTest(
+	msgTypeID int,
+	bodyLength int,
+	silent bool,
+	encode func(encodedOffset int) error,
 ) error {
-	return proxy.encodeCommitCorrelatedAt(claimOffset, encodeOffset)
+	return proxy.offerBody(msgTypeID, bodyLength, silent, encode)
 }
 
 func NewConductorForTest(
@@ -116,14 +112,27 @@ func NewConductorForTest(
 	)
 }
 
+func newConductorTestBuffer(tb testing.TB, totalLength int) aeronatomic.AtomicBuffer {
+	tb.Helper()
+
+	return aeronatomic.Wrap(make([]byte, totalLength))
+}
+
 func newConductorTestRing(tb testing.TB) *ringbuffer.ManyToOneRingBuffer {
 	tb.Helper()
 
-	bufferBytes := make([]byte, ringbuffer.TotalBufferLength(conductorTestRingDataCapacity))
-	buffer := aeronatomic.Wrap(bufferBytes)
+	buffer := newConductorTestBuffer(tb, ringbuffer.TotalBufferLength(conductorTestRingDataCapacity))
 	ring, err := ringbuffer.NewManyToOneRingBuffer(buffer)
 	require.NoError(tb, err)
 	return ring
+}
+
+func DecodeTrailingStringASCIIForTest(
+	buf aeronatomic.AtomicBuffer,
+	offset, bodyLength, stringOffset int,
+	wrapped error,
+) (string, error) {
+	return decodeTrailingStringASCII(buf, offset, bodyLength, stringOffset, wrapped)
 }
 
 func newConductorTestBroadcastPair(
@@ -131,8 +140,7 @@ func newConductorTestBroadcastPair(
 ) (*broadcast.BroadcastTransmitter, *broadcast.BroadcastReceiver) {
 	tb.Helper()
 
-	bufferBytes := make([]byte, broadcast.TotalBufferLength(conductorTestRingDataCapacity))
-	buffer := aeronatomic.Wrap(bufferBytes)
+	buffer := newConductorTestBuffer(tb, broadcast.TotalBufferLength(conductorTestRingDataCapacity))
 	receiver, err := broadcast.NewBroadcastReceiver(buffer)
 	require.NoError(tb, err)
 	transmitter, err := broadcast.NewBroadcastTransmitter(buffer)

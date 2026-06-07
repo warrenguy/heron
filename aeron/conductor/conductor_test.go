@@ -553,7 +553,7 @@ func conductorTestConfigMutableNano(
 
 type conductorTestOption func(tb testing.TB, meta, values []byte)
 
-func withHeartbeatCounter(tb testing.TB, clientID int64, counterID int32) conductorTestOption {
+func withHeartbeatCounter(_ testing.TB, clientID int64, counterID int32) conductorTestOption {
 	return func(tb testing.TB, meta, values []byte) {
 		tb.Helper()
 		cnc.WriteCounterRecord(

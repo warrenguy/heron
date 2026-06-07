@@ -39,51 +39,107 @@ type CorrelationAndInt32 struct {
 }
 
 func bodyBoundsError(
-	buffer atomic.AtomicBuffer,
-	offset int,
-	bodyLength int,
+	buf atomic.AtomicBuffer,
+	offset, bodyLength int,
 	wrapped error,
 ) error {
-	capacity := buffer.Capacity()
-	if offset < 0 || bodyLength < 0 || offset > capacity-bodyLength {
-		return fmt.Errorf(
-			"%w: offset=%d capacity=%d",
+	return atomic.BoundsWrapError(buf, offset, bodyLength, wrapped)
+}
+
+func decodeMinimumBodyLengthError(
+	bodyLength, minimum int,
+	wrapped error,
+) error {
+	if bodyLength >= minimum {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: bodyLength=%d minimum=%d",
+		wrapped,
+		bodyLength,
+		minimum,
+	)
+}
+
+func putCorrelatedFields(
+	buf atomic.AtomicBuffer,
+	offset int,
+	clientID, correlationID int64,
+) {
+	buf.PutInt64(offset, clientID)
+	buf.PutInt64(offset+sizeOfInt64, correlationID)
+}
+
+func decodeTrailingStringASCII(
+	buf atomic.AtomicBuffer,
+	offset, bodyLength, stringOffset int,
+	wrapped error,
+) (string, error) {
+	if stringOffset > bodyLength {
+		return "", fmt.Errorf(
+			"%w: stringOffset=%d bodyLength=%d",
 			wrapped,
-			offset,
-			capacity,
+			stringOffset,
+			bodyLength,
 		)
 	}
-	return nil
+	value, encodedLength, err := atomic.GetStringASCII(
+		buf.Slice(offset+stringOffset, bodyLength-stringOffset),
+		0,
+	)
+	if err != nil {
+		return "", err
+	}
+
+	decodedLength := stringOffset + encodedLength
+	if decodedLength != bodyLength {
+		return "", fmt.Errorf(
+			"%w: decodedLength=%d bodyLength=%d",
+			wrapped,
+			decodedLength,
+			bodyLength,
+		)
+	}
+	return value, nil
 }
 
 func EncodeCorrelated(
-	buffer atomic.AtomicBuffer,
+	buf atomic.AtomicBuffer,
 	offset int,
-	clientID int64,
-	correlationID int64,
+	clientID, correlationID int64,
 ) error {
 	if err := bodyBoundsError(
-		buffer,
+		buf,
 		offset,
 		CorrelatedMessageLength,
 		ErrCorrelatedMessageOutOfBounds,
 	); err != nil {
 		return err
 	}
-	buffer.PutInt64(offset, clientID)
-	buffer.PutInt64(offset+sizeOfInt64, correlationID)
+	putCorrelatedFields(buf, offset, clientID, correlationID)
 	return nil
 }
 
-func CorrelatedMessageBytes(clientID, correlationID int64) []byte {
-	buffer := make([]byte, CorrelatedMessageLength)
-	_ = EncodeCorrelated(atomic.Wrap(buffer), 0, clientID, correlationID)
+func encodeToBytes(
+	length int,
+	encode func(buf atomic.AtomicBuffer, offset int) error,
+) []byte {
+	buffer := make([]byte, length)
+	if err := encode(atomic.Wrap(buffer), 0); err != nil {
+		panic(err)
+	}
 	return buffer
 }
 
-func DecodeCorrelated(buffer atomic.AtomicBuffer, offset int) (CorrelatedMessage, error) {
+func CorrelatedMessageBytes(clientID, correlationID int64) []byte {
+	return encodeToBytes(CorrelatedMessageLength, func(buf atomic.AtomicBuffer, offset int) error {
+		return EncodeCorrelated(buf, offset, clientID, correlationID)
+	})
+}
+
+func DecodeCorrelated(buf atomic.AtomicBuffer, offset int) (CorrelatedMessage, error) {
 	if err := bodyBoundsError(
-		buffer,
+		buf,
 		offset,
 		CorrelatedMessageLength,
 		ErrCorrelatedMessageOutOfBounds,
@@ -91,17 +147,14 @@ func DecodeCorrelated(buffer atomic.AtomicBuffer, offset int) (CorrelatedMessage
 		return CorrelatedMessage{}, err
 	}
 	return CorrelatedMessage{
-		ClientID:      buffer.GetInt64(offset),
-		CorrelationID: buffer.GetInt64(offset + sizeOfInt64),
+		ClientID:      buf.GetInt64(offset),
+		CorrelationID: buf.GetInt64(offset + sizeOfInt64),
 	}, nil
 }
 
-func DecodeCorrelationAndInt32(
-	buffer atomic.AtomicBuffer,
-	offset int,
-) (CorrelationAndInt32, error) {
+func DecodeCorrelationAndInt32(buf atomic.AtomicBuffer, offset int) (CorrelationAndInt32, error) {
 	if err := bodyBoundsError(
-		buffer,
+		buf,
 		offset,
 		CorrelationAndInt32BodyLength,
 		ErrCorrelationAndInt32OutOfBounds,
@@ -109,7 +162,7 @@ func DecodeCorrelationAndInt32(
 		return CorrelationAndInt32{}, err
 	}
 	return CorrelationAndInt32{
-		CorrelationID: buffer.GetInt64(offset),
-		Int32Value:    buffer.GetInt32(offset + sizeOfInt64),
+		CorrelationID: buf.GetInt64(offset),
+		Int32Value:    buf.GetInt32(offset + sizeOfInt64),
 	}, nil
 }

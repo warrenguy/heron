@@ -36,21 +36,21 @@ test:
 	go test -race -coverprofile=$(COVERAGE_PROFILE) ./...
 	@go tool cover -func=$(COVERAGE_PROFILE) | tail -1
 
-test-stress:
-	go test -tags=stress -count=1 -run Stress ./aeron/ringbuffer/ ./aeron/broadcast/
-
-bench:
-	go test -bench=. -benchmem ./...
-
 BENCH_DIR := .bench
 BENCH_BASELINE := $(BENCH_DIR)/baseline.txt
 BENCH_COUNT ?= 10
-BENCH_PKGS := ./aeron/broadcast/ ./aeron/ringbuffer/
+BENCH_PKGS := ./...
 export BENCH_PKGS BENCH_COUNT BENCH_BASELINE GOARCH
+
+test-stress:
+	go test -tags=stress -count=1 -run Stress ./...
+
+bench:
+	go test -run '^$$' -bench=. -benchmem ./...
 
 bench-baseline:
 	@mkdir -p $(BENCH_DIR) && set -o pipefail && \
-		go test -bench=. -benchmem -count=$(BENCH_COUNT) $(BENCH_PKGS) \
+		go test -run '^$$' -bench=. -benchmem -count=$(BENCH_COUNT) $(BENCH_PKGS) \
 		| tee $(BENCH_BASELINE)
 
 bench-regression:

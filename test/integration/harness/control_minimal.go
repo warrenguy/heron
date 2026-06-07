@@ -5,7 +5,6 @@ import (
 
 	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/record"
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
 
@@ -45,48 +44,7 @@ func findPendingClientClose(
 	ring *ringbuffer.ManyToOneRingBuffer,
 	clientID int64,
 ) (conductor.CorrelatedMessage, bool, error) {
-	buffer := ring.Buffer()
-	capacity := ring.Capacity()
-	mask := capacity - 1
-
-	head := ring.ConsumerPosition()
-	tail := ring.ProducerPosition()
-	if head >= tail {
-		return conductor.CorrelatedMessage{}, false, nil
-	}
-
-	position := head
-	for position < tail {
-		recordIndex := int(position) & mask
-		recordLength := int(buffer.GetInt32Volatile(record.LengthOffset(recordIndex)))
-		if recordLength <= 0 {
-			// Driver may be mid-consume; stop scanning like the ring consumer.
-			break
-		}
-
-		alignedLength := record.AlignRecordLength(recordLength)
-		messageTypeID := int(buffer.GetInt32(record.TypeOffset(recordIndex)))
-		if messageTypeID == conductor.ClientClose {
-			payloadOffset := record.EncodedMsgOffset(recordIndex)
-			bodyLength := recordLength - ringbuffer.HeaderLength
-			decoded, ok, err := decodeMatchingClientClose(
-				buffer,
-				payloadOffset,
-				bodyLength,
-				clientID,
-			)
-			if err != nil {
-				return conductor.CorrelatedMessage{}, false, err
-			}
-			if ok {
-				return decoded, true, nil
-			}
-		}
-
-		position += int64(alignedLength)
-	}
-
-	return conductor.CorrelatedMessage{}, false, nil
+	return findPendingOnRing(ring, clientCloseObserveSpec(clientID))
 }
 
 func findOfferedClientCloseAt(
@@ -94,32 +52,7 @@ func findOfferedClientCloseAt(
 	clientID int64,
 	producerBefore int64,
 ) (conductor.CorrelatedMessage, bool, error) {
-	if ring.ProducerPosition() <= producerBefore {
-		return conductor.CorrelatedMessage{}, false, nil
-	}
-
-	buffer := ring.Buffer()
-	capacity := ring.Capacity()
-	recordIndex := int(producerBefore) & (capacity - 1)
-
-	recordLength := int(buffer.GetInt32Volatile(record.LengthOffset(recordIndex)))
-	if recordLength <= 0 {
-		return conductor.CorrelatedMessage{}, false, nil
-	}
-
-	alignedLength := record.AlignRecordLength(recordLength)
-	if int64(alignedLength) != int64(conductor.CorrelatedRingRecordLength()) {
-		return conductor.CorrelatedMessage{}, false, nil
-	}
-
-	messageTypeID := int(buffer.GetInt32(record.TypeOffset(recordIndex)))
-	if messageTypeID != conductor.ClientClose {
-		return conductor.CorrelatedMessage{}, false, nil
-	}
-
-	payloadOffset := record.EncodedMsgOffset(recordIndex)
-	bodyLength := recordLength - ringbuffer.HeaderLength
-	return decodeMatchingClientClose(buffer, payloadOffset, bodyLength, clientID)
+	return findOfferedAt(ring, producerBefore, clientCloseObserveSpec(clientID), nil)
 }
 
 func observeClientClose(
@@ -128,39 +61,12 @@ func observeClientClose(
 	consumerBefore, producerBefore int64,
 	provenClientClosePosition *int64,
 ) (conductor.CorrelatedMessage, bool, error) {
-	if *provenClientClosePosition < 0 {
-		decoded, ok, err := findOfferedClientCloseAt(ring, clientID, producerBefore)
-		if err != nil {
-			return conductor.CorrelatedMessage{}, false, err
-		}
-		if ok {
-			*provenClientClosePosition = producerBefore
-			return decoded, true, nil
-		}
-	}
-
-	decoded, ok, err := findPendingClientClose(ring, clientID)
-	if err != nil {
-		return conductor.CorrelatedMessage{}, false, err
-	}
-	if ok {
-		if *provenClientClosePosition < 0 {
-			*provenClientClosePosition = ring.ConsumerPosition()
-		}
-		return decoded, true, nil
-	}
-
-	consumerAfter := ring.ConsumerPosition()
-	producerAfter := ring.ProducerPosition()
-	return findConsumedClientCloseAt(
+	return observeOnRing(
 		ring,
-		clientID,
 		consumerBefore,
-		consumerAfter,
 		producerBefore,
-		producerAfter,
-		*provenClientClosePosition,
-		producerBefore == consumerBefore,
+		provenClientClosePosition,
+		clientCloseObserveSpec(clientID),
 	)
 }
 
@@ -172,39 +78,84 @@ func findConsumedClientCloseAt(
 	provenClientClosePosition int64,
 	onlyClientCloseOfferedSinceSnapshot bool,
 ) (conductor.CorrelatedMessage, bool, error) {
-	wantRecordLength := int64(conductor.CorrelatedRingRecordLength())
-	producerDelta := producerAfter - producerBefore
-	consumerDelta := consumerAfter - consumerBefore
-	if producerDelta != wantRecordLength || consumerDelta != wantRecordLength {
-		return conductor.CorrelatedMessage{}, false, nil
+	return findConsumedAt(
+		ring,
+		consumerBefore,
+		consumerAfter,
+		producerBefore,
+		producerAfter,
+		provenClientClosePosition,
+		onlyClientCloseOfferedSinceSnapshot,
+		clientCloseObserveSpec(clientID),
+	)
+}
+
+func decodeMatchingAddPublication(
+	buffer aeronatomic.AtomicBuffer,
+	payloadOffset int,
+	bodyLength int,
+	want conductor.PublicationMessage,
+) (conductor.PublicationMessage, bool, error) {
+	decoded, err := conductor.DecodePublicationMessage(buffer, payloadOffset, bodyLength)
+	if err != nil {
+		return conductor.PublicationMessage{}, false, err
+	}
+	if decoded.ClientID != want.ClientID ||
+		decoded.CorrelationID != want.CorrelationID ||
+		decoded.StreamID != want.StreamID ||
+		decoded.Channel != want.Channel {
+		return conductor.PublicationMessage{}, false, nil
 	}
 
-	buffer := ring.Buffer()
-	capacity := ring.Capacity()
-	recordIndex := int(consumerBefore) & (capacity - 1)
+	return decoded, true, nil
+}
 
-	recordLength := int(buffer.GetInt32Volatile(record.LengthOffset(recordIndex)))
-	if recordLength <= 0 {
-		closeOnlySinceSnapshot := onlyClientCloseOfferedSinceSnapshot &&
-			producerBefore == consumerBefore
-		if provenClientClosePosition == consumerBefore || closeOnlySinceSnapshot {
-			return syntheticClientClose(clientID), true, nil
-		}
+func findPendingAddPublication(
+	ring *ringbuffer.ManyToOneRingBuffer,
+	want conductor.PublicationMessage,
+) (conductor.PublicationMessage, bool, error) {
+	return findPendingOnRing(ring, addPublicationObserveSpec(want))
+}
 
-		return conductor.CorrelatedMessage{}, false, nil
-	}
+func findOfferedAddPublicationAt(
+	ring *ringbuffer.ManyToOneRingBuffer,
+	producerBefore int64,
+	want conductor.PublicationMessage,
+) (conductor.PublicationMessage, bool, error) {
+	return findOfferedAt(ring, producerBefore, addPublicationObserveSpec(want), nil)
+}
 
-	alignedLength := record.AlignRecordLength(recordLength)
-	if int64(alignedLength) != wantRecordLength {
-		return conductor.CorrelatedMessage{}, false, nil
-	}
+func observeAddPublication(
+	ring *ringbuffer.ManyToOneRingBuffer,
+	want conductor.PublicationMessage,
+	consumerBefore, producerBefore int64,
+	provenPosition *int64,
+) (conductor.PublicationMessage, bool, error) {
+	return observeOnRing(
+		ring,
+		consumerBefore,
+		producerBefore,
+		provenPosition,
+		addPublicationObserveSpec(want),
+	)
+}
 
-	messageTypeID := int(buffer.GetInt32(record.TypeOffset(recordIndex)))
-	if messageTypeID != conductor.ClientClose {
-		return conductor.CorrelatedMessage{}, false, nil
-	}
-
-	payloadOffset := record.EncodedMsgOffset(recordIndex)
-	bodyLength := recordLength - ringbuffer.HeaderLength
-	return decodeMatchingClientClose(buffer, payloadOffset, bodyLength, clientID)
+func findConsumedAddPublicationAt(
+	ring *ringbuffer.ManyToOneRingBuffer,
+	want conductor.PublicationMessage,
+	consumerBefore, consumerAfter int64,
+	producerBefore, producerAfter int64,
+	provenPosition int64,
+	onlyAddPublicationOfferedSinceSnapshot bool,
+) (conductor.PublicationMessage, bool, error) {
+	return findConsumedAt(
+		ring,
+		consumerBefore,
+		consumerAfter,
+		producerBefore,
+		producerAfter,
+		provenPosition,
+		onlyAddPublicationOfferedSinceSnapshot,
+		addPublicationObserveSpec(want),
+	)
 }
