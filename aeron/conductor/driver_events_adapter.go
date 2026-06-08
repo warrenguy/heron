@@ -114,6 +114,8 @@ func (adapter *DriverEventsAdapter) rejectUnlessActiveCorrelation(
 	return false
 }
 
+// Fixed flyweight: broadcast length may exceed the body;
+// decode reads OperationSuccessBodyLength only.
 func (adapter *DriverEventsAdapter) handleOnOperationSuccess(
 	buffer atomic.AtomicBuffer,
 	offset int,
@@ -142,6 +144,7 @@ func (adapter *DriverEventsAdapter) handleOnOperationSuccess(
 	}
 }
 
+// Variable-length flyweight: decode requires exact body consumption; trailing bytes are rejected.
 func (adapter *DriverEventsAdapter) handleOnError(
 	buffer atomic.AtomicBuffer,
 	offset int,
@@ -149,7 +152,7 @@ func (adapter *DriverEventsAdapter) handleOnError(
 	activeCorrelationID int64,
 	pending PendingEventHandler,
 ) {
-	if length < ErrorResponseFixedBodyLength {
+	if length < ErrorResponseMinBodyLength {
 		adapter.unhandledEventCount++
 		return
 	}
@@ -170,6 +173,8 @@ func (adapter *DriverEventsAdapter) handleOnError(
 	}
 }
 
+// Fixed flyweight: broadcast length may exceed the body;
+// decode reads NextAvailableSessionIDBodyLength only.
 func (adapter *DriverEventsAdapter) handleNextAvailableSessionID(
 	buffer atomic.AtomicBuffer,
 	offset int,
@@ -177,11 +182,11 @@ func (adapter *DriverEventsAdapter) handleNextAvailableSessionID(
 	activeCorrelationID int64,
 	pending PendingEventHandler,
 ) {
-	if length < CorrelationAndInt32BodyLength {
+	if length < NextAvailableSessionIDBodyLength {
 		adapter.unhandledEventCount++
 		return
 	}
-	decoded, err := DecodeCorrelationAndInt32(buffer, offset)
+	decoded, err := DecodeNextAvailableSessionID(buffer, offset)
 	if err != nil {
 		adapter.unhandledEventCount++
 		return

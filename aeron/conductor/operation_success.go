@@ -14,6 +14,8 @@ type OperationSuccess struct {
 	CorrelationID int64
 }
 
+// DecodeOperationSuccess decodes an ON_OPERATION_SUCCESS event body.
+// The caller must ensure the broadcast body length is at least OperationSuccessBodyLength.
 func DecodeOperationSuccess(
 	buf atomic.AtomicBuffer,
 	offset int,

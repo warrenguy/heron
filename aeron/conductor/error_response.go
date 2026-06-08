@@ -7,7 +7,10 @@ import (
 	"github.com/warrenguy/heron/aeron/atomic"
 )
 
-const ErrorResponseFixedBodyLength = 16
+const (
+	ErrorResponseFixedBodyLength = 16 // through length field inclusive
+	ErrorResponseMinBodyLength   = ErrorResponseFixedBodyLength
+)
 
 var ErrErrorResponseTooShort = errors.New("conductor: error response too short")
 
@@ -28,7 +31,7 @@ func DecodeErrorResponse(
 ) (ErrorResponse, error) {
 	if err := decodeMinimumBodyLengthError(
 		length,
-		ErrorResponseFixedBodyLength,
+		ErrorResponseMinBodyLength,
 		ErrErrorResponseTooShort,
 	); err != nil {
 		return ErrorResponse{}, err
@@ -44,7 +47,11 @@ func DecodeErrorResponse(
 
 	messageLength := buf.GetInt32(offset + 12)
 	if messageLength < 0 {
-		return ErrorResponse{}, ErrErrorResponseTooShort
+		return ErrorResponse{}, fmt.Errorf(
+			"%w: messageLength=%d",
+			ErrErrorResponseTooShort,
+			messageLength,
+		)
 	}
 
 	messageLengthInt := int(messageLength)
@@ -58,6 +65,7 @@ func DecodeErrorResponse(
 		)
 	}
 
+	// Exact-fit decode: decodedLength must equal length so padded broadcast bodies are rejected.
 	decodedMessage, err := decodeTrailingStringASCII(
 		buf,
 		offset,

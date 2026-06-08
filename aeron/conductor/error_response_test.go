@@ -4,10 +4,34 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 )
+
+func TestErrorResponseBytes_golden(t *testing.T) {
+	require.Equal(
+		t,
+		[]byte{
+			0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x0b, 0x00, 0x00, 0x00,
+			0x04, 0x00, 0x00, 0x00,
+			0x66, 0x61, 0x69, 0x6c,
+		},
+		conductor.ErrorResponseBytes(7, 11, "fail"),
+	)
+	require.Equal(
+		t,
+		[]byte{
+			0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00,
+		},
+		conductor.ErrorResponseBytes(7, 0, ""),
+	)
+}
 
 func TestDecodeErrorResponse_golden(t *testing.T) {
 	payload := conductor.ErrorResponseBytes(7, 11, "fail")
@@ -67,7 +91,7 @@ func TestDecodeErrorResponse_negativeMessageLength(t *testing.T) {
 
 	_, err := conductor.DecodeErrorResponse(buffer, 0, 16)
 	require.ErrorIs(t, err, conductor.ErrErrorResponseTooShort)
-	require.EqualError(t, err, "conductor: error response too short")
+	require.EqualError(t, err, "conductor: error response too short: messageLength=-1")
 }
 
 func TestDecodeErrorResponse_lengthMismatch(t *testing.T) {
@@ -111,6 +135,21 @@ func TestDecodeErrorResponse_truncatedMessage(t *testing.T) {
 	)
 }
 
+func TestEncodeErrorResponse_nonASCII(t *testing.T) {
+	const nonASCIIMessage = "fail\x80"
+	buffer := atomic.Wrap(
+		make([]byte, conductor.ErrorResponseTotalLength(len(nonASCIIMessage))),
+	)
+
+	err := conductor.EncodeErrorResponse(buffer, 0, conductor.ErrorResponse{
+		OffendingCommandCorrelationID: 7,
+		ErrorCode:                     1,
+		ErrorMessage:                  nonASCIIMessage,
+	})
+	require.ErrorIs(t, err, atomic.ErrStringASCIINonASCII)
+	require.EqualError(t, err, "atomic: string ascii non-ascii")
+}
+
 func TestEncodeErrorResponse_outOfBounds(t *testing.T) {
 	buffer := atomic.Wrap(make([]byte, 16))
 
@@ -127,21 +166,25 @@ func TestEncodeErrorResponse_outOfBounds(t *testing.T) {
 	)
 }
 
-func TestErrorResponse_roundtrip(t *testing.T) {
-	want := conductor.ErrorResponse{
-		OffendingCommandCorrelationID: 42,
-		ErrorCode:                     99,
-		ErrorMessage:                  "channel error",
-	}
-	buffer := atomic.Wrap(make([]byte, conductor.ErrorResponseTotalLength(len(want.ErrorMessage))))
+func TestDecodeErrorResponse_roundtrip_rapid(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		correlationID := rapid.Int64().Draw(rt, "correlationID")
+		errorCode := rapid.Int32().Draw(rt, "errorCode")
+		message := testutil.DrawASCIIStringLenRange(rt, "message", 0, 256)
+		offset := rapid.IntRange(0, 8).Draw(rt, "offset")
 
-	require.NoError(t, conductor.EncodeErrorResponse(buffer, 0, want))
+		want := conductor.ErrorResponse{
+			OffendingCommandCorrelationID: correlationID,
+			ErrorCode:                     errorCode,
+			ErrorMessage:                  message,
+		}
+		bodyLength := conductor.ErrorResponseTotalLength(len(message))
+		buffer := atomic.Wrap(make([]byte, offset+bodyLength))
 
-	got, err := conductor.DecodeErrorResponse(
-		buffer,
-		0,
-		conductor.ErrorResponseTotalLength(len(want.ErrorMessage)),
-	)
-	require.NoError(t, err)
-	require.Equal(t, want, got)
+		require.NoError(rt, conductor.EncodeErrorResponse(buffer, offset, want))
+
+		got, err := conductor.DecodeErrorResponse(buffer, offset, bodyLength)
+		require.NoError(rt, err)
+		require.Equal(rt, want, got)
+	})
 }

@@ -9,9 +9,16 @@ import (
 	"github.com/warrenguy/heron/aeron/conductor"
 )
 
+func TestOperationSuccessBytes_golden(t *testing.T) {
+	require.Equal(
+		t,
+		[]byte{0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+		conductor.OperationSuccessBytes(7),
+	)
+}
+
 func TestDecodeOperationSuccess_golden(t *testing.T) {
-	payload := conductor.OperationSuccessBytes(7)
-	buffer := atomic.Wrap(payload)
+	buffer := atomic.Wrap(conductor.OperationSuccessBytes(7))
 
 	got, err := conductor.DecodeOperationSuccess(buffer, 0)
 	require.NoError(t, err)

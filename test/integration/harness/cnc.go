@@ -143,6 +143,20 @@ func requireDecodeCorrelationAndInt32(
 	return decoded
 }
 
+func requireDecodeNextAvailableSessionID(
+	t testing.TB,
+	toClients *broadcast.BroadcastReceiver,
+) conductor.CorrelationAndInt32 {
+	t.Helper()
+
+	decoded, err := conductor.DecodeNextAvailableSessionID(
+		toClients.Buffer(),
+		toClients.Offset(),
+	)
+	require.NoError(t, err)
+	return decoded
+}
+
 func waitForNextSessionIDEvent(
 	t testing.TB,
 	toClients *broadcast.BroadcastReceiver,
@@ -165,16 +179,16 @@ func waitForNextSessionIDEvent(
 
 			switch toClients.TypeID() {
 			case conductor.OnNextAvailableSessionID:
-				require.Equal(t, conductor.CorrelationAndInt32BodyLength, toClients.Length())
+				require.Equal(t, conductor.NextAvailableSessionIDBodyLength, toClients.Length())
 
-				event = requireDecodeCorrelationAndInt32(t, toClients)
+				event = requireDecodeNextAvailableSessionID(t, toClients)
 				require.Equal(t, correlationID, event.CorrelationID)
 				return true
 			case conductor.OnError:
 				require.GreaterOrEqual(
 					t,
 					toClients.Length(),
-					conductor.CorrelationAndInt32BodyLength,
+					conductor.ErrorResponseMinBodyLength,
 					"ON_ERROR correlation %d",
 					correlationID,
 				)

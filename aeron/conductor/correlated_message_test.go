@@ -127,13 +127,32 @@ func TestDecodeTrailingStringASCII_stringOffsetBeyondBodyLength(t *testing.T) {
 	)
 }
 
+// Java NextAvailableSessionIdFlyweight 1.51.0 (correlationID=99, nextSessionID=1001).
+func TestNextAvailableSessionIDBytes_golden(t *testing.T) {
+	require.Equal(
+		t,
+		[]byte{
+			0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0xe9, 0x03, 0x00, 0x00,
+		},
+		conductor.CorrelationAndInt32Bytes(99, 1001),
+	)
+}
+
+func TestDecodeNextAvailableSessionID_golden(t *testing.T) {
+	buffer := atomic.Wrap(conductor.CorrelationAndInt32Bytes(99, 1001))
+
+	got, err := conductor.DecodeNextAvailableSessionID(buffer, 0)
+	require.NoError(t, err)
+	require.Equal(t, conductor.CorrelationAndInt32{
+		CorrelationID: 99,
+		Int32Value:    1001,
+	}, got)
+}
+
 func TestCorrelationAndInt32(t *testing.T) {
 	t.Run("decode golden", func(t *testing.T) {
-		buf := []byte{
-			0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-			0x39, 0x30, 0x00, 0x00,
-		}
-		buffer := atomic.Wrap(buf)
+		buffer := atomic.Wrap(conductor.CorrelationAndInt32Bytes(42, 12345))
 
 		got, err := conductor.DecodeCorrelationAndInt32(buffer, 0)
 		require.NoError(t, err)

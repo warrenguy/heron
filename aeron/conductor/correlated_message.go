@@ -21,6 +21,7 @@ const (
 	sizeOfInt64                         = 8
 	CorrelatedMessageLength             = 2 * sizeOfInt64
 	CorrelationAndInt32BodyLength       = sizeOfInt64 + 4
+	NextAvailableSessionIDBodyLength    = CorrelationAndInt32BodyLength
 	GetNextAvailableSessionIDBodyLength = CorrelatedMessageLength + 4
 )
 
@@ -193,4 +194,13 @@ func DecodeCorrelationAndInt32(buf atomic.AtomicBuffer, offset int) (Correlation
 		CorrelationID: buf.GetInt64(offset),
 		Int32Value:    buf.GetInt32(offset + sizeOfInt64),
 	}, nil
+}
+
+// DecodeNextAvailableSessionID decodes the ON_NEXT_AVAILABLE_SESSION_ID event body.
+// The caller must ensure the broadcast body length is at least NextAvailableSessionIDBodyLength.
+func DecodeNextAvailableSessionID(
+	buf atomic.AtomicBuffer,
+	offset int,
+) (CorrelationAndInt32, error) {
+	return DecodeCorrelationAndInt32(buf, offset)
 }

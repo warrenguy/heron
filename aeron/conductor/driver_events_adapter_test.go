@@ -76,6 +76,24 @@ func TestDriverEventsAdapter_OnNextAvailableSessionID(t *testing.T) {
 			wantPendingRemoved:   true,
 		},
 		{
+			name:                 "paddedBody",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestCorrelationID,
+			eventSessionID:       nextSessionID,
+			eventPayload: func() []byte {
+				payload := conductor.CorrelationAndInt32Bytes(
+					pendingTestCorrelationID,
+					nextSessionID,
+				)
+				return append(payload, 0xFF)
+			}(),
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindNextSessionID,
+			wantDone:             true,
+			wantSessionID:        nextSessionID,
+			wantPendingRemoved:   true,
+		},
+		{
 			name:                 "wrongActiveCorrelationID",
 			setActiveCorrelation: true,
 			eventCorrelationID:   pendingTestOtherCorrelationID,
@@ -113,6 +131,13 @@ func TestDriverEventsAdapter_OnNextAvailableSessionID(t *testing.T) {
 		{
 			name:                 "shortBody",
 			eventPayload:         []byte{0x01},
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindNextSessionID,
+			wantUnhandled:        1,
+		},
+		{
+			name:                 "minimumMinusOneBody",
+			eventPayload:         bodyOneByteShort(conductor.NextAvailableSessionIDBodyLength),
 			receiveCorrelationID: pendingTestCorrelationID,
 			pendingKind:          conductor.PendingKindNextSessionID,
 			wantUnhandled:        1,
@@ -213,6 +238,7 @@ func TestDriverEventsAdapter_OnError(t *testing.T) {
 		wantUnhandled        int64
 		wantDone             bool
 		wantDriverError      bool
+		wantErrorMessage     string
 		wantPendingRemoved   bool
 	}{
 		{
@@ -224,6 +250,7 @@ func TestDriverEventsAdapter_OnError(t *testing.T) {
 			receiveCorrelationID: pendingTestCorrelationID,
 			wantDone:             true,
 			wantDriverError:      true,
+			wantErrorMessage:     "registration failed",
 			wantPendingRemoved:   true,
 		},
 		{
@@ -235,6 +262,24 @@ func TestDriverEventsAdapter_OnError(t *testing.T) {
 			receiveCorrelationID: pendingTestCorrelationID,
 			wantDone:             true,
 			wantDriverError:      true,
+			wantErrorMessage:     "registration failed",
+			wantPendingRemoved:   true,
+		},
+		{
+			name:                 "emptyMessage",
+			setActiveCorrelation: true,
+			registerPending:      true,
+			pendingKind:          conductor.PendingKindNextSessionID,
+			eventCorrelationID:   pendingTestCorrelationID,
+			eventPayload: conductor.ErrorResponseBytes(
+				pendingTestCorrelationID,
+				errorCode,
+				"",
+			),
+			receiveCorrelationID: pendingTestCorrelationID,
+			wantDone:             true,
+			wantDriverError:      true,
+			wantErrorMessage:     "",
 			wantPendingRemoved:   true,
 		},
 		{
@@ -274,16 +319,60 @@ func TestDriverEventsAdapter_OnError(t *testing.T) {
 			wantUnhandled:        1,
 		},
 		{
+			name:                 "minimumMinusOneBody",
+			eventPayload:         bodyOneByteShort(conductor.ErrorResponseMinBodyLength),
+			receiveCorrelationID: pendingTestCorrelationID,
+			wantUnhandled:        1,
+		},
+		{
+			name: "lengthMismatch",
+			eventPayload: func() []byte {
+				payload := make([]byte, conductor.ErrorResponseMinBodyLength)
+				buffer := atomic.Wrap(payload)
+				buffer.PutInt64(0, pendingTestCorrelationID)
+				buffer.PutInt32(8, errorCode)
+				buffer.PutInt32(12, 8)
+				return payload
+			}(),
+			receiveCorrelationID: pendingTestCorrelationID,
+			wantUnhandled:        1,
+		},
+		{
+			name: "truncatedMessage",
+			eventPayload: func() []byte {
+				payload := conductor.ErrorResponseBytes(
+					pendingTestCorrelationID,
+					errorCode,
+					"fail",
+				)
+				return payload[:len(payload)-1]
+			}(),
+			receiveCorrelationID: pendingTestCorrelationID,
+			wantUnhandled:        1,
+		},
+		{
+			name: "bodyLongerThanDecoded",
+			eventPayload: func() []byte {
+				payload := conductor.ErrorResponseBytes(
+					pendingTestCorrelationID,
+					errorCode,
+					"fail",
+				)
+				return append(payload, 0xFF)
+			}(),
+			receiveCorrelationID: pendingTestCorrelationID,
+			wantUnhandled:        1,
+		},
+		{
 			name:                 "negativeMessageLength",
 			setActiveCorrelation: true,
 			registerPending:      true,
 			eventPayload: func() []byte {
-				payload := make([]byte, 16)
-				atomic.Wrap(payload).PutInt64(0, pendingTestCorrelationID)
-				payload[12] = 0xff
-				payload[13] = 0xff
-				payload[14] = 0xff
-				payload[15] = 0xff
+				payload := make([]byte, conductor.ErrorResponseMinBodyLength)
+				buffer := atomic.Wrap(payload)
+				buffer.PutInt64(0, pendingTestCorrelationID)
+				buffer.PutInt32(8, errorCode)
+				buffer.PutInt32(12, -1)
 				return payload
 			}(),
 			receiveCorrelationID: pendingTestCorrelationID,
@@ -345,11 +434,11 @@ func TestDriverEventsAdapter_OnError(t *testing.T) {
 				require.ErrorAs(t, err, &driverErr)
 				require.Equal(t, pendingTestCorrelationID, driverErr.CorrelationID)
 				require.Equal(t, errorCode, driverErr.ErrorCode)
-				require.Equal(t, "registration failed", driverErr.Message)
 				require.EqualError(
 					t,
 					err,
-					"conductor: driver registration error: correlation=7 code=11 message=registration failed",
+					"conductor: driver registration error: correlation=7 code=11 message="+
+						testCase.wantErrorMessage,
 				)
 			} else {
 				require.NoError(t, err)
@@ -381,6 +470,18 @@ func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
 			name:                 "matchingActive",
 			setActiveCorrelation: true,
 			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindOperationSuccess,
+			wantDone:             true,
+		},
+		{
+			name:                 "paddedBody",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestCorrelationID,
+			eventPayload: func() []byte {
+				payload := conductor.OperationSuccessBytes(pendingTestCorrelationID)
+				return append(payload, 0xFF)
+			}(),
 			receiveCorrelationID: pendingTestCorrelationID,
 			pendingKind:          conductor.PendingKindOperationSuccess,
 			wantDone:             true,
@@ -421,6 +522,13 @@ func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
 		{
 			name:                 "shortBody",
 			eventPayload:         []byte{0x01},
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindOperationSuccess,
+			wantUnhandled:        1,
+		},
+		{
+			name:                 "minimumMinusOneBody",
+			eventPayload:         bodyOneByteShort(conductor.OperationSuccessBodyLength),
 			receiveCorrelationID: pendingTestCorrelationID,
 			pendingKind:          conductor.PendingKindOperationSuccess,
 			wantUnhandled:        1,
@@ -547,6 +655,10 @@ func newDriverEventsAdapterForTest(
 		errorHandler,
 		onClientTimeout,
 	)
+}
+
+func bodyOneByteShort(minimumBodyLength int) []byte {
+	return make([]byte, minimumBodyLength-1)
 }
 
 func transmitConductorEvent(
