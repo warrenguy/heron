@@ -286,30 +286,60 @@ func TestConductor_terminateClearsPending(t *testing.T) {
 	require.ErrorIs(t, conductorInstance.TerminationCause(), conductor.ErrDriverShutdown)
 }
 
-func TestConductor_completeNextSessionID_wrongKind(t *testing.T) {
-	conductorInstance := newConductorForTestAtWorkNano(
-		t,
-		func(error) {},
-		0,
-		0,
-	)
-	require.NoError(
-		t,
-		conductorInstance.RegisterPending(
-			conductor.PendingKindOperationSuccess,
-			pendingTestCorrelationID,
-			pendingTestTimeout,
-		),
-	)
+func TestConductor_pendingHandler_wrongKind(t *testing.T) {
+	tests := []struct {
+		name           string
+		registeredKind conductor.PendingKind
+		invoke         func(*conductor.Conductor) bool
+		wantKind       conductor.PendingKind
+		wantInt32Value int32
+	}{
+		{
+			name:           "OnNextAvailableSessionID",
+			registeredKind: conductor.PendingKindOperationSuccess,
+			invoke: func(conductorInstance *conductor.Conductor) bool {
+				return conductorInstance.OnNextAvailableSessionID(pendingTestCorrelationID, 42)
+			},
+			wantKind:       conductor.PendingKindOperationSuccess,
+			wantInt32Value: 0,
+		},
+		{
+			name:           "OnOperationSuccess",
+			registeredKind: conductor.PendingKindNextSessionID,
+			invoke: func(conductorInstance *conductor.Conductor) bool {
+				return conductorInstance.OnOperationSuccess(pendingTestCorrelationID)
+			},
+			wantKind: conductor.PendingKindNextSessionID,
+		},
+	}
 
-	ok := conductorInstance.CompleteNextSessionIDForTest(pendingTestCorrelationID, 42)
-	require.False(t, ok)
-	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			conductorInstance := newConductorForTestAtWorkNano(
+				t,
+				func(error) {},
+				0,
+				0,
+			)
+			require.NoError(
+				t,
+				conductorInstance.RegisterPending(
+					testCase.registeredKind,
+					pendingTestCorrelationID,
+					pendingTestTimeout,
+				),
+			)
 
-	registration, found := conductorInstance.PendingResult(pendingTestCorrelationID)
-	require.True(t, found)
-	require.Equal(t, conductor.PendingKindOperationSuccess, registration.Kind)
-	require.Equal(t, int32(0), registration.Int32Value)
+			ok := testCase.invoke(conductorInstance)
+			require.False(t, ok)
+			require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+
+			registration, found := conductorInstance.PendingResult(pendingTestCorrelationID)
+			require.True(t, found)
+			require.Equal(t, testCase.wantKind, registration.Kind)
+			require.Equal(t, testCase.wantInt32Value, registration.Int32Value)
+		})
+	}
 }
 
 func TestConductor_CompletePendingForTest_missingRegistration(t *testing.T) {
@@ -322,4 +352,182 @@ func TestConductor_CompletePendingForTest_missingRegistration(t *testing.T) {
 	err := conductorInstance.CompletePendingForTest(pendingTestCorrelationID, 1, nil)
 	require.ErrorIs(t, err, conductor.ErrPendingNotFound)
 	require.EqualError(t, err, "conductor: no pending registration for correlation")
+}
+
+func TestConductor_expirePending_viaDoWork(t *testing.T) {
+	const startNs = int64(1_000)
+	var nanoNs int64
+	conductorInstance := newConductorForTest(
+		t,
+		conductorTestConfigMutableNano(t, func(error) {}, 0, &nanoNs),
+	)
+	nanoNs = startNs
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindNextSessionID,
+			pendingTestOtherCorrelationID,
+			500*time.Nanosecond,
+		),
+	)
+
+	nanoNs = startNs + 500
+	workCount := conductorInstance.DoWork()
+	require.Equal(t, 1, workCount)
+
+	_, ok := conductorInstance.PendingResult(pendingTestOtherCorrelationID)
+	require.False(t, ok)
+	done, _, err := conductorInstance.PollPending(pendingTestOtherCorrelationID)
+	require.False(t, done)
+	require.NoError(t, err)
+	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+}
+
+func TestConductor_expirePending_activeAwaitTimeout(t *testing.T) {
+	const startNs = int64(1_000)
+	var nanoNs int64
+	conductorInstance := newConductorForTest(
+		t,
+		conductorTestConfigMutableNano(t, func(error) {}, 0, &nanoNs),
+	)
+	nanoNs = startNs
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindNextSessionID,
+			pendingTestCorrelationID,
+			500*time.Nanosecond,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(pendingTestCorrelationID)
+
+	nanoNs = startNs + 500
+	workCount := conductorInstance.DoWork()
+	require.Equal(t, 1, workCount)
+
+	done, _, err := conductorInstance.PollPending(pendingTestCorrelationID)
+	require.True(t, done)
+	require.ErrorIs(t, err, conductor.ErrAwaitTimeout)
+	require.EqualError(t, err, "conductor: await response timeout")
+}
+
+func TestConductor_expirePending_lateSuccessClearsLatchedTimeout(t *testing.T) {
+	const (
+		startNs             = int64(1_000)
+		nextSessionID int32 = 42
+	)
+	var nanoNs int64
+	conductorInstance := newConductorForTest(
+		t,
+		conductorTestConfigMutableNano(t, func(error) {}, 0, &nanoNs),
+	)
+	nanoNs = startNs
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindNextSessionID,
+			pendingTestCorrelationID,
+			500*time.Nanosecond,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(pendingTestCorrelationID)
+
+	nanoNs = startNs + 500
+	workCount := conductorInstance.DoWork()
+	require.Equal(t, 1, workCount)
+	require.Equal(t, pendingTestCorrelationID, conductorInstance.ReceivedCorrelationID())
+	registration, ok := conductorInstance.PendingResult(pendingTestCorrelationID)
+	require.True(t, ok)
+	require.ErrorIs(t, registration.Err, conductor.ErrAwaitTimeout)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnNextAvailableSessionID,
+		conductor.CorrelationAndInt32Bytes(pendingTestCorrelationID, nextSessionID),
+	)
+	_ = conductorInstance.DoWork()
+
+	done, registration, err := conductorInstance.PollPending(pendingTestCorrelationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	require.Equal(t, nextSessionID, registration.Int32Value)
+}
+
+func TestConductor_expirePending_sameTickCompletionNotInterrupted(t *testing.T) {
+	const (
+		startNs             = int64(1_000)
+		nextSessionID int32 = 42
+	)
+	var nanoNs int64
+	conductorInstance := newConductorForTest(
+		t,
+		conductorTestConfigMutableNano(t, func(error) {}, 0, &nanoNs),
+	)
+	nanoNs = startNs
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindNextSessionID,
+			pendingTestCorrelationID,
+			500*time.Nanosecond,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(pendingTestCorrelationID)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnNextAvailableSessionID,
+		conductor.CorrelationAndInt32Bytes(pendingTestCorrelationID, nextSessionID),
+	)
+
+	nanoNs = startNs + 500
+	_ = conductorInstance.DoWork()
+
+	done, registration, err := conductorInstance.PollPending(pendingTestCorrelationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	require.Equal(t, nextSessionID, registration.Int32Value)
+}
+
+func TestConductor_service_resetsReceivedCorrelationIDEachTick(t *testing.T) {
+	const nextSessionID int32 = 42
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindNextSessionID,
+			pendingTestCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(pendingTestCorrelationID)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnNextAvailableSessionID,
+		conductor.CorrelationAndInt32Bytes(pendingTestCorrelationID, nextSessionID),
+	)
+
+	_ = conductorInstance.DoWork()
+	done, registration, err := conductorInstance.PollPending(pendingTestCorrelationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	require.Equal(t, nextSessionID, registration.Int32Value)
+
+	_ = conductorInstance.DoWork()
+	done, _, err = conductorInstance.PollPending(pendingTestCorrelationID)
+	require.False(t, done)
+	require.NoError(t, err)
+	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
 }

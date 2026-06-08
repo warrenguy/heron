@@ -1,6 +1,9 @@
 package conductor
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 type PendingKind int
 
@@ -18,7 +21,10 @@ type PendingRegistration struct {
 	Err        error
 }
 
+// pendingRegistry map structure is mutex-protected; Conductor await fields still
+// require a single invoker goroutine per client until clientLock lands.
 type pendingRegistry struct {
+	mu      sync.Mutex
 	entries map[int64]*PendingRegistration
 }
 
@@ -27,6 +33,9 @@ func newPendingRegistry() pendingRegistry {
 }
 
 func (registry *pendingRegistry) Register(registration PendingRegistration) error {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
 	if _, ok := registry.entries[registration.CorrelationID]; ok {
 		return ErrPendingAlreadyRegistered
 	}
@@ -36,16 +45,59 @@ func (registry *pendingRegistry) Register(registration PendingRegistration) erro
 }
 
 func (registry *pendingRegistry) Get(correlationID int64) (*PendingRegistration, bool) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
 	registration, ok := registry.entries[correlationID]
 	return registration, ok
 }
 
 func (registry *pendingRegistry) Remove(correlationID int64) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
 	delete(registry.entries, correlationID)
 }
 
 func (registry *pendingRegistry) IsEmpty() bool {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
 	return len(registry.entries) == 0
+}
+
+func (registry *pendingRegistry) Clear() {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	clear(registry.entries)
+}
+
+func (registry *pendingRegistry) ExpireBefore(
+	nowNs int64,
+	receivedCorrelationID int64,
+	activeCorrelationID int64,
+) (workCount int, timedOutActiveCorrelationID int64) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	timedOutActiveCorrelationID = NullCorrelationID
+	for correlationID, registration := range registry.entries {
+		if correlationID == receivedCorrelationID {
+			continue
+		}
+		if nowNs < registration.DeadlineNs {
+			continue
+		}
+		workCount++
+		if correlationID == activeCorrelationID {
+			registration.Err = ErrAwaitTimeout
+			timedOutActiveCorrelationID = correlationID
+			continue
+		}
+		delete(registry.entries, correlationID)
+	}
+	return workCount, timedOutActiveCorrelationID
 }
 
 func (conductor *Conductor) ActiveCorrelationID() int64 {
@@ -66,15 +118,26 @@ func (conductor *Conductor) PendingResult(
 	return *registration, true
 }
 
+// RegisterPending runs on the caller goroutine; PollPending and adapter handlers
+// run on the conductor service goroutine inside DoWork. Concurrent DoWork on one
+// Conductor is undefined.
 func (conductor *Conductor) RegisterPending(
 	kind PendingKind,
 	correlationID int64,
 	timeout time.Duration,
 ) error {
+	deadlineNs := conductor.config.NanoClock() + timeout.Nanoseconds()
+	return conductor.RegisterPendingWithDeadline(kind, correlationID, deadlineNs)
+}
+
+func (conductor *Conductor) RegisterPendingWithDeadline(
+	kind PendingKind,
+	correlationID int64,
+	deadlineNs int64,
+) error {
 	if conductor.isTerminating {
 		return ErrConductorTerminating
 	}
-	deadlineNs := conductor.config.NanoClock() + timeout.Nanoseconds()
 	return conductor.pending.Register(PendingRegistration{
 		CorrelationID: correlationID,
 		Kind:          kind,
@@ -107,7 +170,7 @@ func (conductor *Conductor) CancelPending(correlationID int64) {
 }
 
 func (conductor *Conductor) ClearPending() {
-	clear(conductor.pending.entries)
+	conductor.pending.Clear()
 	conductor.receivedCorrelationID = NullCorrelationID
 	conductor.activeCorrelationID = NullCorrelationID
 }
@@ -116,20 +179,64 @@ func (conductor *Conductor) SetActiveCorrelationID(correlationID int64) {
 	conductor.activeCorrelationID = correlationID
 }
 
-func (conductor *Conductor) completeNextSessionID(
-	correlationID int64,
-	nextSessionID int32,
+func (conductor *Conductor) completePendingSuccess(
+	registration *PendingRegistration,
+	mutate func(*PendingRegistration),
 ) bool {
+	if mutate != nil {
+		mutate(registration)
+	}
+	registration.Err = nil
+	conductor.receivedCorrelationID = registration.CorrelationID
+	return true
+}
+
+func (conductor *Conductor) completePendingError(response ErrorResponse) bool {
+	correlationID := response.OffendingCommandCorrelationID
 	registration, ok := conductor.pending.Get(correlationID)
 	if !ok {
 		return false
 	}
-	if registration.Kind != PendingKindNextSessionID {
-		return false
+	registration.Err = &DriverRegistrationError{
+		CorrelationID: correlationID,
+		ErrorCode:     response.ErrorCode,
+		Message:       response.ErrorMessage,
 	}
-	registration.Int32Value = nextSessionID
 	conductor.receivedCorrelationID = correlationID
 	return true
+}
+
+func (conductor *Conductor) completePendingIfKind(
+	correlationID int64,
+	wantKind PendingKind,
+	mutate func(*PendingRegistration),
+) bool {
+	registration, ok := conductor.pending.Get(correlationID)
+	if !ok || registration.Kind != wantKind {
+		return false
+	}
+	return conductor.completePendingSuccess(registration, mutate)
+}
+
+func (conductor *Conductor) OnOperationSuccess(correlationID int64) bool {
+	return conductor.completePendingIfKind(correlationID, PendingKindOperationSuccess, nil)
+}
+
+func (conductor *Conductor) OnError(response ErrorResponse) bool {
+	return conductor.completePendingError(response)
+}
+
+func (conductor *Conductor) OnNextAvailableSessionID(
+	correlationID int64,
+	nextSessionID int32,
+) bool {
+	return conductor.completePendingIfKind(
+		correlationID,
+		PendingKindNextSessionID,
+		func(registration *PendingRegistration) {
+			registration.Int32Value = nextSessionID
+		},
+	)
 }
 
 func (conductor *Conductor) SetReceivedCorrelationIDForTest(correlationID int64) {
@@ -142,7 +249,7 @@ func (conductor *Conductor) CompletePendingForTest(
 	err error,
 ) error {
 	if err == nil {
-		if !conductor.completeNextSessionID(correlationID, int32Value) {
+		if !conductor.OnNextAvailableSessionID(correlationID, int32Value) {
 			return ErrPendingNotFound
 		}
 		return nil

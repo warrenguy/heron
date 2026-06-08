@@ -128,7 +128,7 @@ func TestMapAwaitError(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			mapped := aeron.MapAwaitErrorForTest(testCase.input)
 			if testCase.wantSame {
-				require.Equal(t, testCase.input, mapped)
+				require.Same(t, testCase.input, mapped)
 				return
 			}
 			if testCase.wantErr != nil {
@@ -140,6 +140,81 @@ func TestMapAwaitError(t *testing.T) {
 			var got *aeron.RegistrationError
 			require.ErrorAs(t, mapped, &got)
 			require.Equal(t, int64(4), got.CorrelationID)
+			require.Equal(t, int32(2), got.ErrorCode)
+			require.Equal(t, "failed", got.Message)
+			require.EqualError(t, mapped, testCase.wantMsg)
+		})
+	}
+}
+
+func TestMapPollPendingError(t *testing.T) {
+	const correlationID int64 = 5
+	const timeout = 2 * time.Second
+	registrationErr := &conductor.DriverRegistrationError{
+		CorrelationID: correlationID,
+		ErrorCode:     2,
+		Message:       "failed",
+	}
+	otherErr := errors.New("aeron: other failure")
+
+	tests := []struct {
+		name     string
+		input    error
+		wantSame bool
+		wantErr  error
+		wantMsg  string
+	}{
+		{
+			name:    "await timeout",
+			input:   conductor.ErrAwaitTimeout,
+			wantMsg: "aeron: await response timeout: correlation=5 timeout=2s",
+		},
+		{
+			name:    "driver registration error",
+			input:   registrationErr,
+			wantMsg: "aeron: driver registration error: correlation=5 code=2 message=failed",
+		},
+		{
+			name:    "pending not found",
+			input:   conductor.ErrPendingNotFound,
+			wantErr: aeron.ErrAwaitInterrupted,
+			wantMsg: "aeron: await response interrupted",
+		},
+		{
+			name:     "pass through",
+			input:    otherErr,
+			wantSame: true,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			mapped := aeron.MapPollPendingErrorForTest(
+				correlationID,
+				timeout,
+				testCase.input,
+			)
+			if testCase.wantSame {
+				require.Same(t, testCase.input, mapped)
+				return
+			}
+			if testCase.input == conductor.ErrAwaitTimeout {
+				var timeoutErr *aeron.AwaitTimeoutError
+				require.ErrorAs(t, mapped, &timeoutErr)
+				require.Equal(t, correlationID, timeoutErr.CorrelationID)
+				require.Equal(t, timeout, timeoutErr.Timeout)
+				require.EqualError(t, mapped, testCase.wantMsg)
+				return
+			}
+			if testCase.wantErr != nil {
+				require.ErrorIs(t, mapped, testCase.wantErr)
+				require.EqualError(t, mapped, testCase.wantMsg)
+				return
+			}
+
+			var got *aeron.RegistrationError
+			require.ErrorAs(t, mapped, &got)
+			require.Equal(t, correlationID, got.CorrelationID)
 			require.Equal(t, int32(2), got.ErrorCode)
 			require.Equal(t, "failed", got.Message)
 			require.EqualError(t, mapped, testCase.wantMsg)
@@ -182,7 +257,7 @@ func TestMapConductorError(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			mapped := aeron.MapConductorErrorForTest(testCase.input)
 			if testCase.wantSame {
-				require.Equal(t, testCase.input, mapped)
+				require.Same(t, testCase.input, mapped)
 				return
 			}
 

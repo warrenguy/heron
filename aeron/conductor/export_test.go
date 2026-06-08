@@ -45,13 +45,6 @@ func (conductor *Conductor) SetCountersReaderForTest(reader *cnc.CountersReader)
 	conductor.countersReader = reader
 }
 
-func (conductor *Conductor) CompleteNextSessionIDForTest(
-	correlationID int64,
-	nextSessionID int32,
-) bool {
-	return conductor.completeNextSessionID(correlationID, nextSessionID)
-}
-
 func (conductor *Conductor) SetTerminatingForTest(terminating bool) {
 	conductor.isTerminating = terminating
 }

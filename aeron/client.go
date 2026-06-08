@@ -217,7 +217,13 @@ func (client *Client) awaitResponse(
 	}
 	conductorInstance := client.conductor
 	defer conductorInstance.SetActiveCorrelationID(conductor.NullCorrelationID)
-	if err := conductorInstance.RegisterPending(kind, correlationID, timeout); err != nil {
+	startNs := client.nanoClock()
+	deadlineNs := startNs + timeout.Nanoseconds()
+	if err := conductorInstance.RegisterPendingWithDeadline(
+		kind,
+		correlationID,
+		deadlineNs,
+	); err != nil {
 		return conductor.PendingRegistration{}, mapRegistrationError(err)
 	}
 	pendingCompleted := false
@@ -233,7 +239,6 @@ func (client *Client) awaitResponse(
 			return conductor.PendingRegistration{}, err
 		}
 	}
-	deadlineNs := client.nanoClock() + timeout.Nanoseconds()
 	for client.nanoClock() < deadlineNs {
 		if err := client.requireReadyWithConductor(); err != nil {
 			return conductor.PendingRegistration{}, err
@@ -251,17 +256,17 @@ func (client *Client) awaitResponse(
 			time.Sleep(client.idleSleepDuration)
 			continue
 		}
-		if err != nil {
-			pendingCompleted = true
-			return conductor.PendingRegistration{}, mapAwaitError(err)
-		}
 		pendingCompleted = true
+		if err != nil {
+			return conductor.PendingRegistration{}, mapPollPendingError(
+				correlationID,
+				timeout,
+				err,
+			)
+		}
 		return registration, nil
 	}
-	return conductor.PendingRegistration{}, &AwaitTimeoutError{
-		CorrelationID: correlationID,
-		Timeout:       timeout,
-	}
+	return conductor.PendingRegistration{}, newAwaitTimeoutError(correlationID, timeout)
 }
 
 //nolint:staticcheck // Aeron Java API uses ClientId.

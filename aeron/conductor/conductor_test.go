@@ -118,6 +118,112 @@ func TestConductor_unregisteredClientSkipsHeartbeatCounter(t *testing.T) {
 	require.False(t, conductorInstance.IsTerminating())
 }
 
+func TestConductor_DoWork_completesActivePendingOnNextAvailableSessionID(t *testing.T) {
+	const nextSessionID int32 = 42
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindNextSessionID,
+			pendingTestCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(pendingTestCorrelationID)
+
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnNextAvailableSessionID,
+		conductor.CorrelationAndInt32Bytes(pendingTestCorrelationID, nextSessionID),
+	)
+
+	_ = conductorInstance.DoWork()
+
+	done, registration, err := conductorInstance.PollPending(pendingTestCorrelationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	require.Equal(t, nextSessionID, registration.Int32Value)
+}
+
+func TestConductor_DoWork_completesActivePendingOnOperationSuccess(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindOperationSuccess,
+			pendingTestCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(pendingTestCorrelationID)
+
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnOperationSuccess,
+		conductor.OperationSuccessBytes(pendingTestCorrelationID),
+	)
+
+	_ = conductorInstance.DoWork()
+
+	done, registration, err := conductorInstance.PollPending(pendingTestCorrelationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	require.Equal(t, conductor.PendingKindOperationSuccess, registration.Kind)
+}
+
+func TestConductor_DoWork_completesActivePendingOnError(t *testing.T) {
+	const errorCode int32 = 11
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindOperationSuccess,
+			pendingTestCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(pendingTestCorrelationID)
+
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnError,
+		conductor.ErrorResponseBytes(pendingTestCorrelationID, errorCode, "registration failed"),
+	)
+
+	_ = conductorInstance.DoWork()
+
+	done, _, err := conductorInstance.PollPending(pendingTestCorrelationID)
+	require.True(t, done)
+	var driverErr *conductor.DriverRegistrationError
+	require.ErrorAs(t, err, &driverErr)
+	require.Equal(t, pendingTestCorrelationID, driverErr.CorrelationID)
+	require.Equal(t, errorCode, driverErr.ErrorCode)
+	require.Equal(t, "registration failed", driverErr.Message)
+	require.EqualError(
+		t,
+		err,
+		"conductor: driver registration error: correlation=7 code=11 message=registration failed",
+	)
+}
+
 func TestConductor_oneBroadcastEventPerDoWork(t *testing.T) {
 	errorHandler, gotErrors := collectConductorErrors()
 	conductorInstance := newConductorForTest(
@@ -126,15 +232,24 @@ func TestConductor_oneBroadcastEventPerDoWork(t *testing.T) {
 	)
 	adapter := conductorInstance.EventsAdapterForTest()
 
-	transmitConductorEvent(t, adapter, conductor.OnError, []byte{0x01})
-	transmitConductorEvent(t, adapter, conductor.OnError, []byte{0x02})
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnError,
+		conductor.ErrorResponseBytes(99, 1, "first"),
+	)
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnError,
+		conductor.ErrorResponseBytes(100, 2, "second"),
+	)
 
-	for step, wantErrs := range []int{1, 2} {
+	for step := range 2 {
 		workCount := conductorInstance.DoWork()
 		require.Equal(t, 1, workCount)
-		require.Len(t, *gotErrors, wantErrs)
-		require.ErrorIs(t, (*gotErrors)[step], conductor.ErrDriverErrorEvent)
-		require.EqualError(t, (*gotErrors)[step], "conductor: driver error event received")
+		require.Empty(t, *gotErrors)
+		require.Equal(t, int64(step+1), adapter.UnhandledEventCount())
 	}
 
 	receiver := adapter.CopyReceiverForTest().BroadcastReceiver()

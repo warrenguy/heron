@@ -20,6 +20,14 @@ func MapAwaitErrorForTest(err error) error {
 	return mapAwaitError(err)
 }
 
+func MapPollPendingErrorForTest(
+	correlationID int64,
+	timeout time.Duration,
+	err error,
+) error {
+	return mapPollPendingError(correlationID, timeout, err)
+}
+
 func MapRegistrationErrorForTest(err error) error {
 	return mapRegistrationError(err)
 }
@@ -37,12 +45,16 @@ func (client *Client) PollAwaitForTest(correlationID int64) error {
 	if err := client.requireReadyWithConductor(); err != nil {
 		return err
 	}
-	client.DoWork()
 	done, _, err := client.conductor.PollPending(correlationID)
+	if done {
+		return mapPollPendingError(correlationID, client.driverTimeout, err)
+	}
+	client.DoWork()
+	done, _, err = client.conductor.PollPending(correlationID)
 	if !done {
 		return ErrClientNotReady
 	}
-	return mapAwaitError(err)
+	return mapPollPendingError(correlationID, client.driverTimeout, err)
 }
 
 func NormalizeContextForTest(ctx Context) Context {

@@ -1,14 +1,10 @@
 package conductor
 
 import (
-	"errors"
-
 	"github.com/warrenguy/heron/aeron/atomic"
 )
 
 const ClientTimeoutBodyLength = 8
-
-var ErrDriverErrorEvent = errors.New("conductor: driver error event received")
 
 type DriverEventsAdapter struct {
 	copyReceiver        *CopyBroadcastReceiver
@@ -33,13 +29,15 @@ func NewDriverEventsAdapter(
 	}
 }
 
-type nextSessionIDCompleter interface {
-	completeNextSessionID(correlationID int64, nextSessionID int32) bool
+type PendingEventHandler interface {
+	OnOperationSuccess(correlationID int64) bool
+	OnError(resp ErrorResponse) bool
+	OnNextAvailableSessionID(correlationID int64, nextSessionID int32) bool
 }
 
 func (adapter *DriverEventsAdapter) Receive(
 	activeCorrelationID int64,
-	completer nextSessionIDCompleter,
+	pending PendingEventHandler,
 ) int {
 	if adapter.isInvalid {
 		return 0
@@ -51,7 +49,7 @@ func (adapter *DriverEventsAdapter) Receive(
 		offset int,
 		length int,
 	) {
-		adapter.onMessage(msgTypeID, buffer, offset, length, activeCorrelationID, completer)
+		adapter.onMessage(msgTypeID, buffer, offset, length, activeCorrelationID, pending)
 	})
 	if err != nil {
 		adapter.isInvalid = true
@@ -75,23 +73,99 @@ func (adapter *DriverEventsAdapter) onMessage(
 	offset int,
 	length int,
 	activeCorrelationID int64,
-	completer nextSessionIDCompleter,
+	pending PendingEventHandler,
 ) {
 	switch msgTypeID {
 	case OnClientTimeout:
 		adapter.handleClientTimeout(buffer, offset, length)
+	case OnOperationSuccess:
+		adapter.handleOnOperationSuccess(
+			buffer,
+			offset,
+			length,
+			activeCorrelationID,
+			pending,
+		)
+	case OnError:
+		adapter.handleOnError(buffer, offset, length, activeCorrelationID, pending)
 	case OnNextAvailableSessionID:
 		adapter.handleNextAvailableSessionID(
 			buffer,
 			offset,
 			length,
 			activeCorrelationID,
-			completer,
+			pending,
 		)
-	case OnError:
-		// Full ErrorResponse decode and correlation routing lands with Client command handling.
-		invokeErrorHandler(adapter.errorHandler, ErrDriverErrorEvent)
 	default:
+		adapter.unhandledEventCount++
+	}
+}
+
+func (adapter *DriverEventsAdapter) rejectUnlessActiveCorrelation(
+	activeCorrelationID int64,
+	pending PendingEventHandler,
+	correlationID int64,
+) bool {
+	if activeCorrelationID == NullCorrelationID || pending == nil ||
+		correlationID != activeCorrelationID {
+		adapter.unhandledEventCount++
+		return true
+	}
+	return false
+}
+
+func (adapter *DriverEventsAdapter) handleOnOperationSuccess(
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+	activeCorrelationID int64,
+	pending PendingEventHandler,
+) {
+	if length < OperationSuccessBodyLength {
+		adapter.unhandledEventCount++
+		return
+	}
+	decoded, err := DecodeOperationSuccess(buffer, offset)
+	if err != nil {
+		adapter.unhandledEventCount++
+		return
+	}
+	if adapter.rejectUnlessActiveCorrelation(
+		activeCorrelationID,
+		pending,
+		decoded.CorrelationID,
+	) {
+		return
+	}
+	if !pending.OnOperationSuccess(decoded.CorrelationID) {
+		adapter.unhandledEventCount++
+	}
+}
+
+func (adapter *DriverEventsAdapter) handleOnError(
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+	activeCorrelationID int64,
+	pending PendingEventHandler,
+) {
+	if length < ErrorResponseFixedBodyLength {
+		adapter.unhandledEventCount++
+		return
+	}
+	decoded, err := DecodeErrorResponse(buffer, offset, length)
+	if err != nil {
+		adapter.unhandledEventCount++
+		return
+	}
+	if adapter.rejectUnlessActiveCorrelation(
+		activeCorrelationID,
+		pending,
+		decoded.OffendingCommandCorrelationID,
+	) {
+		return
+	}
+	if !pending.OnError(decoded) {
 		adapter.unhandledEventCount++
 	}
 }
@@ -101,12 +175,8 @@ func (adapter *DriverEventsAdapter) handleNextAvailableSessionID(
 	offset int,
 	length int,
 	activeCorrelationID int64,
-	completer nextSessionIDCompleter,
+	pending PendingEventHandler,
 ) {
-	if activeCorrelationID == NullCorrelationID || completer == nil {
-		adapter.unhandledEventCount++
-		return
-	}
 	if length < CorrelationAndInt32BodyLength {
 		adapter.unhandledEventCount++
 		return
@@ -116,8 +186,14 @@ func (adapter *DriverEventsAdapter) handleNextAvailableSessionID(
 		adapter.unhandledEventCount++
 		return
 	}
-	if decoded.CorrelationID != activeCorrelationID ||
-		!completer.completeNextSessionID(decoded.CorrelationID, decoded.Int32Value) {
+	if adapter.rejectUnlessActiveCorrelation(
+		activeCorrelationID,
+		pending,
+		decoded.CorrelationID,
+	) {
+		return
+	}
+	if !pending.OnNextAvailableSessionID(decoded.CorrelationID, decoded.Int32Value) {
 		adapter.unhandledEventCount++
 	}
 }

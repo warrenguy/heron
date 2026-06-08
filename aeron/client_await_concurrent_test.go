@@ -1,8 +1,12 @@
 //go:build !race
 
+// Hammer-during-register races Conductor await fields; excluded from -race until
+// clientLock serializes DoWork with RegisterPending on one client.
+
 package aeron
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +27,12 @@ func TestClient_GetNextAvailableSessionID_concurrentDoWorkBeforeRegister(t *test
 	const wantSessionID int32 = 88
 
 	stopHammer := make(chan struct{})
+	var stopOnce sync.Once
+	stopHammerGoroutine := func() {
+		stopOnce.Do(func() { close(stopHammer) })
+	}
+	t.Cleanup(stopHammerGoroutine)
+
 	go func() {
 		for {
 			select {
@@ -33,7 +43,6 @@ func TestClient_GetNextAvailableSessionID_concurrentDoWorkBeforeRegister(t *test
 			}
 		}
 	}()
-	defer close(stopHammer)
 
 	type result struct {
 		sessionID int32
@@ -45,10 +54,16 @@ func TestClient_GetNextAvailableSessionID_concurrentDoWorkBeforeRegister(t *test
 		resultCh <- result{sessionID: sessionID, err: err}
 	}()
 
-	pollDeadline := time.Now().Add(testutil.TestDriverTimeout)
+	deadline := time.Now().Add(testutil.TestDriverTimeout)
 	require.True(
 		t,
-		pollAndRespondToNextAvailableSessionIDCommand(t, fixture, wantSessionID, pollDeadline),
+		pollAndRespondToNextAvailableSessionIDCommand(
+			t,
+			fixture,
+			wantSessionID,
+			deadline,
+			stopHammerGoroutine,
+		),
 		"timed out waiting for GetNextAvailableSessionID command on ring",
 	)
 

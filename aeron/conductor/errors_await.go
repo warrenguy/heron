@@ -8,7 +8,7 @@ import (
 var (
 	ErrPendingAlreadyRegistered = errors.New("conductor: correlation already pending")
 	ErrPendingNotFound          = errors.New("conductor: no pending registration for correlation")
-	// ErrAwaitTimeout is for conductor-side deadline enforcement once expirePending runs in service().
+	// ErrAwaitTimeout is set on active pending when expirePending sees nowNs >= DeadlineNs.
 	ErrAwaitTimeout         = errors.New("conductor: await response timeout")
 	ErrConductorTerminating = errors.New("conductor: conductor is terminating")
 )

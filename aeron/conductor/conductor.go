@@ -130,14 +130,26 @@ func (conductor *Conductor) SeedServiceTimestamps(nowNs int64) {
 }
 
 func (conductor *Conductor) service() int {
-	workCount := conductor.checkTimeouts(conductor.config.NanoClock())
+	nowNs := conductor.config.NanoClock()
+	workCount := conductor.checkTimeouts(nowNs)
 	if conductor.isTerminating {
 		return workCount
 	}
+
+	conductor.receivedCorrelationID = NullCorrelationID
 	workCount += conductor.eventsAdapter.Receive(
 		conductor.activeCorrelationID,
 		conductor,
 	)
+	expireWorkCount, timedOutActiveCorrelationID := conductor.pending.ExpireBefore(
+		nowNs,
+		conductor.receivedCorrelationID,
+		conductor.activeCorrelationID,
+	)
+	workCount += expireWorkCount
+	if timedOutActiveCorrelationID != NullCorrelationID {
+		conductor.receivedCorrelationID = timedOutActiveCorrelationID
+	}
 	return workCount
 }
 

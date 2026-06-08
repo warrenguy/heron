@@ -111,6 +111,87 @@ func TestClient_awaitResponse_timeout_immediate(t *testing.T) {
 	)
 }
 
+func TestClient_awaitResponse_sharedDeadline_beforeOffer(t *testing.T) {
+	const (
+		startNs    = int64(1_000)
+		timeout    = 500 * time.Nanosecond
+		offerDelay = 200 * time.Nanosecond
+	)
+	deadlineNs := startNs + int64(timeout)
+	nanoNs := startNs
+	var afterOffer bool
+	client, fixture := newClientAwaitFixture(
+		t,
+		func() int64 {
+			if afterOffer {
+				return deadlineNs
+			}
+			return nanoNs
+		},
+		time.Second,
+		time.Microsecond,
+	)
+
+	_, err := client.AwaitResponseForTest(
+		clientAwaitTestCorrelationID,
+		conductor.PendingKindNextSessionID,
+		timeout,
+		func() error {
+			registration, ok := fixture.Conductor.PendingResult(clientAwaitTestCorrelationID)
+			require.True(t, ok)
+			require.Equal(t, deadlineNs, registration.DeadlineNs)
+			nanoNs = startNs + int64(offerDelay)
+			afterOffer = true
+			return nil
+		},
+	)
+	requireAwaitTimeout(
+		t,
+		fixture,
+		err,
+		clientAwaitTestCorrelationID,
+		timeout,
+		"aeron: await response timeout: correlation=11 timeout=500ns",
+	)
+}
+
+func TestClient_awaitResponse_conductorExpireTimeout(t *testing.T) {
+	const (
+		startNs = int64(1_000)
+		timeout = 500 * time.Nanosecond
+	)
+	deadlineNs := startNs + int64(timeout)
+	var nanoReads int
+	client, fixture := newClientAwaitFixture(
+		t,
+		func() int64 {
+			nanoReads++
+			if nanoReads <= 4 {
+				return startNs
+			}
+			return deadlineNs
+		},
+		time.Second,
+		time.Microsecond,
+	)
+
+	_, err := client.AwaitResponseForTest(
+		clientAwaitTestCorrelationID,
+		conductor.PendingKindNextSessionID,
+		timeout,
+		nil,
+	)
+	require.GreaterOrEqual(t, nanoReads, 5)
+	requireAwaitTimeout(
+		t,
+		fixture,
+		err,
+		clientAwaitTestCorrelationID,
+		timeout,
+		"aeron: await response timeout: correlation=11 timeout=500ns",
+	)
+}
+
 func TestClient_awaitResponse_timeout_afterDeadline(t *testing.T) {
 	const timeout = 5 * time.Millisecond
 	startNs := testutil.TestStartNanoNs
@@ -249,6 +330,7 @@ func pollAndRespondToNextAvailableSessionIDCommand(
 	fixture *testutil.ConductorFixture,
 	sessionID int32,
 	deadline time.Time,
+	onCommandSeen func(),
 ) bool {
 	t.Helper()
 
@@ -261,6 +343,9 @@ func pollAndRespondToNextAvailableSessionIDCommand(
 			decoded, err := conductor.DecodeCorrelated(buffer, index)
 			if err != nil {
 				return
+			}
+			if onCommandSeen != nil {
+				onCommandSeen()
 			}
 			transmitErr := fixture.Transmit(
 				conductor.OnNextAvailableSessionID,
@@ -302,7 +387,7 @@ func TestClient_GetNextAvailableSessionID_success(t *testing.T) {
 	pollDeadline := time.Now().Add(time.Second)
 	require.True(
 		t,
-		pollAndRespondToNextAvailableSessionIDCommand(t, fixture, wantSessionID, pollDeadline),
+		pollAndRespondToNextAvailableSessionIDCommand(t, fixture, wantSessionID, pollDeadline, nil),
 		"timed out waiting for GetNextAvailableSessionID command on ring",
 	)
 
@@ -332,20 +417,47 @@ func TestClient_awaitResponse_deferredOfferFastResponse(t *testing.T) {
 		conductor.PendingKindNextSessionID,
 		time.Second,
 		func() error {
-			transmitErr := fixture.Transmit(
+			return fixture.Transmit(
 				conductor.OnNextAvailableSessionID,
 				conductor.CorrelationAndInt32Bytes(clientAwaitTestCorrelationID, wantSessionID),
 			)
-			if transmitErr != nil {
-				return transmitErr
-			}
-			client.DoWork()
-			return nil
 		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, wantSessionID, registration.Int32Value)
 	requireActiveCorrelationCleared(t, fixture)
+}
+
+func TestClient_PollAwaitForTest_requiresDoWorkAfterBroadcastCompletion(t *testing.T) {
+	var nanoNs int64
+	client, fixture := newClientAwaitFixture(
+		t,
+		func() int64 { return nanoNs },
+		time.Second,
+		time.Millisecond,
+	)
+
+	require.NoError(
+		t,
+		fixture.Conductor.RegisterPending(
+			conductor.PendingKindNextSessionID,
+			clientAwaitTestCorrelationID,
+			time.Second,
+		),
+	)
+	fixture.Conductor.SetActiveCorrelationID(clientAwaitTestCorrelationID)
+	require.NoError(
+		t,
+		fixture.Transmit(
+			conductor.OnNextAvailableSessionID,
+			conductor.CorrelationAndInt32Bytes(clientAwaitTestCorrelationID, 42),
+		),
+	)
+
+	err := client.PollAwaitForTest(clientAwaitTestCorrelationID)
+	require.NoError(t, err)
+	_, ok := fixture.Conductor.PendingResult(clientAwaitTestCorrelationID)
+	require.False(t, ok)
 }
 
 func TestClient_GetNextAvailableSessionID_offersCommand(t *testing.T) {

@@ -75,6 +75,13 @@ func (err *AwaitTimeoutError) Error() string {
 	)
 }
 
+func newAwaitTimeoutError(correlationID int64, timeout time.Duration) *AwaitTimeoutError {
+	return &AwaitTimeoutError{
+		CorrelationID: correlationID,
+		Timeout:       timeout,
+	}
+}
+
 // mapConductorError maps driver liveness failures to DriverTimeoutError.
 // Other conductor termination errors (ErrConductorServiceTimeout, ErrClientTimeout,
 // HeartbeatCounterClosedError) pass through unchanged so callers can distinguish them.
@@ -119,4 +126,18 @@ func mapAwaitError(err error) error {
 		return ErrAwaitInterrupted
 	}
 	return err
+}
+
+func mapPollPendingError(
+	correlationID int64,
+	timeout time.Duration,
+	err error,
+) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, conductor.ErrAwaitTimeout) {
+		return newAwaitTimeoutError(correlationID, timeout)
+	}
+	return mapAwaitError(err)
 }

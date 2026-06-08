@@ -1,0 +1,56 @@
+package conductor
+
+import (
+	"errors"
+
+	"github.com/warrenguy/heron/aeron/atomic"
+)
+
+const OperationSuccessBodyLength = 8
+
+var ErrOperationSuccessTooShort = errors.New("conductor: operation success too short")
+
+type OperationSuccess struct {
+	CorrelationID int64
+}
+
+func DecodeOperationSuccess(
+	buf atomic.AtomicBuffer,
+	offset int,
+) (OperationSuccess, error) {
+	if err := bodyBoundsError(
+		buf,
+		offset,
+		OperationSuccessBodyLength,
+		ErrOperationSuccessTooShort,
+	); err != nil {
+		return OperationSuccess{}, err
+	}
+	return OperationSuccess{CorrelationID: buf.GetInt64(offset)}, nil
+}
+
+func EncodeOperationSuccess(
+	buf atomic.AtomicBuffer,
+	offset int,
+	correlationID int64,
+) error {
+	if err := bodyBoundsError(
+		buf,
+		offset,
+		OperationSuccessBodyLength,
+		ErrOperationSuccessTooShort,
+	); err != nil {
+		return err
+	}
+	buf.PutInt64(offset, correlationID)
+	return nil
+}
+
+func OperationSuccessBytes(correlationID int64) []byte {
+	return encodeToBytes(
+		OperationSuccessBodyLength,
+		func(buf atomic.AtomicBuffer, offset int) error {
+			return EncodeOperationSuccess(buf, offset, correlationID)
+		},
+	)
+}

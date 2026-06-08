@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/internal/testutil"
@@ -56,7 +57,8 @@ func TestDriverEventsAdapter_OnNextAvailableSessionID(t *testing.T) {
 		eventSessionID       int32
 		eventPayload         []byte
 		receiveCorrelationID int64
-		useNilCompleter      bool
+		pendingKind          conductor.PendingKind
+		useNilPending        bool
 		wantUnhandled        int64
 		wantDone             bool
 		wantSessionID        int32
@@ -68,6 +70,7 @@ func TestDriverEventsAdapter_OnNextAvailableSessionID(t *testing.T) {
 			eventCorrelationID:   pendingTestCorrelationID,
 			eventSessionID:       nextSessionID,
 			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindNextSessionID,
 			wantDone:             true,
 			wantSessionID:        nextSessionID,
 			wantPendingRemoved:   true,
@@ -78,6 +81,7 @@ func TestDriverEventsAdapter_OnNextAvailableSessionID(t *testing.T) {
 			eventCorrelationID:   pendingTestOtherCorrelationID,
 			eventSessionID:       nextSessionID,
 			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindNextSessionID,
 			wantUnhandled:        1,
 		},
 		{
@@ -85,20 +89,32 @@ func TestDriverEventsAdapter_OnNextAvailableSessionID(t *testing.T) {
 			eventCorrelationID:   pendingTestCorrelationID,
 			eventSessionID:       nextSessionID,
 			receiveCorrelationID: conductor.NullCorrelationID,
+			pendingKind:          conductor.PendingKindNextSessionID,
 			wantUnhandled:        1,
 		},
 		{
-			name:                 "nilCompleter",
+			name:                 "nilPending",
 			eventCorrelationID:   pendingTestCorrelationID,
 			eventSessionID:       nextSessionID,
 			receiveCorrelationID: pendingTestCorrelationID,
-			useNilCompleter:      true,
+			pendingKind:          conductor.PendingKindNextSessionID,
+			useNilPending:        true,
+			wantUnhandled:        1,
+		},
+		{
+			name:                 "wrongKind",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestCorrelationID,
+			eventSessionID:       nextSessionID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindOperationSuccess,
 			wantUnhandled:        1,
 		},
 		{
 			name:                 "shortBody",
 			eventPayload:         []byte{0x01},
 			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindNextSessionID,
 			wantUnhandled:        1,
 		},
 	}
@@ -114,7 +130,7 @@ func TestDriverEventsAdapter_OnNextAvailableSessionID(t *testing.T) {
 			require.NoError(
 				t,
 				conductorInstance.RegisterPending(
-					conductor.PendingKindNextSessionID,
+					testCase.pendingKind,
 					pendingTestCorrelationID,
 					pendingTestTimeout,
 				),
@@ -139,7 +155,7 @@ func TestDriverEventsAdapter_OnNextAvailableSessionID(t *testing.T) {
 			)
 
 			var count int
-			if testCase.useNilCompleter {
+			if testCase.useNilPending {
 				count = adapter.Receive(testCase.receiveCorrelationID, nil)
 			} else {
 				count = adapter.Receive(
@@ -183,21 +199,291 @@ func TestDriverEventsAdapter_OnClientTimeout_shortBody(t *testing.T) {
 }
 
 func TestDriverEventsAdapter_OnError(t *testing.T) {
-	var gotErrors []error
-	adapter := newDriverEventsAdapterForTest(
-		t,
-		1,
-		func(err error) { gotErrors = append(gotErrors, err) },
-		func() { t.Fatal("timeout handler should not run") },
-	)
+	const errorCode int32 = 11
 
-	transmitConductorEvent(t, adapter, conductor.OnError, []byte{0x01, 0x02, 0x03, 0x04})
+	tests := []struct {
+		name                 string
+		setActiveCorrelation bool
+		registerPending      bool
+		pendingKind          conductor.PendingKind
+		eventCorrelationID   int64
+		eventPayload         []byte
+		receiveCorrelationID int64
+		useNilPending        bool
+		wantUnhandled        int64
+		wantDone             bool
+		wantDriverError      bool
+		wantPendingRemoved   bool
+	}{
+		{
+			name:                 "matchingActive",
+			setActiveCorrelation: true,
+			registerPending:      true,
+			pendingKind:          conductor.PendingKindNextSessionID,
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			wantDone:             true,
+			wantDriverError:      true,
+			wantPendingRemoved:   true,
+		},
+		{
+			name:                 "matchingActiveOperationSuccessKind",
+			setActiveCorrelation: true,
+			registerPending:      true,
+			pendingKind:          conductor.PendingKindOperationSuccess,
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			wantDone:             true,
+			wantDriverError:      true,
+			wantPendingRemoved:   true,
+		},
+		{
+			name:                 "nonMatchingActive",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestOtherCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			wantUnhandled:        1,
+		},
+		{
+			name:                 "nullCorrelationID",
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: conductor.NullCorrelationID,
+			wantUnhandled:        1,
+		},
+		{
+			name:                 "nilPending",
+			setActiveCorrelation: true,
+			registerPending:      true,
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			useNilPending:        true,
+			wantUnhandled:        1,
+		},
+		{
+			name:                 "noPendingRegistration",
+			setActiveCorrelation: true,
+			registerPending:      false,
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			wantUnhandled:        1,
+		},
+		{
+			name:                 "shortBody",
+			eventPayload:         []byte{0x01},
+			receiveCorrelationID: pendingTestCorrelationID,
+			wantUnhandled:        1,
+		},
+		{
+			name:                 "negativeMessageLength",
+			setActiveCorrelation: true,
+			registerPending:      true,
+			eventPayload: func() []byte {
+				payload := make([]byte, 16)
+				atomic.Wrap(payload).PutInt64(0, pendingTestCorrelationID)
+				payload[12] = 0xff
+				payload[13] = 0xff
+				payload[14] = 0xff
+				payload[15] = 0xff
+				return payload
+			}(),
+			receiveCorrelationID: pendingTestCorrelationID,
+			wantUnhandled:        1,
+		},
+	}
 
-	count := adapter.Receive(conductor.NullCorrelationID, nil)
-	require.Equal(t, 1, count)
-	require.Len(t, gotErrors, 1)
-	require.ErrorIs(t, gotErrors[0], conductor.ErrDriverErrorEvent)
-	require.EqualError(t, gotErrors[0], "conductor: driver error event received")
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			conductorInstance := newConductorForTestAtWorkNano(
+				t,
+				func(error) {},
+				0,
+				0,
+			)
+			if testCase.registerPending {
+				require.NoError(
+					t,
+					conductorInstance.RegisterPending(
+						testCase.pendingKind,
+						pendingTestCorrelationID,
+						pendingTestTimeout,
+					),
+				)
+			}
+			if testCase.setActiveCorrelation {
+				conductorInstance.SetActiveCorrelationID(pendingTestCorrelationID)
+			}
+
+			adapter := conductorInstance.EventsAdapterForTest()
+			payload := testCase.eventPayload
+			if payload == nil {
+				payload = conductor.ErrorResponseBytes(
+					testCase.eventCorrelationID,
+					errorCode,
+					"registration failed",
+				)
+			}
+			transmitConductorEvent(t, adapter, conductor.OnError, payload)
+
+			var count int
+			if testCase.useNilPending {
+				count = adapter.Receive(testCase.receiveCorrelationID, nil)
+			} else {
+				count = adapter.Receive(
+					testCase.receiveCorrelationID,
+					conductorInstance,
+				)
+			}
+			require.Equal(t, 1, count)
+			require.Equal(t, testCase.wantUnhandled, adapter.UnhandledEventCount())
+
+			done, registration, err := conductorInstance.PollPending(
+				pendingTestCorrelationID,
+			)
+			require.Equal(t, testCase.wantDone, done)
+			if testCase.wantDriverError {
+				var driverErr *conductor.DriverRegistrationError
+				require.ErrorAs(t, err, &driverErr)
+				require.Equal(t, pendingTestCorrelationID, driverErr.CorrelationID)
+				require.Equal(t, errorCode, driverErr.ErrorCode)
+				require.Equal(t, "registration failed", driverErr.Message)
+				require.EqualError(
+					t,
+					err,
+					"conductor: driver registration error: correlation=7 code=11 message=registration failed",
+				)
+			} else {
+				require.NoError(t, err)
+				require.Zero(t, registration)
+			}
+
+			if testCase.wantPendingRemoved {
+				_, ok := conductorInstance.PendingResult(pendingTestCorrelationID)
+				require.False(t, ok)
+			}
+		})
+	}
+}
+
+func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
+	tests := []struct {
+		name                 string
+		setActiveCorrelation bool
+		eventCorrelationID   int64
+		eventPayload         []byte
+		receiveCorrelationID int64
+		pendingKind          conductor.PendingKind
+		useNilPending        bool
+		wantUnhandled        int64
+		wantDone             bool
+		wantPendingRetained  bool
+	}{
+		{
+			name:                 "matchingActive",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindOperationSuccess,
+			wantDone:             true,
+		},
+		{
+			name:                 "nonMatchingActive",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestOtherCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindOperationSuccess,
+			wantUnhandled:        1,
+		},
+		{
+			name:                 "nullCorrelationID",
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: conductor.NullCorrelationID,
+			pendingKind:          conductor.PendingKindOperationSuccess,
+			wantUnhandled:        1,
+		},
+		{
+			name:                 "nilPending",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindOperationSuccess,
+			useNilPending:        true,
+			wantUnhandled:        1,
+		},
+		{
+			name:                 "wrongKind",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindNextSessionID,
+			wantUnhandled:        1,
+			wantPendingRetained:  true,
+		},
+		{
+			name:                 "shortBody",
+			eventPayload:         []byte{0x01},
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindOperationSuccess,
+			wantUnhandled:        1,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			conductorInstance := newConductorForTestAtWorkNano(
+				t,
+				func(error) {},
+				0,
+				0,
+			)
+			require.NoError(
+				t,
+				conductorInstance.RegisterPending(
+					testCase.pendingKind,
+					pendingTestCorrelationID,
+					pendingTestTimeout,
+				),
+			)
+			if testCase.setActiveCorrelation {
+				conductorInstance.SetActiveCorrelationID(pendingTestCorrelationID)
+			}
+
+			adapter := conductorInstance.EventsAdapterForTest()
+			payload := testCase.eventPayload
+			if payload == nil {
+				payload = conductor.OperationSuccessBytes(testCase.eventCorrelationID)
+			}
+			transmitConductorEvent(t, adapter, conductor.OnOperationSuccess, payload)
+
+			var count int
+			if testCase.useNilPending {
+				count = adapter.Receive(testCase.receiveCorrelationID, nil)
+			} else {
+				count = adapter.Receive(
+					testCase.receiveCorrelationID,
+					conductorInstance,
+				)
+			}
+			require.Equal(t, 1, count)
+			require.Equal(t, testCase.wantUnhandled, adapter.UnhandledEventCount())
+
+			done, registration, err := conductorInstance.PollPending(
+				pendingTestCorrelationID,
+			)
+			require.Equal(t, testCase.wantDone, done)
+			if testCase.wantDone {
+				require.NoError(t, err)
+				require.Equal(t, conductor.PendingKindOperationSuccess, registration.Kind)
+			} else {
+				require.NoError(t, err)
+				require.Zero(t, registration)
+			}
+
+			if testCase.wantPendingRetained {
+				_, ok := conductorInstance.PendingResult(pendingTestCorrelationID)
+				require.True(t, ok)
+			}
+		})
+	}
 }
 
 func TestDriverEventsAdapter_unhandledEvent(t *testing.T) {
