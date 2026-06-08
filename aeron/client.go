@@ -29,21 +29,13 @@ type Client struct {
 
 func Connect(ctx Context) (*Client, error) {
 	ctx = normalizeContext(ctx)
-	if ctx.AeronDir == "" {
-		return nil, errors.New("aeron: AeronDir is required")
-	}
-	if !ctx.useConductorInvokerEnabled() {
-		return nil, errors.New("aeron: dedicated conductor invoker is not supported")
+	if err := validateConnectContext(ctx); err != nil {
+		return nil, err
 	}
 
-	cncPath := filepath.Join(ctx.AeronDir, cnc.FileName)
-	if err := cnc.WaitCncReady(cncPath, ctx.DriverTimeout); err != nil {
-		return nil, fmt.Errorf("aeron: wait for cnc ready: %w", err)
-	}
-
-	mapped, err := cnc.MapCncFile(cncPath)
+	mapped, rings, err := openCnc(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("aeron: map cnc file: %w", err)
+		return nil, err
 	}
 
 	connected := false
@@ -53,15 +45,60 @@ func Connect(ctx Context) (*Client, error) {
 		}
 	}()
 
+	client, err := newConductorClient(ctx, mapped, rings)
+	if err != nil {
+		return nil, err
+	}
+	connected = true
+	return client, nil
+}
+
+func validateConnectContext(ctx Context) error {
+	if ctx.AeronDir == "" {
+		return errors.New("aeron: AeronDir is required")
+	}
+	if !ctx.useConductorInvokerEnabled() {
+		return errors.New("aeron: dedicated conductor invoker is not supported")
+	}
+	return nil
+}
+
+func openCnc(ctx Context) (*cnc.MappedCncFile, *cnc.Rings, error) {
+	cncPath := filepath.Join(ctx.AeronDir, cnc.FileName)
+	if err := cnc.WaitCncReady(cncPath, ctx.DriverTimeout); err != nil {
+		return nil, nil, fmt.Errorf("aeron: wait for cnc ready: %w", err)
+	}
+
+	mapped, err := cnc.MapCncFile(cncPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("aeron: map cnc file: %w", err)
+	}
+
+	opened := false
+	defer func() {
+		if !opened {
+			_ = mapped.Close()
+		}
+	}()
+
 	rings, err := cnc.WireRings(mapped)
 	if err != nil {
-		return nil, fmt.Errorf("aeron: wire rings: %w", err)
+		return nil, nil, fmt.Errorf("aeron: wire rings: %w", err)
 	}
 
 	if rings.Mapping != nil && rings.Mapping.Data != nil {
 		mmap.PreTouch(rings.Mapping.Data, 0)
 	}
 
+	opened = true
+	return mapped, rings, nil
+}
+
+func newConductorClient(
+	ctx Context,
+	mapped *cnc.MappedCncFile,
+	rings *cnc.Rings,
+) (*Client, error) {
 	if err := waitForDriverHeartbeat(rings.ToDriver, ctx.DriverTimeout, ctx.EpochClock); err != nil {
 		return nil, err
 	}
@@ -105,7 +142,6 @@ func Connect(ctx Context) (*Client, error) {
 		config,
 	)
 
-	connected = true
 	return &Client{
 		clientID:          clientID,
 		mapped:            mapped,
