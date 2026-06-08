@@ -58,6 +58,11 @@ type Config struct {
 	ErrorHandler        func(error)
 }
 
+type unavailableImageRecord struct {
+	CorrelationID              int64
+	SubscriptionRegistrationID int64
+}
+
 type Conductor struct {
 	driverProxy           *DriverProxy
 	eventsAdapter         *DriverEventsAdapter
@@ -73,6 +78,12 @@ type Conductor struct {
 	pending               pendingRegistry
 	activeCorrelationID   int64
 	receivedCorrelationID int64
+	// Step-3 staging only; unbounded append until step 7 resource maps replace slices.
+	lastPublicationReady  *PublicationBuffersReady
+	lastSubscriptionReady *SubscriptionReady
+	availableImages       []AvailableImage
+	unavailableImages     []unavailableImageRecord
+	publicationErrors     []PublicationError
 	terminationCause      error
 	isTerminating         bool
 }
@@ -102,6 +113,15 @@ func NewConductor(
 		copyReceiver,
 		config.ErrorHandler,
 		conductor.onClientTimeout,
+		DriverEventsAdapterHandlers{
+			OnPublicationReady:  conductor.onPublicationReady,
+			OnSubscriptionReady: conductor.onSubscriptionReady,
+			OnAvailableImage:    conductor.onAvailableImage,
+			OnUnavailableImage:  conductor.onUnavailableImage,
+			OnPublicationError:  conductor.onPublicationError,
+			OnCorrelatedReady:   conductor.onCorrelatedEvent,
+		},
+		&conductor.pending,
 	)
 	if config.NanoClock != nil {
 		conductor.SeedServiceTimestamps(config.NanoClock())
@@ -243,6 +263,41 @@ func (conductor *Conductor) onClientTimeout() {
 		return
 	}
 	conductor.terminateWithError(ErrClientTimeout)
+}
+
+// Latch only; pending removal stays in PollPending until step 7 Complete policy.
+func (conductor *Conductor) onCorrelatedEvent(correlationID int64) {
+	conductor.receivedCorrelationID = correlationID
+}
+
+func (conductor *Conductor) onPublicationReady(event PublicationBuffersReady) {
+	eventCopy := event
+	conductor.lastPublicationReady = &eventCopy
+}
+
+func (conductor *Conductor) onSubscriptionReady(event SubscriptionReady) {
+	eventCopy := event
+	conductor.lastSubscriptionReady = &eventCopy
+}
+
+func (conductor *Conductor) onAvailableImage(event AvailableImage) {
+	conductor.availableImages = append(conductor.availableImages, event)
+}
+
+func (conductor *Conductor) onUnavailableImage(
+	correlationID, subscriptionRegistrationID int64,
+) {
+	conductor.unavailableImages = append(
+		conductor.unavailableImages,
+		unavailableImageRecord{
+			CorrelationID:              correlationID,
+			SubscriptionRegistrationID: subscriptionRegistrationID,
+		},
+	)
+}
+
+func (conductor *Conductor) onPublicationError(event PublicationError) {
+	conductor.publicationErrors = append(conductor.publicationErrors, event)
 }
 
 func (conductor *Conductor) terminateWithError(err error) {

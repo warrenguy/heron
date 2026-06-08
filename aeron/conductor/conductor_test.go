@@ -224,6 +224,43 @@ func TestConductor_DoWork_completesActivePendingOnError(t *testing.T) {
 	)
 }
 
+func TestConductor_onPublicationReadyViaDoWork(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindOperationSuccess,
+			goldenPublicationReadyCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(goldenPublicationReadyCorrelationID)
+
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnPublicationReady,
+		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
+	)
+
+	workCount := conductorInstance.DoWork()
+	require.Equal(t, 1, workCount)
+
+	ready, ok := conductor.LastPublicationReadyForTest(conductorInstance)
+	require.True(t, ok)
+	require.Equal(t, goldenPublicationBuffersReadyEvent, ready)
+	require.Equal(
+		t,
+		goldenPublicationReadyCorrelationID,
+		conductorInstance.ReceivedCorrelationID(),
+	)
+}
+
 func TestConductor_oneBroadcastEventPerDoWork(t *testing.T) {
 	errorHandler, gotErrors := collectConductorErrors()
 	conductorInstance := newConductorForTest(
@@ -254,6 +291,112 @@ func TestConductor_oneBroadcastEventPerDoWork(t *testing.T) {
 
 	receiver := adapter.CopyReceiverForTest().BroadcastReceiver()
 	require.False(t, receiver.ReceiveNext())
+}
+
+func TestConductor_onSubscriptionReadyViaDoWork(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindOperationSuccess,
+			goldenSubscriptionReadyCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(goldenSubscriptionReadyCorrelationID)
+
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnSubscriptionReady,
+		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
+	)
+
+	workCount := conductorInstance.DoWork()
+	require.Equal(t, 1, workCount)
+
+	ready, ok := conductor.LastSubscriptionReadyForTest(conductorInstance)
+	require.True(t, ok)
+	require.Equal(t, goldenSubscriptionReadyEvent, ready)
+	require.Equal(
+		t,
+		goldenSubscriptionReadyCorrelationID,
+		conductorInstance.ReceivedCorrelationID(),
+	)
+}
+
+func TestConductor_oneGatedReadyEventPerDoWork(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindOperationSuccess,
+			goldenPublicationReadyCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindOperationSuccess,
+			goldenSubscriptionReadyCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(goldenPublicationReadyCorrelationID)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnPublicationReady,
+		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
+	)
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnSubscriptionReady,
+		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
+	)
+
+	workCount := conductorInstance.DoWork()
+	require.Equal(t, 1, workCount)
+
+	ready, ok := conductor.LastPublicationReadyForTest(conductorInstance)
+	require.True(t, ok)
+	require.Equal(t, goldenPublicationBuffersReadyEvent, ready)
+	require.Equal(
+		t,
+		goldenPublicationReadyCorrelationID,
+		conductorInstance.ReceivedCorrelationID(),
+	)
+
+	subscriptionReady, ok := conductor.LastSubscriptionReadyForTest(conductorInstance)
+	require.False(t, ok)
+	require.Zero(t, subscriptionReady)
+
+	workCount = conductorInstance.DoWork()
+	require.Equal(t, 1, workCount)
+
+	subscriptionReady, ok = conductor.LastSubscriptionReadyForTest(conductorInstance)
+	require.True(t, ok)
+	require.Equal(t, goldenSubscriptionReadyEvent, subscriptionReady)
+	require.Equal(
+		t,
+		goldenSubscriptionReadyCorrelationID,
+		conductorInstance.ReceivedCorrelationID(),
+	)
+	require.False(t, adapter.CopyReceiverForTest().BroadcastReceiver().ReceiveNext())
 }
 
 func TestConductor_onClientTimeoutEvent(t *testing.T) {

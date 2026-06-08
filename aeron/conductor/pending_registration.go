@@ -59,6 +59,14 @@ func (registry *pendingRegistry) Remove(correlationID int64) {
 	delete(registry.entries, correlationID)
 }
 
+func (registry *pendingRegistry) Contains(correlationID int64) bool {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	_, ok := registry.entries[correlationID]
+	return ok
+}
+
 func (registry *pendingRegistry) IsEmpty() bool {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()

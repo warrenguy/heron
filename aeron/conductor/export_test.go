@@ -147,3 +147,49 @@ func DecodeTrailingStringASCIIForTest(
 ) (string, error) {
 	return decodeTrailingStringASCII(buf, offset, bodyLength, stringOffset, wrapped)
 }
+
+func LastPublicationReadyForTest(
+	conductorInstance *Conductor,
+) (PublicationBuffersReady, bool) {
+	if conductorInstance.lastPublicationReady == nil {
+		return PublicationBuffersReady{}, false
+	}
+	return *conductorInstance.lastPublicationReady, true
+}
+
+func LastSubscriptionReadyForTest(
+	conductorInstance *Conductor,
+) (SubscriptionReady, bool) {
+	if conductorInstance.lastSubscriptionReady == nil {
+		return SubscriptionReady{}, false
+	}
+	return *conductorInstance.lastSubscriptionReady, true
+}
+
+func AvailableImagesForTest(conductorInstance *Conductor) []AvailableImage {
+	return append([]AvailableImage(nil), conductorInstance.availableImages...)
+}
+
+func UnavailableImagesForTest(
+	conductorInstance *Conductor,
+) []struct {
+	CorrelationID              int64
+	SubscriptionRegistrationID int64
+} {
+	records := make(
+		[]struct {
+			CorrelationID              int64
+			SubscriptionRegistrationID int64
+		},
+		len(conductorInstance.unavailableImages),
+	)
+	for i, record := range conductorInstance.unavailableImages {
+		records[i].CorrelationID = record.CorrelationID
+		records[i].SubscriptionRegistrationID = record.SubscriptionRegistrationID
+	}
+	return records
+}
+
+func PublicationErrorsForTest(conductorInstance *Conductor) []PublicationError {
+	return append([]PublicationError(nil), conductorInstance.publicationErrors...)
+}

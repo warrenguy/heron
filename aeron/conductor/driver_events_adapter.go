@@ -6,13 +6,34 @@ import (
 
 const ClientTimeoutBodyLength = 8
 
+type (
+	PublicationReadyHandler  func(PublicationBuffersReady)
+	SubscriptionReadyHandler func(SubscriptionReady)
+	AvailableImageHandler    func(AvailableImage)
+	UnavailableImageHandler  func(correlationID, subscriptionRegistrationID int64)
+	PublicationErrorHandler  func(PublicationError)
+	CorrelatedReadyHandler   func(correlationID int64)
+)
+
+type DriverEventsAdapterHandlers struct {
+	OnPublicationReady  PublicationReadyHandler
+	OnSubscriptionReady SubscriptionReadyHandler
+	OnAvailableImage    AvailableImageHandler
+	OnUnavailableImage  UnavailableImageHandler
+	OnPublicationError  PublicationErrorHandler
+	OnCorrelatedReady   CorrelatedReadyHandler
+}
+
 type DriverEventsAdapter struct {
 	copyReceiver        *CopyBroadcastReceiver
 	clientID            int64
 	errorHandler        func(error)
 	onClientTimeout     func()
+	handlers            DriverEventsAdapterHandlers
+	pendingRegistry     *pendingRegistry
 	unhandledEventCount int64
-	isInvalid           bool
+	// Permanent after ErrBroadcastLapped; Receive returns 0 with no recovery (Stage 2 pin).
+	isInvalid bool
 }
 
 func NewDriverEventsAdapter(
@@ -20,12 +41,16 @@ func NewDriverEventsAdapter(
 	copyReceiver *CopyBroadcastReceiver,
 	errorHandler func(error),
 	onClientTimeout func(),
+	handlers DriverEventsAdapterHandlers,
+	pendingRegistry *pendingRegistry,
 ) *DriverEventsAdapter {
 	return &DriverEventsAdapter{
 		copyReceiver:    copyReceiver,
 		clientID:        clientID,
 		errorHandler:    errorHandler,
 		onClientTimeout: onClientTimeout,
+		handlers:        handlers,
+		pendingRegistry: pendingRegistry,
 	}
 }
 
@@ -76,8 +101,13 @@ func (adapter *DriverEventsAdapter) onMessage(
 	pending PendingEventHandler,
 ) {
 	switch msgTypeID {
-	case OnClientTimeout:
-		adapter.handleClientTimeout(buffer, offset, length)
+	// Driver events (0x0F01–0x0F0D), ascending event ID.
+	case OnError:
+		adapter.handleOnError(buffer, offset, length, activeCorrelationID, pending)
+	case OnAvailableImage:
+		adapter.handleAvailableImage(buffer, offset, length)
+	case OnPublicationReady, OnExclusivePublicationReady:
+		adapter.handlePublicationReady(buffer, offset, length, activeCorrelationID)
 	case OnOperationSuccess:
 		adapter.handleOnOperationSuccess(
 			buffer,
@@ -86,8 +116,14 @@ func (adapter *DriverEventsAdapter) onMessage(
 			activeCorrelationID,
 			pending,
 		)
-	case OnError:
-		adapter.handleOnError(buffer, offset, length, activeCorrelationID, pending)
+	case OnUnavailableImage:
+		adapter.handleUnavailableImage(buffer, offset, length)
+	case OnSubscriptionReady:
+		adapter.handleSubscriptionReady(buffer, offset, length, activeCorrelationID)
+	case OnClientTimeout:
+		adapter.handleClientTimeout(buffer, offset, length)
+	case OnPublicationError:
+		adapter.handlePublicationError(buffer, offset, length)
 	case OnNextAvailableSessionID:
 		adapter.handleNextAvailableSessionID(
 			buffer,
@@ -109,6 +145,21 @@ func (adapter *DriverEventsAdapter) rejectUnlessActiveCorrelation(
 	if activeCorrelationID == NullCorrelationID || pending == nil ||
 		correlationID != activeCorrelationID {
 		adapter.unhandledEventCount++
+		return true
+	}
+	return false
+}
+
+// isCorrelated gates async ready events: active await OR pending registry entry.
+// rejectUnlessActiveCorrelation requires exact active match for step-2 responses.
+func (adapter *DriverEventsAdapter) isCorrelated(
+	activeCorrelationID int64,
+	correlationID int64,
+) bool {
+	if correlationID == activeCorrelationID && activeCorrelationID != NullCorrelationID {
+		return true
+	}
+	if adapter.pendingRegistry != nil && adapter.pendingRegistry.Contains(correlationID) {
 		return true
 	}
 	return false
@@ -221,4 +272,168 @@ func (adapter *DriverEventsAdapter) handleClientTimeout(
 	if adapter.onClientTimeout != nil {
 		adapter.onClientTimeout()
 	}
+}
+
+func peekEventCorrelationID(
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+) (int64, bool) {
+	if length < sizeOfInt64 {
+		return 0, false
+	}
+	return buffer.GetInt64(offset), true
+}
+
+func handleDecodedEvent[T any](
+	adapter *DriverEventsAdapter,
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+	decode func(atomic.AtomicBuffer, int, int) (T, error),
+	onEvent func(T),
+) {
+	decoded, err := decode(buffer, offset, length)
+	if err != nil {
+		adapter.unhandledEventCount++
+		return
+	}
+	if onEvent != nil {
+		onEvent(decoded)
+	}
+}
+
+func handleCorrelatedReady[T any](
+	adapter *DriverEventsAdapter,
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+	activeCorrelationID int64,
+	minimumBodyLength int,
+	peekCorrelationID func(atomic.AtomicBuffer, int, int) (int64, bool),
+	decode func(atomic.AtomicBuffer, int, int) (T, error),
+	correlationID func(T) int64,
+	onReady func(T),
+) {
+	if peekCorrelationID != nil && length >= minimumBodyLength {
+		if eventCorrelationID, ok := peekCorrelationID(buffer, offset, length); ok &&
+			!adapter.isCorrelated(activeCorrelationID, eventCorrelationID) {
+			return
+		}
+	}
+
+	decoded, err := decode(buffer, offset, length)
+	if err != nil {
+		adapter.unhandledEventCount++
+		return
+	}
+
+	eventCorrelationID := correlationID(decoded)
+	if adapter.handlers.OnCorrelatedReady != nil {
+		adapter.handlers.OnCorrelatedReady(eventCorrelationID)
+	}
+	if onReady != nil {
+		onReady(decoded)
+	}
+}
+
+func publicationBuffersReadyCorrelationID(event PublicationBuffersReady) int64 {
+	return event.CorrelationID
+}
+
+func subscriptionReadyCorrelationID(event SubscriptionReady) int64 {
+	return event.CorrelationID
+}
+
+func (adapter *DriverEventsAdapter) handleAvailableImage(
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+) {
+	handleDecodedEvent(
+		adapter,
+		buffer,
+		offset,
+		length,
+		DecodeAvailableImage,
+		adapter.handlers.OnAvailableImage,
+	)
+}
+
+func (adapter *DriverEventsAdapter) handlePublicationReady(
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+	activeCorrelationID int64,
+) {
+	handleCorrelatedReady(
+		adapter,
+		buffer,
+		offset,
+		length,
+		activeCorrelationID,
+		PublicationBuffersReadyFixedLength+atomic.StringASCIIHeaderLength,
+		peekEventCorrelationID,
+		DecodePublicationBuffersReady,
+		publicationBuffersReadyCorrelationID,
+		adapter.handlers.OnPublicationReady,
+	)
+}
+
+func (adapter *DriverEventsAdapter) handleSubscriptionReady(
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+	activeCorrelationID int64,
+) {
+	handleCorrelatedReady(
+		adapter,
+		buffer,
+		offset,
+		length,
+		activeCorrelationID,
+		SubscriptionReadyBodyLength,
+		peekEventCorrelationID,
+		DecodeSubscriptionReady,
+		subscriptionReadyCorrelationID,
+		adapter.handlers.OnSubscriptionReady,
+	)
+}
+
+func (adapter *DriverEventsAdapter) handleUnavailableImage(
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+) {
+	handleDecodedEvent(
+		adapter,
+		buffer,
+		offset,
+		length,
+		DecodeUnavailableImage,
+		func(event UnavailableImage) {
+			if adapter.handlers.OnUnavailableImage != nil {
+				adapter.handlers.OnUnavailableImage(
+					event.CorrelationID,
+					event.SubscriptionRegistrationID,
+				)
+			}
+		},
+	)
+}
+
+func (adapter *DriverEventsAdapter) handlePublicationError(
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+) {
+	handleDecodedEvent(
+		adapter,
+		buffer,
+		offset,
+		length,
+		DecodePublicationError,
+		adapter.handlers.OnPublicationError,
+	)
+	// errorHandler deferral: step 7 defines publication-error user policy.
 }

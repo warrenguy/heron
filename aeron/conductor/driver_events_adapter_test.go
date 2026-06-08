@@ -594,6 +594,482 @@ func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
 	}
 }
 
+func TestDriverEventsAdapter_OnPublicationReady_matchingCorrelation(t *testing.T) {
+	tests := []struct {
+		name      string
+		msgTypeID int
+	}{
+		{name: "publication", msgTypeID: conductor.OnPublicationReady},
+		{name: "exclusive", msgTypeID: conductor.OnExclusivePublicationReady},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			conductorInstance := newConductorForTestAtWorkNano(
+				t,
+				func(error) {},
+				0,
+				0,
+			)
+			require.NoError(
+				t,
+				conductorInstance.RegisterPending(
+					conductor.PendingKindOperationSuccess,
+					goldenPublicationReadyCorrelationID,
+					pendingTestTimeout,
+				),
+			)
+			conductorInstance.SetActiveCorrelationID(goldenPublicationReadyCorrelationID)
+
+			adapter := conductorInstance.EventsAdapterForTest()
+			transmitConductorEvent(
+				t,
+				adapter,
+				testCase.msgTypeID,
+				conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
+			)
+
+			count := adapter.Receive(goldenPublicationReadyCorrelationID, conductorInstance)
+			require.Equal(t, 1, count)
+			require.Zero(t, adapter.UnhandledEventCount())
+
+			ready, ok := conductor.LastPublicationReadyForTest(conductorInstance)
+			require.True(t, ok)
+			require.Equal(t, goldenPublicationBuffersReadyEvent, ready)
+			require.Equal(
+				t,
+				goldenPublicationReadyCorrelationID,
+				conductorInstance.ReceivedCorrelationID(),
+			)
+		})
+	}
+}
+
+func TestDriverEventsAdapter_OnPublicationReady_matchingCorrelation_paddedBody(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindOperationSuccess,
+			goldenPublicationReadyCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(goldenPublicationReadyCorrelationID)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	payload := append(
+		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
+		0xFF,
+	)
+	transmitConductorEvent(t, adapter, conductor.OnPublicationReady, payload)
+
+	count := adapter.Receive(goldenPublicationReadyCorrelationID, conductorInstance)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+
+	ready, ok := conductor.LastPublicationReadyForTest(conductorInstance)
+	require.True(t, ok)
+	require.Equal(t, goldenPublicationBuffersReadyEvent, ready)
+}
+
+func TestDriverEventsAdapter_OnPublicationReady_pendingRegistryOnly(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindOperationSuccess,
+			goldenPublicationReadyCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnPublicationReady,
+		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
+	)
+
+	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+
+	ready, ok := conductor.LastPublicationReadyForTest(conductorInstance)
+	require.True(t, ok)
+	require.Equal(t, goldenPublicationBuffersReadyEvent, ready)
+	require.Equal(
+		t,
+		goldenPublicationReadyCorrelationID,
+		conductorInstance.ReceivedCorrelationID(),
+	)
+}
+
+func TestDriverEventsAdapter_OnPublicationReady_unrelatedCorrelation(t *testing.T) {
+	var handlerCalled bool
+	_, rx := newCopyBroadcastPair(t)
+	copyReceiver := conductor.NewCopyBroadcastReceiver(rx)
+	adapter := conductor.NewDriverEventsAdapter(
+		1,
+		copyReceiver,
+		func(error) { t.Fatal("error handler should not run") },
+		func() { t.Fatal("timeout handler should not run") },
+		conductor.DriverEventsAdapterHandlers{
+			OnPublicationReady: func(conductor.PublicationBuffersReady) {
+				handlerCalled = true
+			},
+		},
+		nil,
+	)
+
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnPublicationReady,
+		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
+	)
+
+	count := adapter.Receive(conductor.NullCorrelationID, nil)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+	require.False(t, handlerCalled)
+}
+
+func TestDriverEventsAdapter_OnPublicationReady_foreignPendingCorrelation(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindOperationSuccess,
+			pendingTestOtherCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnPublicationReady,
+		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
+	)
+
+	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+
+	_, ok := conductor.LastPublicationReadyForTest(conductorInstance)
+	require.False(t, ok)
+	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+}
+
+func TestDriverEventsAdapter_OnPublicationReady_decodeFailure(t *testing.T) {
+	testDriverEventsAdapterEventDecodeFailure(
+		t,
+		conductor.OnPublicationReady,
+		bodyOneByteShort(conductor.PublicationBuffersReadyFixedLength+4),
+		goldenPublicationReadyCorrelationID,
+	)
+}
+
+func TestDriverEventsAdapter_OnSubscriptionReady_matchingCorrelation(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindOperationSuccess,
+			goldenSubscriptionReadyCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(goldenSubscriptionReadyCorrelationID)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnSubscriptionReady,
+		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
+	)
+
+	count := adapter.Receive(goldenSubscriptionReadyCorrelationID, conductorInstance)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+
+	ready, ok := conductor.LastSubscriptionReadyForTest(conductorInstance)
+	require.True(t, ok)
+	require.Equal(t, goldenSubscriptionReadyEvent, ready)
+	require.Equal(
+		t,
+		goldenSubscriptionReadyCorrelationID,
+		conductorInstance.ReceivedCorrelationID(),
+	)
+}
+
+func TestDriverEventsAdapter_OnSubscriptionReady_unrelatedCorrelation(t *testing.T) {
+	var handlerCalled bool
+	_, rx := newCopyBroadcastPair(t)
+	copyReceiver := conductor.NewCopyBroadcastReceiver(rx)
+	adapter := conductor.NewDriverEventsAdapter(
+		1,
+		copyReceiver,
+		func(error) { t.Fatal("error handler should not run") },
+		func() { t.Fatal("timeout handler should not run") },
+		conductor.DriverEventsAdapterHandlers{
+			OnSubscriptionReady: func(conductor.SubscriptionReady) {
+				handlerCalled = true
+			},
+		},
+		nil,
+	)
+
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnSubscriptionReady,
+		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
+	)
+
+	count := adapter.Receive(conductor.NullCorrelationID, nil)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+	require.False(t, handlerCalled)
+}
+
+func TestDriverEventsAdapter_OnSubscriptionReady_matchingCorrelation_paddedBody(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindOperationSuccess,
+			goldenSubscriptionReadyCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(goldenSubscriptionReadyCorrelationID)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	payload := append(conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent), 0xFF)
+	transmitConductorEvent(t, adapter, conductor.OnSubscriptionReady, payload)
+
+	count := adapter.Receive(goldenSubscriptionReadyCorrelationID, conductorInstance)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+
+	ready, ok := conductor.LastSubscriptionReadyForTest(conductorInstance)
+	require.True(t, ok)
+	require.Equal(t, goldenSubscriptionReadyEvent, ready)
+}
+
+func TestDriverEventsAdapter_OnSubscriptionReady_foreignPendingCorrelation(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindOperationSuccess,
+			pendingTestOtherCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnSubscriptionReady,
+		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
+	)
+
+	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+
+	_, ok := conductor.LastSubscriptionReadyForTest(conductorInstance)
+	require.False(t, ok)
+	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+}
+
+func TestDriverEventsAdapter_OnSubscriptionReady_pendingRegistryOnly(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindOperationSuccess,
+			goldenSubscriptionReadyCorrelationID,
+			pendingTestTimeout,
+		),
+	)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnSubscriptionReady,
+		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
+	)
+
+	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+
+	ready, ok := conductor.LastSubscriptionReadyForTest(conductorInstance)
+	require.True(t, ok)
+	require.Equal(t, goldenSubscriptionReadyEvent, ready)
+	require.Equal(
+		t,
+		goldenSubscriptionReadyCorrelationID,
+		conductorInstance.ReceivedCorrelationID(),
+	)
+}
+
+func TestDriverEventsAdapter_OnSubscriptionReady_decodeFailure(t *testing.T) {
+	testDriverEventsAdapterEventDecodeFailure(
+		t,
+		conductor.OnSubscriptionReady,
+		bodyOneByteShort(conductor.SubscriptionReadyBodyLength),
+		conductor.NullCorrelationID,
+	)
+}
+
+func TestDriverEventsAdapter_OnAvailableImage(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnAvailableImage,
+		conductor.AvailableImageBytes(goldenAvailableImageEvent),
+	)
+
+	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+
+	images := conductor.AvailableImagesForTest(conductorInstance)
+	require.Len(t, images, 1)
+	require.Equal(t, goldenAvailableImageEvent, images[0])
+}
+
+func TestDriverEventsAdapter_OnAvailableImage_decodeFailure(t *testing.T) {
+	testDriverEventsAdapterEventDecodeFailure(
+		t,
+		conductor.OnAvailableImage,
+		bodyOneByteShort(conductor.AvailableImageFixedLength+4),
+		conductor.NullCorrelationID,
+	)
+}
+
+func TestDriverEventsAdapter_OnUnavailableImage(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnUnavailableImage,
+		conductor.UnavailableImageBytes(goldenUnavailableImageEvent),
+	)
+
+	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+
+	records := conductor.UnavailableImagesForTest(conductorInstance)
+	require.Len(t, records, 1)
+	require.Equal(t, goldenUnavailableImageCorrelationID, records[0].CorrelationID)
+	require.Equal(t, int64(5005), records[0].SubscriptionRegistrationID)
+}
+
+func TestDriverEventsAdapter_OnUnavailableImage_decodeFailure(t *testing.T) {
+	testDriverEventsAdapterEventDecodeFailure(
+		t,
+		conductor.OnUnavailableImage,
+		bodyOneByteShort(conductor.UnavailableImageFixedLength+4),
+		conductor.NullCorrelationID,
+	)
+}
+
+func TestDriverEventsAdapter_OnPublicationError(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnPublicationError,
+		conductor.PublicationErrorBytes(goldenPublicationErrorEvent),
+	)
+
+	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+
+	errors := conductor.PublicationErrorsForTest(conductorInstance)
+	require.Len(t, errors, 1)
+	require.Equal(t, goldenPublicationErrorEvent, errors[0])
+}
+
+func TestDriverEventsAdapter_OnPublicationError_decodeFailure(t *testing.T) {
+	testDriverEventsAdapterEventDecodeFailure(
+		t,
+		conductor.OnPublicationError,
+		bodyOneByteShort(conductor.PublicationErrorFixedLength+4),
+		conductor.NullCorrelationID,
+	)
+}
+
 func TestDriverEventsAdapter_unhandledEvent(t *testing.T) {
 	adapter := newDriverEventsAdapterForTest(
 		t,
@@ -602,7 +1078,7 @@ func TestDriverEventsAdapter_unhandledEvent(t *testing.T) {
 		func() { t.Fatal("timeout handler should not run") },
 	)
 
-	transmitConductorEvent(t, adapter, conductor.OnPublicationReady, []byte{0x01, 0x02})
+	transmitConductorEvent(t, adapter, 0xFFFF, []byte{0x01, 0x02})
 
 	count := adapter.Receive(conductor.NullCorrelationID, nil)
 	require.Equal(t, 1, count)
@@ -654,6 +1130,8 @@ func newDriverEventsAdapterForTest(
 		copyReceiver,
 		errorHandler,
 		onClientTimeout,
+		conductor.DriverEventsAdapterHandlers{},
+		nil,
 	)
 }
 
@@ -661,18 +1139,28 @@ func bodyOneByteShort(minimumBodyLength int) []byte {
 	return make([]byte, minimumBodyLength-1)
 }
 
-func transmitConductorEvent(
+func testDriverEventsAdapterEventDecodeFailure(
 	t *testing.T,
-	adapter *conductor.DriverEventsAdapter,
 	msgTypeID int,
 	payload []byte,
+	receiveCorrelationID int64,
 ) {
 	t.Helper()
 
-	copyReceiver := adapter.CopyReceiverForTest()
-	buf := copyReceiver.BroadcastReceiver().Buffer()
-	tx, err := broadcast.NewBroadcastTransmitter(buf)
-	require.NoError(t, err)
-	err = tx.Transmit(msgTypeID, payload)
-	require.NoError(t, err)
+	_, rx := newCopyBroadcastPair(t)
+	copyReceiver := conductor.NewCopyBroadcastReceiver(rx)
+	adapter := conductor.NewDriverEventsAdapter(
+		1,
+		copyReceiver,
+		func(error) { t.Fatal("error handler should not run") },
+		func() { t.Fatal("timeout handler should not run") },
+		conductor.DriverEventsAdapterHandlers{},
+		nil,
+	)
+
+	transmitConductorEvent(t, adapter, msgTypeID, payload)
+
+	count := adapter.Receive(receiveCorrelationID, nil)
+	require.Equal(t, 1, count)
+	require.Equal(t, int64(1), adapter.UnhandledEventCount())
 }

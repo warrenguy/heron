@@ -20,6 +20,17 @@ func pendingRegistryTestRegistration(correlationID int64) PendingRegistration {
 	}
 }
 
+func TestPendingRegistry_contains(t *testing.T) {
+	registry := newPendingRegistry()
+	registration := pendingRegistryTestRegistration(pendingRegistryTestCorrelationID)
+
+	require.False(t, registry.Contains(pendingRegistryTestCorrelationID))
+	require.NoError(t, registry.Register(registration))
+	require.True(t, registry.Contains(pendingRegistryTestCorrelationID))
+	registry.Remove(pendingRegistryTestCorrelationID)
+	require.False(t, registry.Contains(pendingRegistryTestCorrelationID))
+}
+
 func TestPendingRegistry_registerGetRemove(t *testing.T) {
 	registry := newPendingRegistry()
 	registration := pendingRegistryTestRegistration(pendingRegistryTestCorrelationID)
