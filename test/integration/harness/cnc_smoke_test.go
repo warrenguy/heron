@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
 )
 
@@ -58,15 +59,34 @@ func TestCncWiring(t *testing.T) {
 	})
 
 	t.Run("GetNextSessionIDRoundtrip", func(t *testing.T) {
-		const correlationID int64 = 1001
-		err := conductor.NewDriverProxy(toDriver, 1).
-			GetNextAvailableSessionID(correlationID, 100)
-		require.NoError(t, err)
+		const sessionIDStreamID int32 = 100
 
-		event := waitForNextSessionIDEvent(t, toClients, correlationID)
-		// Aeron 1.51.0 seeds next_session_id via aeron_randomised_int32(); values may be
-		// negative. Roundtrip is proven by type, length, decode, and correlation match.
-		t.Logf("next session id: %d", event.Int32Value)
+		client, err := aeron.Connect(aeron.Context{AeronDir: md.Dir})
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, client.ClientId(), int64(0))
+		t.Cleanup(func() {
+			require.NoError(t, client.Close())
+		})
+
+		firstSessionID, err := client.GetNextAvailableSessionID(sessionIDStreamID)
+		require.NoError(t, err)
+		secondSessionID, err := client.GetNextAvailableSessionID(sessionIDStreamID)
+		require.NoError(t, err)
+		require.NotEqual(t, firstSessionID, secondSessionID)
+
+		// Live-driver roundtrip via Client.GetNextAvailableSessionID await path
+		// (offer -> conductor -> broadcast -> Client return). Broadcast wire decode and correlation
+		// matching are covered in unit tests (aeron/client_await_test.go). Failure modes
+		// (timeout, ON_ERROR, driver death) stay in unit tests by design. Aeron 1.51.0 seeds
+		// next_session_id via aeron_randomised_int32(); values may be negative.
+		t.Logf("next session ids: %d, %d", firstSessionID, secondSessionID)
+
+		// Client advances its own broadcast cursor; drain harness receiver so later subtests
+		// polling toClients do not see stale ON_NEXT_AVAILABLE_SESSION_ID events.
+		for toClients.ReceiveNext() {
+			require.True(t, toClients.Validate())
+		}
+
 		md.AssertProcessAlive(t)
 	})
 
