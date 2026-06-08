@@ -152,6 +152,34 @@ func DecodeCorrelated(buf atomic.AtomicBuffer, offset int) (CorrelatedMessage, e
 	}, nil
 }
 
+func EncodeCorrelationAndInt32(
+	buf atomic.AtomicBuffer,
+	offset int,
+	correlationID int64,
+	int32Value int32,
+) error {
+	if err := bodyBoundsError(
+		buf,
+		offset,
+		CorrelationAndInt32BodyLength,
+		ErrCorrelationAndInt32OutOfBounds,
+	); err != nil {
+		return err
+	}
+	buf.PutInt64(offset, correlationID)
+	buf.PutInt32(offset+sizeOfInt64, int32Value)
+	return nil
+}
+
+func CorrelationAndInt32Bytes(correlationID int64, int32Value int32) []byte {
+	return encodeToBytes(
+		CorrelationAndInt32BodyLength,
+		func(buf atomic.AtomicBuffer, offset int) error {
+			return EncodeCorrelationAndInt32(buf, offset, correlationID, int32Value)
+		},
+	)
+}
+
 func DecodeCorrelationAndInt32(buf atomic.AtomicBuffer, offset int) (CorrelationAndInt32, error) {
 	if err := bodyBoundsError(
 		buf,

@@ -70,6 +70,10 @@ type Conductor struct {
 	timeOfLastKeepAliveNs int64
 	timeOfLastServiceNs   int64
 	heartbeatCounterID    int32
+	pending               pendingRegistry
+	activeCorrelationID   int64
+	receivedCorrelationID int64
+	terminationCause      error
 	isTerminating         bool
 }
 
@@ -88,6 +92,9 @@ func NewConductor(
 		interServiceTimeoutNs: config.InterServiceTimeout.Nanoseconds(),
 		keepAliveIntervalNs:   config.KeepAliveInterval.Nanoseconds(),
 		heartbeatCounterID:    cnc.NullCounterID,
+		pending:               newPendingRegistry(),
+		activeCorrelationID:   NullCorrelationID,
+		receivedCorrelationID: NullCorrelationID,
 	}
 	copyReceiver := NewCopyBroadcastReceiver(broadcastReceiver)
 	conductor.eventsAdapter = NewDriverEventsAdapter(
@@ -113,6 +120,10 @@ func (conductor *Conductor) IsTerminating() bool {
 	return conductor.isTerminating
 }
 
+func (conductor *Conductor) TerminationCause() error {
+	return conductor.terminationCause
+}
+
 func (conductor *Conductor) SeedServiceTimestamps(nowNs int64) {
 	conductor.timeOfLastServiceNs = nowNs
 	conductor.timeOfLastKeepAliveNs = nowNs
@@ -123,7 +134,10 @@ func (conductor *Conductor) service() int {
 	if conductor.isTerminating {
 		return workCount
 	}
-	workCount += conductor.eventsAdapter.Receive(NullCorrelationID)
+	workCount += conductor.eventsAdapter.Receive(
+		conductor.activeCorrelationID,
+		conductor,
+	)
 	return workCount
 }
 
@@ -221,6 +235,8 @@ func (conductor *Conductor) onClientTimeout() {
 
 func (conductor *Conductor) terminateWithError(err error) {
 	conductor.isTerminating = true
+	conductor.terminationCause = err
+	conductor.ClearPending()
 	invokeErrorHandler(conductor.config.ErrorHandler, err)
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 )
 
 const (
@@ -155,7 +156,7 @@ func TestConductor_onClientTimeoutEvent(t *testing.T) {
 		t,
 		conductorInstance.EventsAdapterForTest(),
 		conductor.OnClientTimeout,
-		clientTimeoutPayload(conductorTestClientID),
+		testutil.ClientTimeoutPayload(conductorTestClientID),
 	)
 
 	workCount := conductorInstance.DoWork()
@@ -345,13 +346,13 @@ func TestConductor_duplicateClientTimeoutIgnored(t *testing.T) {
 	)
 	adapter := conductorInstance.EventsAdapterForTest()
 
-	timeoutPayload := clientTimeoutPayload(conductorTestClientID)
+	timeoutPayload := testutil.ClientTimeoutPayload(conductorTestClientID)
 	transmitConductorEvent(t, adapter, conductor.OnClientTimeout, timeoutPayload)
 	require.Equal(t, 1, conductorInstance.DoWork())
 	require.Len(t, gotErrors, 1)
 
 	transmitConductorEvent(t, adapter, conductor.OnClientTimeout, timeoutPayload)
-	require.Equal(t, 1, adapter.Receive(conductor.NullCorrelationID))
+	require.Equal(t, 1, adapter.Receive(conductor.NullCorrelationID, nil))
 	require.Len(t, gotErrors, 1)
 }
 

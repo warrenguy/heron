@@ -9,6 +9,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 )
 
 func newAdvancingEpochClock(startMs, stepMs int64) conductor.EpochClock {
@@ -20,7 +21,7 @@ func newAdvancingEpochClock(startMs, stepMs int64) conductor.EpochClock {
 	}
 }
 
-func requireDriverTimeoutCause(tb clientTestTB, err, wantCause error) {
+func requireDriverTimeoutCause(tb testutil.TB, err, wantCause error) {
 	tb.Helper()
 
 	var timeoutErr *aeron.DriverTimeoutError
@@ -64,7 +65,7 @@ func TestWaitForDriverHeartbeat_timeouts(t *testing.T) {
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			ring := newClientTestRing(t)
+			ring := testutil.NewTestRing(t)
 			if testCase.heartbeat != 0 {
 				ring.SetConsumerHeartbeatTime(testCase.heartbeat)
 			}
@@ -80,7 +81,7 @@ func TestWaitForDriverHeartbeat_timeouts(t *testing.T) {
 }
 
 func TestWaitForDriverHeartbeat_freshHeartbeat(t *testing.T) {
-	ring := newClientTestRing(t)
+	ring := testutil.NewTestRing(t)
 	ring.SetConsumerHeartbeatTime(9_500)
 
 	err := aeron.WaitForDriverHeartbeatForTest(
@@ -92,7 +93,7 @@ func TestWaitForDriverHeartbeat_freshHeartbeat(t *testing.T) {
 }
 
 func TestWaitForDriverHeartbeat_frozenEpochClockWallBackstop(t *testing.T) {
-	ring := newClientTestRing(t)
+	ring := testutil.NewTestRing(t)
 
 	start := time.Now()
 	err := aeron.WaitForDriverHeartbeatForTest(

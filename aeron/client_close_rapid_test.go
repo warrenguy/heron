@@ -8,18 +8,19 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 )
 
 func TestClient_firstDoWorkSeedsServiceTimestamps_rapid(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		nanoNs := clientTestStartNanoNs
-		interServiceTimeoutNs := clientTestInterServiceTimeout.Nanoseconds()
+		nanoNs := testutil.TestStartNanoNs
+		interServiceTimeoutNs := testutil.TestInterServiceTimeout.Nanoseconds()
 		advanceNs := int64(
 			rapid.IntRange(0, int(interServiceTimeoutNs-1)).Draw(t, "advanceNs"),
 		)
 
-		conductorInstance := newClientTestConductor(t, &nanoNs, clientTestEpochMs, nil)
-		nanoNs = clientTestStartNanoNs + advanceNs
+		conductorInstance := newClientTestConductor(t, &nanoNs, nil)
+		nanoNs = testutil.TestStartNanoNs + advanceNs
 
 		client := aeron.NewClientForTest(
 			conductorInstance,
@@ -34,8 +35,8 @@ func TestClient_firstDoWorkSeedsServiceTimestamps_rapid(t *testing.T) {
 func TestClient_conductorServiceTimeoutAfterInterval_rapid(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		var gotErr error
-		nanoNs := clientTestStartNanoNs
-		interServiceTimeoutNs := clientTestInterServiceTimeout.Nanoseconds()
+		nanoNs := testutil.TestStartNanoNs
+		interServiceTimeoutNs := testutil.TestInterServiceTimeout.Nanoseconds()
 		advanceNs := int64(
 			rapid.IntRange(
 				int(interServiceTimeoutNs+1),
@@ -46,10 +47,9 @@ func TestClient_conductorServiceTimeoutAfterInterval_rapid(t *testing.T) {
 		conductorInstance := newClientTestConductor(
 			t,
 			&nanoNs,
-			clientTestEpochMs,
 			func(err error) { gotErr = err },
 		)
-		nanoNs = clientTestStartNanoNs + advanceNs
+		nanoNs = testutil.TestStartNanoNs + advanceNs
 
 		require.Equal(t, 1, conductorInstance.DoWork())
 		require.True(t, conductorInstance.IsTerminating())

@@ -9,6 +9,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 )
 
 func TestWaitForDriverHeartbeat_driverShutdown_rapid(t *testing.T) {
@@ -16,7 +17,7 @@ func TestWaitForDriverHeartbeat_driverShutdown_rapid(t *testing.T) {
 		timeoutMs := rapid.IntRange(1, 60_000).Draw(t, "timeoutMs")
 		startMs := int64(rapid.IntRange(1, 1_000_000).Draw(t, "startMs"))
 
-		ring := newClientTestRing(t)
+		ring := testutil.NewTestRing(t)
 		ring.SetConsumerHeartbeatTime(conductor.DriverShutdownHeartbeat)
 
 		err := aeron.WaitForDriverHeartbeatForTest(
@@ -36,7 +37,7 @@ func TestWaitForDriverHeartbeat_freshHeartbeat_rapid(t *testing.T) {
 		ageMs := int64(rapid.IntRange(0, timeoutMs).Draw(t, "ageMs"))
 		nowMs := heartbeat + ageMs
 
-		ring := newClientTestRing(t)
+		ring := testutil.NewTestRing(t)
 		ring.SetConsumerHeartbeatTime(heartbeat)
 
 		err := aeron.WaitForDriverHeartbeatForTest(
@@ -56,7 +57,7 @@ func TestWaitForDriverHeartbeat_staleAtConnect_rapid(t *testing.T) {
 		ageMs := int64(timeoutMs) + int64(extraAge)
 		nowMs := heartbeat + ageMs
 
-		ring := newClientTestRing(t)
+		ring := testutil.NewTestRing(t)
 		ring.SetConsumerHeartbeatTime(heartbeat)
 
 		err := aeron.WaitForDriverHeartbeatForTest(
@@ -74,7 +75,7 @@ func TestWaitForDriverHeartbeat_notReady_rapid(t *testing.T) {
 		startMs := int64(rapid.IntRange(1, 1_000_000).Draw(t, "startMs"))
 		stepMs := int64(timeoutMs) + int64(rapid.IntRange(1, 10_000).Draw(t, "pastDeadline"))
 
-		ring := newClientTestRing(t)
+		ring := testutil.NewTestRing(t)
 		if !rapid.Bool().Draw(t, "useUnsetHeartbeat") {
 			ring.SetConsumerHeartbeatTime(
 				int64(rapid.IntRange(-1_000, -2).Draw(t, "heartbeat")),

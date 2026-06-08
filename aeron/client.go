@@ -21,6 +21,8 @@ type Client struct {
 	conductor               *conductor.Conductor
 	driverProxy             *conductor.DriverProxy
 	nanoClock               conductor.NanoClock
+	driverTimeout           time.Duration
+	idleSleepDuration       time.Duration
 	serviceTimestampsSeeded bool
 	closed                  bool
 }
@@ -105,12 +107,14 @@ func Connect(ctx Context) (*Client, error) {
 
 	connected = true
 	return &Client{
-		clientID:       clientID,
-		mapped:         mapped,
-		countersReader: countersReader,
-		conductor:      conductorInstance,
-		driverProxy:    driverProxy,
-		nanoClock:      ctx.NanoClock,
+		clientID:          clientID,
+		mapped:            mapped,
+		countersReader:    countersReader,
+		conductor:         conductorInstance,
+		driverProxy:       driverProxy,
+		nanoClock:         ctx.NanoClock,
+		driverTimeout:     ctx.DriverTimeout,
+		idleSleepDuration: ctx.IdleSleepDuration,
 	}, nil
 }
 
@@ -153,6 +157,113 @@ func (client *Client) Close() error {
 	return err
 }
 
+func (client *Client) NextCorrelationID() int64 {
+	if client == nil || client.closed || client.driverProxy == nil {
+		return 0
+	}
+	return client.driverProxy.NextCorrelationID()
+}
+
+func (client *Client) GetNextAvailableSessionID(streamID int32) (int32, error) {
+	if err := client.requireReadyWithDriverProxy(); err != nil {
+		return 0, err
+	}
+	correlationID := client.driverProxy.NextCorrelationID()
+	registration, err := client.awaitResponse(
+		correlationID,
+		conductor.PendingKindNextSessionID,
+		client.driverTimeout,
+		func() error {
+			return client.driverProxy.GetNextAvailableSessionID(correlationID, streamID)
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+	return registration.Int32Value, nil
+}
+
+func (client *Client) requireReadyWithConductor() error {
+	if client == nil {
+		return ErrClientNotReady
+	}
+	if client.closed {
+		return ErrClientClosed
+	}
+	if client.conductor == nil || client.nanoClock == nil {
+		return ErrClientNotReady
+	}
+	return nil
+}
+
+func (client *Client) requireReadyWithDriverProxy() error {
+	if err := client.requireReadyWithConductor(); err != nil {
+		return err
+	}
+	if client.driverProxy == nil {
+		return ErrClientNotReady
+	}
+	return nil
+}
+
+func (client *Client) awaitResponse(
+	correlationID int64,
+	kind conductor.PendingKind,
+	timeout time.Duration,
+	offer func() error,
+) (conductor.PendingRegistration, error) {
+	if err := client.requireReadyWithConductor(); err != nil {
+		return conductor.PendingRegistration{}, err
+	}
+	conductorInstance := client.conductor
+	defer conductorInstance.SetActiveCorrelationID(conductor.NullCorrelationID)
+	if err := conductorInstance.RegisterPending(kind, correlationID, timeout); err != nil {
+		return conductor.PendingRegistration{}, mapRegistrationError(err)
+	}
+	pendingCompleted := false
+	defer func() {
+		if !pendingCompleted {
+			conductorInstance.CancelPending(correlationID)
+		}
+	}()
+
+	conductorInstance.SetActiveCorrelationID(correlationID)
+	if offer != nil {
+		if err := offer(); err != nil {
+			return conductor.PendingRegistration{}, err
+		}
+	}
+	deadlineNs := client.nanoClock() + timeout.Nanoseconds()
+	for client.nanoClock() < deadlineNs {
+		if err := client.requireReadyWithConductor(); err != nil {
+			return conductor.PendingRegistration{}, err
+		}
+		if conductorInstance.IsTerminating() {
+			cause := conductorInstance.TerminationCause()
+			if cause == nil {
+				cause = conductor.ErrDriverShutdown
+			}
+			return conductor.PendingRegistration{}, mapConductorError(cause)
+		}
+		client.DoWork()
+		done, registration, err := conductorInstance.PollPending(correlationID)
+		if !done {
+			time.Sleep(client.idleSleepDuration)
+			continue
+		}
+		if err != nil {
+			pendingCompleted = true
+			return conductor.PendingRegistration{}, mapAwaitError(err)
+		}
+		pendingCompleted = true
+		return registration, nil
+	}
+	return conductor.PendingRegistration{}, &AwaitTimeoutError{
+		CorrelationID: correlationID,
+		Timeout:       timeout,
+	}
+}
+
 //nolint:staticcheck // Aeron Java API uses ClientId.
 func (client *Client) ClientId() int64 {
 	if client == nil {
@@ -171,7 +282,7 @@ func (client *Client) CncMetadata() (cnc.Metadata, error) {
 
 func (client *Client) CountersReader() (cnc.CountersView, error) {
 	if client == nil || client.closed {
-		return nil, errors.New("aeron: client is closed")
+		return nil, ErrClientClosed
 	}
 	if client.countersReader == nil {
 		return nil, errors.New("aeron: client has no counters reader")
@@ -189,7 +300,7 @@ func (client *Client) ErrorLogBuffer() ([]byte, error) {
 
 func (client *Client) mappedCncFile() (*cnc.MappedCncFile, error) {
 	if client == nil || client.closed {
-		return nil, errors.New("aeron: client is closed")
+		return nil, ErrClientClosed
 	}
 	if client.mapped == nil {
 		return nil, errors.New("aeron: client has no mapped cnc file")

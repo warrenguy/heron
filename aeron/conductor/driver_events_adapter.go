@@ -33,15 +33,26 @@ func NewDriverEventsAdapter(
 	}
 }
 
-func (adapter *DriverEventsAdapter) Receive(activeCorrelationID int64) int {
-	// Java matches driver responses to in-flight sync commands; wired when Client adds awaitResponse.
-	_ = activeCorrelationID
+type nextSessionIDCompleter interface {
+	completeNextSessionID(correlationID int64, nextSessionID int32) bool
+}
 
+func (adapter *DriverEventsAdapter) Receive(
+	activeCorrelationID int64,
+	completer nextSessionIDCompleter,
+) int {
 	if adapter.isInvalid {
 		return 0
 	}
 
-	count, err := adapter.copyReceiver.Receive(adapter.onMessage)
+	count, err := adapter.copyReceiver.Receive(func(
+		msgTypeID int,
+		buffer atomic.AtomicBuffer,
+		offset int,
+		length int,
+	) {
+		adapter.onMessage(msgTypeID, buffer, offset, length, activeCorrelationID, completer)
+	})
 	if err != nil {
 		adapter.isInvalid = true
 		invokeErrorHandler(adapter.errorHandler, err)
@@ -63,14 +74,50 @@ func (adapter *DriverEventsAdapter) onMessage(
 	buffer atomic.AtomicBuffer,
 	offset int,
 	length int,
+	activeCorrelationID int64,
+	completer nextSessionIDCompleter,
 ) {
 	switch msgTypeID {
 	case OnClientTimeout:
 		adapter.handleClientTimeout(buffer, offset, length)
+	case OnNextAvailableSessionID:
+		adapter.handleNextAvailableSessionID(
+			buffer,
+			offset,
+			length,
+			activeCorrelationID,
+			completer,
+		)
 	case OnError:
 		// Full ErrorResponse decode and correlation routing lands with Client command handling.
 		invokeErrorHandler(adapter.errorHandler, ErrDriverErrorEvent)
 	default:
+		adapter.unhandledEventCount++
+	}
+}
+
+func (adapter *DriverEventsAdapter) handleNextAvailableSessionID(
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+	activeCorrelationID int64,
+	completer nextSessionIDCompleter,
+) {
+	if activeCorrelationID == NullCorrelationID || completer == nil {
+		adapter.unhandledEventCount++
+		return
+	}
+	if length < CorrelationAndInt32BodyLength {
+		adapter.unhandledEventCount++
+		return
+	}
+	decoded, err := DecodeCorrelationAndInt32(buffer, offset)
+	if err != nil {
+		adapter.unhandledEventCount++
+		return
+	}
+	if decoded.CorrelationID != activeCorrelationID ||
+		!completer.completeNextSessionID(decoded.CorrelationID, decoded.Int32Value) {
 		adapter.unhandledEventCount++
 	}
 }

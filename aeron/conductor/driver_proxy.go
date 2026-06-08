@@ -32,6 +32,10 @@ func (proxy *DriverProxy) TimeOfLastDriverKeepaliveMs() int64 {
 	return proxy.ring.ConsumerHeartbeatTime()
 }
 
+func (proxy *DriverProxy) NextCorrelationID() int64 {
+	return proxy.ring.NextCorrelationID()
+}
+
 func (proxy *DriverProxy) ClientKeepalive() error {
 	return proxy.offerCorrelated(ClientKeepalive, false)
 }

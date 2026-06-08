@@ -45,6 +45,17 @@ func (conductor *Conductor) SetCountersReaderForTest(reader *cnc.CountersReader)
 	conductor.countersReader = reader
 }
 
+func (conductor *Conductor) CompleteNextSessionIDForTest(
+	correlationID int64,
+	nextSessionID int32,
+) bool {
+	return conductor.completeNextSessionID(correlationID, nextSessionID)
+}
+
+func (conductor *Conductor) SetTerminatingForTest(terminating bool) {
+	conductor.isTerminating = terminating
+}
+
 func (proxy *DriverProxy) Ring() *ringbuffer.ManyToOneRingBuffer {
 	return proxy.ring
 }
@@ -83,6 +94,47 @@ func (proxy *DriverProxy) OfferBodyForTest(
 	return proxy.offerBody(msgTypeID, bodyLength, silent, encode)
 }
 
+func NewConductorUnchecked(
+	config Config,
+	countersReader *cnc.CountersReader,
+) (*Conductor, error) {
+	if countersReader == nil {
+		meta := make([]byte, cnc.CounterMetadataLength)
+		values := make([]byte, cnc.CounterValueLength)
+		var err error
+		countersReader, err = cnc.NewCountersReader(meta, values)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	ringBuffer := aeronatomic.Wrap(
+		make([]byte, ringbuffer.TotalBufferLength(conductorTestRingDataCapacity)),
+	)
+	ring, err := ringbuffer.NewManyToOneRingBuffer(ringBuffer)
+	if err != nil {
+		return nil, err
+	}
+	if config.EpochClock != nil {
+		ring.SetConsumerHeartbeatTime(config.EpochClock())
+	}
+
+	broadcastBuffer := aeronatomic.Wrap(
+		make([]byte, broadcast.TotalBufferLength(conductorTestRingDataCapacity)),
+	)
+	broadcastReceiver, err := broadcast.NewBroadcastReceiver(broadcastBuffer)
+	if err != nil {
+		return nil, err
+	}
+
+	return NewConductor(
+		NewDriverProxy(ring, config.ClientID),
+		broadcastReceiver,
+		countersReader,
+		config,
+	), nil
+}
+
 func NewConductorForTest(
 	tb testing.TB,
 	config Config,
@@ -90,41 +142,9 @@ func NewConductorForTest(
 ) *Conductor {
 	tb.Helper()
 
-	if countersReader == nil {
-		meta := make([]byte, cnc.CounterMetadataLength)
-		values := make([]byte, cnc.CounterValueLength)
-		var err error
-		countersReader, err = cnc.NewCountersReader(meta, values)
-		require.NoError(tb, err)
-	}
-
-	ring := newConductorTestRing(tb)
-	if config.EpochClock != nil {
-		ring.SetConsumerHeartbeatTime(config.EpochClock())
-	}
-
-	_, broadcastReceiver := newConductorTestBroadcastPair(tb)
-	return NewConductor(
-		NewDriverProxy(ring, config.ClientID),
-		broadcastReceiver,
-		countersReader,
-		config,
-	)
-}
-
-func newConductorTestBuffer(tb testing.TB, totalLength int) aeronatomic.AtomicBuffer {
-	tb.Helper()
-
-	return aeronatomic.Wrap(make([]byte, totalLength))
-}
-
-func newConductorTestRing(tb testing.TB) *ringbuffer.ManyToOneRingBuffer {
-	tb.Helper()
-
-	buffer := newConductorTestBuffer(tb, ringbuffer.TotalBufferLength(conductorTestRingDataCapacity))
-	ring, err := ringbuffer.NewManyToOneRingBuffer(buffer)
+	conductorInstance, err := NewConductorUnchecked(config, countersReader)
 	require.NoError(tb, err)
-	return ring
+	return conductorInstance
 }
 
 func DecodeTrailingStringASCIIForTest(
@@ -133,17 +153,4 @@ func DecodeTrailingStringASCIIForTest(
 	wrapped error,
 ) (string, error) {
 	return decodeTrailingStringASCII(buf, offset, bodyLength, stringOffset, wrapped)
-}
-
-func newConductorTestBroadcastPair(
-	tb testing.TB,
-) (*broadcast.BroadcastTransmitter, *broadcast.BroadcastReceiver) {
-	tb.Helper()
-
-	buffer := newConductorTestBuffer(tb, broadcast.TotalBufferLength(conductorTestRingDataCapacity))
-	receiver, err := broadcast.NewBroadcastReceiver(buffer)
-	require.NoError(tb, err)
-	transmitter, err := broadcast.NewBroadcastTransmitter(buffer)
-	require.NoError(tb, err)
-	return transmitter, receiver
 }

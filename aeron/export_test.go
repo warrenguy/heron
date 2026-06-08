@@ -16,6 +16,35 @@ func MapConductorErrorForTest(err error) error {
 	return mapConductorError(err)
 }
 
+func MapAwaitErrorForTest(err error) error {
+	return mapAwaitError(err)
+}
+
+func MapRegistrationErrorForTest(err error) error {
+	return mapRegistrationError(err)
+}
+
+func (client *Client) AwaitResponseForTest(
+	correlationID int64,
+	kind conductor.PendingKind,
+	timeout time.Duration,
+	offer func() error,
+) (conductor.PendingRegistration, error) {
+	return client.awaitResponse(correlationID, kind, timeout, offer)
+}
+
+func (client *Client) PollAwaitForTest(correlationID int64) error {
+	if err := client.requireReadyWithConductor(); err != nil {
+		return err
+	}
+	client.DoWork()
+	done, _, err := client.conductor.PollPending(correlationID)
+	if !done {
+		return ErrClientNotReady
+	}
+	return mapAwaitError(err)
+}
+
 func NormalizeContextForTest(ctx Context) Context {
 	return normalizeContext(ctx)
 }
@@ -67,9 +96,30 @@ func NewClientForTest(
 		id = clientID[0]
 	}
 
+	return NewClientForTestWithDriverProxy(
+		conductorInstance,
+		nil,
+		nanoClock,
+		id,
+		defaultDriverTimeout,
+		defaultIdleSleepDuration,
+	)
+}
+
+func NewClientForTestWithDriverProxy(
+	conductorInstance *conductor.Conductor,
+	driverProxy *conductor.DriverProxy,
+	nanoClock conductor.NanoClock,
+	clientID int64,
+	driverTimeout time.Duration,
+	idleSleepDuration time.Duration,
+) *Client {
 	return &Client{
-		clientID:  id,
-		conductor: conductorInstance,
-		nanoClock: nanoClock,
+		clientID:          clientID,
+		conductor:         conductorInstance,
+		driverProxy:       driverProxy,
+		nanoClock:         nanoClock,
+		driverTimeout:     driverTimeout,
+		idleSleepDuration: idleSleepDuration,
 	}
 }
