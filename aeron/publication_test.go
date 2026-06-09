@@ -110,12 +110,58 @@ func TestPublication_OfferWithOffset_invalidBounds(t *testing.T) {
 	}
 }
 
+func requireRejectedOfferLeavesTermClean(
+	tb testing.TB,
+	pub *aeron.Publication,
+	wantStatus int64,
+	offer func() int64,
+) {
+	tb.Helper()
+
+	beforeCount := aeron.PublicationActiveTermCountForTest(pub)
+	beforePosition := pub.Position()
+	shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
+	termOffset := int(logbuffer.ComputeTermOffsetFromPosition(beforePosition, shift))
+	_, termBuf := aeron.PublicationActiveTermBufferForTest(pub)
+	require.Equal(tb, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
+
+	got := offer()
+	require.Equal(tb, wantStatus, got)
+	require.Equal(tb, beforePosition, pub.Position())
+	require.Equal(tb, beforeCount, aeron.PublicationActiveTermCountForTest(pub))
+	require.Equal(tb, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
+}
+
 func TestPublication_Offer_payloadLengthBoundary(t *testing.T) {
 	pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), 1_000_000)
 	maxPayload := pub.MaxPayloadLengthForTest()
+	maxMessage := pub.MaxMessageLengthForTest()
 
 	require.Positive(t, pub.Offer(make([]byte, maxPayload)))
-	require.Equal(t, aeron.UnsupportedMessageLength, pub.Offer(make([]byte, maxPayload+1)))
+
+	fragmentedPayload := make([]byte, maxPayload+1)
+	for i := range fragmentedPayload {
+		fragmentedPayload[i] = byte(i)
+	}
+	fragmentedPosition := pub.Offer(fragmentedPayload)
+	require.Positive(t, fragmentedPosition)
+
+	frames := readFragmentedFramesAtPosition(
+		t,
+		pub,
+		fragmentedPosition,
+		maxPayload+1,
+		maxPayload,
+	)
+	require.Len(t, frames, 2)
+	requireFragmentFlags(t, frames)
+	requireReassembledPayload(t, frames, fragmentedPayload)
+
+	require.Positive(t, pub.Offer(make([]byte, maxMessage)))
+
+	beforePosition := pub.Position()
+	require.Equal(t, aeron.MaxPositionExceeded, pub.Offer(make([]byte, maxMessage+1)))
+	require.Equal(t, beforePosition, pub.Position())
 }
 
 func TestPublication_TryClaim_payloadLengthBoundary(t *testing.T) {
@@ -378,6 +424,82 @@ func TestPublication_MaxPositionExceeded_preFAA(t *testing.T) {
 	require.Equal(t, beforeCount, aeron.PublicationActiveTermCountForTest(pub))
 	require.Equal(t, position, pub.Position())
 	require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
+}
+
+func TestPublication_FragmentedOffer_statusPaths(t *testing.T) {
+	fragmentedLength := func(pub *aeron.Publication) int {
+		return pub.MaxPayloadLengthForTest() + 1
+	}
+
+	t.Run("BackPressured", func(t *testing.T) {
+		cfg := publicationLogConfigAtPosition(500_000)
+		pub := aeron.NewTestPublication(t, cfg, 500_000)
+		payload := make([]byte, fragmentedLength(pub))
+		requireRejectedOfferLeavesTermClean(t, pub, aeron.BackPressured, func() int64 {
+			return pub.Offer(payload)
+		})
+	})
+
+	t.Run("NotConnected", func(t *testing.T) {
+		cfg := aeron.DefaultTestPublicationLogConfig()
+		cfg.IsConnected = 0
+		pub := aeron.NewTestPublication(t, cfg, 0)
+		payload := make([]byte, fragmentedLength(pub))
+		requireRejectedOfferLeavesTermClean(t, pub, aeron.NotConnected, func() int64 {
+			return pub.Offer(payload)
+		})
+	})
+
+	t.Run("AdminAction term mismatch", func(t *testing.T) {
+		pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), 1_000_000)
+		aeron.SetPublicationActiveTermCountForTest(pub, 1)
+		aeron.SetPublicationRawTailForTest(
+			pub,
+			logbuffer.IndexByTermCount(1),
+			logbuffer.PackRawTail(aeron.TestPublicationInitialTermID, 0),
+		)
+		payload := make([]byte, fragmentedLength(pub))
+		requireRejectedOfferLeavesTermClean(t, pub, aeron.AdminAction, func() int64 {
+			return pub.Offer(payload)
+		})
+	})
+
+	t.Run("Closed", func(t *testing.T) {
+		pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), 1_000_000)
+		require.NoError(t, pub.Close())
+		got := pub.Offer(make([]byte, fragmentedLength(pub)))
+		require.Equal(t, aeron.Closed, got)
+	})
+
+	t.Run("MaxMessageLength after prelude", func(t *testing.T) {
+		pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), int64(1)<<40)
+		maxMessage := pub.MaxMessageLengthForTest()
+		payload := make([]byte, maxMessage+1)
+		requireRejectedOfferLeavesTermClean(t, pub, aeron.MaxPositionExceeded, func() int64 {
+			return pub.Offer(payload)
+		})
+	})
+}
+
+func TestPublication_MaxPositionExceeded_fragmented(t *testing.T) {
+	pub := aeron.NewTestPublication(t, publicationLogConfigNearMaxPosition(), int64(1)<<62)
+	maxPayload := pub.MaxPayloadLengthForTest()
+	requireRejectedOfferLeavesTermClean(t, pub, aeron.MaxPositionExceeded, func() int64 {
+		return pub.Offer(make([]byte, maxPayload+1))
+	})
+}
+
+func TestPublication_FragmentedOffer_backPressuredNearMaxPosition(t *testing.T) {
+	// Remaining term space must exceed single-frame alignment for maxPayload+1
+	// but not the full fragmented reservation; framed-length prelude max check
+	// alone would return MaxPositionExceeded while backPressureStatus returns BackPressured.
+	const remaining int32 = 1450
+	position := publicationPositionWithTermRemaining(remaining)
+	pub := aeron.NewTestPublication(t, publicationLogConfigWithTermRemaining(remaining), position)
+	maxPayload := pub.MaxPayloadLengthForTest()
+
+	got := pub.Offer(make([]byte, maxPayload+1))
+	require.Equal(t, aeron.BackPressured, got)
 }
 
 func TestPublication_AdminAction_termCountMismatch(t *testing.T) {

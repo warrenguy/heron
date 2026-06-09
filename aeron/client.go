@@ -349,6 +349,15 @@ func (client *Client) mappedCncFile() (*cnc.MappedCncFile, error) {
 	return client.mapped, nil
 }
 
+func driverShutdownHeartbeatError(heartbeatMs int64) error {
+	if heartbeatMs == conductor.DriverShutdownHeartbeat {
+		return &DriverTimeoutError{Cause: conductor.ErrDriverShutdown}
+	}
+	return nil
+}
+
+// Epoch deadline is the connect timeout; wall clock and driverHeartbeatPollInterval
+// backstop frozen-epoch tests and shutdown observed after the poll sleep only.
 func waitForDriverHeartbeat(
 	toDriver *ringbuffer.ManyToOneRingBuffer,
 	timeout time.Duration,
@@ -361,15 +370,12 @@ func waitForDriverHeartbeat(
 	sawPositiveHeartbeat := false
 
 	for {
-		nowMs := epochClock()
-		if nowMs >= deadlineMs || !time.Now().Before(wallDeadline) {
-			break
+		heartbeatMs := toDriver.ConsumerHeartbeatTime()
+		if err := driverShutdownHeartbeatError(heartbeatMs); err != nil {
+			return err
 		}
 
-		heartbeatMs := toDriver.ConsumerHeartbeatTime()
-		if heartbeatMs == conductor.DriverShutdownHeartbeat {
-			return &DriverTimeoutError{Cause: conductor.ErrDriverShutdown}
-		}
+		nowMs := epochClock()
 		if heartbeatMs > 0 {
 			sawPositiveHeartbeat = true
 			ageMs := max(nowMs-heartbeatMs, 0)
@@ -378,7 +384,15 @@ func waitForDriverHeartbeat(
 			}
 			break
 		}
+
+		if nowMs >= deadlineMs || !time.Now().Before(wallDeadline) {
+			break
+		}
 		time.Sleep(driverHeartbeatPollInterval)
+	}
+
+	if err := driverShutdownHeartbeatError(toDriver.ConsumerHeartbeatTime()); err != nil {
+		return err
 	}
 
 	cause := ErrDriverHeartbeatNotReady

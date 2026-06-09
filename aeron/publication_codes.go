@@ -14,8 +14,8 @@ import (
 //     PositionLimit, Position, and AvailableWindow map internal read failures to Closed
 //     because those methods return int64 only.
 //   - MaxPositionExceeded (-5): stream position exhausted; close and add a new publication.
-//   - UnsupportedMessageLength (-6): Offer/OfferWithOffset payload exceeds maxPayloadLength
-//     (TryClaim returns a Go error for the same condition).
+//   - UnsupportedMessageLength (-6): reserved; TryClaim returns a Go error when length
+//     exceeds maxPayloadLength. Offer fragments payloads up to maxMessageLength.
 const (
 	NotConnected             int64 = -1
 	BackPressured            int64 = -2
@@ -28,9 +28,10 @@ const (
 func backPressureStatus(
 	pub *Publication,
 	position int64,
-	alignedLength int64,
+	messageLength int64,
 ) int64 {
-	if position+alignedLength >= pub.maxPossiblePosition {
+	requiredSpan := int64(logbuffer.AlignFragmentChunkLength(int(messageLength)))
+	if position+requiredSpan >= pub.maxPossiblePosition {
 		return MaxPositionExceeded
 	}
 	if logbuffer.IsConnectedVolatile(pub.meta) != 0 {

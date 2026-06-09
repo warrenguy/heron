@@ -61,6 +61,14 @@ func TestWaitForDriverHeartbeat_timeouts(t *testing.T) {
 			epochStep:  100,
 			wantCause:  conductor.ErrDriverShutdown,
 		},
+		{
+			name:       "driver shutdown short wall timeout",
+			heartbeat:  conductor.DriverShutdownHeartbeat,
+			timeout:    2 * time.Millisecond,
+			epochStart: 1_337,
+			epochStep:  0,
+			wantCause:  conductor.ErrDriverShutdown,
+		},
 	}
 
 	for _, testCase := range tests {
@@ -92,6 +100,18 @@ func TestWaitForDriverHeartbeat_freshHeartbeat(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestWaitForDriverHeartbeat_freshAtEpochDeadlineBoundary(t *testing.T) {
+	ring := testutil.NewTestRing(t)
+	ring.SetConsumerHeartbeatTime(1_000)
+
+	err := aeron.WaitForDriverHeartbeatForTest(
+		ring,
+		5*time.Second,
+		newAdvancingEpochClock(1_000, 5_000),
+	)
+	require.NoError(t, err)
+}
+
 func TestWaitForDriverHeartbeat_frozenEpochClockWallBackstop(t *testing.T) {
 	ring := testutil.NewTestRing(t)
 
@@ -104,7 +124,8 @@ func TestWaitForDriverHeartbeat_frozenEpochClockWallBackstop(t *testing.T) {
 	elapsed := time.Since(start)
 
 	requireDriverTimeoutCause(t, err, aeron.ErrDriverHeartbeatNotReady)
-	require.Less(t, elapsed, 2*time.Second)
+	require.Greater(t, elapsed, 40*time.Millisecond)
+	require.Less(t, elapsed, 200*time.Millisecond)
 }
 
 func TestValidateClientID(t *testing.T) {

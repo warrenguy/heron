@@ -223,19 +223,19 @@ func writeFrameHeader(
 	return nil
 }
 
-func WriteDataHeaderUnfragmented(
+func writeDataHeader(
 	buffer atomic.AtomicBuffer,
 	frameOffset int,
+	flags uint8,
 	sessionID int32,
 	streamID int32,
 	termID int32,
 	termOffset int32,
-	flags uint8,
 ) error {
 	if err := writeFrameHeader(
 		buffer,
 		frameOffset,
-		flags|Unfragmented,
+		flags,
 		HdrTypeData,
 		termID,
 		termOffset,
@@ -245,6 +245,49 @@ func WriteDataHeaderUnfragmented(
 	buffer.PutInt32(frameOffset+OffsetSessionID, sessionID)
 	buffer.PutInt32(frameOffset+OffsetStreamID, streamID)
 	return nil
+}
+
+func WriteDataHeaderUnfragmented(
+	buffer atomic.AtomicBuffer,
+	frameOffset int,
+	sessionID int32,
+	streamID int32,
+	termID int32,
+	termOffset int32,
+	flags uint8,
+) error {
+	return writeDataHeader(
+		buffer,
+		frameOffset,
+		flags|Unfragmented,
+		sessionID,
+		streamID,
+		termID,
+		termOffset,
+	)
+}
+
+// WriteDataHeaderFragmented sets DATA header fields with caller fragment flags
+// (BeginFlag, EndFlag, or neither). Never passes Unfragmented (0xC0). Caller
+// commits payload visibility via PutFrameLengthOrdered after copying bytes.
+func WriteDataHeaderFragmented(
+	buffer atomic.AtomicBuffer,
+	frameOffset int,
+	sessionID int32,
+	streamID int32,
+	termID int32,
+	termOffset int32,
+	fragmentFlags uint8,
+) error {
+	return writeDataHeader(
+		buffer,
+		frameOffset,
+		fragmentFlags,
+		sessionID,
+		streamID,
+		termID,
+		termOffset,
+	)
 }
 
 func WritePaddingFrame(

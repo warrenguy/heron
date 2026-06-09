@@ -2,6 +2,7 @@ package aeron
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,6 +64,113 @@ func OfferRetryForTest(pub *Publication, payload []byte) int64 {
 	return OfferWithOffsetRetryForTest(pub, payload, 0, len(payload))
 }
 
+type fragmentedWriteSlot struct {
+	termIndex   int
+	frameOffset int
+}
+
+type inflightSlotTracker struct {
+	mu         sync.Mutex
+	inflight   map[fragmentedWriteSlot]int
+	overlapped map[fragmentedWriteSlot]struct{}
+}
+
+func (tracker *inflightSlotTracker) reset() {
+	tracker.mu.Lock()
+	tracker.inflight = make(map[fragmentedWriteSlot]int)
+	tracker.overlapped = make(map[fragmentedWriteSlot]struct{})
+	tracker.mu.Unlock()
+}
+
+func (tracker *inflightSlotTracker) track(key fragmentedWriteSlot, begin bool) {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	if begin {
+		tracker.inflight[key]++
+		if tracker.inflight[key] > 1 {
+			tracker.overlapped[key] = struct{}{}
+		}
+		return
+	}
+	tracker.inflight[key]--
+	if tracker.inflight[key] <= 0 {
+		delete(tracker.inflight, key)
+	}
+}
+
+func (tracker *inflightSlotTracker) report() []fragmentedWriteSlot {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+
+	result := make([]fragmentedWriteSlot, 0, len(tracker.inflight)+len(tracker.overlapped))
+	reported := make(map[fragmentedWriteSlot]struct{}, len(tracker.inflight)+len(tracker.overlapped))
+	for key := range tracker.overlapped {
+		if _, ok := reported[key]; ok {
+			continue
+		}
+		reported[key] = struct{}{}
+		result = append(result, key)
+	}
+	for key, count := range tracker.inflight {
+		if count <= 0 {
+			continue
+		}
+		if _, ok := reported[key]; ok {
+			continue
+		}
+		reported[key] = struct{}{}
+		result = append(result, key)
+	}
+	return result
+}
+
+var (
+	fragmentedWriteTracker       inflightSlotTracker
+	fragmentedReservationTracker inflightSlotTracker
+)
+
+func trackFragmentedSlot(
+	tracker *inflightSlotTracker,
+	termIndex int,
+	frameOffset int,
+	begin bool,
+) {
+	tracker.track(
+		fragmentedWriteSlot{termIndex: termIndex, frameOffset: frameOffset},
+		begin,
+	)
+}
+
+func EnableFragmentedWriteTrackingForTest() {
+	fragmentedWriteTracker.reset()
+	fragmentedReservationTracker.reset()
+	fragmentedReservationTrack = func(termIndex, termOffset int, begin bool) {
+		trackFragmentedSlot(&fragmentedReservationTracker, termIndex, termOffset, begin)
+	}
+	fragmentedWriteTrack = func(termIndex, frameOffset int, begin bool) {
+		trackFragmentedSlot(&fragmentedWriteTracker, termIndex, frameOffset, begin)
+	}
+}
+
+func DisableFragmentedWriteTrackingForTest() {
+	fragmentedWriteTrack = nil
+	fragmentedReservationTrack = nil
+	fragmentedWriteTracker.reset()
+	fragmentedReservationTracker.reset()
+}
+
+func SetFragmentedWriteTrackForTest(fn func(termIndex, frameOffset int, begin bool)) {
+	fragmentedWriteTrack = fn
+}
+
+func ReportFragmentedWriteTrackerForTest() []fragmentedWriteSlot {
+	return fragmentedWriteTracker.report()
+}
+
+func ReportFragmentedReservationTrackerForTest() []fragmentedWriteSlot {
+	return fragmentedReservationTracker.report()
+}
+
 func OfferWithOffsetRetryForTest(
 	pub *Publication,
 	buffer []byte,
@@ -103,6 +211,65 @@ func NewTestPublication(
 
 func (pub *Publication) MaxPayloadLengthForTest() int {
 	return pub.maxPayloadLength
+}
+
+func (pub *Publication) MaxMessageLengthForTest() int {
+	return pub.maxMessageLength
+}
+
+const maxFragmentedReadIterations = 64
+
+type FragmentedFrameForTest struct {
+	Flags   uint8
+	Payload []byte
+}
+
+func FragmentedMessageStartOffsetForTest(position int64, shift, totalAligned int) int {
+	termOffset := int(logbuffer.ComputeTermOffsetFromPosition(position, shift))
+	return termOffset - totalAligned
+}
+
+func ReadFragmentedMessageFramesForTest(
+	termBuf atomic.AtomicBuffer,
+	startOffset int,
+) ([]FragmentedFrameForTest, bool) {
+	var frames []FragmentedFrameForTest
+	offset := startOffset
+	for range maxFragmentedReadIterations {
+		frameLength := int(logbuffer.FrameLengthVolatile(termBuf, offset))
+		if frameLength <= 0 {
+			return nil, false
+		}
+
+		payloadStart := offset + logbuffer.DataHeaderLength
+		payloadEnd := offset + frameLength
+		frames = append(frames, FragmentedFrameForTest{
+			Flags: logbuffer.FrameFlags(termBuf, offset),
+			Payload: append(
+				[]byte(nil),
+				termBuf.Bytes()[payloadStart:payloadEnd]...,
+			),
+		})
+
+		if frames[len(frames)-1].Flags&logbuffer.EndFlag != 0 {
+			return frames, true
+		}
+		offset += logbuffer.AlignFrameLength(frameLength)
+	}
+
+	return nil, false
+}
+
+func ReadFragmentedMessageForTest(
+	tb testing.TB,
+	termBuf atomic.AtomicBuffer,
+	startOffset int,
+) []FragmentedFrameForTest {
+	tb.Helper()
+
+	frames, ok := ReadFragmentedMessageFramesForTest(termBuf, startOffset)
+	require.True(tb, ok, "fragmented message missing END flag within iteration budget")
+	return frames
 }
 
 func (pub *Publication) MetaDataBufferForTest() atomic.AtomicBuffer {
@@ -431,6 +598,8 @@ func (client *Client) AwaitResponseForTest(
 	return client.awaitResponse(correlationID, kind, timeout, offer)
 }
 
+// PollAwaitForTest probes a single DoWork tick: one PollPending, DoWork, then
+// PollPending again. It is not the full awaitResponse loop.
 func (client *Client) PollAwaitForTest(correlationID int64) error {
 	if err := client.requireReadyWithConductor(); err != nil {
 		return err

@@ -132,6 +132,63 @@ func TestWriteDataHeaderUnfragmented_outOfBounds(t *testing.T) {
 	require.EqualError(t, err, "logbuffer: frame header out of bounds")
 }
 
+func TestWriteDataHeaderFragmented_beginMiddleEndGoldenBytes(t *testing.T) {
+	const (
+		sessionID  = int32(11)
+		streamID   = int32(22)
+		termID     = int32(7)
+		termOffset = int32(128)
+	)
+
+	// Fragmented DATA frames never combine BeginFlag|EndFlag; that bitmask is
+	// Unfragmented (0xC0) on the unfragmented writer path only.
+	tests := []struct {
+		name         string
+		fragmentFlag uint8
+		wantFlags    byte
+	}{
+		{name: "begin only", fragmentFlag: logbuffer.BeginFlag, wantFlags: 0x80},
+		{name: "middle", fragmentFlag: 0, wantFlags: 0x00},
+		{name: "end only", fragmentFlag: logbuffer.EndFlag, wantFlags: 0x40},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, logbuffer.DataHeaderLength)
+			buffer := atomic.Wrap(buf)
+			require.NoError(t, logbuffer.WriteDataHeaderFragmented(
+				buffer,
+				0,
+				sessionID,
+				streamID,
+				termID,
+				termOffset,
+				tt.fragmentFlag,
+			))
+			logbuffer.PutFrameLengthOrdered(buffer, 0, 64)
+
+			want := []byte{
+				0x40, 0x00, 0x00, 0x00,
+				0x00,
+				tt.wantFlags,
+				0x01, 0x00,
+				0x80, 0x00, 0x00, 0x00,
+				0x0B, 0x00, 0x00, 0x00,
+				0x16, 0x00, 0x00, 0x00,
+				0x07, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			}
+			require.Equal(t, want, buf)
+		})
+	}
+}
+
+func TestWriteDataHeaderFragmented_outOfBounds(t *testing.T) {
+	buffer := atomic.Wrap(make([]byte, logbuffer.DataHeaderLength-1))
+	err := logbuffer.WriteDataHeaderFragmented(buffer, 0, 1, 2, 3, 4, logbuffer.BeginFlag)
+	require.EqualError(t, err, "logbuffer: frame header out of bounds")
+}
+
 func TestWritePaddingFrame_outOfBounds(t *testing.T) {
 	buffer := atomic.Wrap(make([]byte, logbuffer.DataHeaderLength-1))
 	err := logbuffer.WritePaddingFrame(buffer, 0, 1, 2)

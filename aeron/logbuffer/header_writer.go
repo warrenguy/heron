@@ -37,9 +37,31 @@ func (writer *HeaderWriter) Write(
 	frameLength int32,
 	termID int32,
 ) {
+	writer.writeHeader(termBuf, termOffset, frameLength, termID, writer.header[OffsetFlags])
+}
+
+func (writer *HeaderWriter) WriteWithFlags(
+	termBuf atomic.AtomicBuffer,
+	termOffset int,
+	frameLength int32,
+	termID int32,
+	flags uint8,
+) {
+	writer.writeHeader(termBuf, termOffset, frameLength, termID, flags)
+}
+
+func (writer *HeaderWriter) writeHeader(
+	termBuf atomic.AtomicBuffer,
+	termOffset int,
+	frameLength int32,
+	termID int32,
+	flags uint8,
+) {
 	PutFrameLengthRelease(termBuf, termOffset, -frameLength)
 	atomic.ReleaseFence()
-	termBuf.PutBytes(termOffset+OffsetVersion, writer.header[OffsetVersion:OffsetTermOffset])
+	termBuf.PutBytes(termOffset+OffsetVersion, writer.header[OffsetVersion:OffsetFlags])
+	PutFrameFlags(termBuf, termOffset, flags)
+	termBuf.PutBytes(termOffset+OffsetFrameType, writer.header[OffsetFrameType:OffsetTermOffset])
 	termBuf.PutBytes(termOffset+OffsetSessionID, writer.header[OffsetSessionID:OffsetTermID])
 	termBuf.PutBytes(termOffset+OffsetReservedValue, writer.header[OffsetReservedValue:])
 	PutFrameTermID(termBuf, termOffset, termID)

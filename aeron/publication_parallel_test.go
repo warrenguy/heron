@@ -52,9 +52,8 @@ func TestPublication_Offer_parallel(t *testing.T) {
 		seen[position] = struct{}{}
 
 		const payloadLen = 2
-		aligned := logbuffer.AlignFrameLength(payloadLen + logbuffer.DataHeaderLength)
-		termOffset := int(logbuffer.ComputeTermOffsetFromPosition(position, shift))
-		frameStart := termOffset - aligned
+		aligned := logbuffer.AlignFragmentChunkLength(payloadLen)
+		frameStart := aeron.FragmentedMessageStartOffsetForTest(position, shift, aligned)
 
 		termIndex := logbuffer.IndexByPosition(position, shift)
 		termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)

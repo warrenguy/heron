@@ -32,8 +32,8 @@ func TestPublication_Offer_rapid(t *testing.T) {
 				require.Greater(t, position, lastPosition)
 			}
 			lastPosition = position
-			aligned := logbuffer.AlignFrameLength(length + logbuffer.DataHeaderLength)
-			frameStart := int(logbuffer.ComputeTermOffsetFromPosition(position, shift)) - aligned
+			aligned := logbuffer.AlignFragmentChunkLength(length)
+			frameStart := aeron.FragmentedMessageStartOffsetForTest(position, shift, aligned)
 
 			termIndex := logbuffer.IndexByPosition(position, shift)
 			termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
@@ -69,8 +69,8 @@ func TestPublication_Offer_rapid_nonZeroStart(t *testing.T) {
 			}
 			lastPosition = position
 
-			aligned := logbuffer.AlignFrameLength(length + logbuffer.DataHeaderLength)
-			frameStart := int(logbuffer.ComputeTermOffsetFromPosition(position, shift)) - aligned
+			aligned := logbuffer.AlignFragmentChunkLength(length)
+			frameStart := aeron.FragmentedMessageStartOffsetForTest(position, shift, aligned)
 
 			termIndex := logbuffer.IndexByPosition(position, shift)
 			termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
@@ -80,6 +80,36 @@ func TestPublication_Offer_rapid_nonZeroStart(t *testing.T) {
 			got := termBuf.Bytes()[payloadStart : payloadStart+length]
 			require.Equal(t, payload, got)
 		}
+	})
+}
+
+func TestPublication_Offer_rapid_nearMaxPosition_fragmented(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		position := publicationPositionNearMaxPosition()
+		cfg := publicationLogConfigNearMaxPosition()
+		pub := aeron.NewTestPublicationWithoutTBForRapid(cfg, position)
+		beforeCount := aeron.PublicationActiveTermCountForTest(pub)
+		maxPayload := pub.MaxPayloadLengthForTest()
+		maxMessage := pub.MaxMessageLengthForTest()
+
+		shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
+		termOffset := int(logbuffer.ComputeTermOffsetFromPosition(position, shift))
+		termIndex := logbuffer.IndexByPosition(position, shift)
+		termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
+		require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
+
+		messageCount := rapid.IntRange(1, 8).Draw(t, "messageCount")
+		for i := range messageCount {
+			length := rapid.IntRange(maxPayload+1, maxMessage).Draw(t, fmt.Sprintf("length%d", i))
+			payload := rapid.SliceOfN(rapid.Byte(), length, length).Draw(t, fmt.Sprintf("payload%d", i))
+
+			got := pub.Offer(payload)
+			require.Equal(t, aeron.MaxPositionExceeded, got)
+		}
+
+		require.Equal(t, beforeCount, aeron.PublicationActiveTermCountForTest(pub))
+		require.Equal(t, position, pub.Position())
+		require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
 	})
 }
 
@@ -108,6 +138,51 @@ func TestPublication_Offer_rapid_nearMaxPosition(t *testing.T) {
 		require.Equal(t, beforeCount, aeron.PublicationActiveTermCountForTest(pub))
 		require.Equal(t, position, pub.Position())
 		require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
+	})
+}
+
+func TestPublication_Offer_rapid_fragmented(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		pub := aeron.NewTestPublicationWithoutTBForRapid(
+			aeron.DefaultTestPublicationLogConfig(),
+			int64(1)<<40,
+		)
+		maxPayload := pub.MaxPayloadLengthForTest()
+		maxMessage := pub.MaxMessageLengthForTest()
+		messageCount := rapid.IntRange(1, 16).Draw(t, "messageCount")
+
+		var lastPosition int64
+		type termReadCursor struct {
+			termCount int32
+			offset    int
+		}
+		termReadCursors := [logbuffer.PartitionCount]termReadCursor{}
+		for i := range messageCount {
+			length := rapid.IntRange(maxPayload+1, maxMessage).Draw(t, fmt.Sprintf("length%d", i))
+			payload := rapid.SliceOfN(rapid.Byte(), length, length).Draw(t, fmt.Sprintf("payload%d", i))
+
+			position := aeron.OfferRetryForTest(pub, payload)
+			require.Positive(t, position)
+			if i > 0 {
+				require.Greater(t, position, lastPosition)
+			}
+			lastPosition = position
+
+			termCount := logbuffer.ActiveTermCount(pub.MetaDataBufferForTest())
+			termIndex := logbuffer.IndexByTermCount(termCount)
+			cursor := &termReadCursors[termIndex]
+			if cursor.termCount != termCount {
+				cursor.termCount = termCount
+				cursor.offset = 0
+			}
+
+			termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
+			frames, ok := aeron.ReadFragmentedMessageFramesForTest(termBuf, cursor.offset)
+			require.True(t, ok)
+			require.Equal(t, payload, reassembledPayload(frames))
+			requireFragmentFlags(t, frames)
+			cursor.offset += logbuffer.ComputeFragmentedFrameLength(length, maxPayload)
+		}
 	})
 }
 

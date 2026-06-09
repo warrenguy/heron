@@ -3,11 +3,17 @@ package aeron
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+)
+
+var (
+	fragmentedWriteTrack       func(termIndex, frameOffset int, begin bool)
+	fragmentedReservationTrack func(termIndex, termOffset int, begin bool)
 )
 
 // Publication is a concurrent IPC publisher over a driver-mapped log buffer.
@@ -28,10 +34,12 @@ type Publication struct {
 
 	initialTermID    int32
 	maxPayloadLength int
-	// Reserved for fragmented offer.
-	maxMessageLength    int
-	maxPossiblePosition int64
-	headerWriter        logbuffer.HeaderWriter
+	// Upper bound for Offer payload length; payloads above maxPayloadLength
+	// fragment until this limit, then return MaxPositionExceeded.
+	maxMessageLength      int
+	maxPossiblePosition   int64
+	headerWriter          logbuffer.HeaderWriter
+	fragmentedPartitionMu [logbuffer.PartitionCount]sync.Mutex
 
 	counters                  cnc.CountersView
 	publicationLimitCounterID int32
@@ -43,24 +51,30 @@ type Publication struct {
 // ChannelEndpointStatusActive mirrors Java ChannelEndpointStatus.ACTIVE.
 const ChannelEndpointStatusActive int64 = 1
 
-// Offer publishes an unfragmented message from buffer. Returns a new stream
-// position (>0) or a negative status code (see publication_codes.go).
+// Offer publishes a message from buffer. Unfragmented payloads fit one DATA
+// frame; larger payloads up to maxMessageLength split into fragments. Returns a
+// new stream position (>0) or a negative status code (see publication_codes.go).
 func (pub *Publication) Offer(buffer []byte) int64 {
 	return pub.OfferWithOffset(buffer, 0, len(buffer))
 }
 
 // OfferWithOffset publishes length bytes from buffer[offset:offset+length].
 // Negative length or invalid offset/length bounds panic (Java IllegalArgumentException).
-// length > maxPayloadLength returns UnsupportedMessageLength (-6).
+// length <= maxPayloadLength uses a single DATA frame; larger payloads up to
+// maxMessageLength split across BEGIN/middle/END fragments (Java offer parity).
+// Oversized payloads run the shared prelude first. When position < limit,
+// length > maxMessageLength returns MaxPositionExceeded (-5). Prelude may
+// return other negative codes (e.g. BackPressured) before that check.
 func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64 {
 	if pub.isClosed() {
 		return Closed
 	}
 	validateOfferSliceBounds(offset, length, len(buffer))
-	if length > pub.maxPayloadLength {
-		return UnsupportedMessageLength
+	// Prelude runs inside each append path (same layout as reserveMessageSpace).
+	if length <= pub.maxPayloadLength {
+		return pub.reserveAndAppend(buffer, offset, length)
 	}
-	return pub.reserveAndAppend(buffer, offset, length)
+	return pub.appendFragmentedMessage(buffer, offset, length)
 }
 
 // TryClaim reserves aligned space for an unfragmented message.
@@ -278,13 +292,124 @@ type reserveOutcome struct {
 	status      int64
 }
 
+type offerPrelude struct {
+	termIndex  int
+	termBuf    aeronatomic.AtomicBuffer
+	tailOffset int
+	status     int64
+}
+
+func (pub *Publication) offerPreludeState() (prelude offerPrelude, position, limit int64) {
+	limit, err := pub.counters.GetCounterValue(pub.publicationLimitCounterID)
+	if err != nil {
+		return offerPrelude{status: Closed}, 0, 0
+	}
+
+	termLength := pub.termBufferLength
+
+	termCount := logbuffer.ActiveTermCount(pub.meta)
+	termIndex := logbuffer.IndexByTermCount(termCount)
+	termBuf := pub.termBuffers[termIndex]
+	tailOffset := logbuffer.OffsetTermTailCounter(termIndex)
+
+	rawTail := pub.meta.GetInt64Volatile(tailOffset)
+	termID := logbuffer.TermID(rawTail)
+	termOffset := int(logbuffer.TermOffset(rawTail, int32(termLength)))
+
+	if termCount != logbuffer.ComputeTermCount(termID, pub.initialTermID) {
+		return offerPrelude{status: AdminAction}, 0, limit
+	}
+
+	position = logbuffer.ComputePosition(
+		termID,
+		int32(termOffset),
+		pub.positionBitsToShift,
+		pub.initialTermID,
+	)
+	return offerPrelude{
+		termIndex:  termIndex,
+		termBuf:    termBuf,
+		tailOffset: tailOffset,
+	}, position, limit
+}
+
+// Java ConcurrentPublication.offer gates fragmented offers on position>=limit
+// with backPressureStatus(position, payloadLength); reservationSpan is framed length only.
+func (pub *Publication) runOfferPrelude(reservationSpan, messageLength int) offerPrelude {
+	prelude, position, limit := pub.offerPreludeState()
+	if prelude.status != 0 {
+		return prelude
+	}
+	if position >= limit {
+		return offerPrelude{status: backPressureStatus(pub, position, int64(messageLength))}
+	}
+	if position+int64(reservationSpan) >= pub.maxPossiblePosition {
+		return offerPrelude{status: MaxPositionExceeded}
+	}
+	return prelude
+}
+
+func (pub *Publication) reserveTailFromPrelude(
+	prelude offerPrelude,
+	span int,
+	frameLength int32,
+) reserveOutcome {
+	termLength := pub.termBufferLength
+	rawTail := pub.meta.GetAndAddInt64(prelude.tailOffset, int64(span))
+	termID := logbuffer.TermID(rawTail)
+	termOffset := int(logbuffer.TermOffset(rawTail, int32(termLength)))
+	resultingOffset := termOffset + span
+	position := logbuffer.ComputePosition(
+		termID,
+		int32(resultingOffset),
+		pub.positionBitsToShift,
+		pub.initialTermID,
+	)
+	if resultingOffset > termLength {
+		return reserveOutcome{
+			termBuf:    prelude.termBuf,
+			termOffset: termOffset,
+			termID:     termID,
+			position:   position,
+			status:     pub.handleEndOfLog(prelude.termBuf, termLength, termID, termOffset, position),
+		}
+	}
+	return reserveOutcome{
+		termIndex:   prelude.termIndex,
+		termBuf:     prelude.termBuf,
+		termOffset:  termOffset,
+		termID:      termID,
+		position:    position,
+		frameLength: frameLength,
+	}
+}
+
+func (pub *Publication) reserveTailAfterPrelude(
+	prelude offerPrelude,
+	span int,
+	frameLength int32,
+) reserveOutcome {
+	termCount := logbuffer.ActiveTermCount(pub.meta)
+	if logbuffer.IndexByTermCount(termCount) != prelude.termIndex {
+		return reserveOutcome{status: AdminAction}
+	}
+	rawTailVolatile := pub.meta.GetInt64Volatile(prelude.tailOffset)
+	if logbuffer.ComputeTermCount(logbuffer.TermID(rawTailVolatile), pub.initialTermID) != termCount {
+		return reserveOutcome{status: AdminAction}
+	}
+
+	return pub.reserveTailFromPrelude(prelude, span, frameLength)
+}
+
 // reserveMessageSpace checks publication limit, then reserves space via
 // fetch-and-add on the active partition tail counter. Read ActiveTermCount and
 // partition raw tail separately, not RawTailVolatile, so limit and reservation
 // share one term/offset pair (Java ConcurrentPublication ordering). No yield
 // between that read and GetAndAddInt64: rotation between them pins the wrong
 // partition. Reservation always completes as DATA or PAD on termBuf/termOffset;
-// callers retry on AdminAction.
+// callers retry on AdminAction. Prelude mirrors offerPreludeState but is not
+// delegated to runOfferPrelude: tail read and FAA must stay in one function;
+// splitting them adds non-inlinable calls on the unfragmented hot path.
 func (pub *Publication) reserveMessageSpace(messageLength int) reserveOutcome {
 	limit, err := pub.counters.GetCounterValue(pub.publicationLimitCounterID)
 	if err != nil {
@@ -292,7 +417,7 @@ func (pub *Publication) reserveMessageSpace(messageLength int) reserveOutcome {
 	}
 
 	frameLength := int32(messageLength + logbuffer.DataHeaderLength)
-	alignedLength := logbuffer.AlignFrameLength(int(frameLength))
+	alignedLength := logbuffer.AlignFragmentChunkLength(messageLength)
 	termLength := pub.termBufferLength
 
 	termCount := logbuffer.ActiveTermCount(pub.meta)
@@ -314,11 +439,11 @@ func (pub *Publication) reserveMessageSpace(messageLength int) reserveOutcome {
 		pub.positionBitsToShift,
 		pub.initialTermID,
 	)
+	if position >= limit {
+		return reserveOutcome{status: backPressureStatus(pub, position, int64(messageLength))}
+	}
 	if position+int64(alignedLength) >= pub.maxPossiblePosition {
 		return reserveOutcome{status: MaxPositionExceeded}
-	}
-	if position >= limit {
-		return reserveOutcome{status: backPressureStatus(pub, position, int64(alignedLength))}
 	}
 
 	rawTail = pub.meta.GetAndAddInt64(tailOffset, int64(alignedLength))
@@ -351,6 +476,122 @@ func (pub *Publication) reserveMessageSpace(messageLength int) reserveOutcome {
 		position:    newPosition,
 		frameLength: frameLength,
 	}
+}
+
+func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length int) int64 {
+	// Java ConcurrentPublication.appendFragmentedMessage: one FAA for the full
+	// framed span via computeFragmentedFrameLength; fragment writes follow in
+	// the reserved block without further tail counter updates.
+	framedLength := logbuffer.ComputeFragmentedFrameLength(length, pub.maxPayloadLength)
+	prelude := pub.runOfferPrelude(framedLength, length)
+	if prelude.status != 0 {
+		return prelude.status
+	}
+	// After prelude, before reservation: oversized length returns -5 without FAA.
+	if length > pub.maxMessageLength {
+		return MaxPositionExceeded
+	}
+
+	partitionMu := &pub.fragmentedPartitionMu[prelude.termIndex]
+	// Non-blocking: contention returns AdminAction for caller retry, same as rotation.
+	if !partitionMu.TryLock() {
+		return AdminAction
+	}
+	defer partitionMu.Unlock()
+
+	outcome := pub.reserveTailAfterPrelude(prelude, framedLength, 0)
+	if outcome.status != 0 {
+		return outcome.status
+	}
+	if fragmentedReservationTrack != nil {
+		fragmentedReservationTrack(outcome.termIndex, outcome.termOffset, true)
+		defer fragmentedReservationTrack(outcome.termIndex, outcome.termOffset, false)
+	}
+
+	frameOffset := outcome.termOffset
+	tailOffset := prelude.tailOffset
+	reservationEnd := outcome.termOffset + framedLength
+	remaining := length
+	fullChunkAligned := logbuffer.AlignFragmentChunkLength(pub.maxPayloadLength)
+
+	// Fragment loop must finish on outcome.termBuf: FAA already advanced the tail
+	// for the full framed span; AdminAction mid-loop leaves uncommitted gaps.
+	for remaining > 0 {
+		// Partition recycle resets raw-tail term ID; pad remainder so tail-advanced
+		// space stays contiguous and a new publisher cannot overlap this reservation.
+		if logbuffer.TermID(pub.meta.GetInt64Volatile(tailOffset)) != outcome.termID {
+			if frameOffset < reservationEnd {
+				pub.commitTermPadding(
+					outcome.termBuf,
+					outcome.termID,
+					frameOffset,
+					int32(reservationEnd-frameOffset),
+				)
+			}
+			return AdminAction
+		}
+
+		bytesToWrite := min(remaining, pub.maxPayloadLength)
+		frameLength := int32(bytesToWrite + logbuffer.DataHeaderLength)
+		alignedLength := fullChunkAligned
+		if bytesToWrite != pub.maxPayloadLength {
+			alignedLength = logbuffer.AlignFragmentChunkLength(bytesToWrite)
+		}
+
+		var fragFlags uint8
+		if remaining == length {
+			fragFlags = logbuffer.BeginFlag
+		}
+		if bytesToWrite == remaining {
+			fragFlags |= logbuffer.EndFlag
+		}
+
+		trackFragmentWrite := func(begin bool) {
+			if fragmentedWriteTrack != nil {
+				fragmentedWriteTrack(outcome.termIndex, frameOffset, begin)
+			}
+		}
+		trackFragmentWrite(true)
+
+		pub.headerWriter.WriteWithFlags(
+			outcome.termBuf,
+			frameOffset,
+			frameLength,
+			outcome.termID,
+			fragFlags,
+		)
+		payloadOffset := srcOffset + (length - remaining)
+		outcome.termBuf.PutBytes(
+			frameOffset+logbuffer.DataHeaderLength,
+			buffer[payloadOffset:payloadOffset+bytesToWrite],
+		)
+		logbuffer.PutFrameLengthOrdered(outcome.termBuf, frameOffset, frameLength)
+
+		trackFragmentWrite(false)
+
+		frameOffset += alignedLength
+		remaining -= bytesToWrite
+	}
+
+	return outcome.position
+}
+
+func (pub *Publication) commitTermPadding(
+	termBuf aeronatomic.AtomicBuffer,
+	termID int32,
+	fromOffset int,
+	paddingLength int32,
+) {
+	if paddingLength <= 0 {
+		return
+	}
+	if paddingLength >= logbuffer.DataHeaderLength {
+		pub.headerWriter.Write(termBuf, fromOffset, paddingLength, termID)
+		logbuffer.PutFrameType(termBuf, fromOffset, logbuffer.HdrTypePad)
+		logbuffer.PutFrameLengthOrdered(termBuf, fromOffset, paddingLength)
+		return
+	}
+	logbuffer.CommitMinimalTermEndPadding(termBuf, fromOffset, paddingLength)
 }
 
 func (pub *Publication) reserveWithHeader(length int) (reserveOutcome, bool) {
@@ -398,16 +639,9 @@ func (pub *Publication) handleEndOfLog(
 	position int64,
 ) int64 {
 	if termOffset < termLength {
-		paddingLength := int32(termLength - termOffset)
-		if paddingLength >= logbuffer.DataHeaderLength {
-			// Term-end padding seeds session/stream and default header fields before the
-			// PAD type commit; PAD-only writes (as in Abort) would omit them.
-			pub.headerWriter.Write(termBuf, termOffset, paddingLength, termID)
-			logbuffer.PutFrameType(termBuf, termOffset, logbuffer.HdrTypePad)
-			logbuffer.PutFrameLengthOrdered(termBuf, termOffset, paddingLength)
-		} else {
-			logbuffer.CommitMinimalTermEndPadding(termBuf, termOffset, paddingLength)
-		}
+		// Term-end padding seeds session/stream and default header fields before the
+		// PAD type commit; PAD-only writes (as in Abort) would omit them.
+		pub.commitTermPadding(termBuf, termID, termOffset, int32(termLength-termOffset))
 	}
 
 	if position >= pub.maxPossiblePosition {

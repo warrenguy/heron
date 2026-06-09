@@ -109,6 +109,21 @@ func TestComputeMaxMessageLength(t *testing.T) {
 	require.Equal(t, logbuffer.MaxMessageLength, logbuffer.ComputeMaxMessageLength(1<<27))
 }
 
+func TestComputeFragmentedFrameLength(t *testing.T) {
+	const maxPayload = 1376
+	require.Equal(
+		t,
+		logbuffer.AlignFrameLength(maxPayload+logbuffer.DataHeaderLength)+
+			logbuffer.AlignFrameLength(1+logbuffer.DataHeaderLength),
+		logbuffer.ComputeFragmentedFrameLength(maxPayload+1, maxPayload),
+	)
+	require.Equal(
+		t,
+		3*logbuffer.AlignFrameLength(maxPayload+logbuffer.DataHeaderLength),
+		logbuffer.ComputeFragmentedFrameLength(3*maxPayload, maxPayload),
+	)
+}
+
 func TestCheckTermLength(t *testing.T) {
 	require.NoError(t, logbuffer.CheckTermLength(logbuffer.TestTermLength))
 

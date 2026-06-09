@@ -97,3 +97,22 @@ func ComputeMaxMessageLength(termLength int) int {
 func AlignFrameLength(length int) int {
 	return atomic.Align(length, FrameAlignment)
 }
+
+// ComputeFragmentedFrameLength returns the aligned term space for a payload
+// split across DATA fragments (Java LogBufferDescriptor.computeFragmentedFrameLength).
+func ComputeFragmentedFrameLength(length, maxPayloadLength int) int {
+	if length <= 0 {
+		return 0
+	}
+	fragmentCount := (length + maxPayloadLength - 1) / maxPayloadLength
+	if fragmentCount == 1 {
+		return AlignFragmentChunkLength(length)
+	}
+	lastChunk := length - (fragmentCount-1)*maxPayloadLength
+	fullFrame := AlignFragmentChunkLength(maxPayloadLength)
+	return (fragmentCount-1)*fullFrame + AlignFragmentChunkLength(lastChunk)
+}
+
+func AlignFragmentChunkLength(payloadBytes int) int {
+	return AlignFrameLength(payloadBytes + DataHeaderLength)
+}
