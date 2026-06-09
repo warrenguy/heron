@@ -62,6 +62,7 @@ coverage: test
 clean:
 	rm -f $(COVERAGE_PROFILE) coverage.html
 	rm -f bin/aeronmd
+	find . -type d -path '*/testdata/rapid' -prune -exec rm -rf {} +
 
 test-integration: bin/aeronmd
 	go test -race -count=1 -tags=integration ./test/integration/...
