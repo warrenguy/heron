@@ -6,7 +6,7 @@ import (
 
 const PublicationBuffersReadyFixedLength = 32
 
-// LogFileName is decoded now; step 4/5 must mmap before Offer succeeds.
+// LogFileName is decoded now; caller must mmap before Offer succeeds.
 type PublicationBuffersReady struct {
 	CorrelationID             int64
 	RegistrationID            int64

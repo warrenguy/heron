@@ -103,6 +103,10 @@ func (b AtomicBuffer) CompareAndSwapInt64(offset int, expect, update int64) bool
 	return atomic.CompareAndSwapInt64((*int64)(addressAt(b.buf, offset, 8)), expect, update)
 }
 
+func (b AtomicBuffer) CompareAndSwapInt32(offset int, expect, update int32) bool {
+	return atomic.CompareAndSwapInt32((*int32)(addressAt(b.buf, offset, 4)), expect, update)
+}
+
 func (b AtomicBuffer) AddInt64(offset int, delta int64) int64 {
 	return atomic.AddInt64((*int64)(addressAt(b.buf, offset, 8)), delta)
 }

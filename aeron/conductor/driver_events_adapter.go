@@ -32,7 +32,7 @@ type DriverEventsAdapter struct {
 	handlers            DriverEventsAdapterHandlers
 	pendingRegistry     *pendingRegistry
 	unhandledEventCount int64
-	// Permanent after ErrBroadcastLapped; Receive returns 0 with no recovery (Stage 2 pin).
+	// Permanent after ErrBroadcastLapped; Receive returns 0 with no recovery.
 	isInvalid bool
 }
 
@@ -101,7 +101,7 @@ func (adapter *DriverEventsAdapter) onMessage(
 	pending PendingEventHandler,
 ) {
 	switch msgTypeID {
-	// Driver events (0x0F01–0x0F0D), ascending event ID.
+	// Driver events (0x0F01-0x0F0D), ascending event ID.
 	case OnError:
 		adapter.handleOnError(buffer, offset, length, activeCorrelationID, pending)
 	case OnAvailableImage:
@@ -151,7 +151,7 @@ func (adapter *DriverEventsAdapter) rejectUnlessActiveCorrelation(
 }
 
 // isCorrelated gates async ready events: active await OR pending registry entry.
-// rejectUnlessActiveCorrelation requires exact active match for step-2 responses.
+// rejectUnlessActiveCorrelation requires exact active match for correlated responses.
 func (adapter *DriverEventsAdapter) isCorrelated(
 	activeCorrelationID int64,
 	correlationID int64,
@@ -435,5 +435,4 @@ func (adapter *DriverEventsAdapter) handlePublicationError(
 		DecodePublicationError,
 		adapter.handlers.OnPublicationError,
 	)
-	// errorHandler deferral: step 7 defines publication-error user policy.
 }

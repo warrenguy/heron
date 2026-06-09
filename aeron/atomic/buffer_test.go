@@ -35,6 +35,16 @@ func TestAtomicBuffer_Int64VolatileCAS(t *testing.T) {
 	require.Equal(t, int64(99), atomicBuffer.GetInt64Volatile(8))
 }
 
+func TestAtomicBuffer_Int32VolatileCAS(t *testing.T) {
+	atomicBuffer := newTestAtomicBuffer(t, testAtomicBufferSize)
+	atomicBuffer.PutInt32Release(0, 42)
+	require.Equal(t, int32(42), atomicBuffer.GetInt32Volatile(0))
+	require.True(t, atomicBuffer.CompareAndSwapInt32(0, 42, 99))
+	require.Equal(t, int32(99), atomicBuffer.GetInt32Volatile(0))
+	require.False(t, atomicBuffer.CompareAndSwapInt32(0, 42, 100))
+	require.Equal(t, int32(99), atomicBuffer.GetInt32Volatile(0))
+}
+
 func TestAtomicBuffer_ZeroAllocs(t *testing.T) {
 	atomicBuffer := newTestAtomicBuffer(t, testAtomicBufferSize)
 	atomicBuffer.PutInt64Release(0, 1)
@@ -64,6 +74,10 @@ func TestAtomicBuffer_ZeroAllocs(t *testing.T) {
 			i32++
 		}},
 		{"GetInt32Volatile", func() { _ = atomicBuffer.GetInt32Volatile(0) }},
+		{"CompareAndSwapInt32", func() {
+			expect := atomicBuffer.GetInt32Volatile(0)
+			_ = atomicBuffer.CompareAndSwapInt32(0, expect, expect+1)
+		}},
 		{"PutBytes", func() { atomicBuffer.PutBytes(0, src) }},
 		{"PutBytesFrom", func() { atomicBuffer.PutBytesFrom(8, srcBuf, 0, 4) }},
 		{"GetAndAddInt64", func() { _ = atomicBuffer.GetAndAddInt64(0, 1) }},

@@ -78,7 +78,7 @@ type Conductor struct {
 	pending               pendingRegistry
 	activeCorrelationID   int64
 	receivedCorrelationID int64
-	// Step-3 staging only; unbounded append until step 7 resource maps replace slices.
+	// Staging only; unbounded append until resource maps replace slices.
 	lastPublicationReady  *PublicationBuffersReady
 	lastSubscriptionReady *SubscriptionReady
 	availableImages       []AvailableImage
@@ -265,7 +265,7 @@ func (conductor *Conductor) onClientTimeout() {
 	conductor.terminateWithError(ErrClientTimeout)
 }
 
-// Latch only; pending removal stays in PollPending until step 7 Complete policy.
+// Latch only; pending removal stays in PollPending until await completion.
 func (conductor *Conductor) onCorrelatedEvent(correlationID int64) {
 	conductor.receivedCorrelationID = correlationID
 }
