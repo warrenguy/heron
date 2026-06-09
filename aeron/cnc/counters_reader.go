@@ -15,11 +15,12 @@ const (
 	CounterRecordAllocated           int32 = 1
 	CounterRecordReclaimed           int32 = -1
 	NullCounterID                    int32 = -1
-	DriverPublisherLimitTypeID       int32 = 1
-	DriverReceiveChannelStatusTypeID int32 = 7
-	DriverSendChannelStatusTypeID    int32 = 6
-	ClientHeartbeatTypeID            int32 = 11
 	SystemCounterTypeID              int32 = 0
+	DriverPublisherLimitTypeID       int32 = 1
+	DriverSubscriberPositionTypeID   int32 = 4
+	DriverSendChannelStatusTypeID    int32 = 6
+	DriverReceiveChannelStatusTypeID int32 = 7
+	ClientHeartbeatTypeID            int32 = 11
 
 	SystemCounterControlProtocolVersionID int32 = 43
 
@@ -84,21 +85,7 @@ func NewCountersReader(meta, values []byte) (*CountersReader, error) {
 	}, nil
 }
 
-func (reader *CountersReader) GetCounterValue(counterID int32) (int64, error) {
-	if reader == nil {
-		return 0, errors.New("cnc: counters reader is nil")
-	}
-	if counterID < 0 || counterID > reader.maxCounterID {
-		return 0, fmt.Errorf(
-			"cnc: counter id %d out of range: maxCounterId=%d",
-			counterID,
-			reader.maxCounterID,
-		)
-	}
-	return reader.values.GetInt64Volatile(counterOffset(counterID)), nil
-}
-
-func (reader *CountersReader) SetCounterValue(counterID int32, value int64) error {
+func (reader *CountersReader) validateCounterID(counterID int32) error {
 	if reader == nil {
 		return errors.New("cnc: counters reader is nil")
 	}
@@ -109,7 +96,21 @@ func (reader *CountersReader) SetCounterValue(counterID int32, value int64) erro
 			reader.maxCounterID,
 		)
 	}
-	reader.values.PutInt64Release(counterOffset(counterID), value)
+	return nil
+}
+
+func (reader *CountersReader) GetCounterValue(counterID int32) (int64, error) {
+	if err := reader.validateCounterID(counterID); err != nil {
+		return 0, err
+	}
+	return reader.values.GetInt64Volatile(CounterOffset(counterID)), nil
+}
+
+func (reader *CountersReader) SetCounterValue(counterID int32, value int64) error {
+	if err := reader.validateCounterID(counterID); err != nil {
+		return err
+	}
+	reader.values.PutInt64Release(CounterOffset(counterID), value)
 	return nil
 }
 
@@ -130,7 +131,7 @@ func (reader *CountersReader) FindHeartbeatCounter(
 		if state == CounterRecordUnused {
 			break
 		}
-		if !reader.counterRecordMatchesState(id, state, registrationID, typeID) {
+		if !reader.counterRecordMatchesAt(id, metadataOffset, state, registrationID, typeID) {
 			continue
 		}
 		return id, true
@@ -164,24 +165,6 @@ func (reader *CountersReader) counterRecordMatches(
 	return reader.counterRecordMatchesAt(counterID, metadataOffset, state, registrationID, typeID)
 }
 
-func (reader *CountersReader) counterRecordMatchesState(
-	counterID int32,
-	state int32,
-	registrationID int64,
-	typeID int32,
-) bool {
-	if counterID < 0 || counterID > reader.maxCounterID {
-		return false
-	}
-	return reader.counterRecordMatchesAt(
-		counterID,
-		counterMetadataOffset(counterID),
-		state,
-		registrationID,
-		typeID,
-	)
-}
-
 func (reader *CountersReader) counterRecordMatchesAt(
 	counterID int32,
 	metadataOffset int,
@@ -198,9 +181,8 @@ func (reader *CountersReader) counterRecordMatchesAt(
 
 	var recordRegistrationID int64
 	if counterRegistrationIDInValuesBuffer(typeID) {
-		valuesOffset := counterOffset(counterID)
-		recordRegistrationID = reader.values.GetInt64(
-			valuesOffset + offsetCounterValuesRegistrationID,
+		recordRegistrationID = reader.values.GetInt64Volatile(
+			CounterOffset(counterID) + offsetCounterValuesRegistrationID,
 		)
 	} else {
 		recordRegistrationID = reader.metadata.GetInt64(metadataOffset + offsetCounterMetadataKey)
@@ -220,7 +202,7 @@ func (reader *CountersReader) CounterValuesBuffer() atomic.AtomicBuffer {
 	return reader.values
 }
 
-func counterOffset(counterID int32) int {
+func CounterOffset(counterID int32) int {
 	return int(counterID) * CounterValueLength
 }
 
@@ -314,7 +296,7 @@ func writeCounterRecord(
 	writeKey func(metaOffset, valuesOffset int) error,
 ) error {
 	metaOffset := counterMetadataOffset(counterID)
-	valuesOffset := counterOffset(counterID)
+	valuesOffset := CounterOffset(counterID)
 
 	metaBuffer.PutInt32(metaOffset+offsetCounterMetadataTypeID, typeID)
 	if err := writeKey(metaOffset, valuesOffset); err != nil {

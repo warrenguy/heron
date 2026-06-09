@@ -25,6 +25,12 @@ const (
 	TestPublicationInitialTermID    int32 = 7
 	TestPublicationMTULength        int32 = 1408
 	TestPublicationTermLength             = logbuffer.TermMinLength
+
+	TestSubscriptionRegistrationID  int64 = 8001
+	TestImageCorrelationID          int64 = 8101
+	TestSubscriberPositionCounterID int32 = 3
+	TestImageSourceIdentity               = "aeron:ipc"
+	TestSubscriberPositionAtJoin    int64 = 128
 )
 
 type TestPublicationLogConfig struct {
@@ -299,6 +305,19 @@ func NewTestCountersReaderForTest(tb testing.TB, limitPosition int64) *cnc.Count
 	return newTestCountersReaderWithoutTB(limitPosition)
 }
 
+func NewTestCountersReaderWithSubscriberPositionForTest(
+	tb testing.TB,
+	joinPosition int64,
+	registrationID ...int64,
+) *cnc.CountersReader {
+	tb.Helper()
+	regID := TestSubscriptionRegistrationID
+	if len(registrationID) > 0 {
+		regID = registrationID[0]
+	}
+	return newTestCountersReaderWithSubscriberPositionRegistration(joinPosition, regID)
+}
+
 func NewTestCountersReaderLimitOnlyForTest(tb testing.TB, limitPosition int64) *cnc.CountersReader {
 	tb.Helper()
 	return newTestCountersReaderLimitOnlyWithoutTB(limitPosition)
@@ -512,20 +531,13 @@ func writeTestPublicationMetadata(buf []byte, cfg TestPublicationLogConfig) {
 	}
 }
 
-func newTestCountersReaderLimitOnlyWithoutTB(limitPosition int64) *cnc.CountersReader {
-	const counterCount = 3
+func newTestCountersReaderFromRecords(
+	counterCount int,
+	writeRecords func(meta, values []byte),
+) *cnc.CountersReader {
 	meta := make([]byte, cnc.CounterMetadataLength*counterCount)
 	values := make([]byte, cnc.CounterValueLength*counterCount)
-
-	cnc.WriteCounterRecord(
-		meta,
-		values,
-		TestPublicationLimitCounterID,
-		cnc.CounterRecordAllocated,
-		cnc.DriverPublisherLimitTypeID,
-		TestPublicationRegistrationID,
-		limitPosition,
-	)
+	writeRecords(meta, values)
 
 	reader, err := cnc.NewCountersReader(meta, values)
 	if err != nil {
@@ -534,39 +546,45 @@ func newTestCountersReaderLimitOnlyWithoutTB(limitPosition int64) *cnc.CountersR
 	return reader
 }
 
+func newTestCountersReaderLimitOnlyWithoutTB(limitPosition int64) *cnc.CountersReader {
+	return newTestCountersReaderFromRecords(3, func(meta, values []byte) {
+		cnc.WriteCounterRecord(
+			meta,
+			values,
+			TestPublicationLimitCounterID,
+			cnc.CounterRecordAllocated,
+			cnc.DriverPublisherLimitTypeID,
+			TestPublicationRegistrationID,
+			limitPosition,
+		)
+	})
+}
+
 func newTestCountersReaderWithoutTB(limitPosition int64) *cnc.CountersReader {
-	const counterCount = 3
-	meta := make([]byte, cnc.CounterMetadataLength*counterCount)
-	values := make([]byte, cnc.CounterValueLength*counterCount)
-
-	cnc.WriteCounterRecord(
-		meta,
-		values,
-		TestPublicationLimitCounterID,
-		cnc.CounterRecordAllocated,
-		cnc.DriverPublisherLimitTypeID,
-		TestPublicationRegistrationID,
-		limitPosition,
-	)
-	err := cnc.WriteChannelStatusCounterRecord(
-		meta,
-		values,
-		TestPublicationChannelCounterID,
-		cnc.CounterRecordAllocated,
-		cnc.DriverSendChannelStatusTypeID,
-		"aeron:ipc",
-		TestPublicationRegistrationID,
-		1,
-	)
-	if err != nil {
-		panic(err)
-	}
-
-	reader, err := cnc.NewCountersReader(meta, values)
-	if err != nil {
-		panic(err)
-	}
-	return reader
+	return newTestCountersReaderFromRecords(3, func(meta, values []byte) {
+		cnc.WriteCounterRecord(
+			meta,
+			values,
+			TestPublicationLimitCounterID,
+			cnc.CounterRecordAllocated,
+			cnc.DriverPublisherLimitTypeID,
+			TestPublicationRegistrationID,
+			limitPosition,
+		)
+		err := cnc.WriteChannelStatusCounterRecord(
+			meta,
+			values,
+			TestPublicationChannelCounterID,
+			cnc.CounterRecordAllocated,
+			cnc.DriverSendChannelStatusTypeID,
+			"aeron:ipc",
+			TestPublicationRegistrationID,
+			1,
+		)
+		if err != nil {
+			panic(err)
+		}
+	})
 }
 
 func MapConductorErrorForTest(err error) error {
@@ -693,4 +711,199 @@ func NewClientForTestWithDriverProxy(
 		driverTimeout:     driverTimeout,
 		idleSleepDuration: idleSleepDuration,
 	}
+}
+
+func NewSubscriptionForTest(
+	registrationID int64,
+	streamID int32,
+	channel string,
+) *Subscription {
+	return newSubscription(registrationID, streamID, channel, 0)
+}
+
+func AvailableImageForTest() conductor.AvailableImage {
+	return conductor.AvailableImage{
+		CorrelationID:              TestImageCorrelationID,
+		SessionID:                  TestPublicationSessionID,
+		StreamID:                   TestPublicationStreamID,
+		SubscriptionRegistrationID: TestSubscriptionRegistrationID,
+		SubscriberPositionID:       TestSubscriberPositionCounterID,
+		LogFileName:                "test-image.log",
+		SourceIdentity:             TestImageSourceIdentity,
+	}
+}
+
+func AvailableImageWithSubscriberPositionIDForTest(
+	subscriberPositionID int32,
+) conductor.AvailableImage {
+	event := AvailableImageForTest()
+	event.SubscriberPositionID = subscriberPositionID
+	return event
+}
+
+func NewTestLogBuffersForTest(
+	tb testing.TB,
+	cfg TestPublicationLogConfig,
+) *logbuffer.LogBuffers {
+	tb.Helper()
+	log := newTestMappedLog(tb, cfg)
+	logBuffers, err := logbuffer.NewLogBuffers(log)
+	require.NoError(tb, err)
+	return logBuffers
+}
+
+func NewImageWithCommittedDataFrameForTest(
+	tb testing.TB,
+	joinPosition int64,
+	frameOffset int,
+) (*Image, int32) {
+	tb.Helper()
+
+	sub := newSubscription(
+		TestSubscriptionRegistrationID,
+		TestPublicationStreamID,
+		TestImageSourceIdentity,
+		0,
+	)
+	image := NewImageForTest(tb, sub, joinPosition)
+	termBuffer := ImageTermBuffer0ForTest(image)
+	payload := []byte("payload")
+	WriteCommittedDataFrameForTest(
+		termBuffer,
+		frameOffset,
+		TestPublicationSessionID,
+		TestPublicationStreamID,
+		TestPublicationInitialTermID,
+		int32(frameOffset),
+		logbuffer.Unfragmented,
+		payload,
+	)
+	return image, int32(len(payload) + logbuffer.DataHeaderLength)
+}
+
+func NewImageDirectForTest(
+	sub *Subscription,
+	event conductor.AvailableImage,
+	logBuffers *logbuffer.LogBuffers,
+	counters *cnc.CountersReader,
+) (*Image, error) {
+	return newImage(sub, event, logBuffers, counters, nil)
+}
+
+func NewImageForTest(
+	tb testing.TB,
+	sub *Subscription,
+	joinPosition int64,
+) *Image {
+	tb.Helper()
+	return NewImageForTestWithCorrelationID(tb, sub, joinPosition, TestImageCorrelationID)
+}
+
+func NewImageForTestWithCorrelationID(
+	tb testing.TB,
+	sub *Subscription,
+	joinPosition int64,
+	correlationID int64,
+) *Image {
+	tb.Helper()
+	event := AvailableImageForTest()
+	event.CorrelationID = correlationID
+	return newTestImage(tb, sub, joinPosition, event)
+}
+
+func ImageHeaderForTest(image *Image) *Header {
+	return &image.header
+}
+
+func ImageInternalCloseForTest(image *Image) {
+	image.internalClose()
+}
+
+func WriteCommittedDataFrameForTest(
+	termBuffer atomic.AtomicBuffer,
+	frameOffset int,
+	sessionID int32,
+	streamID int32,
+	termID int32,
+	termOffset int32,
+	flags uint8,
+	payload []byte,
+) {
+	frameLength := int32(len(payload) + logbuffer.DataHeaderLength)
+	if err := logbuffer.WriteDataHeaderUnfragmented(
+		termBuffer,
+		frameOffset,
+		sessionID,
+		streamID,
+		termID,
+		termOffset,
+		flags,
+	); err != nil {
+		panic(err)
+	}
+	termBuffer.PutBytes(frameOffset+logbuffer.DataHeaderLength, payload)
+	logbuffer.PutFrameLengthOrdered(termBuffer, frameOffset, frameLength)
+}
+
+func ImageTermBuffer0ForTest(image *Image) atomic.AtomicBuffer {
+	return image.termBuffers[0]
+}
+
+func ImageSetSubscriberPositionForTest(image *Image, value int64) {
+	image.subscriberPos.SetRelease(value)
+}
+
+func HeaderSetFragmentedFrameLenForTest(header *Header, fragmentedFrameLen int32) {
+	header.fragmentedFrameLen = fragmentedFrameLen
+}
+
+func ImageTermBuffer0CapacityForTest(image *Image) int {
+	return image.termBuffers[0].Capacity()
+}
+
+func ImageHeaderBufferCapacityForTest(image *Image) int {
+	return image.header.buffer.Capacity()
+}
+
+func SubscriptionAddImageForTest(sub *Subscription, image *Image) {
+	sub.addImage(image)
+}
+
+func SubscriptionRemoveImageForTest(sub *Subscription, correlationID int64) *Image {
+	return sub.removeImage(correlationID)
+}
+
+func newTestImage(
+	tb testing.TB,
+	sub *Subscription,
+	joinPosition int64,
+	event conductor.AvailableImage,
+) *Image {
+	tb.Helper()
+
+	logBuffers := NewTestLogBuffersForTest(tb, DefaultTestPublicationLogConfig())
+	counters := newTestCountersReaderWithSubscriberPositionRegistration(
+		joinPosition,
+		event.SubscriptionRegistrationID,
+	)
+	image, err := newImage(sub, event, logBuffers, counters, nil)
+	require.NoError(tb, err)
+	return image
+}
+
+func newTestCountersReaderWithSubscriberPositionRegistration(
+	joinPosition int64,
+	registrationID int64,
+) *cnc.CountersReader {
+	return newTestCountersReaderFromRecords(4, func(meta, values []byte) {
+		cnc.WriteCounterRecord(
+			meta,
+			values,
+			TestSubscriberPositionCounterID,
+			cnc.CounterRecordAllocated,
+			cnc.DriverSubscriberPositionTypeID,
+			registrationID,
+			joinPosition,
+		)
+	})
 }

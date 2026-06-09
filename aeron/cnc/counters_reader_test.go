@@ -516,6 +516,44 @@ type counterRecord struct {
 	value          int64
 }
 
+func writeAllocatedCounterForTest(
+	meta []byte,
+	values []byte,
+	counterID int32,
+	typeID int32,
+	registrationID int64,
+	value int64,
+) error {
+	switch typeID {
+	case cnc.DriverSendChannelStatusTypeID, cnc.DriverReceiveChannelStatusTypeID:
+		return cnc.WriteChannelStatusCounterRecord(
+			meta,
+			values,
+			counterID,
+			cnc.CounterRecordAllocated,
+			typeID,
+			"aeron:ipc",
+			registrationID,
+			value,
+		)
+	default:
+		cnc.WriteCounterRecord(
+			meta,
+			values,
+			counterID,
+			cnc.CounterRecordAllocated,
+			typeID,
+			registrationID,
+			value,
+		)
+		return nil
+	}
+}
+
+func counterMetadataRegistrationKeyOffset(counterID int32) int {
+	return int(counterID)*cnc.CounterMetadataLength + 16
+}
+
 func syntheticCountersBuffers(tb testing.TB, counterCount int) ([]byte, []byte) {
 	tb.Helper()
 	require.Positive(tb, counterCount)

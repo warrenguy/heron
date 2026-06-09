@@ -87,6 +87,18 @@ func MapLogBuffer(data []byte) (*MappedLogBuffer, error) {
 	return mapLogBuffer(data)
 }
 
+func MapSyntheticLogBufferForTest(tb testing.TB) *MappedLogBuffer {
+	tb.Helper()
+	buf := make([]byte, TestComputedLength)
+	WriteSyntheticMetadata(buf, DefaultSyntheticMetadataConfig())
+
+	mapped, err := MapLogBuffer(buf)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return mapped
+}
+
 func MapLogFileAfterDiscover(
 	file *os.File,
 	path string,

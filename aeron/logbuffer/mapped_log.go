@@ -273,6 +273,15 @@ func (mapped *MappedLogBuffer) TermBuffer(index int) (atomic.AtomicBuffer, error
 	return mapped.termViews[index], nil
 }
 
+// Returned AtomicBuffer views are by-value slice headers. Retaining them across
+// Close is use-after-unmap on the MapLogFile path; heap-backed MapLogBuffer differs.
+func (mapped *MappedLogBuffer) TermBuffers() ([PartitionCount]atomic.AtomicBuffer, error) {
+	if err := mapped.closedErr(); err != nil {
+		return [PartitionCount]atomic.AtomicBuffer{}, err
+	}
+	return mapped.termViews, nil
+}
+
 // Returned AtomicBuffer is a by-value slice header. Retaining it across Close
 // is use-after-unmap on the MapLogFile path; heap-backed MapLogBuffer differs.
 func (mapped *MappedLogBuffer) MetaDataBuffer() (atomic.AtomicBuffer, error) {
