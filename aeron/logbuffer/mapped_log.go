@@ -36,6 +36,12 @@ func fileSizeFromStat(size int64) (int, error) {
 	return int(size), nil
 }
 
+// MapLogBufferFromBytes copies data into an owned heap buffer and maps it as a log.
+// Intended for in-memory fixtures and tests; production IPC uses MapLogFile.
+func MapLogBufferFromBytes(data []byte) (*MappedLogBuffer, error) {
+	return mapLogBuffer(data)
+}
+
 func MapLogFile(path string) (*MappedLogBuffer, error) {
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
@@ -261,7 +267,7 @@ func (mapped *MappedLogBuffer) TermBuffer(index int) (atomic.AtomicBuffer, error
 	if err := mapped.closedErr(); err != nil {
 		return atomic.AtomicBuffer{}, err
 	}
-	if err := validateTermIndex(index, "term index"); err != nil {
+	if err := ValidateTermIndex(index, "term index"); err != nil {
 		return atomic.AtomicBuffer{}, err
 	}
 	return mapped.termViews[index], nil

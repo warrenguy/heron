@@ -117,20 +117,30 @@ func TestRotateLog_casRawTailRetry(t *testing.T) {
 			case <-stop:
 				return
 			default:
+				rawTail, err := logbuffer.GetRawTail(meta, 1)
+				if err != nil || logbuffer.TermID(rawTail) != 5 {
+					return
+				}
 				offset := int32(0)
 				if alternate {
 					offset = 1024
 				}
 				alternate = !alternate
-				_ = logbuffer.PutRawTail(meta, 1, logbuffer.PackRawTail(5, offset))
+				_, _ = logbuffer.CasRawTail(
+					meta,
+					1,
+					rawTail,
+					logbuffer.PackRawTail(5, offset),
+				)
 			}
 		}
 	})
 
-	require.True(t, logbuffer.RotateLog(meta, 0, 7))
-	require.Equal(t, int32(1), logbuffer.ActiveTermCount(meta))
+	ok := logbuffer.RotateLog(meta, 0, 7)
 	close(stop)
 	wg.Wait()
+	require.True(t, ok)
+	require.Equal(t, int32(1), logbuffer.ActiveTermCount(meta))
 	rawTail, err := logbuffer.GetRawTail(meta, 1)
 	require.NoError(t, err)
 	require.Equal(t, int32(8), logbuffer.TermID(rawTail))

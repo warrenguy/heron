@@ -2,7 +2,7 @@ package logbuffer
 
 import "fmt"
 
-func validateTermIndex(index int, label string) error {
+func ValidateTermIndex(index int, label string) error {
 	if index < 0 || index >= PartitionCount {
 		return fmt.Errorf("logbuffer: invalid %s: %d", label, index)
 	}

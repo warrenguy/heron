@@ -93,17 +93,11 @@ func IsConnectedVolatile(meta atomic.AtomicBuffer) int32 {
 	return meta.GetInt32Volatile(OffsetIsConnected)
 }
 
-// Returns the stored default header slice. Values in (0, DataHeaderLength)
-// pass through unchanged; driver init writes 32. Callers copying the template
-// must ensure length is at least DataHeaderLength.
+// Returns the default frame header slice from metadata. Length is clamped
+// between DataHeaderLength and DefaultFrameHeaderMaxLength.
 func DefaultFrameHeaderBuffer(meta atomic.AtomicBuffer) atomic.AtomicBuffer {
-	headerLength := meta.GetInt32(OffsetDefaultFrameHeaderLength)
-	if headerLength <= 0 {
-		headerLength = DataHeaderLength
-	}
-	if headerLength > DefaultFrameHeaderMaxLength {
-		headerLength = DefaultFrameHeaderMaxLength
-	}
+	storedLength := meta.GetInt32(OffsetDefaultFrameHeaderLength)
+	headerLength := min(max(storedLength, DataHeaderLength), DefaultFrameHeaderMaxLength)
 	return meta.Slice(OffsetDefaultFrameHeader, int(headerLength))
 }
 

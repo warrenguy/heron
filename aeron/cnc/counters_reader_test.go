@@ -34,6 +34,65 @@ func TestNewCountersReaderRejectsInsufficientMetadata(t *testing.T) {
 	)
 }
 
+const writeCounterRecordChannelStatusPanic = "cnc: WriteCounterRecord cannot write channel " +
+	"status counters (type 6/7); use WriteChannelStatusCounterRecord"
+
+func TestWriteChannelStatusCounterRecordRejectsNonChannelStatusTypeIDs(t *testing.T) {
+	meta, values := syntheticCountersBuffers(t, 1)
+
+	err := cnc.WriteChannelStatusCounterRecord(
+		meta,
+		values,
+		0,
+		cnc.CounterRecordAllocated,
+		cnc.ClientHeartbeatTypeID,
+		"aeron:ipc",
+		42,
+		1,
+	)
+	require.EqualError(
+		t,
+		err,
+		"cnc: WriteChannelStatusCounterRecord requires channel status type ID (6 or 7), "+
+			"got 11; use WriteCounterRecord",
+	)
+}
+
+func TestWriteCounterRecordRejectsChannelStatusTypeIDs(t *testing.T) {
+	meta, values := syntheticCountersBuffers(t, 1)
+
+	require.PanicsWithValue(
+		t,
+		writeCounterRecordChannelStatusPanic,
+		func() {
+			cnc.WriteCounterRecord(
+				meta,
+				values,
+				0,
+				cnc.CounterRecordAllocated,
+				cnc.DriverSendChannelStatusTypeID,
+				9001,
+				1,
+			)
+		},
+	)
+	require.PanicsWithValue(
+		t,
+		writeCounterRecordChannelStatusPanic,
+		func() {
+			cnc.WriteCounterRecord(
+				meta,
+				values,
+				0,
+				cnc.CounterRecordAllocated,
+				cnc.DriverReceiveChannelStatusTypeID,
+				9001,
+				1,
+			)
+		},
+	)
+}
+
 func TestCountersReaderGetCounterValue(t *testing.T) {
 	meta, values := syntheticCountersBuffers(t, 2)
 	writeDenseCounterPrefix(meta, values, 1)
@@ -271,6 +330,110 @@ func TestCountersReaderIsCounterActive(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestCountersReaderIsCounterActiveChannelStatus(t *testing.T) {
+	meta, values := syntheticCountersBuffers(t, 1)
+	channel := "aeron:ipc"
+	registrationID := int64(9001)
+
+	err := cnc.WriteChannelStatusCounterRecord(
+		meta,
+		values,
+		0,
+		cnc.CounterRecordAllocated,
+		cnc.DriverSendChannelStatusTypeID,
+		channel,
+		registrationID,
+		1,
+	)
+	require.NoError(t, err)
+
+	metaBuffer := atomic.Wrap(meta)
+	gotChannel, _, err := atomic.GetStringASCII(metaBuffer, cnc.CounterMetadataLength*0+16)
+	require.NoError(t, err)
+	require.Equal(t, channel, gotChannel)
+
+	metaBuffer.PutInt64(16, 999)
+	require.Equal(
+		t,
+		registrationID,
+		atomic.Wrap(values).GetInt64(cnc.CounterValueLength*0+8),
+	)
+
+	reader, err := cnc.NewCountersReader(meta, values)
+	require.NoError(t, err)
+
+	require.True(
+		t,
+		reader.IsCounterActive(0, registrationID, cnc.DriverSendChannelStatusTypeID),
+	)
+	require.False(
+		t,
+		reader.IsCounterActive(0, registrationID+1, cnc.DriverSendChannelStatusTypeID),
+	)
+	require.False(
+		t,
+		reader.IsCounterActive(0, registrationID, cnc.ClientHeartbeatTypeID),
+	)
+}
+
+func TestCountersReaderIsCounterActiveRegistrationIDSource(t *testing.T) {
+	t.Run("publisher limit uses metadata key", func(t *testing.T) {
+		meta, values := syntheticCountersBuffers(t, 1)
+		cnc.WriteCounterRecord(
+			meta,
+			values,
+			0,
+			cnc.CounterRecordAllocated,
+			cnc.DriverPublisherLimitTypeID,
+			42,
+			100,
+		)
+
+		reader, err := cnc.NewCountersReader(meta, values)
+		require.NoError(t, err)
+		require.True(t, reader.IsCounterActive(0, 42, cnc.DriverPublisherLimitTypeID))
+		require.False(t, reader.IsCounterActive(0, 43, cnc.DriverPublisherLimitTypeID))
+	})
+
+	t.Run("heartbeat uses metadata key", func(t *testing.T) {
+		meta, values := syntheticCountersBuffers(t, 1)
+		cnc.WriteCounterRecord(
+			meta,
+			values,
+			0,
+			cnc.CounterRecordAllocated,
+			cnc.ClientHeartbeatTypeID,
+			42,
+			100,
+		)
+
+		reader, err := cnc.NewCountersReader(meta, values)
+		require.NoError(t, err)
+		require.True(t, reader.IsCounterActive(0, 42, cnc.ClientHeartbeatTypeID))
+		require.False(t, reader.IsCounterActive(0, 43, cnc.ClientHeartbeatTypeID))
+	})
+
+	t.Run("receive channel status uses values buffer", func(t *testing.T) {
+		meta, values := syntheticCountersBuffers(t, 1)
+		err := cnc.WriteChannelStatusCounterRecord(
+			meta,
+			values,
+			0,
+			cnc.CounterRecordAllocated,
+			cnc.DriverReceiveChannelStatusTypeID,
+			"aeron:udp?endpoint=localhost:40123",
+			77,
+			2,
+		)
+		require.NoError(t, err)
+
+		reader, err := cnc.NewCountersReader(meta, values)
+		require.NoError(t, err)
+		require.True(t, reader.IsCounterActive(0, 77, cnc.DriverReceiveChannelStatusTypeID))
+		require.False(t, reader.IsCounterActive(0, 78, cnc.DriverReceiveChannelStatusTypeID))
+	})
 }
 
 func TestCountersReaderIsCounterActiveOutOfRangeAndUnused(t *testing.T) {

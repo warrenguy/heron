@@ -255,3 +255,30 @@ func WritePaddingFrame(
 ) error {
 	return writeFrameHeader(buffer, frameOffset, 0, HdrTypePad, termID, termOffset)
 }
+
+// CommitMinimalTermEndPadding writes frame length and PAD type into whatever
+// header fields fit when the tail gap is shorter than DataHeaderLength.
+func CommitMinimalTermEndPadding(
+	termBuf atomic.AtomicBuffer,
+	termOffset int,
+	paddingLength int32,
+) {
+	if paddingLength <= 0 {
+		return
+	}
+
+	paddingEnd := termOffset + int(paddingLength)
+	if paddingEnd > termBuf.Capacity() {
+		return
+	}
+
+	if termOffset+OffsetFrameLength+4 <= paddingEnd {
+		termBuf.PutInt32Release(termOffset+OffsetFrameLength, paddingLength)
+	}
+	if termOffset+OffsetFrameType+2 <= paddingEnd {
+		binary.LittleEndian.PutUint16(
+			termBuf.Bytes()[termOffset+OffsetFrameType:],
+			uint16(HdrTypePad),
+		)
+	}
+}

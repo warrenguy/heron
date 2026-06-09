@@ -103,7 +103,7 @@ func TestDefaultFrameHeaderBuffer(t *testing.T) {
 	}{
 		{"zero defaults to DataHeaderLength", 0, logbuffer.DataHeaderLength},
 		{"negative defaults to DataHeaderLength", -1, logbuffer.DataHeaderLength},
-		{"below DataHeaderLength uses stored value", 16, 16},
+		{"below DataHeaderLength clamps to DataHeaderLength", 16, logbuffer.DataHeaderLength},
 		{"DataHeaderLength", logbuffer.DataHeaderLength, logbuffer.DataHeaderLength},
 		{"at max", logbuffer.DefaultFrameHeaderMaxLength, logbuffer.DefaultFrameHeaderMaxLength},
 		{

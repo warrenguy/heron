@@ -327,3 +327,29 @@ func TestMapLogFile_missingFile(t *testing.T) {
 	_, err := logbuffer.MapLogFile(path)
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
+
+func TestMapLogBufferFromBytes_roundtrip(t *testing.T) {
+	buf := make([]byte, logbuffer.TestComputedLength)
+	logbuffer.WriteSyntheticMetadata(buf, logbuffer.DefaultSyntheticMetadataConfig())
+
+	mapped, err := logbuffer.MapLogBufferFromBytes(buf)
+	require.NoError(t, err)
+	defer func() { _ = mapped.Close() }()
+
+	term0, err := mapped.TermBuffer(0)
+	require.NoError(t, err)
+	term0.PutInt32(0, 0xBEEF)
+
+	remapped, err := logbuffer.MapLogBufferFromBytes(buf)
+	require.NoError(t, err)
+	defer func() { _ = remapped.Close() }()
+
+	term0Again, err := remapped.TermBuffer(0)
+	require.NoError(t, err)
+	require.Equal(t, int32(0), term0Again.GetInt32(0))
+}
+
+func TestMapLogBufferFromBytes_bufferTooShort(t *testing.T) {
+	_, err := logbuffer.MapLogBufferFromBytes(make([]byte, logbuffer.MetaDataLength-1))
+	require.EqualError(t, err, "logbuffer: buffer too short: 4095 < 4096")
+}

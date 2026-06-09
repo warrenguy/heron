@@ -11,18 +11,22 @@ const (
 	CounterValueLength    = 128
 	CounterMetadataLength = 512
 
-	CounterRecordUnused    int32 = 0
-	CounterRecordAllocated int32 = 1
-	CounterRecordReclaimed int32 = -1
-	NullCounterID          int32 = -1
-	ClientHeartbeatTypeID  int32 = 11
-	SystemCounterTypeID    int32 = 0
+	CounterRecordUnused              int32 = 0
+	CounterRecordAllocated           int32 = 1
+	CounterRecordReclaimed           int32 = -1
+	NullCounterID                    int32 = -1
+	DriverPublisherLimitTypeID       int32 = 1
+	DriverReceiveChannelStatusTypeID int32 = 7
+	DriverSendChannelStatusTypeID    int32 = 6
+	ClientHeartbeatTypeID            int32 = 11
+	SystemCounterTypeID              int32 = 0
 
 	SystemCounterControlProtocolVersionID int32 = 43
 
-	offsetCounterMetadataState  = 0
-	offsetCounterMetadataTypeID = 4
-	offsetCounterMetadataKey    = 16
+	offsetCounterMetadataState        = 0
+	offsetCounterMetadataTypeID       = 4
+	offsetCounterMetadataKey          = 16
+	offsetCounterValuesRegistrationID = 8
 )
 
 type CountersView interface {
@@ -157,7 +161,7 @@ func (reader *CountersReader) counterRecordMatches(
 
 	metadataOffset := counterMetadataOffset(counterID)
 	state := reader.metadata.GetInt32Volatile(metadataOffset + offsetCounterMetadataState)
-	return reader.counterRecordMatchesState(counterID, state, registrationID, typeID)
+	return reader.counterRecordMatchesAt(counterID, metadataOffset, state, registrationID, typeID)
 }
 
 func (reader *CountersReader) counterRecordMatchesState(
@@ -169,18 +173,44 @@ func (reader *CountersReader) counterRecordMatchesState(
 	if counterID < 0 || counterID > reader.maxCounterID {
 		return false
 	}
+	return reader.counterRecordMatchesAt(
+		counterID,
+		counterMetadataOffset(counterID),
+		state,
+		registrationID,
+		typeID,
+	)
+}
+
+func (reader *CountersReader) counterRecordMatchesAt(
+	counterID int32,
+	metadataOffset int,
+	state int32,
+	registrationID int64,
+	typeID int32,
+) bool {
 	if state != CounterRecordAllocated {
 		return false
 	}
-
-	metadataOffset := counterMetadataOffset(counterID)
 	if reader.metadata.GetInt32(metadataOffset+offsetCounterMetadataTypeID) != typeID {
 		return false
 	}
-	if reader.metadata.GetInt64(metadataOffset+offsetCounterMetadataKey) != registrationID {
-		return false
+
+	var recordRegistrationID int64
+	if counterRegistrationIDInValuesBuffer(typeID) {
+		valuesOffset := counterOffset(counterID)
+		recordRegistrationID = reader.values.GetInt64(
+			valuesOffset + offsetCounterValuesRegistrationID,
+		)
+	} else {
+		recordRegistrationID = reader.metadata.GetInt64(metadataOffset + offsetCounterMetadataKey)
 	}
-	return true
+	return recordRegistrationID == registrationID
+}
+
+func counterRegistrationIDInValuesBuffer(typeID int32) bool {
+	return typeID == DriverSendChannelStatusTypeID ||
+		typeID == DriverReceiveChannelStatusTypeID
 }
 
 func (reader *CountersReader) CounterValuesBuffer() atomic.AtomicBuffer {
@@ -207,14 +237,90 @@ func WriteCounterRecord(
 	registrationID int64,
 	value int64,
 ) {
+	if counterRegistrationIDInValuesBuffer(typeID) {
+		panic(
+			"cnc: WriteCounterRecord cannot write channel status counters " +
+				"(type 6/7); use WriteChannelStatusCounterRecord",
+		)
+	}
+
 	metaBuffer := atomic.Wrap(meta)
 	valuesBuffer := atomic.Wrap(values)
+	_ = writeCounterRecord(
+		metaBuffer,
+		valuesBuffer,
+		counterID,
+		state,
+		typeID,
+		value,
+		func(metaOffset, _ int) error {
+			metaBuffer.PutInt64(metaOffset+offsetCounterMetadataKey, registrationID)
+			return nil
+		},
+	)
+}
 
+func WriteChannelStatusCounterRecord(
+	meta []byte,
+	values []byte,
+	counterID int32,
+	state int32,
+	typeID int32,
+	channel string,
+	registrationID int64,
+	value int64,
+) error {
+	if !counterRegistrationIDInValuesBuffer(typeID) {
+		return fmt.Errorf(
+			"cnc: WriteChannelStatusCounterRecord requires channel status type ID (6 or 7), "+
+				"got %d; use WriteCounterRecord",
+			typeID,
+		)
+	}
+
+	metaBuffer := atomic.Wrap(meta)
+	valuesBuffer := atomic.Wrap(values)
+	return writeCounterRecord(
+		metaBuffer,
+		valuesBuffer,
+		counterID,
+		state,
+		typeID,
+		value,
+		func(metaOffset, valuesOffset int) error {
+			if _, err := atomic.PutStringASCII(
+				metaBuffer,
+				metaOffset+offsetCounterMetadataKey,
+				channel,
+			); err != nil {
+				return err
+			}
+			valuesBuffer.PutInt64(
+				valuesOffset+offsetCounterValuesRegistrationID,
+				registrationID,
+			)
+			return nil
+		},
+	)
+}
+
+func writeCounterRecord(
+	metaBuffer atomic.AtomicBuffer,
+	valuesBuffer atomic.AtomicBuffer,
+	counterID int32,
+	state int32,
+	typeID int32,
+	value int64,
+	writeKey func(metaOffset, valuesOffset int) error,
+) error {
 	metaOffset := counterMetadataOffset(counterID)
 	valuesOffset := counterOffset(counterID)
 
 	metaBuffer.PutInt32(metaOffset+offsetCounterMetadataTypeID, typeID)
-	metaBuffer.PutInt64(metaOffset+offsetCounterMetadataKey, registrationID)
+	if err := writeKey(metaOffset, valuesOffset); err != nil {
+		return err
+	}
 	valuesBuffer.PutInt64(valuesOffset, value)
 	metaBuffer.PutInt32Release(metaOffset+offsetCounterMetadataState, state)
+	return nil
 }

@@ -137,3 +137,42 @@ func TestWritePaddingFrame_outOfBounds(t *testing.T) {
 	err := logbuffer.WritePaddingFrame(buffer, 0, 1, 2)
 	require.EqualError(t, err, "logbuffer: frame header out of bounds")
 }
+
+func TestCommitMinimalTermEndPadding_partialGaps(t *testing.T) {
+	const termOffset = 0
+
+	tests := []struct {
+		name            string
+		paddingLength   int32
+		wantFrameLength bool
+		wantPadType     bool
+	}{
+		{name: "1 byte gap", paddingLength: 1},
+		{name: "3 byte gap", paddingLength: 3},
+		{name: "4 byte gap", paddingLength: 4, wantFrameLength: true},
+		{name: "5 byte gap", paddingLength: 5, wantFrameLength: true},
+		{name: "6 byte gap", paddingLength: 6, wantFrameLength: true},
+		{name: "7 byte gap", paddingLength: 7, wantFrameLength: true},
+		{name: "8 byte gap", paddingLength: 8, wantFrameLength: true, wantPadType: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, logbuffer.DataHeaderLength)
+			for i := range buf {
+				buf[i] = 0xFF
+			}
+			buffer := atomic.Wrap(buf)
+
+			logbuffer.CommitMinimalTermEndPadding(buffer, termOffset, tt.paddingLength)
+
+			if tt.wantFrameLength {
+				require.Equal(t, tt.paddingLength, logbuffer.FrameLength(buffer, termOffset))
+			} else {
+				require.Equal(t, int32(-1), logbuffer.FrameLength(buffer, termOffset))
+			}
+
+			require.Equal(t, tt.wantPadType, logbuffer.IsPaddingFrame(buffer, termOffset))
+		})
+	}
+}
