@@ -456,7 +456,7 @@ func TestDriverEventsAdapter_OnError(t *testing.T) {
 }
 
 func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
-	tests := []struct {
+	type testCase struct {
 		name                 string
 		setActiveCorrelation bool
 		eventCorrelationID   int64
@@ -466,8 +466,11 @@ func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
 		useNilPending        bool
 		wantUnhandled        int64
 		wantDone             bool
+		wantPendingRemoved   bool
 		wantPendingRetained  bool
-	}{
+	}
+
+	tests := []testCase{
 		{
 			name:                 "matchingActive",
 			setActiveCorrelation: true,
@@ -475,6 +478,7 @@ func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
 			receiveCorrelationID: pendingTestCorrelationID,
 			pendingKind:          conductor.PendingKindOperationSuccess,
 			wantDone:             true,
+			wantPendingRemoved:   true,
 		},
 		{
 			name:                 "paddedBody",
@@ -487,6 +491,7 @@ func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
 			receiveCorrelationID: pendingTestCorrelationID,
 			pendingKind:          conductor.PendingKindOperationSuccess,
 			wantDone:             true,
+			wantPendingRemoved:   true,
 		},
 		{
 			name:                 "nonMatchingActive",
@@ -535,6 +540,40 @@ func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
 			pendingKind:          conductor.PendingKindOperationSuccess,
 			wantUnhandled:        1,
 		},
+		{
+			name:                 "addPublicationAckOnly",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindAddPublication,
+			wantPendingRetained:  true,
+		},
+		{
+			name:                 "addSubscriptionAckOnly",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindAddSubscription,
+			wantPendingRetained:  true,
+		},
+		{
+			name:                 "removePublication",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindRemovePublication,
+			wantDone:             true,
+			wantPendingRemoved:   true,
+		},
+		{
+			name:                 "removeSubscription",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindRemoveSubscription,
+			wantDone:             true,
+			wantPendingRemoved:   true,
+		},
 	}
 
 	for _, testCase := range tests {
@@ -547,10 +586,10 @@ func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
 			)
 			require.NoError(
 				t,
-				conductorInstance.RegisterPending(
+				registerPendingKindForTest(
+					conductorInstance,
 					testCase.pendingKind,
 					pendingTestCorrelationID,
-					pendingTestTimeout,
 				),
 			)
 			if testCase.setActiveCorrelation {
@@ -582,7 +621,7 @@ func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
 			require.Equal(t, testCase.wantDone, done)
 			if testCase.wantDone {
 				require.NoError(t, err)
-				require.Equal(t, conductor.PendingKindOperationSuccess, registration.Kind)
+				require.Equal(t, testCase.pendingKind, registration.Kind)
 			} else {
 				require.NoError(t, err)
 				require.Zero(t, registration)
@@ -591,6 +630,15 @@ func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
 			if testCase.wantPendingRetained {
 				_, ok := conductorInstance.PendingResult(pendingTestCorrelationID)
 				require.True(t, ok)
+				require.Equal(
+					t,
+					conductor.NullCorrelationID,
+					conductorInstance.ReceivedCorrelationID(),
+				)
+			}
+			if testCase.wantPendingRemoved {
+				_, ok := conductorInstance.PendingResult(pendingTestCorrelationID)
+				require.False(t, ok)
 			}
 		})
 	}
@@ -715,6 +763,26 @@ func TestDriverEventsAdapter_OnPublicationReady_pendingRegistryOnly(t *testing.T
 		t,
 		goldenPublicationReadyCorrelationID,
 		conductorInstance.ReceivedCorrelationID(),
+	)
+}
+
+func TestDriverEventsAdapter_OnPublicationReady_wrongAddKind(t *testing.T) {
+	testDriverEventsAdapterOnReadyWrongAddKind(
+		t,
+		conductor.PendingKindAddSubscription,
+		goldenPublicationReadyCorrelationID,
+		conductor.OnPublicationReady,
+		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
+	)
+}
+
+func TestDriverEventsAdapter_OnSubscriptionReady_wrongAddKind(t *testing.T) {
+	testDriverEventsAdapterOnReadyWrongAddKind(
+		t,
+		conductor.PendingKindAddPublication,
+		goldenSubscriptionReadyCorrelationID,
+		conductor.OnSubscriptionReady,
+		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
 	)
 }
 
@@ -1188,6 +1256,43 @@ func newDriverEventsAdapterForTest(
 		conductor.DriverEventsAdapterHandlers{},
 		nil,
 	)
+}
+
+func testDriverEventsAdapterOnReadyWrongAddKind(
+	t *testing.T,
+	pendingKind conductor.PendingKind,
+	correlationID int64,
+	msgTypeID int,
+	payload []byte,
+) {
+	t.Helper()
+
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		registerPendingKindForTest(conductorInstance, pendingKind, correlationID),
+	)
+	conductorInstance.SetActiveCorrelationID(correlationID)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(t, adapter, msgTypeID, payload)
+
+	count := adapter.Receive(correlationID, conductorInstance)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+
+	done, registration, err := conductorInstance.PollPending(correlationID)
+	require.False(t, done)
+	require.Zero(t, registration)
+	require.NoError(t, err)
+	_, ok := conductorInstance.PendingResult(correlationID)
+	require.True(t, ok)
+	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
 }
 
 func bodyOneByteShort(minimumBodyLength int) []byte {

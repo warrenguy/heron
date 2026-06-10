@@ -277,20 +277,38 @@ func (conductor *Conductor) onClientTimeout() {
 	conductor.terminateWithError(ErrClientTimeout)
 }
 
-// Latch only; pending removal stays in PollPending until await completion.
+// Add kinds complete in onPublicationReady/onSubscriptionReady; do not set
+// receivedCorrelationID here or PollPending would finish before metadata is filled.
 func (conductor *Conductor) onCorrelatedEvent(correlationID int64) {
-	conductor.receivedCorrelationID = correlationID
+	registration, ok := conductor.pending.Get(correlationID)
+	if !ok || !isAddPendingKind(registration.Kind) {
+		conductor.receivedCorrelationID = correlationID
+	}
 }
 
-// onPublicationReady latches only; publication log buffer acquire is not implemented.
 func (conductor *Conductor) onPublicationReady(event PublicationBuffersReady) {
 	eventCopy := event
 	conductor.lastPublicationReady = &eventCopy
+	conductor.completePendingIfKind(
+		event.CorrelationID,
+		PendingKindAddPublication,
+		func(registration *PendingRegistration) {
+			registration.RegistrationID = event.RegistrationID
+			registration.StreamID = event.StreamID
+		},
+	)
 }
 
 func (conductor *Conductor) onSubscriptionReady(event SubscriptionReady) {
 	eventCopy := event
 	conductor.lastSubscriptionReady = &eventCopy
+	conductor.completePendingIfKind(
+		event.CorrelationID,
+		PendingKindAddSubscription,
+		func(registration *PendingRegistration) {
+			registration.RegistrationID = event.CorrelationID
+		},
+	)
 }
 
 func (conductor *Conductor) onPublicationError(event PublicationError) {

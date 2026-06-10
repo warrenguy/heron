@@ -224,6 +224,92 @@ func TestConductor_DoWork_completesActivePendingOnError(t *testing.T) {
 	)
 }
 
+func TestConductor_DoWork_completesActivePendingOnPublicationReady(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		registerPendingAddWithCorrelationForTest(
+			conductorInstance,
+			conductor.PendingKindAddPublication,
+			goldenPublicationReadyCorrelationID,
+			99,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(goldenPublicationReadyCorrelationID)
+
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnPublicationReady,
+		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
+	)
+
+	_ = conductorInstance.DoWork()
+
+	done, registration, err := conductorInstance.PollPending(goldenPublicationReadyCorrelationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	require.Equal(t, conductor.PendingKindAddPublication, registration.Kind)
+	require.Equal(t, goldenPublicationBuffersReadyEvent.RegistrationID, registration.RegistrationID)
+	require.Equal(t, goldenPublicationBuffersReadyEvent.StreamID, registration.StreamID)
+	require.Equal(t, "aeron:ipc", registration.Channel)
+	require.Nil(t, registration.Publication)
+	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+	_, ok := conductorInstance.PendingResult(goldenPublicationReadyCorrelationID)
+	require.False(t, ok)
+	ready, latched := conductor.LastPublicationReadyForTest(conductorInstance)
+	require.True(t, latched)
+	require.Equal(t, goldenPublicationBuffersReadyEvent, ready)
+}
+
+func TestConductor_DoWork_completesActivePendingOnSubscriptionReady(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		registerPendingAddWithCorrelationForTest(
+			conductorInstance,
+			conductor.PendingKindAddSubscription,
+			goldenSubscriptionReadyCorrelationID,
+			pendingTestStreamID,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(goldenSubscriptionReadyCorrelationID)
+
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnSubscriptionReady,
+		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
+	)
+
+	_ = conductorInstance.DoWork()
+
+	done, registration, err := conductorInstance.PollPending(goldenSubscriptionReadyCorrelationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	require.Equal(t, conductor.PendingKindAddSubscription, registration.Kind)
+	require.Equal(t, goldenSubscriptionReadyCorrelationID, registration.RegistrationID)
+	require.Equal(t, int32(7), registration.StreamID)
+	require.Equal(t, "aeron:ipc", registration.Channel)
+	require.Nil(t, registration.Subscription)
+	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+	_, ok := conductorInstance.PendingResult(goldenSubscriptionReadyCorrelationID)
+	require.False(t, ok)
+	ready, latched := conductor.LastSubscriptionReadyForTest(conductorInstance)
+	require.True(t, latched)
+	require.Equal(t, goldenSubscriptionReadyEvent, ready)
+}
+
 func TestConductor_onPublicationReadyViaDoWork(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
@@ -855,14 +941,26 @@ func newConductorForTestAtWorkNano(
 ) *conductor.Conductor {
 	tb.Helper()
 
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(tb, errorHandler, epochMs, options...)
+	*nanoNs = workNanoNs
+	return conductorInstance
+}
+
+func newConductorForMutableNanoTest(
+	tb testing.TB,
+	errorHandler func(error),
+	epochMs int64,
+	options ...conductorTestOption,
+) (*conductor.Conductor, *int64) {
+	tb.Helper()
+
 	var nanoNs int64
 	conductorInstance := newConductorForTest(
 		tb,
 		conductorTestConfigMutableNano(tb, errorHandler, epochMs, &nanoNs),
 		options...,
 	)
-	nanoNs = workNanoNs
-	return conductorInstance
+	return conductorInstance, &nanoNs
 }
 
 func fillBroadcastUntilLap(

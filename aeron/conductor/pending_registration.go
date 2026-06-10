@@ -10,6 +10,10 @@ type PendingKind int
 const (
 	PendingKindOperationSuccess PendingKind = iota
 	PendingKindNextSessionID
+	PendingKindAddPublication
+	PendingKindAddSubscription
+	PendingKindRemovePublication
+	PendingKindRemoveSubscription
 )
 
 type PendingRegistration struct {
@@ -17,8 +21,15 @@ type PendingRegistration struct {
 	Kind          PendingKind
 	DeadlineNs    int64
 
-	Int32Value int32
-	Err        error
+	StreamID       int32
+	Channel        string
+	RegistrationID int64
+	Int32Value     int32
+	Err            error
+	// Publication and Subscription are any-typed until ready handlers construct
+	// handles; conductor cannot import aeron without an import cycle.
+	Publication  any
+	Subscription any
 }
 
 // pendingRegistry map structure is mutex-protected; Conductor await fields still
@@ -129,13 +140,43 @@ func (conductor *Conductor) PendingResult(
 // RegisterPending runs on the caller goroutine; PollPending and adapter handlers
 // run on the conductor service goroutine inside DoWork. Concurrent DoWork on one
 // Conductor is undefined.
+func (conductor *Conductor) pendingDeadline(timeout time.Duration) int64 {
+	return conductor.config.NanoClock() + timeout.Nanoseconds()
+}
+
+func (conductor *Conductor) checkNotTerminating() error {
+	if conductor.isTerminating {
+		return ErrConductorTerminating
+	}
+	return nil
+}
+
 func (conductor *Conductor) RegisterPending(
 	kind PendingKind,
 	correlationID int64,
 	timeout time.Duration,
 ) error {
-	deadlineNs := conductor.config.NanoClock() + timeout.Nanoseconds()
-	return conductor.RegisterPendingWithDeadline(kind, correlationID, deadlineNs)
+	return conductor.RegisterPendingWithDeadline(
+		kind,
+		correlationID,
+		conductor.pendingDeadline(timeout),
+	)
+}
+
+func (conductor *Conductor) registerPendingEntry(
+	registration PendingRegistration,
+	wantAdd bool,
+) error {
+	if err := conductor.checkNotTerminating(); err != nil {
+		return err
+	}
+	if isAddPendingKind(registration.Kind) && !wantAdd {
+		return ErrAddPendingKindRequiresAddAPI
+	}
+	if !isAddPendingKind(registration.Kind) && wantAdd {
+		return ErrNonAddPendingKindRequiresRegisterPending
+	}
+	return conductor.pending.Register(registration)
 }
 
 func (conductor *Conductor) RegisterPendingWithDeadline(
@@ -143,14 +184,43 @@ func (conductor *Conductor) RegisterPendingWithDeadline(
 	correlationID int64,
 	deadlineNs int64,
 ) error {
-	if conductor.isTerminating {
-		return ErrConductorTerminating
-	}
-	return conductor.pending.Register(PendingRegistration{
+	return conductor.registerPendingEntry(PendingRegistration{
 		CorrelationID: correlationID,
 		Kind:          kind,
 		DeadlineNs:    deadlineNs,
-	})
+	}, false)
+}
+
+func (conductor *Conductor) RegisterPendingAdd(
+	kind PendingKind,
+	correlationID int64,
+	streamID int32,
+	channel string,
+	timeout time.Duration,
+) error {
+	return conductor.RegisterPendingAddWithDeadline(
+		kind,
+		correlationID,
+		streamID,
+		channel,
+		conductor.pendingDeadline(timeout),
+	)
+}
+
+func (conductor *Conductor) RegisterPendingAddWithDeadline(
+	kind PendingKind,
+	correlationID int64,
+	streamID int32,
+	channel string,
+	deadlineNs int64,
+) error {
+	return conductor.registerPendingEntry(PendingRegistration{
+		CorrelationID: correlationID,
+		Kind:          kind,
+		StreamID:      streamID,
+		Channel:       channel,
+		DeadlineNs:    deadlineNs,
+	}, true)
 }
 
 func (conductor *Conductor) PollPending(
@@ -226,8 +296,30 @@ func (conductor *Conductor) completePendingIfKind(
 	return conductor.completePendingSuccess(registration, mutate)
 }
 
+func isAddPendingKind(kind PendingKind) bool {
+	return kind == PendingKindAddPublication || kind == PendingKindAddSubscription
+}
+
+// AddPublication/AddSubscription pendings return true on driver OPERATION_SUCCESS as an
+// ack only; they do not set receivedCorrelationID; onPublicationReady/onSubscriptionReady
+// complete them via completePendingIfKind. RemovePublication, RemoveSubscription, and
+// OperationSuccess pendings complete here via completePendingSuccess. NextSessionID
+// returns false; OnNextAvailableSessionID handles that kind.
 func (conductor *Conductor) OnOperationSuccess(correlationID int64) bool {
-	return conductor.completePendingIfKind(correlationID, PendingKindOperationSuccess, nil)
+	registration, ok := conductor.pending.Get(correlationID)
+	if !ok {
+		return false
+	}
+	switch {
+	case isAddPendingKind(registration.Kind):
+		return true
+	case registration.Kind == PendingKindOperationSuccess,
+		registration.Kind == PendingKindRemovePublication,
+		registration.Kind == PendingKindRemoveSubscription:
+		return conductor.completePendingSuccess(registration, nil)
+	default:
+		return false
+	}
 }
 
 func (conductor *Conductor) OnError(response ErrorResponse) bool {

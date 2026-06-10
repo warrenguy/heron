@@ -58,6 +58,22 @@ var goldenPublicationErrorEvent = conductor.PublicationError{
 	ErrorMessage:   "simulated",
 }
 
+func goldenPublicationBuffersReadyWithCorrelation(
+	correlationID int64,
+) conductor.PublicationBuffersReady {
+	event := goldenPublicationBuffersReadyEvent
+	event.CorrelationID = correlationID
+	return event
+}
+
+func goldenSubscriptionReadyWithCorrelation(
+	correlationID int64,
+) conductor.SubscriptionReady {
+	event := goldenSubscriptionReadyEvent
+	event.CorrelationID = correlationID
+	return event
+}
+
 func transmitConductorEvent(
 	t *testing.T,
 	adapter *conductor.DriverEventsAdapter,

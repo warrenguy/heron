@@ -6,9 +6,15 @@ import (
 )
 
 var (
-	ErrPendingAlreadyRegistered = errors.New("conductor: correlation already pending")
-	ErrPendingNotFound          = errors.New("conductor: no pending registration for correlation")
-	// ErrAwaitTimeout is set on active pending when expirePending sees nowNs >= DeadlineNs.
+	ErrPendingAlreadyRegistered     = errors.New("conductor: correlation already pending")
+	ErrPendingNotFound              = errors.New("conductor: no pending registration for correlation")
+	ErrAddPendingKindRequiresAddAPI = errors.New(
+		"conductor: add pending kind requires RegisterPendingAdd",
+	)
+	ErrNonAddPendingKindRequiresRegisterPending = errors.New(
+		"conductor: pending kind requires RegisterPending",
+	)
+	// ErrAwaitTimeout is set on active pending when ExpireBefore sees nowNs >= DeadlineNs.
 	ErrAwaitTimeout         = errors.New("conductor: await response timeout")
 	ErrConductorTerminating = errors.New("conductor: conductor is terminating")
 )

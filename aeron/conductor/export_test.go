@@ -97,26 +97,6 @@ func DecodeTrailingStringASCIIForTest(
 	return decodeTrailingStringASCII(buf, offset, bodyLength, stringOffset, wrapped)
 }
 
-func lastOptionalForTest[T any](ptr *T) (T, bool) {
-	if ptr == nil {
-		var zero T
-		return zero, false
-	}
-	return *ptr, true
-}
-
-func LastPublicationReadyForTest(conductor *Conductor) (PublicationBuffersReady, bool) {
-	return lastOptionalForTest(conductor.lastPublicationReady)
-}
-
-func LastSubscriptionReadyForTest(conductor *Conductor) (SubscriptionReady, bool) {
-	return lastOptionalForTest(conductor.lastSubscriptionReady)
-}
-
-func PublicationErrorsForTest(conductor *Conductor) []PublicationError {
-	return slices.Clone(conductor.publicationErrors)
-}
-
 func SetLogBuffersRegistryRefCountForTest(
 	registry *LogBuffersRegistry,
 	logFileName string,
@@ -193,6 +173,34 @@ func SeedLogBuffersRegistryForTest(
 
 func ValidateLogFileNameForTest(logFileName, mediaDriverDir string) error {
 	return validateLogFileName(logFileName, mediaDriverDir)
+}
+
+func lastOptionalForTest[T any](ptr *T) (T, bool) {
+	if ptr == nil {
+		var zero T
+		return zero, false
+	}
+	return *ptr, true
+}
+
+func LastPublicationReadyForTest(conductor *Conductor) (PublicationBuffersReady, bool) {
+	return lastOptionalForTest(conductor.lastPublicationReady)
+}
+
+func LastSubscriptionReadyForTest(conductor *Conductor) (SubscriptionReady, bool) {
+	return lastOptionalForTest(conductor.lastSubscriptionReady)
+}
+
+func PublicationErrorsForTest(conductor *Conductor) []PublicationError {
+	return slices.Clone(conductor.publicationErrors)
+}
+
+func (conductor *Conductor) OnPublicationReadyForTest(event PublicationBuffersReady) {
+	conductor.onPublicationReady(event)
+}
+
+func (conductor *Conductor) OnSubscriptionReadyForTest(event SubscriptionReady) {
+	conductor.onSubscriptionReady(event)
 }
 
 func (conductor *Conductor) OnAvailableImageForTest(event AvailableImage) {
