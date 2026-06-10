@@ -56,8 +56,26 @@ func TestLayoutInvariants(t *testing.T) {
 	require.Equal(
 		t,
 		logbuffer.OffsetActiveTermCount,
-		logbuffer.OffsetTermTailCounters+logbuffer.PartitionCount*8,
+		logbuffer.OffsetTermTailCounters+logbuffer.PartitionCount*atomic.SizeInt64,
 	)
+}
+
+func TestOffsetTermTailCounter_golden(t *testing.T) {
+	tests := []struct {
+		name           string
+		partitionIndex int
+		want           int
+	}{
+		{"partition0", 0, 0},
+		{"partition1", 1, atomic.SizeInt64},
+		{"partition2", 2, 2 * atomic.SizeInt64},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.want, logbuffer.OffsetTermTailCounter(test.partitionIndex))
+		})
+	}
 }
 
 func TestComputeLogLength(t *testing.T) {

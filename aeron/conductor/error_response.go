@@ -7,10 +7,7 @@ import (
 	"github.com/warrenguy/heron/aeron/atomic"
 )
 
-const (
-	ErrorResponseFixedBodyLength = 16 // through length field inclusive
-	ErrorResponseMinBodyLength   = ErrorResponseFixedBodyLength
-)
+const ErrorResponseMinBodyLength = ErrorResponseFixedBodyLength
 
 var ErrErrorResponseTooShort = errors.New("conductor: error response too short")
 
@@ -45,7 +42,7 @@ func DecodeErrorResponse(
 		return ErrorResponse{}, err
 	}
 
-	messageLength := buf.GetInt32(offset + 12)
+	messageLength := buf.GetInt32(offset + ErrorResponseErrorMessageLengthOffset)
 	if messageLength < 0 {
 		return ErrorResponse{}, fmt.Errorf(
 			"%w: messageLength=%d",
@@ -70,16 +67,18 @@ func DecodeErrorResponse(
 		buf,
 		offset,
 		length,
-		12,
+		ErrorResponseErrorMessageLengthOffset,
 		ErrErrorResponseTooShort,
 	)
 	if err != nil {
 		return ErrorResponse{}, err
 	}
 	return ErrorResponse{
-		OffendingCommandCorrelationID: buf.GetInt64(offset),
-		ErrorCode:                     buf.GetInt32(offset + 8),
-		ErrorMessage:                  decodedMessage,
+		OffendingCommandCorrelationID: buf.GetInt64(
+			offset + ErrorResponseOffendingCommandCorrelationIDOffset,
+		),
+		ErrorCode:    buf.GetInt32(offset + ErrorResponseErrorCodeOffset),
+		ErrorMessage: decodedMessage,
 	}, nil
 }
 
@@ -99,9 +98,16 @@ func EncodeErrorResponse(
 		return err
 	}
 
-	buf.PutInt64(offset, response.OffendingCommandCorrelationID)
-	buf.PutInt32(offset+8, response.ErrorCode)
-	_, err := atomic.PutStringASCII(buf, offset+12, response.ErrorMessage)
+	buf.PutInt64(
+		offset+ErrorResponseOffendingCommandCorrelationIDOffset,
+		response.OffendingCommandCorrelationID,
+	)
+	buf.PutInt32(offset+ErrorResponseErrorCodeOffset, response.ErrorCode)
+	_, err := atomic.PutStringASCII(
+		buf,
+		offset+ErrorResponseErrorMessageLengthOffset,
+		response.ErrorMessage,
+	)
 	return err
 }
 

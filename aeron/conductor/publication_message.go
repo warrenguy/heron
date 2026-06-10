@@ -8,12 +8,6 @@ import (
 
 var ErrPublicationMessageOutOfBounds = errors.New("conductor: publication message out of bounds")
 
-const (
-	PublicationMessageStreamIDOffset    = 16
-	PublicationMessageChannelOffset     = 20
-	PublicationMessageMinimumBodyLength = 24
-)
-
 type PublicationMessage struct {
 	ClientID      int64
 	CorrelationID int64

@@ -12,7 +12,7 @@ var (
 	ErrStringASCIINonASCII      = errors.New("atomic: string ascii non-ascii")
 )
 
-const StringASCIIHeaderLength = 4
+const StringASCIIHeaderLength = SizeInt32
 
 // StringASCIIEncodedLength is the Agrona putStringAscii wire size: 4-byte
 // little-endian length plus valueByteLen raw payload bytes.

@@ -21,7 +21,8 @@ func TestPublication_Offer_SingleFrame(t *testing.T) {
 	_, termBuf := aeron.PublicationActiveTermBufferForTest(pub)
 	wantFrameLength := int32(len(payload) + logbuffer.DataHeaderLength)
 	require.Equal(t, wantFrameLength, logbuffer.FrameLengthVolatile(termBuf, 0))
-	gotPayload := termBuf.Bytes()[logbuffer.DataHeaderLength : logbuffer.DataHeaderLength+len(payload)]
+	payloadEnd := logbuffer.OffsetFramePayload + len(payload)
+	gotPayload := termBuf.Bytes()[logbuffer.OffsetFramePayload:payloadEnd]
 	require.Equal(t, payload, gotPayload)
 }
 
@@ -56,7 +57,7 @@ func TestPublication_OfferWithOffset(t *testing.T) {
 	require.Positive(t, position)
 
 	_, termBuf := aeron.PublicationActiveTermBufferForTest(pub)
-	gotPayload := termBuf.Bytes()[logbuffer.DataHeaderLength : logbuffer.DataHeaderLength+7]
+	gotPayload := termBuf.Bytes()[logbuffer.OffsetFramePayload : logbuffer.OffsetFramePayload+7]
 	require.Equal(t, []byte("payload"), gotPayload)
 }
 
@@ -575,7 +576,7 @@ func TestPublication_TryClaim_Commit(t *testing.T) {
 	require.GreaterOrEqual(t, frameOffset, 0)
 
 	termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
-	termBuf.PutBytes(frameOffset+logbuffer.DataHeaderLength, []byte("claim-payload-16b"))
+	termBuf.PutBytes(frameOffset+logbuffer.OffsetFramePayload, []byte("claim-payload-16b"))
 
 	require.NoError(t, pub.Commit(termIndex, frameOffset))
 	require.Equal(

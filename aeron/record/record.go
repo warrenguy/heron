@@ -1,11 +1,15 @@
 package record
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/warrenguy/heron/aeron/atomic"
+)
 
 const (
-	HeaderLength     = 8
+	TypeFieldOffset  = atomic.SizeInt32
+	HeaderLength     = atomic.SizeInt32 + atomic.SizeInt32
 	Alignment        = HeaderLength
-	TypeFieldOffset  = 4
 	PaddingMsgTypeID = -1
 
 	// InsufficientCapacity is the Agrona ManyToOneRingBuffer claim index when the

@@ -205,7 +205,7 @@ func TestPublication_FragmentedOffer_termRolloverRetry(t *testing.T) {
 	require.Equal(
 		t,
 		int32(0),
-		logbuffer.FrameLengthVolatile(termBuf, paddingOffset+logbuffer.DataHeaderLength),
+		logbuffer.FrameLengthVolatile(termBuf, paddingOffset+logbuffer.OffsetFramePayload),
 	)
 
 	position := aeron.OfferRetryForTest(pub, payload)

@@ -59,7 +59,7 @@ func (proxy *DriverProxy) GetNextAvailableSessionID(
 			if err := bodyBoundsError(
 				buf,
 				streamOffset,
-				4,
+				sizeOfInt32,
 				ErrCorrelationAndInt32OutOfBounds,
 			); err != nil {
 				return err

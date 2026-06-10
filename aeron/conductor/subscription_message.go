@@ -8,13 +8,7 @@ import (
 
 var ErrSubscriptionMessageOutOfBounds = errors.New("conductor: subscription message out of bounds")
 
-const (
-	SubscriptionMessageRegistrationCorrelationIDOffset = 16
-	SubscriptionMessageStreamIDOffset                  = 24
-	SubscriptionMessageChannelOffset                   = 28
-	SubscriptionMessageMinimumBodyLength               = 32
-	NullRegistrationCorrelationID                      = int64(-1)
-)
+const NullRegistrationCorrelationID = int64(-1)
 
 type SubscriptionMessage struct {
 	ClientID                  int64

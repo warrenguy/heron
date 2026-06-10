@@ -315,10 +315,10 @@ func CommitMinimalTermEndPadding(
 		return
 	}
 
-	if termOffset+OffsetFrameLength+4 <= paddingEnd {
+	if termOffset+OffsetFrameLength+atomic.SizeInt32 <= paddingEnd {
 		termBuf.PutInt32Release(termOffset+OffsetFrameLength, paddingLength)
 	}
-	if termOffset+OffsetFrameType+2 <= paddingEnd {
+	if termOffset+OffsetFrameType+atomic.SizeUint16 <= paddingEnd {
 		binary.LittleEndian.PutUint16(
 			termBuf.Bytes()[termOffset+OffsetFrameType:],
 			uint16(HdrTypePad),

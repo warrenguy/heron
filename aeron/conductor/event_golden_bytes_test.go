@@ -2,6 +2,7 @@ package conductor
 
 import (
 	"encoding/hex"
+	"net"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -98,6 +99,40 @@ func TestPublicationErrorBytes_golden(t *testing.T) {
 		StreamID:       7,
 		ErrorCode:      1,
 		ErrorMessage:   "simulated",
+	}
+	require.Equal(t, PublicationErrorBytes(event), payload)
+
+	decoded, err := DecodePublicationError(atomic.Wrap(payload), 0, len(payload))
+	require.NoError(t, err)
+	require.Equal(t, event, decoded)
+}
+
+func TestPublicationErrorBytes_nonZeroScalars_golden(t *testing.T) {
+	const goldenHex = "d207000000000000bb0b0000000000002a00000007000000" +
+		"a40f0000000000008d130000000000000200901f20010db8000000000000000000000001" +
+		"010000000900000073696d756c61746564"
+	payload, err := hex.DecodeString(goldenHex)
+	require.NoError(t, err)
+
+	var address [net.IPv6len]byte
+	address[0] = 0x20
+	address[1] = 0x01
+	address[2] = 0x0d
+	address[3] = 0xb8
+	address[15] = 0x01
+
+	event := PublicationError{
+		RegistrationID:            2002,
+		DestinationRegistrationID: 3003,
+		SessionID:                 42,
+		StreamID:                  7,
+		ReceiverID:                4004,
+		GroupTag:                  5005,
+		AddressType:               2,
+		AddressPort:               8080,
+		Address:                   address,
+		ErrorCode:                 1,
+		ErrorMessage:              "simulated",
 	}
 	require.Equal(t, PublicationErrorBytes(event), payload)
 

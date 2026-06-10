@@ -69,7 +69,7 @@ func BenchmarkPublication_TryClaim_Commit(b *testing.B) {
 			b.Fatal("tryClaim failed")
 		}
 		termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
-		termBuf.PutBytes(frameOffset+logbuffer.DataHeaderLength, benchPayload64[:])
+		termBuf.PutBytes(frameOffset+logbuffer.OffsetFramePayload, benchPayload64[:])
 		if err := pub.Commit(termIndex, frameOffset); err != nil {
 			b.Fatal(err)
 		}

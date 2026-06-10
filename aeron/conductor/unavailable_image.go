@@ -4,8 +4,6 @@ import (
 	"github.com/warrenguy/heron/aeron/atomic"
 )
 
-const UnavailableImageFixedLength = 20
-
 type UnavailableImage struct {
 	CorrelationID              int64
 	SubscriptionRegistrationID int64
@@ -45,10 +43,12 @@ func DecodeUnavailableImage(
 	}
 
 	return UnavailableImage{
-		CorrelationID:              buf.GetInt64(offset),
-		SubscriptionRegistrationID: buf.GetInt64(offset + 8),
-		StreamID:                   buf.GetInt32(offset + 16),
-		Channel:                    channel,
+		CorrelationID: buf.GetInt64(offset + UnavailableImageCorrelationIDOffset),
+		SubscriptionRegistrationID: buf.GetInt64(
+			offset + UnavailableImageSubscriptionRegistrationIDOffset,
+		),
+		StreamID: buf.GetInt32(offset + UnavailableImageStreamIDOffset),
+		Channel:  channel,
 	}, nil
 }
 
@@ -62,9 +62,12 @@ func EncodeUnavailableImage(
 		return err
 	}
 
-	buf.PutInt64(offset, event.CorrelationID)
-	buf.PutInt64(offset+8, event.SubscriptionRegistrationID)
-	buf.PutInt32(offset+16, event.StreamID)
+	buf.PutInt64(offset+UnavailableImageCorrelationIDOffset, event.CorrelationID)
+	buf.PutInt64(
+		offset+UnavailableImageSubscriptionRegistrationIDOffset,
+		event.SubscriptionRegistrationID,
+	)
+	buf.PutInt32(offset+UnavailableImageStreamIDOffset, event.StreamID)
 	_, err := encodeStringASCIIInBody(buf, offset, UnavailableImageFixedLength, event.Channel)
 	return err
 }

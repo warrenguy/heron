@@ -51,7 +51,7 @@ func TestPublication_Offer_ZeroAllocs(t *testing.T) {
 					panic("tryClaim failed")
 				}
 				termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
-				termBuf.PutBytes(frameOffset+logbuffer.DataHeaderLength, testOfferPayload[:])
+				termBuf.PutBytes(frameOffset+logbuffer.OffsetFramePayload, testOfferPayload[:])
 				if err := pub.Commit(termIndex, frameOffset); err != nil {
 					panic(err)
 				}

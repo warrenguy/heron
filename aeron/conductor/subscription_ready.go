@@ -4,8 +4,6 @@ import (
 	"github.com/warrenguy/heron/aeron/atomic"
 )
 
-const SubscriptionReadyBodyLength = 12
-
 type SubscriptionReady struct {
 	CorrelationID          int64
 	ChannelStatusCounterID int32
@@ -28,8 +26,8 @@ func DecodeSubscriptionReady(
 	}
 
 	return SubscriptionReady{
-		CorrelationID:          buf.GetInt64(offset),
-		ChannelStatusCounterID: buf.GetInt32(offset + 8),
+		CorrelationID:          buf.GetInt64(offset + SubscriptionReadyCorrelationIDOffset),
+		ChannelStatusCounterID: buf.GetInt32(offset + SubscriptionReadyChannelStatusCounterIDOffset),
 	}, nil
 }
 
@@ -47,8 +45,8 @@ func EncodeSubscriptionReady(
 		return err
 	}
 
-	buf.PutInt64(offset, event.CorrelationID)
-	buf.PutInt32(offset+8, event.ChannelStatusCounterID)
+	buf.PutInt64(offset+SubscriptionReadyCorrelationIDOffset, event.CorrelationID)
+	buf.PutInt32(offset+SubscriptionReadyChannelStatusCounterIDOffset, event.ChannelStatusCounterID)
 	return nil
 }
 

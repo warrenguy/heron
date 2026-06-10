@@ -145,7 +145,7 @@ func spinTryClaimCommit(
 				return
 			}
 			termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
-			termBuf.PutBytes(frameOffset+logbuffer.DataHeaderLength, payload)
+			termBuf.PutBytes(frameOffset+logbuffer.OffsetFramePayload, payload)
 			if err := pub.Commit(termIndex, frameOffset); err != nil {
 				errs <- err
 				return

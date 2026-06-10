@@ -47,7 +47,7 @@ const (
 // partitionIndex must be in [0, PartitionCount); out of range yields wrong
 // metadata offsets with no bounds check.
 func OffsetTermTailCounter(partitionIndex int) int {
-	return OffsetTermTailCounters + partitionIndex*8
+	return OffsetTermTailCounters + partitionIndex*atomic.SizeInt64
 }
 
 type MetadataView struct {

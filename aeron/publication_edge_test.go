@@ -22,7 +22,7 @@ func committedTestClaim(t *testing.T, pub *aeron.Publication, length int) (int, 
 
 	termIndex, frameOffset := tryClaimForTest(t, pub, length)
 	termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
-	termBuf.PutBytes(frameOffset+logbuffer.DataHeaderLength, []byte("12345678"))
+	termBuf.PutBytes(frameOffset+logbuffer.OffsetFramePayload, []byte("12345678"))
 	require.NoError(t, pub.Commit(termIndex, frameOffset))
 	return termIndex, frameOffset
 }

@@ -57,7 +57,7 @@ func TestPublication_TermRotation_OnEndOfTerm(t *testing.T) {
 	nextTermID := int32(aeron.TestPublicationInitialTermID + 1)
 	require.Equal(t, nextTermID, logbuffer.FrameTermID(nextTermBuf, 0))
 	require.Equal(t, int32(0), logbuffer.FrameTermOffset(nextTermBuf, 0))
-	gotPayload := nextTermBuf.Bytes()[logbuffer.DataHeaderLength : logbuffer.DataHeaderLength+3]
+	gotPayload := nextTermBuf.Bytes()[logbuffer.OffsetFramePayload : logbuffer.OffsetFramePayload+3]
 	require.Equal(t, []byte{9, 8, 7}, gotPayload)
 
 	for range 3 {
@@ -96,7 +96,7 @@ func TestPublication_TermRotation_TryClaim(t *testing.T) {
 	require.Equal(t, 0, frameOffset)
 
 	termBuf = aeron.PublicationTermBufferForTest(pub, termIndex)
-	termBuf.PutBytes(frameOffset+logbuffer.DataHeaderLength, []byte("12345678"))
+	termBuf.PutBytes(frameOffset+logbuffer.OffsetFramePayload, []byte("12345678"))
 	require.NoError(t, pub.Commit(termIndex, frameOffset))
 	require.Equal(
 		t,
@@ -123,7 +123,7 @@ func TestPublication_TermRotation_TwoStepNearTermEnd(t *testing.T) {
 
 		termBuf := aeron.PublicationTermBufferForTest(pub, 0)
 		require.Equal(t, int16(logbuffer.HdrTypeData), logbuffer.FrameType(termBuf, firstOffset))
-		firstPayloadStart := firstOffset + logbuffer.DataHeaderLength
+		firstPayloadStart := firstOffset + logbuffer.OffsetFramePayload
 		gotFirst := termBuf.Bytes()[firstPayloadStart : firstPayloadStart+16]
 		require.Equal(t, firstPayload, gotFirst)
 
@@ -149,7 +149,7 @@ func TestPublication_TermRotation_TwoStepNearTermEnd(t *testing.T) {
 		nextTermID := int32(aeron.TestPublicationInitialTermID + 1)
 		require.Equal(t, nextTermID, logbuffer.FrameTermID(nextTermBuf, 0))
 		require.Equal(t, int32(0), logbuffer.FrameTermOffset(nextTermBuf, 0))
-		gotThird := nextTermBuf.Bytes()[logbuffer.DataHeaderLength : logbuffer.DataHeaderLength+3]
+		gotThird := nextTermBuf.Bytes()[logbuffer.OffsetFramePayload : logbuffer.OffsetFramePayload+3]
 		require.Equal(t, []byte{9, 8, 7}, gotThird)
 	})
 
@@ -164,7 +164,7 @@ func TestPublication_TermRotation_TwoStepNearTermEnd(t *testing.T) {
 		require.Equal(t, firstOffset, frameOffset)
 
 		termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
-		termBuf.PutBytes(frameOffset+logbuffer.DataHeaderLength, []byte("abcdefghijklmnop"))
+		termBuf.PutBytes(frameOffset+logbuffer.OffsetFramePayload, []byte("abcdefghijklmnop"))
 		require.NoError(t, pub.Commit(termIndex, frameOffset))
 		require.Equal(
 			t,
@@ -194,7 +194,7 @@ func TestPublication_TermRotation_TwoStepNearTermEnd(t *testing.T) {
 		require.Equal(t, 0, frameOffset)
 
 		nextTermBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
-		nextTermBuf.PutBytes(frameOffset+logbuffer.DataHeaderLength, []byte("12345678"))
+		nextTermBuf.PutBytes(frameOffset+logbuffer.OffsetFramePayload, []byte("12345678"))
 		require.NoError(t, pub.Commit(termIndex, frameOffset))
 		require.Equal(
 			t,

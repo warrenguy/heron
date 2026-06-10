@@ -1,6 +1,7 @@
 package conductor
 
 import (
+	"net"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -49,6 +50,34 @@ func TestDecodePublicationError_bodyLongerThanDecoded(t *testing.T) {
 		DecodePublicationError,
 	)
 	require.Equal(t, event.ErrorMessage, decoded.ErrorMessage)
+}
+
+func TestPublicationError_roundtrip_nonZeroScalars(t *testing.T) {
+	var address [net.IPv6len]byte
+	address[0] = 0x20
+	address[1] = 0x01
+	address[2] = 0x0d
+	address[3] = 0xb8
+	address[15] = 0x01
+
+	event := PublicationError{
+		RegistrationID:            2002,
+		DestinationRegistrationID: 3003,
+		SessionID:                 42,
+		StreamID:                  7,
+		ReceiverID:                4004,
+		GroupTag:                  5005,
+		AddressType:               2,
+		AddressPort:               8080,
+		Address:                   address,
+		ErrorCode:                 1,
+		ErrorMessage:              "simulated",
+	}
+	payload := PublicationErrorBytes(event)
+
+	decoded, err := DecodePublicationError(atomic.Wrap(payload), 0, len(payload))
+	require.NoError(t, err)
+	require.Equal(t, event, decoded)
 }
 
 func TestDecodePublicationError_ipv4AddressBlock(t *testing.T) {

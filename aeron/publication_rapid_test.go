@@ -39,7 +39,7 @@ func TestPublication_Offer_rapid(t *testing.T) {
 			termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
 			frameLength := int(logbuffer.FrameLengthVolatile(termBuf, frameStart))
 			require.Equal(t, length+logbuffer.DataHeaderLength, frameLength)
-			got := termBuf.Bytes()[frameStart+logbuffer.DataHeaderLength : frameStart+frameLength]
+			got := termBuf.Bytes()[frameStart+logbuffer.OffsetFramePayload : frameStart+frameLength]
 			require.Equal(t, payload, got)
 		}
 	})
@@ -76,7 +76,7 @@ func TestPublication_Offer_rapid_nonZeroStart(t *testing.T) {
 			termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
 			frameLength := int(logbuffer.FrameLengthVolatile(termBuf, frameStart))
 			require.Equal(t, length+logbuffer.DataHeaderLength, frameLength)
-			payloadStart := frameStart + logbuffer.DataHeaderLength
+			payloadStart := frameStart + logbuffer.OffsetFramePayload
 			got := termBuf.Bytes()[payloadStart : payloadStart+length]
 			require.Equal(t, payload, got)
 		}
@@ -211,11 +211,11 @@ func TestPublication_TryClaim_rapid(t *testing.T) {
 				continue
 			}
 
-			termBuf.PutBytes(frameOffset+logbuffer.DataHeaderLength, payload)
+			termBuf.PutBytes(frameOffset+logbuffer.OffsetFramePayload, payload)
 			require.NoError(t, pub.Commit(termIndex, frameOffset))
 
 			frameLength := int(logbuffer.FrameLengthVolatile(termBuf, frameOffset))
-			got := termBuf.Bytes()[frameOffset+logbuffer.DataHeaderLength : frameOffset+frameLength]
+			got := termBuf.Bytes()[frameOffset+logbuffer.OffsetFramePayload : frameOffset+frameLength]
 			require.Equal(t, payload, got)
 		}
 	})

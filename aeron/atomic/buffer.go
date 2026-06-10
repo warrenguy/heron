@@ -7,6 +7,12 @@ import (
 	"unsafe"
 )
 
+const (
+	SizeInt32  = int(unsafe.Sizeof(int32(0)))
+	SizeInt64  = int(unsafe.Sizeof(int64(0)))
+	SizeUint16 = int(unsafe.Sizeof(uint16(0)))
+)
+
 // AtomicBuffer provides typed access to a byte slice, including atomic
 // operations for shared mmap regions.
 //
@@ -64,51 +70,51 @@ func addressAt(buf []byte, offset, size int) unsafe.Pointer {
 }
 
 func (b AtomicBuffer) GetInt32(offset int) int32 {
-	boundsCheck(b.buf, offset, 4)
-	return int32(binary.LittleEndian.Uint32(b.buf[offset : offset+4]))
+	boundsCheck(b.buf, offset, SizeInt32)
+	return int32(binary.LittleEndian.Uint32(b.buf[offset : offset+SizeInt32]))
 }
 
 func (b AtomicBuffer) PutInt32(offset int, value int32) {
-	boundsCheck(b.buf, offset, 4)
-	binary.LittleEndian.PutUint32(b.buf[offset:offset+4], uint32(value))
+	boundsCheck(b.buf, offset, SizeInt32)
+	binary.LittleEndian.PutUint32(b.buf[offset:offset+SizeInt32], uint32(value))
 }
 
 func (b AtomicBuffer) GetInt32Volatile(offset int) int32 {
-	return atomic.LoadInt32((*int32)(addressAt(b.buf, offset, 4)))
+	return atomic.LoadInt32((*int32)(addressAt(b.buf, offset, SizeInt32)))
 }
 
 func (b AtomicBuffer) PutInt32Release(offset int, value int32) {
-	atomic.StoreInt32((*int32)(addressAt(b.buf, offset, 4)), value)
+	atomic.StoreInt32((*int32)(addressAt(b.buf, offset, SizeInt32)), value)
 }
 
 func (b AtomicBuffer) GetInt64(offset int) int64 {
-	boundsCheck(b.buf, offset, 8)
-	return int64(binary.LittleEndian.Uint64(b.buf[offset : offset+8]))
+	boundsCheck(b.buf, offset, SizeInt64)
+	return int64(binary.LittleEndian.Uint64(b.buf[offset : offset+SizeInt64]))
 }
 
 func (b AtomicBuffer) PutInt64(offset int, value int64) {
-	boundsCheck(b.buf, offset, 8)
-	binary.LittleEndian.PutUint64(b.buf[offset:offset+8], uint64(value))
+	boundsCheck(b.buf, offset, SizeInt64)
+	binary.LittleEndian.PutUint64(b.buf[offset:offset+SizeInt64], uint64(value))
 }
 
 func (b AtomicBuffer) GetInt64Volatile(offset int) int64 {
-	return atomic.LoadInt64((*int64)(addressAt(b.buf, offset, 8)))
+	return atomic.LoadInt64((*int64)(addressAt(b.buf, offset, SizeInt64)))
 }
 
 func (b AtomicBuffer) PutInt64Release(offset int, value int64) {
-	atomic.StoreInt64((*int64)(addressAt(b.buf, offset, 8)), value)
+	atomic.StoreInt64((*int64)(addressAt(b.buf, offset, SizeInt64)), value)
 }
 
 func (b AtomicBuffer) CompareAndSwapInt64(offset int, expect, update int64) bool {
-	return atomic.CompareAndSwapInt64((*int64)(addressAt(b.buf, offset, 8)), expect, update)
+	return atomic.CompareAndSwapInt64((*int64)(addressAt(b.buf, offset, SizeInt64)), expect, update)
 }
 
 func (b AtomicBuffer) CompareAndSwapInt32(offset int, expect, update int32) bool {
-	return atomic.CompareAndSwapInt32((*int32)(addressAt(b.buf, offset, 4)), expect, update)
+	return atomic.CompareAndSwapInt32((*int32)(addressAt(b.buf, offset, SizeInt32)), expect, update)
 }
 
 func (b AtomicBuffer) AddInt64(offset int, delta int64) int64 {
-	return atomic.AddInt64((*int64)(addressAt(b.buf, offset, 8)), delta)
+	return atomic.AddInt64((*int64)(addressAt(b.buf, offset, SizeInt64)), delta)
 }
 
 func copyBytes(dst []byte, dstOffset int, src []byte, srcOffset, length int) {

@@ -238,6 +238,7 @@ func validateTermIndex(termIndex int) error {
 }
 
 func validateFrameOffset(termBuf aeronatomic.AtomicBuffer, frameOffset int) error {
+	// Claim reservation guarantees the full DataHeaderLength fits before payload access.
 	if frameOffset < 0 || frameOffset+logbuffer.DataHeaderLength > termBuf.Capacity() {
 		return fmt.Errorf("aeron: invalid frame offset %d", frameOffset)
 	}
@@ -562,7 +563,7 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 		)
 		payloadOffset := srcOffset + (length - remaining)
 		outcome.termBuf.PutBytes(
-			frameOffset+logbuffer.DataHeaderLength,
+			frameOffset+logbuffer.OffsetFramePayload,
 			buffer[payloadOffset:payloadOffset+bytesToWrite],
 		)
 		logbuffer.PutFrameLengthOrdered(outcome.termBuf, frameOffset, frameLength)
@@ -611,7 +612,7 @@ func (pub *Publication) reserveAndAppend(buffer []byte, srcOffset, length int) i
 	}
 
 	outcome.termBuf.PutBytes(
-		outcome.termOffset+logbuffer.DataHeaderLength,
+		outcome.termOffset+logbuffer.OffsetFramePayload,
 		buffer[srcOffset:srcOffset+length],
 	)
 	logbuffer.PutFrameLengthOrdered(outcome.termBuf, outcome.termOffset, outcome.frameLength)

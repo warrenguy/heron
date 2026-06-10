@@ -2,6 +2,7 @@ package conductor_test
 
 import (
 	"bytes"
+	"net"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -82,8 +83,8 @@ func drawUnavailableImage(rt *rapid.T) conductor.UnavailableImage {
 }
 
 func drawPublicationError(rt *rapid.T) conductor.PublicationError {
-	addressBytes := rapid.SliceOfN(rapid.Byte(), 16, 16).Draw(rt, "address")
-	var address [16]byte
+	addressBytes := rapid.SliceOfN(rapid.Byte(), net.IPv6len, net.IPv6len).Draw(rt, "address")
+	var address [net.IPv6len]byte
 	copy(address[:], addressBytes)
 
 	return conductor.PublicationError{

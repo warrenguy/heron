@@ -62,7 +62,7 @@ func TestPublication_Offer_parallel(t *testing.T) {
 			int32(payloadLen+logbuffer.DataHeaderLength),
 			logbuffer.FrameLengthVolatile(termBuf, frameStart),
 		)
-		payloadStart := frameStart + logbuffer.DataHeaderLength
+		payloadStart := frameStart + logbuffer.OffsetFramePayload
 		got := termBuf.Bytes()[payloadStart : payloadStart+payloadLen]
 		require.Equal(t, expectedPayloads[idx][:], got)
 	}

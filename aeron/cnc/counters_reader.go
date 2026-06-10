@@ -24,10 +24,15 @@ const (
 
 	SystemCounterControlProtocolVersionID int32 = 43
 
-	offsetCounterMetadataState        = 0
-	offsetCounterMetadataTypeID       = 4
-	offsetCounterMetadataKey          = 16
-	offsetCounterValuesRegistrationID = 8
+	CounterMetadataStateOffset  = 0
+	CounterMetadataTypeIDOffset = atomic.SizeInt32
+	// Agrona FREE_FOR_REUSE_DEADLINE at byte 8.
+	counterMetaDeadlineOffset = CounterMetadataTypeIDOffset + atomic.SizeInt32
+	counterMetaKeyOffset      = counterMetaDeadlineOffset + atomic.SizeInt64
+
+	CounterMetadataFreeForReuseDeadlineOffset = counterMetaDeadlineOffset
+	CounterMetadataKeyOffset                  = counterMetaKeyOffset
+	CounterValueRegistrationIDOffset          = atomic.SizeInt64
 )
 
 type CountersView interface {
@@ -127,7 +132,7 @@ func (reader *CountersReader) FindHeartbeatCounter(
 
 	for id := int32(0); id <= reader.maxCounterID; id++ {
 		metadataOffset := counterMetadataOffset(id)
-		state := reader.metadata.GetInt32Volatile(metadataOffset + offsetCounterMetadataState)
+		state := reader.metadata.GetInt32Volatile(metadataOffset + CounterMetadataStateOffset)
 		if state == CounterRecordUnused {
 			break
 		}
@@ -161,7 +166,7 @@ func (reader *CountersReader) counterRecordMatches(
 	}
 
 	metadataOffset := counterMetadataOffset(counterID)
-	state := reader.metadata.GetInt32Volatile(metadataOffset + offsetCounterMetadataState)
+	state := reader.metadata.GetInt32Volatile(metadataOffset + CounterMetadataStateOffset)
 	return reader.counterRecordMatchesAt(counterID, metadataOffset, state, registrationID, typeID)
 }
 
@@ -175,17 +180,17 @@ func (reader *CountersReader) counterRecordMatchesAt(
 	if state != CounterRecordAllocated {
 		return false
 	}
-	if reader.metadata.GetInt32(metadataOffset+offsetCounterMetadataTypeID) != typeID {
+	if reader.metadata.GetInt32(metadataOffset+CounterMetadataTypeIDOffset) != typeID {
 		return false
 	}
 
 	var recordRegistrationID int64
 	if counterRegistrationIDInValuesBuffer(typeID) {
 		recordRegistrationID = reader.values.GetInt64Volatile(
-			CounterOffset(counterID) + offsetCounterValuesRegistrationID,
+			CounterOffset(counterID) + CounterValueRegistrationIDOffset,
 		)
 	} else {
-		recordRegistrationID = reader.metadata.GetInt64(metadataOffset + offsetCounterMetadataKey)
+		recordRegistrationID = reader.metadata.GetInt64(metadataOffset + CounterMetadataKeyOffset)
 	}
 	return recordRegistrationID == registrationID
 }
@@ -236,7 +241,7 @@ func WriteCounterRecord(
 		typeID,
 		value,
 		func(metaOffset, _ int) error {
-			metaBuffer.PutInt64(metaOffset+offsetCounterMetadataKey, registrationID)
+			metaBuffer.PutInt64(metaOffset+CounterMetadataKeyOffset, registrationID)
 			return nil
 		},
 	)
@@ -272,13 +277,13 @@ func WriteChannelStatusCounterRecord(
 		func(metaOffset, valuesOffset int) error {
 			if _, err := atomic.PutStringASCII(
 				metaBuffer,
-				metaOffset+offsetCounterMetadataKey,
+				metaOffset+CounterMetadataKeyOffset,
 				channel,
 			); err != nil {
 				return err
 			}
 			valuesBuffer.PutInt64(
-				valuesOffset+offsetCounterValuesRegistrationID,
+				valuesOffset+CounterValueRegistrationIDOffset,
 				registrationID,
 			)
 			return nil
@@ -298,11 +303,11 @@ func writeCounterRecord(
 	metaOffset := counterMetadataOffset(counterID)
 	valuesOffset := CounterOffset(counterID)
 
-	metaBuffer.PutInt32(metaOffset+offsetCounterMetadataTypeID, typeID)
+	metaBuffer.PutInt32(metaOffset+CounterMetadataTypeIDOffset, typeID)
 	if err := writeKey(metaOffset, valuesOffset); err != nil {
 		return err
 	}
 	valuesBuffer.PutInt64(valuesOffset, value)
-	metaBuffer.PutInt32Release(metaOffset+offsetCounterMetadataState, state)
+	metaBuffer.PutInt32Release(metaOffset+CounterMetadataStateOffset, state)
 	return nil
 }

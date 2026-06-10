@@ -64,7 +64,7 @@ func TestBroadcastTransmitterIntoUsedBuffer(t *testing.T) {
 	buf := newTestBuffer(t)
 	tx := newTransmitter(t, buf)
 
-	const tail = broadcast.Alignment * 3
+	const tail = int64(broadcast.Alignment * 3)
 	buf.PutInt64(broadcast.TailIndex(testCapacity), tail)
 
 	src := []byte{9, 8, 7, 6, 5, 4, 3, 2}

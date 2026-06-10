@@ -6,8 +6,6 @@ import (
 	"github.com/warrenguy/heron/aeron/atomic"
 )
 
-const OperationSuccessBodyLength = 8
-
 var ErrOperationSuccessTooShort = errors.New("conductor: operation success too short")
 
 type OperationSuccess struct {
@@ -28,7 +26,9 @@ func DecodeOperationSuccess(
 	); err != nil {
 		return OperationSuccess{}, err
 	}
-	return OperationSuccess{CorrelationID: buf.GetInt64(offset)}, nil
+	return OperationSuccess{
+		CorrelationID: buf.GetInt64(offset + OperationSuccessCorrelationIDOffset),
+	}, nil
 }
 
 func EncodeOperationSuccess(
@@ -44,7 +44,7 @@ func EncodeOperationSuccess(
 	); err != nil {
 		return err
 	}
-	buf.PutInt64(offset, correlationID)
+	buf.PutInt64(offset+OperationSuccessCorrelationIDOffset, correlationID)
 	return nil
 }
 

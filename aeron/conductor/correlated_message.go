@@ -18,11 +18,10 @@ var (
 )
 
 const (
-	sizeOfInt64                         = 8
 	CorrelatedMessageLength             = 2 * sizeOfInt64
-	CorrelationAndInt32BodyLength       = sizeOfInt64 + 4
+	CorrelationAndInt32BodyLength       = sizeOfInt64 + sizeOfInt32
 	NextAvailableSessionIDBodyLength    = CorrelationAndInt32BodyLength
-	GetNextAvailableSessionIDBodyLength = CorrelatedMessageLength + 4
+	GetNextAvailableSessionIDBodyLength = CorrelatedMessageLength + sizeOfInt32
 )
 
 func CorrelatedRingRecordLength() int {
@@ -67,8 +66,8 @@ func putCorrelatedFields(
 	offset int,
 	clientID, correlationID int64,
 ) {
-	buf.PutInt64(offset, clientID)
-	buf.PutInt64(offset+sizeOfInt64, correlationID)
+	buf.PutInt64(offset+CorrelatedMessageClientIDOffset, clientID)
+	buf.PutInt64(offset+CorrelatedMessageCorrelationIDOffset, correlationID)
 }
 
 func decodeTrailingStringASCII(
@@ -148,8 +147,8 @@ func DecodeCorrelated(buf atomic.AtomicBuffer, offset int) (CorrelatedMessage, e
 		return CorrelatedMessage{}, err
 	}
 	return CorrelatedMessage{
-		ClientID:      buf.GetInt64(offset),
-		CorrelationID: buf.GetInt64(offset + sizeOfInt64),
+		ClientID:      buf.GetInt64(offset + CorrelatedMessageClientIDOffset),
+		CorrelationID: buf.GetInt64(offset + CorrelatedMessageCorrelationIDOffset),
 	}, nil
 }
 
@@ -167,8 +166,8 @@ func EncodeCorrelationAndInt32(
 	); err != nil {
 		return err
 	}
-	buf.PutInt64(offset, correlationID)
-	buf.PutInt32(offset+sizeOfInt64, int32Value)
+	buf.PutInt64(offset+CorrelationAndInt32CorrelationIDOffset, correlationID)
+	buf.PutInt32(offset+CorrelationAndInt32Int32ValueOffset, int32Value)
 	return nil
 }
 
@@ -191,8 +190,8 @@ func DecodeCorrelationAndInt32(buf atomic.AtomicBuffer, offset int) (Correlation
 		return CorrelationAndInt32{}, err
 	}
 	return CorrelationAndInt32{
-		CorrelationID: buf.GetInt64(offset),
-		Int32Value:    buf.GetInt32(offset + sizeOfInt64),
+		CorrelationID: buf.GetInt64(offset + CorrelationAndInt32CorrelationIDOffset),
+		Int32Value:    buf.GetInt32(offset + CorrelationAndInt32Int32ValueOffset),
 	}, nil
 }
 

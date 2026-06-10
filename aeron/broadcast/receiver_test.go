@@ -130,7 +130,7 @@ func TestBroadcastReceiverLengthDefensive(t *testing.T) {
 	require.True(t, rx.ReceiveNext())
 	require.Equal(t, len(src), rx.Length())
 
-	buf.PutInt32(record.LengthOffset(0), broadcast.HeaderLength-1)
+	buf.PutInt32(record.LengthOffset(0), int32(broadcast.HeaderLength-1))
 	require.Equal(t, 0, rx.Length())
 }
 

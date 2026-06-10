@@ -131,6 +131,12 @@ func TestAtomicBuffer_VerifyAlignment(t *testing.T) {
 	}, "non-power-of-two field length")
 }
 
+func TestAtomicPrimitiveSizes(t *testing.T) {
+	require.Equal(t, 4, atomic.SizeInt32)
+	require.Equal(t, 8, atomic.SizeInt64)
+	require.Equal(t, 2, atomic.SizeUint16)
+}
+
 func TestAtomicBuffer_SliceBounds(t *testing.T) {
 	atomicBuffer := newTestAtomicBuffer(t, 16)
 

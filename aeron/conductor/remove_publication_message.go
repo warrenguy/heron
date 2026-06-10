@@ -4,11 +4,7 @@ import (
 	"github.com/warrenguy/heron/aeron/atomic"
 )
 
-const (
-	RemovePublicationFlagsOffset = RemoveMessageBodyLength
-	RemovePublicationBodyLength  = RemovePublicationFlagsOffset + sizeOfInt64
-	RemovePublicationFlagRevoke  = int64(0x1)
-)
+const RemovePublicationFlagRevoke = int64(0x1)
 
 type RemovePublicationMessage struct {
 	RemoveMessage

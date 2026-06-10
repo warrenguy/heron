@@ -247,7 +247,7 @@ func ReadFragmentedMessageFramesForTest(
 			return nil, false
 		}
 
-		payloadStart := offset + logbuffer.DataHeaderLength
+		payloadStart := offset + logbuffer.OffsetFramePayload
 		payloadEnd := offset + frameLength
 		frames = append(frames, FragmentedFrameForTest{
 			Flags: logbuffer.FrameFlags(termBuf, offset),
@@ -841,7 +841,7 @@ func WriteCommittedDataFrameForTest(
 	); err != nil {
 		panic(err)
 	}
-	termBuffer.PutBytes(frameOffset+logbuffer.DataHeaderLength, payload)
+	termBuffer.PutBytes(frameOffset+logbuffer.OffsetFramePayload, payload)
 	logbuffer.PutFrameLengthOrdered(termBuffer, frameOffset, frameLength)
 }
 

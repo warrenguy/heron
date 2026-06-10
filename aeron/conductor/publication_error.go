@@ -2,11 +2,10 @@ package conductor
 
 import (
 	"encoding/binary"
+	"net"
 
 	"github.com/warrenguy/heron/aeron/atomic"
 )
-
-const PublicationErrorFixedLength = 64
 
 type PublicationError struct {
 	RegistrationID            int64
@@ -17,7 +16,7 @@ type PublicationError struct {
 	GroupTag                  int64
 	AddressType               int16
 	AddressPort               uint16
-	Address                   [16]byte
+	Address                   [net.IPv6len]byte
 	ErrorCode                 int32
 	ErrorMessage              string
 }
@@ -53,22 +52,26 @@ func DecodePublicationError(
 		return PublicationError{}, err
 	}
 
-	var address [16]byte
-	copy(address[:], buf.Slice(offset+44, 16).Bytes())
+	var address [net.IPv6len]byte
+	copy(address[:], buf.Slice(offset+PublicationErrorAddressOffset, net.IPv6len).Bytes())
 
 	return PublicationError{
-		RegistrationID:            buf.GetInt64(offset),
-		DestinationRegistrationID: buf.GetInt64(offset + 8),
-		SessionID:                 buf.GetInt32(offset + 16),
-		StreamID:                  buf.GetInt32(offset + 20),
-		ReceiverID:                buf.GetInt64(offset + 24),
-		GroupTag:                  buf.GetInt64(offset + 32),
+		RegistrationID:            buf.GetInt64(offset + PublicationErrorRegistrationIDOffset),
+		DestinationRegistrationID: buf.GetInt64(offset + PublicationErrorDestinationRegistrationIDOffset),
+		SessionID:                 buf.GetInt32(offset + PublicationErrorSessionIDOffset),
+		StreamID:                  buf.GetInt32(offset + PublicationErrorStreamIDOffset),
+		ReceiverID:                buf.GetInt64(offset + PublicationErrorReceiverIDOffset),
+		GroupTag:                  buf.GetInt64(offset + PublicationErrorGroupTagOffset),
 		AddressType: int16(
-			binary.LittleEndian.Uint16(buf.Slice(offset+40, 2).Bytes()),
+			binary.LittleEndian.Uint16(
+				buf.Slice(offset+PublicationErrorAddressTypeOffset, sizeOfUint16).Bytes(),
+			),
 		),
-		AddressPort:  binary.LittleEndian.Uint16(buf.Slice(offset+42, 2).Bytes()),
+		AddressPort: binary.LittleEndian.Uint16(
+			buf.Slice(offset+PublicationErrorAddressPortOffset, sizeOfUint16).Bytes(),
+		),
 		Address:      address,
-		ErrorCode:    buf.GetInt32(offset + 60),
+		ErrorCode:    buf.GetInt32(offset + PublicationErrorErrorCodeOffset),
 		ErrorMessage: errorMessage,
 	}, nil
 }
@@ -83,19 +86,25 @@ func EncodePublicationError(
 		return err
 	}
 
-	buf.PutInt64(offset, event.RegistrationID)
-	buf.PutInt64(offset+8, event.DestinationRegistrationID)
-	buf.PutInt32(offset+16, event.SessionID)
-	buf.PutInt32(offset+20, event.StreamID)
-	buf.PutInt64(offset+24, event.ReceiverID)
-	buf.PutInt64(offset+32, event.GroupTag)
+	buf.PutInt64(offset+PublicationErrorRegistrationIDOffset, event.RegistrationID)
+	buf.PutInt64(
+		offset+PublicationErrorDestinationRegistrationIDOffset,
+		event.DestinationRegistrationID,
+	)
+	buf.PutInt32(offset+PublicationErrorSessionIDOffset, event.SessionID)
+	buf.PutInt32(offset+PublicationErrorStreamIDOffset, event.StreamID)
+	buf.PutInt64(offset+PublicationErrorReceiverIDOffset, event.ReceiverID)
+	buf.PutInt64(offset+PublicationErrorGroupTagOffset, event.GroupTag)
 	binary.LittleEndian.PutUint16(
-		buf.Slice(offset+40, 2).Bytes(),
+		buf.Slice(offset+PublicationErrorAddressTypeOffset, sizeOfUint16).Bytes(),
 		uint16(event.AddressType),
 	)
-	binary.LittleEndian.PutUint16(buf.Slice(offset+42, 2).Bytes(), event.AddressPort)
-	buf.PutBytes(offset+44, event.Address[:])
-	buf.PutInt32(offset+60, event.ErrorCode)
+	binary.LittleEndian.PutUint16(
+		buf.Slice(offset+PublicationErrorAddressPortOffset, sizeOfUint16).Bytes(),
+		event.AddressPort,
+	)
+	buf.PutBytes(offset+PublicationErrorAddressOffset, event.Address[:])
+	buf.PutInt32(offset+PublicationErrorErrorCodeOffset, event.ErrorCode)
 	_, err := encodeStringASCIIInBody(
 		buf,
 		offset,

@@ -772,7 +772,7 @@ func TestAdvanceRingScanPosition(t *testing.T) {
 			name:          "padding aligned boundary",
 			messageTypeID: ringbuffer.PaddingMsgTypeID,
 			recordLength:  ringbuffer.HeaderLength,
-			want:          ringbuffer.HeaderLength,
+			want:          int64(ringbuffer.HeaderLength),
 		},
 		{
 			name:          "normal unaligned body",

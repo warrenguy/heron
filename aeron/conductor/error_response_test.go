@@ -1,6 +1,7 @@
 package conductor_test
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -85,9 +86,9 @@ func TestDecodeErrorResponse_bufferOutOfBounds(t *testing.T) {
 
 func TestDecodeErrorResponse_negativeMessageLength(t *testing.T) {
 	buffer := atomic.Wrap(make([]byte, 16))
-	buffer.PutInt64(0, 7)
-	buffer.PutInt32(8, 1)
-	buffer.PutInt32(12, -1)
+	buffer.PutInt64(conductor.ErrorResponseOffendingCommandCorrelationIDOffset, 7)
+	buffer.PutInt32(conductor.ErrorResponseErrorCodeOffset, 1)
+	buffer.PutInt32(conductor.ErrorResponseErrorMessageLengthOffset, -1)
 
 	_, err := conductor.DecodeErrorResponse(buffer, 0, 16)
 	require.ErrorIs(t, err, conductor.ErrErrorResponseTooShort)
@@ -96,9 +97,9 @@ func TestDecodeErrorResponse_negativeMessageLength(t *testing.T) {
 
 func TestDecodeErrorResponse_lengthMismatch(t *testing.T) {
 	buffer := atomic.Wrap(make([]byte, 16))
-	buffer.PutInt64(0, 7)
-	buffer.PutInt32(8, 1)
-	buffer.PutInt32(12, 8)
+	buffer.PutInt64(conductor.ErrorResponseOffendingCommandCorrelationIDOffset, 7)
+	buffer.PutInt32(conductor.ErrorResponseErrorCodeOffset, 1)
+	buffer.PutInt32(conductor.ErrorResponseErrorMessageLengthOffset, 8)
 
 	_, err := conductor.DecodeErrorResponse(buffer, 0, 16)
 	require.ErrorIs(t, err, conductor.ErrErrorResponseTooShort)
@@ -166,7 +167,7 @@ func TestEncodeErrorResponse_outOfBounds(t *testing.T) {
 	)
 }
 
-func TestDecodeErrorResponse_roundtrip_rapid(t *testing.T) {
+func TestErrorResponse_roundtrip_rapid(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		correlationID := rapid.Int64().Draw(rt, "correlationID")
 		errorCode := rapid.Int32().Draw(rt, "errorCode")
@@ -179,12 +180,34 @@ func TestDecodeErrorResponse_roundtrip_rapid(t *testing.T) {
 			ErrorMessage:                  message,
 		}
 		bodyLength := conductor.ErrorResponseTotalLength(len(message))
-		buffer := atomic.Wrap(make([]byte, offset+bodyLength))
+		require.Len(
+			rt,
+			conductor.ErrorResponseBytes(correlationID, errorCode, message),
+			bodyLength,
+		)
 
+		buffer := atomic.Wrap(make([]byte, offset+bodyLength))
+		prefix := testutil.SnapshotBufferPrefix(buffer, offset)
 		require.NoError(rt, conductor.EncodeErrorResponse(buffer, offset, want))
+		require.True(rt, bytes.Equal(prefix, buffer.Bytes()[:offset]))
 
 		got, err := conductor.DecodeErrorResponse(buffer, offset, bodyLength)
 		require.NoError(rt, err)
 		require.Equal(rt, want, got)
+	})
+}
+
+func TestErrorResponse_trailingPadding_rejects_rapid(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		correlationID := rapid.Int64().Draw(rt, "correlationID")
+		errorCode := rapid.Int32().Draw(rt, "errorCode")
+		message := testutil.DrawASCIIStringLenRange(rt, "message", 0, 256)
+		trailingExtra := rapid.IntRange(1, 8).Draw(rt, "trailingExtra")
+
+		payload := conductor.ErrorResponseBytes(correlationID, errorCode, message)
+		padded := append(append([]byte(nil), payload...), make([]byte, trailingExtra)...)
+
+		_, err := conductor.DecodeErrorResponse(atomic.Wrap(padded), 0, len(padded))
+		require.ErrorIs(rt, err, conductor.ErrErrorResponseTooShort)
 	})
 }

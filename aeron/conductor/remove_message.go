@@ -8,11 +8,6 @@ import (
 
 var ErrRemoveMessageOutOfBounds = errors.New("conductor: remove message out of bounds")
 
-const (
-	RemoveMessageRegistrationIDOffset = CorrelatedMessageLength
-	RemoveMessageBodyLength           = RemoveMessageRegistrationIDOffset + sizeOfInt64
-)
-
 type RemoveMessage struct {
 	ClientID       int64
 	CorrelationID  int64

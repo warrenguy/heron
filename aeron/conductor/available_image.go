@@ -6,8 +6,6 @@ import (
 	"github.com/warrenguy/heron/aeron/atomic"
 )
 
-const AvailableImageFixedLength = 28
-
 type AvailableImage struct {
 	CorrelationID              int64
 	SessionID                  int32
@@ -19,7 +17,7 @@ type AvailableImage struct {
 }
 
 func availableImageSourceIdentityOffset(logFileNameFieldEnd int) int {
-	return atomic.Align(logFileNameFieldEnd, 4)
+	return atomic.Align(logFileNameFieldEnd, sizeOfInt32)
 }
 
 func SourceIdentityOffset(
@@ -100,11 +98,11 @@ func DecodeAvailableImage(
 	}
 
 	return AvailableImage{
-		CorrelationID:              buf.GetInt64(offset),
-		SessionID:                  buf.GetInt32(offset + 8),
-		StreamID:                   buf.GetInt32(offset + 12),
-		SubscriptionRegistrationID: buf.GetInt64(offset + 16),
-		SubscriberPositionID:       buf.GetInt32(offset + 24),
+		CorrelationID:              buf.GetInt64(offset + AvailableImageCorrelationIDOffset),
+		SessionID:                  buf.GetInt32(offset + AvailableImageSessionIDOffset),
+		StreamID:                   buf.GetInt32(offset + AvailableImageStreamIDOffset),
+		SubscriptionRegistrationID: buf.GetInt64(offset + AvailableImageSubscriptionRegistrationIDOffset),
+		SubscriberPositionID:       buf.GetInt32(offset + AvailableImageSubscriberPositionIDOffset),
 		LogFileName:                logFileName,
 		SourceIdentity:             sourceIdentity,
 	}, nil
@@ -120,11 +118,14 @@ func EncodeAvailableImage(
 		return err
 	}
 
-	buf.PutInt64(offset, event.CorrelationID)
-	buf.PutInt32(offset+8, event.SessionID)
-	buf.PutInt32(offset+12, event.StreamID)
-	buf.PutInt64(offset+16, event.SubscriptionRegistrationID)
-	buf.PutInt32(offset+24, event.SubscriberPositionID)
+	buf.PutInt64(offset+AvailableImageCorrelationIDOffset, event.CorrelationID)
+	buf.PutInt32(offset+AvailableImageSessionIDOffset, event.SessionID)
+	buf.PutInt32(offset+AvailableImageStreamIDOffset, event.StreamID)
+	buf.PutInt64(
+		offset+AvailableImageSubscriptionRegistrationIDOffset,
+		event.SubscriptionRegistrationID,
+	)
+	buf.PutInt32(offset+AvailableImageSubscriberPositionIDOffset, event.SubscriberPositionID)
 
 	logFileNameEnd, err := encodeStringASCIIInBody(
 		buf,

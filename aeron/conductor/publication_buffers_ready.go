@@ -4,8 +4,6 @@ import (
 	"github.com/warrenguy/heron/aeron/atomic"
 )
 
-const PublicationBuffersReadyFixedLength = 32
-
 // LogFileName is decoded now; caller must mmap before Offer succeeds.
 type PublicationBuffersReady struct {
 	CorrelationID             int64
@@ -49,13 +47,17 @@ func DecodePublicationBuffersReady(
 	}
 
 	return PublicationBuffersReady{
-		CorrelationID:             buf.GetInt64(offset),
-		RegistrationID:            buf.GetInt64(offset + 8),
-		SessionID:                 buf.GetInt32(offset + 16),
-		StreamID:                  buf.GetInt32(offset + 20),
-		PublicationLimitCounterID: buf.GetInt32(offset + 24),
-		ChannelStatusCounterID:    buf.GetInt32(offset + 28),
-		LogFileName:               logFileName,
+		CorrelationID:  buf.GetInt64(offset + PublicationBuffersReadyCorrelationIDOffset),
+		RegistrationID: buf.GetInt64(offset + PublicationBuffersReadyRegistrationIDOffset),
+		SessionID:      buf.GetInt32(offset + PublicationBuffersReadySessionIDOffset),
+		StreamID:       buf.GetInt32(offset + PublicationBuffersReadyStreamIDOffset),
+		PublicationLimitCounterID: buf.GetInt32(
+			offset + PublicationBuffersReadyPublicationLimitCounterIDOffset,
+		),
+		ChannelStatusCounterID: buf.GetInt32(
+			offset + PublicationBuffersReadyChannelStatusCounterIDOffset,
+		),
+		LogFileName: logFileName,
 	}, nil
 }
 
@@ -69,12 +71,18 @@ func EncodePublicationBuffersReady(
 		return err
 	}
 
-	buf.PutInt64(offset, event.CorrelationID)
-	buf.PutInt64(offset+8, event.RegistrationID)
-	buf.PutInt32(offset+16, event.SessionID)
-	buf.PutInt32(offset+20, event.StreamID)
-	buf.PutInt32(offset+24, event.PublicationLimitCounterID)
-	buf.PutInt32(offset+28, event.ChannelStatusCounterID)
+	buf.PutInt64(offset+PublicationBuffersReadyCorrelationIDOffset, event.CorrelationID)
+	buf.PutInt64(offset+PublicationBuffersReadyRegistrationIDOffset, event.RegistrationID)
+	buf.PutInt32(offset+PublicationBuffersReadySessionIDOffset, event.SessionID)
+	buf.PutInt32(offset+PublicationBuffersReadyStreamIDOffset, event.StreamID)
+	buf.PutInt32(
+		offset+PublicationBuffersReadyPublicationLimitCounterIDOffset,
+		event.PublicationLimitCounterID,
+	)
+	buf.PutInt32(
+		offset+PublicationBuffersReadyChannelStatusCounterIDOffset,
+		event.ChannelStatusCounterID,
+	)
 	_, err := encodeStringASCIIInBody(
 		buf,
 		offset,
