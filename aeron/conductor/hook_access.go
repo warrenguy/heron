@@ -1,3 +1,5 @@
+//go:build testhooks
+
 package conductor
 
 import (
@@ -45,6 +47,31 @@ func eventsAdapterHook(conductor *Conductor) *DriverEventsAdapter {
 
 func copyReceiverHook(adapter *DriverEventsAdapter) *CopyBroadcastReceiver {
 	return adapter.copyReceiver
+}
+
+func setReceivedCorrelationIDHook(conductor *Conductor, correlationID int64) {
+	conductor.receivedCorrelationID = correlationID
+}
+
+func completePendingHook(
+	conductor *Conductor,
+	correlationID int64,
+	int32Value int32,
+	err error,
+) error {
+	if err == nil {
+		if !conductor.OnNextAvailableSessionID(correlationID, int32Value) {
+			return ErrPendingNotFound
+		}
+		return nil
+	}
+	registration, ok := conductor.pending.Get(correlationID)
+	if !ok {
+		return ErrPendingNotFound
+	}
+	registration.Err = err
+	conductor.receivedCorrelationID = correlationID
+	return nil
 }
 
 func newConductorUncheckedHook(

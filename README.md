@@ -25,6 +25,9 @@ make check
 make test-integration
 ```
 
+Ad-hoc unit tests need the `testhooks` build tag (conductor cross-package test
+hooks): `go test -tags=testhooks ./...`. Prefer `make test` / `make check`.
+
 ## Benchmarks
 
 ```bash
@@ -32,6 +35,9 @@ make bench
 make bench-baseline     # .bench/baseline.txt (gitignored, per machine)
 make bench-regression   # vs baseline via benchstat; exit 1 on regression
 ```
+
+Ad-hoc benchmarks need the `testhooks` build tag when not using the Makefile
+targets: `go test -tags=testhooks -run '^$' -bench=. -benchmem ./...`.
 
 Re-baseline after pulling `main` or when perf changes are intentional. Optional env: `BENCH_COUNT`, `BENCH_THRESHOLD`, `SKIP_BENCH_REGRESSION` (defaults in Makefile / `scripts/bench-regression.sh`).
 

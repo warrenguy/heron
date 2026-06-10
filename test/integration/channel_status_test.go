@@ -47,7 +47,7 @@ func TestChannelStatusCounterIsCounterActive(t *testing.T) {
 	ready := waitForPublicationReady(t, client, toClients, correlationID)
 
 	require.NotEqual(t, cnc.NullCounterID, ready.ChannelStatusCounterID)
-	require.Greater(t, ready.RegistrationID, int64(0))
+	require.Positive(t, ready.RegistrationID)
 	require.True(
 		t,
 		countersReader.IsCounterActive(

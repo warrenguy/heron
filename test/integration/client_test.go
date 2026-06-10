@@ -121,7 +121,7 @@ func TestClientErrorLogReadable(t *testing.T) {
 	require.NoError(t, err)
 	errorLog, err := client.ErrorLogBuffer()
 	require.NoError(t, err)
-	require.Equal(t, int(meta.ErrorLogBufferLength), len(errorLog))
+	require.Len(t, errorLog, int(meta.ErrorLogBufferLength))
 	require.False(t, cnc.ErrorLogExists(errorLog))
 }
 
@@ -133,11 +133,11 @@ func TestClientTwoClientsSameDriver(t *testing.T) {
 	clientB, err := aeron.Connect(aeron.Context{AeronDir: md.Dir})
 	require.NoError(t, err)
 
-	clientIdA := clientA.ClientId()
-	clientIdB := clientB.ClientId()
-	require.GreaterOrEqual(t, clientIdA, int64(0))
-	require.GreaterOrEqual(t, clientIdB, int64(0))
-	require.NotEqual(t, clientIdA, clientIdB)
+	clientIDA := clientA.ClientId()
+	clientIDB := clientB.ClientId()
+	require.GreaterOrEqual(t, clientIDA, int64(0))
+	require.GreaterOrEqual(t, clientIDB, int64(0))
+	require.NotEqual(t, clientIDA, clientIDB)
 
 	for range 5 {
 		clientA.DoWork()

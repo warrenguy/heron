@@ -338,27 +338,3 @@ func (conductor *Conductor) OnNextAvailableSessionID(
 		},
 	)
 }
-
-func (conductor *Conductor) SetReceivedCorrelationIDForTest(correlationID int64) {
-	conductor.receivedCorrelationID = correlationID
-}
-
-func (conductor *Conductor) CompletePendingForTest(
-	correlationID int64,
-	int32Value int32,
-	err error,
-) error {
-	if err == nil {
-		if !conductor.OnNextAvailableSessionID(correlationID, int32Value) {
-			return ErrPendingNotFound
-		}
-		return nil
-	}
-	registration, ok := conductor.pending.Get(correlationID)
-	if !ok {
-		return ErrPendingNotFound
-	}
-	registration.Err = err
-	conductor.receivedCorrelationID = correlationID
-	return nil
-}

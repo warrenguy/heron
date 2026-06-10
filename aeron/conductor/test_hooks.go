@@ -1,4 +1,4 @@
-//go:build integration
+//go:build testhooks
 
 package conductor
 
@@ -47,4 +47,16 @@ func NewConductorUnchecked(
 	countersReader *cnc.CountersReader,
 ) (*Conductor, error) {
 	return newConductorUncheckedHook(config, countersReader)
+}
+
+func (conductor *Conductor) SetReceivedCorrelationIDForTest(correlationID int64) {
+	setReceivedCorrelationIDHook(conductor, correlationID)
+}
+
+func (conductor *Conductor) CompletePendingForTest(
+	correlationID int64,
+	int32Value int32,
+	err error,
+) error {
+	return completePendingHook(conductor, correlationID, int32Value, err)
 }
