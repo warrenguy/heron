@@ -2,6 +2,7 @@ package aeron
 
 import (
 	"errors"
+	"os"
 	"slices"
 	"sync"
 	"testing"
@@ -502,6 +503,17 @@ func newTestPublicationWithoutTB(
 	return newTestPublication(nil, logCfg, newTestCountersReaderWithoutTB(limitPosition))
 }
 
+func WriteTestLogFileForTest(tb testing.TB, path string) {
+	tb.Helper()
+
+	computed, err := logbuffer.ComputeLogLength(TestPublicationTermLength, logbuffer.PageMinSize)
+	require.NoError(tb, err)
+
+	buf := make([]byte, computed)
+	writeTestPublicationMetadata(buf, DefaultTestPublicationLogConfig())
+	require.NoError(tb, os.WriteFile(path, buf, 0o644))
+}
+
 func writeTestPublicationMetadata(buf []byte, cfg TestPublicationLogConfig) {
 	metaStart := logbuffer.MetaDataOffset(TestPublicationTermLength)
 	meta := atomic.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
@@ -820,6 +832,17 @@ func ImageInternalCloseForTest(image *Image) {
 	image.internalClose()
 }
 
+func ImageSubscriberErrorHandlerForTest(image *Image) func(error) {
+	if image == nil {
+		return nil
+	}
+	return image.errorHandler
+}
+
+func ImageInvokeSubscriberErrorHandlerForTest(image *Image, err error) {
+	image.invokeSubscriberErrorHandler(err)
+}
+
 func SetPollAfterPaddingAdvanceForTest(hook func()) {
 	pollAfterPaddingAdvanceForTest = hook
 }
@@ -974,6 +997,14 @@ func SubscriptionRemoveImageForTest(sub *Subscription, correlationID int64) *Ima
 	return sub.removeImage(correlationID)
 }
 
+func SubscriptionImageAtIndexForTest(sub *Subscription, index int) (*Image, bool) {
+	if uint(index) >= uint(len(sub.images)) {
+		return nil, false
+	}
+	image := sub.images[index]
+	return image, image != nil
+}
+
 func SubscriptionInjectNilImageAtIndexForTest(sub *Subscription, index int) {
 	if index < 0 || index > len(sub.images) {
 		return
@@ -983,6 +1014,20 @@ func SubscriptionInjectNilImageAtIndexForTest(sub *Subscription, index int) {
 
 func SubscriptionSetRoundRobinIndexForTest(sub *Subscription, index uint32) {
 	sub.roundRobinIndex = index
+}
+
+func SubscriptionSetAvailableImageHandlerForTest(
+	sub *Subscription,
+	handler func(*Image),
+) {
+	sub.availableImageHandler = handler
+}
+
+func SubscriptionSetUnavailableImageHandlerForTest(
+	sub *Subscription,
+	handler func(*Image),
+) {
+	sub.unavailableImageHandler = handler
 }
 
 func SubscriptionRoundRobinIndexForTest(sub *Subscription) uint32 {

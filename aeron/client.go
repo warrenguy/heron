@@ -122,13 +122,16 @@ func newConductorClient(
 
 	driverProxy := conductor.NewDriverProxy(rings.ToDriver, clientID)
 	config := conductor.Config{
-		ClientID:            clientID,
-		DriverTimeout:       ctx.DriverTimeout,
-		KeepAliveInterval:   ctx.KeepAliveInterval,
-		IdleSleepDuration:   ctx.IdleSleepDuration,
-		InterServiceTimeout: ctx.InterServiceTimeout,
-		EpochClock:          ctx.EpochClock,
-		NanoClock:           ctx.NanoClock,
+		ClientID:               clientID,
+		DriverTimeout:          ctx.DriverTimeout,
+		KeepAliveInterval:      ctx.KeepAliveInterval,
+		IdleSleepDuration:      ctx.IdleSleepDuration,
+		InterServiceTimeout:    ctx.InterServiceTimeout,
+		EpochClock:             ctx.EpochClock,
+		NanoClock:              ctx.NanoClock,
+		SubscriberErrorHandler: ctx.ErrorHandler,
+		ImageLifecycle:         ConductorImageLifecycle,
+		MediaDriverDir:         ctx.AeronDir,
 	}
 	if ctx.ErrorHandler != nil {
 		config.ErrorHandler = func(err error) {

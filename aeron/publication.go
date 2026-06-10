@@ -61,7 +61,7 @@ func (pub *Publication) Offer(buffer []byte) int64 {
 // OfferWithOffset publishes length bytes from buffer[offset:offset+length].
 // Negative length or invalid offset/length bounds panic (Java IllegalArgumentException).
 // length <= maxPayloadLength uses a single DATA frame; larger payloads up to
-// maxMessageLength split across BEGIN/middle/END fragments (Java offer parity).
+// maxMessageLength split across BEGIN/middle/END fragments (ConcurrentPublication.offer).
 // Oversized payloads run the shared prelude first. When position < limit,
 // length > maxMessageLength returns MaxPositionExceeded (-5). Prelude may
 // return other negative codes (e.g. BackPressured) before that check.

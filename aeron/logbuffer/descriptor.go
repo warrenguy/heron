@@ -56,8 +56,8 @@ func rawLogLength(termLength int) (int64, error) {
 	return int64(termLength)*int64(PartitionCount) + int64(MetaDataLength), nil
 }
 
-// ComputeLogLength returns page-aligned file length as int. Valid on Heron
-// amd64/arm64 targets where int is 64-bit; max layout fits int at TermMaxLength.
+// ComputeLogLength returns page-aligned file length as int. Valid on amd64/arm64
+// targets where int is 64-bit; max layout fits int at TermMaxLength.
 func ComputeLogLength(termLength, pageSize int) (int, error) {
 	if err := CheckTermLength(termLength); err != nil {
 		return 0, err

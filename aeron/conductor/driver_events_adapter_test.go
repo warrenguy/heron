@@ -972,12 +972,8 @@ func TestDriverEventsAdapter_OnSubscriptionReady_decodeFailure(t *testing.T) {
 }
 
 func TestDriverEventsAdapter_OnAvailableImage(t *testing.T) {
-	conductorInstance := newConductorForTestAtWorkNano(
-		t,
-		func(error) {},
-		0,
-		0,
-	)
+	lifecycle := &recordingImageLifecycle{addImageOK: true}
+	conductorInstance := newConductorForImageAdapterTest(t, lifecycle, true)
 
 	adapter := conductorInstance.EventsAdapterForTest()
 	transmitConductorEvent(
@@ -990,10 +986,24 @@ func TestDriverEventsAdapter_OnAvailableImage(t *testing.T) {
 	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
+	require.Equal(t, goldenAvailableImageEvent, lifecycle.lastEvent)
+}
 
-	images := conductor.AvailableImagesForTest(conductorInstance)
-	require.Len(t, images, 1)
-	require.Equal(t, goldenAvailableImageEvent, images[0])
+func TestDriverEventsAdapter_OnAvailableImage_paddedBody(t *testing.T) {
+	lifecycle := &recordingImageLifecycle{addImageOK: true}
+	conductorInstance := newConductorForImageAdapterTest(t, lifecycle, true)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	payload := append(
+		conductor.AvailableImageBytes(goldenAvailableImageEvent),
+		0xFF,
+	)
+	transmitConductorEvent(t, adapter, conductor.OnAvailableImage, payload)
+
+	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+	require.Equal(t, goldenAvailableImageEvent, lifecycle.lastEvent)
 }
 
 func TestDriverEventsAdapter_OnAvailableImage_decodeFailure(t *testing.T) {
@@ -1008,12 +1018,8 @@ func TestDriverEventsAdapter_OnAvailableImage_decodeFailure(t *testing.T) {
 }
 
 func TestDriverEventsAdapter_OnUnavailableImage(t *testing.T) {
-	conductorInstance := newConductorForTestAtWorkNano(
-		t,
-		func(error) {},
-		0,
-		0,
-	)
+	lifecycle := &recordingImageLifecycle{}
+	conductorInstance := newConductorForImageAdapterTest(t, lifecycle, false)
 
 	adapter := conductorInstance.EventsAdapterForTest()
 	transmitConductorEvent(
@@ -1026,11 +1032,35 @@ func TestDriverEventsAdapter_OnUnavailableImage(t *testing.T) {
 	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
+	require.True(t, lifecycle.closed)
+	require.Equal(t, goldenUnavailableImageCorrelationID, lifecycle.lastRemovedCorrelationID)
+	require.Equal(
+		t,
+		goldenUnavailableImageEvent.SubscriptionRegistrationID,
+		lifecycle.lastSubscriptionRegistrationID,
+	)
+}
 
-	records := conductor.UnavailableImagesForTest(conductorInstance)
-	require.Len(t, records, 1)
-	require.Equal(t, goldenUnavailableImageCorrelationID, records[0].CorrelationID)
-	require.Equal(t, int64(5005), records[0].SubscriptionRegistrationID)
+func TestDriverEventsAdapter_OnUnavailableImage_paddedBody(t *testing.T) {
+	lifecycle := &recordingImageLifecycle{}
+	conductorInstance := newConductorForImageAdapterTest(t, lifecycle, false)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	payload := append(
+		conductor.UnavailableImageBytes(goldenUnavailableImageEvent),
+		0xFF,
+	)
+	transmitConductorEvent(t, adapter, conductor.OnUnavailableImage, payload)
+
+	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
+	require.Equal(t, 1, count)
+	require.Zero(t, adapter.UnhandledEventCount())
+	require.True(t, lifecycle.closed)
+	require.Equal(
+		t,
+		goldenUnavailableImageEvent.SubscriptionRegistrationID,
+		lifecycle.lastSubscriptionRegistrationID,
+	)
 }
 
 func TestDriverEventsAdapter_OnUnavailableImage_decodeFailure(t *testing.T) {
@@ -1123,6 +1153,21 @@ func TestDriverEventsAdapter_broadcastLapped(t *testing.T) {
 	count = adapter.Receive(conductor.NullCorrelationID, nil)
 	require.Zero(t, count)
 	require.Len(t, gotErrors, 1)
+}
+
+func newConductorForImageAdapterTest(
+	t *testing.T,
+	lifecycle *recordingImageLifecycle,
+	seedLogBuffers bool,
+) *conductor.Conductor {
+	t.Helper()
+
+	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, func(error) {})
+	registerGoldenImageSubscription(conductorInstance)
+	if seedLogBuffers {
+		seedGoldenAvailableLogBuffers(t, conductorInstance)
+	}
+	return conductorInstance
 }
 
 func newDriverEventsAdapterForTest(

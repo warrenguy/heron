@@ -38,7 +38,7 @@ func validateStringASCIIValue(value string) error {
 
 // PutStringASCII encodes Agrona putStringAscii layout (LE int32 length, then bytes).
 // Intended for ASCII wire fields such as Aeron channel URIs.
-// Rejects non-ASCII input; Agrona Java sanitizes high chars to '?'.
+// Rejects non-ASCII input; Agrona putStringAscii sanitizes high chars to '?'.
 func PutStringASCII(buf AtomicBuffer, offset int, value string) (int, error) {
 	if err := validateStringASCIIValue(value); err != nil {
 		return 0, err

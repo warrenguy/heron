@@ -55,12 +55,16 @@ type Config struct {
 	InterServiceTimeout time.Duration
 	EpochClock          EpochClock
 	NanoClock           NanoClock
-	ErrorHandler        func(error)
-}
-
-type unavailableImageRecord struct {
-	CorrelationID              int64
-	SubscriptionRegistrationID int64
+	// ErrorHandler receives conductor faults and recovered image callback panics;
+	// nil swallows those errors.
+	ErrorHandler func(error)
+	// SubscriberErrorHandler is optional; nil swallows subscriber-side errors.
+	SubscriberErrorHandler func(error)
+	// ImageLifecycle is optional; nil drops image attach/detach events.
+	ImageLifecycle ImageLifecycle
+	// MediaDriverDir confines log file paths from the driver; required when
+	// ImageLifecycle is non-nil.
+	MediaDriverDir string
 }
 
 type Conductor struct {
@@ -78,14 +82,19 @@ type Conductor struct {
 	pending               pendingRegistry
 	activeCorrelationID   int64
 	receivedCorrelationID int64
-	// Staging only; unbounded append until resource maps replace slices.
+	// Staging only; publication/subscription handles still use last-ready pointers
+	// and an append-only error slice.
 	lastPublicationReady  *PublicationBuffersReady
 	lastSubscriptionReady *SubscriptionReady
-	availableImages       []AvailableImage
-	unavailableImages     []unavailableImageRecord
 	publicationErrors     []PublicationError
-	terminationCause      error
-	isTerminating         bool
+	// Image lifecycle state. subscriptions is populated by the Aeron client after
+	// subscription ready (not wired yet); tests use RegisterSubscriptionForTest.
+	subscriptions      map[int64]SubscriptionHandle
+	logBuffersRegistry *LogBuffersRegistry
+	imageLifecycle     ImageLifecycle
+	isInCallback       bool
+	terminationCause   error
+	isTerminating      bool
 }
 
 func NewConductor(
@@ -104,6 +113,9 @@ func NewConductor(
 		keepAliveIntervalNs:   config.KeepAliveInterval.Nanoseconds(),
 		heartbeatCounterID:    cnc.NullCounterID,
 		pending:               newPendingRegistry(),
+		subscriptions:         make(map[int64]SubscriptionHandle),
+		logBuffersRegistry:    NewLogBuffersRegistry(config.MediaDriverDir),
+		imageLifecycle:        config.ImageLifecycle,
 		activeCorrelationID:   NullCorrelationID,
 		receivedCorrelationID: NullCorrelationID,
 	}
@@ -270,6 +282,7 @@ func (conductor *Conductor) onCorrelatedEvent(correlationID int64) {
 	conductor.receivedCorrelationID = correlationID
 }
 
+// onPublicationReady latches only; publication log buffer acquire is not implemented.
 func (conductor *Conductor) onPublicationReady(event PublicationBuffersReady) {
 	eventCopy := event
 	conductor.lastPublicationReady = &eventCopy
@@ -278,22 +291,6 @@ func (conductor *Conductor) onPublicationReady(event PublicationBuffersReady) {
 func (conductor *Conductor) onSubscriptionReady(event SubscriptionReady) {
 	eventCopy := event
 	conductor.lastSubscriptionReady = &eventCopy
-}
-
-func (conductor *Conductor) onAvailableImage(event AvailableImage) {
-	conductor.availableImages = append(conductor.availableImages, event)
-}
-
-func (conductor *Conductor) onUnavailableImage(
-	correlationID, subscriptionRegistrationID int64,
-) {
-	conductor.unavailableImages = append(
-		conductor.unavailableImages,
-		unavailableImageRecord{
-			CorrelationID:              correlationID,
-			SubscriptionRegistrationID: subscriptionRegistrationID,
-		},
-	)
 }
 
 func (conductor *Conductor) onPublicationError(event PublicationError) {

@@ -72,7 +72,7 @@ func (proxy *DriverProxy) GetNextAvailableSessionID(
 
 // AddPublication offers ADD_PUBLICATION on the to-driver ring.
 // Channel must be ASCII; other bytes return atomic.ErrStringASCIINonASCII.
-// Java Agrona replaces high bytes with '?'.
+// Agrona putStringAscii replaces high bytes with '?'; encode rejects non-ASCII.
 func (proxy *DriverProxy) AddPublication(
 	correlationID int64,
 	streamID int32,
@@ -97,7 +97,7 @@ func (proxy *DriverProxy) AddPublication(
 
 // AddSubscription offers ADD_SUBSCRIPTION on the to-driver ring.
 // Channel must be ASCII; other bytes return atomic.ErrStringASCIINonASCII.
-// Java Agrona replaces high bytes with '?'.
+// Agrona putStringAscii replaces high bytes with '?'; encode rejects non-ASCII.
 func (proxy *DriverProxy) AddSubscription(
 	correlationID int64,
 	streamID int32,

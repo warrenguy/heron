@@ -15,13 +15,16 @@ import (
 //
 // Image is not thread-safe. Do not call Poll concurrently with Client.DoWork on
 // the same client, nor from multiple goroutines. Only one goroutine calls
-// Client.DoWork and Image.Poll for a given client.
+// Client.DoWork and Image.Poll for a given client. isClosed uses atomic.Bool
+// for visibility when close races Poll, but that does not make Poll safe across
+// goroutines while DoWork may unmap shared log memory. During unavailable-image
+// teardown, Poll on the same client thread may observe isClosed before the
+// conductor releases the shared mmap; cross-goroutine Poll during teardown is
+// unsupported.
 //
 // Image does not own the mapped log. Conductor refcounting controls unmap.
 // internalClose clears term and metadata views; retained handles must not read
 // mapped memory after close or log release.
-// isClosed uses atomic.Bool for safe visibility when close races Poll on another
-// goroutine; the documented contract still requires single-thread Poll per client.
 type Image struct {
 	subscription   *Subscription
 	correlationID  int64
@@ -216,14 +219,8 @@ func termEndSlackAdvance(
 	if remaining <= 0 || remaining >= logbuffer.DataHeaderLength {
 		return 0, false
 	}
-	if offset+remaining != capacity {
+	if frameLength > 0 && int(frameLength) != remaining {
 		return 0, false
-	}
-	if frameLength > 0 {
-		if int(frameLength) != remaining {
-			return 0, false
-		}
-		return remaining, true
 	}
 	return remaining, true
 }
@@ -342,9 +339,6 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 	initialOffset := int(initialPosition) & int(image.termLengthMask)
 	offset := initialOffset
 	termBuffer := image.activeTermBuffer(initialPosition)
-	pollConsumePosition := func() int64 {
-		return initialPosition + int64(offset-initialOffset)
-	}
 	capacity := termBuffer.Capacity()
 
 	header := &image.header
@@ -363,7 +357,11 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 		if logbuffer.IsPaddingFrameInTerm(termBuffer, offset) {
 			advance, ok := paddingAdvance(offset, frameLength, capacity)
 			if !ok {
-				image.reportCorruptCommittedFrame(pollConsumePosition(), offset, frameLength)
+				image.reportCorruptCommittedFrame(
+					initialPosition+int64(offset-initialOffset),
+					offset,
+					frameLength,
+				)
 				break
 			}
 			offset += advance
@@ -375,7 +373,11 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 
 		nextOffset, ok := dataFrameNextOffset(offset, frameLength, capacity)
 		if !ok {
-			image.reportCorruptCommittedFrame(pollConsumePosition(), offset, frameLength)
+			image.reportCorruptCommittedFrame(
+				initialPosition+int64(offset-initialOffset),
+				offset,
+				frameLength,
+			)
 			break
 		}
 
@@ -388,7 +390,7 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 		fragmentsRead++
 	}
 
-	newPosition := pollConsumePosition()
+	newPosition := initialPosition + int64(offset-initialOffset)
 	if newPosition > initialPosition && !image.isClosed.Load() {
 		image.subscriberPos.SetRelease(newPosition)
 		if image.lastCorruptReportPosition >= 0 && newPosition > image.lastCorruptReportPosition {

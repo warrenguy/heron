@@ -9,7 +9,7 @@ import (
 	"github.com/warrenguy/heron/aeron/conductor"
 )
 
-// Golden bytes generated from Aeron 1.51.0 Java flyweight layouts via Heron encoders.
+// Golden bytes generated from Aeron 1.51.0 Java flyweight layouts via conductor encoders.
 const (
 	goldenPublicationReadyLogFileName    = "/dev/shm/aeron-publication.log"
 	goldenPublicationReadyCorrelationID  = int64(1001)

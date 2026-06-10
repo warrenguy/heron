@@ -19,7 +19,7 @@ const (
 // Plain GetInt32/PutInt32 (and int64) are non-atomic loads/stores. Hot paths in
 // ringbuffer that publish record headers across goroutines should use
 // GetInt32Volatile/PutInt32Release. Broadcast pairs plain record writes with
-// ReleaseFence and volatile tail counters (Aeron Java ordering); migrating
+// ReleaseFence and volatile tail counters (BroadcastReceiver ordering); migrating
 // broadcast to volatile int32 accessors would be a separate change.
 type AtomicBuffer struct {
 	buf []byte

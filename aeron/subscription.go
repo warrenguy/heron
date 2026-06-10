@@ -23,17 +23,15 @@ type Subscription struct {
 	channelStatusCounterID int32
 
 	images []*Image
-	// roundRobinIndex advances each Poll for fairness (Java int parity); uint32
-	// wrap is normalized against len(images) every call.
+	// roundRobinIndex advances each Poll for fairness. Java Subscription stores
+	// this as int; stored as uint32 here and normalized against len(images) every Poll.
 	roundRobinIndex uint32
 
 	isClosed bool
 
-	// placeholder: image-available callback
-	availableImageHandler func(*Image) //nolint:unused
-	// placeholder: image-unavailable callback
-	unavailableImageHandler func(*Image) //nolint:unused
-	// placeholder: conductor registration back-reference
+	availableImageHandler   func(*Image)
+	unavailableImageHandler func(*Image)
+	// conductor reserved for RemoveSubscription teardown.
 	conductor *conductor.Conductor //nolint:unused
 }
 
@@ -133,18 +131,19 @@ func (subscription *Subscription) imageIndexByCorrelationID(correlationID int64)
 	return -1
 }
 
-func (subscription *Subscription) addImage(image *Image) {
+func (subscription *Subscription) addImage(image *Image) bool {
 	if image == nil {
-		return
+		return false
 	}
 	if subscription.imageIndexByCorrelationID(image.CorrelationID()) >= 0 {
-		return
+		return false
 	}
 	subscription.images = append(subscription.images, image)
+	return true
 }
 
-// removeImage splices the image out of the slice. Conductor must call
-// Image.internalClose before removeImage to match Java ordering.
+// removeImage splices the image out of the slice. Conductor calls removeImage
+// then Image.internalClose so in-flight Poll snapshots stay valid.
 func (subscription *Subscription) removeImage(correlationID int64) *Image {
 	index := subscription.imageIndexByCorrelationID(correlationID)
 	if index < 0 {

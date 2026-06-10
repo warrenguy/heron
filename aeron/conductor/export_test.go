@@ -1,6 +1,9 @@
 package conductor
 
 import (
+	"errors"
+	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -8,21 +11,12 @@ import (
 	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
 
-const conductorTestRingDataCapacity = 4096
-
-func (adapter *DriverEventsAdapter) CopyReceiverForTest() *CopyBroadcastReceiver {
-	return adapter.copyReceiver
-}
-
 func (conductor *Conductor) DriverProxyForTest() *DriverProxy {
 	return conductor.driverProxy
-}
-
-func (conductor *Conductor) EventsAdapterForTest() *DriverEventsAdapter {
-	return conductor.eventsAdapter
 }
 
 func (conductor *Conductor) CountersReaderForTest() *cnc.CountersReader {
@@ -39,10 +33,6 @@ func (conductor *Conductor) TimeOfLastKeepAliveNsForTest() int64 {
 
 func (conductor *Conductor) StoreClientHeartbeatForTest(nowNs, nowMs int64) int {
 	return conductor.storeClientHeartbeat(nowNs, nowMs)
-}
-
-func (conductor *Conductor) SetCountersReaderForTest(reader *cnc.CountersReader) {
-	conductor.countersReader = reader
 }
 
 func (conductor *Conductor) SetTerminatingForTest(terminating bool) {
@@ -87,47 +77,6 @@ func (proxy *DriverProxy) OfferBodyForTest(
 	return proxy.offerBody(msgTypeID, bodyLength, silent, encode)
 }
 
-func NewConductorUnchecked(
-	config Config,
-	countersReader *cnc.CountersReader,
-) (*Conductor, error) {
-	if countersReader == nil {
-		meta := make([]byte, cnc.CounterMetadataLength)
-		values := make([]byte, cnc.CounterValueLength)
-		var err error
-		countersReader, err = cnc.NewCountersReader(meta, values)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	ringBuffer := aeronatomic.Wrap(
-		make([]byte, ringbuffer.TotalBufferLength(conductorTestRingDataCapacity)),
-	)
-	ring, err := ringbuffer.NewManyToOneRingBuffer(ringBuffer)
-	if err != nil {
-		return nil, err
-	}
-	if config.EpochClock != nil {
-		ring.SetConsumerHeartbeatTime(config.EpochClock())
-	}
-
-	broadcastBuffer := aeronatomic.Wrap(
-		make([]byte, broadcast.TotalBufferLength(conductorTestRingDataCapacity)),
-	)
-	broadcastReceiver, err := broadcast.NewBroadcastReceiver(broadcastBuffer)
-	if err != nil {
-		return nil, err
-	}
-
-	return NewConductor(
-		NewDriverProxy(ring, config.ClientID),
-		broadcastReceiver,
-		countersReader,
-		config,
-	), nil
-}
-
 func NewConductorForTest(
 	tb testing.TB,
 	config Config,
@@ -135,9 +84,9 @@ func NewConductorForTest(
 ) *Conductor {
 	tb.Helper()
 
-	conductorInstance, err := NewConductorUnchecked(config, countersReader)
+	conductor, err := NewConductorUnchecked(config, countersReader)
 	require.NoError(tb, err)
-	return conductorInstance
+	return conductor
 }
 
 func DecodeTrailingStringASCIIForTest(
@@ -148,48 +97,154 @@ func DecodeTrailingStringASCIIForTest(
 	return decodeTrailingStringASCII(buf, offset, bodyLength, stringOffset, wrapped)
 }
 
-func LastPublicationReadyForTest(
-	conductorInstance *Conductor,
-) (PublicationBuffersReady, bool) {
-	if conductorInstance.lastPublicationReady == nil {
-		return PublicationBuffersReady{}, false
+func lastOptionalForTest[T any](ptr *T) (T, bool) {
+	if ptr == nil {
+		var zero T
+		return zero, false
 	}
-	return *conductorInstance.lastPublicationReady, true
+	return *ptr, true
 }
 
-func LastSubscriptionReadyForTest(
-	conductorInstance *Conductor,
-) (SubscriptionReady, bool) {
-	if conductorInstance.lastSubscriptionReady == nil {
-		return SubscriptionReady{}, false
+func LastPublicationReadyForTest(conductor *Conductor) (PublicationBuffersReady, bool) {
+	return lastOptionalForTest(conductor.lastPublicationReady)
+}
+
+func LastSubscriptionReadyForTest(conductor *Conductor) (SubscriptionReady, bool) {
+	return lastOptionalForTest(conductor.lastSubscriptionReady)
+}
+
+func PublicationErrorsForTest(conductor *Conductor) []PublicationError {
+	return slices.Clone(conductor.publicationErrors)
+}
+
+func SetLogBuffersRegistryRefCountForTest(
+	registry *LogBuffersRegistry,
+	logFileName string,
+	refCount int32,
+) error {
+	key, err := registry.resolveLogFileKey(logFileName)
+	if err != nil {
+		return err
 	}
-	return *conductorInstance.lastSubscriptionReady, true
-}
-
-func AvailableImagesForTest(conductorInstance *Conductor) []AvailableImage {
-	return append([]AvailableImage(nil), conductorInstance.availableImages...)
-}
-
-func UnavailableImagesForTest(
-	conductorInstance *Conductor,
-) []struct {
-	CorrelationID              int64
-	SubscriptionRegistrationID int64
-} {
-	records := make(
-		[]struct {
-			CorrelationID              int64
-			SubscriptionRegistrationID int64
-		},
-		len(conductorInstance.unavailableImages),
-	)
-	for i, record := range conductorInstance.unavailableImages {
-		records[i].CorrelationID = record.CorrelationID
-		records[i].SubscriptionRegistrationID = record.SubscriptionRegistrationID
+	entry := registry.entries[key]
+	if entry == nil {
+		return fmt.Errorf("conductor: log file %q not in registry", logFileName)
 	}
-	return records
+	entry.refCount = refCount
+	return nil
 }
 
-func PublicationErrorsForTest(conductorInstance *Conductor) []PublicationError {
-	return append([]PublicationError(nil), conductorInstance.publicationErrors...)
+func ResolveLogFileKeyForTest(
+	registry *LogBuffersRegistry,
+	logFileName string,
+) (string, error) {
+	return registry.resolveLogFileKey(logFileName)
+}
+
+func ReleaseResolvedKeyForTest(
+	registry *LogBuffersRegistry,
+	key string,
+	lingerNs int64,
+) {
+	registry.releaseResolvedKey(key, lingerNs)
+}
+
+func LogBuffersRegistryRefCountByResolvedKeyForTest(
+	registry *LogBuffersRegistry,
+	key string,
+) int32 {
+	if registry == nil {
+		return 0
+	}
+	entry := registry.entries[key]
+	if entry == nil {
+		return 0
+	}
+	return entry.refCount
+}
+
+func SeedLogBuffersRegistryForTest(
+	registry *LogBuffersRegistry,
+	logFileName string,
+	buffers *logbuffer.LogBuffers,
+) error {
+	if registry == nil {
+		return errors.New("conductor: log buffers registry is nil")
+	}
+	if logFileName == "" {
+		return errors.New("conductor: log file name is empty")
+	}
+	if buffers == nil {
+		return errors.New("conductor: log buffers is nil")
+	}
+	key, err := registry.resolveLogFileKey(logFileName)
+	if err != nil {
+		return err
+	}
+	if registry.entries[key] != nil {
+		return fmt.Errorf("conductor: log file %q already registered", logFileName)
+	}
+	registry.entries[key] = &logBufferEntry{
+		buffers:  buffers,
+		refCount: 1,
+	}
+	return nil
+}
+
+func ValidateLogFileNameForTest(logFileName, mediaDriverDir string) error {
+	return validateLogFileName(logFileName, mediaDriverDir)
+}
+
+func (conductor *Conductor) OnAvailableImageForTest(event AvailableImage) {
+	conductor.onAvailableImage(event)
+}
+
+func NewSyntheticLogBuffersForTest(tb testing.TB) *logbuffer.LogBuffers {
+	tb.Helper()
+
+	const termLength = 65536
+	const pageSize = 4096
+	computed, err := logbuffer.ComputeLogLength(termLength, pageSize)
+	if err != nil {
+		tb.Fatal(err)
+	}
+
+	buf := make([]byte, computed)
+	metaStart := logbuffer.MetaDataOffset(termLength)
+	meta := aeronatomic.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
+	for partition := range logbuffer.PartitionCount {
+		_ = logbuffer.PutRawTail(
+			meta,
+			partition,
+			logbuffer.PackRawTail(7, termLength),
+		)
+	}
+	meta.PutInt32Release(logbuffer.OffsetTermLength, termLength)
+	meta.PutInt32(logbuffer.OffsetPageSize, pageSize)
+	meta.PutInt32(logbuffer.OffsetMTULength, 1408)
+	meta.PutInt32(logbuffer.OffsetInitialTermID, 7)
+	meta.PutInt32(logbuffer.OffsetDefaultFrameHeaderLength, logbuffer.DataHeaderLength)
+	if err := logbuffer.WriteDataHeaderUnfragmented(
+		meta,
+		logbuffer.OffsetDefaultFrameHeader,
+		1001,
+		2002,
+		7,
+		0,
+		logbuffer.Unfragmented,
+	); err != nil {
+		tb.Fatal(err)
+	}
+
+	mapped, err := logbuffer.MapLogBufferFromBytes(buf)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { _ = mapped.Close() })
+
+	logBuffers, err := logbuffer.NewLogBuffers(mapped)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return logBuffers
 }
