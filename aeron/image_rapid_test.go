@@ -14,6 +14,7 @@ import (
 func writePollTestRandomFrames(
 	rt *rapid.T,
 	termBuffer atomic.AtomicBuffer,
+	namePrefix string,
 	frameCount int,
 	maxPayloadLen int,
 	flags uint8,
@@ -21,7 +22,7 @@ func writePollTestRandomFrames(
 	offset := 0
 	expectedFlags := make([]byte, 0, frameCount)
 	for range frameCount {
-		payloadLen := rapid.IntRange(0, maxPayloadLen).Draw(rt, "payloadLen")
+		payloadLen := rapid.IntRange(0, maxPayloadLen).Draw(rt, namePrefix+"payloadLen")
 		frameLength := logbuffer.AlignFrameLength(payloadLen + logbuffer.DataHeaderLength)
 		if offset+frameLength > termBuffer.Capacity() {
 			break
@@ -142,6 +143,7 @@ func TestImage_Poll_fragmentBoundaries_rapid(t *testing.T) {
 		expectedFlags := writePollTestRandomFrames(
 			rt,
 			termBuffer,
+			"",
 			frameCount,
 			int(aeron.TestPublicationMTULength)-logbuffer.DataHeaderLength,
 			flags,

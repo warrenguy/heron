@@ -2,6 +2,7 @@ package aeron
 
 import (
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -971,6 +972,21 @@ func SubscriptionAddImageForTest(sub *Subscription, image *Image) {
 
 func SubscriptionRemoveImageForTest(sub *Subscription, correlationID int64) *Image {
 	return sub.removeImage(correlationID)
+}
+
+func SubscriptionInjectNilImageAtIndexForTest(sub *Subscription, index int) {
+	if index < 0 || index > len(sub.images) {
+		return
+	}
+	sub.images = slices.Insert(sub.images, index, nil)
+}
+
+func SubscriptionSetRoundRobinIndexForTest(sub *Subscription, index uint32) {
+	sub.roundRobinIndex = index
+}
+
+func SubscriptionRoundRobinIndexForTest(sub *Subscription) uint32 {
+	return sub.roundRobinIndex
 }
 
 func newTestImage(

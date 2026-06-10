@@ -9,6 +9,9 @@ import (
 // Subscription is not thread-safe. Do not call Poll concurrently with
 // Client.DoWork on the same client, nor from multiple goroutines. Only one
 // goroutine calls Client.DoWork and Subscription.Poll for a given client.
+// Image isClosed uses atomic.Bool for visibility within Poll; subscription
+// isClosed is a plain bool; cross-goroutine close visibility for Image only
+// is guaranteed under the single-thread contract above.
 //
 // The images slice is mutated only by the conductor via addImage and
 // removeImage; application code must not modify it.
@@ -19,15 +22,19 @@ type Subscription struct {
 
 	channelStatusCounterID int32
 
-	images          []*Image
+	images []*Image
+	// roundRobinIndex advances each Poll for fairness (Java int parity); uint32
+	// wrap is normalized against len(images) every call.
 	roundRobinIndex uint32
 
 	isClosed bool
 
-	availableImageHandler   func(*Image)
-	unavailableImageHandler func(*Image)
-
-	conductor *conductor.Conductor
+	// placeholder: image-available callback
+	availableImageHandler func(*Image) //nolint:unused
+	// placeholder: image-unavailable callback
+	unavailableImageHandler func(*Image) //nolint:unused
+	// placeholder: conductor registration back-reference
+	conductor *conductor.Conductor //nolint:unused
 }
 
 func newSubscription(
@@ -78,17 +85,43 @@ func (subscription *Subscription) IsClosed() bool {
 	return subscription.isClosed
 }
 
+// Poll delivers fragments from attached images using round-robin fairness across
+// a snapshot of the images slice taken at call entry. Images added during the
+// call are excluded; images removed during the call may still be polled from the
+// snapshot. Nil entries in the snapshot are skipped without calling Image.Poll.
+// The fragmentLimit budget is shared across images in rotation order. Returns 0
+// when the subscription is closed. An in-flight poll is not aborted by a
+// reentrant Close() from a fragment handler. Subscription is not thread-safe;
+// see type documentation.
 func (subscription *Subscription) Poll(handler FragmentHandler, fragmentLimit int) int {
 	if subscription.isClosed {
+		// Retain images after Close until client teardown; do not advance
+		// round-robin or deliver fragments once the subscription is closed.
 		return 0
 	}
-	_ = subscription.roundRobinIndex
-	_ = subscription.availableImageHandler
-	_ = subscription.unavailableImageHandler
-	_ = subscription.conductor
-	_ = handler
-	_ = fragmentLimit
-	return 0
+
+	images := subscription.images
+	length := len(images)
+	if length == 0 {
+		subscription.roundRobinIndex++
+		return 0
+	}
+	startingIndex := subscription.roundRobinIndex % uint32(length)
+	subscription.roundRobinIndex = (startingIndex + 1) % uint32(length)
+
+	fragmentsRead := 0
+	for offset := range length {
+		if fragmentsRead >= fragmentLimit {
+			break
+		}
+		image := images[(int(startingIndex)+offset)%length]
+		if image == nil {
+			continue
+		}
+		fragmentsRead += image.Poll(handler, fragmentLimit-fragmentsRead)
+	}
+
+	return fragmentsRead
 }
 
 func (subscription *Subscription) imageIndexByCorrelationID(correlationID int64) int {
@@ -110,16 +143,23 @@ func (subscription *Subscription) addImage(image *Image) {
 	subscription.images = append(subscription.images, image)
 }
 
+// removeImage splices the image out of the slice. Conductor must call
+// Image.internalClose before removeImage to match Java ordering.
 func (subscription *Subscription) removeImage(correlationID int64) *Image {
 	index := subscription.imageIndexByCorrelationID(correlationID)
 	if index < 0 {
 		return nil
 	}
 	image := subscription.images[index]
-	subscription.images = append(
-		subscription.images[:index],
-		subscription.images[index+1:]...,
-	)
+	n := len(subscription.images) - 1
+	if n == 0 {
+		subscription.images = nil
+		return image
+	}
+	newImages := make([]*Image, n)
+	copy(newImages[:index], subscription.images[:index])
+	copy(newImages[index:], subscription.images[index+1:])
+	subscription.images = newImages
 	return image
 }
 

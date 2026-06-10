@@ -4,6 +4,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/logbuffer"
@@ -145,6 +147,106 @@ func imagePollZeroAllocHandler(
 	_ *aeron.Header,
 ) {
 	imagePollSink = length
+}
+
+type subscriptionPollStep struct {
+	want     int
+	payloads [][]byte
+}
+
+func addSubscriptionPollImage(
+	tb testing.TB,
+	sub *aeron.Subscription,
+	correlationID int64,
+	payloads ...[]byte,
+) *aeron.Image {
+	tb.Helper()
+
+	image := aeron.NewImageForTestWithCorrelationID(tb, sub, 0, correlationID)
+	termBuffer := aeron.ImageTermBuffer0ForTest(image)
+	offset := 0
+	for _, payload := range payloads {
+		writePollTestDataFrame(
+			termBuffer,
+			offset,
+			int32(offset),
+			logbuffer.Unfragmented,
+			payload,
+		)
+		offset += logbuffer.AlignFragmentChunkLength(len(payload))
+	}
+	aeron.SubscriptionAddImageForTest(sub, image)
+	return image
+}
+
+func addTwoStandardPollImages(tb testing.TB, sub *aeron.Subscription) {
+	tb.Helper()
+
+	addSubscriptionPollImage(
+		tb,
+		sub,
+		aeron.TestImageCorrelationID,
+		[]byte("img0-a"),
+		[]byte("img0-b"),
+	)
+	addSubscriptionPollImage(
+		tb,
+		sub,
+		aeron.TestImageCorrelationID+1,
+		[]byte("img1-a"),
+		[]byte("img1-b"),
+	)
+}
+
+func requireSubscriptionPoll(
+	tb testing.TB,
+	sub *aeron.Subscription,
+	capture *pollCapture,
+	limit int,
+	want int,
+	wantPayloads [][]byte,
+) {
+	tb.Helper()
+
+	require.Equal(tb, want, sub.Poll(capture.handler, limit))
+	require.Equal(tb, wantPayloads, capture.payloads)
+}
+
+func requireSubscriptionPollSteps(
+	tb testing.TB,
+	sub *aeron.Subscription,
+	capture *pollCapture,
+	limit int,
+	steps ...subscriptionPollStep,
+) {
+	tb.Helper()
+
+	for _, step := range steps {
+		capture.reset()
+		requireSubscriptionPoll(tb, sub, capture, limit, step.want, step.payloads)
+	}
+}
+
+func subscriptionPollOnFirstFragment(
+	tb testing.TB,
+	capture *pollCapture,
+	onFirst func(tb testing.TB),
+) aeron.FragmentHandler {
+	tb.Helper()
+
+	var handlerCalls int
+	return func(
+		buffer atomic.AtomicBuffer,
+		offset int,
+		length int,
+		header *aeron.Header,
+	) {
+		handlerCalls++
+		if handlerCalls == 1 {
+			onFirst(tb)
+		}
+		capture.handler(buffer, offset, length, header)
+	}
 }
 
 func setupZeroAllocPollImage(tb testing.TB) *aeron.Image {

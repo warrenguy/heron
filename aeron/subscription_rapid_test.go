@@ -8,6 +8,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
 type subImageOp int
@@ -98,5 +99,79 @@ func TestSubscription_imageMapInvariants_rapid(t *testing.T) {
 			wantConnected := !sub.IsClosed() && subscriptionHasOpenImage(images)
 			require.Equal(rt, wantConnected, sub.IsConnected())
 		}
+	})
+}
+
+func addSubscriptionPollImageWithRandomFrames(
+	rt *rapid.T,
+	tb testing.TB,
+	sub *aeron.Subscription,
+	correlationID int64,
+	namePrefix string,
+) *aeron.Image {
+	tb.Helper()
+
+	image := aeron.NewImageForTestWithCorrelationID(tb, sub, 0, correlationID)
+	frameCount := rapid.IntRange(0, 4).Draw(rt, namePrefix+"frameCount")
+	writePollTestRandomFrames(
+		rt,
+		aeron.ImageTermBuffer0ForTest(image),
+		namePrefix,
+		frameCount,
+		24,
+		logbuffer.Unfragmented,
+	)
+	aeron.SubscriptionAddImageForTest(sub, image)
+	return image
+}
+
+func TestSubscription_Poll_invariants_rapid(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		sub := testSubscription(t)
+		imageCount := rapid.IntRange(1, 4).Draw(rt, "imageCount")
+		images := make([]*aeron.Image, 0, imageCount)
+		for index := range imageCount {
+			images = append(images, addSubscriptionPollImageWithRandomFrames(
+				rt,
+				t,
+				sub,
+				aeron.TestImageCorrelationID+int64(index),
+				fmt.Sprintf("img%d", index),
+			))
+		}
+
+		capture := &pollCapture{}
+		fragmentLimit := rapid.IntRange(1, 8).Draw(rt, "fragmentLimit")
+		positionsBefore := make([]int64, len(images))
+		for index, image := range images {
+			positionsBefore[index] = image.Position()
+		}
+
+		fragments := sub.Poll(capture.handler, fragmentLimit)
+
+		require.LessOrEqual(rt, fragments, fragmentLimit)
+		require.Len(rt, capture.payloads, fragments)
+		for index, image := range images {
+			require.GreaterOrEqual(rt, image.Position(), positionsBefore[index])
+		}
+
+		rotationCount := rapid.IntRange(2, 4).Draw(rt, "rotationImageCount")
+		rotationSub := testSubscription(t)
+		rotationPayloads := make([][]byte, rotationCount)
+		for index := range rotationCount {
+			payload := []byte{byte('a' + index)}
+			rotationPayloads[index] = payload
+			addSubscriptionPollImage(t, rotationSub, aeron.TestImageCorrelationID+int64(index), payload)
+		}
+
+		rotationSteps := make([]subscriptionPollStep, rotationCount)
+		for index := range rotationCount {
+			rotationSteps[index] = subscriptionPollStep{
+				want:     1,
+				payloads: [][]byte{rotationPayloads[index]},
+			}
+		}
+		rotationCapture := &pollCapture{}
+		requireSubscriptionPollSteps(t, rotationSub, rotationCapture, 1, rotationSteps...)
 	})
 }
