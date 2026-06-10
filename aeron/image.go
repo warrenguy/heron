@@ -3,6 +3,7 @@ package aeron
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
@@ -19,7 +20,8 @@ import (
 // Image does not own the mapped log. Conductor refcounting controls unmap.
 // internalClose clears term and metadata views; retained handles must not read
 // mapped memory after close or log release.
-// isClosed is a plain bool; safe under the single-thread contract above.
+// isClosed uses atomic.Bool for safe visibility when close races Poll on another
+// goroutine; the documented contract still requires single-thread Poll per client.
 type Image struct {
 	subscription   *Subscription
 	correlationID  int64
@@ -44,8 +46,13 @@ type Image struct {
 	errorHandler func(error)
 
 	finalPosition int64
-	isClosed      bool
+
+	lastCorruptReportPosition int64
+
+	isClosed atomic.Bool
 }
+
+var pollAfterPaddingAdvanceForTest func()
 
 func newImage(
 	sub *Subscription,
@@ -141,6 +148,8 @@ func newImage(
 		positionBitsToShift: positionBitsToShift,
 		mtuLength:           metadata.MTULength,
 		errorHandler:        errorHandler,
+
+		lastCorruptReportPosition: -1,
 	}
 	image.header = Header{
 		initialTermID:       metadata.InitialTermID,
@@ -179,7 +188,7 @@ func (image *Image) JoinPosition() int64 {
 }
 
 func (image *Image) Position() int64 {
-	if image.isClosed {
+	if image.isClosed.Load() {
 		return image.finalPosition
 	}
 	return image.subscriberPos.Get()
@@ -190,24 +199,212 @@ func (image *Image) SubscriberPositionID() int32 {
 }
 
 func (image *Image) IsClosed() bool {
-	return image.isClosed
+	return image.isClosed.Load()
 }
 
+func (image *Image) activeTermBuffer(position int64) aeronatomic.AtomicBuffer {
+	termIndex := logbuffer.IndexByPosition(position, image.positionBitsToShift)
+	return image.termBuffers[termIndex]
+}
+
+func termEndSlackAdvance(
+	offset int,
+	capacity int,
+	frameLength int32,
+) (advance int, ok bool) {
+	remaining := capacity - offset
+	if remaining <= 0 || remaining >= logbuffer.DataHeaderLength {
+		return 0, false
+	}
+	if offset+remaining != capacity {
+		return 0, false
+	}
+	if frameLength > 0 {
+		if int(frameLength) != remaining {
+			return 0, false
+		}
+		return remaining, true
+	}
+	return remaining, true
+}
+
+func paddingAdvance(
+	frameOffset int,
+	frameLength int32,
+	capacity int,
+) (advance int, ok bool) {
+	if frameLength <= 0 || frameOffset+int(frameLength) > capacity {
+		return 0, false
+	}
+	if frameLength < int32(logbuffer.DataHeaderLength) {
+		return 0, false
+	}
+	// Term-end PAD: committed raw span fills the remaining term bytes (e.g.
+	// 40-byte PAD at termLength-40). Advance by frameLength, not alignment.
+	if frameOffset+int(frameLength) == capacity {
+		return int(frameLength), true
+	}
+	advance = logbuffer.AlignFrameLength(int(frameLength))
+	if frameOffset+advance > capacity {
+		return 0, false
+	}
+	return advance, true
+}
+
+func dataFrameNextOffset(
+	frameOffset int,
+	frameLength int32,
+	capacity int,
+) (nextOffset int, ok bool) {
+	if frameLength < int32(logbuffer.DataHeaderLength) {
+		return 0, false
+	}
+	frameLengthInt := int(frameLength)
+	if frameOffset+frameLengthInt > capacity {
+		return 0, false
+	}
+	nextOffset = frameOffset + logbuffer.AlignFrameLength(frameLengthInt)
+	if nextOffset > capacity {
+		return 0, false
+	}
+	return nextOffset, true
+}
+
+func (image *Image) reportCorruptCommittedFrame(
+	consumePosition int64,
+	frameOffset int,
+	frameLength int32,
+) {
+	if consumePosition == image.lastCorruptReportPosition {
+		return
+	}
+	image.lastCorruptReportPosition = consumePosition
+	image.invokeSubscriberErrorHandler(fmt.Errorf(
+		"aeron: corrupt committed frame at term offset %d length %d",
+		frameOffset,
+		frameLength,
+	))
+}
+
+func (image *Image) invokeSubscriberErrorHandler(err error) {
+	if image.errorHandler == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	image.errorHandler(err)
+}
+
+func (image *Image) invokeFragmentHandler(
+	handler FragmentHandler,
+	termBuffer aeronatomic.AtomicBuffer,
+	frameOffset int,
+	frameLength int32,
+	header *Header,
+) (ok bool) {
+	ok = true
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			ok = false
+			err, isErr := recovered.(error)
+			if !isErr {
+				err = fmt.Errorf("aeron: fragment handler panic: %v", recovered)
+			}
+			image.invokeSubscriberErrorHandler(err)
+		}
+	}()
+
+	payloadOffset := frameOffset + logbuffer.OffsetFramePayload
+	payloadLength := int(frameLength) - logbuffer.DataHeaderLength
+	handler(termBuffer, payloadOffset, payloadLength, header)
+	return ok
+}
+
+// Poll scans one active log term and delivers up to fragmentLimit committed DATA
+// fragments via handler. Padding frames advance the consume position without
+// invoking the handler or incrementing the fragment count. A single poll call
+// does not span terms; the next poll selects the active term from the updated
+// subscriber position.
+//
+// Poll reads subscriber position with a volatile load at entry and publishes an
+// advanced position with SetRelease when bytes were consumed and the image is
+// still open. PAD-only scans with zero fragments still advance and store.
+// Handler panic does not advance past the failing DATA frame. Term-end PAD at
+// capacity advances by raw committed padding bytes, not alignment.
 func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
-	if image.isClosed {
+	if image.isClosed.Load() || handler == nil || fragmentLimit <= 0 {
 		return 0
 	}
-	// Poll implementation must stop on non-positive committed frameLength and stay
-	// within term capacity before invoking handlers or advancing subscriber position.
-	return 0
+
+	fragmentsRead := 0
+	initialPosition := image.subscriberPos.Get()
+	initialOffset := int(initialPosition) & int(image.termLengthMask)
+	offset := initialOffset
+	termBuffer := image.activeTermBuffer(initialPosition)
+	pollConsumePosition := func() int64 {
+		return initialPosition + int64(offset-initialOffset)
+	}
+	capacity := termBuffer.Capacity()
+
+	header := &image.header
+	header.SetBuffer(termBuffer)
+
+	for fragmentsRead < fragmentLimit && offset < capacity && !image.isClosed.Load() {
+		frameLength := logbuffer.CommittedFrameLengthVolatile(termBuffer, offset)
+		if advance, ok := termEndSlackAdvance(offset, capacity, frameLength); ok {
+			offset += advance
+			continue
+		}
+		if frameLength <= 0 {
+			break
+		}
+
+		if logbuffer.IsPaddingFrameInTerm(termBuffer, offset) {
+			advance, ok := paddingAdvance(offset, frameLength, capacity)
+			if !ok {
+				image.reportCorruptCommittedFrame(pollConsumePosition(), offset, frameLength)
+				break
+			}
+			offset += advance
+			if pollAfterPaddingAdvanceForTest != nil {
+				pollAfterPaddingAdvanceForTest()
+			}
+			continue
+		}
+
+		nextOffset, ok := dataFrameNextOffset(offset, frameLength, capacity)
+		if !ok {
+			image.reportCorruptCommittedFrame(pollConsumePosition(), offset, frameLength)
+			break
+		}
+
+		header.SetOffset(offset)
+		if !image.invokeFragmentHandler(handler, termBuffer, offset, frameLength, header) {
+			break
+		}
+
+		offset = nextOffset
+		fragmentsRead++
+	}
+
+	newPosition := pollConsumePosition()
+	if newPosition > initialPosition && !image.isClosed.Load() {
+		image.subscriberPos.SetRelease(newPosition)
+		if image.lastCorruptReportPosition >= 0 && newPosition > image.lastCorruptReportPosition {
+			image.lastCorruptReportPosition = -1
+		}
+	}
+
+	return fragmentsRead
 }
 
 func (image *Image) internalClose() {
-	if image.isClosed {
+	if image.isClosed.Load() {
 		return
 	}
 	image.finalPosition = image.subscriberPos.Get()
-	image.isClosed = true
+	image.isClosed.Store(true)
 	image.logBuffers = nil
 	image.metaBuffer = aeronatomic.AtomicBuffer{}
 	image.termBuffers = [logbuffer.PartitionCount]aeronatomic.AtomicBuffer{}

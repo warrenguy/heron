@@ -129,9 +129,49 @@ func IsPaddingFrame(buffer atomic.AtomicBuffer, frameOffset int) bool {
 	if !frameHeaderInBounds(buffer, frameOffset) {
 		return false
 	}
+	return paddingFrameType(buffer, frameOffset) == HdrTypePad
+}
+
+// IsPaddingFrameInTerm reports PAD at frameOffset when the full header fits, or
+// when a term-end slack gap still contains a committed PAD type field.
+func IsPaddingFrameInTerm(buffer atomic.AtomicBuffer, frameOffset int) bool {
+	if frameHeaderInBounds(buffer, frameOffset) {
+		return paddingFrameType(buffer, frameOffset) == HdrTypePad
+	}
+	remaining := buffer.Capacity() - frameOffset
+	if remaining >= DataHeaderLength {
+		return false
+	}
+	typeEnd := OffsetFrameType + atomic.SizeUint16
+	if remaining < typeEnd {
+		return false
+	}
+	return paddingFrameType(buffer, frameOffset) == HdrTypePad
+}
+
+// CommittedFrameLengthVolatile acquire-loads committed frame length at
+// frameOffset. When the full header does not fit in the remaining term bytes,
+// reads length from partial header layout matching CommitMinimalTermEndPadding.
+func CommittedFrameLengthVolatile(buffer atomic.AtomicBuffer, frameOffset int) int32 {
+	frameLength := FrameLengthVolatile(buffer, frameOffset)
+	if frameLength != 0 {
+		return frameLength
+	}
+	remaining := buffer.Capacity() - frameOffset
+	if remaining >= DataHeaderLength || remaining < atomic.SizeInt32 {
+		return 0
+	}
+	length := buffer.GetInt32Volatile(frameOffset + OffsetFrameLength)
+	if length <= 0 || int(length) > remaining {
+		return 0
+	}
+	return length
+}
+
+func paddingFrameType(buffer atomic.AtomicBuffer, frameOffset int) int16 {
 	return int16(binary.LittleEndian.Uint16(
 		buffer.Bytes()[frameOffset+OffsetFrameType:],
-	)) == HdrTypePad
+	))
 }
 
 func putFrameLengthRelease(buffer atomic.AtomicBuffer, frameOffset int, frameLength int32) {

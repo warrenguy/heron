@@ -6,8 +6,8 @@ import (
 )
 
 // SubscriberPosition wraps one driver subscriber-position counter slot in the CNC
-// values buffer. The driver owns counter lifetime for the image session; Java
-// Image reads and writes the slot directly without runtime reuse checks.
+// values buffer. The driver owns counter lifetime for the image session. Get and
+// SetRelease read and publish the consume position on the poll hot path.
 type SubscriberPosition struct {
 	counterID    int32
 	valuesOffset int

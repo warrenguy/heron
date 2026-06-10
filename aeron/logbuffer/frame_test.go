@@ -195,6 +195,65 @@ func TestWritePaddingFrame_outOfBounds(t *testing.T) {
 	require.EqualError(t, err, "logbuffer: frame header out of bounds")
 }
 
+func TestIsPaddingFrameInTerm_fullHeader(t *testing.T) {
+	buf := make([]byte, logbuffer.DataHeaderLength)
+	buffer := atomic.Wrap(buf)
+	require.NoError(t, logbuffer.WritePaddingFrame(buffer, 0, 7, 65520))
+	require.True(t, logbuffer.IsPaddingFrameInTerm(buffer, 0))
+	require.Equal(t, logbuffer.IsPaddingFrame(buffer, 0), logbuffer.IsPaddingFrameInTerm(buffer, 0))
+
+	require.NoError(t, logbuffer.WriteDataHeaderUnfragmented(buffer, 0, 1, 2, 3, 4, 0))
+	require.False(t, logbuffer.IsPaddingFrameInTerm(buffer, 0))
+}
+
+func TestIsPaddingFrameInTerm_termEndSlack(t *testing.T) {
+	tests := []struct {
+		name          string
+		paddingLength int32
+		wantPadType   bool
+	}{
+		{name: "1 byte gap", paddingLength: 1},
+		{name: "3 byte gap", paddingLength: 3},
+		{name: "8 byte gap", paddingLength: 8, wantPadType: true},
+		{name: "31 byte gap", paddingLength: 31, wantPadType: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, tt.paddingLength)
+			buffer := atomic.Wrap(buf)
+			logbuffer.CommitMinimalTermEndPadding(buffer, 0, tt.paddingLength)
+
+			require.False(t, logbuffer.IsPaddingFrame(buffer, 0))
+			require.Equal(t, tt.wantPadType, logbuffer.IsPaddingFrameInTerm(buffer, 0))
+		})
+	}
+}
+
+func TestCommittedFrameLengthVolatile_termEndSlack(t *testing.T) {
+	tests := []struct {
+		name          string
+		paddingLength int32
+		wantLength    int32
+	}{
+		{name: "1 byte gap", paddingLength: 1},
+		{name: "3 byte gap", paddingLength: 3},
+		{name: "8 byte gap", paddingLength: 8, wantLength: 8},
+		{name: "31 byte gap", paddingLength: 31, wantLength: 31},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, tt.paddingLength)
+			buffer := atomic.Wrap(buf)
+			logbuffer.CommitMinimalTermEndPadding(buffer, 0, tt.paddingLength)
+
+			require.Zero(t, logbuffer.FrameLengthVolatile(buffer, 0))
+			require.Equal(t, tt.wantLength, logbuffer.CommittedFrameLengthVolatile(buffer, 0))
+		})
+	}
+}
+
 func TestCommitMinimalTermEndPadding_partialGaps(t *testing.T) {
 	const termOffset = 0
 

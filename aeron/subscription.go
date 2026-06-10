@@ -61,8 +61,7 @@ func (subscription *Subscription) ImageCount() int {
 }
 
 // IsConnected reports whether any non-closed image is attached. Returns false
-// when the subscription is closed, even if images remain in the slice (Java
-// isConnected() only inspects images and does not gate on subscription close).
+// when the subscription is closed, even if images remain in the slice.
 func (subscription *Subscription) IsConnected() bool {
 	if subscription.isClosed {
 		return false

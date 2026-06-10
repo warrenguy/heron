@@ -808,7 +808,7 @@ func NewImageForTestWithCorrelationID(
 	tb.Helper()
 	event := AvailableImageForTest()
 	event.CorrelationID = correlationID
-	return newTestImage(tb, sub, joinPosition, event)
+	return newTestImage(tb, sub, joinPosition, event, nil)
 }
 
 func ImageHeaderForTest(image *Image) *Header {
@@ -817,6 +817,51 @@ func ImageHeaderForTest(image *Image) *Header {
 
 func ImageInternalCloseForTest(image *Image) {
 	image.internalClose()
+}
+
+func SetPollAfterPaddingAdvanceForTest(hook func()) {
+	pollAfterPaddingAdvanceForTest = hook
+}
+
+func writeCommittedDataFrameForTest(
+	termBuffer atomic.AtomicBuffer,
+	frameOffset int,
+	sessionID int32,
+	streamID int32,
+	termID int32,
+	termOffset int32,
+	flags uint8,
+	payload []byte,
+	fragmented bool,
+) {
+	frameLength := int32(len(payload) + logbuffer.DataHeaderLength)
+	var err error
+	if fragmented {
+		err = logbuffer.WriteDataHeaderFragmented(
+			termBuffer,
+			frameOffset,
+			sessionID,
+			streamID,
+			termID,
+			termOffset,
+			flags,
+		)
+	} else {
+		err = logbuffer.WriteDataHeaderUnfragmented(
+			termBuffer,
+			frameOffset,
+			sessionID,
+			streamID,
+			termID,
+			termOffset,
+			flags,
+		)
+	}
+	if err != nil {
+		panic(err)
+	}
+	termBuffer.PutBytes(frameOffset+logbuffer.OffsetFramePayload, payload)
+	logbuffer.PutFrameLengthOrdered(termBuffer, frameOffset, frameLength)
 }
 
 func WriteCommittedDataFrameForTest(
@@ -829,8 +874,7 @@ func WriteCommittedDataFrameForTest(
 	flags uint8,
 	payload []byte,
 ) {
-	frameLength := int32(len(payload) + logbuffer.DataHeaderLength)
-	if err := logbuffer.WriteDataHeaderUnfragmented(
+	writeCommittedDataFrameForTest(
 		termBuffer,
 		frameOffset,
 		sessionID,
@@ -838,15 +882,71 @@ func WriteCommittedDataFrameForTest(
 		termID,
 		termOffset,
 		flags,
-	); err != nil {
-		panic(err)
-	}
-	termBuffer.PutBytes(frameOffset+logbuffer.OffsetFramePayload, payload)
-	logbuffer.PutFrameLengthOrdered(termBuffer, frameOffset, frameLength)
+		payload,
+		false,
+	)
 }
 
 func ImageTermBuffer0ForTest(image *Image) atomic.AtomicBuffer {
-	return image.termBuffers[0]
+	return ImageTermBufferForTest(image, 0)
+}
+
+func ImageTermBufferForTest(image *Image, index int) atomic.AtomicBuffer {
+	return image.termBuffers[index]
+}
+
+func WriteCommittedFragmentedDataFrameForTest(
+	termBuffer atomic.AtomicBuffer,
+	frameOffset int,
+	sessionID int32,
+	streamID int32,
+	termID int32,
+	termOffset int32,
+	flags uint8,
+	payload []byte,
+) {
+	writeCommittedDataFrameForTest(
+		termBuffer,
+		frameOffset,
+		sessionID,
+		streamID,
+		termID,
+		termOffset,
+		flags,
+		payload,
+		true,
+	)
+}
+
+func WriteMinimalTermEndPaddingForTest(
+	termBuffer atomic.AtomicBuffer,
+	frameOffset int,
+	paddingLength int32,
+) {
+	logbuffer.CommitMinimalTermEndPadding(termBuffer, frameOffset, paddingLength)
+}
+
+func WriteCommittedPaddingFrameForTest(
+	termBuffer atomic.AtomicBuffer,
+	frameOffset int,
+	termID int32,
+	termOffset int32,
+	paddingLength int32,
+) {
+	if err := logbuffer.WritePaddingFrame(termBuffer, frameOffset, termID, termOffset); err != nil {
+		panic(err)
+	}
+	logbuffer.PutFrameLengthOrdered(termBuffer, frameOffset, paddingLength)
+}
+
+func NewImageForTestWithErrorHandler(
+	tb testing.TB,
+	sub *Subscription,
+	joinPosition int64,
+	errorHandler func(error),
+) *Image {
+	tb.Helper()
+	return newTestImage(tb, sub, joinPosition, AvailableImageForTest(), errorHandler)
 }
 
 func ImageSetSubscriberPositionForTest(image *Image, value int64) {
@@ -858,7 +958,7 @@ func HeaderSetFragmentedFrameLenForTest(header *Header, fragmentedFrameLen int32
 }
 
 func ImageTermBuffer0CapacityForTest(image *Image) int {
-	return image.termBuffers[0].Capacity()
+	return ImageTermBufferForTest(image, 0).Capacity()
 }
 
 func ImageHeaderBufferCapacityForTest(image *Image) int {
@@ -878,6 +978,7 @@ func newTestImage(
 	sub *Subscription,
 	joinPosition int64,
 	event conductor.AvailableImage,
+	errorHandler func(error),
 ) *Image {
 	tb.Helper()
 
@@ -886,7 +987,7 @@ func newTestImage(
 		joinPosition,
 		event.SubscriptionRegistrationID,
 	)
-	image, err := newImage(sub, event, logBuffers, counters, nil)
+	image, err := newImage(sub, event, logBuffers, counters, errorHandler)
 	require.NoError(tb, err)
 	return image
 }
