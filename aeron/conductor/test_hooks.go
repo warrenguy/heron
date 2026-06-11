@@ -1,23 +1,24 @@
 //go:build testhooks
 
+// Cross-package test hooks for conductor internals.
+//
+// Package-level functions mirror export_test.go receiver methods where both exist
+// so conductor_test can use the latter without symbol conflicts.
 package conductor
 
 import (
-	"fmt"
-
 	"github.com/warrenguy/heron/aeron/cnc"
 )
 
 func assertInvokeImageHandlerUnderWriteLock(savedDepth int32) {
 	if savedDepth <= 0 {
-		panic(fmt.Sprintf(
-			"conductor: invokeImageHandler called without resource write lock (depth=%d)",
-			savedDepth,
-		))
+		panic("conductor: invokeImageHandler called without resource write lock")
 	}
 }
 
 // RegisterSubscriptionForTest is for cross-package tests behind the testhooks tag.
+//
+// conductor_test uses InsertSubscriptionForTest in export_test.go instead.
 func RegisterSubscriptionForTest(
 	conductor *Conductor,
 	registrationID int64,
@@ -27,6 +28,7 @@ func RegisterSubscriptionForTest(
 }
 
 // RegisterPublicationForTest is for cross-package tests behind the testhooks tag.
+//
 // conductor_test uses InsertPublicationForTest in export_test.go instead.
 func RegisterPublicationForTest(
 	conductor *Conductor,
@@ -37,15 +39,31 @@ func RegisterPublicationForTest(
 }
 
 // RemovePublicationForTest is for cross-package tests behind the testhooks tag.
+//
 // conductor_test uses (*Conductor).RemovePublicationForTest in export_test.go instead.
 func RemovePublicationForTest(conductor *Conductor, registrationID int64) {
 	removePublicationHook(conductor, registrationID)
 }
 
 // RemoveSubscriptionForTest is for cross-package tests behind the testhooks tag.
+//
 // conductor_test uses (*Conductor).RemoveSubscriptionForTest in export_test.go instead.
 func RemoveSubscriptionForTest(conductor *Conductor, registrationID int64) {
 	removeSubscriptionHook(conductor, registrationID)
+}
+
+// PublicationCountForTest is for cross-package tests behind the testhooks tag.
+//
+// conductor_test uses (*Conductor).PublicationCountForTest in export_test.go instead.
+func PublicationCountForTest(conductor *Conductor) int {
+	return publicationCountHook(conductor)
+}
+
+// SubscriptionCountForTest is for cross-package tests behind the testhooks tag.
+//
+// conductor_test uses (*Conductor).SubscriptionCountForTest in export_test.go instead.
+func SubscriptionCountForTest(conductor *Conductor) int {
+	return subscriptionCountHook(conductor)
 }
 
 func LogBuffersRegistryForTest(conductor *Conductor) *LogBuffersRegistry {
@@ -90,6 +108,7 @@ func (adapter *DriverEventsAdapter) CopyReceiverForTest() *CopyBroadcastReceiver
 	return copyReceiverHook(adapter)
 }
 
+// NewConductorUnchecked builds a conductor with synthetic driver I/O for tests.
 func NewConductorUnchecked(
 	config Config,
 	countersReader *cnc.CountersReader,

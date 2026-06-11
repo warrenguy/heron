@@ -5,10 +5,13 @@ import (
 )
 
 // RawTailVolatile reads active-term count then that partition's raw tail.
+//
 // Standalone acquire fences between the two volatile loads match C aeron ordering;
-// do not rely on Go volatile alone across both fields. Transient count/tail skew
-// during rotation is accepted; matches C/Java rawTailVolatile. Callers re-read
-// on hot paths.
+// do not rely on Go volatile alone across both fields.
+//
+// Transient count/tail skew during rotation is accepted; matches C/Java rawTailVolatile.
+//
+// Callers re-read on hot paths.
 func RawTailVolatile(meta atomic.AtomicBuffer) (int64, error) {
 	atomic.AcquireFence()
 	activeTermCount := meta.GetInt32Volatile(OffsetActiveTermCount)
@@ -63,9 +66,12 @@ func CasActiveTermCount(
 
 // RotateLog mirrors C aeron_logbuffer_rotate_log: the raw-tail CAS loop may exit
 // without updating the next partition when the expected term id is absent, but
-// CasActiveTermCount still runs unconditionally (C parity). Publication
-// handleEndOfLog calls this after a PAD frame when reserved space crosses the
-// term end; callers must retry Offer/TryClaim on AdminAction.
+// CasActiveTermCount still runs unconditionally (C parity).
+//
+// Publication handleEndOfLog calls this after a PAD frame when reserved space crosses the
+// term end.
+//
+// Callers must retry Offer/TryClaim on AdminAction.
 func RotateLog(
 	meta atomic.AtomicBuffer,
 	currentTermCount int32,

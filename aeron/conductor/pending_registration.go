@@ -32,8 +32,10 @@ type PendingRegistration struct {
 	Subscription any
 }
 
-// pendingRegistry map structure is mutex-protected; Conductor await fields still
-// require a single invoker goroutine per client until clientLock lands.
+// pendingRegistry map structure is mutex-protected.
+//
+// Conductor await fields still require a single invoker goroutine per client until
+// clientLock lands.
 type pendingRegistry struct {
 	mu      sync.Mutex
 	entries map[int64]*PendingRegistration
@@ -173,8 +175,9 @@ func (conductor *Conductor) PendingResult(
 }
 
 // RegisterPending runs on the caller goroutine; PollPending and adapter handlers
-// run on the conductor service goroutine inside DoWork. Concurrent DoWork on one
-// Conductor is undefined.
+// run on the conductor service goroutine inside DoWork.
+//
+// Concurrent DoWork on one Conductor is undefined.
 func (conductor *Conductor) pendingDeadline(timeout time.Duration) int64 {
 	return conductor.config.NanoClock() + timeout.Nanoseconds()
 }
@@ -355,9 +358,12 @@ func addPendingKind(kind PendingKind) bool {
 
 // AddPublication/AddSubscription pendings return true on driver OPERATION_SUCCESS as an
 // ack only; they do not set receivedCorrelationID; handlePublicationReady/handleSubscriptionReady
-// complete them via completePendingIfKind. RemovePublication, RemoveSubscription, and
-// OperationSuccess pendings complete here via completePendingSuccess. NextSessionID
-// returns false; NextSessionID handles that kind.
+// complete them via completePendingIfKind.
+//
+// RemovePublication, RemoveSubscription, and OperationSuccess pendings complete here
+// via completePendingSuccess.
+//
+// NextSessionID returns false; NextSessionID handles that kind.
 func (conductor *Conductor) OperationSucceeded(correlationID int64) bool {
 	registration, ok := conductor.pending.Get(correlationID)
 	if !ok {

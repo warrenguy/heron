@@ -7,6 +7,7 @@ import (
 )
 
 // LogBuffers wraps a MappedLogBuffer for shared pub/image IPC lifetime.
+//
 // Conductor refcount acquire/release deduplicates mmap by path.
 type LogBuffers struct {
 	mapped *MappedLogBuffer
@@ -43,6 +44,7 @@ func (buffers *LogBuffers) TermBuffers() ([PartitionCount]atomic.AtomicBuffer, e
 }
 
 // MappedLogBuffer returns the inner mapped buffer without a closed-state check.
+//
 // Prefer MetaDataBuffer and TermBuffers when validity matters.
 func (buffers *LogBuffers) MappedLogBuffer() *MappedLogBuffer {
 	if buffers == nil {

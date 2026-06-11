@@ -255,6 +255,18 @@ func (client *Client) requireReadyWithDriverProxy() error {
 	return nil
 }
 
+// mapConductorTerminationError maps driver shutdown and keepalive-stale causes to
+// DriverTimeoutError.
+//
+// Client and service timeouts pass through for errors.Is.
+func mapConductorTerminationError(conductorInstance *conductor.Conductor) error {
+	cause := conductorInstance.TerminationCause()
+	if cause == nil {
+		cause = conductor.ErrDriverShutdown
+	}
+	return mapConductorError(cause)
+}
+
 func (client *Client) awaitResponse(
 	correlationID int64,
 	kind conductor.PendingKind,
@@ -288,16 +300,38 @@ func (client *Client) awaitResponse(
 			return conductor.PendingRegistration{}, err
 		}
 	}
+	registration, completed, err := client.awaitPendingPoll(
+		conductorInstance,
+		correlationID,
+		deadlineNs,
+		func(pollErr error) error {
+			return mapPollPendingError(correlationID, timeout, pollErr)
+		},
+	)
+	if completed {
+		pendingCompleted = true
+	}
+	if err != nil {
+		return conductor.PendingRegistration{}, err
+	}
+	if completed {
+		return registration, nil
+	}
+	return conductor.PendingRegistration{}, newAwaitTimeoutError(correlationID, timeout)
+}
+
+func (client *Client) awaitPendingPoll(
+	conductorInstance *conductor.Conductor,
+	correlationID int64,
+	deadlineNs int64,
+	mapPollErr func(error) error,
+) (conductor.PendingRegistration, bool, error) {
 	for client.nanoClock() < deadlineNs {
 		if err := client.requireReadyWithConductor(); err != nil {
-			return conductor.PendingRegistration{}, err
+			return conductor.PendingRegistration{}, false, err
 		}
 		if conductorInstance.IsTerminating() {
-			cause := conductorInstance.TerminationCause()
-			if cause == nil {
-				cause = conductor.ErrDriverShutdown
-			}
-			return conductor.PendingRegistration{}, mapConductorError(cause)
+			return conductor.PendingRegistration{}, false, mapConductorTerminationError(conductorInstance)
 		}
 		client.DoWork()
 		done, registration, err := conductorInstance.PollPending(correlationID)
@@ -305,17 +339,12 @@ func (client *Client) awaitResponse(
 			time.Sleep(client.idleSleepDuration)
 			continue
 		}
-		pendingCompleted = true
 		if err != nil {
-			return conductor.PendingRegistration{}, mapPollPendingError(
-				correlationID,
-				timeout,
-				err,
-			)
+			return conductor.PendingRegistration{}, true, mapPollErr(err)
 		}
-		return registration, nil
+		return registration, true, nil
 	}
-	return conductor.PendingRegistration{}, newAwaitTimeoutError(correlationID, timeout)
+	return conductor.PendingRegistration{}, false, nil
 }
 
 //nolint:staticcheck // Aeron Java API uses ClientId.

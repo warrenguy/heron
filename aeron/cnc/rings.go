@@ -12,9 +12,11 @@ import (
 var ringWireRegionIDs = [2]int{cncRegionToDriver, cncRegionToClients}
 
 // Rings pins the CNC mmap region and wires to-driver / to-clients buffers.
+//
 // Do not call MappedCncFile.Close or Rings.Mapping.Close while using ToDriver
-// or ToClients. Rings.Mapping retains the region if MappedCncFile is dropped
-// without Close.
+// or ToClients.
+//
+// Rings.Mapping retains the region if MappedCncFile is dropped without Close.
 type Rings struct {
 	Mapping   *mmap.Mapping
 	Meta      Metadata
@@ -23,6 +25,7 @@ type Rings struct {
 }
 
 // WireRings constructs ring and broadcast receivers over a mapped cnc.dat.
+//
 // Rings shares Mapping with mapped; see Rings for lifetime rules.
 func WireRings(mapped *MappedCncFile) (*Rings, error) {
 	if mapped == nil {

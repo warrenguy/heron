@@ -185,6 +185,7 @@ func (image *Image) LogFileName() string {
 }
 
 // JoinPosition returns the subscriber counter value captured at image construction.
+//
 // The value does not change when the live counter advances during Poll.
 func (image *Image) JoinPosition() int64 {
 	return image.joinPosition

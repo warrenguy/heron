@@ -47,19 +47,82 @@ func (err *ControlProtocolVersionError) Error() string {
 	)
 }
 
+// RegistrationError reports add/register failures.
+//
+// Driver ON_ERROR uses ErrorCode and Message (stable awaitResponse string).
+//
+// Ring backpressure and ctor failures use Kind and Cause.
+//
+// Kind and Cause are also set on driver errors for errors.Is/Unwrap while Error()
+// keeps the code/message form.
 type RegistrationError struct {
+	Kind          string
 	CorrelationID int64
 	ErrorCode     int32
 	Message       string
+	Cause         error
 }
 
 func (err *RegistrationError) Error() string {
+	if err.Message != "" || err.ErrorCode != 0 {
+		return fmt.Sprintf(
+			"aeron: driver registration error: correlation=%d code=%d message=%s",
+			err.CorrelationID,
+			err.ErrorCode,
+			err.Message,
+		)
+	}
+	if err.Kind != "" && err.Cause != nil {
+		return fmt.Sprintf(
+			"aeron: %s registration error: correlation=%d: %v",
+			err.Kind,
+			err.CorrelationID,
+			err.Cause,
+		)
+	}
+	if err.Kind != "" {
+		return fmt.Sprintf(
+			"aeron: %s registration error: correlation=%d",
+			err.Kind,
+			err.CorrelationID,
+		)
+	}
+	return fmt.Sprintf("aeron: registration error: correlation=%d", err.CorrelationID)
+}
+
+func (err *RegistrationError) Unwrap() error {
+	return err.Cause
+}
+
+type RegistrationTimeoutError struct {
+	Kind          string
+	CorrelationID int64
+	StreamID      int32
+	Channel       string
+}
+
+func (err *RegistrationTimeoutError) Error() string {
 	return fmt.Sprintf(
-		"aeron: driver registration error: correlation=%d code=%d message=%s",
+		"aeron: %s registration timeout: correlation=%d stream=%d channel=%s",
+		err.Kind,
 		err.CorrelationID,
-		err.ErrorCode,
-		err.Message,
+		err.StreamID,
+		err.Channel,
 	)
+}
+
+func newRegistrationTimeoutError(
+	registrationKind string,
+	correlationID int64,
+	streamID int32,
+	channel string,
+) *RegistrationTimeoutError {
+	return &RegistrationTimeoutError{
+		Kind:          registrationKind,
+		CorrelationID: correlationID,
+		StreamID:      streamID,
+		Channel:       channel,
+	}
 }
 
 type AwaitTimeoutError struct {
@@ -83,8 +146,12 @@ func newAwaitTimeoutError(correlationID int64, timeout time.Duration) *AwaitTime
 }
 
 // mapConductorError maps driver liveness failures to DriverTimeoutError.
-// Other conductor termination errors (ErrConductorServiceTimeout, ErrClientTimeout,
-// HeartbeatCounterClosedError) pass through unchanged so callers can distinguish them.
+//
+// DriverRegistrationError and other conductor faults pass through unchanged;
+// add await maps registration errors via mapAddPollPendingError / mapAddAwaitError.
+//
+// ErrConductorServiceTimeout, ErrClientTimeout, and HeartbeatCounterClosedError
+// also pass through so callers can distinguish them.
 func mapConductorError(err error) error {
 	if err == nil {
 		return nil
@@ -110,17 +177,25 @@ func mapRegistrationError(err error) error {
 	return err
 }
 
+func registrationErrorFromDriver(
+	registrationErr *conductor.DriverRegistrationError,
+) RegistrationError {
+	return RegistrationError{
+		CorrelationID: registrationErr.CorrelationID,
+		ErrorCode:     registrationErr.ErrorCode,
+		Message:       registrationErr.Message,
+		Cause:         registrationErr,
+	}
+}
+
 func mapAwaitError(err error) error {
 	if err == nil {
 		return nil
 	}
 
 	if registrationErr, ok := errors.AsType[*conductor.DriverRegistrationError](err); ok {
-		return &RegistrationError{
-			CorrelationID: registrationErr.CorrelationID,
-			ErrorCode:     registrationErr.ErrorCode,
-			Message:       registrationErr.Message,
-		}
+		mapped := registrationErrorFromDriver(registrationErr)
+		return &mapped
 	}
 	if errors.Is(err, conductor.ErrPendingNotFound) {
 		return ErrAwaitInterrupted
@@ -140,4 +215,60 @@ func mapPollPendingError(
 		return newAwaitTimeoutError(correlationID, timeout)
 	}
 	return mapAwaitError(err)
+}
+
+func mapAddOfferError(registrationKind string, correlationID int64, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, conductor.ErrRingInsufficientCapacity) {
+		return &RegistrationError{
+			Kind:          registrationKind,
+			CorrelationID: correlationID,
+			Cause:         err,
+		}
+	}
+	return err
+}
+
+func mapAddDriverRegistrationError(
+	registrationKind string,
+	registrationErr *conductor.DriverRegistrationError,
+) *RegistrationError {
+	mapped := registrationErrorFromDriver(registrationErr)
+	mapped.Kind = registrationKind
+	return &mapped
+}
+
+func mapAddAwaitError(registrationKind string, correlationID int64, err error) error {
+	if err == nil {
+		return nil
+	}
+	if registrationErr, ok := errors.AsType[*conductor.DriverRegistrationError](err); ok {
+		return mapAddDriverRegistrationError(registrationKind, registrationErr)
+	}
+	if errors.Is(err, conductor.ErrPendingNotFound) {
+		return ErrAwaitInterrupted
+	}
+	return &RegistrationError{
+		Kind:          registrationKind,
+		CorrelationID: correlationID,
+		Cause:         err,
+	}
+}
+
+func mapAddPollPendingError(
+	registrationKind string,
+	correlationID int64,
+	streamID int32,
+	channel string,
+	err error,
+) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, conductor.ErrAwaitTimeout) {
+		return newRegistrationTimeoutError(registrationKind, correlationID, streamID, channel)
+	}
+	return mapAddAwaitError(registrationKind, correlationID, err)
 }

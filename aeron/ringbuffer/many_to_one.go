@@ -308,6 +308,7 @@ func (ring *ManyToOneRingBuffer) ControlledReadWithLimit(
 }
 
 // Unblock recovers a stalled consumer on in-flight (negative length) or zeroed-gap records.
+//
 // Idle or recovery only: not safe while TryClaim/Write producers are active
 // (races in-flight length).
 func (ring *ManyToOneRingBuffer) Unblock() bool {

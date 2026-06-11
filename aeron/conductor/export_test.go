@@ -188,8 +188,9 @@ func SeedLogBuffersRegistryForTest(
 	return nil
 }
 
-// InsertPublicationForTest is for conductor_test; cross-package callers use
-// RegisterPublicationForTest behind the testhooks build tag.
+// InsertPublicationForTest is for conductor_test.
+//
+// Cross-package callers use RegisterPublicationForTest behind the testhooks build tag.
 func (conductor *Conductor) InsertPublicationForTest(
 	registrationID int64,
 	publication PublicationHandle,
@@ -303,6 +304,7 @@ func PublicationErrorsForTest(conductor *Conductor) []PublicationError {
 }
 
 // CorrelatedForTest reports whether correlationID passes the async ready peek gate.
+//
 // A true result means correlationID equals activeCorrelationID (including NullCorrelationID)
 // or the adapter pending registry contains correlationID.
 func (adapter *DriverEventsAdapter) CorrelatedForTest(
@@ -322,6 +324,10 @@ func (conductor *Conductor) SubscriptionReadyForTest(event SubscriptionReady) {
 
 func (conductor *Conductor) AvailableImageForTest(event AvailableImage) {
 	conductor.handleAvailableImage(event)
+}
+
+func (conductor *Conductor) InvokeImageHandlerForTest(handler func()) {
+	conductor.invokeImageHandler(handler)
 }
 
 func NewSyntheticLogBuffersForTest(tb testing.TB) *logbuffer.LogBuffers {

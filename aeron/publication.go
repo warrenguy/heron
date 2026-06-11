@@ -17,8 +17,10 @@ var (
 )
 
 // Publication is a concurrent IPC publisher over a driver-mapped log buffer.
-// All methods are safe for concurrent use. Close marks the handle closed only;
-// the conductor retains mapped-log lifetime after Close.
+//
+// All methods are safe for concurrent use.
+//
+// Close marks the handle closed only; the conductor retains mapped-log lifetime after Close.
 type Publication struct {
 	registrationID         int64
 	originalRegistrationID int64
@@ -56,19 +58,24 @@ func (pub *Publication) RegistrationID() int64 {
 }
 
 // Offer publishes a message from buffer. Unfragmented payloads fit one DATA
-// frame; larger payloads up to maxMessageLength split into fragments. Returns a
-// new stream position (>0) or a negative status code (see publication_codes.go).
+// frame; larger payloads up to maxMessageLength split into fragments.
+//
+// Returns a new stream position (>0) or a negative status code (see publication_codes.go).
 func (pub *Publication) Offer(buffer []byte) int64 {
 	return pub.OfferWithOffset(buffer, 0, len(buffer))
 }
 
 // OfferWithOffset publishes length bytes from buffer[offset:offset+length].
+//
 // Negative length or invalid offset/length bounds panic (Java IllegalArgumentException).
+//
 // length <= maxPayloadLength uses a single DATA frame; larger payloads up to
 // maxMessageLength split across BEGIN/middle/END fragments (ConcurrentPublication.offer).
+//
 // Oversized payloads run the shared prelude first. When position < limit,
-// length > maxMessageLength returns MaxPositionExceeded (-5). Prelude may
-// return other negative codes (e.g. BackPressured) before that check.
+// length > maxMessageLength returns MaxPositionExceeded (-5).
+//
+// Prelude may return other negative codes (e.g. BackPressured) before that check.
 func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64 {
 	if pub.isClosed() {
 		return Closed
@@ -133,6 +140,7 @@ func (pub *Publication) Abort(termIndex, frameOffset int) error {
 }
 
 // Position returns the publisher stream position or Closed (-4) when closed.
+//
 // RawTailVolatile drives the read. Its error path is unreachable after valid
 // construction because partition index is always in range; the branch maps to
 // Closed for defensive parity with other auxiliary int64 accessors.
@@ -174,8 +182,9 @@ func (pub *Publication) IsConnected() bool {
 	return !pub.isClosed() && logbuffer.IsConnectedVolatile(pub.meta) != 0
 }
 
-// ChannelStatus reads the driver channel-status counter. IPC publications omit
-// the counter; NullCounterID reports ChannelEndpointStatusActive.
+// ChannelStatus reads the driver channel-status counter.
+//
+// IPC publications omit the counter; NullCounterID reports ChannelEndpointStatusActive.
 func (pub *Publication) ChannelStatus() (int64, error) {
 	if pub.isClosed() {
 		return Closed, errors.New("aeron: publication is closed")
@@ -407,14 +416,18 @@ func (pub *Publication) reserveTailAfterPrelude(
 }
 
 // reserveMessageSpace checks publication limit, then reserves space via
-// fetch-and-add on the active partition tail counter. Read ActiveTermCount and
-// partition raw tail separately, not RawTailVolatile, so limit and reservation
-// share one term/offset pair (Java ConcurrentPublication ordering). No yield
+// fetch-and-add on the active partition tail counter.
+//
+// Read ActiveTermCount and partition raw tail separately, not RawTailVolatile, so
+// limit and reservation share one term/offset pair (Java ConcurrentPublication ordering). No yield
 // between that read and GetAndAddInt64: rotation between them pins the wrong
-// partition. Reservation always completes as DATA or PAD on termBuf/termOffset;
-// callers retry on AdminAction. Prelude mirrors offerPreludeState but is not
-// delegated to runOfferPrelude: tail read and FAA must stay in one function;
-// splitting them adds non-inlinable calls on the unfragmented hot path.
+// partition.
+//
+// Reservation always completes as DATA or PAD on termBuf/termOffset; callers retry on AdminAction.
+//
+// Prelude mirrors offerPreludeState but is not delegated to runOfferPrelude: tail read
+// and FAA must stay in one function; splitting them adds non-inlinable calls on the
+// unfragmented hot path.
 func (pub *Publication) reserveMessageSpace(messageLength int) reserveOutcome {
 	limit, err := pub.counters.CounterValue(pub.publicationLimitCounterID)
 	if err != nil {

@@ -41,8 +41,10 @@ func correlatedStreamChannelBodyLength(
 	return layout.channelOffset + atomic.StringASCIIEncodedLength(len(channel))
 }
 
-// Bounds failures return before any write. Other encode failures may leave fixed-prefix fields
-// written; DriverProxy aborts uncommitted ring claims; standalone callers must not use the buffer.
+// Bounds failures return before any write.
+//
+// Other encode failures may leave fixed-prefix fields written; DriverProxy aborts
+// uncommitted ring claims; standalone callers must not use the buffer.
 func encodeCorrelatedStreamChannelMessage(
 	buf atomic.AtomicBuffer,
 	offset int,

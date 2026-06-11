@@ -74,6 +74,40 @@ func TestClient_accessorGuardsAfterClose(t *testing.T) {
 				return err
 			},
 		},
+		{
+			name: "AddPublication",
+			call: func(client *aeron.Client) error {
+				_, err := client.AddPublication(1001, "aeron:ipc")
+				return err
+			},
+		},
+		{
+			name: "AddSubscription",
+			call: func(client *aeron.Client) error {
+				_, err := client.AddSubscription(1001, "aeron:ipc")
+				return err
+			},
+		},
+	}
+
+	lookupCases := []struct {
+		name string
+		call func(client *aeron.Client) bool
+	}{
+		{
+			name: "Publication",
+			call: func(client *aeron.Client) bool {
+				_, ok := client.Publication(1)
+				return ok
+			},
+		},
+		{
+			name: "Subscription",
+			call: func(client *aeron.Client) bool {
+				_, ok := client.Subscription(1)
+				return ok
+			},
+		},
 	}
 
 	for _, accessorCase := range accessorCases {
@@ -81,7 +115,19 @@ func TestClient_accessorGuardsAfterClose(t *testing.T) {
 			client := accessorCase.client(t)
 			for _, accessorCall := range accessorCalls {
 				t.Run(accessorCall.name, func(t *testing.T) {
-					require.EqualError(t, accessorCall.call(client), "aeron: client is closed")
+					err := accessorCall.call(client)
+					if accessorCase.name == "nilClient" &&
+						(accessorCall.name == "AddPublication" ||
+							accessorCall.name == "AddSubscription") {
+						require.ErrorIs(t, err, aeron.ErrClientNotReady)
+						return
+					}
+					require.ErrorIs(t, err, aeron.ErrClientClosed)
+				})
+			}
+			for _, lookupCase := range lookupCases {
+				t.Run(lookupCase.name, func(t *testing.T) {
+					require.False(t, lookupCase.call(client))
 				})
 			}
 		})
@@ -100,7 +146,7 @@ func TestClient_accessorGuardsAfterClose(t *testing.T) {
 		require.NoError(t, client.Close())
 
 		_, err = client.CountersReader()
-		require.EqualError(t, err, "aeron: client is closed")
+		require.ErrorIs(t, err, aeron.ErrClientClosed)
 
 		_, err = retained.CounterValue(1)
 		require.EqualError(t, err, "cnc: counter id 1 out of range: maxCounterId=0")

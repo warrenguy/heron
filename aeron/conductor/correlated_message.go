@@ -196,6 +196,7 @@ func DecodeCorrelationAndInt32(buf atomic.AtomicBuffer, offset int) (Correlation
 }
 
 // DecodeNextAvailableSessionID decodes the ON_NEXT_AVAILABLE_SESSION_ID event body.
+//
 // The caller must ensure the broadcast body length is at least NextAvailableSessionIDBodyLength.
 func DecodeNextAvailableSessionID(
 	buf atomic.AtomicBuffer,

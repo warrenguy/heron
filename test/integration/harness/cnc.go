@@ -158,8 +158,10 @@ func requireDecodeNextAvailableSessionID(
 }
 
 // waitForNextSessionIDEvent polls the harness broadcast receiver for
-// ON_NEXT_AVAILABLE_SESSION_ID. Retained for low-level wire diagnostics;
-// integration smoke uses Client.NextAvailableSessionID instead.
+// ON_NEXT_AVAILABLE_SESSION_ID.
+//
+// Retained for low-level wire diagnostics; integration smoke uses
+// Client.NextAvailableSessionID instead.
 func waitForNextSessionIDEvent(
 	t testing.TB,
 	toClients *broadcast.BroadcastReceiver,
@@ -240,8 +242,9 @@ func WaitForToDriverRingDrained(
 }
 
 // AssertClientCloseOfferedOnRingAfterClose requires the caller to drain ToDriver
-// and snapshot consumerBefore and producerBefore on a quiescent ring. Backlog at
-// snapshot makes consumed-path observation reject multi-record driver drains.
+// and snapshot consumerBefore and producerBefore on a quiescent ring.
+//
+// Backlog at snapshot makes consumed-path observation reject multi-record driver drains.
 func AssertClientCloseOfferedOnRingAfterClose(
 	t testing.TB,
 	ring *ringbuffer.ManyToOneRingBuffer,
@@ -305,8 +308,9 @@ func assertClientCloseOfferedOnRing(
 }
 
 // assertAddPublicationOfferedOnRing requires the caller to drain ToDriver
-// and snapshot consumerBefore and producerBefore on a quiescent ring. Backlog at
-// snapshot makes consumed-path observation reject multi-record driver drains.
+// and snapshot consumerBefore and producerBefore on a quiescent ring.
+//
+// Backlog at snapshot makes consumed-path observation reject multi-record driver drains.
 func assertAddPublicationOfferedOnRing(
 	t testing.TB,
 	ring *ringbuffer.ManyToOneRingBuffer,

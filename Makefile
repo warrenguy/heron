@@ -1,4 +1,4 @@
-.PHONY: bench bench-baseline bench-regression check test test-stress coverage clean test-integration aeronmd lint gofumpt goimports
+.PHONY: bench bench-baseline bench-regression check check-inner test test-stress coverage clean test-integration aeronmd lint gofumpt goimports
 
 ROOT := $(CURDIR)
 export PATH := $(ROOT)/bin:$(PATH)
@@ -23,8 +23,21 @@ GO_SOURCES := $$(grep -rl --include='*.go' -L 'DO NOT EDIT' .)
 # Conductor cross-package test hooks (test_hooks.go, hook_access.go).
 UNIT_TEST_TAGS := testhooks
 export UNIT_TEST_TAGS
+# Per-package go test deadline (replaces go default 10m on hung tests).
+TEST_TIMEOUT ?= 2m
+# Wall-clock cap for full check (lint + test + test-stress).
+CHECK_TIMEOUT ?= 5m
 
-check: lint test test-stress
+# Without GNU timeout/gtimeout on PATH, CHECK_TIMEOUT is not enforced; TEST_TIMEOUT still applies.
+check:
+	@T=$$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null); \
+	if [ -n "$$T" ]; then \
+		$$T $(CHECK_TIMEOUT) $(MAKE) --no-print-directory check-inner; \
+	else \
+		$(MAKE) --no-print-directory check-inner; \
+	fi
+
+check-inner: lint test test-stress
 
 lint:
 	go tool golangci-lint run ./...
@@ -38,7 +51,7 @@ gofumpt: goimports
 
 # Unit tests need -tags=testhooks (conductor cross-package hooks); use make test.
 test:
-	go test -race -tags=$(UNIT_TEST_TAGS) -coverprofile=$(COVERAGE_PROFILE) ./...
+	go test -timeout=$(TEST_TIMEOUT) -race -tags=$(UNIT_TEST_TAGS) -coverprofile=$(COVERAGE_PROFILE) ./...
 	@go tool cover -func=$(COVERAGE_PROFILE) | tail -1
 
 BENCH_DIR := .bench
@@ -48,7 +61,7 @@ BENCH_PKGS := ./...
 export BENCH_PKGS BENCH_COUNT BENCH_BASELINE GOARCH
 
 test-stress:
-	go test -race -tags=stress,$(UNIT_TEST_TAGS) -count=1 -run Stress ./...
+	go test -timeout=$(TEST_TIMEOUT) -race -tags=stress,$(UNIT_TEST_TAGS) -count=1 -run Stress ./...
 
 bench:
 	go test -run '^$$' -tags=$(UNIT_TEST_TAGS) -bench=. -benchmem ./...
@@ -70,7 +83,7 @@ clean:
 	find . -type d -path '*/testdata/rapid' -prune -exec rm -rf {} +
 
 test-integration: bin/aeronmd
-	go test -race -count=1 -tags=integration ./test/integration/...
+	go test -timeout=$(TEST_TIMEOUT) -race -count=1 -tags=integration ./test/integration/...
 
 bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd.sh
 	./scripts/build-aeronmd.sh

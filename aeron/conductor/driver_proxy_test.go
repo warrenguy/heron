@@ -9,6 +9,7 @@ import (
 
 	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/aeron/record"
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
@@ -810,52 +811,13 @@ func runDriverProxyOfferCorrelatedEncodeFailureAbort(
 	requireZeroDriverProxyCommittedRecords(tb, ring)
 }
 
-func peekDriverProxyCommittedRecordCount(ring *ringbuffer.ManyToOneRingBuffer) int {
-	buffer := ring.Buffer()
-	head := ring.ConsumerPosition()
-	tail := ring.ProducerPosition()
-	if head >= tail {
-		return 0
-	}
-
-	capacity := ring.Capacity()
-	mask := capacity - 1
-	count := 0
-	position := head
-
-	for position < tail {
-		headIndex := int(position) & mask
-		bytesRead := 0
-		maxBlockLength := capacity - headIndex
-
-		for bytesRead < maxBlockLength && position < tail {
-			recordIndex := headIndex + bytesRead
-			recordLength := int(buffer.GetInt32Volatile(record.LengthOffset(recordIndex)))
-			if recordLength <= 0 {
-				return count
-			}
-
-			alignedLength := record.AlignRecordLength(recordLength)
-			bytesRead += alignedLength
-			position += int64(alignedLength)
-
-			messageTypeID := int(buffer.GetInt32(record.TypeOffset(recordIndex)))
-			if messageTypeID != ringbuffer.PaddingMsgTypeID {
-				count++
-			}
-		}
-	}
-
-	return count
-}
-
 func requireZeroDriverProxyCommittedRecords(
 	tb testing.TB,
 	ring *ringbuffer.ManyToOneRingBuffer,
 ) {
 	tb.Helper()
 
-	require.Zero(tb, peekDriverProxyCommittedRecordCount(ring), "aborted claim should not commit")
+	require.Zero(tb, testutil.CommittedNonPaddingRecordCount(ring), "aborted claim should not commit")
 }
 
 func newDriverProxyTestRing(

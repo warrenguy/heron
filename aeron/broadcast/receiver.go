@@ -21,9 +21,11 @@ type BroadcastReceiver struct {
 	lappedCount atomic.Int64
 }
 
-// NewBroadcastReceiver constructs a receiver over buffer. ReceiveNext is not
-// safe for concurrent use. Call Validate before reading TypeID, Length, or
-// payload via the accessors.
+// NewBroadcastReceiver constructs a receiver over buffer.
+//
+// ReceiveNext is not safe for concurrent use.
+//
+// Call Validate before reading TypeID, Length, or payload via the accessors.
 func NewBroadcastReceiver(buffer aeronatomic.AtomicBuffer) (*BroadcastReceiver, error) {
 	capacity, err := CheckCapacity(buffer.Capacity())
 	if err != nil {

@@ -149,9 +149,10 @@ func IsPaddingFrameInTerm(buffer atomic.AtomicBuffer, frameOffset int) bool {
 	return paddingFrameType(buffer, frameOffset) == HdrTypePad
 }
 
-// CommittedFrameLengthVolatile acquire-loads committed frame length at
-// frameOffset. When the full header does not fit in the remaining term bytes,
-// reads length from partial header layout matching CommitMinimalTermEndPadding.
+// CommittedFrameLengthVolatile acquire-loads committed frame length at frameOffset.
+//
+// When the full header does not fit in the remaining term bytes, reads length from
+// partial header layout matching CommitMinimalTermEndPadding.
 func CommittedFrameLengthVolatile(buffer atomic.AtomicBuffer, frameOffset int) int32 {
 	frameLength := FrameLengthVolatile(buffer, frameOffset)
 	if frameLength != 0 {

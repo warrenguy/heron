@@ -47,6 +47,14 @@ func logBuffersRegistryHook(conductor *Conductor) *LogBuffersRegistry {
 	return conductor.logBuffersRegistry
 }
 
+func publicationCountHook(conductor *Conductor) int {
+	return withResourceRLock(conductor, conductor.publicationCount)
+}
+
+func subscriptionCountHook(conductor *Conductor) int {
+	return withResourceRLock(conductor, conductor.subscriptionCount)
+}
+
 func logBuffersRegistryRefCountHook(
 	registry *LogBuffersRegistry,
 	logFileName string,
@@ -65,18 +73,18 @@ func logBuffersRegistryLingerScheduledHook(registry *LogBuffersRegistry) int {
 	return registry.lingerScheduledCount()
 }
 
-func invokeLingerSweepBlockerForTest(conductor *Conductor) {
-	if conductor.lingerSweepBlocker != nil {
-		conductor.lingerSweepBlocker()
-	}
+func logBuffersRegistryCountScheduledLingersHook(registry *LogBuffersRegistry) int {
+	return registry.countScheduledLingers()
 }
 
 func setLingerSweepBlockerHook(conductor *Conductor, blocker func()) {
 	conductor.lingerSweepBlocker = blocker
 }
 
-func logBuffersRegistryCountScheduledLingersHook(registry *LogBuffersRegistry) int {
-	return registry.countScheduledLingers()
+func invokeLingerSweepBlockerForTest(conductor *Conductor) {
+	if blocker := conductor.lingerSweepBlocker; blocker != nil {
+		blocker()
+	}
 }
 
 func setCountersReaderHook(conductor *Conductor, reader *cnc.CountersReader) {
@@ -102,10 +110,10 @@ func completePendingHook(
 	err error,
 ) error {
 	if err == nil {
-		if !conductor.NextSessionID(correlationID, int32Value) {
-			return ErrPendingNotFound
+		if conductor.NextSessionID(correlationID, int32Value) {
+			return nil
 		}
-		return nil
+		return ErrPendingNotFound
 	}
 	registration, ok := conductor.pending.Get(correlationID)
 	if !ok {
@@ -123,11 +131,11 @@ func newConductorUncheckedHook(
 	if countersReader == nil {
 		meta := make([]byte, cnc.CounterMetadataLength)
 		values := make([]byte, cnc.CounterValueLength)
-		var err error
-		countersReader, err = cnc.NewCountersReader(meta, values)
+		reader, err := cnc.NewCountersReader(meta, values)
 		if err != nil {
 			return nil, err
 		}
+		countersReader = reader
 	}
 
 	ringBuffer := aeronatomic.Wrap(

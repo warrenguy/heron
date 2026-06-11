@@ -69,8 +69,9 @@ func (subscription *Subscription) ImageCount() int {
 	return len(subscription.images)
 }
 
-// IsConnected reports whether any non-closed image is attached. Returns false
-// when the subscription is closed, even if images remain in the slice.
+// IsConnected reports whether any non-closed image is attached.
+//
+// Returns false when the subscription is closed, even if images remain in the slice.
 func (subscription *Subscription) IsConnected() bool {
 	if subscription.closed {
 		return false
@@ -91,10 +92,13 @@ func (subscription *Subscription) IsClosed() bool {
 // a snapshot of the images slice taken at call entry. Images added during the
 // call are excluded; images removed during the call may still be polled from the
 // snapshot. Nil entries in the snapshot are skipped without calling Image.Poll.
-// The fragmentLimit budget is shared across images in rotation order. Returns 0
-// when the subscription is closed. An in-flight poll is not aborted by a
-// reentrant Close() from a fragment handler. Subscription is not thread-safe;
-// see type documentation.
+//
+// The fragmentLimit budget is shared across images in rotation order.
+//
+// Returns 0 when the subscription is closed. An in-flight poll is not aborted by a
+// reentrant Close() from a fragment handler.
+//
+// Subscription is not thread-safe; see type documentation.
 func (subscription *Subscription) Poll(handler FragmentHandler, fragmentLimit int) int {
 	if subscription.closed {
 		// Retain images after Close until client teardown; do not advance
@@ -146,8 +150,9 @@ func (subscription *Subscription) addImage(image *Image) bool {
 	return true
 }
 
-// removeImage splices the image out of the slice. Conductor calls removeImage
-// then Image.internalClose so in-flight Poll snapshots stay valid.
+// removeImage splices the image out of the slice.
+//
+// Conductor calls removeImage then Image.internalClose so in-flight Poll snapshots stay valid.
 func (subscription *Subscription) removeImage(correlationID int64) *Image {
 	index := subscription.imageIndexByCorrelationID(correlationID)
 	if index < 0 {
@@ -166,9 +171,11 @@ func (subscription *Subscription) removeImage(correlationID int64) *Image {
 	return image
 }
 
-// Close marks the subscription closed. Does not offer RemoveSubscription or
-// retire images; conductor client close drain handles driver teardown and
-// unavailable-image handling.
+// Close marks the subscription closed.
+//
+// Does not offer RemoveSubscription or retire images.
+//
+// Conductor client close drain handles driver teardown and unavailable-image handling.
 func (subscription *Subscription) Close() error {
 	subscription.closed = true
 	return nil

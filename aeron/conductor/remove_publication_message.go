@@ -43,7 +43,9 @@ func EncodeRemovePublicationMessage(
 }
 
 // DecodeRemovePublicationMessage decodes REMOVE_PUBLICATION at offset.
+//
 // Legacy 24-byte bodies omit the revoke flags field; Revoke is false.
+//
 // Matches Aeron Java revoke(messageLength).
 func DecodeRemovePublicationMessage(
 	buf atomic.AtomicBuffer,

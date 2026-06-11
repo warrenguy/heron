@@ -314,6 +314,7 @@ func TestClient_awaitResponse_driverRegistrationError(t *testing.T) {
 	require.Equal(t, clientAwaitTestCorrelationID, registrationErr.CorrelationID)
 	require.Equal(t, int32(11), registrationErr.ErrorCode)
 	require.Equal(t, "registration failed", registrationErr.Message)
+	require.ErrorIs(t, err, driverErr)
 	require.EqualError(
 		t,
 		err,

@@ -48,8 +48,9 @@ func IndexByTerm(initialTermID, activeTermID int32) int {
 }
 
 // IndexByPosition maps stream position to term partition. Aeron stream positions
-// are non-negative; signed shift matches Java >>> for position >= 0. Partition
-// index and in-term offset (ComputeTermOffsetFromPosition) are different fields.
+// are non-negative; signed shift matches Java >>> for position >= 0.
+//
+// Partition index and in-term offset (ComputeTermOffsetFromPosition) are different fields.
 func IndexByPosition(position int64, positionBitsToShift int) int {
 	shifted := position >> positionBitsToShift
 	return int(uint64(shifted) % uint64(PartitionCount))

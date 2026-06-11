@@ -71,7 +71,9 @@ func (proxy *DriverProxy) NextAvailableSessionID(
 }
 
 // AddPublication offers ADD_PUBLICATION on the to-driver ring.
+//
 // Channel must be ASCII; other bytes return atomic.ErrStringASCIINonASCII.
+//
 // Agrona putStringAscii replaces high bytes with '?'; encode rejects non-ASCII.
 func (proxy *DriverProxy) AddPublication(
 	correlationID int64,
@@ -96,7 +98,9 @@ func (proxy *DriverProxy) AddPublication(
 }
 
 // AddSubscription offers ADD_SUBSCRIPTION on the to-driver ring.
+//
 // Channel must be ASCII; other bytes return atomic.ErrStringASCIINonASCII.
+//
 // Agrona putStringAscii replaces high bytes with '?'; encode rejects non-ASCII.
 func (proxy *DriverProxy) AddSubscription(
 	correlationID int64,

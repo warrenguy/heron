@@ -1,6 +1,7 @@
 package conductor_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -594,6 +595,19 @@ func TestConductor_CompletePendingForTest_missingRegistration(t *testing.T) {
 		0,
 	)
 	err := conductorInstance.CompletePendingForTest(pendingTestCorrelationID, 1, nil)
+	require.ErrorIs(t, err, conductor.ErrPendingNotFound)
+	require.EqualError(t, err, "conductor: no pending registration for correlation")
+}
+
+func TestConductor_CompletePendingForTest_missingRegistrationOnError(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	driverErr := errors.New("conductor: driver rejected registration")
+	err := conductorInstance.CompletePendingForTest(pendingTestCorrelationID, 0, driverErr)
 	require.ErrorIs(t, err, conductor.ErrPendingNotFound)
 	require.EqualError(t, err, "conductor: no pending registration for correlation")
 }

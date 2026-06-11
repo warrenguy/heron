@@ -9,9 +9,10 @@ import (
 	"github.com/warrenguy/heron/aeron/mmap"
 )
 
-// MappedLogBuffer owns mmap until Close. Term and metadata AtomicBuffer views
-// returned before Close must not be used after Close; fresh accessors return error
-// once closed.
+// MappedLogBuffer owns mmap until Close.
+//
+// Term and metadata AtomicBuffer views returned before Close must not be used after Close;
+// fresh accessors return error once closed.
 type MappedLogBuffer struct {
 	mapping    *mmap.Mapping
 	path       string
@@ -37,6 +38,7 @@ func fileSizeFromStat(size int64) (int, error) {
 }
 
 // MapLogBufferFromBytes copies data into an owned heap buffer and maps it as a log.
+//
 // Intended for in-memory fixtures and tests; production IPC uses MapLogFile.
 func MapLogBufferFromBytes(data []byte) (*MappedLogBuffer, error) {
 	return mapLogBuffer(data)
@@ -72,8 +74,9 @@ func MapLogFile(path string) (*MappedLogBuffer, error) {
 	return mapLogFileAfterDiscover(file, path, dims, 0)
 }
 
-// preValidatedFileSize 0 forces Stat before mmap (TOCTOU-safe). Non-zero skips
-// restat and is only valid when size was validated immediately before on this
+// preValidatedFileSize 0 forces Stat before mmap (TOCTOU-safe).
+//
+// Non-zero skips restat and is only valid when size was validated immediately before on this
 // file descriptor; production call sites pass 0.
 func mapLogFileAfterDiscover(
 	file *os.File,
@@ -245,8 +248,10 @@ func (mapped *MappedLogBuffer) ComputedLength() int {
 	return mapped.computed
 }
 
-// Metadata returns the snapshot parsed at map time. After Close the view is
-// zeroed; hot paths should re-read volatile fields from MetaDataBuffer instead.
+// Metadata returns the snapshot parsed at map time.
+//
+// After Close the view is zeroed; hot paths should re-read volatile fields from
+// MetaDataBuffer instead.
 func (mapped *MappedLogBuffer) Metadata() MetadataView {
 	if mapped == nil || mapped.closed {
 		return MetadataView{}
@@ -261,8 +266,10 @@ func (mapped *MappedLogBuffer) closedErr() error {
 	return nil
 }
 
-// Returned AtomicBuffer is a by-value slice header. Retaining it across Close
-// is use-after-unmap on the MapLogFile path; heap-backed MapLogBuffer differs.
+// Returned AtomicBuffer is a by-value slice header.
+//
+// Retaining it across Close is use-after-unmap on the MapLogFile path;
+// heap-backed MapLogBuffer differs.
 func (mapped *MappedLogBuffer) TermBuffer(index int) (atomic.AtomicBuffer, error) {
 	if err := mapped.closedErr(); err != nil {
 		return atomic.AtomicBuffer{}, err
@@ -273,8 +280,10 @@ func (mapped *MappedLogBuffer) TermBuffer(index int) (atomic.AtomicBuffer, error
 	return mapped.termViews[index], nil
 }
 
-// Returned AtomicBuffer views are by-value slice headers. Retaining them across
-// Close is use-after-unmap on the MapLogFile path; heap-backed MapLogBuffer differs.
+// Returned AtomicBuffer views are by-value slice headers.
+//
+// Retaining them across Close is use-after-unmap on the MapLogFile path;
+// heap-backed MapLogBuffer differs.
 func (mapped *MappedLogBuffer) TermBuffers() ([PartitionCount]atomic.AtomicBuffer, error) {
 	if err := mapped.closedErr(); err != nil {
 		return [PartitionCount]atomic.AtomicBuffer{}, err
@@ -282,8 +291,10 @@ func (mapped *MappedLogBuffer) TermBuffers() ([PartitionCount]atomic.AtomicBuffe
 	return mapped.termViews, nil
 }
 
-// Returned AtomicBuffer is a by-value slice header. Retaining it across Close
-// is use-after-unmap on the MapLogFile path; heap-backed MapLogBuffer differs.
+// Returned AtomicBuffer is a by-value slice header.
+//
+// Retaining it across Close is use-after-unmap on the MapLogFile path;
+// heap-backed MapLogBuffer differs.
 func (mapped *MappedLogBuffer) MetaDataBuffer() (atomic.AtomicBuffer, error) {
 	if err := mapped.closedErr(); err != nil {
 		return atomic.AtomicBuffer{}, err
@@ -291,9 +302,10 @@ func (mapped *MappedLogBuffer) MetaDataBuffer() (atomic.AtomicBuffer, error) {
 	return mapped.metaView, nil
 }
 
-// Bytes returns the mapped backing slice. When the on-disk file is page-padded
-// beyond ComputedLength(), len(Bytes()) equals the mapped length; use
-// ComputedLength() for logical log layout bounds.
+// Bytes returns the mapped backing slice.
+//
+// When the on-disk file is page-padded beyond ComputedLength(), len(Bytes()) equals
+// the mapped length; use ComputedLength() for logical log layout bounds.
 func (mapped *MappedLogBuffer) Bytes() []byte {
 	if mapped == nil || mapped.closed {
 		return nil

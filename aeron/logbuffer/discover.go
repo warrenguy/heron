@@ -17,8 +17,9 @@ type layoutDimensions struct {
 
 type dimensionReader func(candidate int) (termLength, pageSize int32, ok bool, err error)
 
-// Returns the first ascending power-of-two candidate that validates. Assumes
-// driver-created Aeron-shaped files; corrupt blobs may false-match at a
+// Returns the first ascending power-of-two candidate that validates.
+//
+// Assumes driver-created Aeron-shaped files; corrupt blobs may false-match at a
 // smaller MetaDataOffset.
 func discoverDimensions(span int, read dimensionReader) (layoutDimensions, error) {
 	maxShift := PositionBitsToShift(TermMaxLength)

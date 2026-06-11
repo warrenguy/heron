@@ -63,8 +63,9 @@ func withResourceRLock2[T any](conductor *Conductor, work func() (T, bool)) (T, 
 	return value, ok
 }
 
-// PublicationByRegID returns a publication handle under RLock. Do not call from
-// the agent goroutine during resourceMu write-lock scopes (deadlocks on RLock);
+// PublicationByRegID returns a publication handle under RLock.
+//
+// Do not call from the agent goroutine during resourceMu write-lock scopes (deadlocks on RLock);
 // agent handlers use publicationByRegID instead.
 func (conductor *Conductor) PublicationByRegID(
 	registrationID int64,
@@ -74,16 +75,18 @@ func (conductor *Conductor) PublicationByRegID(
 	})
 }
 
-// publicationByRegID looks up under resourceMu write lock; agent handlers must
-// call this, not PublicationByRegID.
+// publicationByRegID looks up under resourceMu write lock.
+//
+// Agent handlers must call this, not PublicationByRegID.
 func (conductor *Conductor) publicationByRegID(
 	registrationID int64,
 ) (PublicationHandle, bool) {
 	return resourceByRegID(conductor.publications, registrationID)
 }
 
-// SubscriptionByRegID returns a subscription handle under RLock. Do not call from
-// the agent goroutine during resourceMu write-lock scopes (deadlocks on RLock);
+// SubscriptionByRegID returns a subscription handle under RLock.
+//
+// Do not call from the agent goroutine during resourceMu write-lock scopes (deadlocks on RLock);
 // agent handlers use subscriptionByRegID instead.
 func (conductor *Conductor) SubscriptionByRegID(
 	registrationID int64,
@@ -93,16 +96,20 @@ func (conductor *Conductor) SubscriptionByRegID(
 	})
 }
 
-// subscriptionByRegID looks up under resourceMu write lock; agent handlers must
-// call this, not SubscriptionByRegID.
+// subscriptionByRegID looks up under resourceMu write lock.
+//
+// Agent handlers must call this, not SubscriptionByRegID.
 func (conductor *Conductor) subscriptionByRegID(
 	registrationID int64,
 ) (SubscriptionHandle, bool) {
 	return resourceByRegID(conductor.subscriptions, registrationID)
 }
 
-// insertPublication overwrites an existing registrationID entry. Caller must hold
-// resourceMu write lock. Absent values are rejected.
+// insertPublication overwrites an existing registrationID entry.
+//
+// Caller must hold resourceMu write lock.
+//
+// Absent values are rejected.
 func (conductor *Conductor) insertPublication(
 	registrationID int64,
 	publication PublicationHandle,
@@ -118,8 +125,11 @@ func (conductor *Conductor) removePublication(registrationID int64) {
 	delete(conductor.publications, registrationID)
 }
 
-// insertSubscription overwrites an existing registrationID entry. Caller must
-// hold resourceMu write lock. Absent values are rejected.
+// insertSubscription overwrites an existing registrationID entry.
+//
+// Caller must hold resourceMu write lock.
+//
+// Absent values are rejected.
 func (conductor *Conductor) insertSubscription(
 	registrationID int64,
 	subscription SubscriptionHandle,
@@ -179,8 +189,11 @@ func (conductor *Conductor) sweepLingeringLogBuffers(nowNs int64) int {
 }
 
 // DrainLingeringLogBuffers is the close-path hook for a final linger sweep
-// before CLIENT_CLOSE. Safe from any goroutine once the agent quiesces. During
-// a suspended image handler the mutex is unlocked, so a foreign goroutine may
+// before CLIENT_CLOSE.
+//
+// Safe from any goroutine once the agent quiesces.
+//
+// During a suspended image handler the mutex is unlocked, so a foreign goroutine may
 // acquire the write lock concurrently with the blocked handler.
 func (conductor *Conductor) DrainLingeringLogBuffers() int {
 	return underResourceWriteLockResult(conductor, func() int {

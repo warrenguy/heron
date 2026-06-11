@@ -42,6 +42,9 @@ type ConductorConfig struct {
 	NanoNs              *int64
 	NanoClock           func() int64
 	ErrorHandler        func(error)
+	ImageLifecycle      conductor.ImageLifecycle
+	ResourceLifecycle   conductor.ResourceLifecycle
+	MediaDriverDir      string
 }
 
 func DefaultConductorConfig(nanoNs *int64) ConductorConfig {
@@ -64,13 +67,17 @@ type ConductorFixture struct {
 	NanoClock   func() int64
 }
 
-func NewTestRing(tb TB) *ringbuffer.ManyToOneRingBuffer {
-	tb.Helper()
-
+func newTestRingBuffer() (*ringbuffer.ManyToOneRingBuffer, error) {
 	ringBuffer := aeronatomic.Wrap(
 		make([]byte, ringbuffer.TotalBufferLength(TestRingDataCapacity)),
 	)
-	ring, err := ringbuffer.NewManyToOneRingBuffer(ringBuffer)
+	return ringbuffer.NewManyToOneRingBuffer(ringBuffer)
+}
+
+func NewTestRing(tb TB) *ringbuffer.ManyToOneRingBuffer {
+	tb.Helper()
+
+	ring, err := newTestRingBuffer()
 	require.NoError(tb, err)
 	return ring
 }
@@ -81,10 +88,7 @@ func newTestTransport(epochMs int64) (
 	*broadcast.BroadcastTransmitter,
 	error,
 ) {
-	ringBuffer := aeronatomic.Wrap(
-		make([]byte, ringbuffer.TotalBufferLength(TestRingDataCapacity)),
-	)
-	ring, err := ringbuffer.NewManyToOneRingBuffer(ringBuffer)
+	ring, err := newTestRingBuffer()
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -107,15 +111,18 @@ func newTestTransport(epochMs int64) (
 func NewConductorFixture(tb TB, config ConductorConfig) *ConductorFixture {
 	tb.Helper()
 
-	if config.NanoNs == nil {
-		var nanoNs int64
-		config.NanoNs = &nanoNs
+	cfg := config
+	nanoNs := cfg.NanoNs
+	if nanoNs == nil {
+		var defaultNanoNs int64
+		nanoNs = &defaultNanoNs
+		cfg.NanoNs = nanoNs
 	}
 
-	nanoClock := config.NanoClock
+	nanoClock := cfg.NanoClock
 	if nanoClock == nil {
 		nanoClock = func() int64 {
-			return *config.NanoNs
+			return *nanoNs
 		}
 	}
 
@@ -136,8 +143,11 @@ func NewConductorFixture(tb TB, config ConductorConfig) *ConductorFixture {
 		EpochClock: func() int64 {
 			return config.EpochMs
 		},
-		NanoClock:    nanoClock,
-		ErrorHandler: config.ErrorHandler,
+		NanoClock:         nanoClock,
+		ErrorHandler:      config.ErrorHandler,
+		ImageLifecycle:    config.ImageLifecycle,
+		ResourceLifecycle: config.ResourceLifecycle,
+		MediaDriverDir:    config.MediaDriverDir,
 	}
 
 	driverProxy := conductor.NewDriverProxy(ring, config.ClientID)

@@ -8,7 +8,9 @@ import (
 const headerFragmentedFrameNotSet int32 = -1
 
 // Header is a flyweight reused per Image across Poll callbacks. SetBuffer and
-// SetOffset mutate it each fragment; handlers must not retain *Header past return.
+// SetOffset mutate it each fragment.
+//
+// Handlers must not retain *Header past return.
 type Header struct {
 	buffer              aeronatomic.AtomicBuffer
 	offset              int

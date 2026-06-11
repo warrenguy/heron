@@ -620,6 +620,89 @@ func MapRegistrationErrorForTest(err error) error {
 	return mapRegistrationError(err)
 }
 
+func MapAddOfferErrorForTest(registrationKind string, correlationID int64, err error) error {
+	return mapAddOfferError(registrationKind, correlationID, err)
+}
+
+func MapAddPollPendingErrorForTest(
+	registrationKind string,
+	correlationID int64,
+	streamID int32,
+	channel string,
+	err error,
+) error {
+	return mapAddPollPendingError(registrationKind, correlationID, streamID, channel, err)
+}
+
+func NewRegistrationTimeoutErrorForTest(
+	registrationKind string,
+	correlationID int64,
+	streamID int32,
+	channel string,
+) *RegistrationTimeoutError {
+	return newRegistrationTimeoutError(registrationKind, correlationID, streamID, channel)
+}
+
+func (client *Client) GuardClosedBeforeOfferForTest(
+	driverProxy *conductor.DriverProxy,
+	cncMappedAtOfferStart bool,
+) error {
+	return client.guardClosedBeforeOffer(driverProxy, cncMappedAtOfferStart)
+}
+
+func (client *Client) conductorForTest() *conductor.Conductor {
+	if client == nil || client.conductor == nil {
+		return nil
+	}
+	return client.conductor
+}
+
+func (client *Client) PublicationCountForTest() int {
+	conductorInstance := client.conductorForTest()
+	if conductorInstance == nil {
+		return 0
+	}
+	return conductor.PublicationCountForTest(conductorInstance)
+}
+
+func (client *Client) SubscriptionCountForTest() int {
+	conductorInstance := client.conductorForTest()
+	if conductorInstance == nil {
+		return 0
+	}
+	return conductor.SubscriptionCountForTest(conductorInstance)
+}
+
+func (client *Client) drainedForTest() bool {
+	conductorInstance := client.conductorForTest()
+	if conductorInstance == nil {
+		return true
+	}
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+	return client.PublicationCountForTest() == 0 &&
+		client.SubscriptionCountForTest() == 0 &&
+		!registry.HasScheduledLinger()
+}
+
+func (client *Client) AwaitDrainForTest(timeout time.Duration) error {
+	if err := client.requireReadyWithConductor(); err != nil {
+		return err
+	}
+	conductorInstance := client.conductor
+	deadlineNs := client.nanoClock() + timeout.Nanoseconds()
+	for client.nanoClock() < deadlineNs {
+		if conductorInstance.IsTerminating() {
+			return mapConductorTerminationError(conductorInstance)
+		}
+		client.DoWork()
+		if client.drainedForTest() {
+			return nil
+		}
+		time.Sleep(client.idleSleepDuration)
+	}
+	return errors.New("aeron: await drain timeout")
+}
+
 func (client *Client) AwaitResponseForTest(
 	correlationID int64,
 	kind conductor.PendingKind,
@@ -630,7 +713,9 @@ func (client *Client) AwaitResponseForTest(
 }
 
 // PollAwaitForTest probes a single DoWork tick: one PollPending, DoWork, then
-// PollPending again. It is not the full awaitResponse loop.
+// PollPending again.
+//
+// It is not the full awaitResponse loop.
 func (client *Client) PollAwaitForTest(correlationID int64) error {
 	if err := client.requireReadyWithConductor(); err != nil {
 		return err

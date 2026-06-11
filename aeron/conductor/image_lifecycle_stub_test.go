@@ -461,6 +461,19 @@ func assertImageHandlerPanicRecoveryRestoresLock(
 	require.Equal(t, int64(55), got.RegistrationID())
 }
 
+func TestConductor_invokeImageHandler_requiresWriteLock(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance := newConductorWithRecordingLifecycle(
+		t,
+		&recordingImageLifecycle{addImageOK: true},
+		func(error) {},
+	)
+	require.Panics(t, func() {
+		conductorInstance.InvokeImageHandlerForTest(func() {})
+	})
+}
+
 func TestConductor_invokeImageHandler_panicRecovery(t *testing.T) {
 	t.Parallel()
 

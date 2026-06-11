@@ -16,8 +16,9 @@ type BroadcastTransmitter struct {
 	latestIndex      int
 }
 
-// NewBroadcastTransmitter constructs a transmitter over buffer. Transmit is
-// single-writer; it is not safe for concurrent Transmit calls.
+// NewBroadcastTransmitter constructs a transmitter over buffer.
+//
+// Transmit is single-writer; it is not safe for concurrent Transmit calls.
 func NewBroadcastTransmitter(buffer atomic.AtomicBuffer) (*BroadcastTransmitter, error) {
 	capacity, err := CheckCapacity(buffer.Capacity())
 	if err != nil {

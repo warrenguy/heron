@@ -38,7 +38,9 @@ func MapCreate(path string, length int) (*Mapping, error) {
 }
 
 // MapOpenedFile mmap's length bytes from offset 0 on an already-open file.
+//
 // Caller must have validated on-disk size >= length before calling.
+//
 // On error the file stays open; caller must close it.
 func MapOpenedFile(file *os.File, length int) (*Mapping, error) {
 	if err := requirePositiveLength(length); err != nil {

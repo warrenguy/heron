@@ -25,8 +25,10 @@ type logBufferEntry struct {
 }
 
 // LogBuffersRegistry is the sole conductor log-buffer map: dedup mmap by absolute
-// path, refCount, and lingerDeadlineNs. Not thread-safe; mutation must run under
-// Conductor.resourceMu write lock during mutation scopes or close drain.
+// path, refCount, and lingerDeadlineNs.
+//
+// Not thread-safe; mutation must run under Conductor.resourceMu write lock during
+// mutation scopes or close drain.
 type LogBuffersRegistry struct {
 	entries                map[string]*logBufferEntry
 	mediaDriverDir         string

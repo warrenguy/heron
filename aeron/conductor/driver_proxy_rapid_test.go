@@ -305,7 +305,7 @@ func TestDriverProxy_encodeFailureAborts_rapid(t *testing.T) {
 				outOfBoundsOffset,
 			)
 
-			committedBefore := peekDriverProxyCommittedRecordCount(ring)
+			committedBefore := testutil.CommittedNonPaddingRecordCount(ring)
 			err := proxy.OfferBodyForTest(
 				encodeCase.MsgTypeID,
 				encodeCase.BodyLength,
@@ -319,7 +319,7 @@ func TestDriverProxy_encodeFailureAborts_rapid(t *testing.T) {
 			require.Equal(
 				rt,
 				committedBefore,
-				peekDriverProxyCommittedRecordCount(ring),
+				testutil.CommittedNonPaddingRecordCount(ring),
 				"aborted claim should not commit",
 			)
 		}
