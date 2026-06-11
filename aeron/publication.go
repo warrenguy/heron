@@ -8,6 +8,7 @@ import (
 
 	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
@@ -18,9 +19,11 @@ var (
 
 // Publication is a concurrent IPC publisher over a driver-mapped log buffer.
 //
-// All methods are safe for concurrent use.
+// Offer, TryClaim, Commit, Abort, and read accessors are safe for concurrent
+// use. Close is idempotent but must not be invoked concurrently from multiple
+// goroutines.
 //
-// Close marks the handle closed only; the conductor retains mapped-log lifetime after Close.
+// Close tears down this registration via the bound conductor when present.
 type Publication struct {
 	registrationID         int64
 	originalRegistrationID int64
@@ -47,7 +50,8 @@ type Publication struct {
 	publicationLimitCounterID int32
 	channelStatusCounterID    int32
 
-	closed atomic.Uint32
+	closed    atomic.Uint32
+	conductor *conductor.Conductor
 }
 
 // ChannelEndpointStatusActive mirrors Java ChannelEndpointStatus.ACTIVE.
@@ -77,7 +81,7 @@ func (pub *Publication) Offer(buffer []byte) int64 {
 //
 // Prelude may return other negative codes (e.g. BackPressured) before that check.
 func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64 {
-	if pub.isClosed() {
+	if pub.IsClosed() {
 		return Closed
 	}
 	validateOfferSliceBounds(offset, length, len(buffer))
@@ -108,7 +112,7 @@ func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64
 func (pub *Publication) TryClaim(
 	length int,
 ) (termIndex, frameOffset int, position int64, err error) {
-	if pub.isClosed() {
+	if pub.IsClosed() {
 		return 0, 0, Closed, nil
 	}
 	if length < 0 {
@@ -145,7 +149,7 @@ func (pub *Publication) Abort(termIndex, frameOffset int) error {
 // construction because partition index is always in range; the branch maps to
 // Closed for defensive parity with other auxiliary int64 accessors.
 func (pub *Publication) Position() int64 {
-	if pub.isClosed() {
+	if pub.IsClosed() {
 		return Closed
 	}
 
@@ -166,7 +170,7 @@ func (pub *Publication) Position() int64 {
 
 // PositionLimit returns the publication-limit counter or Closed (-4).
 func (pub *Publication) PositionLimit() int64 {
-	if pub.isClosed() {
+	if pub.IsClosed() {
 		return Closed
 	}
 
@@ -179,14 +183,14 @@ func (pub *Publication) PositionLimit() int64 {
 
 // IsConnected reports the log metadata is-connected flag (not channel-status counter).
 func (pub *Publication) IsConnected() bool {
-	return !pub.isClosed() && logbuffer.IsConnectedVolatile(pub.meta) != 0
+	return !pub.IsClosed() && logbuffer.IsConnectedVolatile(pub.meta) != 0
 }
 
 // ChannelStatus reads the driver channel-status counter.
 //
 // IPC publications omit the counter; NullCounterID reports ChannelEndpointStatusActive.
 func (pub *Publication) ChannelStatus() (int64, error) {
-	if pub.isClosed() {
+	if pub.IsClosed() {
 		return Closed, errors.New("aeron: publication is closed")
 	}
 	if pub.channelStatusCounterID == cnc.NullCounterID {
@@ -197,7 +201,7 @@ func (pub *Publication) ChannelStatus() (int64, error) {
 
 // AvailableWindow returns positionLimit - position, or a negative status code.
 func (pub *Publication) AvailableWindow() int64 {
-	if pub.isClosed() {
+	if pub.IsClosed() {
 		return Closed
 	}
 
@@ -213,14 +217,27 @@ func (pub *Publication) AvailableWindow() int64 {
 	return positionLimit - position
 }
 
-// Close marks the publication closed. Does not unmap the log buffer.
+// Close tears down this registration via the bound conductor.
+//
+// Idempotent: repeated calls return nil. Concurrent Close from multiple
+// goroutines is unsupported. After close, Offer and TryClaim return Closed.
 func (pub *Publication) Close() error {
-	pub.closed.Store(1)
-	return nil
+	if pub.IsClosed() {
+		return nil
+	}
+	if pub.conductor == nil {
+		return pub.markClosed()
+	}
+	return pub.conductor.ClosePublication(pub)
 }
 
-func (pub *Publication) isClosed() bool {
+func (pub *Publication) IsClosed() bool {
 	return pub.closed.Load() != 0
+}
+
+func (pub *Publication) markClosed() error {
+	pub.closed.Store(1)
+	return nil
 }
 
 func validateOfferSliceBounds(offset, length, bufferLength int) {
@@ -278,7 +295,7 @@ func (pub *Publication) loadInFlightClaim(
 	termIndex int,
 	frameOffset int,
 ) (aeronatomic.AtomicBuffer, int32, error) {
-	if pub.isClosed() {
+	if pub.IsClosed() {
 		return aeronatomic.AtomicBuffer{}, 0, errors.New("aeron: publication is closed")
 	}
 	if err := validateTermIndex(termIndex); err != nil {

@@ -13,10 +13,10 @@ type PublicationHandle interface {
 }
 
 func isAbsentMapValue[T any](value T) bool {
-	v := reflect.ValueOf(value)
-	if !v.IsValid() {
+	if any(value) == nil {
 		return true
 	}
+	v := reflect.ValueOf(value)
 	switch v.Kind() {
 	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.Interface:
 		return v.IsNil()
@@ -44,7 +44,25 @@ func liveResourceCount[T any](resources map[int64]T) int {
 	return count
 }
 
-func (conductor *Conductor) withResourceMuRLock(work func()) {
+func snapshotLiveResources[T any](resources map[int64]T) []T {
+	snapshot := make([]T, 0, len(resources))
+	for _, resource := range resources {
+		if isAbsentMapValue(resource) {
+			continue
+		}
+		snapshot = append(snapshot, resource)
+	}
+	return snapshot
+}
+
+func insertResource[T any](resources map[int64]T, registrationID int64, resource T) {
+	if isAbsentMapValue(resource) {
+		return
+	}
+	resources[registrationID] = resource
+}
+
+func withResourceMuRLock(conductor *Conductor, work func()) {
 	conductor.resourceMu.RLock()
 	defer conductor.resourceMu.RUnlock()
 	work()
@@ -52,14 +70,14 @@ func (conductor *Conductor) withResourceMuRLock(work func()) {
 
 func withResourceRLock[T any](conductor *Conductor, work func() T) T {
 	var result T
-	conductor.withResourceMuRLock(func() { result = work() })
+	withResourceMuRLock(conductor, func() { result = work() })
 	return result
 }
 
 func withResourceRLock2[T any](conductor *Conductor, work func() (T, bool)) (T, bool) {
 	var value T
 	var ok bool
-	conductor.withResourceMuRLock(func() { value, ok = work() })
+	withResourceMuRLock(conductor, func() { value, ok = work() })
 	return value, ok
 }
 
@@ -71,7 +89,7 @@ func (conductor *Conductor) PublicationByRegID(
 	registrationID int64,
 ) (PublicationHandle, bool) {
 	return withResourceRLock2(conductor, func() (PublicationHandle, bool) {
-		return conductor.publicationByRegID(registrationID)
+		return resourceByRegID(conductor.publications, registrationID)
 	})
 }
 
@@ -92,7 +110,7 @@ func (conductor *Conductor) SubscriptionByRegID(
 	registrationID int64,
 ) (SubscriptionHandle, bool) {
 	return withResourceRLock2(conductor, func() (SubscriptionHandle, bool) {
-		return conductor.subscriptionByRegID(registrationID)
+		return resourceByRegID(conductor.subscriptions, registrationID)
 	})
 }
 
@@ -109,15 +127,12 @@ func (conductor *Conductor) subscriptionByRegID(
 //
 // Caller must hold resourceMu write lock.
 //
-// Absent values are rejected.
+// Nil handles are ignored; map lookups treat absent entries as a miss.
 func (conductor *Conductor) insertPublication(
 	registrationID int64,
 	publication PublicationHandle,
 ) {
-	if isAbsentMapValue(publication) {
-		return
-	}
-	conductor.publications[registrationID] = publication
+	insertResource(conductor.publications, registrationID, publication)
 }
 
 // removePublication requires resourceMu write lock.
@@ -129,15 +144,12 @@ func (conductor *Conductor) removePublication(registrationID int64) {
 //
 // Caller must hold resourceMu write lock.
 //
-// Absent values are rejected.
+// Nil handles are ignored; map lookups treat absent entries as a miss.
 func (conductor *Conductor) insertSubscription(
 	registrationID int64,
 	subscription SubscriptionHandle,
 ) {
-	if isAbsentMapValue(subscription) {
-		return
-	}
-	conductor.subscriptions[registrationID] = subscription
+	insertResource(conductor.subscriptions, registrationID, subscription)
 }
 
 // removeSubscription requires resourceMu write lock.
@@ -168,20 +180,25 @@ func lingerReleaseNowNs(conductor *Conductor, lingerNs int64) int64 {
 
 // releaseLogBuffers requires resourceMu write lock.
 func (conductor *Conductor) releaseLogBuffers(logFileName string, lingerNs int64) {
-	conductor.logBuffersRegistry.releaseAt(
-		logFileName,
-		lingerReleaseNowNs(conductor, lingerNs),
-		lingerNs,
-	)
+	nowNs := lingerReleaseNowNs(conductor, lingerNs)
+	conductor.logBuffersRegistry.releaseAt(logFileName, nowNs, lingerNs)
 }
 
 // releaseLogBuffersByKey requires resourceMu write lock.
 func (conductor *Conductor) releaseLogBuffersByKey(key string, lingerNs int64) {
-	conductor.logBuffersRegistry.releaseResolvedKeyAt(
-		key,
-		lingerReleaseNowNs(conductor, lingerNs),
-		lingerNs,
-	)
+	nowNs := lingerReleaseNowNs(conductor, lingerNs)
+	conductor.logBuffersRegistry.releaseResolvedKeyAt(key, nowNs, lingerNs)
+}
+
+// releaseLogBuffersByKeys requires resourceMu write lock.
+func (conductor *Conductor) releaseLogBuffersByKeys(keys []string, lingerNs int64) {
+	if len(keys) == 0 {
+		return
+	}
+	nowNs := lingerReleaseNowNs(conductor, lingerNs)
+	for _, key := range keys {
+		conductor.logBuffersRegistry.releaseResolvedKeyAt(key, nowNs, lingerNs)
+	}
 }
 
 func (conductor *Conductor) sweepLingeringLogBuffers(nowNs int64) int {
@@ -196,6 +213,10 @@ func (conductor *Conductor) sweepLingeringLogBuffers(nowNs int64) int {
 // During a suspended image handler the mutex is unlocked, so a foreign goroutine may
 // acquire the write lock concurrently with the blocked handler.
 func (conductor *Conductor) DrainLingeringLogBuffers() int {
+	if conductor.logBuffersRegistry == nil ||
+		!conductor.logBuffersRegistry.HasScheduledLinger() {
+		return 0
+	}
 	return underResourceWriteLockResult(conductor, func() int {
 		return conductor.sweepLingeringLogBuffers(conductor.config.NanoClock())
 	})

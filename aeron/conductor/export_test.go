@@ -39,6 +39,10 @@ func (conductor *Conductor) SetTerminatingForTest(terminating bool) {
 	conductor.terminating = terminating
 }
 
+func (conductor *Conductor) SetCloseLingerNsForTest(lingerNs int64) {
+	conductor.config.CloseLingerNs = lingerNs
+}
+
 func (proxy *DriverProxy) Ring() *ringbuffer.ManyToOneRingBuffer {
 	return proxy.ring
 }
@@ -142,10 +146,6 @@ func SweepLingeringLogBuffersForTest(registry *LogBuffersRegistry, nowNs int64) 
 	return registry.SweepLingering(nowNs)
 }
 
-func LingerDeadlineNsForTest(registry *LogBuffersRegistry, logFileName string) int64 {
-	return registry.lingerDeadlineNs(logFileName)
-}
-
 func LogBuffersRegistryRefCountByResolvedKeyForTest(
 	registry *LogBuffersRegistry,
 	key string,
@@ -153,11 +153,10 @@ func LogBuffersRegistryRefCountByResolvedKeyForTest(
 	if registry == nil {
 		return 0
 	}
-	entry := registry.entries[key]
-	if entry == nil {
-		return 0
+	if entry := registry.entries[key]; entry != nil {
+		return entry.refCount
 	}
-	return entry.refCount
+	return 0
 }
 
 func SeedLogBuffersRegistryForTest(
@@ -213,8 +212,8 @@ func (conductor *Conductor) PreInsertSubscriptionForTest(
 	correlationID int64,
 	streamID int32,
 	channel string,
-) {
-	conductor.preInsertSubscription(correlationID, streamID, channel)
+) error {
+	return conductor.preInsertSubscription(correlationID, streamID, channel)
 }
 
 func (conductor *Conductor) RegisterPendingEntryForTest(
@@ -283,22 +282,6 @@ func ValidateLogFileNameForTest(logFileName, mediaDriverDir string) error {
 	return validateLogFileName(logFileName, mediaDriverDir)
 }
 
-func lastOptionalForTest[T any](ptr *T) (T, bool) {
-	if ptr == nil {
-		var zero T
-		return zero, false
-	}
-	return *ptr, true
-}
-
-func LastPublicationReadyForTest(conductor *Conductor) (PublicationBuffersReady, bool) {
-	return lastOptionalForTest(conductor.lastPublicationReady)
-}
-
-func LastSubscriptionReadyForTest(conductor *Conductor) (SubscriptionReady, bool) {
-	return lastOptionalForTest(conductor.lastSubscriptionReady)
-}
-
 func PublicationErrorsForTest(conductor *Conductor) []PublicationError {
 	return slices.Clone(conductor.publicationErrors)
 }
@@ -320,6 +303,12 @@ func (conductor *Conductor) PublicationReadyForTest(event PublicationBuffersRead
 
 func (conductor *Conductor) SubscriptionReadyForTest(event SubscriptionReady) {
 	conductor.handleSubscriptionReady(event)
+}
+
+func (conductor *Conductor) RollbackAddPendingResourcesForTest(
+	registration PendingRegistration,
+) {
+	conductor.rollbackAddPendingResources(registration)
 }
 
 func (conductor *Conductor) AvailableImageForTest(event AvailableImage) {

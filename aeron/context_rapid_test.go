@@ -33,6 +33,7 @@ func drawPartialContext(t *rapid.T) (
 	ctx.KeepAliveInterval = drawOptionalDuration(t, "keep_alive")
 	ctx.InterServiceTimeout = drawOptionalDuration(t, "inter_service")
 	ctx.IdleSleepDuration = drawOptionalDuration(t, "idle_sleep")
+	ctx.CloseLingerDuration = drawOptionalDuration(t, "close_linger")
 
 	customEpoch = rapid.Bool().Draw(t, "custom_epoch")
 	if customEpoch {
@@ -67,12 +68,14 @@ func TestNormalizeContext_durationFields_rapid(t *testing.T) {
 			KeepAliveInterval:   ctx.KeepAliveInterval,
 			InterServiceTimeout: ctx.InterServiceTimeout,
 			IdleSleepDuration:   ctx.IdleSleepDuration,
+			CloseLingerDuration: ctx.CloseLingerDuration,
 		})
 
 		require.Equal(t, want.DriverTimeout, normalized.DriverTimeout)
 		require.Equal(t, want.KeepAliveInterval, normalized.KeepAliveInterval)
 		require.Equal(t, want.InterServiceTimeout, normalized.InterServiceTimeout)
 		require.Equal(t, want.IdleSleepDuration, normalized.IdleSleepDuration)
+		require.Equal(t, want.CloseLingerDuration, normalized.CloseLingerDuration)
 	})
 }
 
@@ -109,6 +112,7 @@ func requireNormalizedContextsEqual(
 	require.Equal(t, want.KeepAliveInterval, got.KeepAliveInterval)
 	require.Equal(t, want.InterServiceTimeout, got.InterServiceTimeout)
 	require.Equal(t, want.IdleSleepDuration, got.IdleSleepDuration)
+	require.Equal(t, want.CloseLingerDuration, got.CloseLingerDuration)
 	require.Equal(t, want.UseConductorInvoker, got.UseConductorInvoker)
 	require.NotNil(t, want.EpochClock)
 	require.NotNil(t, got.EpochClock)

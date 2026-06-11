@@ -8,31 +8,18 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
 func writeMinimalLogFileForRegistryTest(tb testing.TB, path string) {
 	tb.Helper()
-
-	const termLength = logbuffer.TermMinLength
-	const pageSize = logbuffer.PageMinSize
-	computed, err := logbuffer.ComputeLogLength(termLength, pageSize)
-	require.NoError(tb, err)
-
-	buf := make([]byte, computed)
-	metaStart := logbuffer.MetaDataOffset(termLength)
-	meta := aeronatomic.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
-	meta.PutInt32Release(logbuffer.OffsetTermLength, termLength)
-	meta.PutInt32(logbuffer.OffsetPageSize, pageSize)
-	meta.PutInt32(logbuffer.OffsetMTULength, 1408)
-	meta.PutInt32(logbuffer.OffsetInitialTermID, 7)
-	meta.PutInt32(logbuffer.OffsetDefaultFrameHeaderLength, logbuffer.DataHeaderLength)
-	require.NoError(tb, os.WriteFile(path, buf, 0o644))
+	conductor.WriteMinimalLogFileForTest(tb, path)
 }
 
-const releaseUnderflowPanic = "conductor: log buffer release underflow"
+const (
+	releaseUnderflowPanic = "conductor: log buffer release underflow"
+	negativeLingerPanic   = "conductor: negative linger duration"
+)
 
 func newRegistryWithLogFile(
 	t *testing.T,
@@ -90,6 +77,24 @@ func assertRegistryLingerScheduled(
 	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 	require.Equal(t, startNs+lingerNs, conductor.LingerDeadlineNsForTest(registry, logPath))
 	assertRegistryLingerScheduledMatchesScan(t, registry)
+}
+
+func assertRegistryLingerScheduledMatchesScan(
+	t *testing.T,
+	registry *conductor.LogBuffersRegistry,
+) {
+	t.Helper()
+
+	require.Equal(
+		t,
+		conductor.LogBuffersRegistryCountScheduledLingersForTest(registry),
+		conductor.LogBuffersRegistryLingerScheduledForTest(registry),
+	)
+	require.Equal(
+		t,
+		conductor.LogBuffersRegistryLingerScheduledForTest(registry) > 0,
+		registry.HasScheduledLinger(),
+	)
 }
 
 func assertLingerRetainedAt(
@@ -232,8 +237,10 @@ func TestLogBuffersRegistry_Release_panics(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		setup func(t *testing.T) (*conductor.LogBuffersRegistry, string)
+		name      string
+		setup     func(t *testing.T) (*conductor.LogBuffersRegistry, string)
+		lingerNs  int64
+		wantPanic string
 	}{
 		{
 			name: "lingerScheduledOverRelease",
@@ -242,12 +249,22 @@ func TestLogBuffersRegistry_Release_panics(t *testing.T) {
 				scheduleLingerForRegistryLog(t, registry, logPath, 1_000_000_000, int64(time.Second))
 				return registry, logPath
 			},
+			wantPanic: releaseUnderflowPanic,
 		},
 		{
 			name: "overRelease",
 			setup: func(t *testing.T) (*conductor.LogBuffersRegistry, string) {
 				return newSeededRegistryWithRefCount(t, "over-release.log", 0)
 			},
+			wantPanic: releaseUnderflowPanic,
+		},
+		{
+			name: "negativeLinger",
+			setup: func(t *testing.T) (*conductor.LogBuffersRegistry, string) {
+				return newRegistryWithAcquiredLog(t, "negative-linger.log")
+			},
+			lingerNs:  -1,
+			wantPanic: negativeLingerPanic,
 		},
 	}
 
@@ -257,8 +274,8 @@ func TestLogBuffersRegistry_Release_panics(t *testing.T) {
 			registry, logPath := testCase.setup(t)
 			require.PanicsWithValue(
 				t,
-				releaseUnderflowPanic,
-				func() { registry.Release(logPath, 0) },
+				testCase.wantPanic,
+				func() { registry.Release(logPath, testCase.lingerNs) },
 			)
 		})
 	}
@@ -449,7 +466,6 @@ func TestLogBuffersRegistry_Release_positiveLingerIgnoredUntilFinalRelease(t *te
 	require.Zero(t, conductor.LingerDeadlineNsForTest(registry, logPath))
 	assertRegistryLingerScheduledMatchesScan(t, registry)
 	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
-	require.False(t, registry.HasScheduledLinger())
 
 	registry.Release(logPath, lingerNs)
 	require.Zero(t, conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
@@ -457,7 +473,6 @@ func TestLogBuffersRegistry_Release_positiveLingerIgnoredUntilFinalRelease(t *te
 	require.NotZero(t, conductor.LingerDeadlineNsForTest(registry, logPath))
 	assertRegistryLingerScheduledMatchesScan(t, registry)
 	require.Equal(t, 1, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
-	require.True(t, registry.HasScheduledLinger())
 }
 
 func TestLogBuffersRegistry_Release_lingerSchedulesUnmap(t *testing.T) {
@@ -475,47 +490,6 @@ func TestLogBuffersRegistry_Release_lingerSchedulesUnmap(t *testing.T) {
 	sweep := registrySweepForTest(registry)
 	assertLingerRetainedAt(t, registry, logPath, sweep, 0)
 	assertLingerSweptAt(t, registry, logPath, sweep, deadline)
-}
-
-func TestLogBuffersRegistry_Release_negativeLingerImmediateUnmap(t *testing.T) {
-	t.Parallel()
-
-	const startNs int64 = 9_000_000_000
-
-	tests := []struct {
-		name    string
-		release func(t *testing.T, registry *conductor.LogBuffersRegistry, logPath string)
-	}{
-		{
-			name: "publicRelease",
-			release: func(t *testing.T, registry *conductor.LogBuffersRegistry, logPath string) {
-				t.Helper()
-				registry.Release(logPath, -1)
-			},
-		},
-		{
-			name: "resolvedKeyAt",
-			release: func(t *testing.T, registry *conductor.LogBuffersRegistry, logPath string) {
-				t.Helper()
-				scheduleLingerForRegistryLog(t, registry, logPath, startNs, -1)
-			},
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			registry, logPath := newRegistryWithAcquiredLog(t, testCase.name+".log")
-			testCase.release(t, registry, logPath)
-
-			require.Zero(t, conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
-			require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
-			assertRegistryLingerScheduledMatchesScan(t, registry)
-			require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
-			require.False(t, registry.HasScheduledLinger())
-		})
-	}
 }
 
 func TestLogBuffersRegistry_acquireAfterLingerScheduled_cancelsLinger(t *testing.T) {
@@ -537,30 +511,6 @@ func TestLogBuffersRegistry_acquireAfterLingerScheduled_cancelsLinger(t *testing
 	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 }
 
-func TestSweepLingeringLogBuffers_nilRegistry(t *testing.T) {
-	t.Parallel()
-
-	require.Zero(t, conductor.SweepLingeringLogBuffersForTest(nil, 0))
-}
-
-func assertRegistryLingerScheduledMatchesScan(
-	t *testing.T,
-	registry *conductor.LogBuffersRegistry,
-) {
-	t.Helper()
-
-	require.Equal(
-		t,
-		conductor.LogBuffersRegistryCountScheduledLingersForTest(registry),
-		conductor.LogBuffersRegistryLingerScheduledForTest(registry),
-	)
-	require.Equal(
-		t,
-		conductor.LogBuffersRegistryLingerScheduledForTest(registry) > 0,
-		registry.HasScheduledLinger(),
-	)
-}
-
 func TestLogBuffersRegistry_lingerScheduled_nilRegistry(t *testing.T) {
 	t.Parallel()
 
@@ -568,6 +518,12 @@ func TestLogBuffersRegistry_lingerScheduled_nilRegistry(t *testing.T) {
 	require.False(t, nilRegistry.HasScheduledLinger())
 	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(nil))
 	require.Zero(t, conductor.LogBuffersRegistryCountScheduledLingersForTest(nil))
+}
+
+func TestSweepLingeringLogBuffers_nilRegistry(t *testing.T) {
+	t.Parallel()
+
+	require.Zero(t, conductor.SweepLingeringLogBuffersForTest(nil, 0))
 }
 
 func TestLogBuffersRegistry_lingerScheduledCounter(t *testing.T) {
@@ -578,30 +534,26 @@ func TestLogBuffersRegistry_lingerScheduledCounter(t *testing.T) {
 
 	registry, logPath := newRegistryWithAcquiredLog(t, "linger-counter.log")
 	assertRegistryLingerScheduledMatchesScan(t, registry)
-	require.False(t, registry.HasScheduledLinger())
+	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
 
 	_, err := registry.Acquire(logPath)
 	require.NoError(t, err)
 	registry.Release(logPath, int64(time.Hour))
 	assertRegistryLingerScheduledMatchesScan(t, registry)
 	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
-	require.False(t, registry.HasScheduledLinger())
 
 	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
 	assertRegistryLingerScheduledMatchesScan(t, registry)
 	require.Equal(t, 1, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
-	require.True(t, registry.HasScheduledLinger())
 
 	_, err = registry.Acquire(logPath)
 	require.NoError(t, err)
 	assertRegistryLingerScheduledMatchesScan(t, registry)
 	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
-	require.False(t, registry.HasScheduledLinger())
 
 	registry.Release(logPath, 0)
 	assertRegistryLingerScheduledMatchesScan(t, registry)
 	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
-	require.False(t, registry.HasScheduledLinger())
 
 	registry, logPath = newRegistryWithAcquiredLog(t, "linger-counter-sweep.log")
 	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
@@ -611,5 +563,4 @@ func TestLogBuffersRegistry_lingerScheduledCounter(t *testing.T) {
 	require.Equal(t, 1, sweep(startNs+lingerNs))
 	assertRegistryLingerScheduledMatchesScan(t, registry)
 	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
-	require.False(t, registry.HasScheduledLinger())
 }

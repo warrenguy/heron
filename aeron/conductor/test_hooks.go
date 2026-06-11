@@ -7,8 +7,38 @@
 package conductor
 
 import (
+	"os"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/logbuffer"
 )
+
+func WriteMinimalLogFileForTest(tb testing.TB, path string) {
+	tb.Helper()
+
+	const termLength = logbuffer.TermMinLength
+	const pageSize = logbuffer.PageMinSize
+	computed, err := logbuffer.ComputeLogLength(termLength, pageSize)
+	require.NoError(tb, err)
+
+	buf := make([]byte, computed)
+	metaStart := logbuffer.MetaDataOffset(termLength)
+	meta := aeronatomic.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
+	meta.PutInt32Release(logbuffer.OffsetTermLength, termLength)
+	meta.PutInt32(logbuffer.OffsetPageSize, pageSize)
+	meta.PutInt32(logbuffer.OffsetMTULength, 1408)
+	meta.PutInt32(logbuffer.OffsetInitialTermID, 7)
+	meta.PutInt32(logbuffer.OffsetDefaultFrameHeaderLength, logbuffer.DataHeaderLength)
+	require.NoError(tb, os.WriteFile(path, buf, 0o644))
+}
+
+func SetCloseLingerNsForTest(conductor *Conductor, lingerNs int64) {
+	conductor.config.CloseLingerNs = lingerNs
+}
 
 func assertInvokeImageHandlerUnderWriteLock(savedDepth int32) {
 	if savedDepth <= 0 {
@@ -25,6 +55,16 @@ func RegisterSubscriptionForTest(
 	sub SubscriptionHandle,
 ) {
 	registerSubscriptionHook(conductor, registrationID, sub)
+}
+
+// AcquireLogBuffersForTest is for cross-package tests behind the testhooks tag.
+//
+// conductor_test uses (*Conductor).AcquireLogBuffersForTest in export_test.go instead.
+func AcquireLogBuffersForTest(
+	conductor *Conductor,
+	logFileName string,
+) (*logbuffer.LogBuffers, error) {
+	return acquireLogBuffersHook(conductor, logFileName)
 }
 
 // RegisterPublicationForTest is for cross-package tests behind the testhooks tag.
@@ -90,6 +130,10 @@ func LogBuffersRegistryLingerScheduledForTest(registry *LogBuffersRegistry) int 
 
 func LogBuffersRegistryCountScheduledLingersForTest(registry *LogBuffersRegistry) int {
 	return logBuffersRegistryCountScheduledLingersHook(registry)
+}
+
+func LingerDeadlineNsForTest(registry *LogBuffersRegistry, logFileName string) int64 {
+	return lingerDeadlineNsHook(registry, logFileName)
 }
 
 func (conductor *Conductor) SetLingerSweepBlockerForTest(blocker func()) {

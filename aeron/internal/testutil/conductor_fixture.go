@@ -45,6 +45,7 @@ type ConductorConfig struct {
 	ImageLifecycle      conductor.ImageLifecycle
 	ResourceLifecycle   conductor.ResourceLifecycle
 	MediaDriverDir      string
+	CloseLingerNs       int64
 }
 
 func DefaultConductorConfig(nanoNs *int64) ConductorConfig {
@@ -126,7 +127,7 @@ func NewConductorFixture(tb TB, config ConductorConfig) *ConductorFixture {
 		}
 	}
 
-	ring, receiver, transmitter, err := newTestTransport(config.EpochMs)
+	ring, receiver, transmitter, err := newTestTransport(cfg.EpochMs)
 	require.NoError(tb, err)
 
 	meta := make([]byte, cnc.CounterMetadataLength)
@@ -135,22 +136,23 @@ func NewConductorFixture(tb TB, config ConductorConfig) *ConductorFixture {
 	require.NoError(tb, err)
 
 	conductorConfig := conductor.Config{
-		ClientID:            config.ClientID,
-		DriverTimeout:       config.DriverTimeout,
-		KeepAliveInterval:   config.KeepAliveInterval,
-		IdleSleepDuration:   config.IdleSleepDuration,
-		InterServiceTimeout: config.InterServiceTimeout,
+		ClientID:            cfg.ClientID,
+		DriverTimeout:       cfg.DriverTimeout,
+		KeepAliveInterval:   cfg.KeepAliveInterval,
+		IdleSleepDuration:   cfg.IdleSleepDuration,
+		InterServiceTimeout: cfg.InterServiceTimeout,
 		EpochClock: func() int64 {
-			return config.EpochMs
+			return cfg.EpochMs
 		},
 		NanoClock:         nanoClock,
-		ErrorHandler:      config.ErrorHandler,
-		ImageLifecycle:    config.ImageLifecycle,
-		ResourceLifecycle: config.ResourceLifecycle,
-		MediaDriverDir:    config.MediaDriverDir,
+		ErrorHandler:      cfg.ErrorHandler,
+		ImageLifecycle:    cfg.ImageLifecycle,
+		ResourceLifecycle: cfg.ResourceLifecycle,
+		MediaDriverDir:    cfg.MediaDriverDir,
+		CloseLingerNs:     cfg.CloseLingerNs,
 	}
 
-	driverProxy := conductor.NewDriverProxy(ring, config.ClientID)
+	driverProxy := conductor.NewDriverProxy(ring, cfg.ClientID)
 	conductorInstance, err := conductor.NewConductor(
 		driverProxy,
 		receiver,

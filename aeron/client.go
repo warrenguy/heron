@@ -12,7 +12,10 @@ import (
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
 
-const driverHeartbeatPollInterval = 50 * time.Millisecond
+const (
+	driverHeartbeatPollInterval = 50 * time.Millisecond
+	closeDrainMaxIdleTicks      = 3
+)
 
 type Client struct {
 	clientID                int64
@@ -56,6 +59,9 @@ func Connect(ctx Context) (*Client, error) {
 func validateConnectContext(ctx Context) error {
 	if ctx.AeronDir == "" {
 		return errors.New("aeron: AeronDir is required")
+	}
+	if ctx.CloseLingerDuration < 0 {
+		return errors.New("aeron: CloseLingerDuration must not be negative")
 	}
 	if !ctx.useConductorInvokerEnabled() {
 		return errors.New("aeron: dedicated conductor invoker is not supported")
@@ -107,6 +113,7 @@ func conductorConnectConfig(ctx Context, clientID int64) conductor.Config {
 		ImageLifecycle:         ConductorImageLifecycle,
 		ResourceLifecycle:      ConductorResourceLifecycle,
 		MediaDriverDir:         ctx.AeronDir,
+		CloseLingerNs:          ctx.CloseLingerDuration.Nanoseconds(),
 	}
 	if handler := ctx.ErrorHandler; handler != nil {
 		config.ErrorHandler = func(err error) {
@@ -185,11 +192,21 @@ func (client *Client) IsTerminating() bool {
 	return client.conductor.IsTerminating()
 }
 
+// Close tears down resources, drains close responses and log linger, sends
+// CLIENT_CLOSE, and unmaps the CNC file. Idempotent; concurrent Close is
+// unsupported. Linger drain is best-effort when NanoClock does not advance.
+// Returns the first error from unmapping CNC; teardown errors go to ErrorHandler.
 func (client *Client) Close() error {
 	if client == nil || client.closed {
 		return nil
 	}
 	client.closed = true
+
+	if client.conductor != nil {
+		client.conductor.CloseAllResources()
+		client.drainCloseResponses()
+		client.awaitCloseLingerDrain()
+	}
 
 	if client.driverProxy != nil {
 		client.driverProxy.ClientClose()
@@ -204,6 +221,41 @@ func (client *Client) Close() error {
 	client.countersReader = nil
 	client.driverProxy = nil
 	return err
+}
+
+func (client *Client) drainCloseResponses() {
+	// closeDrainMaxIdleTicks idle DoWork ticks exit early so unit tests with
+	// synthetic drivers finish without waiting the full DriverTimeout cap.
+	deadline := time.Now().Add(client.driverTimeout)
+	idleTicks := 0
+	for time.Now().Before(deadline) {
+		if client.conductor.DoWork() != 0 {
+			idleTicks = 0
+		} else if idleTicks++; idleTicks >= closeDrainMaxIdleTicks {
+			return
+		}
+		time.Sleep(client.idleSleepDuration)
+	}
+}
+
+func (client *Client) awaitCloseLingerDrain() {
+	nanoClock := client.nanoClock
+	if nanoClock == nil || !client.conductor.HasScheduledLinger() {
+		return
+	}
+
+	lingerDuration := time.Duration(client.conductor.CloseLingerNs())
+	lingerDeadlineNs := nanoClock() + lingerDuration.Nanoseconds()
+	wallDeadline := time.Now().Add(lingerDuration)
+	for nanoClock() < lingerDeadlineNs && time.Now().Before(wallDeadline) {
+		client.conductor.DrainLingeringLogBuffers()
+		client.conductor.DoWork()
+		if !client.conductor.HasScheduledLinger() {
+			return
+		}
+		time.Sleep(client.idleSleepDuration)
+	}
+	client.conductor.DrainLingeringLogBuffers()
 }
 
 func (client *Client) NextCorrelationID() int64 {

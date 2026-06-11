@@ -122,7 +122,7 @@ func TestConductorResourceLifecycle_RetirePublication_closesAndReturnsRegistryKe
 	registryKey, err := ConductorResourceLifecycle.RetirePublication(pub)
 	require.NoError(t, err)
 	require.Equal(t, pub.log.Path(), registryKey)
-	require.True(t, pub.isClosed())
+	require.True(t, pub.IsClosed())
 }
 
 func TestConductorResourceLifecycle_RetireSubscription_releasesImageLogs(t *testing.T) {
@@ -162,6 +162,21 @@ func TestValidateConfig_requiresResourceLifecycleWithImageLifecycle(t *testing.T
 	err = conductor.ValidateConfig(conductor.Config{
 		ImageLifecycle:    ConductorImageLifecycle,
 		ResourceLifecycle: ConductorResourceLifecycle,
+	})
+	require.NoError(t, err)
+}
+
+func TestValidateConfig_rejectsNegativeCloseLingerNs(t *testing.T) {
+	t.Parallel()
+
+	err := conductor.ValidateConfig(conductor.Config{
+		CloseLingerNs: -1,
+	})
+	require.ErrorIs(t, err, conductor.ErrNegativeCloseLingerNs)
+	require.EqualError(t, err, "conductor: CloseLingerNs must not be negative")
+
+	err = conductor.ValidateConfig(conductor.Config{
+		CloseLingerNs: 0,
 	})
 	require.NoError(t, err)
 }

@@ -31,6 +31,25 @@ func TestDriverEventsAdapter_clientTimeout_matchingClient(t *testing.T) {
 	require.Empty(t, gotErrors)
 }
 
+func TestDriverEventsAdapter_duplicateClientTimeoutIgnored_adapterLevel(t *testing.T) {
+	errorHandler, gotErrors := collectConductorErrors()
+	conductorInstance := newConductorForTest(
+		t,
+		conductorTestConfig(t, errorHandler, fixedClocks{nanoNs: 0}),
+	)
+	adapter := conductorInstance.EventsAdapterForTest()
+	timeoutPayload := testutil.ClientTimeoutPayload(conductorTestClientID)
+
+	transmitConductorEvent(t, adapter, conductor.OnClientTimeout, timeoutPayload)
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.Len(t, *gotErrors, 1)
+	require.True(t, conductorInstance.IsTerminating())
+
+	transmitConductorEvent(t, adapter, conductor.OnClientTimeout, timeoutPayload)
+	require.Equal(t, 1, adapter.Receive(conductor.NullCorrelationID, nil))
+	require.Len(t, *gotErrors, 1)
+}
+
 func TestDriverEventsAdapter_clientTimeout_otherClient(t *testing.T) {
 	var timeoutCalled bool
 	adapter := newDriverEventsAdapterForTest(
@@ -683,8 +702,6 @@ func TestDriverEventsAdapter_publicationReady_matchingCorrelation(t *testing.T) 
 			require.Equal(t, 1, count)
 			require.Zero(t, adapter.UnhandledEventCount())
 
-			_, latched := conductor.LastPublicationReadyForTest(conductorInstance)
-			require.False(t, latched)
 			require.Equal(
 				t,
 				goldenPublicationReadyCorrelationID,
@@ -721,9 +738,6 @@ func TestDriverEventsAdapter_publicationReady_matchingCorrelation_paddedBody(t *
 	count := adapter.Receive(goldenPublicationReadyCorrelationID, conductorInstance)
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
-
-	_, latched := conductor.LastPublicationReadyForTest(conductorInstance)
-	require.False(t, latched)
 }
 
 func TestDriverEventsAdapter_publicationReady_pendingRegistryOnly(t *testing.T) {
@@ -754,8 +768,6 @@ func TestDriverEventsAdapter_publicationReady_pendingRegistryOnly(t *testing.T) 
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
 
-	_, latched := conductor.LastPublicationReadyForTest(conductorInstance)
-	require.False(t, latched)
 	require.Equal(
 		t,
 		goldenPublicationReadyCorrelationID,
@@ -841,8 +853,6 @@ func TestDriverEventsAdapter_publicationReady_foreignPendingCorrelation(t *testi
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
 
-	_, latched := conductor.LastPublicationReadyForTest(conductorInstance)
-	require.False(t, latched)
 	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
 }
 
@@ -886,8 +896,6 @@ func TestDriverEventsAdapter_subscriptionReady_matchingCorrelation(t *testing.T)
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
 
-	_, latched := conductor.LastSubscriptionReadyForTest(conductorInstance)
-	require.False(t, latched)
 	require.Equal(
 		t,
 		goldenSubscriptionReadyCorrelationID,
@@ -949,9 +957,6 @@ func TestDriverEventsAdapter_subscriptionReady_matchingCorrelation_paddedBody(t 
 	count := adapter.Receive(goldenSubscriptionReadyCorrelationID, conductorInstance)
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
-
-	_, latched := conductor.LastSubscriptionReadyForTest(conductorInstance)
-	require.False(t, latched)
 }
 
 func TestDriverEventsAdapter_subscriptionReady_foreignPendingCorrelation(t *testing.T) {
@@ -982,8 +987,6 @@ func TestDriverEventsAdapter_subscriptionReady_foreignPendingCorrelation(t *test
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
 
-	_, latched := conductor.LastSubscriptionReadyForTest(conductorInstance)
-	require.False(t, latched)
 	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
 }
 
@@ -1015,8 +1018,6 @@ func TestDriverEventsAdapter_subscriptionReady_pendingRegistryOnly(t *testing.T)
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
 
-	_, latched := conductor.LastSubscriptionReadyForTest(conductorInstance)
-	require.False(t, latched)
 	require.Equal(
 		t,
 		goldenSubscriptionReadyCorrelationID,

@@ -11,6 +11,7 @@ const (
 	defaultKeepAliveInterval   = 500 * time.Millisecond
 	defaultIdleSleepDuration   = 16 * time.Millisecond
 	defaultInterServiceTimeout = time.Second
+	defaultCloseLingerDuration = 3 * time.Second
 
 	DefaultIdleSleepDuration = defaultIdleSleepDuration
 )
@@ -22,6 +23,10 @@ type Context struct {
 	KeepAliveInterval   time.Duration
 	InterServiceTimeout time.Duration
 	IdleSleepDuration   time.Duration
+	// CloseLingerDuration schedules log unmap after publication or image close.
+	//
+	// Zero uses the default (3s), not immediate unmap.
+	CloseLingerDuration time.Duration
 
 	ErrorHandler func(error)
 
@@ -50,6 +55,9 @@ func normalizeContext(ctx Context) Context {
 	}
 	if ctx.IdleSleepDuration == 0 {
 		ctx.IdleSleepDuration = defaultIdleSleepDuration
+	}
+	if ctx.CloseLingerDuration == 0 {
+		ctx.CloseLingerDuration = defaultCloseLingerDuration
 	}
 	if ctx.EpochClock == nil {
 		ctx.EpochClock = func() int64 {

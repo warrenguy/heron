@@ -262,7 +262,10 @@ func (conductor *Conductor) RegisterPendingAddWithDeadline(
 		return err
 	}
 	if kind == PendingKindAddSubscription {
-		conductor.preInsertSubscription(correlationID, streamID, channel)
+		if err := conductor.preInsertSubscription(correlationID, streamID, channel); err != nil {
+			conductor.CancelPending(correlationID)
+			return err
+		}
 	}
 	return nil
 }

@@ -657,6 +657,66 @@ func (client *Client) conductorForTest() *conductor.Conductor {
 	return client.conductor
 }
 
+type stubPublicationForTest struct {
+	registrationID int64
+}
+
+func (publication stubPublicationForTest) RegistrationID() int64 {
+	return publication.registrationID
+}
+
+func InsertPublicationForTest(
+	conductorInstance *conductor.Conductor,
+	registrationID int64,
+) {
+	conductor.RegisterPublicationForTest(
+		conductorInstance,
+		registrationID,
+		stubPublicationForTest{registrationID: registrationID},
+	)
+}
+
+func NewFileBackedPublicationBoundForCloseTest(
+	tb testing.TB,
+	conductorInstance *conductor.Conductor,
+	logPath string,
+) *Publication {
+	tb.Helper()
+
+	pub := NewFileBackedPublicationForHooks(tb, logPath)
+
+	_, err := conductor.AcquireLogBuffersForTest(conductorInstance, logPath)
+	require.NoError(tb, err)
+
+	pub.conductor = conductorInstance
+	conductor.RegisterPublicationForTest(conductorInstance, pub.RegistrationID(), pub)
+	return pub
+}
+
+type lingerStubPublicationLifecycle struct {
+	conductorResourceLifecycle
+	registryKey string
+}
+
+func NewLingerStubPublicationLifecycle(registryKey string) conductor.ResourceLifecycle {
+	return lingerStubPublicationLifecycle{registryKey: registryKey}
+}
+
+func (lingerStubPublicationLifecycle) NewPublication(
+	conductor.PublicationBuffersReady,
+	*logbuffer.LogBuffers,
+	*cnc.CountersReader,
+	string,
+) (conductor.PublicationHandle, error) {
+	return nil, errors.New("aeron: linger stub lifecycle does not build publications")
+}
+
+func (l lingerStubPublicationLifecycle) RetirePublication(
+	_ conductor.PublicationHandle,
+) (string, error) {
+	return l.registryKey, nil
+}
+
 func (client *Client) PublicationCountForTest() int {
 	conductorInstance := client.conductorForTest()
 	if conductorInstance == nil {
@@ -679,11 +739,16 @@ func (client *Client) drainedForTest() bool {
 		return true
 	}
 	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
-	return client.PublicationCountForTest() == 0 &&
-		client.SubscriptionCountForTest() == 0 &&
+	return conductor.PublicationCountForTest(conductorInstance) == 0 &&
+		conductor.SubscriptionCountForTest(conductorInstance) == 0 &&
 		!registry.HasScheduledLinger()
 }
 
+// AwaitDrainForTest polls DoWork until publications, subscriptions, and
+// scheduled linger are drained or timeout elapses.
+//
+// NanoClock must advance between ticks when linger is scheduled; a frozen
+// clock causes await-drain timeout even if wall time passes.
 func (client *Client) AwaitDrainForTest(timeout time.Duration) error {
 	if err := client.requireReadyWithConductor(); err != nil {
 		return err
@@ -734,6 +799,18 @@ func (client *Client) PollAwaitForTest(correlationID int64) error {
 
 func NormalizeContextForTest(ctx Context) Context {
 	return normalizeContext(ctx)
+}
+
+func ValidateConnectContextForTest(ctx Context) error {
+	return validateConnectContext(ctx)
+}
+
+func (client *Client) SetCloseLingerDurationForTest(duration time.Duration) {
+	conductorInstance := client.conductorForTest()
+	if conductorInstance == nil {
+		return
+	}
+	conductor.SetCloseLingerNsForTest(conductorInstance, duration.Nanoseconds())
 }
 
 func (ctx Context) UseConductorInvokerEnabledForTest() bool {

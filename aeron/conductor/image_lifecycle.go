@@ -70,21 +70,19 @@ func (conductor *Conductor) handleAvailableImage(event AvailableImage) {
 			return
 		}
 
-		resolvedLogFileName, err := conductor.logBuffersRegistry.resolveLogFileKey(
-			event.LogFileName,
-		)
+		resolvedLogFileKey, err := conductor.logBuffersRegistry.resolveLogFileKey(event.LogFileName)
 		if err != nil {
 			invokeErrorHandler(conductor.config.ErrorHandler, err)
 			return
 		}
 
-		logBuffers, err := conductor.acquireLogBuffersByKey(resolvedLogFileName)
+		logBuffers, err := conductor.acquireLogBuffersByKey(resolvedLogFileKey)
 		if err != nil {
 			invokeErrorHandler(conductor.config.ErrorHandler, err)
 			return
 		}
 
-		event.LogFileName = resolvedLogFileName
+		event.LogFileName = resolvedLogFileKey
 		image, err := conductor.imageLifecycle.NewImage(
 			sub,
 			event,
@@ -93,13 +91,13 @@ func (conductor *Conductor) handleAvailableImage(event AvailableImage) {
 			conductor.config.SubscriberErrorHandler,
 		)
 		if err != nil {
-			conductor.releaseAcquiredLogFile(resolvedLogFileName, err)
+			conductor.releaseAcquiredLogBuffers(resolvedLogFileKey, err)
 			return
 		}
 
 		if !conductor.imageLifecycle.AddImage(sub, image) {
 			conductor.imageLifecycle.CloseImage(image)
-			conductor.releaseAcquiredLogFile(resolvedLogFileName, errImageAttachFailed)
+			conductor.releaseAcquiredLogBuffers(resolvedLogFileKey, errImageAttachFailed)
 			return
 		}
 
@@ -126,12 +124,12 @@ func (conductor *Conductor) handleUnavailableImage(
 		}
 
 		conductor.imageLifecycle.CloseImage(image)
-		// lingerNs=0: synchronous unmap when refcount reaches zero.
 		if !image.IsClosed() {
 			invokeErrorHandler(conductor.config.ErrorHandler, errImageCloseFailedBeforeRelease)
 			return
 		}
-		conductor.releaseLogBuffersByKey(image.LogFileName(), 0)
+		registryKey := image.LogFileName()
+		conductor.releaseLogBuffersByKey(registryKey, conductor.config.CloseLingerNs)
 
 		if handler := conductor.imageLifecycle.UnavailableImageHandler(sub); handler != nil {
 			conductor.invokeImageHandler(func() {
@@ -141,8 +139,8 @@ func (conductor *Conductor) handleUnavailableImage(
 	})
 }
 
-func (conductor *Conductor) releaseAcquiredLogFile(resolvedLogFileName string, err error) {
-	conductor.releaseLogBuffersByKey(resolvedLogFileName, 0)
+func (conductor *Conductor) releaseAcquiredLogBuffers(registryKey string, err error) {
+	conductor.releaseLogBuffersByKey(registryKey, 0)
 	invokeErrorHandler(conductor.config.ErrorHandler, err)
 }
 

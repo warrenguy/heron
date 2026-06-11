@@ -6,6 +6,7 @@ import (
 	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
 
@@ -43,6 +44,18 @@ func removeSubscriptionHook(conductor *Conductor, registrationID int64) {
 	})
 }
 
+func acquireLogBuffersHook(
+	conductor *Conductor,
+	logFileName string,
+) (*logbuffer.LogBuffers, error) {
+	var buffers *logbuffer.LogBuffers
+	var err error
+	conductor.underResourceWriteLock(func() {
+		buffers, err = conductor.acquireLogBuffers(logFileName)
+	})
+	return buffers, err
+}
+
 func logBuffersRegistryHook(conductor *Conductor) *LogBuffersRegistry {
 	return conductor.logBuffersRegistry
 }
@@ -75,6 +88,10 @@ func logBuffersRegistryLingerScheduledHook(registry *LogBuffersRegistry) int {
 
 func logBuffersRegistryCountScheduledLingersHook(registry *LogBuffersRegistry) int {
 	return registry.countScheduledLingers()
+}
+
+func lingerDeadlineNsHook(registry *LogBuffersRegistry, logFileName string) int64 {
+	return registry.lingerDeadlineNs(logFileName)
 }
 
 func setLingerSweepBlockerHook(conductor *Conductor, blocker func()) {

@@ -9,7 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
+	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
 var errRapidApplySubscriptionReady = errors.New("conductor_test: apply subscription ready failed")
@@ -766,9 +769,6 @@ func syncAddPendingRapidAfterDoWork(
 		if !ok {
 			entry.present = false
 			model.entries[correlationID] = entry
-			if entry.driverErrored {
-				continue
-			}
 			continue
 		}
 		entry.deadlineNs = got.DeadlineNs
@@ -876,10 +876,14 @@ func runAddPendingRapidStep(
 		ops = append(ops, addPendingRapidOpCompleteSubReady)
 	}
 	if eligibility.anyPresent {
-		ops = append(ops, addPendingRapidOpSetActive, addPendingRapidOpExpire, addPendingRapidOpClear)
-	}
-	if eligibility.anyPresent {
-		ops = append(ops, addPendingRapidOpCancel, addPendingRapidOpDriverError)
+		ops = append(
+			ops,
+			addPendingRapidOpSetActive,
+			addPendingRapidOpExpire,
+			addPendingRapidOpClear,
+			addPendingRapidOpCancel,
+			addPendingRapidOpDriverError,
+		)
 	}
 	if eligibility.pollable {
 		ops = append(ops, addPendingRapidOpPoll)
@@ -1099,6 +1103,658 @@ func TestConductor_addPending_teardown_rapid(t *testing.T) {
 		for step := range steps {
 			runAddPendingRapidStep(t, rt, conductorInstance, lifecycle, &nanoNs, &model, seen, step)
 			assertAddPendingRapidInvariants(rt, conductorInstance, lifecycle, model)
+		}
+	})
+}
+
+type addPendingBindRetireRapidLifecycle struct {
+	realCreateMarkRecordingLifecycle
+	useRealPublication  bool
+	useRealSubscription bool
+}
+
+func (lifecycle *addPendingBindRetireRapidLifecycle) clearFailureMode() {
+	lifecycle.useRealPublication = false
+	lifecycle.useRealSubscription = false
+	lifecycle.bindPublicationErr = nil
+	lifecycle.bindSubscriptionErr = nil
+	lifecycle.retirePublicationErr = nil
+	lifecycle.retireSubscriptionErr = nil
+}
+
+type addPendingBindRetireFailureMode int
+
+const (
+	addPendingBindRetireFailureNone addPendingBindRetireFailureMode = iota
+	addPendingBindRetireFailureBindPublication
+	addPendingBindRetireFailureBindSubscription
+	addPendingBindRetireFailureRetirePublication
+	addPendingBindRetireFailureRetireSubscription
+)
+
+func (lifecycle *addPendingBindRetireRapidLifecycle) applyFailureMode(
+	mode addPendingBindRetireFailureMode,
+) {
+	lifecycle.clearFailureMode()
+	switch mode {
+	case addPendingBindRetireFailureBindPublication:
+		lifecycle.bindPublicationErr = errStubBindPublication
+	case addPendingBindRetireFailureBindSubscription:
+		lifecycle.bindSubscriptionErr = errStubBindSubscription
+	case addPendingBindRetireFailureRetirePublication:
+		lifecycle.useRealPublication = true
+		lifecycle.retirePublicationErr = errRetirePublication
+	case addPendingBindRetireFailureRetireSubscription:
+		lifecycle.useRealSubscription = true
+		lifecycle.retireSubscriptionErr = errRetireSubscription
+	}
+}
+
+func (lifecycle *addPendingBindRetireRapidLifecycle) NewPublication(
+	event conductor.PublicationBuffersReady,
+	logBuffers *logbuffer.LogBuffers,
+	countersReader *cnc.CountersReader,
+	channel string,
+) (conductor.PublicationHandle, error) {
+	if lifecycle.useRealPublication {
+		lifecycle.newPublicationCalls++
+		if lifecycle.newPublicationErr != nil {
+			return nil, lifecycle.newPublicationErr
+		}
+		return lifecycle.realCreateMarkRecordingLifecycle.NewPublication(
+			event,
+			logBuffers,
+			countersReader,
+			channel,
+		)
+	}
+	return lifecycle.recordingResourceLifecycle.NewPublication(
+		event,
+		logBuffers,
+		countersReader,
+		channel,
+	)
+}
+
+func (lifecycle *addPendingBindRetireRapidLifecycle) NewPreSubscription(
+	registrationID int64,
+	streamID int32,
+	channel string,
+) conductor.SubscriptionHandle {
+	if lifecycle.useRealSubscription {
+		lifecycle.newPreSubscriptionCalls++
+		return lifecycle.realCreateMarkRecordingLifecycle.NewPreSubscription(
+			registrationID,
+			streamID,
+			channel,
+		)
+	}
+	return lifecycle.recordingResourceLifecycle.NewPreSubscription(
+		registrationID,
+		streamID,
+		channel,
+	)
+}
+
+func (lifecycle *addPendingBindRetireRapidLifecycle) ApplySubscriptionReady(
+	sub conductor.SubscriptionHandle,
+	event conductor.SubscriptionReady,
+) error {
+	_, isRealSub := sub.(*aeron.Subscription)
+	if isRealSub {
+		lifecycle.applySubscriptionCalls++
+		if lifecycle.applySubscriptionErr != nil {
+			return lifecycle.applySubscriptionErr
+		}
+		return lifecycle.realCreateMarkRecordingLifecycle.ApplySubscriptionReady(sub, event)
+	}
+	return lifecycle.recordingResourceLifecycle.ApplySubscriptionReady(sub, event)
+}
+
+func (lifecycle *addPendingBindRetireRapidLifecycle) BindPublication(
+	pub conductor.PublicationHandle,
+	clientConductor *conductor.Conductor,
+) error {
+	if lifecycle.useRealPublication {
+		lifecycle.bindPublicationCalls++
+		if lifecycle.bindPublicationErr != nil {
+			return lifecycle.bindPublicationErr
+		}
+		return lifecycle.realCreateMarkRecordingLifecycle.BindPublication(pub, clientConductor)
+	}
+	return lifecycle.recordingResourceLifecycle.BindPublication(pub, clientConductor)
+}
+
+func (lifecycle *addPendingBindRetireRapidLifecycle) BindSubscription(
+	sub conductor.SubscriptionHandle,
+	clientConductor *conductor.Conductor,
+) error {
+	if lifecycle.useRealSubscription {
+		lifecycle.bindSubscriptionCalls++
+		if lifecycle.bindSubscriptionErr != nil {
+			return lifecycle.bindSubscriptionErr
+		}
+		return lifecycle.realCreateMarkRecordingLifecycle.BindSubscription(sub, clientConductor)
+	}
+	return lifecycle.recordingResourceLifecycle.BindSubscription(sub, clientConductor)
+}
+
+func (lifecycle *addPendingBindRetireRapidLifecycle) MarkPublicationClosed(
+	pub conductor.PublicationHandle,
+) {
+	if _, isRealPub := pub.(*aeron.Publication); isRealPub {
+		lifecycle.realCreateMarkRecordingLifecycle.MarkPublicationClosed(pub)
+	}
+}
+
+func (lifecycle *addPendingBindRetireRapidLifecycle) MarkSubscriptionClosed(
+	sub conductor.SubscriptionHandle,
+) {
+	if _, isRealSub := sub.(*aeron.Subscription); isRealSub {
+		lifecycle.realCreateMarkRecordingLifecycle.MarkSubscriptionClosed(sub)
+	}
+}
+
+type addPendingBindRetireRapidEntry struct {
+	addPendingRapidEntry
+	realHandle bool
+	handle     any
+}
+
+type addPendingBindRetireRapidModel struct {
+	entries               map[int64]addPendingBindRetireRapidEntry
+	receivedCorrelationID int64
+	activeCorrelationID   int64
+	nowNs                 int64
+}
+
+func (model addPendingBindRetireRapidModel) baseModel() addPendingRapidModel {
+	entries := make(map[int64]addPendingRapidEntry, len(model.entries))
+	for correlationID, entry := range model.entries {
+		entries[correlationID] = entry.addPendingRapidEntry
+	}
+	return addPendingRapidModel{
+		entries:               entries,
+		receivedCorrelationID: model.receivedCorrelationID,
+		activeCorrelationID:   model.activeCorrelationID,
+		nowNs:                 model.nowNs,
+	}
+}
+
+func drawAddPendingBindRetireCompletable(
+	model addPendingBindRetireRapidModel,
+	kind conductor.PendingKind,
+) (int64, bool) {
+	return drawAddPendingRapidCompletable(model.baseModel(), kind)
+}
+
+func drawAddPendingBindRetirePresent(
+	model addPendingBindRetireRapidModel,
+) (int64, bool) {
+	return drawAddPendingRapidPresent(model.baseModel())
+}
+
+func drawAddPendingBindRetirePollable(
+	model addPendingBindRetireRapidModel,
+) (int64, bool) {
+	return drawAddPendingRapidPollable(model.baseModel())
+}
+
+func applyAddPendingBindRetireCancel(
+	model *addPendingBindRetireRapidModel,
+	correlationID int64,
+) {
+	base := model.baseModel()
+	applyAddPendingRapidCancel(&base, correlationID)
+	model.receivedCorrelationID = base.receivedCorrelationID
+	entry, ok := model.entries[correlationID]
+	if !ok {
+		return
+	}
+	entry.present = base.entries[correlationID].present
+	model.entries[correlationID] = entry
+}
+
+func applyAddPendingBindRetireClear(model *addPendingBindRetireRapidModel) {
+	base := model.baseModel()
+	applyAddPendingRapidClear(&base)
+	model.receivedCorrelationID = base.receivedCorrelationID
+	model.activeCorrelationID = base.activeCorrelationID
+	for correlationID, entry := range model.entries {
+		if baseEntry, ok := base.entries[correlationID]; ok {
+			entry.present = baseEntry.present
+			model.entries[correlationID] = entry
+		}
+	}
+}
+
+func applyAddPendingBindRetirePoll(
+	model *addPendingBindRetireRapidModel,
+	correlationID int64,
+) {
+	base := model.baseModel()
+	applyAddPendingRapidPoll(&base, correlationID)
+	model.receivedCorrelationID = base.receivedCorrelationID
+	entry, ok := model.entries[correlationID]
+	if !ok {
+		return
+	}
+	entry.present = base.entries[correlationID].present
+	model.entries[correlationID] = entry
+}
+
+func syncAddPendingBindRetireAfterDoWork(
+	conductorInstance *conductor.Conductor,
+	model *addPendingBindRetireRapidModel,
+) {
+	base := model.baseModel()
+	syncAddPendingRapidAfterDoWork(conductorInstance, &base)
+	model.receivedCorrelationID = base.receivedCorrelationID
+	for correlationID, entry := range model.entries {
+		if baseEntry, ok := base.entries[correlationID]; ok {
+			entry.present = baseEntry.present
+			entry.timedOut = baseEntry.timedOut
+			model.entries[correlationID] = entry
+		}
+	}
+}
+
+func scanAddPendingBindRetireEligibility(
+	model addPendingBindRetireRapidModel,
+) addPendingRapidEligibility {
+	return scanAddPendingRapidEligibility(model.baseModel())
+}
+
+func assertAddPendingBindRetireHandleClosed(
+	rt *rapid.T,
+	entry addPendingBindRetireRapidEntry,
+) {
+	rt.Helper()
+	if !entry.realHandle || entry.handle == nil {
+		return
+	}
+	switch entry.kind {
+	case conductor.PendingKindAddPublication:
+		require.True(rt, entry.handle.(*aeron.Publication).IsClosed())
+	case conductor.PendingKindAddSubscription:
+		require.True(rt, entry.handle.(*aeron.Subscription).IsClosed())
+	}
+}
+
+func assertAddPendingBindRetireRollback(
+	rt *rapid.T,
+	conductorInstance *conductor.Conductor,
+	mode addPendingBindRetireFailureMode,
+	correlationID int64,
+	entry addPendingBindRetireRapidEntry,
+	gotErrors *[]error,
+	errorsBefore int,
+) {
+	rt.Helper()
+	if !entry.realHandle {
+		return
+	}
+	switch mode {
+	case addPendingBindRetireFailureRetirePublication:
+		if entry.kind != conductor.PendingKindAddPublication {
+			return
+		}
+		require.Greater(rt, len(*gotErrors), errorsBefore)
+		require.ErrorIs(rt, (*gotErrors)[len(*gotErrors)-1], errRetirePublication)
+		assertAddPendingBindRetireHandleClosed(rt, entry)
+		_, pubOK := conductorInstance.PublicationByRegID(entry.registrationID)
+		require.False(rt, pubOK)
+	case addPendingBindRetireFailureRetireSubscription:
+		if entry.kind != conductor.PendingKindAddSubscription {
+			return
+		}
+		require.Greater(rt, len(*gotErrors), errorsBefore)
+		require.ErrorIs(rt, (*gotErrors)[len(*gotErrors)-1], errRetireSubscription)
+		assertAddPendingBindRetireHandleClosed(rt, entry)
+		_, subOK := conductorInstance.SubscriptionByRegID(correlationID)
+		require.False(rt, subOK)
+	}
+}
+
+func snapshotBindRetireRollbackTargets(
+	model addPendingBindRetireRapidModel,
+	include func(addPendingBindRetireRapidEntry) bool,
+) map[int64]addPendingBindRetireRapidEntry {
+	rollbackTargets := make(map[int64]addPendingBindRetireRapidEntry)
+	for correlationID, entry := range model.entries {
+		if include(entry) {
+			rollbackTargets[correlationID] = entry
+		}
+	}
+	return rollbackTargets
+}
+
+func assertAddPendingBindRetireRapidInvariants(
+	rt *rapid.T,
+	conductorInstance *conductor.Conductor,
+	lifecycle *addPendingBindRetireRapidLifecycle,
+	model addPendingBindRetireRapidModel,
+) {
+	rt.Helper()
+
+	require.Equal(rt, model.receivedCorrelationID, conductorInstance.ReceivedCorrelationID())
+	require.Equal(rt, model.activeCorrelationID, conductorInstance.ActiveCorrelationID())
+	for correlationID, entry := range model.entries {
+		_, ok := conductorInstance.PendingResult(correlationID)
+		require.Equal(rt, entry.present, ok, "correlation %d pending membership", correlationID)
+	}
+	if model.receivedCorrelationID != conductor.NullCorrelationID {
+		_, ok := model.entries[model.receivedCorrelationID]
+		require.True(rt, ok)
+		require.True(rt, model.entries[model.receivedCorrelationID].present)
+	}
+	require.Equal(
+		rt,
+		conductorInstance.SubscriptionCountForTest(),
+		lifecycle.newPreSubscriptionCalls-lifecycle.retireSubscriptionCalls,
+	)
+}
+
+func runAddPendingBindRetireFailureRapidStep(
+	t *testing.T,
+	rt *rapid.T,
+	conductorInstance *conductor.Conductor,
+	lifecycle *addPendingBindRetireRapidLifecycle,
+	gotErrors *[]error,
+	nanoNs *int64,
+	model *addPendingBindRetireRapidModel,
+	seen map[int64]struct{},
+	step int,
+) {
+	rt.Helper()
+
+	mode := addPendingBindRetireFailureMode(
+		rapid.IntRange(0, 4).Draw(rt, fmt.Sprintf("failureMode%d", step)),
+	)
+	lifecycle.applyFailureMode(mode)
+
+	eligibility := scanAddPendingBindRetireEligibility(*model)
+	ops := []addPendingRapidOpKind{
+		addPendingRapidOpRegisterPub,
+		addPendingRapidOpRegisterSub,
+	}
+	if eligibility.completablePublication {
+		ops = append(ops, addPendingRapidOpCompletePubReady)
+	}
+	if eligibility.completableSubscription {
+		ops = append(ops, addPendingRapidOpCompleteSubReady)
+	}
+	if eligibility.anyPresent {
+		ops = append(ops, addPendingRapidOpCancel, addPendingRapidOpClear, addPendingRapidOpExpire)
+	}
+	if eligibility.pollable {
+		ops = append(ops, addPendingRapidOpPoll)
+	}
+
+	switch rapid.SampledFrom(ops).Draw(rt, fmt.Sprintf("op%d", step)) {
+	case addPendingRapidOpRegisterPub:
+		correlationID := drawPendingRapidUniqueCorrelationID(
+			rt,
+			rapidMapContains(seen),
+			fmt.Sprintf("pubCorrelationID%d", step),
+		)
+		seen[correlationID] = struct{}{}
+		deadlineNs := model.nowNs + pendingRapidDeadlineOffset(rt, fmt.Sprintf("pubDeadline%d", step))
+		require.NoError(
+			rt,
+			conductorInstance.RegisterPendingAddWithDeadline(
+				conductor.PendingKindAddPublication,
+				correlationID,
+				goldenPublicationBuffersReadyEvent.StreamID,
+				pendingTestChannel,
+				deadlineNs,
+			),
+		)
+		model.entries[correlationID] = addPendingBindRetireRapidEntry{
+			addPendingRapidEntry: addPendingRapidEntry{
+				kind:       conductor.PendingKindAddPublication,
+				present:    true,
+				deadlineNs: deadlineNs,
+			},
+		}
+
+	case addPendingRapidOpRegisterSub:
+		correlationID := drawPendingRapidUniqueCorrelationID(
+			rt,
+			rapidMapContains(seen),
+			fmt.Sprintf("subCorrelationID%d", step),
+		)
+		seen[correlationID] = struct{}{}
+		deadlineNs := model.nowNs + pendingRapidDeadlineOffset(rt, fmt.Sprintf("subDeadline%d", step))
+		subscriptionCountBefore := conductorInstance.SubscriptionCountForTest()
+		err := conductorInstance.RegisterPendingAddWithDeadline(
+			conductor.PendingKindAddSubscription,
+			correlationID,
+			pendingTestStreamID,
+			pendingTestChannel,
+			deadlineNs,
+		)
+		if mode == addPendingBindRetireFailureBindSubscription {
+			require.ErrorIs(rt, err, errStubBindSubscription)
+			require.Equal(rt, subscriptionCountBefore, conductorInstance.SubscriptionCountForTest())
+			_, pendingOK := conductorInstance.PendingResult(correlationID)
+			require.False(rt, pendingOK)
+			_, subOK := conductorInstance.SubscriptionByRegID(correlationID)
+			require.False(rt, subOK)
+			return
+		}
+		require.NoError(rt, err)
+		entry := addPendingBindRetireRapidEntry{
+			addPendingRapidEntry: addPendingRapidEntry{
+				kind:       conductor.PendingKindAddSubscription,
+				present:    true,
+				deadlineNs: deadlineNs,
+			},
+		}
+		if sub, ok := conductorInstance.SubscriptionByRegID(correlationID); ok {
+			if _, isRealSub := sub.(*aeron.Subscription); isRealSub {
+				entry.realHandle = true
+				entry.handle = sub
+			}
+		}
+		model.entries[correlationID] = entry
+
+	case addPendingRapidOpCompletePubReady:
+		correlationID, ok := drawAddPendingBindRetireCompletable(
+			*model,
+			conductor.PendingKindAddPublication,
+		)
+		if !ok {
+			return
+		}
+		event := goldenPublicationBuffersReadyWithCorrelation(correlationID)
+		event.RegistrationID = correlationID + 1
+		if lifecycle.useRealPublication {
+			seedPublicationCountersForTest(t, conductorInstance, event)
+		}
+		if conductor.LogBuffersRegistryRefCountForTest(
+			conductor.LogBuffersRegistryForTest(conductorInstance),
+			goldenPublicationReadyLogFileName,
+		) == 0 {
+			seedGoldenPublicationLogBuffers(t, conductorInstance)
+		}
+		conductorInstance.PublicationReadyForTest(event)
+		entry := model.entries[correlationID]
+		entry.readyLatched = true
+		entry.registrationID = event.RegistrationID
+		if pub, pubOK := conductorInstance.PublicationByRegID(event.RegistrationID); pubOK {
+			if _, isRealPub := pub.(*aeron.Publication); isRealPub {
+				entry.realHandle = true
+				entry.handle = pub
+			}
+		}
+		model.entries[correlationID] = entry
+		model.receivedCorrelationID = correlationID
+
+	case addPendingRapidOpCompleteSubReady:
+		correlationID, ok := drawAddPendingBindRetireCompletable(
+			*model,
+			conductor.PendingKindAddSubscription,
+		)
+		if !ok {
+			return
+		}
+		event := goldenSubscriptionReadyWithCorrelation(correlationID)
+		conductorInstance.SubscriptionReadyForTest(event)
+		entry := model.entries[correlationID]
+		entry.readyLatched = true
+		entry.registrationID = correlationID
+		if sub, subOK := conductorInstance.SubscriptionByRegID(correlationID); subOK {
+			if _, isRealSub := sub.(*aeron.Subscription); isRealSub {
+				entry.realHandle = true
+				entry.handle = sub
+			}
+		}
+		model.entries[correlationID] = entry
+		model.receivedCorrelationID = correlationID
+
+	case addPendingRapidOpCancel:
+		correlationID, ok := drawAddPendingBindRetirePresent(*model)
+		if !ok {
+			return
+		}
+		entry := model.entries[correlationID]
+		readyLatched := model.receivedCorrelationID == correlationID && entry.readyLatched
+		errorsBefore := len(*gotErrors)
+		conductorInstance.CancelPending(correlationID)
+		applyAddPendingBindRetireCancel(model, correlationID)
+		if !readyLatched {
+			assertAddPendingBindRetireRollback(
+				rt,
+				conductorInstance,
+				mode,
+				correlationID,
+				entry,
+				gotErrors,
+				errorsBefore,
+			)
+		}
+
+	case addPendingRapidOpClear:
+		rollbackTargets := snapshotBindRetireRollbackTargets(
+			*model,
+			func(entry addPendingBindRetireRapidEntry) bool { return entry.present },
+		)
+		errorsBefore := len(*gotErrors)
+		conductorInstance.ClearPending()
+		applyAddPendingBindRetireClear(model)
+		for correlationID, entry := range rollbackTargets {
+			assertAddPendingBindRetireRollback(
+				rt,
+				conductorInstance,
+				mode,
+				correlationID,
+				entry,
+				gotErrors,
+				errorsBefore,
+			)
+		}
+
+	case addPendingRapidOpExpire:
+		rollbackTargets := snapshotBindRetireRollbackTargets(
+			*model,
+			func(entry addPendingBindRetireRapidEntry) bool {
+				return entry.present && !entry.readyLatched && !entry.driverErrored
+			},
+		)
+		errorsBefore := len(*gotErrors)
+		model.nowNs += rapid.Int64Range(0, 40_000_000).Draw(rt, fmt.Sprintf("advanceNs%d", step))
+		*nanoNs = model.nowNs
+		_ = conductorInstance.DoWork()
+		syncAddPendingBindRetireAfterDoWork(conductorInstance, model)
+		for correlationID, entry := range rollbackTargets {
+			current, ok := model.entries[correlationID]
+			if !ok || current.present {
+				continue
+			}
+			assertAddPendingBindRetireRollback(
+				rt,
+				conductorInstance,
+				mode,
+				correlationID,
+				entry,
+				gotErrors,
+				errorsBefore,
+			)
+		}
+
+	case addPendingRapidOpPoll:
+		correlationID, ok := drawAddPendingBindRetirePollable(*model)
+		if !ok {
+			return
+		}
+		entry := model.entries[correlationID]
+		var pendingErr error
+		if got, pendingOK := conductorInstance.PendingResult(correlationID); pendingOK {
+			pendingErr = got.Err
+			entry.applyFailed = errors.Is(got.Err, errRapidApplySubscriptionReady)
+			var driverErr *conductor.DriverRegistrationError
+			entry.driverErrored = errors.As(got.Err, &driverErr)
+			entry.timedOut = errors.Is(got.Err, conductor.ErrAwaitTimeout) &&
+				!entry.applyFailed &&
+				!entry.driverErrored
+		}
+		done, _, err := conductorInstance.PollPending(correlationID)
+		require.True(rt, done)
+		switch {
+		case errors.Is(pendingErr, errStubBindPublication):
+			require.ErrorIs(rt, err, errStubBindPublication)
+			_, pubOK := conductorInstance.PublicationByRegID(entry.registrationID)
+			require.False(rt, pubOK)
+		case entry.driverErrored:
+			var driverErr *conductor.DriverRegistrationError
+			require.ErrorAs(rt, err, &driverErr)
+			require.Equal(rt, correlationID, driverErr.CorrelationID)
+		case entry.applyFailed:
+			require.ErrorIs(rt, err, errRapidApplySubscriptionReady)
+		case entry.timedOut:
+			require.ErrorIs(rt, err, conductor.ErrAwaitTimeout)
+			require.EqualError(rt, err, "conductor: await response timeout")
+		case entry.readyLatched:
+			require.NoError(rt, err)
+		default:
+			require.ErrorIs(rt, err, conductor.ErrAwaitTimeout)
+			require.EqualError(rt, err, "conductor: await response timeout")
+		}
+		applyAddPendingBindRetirePoll(model, correlationID)
+	}
+}
+
+func TestConductor_addPending_teardown_bindRetireFailure_rapid(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		nanoNs := pendingRapidBaseNowNs
+		errorHandler, gotErrors := collectConductorErrors()
+		lifecycle := &addPendingBindRetireRapidLifecycle{}
+		config := conductorTestConfigMutableNano(t, errorHandler, 0, &nanoNs)
+		config.ResourceLifecycle = lifecycle
+		conductorInstance := newConductorForTest(t, config)
+		conductorInstance.SeedServiceTimestamps(nanoNs)
+		model := addPendingBindRetireRapidModel{
+			entries:               make(map[int64]addPendingBindRetireRapidEntry),
+			receivedCorrelationID: conductor.NullCorrelationID,
+			activeCorrelationID:   conductor.NullCorrelationID,
+			nowNs:                 pendingRapidBaseNowNs,
+		}
+		seen := make(map[int64]struct{})
+		steps := rapid.IntRange(1, 12).Draw(rt, "steps")
+		for step := range steps {
+			runAddPendingBindRetireFailureRapidStep(
+				t,
+				rt,
+				conductorInstance,
+				lifecycle,
+				gotErrors,
+				&nanoNs,
+				&model,
+				seen,
+				step,
+			)
+			assertAddPendingBindRetireRapidInvariants(rt, conductorInstance, lifecycle, model)
 		}
 	})
 }

@@ -870,7 +870,6 @@ func TestConductor_PollPending_addReady(t *testing.T) {
 		wantRegID     int64
 		wantStreamID  int32
 		wantHandleNil func(t *testing.T, registration conductor.PendingRegistration)
-		assertLatched func(t *testing.T, conductorInstance *conductor.Conductor)
 	}{
 		{
 			name:          "publication",
@@ -885,11 +884,6 @@ func TestConductor_PollPending_addReady(t *testing.T) {
 			wantHandleNil: func(t *testing.T, registration conductor.PendingRegistration) {
 				require.Nil(t, registration.Publication)
 			},
-			assertLatched: func(t *testing.T, conductorInstance *conductor.Conductor) {
-				ready, ok := conductor.LastPublicationReadyForTest(conductorInstance)
-				require.True(t, ok)
-				require.Equal(t, goldenPublicationBuffersReadyEvent, ready)
-			},
 		},
 		{
 			name:          "subscription",
@@ -903,11 +897,6 @@ func TestConductor_PollPending_addReady(t *testing.T) {
 			wantStreamID: pendingTestStreamID,
 			wantHandleNil: func(t *testing.T, registration conductor.PendingRegistration) {
 				require.Nil(t, registration.Subscription)
-			},
-			assertLatched: func(t *testing.T, conductorInstance *conductor.Conductor) {
-				ready, ok := conductor.LastSubscriptionReadyForTest(conductorInstance)
-				require.True(t, ok)
-				require.Equal(t, goldenSubscriptionReadyEvent, ready)
 			},
 		},
 	}
@@ -942,7 +931,6 @@ func TestConductor_PollPending_addReady(t *testing.T) {
 			require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
 			_, ok := conductorInstance.PendingResult(testCase.correlationID)
 			require.False(t, ok)
-			testCase.assertLatched(t, conductorInstance)
 		})
 	}
 }
@@ -1576,6 +1564,65 @@ func TestConductor_expirePending_addSubscriptionSameTickReady(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, conductor.PendingKindAddSubscription, registration.Kind)
 	require.Equal(t, goldenSubscriptionReadyCorrelationID, registration.RegistrationID)
+}
+
+func TestConductor_rollbackAddPendingResources_nonAddKind_silent(t *testing.T) {
+	errorHandler, gotErrors := collectConductorErrors()
+	lifecycle := &recordingResourceLifecycle{}
+	config := conductorTestConfig(t, errorHandler, fixedClocks{nanoNs: 0})
+	config.ResourceLifecycle = lifecycle
+	conductorInstance := newConductorForTest(t, config)
+
+	completeGoldenPublicationReadyForTest(t, conductorInstance)
+	registerGoldenAddPendingForTest(
+		t,
+		conductorInstance,
+		conductor.PendingKindAddSubscription,
+	)
+	require.Equal(t, 1, conductorInstance.PublicationCountForTest())
+	require.Equal(t, 1, conductorInstance.SubscriptionCountForTest())
+
+	nonAddKinds := []struct {
+		name          string
+		kind          conductor.PendingKind
+		correlationID int64
+	}{
+		{
+			name:          "removePublication",
+			kind:          conductor.PendingKindRemovePublication,
+			correlationID: pendingTestCorrelationID,
+		},
+		{
+			name:          "removeSubscription",
+			kind:          conductor.PendingKindRemoveSubscription,
+			correlationID: pendingTestOtherCorrelationID,
+		},
+		{
+			name:          "nextSessionID",
+			kind:          conductor.PendingKindNextSessionID,
+			correlationID: pendingTestCorrelationID,
+		},
+	}
+	for _, testCase := range nonAddKinds {
+		t.Run(testCase.name, func(t *testing.T) {
+			conductorInstance.RollbackAddPendingResourcesForTest(conductor.PendingRegistration{
+				CorrelationID: testCase.correlationID,
+				Kind:          testCase.kind,
+			})
+		})
+	}
+
+	require.Equal(t, 1, conductorInstance.PublicationCountForTest())
+	require.Equal(t, 1, conductorInstance.SubscriptionCountForTest())
+	require.Equal(t, 0, lifecycle.retirePublicationCalls)
+	require.Equal(t, 0, lifecycle.retireSubscriptionCalls)
+	_, ok := conductorInstance.PublicationByRegID(
+		goldenPublicationBuffersReadyEvent.RegistrationID,
+	)
+	require.True(t, ok)
+	_, ok = conductorInstance.SubscriptionByRegID(goldenSubscriptionReadyCorrelationID)
+	require.True(t, ok)
+	require.Empty(t, *gotErrors)
 }
 
 func TestConductor_DriverError_negative(t *testing.T) {

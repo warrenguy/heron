@@ -11,17 +11,27 @@ func timeNowNs() int64 {
 	return time.Now().UnixNano()
 }
 
-func normalizeLingerNs(lingerNs int64) int64 {
-	if lingerNs < 0 {
+func releaseNowNs(lingerNs int64) int64 {
+	if lingerNs <= 0 {
 		return 0
 	}
-	return lingerNs
+	return timeNowNs()
+}
+
+func validateLingerNs(lingerNs int64) {
+	if lingerNs < 0 {
+		panic("conductor: negative linger duration")
+	}
 }
 
 type logBufferEntry struct {
 	buffers          *logbuffer.LogBuffers
 	refCount         int32
 	lingerDeadlineNs int64
+}
+
+func (entry *logBufferEntry) isLingering() bool {
+	return entry.refCount == 0 && entry.lingerDeadlineNs != 0
 }
 
 // LogBuffersRegistry is the sole conductor log-buffer map: dedup mmap by absolute
@@ -106,11 +116,7 @@ func (registry *LogBuffersRegistry) acquireByKey(key string) (*logbuffer.LogBuff
 // schedules unmap after the deadline via SweepLingering. Releasing an unknown or
 // unresolvable path is an intentional no-op.
 func (registry *LogBuffersRegistry) Release(logFileName string, lingerNs int64) {
-	nowNs := int64(0)
-	if lingerNs > 0 {
-		nowNs = timeNowNs()
-	}
-	registry.releaseAt(logFileName, nowNs, lingerNs)
+	registry.releaseAt(logFileName, releaseNowNs(lingerNs), lingerNs)
 }
 
 func (registry *LogBuffersRegistry) releaseAt(
@@ -133,11 +139,7 @@ func (registry *LogBuffersRegistry) releaseAt(
 // releaseResolvedKey: lifecycle must use the acquire-time resolved key, not
 // Release, because re-resolve can fail after acquire (e.g. EvalSymlinks).
 func (registry *LogBuffersRegistry) releaseResolvedKey(key string, lingerNs int64) {
-	nowNs := int64(0)
-	if lingerNs > 0 {
-		nowNs = timeNowNs()
-	}
-	registry.releaseResolvedKeyAt(key, nowNs, lingerNs)
+	registry.releaseResolvedKeyAt(key, releaseNowNs(lingerNs), lingerNs)
 }
 
 func (registry *LogBuffersRegistry) releaseResolvedKeyAt(
@@ -154,7 +156,7 @@ func (registry *LogBuffersRegistry) releaseResolvedKeyAt(
 		return
 	}
 
-	lingerNs = normalizeLingerNs(lingerNs)
+	validateLingerNs(lingerNs)
 	// refCount <= 0 panic is intentional fail-fast during linger, not idempotent.
 	if entry.refCount <= 0 {
 		panic("conductor: log buffer release underflow")
@@ -191,9 +193,7 @@ func (registry *LogBuffersRegistry) SweepLingering(nowNs int64) int {
 
 	workCount := 0
 	for key, entry := range registry.entries {
-		if entry.refCount != 0 ||
-			entry.lingerDeadlineNs == 0 ||
-			nowNs < entry.lingerDeadlineNs {
+		if !entry.isLingering() || nowNs < entry.lingerDeadlineNs {
 			continue
 		}
 		registry.deleteEntry(key, entry)
@@ -203,11 +203,19 @@ func (registry *LogBuffersRegistry) SweepLingering(nowNs int64) int {
 }
 
 func (registry *LogBuffersRegistry) lingerDeadlineNs(logFileName string) int64 {
-	_, entry, ok := registry.lookupLogFile(logFileName)
-	if !ok || entry == nil {
+	entry := registry.lookupEntry(logFileName)
+	if entry == nil {
 		return 0
 	}
 	return entry.lingerDeadlineNs
+}
+
+func (registry *LogBuffersRegistry) lookupEntry(logFileName string) *logBufferEntry {
+	_, entry, ok := registry.lookupLogFile(logFileName)
+	if !ok || entry == nil {
+		return nil
+	}
+	return entry
 }
 
 func (registry *LogBuffersRegistry) lookupLogFile(
@@ -232,16 +240,15 @@ func (registry *LogBuffersRegistry) lookupLogFile(
 }
 
 func (registry *LogBuffersRegistry) refCount(logFileName string) int32 {
-	_, entry, ok := registry.lookupLogFile(logFileName)
-	if !ok || entry == nil {
+	entry := registry.lookupEntry(logFileName)
+	if entry == nil {
 		return 0
 	}
 	return entry.refCount
 }
 
 func (registry *LogBuffersRegistry) contains(logFileName string) bool {
-	_, _, ok := registry.lookupLogFile(logFileName)
-	return ok
+	return registry.lookupEntry(logFileName) != nil
 }
 
 func (registry *LogBuffersRegistry) decrementLingerScheduled(entry *logBufferEntry) {
@@ -269,7 +276,7 @@ func (registry *LogBuffersRegistry) countScheduledLingers() int {
 
 	count := 0
 	for _, entry := range registry.entries {
-		if entry.refCount == 0 && entry.lingerDeadlineNs != 0 {
+		if entry.isLingering() {
 			count++
 		}
 	}

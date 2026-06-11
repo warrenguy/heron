@@ -58,7 +58,7 @@ func (conductorResourceLifecycle) RetireSubscription(
 		registryKeys = append(registryKeys, image.LogFileName())
 		image.internalClose()
 	}
-	return registryKeys, subscription.Close()
+	return registryKeys, subscription.markClosed()
 }
 
 func (conductorResourceLifecycle) RetirePublication(
@@ -72,5 +72,45 @@ func (conductorResourceLifecycle) RetirePublication(
 	if publication.log != nil {
 		registryKey = publication.log.Path()
 	}
-	return registryKey, publication.Close()
+	return registryKey, publication.markClosed()
+}
+
+func (conductorResourceLifecycle) BindPublication(
+	pub conductor.PublicationHandle,
+	clientConductor *conductor.Conductor,
+) error {
+	publication, err := publicationFromHandle(pub)
+	if err != nil {
+		return err
+	}
+	publication.conductor = clientConductor
+	return nil
+}
+
+func (conductorResourceLifecycle) BindSubscription(
+	sub conductor.SubscriptionHandle,
+	clientConductor *conductor.Conductor,
+) error {
+	subscription, err := subscriptionFromHandle(sub)
+	if err != nil {
+		return err
+	}
+	subscription.conductor = clientConductor
+	return nil
+}
+
+func (conductorResourceLifecycle) MarkPublicationClosed(pub conductor.PublicationHandle) {
+	publication, err := publicationFromHandle(pub)
+	if err != nil {
+		return
+	}
+	_ = publication.markClosed()
+}
+
+func (conductorResourceLifecycle) MarkSubscriptionClosed(sub conductor.SubscriptionHandle) {
+	subscription, err := subscriptionFromHandle(sub)
+	if err != nil {
+		return
+	}
+	_ = subscription.markClosed()
 }

@@ -5,9 +5,12 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
-// ResourceLifecycle implements publication and subscription construction in package
-// aeron (ConductorResourceLifecycle). Conductor calls these from ready handlers and
-// subscription pre-insert without importing aeron.
+// ResourceLifecycle constructs and tears down publications and subscriptions for
+// the conductor without importing package aeron.
+//
+// Internal wiring seam only: production uses aeron.ConductorResourceLifecycle.
+// The interface may grow without a backward-compat split; out-of-tree
+// implementations are unsupported.
 type ResourceLifecycle interface {
 	NewPublication(
 		event PublicationBuffersReady,
@@ -36,4 +39,16 @@ type ResourceLifecycle interface {
 	// publication mmap; conductor releases refcounts by key, not via re-resolved
 	// driver paths.
 	RetirePublication(pub PublicationHandle) (registryKey string, err error)
+
+	// BindPublication wires pub to clientConductor so ClosePublication can run.
+	BindPublication(pub PublicationHandle, clientConductor *Conductor) error
+
+	// BindSubscription wires sub to clientConductor so CloseSubscription can run.
+	BindSubscription(sub SubscriptionHandle, clientConductor *Conductor) error
+
+	// MarkPublicationClosed marks pub closed on retire failure or idempotent re-close.
+	MarkPublicationClosed(pub PublicationHandle)
+
+	// MarkSubscriptionClosed marks sub closed on retire failure or idempotent re-close.
+	MarkSubscriptionClosed(sub SubscriptionHandle)
 }

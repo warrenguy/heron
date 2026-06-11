@@ -13,14 +13,23 @@ func TestConnect_validationErrors(t *testing.T) {
 	useInvoker := false
 
 	tests := []struct {
-		name    string
-		ctx     aeron.Context
-		wantErr string
+		name        string
+		ctx         aeron.Context
+		wantErr     string
+		fullConnect bool
 	}{
 		{
 			name:    "requires aeron dir",
 			ctx:     aeron.Context{},
 			wantErr: "aeron: AeronDir is required",
+		},
+		{
+			name: "rejects negative close linger duration",
+			ctx: aeron.Context{
+				AeronDir:            "unused",
+				CloseLingerDuration: -time.Second,
+			},
+			wantErr: "aeron: CloseLingerDuration must not be negative",
 		},
 		{
 			name: "rejects dedicated conductor invoker",
@@ -36,13 +45,21 @@ func TestConnect_validationErrors(t *testing.T) {
 				AeronDir:      t.TempDir(),
 				DriverTimeout: 10 * time.Millisecond,
 			},
-			wantErr: "aeron: wait for cnc ready: cnc: timeout waiting for ready",
+			wantErr:     "aeron: wait for cnc ready: cnc: timeout waiting for ready",
+			fullConnect: true,
 		},
 	}
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, err := aeron.Connect(testCase.ctx)
+			var err error
+			if testCase.fullConnect {
+				_, err = aeron.Connect(testCase.ctx)
+			} else {
+				err = aeron.ValidateConnectContextForTest(
+					aeron.NormalizeContextForTest(testCase.ctx),
+				)
+			}
 			require.EqualError(t, err, testCase.wantErr)
 		})
 	}

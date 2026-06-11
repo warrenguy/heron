@@ -32,8 +32,7 @@ type Subscription struct {
 
 	availableImageHandler   func(*Image)
 	unavailableImageHandler func(*Image)
-	// conductor reserved for RemoveSubscription teardown.
-	conductor *conductor.Conductor //nolint:unused
+	conductor               *conductor.Conductor
 }
 
 func newSubscription(
@@ -95,14 +94,17 @@ func (subscription *Subscription) IsClosed() bool {
 //
 // The fragmentLimit budget is shared across images in rotation order.
 //
-// Returns 0 when the subscription is closed. An in-flight poll is not aborted by a
-// reentrant Close() from a fragment handler.
+// Returns 0 when the subscription is closed, without advancing roundRobinIndex.
+// A normal bound Close runs RetireSubscription, which nils images and
+// internalClose's each image immediately; any mmap linger is deferred at the
+// registry layer, not by retaining the images slice. An in-flight Poll keeps
+// only its entry snapshot and is not aborted by a reentrant Close() from a
+// fragment handler.
 //
 // Subscription is not thread-safe; see type documentation.
 func (subscription *Subscription) Poll(handler FragmentHandler, fragmentLimit int) int {
 	if subscription.closed {
-		// Retain images after Close until client teardown; do not advance
-		// round-robin or deliver fragments once the subscription is closed.
+		// Closed: no fragments and no round-robin advance.
 		return 0
 	}
 
@@ -171,12 +173,21 @@ func (subscription *Subscription) removeImage(correlationID int64) *Image {
 	return image
 }
 
-// Close marks the subscription closed.
+// Close tears down this registration via the bound conductor.
 //
-// Does not offer RemoveSubscription or retire images.
-//
-// Conductor client close drain handles driver teardown and unavailable-image handling.
+// Idempotent: repeated calls return nil. Concurrent Close from multiple
+// goroutines is unsupported. After close, Poll returns zero.
 func (subscription *Subscription) Close() error {
+	if subscription.IsClosed() {
+		return nil
+	}
+	if subscription.conductor == nil {
+		return subscription.markClosed()
+	}
+	return subscription.conductor.CloseSubscription(subscription)
+}
+
+func (subscription *Subscription) markClosed() error {
 	subscription.closed = true
 	return nil
 }
