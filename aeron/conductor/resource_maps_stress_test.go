@@ -92,11 +92,11 @@ func TestConductor_resourceByRegID_concurrentWithDoWork_Stress(t *testing.T) {
 	}
 }
 
-func runSuspendedCallbackWindowStress(
+func runSuspendedHandlerWindowStress(
 	t *testing.T,
 	conductorInstance *conductor.Conductor,
-	callbackEntered chan struct{},
-	releaseCallback chan struct{},
+	handlerEntered chan struct{},
+	releaseHandler chan struct{},
 	readerGoroutines int,
 	lookupsPerReader int,
 	lookup func(*conductor.Conductor) error,
@@ -109,7 +109,7 @@ func runSuspendedCallbackWindowStress(
 	var readerWG sync.WaitGroup
 	for range readerGoroutines {
 		readerWG.Go(func() {
-			<-callbackEntered
+			<-handlerEntered
 			for range lookupsPerReader {
 				if err := lookup(conductorInstance); err != nil {
 					readerErrors <- err
@@ -125,30 +125,30 @@ func runSuspendedCallbackWindowStress(
 		doWorkDone <- conductorInstance.DoWork()
 	}()
 
-	<-callbackEntered
+	<-handlerEntered
 	readerWG.Wait()
 	for range readerGoroutines {
 		select {
 		case err := <-readerErrors:
 			require.NoError(t, err)
 		case <-time.After(time.Second):
-			t.Fatal("reader did not finish lookups during suspended callback")
+			t.Fatal("reader did not finish lookups during suspended handler")
 		}
 	}
 
 	select {
 	case workCount := <-doWorkDone:
 		if cycle >= 0 {
-			t.Fatalf("cycle %d: DoWork finished before callback released: workCount=%d", cycle, workCount)
+			t.Fatalf("cycle %d: DoWork finished before handler released: workCount=%d", cycle, workCount)
 		}
-		t.Fatalf("DoWork finished before callback released: workCount=%d", workCount)
+		t.Fatalf("DoWork finished before handler released: workCount=%d", workCount)
 	default:
 	}
-	close(releaseCallback)
+	close(releaseHandler)
 	require.Equal(t, 1, <-doWorkDone)
 }
 
-func runSuspendedCallbackLookupStress(
+func runSuspendedHandlerLookupStress(
 	t *testing.T,
 	available bool,
 	lookup func(*conductor.Conductor) error,
@@ -157,8 +157,8 @@ func runSuspendedCallbackLookupStress(
 ) {
 	t.Helper()
 
-	callbackEntered := make(chan struct{})
-	releaseCallback := make(chan struct{})
+	handlerEntered := make(chan struct{})
+	releaseHandler := make(chan struct{})
 
 	lifecycle := &recordingImageLifecycle{addImageOK: true}
 	if !available {
@@ -171,12 +171,12 @@ func runSuspendedCallbackLookupStress(
 		seedGoldenAvailableLogBuffers(t, conductorInstance)
 	}
 
-	blockCallback := func(conductor.ImageHandle) {
-		close(callbackEntered)
-		<-releaseCallback
+	blockHandler := func(conductor.ImageHandle) {
+		close(handlerEntered)
+		<-releaseHandler
 	}
 	if available {
-		lifecycle.availableCallback = blockCallback
+		lifecycle.availableImageHandler = blockHandler
 		transmitConductorEvent(
 			t,
 			conductorInstance.EventsAdapterForTest(),
@@ -184,15 +184,15 @@ func runSuspendedCallbackLookupStress(
 			conductor.AvailableImageBytes(goldenAvailableImageEvent),
 		)
 	} else {
-		lifecycle.unavailableCallback = blockCallback
+		lifecycle.unavailableImageHandler = blockHandler
 		triggerGoldenUnavailableImage(t, conductorInstance)
 	}
 
-	runSuspendedCallbackWindowStress(
+	runSuspendedHandlerWindowStress(
 		t,
 		conductorInstance,
-		callbackEntered,
-		releaseCallback,
+		handlerEntered,
+		releaseHandler,
 		readerGoroutines,
 		lookupsPerReader,
 		lookup,
@@ -200,8 +200,8 @@ func runSuspendedCallbackLookupStress(
 	)
 }
 
-func TestConductor_PublicationByRegID_concurrentDuringImageCallback_Stress(t *testing.T) {
-	runSuspendedCallbackLookupStress(
+func TestConductor_PublicationByRegID_concurrentDuringImageHandler_Stress(t *testing.T) {
+	runSuspendedHandlerLookupStress(
 		t,
 		true,
 		lookupPublication(42),
@@ -210,8 +210,8 @@ func TestConductor_PublicationByRegID_concurrentDuringImageCallback_Stress(t *te
 	)
 }
 
-func TestConductor_PublicationByRegID_concurrentDuringUnavailableImageCallback_Stress(t *testing.T) {
-	runSuspendedCallbackLookupStress(
+func TestConductor_PublicationByRegID_concurrentDuringUnavailableImageHandler_Stress(t *testing.T) {
+	runSuspendedHandlerLookupStress(
 		t,
 		false,
 		lookupPublication(42),
@@ -220,8 +220,8 @@ func TestConductor_PublicationByRegID_concurrentDuringUnavailableImageCallback_S
 	)
 }
 
-func TestConductor_SubscriptionByRegID_concurrentDuringImageCallback_Stress(t *testing.T) {
-	runSuspendedCallbackLookupStress(
+func TestConductor_SubscriptionByRegID_concurrentDuringImageHandler_Stress(t *testing.T) {
+	runSuspendedHandlerLookupStress(
 		t,
 		true,
 		lookupSubscription(goldenAvailableImageEvent.SubscriptionRegistrationID),
@@ -230,8 +230,8 @@ func TestConductor_SubscriptionByRegID_concurrentDuringImageCallback_Stress(t *t
 	)
 }
 
-func TestConductor_SubscriptionByRegID_concurrentDuringUnavailableImageCallback_Stress(t *testing.T) {
-	runSuspendedCallbackLookupStress(
+func TestConductor_SubscriptionByRegID_concurrentDuringUnavailableImageHandler_Stress(t *testing.T) {
+	runSuspendedHandlerLookupStress(
 		t,
 		false,
 		lookupSubscription(goldenUnavailableImageEvent.SubscriptionRegistrationID),
@@ -250,16 +250,16 @@ func TestConductor_PublicationByRegID_suspendWindowAlternating_Stress(t *testing
 
 	for cycle := range suspendStressAlternatingCycles {
 		available := cycle%2 == 0
-		callbackEntered := make(chan struct{})
-		releaseCallback := make(chan struct{})
+		handlerEntered := make(chan struct{})
+		releaseHandler := make(chan struct{})
 
-		blockCallback := func(conductor.ImageHandle) {
-			close(callbackEntered)
-			<-releaseCallback
+		blockHandler := func(conductor.ImageHandle) {
+			close(handlerEntered)
+			<-releaseHandler
 		}
 		if available {
-			lifecycle.availableCallback = blockCallback
-			lifecycle.unavailableCallback = nil
+			lifecycle.availableImageHandler = blockHandler
+			lifecycle.unavailableImageHandler = nil
 			transmitConductorEvent(
 				t,
 				conductorInstance.EventsAdapterForTest(),
@@ -267,16 +267,16 @@ func TestConductor_PublicationByRegID_suspendWindowAlternating_Stress(t *testing
 				conductor.AvailableImageBytes(goldenAvailableImageEvent),
 			)
 		} else {
-			lifecycle.unavailableCallback = blockCallback
-			lifecycle.availableCallback = nil
+			lifecycle.unavailableImageHandler = blockHandler
+			lifecycle.availableImageHandler = nil
 			triggerGoldenUnavailableImage(t, conductorInstance)
 		}
 
-		runSuspendedCallbackWindowStress(
+		runSuspendedHandlerWindowStress(
 			t,
 			conductorInstance,
-			callbackEntered,
-			releaseCallback,
+			handlerEntered,
+			releaseHandler,
 			suspendStressAlternatingReaders,
 			suspendStressAlternatingLookups,
 			lookupPublication(42),

@@ -8,10 +8,10 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 )
 
-func assertInvokeImageCallbackUnderWriteLock(savedDepth int32) {
+func assertInvokeImageHandlerUnderWriteLock(savedDepth int32) {
 	if savedDepth <= 0 {
 		panic(fmt.Sprintf(
-			"conductor: invokeImageCallback called without resource write lock (depth=%d)",
+			"conductor: invokeImageHandler called without resource write lock (depth=%d)",
 			savedDepth,
 		))
 	}

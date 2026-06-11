@@ -93,7 +93,7 @@ func TestWriteCounterRecordRejectsChannelStatusTypeIDs(t *testing.T) {
 	)
 }
 
-func TestCountersReaderGetCounterValue(t *testing.T) {
+func TestCountersReaderCounterValue(t *testing.T) {
 	meta, values := syntheticCountersBuffers(t, 2)
 	writeDenseCounterPrefix(meta, values, 1)
 	cnc.WriteCounterRecord(
@@ -109,7 +109,7 @@ func TestCountersReaderGetCounterValue(t *testing.T) {
 	reader, err := cnc.NewCountersReader(meta, values)
 	require.NoError(t, err)
 
-	gotValue, err := reader.GetCounterValue(1)
+	gotValue, err := reader.CounterValue(1)
 	require.NoError(t, err)
 	require.Equal(t, int64(1_700_000_000_123), gotValue)
 }
@@ -240,15 +240,15 @@ func TestCountersReaderFindHeartbeat(t *testing.T) {
 	}
 }
 
-func TestCountersReaderGetCounterValueOutOfRange(t *testing.T) {
+func TestCountersReaderCounterValueOutOfRange(t *testing.T) {
 	meta, values := syntheticCountersBuffers(t, 1)
 	reader, err := cnc.NewCountersReader(meta, values)
 	require.NoError(t, err)
 
-	_, err = reader.GetCounterValue(1)
+	_, err = reader.CounterValue(1)
 	require.EqualError(t, err, "cnc: counter id 1 out of range: maxCounterId=0")
 
-	_, err = reader.GetCounterValue(-1)
+	_, err = reader.CounterValue(-1)
 	require.EqualError(t, err, "cnc: counter id -1 out of range: maxCounterId=0")
 
 	err = reader.SetCounterValue(1, 1)
@@ -451,7 +451,7 @@ func TestCountersReaderIsCounterActiveOutOfRangeAndUnused(t *testing.T) {
 func TestCountersReaderNilReceiver(t *testing.T) {
 	var reader *cnc.CountersReader
 
-	_, err := reader.GetCounterValue(0)
+	_, err := reader.CounterValue(0)
 	require.EqualError(t, err, "cnc: counters reader is nil")
 
 	err = reader.SetCounterValue(0, 1)
@@ -477,7 +477,7 @@ func TestCountersReaderCounterValuesBufferAliasesAndVolatileRead(t *testing.T) {
 	buffer.PutInt64Release(0, 88)
 	require.Equal(t, int64(88), buffer.GetInt64(0))
 
-	gotValue, err := reader.GetCounterValue(0)
+	gotValue, err := reader.CounterValue(0)
 	require.NoError(t, err)
 	require.Equal(t, int64(88), gotValue)
 }

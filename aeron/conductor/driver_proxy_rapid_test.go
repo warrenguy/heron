@@ -241,7 +241,7 @@ func TestDriverProxy_offerReadRoundtrip_rapid(t *testing.T) {
 			case driverProxyOpGetNextAvailableSessionID:
 				correlationID := rapid.Int64().Draw(rt, fmt.Sprintf("sessCorr%d", i))
 				streamID := int32(rapid.Int32().Draw(rt, fmt.Sprintf("sessStream%d", i)))
-				err := proxy.GetNextAvailableSessionID(correlationID, streamID)
+				err := proxy.NextAvailableSessionID(correlationID, streamID)
 				if returnOnInsufficientCapacity(rt, proxy, want, err) {
 					return
 				}

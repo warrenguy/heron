@@ -41,8 +41,8 @@ type ImageLifecycle interface {
 	AddImage(sub SubscriptionHandle, image ImageHandle) bool
 	RemoveImage(sub SubscriptionHandle, correlationID int64) ImageHandle
 	CloseImage(image ImageHandle)
-	AvailableImageCallback(sub SubscriptionHandle) func(ImageHandle)
-	UnavailableImageCallback(sub SubscriptionHandle) func(ImageHandle)
+	AvailableImageHandler(sub SubscriptionHandle) func(ImageHandle)
+	UnavailableImageHandler(sub SubscriptionHandle) func(ImageHandle)
 }
 
 func (conductor *Conductor) subscriptionForImageEvent(
@@ -54,7 +54,7 @@ func (conductor *Conductor) subscriptionForImageEvent(
 	return conductor.subscriptionByRegID(registrationID)
 }
 
-func (conductor *Conductor) onAvailableImage(event AvailableImage) {
+func (conductor *Conductor) handleAvailableImage(event AvailableImage) {
 	conductor.underResourceWriteLock(func() {
 		sub, ok := conductor.subscriptionForImageEvent(event.SubscriptionRegistrationID)
 		if !ok {
@@ -103,15 +103,15 @@ func (conductor *Conductor) onAvailableImage(event AvailableImage) {
 			return
 		}
 
-		if callback := conductor.imageLifecycle.AvailableImageCallback(sub); callback != nil {
-			conductor.invokeImageCallback(func() {
-				callback(image)
+		if handler := conductor.imageLifecycle.AvailableImageHandler(sub); handler != nil {
+			conductor.invokeImageHandler(func() {
+				handler(image)
 			})
 		}
 	})
 }
 
-func (conductor *Conductor) onUnavailableImage(
+func (conductor *Conductor) handleUnavailableImage(
 	correlationID, subscriptionRegistrationID int64,
 ) {
 	conductor.underResourceWriteLock(func() {
@@ -133,9 +133,9 @@ func (conductor *Conductor) onUnavailableImage(
 		}
 		conductor.releaseLogBuffersByKey(image.LogFileName(), 0)
 
-		if callback := conductor.imageLifecycle.UnavailableImageCallback(sub); callback != nil {
-			conductor.invokeImageCallback(func() {
-				callback(image)
+		if handler := conductor.imageLifecycle.UnavailableImageHandler(sub); handler != nil {
+			conductor.invokeImageHandler(func() {
+				handler(image)
 			})
 		}
 	})
@@ -146,29 +146,29 @@ func (conductor *Conductor) releaseAcquiredLogFile(resolvedLogFileName string, e
 	invokeErrorHandler(conductor.config.ErrorHandler, err)
 }
 
-func (conductor *Conductor) invokeImageCallback(callback func()) {
-	// Image callbacks suspend the mutation-scope write lock so PublicationByRegID
+func (conductor *Conductor) invokeImageHandler(handler func()) {
+	// Image handlers suspend the mutation-scope write lock so PublicationByRegID
 	// and SubscriptionByRegID always take RLock and reentrant DoWork can acquire
 	// a fresh write lock for map mutations. Handlers must not assume exclusive map
 	// access: other goroutines may read or write resource maps during the suspend
-	// window. While isInCallback is set, nested user callbacks are skipped; the
+	// window. While inCallback is set, nested user handlers are skipped; the
 	// driver event is still consumed during reentrant DoWork and is not replayed.
-	// Java ClientConductor still delivers nested available/unavailable callbacks.
-	if conductor.isInCallback {
+	// Java ClientConductor still delivers nested available/unavailable handlers.
+	if conductor.inCallback {
 		return
 	}
-	conductor.isInCallback = true
+	conductor.inCallback = true
 	savedDepth := conductor.suspendResourceWriteLock()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err, ok := recovered.(error)
 			if !ok {
-				err = fmt.Errorf("conductor: image callback panic: %v", recovered)
+				err = fmt.Errorf("conductor: image handler panic: %v", recovered)
 			}
 			invokeErrorHandler(conductor.config.ErrorHandler, err)
 		}
 		conductor.resumeResourceWriteLock(savedDepth)
-		conductor.isInCallback = false
+		conductor.inCallback = false
 	}()
-	callback()
+	handler()
 }

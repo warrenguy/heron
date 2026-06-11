@@ -18,15 +18,15 @@ const (
 	driverProxyTestChannel      = "aeron:ipc"
 )
 
-func TestDriverProxy_TimeOfLastDriverKeepaliveMs(t *testing.T) {
+func TestDriverProxy_LastDriverKeepaliveMs(t *testing.T) {
 	ring, _ := newDriverProxyTestRing(t)
 	proxy := conductor.NewDriverProxy(ring, 42)
 
-	require.Zero(t, proxy.TimeOfLastDriverKeepaliveMs())
+	require.Zero(t, proxy.LastDriverKeepaliveMs())
 
 	want := int64(1_700_000_000_123)
 	ring.SetConsumerHeartbeatTime(want)
-	require.Equal(t, want, proxy.TimeOfLastDriverKeepaliveMs())
+	require.Equal(t, want, proxy.LastDriverKeepaliveMs())
 }
 
 func TestDriverProxy_offerCorrelated_encodeGolden(t *testing.T) {
@@ -90,7 +90,7 @@ func TestDriverProxy_offerCorrelated_encodeGolden(t *testing.T) {
 	}
 }
 
-func TestDriverProxy_GetNextAvailableSessionID_encodeGolden(t *testing.T) {
+func TestDriverProxy_NextAvailableSessionID_encodeGolden(t *testing.T) {
 	const (
 		clientID      int64 = 1
 		correlationID int64 = 42
@@ -100,7 +100,7 @@ func TestDriverProxy_GetNextAvailableSessionID_encodeGolden(t *testing.T) {
 	ring, buffer := newDriverProxyTestRing(t)
 	proxy := conductor.NewDriverProxy(ring, clientID)
 
-	err := proxy.GetNextAvailableSessionID(correlationID, streamID)
+	err := proxy.NextAvailableSessionID(correlationID, streamID)
 	require.NoError(t, err)
 
 	payloadOffset := ringbuffer.EncodedMsgOffset(0)
@@ -136,12 +136,12 @@ func TestDriverProxy_GetNextAvailableSessionID_encodeGolden(t *testing.T) {
 	require.Equal(t, conductor.GetNextAvailableSessionID, gotTypeID)
 }
 
-func TestDriverProxy_GetNextAvailableSessionID_insufficientCapacity(t *testing.T) {
+func TestDriverProxy_NextAvailableSessionID_insufficientCapacity(t *testing.T) {
 	ring, buffer := newDriverProxyTestRing(t)
 	seedFullDriverProxyRing(t, buffer)
 
 	proxy := conductor.NewDriverProxy(ring, 1)
-	err := proxy.GetNextAvailableSessionID(42, 100)
+	err := proxy.NextAvailableSessionID(42, 100)
 	require.ErrorIs(t, err, conductor.ErrRingInsufficientCapacity)
 }
 

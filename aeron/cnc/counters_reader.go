@@ -36,7 +36,7 @@ const (
 )
 
 type CountersView interface {
-	GetCounterValue(counterID int32) (int64, error)
+	CounterValue(counterID int32) (int64, error)
 
 	FindHeartbeatCounter(
 		registrationID int64,
@@ -104,7 +104,7 @@ func (reader *CountersReader) validateCounterID(counterID int32) error {
 	return nil
 }
 
-func (reader *CountersReader) GetCounterValue(counterID int32) (int64, error) {
+func (reader *CountersReader) CounterValue(counterID int32) (int64, error) {
 	if err := reader.validateCounterID(counterID); err != nil {
 		return 0, err
 	}

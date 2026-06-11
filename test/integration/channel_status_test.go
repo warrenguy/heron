@@ -68,7 +68,7 @@ func TestChannelStatusCounterIsCounterActive(t *testing.T) {
 		),
 	)
 
-	statusValue, err := countersReader.GetCounterValue(ready.ChannelStatusCounterID)
+	statusValue, err := countersReader.CounterValue(ready.ChannelStatusCounterID)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, statusValue, int64(0))
 

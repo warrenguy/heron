@@ -28,7 +28,7 @@ func NewDriverProxy(
 	}
 }
 
-func (proxy *DriverProxy) TimeOfLastDriverKeepaliveMs() int64 {
+func (proxy *DriverProxy) LastDriverKeepaliveMs() int64 {
 	return proxy.ring.ConsumerHeartbeatTime()
 }
 
@@ -44,7 +44,7 @@ func (proxy *DriverProxy) ClientClose() {
 	_ = proxy.offerCorrelated(ClientClose, true)
 }
 
-func (proxy *DriverProxy) GetNextAvailableSessionID(
+func (proxy *DriverProxy) NextAvailableSessionID(
 	correlationID int64,
 	streamID int32,
 ) error {

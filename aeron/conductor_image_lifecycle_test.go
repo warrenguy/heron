@@ -168,7 +168,7 @@ func transmitConductorImageLifecycleEvent(
 	require.NoError(tb, tx.Transmit(msgTypeID, payload))
 }
 
-func TestConductor_OnAvailableImage_createsImage(t *testing.T) {
+func TestConductor_handleAvailableImage_createsImage(t *testing.T) {
 	t.Parallel()
 
 	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
@@ -205,7 +205,7 @@ func TestConductor_OnAvailableImage_createsImage(t *testing.T) {
 	require.Equal(t, TestSubscriberPositionAtJoin, attachedImage.JoinPosition())
 }
 
-func TestConductor_OnAvailableImage_createsImage_withinMediaDriverDir(t *testing.T) {
+func TestConductor_handleAvailableImage_createsImage_withinMediaDriverDir(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -232,7 +232,7 @@ func TestConductor_OnAvailableImage_createsImage_withinMediaDriverDir(t *testing
 	require.Equal(t, 1, sub.ImageCount())
 }
 
-func TestConductor_OnAvailableImage_unknownSubscriptionIgnored(t *testing.T) {
+func TestConductor_handleAvailableImage_unknownSubscriptionIgnored(t *testing.T) {
 	t.Parallel()
 
 	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
@@ -250,7 +250,7 @@ func TestConductor_OnAvailableImage_unknownSubscriptionIgnored(t *testing.T) {
 	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 }
 
-func TestConductor_OnAvailableImage_duplicateCorrelationIgnored(t *testing.T) {
+func TestConductor_handleAvailableImage_duplicateCorrelationIgnored(t *testing.T) {
 	t.Parallel()
 
 	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
@@ -285,7 +285,7 @@ func TestConductor_OnAvailableImage_duplicateCorrelationIgnored(t *testing.T) {
 	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
 }
 
-func TestConductor_OnAvailableImage_newImageFailureReleasesLog(t *testing.T) {
+func TestConductor_handleAvailableImage_newImageFailureReleasesLog(t *testing.T) {
 	t.Parallel()
 
 	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
@@ -318,7 +318,7 @@ func TestConductor_OnAvailableImage_newImageFailureReleasesLog(t *testing.T) {
 	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 }
 
-func TestConductor_OnAvailableImage_acquireFailureReportsError(t *testing.T) {
+func TestConductor_handleAvailableImage_acquireFailureReportsError(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -349,7 +349,7 @@ func TestConductor_OnAvailableImage_acquireFailureReportsError(t *testing.T) {
 	require.Zero(t, sub.ImageCount())
 }
 
-func TestConductor_OnAvailableImage_inactiveSubscriberCounter(t *testing.T) {
+func TestConductor_handleAvailableImage_inactiveSubscriberCounter(t *testing.T) {
 	t.Parallel()
 
 	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
@@ -390,7 +390,7 @@ func TestConductor_OnAvailableImage_inactiveSubscriberCounter(t *testing.T) {
 	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 }
 
-func TestConductor_OnAvailableImage_rejectsNonASCIIPath(t *testing.T) {
+func TestConductor_handleAvailableImage_rejectsNonASCIIPath(t *testing.T) {
 	t.Parallel()
 
 	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
@@ -423,7 +423,7 @@ func TestConductor_OnAvailableImage_rejectsNonASCIIPath(t *testing.T) {
 	require.Zero(t, sub.ImageCount())
 }
 
-func TestConductor_OnAvailableImage_passesSubscriberErrorHandler(t *testing.T) {
+func TestConductor_handleAvailableImage_passesSubscriberErrorHandler(t *testing.T) {
 	t.Parallel()
 
 	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
@@ -461,7 +461,7 @@ func TestConductor_OnAvailableImage_passesSubscriberErrorHandler(t *testing.T) {
 	require.Equal(t, 1, handlerCalls)
 }
 
-func TestConductor_OnAvailableImage_rejectsPathOutsideMediaDriverDir(t *testing.T) {
+func TestConductor_handleAvailableImage_rejectsPathOutsideMediaDriverDir(t *testing.T) {
 	t.Parallel()
 
 	_, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
@@ -490,7 +490,7 @@ func TestConductor_OnAvailableImage_rejectsPathOutsideMediaDriverDir(t *testing.
 	require.ErrorIs(t, gotErrors[0], conductor.ErrLogFileOutsideMediaDriverDir)
 }
 
-func TestConductor_OnUnavailableImage_closesImage(t *testing.T) {
+func TestConductor_handleUnavailableImage_closesImage(t *testing.T) {
 	t.Parallel()
 
 	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
@@ -541,7 +541,7 @@ func TestConductor_OnUnavailableImage_closesImage(t *testing.T) {
 	}, 1))
 }
 
-func TestConductor_OnUnavailableImage_refcountRetainedWhilePublicationOpen(t *testing.T) {
+func TestConductor_handleUnavailableImage_refcountRetainedWhilePublicationOpen(t *testing.T) {
 	t.Parallel()
 
 	dir, logPath := setupConductorImageLifecycleLogFile(t, "shared.log")
@@ -581,7 +581,7 @@ func TestConductor_OnUnavailableImage_refcountRetainedWhilePublicationOpen(t *te
 	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 }
 
-func TestConductor_OnUnavailableImage_unknownCorrelationIgnored(t *testing.T) {
+func TestConductor_handleUnavailableImage_unknownCorrelationIgnored(t *testing.T) {
 	t.Parallel()
 
 	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
@@ -628,7 +628,7 @@ func TestConductor_OnUnavailableImage_unknownCorrelationIgnored(t *testing.T) {
 	require.Zero(t, unavailableHandlerCalls)
 }
 
-func TestConductor_OnUnavailableImage_unknownSubscriptionIgnored(t *testing.T) {
+func TestConductor_handleUnavailableImage_unknownSubscriptionIgnored(t *testing.T) {
 	t.Parallel()
 
 	conductorInstance := newConductorWithImageLifecycleForTest(t, noopConductorErrorHandler, "/")

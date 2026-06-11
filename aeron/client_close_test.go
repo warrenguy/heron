@@ -94,7 +94,7 @@ func TestClient_accessorGuardsAfterClose(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, retained)
 
-		_, err = retained.GetCounterValue(0)
+		_, err = retained.CounterValue(0)
 		require.NoError(t, err)
 
 		require.NoError(t, client.Close())
@@ -102,7 +102,7 @@ func TestClient_accessorGuardsAfterClose(t *testing.T) {
 		_, err = client.CountersReader()
 		require.EqualError(t, err, "aeron: client is closed")
 
-		_, err = retained.GetCounterValue(1)
+		_, err = retained.CounterValue(1)
 		require.EqualError(t, err, "cnc: counter id 1 out of range: maxCounterId=0")
 	})
 }

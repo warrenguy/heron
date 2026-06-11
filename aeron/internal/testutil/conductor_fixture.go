@@ -141,13 +141,15 @@ func NewConductorFixture(tb TB, config ConductorConfig) *ConductorFixture {
 	}
 
 	driverProxy := conductor.NewDriverProxy(ring, config.ClientID)
+	conductorInstance, err := conductor.NewConductor(
+		driverProxy,
+		receiver,
+		countersReader,
+		conductorConfig,
+	)
+	require.NoError(tb, err)
 	return &ConductorFixture{
-		Conductor: conductor.NewConductor(
-			driverProxy,
-			receiver,
-			countersReader,
-			conductorConfig,
-		),
+		Conductor:   conductorInstance,
 		DriverProxy: driverProxy,
 		Transmitter: transmitter,
 		Ring:        ring,

@@ -51,6 +51,10 @@ type Publication struct {
 // ChannelEndpointStatusActive mirrors Java ChannelEndpointStatus.ACTIVE.
 const ChannelEndpointStatusActive int64 = 1
 
+func (pub *Publication) RegistrationID() int64 {
+	return pub.registrationID
+}
+
 // Offer publishes a message from buffer. Unfragmented payloads fit one DATA
 // frame; larger payloads up to maxMessageLength split into fragments. Returns a
 // new stream position (>0) or a negative status code (see publication_codes.go).
@@ -158,7 +162,7 @@ func (pub *Publication) PositionLimit() int64 {
 		return Closed
 	}
 
-	limit, err := pub.counters.GetCounterValue(pub.publicationLimitCounterID)
+	limit, err := pub.counters.CounterValue(pub.publicationLimitCounterID)
 	if err != nil {
 		return Closed
 	}
@@ -179,7 +183,7 @@ func (pub *Publication) ChannelStatus() (int64, error) {
 	if pub.channelStatusCounterID == cnc.NullCounterID {
 		return ChannelEndpointStatusActive, nil
 	}
-	return pub.counters.GetCounterValue(pub.channelStatusCounterID)
+	return pub.counters.CounterValue(pub.channelStatusCounterID)
 }
 
 // AvailableWindow returns positionLimit - position, or a negative status code.
@@ -301,7 +305,7 @@ type offerPrelude struct {
 }
 
 func (pub *Publication) offerPreludeState() (prelude offerPrelude, position, limit int64) {
-	limit, err := pub.counters.GetCounterValue(pub.publicationLimitCounterID)
+	limit, err := pub.counters.CounterValue(pub.publicationLimitCounterID)
 	if err != nil {
 		return offerPrelude{status: Closed}, 0, 0
 	}
@@ -412,7 +416,7 @@ func (pub *Publication) reserveTailAfterPrelude(
 // delegated to runOfferPrelude: tail read and FAA must stay in one function;
 // splitting them adds non-inlinable calls on the unfragmented hot path.
 func (pub *Publication) reserveMessageSpace(messageLength int) reserveOutcome {
-	limit, err := pub.counters.GetCounterValue(pub.publicationLimitCounterID)
+	limit, err := pub.counters.CounterValue(pub.publicationLimitCounterID)
 	if err != nil {
 		return reserveOutcome{status: Closed}
 	}

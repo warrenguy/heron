@@ -1,6 +1,8 @@
 package conductor_test
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,6 +11,8 @@ import (
 
 	"github.com/warrenguy/heron/aeron/conductor"
 )
+
+var errRapidApplySubscriptionReady = errors.New("conductor_test: apply subscription ready failed")
 
 var rapidPendingKinds = []conductor.PendingKind{
 	conductor.PendingKindNextSessionID,
@@ -19,26 +23,21 @@ var rapidPendingKinds = []conductor.PendingKind{
 	conductor.PendingKindRemoveSubscription,
 }
 
-func newConductorForRapid(rt *rapid.T) *conductor.Conductor {
+func newConductorForRapid(t *testing.T, rt *rapid.T) *conductor.Conductor {
+	t.Helper()
 	rt.Helper()
 
-	var nanoNs int64
-	config := conductor.Config{
-		ClientID:            conductorTestClientID,
-		DriverTimeout:       conductorTestDriverTimeout,
-		KeepAliveInterval:   conductorTestKeepAliveInterval,
-		IdleSleepDuration:   conductorTestIdleSleepDuration,
-		InterServiceTimeout: conductorTestInterServiceTimeout,
-		EpochClock: func() int64 {
-			return 0
-		},
-		NanoClock: func() int64 {
-			return nanoNs
-		},
-	}
-	conductorInstance, err := conductor.NewConductorUnchecked(config, nil)
-	require.NoError(rt, err)
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(t, func(error) {}, 0)
+	conductorInstance.SeedServiceTimestamps(*nanoNs)
 	return conductorInstance
+}
+
+func rapidDriverRejectedResponse(correlationID int64) conductor.ErrorResponse {
+	return conductor.ErrorResponse{
+		OffendingCommandCorrelationID: correlationID,
+		ErrorCode:                     11,
+		ErrorMessage:                  "rejected",
+	}
 }
 
 type pendingRapidSeen struct {
@@ -69,15 +68,16 @@ func registerPendingForRapid(
 
 func TestConductor_RegisterPending_correlationUniqueness_rapid(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		conductorInstance := newConductorForRapid(rt)
+		conductorInstance := newConductorForRapid(t, rt)
 		count := rapid.IntRange(1, 32).Draw(rt, "count")
 		seen := make(map[int64]pendingRapidSeen, count)
 
 		for range count {
-			correlationID := rapid.Int64().Draw(rt, "correlationID")
-			if _, exists := seen[correlationID]; exists {
-				continue
-			}
+			correlationID := drawPendingRapidUniqueCorrelationID(
+				rt,
+				rapidMapContains(seen),
+				"correlationID",
+			)
 
 			kind := rapid.SampledFrom(rapidPendingKinds).Draw(rt, "kind")
 			var streamID int32
@@ -125,6 +125,1045 @@ func TestConductor_RegisterPending_correlationUniqueness_rapid(t *testing.T) {
 			)
 			require.ErrorIs(rt, err, conductor.ErrPendingAlreadyRegistered)
 			require.EqualError(rt, err, "conductor: correlation already pending")
+		}
+	})
+}
+
+const pendingRapidBaseNowNs int64 = 1_000_000_000
+
+type pendingRapidMapEntry struct {
+	kind          conductor.PendingKind
+	deadlineNs    int64
+	err           error
+	driverErrored bool
+}
+
+type pendingRapidMapModel struct {
+	entries               map[int64]pendingRapidMapEntry
+	receivedCorrelationID int64
+	activeCorrelationID   int64
+	nowNs                 int64
+}
+
+func rapidMapKeys[K comparable, V any](values map[K]V) []K {
+	keys := make([]K, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func rapidMapContains[K comparable, V any](values map[K]V) func(K) bool {
+	return func(key K) bool {
+		_, exists := values[key]
+		return exists
+	}
+}
+
+func drawPendingRapidUniqueCorrelationID(
+	rt *rapid.T,
+	isTaken func(int64) bool,
+	label string,
+) int64 {
+	rt.Helper()
+
+	for {
+		correlationID := rapid.Int64().Draw(rt, label)
+		if correlationID == conductor.NullCorrelationID {
+			continue
+		}
+		if isTaken(correlationID) {
+			continue
+		}
+		return correlationID
+	}
+}
+
+func drawRapidAbsentCorrelationID(
+	rt *rapid.T,
+	label string,
+	isPresent func(int64) bool,
+) int64 {
+	rt.Helper()
+
+	for {
+		correlationID := rapid.Int64().Draw(rt, label)
+		if correlationID == conductor.NullCorrelationID || isPresent(correlationID) {
+			continue
+		}
+		return correlationID
+	}
+}
+
+func drawPendingRapidAbsentCorrelationID(
+	rt *rapid.T,
+	model pendingRapidMapModel,
+	label string,
+) int64 {
+	rt.Helper()
+
+	return drawRapidAbsentCorrelationID(rt, label, func(correlationID int64) bool {
+		_, exists := model.entries[correlationID]
+		return exists
+	})
+}
+
+func drawRapidInt64Key(rt *rapid.T, keys []int64, label string) int64 {
+	rt.Helper()
+
+	return keys[rapid.IntRange(0, len(keys)-1).Draw(rt, label)]
+}
+
+func drawPendingRapidExistingCorrelationID(
+	rt *rapid.T,
+	model pendingRapidMapModel,
+	label string,
+) (int64, bool) {
+	rt.Helper()
+
+	if len(model.entries) == 0 {
+		return 0, false
+	}
+	return drawRapidInt64Key(rt, rapidMapKeys(model.entries), label), true
+}
+
+func pendingRapidDeadlineOffset(rt *rapid.T, label string) int64 {
+	rt.Helper()
+
+	return rapid.Int64Range(10_000, 50_000_000).Draw(rt, label)
+}
+
+func registerPendingRapidMapEntry(
+	rt *rapid.T,
+	conductorInstance *conductor.Conductor,
+	model *pendingRapidMapModel,
+	correlationID int64,
+	kind conductor.PendingKind,
+) {
+	rt.Helper()
+
+	deadlineNs := model.nowNs + pendingRapidDeadlineOffset(rt, "deadlineOffset")
+	timeout := time.Duration(deadlineNs - model.nowNs)
+	var streamID int32
+	var channel string
+	switch kind {
+	case conductor.PendingKindAddPublication, conductor.PendingKindAddSubscription:
+		streamID = rapid.Int32().Draw(rt, "streamID")
+		channel = rapid.String().Draw(rt, "channel")
+	}
+	require.NoError(
+		rt,
+		registerPendingKindWithDeadlineForTest(
+			conductorInstance,
+			kind,
+			correlationID,
+			streamID,
+			channel,
+			timeout,
+		),
+	)
+	model.entries[correlationID] = pendingRapidMapEntry{
+		kind:       kind,
+		deadlineNs: deadlineNs,
+	}
+}
+
+func applyPendingRapidCancel(model *pendingRapidMapModel, correlationID int64) {
+	if _, ok := model.entries[correlationID]; !ok {
+		return
+	}
+	delete(model.entries, correlationID)
+	if model.receivedCorrelationID == correlationID {
+		model.receivedCorrelationID = conductor.NullCorrelationID
+	}
+}
+
+func applyPendingRapidPoll(model *pendingRapidMapModel, correlationID int64) {
+	if model.receivedCorrelationID != correlationID {
+		return
+	}
+	delete(model.entries, correlationID)
+	model.receivedCorrelationID = conductor.NullCorrelationID
+}
+
+func applyPendingRapidMapDriverError(model *pendingRapidMapModel, correlationID int64) {
+	entry, ok := model.entries[correlationID]
+	if !ok {
+		return
+	}
+	entry.driverErrored = true
+	model.entries[correlationID] = entry
+	model.receivedCorrelationID = correlationID
+}
+
+func applyPendingRapidClear(model *pendingRapidMapModel) {
+	clear(model.entries)
+	model.receivedCorrelationID = conductor.NullCorrelationID
+	model.activeCorrelationID = conductor.NullCorrelationID
+}
+
+func syncPendingRapidMapAfterDoWork(
+	conductorInstance *conductor.Conductor,
+	model *pendingRapidMapModel,
+) {
+	for correlationID, entry := range model.entries {
+		got, ok := conductorInstance.PendingResult(correlationID)
+		if !ok {
+			delete(model.entries, correlationID)
+			continue
+		}
+		entry.deadlineNs = got.DeadlineNs
+		entry.err = got.Err
+		var driverErr *conductor.DriverRegistrationError
+		entry.driverErrored = errors.As(got.Err, &driverErr)
+		model.entries[correlationID] = entry
+	}
+	model.receivedCorrelationID = conductorInstance.ReceivedCorrelationID()
+}
+
+func assertPendingRapidMapModel(
+	rt *rapid.T,
+	conductorInstance *conductor.Conductor,
+	model pendingRapidMapModel,
+) {
+	rt.Helper()
+
+	for correlationID, entry := range model.entries {
+		got, ok := conductorInstance.PendingResult(correlationID)
+		require.True(rt, ok, "correlation %d should remain pending", correlationID)
+		require.Equal(rt, entry.kind, got.Kind)
+		require.Equal(rt, entry.deadlineNs, got.DeadlineNs)
+		switch {
+		case entry.driverErrored:
+			var driverErr *conductor.DriverRegistrationError
+			require.ErrorAs(rt, got.Err, &driverErr)
+			require.Equal(rt, correlationID, driverErr.CorrelationID)
+		case entry.err != nil:
+			require.ErrorIs(rt, got.Err, entry.err)
+		default:
+			require.NoError(rt, got.Err)
+		}
+	}
+	require.Equal(rt, model.receivedCorrelationID, conductorInstance.ReceivedCorrelationID())
+	require.Equal(rt, model.activeCorrelationID, conductorInstance.ActiveCorrelationID())
+	if model.receivedCorrelationID != conductor.NullCorrelationID {
+		_, ok := model.entries[model.receivedCorrelationID]
+		require.True(rt, ok, "received correlation should remain pending")
+	}
+}
+
+func newConductorForPendingRapidMap(
+	t *testing.T,
+	rt *rapid.T,
+) (*conductor.Conductor, *int64, *pendingRapidMapModel) {
+	t.Helper()
+	rt.Helper()
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(t, func(error) {}, 0)
+	*nanoNs = pendingRapidBaseNowNs
+	conductorInstance.SeedServiceTimestamps(pendingRapidBaseNowNs)
+	return conductorInstance, nanoNs, &pendingRapidMapModel{
+		entries:               make(map[int64]pendingRapidMapEntry),
+		receivedCorrelationID: conductor.NullCorrelationID,
+		activeCorrelationID:   conductor.NullCorrelationID,
+		nowNs:                 pendingRapidBaseNowNs,
+	}
+}
+
+type pendingRapidMapOpKind int
+
+const (
+	pendingRapidMapOpRegister pendingRapidMapOpKind = iota
+	pendingRapidMapOpCancel
+	pendingRapidMapOpPoll
+	pendingRapidMapOpAdvanceExpire
+	pendingRapidMapOpSetActive
+	pendingRapidMapOpClear
+	pendingRapidMapOpDriverError
+)
+
+func runPendingRapidMapOps(
+	t *testing.T,
+	rt *rapid.T,
+	conductorInstance *conductor.Conductor,
+	nanoNs *int64,
+	model *pendingRapidMapModel,
+	seen map[int64]struct{},
+	step int,
+) {
+	rt.Helper()
+
+	ops := []pendingRapidMapOpKind{
+		pendingRapidMapOpRegister,
+		pendingRapidMapOpCancel,
+		pendingRapidMapOpPoll,
+		pendingRapidMapOpAdvanceExpire,
+		pendingRapidMapOpSetActive,
+	}
+	if len(model.entries) > 0 {
+		ops = append(ops, pendingRapidMapOpClear, pendingRapidMapOpDriverError)
+	}
+	switch rapid.SampledFrom(ops).Draw(rt, fmt.Sprintf("op%d", step)) {
+	case pendingRapidMapOpRegister:
+		correlationID := drawPendingRapidUniqueCorrelationID(
+			rt,
+			rapidMapContains(seen),
+			fmt.Sprintf("registerCorrelationID%d", step),
+		)
+		seen[correlationID] = struct{}{}
+		kind := rapid.SampledFrom(rapidPendingKinds).Draw(rt, fmt.Sprintf("registerKind%d", step))
+		registerPendingRapidMapEntry(rt, conductorInstance, model, correlationID, kind)
+
+	case pendingRapidMapOpCancel:
+		if rapid.Bool().Draw(rt, fmt.Sprintf("cancelAbsent%d", step)) {
+			correlationID := drawPendingRapidAbsentCorrelationID(
+				rt,
+				*model,
+				fmt.Sprintf("cancelAbsentCorrelationID%d", step),
+			)
+			conductorInstance.CancelPending(correlationID)
+			return
+		}
+		correlationID, ok := drawPendingRapidExistingCorrelationID(
+			rt,
+			*model,
+			fmt.Sprintf("cancelCorrelationID%d", step),
+		)
+		if !ok {
+			return
+		}
+		conductorInstance.CancelPending(correlationID)
+		applyPendingRapidCancel(model, correlationID)
+
+	case pendingRapidMapOpPoll:
+		if rapid.Bool().Draw(rt, fmt.Sprintf("pollAbsent%d", step)) {
+			correlationID := drawPendingRapidAbsentCorrelationID(
+				rt,
+				*model,
+				fmt.Sprintf("pollAbsentCorrelationID%d", step),
+			)
+			done, _, err := conductorInstance.PollPending(correlationID)
+			require.False(rt, done)
+			require.NoError(rt, err)
+			return
+		}
+		correlationID, ok := drawPendingRapidExistingCorrelationID(
+			rt,
+			*model,
+			fmt.Sprintf("pollCorrelationID%d", step),
+		)
+		if !ok {
+			return
+		}
+		done, _, err := conductorInstance.PollPending(correlationID)
+		wantDone := model.receivedCorrelationID == correlationID
+		require.Equal(rt, wantDone, done)
+		if wantDone {
+			entry := model.entries[correlationID]
+			switch {
+			case entry.driverErrored:
+				var driverErr *conductor.DriverRegistrationError
+				require.ErrorAs(rt, err, &driverErr)
+				require.Equal(rt, correlationID, driverErr.CorrelationID)
+				require.EqualError(
+					rt,
+					err,
+					(&conductor.DriverRegistrationError{
+						CorrelationID: correlationID,
+						ErrorCode:     11,
+						Message:       "rejected",
+					}).Error(),
+				)
+			case entry.err != nil:
+				require.ErrorIs(rt, err, entry.err)
+				require.EqualError(rt, err, "conductor: await response timeout")
+			default:
+				require.NoError(rt, err)
+			}
+		} else {
+			require.NoError(rt, err)
+		}
+		applyPendingRapidPoll(model, correlationID)
+
+	case pendingRapidMapOpAdvanceExpire:
+		model.nowNs += rapid.Int64Range(0, 40_000_000).Draw(rt, fmt.Sprintf("advanceNs%d", step))
+		*nanoNs = model.nowNs
+		_ = conductorInstance.DoWork()
+		syncPendingRapidMapAfterDoWork(conductorInstance, model)
+
+	case pendingRapidMapOpSetActive:
+		if len(model.entries) == 0 {
+			model.activeCorrelationID = conductor.NullCorrelationID
+			conductorInstance.SetActiveCorrelationID(conductor.NullCorrelationID)
+			return
+		}
+		if rapid.Bool().Draw(rt, fmt.Sprintf("activeNull%d", step)) {
+			model.activeCorrelationID = conductor.NullCorrelationID
+			conductorInstance.SetActiveCorrelationID(conductor.NullCorrelationID)
+			return
+		}
+		correlationID, _ := drawPendingRapidExistingCorrelationID(
+			rt,
+			*model,
+			fmt.Sprintf("activeCorrelationID%d", step),
+		)
+		model.activeCorrelationID = correlationID
+		conductorInstance.SetActiveCorrelationID(correlationID)
+
+	case pendingRapidMapOpClear:
+		conductorInstance.ClearPending()
+		applyPendingRapidClear(model)
+
+	case pendingRapidMapOpDriverError:
+		correlationID, ok := drawPendingRapidExistingCorrelationID(
+			rt,
+			*model,
+			fmt.Sprintf("driverErrorCorrelationID%d", step),
+		)
+		if !ok {
+			return
+		}
+		ok = conductorInstance.DriverError(rapidDriverRejectedResponse(correlationID))
+		require.True(rt, ok)
+		applyPendingRapidMapDriverError(model, correlationID)
+	}
+}
+
+func TestConductor_pendingRegistry_lifecycle_rapid(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		conductorInstance, nanoNs, model := newConductorForPendingRapidMap(t, rt)
+		seen := make(map[int64]struct{})
+		seedCount := rapid.IntRange(1, 16).Draw(rt, "seedCount")
+		for range seedCount {
+			correlationID := drawPendingRapidUniqueCorrelationID(
+				rt,
+				rapidMapContains(seen),
+				"seedCorrelationID",
+			)
+			seen[correlationID] = struct{}{}
+			kind := rapid.SampledFrom(rapidPendingKinds).Draw(rt, "seedKind")
+			registerPendingRapidMapEntry(rt, conductorInstance, model, correlationID, kind)
+		}
+
+		steps := rapid.IntRange(1, 24).Draw(rt, "steps")
+		for step := range steps {
+			runPendingRapidMapOps(t, rt, conductorInstance, nanoNs, model, seen, step)
+			assertPendingRapidMapModel(rt, conductorInstance, *model)
+		}
+	})
+}
+
+func wantCorrelatedForTest(
+	activeCorrelationID int64,
+	eventCorrelationID int64,
+	pendingContains bool,
+) bool {
+	if eventCorrelationID == activeCorrelationID &&
+		activeCorrelationID != conductor.NullCorrelationID {
+		return true
+	}
+	return pendingContains
+}
+
+type correlatedRapidOpKind int
+
+const (
+	correlatedRapidOpRegister correlatedRapidOpKind = iota
+	correlatedRapidOpCancel
+	correlatedRapidOpSetActive
+)
+
+func TestDriverEventsAdapter_correlated_gate_rapid(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		conductorInstance := newConductorForRapid(t, rt)
+		adapter := conductorInstance.EventsAdapterForTest()
+		seen := make(map[int64]struct{})
+		pending := make(map[int64]struct{})
+
+		seedCount := rapid.IntRange(0, 8).Draw(rt, "seedCount")
+		for range seedCount {
+			correlationID := drawPendingRapidUniqueCorrelationID(
+				rt,
+				rapidMapContains(seen),
+				"seedCorrelationID",
+			)
+			seen[correlationID] = struct{}{}
+			kind := rapid.SampledFrom(rapidPendingKinds).Draw(rt, "seedKind")
+			require.NoError(rt, registerPendingForRapid(rt, conductorInstance, kind, correlationID, 0, ""))
+			pending[correlationID] = struct{}{}
+		}
+
+		steps := rapid.IntRange(1, 16).Draw(rt, "steps")
+		for step := range steps {
+			switch rapid.SampledFrom([]correlatedRapidOpKind{
+				correlatedRapidOpRegister,
+				correlatedRapidOpCancel,
+				correlatedRapidOpSetActive,
+			}).Draw(rt, fmt.Sprintf("op%d", step)) {
+			case correlatedRapidOpRegister:
+				correlationID := drawPendingRapidUniqueCorrelationID(
+					rt,
+					rapidMapContains(seen),
+					fmt.Sprintf("registerCorrelationID%d", step),
+				)
+				seen[correlationID] = struct{}{}
+				kind := rapid.SampledFrom(rapidPendingKinds).Draw(rt, fmt.Sprintf("registerKind%d", step))
+				require.NoError(
+					rt,
+					registerPendingForRapid(rt, conductorInstance, kind, correlationID, 0, ""),
+				)
+				pending[correlationID] = struct{}{}
+
+			case correlatedRapidOpCancel:
+				if len(pending) == 0 {
+					break
+				}
+				correlationID := drawRapidInt64Key(
+					rt,
+					rapidMapKeys(pending),
+					fmt.Sprintf("cancelIdx%d", step),
+				)
+				conductorInstance.CancelPending(correlationID)
+				delete(pending, correlationID)
+
+			case correlatedRapidOpSetActive:
+				if len(pending) == 0 {
+					conductorInstance.SetActiveCorrelationID(conductor.NullCorrelationID)
+					break
+				}
+				if rapid.Bool().Draw(rt, fmt.Sprintf("activeNull%d", step)) {
+					conductorInstance.SetActiveCorrelationID(conductor.NullCorrelationID)
+					break
+				}
+				conductorInstance.SetActiveCorrelationID(
+					drawRapidInt64Key(rt, rapidMapKeys(pending), fmt.Sprintf("activeIdx%d", step)),
+				)
+			}
+
+			eventCorrelationID := rapid.Int64().Draw(rt, fmt.Sprintf("eventCorrelationID%d", step))
+			activeCorrelationID := conductorInstance.ActiveCorrelationID()
+			_, contains := pending[eventCorrelationID]
+			want := wantCorrelatedForTest(activeCorrelationID, eventCorrelationID, contains)
+			got := adapter.CorrelatedForTest(activeCorrelationID, eventCorrelationID)
+			require.Equal(rt, want, got)
+		}
+	})
+}
+
+type addPendingRapidEntry struct {
+	kind           conductor.PendingKind
+	present        bool
+	readyLatched   bool
+	driverErrored  bool
+	applyFailed    bool
+	timedOut       bool
+	registrationID int64
+	deadlineNs     int64
+}
+
+type addPendingRapidModel struct {
+	entries               map[int64]addPendingRapidEntry
+	receivedCorrelationID int64
+	activeCorrelationID   int64
+	nowNs                 int64
+}
+
+type addPendingRapidOpKind int
+
+const (
+	addPendingRapidOpRegisterPub addPendingRapidOpKind = iota
+	addPendingRapidOpRegisterSub
+	addPendingRapidOpCompletePubReady
+	addPendingRapidOpCompleteSubReady
+	addPendingRapidOpSetActive
+	addPendingRapidOpCancel
+	addPendingRapidOpClear
+	addPendingRapidOpDriverError
+	addPendingRapidOpExpire
+	addPendingRapidOpPoll
+)
+
+func drawAddPendingRapidCompletable(
+	model addPendingRapidModel,
+	kind conductor.PendingKind,
+) (int64, bool) {
+	for correlationID, entry := range model.entries {
+		if !entry.present || entry.readyLatched || entry.driverErrored {
+			continue
+		}
+		if entry.kind == kind {
+			return correlationID, true
+		}
+	}
+	return 0, false
+}
+
+func drawAddPendingRapidPresent(
+	model addPendingRapidModel,
+) (int64, bool) {
+	for correlationID, entry := range model.entries {
+		if entry.present {
+			return correlationID, true
+		}
+	}
+	return 0, false
+}
+
+func drawAddPendingRapidPollable(model addPendingRapidModel) (int64, bool) {
+	if model.receivedCorrelationID == conductor.NullCorrelationID {
+		return 0, false
+	}
+	entry, ok := model.entries[model.receivedCorrelationID]
+	if !ok || !entry.present {
+		return 0, false
+	}
+	return model.receivedCorrelationID, true
+}
+
+func applyAddPendingRapidCancel(model *addPendingRapidModel, correlationID int64) {
+	entry, ok := model.entries[correlationID]
+	if !ok || !entry.present {
+		return
+	}
+	entry.present = false
+	model.entries[correlationID] = entry
+	if model.receivedCorrelationID == correlationID {
+		model.receivedCorrelationID = conductor.NullCorrelationID
+	}
+}
+
+func applyAddPendingRapidClear(model *addPendingRapidModel) {
+	for correlationID, entry := range model.entries {
+		if !entry.present {
+			continue
+		}
+		entry.present = false
+		model.entries[correlationID] = entry
+	}
+	model.receivedCorrelationID = conductor.NullCorrelationID
+	model.activeCorrelationID = conductor.NullCorrelationID
+}
+
+func applyAddPendingRapidDriverError(model *addPendingRapidModel, correlationID int64) {
+	entry, ok := model.entries[correlationID]
+	if !ok || !entry.present || entry.readyLatched {
+		return
+	}
+	entry.driverErrored = true
+	model.entries[correlationID] = entry
+	model.receivedCorrelationID = correlationID
+}
+
+func syncAddPendingRapidAfterDoWork(
+	conductorInstance *conductor.Conductor,
+	model *addPendingRapidModel,
+) {
+	for correlationID, entry := range model.entries {
+		if !entry.present {
+			continue
+		}
+		got, ok := conductorInstance.PendingResult(correlationID)
+		if !ok {
+			entry.present = false
+			model.entries[correlationID] = entry
+			if entry.driverErrored {
+				continue
+			}
+			continue
+		}
+		entry.deadlineNs = got.DeadlineNs
+		if errors.Is(got.Err, conductor.ErrAwaitTimeout) &&
+			!entry.timedOut &&
+			!entry.driverErrored {
+			entry.timedOut = true
+			model.entries[correlationID] = entry
+		}
+	}
+	model.receivedCorrelationID = conductorInstance.ReceivedCorrelationID()
+}
+
+func applyAddPendingRapidPoll(model *addPendingRapidModel, correlationID int64) {
+	entry, ok := model.entries[correlationID]
+	if !ok || !entry.present {
+		return
+	}
+	entry.present = false
+	model.entries[correlationID] = entry
+	model.receivedCorrelationID = conductor.NullCorrelationID
+	if entry.driverErrored {
+		return
+	}
+	if entry.readyLatched && entry.kind == conductor.PendingKindAddPublication {
+		return
+	}
+}
+
+func assertAddPendingRapidInvariants(
+	rt *rapid.T,
+	conductorInstance *conductor.Conductor,
+	lifecycle *recordingResourceLifecycle,
+	model addPendingRapidModel,
+) {
+	rt.Helper()
+
+	require.Equal(rt, model.receivedCorrelationID, conductorInstance.ReceivedCorrelationID())
+	require.Equal(rt, model.activeCorrelationID, conductorInstance.ActiveCorrelationID())
+	for correlationID, entry := range model.entries {
+		_, ok := conductorInstance.PendingResult(correlationID)
+		require.Equal(rt, entry.present, ok, "correlation %d pending membership", correlationID)
+	}
+	if model.receivedCorrelationID != conductor.NullCorrelationID {
+		_, ok := model.entries[model.receivedCorrelationID]
+		require.True(rt, ok)
+		require.True(rt, model.entries[model.receivedCorrelationID].present)
+	}
+	require.Equal(
+		rt,
+		conductorInstance.SubscriptionCountForTest(),
+		lifecycle.newPreSubscriptionCalls-lifecycle.retireSubscriptionCalls,
+	)
+}
+
+type addPendingRapidEligibility struct {
+	completablePublication  bool
+	completableSubscription bool
+	anyPresent              bool
+	pollable                bool
+}
+
+func scanAddPendingRapidEligibility(model addPendingRapidModel) addPendingRapidEligibility {
+	var eligibility addPendingRapidEligibility
+	for _, entry := range model.entries {
+		if !entry.present {
+			continue
+		}
+		eligibility.anyPresent = true
+		if entry.readyLatched || entry.driverErrored {
+			continue
+		}
+		switch entry.kind {
+		case conductor.PendingKindAddPublication:
+			eligibility.completablePublication = true
+		case conductor.PendingKindAddSubscription:
+			eligibility.completableSubscription = true
+		}
+	}
+	_, eligibility.pollable = drawAddPendingRapidPollable(model)
+	return eligibility
+}
+
+func runAddPendingRapidStep(
+	t *testing.T,
+	rt *rapid.T,
+	conductorInstance *conductor.Conductor,
+	lifecycle *recordingResourceLifecycle,
+	nanoNs *int64,
+	model *addPendingRapidModel,
+	seen map[int64]struct{},
+	step int,
+) {
+	rt.Helper()
+
+	eligibility := scanAddPendingRapidEligibility(*model)
+	ops := []addPendingRapidOpKind{
+		addPendingRapidOpRegisterPub,
+		addPendingRapidOpRegisterSub,
+	}
+	if eligibility.completablePublication {
+		ops = append(ops, addPendingRapidOpCompletePubReady)
+	}
+	if eligibility.completableSubscription {
+		ops = append(ops, addPendingRapidOpCompleteSubReady)
+	}
+	if eligibility.anyPresent {
+		ops = append(ops, addPendingRapidOpSetActive, addPendingRapidOpExpire, addPendingRapidOpClear)
+	}
+	if eligibility.anyPresent {
+		ops = append(ops, addPendingRapidOpCancel, addPendingRapidOpDriverError)
+	}
+	if eligibility.pollable {
+		ops = append(ops, addPendingRapidOpPoll)
+	}
+
+	switch rapid.SampledFrom(ops).Draw(rt, fmt.Sprintf("op%d", step)) {
+	case addPendingRapidOpRegisterPub:
+		correlationID := drawPendingRapidUniqueCorrelationID(
+			rt,
+			rapidMapContains(seen),
+			fmt.Sprintf("pubCorrelationID%d", step),
+		)
+		seen[correlationID] = struct{}{}
+		deadlineNs := model.nowNs + pendingRapidDeadlineOffset(rt, fmt.Sprintf("pubDeadline%d", step))
+		require.NoError(
+			rt,
+			conductorInstance.RegisterPendingAddWithDeadline(
+				conductor.PendingKindAddPublication,
+				correlationID,
+				goldenPublicationBuffersReadyEvent.StreamID,
+				pendingTestChannel,
+				deadlineNs,
+			),
+		)
+		model.entries[correlationID] = addPendingRapidEntry{
+			kind:       conductor.PendingKindAddPublication,
+			present:    true,
+			deadlineNs: deadlineNs,
+		}
+
+	case addPendingRapidOpRegisterSub:
+		correlationID := drawPendingRapidUniqueCorrelationID(
+			rt,
+			rapidMapContains(seen),
+			fmt.Sprintf("subCorrelationID%d", step),
+		)
+		seen[correlationID] = struct{}{}
+		deadlineNs := model.nowNs + pendingRapidDeadlineOffset(rt, fmt.Sprintf("subDeadline%d", step))
+		require.NoError(
+			rt,
+			conductorInstance.RegisterPendingAddWithDeadline(
+				conductor.PendingKindAddSubscription,
+				correlationID,
+				pendingTestStreamID,
+				pendingTestChannel,
+				deadlineNs,
+			),
+		)
+		model.entries[correlationID] = addPendingRapidEntry{
+			kind:       conductor.PendingKindAddSubscription,
+			present:    true,
+			deadlineNs: deadlineNs,
+		}
+	case addPendingRapidOpCompletePubReady:
+		correlationID, ok := drawAddPendingRapidCompletable(*model, conductor.PendingKindAddPublication)
+		if !ok {
+			return
+		}
+		if conductor.LogBuffersRegistryRefCountForTest(
+			conductor.LogBuffersRegistryForTest(conductorInstance),
+			goldenPublicationReadyLogFileName,
+		) == 0 {
+			seedGoldenPublicationLogBuffers(t, conductorInstance)
+		}
+		event := goldenPublicationBuffersReadyWithCorrelation(correlationID)
+		event.RegistrationID = correlationID + 1
+		conductorInstance.PublicationReadyForTest(event)
+		entry := model.entries[correlationID]
+		entry.readyLatched = true
+		entry.registrationID = event.RegistrationID
+		model.entries[correlationID] = entry
+		model.receivedCorrelationID = correlationID
+
+	case addPendingRapidOpCompleteSubReady:
+		correlationID, ok := drawAddPendingRapidCompletable(*model, conductor.PendingKindAddSubscription)
+		if !ok {
+			return
+		}
+		applyFails := rapid.Bool().Draw(rt, fmt.Sprintf("applySubFail%d", step))
+		if applyFails {
+			lifecycle.applySubscriptionErr = errRapidApplySubscriptionReady
+		} else {
+			lifecycle.applySubscriptionErr = nil
+		}
+		event := goldenSubscriptionReadyWithCorrelation(correlationID)
+		conductorInstance.SubscriptionReadyForTest(event)
+		entry := model.entries[correlationID]
+		entry.readyLatched = true
+		entry.applyFailed = applyFails
+		entry.registrationID = correlationID
+		model.entries[correlationID] = entry
+		model.receivedCorrelationID = correlationID
+
+	case addPendingRapidOpSetActive:
+		if len(model.entries) == 0 {
+			model.activeCorrelationID = conductor.NullCorrelationID
+			conductorInstance.SetActiveCorrelationID(conductor.NullCorrelationID)
+			return
+		}
+		if rapid.Bool().Draw(rt, fmt.Sprintf("activeNull%d", step)) {
+			model.activeCorrelationID = conductor.NullCorrelationID
+			conductorInstance.SetActiveCorrelationID(conductor.NullCorrelationID)
+			return
+		}
+		correlationID, ok := drawAddPendingRapidPresent(*model)
+		if !ok {
+			return
+		}
+		model.activeCorrelationID = correlationID
+		conductorInstance.SetActiveCorrelationID(correlationID)
+
+	case addPendingRapidOpCancel:
+		if rapid.Bool().Draw(rt, fmt.Sprintf("cancelAbsent%d", step)) {
+			correlationID := drawRapidAbsentCorrelationID(
+				rt,
+				fmt.Sprintf("cancelAbsentCorrelationID%d", step),
+				func(id int64) bool {
+					entry, exists := model.entries[id]
+					return exists && entry.present
+				},
+			)
+			conductorInstance.CancelPending(correlationID)
+			return
+		}
+		correlationID, ok := drawAddPendingRapidPresent(*model)
+		if !ok {
+			return
+		}
+		conductorInstance.CancelPending(correlationID)
+		applyAddPendingRapidCancel(model, correlationID)
+
+	case addPendingRapidOpClear:
+		conductorInstance.ClearPending()
+		applyAddPendingRapidClear(model)
+
+	case addPendingRapidOpDriverError:
+		if rapid.Bool().Draw(rt, fmt.Sprintf("driverErrorAbsent%d", step)) {
+			correlationID := drawRapidAbsentCorrelationID(
+				rt,
+				fmt.Sprintf("driverErrorAbsentCorrelationID%d", step),
+				func(id int64) bool {
+					entry, exists := model.entries[id]
+					return exists && entry.present
+				},
+			)
+			ok := conductorInstance.DriverError(rapidDriverRejectedResponse(correlationID))
+			require.False(rt, ok)
+			return
+		}
+		correlationID, ok := drawAddPendingRapidPresent(*model)
+		if !ok {
+			return
+		}
+		entry := model.entries[correlationID]
+		if entry.readyLatched || entry.driverErrored {
+			return
+		}
+		ok = conductorInstance.DriverError(rapidDriverRejectedResponse(correlationID))
+		require.True(rt, ok)
+		applyAddPendingRapidDriverError(model, correlationID)
+
+	case addPendingRapidOpExpire:
+		model.nowNs += rapid.Int64Range(0, 40_000_000).Draw(rt, fmt.Sprintf("advanceNs%d", step))
+		*nanoNs = model.nowNs
+		_ = conductorInstance.DoWork()
+		syncAddPendingRapidAfterDoWork(conductorInstance, model)
+
+	case addPendingRapidOpPoll:
+		correlationID, ok := drawAddPendingRapidPollable(*model)
+		if !ok {
+			return
+		}
+		entry := model.entries[correlationID]
+		if got, ok := conductorInstance.PendingResult(correlationID); ok {
+			entry.applyFailed = errors.Is(got.Err, errRapidApplySubscriptionReady)
+			var driverErr *conductor.DriverRegistrationError
+			entry.driverErrored = errors.As(got.Err, &driverErr)
+			entry.timedOut = errors.Is(got.Err, conductor.ErrAwaitTimeout) &&
+				!entry.applyFailed &&
+				!entry.driverErrored
+		}
+		done, _, err := conductorInstance.PollPending(correlationID)
+		require.True(rt, done)
+		switch {
+		case entry.driverErrored:
+			var driverErr *conductor.DriverRegistrationError
+			require.ErrorAs(rt, err, &driverErr)
+			require.Equal(rt, correlationID, driverErr.CorrelationID)
+		case entry.applyFailed:
+			require.ErrorIs(rt, err, errRapidApplySubscriptionReady)
+		case entry.timedOut:
+			require.ErrorIs(rt, err, conductor.ErrAwaitTimeout)
+			require.EqualError(rt, err, "conductor: await response timeout")
+		case entry.readyLatched:
+			require.NoError(rt, err)
+		default:
+			require.ErrorIs(rt, err, conductor.ErrAwaitTimeout)
+			require.EqualError(rt, err, "conductor: await response timeout")
+		}
+		applyAddPendingRapidPoll(model, correlationID)
+	}
+}
+
+func TestConductor_addPending_teardown_rapid(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		nanoNs := pendingRapidBaseNowNs
+		conductorInstance, lifecycle := newConductorWithResourceLifecycleMutableNanoForTest(t, 0, &nanoNs)
+		conductorInstance.SeedServiceTimestamps(nanoNs)
+		model := addPendingRapidModel{
+			entries:               make(map[int64]addPendingRapidEntry),
+			receivedCorrelationID: conductor.NullCorrelationID,
+			activeCorrelationID:   conductor.NullCorrelationID,
+			nowNs:                 pendingRapidBaseNowNs,
+		}
+		seen := make(map[int64]struct{})
+		steps := rapid.IntRange(1, 16).Draw(rt, "steps")
+		for step := range steps {
+			runAddPendingRapidStep(t, rt, conductorInstance, lifecycle, &nanoNs, &model, seen, step)
+			assertAddPendingRapidInvariants(rt, conductorInstance, lifecycle, model)
+		}
+	})
+}
+
+func TestConductor_handlePublicationReady_buildFailure_refCount_rapid(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		failureKind := rapid.IntRange(0, 2).Draw(rt, "failureKind")
+		lifecycle := &recordingResourceLifecycle{}
+		conductorInstance := newConductorWithResourceLifecycleForTest(t, lifecycle)
+		registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+		var refCountBefore int32
+		switch failureKind {
+		case 0, 1:
+			if failureKind == 1 {
+				lifecycle.newPublicationErr = errStubPublicationBuild
+			}
+			seedGoldenPublicationLogBuffers(t, conductorInstance)
+			refCountBefore = conductor.LogBuffersRegistryRefCountForTest(
+				registry,
+				goldenPublicationReadyLogFileName,
+			)
+			require.Equal(rt, int32(1), refCountBefore)
+		default:
+			refCountBefore = conductor.LogBuffersRegistryRefCountForTest(
+				registry,
+				goldenPublicationReadyLogFileName,
+			)
+			require.Zero(rt, refCountBefore)
+		}
+
+		require.NoError(
+			rt,
+			registerPendingAddWithCorrelationForTest(
+				conductorInstance,
+				conductor.PendingKindAddPublication,
+				goldenPublicationReadyCorrelationID,
+				goldenPublicationBuffersReadyEvent.StreamID,
+			),
+		)
+		conductorInstance.PublicationReadyForTest(goldenPublicationBuffersReadyEvent)
+
+		done, _, err := conductorInstance.PollPending(goldenPublicationReadyCorrelationID)
+		require.True(rt, done)
+		_, pendingOK := conductorInstance.PendingResult(goldenPublicationReadyCorrelationID)
+		require.False(rt, pendingOK)
+		require.Equal(rt, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+
+		refCountAfter := conductor.LogBuffersRegistryRefCountForTest(
+			registry,
+			goldenPublicationReadyLogFileName,
+		)
+		switch failureKind {
+		case 0:
+			require.NoError(rt, err)
+			require.Equal(rt, 1, conductorInstance.PublicationCountForTest())
+			require.Equal(rt, int32(2), refCountAfter)
+		case 1:
+			require.ErrorIs(rt, err, errStubPublicationBuild)
+			require.Equal(rt, 0, conductorInstance.PublicationCountForTest())
+			require.Equal(rt, refCountBefore, refCountAfter)
+		default:
+			require.EqualError(rt, err, "conductor: failed to map log buffer")
+			require.Equal(rt, 0, conductorInstance.PublicationCountForTest())
+			require.Equal(rt, refCountBefore, refCountAfter)
 		}
 	})
 }

@@ -9,6 +9,11 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
+var (
+	errPublicationLogBufferNil = errors.New("aeron: publication log buffer is nil")
+	errPublicationCountersNil  = errors.New("aeron: publication counters view is nil")
+)
+
 func newPublicationFromReady(
 	ready conductor.PublicationBuffersReady,
 	log *logbuffer.MappedLogBuffer,
@@ -16,10 +21,10 @@ func newPublicationFromReady(
 	channel string,
 ) (*Publication, error) {
 	if log == nil {
-		return nil, errors.New("aeron: publication log buffer is nil")
+		return nil, errPublicationLogBufferNil
 	}
 	if counters == nil {
-		return nil, errors.New("aeron: publication counters view is nil")
+		return nil, errPublicationCountersNil
 	}
 
 	meta, err := log.MetaDataBuffer()
@@ -75,13 +80,11 @@ func newPublicationFromReady(
 		channelStatusCounterID:    ready.ChannelStatusCounterID,
 	}
 
-	for i := range logbuffer.PartitionCount {
-		termBuf, termErr := log.TermBuffer(i)
-		if termErr != nil {
-			return nil, termErr
-		}
-		pub.termBuffers[i] = termBuf
+	termBuffers, err := log.TermBuffers()
+	if err != nil {
+		return nil, err
 	}
+	pub.termBuffers = termBuffers
 
 	pub.headerWriter = logbuffer.NewHeaderWriter(
 		logbuffer.DefaultFrameHeaderBuffer(meta),

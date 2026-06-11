@@ -392,7 +392,7 @@ type ErrCountersView struct {
 	failChannel bool
 }
 
-func (view *ErrCountersView) GetCounterValue(counterID int32) (int64, error) {
+func (view *ErrCountersView) CounterValue(counterID int32) (int64, error) {
 	if view == nil || view.inner == nil {
 		return 0, errors.New("aeron: counters view is nil")
 	}
@@ -402,7 +402,7 @@ func (view *ErrCountersView) GetCounterValue(counterID int32) (int64, error) {
 	if view.failChannel && counterID == TestPublicationChannelCounterID {
 		return 0, errors.New("aeron: injected channel counter failure")
 	}
-	return view.inner.GetCounterValue(counterID)
+	return view.inner.CounterValue(counterID)
 }
 
 func (view *ErrCountersView) FindHeartbeatCounter(
@@ -731,7 +731,7 @@ func NewSubscriptionForTest(
 	streamID int32,
 	channel string,
 ) *Subscription {
-	return newSubscription(registrationID, streamID, channel, 0)
+	return newSubscription(registrationID, streamID, channel)
 }
 
 func AvailableImageForTest() conductor.AvailableImage {
@@ -776,7 +776,6 @@ func NewImageWithCommittedDataFrameForTest(
 		TestSubscriptionRegistrationID,
 		TestPublicationStreamID,
 		TestImageSourceIdentity,
-		0,
 	)
 	image := NewImageForTest(tb, sub, joinPosition)
 	termBuffer := ImageTermBuffer0ForTest(image)
@@ -1032,6 +1031,10 @@ func SubscriptionSetUnavailableImageHandlerForTest(
 
 func SubscriptionRoundRobinIndexForTest(sub *Subscription) uint32 {
 	return sub.roundRobinIndex
+}
+
+func SubscriptionChannelStatusCounterIDForTest(sub *Subscription) int32 {
+	return sub.channelStatusCounterID
 }
 
 func newTestImage(

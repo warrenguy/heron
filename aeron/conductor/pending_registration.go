@@ -85,21 +85,37 @@ func (registry *pendingRegistry) IsEmpty() bool {
 	return len(registry.entries) == 0
 }
 
-func (registry *pendingRegistry) Clear() {
+func (registry *pendingRegistry) ClearEach(fn func(PendingRegistration)) {
 	registry.mu.Lock()
-	defer registry.mu.Unlock()
-
+	snapshot := make([]PendingRegistration, 0, len(registry.entries))
+	for _, registration := range registry.entries {
+		snapshot = append(snapshot, *registration)
+	}
 	clear(registry.entries)
+	registry.mu.Unlock()
+
+	if fn == nil {
+		return
+	}
+	for _, registration := range snapshot {
+		fn(registration)
+	}
+}
+
+type pendingExpireCallback struct {
+	registration PendingRegistration
+	removed      bool
 }
 
 func (registry *pendingRegistry) ExpireBefore(
 	nowNs int64,
 	receivedCorrelationID int64,
 	activeCorrelationID int64,
+	expireHandler func(registration PendingRegistration, removed bool),
 ) (workCount int, timedOutActiveCorrelationID int64) {
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
+	var callbacks []pendingExpireCallback
 
+	registry.mu.Lock()
 	timedOutActiveCorrelationID = NullCorrelationID
 	for correlationID, registration := range registry.entries {
 		if correlationID == receivedCorrelationID {
@@ -108,13 +124,32 @@ func (registry *pendingRegistry) ExpireBefore(
 		if nowNs < registration.DeadlineNs {
 			continue
 		}
-		workCount++
 		if correlationID == activeCorrelationID {
-			registration.Err = ErrAwaitTimeout
 			timedOutActiveCorrelationID = correlationID
+			if registration.Err != ErrAwaitTimeout {
+				registration.Err = ErrAwaitTimeout
+				workCount++
+				callbacks = append(callbacks, pendingExpireCallback{
+					registration: *registration,
+					removed:      false,
+				})
+			}
 			continue
 		}
+		workCount++
+		regCopy := *registration
 		delete(registry.entries, correlationID)
+		callbacks = append(callbacks, pendingExpireCallback{
+			registration: regCopy,
+			removed:      true,
+		})
+	}
+	registry.mu.Unlock()
+
+	if expireHandler != nil {
+		for _, callback := range callbacks {
+			expireHandler(callback.registration, callback.removed)
+		}
 	}
 	return workCount, timedOutActiveCorrelationID
 }
@@ -145,7 +180,7 @@ func (conductor *Conductor) pendingDeadline(timeout time.Duration) int64 {
 }
 
 func (conductor *Conductor) checkNotTerminating() error {
-	if conductor.isTerminating {
+	if conductor.terminating {
 		return ErrConductorTerminating
 	}
 	return nil
@@ -170,10 +205,10 @@ func (conductor *Conductor) registerPendingEntry(
 	if err := conductor.checkNotTerminating(); err != nil {
 		return err
 	}
-	if isAddPendingKind(registration.Kind) && !wantAdd {
+	if addPendingKind(registration.Kind) && !wantAdd {
 		return ErrAddPendingKindRequiresAddAPI
 	}
-	if !isAddPendingKind(registration.Kind) && wantAdd {
+	if !addPendingKind(registration.Kind) && wantAdd {
 		return ErrNonAddPendingKindRequiresRegisterPending
 	}
 	return conductor.pending.Register(registration)
@@ -214,13 +249,19 @@ func (conductor *Conductor) RegisterPendingAddWithDeadline(
 	channel string,
 	deadlineNs int64,
 ) error {
-	return conductor.registerPendingEntry(PendingRegistration{
+	if err := conductor.registerPendingEntry(PendingRegistration{
 		CorrelationID: correlationID,
 		Kind:          kind,
 		StreamID:      streamID,
 		Channel:       channel,
 		DeadlineNs:    deadlineNs,
-	}, true)
+	}, true); err != nil {
+		return err
+	}
+	if kind == PendingKindAddSubscription {
+		conductor.preInsertSubscription(correlationID, streamID, channel)
+	}
+	return nil
 }
 
 func (conductor *Conductor) PollPending(
@@ -236,11 +277,22 @@ func (conductor *Conductor) PollPending(
 	}
 	registration = *registrationPtr
 	conductor.pending.Remove(correlationID)
+	if registration.Err != nil {
+		conductor.rollbackAddPendingResources(registration)
+	}
 	conductor.receivedCorrelationID = NullCorrelationID
 	return true, registration, registration.Err
 }
 
 func (conductor *Conductor) CancelPending(correlationID int64) {
+	registration, ok := conductor.pending.Get(correlationID)
+	if ok {
+		readyLatched := conductor.receivedCorrelationID == correlationID &&
+			registration.Err == nil
+		if !readyLatched {
+			conductor.rollbackAddPendingResources(*registration)
+		}
+	}
 	conductor.pending.Remove(correlationID)
 	if conductor.receivedCorrelationID == correlationID {
 		conductor.receivedCorrelationID = NullCorrelationID
@@ -248,7 +300,9 @@ func (conductor *Conductor) CancelPending(correlationID int64) {
 }
 
 func (conductor *Conductor) ClearPending() {
-	conductor.pending.Clear()
+	conductor.pending.ClearEach(func(registration PendingRegistration) {
+		conductor.rollbackAddPendingResources(registration)
+	})
 	conductor.receivedCorrelationID = NullCorrelationID
 	conductor.activeCorrelationID = NullCorrelationID
 }
@@ -275,12 +329,11 @@ func (conductor *Conductor) completePendingError(response ErrorResponse) bool {
 	if !ok {
 		return false
 	}
-	registration.Err = &DriverRegistrationError{
+	conductor.failPending(registration, &DriverRegistrationError{
 		CorrelationID: correlationID,
 		ErrorCode:     response.ErrorCode,
 		Message:       response.ErrorMessage,
-	}
-	conductor.receivedCorrelationID = correlationID
+	})
 	return true
 }
 
@@ -296,22 +349,22 @@ func (conductor *Conductor) completePendingIfKind(
 	return conductor.completePendingSuccess(registration, mutate)
 }
 
-func isAddPendingKind(kind PendingKind) bool {
+func addPendingKind(kind PendingKind) bool {
 	return kind == PendingKindAddPublication || kind == PendingKindAddSubscription
 }
 
 // AddPublication/AddSubscription pendings return true on driver OPERATION_SUCCESS as an
-// ack only; they do not set receivedCorrelationID; onPublicationReady/onSubscriptionReady
+// ack only; they do not set receivedCorrelationID; handlePublicationReady/handleSubscriptionReady
 // complete them via completePendingIfKind. RemovePublication, RemoveSubscription, and
 // OperationSuccess pendings complete here via completePendingSuccess. NextSessionID
-// returns false; OnNextAvailableSessionID handles that kind.
-func (conductor *Conductor) OnOperationSuccess(correlationID int64) bool {
+// returns false; NextSessionID handles that kind.
+func (conductor *Conductor) OperationSucceeded(correlationID int64) bool {
 	registration, ok := conductor.pending.Get(correlationID)
 	if !ok {
 		return false
 	}
 	switch {
-	case isAddPendingKind(registration.Kind):
+	case addPendingKind(registration.Kind):
 		return true
 	case registration.Kind == PendingKindOperationSuccess,
 		registration.Kind == PendingKindRemovePublication,
@@ -322,11 +375,11 @@ func (conductor *Conductor) OnOperationSuccess(correlationID int64) bool {
 	}
 }
 
-func (conductor *Conductor) OnError(response ErrorResponse) bool {
+func (conductor *Conductor) DriverError(response ErrorResponse) bool {
 	return conductor.completePendingError(response)
 }
 
-func (conductor *Conductor) OnNextAvailableSessionID(
+func (conductor *Conductor) NextSessionID(
 	correlationID int64,
 	nextSessionID int32,
 ) bool {

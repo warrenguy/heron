@@ -15,7 +15,7 @@ import (
 	"github.com/warrenguy/heron/aeron/internal/testutil"
 )
 
-func TestClient_GetNextAvailableSessionID_concurrentDoWorkBeforeRegister(t *testing.T) {
+func TestClient_NextAvailableSessionID_concurrentDoWorkBeforeRegister(t *testing.T) {
 	var nanoNs int64
 	client, fixture := newClientAwaitFixture(
 		t,
@@ -50,7 +50,7 @@ func TestClient_GetNextAvailableSessionID_concurrentDoWorkBeforeRegister(t *test
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		sessionID, err := client.GetNextAvailableSessionID(clientAwaitTestStreamID)
+		sessionID, err := client.NextAvailableSessionID(clientAwaitTestStreamID)
 		resultCh <- result{sessionID: sessionID, err: err}
 	}()
 
@@ -64,7 +64,7 @@ func TestClient_GetNextAvailableSessionID_concurrentDoWorkBeforeRegister(t *test
 			deadline,
 			stopHammerGoroutine,
 		),
-		"timed out waiting for GetNextAvailableSessionID command on ring",
+		"timed out waiting for NextAvailableSessionID command on ring",
 	)
 
 	select {
@@ -72,7 +72,7 @@ func TestClient_GetNextAvailableSessionID_concurrentDoWorkBeforeRegister(t *test
 		require.NoError(t, got.err)
 		require.Equal(t, wantSessionID, got.sessionID)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for GetNextAvailableSessionID client result")
+		t.Fatal("timed out waiting for NextAvailableSessionID client result")
 	}
 	requireActiveCorrelationCleared(t, fixture)
 }

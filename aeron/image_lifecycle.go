@@ -77,23 +77,23 @@ func (conductorImageLifecycle) CloseImage(image conductor.ImageHandle) {
 	img.internalClose()
 }
 
-func (conductorImageLifecycle) AvailableImageCallback(
+func (conductorImageLifecycle) AvailableImageHandler(
 	sub conductor.SubscriptionHandle,
 ) func(conductor.ImageHandle) {
-	return subscriptionImageCallback(sub, func(subscription *Subscription) func(*Image) {
+	return subscriptionImageHandler(sub, func(subscription *Subscription) func(*Image) {
 		return subscription.availableImageHandler
 	})
 }
 
-func (conductorImageLifecycle) UnavailableImageCallback(
+func (conductorImageLifecycle) UnavailableImageHandler(
 	sub conductor.SubscriptionHandle,
 ) func(conductor.ImageHandle) {
-	return subscriptionImageCallback(sub, func(subscription *Subscription) func(*Image) {
+	return subscriptionImageHandler(sub, func(subscription *Subscription) func(*Image) {
 		return subscription.unavailableImageHandler
 	})
 }
 
-func subscriptionImageCallback(
+func subscriptionImageHandler(
 	sub conductor.SubscriptionHandle,
 	handler func(*Subscription) func(*Image),
 ) func(conductor.ImageHandle) {
@@ -113,6 +113,17 @@ func subscriptionFromHandle(sub conductor.SubscriptionHandle) (*Subscription, er
 		return nil, fmt.Errorf("aeron: subscription handle %T is not *Subscription", sub)
 	}
 	return subscription, nil
+}
+
+func publicationFromHandle(pub conductor.PublicationHandle) (*Publication, error) {
+	if pub == nil {
+		return nil, errors.New("aeron: publication handle is nil")
+	}
+	publication, ok := pub.(*Publication)
+	if !ok {
+		return nil, fmt.Errorf("aeron: publication handle %T is not *Publication", pub)
+	}
+	return publication, nil
 }
 
 func imageFromHandle(image conductor.ImageHandle) (*Image, bool) {

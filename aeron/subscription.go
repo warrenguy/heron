@@ -1,6 +1,7 @@
 package aeron
 
 import (
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 )
 
@@ -10,7 +11,7 @@ import (
 // Client.DoWork on the same client, nor from multiple goroutines. Only one
 // goroutine calls Client.DoWork and Subscription.Poll for a given client.
 // Image isClosed uses atomic.Bool for visibility within Poll; subscription
-// isClosed is a plain bool; cross-goroutine close visibility for Image only
+// closed is a plain bool; cross-goroutine close visibility for Image only
 // is guaranteed under the single-thread contract above.
 //
 // The images slice is mutated only by the conductor via addImage and
@@ -27,7 +28,7 @@ type Subscription struct {
 	// this as int; stored as uint32 here and normalized against len(images) every Poll.
 	roundRobinIndex uint32
 
-	isClosed bool
+	closed bool
 
 	availableImageHandler   func(*Image)
 	unavailableImageHandler func(*Image)
@@ -39,14 +40,17 @@ func newSubscription(
 	registrationID int64,
 	streamID int32,
 	channel string,
-	channelStatusCounterID int32,
 ) *Subscription {
 	return &Subscription{
 		registrationID:         registrationID,
 		streamID:               streamID,
 		channel:                channel,
-		channelStatusCounterID: channelStatusCounterID,
+		channelStatusCounterID: cnc.NullCounterID,
 	}
+}
+
+func (subscription *Subscription) applySubscriptionReady(channelStatusCounterID int32) {
+	subscription.channelStatusCounterID = channelStatusCounterID
 }
 
 func (subscription *Subscription) RegistrationID() int64 {
@@ -68,7 +72,7 @@ func (subscription *Subscription) ImageCount() int {
 // IsConnected reports whether any non-closed image is attached. Returns false
 // when the subscription is closed, even if images remain in the slice.
 func (subscription *Subscription) IsConnected() bool {
-	if subscription.isClosed {
+	if subscription.closed {
 		return false
 	}
 	for _, image := range subscription.images {
@@ -80,7 +84,7 @@ func (subscription *Subscription) IsConnected() bool {
 }
 
 func (subscription *Subscription) IsClosed() bool {
-	return subscription.isClosed
+	return subscription.closed
 }
 
 // Poll delivers fragments from attached images using round-robin fairness across
@@ -92,7 +96,7 @@ func (subscription *Subscription) IsClosed() bool {
 // reentrant Close() from a fragment handler. Subscription is not thread-safe;
 // see type documentation.
 func (subscription *Subscription) Poll(handler FragmentHandler, fragmentLimit int) int {
-	if subscription.isClosed {
+	if subscription.closed {
 		// Retain images after Close until client teardown; do not advance
 		// round-robin or deliver fragments once the subscription is closed.
 		return 0
@@ -166,6 +170,6 @@ func (subscription *Subscription) removeImage(correlationID int64) *Image {
 // retire images; conductor client close drain handles driver teardown and
 // unavailable-image handling.
 func (subscription *Subscription) Close() error {
-	subscription.isClosed = true
+	subscription.closed = true
 	return nil
 }

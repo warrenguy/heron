@@ -101,7 +101,7 @@ func TestClientReadsSystemCounters(t *testing.T) {
 	countersReader, err := client.CountersReader()
 	require.NoError(t, err)
 
-	got, err := countersReader.GetCounterValue(conductor.SystemCounterControlProtocolVersion)
+	got, err := countersReader.CounterValue(conductor.SystemCounterControlProtocolVersion)
 	require.NoError(t, err)
 	require.Equal(t, int64(conductor.ControlProtocolVersion), got)
 }
@@ -197,7 +197,7 @@ func TestTwoClientsConcurrentRingOffers(t *testing.T) {
 			if i%2 == 0 {
 				offerErr = proxy.ClientKeepalive()
 			} else {
-				offerErr = proxy.GetNextAvailableSessionID(correlationBase+int64(i), 100)
+				offerErr = proxy.NextAvailableSessionID(correlationBase+int64(i), 100)
 			}
 			if offerErr != nil {
 				offerErrs <- offerErr

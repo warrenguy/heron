@@ -11,7 +11,7 @@ import (
 	"github.com/warrenguy/heron/aeron/internal/testutil"
 )
 
-func TestDriverEventsAdapter_OnClientTimeout_matchingClient(t *testing.T) {
+func TestDriverEventsAdapter_clientTimeout_matchingClient(t *testing.T) {
 	var (
 		timeoutCalled bool
 		gotErrors     []error
@@ -31,7 +31,7 @@ func TestDriverEventsAdapter_OnClientTimeout_matchingClient(t *testing.T) {
 	require.Empty(t, gotErrors)
 }
 
-func TestDriverEventsAdapter_OnClientTimeout_otherClient(t *testing.T) {
+func TestDriverEventsAdapter_clientTimeout_otherClient(t *testing.T) {
 	var timeoutCalled bool
 	adapter := newDriverEventsAdapterForTest(
 		t,
@@ -47,7 +47,7 @@ func TestDriverEventsAdapter_OnClientTimeout_otherClient(t *testing.T) {
 	require.False(t, timeoutCalled)
 }
 
-func TestDriverEventsAdapter_OnNextAvailableSessionID(t *testing.T) {
+func TestDriverEventsAdapter_nextAvailableSessionID(t *testing.T) {
 	const nextSessionID int32 = 42
 
 	tests := []struct {
@@ -208,7 +208,7 @@ func TestDriverEventsAdapter_OnNextAvailableSessionID(t *testing.T) {
 	}
 }
 
-func TestDriverEventsAdapter_OnClientTimeout_shortBody(t *testing.T) {
+func TestDriverEventsAdapter_clientTimeout_shortBody(t *testing.T) {
 	adapter := newDriverEventsAdapterForTest(
 		t,
 		42,
@@ -223,7 +223,7 @@ func TestDriverEventsAdapter_OnClientTimeout_shortBody(t *testing.T) {
 	require.Equal(t, int64(1), adapter.UnhandledEventCount())
 }
 
-func TestDriverEventsAdapter_OnError(t *testing.T) {
+func TestDriverEventsAdapter_errorEvent(t *testing.T) {
 	const errorCode int32 = 11
 
 	tests := []struct {
@@ -455,7 +455,7 @@ func TestDriverEventsAdapter_OnError(t *testing.T) {
 	}
 }
 
-func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
+func TestDriverEventsAdapter_operationSuccess(t *testing.T) {
 	type testCase struct {
 		name                 string
 		setActiveCorrelation bool
@@ -644,7 +644,7 @@ func TestDriverEventsAdapter_OnOperationSuccess(t *testing.T) {
 	}
 }
 
-func TestDriverEventsAdapter_OnPublicationReady_matchingCorrelation(t *testing.T) {
+func TestDriverEventsAdapter_publicationReady_matchingCorrelation(t *testing.T) {
 	tests := []struct {
 		name      string
 		msgTypeID int
@@ -683,9 +683,8 @@ func TestDriverEventsAdapter_OnPublicationReady_matchingCorrelation(t *testing.T
 			require.Equal(t, 1, count)
 			require.Zero(t, adapter.UnhandledEventCount())
 
-			ready, ok := conductor.LastPublicationReadyForTest(conductorInstance)
-			require.True(t, ok)
-			require.Equal(t, goldenPublicationBuffersReadyEvent, ready)
+			_, latched := conductor.LastPublicationReadyForTest(conductorInstance)
+			require.False(t, latched)
 			require.Equal(
 				t,
 				goldenPublicationReadyCorrelationID,
@@ -695,7 +694,7 @@ func TestDriverEventsAdapter_OnPublicationReady_matchingCorrelation(t *testing.T
 	}
 }
 
-func TestDriverEventsAdapter_OnPublicationReady_matchingCorrelation_paddedBody(t *testing.T) {
+func TestDriverEventsAdapter_publicationReady_matchingCorrelation_paddedBody(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
 		func(error) {},
@@ -723,12 +722,11 @@ func TestDriverEventsAdapter_OnPublicationReady_matchingCorrelation_paddedBody(t
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
 
-	ready, ok := conductor.LastPublicationReadyForTest(conductorInstance)
-	require.True(t, ok)
-	require.Equal(t, goldenPublicationBuffersReadyEvent, ready)
+	_, latched := conductor.LastPublicationReadyForTest(conductorInstance)
+	require.False(t, latched)
 }
 
-func TestDriverEventsAdapter_OnPublicationReady_pendingRegistryOnly(t *testing.T) {
+func TestDriverEventsAdapter_publicationReady_pendingRegistryOnly(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
 		func(error) {},
@@ -756,9 +754,8 @@ func TestDriverEventsAdapter_OnPublicationReady_pendingRegistryOnly(t *testing.T
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
 
-	ready, ok := conductor.LastPublicationReadyForTest(conductorInstance)
-	require.True(t, ok)
-	require.Equal(t, goldenPublicationBuffersReadyEvent, ready)
+	_, latched := conductor.LastPublicationReadyForTest(conductorInstance)
+	require.False(t, latched)
 	require.Equal(
 		t,
 		goldenPublicationReadyCorrelationID,
@@ -766,7 +763,7 @@ func TestDriverEventsAdapter_OnPublicationReady_pendingRegistryOnly(t *testing.T
 	)
 }
 
-func TestDriverEventsAdapter_OnPublicationReady_wrongAddKind(t *testing.T) {
+func TestDriverEventsAdapter_publicationReady_wrongAddKind(t *testing.T) {
 	testDriverEventsAdapterOnReadyWrongAddKind(
 		t,
 		conductor.PendingKindAddSubscription,
@@ -776,7 +773,7 @@ func TestDriverEventsAdapter_OnPublicationReady_wrongAddKind(t *testing.T) {
 	)
 }
 
-func TestDriverEventsAdapter_OnSubscriptionReady_wrongAddKind(t *testing.T) {
+func TestDriverEventsAdapter_subscriptionReady_wrongAddKind(t *testing.T) {
 	testDriverEventsAdapterOnReadyWrongAddKind(
 		t,
 		conductor.PendingKindAddPublication,
@@ -786,7 +783,7 @@ func TestDriverEventsAdapter_OnSubscriptionReady_wrongAddKind(t *testing.T) {
 	)
 }
 
-func TestDriverEventsAdapter_OnPublicationReady_unrelatedCorrelation(t *testing.T) {
+func TestDriverEventsAdapter_publicationReady_unrelatedCorrelation(t *testing.T) {
 	var handlerCalled bool
 	_, rx := newCopyBroadcastPair(t)
 	copyReceiver := conductor.NewCopyBroadcastReceiver(rx)
@@ -796,7 +793,7 @@ func TestDriverEventsAdapter_OnPublicationReady_unrelatedCorrelation(t *testing.
 		func(error) { t.Fatal("error handler should not run") },
 		func() { t.Fatal("timeout handler should not run") },
 		conductor.DriverEventsAdapterHandlers{
-			OnPublicationReady: func(conductor.PublicationBuffersReady) {
+			PublicationReady: func(conductor.PublicationBuffersReady) {
 				handlerCalled = true
 			},
 		},
@@ -816,7 +813,7 @@ func TestDriverEventsAdapter_OnPublicationReady_unrelatedCorrelation(t *testing.
 	require.False(t, handlerCalled)
 }
 
-func TestDriverEventsAdapter_OnPublicationReady_foreignPendingCorrelation(t *testing.T) {
+func TestDriverEventsAdapter_publicationReady_foreignPendingCorrelation(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
 		func(error) {},
@@ -844,12 +841,12 @@ func TestDriverEventsAdapter_OnPublicationReady_foreignPendingCorrelation(t *tes
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
 
-	_, ok := conductor.LastPublicationReadyForTest(conductorInstance)
-	require.False(t, ok)
+	_, latched := conductor.LastPublicationReadyForTest(conductorInstance)
+	require.False(t, latched)
 	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
 }
 
-func TestDriverEventsAdapter_OnPublicationReady_decodeFailure(t *testing.T) {
+func TestDriverEventsAdapter_publicationReady_decodeFailure(t *testing.T) {
 	testDriverEventsAdapterEventDecodeFailure(
 		t,
 		conductor.OnPublicationReady,
@@ -860,7 +857,7 @@ func TestDriverEventsAdapter_OnPublicationReady_decodeFailure(t *testing.T) {
 	)
 }
 
-func TestDriverEventsAdapter_OnSubscriptionReady_matchingCorrelation(t *testing.T) {
+func TestDriverEventsAdapter_subscriptionReady_matchingCorrelation(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
 		func(error) {},
@@ -889,9 +886,8 @@ func TestDriverEventsAdapter_OnSubscriptionReady_matchingCorrelation(t *testing.
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
 
-	ready, ok := conductor.LastSubscriptionReadyForTest(conductorInstance)
-	require.True(t, ok)
-	require.Equal(t, goldenSubscriptionReadyEvent, ready)
+	_, latched := conductor.LastSubscriptionReadyForTest(conductorInstance)
+	require.False(t, latched)
 	require.Equal(
 		t,
 		goldenSubscriptionReadyCorrelationID,
@@ -899,7 +895,7 @@ func TestDriverEventsAdapter_OnSubscriptionReady_matchingCorrelation(t *testing.
 	)
 }
 
-func TestDriverEventsAdapter_OnSubscriptionReady_unrelatedCorrelation(t *testing.T) {
+func TestDriverEventsAdapter_subscriptionReady_unrelatedCorrelation(t *testing.T) {
 	var handlerCalled bool
 	_, rx := newCopyBroadcastPair(t)
 	copyReceiver := conductor.NewCopyBroadcastReceiver(rx)
@@ -909,7 +905,7 @@ func TestDriverEventsAdapter_OnSubscriptionReady_unrelatedCorrelation(t *testing
 		func(error) { t.Fatal("error handler should not run") },
 		func() { t.Fatal("timeout handler should not run") },
 		conductor.DriverEventsAdapterHandlers{
-			OnSubscriptionReady: func(conductor.SubscriptionReady) {
+			SubscriptionReady: func(conductor.SubscriptionReady) {
 				handlerCalled = true
 			},
 		},
@@ -929,7 +925,7 @@ func TestDriverEventsAdapter_OnSubscriptionReady_unrelatedCorrelation(t *testing
 	require.False(t, handlerCalled)
 }
 
-func TestDriverEventsAdapter_OnSubscriptionReady_matchingCorrelation_paddedBody(t *testing.T) {
+func TestDriverEventsAdapter_subscriptionReady_matchingCorrelation_paddedBody(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
 		func(error) {},
@@ -954,12 +950,11 @@ func TestDriverEventsAdapter_OnSubscriptionReady_matchingCorrelation_paddedBody(
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
 
-	ready, ok := conductor.LastSubscriptionReadyForTest(conductorInstance)
-	require.True(t, ok)
-	require.Equal(t, goldenSubscriptionReadyEvent, ready)
+	_, latched := conductor.LastSubscriptionReadyForTest(conductorInstance)
+	require.False(t, latched)
 }
 
-func TestDriverEventsAdapter_OnSubscriptionReady_foreignPendingCorrelation(t *testing.T) {
+func TestDriverEventsAdapter_subscriptionReady_foreignPendingCorrelation(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
 		func(error) {},
@@ -987,12 +982,12 @@ func TestDriverEventsAdapter_OnSubscriptionReady_foreignPendingCorrelation(t *te
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
 
-	_, ok := conductor.LastSubscriptionReadyForTest(conductorInstance)
-	require.False(t, ok)
+	_, latched := conductor.LastSubscriptionReadyForTest(conductorInstance)
+	require.False(t, latched)
 	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
 }
 
-func TestDriverEventsAdapter_OnSubscriptionReady_pendingRegistryOnly(t *testing.T) {
+func TestDriverEventsAdapter_subscriptionReady_pendingRegistryOnly(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
 		func(error) {},
@@ -1020,9 +1015,8 @@ func TestDriverEventsAdapter_OnSubscriptionReady_pendingRegistryOnly(t *testing.
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
 
-	ready, ok := conductor.LastSubscriptionReadyForTest(conductorInstance)
-	require.True(t, ok)
-	require.Equal(t, goldenSubscriptionReadyEvent, ready)
+	_, latched := conductor.LastSubscriptionReadyForTest(conductorInstance)
+	require.False(t, latched)
 	require.Equal(
 		t,
 		goldenSubscriptionReadyCorrelationID,
@@ -1030,7 +1024,7 @@ func TestDriverEventsAdapter_OnSubscriptionReady_pendingRegistryOnly(t *testing.
 	)
 }
 
-func TestDriverEventsAdapter_OnSubscriptionReady_decodeFailure(t *testing.T) {
+func TestDriverEventsAdapter_subscriptionReady_decodeFailure(t *testing.T) {
 	testDriverEventsAdapterEventDecodeFailure(
 		t,
 		conductor.OnSubscriptionReady,
@@ -1039,7 +1033,7 @@ func TestDriverEventsAdapter_OnSubscriptionReady_decodeFailure(t *testing.T) {
 	)
 }
 
-func TestDriverEventsAdapter_OnAvailableImage(t *testing.T) {
+func TestDriverEventsAdapter_availableImage(t *testing.T) {
 	lifecycle := &recordingImageLifecycle{addImageOK: true}
 	conductorInstance := newConductorForImageAdapterTest(t, lifecycle, true)
 
@@ -1057,7 +1051,7 @@ func TestDriverEventsAdapter_OnAvailableImage(t *testing.T) {
 	require.Equal(t, goldenAvailableImageEvent, lifecycle.lastEvent)
 }
 
-func TestDriverEventsAdapter_OnAvailableImage_paddedBody(t *testing.T) {
+func TestDriverEventsAdapter_availableImage_paddedBody(t *testing.T) {
 	lifecycle := &recordingImageLifecycle{addImageOK: true}
 	conductorInstance := newConductorForImageAdapterTest(t, lifecycle, true)
 
@@ -1074,7 +1068,7 @@ func TestDriverEventsAdapter_OnAvailableImage_paddedBody(t *testing.T) {
 	require.Equal(t, goldenAvailableImageEvent, lifecycle.lastEvent)
 }
 
-func TestDriverEventsAdapter_OnAvailableImage_decodeFailure(t *testing.T) {
+func TestDriverEventsAdapter_availableImage_decodeFailure(t *testing.T) {
 	testDriverEventsAdapterEventDecodeFailure(
 		t,
 		conductor.OnAvailableImage,
@@ -1085,7 +1079,7 @@ func TestDriverEventsAdapter_OnAvailableImage_decodeFailure(t *testing.T) {
 	)
 }
 
-func TestDriverEventsAdapter_OnUnavailableImage(t *testing.T) {
+func TestDriverEventsAdapter_unavailableImage(t *testing.T) {
 	lifecycle := &recordingImageLifecycle{}
 	conductorInstance := newConductorForImageAdapterTest(t, lifecycle, false)
 
@@ -1109,7 +1103,7 @@ func TestDriverEventsAdapter_OnUnavailableImage(t *testing.T) {
 	)
 }
 
-func TestDriverEventsAdapter_OnUnavailableImage_paddedBody(t *testing.T) {
+func TestDriverEventsAdapter_unavailableImage_paddedBody(t *testing.T) {
 	lifecycle := &recordingImageLifecycle{}
 	conductorInstance := newConductorForImageAdapterTest(t, lifecycle, false)
 
@@ -1131,7 +1125,7 @@ func TestDriverEventsAdapter_OnUnavailableImage_paddedBody(t *testing.T) {
 	)
 }
 
-func TestDriverEventsAdapter_OnUnavailableImage_decodeFailure(t *testing.T) {
+func TestDriverEventsAdapter_unavailableImage_decodeFailure(t *testing.T) {
 	testDriverEventsAdapterEventDecodeFailure(
 		t,
 		conductor.OnUnavailableImage,
@@ -1142,7 +1136,7 @@ func TestDriverEventsAdapter_OnUnavailableImage_decodeFailure(t *testing.T) {
 	)
 }
 
-func TestDriverEventsAdapter_OnPublicationError(t *testing.T) {
+func TestDriverEventsAdapter_publicationError(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
 		func(error) {},
@@ -1167,7 +1161,7 @@ func TestDriverEventsAdapter_OnPublicationError(t *testing.T) {
 	require.Equal(t, goldenPublicationErrorEvent, errors[0])
 }
 
-func TestDriverEventsAdapter_OnPublicationError_decodeFailure(t *testing.T) {
+func TestDriverEventsAdapter_publicationError_decodeFailure(t *testing.T) {
 	testDriverEventsAdapterEventDecodeFailure(
 		t,
 		conductor.OnPublicationError,
@@ -1242,7 +1236,7 @@ func newDriverEventsAdapterForTest(
 	t *testing.T,
 	clientID int64,
 	errorHandler func(error),
-	onClientTimeout func(),
+	clientTimeoutHandler func(),
 ) *conductor.DriverEventsAdapter {
 	t.Helper()
 
@@ -1252,7 +1246,7 @@ func newDriverEventsAdapterForTest(
 		clientID,
 		copyReceiver,
 		errorHandler,
-		onClientTimeout,
+		clientTimeoutHandler,
 		conductor.DriverEventsAdapterHandlers{},
 		nil,
 	)

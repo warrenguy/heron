@@ -363,7 +363,7 @@ func pollAndRespondToNextAvailableSessionIDCommand(
 	return false
 }
 
-func TestClient_GetNextAvailableSessionID_success(t *testing.T) {
+func TestClient_NextAvailableSessionID_success(t *testing.T) {
 	var nanoNs int64
 	client, fixture := newClientAwaitFixture(
 		t,
@@ -380,7 +380,7 @@ func TestClient_GetNextAvailableSessionID_success(t *testing.T) {
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		sessionID, err := client.GetNextAvailableSessionID(clientAwaitTestStreamID)
+		sessionID, err := client.NextAvailableSessionID(clientAwaitTestStreamID)
 		resultCh <- result{sessionID: sessionID, err: err}
 	}()
 
@@ -388,7 +388,7 @@ func TestClient_GetNextAvailableSessionID_success(t *testing.T) {
 	require.True(
 		t,
 		pollAndRespondToNextAvailableSessionIDCommand(t, fixture, wantSessionID, pollDeadline, nil),
-		"timed out waiting for GetNextAvailableSessionID command on ring",
+		"timed out waiting for NextAvailableSessionID command on ring",
 	)
 
 	select {
@@ -396,7 +396,7 @@ func TestClient_GetNextAvailableSessionID_success(t *testing.T) {
 		require.NoError(t, got.err)
 		require.Equal(t, wantSessionID, got.sessionID)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for GetNextAvailableSessionID client result")
+		t.Fatal("timed out waiting for NextAvailableSessionID client result")
 	}
 	requireActiveCorrelationCleared(t, fixture)
 }
@@ -460,7 +460,7 @@ func TestClient_PollAwaitForTest_requiresDoWorkAfterBroadcastCompletion(t *testi
 	require.False(t, ok)
 }
 
-func TestClient_GetNextAvailableSessionID_offersCommand(t *testing.T) {
+func TestClient_NextAvailableSessionID_offersCommand(t *testing.T) {
 	nanoNs := testutil.TestStartNanoNs
 	client, fixture := newClientAwaitFixture(
 		t,
@@ -469,7 +469,7 @@ func TestClient_GetNextAvailableSessionID_offersCommand(t *testing.T) {
 		time.Millisecond,
 	)
 
-	_, err := client.GetNextAvailableSessionID(clientAwaitTestStreamID)
+	_, err := client.NextAvailableSessionID(clientAwaitTestStreamID)
 	var timeoutErr *AwaitTimeoutError
 	require.ErrorAs(t, err, &timeoutErr)
 
@@ -636,11 +636,11 @@ func TestClient_closedClientPaths(t *testing.T) {
 	)
 	require.ErrorIs(t, err, ErrClientClosed)
 
-	_, err = client.GetNextAvailableSessionID(clientAwaitTestStreamID)
+	_, err = client.NextAvailableSessionID(clientAwaitTestStreamID)
 	require.ErrorIs(t, err, ErrClientClosed)
 }
 
-func TestClient_GetNextAvailableSessionID_nilDriverProxy(t *testing.T) {
+func TestClient_NextAvailableSessionID_nilDriverProxy(t *testing.T) {
 	nanoNs := testutil.TestStartNanoNs
 	_, fixture := newClientAwaitFixture(
 		t,
@@ -657,6 +657,6 @@ func TestClient_GetNextAvailableSessionID_nilDriverProxy(t *testing.T) {
 		time.Millisecond,
 	)
 
-	_, err := client.GetNextAvailableSessionID(clientAwaitTestStreamID)
+	_, err := client.NextAvailableSessionID(clientAwaitTestStreamID)
 	require.ErrorIs(t, err, ErrClientNotReady)
 }

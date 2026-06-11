@@ -102,7 +102,7 @@ func completePendingHook(
 	err error,
 ) error {
 	if err == nil {
-		if !conductor.OnNextAvailableSessionID(correlationID, int32Value) {
+		if !conductor.NextSessionID(correlationID, int32Value) {
 			return ErrPendingNotFound
 		}
 		return nil
@@ -149,7 +149,7 @@ func newConductorUncheckedHook(
 		return nil, err
 	}
 
-	return NewConductor(
+	return newConductor(
 		NewDriverProxy(ring, config.ClientID),
 		broadcastReceiver,
 		countersReader,

@@ -100,7 +100,7 @@ func TestConductor_heartbeatCounterUpdate(t *testing.T) {
 	workCount := conductorInstance.DoWork()
 	require.Equal(t, 1, workCount)
 
-	got, err := conductorInstance.CountersReaderForTest().GetCounterValue(0)
+	got, err := conductorInstance.CountersReaderForTest().CounterValue(0)
 	require.NoError(t, err)
 	require.Equal(t, epochMs, got)
 }
@@ -118,7 +118,7 @@ func TestConductor_unregisteredClientSkipsHeartbeatCounter(t *testing.T) {
 	require.False(t, conductorInstance.IsTerminating())
 }
 
-func TestConductor_DoWork_completesActivePendingOnNextAvailableSessionID(t *testing.T) {
+func TestConductor_DoWork_completesActivePending_nextAvailableSessionID(t *testing.T) {
 	const nextSessionID int32 = 42
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
@@ -151,7 +151,7 @@ func TestConductor_DoWork_completesActivePendingOnNextAvailableSessionID(t *test
 	require.Equal(t, nextSessionID, registration.Int32Value)
 }
 
-func TestConductor_DoWork_completesActivePendingOnOperationSuccess(t *testing.T) {
+func TestConductor_DoWork_completesActivePending_operationSuccess(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
 		func(error) {},
@@ -183,7 +183,7 @@ func TestConductor_DoWork_completesActivePendingOnOperationSuccess(t *testing.T)
 	require.Equal(t, conductor.PendingKindOperationSuccess, registration.Kind)
 }
 
-func TestConductor_DoWork_completesActivePendingOnError(t *testing.T) {
+func TestConductor_DoWork_completesActivePending_errorEvent(t *testing.T) {
 	const errorCode int32 = 11
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
@@ -224,7 +224,7 @@ func TestConductor_DoWork_completesActivePendingOnError(t *testing.T) {
 	)
 }
 
-func TestConductor_DoWork_completesActivePendingOnPublicationReady(t *testing.T) {
+func TestConductor_DoWork_completesActivePending_publicationReady(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
 		func(error) {},
@@ -267,7 +267,7 @@ func TestConductor_DoWork_completesActivePendingOnPublicationReady(t *testing.T)
 	require.Equal(t, goldenPublicationBuffersReadyEvent, ready)
 }
 
-func TestConductor_DoWork_completesActivePendingOnSubscriptionReady(t *testing.T) {
+func TestConductor_DoWork_completesActivePending_subscriptionReady(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
 		func(error) {},
@@ -310,40 +310,13 @@ func TestConductor_DoWork_completesActivePendingOnSubscriptionReady(t *testing.T
 	require.Equal(t, goldenSubscriptionReadyEvent, ready)
 }
 
-func TestConductor_onPublicationReadyViaDoWork(t *testing.T) {
-	conductorInstance := newConductorForTestAtWorkNano(
-		t,
-		func(error) {},
-		0,
-		0,
-	)
-	require.NoError(
-		t,
-		conductorInstance.RegisterPending(
-			conductor.PendingKindOperationSuccess,
-			goldenPublicationReadyCorrelationID,
-			pendingTestTimeout,
-		),
-	)
-	conductorInstance.SetActiveCorrelationID(goldenPublicationReadyCorrelationID)
-
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
-		conductor.OnPublicationReady,
-		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
-	)
-
-	workCount := conductorInstance.DoWork()
-	require.Equal(t, 1, workCount)
-
-	ready, ok := conductor.LastPublicationReadyForTest(conductorInstance)
-	require.True(t, ok)
-	require.Equal(t, goldenPublicationBuffersReadyEvent, ready)
-	require.Equal(
+func TestConductor_handlePublicationReadyViaDoWork(t *testing.T) {
+	testConductorOnReadyViaDoWorkWrongKind(
 		t,
 		goldenPublicationReadyCorrelationID,
-		conductorInstance.ReceivedCorrelationID(),
+		conductor.OnPublicationReady,
+		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
+		conductor.LastPublicationReadyForTest,
 	)
 }
 
@@ -379,40 +352,13 @@ func TestConductor_oneBroadcastEventPerDoWork(t *testing.T) {
 	require.False(t, receiver.ReceiveNext())
 }
 
-func TestConductor_onSubscriptionReadyViaDoWork(t *testing.T) {
-	conductorInstance := newConductorForTestAtWorkNano(
-		t,
-		func(error) {},
-		0,
-		0,
-	)
-	require.NoError(
-		t,
-		conductorInstance.RegisterPending(
-			conductor.PendingKindOperationSuccess,
-			goldenSubscriptionReadyCorrelationID,
-			pendingTestTimeout,
-		),
-	)
-	conductorInstance.SetActiveCorrelationID(goldenSubscriptionReadyCorrelationID)
-
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
-		conductor.OnSubscriptionReady,
-		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
-	)
-
-	workCount := conductorInstance.DoWork()
-	require.Equal(t, 1, workCount)
-
-	ready, ok := conductor.LastSubscriptionReadyForTest(conductorInstance)
-	require.True(t, ok)
-	require.Equal(t, goldenSubscriptionReadyEvent, ready)
-	require.Equal(
+func TestConductor_handleSubscriptionReadyViaDoWork(t *testing.T) {
+	testConductorOnReadyViaDoWorkWrongKind(
 		t,
 		goldenSubscriptionReadyCorrelationID,
-		conductorInstance.ReceivedCorrelationID(),
+		conductor.OnSubscriptionReady,
+		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
+		conductor.LastSubscriptionReadyForTest,
 	)
 }
 
@@ -423,22 +369,19 @@ func TestConductor_oneGatedReadyEventPerDoWork(t *testing.T) {
 		0,
 		0,
 	)
-	require.NoError(
-		t,
-		conductorInstance.RegisterPending(
-			conductor.PendingKindOperationSuccess,
-			goldenPublicationReadyCorrelationID,
-			pendingTestTimeout,
-		),
-	)
-	require.NoError(
-		t,
-		conductorInstance.RegisterPending(
-			conductor.PendingKindOperationSuccess,
-			goldenSubscriptionReadyCorrelationID,
-			pendingTestTimeout,
-		),
-	)
+	for _, correlationID := range []int64{
+		goldenPublicationReadyCorrelationID,
+		goldenSubscriptionReadyCorrelationID,
+	} {
+		require.NoError(
+			t,
+			registerPendingKindForTest(
+				conductorInstance,
+				conductor.PendingKindOperationSuccess,
+				correlationID,
+			),
+		)
+	}
 	conductorInstance.SetActiveCorrelationID(goldenPublicationReadyCorrelationID)
 
 	adapter := conductorInstance.EventsAdapterForTest()
@@ -458,25 +401,22 @@ func TestConductor_oneGatedReadyEventPerDoWork(t *testing.T) {
 	workCount := conductorInstance.DoWork()
 	require.Equal(t, 1, workCount)
 
-	ready, ok := conductor.LastPublicationReadyForTest(conductorInstance)
-	require.True(t, ok)
-	require.Equal(t, goldenPublicationBuffersReadyEvent, ready)
+	_, ok := conductor.LastPublicationReadyForTest(conductorInstance)
+	require.False(t, ok)
 	require.Equal(
 		t,
 		goldenPublicationReadyCorrelationID,
 		conductorInstance.ReceivedCorrelationID(),
 	)
 
-	subscriptionReady, ok := conductor.LastSubscriptionReadyForTest(conductorInstance)
+	_, ok = conductor.LastSubscriptionReadyForTest(conductorInstance)
 	require.False(t, ok)
-	require.Zero(t, subscriptionReady)
 
 	workCount = conductorInstance.DoWork()
 	require.Equal(t, 1, workCount)
 
-	subscriptionReady, ok = conductor.LastSubscriptionReadyForTest(conductorInstance)
-	require.True(t, ok)
-	require.Equal(t, goldenSubscriptionReadyEvent, subscriptionReady)
+	_, ok = conductor.LastSubscriptionReadyForTest(conductorInstance)
+	require.False(t, ok)
 	require.Equal(
 		t,
 		goldenSubscriptionReadyCorrelationID,
@@ -485,7 +425,7 @@ func TestConductor_oneGatedReadyEventPerDoWork(t *testing.T) {
 	require.False(t, adapter.CopyReceiverForTest().BroadcastReceiver().ReceiveNext())
 }
 
-func TestConductor_onClientTimeoutEvent(t *testing.T) {
+func TestConductor_handleClientTimeout(t *testing.T) {
 	var gotErrors []error
 	conductorInstance := newConductorForTest(
 		t,
@@ -963,6 +903,48 @@ func newConductorForMutableNanoTest(
 	return conductorInstance, &nanoNs
 }
 
+func testConductorOnReadyViaDoWorkWrongKind[T any](
+	t *testing.T,
+	correlationID int64,
+	wireEvent int,
+	eventBytes []byte,
+	lastReadyForTest func(*conductor.Conductor) (T, bool),
+) {
+	t.Helper()
+
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		registerPendingKindForTest(
+			conductorInstance,
+			conductor.PendingKindOperationSuccess,
+			correlationID,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(correlationID)
+
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		wireEvent,
+		eventBytes,
+	)
+
+	workCount := conductorInstance.DoWork()
+	require.Equal(t, 1, workCount)
+
+	// Gated staging: wrong-kind ready latches PollPending via handleCorrelatedEvent but
+	// does not stage last*Ready when completePendingIfKind rejects the kind.
+	_, latched := lastReadyForTest(conductorInstance)
+	require.False(t, latched)
+	require.Equal(t, correlationID, conductorInstance.ReceivedCorrelationID())
+}
+
 func fillBroadcastUntilLap(
 	tb testing.TB,
 	tx *broadcast.BroadcastTransmitter,
@@ -988,4 +970,24 @@ func rewindBroadcastTailForLap(
 	actualLatest := buf.GetInt64Volatile(broadcast.LatestIndex(capacity))
 	buf.PutInt64Release(broadcast.LatestIndex(capacity), 0)
 	buf.PutInt64Release(broadcast.LatestIndex(capacity), actualLatest)
+}
+
+func TestNewConductor_requiresResourceLifecycleWithImageLifecycle(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance, err := conductor.NewConductor(
+		nil,
+		nil,
+		nil,
+		conductor.Config{
+			ImageLifecycle: &recordingImageLifecycle{},
+		},
+	)
+	require.Nil(t, conductorInstance)
+	require.ErrorIs(t, err, conductor.ErrResourceLifecycleRequired)
+	require.EqualError(
+		t,
+		err,
+		"conductor: ResourceLifecycle is required when ImageLifecycle is set",
+	)
 }

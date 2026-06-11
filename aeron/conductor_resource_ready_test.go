@@ -1,0 +1,335 @@
+package aeron
+
+import (
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/conductor"
+)
+
+const (
+	resourceReadyPublicationLimitCounterID   int32 = 0
+	resourceReadyPublicationChannelCounterID int32 = 1
+	resourceReadySubscriberPositionCounterID int32 = 2
+
+	resourceReadyPublicationCorrelationID    int64 = 1001
+	resourceReadySubscriptionCorrelationID   int64 = 3003
+	resourceReadyPublicationRegistrationID   int64 = 2002
+	resourceReadyAvailableImageCorrelationID int64 = 4004
+
+	resourceReadyStreamID int32 = 7
+	resourceReadyChannel        = "aeron:ipc"
+)
+
+var (
+	resourceReadyGoldenPublicationReady = conductor.PublicationBuffersReady{
+		CorrelationID:             resourceReadyPublicationCorrelationID,
+		RegistrationID:            resourceReadyPublicationRegistrationID,
+		SessionID:                 42,
+		StreamID:                  resourceReadyStreamID,
+		PublicationLimitCounterID: resourceReadyPublicationLimitCounterID,
+		ChannelStatusCounterID:    resourceReadyPublicationChannelCounterID,
+	}
+	resourceReadyGoldenSubscriptionReady = conductor.SubscriptionReady{
+		CorrelationID:          resourceReadySubscriptionCorrelationID,
+		ChannelStatusCounterID: 12,
+	}
+	resourceReadyGoldenAvailableImage = conductor.AvailableImage{
+		CorrelationID:              resourceReadyAvailableImageCorrelationID,
+		SessionID:                  42,
+		StreamID:                   resourceReadyStreamID,
+		SubscriptionRegistrationID: resourceReadySubscriptionCorrelationID,
+		SubscriberPositionID:       resourceReadySubscriberPositionCounterID,
+		SourceIdentity:             "ipc",
+	}
+)
+
+type applyFailingResourceLifecycle struct {
+	conductorResourceLifecycle
+	applyErr error
+}
+
+func (lifecycle applyFailingResourceLifecycle) ApplySubscriptionReady(
+	sub conductor.SubscriptionHandle,
+	event conductor.SubscriptionReady,
+) error {
+	if lifecycle.applyErr != nil {
+		return lifecycle.applyErr
+	}
+	return lifecycle.conductorResourceLifecycle.ApplySubscriptionReady(sub, event)
+}
+
+func setupResourceReadyConductorTest(
+	tb testing.TB,
+	logFilename string,
+	resourceLifecycle conductor.ResourceLifecycle,
+) (logPath string, conductorInstance *conductor.Conductor) {
+	tb.Helper()
+
+	dir, logPath := setupConductorImageLifecycleLogFile(tb, logFilename)
+	conductorInstance = newConductorWithImageLifecycleForTest(
+		tb,
+		noopConductorErrorHandler,
+		dir,
+		func(config *conductor.Config) {
+			config.ResourceLifecycle = resourceLifecycle
+		},
+	)
+	conductorInstance.SetCountersReaderForTest(countersReaderForResourceReadyTest(tb))
+	return logPath, conductorInstance
+}
+
+func countersReaderForResourceReadyTest(tb testing.TB) *cnc.CountersReader {
+	tb.Helper()
+	return newTestCountersReaderFromRecords(3, func(meta, values []byte) {
+		cnc.WriteCounterRecord(
+			meta,
+			values,
+			resourceReadyPublicationLimitCounterID,
+			cnc.CounterRecordAllocated,
+			cnc.DriverPublisherLimitTypeID,
+			resourceReadyPublicationRegistrationID,
+			0,
+		)
+		err := cnc.WriteChannelStatusCounterRecord(
+			meta,
+			values,
+			resourceReadyPublicationChannelCounterID,
+			cnc.CounterRecordAllocated,
+			cnc.DriverSendChannelStatusTypeID,
+			resourceReadyChannel,
+			resourceReadyPublicationRegistrationID,
+			1,
+		)
+		if err != nil {
+			panic(err)
+		}
+		cnc.WriteCounterRecord(
+			meta,
+			values,
+			resourceReadySubscriberPositionCounterID,
+			cnc.CounterRecordAllocated,
+			cnc.DriverSubscriberPositionTypeID,
+			resourceReadySubscriptionCorrelationID,
+			TestSubscriberPositionAtJoin,
+		)
+	})
+}
+
+func publicationReadyEventForLogPath(logPath string) conductor.PublicationBuffersReady {
+	event := resourceReadyGoldenPublicationReady
+	event.LogFileName = logPath
+	return event
+}
+
+func availableImageEventForSubscription(logPath string) conductor.AvailableImage {
+	event := resourceReadyGoldenAvailableImage
+	event.LogFileName = logPath
+	return event
+}
+
+func registerResourceReadySubscriptionPending(
+	t *testing.T,
+	conductorInstance *conductor.Conductor,
+) {
+	t.Helper()
+	require.NoError(
+		t,
+		conductorInstance.RegisterPendingAdd(
+			conductor.PendingKindAddSubscription,
+			resourceReadySubscriptionCorrelationID,
+			resourceReadyStreamID,
+			resourceReadyChannel,
+			time.Second,
+		),
+	)
+	_, ok := conductorInstance.SubscriptionByRegID(resourceReadySubscriptionCorrelationID)
+	require.True(t, ok)
+}
+
+func transmitResourceReadyAvailableImage(
+	t *testing.T,
+	conductorInstance *conductor.Conductor,
+	logPath string,
+) {
+	t.Helper()
+	transmitConductorImageLifecycleEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnAvailableImage,
+		conductor.AvailableImageBytes(availableImageEventForSubscription(logPath)),
+	)
+	require.Equal(t, 1, conductorInstance.DoWork())
+}
+
+func transmitResourceReadySubscriptionReady(
+	t *testing.T,
+	conductorInstance *conductor.Conductor,
+) {
+	t.Helper()
+	conductorInstance.SetActiveCorrelationID(resourceReadySubscriptionCorrelationID)
+	transmitConductorImageLifecycleEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnSubscriptionReady,
+		conductor.SubscriptionReadyBytes(resourceReadyGoldenSubscriptionReady),
+	)
+	require.Equal(t, 1, conductorInstance.DoWork())
+}
+
+func setupResourceReadySubscriptionWithAvailableImage(
+	t *testing.T,
+	conductorInstance *conductor.Conductor,
+	registry *conductor.LogBuffersRegistry,
+	logPath string,
+) {
+	t.Helper()
+	registerResourceReadySubscriptionPending(t, conductorInstance)
+	transmitResourceReadyAvailableImage(t, conductorInstance, logPath)
+	_, ok := conductorInstance.SubscriptionByRegID(resourceReadySubscriptionCorrelationID)
+	require.True(t, ok)
+	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+}
+
+func TestConductor_handlePublicationReady_refcountsLog(t *testing.T) {
+	logPath, conductorInstance := setupResourceReadyConductorTest(
+		t,
+		"shared.log",
+		ConductorResourceLifecycle,
+	)
+
+	require.NoError(
+		t,
+		conductorInstance.RegisterPendingAdd(
+			conductor.PendingKindAddPublication,
+			resourceReadyPublicationCorrelationID,
+			resourceReadyStreamID,
+			resourceReadyChannel,
+			time.Second,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(resourceReadyPublicationCorrelationID)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorImageLifecycleEvent(
+		t,
+		adapter,
+		conductor.OnPublicationReady,
+		conductor.PublicationBuffersReadyBytes(publicationReadyEventForLogPath(logPath)),
+	)
+	require.Equal(t, 1, conductorInstance.DoWork())
+
+	done, registration, err := conductorInstance.PollPending(resourceReadyPublicationCorrelationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	pub, ok := registration.Publication.(*Publication)
+	require.True(t, ok)
+	gotPub, ok := conductorInstance.PublicationByRegID(resourceReadyPublicationRegistrationID)
+	require.True(t, ok)
+	require.Same(t, pub, gotPub)
+
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+
+	registerResourceReadySubscriptionPending(t, conductorInstance)
+
+	transmitConductorImageLifecycleEvent(
+		t,
+		adapter,
+		conductor.OnAvailableImage,
+		conductor.AvailableImageBytes(availableImageEventForSubscription(logPath)),
+	)
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.Equal(
+		t,
+		int32(2),
+		conductor.LogBuffersRegistryRefCountForTest(registry, logPath),
+	)
+}
+
+func TestConductor_availableThenSubscriptionReady_preInsert(t *testing.T) {
+	logPath, conductorInstance := setupResourceReadyConductorTest(
+		t,
+		"image.log",
+		ConductorResourceLifecycle,
+	)
+
+	registerResourceReadySubscriptionPending(t, conductorInstance)
+
+	transmitResourceReadyAvailableImage(t, conductorInstance, logPath)
+
+	sub, ok := conductorInstance.SubscriptionByRegID(resourceReadySubscriptionCorrelationID)
+	require.True(t, ok)
+	aeronSub, err := subscriptionFromHandle(sub)
+	require.NoError(t, err)
+	require.Equal(t, 1, aeronSub.ImageCount())
+
+	transmitResourceReadySubscriptionReady(t, conductorInstance)
+
+	done, registration, err := conductorInstance.PollPending(resourceReadySubscriptionCorrelationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	require.NotNil(t, registration.Subscription)
+	require.Equal(t, 1, aeronSub.ImageCount())
+	require.Equal(
+		t,
+		int32(12),
+		SubscriptionChannelStatusCounterIDForTest(aeronSub),
+	)
+
+	got, ok := conductorInstance.SubscriptionByRegID(resourceReadySubscriptionCorrelationID)
+	require.True(t, ok)
+	require.Same(t, registration.Subscription, got)
+}
+
+func TestConductor_addSubscription_availableImageThenDriverError_restoresRefcount(t *testing.T) {
+	logPath, conductorInstance := setupResourceReadyConductorTest(
+		t,
+		"driver-error.log",
+		ConductorResourceLifecycle,
+	)
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+	setupResourceReadySubscriptionWithAvailableImage(t, conductorInstance, registry, logPath)
+
+	require.True(
+		t,
+		conductorInstance.DriverError(conductor.ErrorResponse{
+			OffendingCommandCorrelationID: resourceReadySubscriptionCorrelationID,
+			ErrorCode:                     11,
+			ErrorMessage:                  "add subscription rejected",
+		}),
+	)
+
+	done, _, err := conductorInstance.PollPending(resourceReadySubscriptionCorrelationID)
+	require.True(t, done)
+	require.Error(t, err)
+	_, ok := conductorInstance.SubscriptionByRegID(resourceReadySubscriptionCorrelationID)
+	require.False(t, ok)
+	require.Zero(t, conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+}
+
+func TestConductor_addSubscription_availableImageThenApplyFailure_restoresRefcount(t *testing.T) {
+	errApply := errors.New("aeron_test: apply subscription ready failed")
+	logPath, conductorInstance := setupResourceReadyConductorTest(
+		t,
+		"apply-failure.log",
+		applyFailingResourceLifecycle{applyErr: errApply},
+	)
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+	setupResourceReadySubscriptionWithAvailableImage(t, conductorInstance, registry, logPath)
+
+	transmitResourceReadySubscriptionReady(t, conductorInstance)
+
+	done, _, err := conductorInstance.PollPending(resourceReadySubscriptionCorrelationID)
+	require.True(t, done)
+	require.ErrorIs(t, err, errApply)
+	_, ok := conductorInstance.SubscriptionByRegID(resourceReadySubscriptionCorrelationID)
+	require.False(t, ok)
+	require.Zero(t, conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+}

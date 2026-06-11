@@ -94,6 +94,28 @@ func openCnc(ctx Context) (*cnc.MappedCncFile, *cnc.Rings, error) {
 	return mapped, rings, nil
 }
 
+func conductorConnectConfig(ctx Context, clientID int64) conductor.Config {
+	config := conductor.Config{
+		ClientID:               clientID,
+		DriverTimeout:          ctx.DriverTimeout,
+		KeepAliveInterval:      ctx.KeepAliveInterval,
+		IdleSleepDuration:      ctx.IdleSleepDuration,
+		InterServiceTimeout:    ctx.InterServiceTimeout,
+		EpochClock:             ctx.EpochClock,
+		NanoClock:              ctx.NanoClock,
+		SubscriberErrorHandler: ctx.ErrorHandler,
+		ImageLifecycle:         ConductorImageLifecycle,
+		ResourceLifecycle:      ConductorResourceLifecycle,
+		MediaDriverDir:         ctx.AeronDir,
+	}
+	if handler := ctx.ErrorHandler; handler != nil {
+		config.ErrorHandler = func(err error) {
+			handler(mapConductorError(err))
+		}
+	}
+	return config
+}
+
 func newConductorClient(
 	ctx Context,
 	mapped *cnc.MappedCncFile,
@@ -121,29 +143,17 @@ func newConductorClient(
 	}
 
 	driverProxy := conductor.NewDriverProxy(rings.ToDriver, clientID)
-	config := conductor.Config{
-		ClientID:               clientID,
-		DriverTimeout:          ctx.DriverTimeout,
-		KeepAliveInterval:      ctx.KeepAliveInterval,
-		IdleSleepDuration:      ctx.IdleSleepDuration,
-		InterServiceTimeout:    ctx.InterServiceTimeout,
-		EpochClock:             ctx.EpochClock,
-		NanoClock:              ctx.NanoClock,
-		SubscriberErrorHandler: ctx.ErrorHandler,
-		ImageLifecycle:         ConductorImageLifecycle,
-		MediaDriverDir:         ctx.AeronDir,
-	}
-	if ctx.ErrorHandler != nil {
-		config.ErrorHandler = func(err error) {
-			ctx.ErrorHandler(mapConductorError(err))
-		}
-	}
-	conductorInstance := conductor.NewConductor(
+	config := conductorConnectConfig(ctx, clientID)
+
+	conductorInstance, err := conductor.NewConductor(
 		driverProxy,
 		rings.ToClients,
 		countersReader,
 		config,
 	)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Client{
 		clientID:          clientID,
@@ -203,7 +213,7 @@ func (client *Client) NextCorrelationID() int64 {
 	return client.driverProxy.NextCorrelationID()
 }
 
-func (client *Client) GetNextAvailableSessionID(streamID int32) (int32, error) {
+func (client *Client) NextAvailableSessionID(streamID int32) (int32, error) {
 	if err := client.requireReadyWithDriverProxy(); err != nil {
 		return 0, err
 	}
@@ -213,7 +223,7 @@ func (client *Client) GetNextAvailableSessionID(streamID int32) (int32, error) {
 		conductor.PendingKindNextSessionID,
 		client.driverTimeout,
 		func() error {
-			return client.driverProxy.GetNextAvailableSessionID(correlationID, streamID)
+			return client.driverProxy.NextAvailableSessionID(correlationID, streamID)
 		},
 	)
 	if err != nil {
@@ -414,7 +424,7 @@ func validateClientID(clientID int64) error {
 
 func validateControlProtocolVersion(reader cnc.CountersView) error {
 	want := int64(conductor.ControlProtocolVersion)
-	got, err := reader.GetCounterValue(conductor.SystemCounterControlProtocolVersion)
+	got, err := reader.CounterValue(conductor.SystemCounterControlProtocolVersion)
 	if err != nil {
 		return fmt.Errorf("aeron: read control protocol version counter: %w", err)
 	}

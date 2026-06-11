@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
@@ -16,6 +17,11 @@ func TestSubscription_newSubscription_fields(t *testing.T) {
 	require.Equal(t, aeron.TestSubscriptionRegistrationID, sub.RegistrationID())
 	require.Equal(t, aeron.TestPublicationStreamID, sub.StreamID())
 	require.Equal(t, aeron.TestImageSourceIdentity, sub.Channel())
+	require.Equal(
+		t,
+		cnc.NullCounterID,
+		aeron.SubscriptionChannelStatusCounterIDForTest(sub),
+	)
 	require.Equal(t, 0, sub.ImageCount())
 	require.False(t, sub.IsConnected())
 	require.False(t, sub.IsClosed())

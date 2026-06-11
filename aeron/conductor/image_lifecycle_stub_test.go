@@ -3,6 +3,7 @@ package conductor_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -33,8 +34,8 @@ type recordingImageLifecycle struct {
 	hasImage                       bool
 	newImageErr                    error
 	addImageOK                     bool
-	availableCallback              func(conductor.ImageHandle)
-	unavailableCallback            func(conductor.ImageHandle)
+	availableImageHandler          func(conductor.ImageHandle)
+	unavailableImageHandler        func(conductor.ImageHandle)
 	lastEvent                      conductor.AvailableImage
 	lastRemovedCorrelationID       int64
 	lastSubscriptionRegistrationID int64
@@ -99,16 +100,16 @@ func (lifecycle *recordingImageLifecycle) CloseImage(image conductor.ImageHandle
 	}
 }
 
-func (lifecycle *recordingImageLifecycle) AvailableImageCallback(
+func (lifecycle *recordingImageLifecycle) AvailableImageHandler(
 	_ conductor.SubscriptionHandle,
 ) func(conductor.ImageHandle) {
-	return lifecycle.availableCallback
+	return lifecycle.availableImageHandler
 }
 
-func (lifecycle *recordingImageLifecycle) UnavailableImageCallback(
+func (lifecycle *recordingImageLifecycle) UnavailableImageHandler(
 	_ conductor.SubscriptionHandle,
 ) func(conductor.ImageHandle) {
-	return lifecycle.unavailableCallback
+	return lifecycle.unavailableImageHandler
 }
 
 func registerGoldenSubscription(
@@ -134,13 +135,22 @@ func registerGoldenImageSubscription(conductorInstance *conductor.Conductor) {
 	)
 }
 
-func seedGoldenAvailableLogBuffers(tb testing.TB, conductorInstance *conductor.Conductor) {
+func seedLogBuffersForTest(
+	tb testing.TB,
+	conductorInstance *conductor.Conductor,
+	logFileName string,
+) {
 	tb.Helper()
 	require.NoError(tb, conductor.SeedLogBuffersRegistryForTest(
 		conductor.LogBuffersRegistryForTest(conductorInstance),
-		goldenAvailableImageEvent.LogFileName,
+		logFileName,
 		conductor.NewSyntheticLogBuffersForTest(tb),
 	))
+}
+
+func seedGoldenAvailableLogBuffers(tb testing.TB, conductorInstance *conductor.Conductor) {
+	tb.Helper()
+	seedLogBuffersForTest(tb, conductorInstance, goldenAvailableImageEvent.LogFileName)
 }
 
 func newConductorWithRecordingLifecycle(
@@ -183,7 +193,49 @@ func triggerGoldenUnavailableImage(t *testing.T, conductorInstance *conductor.Co
 	)
 }
 
-func TestConductor_onAvailableImage_emptyMediaDriverDirReportsError(t *testing.T) {
+func TestConductor_handleAvailableImage_withoutPreInsert_silentDrop(t *testing.T) {
+	t.Parallel()
+
+	lifecycle := &recordingImageLifecycle{addImageOK: true}
+	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, func(error) {})
+	seedGoldenAvailableLogBuffers(t, conductorInstance)
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+	require.NoError(
+		t,
+		conductorInstance.RegisterPendingEntryForTest(
+			conductor.PendingRegistration{
+				CorrelationID: goldenAvailableImageEvent.SubscriptionRegistrationID,
+				Kind:          conductor.PendingKindAddSubscription,
+				StreamID:      goldenAvailableImageEvent.StreamID,
+				Channel:       pendingTestChannel,
+				DeadlineNs:    time.Second.Nanoseconds(),
+			},
+			true,
+		),
+	)
+	require.Equal(t, 0, conductorInstance.SubscriptionCountForTest())
+
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnAvailableImage,
+		conductor.AvailableImageBytes(goldenAvailableImageEvent),
+	)
+	require.Equal(t, 1, conductorInstance.DoWork())
+
+	require.Zero(t, lifecycle.lastEvent.CorrelationID)
+	require.Equal(
+		t,
+		int32(1),
+		conductor.LogBuffersRegistryRefCountForTest(
+			registry,
+			goldenAvailableImageEvent.LogFileName,
+		),
+	)
+}
+
+func TestConductor_handleAvailableImage_emptyMediaDriverDirReportsError(t *testing.T) {
 	t.Parallel()
 
 	errorHandler, gotErrors := collectConductorErrors()
@@ -210,7 +262,7 @@ func TestConductor_onAvailableImage_emptyMediaDriverDirReportsError(t *testing.T
 	))
 }
 
-func TestConductor_onAvailableImage_nilLifecycleNoOp(t *testing.T) {
+func TestConductor_handleAvailableImage_nilLifecycleNoOp(t *testing.T) {
 	t.Parallel()
 
 	conductorInstance := newConductorForTest(
@@ -234,7 +286,7 @@ func TestConductor_onAvailableImage_nilLifecycleNoOp(t *testing.T) {
 	))
 }
 
-func TestConductor_onAvailableImage_newImageFailureReleasesAcquire(t *testing.T) {
+func TestConductor_handleAvailableImage_newImageFailureReleasesAcquire(t *testing.T) {
 	t.Parallel()
 
 	errorHandler, gotErrors := collectConductorErrors()
@@ -266,7 +318,7 @@ func TestConductor_onAvailableImage_newImageFailureReleasesAcquire(t *testing.T)
 	))
 }
 
-func TestConductor_onAvailableImage_addImageFailureReleasesAcquire(t *testing.T) {
+func TestConductor_handleAvailableImage_addImageFailureReleasesAcquire(t *testing.T) {
 	t.Parallel()
 
 	errorHandler, gotErrors := collectConductorErrors()
@@ -293,7 +345,7 @@ func TestConductor_onAvailableImage_addImageFailureReleasesAcquire(t *testing.T)
 	))
 }
 
-func TestConductor_onUnavailableImage_closeFailureSkipsRelease(t *testing.T) {
+func TestConductor_handleUnavailableImage_closeFailureSkipsRelease(t *testing.T) {
 	t.Parallel()
 
 	errorHandler, gotErrors := collectConductorErrors()
@@ -322,7 +374,7 @@ func TestConductor_onUnavailableImage_closeFailureSkipsRelease(t *testing.T) {
 	))
 }
 
-func TestConductor_onUnavailableImage_nilLifecycleNoOp(t *testing.T) {
+func TestConductor_handleUnavailableImage_nilLifecycleNoOp(t *testing.T) {
 	t.Parallel()
 
 	conductorInstance := newConductorForTest(
@@ -341,7 +393,7 @@ func TestConductor_onUnavailableImage_nilLifecycleNoOp(t *testing.T) {
 	require.Equal(t, 1, conductorInstance.DoWork())
 }
 
-func assertImageCallbackPanicRecoveryRestoresLock(
+func assertImageHandlerPanicRecoveryRestoresLock(
 	t *testing.T,
 	panicWith any,
 	wantErr error,
@@ -357,9 +409,9 @@ func assertImageCallbackPanicRecoveryRestoresLock(
 		seedGoldenAvailableLogBuffers(t, conductorInstance)
 	}
 
-	var secondCallbackFired bool
+	var secondHandlerFired bool
 	if available {
-		lifecycle.availableCallback = func(conductor.ImageHandle) {
+		lifecycle.availableImageHandler = func(conductor.ImageHandle) {
 			panic(panicWith)
 		}
 		transmitConductorEvent(
@@ -369,7 +421,7 @@ func assertImageCallbackPanicRecoveryRestoresLock(
 			conductor.AvailableImageBytes(goldenAvailableImageEvent),
 		)
 	} else {
-		lifecycle.unavailableCallback = func(conductor.ImageHandle) {
+		lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
 			panic(panicWith)
 		}
 		triggerGoldenUnavailableImage(t, conductorInstance)
@@ -384,8 +436,8 @@ func assertImageCallbackPanicRecoveryRestoresLock(
 	}
 
 	if available {
-		lifecycle.availableCallback = func(conductor.ImageHandle) {
-			secondCallbackFired = true
+		lifecycle.availableImageHandler = func(conductor.ImageHandle) {
+			secondHandlerFired = true
 		}
 		transmitConductorEvent(
 			t,
@@ -394,14 +446,14 @@ func assertImageCallbackPanicRecoveryRestoresLock(
 			conductor.AvailableImageBytes(goldenAvailableImageEvent),
 		)
 	} else {
-		lifecycle.unavailableCallback = func(conductor.ImageHandle) {
-			secondCallbackFired = true
+		lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
+			secondHandlerFired = true
 		}
 		triggerGoldenUnavailableImage(t, conductorInstance)
 	}
 
 	require.Equal(t, 1, conductorInstance.DoWork())
-	require.True(t, secondCallbackFired)
+	require.True(t, secondHandlerFired)
 
 	conductorInstance.InsertPublicationForTest(55, stubPublication{registrationID: 55})
 	got, ok := conductorInstance.PublicationByRegID(55)
@@ -409,7 +461,7 @@ func assertImageCallbackPanicRecoveryRestoresLock(
 	require.Equal(t, int64(55), got.RegistrationID())
 }
 
-func TestConductor_invokeImageCallback_panicRecovery(t *testing.T) {
+func TestConductor_invokeImageHandler_panicRecovery(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -420,7 +472,7 @@ func TestConductor_invokeImageCallback_panicRecovery(t *testing.T) {
 		{
 			name:      "stringPanic",
 			panicWith: "string panic",
-			wantErr:   errors.New("conductor: image callback panic: string panic"),
+			wantErr:   errors.New("conductor: image handler panic: string panic"),
 		},
 		{
 			name:      "errorPanic",
@@ -431,7 +483,7 @@ func TestConductor_invokeImageCallback_panicRecovery(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			assertImageCallbackPanicRecoveryRestoresLock(
+			assertImageHandlerPanicRecoveryRestoresLock(
 				t,
 				testCase.panicWith,
 				testCase.wantErr,
@@ -441,14 +493,14 @@ func TestConductor_invokeImageCallback_panicRecovery(t *testing.T) {
 	}
 }
 
-func TestConductor_invokeImageCallback_suppressesNested(t *testing.T) {
+func TestConductor_invokeImageHandler_suppressesNested(t *testing.T) {
 	t.Parallel()
 
 	var outerCalls int
 	var nestedDoWorkCalls int
 	lifecycle := &recordingImageLifecycle{addImageOK: true}
 	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, func(error) {})
-	lifecycle.availableCallback = func(conductor.ImageHandle) {
+	lifecycle.availableImageHandler = func(conductor.ImageHandle) {
 		outerCalls++
 		transmitConductorEvent(
 			t,
@@ -474,7 +526,7 @@ func TestConductor_invokeImageCallback_suppressesNested(t *testing.T) {
 	require.Equal(t, 1, nestedDoWorkCalls)
 }
 
-func TestConductor_invokeUnavailableImageCallback_panicRecovery(t *testing.T) {
+func TestConductor_invokeUnavailableImageHandler_panicRecovery(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -485,7 +537,7 @@ func TestConductor_invokeUnavailableImageCallback_panicRecovery(t *testing.T) {
 		{
 			name:      "stringPanic",
 			panicWith: "unavailable string panic",
-			wantErr:   errors.New("conductor: image callback panic: unavailable string panic"),
+			wantErr:   errors.New("conductor: image handler panic: unavailable string panic"),
 		},
 		{
 			name:      "errorPanic",
@@ -496,7 +548,7 @@ func TestConductor_invokeUnavailableImageCallback_panicRecovery(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			assertImageCallbackPanicRecoveryRestoresLock(
+			assertImageHandlerPanicRecoveryRestoresLock(
 				t,
 				testCase.panicWith,
 				testCase.wantErr,
@@ -506,14 +558,14 @@ func TestConductor_invokeUnavailableImageCallback_panicRecovery(t *testing.T) {
 	}
 }
 
-func TestConductor_invokeUnavailableImageCallback_suppressesNested(t *testing.T) {
+func TestConductor_invokeUnavailableImageHandler_suppressesNested(t *testing.T) {
 	t.Parallel()
 
 	var outerCalls int
 	var nestedDoWorkCalls int
 	lifecycle := &recordingImageLifecycle{}
 	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, func(error) {})
-	lifecycle.unavailableCallback = func(conductor.ImageHandle) {
+	lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
 		outerCalls++
 		transmitConductorEvent(
 			t,

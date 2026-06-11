@@ -35,7 +35,7 @@ func TestConductor_DoWork_ZeroAllocsAfterKeepaliveTick(t *testing.T) {
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 
-	got, err := conductorInstance.CountersReaderForTest().GetCounterValue(0)
+	got, err := conductorInstance.CountersReaderForTest().CounterValue(0)
 	require.NoError(t, err)
 	require.Equal(t, epochMs, got)
 

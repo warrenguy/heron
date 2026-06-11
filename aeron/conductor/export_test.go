@@ -36,7 +36,7 @@ func (conductor *Conductor) StoreClientHeartbeatForTest(nowNs, nowMs int64) int 
 }
 
 func (conductor *Conductor) SetTerminatingForTest(terminating bool) {
-	conductor.isTerminating = terminating
+	conductor.terminating = terminating
 }
 
 func (proxy *DriverProxy) Ring() *ringbuffer.ManyToOneRingBuffer {
@@ -208,6 +208,21 @@ func (conductor *Conductor) InsertSubscriptionForTest(
 	})
 }
 
+func (conductor *Conductor) PreInsertSubscriptionForTest(
+	correlationID int64,
+	streamID int32,
+	channel string,
+) {
+	conductor.preInsertSubscription(correlationID, streamID, channel)
+}
+
+func (conductor *Conductor) RegisterPendingEntryForTest(
+	registration PendingRegistration,
+	wantAdd bool,
+) error {
+	return conductor.registerPendingEntry(registration, wantAdd)
+}
+
 func (conductor *Conductor) RemovePublicationForTest(registrationID int64) {
 	conductor.underResourceWriteLock(func() {
 		conductor.removePublication(registrationID)
@@ -226,6 +241,10 @@ func (conductor *Conductor) PublicationCountForTest() int {
 
 func (conductor *Conductor) SubscriptionCountForTest() int {
 	return withResourceRLock(conductor, conductor.subscriptionCount)
+}
+
+func (conductor *Conductor) ResourceWriteLockDepthForTest() int32 {
+	return conductor.resourceWriteLockDepth
 }
 
 func (conductor *Conductor) InsertNilPublicationForTest(registrationID int64) {
@@ -283,16 +302,26 @@ func PublicationErrorsForTest(conductor *Conductor) []PublicationError {
 	return slices.Clone(conductor.publicationErrors)
 }
 
-func (conductor *Conductor) OnPublicationReadyForTest(event PublicationBuffersReady) {
-	conductor.onPublicationReady(event)
+// CorrelatedForTest reports whether correlationID passes the async ready peek gate.
+// A true result means correlationID equals activeCorrelationID (including NullCorrelationID)
+// or the adapter pending registry contains correlationID.
+func (adapter *DriverEventsAdapter) CorrelatedForTest(
+	activeCorrelationID int64,
+	correlationID int64,
+) bool {
+	return adapter.correlated(activeCorrelationID, correlationID)
 }
 
-func (conductor *Conductor) OnSubscriptionReadyForTest(event SubscriptionReady) {
-	conductor.onSubscriptionReady(event)
+func (conductor *Conductor) PublicationReadyForTest(event PublicationBuffersReady) {
+	conductor.handlePublicationReady(event)
 }
 
-func (conductor *Conductor) OnAvailableImageForTest(event AvailableImage) {
-	conductor.onAvailableImage(event)
+func (conductor *Conductor) SubscriptionReadyForTest(event SubscriptionReady) {
+	conductor.handleSubscriptionReady(event)
+}
+
+func (conductor *Conductor) AvailableImageForTest(event AvailableImage) {
+	conductor.handleAvailableImage(event)
 }
 
 func NewSyntheticLogBuffersForTest(tb testing.TB) *logbuffer.LogBuffers {

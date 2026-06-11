@@ -16,6 +16,9 @@ var (
 	ErrConductorServiceTimeout = errors.New(
 		"conductor: service interval exceeded",
 	)
+	ErrResourceLifecycleRequired = errors.New(
+		"conductor: ResourceLifecycle is required when ImageLifecycle is set",
+	)
 )
 
 type HeartbeatCounterClosedError struct {
@@ -56,16 +59,25 @@ type Config struct {
 	InterServiceTimeout time.Duration
 	EpochClock          EpochClock
 	NanoClock           NanoClock
-	// ErrorHandler receives conductor faults and recovered image callback panics;
+	// ErrorHandler receives conductor faults and recovered image handler panics;
 	// nil swallows those errors.
 	ErrorHandler func(error)
 	// SubscriberErrorHandler is optional; nil swallows subscriber-side errors.
 	SubscriberErrorHandler func(error)
 	// ImageLifecycle is optional; nil drops image attach/detach events.
 	ImageLifecycle ImageLifecycle
+	// ResourceLifecycle is optional; nil skips handle construction on ready events.
+	ResourceLifecycle ResourceLifecycle
 	// MediaDriverDir confines log file paths from the driver; required when
 	// ImageLifecycle is non-nil.
 	MediaDriverDir string
+}
+
+func ValidateConfig(config Config) error {
+	if config.ImageLifecycle != nil && config.ResourceLifecycle == nil {
+		return ErrResourceLifecycleRequired
+	}
+	return nil
 }
 
 type Conductor struct {
@@ -83,32 +95,46 @@ type Conductor struct {
 	pending               pendingRegistry
 	activeCorrelationID   int64
 	receivedCorrelationID int64
-	// Staging only; publication/subscription handles still use last-ready pointers
-	// and an append-only error slice.
+	// Test-only staging; gated on successful add-kind ready completion. Production
+	// uses PollPending Publication/Subscription fields.
 	lastPublicationReady  *PublicationBuffersReady
 	lastSubscriptionReady *SubscriptionReady
 	publicationErrors     []PublicationError
-	// Resource maps; populated by the Aeron client after ready events (not wired
-	// yet). Tests use RegisterPublicationForTest / RegisterSubscriptionForTest.
+	// Resource maps; populated by ready handlers and subscription pre-insert.
 	publications  map[int64]PublicationHandle
 	subscriptions map[int64]SubscriptionHandle
 	// logBuffersRegistry is the sole log-buffer map: dedup mmap, refCount, linger.
 	logBuffersRegistry *LogBuffersRegistry
 	resourceMu         sync.RWMutex
 	// resourceWriteLockDepth is updated only under resourceMu write lock;
-	// suspend/resume during image callbacks lets foreign drain acquire write lock.
+	// suspend/resume during image handlers lets foreign drain acquire write lock.
 	resourceWriteLockDepth int32
 	imageLifecycle         ImageLifecycle
-	// isInCallback is agent-only; suppresses nested image handler delivery.
-	isInCallback bool
+	resourceLifecycle      ResourceLifecycle
+	// cachedCorrelatedPending avoids a second pending.Get on the adapter ready path.
+	cachedCorrelatedPending *PendingRegistration
+	// inCallback is agent-only; suppresses nested image handler delivery.
+	inCallback bool
 	// lingerSweepBlocker is agent-only; optional test hook during linger sweep.
 	// Only invoked via invokeLingerSweepBlockerForTest (no-op in !testhooks builds).
 	lingerSweepBlocker func()
 	terminationCause   error
-	isTerminating      bool
+	terminating        bool
 }
 
 func NewConductor(
+	driverProxy *DriverProxy,
+	broadcastReceiver *broadcast.BroadcastReceiver,
+	countersReader *cnc.CountersReader,
+	config Config,
+) (*Conductor, error) {
+	if err := ValidateConfig(config); err != nil {
+		return nil, err
+	}
+	return newConductor(driverProxy, broadcastReceiver, countersReader, config), nil
+}
+
+func newConductor(
 	driverProxy *DriverProxy,
 	broadcastReceiver *broadcast.BroadcastReceiver,
 	countersReader *cnc.CountersReader,
@@ -128,6 +154,7 @@ func NewConductor(
 		subscriptions:         make(map[int64]SubscriptionHandle),
 		logBuffersRegistry:    NewLogBuffersRegistry(config.MediaDriverDir),
 		imageLifecycle:        config.ImageLifecycle,
+		resourceLifecycle:     config.ResourceLifecycle,
 		activeCorrelationID:   NullCorrelationID,
 		receivedCorrelationID: NullCorrelationID,
 	}
@@ -136,14 +163,14 @@ func NewConductor(
 		config.ClientID,
 		copyReceiver,
 		config.ErrorHandler,
-		conductor.onClientTimeout,
+		conductor.handleClientTimeout,
 		DriverEventsAdapterHandlers{
-			OnPublicationReady:  conductor.onPublicationReady,
-			OnSubscriptionReady: conductor.onSubscriptionReady,
-			OnAvailableImage:    conductor.onAvailableImage,
-			OnUnavailableImage:  conductor.onUnavailableImage,
-			OnPublicationError:  conductor.onPublicationError,
-			OnCorrelatedReady:   conductor.onCorrelatedEvent,
+			PublicationReady:  conductor.handlePublicationReady,
+			SubscriptionReady: conductor.handleSubscriptionReady,
+			AvailableImage:    conductor.handleAvailableImage,
+			UnavailableImage:  conductor.handleUnavailableImage,
+			PublicationError:  conductor.handlePublicationError,
+			CorrelatedReady:   conductor.handleCorrelatedEvent,
 		},
 		&conductor.pending,
 	)
@@ -154,14 +181,14 @@ func NewConductor(
 }
 
 func (conductor *Conductor) DoWork() int {
-	if conductor.isTerminating {
+	if conductor.terminating {
 		return 0
 	}
 	return conductor.service()
 }
 
 func (conductor *Conductor) IsTerminating() bool {
-	return conductor.isTerminating
+	return conductor.terminating
 }
 
 func (conductor *Conductor) TerminationCause() error {
@@ -176,11 +203,12 @@ func (conductor *Conductor) SeedServiceTimestamps(nowNs int64) {
 func (conductor *Conductor) service() int {
 	nowNs := conductor.config.NanoClock()
 	workCount := conductor.checkTimeouts(nowNs)
-	if conductor.isTerminating {
+	if conductor.terminating {
 		return workCount
 	}
 
 	conductor.receivedCorrelationID = NullCorrelationID
+	conductor.cachedCorrelatedPending = nil
 	workCount += conductor.eventsAdapter.Receive(
 		conductor.activeCorrelationID,
 		conductor,
@@ -189,6 +217,7 @@ func (conductor *Conductor) service() int {
 		nowNs,
 		conductor.receivedCorrelationID,
 		conductor.activeCorrelationID,
+		conductor.handlePendingExpired,
 	)
 	workCount += expireWorkCount
 	if timedOutActiveCorrelationID != NullCorrelationID {
@@ -211,7 +240,7 @@ func (conductor *Conductor) checkTimeouts(nowNs int64) int {
 
 	conductor.checkServiceInterval(nowNs)
 	conductor.timeOfLastServiceNs = nowNs
-	if conductor.isTerminating {
+	if conductor.terminating {
 		return 1
 	}
 
@@ -232,7 +261,7 @@ func (conductor *Conductor) checkLiveness(nowNs int64) int {
 	}
 
 	nowMs := conductor.config.EpochClock()
-	lastKeepaliveMs := conductor.driverProxy.TimeOfLastDriverKeepaliveMs()
+	lastKeepaliveMs := conductor.driverProxy.LastDriverKeepaliveMs()
 
 	if lastKeepaliveMs == DriverShutdownHeartbeat {
 		conductor.terminateWithError(ErrDriverShutdown)
@@ -289,53 +318,272 @@ func (conductor *Conductor) storeClientHeartbeat(nowNs, nowMs int64) int {
 	return 1
 }
 
-func (conductor *Conductor) onClientTimeout() {
-	if conductor.isTerminating {
+func (conductor *Conductor) handleClientTimeout() {
+	if conductor.terminating {
 		return
 	}
 	conductor.terminateWithError(ErrClientTimeout)
 }
 
-// Add kinds complete in onPublicationReady/onSubscriptionReady; do not set
+// Add kinds complete in handlePublicationReady/handleSubscriptionReady; do not set
 // receivedCorrelationID here or PollPending would finish before metadata is filled.
-func (conductor *Conductor) onCorrelatedEvent(correlationID int64) {
+func (conductor *Conductor) handleCorrelatedEvent(correlationID int64) {
 	registration, ok := conductor.pending.Get(correlationID)
-	if !ok || !isAddPendingKind(registration.Kind) {
+	if ok {
+		conductor.cachedCorrelatedPending = registration
+	} else {
+		conductor.cachedCorrelatedPending = nil
+	}
+	if !ok || !addPendingKind(registration.Kind) {
 		conductor.receivedCorrelationID = correlationID
 	}
 }
 
-func (conductor *Conductor) onPublicationReady(event PublicationBuffersReady) {
+func (conductor *Conductor) pendingForReady(correlationID int64) (*PendingRegistration, bool) {
+	cached := conductor.cachedCorrelatedPending
+	if cached != nil && cached.CorrelationID == correlationID {
+		conductor.cachedCorrelatedPending = nil
+		return cached, true
+	}
+	return conductor.pending.Get(correlationID)
+}
+
+func stageLastReady[T any](dst **T, event T, completed bool) {
+	if !completed {
+		return
+	}
 	eventCopy := event
-	conductor.lastPublicationReady = &eventCopy
-	conductor.completePendingIfKind(
+	*dst = &eventCopy
+}
+
+func (conductor *Conductor) addReadyRegistration(
+	correlationID int64,
+	wantKind PendingKind,
+) (*PendingRegistration, bool) {
+	registration, ok := conductor.pendingForReady(correlationID)
+	if !ok || registration.Kind != wantKind {
+		return nil, false
+	}
+	return registration, true
+}
+
+func (conductor *Conductor) handlePublicationReady(event PublicationBuffersReady) {
+	stageLastReady(
+		&conductor.lastPublicationReady,
+		event,
+		conductor.completePublicationReady(event),
+	)
+}
+
+func (conductor *Conductor) handleSubscriptionReady(event SubscriptionReady) {
+	stageLastReady(
+		&conductor.lastSubscriptionReady,
+		event,
+		conductor.completeSubscriptionReady(event),
+	)
+}
+
+func (conductor *Conductor) completePublicationReady(event PublicationBuffersReady) bool {
+	registration, ok := conductor.addReadyRegistration(
 		event.CorrelationID,
 		PendingKindAddPublication,
-		func(registration *PendingRegistration) {
-			registration.RegistrationID = event.RegistrationID
-			registration.StreamID = event.StreamID
-		},
 	)
+	if !ok {
+		return false
+	}
+	registration.RegistrationID = event.RegistrationID
+
+	var publication PublicationHandle
+	if conductor.resourceLifecycle != nil {
+		var buildErr error
+		publication, buildErr = conductor.buildAndInsertPublication(event, registration.Channel)
+		if buildErr != nil {
+			conductor.failPending(registration, buildErr)
+			return false
+		}
+	}
+
+	return conductor.completePendingSuccess(registration, func(registration *PendingRegistration) {
+		registration.RegistrationID = event.RegistrationID
+		registration.StreamID = event.StreamID
+		registration.Publication = publication
+	})
 }
 
-func (conductor *Conductor) onSubscriptionReady(event SubscriptionReady) {
-	eventCopy := event
-	conductor.lastSubscriptionReady = &eventCopy
-	conductor.completePendingIfKind(
+func (conductor *Conductor) completeSubscriptionReady(event SubscriptionReady) bool {
+	registration, ok := conductor.addReadyRegistration(
 		event.CorrelationID,
 		PendingKindAddSubscription,
-		func(registration *PendingRegistration) {
-			registration.RegistrationID = event.CorrelationID
-		},
+	)
+	if !ok {
+		return false
+	}
+
+	var subscription SubscriptionHandle
+	if conductor.resourceLifecycle != nil {
+		var buildErr error
+		subscription, buildErr = conductor.applySubscriptionReady(event, registration)
+		if buildErr != nil {
+			conductor.failPending(registration, buildErr)
+			return false
+		}
+	}
+
+	return conductor.completePendingSuccess(registration, func(registration *PendingRegistration) {
+		registration.RegistrationID = event.CorrelationID
+		registration.Subscription = subscription
+	})
+}
+
+func (conductor *Conductor) buildAndInsertPublication(
+	event PublicationBuffersReady,
+	channel string,
+) (PublicationHandle, error) {
+	var publication PublicationHandle
+	var buildErr error
+	conductor.underResourceWriteLock(func() {
+		resolvedLogFileKey, err := conductor.logBuffersRegistry.resolveLogFileKey(
+			event.LogFileName,
+		)
+		if err != nil {
+			buildErr = err
+			return
+		}
+		logBuffers, err := conductor.acquireLogBuffersByKey(resolvedLogFileKey)
+		if err != nil {
+			buildErr = err
+			return
+		}
+		publication, buildErr = conductor.resourceLifecycle.NewPublication(
+			event,
+			logBuffers,
+			conductor.countersReader,
+			channel,
+		)
+		if buildErr != nil {
+			conductor.releaseLogBuffersByKey(resolvedLogFileKey, 0)
+			return
+		}
+		conductor.insertPublication(event.RegistrationID, publication)
+	})
+	return publication, buildErr
+}
+
+func (conductor *Conductor) applySubscriptionReady(
+	event SubscriptionReady,
+	registration *PendingRegistration,
+) (SubscriptionHandle, error) {
+	var subscription SubscriptionHandle
+	var buildErr error
+	conductor.underResourceWriteLock(func() {
+		subscription = conductor.subscriptionForReady(event.CorrelationID, registration)
+		buildErr = conductor.resourceLifecycle.ApplySubscriptionReady(subscription, event)
+	})
+	return subscription, buildErr
+}
+
+func (conductor *Conductor) subscriptionForReady(
+	correlationID int64,
+	registration *PendingRegistration,
+) SubscriptionHandle {
+	if subscription, ok := conductor.subscriptionByRegID(correlationID); ok {
+		return subscription
+	}
+	return conductor.createAndInsertPreSubscription(
+		correlationID,
+		registration.StreamID,
+		registration.Channel,
 	)
 }
 
-func (conductor *Conductor) onPublicationError(event PublicationError) {
+func (conductor *Conductor) createAndInsertPreSubscription(
+	correlationID int64,
+	streamID int32,
+	channel string,
+) SubscriptionHandle {
+	subscription := conductor.resourceLifecycle.NewPreSubscription(
+		correlationID,
+		streamID,
+		channel,
+	)
+	conductor.insertSubscription(correlationID, subscription)
+	return subscription
+}
+
+// preInsertSubscription inserts subscriptions[correlationID] before AddSubscription
+// offer. RegisterPendingAdd invokes this immediately after pending registration;
+// callers must offer synchronously so image events do not arrive in the gap.
+func (conductor *Conductor) preInsertSubscription(
+	correlationID int64,
+	streamID int32,
+	channel string,
+) {
+	if conductor.resourceLifecycle == nil {
+		return
+	}
+	conductor.underResourceWriteLock(func() {
+		if _, ok := conductor.subscriptionByRegID(correlationID); ok {
+			return
+		}
+		conductor.createAndInsertPreSubscription(correlationID, streamID, channel)
+	})
+}
+
+func (conductor *Conductor) rollbackAddPendingResources(registration PendingRegistration) {
+	if conductor.resourceLifecycle == nil {
+		return
+	}
+	conductor.underResourceWriteLock(func() {
+		switch registration.Kind {
+		case PendingKindAddSubscription:
+			sub, ok := conductor.subscriptionByRegID(registration.CorrelationID)
+			if !ok {
+				return
+			}
+			registryKeys, err := conductor.resourceLifecycle.RetireSubscription(sub)
+			if err != nil {
+				invokeErrorHandler(conductor.config.ErrorHandler, err)
+			}
+			for _, registryKey := range registryKeys {
+				conductor.releaseLogBuffersByKey(registryKey, 0)
+			}
+			conductor.removeSubscription(registration.CorrelationID)
+		case PendingKindAddPublication:
+			if registration.RegistrationID == 0 {
+				return
+			}
+			pub, ok := conductor.publicationByRegID(registration.RegistrationID)
+			if !ok {
+				return
+			}
+			registryKey, err := conductor.resourceLifecycle.RetirePublication(pub)
+			if err != nil {
+				invokeErrorHandler(conductor.config.ErrorHandler, err)
+			}
+			if registryKey != "" {
+				conductor.releaseLogBuffersByKey(registryKey, 0)
+			}
+			conductor.removePublication(registration.RegistrationID)
+		}
+	})
+}
+
+func (conductor *Conductor) handlePendingExpired(registration PendingRegistration, _ bool) {
+	conductor.rollbackAddPendingResources(registration)
+}
+
+func (conductor *Conductor) failPending(registration *PendingRegistration, err error) {
+	conductor.rollbackAddPendingResources(*registration)
+	registration.Err = err
+	conductor.receivedCorrelationID = registration.CorrelationID
+}
+
+func (conductor *Conductor) handlePublicationError(event PublicationError) {
 	conductor.publicationErrors = append(conductor.publicationErrors, event)
 }
 
 func (conductor *Conductor) terminateWithError(err error) {
-	conductor.isTerminating = true
+	conductor.terminating = true
 	conductor.terminationCause = err
 	conductor.ClearPending()
 	invokeErrorHandler(conductor.config.ErrorHandler, err)

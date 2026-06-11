@@ -68,13 +68,13 @@ func TestCncWiring(t *testing.T) {
 			require.NoError(t, client.Close())
 		})
 
-		firstSessionID, err := client.GetNextAvailableSessionID(sessionIDStreamID)
+		firstSessionID, err := client.NextAvailableSessionID(sessionIDStreamID)
 		require.NoError(t, err)
-		secondSessionID, err := client.GetNextAvailableSessionID(sessionIDStreamID)
+		secondSessionID, err := client.NextAvailableSessionID(sessionIDStreamID)
 		require.NoError(t, err)
 		require.NotEqual(t, firstSessionID, secondSessionID)
 
-		// Live-driver roundtrip via Client.GetNextAvailableSessionID await path
+		// Live-driver roundtrip via Client.NextAvailableSessionID await path
 		// (offer -> conductor -> broadcast -> Client return). Broadcast wire decode and correlation
 		// matching are covered in unit tests (aeron/client_await_test.go). Failure modes
 		// (timeout, ON_ERROR, driver death) stay in unit tests by design. Aeron 1.51.0 seeds

@@ -13,6 +13,10 @@ type stubSubscriptionHandle struct{}
 func (stubSubscriptionHandle) RegistrationID() int64 { return 1 }
 func (stubSubscriptionHandle) StreamID() int32       { return 1 }
 
+type stubPublicationHandle struct{}
+
+func (stubPublicationHandle) RegistrationID() int64 { return 1 }
+
 type stubImageHandle struct{}
 
 func (stubImageHandle) CorrelationID() int64 { return 1 }
@@ -21,6 +25,7 @@ func (stubImageHandle) IsClosed() bool       { return false }
 
 var (
 	stubSubHandle = stubSubscriptionHandle{}
+	stubPubHandle = stubPublicationHandle{}
 	stubImgHandle = stubImageHandle{}
 )
 
@@ -69,11 +74,11 @@ func TestConductorImageLifecycle_noOpOnInvalidHandles(t *testing.T) {
 	require.Nil(t, ConductorImageLifecycle.RemoveImage(stubSubHandle, 1))
 	ConductorImageLifecycle.CloseImage(nil)
 	ConductorImageLifecycle.CloseImage(stubImgHandle)
-	require.Nil(t, ConductorImageLifecycle.AvailableImageCallback(stubSubHandle))
-	require.Nil(t, ConductorImageLifecycle.UnavailableImageCallback(stubSubHandle))
+	require.Nil(t, ConductorImageLifecycle.AvailableImageHandler(stubSubHandle))
+	require.Nil(t, ConductorImageLifecycle.UnavailableImageHandler(stubSubHandle))
 }
 
-func TestConductorImageLifecycle_callbackClosuresIgnoreWrongHandleType(t *testing.T) {
+func TestConductorImageLifecycle_handlerClosuresIgnoreWrongHandleType(t *testing.T) {
 	t.Parallel()
 
 	sub := NewSubscriptionForTest(
@@ -89,14 +94,14 @@ func TestConductorImageLifecycle_callbackClosuresIgnoreWrongHandleType(t *testin
 		unavailableCalls++
 	})
 
-	availableCallback := ConductorImageLifecycle.AvailableImageCallback(sub)
-	require.NotNil(t, availableCallback)
-	availableCallback(stubImgHandle)
+	availableHandler := ConductorImageLifecycle.AvailableImageHandler(sub)
+	require.NotNil(t, availableHandler)
+	availableHandler(stubImgHandle)
 	require.Zero(t, availableCalls)
 
-	unavailableCallback := ConductorImageLifecycle.UnavailableImageCallback(sub)
-	require.NotNil(t, unavailableCallback)
-	unavailableCallback(stubImgHandle)
+	unavailableHandler := ConductorImageLifecycle.UnavailableImageHandler(sub)
+	require.NotNil(t, unavailableHandler)
+	unavailableHandler(stubImgHandle)
 	require.Zero(t, unavailableCalls)
 }
 

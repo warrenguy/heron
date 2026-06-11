@@ -159,7 +159,7 @@ func requireDecodeNextAvailableSessionID(
 
 // waitForNextSessionIDEvent polls the harness broadcast receiver for
 // ON_NEXT_AVAILABLE_SESSION_ID. Retained for low-level wire diagnostics;
-// integration smoke uses Client.GetNextAvailableSessionID instead.
+// integration smoke uses Client.NextAvailableSessionID instead.
 func waitForNextSessionIDEvent(
 	t testing.TB,
 	toClients *broadcast.BroadcastReceiver,

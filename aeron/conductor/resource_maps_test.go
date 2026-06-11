@@ -59,7 +59,7 @@ func scheduleLingerForConductorLog(
 	conductorInstance.ReleaseLogBuffersForTest(logPath, lingerNs)
 }
 
-type imageCallbackLingerFixtures struct {
+type imageHandlerLingerFixtures struct {
 	conductor     *conductor.Conductor
 	nanoNs        *int64
 	lifecycle     *recordingImageLifecycle
@@ -85,11 +85,11 @@ func acquireLogOnConductorRegistry(
 	return registry, logPath
 }
 
-func setupImageCallbackLingerFixtures(
+func setupImageHandlerLingerFixtures(
 	t *testing.T,
 	startNs int64,
 	logFileName string,
-) imageCallbackLingerFixtures {
+) imageHandlerLingerFixtures {
 	t.Helper()
 
 	const lingerNs = int64(time.Second)
@@ -118,7 +118,7 @@ func setupImageCallbackLingerFixtures(
 	registerGoldenImageSubscription(conductorInstance)
 	seedGoldenAvailableLogBuffers(t, conductorInstance)
 
-	return imageCallbackLingerFixtures{
+	return imageHandlerLingerFixtures{
 		conductor:     conductorInstance,
 		nanoNs:        nanoNs,
 		lifecycle:     lifecycle,
@@ -402,22 +402,22 @@ func TestConductor_DoWork_concurrentDrainLingeringLogBuffers_race(t *testing.T) 
 	require.Less(t, *nanoNs, startNs+lingerNs)
 }
 
-type concurrentImageCallbackLookupCase struct {
+type concurrentImageHandlerLookupCase struct {
 	available bool
 	setup     func(*conductor.Conductor, *recordingImageLifecycle)
 	trigger   func(*testing.T, *conductor.Conductor)
 	setBlock  func(*recordingImageLifecycle, chan struct{}, chan struct{})
 }
 
-func runConcurrentLookupDuringImageCallbackTest(
+func runConcurrentLookupDuringImageHandlerTest(
 	t *testing.T,
-	testCase concurrentImageCallbackLookupCase,
+	testCase concurrentImageHandlerLookupCase,
 	lookup func(*conductor.Conductor) error,
 ) {
 	t.Helper()
 
-	callbackEntered := make(chan struct{})
-	releaseCallback := make(chan struct{})
+	handlerEntered := make(chan struct{})
+	releaseHandler := make(chan struct{})
 	lookupDone := make(chan error, 1)
 
 	lifecycle := &recordingImageLifecycle{addImageOK: true}
@@ -426,10 +426,10 @@ func runConcurrentLookupDuringImageCallbackTest(
 	}
 	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, func(error) {})
 	testCase.setup(conductorInstance, lifecycle)
-	testCase.setBlock(lifecycle, callbackEntered, releaseCallback)
+	testCase.setBlock(lifecycle, handlerEntered, releaseHandler)
 
 	go func() {
-		<-callbackEntered
+		<-handlerEntered
 		lookupDone <- lookup(conductorInstance)
 	}()
 
@@ -440,29 +440,29 @@ func runConcurrentLookupDuringImageCallbackTest(
 		doWorkDone <- conductorInstance.DoWork()
 	}()
 
-	<-callbackEntered
+	<-handlerEntered
 	select {
 	case err := <-lookupDone:
 		require.NoError(t, err)
 	case <-time.After(time.Second):
-		t.Fatal("lookup did not complete during suspended callback")
+		t.Fatal("lookup did not complete during suspended handler")
 	}
 
 	select {
 	case workCount := <-doWorkDone:
-		t.Fatalf("DoWork finished before callback released: workCount=%d", workCount)
+		t.Fatalf("DoWork finished before handler released: workCount=%d", workCount)
 	default:
 	}
-	close(releaseCallback)
+	close(releaseHandler)
 	require.Equal(t, 1, <-doWorkDone)
 }
 
-func TestConductor_PublicationByRegID_concurrentDuringImageCallback(t *testing.T) {
+func TestConductor_PublicationByRegID_concurrentDuringImageHandler(t *testing.T) {
 	t.Parallel()
 
-	runConcurrentLookupDuringImageCallbackTest(
+	runConcurrentLookupDuringImageHandlerTest(
 		t,
-		concurrentImageCallbackLookupCase{
+		concurrentImageHandlerLookupCase{
 			available: true,
 			setup: func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
 				conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
@@ -480,12 +480,12 @@ func TestConductor_PublicationByRegID_concurrentDuringImageCallback(t *testing.T
 			},
 			setBlock: func(
 				lifecycle *recordingImageLifecycle,
-				callbackEntered chan struct{},
-				releaseCallback chan struct{},
+				handlerEntered chan struct{},
+				releaseHandler chan struct{},
 			) {
-				lifecycle.availableCallback = func(conductor.ImageHandle) {
-					close(callbackEntered)
-					<-releaseCallback
+				lifecycle.availableImageHandler = func(conductor.ImageHandle) {
+					close(handlerEntered)
+					<-releaseHandler
 				}
 			},
 		},
@@ -493,12 +493,12 @@ func TestConductor_PublicationByRegID_concurrentDuringImageCallback(t *testing.T
 	)
 }
 
-func TestConductor_PublicationByRegID_concurrentDuringUnavailableImageCallback(t *testing.T) {
+func TestConductor_PublicationByRegID_concurrentDuringUnavailableImageHandler(t *testing.T) {
 	t.Parallel()
 
-	runConcurrentLookupDuringImageCallbackTest(
+	runConcurrentLookupDuringImageHandlerTest(
 		t,
-		concurrentImageCallbackLookupCase{
+		concurrentImageHandlerLookupCase{
 			available: false,
 			setup: func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
 				conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
@@ -510,12 +510,12 @@ func TestConductor_PublicationByRegID_concurrentDuringUnavailableImageCallback(t
 			},
 			setBlock: func(
 				lifecycle *recordingImageLifecycle,
-				callbackEntered chan struct{},
-				releaseCallback chan struct{},
+				handlerEntered chan struct{},
+				releaseHandler chan struct{},
 			) {
-				lifecycle.unavailableCallback = func(conductor.ImageHandle) {
-					close(callbackEntered)
-					<-releaseCallback
+				lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
+					close(handlerEntered)
+					<-releaseHandler
 				}
 			},
 		},
@@ -523,12 +523,12 @@ func TestConductor_PublicationByRegID_concurrentDuringUnavailableImageCallback(t
 	)
 }
 
-func TestConductor_SubscriptionByRegID_concurrentDuringImageCallback(t *testing.T) {
+func TestConductor_SubscriptionByRegID_concurrentDuringImageHandler(t *testing.T) {
 	t.Parallel()
 
-	runConcurrentLookupDuringImageCallbackTest(
+	runConcurrentLookupDuringImageHandlerTest(
 		t,
-		concurrentImageCallbackLookupCase{
+		concurrentImageHandlerLookupCase{
 			available: true,
 			setup: func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
 				registerGoldenImageSubscription(conductorInstance)
@@ -545,12 +545,12 @@ func TestConductor_SubscriptionByRegID_concurrentDuringImageCallback(t *testing.
 			},
 			setBlock: func(
 				lifecycle *recordingImageLifecycle,
-				callbackEntered chan struct{},
-				releaseCallback chan struct{},
+				handlerEntered chan struct{},
+				releaseHandler chan struct{},
 			) {
-				lifecycle.availableCallback = func(conductor.ImageHandle) {
-					close(callbackEntered)
-					<-releaseCallback
+				lifecycle.availableImageHandler = func(conductor.ImageHandle) {
+					close(handlerEntered)
+					<-releaseHandler
 				}
 			},
 		},
@@ -558,12 +558,12 @@ func TestConductor_SubscriptionByRegID_concurrentDuringImageCallback(t *testing.
 	)
 }
 
-func TestConductor_SubscriptionByRegID_concurrentDuringUnavailableImageCallback(t *testing.T) {
+func TestConductor_SubscriptionByRegID_concurrentDuringUnavailableImageHandler(t *testing.T) {
 	t.Parallel()
 
-	runConcurrentLookupDuringImageCallbackTest(
+	runConcurrentLookupDuringImageHandlerTest(
 		t,
-		concurrentImageCallbackLookupCase{
+		concurrentImageHandlerLookupCase{
 			available: false,
 			setup: func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
 				registerGoldenImageSubscription(conductorInstance)
@@ -574,12 +574,12 @@ func TestConductor_SubscriptionByRegID_concurrentDuringUnavailableImageCallback(
 			},
 			setBlock: func(
 				lifecycle *recordingImageLifecycle,
-				callbackEntered chan struct{},
-				releaseCallback chan struct{},
+				handlerEntered chan struct{},
+				releaseHandler chan struct{},
 			) {
-				lifecycle.unavailableCallback = func(conductor.ImageHandle) {
-					close(callbackEntered)
-					<-releaseCallback
+				lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
+					close(handlerEntered)
+					<-releaseHandler
 				}
 			},
 		},
@@ -587,11 +587,11 @@ func TestConductor_SubscriptionByRegID_concurrentDuringUnavailableImageCallback(
 	)
 }
 
-func runForeignWriteLockDuringSuspendedImageCallbackTest(t *testing.T, available bool) {
+func runForeignWriteLockDuringSuspendedImageHandlerTest(t *testing.T, available bool) {
 	t.Helper()
 
-	callbackEntered := make(chan struct{})
-	releaseCallback := make(chan struct{})
+	handlerEntered := make(chan struct{})
+	releaseHandler := make(chan struct{})
 	insertDone := make(chan error, 1)
 
 	lifecycle := &recordingImageLifecycle{addImageOK: true}
@@ -604,12 +604,12 @@ func runForeignWriteLockDuringSuspendedImageCallbackTest(t *testing.T, available
 		seedGoldenAvailableLogBuffers(t, conductorInstance)
 	}
 
-	blockCallback := func(conductor.ImageHandle) {
-		close(callbackEntered)
-		<-releaseCallback
+	blockHandler := func(conductor.ImageHandle) {
+		close(handlerEntered)
+		<-releaseHandler
 	}
 	if available {
-		lifecycle.availableCallback = blockCallback
+		lifecycle.availableImageHandler = blockHandler
 		transmitConductorEvent(
 			t,
 			conductorInstance.EventsAdapterForTest(),
@@ -617,12 +617,12 @@ func runForeignWriteLockDuringSuspendedImageCallbackTest(t *testing.T, available
 			conductor.AvailableImageBytes(goldenAvailableImageEvent),
 		)
 	} else {
-		lifecycle.unavailableCallback = blockCallback
+		lifecycle.unavailableImageHandler = blockHandler
 		triggerGoldenUnavailableImage(t, conductorInstance)
 	}
 
 	go func() {
-		<-callbackEntered
+		<-handlerEntered
 		insertDone <- insertAndLookupPublication(77)(conductorInstance)
 	}()
 
@@ -631,20 +631,20 @@ func runForeignWriteLockDuringSuspendedImageCallbackTest(t *testing.T, available
 		doWorkDone <- conductorInstance.DoWork()
 	}()
 
-	<-callbackEntered
+	<-handlerEntered
 	select {
 	case err := <-insertDone:
 		require.NoError(t, err)
 	case <-time.After(time.Second):
-		t.Fatal("foreign write lock did not complete during suspended callback")
+		t.Fatal("foreign write lock did not complete during suspended handler")
 	}
 
 	select {
 	case workCount := <-doWorkDone:
-		t.Fatalf("DoWork finished before callback released: workCount=%d", workCount)
+		t.Fatalf("DoWork finished before handler released: workCount=%d", workCount)
 	default:
 	}
-	close(releaseCallback)
+	close(releaseHandler)
 	require.GreaterOrEqual(t, <-doWorkDone, 1)
 
 	got, ok := conductorInstance.PublicationByRegID(77)
@@ -652,22 +652,22 @@ func runForeignWriteLockDuringSuspendedImageCallbackTest(t *testing.T, available
 	require.Equal(t, int64(77), got.RegistrationID())
 }
 
-func TestConductor_foreignWriteLockDuringSuspendedImageCallback(t *testing.T) {
+func TestConductor_foreignWriteLockDuringSuspendedImageHandler(t *testing.T) {
 	t.Parallel()
-	runForeignWriteLockDuringSuspendedImageCallbackTest(t, true)
+	runForeignWriteLockDuringSuspendedImageHandlerTest(t, true)
 }
 
-func TestConductor_foreignWriteLockDuringSuspendedUnavailableImageCallback(t *testing.T) {
+func TestConductor_foreignWriteLockDuringSuspendedUnavailableImageHandler(t *testing.T) {
 	t.Parallel()
-	runForeignWriteLockDuringSuspendedImageCallbackTest(t, false)
+	runForeignWriteLockDuringSuspendedImageHandlerTest(t, false)
 }
 
-func TestConductor_foreignDrainLingeringDuringSuspendedImageCallback(t *testing.T) {
+func TestConductor_foreignDrainLingeringDuringSuspendedImageHandler(t *testing.T) {
 	t.Parallel()
 
 	const startNs int64 = 14_000_000_000
 
-	fixtures := setupImageCallbackLingerFixtures(t, startNs, "foreign-drain-callback.log")
+	fixtures := setupImageHandlerLingerFixtures(t, startNs, "foreign-drain-handler.log")
 	conductorInstance := fixtures.conductor
 	nanoNs := fixtures.nanoNs
 	lifecycle := fixtures.lifecycle
@@ -675,20 +675,20 @@ func TestConductor_foreignDrainLingeringDuringSuspendedImageCallback(t *testing.
 	lingerLogPath := fixtures.lingerLogPath
 	lingerNs := fixtures.lingerNs
 
-	callbackEntered := make(chan struct{})
-	releaseCallback := make(chan struct{})
+	handlerEntered := make(chan struct{})
+	releaseHandler := make(chan struct{})
 	drainDone := make(chan int, 1)
 
-	lifecycle.unavailableCallback = func(conductor.ImageHandle) {
-		close(callbackEntered)
-		<-releaseCallback
+	lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
+		close(handlerEntered)
+		<-releaseHandler
 	}
 
 	*nanoNs = startNs + lingerNs - 1
 	triggerGoldenUnavailableImage(t, conductorInstance)
 
 	go func() {
-		<-callbackEntered
+		<-handlerEntered
 		drainDone <- conductorInstance.DrainLingeringLogBuffers()
 	}()
 
@@ -697,25 +697,25 @@ func TestConductor_foreignDrainLingeringDuringSuspendedImageCallback(t *testing.
 		doWorkDone <- conductorInstance.DoWork()
 	}()
 
-	<-callbackEntered
+	<-handlerEntered
 	select {
 	case drainWork := <-drainDone:
 		require.Zero(t, drainWork)
 	case <-time.After(time.Second):
-		t.Fatal("foreign DrainLingeringLogBuffers did not complete during suspended callback")
+		t.Fatal("foreign DrainLingeringLogBuffers did not complete during suspended handler")
 	}
 	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, lingerLogPath))
 
 	select {
 	case workCount := <-doWorkDone:
-		t.Fatalf("DoWork finished before callback released: workCount=%d", workCount)
+		t.Fatalf("DoWork finished before handler released: workCount=%d", workCount)
 	default:
 	}
-	close(releaseCallback)
+	close(releaseHandler)
 	require.GreaterOrEqual(t, <-doWorkDone, 1)
 }
 
-func runImageCallbackActionTest(
+func runImageHandlerActionTest(
 	t *testing.T,
 	available bool,
 	setup func(*conductor.Conductor, *recordingImageLifecycle),
@@ -724,7 +724,7 @@ func runImageCallbackActionTest(
 ) *conductor.Conductor {
 	t.Helper()
 
-	callbackDone := make(chan error, 1)
+	handlerDone := make(chan error, 1)
 	lifecycle := &recordingImageLifecycle{addImageOK: true}
 	if !available {
 		lifecycle = &recordingImageLifecycle{}
@@ -733,12 +733,12 @@ func runImageCallbackActionTest(
 	setup(conductorInstance, lifecycle)
 
 	if available {
-		lifecycle.availableCallback = func(conductor.ImageHandle) {
-			callbackDone <- action(conductorInstance)
+		lifecycle.availableImageHandler = func(conductor.ImageHandle) {
+			handlerDone <- action(conductorInstance)
 		}
 	} else {
-		lifecycle.unavailableCallback = func(conductor.ImageHandle) {
-			callbackDone <- action(conductorInstance)
+		lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
+			handlerDone <- action(conductorInstance)
 		}
 	}
 
@@ -746,10 +746,10 @@ func runImageCallbackActionTest(
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 	select {
-	case err := <-callbackDone:
+	case err := <-handlerDone:
 		require.NoError(t, err)
 	case <-time.After(time.Second):
-		t.Fatal("image callback action did not complete")
+		t.Fatal("image handler action did not complete")
 	}
 	return conductorInstance
 }
@@ -808,7 +808,7 @@ func lookupGoldenSubscription(available bool) func(*conductor.Conductor) error {
 	}
 }
 
-func runReentrantDoWorkFromImageCallbackTest(
+func runReentrantDoWorkFromImageHandlerTest(
 	t *testing.T,
 	available bool,
 	enqueueFollowUpEvent func(*testing.T, *conductor.Conductor),
@@ -816,7 +816,7 @@ func runReentrantDoWorkFromImageCallbackTest(
 	t.Helper()
 
 	var nestedDoWorkCalls int
-	callbackDone := make(chan error, 1)
+	handlerDone := make(chan error, 1)
 	lifecycle := &recordingImageLifecycle{addImageOK: true}
 	if !available {
 		lifecycle = &recordingImageLifecycle{}
@@ -827,19 +827,19 @@ func runReentrantDoWorkFromImageCallbackTest(
 		seedGoldenAvailableLogBuffers(t, conductorInstance)
 	}
 
-	callbackAction := func(conductor.ImageHandle) {
+	handlerAction := func(conductor.ImageHandle) {
 		nestedDoWorkCalls++
 		if enqueueFollowUpEvent != nil {
 			enqueueFollowUpEvent(t, conductorInstance)
 		}
 		if conductorInstance.DoWork() < 1 {
-			callbackDone <- fmt.Errorf("nested DoWork processed no work")
+			handlerDone <- fmt.Errorf("nested DoWork processed no work")
 			return
 		}
-		callbackDone <- nil
+		handlerDone <- nil
 	}
 	if available {
-		lifecycle.availableCallback = callbackAction
+		lifecycle.availableImageHandler = handlerAction
 		transmitConductorEvent(
 			t,
 			conductorInstance.EventsAdapterForTest(),
@@ -847,24 +847,24 @@ func runReentrantDoWorkFromImageCallbackTest(
 			conductor.AvailableImageBytes(goldenAvailableImageEvent),
 		)
 	} else {
-		lifecycle.unavailableCallback = callbackAction
+		lifecycle.unavailableImageHandler = handlerAction
 		triggerGoldenUnavailableImage(t, conductorInstance)
 	}
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 	select {
-	case err := <-callbackDone:
+	case err := <-handlerDone:
 		require.NoError(t, err)
 	case <-time.After(time.Second):
-		t.Fatal("reentrant DoWork from image callback did not complete")
+		t.Fatal("reentrant DoWork from image handler did not complete")
 	}
 	require.Equal(t, 1, nestedDoWorkCalls)
 }
 
-func TestConductor_imageCallback_acquiresWriteLockForMapMutation(t *testing.T) {
+func TestConductor_imageHandler_acquiresWriteLockForMapMutation(t *testing.T) {
 	t.Parallel()
 
-	conductorInstance := runImageCallbackActionTest(
+	conductorInstance := runImageHandlerActionTest(
 		t,
 		true,
 		func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
@@ -901,22 +901,22 @@ func enqueueGoldenAvailableImage(
 	)
 }
 
-func TestConductor_imageCallback_reentrantDoWork_fromAvailableCallback(t *testing.T) {
+func TestConductor_imageHandler_reentrantDoWork_fromAvailableImageHandler(t *testing.T) {
 	t.Parallel()
 
-	runReentrantDoWorkFromImageCallbackTest(t, true, enqueueGoldenAvailableImage)
+	runReentrantDoWorkFromImageHandlerTest(t, true, enqueueGoldenAvailableImage)
 }
 
-func TestConductor_imageCallback_reentrantDoWork_fromUnavailableCallback(t *testing.T) {
+func TestConductor_imageHandler_reentrantDoWork_fromUnavailableImageHandler(t *testing.T) {
 	t.Parallel()
 
-	runReentrantDoWorkFromImageCallbackTest(t, false, triggerGoldenUnavailableImage)
+	runReentrantDoWorkFromImageHandlerTest(t, false, triggerGoldenUnavailableImage)
 }
 
-func TestConductor_imageCallback_mapMutation_fromUnavailableCallback(t *testing.T) {
+func TestConductor_imageHandler_mapMutation_fromUnavailableImageHandler(t *testing.T) {
 	t.Parallel()
 
-	conductorInstance := runImageCallbackActionTest(
+	conductorInstance := runImageHandlerActionTest(
 		t,
 		false,
 		func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
@@ -931,10 +931,10 @@ func TestConductor_imageCallback_mapMutation_fromUnavailableCallback(t *testing.
 	require.Equal(t, int64(88), got.RegistrationID())
 }
 
-func TestConductor_PublicationByRegID_fromImageCallback(t *testing.T) {
+func TestConductor_PublicationByRegID_fromImageHandler(t *testing.T) {
 	t.Parallel()
 
-	runImageCallbackActionTest(
+	runImageHandlerActionTest(
 		t,
 		true,
 		func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
@@ -955,10 +955,10 @@ func TestConductor_PublicationByRegID_fromImageCallback(t *testing.T) {
 	)
 }
 
-func TestConductor_PublicationByRegID_fromUnavailableImageCallback(t *testing.T) {
+func TestConductor_PublicationByRegID_fromUnavailableImageHandler(t *testing.T) {
 	t.Parallel()
 
-	runImageCallbackActionTest(
+	runImageHandlerActionTest(
 		t,
 		false,
 		func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
@@ -970,10 +970,10 @@ func TestConductor_PublicationByRegID_fromUnavailableImageCallback(t *testing.T)
 	)
 }
 
-func TestConductor_SubscriptionByRegID_fromImageCallback(t *testing.T) {
+func TestConductor_SubscriptionByRegID_fromImageHandler(t *testing.T) {
 	t.Parallel()
 
-	runImageCallbackActionTest(
+	runImageHandlerActionTest(
 		t,
 		true,
 		func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
@@ -993,10 +993,10 @@ func TestConductor_SubscriptionByRegID_fromImageCallback(t *testing.T) {
 	)
 }
 
-func TestConductor_SubscriptionByRegID_fromUnavailableImageCallback(t *testing.T) {
+func TestConductor_SubscriptionByRegID_fromUnavailableImageHandler(t *testing.T) {
 	t.Parallel()
 
-	runImageCallbackActionTest(
+	runImageHandlerActionTest(
 		t,
 		false,
 		func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
@@ -1356,7 +1356,7 @@ func TestConductor_nestedDoWork_lingerRetainedBeforeDeadlineSweptAfter(t *testin
 
 	const startNs int64 = 11_000_000_000
 
-	fixtures := setupImageCallbackLingerFixtures(t, startNs, "nested-linger.log")
+	fixtures := setupImageHandlerLingerFixtures(t, startNs, "nested-linger.log")
 	conductorInstance := fixtures.conductor
 	nanoNs := fixtures.nanoNs
 	lifecycle := fixtures.lifecycle
@@ -1368,7 +1368,7 @@ func TestConductor_nestedDoWork_lingerRetainedBeforeDeadlineSweptAfter(t *testin
 
 	*nanoNs = startNs + lingerNs - 1
 	var nestedDoWorkCalls int
-	lifecycle.unavailableCallback = func(conductor.ImageHandle) {
+	lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
 		nestedDoWorkCalls++
 		conductorInstance.DoWork()
 	}
@@ -1382,7 +1382,7 @@ func TestConductor_nestedDoWork_lingerRetainedBeforeDeadlineSweptAfter(t *testin
 	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, lingerLogPath))
 }
 
-func TestConductor_DrainLingeringLogBuffers_fromImageCallback(t *testing.T) {
+func TestConductor_DrainLingeringLogBuffers_fromImageHandler(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1412,10 +1412,10 @@ func TestConductor_DrainLingeringLogBuffers_fromImageCallback(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			fixtures := setupImageCallbackLingerFixtures(
+			fixtures := setupImageHandlerLingerFixtures(
 				t,
 				testCase.startNs,
-				"drain-callback-"+testCase.name+".log",
+				"drain-handler-"+testCase.name+".log",
 			)
 			conductorInstance := fixtures.conductor
 			nanoNs := fixtures.nanoNs
@@ -1431,7 +1431,7 @@ func TestConductor_DrainLingeringLogBuffers_fromImageCallback(t *testing.T) {
 			}
 
 			var drainWork int
-			lifecycle.unavailableCallback = func(conductor.ImageHandle) {
+			lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
 				drainWork = conductorInstance.DrainLingeringLogBuffers()
 			}
 			triggerGoldenUnavailableImage(t, conductorInstance)
@@ -1477,7 +1477,7 @@ func TestConductor_DoWork_sweepAdvancesNanoClockMidService(t *testing.T) {
 	conductorInstance.ReleaseLogBuffersForTest(logPath, lingerNs)
 
 	*nanoNs = startNs + lingerNs - 1
-	lifecycle.unavailableCallback = func(conductor.ImageHandle) {
+	lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
 		*nanoNs = startNs + lingerNs
 	}
 	registerGoldenImageSubscription(conductorInstance)

@@ -382,7 +382,7 @@ func TestImage_Poll_advancesSubscriberCounter(t *testing.T) {
 	fragments := image.Poll(capture.handler, 1)
 
 	require.Equal(t, 1, fragments)
-	gotCounter, err := counters.GetCounterValue(aeron.TestSubscriberPositionCounterID)
+	gotCounter, err := counters.CounterValue(aeron.TestSubscriberPositionCounterID)
 	require.NoError(t, err)
 	require.Equal(t, joinPosition+advance, gotCounter)
 	require.Equal(t, joinPosition+advance, image.Position())
