@@ -1,17 +1,31 @@
 package conductor
 
 import (
+	"time"
+
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
-type logBufferEntry struct {
-	buffers  *logbuffer.LogBuffers
-	refCount int32
+func timeNowNs() int64 {
+	return time.Now().UnixNano()
 }
 
-// LogBuffersRegistry refcount-maps log files so IPC publications and images
-// can share one mmap when MediaDriverDir is configured. Not thread-safe; the
-// client must not call DoWork concurrently with resource mutation.
+func normalizeLingerNs(lingerNs int64) int64 {
+	if lingerNs < 0 {
+		return 0
+	}
+	return lingerNs
+}
+
+type logBufferEntry struct {
+	buffers          *logbuffer.LogBuffers
+	refCount         int32
+	lingerDeadlineNs int64
+}
+
+// LogBuffersRegistry is the sole conductor log-buffer map: dedup mmap by absolute
+// path, refCount, and lingerDeadlineNs. Not thread-safe; mutation must run under
+// Conductor.resourceMu write lock during DoWork or close drain.
 type LogBuffersRegistry struct {
 	entries                map[string]*logBufferEntry
 	mediaDriverDir         string
@@ -57,6 +71,7 @@ func (registry *LogBuffersRegistry) acquireByKey(key string) (*logbuffer.LogBuff
 	entry := registry.entries[key]
 	if entry != nil {
 		entry.refCount++
+		entry.lingerDeadlineNs = 0
 		return entry.buffers, nil
 	}
 
@@ -79,58 +94,110 @@ func (registry *LogBuffersRegistry) acquireByKey(key string) (*logbuffer.LogBuff
 }
 
 // Release decrements the refcount for logFileName. When the count reaches zero
-// the mapped log is closed immediately when lingerNs is zero. Releasing an
-// unknown or unresolvable path is an intentional no-op.
+// the mapped log is closed immediately when lingerNs is zero. A positive lingerNs
+// schedules unmap after the deadline via SweepLingering. Releasing an unknown or
+// unresolvable path is an intentional no-op.
 func (registry *LogBuffersRegistry) Release(logFileName string, lingerNs int64) {
+	nowNs := int64(0)
+	if lingerNs > 0 {
+		nowNs = timeNowNs()
+	}
+	registry.releaseAt(logFileName, nowNs, lingerNs)
+}
+
+func (registry *LogBuffersRegistry) releaseAt(
+	logFileName string,
+	nowNs int64,
+	lingerNs int64,
+) {
 	if registry == nil || logFileName == "" {
 		return
 	}
-	if lingerNs != 0 {
-		panic("conductor: log buffer linger is not implemented")
-	}
 
+	// Unknown or unresolvable path is an intentional no-op.
 	key, err := registry.resolveLogFileKey(logFileName)
 	if err != nil {
 		return
 	}
-	if registry.entries[key] == nil {
-		return
-	}
-	registry.releaseResolvedKey(key, lingerNs)
+	registry.releaseResolvedKeyAt(key, nowNs, lingerNs)
 }
 
-// releaseResolvedKey decrements refcount for an acquire-time resolved map key.
-// Unknown keys are a no-op. Lifecycle paths use this instead of Release to avoid
-// re-resolving a stored key that may fail EvalSymlinks after acquire.
+// releaseResolvedKey: lifecycle must use the acquire-time resolved key, not
+// Release, because re-resolve can fail after acquire (e.g. EvalSymlinks).
 func (registry *LogBuffersRegistry) releaseResolvedKey(key string, lingerNs int64) {
+	nowNs := int64(0)
+	if lingerNs > 0 {
+		nowNs = timeNowNs()
+	}
+	registry.releaseResolvedKeyAt(key, nowNs, lingerNs)
+}
+
+func (registry *LogBuffersRegistry) releaseResolvedKeyAt(
+	key string,
+	nowNs int64,
+	lingerNs int64,
+) {
 	if registry == nil || key == "" {
 		return
 	}
-	if lingerNs != 0 {
-		panic("conductor: log buffer linger is not implemented")
-	}
-	if registry.entries[key] == nil {
+
+	entry := registry.entries[key]
+	if entry == nil {
 		return
 	}
-	registry.releaseByKey(key, lingerNs)
-}
 
-func (registry *LogBuffersRegistry) releaseByKey(key string, lingerNs int64) {
-	_ = lingerNs
-	entry := registry.entries[key]
+	lingerNs = normalizeLingerNs(lingerNs)
+	// refCount <= 0 panic is intentional fail-fast during linger, not idempotent.
 	if entry.refCount <= 0 {
 		panic("conductor: log buffer release underflow")
 	}
 
 	entry.refCount--
+	// lingerNs applies only when refCount hits zero; intermediate releases ignore it.
 	if entry.refCount > 0 {
 		return
 	}
 
+	if lingerNs == 0 {
+		registry.deleteEntry(key, entry)
+		return
+	}
+
+	entry.lingerDeadlineNs = nowNs + lingerNs
+}
+
+func (registry *LogBuffersRegistry) deleteEntry(key string, entry *logBufferEntry) {
 	delete(registry.entries, key)
 	if mapped := entry.buffers.MappedLogBuffer(); mapped != nil {
 		_ = mapped.Close()
 	}
+}
+
+// SweepLingering closes and removes entries whose linger deadline has passed.
+func (registry *LogBuffersRegistry) SweepLingering(nowNs int64) int {
+	if registry == nil {
+		return 0
+	}
+
+	workCount := 0
+	for key, entry := range registry.entries {
+		if entry.refCount != 0 ||
+			entry.lingerDeadlineNs == 0 ||
+			nowNs < entry.lingerDeadlineNs {
+			continue
+		}
+		registry.deleteEntry(key, entry)
+		workCount++
+	}
+	return workCount
+}
+
+func (registry *LogBuffersRegistry) lingerDeadlineNs(logFileName string) int64 {
+	_, entry, ok := registry.lookupLogFile(logFileName)
+	if !ok || entry == nil {
+		return 0
+	}
+	return entry.lingerDeadlineNs
 }
 
 func (registry *LogBuffersRegistry) lookupLogFile(

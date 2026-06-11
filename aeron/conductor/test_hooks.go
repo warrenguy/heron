@@ -2,14 +2,50 @@
 
 package conductor
 
-import "github.com/warrenguy/heron/aeron/cnc"
+import (
+	"fmt"
 
+	"github.com/warrenguy/heron/aeron/cnc"
+)
+
+func assertInvokeImageCallbackUnderWriteLock(savedDepth int32) {
+	if savedDepth <= 0 {
+		panic(fmt.Sprintf(
+			"conductor: invokeImageCallback called without resource write lock (depth=%d)",
+			savedDepth,
+		))
+	}
+}
+
+// RegisterSubscriptionForTest is for cross-package tests behind the testhooks tag.
 func RegisterSubscriptionForTest(
 	conductor *Conductor,
 	registrationID int64,
 	sub SubscriptionHandle,
 ) {
 	registerSubscriptionHook(conductor, registrationID, sub)
+}
+
+// RegisterPublicationForTest is for cross-package tests behind the testhooks tag.
+// conductor_test uses InsertPublicationForTest in export_test.go instead.
+func RegisterPublicationForTest(
+	conductor *Conductor,
+	registrationID int64,
+	publication PublicationHandle,
+) {
+	registerPublicationHook(conductor, registrationID, publication)
+}
+
+// RemovePublicationForTest is for cross-package tests behind the testhooks tag.
+// conductor_test uses (*Conductor).RemovePublicationForTest in export_test.go instead.
+func RemovePublicationForTest(conductor *Conductor, registrationID int64) {
+	removePublicationHook(conductor, registrationID)
+}
+
+// RemoveSubscriptionForTest is for cross-package tests behind the testhooks tag.
+// conductor_test uses (*Conductor).RemoveSubscriptionForTest in export_test.go instead.
+func RemoveSubscriptionForTest(conductor *Conductor, registrationID int64) {
+	removeSubscriptionHook(conductor, registrationID)
 }
 
 func LogBuffersRegistryForTest(conductor *Conductor) *LogBuffersRegistry {

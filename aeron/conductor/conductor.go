@@ -3,6 +3,7 @@ package conductor
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/warrenguy/heron/aeron/broadcast"
@@ -87,14 +88,20 @@ type Conductor struct {
 	lastPublicationReady  *PublicationBuffersReady
 	lastSubscriptionReady *SubscriptionReady
 	publicationErrors     []PublicationError
-	// Image lifecycle state. subscriptions is populated by the Aeron client after
-	// subscription ready (not wired yet); tests use RegisterSubscriptionForTest.
-	subscriptions      map[int64]SubscriptionHandle
+	// Resource maps; populated by the Aeron client after ready events (not wired
+	// yet). Tests use RegisterPublicationForTest / RegisterSubscriptionForTest.
+	publications  map[int64]PublicationHandle
+	subscriptions map[int64]SubscriptionHandle
+	// logBuffersRegistry is the sole log-buffer map: dedup mmap, refCount, linger.
 	logBuffersRegistry *LogBuffersRegistry
-	imageLifecycle     ImageLifecycle
-	isInCallback       bool
-	terminationCause   error
-	isTerminating      bool
+	resourceMu         sync.RWMutex
+	// resourceWriteLockDepth is agent-only; counts outer DoWork write-lock scopes.
+	resourceWriteLockDepth int32
+	imageLifecycle         ImageLifecycle
+	// isInCallback is agent-only; suppresses nested image handler delivery.
+	isInCallback     bool
+	terminationCause error
+	isTerminating    bool
 }
 
 func NewConductor(
@@ -113,6 +120,7 @@ func NewConductor(
 		keepAliveIntervalNs:   config.KeepAliveInterval.Nanoseconds(),
 		heartbeatCounterID:    cnc.NullCounterID,
 		pending:               newPendingRegistry(),
+		publications:          make(map[int64]PublicationHandle),
 		subscriptions:         make(map[int64]SubscriptionHandle),
 		logBuffersRegistry:    NewLogBuffersRegistry(config.MediaDriverDir),
 		imageLifecycle:        config.ImageLifecycle,
@@ -145,7 +153,15 @@ func (conductor *Conductor) DoWork() int {
 	if conductor.isTerminating {
 		return 0
 	}
-	return conductor.service()
+	return conductor.runUnderResourceWriteLock(conductor.service)
+}
+
+// runUnderResourceWriteLock runs work under resourceMu write lock. Image callbacks
+// suspend the lock so nested DoWork can acquire a fresh write lock safely.
+func (conductor *Conductor) runUnderResourceWriteLock(work func() int) int {
+	var workCount int
+	conductor.underResourceWriteLock(func() { workCount = work() })
+	return workCount
 }
 
 func (conductor *Conductor) IsTerminating() bool {
@@ -182,6 +198,8 @@ func (conductor *Conductor) service() int {
 	if timedOutActiveCorrelationID != NullCorrelationID {
 		conductor.receivedCorrelationID = timedOutActiveCorrelationID
 	}
+	// Re-sample NanoClock so linger sweep sees time advanced during this tick.
+	workCount += conductor.sweepLingeringLogBuffers(conductor.config.NanoClock())
 	return workCount
 }
 

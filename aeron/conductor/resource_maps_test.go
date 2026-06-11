@@ -1,0 +1,1298 @@
+package conductor_test
+
+import (
+	"fmt"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/warrenguy/heron/aeron/conductor"
+)
+
+const resourceMapTestEpochMs int64 = 1_700_000_000_000
+
+type stubPublication struct {
+	registrationID int64
+}
+
+func (publication stubPublication) RegistrationID() int64 {
+	return publication.registrationID
+}
+
+type stubPublicationPtr struct {
+	registrationID int64
+}
+
+func (publication *stubPublicationPtr) RegistrationID() int64 {
+	return publication.registrationID
+}
+
+func newBareConductorForResourceMapTest(tb testing.TB) *conductor.Conductor {
+	tb.Helper()
+	return newConductorForTest(tb, conductorTestConfig(tb, func(error) {}, fixedClocks{}))
+}
+
+func newConductorWithZeroNanoClockAndMediaDir(
+	tb testing.TB,
+	mediaDriverDir string,
+) *conductor.Conductor {
+	tb.Helper()
+
+	config := conductorTestConfig(tb, func(error) {}, fixedClocks{epochMs: resourceMapTestEpochMs})
+	config.MediaDriverDir = mediaDriverDir
+	return newConductorForTest(tb, config)
+}
+
+func scheduleLingerForConductorLog(
+	t *testing.T,
+	conductorInstance *conductor.Conductor,
+	logPath string,
+	lingerNs int64,
+) {
+	t.Helper()
+
+	_, err := conductorInstance.AcquireLogBuffersForTest(logPath)
+	require.NoError(t, err)
+	conductorInstance.ReleaseLogBuffersForTest(logPath, lingerNs)
+}
+
+type imageCallbackLingerFixtures struct {
+	conductor     *conductor.Conductor
+	nanoNs        *int64
+	lifecycle     *recordingImageLifecycle
+	registry      *conductor.LogBuffersRegistry
+	lingerLogPath string
+	startNs       int64
+	lingerNs      int64
+}
+
+func acquireLogOnConductorRegistry(
+	t *testing.T,
+	conductorInstance *conductor.Conductor,
+	logFileName string,
+) (*conductor.LogBuffersRegistry, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, logFileName)
+	writeMinimalLogFileForRegistryTest(t, logPath)
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+	_, err := registry.Acquire(logPath)
+	require.NoError(t, err)
+	return registry, logPath
+}
+
+func setupImageCallbackLingerFixtures(
+	t *testing.T,
+	startNs int64,
+	logFileName string,
+) imageCallbackLingerFixtures {
+	t.Helper()
+
+	const lingerNs = int64(time.Second)
+
+	dir := t.TempDir()
+	lingerLogPath := filepath.Join(dir, logFileName)
+	writeMinimalLogFileForRegistryTest(t, lingerLogPath)
+
+	lifecycle := &recordingImageLifecycle{
+		hasImage:           true,
+		removedLogFileName: goldenAvailableImageEvent.LogFileName,
+	}
+	conductorInstance, nanoNs := newConductorWithRecordingLifecycleMutableNano(
+		t,
+		lifecycle,
+		func(error) {},
+		resourceMapTestEpochMs,
+		"/",
+	)
+	conductorInstance.SeedServiceTimestamps(startNs)
+	*nanoNs = startNs
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+	scheduleLingerForConductorLog(t, conductorInstance, lingerLogPath, lingerNs)
+
+	registerGoldenImageSubscription(conductorInstance)
+	seedGoldenAvailableLogBuffers(t, conductorInstance)
+
+	return imageCallbackLingerFixtures{
+		conductor:     conductorInstance,
+		nanoNs:        nanoNs,
+		lifecycle:     lifecycle,
+		registry:      registry,
+		lingerLogPath: lingerLogPath,
+		startNs:       startNs,
+		lingerNs:      lingerNs,
+	}
+}
+
+func TestConductor_publicationMap_overwriteDuplicateRegistrationID(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance := newBareConductorForResourceMapTest(t)
+
+	conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+	conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 99})
+
+	got, ok := conductorInstance.PublicationByRegID(42)
+	require.True(t, ok)
+	require.Equal(t, int64(99), got.RegistrationID())
+}
+
+func TestConductor_publicationMap_insertRemove(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance := newBareConductorForResourceMapTest(t)
+
+	_, ok := conductorInstance.PublicationByRegID(99)
+	require.False(t, ok)
+
+	publication := stubPublication{registrationID: 42}
+	conductorInstance.InsertPublicationForTest(42, publication)
+	require.Equal(t, 1, conductorInstance.PublicationCountForTest())
+
+	got, ok := conductorInstance.PublicationByRegID(42)
+	require.True(t, ok)
+	require.Equal(t, int64(42), got.RegistrationID())
+
+	conductorInstance.RemovePublicationForTest(42)
+	require.Equal(t, 0, conductorInstance.PublicationCountForTest())
+
+	_, ok = conductorInstance.PublicationByRegID(42)
+	require.False(t, ok)
+}
+
+func TestConductor_publicationMap_nilEntryMiss(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance := newBareConductorForResourceMapTest(t)
+	conductorInstance.InsertNilPublicationForTest(42)
+
+	require.Equal(t, 0, conductorInstance.PublicationCountForTest())
+
+	got, ok := conductorInstance.PublicationByRegID(42)
+	require.False(t, ok)
+	require.Nil(t, got)
+}
+
+func TestConductor_publicationMap_typedNilEntryMiss(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance := newBareConductorForResourceMapTest(t)
+
+	var nilPublication conductor.PublicationHandle = (*stubPublicationPtr)(nil)
+	conductorInstance.InsertPublicationForTest(42, nilPublication)
+
+	require.Equal(t, 0, conductorInstance.PublicationCountForTest())
+
+	got, ok := conductorInstance.PublicationByRegID(42)
+	require.False(t, ok)
+	require.Nil(t, got)
+}
+
+func TestConductor_PublicationByRegID_concurrentWithDoWork(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance, _ := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	conductorInstance.SeedServiceTimestamps(1)
+	conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for range 500 {
+			got, ok := conductorInstance.PublicationByRegID(42)
+			require.True(t, ok)
+			require.Equal(t, int64(42), got.RegistrationID())
+		}
+	})
+
+	for range 500 {
+		conductorInstance.DoWork()
+	}
+
+	wg.Wait()
+}
+
+type concurrentImageCallbackLookupCase struct {
+	available bool
+	setup     func(*conductor.Conductor, *recordingImageLifecycle)
+	trigger   func(*testing.T, *conductor.Conductor)
+	setBlock  func(*recordingImageLifecycle, chan struct{}, chan struct{})
+}
+
+func runConcurrentLookupDuringImageCallbackTest(
+	t *testing.T,
+	testCase concurrentImageCallbackLookupCase,
+	lookup func(*conductor.Conductor) error,
+) {
+	t.Helper()
+
+	callbackEntered := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	lookupDone := make(chan error, 1)
+
+	lifecycle := &recordingImageLifecycle{addImageOK: true}
+	if !testCase.available {
+		lifecycle = &recordingImageLifecycle{}
+	}
+	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, func(error) {})
+	testCase.setup(conductorInstance, lifecycle)
+	testCase.setBlock(lifecycle, callbackEntered, releaseCallback)
+
+	go func() {
+		<-callbackEntered
+		lookupDone <- lookup(conductorInstance)
+	}()
+
+	testCase.trigger(t, conductorInstance)
+
+	doWorkDone := make(chan int)
+	go func() {
+		doWorkDone <- conductorInstance.DoWork()
+	}()
+
+	<-callbackEntered
+	select {
+	case err := <-lookupDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("lookup did not complete during suspended callback")
+	}
+
+	select {
+	case workCount := <-doWorkDone:
+		t.Fatalf("DoWork finished before callback released: workCount=%d", workCount)
+	default:
+	}
+	close(releaseCallback)
+	require.Equal(t, 1, <-doWorkDone)
+}
+
+func TestConductor_PublicationByRegID_concurrentDuringImageCallback(t *testing.T) {
+	t.Parallel()
+
+	runConcurrentLookupDuringImageCallbackTest(
+		t,
+		concurrentImageCallbackLookupCase{
+			available: true,
+			setup: func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
+				conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+				registerGoldenImageSubscription(conductorInstance)
+				seedGoldenAvailableLogBuffers(t, conductorInstance)
+			},
+			trigger: func(t *testing.T, conductorInstance *conductor.Conductor) {
+				t.Helper()
+				transmitConductorEvent(
+					t,
+					conductorInstance.EventsAdapterForTest(),
+					conductor.OnAvailableImage,
+					conductor.AvailableImageBytes(goldenAvailableImageEvent),
+				)
+			},
+			setBlock: func(
+				lifecycle *recordingImageLifecycle,
+				callbackEntered chan struct{},
+				releaseCallback chan struct{},
+			) {
+				lifecycle.availableCallback = func(conductor.ImageHandle) {
+					close(callbackEntered)
+					<-releaseCallback
+				}
+			},
+		},
+		lookupPublication(42),
+	)
+}
+
+func TestConductor_PublicationByRegID_concurrentDuringUnavailableImageCallback(t *testing.T) {
+	t.Parallel()
+
+	runConcurrentLookupDuringImageCallbackTest(
+		t,
+		concurrentImageCallbackLookupCase{
+			available: false,
+			setup: func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
+				conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+				registerGoldenImageSubscription(conductorInstance)
+			},
+			trigger: func(t *testing.T, conductorInstance *conductor.Conductor) {
+				t.Helper()
+				triggerGoldenUnavailableImage(t, conductorInstance)
+			},
+			setBlock: func(
+				lifecycle *recordingImageLifecycle,
+				callbackEntered chan struct{},
+				releaseCallback chan struct{},
+			) {
+				lifecycle.unavailableCallback = func(conductor.ImageHandle) {
+					close(callbackEntered)
+					<-releaseCallback
+				}
+			},
+		},
+		lookupPublication(42),
+	)
+}
+
+func TestConductor_SubscriptionByRegID_concurrentDuringImageCallback(t *testing.T) {
+	t.Parallel()
+
+	runConcurrentLookupDuringImageCallbackTest(
+		t,
+		concurrentImageCallbackLookupCase{
+			available: true,
+			setup: func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
+				registerGoldenImageSubscription(conductorInstance)
+				seedGoldenAvailableLogBuffers(t, conductorInstance)
+			},
+			trigger: func(t *testing.T, conductorInstance *conductor.Conductor) {
+				t.Helper()
+				transmitConductorEvent(
+					t,
+					conductorInstance.EventsAdapterForTest(),
+					conductor.OnAvailableImage,
+					conductor.AvailableImageBytes(goldenAvailableImageEvent),
+				)
+			},
+			setBlock: func(
+				lifecycle *recordingImageLifecycle,
+				callbackEntered chan struct{},
+				releaseCallback chan struct{},
+			) {
+				lifecycle.availableCallback = func(conductor.ImageHandle) {
+					close(callbackEntered)
+					<-releaseCallback
+				}
+			},
+		},
+		lookupGoldenSubscription(true),
+	)
+}
+
+func TestConductor_SubscriptionByRegID_concurrentDuringUnavailableImageCallback(t *testing.T) {
+	t.Parallel()
+
+	runConcurrentLookupDuringImageCallbackTest(
+		t,
+		concurrentImageCallbackLookupCase{
+			available: false,
+			setup: func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
+				registerGoldenImageSubscription(conductorInstance)
+			},
+			trigger: func(t *testing.T, conductorInstance *conductor.Conductor) {
+				t.Helper()
+				triggerGoldenUnavailableImage(t, conductorInstance)
+			},
+			setBlock: func(
+				lifecycle *recordingImageLifecycle,
+				callbackEntered chan struct{},
+				releaseCallback chan struct{},
+			) {
+				lifecycle.unavailableCallback = func(conductor.ImageHandle) {
+					close(callbackEntered)
+					<-releaseCallback
+				}
+			},
+		},
+		lookupGoldenSubscription(false),
+	)
+}
+
+func runForeignWriteLockDuringSuspendedImageCallbackTest(t *testing.T, available bool) {
+	t.Helper()
+
+	callbackEntered := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	insertDone := make(chan error, 1)
+
+	lifecycle := &recordingImageLifecycle{addImageOK: true}
+	if !available {
+		lifecycle = &recordingImageLifecycle{}
+	}
+	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, func(error) {})
+	registerGoldenImageSubscription(conductorInstance)
+	if available {
+		seedGoldenAvailableLogBuffers(t, conductorInstance)
+	}
+
+	blockCallback := func(conductor.ImageHandle) {
+		close(callbackEntered)
+		<-releaseCallback
+	}
+	if available {
+		lifecycle.availableCallback = blockCallback
+		transmitConductorEvent(
+			t,
+			conductorInstance.EventsAdapterForTest(),
+			conductor.OnAvailableImage,
+			conductor.AvailableImageBytes(goldenAvailableImageEvent),
+		)
+	} else {
+		lifecycle.unavailableCallback = blockCallback
+		triggerGoldenUnavailableImage(t, conductorInstance)
+	}
+
+	go func() {
+		<-callbackEntered
+		insertDone <- insertAndLookupPublication(77)(conductorInstance)
+	}()
+
+	doWorkDone := make(chan int)
+	go func() {
+		doWorkDone <- conductorInstance.DoWork()
+	}()
+
+	<-callbackEntered
+	select {
+	case err := <-insertDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("foreign write lock did not complete during suspended callback")
+	}
+
+	select {
+	case workCount := <-doWorkDone:
+		t.Fatalf("DoWork finished before callback released: workCount=%d", workCount)
+	default:
+	}
+	close(releaseCallback)
+	require.GreaterOrEqual(t, <-doWorkDone, 1)
+
+	got, ok := conductorInstance.PublicationByRegID(77)
+	require.True(t, ok)
+	require.Equal(t, int64(77), got.RegistrationID())
+}
+
+func TestConductor_foreignWriteLockDuringSuspendedImageCallback(t *testing.T) {
+	t.Parallel()
+	runForeignWriteLockDuringSuspendedImageCallbackTest(t, true)
+}
+
+func TestConductor_foreignWriteLockDuringSuspendedUnavailableImageCallback(t *testing.T) {
+	t.Parallel()
+	runForeignWriteLockDuringSuspendedImageCallbackTest(t, false)
+}
+
+func TestConductor_foreignDrainLingeringDuringSuspendedImageCallback(t *testing.T) {
+	t.Parallel()
+
+	const startNs int64 = 14_000_000_000
+
+	fixtures := setupImageCallbackLingerFixtures(t, startNs, "foreign-drain-callback.log")
+	conductorInstance := fixtures.conductor
+	nanoNs := fixtures.nanoNs
+	lifecycle := fixtures.lifecycle
+	registry := fixtures.registry
+	lingerLogPath := fixtures.lingerLogPath
+	lingerNs := fixtures.lingerNs
+
+	callbackEntered := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	drainDone := make(chan int, 1)
+
+	lifecycle.unavailableCallback = func(conductor.ImageHandle) {
+		close(callbackEntered)
+		<-releaseCallback
+	}
+
+	*nanoNs = startNs + lingerNs - 1
+	triggerGoldenUnavailableImage(t, conductorInstance)
+
+	go func() {
+		<-callbackEntered
+		drainDone <- conductorInstance.DrainLingeringLogBuffers()
+	}()
+
+	doWorkDone := make(chan int)
+	go func() {
+		doWorkDone <- conductorInstance.DoWork()
+	}()
+
+	<-callbackEntered
+	select {
+	case drainWork := <-drainDone:
+		require.Zero(t, drainWork)
+	case <-time.After(time.Second):
+		t.Fatal("foreign DrainLingeringLogBuffers did not complete during suspended callback")
+	}
+	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, lingerLogPath))
+
+	select {
+	case workCount := <-doWorkDone:
+		t.Fatalf("DoWork finished before callback released: workCount=%d", workCount)
+	default:
+	}
+	close(releaseCallback)
+	require.GreaterOrEqual(t, <-doWorkDone, 1)
+}
+
+func runImageCallbackActionTest(
+	t *testing.T,
+	available bool,
+	setup func(*conductor.Conductor, *recordingImageLifecycle),
+	trigger func(*testing.T, *conductor.Conductor),
+	action func(*conductor.Conductor) error,
+) *conductor.Conductor {
+	t.Helper()
+
+	callbackDone := make(chan error, 1)
+	lifecycle := &recordingImageLifecycle{addImageOK: true}
+	if !available {
+		lifecycle = &recordingImageLifecycle{}
+	}
+	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, func(error) {})
+	setup(conductorInstance, lifecycle)
+
+	if available {
+		lifecycle.availableCallback = func(conductor.ImageHandle) {
+			callbackDone <- action(conductorInstance)
+		}
+	} else {
+		lifecycle.unavailableCallback = func(conductor.ImageHandle) {
+			callbackDone <- action(conductorInstance)
+		}
+	}
+
+	trigger(t, conductorInstance)
+
+	require.Equal(t, 1, conductorInstance.DoWork())
+	select {
+	case err := <-callbackDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("image callback action did not complete")
+	}
+	return conductorInstance
+}
+
+func insertAndLookupPublication(registrationID int64) func(*conductor.Conductor) error {
+	return func(conductorInstance *conductor.Conductor) error {
+		conductorInstance.InsertPublicationForTest(
+			registrationID,
+			stubPublication{registrationID: registrationID},
+		)
+		got, ok := conductorInstance.PublicationByRegID(registrationID)
+		if !ok {
+			return fmt.Errorf("publication %d not found", registrationID)
+		}
+		if got.RegistrationID() != registrationID {
+			return fmt.Errorf("got registration ID %d, want %d", got.RegistrationID(), registrationID)
+		}
+		return nil
+	}
+}
+
+func lookupPublication(registrationID int64) func(*conductor.Conductor) error {
+	return func(conductorInstance *conductor.Conductor) error {
+		got, ok := conductorInstance.PublicationByRegID(registrationID)
+		if !ok {
+			return fmt.Errorf("publication %d not found", registrationID)
+		}
+		if got.RegistrationID() != registrationID {
+			return fmt.Errorf("got registration ID %d, want %d", got.RegistrationID(), registrationID)
+		}
+		return nil
+	}
+}
+
+func lookupGoldenSubscription(available bool) func(*conductor.Conductor) error {
+	return func(conductorInstance *conductor.Conductor) error {
+		var registrationID int64
+		var wantStreamID int32
+		if available {
+			registrationID = goldenAvailableImageEvent.SubscriptionRegistrationID
+			wantStreamID = goldenAvailableImageEvent.StreamID
+		} else {
+			registrationID = goldenUnavailableImageEvent.SubscriptionRegistrationID
+		}
+		got, ok := conductorInstance.SubscriptionByRegID(registrationID)
+		if !ok {
+			return fmt.Errorf("subscription %d not found", registrationID)
+		}
+		if got.RegistrationID() != registrationID {
+			return fmt.Errorf("got registration ID %d, want %d", got.RegistrationID(), registrationID)
+		}
+		if available && got.StreamID() != wantStreamID {
+			return fmt.Errorf("got stream ID %d, want %d", got.StreamID(), wantStreamID)
+		}
+		return nil
+	}
+}
+
+func runReentrantDoWorkFromImageCallbackTest(
+	t *testing.T,
+	available bool,
+	enqueueFollowUpEvent func(*testing.T, *conductor.Conductor),
+) {
+	t.Helper()
+
+	var nestedDoWorkCalls int
+	callbackDone := make(chan error, 1)
+	lifecycle := &recordingImageLifecycle{addImageOK: true}
+	if !available {
+		lifecycle = &recordingImageLifecycle{}
+	}
+	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, func(error) {})
+	registerGoldenImageSubscription(conductorInstance)
+	if available {
+		seedGoldenAvailableLogBuffers(t, conductorInstance)
+	}
+
+	callbackAction := func(conductor.ImageHandle) {
+		nestedDoWorkCalls++
+		if enqueueFollowUpEvent != nil {
+			enqueueFollowUpEvent(t, conductorInstance)
+		}
+		if conductorInstance.DoWork() < 1 {
+			callbackDone <- fmt.Errorf("nested DoWork processed no work")
+			return
+		}
+		callbackDone <- nil
+	}
+	if available {
+		lifecycle.availableCallback = callbackAction
+		transmitConductorEvent(
+			t,
+			conductorInstance.EventsAdapterForTest(),
+			conductor.OnAvailableImage,
+			conductor.AvailableImageBytes(goldenAvailableImageEvent),
+		)
+	} else {
+		lifecycle.unavailableCallback = callbackAction
+		triggerGoldenUnavailableImage(t, conductorInstance)
+	}
+
+	require.Equal(t, 1, conductorInstance.DoWork())
+	select {
+	case err := <-callbackDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("reentrant DoWork from image callback did not complete")
+	}
+	require.Equal(t, 1, nestedDoWorkCalls)
+}
+
+func TestConductor_imageCallback_acquiresWriteLockForMapMutation(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance := runImageCallbackActionTest(
+		t,
+		true,
+		func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
+			registerGoldenImageSubscription(conductorInstance)
+			seedGoldenAvailableLogBuffers(t, conductorInstance)
+		},
+		func(t *testing.T, conductorInstance *conductor.Conductor) {
+			t.Helper()
+			transmitConductorEvent(
+				t,
+				conductorInstance.EventsAdapterForTest(),
+				conductor.OnAvailableImage,
+				conductor.AvailableImageBytes(goldenAvailableImageEvent),
+			)
+		},
+		insertAndLookupPublication(99),
+	)
+
+	got, ok := conductorInstance.PublicationByRegID(99)
+	require.True(t, ok)
+	require.Equal(t, int64(99), got.RegistrationID())
+}
+
+func enqueueGoldenAvailableImage(
+	t *testing.T,
+	conductorInstance *conductor.Conductor,
+) {
+	t.Helper()
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnAvailableImage,
+		conductor.AvailableImageBytes(goldenAvailableImageEvent),
+	)
+}
+
+func TestConductor_imageCallback_reentrantDoWork_fromAvailableCallback(t *testing.T) {
+	t.Parallel()
+
+	runReentrantDoWorkFromImageCallbackTest(t, true, enqueueGoldenAvailableImage)
+}
+
+func TestConductor_imageCallback_reentrantDoWork_fromUnavailableCallback(t *testing.T) {
+	t.Parallel()
+
+	runReentrantDoWorkFromImageCallbackTest(t, false, triggerGoldenUnavailableImage)
+}
+
+func TestConductor_imageCallback_mapMutation_fromUnavailableCallback(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance := runImageCallbackActionTest(
+		t,
+		false,
+		func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
+			registerGoldenImageSubscription(conductorInstance)
+		},
+		triggerGoldenUnavailableImage,
+		insertAndLookupPublication(88),
+	)
+
+	got, ok := conductorInstance.PublicationByRegID(88)
+	require.True(t, ok)
+	require.Equal(t, int64(88), got.RegistrationID())
+}
+
+func TestConductor_PublicationByRegID_fromImageCallback(t *testing.T) {
+	t.Parallel()
+
+	runImageCallbackActionTest(
+		t,
+		true,
+		func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
+			conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+			registerGoldenImageSubscription(conductorInstance)
+			seedGoldenAvailableLogBuffers(t, conductorInstance)
+		},
+		func(t *testing.T, conductorInstance *conductor.Conductor) {
+			t.Helper()
+			transmitConductorEvent(
+				t,
+				conductorInstance.EventsAdapterForTest(),
+				conductor.OnAvailableImage,
+				conductor.AvailableImageBytes(goldenAvailableImageEvent),
+			)
+		},
+		lookupPublication(42),
+	)
+}
+
+func TestConductor_PublicationByRegID_fromUnavailableImageCallback(t *testing.T) {
+	t.Parallel()
+
+	runImageCallbackActionTest(
+		t,
+		false,
+		func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
+			conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+			registerGoldenImageSubscription(conductorInstance)
+		},
+		triggerGoldenUnavailableImage,
+		lookupPublication(42),
+	)
+}
+
+func TestConductor_SubscriptionByRegID_fromImageCallback(t *testing.T) {
+	t.Parallel()
+
+	runImageCallbackActionTest(
+		t,
+		true,
+		func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
+			registerGoldenImageSubscription(conductorInstance)
+			seedGoldenAvailableLogBuffers(t, conductorInstance)
+		},
+		func(t *testing.T, conductorInstance *conductor.Conductor) {
+			t.Helper()
+			transmitConductorEvent(
+				t,
+				conductorInstance.EventsAdapterForTest(),
+				conductor.OnAvailableImage,
+				conductor.AvailableImageBytes(goldenAvailableImageEvent),
+			)
+		},
+		lookupGoldenSubscription(true),
+	)
+}
+
+func TestConductor_SubscriptionByRegID_fromUnavailableImageCallback(t *testing.T) {
+	t.Parallel()
+
+	runImageCallbackActionTest(
+		t,
+		false,
+		func(conductorInstance *conductor.Conductor, _ *recordingImageLifecycle) {
+			registerGoldenImageSubscription(conductorInstance)
+		},
+		triggerGoldenUnavailableImage,
+		lookupGoldenSubscription(false),
+	)
+}
+
+func TestConductor_subscriptionMap_lookup(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance := newBareConductorForResourceMapTest(t)
+	subscription := stubSubscription{registrationID: 7, streamID: 1001}
+
+	conductor.RegisterSubscriptionForTest(conductorInstance, 7, subscription)
+	require.Equal(t, 1, conductorInstance.SubscriptionCountForTest())
+
+	got, ok := conductorInstance.SubscriptionByRegID(7)
+	require.True(t, ok)
+	require.Equal(t, int64(7), got.RegistrationID())
+	require.Equal(t, int32(1001), got.StreamID())
+
+	_, ok = conductorInstance.SubscriptionByRegID(99)
+	require.False(t, ok)
+
+	conductorInstance.RemoveSubscriptionForTest(7)
+	require.Equal(t, 0, conductorInstance.SubscriptionCountForTest())
+	_, ok = conductorInstance.SubscriptionByRegID(7)
+	require.False(t, ok)
+}
+
+func TestConductor_subscriptionMap_nilEntryMiss(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance := newBareConductorForResourceMapTest(t)
+	conductorInstance.InsertNilSubscriptionForTest(7)
+
+	require.Equal(t, 0, conductorInstance.SubscriptionCountForTest())
+
+	got, ok := conductorInstance.SubscriptionByRegID(7)
+	require.False(t, ok)
+	require.Nil(t, got)
+}
+
+func TestConductor_acquireLogBuffers_sharedIPCPathRefcount(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "shared.log")
+	writeMinimalLogFileForRegistryTest(t, logPath)
+	aliasPath := filepath.Join(dir, ".", "shared.log")
+
+	conductorInstance := newConductorWithZeroNanoClockAndMediaDir(t, dir)
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+	first, err := conductorInstance.AcquireLogBuffersForTest(logPath)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+
+	second, err := conductorInstance.AcquireLogBuffersForTest(aliasPath)
+	require.NoError(t, err)
+	require.Same(t, first.MappedLogBuffer(), second.MappedLogBuffer())
+	require.Equal(t, int32(2), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+	require.Equal(t, int32(2), conductor.LogBuffersRegistryRefCountForTest(registry, aliasPath))
+
+	conductorInstance.ReleaseLogBuffersForTest(logPath, 0)
+	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+
+	conductorInstance.ReleaseLogBuffersForTest(aliasPath, 0)
+	require.Zero(t, conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+}
+
+func TestConductor_AcquireLogBuffers_propagatesRegistryErrors(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance := newConductorWithZeroNanoClockAndMediaDir(t, t.TempDir())
+	_, err := conductorInstance.AcquireLogBuffersForTest("")
+	require.ErrorIs(t, err, conductor.ErrLogFileNameEmpty)
+}
+
+func TestConductor_ReleaseLogBuffers_positiveLinger_sweptByDoWork(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "wrapper-linger.log")
+	writeMinimalLogFileForRegistryTest(t, logPath)
+
+	const startNs int64 = 6_000_000_000
+	const lingerNs int64 = int64(time.Second)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	conductorInstance.SeedServiceTimestamps(startNs)
+	*nanoNs = startNs
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+	scheduleLingerForConductorLog(t, conductorInstance, logPath, lingerNs)
+	assertRegistryLingerScheduled(t, registry, logPath, startNs, lingerNs)
+
+	*nanoNs = startNs + lingerNs - 1
+	conductorInstance.DoWork()
+	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+
+	*nanoNs = startNs + lingerNs
+	work := conductorInstance.DoWork()
+	require.GreaterOrEqual(t, work, 1)
+	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+}
+
+func TestConductor_ReleaseLogBuffers_zeroNanoClock_usesSharedTimeDomain(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "zero-clock.log")
+	writeMinimalLogFileForRegistryTest(t, logPath)
+
+	const lingerNs int64 = int64(time.Hour)
+
+	conductorInstance := newConductorWithZeroNanoClockAndMediaDir(t, dir)
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+	scheduleLingerForConductorLog(t, conductorInstance, logPath, lingerNs)
+	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+
+	deadline := conductor.LingerDeadlineNsForTest(registry, logPath)
+	require.NotZero(t, deadline)
+	assertLingerRetainedAt(
+		t,
+		registry,
+		logPath,
+		conductorInstance.SweepLingeringLogBuffersAtForTest,
+		0,
+	)
+	assertLingerSweptAt(
+		t,
+		registry,
+		logPath,
+		conductorInstance.SweepLingeringLogBuffersAtForTest,
+		deadline,
+	)
+}
+
+func TestConductor_ReleaseLogBuffers_zeroNanoClockAdvance_sweptByDoWork(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "zero-clock-advance.log")
+	writeMinimalLogFileForRegistryTest(t, logPath)
+
+	const lingerNs int64 = int64(time.Second)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	conductorInstance.SeedServiceTimestamps(0)
+	*nanoNs = 0
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+	scheduleLingerForConductorLog(t, conductorInstance, logPath, lingerNs)
+	assertRegistryLingerScheduled(t, registry, logPath, 0, lingerNs)
+
+	*nanoNs = lingerNs - 1
+	conductorInstance.DoWork()
+	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+
+	*nanoNs = lingerNs
+	work := conductorInstance.DoWork()
+	require.GreaterOrEqual(t, work, 1)
+	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+}
+
+func TestConductor_acquireAfterLingerScheduled_cancelsLinger(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "conductor-reacquire.log")
+	writeMinimalLogFileForRegistryTest(t, logPath)
+
+	const startNs int64 = 7_000_000_000
+	const lingerNs int64 = int64(time.Second)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	*nanoNs = startNs
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+	scheduleLingerForConductorLog(t, conductorInstance, logPath, lingerNs)
+	require.NotZero(t, conductor.LingerDeadlineNsForTest(registry, logPath))
+
+	_, err := conductorInstance.AcquireLogBuffersForTest(logPath)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+	require.Zero(t, conductor.LingerDeadlineNsForTest(registry, logPath))
+
+	conductorInstance.ReleaseLogBuffersForTest(logPath, 0)
+	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+}
+
+func TestConductor_sweepLingeringLogBuffers_afterDeadline(t *testing.T) {
+	t.Parallel()
+
+	const startNs int64 = 1_000_000_000
+	const lingerNs int64 = int64(5 * time.Second)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	conductorInstance.SeedServiceTimestamps(startNs)
+
+	registry, logPath := acquireLogOnConductorRegistry(t, conductorInstance, "linger.log")
+	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
+	assertRegistryLingerScheduled(t, registry, logPath, startNs, lingerNs)
+
+	*nanoNs = startNs + lingerNs - 1
+	assertLingerRetainedAt(
+		t,
+		registry,
+		logPath,
+		conductorInstance.SweepLingeringLogBuffersAtForTest,
+		*nanoNs,
+	)
+
+	*nanoNs = startNs + lingerNs
+	assertLingerSweptAt(
+		t,
+		registry,
+		logPath,
+		conductorInstance.SweepLingeringLogBuffersAtForTest,
+		*nanoNs,
+	)
+	require.Zero(t, conductorInstance.SweepLingeringLogBuffersAtForTest(*nanoNs))
+}
+
+func TestConductor_DoWork_sweepsLingeringLogBuffers(t *testing.T) {
+	t.Parallel()
+
+	const startNs int64 = 2_000_000_000
+	const lingerNs int64 = int64(time.Second)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	conductorInstance.SeedServiceTimestamps(startNs)
+
+	registry, logPath := acquireLogOnConductorRegistry(t, conductorInstance, "do-work-linger.log")
+	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
+
+	*nanoNs = startNs + lingerNs - 1
+	conductorInstance.DoWork()
+	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+
+	*nanoNs = startNs + lingerNs
+	work := conductorInstance.DoWork()
+	require.GreaterOrEqual(t, work, 1)
+	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+}
+
+func TestConductor_DrainLingeringLogBuffers_closeHook(t *testing.T) {
+	t.Parallel()
+
+	const startNs int64 = 3_000_000_000
+	const lingerNs int64 = int64(2 * time.Second)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	registry, logPath := acquireLogOnConductorRegistry(t, conductorInstance, "drain-linger.log")
+	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
+
+	*nanoNs = startNs + lingerNs - 1
+	conductorInstance.DrainLingeringLogBuffers()
+	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+
+	*nanoNs = startNs + lingerNs
+	require.Equal(t, 1, conductorInstance.DrainLingeringLogBuffers())
+	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+}
+
+func TestConductor_DoWork_terminatingSkipsLingerSweep(t *testing.T) {
+	t.Parallel()
+
+	const startNs int64 = 8_000_000_000
+	const lingerNs int64 = int64(time.Second)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	registry, logPath := acquireLogOnConductorRegistry(t, conductorInstance, "terminating-linger.log")
+	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
+
+	*nanoNs = startNs + lingerNs
+	conductorInstance.SetTerminatingForTest(true)
+	require.Zero(t, conductorInstance.DoWork())
+	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+
+	require.Equal(t, 1, conductorInstance.DrainLingeringLogBuffers())
+	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+}
+
+func TestConductor_DoWork_sweepUsesFreshNanoClock(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "fresh-clock.log")
+	writeMinimalLogFileForRegistryTest(t, logPath)
+
+	const startNs int64 = 10_000_000_000
+	const lingerNs int64 = int64(time.Second)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	conductorInstance.SeedServiceTimestamps(startNs)
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+	*nanoNs = startNs
+	scheduleLingerForConductorLog(t, conductorInstance, logPath, lingerNs)
+
+	*nanoNs = startNs + lingerNs
+	work := conductorInstance.DoWork()
+	require.GreaterOrEqual(t, work, 1)
+	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+}
+
+func TestConductor_nestedDoWork_lingerRetainedBeforeDeadlineSweptAfter(t *testing.T) {
+	t.Parallel()
+
+	const startNs int64 = 11_000_000_000
+
+	fixtures := setupImageCallbackLingerFixtures(t, startNs, "nested-linger.log")
+	conductorInstance := fixtures.conductor
+	nanoNs := fixtures.nanoNs
+	lifecycle := fixtures.lifecycle
+	registry := fixtures.registry
+	lingerLogPath := fixtures.lingerLogPath
+	lingerNs := fixtures.lingerNs
+
+	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, lingerLogPath))
+
+	*nanoNs = startNs + lingerNs - 1
+	var nestedDoWorkCalls int
+	lifecycle.unavailableCallback = func(conductor.ImageHandle) {
+		nestedDoWorkCalls++
+		conductorInstance.DoWork()
+	}
+	triggerGoldenUnavailableImage(t, conductorInstance)
+	conductorInstance.DoWork()
+	require.Equal(t, 1, nestedDoWorkCalls)
+	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, lingerLogPath))
+
+	*nanoNs = startNs + lingerNs
+	conductorInstance.DoWork()
+	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, lingerLogPath))
+}
+
+func TestConductor_DrainLingeringLogBuffers_fromImageCallback(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		startNs       int64
+		atDeadline    bool
+		wantDrainWork int
+		wantContains  bool
+	}{
+		{
+			name:          "beforeDeadline",
+			startNs:       12_000_000_000,
+			atDeadline:    false,
+			wantDrainWork: 0,
+			wantContains:  true,
+		},
+		{
+			name:          "afterDeadline",
+			startNs:       12_100_000_000,
+			atDeadline:    true,
+			wantDrainWork: 1,
+			wantContains:  false,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtures := setupImageCallbackLingerFixtures(
+				t,
+				testCase.startNs,
+				"drain-callback-"+testCase.name+".log",
+			)
+			conductorInstance := fixtures.conductor
+			nanoNs := fixtures.nanoNs
+			lifecycle := fixtures.lifecycle
+			registry := fixtures.registry
+			lingerLogPath := fixtures.lingerLogPath
+			lingerNs := fixtures.lingerNs
+
+			if testCase.atDeadline {
+				*nanoNs = testCase.startNs + lingerNs
+			} else {
+				*nanoNs = testCase.startNs + lingerNs - 1
+			}
+
+			var drainWork int
+			lifecycle.unavailableCallback = func(conductor.ImageHandle) {
+				drainWork = conductorInstance.DrainLingeringLogBuffers()
+			}
+			triggerGoldenUnavailableImage(t, conductorInstance)
+			conductorInstance.DoWork()
+			require.Equal(t, testCase.wantDrainWork, drainWork)
+			require.Equal(
+				t,
+				testCase.wantContains,
+				conductor.LogBuffersRegistryContainsForTest(registry, lingerLogPath),
+			)
+		})
+	}
+}
+
+func TestConductor_DoWork_sweepAdvancesNanoClockMidService(t *testing.T) {
+	t.Parallel()
+
+	const startNs int64 = 13_000_000_000
+	const lingerNs int64 = int64(time.Second)
+
+	lifecycle := &recordingImageLifecycle{
+		hasImage:           true,
+		removedLogFileName: goldenAvailableImageEvent.LogFileName,
+	}
+	conductorInstance, nanoNs := newConductorWithRecordingLifecycleMutableNano(
+		t,
+		lifecycle,
+		func(error) {},
+		resourceMapTestEpochMs,
+		"/",
+	)
+	conductorInstance.SeedServiceTimestamps(startNs)
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "mid-service-clock.log")
+	writeMinimalLogFileForRegistryTest(t, logPath)
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+	_, err := conductorInstance.AcquireLogBuffersForTest(logPath)
+	require.NoError(t, err)
+
+	*nanoNs = startNs
+	conductorInstance.ReleaseLogBuffersForTest(logPath, lingerNs)
+
+	*nanoNs = startNs + lingerNs - 1
+	lifecycle.unavailableCallback = func(conductor.ImageHandle) {
+		*nanoNs = startNs + lingerNs
+	}
+	registerGoldenImageSubscription(conductorInstance)
+	seedGoldenAvailableLogBuffers(t, conductorInstance)
+	triggerGoldenUnavailableImage(t, conductorInstance)
+	conductorInstance.DoWork()
+	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+}

@@ -51,8 +51,7 @@ func (conductor *Conductor) subscriptionForImageEvent(
 	if conductor.imageLifecycle == nil {
 		return nil, false
 	}
-	sub := conductor.subscriptions[registrationID]
-	return sub, sub != nil
+	return conductor.subscriptionByRegID(registrationID)
 }
 
 func (conductor *Conductor) onAvailableImage(event AvailableImage) {
@@ -78,7 +77,7 @@ func (conductor *Conductor) onAvailableImage(event AvailableImage) {
 		return
 	}
 
-	logBuffers, err := conductor.logBuffersRegistry.acquireByKey(resolvedLogFileName)
+	logBuffers, err := conductor.acquireLogBuffersByKey(resolvedLogFileName)
 	if err != nil {
 		invokeErrorHandler(conductor.config.ErrorHandler, err)
 		return
@@ -124,12 +123,12 @@ func (conductor *Conductor) onUnavailableImage(
 	}
 
 	conductor.imageLifecycle.CloseImage(image)
-	// lingerNs=0: synchronous unmap when refcount reaches zero; linger queue not implemented.
+	// lingerNs=0: synchronous unmap when refcount reaches zero.
 	if !image.IsClosed() {
 		invokeErrorHandler(conductor.config.ErrorHandler, errImageCloseFailedBeforeRelease)
 		return
 	}
-	conductor.logBuffersRegistry.releaseResolvedKey(image.LogFileName(), 0)
+	conductor.releaseLogBuffersByKey(image.LogFileName(), 0)
 
 	if callback := conductor.imageLifecycle.UnavailableImageCallback(sub); callback != nil {
 		conductor.invokeImageCallback(func() {
@@ -139,19 +138,24 @@ func (conductor *Conductor) onUnavailableImage(
 }
 
 func (conductor *Conductor) releaseAcquiredLogFile(resolvedLogFileName string, err error) {
-	conductor.logBuffersRegistry.releaseResolvedKey(resolvedLogFileName, 0)
+	conductor.releaseLogBuffersByKey(resolvedLogFileName, 0)
 	invokeErrorHandler(conductor.config.ErrorHandler, err)
 }
 
 func (conductor *Conductor) invokeImageCallback(callback func()) {
-	// Nested image handlers are dropped to avoid reentrant callback stacks; Java
-	// ClientConductor still delivers nested available/unavailable callbacks.
+	// Image callbacks suspend the DoWork write lock so PublicationByRegID and
+	// SubscriptionByRegID always take RLock and reentrant DoWork can acquire a
+	// fresh write lock for map mutations. Handlers must not assume exclusive map
+	// access: other goroutines may read or write resource maps during the suspend
+	// window. While isInCallback is set, nested user callbacks are skipped; the
+	// driver event is still consumed during reentrant DoWork and is not replayed.
+	// Java ClientConductor still delivers nested available/unavailable callbacks.
 	if conductor.isInCallback {
 		return
 	}
 	conductor.isInCallback = true
+	savedDepth := conductor.suspendResourceWriteLock()
 	defer func() {
-		conductor.isInCallback = false
 		if recovered := recover(); recovered != nil {
 			err, ok := recovered.(error)
 			if !ok {
@@ -159,6 +163,8 @@ func (conductor *Conductor) invokeImageCallback(callback func()) {
 			}
 			invokeErrorHandler(conductor.config.ErrorHandler, err)
 		}
+		conductor.resumeResourceWriteLock(savedDepth)
+		conductor.isInCallback = false
 	}()
 	callback()
 }

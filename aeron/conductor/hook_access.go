@@ -16,7 +16,31 @@ func registerSubscriptionHook(
 	registrationID int64,
 	sub SubscriptionHandle,
 ) {
-	conductor.subscriptions[registrationID] = sub
+	conductor.underResourceWriteLock(func() {
+		conductor.insertSubscription(registrationID, sub)
+	})
+}
+
+func registerPublicationHook(
+	conductor *Conductor,
+	registrationID int64,
+	publication PublicationHandle,
+) {
+	conductor.underResourceWriteLock(func() {
+		conductor.insertPublication(registrationID, publication)
+	})
+}
+
+func removePublicationHook(conductor *Conductor, registrationID int64) {
+	conductor.underResourceWriteLock(func() {
+		conductor.removePublication(registrationID)
+	})
+}
+
+func removeSubscriptionHook(conductor *Conductor, registrationID int64) {
+	conductor.underResourceWriteLock(func() {
+		conductor.removeSubscription(registrationID)
+	})
 }
 
 func logBuffersRegistryHook(conductor *Conductor) *LogBuffersRegistry {

@@ -129,6 +129,23 @@ func ReleaseResolvedKeyForTest(
 	registry.releaseResolvedKey(key, lingerNs)
 }
 
+func ReleaseResolvedKeyAtForTest(
+	registry *LogBuffersRegistry,
+	key string,
+	nowNs int64,
+	lingerNs int64,
+) {
+	registry.releaseResolvedKeyAt(key, nowNs, lingerNs)
+}
+
+func SweepLingeringLogBuffersForTest(registry *LogBuffersRegistry, nowNs int64) int {
+	return registry.SweepLingering(nowNs)
+}
+
+func LingerDeadlineNsForTest(registry *LogBuffersRegistry, logFileName string) int64 {
+	return registry.lingerDeadlineNs(logFileName)
+}
+
 func LogBuffersRegistryRefCountByResolvedKeyForTest(
 	registry *LogBuffersRegistry,
 	key string,
@@ -169,6 +186,77 @@ func SeedLogBuffersRegistryForTest(
 		refCount: 1,
 	}
 	return nil
+}
+
+// InsertPublicationForTest is for conductor_test; cross-package callers use
+// RegisterPublicationForTest behind the testhooks build tag.
+func (conductor *Conductor) InsertPublicationForTest(
+	registrationID int64,
+	publication PublicationHandle,
+) {
+	conductor.underResourceWriteLock(func() {
+		conductor.insertPublication(registrationID, publication)
+	})
+}
+
+func (conductor *Conductor) InsertSubscriptionForTest(
+	registrationID int64,
+	subscription SubscriptionHandle,
+) {
+	conductor.underResourceWriteLock(func() {
+		conductor.insertSubscription(registrationID, subscription)
+	})
+}
+
+func (conductor *Conductor) RemovePublicationForTest(registrationID int64) {
+	conductor.underResourceWriteLock(func() {
+		conductor.removePublication(registrationID)
+	})
+}
+
+func (conductor *Conductor) RemoveSubscriptionForTest(registrationID int64) {
+	conductor.underResourceWriteLock(func() {
+		conductor.removeSubscription(registrationID)
+	})
+}
+
+func (conductor *Conductor) PublicationCountForTest() int {
+	return withResourceRLock(conductor, conductor.publicationCount)
+}
+
+func (conductor *Conductor) SubscriptionCountForTest() int {
+	return withResourceRLock(conductor, conductor.subscriptionCount)
+}
+
+func (conductor *Conductor) InsertNilPublicationForTest(registrationID int64) {
+	conductor.InsertPublicationForTest(registrationID, nil)
+}
+
+func (conductor *Conductor) InsertNilSubscriptionForTest(registrationID int64) {
+	conductor.InsertSubscriptionForTest(registrationID, nil)
+}
+
+func (conductor *Conductor) AcquireLogBuffersForTest(
+	logFileName string,
+) (*logbuffer.LogBuffers, error) {
+	var buffers *logbuffer.LogBuffers
+	var err error
+	conductor.underResourceWriteLock(func() {
+		buffers, err = conductor.acquireLogBuffers(logFileName)
+	})
+	return buffers, err
+}
+
+func (conductor *Conductor) ReleaseLogBuffersForTest(logFileName string, lingerNs int64) {
+	conductor.underResourceWriteLock(func() {
+		conductor.releaseLogBuffers(logFileName, lingerNs)
+	})
+}
+
+func (conductor *Conductor) SweepLingeringLogBuffersAtForTest(nowNs int64) int {
+	return underResourceWriteLockResult(conductor, func() int {
+		return conductor.sweepLingeringLogBuffers(nowNs)
+	})
 }
 
 func ValidateLogFileNameForTest(logFileName, mediaDriverDir string) error {
