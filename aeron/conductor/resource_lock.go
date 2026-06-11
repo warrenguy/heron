@@ -1,10 +1,12 @@
 package conductor
 
-// underResourceWriteLock acquires resourceMu for exclusive map/registry access.
-// It is not reentrant on the same goroutine during non-callback DoWork; hooks
-// and tests must run off-agent or from image callbacks after the write lock is
-// suspended. resourceWriteLockDepth counts outer DoWork scopes; suspendResourceWriteLock
-// swaps depth to zero and unlocks, then resumeResourceWriteLock restores on return.
+// underResourceWriteLock acquires resourceMu for exclusive map/registry mutation.
+// It is not reentrant on the same goroutine unless resourceMu was suspended first
+// (image callbacks only); nested calls deadlock. Hooks and tests must run off-agent
+// or from image callbacks after suspendResourceWriteLock unlocks resourceMu.
+// resourceWriteLockDepth is a held flag (0 or 1) for suspend/resume bookkeeping,
+// not a nested-scope counter; suspendResourceWriteLock saves it and unlocks,
+// resumeResourceWriteLock restores it for the outer defer.
 func (conductor *Conductor) underResourceWriteLock(work func()) {
 	conductor.resourceMu.Lock()
 	conductor.resourceWriteLockDepth++

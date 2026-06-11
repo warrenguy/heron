@@ -66,6 +66,18 @@ func LogBuffersRegistryContainsForTest(
 	return logBuffersRegistryContainsHook(registry, logFileName)
 }
 
+func LogBuffersRegistryLingerScheduledForTest(registry *LogBuffersRegistry) int {
+	return logBuffersRegistryLingerScheduledHook(registry)
+}
+
+func LogBuffersRegistryCountScheduledLingersForTest(registry *LogBuffersRegistry) int {
+	return logBuffersRegistryCountScheduledLingersHook(registry)
+}
+
+func (conductor *Conductor) SetLingerSweepBlockerForTest(blocker func()) {
+	setLingerSweepBlockerHook(conductor, blocker)
+}
+
 func (conductor *Conductor) SetCountersReaderForTest(reader *cnc.CountersReader) {
 	setCountersReaderHook(conductor, reader)
 }

@@ -64,8 +64,8 @@ func withResourceRLock2[T any](conductor *Conductor, work func() (T, bool)) (T, 
 }
 
 // PublicationByRegID returns a publication handle under RLock. Do not call from
-// the agent goroutine during non-callback DoWork (deadlocks on RLock); DoWork
-// handlers use publicationByRegID instead.
+// the agent goroutine during resourceMu write-lock scopes (deadlocks on RLock);
+// agent handlers use publicationByRegID instead.
 func (conductor *Conductor) PublicationByRegID(
 	registrationID int64,
 ) (PublicationHandle, bool) {
@@ -74,8 +74,8 @@ func (conductor *Conductor) PublicationByRegID(
 	})
 }
 
-// publicationByRegID looks up under the write lock during DoWork; agent handlers
-// must call this, not PublicationByRegID.
+// publicationByRegID looks up under resourceMu write lock; agent handlers must
+// call this, not PublicationByRegID.
 func (conductor *Conductor) publicationByRegID(
 	registrationID int64,
 ) (PublicationHandle, bool) {
@@ -83,8 +83,8 @@ func (conductor *Conductor) publicationByRegID(
 }
 
 // SubscriptionByRegID returns a subscription handle under RLock. Do not call from
-// the agent goroutine during non-callback DoWork (deadlocks on RLock); DoWork
-// handlers use subscriptionByRegID instead.
+// the agent goroutine during resourceMu write-lock scopes (deadlocks on RLock);
+// agent handlers use subscriptionByRegID instead.
 func (conductor *Conductor) SubscriptionByRegID(
 	registrationID int64,
 ) (SubscriptionHandle, bool) {
@@ -93,8 +93,8 @@ func (conductor *Conductor) SubscriptionByRegID(
 	})
 }
 
-// subscriptionByRegID looks up under the write lock during DoWork; agent handlers
-// must call this, not SubscriptionByRegID.
+// subscriptionByRegID looks up under resourceMu write lock; agent handlers must
+// call this, not SubscriptionByRegID.
 func (conductor *Conductor) subscriptionByRegID(
 	registrationID int64,
 ) (SubscriptionHandle, bool) {
@@ -102,7 +102,7 @@ func (conductor *Conductor) subscriptionByRegID(
 }
 
 // insertPublication overwrites an existing registrationID entry. Caller must hold
-// resourceMu write lock (normally via DoWork). Absent values are rejected.
+// resourceMu write lock. Absent values are rejected.
 func (conductor *Conductor) insertPublication(
 	registrationID int64,
 	publication PublicationHandle,
@@ -113,13 +113,13 @@ func (conductor *Conductor) insertPublication(
 	conductor.publications[registrationID] = publication
 }
 
-// removePublication requires resourceMu write lock (normally via DoWork).
+// removePublication requires resourceMu write lock.
 func (conductor *Conductor) removePublication(registrationID int64) {
 	delete(conductor.publications, registrationID)
 }
 
 // insertSubscription overwrites an existing registrationID entry. Caller must
-// hold resourceMu write lock (normally via DoWork). Absent values are rejected.
+// hold resourceMu write lock. Absent values are rejected.
 func (conductor *Conductor) insertSubscription(
 	registrationID int64,
 	subscription SubscriptionHandle,
@@ -130,19 +130,19 @@ func (conductor *Conductor) insertSubscription(
 	conductor.subscriptions[registrationID] = subscription
 }
 
-// removeSubscription requires resourceMu write lock (normally via DoWork).
+// removeSubscription requires resourceMu write lock.
 func (conductor *Conductor) removeSubscription(registrationID int64) {
 	delete(conductor.subscriptions, registrationID)
 }
 
-// acquireLogBuffers requires resourceMu write lock (normally via DoWork).
+// acquireLogBuffers requires resourceMu write lock.
 func (conductor *Conductor) acquireLogBuffers(
 	logFileName string,
 ) (*logbuffer.LogBuffers, error) {
 	return conductor.logBuffersRegistry.Acquire(logFileName)
 }
 
-// acquireLogBuffersByKey requires resourceMu write lock (normally via DoWork).
+// acquireLogBuffersByKey requires resourceMu write lock.
 func (conductor *Conductor) acquireLogBuffersByKey(
 	key string,
 ) (*logbuffer.LogBuffers, error) {
@@ -156,7 +156,7 @@ func lingerReleaseNowNs(conductor *Conductor, lingerNs int64) int64 {
 	return conductor.config.NanoClock()
 }
 
-// releaseLogBuffers requires resourceMu write lock (normally via DoWork).
+// releaseLogBuffers requires resourceMu write lock.
 func (conductor *Conductor) releaseLogBuffers(logFileName string, lingerNs int64) {
 	conductor.logBuffersRegistry.releaseAt(
 		logFileName,
@@ -165,7 +165,7 @@ func (conductor *Conductor) releaseLogBuffers(logFileName string, lingerNs int64
 	)
 }
 
-// releaseLogBuffersByKey requires resourceMu write lock (normally via DoWork).
+// releaseLogBuffersByKey requires resourceMu write lock.
 func (conductor *Conductor) releaseLogBuffersByKey(key string, lingerNs int64) {
 	conductor.logBuffersRegistry.releaseResolvedKeyAt(
 		key,
@@ -183,7 +183,7 @@ func (conductor *Conductor) sweepLingeringLogBuffers(nowNs int64) int {
 // a suspended image callback the mutex is unlocked, so a foreign goroutine may
 // acquire the write lock concurrently with the blocked callback.
 func (conductor *Conductor) DrainLingeringLogBuffers() int {
-	return conductor.runUnderResourceWriteLock(func() int {
+	return underResourceWriteLockResult(conductor, func() int {
 		return conductor.sweepLingeringLogBuffers(conductor.config.NanoClock())
 	})
 }

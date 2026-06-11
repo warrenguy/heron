@@ -95,13 +95,17 @@ type Conductor struct {
 	// logBuffersRegistry is the sole log-buffer map: dedup mmap, refCount, linger.
 	logBuffersRegistry *LogBuffersRegistry
 	resourceMu         sync.RWMutex
-	// resourceWriteLockDepth is agent-only; counts outer DoWork write-lock scopes.
+	// resourceWriteLockDepth is updated only under resourceMu write lock;
+	// suspend/resume during image callbacks lets foreign drain acquire write lock.
 	resourceWriteLockDepth int32
 	imageLifecycle         ImageLifecycle
 	// isInCallback is agent-only; suppresses nested image handler delivery.
-	isInCallback     bool
-	terminationCause error
-	isTerminating    bool
+	isInCallback bool
+	// lingerSweepBlocker is agent-only; optional test hook during linger sweep.
+	// Only invoked via invokeLingerSweepBlockerForTest (no-op in !testhooks builds).
+	lingerSweepBlocker func()
+	terminationCause   error
+	isTerminating      bool
 }
 
 func NewConductor(
@@ -153,15 +157,7 @@ func (conductor *Conductor) DoWork() int {
 	if conductor.isTerminating {
 		return 0
 	}
-	return conductor.runUnderResourceWriteLock(conductor.service)
-}
-
-// runUnderResourceWriteLock runs work under resourceMu write lock. Image callbacks
-// suspend the lock so nested DoWork can acquire a fresh write lock safely.
-func (conductor *Conductor) runUnderResourceWriteLock(work func() int) int {
-	var workCount int
-	conductor.underResourceWriteLock(func() { workCount = work() })
-	return workCount
+	return conductor.service()
 }
 
 func (conductor *Conductor) IsTerminating() bool {
@@ -199,7 +195,12 @@ func (conductor *Conductor) service() int {
 		conductor.receivedCorrelationID = timedOutActiveCorrelationID
 	}
 	// Re-sample NanoClock so linger sweep sees time advanced during this tick.
-	workCount += conductor.sweepLingeringLogBuffers(conductor.config.NanoClock())
+	if conductor.logBuffersRegistry.HasScheduledLinger() {
+		workCount += underResourceWriteLockResult(conductor, func() int {
+			invokeLingerSweepBlockerForTest(conductor)
+			return conductor.sweepLingeringLogBuffers(conductor.config.NanoClock())
+		})
+	}
 	return workCount
 }
 

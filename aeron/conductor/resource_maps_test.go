@@ -220,6 +220,188 @@ func TestConductor_PublicationByRegID_concurrentWithDoWork(t *testing.T) {
 	wg.Wait()
 }
 
+func runConcurrentPubSubLookup(
+	t *testing.T,
+	wg *sync.WaitGroup,
+	conductorInstance *conductor.Conductor,
+	iterations int,
+) {
+	t.Helper()
+
+	wg.Go(func() {
+		for range iterations {
+			publication, ok := conductorInstance.PublicationByRegID(42)
+			require.True(t, ok)
+			require.Equal(t, int64(42), publication.RegistrationID())
+
+			subscription, ok := conductorInstance.SubscriptionByRegID(77)
+			require.True(t, ok)
+			require.Equal(t, int64(77), subscription.RegistrationID())
+			require.Equal(t, int32(9), subscription.StreamID())
+		}
+	})
+}
+
+func TestConductor_DoWork_idleNoLockConcurrentLookup(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance, _ := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	conductorInstance.SeedServiceTimestamps(1)
+	conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+	conductorInstance.InsertSubscriptionForTest(
+		77,
+		stubSubscription{registrationID: 77, streamID: 9},
+	)
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+	require.False(t, registry.HasScheduledLinger())
+
+	var wg sync.WaitGroup
+	runConcurrentPubSubLookup(t, &wg, conductorInstance, 1000)
+
+	for range 1000 {
+		require.Zero(t, conductorInstance.DoWork())
+		require.False(t, registry.HasScheduledLinger())
+	}
+
+	wg.Wait()
+}
+
+func TestConductor_DoWork_lingerScheduledConcurrentLookup_race(t *testing.T) {
+	t.Parallel()
+
+	const startNs int64 = 12_000_000_000
+	const lingerNs int64 = int64(time.Second)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	conductorInstance.SeedServiceTimestamps(startNs)
+	conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+	conductorInstance.InsertSubscriptionForTest(
+		77,
+		stubSubscription{registrationID: 77, streamID: 9},
+	)
+
+	registry, logPath := acquireLogOnConductorRegistry(t, conductorInstance, "linger-concurrent.log")
+	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
+	require.True(t, registry.HasScheduledLinger())
+	*nanoNs = startNs + lingerNs - 1
+
+	var wg sync.WaitGroup
+	runConcurrentPubSubLookup(t, &wg, conductorInstance, 1000)
+
+	for range 1000 {
+		conductorInstance.DoWork()
+	}
+
+	wg.Wait()
+}
+
+func TestConductor_DoWork_lingerScheduledConcurrentLookup_blocksDuringSweep(t *testing.T) {
+	t.Parallel()
+
+	sweepEntered := make(chan struct{})
+	releaseSweep := make(chan struct{})
+	var sweepEnteredOnce sync.Once
+
+	const startNs int64 = 12_500_000_000
+	const lingerNs int64 = int64(time.Second)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	conductorInstance.SeedServiceTimestamps(startNs)
+	conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+	conductorInstance.InsertSubscriptionForTest(
+		77,
+		stubSubscription{registrationID: 77, streamID: 9},
+	)
+
+	registry, logPath := acquireLogOnConductorRegistry(t, conductorInstance, "linger-sweep-block.log")
+	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
+	require.True(t, registry.HasScheduledLinger())
+	*nanoNs = startNs + lingerNs - 1
+
+	conductorInstance.SetLingerSweepBlockerForTest(func() {
+		sweepEnteredOnce.Do(func() { close(sweepEntered) })
+		<-releaseSweep
+	})
+	t.Cleanup(func() { conductorInstance.SetLingerSweepBlockerForTest(nil) })
+
+	doWorkDone := make(chan int)
+	go func() {
+		doWorkDone <- conductorInstance.DoWork()
+	}()
+
+	<-sweepEntered
+
+	lookupDone := make(chan bool, 1)
+	go func() {
+		_, ok := conductorInstance.PublicationByRegID(42)
+		lookupDone <- ok
+	}()
+
+	select {
+	case ok := <-lookupDone:
+		t.Fatalf("lookup completed during linger sweep write lock: ok=%v", ok)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	select {
+	case workCount := <-doWorkDone:
+		t.Fatalf("DoWork finished before sweep released: workCount=%d", workCount)
+	default:
+	}
+
+	close(releaseSweep)
+	require.True(t, <-lookupDone)
+	<-doWorkDone
+}
+
+func TestConductor_DoWork_concurrentDrainLingeringLogBuffers_race(t *testing.T) {
+	t.Parallel()
+
+	const startNs int64 = 13_000_000_000
+	const lingerNs int64 = int64(time.Second)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	conductorInstance.SeedServiceTimestamps(startNs)
+	registry, logPath := acquireLogOnConductorRegistry(t, conductorInstance, "drain-race.log")
+	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
+	require.True(t, registry.HasScheduledLinger())
+	*nanoNs = startNs + lingerNs/2
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for range 500 {
+			conductorInstance.DoWork()
+		}
+	})
+	wg.Go(func() {
+		for range 500 {
+			conductorInstance.DrainLingeringLogBuffers()
+		}
+	})
+	wg.Wait()
+
+	assertRegistryLingerScheduledMatchesScan(t, registry)
+	require.True(t, registry.HasScheduledLinger())
+	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+	require.Less(t, *nanoNs, startNs+lingerNs)
+}
+
 type concurrentImageCallbackLookupCase struct {
 	available bool
 	setup     func(*conductor.Conductor, *recordingImageLifecycle)
@@ -924,11 +1106,13 @@ func TestConductor_ReleaseLogBuffers_positiveLinger_sweptByDoWork(t *testing.T) 
 	*nanoNs = startNs + lingerNs - 1
 	conductorInstance.DoWork()
 	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+	require.True(t, registry.HasScheduledLinger())
 
 	*nanoNs = startNs + lingerNs
 	work := conductorInstance.DoWork()
 	require.GreaterOrEqual(t, work, 1)
 	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+	require.False(t, registry.HasScheduledLinger())
 }
 
 func TestConductor_ReleaseLogBuffers_zeroNanoClock_usesSharedTimeDomain(t *testing.T) {
@@ -988,11 +1172,13 @@ func TestConductor_ReleaseLogBuffers_zeroNanoClockAdvance_sweptByDoWork(t *testi
 	*nanoNs = lingerNs - 1
 	conductorInstance.DoWork()
 	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+	require.True(t, registry.HasScheduledLinger())
 
 	*nanoNs = lingerNs
 	work := conductorInstance.DoWork()
 	require.GreaterOrEqual(t, work, 1)
 	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+	require.False(t, registry.HasScheduledLinger())
 }
 
 func TestConductor_acquireAfterLingerScheduled_cancelsLinger(t *testing.T) {
@@ -1077,15 +1263,19 @@ func TestConductor_DoWork_sweepsLingeringLogBuffers(t *testing.T) {
 
 	registry, logPath := acquireLogOnConductorRegistry(t, conductorInstance, "do-work-linger.log")
 	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
+	require.True(t, registry.HasScheduledLinger())
 
 	*nanoNs = startNs + lingerNs - 1
 	conductorInstance.DoWork()
 	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+	require.True(t, registry.HasScheduledLinger())
 
 	*nanoNs = startNs + lingerNs
 	work := conductorInstance.DoWork()
 	require.GreaterOrEqual(t, work, 1)
 	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+	require.False(t, registry.HasScheduledLinger())
+	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
 }
 
 func TestConductor_DrainLingeringLogBuffers_closeHook(t *testing.T) {

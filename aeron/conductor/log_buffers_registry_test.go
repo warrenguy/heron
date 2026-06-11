@@ -89,6 +89,7 @@ func assertRegistryLingerScheduled(
 	require.Zero(t, conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
 	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 	require.Equal(t, startNs+lingerNs, conductor.LingerDeadlineNsForTest(registry, logPath))
+	assertRegistryLingerScheduledMatchesScan(t, registry)
 }
 
 func assertLingerRetainedAt(
@@ -446,11 +447,17 @@ func TestLogBuffersRegistry_Release_positiveLingerIgnoredUntilFinalRelease(t *te
 	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
 	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 	require.Zero(t, conductor.LingerDeadlineNsForTest(registry, logPath))
+	assertRegistryLingerScheduledMatchesScan(t, registry)
+	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
+	require.False(t, registry.HasScheduledLinger())
 
 	registry.Release(logPath, lingerNs)
 	require.Zero(t, conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
 	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 	require.NotZero(t, conductor.LingerDeadlineNsForTest(registry, logPath))
+	assertRegistryLingerScheduledMatchesScan(t, registry)
+	require.Equal(t, 1, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
+	require.True(t, registry.HasScheduledLinger())
 }
 
 func TestLogBuffersRegistry_Release_lingerSchedulesUnmap(t *testing.T) {
@@ -504,6 +511,9 @@ func TestLogBuffersRegistry_Release_negativeLingerImmediateUnmap(t *testing.T) {
 
 			require.Zero(t, conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
 			require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+			assertRegistryLingerScheduledMatchesScan(t, registry)
+			require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
+			require.False(t, registry.HasScheduledLinger())
 		})
 	}
 }
@@ -531,4 +541,75 @@ func TestSweepLingeringLogBuffers_nilRegistry(t *testing.T) {
 	t.Parallel()
 
 	require.Zero(t, conductor.SweepLingeringLogBuffersForTest(nil, 0))
+}
+
+func assertRegistryLingerScheduledMatchesScan(
+	t *testing.T,
+	registry *conductor.LogBuffersRegistry,
+) {
+	t.Helper()
+
+	require.Equal(
+		t,
+		conductor.LogBuffersRegistryCountScheduledLingersForTest(registry),
+		conductor.LogBuffersRegistryLingerScheduledForTest(registry),
+	)
+	require.Equal(
+		t,
+		conductor.LogBuffersRegistryLingerScheduledForTest(registry) > 0,
+		registry.HasScheduledLinger(),
+	)
+}
+
+func TestLogBuffersRegistry_lingerScheduled_nilRegistry(t *testing.T) {
+	t.Parallel()
+
+	var nilRegistry *conductor.LogBuffersRegistry
+	require.False(t, nilRegistry.HasScheduledLinger())
+	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(nil))
+	require.Zero(t, conductor.LogBuffersRegistryCountScheduledLingersForTest(nil))
+}
+
+func TestLogBuffersRegistry_lingerScheduledCounter(t *testing.T) {
+	t.Parallel()
+
+	const startNs int64 = 6_000_000_000
+	const lingerNs int64 = int64(time.Second)
+
+	registry, logPath := newRegistryWithAcquiredLog(t, "linger-counter.log")
+	assertRegistryLingerScheduledMatchesScan(t, registry)
+	require.False(t, registry.HasScheduledLinger())
+
+	_, err := registry.Acquire(logPath)
+	require.NoError(t, err)
+	registry.Release(logPath, int64(time.Hour))
+	assertRegistryLingerScheduledMatchesScan(t, registry)
+	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
+	require.False(t, registry.HasScheduledLinger())
+
+	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
+	assertRegistryLingerScheduledMatchesScan(t, registry)
+	require.Equal(t, 1, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
+	require.True(t, registry.HasScheduledLinger())
+
+	_, err = registry.Acquire(logPath)
+	require.NoError(t, err)
+	assertRegistryLingerScheduledMatchesScan(t, registry)
+	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
+	require.False(t, registry.HasScheduledLinger())
+
+	registry.Release(logPath, 0)
+	assertRegistryLingerScheduledMatchesScan(t, registry)
+	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
+	require.False(t, registry.HasScheduledLinger())
+
+	registry, logPath = newRegistryWithAcquiredLog(t, "linger-counter-sweep.log")
+	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
+	require.Equal(t, 1, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
+
+	sweep := registrySweepForTest(registry)
+	require.Equal(t, 1, sweep(startNs+lingerNs))
+	assertRegistryLingerScheduledMatchesScan(t, registry)
+	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
+	require.False(t, registry.HasScheduledLinger())
 }

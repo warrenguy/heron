@@ -61,6 +61,24 @@ func logBuffersRegistryContainsHook(
 	return registry.contains(logFileName)
 }
 
+func logBuffersRegistryLingerScheduledHook(registry *LogBuffersRegistry) int {
+	return registry.lingerScheduledCount()
+}
+
+func invokeLingerSweepBlockerForTest(conductor *Conductor) {
+	if conductor.lingerSweepBlocker != nil {
+		conductor.lingerSweepBlocker()
+	}
+}
+
+func setLingerSweepBlockerHook(conductor *Conductor, blocker func()) {
+	conductor.lingerSweepBlocker = blocker
+}
+
+func logBuffersRegistryCountScheduledLingersHook(registry *LogBuffersRegistry) int {
+	return registry.countScheduledLingers()
+}
+
 func setCountersReaderHook(conductor *Conductor, reader *cnc.CountersReader) {
 	conductor.countersReader = reader
 }

@@ -1,6 +1,7 @@
 package conductor
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
@@ -25,11 +26,15 @@ type logBufferEntry struct {
 
 // LogBuffersRegistry is the sole conductor log-buffer map: dedup mmap by absolute
 // path, refCount, and lingerDeadlineNs. Not thread-safe; mutation must run under
-// Conductor.resourceMu write lock during DoWork or close drain.
+// Conductor.resourceMu write lock during mutation scopes or close drain.
 type LogBuffersRegistry struct {
 	entries                map[string]*logBufferEntry
 	mediaDriverDir         string
 	resolvedMediaDriverDir string
+	// lingerScheduled counts entries awaiting linger sweep; updated with atomic.Add
+	// under resourceMu write lock. HasScheduledLinger uses atomic.Load for lock-free
+	// reads from service() while other goroutines may drain under write lock.
+	lingerScheduled atomic.Int32
 }
 
 func NewLogBuffersRegistry(mediaDriverDir string) *LogBuffersRegistry {
@@ -70,6 +75,7 @@ func (registry *LogBuffersRegistry) acquireByKey(key string) (*logbuffer.LogBuff
 
 	entry := registry.entries[key]
 	if entry != nil {
+		registry.decrementLingerScheduled(entry)
 		entry.refCount++
 		entry.lingerDeadlineNs = 0
 		return entry.buffers, nil
@@ -164,9 +170,11 @@ func (registry *LogBuffersRegistry) releaseResolvedKeyAt(
 	}
 
 	entry.lingerDeadlineNs = nowNs + lingerNs
+	registry.lingerScheduled.Add(1)
 }
 
 func (registry *LogBuffersRegistry) deleteEntry(key string, entry *logBufferEntry) {
+	registry.decrementLingerScheduled(entry)
 	delete(registry.entries, key)
 	if mapped := entry.buffers.MappedLogBuffer(); mapped != nil {
 		_ = mapped.Close()
@@ -232,4 +240,36 @@ func (registry *LogBuffersRegistry) refCount(logFileName string) int32 {
 func (registry *LogBuffersRegistry) contains(logFileName string) bool {
 	_, _, ok := registry.lookupLogFile(logFileName)
 	return ok
+}
+
+func (registry *LogBuffersRegistry) decrementLingerScheduled(entry *logBufferEntry) {
+	if entry.lingerDeadlineNs != 0 {
+		registry.lingerScheduled.Add(-1)
+	}
+}
+
+// HasScheduledLinger reports whether any entry is awaiting linger sweep.
+func (registry *LogBuffersRegistry) HasScheduledLinger() bool {
+	return registry != nil && registry.lingerScheduled.Load() > 0
+}
+
+func (registry *LogBuffersRegistry) lingerScheduledCount() int {
+	if registry == nil {
+		return 0
+	}
+	return int(registry.lingerScheduled.Load())
+}
+
+func (registry *LogBuffersRegistry) countScheduledLingers() int {
+	if registry == nil {
+		return 0
+	}
+
+	count := 0
+	for _, entry := range registry.entries {
+		if entry.refCount == 0 && entry.lingerDeadlineNs != 0 {
+			count++
+		}
+	}
+	return count
 }

@@ -128,6 +128,16 @@ func assertRegistryRapidInvariants(
 	require.Equal(rt, model.refCount, observed.refCount)
 	require.Equal(rt, model.contains, observed.contains)
 	require.Equal(rt, model.lingerDeadlineNs, observed.lingerDeadlineNs)
+	require.Equal(
+		rt,
+		conductor.LogBuffersRegistryCountScheduledLingersForTest(registry),
+		conductor.LogBuffersRegistryLingerScheduledForTest(registry),
+	)
+	require.Equal(
+		rt,
+		conductor.LogBuffersRegistryLingerScheduledForTest(registry) > 0,
+		registry.HasScheduledLinger(),
+	)
 }
 
 type registryRapidStepTarget struct {
