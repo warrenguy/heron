@@ -58,6 +58,7 @@ type Client struct {
 	serviceTimestampsSeeded bool
 	clientLock              sync.Mutex
 	closed                  atomic.Bool
+	awaitPollSleepingHook   func()
 }
 
 func (client *Client) lockClient() {
@@ -546,6 +547,7 @@ func (client *Client) awaitPendingPoll(
 		if completed {
 			return registration, true, nil
 		}
+		invokeAwaitPollSleepingHook(client)
 		time.Sleep(client.idleSleepDuration)
 	}
 	return conductor.PendingRegistration{}, false, nil

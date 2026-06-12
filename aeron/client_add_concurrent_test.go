@@ -43,16 +43,48 @@ func requireAddClosedResult(t *testing.T, got addConcurrentResult) {
 	requireErrClientClosed(t, got.err)
 }
 
+type awaitPollSleepingWaiter struct {
+	notify chan struct{}
+}
+
+func newAwaitPollSleepingWaiter(t *testing.T, client *Client) *awaitPollSleepingWaiter {
+	t.Helper()
+
+	waiter := &awaitPollSleepingWaiter{notify: make(chan struct{}, 1)}
+	client.SetAwaitPollSleepingHookForTest(func() {
+		select {
+		case waiter.notify <- struct{}{}:
+		default:
+		}
+	})
+	t.Cleanup(func() { client.SetAwaitPollSleepingHookForTest(nil) })
+	return waiter
+}
+
+func (waiter *awaitPollSleepingWaiter) waitForSleeping(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-waiter.notify:
+	case <-time.After(clientConcurrentResultTimeout):
+		t.Fatal("timed out waiting for await poll sleep under clientLock")
+	}
+}
+
 type doWorkHammer struct {
 	ticks                atomic.Int32
 	pauseTicksAtRegister int32
 	stop                 chan struct{}
+	awaitPollSleeping    *awaitPollSleepingWaiter
 }
 
 func newDoWorkHammer(t *testing.T, client *Client) *doWorkHammer {
 	t.Helper()
 
-	hammer := &doWorkHammer{stop: make(chan struct{})}
+	hammer := &doWorkHammer{
+		stop:              make(chan struct{}),
+		awaitPollSleeping: newAwaitPollSleepingWaiter(t, client),
+	}
 	var stopOnce sync.Once
 	t.Cleanup(func() {
 		stopOnce.Do(func() { close(hammer.stop) })
@@ -71,50 +103,20 @@ func newDoWorkHammer(t *testing.T, client *Client) *doWorkHammer {
 	return hammer
 }
 
-func (hammer *doWorkHammer) requireTicksStableFor(t *testing.T, stableFor time.Duration) int32 {
-	t.Helper()
-
-	var (
-		last        int32
-		stableSince time.Time
-	)
-	require.Eventually(
-		t,
-		func() bool {
-			current := hammer.ticks.Load()
-			if current != last {
-				last = current
-				stableSince = time.Time{}
-				return false
-			}
-			if stableSince.IsZero() {
-				stableSince = time.Now()
-				return false
-			}
-			return time.Since(stableSince) >= stableFor
-		},
-		20*time.Millisecond,
-		50*time.Microsecond,
-		"hammer did not block on clientLock before pause check",
-	)
-	return last
-}
-
 func (hammer *doWorkHammer) onCommandSeenPauseCheck(t *testing.T) func(int64) {
 	t.Helper()
 
 	return func(_ int64) {
-		hammer.pauseTicksAtRegister = hammer.requireTicksStableFor(t, 2*time.Millisecond)
-		spinDeadline := time.Now().Add(20 * time.Millisecond)
-		for time.Now().Before(spinDeadline) {
-			require.Equal(
-				t,
-				hammer.pauseTicksAtRegister,
-				hammer.ticks.Load(),
-				"external DoWork interleaved during blocking await",
-			)
-			time.Sleep(time.Microsecond)
-		}
+		hammer.awaitPollSleeping.waitForSleeping(t)
+		baseline := hammer.ticks.Load()
+		require.Never(
+			t,
+			func() bool { return hammer.ticks.Load() != baseline },
+			20*time.Millisecond,
+			time.Microsecond,
+			"external DoWork interleaved during blocking await",
+		)
+		hammer.pauseTicksAtRegister = baseline
 	}
 }
 

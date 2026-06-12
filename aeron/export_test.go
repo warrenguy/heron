@@ -650,6 +650,13 @@ func (client *Client) GuardClosedBeforeOfferForTest(
 	return client.guardClosedBeforeOffer(driverProxy, cncMappedAtOfferStart)
 }
 
+// SetAwaitPollSleepingHookForTest installs a hook invoked under clientLock
+// immediately before each await-poll sleep. Set from the test goroutine before
+// starting a blocking await; clear after the await goroutine has finished.
+func (client *Client) SetAwaitPollSleepingHookForTest(hook func()) {
+	setAwaitPollSleepingHook(client, hook)
+}
+
 // PublishClosedForTest sets closed without teardown; for guard tests only.
 func (client *Client) PublishClosedForTest() {
 	// CAS mirrors Close phase-1 publish; teardown is intentionally omitted.
