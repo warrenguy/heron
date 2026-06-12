@@ -19,6 +19,189 @@ import (
 
 const clientStayAliveDuration = 10 * time.Second
 
+func assertAddRejectedAfterClose(
+	t *testing.T,
+	md *harness.MediaDriver,
+	streamID int32,
+	add func(*aeron.Client, int32) (any, error),
+) {
+	t.Helper()
+
+	// Client must stay closed; ConnectClient cleanup would re-close.
+	client, err := aeron.Connect(aeron.Context{AeronDir: md.Dir})
+	require.NoError(t, err)
+	require.NoError(t, client.Close())
+	require.Zero(t, client.DoWork())
+
+	got, err := add(client, streamID)
+	require.Nil(t, got)
+	require.ErrorIs(t, err, aeron.ErrClientClosed)
+	md.AssertProcessAlive(t)
+}
+
+func assertLookupHitThenMissAfterClose(
+	t *testing.T,
+	md *harness.MediaDriver,
+	streamID int32,
+	setup func(*aeron.Client, int32) (regID int64, want any, closeFn func() error),
+	lookup func(*aeron.Client, int64) (any, bool),
+	requireMiss func(testing.TB, *aeron.Client, int64),
+) {
+	t.Helper()
+
+	client := harness.ConnectClient(t, md, aeron.Context{})
+
+	regID, want, closeFn := setup(client, streamID)
+	got, ok := lookup(client, regID)
+	require.True(t, ok)
+	require.Same(t, want, got)
+
+	require.NoError(t, closeFn())
+	requireMiss(t, client, regID)
+	md.AssertProcessAlive(t)
+}
+
+// Client Add* IPC integration tests prove blocking AddPublication/AddSubscription
+// and regID lookup on live aeronmd. Does not send Offer payloads or poll
+// fragments; unit tests cover synthetic-driver error paths.
+//
+// Stream IDs 7101-7107 are unique per test to avoid collisions if tests share a driver.
+
+// TestClientAddPublicationIPC proves AddPublication blocks until ready, inserts
+// the handle into the client map, and Publication(regID) returns the same pointer.
+func TestClientAddPublicationIPC(t *testing.T) {
+	md := harness.Start(t)
+
+	client := harness.ConnectClient(t, md, aeron.Context{})
+
+	const streamID int32 = 7101
+	pub, err := client.AddPublication(streamID, harness.IPCChannel)
+	require.NoError(t, err)
+	require.NotNil(t, pub)
+	require.Positive(t, pub.RegistrationID())
+
+	regID := pub.RegistrationID()
+	got, ok := client.Publication(regID)
+	require.True(t, ok)
+	require.Same(t, pub, got)
+
+	require.NoError(t, pub.Close())
+	md.AssertProcessAlive(t)
+}
+
+// TestClientAddPublicationIsConnectedEventually proves IsConnected becomes true once
+// a matching IPC subscriber is registered and driver events are pumped via DoWork.
+func TestClientAddPublicationIsConnectedEventually(t *testing.T) {
+	md := harness.Start(t)
+
+	client := harness.ConnectClient(t, md, aeron.Context{})
+
+	const streamID int32 = 7102
+	pub, err := client.AddPublication(streamID, harness.IPCChannel)
+	require.NoError(t, err)
+	require.NotNil(t, pub)
+	require.False(t, pub.IsConnected())
+
+	// Live IPC: pub is_connected stays false until a matching subscriber attaches.
+	sub, err := client.AddSubscription(streamID, harness.IPCChannel)
+	require.NoError(t, err)
+	require.NotNil(t, sub)
+	harness.CleanupClose(t, "close subscription", sub.Close)
+
+	harness.WaitForIPCLinkConnected(t, client, pub, sub, 0)
+
+	require.NoError(t, pub.Close())
+	md.AssertProcessAlive(t)
+}
+
+// TestClientAddSubscriptionIPC proves AddSubscription blocks until ready and
+// Subscription(regID) returns the same pointer with stream and channel set.
+func TestClientAddSubscriptionIPC(t *testing.T) {
+	md := harness.Start(t)
+
+	client := harness.ConnectClient(t, md, aeron.Context{})
+
+	const streamID int32 = 7103
+	sub, err := client.AddSubscription(streamID, harness.IPCChannel)
+	require.NoError(t, err)
+	require.NotNil(t, sub)
+	require.Positive(t, sub.RegistrationID())
+	require.Equal(t, streamID, sub.StreamID())
+	require.Equal(t, harness.IPCChannel, sub.Channel())
+
+	regID := sub.RegistrationID()
+	got, ok := client.Subscription(regID)
+	require.True(t, ok)
+	require.Same(t, sub, got)
+
+	require.NoError(t, sub.Close())
+	md.AssertProcessAlive(t)
+}
+
+// TestClientPublicationLookupByRegID proves lookup hits while registered and
+// misses after Close removes the handle from the client map.
+func TestClientPublicationLookupByRegID(t *testing.T) {
+	md := harness.Start(t)
+
+	assertLookupHitThenMissAfterClose(
+		t,
+		md,
+		7104,
+		func(client *aeron.Client, streamID int32) (int64, any, func() error) {
+			pub, err := client.AddPublication(streamID, harness.IPCChannel)
+			require.NoError(t, err)
+			require.NotNil(t, pub)
+			return pub.RegistrationID(), pub, pub.Close
+		},
+		func(client *aeron.Client, regID int64) (any, bool) {
+			return client.Publication(regID)
+		},
+		harness.RequirePublicationLookupMiss,
+	)
+}
+
+// TestClientAddPublicationRejectedAfterClose proves AddPublication on a closed
+// client returns ErrClientClosed without offering a new registration.
+func TestClientAddPublicationRejectedAfterClose(t *testing.T) {
+	md := harness.Start(t)
+
+	assertAddRejectedAfterClose(t, md, 7105, func(client *aeron.Client, streamID int32) (any, error) {
+		return client.AddPublication(streamID, harness.IPCChannel)
+	})
+}
+
+// TestClientAddSubscriptionRejectedAfterClose proves AddSubscription on a closed
+// client returns ErrClientClosed without offering a new registration.
+func TestClientAddSubscriptionRejectedAfterClose(t *testing.T) {
+	md := harness.Start(t)
+
+	assertAddRejectedAfterClose(t, md, 7106, func(client *aeron.Client, streamID int32) (any, error) {
+		return client.AddSubscription(streamID, harness.IPCChannel)
+	})
+}
+
+// TestClientSubscriptionLookupByRegID proves lookup hits while registered and
+// misses after Close removes the handle from the client map.
+func TestClientSubscriptionLookupByRegID(t *testing.T) {
+	md := harness.Start(t)
+
+	assertLookupHitThenMissAfterClose(
+		t,
+		md,
+		7107,
+		func(client *aeron.Client, streamID int32) (int64, any, func() error) {
+			sub, err := client.AddSubscription(streamID, harness.IPCChannel)
+			require.NoError(t, err)
+			require.NotNil(t, sub)
+			return sub.RegistrationID(), sub, sub.Close
+		},
+		func(client *aeron.Client, regID int64) (any, bool) {
+			return client.Subscription(regID)
+		},
+		harness.RequireSubscriptionLookupMiss,
+	)
+}
+
 func TestClientStayAlive(t *testing.T) {
 	md := harness.Start(t)
 

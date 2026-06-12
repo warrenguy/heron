@@ -91,10 +91,7 @@ func consumerHeartbeatAgeMs(toDriver *ringbuffer.ManyToOneRingBuffer) (ageMs int
 	if heartbeatMs <= 0 {
 		return 0, false
 	}
-	ageMs = time.Now().UnixMilli() - heartbeatMs
-	if ageMs < 0 {
-		ageMs = 0
-	}
+	ageMs = max(time.Now().UnixMilli()-heartbeatMs, 0)
 	return ageMs, true
 }
 
