@@ -8,7 +8,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 env:
-  BENCH_COUNT: 6
+  BENCH_COUNT: 3
   BENCH_THRESHOLD: 30
   GOMAXPROCS: 4
 

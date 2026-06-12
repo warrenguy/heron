@@ -1,6 +1,7 @@
 package aeron_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -9,8 +10,24 @@ import (
 	"github.com/warrenguy/heron/aeron"
 )
 
-func rapidDoWorkNTimes(_ *rapid.T, client *aeron.Client, count int) {
+func rapidDoWorkNTimes(rt *rapid.T, client *aeron.Client, count int) {
+	rt.Helper()
+
 	for range count {
+		client.DoWork()
+	}
+}
+
+func rapidPreCloseDoWorkWithQueries(rt *rapid.T, client *aeron.Client, clientID int64, count int) {
+	rt.Helper()
+
+	for i := range count {
+		if rapid.Bool().Draw(rt, fmt.Sprintf("isTerminating%d", i)) {
+			require.False(rt, client.IsTerminating())
+		}
+		if rapid.Bool().Draw(rt, fmt.Sprintf("clientId%d", i)) {
+			require.Equal(rt, clientID, client.ClientId())
+		}
 		client.DoWork()
 	}
 }
@@ -21,7 +38,12 @@ func TestClient_closeDoWorkGuards_rapid(t *testing.T) {
 		client := newRapidTestClient(t, clientID)
 		require.Equal(t, clientID, client.ClientId())
 
-		rapidDoWorkNTimes(t, client, rapid.IntRange(0, 16).Draw(t, "doWorkBeforeClose"))
+		rapidPreCloseDoWorkWithQueries(
+			t,
+			client,
+			clientID,
+			rapid.IntRange(0, 32).Draw(t, "doWorkBeforeClose"),
+		)
 		require.Equal(t, clientID, client.ClientId())
 
 		require.NoError(t, client.Close())
@@ -33,6 +55,18 @@ func TestClient_closeDoWorkGuards_rapid(t *testing.T) {
 	})
 }
 
+func rapidInterleaveDoWorkAndIsTerminating(rt *rapid.T, client *aeron.Client, count int) {
+	rt.Helper()
+
+	for i := range count {
+		if rapid.Bool().Draw(rt, fmt.Sprintf("doWork%d", i)) {
+			client.DoWork()
+		} else {
+			_ = client.IsTerminating()
+		}
+	}
+}
+
 func TestClient_doubleClose_rapid(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		client := newRapidTestClient(t, 0)
@@ -40,6 +74,11 @@ func TestClient_doubleClose_rapid(t *testing.T) {
 		rapidDoWorkNTimes(t, client, rapid.IntRange(0, 16).Draw(t, "doWorkBeforeClose"))
 
 		require.NoError(t, client.Close())
+		rapidInterleaveDoWorkAndIsTerminating(
+			t,
+			client,
+			rapid.IntRange(0, 32).Draw(t, "betweenCloseOps"),
+		)
 		require.NoError(t, client.Close())
 		require.Zero(t, client.DoWork())
 		require.False(t, client.IsTerminating())

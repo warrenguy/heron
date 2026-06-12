@@ -650,6 +650,50 @@ func (client *Client) GuardClosedBeforeOfferForTest(
 	return client.guardClosedBeforeOffer(driverProxy, cncMappedAtOfferStart)
 }
 
+// PublishClosedForTest sets closed without teardown; for guard tests only.
+func (client *Client) PublishClosedForTest() {
+	// CAS mirrors Close phase-1 publish; teardown is intentionally omitted.
+	client.closed.CompareAndSwap(false, true)
+}
+
+func (client *Client) mapPollPendingErrorForTest(correlationID int64) func(error) error {
+	return func(err error) error {
+		return mapPollPendingError(correlationID, client.driverTimeout, err)
+	}
+}
+
+// DoWorkLockedForTest runs one conductor service tick without acquiring clientLock.
+//
+// Caller must already hold clientLock, as in blocking await/offer poll loops, Close
+// teardown, or ErrorHandler and image handlers invoked during doWorkLocked; see
+// Client godoc.
+func (client *Client) DoWorkLockedForTest() int {
+	return client.doWorkLocked()
+}
+
+// AwaitPendingPollOneTickForTest runs one awaitPendingPoll tick via production code.
+//
+// skipDoWork omits doWorkLocked when poll completion is pre-latched; afterPollPending
+// runs after PollPending for closed-guard branch tests.
+func (client *Client) AwaitPendingPollOneTickForTest(
+	correlationID int64,
+	skipDoWork bool,
+	afterPollPending func(),
+) (conductor.PendingRegistration, bool, error) {
+	client.lockClient()
+	defer client.unlockClient()
+
+	return client.awaitPendingPollTick(
+		client.conductor,
+		correlationID,
+		client.mapPollPendingErrorForTest(correlationID),
+		&awaitPendingPollTickConfig{
+			skipDoWork:       skipDoWork,
+			afterPollPending: afterPollPending,
+		},
+	)
+}
+
 func (client *Client) conductorForTest() *conductor.Conductor {
 	if client == nil || client.conductor == nil {
 		return nil
@@ -785,16 +829,17 @@ func (client *Client) PollAwaitForTest(correlationID int64) error {
 	if err := client.requireReadyWithConductor(); err != nil {
 		return err
 	}
+	mapErr := client.mapPollPendingErrorForTest(correlationID)
 	done, _, err := client.conductor.PollPending(correlationID)
 	if done {
-		return mapPollPendingError(correlationID, client.driverTimeout, err)
+		return mapErr(err)
 	}
 	client.DoWork()
 	done, _, err = client.conductor.PollPending(correlationID)
 	if !done {
 		return ErrClientNotReady
 	}
-	return mapPollPendingError(correlationID, client.driverTimeout, err)
+	return mapErr(err)
 }
 
 func NormalizeContextForTest(ctx Context) Context {

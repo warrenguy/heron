@@ -26,16 +26,11 @@ type PendingRegistration struct {
 	RegistrationID int64
 	Int32Value     int32
 	Err            error
-	// Publication and Subscription are any-typed until ready handlers construct
-	// handles; conductor cannot import aeron without an import cycle.
+	// Publication and Subscription are any to break the conductor/aeron import cycle.
 	Publication  any
 	Subscription any
 }
 
-// pendingRegistry map structure is mutex-protected.
-//
-// Conductor await fields still require a single invoker goroutine per client until
-// clientLock lands.
 type pendingRegistry struct {
 	mu      sync.Mutex
 	entries map[int64]*PendingRegistration
@@ -174,10 +169,6 @@ func (conductor *Conductor) PendingResult(
 	return *registration, true
 }
 
-// RegisterPending runs on the caller goroutine; PollPending and adapter handlers
-// run on the conductor service goroutine inside DoWork.
-//
-// Concurrent DoWork on one Conductor is undefined.
 func (conductor *Conductor) pendingDeadline(timeout time.Duration) int64 {
 	return conductor.config.NanoClock() + timeout.Nanoseconds()
 }
@@ -189,6 +180,14 @@ func (conductor *Conductor) checkNotTerminating() error {
 	return nil
 }
 
+// RegisterPending runs on the caller goroutine.
+//
+// Adapter handlers latch completion during DoWork when the client polls via
+// doWorkLocked.
+//
+// PollPending runs on the same caller in awaitPendingPollTick after
+// doWorkLocked, not inside DoWork. Client serialization: see aeron.Client
+// godoc.
 func (conductor *Conductor) RegisterPending(
 	kind PendingKind,
 	correlationID int64,
@@ -270,6 +269,11 @@ func (conductor *Conductor) RegisterPendingAddWithDeadline(
 	return nil
 }
 
+// PollPending returns a latched pending registration after adapter handlers set
+// receivedCorrelationID during DoWork.
+//
+// Called from the client on the same goroutine as RegisterPending, after
+// doWorkLocked; not invoked from inside DoWork.
 func (conductor *Conductor) PollPending(
 	correlationID int64,
 ) (done bool, registration PendingRegistration, err error) {
@@ -284,7 +288,7 @@ func (conductor *Conductor) PollPending(
 	registration = *registrationPtr
 	conductor.pending.Remove(correlationID)
 	if registration.Err != nil {
-		conductor.rollbackAddPendingResources(registration)
+		conductor.RollbackAddPendingResources(registration)
 	}
 	conductor.receivedCorrelationID = NullCorrelationID
 	return true, registration, registration.Err
@@ -296,7 +300,7 @@ func (conductor *Conductor) CancelPending(correlationID int64) {
 		readyLatched := conductor.receivedCorrelationID == correlationID &&
 			registration.Err == nil
 		if !readyLatched {
-			conductor.rollbackAddPendingResources(*registration)
+			conductor.RollbackAddPendingResources(*registration)
 		}
 	}
 	conductor.pending.Remove(correlationID)
@@ -307,7 +311,7 @@ func (conductor *Conductor) CancelPending(correlationID int64) {
 
 func (conductor *Conductor) ClearPending() {
 	conductor.pending.ClearEach(func(registration PendingRegistration) {
-		conductor.rollbackAddPendingResources(registration)
+		conductor.RollbackAddPendingResources(registration)
 	})
 	conductor.receivedCorrelationID = NullCorrelationID
 	conductor.activeCorrelationID = NullCorrelationID
@@ -359,14 +363,9 @@ func addPendingKind(kind PendingKind) bool {
 	return kind == PendingKindAddPublication || kind == PendingKindAddSubscription
 }
 
-// AddPublication/AddSubscription pendings return true on driver OPERATION_SUCCESS as an
-// ack only; they do not set receivedCorrelationID; handlePublicationReady/handleSubscriptionReady
-// complete them via completePendingIfKind.
-//
-// RemovePublication, RemoveSubscription, and OperationSuccess pendings complete here
-// via completePendingSuccess.
-//
-// NextSessionID returns false; NextSessionID handles that kind.
+// OperationSucceeded completes remove and generic success pendings. Add kinds only
+// ack here; handlePublicationReady and handleSubscriptionReady finish them. NextSessionID
+// is completed by Conductor.NextSessionID.
 func (conductor *Conductor) OperationSucceeded(correlationID int64) bool {
 	registration, ok := conductor.pending.Get(correlationID)
 	if !ok {

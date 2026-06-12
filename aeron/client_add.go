@@ -10,6 +10,7 @@ import (
 )
 
 // AddPublication registers a concurrent publication on channel/streamID.
+//
 // Blocks until ON_PUBLICATION_READY is processed, the log is mmap'd, and the
 // Publication handle is inserted into the conductor resource map, or until
 // Context.DriverTimeout elapses. DriverTimeout covers both to-driver ring offer
@@ -17,12 +18,7 @@ import (
 // shorten the response poll window.
 //
 // Concurrent AddPublication from multiple goroutines is unsupported.
-// External DoWork from another goroutine during a blocking AddPublication is
-// unsupported.
-//
-// Concurrent Close from another goroutine during a blocking AddPublication is
-// unsupported; if Close is observed while awaiting, ErrClientClosed is returned
-// on a best-effort basis.
+// See Client godoc for DoWork, Close, and handle-level concurrency.
 func (client *Client) AddPublication(streamID int32, channel string) (*Publication, error) {
 	if err := prepareAdd(client, channel); err != nil {
 		return nil, err
@@ -42,6 +38,7 @@ func (client *Client) AddPublication(streamID int32, channel string) (*Publicati
 }
 
 // AddSubscription registers a subscription on channel/streamID.
+//
 // Blocks until ON_SUBSCRIPTION_READY is processed and the Subscription handle
 // is inserted into the resource map, or until Context.DriverTimeout elapses.
 // DriverTimeout covers both to-driver ring offer retries and the wait for the
@@ -52,12 +49,7 @@ func (client *Client) AddPublication(streamID int32, channel string) (*Publicati
 // conductor dispatch, not as a precondition for AddSubscription to return.
 //
 // Concurrent AddSubscription from multiple goroutines is unsupported.
-// External DoWork from another goroutine during a blocking AddSubscription is
-// unsupported.
-//
-// Concurrent Close from another goroutine during a blocking AddSubscription is
-// unsupported; if Close is observed while awaiting, ErrClientClosed is returned
-// on a best-effort basis.
+// Same concurrency rules as AddPublication; see Client godoc.
 func (client *Client) AddSubscription(streamID int32, channel string) (*Subscription, error) {
 	if err := prepareAdd(client, channel); err != nil {
 		return nil, err
@@ -81,6 +73,9 @@ func (client *Client) AddSubscription(streamID int32, channel string) (*Subscrip
 // Lookup is O(1) on the conductor map. Second return is false after remove/close,
 // if regID was never registered on this client, or if the stored handle is not a
 // *Publication.
+//
+// Concurrent Close during lookup is unsupported. Closed and nil conductor checks
+// are best-effort without clientLock, like NextCorrelationID.
 func (client *Client) Publication(regID int64) (*Publication, bool) {
 	return lookupByRegID(
 		client,
@@ -95,6 +90,9 @@ func (client *Client) Publication(regID int64) (*Publication, bool) {
 // Lookup is O(1) on the conductor map. Second return is false after remove/close,
 // if regID was never registered on this client, or if the stored handle is not a
 // *Subscription.
+//
+// Concurrent Close during lookup is unsupported. Closed and nil conductor checks
+// are best-effort without clientLock, like NextCorrelationID.
 func (client *Client) Subscription(regID int64) (*Subscription, bool) {
 	return lookupByRegID(
 		client,
@@ -115,7 +113,8 @@ func prepareAdd(client *Client, channel string) error {
 	if client == nil {
 		return ErrClientNotReady
 	}
-	if client.closed {
+	// awaitAdd re-checks closed under clientLock.
+	if client.closed.Load() {
 		return ErrClientClosed
 	}
 	return validateChannel(channel)
@@ -165,22 +164,30 @@ func lookupByRegID[Handle, T any](
 }
 
 func (client *Client) conductorForLookup() *conductor.Conductor {
-	if client == nil || client.closed || client.conductor == nil {
+	if client == nil || client.closed.Load() || client.conductor == nil {
 		return nil
 	}
 	return client.conductor
 }
 
+// awaitAdd blocks until the add registration completes or times out.
+// Poll and offer ticks call doWorkLocked, not DoWork. See Client godoc for concurrency.
 func (client *Client) awaitAdd(
 	pendingKind conductor.PendingKind,
 	streamID int32,
 	channel string,
 	offer addOfferFunc,
 ) (conductor.PendingRegistration, error) {
-	registrationKind := registrationKindFor(pendingKind)
+	if client == nil {
+		return conductor.PendingRegistration{}, ErrClientNotReady
+	}
+	client.lockClient()
+	defer client.unlockClient()
+
 	if err := client.requireReadyWithDriverProxy(); err != nil {
 		return conductor.PendingRegistration{}, err
 	}
+	registrationKind := registrationKindFor(pendingKind)
 
 	driverProxy := client.driverProxy
 	cncMappedAtOfferStart := client.mapped != nil
@@ -260,7 +267,10 @@ func (client *Client) guardClosedBeforeOffer(
 	if err := client.requireReadyWithDriverProxy(); err != nil {
 		return err
 	}
-	if client.closed || (cncMappedAtOfferStart && client.mapped == nil) {
+	if err := client.errIfClosed(); err != nil {
+		return err
+	}
+	if cncMappedAtOfferStart && client.mapped == nil {
 		return ErrClientClosed
 	}
 	if client.driverProxy != driverProxy {
@@ -288,7 +298,7 @@ func (client *Client) offerAddCommand(
 		if conductorInstance.IsTerminating() {
 			return mapConductorTerminationError(conductorInstance)
 		}
-		client.DoWork()
+		client.doWorkLocked()
 		if err := client.guardClosedBeforeOffer(driverProxy, cncMappedAtOfferStart); err != nil {
 			return err
 		}

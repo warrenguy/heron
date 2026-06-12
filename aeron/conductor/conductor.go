@@ -533,7 +533,7 @@ func (conductor *Conductor) preInsertSubscription(
 	return preInsertErr
 }
 
-func (conductor *Conductor) rollbackAddPendingResources(registration PendingRegistration) {
+func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegistration) {
 	if conductor.resourceLifecycle == nil {
 		return
 	}
@@ -592,11 +592,11 @@ func (conductor *Conductor) bindSubscriptionOnInsert(subscription SubscriptionHa
 }
 
 func (conductor *Conductor) handlePendingExpired(registration PendingRegistration, _ bool) {
-	conductor.rollbackAddPendingResources(registration)
+	conductor.RollbackAddPendingResources(registration)
 }
 
 func (conductor *Conductor) failPending(registration *PendingRegistration, err error) {
-	conductor.rollbackAddPendingResources(*registration)
+	conductor.RollbackAddPendingResources(*registration)
 	registration.Err = err
 	conductor.receivedCorrelationID = registration.CorrelationID
 }

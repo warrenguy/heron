@@ -298,7 +298,7 @@ func (adapter *DriverEventsAdapter) CorrelatedForTest(
 }
 
 func (conductor *Conductor) PublicationReadyForTest(event PublicationBuffersReady) {
-	conductor.handlePublicationReady(event)
+	publicationReadyHook(conductor, event)
 }
 
 func (conductor *Conductor) SubscriptionReadyForTest(event SubscriptionReady) {
@@ -308,7 +308,7 @@ func (conductor *Conductor) SubscriptionReadyForTest(event SubscriptionReady) {
 func (conductor *Conductor) RollbackAddPendingResourcesForTest(
 	registration PendingRegistration,
 ) {
-	conductor.rollbackAddPendingResources(registration)
+	conductor.RollbackAddPendingResources(registration)
 }
 
 func (conductor *Conductor) AvailableImageForTest(event AvailableImage) {

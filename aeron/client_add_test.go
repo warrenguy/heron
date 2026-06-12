@@ -135,6 +135,27 @@ func decodeAddSubscriptionCorrelationID(
 	return decoded.CorrelationID, nil
 }
 
+func decodeCorrelatedCorrelationID(
+	buffer aeronatomic.AtomicBuffer,
+	index int,
+	_ int,
+) (int64, error) {
+	decoded, err := conductor.DecodeCorrelated(buffer, index)
+	if err != nil {
+		return 0, err
+	}
+	return decoded.CorrelationID, nil
+}
+
+const clientConcurrentResultTimeout = 2 * time.Second
+
+func requireErrClientClosed(t *testing.T, err error) {
+	t.Helper()
+
+	require.ErrorIs(t, err, ErrClientClosed)
+	require.EqualError(t, err, ErrClientClosed.Error())
+}
+
 func receiveAddResult[T any](
 	t *testing.T,
 	resultCh <-chan T,
@@ -151,6 +172,52 @@ func receiveAddResult[T any](
 		var zero T
 		return zero
 	}
+}
+
+func requireCloseBlockedDuringAwait(
+	t *testing.T,
+	client *Client,
+	closeDone <-chan error,
+) {
+	t.Helper()
+
+	require.Eventually(
+		t,
+		func() bool {
+			if !errors.Is(client.errIfClosed(), ErrClientClosed) {
+				return false
+			}
+			select {
+			case <-closeDone:
+				return false
+			default:
+				return true
+			}
+		},
+		clientConcurrentResultTimeout,
+		time.Microsecond,
+		"closed state not observable before await released lock",
+	)
+	select {
+	case err := <-closeDone:
+		t.Fatal("Close returned before await released lock:", err)
+	default:
+	}
+}
+
+func requireAddCommandNotOnRing(
+	t *testing.T,
+	fixture *testutil.ConductorFixture,
+	msgTypeID int,
+) {
+	t.Helper()
+
+	require.NotContains(
+		t,
+		testutil.CommittedRecordTypeIDs(fixture.Ring),
+		msgTypeID,
+		"add command reached ring before offer-phase synchronization",
+	)
 }
 
 func requireAddPhaseTimeout(
@@ -393,6 +460,7 @@ func pollAndRespondToAddSubscriptionCommand(
 	t *testing.T,
 	fixture *testutil.ConductorFixture,
 	deadline time.Time,
+	onCommandSeen func(correlationID int64),
 ) (bool, int64) {
 	t.Helper()
 
@@ -407,7 +475,7 @@ func pollAndRespondToAddSubscriptionCommand(
 				clientAddSubscriptionReadyEvent(correlationID),
 			)
 		},
-		nil,
+		onCommandSeen,
 	)
 }
 
@@ -812,7 +880,7 @@ func TestClient_AddSubscription_ringBackpressureRetryThenSuccess(t *testing.T) {
 	resetClientAddRingEmpty(fixture.Ring)
 
 	pollDeadline := time.Now().Add(time.Second)
-	responded, _ := pollAndRespondToAddSubscriptionCommand(t, fixture, pollDeadline)
+	responded, _ := pollAndRespondToAddSubscriptionCommand(t, fixture, pollDeadline, nil)
 	require.True(t, responded, "timed out waiting for AddSubscription command on ring")
 
 	got := receiveAddResult(
@@ -1037,7 +1105,7 @@ func TestClient_AddSubscription_insertsMapOnSyntheticReady(t *testing.T) {
 	}()
 
 	pollDeadline := time.Now().Add(time.Second)
-	responded, correlationID := pollAndRespondToAddSubscriptionCommand(t, fixture, pollDeadline)
+	responded, correlationID := pollAndRespondToAddSubscriptionCommand(t, fixture, pollDeadline, nil)
 	require.True(t, responded, "timed out waiting for AddSubscription command on ring")
 
 	got := receiveAddResult(
@@ -1429,7 +1497,46 @@ func TestClient_AddPublication_pollPhaseLogMapFailure(t *testing.T) {
 	requireActiveCorrelationCleared(t, fixture)
 }
 
-func TestClient_GuardClosedBeforeOfferForTest_proxyMismatch(t *testing.T) {
+func TestClient_awaitPendingPoll_closedGuardAfterPollPending_addPublication(t *testing.T) {
+	var nanoNs int64
+	dir, logPath := setupClientAddPublicationLog(t)
+	client, fixture := newClientAddFixture(
+		t,
+		func() int64 { return nanoNs },
+		time.Second,
+		time.Millisecond,
+		dir,
+	)
+	fixture.Conductor.SetCountersReaderForTest(countersReaderForClientAddTest(t))
+
+	correlationID := client.NextCorrelationID()
+	deadlineNs := client.nanoClock() + time.Second.Nanoseconds()
+	require.NoError(
+		t,
+		fixture.Conductor.RegisterPendingAddWithDeadline(
+			conductor.PendingKindAddPublication,
+			correlationID,
+			clientAddStreamID,
+			clientAddChannel,
+			deadlineNs,
+		),
+	)
+	conductor.PublicationReadyForTest(
+		fixture.Conductor,
+		clientAddPublicationReadyEvent(correlationID, logPath),
+	)
+	require.Equal(t, 1, client.PublicationCountForTest())
+
+	_, completed, err := client.AwaitPendingPollOneTickForTest(correlationID, true, func() {
+		client.PublishClosedForTest()
+	})
+	require.True(t, completed)
+	require.ErrorIs(t, err, ErrClientClosed)
+	require.EqualError(t, err, ErrClientClosed.Error())
+	require.Equal(t, 0, client.PublicationCountForTest())
+}
+
+func TestClient_awaitPendingPoll_closedGuardAfterPollPending_addSubscription(t *testing.T) {
 	var nanoNs int64
 	dir := t.TempDir()
 	client, fixture := newClientAddFixture(
@@ -1439,22 +1546,67 @@ func TestClient_GuardClosedBeforeOfferForTest_proxyMismatch(t *testing.T) {
 		time.Millisecond,
 		dir,
 	)
+
+	correlationID := client.NextCorrelationID()
+	deadlineNs := client.nanoClock() + time.Second.Nanoseconds()
+	require.NoError(
+		t,
+		fixture.Conductor.RegisterPendingAddWithDeadline(
+			conductor.PendingKindAddSubscription,
+			correlationID,
+			clientAddStreamID,
+			clientAddChannel,
+			deadlineNs,
+		),
+	)
+	conductor.SubscriptionReadyForTest(
+		fixture.Conductor,
+		clientAddSubscriptionReadyEvent(correlationID),
+	)
+	require.Equal(t, 1, client.SubscriptionCountForTest())
+
+	_, completed, err := client.AwaitPendingPollOneTickForTest(correlationID, true, func() {
+		client.PublishClosedForTest()
+	})
+	require.True(t, completed)
+	require.ErrorIs(t, err, ErrClientClosed)
+	require.EqualError(t, err, ErrClientClosed.Error())
+	require.Equal(t, 0, client.SubscriptionCountForTest())
+}
+
+func newGuardClosedBeforeOfferClient(t *testing.T) (*Client, *testutil.ConductorFixture) {
+	t.Helper()
+	var nanoNs int64
+	return newClientAddFixture(
+		t,
+		func() int64 { return nanoNs },
+		time.Second,
+		time.Millisecond,
+		t.TempDir(),
+	)
+}
+
+func TestClient_GuardClosedBeforeOfferForTest_proxyMismatch(t *testing.T) {
+	client, fixture := newGuardClosedBeforeOfferClient(t)
 	otherProxy := conductor.NewDriverProxy(fixture.Ring, testutil.TestClientID+1)
 
 	err := client.GuardClosedBeforeOfferForTest(otherProxy, false)
 	require.ErrorIs(t, err, ErrClientNotReady)
+	require.EqualError(t, err, ErrClientNotReady.Error())
+}
+
+func TestClient_GuardClosedBeforeOfferForTest_closedFlag(t *testing.T) {
+	client, fixture := newGuardClosedBeforeOfferClient(t)
+	client.PublishClosedForTest()
+
+	err := client.GuardClosedBeforeOfferForTest(fixture.DriverProxy, false)
+	require.ErrorIs(t, err, ErrClientClosed)
+	require.EqualError(t, err, ErrClientClosed.Error())
 }
 
 func TestClient_GuardClosedBeforeOfferForTest_staleMappedCncFlag(t *testing.T) {
-	var nanoNs int64
-	dir := t.TempDir()
-	client, fixture := newClientAddFixture(
-		t,
-		func() int64 { return nanoNs },
-		time.Second,
-		time.Millisecond,
-		dir,
-	)
+	client, fixture := newGuardClosedBeforeOfferClient(t)
+
 	err := client.GuardClosedBeforeOfferForTest(fixture.DriverProxy, true)
 	require.ErrorIs(t, err, ErrClientClosed)
 }

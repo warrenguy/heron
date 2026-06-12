@@ -326,42 +326,43 @@ func TestClient_awaitResponse_driverRegistrationError(t *testing.T) {
 	requireActiveCorrelationCleared(t, fixture)
 }
 
+func waitForNextAvailableSessionIDCommand(
+	t *testing.T,
+	fixture *testutil.ConductorFixture,
+) int64 {
+	t.Helper()
+
+	return waitForAddCommand(
+		t,
+		fixture,
+		conductor.GetNextAvailableSessionID,
+		decodeCorrelatedCorrelationID,
+		"NextAvailableSessionID",
+	)
+}
+
 func pollAndRespondToNextAvailableSessionIDCommand(
 	t *testing.T,
 	fixture *testutil.ConductorFixture,
 	sessionID int32,
 	deadline time.Time,
-	onCommandSeen func(),
+	onCommandSeen func(int64),
 ) bool {
 	t.Helper()
 
-	for time.Now().Before(deadline) {
-		var responded bool
-		fixture.Ring.Read(func(msgTypeID int, buffer aeronatomic.AtomicBuffer, index, length int) {
-			if msgTypeID != conductor.GetNextAvailableSessionID {
-				return
-			}
-			decoded, err := conductor.DecodeCorrelated(buffer, index)
-			if err != nil {
-				return
-			}
-			if onCommandSeen != nil {
-				onCommandSeen()
-			}
-			transmitErr := fixture.Transmit(
-				conductor.OnNextAvailableSessionID,
-				conductor.CorrelationAndInt32Bytes(decoded.CorrelationID, sessionID),
-			)
-			if transmitErr == nil {
-				responded = true
-			}
-		})
-		if responded {
-			return true
-		}
-		time.Sleep(time.Millisecond)
-	}
-	return false
+	responded, _ := pollAndRespondToAddCommand(
+		t,
+		fixture,
+		conductor.GetNextAvailableSessionID,
+		decodeCorrelatedCorrelationID,
+		deadline,
+		func(correlationID int64) (int, []byte) {
+			return conductor.OnNextAvailableSessionID,
+				conductor.CorrelationAndInt32Bytes(correlationID, sessionID)
+		},
+		onCommandSeen,
+	)
+	return responded
 }
 
 func TestClient_NextAvailableSessionID_success(t *testing.T) {
@@ -514,6 +515,56 @@ func TestClient_awaitResponse_terminationCause(t *testing.T) {
 	requireActiveCorrelationCleared(t, fixture)
 }
 
+func TestClient_awaitResponse_errorHandlerNestedDoWorkLocked(t *testing.T) {
+	var nanoNs int64
+	var client *Client
+	var nestedDoWorkCalls int
+
+	config := testutil.DefaultConductorConfig(&nanoNs)
+	config.NanoClock = func() int64 { return nanoNs }
+	config.DriverTimeout = time.Second
+	config.IdleSleepDuration = time.Millisecond
+	config.ErrorHandler = func(error) {
+		nestedDoWorkCalls++
+		client.DoWorkLockedForTest()
+	}
+	fixture := testutil.NewConductorFixture(t, config)
+	client = NewClientForTestWithDriverProxy(
+		fixture.Conductor,
+		fixture.DriverProxy,
+		fixture.NanoClock,
+		config.ClientID,
+		config.DriverTimeout,
+		config.IdleSleepDuration,
+	)
+
+	client.DoWork()
+	nanoNs = testutil.TestWorkNanoNs
+	fixture.Ring.SetConsumerHeartbeatTime(conductor.NullCorrelationID)
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := client.AwaitResponseForTest(
+			clientAwaitTestCorrelationID,
+			conductor.PendingKindNextSessionID,
+			time.Second,
+			nil,
+		)
+		resultCh <- err
+	}()
+
+	select {
+	case err := <-resultCh:
+		var timeoutErr *DriverTimeoutError
+		require.ErrorAs(t, err, &timeoutErr)
+		require.ErrorIs(t, timeoutErr.Unwrap(), conductor.ErrDriverShutdown)
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking await hung: ErrorHandler nested doWorkLocked deadlock")
+	}
+	require.Equal(t, 1, nestedDoWorkCalls)
+	requireActiveCorrelationCleared(t, fixture)
+}
+
 func TestClient_awaitResponse_clientTimeoutTerminationCause(t *testing.T) {
 	var nanoNs int64
 	client, fixture := newClientAwaitFixture(
@@ -616,6 +667,40 @@ func TestClient_awaitResponse_registerPendingFailures(t *testing.T) {
 			require.EqualError(t, err, testCase.wantMsg)
 		})
 	}
+}
+
+func TestClient_awaitPendingPoll_closedGuardAfterPollPending(t *testing.T) {
+	var nanoNs int64
+	client, fixture := newClientAwaitFixture(
+		t,
+		func() int64 { return nanoNs },
+		time.Second,
+		time.Millisecond,
+	)
+
+	const wantSessionID int32 = 42
+
+	correlationID := client.NextCorrelationID()
+	deadlineNs := client.nanoClock() + time.Second.Nanoseconds()
+	require.NoError(
+		t,
+		fixture.Conductor.RegisterPendingWithDeadline(
+			conductor.PendingKindNextSessionID,
+			correlationID,
+			deadlineNs,
+		),
+	)
+	require.NoError(
+		t,
+		fixture.Conductor.CompletePendingForTest(correlationID, wantSessionID, nil),
+	)
+
+	_, completed, err := client.AwaitPendingPollOneTickForTest(correlationID, true, func() {
+		client.PublishClosedForTest()
+	})
+	require.True(t, completed)
+	require.ErrorIs(t, err, ErrClientClosed)
+	require.EqualError(t, err, ErrClientClosed.Error())
 }
 
 func TestClient_closedClientPaths(t *testing.T) {

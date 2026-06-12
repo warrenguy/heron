@@ -1,5 +1,4 @@
 // Concurrent publication stress tests intentionally run under -race in make check.
-// client_await_concurrent_test.go excludes -race via //go:build !race.
 
 package aeron_test
 

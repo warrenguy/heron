@@ -120,6 +120,10 @@ func setReceivedCorrelationIDHook(conductor *Conductor, correlationID int64) {
 	conductor.receivedCorrelationID = correlationID
 }
 
+func publicationReadyHook(conductor *Conductor, event PublicationBuffersReady) {
+	conductor.handlePublicationReady(event)
+}
+
 func completePendingHook(
 	conductor *Conductor,
 	correlationID int64,

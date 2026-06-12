@@ -171,3 +171,17 @@ func (conductor *Conductor) CompletePendingForTest(
 ) error {
 	return completePendingHook(conductor, correlationID, int32Value, err)
 }
+
+// PublicationReadyForTest is for cross-package tests behind the testhooks tag.
+//
+// conductor_test uses (*Conductor).PublicationReadyForTest in export_test.go instead.
+func PublicationReadyForTest(conductor *Conductor, event PublicationBuffersReady) {
+	publicationReadyHook(conductor, event)
+}
+
+// SubscriptionReadyForTest is for cross-package tests behind the testhooks tag.
+//
+// conductor_test uses (*Conductor).SubscriptionReadyForTest in export_test.go instead.
+func SubscriptionReadyForTest(conductor *Conductor, event SubscriptionReady) {
+	conductor.handleSubscriptionReady(event)
+}

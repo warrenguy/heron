@@ -68,6 +68,15 @@ func waitForClientClose(t *testing.T, closeDone <-chan error, timeoutMsg string)
 	}
 }
 
+func assertClientCloseIsIdempotent(t *testing.T, client *aeron.Client) {
+	t.Helper()
+
+	require.NoError(t, client.Close())
+	require.NoError(t, client.Close())
+	require.Zero(t, client.DoWork())
+	require.False(t, client.IsTerminating())
+}
+
 func waitForClientCloseWithAdvancingClock(
 	t *testing.T,
 	closeDone <-chan error,
@@ -169,13 +178,20 @@ func TestClient_nilGuards(t *testing.T) {
 }
 
 func TestClient_closeBehavior(t *testing.T) {
-	client := &aeron.Client{}
+	t.Run("emptyClient", func(t *testing.T) {
+		client := &aeron.Client{}
 
-	require.False(t, client.IsTerminating())
-	require.NoError(t, client.Close())
-	require.NoError(t, client.Close())
-	require.Zero(t, client.DoWork())
-	require.False(t, client.IsTerminating())
+		require.False(t, client.IsTerminating())
+		assertClientCloseIsIdempotent(t, client)
+	})
+
+	t.Run("conductorBackedClient", func(t *testing.T) {
+		nanoNs := testutil.TestStartNanoNs
+		fixture := testutil.NewConductorFixture(t, testutil.DefaultConductorConfig(&nanoNs))
+		client := aeron.NewClientForTest(fixture.Conductor, func() int64 { return nanoNs })
+
+		assertClientCloseIsIdempotent(t, client)
+	})
 }
 
 func TestClient_accessorGuardsAfterClose(t *testing.T) {

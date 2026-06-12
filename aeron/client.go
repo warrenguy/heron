@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/warrenguy/heron/aeron/cnc"
@@ -17,6 +19,33 @@ const (
 	closeDrainMaxIdleTicks      = 3
 )
 
+// Client is the Aeron media driver client. The caller goroutine invokes DoWork
+// to pump conductor service; there is no background conductor goroutine.
+//
+// One Client permits at most one blocking command (awaitResponse, awaitAdd,
+// Close teardown) at a time. clientLock enforces that contract.
+//
+// DoWork from another goroutine during a blocking await blocks until the await
+// completes.
+//
+// Concurrent Close during blocking Add* or NextAvailableSessionID is
+// unsupported. Close sets closed before waiting on clientLock; the blocking
+// call returns ErrClientClosed when closed is observed (offer and poll loops).
+// If a driver response latches on the same poll tick as Close, the await returns
+// ErrClientClosed on a best-effort basis rather than success. Incomplete add
+// pendings are cancelled; partial add resources are rolled back. Close teardown
+// then proceeds once clientLock is released. Callers should still serialize Close
+// with blocking client APIs.
+//
+// Poll loops under clientLock call doWorkLocked, not DoWork.
+//
+// Callbacks invoked from doWorkLocked (ErrorHandler, available/unavailable image
+// handlers) must not call DoWork, Close, Add*, NextAvailableSessionID, or
+// IsTerminating.
+//
+// Publication Offer from other goroutines remains allowed when the caller does
+// not overlap blocking client APIs. Subscription and Image Poll stay on the
+// invoker goroutine; see Subscription and Image godoc.
 type Client struct {
 	clientID                int64
 	mapped                  *cnc.MappedCncFile
@@ -27,7 +56,16 @@ type Client struct {
 	driverTimeout           time.Duration
 	idleSleepDuration       time.Duration
 	serviceTimestampsSeeded bool
-	closed                  bool
+	clientLock              sync.Mutex
+	closed                  atomic.Bool
+}
+
+func (client *Client) lockClient() {
+	client.clientLock.Lock()
+}
+
+func (client *Client) unlockClient() {
+	client.clientLock.Unlock()
 }
 
 func Connect(ctx Context) (*Client, error) {
@@ -174,8 +212,8 @@ func newConductorClient(
 	}, nil
 }
 
-func (client *Client) DoWork() int {
-	if client == nil || client.closed || client.conductor == nil {
+func (client *Client) doWorkLocked() int {
+	if client.conductor == nil {
 		return 0
 	}
 	if !client.serviceTimestampsSeeded {
@@ -185,23 +223,66 @@ func (client *Client) DoWork() int {
 	return client.conductor.DoWork()
 }
 
+// DoWork runs one conductor service tick under clientLock. Returns work done
+// count; zero when closed or the tick made no progress.
+//
+// See Client godoc for invoker and concurrency contract.
+func (client *Client) DoWork() int {
+	if client == nil || client.closed.Load() || client.conductor == nil {
+		return 0
+	}
+	client.lockClient()
+	defer client.unlockClient()
+	if client.closed.Load() || client.conductor == nil {
+		return 0
+	}
+	return client.doWorkLocked()
+}
+
+// IsTerminating reports whether the conductor has entered termination (driver
+// shutdown, keepalive stale, client or service timeout, etc.).
+//
+// Takes clientLock for a consistent read alongside Close and blocking awaits.
+// Must not be called from ErrorHandler or available/unavailable image handlers
+// invoked during doWorkLocked; see Client godoc.
 func (client *Client) IsTerminating() bool {
-	if client == nil || client.closed || client.conductor == nil {
+	if client == nil || client.closed.Load() || client.conductor == nil {
+		return false
+	}
+	client.lockClient()
+	defer client.unlockClient()
+	if client.closed.Load() || client.conductor == nil {
 		return false
 	}
 	return client.conductor.IsTerminating()
 }
 
 // Close tears down resources, drains close responses and log linger, sends
-// CLIENT_CLOSE, and unmaps the CNC file. Idempotent; concurrent Close is
-// unsupported. Linger drain is best-effort when NanoClock does not advance.
-// Returns the first error from unmapping CNC; teardown errors go to ErrorHandler.
+// CLIENT_CLOSE, and unmaps the CNC file.
+//
+// Idempotent. Close must not be invoked concurrently from multiple goroutines;
+// concurrent Close is not part of the supported API contract. If it occurs anyway,
+// only the first Close to win the closed CAS runs teardown under clientLock;
+// other Close calls return nil immediately without waiting for teardown to
+// finish, so nil does not imply the CNC file is unmapped.
+//
+// Linger drain is best-effort when NanoClock does not advance.
+//
+// Returns the first error from unmapping CNC; teardown errors go to
+// ErrorHandler.
 func (client *Client) Close() error {
-	if client == nil || client.closed {
+	if client == nil {
 		return nil
 	}
-	client.closed = true
+	if !client.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	client.lockClient()
+	defer client.unlockClient()
+	return client.closeTeardownLocked()
+}
 
+func (client *Client) closeTeardownLocked() error {
 	if client.conductor != nil {
 		client.conductor.CloseAllResources()
 		client.drainCloseResponses()
@@ -229,7 +310,7 @@ func (client *Client) drainCloseResponses() {
 	deadline := time.Now().Add(client.driverTimeout)
 	idleTicks := 0
 	for time.Now().Before(deadline) {
-		if client.conductor.DoWork() != 0 {
+		if client.doWorkLocked() != 0 {
 			idleTicks = 0
 		} else if idleTicks++; idleTicks >= closeDrainMaxIdleTicks {
 			return
@@ -249,7 +330,7 @@ func (client *Client) awaitCloseLingerDrain() {
 	wallDeadline := time.Now().Add(lingerDuration)
 	for nanoClock() < lingerDeadlineNs && time.Now().Before(wallDeadline) {
 		client.conductor.DrainLingeringLogBuffers()
-		client.conductor.DoWork()
+		client.doWorkLocked()
 		if !client.conductor.HasScheduledLinger() {
 			return
 		}
@@ -258,13 +339,25 @@ func (client *Client) awaitCloseLingerDrain() {
 	client.conductor.DrainLingeringLogBuffers()
 }
 
+// NextCorrelationID allocates the next correlation id from the driver ring.
+// Concurrent Close during allocation is unsupported; closed and nil proxy checks
+// are best-effort without clientLock.
 func (client *Client) NextCorrelationID() int64 {
-	if client == nil || client.closed || client.driverProxy == nil {
+	if client == nil || client.closed.Load() || client.driverProxy == nil {
 		return 0
 	}
 	return client.driverProxy.NextCorrelationID()
 }
 
+// NextAvailableSessionID blocks until the driver returns the next session id or
+// DriverTimeout elapses.
+//
+// Correlation id is allocated before clientLock is acquired. Blocking await
+// serializes with other blocking client APIs.
+//
+// DoWork from another goroutine blocks until this call completes.
+//
+// Concurrent Close during this call is unsupported; see Client godoc.
 func (client *Client) NextAvailableSessionID(streamID int32) (int32, error) {
 	if err := client.requireReadyWithDriverProxy(); err != nil {
 		return 0, err
@@ -284,12 +377,19 @@ func (client *Client) NextAvailableSessionID(streamID int32) (int32, error) {
 	return registration.Int32Value, nil
 }
 
+func (client *Client) errIfClosed() error {
+	if client == nil || client.closed.Load() {
+		return ErrClientClosed
+	}
+	return nil
+}
+
 func (client *Client) requireReadyWithConductor() error {
 	if client == nil {
 		return ErrClientNotReady
 	}
-	if client.closed {
-		return ErrClientClosed
+	if err := client.errIfClosed(); err != nil {
+		return err
 	}
 	if client.conductor == nil || client.nanoClock == nil {
 		return ErrClientNotReady
@@ -319,12 +419,20 @@ func mapConductorTerminationError(conductorInstance *conductor.Conductor) error 
 	return mapConductorError(cause)
 }
 
+// awaitResponse blocks until the pending registration completes or times out.
+// Poll ticks call doWorkLocked, not DoWork. See Client godoc for concurrency.
 func (client *Client) awaitResponse(
 	correlationID int64,
 	kind conductor.PendingKind,
 	timeout time.Duration,
 	offer func() error,
 ) (conductor.PendingRegistration, error) {
+	if client == nil {
+		return conductor.PendingRegistration{}, ErrClientNotReady
+	}
+	client.lockClient()
+	defer client.unlockClient()
+
 	if err := client.requireReadyWithConductor(); err != nil {
 		return conductor.PendingRegistration{}, err
 	}
@@ -372,6 +480,53 @@ func (client *Client) awaitResponse(
 	return conductor.PendingRegistration{}, newAwaitTimeoutError(correlationID, timeout)
 }
 
+// awaitPendingPollTickConfig fields are test-only; used via
+// AwaitPendingPollOneTickForTest.
+type awaitPendingPollTickConfig struct {
+	skipDoWork       bool
+	afterPollPending func()
+}
+
+func (client *Client) awaitPendingPollTick(
+	conductorInstance *conductor.Conductor,
+	correlationID int64,
+	mapPollErr func(error) error,
+	tickConfig *awaitPendingPollTickConfig,
+) (conductor.PendingRegistration, bool, error) {
+	if err := client.requireReadyWithConductor(); err != nil {
+		return conductor.PendingRegistration{}, false, err
+	}
+	if conductorInstance.IsTerminating() {
+		return conductor.PendingRegistration{}, false, mapConductorTerminationError(conductorInstance)
+	}
+	var skipDoWork bool
+	var afterPollPending func()
+	if tickConfig != nil {
+		skipDoWork = tickConfig.skipDoWork
+		afterPollPending = tickConfig.afterPollPending
+	}
+	if !skipDoWork {
+		client.doWorkLocked()
+	}
+	done, registration, err := conductorInstance.PollPending(correlationID)
+	if afterPollPending != nil {
+		afterPollPending()
+	}
+	if !done {
+		return conductor.PendingRegistration{}, false, nil
+	}
+	if err != nil {
+		return conductor.PendingRegistration{}, true, mapPollErr(err)
+	}
+	// Close CAS may publish closed after the iteration-start check; best-effort
+	// ErrClientClosed rather than returning success on the same tick.
+	if err := client.errIfClosed(); err != nil {
+		conductorInstance.RollbackAddPendingResources(registration)
+		return registration, true, err
+	}
+	return registration, true, nil
+}
+
 func (client *Client) awaitPendingPoll(
 	conductorInstance *conductor.Conductor,
 	correlationID int64,
@@ -379,22 +534,19 @@ func (client *Client) awaitPendingPoll(
 	mapPollErr func(error) error,
 ) (conductor.PendingRegistration, bool, error) {
 	for client.nanoClock() < deadlineNs {
-		if err := client.requireReadyWithConductor(); err != nil {
-			return conductor.PendingRegistration{}, false, err
-		}
-		if conductorInstance.IsTerminating() {
-			return conductor.PendingRegistration{}, false, mapConductorTerminationError(conductorInstance)
-		}
-		client.DoWork()
-		done, registration, err := conductorInstance.PollPending(correlationID)
-		if !done {
-			time.Sleep(client.idleSleepDuration)
-			continue
-		}
+		registration, completed, err := client.awaitPendingPollTick(
+			conductorInstance,
+			correlationID,
+			mapPollErr,
+			nil,
+		)
 		if err != nil {
-			return conductor.PendingRegistration{}, true, mapPollErr(err)
+			return registration, completed, err
 		}
-		return registration, true, nil
+		if completed {
+			return registration, true, nil
+		}
+		time.Sleep(client.idleSleepDuration)
 	}
 	return conductor.PendingRegistration{}, false, nil
 }
@@ -416,8 +568,8 @@ func (client *Client) CncMetadata() (cnc.Metadata, error) {
 }
 
 func (client *Client) CountersReader() (cnc.CountersView, error) {
-	if client == nil || client.closed {
-		return nil, ErrClientClosed
+	if err := client.errIfClosed(); err != nil {
+		return nil, err
 	}
 	if client.countersReader == nil {
 		return nil, errors.New("aeron: client has no counters reader")
@@ -434,8 +586,8 @@ func (client *Client) ErrorLogBuffer() ([]byte, error) {
 }
 
 func (client *Client) mappedCncFile() (*cnc.MappedCncFile, error) {
-	if client == nil || client.closed {
-		return nil, ErrClientClosed
+	if err := client.errIfClosed(); err != nil {
+		return nil, err
 	}
 	if client.mapped == nil {
 		return nil, errors.New("aeron: client has no mapped cnc file")
