@@ -789,6 +789,12 @@ func newIPCPublicationWithNullChannelCounter(t *testing.T) *aeron.Publication {
 	return pub
 }
 
+func TestPublication_MaxPayloadLength(t *testing.T) {
+	pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), 1_000_000)
+	want := int(aeron.TestPublicationMTULength) - logbuffer.DataHeaderLength
+	require.Equal(t, want, pub.MaxPayloadLength())
+}
+
 func TestPublication_StreamIDSessionID(t *testing.T) {
 	pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), 1_000_000)
 

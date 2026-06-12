@@ -69,6 +69,12 @@ func (pub *Publication) StreamID() int32 {
 	return pub.streamID
 }
 
+// MaxPayloadLength returns the largest payload that fits in one DATA frame
+// (publication MTU minus DataHeaderLength).
+func (pub *Publication) MaxPayloadLength() int {
+	return pub.maxPayloadLength
+}
+
 // Offer publishes a message from buffer. Unfragmented payloads fit one DATA
 // frame; larger payloads up to maxMessageLength split into fragments.
 //
