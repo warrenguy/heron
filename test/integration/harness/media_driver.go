@@ -1,9 +1,12 @@
+//go:build integration
+
 package harness
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +21,25 @@ import (
 )
 
 const termBufferLength = "65536"
+
+const (
+	envTermBufferLength    = "AERON_TERM_BUFFER_LENGTH"
+	envIPCTermBufferLength = "AERON_IPC_TERM_BUFFER_LENGTH"
+	envThreadingMode       = "AERON_THREADING_MODE"
+	envDir                 = "AERON_DIR"
+)
+
+type DriverEnv map[string]string
+
+type Config struct {
+	Env DriverEnv
+}
+
+var defaultDriverEnv = DriverEnv{
+	envTermBufferLength:    termBufferLength,
+	envIPCTermBufferLength: termBufferLength,
+	envThreadingMode:       "SHARED",
+}
 
 var (
 	errAeronmdNotFound              = errors.New("aeronmd not found")
@@ -36,6 +58,14 @@ type MediaDriver struct {
 
 func Start(t testing.TB) *MediaDriver {
 	t.Helper()
+	return StartWithConfig(t, Config{})
+}
+
+// StartWithConfig starts aeronmd with defaultDriverEnv (64 KiB term buffers, SHARED threading),
+// merged under cfg.Env (overrides win), and AERON_DIR set to a fresh temp directory.
+// Start delegates here with an empty Config.
+func StartWithConfig(t testing.TB, cfg Config) *MediaDriver {
+	t.Helper()
 	aeronmd, err := resolveAeronmd()
 	if err != nil {
 		if errors.Is(err, errAeronmdNotFound) {
@@ -47,14 +77,18 @@ func Start(t testing.TB) *MediaDriver {
 	if err != nil {
 		t.Fatalf("harness: mkdir temp: %v", err)
 	}
-	t.Setenv("AERON_DIR", dir)
-	t.Setenv("AERON_TERM_BUFFER_LENGTH", termBufferLength)
-	t.Setenv("AERON_IPC_TERM_BUFFER_LENGTH", termBufferLength)
-	t.Setenv("AERON_THREADING_MODE", "SHARED")
+	env := make(DriverEnv, len(defaultDriverEnv)+len(cfg.Env)+1)
+	maps.Copy(env, defaultDriverEnv)
+	maps.Copy(env, cfg.Env)
+	env[envDir] = dir
+	for key, value := range env {
+		t.Setenv(key, value)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, aeronmd)
 	cmd.Dir = dir
+	cmd.Env = os.Environ()
 	if err := cmd.Start(); err != nil {
 		cancel()
 		_ = os.RemoveAll(dir)

@@ -16,8 +16,8 @@ const (
 	// IPCChannel is the default channel for live-driver integration tests.
 	IPCChannel = "aeron:ipc"
 
-	// Matches default zero Context DriverTimeout (10s).
-	connectedPollTimeout = 10 * time.Second
+	// ConnectedPollTimeout matches default zero Context DriverTimeout (10s).
+	ConnectedPollTimeout = 10 * time.Second
 )
 
 // ConnectClient connects to md and registers client.Close on t.Cleanup.
@@ -47,47 +47,34 @@ func CleanupClose(t testing.TB, label string, closeFn func() error) {
 	})
 }
 
-func pollClientUntil(
+func pollClientUntilDynamic(
 	t testing.TB,
 	client *aeron.Client,
 	timeout time.Duration,
 	ok func() bool,
-	failMsg string,
+	failMsg func() string,
 ) {
 	t.Helper()
 
-	pollUntil(
-		t,
+	if pollUntilBool(
 		timeout,
 		aeron.DefaultIdleSleepDuration,
 		func() bool {
 			client.DoWork()
 			return ok()
 		},
-		failMsg,
-	)
+	) {
+		return
+	}
+	t.Errorf("%s within %s", failMsg(), timeout)
+	t.FailNow()
 }
 
-// WaitForPublicationConnected polls DoWork until pub.IsConnected on live IPC.
-// Requires a matching subscriber; publication metadata alone does not flip true.
-func WaitForPublicationConnected(
-	t testing.TB,
-	client *aeron.Client,
-	pub *aeron.Publication,
-	timeout time.Duration,
-) {
-	t.Helper()
+func connectedPollTimeoutOr(timeout time.Duration) time.Duration {
 	if timeout == 0 {
-		timeout = connectedPollTimeout
+		return ConnectedPollTimeout
 	}
-
-	pollClientUntil(
-		t,
-		client,
-		timeout,
-		pub.IsConnected,
-		fmt.Sprintf("publication %d never connected", pub.RegistrationID()),
-	)
+	return timeout
 }
 
 // WaitForSubscriptionConnected polls DoWork until the subscription reports connected.
@@ -98,16 +85,15 @@ func WaitForSubscriptionConnected(
 	timeout time.Duration,
 ) {
 	t.Helper()
-	if timeout == 0 {
-		timeout = connectedPollTimeout
-	}
 
-	pollClientUntil(
+	pollClientUntilDynamic(
 		t,
 		client,
-		timeout,
+		connectedPollTimeoutOr(timeout),
 		sub.IsConnected,
-		fmt.Sprintf("subscription %d never connected", sub.RegistrationID()),
+		func() string {
+			return fmt.Sprintf("subscription %d never connected", sub.RegistrationID())
+		},
 	)
 }
 
@@ -121,13 +107,11 @@ func WaitForIPCLinkConnected(
 	timeout time.Duration,
 ) {
 	t.Helper()
-	if timeout == 0 {
-		timeout = connectedPollTimeout
-	}
 
+	timeout = connectedPollTimeoutOr(timeout)
 	deadline := time.Now().Add(timeout)
 	WaitForSubscriptionConnected(t, client, sub, time.Until(deadline))
-	WaitForPublicationConnected(t, client, pub, time.Until(deadline))
+	PollUntilConnected(t, client, pub, time.Until(deadline))
 }
 
 func requireLookupMiss[T any](
@@ -139,7 +123,7 @@ func requireLookupMiss[T any](
 ) {
 	t.Helper()
 
-	pollClientUntil(
+	pollClientUntilDynamic(
 		t,
 		client,
 		timeout,
@@ -147,7 +131,9 @@ func requireLookupMiss[T any](
 			_, ok := lookup()
 			return !ok
 		},
-		fmt.Sprintf("%s still registered after close", resourceLabel),
+		func() string {
+			return fmt.Sprintf("%s still registered after close", resourceLabel)
+		},
 	)
 }
 

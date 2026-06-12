@@ -63,19 +63,48 @@ func newDoWorkHammer(t *testing.T, client *Client) *doWorkHammer {
 			case <-hammer.stop:
 				return
 			default:
-				hammer.ticks.Add(1)
 				client.DoWork()
+				hammer.ticks.Add(1)
 			}
 		}
 	}()
 	return hammer
 }
 
+func (hammer *doWorkHammer) requireTicksStableFor(t *testing.T, stableFor time.Duration) int32 {
+	t.Helper()
+
+	var (
+		last        int32
+		stableSince time.Time
+	)
+	require.Eventually(
+		t,
+		func() bool {
+			current := hammer.ticks.Load()
+			if current != last {
+				last = current
+				stableSince = time.Time{}
+				return false
+			}
+			if stableSince.IsZero() {
+				stableSince = time.Now()
+				return false
+			}
+			return time.Since(stableSince) >= stableFor
+		},
+		20*time.Millisecond,
+		50*time.Microsecond,
+		"hammer did not block on clientLock before pause check",
+	)
+	return last
+}
+
 func (hammer *doWorkHammer) onCommandSeenPauseCheck(t *testing.T) func(int64) {
 	t.Helper()
 
 	return func(_ int64) {
-		hammer.pauseTicksAtRegister = hammer.ticks.Load()
+		hammer.pauseTicksAtRegister = hammer.requireTicksStableFor(t, 2*time.Millisecond)
 		spinDeadline := time.Now().Add(20 * time.Millisecond)
 		for time.Now().Before(spinDeadline) {
 			require.Equal(

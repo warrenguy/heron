@@ -111,6 +111,18 @@ func TestPublication_OfferWithOffset_invalidBounds(t *testing.T) {
 	}
 }
 
+func publicationTermOffsetAtPosition(position int64) int32 {
+	shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
+	return logbuffer.ComputeTermOffsetFromPosition(position, shift)
+}
+
+func newTestPublicationWithLimitCounterFailure(tb testing.TB) *aeron.Publication {
+	tb.Helper()
+
+	view := aeron.NewErrCountersView(tb, 1_000_000, true, false)
+	return aeron.NewTestPublicationWithCounters(tb, aeron.DefaultTestPublicationLogConfig(), view)
+}
+
 func requireRejectedOfferLeavesTermClean(
 	tb testing.TB,
 	pub *aeron.Publication,
@@ -121,8 +133,7 @@ func requireRejectedOfferLeavesTermClean(
 
 	beforeCount := aeron.PublicationActiveTermCountForTest(pub)
 	beforePosition := pub.Position()
-	shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
-	termOffset := int(logbuffer.ComputeTermOffsetFromPosition(beforePosition, shift))
+	termOffset := int(publicationTermOffsetAtPosition(beforePosition))
 	_, termBuf := aeron.PublicationActiveTermBufferForTest(pub)
 	require.Equal(tb, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
 
@@ -188,7 +199,7 @@ func publicationLogConfigAtPosition(position int64) aeron.TestPublicationLogConf
 		shift,
 		aeron.TestPublicationInitialTermID,
 	)
-	termOffset := logbuffer.ComputeTermOffsetFromPosition(position, shift)
+	termOffset := publicationTermOffsetAtPosition(position)
 	index := logbuffer.IndexByPosition(position, shift)
 	termCount := logbuffer.ComputeTermCount(termID, aeron.TestPublicationInitialTermID)
 
@@ -206,13 +217,14 @@ func publicationPositionNearMaxPosition() int64 {
 	return publicationPositionWithTermRemaining(32)
 }
 
+const publicationNearMaxTermCount = int32(1<<31 - 1)
+
 func publicationLogConfigWithTermRemaining(remaining int32) aeron.TestPublicationLogConfig {
-	const termCount = int32(1<<31 - 1)
-	termID := logbuffer.AddWrapI32(aeron.TestPublicationInitialTermID, termCount)
-	index := logbuffer.IndexByTermCount(termCount)
+	termID := logbuffer.AddWrapI32(aeron.TestPublicationInitialTermID, publicationNearMaxTermCount)
+	index := logbuffer.IndexByTermCount(publicationNearMaxTermCount)
 
 	cfg := aeron.DefaultTestPublicationLogConfig()
-	cfg.ActiveTermCount = termCount
+	cfg.ActiveTermCount = publicationNearMaxTermCount
 	cfg.RawTails[index] = logbuffer.PackRawTail(
 		termID,
 		int32(aeron.TestPublicationTermLength)-remaining,
@@ -221,8 +233,7 @@ func publicationLogConfigWithTermRemaining(remaining int32) aeron.TestPublicatio
 }
 
 func publicationPositionWithTermRemaining(remaining int32) int64 {
-	const termCount = int32(1<<31 - 1)
-	termID := logbuffer.AddWrapI32(aeron.TestPublicationInitialTermID, termCount)
+	termID := logbuffer.AddWrapI32(aeron.TestPublicationInitialTermID, publicationNearMaxTermCount)
 	shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
 	return logbuffer.ComputePosition(
 		termID,
@@ -314,9 +325,7 @@ func TestPublication_TryClaim_backPressureStatuses(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := publicationLogConfigAtPosition(tc.position)
-			if tc.connected {
-				cfg.IsConnected = 1
-			} else {
+			if !tc.connected {
 				cfg.IsConnected = 0
 			}
 			pub := aeron.NewTestPublication(t, cfg, tc.limit)
@@ -361,8 +370,7 @@ func TestPublication_TryClaim_maxPositionExceeded_preFAA(t *testing.T) {
 	pub := aeron.NewTestPublication(t, publicationLogConfigNearMaxPosition(), position)
 	beforeCount := aeron.PublicationActiveTermCountForTest(pub)
 
-	shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
-	termOffset := int(logbuffer.ComputeTermOffsetFromPosition(position, shift))
+	termOffset := int(publicationTermOffsetAtPosition(position))
 	_, termBuf := aeron.PublicationActiveTermBufferForTest(pub)
 	require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
 
@@ -399,8 +407,7 @@ func TestPublication_MaxPositionExceeded_highLimitExactTermFill(t *testing.T) {
 	position := publicationPositionWithTermRemaining(remaining)
 	pub := aeron.NewTestPublication(t, cfg, 1<<62)
 
-	shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
-	termOffset := int(logbuffer.ComputeTermOffsetFromPosition(position, shift))
+	termOffset := int(publicationTermOffsetAtPosition(position))
 	_, termBuf := aeron.PublicationActiveTermBufferForTest(pub)
 	require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
 
@@ -415,8 +422,7 @@ func TestPublication_MaxPositionExceeded_preFAA(t *testing.T) {
 	pub := aeron.NewTestPublication(t, publicationLogConfigNearMaxPosition(), position)
 	beforeCount := aeron.PublicationActiveTermCountForTest(pub)
 
-	shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
-	termOffset := int(logbuffer.ComputeTermOffsetFromPosition(position, shift))
+	termOffset := int(publicationTermOffsetAtPosition(position))
 	_, termBuf := aeron.PublicationActiveTermBufferForTest(pub)
 	require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
 
@@ -720,26 +726,22 @@ func TestPublication_AvailableWindow_atLimit(t *testing.T) {
 }
 
 func TestPublication_AvailableWindow_counterFailure(t *testing.T) {
-	view := aeron.NewErrCountersView(t, 1_000_000, true, false)
-	pub := aeron.NewTestPublicationWithCounters(t, aeron.DefaultTestPublicationLogConfig(), view)
+	pub := newTestPublicationWithLimitCounterFailure(t)
 	require.Equal(t, aeron.Closed, pub.AvailableWindow())
 }
 
 func TestPublication_PositionLimit_counterFailure(t *testing.T) {
-	view := aeron.NewErrCountersView(t, 1_000_000, true, false)
-	pub := aeron.NewTestPublicationWithCounters(t, aeron.DefaultTestPublicationLogConfig(), view)
+	pub := newTestPublicationWithLimitCounterFailure(t)
 	require.Equal(t, aeron.Closed, pub.PositionLimit())
 }
 
 func TestPublication_Offer_limitCounterFailure(t *testing.T) {
-	view := aeron.NewErrCountersView(t, 1_000_000, true, false)
-	pub := aeron.NewTestPublicationWithCounters(t, aeron.DefaultTestPublicationLogConfig(), view)
+	pub := newTestPublicationWithLimitCounterFailure(t)
 	require.Equal(t, aeron.Closed, pub.Offer([]byte{1}))
 }
 
 func TestPublication_TryClaim_limitCounterFailure(t *testing.T) {
-	view := aeron.NewErrCountersView(t, 1_000_000, true, false)
-	pub := aeron.NewTestPublicationWithCounters(t, aeron.DefaultTestPublicationLogConfig(), view)
+	pub := newTestPublicationWithLimitCounterFailure(t)
 	_, _, position, err := pub.TryClaim(16)
 	require.NoError(t, err)
 	require.Equal(t, aeron.Closed, position)
@@ -785,6 +787,17 @@ func newIPCPublicationWithNullChannelCounter(t *testing.T) *aeron.Publication {
 	require.NoError(t, err)
 	require.NotNil(t, pub)
 	return pub
+}
+
+func TestPublication_StreamIDSessionID(t *testing.T) {
+	pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), 1_000_000)
+
+	require.Equal(t, aeron.TestPublicationStreamID, pub.StreamID())
+	require.Equal(t, aeron.TestPublicationSessionID, pub.SessionID())
+
+	require.NoError(t, pub.Close())
+	require.Equal(t, aeron.TestPublicationStreamID, pub.StreamID())
+	require.Equal(t, aeron.TestPublicationSessionID, pub.SessionID())
 }
 
 func TestPublication_nullChannelStatusCounter(t *testing.T) {

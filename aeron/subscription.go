@@ -68,6 +68,22 @@ func (subscription *Subscription) ImageCount() int {
 	return len(subscription.images)
 }
 
+// ImageAt returns the attached image at index when present and not closed.
+// Slice indices are not stable across Client.DoWork; poll or copy fields before the next DoWork.
+func (subscription *Subscription) ImageAt(index int) (*Image, bool) {
+	if subscription.closed {
+		return nil, false
+	}
+	if uint(index) >= uint(len(subscription.images)) {
+		return nil, false
+	}
+	image := subscription.images[index]
+	if image == nil || image.IsClosed() {
+		return nil, false
+	}
+	return image, true
+}
+
 // IsConnected reports whether any non-closed image is attached.
 //
 // Returns false when the subscription is closed, even if images remain in the slice.
@@ -178,7 +194,7 @@ func (subscription *Subscription) removeImage(correlationID int64) *Image {
 // Idempotent: repeated calls return nil. Concurrent Close from multiple
 // goroutines is unsupported. After close, Poll returns zero.
 func (subscription *Subscription) Close() error {
-	if subscription.IsClosed() {
+	if subscription.closed {
 		return nil
 	}
 	if subscription.conductor == nil {

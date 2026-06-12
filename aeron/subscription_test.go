@@ -2,6 +2,7 @@ package aeron_test
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -62,6 +63,34 @@ func TestSubscription_IsConnected_allImagesClosed(t *testing.T) {
 
 	require.Equal(t, 1, sub.ImageCount())
 	require.False(t, sub.IsConnected())
+}
+
+func TestSubscription_ImageAt(t *testing.T) {
+	sub := testSubscription(t)
+	image := addTestImage(t, sub)
+	aeron.SubscriptionInjectNilImageAtIndexForTest(sub, 1)
+
+	got, ok := sub.ImageAt(0)
+	require.True(t, ok)
+	require.Same(t, image, got)
+
+	for _, idx := range []int{1, -1} {
+		_, ok := sub.ImageAt(idx)
+		require.False(t, ok)
+	}
+
+	aeron.ImageInternalCloseForTest(image)
+	_, ok = sub.ImageAt(0)
+	require.False(t, ok)
+}
+
+func TestSubscription_ImageAt_closedSubscription(t *testing.T) {
+	sub := testSubscription(t)
+	addTestImage(t, sub)
+
+	require.NoError(t, sub.Close())
+	_, ok := sub.ImageAt(0)
+	require.False(t, ok)
 }
 
 func TestSubscription_ImageCountIsConnected(t *testing.T) {
@@ -211,7 +240,7 @@ func TestSubscription_Poll_singleImageDelegates(t *testing.T) {
 
 	capture := &pollCapture{}
 	wantFragments := image.Poll(capture.handler, 3)
-	expectedPayloads := append([][]byte(nil), capture.payloads...)
+	expectedPayloads := slices.Clone(capture.payloads)
 
 	aeron.ImageSetSubscriberPositionForTest(image, 0)
 	capture.reset()
@@ -281,10 +310,13 @@ func TestSubscription_Poll_allImagesClosedReturnsZero(t *testing.T) {
 	require.Equal(t, 0, sub.Poll(capture.handler, 5))
 	require.Empty(t, capture.payloads)
 
-	require.NotNil(t, aeron.SubscriptionRemoveImageForTest(sub, aeron.TestImageCorrelationID))
-	require.NotNil(t, aeron.SubscriptionRemoveImageForTest(sub, aeron.TestImageCorrelationID+1))
-	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID, []byte("fresh0"))
-	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID+1, []byte("fresh1"))
+	for i, payload := range [][]byte{[]byte("fresh0"), []byte("fresh1")} {
+		require.NotNil(
+			t,
+			aeron.SubscriptionRemoveImageForTest(sub, aeron.TestImageCorrelationID+int64(i)),
+		)
+		addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID+int64(i), payload)
+	}
 
 	capture.reset()
 	requireSubscriptionPoll(t, sub, capture, 1, 1, [][]byte{[]byte("fresh1")})
@@ -292,27 +324,13 @@ func TestSubscription_Poll_allImagesClosedReturnsZero(t *testing.T) {
 
 func TestSubscription_Poll_threeImageLimit(t *testing.T) {
 	sub := testSubscription(t)
-	addSubscriptionPollImage(
-		t,
-		sub,
-		aeron.TestImageCorrelationID,
-		[]byte("img0-a"),
-		[]byte("img0-b"),
-	)
-	addSubscriptionPollImage(
-		t,
-		sub,
-		aeron.TestImageCorrelationID+1,
-		[]byte("img1-a"),
-		[]byte("img1-b"),
-	)
-	addSubscriptionPollImage(
-		t,
-		sub,
-		aeron.TestImageCorrelationID+2,
-		[]byte("img2-a"),
-		[]byte("img2-b"),
-	)
+	for i, payloads := range [][][]byte{
+		{[]byte("img0-a"), []byte("img0-b")},
+		{[]byte("img1-a"), []byte("img1-b")},
+		{[]byte("img2-a"), []byte("img2-b")},
+	} {
+		addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID+int64(i), payloads...)
+	}
 
 	capture := &pollCapture{}
 	requireSubscriptionPoll(
@@ -328,15 +346,13 @@ func TestSubscription_Poll_threeImageLimit(t *testing.T) {
 
 func TestSubscription_Poll_roundRobinThreeImages(t *testing.T) {
 	sub := testSubscription(t)
-	addSubscriptionPollImage(
-		t,
-		sub,
-		aeron.TestImageCorrelationID,
-		[]byte("img0-a"),
-		[]byte("img0-b"),
-	)
-	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID+1, []byte("img1-a"))
-	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID+2, []byte("img2-a"))
+	for i, payloads := range [][][]byte{
+		{[]byte("img0-a"), []byte("img0-b")},
+		{[]byte("img1-a")},
+		{[]byte("img2-a")},
+	} {
+		addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID+int64(i), payloads...)
+	}
 
 	capture := &pollCapture{}
 	requireSubscriptionPollSteps(

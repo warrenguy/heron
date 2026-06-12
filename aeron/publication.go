@@ -61,6 +61,14 @@ func (pub *Publication) RegistrationID() int64 {
 	return pub.registrationID
 }
 
+func (pub *Publication) SessionID() int32 {
+	return pub.sessionID
+}
+
+func (pub *Publication) StreamID() int32 {
+	return pub.streamID
+}
+
 // Offer publishes a message from buffer. Unfragmented payloads fit one DATA
 // frame; larger payloads up to maxMessageLength split into fragments.
 //
@@ -581,12 +589,9 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 			fragFlags |= logbuffer.EndFlag
 		}
 
-		trackFragmentWrite := func(begin bool) {
-			if fragmentedWriteTrack != nil {
-				fragmentedWriteTrack(outcome.termIndex, frameOffset, begin)
-			}
+		if fragmentedWriteTrack != nil {
+			fragmentedWriteTrack(outcome.termIndex, frameOffset, true)
 		}
-		trackFragmentWrite(true)
 
 		pub.headerWriter.WriteWithFlags(
 			outcome.termBuf,
@@ -602,7 +607,9 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 		)
 		logbuffer.PutFrameLengthOrdered(outcome.termBuf, frameOffset, frameLength)
 
-		trackFragmentWrite(false)
+		if fragmentedWriteTrack != nil {
+			fragmentedWriteTrack(outcome.termIndex, frameOffset, false)
+		}
 
 		frameOffset += alignedLength
 		remaining -= bytesToWrite

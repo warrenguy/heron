@@ -228,7 +228,7 @@ func (client *Client) doWorkLocked() int {
 //
 // See Client godoc for invoker and concurrency contract.
 func (client *Client) DoWork() int {
-	if client == nil || client.closed.Load() || client.conductor == nil {
+	if client == nil || client.closed.Load() {
 		return 0
 	}
 	client.lockClient()
@@ -246,7 +246,7 @@ func (client *Client) DoWork() int {
 // Must not be called from ErrorHandler or available/unavailable image handlers
 // invoked during doWorkLocked; see Client godoc.
 func (client *Client) IsTerminating() bool {
-	if client == nil || client.closed.Load() || client.conductor == nil {
+	if client == nil || client.closed.Load() {
 		return false
 	}
 	client.lockClient()

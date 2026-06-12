@@ -62,5 +62,6 @@ trap 'docker rm -f "${cid}" >/dev/null 2>&1 || true' EXIT
 mkdir -p "${ROOT}/bin"
 docker cp "${cid}:/src/aeron/cppbuild/Release/binaries/${artifact}" "${OUT}"
 chmod +x "${OUT}"
+touch "${OUT}"
 
 echo "heron: extracted ${OUT}"
