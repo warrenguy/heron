@@ -1383,7 +1383,7 @@ func TestScanPendingToDriverMessages_remove(t *testing.T) {
 				requireRemoveMessageIdentity(t, clientID, registrationID, decoded)
 			})
 
-			t.Run(ops.name, func(t *testing.T) {
+			t.Run("found", func(t *testing.T) {
 				ring, _ := newControlMinimalTestRingBuffer(t)
 				ops.offer(t, ring, clientID, 42, registrationID)
 
@@ -1411,7 +1411,7 @@ func TestFindOfferedRemoveAt(t *testing.T) {
 				ops.assertZero(t, decoded)
 			})
 
-			t.Run(ops.name, func(t *testing.T) {
+			t.Run("found", func(t *testing.T) {
 				ring, _ := newControlMinimalTestRingBuffer(t)
 				producerBefore := ring.ProducerPosition()
 				ops.offer(t, ring, clientID, 42, registrationID)
@@ -1431,7 +1431,7 @@ func TestFindConsumedRemoveAt(t *testing.T) {
 			clientID, registrationID := controlMinimalTestRemoveIDs()
 			recordLength := ops.recordLength()
 
-			t.Run(ops.name, func(t *testing.T) {
+			t.Run("found", func(t *testing.T) {
 				ring, buffer := newControlMinimalTestRingBuffer(t)
 				consumerBefore := ring.ConsumerPosition()
 				producerBefore := ring.ProducerPosition()
@@ -1779,7 +1779,7 @@ func TestOfferedRecordTypeIDsBetween(t *testing.T) {
 	offerRemoveSubscriptionForTest(t, ring, clientID, 2, 9002)
 	proxy.ClientClose()
 
-	typeIDs, err := offeredRecordTypeIDsBetween(ring, consumerBefore, ring.ProducerPosition())
+	typeIDs, err := OfferedRecordTypeIDsBetween(ring, consumerBefore, ring.ProducerPosition())
 	require.NoError(t, err)
 	require.Equal(
 		t,
@@ -1792,12 +1792,12 @@ func TestOfferedRecordTypeIDsBetween_edgeCases(t *testing.T) {
 	ring, buffer := newControlMinimalTestRingBuffer(t)
 
 	t.Run("invalidRange", func(t *testing.T) {
-		_, err := offeredRecordTypeIDsBetween(ring, 10, 5)
+		_, err := OfferedRecordTypeIDsBetween(ring, 10, 5)
 		require.Error(t, err)
 	})
 
 	t.Run("equalRange", func(t *testing.T) {
-		typeIDs, err := offeredRecordTypeIDsBetween(ring, 0, 0)
+		typeIDs, err := OfferedRecordTypeIDsBetween(ring, 0, 0)
 		require.NoError(t, err)
 		require.Nil(t, typeIDs)
 	})
@@ -1808,7 +1808,7 @@ func TestOfferedRecordTypeIDsBetween_edgeCases(t *testing.T) {
 		offerRemovePublicationForTest(t, ring, clientID, 1, 9001)
 		buffer.PutInt32(record.LengthOffset(int(from)&(ring.Capacity()-1)), 0)
 
-		typeIDs, err := offeredRecordTypeIDsBetween(ring, from, ring.ProducerPosition())
+		typeIDs, err := OfferedRecordTypeIDsBetween(ring, from, ring.ProducerPosition())
 		require.NoError(t, err)
 		require.Empty(t, typeIDs)
 	})
@@ -1822,7 +1822,7 @@ func TestOfferedRecordTypeIDsBetween_edgeCases(t *testing.T) {
 		buffer.PutInt32(record.LengthOffset(fromIndex), int32(controlMinimalWrapPadding))
 		to := from + int64(recordLength) + controlMinimalWrapPadding
 
-		typeIDs, err := offeredRecordTypeIDsBetween(ring, from, to)
+		typeIDs, err := OfferedRecordTypeIDsBetween(ring, from, to)
 		require.NoError(t, err)
 		require.Empty(t, typeIDs)
 	})

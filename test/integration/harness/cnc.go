@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/broadcast"
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/cnc/cnctest"
 	"github.com/warrenguy/heron/aeron/conductor"
@@ -28,10 +28,6 @@ const (
 type cncAttach struct {
 	Mapped *cnc.MappedCncFile
 	Rings  *cnc.Rings
-}
-
-func OpenCnc(t testing.TB, md *MediaDriver) *cncAttach {
-	return openCnc(t, md)
 }
 
 func openCnc(t testing.TB, md *MediaDriver) *cncAttach {
@@ -110,115 +106,48 @@ func consumerHeartbeatWithin(
 	return ageMs < maxAgeMs
 }
 
-func assertConsumerHeartbeatFresh(t testing.TB, attach *cncAttach) {
+// AssertConsumerHeartbeatFresh polls until the driver consumer heartbeat is fresh.
+func AssertConsumerHeartbeatFresh(t testing.TB, attach *cncAttach) {
 	t.Helper()
-
-	toDriver := attach.Rings.ToDriver
 
 	pollUntil(
 		t,
 		heartbeatFreshPollTimeout,
 		defaultPollInterval,
 		func() bool {
-			return consumerHeartbeatWithin(toDriver, heartbeatFreshMaxAgeMs, false)
+			return consumerHeartbeatWithin(
+				attach.Rings.ToDriver,
+				heartbeatFreshMaxAgeMs,
+				false,
+			)
 		},
 		"consumer heartbeat not fresh",
 	)
 }
 
-func requireDecodeCorrelationAndInt32(
+// WaitForToDriverRingDrainedWithClients polls both clients until the ring drains.
+func WaitForToDriverRingDrainedWithClients(
 	t testing.TB,
-	toClients *broadcast.BroadcastReceiver,
-) conductor.CorrelationAndInt32 {
+	ring *ringbuffer.ManyToOneRingBuffer,
+	clientA, clientB *aeron.Client,
+	timeout time.Duration,
+) {
 	t.Helper()
 
-	decoded, err := conductor.DecodeCorrelationAndInt32(
-		toClients.Buffer(),
-		toClients.Offset(),
-	)
-	require.NoError(t, err)
-	return decoded
-}
-
-func requireDecodeNextAvailableSessionID(
-	t testing.TB,
-	toClients *broadcast.BroadcastReceiver,
-) conductor.CorrelationAndInt32 {
-	t.Helper()
-
-	decoded, err := conductor.DecodeNextAvailableSessionID(
-		toClients.Buffer(),
-		toClients.Offset(),
-	)
-	require.NoError(t, err)
-	return decoded
-}
-
-// waitForNextSessionIDEvent polls the harness broadcast receiver for
-// ON_NEXT_AVAILABLE_SESSION_ID.
-//
-// Retained for low-level wire diagnostics; integration smoke uses
-// Client.NextAvailableSessionID instead.
-func waitForNextSessionIDEvent(
-	t testing.TB,
-	toClients *broadcast.BroadcastReceiver,
-	correlationID int64,
-) conductor.CorrelationAndInt32 {
-	t.Helper()
-
-	var event conductor.CorrelationAndInt32
+	if timeout == 0 {
+		timeout = ConnectedPollTimeout
+	}
 	pollUntil(
 		t,
-		commandPollDeadline,
-		defaultPollInterval,
+		timeout,
+		aeron.DefaultIdleSleepDuration,
 		func() bool {
-			if !toClients.ReceiveNext() {
-				return false
-			}
-			if !toClients.Validate() {
-				return false
-			}
-
-			switch toClients.TypeID() {
-			case conductor.OnNextAvailableSessionID:
-				require.Equal(t, conductor.NextAvailableSessionIDBodyLength, toClients.Length())
-
-				event = requireDecodeNextAvailableSessionID(t, toClients)
-				require.Equal(t, correlationID, event.CorrelationID)
-				return true
-			case conductor.OnError:
-				require.GreaterOrEqual(
-					t,
-					toClients.Length(),
-					conductor.ErrorResponseMinBodyLength,
-					"ON_ERROR correlation %d",
-					correlationID,
-				)
-				onError := requireDecodeCorrelationAndInt32(t, toClients)
-				require.NotEqual(
-					t,
-					correlationID,
-					onError.CorrelationID,
-					"ON_ERROR error code %d",
-					onError.Int32Value,
-				)
-				return false
-			default:
-				require.FailNow(
-					t,
-					fmt.Sprintf(
-						"unexpected broadcast type %d for correlation %d (length %d)",
-						toClients.TypeID(),
-						correlationID,
-						toClients.Length(),
-					),
-				)
-				return false
-			}
+			clientA.DoWork()
+			clientB.DoWork()
+			return ring.ConsumerPosition() == ring.ProducerPosition()
 		},
-		"ON_NEXT_AVAILABLE_SESSION_ID not received",
+		"to-driver ring not drained",
 	)
-	return event
 }
 
 func WaitForToDriverRingDrained(

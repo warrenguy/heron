@@ -29,7 +29,7 @@ func TestCncWiring(t *testing.T) {
 		})
 
 		t.Run("DriverConsumerHeartbeatFresh", func(t *testing.T) {
-			assertConsumerHeartbeatFresh(t, attach)
+			AssertConsumerHeartbeatFresh(t, attach)
 		})
 	})
 

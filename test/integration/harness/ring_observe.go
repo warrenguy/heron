@@ -10,6 +10,10 @@ func ringRecordLength(bodyLength int) int {
 	return record.AlignRecordLength(bodyLength + ringbuffer.HeaderLength)
 }
 
+func AlignedDriverRecordLength(bodyLength int) int64 {
+	return int64(ringRecordLength(bodyLength))
+}
+
 type toDriverObserveSpec[T any] struct {
 	messageTypeID int
 	recordLength  int
@@ -28,6 +32,8 @@ func advanceRingScanPosition(messageTypeID, recordLength int) int64 {
 	return int64(record.AlignRecordLength(recordLength))
 }
 
+// recordLength <= 0 marks an in-flight producer tail; callers must poll until
+// quiescent (WaitForToDriverRingDrained) or retry with deadline.
 func nextRingRecord(
 	buffer aeronatomic.AtomicBuffer,
 	mask int,

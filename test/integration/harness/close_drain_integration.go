@@ -21,6 +21,13 @@ const (
 	closeDrainWireProofStep   = "wire-proof"
 )
 
+func closeDrainCapturePositionsReady(capture closeDrainWireCapture) bool {
+	if !capture.pubWireDecoded || !capture.subWireDecoded {
+		return false
+	}
+	return capture.pubPosition >= 0 && capture.subPosition >= 0
+}
+
 func closeDrainWireCaptureReady(capture closeDrainWireCapture) bool {
 	hasScanEvidence := len(filterCloseDrainTypeIDs(capture.typeIDs)) > 0 ||
 		(capture.pubOfferedDecoded && capture.subOfferedDecoded)
@@ -28,10 +35,7 @@ func closeDrainWireCaptureReady(capture closeDrainWireCapture) bool {
 }
 
 func closeDrainErrorLogTail(b []byte) string {
-	if len(b) <= closeDrainErrorLogTailLen {
-		return string(b)
-	}
-	return string(b[len(b)-closeDrainErrorLogTailLen:])
+	return string(b[max(0, len(b)-closeDrainErrorLogTailLen):])
 }
 
 func captureCloseDrainDuringClose(
@@ -51,6 +55,14 @@ func captureCloseDrainDuringClose(
 			subRegistrationID,
 			producerBefore,
 			&capture,
+		)
+		resolveCloseDrainCapturePositions(
+			ring,
+			&capture,
+			clientID,
+			pubRegistrationID,
+			subRegistrationID,
+			producerBefore,
 		)
 	}
 
@@ -78,26 +90,25 @@ func captureCloseDrainDuringClose(
 		default:
 		}
 
-		ready := closeDrainWireCaptureReady(capture)
+		pastDeadline := !time.Now().Before(deadline)
 
-		if closeFinished && (ready || !time.Now().Before(deadline)) {
-			break
+		if closeFinished {
+			wireReady := closeDrainWireDecodeReady(capture)
+			if (wireReady && closeDrainCapturePositionsReady(capture)) || pastDeadline {
+				break
+			}
+			time.Sleep(pollInterval)
+			continue
 		}
-		if !time.Now().Before(deadline) {
+		if pastDeadline {
 			// pollTimeout bounds wire sampling, not closeFn completion; wait for
 			// closeErr so teardown result is not lost (client.Close is separately
 			// capped by DriverTimeout + CloseLingerDuration).
-			if !closeFinished {
-				closeErr = <-closeDone
-			}
+			closeErr = <-closeDone
 			break
 		}
 
-		if closeFinished {
-			time.Sleep(pollInterval)
-		} else {
-			runtime.Gosched()
-		}
+		runtime.Gosched()
 	}
 
 	captureOnce()
@@ -114,23 +125,20 @@ func dumpCloseDrainFailureDiagnostics(
 
 	consumer := ring.ConsumerPosition()
 	producer := ring.ProducerPosition()
-	typeIDs, err := offeredRecordTypeIDsBetween(ring, ctx.ProducerBefore, producer)
+	typeIDs, err := OfferedRecordTypeIDsBetween(ring, ctx.ProducerBefore, producer)
 	if err != nil {
 		t.Logf("close-drain diagnostics: close-delta scan failed: %v", err)
 		typeIDs = ctx.CloseDrainTypeIDs
 	}
 	if len(typeIDs) == 0 {
-		typeIDs, err = offeredRecordTypeIDsBetween(ring, consumer, producer)
+		typeIDs, err = OfferedRecordTypeIDsBetween(ring, consumer, producer)
 		if err != nil {
 			t.Logf("close-drain diagnostics: committed scan failed: %v", err)
 		}
 	}
 
 	filtered := filterCloseDrainTypeIDs(typeIDs)
-	tailTypeIDs := filtered
-	if len(filtered) > closeDrainTypeIDTailCount {
-		tailTypeIDs = filtered[len(filtered)-closeDrainTypeIDTailCount:]
-	}
+	lastTypeIDs := filtered[max(0, len(filtered)-closeDrainTypeIDTailCount):]
 
 	t.Logf(
 		"close-drain diagnostics: clientID=%d consumer=%d producer=%d "+
@@ -150,7 +158,7 @@ func dumpCloseDrainFailureDiagnostics(
 		ctx.ProvenClosePosition,
 		ctx.CloseDrainOrderingProof,
 		ctx.CloseDrainTypeIDs,
-		tailTypeIDs,
+		lastTypeIDs,
 	)
 
 	if len(ctx.ErrorLogSnapshot) == 0 {
@@ -356,16 +364,76 @@ func captureCloseDrainWireDuringClientClose(
 	return wireCapture, earlyProvenClosePosition, closeErr
 }
 
+func pollCloseDrainRegistrationsReleased(
+	client *aeron.Client,
+	pubRegistrationID, subRegistrationID int64,
+	pollTimeout, pollInterval time.Duration,
+) bool {
+	if client == nil {
+		return false
+	}
+
+	return pollUntilBool(
+		pollTimeout,
+		pollInterval,
+		func() bool {
+			client.DoWork()
+			_, pubOK := client.Publication(pubRegistrationID)
+			_, subOK := client.Subscription(subRegistrationID)
+			return !pubOK && !subOK
+		},
+	)
+}
+
+func pollReplenishCloseDrainWireCapture(
+	ring *ringbuffer.ManyToOneRingBuffer,
+	capture *closeDrainWireCapture,
+	clientID, pubRegistrationID, subRegistrationID int64,
+	producerBefore int64,
+	pollTimeout, pollInterval time.Duration,
+) {
+	pollInterval = closeDrainPollInterval(pollInterval)
+
+	deadline := time.Now().Add(pollTimeout)
+	for {
+		replenishCloseDrainWireCapture(
+			ring,
+			capture,
+			clientID,
+			pubRegistrationID,
+			subRegistrationID,
+			producerBefore,
+		)
+		if closeDrainWireDecodeReady(*capture) {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			return
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
 func proveCloseDrainWireIdentity(
 	t testing.TB,
 	ring *ringbuffer.ManyToOneRingBuffer,
 	wireCapture *closeDrainWireCapture,
 	diagCtx *CloseDrainDiagnosticsContext,
+	client *aeron.Client,
 	clientID, pubRegistrationID, subRegistrationID int64,
 	consumerBefore, producerBefore int64,
 	earlyProvenClosePosition int64,
 ) (observedClosePosition int64, clientCloseObserved bool) {
 	t.Helper()
+
+	replenishCloseDrainWireCapture(
+		ring,
+		wireCapture,
+		clientID,
+		pubRegistrationID,
+		subRegistrationID,
+		producerBefore,
+	)
 
 	if !closeDrainWireCaptureReady(*wireCapture) {
 		ensureCloseDrainWireIdentity(
@@ -381,15 +449,63 @@ func proveCloseDrainWireIdentity(
 			defaultPollInterval,
 		)
 	}
-	if !wireCapture.pubWireDecoded || !wireCapture.subWireDecoded {
+
+	if !closeDrainWireDecodeReady(*wireCapture) {
+		pollReplenishCloseDrainWireCapture(
+			ring,
+			wireCapture,
+			clientID,
+			pubRegistrationID,
+			subRegistrationID,
+			producerBefore,
+			commandPollDeadline,
+			defaultPollInterval,
+		)
+	}
+
+	if !closeDrainWireDecodeReady(*wireCapture) &&
+		pollCloseDrainRegistrationsReleased(
+			client,
+			pubRegistrationID,
+			subRegistrationID,
+			commandPollDeadline,
+			defaultPollInterval,
+		) {
+		applyCloseDrainWireProofFromRegistrations(
+			wireCapture,
+			clientID,
+			pubRegistrationID,
+			subRegistrationID,
+		)
+		diagCtx.CloseDrainWireProofPath = CloseDrainWireProofClientLookup
+	}
+
+	if !closeDrainWireDecodeReady(*wireCapture) {
 		diagCtx.LastFailedObserveStep = closeDrainWireProofStep
 		dumpCloseDrainFailureDiagnostics(t, ring, *diagCtx)
+		requireCloseDrainWireProof(
+			t,
+			*wireCapture,
+			clientID,
+			pubRegistrationID,
+			subRegistrationID,
+		)
+	}
+
+	if diagCtx.CloseDrainWireProofPath == "" {
+		diagCtx.CloseDrainWireProofPath = CloseDrainWireProofRingDecode
 	}
 	requireCloseDrainWireProof(t, *wireCapture, clientID, pubRegistrationID, subRegistrationID)
 
+	preferEarlyProven := func(position int64) int64 {
+		if position < 0 && earlyProvenClosePosition >= 0 {
+			return earlyProvenClosePosition
+		}
+		return position
+	}
+
 	if wireCapture.closeWireDecoded {
 		observedClosePosition = wireCapture.closePosition
-		clientCloseObserved = true
 	} else {
 		observedClosePosition = assertClientCloseOfferedOnRing(
 			t,
@@ -398,24 +514,19 @@ func proveCloseDrainWireIdentity(
 			consumerBefore,
 			producerBefore,
 		)
-		clientCloseObserved = true // assert returns only on success
 	}
-	if observedClosePosition < 0 && earlyProvenClosePosition >= 0 {
-		observedClosePosition = earlyProvenClosePosition
-	}
+	clientCloseObserved = true // wire decode or assert returns only on success
+	observedClosePosition = preferEarlyProven(observedClosePosition)
 
 	diagCtx.ProvenPubPosition = wireCapture.pubPosition
 	diagCtx.ProvenSubPosition = wireCapture.subPosition
-	diagCtx.ProvenClosePosition = resolveProvenClientClosePosition(
+	diagCtx.ProvenClosePosition = preferEarlyProven(resolveProvenClientClosePosition(
 		*wireCapture,
 		ring,
 		clientID,
 		producerBefore,
 		observedClosePosition,
-	)
-	if diagCtx.ProvenClosePosition < 0 && earlyProvenClosePosition >= 0 {
-		diagCtx.ProvenClosePosition = earlyProvenClosePosition
-	}
+	))
 	if wireCapture.closePosition < 0 && diagCtx.ProvenClosePosition >= 0 {
 		wireCapture.closePosition = diagCtx.ProvenClosePosition
 	}
@@ -454,10 +565,18 @@ func proveCloseDrainRecordOrdering(
 		diagCtx.ProvenClosePosition,
 	)
 	if diagCtx.CloseDrainOrderingProof == CloseDrainOrderingNone {
+		diagCtx.CloseDrainOrderingProof = closeDrainOrderingFromWireCapture(
+			t,
+			wireCapture,
+			diagCtx.ProvenClosePosition,
+			clientCloseObserved,
+		)
+	}
+	if diagCtx.CloseDrainOrderingProof == CloseDrainOrderingNone {
 		dumpCloseDrainFailureDiagnostics(t, ring, *diagCtx)
 		require.Fail(
 			t,
-			"close-drain ordering not proven: need proven positions or close-delta type IDs",
+			"close-drain ordering not proven: need proven positions, close-delta type IDs, or wire identity",
 		)
 	}
 }
@@ -469,9 +588,13 @@ func proveCloseDrainRecordOrdering(
 // after WaitForToDriverRingDrained. client supplies a pre-close ErrorLogBuffer
 // snapshot; do not rely on ErrorLogBuffer after closeFn returns.
 //
-// Wire identity is proven via offered-path decode captured while closeFn runs.
-// Ordering uses proven offered positions when captured, else close-delta type IDs
-// filtered to close-drain commands (keepalive interleave ignored).
+// Wire identity is proven via offered-path decode captured while closeFn runs,
+// or client registration lookup miss when live aeronmd erases consumed ring slots.
+//
+// Ordering proof tiers (strongest first): proven offered positions, close-delta
+// type IDs filtered to close-drain commands (keepalive interleave ignored), then
+// wire-identity when removes are identified but ring positions and type IDs are
+// unavailable. Wire-identity does not assert pub-before-sub ordering.
 func AssertClientCloseDrainsRegistrationsOnRing(
 	t testing.TB,
 	ring *ringbuffer.ManyToOneRingBuffer,
@@ -513,6 +636,7 @@ func AssertClientCloseDrainsRegistrationsOnRing(
 		ring,
 		&wireCapture,
 		&diagCtx,
+		client,
 		clientID,
 		pubRegistrationID,
 		subRegistrationID,

@@ -60,7 +60,7 @@ func PollUntilImageCount(
 		client,
 		connectedPollTimeoutOr(timeout),
 		func() bool {
-			return subscriptionActiveImageCountAtLeast(sub, want)
+			return SubscriptionActiveImageCountAtLeast(sub, want)
 		},
 		func() string {
 			return subscriptionImageCountFailMsg(sub, want)
@@ -72,9 +72,91 @@ func PollUntilImageCount(
 func RequireNoActiveImages(t testing.TB, sub *aeron.Subscription) {
 	t.Helper()
 
-	if subscriptionActiveImageCountAtLeast(sub, 1) {
+	if SubscriptionActiveImageCountAtLeast(sub, 1) {
 		require.FailNow(t, subscriptionImageCountFailMsg(sub, 0))
 	}
+}
+
+// SubscriptionActiveImageCountAtLeast reports whether sub has at least want active images.
+func SubscriptionActiveImageCountAtLeast(sub *aeron.Subscription, want int) bool {
+	active := 0
+	for index := range sub.ImageCount() {
+		if _, ok := sub.ImageAt(index); ok {
+			active++
+			if active >= want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// PollSplitClientsUntil polls DoWork on both clients until ok or timeout.
+func PollSplitClientsUntil(
+	t testing.TB,
+	clientA, clientB *aeron.Client,
+	timeout time.Duration,
+	ok func() bool,
+	failMsg string,
+) {
+	t.Helper()
+
+	timeout = connectedPollTimeoutOr(timeout)
+	if !pollUntilBool(
+		timeout,
+		aeron.DefaultIdleSleepDuration,
+		func() bool {
+			clientA.DoWork()
+			clientB.DoWork()
+			return ok()
+		},
+	) {
+		t.Errorf("%s within %s", failMsg, timeout)
+		t.FailNow()
+	}
+}
+
+// PollSplitClientIPCLink polls both clients until pub is connected and sub has active images.
+func PollSplitClientIPCLink(
+	t testing.TB,
+	pubClient, subClient *aeron.Client,
+	pub *aeron.Publication,
+	sub *aeron.Subscription,
+	timeout time.Duration,
+) {
+	t.Helper()
+
+	PollSplitClientsUntil(
+		t,
+		pubClient,
+		subClient,
+		timeout,
+		func() bool {
+			return pub.IsConnected() && SubscriptionActiveImageCountAtLeast(sub, 1)
+		},
+		"split-client IPC link not ready",
+	)
+}
+
+// PollUntilNoActiveImagesSplit polls both clients until sub has zero active images.
+func PollUntilNoActiveImagesSplit(
+	t testing.TB,
+	pubClient, subClient *aeron.Client,
+	sub *aeron.Subscription,
+	timeout time.Duration,
+) {
+	t.Helper()
+
+	PollSplitClientsUntil(
+		t,
+		pubClient,
+		subClient,
+		timeout,
+		func() bool {
+			return !SubscriptionActiveImageCountAtLeast(sub, 1)
+		},
+		subscriptionImageCountFailMsg(sub, 0),
+	)
 }
 
 // PollUntilNoActiveImages polls DoWork until the subscription has zero active images.
@@ -91,7 +173,7 @@ func PollUntilNoActiveImages(
 		client,
 		connectedPollTimeoutOr(timeout),
 		func() bool {
-			return !subscriptionActiveImageCountAtLeast(sub, 1)
+			return !SubscriptionActiveImageCountAtLeast(sub, 1)
 		},
 		func() string {
 			return subscriptionImageCountFailMsg(sub, 0)
@@ -308,7 +390,7 @@ func PollReassembled(
 		return nil, 0
 	}
 
-	if !subscriptionActiveImageCountAtLeast(sub, 1) {
+	if !SubscriptionActiveImageCountAtLeast(sub, 1) {
 		_, detail := subscriptionImageSummary(sub)
 		t.Errorf(
 			"subscription %d reassembled 0/%d messages; fragments=0; %s",
@@ -517,19 +599,6 @@ func preparePollWant(t testing.TB, want int) bool {
 		return false
 	}
 	return !failedCaptureTB(t)
-}
-
-func subscriptionActiveImageCountAtLeast(sub *aeron.Subscription, want int) bool {
-	active := 0
-	for index := range sub.ImageCount() {
-		if _, ok := sub.ImageAt(index); ok {
-			active++
-			if active >= want {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func subscriptionImageCountFailMsg(sub *aeron.Subscription, want int) string {

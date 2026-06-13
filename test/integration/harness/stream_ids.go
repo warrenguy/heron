@@ -6,6 +6,8 @@ const (
 	PubSubRoundtripStreamID           int32 = 1007
 	PubSubTermRolloverStreamID        int32 = 1008
 	PubSubCloseDrainStreamID          int32 = 1009
+	MPSCMatrixPubSubStreamID          int32 = 1010
+	MPSCMatrixSessionIDStreamID       int32 = 1011
 	PubSubFragmentedRoundtripStreamID int32 = 1012
 
 	PollUntilConnectedTimeoutStreamID      = 7990
@@ -33,4 +35,7 @@ const (
 	OfferWithRetryWitnessBackPressuredStreamID = 8011
 
 	PollUntilNoActiveImagesTimeoutStreamID = 8012
+
+	PollSplitClientIPCLinkTimeoutStreamID       = 8014
+	PollUntilNoActiveImagesSplitTimeoutStreamID = 8015
 )

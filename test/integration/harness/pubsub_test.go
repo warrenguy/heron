@@ -151,6 +151,85 @@ func TestPollUntilNoActiveImages_timeoutMessage(t *testing.T) {
 	require.Equal(t, wantMsg, capture.lastMsg)
 }
 
+func TestPollSplitClientsUntil_timeoutMessage(t *testing.T) {
+	md := Start(t)
+	clientA := ConnectClient(t, md, aeron.Context{})
+	clientB := ConnectClient(t, md, aeron.Context{})
+
+	const failMsg = "split poll condition not met"
+	capture := &captureFailTB{TB: t}
+	PollSplitClientsUntil(
+		capture,
+		clientA,
+		clientB,
+		pollHarnessShortTimeout,
+		func() bool { return false },
+		failMsg,
+	)
+	require.True(t, capture.failed)
+	wantMsg := fmt.Sprintf("%s within %s", failMsg, pollHarnessShortTimeout)
+	require.Equal(t, wantMsg, capture.lastMsg)
+}
+
+func TestPollSplitClientIPCLink_timeoutMessage(t *testing.T) {
+	md := Start(t)
+	pubClient := ConnectClient(t, md, aeron.Context{})
+	subClient := ConnectClient(t, md, aeron.Context{})
+
+	pub, err := pubClient.AddPublication(PollSplitClientIPCLinkTimeoutStreamID, IPCChannel)
+	require.NoError(t, err)
+	CleanupClose(t, "close publication", pub.Close)
+
+	sub, err := subClient.AddSubscription(PollSplitClientIPCLinkTimeoutStreamID+1, IPCChannel)
+	require.NoError(t, err)
+	CleanupClose(t, "close subscription", sub.Close)
+
+	capture := &captureFailTB{TB: t}
+	PollSplitClientIPCLink(
+		capture,
+		pubClient,
+		subClient,
+		pub,
+		sub,
+		pollHarnessShortTimeout,
+	)
+	require.True(t, capture.failed)
+	wantMsg := fmt.Sprintf(
+		"split-client IPC link not ready within %s",
+		pollHarnessShortTimeout,
+	)
+	require.Equal(t, wantMsg, capture.lastMsg)
+}
+
+func TestPollUntilNoActiveImagesSplit_timeoutMessage(t *testing.T) {
+	md := Start(t)
+	pubClient := ConnectClient(t, md, aeron.Context{})
+	subClient := ConnectClient(t, md, aeron.Context{})
+
+	_, sub := connectIPCPubSubClients(
+		t,
+		pubClient,
+		subClient,
+		PollUntilNoActiveImagesSplitTimeoutStreamID,
+	)
+
+	capture := &captureFailTB{TB: t}
+	PollUntilNoActiveImagesSplit(
+		capture,
+		pubClient,
+		subClient,
+		sub,
+		pollHarnessShortTimeout,
+	)
+	require.True(t, capture.failed)
+	wantMsg := fmt.Sprintf(
+		"%s within %s",
+		subscriptionImageCountFailMsg(sub, 0),
+		pollHarnessShortTimeout,
+	)
+	require.Equal(t, wantMsg, capture.lastMsg)
+}
+
 func TestPollUntilImageCount_invalidWantFails(t *testing.T) {
 	testInvalidPollWant(t, PollUntilImageCountInvalidWantStreamID, func(
 		capture *captureFailTB,

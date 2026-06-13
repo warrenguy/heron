@@ -117,7 +117,7 @@ func TestAssertCloseDrainRecordOrdering_provenPositions(t *testing.T) {
 func TestAssertCloseDrainRecordOrdering_typeIDs(t *testing.T) {
 	offered := offerCloseDrainTripleForTest(t)
 
-	typeIDs, err := offeredRecordTypeIDsBetween(
+	typeIDs, err := OfferedRecordTypeIDsBetween(
 		offered.ring,
 		offered.producerBefore,
 		offered.producerAfter,
@@ -293,6 +293,75 @@ func TestCloseDrainWirePositionsProven_requiresDistinctIncreasing(t *testing.T) 
 	require.False(t, closeDrainWirePositionsProven(-1, 100))
 }
 
+func TestResolveCloseDrainCapturePositions_fillsMissingOfferedPositions(t *testing.T) {
+	triple := offerCloseDrainTripleForTest(t)
+
+	capture := closeDrainWireCaptureWithRemoveIdentities()
+	capture.pubWireDecoded = true
+	capture.subWireDecoded = true
+	capture.producerAfter = triple.producerAfter
+
+	resolveCloseDrainCapturePositions(
+		triple.ring,
+		&capture,
+		triple.clientID,
+		triple.pubRegistrationID,
+		triple.subRegistrationID,
+		triple.producerBefore,
+	)
+
+	require.GreaterOrEqual(t, capture.pubPosition, triple.producerBefore)
+	require.Greater(t, capture.subPosition, capture.pubPosition)
+	require.Greater(t, capture.closePosition, capture.subPosition)
+}
+
+func TestApplyCloseDrainWireProofFromRegistrations_satisfiesWireProof(t *testing.T) {
+	clientID, pubRegistrationID, subRegistrationID := closeDrainTestIDs()
+
+	capture := newCloseDrainWireCapture()
+	applyCloseDrainWireProofFromRegistrations(
+		&capture,
+		clientID,
+		pubRegistrationID,
+		subRegistrationID,
+	)
+
+	requireCloseDrainWireProof(
+		t,
+		capture,
+		clientID,
+		pubRegistrationID,
+		subRegistrationID,
+	)
+}
+
+func TestReplenishCloseDrainWireCapture_decodesOfferedTriple(t *testing.T) {
+	triple := offerCloseDrainTripleForTest(t)
+
+	capture := newCloseDrainWireCapture()
+	replenishCloseDrainWireCapture(
+		triple.ring,
+		&capture,
+		triple.clientID,
+		triple.pubRegistrationID,
+		triple.subRegistrationID,
+		triple.producerBefore,
+	)
+
+	require.True(t, closeDrainWireDecodeReady(capture))
+	require.GreaterOrEqual(t, capture.pubPosition, triple.producerBefore)
+	require.Greater(t, capture.subPosition, capture.pubPosition)
+}
+
+func TestCloseDrainOrderingFromWireCapture_acceptsDecodedRemovesWithoutPositions(t *testing.T) {
+	capture := closeDrainWireCaptureWithRemoveIdentities()
+	capture.pubWireDecoded = true
+	capture.subWireDecoded = true
+
+	proof := closeDrainOrderingFromWireCapture(t, capture, -1, true)
+	require.Equal(t, CloseDrainOrderingWireIdentity, proof)
+}
+
 func TestProveCloseDrainOrdering_rejectsPermutedRingOrder(t *testing.T) {
 	ring, _ := newControlMinimalTestRingBuffer(t)
 	clientID, pubRegistrationID, subRegistrationID := closeDrainTestIDs()
@@ -301,7 +370,7 @@ func TestProveCloseDrainOrdering_rejectsPermutedRingOrder(t *testing.T) {
 	offerRemovePublicationForTest(t, ring, clientID, 2, pubRegistrationID)
 	conductor.NewDriverProxy(ring, clientID).ClientClose()
 
-	typeIDs, err := offeredRecordTypeIDsBetween(
+	typeIDs, err := OfferedRecordTypeIDsBetween(
 		ring,
 		producerBefore,
 		ring.ProducerPosition(),
@@ -336,6 +405,26 @@ func TestProveCloseDrainOrdering_rejectsPermutedRingOrder(t *testing.T) {
 	require.NotEqual(t, closeDrainCommandTypeIDs(), filterCloseDrainTypeIDs(typeIDs))
 }
 
+func TestFindOfferedBetween_emptyRangeReturnsNotFound(t *testing.T) {
+	ring, _ := newControlMinimalTestRingBuffer(t)
+
+	const clientID int64 = 7
+	proxy := conductor.NewDriverProxy(ring, clientID)
+	from := ring.ProducerPosition()
+	proxy.ClientClose()
+	to := ring.ProducerPosition()
+
+	requireFindOfferedBetweenRanges(
+		t,
+		ring,
+		clientCloseObserveSpec(clientID),
+		[]findOfferedBetweenRangeExpect{
+			{from: from, to: from, wantOK: false},
+			{from: to, to: from, wantOK: false},
+		},
+	)
+}
+
 func TestFindOfferedBetween_incompleteHeadAtScanStartReturnsNotFound(t *testing.T) {
 	ring, buffer := newControlMinimalTestRingBuffer(t)
 
@@ -344,15 +433,37 @@ func TestFindOfferedBetween_incompleteHeadAtScanStartReturnsNotFound(t *testing.
 	conductor.NewDriverProxy(ring, clientID).ClientClose()
 	buffer.PutInt32(record.LengthOffset(int(from)&(ring.Capacity()-1)), 0)
 
-	_, ok, err := findOfferedBetween(
+	requireFindOfferedBetweenRanges(
+		t,
 		ring,
-		from,
-		ring.ProducerPosition(),
 		clientCloseObserveSpec(clientID),
-		nil,
+		[]findOfferedBetweenRangeExpect{
+			{from: from, to: ring.ProducerPosition(), wantOK: false},
+		},
 	)
-	require.NoError(t, err)
-	require.False(t, ok)
+}
+
+func TestFindOfferedBetween_incompleteTailMidScanReturnsNotFound(t *testing.T) {
+	ring, buffer := newControlMinimalTestRingBuffer(t)
+
+	const clientID int64 = 7
+	proxy := conductor.NewDriverProxy(ring, clientID)
+	from := ring.ProducerPosition()
+	proxy.ClientClose()
+	secondPosition := ring.ProducerPosition()
+	proxy.ClientClose()
+	buffer.PutInt32(record.LengthOffset(int(secondPosition)&(ring.Capacity()-1)), 0)
+	to := ring.ProducerPosition()
+
+	requireFindOfferedBetweenRanges(
+		t,
+		ring,
+		clientCloseObserveSpec(clientID),
+		[]findOfferedBetweenRangeExpect{
+			{from: from, to: secondPosition, wantOK: true, wantPosition: -1},
+			{from: secondPosition, to: to, wantOK: false},
+		},
+	)
 }
 
 func TestFindOfferedBetween_boundedRangeFindsFirstMatchingRecord(t *testing.T) {
@@ -365,26 +476,321 @@ func TestFindOfferedBetween_boundedRangeFindsFirstMatchingRecord(t *testing.T) {
 	mid := ring.ProducerPosition()
 	proxy.ClientClose()
 	to := ring.ProducerPosition()
-	spec := clientCloseObserveSpec(clientID)
 
-	_, ok, err := findOfferedBetween(ring, from, mid, spec, nil)
-	require.NoError(t, err)
-	require.True(t, ok)
+	requireFindOfferedBetweenRanges(
+		t,
+		ring,
+		clientCloseObserveSpec(clientID),
+		[]findOfferedBetweenRangeExpect{
+			{from: from, to: mid, wantOK: true, wantPosition: -1},
+			{from: from, to: to, wantOK: true, wantPosition: -1},
+			{from: from, to: mid, wantOK: true, wantPosition: from},
+			{from: from, to: to, wantOK: true, wantPosition: from},
+		},
+	)
+}
 
-	_, ok, err = findOfferedBetween(ring, from, to, spec, nil)
-	require.NoError(t, err)
-	require.True(t, ok)
+type findOfferedBetweenRangeExpect struct {
+	from         int64
+	to           int64
+	wantOK       bool
+	wantPosition int64
+}
 
-	var matchedPosition int64
-	_, ok, err = findOfferedBetween(ring, from, mid, spec, &matchedPosition)
-	require.NoError(t, err)
-	require.True(t, ok)
-	require.Equal(t, from, matchedPosition)
+func requireFindOfferedBetweenRanges[T any](
+	t *testing.T,
+	ring *ringbuffer.ManyToOneRingBuffer,
+	spec toDriverObserveSpec[T],
+	checks []findOfferedBetweenRangeExpect,
+) {
+	t.Helper()
 
-	_, ok, err = findOfferedBetween(ring, from, to, spec, &matchedPosition)
+	for _, check := range checks {
+		requireFindOfferedBetween(
+			t,
+			ring,
+			spec,
+			check.from,
+			check.to,
+			check.wantOK,
+			check.wantPosition,
+		)
+	}
+}
+
+func requireFindOfferedBetween[T any](
+	t *testing.T,
+	ring *ringbuffer.ManyToOneRingBuffer,
+	spec toDriverObserveSpec[T],
+	from, to int64,
+	wantOK bool,
+	wantPosition int64,
+) {
+	t.Helper()
+
+	matchedPosition := int64(-1)
+	_, ok, err := findOfferedBetween(ring, from, to, spec, &matchedPosition)
 	require.NoError(t, err)
-	require.True(t, ok)
-	require.Equal(t, from, matchedPosition)
+	require.Equal(t, wantOK, ok)
+	if wantOK && wantPosition >= 0 {
+		require.Equal(t, wantPosition, matchedPosition)
+	}
+	if !wantOK {
+		require.Equal(t, int64(-1), matchedPosition)
+	}
+}
+
+func TestFindOfferedBetween_decodeMatchErrorPropagates(t *testing.T) {
+	ring, buffer := newControlMinimalTestRingBuffer(t)
+
+	clientID, registrationID := controlMinimalTestRemoveIDs()
+	from := ring.ProducerPosition()
+	offerRemovePublicationForTest(t, ring, clientID, 1, registrationID)
+
+	recordIndex := int(from) & (ring.Capacity() - 1)
+	const corruptedBody = 4
+	corruptedRecordLength := ringbuffer.HeaderLength + corruptedBody
+	aligned := record.AlignRecordLength(corruptedRecordLength)
+	buffer.PutInt32(record.LengthOffset(recordIndex), int32(corruptedRecordLength))
+
+	baseSpec := removePublicationObserveSpec(clientID, registrationID)
+	spec := toDriverObserveSpec[conductor.RemovePublicationMessage]{
+		messageTypeID: baseSpec.messageTypeID,
+		recordLength:  aligned,
+		decodeMatch:   baseSpec.decodeMatch,
+	}
+
+	_, ok, err := findOfferedBetween(ring, from, from+int64(aligned), spec, nil)
+	require.Error(t, err)
+	require.False(t, ok)
+}
+
+func TestFindOfferedBetween_interleaveScenarios(t *testing.T) {
+	t.Run("wrongTypeInterleaveFindsRemoveNotClose", func(t *testing.T) {
+		ring, _ := newControlMinimalTestRingBuffer(t)
+
+		clientID, pubRegistrationID := controlMinimalTestRemoveIDs()
+		proxy := conductor.NewDriverProxy(ring, clientID)
+		from := ring.ProducerPosition()
+		proxy.ClientClose()
+		removePosition := ring.ProducerPosition()
+		offerRemovePublicationForTest(t, ring, clientID, 1, pubRegistrationID)
+		to := ring.ProducerPosition()
+
+		requireFindOfferedBetweenRanges(
+			t,
+			ring,
+			clientCloseObserveSpec(clientID),
+			[]findOfferedBetweenRangeExpect{
+				{from: from, to: removePosition, wantOK: true, wantPosition: from},
+			},
+		)
+		requireFindOfferedBetweenRanges(
+			t,
+			ring,
+			removePublicationObserveSpec(clientID, pubRegistrationID),
+			[]findOfferedBetweenRangeExpect{
+				{from: from, to: removePosition, wantOK: false, wantPosition: -1},
+				{from: from, to: to, wantOK: true, wantPosition: removePosition},
+			},
+		)
+	})
+
+	t.Run("wrongClientIDInterleave", func(t *testing.T) {
+		ring, _ := newControlMinimalTestRingBuffer(t)
+
+		const (
+			wiredClientID int64 = 7
+			otherClientID int64 = 9
+		)
+		proxyWired := conductor.NewDriverProxy(ring, wiredClientID)
+		proxyOther := conductor.NewDriverProxy(ring, otherClientID)
+
+		from := ring.ProducerPosition()
+		proxyOther.ClientClose()
+		proxyWired.ClientClose()
+		to := ring.ProducerPosition()
+		wiredClosePosition := from + int64(conductor.CorrelatedRingRecordLength())
+
+		requireFindOfferedBetweenRanges(
+			t,
+			ring,
+			clientCloseObserveSpec(otherClientID),
+			[]findOfferedBetweenRangeExpect{
+				{from: from, to: wiredClosePosition, wantOK: true, wantPosition: from},
+			},
+		)
+		requireFindOfferedBetweenRanges(
+			t,
+			ring,
+			clientCloseObserveSpec(wiredClientID),
+			[]findOfferedBetweenRangeExpect{
+				{from: from, to: wiredClosePosition, wantOK: false, wantPosition: -1},
+				{from: from, to: to, wantOK: true, wantPosition: wiredClosePosition},
+			},
+		)
+	})
+
+	t.Run("wrongRegistrationIDInterleaveRemovePublication", func(t *testing.T) {
+		testFindOfferedBetweenWrongRegistrationIDInterleave(
+			t,
+			offerRemovePublicationForTest,
+			removePublicationObserveSpec,
+		)
+	})
+
+	t.Run("wrongRegistrationIDInterleaveRemoveSubscription", func(t *testing.T) {
+		testFindOfferedBetweenWrongRegistrationIDInterleave(
+			t,
+			offerRemoveSubscriptionForTest,
+			removeSubscriptionObserveSpec,
+		)
+	})
+}
+
+func testFindOfferedBetweenWrongRegistrationIDInterleave[T any](
+	t *testing.T,
+	offer func(
+		t *testing.T,
+		ring *ringbuffer.ManyToOneRingBuffer,
+		clientID, correlationID, registrationID int64,
+	),
+	spec func(clientID, registrationID int64) toDriverObserveSpec[T],
+) {
+	t.Helper()
+
+	ring, _ := newControlMinimalTestRingBuffer(t)
+
+	const (
+		clientID      int64 = 7
+		registrationA int64 = 9001
+		registrationB int64 = 9002
+	)
+	from := ring.ProducerPosition()
+	offer(t, ring, clientID, 1, registrationB)
+	matchPosition := ring.ProducerPosition()
+	offer(t, ring, clientID, 2, registrationA)
+	to := ring.ProducerPosition()
+
+	requireFindOfferedBetweenRanges(
+		t,
+		ring,
+		spec(clientID, registrationA),
+		[]findOfferedBetweenRangeExpect{
+			{from: from, to: to, wantOK: true, wantPosition: matchPosition},
+			{from: from, to: matchPosition, wantOK: false, wantPosition: -1},
+		},
+	)
+}
+
+func TestMPSCMatrixCommandTypeIDs_filtersMatrixCommands(t *testing.T) {
+	filtered := MPSCMatrixCommandTypeIDs([]int{
+		conductor.ClientKeepalive,
+		conductor.AddPublication,
+		conductor.RemoveSubscription,
+		99,
+	})
+	require.Equal(
+		t,
+		[]int{conductor.AddPublication, conductor.RemoveSubscription},
+		filtered,
+	)
+}
+
+func TestAdoptMPSCMatrixTypeIDsIfRicher_dedupPreservesOrder(t *testing.T) {
+	adopted := AdoptMPSCMatrixTypeIDsIfRicher(
+		[]int{conductor.RemovePublication, conductor.AddPublication},
+		[]int{conductor.AddPublication, conductor.RemoveSubscription},
+	)
+	require.Equal(
+		t,
+		[]int{
+			conductor.RemovePublication,
+			conductor.AddPublication,
+			conductor.RemoveSubscription,
+		},
+		adopted,
+	)
+}
+
+func TestRequireMPSCMatrixCommandTypeIDsPresent(t *testing.T) {
+	tests := []struct {
+		name     string
+		typeIDs  []int
+		wantFail bool
+	}{
+		{
+			name:     "missingBoth",
+			typeIDs:  []int{conductor.AddPublication},
+			wantFail: true,
+		},
+		{
+			name: "missingRemovePublication",
+			typeIDs: []int{
+				conductor.AddPublication,
+				conductor.RemoveSubscription,
+			},
+			wantFail: true,
+		},
+		{
+			name: "missingRemoveSubscription",
+			typeIDs: []int{
+				conductor.AddPublication,
+				conductor.RemovePublication,
+			},
+			wantFail: true,
+		},
+		{
+			name: "bothRemovesPresent",
+			typeIDs: []int{
+				conductor.AddPublication,
+				conductor.RemovePublication,
+				conductor.RemoveSubscription,
+			},
+			wantFail: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.wantFail {
+				capture := &captureFailTB{TB: t}
+				RequireMPSCMatrixCommandTypeIDsPresent(capture, tt.typeIDs)
+				require.True(t, capture.failed)
+				return
+			}
+			RequireMPSCMatrixCommandTypeIDsPresent(t, tt.typeIDs)
+		})
+	}
+}
+
+func TestFindOfferedBetween_matchAfterPadding(t *testing.T) {
+	ring, buffer := newControlMinimalTestRingBuffer(t)
+
+	const clientID int64 = 7
+	proxy := conductor.NewDriverProxy(ring, clientID)
+	seedControlMinimalRingNearWrap(t, ring, buffer)
+
+	from := ring.ProducerPosition()
+	recordLength := conductor.CorrelatedRingRecordLength()
+	firstMatchPosition := from + controlMinimalWrapPadding
+	mid := firstMatchPosition + int64(recordLength)
+
+	proxy.ClientClose()
+	require.Equal(t, mid, ring.ProducerPosition())
+
+	proxy.ClientClose()
+	to := ring.ProducerPosition()
+
+	requireFindOfferedBetweenRanges(
+		t,
+		ring,
+		clientCloseObserveSpec(clientID),
+		[]findOfferedBetweenRangeExpect{
+			{from: from, to: mid, wantOK: true, wantPosition: firstMatchPosition},
+			{from: mid, to: to, wantOK: true, wantPosition: mid},
+		},
+	)
 }
 
 func TestFindMatchingClientClosePositionBetween_respectsBoundedToPosition(t *testing.T) {
