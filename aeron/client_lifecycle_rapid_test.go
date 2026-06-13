@@ -1,3 +1,5 @@
+//go:build rapid
+
 package aeron_test
 
 import (

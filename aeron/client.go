@@ -58,8 +58,6 @@ type Client struct {
 	serviceTimestampsSeeded bool
 	clientLock              sync.Mutex
 	closed                  atomic.Bool
-	awaitPollSleepingHook   func()
-	awaitPollSleepingHookMu sync.Mutex
 }
 
 func (client *Client) lockClient() {
@@ -482,18 +480,10 @@ func (client *Client) awaitResponse(
 	return conductor.PendingRegistration{}, newAwaitTimeoutError(correlationID, timeout)
 }
 
-// awaitPendingPollTickConfig fields are test-only; used via
-// AwaitPendingPollOneTickForTest.
-type awaitPendingPollTickConfig struct {
-	skipDoWork       bool
-	afterPollPending func()
-}
-
 func (client *Client) awaitPendingPollTick(
 	conductorInstance *conductor.Conductor,
 	correlationID int64,
 	mapPollErr func(error) error,
-	tickConfig *awaitPendingPollTickConfig,
 ) (conductor.PendingRegistration, bool, error) {
 	if err := client.requireReadyWithConductor(); err != nil {
 		return conductor.PendingRegistration{}, false, err
@@ -501,24 +491,27 @@ func (client *Client) awaitPendingPollTick(
 	if conductorInstance.IsTerminating() {
 		return conductor.PendingRegistration{}, false, mapConductorTerminationError(conductorInstance)
 	}
-	var skipDoWork bool
-	var afterPollPending func()
-	if tickConfig != nil {
-		skipDoWork = tickConfig.skipDoWork
-		afterPollPending = tickConfig.afterPollPending
-	}
-	if !skipDoWork {
-		client.doWorkLocked()
-	}
+	client.doWorkLocked()
 	done, registration, err := conductorInstance.PollPending(correlationID)
-	if afterPollPending != nil {
-		afterPollPending()
-	}
 	if !done {
 		return conductor.PendingRegistration{}, false, nil
 	}
-	if err != nil {
-		return conductor.PendingRegistration{}, true, mapPollErr(err)
+	return client.completeAwaitPendingPollTick(
+		conductorInstance,
+		registration,
+		mapPollErr,
+		err,
+	)
+}
+
+func (client *Client) completeAwaitPendingPollTick(
+	conductorInstance *conductor.Conductor,
+	registration conductor.PendingRegistration,
+	mapPollErr func(error) error,
+	pollErr error,
+) (conductor.PendingRegistration, bool, error) {
+	if pollErr != nil {
+		return conductor.PendingRegistration{}, true, mapPollErr(pollErr)
 	}
 	// Close CAS may publish closed after the iteration-start check; best-effort
 	// ErrClientClosed rather than returning success on the same tick.
@@ -540,7 +533,6 @@ func (client *Client) awaitPendingPoll(
 			conductorInstance,
 			correlationID,
 			mapPollErr,
-			nil,
 		)
 		if err != nil {
 			return registration, completed, err

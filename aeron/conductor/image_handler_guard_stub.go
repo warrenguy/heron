@@ -8,5 +8,5 @@ package conductor
 func assertInvokeImageHandlerUnderWriteLock(savedDepth int32) {}
 
 // service calls this before linger sweep under resourceMu write lock.
-// hook_access.go invokes Conductor.lingerSweepBlocker when set under testhooks.
-func invokeLingerSweepBlockerForTest(conductor *Conductor) {}
+// hook_access.go invokes linger sweep blocker side table under testhooks.
+func invokeLingerSweepBlocker(conductor *Conductor) {}

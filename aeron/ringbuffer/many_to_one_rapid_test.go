@@ -1,3 +1,5 @@
+//go:build rapid
+
 package ringbuffer_test
 
 import (

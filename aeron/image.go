@@ -55,8 +55,6 @@ type Image struct {
 	isClosed atomic.Bool
 }
 
-var pollAfterPaddingAdvanceForTest func()
-
 func newImage(
 	sub *Subscription,
 	event conductor.AvailableImage,
@@ -366,9 +364,7 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 				break
 			}
 			offset += advance
-			if pollAfterPaddingAdvanceForTest != nil {
-				pollAfterPaddingAdvanceForTest()
-			}
+			trackPollAfterPaddingAdvance()
 			continue
 		}
 

@@ -147,7 +147,10 @@ func decodeCorrelatedCorrelationID(
 	return decoded.CorrelationID, nil
 }
 
-const clientConcurrentResultTimeout = 2 * time.Second
+const (
+	clientConcurrentResultTimeout      = 2 * time.Second
+	concurrentAwaitHammerCheckDuration = 20 * time.Millisecond
+)
 
 func requireErrClientClosed(t *testing.T, err error) {
 	t.Helper()

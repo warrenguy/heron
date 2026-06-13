@@ -383,6 +383,7 @@ func TestClient_Close_lingerDrainRunsConductorDoWork(t *testing.T) {
 	fixture.Conductor.SetLingerSweepBlockerForTest(func() {
 		doWorkLingerSweeps.Add(1)
 	})
+	t.Cleanup(func() { fixture.Conductor.SetLingerSweepBlockerForTest(nil) })
 
 	closeDone := closeClientAsync(client)
 	lingerScheduled := false

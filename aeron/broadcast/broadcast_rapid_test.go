@@ -1,3 +1,5 @@
+//go:build rapid
+
 package broadcast_test
 
 import (

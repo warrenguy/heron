@@ -8,6 +8,7 @@
 package aeron
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -45,26 +46,56 @@ func requireAddClosedResult(t *testing.T, got addConcurrentResult) {
 
 type awaitPollSleepingWaiter struct {
 	notify       chan struct{}
-	ticksAtSleep atomic.Int32
+	blocked      chan struct{}
+	proceed      chan struct{}
+	blockProceed atomic.Bool
 }
 
 func newAwaitPollSleepingWaiter(
 	t *testing.T,
 	client *Client,
-	hammer *doWorkHammer,
 ) *awaitPollSleepingWaiter {
 	t.Helper()
 
-	waiter := &awaitPollSleepingWaiter{notify: make(chan struct{}, 1)}
+	waiter := &awaitPollSleepingWaiter{
+		notify:  make(chan struct{}, 1),
+		blocked: make(chan struct{}),
+		proceed: make(chan struct{}, 1),
+	}
 	client.SetAwaitPollSleepingHookForTest(func() {
-		waiter.ticksAtSleep.Store(hammer.ticks.Load())
 		select {
 		case waiter.notify <- struct{}{}:
 		default:
 		}
+		if waiter.blockProceed.CompareAndSwap(true, false) {
+			waiter.blocked <- struct{}{}
+			<-waiter.proceed
+		}
 	})
-	t.Cleanup(func() { client.SetAwaitPollSleepingHookForTest(nil) })
+	t.Cleanup(func() {
+		waiter.releaseHook()
+		client.SetAwaitPollSleepingHookForTest(nil)
+	})
 	return waiter
+}
+
+func (waiter *awaitPollSleepingWaiter) armBlock() {
+	waiter.drainProceed()
+	waiter.blockProceed.Store(true)
+}
+
+func (waiter *awaitPollSleepingWaiter) drainProceed() {
+	select {
+	case <-waiter.proceed:
+	default:
+	}
+}
+
+func (waiter *awaitPollSleepingWaiter) releaseHook() {
+	select {
+	case waiter.proceed <- struct{}{}:
+	default:
+	}
 }
 
 func (waiter *awaitPollSleepingWaiter) drainNotifications() {
@@ -80,7 +111,6 @@ func (waiter *awaitPollSleepingWaiter) drainNotifications() {
 func (waiter *awaitPollSleepingWaiter) waitForSleeping(t *testing.T) {
 	t.Helper()
 
-	waiter.drainNotifications()
 	select {
 	case <-waiter.notify:
 	case <-time.After(clientConcurrentResultTimeout):
@@ -88,9 +118,21 @@ func (waiter *awaitPollSleepingWaiter) waitForSleeping(t *testing.T) {
 	}
 }
 
+func (waiter *awaitPollSleepingWaiter) waitForBlocked(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-waiter.blocked:
+	case <-time.After(clientConcurrentResultTimeout):
+		t.Fatal("timed out waiting for blocked await poll sleep under clientLock")
+	}
+}
+
 type doWorkHammer struct {
 	ticks                atomic.Int32
 	pauseTicksAtRegister int32
+	pauseCheckActive     atomic.Bool
+	lockTakenDuringPause atomic.Bool
 	stop                 chan struct{}
 	awaitPollSleeping    *awaitPollSleepingWaiter
 }
@@ -101,7 +143,7 @@ func newDoWorkHammer(t *testing.T, client *Client) *doWorkHammer {
 	hammer := &doWorkHammer{
 		stop: make(chan struct{}),
 	}
-	hammer.awaitPollSleeping = newAwaitPollSleepingWaiter(t, client, hammer)
+	hammer.awaitPollSleeping = newAwaitPollSleepingWaiter(t, client)
 	var stopOnce sync.Once
 	t.Cleanup(func() {
 		stopOnce.Do(func() { close(hammer.stop) })
@@ -112,7 +154,15 @@ func newDoWorkHammer(t *testing.T, client *Client) *doWorkHammer {
 			case <-hammer.stop:
 				return
 			default:
-				client.DoWork()
+				if !client.TryLockClientForTest() {
+					runtime.Gosched()
+					continue
+				}
+				if hammer.pauseCheckActive.Load() {
+					hammer.lockTakenDuringPause.Store(true)
+				}
+				client.DoWorkLockedForTest()
+				client.UnlockClientForTest()
 				hammer.ticks.Add(1)
 			}
 		}
@@ -124,16 +174,29 @@ func (hammer *doWorkHammer) onCommandSeenPauseCheck(t *testing.T) func(int64) {
 	t.Helper()
 
 	return func(_ int64) {
+		hammer.awaitPollSleeping.drainNotifications()
 		hammer.awaitPollSleeping.waitForSleeping(t)
-		baseline := hammer.awaitPollSleeping.ticksAtSleep.Load()
-		require.Never(
+
+		hammer.lockTakenDuringPause.Store(false)
+		hammer.pauseCheckActive.Store(true)
+		defer hammer.pauseCheckActive.Store(false)
+
+		hammer.awaitPollSleeping.armBlock()
+		defer hammer.awaitPollSleeping.releaseHook()
+
+		hammer.awaitPollSleeping.waitForBlocked(t)
+		require.False(
 			t,
-			func() bool { return hammer.ticks.Load() != baseline },
-			20*time.Millisecond,
-			time.Microsecond,
+			hammer.lockTakenDuringPause.Load(),
 			"external DoWork interleaved during blocking await",
 		)
-		hammer.pauseTicksAtRegister = baseline
+		time.Sleep(concurrentAwaitHammerCheckDuration)
+		require.False(
+			t,
+			hammer.lockTakenDuringPause.Load(),
+			"external DoWork interleaved during blocking await",
+		)
+		hammer.pauseTicksAtRegister = hammer.ticks.Load()
 	}
 }
 

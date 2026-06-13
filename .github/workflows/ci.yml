@@ -23,13 +23,30 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Write Go arch cache marker
+        run: echo "${{ env.GOARCH }}" > .go-arch-cache-marker
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: |
+            go.sum
+            .go-arch-cache-marker
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-${{ runner.os }}-${{ env.GOARCH }}-${{ hashFiles('.golangci.yml', 'go.sum') }}
+          restore-keys: |
+            golangci-${{ runner.os }}-${{ env.GOARCH }}-
 
       - name: Check
         run: make check
+
+      - name: Property tests
+        if: matrix.goarch == 'amd64'
+        run: make test-rapid
 
   integration:
     needs: check
@@ -40,10 +57,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Write Go arch cache marker
+        run: echo "${{ env.GOARCH }}" > .go-arch-cache-marker
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: |
+            go.sum
+            .go-arch-cache-marker
 
       - uses: actions/cache@v4
         id: aeronmd-cache

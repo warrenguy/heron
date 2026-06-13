@@ -3,6 +3,8 @@
 package conductor
 
 import (
+	"sync"
+
 	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/cnc"
@@ -11,6 +13,11 @@ import (
 )
 
 const testRingDataCapacity = 4096
+
+var (
+	lingerSweepBlockers   = make(map[*Conductor]func())
+	lingerSweepBlockersMu sync.Mutex
+)
 
 func registerSubscriptionHook(
 	conductor *Conductor,
@@ -95,11 +102,26 @@ func lingerDeadlineNsHook(registry *LogBuffersRegistry, logFileName string) int6
 }
 
 func setLingerSweepBlockerHook(conductor *Conductor, blocker func()) {
-	conductor.lingerSweepBlocker = blocker
+	if conductor == nil {
+		return
+	}
+	lingerSweepBlockersMu.Lock()
+	defer lingerSweepBlockersMu.Unlock()
+	if blocker == nil {
+		delete(lingerSweepBlockers, conductor)
+		return
+	}
+	lingerSweepBlockers[conductor] = blocker
 }
 
-func invokeLingerSweepBlockerForTest(conductor *Conductor) {
-	if blocker := conductor.lingerSweepBlocker; blocker != nil {
+func invokeLingerSweepBlocker(conductor *Conductor) {
+	if conductor == nil {
+		return
+	}
+	lingerSweepBlockersMu.Lock()
+	blocker := lingerSweepBlockers[conductor]
+	lingerSweepBlockersMu.Unlock()
+	if blocker != nil {
 		blocker()
 	}
 }

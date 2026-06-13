@@ -21,12 +21,23 @@ make aeronmd   # requires Docker; output bin/aeronmd (see specs/versions.yaml)
 ## Development
 
 ```bash
-make check
+make check              # lint, unit tests (-race), stress
+make test-rapid         # property tests (pgregory.net/rapid), separate from make test
 make test-integration
 ```
 
-Ad-hoc unit tests need the `testhooks` build tag (conductor cross-package test
-hooks): `go test -tags=testhooks ./...`. Prefer `make test` / `make check`.
+Unit tests use the `testhooks` build tag (conductor cross-package test hooks).
+Property tests live in `*_rapid_test.go` behind the `rapid` tag (`//go:build rapid`);
+CI runs them via `make test-rapid` on amd64 after `make check`.
+
+```bash
+make test                                                                    # unit only
+go test -race -tags=testhooks ./...                                          # ad-hoc unit
+go test -race -tags=rapid,testhooks -run rapid ./...                         # ad-hoc property
+go test -race -tags=rapid,testhooks ./aeron/conductor/ -run TestErrorResponse_roundtrip_rapid
+```
+
+Prefer Makefile targets over bare `go test`.
 
 ## Benchmarks
 

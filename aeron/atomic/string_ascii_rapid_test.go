@@ -1,3 +1,5 @@
+//go:build rapid
+
 package atomic_test
 
 import (

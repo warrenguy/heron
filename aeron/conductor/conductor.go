@@ -118,12 +118,9 @@ type Conductor struct {
 	// cachedCorrelatedPending avoids a second pending.Get on the adapter ready path.
 	cachedCorrelatedPending *PendingRegistration
 	// inCallback is agent-only; suppresses nested image handler delivery.
-	inCallback bool
-	// lingerSweepBlocker is agent-only; optional test hook during linger sweep.
-	// Only invoked via invokeLingerSweepBlockerForTest (no-op in !testhooks builds).
-	lingerSweepBlocker func()
-	terminationCause   error
-	terminating        bool
+	inCallback       bool
+	terminationCause error
+	terminating      bool
 }
 
 func NewConductor(
@@ -230,7 +227,7 @@ func (conductor *Conductor) service() int {
 	// Re-sample NanoClock so linger sweep sees time advanced during this tick.
 	if conductor.logBuffersRegistry.HasScheduledLinger() {
 		workCount += underResourceWriteLockResult(conductor, func() int {
-			invokeLingerSweepBlockerForTest(conductor)
+			invokeLingerSweepBlocker(conductor)
 			return conductor.sweepLingeringLogBuffers(conductor.config.NanoClock())
 		})
 	}

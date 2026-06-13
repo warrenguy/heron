@@ -1,5 +1,5 @@
-.PHONY: bench bench-baseline bench-regression check check-inner fuzz test test-stress coverage clean \
-	test-integration aeronmd lint gofumpt goimports
+.PHONY: bench bench-baseline bench-regression check check-inner fuzz test test-rapid test-stress \
+	coverage clean test-integration aeronmd lint gofumpt goimports
 
 ROOT := $(CURDIR)
 export PATH := $(ROOT)/bin:$(PATH)
@@ -42,7 +42,8 @@ check:
 		$(MAKE) --no-print-directory check-inner; \
 	fi
 
-check-inner: lint test test-stress
+check-inner: lint
+	@$(MAKE) --no-print-directory -j2 test test-stress
 
 lint:
 	go tool golangci-lint run ./...
@@ -75,6 +76,9 @@ BENCH_BASELINE := $(BENCH_DIR)/baseline.txt
 BENCH_COUNT ?= 10
 BENCH_PKGS := ./...
 export BENCH_PKGS BENCH_COUNT BENCH_BASELINE GOARCH
+
+test-rapid:
+	go test -timeout=$(TEST_TIMEOUT) -race -tags=rapid,$(UNIT_TEST_TAGS) -count=1 -run rapid ./...
 
 test-stress:
 	go test -timeout=$(TEST_TIMEOUT) -race -tags=stress,$(UNIT_TEST_TAGS) -count=1 -run Stress ./...

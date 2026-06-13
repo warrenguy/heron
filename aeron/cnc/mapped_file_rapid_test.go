@@ -1,3 +1,5 @@
+//go:build rapid
+
 package cnc_test
 
 import (

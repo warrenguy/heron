@@ -1,3 +1,5 @@
+//go:build rapid
+
 package logbuffer_test
 
 import (

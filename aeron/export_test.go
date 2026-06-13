@@ -669,6 +669,22 @@ func (client *Client) mapPollPendingErrorForTest(correlationID int64) func(error
 	}
 }
 
+// TryLockClientForTest non-blocking acquire of clientLock for test goroutines
+// that hammer DoWorkLockedForTest while blocking await holds the lock.
+//
+// UnlockClientForTest required after true; false means clientLock held elsewhere.
+func (client *Client) TryLockClientForTest() bool {
+	if client == nil {
+		return false
+	}
+	return client.clientLock.TryLock()
+}
+
+// UnlockClientForTest releases clientLock from a successful TryLockClientForTest.
+func (client *Client) UnlockClientForTest() {
+	client.unlockClient()
+}
+
 // DoWorkLockedForTest runs one conductor service tick without acquiring clientLock.
 //
 // Caller must already hold clientLock, as in blocking await/offer poll loops, Close
@@ -678,7 +694,7 @@ func (client *Client) DoWorkLockedForTest() int {
 	return client.doWorkLocked()
 }
 
-// AwaitPendingPollOneTickForTest runs one awaitPendingPoll tick via production code.
+// AwaitPendingPollOneTickForTest runs one awaitPendingPollTickForTest tick under clientLock.
 //
 // skipDoWork omits doWorkLocked when poll completion is pre-latched; afterPollPending
 // runs after PollPending for closed-guard branch tests.
@@ -690,14 +706,12 @@ func (client *Client) AwaitPendingPollOneTickForTest(
 	client.lockClient()
 	defer client.unlockClient()
 
-	return client.awaitPendingPollTick(
+	return client.awaitPendingPollTickForTest(
 		client.conductor,
 		correlationID,
 		client.mapPollPendingErrorForTest(correlationID),
-		&awaitPendingPollTickConfig{
-			skipDoWork:       skipDoWork,
-			afterPollPending: afterPollPending,
-		},
+		skipDoWork,
+		afterPollPending,
 	)
 }
 
@@ -1057,7 +1071,7 @@ func ImageInvokeSubscriberErrorHandlerForTest(image *Image, err error) {
 }
 
 func SetPollAfterPaddingAdvanceForTest(hook func()) {
-	pollAfterPaddingAdvanceForTest = hook
+	setPollAfterPaddingAdvanceHook(hook)
 }
 
 func writeCommittedDataFrameForTest(

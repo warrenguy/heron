@@ -1,3 +1,5 @@
+//go:build rapid
+
 package conductor_test
 
 import (
