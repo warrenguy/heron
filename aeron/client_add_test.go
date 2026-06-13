@@ -918,6 +918,13 @@ func TestClient_AddPublication_terminationDuringOfferRetry(t *testing.T) {
 	}()
 
 	waitForClientAddClockReads(clock, 4)
+	requireAddCommandNotOnRing(t, fixture, conductor.AddPublication)
+
+	correlationID := fixture.Conductor.ActiveCorrelationID()
+	require.NotEqual(t, conductor.NullCorrelationID, correlationID)
+	_, ok := fixture.Conductor.PendingResult(correlationID)
+	require.True(t, ok, "expected pending registration during offer-phase backpressure")
+
 	fixture.Ring.SetConsumerHeartbeatTime(conductor.NullCorrelationID)
 	clock.SetNanoNs(testutil.TestWorkNanoNs)
 
@@ -929,8 +936,7 @@ func TestClient_AddPublication_terminationDuringOfferRetry(t *testing.T) {
 	)
 	require.Nil(t, got.pub)
 	requireDriverShutdownTimeout(t, got.err)
-	correlationID := fixture.DriverProxy.NextCorrelationID() - 1
-	_, ok := fixture.Conductor.PendingResult(correlationID)
+	_, ok = fixture.Conductor.PendingResult(correlationID)
 	require.False(t, ok)
 	require.Equal(t, 0, client.PublicationCountForTest())
 	requireActiveCorrelationCleared(t, fixture)
@@ -959,6 +965,13 @@ func TestClient_AddSubscription_terminationDuringOfferRetry(t *testing.T) {
 	}()
 
 	waitForClientAddClockReads(clock, 4)
+	requireAddCommandNotOnRing(t, fixture, conductor.AddSubscription)
+
+	correlationID := fixture.Conductor.ActiveCorrelationID()
+	require.NotEqual(t, conductor.NullCorrelationID, correlationID)
+	_, ok := fixture.Conductor.PendingResult(correlationID)
+	require.True(t, ok, "expected pending registration during offer-phase backpressure")
+
 	fixture.Ring.SetConsumerHeartbeatTime(conductor.NullCorrelationID)
 	clock.SetNanoNs(testutil.TestWorkNanoNs)
 
@@ -970,8 +983,7 @@ func TestClient_AddSubscription_terminationDuringOfferRetry(t *testing.T) {
 	)
 	require.Nil(t, got.sub)
 	requireDriverShutdownTimeout(t, got.err)
-	correlationID := fixture.DriverProxy.NextCorrelationID() - 1
-	_, ok := fixture.Conductor.PendingResult(correlationID)
+	_, ok = fixture.Conductor.PendingResult(correlationID)
 	require.False(t, ok)
 	require.Equal(t, 0, client.SubscriptionCountForTest())
 	requireActiveCorrelationCleared(t, fixture)

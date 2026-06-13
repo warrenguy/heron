@@ -12,11 +12,6 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
-var (
-	fragmentedWriteTrack       func(termIndex, frameOffset int, begin bool)
-	fragmentedReservationTrack func(termIndex, termOffset int, begin bool)
-)
-
 // Publication is a concurrent IPC publisher over a driver-mapped log buffer.
 //
 // Offer, TryClaim, Commit, Abort, and read accessors are safe for concurrent
@@ -552,9 +547,8 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 	if outcome.status != 0 {
 		return outcome.status
 	}
-	if fragmentedReservationTrack != nil {
-		fragmentedReservationTrack(outcome.termIndex, outcome.termOffset, true)
-		defer fragmentedReservationTrack(outcome.termIndex, outcome.termOffset, false)
+	if trackFragmentedReservationBegin(outcome.termIndex, outcome.termOffset) {
+		defer trackFragmentedReservationEnd(outcome.termIndex, outcome.termOffset)
 	}
 
 	frameOffset := outcome.termOffset
@@ -595,9 +589,7 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 			fragFlags |= logbuffer.EndFlag
 		}
 
-		if fragmentedWriteTrack != nil {
-			fragmentedWriteTrack(outcome.termIndex, frameOffset, true)
-		}
+		trackFragmentedWrite(outcome.termIndex, frameOffset, true)
 
 		pub.headerWriter.WriteWithFlags(
 			outcome.termBuf,
@@ -613,9 +605,7 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 		)
 		logbuffer.PutFrameLengthOrdered(outcome.termBuf, frameOffset, frameLength)
 
-		if fragmentedWriteTrack != nil {
-			fragmentedWriteTrack(outcome.termIndex, frameOffset, false)
-		}
+		trackFragmentedWrite(outcome.termIndex, frameOffset, false)
 
 		frameOffset += alignedLength
 		remaining -= bytesToWrite

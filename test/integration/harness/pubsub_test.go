@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -23,27 +24,36 @@ var invalidWantCases = []struct {
 	{name: "negative", want: -1},
 }
 
+func connectIPCPubSubClients(
+	t testing.TB,
+	pubClient *aeron.Client,
+	subClient *aeron.Client,
+	streamID int32,
+) (*aeron.Publication, *aeron.Subscription) {
+	t.Helper()
+
+	pub, err := pubClient.AddPublication(streamID, IPCChannel)
+	require.NoError(t, err)
+	CleanupClose(t, "close publication", pub.Close)
+
+	sub, err := subClient.AddSubscription(streamID, IPCChannel)
+	require.NoError(t, err)
+	CleanupClose(t, "close subscription", sub.Close)
+	if pubClient == subClient {
+		WaitForIPCLinkConnected(t, pubClient, pub, sub, ConnectedPollTimeout)
+	} else {
+		PollUntilConnected(t, pubClient, pub, ConnectedPollTimeout)
+		PollUntilImageCount(t, subClient, sub, 1, ConnectedPollTimeout)
+	}
+	return pub, sub
+}
+
 func connectIPCPubSub(
 	t testing.TB,
 	client *aeron.Client,
 	streamID int32,
 ) (*aeron.Publication, *aeron.Subscription) {
-	t.Helper()
-
-	pub, err := client.AddPublication(streamID, IPCChannel)
-	require.NoError(t, err)
-	CleanupClose(t, "close publication", pub.Close)
-
-	sub, err := client.AddSubscription(streamID, IPCChannel)
-	require.NoError(t, err)
-	CleanupClose(t, "close subscription", sub.Close)
-
-	WaitForIPCLinkConnected(t, client, pub, sub, ConnectedPollTimeout)
-	return pub, sub
-}
-
-func alignedDataFrameAdvance(payload []byte) int64 {
-	return int64(logbuffer.AlignFragmentChunkLength(len(payload)))
+	return connectIPCPubSubClients(t, client, client, streamID)
 }
 
 func offerSingleAlignedFragment(
@@ -57,7 +67,7 @@ func offerSingleAlignedFragment(
 	result := pub.Offer(payload)
 	require.Positive(t, result)
 	client.DoWork()
-	return alignedDataFrameAdvance(payload)
+	return AlignedOfferAdvance(len(payload), 1)
 }
 
 func TestPollUntilConnected_timeoutMessage(t *testing.T) {
@@ -224,7 +234,7 @@ func TestPollDelivered_liveIPC(t *testing.T) {
 	pub, sub := connectIPCPubSub(t, client, PollDeliveredLiveIPCStreamID)
 
 	pubPosBefore := pub.Position()
-	alignedAdvance := alignedDataFrameAdvance(payload)
+	alignedAdvance := AlignedOfferAdvance(len(payload), 1)
 
 	result := pub.Offer(payload)
 	require.Positive(t, result)
@@ -413,4 +423,138 @@ func TestPollReassembled_liveIPC_fragmented(t *testing.T) {
 	require.Equal(t, 2, fragments)
 
 	AssertPubSubPositionsAdvanced(t, pub, sub, pubPosBefore, wantAdvance)
+}
+
+func TestComputeRolloverMessageCount_table(t *testing.T) {
+	tests := []struct {
+		name        string
+		termLen     int
+		payloadSize int
+		want        int
+	}{
+		{
+			name:        "four_kiB_term_256_payload",
+			termLen:     4096,
+			payloadSize: 256,
+			want:        17,
+		},
+		{
+			name:        "term_min_length_256_payload",
+			termLen:     logbuffer.TermMinLength,
+			payloadSize: 256,
+			want:        230,
+		},
+		{
+			name:        "zero_term_len",
+			termLen:     0,
+			payloadSize: 256,
+			want:        0,
+		},
+		{
+			name:        "zero_payload_size",
+			termLen:     4096,
+			payloadSize: 0,
+			want:        0,
+		},
+		{
+			name:        "negative_inputs",
+			termLen:     -1,
+			payloadSize: -1,
+			want:        0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, ComputeRolloverMessageCount(tt.termLen, tt.payloadSize))
+		})
+	}
+}
+
+func TestOfferWithRetryWitness_cleanSuccess_returnsFalse(t *testing.T) {
+	md := Start(t)
+	client := ConnectClient(t, md, aeron.Context{})
+
+	pub, _ := connectIPCPubSub(t, client, OfferWithRetryWitnessCleanStreamID)
+
+	pubPosBefore := pub.Position()
+	payload := []byte{0x01}
+	pos, witness := OfferWithRetryWitness(t, client, pub, payload, ConnectedPollTimeout)
+	require.False(t, witness)
+	require.Positive(t, pos)
+	require.Greater(t, pos, pubPosBefore)
+}
+
+func TestOfferWithRetryWitness_backPressured_returnsTrue(t *testing.T) {
+	md := Start(t)
+	pubClient := ConnectClient(t, md, aeron.Context{})
+	subClient := ConnectClient(t, md, aeron.Context{})
+
+	pub, sub := connectIPCPubSubClients(
+		t,
+		pubClient,
+		subClient,
+		OfferWithRetryWitnessBackPressuredStreamID,
+	)
+
+	payload := make([]byte, 256)
+	sawBackpressure := false
+	for range 300 {
+		result := pub.Offer(payload)
+		switch {
+		case result > 0:
+			pubClient.DoWork()
+		case result == aeron.BackPressured:
+			sawBackpressure = true
+		case result == aeron.AdminAction:
+			pubClient.DoWork()
+		default:
+			require.FailNowf(t, "unexpected offer status", "status=%d", result)
+		}
+		if sawBackpressure {
+			break
+		}
+	}
+	require.True(t, sawBackpressure, "expected to fill publication window without subscriber poll")
+
+	pubPosBefore := pub.Position()
+	transientSeen := make(chan struct{}, 1)
+	drainCtx, stopDrain := context.WithCancel(context.Background())
+	drainDone := make(chan struct{})
+	t.Cleanup(func() {
+		stopDrain()
+		select {
+		case <-drainDone:
+		case <-time.After(time.Second):
+			t.Errorf("witness backpressure drain goroutine did not exit within 1s")
+		}
+	})
+	go func() {
+		defer close(drainDone)
+		select {
+		case <-transientSeen:
+		case <-drainCtx.Done():
+			return
+		}
+		for drainCtx.Err() == nil {
+			drainSubscriptionFragments(sub, 1000)
+			subClient.DoWork()
+			time.Sleep(aeron.DefaultIdleSleepDuration)
+		}
+	}()
+
+	pos, witness := OfferWithRetryWitnessAfterNotify(
+		t,
+		pubClient,
+		pub,
+		payload,
+		ConnectedPollTimeout,
+		transientSeen,
+	)
+	stopDrain()
+	// stopDrain cancels drainCtx; goroutine closes drainDone after at most one poll loop.
+	<-drainDone
+	require.True(t, witness)
+	require.Positive(t, pos)
+	require.Greater(t, pos, pubPosBefore)
 }

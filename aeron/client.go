@@ -59,6 +59,7 @@ type Client struct {
 	clientLock              sync.Mutex
 	closed                  atomic.Bool
 	awaitPollSleepingHook   func()
+	awaitPollSleepingHookMu sync.Mutex
 }
 
 func (client *Client) lockClient() {

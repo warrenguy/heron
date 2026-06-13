@@ -44,14 +44,20 @@ func requireAddClosedResult(t *testing.T, got addConcurrentResult) {
 }
 
 type awaitPollSleepingWaiter struct {
-	notify chan struct{}
+	notify       chan struct{}
+	ticksAtSleep atomic.Int32
 }
 
-func newAwaitPollSleepingWaiter(t *testing.T, client *Client) *awaitPollSleepingWaiter {
+func newAwaitPollSleepingWaiter(
+	t *testing.T,
+	client *Client,
+	hammer *doWorkHammer,
+) *awaitPollSleepingWaiter {
 	t.Helper()
 
 	waiter := &awaitPollSleepingWaiter{notify: make(chan struct{}, 1)}
 	client.SetAwaitPollSleepingHookForTest(func() {
+		waiter.ticksAtSleep.Store(hammer.ticks.Load())
 		select {
 		case waiter.notify <- struct{}{}:
 		default:
@@ -61,9 +67,20 @@ func newAwaitPollSleepingWaiter(t *testing.T, client *Client) *awaitPollSleeping
 	return waiter
 }
 
+func (waiter *awaitPollSleepingWaiter) drainNotifications() {
+	for {
+		select {
+		case <-waiter.notify:
+		default:
+			return
+		}
+	}
+}
+
 func (waiter *awaitPollSleepingWaiter) waitForSleeping(t *testing.T) {
 	t.Helper()
 
+	waiter.drainNotifications()
 	select {
 	case <-waiter.notify:
 	case <-time.After(clientConcurrentResultTimeout):
@@ -82,9 +99,9 @@ func newDoWorkHammer(t *testing.T, client *Client) *doWorkHammer {
 	t.Helper()
 
 	hammer := &doWorkHammer{
-		stop:              make(chan struct{}),
-		awaitPollSleeping: newAwaitPollSleepingWaiter(t, client),
+		stop: make(chan struct{}),
 	}
+	hammer.awaitPollSleeping = newAwaitPollSleepingWaiter(t, client, hammer)
 	var stopOnce sync.Once
 	t.Cleanup(func() {
 		stopOnce.Do(func() { close(hammer.stop) })
@@ -108,7 +125,7 @@ func (hammer *doWorkHammer) onCommandSeenPauseCheck(t *testing.T) func(int64) {
 
 	return func(_ int64) {
 		hammer.awaitPollSleeping.waitForSleeping(t)
-		baseline := hammer.ticks.Load()
+		baseline := hammer.awaitPollSleeping.ticksAtSleep.Load()
 		require.Never(
 			t,
 			func() bool { return hammer.ticks.Load() != baseline },
@@ -354,7 +371,8 @@ func TestClient_Add_concurrentCloseDuringOfferBackpressure(t *testing.T) {
 			waitForClientAddClockReads(clock, 4)
 			requireAddCommandNotOnRing(t, fixture, testCase.addCommandTypeID)
 
-			correlationID := fixture.DriverProxy.NextCorrelationID() - 1
+			correlationID := fixture.Conductor.ActiveCorrelationID()
+			require.NotEqual(t, conductor.NullCorrelationID, correlationID)
 			_, ok := fixture.Conductor.PendingResult(correlationID)
 			require.True(t, ok, "expected pending registration during offer-phase backpressure")
 

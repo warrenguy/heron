@@ -90,24 +90,13 @@ func PollDelivered(
 	}
 
 	received := make([][]byte, 0, want)
-	handler := func(
-		buffer atomic.AtomicBuffer,
-		offset int,
-		length int,
-		_ *aeron.Header,
-	) {
-		received = append(
-			received,
-			slices.Clone(buffer.Bytes()[offset:offset+length]),
-		)
-	}
 
 	pollClientUntilDynamic(
 		t,
 		client,
 		connectedPollTimeoutOr(timeout),
 		func() bool {
-			pollSubscriptionFragments(sub, want, len(received), handler)
+			received = CollectSubscriptionFragments(sub, want, received)
 			return len(received) >= want
 		},
 		func() string {
@@ -124,12 +113,11 @@ func PollDelivered(
 	return received
 }
 
-// OfferWithRetry loops Offer until success or deadline.
-//
 // Retries BackPressured and NotConnected with DoWork and idle sleep. AdminAction
 // retries with DoWork only; Aeron requires retrying AdminAction, and a mid-fragment
 // AdminAction may leave a padding-terminated partial in the log before a successful
 // full retry.
+//
 // Terminal codes (Closed, MaxPositionExceeded) fail immediately.
 func OfferWithRetry(
 	t testing.TB,
@@ -140,19 +128,112 @@ func OfferWithRetry(
 ) int64 {
 	t.Helper()
 
+	position, _ := offerWithRetry(t, client, pub, payload, timeout, nil)
+	return position
+}
+
+// OfferWithRetryWitness is OfferWithRetry and reports whether any transient
+// BackPressured or AdminAction occurred before a successful offer.
+//
+// Returns the successful publication position and sawBackpressureOrAdmin.
+func OfferWithRetryWitness(
+	t testing.TB,
+	client *aeron.Client,
+	pub *aeron.Publication,
+	payload []byte,
+	timeout time.Duration,
+) (int64, bool) {
+	t.Helper()
+
+	return offerWithRetry(t, client, pub, payload, timeout, nil)
+}
+
+// OfferWithRetryWitnessAfterNotify is OfferWithRetryWitness and sends one
+// non-blocking signal on notify when the first transient BackPressured or
+// AdminAction is observed, so callers can gate work (e.g. subscriber drain)
+// until the witness has seen backpressure.
+func OfferWithRetryWitnessAfterNotify(
+	t testing.TB,
+	client *aeron.Client,
+	pub *aeron.Publication,
+	payload []byte,
+	timeout time.Duration,
+	notify chan<- struct{},
+) (int64, bool) {
+	t.Helper()
+
+	return offerWithRetry(t, client, pub, payload, timeout, notify)
+}
+
+func offerStallTimeout(timeout time.Duration) time.Duration {
+	stall := timeout / 5
+	if stall < time.Second && timeout >= 5*time.Second {
+		return time.Second
+	}
+	return stall
+}
+
+func offerWithRetry(
+	t testing.TB,
+	client *aeron.Client,
+	pub *aeron.Publication,
+	payload []byte,
+	timeout time.Duration,
+	notify chan<- struct{},
+) (int64, bool) {
 	timeout = connectedPollTimeoutOr(timeout)
+	stallTimeout := offerStallTimeout(timeout)
 	deadline := time.Now().Add(timeout)
-	var lastStatus int64
+	var (
+		lastStatus             int64
+		sawBackpressureOrAdmin bool
+		retryPosition          = pub.Position()
+		stallMarked            time.Time
+	)
 	for time.Now().Before(deadline) {
 		result := pub.Offer(payload)
 		if result > 0 {
-			return result
+			return result, sawBackpressureOrAdmin
 		}
 		lastStatus = result
+		position := pub.Position()
+		if position > retryPosition {
+			retryPosition = position
+			stallMarked = time.Time{}
+		} else if result == aeron.BackPressured || result == aeron.AdminAction {
+			if stallMarked.IsZero() {
+				stallMarked = time.Now()
+			} else if time.Since(stallMarked) >= stallTimeout {
+				t.Errorf(
+					"publication %d (stream %d session %d) offer stalled within %s; position=%d; status=%d",
+					pub.RegistrationID(),
+					pub.StreamID(),
+					pub.SessionID(),
+					stallTimeout,
+					position,
+					lastStatus,
+				)
+				t.FailNow()
+				return 0, sawBackpressureOrAdmin
+			}
+		} else if result == aeron.NotConnected {
+			stallMarked = time.Time{}
+		}
 		switch result {
-		case aeron.AdminAction:
+		case aeron.AdminAction, aeron.BackPressured:
+			if notify != nil {
+				select {
+				case notify <- struct{}{}:
+				default:
+				}
+				notify = nil
+			}
+			sawBackpressureOrAdmin = true
 			client.DoWork()
-		case aeron.BackPressured, aeron.NotConnected:
+			if result == aeron.BackPressured {
+				time.Sleep(aeron.DefaultIdleSleepDuration)
+			}
+		case aeron.NotConnected:
 			client.DoWork()
 			time.Sleep(aeron.DefaultIdleSleepDuration)
 		default:
@@ -165,7 +246,7 @@ func OfferWithRetry(
 				pub.Position(),
 			)
 			t.FailNow()
-			return result
+			return result, sawBackpressureOrAdmin
 		}
 	}
 
@@ -179,16 +260,18 @@ func OfferWithRetry(
 		lastStatus,
 	)
 	t.FailNow()
-	return 0
+	return 0, sawBackpressureOrAdmin
 }
 
-// PollReassembled polls DoWork and sub.Poll until want logical messages are reassembled.
-//
 // Harness-only reassembly via Begin/Middle/End flags; not a production FragmentAssembler.
+//
 // Assumes a single assembly context, a single publisher/image, and in-order sequential
 // fragmented messages only; not safe for multi-image or interleaved fragmentation.
+//
 // Orphan middle or END fragments (no prior BEGIN in pending) fail fast.
-// - A new BEGIN resets in-progress assembly (expected after AdminAction partial + retry).
+//
+// A new BEGIN resets in-progress assembly (expected after AdminAction partial + retry).
+//
 // Returns reassembled payloads and the number of poll fragments seen.
 func PollReassembled(
 	t testing.TB,
@@ -301,6 +384,76 @@ func pollSubscriptionFragments(
 	if remaining := want - have; remaining > 0 {
 		sub.Poll(handler, remaining)
 	}
+}
+
+func discardSubscriptionFragment(
+	_ atomic.AtomicBuffer,
+	_ int,
+	_ int,
+	_ *aeron.Header,
+) {
+}
+
+// drainSubscriptionFragments polls up to want fragments without retaining payloads.
+func drainSubscriptionFragments(sub *aeron.Subscription, want int) {
+	pollSubscriptionFragments(sub, want, 0, discardSubscriptionFragment)
+}
+
+// CollectSubscriptionFragments appends up to want-len(received) payload fragments
+// from a single sub.Poll tick.
+func CollectSubscriptionFragments(
+	sub *aeron.Subscription,
+	want int,
+	received [][]byte,
+) [][]byte {
+	pollSubscriptionFragments(sub, want, len(received), func(
+		buffer atomic.AtomicBuffer,
+		offset int,
+		length int,
+		_ *aeron.Header,
+	) {
+		received = append(
+			received,
+			slices.Clone(buffer.Bytes()[offset:offset+length]),
+		)
+	})
+	return received
+}
+
+// rolloverTermCrossMargin is extra offers beyond one full term to cross PAD/rotation.
+const rolloverTermCrossMargin = 2
+
+// ComputeRolloverMessageCount returns offers needed to exceed one term partition.
+//
+// termLen and payloadSize must be positive; otherwise returns zero.
+func ComputeRolloverMessageCount(termLen, payloadSize int) int {
+	if termLen <= 0 || payloadSize <= 0 {
+		return 0
+	}
+	frameLen := logbuffer.AlignFragmentChunkLength(payloadSize)
+	return (termLen+frameLen-1)/frameLen + rolloverTermCrossMargin
+}
+
+// AlignedOfferAdvance returns aligned DATA frame bytes for offerCount fixed-size payloads.
+func AlignedOfferAdvance(payloadSize, offerCount int) int64 {
+	return int64(logbuffer.AlignFragmentChunkLength(payloadSize)) * int64(offerCount)
+}
+
+// DistinctIPCPayloads builds count same-size payloads; full slices differ when
+// size >= 2 and count <= 256.
+//
+// Byte 0 uses headerBase|index for tagging and may collide across indices.
+// Bytes 1..size-1 repeat byte(index) for slice identity.
+func DistinctIPCPayloads(count, size int, headerBase byte) [][]byte {
+	payloads := make([][]byte, count)
+	for index := range count {
+		payloads[index] = make([]byte, size)
+		payloads[index][0] = headerBase | byte(index)
+		for offset := 1; offset < size; offset++ {
+			payloads[index][offset] = byte(index)
+		}
+	}
+	return payloads
 }
 
 // FragmentedRoundtripExtraBytes is the default extra size for FragmentedRoundtripPayload.

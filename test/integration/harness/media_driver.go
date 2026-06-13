@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,9 +19,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
-const termBufferLength = "65536"
+var termBufferLength = strconv.Itoa(logbuffer.TermMinLength)
 
 const (
 	envTermBufferLength    = "AERON_TERM_BUFFER_LENGTH"
@@ -41,6 +43,48 @@ var defaultDriverEnv = DriverEnv{
 	envThreadingMode:       "SHARED",
 }
 
+func RolloverDriverEnv() DriverEnv {
+	return DriverEnv{
+		envTermBufferLength:    defaultDriverEnv[envTermBufferLength],
+		envIPCTermBufferLength: defaultDriverEnv[envIPCTermBufferLength],
+	}
+}
+
+func TermDataLengthFromCmdEnv(md *MediaDriver) (int, error) {
+	if md == nil {
+		return 0, fmt.Errorf("harness: nil media driver")
+	}
+	if md.ipcTermDataLength <= 0 {
+		return 0, fmt.Errorf("harness: ipc term data length not set")
+	}
+	return md.ipcTermDataLength, nil
+}
+
+func buildDriverCmdEnv(merged DriverEnv) []string {
+	strip := make(map[string]struct{}, len(merged)+1)
+	for key := range merged {
+		strip[key] = struct{}{}
+	}
+	strip[envDir] = struct{}{}
+
+	base := os.Environ()
+	out := make([]string, 0, len(base)+len(merged))
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if _, drop := strip[key]; drop {
+			continue
+		}
+		out = append(out, entry)
+	}
+	for key, value := range merged {
+		out = append(out, key+"="+value)
+	}
+	return out
+}
+
 var (
 	errAeronmdNotFound              = errors.New("aeronmd not found")
 	errMediaDriverProcessNotStarted = errors.New("harness: media driver process not started")
@@ -51,6 +95,8 @@ type MediaDriver struct {
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
 	pid    int
+
+	ipcTermDataLength int
 
 	exited  chan struct{}
 	waitErr error
@@ -81,6 +127,15 @@ func StartWithConfig(t testing.TB, cfg Config) *MediaDriver {
 	maps.Copy(env, defaultDriverEnv)
 	maps.Copy(env, cfg.Env)
 	env[envDir] = dir
+	ipcTermDataLength, err := strconv.Atoi(env[envIPCTermBufferLength])
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		t.Fatalf("harness: parse %s=%q: %v", envIPCTermBufferLength, env[envIPCTermBufferLength], err)
+	}
+	if err := logbuffer.CheckTermLength(ipcTermDataLength); err != nil {
+		_ = os.RemoveAll(dir)
+		t.Fatalf("harness: invalid %s=%d: %v", envIPCTermBufferLength, ipcTermDataLength, err)
+	}
 	for key, value := range env {
 		t.Setenv(key, value)
 	}
@@ -88,7 +143,7 @@ func StartWithConfig(t testing.TB, cfg Config) *MediaDriver {
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, aeronmd)
 	cmd.Dir = dir
-	cmd.Env = os.Environ()
+	cmd.Env = buildDriverCmdEnv(env)
 	if err := cmd.Start(); err != nil {
 		cancel()
 		_ = os.RemoveAll(dir)
@@ -96,11 +151,12 @@ func StartWithConfig(t testing.TB, cfg Config) *MediaDriver {
 	}
 
 	md := &MediaDriver{
-		Dir:    dir,
-		cmd:    cmd,
-		cancel: cancel,
-		pid:    cmd.Process.Pid,
-		exited: make(chan struct{}),
+		Dir:               dir,
+		cmd:               cmd,
+		cancel:            cancel,
+		pid:               cmd.Process.Pid,
+		ipcTermDataLength: ipcTermDataLength,
+		exited:            make(chan struct{}),
 	}
 	go func() {
 		md.waitErr = cmd.Wait()
@@ -155,6 +211,13 @@ func (md *MediaDriver) CncPath() string {
 		return ""
 	}
 	return filepath.Join(md.Dir, cnc.FileName)
+}
+
+func (md *MediaDriver) CmdEnvForTest() []string {
+	if md == nil || md.cmd == nil {
+		return nil
+	}
+	return md.cmd.Env
 }
 
 func (md *MediaDriver) driverProcess() (*os.Process, error) {

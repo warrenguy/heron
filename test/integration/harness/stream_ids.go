@@ -4,6 +4,7 @@ package harness
 
 const (
 	PubSubRoundtripStreamID           int32 = 1007
+	PubSubTermRolloverStreamID        int32 = 1008
 	PubSubFragmentedRoundtripStreamID int32 = 1012
 
 	PollUntilConnectedTimeoutStreamID      = 7990
@@ -26,4 +27,7 @@ const (
 	RequirePublicationLookupMissStreamID     = 7992
 	WaitForIPCLinkConnectedStreamID          = 7993
 	ConnectedWaitSubscriptionTimeoutStreamID = 7994
+
+	OfferWithRetryWitnessCleanStreamID         = 8010
+	OfferWithRetryWitnessBackPressuredStreamID = 8011
 )

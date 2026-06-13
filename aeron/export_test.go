@@ -152,23 +152,23 @@ func trackFragmentedSlot(
 func EnableFragmentedWriteTrackingForTest() {
 	fragmentedWriteTracker.reset()
 	fragmentedReservationTracker.reset()
-	fragmentedReservationTrack = func(termIndex, termOffset int, begin bool) {
+	setFragmentedReservationTrackHook(func(termIndex, termOffset int, begin bool) {
 		trackFragmentedSlot(&fragmentedReservationTracker, termIndex, termOffset, begin)
-	}
-	fragmentedWriteTrack = func(termIndex, frameOffset int, begin bool) {
+	})
+	setFragmentedWriteTrackHook(func(termIndex, frameOffset int, begin bool) {
 		trackFragmentedSlot(&fragmentedWriteTracker, termIndex, frameOffset, begin)
-	}
+	})
 }
 
 func DisableFragmentedWriteTrackingForTest() {
-	fragmentedWriteTrack = nil
-	fragmentedReservationTrack = nil
+	setFragmentedWriteTrackHook(nil)
+	setFragmentedReservationTrackHook(nil)
 	fragmentedWriteTracker.reset()
 	fragmentedReservationTracker.reset()
 }
 
 func SetFragmentedWriteTrackForTest(fn func(termIndex, frameOffset int, begin bool)) {
-	fragmentedWriteTrack = fn
+	setFragmentedWriteTrackHook(fn)
 }
 
 func ReportFragmentedWriteTrackerForTest() []fragmentedWriteSlot {

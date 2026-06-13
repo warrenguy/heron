@@ -84,21 +84,13 @@ func TestPubSubIPCRoundtrip(t *testing.T) {
 		messageCount = 16
 		payloadSize  = 64
 	)
-	payloads := make([][]byte, messageCount)
-	for index := range messageCount {
-		payloads[index] = make([]byte, payloadSize)
-		payloads[index][0] = byte(0xA0 | index)
-		for offset := 1; offset < payloadSize; offset++ {
-			payloads[index][offset] = byte(index)
-		}
-	}
+	payloads := harness.DistinctIPCPayloads(messageCount, payloadSize, 0xA0)
 
 	pub, sub := setupIPCPubSub(t, client, streamID)
 
 	pubPosBefore := pub.Position()
 	// Position advance uses aligned DATA frame length, not raw payload sum.
-	alignedFrameLen := int64(logbuffer.AlignFragmentChunkLength(payloadSize))
-	wantAdvance := alignedFrameLen * int64(messageCount)
+	wantAdvance := harness.AlignedOfferAdvance(payloadSize, messageCount)
 
 	for _, payload := range payloads {
 		require.Positive(t, pub.Offer(payload))
@@ -141,5 +133,80 @@ func TestPubSubIPCFragmentedRoundtrip(t *testing.T) {
 	require.Equal(t, 2, fragments)
 
 	assertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
+	finishPubSubIPCTest(t, md, hadClientError)
+}
+
+// TestPublicationTermRollover proves sustained IPC offers cross a term boundary
+// without permanent stall and deliver all payloads in order on live aeronmd.
+func TestPublicationTermRollover(t *testing.T) {
+	md := harness.StartWithConfig(t, harness.Config{Env: harness.RolloverDriverEnv()})
+	client, hadClientError := connectIPCClient(t, md)
+
+	const (
+		streamID    = harness.PubSubTermRolloverStreamID
+		payloadSize = 256
+	)
+
+	termDataLength, err := harness.TermDataLengthFromCmdEnv(md)
+	require.NoError(t, err)
+	require.Equal(t, logbuffer.TermMinLength, termDataLength)
+	messagesToRollover := harness.ComputeRolloverMessageCount(termDataLength, payloadSize)
+
+	payloads := harness.DistinctIPCPayloads(messagesToRollover, payloadSize, 0xB0)
+
+	pub, sub := setupIPCPubSub(t, client, streamID)
+
+	pubPosBefore := pub.Position()
+	wantAdvance := harness.AlignedOfferAdvance(payloadSize, messagesToRollover)
+	shift := logbuffer.PositionBitsToShift(termDataLength)
+
+	sawBackpressureOrAdmin := false
+	prevPosition := pubPosBefore
+	received := make([][]byte, 0, messagesToRollover)
+	for _, payload := range payloads {
+		result, sawTransient := harness.OfferWithRetryWitness(
+			t,
+			client,
+			pub,
+			payload,
+			harness.ConnectedPollTimeout,
+		)
+		sawBackpressureOrAdmin = sawBackpressureOrAdmin || sawTransient
+		require.Greater(t, result, prevPosition)
+		prevPosition = result
+		client.DoWork()
+		// Drain the subscriber during the burst so sustained BackPressured cannot stall
+		// offers on 64 KiB terms with a large message count.
+		received = harness.CollectSubscriptionFragments(sub, messagesToRollover, received)
+	}
+
+	require.GreaterOrEqual(
+		t,
+		(pub.Position()>>shift)-(pubPosBefore>>shift),
+		int64(1),
+		"publication position did not cross a term boundary (termDataLength=%d)",
+		termDataLength,
+	)
+	require.True(
+		t,
+		sawBackpressureOrAdmin,
+		"expected transient BackPressured or AdminAction during rollover burst",
+	)
+
+	if remaining := messagesToRollover - len(received); remaining > 0 {
+		tail := harness.PollDelivered(t, client, sub, remaining, 0)
+		received = append(received, tail...)
+	}
+	require.Equal(t, payloads, received)
+
+	actualAdvance := pub.Position() - pubPosBefore
+	require.GreaterOrEqual(
+		t,
+		actualAdvance,
+		wantAdvance,
+		"publication position should advance by at least %d bytes (wantAdvance)",
+		wantAdvance,
+	)
+	assertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, actualAdvance)
 	finishPubSubIPCTest(t, md, hadClientError)
 }
