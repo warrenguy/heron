@@ -9,6 +9,7 @@ const (
 	MPSCMatrixPubSubStreamID          int32 = 1010
 	MPSCMatrixSessionIDStreamID       int32 = 1011
 	PubSubFragmentedRoundtripStreamID int32 = 1012
+	PubSubTwoClientsRoundtripStreamID int32 = 1013
 
 	PollUntilConnectedTimeoutStreamID      = 7990
 	PollUntilImageCountZeroActiveStreamID  = 7995
@@ -38,4 +39,8 @@ const (
 
 	PollSplitClientIPCLinkTimeoutStreamID       = 8014
 	PollUntilNoActiveImagesSplitTimeoutStreamID = 8015
+
+	PollDeliveredSplitTimeoutStreamID         = 8016
+	PollDeliveredSplitPartialDeliveryStreamID = 8017
+	PollDeliveredSplitInvalidWantStreamID     = 8018
 )

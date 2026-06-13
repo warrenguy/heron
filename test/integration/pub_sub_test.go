@@ -16,13 +16,27 @@ import (
 func connectIPCClient(t *testing.T, md *harness.MediaDriver) (*aeron.Client, *atomic.Bool) {
 	t.Helper()
 
+	return connectIPCClientContext(t, md, aeron.Context{})
+}
+
+func connectIPCClientContext(
+	t *testing.T,
+	md *harness.MediaDriver,
+	ctx aeron.Context,
+) (*aeron.Client, *atomic.Bool) {
+	t.Helper()
+
 	var hadClientError atomic.Bool
-	client := harness.ConnectClient(t, md, aeron.Context{
-		ErrorHandler: func(err error) {
-			hadClientError.Store(true)
-			t.Errorf("client error: %v", err)
-		},
-	})
+	callerHandler := ctx.ErrorHandler
+	ctx.ErrorHandler = func(err error) {
+		hadClientError.Store(true)
+		if callerHandler != nil {
+			callerHandler(err)
+			return
+		}
+		t.Errorf("client error: %v", err)
+	}
+	client := harness.ConnectClient(t, md, ctx)
 	return client, &hadClientError
 }
 
@@ -74,6 +88,19 @@ func finishPubSubIPCTest(t *testing.T, md *harness.MediaDriver, hadClientError *
 	md.AssertProcessAlive(t)
 }
 
+func finishPubSubIPCTwoClientsTest(
+	t *testing.T,
+	md *harness.MediaDriver,
+	hadPubClientError *atomic.Bool,
+	hadSubClientError *atomic.Bool,
+) {
+	t.Helper()
+
+	require.False(t, hadPubClientError.Load())
+	require.False(t, hadSubClientError.Load())
+	md.AssertProcessAlive(t)
+}
+
 // TestPubSubIPCRoundtrip proves IPC offer, poll delivery, and position advance on live aeronmd.
 func TestPubSubIPCRoundtrip(t *testing.T) {
 	md := harness.Start(t)
@@ -103,6 +130,42 @@ func TestPubSubIPCRoundtrip(t *testing.T) {
 
 	assertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
 	finishPubSubIPCTest(t, md, hadClientError)
+}
+
+// TestPubSubIPCTwoClientsRoundtrip proves split-client IPC offer, poll delivery,
+// and position advance on live aeronmd.
+func TestPubSubIPCTwoClientsRoundtrip(t *testing.T) {
+	md := harness.Start(t)
+
+	splitClientCtx := aeron.Context{
+		InterServiceTimeout: harness.ConnectedPollTimeout,
+	}
+	pubClient, hadPubClientError := connectIPCClientContext(t, md, splitClientCtx)
+	subClient, hadSubClientError := connectIPCClientContext(t, md, splitClientCtx)
+
+	const (
+		streamID     = harness.PubSubTwoClientsRoundtripStreamID
+		messageCount = 16
+		payloadSize  = 64
+	)
+	payloads := harness.DistinctIPCPayloads(messageCount, payloadSize, 0xC0)
+
+	pub, sub := harness.ConnectIPCPubSubClients(t, pubClient, subClient, streamID)
+
+	pubPosBefore := pub.Position()
+	wantAdvance := harness.AlignedOfferAdvance(payloadSize, messageCount)
+
+	for _, payload := range payloads {
+		require.Positive(t, pub.Offer(payload))
+		pubClient.DoWork()
+		subClient.DoWork()
+	}
+
+	received := harness.PollDeliveredSplit(t, pubClient, subClient, sub, messageCount, 0)
+	require.Equal(t, payloads, received)
+
+	assertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
+	finishPubSubIPCTwoClientsTest(t, md, hadPubClientError, hadSubClientError)
 }
 
 // TestPubSubIPCFragmentedRoundtrip proves fragmented Offer, PollReassembled delivery,

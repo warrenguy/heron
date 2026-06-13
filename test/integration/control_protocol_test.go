@@ -133,7 +133,7 @@ func TestMPSCCommandMatrix(t *testing.T) {
 	harness.CleanupClose(t, "close subscription", sub.Close)
 
 	// Split-client IPC link and data offer on test goroutine after concurrent Add*;
-	// mirrors connectIPCPubSubClients. Avoids testify in workers and lost offers
+	// mirrors ConnectIPCPubSubClients. Avoids testify in workers and lost offers
 	// when subscriber image is not yet attached.
 	harness.PollSplitClientIPCLink(t, clientA, clientB, pub, sub, 0)
 	harness.OfferWithRetry(t, clientA, pub, []byte("mpsc-A"), 0)
