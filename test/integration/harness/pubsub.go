@@ -63,15 +63,38 @@ func PollUntilImageCount(
 			return subscriptionActiveImageCountAtLeast(sub, want)
 		},
 		func() string {
-			active, detail := subscriptionImageSummary(sub)
-			return fmt.Sprintf(
-				"subscription %d (stream %d) active image count=%d want=%d; %s",
-				sub.RegistrationID(),
-				sub.StreamID(),
-				active,
-				want,
-				detail,
-			)
+			return subscriptionImageCountFailMsg(sub, want)
+		},
+	)
+}
+
+// RequireNoActiveImages fails fast if the subscription has any active image.
+func RequireNoActiveImages(t testing.TB, sub *aeron.Subscription) {
+	t.Helper()
+
+	if subscriptionActiveImageCountAtLeast(sub, 1) {
+		require.FailNow(t, subscriptionImageCountFailMsg(sub, 0))
+	}
+}
+
+// PollUntilNoActiveImages polls DoWork until the subscription has zero active images.
+func PollUntilNoActiveImages(
+	t testing.TB,
+	client *aeron.Client,
+	sub *aeron.Subscription,
+	timeout time.Duration,
+) {
+	t.Helper()
+
+	pollClientUntilDynamic(
+		t,
+		client,
+		connectedPollTimeoutOr(timeout),
+		func() bool {
+			return !subscriptionActiveImageCountAtLeast(sub, 1)
+		},
+		func() string {
+			return subscriptionImageCountFailMsg(sub, 0)
 		},
 	)
 }
@@ -507,6 +530,18 @@ func subscriptionActiveImageCountAtLeast(sub *aeron.Subscription, want int) bool
 		}
 	}
 	return false
+}
+
+func subscriptionImageCountFailMsg(sub *aeron.Subscription, want int) string {
+	active, detail := subscriptionImageSummary(sub)
+	return fmt.Sprintf(
+		"subscription %d (stream %d) active image count=%d want=%d; %s",
+		sub.RegistrationID(),
+		sub.StreamID(),
+		active,
+		want,
+		detail,
+	)
 }
 
 func subscriptionImageSummary(sub *aeron.Subscription) (active int, detail string) {

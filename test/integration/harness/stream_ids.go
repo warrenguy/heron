@@ -5,6 +5,7 @@ package harness
 const (
 	PubSubRoundtripStreamID           int32 = 1007
 	PubSubTermRolloverStreamID        int32 = 1008
+	PubSubCloseDrainStreamID          int32 = 1009
 	PubSubFragmentedRoundtripStreamID int32 = 1012
 
 	PollUntilConnectedTimeoutStreamID      = 7990
@@ -30,4 +31,6 @@ const (
 
 	OfferWithRetryWitnessCleanStreamID         = 8010
 	OfferWithRetryWitnessBackPressuredStreamID = 8011
+
+	PollUntilNoActiveImagesTimeoutStreamID = 8012
 )

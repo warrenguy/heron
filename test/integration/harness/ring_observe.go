@@ -2,7 +2,6 @@ package harness
 
 import (
 	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
-	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/record"
 	"github.com/warrenguy/heron/aeron/ringbuffer"
 )
@@ -102,17 +101,31 @@ func findOfferedAt[T any](
 	spec toDriverObserveSpec[T],
 	matchedPosition *int64,
 ) (T, bool, error) {
+	return findOfferedBetween(
+		ring,
+		producerBefore,
+		ring.ProducerPosition(),
+		spec,
+		matchedPosition,
+	)
+}
+
+func findOfferedBetween[T any](
+	ring *ringbuffer.ManyToOneRingBuffer,
+	fromPosition, toPosition int64,
+	spec toDriverObserveSpec[T],
+	matchedPosition *int64,
+) (T, bool, error) {
 	var zero T
 
-	producerAfter := ring.ProducerPosition()
-	if producerAfter <= producerBefore {
+	if toPosition <= fromPosition {
 		return zero, false, nil
 	}
 
 	buffer := ring.Buffer()
 	mask := ring.Capacity() - 1
 
-	for position := producerBefore; position < producerAfter; {
+	for position := fromPosition; position < toPosition; {
 		_, messageTypeID, recordLength, nextPosition, incomplete := nextRingRecord(
 			buffer,
 			mask,
@@ -299,38 +312,4 @@ func observeOnRing[T any](
 		producerBefore == consumerBefore,
 		spec,
 	)
-}
-
-func clientCloseObserveSpec(clientID int64) toDriverObserveSpec[conductor.CorrelatedMessage] {
-	return toDriverObserveSpec[conductor.CorrelatedMessage]{
-		messageTypeID: conductor.ClientClose,
-		recordLength:  conductor.CorrelatedRingRecordLength(),
-		decodeMatch: func(
-			buffer aeronatomic.AtomicBuffer,
-			payloadOffset, bodyLength int,
-		) (conductor.CorrelatedMessage, bool, error) {
-			return decodeMatchingClientClose(buffer, payloadOffset, bodyLength, clientID)
-		},
-		clearedValue: func() conductor.CorrelatedMessage {
-			return syntheticClientClose(clientID)
-		},
-	}
-}
-
-func addPublicationObserveSpec(
-	want conductor.PublicationMessage,
-) toDriverObserveSpec[conductor.PublicationMessage] {
-	return toDriverObserveSpec[conductor.PublicationMessage]{
-		messageTypeID: conductor.AddPublication,
-		recordLength:  ringRecordLength(conductor.PublicationMessageBodyLength(want.Channel)),
-		decodeMatch: func(
-			buffer aeronatomic.AtomicBuffer,
-			payloadOffset, bodyLength int,
-		) (conductor.PublicationMessage, bool, error) {
-			return decodeMatchingAddPublication(buffer, payloadOffset, bodyLength, want)
-		},
-		clearedValue: func() conductor.PublicationMessage {
-			return want
-		},
-	}
 }

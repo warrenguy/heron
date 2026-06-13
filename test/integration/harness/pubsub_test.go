@@ -134,6 +134,23 @@ func TestPollUntilImageCount_timeoutMessage(t *testing.T) {
 	})
 }
 
+func TestPollUntilNoActiveImages_timeoutMessage(t *testing.T) {
+	md := Start(t)
+	client := ConnectClient(t, md, aeron.Context{})
+
+	_, sub := connectIPCPubSub(t, client, PollUntilNoActiveImagesTimeoutStreamID)
+
+	capture := &captureFailTB{TB: t}
+	PollUntilNoActiveImages(capture, client, sub, pollHarnessShortTimeout)
+	require.True(t, capture.failed)
+	wantMsg := fmt.Sprintf(
+		"%s within %s",
+		subscriptionImageCountFailMsg(sub, 0),
+		pollHarnessShortTimeout,
+	)
+	require.Equal(t, wantMsg, capture.lastMsg)
+}
+
 func TestPollUntilImageCount_invalidWantFails(t *testing.T) {
 	testInvalidPollWant(t, PollUntilImageCountInvalidWantStreamID, func(
 		capture *captureFailTB,

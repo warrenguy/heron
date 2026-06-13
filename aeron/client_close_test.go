@@ -2,6 +2,7 @@ package aeron_test
 
 import (
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,23 +31,52 @@ func newClientCloseTestClient(
 	)
 }
 
-func indexOfRecordType(typeIDs []int, typeID int) int {
-	for index, id := range typeIDs {
-		if id == typeID {
-			return index
-		}
-	}
-	return -1
-}
-
-func requireRecordComesBefore(t *testing.T, typeIDs []int, earlierTypeID, laterTypeID int) {
+func requireRecordOrder(t *testing.T, typeIDs []int, orderedTypeIDs ...int) {
 	t.Helper()
 
-	earlierIndex := indexOfRecordType(typeIDs, earlierTypeID)
-	require.NotEqual(t, -1, earlierIndex)
-	laterIndex := indexOfRecordType(typeIDs, laterTypeID)
-	require.NotEqual(t, -1, laterIndex)
-	require.Less(t, earlierIndex, laterIndex)
+	for i := 0; i < len(orderedTypeIDs)-1; i++ {
+		earlierIndex := slices.Index(typeIDs, orderedTypeIDs[i])
+		require.NotEqual(t, -1, earlierIndex)
+		laterIndex := slices.Index(typeIDs, orderedTypeIDs[i+1])
+		require.NotEqual(t, -1, laterIndex)
+		require.Less(t, earlierIndex, laterIndex)
+	}
+}
+
+func setupClientCloseDrainTest(
+	t *testing.T,
+	withPublication, withSubscription bool,
+) (*testutil.ConductorFixture, *aeron.Client) {
+	t.Helper()
+
+	nanoNs := testutil.TestStartNanoNs
+	fixture := testutil.NewConductorFixture(t, testutil.DefaultConductorConfig(&nanoNs))
+
+	if withPublication {
+		aeron.InsertPublicationForTest(fixture.Conductor, 11)
+	}
+	if withSubscription {
+		sub := aeron.NewSubscriptionForTest(22, 1001, "aeron:ipc")
+		conductor.RegisterSubscriptionForTest(fixture.Conductor, 22, sub)
+	}
+
+	return fixture, newClientCloseTestClient(
+		fixture,
+		func() int64 { return nanoNs },
+		testutil.TestIdleSleepDuration,
+	)
+}
+
+func closeClientAndRequireRecordOrder(
+	t *testing.T,
+	client *aeron.Client,
+	fixture *testutil.ConductorFixture,
+	orderedTypeIDs ...int,
+) {
+	t.Helper()
+
+	require.NoError(t, client.Close())
+	requireRecordOrder(t, testutil.CommittedRecordTypeIDs(fixture.Ring), orderedTypeIDs...)
 }
 
 func closeClientAsync(client *aeron.Client) <-chan error {
@@ -330,42 +360,29 @@ func TestClient_conductorServiceTimeoutAfterInterServiceTimeout(t *testing.T) {
 }
 
 func TestClient_Close_drainsPublicationBeforeClientClose(t *testing.T) {
-	nanoNs := testutil.TestStartNanoNs
-	fixture := testutil.NewConductorFixture(t, testutil.DefaultConductorConfig(&nanoNs))
-
-	aeron.InsertPublicationForTest(fixture.Conductor, 11)
-
-	client := newClientCloseTestClient(
-		fixture,
-		func() int64 { return nanoNs },
-		testutil.TestIdleSleepDuration,
+	fixture, client := setupClientCloseDrainTest(t, true, false)
+	closeClientAndRequireRecordOrder(
+		t, client, fixture, conductor.RemovePublication, conductor.ClientClose,
 	)
-	require.NoError(t, client.Close())
+	require.Equal(t, 0, conductor.PublicationCountForTest(fixture.Conductor))
+}
 
-	typeIDs := testutil.CommittedRecordTypeIDs(fixture.Ring)
-	require.Contains(t, typeIDs, conductor.RemovePublication)
-	requireRecordComesBefore(t, typeIDs, conductor.RemovePublication, conductor.ClientClose)
-	require.Equal(t, 0, client.PublicationCountForTest())
+func TestClient_Close_drainsPublicationAndSubscriptionBeforeClientClose(t *testing.T) {
+	fixture, client := setupClientCloseDrainTest(t, true, true)
+	closeClientAndRequireRecordOrder(
+		t, client, fixture,
+		conductor.RemovePublication, conductor.RemoveSubscription, conductor.ClientClose,
+	)
+	require.Equal(t, 0, conductor.PublicationCountForTest(fixture.Conductor))
+	require.Equal(t, 0, conductor.SubscriptionCountForTest(fixture.Conductor))
 }
 
 func TestClient_Close_drainsSubscriptionBeforeClientClose(t *testing.T) {
-	nanoNs := testutil.TestStartNanoNs
-	fixture := testutil.NewConductorFixture(t, testutil.DefaultConductorConfig(&nanoNs))
-
-	sub := aeron.NewSubscriptionForTest(22, 1001, "aeron:ipc")
-	conductor.RegisterSubscriptionForTest(fixture.Conductor, 22, sub)
-
-	client := newClientCloseTestClient(
-		fixture,
-		func() int64 { return nanoNs },
-		testutil.TestIdleSleepDuration,
+	fixture, client := setupClientCloseDrainTest(t, false, true)
+	closeClientAndRequireRecordOrder(
+		t, client, fixture, conductor.RemoveSubscription, conductor.ClientClose,
 	)
-	require.NoError(t, client.Close())
-
-	typeIDs := testutil.CommittedRecordTypeIDs(fixture.Ring)
-	require.Contains(t, typeIDs, conductor.RemoveSubscription)
-	requireRecordComesBefore(t, typeIDs, conductor.RemoveSubscription, conductor.ClientClose)
-	require.Equal(t, 0, client.SubscriptionCountForTest())
+	require.Equal(t, 0, conductor.SubscriptionCountForTest(fixture.Conductor))
 }
 
 func TestClient_Close_lingerDrainRunsConductorDoWork(t *testing.T) {
@@ -435,10 +452,11 @@ func TestClient_Close_realPublication_lingerDrainBeforeClientClose(t *testing.T)
 	registry := conductor.LogBuffersRegistryForTest(fixture.Conductor)
 	require.False(t, registry.HasScheduledLinger())
 
-	typeIDs := testutil.CommittedRecordTypeIDs(fixture.Ring)
-	require.Contains(t, typeIDs, conductor.RemovePublication)
-	requireRecordComesBefore(t, typeIDs, conductor.RemovePublication, conductor.ClientClose)
-	require.Equal(t, 0, client.PublicationCountForTest())
+	requireRecordOrder(
+		t, testutil.CommittedRecordTypeIDs(fixture.Ring),
+		conductor.RemovePublication, conductor.ClientClose,
+	)
+	require.Equal(t, 0, conductor.PublicationCountForTest(fixture.Conductor))
 }
 
 func TestClient_Close_realPublication_closePublicationLingerRetainedThenSwept(t *testing.T) {
@@ -489,9 +507,10 @@ func TestClient_Close_lingerDrainBeforeClientClose(t *testing.T) {
 	registry := conductor.LogBuffersRegistryForTest(fixture.Conductor)
 	require.False(t, registry.HasScheduledLinger())
 
-	typeIDs := testutil.CommittedRecordTypeIDs(fixture.Ring)
-	require.Contains(t, typeIDs, conductor.RemovePublication)
-	requireRecordComesBefore(t, typeIDs, conductor.RemovePublication, conductor.ClientClose)
+	requireRecordOrder(
+		t, testutil.CommittedRecordTypeIDs(fixture.Ring),
+		conductor.RemovePublication, conductor.ClientClose,
+	)
 }
 
 func TestClient_Close_frozenNanoClock_bestEffortLingerDrain(t *testing.T) {

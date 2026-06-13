@@ -1,5 +1,3 @@
-//go:build integration
-
 package harness
 
 import (
@@ -15,27 +13,27 @@ type captureFailTB struct {
 }
 
 func (capture *captureFailTB) Errorf(format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
-	if !strings.Contains(msg, "Error Trace:") {
-		capture.lastMsg = msg
-		return
-	}
-	for line := range strings.SplitSeq(msg, "\n") {
-		trimmed := strings.TrimSpace(line)
-		after, ok := strings.CutPrefix(trimmed, "Error:")
-		if ok {
-			capture.lastMsg = strings.TrimSpace(after)
-			return
-		}
-	}
-	capture.lastMsg = msg
+	capture.lastMsg = lastCapturedErrorMessage(fmt.Sprintf(format, args...))
 }
 
 func (capture *captureFailTB) FailNow() {
 	capture.failed = true
 }
 
+//nolint:unused // referenced from integration-only pubsub.go.
 func failedCaptureTB(t testing.TB) bool {
 	capture, ok := t.(*captureFailTB)
 	return ok && capture.failed
+}
+
+func lastCapturedErrorMessage(msg string) string {
+	if !strings.Contains(msg, "Error Trace:") {
+		return msg
+	}
+	for line := range strings.SplitSeq(msg, "\n") {
+		if after, ok := strings.CutPrefix(strings.TrimSpace(line), "Error:"); ok {
+			return strings.TrimSpace(after)
+		}
+	}
+	return msg
 }

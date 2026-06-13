@@ -42,16 +42,20 @@ func TestCncWiring(t *testing.T) {
 		require.NoError(t, err)
 
 		time.Sleep(driverConsumeWindow)
+
+		for toClients.ReceiveNext() {
+			require.True(t, toClients.Validate())
+		}
+
 		md.AssertProcessAlive(t)
 	})
 
 	t.Run("SoakAttach", func(t *testing.T) {
-		meta := attach.Rings.Meta
-		timeoutMs := meta.ClientLivenessTimeoutNs / 1_000_000
+		timeoutMs := attach.Rings.Meta.ClientLivenessTimeoutNs / 1_000_000
 		const marginMs = int64(1_000)
 		require.Greater(t, timeoutMs, marginMs)
 
-		runSoak(t, soakDuration, soakPollInterval, func() {
+		RunSoak(t, soakDuration, soakPollInterval, func() {
 			assertDriverAliveAndPIDMatches(t, md, attach)
 			require.True(t, consumerHeartbeatWithin(toDriver, timeoutMs-marginMs, true))
 			require.False(t, toClients.ReceiveNext())
@@ -91,28 +95,17 @@ func TestCncWiring(t *testing.T) {
 	})
 
 	t.Run("AddPublicationOfferedOnLiveRing", func(t *testing.T) {
-		const (
-			clientID      int64 = 1
-			correlationID int64 = 2001
-			streamID      int32 = 1001
-			channel             = "aeron:ipc"
-		)
-
-		WaitForToDriverRingDrained(t, toDriver)
-
-		consumerBefore := toDriver.ConsumerPosition()
-		producerBefore := toDriver.ProducerPosition()
-
 		want := conductor.PublicationMessage{
-			ClientID:      clientID,
-			CorrelationID: correlationID,
-			StreamID:      streamID,
-			Channel:       channel,
+			ClientID:      1,
+			CorrelationID: 2001,
+			StreamID:      1001,
+			Channel:       IPCChannel,
 		}
 
-		proxy := conductor.NewDriverProxy(toDriver, clientID)
-		err := proxy.AddPublication(correlationID, streamID, channel)
-		require.NoError(t, err)
+		consumerBefore, producerBefore := QuiescentToDriverSnapshot(t, toDriver)
+
+		proxy := conductor.NewDriverProxy(toDriver, want.ClientID)
+		require.NoError(t, proxy.AddPublication(want.CorrelationID, want.StreamID, want.Channel))
 
 		assertAddPublicationOfferedOnRing(
 			t,

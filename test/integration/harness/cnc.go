@@ -238,6 +238,55 @@ func WaitForToDriverRingDrained(
 	)
 }
 
+func QuiescentToDriverSnapshot(
+	t testing.TB,
+	ring *ringbuffer.ManyToOneRingBuffer,
+) (consumerBefore, producerBefore int64) {
+	t.Helper()
+
+	WaitForToDriverRingDrained(t, ring)
+	consumerBefore = ring.ConsumerPosition()
+	producerBefore = ring.ProducerPosition()
+	requireQuiescentToDriverSnapshot(t, ring, consumerBefore, producerBefore)
+	return consumerBefore, producerBefore
+}
+
+func requireQuiescentSnapshotCoherence(
+	t testing.TB,
+	consumerBefore, producerBefore int64,
+) {
+	t.Helper()
+
+	require.Equal(
+		t,
+		producerBefore,
+		consumerBefore,
+		"to-driver ring snapshot must be quiescent (consumerBefore == producerBefore)",
+	)
+}
+
+func requireQuiescentToDriverSnapshot(
+	t testing.TB,
+	ring *ringbuffer.ManyToOneRingBuffer,
+	consumerBefore, producerBefore int64,
+) {
+	t.Helper()
+
+	requireQuiescentSnapshotCoherence(t, consumerBefore, producerBefore)
+	require.Equal(
+		t,
+		consumerBefore,
+		ring.ConsumerPosition(),
+		"to-driver ring consumer position changed before observe",
+	)
+	require.Equal(
+		t,
+		producerBefore,
+		ring.ProducerPosition(),
+		"to-driver ring producer position changed before observe",
+	)
+}
+
 // AssertClientCloseOfferedOnRingAfterClose requires the caller to drain ToDriver
 // and snapshot consumerBefore and producerBefore on a quiescent ring.
 //
@@ -251,8 +300,10 @@ func AssertClientCloseOfferedOnRingAfterClose(
 ) {
 	t.Helper()
 
+	requireQuiescentToDriverSnapshot(t, ring, consumerBefore, producerBefore)
+
 	require.NoError(t, closeFn())
-	assertClientCloseOfferedOnRing(
+	_ = assertClientCloseOfferedOnRing(
 		t,
 		ring,
 		clientID,
@@ -266,7 +317,7 @@ func assertClientCloseOfferedOnRing(
 	ring *ringbuffer.ManyToOneRingBuffer,
 	clientID int64,
 	consumerBefore, producerBefore int64,
-) {
+) int64 {
 	t.Helper()
 
 	want := conductor.CorrelatedMessage{
@@ -302,6 +353,7 @@ func assertClientCloseOfferedOnRing(
 		clientID,
 	)
 	require.Equal(t, want, decoded)
+	return provenClientClosePosition
 }
 
 // assertAddPublicationOfferedOnRing requires the caller to drain ToDriver
@@ -315,6 +367,8 @@ func assertAddPublicationOfferedOnRing(
 	consumerBefore, producerBefore int64,
 ) {
 	t.Helper()
+
+	requireQuiescentSnapshotCoherence(t, consumerBefore, producerBefore)
 
 	provenAddPublicationPosition := int64(-1)
 	var decoded conductor.PublicationMessage
@@ -374,7 +428,8 @@ func pollUntil(
 	require.FailNow(t, fmt.Sprintf("%s within %s", failMsg, timeout))
 }
 
-func runSoak(t testing.TB, duration, interval time.Duration, tick func()) {
+// RunSoak runs a short post-assert DoWork soak for integration acceptance tests.
+func RunSoak(t testing.TB, duration, interval time.Duration, tick func()) {
 	t.Helper()
 
 	deadline := time.Now().Add(duration)
