@@ -6,23 +6,39 @@ import (
 	"testing"
 )
 
-type captureFailTB struct {
+// CaptureFailTB records testify failures without stopping the parent test run.
+type CaptureFailTB struct {
 	testing.TB
 	failed  bool
 	lastMsg string
 }
 
-func (capture *captureFailTB) Errorf(format string, args ...any) {
+// NewCaptureFailTB wraps t for negative assertion cases.
+func NewCaptureFailTB(t testing.TB) *CaptureFailTB {
+	return &CaptureFailTB{TB: t}
+}
+
+// Failed reports whether a captured assertion failed.
+func (capture *CaptureFailTB) Failed() bool {
+	return capture.failed
+}
+
+func (capture *CaptureFailTB) Errorf(format string, args ...any) {
 	capture.lastMsg = lastCapturedErrorMessage(fmt.Sprintf(format, args...))
 }
 
-func (capture *captureFailTB) FailNow() {
+func (capture *CaptureFailTB) FailNow() {
 	capture.failed = true
+}
+
+func (capture *CaptureFailTB) Fatalf(format string, args ...any) {
+	capture.Errorf(format, args...)
+	capture.FailNow()
 }
 
 //nolint:unused // referenced from integration-only pubsub.go.
 func failedCaptureTB(t testing.TB) bool {
-	capture, ok := t.(*captureFailTB)
+	capture, ok := t.(*CaptureFailTB)
 	return ok && capture.failed
 }
 

@@ -3,47 +3,30 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=SCRIPTDIR/lib/versions.sh
+source "${ROOT}/scripts/lib/versions.sh"
 VERSIONS="${ROOT}/specs/versions.yaml"
 DOCKERFILE="${ROOT}/docker/aeronmd/Dockerfile"
 OUT="${ROOT}/bin/aeronmd"
 IMAGE="heron-aeronmd:build"
 
-yaml_field() {
-	local key="$1"
-	awk -v "key=${key}" '
-		$0 ~ "^[[:space:]]+" key ":" {
-			gsub(/^[[:space:]]+[^:]+:[[:space:]]*"?|"?[[:space:]]*$/, "")
-			print
-			exit
-		}
-	' "${VERSIONS}"
-}
-
-if [[ ! -f "${VERSIONS}" ]]; then
-	echo "heron: ${VERSIONS} not found" >&2
-	exit 1
-fi
-
-if ! command -v docker >/dev/null 2>&1; then
+command -v docker >/dev/null || {
 	echo "heron: docker required to build aeronmd" >&2
 	exit 1
-fi
+}
 
-repository="$(yaml_field repository)"
-ref="$(yaml_field ref)"
-artifact="$(yaml_field driver_artifact)"
+require_aeron_versions "${VERSIONS}" || exit 1
 
-if [[ -z "${repository}" || -z "${ref}" || -z "${artifact}" ]]; then
-	echo "heron: aeron.repository, aeron.ref, and aeron.driver_artifact" \
-		"required in ${VERSIONS}" >&2
-	exit 1
-fi
+# Must match docker/aeronmd/Dockerfile builder stage output path.
+CONTAINER_BIN="/src/aeron/cppbuild/Release/binaries/${AERON_DRIVER_ARTIFACT}"
 
-echo "heron: building aeronmd (ref ${ref})"
+echo "heron: building aeronmd (ref ${AERON_REF})"
 docker_build_args=(
 	-f "${DOCKERFILE}"
-	--build-arg "AERON_REF=${ref}"
-	--build-arg "AERON_REPOSITORY=${repository}"
+	--target builder
+	--build-arg "AERON_REF=${AERON_REF}"
+	--build-arg "AERON_REPOSITORY=${AERON_REPOSITORY}"
+	--build-arg "AERON_DRIVER_ARTIFACT=${AERON_DRIVER_ARTIFACT}"
 	-t "${IMAGE}"
 	"${ROOT}"
 )
@@ -59,8 +42,8 @@ fi
 cid="$(docker create "${IMAGE}")"
 trap 'docker rm -f "${cid}" >/dev/null 2>&1 || true' EXIT
 
-mkdir -p "${ROOT}/bin"
-docker cp "${cid}:/src/aeron/cppbuild/Release/binaries/${artifact}" "${OUT}"
+mkdir -p "$(dirname "${OUT}")"
+docker cp "${cid}:${CONTAINER_BIN}" "${OUT}"
 chmod +x "${OUT}"
 touch "${OUT}"
 

@@ -38,3 +38,4 @@ aeron-*
 # Local build outputs
 build/
 out/
+**/target/

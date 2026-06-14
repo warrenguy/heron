@@ -146,7 +146,7 @@ func TestAssertCloseDrainRecordOrdering_partialProvenPositionsFallsThrough(t *te
 }
 
 func TestAssertCloseDrainOrderingFromTypeIDs_negativePermutedOrder(t *testing.T) {
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	typeIDs := []int{
 		conductor.RemoveSubscription,
 		conductor.RemovePublication,
@@ -163,7 +163,7 @@ func TestAssertCloseDrainOrderingFromTypeIDs_emptyReturnsNone(t *testing.T) {
 }
 
 func TestAssertCloseDrainRecordOrdering_negativeProvenPositions(t *testing.T) {
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 
 	_ = assertCloseDrainRecordOrdering(capture, nil, 0, nil, 300, 200, 100)
 	require.True(t, capture.failed)
@@ -391,7 +391,7 @@ func TestProveCloseDrainOrdering_rejectsPermutedRingOrder(t *testing.T) {
 	orderingTypeIDs, err := closeDrainOrderingTypeIDs(capture, ring, producerBefore, true, -1)
 	require.NoError(t, err)
 
-	failCapture := &captureFailTB{TB: t}
+	failCapture := &CaptureFailTB{TB: t}
 	_ = assertCloseDrainRecordOrdering(
 		failCapture,
 		ring,
@@ -754,7 +754,7 @@ func TestRequireMPSCMatrixCommandTypeIDsPresent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.wantFail {
-				capture := &captureFailTB{TB: t}
+				capture := &CaptureFailTB{TB: t}
 				RequireMPSCMatrixCommandTypeIDsPresent(capture, tt.typeIDs)
 				require.True(t, capture.failed)
 				return

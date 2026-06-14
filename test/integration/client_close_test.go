@@ -105,7 +105,7 @@ func TestClientCloseDrainsRegistrations(t *testing.T) {
 	)
 	t.Logf("close-drain ordering proof path: %s", closeDrainDiag.CloseDrainOrderingProof)
 
-	client2, hadClientError := connectIPCClient(t, md)
+	client2, hadClientError := harness.ConnectIPCClient(t, md)
 
 	sub2, err := client2.AddSubscription(streamID, harness.IPCChannel)
 	if err != nil {

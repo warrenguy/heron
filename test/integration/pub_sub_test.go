@@ -13,98 +13,19 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-func connectIPCClient(t *testing.T, md *harness.MediaDriver) (*aeron.Client, *atomic.Bool) {
+func finishPubSubIPCTest(t *testing.T, md *harness.MediaDriver, clientErrors ...*atomic.Bool) {
 	t.Helper()
 
-	return connectIPCClientContext(t, md, aeron.Context{})
-}
-
-func connectIPCClientContext(
-	t *testing.T,
-	md *harness.MediaDriver,
-	ctx aeron.Context,
-) (*aeron.Client, *atomic.Bool) {
-	t.Helper()
-
-	var hadClientError atomic.Bool
-	callerHandler := ctx.ErrorHandler
-	ctx.ErrorHandler = func(err error) {
-		hadClientError.Store(true)
-		if callerHandler != nil {
-			callerHandler(err)
-			return
-		}
-		t.Errorf("client error: %v", err)
+	for _, hadClientError := range clientErrors {
+		require.False(t, hadClientError.Load())
 	}
-	client := harness.ConnectClient(t, md, ctx)
-	return client, &hadClientError
-}
-
-func setupIPCPubSub(
-	t *testing.T,
-	client *aeron.Client,
-	streamID int32,
-) (*aeron.Publication, *aeron.Subscription) {
-	t.Helper()
-
-	pub, err := client.AddPublication(streamID, harness.IPCChannel)
-	require.NoError(t, err)
-	harness.CleanupClose(t, "close publication", pub.Close)
-
-	sub, err := client.AddSubscription(streamID, harness.IPCChannel)
-	require.NoError(t, err)
-	harness.CleanupClose(t, "close subscription", sub.Close)
-
-	// Poll publication connect before image attach; harness does not use WaitForIPCLinkConnected.
-	harness.PollUntilConnected(t, client, pub, harness.ConnectedPollTimeout)
-	harness.PollUntilImageCount(t, client, sub, 1, harness.ConnectedPollTimeout)
-	return pub, sub
-}
-
-func assertPubSubIPCMetadata(
-	t *testing.T,
-	streamID int32,
-	pub *aeron.Publication,
-	sub *aeron.Subscription,
-	pubPosBefore int64,
-	wantAdvance int64,
-) {
-	t.Helper()
-
-	harness.AssertPubSubPositionsAdvanced(t, pub, sub, pubPosBefore, wantAdvance)
-
-	image, ok := sub.ImageAt(0)
-	require.True(t, ok)
-	require.Equal(t, streamID, pub.StreamID())
-	require.Equal(t, streamID, sub.StreamID())
-	require.Equal(t, streamID, image.StreamID())
-	require.Equal(t, pub.SessionID(), image.SessionID())
-}
-
-func finishPubSubIPCTest(t *testing.T, md *harness.MediaDriver, hadClientError *atomic.Bool) {
-	t.Helper()
-
-	require.False(t, hadClientError.Load())
-	md.AssertProcessAlive(t)
-}
-
-func finishPubSubIPCTwoClientsTest(
-	t *testing.T,
-	md *harness.MediaDriver,
-	hadPubClientError *atomic.Bool,
-	hadSubClientError *atomic.Bool,
-) {
-	t.Helper()
-
-	require.False(t, hadPubClientError.Load())
-	require.False(t, hadSubClientError.Load())
 	md.AssertProcessAlive(t)
 }
 
 // TestPubSubIPCRoundtrip proves IPC offer, poll delivery, and position advance on live aeronmd.
 func TestPubSubIPCRoundtrip(t *testing.T) {
 	md := harness.Start(t)
-	client, hadClientError := connectIPCClient(t, md)
+	client, hadClientError := harness.ConnectIPCClient(t, md)
 
 	const (
 		streamID     = harness.PubSubRoundtripStreamID
@@ -113,7 +34,7 @@ func TestPubSubIPCRoundtrip(t *testing.T) {
 	)
 	payloads := harness.DistinctIPCPayloads(messageCount, payloadSize, 0xA0)
 
-	pub, sub := setupIPCPubSub(t, client, streamID)
+	pub, sub := harness.ConnectIPCPubSubClients(t, client, client, streamID)
 
 	pubPosBefore := pub.Position()
 	// Position advance uses aligned DATA frame length, not raw payload sum.
@@ -128,7 +49,7 @@ func TestPubSubIPCRoundtrip(t *testing.T) {
 
 	require.Equal(t, payloads, received)
 
-	assertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
+	harness.AssertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
 	finishPubSubIPCTest(t, md, hadClientError)
 }
 
@@ -140,8 +61,8 @@ func TestPubSubIPCTwoClientsRoundtrip(t *testing.T) {
 	splitClientCtx := aeron.Context{
 		InterServiceTimeout: harness.ConnectedPollTimeout,
 	}
-	pubClient, hadPubClientError := connectIPCClientContext(t, md, splitClientCtx)
-	subClient, hadSubClientError := connectIPCClientContext(t, md, splitClientCtx)
+	pubClient, hadPubClientError := harness.ConnectIPCClientContext(t, md, splitClientCtx)
+	subClient, hadSubClientError := harness.ConnectIPCClientContext(t, md, splitClientCtx)
 
 	const (
 		streamID     = harness.PubSubTwoClientsRoundtripStreamID
@@ -164,22 +85,22 @@ func TestPubSubIPCTwoClientsRoundtrip(t *testing.T) {
 	received := harness.PollDeliveredSplit(t, pubClient, subClient, sub, messageCount, 0)
 	require.Equal(t, payloads, received)
 
-	assertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
-	finishPubSubIPCTwoClientsTest(t, md, hadPubClientError, hadSubClientError)
+	harness.AssertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
+	finishPubSubIPCTest(t, md, hadPubClientError, hadSubClientError)
 }
 
 // TestPubSubIPCFragmentedRoundtrip proves fragmented Offer, PollReassembled delivery,
 // and aligned position advance on live aeronmd.
 func TestPubSubIPCFragmentedRoundtrip(t *testing.T) {
 	md := harness.Start(t)
-	client, hadClientError := connectIPCClient(t, md)
+	client, hadClientError := harness.ConnectIPCClient(t, md)
 
 	const (
 		streamID     = harness.PubSubFragmentedRoundtripStreamID
 		messageCount = 1
 	)
 
-	pub, sub := setupIPCPubSub(t, client, streamID)
+	pub, sub := harness.ConnectIPCPubSubClients(t, client, client, streamID)
 
 	maxPayload := pub.MaxPayloadLength()
 	payload := harness.FragmentedRoundtripPayload(maxPayload, harness.FragmentedRoundtripExtraBytes)
@@ -195,7 +116,7 @@ func TestPubSubIPCFragmentedRoundtrip(t *testing.T) {
 	require.Equal(t, [][]byte{payload}, received)
 	require.Equal(t, 2, fragments)
 
-	assertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
+	harness.AssertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
 	finishPubSubIPCTest(t, md, hadClientError)
 }
 
@@ -203,7 +124,7 @@ func TestPubSubIPCFragmentedRoundtrip(t *testing.T) {
 // without permanent stall and deliver all payloads in order on live aeronmd.
 func TestPublicationTermRollover(t *testing.T) {
 	md := harness.StartWithConfig(t, harness.Config{Env: harness.RolloverDriverEnv()})
-	client, hadClientError := connectIPCClient(t, md)
+	client, hadClientError := harness.ConnectIPCClient(t, md)
 
 	const (
 		streamID    = harness.PubSubTermRolloverStreamID
@@ -217,7 +138,7 @@ func TestPublicationTermRollover(t *testing.T) {
 
 	payloads := harness.DistinctIPCPayloads(messagesToRollover, payloadSize, 0xB0)
 
-	pub, sub := setupIPCPubSub(t, client, streamID)
+	pub, sub := harness.ConnectIPCPubSubClients(t, client, client, streamID)
 
 	pubPosBefore := pub.Position()
 	wantAdvance := harness.AlignedOfferAdvance(payloadSize, messagesToRollover)
@@ -270,6 +191,6 @@ func TestPublicationTermRollover(t *testing.T) {
 		"publication position should advance by at least %d bytes (wantAdvance)",
 		wantAdvance,
 	)
-	assertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, actualAdvance)
+	harness.AssertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, actualAdvance)
 	finishPubSubIPCTest(t, md, hadClientError)
 }

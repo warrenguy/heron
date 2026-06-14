@@ -119,7 +119,8 @@ trap 'rm -f "${NEW}" "${REPORT}" "${BENCHSTAT_TEXT}" "${GO_TEST_LOG}"' EXIT
 
 echo "bench-regression: running benchmarks (count=${COUNT})..." >&2
 # shellcheck disable=SC2086
-if ! go test -run '^$' -tags="${UNIT_TEST_TAGS:-testhooks}" -bench=. -benchmem -count="${COUNT}" ${PACKAGES} \
+if ! go test -run '^$' -tags="${UNIT_TEST_TAGS:-testhooks}" \
+	-bench=. -benchmem -count="${COUNT}" ${PACKAGES} \
 	>"${NEW}" 2>"${GO_TEST_LOG}"
 then
 	[[ -s "${GO_TEST_LOG}" ]] && cat "${GO_TEST_LOG}" >&2

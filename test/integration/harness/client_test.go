@@ -46,12 +46,12 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 	tests := []struct {
 		name   string
 		stream int32
-		wait   func(*captureFailTB, *aeron.Client, int32)
+		wait   func(*CaptureFailTB, *aeron.Client, int32)
 	}{
 		{
 			name:   "publication",
 			stream: ConnectedWaitPublicationTimeoutStreamID,
-			wait: func(capture *captureFailTB, client *aeron.Client, streamID int32) {
+			wait: func(capture *CaptureFailTB, client *aeron.Client, streamID int32) {
 				pub, err := client.AddPublication(streamID, IPCChannel)
 				require.NoError(capture, err)
 				PollUntilConnected(capture, client, pub, connectedWaitTestTimeout)
@@ -68,7 +68,7 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 		{
 			name:   "subscription",
 			stream: ConnectedWaitSubscriptionTimeoutStreamID,
-			wait: func(capture *captureFailTB, client *aeron.Client, streamID int32) {
+			wait: func(capture *CaptureFailTB, client *aeron.Client, streamID int32) {
 				sub, err := client.AddSubscription(streamID, IPCChannel)
 				require.NoError(capture, err)
 				WaitForSubscriptionConnected(capture, client, sub, connectedWaitTestTimeout)
@@ -87,7 +87,7 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 			md := Start(t)
 			client := ConnectClient(t, md, aeron.Context{})
 
-			capture := &captureFailTB{TB: t}
+			capture := &CaptureFailTB{TB: t}
 			tt.wait(capture, client, tt.stream)
 			require.True(t, capture.failed)
 		})

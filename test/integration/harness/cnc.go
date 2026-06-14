@@ -3,7 +3,9 @@
 package harness
 
 import (
+	"bytes"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -30,10 +32,10 @@ type cncAttach struct {
 	Rings  *cnc.Rings
 }
 
-func openCnc(t testing.TB, md *MediaDriver) *cncAttach {
+func attachCncPath(t testing.TB, cncPath string) *cncAttach {
 	t.Helper()
 
-	mapped, err := cnc.MapCncFile(md.CncPath())
+	mapped, err := cnc.MapCncFile(cncPath)
 	require.NoError(t, err, "map cnc file")
 
 	t.Cleanup(func() {
@@ -46,6 +48,12 @@ func openCnc(t testing.TB, md *MediaDriver) *cncAttach {
 	require.NoError(t, err, "wire rings")
 
 	return &cncAttach{Mapped: mapped, Rings: rings}
+}
+
+func openCnc(t testing.TB, md *MediaDriver) *cncAttach {
+	t.Helper()
+
+	return attachCncPath(t, md.CncPath())
 }
 
 func StartAttachedCnc(t testing.TB) (*MediaDriver, *cncAttach) {
@@ -355,6 +363,36 @@ func pollUntil(
 		return
 	}
 	require.FailNow(t, fmt.Sprintf("%s within %s", failMsg, timeout))
+}
+
+// PollUntilFileWhen polls until ready accepts trimmed file content.
+func PollUntilFileWhen(
+	path string,
+	timeout time.Duration,
+	ready func([]byte) bool,
+) ([]byte, error) {
+	var data []byte
+	ok := pollUntilBool(timeout, defaultPollInterval, func() bool {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return false
+		}
+
+		data = bytes.TrimSpace(raw)
+		return ready(data)
+	})
+	if !ok {
+		return nil, fmt.Errorf("%s not ready within %s", path, timeout)
+	}
+
+	return data, nil
+}
+
+// PollUntilFile polls until path exists and returns non-empty trimmed content.
+func PollUntilFile(path string, timeout time.Duration) ([]byte, error) {
+	return PollUntilFileWhen(path, timeout, func(data []byte) bool {
+		return len(data) > 0
+	})
 }
 
 // RunSoak runs a short post-assert DoWork soak for integration acceptance tests.

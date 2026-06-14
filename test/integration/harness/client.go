@@ -4,6 +4,7 @@ package harness
 
 import (
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +36,35 @@ func ConnectClient(t testing.TB, md *MediaDriver, ctx aeron.Context) *aeron.Clie
 		}
 	})
 	return client
+}
+
+// ConnectIPCClient connects to md and records client errors in the returned flag.
+func ConnectIPCClient(t testing.TB, md *MediaDriver) (*aeron.Client, *atomic.Bool) {
+	t.Helper()
+
+	return ConnectIPCClientContext(t, md, aeron.Context{})
+}
+
+// ConnectIPCClientContext connects with ctx and records client errors in the returned flag.
+func ConnectIPCClientContext(
+	t testing.TB,
+	md *MediaDriver,
+	ctx aeron.Context,
+) (*aeron.Client, *atomic.Bool) {
+	t.Helper()
+
+	var hadClientError atomic.Bool
+	callerHandler := ctx.ErrorHandler
+	ctx.ErrorHandler = func(err error) {
+		hadClientError.Store(true)
+		if callerHandler != nil {
+			callerHandler(err)
+		} else {
+			t.Errorf("client error: %v", err)
+		}
+	}
+
+	return ConnectClient(t, md, ctx), &hadClientError
 }
 
 // CleanupClose registers closeFn on t.Cleanup; records errors without masking test failure.

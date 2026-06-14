@@ -34,6 +34,13 @@ jobs:
             go.sum
             .go-arch-cache-marker
 
+      - uses: actions/setup-java@v4
+        if: matrix.goarch == 'amd64'
+        with:
+          distribution: temurin
+          java-version: 26
+          cache: maven
+
       - uses: actions/cache@v4
         with:
           path: ~/.cache/golangci-lint
@@ -41,12 +48,23 @@ jobs:
           restore-keys: |
             golangci-${{ runner.os }}-${{ env.GOARCH }}-
 
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
       - name: Check
         run: make check
 
       - name: Property tests
         if: matrix.goarch == 'amd64'
         run: make test-rapid
+
+      - name: Java interop unit tests
+        if: matrix.goarch == 'amd64'
+        run: make test-java-interop-unit
+
+      - name: Java interop Go oracle tests
+        if: matrix.goarch == 'amd64'
+        run: make test-java-interop-oracle
 
   integration:
     needs: check

@@ -14,7 +14,11 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
-const pollHarnessShortTimeout = 50 * time.Millisecond
+const (
+	pollHarnessShortTimeout = 50 * time.Millisecond
+
+	assertSubscribeMetadataTestStreamID int32 = 1100
+)
 
 var invalidWantCases = []struct {
 	name string
@@ -54,7 +58,7 @@ func TestPollUntilConnected_timeoutMessage(t *testing.T) {
 	require.NoError(t, err)
 	CleanupClose(t, "close publication", pub.Close)
 
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	PollUntilConnected(capture, client, pub, pollHarnessShortTimeout)
 	require.True(t, capture.failed)
 	wantMsg := fmt.Sprintf(
@@ -76,7 +80,7 @@ func TestPollUntilImageCount_timeoutMessage(t *testing.T) {
 		require.NoError(t, err)
 		CleanupClose(t, "close subscription", sub.Close)
 
-		capture := &captureFailTB{TB: t}
+		capture := &CaptureFailTB{TB: t}
 		PollUntilImageCount(capture, client, sub, 1, pollHarnessShortTimeout)
 		require.True(t, capture.failed)
 		wantMsg := fmt.Sprintf(
@@ -94,7 +98,7 @@ func TestPollUntilImageCount_timeoutMessage(t *testing.T) {
 
 		pub, sub := connectIPCPubSub(t, client, PollUntilImageCountOneWantTwoStreamID)
 
-		capture := &captureFailTB{TB: t}
+		capture := &CaptureFailTB{TB: t}
 		PollUntilImageCount(capture, client, sub, 2, pollHarnessShortTimeout)
 		require.True(t, capture.failed)
 		wantMsg := fmt.Sprintf(
@@ -116,7 +120,7 @@ func TestPollUntilNoActiveImages_timeoutMessage(t *testing.T) {
 
 	_, sub := connectIPCPubSub(t, client, PollUntilNoActiveImagesTimeoutStreamID)
 
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	PollUntilNoActiveImages(capture, client, sub, pollHarnessShortTimeout)
 	require.True(t, capture.failed)
 	wantMsg := fmt.Sprintf(
@@ -133,7 +137,7 @@ func TestPollSplitClientsUntil_timeoutMessage(t *testing.T) {
 	clientB := ConnectClient(t, md, aeron.Context{})
 
 	const failMsg = "split poll condition not met"
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	PollSplitClientsUntil(
 		capture,
 		clientA,
@@ -160,7 +164,7 @@ func TestPollSplitClientIPCLink_timeoutMessage(t *testing.T) {
 	require.NoError(t, err)
 	CleanupClose(t, "close subscription", sub.Close)
 
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	PollSplitClientIPCLink(
 		capture,
 		pubClient,
@@ -189,7 +193,7 @@ func TestPollUntilNoActiveImagesSplit_timeoutMessage(t *testing.T) {
 		PollUntilNoActiveImagesSplitTimeoutStreamID,
 	)
 
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	PollUntilNoActiveImagesSplit(
 		capture,
 		pubClient,
@@ -208,7 +212,7 @@ func TestPollUntilNoActiveImagesSplit_timeoutMessage(t *testing.T) {
 
 func TestPollUntilImageCount_invalidWantFails(t *testing.T) {
 	testInvalidPollWant(t, PollUntilImageCountInvalidWantStreamID, func(
-		capture *captureFailTB,
+		capture *CaptureFailTB,
 		client *aeron.Client,
 		sub *aeron.Subscription,
 		want int,
@@ -220,7 +224,7 @@ func TestPollUntilImageCount_invalidWantFails(t *testing.T) {
 func testInvalidPollWant(
 	t *testing.T,
 	streamID int32,
-	poll func(*captureFailTB, *aeron.Client, *aeron.Subscription, int),
+	poll func(*CaptureFailTB, *aeron.Client, *aeron.Subscription, int),
 ) {
 	t.Helper()
 	for _, tt := range invalidWantCases {
@@ -232,7 +236,7 @@ func testInvalidPollWant(
 			require.NoError(t, err)
 			CleanupClose(t, "close subscription", sub.Close)
 
-			capture := &captureFailTB{TB: t}
+			capture := &CaptureFailTB{TB: t}
 			poll(capture, client, sub, tt.want)
 			require.True(t, capture.failed)
 			require.Equal(t, fmt.Sprintf(`"%d" is not positive`, tt.want), capture.lastMsg)
@@ -246,7 +250,7 @@ func TestPollDelivered_timeoutMessage(t *testing.T) {
 
 	pub, sub := connectIPCPubSub(t, client, PollDeliveredTimeoutStreamID)
 
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	got := PollDelivered(capture, client, sub, 1, pollHarnessShortTimeout)
 	require.True(t, capture.failed)
 	require.Empty(t, got)
@@ -269,7 +273,7 @@ func TestPollDelivered_partialDelivery_timeoutMessage(t *testing.T) {
 
 	alignedAdvance := offerSingleAlignedFragment(t, client, pub)
 
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	got := PollDelivered(capture, client, sub, 2, pollHarnessShortTimeout)
 	require.True(t, capture.failed)
 	require.Len(t, got, 1)
@@ -287,7 +291,7 @@ func TestPollDelivered_partialDelivery_timeoutMessage(t *testing.T) {
 
 func TestPollDelivered_invalidWantFails(t *testing.T) {
 	testInvalidPollWant(t, PollDeliveredInvalidWantStreamID, func(
-		capture *captureFailTB,
+		capture *CaptureFailTB,
 		client *aeron.Client,
 		sub *aeron.Subscription,
 		want int,
@@ -331,7 +335,7 @@ func TestPollDeliveredSplit_timeoutMessage(t *testing.T) {
 		PollDeliveredSplitTimeoutStreamID,
 	)
 
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	got := PollDeliveredSplit(
 		capture,
 		pubClient,
@@ -367,7 +371,7 @@ func TestPollDeliveredSplit_partialDelivery_timeoutMessage(t *testing.T) {
 
 	alignedAdvance := offerSingleAlignedFragmentSplit(t, pubClient, pub)
 
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	got := PollDeliveredSplit(
 		capture,
 		pubClient,
@@ -392,7 +396,7 @@ func TestPollDeliveredSplit_partialDelivery_timeoutMessage(t *testing.T) {
 
 func TestPollDeliveredSplit_invalidWantFails(t *testing.T) {
 	testInvalidPollWantSplit(t, PollDeliveredSplitInvalidWantStreamID, func(
-		capture *captureFailTB,
+		capture *CaptureFailTB,
 		pubClient *aeron.Client,
 		subClient *aeron.Client,
 		sub *aeron.Subscription,
@@ -427,7 +431,7 @@ func offerSingleAlignedFragmentSplit(
 func testInvalidPollWantSplit(
 	t *testing.T,
 	streamID int32,
-	poll func(*captureFailTB, *aeron.Client, *aeron.Client, *aeron.Subscription, int),
+	poll func(*CaptureFailTB, *aeron.Client, *aeron.Client, *aeron.Subscription, int),
 ) {
 	t.Helper()
 	for _, tt := range invalidWantCases {
@@ -440,7 +444,7 @@ func testInvalidPollWantSplit(
 			require.NoError(t, err)
 			CleanupClose(t, "close subscription", sub.Close)
 
-			capture := &captureFailTB{TB: t}
+			capture := &CaptureFailTB{TB: t}
 			poll(capture, pubClient, subClient, sub, tt.want)
 			require.True(t, capture.failed)
 			require.Equal(t, fmt.Sprintf(`"%d" is not positive`, tt.want), capture.lastMsg)
@@ -454,7 +458,7 @@ func TestPollReassembled_timeoutMessage(t *testing.T) {
 
 	pub, sub := connectIPCPubSub(t, client, PollReassembledTimeoutStreamID)
 
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	got, fragments := PollReassembled(capture, client, sub, 1, pollHarnessShortTimeout)
 	require.True(t, capture.failed)
 	require.Empty(t, got)
@@ -478,7 +482,7 @@ func TestPollReassembled_noActiveImage_failsFast(t *testing.T) {
 	require.NoError(t, err)
 	CleanupClose(t, "close subscription", sub.Close)
 
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	got, fragments := PollReassembled(capture, client, sub, 1, pollHarnessShortTimeout)
 	require.True(t, capture.failed)
 	require.Empty(t, got)
@@ -498,7 +502,7 @@ func TestPollReassembled_partialDelivery_timeoutMessage(t *testing.T) {
 
 	alignedAdvance := offerSingleAlignedFragment(t, client, pub)
 
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	got, fragments := PollReassembled(capture, client, sub, 2, pollHarnessShortTimeout)
 	require.True(t, capture.failed)
 	require.Len(t, got, 1)
@@ -518,7 +522,7 @@ func TestPollReassembled_partialDelivery_timeoutMessage(t *testing.T) {
 
 func TestPollReassembled_invalidWantFails(t *testing.T) {
 	testInvalidPollWant(t, PollReassembledInvalidWantStreamID, func(
-		capture *captureFailTB,
+		capture *CaptureFailTB,
 		client *aeron.Client,
 		sub *aeron.Subscription,
 		want int,
@@ -538,7 +542,7 @@ func TestOfferWithRetry_notConnected_timesOut(t *testing.T) {
 	CleanupClose(t, "close publication", pub.Close)
 
 	payload := []byte{0x01}
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	got := OfferWithRetry(capture, client, pub, payload, pollHarnessShortTimeout)
 	require.True(t, capture.failed)
 	require.Zero(t, got)
@@ -587,7 +591,7 @@ func TestOfferWithRetry_closedPublication_failsImmediately(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, pub.Close())
 
-	capture := &captureFailTB{TB: t}
+	capture := &CaptureFailTB{TB: t}
 	got := OfferWithRetry(capture, client, pub, []byte{0x01}, time.Second)
 	require.True(t, capture.failed)
 	require.Equal(t, aeron.Closed, got)
@@ -758,4 +762,78 @@ func TestOfferWithRetryWitness_backPressured_returnsTrue(t *testing.T) {
 	require.True(t, witness)
 	require.Positive(t, pos)
 	require.Greater(t, pos, pubPosBefore)
+}
+
+// TestAssertSubscribeMetadata_liveIPC proves AssertSubscribeMetadata stream,
+// session, and position checks on live aeronmd IPC pub/sub.
+func TestAssertSubscribeMetadata_liveIPC(t *testing.T) {
+	md := Start(t)
+	client := ConnectClient(t, md, aeron.Context{})
+
+	pub, sub := ConnectIPCPubSubClients(t, client, client, assertSubscribeMetadataTestStreamID)
+
+	image, ok := sub.ImageAt(0)
+	require.True(t, ok)
+	joinPosBefore := image.JoinPosition()
+
+	const messageCount = 2
+	const payloadSize = 32
+	wantAdvance := AlignedOfferAdvance(payloadSize, messageCount)
+	payloads := DistinctIPCPayloads(messageCount, payloadSize, 0xD0)
+
+	for _, payload := range payloads {
+		OfferWithRetry(t, client, pub, payload, ConnectedPollTimeout)
+	}
+	_ = PollDelivered(t, client, sub, messageCount, ConnectedPollTimeout)
+
+	sessionID := pub.SessionID()
+	witnessCases := []struct {
+		name        string
+		streamID    int32
+		sessionID   int32
+		wantAdvance int64
+		wantFail    bool
+	}{
+		{
+			name:        "matchingWitness",
+			streamID:    assertSubscribeMetadataTestStreamID,
+			sessionID:   sessionID,
+			wantAdvance: wantAdvance,
+		},
+		{
+			name:        "wrongSessionID",
+			streamID:    assertSubscribeMetadataTestStreamID,
+			sessionID:   sessionID + 1,
+			wantAdvance: wantAdvance,
+			wantFail:    true,
+		},
+		{
+			name:        "wrongStreamID",
+			streamID:    assertSubscribeMetadataTestStreamID + 1,
+			sessionID:   sessionID,
+			wantAdvance: wantAdvance,
+			wantFail:    true,
+		},
+		{
+			name:        "wrongWantAdvance",
+			streamID:    assertSubscribeMetadataTestStreamID,
+			sessionID:   sessionID,
+			wantAdvance: wantAdvance + 1,
+			wantFail:    true,
+		},
+	}
+	assertWitness := func(tb testing.TB, streamID, sessionID int32, advance int64) {
+		AssertSubscribeMetadata(tb, streamID, sessionID, sub, joinPosBefore, advance)
+	}
+	for _, tt := range witnessCases {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.wantFail {
+				capture := NewCaptureFailTB(t)
+				assertWitness(capture, tt.streamID, tt.sessionID, tt.wantAdvance)
+				require.True(t, capture.Failed())
+				return
+			}
+			assertWitness(t, tt.streamID, tt.sessionID, tt.wantAdvance)
+		})
+	}
 }

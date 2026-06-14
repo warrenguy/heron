@@ -104,10 +104,15 @@ Notes:
 ## Development
 
 ```bash
-make check              # lint, unit tests (-race), stress
-make test-rapid         # property tests (pgregory.net/rapid), separate from make test
-make test-integration
+make check                        # lint, unit tests (-race), stress
+make test-rapid                   # property tests (pgregory.net/rapid)
+make test-integration             # live C aeronmd (-tags=integration)
+make test-java-interop-contract   # Java + Go oracle helpers (host JDK 26, Maven, mvn)
+make test-java-interop            # optional Docker Compose smoke (bidirectional IPC pub/sub)
 ```
+
+`make check` / `make lint` also require [ShellCheck](https://github.com/koalaman/shellcheck) on
+`PATH` (e.g. `pacman -S shellcheck`, `apt install shellcheck`).
 
 Unit tests use the `testhooks` build tag (conductor cross-package test hooks).
 Property tests live in `*_rapid_test.go` behind the `rapid` tag (`//go:build rapid`);

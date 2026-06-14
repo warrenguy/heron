@@ -29,6 +29,8 @@ const (
 	envIPCTermBufferLength = "AERON_IPC_TERM_BUFFER_LENGTH"
 	envThreadingMode       = "AERON_THREADING_MODE"
 	envDir                 = "AERON_DIR"
+
+	joinExternalCncReadyTimeout = 10 * time.Second
 )
 
 type DriverEnv map[string]string
@@ -45,9 +47,45 @@ var defaultDriverEnv = DriverEnv{
 
 func RolloverDriverEnv() DriverEnv {
 	return DriverEnv{
-		envTermBufferLength:    defaultDriverEnv[envTermBufferLength],
-		envIPCTermBufferLength: defaultDriverEnv[envIPCTermBufferLength],
+		envTermBufferLength:    termBufferLength,
+		envIPCTermBufferLength: termBufferLength,
 	}
+}
+
+func setupTestDriverEnv(
+	t testing.TB,
+	dir string,
+	overrides DriverEnv,
+	onFail func(),
+) (DriverEnv, int) {
+	t.Helper()
+
+	env := make(DriverEnv, len(defaultDriverEnv)+len(overrides)+1)
+	maps.Copy(env, defaultDriverEnv)
+	maps.Copy(env, overrides)
+	env[envDir] = dir
+
+	ipcTermDataLength, err := strconv.Atoi(env[envIPCTermBufferLength])
+	if err != nil {
+		if onFail != nil {
+			onFail()
+		}
+		t.Fatalf("harness: parse %s=%q: %v", envIPCTermBufferLength, env[envIPCTermBufferLength], err)
+	}
+	if err := logbuffer.CheckTermLength(ipcTermDataLength); err != nil {
+		if onFail != nil {
+			onFail()
+		}
+		t.Fatalf("harness: invalid %s=%d: %v", envIPCTermBufferLength, ipcTermDataLength, err)
+	}
+	for key, value := range env {
+		t.Setenv(key, value)
+	}
+	return env, ipcTermDataLength
+}
+
+func driverCncPath(dir string) string {
+	return filepath.Join(dir, cnc.FileName)
 }
 
 func TermDataLengthFromCmdEnv(md *MediaDriver) (int, error) {
@@ -97,6 +135,7 @@ type MediaDriver struct {
 	pid    int
 
 	ipcTermDataLength int
+	external          bool
 
 	exited  chan struct{}
 	waitErr error
@@ -123,22 +162,7 @@ func StartWithConfig(t testing.TB, cfg Config) *MediaDriver {
 	if err != nil {
 		t.Fatalf("harness: mkdir temp: %v", err)
 	}
-	env := make(DriverEnv, len(defaultDriverEnv)+len(cfg.Env)+1)
-	maps.Copy(env, defaultDriverEnv)
-	maps.Copy(env, cfg.Env)
-	env[envDir] = dir
-	ipcTermDataLength, err := strconv.Atoi(env[envIPCTermBufferLength])
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		t.Fatalf("harness: parse %s=%q: %v", envIPCTermBufferLength, env[envIPCTermBufferLength], err)
-	}
-	if err := logbuffer.CheckTermLength(ipcTermDataLength); err != nil {
-		_ = os.RemoveAll(dir)
-		t.Fatalf("harness: invalid %s=%d: %v", envIPCTermBufferLength, ipcTermDataLength, err)
-	}
-	for key, value := range env {
-		t.Setenv(key, value)
-	}
+	env, ipcTermDataLength := setupTestDriverEnv(t, dir, cfg.Env, func() { _ = os.RemoveAll(dir) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, aeronmd)
@@ -163,12 +187,63 @@ func StartWithConfig(t testing.TB, cfg Config) *MediaDriver {
 		close(md.exited)
 	}()
 
-	if err := cnc.WaitCncReady(md.CncPath(), 10*time.Second); err != nil {
+	if err := cnc.WaitCncReady(md.CncPath(), joinExternalCncReadyTimeout); err != nil {
 		md.Stop()
 		t.Fatalf("harness: %s not ready: %v", cnc.FileName, err)
 	}
 	t.Cleanup(func() { md.Stop() })
 	return md
+}
+
+// JoinExternal attaches to an already-running aeronmd at dir without spawning a process.
+//
+// ipcTermDataLength on external attach is a client-side assumption from defaultDriverEnv
+// (AERON_IPC_TERM_BUFFER_LENGTH), not read from the live driver CNC. External compose
+// stacks should pin matching term buffer env on every service; callers must keep client
+// and driver term lengths aligned.
+func JoinExternal(t testing.TB, dir string) *MediaDriver {
+	t.Helper()
+	return JoinExternalTimeout(t, dir, joinExternalCncReadyTimeout)
+}
+
+// JoinExternalTimeout is JoinExternal with a custom CNC ready poll deadline.
+func JoinExternalTimeout(t testing.TB, dir string, readyTimeout time.Duration) *MediaDriver {
+	t.Helper()
+	require.NotEmpty(t, dir)
+
+	_, ipcTermDataLength := setupTestDriverEnv(t, dir, nil, nil)
+
+	if err := cnc.WaitCncReady(driverCncPath(dir), readyTimeout); err != nil {
+		t.Fatalf("harness: %s not ready: %v", cnc.FileName, err)
+	}
+
+	md := &MediaDriver{
+		Dir:               dir,
+		ipcTermDataLength: ipcTermDataLength,
+		external:          true,
+	}
+	t.Cleanup(func() { md.Stop() })
+	return md
+}
+
+// AssertCncAlive checks the CNC is readable and the driver consumer heartbeat is fresh.
+func AssertCncAlive(t testing.TB, dir string) {
+	t.Helper()
+	require.NotEmpty(t, dir)
+
+	cncPath := driverCncPath(dir)
+	meta, err := cnc.ReadMetadataFile(cncPath)
+	require.NoError(t, err, "read cnc metadata")
+	if failedCaptureTB(t) {
+		return
+	}
+	require.Positive(t, meta.PID, "cnc pid")
+
+	attach := attachCncPath(t, cncPath)
+	if failedCaptureTB(t) {
+		return
+	}
+	AssertConsumerHeartbeatFresh(t, attach)
 }
 
 func (md *MediaDriver) Kill() error {
@@ -186,6 +261,10 @@ func (md *MediaDriver) Kill() error {
 
 func (md *MediaDriver) Stop() {
 	if md == nil {
+		return
+	}
+	if md.external {
+		md.Dir = ""
 		return
 	}
 	if md.cancel != nil {
@@ -210,7 +289,7 @@ func (md *MediaDriver) CncPath() string {
 	if md == nil {
 		return ""
 	}
-	return filepath.Join(md.Dir, cnc.FileName)
+	return driverCncPath(md.Dir)
 }
 
 func (md *MediaDriver) CmdEnvForTest() []string {
@@ -269,6 +348,16 @@ func (md *MediaDriver) aliveError() error {
 func (md *MediaDriver) AssertProcessAlive(t testing.TB) {
 	t.Helper()
 	require.NoError(t, md.aliveError())
+}
+
+// AssertAlive checks driver liveness for spawned or external attach paths.
+func (md *MediaDriver) AssertAlive(t testing.TB) {
+	t.Helper()
+	if md.external {
+		AssertCncAlive(t, md.Dir)
+		return
+	}
+	md.AssertProcessAlive(t)
 }
 
 func resolveAeronmd() (string, error) {

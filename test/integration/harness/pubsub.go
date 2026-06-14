@@ -374,7 +374,8 @@ func OfferWithRetryWitnessAfterNotify(
 	return offerWithRetry(t, client, pub, payload, timeout, notify)
 }
 
-func offerStallTimeout(timeout time.Duration) time.Duration {
+// OfferStallTimeout derives stall timeout from offer retry timeout.
+func OfferStallTimeout(timeout time.Duration) time.Duration {
 	stall := timeout / 5
 	if stall < time.Second && timeout >= 5*time.Second {
 		return time.Second
@@ -391,7 +392,7 @@ func offerWithRetry(
 	notify chan<- struct{},
 ) (int64, bool) {
 	timeout = connectedPollTimeoutOr(timeout)
-	stallTimeout := offerStallTimeout(timeout)
+	stallTimeout := OfferStallTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	var (
 		lastStatus             int64
@@ -678,6 +679,46 @@ func FragmentedRoundtripPayload(maxPayload, extra int) []byte {
 	return payload
 }
 
+// AssertPubSubIPCMetadata checks publication and image positions advanced by wantAdvance
+// and that stream and session IDs match across pub, sub, and image.
+func AssertPubSubIPCMetadata(
+	t testing.TB,
+	streamID int32,
+	pub *aeron.Publication,
+	sub *aeron.Subscription,
+	pubPosBefore int64,
+	wantAdvance int64,
+) {
+	t.Helper()
+
+	image := AssertPubSubPositionsAdvanced(t, pub, sub, pubPosBefore, wantAdvance)
+
+	require.Equal(t, streamID, pub.StreamID())
+	AssertSubscribeMetadata(t, streamID, pub.SessionID(), sub, image.JoinPosition(), wantAdvance)
+}
+
+// AssertSubscribeMetadata checks subscriber-only IPC metadata when Go does not publish.
+//
+// Verifies stream ID on sub and image, session ID on image, and image.Position() equals
+// joinPosBefore+wantAdvance.
+func AssertSubscribeMetadata(
+	t testing.TB,
+	streamID int32,
+	sessionID int32,
+	sub *aeron.Subscription,
+	joinPosBefore int64,
+	wantAdvance int64,
+) {
+	t.Helper()
+
+	require.Equal(t, streamID, sub.StreamID())
+
+	image := requireFirstImage(t, sub)
+	require.Equal(t, streamID, image.StreamID())
+	require.Equal(t, sessionID, image.SessionID())
+	require.Equal(t, joinPosBefore+wantAdvance, image.Position())
+}
+
 // AssertPubSubPositionsAdvanced checks publication and image positions advanced by advance.
 func AssertPubSubPositionsAdvanced(
 	t testing.TB,
@@ -685,14 +726,22 @@ func AssertPubSubPositionsAdvanced(
 	sub *aeron.Subscription,
 	pubPosBefore int64,
 	advance int64,
-) {
+) *aeron.Image {
 	t.Helper()
 
 	require.Equal(t, pubPosBefore+advance, pub.Position())
 
+	image := requireFirstImage(t, sub)
+	require.Equal(t, image.JoinPosition()+advance, image.Position())
+	return image
+}
+
+func requireFirstImage(t testing.TB, sub *aeron.Subscription) *aeron.Image {
+	t.Helper()
+
 	image, ok := sub.ImageAt(0)
 	require.True(t, ok)
-	require.Equal(t, image.JoinPosition()+advance, image.Position())
+	return image
 }
 
 func preparePollWant(t testing.TB, want int) bool {
