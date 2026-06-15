@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compare current benchmarks to a local baseline (make bench-baseline).
+# Compare contract benchmarks to a local baseline (make bench-baseline).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,7 +8,30 @@ cd "${ROOT}"
 BASELINE="${BENCH_BASELINE:-${ROOT}/.bench/baseline.txt}"
 COUNT="${BENCH_COUNT:-10}"
 THRESHOLD="${BENCH_THRESHOLD:-10}"
-PACKAGES="${BENCH_PKGS:-./...}"
+# Contract regression only: ./test/bench/... with bench build tag.
+PACKAGES="${BENCH_PKGS:-./test/bench/...}"
+has_test_bench=0
+has_non_bench=0
+for pkg in ${PACKAGES}; do
+	case "${pkg}" in
+	*test/bench*)
+		has_test_bench=1
+		;;
+	*)
+		has_non_bench=1
+		;;
+	esac
+done
+if [[ "${has_test_bench}" -eq 1 && "${has_non_bench}" -eq 1 ]]; then
+	echo "bench-regression: cannot mix test/bench with other packages (conflicting build tags)" >&2
+	exit 1
+fi
+UNIT_TEST_TAGS="${UNIT_TEST_TAGS:-bench}"
+[[ "${UNIT_TEST_TAGS}" == testhooks ]] && UNIT_TEST_TAGS=bench
+if [[ "${has_test_bench}" -eq 1 && "${UNIT_TEST_TAGS}" != *bench* ]]; then
+	echo "bench-regression: test/bench packages require bench build tag (got: ${UNIT_TEST_TAGS})" >&2
+	exit 1
+fi
 SKIP="${SKIP_BENCH_REGRESSION:-}"
 
 workflow_notice() {
@@ -119,7 +142,7 @@ trap 'rm -f "${NEW}" "${REPORT}" "${BENCHSTAT_TEXT}" "${GO_TEST_LOG}"' EXIT
 
 echo "bench-regression: running benchmarks (count=${COUNT})..." >&2
 # shellcheck disable=SC2086
-if ! go test -run '^$' -tags="${UNIT_TEST_TAGS:-testhooks}" \
+if ! go test -run '^$' -tags="${UNIT_TEST_TAGS}" \
 	-bench=. -benchmem -count="${COUNT}" ${PACKAGES} \
 	>"${NEW}" 2>"${GO_TEST_LOG}"
 then

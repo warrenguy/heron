@@ -19,40 +19,36 @@ import (
 )
 
 const (
-	TestPublicationRegistrationID   int64 = 9001
-	TestPublicationLimitCounterID   int32 = 1
-	TestPublicationChannelCounterID int32 = 2
-	TestPublicationSessionID        int32 = 1001
-	TestPublicationStreamID         int32 = 2002
-	TestPublicationInitialTermID    int32 = 7
-	TestPublicationMTULength        int32 = 1408
-	TestPublicationTermLength             = logbuffer.TermMinLength
+	TestPublicationRegistrationID   int64 = inMemPublicationRegistrationID
+	TestPublicationLimitCounterID   int32 = inMemPublicationLimitCounterID
+	TestPublicationChannelCounterID int32 = inMemPublicationChannelCounterID
+	TestPublicationSessionID        int32 = inMemPublicationSessionID
+	TestPublicationStreamID         int32 = inMemPublicationStreamID
+	TestPublicationInitialTermID    int32 = inMemPublicationInitialTermID
+	TestPublicationMTULength        int32 = inMemPublicationMTULength
+	TestPublicationTermLength             = inMemPublicationTermLength
 
-	TestSubscriptionRegistrationID  int64 = 8001
-	TestImageCorrelationID          int64 = 8101
-	TestSubscriberPositionCounterID int32 = 3
-	TestImageSourceIdentity               = "aeron:ipc"
+	TestSubscriptionRegistrationID  int64 = inMemSubscriptionRegistrationID
+	TestImageCorrelationID          int64 = inMemImageCorrelationID
+	TestSubscriberPositionCounterID int32 = inMemSubscriberPositionCounterID
+	TestImageSourceIdentity               = inMemImageSourceIdentity
 	TestSubscriberPositionAtJoin    int64 = 128
+
+	PollTestZeroAllocPayload = inMemPollZeroAllocPayload
 )
 
-type TestPublicationLogConfig struct {
-	InitialTermID   int32
-	ActiveTermCount int32
-	RawTails        [logbuffer.PartitionCount]int64
-	IsConnected     int32
+func PollTestZeroAllocPayloadBytes() []byte {
+	return inMemPollZeroAllocPayloadBytes
 }
 
+func PollTestZeroAllocFrameBytes() int64 {
+	return inMemPollZeroAllocFrameBytes
+}
+
+type TestPublicationLogConfig = inMemPublicationLogConfig
+
 func DefaultTestPublicationLogConfig() TestPublicationLogConfig {
-	return TestPublicationLogConfig{
-		InitialTermID:   TestPublicationInitialTermID,
-		ActiveTermCount: 0,
-		RawTails: [logbuffer.PartitionCount]int64{
-			logbuffer.PackRawTail(TestPublicationInitialTermID, 0),
-			logbuffer.PackRawTail(TestPublicationInitialTermID-2, 0),
-			logbuffer.PackRawTail(TestPublicationInitialTermID-1, 0),
-		},
-		IsConnected: 1,
-	}
+	return defaultInMemPublicationLogConfig()
 }
 
 func NewPublicationFromReadyForTest(
@@ -447,38 +443,15 @@ func newTestMappedLog(tb testing.TB, cfg TestPublicationLogConfig) *logbuffer.Ma
 	if tb != nil {
 		tb.Helper()
 	}
-
-	computed, err := logbuffer.ComputeLogLength(TestPublicationTermLength, logbuffer.PageMinSize)
+	log := newInMemMappedLog(cfg)
 	if tb != nil {
-		require.NoError(tb, err)
-	} else if err != nil {
-		panic(err)
-	}
-
-	buf := make([]byte, computed)
-	writeTestPublicationMetadata(buf, cfg)
-
-	log, err := logbuffer.MapLogBufferFromBytes(buf)
-	if tb != nil {
-		require.NoError(tb, err)
 		tb.Cleanup(func() { _ = log.Close() })
-		return log
-	}
-	if err != nil {
-		panic(err)
 	}
 	return log
 }
 
 func testPublicationBuffersReady() conductor.PublicationBuffersReady {
-	return conductor.PublicationBuffersReady{
-		RegistrationID:            TestPublicationRegistrationID,
-		SessionID:                 TestPublicationSessionID,
-		StreamID:                  TestPublicationStreamID,
-		PublicationLimitCounterID: TestPublicationLimitCounterID,
-		ChannelStatusCounterID:    TestPublicationChannelCounterID,
-		LogFileName:               "test.log",
-	}
+	return inMemPublicationBuffersReady()
 }
 
 func newTestPublication(
@@ -486,14 +459,11 @@ func newTestPublication(
 	logCfg TestPublicationLogConfig,
 	counters cnc.CountersView,
 ) *Publication {
-	log := newTestMappedLog(tb, logCfg)
-	pub, err := newPublicationFromReady(testPublicationBuffersReady(), log, counters, "aeron:ipc")
 	if tb != nil {
-		require.NoError(tb, err)
-	} else if err != nil {
-		panic(err)
+		tb.Helper()
 	}
-	return pub
+	log := newTestMappedLog(tb, logCfg)
+	return newInMemPublicationFromLog(log, counters)
 }
 
 func newTestPublicationWithoutTB(
@@ -506,57 +476,16 @@ func newTestPublicationWithoutTB(
 func WriteTestLogFileForTest(tb testing.TB, path string) {
 	tb.Helper()
 
-	computed, err := logbuffer.ComputeLogLength(TestPublicationTermLength, logbuffer.PageMinSize)
-	require.NoError(tb, err)
-
-	buf := make([]byte, computed)
-	writeTestPublicationMetadata(buf, DefaultTestPublicationLogConfig())
+	buf := make([]byte, inMemMappedLogLength)
+	writeInMemPublicationMetadata(buf, DefaultTestPublicationLogConfig())
 	require.NoError(tb, os.WriteFile(path, buf, 0o644))
-}
-
-func writeTestPublicationMetadata(buf []byte, cfg TestPublicationLogConfig) {
-	metaStart := logbuffer.MetaDataOffset(TestPublicationTermLength)
-	meta := atomic.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
-
-	for i := range logbuffer.PartitionCount {
-		_ = logbuffer.PutRawTail(meta, i, cfg.RawTails[i])
-	}
-	meta.PutInt32Release(logbuffer.OffsetActiveTermCount, cfg.ActiveTermCount)
-	meta.PutInt64(logbuffer.OffsetCorrelationID, TestPublicationRegistrationID)
-	meta.PutInt32(logbuffer.OffsetInitialTermID, cfg.InitialTermID)
-	meta.PutInt32(logbuffer.OffsetDefaultFrameHeaderLength, logbuffer.DataHeaderLength)
-	meta.PutInt32(logbuffer.OffsetTermLength, TestPublicationTermLength)
-	meta.PutInt32(logbuffer.OffsetPageSize, logbuffer.PageMinSize)
-	meta.PutInt32(logbuffer.OffsetMTULength, TestPublicationMTULength)
-	meta.PutInt32Release(logbuffer.OffsetIsConnected, cfg.IsConnected)
-	meta.Bytes()[logbuffer.OffsetLogType] = logbuffer.LogBufferTypeConcurrentPublication
-
-	if err := logbuffer.WriteDataHeaderUnfragmented(
-		meta,
-		logbuffer.OffsetDefaultFrameHeader,
-		TestPublicationSessionID,
-		TestPublicationStreamID,
-		cfg.InitialTermID,
-		0,
-		logbuffer.Unfragmented,
-	); err != nil {
-		panic(err)
-	}
 }
 
 func newTestCountersReaderFromRecords(
 	counterCount int,
 	writeRecords func(meta, values []byte),
 ) *cnc.CountersReader {
-	meta := make([]byte, cnc.CounterMetadataLength*counterCount)
-	values := make([]byte, cnc.CounterValueLength*counterCount)
-	writeRecords(meta, values)
-
-	reader, err := cnc.NewCountersReader(meta, values)
-	if err != nil {
-		panic(err)
-	}
-	return reader
+	return inMemCountersReaderFromRecords(counterCount, writeRecords)
 }
 
 func newTestCountersReaderLimitOnlyWithoutTB(limitPosition int64) *cnc.CountersReader {
@@ -574,30 +503,7 @@ func newTestCountersReaderLimitOnlyWithoutTB(limitPosition int64) *cnc.CountersR
 }
 
 func newTestCountersReaderWithoutTB(limitPosition int64) *cnc.CountersReader {
-	return newTestCountersReaderFromRecords(3, func(meta, values []byte) {
-		cnc.WriteCounterRecord(
-			meta,
-			values,
-			TestPublicationLimitCounterID,
-			cnc.CounterRecordAllocated,
-			cnc.DriverPublisherLimitTypeID,
-			TestPublicationRegistrationID,
-			limitPosition,
-		)
-		err := cnc.WriteChannelStatusCounterRecord(
-			meta,
-			values,
-			TestPublicationChannelCounterID,
-			cnc.CounterRecordAllocated,
-			cnc.DriverSendChannelStatusTypeID,
-			"aeron:ipc",
-			TestPublicationRegistrationID,
-			1,
-		)
-		if err != nil {
-			panic(err)
-		}
-	})
+	return inMemCountersReaderWithoutTB(limitPosition)
 }
 
 func MapConductorErrorForTest(err error) error {
@@ -963,15 +869,7 @@ func NewSubscriptionForTest(
 }
 
 func AvailableImageForTest() conductor.AvailableImage {
-	return conductor.AvailableImage{
-		CorrelationID:              TestImageCorrelationID,
-		SessionID:                  TestPublicationSessionID,
-		StreamID:                   TestPublicationStreamID,
-		SubscriptionRegistrationID: TestSubscriptionRegistrationID,
-		SubscriberPositionID:       TestSubscriberPositionCounterID,
-		LogFileName:                "test-image.log",
-		SourceIdentity:             TestImageSourceIdentity,
-	}
+	return inMemAvailableImage()
 }
 
 func AvailableImageWithSubscriberPositionIDForTest(
@@ -1085,6 +983,20 @@ func writeCommittedDataFrameForTest(
 	payload []byte,
 	fragmented bool,
 ) {
+	if !fragmented &&
+		sessionID == inMemPublicationSessionID &&
+		streamID == inMemPublicationStreamID {
+		writeInMemCommittedDataFrame(
+			termBuffer,
+			frameOffset,
+			termID,
+			termOffset,
+			flags,
+			payload,
+		)
+		return
+	}
+
 	frameLength := int32(len(payload) + logbuffer.DataHeaderLength)
 	var err error
 	if fragmented {
@@ -1201,7 +1113,7 @@ func NewImageForTestWithErrorHandler(
 }
 
 func ImageSetSubscriberPositionForTest(image *Image, value int64) {
-	image.subscriberPos.SetRelease(value)
+	setInMemImageSubscriberPosition(image, value)
 }
 
 func HeaderSetFragmentedFrameLenForTest(header *Header, fragmentedFrameLen int32) {
@@ -1288,15 +1200,5 @@ func newTestCountersReaderWithSubscriberPositionRegistration(
 	joinPosition int64,
 	registrationID int64,
 ) *cnc.CountersReader {
-	return newTestCountersReaderFromRecords(4, func(meta, values []byte) {
-		cnc.WriteCounterRecord(
-			meta,
-			values,
-			TestSubscriberPositionCounterID,
-			cnc.CounterRecordAllocated,
-			cnc.DriverSubscriberPositionTypeID,
-			registrationID,
-			joinPosition,
-		)
-	})
+	return inMemCountersReaderWithSubscriberPosition(joinPosition, registrationID)
 }

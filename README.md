@@ -1,6 +1,7 @@
 # Heron
 
-Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport client and Aeron Cluster client and server (consensus module and clustered service container).
+Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport client and Aeron Cluster client and
+server (consensus module and clustered service container).
 
 IPC/UDP via external media driver (integration tests use C `aeronmd`).
 
@@ -8,7 +9,8 @@ IPC/UDP via external media driver (integration tests use C `aeronmd`).
 
 - **Pure Go** - no cgo; hot paths use `unsafe`, atomics, and `mmap` via `golang.org/x/sys/unix`.
 - **GOARCH** - `amd64` and `arm64` only (little-endian).
-- **Media driver** - IPC/UDP needs a separate media driver (C or Java), not vendored here; integration tests use pinned C `aeronmd`.
+- **Media driver** - IPC/UDP needs a separate media driver (C or Java), not vendored here;
+  integration tests use pinned C `aeronmd`.
 
 ## Media driver (`aeronmd`)
 
@@ -16,7 +18,8 @@ IPC/UDP via external media driver (integration tests use C `aeronmd`).
 make aeronmd   # requires Docker; output bin/aeronmd (see specs/versions.yaml)
 ```
 
-`make test-integration` builds `aeronmd` when needed and sets `AERON_DIR` per test; override with `AERONMD_PATH` or an `aeronmd` on `PATH`.
+`make test-integration` builds `aeronmd` when needed and sets `AERON_DIR` per test; override with
+`AERONMD_PATH` or an `aeronmd` on `PATH`.
 
 ## Usage
 
@@ -97,8 +100,10 @@ func pollOne(sub *aeron.Subscription, client *aeron.Client) []byte {
 
 Notes:
 
-- `AddPublication` / `AddSubscription` block until the driver responds; poll `IsConnected` / `ImageCount` after they return.
-- One goroutine should call `DoWork` and `Subscription.Poll` for a given client. `Publication.Offer` may run from other goroutines.
+- `AddPublication` / `AddSubscription` block until the driver responds; poll `IsConnected` /
+  `ImageCount` after they return.
+- One goroutine should call `DoWork` and `Subscription.Poll` for a given client.
+  `Publication.Offer` may run from other goroutines.
 - Close publications and subscriptions before `client.Close()`.
 
 ## Development
@@ -118,6 +123,8 @@ Unit tests use the `testhooks` build tag (conductor cross-package test hooks).
 Property tests live in `*_rapid_test.go` behind the `rapid` tag (`//go:build rapid`);
 CI runs them via `make test-rapid` on amd64 after `make check`.
 
+IDE/gopls: set `go.buildTags` to `testhooks rapid stress integration bench`.
+
 ```bash
 make test                                              # unit only
 go test -race -tags=testhooks ./...                    # ad-hoc unit
@@ -128,16 +135,25 @@ Prefer Makefile targets over bare `go test`.
 
 ## Benchmarks
 
+| Target | Tags | Packages | CI alloc regression? |
+|--------|------|----------|----------------------|
+| `make bench` | `bench` | `./test/bench/...` | no |
+| `make bench-baseline` | `bench` | `./test/bench/...` | - |
+| `make bench-regression` | `bench` | `./test/bench/...` | yes |
+| `make bench-micro` | `testhooks` | `./aeron/...` white-box | no |
+
 ```bash
-make bench
+make bench              # contract suite (quick)
+make bench-micro        # white-box in-package (informational)
 make bench-baseline     # .bench/baseline.txt (gitignored, per machine)
-make bench-regression   # vs baseline via benchstat; exit 1 on regression
+make bench-regression   # vs baseline via benchstat; exit 1 on alloc regression
 ```
 
-Ad-hoc benchmarks need the `testhooks` build tag when not using the Makefile
-targets: `go test -tags=testhooks -run '^$' -bench=. -benchmem ./...`.
+Re-baseline after pulling `main` or when perf changes are intentional.
 
-Re-baseline after pulling `main` or when perf changes are intentional. Optional env: `BENCH_COUNT`, `BENCH_THRESHOLD`, `SKIP_BENCH_REGRESSION` (defaults in Makefile / `scripts/bench-regression.sh`).
+Optional env: `BENCH_COUNT` (Makefile default 10), `BENCH_PAYLOAD_SIZES` (comma-separated
+filter; CI uses `32,1400`), `BENCH_THRESHOLD` (script default 10; CI sets 30 in
+`bench.yml`), `SKIP_BENCH_REGRESSION`.
 
 ## License
 

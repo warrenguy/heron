@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	pollTestZeroAllocPayload     = "zero-alloc"
+	pollTestZeroAllocPayload     = aeron.PollTestZeroAllocPayload
 	pollTestPaddingLength        = int32(2 * logbuffer.FrameAlignment)
 	pollTestWidePaddingLength    = int32(3 * logbuffer.FrameAlignment)
 	pollTestNonZeroFrameOffset   = logbuffer.FrameAlignment
@@ -258,7 +258,7 @@ func setupZeroAllocPollImage(tb testing.TB) *aeron.Image {
 		aeron.ImageTermBuffer0ForTest(image),
 		0,
 		1,
-		[]byte(pollTestZeroAllocPayload),
+		aeron.PollTestZeroAllocPayloadBytes(),
 	)
 	imagePollSink = image.Poll(imagePollZeroAllocHandler, 1)
 	return image

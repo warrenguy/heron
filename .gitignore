@@ -24,6 +24,7 @@ worktrees/
 # Test artifacts
 **/testdata/rapid/
 **/*.fail
+.coverage/
 coverage.out
 coverage.html
 *.prof

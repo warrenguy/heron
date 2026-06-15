@@ -10,7 +10,6 @@ import (
 var (
 	benchOfferSink   int64
 	benchPayload64   = [64]byte{}
-	benchPayload512  = [512]byte{}
 	benchPayload1400 = [1400]byte{}
 	benchPayload4000 = [4000]byte{}
 )
@@ -30,28 +29,13 @@ func setupBenchPublication(b *testing.B) *aeron.Publication {
 	return pub
 }
 
-func BenchmarkPublication_Offer_Small(b *testing.B) {
+func BenchmarkPublication_Offer_Fragmented(b *testing.B) {
 	pub := setupBenchPublication(b)
 	b.ReportAllocs()
-	b.SetBytes(64)
-	for b.Loop() {
-		benchOfferSink = aeron.OfferRetryForTest(pub, benchPayload64[:])
-	}
-}
-
-func BenchmarkPublication_Offer_Medium(b *testing.B) {
-	pub := setupBenchPublication(b)
-	b.ReportAllocs()
-	b.Run("512", func(b *testing.B) {
-		b.SetBytes(512)
-		for b.Loop() {
-			benchOfferSink = aeron.OfferRetryForTest(pub, benchPayload512[:])
-		}
-	})
-	b.Run("fragmented/1400", func(b *testing.B) {
+	b.Run("1400", func(b *testing.B) {
 		benchFragmentedOffer(b, pub, benchPayload1400[:])
 	})
-	b.Run("fragmented/4000", func(b *testing.B) {
+	b.Run("4000", func(b *testing.B) {
 		benchFragmentedOffer(b, pub, benchPayload4000[:])
 	})
 }

@@ -1,5 +1,6 @@
-.PHONY: bench bench-baseline bench-regression check check-aeron-versions check-inner \
-	fuzz test test-rapid test-stress coverage clean test-integration \
+.PHONY: bench bench-baseline bench-regression bench-micro check check-aeron-versions check-inner \
+	coverage coverage-unit coverage-rapid coverage-stress coverage-bench-fixture \
+	fuzz test test-rapid test-stress test-bench-fixture clean test-integration \
 	test-java-interop test-java-interop-unit test-java-interop-oracle \
 	test-java-interop-contract aeronmd lint gofumpt goimports
 
@@ -21,7 +22,16 @@ $(error GOARCH=$(GOARCH) != native $(NATIVE_GOARCH); \
 endif
 endif
 
+COVERAGE_DIR := .coverage
+COVERAGE_ROOT := $(ROOT)/$(COVERAGE_DIR)
 COVERAGE_PROFILE := coverage.out
+COVERAGE_MODE := atomic
+COVERAGE_SLICES := $(COVERAGE_ROOT)/unit,$(COVERAGE_ROOT)/rapid,$(COVERAGE_ROOT)/stress,$(COVERAGE_ROOT)/bench-fixture
+COVERAGE_PREPARED := $(COVERAGE_ROOT)/.prepared
+# Set by coverage-* targets; names slice dir under COVERAGE_ROOT.
+COVERAGE_SLICE ?=
+COVERAGE_TEST_ARGS = $(if $(COVERAGE_SLICE),-cover -covermode=$(COVERAGE_MODE) \
+	-args -test.gocoverdir=$(COVERAGE_ROOT)/$(COVERAGE_SLICE),)
 GO_MODULE := github.com/warrenguy/heron
 GO_TEST_PKGS := ./...
 GO_SOURCES := $$(grep -rl --include='*.go' -L 'DO NOT EDIT' \
@@ -49,7 +59,7 @@ check:
 	fi
 
 check-inner: lint check-aeron-versions
-	@$(MAKE) --no-print-directory -j2 test test-stress
+	@$(MAKE) --no-print-directory -j3 test test-stress test-bench-fixture
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
@@ -57,6 +67,7 @@ check-aeron-versions:
 lint:
 	go tool golangci-lint run $(GO_TEST_PKGS)
 	go tool golangci-lint run --build-tags=integration,java_interop -D unused ./test/integration/...
+	go tool golangci-lint run --build-tags=bench ./test/bench/... ./aeron/
 	@command -v shellcheck >/dev/null || { \
 		echo "heron: shellcheck required (e.g. apt install shellcheck, pacman -S shellcheck)" >&2; \
 		exit 1; \
@@ -90,39 +101,78 @@ fuzz:
 # Unit tests need -tags=testhooks (conductor cross-package hooks); use make test.
 test:
 	go test -timeout=$(TEST_TIMEOUT) -race -tags=$(UNIT_TEST_TAGS) \
-		-coverprofile=$(COVERAGE_PROFILE) $(GO_TEST_PKGS)
-	@go tool cover -func=$(COVERAGE_PROFILE) | tail -1
+		-count=1 $(GO_TEST_PKGS) $(COVERAGE_TEST_ARGS)
 
 BENCH_DIR := .bench
 BENCH_BASELINE := $(BENCH_DIR)/baseline.txt
 BENCH_COUNT ?= 10
-export BENCH_PKGS := $(GO_TEST_PKGS)
+BENCH_PKGS ?= ./test/bench/...
+BENCH_TAGS := bench
+export BENCH_PKGS
 export BENCH_COUNT BENCH_BASELINE GOARCH
 
 test-rapid:
 	go test -timeout=$(TEST_TIMEOUT) -race -tags=rapid,$(UNIT_TEST_TAGS) \
-		-count=1 -run rapid $(GO_TEST_PKGS)
+		-count=1 -run rapid $(GO_TEST_PKGS) $(COVERAGE_TEST_ARGS)
 
 test-stress:
 	go test -timeout=$(TEST_TIMEOUT) -race -tags=stress,$(UNIT_TEST_TAGS) \
-		-count=1 -run Stress $(GO_TEST_PKGS)
+		-count=1 -run Stress $(GO_TEST_PKGS) $(COVERAGE_TEST_ARGS)
+
+test-bench-fixture:
+	go test -timeout=$(TEST_TIMEOUT) -race -tags=bench,$(UNIT_TEST_TAGS) -count=1 ./aeron/ \
+		-run '^Test(ResetInMemPublicationTermForBench|BenchFixture)' \
+		$(COVERAGE_TEST_ARGS)
 
 bench:
-	go test -run '^$$' -tags=$(UNIT_TEST_TAGS) -bench=. -benchmem $(GO_TEST_PKGS)
+	go test -tags=$(BENCH_TAGS) -run '^$$' -bench=. -benchmem \
+		-benchtime=1s $(BENCH_PKGS)
+
+bench-micro:
+	go test -run '^$$' -tags=testhooks -bench=. -benchmem \
+		./aeron/ ./aeron/ringbuffer/ ./aeron/broadcast/ ./aeron/conductor/ ./aeron/cnc/
 
 bench-baseline:
 	@mkdir -p $(BENCH_DIR) && set -o pipefail && \
-		go test -run '^$$' -tags=$(UNIT_TEST_TAGS) -bench=. -benchmem \
-			-count=$(BENCH_COUNT) $(GO_TEST_PKGS) \
-		| tee $(BENCH_BASELINE)
+		{ printf '%s\n' '# produced by: make bench-baseline (tags=bench)'; \
+		go test -run '^$$' -tags=$(BENCH_TAGS) -bench=. -benchmem \
+			-count=$(BENCH_COUNT) $(BENCH_PKGS); \
+		} | tee $(BENCH_BASELINE)
 
 bench-regression:
-	@scripts/bench-regression.sh
+	@UNIT_TEST_TAGS=$(BENCH_TAGS) scripts/bench-regression.sh
 
-coverage: test
+$(COVERAGE_PREPARED):
+	@rm -rf $(COVERAGE_DIR)
+	@mkdir -p $(COVERAGE_ROOT)/unit $(COVERAGE_ROOT)/rapid \
+		$(COVERAGE_ROOT)/stress $(COVERAGE_ROOT)/bench-fixture \
+		$(COVERAGE_ROOT)/merged
+	@touch $@
+
+coverage-unit: $(COVERAGE_PREPARED)
+	$(MAKE) --no-print-directory COVERAGE_SLICE=unit test
+
+coverage-rapid: $(COVERAGE_PREPARED)
+	$(MAKE) --no-print-directory COVERAGE_SLICE=rapid test-rapid
+
+coverage-stress: $(COVERAGE_PREPARED)
+	$(MAKE) --no-print-directory COVERAGE_SLICE=stress test-stress
+
+coverage-bench-fixture: $(COVERAGE_PREPARED)
+	$(MAKE) --no-print-directory COVERAGE_SLICE=bench-fixture test-bench-fixture
+
+$(COVERAGE_PROFILE): coverage-unit coverage-rapid coverage-stress coverage-bench-fixture
+	go tool covdata merge -i=$(COVERAGE_SLICES) -o=$(COVERAGE_ROOT)/merged
+	go tool covdata textfmt -i=$(COVERAGE_ROOT)/merged -o=$(COVERAGE_PROFILE)
+
+coverage.html: $(COVERAGE_PROFILE)
 	go tool cover -html=$(COVERAGE_PROFILE) -o coverage.html
 
+coverage: coverage.html
+	@go tool cover -func=$(COVERAGE_PROFILE) | tail -1
+
 clean:
+	rm -rf $(COVERAGE_DIR)
 	rm -f $(COVERAGE_PROFILE) coverage.html
 	rm -f bin/aeronmd
 	find . -type d -path '*/testdata/rapid' -prune -exec rm -rf {} +
