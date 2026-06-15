@@ -1,18 +1,17 @@
 # Heron
 
-Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport client and Aeron Cluster client and
-server (consensus module and clustered service container).
-
-IPC/UDP via external media driver (integration tests use C `aeronmd`).
+Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport client; Aeron Cluster support
+planned.
 
 ## Constraints
 
-- **Pure Go** - no cgo; hot paths use `unsafe`, atomics, and `mmap` via `golang.org/x/sys/unix`.
+- **Pure Go** - no cgo; uses `unsafe` and atomics on hot paths.
 - **GOARCH** - `amd64` and `arm64` only (little-endian).
-- **Media driver** - IPC/UDP needs a separate media driver (C or Java), not vendored here;
-  integration tests use pinned C `aeronmd`.
+- **Media driver** - IPC/UDP uses external Aeron media driver (C or Java).
 
 ## Media driver (`aeronmd`)
+
+Build `aeronmd` (Aeron C media driver) via Docker:
 
 ```bash
 make aeronmd   # requires Docker; output bin/aeronmd (see specs/versions.yaml)
@@ -109,7 +108,7 @@ Notes:
 ## Development
 
 ```bash
-make check                        # lint, unit tests (-race), stress
+make check                        # lint, aeron version pin check, unit tests (-race), stress
 make test-rapid                   # property tests (pgregory.net/rapid)
 make test-integration             # live C aeronmd (-tags=integration)
 make test-java-interop-contract   # Java + Go oracle helpers (host JDK 26, Maven, mvn)
@@ -119,7 +118,9 @@ make test-java-interop            # optional Docker Compose smoke (bidirectional
 `make check` / `make lint` also require [ShellCheck](https://github.com/koalaman/shellcheck) on
 `PATH` (e.g. `pacman -S shellcheck`, `apt install shellcheck`).
 
-Unit tests use the `testhooks` build tag (conductor cross-package test hooks).
+Unit tests use the `bench` and `testhooks` build tags (`bench` contract suite;
+`testhooks` conductor cross-package test hooks).
+
 Property tests live in `*_rapid_test.go` behind the `rapid` tag (`//go:build rapid`);
 CI runs them via `make test-rapid` on amd64 after `make check`.
 
@@ -127,7 +128,7 @@ IDE/gopls: set `go.buildTags` to `testhooks rapid stress integration bench`.
 
 ```bash
 make test                                              # unit only
-go test -race -tags=testhooks ./...                    # ad-hoc unit
+go test -race -tags=bench,testhooks ./...              # ad-hoc unit
 go test -race -tags=rapid,testhooks -run rapid ./...   # ad-hoc property
 ```
 
@@ -135,18 +136,16 @@ Prefer Makefile targets over bare `go test`.
 
 ## Benchmarks
 
-| Target | Tags | Packages | CI alloc regression? |
-|--------|------|----------|----------------------|
-| `make bench` | `bench` | `./test/bench/...` | no |
-| `make bench-baseline` | `bench` | `./test/bench/...` | - |
-| `make bench-regression` | `bench` | `./test/bench/...` | yes |
-| `make bench-micro` | `testhooks` | `./aeron/...` white-box | no |
+| Target | Tags | Packages |
+|--------|------|----------|
+| `make bench` (+ baseline, regression) | `bench` | `./test/bench/...` |
+| `make bench-micro` | `testhooks` | `./aeron/...` white-box |
 
 ```bash
 make bench              # contract suite (quick)
-make bench-micro        # white-box in-package (informational)
 make bench-baseline     # .bench/baseline.txt (gitignored, per machine)
-make bench-regression   # vs baseline via benchstat; exit 1 on alloc regression
+make bench-regression   # vs baseline via benchstat; exit 1 on alloc regression (CI)
+make bench-micro        # white-box in-package (informational)
 ```
 
 Re-baseline after pulling `main` or when perf changes are intentional.
