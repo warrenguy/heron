@@ -34,6 +34,7 @@ jobs:
             go.sum
             .go-arch-cache-marker
 
+      # Java on amd64 only: check-sbe-stale-optional (make check) and test-java-interop-unit.
       - uses: actions/setup-java@v4
         if: matrix.goarch == 'amd64'
         with:

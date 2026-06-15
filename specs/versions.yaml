@@ -1,7 +1,11 @@
-# External media driver pins for Heron.
-# Consumed by scripts/build-aeronmd.sh (Docker build + bin/aeronmd extract).
+# Heron upstream and codegen pins.
+# aeron: scripts/build-aeronmd.sh, scripts/regen-cluster-codecs.sh
+# sbe_tool: scripts/generate-sbe.sh
 
 aeron:
-  repository: "https://github.com/aeron-io/aeron.git"
-  ref: "1.51.0"
-  driver_artifact: "aeronmd_s"
+  repository: https://github.com/aeron-io/aeron.git
+  ref: 1.51.0
+  driver_artifact: aeronmd_s
+
+sbe_tool:
+  maven_coordinates: "uk.co.real-logic:sbe-all:1.38.1"

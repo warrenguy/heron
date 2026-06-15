@@ -108,7 +108,7 @@ Notes:
 ## Development
 
 ```bash
-make check                        # lint, aeron version pin check, unit tests (-race), stress
+make check                        # lint, pins, codec checks, unit+stress (-race)
 make test-rapid                   # property tests (pgregory.net/rapid)
 make test-integration             # live C aeronmd (-tags=integration)
 make test-java-interop-contract   # Java + Go oracle helpers (host JDK 26, Maven, mvn)
@@ -134,6 +134,30 @@ go test -race -tags=rapid,testhooks -run rapid ./...   # ad-hoc property
 
 Prefer Makefile targets over bare `go test`.
 
+### Cluster SBE codecs
+
+Cluster codecs use trimmed SBE XML (`specs/cluster-codecs-client.xml`) and generated Go
+flyweights (`aeron/sbe/generated/`). `go test` uses the committed artifacts only; Java is
+not required for tests.
+
+`make check` also runs `check-cluster-codecs-stale-optional` (regen trim, diff, restore;
+needs `go` and `curl` on `PATH`) and `check-sbe-stale-optional` (regenerate flyweights,
+`git diff aeron/sbe/generated/`; needs Java). Either optional step is skipped with a message
+when its tools are missing.
+
+After bumping `aeron.ref` in `specs/versions.yaml`, refresh both:
+
+```bash
+make cluster-codecs-regen   # fetch upstream XML @ pin, trim (Go+curl)
+make sbe-generate           # emit flyweights (Java; sbe_tool pin in versions.yaml)
+```
+
+`go generate` in `aeron/sbe` and `make sbe-generate` both invoke `scripts/generate-sbe.sh`
+and require Java. On amd64 CI, `make check` runs `check-sbe-stale-optional` when Java is on `PATH`.
+
+`cluster-codecs-regen` caches upstream under `.cache/`. For a local checkout:
+`./scripts/regen-cluster-codecs.sh /path/to/aeron-cluster-codecs.xml`.
+
 ## Benchmarks
 
 | Target | Tags | Packages |
@@ -157,3 +181,9 @@ filter; CI uses `32,1400`), `BENCH_THRESHOLD` (script default 10; CI sets 30 in
 ## License
 
 MIT - see [LICENSE](LICENSE).
+
+## Third-party notices
+
+`specs/cluster-codecs-client.xml` and `aeron/sbe/generated/` are derived from
+[Aeron](https://github.com/aeron-io/aeron) cluster codecs
+([Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0)).

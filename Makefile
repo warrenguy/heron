@@ -43,7 +43,9 @@ FUZZ_TIMEOUT ?= 5m
 CHECK_TIMEOUT ?= 5m
 
 # Without GNU timeout/gtimeout on PATH, CHECK_TIMEOUT is not enforced; TEST_TIMEOUT still applies.
-.PHONY: check check-inner check-aeron-versions
+.PHONY: check check-inner check-aeron-versions test-cluster-codecs-trim \
+	check-cluster-codecs-stale check-cluster-codecs-stale-optional \
+	check-sbe-stale check-sbe-stale-optional
 check:
 	@T=$$(command -v timeout 2>/dev/null \
 		|| command -v gtimeout 2>/dev/null); \
@@ -53,11 +55,36 @@ check:
 		$(MAKE) --no-print-directory check-inner; \
 	fi
 
-check-inner: lint check-aeron-versions
+check-inner: lint check-aeron-versions test-cluster-codecs-trim \
+	check-cluster-codecs-stale-optional check-sbe-stale-optional
 	@$(MAKE) --no-print-directory -j2 test test-stress
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
+
+test-cluster-codecs-trim:
+	@go test -race -count=1 -timeout=30s ./tools/cluster-codecs-trim/...
+
+check-cluster-codecs-stale:
+	@set -euo pipefail; \
+	tmp=$$(mktemp); \
+	cp specs/cluster-codecs-client.xml "$$tmp"; \
+	trap 'cp "$$tmp" specs/cluster-codecs-client.xml; rm -f "$$tmp"' EXIT; \
+	./scripts/regen-cluster-codecs.sh; \
+	diff -u "$$tmp" specs/cluster-codecs-client.xml
+
+check-cluster-codecs-stale-optional:
+	@command -v go >/dev/null && command -v curl >/dev/null \
+		&& $(MAKE) --no-print-directory check-cluster-codecs-stale \
+		|| echo "heron: skipping check-cluster-codecs-stale (go/curl not installed)"
+
+check-sbe-stale: sbe-generate
+	@git diff --exit-code aeron/sbe/generated/
+
+check-sbe-stale-optional:
+	@command -v java >/dev/null \
+		&& $(MAKE) --no-print-directory check-sbe-stale \
+		|| echo "heron: skipping check-sbe-stale (java not installed)"
 
 .PHONY: lint goimports gofumpt
 lint:
@@ -122,8 +149,7 @@ bench:
 		-benchtime=1s $(BENCH_PKGS)
 
 bench-micro:
-	go test -run '^$$' -tags=testhooks -bench=. -benchmem \
-		./aeron/ ./aeron/ringbuffer/ ./aeron/broadcast/ ./aeron/conductor/ ./aeron/cnc/
+	go test -run '^$$' -tags=testhooks -bench=. -benchmem ./aeron/...
 
 bench-baseline:
 	@mkdir -p $(BENCH_DIR) && set -o pipefail && \
@@ -197,3 +223,12 @@ bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd
 	./scripts/build-aeronmd.sh
 
 aeronmd: bin/aeronmd
+
+# SBE: cluster-codecs-regen (Go+curl) trims XML; sbe-generate (Java) emits flyweights.
+# go test uses committed specs/cluster-codecs-client.xml and aeron/sbe/generated only.
+.PHONY: cluster-codecs-regen sbe-generate
+cluster-codecs-regen:
+	./scripts/regen-cluster-codecs.sh
+
+sbe-generate:
+	./scripts/generate-sbe.sh

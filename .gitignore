@@ -36,6 +36,9 @@ cnc.dat
 /dev/shm/aeron*/
 aeron-*
 
+# Tool caches
+.cache/
+
 # Local build outputs
 build/
 out/
