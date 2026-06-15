@@ -21,6 +21,9 @@ const (
 // GetInt32Volatile/PutInt32Release. Broadcast pairs plain record writes with
 // ReleaseFence and volatile tail counters (BroadcastReceiver ordering); migrating
 // broadcast to volatile int32 accessors would be a separate change.
+//
+// *At accessors skip boundsCheck. Application code must use Get*. Internal tree
+// packages may call *At only after bind-time or header bounds proof.
 type AtomicBuffer struct {
 	buf []byte
 }
@@ -64,13 +67,21 @@ func boundsCheck(buf []byte, offset, size int) {
 	}
 }
 
+func addressAtUnchecked(buf []byte, offset int) unsafe.Pointer {
+	return unsafe.Add(unsafe.Pointer(&buf[0]), offset)
+}
+
 func addressAt(buf []byte, offset, size int) unsafe.Pointer {
 	boundsCheck(buf, offset, size)
-	return unsafe.Add(unsafe.Pointer(&buf[0]), offset)
+	return addressAtUnchecked(buf, offset)
 }
 
 func (b AtomicBuffer) GetInt32(offset int) int32 {
 	boundsCheck(b.buf, offset, SizeInt32)
+	return b.Int32At(offset)
+}
+
+func (b AtomicBuffer) Int32At(offset int) int32 {
 	return int32(binary.LittleEndian.Uint32(b.buf[offset : offset+SizeInt32]))
 }
 
@@ -80,7 +91,12 @@ func (b AtomicBuffer) PutInt32(offset int, value int32) {
 }
 
 func (b AtomicBuffer) GetInt32Volatile(offset int) int32 {
-	return atomic.LoadInt32((*int32)(addressAt(b.buf, offset, SizeInt32)))
+	boundsCheck(b.buf, offset, SizeInt32)
+	return b.VolatileInt32At(offset)
+}
+
+func (b AtomicBuffer) VolatileInt32At(offset int) int32 {
+	return atomic.LoadInt32((*int32)(addressAtUnchecked(b.buf, offset)))
 }
 
 func (b AtomicBuffer) PutInt32Release(offset int, value int32) {
@@ -89,6 +105,10 @@ func (b AtomicBuffer) PutInt32Release(offset int, value int32) {
 
 func (b AtomicBuffer) GetInt64(offset int) int64 {
 	boundsCheck(b.buf, offset, SizeInt64)
+	return b.Int64At(offset)
+}
+
+func (b AtomicBuffer) Int64At(offset int) int64 {
 	return int64(binary.LittleEndian.Uint64(b.buf[offset : offset+SizeInt64]))
 }
 
@@ -98,7 +118,12 @@ func (b AtomicBuffer) PutInt64(offset int, value int64) {
 }
 
 func (b AtomicBuffer) GetInt64Volatile(offset int) int64 {
-	return atomic.LoadInt64((*int64)(addressAt(b.buf, offset, SizeInt64)))
+	boundsCheck(b.buf, offset, SizeInt64)
+	return b.VolatileInt64At(offset)
+}
+
+func (b AtomicBuffer) VolatileInt64At(offset int) int64 {
+	return atomic.LoadInt64((*int64)(addressAtUnchecked(b.buf, offset)))
 }
 
 func (b AtomicBuffer) PutInt64Release(offset int, value int64) {

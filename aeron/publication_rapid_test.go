@@ -188,6 +188,51 @@ func TestPublication_Offer_rapid_fragmented(t *testing.T) {
 	})
 }
 
+const limitGateRapidMaxDraw = 8192 // default 64 KiB term; avoid AdminAction rotation spin
+
+func TestPublication_Offer_limitGate_rapid(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		limit := rapid.Int64Range(256, limitGateRapidMaxDraw).Draw(t, "limit")
+		startPosition := rapid.Int64Range(0, limit).Draw(t, "startPosition")
+
+		cfg := publicationLogConfigAtPosition(startPosition)
+		if startPosition >= limit {
+			connected := rapid.Bool().Draw(t, "connected")
+			if connected {
+				cfg.IsConnected = 1
+			} else {
+				cfg.IsConnected = 0
+			}
+			pub := aeron.NewTestPublicationWithoutTBForRapid(cfg, limit)
+
+			maxPayload := pub.MaxPayloadLengthForTest()
+			maxMessage := pub.MaxMessageLengthForTest()
+			payloadLen := rapid.IntRange(maxPayload+1, maxMessage).Draw(t, "payloadLen")
+			payload := rapid.SliceOfN(rapid.Byte(), payloadLen, payloadLen).Draw(t, "payload")
+
+			got := pub.Offer(payload)
+			if connected {
+				require.Equal(t, aeron.BackPressured, got)
+			} else {
+				require.Equal(t, aeron.NotConnected, got)
+			}
+			return
+		}
+
+		connected := rapid.Bool().Draw(t, "connected")
+		if connected {
+			cfg.IsConnected = 1
+		} else {
+			cfg.IsConnected = 0
+		}
+		pub := aeron.NewTestPublicationWithoutTBForRapid(cfg, limit)
+		maxPayload := pub.MaxPayloadLengthForTest()
+		payloadLen := rapid.IntRange(0, maxPayload).Draw(t, "payloadLen")
+		payload := rapid.SliceOfN(rapid.Byte(), payloadLen, payloadLen).Draw(t, "payload")
+		require.Positive(t, aeron.OfferRetryForTest(pub, payload))
+	})
+}
+
 func TestPublication_TryClaim_rapid(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		pub := aeron.NewTestPublicationWithoutTBForRapid(

@@ -562,7 +562,7 @@ func (client *Client) CncMetadata() (cnc.Metadata, error) {
 	return mapped.Metadata(), nil
 }
 
-func (client *Client) CountersReader() (cnc.CountersView, error) {
+func (client *Client) CountersReader() (*cnc.CountersReader, error) {
 	if err := client.errIfClosed(); err != nil {
 		return nil, err
 	}
@@ -650,7 +650,7 @@ func validateClientID(clientID int64) error {
 	return nil
 }
 
-func validateControlProtocolVersion(reader cnc.CountersView) error {
+func validateControlProtocolVersion(reader *cnc.CountersReader) error {
 	want := int64(conductor.ControlProtocolVersion)
 	got, err := reader.CounterValue(conductor.SystemCounterControlProtocolVersion)
 	if err != nil {

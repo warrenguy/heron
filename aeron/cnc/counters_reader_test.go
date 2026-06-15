@@ -464,6 +464,35 @@ func TestCountersReaderNilReceiver(t *testing.T) {
 	require.Equal(t, atomic.AtomicBuffer{}, reader.CounterValuesBuffer())
 }
 
+func TestNewCounterSlot_outOfBoundsPanics(t *testing.T) {
+	_, values := syntheticCountersBuffers(t, 1)
+	buffer := atomic.Wrap(values)
+
+	cases := []struct {
+		name      string
+		counterID int32
+		wantPanic string
+	}{
+		{
+			name:      "counterIDPastBuffer",
+			counterID: 1,
+			wantPanic: "cnc: counter slot offset out of bounds: counterID=1 offset=128 capacity=128",
+		},
+		{
+			name:      "negativeCounterID",
+			counterID: -1,
+			wantPanic: "cnc: counter slot offset out of bounds: counterID=-1 offset=-128 capacity=128",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.PanicsWithValue(t, tc.wantPanic, func() {
+				cnc.NewCounterSlot(tc.counterID, buffer)
+			})
+		})
+	}
+}
+
 func TestCountersReaderCounterValuesBufferAliasesAndVolatileRead(t *testing.T) {
 	meta, values := syntheticCountersBuffers(t, 1)
 	cnc.WriteCounterRecord(meta, values, 0, cnc.CounterRecordAllocated, cnc.SystemCounterTypeID, 0, 77)
@@ -472,10 +501,13 @@ func TestCountersReaderCounterValuesBufferAliasesAndVolatileRead(t *testing.T) {
 	require.NoError(t, err)
 
 	buffer := reader.CounterValuesBuffer()
+	slot := cnc.NewCounterSlot(0, buffer)
 	require.Equal(t, int64(77), buffer.GetInt64(0))
+	require.Equal(t, int64(77), slot.Get())
 
 	buffer.PutInt64Release(0, 88)
 	require.Equal(t, int64(88), buffer.GetInt64(0))
+	require.Equal(t, int64(88), slot.Get())
 
 	gotValue, err := reader.CounterValue(0)
 	require.NoError(t, err)

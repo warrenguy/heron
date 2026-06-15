@@ -604,15 +604,9 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 			panicPayload,
 		)
 
-		fragments := image.Poll(pollPanicHandler, 1)
-
-		require.Zero(t, fragments)
-		require.Zero(t, image.Position())
-
-		capture := &pollCapture{}
-		fragments = image.Poll(capture.handler, 1)
-		require.Equal(t, 1, fragments)
-		require.Equal(t, panicPayload, capture.payloads[0])
+		require.Panics(t, func() {
+			_ = image.Poll(pollPanicHandler, 1)
+		})
 	})
 
 	t.Run("errorHandlerPanicDoesNotEscape", func(t *testing.T) {

@@ -36,6 +36,29 @@ func frameHeaderInBounds(buffer atomic.AtomicBuffer, frameOffset int) bool {
 	return frameOffset >= 0 && frameOffset+DataHeaderLength <= buffer.Capacity()
 }
 
+func frameFieldInt32At(
+	buffer atomic.AtomicBuffer,
+	frameOffset int,
+	fieldOffset int,
+	volatile bool,
+) int32 {
+	if !frameHeaderInBounds(buffer, frameOffset) {
+		return 0
+	}
+	offset := frameOffset + fieldOffset
+	if volatile {
+		return buffer.VolatileInt32At(offset)
+	}
+	return buffer.Int32At(offset)
+}
+
+func frameFieldInt64(buffer atomic.AtomicBuffer, frameOffset, fieldOffset int) int64 {
+	if !frameHeaderInBounds(buffer, frameOffset) {
+		return 0
+	}
+	return buffer.Int64At(frameOffset + fieldOffset)
+}
+
 // Frame header accessors use three OOB contracts:
 //
 // Read helpers return zero when the 32-byte header would extend past the buffer.
@@ -54,19 +77,13 @@ func frameHeaderInBounds(buffer atomic.AtomicBuffer, frameOffset int) bool {
 // reads in the same goroutine only. Subscription poll on shared mmap must use
 // FrameLengthVolatile with PutFrameLengthRelease/Ordered.
 func FrameLength(buffer atomic.AtomicBuffer, frameOffset int) int32 {
-	if !frameHeaderInBounds(buffer, frameOffset) {
-		return 0
-	}
-	return buffer.GetInt32(frameOffset + OffsetFrameLength)
+	return frameFieldInt32At(buffer, frameOffset, OffsetFrameLength, false)
 }
 
 // FrameLengthVolatile acquire-loads frame length. Image/subscription poll loops
 // on shared term buffers must use this accessor.
 func FrameLengthVolatile(buffer atomic.AtomicBuffer, frameOffset int) int32 {
-	if !frameHeaderInBounds(buffer, frameOffset) {
-		return 0
-	}
-	return buffer.GetInt32Volatile(frameOffset + OffsetFrameLength)
+	return frameFieldInt32At(buffer, frameOffset, OffsetFrameLength, true)
 }
 
 func FrameVersion(buffer atomic.AtomicBuffer, frameOffset int) int8 {
@@ -87,42 +104,27 @@ func FrameType(buffer atomic.AtomicBuffer, frameOffset int) int16 {
 	if !frameHeaderInBounds(buffer, frameOffset) {
 		return 0
 	}
-	return int16(binary.LittleEndian.Uint16(buffer.Bytes()[frameOffset+OffsetFrameType:]))
+	return frameTypeAt(buffer.Bytes(), frameOffset)
 }
 
 func FrameTermOffset(buffer atomic.AtomicBuffer, frameOffset int) int32 {
-	if !frameHeaderInBounds(buffer, frameOffset) {
-		return 0
-	}
-	return buffer.GetInt32(frameOffset + OffsetTermOffset)
+	return frameFieldInt32At(buffer, frameOffset, OffsetTermOffset, false)
 }
 
 func FrameSessionID(buffer atomic.AtomicBuffer, frameOffset int) int32 {
-	if !frameHeaderInBounds(buffer, frameOffset) {
-		return 0
-	}
-	return buffer.GetInt32(frameOffset + OffsetSessionID)
+	return frameFieldInt32At(buffer, frameOffset, OffsetSessionID, false)
 }
 
 func FrameStreamID(buffer atomic.AtomicBuffer, frameOffset int) int32 {
-	if !frameHeaderInBounds(buffer, frameOffset) {
-		return 0
-	}
-	return buffer.GetInt32(frameOffset + OffsetStreamID)
+	return frameFieldInt32At(buffer, frameOffset, OffsetStreamID, false)
 }
 
 func FrameTermID(buffer atomic.AtomicBuffer, frameOffset int) int32 {
-	if !frameHeaderInBounds(buffer, frameOffset) {
-		return 0
-	}
-	return buffer.GetInt32(frameOffset + OffsetTermID)
+	return frameFieldInt32At(buffer, frameOffset, OffsetTermID, false)
 }
 
 func FrameReservedValue(buffer atomic.AtomicBuffer, frameOffset int) int64 {
-	if !frameHeaderInBounds(buffer, frameOffset) {
-		return 0
-	}
-	return buffer.GetInt64(frameOffset + OffsetReservedValue)
+	return frameFieldInt64(buffer, frameOffset, OffsetReservedValue)
 }
 
 func IsPaddingFrame(buffer atomic.AtomicBuffer, frameOffset int) bool {
@@ -149,30 +151,36 @@ func IsPaddingFrameInTerm(buffer atomic.AtomicBuffer, frameOffset int) bool {
 	return paddingFrameType(buffer, frameOffset) == HdrTypePad
 }
 
-// CommittedFrameLengthVolatile acquire-loads committed frame length at frameOffset.
-//
-// When the full header does not fit in the remaining term bytes, reads length from
-// partial header layout matching CommitMinimalTermEndPadding.
-func CommittedFrameLengthVolatile(buffer atomic.AtomicBuffer, frameOffset int) int32 {
-	frameLength := FrameLengthVolatile(buffer, frameOffset)
-	if frameLength != 0 {
-		return frameLength
-	}
+func partialCommittedFrameLengthVolatile(buffer atomic.AtomicBuffer, frameOffset int) int32 {
 	remaining := buffer.Capacity() - frameOffset
 	if remaining >= DataHeaderLength || remaining < atomic.SizeInt32 {
 		return 0
 	}
-	length := buffer.GetInt32Volatile(frameOffset + OffsetFrameLength)
+	length := buffer.VolatileInt32At(frameOffset + OffsetFrameLength)
 	if length <= 0 || int(length) > remaining {
 		return 0
 	}
 	return length
 }
 
+// CommittedFrameLengthVolatile acquire-loads committed frame length at frameOffset.
+//
+// When the full header does not fit in the remaining term bytes, reads length from
+// partial header layout matching CommitMinimalTermEndPadding.
+func CommittedFrameLengthVolatile(buffer atomic.AtomicBuffer, frameOffset int) int32 {
+	if frameHeaderInBounds(buffer, frameOffset) {
+		return FrameLengthVolatile(buffer, frameOffset)
+	}
+	return partialCommittedFrameLengthVolatile(buffer, frameOffset)
+}
+
+// frameTypeAt reads HdrType at offset+6; binary.LittleEndian matches Agrona byte order.
+func frameTypeAt(header []byte, frameOffset int) int16 {
+	return int16(binary.LittleEndian.Uint16(header[frameOffset+OffsetFrameType:]))
+}
+
 func paddingFrameType(buffer atomic.AtomicBuffer, frameOffset int) int16 {
-	return int16(binary.LittleEndian.Uint16(
-		buffer.Bytes()[frameOffset+OffsetFrameType:],
-	))
+	return frameTypeAt(buffer.Bytes(), frameOffset)
 }
 
 func putFrameLengthRelease(buffer atomic.AtomicBuffer, frameOffset int, frameLength int32) {

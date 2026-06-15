@@ -1,9 +1,3 @@
-.PHONY: bench bench-baseline bench-regression bench-micro check check-aeron-versions check-inner \
-	coverage coverage-unit coverage-rapid coverage-stress coverage-bench-fixture \
-	fuzz test test-rapid test-stress test-bench-fixture clean test-integration \
-	test-java-interop test-java-interop-unit test-java-interop-oracle \
-	test-java-interop-contract aeronmd lint gofumpt goimports
-
 ROOT := $(CURDIR)
 export PATH := $(ROOT)/bin:$(PATH)
 SHELL := /bin/bash
@@ -26,7 +20,7 @@ COVERAGE_DIR := .coverage
 COVERAGE_ROOT := $(ROOT)/$(COVERAGE_DIR)
 COVERAGE_PROFILE := coverage.out
 COVERAGE_MODE := atomic
-COVERAGE_SLICES := $(COVERAGE_ROOT)/unit,$(COVERAGE_ROOT)/rapid,$(COVERAGE_ROOT)/stress,$(COVERAGE_ROOT)/bench-fixture
+COVERAGE_SLICES := $(COVERAGE_ROOT)/unit,$(COVERAGE_ROOT)/rapid,$(COVERAGE_ROOT)/stress
 COVERAGE_PREPARED := $(COVERAGE_ROOT)/.prepared
 # Set by coverage-* targets; names slice dir under COVERAGE_ROOT.
 COVERAGE_SLICE ?=
@@ -49,6 +43,7 @@ FUZZ_TIMEOUT ?= 5m
 CHECK_TIMEOUT ?= 5m
 
 # Without GNU timeout/gtimeout on PATH, CHECK_TIMEOUT is not enforced; TEST_TIMEOUT still applies.
+.PHONY: check check-inner check-aeron-versions
 check:
 	@T=$$(command -v timeout 2>/dev/null \
 		|| command -v gtimeout 2>/dev/null); \
@@ -59,15 +54,15 @@ check:
 	fi
 
 check-inner: lint check-aeron-versions
-	@$(MAKE) --no-print-directory -j3 test test-stress test-bench-fixture
+	@$(MAKE) --no-print-directory -j2 test test-stress
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
 
+.PHONY: lint goimports gofumpt
 lint:
 	go tool golangci-lint run $(GO_TEST_PKGS)
-	go tool golangci-lint run --build-tags=integration,java_interop -D unused ./test/integration/...
-	go tool golangci-lint run --build-tags=bench ./test/bench/... ./aeron/
+	go tool golangci-lint run --build-tags=integration,java_interop ./test/integration/...
 	@command -v shellcheck >/dev/null || { \
 		echo "heron: shellcheck required (e.g. apt install shellcheck, pacman -S shellcheck)" >&2; \
 		exit 1; \
@@ -85,6 +80,7 @@ goimports:
 gofumpt: goimports
 	go tool gofumpt -extra -w $(GO_SOURCES)
 
+.PHONY: fuzz
 # -fuzz=Fuzz requires at most one matching Fuzz* per package (Go errors otherwise).
 fuzz:
 	@set -euo pipefail; \
@@ -98,18 +94,11 @@ fuzz:
 			-fuzz=Fuzz -fuzztime=$(FUZZ_TIME) $$pkg; \
 	done
 
-# Unit tests need -tags=testhooks (conductor cross-package hooks); use make test.
+.PHONY: test test-rapid test-stress
+# Unit tests need -tags=testhooks,bench; use make test.
 test:
-	go test -timeout=$(TEST_TIMEOUT) -race -tags=$(UNIT_TEST_TAGS) \
+	go test -timeout=$(TEST_TIMEOUT) -race -tags=bench,$(UNIT_TEST_TAGS) \
 		-count=1 $(GO_TEST_PKGS) $(COVERAGE_TEST_ARGS)
-
-BENCH_DIR := .bench
-BENCH_BASELINE := $(BENCH_DIR)/baseline.txt
-BENCH_COUNT ?= 10
-BENCH_PKGS ?= ./test/bench/...
-BENCH_TAGS := bench
-export BENCH_PKGS
-export BENCH_COUNT BENCH_BASELINE GOARCH
 
 test-rapid:
 	go test -timeout=$(TEST_TIMEOUT) -race -tags=rapid,$(UNIT_TEST_TAGS) \
@@ -119,11 +108,15 @@ test-stress:
 	go test -timeout=$(TEST_TIMEOUT) -race -tags=stress,$(UNIT_TEST_TAGS) \
 		-count=1 -run Stress $(GO_TEST_PKGS) $(COVERAGE_TEST_ARGS)
 
-test-bench-fixture:
-	go test -timeout=$(TEST_TIMEOUT) -race -tags=bench,$(UNIT_TEST_TAGS) -count=1 ./aeron/ \
-		-run '^Test(ResetInMemPublicationTermForBench|BenchFixture)' \
-		$(COVERAGE_TEST_ARGS)
+BENCH_DIR := .bench
+BENCH_BASELINE := $(BENCH_DIR)/baseline.txt
+BENCH_COUNT ?= 10
+BENCH_PKGS ?= ./test/bench/...
+BENCH_TAGS := bench
+export BENCH_PKGS
+export BENCH_COUNT BENCH_BASELINE GOARCH
 
+.PHONY: bench bench-micro bench-baseline bench-regression
 bench:
 	go test -tags=$(BENCH_TAGS) -run '^$$' -bench=. -benchmem \
 		-benchtime=1s $(BENCH_PKGS)
@@ -145,10 +138,10 @@ bench-regression:
 $(COVERAGE_PREPARED):
 	@rm -rf $(COVERAGE_DIR)
 	@mkdir -p $(COVERAGE_ROOT)/unit $(COVERAGE_ROOT)/rapid \
-		$(COVERAGE_ROOT)/stress $(COVERAGE_ROOT)/bench-fixture \
-		$(COVERAGE_ROOT)/merged
+		$(COVERAGE_ROOT)/stress $(COVERAGE_ROOT)/merged
 	@touch $@
 
+.PHONY: coverage coverage-unit coverage-rapid coverage-stress
 coverage-unit: $(COVERAGE_PREPARED)
 	$(MAKE) --no-print-directory COVERAGE_SLICE=unit test
 
@@ -158,10 +151,7 @@ coverage-rapid: $(COVERAGE_PREPARED)
 coverage-stress: $(COVERAGE_PREPARED)
 	$(MAKE) --no-print-directory COVERAGE_SLICE=stress test-stress
 
-coverage-bench-fixture: $(COVERAGE_PREPARED)
-	$(MAKE) --no-print-directory COVERAGE_SLICE=bench-fixture test-bench-fixture
-
-$(COVERAGE_PROFILE): coverage-unit coverage-rapid coverage-stress coverage-bench-fixture
+$(COVERAGE_PROFILE): coverage-unit coverage-rapid coverage-stress
 	go tool covdata merge -i=$(COVERAGE_SLICES) -o=$(COVERAGE_ROOT)/merged
 	go tool covdata textfmt -i=$(COVERAGE_ROOT)/merged -o=$(COVERAGE_PROFILE)
 
@@ -171,18 +161,21 @@ coverage.html: $(COVERAGE_PROFILE)
 coverage: coverage.html
 	@go tool cover -func=$(COVERAGE_PROFILE) | tail -1
 
+.PHONY: clean
 clean:
 	rm -rf $(COVERAGE_DIR)
 	rm -f $(COVERAGE_PROFILE) coverage.html
 	rm -f bin/aeronmd
 	find . -type d -path '*/testdata/rapid' -prune -exec rm -rf {} +
 
+.PHONY: test-integration aeronmd
 test-integration: bin/aeronmd
 	go test -timeout=$(TEST_TIMEOUT) -race -count=1 -tags=integration ./test/integration/...
 
 JAVA_INTEROP_POM := test/integration/java_interop/pom.xml
 JAVA_INTEROP_ORACLE_TIMEOUT ?= 30s
 
+.PHONY: test-java-interop test-java-interop-unit test-java-interop-oracle test-java-interop-contract
 test-java-interop:
 	./scripts/java-interop-smoke.sh
 

@@ -41,9 +41,9 @@ type Publication struct {
 	headerWriter          logbuffer.HeaderWriter
 	fragmentedPartitionMu [logbuffer.PartitionCount]sync.Mutex
 
-	counters                  cnc.CountersView
-	publicationLimitCounterID int32
-	channelStatusCounterID    int32
+	counters               *cnc.CountersReader
+	publicationLimit       cnc.CounterSlot
+	channelStatusCounterID int32
 
 	closed    atomic.Uint32
 	conductor *conductor.Conductor
@@ -183,11 +183,10 @@ func (pub *Publication) PositionLimit() int64 {
 		return Closed
 	}
 
-	limit, err := pub.counters.CounterValue(pub.publicationLimitCounterID)
-	if err != nil {
+	if err := publicationCounterValueError(pub, pub.publicationLimit.CounterID()); err != nil {
 		return Closed
 	}
-	return limit
+	return pub.publicationLimit.Get()
 }
 
 // IsConnected reports the log metadata is-connected flag (not channel-status counter).
@@ -205,7 +204,14 @@ func (pub *Publication) ChannelStatus() (int64, error) {
 	if pub.channelStatusCounterID == cnc.NullCounterID {
 		return ChannelEndpointStatusActive, nil
 	}
-	return pub.counters.CounterValue(pub.channelStatusCounterID)
+	return pub.counterValue(pub.channelStatusCounterID)
+}
+
+func (pub *Publication) counterValue(counterID int32) (int64, error) {
+	if err := publicationCounterValueError(pub, counterID); err != nil {
+		return 0, err
+	}
+	return pub.counters.CounterValue(counterID)
 }
 
 // AvailableWindow returns positionLimit - position, or a negative status code.
@@ -340,10 +346,7 @@ type offerPrelude struct {
 }
 
 func (pub *Publication) offerPreludeState() (prelude offerPrelude, position, limit int64) {
-	limit, err := pub.counters.CounterValue(pub.publicationLimitCounterID)
-	if err != nil {
-		return offerPrelude{status: Closed}, 0, 0
-	}
+	limit = pub.publicationLimit.Get()
 
 	termLength := pub.termBufferLength
 
@@ -357,7 +360,7 @@ func (pub *Publication) offerPreludeState() (prelude offerPrelude, position, lim
 	termOffset := int(logbuffer.TermOffset(rawTail, int32(termLength)))
 
 	if termCount != logbuffer.ComputeTermCount(termID, pub.initialTermID) {
-		return offerPrelude{status: AdminAction}, 0, limit
+		return offerPrelude{status: AdminAction}, 0, 0
 	}
 
 	position = logbuffer.ComputePosition(
@@ -444,10 +447,9 @@ func (pub *Publication) reserveTailAfterPrelude(
 // reserveMessageSpace checks publication limit, then reserves space via
 // fetch-and-add on the active partition tail counter.
 //
-// Read ActiveTermCount and partition raw tail separately, not RawTailVolatile, so
-// limit and reservation share one term/offset pair (Java ConcurrentPublication ordering). No yield
-// between that read and GetAndAddInt64: rotation between them pins the wrong
-// partition.
+// Volatile read order: limit, ActiveTermCount, partition raw tail (Java
+// ConcurrentPublication). No yield between tail read and GetAndAddInt64: rotation
+// between them pins the wrong partition.
 //
 // Reservation always completes as DATA or PAD on termBuf/termOffset; callers retry on AdminAction.
 //
@@ -455,10 +457,7 @@ func (pub *Publication) reserveTailAfterPrelude(
 // and FAA must stay in one function; splitting them adds non-inlinable calls on the
 // unfragmented hot path.
 func (pub *Publication) reserveMessageSpace(messageLength int) reserveOutcome {
-	limit, err := pub.counters.CounterValue(pub.publicationLimitCounterID)
-	if err != nil {
-		return reserveOutcome{status: Closed}
-	}
+	limit := pub.publicationLimit.Get()
 
 	frameLength := int32(messageLength + logbuffer.DataHeaderLength)
 	alignedLength := logbuffer.AlignFragmentChunkLength(messageLength)

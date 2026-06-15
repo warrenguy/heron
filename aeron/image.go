@@ -299,20 +299,22 @@ func (image *Image) invokeFragmentHandler(
 	frameLength int32,
 	header *Header,
 ) (ok bool) {
-	ok = true
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			ok = false
-			err, isErr := recovered.(error)
-			if !isErr {
-				err = fmt.Errorf("aeron: fragment handler panic: %v", recovered)
-			}
-			image.invokeSubscriberErrorHandler(err)
-		}
-	}()
-
 	payloadOffset := frameOffset + logbuffer.OffsetFramePayload
 	payloadLength := int(frameLength) - logbuffer.DataHeaderLength
+	ok = true
+	if image.errorHandler != nil {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				ok = false
+				err, isErr := recovered.(error)
+				if !isErr {
+					err = fmt.Errorf("aeron: fragment handler panic: %v", recovered)
+				}
+				image.invokeSubscriberErrorHandler(err)
+			}
+		}()
+	}
+
 	handler(termBuffer, payloadOffset, payloadLength, header)
 	return ok
 }
@@ -326,8 +328,10 @@ func (image *Image) invokeFragmentHandler(
 // Poll reads subscriber position with a volatile load at entry and publishes an
 // advanced position with SetRelease when bytes were consumed and the image is
 // still open. PAD-only scans with zero fragments still advance and store.
-// Handler panic does not advance past the failing DATA frame. Term-end PAD at
-// capacity advances by raw committed padding bytes, not alignment.
+// Handler panic does not advance past the failing DATA frame when an error
+// handler is configured. Without an error handler, handler panic propagates to
+// the caller. Term-end PAD at capacity advances by raw committed padding bytes,
+// not alignment.
 func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 	if image.isClosed.Load() || handler == nil || fragmentLimit <= 0 {
 		return 0

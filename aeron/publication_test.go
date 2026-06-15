@@ -1,6 +1,7 @@
 package aeron_test
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -116,11 +117,88 @@ func publicationTermOffsetAtPosition(position int64) int32 {
 	return logbuffer.ComputeTermOffsetFromPosition(position, shift)
 }
 
-func newTestPublicationWithLimitCounterFailure(tb testing.TB) *aeron.Publication {
+func injectPublicationCounterError(
+	tb testing.TB,
+	pub *aeron.Publication,
+	counterID int32,
+	errMsg string,
+) {
+	tb.Helper()
+	aeron.SetPublicationCounterValueErrorForTest(
+		tb,
+		pub,
+		counterID,
+		errors.New(errMsg),
+	)
+}
+
+func setupPublicationWithLimitCounterValueFailure(tb testing.TB) *aeron.Publication {
 	tb.Helper()
 
-	view := aeron.NewErrCountersView(tb, 1_000_000, true, false)
-	return aeron.NewTestPublicationWithCounters(tb, aeron.DefaultTestPublicationLogConfig(), view)
+	pub, _ := setupPublicationWithLimitReader(tb, 1_000_000)
+	injectPublicationCounterError(
+		tb,
+		pub,
+		aeron.TestPublicationLimitCounterID,
+		"aeron: injected limit counter failure",
+	)
+	return pub
+}
+
+func setupPublicationWithLimitReader(
+	tb testing.TB,
+	limit int64,
+) (*aeron.Publication, *cnc.CountersReader) {
+	tb.Helper()
+
+	reader := aeron.NewTestCountersReaderForTest(tb, limit)
+	pub := aeron.NewTestPublicationWithCounters(tb, aeron.DefaultTestPublicationLogConfig(), reader)
+	return pub, reader
+}
+
+func setupPublicationWithLimitReaderAtPosition(
+	tb testing.TB,
+	limit int64,
+	position int64,
+) (*aeron.Publication, *cnc.CountersReader) {
+	tb.Helper()
+
+	reader := aeron.NewTestCountersReaderForTest(tb, limit)
+	cfg := publicationLogConfigAtPosition(position)
+	pub := aeron.NewTestPublicationWithCounters(tb, cfg, reader)
+	return pub, reader
+}
+
+func writeTestPublicationLimit(tb testing.TB, reader *cnc.CountersReader, limit int64) {
+	tb.Helper()
+	require.NoError(tb, reader.SetCounterValue(aeron.TestPublicationLimitCounterID, limit))
+}
+
+func offerThenDecreaseLimitBelowPosition(
+	tb testing.TB,
+	pub *aeron.Publication,
+	reader *cnc.CountersReader,
+) (position, decreasedLimit int64) {
+	tb.Helper()
+
+	position = pub.Offer([]byte{1, 2, 3, 4})
+	require.Positive(tb, position)
+	decreasedLimit = position - 1
+	writeTestPublicationLimit(tb, reader, decreasedLimit)
+	return position, decreasedLimit
+}
+
+func requirePublicationLimitSlotMatchesCounter(
+	tb testing.TB,
+	pub *aeron.Publication,
+	reader *cnc.CountersReader,
+) {
+	tb.Helper()
+
+	gotViaSlot := aeron.PublicationLimitSlotForTest(pub)
+	gotViaCounter, err := reader.CounterValue(aeron.TestPublicationLimitCounterID)
+	require.NoError(tb, err)
+	require.Equal(tb, gotViaCounter, gotViaSlot)
 }
 
 func requireRejectedOfferLeavesTermClean(
@@ -342,17 +420,31 @@ func TestPublication_TryClaim_backPressureStatuses(t *testing.T) {
 }
 
 func TestPublication_NotConnectedVsBackPressured(t *testing.T) {
-	cfg := aeron.DefaultTestPublicationLogConfig()
-	cfg.IsConnected = 0
-	pub := aeron.NewTestPublication(t, cfg, 0)
+	t.Run("disconnected at limit", func(t *testing.T) {
+		cfg := aeron.DefaultTestPublicationLogConfig()
+		cfg.IsConnected = 0
+		pub := aeron.NewTestPublication(t, cfg, 0)
 
-	got := pub.Offer([]byte{1})
-	require.Equal(t, aeron.NotConnected, got)
+		got := pub.Offer([]byte{1})
+		require.Equal(t, aeron.NotConnected, got)
+	})
 
-	cfg.IsConnected = 1
-	pub = aeron.NewTestPublication(t, cfg, 0)
-	got = pub.Offer([]byte{1})
-	require.Equal(t, aeron.BackPressured, got)
+	t.Run("connected at limit", func(t *testing.T) {
+		cfg := aeron.DefaultTestPublicationLogConfig()
+		cfg.IsConnected = 1
+		pub := aeron.NewTestPublication(t, cfg, 0)
+
+		got := pub.Offer([]byte{1})
+		require.Equal(t, aeron.BackPressured, got)
+	})
+
+	t.Run("disconnected under limit proceeds", func(t *testing.T) {
+		cfg := aeron.DefaultTestPublicationLogConfig()
+		cfg.IsConnected = 0
+		pub := aeron.NewTestPublication(t, cfg, 1_000_000)
+
+		require.Positive(t, pub.Offer([]byte{1, 2, 3}))
+	})
 }
 
 func TestPublication_TryClaim_maxPositionExceeded(t *testing.T) {
@@ -439,8 +531,7 @@ func TestPublication_FragmentedOffer_statusPaths(t *testing.T) {
 	}
 
 	t.Run("BackPressured", func(t *testing.T) {
-		cfg := publicationLogConfigAtPosition(500_000)
-		pub := aeron.NewTestPublication(t, cfg, 500_000)
+		pub, _ := setupPublicationWithLimitReaderAtPosition(t, 500_000, 500_000)
 		payload := make([]byte, fragmentedLength(pub))
 		requireRejectedOfferLeavesTermClean(t, pub, aeron.BackPressured, func() int64 {
 			return pub.Offer(payload)
@@ -703,8 +794,13 @@ func TestPublication_ChannelStatus(t *testing.T) {
 }
 
 func TestPublication_ChannelStatus_counterFailure(t *testing.T) {
-	view := aeron.NewErrCountersView(t, 1_000_000, false, true)
-	pub := aeron.NewTestPublicationWithCounters(t, aeron.DefaultTestPublicationLogConfig(), view)
+	pub, _ := setupPublicationWithLimitReader(t, 1_000_000)
+	injectPublicationCounterError(
+		t,
+		pub,
+		aeron.TestPublicationChannelCounterID,
+		"aeron: injected channel counter failure",
+	)
 
 	_, err := pub.ChannelStatus()
 	require.EqualError(t, err, "aeron: injected channel counter failure")
@@ -720,31 +816,71 @@ func TestPublication_AvailableWindow(t *testing.T) {
 }
 
 func TestPublication_AvailableWindow_atLimit(t *testing.T) {
-	cfg := publicationLogConfigAtPosition(500_000)
-	pub := aeron.NewTestPublication(t, cfg, 500_000)
+	pub, _ := setupPublicationWithLimitReaderAtPosition(t, 500_000, 500_000)
 	require.Equal(t, int64(0), pub.AvailableWindow())
 }
 
-func TestPublication_AvailableWindow_counterFailure(t *testing.T) {
-	pub := newTestPublicationWithLimitCounterFailure(t)
+func TestPublication_limitCounterFailure_coldAccessorsReturnClosed(t *testing.T) {
+	pub := setupPublicationWithLimitCounterValueFailure(t)
 	require.Equal(t, aeron.Closed, pub.AvailableWindow())
-}
-
-func TestPublication_PositionLimit_counterFailure(t *testing.T) {
-	pub := newTestPublicationWithLimitCounterFailure(t)
 	require.Equal(t, aeron.Closed, pub.PositionLimit())
 }
 
-func TestPublication_Offer_limitCounterFailure(t *testing.T) {
-	pub := newTestPublicationWithLimitCounterFailure(t)
-	require.Equal(t, aeron.Closed, pub.Offer([]byte{1}))
-}
+func TestPublication_limitCounterValueFailure_hotPathUsesBoundSlot(t *testing.T) {
+	// Hot path reads bound limit slot; CounterValue injection hits cold accessors only.
+	pub := setupPublicationWithLimitCounterValueFailure(t)
+	require.Equal(t, aeron.Closed, pub.PositionLimit())
+	require.Equal(t, aeron.Closed, pub.AvailableWindow())
+	require.Positive(t, pub.Offer([]byte{1}))
 
-func TestPublication_TryClaim_limitCounterFailure(t *testing.T) {
-	pub := newTestPublicationWithLimitCounterFailure(t)
 	_, _, position, err := pub.TryClaim(16)
 	require.NoError(t, err)
-	require.Equal(t, aeron.Closed, position)
+	require.Positive(t, position)
+
+	maxPayload := pub.MaxPayloadLengthForTest()
+	require.Positive(t, pub.Offer(make([]byte, maxPayload+1)))
+}
+
+func TestPublication_publicationLimitSlot_matchesCounterValueAfterBind(t *testing.T) {
+	cases := []struct {
+		name  string
+		limit int64
+	}{
+		{name: "small limit", limit: 128},
+		{name: "large limit", limit: 1_000_000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pub, reader := setupPublicationWithLimitReader(t, tc.limit)
+			requirePublicationLimitSlotMatchesCounter(t, pub, reader)
+		})
+	}
+
+	t.Run("live update tracks driver write", func(t *testing.T) {
+		const updatedLimit int64 = 2_000_000
+		pub, reader := setupPublicationWithLimitReader(t, 1_000_000)
+		writeTestPublicationLimit(t, reader, updatedLimit)
+		require.Equal(t, updatedLimit, pub.PositionLimit())
+	})
+
+	t.Run("live limit decrease blocks Offer and updates AvailableWindow", func(t *testing.T) {
+		pub, reader := setupPublicationWithLimitReader(t, 1_000_000)
+		position, decreasedLimit := offerThenDecreaseLimitBelowPosition(t, pub, reader)
+
+		requireRejectedOfferLeavesTermClean(t, pub, aeron.BackPressured, func() int64 {
+			return pub.Offer([]byte{5, 6, 7, 8})
+		})
+		require.Equal(t, decreasedLimit-position, pub.AvailableWindow())
+	})
+
+	t.Run("fragmented Offer at limit", func(t *testing.T) {
+		const limit int64 = 500_000
+		pub, _ := setupPublicationWithLimitReaderAtPosition(t, limit, limit)
+		payload := make([]byte, pub.MaxPayloadLengthForTest()+1)
+		requireRejectedOfferLeavesTermClean(t, pub, aeron.BackPressured, func() int64 {
+			return pub.Offer(payload)
+		})
+	})
 }
 
 func TestNewPublicationFromReadyForTest_validation(t *testing.T) {

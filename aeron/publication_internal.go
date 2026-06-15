@@ -17,7 +17,7 @@ var (
 func newPublicationFromReady(
 	ready conductor.PublicationBuffersReady,
 	log *logbuffer.MappedLogBuffer,
-	counters cnc.CountersView,
+	counters *cnc.CountersReader,
 	channel string,
 ) (*Publication, error) {
 	if log == nil {
@@ -41,6 +41,10 @@ func newPublicationFromReady(
 	); err != nil {
 		return nil, err
 	}
+	publicationLimit := cnc.NewCounterSlot(
+		ready.PublicationLimitCounterID,
+		counters.CounterValuesBuffer(),
+	)
 	if ready.ChannelStatusCounterID != cnc.NullCounterID {
 		if err := requireActiveCounter(
 			counters,
@@ -62,22 +66,22 @@ func newPublicationFromReady(
 	positionBitsToShift := logbuffer.PositionBitsToShift(termBufferLength)
 
 	pub := &Publication{
-		registrationID:            ready.RegistrationID,
-		originalRegistrationID:    ready.RegistrationID,
-		sessionID:                 ready.SessionID,
-		streamID:                  ready.StreamID,
-		channel:                   channel,
-		log:                       log,
-		meta:                      meta,
-		termBufferLength:          termBufferLength,
-		positionBitsToShift:       positionBitsToShift,
-		initialTermID:             metadata.InitialTermID,
-		maxPayloadLength:          int(metadata.MTULength) - logbuffer.DataHeaderLength,
-		maxMessageLength:          logbuffer.ComputeMaxMessageLength(termBufferLength),
-		maxPossiblePosition:       int64(termBufferLength) * (1 << 31),
-		counters:                  counters,
-		publicationLimitCounterID: ready.PublicationLimitCounterID,
-		channelStatusCounterID:    ready.ChannelStatusCounterID,
+		registrationID:         ready.RegistrationID,
+		originalRegistrationID: ready.RegistrationID,
+		sessionID:              ready.SessionID,
+		streamID:               ready.StreamID,
+		channel:                channel,
+		log:                    log,
+		meta:                   meta,
+		termBufferLength:       termBufferLength,
+		positionBitsToShift:    positionBitsToShift,
+		initialTermID:          metadata.InitialTermID,
+		maxPayloadLength:       int(metadata.MTULength) - logbuffer.DataHeaderLength,
+		maxMessageLength:       logbuffer.ComputeMaxMessageLength(termBufferLength),
+		maxPossiblePosition:    int64(termBufferLength) * (1 << 31),
+		counters:               counters,
+		publicationLimit:       publicationLimit,
+		channelStatusCounterID: ready.ChannelStatusCounterID,
 	}
 
 	termBuffers, err := log.TermBuffers()
@@ -96,7 +100,7 @@ func newPublicationFromReady(
 }
 
 func requireActiveCounter(
-	counters cnc.CountersView,
+	counters *cnc.CountersReader,
 	counterID int32,
 	registrationID int64,
 	typeID int32,

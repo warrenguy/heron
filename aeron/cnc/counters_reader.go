@@ -35,31 +35,48 @@ const (
 	CounterValueRegistrationIDOffset          = atomic.SizeInt64
 )
 
-type CountersView interface {
-	CounterValue(counterID int32) (int64, error)
-
-	FindHeartbeatCounter(
-		registrationID int64,
-		typeID int32,
-	) (
-		counterID int32,
-		ok bool,
-	)
-
-	IsCounterActive(
-		counterID int32,
-		registrationID int64,
-		typeID int32,
-	) bool
-}
-
 type CountersReader struct {
 	metadata     atomic.AtomicBuffer
 	values       atomic.AtomicBuffer
 	maxCounterID int32
 }
 
-var _ CountersView = (*CountersReader)(nil)
+// CounterSlot wraps one bound counter value slot in the CNC values buffer.
+//
+// Bind after validating the counter is active for the session.
+//
+// Get reads the value on hot paths without per-op counter ID validation.
+type CounterSlot struct {
+	counterID    int32
+	valuesOffset int
+	values       atomic.AtomicBuffer
+}
+
+func NewCounterSlot(counterID int32, values atomic.AtomicBuffer) CounterSlot {
+	offset := CounterOffset(counterID)
+	capacity := values.Capacity()
+	if offset < 0 || offset+atomic.SizeInt64 > capacity {
+		panic(fmt.Sprintf(
+			"cnc: counter slot offset out of bounds: counterID=%d offset=%d capacity=%d",
+			counterID,
+			offset,
+			capacity,
+		))
+	}
+	return CounterSlot{
+		counterID:    counterID,
+		valuesOffset: offset,
+		values:       values,
+	}
+}
+
+func (slot *CounterSlot) Get() int64 {
+	return slot.values.VolatileInt64At(slot.valuesOffset)
+}
+
+func (slot *CounterSlot) CounterID() int32 {
+	return slot.counterID
+}
 
 func NewCountersReader(meta, values []byte) (*CountersReader, error) {
 	if len(values) == 0 {
@@ -108,7 +125,7 @@ func (reader *CountersReader) CounterValue(counterID int32) (int64, error) {
 	if err := reader.validateCounterID(counterID); err != nil {
 		return 0, err
 	}
-	return reader.values.GetInt64Volatile(CounterOffset(counterID)), nil
+	return reader.values.VolatileInt64At(CounterOffset(counterID)), nil
 }
 
 func (reader *CountersReader) SetCounterValue(counterID int32, value int64) error {

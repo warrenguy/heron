@@ -230,7 +230,9 @@ func TestConductor_SubscriptionByRegID_concurrentDuringImageHandler_Stress(t *te
 	)
 }
 
-func TestConductor_SubscriptionByRegID_concurrentDuringUnavailableImageHandler_Stress(t *testing.T) {
+func TestConductor_SubscriptionByRegID_concurrentDuringUnavailableImageHandler_Stress(
+	t *testing.T,
+) {
 	runSuspendedHandlerLookupStress(
 		t,
 		false,

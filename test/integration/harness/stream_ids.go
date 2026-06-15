@@ -10,6 +10,7 @@ const (
 	MPSCMatrixSessionIDStreamID       int32 = 1011
 	PubSubFragmentedRoundtripStreamID int32 = 1012
 	PubSubTwoClientsRoundtripStreamID int32 = 1013
+	PublicationLimitStreamID          int32 = 1014
 
 	PollUntilConnectedTimeoutStreamID      = 7990
 	PollUntilImageCountZeroActiveStreamID  = 7995

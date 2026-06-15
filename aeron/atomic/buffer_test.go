@@ -97,6 +97,51 @@ func TestAtomicBuffer_EmptyPanics(t *testing.T) {
 	}, "GetInt32Volatile on nil buffer")
 }
 
+func TestAtomicBuffer_TrustedAt_matchesBoundedGetters(t *testing.T) {
+	atomicBuffer := newTestAtomicBuffer(t, testAtomicBufferSize)
+	atomicBuffer.PutInt32(0, 0x01020304)
+	atomicBuffer.PutInt64Release(8, 0x0A0B0C0D0E0F1011)
+
+	cases := []struct {
+		name string
+		fn   func(t *testing.T)
+	}{
+		{"Int32At", func(t *testing.T) {
+			require.Equal(t, atomicBuffer.GetInt32(0), atomicBuffer.Int32At(0))
+		}},
+		{"Int64At", func(t *testing.T) {
+			require.Equal(t, atomicBuffer.GetInt64(8), atomicBuffer.Int64At(8))
+		}},
+		{"VolatileInt32At", func(t *testing.T) {
+			require.Equal(t, atomicBuffer.GetInt32Volatile(0), atomicBuffer.VolatileInt32At(0))
+		}},
+		{"VolatileInt64At", func(t *testing.T) {
+			require.Equal(t, atomicBuffer.GetInt64Volatile(8), atomicBuffer.VolatileInt64At(8))
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, tc.fn)
+	}
+}
+
+func TestAtomicBuffer_TrustedAt_outOfBoundsPanics(t *testing.T) {
+	atomicBuffer := newTestAtomicBuffer(t, atomic.SizeInt32)
+	emptyBuffer := atomic.Wrap(nil)
+
+	cases := []struct {
+		name string
+		fn   func()
+	}{
+		{"GetInt32 out of bounds", func() { atomicBuffer.GetInt32(atomic.SizeInt32) }},
+		{"GetInt32Volatile out of bounds", func() { atomicBuffer.GetInt32Volatile(atomic.SizeInt32) }},
+		{"VolatileInt32At on nil buffer", func() { emptyBuffer.VolatileInt32At(0) }},
+		{"VolatileInt64At on nil buffer", func() { emptyBuffer.VolatileInt64At(0) }},
+	}
+	for _, tc := range cases {
+		require.Panics(t, tc.fn, tc.name)
+	}
+}
+
 func TestAtomicBuffer_GetAndAddInt64ReturnsPrevious(t *testing.T) {
 	atomicBuffer := newTestAtomicBuffer(t, testAtomicBufferSize)
 	require.Equal(t, int64(0), atomicBuffer.GetAndAddInt64(0, 5))

@@ -54,7 +54,7 @@ func DefaultTestPublicationLogConfig() TestPublicationLogConfig {
 func NewPublicationFromReadyForTest(
 	ready conductor.PublicationBuffersReady,
 	log *logbuffer.MappedLogBuffer,
-	counters cnc.CountersView,
+	counters *cnc.CountersReader,
 	channel string,
 ) (*Publication, error) {
 	return newPublicationFromReady(ready, log, counters, channel)
@@ -284,6 +284,10 @@ func PublicationActiveTermCountForTest(pub *Publication) int32 {
 	return logbuffer.ActiveTermCount(pub.meta)
 }
 
+func PublicationLimitSlotForTest(pub *Publication) int64 {
+	return pub.publicationLimit.Get()
+}
+
 func NewTestPublicationWithoutTBForRapid(
 	logCfg TestPublicationLogConfig,
 	limitPosition int64,
@@ -382,61 +386,13 @@ func VerifyPublicationLogIntegrityForTest(tb testing.TB, pub *Publication) {
 	}
 }
 
-type ErrCountersView struct {
-	inner       cnc.CountersView
-	failLimit   bool
-	failChannel bool
-}
-
-func (view *ErrCountersView) CounterValue(counterID int32) (int64, error) {
-	if view == nil || view.inner == nil {
-		return 0, errors.New("aeron: counters view is nil")
-	}
-	if view.failLimit && counterID == TestPublicationLimitCounterID {
-		return 0, errors.New("aeron: injected limit counter failure")
-	}
-	if view.failChannel && counterID == TestPublicationChannelCounterID {
-		return 0, errors.New("aeron: injected channel counter failure")
-	}
-	return view.inner.CounterValue(counterID)
-}
-
-func (view *ErrCountersView) FindHeartbeatCounter(
-	registrationID int64,
-	typeID int32,
-) (counterID int32, ok bool) {
-	return view.inner.FindHeartbeatCounter(registrationID, typeID)
-}
-
-func (view *ErrCountersView) IsCounterActive(
-	counterID int32,
-	registrationID int64,
-	typeID int32,
-) bool {
-	return view.inner.IsCounterActive(counterID, registrationID, typeID)
-}
-
 func NewTestPublicationWithCounters(
 	tb testing.TB,
 	logCfg TestPublicationLogConfig,
-	counters cnc.CountersView,
+	counters *cnc.CountersReader,
 ) *Publication {
 	tb.Helper()
 	return newTestPublication(tb, logCfg, counters)
-}
-
-func NewErrCountersView(
-	tb testing.TB,
-	limitPosition int64,
-	failLimit bool,
-	failChannel bool,
-) *ErrCountersView {
-	tb.Helper()
-	return &ErrCountersView{
-		inner:       newTestCountersReaderWithoutTB(limitPosition),
-		failLimit:   failLimit,
-		failChannel: failChannel,
-	}
 }
 
 func newTestMappedLog(tb testing.TB, cfg TestPublicationLogConfig) *logbuffer.MappedLogBuffer {
@@ -457,7 +413,7 @@ func testPublicationBuffersReady() conductor.PublicationBuffersReady {
 func newTestPublication(
 	tb testing.TB,
 	logCfg TestPublicationLogConfig,
-	counters cnc.CountersView,
+	counters *cnc.CountersReader,
 ) *Publication {
 	if tb != nil {
 		tb.Helper()
@@ -797,7 +753,7 @@ func WaitForDriverHeartbeatForTest(
 	return waitForDriverHeartbeat(toDriver, timeout, epochClock)
 }
 
-func ValidateControlProtocolVersionForTest(reader cnc.CountersView) error {
+func ValidateControlProtocolVersionForTest(reader *cnc.CountersReader) error {
 	return validateControlProtocolVersion(reader)
 }
 

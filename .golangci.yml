@@ -5,6 +5,8 @@ run:
   build-tags:
     - testhooks
     - rapid
+    - bench
+    - stress
 
 formatters:
   enable:

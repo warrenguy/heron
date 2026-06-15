@@ -77,7 +77,7 @@ func newInMemMappedLog(cfg inMemPublicationLogConfig) *logbuffer.MappedLogBuffer
 
 func newInMemPublicationFromLog(
 	log *logbuffer.MappedLogBuffer,
-	counters cnc.CountersView,
+	counters *cnc.CountersReader,
 ) *Publication {
 	pub, err := newPublicationFromReady(inMemPublicationBuffersReady(), log, counters, "aeron:ipc")
 	if err != nil {

@@ -26,7 +26,7 @@ func newSubscriberPosition(counterID int32, values aeronatomic.AtomicBuffer) Sub
 }
 
 func (position *SubscriberPosition) Get() int64 {
-	return position.values.GetInt64Volatile(position.valuesOffset)
+	return position.values.VolatileInt64At(position.valuesOffset)
 }
 
 func (position *SubscriberPosition) SetRelease(value int64) {
