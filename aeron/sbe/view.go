@@ -13,7 +13,7 @@ var ErrVarSliceOutOfBounds = errors.New("sbe: var slice out of buffer bounds")
 // the non-negative maxLen bound.
 var ErrVarSliceTooLarge = errors.New("sbe: var slice length exceeds max")
 
-const varLengthPrefixSize = 4
+const VarLengthPrefixSize = 4
 
 // VarSlice is a zero-alloc view into a fragment buffer for varAscii/varData fields.
 type VarSlice struct {
@@ -28,7 +28,7 @@ func ReadVarSlice(buf []byte, offset, maxLen int) (VarSlice, int, error) {
 		return VarSlice{}, offset, ErrVarSliceOutOfBounds
 	}
 
-	prefixEnd := offset + varLengthPrefixSize
+	prefixEnd := offset + VarLengthPrefixSize
 	if prefixEnd < offset || prefixEnd > len(buf) {
 		return VarSlice{}, offset, ErrVarSliceOutOfBounds
 	}

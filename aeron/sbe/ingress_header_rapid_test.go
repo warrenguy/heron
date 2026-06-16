@@ -14,7 +14,7 @@ import (
 )
 
 func TestEncodeIngressHeader_rapid(t *testing.T) {
-	rapid.Check(t, func(rt *rapid.T) {
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
 		headerLen := sbe.SessionMessageHeaderEncodedLen()
 		bufLen := rapid.IntRange(0, 512).Draw(rt, "bufLen")
 		buf := make([]byte, bufLen)

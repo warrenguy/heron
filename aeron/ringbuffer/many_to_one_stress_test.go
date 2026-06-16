@@ -14,10 +14,6 @@ import (
 
 // MPSC stress uses plain stores; do not run under -race (false positives). See Unblock godoc.
 func TestManyToOneRingBuffer_MPSCStress(t *testing.T) {
-	if testing.Short() {
-		t.Skip("stress test skipped in short mode")
-	}
-
 	const (
 		dataCapacity = 64 * 1024
 		writers      = 4

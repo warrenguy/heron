@@ -1,0 +1,417 @@
+package sbe
+
+import (
+	"encoding/binary"
+
+	gensbe "github.com/warrenguy/heron/aeron/sbe/generated/sbe"
+)
+
+const (
+	messageHeaderEncodedLength = int(gensbe.MessageHeaderEncodedLength)
+	clusterSchemaID            = gensbe.MessageHeaderSbeSchemaID
+)
+
+// ClusterMaxVarLen bounds each varAscii/varData field during cluster egress decode.
+const ClusterMaxVarLen = 1400
+
+// DecodedMessage is a template ID plus plain field struct decoded from wire bytes.
+// Fields holds a concrete type from codec_fields.go (for example SessionEventFields).
+// Var payloads in Fields are copied out of buf; callers may retain them after buf is reused.
+type DecodedMessage struct {
+	TemplateID uint16
+	Fields     any // concrete type per template; see codec_fields.go
+}
+
+// DecodeMessageHeader reads the 8-byte SBE message header at offset.
+func DecodeMessageHeader(
+	buf []byte,
+	offset int,
+) (blockLength, templateID, schemaID, version uint16, ok bool) {
+	if offset < 0 || offset > len(buf)-messageHeaderEncodedLength {
+		return 0, 0, 0, 0, false
+	}
+	blockLength = binary.LittleEndian.Uint16(buf[offset:])
+	templateID = binary.LittleEndian.Uint16(buf[offset+2:])
+	schemaID = binary.LittleEndian.Uint16(buf[offset+4:])
+	version = binary.LittleEndian.Uint16(buf[offset+6:])
+	return blockLength, templateID, schemaID, version, true
+}
+
+// TryDecodeByTemplate decodes a cluster SBE message into plain field structs.
+// maxVarLen bounds each varAscii/varData field; use ClusterMaxVarLen for egress.
+// Rejects maxVarLen < 0. Trailing bytes after the last var field are ignored so
+// Aeron fragment buffers decode without requiring exact buffer length.
+func TryDecodeByTemplate(buf []byte, offset, maxVarLen int) (decoded DecodedMessage, ok bool) {
+	if maxVarLen < 0 {
+		return DecodedMessage{}, false
+	}
+	layout, ok := parseClusterMessage(buf, offset)
+	if !ok {
+		return DecodedMessage{}, false
+	}
+
+	vars, _, ok := scanTemplateVarFields(
+		buf,
+		layout.varOffset,
+		layout.templateID,
+		layout.actingVersion,
+		maxVarLen,
+		true,
+	)
+	if !ok {
+		return DecodedMessage{}, false
+	}
+
+	fields, ok := decodeTemplateFields(
+		buf,
+		layout.bodyOffset,
+		layout.blockLength,
+		layout.templateID,
+		layout.actingVersion,
+		vars,
+	)
+	if !ok {
+		return DecodedMessage{}, false
+	}
+	return DecodedMessage{TemplateID: layout.templateID, Fields: fields}, true
+}
+
+type templateVarFields struct {
+	detail             []byte
+	responseChannel    []byte
+	encodedCredentials []byte
+	clientInfo         []byte
+	ingressEndpoints   []byte
+	encodedChallenge   []byte
+	message            []byte
+	payload            []byte
+}
+
+// ClusterRootBlockLengthBounds returns min and max blockLength accepted for templateID
+// at actingVersion.
+func ClusterRootBlockLengthBounds(
+	templateID, actingVersion uint16,
+) (minBlock, maxBlock uint16, ok bool) {
+	switch templateID {
+	case gensbe.SessionMessageHeaderSbeTemplateID:
+		bl := gensbe.SessionMessageHeaderSbeBlockLength
+		return bl, bl, true
+	case gensbe.SessionEventSbeTemplateID:
+		maxBlock = gensbe.SessionEventSbeBlockLength
+		switch {
+		case actingVersion < 6:
+			return 32, maxBlock, true
+		case actingVersion < 13:
+			return 36, maxBlock, true
+		default:
+			return maxBlock, maxBlock, true
+		}
+	case gensbe.SessionConnectRequestSbeTemplateID:
+		maxBlock = gensbe.SessionConnectRequestSbeBlockLength
+		if actingVersion < 2 {
+			return 12, maxBlock, true
+		}
+		return maxBlock, maxBlock, true
+	case gensbe.SessionCloseRequestSbeTemplateID:
+		bl := gensbe.SessionCloseRequestSbeBlockLength
+		return bl, bl, true
+	case gensbe.SessionKeepAliveSbeTemplateID:
+		bl := gensbe.SessionKeepAliveSbeBlockLength
+		return bl, bl, true
+	case gensbe.NewLeaderEventSbeTemplateID:
+		bl := gensbe.NewLeaderEventSbeBlockLength
+		return bl, bl, true
+	case gensbe.ChallengeSbeTemplateID:
+		bl := gensbe.ChallengeSbeBlockLength
+		return bl, bl, true
+	case gensbe.ChallengeResponseSbeTemplateID:
+		bl := gensbe.ChallengeResponseSbeBlockLength
+		return bl, bl, true
+	case gensbe.AdminRequestSbeTemplateID:
+		bl := gensbe.AdminRequestSbeBlockLength
+		return bl, bl, true
+	case gensbe.AdminResponseSbeTemplateID:
+		bl := gensbe.AdminResponseSbeBlockLength
+		return bl, bl, true
+	default:
+		return 0, 0, false
+	}
+}
+
+func templateVarFieldCount(templateID, actingVersion uint16) (count int, ok bool) {
+	switch templateID {
+	case gensbe.SessionMessageHeaderSbeTemplateID,
+		gensbe.SessionCloseRequestSbeTemplateID,
+		gensbe.SessionKeepAliveSbeTemplateID:
+		return 0, true
+	case gensbe.SessionEventSbeTemplateID,
+		gensbe.NewLeaderEventSbeTemplateID,
+		gensbe.ChallengeSbeTemplateID,
+		gensbe.ChallengeResponseSbeTemplateID,
+		gensbe.AdminRequestSbeTemplateID:
+		return 1, true
+	case gensbe.SessionConnectRequestSbeTemplateID:
+		if actingVersion >= 14 {
+			return 3, true
+		}
+		return 2, true
+	case gensbe.AdminResponseSbeTemplateID:
+		return 2, true
+	default:
+		return 0, false
+	}
+}
+
+type clusterMessageLayout struct {
+	bodyOffset, varOffset                  int
+	blockLength, templateID, actingVersion uint16
+}
+
+func parseClusterMessage(buf []byte, offset int) (clusterMessageLayout, bool) {
+	blockLength, templateID, schemaID, actingVersion, ok := DecodeMessageHeader(buf, offset)
+	if !ok || schemaID != clusterSchemaID {
+		return clusterMessageLayout{}, false
+	}
+
+	minBlock, maxBlock, known := ClusterRootBlockLengthBounds(templateID, actingVersion)
+	if !known || blockLength < minBlock || blockLength > maxBlock {
+		return clusterMessageLayout{}, false
+	}
+
+	bodyOffset := offset + messageHeaderEncodedLength
+	if len(buf)-bodyOffset < int(blockLength) {
+		return clusterMessageLayout{}, false
+	}
+
+	return clusterMessageLayout{
+		bodyOffset:    bodyOffset,
+		varOffset:     bodyOffset + int(blockLength),
+		blockLength:   blockLength,
+		templateID:    templateID,
+		actingVersion: actingVersion,
+	}, true
+}
+
+// ClusterMessageWireEnd returns the offset after the last var field for a cluster message.
+// Rejects maxVarLen < 0 (consistent with TryDecodeByTemplate).
+func ClusterMessageWireEnd(buf []byte, offset, maxVarLen int) (wireEnd int, ok bool) {
+	if maxVarLen < 0 {
+		return 0, false
+	}
+	layout, ok := parseClusterMessage(buf, offset)
+	if !ok {
+		return 0, false
+	}
+	_, wireEnd, ok = scanTemplateVarFields(
+		buf,
+		layout.varOffset,
+		layout.templateID,
+		layout.actingVersion,
+		maxVarLen,
+		false,
+	)
+	return wireEnd, ok
+}
+
+func scanTemplateVarFields(
+	buf []byte,
+	offset int,
+	templateID, actingVersion uint16,
+	maxVarLen int,
+	clone bool,
+) (vars templateVarFields, next int, ok bool) {
+	count, ok := templateVarFieldCount(templateID, actingVersion)
+	if !ok {
+		return templateVarFields{}, 0, false
+	}
+	if count == 0 {
+		return templateVarFields{}, offset, true
+	}
+
+	var raw [][]byte
+	if clone {
+		raw = make([][]byte, count)
+	}
+	pos := offset
+	for i := range count {
+		slice, nextPos, err := ReadVarSlice(buf, pos, maxVarLen)
+		if err != nil {
+			return templateVarFields{}, 0, false
+		}
+		if clone {
+			raw[i] = cloneBytes(slice.Data)
+		}
+		pos = nextPos
+	}
+	if !clone {
+		return templateVarFields{}, pos, true
+	}
+	vars, ok = assignTemplateVarFields(templateID, raw)
+	return vars, pos, ok
+}
+
+func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields, bool) {
+	switch templateID {
+	case gensbe.SessionMessageHeaderSbeTemplateID,
+		gensbe.SessionCloseRequestSbeTemplateID,
+		gensbe.SessionKeepAliveSbeTemplateID:
+		return templateVarFields{}, true
+	case gensbe.SessionEventSbeTemplateID:
+		return templateVarFields{detail: raw[0]}, true
+	case gensbe.SessionConnectRequestSbeTemplateID:
+		if len(raw) == 2 {
+			return templateVarFields{
+				responseChannel:    raw[0],
+				encodedCredentials: raw[1],
+			}, true
+		}
+		if len(raw) == 3 {
+			return templateVarFields{
+				responseChannel:    raw[0],
+				encodedCredentials: raw[1],
+				clientInfo:         raw[2],
+			}, true
+		}
+		return templateVarFields{}, false
+	case gensbe.NewLeaderEventSbeTemplateID:
+		return templateVarFields{ingressEndpoints: raw[0]}, true
+	case gensbe.ChallengeSbeTemplateID:
+		return templateVarFields{encodedChallenge: raw[0]}, true
+	case gensbe.ChallengeResponseSbeTemplateID:
+		return templateVarFields{encodedCredentials: raw[0]}, true
+	case gensbe.AdminRequestSbeTemplateID:
+		return templateVarFields{payload: raw[0]}, true
+	case gensbe.AdminResponseSbeTemplateID:
+		if len(raw) != 2 {
+			return templateVarFields{}, false
+		}
+		return templateVarFields{message: raw[0], payload: raw[1]}, true
+	default:
+		return templateVarFields{}, false
+	}
+}
+
+func decodeTemplateFields(
+	buf []byte,
+	bodyOffset int,
+	blockLength, templateID, actingVersion uint16,
+	vars templateVarFields,
+) (fields any, ok bool) {
+	defer func() {
+		if recover() != nil {
+			fields = nil
+			ok = false
+		}
+	}()
+
+	bufLen := uint64(len(buf))
+	body := uint64(bodyOffset)
+	block := uint64(blockLength)
+	version := uint64(actingVersion)
+
+	switch templateID {
+	case gensbe.SessionMessageHeaderSbeTemplateID:
+		var msg gensbe.SessionMessageHeader
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return SessionMessageHeaderFields{
+			LeadershipTermID: msg.LeadershipTermId(),
+			ClusterSessionID: msg.ClusterSessionId(),
+			Timestamp:        msg.Timestamp(),
+		}, true
+	case gensbe.SessionEventSbeTemplateID:
+		var msg gensbe.SessionEvent
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return SessionEventFields{
+			ClusterSessionID:         msg.ClusterSessionId(),
+			CorrelationID:            msg.CorrelationId(),
+			LeadershipTermID:         msg.LeadershipTermId(),
+			LeaderMemberID:           msg.LeaderMemberId(),
+			Code:                     msg.Code(),
+			Version:                  msg.Version(),
+			LeaderHeartbeatTimeoutNs: msg.LeaderHeartbeatTimeoutNs(),
+			Detail:                   vars.detail,
+		}, true
+	case gensbe.SessionConnectRequestSbeTemplateID:
+		var msg gensbe.SessionConnectRequest
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return SessionConnectRequestFields{
+			CorrelationID:      msg.CorrelationId(),
+			ResponseStreamID:   msg.ResponseStreamId(),
+			Version:            msg.Version(),
+			ResponseChannel:    vars.responseChannel,
+			EncodedCredentials: vars.encodedCredentials,
+			ClientInfo:         vars.clientInfo,
+		}, true
+	case gensbe.SessionCloseRequestSbeTemplateID:
+		var msg gensbe.SessionCloseRequest
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return SessionCloseRequestFields{
+			LeadershipTermID: msg.LeadershipTermId(),
+			ClusterSessionID: msg.ClusterSessionId(),
+		}, true
+	case gensbe.SessionKeepAliveSbeTemplateID:
+		var msg gensbe.SessionKeepAlive
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return SessionKeepAliveFields{
+			LeadershipTermID: msg.LeadershipTermId(),
+			ClusterSessionID: msg.ClusterSessionId(),
+		}, true
+	case gensbe.NewLeaderEventSbeTemplateID:
+		var msg gensbe.NewLeaderEvent
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return NewLeaderEventFields{
+			LeadershipTermID: msg.LeadershipTermId(),
+			ClusterSessionID: msg.ClusterSessionId(),
+			LeaderMemberID:   msg.LeaderMemberId(),
+			IngressEndpoints: vars.ingressEndpoints,
+		}, true
+	case gensbe.ChallengeSbeTemplateID:
+		var msg gensbe.Challenge
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return ChallengeFields{
+			CorrelationID:    msg.CorrelationId(),
+			ClusterSessionID: msg.ClusterSessionId(),
+			EncodedChallenge: vars.encodedChallenge,
+		}, true
+	case gensbe.ChallengeResponseSbeTemplateID:
+		var msg gensbe.ChallengeResponse
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return ChallengeResponseFields{
+			CorrelationID:      msg.CorrelationId(),
+			ClusterSessionID:   msg.ClusterSessionId(),
+			EncodedCredentials: vars.encodedCredentials,
+		}, true
+	case gensbe.AdminRequestSbeTemplateID:
+		var msg gensbe.AdminRequest
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return AdminRequestFields{
+			LeadershipTermID: msg.LeadershipTermId(),
+			ClusterSessionID: msg.ClusterSessionId(),
+			CorrelationID:    msg.CorrelationId(),
+			RequestType:      msg.RequestType(),
+			Payload:          vars.payload,
+		}, true
+	case gensbe.AdminResponseSbeTemplateID:
+		var msg gensbe.AdminResponse
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return AdminResponseFields{
+			ClusterSessionID: msg.ClusterSessionId(),
+			CorrelationID:    msg.CorrelationId(),
+			RequestType:      msg.RequestType(),
+			ResponseCode:     msg.ResponseCode(),
+			Message:          vars.message,
+			Payload:          vars.payload,
+		}, true
+	default:
+		return nil, false
+	}
+}
+
+func cloneBytes(src []byte) []byte {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make([]byte, len(src))
+	copy(dst, src)
+	return dst
+}

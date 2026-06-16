@@ -13,10 +13,8 @@ import (
 	"github.com/warrenguy/heron/aeron/sbe"
 )
 
-const varLengthPrefixSize = 4
-
 func TestReadVarSlice_rapid(t *testing.T) {
-	rapid.Check(t, func(rt *rapid.T) {
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
 		bufLen := rapid.IntRange(0, 256).Draw(rt, "bufLen")
 		buf := make([]byte, bufLen)
 
@@ -26,7 +24,7 @@ func TestReadVarSlice_rapid(t *testing.T) {
 		).Draw(rt, "offset")
 
 		writePrefix := rapid.Bool().Draw(rt, "writePrefix")
-		prefixEnd := offset + varLengthPrefixSize
+		prefixEnd := offset + sbe.VarLengthPrefixSize
 		canWritePrefix := writePrefix &&
 			offset >= 0 &&
 			prefixEnd >= offset &&
@@ -70,7 +68,7 @@ func readVarSliceOracle(
 		return false, nil, offset, sbe.ErrVarSliceOutOfBounds
 	}
 
-	prefixEnd := offset + varLengthPrefixSize
+	prefixEnd := offset + sbe.VarLengthPrefixSize
 	if prefixEnd < offset || prefixEnd > len(buf) {
 		return false, nil, offset, sbe.ErrVarSliceOutOfBounds
 	}
