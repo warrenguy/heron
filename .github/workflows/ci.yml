@@ -18,80 +18,68 @@ jobs:
           - goarch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    env:
+    env: &go-arch-env
       GOARCH: ${{ matrix.goarch }}
     steps:
-      - uses: actions/checkout@v6
+      - &checkout-step
+        uses: actions/checkout@v6
 
-      - name: Write Go arch cache marker
+      - &go-arch-cache-marker-step
+        name: Write Go arch cache marker
         run: echo "${{ env.GOARCH }}" > .go-arch-cache-marker
 
       - uses: actions/setup-go@v6
-        with:
+        with: &go-setup-with
           go-version-file: go.mod
           cache: true
           cache-dependency-path: |
             go.sum
             .go-arch-cache-marker
 
-      # Java on amd64 only: check-sbe-stale-optional (make check) and test-java-interop-unit.
-      - uses: actions/setup-java@v4
-        if: matrix.goarch == 'amd64'
+      # amd64: Java, lint cache, shellcheck, and static checks (SBE, contract oracles).
+      - uses: actions/setup-java@v5
+        if: env.GOARCH == 'amd64'
         with:
           distribution: temurin
           java-version: 26
           cache: maven
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
+        if: env.GOARCH == 'amd64'
         with:
           path: ~/.cache/golangci-lint
           key: golangci-${{ runner.os }}-${{ env.GOARCH }}-${{ hashFiles('.golangci.yml', 'go.sum') }}
           restore-keys: |
             golangci-${{ runner.os }}-${{ env.GOARCH }}-
 
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Check static
+        if: env.GOARCH == 'amd64'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck && make check-static
 
-      - name: Check
-        run: make check
+      - name: Check test
+        run: make check-test
 
       - name: Property tests
-        if: matrix.goarch == 'amd64'
+        if: env.GOARCH == 'amd64'
         run: make test-rapid
-
-      - name: Java interop unit tests
-        if: matrix.goarch == 'amd64'
-        run: make test-java-interop-unit
-
-      - name: Java interop Go oracle tests
-        if: matrix.goarch == 'amd64'
-        run: make test-java-interop-oracle
 
   integration:
     needs: check
     strategy: *go-matrix
     runs-on: ${{ matrix.runner }}
-    env:
-      GOARCH: ${{ matrix.goarch }}
+    env: *go-arch-env
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Write Go arch cache marker
-        run: echo "${{ env.GOARCH }}" > .go-arch-cache-marker
+      - *checkout-step
+      - *go-arch-cache-marker-step
 
       - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-          cache-dependency-path: |
-            go.sum
-            .go-arch-cache-marker
+        with: *go-setup-with
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         id: aeronmd-cache
         with:
           path: bin/aeronmd
-          key: aeronmd-${{ matrix.goarch }}-${{ hashFiles('specs/versions.yaml', 'docker/aeronmd/Dockerfile', 'scripts/build-aeronmd.sh') }}
+          key: aeronmd-${{ env.GOARCH }}-${{ hashFiles('specs/versions.yaml', 'docker/aeronmd/Dockerfile', 'scripts/build-aeronmd.sh') }}
 
       - name: Refresh aeronmd mtime
         if: steps.aeronmd-cache.outputs.cache-hit == 'true'

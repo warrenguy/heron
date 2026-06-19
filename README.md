@@ -1,7 +1,7 @@
 # Heron
 
-Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport client; Aeron Cluster support
-planned.
+Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport client and Aeron Cluster client
+and server.
 
 ## Constraints
 
@@ -14,11 +14,10 @@ planned.
 Build `aeronmd` (Aeron C media driver) via Docker:
 
 ```bash
-make aeronmd   # requires Docker; output bin/aeronmd (see specs/versions.yaml)
+make aeronmd   # requires Docker; output bin/aeronmd
 ```
 
-`make test-integration` builds `aeronmd` when needed and sets `AERON_DIR` per test; override with
-`AERONMD_PATH` or an `aeronmd` on `PATH`.
+Aeron release pinned in [`specs/versions.yaml`](specs/versions.yaml) (`aeron.ref`).
 
 ## Usage
 
@@ -107,24 +106,26 @@ Notes:
 
 ## Development
 
+### Pinned dependencies
+
+SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/versions.yaml).
+
+### Tests
+
 ```bash
-make check                        # lint, pins, codec checks, unit+stress (-race)
+make check                        # lint, pins, SBE/catalog stale (optional), unit+stress (-race)
 make test-rapid                   # property tests (pgregory.net/rapid)
 make test-integration             # live C aeronmd (-tags=integration)
-make test-java-interop-contract   # Java + Go oracle helpers (host JDK 26, Maven, mvn)
-make test-java-interop            # optional Docker Compose smoke (bidirectional IPC pub/sub)
+make contract-oracles             # interop + cluster SBE oracles (mvn/java)
+make test-java-interop-contract   # interop only
+make test-cluster-sbe-contract    # cluster SBE only
+make test-java-interop            # Docker Compose smoke (bidirectional IPC pub/sub)
 ```
 
-`make check` / `make lint` also require [ShellCheck](https://github.com/koalaman/shellcheck) on
-`PATH` (e.g. `pacman -S shellcheck`, `apt install shellcheck`).
-
-Unit tests use the `bench` and `testhooks` build tags (`bench` contract suite;
-`testhooks` conductor cross-package test hooks).
-
-Property tests live in `*_rapid_test.go` behind the `rapid` tag (`//go:build rapid`);
-CI runs them via `make test-rapid` on amd64 after `make check`.
-
-IDE/gopls: set `go.buildTags` to `testhooks rapid stress integration bench`.
+- `make test-integration` builds `bin/aeronmd` when needed; harness sets `AERON_DIR` per test.
+- Unit tests use `bench` and `testhooks` build tags.
+- Property tests live in `*_rapid_test.go` behind the `rapid` tag.
+- IDE/gopls: set `go.buildTags` to `testhooks rapid stress integration bench`.
 
 ```bash
 make test                                              # unit only
@@ -136,29 +137,20 @@ Prefer Makefile targets over bare `go test`.
 
 ### Cluster SBE codecs
 
-Cluster codecs use trimmed SBE XML (`specs/cluster-codecs-client.xml`) and generated Go
-flyweights (`aeron/sbe/generated/`). `go test` uses the committed artifacts only; Java is
-not required for tests.
+Cluster codecs use Heron-owned SBE XML (`specs/cluster-codecs-client.xml`) and generated Go
+flyweights (`aeron/sbe/generated/`). Fixture oracle rows are authored in
+`test/integration/cluster_sbe/clustersbe/fixtures/catalog.json`; run
+`make cluster-sbe-catalog-regen` to refresh committed `hex` from `fields`.
 
-`make check` also runs `check-cluster-codecs-stale-optional` (regen trim, diff, restore;
-needs `go` and `curl` on `PATH`) and `check-sbe-stale-optional` (regenerate flyweights,
-`git diff aeron/sbe/generated/`; needs Java). Either optional step is skipped with a message
-when its tools are missing.
+Pin-bump workflow:
 
-After bumping `aeron.ref` in `specs/versions.yaml`, refresh both:
+1. Bump `aeron.ref` in [`specs/versions.yaml`](specs/versions.yaml).
+2. Diff upstream `aeron-cluster/src/main/resources/cluster/aeron-cluster-codecs.xml` (client messages and shared types only).
+3. Port into `specs/cluster-codecs-client.xml`.
+4. `make sbe-generate`; commit flyweight diff if any.
+5. `make test-cluster-sbe-contract`; fix failures under `aeron/sbe/` and `test/integration/cluster_sbe/clustersbe/`.
 
-```bash
-make cluster-codecs-regen   # fetch upstream XML @ pin, trim (Go+curl)
-make sbe-generate           # emit flyweights (Java; sbe_tool pin in versions.yaml)
-```
-
-`go generate` in `aeron/sbe` and `make sbe-generate` both invoke `scripts/generate-sbe.sh`
-and require Java. On amd64 CI, `make check` runs `check-sbe-stale-optional` when Java is on `PATH`.
-
-`cluster-codecs-regen` caches upstream under `.cache/`. For a local checkout:
-`./scripts/regen-cluster-codecs.sh /path/to/aeron-cluster-codecs.xml`.
-
-## Benchmarks
+### Benchmarks
 
 | Target | Tags | Packages |
 |--------|------|----------|
@@ -184,6 +176,6 @@ MIT - see [LICENSE](LICENSE).
 
 ## Third-party notices
 
-`specs/cluster-codecs-client.xml` and `aeron/sbe/generated/` are derived from
+Cluster SBE wire XML and flyweights (see **Cluster SBE codecs** above) are ported from
 [Aeron](https://github.com/aeron-io/aeron) cluster codecs
 ([Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0)).

@@ -1,5 +1,5 @@
 # Heron upstream and codegen pins.
-# aeron: scripts/build-aeronmd.sh, scripts/regen-cluster-codecs.sh
+# aeron: scripts/build-aeronmd.sh; cluster wire XML manual port (README Cluster SBE codecs)
 # sbe_tool: scripts/generate-sbe.sh
 
 aeron:

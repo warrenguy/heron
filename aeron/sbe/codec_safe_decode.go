@@ -1,15 +1,27 @@
 package sbe
 
 import (
+	"bytes"
 	"encoding/binary"
 
 	gensbe "github.com/warrenguy/heron/aeron/sbe/generated/sbe"
 )
 
-const (
-	messageHeaderEncodedLength = int(gensbe.MessageHeaderEncodedLength)
-	clusterSchemaID            = gensbe.MessageHeaderSbeSchemaID
+var (
+	messageHeaderLayout = &gensbe.MessageHeader{}
+
+	messageHeaderEncodedLength       = int(messageHeaderLayout.EncodedLength())
+	clusterSchemaID                  = messageHeaderLayout.SbeSchemaId()
+	messageHeaderBlockLengthOffset   = int(messageHeaderLayout.BlockLengthEncodingOffset())
+	messageHeaderTemplateIDOffset    = int(messageHeaderLayout.TemplateIdEncodingOffset())
+	messageHeaderSchemaIDOffset      = int(messageHeaderLayout.SchemaIdEncodingOffset())
+	messageHeaderActingVersionOffset = int(messageHeaderLayout.VersionEncodingOffset())
 )
+
+// MessageHeaderEncodedLen is the wire size of the SBE message header.
+func MessageHeaderEncodedLen() int {
+	return messageHeaderEncodedLength
+}
 
 // ClusterMaxVarLen bounds each varAscii/varData field during cluster egress decode.
 const ClusterMaxVarLen = 1400
@@ -22,7 +34,7 @@ type DecodedMessage struct {
 	Fields     any // concrete type per template; see codec_fields.go
 }
 
-// DecodeMessageHeader reads the 8-byte SBE message header at offset.
+// DecodeMessageHeader reads the SBE message header at offset.
 func DecodeMessageHeader(
 	buf []byte,
 	offset int,
@@ -30,10 +42,10 @@ func DecodeMessageHeader(
 	if offset < 0 || offset > len(buf)-messageHeaderEncodedLength {
 		return 0, 0, 0, 0, false
 	}
-	blockLength = binary.LittleEndian.Uint16(buf[offset:])
-	templateID = binary.LittleEndian.Uint16(buf[offset+2:])
-	schemaID = binary.LittleEndian.Uint16(buf[offset+4:])
-	version = binary.LittleEndian.Uint16(buf[offset+6:])
+	blockLength = binary.LittleEndian.Uint16(buf[offset+messageHeaderBlockLengthOffset:])
+	templateID = binary.LittleEndian.Uint16(buf[offset+messageHeaderTemplateIDOffset:])
+	schemaID = binary.LittleEndian.Uint16(buf[offset+messageHeaderSchemaIDOffset:])
+	version = binary.LittleEndian.Uint16(buf[offset+messageHeaderActingVersionOffset:])
 	return blockLength, templateID, schemaID, version, true
 }
 
@@ -87,6 +99,10 @@ type templateVarFields struct {
 	payload            []byte
 }
 
+func clusterFixedBlockLength(blockLength uint16) (minBlock, maxBlock uint16, ok bool) {
+	return blockLength, blockLength, true
+}
+
 // ClusterRootBlockLengthBounds returns min and max blockLength accepted for templateID
 // at actingVersion.
 func ClusterRootBlockLengthBounds(
@@ -94,8 +110,7 @@ func ClusterRootBlockLengthBounds(
 ) (minBlock, maxBlock uint16, ok bool) {
 	switch templateID {
 	case gensbe.SessionMessageHeaderSbeTemplateID:
-		bl := gensbe.SessionMessageHeaderSbeBlockLength
-		return bl, bl, true
+		return clusterFixedBlockLength(gensbe.SessionMessageHeaderSbeBlockLength)
 	case gensbe.SessionEventSbeTemplateID:
 		maxBlock = gensbe.SessionEventSbeBlockLength
 		switch {
@@ -104,41 +119,36 @@ func ClusterRootBlockLengthBounds(
 		case actingVersion < 13:
 			return 36, maxBlock, true
 		default:
-			return maxBlock, maxBlock, true
+			return clusterFixedBlockLength(maxBlock)
 		}
 	case gensbe.SessionConnectRequestSbeTemplateID:
 		maxBlock = gensbe.SessionConnectRequestSbeBlockLength
 		if actingVersion < 2 {
 			return 12, maxBlock, true
 		}
-		return maxBlock, maxBlock, true
+		return clusterFixedBlockLength(maxBlock)
 	case gensbe.SessionCloseRequestSbeTemplateID:
-		bl := gensbe.SessionCloseRequestSbeBlockLength
-		return bl, bl, true
+		return clusterFixedBlockLength(gensbe.SessionCloseRequestSbeBlockLength)
 	case gensbe.SessionKeepAliveSbeTemplateID:
-		bl := gensbe.SessionKeepAliveSbeBlockLength
-		return bl, bl, true
+		return clusterFixedBlockLength(gensbe.SessionKeepAliveSbeBlockLength)
 	case gensbe.NewLeaderEventSbeTemplateID:
-		bl := gensbe.NewLeaderEventSbeBlockLength
-		return bl, bl, true
+		return clusterFixedBlockLength(gensbe.NewLeaderEventSbeBlockLength)
 	case gensbe.ChallengeSbeTemplateID:
-		bl := gensbe.ChallengeSbeBlockLength
-		return bl, bl, true
+		return clusterFixedBlockLength(gensbe.ChallengeSbeBlockLength)
 	case gensbe.ChallengeResponseSbeTemplateID:
-		bl := gensbe.ChallengeResponseSbeBlockLength
-		return bl, bl, true
+		return clusterFixedBlockLength(gensbe.ChallengeResponseSbeBlockLength)
 	case gensbe.AdminRequestSbeTemplateID:
-		bl := gensbe.AdminRequestSbeBlockLength
-		return bl, bl, true
+		return clusterFixedBlockLength(gensbe.AdminRequestSbeBlockLength)
 	case gensbe.AdminResponseSbeTemplateID:
-		bl := gensbe.AdminResponseSbeBlockLength
-		return bl, bl, true
+		return clusterFixedBlockLength(gensbe.AdminResponseSbeBlockLength)
 	default:
 		return 0, 0, false
 	}
 }
 
-func templateVarFieldCount(templateID, actingVersion uint16) (count int, ok bool) {
+// ClusterVarFieldCount returns the number of variable-length fields for templateID
+// at actingVersion.
+func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool) {
 	switch templateID {
 	case gensbe.SessionMessageHeaderSbeTemplateID,
 		gensbe.SessionCloseRequestSbeTemplateID,
@@ -151,7 +161,7 @@ func templateVarFieldCount(templateID, actingVersion uint16) (count int, ok bool
 		gensbe.AdminRequestSbeTemplateID:
 		return 1, true
 	case gensbe.SessionConnectRequestSbeTemplateID:
-		if actingVersion >= 14 {
+		if actingVersion >= SessionConnectClientInfoMinVersion {
 			return 3, true
 		}
 		return 2, true
@@ -220,7 +230,7 @@ func scanTemplateVarFields(
 	maxVarLen int,
 	clone bool,
 ) (vars templateVarFields, next int, ok bool) {
-	count, ok := templateVarFieldCount(templateID, actingVersion)
+	count, ok := ClusterVarFieldCount(templateID, actingVersion)
 	if !ok {
 		return templateVarFields{}, 0, false
 	}
@@ -239,7 +249,11 @@ func scanTemplateVarFields(
 			return templateVarFields{}, 0, false
 		}
 		if clone {
-			raw[i] = cloneBytes(slice.Data)
+			if len(slice.Data) == 0 {
+				raw[i] = nil
+			} else {
+				raw[i] = bytes.Clone(slice.Data)
+			}
 		}
 		pos = nextPos
 	}
@@ -252,27 +266,17 @@ func scanTemplateVarFields(
 
 func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields, bool) {
 	switch templateID {
-	case gensbe.SessionMessageHeaderSbeTemplateID,
-		gensbe.SessionCloseRequestSbeTemplateID,
-		gensbe.SessionKeepAliveSbeTemplateID:
-		return templateVarFields{}, true
 	case gensbe.SessionEventSbeTemplateID:
 		return templateVarFields{detail: raw[0]}, true
 	case gensbe.SessionConnectRequestSbeTemplateID:
-		if len(raw) == 2 {
-			return templateVarFields{
-				responseChannel:    raw[0],
-				encodedCredentials: raw[1],
-			}, true
+		vars := templateVarFields{
+			responseChannel:    raw[0],
+			encodedCredentials: raw[1],
 		}
 		if len(raw) == 3 {
-			return templateVarFields{
-				responseChannel:    raw[0],
-				encodedCredentials: raw[1],
-				clientInfo:         raw[2],
-			}, true
+			vars.clientInfo = raw[2]
 		}
-		return templateVarFields{}, false
+		return vars, true
 	case gensbe.NewLeaderEventSbeTemplateID:
 		return templateVarFields{ingressEndpoints: raw[0]}, true
 	case gensbe.ChallengeSbeTemplateID:
@@ -282,9 +286,6 @@ func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields
 	case gensbe.AdminRequestSbeTemplateID:
 		return templateVarFields{payload: raw[0]}, true
 	case gensbe.AdminResponseSbeTemplateID:
-		if len(raw) != 2 {
-			return templateVarFields{}, false
-		}
 		return templateVarFields{message: raw[0], payload: raw[1]}, true
 	default:
 		return templateVarFields{}, false
@@ -405,13 +406,4 @@ func decodeTemplateFields(
 	default:
 		return nil, false
 	}
-}
-
-func cloneBytes(src []byte) []byte {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make([]byte, len(src))
-	copy(dst, src)
-	return dst
 }

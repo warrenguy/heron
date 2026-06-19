@@ -2,8 +2,6 @@ package sbe_test
 
 import (
 	"bytes"
-	"encoding/binary"
-	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,16 +11,17 @@ import (
 )
 
 const (
-	codecTestMaxVarLen     = 256
+	codecTestMaxVarLen     = sbe.ClusterCodecMaxVarLen
 	fuzzClusterCodecMaxLen = 4096
 	codecFuzzMaxOffset     = 8
 	codecFuzzOffsetSpan    = codecFuzzMaxOffset + 1
-	clusterSchemaID        = gensbe.MessageHeaderSbeSchemaID
-	messageHeaderLen       = int(gensbe.MessageHeaderEncodedLength)
 )
 
 var (
-	codecAllEventCodes = []gensbe.EventCode{
+	messageHeaderLen                      = sbe.MessageHeaderEncodedLen()
+	sessionConnectClientInfoMinVersion    = sbe.SessionConnectClientInfoMinVersion
+	sessionEventLeaderHeartbeatMinVersion = sbe.SessionEventLeaderHeartbeatMinVersion
+	codecAllEventCodes                    = []gensbe.EventCode{
 		gensbe.EventCode_OK,
 		gensbe.EventCode_ERROR,
 		gensbe.EventCode_REDIRECT,
@@ -38,355 +37,73 @@ var (
 
 var codecRoundtripOffsetValues = []int{0, 4}
 
-func applyClusterMessageHeader(
-	buf []byte,
-	offset int,
-	blockLength, templateID, actingVersion uint16,
-) (bodyOffset int, ok bool) {
-	if offset < 0 || offset > len(buf)-messageHeaderLen {
-		return 0, false
-	}
-	binary.LittleEndian.PutUint16(buf[offset:], blockLength)
-	binary.LittleEndian.PutUint16(buf[offset+2:], templateID)
-	binary.LittleEndian.PutUint16(buf[offset+4:], clusterSchemaID)
-	binary.LittleEndian.PutUint16(buf[offset+6:], actingVersion)
-	return offset + messageHeaderLen, true
+func encodeClusterInto(
+	t *testing.T,
+	encode func(buf []byte) (wireEnd int, ok bool),
+) (buf []byte, wireEnd int) {
+	t.Helper()
+	buf = make([]byte, fuzzClusterCodecMaxLen)
+	wireEnd, ok := encode(buf)
+	require.True(t, ok)
+	return buf, wireEnd
 }
 
-func encodeWithClusterHeader(
-	buf []byte,
-	offset int,
-	blockLength, templateID, actingVersion uint16,
-	encodeBody func(bodyOffset int, blockLength, actingVersion uint16) int,
-) (wireEnd int, ok bool) {
-	bodyOffset, ok := applyClusterMessageHeader(buf, offset, blockLength, templateID, actingVersion)
-	if !ok {
-		return 0, false
-	}
-	return offset + messageHeaderLen + encodeBody(bodyOffset, blockLength, actingVersion), true
+func encodeClusterWire(
+	t *testing.T,
+	encode func(buf []byte) (wireEnd int, ok bool),
+) []byte {
+	t.Helper()
+	buf, wireEnd := encodeClusterInto(t, encode)
+	return buf[:wireEnd]
 }
 
-func encodeLeadershipSessionMessage(
-	buf []byte,
-	offset int,
-	actingVersion, blockLength uint16,
-	leadershipTermID, clusterSessionID int64,
-	encode func(buf []byte, offset, limit int, leadershipTermID, clusterSessionID int64) int,
-) (wireEnd int, ok bool) {
-	wireLen := encode(buf, offset, len(buf), leadershipTermID, clusterSessionID)
-	patchClusterMessageHeader(buf, offset, blockLength, actingVersion)
-	return offset + wireLen, true
-}
-
-func encodeSessionMessageHeader(
-	buf []byte,
-	offset int,
+func sessionEventEncodeFunc(
 	actingVersion uint16,
-	fields sbe.SessionMessageHeaderFields,
-) (wireEnd int, ok bool) {
-	var msg gensbe.SessionMessageHeader
-	msg.WrapAndApplyHeader(buf, uint64(offset), uint64(len(buf))).
-		SetLeadershipTermId(fields.LeadershipTermID).
-		SetClusterSessionId(fields.ClusterSessionID).
-		SetTimestamp(fields.Timestamp)
-	patchClusterMessageHeader(buf, offset, gensbe.SessionMessageHeaderSbeBlockLength, actingVersion)
-	return offset + int(msg.SbeBlockAndHeaderLength()), true
-}
-
-func encodeSessionEvent(
-	buf []byte,
-	offset int,
-	actingVersion uint16,
-	blockLength uint16,
 	fields sbe.SessionEventFields,
-) (wireEnd int, ok bool) {
-	return encodeWithClusterHeader(
-		buf,
-		offset,
-		blockLength,
-		gensbe.SessionEventSbeTemplateID,
-		actingVersion,
-		func(bodyOffset int, blockLength, actingVersion uint16) int {
-			var msg gensbe.SessionEvent
-			msg.Wrap(buf, uint64(bodyOffset), uint64(len(buf)), uint64(blockLength), uint64(actingVersion)).
-				SetClusterSessionId(fields.ClusterSessionID).
-				SetCorrelationId(fields.CorrelationID).
-				SetLeadershipTermId(fields.LeadershipTermID).
-				SetLeaderMemberId(fields.LeaderMemberID).
-				SetCode(fields.Code)
-			if actingVersion >= 6 && fields.Version != 0 {
-				msg.SetVersion(fields.Version)
-			}
-			if actingVersion >= 13 && fields.LeaderHeartbeatTimeoutNs != math.MinInt64 {
-				msg.SetLeaderHeartbeatTimeoutNs(fields.LeaderHeartbeatTimeoutNs)
-			}
-			putVarBytes(func(s string, l uint32) { msg.PutDetailLen(s, l) }, fields.Detail)
-			return int(msg.EncodedLength())
-		},
-	)
+) func(buf []byte) (wireEnd int, ok bool) {
+	return func(buf []byte) (int, bool) {
+		return sbe.EncodeSessionEvent(
+			buf, 0, actingVersion, sbe.SessionEventBlockLength(actingVersion), fields,
+		)
+	}
 }
 
-// sessionEventOracleFields maps encode input to expected decode output.
-// math.MinInt64 is the encode omit sentinel at actingVersion >= 13 (decodes as 0).
-func sessionEventOracleFields(
-	fields sbe.SessionEventFields,
+func encodeSessionEventInto(
+	t *testing.T,
 	actingVersion uint16,
-) sbe.SessionEventFields {
-	if actingVersion < 13 {
-		fields.LeaderHeartbeatTimeoutNs = math.MinInt64
-		return fields
-	}
-	if fields.LeaderHeartbeatTimeoutNs == math.MinInt64 {
-		fields.LeaderHeartbeatTimeoutNs = 0
-	}
-	return fields
+	fields sbe.SessionEventFields,
+) (buf []byte, wireEnd int) {
+	return encodeClusterInto(t, sessionEventEncodeFunc(actingVersion, fields))
 }
 
-func sessionEventBlockLength(actingVersion uint16) uint16 {
-	minBlock, _, ok := sbe.ClusterRootBlockLengthBounds(
-		gensbe.SessionEventSbeTemplateID,
-		actingVersion,
-	)
-	if !ok {
-		return gensbe.SessionEventSbeBlockLength
-	}
-	return minBlock
+func encodeSessionEventWire(
+	t *testing.T,
+	actingVersion uint16,
+	fields sbe.SessionEventFields,
+) []byte {
+	return encodeClusterWire(t, sessionEventEncodeFunc(actingVersion, fields))
 }
 
-func encodeSessionConnectRequest(
-	buf []byte,
-	offset int,
+func encodeSessionConnectRequestWire(
+	t *testing.T,
 	actingVersion uint16,
 	fields sbe.SessionConnectRequestFields,
-) (wireEnd int, ok bool) {
-	blockLength, _, ok := sbe.ClusterRootBlockLengthBounds(
-		gensbe.SessionConnectRequestSbeTemplateID,
-		actingVersion,
-	)
-	if !ok {
-		blockLength = gensbe.SessionConnectRequestSbeBlockLength
-	}
-	return encodeWithClusterHeader(
-		buf,
-		offset,
-		blockLength,
-		gensbe.SessionConnectRequestSbeTemplateID,
-		actingVersion,
-		func(bodyOffset int, blockLength, actingVersion uint16) int {
-			var msg gensbe.SessionConnectRequest
-			msg.Wrap(buf, uint64(bodyOffset), uint64(len(buf)), uint64(blockLength), uint64(actingVersion)).
-				SetCorrelationId(fields.CorrelationID).
-				SetResponseStreamId(fields.ResponseStreamID)
-			if actingVersion >= 2 && fields.Version != 0 {
-				msg.SetVersion(fields.Version)
-			}
-			putVarBytes(func(s string, l uint32) { msg.PutResponseChannelLen(s, l) }, fields.ResponseChannel)
-			putVarBytes(
-				func(s string, l uint32) { msg.PutEncodedCredentialsLen(s, l) },
-				fields.EncodedCredentials,
-			)
-			if actingVersion >= 14 {
-				putVarBytes(func(s string, l uint32) { msg.PutClientInfoLen(s, l) }, fields.ClientInfo)
-			}
-			return int(msg.EncodedLength())
-		},
-	)
-}
-
-func encodeSessionCloseRequest(
-	buf []byte,
-	offset int,
-	actingVersion uint16,
-	fields sbe.SessionCloseRequestFields,
-) (wireEnd int, ok bool) {
-	return encodeLeadershipSessionMessage(
-		buf,
-		offset,
-		actingVersion,
-		gensbe.SessionCloseRequestSbeBlockLength,
-		fields.LeadershipTermID,
-		fields.ClusterSessionID,
-		func(buf []byte, offset, limit int, leadershipTermID, clusterSessionID int64) int {
-			var msg gensbe.SessionCloseRequest
-			msg.WrapAndApplyHeader(buf, uint64(offset), uint64(limit)).
-				SetLeadershipTermId(leadershipTermID).
-				SetClusterSessionId(clusterSessionID)
-			return int(msg.SbeBlockAndHeaderLength())
-		},
-	)
-}
-
-func encodeSessionKeepAlive(
-	buf []byte,
-	offset int,
-	actingVersion uint16,
-	fields sbe.SessionKeepAliveFields,
-) (wireEnd int, ok bool) {
-	return encodeLeadershipSessionMessage(
-		buf,
-		offset,
-		actingVersion,
-		gensbe.SessionKeepAliveSbeBlockLength,
-		fields.LeadershipTermID,
-		fields.ClusterSessionID,
-		func(buf []byte, offset, limit int, leadershipTermID, clusterSessionID int64) int {
-			var msg gensbe.SessionKeepAlive
-			msg.WrapAndApplyHeader(buf, uint64(offset), uint64(limit)).
-				SetLeadershipTermId(leadershipTermID).
-				SetClusterSessionId(clusterSessionID)
-			return int(msg.SbeBlockAndHeaderLength())
-		},
-	)
-}
-
-func encodeNewLeaderEvent(
-	buf []byte,
-	offset int,
-	actingVersion uint16,
-	fields sbe.NewLeaderEventFields,
-) (wireEnd int, ok bool) {
-	return encodeWithClusterHeader(
-		buf,
-		offset,
-		gensbe.NewLeaderEventSbeBlockLength,
-		gensbe.NewLeaderEventSbeTemplateID,
-		actingVersion,
-		func(bodyOffset int, blockLength, actingVersion uint16) int {
-			var msg gensbe.NewLeaderEvent
-			msg.Wrap(buf, uint64(bodyOffset), uint64(len(buf)), uint64(blockLength), uint64(actingVersion)).
-				SetLeadershipTermId(fields.LeadershipTermID).
-				SetClusterSessionId(fields.ClusterSessionID).
-				SetLeaderMemberId(fields.LeaderMemberID)
-			putVarBytes(
-				func(s string, l uint32) { msg.PutIngressEndpointsLen(s, l) },
-				fields.IngressEndpoints,
-			)
-			return int(msg.EncodedLength())
-		},
-	)
-}
-
-func encodeChallenge(
-	buf []byte,
-	offset int,
-	actingVersion uint16,
-	fields sbe.ChallengeFields,
-) (wireEnd int, ok bool) {
-	return encodeWithClusterHeader(
-		buf,
-		offset,
-		gensbe.ChallengeSbeBlockLength,
-		gensbe.ChallengeSbeTemplateID,
-		actingVersion,
-		func(bodyOffset int, blockLength, actingVersion uint16) int {
-			var msg gensbe.Challenge
-			msg.Wrap(buf, uint64(bodyOffset), uint64(len(buf)), uint64(blockLength), uint64(actingVersion)).
-				SetCorrelationId(fields.CorrelationID).
-				SetClusterSessionId(fields.ClusterSessionID)
-			putVarBytes(
-				func(s string, l uint32) { msg.PutEncodedChallengeLen(s, l) },
-				fields.EncodedChallenge,
-			)
-			return int(msg.EncodedLength())
-		},
-	)
-}
-
-func encodeChallengeResponse(
-	buf []byte,
-	offset int,
-	actingVersion uint16,
-	fields sbe.ChallengeResponseFields,
-) (wireEnd int, ok bool) {
-	return encodeWithClusterHeader(
-		buf,
-		offset,
-		gensbe.ChallengeResponseSbeBlockLength,
-		gensbe.ChallengeResponseSbeTemplateID,
-		actingVersion,
-		func(bodyOffset int, blockLength, actingVersion uint16) int {
-			var msg gensbe.ChallengeResponse
-			msg.Wrap(buf, uint64(bodyOffset), uint64(len(buf)), uint64(blockLength), uint64(actingVersion)).
-				SetCorrelationId(fields.CorrelationID).
-				SetClusterSessionId(fields.ClusterSessionID)
-			putVarBytes(
-				func(s string, l uint32) { msg.PutEncodedCredentialsLen(s, l) },
-				fields.EncodedCredentials,
-			)
-			return int(msg.EncodedLength())
-		},
-	)
-}
-
-func encodeAdminRequest(
-	buf []byte,
-	offset int,
-	actingVersion uint16,
-	fields sbe.AdminRequestFields,
-) (wireEnd int, ok bool) {
-	return encodeWithClusterHeader(
-		buf,
-		offset,
-		gensbe.AdminRequestSbeBlockLength,
-		gensbe.AdminRequestSbeTemplateID,
-		actingVersion,
-		func(bodyOffset int, blockLength, actingVersion uint16) int {
-			var msg gensbe.AdminRequest
-			msg.Wrap(buf, uint64(bodyOffset), uint64(len(buf)), uint64(blockLength), uint64(actingVersion)).
-				SetLeadershipTermId(fields.LeadershipTermID).
-				SetClusterSessionId(fields.ClusterSessionID).
-				SetCorrelationId(fields.CorrelationID).
-				SetRequestType(fields.RequestType)
-			putVarBytes(func(s string, l uint32) { msg.PutPayloadLen(s, l) }, fields.Payload)
-			return int(msg.EncodedLength())
-		},
-	)
-}
-
-func encodeAdminResponse(
-	buf []byte,
-	offset int,
-	actingVersion uint16,
-	fields sbe.AdminResponseFields,
-) (wireEnd int, ok bool) {
-	return encodeWithClusterHeader(
-		buf,
-		offset,
-		gensbe.AdminResponseSbeBlockLength,
-		gensbe.AdminResponseSbeTemplateID,
-		actingVersion,
-		func(bodyOffset int, blockLength, actingVersion uint16) int {
-			var msg gensbe.AdminResponse
-			msg.Wrap(buf, uint64(bodyOffset), uint64(len(buf)), uint64(blockLength), uint64(actingVersion)).
-				SetClusterSessionId(fields.ClusterSessionID).
-				SetCorrelationId(fields.CorrelationID).
-				SetRequestType(fields.RequestType).
-				SetResponseCode(fields.ResponseCode)
-			putVarBytes(func(s string, l uint32) { msg.PutMessageLen(s, l) }, fields.Message)
-			putVarBytes(func(s string, l uint32) { msg.PutPayloadLen(s, l) }, fields.Payload)
-			return int(msg.EncodedLength())
-		},
-	)
-}
-
-func patchClusterMessageHeader(buf []byte, offset int, blockLength, actingVersion uint16) {
-	binary.LittleEndian.PutUint16(buf[offset:], blockLength)
-	binary.LittleEndian.PutUint16(buf[offset+6:], actingVersion)
+) []byte {
+	return encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return sbe.EncodeSessionConnectRequest(buf, 0, actingVersion, fields)
+	})
 }
 
 func requireBytesEqual(tb require.TestingT, want, got []byte) {
-	if len(want) == 0 && len(got) == 0 {
-		return
-	}
-	require.Equal(tb, want, got)
+	require.True(tb, bytes.Equal(want, got))
 }
 
-func putVarBytes(put func(string, uint32), data []byte) {
-	if len(data) == 0 {
-		put("", 0)
-		return
-	}
-	put(string(data), uint32(len(data)))
+func requireDecodedFieldsEqual[T any](tb require.TestingT, want, got any) {
+	wantFields, ok := want.(T)
+	require.True(tb, ok)
+	gotFields, ok := got.(T)
+	require.True(tb, ok)
+	require.Equal(tb, wantFields, gotFields)
 }
 
 // requireEncodedLengthMatchesWire checks header fields and total wire length.
@@ -403,7 +120,7 @@ func requireEncodedLengthMatchesWire(
 	_, gotTemplateID, schemaID, version, ok := sbe.DecodeMessageHeader(buf, offset)
 	require.True(tb, ok)
 	require.Equal(tb, templateID, gotTemplateID)
-	require.Equal(tb, clusterSchemaID, schemaID)
+	require.Equal(tb, gensbe.MessageHeaderSbeSchemaID, schemaID)
 	require.Equal(tb, actingVersion, version)
 
 	bodyEnd, ok := sbe.ClusterMessageWireEnd(buf, offset, codecTestMaxVarLen)
@@ -414,9 +131,7 @@ func requireEncodedLengthMatchesWire(
 func requireDecodedClusterFields(tb require.TestingT, want, got any) {
 	switch wantFields := want.(type) {
 	case sbe.SessionMessageHeaderFields:
-		gotFields, ok := got.(sbe.SessionMessageHeaderFields)
-		require.True(tb, ok)
-		require.Equal(tb, wantFields, gotFields)
+		requireDecodedFieldsEqual[sbe.SessionMessageHeaderFields](tb, wantFields, got)
 	case sbe.SessionEventFields:
 		gotFields, ok := got.(sbe.SessionEventFields)
 		require.True(tb, ok)
@@ -438,13 +153,9 @@ func requireDecodedClusterFields(tb require.TestingT, want, got any) {
 		requireBytesEqual(tb, wantFields.EncodedCredentials, gotFields.EncodedCredentials)
 		requireBytesEqual(tb, wantFields.ClientInfo, gotFields.ClientInfo)
 	case sbe.SessionCloseRequestFields:
-		gotFields, ok := got.(sbe.SessionCloseRequestFields)
-		require.True(tb, ok)
-		require.Equal(tb, wantFields, gotFields)
+		requireDecodedFieldsEqual[sbe.SessionCloseRequestFields](tb, wantFields, got)
 	case sbe.SessionKeepAliveFields:
-		gotFields, ok := got.(sbe.SessionKeepAliveFields)
-		require.True(tb, ok)
-		require.Equal(tb, wantFields, gotFields)
+		requireDecodedFieldsEqual[sbe.SessionKeepAliveFields](tb, wantFields, got)
 	case sbe.NewLeaderEventFields:
 		gotFields, ok := got.(sbe.NewLeaderEventFields)
 		require.True(tb, ok)
@@ -544,27 +255,29 @@ func runCodecRoundtripCases(
 }
 
 func codecFuzzSeedBuffers() [][]byte {
-	seeds := make([][]byte, 0, 30)
-	addSeed := func(buf []byte, offset, wireEnd int) {
-		wire := append([]byte(nil), buf[offset:wireEnd]...)
+	const (
+		actingVersion   = gensbe.SessionMessageHeaderSbeSchemaVersion
+		seedEncodeCount = 12
+	)
+	buf := make([]byte, fuzzClusterCodecMaxLen)
+	seeds := make([][]byte, 0, seedEncodeCount*(1+codecFuzzMaxOffset))
+	addSeed := func(wireEnd int) {
+		wire := bytes.Clone(buf[:wireEnd])
 		seeds = append(seeds, wire)
 		for trunc := 1; trunc <= codecFuzzMaxOffset && trunc < len(wire); trunc++ {
 			seeds = append(seeds, wire[:len(wire)-trunc])
 		}
 	}
 
-	const actingVersion = gensbe.SessionMessageHeaderSbeSchemaVersion
-	buf := make([]byte, fuzzClusterCodecMaxLen)
-
-	end, _ := encodeSessionMessageHeader(buf, 0, actingVersion, sbe.SessionMessageHeaderFields{
+	end, _ := sbe.EncodeSessionMessageHeader(buf, 0, actingVersion, sbe.SessionMessageHeaderFields{
 		LeadershipTermID: 11,
 		ClusterSessionID: 22,
 		Timestamp:        33,
 	})
-	addSeed(buf, 0, end)
+	addSeed(end)
 
-	end, _ = encodeSessionEvent(
-		buf, 0, actingVersion, gensbe.SessionEventSbeBlockLength, sbe.SessionEventFields{
+	end, _ = sbe.EncodeSessionEvent(
+		buf, 0, actingVersion, sbe.SessionEventBlockLength(actingVersion), sbe.SessionEventFields{
 			ClusterSessionID: 1,
 			CorrelationID:    2,
 			LeadershipTermID: 3,
@@ -573,9 +286,9 @@ func codecFuzzSeedBuffers() [][]byte {
 			Detail:           []byte("ok"),
 		},
 	)
-	addSeed(buf, 0, end)
+	addSeed(end)
 
-	end, _ = encodeSessionEvent(buf, 0, 5, 32, sbe.SessionEventFields{
+	end, _ = sbe.EncodeSessionEvent(buf, 0, 5, sbe.SessionEventBlockLength(5), sbe.SessionEventFields{
 		ClusterSessionID: 9,
 		CorrelationID:    8,
 		LeadershipTermID: 7,
@@ -583,9 +296,9 @@ func codecFuzzSeedBuffers() [][]byte {
 		Code:             gensbe.EventCode_ERROR,
 		Detail:           nil,
 	})
-	addSeed(buf, 0, end)
+	addSeed(end)
 
-	end, _ = encodeSessionConnectRequest(buf, 0, actingVersion, sbe.SessionConnectRequestFields{
+	end, _ = sbe.EncodeSessionConnectRequest(buf, 0, actingVersion, sbe.SessionConnectRequestFields{
 		CorrelationID:      100,
 		ResponseStreamID:   200,
 		Version:            1,
@@ -593,65 +306,65 @@ func codecFuzzSeedBuffers() [][]byte {
 		EncodedCredentials: bytes.Repeat([]byte{0xAB}, 32),
 		ClientInfo:         []byte("go-client"),
 	})
-	addSeed(buf, 0, end)
+	addSeed(end)
 
-	end, _ = encodeSessionConnectRequest(buf, 0, 1, sbe.SessionConnectRequestFields{
+	end, _ = sbe.EncodeSessionConnectRequest(buf, 0, 1, sbe.SessionConnectRequestFields{
 		CorrelationID:    101,
 		ResponseStreamID: 201,
 		ResponseChannel:  nil,
 	})
-	addSeed(buf, 0, end)
+	addSeed(end)
 
-	end, _ = encodeSessionCloseRequest(buf, 0, actingVersion, sbe.SessionCloseRequestFields{
+	end, _ = sbe.EncodeSessionCloseRequest(buf, 0, actingVersion, sbe.SessionCloseRequestFields{
 		LeadershipTermID: 5,
 		ClusterSessionID: 6,
 	})
-	addSeed(buf, 0, end)
+	addSeed(end)
 
-	end, _ = encodeSessionKeepAlive(buf, 0, actingVersion, sbe.SessionKeepAliveFields{
+	end, _ = sbe.EncodeSessionKeepAlive(buf, 0, actingVersion, sbe.SessionKeepAliveFields{
 		LeadershipTermID: 7,
 		ClusterSessionID: 8,
 	})
-	addSeed(buf, 0, end)
+	addSeed(end)
 
-	end, _ = encodeNewLeaderEvent(buf, 0, actingVersion, sbe.NewLeaderEventFields{
+	end, _ = sbe.EncodeNewLeaderEvent(buf, 0, actingVersion, sbe.NewLeaderEventFields{
 		LeadershipTermID: 1,
 		ClusterSessionID: 2,
 		LeaderMemberID:   3,
 		IngressEndpoints: []byte("localhost:40123"),
 	})
-	addSeed(buf, 0, end)
+	addSeed(end)
 
-	end, _ = encodeChallenge(buf, 0, actingVersion, sbe.ChallengeFields{
+	end, _ = sbe.EncodeChallenge(buf, 0, actingVersion, sbe.ChallengeFields{
 		CorrelationID:    10,
 		ClusterSessionID: 11,
 		EncodedChallenge: bytes.Repeat([]byte{0xCD}, 32),
 	})
-	addSeed(buf, 0, end)
+	addSeed(end)
 
-	end, _ = encodeChallengeResponse(buf, 0, actingVersion, sbe.ChallengeResponseFields{
+	end, _ = sbe.EncodeChallengeResponse(buf, 0, actingVersion, sbe.ChallengeResponseFields{
 		CorrelationID:      12,
 		ClusterSessionID:   13,
 		EncodedCredentials: bytes.Repeat([]byte{0xEF}, 32),
 	})
-	addSeed(buf, 0, end)
+	addSeed(end)
 
-	end, _ = encodeAdminRequest(buf, 0, actingVersion, sbe.AdminRequestFields{
+	end, _ = sbe.EncodeAdminRequest(buf, 0, actingVersion, sbe.AdminRequestFields{
 		LeadershipTermID: 1,
 		ClusterSessionID: 2,
 		CorrelationID:    3,
 		RequestType:      gensbe.AdminRequestType_SNAPSHOT,
 	})
-	addSeed(buf, 0, end)
+	addSeed(end)
 
-	end, _ = encodeAdminResponse(buf, 0, actingVersion, sbe.AdminResponseFields{
+	end, _ = sbe.EncodeAdminResponse(buf, 0, actingVersion, sbe.AdminResponseFields{
 		ClusterSessionID: 4,
 		CorrelationID:    5,
 		RequestType:      gensbe.AdminRequestType_SNAPSHOT,
 		ResponseCode:     gensbe.AdminResponseCode_OK,
 		Message:          []byte("snapshot complete"),
 	})
-	addSeed(buf, 0, end)
+	addSeed(end)
 
 	return seeds
 }

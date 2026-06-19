@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch pinned sbe-tool JAR and generate Go flyweights from trimmed cluster XML.
+# Fetch pinned sbe-tool JAR and generate Go flyweights from committed cluster wire XML.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

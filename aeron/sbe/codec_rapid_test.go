@@ -14,8 +14,7 @@ import (
 
 func TestSessionMessageHeader_codec_rapid(t *testing.T) {
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
-		actingVersion := rapidActingVersion(rt)
-		offset := rapidCodecOffset(rt)
+		actingVersion, offset := rapidCodecContext(rt)
 		fields := sbe.SessionMessageHeaderFields{
 			LeadershipTermID: rapid.Int64().Draw(rt, "leadershipTermID"),
 			ClusterSessionID: rapid.Int64().Draw(rt, "clusterSessionID"),
@@ -27,9 +26,7 @@ func TestSessionMessageHeader_codec_rapid(t *testing.T) {
 			gensbe.SessionMessageHeaderSbeTemplateID,
 			actingVersion,
 			offset,
-			func(buf []byte, offset int) (int, bool) {
-				return encodeSessionMessageHeader(buf, offset, actingVersion, fields)
-			},
+			rapidEncodeAt(actingVersion, fields, sbe.EncodeSessionMessageHeader),
 			fields,
 		)
 	})
@@ -37,9 +34,8 @@ func TestSessionMessageHeader_codec_rapid(t *testing.T) {
 
 func TestSessionEvent_codec_rapid(t *testing.T) {
 	rapidCheck(t, rapidChecksSessionEvent, func(rt *rapid.T) {
-		actingVersion := rapidActingVersion(rt)
-		offset := rapidCodecOffset(rt)
-		blockLength := sessionEventBlockLength(actingVersion)
+		actingVersion, offset := rapidCodecContext(rt)
+		blockLength := sbe.SessionEventBlockLength(actingVersion)
 
 		fields := sbe.SessionEventFields{
 			ClusterSessionID:         rapid.Int64().Draw(rt, "clusterSessionID"),
@@ -52,15 +48,13 @@ func TestSessionEvent_codec_rapid(t *testing.T) {
 			Detail:                   rapidASCIIBytes(rt, "detail"),
 		}
 
-		wantFields := sessionEventOracleFields(fields, actingVersion)
+		wantFields := sbe.SessionEventOracleFields(fields, actingVersion)
 		runCodecRoundtripAtOffset(
 			rt,
 			gensbe.SessionEventSbeTemplateID,
 			actingVersion,
 			offset,
-			func(buf []byte, offset int) (int, bool) {
-				return encodeSessionEvent(buf, offset, actingVersion, blockLength, fields)
-			},
+			rapidEncodeSessionEvent(actingVersion, blockLength, fields),
 			wantFields,
 		)
 	})
@@ -68,8 +62,7 @@ func TestSessionEvent_codec_rapid(t *testing.T) {
 
 func TestSessionConnectRequest_codec_rapid(t *testing.T) {
 	rapidCheck(t, rapidChecksSessionConnectReq, func(rt *rapid.T) {
-		actingVersion := rapidActingVersion(rt)
-		offset := rapidCodecOffset(rt)
+		actingVersion, offset := rapidCodecContext(rt)
 
 		fields := sbe.SessionConnectRequestFields{
 			CorrelationID:      rapid.Int64().Draw(rt, "correlationID"),
@@ -77,7 +70,12 @@ func TestSessionConnectRequest_codec_rapid(t *testing.T) {
 			Version:            rapidVersionIf(rt, actingVersion, 2),
 			ResponseChannel:    rapidASCIIBytes(rt, "responseChannel"),
 			EncodedCredentials: rapidVarDataBytes(rt, "encodedCredentials"),
-			ClientInfo:         rapidASCIIBytesIf(rt, actingVersion, 14, "clientInfo"),
+			ClientInfo: rapidASCIIBytesIf(
+				rt,
+				actingVersion,
+				sessionConnectClientInfoMinVersion,
+				"clientInfo",
+			),
 		}
 
 		runCodecRoundtripAtOffset(
@@ -85,9 +83,7 @@ func TestSessionConnectRequest_codec_rapid(t *testing.T) {
 			gensbe.SessionConnectRequestSbeTemplateID,
 			actingVersion,
 			offset,
-			func(buf []byte, offset int) (int, bool) {
-				return encodeSessionConnectRequest(buf, offset, actingVersion, fields)
-			},
+			rapidEncodeAt(actingVersion, fields, sbe.EncodeSessionConnectRequest),
 			fields,
 		)
 	})
@@ -95,8 +91,7 @@ func TestSessionConnectRequest_codec_rapid(t *testing.T) {
 
 func TestSessionCloseAndKeepAlive_codec_rapid(t *testing.T) {
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
-		actingVersion := rapidActingVersion(rt)
-		offset := rapidCodecOffset(rt)
+		actingVersion, offset := rapidCodecContext(rt)
 		closeFields := sbe.SessionCloseRequestFields{
 			LeadershipTermID: rapid.Int64().Draw(rt, "closeLeadershipTermID"),
 			ClusterSessionID: rapid.Int64().Draw(rt, "closeClusterSessionID"),
@@ -111,9 +106,7 @@ func TestSessionCloseAndKeepAlive_codec_rapid(t *testing.T) {
 			gensbe.SessionCloseRequestSbeTemplateID,
 			actingVersion,
 			offset,
-			func(buf []byte, offset int) (int, bool) {
-				return encodeSessionCloseRequest(buf, offset, actingVersion, closeFields)
-			},
+			rapidEncodeAt(actingVersion, closeFields, sbe.EncodeSessionCloseRequest),
 			closeFields,
 		)
 
@@ -122,9 +115,7 @@ func TestSessionCloseAndKeepAlive_codec_rapid(t *testing.T) {
 			gensbe.SessionKeepAliveSbeTemplateID,
 			actingVersion,
 			offset,
-			func(buf []byte, offset int) (int, bool) {
-				return encodeSessionKeepAlive(buf, offset, actingVersion, keepAliveFields)
-			},
+			rapidEncodeAt(actingVersion, keepAliveFields, sbe.EncodeSessionKeepAlive),
 			keepAliveFields,
 		)
 	})
@@ -132,8 +123,7 @@ func TestSessionCloseAndKeepAlive_codec_rapid(t *testing.T) {
 
 func TestNewLeaderEvent_codec_rapid(t *testing.T) {
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
-		actingVersion := rapidActingVersion(rt)
-		offset := rapidCodecOffset(rt)
+		actingVersion, offset := rapidCodecContext(rt)
 		fields := sbe.NewLeaderEventFields{
 			LeadershipTermID: rapid.Int64().Draw(rt, "leadershipTermID"),
 			ClusterSessionID: rapid.Int64().Draw(rt, "clusterSessionID"),
@@ -146,9 +136,7 @@ func TestNewLeaderEvent_codec_rapid(t *testing.T) {
 			gensbe.NewLeaderEventSbeTemplateID,
 			actingVersion,
 			offset,
-			func(buf []byte, offset int) (int, bool) {
-				return encodeNewLeaderEvent(buf, offset, actingVersion, fields)
-			},
+			rapidEncodeAt(actingVersion, fields, sbe.EncodeNewLeaderEvent),
 			fields,
 		)
 	})
@@ -156,8 +144,7 @@ func TestNewLeaderEvent_codec_rapid(t *testing.T) {
 
 func TestChallenge_codec_rapid(t *testing.T) {
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
-		actingVersion := rapidActingVersion(rt)
-		offset := rapidCodecOffset(rt)
+		actingVersion, offset := rapidCodecContext(rt)
 		fields := sbe.ChallengeFields{
 			CorrelationID:    rapid.Int64().Draw(rt, "correlationID"),
 			ClusterSessionID: rapid.Int64().Draw(rt, "clusterSessionID"),
@@ -169,9 +156,7 @@ func TestChallenge_codec_rapid(t *testing.T) {
 			gensbe.ChallengeSbeTemplateID,
 			actingVersion,
 			offset,
-			func(buf []byte, offset int) (int, bool) {
-				return encodeChallenge(buf, offset, actingVersion, fields)
-			},
+			rapidEncodeAt(actingVersion, fields, sbe.EncodeChallenge),
 			fields,
 		)
 	})
@@ -179,8 +164,7 @@ func TestChallenge_codec_rapid(t *testing.T) {
 
 func TestChallengeResponse_codec_rapid(t *testing.T) {
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
-		actingVersion := rapidActingVersion(rt)
-		offset := rapidCodecOffset(rt)
+		actingVersion, offset := rapidCodecContext(rt)
 		fields := sbe.ChallengeResponseFields{
 			CorrelationID:      rapid.Int64().Draw(rt, "correlationID"),
 			ClusterSessionID:   rapid.Int64().Draw(rt, "clusterSessionID"),
@@ -192,9 +176,7 @@ func TestChallengeResponse_codec_rapid(t *testing.T) {
 			gensbe.ChallengeResponseSbeTemplateID,
 			actingVersion,
 			offset,
-			func(buf []byte, offset int) (int, bool) {
-				return encodeChallengeResponse(buf, offset, actingVersion, fields)
-			},
+			rapidEncodeAt(actingVersion, fields, sbe.EncodeChallengeResponse),
 			fields,
 		)
 	})
@@ -202,8 +184,7 @@ func TestChallengeResponse_codec_rapid(t *testing.T) {
 
 func TestAdminRequest_codec_rapid(t *testing.T) {
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
-		actingVersion := rapidActingVersion(rt)
-		offset := rapidCodecOffset(rt)
+		actingVersion, offset := rapidCodecContext(rt)
 		fields := sbe.AdminRequestFields{
 			LeadershipTermID: rapid.Int64().Draw(rt, "leadershipTermID"),
 			ClusterSessionID: rapid.Int64().Draw(rt, "clusterSessionID"),
@@ -217,9 +198,7 @@ func TestAdminRequest_codec_rapid(t *testing.T) {
 			gensbe.AdminRequestSbeTemplateID,
 			actingVersion,
 			offset,
-			func(buf []byte, offset int) (int, bool) {
-				return encodeAdminRequest(buf, offset, actingVersion, fields)
-			},
+			rapidEncodeAt(actingVersion, fields, sbe.EncodeAdminRequest),
 			fields,
 		)
 	})
@@ -227,8 +206,7 @@ func TestAdminRequest_codec_rapid(t *testing.T) {
 
 func TestAdminResponse_codec_rapid(t *testing.T) {
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
-		actingVersion := rapidActingVersion(rt)
-		offset := rapidCodecOffset(rt)
+		actingVersion, offset := rapidCodecContext(rt)
 		fields := sbe.AdminResponseFields{
 			ClusterSessionID: rapid.Int64().Draw(rt, "clusterSessionID"),
 			CorrelationID:    rapid.Int64().Draw(rt, "correlationID"),
@@ -243,12 +221,34 @@ func TestAdminResponse_codec_rapid(t *testing.T) {
 			gensbe.AdminResponseSbeTemplateID,
 			actingVersion,
 			offset,
-			func(buf []byte, offset int) (int, bool) {
-				return encodeAdminResponse(buf, offset, actingVersion, fields)
-			},
+			rapidEncodeAt(actingVersion, fields, sbe.EncodeAdminResponse),
 			fields,
 		)
 	})
+}
+
+func rapidCodecContext(rt *rapid.T) (actingVersion uint16, offset int) {
+	rt.Helper()
+	return rapidActingVersion(rt), rapidCodecOffset(rt)
+}
+
+func rapidEncodeAt[T any](
+	actingVersion uint16,
+	fields T,
+	encode func([]byte, int, uint16, T) (int, bool),
+) func([]byte, int) (int, bool) {
+	return func(buf []byte, offset int) (int, bool) {
+		return encode(buf, offset, actingVersion, fields)
+	}
+}
+
+func rapidEncodeSessionEvent(
+	actingVersion, blockLength uint16,
+	fields sbe.SessionEventFields,
+) func([]byte, int) (int, bool) {
+	return func(buf []byte, offset int) (int, bool) {
+		return sbe.EncodeSessionEvent(buf, offset, actingVersion, blockLength, fields)
+	}
 }
 
 func rapidActingVersion(rt *rapid.T) uint16 {
@@ -290,7 +290,8 @@ func rapidVarDataBytes(rt *rapid.T, name string) []byte {
 // rapidLeaderHeartbeatTimeoutNs draws encode input. math.MinInt64 means omit setter.
 func rapidLeaderHeartbeatTimeoutNs(rt *rapid.T, actingVersion uint16) int64 {
 	rt.Helper()
-	if actingVersion < 13 || rapid.Bool().Draw(rt, "omitLeaderHeartbeat") {
+	omit := rapid.Bool().Draw(rt, "omitLeaderHeartbeat")
+	if actingVersion < sessionEventLeaderHeartbeatMinVersion || omit {
 		return math.MinInt64
 	}
 	// Exclude MinInt64 so draw is always an explicit on-wire value.

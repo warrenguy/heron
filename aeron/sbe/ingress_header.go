@@ -7,7 +7,8 @@ import (
 	gensbe "github.com/warrenguy/heron/aeron/sbe/generated/sbe"
 )
 
-var sessionMessageHeaderEncodedLen = int((&gensbe.SessionMessageHeader{}).SbeBlockAndHeaderLength())
+var sessionMessageHeaderEncodedLen = messageHeaderEncodedLength +
+	int(gensbe.SessionMessageHeaderSbeBlockLength)
 
 // SessionMessageHeaderEncodedLen is the wire size of MessageHeader plus SessionMessageHeader.
 func SessionMessageHeaderEncodedLen() int {
@@ -30,12 +31,13 @@ type IngressHeaderFields struct {
 // buf must provide at least SessionMessageHeaderEncodedLen bytes from that offset.
 func EncodeIngressHeader(buf []byte, frameOffset int, fields IngressHeaderFields) (int, error) {
 	payloadOffset := frameOffset + logbuffer.OffsetFramePayload
-	if payloadOffset < 0 || payloadOffset > len(buf)-sessionMessageHeaderEncodedLen {
+	bufLen := len(buf)
+	if payloadOffset < 0 || payloadOffset > bufLen-sessionMessageHeaderEncodedLen {
 		return 0, ErrIngressHeaderBufferTooSmall
 	}
 
 	var header gensbe.SessionMessageHeader
-	header.WrapAndApplyHeader(buf, uint64(payloadOffset), uint64(len(buf))).
+	header.WrapAndApplyHeader(buf, uint64(payloadOffset), uint64(bufLen)).
 		SetLeadershipTermId(fields.LeadershipTermID).
 		SetClusterSessionId(fields.ClusterSessionID).
 		SetTimestamp(fields.Timestamp)

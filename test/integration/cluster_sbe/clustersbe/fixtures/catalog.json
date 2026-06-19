@@ -1,0 +1,366 @@
+{
+  "schemaVersion": 1,
+  "blobs": {
+    "admin16": {
+      "repeat": {
+        "byte": 51,
+        "len": 16
+      }
+    },
+    "challenge32": {
+      "repeat": {
+        "byte": 171,
+        "len": 32
+      }
+    },
+    "cred32": {
+      "repeat": {
+        "byte": 205,
+        "len": 32
+      }
+    }
+  },
+  "fixtures": [
+    {
+      "name": "sessionMessageHeader_zeros",
+      "template": "sessionMessageHeader",
+      "actingVersion": 16,
+      "hex": "180001006f001000000000000000000000000000000000000000000000000000",
+      "fields": {
+        "clusterSessionId": 0,
+        "leadershipTermId": 0,
+        "timestamp": 0
+      }
+    },
+    {
+      "name": "sessionMessageHeader_maxInt64",
+      "template": "sessionMessageHeader",
+      "actingVersion": 16,
+      "hex": "180001006f001000ffffffffffffff7fffffffffffffff7fffffffffffffff7f",
+      "fields": {
+        "clusterSessionId": 9223372036854775807,
+        "leadershipTermId": 9223372036854775807,
+        "timestamp": 9223372036854775807
+      }
+    },
+    {
+      "name": "sessionEvent_legacyV5_blockLength32",
+      "template": "sessionEvent",
+      "actingVersion": 5,
+      "hex": "200002006f000500280000000000000029000000000000002a000000000000002b00000004000000060000006c6567616379",
+      "fields": {
+        "clusterSessionId": 40,
+        "code": "CLOSED",
+        "correlationId": 41,
+        "detail": "legacy",
+        "leaderHeartbeatTimeoutNs": "absent",
+        "leaderMemberId": 43,
+        "leadershipTermId": 42
+      },
+      "blockLength": 32
+    },
+    {
+      "name": "sessionEvent_ok_emptyDetail",
+      "template": "sessionEvent",
+      "actingVersion": 16,
+      "hex": "2c0002006f001000010000000000000002000000000000000300000000000000040000000000000000000000000000000000000000000000",
+      "fields": {
+        "clusterSessionId": 1,
+        "code": "OK",
+        "correlationId": 2,
+        "leaderHeartbeatTimeoutNs": 0,
+        "leaderMemberId": 4,
+        "leadershipTermId": 3
+      }
+    },
+    {
+      "name": "sessionEvent_error_withDetail",
+      "template": "sessionEvent",
+      "actingVersion": 16,
+      "hex": "2c0002006f0010000a000000000000000b000000000000000c000000000000000d0000000100000000000000000000000000000004000000626f6f6d",
+      "fields": {
+        "clusterSessionId": 10,
+        "code": "ERROR",
+        "correlationId": 11,
+        "detail": "boom",
+        "leaderHeartbeatTimeoutNs": 0,
+        "leaderMemberId": 13,
+        "leadershipTermId": 12
+      }
+    },
+    {
+      "name": "sessionEvent_redirect_withVersion",
+      "template": "sessionEvent",
+      "actingVersion": 6,
+      "hex": "240002006f000600140000000000000015000000000000001600000000000000170000000200000007000000080000007265646972656374",
+      "fields": {
+        "clusterSessionId": 20,
+        "code": "REDIRECT",
+        "correlationId": 21,
+        "detail": "redirect",
+        "leaderHeartbeatTimeoutNs": "absent",
+        "leaderMemberId": 23,
+        "leadershipTermId": 22,
+        "version": 7
+      }
+    },
+    {
+      "name": "sessionEvent_leaderHeartbeat_present",
+      "template": "sessionEvent",
+      "actingVersion": 16,
+      "hex": "2c0002006f0010001e000000000000001f00000000000000200000000000000021000000000000000000000000f2052a01000000020000006862",
+      "fields": {
+        "clusterSessionId": 30,
+        "code": "OK",
+        "correlationId": 31,
+        "detail": "hb",
+        "leaderHeartbeatTimeoutNs": 5000000000,
+        "leaderMemberId": 33,
+        "leadershipTermId": 32
+      }
+    },
+    {
+      "name": "sessionEvent_leaderHeartbeat_omittedV13",
+      "template": "sessionEvent",
+      "actingVersion": 13,
+      "hex": "2c0002006f000d003c000000000000003d000000000000003e000000000000003f00000000000000000000000000000000000000070000006f6d69742d6862",
+      "fields": {
+        "clusterSessionId": 60,
+        "code": "OK",
+        "correlationId": 61,
+        "detail": "omit-hb",
+        "leaderHeartbeatTimeoutNs": "absent",
+        "leaderMemberId": 63,
+        "leadershipTermId": 62
+      }
+    },
+    {
+      "name": "sessionEvent_authenticationRejected",
+      "template": "sessionEvent",
+      "actingVersion": 16,
+      "hex": "2c0002006f00100046000000000000004700000000000000480000000000000049000000030000000000000000000000000000000600000064656e696564",
+      "fields": {
+        "clusterSessionId": 70,
+        "code": "AUTHENTICATION_REJECTED",
+        "correlationId": 71,
+        "detail": "denied",
+        "leaderHeartbeatTimeoutNs": 0,
+        "leaderMemberId": 73,
+        "leadershipTermId": 72
+      }
+    },
+    {
+      "name": "sessionEvent_closedV16",
+      "template": "sessionEvent",
+      "actingVersion": 16,
+      "hex": "2c0002006f001000500000000000000051000000000000005200000000000000530000000400000000000000000000000000000006000000636c6f736564",
+      "fields": {
+        "clusterSessionId": 80,
+        "code": "CLOSED",
+        "correlationId": 81,
+        "detail": "closed",
+        "leaderHeartbeatTimeoutNs": 0,
+        "leaderMemberId": 83,
+        "leadershipTermId": 82
+      }
+    },
+    {
+      "name": "sessionConnectRequest_emptyCredsV2",
+      "template": "sessionConnectRequest",
+      "actingVersion": 2,
+      "hex": "100003006f0002006400000000000000c8000000010000000000000000000000",
+      "fields": {
+        "correlationId": 100,
+        "responseStreamId": 200,
+        "version": 1
+      }
+    },
+    {
+      "name": "sessionConnectRequest_channelAndCredsV6",
+      "template": "sessionConnectRequest",
+      "actingVersion": 6,
+      "hex": "100003006f0006006500000000000000c900000003000000090000006165726f6e3a69706303000000010203",
+      "fields": {
+        "correlationId": 101,
+        "encodedCredentials": {
+          "hex": "010203"
+        },
+        "responseChannel": "aeron:ipc",
+        "responseStreamId": 201,
+        "version": 3
+      }
+    },
+    {
+      "name": "sessionConnectRequest_clientInfoV14",
+      "template": "sessionConnectRequest",
+      "actingVersion": 14,
+      "hex": "100003006f000e006600000000000000ca00000004000000220000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a3430313233030000000908070c0000006865726f6e2d636c69656e74",
+      "fields": {
+        "clientInfo": "heron-client",
+        "correlationId": 102,
+        "encodedCredentials": {
+          "hex": "090807"
+        },
+        "responseChannel": "aeron:udp?endpoint=localhost:40123",
+        "responseStreamId": 202,
+        "version": 4
+      }
+    },
+    {
+      "name": "sessionConnectRequest_versionNullPreV2",
+      "template": "sessionConnectRequest",
+      "actingVersion": 1,
+      "hex": "0c0003006f0001006700000000000000cb0000000000000000000000",
+      "fields": {
+        "correlationId": 103,
+        "responseStreamId": 203,
+        "version": 0
+      }
+    },
+    {
+      "name": "sessionCloseRequest_typical",
+      "template": "sessionCloseRequest",
+      "actingVersion": 16,
+      "hex": "100004006f00100007000000000000000800000000000000",
+      "fields": {
+        "clusterSessionId": 8,
+        "leadershipTermId": 7
+      }
+    },
+    {
+      "name": "sessionKeepAlive_typical",
+      "template": "sessionKeepAlive",
+      "actingVersion": 16,
+      "hex": "100005006f00100009000000000000000a00000000000000",
+      "fields": {
+        "clusterSessionId": 10,
+        "leadershipTermId": 9
+      }
+    },
+    {
+      "name": "newLeaderEvent_emptyEndpoints",
+      "template": "newLeaderEvent",
+      "actingVersion": 16,
+      "hex": "140006006f001000010000000000000002000000000000000300000000000000",
+      "fields": {
+        "clusterSessionId": 2,
+        "leaderMemberId": 3,
+        "leadershipTermId": 1
+      }
+    },
+    {
+      "name": "newLeaderEvent_singleEndpoint",
+      "template": "newLeaderEvent",
+      "actingVersion": 16,
+      "hex": "140006006f00100004000000000000000500000000000000060000000f0000006c6f63616c686f73743a3430313233",
+      "fields": {
+        "clusterSessionId": 5,
+        "ingressEndpoints": "localhost:40123",
+        "leaderMemberId": 6,
+        "leadershipTermId": 4
+      }
+    },
+    {
+      "name": "challenge_empty",
+      "template": "challenge",
+      "actingVersion": 16,
+      "hex": "100007006f0010000b000000000000000c0000000000000000000000",
+      "fields": {
+        "clusterSessionId": 12,
+        "correlationId": 11
+      }
+    },
+    {
+      "name": "challenge_blob32",
+      "template": "challenge",
+      "actingVersion": 16,
+      "hex": "100007006f0010000d000000000000000e0000000000000020000000abababababababababababababababababababababababababababababababab",
+      "fields": {
+        "clusterSessionId": 14,
+        "correlationId": 13,
+        "encodedChallenge": {
+          "ref": "challenge32"
+        }
+      }
+    },
+    {
+      "name": "challengeResponse_empty",
+      "template": "challengeResponse",
+      "actingVersion": 16,
+      "hex": "100008006f0010001500000000000000160000000000000000000000",
+      "fields": {
+        "clusterSessionId": 22,
+        "correlationId": 21
+      }
+    },
+    {
+      "name": "challengeResponse_credBlob32",
+      "template": "challengeResponse",
+      "actingVersion": 16,
+      "hex": "100008006f0010001700000000000000180000000000000020000000cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "fields": {
+        "clusterSessionId": 24,
+        "correlationId": 23,
+        "encodedCredentials": {
+          "ref": "cred32"
+        }
+      }
+    },
+    {
+      "name": "adminRequest_snapshotEmptyPayload",
+      "template": "adminRequest",
+      "actingVersion": 16,
+      "hex": "1c001a006f0010000100000000000000020000000000000003000000000000000000000000000000",
+      "fields": {
+        "clusterSessionId": 2,
+        "correlationId": 3,
+        "leadershipTermId": 1,
+        "requestType": "SNAPSHOT"
+      }
+    },
+    {
+      "name": "adminRequest_snapshotPayload16",
+      "template": "adminRequest",
+      "actingVersion": 16,
+      "hex": "1c001a006f001000040000000000000005000000000000000600000000000000000000001000000033333333333333333333333333333333",
+      "fields": {
+        "clusterSessionId": 5,
+        "correlationId": 6,
+        "leadershipTermId": 4,
+        "payload": {
+          "ref": "admin16"
+        },
+        "requestType": "SNAPSHOT"
+      }
+    },
+    {
+      "name": "adminResponse_okWithMessage",
+      "template": "adminResponse",
+      "actingVersion": 16,
+      "hex": "18001b006f00100001000000000000000200000000000000000000000000000004000000646f6e6500000000",
+      "fields": {
+        "clusterSessionId": 1,
+        "correlationId": 2,
+        "message": "done",
+        "requestType": "SNAPSHOT",
+        "responseCode": "OK"
+      }
+    },
+    {
+      "name": "adminResponse_errorWithMessageAndPayload",
+      "template": "adminResponse",
+      "actingVersion": 16,
+      "hex": "18001b006f001000030000000000000004000000000000000000000001000000060000006661696c65640600000064657461696c",
+      "fields": {
+        "clusterSessionId": 3,
+        "correlationId": 4,
+        "message": "failed",
+        "payload": {
+          "hex": "64657461696c"
+        },
+        "requestType": "SNAPSHOT",
+        "responseCode": "ERROR"
+      }
+    }
+  ]
+}

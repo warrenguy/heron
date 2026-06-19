@@ -32,64 +32,83 @@ GO_SOURCES := $$(grep -rl --include='*.go' -L 'DO NOT EDIT' \
 	--exclude-dir=docker .)
 SHELL_SCRIPTS := $$(find . -name '*.sh' -type f ! -path './.git/*')
 # Conductor cross-package test hooks (test_hooks.go, hook_access.go).
-UNIT_TEST_TAGS := testhooks
-export UNIT_TEST_TAGS
+export UNIT_TEST_TAGS := testhooks
 # Per-package go test deadline (replaces go default 10m on hung tests).
 TEST_TIMEOUT ?= 2m
 FUZZ_TIME ?= 30s
 # Per-package go test deadline for make fuzz (baseline + FUZZ_TIME + minimization).
 FUZZ_TIMEOUT ?= 5m
-# Wall-clock cap for full check (lint + test + test-stress).
+# Wall-clock cap for full check (check-static + unit + stress).
 CHECK_TIMEOUT ?= 5m
 
 # Without GNU timeout/gtimeout on PATH, CHECK_TIMEOUT is not enforced; TEST_TIMEOUT still applies.
-.PHONY: check check-inner check-aeron-versions test-cluster-codecs-trim \
-	check-cluster-codecs-stale check-cluster-codecs-stale-optional \
-	check-sbe-stale check-sbe-stale-optional
+.PHONY: check check-inner check-static check-test check-aeron-versions \
+	check-sbe-stale check-sbe-stale-optional \
+	cluster-sbe-catalog-regen check-catalog-stale check-catalog-stale-optional \
+	check-catalog-stale-selftest \
+	contract-oracles-optional
 check:
 	@T=$$(command -v timeout 2>/dev/null \
 		|| command -v gtimeout 2>/dev/null); \
 	if [ -n "$$T" ]; then \
-		$$T $(CHECK_TIMEOUT) $(MAKE) --no-print-directory check-inner; \
+		$$T --foreground $(CHECK_TIMEOUT) $(MAKE) --no-print-directory check-inner; \
 	else \
 		$(MAKE) --no-print-directory check-inner; \
 	fi
 
-check-inner: lint check-aeron-versions test-cluster-codecs-trim \
-	check-cluster-codecs-stale-optional check-sbe-stale-optional
-	@$(MAKE) --no-print-directory -j2 test test-stress
+check-static: lint
+	+@$(MAKE) --no-print-directory -j4 check-aeron-versions check-sbe-stale-optional \
+		check-catalog-stale-optional \
+		contract-oracles-optional
+
+check-test:
+	+@$(MAKE) --no-print-directory -j2 test test-stress
+
+check-inner: check-static check-test
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
 
-test-cluster-codecs-trim:
-	@go test -race -count=1 -timeout=30s ./tools/cluster-codecs-trim/...
+# Run $(1) when $(2) succeeds; otherwise print skip message $(3).
+define optional-target
+$(1)-optional:
+	@if $(2); then \
+		$(MAKE) --no-print-directory $(1); \
+	else \
+		echo "heron: skipping $(1) ($(3))"; \
+	fi
+endef
 
-check-cluster-codecs-stale:
-	@set -euo pipefail; \
-	tmp=$$(mktemp); \
-	cp specs/cluster-codecs-client.xml "$$tmp"; \
-	trap 'cp "$$tmp" specs/cluster-codecs-client.xml; rm -f "$$tmp"' EXIT; \
-	./scripts/regen-cluster-codecs.sh; \
-	diff -u "$$tmp" specs/cluster-codecs-client.xml
+# Cluster SBE codegen: catalog.json stale check in check-static.
+CLUSTER_SBE_CATALOG_JSON := test/integration/cluster_sbe/clustersbe/fixtures/catalog.json
+CLUSTER_SBE_CATALOG_REGEN := go run ./tools/cluster-sbe-catalog-gen \
+	-catalog $(CLUSTER_SBE_CATALOG_JSON) -out $(CLUSTER_SBE_CATALOG_JSON)
 
-check-cluster-codecs-stale-optional:
-	@command -v go >/dev/null && command -v curl >/dev/null \
-		&& $(MAKE) --no-print-directory check-cluster-codecs-stale \
-		|| echo "heron: skipping check-cluster-codecs-stale (go/curl not installed)"
+cluster-sbe-catalog-regen:
+	@$(CLUSTER_SBE_CATALOG_REGEN)
+
+check-catalog-stale:
+	@set -euo pipefail; tmp=$$(mktemp); cp $(CLUSTER_SBE_CATALOG_JSON) "$$tmp"; \
+	trap 'cp "$$tmp" $(CLUSTER_SBE_CATALOG_JSON); rm -f "$$tmp"' EXIT; \
+	$(CLUSTER_SBE_CATALOG_REGEN); diff -u "$$tmp" $(CLUSTER_SBE_CATALOG_JSON)
+
+$(eval $(call optional-target,check-catalog-stale,command -v go >/dev/null,go not installed))
+
+check-catalog-stale-selftest:
+	@CLUSTER_SBE_CATALOG_JSON=$(CLUSTER_SBE_CATALOG_JSON) ./scripts/check-catalog-stale-selftest.sh
 
 check-sbe-stale: sbe-generate
 	@git diff --exit-code aeron/sbe/generated/
 
-check-sbe-stale-optional:
-	@command -v java >/dev/null \
-		&& $(MAKE) --no-print-directory check-sbe-stale \
-		|| echo "heron: skipping check-sbe-stale (java not installed)"
+$(eval $(call optional-target,check-sbe-stale,command -v java >/dev/null,java not installed))
+
+INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe
 
 .PHONY: lint goimports gofumpt
 lint:
 	go tool golangci-lint run $(GO_TEST_PKGS)
-	go tool golangci-lint run --build-tags=integration,java_interop ./test/integration/...
+	go tool golangci-lint run --build-tags=$(INTEGRATION_LINT_TAGS) \
+		./test/integration/...
 	@command -v shellcheck >/dev/null || { \
 		echo "heron: shellcheck required (e.g. apt install shellcheck, pacman -S shellcheck)" >&2; \
 		exit 1; \
@@ -111,29 +130,25 @@ gofumpt: goimports
 # -fuzz=Fuzz requires at most one matching Fuzz* per package (Go errors otherwise).
 fuzz:
 	@set -euo pipefail; \
-	fuzz_pkgs=$$(grep -rl '^func Fuzz' --include='*_fuzz_test.go' . \
-		| sed 's|/[^/]*$$||' | sort -u) || [ $$? -eq 1 ]; \
-	if [ -z "$$fuzz_pkgs" ]; then \
-		echo "no fuzz tests"; exit 1; \
-	fi; \
+	fuzz_pkgs=$$(grep -rl '^func Fuzz' --include='*_fuzz_test.go' . 2>/dev/null \
+		| sed 's|/[^/]*$$||' | sort -u || true); \
+	[ -n "$$fuzz_pkgs" ] || { echo "no fuzz tests"; exit 1; }; \
 	for pkg in $$fuzz_pkgs; do \
 		go test -timeout=$(FUZZ_TIMEOUT) -tags=$(UNIT_TEST_TAGS) -run '^$$' \
 			-fuzz=Fuzz -fuzztime=$(FUZZ_TIME) $$pkg; \
 	done
 
-.PHONY: test test-rapid test-stress
 # Unit tests need -tags=testhooks,bench; use make test.
-test:
-	go test -timeout=$(TEST_TIMEOUT) -race -tags=bench,$(UNIT_TEST_TAGS) \
-		-count=1 $(GO_TEST_PKGS) $(COVERAGE_TEST_ARGS)
+define go-test-target
+.PHONY: test$(1)
+test$(1):
+	go test -timeout=$(TEST_TIMEOUT) -race -tags=$(2),$(UNIT_TEST_TAGS) \
+		-count=1 $(3) $(GO_TEST_PKGS) $(COVERAGE_TEST_ARGS)
+endef
 
-test-rapid:
-	go test -timeout=$(TEST_TIMEOUT) -race -tags=rapid,$(UNIT_TEST_TAGS) \
-		-count=1 -run rapid $(GO_TEST_PKGS) $(COVERAGE_TEST_ARGS)
-
-test-stress:
-	go test -timeout=$(TEST_TIMEOUT) -race -tags=stress,$(UNIT_TEST_TAGS) \
-		-count=1 -run Stress $(GO_TEST_PKGS) $(COVERAGE_TEST_ARGS)
+$(eval $(call go-test-target,,bench,))
+$(eval $(call go-test-target,-rapid,rapid,-run rapid))
+$(eval $(call go-test-target,-stress,stress,-run Stress))
 
 BENCH_DIR := .bench
 BENCH_BASELINE := $(BENCH_DIR)/baseline.txt
@@ -167,15 +182,17 @@ $(COVERAGE_PREPARED):
 		$(COVERAGE_ROOT)/stress $(COVERAGE_ROOT)/merged
 	@touch $@
 
-.PHONY: coverage coverage-unit coverage-rapid coverage-stress
-coverage-unit: $(COVERAGE_PREPARED)
-	$(MAKE) --no-print-directory COVERAGE_SLICE=unit test
+define coverage-slice-target
+.PHONY: coverage-$(1)
+coverage-$(1): $(COVERAGE_PREPARED)
+	$(MAKE) --no-print-directory COVERAGE_SLICE=$(1) test$(2)
+endef
 
-coverage-rapid: $(COVERAGE_PREPARED)
-	$(MAKE) --no-print-directory COVERAGE_SLICE=rapid test-rapid
+$(eval $(call coverage-slice-target,unit,))
+$(eval $(call coverage-slice-target,rapid,-rapid))
+$(eval $(call coverage-slice-target,stress,-stress))
 
-coverage-stress: $(COVERAGE_PREPARED)
-	$(MAKE) --no-print-directory COVERAGE_SLICE=stress test-stress
+.PHONY: coverage
 
 $(COVERAGE_PROFILE): coverage-unit coverage-rapid coverage-stress
 	go tool covdata merge -i=$(COVERAGE_SLICES) -o=$(COVERAGE_ROOT)/merged
@@ -199,36 +216,61 @@ test-integration: bin/aeronmd
 	go test -timeout=$(TEST_TIMEOUT) -race -count=1 -tags=integration ./test/integration/...
 
 JAVA_INTEROP_POM := test/integration/java_interop/pom.xml
+CLUSTER_SBE_POM := test/integration/cluster_sbe/pom.xml
 JAVA_INTEROP_ORACLE_TIMEOUT ?= 30s
+CLUSTER_SBE_ORACLE_TIMEOUT ?= $(JAVA_INTEROP_ORACLE_TIMEOUT)
+JAVA_INTEROP_ORACLE_TAGS := testhooks,integration,java_interop
+CLUSTER_SBE_ORACLE_TAGS := integration,cluster_sbe
 
-.PHONY: test-java-interop test-java-interop-unit test-java-interop-oracle test-java-interop-contract
+# Run mvn test for an integration POM; $(1)=logical name, $(2)=pom path.
+define mvn-integration-unit
+test-$(1)-unit:
+	@command -v mvn >/dev/null || { \
+		echo "heron: mvn required (JDK 26 per $(2))" >&2; \
+		exit 1; \
+	}
+	mvn -q -f $(2) test
+endef
+
+# Run go oracle test; $(1)=suite, $(2)=timeout, $(3)=tags var (by name; value has commas), $(4)=package.
+define integration-oracle
+test-$(1)-oracle:
+	go test -timeout=$(2) -race \
+		-tags=$($(3)) -count=1 \
+		$(4)
+endef
+
+# Aggregate unit + oracle; $(1)=suite.
+define integration-contract
+test-$(1)-contract:
+	@$(MAKE) --no-print-directory -j2 test-$(1)-unit test-$(1)-oracle
+endef
+
+.PHONY: test-java-interop test-java-interop-unit test-java-interop-oracle test-java-interop-contract \
+	test-cluster-sbe-unit test-cluster-sbe-oracle test-cluster-sbe-contract \
+	contract-oracles contract-oracles-optional
 test-java-interop:
 	./scripts/java-interop-smoke.sh
 
-test-java-interop-unit:
-	@command -v mvn >/dev/null || { \
-		echo "heron: mvn required (JDK 26 per $(JAVA_INTEROP_POM))" >&2; \
-		exit 1; \
-	}
-	mvn -q -f $(JAVA_INTEROP_POM) test
+$(eval $(call mvn-integration-unit,java-interop,$(JAVA_INTEROP_POM)))
+$(eval $(call integration-oracle,java-interop,$(JAVA_INTEROP_ORACLE_TIMEOUT),JAVA_INTEROP_ORACLE_TAGS,./test/integration/java_interop/javainterop/))
+$(eval $(call integration-contract,java-interop))
 
-test-java-interop-oracle:
-	go test -timeout=$(JAVA_INTEROP_ORACLE_TIMEOUT) -race \
-		-tags=testhooks,integration,java_interop -count=1 \
-		./test/integration/java_interop/javainterop/
+$(eval $(call mvn-integration-unit,cluster-sbe,$(CLUSTER_SBE_POM)))
+$(eval $(call integration-oracle,cluster-sbe,$(CLUSTER_SBE_ORACLE_TIMEOUT),CLUSTER_SBE_ORACLE_TAGS,./test/integration/cluster_sbe/clustersbe/))
+$(eval $(call integration-contract,cluster-sbe))
 
-test-java-interop-contract: test-java-interop-unit test-java-interop-oracle
+contract-oracles:
+	@$(MAKE) --no-print-directory -j2 test-java-interop-contract test-cluster-sbe-contract
+
+$(eval $(call optional-target,contract-oracles,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
 
 bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd.sh
 	./scripts/build-aeronmd.sh
 
 aeronmd: bin/aeronmd
 
-# SBE: cluster-codecs-regen (Go+curl) trims XML; sbe-generate (Java) emits flyweights.
-# go test uses committed specs/cluster-codecs-client.xml and aeron/sbe/generated only.
-.PHONY: cluster-codecs-regen sbe-generate
-cluster-codecs-regen:
-	./scripts/regen-cluster-codecs.sh
-
+# Java SBE codegen.
+.PHONY: sbe-generate
 sbe-generate:
 	./scripts/generate-sbe.sh
