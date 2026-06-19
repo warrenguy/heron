@@ -114,16 +114,16 @@ func ClusterRootBlockLengthBounds(
 	case gensbe.SessionEventSbeTemplateID:
 		maxBlock = gensbe.SessionEventSbeBlockLength
 		switch {
-		case actingVersion < 6:
+		case actingVersion < SessionEventVersionMinVersion:
 			return 32, maxBlock, true
-		case actingVersion < 13:
+		case actingVersion < SessionEventLeaderHeartbeatMinVersion:
 			return 36, maxBlock, true
 		default:
 			return clusterFixedBlockLength(maxBlock)
 		}
 	case gensbe.SessionConnectRequestSbeTemplateID:
 		maxBlock = gensbe.SessionConnectRequestSbeBlockLength
-		if actingVersion < 2 {
+		if actingVersion < SessionConnectVersionMinVersion {
 			return 12, maxBlock, true
 		}
 		return clusterFixedBlockLength(maxBlock)

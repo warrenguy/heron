@@ -1,7 +1,6 @@
 package catalogschema
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/warrenguy/heron/aeron/sbe"
@@ -11,29 +10,44 @@ const (
 	templateSessionEvent          = "sessionEvent"
 	templateSessionConnectRequest = "sessionConnectRequest"
 	SessionEventHeartbeatField    = "leaderHeartbeatTimeoutNs"
-
-	connectVersionWireActingVersion          = 2
-	sessionEventOmitBlockLengthActingVersion = 6
 )
 
-func ConnectVersionRequired(actingVersion uint16) bool {
-	return actingVersion < connectVersionWireActingVersion
+func connectVersionRequired(actingVersion uint16) bool {
+	return actingVersion < sbe.SessionConnectVersionMinVersion
 }
 
 func ValidateConnectVersion(template string, actingVersion uint16, fields map[string]any) error {
-	if template != templateSessionConnectRequest || !ConnectVersionRequired(actingVersion) {
+	if template != templateSessionConnectRequest || !connectVersionRequired(actingVersion) {
 		return nil
 	}
 	if _, ok := fields["version"]; !ok {
-		return errors.New("missing version for actingVersion < 2")
+		return fmt.Errorf(
+			"missing version for actingVersion < %d",
+			sbe.SessionConnectVersionMinVersion,
+		)
+	}
+	return nil
+}
+
+func ValidateSessionEventHeartbeat(template string, fields map[string]any) error {
+	if template != templateSessionEvent {
+		return nil
+	}
+	if _, ok := fields[SessionEventHeartbeatField]; !ok {
+		return fmt.Errorf(
+			"missing %s (use %q to omit on wire)",
+			SessionEventHeartbeatField,
+			HeartbeatAbsentSentinel,
+		)
 	}
 	return nil
 }
 
 // SessionEventLegacyBlockLength reports the catalog blockLength for sessionEvent when
-// actingVersion < 6; the bool is false when blockLength must be omitted.
+// actingVersion is below SessionEventVersionMinVersion; the bool is false when
+// blockLength must be omitted.
 func SessionEventLegacyBlockLength(actingVersion uint16) (uint16, bool) {
-	if actingVersion >= sessionEventOmitBlockLengthActingVersion {
+	if actingVersion >= sbe.SessionEventVersionMinVersion {
 		return 0, false
 	}
 	return sbe.SessionEventBlockLength(actingVersion), true

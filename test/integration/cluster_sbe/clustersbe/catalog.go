@@ -27,15 +27,6 @@ func CatalogJSONForTest() []byte {
 
 type FixtureEntry = catalogschema.FixtureEntry
 
-// Panics during package init if catalog.json fails validation.
-func CatalogNames() []string {
-	names := make([]string, len(wireFixtures))
-	for i := range wireFixtures {
-		names[i] = wireFixtures[i].Name
-	}
-	return names
-}
-
 func loadCatalog() ([]WireFixture, error) {
 	catalog, err := catalogschema.ParseJSON(catalogJSONForTest)
 	if err != nil {
@@ -59,18 +50,30 @@ func loadCatalog() ([]WireFixture, error) {
 	return fixtures, nil
 }
 
-func catalogEntryToWireFixture(entry FixtureEntry, blobs map[string][]byte) (WireFixture, error) {
-	templateID, err := catalogschema.TemplateIDFromName(entry.Template)
+func projectCatalogEntry(
+	entry FixtureEntry,
+	blobs map[string][]byte,
+) (templateID uint16, fields any, err error) {
+	templateID, err = catalogschema.TemplateIDFromName(entry.Template)
 	if err != nil {
-		return WireFixture{}, err
+		return 0, nil, err
 	}
 
-	fields, err := catalogschema.ProjectCatalogToFields(
+	fields, err = catalogschema.ProjectCatalogToFields(
 		entry.Template,
 		entry.ActingVersion,
 		entry.Fields,
 		blobs,
 	)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	return templateID, fields, nil
+}
+
+func catalogEntryToWireFixture(entry FixtureEntry, blobs map[string][]byte) (WireFixture, error) {
+	templateID, fields, err := projectCatalogEntry(entry, blobs)
 	if err != nil {
 		return WireFixture{}, err
 	}
@@ -93,11 +96,15 @@ func CatalogEntryToWireFixtureForTest(
 
 // Regenerates committed fixture hex from catalog fields.
 func EncodeCatalogEntry(entry FixtureEntry, blobs map[string][]byte) ([]byte, error) {
-	fixture, err := catalogEntryToWireFixture(entry, blobs)
+	templateID, fields, err := projectCatalogEntry(entry, blobs)
 	if err != nil {
 		return nil, err
 	}
-	wire, ok := ReencodeWire(fixture)
+	wire, ok := ReencodeWire(WireFixture{
+		TemplateID:    templateID,
+		ActingVersion: entry.ActingVersion,
+		Fields:        fields,
+	})
 	if !ok {
 		return nil, fmt.Errorf(
 			"encode wire (template=%s actingVersion=%d)",

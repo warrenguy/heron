@@ -57,9 +57,9 @@ check:
 	fi
 
 check-static: lint
-	+@$(MAKE) --no-print-directory -j4 check-aeron-versions check-sbe-stale-optional \
-		check-catalog-stale-optional \
-		contract-oracles-optional
+	+@$(MAKE) --no-print-directory check-sbe-stale-optional
+	+@$(MAKE) --no-print-directory -j3 check-aeron-versions \
+		check-catalog-stale-optional contract-oracles-optional
 
 check-test:
 	+@$(MAKE) --no-print-directory -j2 test test-stress
@@ -81,13 +81,17 @@ endef
 
 # Cluster SBE codegen: catalog.json stale check in check-static.
 CLUSTER_SBE_CATALOG_JSON := test/integration/cluster_sbe/clustersbe/fixtures/catalog.json
-CLUSTER_SBE_CATALOG_REGEN := go run ./tools/cluster-sbe-catalog-gen \
+CLUSTER_SBE_CATALOG_GEN := bin/cluster-sbe-catalog-gen
+CLUSTER_SBE_CATALOG_REGEN := $(CLUSTER_SBE_CATALOG_GEN) \
 	-catalog $(CLUSTER_SBE_CATALOG_JSON) -out $(CLUSTER_SBE_CATALOG_JSON)
 
-cluster-sbe-catalog-regen:
+bin/cluster-sbe-catalog-gen: go.mod go.sum $(wildcard tools/cluster-sbe-catalog-gen/*.go)
+	go build -o $@ ./tools/cluster-sbe-catalog-gen
+
+cluster-sbe-catalog-regen: bin/cluster-sbe-catalog-gen
 	@$(CLUSTER_SBE_CATALOG_REGEN)
 
-check-catalog-stale:
+check-catalog-stale: bin/cluster-sbe-catalog-gen
 	@set -euo pipefail; tmp=$$(mktemp); cp $(CLUSTER_SBE_CATALOG_JSON) "$$tmp"; \
 	trap 'cp "$$tmp" $(CLUSTER_SBE_CATALOG_JSON); rm -f "$$tmp"' EXIT; \
 	$(CLUSTER_SBE_CATALOG_REGEN); diff -u "$$tmp" $(CLUSTER_SBE_CATALOG_JSON)
@@ -243,7 +247,7 @@ endef
 # Aggregate unit + oracle; $(1)=suite.
 define integration-contract
 test-$(1)-contract:
-	@$(MAKE) --no-print-directory -j2 test-$(1)-unit test-$(1)-oracle
+	+@$(MAKE) --no-print-directory test-$(1)-unit test-$(1)-oracle
 endef
 
 .PHONY: test-java-interop test-java-interop-unit test-java-interop-oracle test-java-interop-contract \
@@ -261,7 +265,7 @@ $(eval $(call integration-oracle,cluster-sbe,$(CLUSTER_SBE_ORACLE_TIMEOUT),CLUST
 $(eval $(call integration-contract,cluster-sbe))
 
 contract-oracles:
-	@$(MAKE) --no-print-directory -j2 test-java-interop-contract test-cluster-sbe-contract
+	+@$(MAKE) --no-print-directory test-java-interop-contract test-cluster-sbe-contract
 
 $(eval $(call optional-target,contract-oracles,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
 

@@ -7,8 +7,7 @@ import (
 	gensbe "github.com/warrenguy/heron/aeron/sbe/generated/sbe"
 )
 
-var sessionMessageHeaderEncodedLen = messageHeaderEncodedLength +
-	int(gensbe.SessionMessageHeaderSbeBlockLength)
+var sessionMessageHeaderEncodedLen = int((&gensbe.SessionMessageHeader{}).SbeBlockAndHeaderLength())
 
 // SessionMessageHeaderEncodedLen is the wire size of MessageHeader plus SessionMessageHeader.
 func SessionMessageHeaderEncodedLen() int {

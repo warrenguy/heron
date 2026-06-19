@@ -3,6 +3,7 @@ package catalogschema_test
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -241,6 +242,15 @@ func TestValidate_errors(t *testing.T) {
 			wantErr: "repeat byte out of range",
 		},
 		{
+			name: "blobRepeatLenExceedsMax",
+			mutate: func(c *catalogschema.CatalogFile) {
+				c.Blobs["challenge32"] = catalogschema.BlobSpec{
+					Repeat: catalogschema.BlobRepeat{Byte: 1, Len: 300},
+				}
+			},
+			wantErr: "repeat len 300 exceeds max",
+		},
+		{
 			name: "missingName",
 			mutate: func(c *catalogschema.CatalogFile) {
 				c.Fixtures[0].Name = ""
@@ -355,6 +365,34 @@ func TestValidate_errors(t *testing.T) {
 				})
 			},
 			wantErr: "unknown blob ref",
+		},
+		{
+			name: "sessionEventMissingHeartbeat",
+			mutate: func(c *catalogschema.CatalogFile) {
+				c.Fixtures[0].Template = "sessionEvent"
+				c.Fixtures[0].Fields = validSessionEventFields()
+				delete(c.Fixtures[0].Fields, catalogschema.SessionEventHeartbeatField)
+			},
+			wantErr: "missing leaderHeartbeatTimeoutNs",
+		},
+		{
+			name: "sessionEventDetailTooLong",
+			mutate: func(c *catalogschema.CatalogFile) {
+				c.Fixtures[0].Template = "sessionEvent"
+				fields := validSessionEventFields()
+				fields["detail"] = strings.Repeat("x", 300)
+				c.Fixtures[0].Fields = fields
+			},
+			wantErr: "length 300 exceeds max",
+		},
+		{
+			name: "encodedChallengePlainStringRejected",
+			mutate: func(c *catalogschema.CatalogFile) {
+				mutateChallengeFields(c, func(fields map[string]any) {
+					fields["encodedChallenge"] = "0102"
+				})
+			},
+			wantErr: "expected hex or ref object",
 		},
 	}
 

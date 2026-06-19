@@ -18,6 +18,14 @@ var SessionConnectClientInfoMinVersion = uint16(
 	(&gensbe.SessionConnectRequest{}).ClientInfoSinceVersion(),
 )
 
+var SessionEventVersionMinVersion = uint16(
+	(&gensbe.SessionEvent{}).VersionSinceVersion(),
+)
+
+var SessionConnectVersionMinVersion = uint16(
+	(&gensbe.SessionConnectRequest{}).VersionSinceVersion(),
+)
+
 // SessionEventOracleFields applies LeaderHeartbeatTimeoutNs oracle rules.
 //
 // math.MinInt64 omits on encode at actingVersion >= 13; decode reads 0. Below

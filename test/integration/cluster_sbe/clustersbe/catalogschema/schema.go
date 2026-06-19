@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/warrenguy/heron/aeron/sbe"
 	gensbe "github.com/warrenguy/heron/aeron/sbe/generated/sbe"
 )
 
@@ -20,9 +21,11 @@ const SchemaVersion = 1
 const HeartbeatAbsentSentinel = "absent"
 
 type wireTemplateSpec struct {
-	id               uint16
-	name             string
-	allowedFieldKeys []string
+	id                uint16
+	name              string
+	allowedFieldKeys  []string
+	varFieldKeys      []string
+	varBytesFieldKeys []string
 }
 
 // wireTemplateCatalog lists each cluster client message: SBE template id, catalog
@@ -41,6 +44,7 @@ var wireTemplateCatalog = []wireTemplateSpec{
 			"clusterSessionId", "correlationId", "leadershipTermId", "leaderMemberId",
 			"code", "version", SessionEventHeartbeatField, "detail",
 		},
+		varFieldKeys: []string{"detail"},
 	},
 	{
 		id:   gensbe.SessionConnectRequestSbeTemplateID,
@@ -49,6 +53,8 @@ var wireTemplateCatalog = []wireTemplateSpec{
 			"correlationId", "responseStreamId", "version", "responseChannel",
 			"encodedCredentials", "clientInfo",
 		},
+		varFieldKeys:      []string{"responseChannel", "encodedCredentials", "clientInfo"},
+		varBytesFieldKeys: []string{"encodedCredentials"},
 	},
 	{
 		id:               gensbe.SessionCloseRequestSbeTemplateID,
@@ -66,16 +72,21 @@ var wireTemplateCatalog = []wireTemplateSpec{
 		allowedFieldKeys: []string{
 			"leadershipTermId", "clusterSessionId", "leaderMemberId", "ingressEndpoints",
 		},
+		varFieldKeys: []string{"ingressEndpoints"},
 	},
 	{
-		id:               gensbe.ChallengeSbeTemplateID,
-		name:             "challenge",
-		allowedFieldKeys: []string{"correlationId", "clusterSessionId", "encodedChallenge"},
+		id:                gensbe.ChallengeSbeTemplateID,
+		name:              "challenge",
+		allowedFieldKeys:  []string{"correlationId", "clusterSessionId", "encodedChallenge"},
+		varFieldKeys:      []string{"encodedChallenge"},
+		varBytesFieldKeys: []string{"encodedChallenge"},
 	},
 	{
-		id:               gensbe.ChallengeResponseSbeTemplateID,
-		name:             "challengeResponse",
-		allowedFieldKeys: []string{"correlationId", "clusterSessionId", "encodedCredentials"},
+		id:                gensbe.ChallengeResponseSbeTemplateID,
+		name:              "challengeResponse",
+		allowedFieldKeys:  []string{"correlationId", "clusterSessionId", "encodedCredentials"},
+		varFieldKeys:      []string{"encodedCredentials"},
+		varBytesFieldKeys: []string{"encodedCredentials"},
 	},
 	{
 		id:   gensbe.AdminRequestSbeTemplateID,
@@ -83,6 +94,8 @@ var wireTemplateCatalog = []wireTemplateSpec{
 		allowedFieldKeys: []string{
 			"leadershipTermId", "clusterSessionId", "correlationId", "requestType", "payload",
 		},
+		varFieldKeys:      []string{"payload"},
+		varBytesFieldKeys: []string{"payload"},
 	},
 	{
 		id:   gensbe.AdminResponseSbeTemplateID,
@@ -90,6 +103,8 @@ var wireTemplateCatalog = []wireTemplateSpec{
 		allowedFieldKeys: []string{
 			"clusterSessionId", "correlationId", "requestType", "responseCode", "message", "payload",
 		},
+		varFieldKeys:      []string{"message", "payload"},
+		varBytesFieldKeys: []string{"payload"},
 	},
 }
 
@@ -112,17 +127,27 @@ var (
 )
 
 var (
-	templateIDs       map[string]uint16
-	templateFieldKeys map[string]map[string]struct{}
+	templateIDs               map[string]uint16
+	templateFieldKeys         map[string]map[string]struct{}
+	templateVarFieldKeys      map[string][]string
+	templateVarBytesFieldKeys map[string]map[string]struct{}
 )
 
 func init() {
 	n := len(wireTemplateCatalog)
 	templateIDs = make(map[string]uint16, n)
 	templateFieldKeys = make(map[string]map[string]struct{}, n)
+	templateVarFieldKeys = make(map[string][]string, n)
+	templateVarBytesFieldKeys = make(map[string]map[string]struct{}, n)
 	for _, w := range wireTemplateCatalog {
 		templateIDs[w.name] = w.id
 		templateFieldKeys[w.name] = fieldKeys(w.allowedFieldKeys...)
+		if len(w.varFieldKeys) > 0 {
+			templateVarFieldKeys[w.name] = w.varFieldKeys
+		}
+		if len(w.varBytesFieldKeys) > 0 {
+			templateVarBytesFieldKeys[w.name] = fieldKeys(w.varBytesFieldKeys...)
+		}
 	}
 }
 
@@ -218,7 +243,15 @@ func Validate(catalog CatalogFile) error {
 		if spec.Repeat.Byte < 0 || spec.Repeat.Byte > 255 {
 			return fmt.Errorf("blob %q: repeat byte out of range", id)
 		}
+		if spec.Repeat.Len > sbe.ClusterCodecMaxVarLen {
+			return fmt.Errorf(
+				"blob %q: repeat len %d exceeds max %d",
+				id, spec.Repeat.Len, sbe.ClusterCodecMaxVarLen,
+			)
+		}
 	}
+
+	resolvedBlobs := ResolveBlobs(catalog.Blobs)
 
 	seen := make(map[string]struct{}, len(catalog.Fixtures))
 	for i, entry := range catalog.Fixtures {
@@ -251,10 +284,16 @@ func Validate(catalog CatalogFile) error {
 		if err := ValidateConnectVersion(entry.Template, entry.ActingVersion, entry.Fields); err != nil {
 			return fmt.Errorf("fixture %q: %w", entry.Name, err)
 		}
+		if err := ValidateSessionEventHeartbeat(entry.Template, entry.Fields); err != nil {
+			return fmt.Errorf("fixture %q: %w", entry.Name, err)
+		}
 		if err := validateFixtureFields(entry); err != nil {
 			return fmt.Errorf("fixture %q: %w", entry.Name, err)
 		}
 		if err := validateBlobRefs(entry.Fields, catalog.Blobs); err != nil {
+			return fmt.Errorf("fixture %q: %w", entry.Name, err)
+		}
+		if err := validateFixtureVarFieldLengths(entry, resolvedBlobs); err != nil {
 			return fmt.Errorf("fixture %q: %w", entry.Name, err)
 		}
 	}

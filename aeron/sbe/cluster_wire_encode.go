@@ -48,8 +48,8 @@ func encodeWithClusterWireHeader(
 	return bodyOffset + encodeBody(bodyOffset, blockLength, actingVersion), true
 }
 
-func putClusterVarBytes(put func(string), data []byte) {
-	put(unsafe.String(unsafe.SliceData(data), len(data)))
+func clusterVarString(data []byte) string {
+	return unsafe.String(unsafe.SliceData(data), len(data))
 }
 
 // EncodeSessionMessageHeader writes a cluster SessionMessageHeader at offset.
@@ -98,13 +98,14 @@ func EncodeSessionEvent(
 				SetLeadershipTermId(fields.LeadershipTermID).
 				SetLeaderMemberId(fields.LeaderMemberID).
 				SetCode(fields.Code)
-			if actingVersion >= 6 && fields.Version != 0 {
+			if actingVersion >= SessionEventVersionMinVersion && fields.Version != 0 {
 				msg.SetVersion(fields.Version)
 			}
-			if actingVersion >= 13 && fields.LeaderHeartbeatTimeoutNs != math.MinInt64 {
+			if actingVersion >= SessionEventLeaderHeartbeatMinVersion &&
+				fields.LeaderHeartbeatTimeoutNs != math.MinInt64 {
 				msg.SetLeaderHeartbeatTimeoutNs(fields.LeaderHeartbeatTimeoutNs)
 			}
-			putClusterVarBytes(func(s string) { msg.PutDetail(s) }, fields.Detail)
+			msg.PutDetail(clusterVarString(fields.Detail))
 			return int(msg.EncodedLength())
 		},
 	)
@@ -133,13 +134,13 @@ func EncodeSessionConnectRequest(
 			msg.Wrap(buf, uint64(bodyOffset), uint64(len(buf)), uint64(blockLength), uint64(actingVersion)).
 				SetCorrelationId(fields.CorrelationID).
 				SetResponseStreamId(fields.ResponseStreamID)
-			if actingVersion >= 2 && fields.Version != 0 {
+			if actingVersion >= SessionConnectVersionMinVersion && fields.Version != 0 {
 				msg.SetVersion(fields.Version)
 			}
-			putClusterVarBytes(func(s string) { msg.PutResponseChannel(s) }, fields.ResponseChannel)
-			putClusterVarBytes(func(s string) { msg.PutEncodedCredentials(s) }, fields.EncodedCredentials)
+			msg.PutResponseChannel(clusterVarString(fields.ResponseChannel))
+			msg.PutEncodedCredentials(clusterVarString(fields.EncodedCredentials))
 			if actingVersion >= SessionConnectClientInfoMinVersion {
-				putClusterVarBytes(func(s string) { msg.PutClientInfo(s) }, fields.ClientInfo)
+				msg.PutClientInfo(clusterVarString(fields.ClientInfo))
 			}
 			return int(msg.EncodedLength())
 		},
@@ -211,7 +212,7 @@ func EncodeNewLeaderEvent(
 				SetLeadershipTermId(fields.LeadershipTermID).
 				SetClusterSessionId(fields.ClusterSessionID).
 				SetLeaderMemberId(fields.LeaderMemberID)
-			putClusterVarBytes(func(s string) { msg.PutIngressEndpoints(s) }, fields.IngressEndpoints)
+			msg.PutIngressEndpoints(clusterVarString(fields.IngressEndpoints))
 			return int(msg.EncodedLength())
 		},
 	)
@@ -235,7 +236,7 @@ func EncodeChallenge(
 			msg.Wrap(buf, uint64(bodyOffset), uint64(len(buf)), uint64(blockLength), uint64(actingVersion)).
 				SetCorrelationId(fields.CorrelationID).
 				SetClusterSessionId(fields.ClusterSessionID)
-			putClusterVarBytes(func(s string) { msg.PutEncodedChallenge(s) }, fields.EncodedChallenge)
+			msg.PutEncodedChallenge(clusterVarString(fields.EncodedChallenge))
 			return int(msg.EncodedLength())
 		},
 	)
@@ -259,7 +260,7 @@ func EncodeChallengeResponse(
 			msg.Wrap(buf, uint64(bodyOffset), uint64(len(buf)), uint64(blockLength), uint64(actingVersion)).
 				SetCorrelationId(fields.CorrelationID).
 				SetClusterSessionId(fields.ClusterSessionID)
-			putClusterVarBytes(func(s string) { msg.PutEncodedCredentials(s) }, fields.EncodedCredentials)
+			msg.PutEncodedCredentials(clusterVarString(fields.EncodedCredentials))
 			return int(msg.EncodedLength())
 		},
 	)
@@ -285,7 +286,7 @@ func EncodeAdminRequest(
 				SetClusterSessionId(fields.ClusterSessionID).
 				SetCorrelationId(fields.CorrelationID).
 				SetRequestType(fields.RequestType)
-			putClusterVarBytes(func(s string) { msg.PutPayload(s) }, fields.Payload)
+			msg.PutPayload(clusterVarString(fields.Payload))
 			return int(msg.EncodedLength())
 		},
 	)
@@ -311,8 +312,8 @@ func EncodeAdminResponse(
 				SetCorrelationId(fields.CorrelationID).
 				SetRequestType(fields.RequestType).
 				SetResponseCode(fields.ResponseCode)
-			putClusterVarBytes(func(s string) { msg.PutMessage(s) }, fields.Message)
-			putClusterVarBytes(func(s string) { msg.PutPayload(s) }, fields.Payload)
+			msg.PutMessage(clusterVarString(fields.Message))
+			msg.PutPayload(clusterVarString(fields.Payload))
 			return int(msg.EncodedLength())
 		},
 	)
