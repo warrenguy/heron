@@ -1,6 +1,7 @@
 package aeron
 
 import (
+	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
@@ -34,17 +35,26 @@ const (
 	UnsupportedMessageLength int64 = -6
 )
 
+func backPressureStatusForLog(
+	meta aeronatomic.AtomicBuffer,
+	maxPossiblePosition int64,
+	position int64,
+	requiredSpan int64,
+) int64 {
+	if position+requiredSpan >= maxPossiblePosition {
+		return MaxPositionExceeded
+	}
+	if logbuffer.IsConnectedVolatile(meta) != 0 {
+		return BackPressured
+	}
+	return NotConnected
+}
+
 func backPressureStatus(
 	pub *Publication,
 	position int64,
 	messageLength int64,
 ) int64 {
 	requiredSpan := int64(logbuffer.AlignFragmentChunkLength(int(messageLength)))
-	if position+requiredSpan >= pub.maxPossiblePosition {
-		return MaxPositionExceeded
-	}
-	if logbuffer.IsConnectedVolatile(pub.meta) != 0 {
-		return BackPressured
-	}
-	return NotConnected
+	return backPressureStatusForLog(pub.meta, pub.maxPossiblePosition, position, requiredSpan)
 }

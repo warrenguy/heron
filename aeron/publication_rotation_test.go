@@ -6,16 +6,79 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
+const termRotationTestMargin = 64
+
 func publicationLogConfigNearTermEnd(margin int) aeron.TestPublicationLogConfig {
-	cfg := aeron.DefaultTestPublicationLogConfig()
-	cfg.RawTails[0] = logbuffer.PackRawTail(
-		aeron.TestPublicationInitialTermID,
-		int32(aeron.TestPublicationTermLength-margin),
-	)
-	return cfg
+	return aeron.LogConfigNearTermEndForTest(aeron.DefaultTestPublicationLogConfig, margin)
+}
+
+func requireEndOfTermPaddingOnBuffer(
+	tb testing.TB,
+	termBuf atomic.AtomicBuffer,
+	termLength, margin int,
+) {
+	tb.Helper()
+
+	paddingOffset := termLength - margin
+	require.True(tb, logbuffer.IsPaddingFrame(termBuf, paddingOffset))
+	require.Equal(tb, int32(margin), logbuffer.FrameLengthVolatile(termBuf, paddingOffset))
+}
+
+func requireRotatedToNextTermMeta(
+	tb testing.TB,
+	meta atomic.AtomicBuffer,
+	termLength int,
+	wantTermCount int32,
+) int {
+	tb.Helper()
+
+	require.Equal(tb, wantTermCount, logbuffer.ActiveTermCount(meta))
+
+	nextIndex := logbuffer.IndexByTermCount(wantTermCount)
+	rawTail, err := logbuffer.GetRawTail(meta, nextIndex)
+	require.NoError(tb, err)
+	wantTermID := int32(aeron.TestPublicationInitialTermID + wantTermCount)
+	require.Equal(tb, wantTermID, logbuffer.TermID(rawTail))
+	require.Equal(tb, int32(0), logbuffer.TermOffset(rawTail, int32(termLength)))
+	return nextIndex
+}
+
+func requireEndOfTermPaddingFrame(
+	t *testing.T,
+	pub *aeron.Publication,
+	termIndex, termLength, margin int,
+) {
+	t.Helper()
+
+	termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
+	requireEndOfTermPaddingOnBuffer(t, termBuf, termLength, margin)
+}
+
+func requirePublicationRotatedToNextTerm(t *testing.T, pub *aeron.Publication, termLength int) int {
+	t.Helper()
+
+	return requireRotatedToNextTermMeta(t, pub.MetaDataBufferForTest(), termLength, 1)
+}
+
+func requireDataFramePayloadAtOffset(
+	t *testing.T,
+	pub *aeron.Publication,
+	termIndex, frameOffset int,
+	wantPayload []byte,
+) {
+	t.Helper()
+
+	termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
+	nextTermID := int32(aeron.TestPublicationInitialTermID + 1)
+	require.Equal(t, int16(logbuffer.HdrTypeData), logbuffer.FrameType(termBuf, frameOffset))
+	require.Equal(t, nextTermID, logbuffer.FrameTermID(termBuf, frameOffset))
+	require.Equal(t, int32(frameOffset), logbuffer.FrameTermOffset(termBuf, frameOffset))
+	start := frameOffset + logbuffer.OffsetFramePayload
+	require.Equal(t, wantPayload, termBuf.Bytes()[start:start+len(wantPayload)])
 }
 
 func TestVerifyPublicationLogIntegrityForTest_nearTermEndAfterOffer(t *testing.T) {
@@ -30,35 +93,18 @@ func TestVerifyPublicationLogIntegrityForTest_nearTermEndAfterOffer(t *testing.T
 
 func TestPublication_TermRotation_OnEndOfTerm(t *testing.T) {
 	termLength := aeron.TestPublicationTermLength
-	margin := 64
-	pub := aeron.NewTestPublication(t, publicationLogConfigNearTermEnd(margin), int64(1)<<62)
+	pub := newTestPublicationNearTermEnd(t, termRotationTestMargin)
 
-	first := pub.Offer(make([]byte, margin))
+	first := pub.Offer(make([]byte, termRotationTestMargin))
 	require.Equal(t, aeron.AdminAction, first)
 
-	termBuf := aeron.PublicationTermBufferForTest(pub, 0)
-	paddingOffset := termLength - margin
-	require.True(t, logbuffer.IsPaddingFrame(termBuf, paddingOffset))
-	require.Equal(t, int32(margin), logbuffer.FrameLengthVolatile(termBuf, paddingOffset))
-
-	require.Equal(t, int32(1), logbuffer.ActiveTermCount(pub.MetaDataBufferForTest()))
-
-	nextIndex := logbuffer.IndexByTermCount(1)
-	rawTail, err := logbuffer.GetRawTail(pub.MetaDataBufferForTest(), nextIndex)
-	require.NoError(t, err)
-	require.Equal(t, int32(aeron.TestPublicationInitialTermID+1), logbuffer.TermID(rawTail))
-	require.Equal(t, int32(0), logbuffer.TermOffset(rawTail, int32(termLength)))
+	requireEndOfTermPaddingFrame(t, pub, 0, termLength, termRotationTestMargin)
+	nextIndex := requirePublicationRotatedToNextTerm(t, pub, termLength)
 
 	second := pub.Offer([]byte{9, 8, 7})
 	require.Positive(t, second)
 
-	nextTermBuf := aeron.PublicationTermBufferForTest(pub, nextIndex)
-	require.Equal(t, int16(logbuffer.HdrTypeData), logbuffer.FrameType(nextTermBuf, 0))
-	nextTermID := int32(aeron.TestPublicationInitialTermID + 1)
-	require.Equal(t, nextTermID, logbuffer.FrameTermID(nextTermBuf, 0))
-	require.Equal(t, int32(0), logbuffer.FrameTermOffset(nextTermBuf, 0))
-	gotPayload := nextTermBuf.Bytes()[logbuffer.OffsetFramePayload : logbuffer.OffsetFramePayload+3]
-	require.Equal(t, []byte{9, 8, 7}, gotPayload)
+	requireDataFramePayloadAtOffset(t, pub, nextIndex, 0, []byte{9, 8, 7})
 
 	for range 3 {
 		position := aeron.OfferRetryForTest(pub, []byte{1, 2, 3, 4, 5, 6, 7, 8})
@@ -69,25 +115,14 @@ func TestPublication_TermRotation_OnEndOfTerm(t *testing.T) {
 
 func TestPublication_TermRotation_TryClaim(t *testing.T) {
 	termLength := aeron.TestPublicationTermLength
-	margin := 64
-	pub := aeron.NewTestPublication(t, publicationLogConfigNearTermEnd(margin), int64(1)<<62)
+	pub := newTestPublicationNearTermEnd(t, termRotationTestMargin)
 
-	_, _, position, err := pub.TryClaim(margin)
+	_, _, position, err := pub.TryClaim(termRotationTestMargin)
 	require.NoError(t, err)
 	require.Equal(t, aeron.AdminAction, position)
 
-	termBuf := aeron.PublicationTermBufferForTest(pub, 0)
-	paddingOffset := termLength - margin
-	require.True(t, logbuffer.IsPaddingFrame(termBuf, paddingOffset))
-	require.Equal(t, int32(margin), logbuffer.FrameLengthVolatile(termBuf, paddingOffset))
-
-	require.Equal(t, int32(1), logbuffer.ActiveTermCount(pub.MetaDataBufferForTest()))
-
-	nextIndex := logbuffer.IndexByTermCount(1)
-	rawTail, err := logbuffer.GetRawTail(pub.MetaDataBufferForTest(), nextIndex)
-	require.NoError(t, err)
-	require.Equal(t, int32(aeron.TestPublicationInitialTermID+1), logbuffer.TermID(rawTail))
-	require.Equal(t, int32(0), logbuffer.TermOffset(rawTail, int32(termLength)))
+	requireEndOfTermPaddingFrame(t, pub, 0, termLength, termRotationTestMargin)
+	nextIndex := requirePublicationRotatedToNextTerm(t, pub, termLength)
 
 	termIndex, frameOffset, position, err := pub.TryClaim(8)
 	require.NoError(t, err)
@@ -95,7 +130,7 @@ func TestPublication_TermRotation_TryClaim(t *testing.T) {
 	require.Equal(t, nextIndex, termIndex)
 	require.Equal(t, 0, frameOffset)
 
-	termBuf = aeron.PublicationTermBufferForTest(pub, termIndex)
+	termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
 	termBuf.PutBytes(frameOffset+logbuffer.OffsetFramePayload, []byte("12345678"))
 	require.NoError(t, pub.Commit(termIndex, frameOffset))
 	require.Equal(
@@ -107,11 +142,10 @@ func TestPublication_TermRotation_TryClaim(t *testing.T) {
 
 func TestPublication_TermRotation_TwoStepNearTermEnd(t *testing.T) {
 	termLength := aeron.TestPublicationTermLength
-	margin := 64
-	firstOffset := termLength - margin
+	firstOffset := termLength - termRotationTestMargin
 
 	t.Run("Offer", func(t *testing.T) {
-		pub := aeron.NewTestPublication(t, publicationLogConfigNearTermEnd(margin), int64(1)<<62)
+		pub := newTestPublicationNearTermEnd(t, termRotationTestMargin)
 
 		firstPayload := make([]byte, 16)
 		for i := range firstPayload {
@@ -127,34 +161,22 @@ func TestPublication_TermRotation_TwoStepNearTermEnd(t *testing.T) {
 		gotFirst := termBuf.Bytes()[firstPayloadStart : firstPayloadStart+16]
 		require.Equal(t, firstPayload, gotFirst)
 
-		second := pub.Offer(make([]byte, margin))
+		second := pub.Offer(make([]byte, termRotationTestMargin))
 		require.Equal(t, aeron.AdminAction, second)
 
 		require.False(t, logbuffer.IsPaddingFrame(termBuf, firstOffset))
 		require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(termBuf, termLength))
 
-		require.Equal(t, int32(1), logbuffer.ActiveTermCount(pub.MetaDataBufferForTest()))
-
-		nextIndex := logbuffer.IndexByTermCount(1)
-		rawTail, err := logbuffer.GetRawTail(pub.MetaDataBufferForTest(), nextIndex)
-		require.NoError(t, err)
-		require.Equal(t, int32(aeron.TestPublicationInitialTermID+1), logbuffer.TermID(rawTail))
-		require.Equal(t, int32(0), logbuffer.TermOffset(rawTail, int32(termLength)))
+		nextIndex := requirePublicationRotatedToNextTerm(t, pub, termLength)
 
 		third := pub.Offer([]byte{9, 8, 7})
 		require.Positive(t, third)
 
-		nextTermBuf := aeron.PublicationTermBufferForTest(pub, nextIndex)
-		require.Equal(t, int16(logbuffer.HdrTypeData), logbuffer.FrameType(nextTermBuf, 0))
-		nextTermID := int32(aeron.TestPublicationInitialTermID + 1)
-		require.Equal(t, nextTermID, logbuffer.FrameTermID(nextTermBuf, 0))
-		require.Equal(t, int32(0), logbuffer.FrameTermOffset(nextTermBuf, 0))
-		gotThird := nextTermBuf.Bytes()[logbuffer.OffsetFramePayload : logbuffer.OffsetFramePayload+3]
-		require.Equal(t, []byte{9, 8, 7}, gotThird)
+		requireDataFramePayloadAtOffset(t, pub, nextIndex, 0, []byte{9, 8, 7})
 	})
 
 	t.Run("TryClaim+Commit", func(t *testing.T) {
-		pub := aeron.NewTestPublication(t, publicationLogConfigNearTermEnd(margin), int64(1)<<62)
+		pub := newTestPublicationNearTermEnd(t, termRotationTestMargin)
 
 		termIndex, frameOffset, position, err := pub.TryClaim(16)
 		require.NoError(t, err)
@@ -172,20 +194,14 @@ func TestPublication_TermRotation_TwoStepNearTermEnd(t *testing.T) {
 			logbuffer.FrameLengthVolatile(termBuf, frameOffset),
 		)
 
-		_, _, position, err = pub.TryClaim(margin)
+		_, _, position, err = pub.TryClaim(termRotationTestMargin)
 		require.NoError(t, err)
 		require.Equal(t, aeron.AdminAction, position)
 
 		require.False(t, logbuffer.IsPaddingFrame(termBuf, firstOffset))
 		require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(termBuf, termLength))
 
-		require.Equal(t, int32(1), logbuffer.ActiveTermCount(pub.MetaDataBufferForTest()))
-
-		nextIndex := logbuffer.IndexByTermCount(1)
-		rawTail, err := logbuffer.GetRawTail(pub.MetaDataBufferForTest(), nextIndex)
-		require.NoError(t, err)
-		require.Equal(t, int32(aeron.TestPublicationInitialTermID+1), logbuffer.TermID(rawTail))
-		require.Equal(t, int32(0), logbuffer.TermOffset(rawTail, int32(termLength)))
+		nextIndex := requirePublicationRotatedToNextTerm(t, pub, termLength)
 
 		termIndex, frameOffset, position, err = pub.TryClaim(8)
 		require.NoError(t, err)

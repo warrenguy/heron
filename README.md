@@ -113,15 +113,19 @@ SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/ve
 ### Tests
 
 ```bash
-make check                        # lint, pins, SBE/catalog stale (optional), unit+stress (-race)
+make check                        # lint, pins, SBE/catalog stale (opt), unit+stress (-race)
 make test-rapid                   # property tests (pgregory.net/rapid)
 make test-integration             # live C aeronmd (-tags=integration)
-make contract-oracles             # interop + cluster SBE oracles (mvn/java)
-make test-java-interop-contract   # interop only
-make test-cluster-sbe-contract    # cluster SBE only
+make contract-oracles             # both contract suites below (needs mvn + java)
+make test-java-interop-contract   # Go/Java smoke: streams, payloads, timeouts (no driver)
+make test-cluster-sbe-contract    # Go/Java cluster SBE wire bytes vs catalog.json (no driver)
 make test-java-interop            # Docker Compose smoke (bidirectional IPC pub/sub)
 ```
 
+- Contract targets run `mvn test` (Java goldens) then matching Go oracle tests; no aeronmd or
+  Docker.
+- `test-java-interop-contract` checks shared constants for `make test-java-interop` (e.g. stream
+  1100/1101, 32x32-byte `java-N` / `go-N` payloads) before the live smoke run.
 - `make test-integration` builds `bin/aeronmd` when needed; harness sets `AERON_DIR` per test.
 - Unit tests use `bench` and `testhooks` build tags.
 - Property tests live in `*_rapid_test.go` behind the `rapid` tag.
@@ -137,8 +141,8 @@ Prefer Makefile targets over bare `go test`.
 
 ### Cluster SBE codecs
 
-Cluster codecs use Heron-owned SBE XML (`specs/cluster-codecs-client.xml`) and generated Go
-flyweights (`aeron/sbe/generated/`). Fixture oracle rows are authored in
+Cluster codecs use in-tree SBE XML (`specs/cluster-codecs-client.xml`) and generated Go
+flyweights (`aeron/sbe/generated/`). Fixture oracle rows live in
 `test/integration/cluster_sbe/clustersbe/fixtures/catalog.json`; run
 `make cluster-sbe-catalog-regen` to refresh committed `hex` from `fields`.
 

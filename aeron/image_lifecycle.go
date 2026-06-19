@@ -115,6 +115,7 @@ func subscriptionFromHandle(sub conductor.SubscriptionHandle) (*Subscription, er
 	return subscription, nil
 }
 
+// publicationFromHandle resolves concurrent *Publication handles only.
 func publicationFromHandle(pub conductor.PublicationHandle) (*Publication, error) {
 	if pub == nil {
 		return nil, errors.New("aeron: publication handle is nil")

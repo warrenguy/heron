@@ -23,7 +23,8 @@ const (
 	inMemSubscriptionRegistrationID  int64 = 8001
 	inMemImageCorrelationID          int64 = 8101
 	inMemSubscriberPositionCounterID int32 = 3
-	inMemImageSourceIdentity               = "aeron:ipc"
+	inMemIPCChannel                        = "aeron:ipc"
+	inMemImageSourceIdentity               = inMemIPCChannel
 
 	inMemPollZeroAllocPayload = "zero-alloc"
 )
@@ -49,6 +50,7 @@ type inMemPublicationLogConfig struct {
 	ActiveTermCount int32
 	RawTails        [logbuffer.PartitionCount]int64
 	IsConnected     int32
+	LogType         uint8
 }
 
 func defaultInMemPublicationLogConfig() inMemPublicationLogConfig {
@@ -61,7 +63,14 @@ func defaultInMemPublicationLogConfig() inMemPublicationLogConfig {
 			logbuffer.PackRawTail(inMemPublicationInitialTermID-1, 0),
 		},
 		IsConnected: 1,
+		LogType:     logbuffer.LogBufferTypeConcurrentPublication,
 	}
+}
+
+func defaultInMemExclusivePublicationLogConfig() inMemPublicationLogConfig {
+	cfg := defaultInMemPublicationLogConfig()
+	cfg.LogType = logbuffer.LogBufferTypeExclusivePublication
+	return cfg
 }
 
 func newInMemMappedLog(cfg inMemPublicationLogConfig) *logbuffer.MappedLogBuffer {
@@ -79,11 +88,27 @@ func newInMemPublicationFromLog(
 	log *logbuffer.MappedLogBuffer,
 	counters *cnc.CountersReader,
 ) *Publication {
-	pub, err := newPublicationFromReady(inMemPublicationBuffersReady(), log, counters, "aeron:ipc")
+	pub, err := newPublicationFromReady(inMemPublicationBuffersReady(), log, counters, inMemIPCChannel)
 	if err != nil {
 		panic(err)
 	}
 	return pub
+}
+
+func newInMemExclusivePublicationFromLog(
+	log *logbuffer.MappedLogBuffer,
+	counters *cnc.CountersReader,
+) *ExclusivePublication {
+	ep, err := newExclusivePublicationFromReady(
+		inMemPublicationBuffersReady(),
+		log,
+		counters,
+		inMemIPCChannel,
+	)
+	if err != nil {
+		panic(err)
+	}
+	return ep
 }
 
 func writeInMemPublicationMetadata(buf []byte, cfg inMemPublicationLogConfig) {
@@ -101,7 +126,7 @@ func writeInMemPublicationMetadata(buf []byte, cfg inMemPublicationLogConfig) {
 	meta.PutInt32(logbuffer.OffsetPageSize, logbuffer.PageMinSize)
 	meta.PutInt32(logbuffer.OffsetMTULength, inMemPublicationMTULength)
 	meta.PutInt32Release(logbuffer.OffsetIsConnected, cfg.IsConnected)
-	meta.Bytes()[logbuffer.OffsetLogType] = logbuffer.LogBufferTypeConcurrentPublication
+	meta.Bytes()[logbuffer.OffsetLogType] = cfg.LogType
 
 	if err := logbuffer.WriteDataHeaderUnfragmented(
 		meta,
@@ -180,7 +205,7 @@ func inMemCountersReaderWithoutTB(limitPosition int64) *cnc.CountersReader {
 			inMemPublicationChannelCounterID,
 			cnc.CounterRecordAllocated,
 			cnc.DriverSendChannelStatusTypeID,
-			"aeron:ipc",
+			inMemIPCChannel,
 			inMemPublicationRegistrationID,
 			1,
 		)

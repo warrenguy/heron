@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
@@ -97,6 +98,25 @@ func newPublicationFromReady(
 	)
 
 	return pub, nil
+}
+
+func commitPublicationTermPadding(
+	headerWriter logbuffer.HeaderWriter,
+	termBuf aeronatomic.AtomicBuffer,
+	termID int32,
+	fromOffset int,
+	paddingLength int32,
+) {
+	if paddingLength <= 0 {
+		return
+	}
+	if paddingLength >= logbuffer.DataHeaderLength {
+		headerWriter.Write(termBuf, fromOffset, paddingLength, termID)
+		logbuffer.PutFrameType(termBuf, fromOffset, logbuffer.HdrTypePad)
+		logbuffer.PutFrameLengthOrdered(termBuf, fromOffset, paddingLength)
+		return
+	}
+	logbuffer.CommitMinimalTermEndPadding(termBuf, fromOffset, paddingLength)
 }
 
 func requireActiveCounter(

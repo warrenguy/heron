@@ -1,0 +1,87 @@
+// Publication handle helpers shared by concurrent and exclusive publications.
+//
+// Close, retire, and bind resolve *Publication and *ExclusivePublication so both
+// types mark closed when a handle is already in the resource map.
+package aeron
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/logbuffer"
+)
+
+type publicationHandleOps struct {
+	registryKey  string
+	markClosed   func() error
+	setConductor func(*conductor.Conductor)
+}
+
+func retirePublicationHandle(pub conductor.PublicationHandle) (string, error) {
+	ops, err := publicationHandleOpsFor(pub)
+	if err != nil {
+		return "", err
+	}
+	return ops.registryKey, ops.markClosed()
+}
+
+func bindPublicationHandle(
+	pub conductor.PublicationHandle,
+	clientConductor *conductor.Conductor,
+) error {
+	ops, err := publicationHandleOpsFor(pub)
+	if err != nil {
+		return err
+	}
+	ops.setConductor(clientConductor)
+	return nil
+}
+
+func markPublicationHandleClosed(pub conductor.PublicationHandle) {
+	ops, err := publicationHandleOpsFor(pub)
+	if err != nil {
+		return
+	}
+	_ = ops.markClosed()
+}
+
+func publicationHandleOpsFor(pub conductor.PublicationHandle) (publicationHandleOps, error) {
+	if pub == nil {
+		return publicationHandleOps{}, errors.New("aeron: publication handle is nil")
+	}
+	switch p := pub.(type) {
+	case *Publication:
+		return publicationHandleOps{
+			registryKey: publicationRegistryKey(p.log),
+			markClosed:  p.markClosed,
+			setConductor: func(c *conductor.Conductor) {
+				p.conductor = c
+			},
+		}, nil
+	case *ExclusivePublication:
+		return publicationHandleOps{
+			registryKey: publicationRegistryKey(p.log),
+			markClosed:  p.markClosed,
+			setConductor: func(c *conductor.Conductor) {
+				p.conductor = c
+			},
+		}, nil
+	default:
+		return publicationHandleOps{}, publicationHandleTypeError(pub)
+	}
+}
+
+func publicationRegistryKey(log *logbuffer.MappedLogBuffer) string {
+	if log == nil {
+		return ""
+	}
+	return log.Path()
+}
+
+func publicationHandleTypeError(pub conductor.PublicationHandle) error {
+	return fmt.Errorf(
+		"aeron: publication handle %T is not *Publication or *ExclusivePublication",
+		pub,
+	)
+}

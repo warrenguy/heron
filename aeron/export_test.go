@@ -51,6 +51,101 @@ func DefaultTestPublicationLogConfig() TestPublicationLogConfig {
 	return defaultInMemPublicationLogConfig()
 }
 
+func DefaultTestExclusivePublicationLogConfig() TestPublicationLogConfig {
+	return defaultInMemExclusivePublicationLogConfig()
+}
+
+const (
+	NearMaxTermCountForTest                   = int32(1<<31 - 1)
+	nearMaxPositionTermRemainingForTest int32 = 32
+)
+
+func LogTermOffsetAtPositionForTest(position int64) int32 {
+	shift := logbuffer.PositionBitsToShift(TestPublicationTermLength)
+	return logbuffer.ComputeTermOffsetFromPosition(position, shift)
+}
+
+func LogConfigAtPositionForTest(
+	base func() TestPublicationLogConfig,
+	position int64,
+) TestPublicationLogConfig {
+	shift := logbuffer.PositionBitsToShift(TestPublicationTermLength)
+	termID := logbuffer.ComputeTermIDFromPosition(
+		position,
+		shift,
+		TestPublicationInitialTermID,
+	)
+	termOffset := logbuffer.ComputeTermOffsetFromPosition(position, shift)
+	index := logbuffer.IndexByPosition(position, shift)
+	termCount := logbuffer.ComputeTermCount(termID, TestPublicationInitialTermID)
+
+	cfg := base()
+	cfg.ActiveTermCount = termCount
+	cfg.RawTails[index] = logbuffer.PackRawTail(termID, termOffset)
+	return cfg
+}
+
+func LogConfigNearTermEndForTest(
+	base func() TestPublicationLogConfig,
+	margin int,
+) TestPublicationLogConfig {
+	cfg := base()
+	cfg.RawTails[0] = logbuffer.PackRawTail(
+		TestPublicationInitialTermID,
+		int32(TestPublicationTermLength-margin),
+	)
+	return cfg
+}
+
+func nearMaxTermTailForTest(remaining int32) (termID int32, index int, termOffset int32) {
+	termID = logbuffer.AddWrapI32(TestPublicationInitialTermID, NearMaxTermCountForTest)
+	index = logbuffer.IndexByTermCount(NearMaxTermCountForTest)
+	termOffset = int32(TestPublicationTermLength) - remaining
+	return termID, index, termOffset
+}
+
+func LogConfigWithTermRemainingForTest(
+	base func() TestPublicationLogConfig,
+	remaining int32,
+) TestPublicationLogConfig {
+	termID, index, termOffset := nearMaxTermTailForTest(remaining)
+
+	cfg := base()
+	cfg.ActiveTermCount = NearMaxTermCountForTest
+	cfg.RawTails[index] = logbuffer.PackRawTail(termID, termOffset)
+	return cfg
+}
+
+func PositionWithTermRemainingForTest(remaining int32) int64 {
+	termID, _, termOffset := nearMaxTermTailForTest(remaining)
+	shift := logbuffer.PositionBitsToShift(TestPublicationTermLength)
+	return logbuffer.ComputePosition(
+		termID,
+		termOffset,
+		shift,
+		TestPublicationInitialTermID,
+	)
+}
+
+func LogConfigNearMaxPositionForTest(
+	base func() TestPublicationLogConfig,
+) TestPublicationLogConfig {
+	return LogConfigWithTermRemainingForTest(base, nearMaxPositionTermRemainingForTest)
+}
+
+func PositionNearMaxPositionForTest() int64 {
+	return PositionWithTermRemainingForTest(nearMaxPositionTermRemainingForTest)
+}
+
+func NewExclusivePublicationFromReadyForTest(
+	ready conductor.PublicationBuffersReady,
+	log *logbuffer.MappedLogBuffer,
+	counters *cnc.CountersReader,
+	channel string,
+) (*ExclusivePublication, error) {
+	return newExclusivePublicationFromReady(ready, log, counters, channel)
+}
+
 func NewPublicationFromReadyForTest(
 	ready conductor.PublicationBuffersReady,
 	log *logbuffer.MappedLogBuffer,
@@ -64,7 +159,7 @@ func PublicationBuffersReadyForTest() conductor.PublicationBuffersReady {
 	return testPublicationBuffersReady()
 }
 
-func OfferRetryForTest(pub *Publication, payload []byte) int64 {
+func OfferRetryForTest(pub offerWithOffsetRetrySource, payload []byte) int64 {
 	return OfferWithOffsetRetryForTest(pub, payload, 0, len(payload))
 }
 
@@ -107,23 +202,17 @@ func (tracker *inflightSlotTracker) report() []fragmentedWriteSlot {
 	defer tracker.mu.Unlock()
 
 	result := make([]fragmentedWriteSlot, 0, len(tracker.inflight)+len(tracker.overlapped))
-	reported := make(map[fragmentedWriteSlot]struct{}, len(tracker.inflight)+len(tracker.overlapped))
+	seen := make(map[fragmentedWriteSlot]struct{}, len(tracker.inflight)+len(tracker.overlapped))
 	for key := range tracker.overlapped {
-		if _, ok := reported[key]; ok {
-			continue
-		}
-		reported[key] = struct{}{}
+		seen[key] = struct{}{}
 		result = append(result, key)
 	}
 	for key, count := range tracker.inflight {
-		if count <= 0 {
-			continue
+		if count > 0 {
+			if _, ok := seen[key]; !ok {
+				result = append(result, key)
+			}
 		}
-		if _, ok := reported[key]; ok {
-			continue
-		}
-		reported[key] = struct{}{}
-		result = append(result, key)
 	}
 	return result
 }
@@ -175,8 +264,12 @@ func ReportFragmentedReservationTrackerForTest() []fragmentedWriteSlot {
 	return fragmentedReservationTracker.report()
 }
 
-func OfferWithOffsetRetryForTest(
-	pub *Publication,
+type offerWithOffsetRetrySource interface {
+	OfferWithOffset(buffer []byte, offset, length int) int64
+}
+
+func offerWithOffsetRetry(
+	pub offerWithOffsetRetrySource,
 	buffer []byte,
 	offset int,
 	length int,
@@ -189,8 +282,21 @@ func OfferWithOffsetRetryForTest(
 	}
 }
 
-func TryClaimRetryForTest(
-	pub *Publication,
+func OfferWithOffsetRetryForTest(
+	pub offerWithOffsetRetrySource,
+	buffer []byte,
+	offset int,
+	length int,
+) int64 {
+	return offerWithOffsetRetry(pub, buffer, offset, length)
+}
+
+type tryClaimRetrySource interface {
+	TryClaim(length int) (termIndex, frameOffset int, position int64, err error)
+}
+
+func tryClaimRetry(
+	pub tryClaimRetrySource,
 	length int,
 ) (termIndex, frameOffset int, position int64, err error) {
 	for {
@@ -202,6 +308,13 @@ func TryClaimRetryForTest(
 			return termIndex, frameOffset, position, nil
 		}
 	}
+}
+
+func TryClaimRetryForTest(
+	pub tryClaimRetrySource,
+	length int,
+) (termIndex, frameOffset int, position int64, err error) {
+	return tryClaimRetry(pub, length)
 }
 
 func NewTestPublication(
@@ -281,11 +394,11 @@ func (pub *Publication) MetaDataBufferForTest() atomic.AtomicBuffer {
 }
 
 func PublicationActiveTermCountForTest(pub *Publication) int32 {
-	return logbuffer.ActiveTermCount(pub.meta)
+	return publicationActiveTermCountForTest(pub.meta)
 }
 
 func PublicationLimitSlotForTest(pub *Publication) int64 {
-	return pub.publicationLimit.Get()
+	return publicationLimitSlotForTest(pub.publicationLimit)
 }
 
 func NewTestPublicationWithoutTBForRapid(
@@ -293,6 +406,129 @@ func NewTestPublicationWithoutTBForRapid(
 	limitPosition int64,
 ) *Publication {
 	return newTestPublicationWithoutTB(logCfg, limitPosition)
+}
+
+func NewTestExclusivePublication(
+	tb testing.TB,
+	logCfg TestPublicationLogConfig,
+	limitPosition int64,
+) *ExclusivePublication {
+	tb.Helper()
+	return newTestExclusivePublication(tb, logCfg, newTestCountersReaderWithoutTB(limitPosition))
+}
+
+func NewTestExclusivePublicationWithoutTBForRapid(
+	logCfg TestPublicationLogConfig,
+	limitPosition int64,
+) *ExclusivePublication {
+	return newTestExclusivePublicationWithoutTB(logCfg, limitPosition)
+}
+
+func (ep *ExclusivePublication) MaxPayloadLengthForTest() int {
+	return ep.maxPayloadLength
+}
+
+func (ep *ExclusivePublication) MaxMessageLengthForTest() int {
+	return ep.maxMessageLength
+}
+
+func (ep *ExclusivePublication) MaxPossiblePositionForTest() int64 {
+	return ep.maxPossiblePosition
+}
+
+func (ep *ExclusivePublication) MetaDataBufferForTest() atomic.AtomicBuffer {
+	return ep.meta
+}
+
+func publicationActiveTermCountForTest(meta atomic.AtomicBuffer) int32 {
+	return logbuffer.ActiveTermCount(meta)
+}
+
+func publicationLimitSlotForTest(limit cnc.CounterSlot) int64 {
+	return limit.Get()
+}
+
+func publicationActiveTermBufferForTest(
+	meta atomic.AtomicBuffer,
+	termBuffers [logbuffer.PartitionCount]atomic.AtomicBuffer,
+) (int, atomic.AtomicBuffer) {
+	index := logbuffer.IndexByTermCount(publicationActiveTermCountForTest(meta))
+	return index, termBuffers[index]
+}
+
+func publicationTermBufferForTest(
+	termBuffers [logbuffer.PartitionCount]atomic.AtomicBuffer,
+	index int,
+) atomic.AtomicBuffer {
+	return termBuffers[index]
+}
+
+func setPublicationRawTailForTest(
+	meta atomic.AtomicBuffer,
+	partitionIndex int,
+	rawTail int64,
+) {
+	_ = logbuffer.PutRawTail(meta, partitionIndex, rawTail)
+}
+
+func setPublicationActiveTermCountForTest(meta atomic.AtomicBuffer, termCount int32) {
+	meta.PutInt32Release(logbuffer.OffsetActiveTermCount, termCount)
+}
+
+func ExclusivePublicationActiveTermCountForTest(ep *ExclusivePublication) int32 {
+	return publicationActiveTermCountForTest(ep.meta)
+}
+
+func ExclusivePublicationLimitSlotForTest(ep *ExclusivePublication) int64 {
+	return publicationLimitSlotForTest(ep.publicationLimit)
+}
+
+func ExclusivePublicationActiveTermBufferForTest(
+	ep *ExclusivePublication,
+) (int, atomic.AtomicBuffer) {
+	return publicationActiveTermBufferForTest(ep.meta, ep.termBuffers)
+}
+
+func ExclusivePublicationTermBufferForTest(
+	ep *ExclusivePublication,
+	index int,
+) atomic.AtomicBuffer {
+	return publicationTermBufferForTest(ep.termBuffers, index)
+}
+
+func SetExclusivePublicationRawTailForTest(
+	ep *ExclusivePublication,
+	partitionIndex int,
+	rawTail int64,
+) {
+	setPublicationRawTailForTest(ep.meta, partitionIndex, rawTail)
+}
+
+func SetExclusivePublicationActiveTermCountForTest(ep *ExclusivePublication, termCount int32) {
+	setPublicationActiveTermCountForTest(ep.meta, termCount)
+}
+
+func RotateExclusivePublicationForTest(ep *ExclusivePublication) {
+	ep.rotateTerm()
+}
+
+func (ep *ExclusivePublication) HandleEndOfLogForTest(
+	termBuf atomic.AtomicBuffer,
+	termLength int,
+	termID int32,
+	termOffset int,
+	reservedPosition int64,
+) int64 {
+	return ep.handleEndOfLog(termBuf, termLength, termID, termOffset, reservedPosition)
+}
+
+func NewTestExclusivePublicationWithCounters(
+	tb testing.TB,
+	logCfg TestPublicationLogConfig,
+	counters *cnc.CountersReader,
+) *ExclusivePublication {
+	tb.Helper()
+	return newTestExclusivePublication(tb, logCfg, counters)
 }
 
 func NewTestMappedLogForTest(
@@ -326,13 +562,11 @@ func NewTestCountersReaderLimitOnlyForTest(tb testing.TB, limitPosition int64) *
 }
 
 func PublicationActiveTermBufferForTest(pub *Publication) (int, atomic.AtomicBuffer) {
-	termCount := logbuffer.ActiveTermCount(pub.meta)
-	index := logbuffer.IndexByTermCount(termCount)
-	return index, pub.termBuffers[index]
+	return publicationActiveTermBufferForTest(pub.meta, pub.termBuffers)
 }
 
 func PublicationTermBufferForTest(pub *Publication, index int) atomic.AtomicBuffer {
-	return pub.termBuffers[index]
+	return publicationTermBufferForTest(pub.termBuffers, index)
 }
 
 func SetPublicationRawTailForTest(
@@ -340,11 +574,11 @@ func SetPublicationRawTailForTest(
 	partitionIndex int,
 	rawTail int64,
 ) {
-	_ = logbuffer.PutRawTail(pub.meta, partitionIndex, rawTail)
+	setPublicationRawTailForTest(pub.meta, partitionIndex, rawTail)
 }
 
 func SetPublicationActiveTermCountForTest(pub *Publication, termCount int32) {
-	pub.meta.PutInt32Release(logbuffer.OffsetActiveTermCount, termCount)
+	setPublicationActiveTermCountForTest(pub.meta, termCount)
 }
 
 func RotatePublicationLogForTest(pub *Publication, termCount, termID int32) {
@@ -427,6 +661,25 @@ func newTestPublicationWithoutTB(
 	limitPosition int64,
 ) *Publication {
 	return newTestPublication(nil, logCfg, newTestCountersReaderWithoutTB(limitPosition))
+}
+
+func newTestExclusivePublication(
+	tb testing.TB,
+	logCfg TestPublicationLogConfig,
+	counters *cnc.CountersReader,
+) *ExclusivePublication {
+	if tb != nil {
+		tb.Helper()
+	}
+	log := newTestMappedLog(tb, logCfg)
+	return newInMemExclusivePublicationFromLog(log, counters)
+}
+
+func newTestExclusivePublicationWithoutTB(
+	logCfg TestPublicationLogConfig,
+	limitPosition int64,
+) *ExclusivePublication {
+	return newTestExclusivePublication(nil, logCfg, newTestCountersReaderWithoutTB(limitPosition))
 }
 
 func WriteTestLogFileForTest(tb testing.TB, path string) {

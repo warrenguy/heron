@@ -112,11 +112,6 @@ func TestPublication_OfferWithOffset_invalidBounds(t *testing.T) {
 	}
 }
 
-func publicationTermOffsetAtPosition(position int64) int32 {
-	shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
-	return logbuffer.ComputeTermOffsetFromPosition(position, shift)
-}
-
 func injectPublicationCounterError(
 	tb testing.TB,
 	pub *aeron.Publication,
@@ -211,7 +206,7 @@ func requireRejectedOfferLeavesTermClean(
 
 	beforeCount := aeron.PublicationActiveTermCountForTest(pub)
 	beforePosition := pub.Position()
-	termOffset := int(publicationTermOffsetAtPosition(beforePosition))
+	termOffset := int(aeron.LogTermOffsetAtPositionForTest(beforePosition))
 	_, termBuf := aeron.PublicationActiveTermBufferForTest(pub)
 	require.Equal(tb, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
 
@@ -220,6 +215,26 @@ func requireRejectedOfferLeavesTermClean(
 	require.Equal(tb, beforePosition, pub.Position())
 	require.Equal(tb, beforeCount, aeron.PublicationActiveTermCountForTest(pub))
 	require.Equal(tb, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
+}
+
+func publicationLogConfigAtPosition(position int64) aeron.TestPublicationLogConfig {
+	return aeron.LogConfigAtPositionForTest(aeron.DefaultTestPublicationLogConfig, position)
+}
+
+func publicationLogConfigNearMaxPosition() aeron.TestPublicationLogConfig {
+	return aeron.LogConfigNearMaxPositionForTest(aeron.DefaultTestPublicationLogConfig)
+}
+
+func publicationPositionNearMaxPosition() int64 {
+	return aeron.PositionNearMaxPositionForTest()
+}
+
+func publicationLogConfigWithTermRemaining(remaining int32) aeron.TestPublicationLogConfig {
+	return aeron.LogConfigWithTermRemainingForTest(aeron.DefaultTestPublicationLogConfig, remaining)
+}
+
+func publicationPositionWithTermRemaining(remaining int32) int64 {
+	return aeron.PositionWithTermRemainingForTest(remaining)
 }
 
 func TestPublication_Offer_payloadLengthBoundary(t *testing.T) {
@@ -267,57 +282,6 @@ func TestPublication_TryClaim_payloadLengthBoundary(t *testing.T) {
 		t,
 		err,
 		"aeron: claim length 1377 exceeds maxPayloadLength=1376",
-	)
-}
-
-func publicationLogConfigAtPosition(position int64) aeron.TestPublicationLogConfig {
-	shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
-	termID := logbuffer.ComputeTermIDFromPosition(
-		position,
-		shift,
-		aeron.TestPublicationInitialTermID,
-	)
-	termOffset := publicationTermOffsetAtPosition(position)
-	index := logbuffer.IndexByPosition(position, shift)
-	termCount := logbuffer.ComputeTermCount(termID, aeron.TestPublicationInitialTermID)
-
-	cfg := aeron.DefaultTestPublicationLogConfig()
-	cfg.ActiveTermCount = termCount
-	cfg.RawTails[index] = logbuffer.PackRawTail(termID, termOffset)
-	return cfg
-}
-
-func publicationLogConfigNearMaxPosition() aeron.TestPublicationLogConfig {
-	return publicationLogConfigWithTermRemaining(32)
-}
-
-func publicationPositionNearMaxPosition() int64 {
-	return publicationPositionWithTermRemaining(32)
-}
-
-const publicationNearMaxTermCount = int32(1<<31 - 1)
-
-func publicationLogConfigWithTermRemaining(remaining int32) aeron.TestPublicationLogConfig {
-	termID := logbuffer.AddWrapI32(aeron.TestPublicationInitialTermID, publicationNearMaxTermCount)
-	index := logbuffer.IndexByTermCount(publicationNearMaxTermCount)
-
-	cfg := aeron.DefaultTestPublicationLogConfig()
-	cfg.ActiveTermCount = publicationNearMaxTermCount
-	cfg.RawTails[index] = logbuffer.PackRawTail(
-		termID,
-		int32(aeron.TestPublicationTermLength)-remaining,
-	)
-	return cfg
-}
-
-func publicationPositionWithTermRemaining(remaining int32) int64 {
-	termID := logbuffer.AddWrapI32(aeron.TestPublicationInitialTermID, publicationNearMaxTermCount)
-	shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
-	return logbuffer.ComputePosition(
-		termID,
-		int32(aeron.TestPublicationTermLength)-remaining,
-		shift,
-		aeron.TestPublicationInitialTermID,
 	)
 }
 
@@ -462,7 +426,7 @@ func TestPublication_TryClaim_maxPositionExceeded_preFAA(t *testing.T) {
 	pub := aeron.NewTestPublication(t, publicationLogConfigNearMaxPosition(), position)
 	beforeCount := aeron.PublicationActiveTermCountForTest(pub)
 
-	termOffset := int(publicationTermOffsetAtPosition(position))
+	termOffset := int(aeron.LogTermOffsetAtPositionForTest(position))
 	_, termBuf := aeron.PublicationActiveTermBufferForTest(pub)
 	require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
 
@@ -499,7 +463,7 @@ func TestPublication_MaxPositionExceeded_highLimitExactTermFill(t *testing.T) {
 	position := publicationPositionWithTermRemaining(remaining)
 	pub := aeron.NewTestPublication(t, cfg, 1<<62)
 
-	termOffset := int(publicationTermOffsetAtPosition(position))
+	termOffset := int(aeron.LogTermOffsetAtPositionForTest(position))
 	_, termBuf := aeron.PublicationActiveTermBufferForTest(pub)
 	require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
 
@@ -514,7 +478,7 @@ func TestPublication_MaxPositionExceeded_preFAA(t *testing.T) {
 	pub := aeron.NewTestPublication(t, publicationLogConfigNearMaxPosition(), position)
 	beforeCount := aeron.PublicationActiveTermCountForTest(pub)
 
-	termOffset := int(publicationTermOffsetAtPosition(position))
+	termOffset := int(aeron.LogTermOffsetAtPositionForTest(position))
 	_, termBuf := aeron.PublicationActiveTermBufferForTest(pub)
 	require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(termBuf, termOffset))
 

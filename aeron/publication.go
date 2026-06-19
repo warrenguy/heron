@@ -313,11 +313,22 @@ func (pub *Publication) loadInFlightClaim(
 	if pub.IsClosed() {
 		return aeronatomic.AtomicBuffer{}, 0, errors.New("aeron: publication is closed")
 	}
+	return loadInFlightClaimFrame(&pub.termBuffers, termIndex, frameOffset)
+}
+
+// loadInFlightClaimFrame validates a claimed frame and returns its term buffer
+// and absolute frame length. Shared by concurrent and exclusive Commit/Abort;
+// the closed check stays with each caller for the type-specific error.
+func loadInFlightClaimFrame(
+	termBuffers *[logbuffer.PartitionCount]aeronatomic.AtomicBuffer,
+	termIndex int,
+	frameOffset int,
+) (aeronatomic.AtomicBuffer, int32, error) {
 	if err := validateTermIndex(termIndex); err != nil {
 		return aeronatomic.AtomicBuffer{}, 0, err
 	}
 
-	termBuf := pub.termBuffers[termIndex]
+	termBuf := termBuffers[termIndex]
 	if err := validateFrameOffset(termBuf, frameOffset); err != nil {
 		return aeronatomic.AtomicBuffer{}, 0, err
 	}
@@ -619,16 +630,7 @@ func (pub *Publication) commitTermPadding(
 	fromOffset int,
 	paddingLength int32,
 ) {
-	if paddingLength <= 0 {
-		return
-	}
-	if paddingLength >= logbuffer.DataHeaderLength {
-		pub.headerWriter.Write(termBuf, fromOffset, paddingLength, termID)
-		logbuffer.PutFrameType(termBuf, fromOffset, logbuffer.HdrTypePad)
-		logbuffer.PutFrameLengthOrdered(termBuf, fromOffset, paddingLength)
-		return
-	}
-	logbuffer.CommitMinimalTermEndPadding(termBuf, fromOffset, paddingLength)
+	commitPublicationTermPadding(pub.headerWriter, termBuf, termID, fromOffset, paddingLength)
 }
 
 func (pub *Publication) reserveWithHeader(length int) (reserveOutcome, bool) {

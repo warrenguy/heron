@@ -64,27 +64,14 @@ func (conductorResourceLifecycle) RetireSubscription(
 func (conductorResourceLifecycle) RetirePublication(
 	pub conductor.PublicationHandle,
 ) (string, error) {
-	publication, err := publicationFromHandle(pub)
-	if err != nil {
-		return "", err
-	}
-	var registryKey string
-	if publication.log != nil {
-		registryKey = publication.log.Path()
-	}
-	return registryKey, publication.markClosed()
+	return retirePublicationHandle(pub)
 }
 
 func (conductorResourceLifecycle) BindPublication(
 	pub conductor.PublicationHandle,
 	clientConductor *conductor.Conductor,
 ) error {
-	publication, err := publicationFromHandle(pub)
-	if err != nil {
-		return err
-	}
-	publication.conductor = clientConductor
-	return nil
+	return bindPublicationHandle(pub, clientConductor)
 }
 
 func (conductorResourceLifecycle) BindSubscription(
@@ -100,11 +87,7 @@ func (conductorResourceLifecycle) BindSubscription(
 }
 
 func (conductorResourceLifecycle) MarkPublicationClosed(pub conductor.PublicationHandle) {
-	publication, err := publicationFromHandle(pub)
-	if err != nil {
-		return
-	}
-	_ = publication.markClosed()
+	markPublicationHandleClosed(pub)
 }
 
 func (conductorResourceLifecycle) MarkSubscriptionClosed(sub conductor.SubscriptionHandle) {

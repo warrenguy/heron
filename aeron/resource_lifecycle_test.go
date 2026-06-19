@@ -46,33 +46,40 @@ func TestConductorResourceLifecycle_NewPublication_inactiveLimitCounter(t *testi
 	require.ErrorContains(t, err, "publication limit counter")
 }
 
-func TestConductorResourceLifecycle_ApplySubscriptionReady_errors(t *testing.T) {
-	t.Parallel()
+func runConductorSubscriptionHandleErrorTests(
+	t *testing.T,
+	run func(sub conductor.SubscriptionHandle) error,
+) {
+	t.Helper()
 
 	for _, tt := range conductorSubscriptionHandleErrorCases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := ConductorResourceLifecycle.ApplySubscriptionReady(
-				tt.sub,
-				conductor.SubscriptionReady{ChannelStatusCounterID: 12},
-			)
+			err := run(tt.sub)
 			require.EqualError(t, err, tt.want)
 		})
 	}
 }
 
+func TestConductorResourceLifecycle_ApplySubscriptionReady_errors(t *testing.T) {
+	t.Parallel()
+
+	runConductorSubscriptionHandleErrorTests(t, func(sub conductor.SubscriptionHandle) error {
+		return ConductorResourceLifecycle.ApplySubscriptionReady(
+			sub,
+			conductor.SubscriptionReady{ChannelStatusCounterID: 12},
+		)
+	})
+}
+
 func TestConductorResourceLifecycle_RetireSubscription_errors(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range conductorSubscriptionHandleErrorCases {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			_, err := ConductorResourceLifecycle.RetireSubscription(tt.sub)
-			require.EqualError(t, err, tt.want)
-		})
-	}
+	runConductorSubscriptionHandleErrorTests(t, func(sub conductor.SubscriptionHandle) error {
+		_, err := ConductorResourceLifecycle.RetireSubscription(sub)
+		return err
+	})
 }
 
 var conductorPublicationHandleErrorCases = []struct {
@@ -88,7 +95,8 @@ var conductorPublicationHandleErrorCases = []struct {
 	{
 		name: "wrong type",
 		pub:  stubPubHandle,
-		want: "aeron: publication handle aeron.stubPublicationHandle is not *Publication",
+		want: "aeron: publication handle aeron.stubPublicationHandle is not " +
+			"*Publication or *ExclusivePublication",
 	},
 }
 
@@ -105,24 +113,64 @@ func TestConductorResourceLifecycle_RetirePublication_errors(t *testing.T) {
 	}
 }
 
+type retirePublicationFixture struct {
+	handle   conductor.PublicationHandle
+	logPath  string
+	isClosed func() bool
+}
+
+func newRetirePublicationFixture(
+	t *testing.T,
+	logCfg TestPublicationLogConfig,
+	exclusive bool,
+) retirePublicationFixture {
+	t.Helper()
+
+	log := NewTestMappedLogForTest(t, logCfg)
+	ready := testPublicationBuffersReady()
+	ready.ChannelStatusCounterID = cnc.NullCounterID
+	counters := NewTestCountersReaderLimitOnlyForTest(t, int64(1)<<40)
+
+	if exclusive {
+		ep, err := NewExclusivePublicationFromReadyForTest(ready, log, counters, "aeron:ipc")
+		require.NoError(t, err)
+		return retirePublicationFixture{ep, ep.log.Path(), ep.IsClosed}
+	}
+
+	pub, err := NewPublicationFromReadyForTest(ready, log, counters, "aeron:ipc")
+	require.NoError(t, err)
+	return retirePublicationFixture{pub, pub.log.Path(), pub.IsClosed}
+}
+
 func TestConductorResourceLifecycle_RetirePublication_closesAndReturnsRegistryKey(t *testing.T) {
 	t.Parallel()
 
-	log := NewTestMappedLogForTest(t, DefaultTestPublicationLogConfig())
-	ready := testPublicationBuffersReady()
-	ready.ChannelStatusCounterID = cnc.NullCounterID
-	pub, err := NewPublicationFromReadyForTest(
-		ready,
-		log,
-		NewTestCountersReaderLimitOnlyForTest(t, int64(1)<<40),
-		"aeron:ipc",
-	)
-	require.NoError(t, err)
+	for _, tt := range []struct {
+		name      string
+		logCfg    TestPublicationLogConfig
+		exclusive bool
+	}{
+		{
+			name:      "publication",
+			logCfg:    DefaultTestPublicationLogConfig(),
+			exclusive: false,
+		},
+		{
+			name:      "exclusive",
+			logCfg:    DefaultTestExclusivePublicationLogConfig(),
+			exclusive: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	registryKey, err := ConductorResourceLifecycle.RetirePublication(pub)
-	require.NoError(t, err)
-	require.Equal(t, pub.log.Path(), registryKey)
-	require.True(t, pub.IsClosed())
+			fixture := newRetirePublicationFixture(t, tt.logCfg, tt.exclusive)
+			registryKey, err := ConductorResourceLifecycle.RetirePublication(fixture.handle)
+			require.NoError(t, err)
+			require.Equal(t, fixture.logPath, registryKey)
+			require.True(t, fixture.isClosed())
+		})
+	}
 }
 
 func TestConductorResourceLifecycle_RetireSubscription_releasesImageLogs(t *testing.T) {
