@@ -19,6 +19,13 @@ type ResourceLifecycle interface {
 		channel string,
 	) (PublicationHandle, error)
 
+	NewExclusivePublication(
+		event PublicationBuffersReady,
+		logBuffers *logbuffer.LogBuffers,
+		countersReader *cnc.CountersReader,
+		channel string,
+	) (PublicationHandle, error)
+
 	NewPreSubscription(
 		registrationID int64,
 		streamID int32,

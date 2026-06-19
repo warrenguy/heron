@@ -11,11 +11,13 @@ import (
 
 // Golden bytes generated from Aeron 1.51.0 Java flyweight layouts via conductor encoders.
 const (
-	goldenPublicationReadyLogFileName    = "/dev/shm/aeron-publication.log"
-	goldenPublicationReadyCorrelationID  = int64(1001)
-	goldenSubscriptionReadyCorrelationID = int64(3003)
-	goldenAvailableImageCorrelationID    = int64(4004)
-	goldenUnavailableImageCorrelationID  = int64(6006)
+	goldenPublicationReadyLogFileName            = "/dev/shm/aeron-publication.log"
+	goldenExclusivePublicationReadyLogFileName   = "/dev/shm/aeron-exclusive-publication.log"
+	goldenPublicationReadyCorrelationID          = int64(1001)
+	goldenExclusivePublicationReadyCorrelationID = int64(0x0F06_0000_0002)
+	goldenSubscriptionReadyCorrelationID         = int64(3003)
+	goldenAvailableImageCorrelationID            = int64(4004)
+	goldenUnavailableImageCorrelationID          = int64(6006)
 )
 
 var goldenPublicationBuffersReadyEvent = conductor.PublicationBuffersReady{
@@ -26,6 +28,16 @@ var goldenPublicationBuffersReadyEvent = conductor.PublicationBuffersReady{
 	PublicationLimitCounterID: 10,
 	ChannelStatusCounterID:    11,
 	LogFileName:               goldenPublicationReadyLogFileName,
+}
+
+var goldenExclusivePublicationBuffersReadyEvent = conductor.PublicationBuffersReady{
+	CorrelationID:             goldenExclusivePublicationReadyCorrelationID,
+	RegistrationID:            2003,
+	SessionID:                 43,
+	StreamID:                  8,
+	PublicationLimitCounterID: 10,
+	ChannelStatusCounterID:    11,
+	LogFileName:               goldenExclusivePublicationReadyLogFileName,
 }
 
 var goldenSubscriptionReadyEvent = conductor.SubscriptionReady{
@@ -62,6 +74,14 @@ func goldenPublicationBuffersReadyWithCorrelation(
 	correlationID int64,
 ) conductor.PublicationBuffersReady {
 	event := goldenPublicationBuffersReadyEvent
+	event.CorrelationID = correlationID
+	return event
+}
+
+func goldenExclusivePublicationBuffersReadyWithCorrelation(
+	correlationID int64,
+) conductor.PublicationBuffersReady {
+	event := goldenExclusivePublicationBuffersReadyEvent
 	event.CorrelationID = correlationID
 	return event
 }

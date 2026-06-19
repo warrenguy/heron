@@ -146,6 +146,10 @@ func publicationReadyHook(conductor *Conductor, event PublicationBuffersReady) {
 	conductor.handlePublicationReady(event)
 }
 
+func exclusivePublicationReadyHook(conductor *Conductor, event PublicationBuffersReady) {
+	conductor.handleExclusivePublicationReady(event)
+}
+
 func completePendingHook(
 	conductor *Conductor,
 	correlationID int64,

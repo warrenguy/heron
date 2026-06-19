@@ -258,6 +258,30 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 			},
 		},
 		{
+			name:       "add exclusive publication",
+			wantTypeID: conductor.AddExclusivePublication,
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.AddExclusivePublication(correlationID, streamID, driverProxyTestChannel)
+			},
+			wantBody: conductor.PublicationMessageBytes(
+				clientID,
+				correlationID,
+				streamID,
+				driverProxyTestChannel,
+			),
+			bodyLength: conductor.PublicationMessageBodyLength(driverProxyTestChannel),
+			read: func(t *testing.T, buffer aeronatomic.AtomicBuffer, index, length int) {
+				got, err := conductor.DecodePublicationMessage(buffer, index, length)
+				require.NoError(t, err)
+				require.Equal(t, conductor.PublicationMessage{
+					ClientID:      clientID,
+					CorrelationID: correlationID,
+					StreamID:      streamID,
+					Channel:       driverProxyTestChannel,
+				}, got)
+			},
+		},
+		{
 			name:       "add subscription",
 			wantTypeID: conductor.AddSubscription,
 			offer: func(proxy *conductor.DriverProxy) error {

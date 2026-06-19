@@ -17,6 +17,7 @@ var closedGuardAfterPollPendingKinds = []conductor.PendingKind{
 	conductor.PendingKindNextSessionID,
 	conductor.PendingKindAddPublication,
 	conductor.PendingKindAddSubscription,
+	conductor.PendingKindAddExclusivePublication,
 }
 
 func drawClosedGuardAfterPollPendingKind(rt *rapid.T) conductor.PendingKind {
@@ -59,8 +60,13 @@ func setupPreLatchedClosedGuardPending(
 		)
 		return client, correlationID, nil
 
-	case conductor.PendingKindAddPublication:
-		dir, logPath := setupClientAddPublicationLog(t)
+	case conductor.PendingKindAddPublication, conductor.PendingKindAddExclusivePublication:
+		var dir, logPath string
+		if kind == conductor.PendingKindAddExclusivePublication {
+			dir, logPath = setupClientAddPublicationKindLog(t, true)
+		} else {
+			dir, logPath = setupClientAddPublicationLog(t)
+		}
 		client, fixture := newClientAddFixture(
 			t,
 			func() int64 { return nanoNs },
@@ -81,10 +87,12 @@ func setupPreLatchedClosedGuardPending(
 				deadlineNs,
 			),
 		)
-		conductor.PublicationReadyForTest(
-			fixture.Conductor,
-			clientAddPublicationReadyEvent(correlationID, logPath),
-		)
+		readyEvent := clientAddPublicationReadyEvent(correlationID, logPath)
+		if kind == conductor.PendingKindAddExclusivePublication {
+			conductor.ExclusivePublicationReadyForTest(fixture.Conductor, readyEvent)
+		} else {
+			conductor.PublicationReadyForTest(fixture.Conductor, readyEvent)
+		}
 		require.Equal(rt, 1, client.PublicationCountForTest())
 		return client, correlationID, (*Client).PublicationCountForTest
 

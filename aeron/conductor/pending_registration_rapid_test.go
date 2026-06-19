@@ -24,6 +24,7 @@ var rapidPendingKinds = []conductor.PendingKind{
 	conductor.PendingKindOperationSuccess,
 	conductor.PendingKindAddPublication,
 	conductor.PendingKindAddSubscription,
+	conductor.PendingKindAddExclusivePublication,
 	conductor.PendingKindRemovePublication,
 	conductor.PendingKindRemoveSubscription,
 }
@@ -87,8 +88,7 @@ func TestConductor_RegisterPending_correlationUniqueness_rapid(t *testing.T) {
 			kind := rapid.SampledFrom(rapidPendingKinds).Draw(rt, "kind")
 			var streamID int32
 			var channel string
-			switch kind {
-			case conductor.PendingKindAddPublication, conductor.PendingKindAddSubscription:
+			if conductor.AddPendingKindForTest(kind) {
 				streamID = rapid.Int32().Draw(rt, "streamID")
 				channel = rapid.String().Draw(rt, "channel")
 			}
@@ -112,8 +112,7 @@ func TestConductor_RegisterPending_correlationUniqueness_rapid(t *testing.T) {
 			require.True(rt, ok)
 			require.Equal(rt, correlationID, got.CorrelationID)
 			require.Equal(rt, entry.kind, got.Kind)
-			switch entry.kind {
-			case conductor.PendingKindAddPublication, conductor.PendingKindAddSubscription:
+			if conductor.AddPendingKindForTest(entry.kind) {
 				require.Equal(rt, entry.streamID, got.StreamID)
 				require.Equal(rt, entry.channel, got.Channel)
 			}
@@ -251,8 +250,7 @@ func registerPendingRapidMapEntry(
 	timeout := time.Duration(deadlineNs - model.nowNs)
 	var streamID int32
 	var channel string
-	switch kind {
-	case conductor.PendingKindAddPublication, conductor.PendingKindAddSubscription:
+	if conductor.AddPendingKindForTest(kind) {
 		streamID = rapid.Int32().Draw(rt, "streamID")
 		channel = rapid.String().Draw(rt, "channel")
 	}
@@ -677,8 +675,10 @@ type addPendingRapidOpKind int
 
 const (
 	addPendingRapidOpRegisterPub addPendingRapidOpKind = iota
+	addPendingRapidOpRegisterExclusivePub
 	addPendingRapidOpRegisterSub
 	addPendingRapidOpCompletePubReady
+	addPendingRapidOpCompleteExclusivePubReady
 	addPendingRapidOpCompleteSubReady
 	addPendingRapidOpSetActive
 	addPendingRapidOpCancel
@@ -792,12 +792,6 @@ func applyAddPendingRapidPoll(model *addPendingRapidModel, correlationID int64) 
 	entry.present = false
 	model.entries[correlationID] = entry
 	model.receivedCorrelationID = conductor.NullCorrelationID
-	if entry.driverErrored {
-		return
-	}
-	if entry.readyLatched && entry.kind == conductor.PendingKindAddPublication {
-		return
-	}
 }
 
 func assertAddPendingRapidInvariants(
@@ -827,10 +821,11 @@ func assertAddPendingRapidInvariants(
 }
 
 type addPendingRapidEligibility struct {
-	completablePublication  bool
-	completableSubscription bool
-	anyPresent              bool
-	pollable                bool
+	completablePublication          bool
+	completableExclusivePublication bool
+	completableSubscription         bool
+	anyPresent                      bool
+	pollable                        bool
 }
 
 func scanAddPendingRapidEligibility(model addPendingRapidModel) addPendingRapidEligibility {
@@ -846,6 +841,8 @@ func scanAddPendingRapidEligibility(model addPendingRapidModel) addPendingRapidE
 		switch entry.kind {
 		case conductor.PendingKindAddPublication:
 			eligibility.completablePublication = true
+		case conductor.PendingKindAddExclusivePublication:
+			eligibility.completableExclusivePublication = true
 		case conductor.PendingKindAddSubscription:
 			eligibility.completableSubscription = true
 		}
@@ -869,10 +866,14 @@ func runAddPendingRapidStep(
 	eligibility := scanAddPendingRapidEligibility(*model)
 	ops := []addPendingRapidOpKind{
 		addPendingRapidOpRegisterPub,
+		addPendingRapidOpRegisterExclusivePub,
 		addPendingRapidOpRegisterSub,
 	}
 	if eligibility.completablePublication {
 		ops = append(ops, addPendingRapidOpCompletePubReady)
+	}
+	if eligibility.completableExclusivePublication {
+		ops = append(ops, addPendingRapidOpCompleteExclusivePubReady)
 	}
 	if eligibility.completableSubscription {
 		ops = append(ops, addPendingRapidOpCompleteSubReady)
@@ -916,6 +917,31 @@ func runAddPendingRapidStep(
 			deadlineNs: deadlineNs,
 		}
 
+	case addPendingRapidOpRegisterExclusivePub:
+		correlationID := drawPendingRapidUniqueCorrelationID(
+			rt,
+			rapidMapContains(seen),
+			fmt.Sprintf("exclusivePubCorrelationID%d", step),
+		)
+		seen[correlationID] = struct{}{}
+		deadlineLabel := fmt.Sprintf("exclusivePubDeadline%d", step)
+		deadlineNs := model.nowNs + pendingRapidDeadlineOffset(rt, deadlineLabel)
+		require.NoError(
+			rt,
+			conductorInstance.RegisterPendingAddWithDeadline(
+				conductor.PendingKindAddExclusivePublication,
+				correlationID,
+				goldenExclusivePublicationBuffersReadyEvent.StreamID,
+				pendingTestChannel,
+				deadlineNs,
+			),
+		)
+		model.entries[correlationID] = addPendingRapidEntry{
+			kind:       conductor.PendingKindAddExclusivePublication,
+			present:    true,
+			deadlineNs: deadlineNs,
+		}
+
 	case addPendingRapidOpRegisterSub:
 		correlationID := drawPendingRapidUniqueCorrelationID(
 			rt,
@@ -953,6 +979,29 @@ func runAddPendingRapidStep(
 		event := goldenPublicationBuffersReadyWithCorrelation(correlationID)
 		event.RegistrationID = correlationID + 1
 		conductorInstance.PublicationReadyForTest(event)
+		entry := model.entries[correlationID]
+		entry.readyLatched = true
+		entry.registrationID = event.RegistrationID
+		model.entries[correlationID] = entry
+		model.receivedCorrelationID = correlationID
+
+	case addPendingRapidOpCompleteExclusivePubReady:
+		correlationID, ok := drawAddPendingRapidCompletable(
+			*model,
+			conductor.PendingKindAddExclusivePublication,
+		)
+		if !ok {
+			return
+		}
+		if conductor.LogBuffersRegistryRefCountForTest(
+			conductor.LogBuffersRegistryForTest(conductorInstance),
+			goldenExclusivePublicationReadyLogFileName,
+		) == 0 {
+			seedGoldenExclusivePublicationLogBuffers(t, conductorInstance)
+		}
+		event := goldenExclusivePublicationBuffersReadyWithCorrelation(correlationID)
+		event.RegistrationID = correlationID + 1
+		conductorInstance.ExclusivePublicationReadyForTest(event)
 		entry := model.entries[correlationID]
 		entry.readyLatched = true
 		entry.registrationID = event.RegistrationID
@@ -1178,6 +1227,32 @@ func (lifecycle *addPendingBindRetireRapidLifecycle) NewPublication(
 	)
 }
 
+func (lifecycle *addPendingBindRetireRapidLifecycle) NewExclusivePublication(
+	event conductor.PublicationBuffersReady,
+	logBuffers *logbuffer.LogBuffers,
+	countersReader *cnc.CountersReader,
+	channel string,
+) (conductor.PublicationHandle, error) {
+	if lifecycle.useRealPublication {
+		lifecycle.newExclusivePublicationCalls++
+		if lifecycle.newExclusivePublicationErr != nil {
+			return nil, lifecycle.newExclusivePublicationErr
+		}
+		return lifecycle.realCreateMarkRecordingLifecycle.NewExclusivePublication(
+			event,
+			logBuffers,
+			countersReader,
+			channel,
+		)
+	}
+	return lifecycle.recordingResourceLifecycle.NewExclusivePublication(
+		event,
+		logBuffers,
+		countersReader,
+		channel,
+	)
+}
+
 func (lifecycle *addPendingBindRetireRapidLifecycle) NewPreSubscription(
 	registrationID int64,
 	streamID int32,
@@ -1244,7 +1319,8 @@ func (lifecycle *addPendingBindRetireRapidLifecycle) BindSubscription(
 func (lifecycle *addPendingBindRetireRapidLifecycle) MarkPublicationClosed(
 	pub conductor.PublicationHandle,
 ) {
-	if _, isRealPub := pub.(*aeron.Publication); isRealPub {
+	switch pub.(type) {
+	case *aeron.Publication, *aeron.ExclusivePublication:
 		lifecycle.realCreateMarkRecordingLifecycle.MarkPublicationClosed(pub)
 	}
 }
@@ -1378,6 +1454,8 @@ func assertAddPendingBindRetireHandleClosed(
 	switch entry.kind {
 	case conductor.PendingKindAddPublication:
 		require.True(rt, entry.handle.(*aeron.Publication).IsClosed())
+	case conductor.PendingKindAddExclusivePublication:
+		require.True(rt, entry.handle.(*aeron.ExclusivePublication).IsClosed())
 	case conductor.PendingKindAddSubscription:
 		require.True(rt, entry.handle.(*aeron.Subscription).IsClosed())
 	}
@@ -1398,7 +1476,7 @@ func assertAddPendingBindRetireRollback(
 	}
 	switch mode {
 	case addPendingBindRetireFailureRetirePublication:
-		if entry.kind != conductor.PendingKindAddPublication {
+		if !conductor.AddPublicationPendingKindForTest(entry.kind) {
 			return
 		}
 		require.Greater(rt, len(*gotErrors), errorsBefore)
@@ -1478,10 +1556,14 @@ func runAddPendingBindRetireFailureRapidStep(
 	eligibility := scanAddPendingBindRetireEligibility(*model)
 	ops := []addPendingRapidOpKind{
 		addPendingRapidOpRegisterPub,
+		addPendingRapidOpRegisterExclusivePub,
 		addPendingRapidOpRegisterSub,
 	}
 	if eligibility.completablePublication {
 		ops = append(ops, addPendingRapidOpCompletePubReady)
+	}
+	if eligibility.completableExclusivePublication {
+		ops = append(ops, addPendingRapidOpCompleteExclusivePubReady)
 	}
 	if eligibility.completableSubscription {
 		ops = append(ops, addPendingRapidOpCompleteSubReady)
@@ -1515,6 +1597,33 @@ func runAddPendingBindRetireFailureRapidStep(
 		model.entries[correlationID] = addPendingBindRetireRapidEntry{
 			addPendingRapidEntry: addPendingRapidEntry{
 				kind:       conductor.PendingKindAddPublication,
+				present:    true,
+				deadlineNs: deadlineNs,
+			},
+		}
+
+	case addPendingRapidOpRegisterExclusivePub:
+		correlationID := drawPendingRapidUniqueCorrelationID(
+			rt,
+			rapidMapContains(seen),
+			fmt.Sprintf("exclusivePubCorrelationID%d", step),
+		)
+		seen[correlationID] = struct{}{}
+		deadlineLabel := fmt.Sprintf("exclusivePubDeadline%d", step)
+		deadlineNs := model.nowNs + pendingRapidDeadlineOffset(rt, deadlineLabel)
+		require.NoError(
+			rt,
+			conductorInstance.RegisterPendingAddWithDeadline(
+				conductor.PendingKindAddExclusivePublication,
+				correlationID,
+				goldenExclusivePublicationBuffersReadyEvent.StreamID,
+				pendingTestChannel,
+				deadlineNs,
+			),
+		)
+		model.entries[correlationID] = addPendingBindRetireRapidEntry{
+			addPendingRapidEntry: addPendingRapidEntry{
+				kind:       conductor.PendingKindAddExclusivePublication,
 				present:    true,
 				deadlineNs: deadlineNs,
 			},
@@ -1586,6 +1695,38 @@ func runAddPendingBindRetireFailureRapidStep(
 		entry.registrationID = event.RegistrationID
 		if pub, pubOK := conductorInstance.PublicationByRegID(event.RegistrationID); pubOK {
 			if _, isRealPub := pub.(*aeron.Publication); isRealPub {
+				entry.realHandle = true
+				entry.handle = pub
+			}
+		}
+		model.entries[correlationID] = entry
+		model.receivedCorrelationID = correlationID
+
+	case addPendingRapidOpCompleteExclusivePubReady:
+		correlationID, ok := drawAddPendingBindRetireCompletable(
+			*model,
+			conductor.PendingKindAddExclusivePublication,
+		)
+		if !ok {
+			return
+		}
+		event := goldenExclusivePublicationBuffersReadyWithCorrelation(correlationID)
+		event.RegistrationID = correlationID + 1
+		if lifecycle.useRealPublication {
+			seedPublicationCountersForTest(t, conductorInstance, event)
+		}
+		if conductor.LogBuffersRegistryRefCountForTest(
+			conductor.LogBuffersRegistryForTest(conductorInstance),
+			goldenExclusivePublicationReadyLogFileName,
+		) == 0 {
+			seedGoldenExclusivePublicationLogBuffers(t, conductorInstance)
+		}
+		conductorInstance.ExclusivePublicationReadyForTest(event)
+		entry := model.entries[correlationID]
+		entry.readyLatched = true
+		entry.registrationID = event.RegistrationID
+		if pub, pubOK := conductorInstance.PublicationByRegID(event.RegistrationID); pubOK {
+			if _, isRealPub := pub.(*aeron.ExclusivePublication); isRealPub {
 				entry.realHandle = true
 				entry.handle = pub
 			}
@@ -1763,27 +1904,63 @@ func TestConductor_addPending_teardown_bindRetireFailure_rapid(t *testing.T) {
 
 func TestConductor_handlePublicationReady_buildFailure_refCount_rapid(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
+		exclusive := rapid.Bool().Draw(rt, "exclusive")
 		failureKind := rapid.IntRange(0, 2).Draw(rt, "failureKind")
 		lifecycle := &recordingResourceLifecycle{}
 		conductorInstance := newConductorWithResourceLifecycleForTest(t, lifecycle)
 		registry := conductor.LogBuffersRegistryForTest(conductorInstance)
 
+		var (
+			pendingKind   conductor.PendingKind
+			correlationID int64
+			streamID      int32
+			logFileName   string
+			readyForTest  func(*conductor.Conductor)
+		)
+		if exclusive {
+			logFileName = goldenExclusivePublicationReadyLogFileName
+			pendingKind = conductor.PendingKindAddExclusivePublication
+			correlationID = goldenExclusivePublicationReadyCorrelationID
+			streamID = goldenExclusivePublicationBuffersReadyEvent.StreamID
+			readyForTest = func(conductorInstance *conductor.Conductor) {
+				conductorInstance.ExclusivePublicationReadyForTest(
+					goldenExclusivePublicationBuffersReadyEvent,
+				)
+			}
+		} else {
+			logFileName = goldenPublicationReadyLogFileName
+			pendingKind = conductor.PendingKindAddPublication
+			correlationID = goldenPublicationReadyCorrelationID
+			streamID = goldenPublicationBuffersReadyEvent.StreamID
+			readyForTest = func(conductorInstance *conductor.Conductor) {
+				conductorInstance.PublicationReadyForTest(goldenPublicationBuffersReadyEvent)
+			}
+		}
+
 		var refCountBefore int32
 		switch failureKind {
 		case 0, 1:
 			if failureKind == 1 {
-				lifecycle.newPublicationErr = errStubPublicationBuild
+				if exclusive {
+					lifecycle.newExclusivePublicationErr = errStubPublicationBuild
+				} else {
+					lifecycle.newPublicationErr = errStubPublicationBuild
+				}
 			}
-			seedGoldenPublicationLogBuffers(t, conductorInstance)
+			if exclusive {
+				seedGoldenExclusivePublicationLogBuffers(t, conductorInstance)
+			} else {
+				seedGoldenPublicationLogBuffers(t, conductorInstance)
+			}
 			refCountBefore = conductor.LogBuffersRegistryRefCountForTest(
 				registry,
-				goldenPublicationReadyLogFileName,
+				logFileName,
 			)
 			require.Equal(rt, int32(1), refCountBefore)
 		default:
 			refCountBefore = conductor.LogBuffersRegistryRefCountForTest(
 				registry,
-				goldenPublicationReadyLogFileName,
+				logFileName,
 			)
 			require.Zero(rt, refCountBefore)
 		}
@@ -1792,22 +1969,22 @@ func TestConductor_handlePublicationReady_buildFailure_refCount_rapid(t *testing
 			rt,
 			registerPendingAddWithCorrelationForTest(
 				conductorInstance,
-				conductor.PendingKindAddPublication,
-				goldenPublicationReadyCorrelationID,
-				goldenPublicationBuffersReadyEvent.StreamID,
+				pendingKind,
+				correlationID,
+				streamID,
 			),
 		)
-		conductorInstance.PublicationReadyForTest(goldenPublicationBuffersReadyEvent)
+		readyForTest(conductorInstance)
 
-		done, _, err := conductorInstance.PollPending(goldenPublicationReadyCorrelationID)
+		done, _, err := conductorInstance.PollPending(correlationID)
 		require.True(rt, done)
-		_, pendingOK := conductorInstance.PendingResult(goldenPublicationReadyCorrelationID)
+		_, pendingOK := conductorInstance.PendingResult(correlationID)
 		require.False(rt, pendingOK)
 		require.Equal(rt, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
 
 		refCountAfter := conductor.LogBuffersRegistryRefCountForTest(
 			registry,
-			goldenPublicationReadyLogFileName,
+			logFileName,
 		)
 		switch failureKind {
 		case 0:

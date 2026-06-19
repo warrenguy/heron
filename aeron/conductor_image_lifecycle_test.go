@@ -83,6 +83,18 @@ func setupConductorImageLifecycleLogFile(tb testing.TB, filename string) (dir, l
 	return dir, logPath
 }
 
+func setupConductorImageLifecycleExclusiveLogFile(
+	tb testing.TB,
+	filename string,
+) (dir, logPath string) {
+	tb.Helper()
+
+	dir = tb.TempDir()
+	logPath = filepath.Join(dir, filename)
+	WriteTestExclusiveLogFileForTest(tb, logPath)
+	return dir, logPath
+}
+
 func registerConductorImageLifecycleSubscriptionForTest(
 	conductorInstance *conductor.Conductor,
 	streamID int32,

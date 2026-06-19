@@ -141,10 +141,27 @@ func seedLogBuffersForTest(
 	logFileName string,
 ) {
 	tb.Helper()
+	seedSyntheticLogBuffersForTest(tb, conductorInstance, logFileName, false)
+}
+
+func seedSyntheticLogBuffersForTest(
+	tb testing.TB,
+	conductorInstance *conductor.Conductor,
+	logFileName string,
+	exclusive bool,
+) {
+	tb.Helper()
+
+	var logBuffers *logbuffer.LogBuffers
+	if exclusive {
+		logBuffers = conductor.NewSyntheticExclusiveLogBuffersForTest(tb)
+	} else {
+		logBuffers = conductor.NewSyntheticLogBuffersForTest(tb)
+	}
 	require.NoError(tb, conductor.SeedLogBuffersRegistryForTest(
 		conductor.LogBuffersRegistryForTest(conductorInstance),
 		logFileName,
-		conductor.NewSyntheticLogBuffersForTest(tb),
+		logBuffers,
 	))
 }
 

@@ -112,7 +112,28 @@ func subscriptionFromHandle(sub conductor.SubscriptionHandle) (*Subscription, er
 	if !ok {
 		return nil, fmt.Errorf("aeron: subscription handle %T is not *Subscription", sub)
 	}
+	if subscription == nil {
+		return nil, errors.New("aeron: subscription handle is nil")
+	}
 	return subscription, nil
+}
+
+func publicationHandleFrom[T *Publication | *ExclusivePublication](
+	pub conductor.PublicationHandle,
+	wantTypeName string,
+) (T, error) {
+	var zero T
+	if pub == nil {
+		return zero, errors.New("aeron: publication handle is nil")
+	}
+	publication, ok := pub.(T)
+	if !ok {
+		return zero, fmt.Errorf("aeron: publication handle %T is not %s", pub, wantTypeName)
+	}
+	if publication == zero {
+		return zero, errors.New("aeron: publication handle is nil")
+	}
+	return publication, nil
 }
 
 // publicationFromHandle resolves concurrent *Publication handles only.
@@ -124,7 +145,17 @@ func publicationFromHandle(pub conductor.PublicationHandle) (*Publication, error
 	if !ok {
 		return nil, fmt.Errorf("aeron: publication handle %T is not *Publication", pub)
 	}
+	if publication == nil {
+		return nil, errors.New("aeron: publication handle is nil")
+	}
 	return publication, nil
+}
+
+// exclusivePublicationFromHandle resolves exclusive *ExclusivePublication handles only.
+func exclusivePublicationFromHandle(
+	pub conductor.PublicationHandle,
+) (*ExclusivePublication, error) {
+	return publicationHandleFrom[*ExclusivePublication](pub, "*ExclusivePublication")
 }
 
 func imageFromHandle(image conductor.ImageHandle) (*Image, bool) {

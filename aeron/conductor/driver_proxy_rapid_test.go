@@ -19,6 +19,7 @@ type driverProxyOp int
 const (
 	driverProxyOpClientKeepalive driverProxyOp = iota
 	driverProxyOpAddPublication
+	driverProxyOpAddExclusivePublication
 	driverProxyOpAddSubscription
 	driverProxyOpRemovePublication
 	driverProxyOpRemoveSubscription
@@ -57,6 +58,7 @@ func verifyDriverProxyWantRecords(
 
 func appendDriverProxyAddPublicationWant(
 	want []driverProxyExpectedRecord,
+	msgTypeID int,
 	clientID int64,
 	correlationID int64,
 	streamID int32,
@@ -64,7 +66,7 @@ func appendDriverProxyAddPublicationWant(
 	bodyLength int,
 ) []driverProxyExpectedRecord {
 	return append(want, driverProxyExpectedRecord{
-		msgTypeID: conductor.AddPublication,
+		msgTypeID: msgTypeID,
 		verify: func(t *rapid.T, buffer aeronatomic.AtomicBuffer, index, length int) {
 			got, decodeErr := conductor.DecodePublicationMessage(buffer, index, length)
 			require.NoError(t, decodeErr)
@@ -162,6 +164,25 @@ func TestDriverProxy_offerReadRoundtrip_rapid(t *testing.T) {
 				bodyLength := conductor.PublicationMessageBodyLength(channel)
 				want = appendDriverProxyAddPublicationWant(
 					want,
+					conductor.AddPublication,
+					clientID,
+					correlationID,
+					streamID,
+					channel,
+					bodyLength,
+				)
+			case driverProxyOpAddExclusivePublication:
+				correlationID := rapid.Int64().Draw(rt, fmt.Sprintf("exPubCorr%d", i))
+				streamID := int32(rapid.Int32().Draw(rt, fmt.Sprintf("exPubStream%d", i)))
+				channel := testutil.DrawASCIIString(rt, fmt.Sprintf("exPubChannel%d", i), 128)
+				err := proxy.AddExclusivePublication(correlationID, streamID, channel)
+				if returnOnInsufficientCapacity(rt, proxy, want, err) {
+					return
+				}
+				bodyLength := conductor.PublicationMessageBodyLength(channel)
+				want = appendDriverProxyAddPublicationWant(
+					want,
+					conductor.AddExclusivePublication,
 					clientID,
 					correlationID,
 					streamID,
@@ -289,6 +310,7 @@ func TestDriverProxy_encodeFailureAborts_rapid(t *testing.T) {
 				bodyLength := conductor.PublicationMessageBodyLength(channel)
 				want = appendDriverProxyAddPublicationWant(
 					want,
+					conductor.AddPublication,
 					clientID,
 					correlationID,
 					streamID,

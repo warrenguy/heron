@@ -16,12 +16,13 @@ type (
 )
 
 type DriverEventsAdapterHandlers struct {
-	PublicationReady  PublicationReadyHandler
-	SubscriptionReady SubscriptionReadyHandler
-	AvailableImage    AvailableImageHandler
-	UnavailableImage  UnavailableImageHandler
-	PublicationError  PublicationErrorHandler
-	CorrelatedReady   CorrelatedReadyHandler
+	PublicationReady          PublicationReadyHandler
+	ExclusivePublicationReady PublicationReadyHandler
+	SubscriptionReady         SubscriptionReadyHandler
+	AvailableImage            AvailableImageHandler
+	UnavailableImage          UnavailableImageHandler
+	PublicationError          PublicationErrorHandler
+	CorrelatedReady           CorrelatedReadyHandler
 }
 
 type DriverEventsAdapter struct {
@@ -106,8 +107,22 @@ func (adapter *DriverEventsAdapter) handleMessage(
 		adapter.handleError(buffer, offset, length, activeCorrelationID, pending)
 	case OnAvailableImage:
 		adapter.handleAvailableImage(buffer, offset, length)
-	case OnPublicationReady, OnExclusivePublicationReady:
-		adapter.handlePublicationReady(buffer, offset, length, activeCorrelationID)
+	case OnPublicationReady:
+		adapter.handlePublicationBuffersReady(
+			buffer,
+			offset,
+			length,
+			activeCorrelationID,
+			adapter.handlers.PublicationReady,
+		)
+	case OnExclusivePublicationReady:
+		adapter.handlePublicationBuffersReady(
+			buffer,
+			offset,
+			length,
+			activeCorrelationID,
+			adapter.handlers.ExclusivePublicationReady,
+		)
 	case OnOperationSuccess:
 		adapter.handleOperationSuccess(
 			buffer,
@@ -156,13 +171,8 @@ func (adapter *DriverEventsAdapter) correlated(
 	activeCorrelationID int64,
 	correlationID int64,
 ) bool {
-	if correlationID == activeCorrelationID && activeCorrelationID != NullCorrelationID {
-		return true
-	}
-	if adapter.pendingRegistry != nil && adapter.pendingRegistry.Contains(correlationID) {
-		return true
-	}
-	return false
+	return (correlationID == activeCorrelationID && activeCorrelationID != NullCorrelationID) ||
+		(adapter.pendingRegistry != nil && adapter.pendingRegistry.Contains(correlationID))
 }
 
 // Fixed flyweight: broadcast length may exceed the body;
@@ -360,11 +370,12 @@ func (adapter *DriverEventsAdapter) handleAvailableImage(
 	)
 }
 
-func (adapter *DriverEventsAdapter) handlePublicationReady(
+func (adapter *DriverEventsAdapter) handlePublicationBuffersReady(
 	buffer atomic.AtomicBuffer,
 	offset int,
 	length int,
 	activeCorrelationID int64,
+	handler PublicationReadyHandler,
 ) {
 	handleCorrelatedReady(
 		adapter,
@@ -376,7 +387,7 @@ func (adapter *DriverEventsAdapter) handlePublicationReady(
 		peekEventCorrelationID,
 		DecodePublicationBuffersReady,
 		publicationBuffersReadyCorrelationID,
-		adapter.handlers.PublicationReady,
+		handler,
 	)
 }
 

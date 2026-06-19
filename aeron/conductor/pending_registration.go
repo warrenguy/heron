@@ -12,6 +12,7 @@ const (
 	PendingKindNextSessionID
 	PendingKindAddPublication
 	PendingKindAddSubscription
+	PendingKindAddExclusivePublication
 	PendingKindRemovePublication
 	PendingKindRemoveSubscription
 )
@@ -359,13 +360,20 @@ func (conductor *Conductor) completePendingIfKind(
 	return conductor.completePendingSuccess(registration, mutate)
 }
 
+func addPublicationPendingKind(kind PendingKind) bool {
+	return kind == PendingKindAddPublication ||
+		kind == PendingKindAddExclusivePublication
+}
+
 func addPendingKind(kind PendingKind) bool {
-	return kind == PendingKindAddPublication || kind == PendingKindAddSubscription
+	return addPublicationPendingKind(kind) ||
+		kind == PendingKindAddSubscription
 }
 
 // OperationSucceeded completes remove and generic success pendings. Add kinds only
-// ack here; handlePublicationReady and handleSubscriptionReady finish them. NextSessionID
-// is completed by Conductor.NextSessionID.
+// ack here; handlePublicationReady, handleExclusivePublicationReady, and
+// handleSubscriptionReady finish them. NextSessionID is completed by
+// Conductor.NextSessionID.
 func (conductor *Conductor) OperationSucceeded(correlationID int64) bool {
 	registration, ok := conductor.pending.Get(correlationID)
 	if !ok {

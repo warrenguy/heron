@@ -166,12 +166,13 @@ func newConductor(
 		config.ErrorHandler,
 		conductor.handleClientTimeout,
 		DriverEventsAdapterHandlers{
-			PublicationReady:  conductor.handlePublicationReady,
-			SubscriptionReady: conductor.handleSubscriptionReady,
-			AvailableImage:    conductor.handleAvailableImage,
-			UnavailableImage:  conductor.handleUnavailableImage,
-			PublicationError:  conductor.handlePublicationError,
-			CorrelatedReady:   conductor.handleCorrelatedEvent,
+			PublicationReady:          conductor.handlePublicationReady,
+			ExclusivePublicationReady: conductor.handleExclusivePublicationReady,
+			SubscriptionReady:         conductor.handleSubscriptionReady,
+			AvailableImage:            conductor.handleAvailableImage,
+			UnavailableImage:          conductor.handleUnavailableImage,
+			PublicationError:          conductor.handlePublicationError,
+			CorrelatedReady:           conductor.handleCorrelatedEvent,
 		},
 		&conductor.pending,
 	)
@@ -326,8 +327,9 @@ func (conductor *Conductor) handleClientTimeout() {
 	conductor.terminateWithError(ErrClientTimeout)
 }
 
-// Add kinds complete in handlePublicationReady/handleSubscriptionReady; do not set
-// receivedCorrelationID here or PollPending would finish before metadata is filled.
+// Add kinds complete in handlePublicationReady, handleExclusivePublicationReady,
+// and handleSubscriptionReady; do not set receivedCorrelationID here or
+// PollPending would finish before metadata is filled.
 func (conductor *Conductor) handleCorrelatedEvent(correlationID int64) {
 	registration, ok := conductor.pending.Get(correlationID)
 	if ok {
@@ -361,17 +363,24 @@ func (conductor *Conductor) addReadyRegistration(
 }
 
 func (conductor *Conductor) handlePublicationReady(event PublicationBuffersReady) {
-	conductor.completePublicationReady(event)
+	conductor.completePublicationReady(event, PendingKindAddPublication)
+}
+
+func (conductor *Conductor) handleExclusivePublicationReady(event PublicationBuffersReady) {
+	conductor.completePublicationReady(event, PendingKindAddExclusivePublication)
 }
 
 func (conductor *Conductor) handleSubscriptionReady(event SubscriptionReady) {
 	conductor.completeSubscriptionReady(event)
 }
 
-func (conductor *Conductor) completePublicationReady(event PublicationBuffersReady) bool {
+func (conductor *Conductor) completePublicationReady(
+	event PublicationBuffersReady,
+	wantKind PendingKind,
+) bool {
 	registration, ok := conductor.addReadyRegistration(
 		event.CorrelationID,
-		PendingKindAddPublication,
+		wantKind,
 	)
 	if !ok {
 		return false
@@ -381,7 +390,11 @@ func (conductor *Conductor) completePublicationReady(event PublicationBuffersRea
 	var publication PublicationHandle
 	if conductor.resourceLifecycle != nil {
 		var buildErr error
-		publication, buildErr = conductor.buildAndInsertPublication(event, registration.Channel)
+		publication, buildErr = conductor.buildAndInsertPublication(
+			event,
+			registration.Channel,
+			wantKind,
+		)
 		if buildErr != nil {
 			conductor.failPending(registration, buildErr)
 			return false
@@ -423,6 +436,7 @@ func (conductor *Conductor) completeSubscriptionReady(event SubscriptionReady) b
 func (conductor *Conductor) buildAndInsertPublication(
 	event PublicationBuffersReady,
 	channel string,
+	kind PendingKind,
 ) (PublicationHandle, error) {
 	var publication PublicationHandle
 	var buildErr error
@@ -437,12 +451,28 @@ func (conductor *Conductor) buildAndInsertPublication(
 			buildErr = err
 			return
 		}
-		publication, buildErr = conductor.resourceLifecycle.NewPublication(
-			event,
-			logBuffers,
-			conductor.countersReader,
-			channel,
-		)
+		// Callers must pass kind validated by addReadyRegistration.
+		switch kind {
+		case PendingKindAddPublication:
+			publication, buildErr = conductor.resourceLifecycle.NewPublication(
+				event,
+				logBuffers,
+				conductor.countersReader,
+				channel,
+			)
+		case PendingKindAddExclusivePublication:
+			publication, buildErr = conductor.resourceLifecycle.NewExclusivePublication(
+				event,
+				logBuffers,
+				conductor.countersReader,
+				channel,
+			)
+		}
+		if buildErr == nil && isAbsentMapValue(publication) {
+			buildErr = errors.New(
+				"conductor: resource lifecycle returned nil publication handle",
+			)
+		}
 		if buildErr != nil {
 			conductor.releaseLogBuffersByKey(resolvedLogFileKey, 0)
 			return
@@ -553,7 +583,10 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 				conductor.releaseLogBuffersByKey(registryKey, 0)
 			}
 			conductor.removeSubscription(registration.CorrelationID)
-		case PendingKindAddPublication:
+		default:
+			if !addPublicationPendingKind(registration.Kind) {
+				return
+			}
 			if registration.RegistrationID == 0 {
 				return
 			}

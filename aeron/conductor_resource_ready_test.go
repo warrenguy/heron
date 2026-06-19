@@ -195,6 +195,67 @@ func setupResourceReadySubscriptionWithAvailableImage(
 	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
 }
 
+func setupResourceReadyExclusiveConductorTest(
+	tb testing.TB,
+	logFilename string,
+	resourceLifecycle conductor.ResourceLifecycle,
+) (logPath string, conductorInstance *conductor.Conductor) {
+	tb.Helper()
+
+	dir, logPath := setupConductorImageLifecycleExclusiveLogFile(tb, logFilename)
+	conductorInstance = newConductorWithImageLifecycleForTest(
+		tb,
+		noopConductorErrorHandler,
+		dir,
+		func(config *conductor.Config) {
+			config.ResourceLifecycle = resourceLifecycle
+		},
+	)
+	conductorInstance.SetCountersReaderForTest(countersReaderForResourceReadyTest(tb))
+	return logPath, conductorInstance
+}
+
+func TestConductor_handleExclusivePublicationReady_refcountsLog(t *testing.T) {
+	logPath, conductorInstance := setupResourceReadyExclusiveConductorTest(
+		t,
+		"exclusive-shared.log",
+		ConductorResourceLifecycle,
+	)
+
+	require.NoError(
+		t,
+		conductorInstance.RegisterPendingAdd(
+			conductor.PendingKindAddExclusivePublication,
+			resourceReadyPublicationCorrelationID,
+			resourceReadyStreamID,
+			resourceReadyChannel,
+			time.Second,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(resourceReadyPublicationCorrelationID)
+
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorImageLifecycleEvent(
+		t,
+		adapter,
+		conductor.OnExclusivePublicationReady,
+		conductor.PublicationBuffersReadyBytes(publicationReadyEventForLogPath(logPath)),
+	)
+	require.Equal(t, 1, conductorInstance.DoWork())
+
+	done, registration, err := conductorInstance.PollPending(resourceReadyPublicationCorrelationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	ep, ok := registration.Publication.(*ExclusivePublication)
+	require.True(t, ok)
+	gotEP, ok := conductorInstance.PublicationByRegID(resourceReadyPublicationRegistrationID)
+	require.True(t, ok)
+	require.Same(t, ep, gotEP)
+
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+}
+
 func TestConductor_handlePublicationReady_refcountsLog(t *testing.T) {
 	logPath, conductorInstance := setupResourceReadyConductorTest(
 		t,

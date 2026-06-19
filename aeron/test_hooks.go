@@ -70,11 +70,34 @@ func NewFileBackedPublicationForHooks(tb testing.TB, logPath string) *Publicatio
 	return pub
 }
 
+// NewTestExclusivePublicationForHooks builds exclusive publication for close tests.
+func NewTestExclusivePublicationForHooks(tb testing.TB) *ExclusivePublication {
+	tb.Helper()
+
+	log := newTestHookMappedLog(tb, logbuffer.LogBufferTypeExclusivePublication)
+	ready := conductor.PublicationBuffersReady{
+		RegistrationID:            testHookPublicationRegistrationID,
+		SessionID:                 testHookPublicationSessionID,
+		StreamID:                  testHookPublicationStreamID,
+		PublicationLimitCounterID: testHookPublicationLimitCounterID,
+		ChannelStatusCounterID:    cnc.NullCounterID,
+		LogFileName:               "test-hook.log",
+	}
+	pub, err := newExclusivePublicationFromReady(
+		ready,
+		log,
+		newTestHookCountersReader(tb),
+		testHookIPCChannel,
+	)
+	require.NoError(tb, err)
+	return pub
+}
+
 // NewTestPublicationForHooks builds a publication for cross-package close tests.
 func NewTestPublicationForHooks(tb testing.TB) *Publication {
 	tb.Helper()
 
-	log := newTestHookMappedLog(tb)
+	log := newTestHookMappedLog(tb, logbuffer.LogBufferTypeConcurrentPublication)
 	ready := conductor.PublicationBuffersReady{
 		RegistrationID:            testHookPublicationRegistrationID,
 		SessionID:                 testHookPublicationSessionID,
@@ -110,7 +133,7 @@ func writeTestHookLogFile(tb testing.TB, path string) {
 	require.NoError(tb, os.WriteFile(path, buf, 0o644))
 }
 
-func newTestHookMappedLog(tb testing.TB) *logbuffer.MappedLogBuffer {
+func newTestHookMappedLog(tb testing.TB, logType byte) *logbuffer.MappedLogBuffer {
 	tb.Helper()
 
 	computed, err := logbuffer.ComputeLogLength(logbuffer.TermMinLength, logbuffer.PageMinSize)
@@ -124,6 +147,16 @@ func newTestHookMappedLog(tb testing.TB) *logbuffer.MappedLogBuffer {
 	meta.PutInt32(logbuffer.OffsetMTULength, testHookPublicationMTULength)
 	meta.PutInt32(logbuffer.OffsetInitialTermID, testHookPublicationInitialTermID)
 	meta.PutInt32(logbuffer.OffsetDefaultFrameHeaderLength, logbuffer.DataHeaderLength)
+	rawTails := [logbuffer.PartitionCount]int64{
+		logbuffer.PackRawTail(testHookPublicationInitialTermID, 0),
+		logbuffer.PackRawTail(testHookPublicationInitialTermID-2, 0),
+		logbuffer.PackRawTail(testHookPublicationInitialTermID-1, 0),
+	}
+	for partition := range logbuffer.PartitionCount {
+		_ = logbuffer.PutRawTail(meta, partition, rawTails[partition])
+	}
+	meta.PutInt32Release(logbuffer.OffsetActiveTermCount, 0)
+	meta.Bytes()[logbuffer.OffsetLogType] = logType
 
 	log, err := logbuffer.MapLogBufferFromBytes(buf)
 	require.NoError(tb, err)

@@ -20,6 +20,20 @@ func (conductorResourceLifecycle) NewPublication(
 	return newPublicationFromReady(event, logBuffers.MappedLogBuffer(), countersReader, channel)
 }
 
+func (conductorResourceLifecycle) NewExclusivePublication(
+	event conductor.PublicationBuffersReady,
+	logBuffers *logbuffer.LogBuffers,
+	countersReader *cnc.CountersReader,
+	channel string,
+) (conductor.PublicationHandle, error) {
+	return newExclusivePublicationFromReady(
+		event,
+		logBuffers.MappedLogBuffer(),
+		countersReader,
+		channel,
+	)
+}
+
 func (conductorResourceLifecycle) NewPreSubscription(
 	registrationID int64,
 	streamID int32,

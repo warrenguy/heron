@@ -1,7 +1,6 @@
 package conductor_test
 
 import (
-	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -52,25 +51,25 @@ type retireBeforeRemoveLifecycle struct {
 	ring *ringbuffer.ManyToOneRingBuffer
 }
 
-func (lifecycle *retireBeforeRemoveLifecycle) RetirePublication(
-	pub conductor.PublicationHandle,
-) (string, error) {
+func (lifecycle *retireBeforeRemoveLifecycle) assertNoRemoveOffered(message string) {
 	require.Empty(
 		lifecycle.tb,
 		testutil.CommittedRecordTypeIDs(lifecycle.ring),
-		"REMOVE_PUBLICATION must not be offered before retire",
+		message,
 	)
+}
+
+func (lifecycle *retireBeforeRemoveLifecycle) RetirePublication(
+	pub conductor.PublicationHandle,
+) (string, error) {
+	lifecycle.assertNoRemoveOffered("REMOVE_PUBLICATION must not be offered before retire")
 	return lifecycle.recordingResourceLifecycle.RetirePublication(pub)
 }
 
 func (lifecycle *retireBeforeRemoveLifecycle) RetireSubscription(
 	sub conductor.SubscriptionHandle,
 ) ([]string, error) {
-	require.Empty(
-		lifecycle.tb,
-		testutil.CommittedRecordTypeIDs(lifecycle.ring),
-		"REMOVE_SUBSCRIPTION must not be offered before retire",
-	)
+	lifecycle.assertNoRemoveOffered("REMOVE_SUBSCRIPTION must not be offered before retire")
 	return lifecycle.recordingResourceLifecycle.RetireSubscription(sub)
 }
 
@@ -120,6 +119,20 @@ func (lifecycle *realCreateMarkRecordingLifecycle) NewPublication(
 	channel string,
 ) (conductor.PublicationHandle, error) {
 	return aeron.ConductorResourceLifecycle.NewPublication(
+		event,
+		logBuffers,
+		countersReader,
+		channel,
+	)
+}
+
+func (lifecycle *realCreateMarkRecordingLifecycle) NewExclusivePublication(
+	event conductor.PublicationBuffersReady,
+	logBuffers *logbuffer.LogBuffers,
+	countersReader *cnc.CountersReader,
+	channel string,
+) (conductor.PublicationHandle, error) {
+	return aeron.ConductorResourceLifecycle.NewExclusivePublication(
 		event,
 		logBuffers,
 		countersReader,
@@ -203,6 +216,17 @@ func insertRealPublicationForCloseTest(
 	tb.Helper()
 
 	pub := aeron.NewTestPublicationForHooks(tb)
+	conductorInstance.InsertPublicationForTest(pub.RegistrationID(), pub)
+	return pub
+}
+
+func insertRealExclusivePublicationForCloseTest(
+	tb testing.TB,
+	conductorInstance *conductor.Conductor,
+) *aeron.ExclusivePublication {
+	tb.Helper()
+
+	pub := aeron.NewTestExclusivePublicationForHooks(tb)
 	conductorInstance.InsertPublicationForTest(pub.RegistrationID(), pub)
 	return pub
 }
@@ -516,24 +540,18 @@ func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testi
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		errMessage string
-		lifecycle  func(errRetire error) conductor.ResourceLifecycle
-		insert     func(t *testing.T, conductorInstance *conductor.Conductor) any
-		close      func(t *testing.T, conductorInstance *conductor.Conductor, handle any) error
-		count      func(conductorInstance *conductor.Conductor) int
-		isClosed   func(handle any) bool
+		name      string
+		errRetire error
+		lifecycle conductor.ResourceLifecycle
+		insert    func(t *testing.T, conductorInstance *conductor.Conductor) any
+		close     func(t *testing.T, conductorInstance *conductor.Conductor, handle any) error
+		count     func(conductorInstance *conductor.Conductor) int
+		isClosed  func(handle any) bool
 	}{
 		{
-			name:       "publication",
-			errMessage: "conductor_test: retire publication failed",
-			lifecycle: func(errRetire error) conductor.ResourceLifecycle {
-				return &realMarkRecordingLifecycle{
-					recordingResourceLifecycle: recordingResourceLifecycle{
-						retirePublicationErr: errRetire,
-					},
-				}
-			},
+			name:      "publication",
+			errRetire: errRetirePublication,
+			lifecycle: realCreateMarkRecordingLifecycleWithRetirePublicationErr(errRetirePublication),
 			insert: func(t *testing.T, conductorInstance *conductor.Conductor) any {
 				return insertRealPublicationForCloseTest(t, conductorInstance)
 			},
@@ -552,15 +570,30 @@ func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testi
 			},
 		},
 		{
-			name:       "subscription",
-			errMessage: "conductor_test: retire subscription failed",
-			lifecycle: func(errRetire error) conductor.ResourceLifecycle {
-				return &realMarkRecordingLifecycle{
-					recordingResourceLifecycle: recordingResourceLifecycle{
-						retireSubscriptionErr: errRetire,
-					},
-				}
+			name:      "exclusivePublication",
+			errRetire: errRetirePublication,
+			lifecycle: realCreateMarkRecordingLifecycleWithRetirePublicationErr(errRetirePublication),
+			insert: func(t *testing.T, conductorInstance *conductor.Conductor) any {
+				return insertRealExclusivePublicationForCloseTest(t, conductorInstance)
 			},
+			close: func(
+				t *testing.T,
+				conductorInstance *conductor.Conductor,
+				handle any,
+			) error {
+				return conductorInstance.ClosePublication(handle.(conductor.PublicationHandle))
+			},
+			count: func(conductorInstance *conductor.Conductor) int {
+				return conductorInstance.PublicationCountForTest()
+			},
+			isClosed: func(handle any) bool {
+				return handle.(*aeron.ExclusivePublication).IsClosed()
+			},
+		},
+		{
+			name:      "subscription",
+			errRetire: errRetireSubscription,
+			lifecycle: realCreateMarkRecordingLifecycleWithRetireSubscriptionErr(errRetireSubscription),
 			insert: func(t *testing.T, conductorInstance *conductor.Conductor) any {
 				return insertRealSubscriptionForCloseTest(t, conductorInstance)
 			},
@@ -584,17 +617,16 @@ func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testi
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			errRetire := errors.New(testCase.errMessage)
 			errorHandler, gotErrors := collectConductorErrors()
 			config := conductorTestConfig(t, errorHandler, fixedClocks{})
-			config.ResourceLifecycle = testCase.lifecycle(errRetire)
+			config.ResourceLifecycle = testCase.lifecycle
 			conductorInstance := newConductorForTest(t, config)
 
 			handle := testCase.insert(t, conductorInstance)
 			require.NoError(t, testCase.close(t, conductorInstance, handle))
 
 			require.Len(t, *gotErrors, 1)
-			require.ErrorIs(t, (*gotErrors)[0], errRetire)
+			require.ErrorIs(t, (*gotErrors)[0], testCase.errRetire)
 			require.Equal(t, 0, testCase.count(conductorInstance))
 			require.True(t, testCase.isClosed(handle))
 		})
@@ -605,14 +637,17 @@ func TestConductor_CloseResource_idempotent(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		removeTypeID int
-		setup        func(conductorInstance *conductor.Conductor)
-		closeTwice   func(t *testing.T, conductorInstance *conductor.Conductor)
+		name                        string
+		removeTypeID                int
+		wantRetirePublicationCalls  int
+		wantRetireSubscriptionCalls int
+		setup                       func(conductorInstance *conductor.Conductor)
+		closeTwice                  func(t *testing.T, conductorInstance *conductor.Conductor)
 	}{
 		{
-			name:         "publication",
-			removeTypeID: conductor.RemovePublication,
+			name:                       "publication",
+			removeTypeID:               conductor.RemovePublication,
+			wantRetirePublicationCalls: 1,
 			setup: func(conductorInstance *conductor.Conductor) {
 				conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
 			},
@@ -623,8 +658,9 @@ func TestConductor_CloseResource_idempotent(t *testing.T) {
 			},
 		},
 		{
-			name:         "subscription",
-			removeTypeID: conductor.RemoveSubscription,
+			name:                        "subscription",
+			removeTypeID:                conductor.RemoveSubscription,
+			wantRetireSubscriptionCalls: 1,
 			setup: func(conductorInstance *conductor.Conductor) {
 				conductorInstance.InsertSubscriptionForTest(22, &stubResourceSubscription{registrationID: 22})
 			},
@@ -647,12 +683,8 @@ func TestConductor_CloseResource_idempotent(t *testing.T) {
 			testCase.setup(conductorInstance)
 			testCase.closeTwice(t, conductorInstance)
 
-			switch testCase.name {
-			case "publication":
-				require.Equal(t, 1, lifecycle.retirePublicationCalls)
-			case "subscription":
-				require.Equal(t, 1, lifecycle.retireSubscriptionCalls)
-			}
+			require.Equal(t, testCase.wantRetirePublicationCalls, lifecycle.retirePublicationCalls)
+			require.Equal(t, testCase.wantRetireSubscriptionCalls, lifecycle.retireSubscriptionCalls)
 			require.Equal(t, []int{testCase.removeTypeID}, testutil.CommittedRecordTypeIDs(ring))
 		})
 	}
@@ -686,6 +718,26 @@ func TestConductor_CloseResource_mapMiss_marksClosed(t *testing.T) {
 			},
 			closed: func(handle any) bool {
 				return handle.(*aeron.Publication).IsClosed()
+			},
+		},
+		{
+			name: "exclusivePublication",
+			insert: func(t *testing.T, conductorInstance *conductor.Conductor) any {
+				return insertRealExclusivePublicationForCloseTest(t, conductorInstance)
+			},
+			remove: func(conductorInstance *conductor.Conductor, handle any) {
+				pub := handle.(*aeron.ExclusivePublication)
+				conductorInstance.RemovePublicationForTest(pub.RegistrationID())
+			},
+			close: func(
+				t *testing.T,
+				conductorInstance *conductor.Conductor,
+				handle any,
+			) error {
+				return conductorInstance.ClosePublication(handle.(conductor.PublicationHandle))
+			},
+			closed: func(handle any) bool {
+				return handle.(*aeron.ExclusivePublication).IsClosed()
 			},
 		},
 		{

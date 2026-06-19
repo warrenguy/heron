@@ -37,6 +37,37 @@ func (client *Client) AddPublication(streamID int32, channel string) (*Publicati
 	return publicationFromPending(registration)
 }
 
+// AddExclusivePublication registers an exclusive publication on channel/streamID.
+//
+// Blocks until ON_EXCLUSIVE_PUBLICATION_READY is processed, the log is mmap'd, and
+// the ExclusivePublication handle is inserted into the conductor resource map, or
+// until Context.DriverTimeout elapses. DriverTimeout covers both to-driver ring
+// offer retries and the wait for the driver response; sustained ring backpressure
+// can shorten the response poll window.
+//
+// Concurrent AddExclusivePublication from multiple goroutines is unsupported.
+// See Client godoc for DoWork, Close, and handle-level concurrency.
+func (client *Client) AddExclusivePublication(
+	streamID int32,
+	channel string,
+) (*ExclusivePublication, error) {
+	if err := prepareAdd(client, channel); err != nil {
+		return nil, err
+	}
+	registration, err := client.awaitAdd(
+		conductor.PendingKindAddExclusivePublication,
+		streamID,
+		channel,
+		func(proxy *conductor.DriverProxy, correlationID int64) error {
+			return proxy.AddExclusivePublication(correlationID, streamID, channel)
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return exclusivePublicationFromPending(registration)
+}
+
 // AddSubscription registers a subscription on channel/streamID.
 //
 // Blocks until ON_SUBSCRIPTION_READY is processed and the Subscription handle
@@ -66,6 +97,23 @@ func (client *Client) AddSubscription(streamID int32, channel string) (*Subscrip
 		return nil, err
 	}
 	return subscriptionFromPending(registration)
+}
+
+// ExclusivePublication returns the exclusive publication registered with regID, if present.
+//
+// Lookup is O(1) on the conductor map. Second return is false after remove/close,
+// if regID was never registered on this client, or if the stored handle is not a
+// *ExclusivePublication.
+//
+// Concurrent Close during lookup is unsupported. Closed and nil conductor checks
+// are best-effort without clientLock, like NextCorrelationID.
+func (client *Client) ExclusivePublication(regID int64) (*ExclusivePublication, bool) {
+	return lookupByRegID(
+		client,
+		regID,
+		(*conductor.Conductor).PublicationByRegID,
+		exclusivePublicationFromHandle,
+	)
 }
 
 // Publication returns the publication registered with regID, if present.
@@ -103,8 +151,9 @@ func (client *Client) Subscription(regID int64) (*Subscription, bool) {
 }
 
 const (
-	registrationKindPublication  = "publication"
-	registrationKindSubscription = "subscription"
+	registrationKindPublication          = "publication"
+	registrationKindExclusivePublication = "exclusive publication"
+	registrationKindSubscription         = "subscription"
 )
 
 type addOfferFunc func(proxy *conductor.DriverProxy, correlationID int64) error
@@ -124,6 +173,8 @@ func registrationKindFor(pendingKind conductor.PendingKind) string {
 	switch pendingKind {
 	case conductor.PendingKindAddPublication:
 		return registrationKindPublication
+	case conductor.PendingKindAddExclusivePublication:
+		return registrationKindExclusivePublication
 	case conductor.PendingKindAddSubscription:
 		return registrationKindSubscription
 	default:
@@ -350,6 +401,17 @@ func publicationFromPending(
 		publicationFromHandle,
 		"publication",
 		"*Publication",
+	)
+}
+
+func exclusivePublicationFromPending(
+	registration conductor.PendingRegistration,
+) (*ExclusivePublication, error) {
+	return fromPendingHandle(
+		registration.Publication,
+		exclusivePublicationFromHandle,
+		"exclusive publication",
+		"*ExclusivePublication",
 	)
 }
 

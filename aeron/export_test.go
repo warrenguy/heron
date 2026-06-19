@@ -682,12 +682,20 @@ func newTestExclusivePublicationWithoutTB(
 	return newTestExclusivePublication(nil, logCfg, newTestCountersReaderWithoutTB(limitPosition))
 }
 
-func WriteTestLogFileForTest(tb testing.TB, path string) {
+func writeTestLogFileForTest(tb testing.TB, path string, cfg TestPublicationLogConfig) {
 	tb.Helper()
 
 	buf := make([]byte, inMemMappedLogLength)
-	writeInMemPublicationMetadata(buf, DefaultTestPublicationLogConfig())
+	writeInMemPublicationMetadata(buf, cfg)
 	require.NoError(tb, os.WriteFile(path, buf, 0o644))
+}
+
+func WriteTestLogFileForTest(tb testing.TB, path string) {
+	writeTestLogFileForTest(tb, path, DefaultTestPublicationLogConfig())
+}
+
+func WriteTestExclusiveLogFileForTest(tb testing.TB, path string) {
+	writeTestLogFileForTest(tb, path, DefaultTestExclusivePublicationLogConfig())
 }
 
 func newTestCountersReaderFromRecords(
@@ -873,6 +881,10 @@ func NewFileBackedPublicationBoundForCloseTest(
 	return pub
 }
 
+var errLingerStubDoesNotBuildPublications = errors.New(
+	"aeron: linger stub lifecycle does not build publications",
+)
+
 type lingerStubPublicationLifecycle struct {
 	conductorResourceLifecycle
 	registryKey string
@@ -888,7 +900,16 @@ func (lingerStubPublicationLifecycle) NewPublication(
 	*cnc.CountersReader,
 	string,
 ) (conductor.PublicationHandle, error) {
-	return nil, errors.New("aeron: linger stub lifecycle does not build publications")
+	return nil, errLingerStubDoesNotBuildPublications
+}
+
+func (lingerStubPublicationLifecycle) NewExclusivePublication(
+	conductor.PublicationBuffersReady,
+	*logbuffer.LogBuffers,
+	*cnc.CountersReader,
+	string,
+) (conductor.PublicationHandle, error) {
+	return nil, errLingerStubDoesNotBuildPublications
 }
 
 func (l lingerStubPublicationLifecycle) RetirePublication(

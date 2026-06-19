@@ -914,6 +914,25 @@ func TestPublication_nullChannelStatusCounter(t *testing.T) {
 	require.Equal(t, aeron.ChannelEndpointStatusActive, status)
 }
 
+func TestNewPublicationFromReadyForTest_wrongLogType(t *testing.T) {
+	log := aeron.NewTestMappedLogForTest(t, aeron.DefaultTestExclusivePublicationLogConfig())
+	t.Cleanup(func() { _ = log.Close() })
+
+	counters := aeron.NewTestCountersReaderForTest(t, 1_000_000)
+
+	_, err := aeron.NewPublicationFromReadyForTest(
+		aeron.PublicationBuffersReadyForTest(),
+		log,
+		counters,
+		"aeron:ipc",
+	)
+	require.EqualError(
+		t,
+		err,
+		"aeron: expected concurrent publication log type 0, got 1",
+	)
+}
+
 func TestNewPublicationFromReadyForTest_inactiveChannelCounter(t *testing.T) {
 	log := aeron.NewTestMappedLogForTest(t, aeron.DefaultTestPublicationLogConfig())
 	t.Cleanup(func() { _ = log.Close() })

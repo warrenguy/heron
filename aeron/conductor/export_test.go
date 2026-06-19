@@ -223,6 +223,14 @@ func (conductor *Conductor) RegisterPendingEntryForTest(
 	return conductor.registerPendingEntry(registration, wantAdd)
 }
 
+func AddPendingKindForTest(kind PendingKind) bool {
+	return addPendingKind(kind)
+}
+
+func AddPublicationPendingKindForTest(kind PendingKind) bool {
+	return addPublicationPendingKind(kind)
+}
+
 func (conductor *Conductor) RemovePublicationForTest(registrationID int64) {
 	conductor.underResourceWriteLock(func() {
 		conductor.removePublication(registrationID)
@@ -297,8 +305,16 @@ func (adapter *DriverEventsAdapter) CorrelatedForTest(
 	return adapter.correlated(activeCorrelationID, correlationID)
 }
 
+// PublicationReadyForTest completes PendingKindAddPublication only.
+// Pending kind must match; use ExclusivePublicationReadyForTest for exclusive add pendings.
 func (conductor *Conductor) PublicationReadyForTest(event PublicationBuffersReady) {
 	publicationReadyHook(conductor, event)
+}
+
+// ExclusivePublicationReadyForTest completes PendingKindAddExclusivePublication only.
+// Pending kind must match; use PublicationReadyForTest for concurrent add pendings.
+func (conductor *Conductor) ExclusivePublicationReadyForTest(event PublicationBuffersReady) {
+	exclusivePublicationReadyHook(conductor, event)
 }
 
 func (conductor *Conductor) SubscriptionReadyForTest(event SubscriptionReady) {
@@ -321,9 +337,20 @@ func (conductor *Conductor) InvokeImageHandlerForTest(handler func()) {
 
 func NewSyntheticLogBuffersForTest(tb testing.TB) *logbuffer.LogBuffers {
 	tb.Helper()
+	return newSyntheticLogBuffersForTest(tb, logbuffer.LogBufferTypeConcurrentPublication)
+}
+
+func NewSyntheticExclusiveLogBuffersForTest(tb testing.TB) *logbuffer.LogBuffers {
+	tb.Helper()
+	return newSyntheticLogBuffersForTest(tb, logbuffer.LogBufferTypeExclusivePublication)
+}
+
+func newSyntheticLogBuffersForTest(tb testing.TB, logType byte) *logbuffer.LogBuffers {
+	tb.Helper()
 
 	const termLength = 65536
 	const pageSize = 4096
+	const initialTermID int32 = 7
 	computed, err := logbuffer.ComputeLogLength(termLength, pageSize)
 	if err != nil {
 		tb.Fatal(err)
@@ -332,29 +359,41 @@ func NewSyntheticLogBuffersForTest(tb testing.TB) *logbuffer.LogBuffers {
 	buf := make([]byte, computed)
 	metaStart := logbuffer.MetaDataOffset(termLength)
 	meta := aeronatomic.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
-	for partition := range logbuffer.PartitionCount {
-		_ = logbuffer.PutRawTail(
-			meta,
-			partition,
-			logbuffer.PackRawTail(7, termLength),
-		)
+	rawTails := [logbuffer.PartitionCount]int64{
+		logbuffer.PackRawTail(initialTermID, 0),
+		logbuffer.PackRawTail(initialTermID-2, 0),
+		logbuffer.PackRawTail(initialTermID-1, 0),
 	}
+	for partition := range logbuffer.PartitionCount {
+		_ = logbuffer.PutRawTail(meta, partition, rawTails[partition])
+	}
+	meta.PutInt32Release(logbuffer.OffsetActiveTermCount, 0)
 	meta.PutInt32Release(logbuffer.OffsetTermLength, termLength)
 	meta.PutInt32(logbuffer.OffsetPageSize, pageSize)
 	meta.PutInt32(logbuffer.OffsetMTULength, 1408)
-	meta.PutInt32(logbuffer.OffsetInitialTermID, 7)
+	meta.PutInt32(logbuffer.OffsetInitialTermID, initialTermID)
 	meta.PutInt32(logbuffer.OffsetDefaultFrameHeaderLength, logbuffer.DataHeaderLength)
+	meta.Bytes()[logbuffer.OffsetLogType] = logType
 	if err := logbuffer.WriteDataHeaderUnfragmented(
 		meta,
 		logbuffer.OffsetDefaultFrameHeader,
 		1001,
 		2002,
-		7,
+		initialTermID,
 		0,
 		logbuffer.Unfragmented,
 	); err != nil {
 		tb.Fatal(err)
 	}
+
+	return newSyntheticLogBuffersFromMeta(tb, buf)
+}
+
+func newSyntheticLogBuffersFromMeta(
+	tb testing.TB,
+	buf []byte,
+) *logbuffer.LogBuffers {
+	tb.Helper()
 
 	mapped, err := logbuffer.MapLogBufferFromBytes(buf)
 	if err != nil {

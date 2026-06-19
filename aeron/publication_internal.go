@@ -62,6 +62,13 @@ func newPublicationFromReady(
 	if err != nil {
 		return nil, err
 	}
+	if metadata.Type != logbuffer.LogBufferTypeConcurrentPublication {
+		return nil, fmt.Errorf(
+			"aeron: expected concurrent publication log type %d, got %d",
+			logbuffer.LogBufferTypeConcurrentPublication,
+			metadata.Type,
+		)
+	}
 
 	termBufferLength := log.TermLength()
 	positionBitsToShift := logbuffer.PositionBitsToShift(termBufferLength)

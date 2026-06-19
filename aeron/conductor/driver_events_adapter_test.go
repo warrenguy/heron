@@ -576,6 +576,14 @@ func TestDriverEventsAdapter_operationSuccess(t *testing.T) {
 			wantPendingRetained:  true,
 		},
 		{
+			name:                 "addExclusivePublicationAckOnly",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindAddExclusivePublication,
+			wantPendingRetained:  true,
+		},
+		{
 			name:                 "removePublication",
 			setActiveCorrelation: true,
 			eventCorrelationID:   pendingTestCorrelationID,

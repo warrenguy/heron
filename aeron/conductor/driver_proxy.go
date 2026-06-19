@@ -80,8 +80,32 @@ func (proxy *DriverProxy) AddPublication(
 	streamID int32,
 	channel string,
 ) error {
+	return proxy.offerPublicationMessage(AddPublication, correlationID, streamID, channel)
+}
+
+// AddExclusivePublication offers ADD_EXCLUSIVE_PUBLICATION on the to-driver ring.
+//
+// Channel must be ASCII; other bytes return atomic.ErrStringASCIINonASCII.
+//
+// Agrona putStringAscii replaces high bytes with '?'; encode rejects non-ASCII.
+func (proxy *DriverProxy) AddExclusivePublication(
+	correlationID int64,
+	streamID int32,
+	channel string,
+) error {
+	return proxy.offerPublicationMessage(AddExclusivePublication, correlationID, streamID, channel)
+}
+
+// offerPublicationMessage offers a PublicationMessage-bodied command (ADD_PUBLICATION
+// or ADD_EXCLUSIVE_PUBLICATION, which share wire layout) under the given message type.
+func (proxy *DriverProxy) offerPublicationMessage(
+	msgTypeID int,
+	correlationID int64,
+	streamID int32,
+	channel string,
+) error {
 	return proxy.offerBody(
-		AddPublication,
+		msgTypeID,
 		PublicationMessageBodyLength(channel),
 		false,
 		func(encodedOffset int) error {

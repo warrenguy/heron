@@ -108,11 +108,16 @@ $(eval $(call optional-target,check-sbe-stale,command -v java >/dev/null,java no
 
 INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe
 
-.PHONY: lint goimports gofumpt
+.PHONY: lint lint-golangci lint-shell goimports gofumpt
 lint:
+	+@$(MAKE) --no-print-directory -j2 lint-golangci lint-shell
+
+lint-golangci:
 	go tool golangci-lint run $(GO_TEST_PKGS)
 	go tool golangci-lint run --build-tags=$(INTEGRATION_LINT_TAGS) \
 		./test/integration/...
+
+lint-shell:
 	@command -v shellcheck >/dev/null || { \
 		echo "heron: shellcheck required (e.g. apt install shellcheck, pacman -S shellcheck)" >&2; \
 		exit 1; \

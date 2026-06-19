@@ -264,6 +264,52 @@ func TestConductor_DoWork_completesActivePending_publicationReady(t *testing.T) 
 	require.False(t, ok)
 }
 
+func TestConductor_DoWork_completesActivePending_exclusivePublicationReady(t *testing.T) {
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		registerPendingAddWithCorrelationForTest(
+			conductorInstance,
+			conductor.PendingKindAddExclusivePublication,
+			goldenExclusivePublicationReadyCorrelationID,
+			goldenExclusivePublicationBuffersReadyEvent.StreamID,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(goldenExclusivePublicationReadyCorrelationID)
+
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnExclusivePublicationReady,
+		conductor.PublicationBuffersReadyBytes(goldenExclusivePublicationBuffersReadyEvent),
+	)
+
+	_ = conductorInstance.DoWork()
+
+	done, registration, err := conductorInstance.PollPending(
+		goldenExclusivePublicationReadyCorrelationID,
+	)
+	require.True(t, done)
+	require.NoError(t, err)
+	require.Equal(t, conductor.PendingKindAddExclusivePublication, registration.Kind)
+	require.Equal(
+		t,
+		goldenExclusivePublicationBuffersReadyEvent.RegistrationID,
+		registration.RegistrationID,
+	)
+	require.Equal(t, goldenExclusivePublicationBuffersReadyEvent.StreamID, registration.StreamID)
+	require.Equal(t, "aeron:ipc", registration.Channel)
+	require.Nil(t, registration.Publication)
+	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+	_, ok := conductorInstance.PendingResult(goldenExclusivePublicationReadyCorrelationID)
+	require.False(t, ok)
+}
+
 func TestConductor_DoWork_completesActivePending_subscriptionReady(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
@@ -310,6 +356,15 @@ func TestConductor_handlePublicationReadyViaDoWork(t *testing.T) {
 		goldenPublicationReadyCorrelationID,
 		conductor.OnPublicationReady,
 		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
+	)
+}
+
+func TestConductor_handleExclusivePublicationReadyViaDoWork(t *testing.T) {
+	testConductorOnReadyViaDoWorkWrongKind(
+		t,
+		goldenExclusivePublicationReadyCorrelationID,
+		conductor.OnExclusivePublicationReady,
+		conductor.PublicationBuffersReadyBytes(goldenExclusivePublicationBuffersReadyEvent),
 	)
 }
 
