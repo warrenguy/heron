@@ -8,6 +8,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
 var (
@@ -390,11 +391,7 @@ func (conductor *Conductor) completePublicationReady(
 	var publication PublicationHandle
 	if conductor.resourceLifecycle != nil {
 		var buildErr error
-		publication, buildErr = conductor.buildAndInsertPublication(
-			event,
-			registration.Channel,
-			wantKind,
-		)
+		publication, buildErr = conductor.buildAndInsertPublication(event, registration)
 		if buildErr != nil {
 			conductor.failPending(registration, buildErr)
 			return false
@@ -402,7 +399,6 @@ func (conductor *Conductor) completePublicationReady(
 	}
 
 	return conductor.completePendingSuccess(registration, func(registration *PendingRegistration) {
-		registration.RegistrationID = event.RegistrationID
 		registration.StreamID = event.StreamID
 		registration.Publication = publication
 	})
@@ -435,8 +431,7 @@ func (conductor *Conductor) completeSubscriptionReady(event SubscriptionReady) b
 
 func (conductor *Conductor) buildAndInsertPublication(
 	event PublicationBuffersReady,
-	channel string,
-	kind PendingKind,
+	registration *PendingRegistration,
 ) (PublicationHandle, error) {
 	var publication PublicationHandle
 	var buildErr error
@@ -451,23 +446,14 @@ func (conductor *Conductor) buildAndInsertPublication(
 			buildErr = err
 			return
 		}
-		// Callers must pass kind validated by addReadyRegistration.
-		switch kind {
-		case PendingKindAddPublication:
-			publication, buildErr = conductor.resourceLifecycle.NewPublication(
-				event,
-				logBuffers,
-				conductor.countersReader,
-				channel,
-			)
-		case PendingKindAddExclusivePublication:
-			publication, buildErr = conductor.resourceLifecycle.NewExclusivePublication(
-				event,
-				logBuffers,
-				conductor.countersReader,
-				channel,
-			)
-		}
+		publication, buildErr = newPublicationForPendingKind(
+			conductor.resourceLifecycle,
+			registration.Kind,
+			event,
+			logBuffers,
+			conductor.countersReader,
+			registration.Channel,
+		)
 		if buildErr == nil && isAbsentMapValue(publication) {
 			buildErr = errors.New(
 				"conductor: resource lifecycle returned nil publication handle",
@@ -640,6 +626,24 @@ func (conductor *Conductor) terminateWithError(err error) {
 	conductor.terminationCause = err
 	conductor.ClearPending()
 	invokeErrorHandler(conductor.config.ErrorHandler, err)
+}
+
+func newPublicationForPendingKind(
+	lifecycle ResourceLifecycle,
+	kind PendingKind,
+	event PublicationBuffersReady,
+	logBuffers *logbuffer.LogBuffers,
+	countersReader *cnc.CountersReader,
+	channel string,
+) (PublicationHandle, error) {
+	switch kind {
+	case PendingKindAddPublication:
+		return lifecycle.NewPublication(event, logBuffers, countersReader, channel)
+	case PendingKindAddExclusivePublication:
+		return lifecycle.NewExclusivePublication(event, logBuffers, countersReader, channel)
+	}
+	var absent PublicationHandle
+	return absent, nil
 }
 
 func invokeErrorHandler(handler func(error), err error) {

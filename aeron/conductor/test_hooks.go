@@ -172,8 +172,7 @@ func (conductor *Conductor) CompletePendingForTest(
 	return completePendingHook(conductor, correlationID, int32Value, err)
 }
 
-// PublicationReadyForTest completes PendingKindAddPublication only.
-// Pending kind must match; use ExclusivePublicationReadyForTest for exclusive add pendings.
+// PublicationReadyForTest completes PendingKindAddPublication.
 //
 // Cross-package tests behind the testhooks tag. conductor_test uses
 // (*Conductor).PublicationReadyForTest in export_test.go instead.
@@ -181,8 +180,7 @@ func PublicationReadyForTest(conductor *Conductor, event PublicationBuffersReady
 	publicationReadyHook(conductor, event)
 }
 
-// ExclusivePublicationReadyForTest completes PendingKindAddExclusivePublication only.
-// Pending kind must match; use PublicationReadyForTest for concurrent add pendings.
+// ExclusivePublicationReadyForTest completes PendingKindAddExclusivePublication.
 //
 // Cross-package tests behind the testhooks tag. conductor_test uses
 // (*Conductor).ExclusivePublicationReadyForTest in export_test.go instead.

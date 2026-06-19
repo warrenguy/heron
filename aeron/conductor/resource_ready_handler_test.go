@@ -52,6 +52,15 @@ func (publication stubResourcePublication) RegistrationID() int64 {
 	return publication.registrationID
 }
 
+func stubResourcePublicationFromEvent(
+	event conductor.PublicationBuffersReady,
+) stubResourcePublication {
+	return stubResourcePublication{
+		registrationID: event.RegistrationID,
+		registryKey:    event.LogFileName,
+	}
+}
+
 type stubResourceSubscription struct {
 	registrationID         int64
 	streamID               int32
@@ -109,20 +118,31 @@ func (lifecycle *recordingResourceLifecycle) BindSubscription(
 	return nil
 }
 
+func (lifecycle *recordingResourceLifecycle) recordStubPublication(
+	event conductor.PublicationBuffersReady,
+	exclusive bool,
+) (conductor.PublicationHandle, error) {
+	if exclusive {
+		lifecycle.newExclusivePublicationCalls++
+		if lifecycle.newExclusivePublicationErr != nil {
+			return nil, lifecycle.newExclusivePublicationErr
+		}
+	} else {
+		lifecycle.newPublicationCalls++
+		if lifecycle.newPublicationErr != nil {
+			return nil, lifecycle.newPublicationErr
+		}
+	}
+	return stubResourcePublicationFromEvent(event), nil
+}
+
 func (lifecycle *recordingResourceLifecycle) NewPublication(
 	event conductor.PublicationBuffersReady,
 	_ *logbuffer.LogBuffers,
 	_ *cnc.CountersReader,
 	_ string,
 ) (conductor.PublicationHandle, error) {
-	lifecycle.newPublicationCalls++
-	if lifecycle.newPublicationErr != nil {
-		return nil, lifecycle.newPublicationErr
-	}
-	return stubResourcePublication{
-		registrationID: event.RegistrationID,
-		registryKey:    event.LogFileName,
-	}, nil
+	return lifecycle.recordStubPublication(event, false)
 }
 
 func (lifecycle *recordingResourceLifecycle) NewExclusivePublication(
@@ -131,14 +151,7 @@ func (lifecycle *recordingResourceLifecycle) NewExclusivePublication(
 	_ *cnc.CountersReader,
 	_ string,
 ) (conductor.PublicationHandle, error) {
-	lifecycle.newExclusivePublicationCalls++
-	if lifecycle.newExclusivePublicationErr != nil {
-		return nil, lifecycle.newExclusivePublicationErr
-	}
-	return stubResourcePublication{
-		registrationID: event.RegistrationID,
-		registryKey:    event.LogFileName,
-	}, nil
+	return lifecycle.recordStubPublication(event, true)
 }
 
 func (lifecycle *recordingResourceLifecycle) NewPreSubscription(
@@ -203,17 +216,30 @@ type absentPublicationLifecycle struct {
 	returnTypedNil bool
 }
 
+func (lifecycle *absentPublicationLifecycle) absentPublicationHandle(
+	exclusive bool,
+) (conductor.PublicationHandle, error) {
+	if exclusive {
+		lifecycle.newExclusivePublicationCalls++
+		if lifecycle.returnTypedNil {
+			return (*aeron.ExclusivePublication)(nil), nil
+		}
+	} else {
+		lifecycle.newPublicationCalls++
+		if lifecycle.returnTypedNil {
+			return (*aeron.Publication)(nil), nil
+		}
+	}
+	return nil, nil
+}
+
 func (lifecycle *absentPublicationLifecycle) NewPublication(
 	_ conductor.PublicationBuffersReady,
 	_ *logbuffer.LogBuffers,
 	_ *cnc.CountersReader,
 	_ string,
 ) (conductor.PublicationHandle, error) {
-	lifecycle.newPublicationCalls++
-	if lifecycle.returnTypedNil {
-		return (*aeron.Publication)(nil), nil
-	}
-	return nil, nil
+	return lifecycle.absentPublicationHandle(false)
 }
 
 func (lifecycle *absentPublicationLifecycle) NewExclusivePublication(
@@ -222,11 +248,7 @@ func (lifecycle *absentPublicationLifecycle) NewExclusivePublication(
 	_ *cnc.CountersReader,
 	_ string,
 ) (conductor.PublicationHandle, error) {
-	lifecycle.newExclusivePublicationCalls++
-	if lifecycle.returnTypedNil {
-		return (*aeron.ExclusivePublication)(nil), nil
-	}
-	return nil, nil
+	return lifecycle.absentPublicationHandle(true)
 }
 
 func newConductorWithResourceLifecycleForTest(
@@ -334,30 +356,17 @@ func completeGoldenPublicationKindReadyForTest(
 	}
 }
 
-func requireGoldenPublicationLogRefCountForTest(
+func requireGoldenPublicationKindLogRefCountForTest(
 	tb testing.TB,
 	registry *conductor.LogBuffersRegistry,
+	kind conductor.PendingKind,
 	want int32,
 ) {
 	tb.Helper()
 	requireGoldenLogRefCountForTest(
 		tb,
 		registry,
-		goldenPublicationReadyLogFileName,
-		want,
-	)
-}
-
-func requireGoldenExclusivePublicationLogRefCountForTest(
-	tb testing.TB,
-	registry *conductor.LogBuffersRegistry,
-	want int32,
-) {
-	tb.Helper()
-	requireGoldenLogRefCountForTest(
-		tb,
-		registry,
-		goldenExclusivePublicationReadyLogFileName,
+		goldenPublicationLogFileNameForKind(kind),
 		want,
 	)
 }
@@ -716,11 +725,11 @@ func (lifecycle *bindFailureContractLifecycle) NewPublication(
 
 func (lifecycle *bindFailureContractLifecycle) NewExclusivePublication(
 	event conductor.PublicationBuffersReady,
-	_ *logbuffer.LogBuffers,
-	_ *cnc.CountersReader,
-	_ string,
+	logBuffers *logbuffer.LogBuffers,
+	countersReader *cnc.CountersReader,
+	channel string,
 ) (conductor.PublicationHandle, error) {
-	return lifecycle.trackablePublicationFromEvent(event), nil
+	return lifecycle.NewPublication(event, logBuffers, countersReader, channel)
 }
 
 func (lifecycle *bindFailureContractLifecycle) NewPreSubscription(
@@ -978,6 +987,65 @@ const (
 	bindFailureTeardownSubscriptionReady
 )
 
+type publicationBindFailureCase struct {
+	pendingKind      conductor.PendingKind
+	correlationID    int64
+	seed             func(tb testing.TB, conductorInstance *conductor.Conductor, useProduction bool)
+	signalReady      func(conductorInstance *conductor.Conductor)
+	assertProduction func(tb testing.TB, productionLifecycle *productionBindStubLifecycle)
+}
+
+func publicationBindFailureCaseForKind(
+	kind bindFailureTeardownKind,
+) publicationBindFailureCase {
+	switch kind {
+	case bindFailureTeardownPublicationReady:
+		return publicationBindFailureCase{
+			pendingKind:   conductor.PendingKindAddPublication,
+			correlationID: goldenPublicationReadyCorrelationID,
+			seed: func(tb testing.TB, conductorInstance *conductor.Conductor, useProduction bool) {
+				seedGoldenPublicationLogBuffers(tb, conductorInstance)
+				if useProduction {
+					seedGoldenPublicationCountersForTest(tb, conductorInstance)
+				}
+			},
+			signalReady: func(conductorInstance *conductor.Conductor) {
+				conductorInstance.PublicationReadyForTest(goldenPublicationBuffersReadyEvent)
+			},
+			assertProduction: func(tb testing.TB, productionLifecycle *productionBindStubLifecycle) {
+				require.NotNil(tb, productionLifecycle.lastPublication)
+				require.True(tb, productionLifecycle.lastPublication.IsClosed())
+			},
+		}
+	case bindFailureTeardownExclusivePublicationReady:
+		return publicationBindFailureCase{
+			pendingKind:   conductor.PendingKindAddExclusivePublication,
+			correlationID: goldenExclusivePublicationReadyCorrelationID,
+			seed: func(tb testing.TB, conductorInstance *conductor.Conductor, useProduction bool) {
+				seedGoldenExclusivePublicationLogBuffers(tb, conductorInstance)
+				if useProduction {
+					seedPublicationCountersForTest(
+						tb,
+						conductorInstance,
+						goldenExclusivePublicationBuffersReadyEvent,
+					)
+				}
+			},
+			signalReady: func(conductorInstance *conductor.Conductor) {
+				conductorInstance.ExclusivePublicationReadyForTest(
+					goldenExclusivePublicationBuffersReadyEvent,
+				)
+			},
+			assertProduction: func(tb testing.TB, productionLifecycle *productionBindStubLifecycle) {
+				require.NotNil(tb, productionLifecycle.lastExclusivePublication)
+				require.True(tb, productionLifecycle.lastExclusivePublication.IsClosed())
+			},
+		}
+	default:
+		panic("conductor_test: unsupported publication bind failure kind")
+	}
+}
+
 func TestConductor_bindFailure_teardownContract(t *testing.T) {
 	t.Parallel()
 
@@ -1057,28 +1125,19 @@ func TestConductor_bindFailure_teardownContract(t *testing.T) {
 			conductorInstance := newConductorWithResourceLifecycleForTest(t, lifecycle)
 
 			switch testCase.kind {
-			case bindFailureTeardownPublicationReady:
-				seedGoldenPublicationLogBuffers(t, conductorInstance)
-				if testCase.useProduction {
-					seedGoldenPublicationCountersForTest(t, conductorInstance)
-				}
-				registerGoldenAddPendingForTest(
-					t,
-					conductorInstance,
-					conductor.PendingKindAddPublication,
-				)
-				conductorInstance.PublicationReadyForTest(goldenPublicationBuffersReadyEvent)
+			case bindFailureTeardownPublicationReady, bindFailureTeardownExclusivePublicationReady:
+				pubCase := publicationBindFailureCaseForKind(testCase.kind)
+				pubCase.seed(t, conductorInstance, testCase.useProduction)
+				registerGoldenAddPendingForTest(t, conductorInstance, pubCase.pendingKind)
+				pubCase.signalReady(conductorInstance)
 
-				done, _, err := conductorInstance.PollPending(
-					goldenPublicationReadyCorrelationID,
-				)
+				done, _, err := conductorInstance.PollPending(pubCase.correlationID)
 				require.True(t, done)
 				require.ErrorIs(t, err, errStubBindPublication)
 				require.Equal(t, 0, conductorInstance.PublicationCountForTest())
 
 				if testCase.useProduction {
-					require.NotNil(t, productionLifecycle.lastPublication)
-					require.True(t, productionLifecycle.lastPublication.IsClosed())
+					pubCase.assertProduction(t, productionLifecycle)
 					return
 				}
 
@@ -1090,49 +1149,12 @@ func TestConductor_bindFailure_teardownContract(t *testing.T) {
 				} else {
 					require.Equal(t, 0, contractLifecycle.markPublicationClosedCalls)
 					registry := conductor.LogBuffersRegistryForTest(conductorInstance)
-					requireGoldenPublicationLogRefCountForTest(t, registry, 1)
-				}
-
-			case bindFailureTeardownExclusivePublicationReady:
-				seedGoldenExclusivePublicationLogBuffers(t, conductorInstance)
-				if testCase.useProduction {
-					seedPublicationCountersForTest(
+					requireGoldenPublicationKindLogRefCountForTest(
 						t,
-						conductorInstance,
-						goldenExclusivePublicationBuffersReadyEvent,
+						registry,
+						pubCase.pendingKind,
+						1,
 					)
-				}
-				registerGoldenAddPendingForTest(
-					t,
-					conductorInstance,
-					conductor.PendingKindAddExclusivePublication,
-				)
-				conductorInstance.ExclusivePublicationReadyForTest(
-					goldenExclusivePublicationBuffersReadyEvent,
-				)
-
-				done, _, err := conductorInstance.PollPending(
-					goldenExclusivePublicationReadyCorrelationID,
-				)
-				require.True(t, done)
-				require.ErrorIs(t, err, errStubBindPublication)
-				require.Equal(t, 0, conductorInstance.PublicationCountForTest())
-
-				if testCase.useProduction {
-					require.NotNil(t, productionLifecycle.lastExclusivePublication)
-					require.True(t, productionLifecycle.lastExclusivePublication.IsClosed())
-					return
-				}
-
-				require.NotNil(t, contractLifecycle.lastPublication)
-				require.True(t, contractLifecycle.lastPublication.closed)
-				require.Equal(t, 1, contractLifecycle.retirePublicationCalls)
-				if testCase.retirePublicationErr != nil {
-					require.Equal(t, 1, contractLifecycle.markPublicationClosedCalls)
-				} else {
-					require.Equal(t, 0, contractLifecycle.markPublicationClosedCalls)
-					registry := conductor.LogBuffersRegistryForTest(conductorInstance)
-					requireGoldenExclusivePublicationLogRefCountForTest(t, registry, 1)
 				}
 
 			case bindFailureTeardownSubscriptionPreInsert:
@@ -1213,7 +1235,12 @@ func TestConductor_bindFailure_retireBeforeLogRelease(t *testing.T) {
 	require.ErrorIs(t, err, errStubBindPublication)
 	require.NotNil(t, lifecycle.lastPublication)
 	require.True(t, lifecycle.lastPublication.closed)
-	requireGoldenPublicationLogRefCountForTest(t, registry, 1)
+	requireGoldenPublicationKindLogRefCountForTest(
+		t,
+		registry,
+		conductor.PendingKindAddPublication,
+		1,
+	)
 }
 
 func TestConductor_handlePublicationReady_failurePaths(t *testing.T) {
@@ -1909,28 +1936,30 @@ func TestConductor_addPublicationPending_teardownRollsBackReadyInsert(t *testing
 	}
 }
 
-func realCreateMarkRecordingLifecycleWithRetirePublicationErr(
-	errRetire error,
+func realCreateMarkRecordingLifecycleWithRetireErrs(
+	retirePublicationErr error,
+	retireSubscriptionErr error,
 ) conductor.ResourceLifecycle {
 	return &realCreateMarkRecordingLifecycle{
 		realMarkRecordingLifecycle: realMarkRecordingLifecycle{
 			recordingResourceLifecycle: recordingResourceLifecycle{
-				retirePublicationErr: errRetire,
+				retirePublicationErr:  retirePublicationErr,
+				retireSubscriptionErr: retireSubscriptionErr,
 			},
 		},
 	}
 }
 
+func realCreateMarkRecordingLifecycleWithRetirePublicationErr(
+	errRetire error,
+) conductor.ResourceLifecycle {
+	return realCreateMarkRecordingLifecycleWithRetireErrs(errRetire, nil)
+}
+
 func realCreateMarkRecordingLifecycleWithRetireSubscriptionErr(
 	errRetire error,
 ) conductor.ResourceLifecycle {
-	return &realCreateMarkRecordingLifecycle{
-		realMarkRecordingLifecycle: realMarkRecordingLifecycle{
-			recordingResourceLifecycle: recordingResourceLifecycle{
-				retireSubscriptionErr: errRetire,
-			},
-		},
-	}
+	return realCreateMarkRecordingLifecycleWithRetireErrs(nil, errRetire)
 }
 
 func TestConductor_rollbackAddPendingResources_retireFailure_marksClosedAndRemovesMap(

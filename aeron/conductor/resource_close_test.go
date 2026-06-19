@@ -209,6 +209,16 @@ func newConductorWithImageCloseLingerForTest(
 	return newConductorForTest(tb, config), &nanoNs
 }
 
+func insertPublicationForCloseTest(
+	tb testing.TB,
+	conductorInstance *conductor.Conductor,
+	pub conductor.PublicationHandle,
+) {
+	tb.Helper()
+
+	conductorInstance.InsertPublicationForTest(pub.RegistrationID(), pub)
+}
+
 func insertRealPublicationForCloseTest(
 	tb testing.TB,
 	conductorInstance *conductor.Conductor,
@@ -216,7 +226,7 @@ func insertRealPublicationForCloseTest(
 	tb.Helper()
 
 	pub := aeron.NewTestPublicationForHooks(tb)
-	conductorInstance.InsertPublicationForTest(pub.RegistrationID(), pub)
+	insertPublicationForCloseTest(tb, conductorInstance, pub)
 	return pub
 }
 
@@ -227,8 +237,18 @@ func insertRealExclusivePublicationForCloseTest(
 	tb.Helper()
 
 	pub := aeron.NewTestExclusivePublicationForHooks(tb)
-	conductorInstance.InsertPublicationForTest(pub.RegistrationID(), pub)
+	insertPublicationForCloseTest(tb, conductorInstance, pub)
 	return pub
+}
+
+func closePublicationForCloseTest(
+	t *testing.T,
+	conductorInstance *conductor.Conductor,
+	handle any,
+) error {
+	t.Helper()
+
+	return conductorInstance.ClosePublication(handle.(conductor.PublicationHandle))
 }
 
 func insertFileBackedRealPublicationForCloseTest(
@@ -243,7 +263,7 @@ func insertFileBackedRealPublicationForCloseTest(
 	_, err := conductorInstance.AcquireLogBuffersForTest(logPath)
 	require.NoError(tb, err)
 
-	conductorInstance.InsertPublicationForTest(pub.RegistrationID(), pub)
+	insertPublicationForCloseTest(tb, conductorInstance, pub)
 	return pub
 }
 
@@ -542,7 +562,7 @@ func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testi
 	tests := []struct {
 		name      string
 		errRetire error
-		lifecycle conductor.ResourceLifecycle
+		lifecycle func(error) conductor.ResourceLifecycle
 		insert    func(t *testing.T, conductorInstance *conductor.Conductor) any
 		close     func(t *testing.T, conductorInstance *conductor.Conductor, handle any) error
 		count     func(conductorInstance *conductor.Conductor) int
@@ -551,20 +571,12 @@ func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testi
 		{
 			name:      "publication",
 			errRetire: errRetirePublication,
-			lifecycle: realCreateMarkRecordingLifecycleWithRetirePublicationErr(errRetirePublication),
+			lifecycle: realCreateMarkRecordingLifecycleWithRetirePublicationErr,
 			insert: func(t *testing.T, conductorInstance *conductor.Conductor) any {
 				return insertRealPublicationForCloseTest(t, conductorInstance)
 			},
-			close: func(
-				t *testing.T,
-				conductorInstance *conductor.Conductor,
-				handle any,
-			) error {
-				return conductorInstance.ClosePublication(handle.(conductor.PublicationHandle))
-			},
-			count: func(conductorInstance *conductor.Conductor) int {
-				return conductorInstance.PublicationCountForTest()
-			},
+			close: closePublicationForCloseTest,
+			count: (*conductor.Conductor).PublicationCountForTest,
 			isClosed: func(handle any) bool {
 				return handle.(*aeron.Publication).IsClosed()
 			},
@@ -572,20 +584,12 @@ func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testi
 		{
 			name:      "exclusivePublication",
 			errRetire: errRetirePublication,
-			lifecycle: realCreateMarkRecordingLifecycleWithRetirePublicationErr(errRetirePublication),
+			lifecycle: realCreateMarkRecordingLifecycleWithRetirePublicationErr,
 			insert: func(t *testing.T, conductorInstance *conductor.Conductor) any {
 				return insertRealExclusivePublicationForCloseTest(t, conductorInstance)
 			},
-			close: func(
-				t *testing.T,
-				conductorInstance *conductor.Conductor,
-				handle any,
-			) error {
-				return conductorInstance.ClosePublication(handle.(conductor.PublicationHandle))
-			},
-			count: func(conductorInstance *conductor.Conductor) int {
-				return conductorInstance.PublicationCountForTest()
-			},
+			close: closePublicationForCloseTest,
+			count: (*conductor.Conductor).PublicationCountForTest,
 			isClosed: func(handle any) bool {
 				return handle.(*aeron.ExclusivePublication).IsClosed()
 			},
@@ -593,7 +597,7 @@ func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testi
 		{
 			name:      "subscription",
 			errRetire: errRetireSubscription,
-			lifecycle: realCreateMarkRecordingLifecycleWithRetireSubscriptionErr(errRetireSubscription),
+			lifecycle: realCreateMarkRecordingLifecycleWithRetireSubscriptionErr,
 			insert: func(t *testing.T, conductorInstance *conductor.Conductor) any {
 				return insertRealSubscriptionForCloseTest(t, conductorInstance)
 			},
@@ -619,7 +623,7 @@ func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testi
 
 			errorHandler, gotErrors := collectConductorErrors()
 			config := conductorTestConfig(t, errorHandler, fixedClocks{})
-			config.ResourceLifecycle = testCase.lifecycle
+			config.ResourceLifecycle = testCase.lifecycle(testCase.errRetire)
 			conductorInstance := newConductorForTest(t, config)
 
 			handle := testCase.insert(t, conductorInstance)
@@ -709,13 +713,7 @@ func TestConductor_CloseResource_mapMiss_marksClosed(t *testing.T) {
 				pub := handle.(*aeron.Publication)
 				conductorInstance.RemovePublicationForTest(pub.RegistrationID())
 			},
-			close: func(
-				t *testing.T,
-				conductorInstance *conductor.Conductor,
-				handle any,
-			) error {
-				return conductorInstance.ClosePublication(handle.(conductor.PublicationHandle))
-			},
+			close: closePublicationForCloseTest,
 			closed: func(handle any) bool {
 				return handle.(*aeron.Publication).IsClosed()
 			},
@@ -729,13 +727,7 @@ func TestConductor_CloseResource_mapMiss_marksClosed(t *testing.T) {
 				pub := handle.(*aeron.ExclusivePublication)
 				conductorInstance.RemovePublicationForTest(pub.RegistrationID())
 			},
-			close: func(
-				t *testing.T,
-				conductorInstance *conductor.Conductor,
-				handle any,
-			) error {
-				return conductorInstance.ClosePublication(handle.(conductor.PublicationHandle))
-			},
+			close: closePublicationForCloseTest,
 			closed: func(handle any) bool {
 				return handle.(*aeron.ExclusivePublication).IsClosed()
 			},

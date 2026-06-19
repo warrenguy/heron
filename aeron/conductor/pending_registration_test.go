@@ -97,17 +97,36 @@ type addRemovePendingKindCase struct {
 	add  bool
 }
 
-var addRemovePendingKindCases = []addRemovePendingKindCase{
-	{name: "addPublication", kind: conductor.PendingKindAddPublication, add: true},
-	{name: "addSubscription", kind: conductor.PendingKindAddSubscription, add: true},
-	{
-		name: "addExclusivePublication",
-		kind: conductor.PendingKindAddExclusivePublication,
-		add:  true,
-	},
-	{name: "removePublication", kind: conductor.PendingKindRemovePublication},
-	{name: "removeSubscription", kind: conductor.PendingKindRemoveSubscription},
+var addPendingKindCases = []struct {
+	name string
+	kind conductor.PendingKind
+}{
+	{name: "addPublication", kind: conductor.PendingKindAddPublication},
+	{name: "addSubscription", kind: conductor.PendingKindAddSubscription},
+	{name: "addExclusivePublication", kind: conductor.PendingKindAddExclusivePublication},
 }
+
+var addRemovePendingKindCases = func() []addRemovePendingKindCase {
+	cases := make([]addRemovePendingKindCase, 0, len(addPendingKindCases)+2)
+	for _, kindCase := range addPendingKindCases {
+		cases = append(cases, addRemovePendingKindCase{
+			name: kindCase.name,
+			kind: kindCase.kind,
+			add:  true,
+		})
+	}
+	return append(
+		cases,
+		addRemovePendingKindCase{
+			name: "removePublication",
+			kind: conductor.PendingKindRemovePublication,
+		},
+		addRemovePendingKindCase{
+			name: "removeSubscription",
+			kind: conductor.PendingKindRemoveSubscription,
+		},
+	)
+}()
 
 func registerAddRemovePendingKindCase(
 	conductorInstance *conductor.Conductor,
@@ -121,6 +140,11 @@ func registerAddRemovePendingKindCase(
 
 func invokeNextSessionIDWrongKind(conductorInstance *conductor.Conductor) bool {
 	return conductorInstance.NextSessionID(pendingTestCorrelationID, 42)
+}
+
+func requireNilPublicationHandle(t *testing.T, registration conductor.PendingRegistration) {
+	t.Helper()
+	require.Nil(t, registration.Publication)
 }
 
 func TestConductor_RegisterPending_duplicate(t *testing.T) {
@@ -167,25 +191,7 @@ func TestConductor_RegisterPending_terminating(t *testing.T) {
 }
 
 func TestConductor_RegisterPending_rejectsAddKinds(t *testing.T) {
-	tests := []struct {
-		name string
-		kind conductor.PendingKind
-	}{
-		{
-			name: "addPublication",
-			kind: conductor.PendingKindAddPublication,
-		},
-		{
-			name: "addSubscription",
-			kind: conductor.PendingKindAddSubscription,
-		},
-		{
-			name: "addExclusivePublication",
-			kind: conductor.PendingKindAddExclusivePublication,
-		},
-	}
-
-	for _, testCase := range tests {
+	for _, testCase := range addPendingKindCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			conductorInstance := newConductorForTestAtWorkNano(
 				t,
@@ -392,37 +398,37 @@ func TestConductor_ClearPending(t *testing.T) {
 		require.False(t, ok)
 	})
 
-	t.Run("addPublicationAfterReady", func(t *testing.T) {
-		lifecycle := &recordingResourceLifecycle{}
-		conductorInstance := newConductorWithResourceLifecycleForTest(t, lifecycle)
-		completeGoldenPublicationReadyForTest(t, conductorInstance)
-		require.Equal(t, 1, conductorInstance.PublicationCountForTest())
+	publicationClearPendingCases := []struct {
+		name  string
+		setup func(testing.TB, *conductor.Conductor)
+		regID int64
+	}{
+		{
+			name:  "addPublicationAfterReady",
+			setup: completeGoldenPublicationReadyForTest,
+			regID: goldenPublicationBuffersReadyEvent.RegistrationID,
+		},
+		{
+			name:  "addExclusivePublicationAfterReady",
+			setup: completeGoldenExclusivePublicationReadyForTest,
+			regID: goldenExclusivePublicationBuffersReadyEvent.RegistrationID,
+		},
+	}
+	for _, testCase := range publicationClearPendingCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			lifecycle := &recordingResourceLifecycle{}
+			conductorInstance := newConductorWithResourceLifecycleForTest(t, lifecycle)
+			testCase.setup(t, conductorInstance)
+			require.Equal(t, 1, conductorInstance.PublicationCountForTest())
 
-		conductorInstance.ClearPending()
+			conductorInstance.ClearPending()
 
-		require.Equal(t, 0, conductorInstance.PublicationCountForTest())
-		require.Equal(t, 1, lifecycle.retirePublicationCalls)
-		_, ok := conductorInstance.PublicationByRegID(
-			goldenPublicationBuffersReadyEvent.RegistrationID,
-		)
-		require.False(t, ok)
-	})
-
-	t.Run("addExclusivePublicationAfterReady", func(t *testing.T) {
-		lifecycle := &recordingResourceLifecycle{}
-		conductorInstance := newConductorWithResourceLifecycleForTest(t, lifecycle)
-		completeGoldenExclusivePublicationReadyForTest(t, conductorInstance)
-		require.Equal(t, 1, conductorInstance.PublicationCountForTest())
-
-		conductorInstance.ClearPending()
-
-		require.Equal(t, 0, conductorInstance.PublicationCountForTest())
-		require.Equal(t, 1, lifecycle.retirePublicationCalls)
-		_, ok := conductorInstance.PublicationByRegID(
-			goldenExclusivePublicationBuffersReadyEvent.RegistrationID,
-		)
-		require.False(t, ok)
-	})
+			require.Equal(t, 0, conductorInstance.PublicationCountForTest())
+			require.Equal(t, 1, lifecycle.retirePublicationCalls)
+			_, ok := conductorInstance.PublicationByRegID(testCase.regID)
+			require.False(t, ok)
+		})
+	}
 }
 
 func TestConductor_PollPending_wrongCorrelation(t *testing.T) {
@@ -576,9 +582,9 @@ func TestConductor_pendingHandler_wrongKind(t *testing.T) {
 				return registerPendingAddForTest(conductorInstance, conductor.PendingKindAddSubscription)
 			},
 			invoke: func(conductorInstance *conductor.Conductor) bool {
-				event := goldenExclusivePublicationBuffersReadyEvent
-				event.CorrelationID = pendingTestCorrelationID
-				conductorInstance.ExclusivePublicationReadyForTest(event)
+				conductorInstance.ExclusivePublicationReadyForTest(
+					goldenExclusivePublicationBuffersReadyWithCorrelation(pendingTestCorrelationID),
+				)
 				return false
 			},
 			wantKind: conductor.PendingKindAddSubscription,
@@ -589,9 +595,9 @@ func TestConductor_pendingHandler_wrongKind(t *testing.T) {
 				return registerPendingAddForTest(conductorInstance, conductor.PendingKindAddPublication)
 			},
 			invoke: func(conductorInstance *conductor.Conductor) bool {
-				event := goldenExclusivePublicationBuffersReadyEvent
-				event.CorrelationID = pendingTestCorrelationID
-				conductorInstance.ExclusivePublicationReadyForTest(event)
+				conductorInstance.ExclusivePublicationReadyForTest(
+					goldenExclusivePublicationBuffersReadyWithCorrelation(pendingTestCorrelationID),
+				)
 				return false
 			},
 			wantKind: conductor.PendingKindAddPublication,
@@ -960,11 +966,9 @@ func TestConductor_PollPending_addReady(t *testing.T) {
 			signalReady: func(conductorInstance *conductor.Conductor) {
 				conductorInstance.PublicationReadyForTest(goldenPublicationBuffersReadyEvent)
 			},
-			wantRegID:    goldenPublicationBuffersReadyEvent.RegistrationID,
-			wantStreamID: goldenPublicationBuffersReadyEvent.StreamID,
-			wantHandleNil: func(t *testing.T, registration conductor.PendingRegistration) {
-				require.Nil(t, registration.Publication)
-			},
+			wantRegID:     goldenPublicationBuffersReadyEvent.RegistrationID,
+			wantStreamID:  goldenPublicationBuffersReadyEvent.StreamID,
+			wantHandleNil: requireNilPublicationHandle,
 		},
 		{
 			name:          "exclusivePublication",
@@ -976,11 +980,9 @@ func TestConductor_PollPending_addReady(t *testing.T) {
 					goldenExclusivePublicationBuffersReadyEvent,
 				)
 			},
-			wantRegID:    goldenExclusivePublicationBuffersReadyEvent.RegistrationID,
-			wantStreamID: goldenExclusivePublicationBuffersReadyEvent.StreamID,
-			wantHandleNil: func(t *testing.T, registration conductor.PendingRegistration) {
-				require.Nil(t, registration.Publication)
-			},
+			wantRegID:     goldenExclusivePublicationBuffersReadyEvent.RegistrationID,
+			wantStreamID:  goldenExclusivePublicationBuffersReadyEvent.StreamID,
+			wantHandleNil: requireNilPublicationHandle,
 		},
 		{
 			name:          "subscription",
@@ -1124,19 +1126,7 @@ func TestConductor_PollPending_onError(t *testing.T) {
 }
 
 func TestConductor_OperationSucceeded_addKindsAckOnly(t *testing.T) {
-	tests := []struct {
-		name string
-		kind conductor.PendingKind
-	}{
-		{name: "addPublication", kind: conductor.PendingKindAddPublication},
-		{name: "addSubscription", kind: conductor.PendingKindAddSubscription},
-		{
-			name: "addExclusivePublication",
-			kind: conductor.PendingKindAddExclusivePublication,
-		},
-	}
-
-	for _, testCase := range tests {
+	for _, testCase := range addPendingKindCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			conductorInstance := newConductorForTestAtWorkNano(
 				t,

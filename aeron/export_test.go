@@ -401,6 +401,10 @@ func PublicationLimitSlotForTest(pub *Publication) int64 {
 	return publicationLimitSlotForTest(pub.publicationLimit)
 }
 
+func PublicationConductorForTest(pub *Publication) *conductor.Conductor {
+	return pub.conductor
+}
+
 func NewTestPublicationWithoutTBForRapid(
 	logCfg TestPublicationLogConfig,
 	limitPosition int64,
@@ -481,6 +485,10 @@ func ExclusivePublicationActiveTermCountForTest(ep *ExclusivePublication) int32 
 
 func ExclusivePublicationLimitSlotForTest(ep *ExclusivePublication) int64 {
 	return publicationLimitSlotForTest(ep.publicationLimit)
+}
+
+func ExclusivePublicationConductorForTest(ep *ExclusivePublication) *conductor.Conductor {
+	return ep.conductor
 }
 
 func ExclusivePublicationActiveTermBufferForTest(
@@ -684,10 +692,7 @@ func newTestExclusivePublicationWithoutTB(
 
 func writeTestLogFileForTest(tb testing.TB, path string, cfg TestPublicationLogConfig) {
 	tb.Helper()
-
-	buf := make([]byte, inMemMappedLogLength)
-	writeInMemPublicationMetadata(buf, cfg)
-	require.NoError(tb, os.WriteFile(path, buf, 0o644))
+	require.NoError(tb, os.WriteFile(path, inMemPublicationLogBytes(cfg), 0o644))
 }
 
 func WriteTestLogFileForTest(tb testing.TB, path string) {
@@ -696,6 +701,14 @@ func WriteTestLogFileForTest(tb testing.TB, path string) {
 
 func WriteTestExclusiveLogFileForTest(tb testing.TB, path string) {
 	writeTestLogFileForTest(tb, path, DefaultTestExclusivePublicationLogConfig())
+}
+
+func WriteTestKindLogFileForTest(tb testing.TB, path string, exclusive bool) {
+	if exclusive {
+		WriteTestExclusiveLogFileForTest(tb, path)
+		return
+	}
+	WriteTestLogFileForTest(tb, path)
 }
 
 func newTestCountersReaderFromRecords(
@@ -903,13 +916,13 @@ func (lingerStubPublicationLifecycle) NewPublication(
 	return nil, errLingerStubDoesNotBuildPublications
 }
 
-func (lingerStubPublicationLifecycle) NewExclusivePublication(
-	conductor.PublicationBuffersReady,
-	*logbuffer.LogBuffers,
-	*cnc.CountersReader,
-	string,
+func (l lingerStubPublicationLifecycle) NewExclusivePublication(
+	event conductor.PublicationBuffersReady,
+	logBuffers *logbuffer.LogBuffers,
+	countersReader *cnc.CountersReader,
+	channel string,
 ) (conductor.PublicationHandle, error) {
-	return nil, errLingerStubDoesNotBuildPublications
+	return l.NewPublication(event, logBuffers, countersReader, channel)
 }
 
 func (l lingerStubPublicationLifecycle) RetirePublication(

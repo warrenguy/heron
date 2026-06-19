@@ -75,23 +75,19 @@ func newConductorWithImageLifecycleForTest(
 }
 
 func setupConductorImageLifecycleLogFile(tb testing.TB, filename string) (dir, logPath string) {
-	tb.Helper()
-
-	dir = tb.TempDir()
-	logPath = filepath.Join(dir, filename)
-	WriteTestLogFileForTest(tb, logPath)
-	return dir, logPath
+	return setupConductorImageLifecycleKindLogFile(tb, filename, false)
 }
 
-func setupConductorImageLifecycleExclusiveLogFile(
+func setupConductorImageLifecycleKindLogFile(
 	tb testing.TB,
 	filename string,
+	exclusive bool,
 ) (dir, logPath string) {
 	tb.Helper()
 
 	dir = tb.TempDir()
 	logPath = filepath.Join(dir, filename)
-	WriteTestExclusiveLogFileForTest(tb, logPath)
+	WriteTestKindLogFileForTest(tb, logPath, exclusive)
 	return dir, logPath
 }
 

@@ -27,44 +27,65 @@ var conductorSubscriptionHandleErrorCases = []struct {
 	},
 }
 
-func TestConductorResourceLifecycle_NewExclusivePublication_inactiveLimitCounter(t *testing.T) {
-	t.Parallel()
+func emptyCountersReaderForTest(t *testing.T) *cnc.CountersReader {
+	t.Helper()
 
-	logBuffers := NewTestLogBuffersForTest(t, DefaultTestExclusivePublicationLogConfig())
-	ready := testPublicationBuffersReady()
-	emptyReader, err := cnc.NewCountersReader(
+	reader, err := cnc.NewCountersReader(
 		make([]byte, cnc.CounterMetadataLength),
 		make([]byte, cnc.CounterValueLength),
 	)
 	require.NoError(t, err)
+	return reader
+}
 
-	_, err = ConductorResourceLifecycle.NewExclusivePublication(
-		ready,
-		logBuffers,
-		emptyReader,
-		"aeron:ipc",
-	)
-	require.ErrorContains(t, err, "publication limit counter")
+var publicationKindLogConfigCases = []struct {
+	name      string
+	logCfg    TestPublicationLogConfig
+	exclusive bool
+}{
+	{
+		name:      "publication",
+		logCfg:    DefaultTestPublicationLogConfig(),
+		exclusive: false,
+	},
+	{
+		name:      "exclusive",
+		logCfg:    DefaultTestExclusivePublicationLogConfig(),
+		exclusive: true,
+	},
 }
 
 func TestConductorResourceLifecycle_NewPublication_inactiveLimitCounter(t *testing.T) {
 	t.Parallel()
 
-	logBuffers := NewTestLogBuffersForTest(t, DefaultTestPublicationLogConfig())
-	ready := testPublicationBuffersReady()
-	emptyReader, err := cnc.NewCountersReader(
-		make([]byte, cnc.CounterMetadataLength),
-		make([]byte, cnc.CounterValueLength),
-	)
-	require.NoError(t, err)
+	emptyReader := emptyCountersReaderForTest(t)
 
-	_, err = ConductorResourceLifecycle.NewPublication(
-		ready,
-		logBuffers,
-		emptyReader,
-		"aeron:ipc",
-	)
-	require.ErrorContains(t, err, "publication limit counter")
+	for _, tt := range publicationKindLogConfigCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			logBuffers := NewTestLogBuffersForTest(t, tt.logCfg)
+			ready := testPublicationBuffersReady()
+
+			var err error
+			if tt.exclusive {
+				_, err = ConductorResourceLifecycle.NewExclusivePublication(
+					ready,
+					logBuffers,
+					emptyReader,
+					"aeron:ipc",
+				)
+			} else {
+				_, err = ConductorResourceLifecycle.NewPublication(
+					ready,
+					logBuffers,
+					emptyReader,
+					"aeron:ipc",
+				)
+			}
+			require.ErrorContains(t, err, "publication limit counter")
+		})
+	}
 }
 
 func runConductorSubscriptionHandleErrorTests(
@@ -103,11 +124,13 @@ func TestConductorResourceLifecycle_RetireSubscription_errors(t *testing.T) {
 	})
 }
 
-var conductorPublicationHandleErrorCases = []struct {
+type publicationHandleErrorCase struct {
 	name string
 	pub  conductor.PublicationHandle
 	want string
-}{
+}
+
+var conductorPublicationHandleErrorCases = []publicationHandleErrorCase{
 	{
 		name: "nil",
 		pub:  nil,
@@ -119,19 +142,63 @@ var conductorPublicationHandleErrorCases = []struct {
 		want: "aeron: publication handle aeron.stubPublicationHandle is not " +
 			"*Publication or *ExclusivePublication",
 	},
+	{
+		name: "typed nil publication",
+		pub:  (*Publication)(nil),
+		want: "aeron: publication handle is nil",
+	},
+	{
+		name: "typed nil exclusive publication",
+		pub:  (*ExclusivePublication)(nil),
+		want: "aeron: publication handle is nil",
+	},
+}
+
+func runPublicationHandleErrorTests(
+	t *testing.T,
+	cases []publicationHandleErrorCase,
+	run func(pub conductor.PublicationHandle) error,
+) {
+	t.Helper()
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := run(tt.pub)
+			require.EqualError(t, err, tt.want)
+		})
+	}
 }
 
 func TestConductorResourceLifecycle_RetirePublication_errors(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range conductorPublicationHandleErrorCases {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	runPublicationHandleErrorTests(
+		t,
+		conductorPublicationHandleErrorCases,
+		func(pub conductor.PublicationHandle) error {
+			_, err := ConductorResourceLifecycle.RetirePublication(pub)
+			return err
+		},
+	)
+}
 
-			_, err := ConductorResourceLifecycle.RetirePublication(tt.pub)
-			require.EqualError(t, err, tt.want)
-		})
-	}
+func TestConductorResourceLifecycle_BindPublication_errors(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance := testutil.NewConductorFixture(
+		t,
+		testutil.DefaultConductorConfig(nil),
+	).Conductor
+
+	runPublicationHandleErrorTests(
+		t,
+		conductorPublicationHandleErrorCases,
+		func(pub conductor.PublicationHandle) error {
+			return ConductorResourceLifecycle.BindPublication(pub, conductorInstance)
+		},
+	)
 }
 
 type retirePublicationFixture struct {
@@ -163,84 +230,91 @@ func newRetirePublicationFixture(
 	return retirePublicationFixture{pub, pub.log.Path(), pub.IsClosed}
 }
 
-var conductorExclusivePublicationHandleErrorCases = []struct {
-	name string
-	pub  conductor.PublicationHandle
-	want string
-}{
-	{
-		name: "nil",
-		pub:  nil,
-		want: "aeron: publication handle is nil",
-	},
-	{
-		name: "wrong type",
-		pub:  stubPubHandle,
-		want: "aeron: publication handle aeron.stubPublicationHandle is not *ExclusivePublication",
-	},
-	{
-		name: "typed nil",
-		pub:  (*ExclusivePublication)(nil),
-		want: "aeron: publication handle is nil",
-	},
+func publicationFromHandleErrorCases(
+	kind string,
+	typeName string,
+	typedNil conductor.PublicationHandle,
+) []publicationHandleErrorCase {
+	return []publicationHandleErrorCase{
+		{
+			name: "nil",
+			pub:  nil,
+			want: "aeron: " + kind + " handle is nil",
+		},
+		{
+			name: "wrong type",
+			pub:  stubPubHandle,
+			want: "aeron: " + kind + " handle aeron.stubPublicationHandle is not " + typeName,
+		},
+		{
+			name: "typed nil",
+			pub:  typedNil,
+			want: "aeron: " + kind + " handle is nil",
+		},
+	}
 }
 
 func TestPublicationFromHandle_errors(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		pub  conductor.PublicationHandle
-		want string
-	}{
-		{
-			name: "nil",
-			pub:  nil,
-			want: "aeron: publication handle is nil",
+	runPublicationHandleErrorTests(
+		t,
+		publicationFromHandleErrorCases("publication", "*Publication", (*Publication)(nil)),
+		func(pub conductor.PublicationHandle) error {
+			_, err := publicationFromHandle(pub)
+			return err
 		},
-		{
-			name: "wrong type",
-			pub:  stubPubHandle,
-			want: "aeron: publication handle aeron.stubPublicationHandle is not *Publication",
-		},
-		{
-			name: "typed nil",
-			pub:  (*Publication)(nil),
-			want: "aeron: publication handle is nil",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			_, err := publicationFromHandle(tt.pub)
-			require.EqualError(t, err, tt.want)
-		})
-	}
+	)
 }
 
 func TestExclusivePublicationFromHandle_errors(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range conductorExclusivePublicationHandleErrorCases {
+	runPublicationHandleErrorTests(
+		t,
+		publicationFromHandleErrorCases(
+			"exclusive publication",
+			"*ExclusivePublication",
+			(*ExclusivePublication)(nil),
+		),
+		func(pub conductor.PublicationHandle) error {
+			_, err := exclusivePublicationFromHandle(pub)
+			return err
+		},
+	)
+}
+
+func TestConductorResourceLifecycle_BindPublication(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range publicationKindLogConfigCases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := exclusivePublicationFromHandle(tt.pub)
-			require.EqualError(t, err, tt.want)
+			fixture := newRetirePublicationFixture(t, tt.logCfg, tt.exclusive)
+			conductorInstance := testutil.NewConductorFixture(
+				t,
+				testutil.DefaultConductorConfig(nil),
+			).Conductor
+			require.NoError(
+				t,
+				ConductorResourceLifecycle.BindPublication(fixture.handle, conductorInstance),
+			)
+
+			switch handle := fixture.handle.(type) {
+			case *Publication:
+				require.Equal(t, conductorInstance, PublicationConductorForTest(handle))
+			case *ExclusivePublication:
+				require.Equal(
+					t,
+					conductorInstance,
+					ExclusivePublicationConductorForTest(handle),
+				)
+			default:
+				t.Fatalf("unexpected publication handle type %T", fixture.handle)
+			}
 		})
 	}
-}
-
-func TestConductorResourceLifecycle_BindPublication_exclusive(t *testing.T) {
-	t.Parallel()
-
-	fixture := newRetirePublicationFixture(t, DefaultTestExclusivePublicationLogConfig(), true)
-	conductorInstance := testutil.NewConductorFixture(
-		t,
-		testutil.DefaultConductorConfig(nil),
-	).Conductor
-	require.NoError(t, ConductorResourceLifecycle.BindPublication(fixture.handle, conductorInstance))
 }
 
 func TestConductorResourceLifecycle_MarkPublicationClosed_exclusive(t *testing.T) {
@@ -251,25 +325,21 @@ func TestConductorResourceLifecycle_MarkPublicationClosed_exclusive(t *testing.T
 	require.True(t, fixture.isClosed())
 }
 
+func TestConductorResourceLifecycle_MarkPublicationClosed_typedNilNoPanic(t *testing.T) {
+	t.Parallel()
+
+	require.NotPanics(t, func() {
+		ConductorResourceLifecycle.MarkPublicationClosed((*Publication)(nil))
+	})
+	require.NotPanics(t, func() {
+		ConductorResourceLifecycle.MarkPublicationClosed((*ExclusivePublication)(nil))
+	})
+}
+
 func TestConductorResourceLifecycle_RetirePublication_closesAndReturnsRegistryKey(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range []struct {
-		name      string
-		logCfg    TestPublicationLogConfig
-		exclusive bool
-	}{
-		{
-			name:      "publication",
-			logCfg:    DefaultTestPublicationLogConfig(),
-			exclusive: false,
-		},
-		{
-			name:      "exclusive",
-			logCfg:    DefaultTestExclusivePublicationLogConfig(),
-			exclusive: true,
-		},
-	} {
+	for _, tt := range publicationKindLogConfigCases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 

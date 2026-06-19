@@ -217,6 +217,19 @@ func TestDriverProxy_offerCorrelated_encodeFailureAborts(t *testing.T) {
 	})
 }
 
+func requireDriverProxyPublicationMessage(
+	t *testing.T,
+	buffer aeronatomic.AtomicBuffer,
+	index, length int,
+	want conductor.PublicationMessage,
+) {
+	t.Helper()
+
+	got, err := conductor.DecodePublicationMessage(buffer, index, length)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
 func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 	const (
 		clientID       int64 = 1
@@ -224,6 +237,23 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 		streamID       int32 = 1001
 		registrationID int64 = 9001
 	)
+
+	publicationWant := conductor.PublicationMessage{
+		ClientID:      clientID,
+		CorrelationID: correlationID,
+		StreamID:      streamID,
+		Channel:       driverProxyTestChannel,
+	}
+	publicationWantBody := conductor.PublicationMessageBytes(
+		clientID,
+		correlationID,
+		streamID,
+		driverProxyTestChannel,
+	)
+	publicationBodyLength := conductor.PublicationMessageBodyLength(driverProxyTestChannel)
+	requirePublication := func(t *testing.T, buffer aeronatomic.AtomicBuffer, index, length int) {
+		requireDriverProxyPublicationMessage(t, buffer, index, length, publicationWant)
+	}
 
 	tests := []struct {
 		name       string
@@ -239,23 +269,9 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 			offer: func(proxy *conductor.DriverProxy) error {
 				return proxy.AddPublication(correlationID, streamID, driverProxyTestChannel)
 			},
-			wantBody: conductor.PublicationMessageBytes(
-				clientID,
-				correlationID,
-				streamID,
-				driverProxyTestChannel,
-			),
-			bodyLength: conductor.PublicationMessageBodyLength(driverProxyTestChannel),
-			read: func(t *testing.T, buffer aeronatomic.AtomicBuffer, index, length int) {
-				got, err := conductor.DecodePublicationMessage(buffer, index, length)
-				require.NoError(t, err)
-				require.Equal(t, conductor.PublicationMessage{
-					ClientID:      clientID,
-					CorrelationID: correlationID,
-					StreamID:      streamID,
-					Channel:       driverProxyTestChannel,
-				}, got)
-			},
+			wantBody:   publicationWantBody,
+			bodyLength: publicationBodyLength,
+			read:       requirePublication,
 		},
 		{
 			name:       "add exclusive publication",
@@ -263,23 +279,9 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 			offer: func(proxy *conductor.DriverProxy) error {
 				return proxy.AddExclusivePublication(correlationID, streamID, driverProxyTestChannel)
 			},
-			wantBody: conductor.PublicationMessageBytes(
-				clientID,
-				correlationID,
-				streamID,
-				driverProxyTestChannel,
-			),
-			bodyLength: conductor.PublicationMessageBodyLength(driverProxyTestChannel),
-			read: func(t *testing.T, buffer aeronatomic.AtomicBuffer, index, length int) {
-				got, err := conductor.DecodePublicationMessage(buffer, index, length)
-				require.NoError(t, err)
-				require.Equal(t, conductor.PublicationMessage{
-					ClientID:      clientID,
-					CorrelationID: correlationID,
-					StreamID:      streamID,
-					Channel:       driverProxyTestChannel,
-				}, got)
-			},
+			wantBody:   publicationWantBody,
+			bodyLength: publicationBodyLength,
+			read:       requirePublication,
 		},
 		{
 			name:       "add subscription",
@@ -430,6 +432,12 @@ func TestDriverProxy_offerBody_insufficientCapacity(t *testing.T) {
 			},
 		},
 		{
+			name: "add exclusive publication",
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.AddExclusivePublication(42, 1001, driverProxyTestChannel)
+			},
+		},
+		{
 			name: "add subscription",
 			offer: func(proxy *conductor.DriverProxy) error {
 				return proxy.AddSubscription(42, 1001, driverProxyTestChannel)
@@ -480,6 +488,12 @@ func TestDriverProxy_addChannelCommands_rejectNonASCII(t *testing.T) {
 			name: "add publication",
 			offer: func(proxy *conductor.DriverProxy, channel string) error {
 				return proxy.AddPublication(correlationID, streamID, channel)
+			},
+		},
+		{
+			name: "add exclusive publication",
+			offer: func(proxy *conductor.DriverProxy, channel string) error {
+				return proxy.AddExclusivePublication(correlationID, streamID, channel)
 			},
 		},
 		{

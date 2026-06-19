@@ -305,14 +305,12 @@ func (adapter *DriverEventsAdapter) CorrelatedForTest(
 	return adapter.correlated(activeCorrelationID, correlationID)
 }
 
-// PublicationReadyForTest completes PendingKindAddPublication only.
-// Pending kind must match; use ExclusivePublicationReadyForTest for exclusive add pendings.
+// PublicationReadyForTest completes PendingKindAddPublication.
 func (conductor *Conductor) PublicationReadyForTest(event PublicationBuffersReady) {
 	publicationReadyHook(conductor, event)
 }
 
-// ExclusivePublicationReadyForTest completes PendingKindAddExclusivePublication only.
-// Pending kind must match; use PublicationReadyForTest for concurrent add pendings.
+// ExclusivePublicationReadyForTest completes PendingKindAddExclusivePublication.
 func (conductor *Conductor) ExclusivePublicationReadyForTest(event PublicationBuffersReady) {
 	exclusivePublicationReadyHook(conductor, event)
 }
@@ -346,11 +344,11 @@ func NewSyntheticExclusiveLogBuffersForTest(tb testing.TB) *logbuffer.LogBuffers
 }
 
 func newSyntheticLogBuffersForTest(tb testing.TB, logType byte) *logbuffer.LogBuffers {
-	tb.Helper()
-
-	const termLength = 65536
-	const pageSize = 4096
-	const initialTermID int32 = 7
+	const (
+		termLength    = 65536
+		pageSize      = 4096
+		initialTermID = int32(7)
+	)
 	computed, err := logbuffer.ComputeLogLength(termLength, pageSize)
 	if err != nil {
 		tb.Fatal(err)
@@ -385,7 +383,6 @@ func newSyntheticLogBuffersForTest(tb testing.TB, logType byte) *logbuffer.LogBu
 	); err != nil {
 		tb.Fatal(err)
 	}
-
 	return newSyntheticLogBuffersFromMeta(tb, buf)
 }
 
@@ -393,8 +390,6 @@ func newSyntheticLogBuffersFromMeta(
 	tb testing.TB,
 	buf []byte,
 ) *logbuffer.LogBuffers {
-	tb.Helper()
-
 	mapped, err := logbuffer.MapLogBufferFromBytes(buf)
 	if err != nil {
 		tb.Fatal(err)

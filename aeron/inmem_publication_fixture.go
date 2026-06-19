@@ -73,11 +73,14 @@ func defaultInMemExclusivePublicationLogConfig() inMemPublicationLogConfig {
 	return cfg
 }
 
-func newInMemMappedLog(cfg inMemPublicationLogConfig) *logbuffer.MappedLogBuffer {
+func inMemPublicationLogBytes(cfg inMemPublicationLogConfig) []byte {
 	buf := make([]byte, inMemMappedLogLength)
 	writeInMemPublicationMetadata(buf, cfg)
+	return buf
+}
 
-	log, err := logbuffer.MapLogBufferFromBytes(buf)
+func newInMemMappedLog(cfg inMemPublicationLogConfig) *logbuffer.MappedLogBuffer {
+	log, err := logbuffer.MapLogBufferFromBytes(inMemPublicationLogBytes(cfg))
 	if err != nil {
 		panic(err)
 	}

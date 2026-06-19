@@ -104,58 +104,37 @@ func subscriptionImageHandler(
 	return wrapImageHandler(handler(subscription))
 }
 
-func subscriptionFromHandle(sub conductor.SubscriptionHandle) (*Subscription, error) {
-	if sub == nil {
-		return nil, errors.New("aeron: subscription handle is nil")
-	}
-	subscription, ok := sub.(*Subscription)
-	if !ok {
-		return nil, fmt.Errorf("aeron: subscription handle %T is not *Subscription", sub)
-	}
-	if subscription == nil {
-		return nil, errors.New("aeron: subscription handle is nil")
-	}
-	return subscription, nil
-}
-
-func publicationHandleFrom[T *Publication | *ExclusivePublication](
-	pub conductor.PublicationHandle,
-	wantTypeName string,
-) (T, error) {
+func typedHandleFrom[T comparable](handle any, kind, typeName string) (T, error) {
 	var zero T
-	if pub == nil {
-		return zero, errors.New("aeron: publication handle is nil")
+	if handle == nil {
+		return zero, errors.New("aeron: " + kind + " handle is nil")
 	}
-	publication, ok := pub.(T)
+	typed, ok := handle.(T)
 	if !ok {
-		return zero, fmt.Errorf("aeron: publication handle %T is not %s", pub, wantTypeName)
+		return zero, fmt.Errorf("aeron: %s handle %T is not %s", kind, handle, typeName)
 	}
-	if publication == zero {
-		return zero, errors.New("aeron: publication handle is nil")
+	if typed == zero {
+		return zero, errors.New("aeron: " + kind + " handle is nil")
 	}
-	return publication, nil
+	return typed, nil
 }
 
-// publicationFromHandle resolves concurrent *Publication handles only.
+func subscriptionFromHandle(sub conductor.SubscriptionHandle) (*Subscription, error) {
+	return typedHandleFrom[*Subscription](sub, "subscription", "*Subscription")
+}
+
 func publicationFromHandle(pub conductor.PublicationHandle) (*Publication, error) {
-	if pub == nil {
-		return nil, errors.New("aeron: publication handle is nil")
-	}
-	publication, ok := pub.(*Publication)
-	if !ok {
-		return nil, fmt.Errorf("aeron: publication handle %T is not *Publication", pub)
-	}
-	if publication == nil {
-		return nil, errors.New("aeron: publication handle is nil")
-	}
-	return publication, nil
+	return typedHandleFrom[*Publication](pub, "publication", "*Publication")
 }
 
-// exclusivePublicationFromHandle resolves exclusive *ExclusivePublication handles only.
 func exclusivePublicationFromHandle(
 	pub conductor.PublicationHandle,
 ) (*ExclusivePublication, error) {
-	return publicationHandleFrom[*ExclusivePublication](pub, "*ExclusivePublication")
+	return typedHandleFrom[*ExclusivePublication](
+		pub,
+		"exclusive publication",
+		"*ExclusivePublication",
+	)
 }
 
 func imageFromHandle(image conductor.ImageHandle) (*Image, bool) {

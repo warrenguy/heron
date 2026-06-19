@@ -67,10 +67,11 @@ func setupResourceReadyConductorTest(
 	tb testing.TB,
 	logFilename string,
 	resourceLifecycle conductor.ResourceLifecycle,
+	exclusive bool,
 ) (logPath string, conductorInstance *conductor.Conductor) {
 	tb.Helper()
 
-	dir, logPath := setupConductorImageLifecycleLogFile(tb, logFilename)
+	dir, logPath := setupConductorImageLifecycleKindLogFile(tb, logFilename, exclusive)
 	conductorInstance = newConductorWithImageLifecycleForTest(
 		tb,
 		noopConductorErrorHandler,
@@ -130,6 +131,51 @@ func availableImageEventForSubscription(logPath string) conductor.AvailableImage
 	event := resourceReadyGoldenAvailableImage
 	event.LogFileName = logPath
 	return event
+}
+
+func registerResourceReadyPublicationPending(
+	t *testing.T,
+	conductorInstance *conductor.Conductor,
+	exclusive bool,
+) {
+	t.Helper()
+
+	pendingKind := conductor.PendingKindAddPublication
+	if exclusive {
+		pendingKind = conductor.PendingKindAddExclusivePublication
+	}
+	require.NoError(
+		t,
+		conductorInstance.RegisterPendingAdd(
+			pendingKind,
+			resourceReadyPublicationCorrelationID,
+			resourceReadyStreamID,
+			resourceReadyChannel,
+			time.Second,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(resourceReadyPublicationCorrelationID)
+}
+
+func transmitResourceReadyPublicationReady(
+	t *testing.T,
+	conductorInstance *conductor.Conductor,
+	logPath string,
+	exclusive bool,
+) {
+	t.Helper()
+
+	eventType := conductor.OnPublicationReady
+	if exclusive {
+		eventType = conductor.OnExclusivePublicationReady
+	}
+	transmitConductorImageLifecycleEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		eventType,
+		conductor.PublicationBuffersReadyBytes(publicationReadyEventForLogPath(logPath)),
+	)
+	require.Equal(t, 1, conductorInstance.DoWork())
 }
 
 func registerResourceReadySubscriptionPending(
@@ -195,53 +241,16 @@ func setupResourceReadySubscriptionWithAvailableImage(
 	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
 }
 
-func setupResourceReadyExclusiveConductorTest(
-	tb testing.TB,
-	logFilename string,
-	resourceLifecycle conductor.ResourceLifecycle,
-) (logPath string, conductorInstance *conductor.Conductor) {
-	tb.Helper()
-
-	dir, logPath := setupConductorImageLifecycleExclusiveLogFile(tb, logFilename)
-	conductorInstance = newConductorWithImageLifecycleForTest(
-		tb,
-		noopConductorErrorHandler,
-		dir,
-		func(config *conductor.Config) {
-			config.ResourceLifecycle = resourceLifecycle
-		},
-	)
-	conductorInstance.SetCountersReaderForTest(countersReaderForResourceReadyTest(tb))
-	return logPath, conductorInstance
-}
-
 func TestConductor_handleExclusivePublicationReady_refcountsLog(t *testing.T) {
-	logPath, conductorInstance := setupResourceReadyExclusiveConductorTest(
+	logPath, conductorInstance := setupResourceReadyConductorTest(
 		t,
 		"exclusive-shared.log",
 		ConductorResourceLifecycle,
+		true,
 	)
 
-	require.NoError(
-		t,
-		conductorInstance.RegisterPendingAdd(
-			conductor.PendingKindAddExclusivePublication,
-			resourceReadyPublicationCorrelationID,
-			resourceReadyStreamID,
-			resourceReadyChannel,
-			time.Second,
-		),
-	)
-	conductorInstance.SetActiveCorrelationID(resourceReadyPublicationCorrelationID)
-
-	adapter := conductorInstance.EventsAdapterForTest()
-	transmitConductorImageLifecycleEvent(
-		t,
-		adapter,
-		conductor.OnExclusivePublicationReady,
-		conductor.PublicationBuffersReadyBytes(publicationReadyEventForLogPath(logPath)),
-	)
-	require.Equal(t, 1, conductorInstance.DoWork())
+	registerResourceReadyPublicationPending(t, conductorInstance, true)
+	transmitResourceReadyPublicationReady(t, conductorInstance, logPath, true)
 
 	done, registration, err := conductorInstance.PollPending(resourceReadyPublicationCorrelationID)
 	require.True(t, done)
@@ -261,28 +270,11 @@ func TestConductor_handlePublicationReady_refcountsLog(t *testing.T) {
 		t,
 		"shared.log",
 		ConductorResourceLifecycle,
+		false,
 	)
 
-	require.NoError(
-		t,
-		conductorInstance.RegisterPendingAdd(
-			conductor.PendingKindAddPublication,
-			resourceReadyPublicationCorrelationID,
-			resourceReadyStreamID,
-			resourceReadyChannel,
-			time.Second,
-		),
-	)
-	conductorInstance.SetActiveCorrelationID(resourceReadyPublicationCorrelationID)
-
-	adapter := conductorInstance.EventsAdapterForTest()
-	transmitConductorImageLifecycleEvent(
-		t,
-		adapter,
-		conductor.OnPublicationReady,
-		conductor.PublicationBuffersReadyBytes(publicationReadyEventForLogPath(logPath)),
-	)
-	require.Equal(t, 1, conductorInstance.DoWork())
+	registerResourceReadyPublicationPending(t, conductorInstance, false)
+	transmitResourceReadyPublicationReady(t, conductorInstance, logPath, false)
 
 	done, registration, err := conductorInstance.PollPending(resourceReadyPublicationCorrelationID)
 	require.True(t, done)
@@ -297,14 +289,7 @@ func TestConductor_handlePublicationReady_refcountsLog(t *testing.T) {
 	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
 
 	registerResourceReadySubscriptionPending(t, conductorInstance)
-
-	transmitConductorImageLifecycleEvent(
-		t,
-		adapter,
-		conductor.OnAvailableImage,
-		conductor.AvailableImageBytes(availableImageEventForSubscription(logPath)),
-	)
-	require.Equal(t, 1, conductorInstance.DoWork())
+	transmitResourceReadyAvailableImage(t, conductorInstance, logPath)
 	require.Equal(
 		t,
 		int32(2),
@@ -317,6 +302,7 @@ func TestConductor_availableThenSubscriptionReady_preInsert(t *testing.T) {
 		t,
 		"image.log",
 		ConductorResourceLifecycle,
+		false,
 	)
 
 	registerResourceReadySubscriptionPending(t, conductorInstance)
@@ -352,6 +338,7 @@ func TestConductor_addSubscription_availableImageThenDriverError_restoresRefcoun
 		t,
 		"driver-error.log",
 		ConductorResourceLifecycle,
+		false,
 	)
 	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
 
@@ -380,6 +367,7 @@ func TestConductor_addSubscription_availableImageThenApplyFailure_restoresRefcou
 		t,
 		"apply-failure.log",
 		applyFailingResourceLifecycle{applyErr: errApply},
+		false,
 	)
 	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
 

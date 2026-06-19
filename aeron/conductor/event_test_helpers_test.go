@@ -70,20 +70,31 @@ var goldenPublicationErrorEvent = conductor.PublicationError{
 	ErrorMessage:   "simulated",
 }
 
+func publicationBuffersReadyWithCorrelation(
+	base conductor.PublicationBuffersReady,
+	correlationID int64,
+) conductor.PublicationBuffersReady {
+	event := base
+	event.CorrelationID = correlationID
+	return event
+}
+
 func goldenPublicationBuffersReadyWithCorrelation(
 	correlationID int64,
 ) conductor.PublicationBuffersReady {
-	event := goldenPublicationBuffersReadyEvent
-	event.CorrelationID = correlationID
-	return event
+	return publicationBuffersReadyWithCorrelation(
+		goldenPublicationBuffersReadyEvent,
+		correlationID,
+	)
 }
 
 func goldenExclusivePublicationBuffersReadyWithCorrelation(
 	correlationID int64,
 ) conductor.PublicationBuffersReady {
-	event := goldenExclusivePublicationBuffersReadyEvent
-	event.CorrelationID = correlationID
-	return event
+	return publicationBuffersReadyWithCorrelation(
+		goldenExclusivePublicationBuffersReadyEvent,
+		correlationID,
+	)
 }
 
 func goldenSubscriptionReadyWithCorrelation(

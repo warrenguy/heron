@@ -167,7 +167,12 @@ func seedSyntheticLogBuffersForTest(
 
 func seedGoldenAvailableLogBuffers(tb testing.TB, conductorInstance *conductor.Conductor) {
 	tb.Helper()
-	seedLogBuffersForTest(tb, conductorInstance, goldenAvailableImageEvent.LogFileName)
+	seedSyntheticLogBuffersForTest(
+		tb,
+		conductorInstance,
+		goldenAvailableImageEvent.LogFileName,
+		false,
+	)
 }
 
 func newConductorWithRecordingLifecycle(
@@ -197,6 +202,17 @@ func newConductorWithRecordingLifecycleMutableNano(
 	config.ImageLifecycle = lifecycle
 	config.MediaDriverDir = mediaDriverDir
 	return newConductorForTest(tb, config), &nanoNs
+}
+
+func triggerGoldenAvailableImage(t *testing.T, conductorInstance *conductor.Conductor) {
+	t.Helper()
+
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnAvailableImage,
+		conductor.AvailableImageBytes(goldenAvailableImageEvent),
+	)
 }
 
 func triggerGoldenUnavailableImage(t *testing.T, conductorInstance *conductor.Conductor) {
@@ -233,12 +249,7 @@ func TestConductor_handleAvailableImage_withoutPreInsert_silentDrop(t *testing.T
 	)
 	require.Equal(t, 0, conductorInstance.SubscriptionCountForTest())
 
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
-		conductor.OnAvailableImage,
-		conductor.AvailableImageBytes(goldenAvailableImageEvent),
-	)
+	triggerGoldenAvailableImage(t, conductorInstance)
 	require.Equal(t, 1, conductorInstance.DoWork())
 
 	require.Zero(t, lifecycle.lastEvent.CorrelationID)
@@ -262,12 +273,7 @@ func TestConductor_handleAvailableImage_emptyMediaDriverDirReportsError(t *testi
 	conductorInstance := newConductorForTest(t, config)
 	registerGoldenImageSubscription(conductorInstance)
 
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
-		conductor.OnAvailableImage,
-		conductor.AvailableImageBytes(goldenAvailableImageEvent),
-	)
+	triggerGoldenAvailableImage(t, conductorInstance)
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 	require.Len(t, *gotErrors, 1)
@@ -288,12 +294,7 @@ func TestConductor_handleAvailableImage_nilLifecycleNoOp(t *testing.T) {
 	)
 	registerGoldenImageSubscription(conductorInstance)
 
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
-		conductor.OnAvailableImage,
-		conductor.AvailableImageBytes(goldenAvailableImageEvent),
-	)
+	triggerGoldenAvailableImage(t, conductorInstance)
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
@@ -314,12 +315,7 @@ func TestConductor_handleAvailableImage_newImageFailureReleasesAcquire(t *testin
 	registerGoldenImageSubscription(conductorInstance)
 	seedGoldenAvailableLogBuffers(t, conductorInstance)
 
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
-		conductor.OnAvailableImage,
-		conductor.AvailableImageBytes(goldenAvailableImageEvent),
-	)
+	triggerGoldenAvailableImage(t, conductorInstance)
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 	require.Len(t, *gotErrors, 1)
@@ -344,12 +340,7 @@ func TestConductor_handleAvailableImage_addImageFailureReleasesAcquire(t *testin
 	registerGoldenImageSubscription(conductorInstance)
 	seedGoldenAvailableLogBuffers(t, conductorInstance)
 
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
-		conductor.OnAvailableImage,
-		conductor.AvailableImageBytes(goldenAvailableImageEvent),
-	)
+	triggerGoldenAvailableImage(t, conductorInstance)
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 	require.Len(t, *gotErrors, 1)
@@ -375,12 +366,7 @@ func TestConductor_handleUnavailableImage_closeFailureSkipsRelease(t *testing.T)
 	seedGoldenAvailableLogBuffers(t, conductorInstance)
 	registerGoldenImageSubscription(conductorInstance)
 
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
-		conductor.OnUnavailableImage,
-		conductor.UnavailableImageBytes(goldenUnavailableImageEvent),
-	)
+	triggerGoldenUnavailableImage(t, conductorInstance)
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 	require.Len(t, *gotErrors, 1)
@@ -400,12 +386,7 @@ func TestConductor_handleUnavailableImage_nilLifecycleNoOp(t *testing.T) {
 	)
 	registerGoldenImageSubscription(conductorInstance)
 
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
-		conductor.OnUnavailableImage,
-		conductor.UnavailableImageBytes(goldenUnavailableImageEvent),
-	)
+	triggerGoldenUnavailableImage(t, conductorInstance)
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 }
@@ -426,23 +407,26 @@ func assertImageHandlerPanicRecoveryRestoresLock(
 		seedGoldenAvailableLogBuffers(t, conductorInstance)
 	}
 
-	var secondHandlerFired bool
-	if available {
-		lifecycle.availableImageHandler = func(conductor.ImageHandle) {
-			panic(panicWith)
+	setImageHandler := func(handler func(conductor.ImageHandle)) {
+		if available {
+			lifecycle.availableImageHandler = handler
+			return
 		}
-		transmitConductorEvent(
-			t,
-			conductorInstance.EventsAdapterForTest(),
-			conductor.OnAvailableImage,
-			conductor.AvailableImageBytes(goldenAvailableImageEvent),
-		)
-	} else {
-		lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
-			panic(panicWith)
+		lifecycle.unavailableImageHandler = handler
+	}
+	triggerImageEvent := func() {
+		if available {
+			triggerGoldenAvailableImage(t, conductorInstance)
+			return
 		}
 		triggerGoldenUnavailableImage(t, conductorInstance)
 	}
+
+	var secondHandlerFired bool
+	setImageHandler(func(conductor.ImageHandle) {
+		panic(panicWith)
+	})
+	triggerImageEvent()
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 	require.Len(t, *gotErrors, 1)
@@ -452,22 +436,10 @@ func assertImageHandlerPanicRecoveryRestoresLock(
 		require.Equal(t, panicWith, (*gotErrors)[0])
 	}
 
-	if available {
-		lifecycle.availableImageHandler = func(conductor.ImageHandle) {
-			secondHandlerFired = true
-		}
-		transmitConductorEvent(
-			t,
-			conductorInstance.EventsAdapterForTest(),
-			conductor.OnAvailableImage,
-			conductor.AvailableImageBytes(goldenAvailableImageEvent),
-		)
-	} else {
-		lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
-			secondHandlerFired = true
-		}
-		triggerGoldenUnavailableImage(t, conductorInstance)
-	}
+	setImageHandler(func(conductor.ImageHandle) {
+		secondHandlerFired = true
+	})
+	triggerImageEvent()
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 	require.True(t, secondHandlerFired)
@@ -532,24 +504,14 @@ func TestConductor_invokeImageHandler_suppressesNested(t *testing.T) {
 	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, func(error) {})
 	lifecycle.availableImageHandler = func(conductor.ImageHandle) {
 		outerCalls++
-		transmitConductorEvent(
-			t,
-			conductorInstance.EventsAdapterForTest(),
-			conductor.OnAvailableImage,
-			conductor.AvailableImageBytes(goldenAvailableImageEvent),
-		)
+		triggerGoldenAvailableImage(t, conductorInstance)
 		nestedDoWorkCalls++
 		_ = conductorInstance.DoWork()
 	}
 	registerGoldenImageSubscription(conductorInstance)
 	seedGoldenAvailableLogBuffers(t, conductorInstance)
 
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
-		conductor.OnAvailableImage,
-		conductor.AvailableImageBytes(goldenAvailableImageEvent),
-	)
+	triggerGoldenAvailableImage(t, conductorInstance)
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 	require.Equal(t, 1, outerCalls)
@@ -597,23 +559,13 @@ func TestConductor_invokeUnavailableImageHandler_suppressesNested(t *testing.T) 
 	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, func(error) {})
 	lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
 		outerCalls++
-		transmitConductorEvent(
-			t,
-			conductorInstance.EventsAdapterForTest(),
-			conductor.OnUnavailableImage,
-			conductor.UnavailableImageBytes(goldenUnavailableImageEvent),
-		)
+		triggerGoldenUnavailableImage(t, conductorInstance)
 		nestedDoWorkCalls++
 		_ = conductorInstance.DoWork()
 	}
 	registerGoldenImageSubscription(conductorInstance)
 
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
-		conductor.OnUnavailableImage,
-		conductor.UnavailableImageBytes(goldenUnavailableImageEvent),
-	)
+	triggerGoldenUnavailableImage(t, conductorInstance)
 
 	require.Equal(t, 1, conductorInstance.DoWork())
 	require.Equal(t, 1, outerCalls)

@@ -132,7 +132,7 @@ func WaitForSubscriptionConnected(
 func WaitForIPCLinkConnected(
 	t testing.TB,
 	client *aeron.Client,
-	pub *aeron.Publication,
+	pub ipcPublisher,
 	sub *aeron.Subscription,
 	timeout time.Duration,
 ) {
@@ -148,8 +148,9 @@ func requireLookupMiss[T any](
 	t testing.TB,
 	client *aeron.Client,
 	timeout time.Duration,
-	lookup func() (T, bool),
-	resourceLabel string,
+	regID int64,
+	resourceKind string,
+	lookup func(int64) (T, bool),
 ) {
 	t.Helper()
 
@@ -158,11 +159,11 @@ func requireLookupMiss[T any](
 		client,
 		timeout,
 		func() bool {
-			_, ok := lookup()
+			_, ok := lookup(regID)
 			return !ok
 		},
 		func() string {
-			return fmt.Sprintf("%s still registered after close", resourceLabel)
+			return fmt.Sprintf("%s %d still registered after close", resourceKind, regID)
 		},
 	)
 }
@@ -175,14 +176,24 @@ func RequirePublicationLookupMiss(
 ) {
 	t.Helper()
 
+	requireLookupMiss(t, client, commandPollDeadline, regID, "publication", client.Publication)
+}
+
+// RequireExclusivePublicationLookupMiss polls DoWork until ExclusivePublication(regID) misses.
+func RequireExclusivePublicationLookupMiss(
+	t testing.TB,
+	client *aeron.Client,
+	regID int64,
+) {
+	t.Helper()
+
 	requireLookupMiss(
 		t,
 		client,
 		commandPollDeadline,
-		func() (*aeron.Publication, bool) {
-			return client.Publication(regID)
-		},
-		fmt.Sprintf("publication %d", regID),
+		regID,
+		"exclusive publication",
+		client.ExclusivePublication,
 	)
 }
 
@@ -194,13 +205,5 @@ func RequireSubscriptionLookupMiss(
 ) {
 	t.Helper()
 
-	requireLookupMiss(
-		t,
-		client,
-		commandPollDeadline,
-		func() (*aeron.Subscription, bool) {
-			return client.Subscription(regID)
-		},
-		fmt.Sprintf("subscription %d", regID),
-	)
+	requireLookupMiss(t, client, commandPollDeadline, regID, "subscription", client.Subscription)
 }

@@ -3,14 +3,15 @@
 package harness
 
 const (
-	PubSubRoundtripStreamID           int32 = 1007
-	PubSubTermRolloverStreamID        int32 = 1008
-	PubSubCloseDrainStreamID          int32 = 1009
-	MPSCMatrixPubSubStreamID          int32 = 1010
-	MPSCMatrixSessionIDStreamID       int32 = 1011
-	PubSubFragmentedRoundtripStreamID int32 = 1012
-	PubSubTwoClientsRoundtripStreamID int32 = 1013
-	PublicationLimitStreamID          int32 = 1014
+	PubSubRoundtripStreamID                         int32 = 1007
+	PubSubTermRolloverStreamID                      int32 = 1008
+	PubSubCloseDrainStreamID                        int32 = 1009
+	MPSCMatrixPubSubStreamID                        int32 = 1010
+	MPSCMatrixSessionIDStreamID                     int32 = 1011
+	PubSubFragmentedRoundtripStreamID               int32 = 1012
+	PubSubTwoClientsRoundtripStreamID               int32 = 1013
+	PublicationLimitStreamID                        int32 = 1014
+	ExclusivePublicationTwoClientsRoundtripStreamID int32 = 7206
 
 	PollUntilConnectedTimeoutStreamID      = 7990
 	PollUntilImageCountZeroActiveStreamID  = 7995

@@ -52,6 +52,9 @@ func publicationHandleOpsFor(pub conductor.PublicationHandle) (publicationHandle
 	}
 	switch p := pub.(type) {
 	case *Publication:
+		if p == nil {
+			return publicationHandleOps{}, errors.New("aeron: publication handle is nil")
+		}
 		return publicationHandleOps{
 			registryKey: publicationRegistryKey(p.log),
 			markClosed:  p.markClosed,
@@ -60,6 +63,9 @@ func publicationHandleOpsFor(pub conductor.PublicationHandle) (publicationHandle
 			},
 		}, nil
 	case *ExclusivePublication:
+		if p == nil {
+			return publicationHandleOps{}, errors.New("aeron: publication handle is nil")
+		}
 		return publicationHandleOps{
 			registryKey: publicationRegistryKey(p.log),
 			markClosed:  p.markClosed,

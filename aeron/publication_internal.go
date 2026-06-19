@@ -62,12 +62,12 @@ func newPublicationFromReady(
 	if err != nil {
 		return nil, err
 	}
-	if metadata.Type != logbuffer.LogBufferTypeConcurrentPublication {
-		return nil, fmt.Errorf(
-			"aeron: expected concurrent publication log type %d, got %d",
-			logbuffer.LogBufferTypeConcurrentPublication,
-			metadata.Type,
-		)
+	if err := requireLogBufferType(
+		metadata,
+		logbuffer.LogBufferTypeConcurrentPublication,
+		"concurrent publication",
+	); err != nil {
+		return nil, err
 	}
 
 	termBufferLength := log.TermLength()
@@ -124,6 +124,22 @@ func commitPublicationTermPadding(
 		return
 	}
 	logbuffer.CommitMinimalTermEndPadding(termBuf, fromOffset, paddingLength)
+}
+
+func requireLogBufferType(
+	metadata logbuffer.MetadataView,
+	expected uint8,
+	label string,
+) error {
+	if metadata.Type == expected {
+		return nil
+	}
+	return fmt.Errorf(
+		"aeron: expected %s log type %d, got %d",
+		label,
+		expected,
+		metadata.Type,
+	)
 }
 
 func requireActiveCounter(

@@ -66,6 +66,7 @@ func assertLookupHitThenMissAfterClose(
 // fragments; unit tests cover synthetic-driver error paths.
 //
 // Stream IDs 7101-7107 are unique per test to avoid collisions if tests share a driver.
+// Stream IDs 7201-7206 are reserved for exclusive publication client tests.
 
 // TestClientAddPublicationIPC proves AddPublication blocks until ready, inserts
 // the handle into the client map, and Publication(regID) returns the same pointer.
@@ -112,6 +113,149 @@ func TestClientAddPublicationIsConnectedEventually(t *testing.T) {
 
 	require.NoError(t, pub.Close())
 	md.AssertProcessAlive(t)
+}
+
+// TestClientAddExclusivePublicationIPC proves AddExclusivePublication blocks until
+// ready, inserts the handle into the client map, and ExclusivePublication(regID)
+// returns the same pointer.
+func TestClientAddExclusivePublicationIPC(t *testing.T) {
+	md := harness.Start(t)
+
+	client := harness.ConnectClient(t, md, aeron.Context{})
+
+	const streamID int32 = 7201
+	pub, err := client.AddExclusivePublication(streamID, harness.IPCChannel)
+	require.NoError(t, err)
+	require.NotNil(t, pub)
+	require.Positive(t, pub.RegistrationID())
+
+	regID := pub.RegistrationID()
+	got, ok := client.ExclusivePublication(regID)
+	require.True(t, ok)
+	require.Same(t, pub, got)
+
+	require.NoError(t, pub.Close())
+	md.AssertProcessAlive(t)
+}
+
+// TestClientAddExclusivePublicationIsConnectedEventually proves IsConnected becomes true
+// once a matching IPC subscriber is registered and driver events are pumped via DoWork.
+func TestClientAddExclusivePublicationIsConnectedEventually(t *testing.T) {
+	md := harness.Start(t)
+
+	client := harness.ConnectClient(t, md, aeron.Context{})
+
+	const streamID int32 = 7203
+	pub, err := client.AddExclusivePublication(streamID, harness.IPCChannel)
+	require.NoError(t, err)
+	require.NotNil(t, pub)
+	require.False(t, pub.IsConnected())
+
+	// Live IPC: pub is_connected stays false until a matching subscriber attaches.
+	sub, err := client.AddSubscription(streamID, harness.IPCChannel)
+	require.NoError(t, err)
+	require.NotNil(t, sub)
+	harness.CleanupClose(t, "close subscription", sub.Close)
+
+	harness.WaitForIPCLinkConnected(t, client, pub, sub, 0)
+
+	require.NoError(t, pub.Close())
+	md.AssertProcessAlive(t)
+}
+
+// TestExclusivePublicationIPCRoundtrip proves exclusive IPC offer, poll delivery,
+// and position advance on live aeronmd.
+func TestExclusivePublicationIPCRoundtrip(t *testing.T) {
+	md := harness.Start(t)
+	client, hadClientError := harness.ConnectIPCClient(t, md)
+
+	const (
+		streamID     = int32(7202)
+		messageCount = 4 // smoke: fewer fragments than TestPubSubIPCRoundtrip
+		payloadSize  = 64
+	)
+	payloads := harness.DistinctIPCPayloads(messageCount, payloadSize, 0xE0)
+
+	pub, sub := harness.ConnectExclusiveIPCPubSubClients(t, client, client, streamID)
+
+	pubPosBefore := pub.Position()
+	wantAdvance := harness.AlignedOfferAdvance(payloadSize, messageCount)
+	for _, payload := range payloads {
+		require.Positive(t, pub.Offer(payload))
+		client.DoWork()
+	}
+
+	received := harness.PollDelivered(t, client, sub, messageCount, 0)
+	require.Equal(t, payloads, received)
+	harness.AssertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
+	finishPubSubIPCTest(t, md, hadClientError)
+}
+
+// TestExclusivePublicationIPCTwoClientsRoundtrip proves split-client exclusive IPC
+// offer, poll delivery, and position advance on live aeronmd.
+func TestExclusivePublicationIPCTwoClientsRoundtrip(t *testing.T) {
+	md := harness.Start(t)
+
+	splitClientCtx := aeron.Context{
+		InterServiceTimeout: harness.ConnectedPollTimeout,
+	}
+	pubClient, hadPubClientError := harness.ConnectIPCClientContext(t, md, splitClientCtx)
+	subClient, hadSubClientError := harness.ConnectIPCClientContext(t, md, splitClientCtx)
+
+	const (
+		streamID     = harness.ExclusivePublicationTwoClientsRoundtripStreamID
+		messageCount = 4 // smoke: fewer fragments than TestPubSubIPCTwoClientsRoundtrip
+		payloadSize  = 64
+	)
+	payloads := harness.DistinctIPCPayloads(messageCount, payloadSize, 0xE2)
+
+	pub, sub := harness.ConnectExclusiveIPCPubSubClients(t, pubClient, subClient, streamID)
+
+	pubPosBefore := pub.Position()
+	wantAdvance := harness.AlignedOfferAdvance(payloadSize, messageCount)
+	for _, payload := range payloads {
+		require.Positive(t, pub.Offer(payload))
+		pubClient.DoWork()
+		subClient.DoWork()
+	}
+
+	received := harness.PollDeliveredSplit(t, pubClient, subClient, sub, messageCount, 0)
+	require.Equal(t, payloads, received)
+
+	harness.AssertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
+	finishPubSubIPCTest(t, md, hadPubClientError, hadSubClientError)
+}
+
+// TestClientExclusivePublicationLookupByRegID proves lookup hits while registered and
+// misses after Close removes the handle from the client map.
+func TestClientExclusivePublicationLookupByRegID(t *testing.T) {
+	md := harness.Start(t)
+
+	assertLookupHitThenMissAfterClose(
+		t,
+		md,
+		7204,
+		func(client *aeron.Client, streamID int32) (int64, any, func() error) {
+			pub, err := client.AddExclusivePublication(streamID, harness.IPCChannel)
+			require.NoError(t, err)
+			require.NotNil(t, pub)
+			return pub.RegistrationID(), pub, pub.Close
+		},
+		func(client *aeron.Client, regID int64) (any, bool) {
+			return client.ExclusivePublication(regID)
+		},
+		harness.RequireExclusivePublicationLookupMiss,
+	)
+}
+
+// TestClientAddExclusivePublicationRejectedAfterClose proves AddExclusivePublication on a
+// closed client returns ErrClientClosed without offering a new registration.
+func TestClientAddExclusivePublicationRejectedAfterClose(t *testing.T) {
+	md := harness.Start(t)
+
+	assertAddRejectedAfterClose(t, md, 7205, func(client *aeron.Client, streamID int32) (any, error) {
+		return client.AddExclusivePublication(streamID, harness.IPCChannel)
+	})
 }
 
 // TestClientAddSubscriptionIPC proves AddSubscription blocks until ready and

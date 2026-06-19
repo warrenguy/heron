@@ -2,7 +2,6 @@ package aeron
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
@@ -63,12 +62,12 @@ func newExclusivePublicationFromReady(
 	if err != nil {
 		return nil, err
 	}
-	if metadata.Type != logbuffer.LogBufferTypeExclusivePublication {
-		return nil, fmt.Errorf(
-			"aeron: expected exclusive publication log type %d, got %d",
-			logbuffer.LogBufferTypeExclusivePublication,
-			metadata.Type,
-		)
+	if err := requireLogBufferType(
+		metadata,
+		logbuffer.LogBufferTypeExclusivePublication,
+		"exclusive publication",
+	); err != nil {
+		return nil, err
 	}
 
 	termBufferLength := log.TermLength()

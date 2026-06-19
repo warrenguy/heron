@@ -17,11 +17,25 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
+type ipcPublisher interface {
+	IsConnected() bool
+	RegistrationID() int64
+	StreamID() int32
+	SessionID() int32
+	Position() int64
+	Offer([]byte) int64
+}
+
+var (
+	_ ipcPublisher = (*aeron.Publication)(nil)
+	_ ipcPublisher = (*aeron.ExclusivePublication)(nil)
+)
+
 // PollUntilConnected polls DoWork until pub.IsConnected on live IPC.
 func PollUntilConnected(
 	t testing.TB,
 	client *aeron.Client,
-	pub *aeron.Publication,
+	pub ipcPublisher,
 	timeout time.Duration,
 ) {
 	t.Helper()
@@ -92,6 +106,30 @@ func SubscriptionActiveImageCountAtLeast(sub *aeron.Subscription, want int) bool
 	return false
 }
 
+func pollSplitClientsUntilDynamic(
+	t testing.TB,
+	clientA, clientB *aeron.Client,
+	timeout time.Duration,
+	ok func() bool,
+	failMsg func() string,
+) {
+	t.Helper()
+
+	if pollUntilBool(
+		timeout,
+		aeron.DefaultIdleSleepDuration,
+		func() bool {
+			clientA.DoWork()
+			clientB.DoWork()
+			return ok()
+		},
+	) {
+		return
+	}
+	t.Errorf("%s within %s", failMsg(), timeout)
+	t.FailNow()
+}
+
 // PollSplitClientsUntil polls DoWork on both clients until ok or timeout.
 func PollSplitClientsUntil(
 	t testing.TB,
@@ -102,26 +140,21 @@ func PollSplitClientsUntil(
 ) {
 	t.Helper()
 
-	timeout = connectedPollTimeoutOr(timeout)
-	if !pollUntilBool(
-		timeout,
-		aeron.DefaultIdleSleepDuration,
-		func() bool {
-			clientA.DoWork()
-			clientB.DoWork()
-			return ok()
-		},
-	) {
-		t.Errorf("%s within %s", failMsg, timeout)
-		t.FailNow()
-	}
+	pollSplitClientsUntilDynamic(
+		t,
+		clientA,
+		clientB,
+		connectedPollTimeoutOr(timeout),
+		ok,
+		func() string { return failMsg },
+	)
 }
 
 // PollSplitClientIPCLink polls both clients until pub is connected and sub has active images.
 func PollSplitClientIPCLink(
 	t testing.TB,
 	pubClient, subClient *aeron.Client,
-	pub *aeron.Publication,
+	pub ipcPublisher,
 	sub *aeron.Subscription,
 	timeout time.Duration,
 ) {
@@ -139,8 +172,73 @@ func PollSplitClientIPCLink(
 	)
 }
 
-// ConnectIPCPubSubClients registers pub and sub on distinct or shared clients and
-// waits until the IPC link is ready on live aeronmd.
+type ipcPublication interface {
+	*aeron.Publication | *aeron.ExclusivePublication
+	ipcPublisher
+	Close() error
+}
+
+func connectIPCPubSubClients[P ipcPublication](
+	t testing.TB,
+	pubClient *aeron.Client,
+	subClient *aeron.Client,
+	streamID int32,
+	pubLabel string,
+	addPublication func(int32, string) (P, error),
+) (P, *aeron.Subscription) {
+	t.Helper()
+
+	if pubClient == subClient {
+		pub, err := addPublication(streamID, IPCChannel)
+		require.NoError(t, err)
+		CleanupClose(t, pubLabel, pub.Close)
+
+		sub, err := subClient.AddSubscription(streamID, IPCChannel)
+		require.NoError(t, err)
+		CleanupClose(t, "close subscription", sub.Close)
+
+		WaitForIPCLinkConnected(t, pubClient, pub, sub, ConnectedPollTimeout)
+		return pub, sub
+	}
+
+	var (
+		pub    P
+		sub    *aeron.Subscription
+		pubErr error
+		subErr error
+	)
+
+	var registerWG sync.WaitGroup
+	registerWG.Add(2)
+
+	go func() {
+		defer registerWG.Done()
+		pub, pubErr = addPublication(streamID, IPCChannel)
+	}()
+
+	go func() {
+		defer registerWG.Done()
+		sub, subErr = subClient.AddSubscription(streamID, IPCChannel)
+	}()
+
+	registerWG.Wait()
+
+	if pub != nil {
+		CleanupClose(t, pubLabel, pub.Close)
+	}
+	if sub != nil {
+		CleanupClose(t, "close subscription", sub.Close)
+	}
+
+	require.NoError(t, pubErr)
+	require.NoError(t, subErr)
+
+	PollSplitClientIPCLink(t, pubClient, subClient, pub, sub, ConnectedPollTimeout)
+	return pub, sub
+}
+
+// ConnectIPCPubSubClients registers a concurrent publication and subscription on
+// distinct or shared clients and waits until the IPC link is ready on live aeronmd.
 //
 // Split clients register concurrently; each Add* blocks until ready or client
 // DriverTimeout. PollSplitClientIPCLink then pumps both conductors for link setup.
@@ -152,53 +250,37 @@ func ConnectIPCPubSubClients(
 ) (*aeron.Publication, *aeron.Subscription) {
 	t.Helper()
 
-	if pubClient == subClient {
-		pub, err := pubClient.AddPublication(streamID, IPCChannel)
-		require.NoError(t, err)
-		CleanupClose(t, "close publication", pub.Close)
-
-		sub, err := subClient.AddSubscription(streamID, IPCChannel)
-		require.NoError(t, err)
-		CleanupClose(t, "close subscription", sub.Close)
-
-		WaitForIPCLinkConnected(t, pubClient, pub, sub, ConnectedPollTimeout)
-		return pub, sub
-	}
-
-	var (
-		pub    *aeron.Publication
-		sub    *aeron.Subscription
-		pubErr error
-		subErr error
+	return connectIPCPubSubClients(
+		t,
+		pubClient,
+		subClient,
+		streamID,
+		"close publication",
+		pubClient.AddPublication,
 	)
+}
 
-	var registerWG sync.WaitGroup
-	registerWG.Add(2)
+// ConnectExclusiveIPCPubSubClients registers an exclusive publication and
+// subscription on distinct or shared clients and waits until the IPC link is ready.
+//
+// Split clients register concurrently; each Add* blocks until ready or client
+// DriverTimeout. PollSplitClientIPCLink then pumps both conductors for link setup.
+func ConnectExclusiveIPCPubSubClients(
+	t testing.TB,
+	pubClient *aeron.Client,
+	subClient *aeron.Client,
+	streamID int32,
+) (*aeron.ExclusivePublication, *aeron.Subscription) {
+	t.Helper()
 
-	go func() {
-		defer registerWG.Done()
-		pub, pubErr = pubClient.AddPublication(streamID, IPCChannel)
-	}()
-
-	go func() {
-		defer registerWG.Done()
-		sub, subErr = subClient.AddSubscription(streamID, IPCChannel)
-	}()
-
-	registerWG.Wait()
-
-	if pub != nil {
-		CleanupClose(t, "close publication", pub.Close)
-	}
-	if sub != nil {
-		CleanupClose(t, "close subscription", sub.Close)
-	}
-
-	require.NoError(t, pubErr)
-	require.NoError(t, subErr)
-
-	PollSplitClientIPCLink(t, pubClient, subClient, pub, sub, ConnectedPollTimeout)
-	return pub, sub
+	return connectIPCPubSubClients(
+		t,
+		pubClient,
+		subClient,
+		streamID,
+		"close exclusive publication",
+		pubClient.AddExclusivePublication,
+	)
 }
 
 // PollUntilNoActiveImagesSplit polls both clients until sub has zero active images.
@@ -268,14 +350,7 @@ func PollDelivered(
 			return len(received) >= want
 		},
 		func() string {
-			_, detail := subscriptionImageSummary(sub)
-			return fmt.Sprintf(
-				"subscription %d delivered %d/%d fragments; %s",
-				sub.RegistrationID(),
-				len(received),
-				want,
-				detail,
-			)
+			return pollDeliveredFailMsg(sub, len(received), want)
 		},
 	)
 	return received
@@ -296,29 +371,20 @@ func PollDeliveredSplit(
 	}
 
 	received := make([][]byte, 0, want)
-	timeout = connectedPollTimeoutOr(timeout)
 
-	if !pollUntilBool(
-		timeout,
-		aeron.DefaultIdleSleepDuration,
+	pollSplitClientsUntilDynamic(
+		t,
+		pubClient,
+		subClient,
+		connectedPollTimeoutOr(timeout),
 		func() bool {
-			pubClient.DoWork()
-			subClient.DoWork()
 			received = CollectSubscriptionFragments(sub, want, received)
 			return len(received) >= want
 		},
-	) {
-		_, detail := subscriptionImageSummary(sub)
-		t.Errorf(
-			"subscription %d delivered %d/%d fragments; %s within %s",
-			sub.RegistrationID(),
-			len(received),
-			want,
-			detail,
-			timeout,
-		)
-		t.FailNow()
-	}
+		func() string {
+			return pollDeliveredFailMsg(sub, len(received), want)
+		},
+	)
 	return received
 }
 
@@ -331,7 +397,7 @@ func PollDeliveredSplit(
 func OfferWithRetry(
 	t testing.TB,
 	client *aeron.Client,
-	pub *aeron.Publication,
+	pub ipcPublisher,
 	payload []byte,
 	timeout time.Duration,
 ) int64 {
@@ -348,7 +414,7 @@ func OfferWithRetry(
 func OfferWithRetryWitness(
 	t testing.TB,
 	client *aeron.Client,
-	pub *aeron.Publication,
+	pub ipcPublisher,
 	payload []byte,
 	timeout time.Duration,
 ) (int64, bool) {
@@ -364,7 +430,7 @@ func OfferWithRetryWitness(
 func OfferWithRetryWitnessAfterNotify(
 	t testing.TB,
 	client *aeron.Client,
-	pub *aeron.Publication,
+	pub ipcPublisher,
 	payload []byte,
 	timeout time.Duration,
 	notify chan<- struct{},
@@ -386,7 +452,7 @@ func OfferStallTimeout(timeout time.Duration) time.Duration {
 func offerWithRetry(
 	t testing.TB,
 	client *aeron.Client,
-	pub *aeron.Publication,
+	pub ipcPublisher,
 	payload []byte,
 	timeout time.Duration,
 	notify chan<- struct{},
@@ -684,7 +750,7 @@ func FragmentedRoundtripPayload(maxPayload, extra int) []byte {
 func AssertPubSubIPCMetadata(
 	t testing.TB,
 	streamID int32,
-	pub *aeron.Publication,
+	pub ipcPublisher,
 	sub *aeron.Subscription,
 	pubPosBefore int64,
 	wantAdvance int64,
@@ -722,7 +788,7 @@ func AssertSubscribeMetadata(
 // AssertPubSubPositionsAdvanced checks publication and image positions advanced by advance.
 func AssertPubSubPositionsAdvanced(
 	t testing.TB,
-	pub *aeron.Publication,
+	pub ipcPublisher,
 	sub *aeron.Subscription,
 	pubPosBefore int64,
 	advance int64,
@@ -752,6 +818,17 @@ func preparePollWant(t testing.TB, want int) bool {
 		return false
 	}
 	return !failedCaptureTB(t)
+}
+
+func pollDeliveredFailMsg(sub *aeron.Subscription, received, want int) string {
+	_, detail := subscriptionImageSummary(sub)
+	return fmt.Sprintf(
+		"subscription %d delivered %d/%d fragments; %s",
+		sub.RegistrationID(),
+		received,
+		want,
+		detail,
+	)
 }
 
 func subscriptionImageCountFailMsg(sub *aeron.Subscription, want int) string {

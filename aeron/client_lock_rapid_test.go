@@ -61,12 +61,8 @@ func setupPreLatchedClosedGuardPending(
 		return client, correlationID, nil
 
 	case conductor.PendingKindAddPublication, conductor.PendingKindAddExclusivePublication:
-		var dir, logPath string
-		if kind == conductor.PendingKindAddExclusivePublication {
-			dir, logPath = setupClientAddPublicationKindLog(t, true)
-		} else {
-			dir, logPath = setupClientAddPublicationLog(t)
-		}
+		testCase := clientAddPublicationKindCaseFor(kind)
+		dir, logPath := testCase.setupLog(t)
 		client, fixture := newClientAddFixture(
 			t,
 			func() int64 { return nanoNs },
@@ -87,12 +83,10 @@ func setupPreLatchedClosedGuardPending(
 				deadlineNs,
 			),
 		)
-		readyEvent := clientAddPublicationReadyEvent(correlationID, logPath)
-		if kind == conductor.PendingKindAddExclusivePublication {
-			conductor.ExclusivePublicationReadyForTest(fixture.Conductor, readyEvent)
-		} else {
-			conductor.PublicationReadyForTest(fixture.Conductor, readyEvent)
-		}
+		testCase.signalReady(
+			fixture.Conductor,
+			clientAddPublicationReadyEvent(correlationID, logPath),
+		)
 		require.Equal(rt, 1, client.PublicationCountForTest())
 		return client, correlationID, (*Client).PublicationCountForTest
 

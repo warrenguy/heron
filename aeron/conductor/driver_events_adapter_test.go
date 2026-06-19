@@ -559,31 +559,20 @@ func TestDriverEventsAdapter_operationSuccess(t *testing.T) {
 			pendingKind:          conductor.PendingKindOperationSuccess,
 			wantUnhandled:        1,
 		},
-		{
-			name:                 "addPublicationAckOnly",
+	}
+	for _, addKind := range addPendingKindCases {
+		tests = append(tests, testCase{
+			name:                 addKind.name + "AckOnly",
 			setActiveCorrelation: true,
 			eventCorrelationID:   pendingTestCorrelationID,
 			receiveCorrelationID: pendingTestCorrelationID,
-			pendingKind:          conductor.PendingKindAddPublication,
+			pendingKind:          addKind.kind,
 			wantPendingRetained:  true,
-		},
-		{
-			name:                 "addSubscriptionAckOnly",
-			setActiveCorrelation: true,
-			eventCorrelationID:   pendingTestCorrelationID,
-			receiveCorrelationID: pendingTestCorrelationID,
-			pendingKind:          conductor.PendingKindAddSubscription,
-			wantPendingRetained:  true,
-		},
-		{
-			name:                 "addExclusivePublicationAckOnly",
-			setActiveCorrelation: true,
-			eventCorrelationID:   pendingTestCorrelationID,
-			receiveCorrelationID: pendingTestCorrelationID,
-			pendingKind:          conductor.PendingKindAddExclusivePublication,
-			wantPendingRetained:  true,
-		},
-		{
+		})
+	}
+	tests = append(
+		tests,
+		testCase{
 			name:                 "removePublication",
 			setActiveCorrelation: true,
 			eventCorrelationID:   pendingTestCorrelationID,
@@ -592,7 +581,7 @@ func TestDriverEventsAdapter_operationSuccess(t *testing.T) {
 			wantDone:             true,
 			wantPendingRemoved:   true,
 		},
-		{
+		testCase{
 			name:                 "removeSubscription",
 			setActiveCorrelation: true,
 			eventCorrelationID:   pendingTestCorrelationID,
@@ -601,7 +590,7 @@ func TestDriverEventsAdapter_operationSuccess(t *testing.T) {
 			wantDone:             true,
 			wantPendingRemoved:   true,
 		},
-	}
+	)
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {

@@ -225,89 +225,25 @@ func TestConductor_DoWork_completesActivePending_errorEvent(t *testing.T) {
 }
 
 func TestConductor_DoWork_completesActivePending_publicationReady(t *testing.T) {
-	conductorInstance := newConductorForTestAtWorkNano(
+	testConductorDoWorkCompletesActivePendingPublicationReady(
 		t,
-		func(error) {},
-		0,
-		0,
-	)
-	require.NoError(
-		t,
-		registerPendingAddWithCorrelationForTest(
-			conductorInstance,
-			conductor.PendingKindAddPublication,
-			goldenPublicationReadyCorrelationID,
-			99,
-		),
-	)
-	conductorInstance.SetActiveCorrelationID(goldenPublicationReadyCorrelationID)
-
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
+		conductor.PendingKindAddPublication,
+		goldenPublicationReadyCorrelationID,
+		99,
 		conductor.OnPublicationReady,
-		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
+		goldenPublicationBuffersReadyEvent,
 	)
-
-	_ = conductorInstance.DoWork()
-
-	done, registration, err := conductorInstance.PollPending(goldenPublicationReadyCorrelationID)
-	require.True(t, done)
-	require.NoError(t, err)
-	require.Equal(t, conductor.PendingKindAddPublication, registration.Kind)
-	require.Equal(t, goldenPublicationBuffersReadyEvent.RegistrationID, registration.RegistrationID)
-	require.Equal(t, goldenPublicationBuffersReadyEvent.StreamID, registration.StreamID)
-	require.Equal(t, "aeron:ipc", registration.Channel)
-	require.Nil(t, registration.Publication)
-	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
-	_, ok := conductorInstance.PendingResult(goldenPublicationReadyCorrelationID)
-	require.False(t, ok)
 }
 
 func TestConductor_DoWork_completesActivePending_exclusivePublicationReady(t *testing.T) {
-	conductorInstance := newConductorForTestAtWorkNano(
+	testConductorDoWorkCompletesActivePendingPublicationReady(
 		t,
-		func(error) {},
-		0,
-		0,
-	)
-	require.NoError(
-		t,
-		registerPendingAddWithCorrelationForTest(
-			conductorInstance,
-			conductor.PendingKindAddExclusivePublication,
-			goldenExclusivePublicationReadyCorrelationID,
-			goldenExclusivePublicationBuffersReadyEvent.StreamID,
-		),
-	)
-	conductorInstance.SetActiveCorrelationID(goldenExclusivePublicationReadyCorrelationID)
-
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
-		conductor.OnExclusivePublicationReady,
-		conductor.PublicationBuffersReadyBytes(goldenExclusivePublicationBuffersReadyEvent),
-	)
-
-	_ = conductorInstance.DoWork()
-
-	done, registration, err := conductorInstance.PollPending(
+		conductor.PendingKindAddExclusivePublication,
 		goldenExclusivePublicationReadyCorrelationID,
+		goldenExclusivePublicationBuffersReadyEvent.StreamID,
+		conductor.OnExclusivePublicationReady,
+		goldenExclusivePublicationBuffersReadyEvent,
 	)
-	require.True(t, done)
-	require.NoError(t, err)
-	require.Equal(t, conductor.PendingKindAddExclusivePublication, registration.Kind)
-	require.Equal(
-		t,
-		goldenExclusivePublicationBuffersReadyEvent.RegistrationID,
-		registration.RegistrationID,
-	)
-	require.Equal(t, goldenExclusivePublicationBuffersReadyEvent.StreamID, registration.StreamID)
-	require.Equal(t, "aeron:ipc", registration.Channel)
-	require.Nil(t, registration.Publication)
-	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
-	_, ok := conductorInstance.PendingResult(goldenExclusivePublicationReadyCorrelationID)
-	require.False(t, ok)
 }
 
 func TestConductor_DoWork_completesActivePending_subscriptionReady(t *testing.T) {
@@ -933,6 +869,55 @@ func newConductorForMutableNanoTest(
 		options...,
 	)
 	return conductorInstance, &nanoNs
+}
+
+func testConductorDoWorkCompletesActivePendingPublicationReady(
+	t *testing.T,
+	kind conductor.PendingKind,
+	correlationID int64,
+	registerStreamID int32,
+	wireEvent int,
+	event conductor.PublicationBuffersReady,
+) {
+	t.Helper()
+
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(
+		t,
+		registerPendingAddWithCorrelationForTest(
+			conductorInstance,
+			kind,
+			correlationID,
+			registerStreamID,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(correlationID)
+
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		wireEvent,
+		conductor.PublicationBuffersReadyBytes(event),
+	)
+
+	_ = conductorInstance.DoWork()
+
+	done, registration, err := conductorInstance.PollPending(correlationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	require.Equal(t, kind, registration.Kind)
+	require.Equal(t, event.RegistrationID, registration.RegistrationID)
+	require.Equal(t, event.StreamID, registration.StreamID)
+	require.Equal(t, "aeron:ipc", registration.Channel)
+	require.Nil(t, registration.Publication)
+	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+	_, ok := conductorInstance.PendingResult(correlationID)
+	require.False(t, ok)
 }
 
 func testConductorOnReadyViaDoWorkWrongKind(

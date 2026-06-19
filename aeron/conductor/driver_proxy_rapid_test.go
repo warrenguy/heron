@@ -111,6 +111,35 @@ func drawDriverProxyEncodeFailureInput(
 	return input
 }
 
+func runDriverProxyAddPublicationStep(
+	rt *rapid.T,
+	proxy *conductor.DriverProxy,
+	want []driverProxyExpectedRecord,
+	clientID int64,
+	step int,
+	namePrefix string,
+	msgTypeID int,
+	offer func(correlationID int64, streamID int32, channel string) error,
+) ([]driverProxyExpectedRecord, bool) {
+	correlationID := rapid.Int64().Draw(rt, fmt.Sprintf("%sCorr%d", namePrefix, step))
+	streamID := rapid.Int32().Draw(rt, fmt.Sprintf("%sStream%d", namePrefix, step))
+	channel := testutil.DrawASCIIString(rt, fmt.Sprintf("%sChannel%d", namePrefix, step), 128)
+	err := offer(correlationID, streamID, channel)
+	if returnOnInsufficientCapacity(rt, proxy, want, err) {
+		return want, true
+	}
+	bodyLength := conductor.PublicationMessageBodyLength(channel)
+	return appendDriverProxyAddPublicationWant(
+		want,
+		msgTypeID,
+		clientID,
+		correlationID,
+		streamID,
+		channel,
+		bodyLength,
+	), false
+}
+
 func returnOnInsufficientCapacity(
 	rt *rapid.T,
 	ring *conductor.DriverProxy,
@@ -135,7 +164,8 @@ func TestDriverProxy_offerReadRoundtrip_rapid(t *testing.T) {
 		stepCount := rapid.IntRange(1, 16).Draw(rt, "stepCount")
 		var want []driverProxyExpectedRecord
 		for i := range stepCount {
-			switch drawDriverProxyOp(rt, fmt.Sprintf("op%d", i)) {
+			op := drawDriverProxyOp(rt, fmt.Sprintf("op%d", i))
+			switch op {
 			case driverProxyOpClientKeepalive:
 				err := proxy.ClientKeepalive()
 				if returnOnInsufficientCapacity(rt, proxy, want, err) {
@@ -153,42 +183,29 @@ func TestDriverProxy_offerReadRoundtrip_rapid(t *testing.T) {
 						require.Equal(t, conductor.CorrelatedMessageLength, length)
 					},
 				})
-			case driverProxyOpAddPublication:
-				correlationID := rapid.Int64().Draw(rt, fmt.Sprintf("pubCorr%d", i))
-				streamID := int32(rapid.Int32().Draw(rt, fmt.Sprintf("pubStream%d", i)))
-				channel := testutil.DrawASCIIString(rt, fmt.Sprintf("pubChannel%d", i), 128)
-				err := proxy.AddPublication(correlationID, streamID, channel)
-				if returnOnInsufficientCapacity(rt, proxy, want, err) {
+			case driverProxyOpAddPublication, driverProxyOpAddExclusivePublication:
+				namePrefix := "pub"
+				msgTypeID := conductor.AddPublication
+				offer := proxy.AddPublication
+				if op == driverProxyOpAddExclusivePublication {
+					namePrefix = "exPub"
+					msgTypeID = conductor.AddExclusivePublication
+					offer = proxy.AddExclusivePublication
+				}
+				var done bool
+				want, done = runDriverProxyAddPublicationStep(
+					rt,
+					proxy,
+					want,
+					clientID,
+					i,
+					namePrefix,
+					msgTypeID,
+					offer,
+				)
+				if done {
 					return
 				}
-				bodyLength := conductor.PublicationMessageBodyLength(channel)
-				want = appendDriverProxyAddPublicationWant(
-					want,
-					conductor.AddPublication,
-					clientID,
-					correlationID,
-					streamID,
-					channel,
-					bodyLength,
-				)
-			case driverProxyOpAddExclusivePublication:
-				correlationID := rapid.Int64().Draw(rt, fmt.Sprintf("exPubCorr%d", i))
-				streamID := int32(rapid.Int32().Draw(rt, fmt.Sprintf("exPubStream%d", i)))
-				channel := testutil.DrawASCIIString(rt, fmt.Sprintf("exPubChannel%d", i), 128)
-				err := proxy.AddExclusivePublication(correlationID, streamID, channel)
-				if returnOnInsufficientCapacity(rt, proxy, want, err) {
-					return
-				}
-				bodyLength := conductor.PublicationMessageBodyLength(channel)
-				want = appendDriverProxyAddPublicationWant(
-					want,
-					conductor.AddExclusivePublication,
-					clientID,
-					correlationID,
-					streamID,
-					channel,
-					bodyLength,
-				)
 			case driverProxyOpAddSubscription:
 				correlationID := rapid.Int64().Draw(rt, fmt.Sprintf("subCorr%d", i))
 				streamID := int32(rapid.Int32().Draw(rt, fmt.Sprintf("subStream%d", i)))
@@ -301,7 +318,7 @@ func TestDriverProxy_encodeFailureAborts_rapid(t *testing.T) {
 			validOffer := rapid.Bool().Draw(rt, fmt.Sprintf("validOffer%d", i))
 			if validOffer {
 				correlationID := rapid.Int64().Draw(rt, fmt.Sprintf("corr%d", i))
-				streamID := int32(rapid.Int32().Draw(rt, fmt.Sprintf("stream%d", i)))
+				streamID := rapid.Int32().Draw(rt, fmt.Sprintf("stream%d", i))
 				channel := testutil.DrawASCIIString(rt, fmt.Sprintf("channel%d", i), 64)
 				err := proxy.AddPublication(correlationID, streamID, channel)
 				if returnOnInsufficientCapacity(rt, proxy, want, err) {
