@@ -1324,6 +1324,30 @@ func WriteCommittedFragmentedDataFrameForTest(
 	)
 }
 
+func WriteCommittedFragmentedDataFramesForTest(
+	termBuffer atomic.AtomicBuffer,
+	startOffset int,
+	fragments []FragmentedFrameForTest,
+) []int {
+	offsets := make([]int, len(fragments))
+	offset := startOffset
+	for i, fragment := range fragments {
+		offsets[i] = offset
+		WriteCommittedFragmentedDataFrameForTest(
+			termBuffer,
+			offset,
+			TestPublicationSessionID,
+			TestPublicationStreamID,
+			TestPublicationInitialTermID,
+			int32(offset),
+			fragment.Flags,
+			fragment.Payload,
+		)
+		offset += logbuffer.AlignFragmentChunkLength(len(fragment.Payload))
+	}
+	return offsets
+}
+
 func WriteMinimalTermEndPaddingForTest(
 	termBuffer atomic.AtomicBuffer,
 	frameOffset int,
@@ -1357,10 +1381,6 @@ func NewImageForTestWithErrorHandler(
 
 func ImageSetSubscriberPositionForTest(image *Image, value int64) {
 	setInMemImageSubscriberPosition(image, value)
-}
-
-func HeaderSetFragmentedFrameLenForTest(header *Header, fragmentedFrameLen int32) {
-	header.fragmentedFrameLen = fragmentedFrameLen
 }
 
 func ImageTermBuffer0CapacityForTest(image *Image) int {

@@ -3,6 +3,7 @@
 package aeron_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,18 @@ type drawnCommittedFrame struct {
 	frameLength int32
 }
 
+func headerRapidImage(t *testing.T) *aeron.Image {
+	return testImage(t, testSubscription(t))
+}
+
+func drawByteSlice(rt *rapid.T, name string, minLen, maxLen int) []byte {
+	if minLen > maxLen {
+		panic(fmt.Sprintf("drawByteSlice %q: minLen %d > maxLen %d", name, minLen, maxLen))
+	}
+	n := rapid.IntRange(minLen, maxLen).Draw(rt, name+"Len")
+	return rapid.SliceOfN(rapid.Byte(), n, n).Draw(rt, name)
+}
+
 func drawCommittedFrame(
 	rt *rapid.T,
 	termLength int,
@@ -31,19 +44,17 @@ func drawCommittedFrame(
 	if maxPayloadCap >= 0 && maxPayload > maxPayloadCap {
 		maxPayload = maxPayloadCap
 	}
-	payloadLen := rapid.IntRange(0, maxPayload).Draw(rt, "payloadLen")
-	payload := rapid.SliceOfN(rapid.Byte(), payloadLen, payloadLen).Draw(rt, "payload")
+	payload := drawByteSlice(rt, "payload", 0, maxPayload)
 	return drawnCommittedFrame{
 		frameOffset: frameOffset,
 		termOffset:  int32(frameOffset),
 		payload:     payload,
-		frameLength: int32(payloadLen + logbuffer.DataHeaderLength),
+		frameLength: int32(len(payload) + logbuffer.DataHeaderLength),
 	}
 }
 
 func TestHeader_positionMath_rapid(t *testing.T) {
-	sub := testSubscription(t)
-	image := testImage(t, sub)
+	image := headerRapidImage(t)
 	termBuffer := aeron.ImageTermBuffer0ForTest(image)
 	termLength := aeron.TestPublicationTermLength
 	shift := logbuffer.PositionBitsToShift(termLength)
@@ -75,16 +86,17 @@ func TestHeader_positionMath_rapid(t *testing.T) {
 			occupancy = fragmentedSpan
 		}
 
+		nextTermOffset := header.NextTermOffset()
 		require.Equal(
 			rt,
 			int32(logbuffer.AlignFrameLength(int(header.TermOffset())+int(occupancy))),
-			header.NextTermOffset(),
+			nextTermOffset,
 		)
 		require.Equal(
 			rt,
 			logbuffer.ComputePosition(
 				header.TermID(),
-				header.NextTermOffset(),
+				nextTermOffset,
 				shift,
 				aeron.TestPublicationInitialTermID,
 			),
@@ -93,9 +105,28 @@ func TestHeader_positionMath_rapid(t *testing.T) {
 	})
 }
 
+func drawBeginEndFragmentSpecs(rt *rapid.T) []aeron.FragmentedFrameForTest {
+	return []aeron.FragmentedFrameForTest{
+		{Flags: logbuffer.BeginFlag, Payload: drawByteSlice(rt, "beginPayload", 1, 64)},
+		{Flags: logbuffer.EndFlag, Payload: drawByteSlice(rt, "endPayload", 0, 64)},
+	}
+}
+
+func TestHeader_ConfigureCompletedFragment_rapid(t *testing.T) {
+	image := headerRapidImage(t)
+	termBuffer := aeron.ImageTermBuffer0ForTest(image)
+
+	rapid.Check(t, func(rt *rapid.T) {
+		fragments := drawBeginEndFragmentSpecs(rt)
+		frameOffsets := aeron.WriteCommittedFragmentedDataFramesForTest(termBuffer, 0, fragments)
+		fixture := newCompletedFragmentFixture(image, termBuffer, frameOffsets, fragments)
+
+		assertConfigureCompletedFragmentOracle(rt, fixture, false)
+	})
+}
+
 func TestHeader_frameFieldsRoundtrip_rapid(t *testing.T) {
-	sub := testSubscription(t)
-	image := testImage(t, sub)
+	image := headerRapidImage(t)
 	termBuffer := aeron.ImageTermBuffer0ForTest(image)
 	termLength := aeron.TestPublicationTermLength
 

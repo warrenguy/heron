@@ -14,8 +14,20 @@ import (
 	"github.com/warrenguy/heron/agrona/atomic"
 )
 
-// Cross-package test hooks. Values mirror export_test.go Test* constants but live
-// here because _test.go helpers are not visible to external test packages.
+// HeaderSetFragmentedFrameLenForTest seeds fragmentedFrameLen on a poll flyweight.
+func HeaderSetFragmentedFrameLenForTest(header *Header, fragmentedFrameLen int32) {
+	header.fragmentedFrameLen = fragmentedFrameLen
+}
+
+// HeaderFragmentedFrameLenForTest returns fragmentedFrameLen on a completed header.
+func HeaderFragmentedFrameLenForTest(header *Header) int32 {
+	return header.fragmentedFrameLen
+}
+
+// Cross-package test hooks. Publication-related IDs align with in-mem Test* fixtures;
+// subscription/image/counter IDs use separate namespace for cross-package hook tests
+// (not full mirror of export_test). Helpers live here because _test.go is not visible
+// to external test packages.
 const (
 	testHookIPCChannel = "aeron:ipc"
 
@@ -31,6 +43,10 @@ const (
 	testHookPublicationLimitPosition  int64 = 1 << 40
 
 	testHookMappedLogFileName = "test-hook.log"
+
+	testHookImageCorrelationID          int64 = 9102
+	testHookImageSessionID              int32 = 1002
+	testHookSubscriberPositionCounterID int32 = 4
 )
 
 // NewTestSubscriptionForHooks builds a subscription for cross-package close tests.
@@ -135,21 +151,27 @@ func seedTestHookPartitionRawTails(meta atomic.AtomicBuffer) {
 	meta.PutInt32Release(logbuffer.OffsetActiveTermCount, 0)
 }
 
-func writeTestHookLogFile(tb testing.TB, path string) {
-	tb.Helper()
-
-	buf, meta := allocTestHookLogBuffer(tb)
-	initTestHookLogMetadata(meta)
-	require.NoError(tb, os.WriteFile(path, buf, 0o644))
-}
-
-func newTestHookMappedLog(tb testing.TB, logType byte) *logbuffer.MappedLogBuffer {
+func prepareTestHookLogBuffer(tb testing.TB, logType byte) []byte {
 	tb.Helper()
 
 	buf, meta := allocTestHookLogBuffer(tb)
 	initTestHookLogMetadata(meta)
 	seedTestHookPartitionRawTails(meta)
 	meta.Bytes()[logbuffer.OffsetLogType] = logType
+	return buf
+}
+
+func writeTestHookLogFile(tb testing.TB, path string) {
+	tb.Helper()
+
+	buf := prepareTestHookLogBuffer(tb, logbuffer.LogBufferTypeConcurrentPublication)
+	require.NoError(tb, os.WriteFile(path, buf, 0o644))
+}
+
+func newTestHookMappedLog(tb testing.TB, logType byte) *logbuffer.MappedLogBuffer {
+	tb.Helper()
+
+	buf := prepareTestHookLogBuffer(tb, logType)
 
 	log, err := logbuffer.MapLogBufferFromBytes(buf)
 	require.NoError(tb, err)
@@ -157,21 +179,136 @@ func newTestHookMappedLog(tb testing.TB, logType byte) *logbuffer.MappedLogBuffe
 	return log
 }
 
-func newTestHookCountersReader(tb testing.TB) *cnc.CountersReader {
+// NewTestImageForHooks builds an in-memory image wired to sub for cross-package poll tests.
+// Caller must register the image via SubscriptionAddImageForHooks before Subscription.Poll.
+func NewTestImageForHooks(tb testing.TB, sub *Subscription, joinPosition int64) *Image {
 	tb.Helper()
 
-	meta := make([]byte, cnc.CounterMetadataLength*3)
-	values := make([]byte, cnc.CounterValueLength*3)
-	cnc.WriteCounterRecord(
-		meta,
-		values,
-		testHookPublicationLimitCounterID,
-		cnc.CounterRecordAllocated,
-		cnc.DriverPublisherLimitTypeID,
-		testHookPublicationRegistrationID,
-		testHookPublicationLimitPosition,
+	log := newTestHookMappedLog(tb, logbuffer.LogBufferTypeConcurrentPublication)
+	logBuffers, err := logbuffer.NewLogBuffers(log)
+	require.NoError(tb, err)
+
+	image, err := newImage(
+		sub,
+		testHookAvailableImage(),
+		logBuffers,
+		newTestHookCountersReaderWithSubscriberPosition(tb, joinPosition),
+		nil,
 	)
+	require.NoError(tb, err)
+	return image
+}
+
+// SubscriptionAddImageForHooks registers image on sub. False when image is nil
+// or correlation ID is already registered.
+func SubscriptionAddImageForHooks(sub *Subscription, image *Image) bool {
+	return sub.addImage(image)
+}
+
+// ImageTermBufferForHooks returns partition 0 term buffer for frame writes.
+func ImageTermBufferForHooks(image *Image) atomic.AtomicBuffer {
+	return image.termBuffers[0]
+}
+
+// WriteCommittedDataFrameForHooks commits a DATA frame at frameOffset. Unfragmented
+// flags use WriteDataHeaderUnfragmented; other flags use WriteDataHeaderFragmented.
+func WriteCommittedDataFrameForHooks(
+	termBuffer atomic.AtomicBuffer,
+	frameOffset int,
+	sessionID int32,
+	streamID int32,
+	termID int32,
+	termOffset int32,
+	flags uint8,
+	payload []byte,
+) {
+	frameLength := int32(len(payload) + logbuffer.DataHeaderLength)
+	writeHeader := logbuffer.WriteDataHeaderUnfragmented
+	if flags&logbuffer.Unfragmented != logbuffer.Unfragmented {
+		writeHeader = logbuffer.WriteDataHeaderFragmented
+	}
+	if err := writeHeader(
+		termBuffer,
+		frameOffset,
+		sessionID,
+		streamID,
+		termID,
+		termOffset,
+		flags,
+	); err != nil {
+		panic(err)
+	}
+	termBuffer.PutBytes(frameOffset+logbuffer.OffsetFramePayload, payload)
+	logbuffer.PutFrameLengthOrdered(termBuffer, frameOffset, frameLength)
+}
+
+func testHookAvailableImage() conductor.AvailableImage {
+	return conductor.AvailableImage{
+		CorrelationID:              testHookImageCorrelationID,
+		SessionID:                  testHookImageSessionID,
+		StreamID:                   testHookSubscriptionStreamID,
+		SubscriptionRegistrationID: testHookSubscriptionRegistrationID,
+		SubscriberPositionID:       testHookSubscriberPositionCounterID,
+		LogFileName:                testHookMappedLogFileName,
+		SourceIdentity:             testHookIPCChannel,
+	}
+}
+
+func newTestHookCountersReaderFromRecords(
+	tb testing.TB,
+	counterCount int,
+	writeRecords func(meta, values []byte),
+) *cnc.CountersReader {
+	tb.Helper()
+
+	meta := make([]byte, cnc.CounterMetadataLength*counterCount)
+	values := make([]byte, cnc.CounterValueLength*counterCount)
+	writeRecords(meta, values)
+
 	reader, err := cnc.NewCountersReader(meta, values)
 	require.NoError(tb, err)
 	return reader
+}
+
+func newTestHookCountersReader(tb testing.TB) *cnc.CountersReader {
+	tb.Helper()
+
+	return newTestHookCountersReaderFromRecords(
+		tb,
+		int(testHookPublicationLimitCounterID)+1,
+		func(meta, values []byte) {
+			cnc.WriteCounterRecord(
+				meta,
+				values,
+				testHookPublicationLimitCounterID,
+				cnc.CounterRecordAllocated,
+				cnc.DriverPublisherLimitTypeID,
+				testHookPublicationRegistrationID,
+				testHookPublicationLimitPosition,
+			)
+		},
+	)
+}
+
+func newTestHookCountersReaderWithSubscriberPosition(
+	tb testing.TB,
+	joinPosition int64,
+) *cnc.CountersReader {
+	tb.Helper()
+
+	return newTestHookCountersReaderFromRecords(
+		tb,
+		int(testHookSubscriberPositionCounterID)+1,
+		func(meta, values []byte) {
+			cnc.WriteCounterRecord(
+				meta,
+				values,
+				testHookSubscriberPositionCounterID,
+				cnc.CounterRecordAllocated,
+				cnc.DriverSubscriberPositionTypeID,
+				testHookSubscriptionRegistrationID,
+				joinPosition,
+			)
+		},
+	)
 }

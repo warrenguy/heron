@@ -14,6 +14,9 @@ const (
 	// DefaultEgressStreamID is the Java AeronCluster egress stream default (102).
 	DefaultEgressStreamID int32 = 102
 
+	// DefaultEgressFragmentLimit matches Java AeronCluster.FRAGMENT_LIMIT.
+	DefaultEgressFragmentLimit = 10
+
 	// DefaultMessageTimeout matches Java messageTimeoutNs (5 seconds).
 	DefaultMessageTimeout = 5 * time.Second
 

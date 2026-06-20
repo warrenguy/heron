@@ -388,6 +388,33 @@ func TestImage_Poll_advancesSubscriberCounter(t *testing.T) {
 	require.Equal(t, joinPosition+advance, image.Position())
 }
 
+func TestImage_Poll_resetsFragmentedFrameLen(t *testing.T) {
+	image, capture := newPollImage(t, 0)
+	termBuffer := aeron.ImageTermBuffer0ForTest(image)
+	payload := []byte("payload")
+	writePollTestDataFrame(termBuffer, 0, 0, logbuffer.Unfragmented, payload)
+
+	expectedNextTermOffset := int32(logbuffer.AlignFragmentChunkLength(len(payload)))
+	expectedPosition := int64(expectedNextTermOffset)
+
+	aeron.HeaderSetFragmentedFrameLenForTest(aeron.ImageHeaderForTest(image), 256)
+
+	fragments := image.Poll(func(
+		buffer atomic.AtomicBuffer,
+		offset int,
+		length int,
+		header *aeron.Header,
+	) {
+		require.Equal(t, expectedNextTermOffset, header.NextTermOffset())
+		require.Equal(t, expectedPosition, header.Position())
+		capture.handler(buffer, offset, length, header)
+	}, 1)
+
+	require.Equal(t, 1, fragments)
+	require.Equal(t, payload, capture.payloads[0])
+	require.Equal(t, expectedPosition, image.Position())
+}
+
 func TestImage_Poll_joinPositionImmutable(t *testing.T) {
 	const joinPosition int64 = 0
 	image, capture := newPollImage(t, joinPosition)
@@ -504,15 +531,7 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 	}
 
 	t.Run("firstFrameWithErrorHandler", func(t *testing.T) {
-		var handled error
-		image := aeron.NewImageForTestWithErrorHandler(
-			t,
-			testSubscription(t),
-			0,
-			func(err error) {
-				handled = err
-			},
-		)
+		image, capture, handledErr := newPollImageWithErrorHandler(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
 		writePollTestDataFrame(termBuffer, 0, 0, logbuffer.Unfragmented, panicPayload)
 		nextOffset := logbuffer.AlignFragmentChunkLength(len(panicPayload))
@@ -528,25 +547,17 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 
 		require.Zero(t, fragments)
 		require.Zero(t, image.Position())
+		handled := handledErr()
 		require.Error(t, handled)
 		require.Equal(t, wantErr, handled.Error())
 
-		capture := &pollCapture{}
 		fragments = image.Poll(capture.handler, 1)
 		require.Equal(t, 1, fragments)
 		require.Equal(t, panicPayload, capture.payloads[0])
 	})
 
 	t.Run("afterPaddingPartialAdvance", func(t *testing.T) {
-		var handled error
-		image := aeron.NewImageForTestWithErrorHandler(
-			t,
-			testSubscription(t),
-			0,
-			func(err error) {
-				handled = err
-			},
-		)
+		image, _, handledErr := newPollImageWithErrorHandler(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
 		writePollTestPaddingThenData(termBuffer, pollTestPaddingLength, panicPayload)
 
@@ -554,20 +565,13 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 
 		require.Zero(t, fragments)
 		require.Equal(t, int64(pollTestPaddingLength), image.Position())
+		handled := handledErr()
 		require.Error(t, handled)
 		require.Equal(t, wantErr, handled.Error())
 	})
 
 	t.Run("nthFrameAfterSuccess", func(t *testing.T) {
-		var handled error
-		image := aeron.NewImageForTestWithErrorHandler(
-			t,
-			testSubscription(t),
-			0,
-			func(err error) {
-				handled = err
-			},
-		)
+		image, capture, handledErr := newPollImageWithErrorHandler(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
 		chainPayload := []byte("a")
 		writeDataFrameChain(t, termBuffer, 0, 2, chainPayload)
@@ -585,10 +589,10 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 
 		require.Equal(t, 1, fragments)
 		require.Equal(t, int64(firstSpan), image.Position())
+		handled := handledErr()
 		require.Error(t, handled)
 		require.Equal(t, wantErr, handled.Error())
 
-		capture := &pollCapture{}
 		fragments = image.Poll(capture.handler, 1)
 		require.Equal(t, 1, fragments)
 		require.Equal(t, chainPayload, capture.payloads[0])
@@ -634,15 +638,7 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 
 	t.Run("nonErrorPanicWrap", func(t *testing.T) {
 		const panicValue = "boom"
-		var handled error
-		image := aeron.NewImageForTestWithErrorHandler(
-			t,
-			testSubscription(t),
-			0,
-			func(err error) {
-				handled = err
-			},
-		)
+		image, _, handledErr := newPollImageWithErrorHandler(t, 0)
 		writePollTestDataFrame(
 			aeron.ImageTermBuffer0ForTest(image),
 			0,
@@ -658,6 +654,7 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 		fragments := image.Poll(nonErrorPanicHandler, 1)
 
 		require.Zero(t, fragments)
+		handled := handledErr()
 		require.Error(t, handled)
 		require.Equal(t, "aeron: fragment handler panic: boom", handled.Error())
 	})
@@ -711,7 +708,9 @@ func TestImage_Poll_rejectsMidTermShortPadding(t *testing.T) {
 
 	require.Zero(t, fragments)
 	require.Equal(t, int64(frameOffset), image.Position())
-	require.Equal(t, wantErr, handledErr().Error())
+	handled := handledErr()
+	require.Error(t, handled)
+	require.Equal(t, wantErr, handled.Error())
 }
 
 func TestImage_Poll_closeSkipsCounterStore(t *testing.T) {
@@ -779,37 +778,21 @@ func TestImage_Poll_closeSkipsCounterStore(t *testing.T) {
 func TestImage_Poll_deliversFragmentedFramesIndividually(t *testing.T) {
 	image, capture := newPollImage(t, 0)
 	termBuffer := aeron.ImageTermBuffer0ForTest(image)
-	fragments := []struct {
-		flags   uint8
-		payload []byte
-	}{
-		{flags: logbuffer.BeginFlag, payload: []byte("begin")},
-		{flags: 0, payload: []byte("middle")},
-		{flags: logbuffer.EndFlag, payload: []byte("end")},
+	fragments := []aeron.FragmentedFrameForTest{
+		{Flags: logbuffer.BeginFlag, Payload: []byte("begin")},
+		{Flags: 0, Payload: []byte("middle")},
+		{Flags: logbuffer.EndFlag, Payload: []byte("end")},
 	}
 
-	offset := 0
-	for _, fragment := range fragments {
-		aeron.WriteCommittedFragmentedDataFrameForTest(
-			termBuffer,
-			offset,
-			aeron.TestPublicationSessionID,
-			aeron.TestPublicationStreamID,
-			aeron.TestPublicationInitialTermID,
-			int32(offset),
-			fragment.flags,
-			fragment.payload,
-		)
-		offset += logbuffer.AlignFragmentChunkLength(len(fragment.payload))
-	}
+	aeron.WriteCommittedFragmentedDataFramesForTest(termBuffer, 0, fragments)
 
 	got := image.Poll(capture.handler, len(fragments))
 
 	require.Equal(t, len(fragments), got)
 	require.Len(t, capture.payloads, len(fragments))
-	require.Equal(t, fragments[0].payload, capture.payloads[0])
-	require.Equal(t, fragments[1].payload, capture.payloads[1])
-	require.Equal(t, fragments[2].payload, capture.payloads[2])
+	require.Equal(t, fragments[0].Payload, capture.payloads[0])
+	require.Equal(t, fragments[1].Payload, capture.payloads[1])
+	require.Equal(t, fragments[2].Payload, capture.payloads[2])
 	require.Equal(t, byte(logbuffer.BeginFlag), capture.flags[0]&byte(logbuffer.BeginFlag))
 	require.Zero(t, capture.flags[0]&byte(logbuffer.EndFlag))
 	require.Zero(t, capture.flags[1]&(byte(logbuffer.BeginFlag)|byte(logbuffer.EndFlag)))
@@ -862,8 +845,9 @@ func TestImage_Poll_rejectsCorruptFrameLength(t *testing.T) {
 
 	require.Zero(t, fragments)
 	require.Zero(t, image.Position())
-	require.Error(t, handledErr())
-	require.Equal(t, wantErr, handledErr().Error())
+	handled := handledErr()
+	require.Error(t, handled)
+	require.Equal(t, wantErr, handled.Error())
 }
 
 func TestImage_Poll_consumesSubHeaderTermEndGap(t *testing.T) {
@@ -1025,15 +1009,7 @@ func TestImage_Poll_rejectsAlignedSpanOverflow(t *testing.T) {
 	const frameOffset = aeron.TestPublicationTermLength - 40
 	const frameLength = int32(40)
 	const wantErr = "aeron: corrupt committed frame at term offset 65496 length 40"
-	var handled error
-	image := aeron.NewImageForTestWithErrorHandler(
-		t,
-		testSubscription(t),
-		int64(frameOffset),
-		func(err error) {
-			handled = err
-		},
-	)
+	image, capture, handledErr := newPollImageWithErrorHandler(t, int64(frameOffset))
 	termBuffer := aeron.ImageTermBuffer0ForTest(image)
 	if err := logbuffer.WriteDataHeaderUnfragmented(
 		termBuffer,
@@ -1049,11 +1025,11 @@ func TestImage_Poll_rejectsAlignedSpanOverflow(t *testing.T) {
 	termBuffer.PutBytes(frameOffset+logbuffer.OffsetFramePayload, []byte{1, 2, 3, 4, 5, 6, 7, 8})
 	logbuffer.PutFrameLengthOrdered(termBuffer, frameOffset, frameLength)
 
-	capture := &pollCapture{}
 	fragments := image.Poll(capture.handler, 1)
 
 	require.Zero(t, fragments)
 	require.Equal(t, int64(frameOffset), image.Position())
+	handled := handledErr()
 	require.Error(t, handled)
 	require.Equal(t, wantErr, handled.Error())
 }

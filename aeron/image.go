@@ -247,6 +247,13 @@ func paddingAdvance(
 	return advance, true
 }
 
+// pollConsumePosition maps a term offset back to the subscriber log position for a
+// single-term poll scan. Callers must pass initialPosition and initialOffset from
+// poll entry; offset must remain within the same term as initialOffset.
+func pollConsumePosition(initialPosition int64, initialOffset, offset int) int64 {
+	return initialPosition + int64(offset-initialOffset)
+}
+
 func dataFrameNextOffset(
 	frameOffset int,
 	frameLength int32,
@@ -267,17 +274,19 @@ func dataFrameNextOffset(
 }
 
 func (image *Image) reportCorruptCommittedFrame(
-	consumePosition int64,
-	frameOffset int,
+	initialPosition int64,
+	initialOffset int,
+	offset int,
 	frameLength int32,
 ) {
+	consumePosition := pollConsumePosition(initialPosition, initialOffset, offset)
 	if consumePosition == image.lastCorruptReportPosition {
 		return
 	}
 	image.lastCorruptReportPosition = consumePosition
 	image.invokeSubscriberErrorHandler(fmt.Errorf(
 		"aeron: corrupt committed frame at term offset %d length %d",
-		frameOffset,
+		offset,
 		frameLength,
 	))
 }
@@ -299,6 +308,10 @@ func (image *Image) invokeFragmentHandler(
 	frameLength int32,
 	header *Header,
 ) (ok bool) {
+	header.SetBuffer(termBuffer)
+	header.ResetPollFragmentState()
+	header.SetOffset(frameOffset)
+
 	payloadOffset := frameOffset + logbuffer.OffsetFramePayload
 	payloadLength := int(frameLength) - logbuffer.DataHeaderLength
 	ok = true
@@ -345,7 +358,6 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 	capacity := termBuffer.Capacity()
 
 	header := &image.header
-	header.SetBuffer(termBuffer)
 
 	for fragmentsRead < fragmentLimit && offset < capacity && !image.isClosed.Load() {
 		frameLength := logbuffer.CommittedFrameLengthVolatile(termBuffer, offset)
@@ -361,7 +373,8 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 			advance, ok := paddingAdvance(offset, frameLength, capacity)
 			if !ok {
 				image.reportCorruptCommittedFrame(
-					initialPosition+int64(offset-initialOffset),
+					initialPosition,
+					initialOffset,
 					offset,
 					frameLength,
 				)
@@ -375,14 +388,14 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 		nextOffset, ok := dataFrameNextOffset(offset, frameLength, capacity)
 		if !ok {
 			image.reportCorruptCommittedFrame(
-				initialPosition+int64(offset-initialOffset),
+				initialPosition,
+				initialOffset,
 				offset,
 				frameLength,
 			)
 			break
 		}
 
-		header.SetOffset(offset)
 		if !image.invokeFragmentHandler(handler, termBuffer, offset, frameLength, header) {
 			break
 		}
@@ -391,7 +404,7 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 		fragmentsRead++
 	}
 
-	newPosition := initialPosition + int64(offset-initialOffset)
+	newPosition := pollConsumePosition(initialPosition, initialOffset, offset)
 	if newPosition > initialPosition && !image.isClosed.Load() {
 		image.subscriberPos.SetRelease(newPosition)
 		if image.lastCorruptReportPosition >= 0 && newPosition > image.lastCorruptReportPosition {

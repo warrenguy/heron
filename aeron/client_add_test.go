@@ -957,7 +957,6 @@ func TestClient_Add_ringExhaustion_returnsRegistrationError(t *testing.T) {
 	pubCases := clientAddPublicationKindCases()
 	tests := make([]ringExhaustionCase, 0, len(pubCases)+1)
 	for _, pubCase := range pubCases {
-		pubCase := pubCase
 		tests = append(tests, ringExhaustionCase{
 			name: pubCase.name,
 			dir: func(t *testing.T) string {

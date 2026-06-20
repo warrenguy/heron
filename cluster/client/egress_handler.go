@@ -11,8 +11,8 @@ var errEgressHandlerMessageNotConfigured = errors.New(
 	"cluster client: EgressHandler Message callback not configured",
 )
 
-// EgressHandler receives decoded cluster egress events. Buffer views are valid only
-// for the callback duration; do not retain slices or the Header pointer.
+// EgressHandler receives decoded cluster egress events. Message buffer views and the
+// Header pointer are valid only for the callback duration; do not retain them.
 type EgressHandler interface {
 	// Message delivers an application payload. Offset points past the SessionMessageHeader;
 	// buffer, offset, length, and header follow aeron.FragmentHandler lifetime rules.
@@ -25,7 +25,8 @@ type EgressHandler interface {
 		header *aeron.Header,
 	)
 
-	// SessionEvent delivers template 2 (SessionEvent). detail is raw ASCII bytes.
+	// SessionEvent delivers template 2 (SessionEvent). detail is copied wire bytes;
+	// safe to retain after return.
 	SessionEvent(
 		correlationID int64,
 		clusterSessionID int64,
@@ -35,8 +36,8 @@ type EgressHandler interface {
 		detail []byte,
 	)
 
-	// NewLeader delivers template 6 (NewLeaderEvent).
-	// ingressEndpoints is raw ASCII bytes (e.g. "0=localhost:20110,...").
+	// NewLeader delivers template 6 (NewLeaderEvent). ingressEndpoints is copied wire bytes
+	// (e.g. "0=localhost:20110,..."); safe to retain after return.
 	NewLeader(
 		clusterSessionID int64,
 		leadershipTermID int64,
@@ -44,7 +45,8 @@ type EgressHandler interface {
 		ingressEndpoints []byte,
 	)
 
-	// AdminResponse delivers template 27 (AdminResponse).
+	// AdminResponse delivers template 27 (AdminResponse). message and payload are
+	// copied wire bytes; safe to retain after return.
 	AdminResponse(
 		clusterSessionID int64,
 		correlationID int64,
@@ -154,29 +156,9 @@ func (h *EgressHandlers) AdminResponse(
 	}
 }
 
-// ThrowingEgressHandler panics on Message to mirror Java conclude() throw semantics.
-// Message is void, so panic is the Go equivalent of Java throwing ConfigurationException
-// on the first onMessage. Other methods are no-ops. Use in tests that require
-// fail-fast on first message delivery.
-type ThrowingEgressHandler struct {
-	Err error
-}
+type noopEgressHandler struct{}
 
-func (h ThrowingEgressHandler) Message(
-	_ int64,
-	_ int64,
-	_ atomic.AtomicBuffer,
-	_ int,
-	_ int,
-	_ *aeron.Header,
-) {
-	if h.Err != nil {
-		panic(h.Err)
-	}
-	panic(errEgressHandlerMessageNotConfigured)
-}
-
-func (ThrowingEgressHandler) SessionEvent(
+func (noopEgressHandler) SessionEvent(
 	_ int64,
 	_ int64,
 	_ int64,
@@ -186,7 +168,7 @@ func (ThrowingEgressHandler) SessionEvent(
 ) {
 }
 
-func (ThrowingEgressHandler) NewLeader(
+func (noopEgressHandler) NewLeader(
 	_ int64,
 	_ int64,
 	_ int32,
@@ -194,7 +176,7 @@ func (ThrowingEgressHandler) NewLeader(
 ) {
 }
 
-func (ThrowingEgressHandler) AdminResponse(
+func (noopEgressHandler) AdminResponse(
 	_ int64,
 	_ int64,
 	_ AdminRequestType,
@@ -202,4 +184,29 @@ func (ThrowingEgressHandler) AdminResponse(
 	_ []byte,
 	_ []byte,
 ) {
+}
+
+// ThrowingEgressHandler panics on Message simulating runtime dispatch failure when
+// message callback not configured; NOT Java conclude() validation. Other methods are
+// no-ops. Use in tests that require fail-fast on first message delivery.
+type ThrowingEgressHandler struct {
+	noopEgressHandler
+	Err error
+}
+
+var _ EgressHandler = ThrowingEgressHandler{}
+
+func (h ThrowingEgressHandler) Message(
+	_ int64,
+	_ int64,
+	_ atomic.AtomicBuffer,
+	_ int,
+	_ int,
+	_ *aeron.Header,
+) {
+	err := h.Err
+	if err == nil {
+		err = errEgressHandlerMessageNotConfigured
+	}
+	panic(err)
 }
