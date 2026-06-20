@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/record"
-	"github.com/warrenguy/heron/aeron/ringbuffer"
+	"github.com/warrenguy/heron/agrona/record"
+	"github.com/warrenguy/heron/agrona/ringbuffer"
 )
 
 type closeDrainWireCapture struct {

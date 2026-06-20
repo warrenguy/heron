@@ -4,12 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
+	stdatomic "sync/atomic"
 
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 // Publication is a concurrent IPC publisher over a driver-mapped log buffer.
@@ -27,8 +27,8 @@ type Publication struct {
 	channel                string
 
 	log                 *logbuffer.MappedLogBuffer
-	meta                aeronatomic.AtomicBuffer
-	termBuffers         [logbuffer.PartitionCount]aeronatomic.AtomicBuffer
+	meta                atomic.AtomicBuffer
+	termBuffers         [logbuffer.PartitionCount]atomic.AtomicBuffer
 	termBufferLength    int
 	positionBitsToShift int
 
@@ -45,7 +45,7 @@ type Publication struct {
 	publicationLimit       cnc.CounterSlot
 	channelStatusCounterID int32
 
-	closed    atomic.Uint32
+	closed    stdatomic.Uint32
 	conductor *conductor.Conductor
 }
 
@@ -282,7 +282,7 @@ func validateTermIndex(termIndex int) error {
 	return nil
 }
 
-func validateFrameOffset(termBuf aeronatomic.AtomicBuffer, frameOffset int) error {
+func validateFrameOffset(termBuf atomic.AtomicBuffer, frameOffset int) error {
 	// Claim reservation guarantees the full DataHeaderLength fits before payload access.
 	if frameOffset < 0 || frameOffset+logbuffer.DataHeaderLength > termBuf.Capacity() {
 		return fmt.Errorf("aeron: invalid frame offset %d", frameOffset)
@@ -309,9 +309,9 @@ func (pub *Publication) finalizeInFlightClaim(
 func (pub *Publication) loadInFlightClaim(
 	termIndex int,
 	frameOffset int,
-) (aeronatomic.AtomicBuffer, int32, error) {
+) (atomic.AtomicBuffer, int32, error) {
 	if pub.IsClosed() {
-		return aeronatomic.AtomicBuffer{}, 0, errors.New("aeron: publication is closed")
+		return atomic.AtomicBuffer{}, 0, errors.New("aeron: publication is closed")
 	}
 	return loadInFlightClaimFrame(&pub.termBuffers, termIndex, frameOffset)
 }
@@ -320,28 +320,28 @@ func (pub *Publication) loadInFlightClaim(
 // and absolute frame length. Shared by concurrent and exclusive Commit/Abort;
 // the closed check stays with each caller for the type-specific error.
 func loadInFlightClaimFrame(
-	termBuffers *[logbuffer.PartitionCount]aeronatomic.AtomicBuffer,
+	termBuffers *[logbuffer.PartitionCount]atomic.AtomicBuffer,
 	termIndex int,
 	frameOffset int,
-) (aeronatomic.AtomicBuffer, int32, error) {
+) (atomic.AtomicBuffer, int32, error) {
 	if err := validateTermIndex(termIndex); err != nil {
-		return aeronatomic.AtomicBuffer{}, 0, err
+		return atomic.AtomicBuffer{}, 0, err
 	}
 
 	termBuf := termBuffers[termIndex]
 	if err := validateFrameOffset(termBuf, frameOffset); err != nil {
-		return aeronatomic.AtomicBuffer{}, 0, err
+		return atomic.AtomicBuffer{}, 0, err
 	}
 	frameLength := termBuf.GetInt32Volatile(frameOffset)
 	if frameLength >= 0 {
-		return aeronatomic.AtomicBuffer{}, 0, errors.New("aeron: claimed space not in flight")
+		return atomic.AtomicBuffer{}, 0, errors.New("aeron: claimed space not in flight")
 	}
 	return termBuf, -frameLength, nil
 }
 
 type reserveOutcome struct {
 	termIndex   int
-	termBuf     aeronatomic.AtomicBuffer
+	termBuf     atomic.AtomicBuffer
 	termOffset  int
 	termID      int32
 	position    int64
@@ -351,7 +351,7 @@ type reserveOutcome struct {
 
 type offerPrelude struct {
 	termIndex  int
-	termBuf    aeronatomic.AtomicBuffer
+	termBuf    atomic.AtomicBuffer
 	tailOffset int
 	status     int64
 }
@@ -625,7 +625,7 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 }
 
 func (pub *Publication) commitTermPadding(
-	termBuf aeronatomic.AtomicBuffer,
+	termBuf atomic.AtomicBuffer,
 	termID int32,
 	fromOffset int,
 	paddingLength int32,
@@ -671,7 +671,7 @@ func (pub *Publication) reserveClaim(length int) (
 }
 
 func (pub *Publication) handleEndOfLog(
-	termBuf aeronatomic.AtomicBuffer,
+	termBuf atomic.AtomicBuffer,
 	termLength int,
 	termID int32,
 	termOffset int,

@@ -12,8 +12,8 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/record"
-	"github.com/warrenguy/heron/aeron/ringbuffer"
+	"github.com/warrenguy/heron/agrona/record"
+	"github.com/warrenguy/heron/agrona/ringbuffer"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 

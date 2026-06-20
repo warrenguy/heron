@@ -102,7 +102,7 @@ check-catalog-stale-selftest:
 	@CLUSTER_SBE_CATALOG_JSON=$(CLUSTER_SBE_CATALOG_JSON) ./scripts/check-catalog-stale-selftest.sh
 
 check-sbe-stale: sbe-generate
-	@git diff --exit-code aeron/sbe/generated/
+	@git diff --exit-code cluster/codecs/generated/
 
 $(eval $(call optional-target,check-sbe-stale,command -v java >/dev/null,java not installed))
 
@@ -173,7 +173,8 @@ bench:
 		-benchtime=1s $(BENCH_PKGS)
 
 bench-micro:
-	go test -run '^$$' -tags=testhooks -bench=. -benchmem ./aeron/...
+	go test -run '^$$' -tags=testhooks -bench=. -benchmem \
+		./agrona/... ./aeron/...
 
 bench-baseline:
 	@mkdir -p $(BENCH_DIR) && set -o pipefail && \

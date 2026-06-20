@@ -1,8 +1,8 @@
 package aeron
 
 import (
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 // SubscriberPosition wraps one driver subscriber-position counter slot in the CNC
@@ -14,10 +14,10 @@ import (
 type SubscriberPosition struct {
 	counterID    int32
 	valuesOffset int
-	values       aeronatomic.AtomicBuffer
+	values       atomic.AtomicBuffer
 }
 
-func newSubscriberPosition(counterID int32, values aeronatomic.AtomicBuffer) SubscriberPosition {
+func newSubscriberPosition(counterID int32, values atomic.AtomicBuffer) SubscriberPosition {
 	return SubscriberPosition{
 		counterID:    counterID,
 		valuesOffset: cnc.CounterOffset(counterID),

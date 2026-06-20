@@ -14,7 +14,7 @@ and server.
 Build `aeronmd` (Aeron C media driver) via Docker:
 
 ```bash
-make aeronmd   # requires Docker; output bin/aeronmd
+make aeronmd  # requires Docker; output bin/aeronmd
 ```
 
 Aeron release pinned in [`specs/versions.yaml`](specs/versions.yaml) (`aeron.ref`).
@@ -41,7 +41,7 @@ import (
 	"log"
 
 	"github.com/warrenguy/heron/aeron"
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 func main() {
@@ -73,7 +73,8 @@ func main() {
 	}
 
 	payload := []byte("hello")
-	if pos := pub.Offer(payload); pos < 0 {
+	pos := pub.Offer(payload)
+	if pos < 0 {
 		log.Fatalf("offer failed: %d", pos)
 	}
 
@@ -83,7 +84,7 @@ func main() {
 
 func pollOne(sub *aeron.Subscription, client *aeron.Client) []byte {
 	var msg []byte
-	handler := func(buf aeronatomic.AtomicBuffer, off, n int, _ *aeron.Header) {
+	handler := func(buf atomic.AtomicBuffer, off, n int, _ *aeron.Header) {
 		msg = append(msg, buf.Bytes()[off:off+n]...)
 	}
 	for {
@@ -106,6 +107,19 @@ Notes:
 
 ## Development
 
+### Building blocks
+
+| Area | Import path | Detail |
+|------|-------------|--------|
+| Agrona primitives | `github.com/warrenguy/heron/agrona/...` | Per-package roles in [`agrona/README.md`](agrona/README.md) |
+| Cluster client | `github.com/warrenguy/heron/cluster/client` | `ClusterContext`, egress handlers, session API |
+| Cluster codecs | `github.com/warrenguy/heron/cluster/codecs` | SBE wire flyweights; see **Cluster SBE codecs** below |
+| Transport client | `github.com/warrenguy/heron/aeron` | `Connect`, `Client`, `Publication`, `Subscription` |
+| Transport internals | `github.com/warrenguy/heron/aeron/{conductor,cnc,logbuffer}` | Driver control protocol, CnC metadata, term framing |
+
+`ClusterContext.IdleStrategy` defaults via `.../cluster/client.NewDefaultIdleStrategy()`;
+import `.../agrona/idlestrategy` for custom strategies.
+
 ### Pinned dependencies
 
 SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/versions.yaml).
@@ -113,13 +127,13 @@ SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/ve
 ### Tests
 
 ```bash
-make check                        # lint, pins, SBE/catalog stale (opt), unit+stress (-race)
-make test-rapid                   # property tests (pgregory.net/rapid)
-make test-integration             # live C aeronmd (-tags=integration)
-make contract-oracles             # both contract suites below (needs mvn + java)
-make test-java-interop-contract   # Go/Java smoke: streams, payloads, timeouts (no driver)
-make test-cluster-sbe-contract    # Go/Java cluster SBE wire bytes vs catalog.json (no driver)
-make test-java-interop            # Docker Compose smoke (bidirectional IPC pub/sub)
+make check                       # lint, pins, SBE/catalog stale (opt), unit+stress
+make test-rapid                  # property tests (pgregory.net/rapid)
+make test-integration            # live C aeronmd (-tags=integration)
+make contract-oracles            # both contract suites below (needs mvn + java)
+make test-java-interop-contract  # Go/Java smoke: streams, payloads, timeouts (no driver)
+make test-cluster-sbe-contract   # Go/Java cluster SBE wire bytes vs catalog.json (no driver)
+make test-java-interop           # Docker Compose smoke (bidirectional IPC pub/sub)
 ```
 
 - Contract targets run `mvn test` (Java goldens) then matching Go oracle tests; no aeronmd or
@@ -132,9 +146,9 @@ make test-java-interop            # Docker Compose smoke (bidirectional IPC pub/
 - IDE/gopls: set `go.buildTags` to `testhooks rapid stress integration bench`.
 
 ```bash
-make test                                              # unit only
-go test -race -tags=bench,testhooks ./...              # ad-hoc unit
-go test -race -tags=rapid,testhooks -run rapid ./...   # ad-hoc property
+make test                                             # unit only
+go test -race -tags=bench,testhooks ./...             # ad-hoc unit
+go test -race -tags=rapid,testhooks -run rapid ./...  # ad-hoc property
 ```
 
 Prefer Makefile targets over bare `go test`.
@@ -142,7 +156,7 @@ Prefer Makefile targets over bare `go test`.
 ### Cluster SBE codecs
 
 Cluster codecs use in-tree SBE XML (`specs/cluster-codecs-client.xml`) and generated Go
-flyweights (`aeron/sbe/generated/`). Fixture oracle rows live in
+flyweights (`cluster/codecs/generated/`). Fixture oracle rows live in
 `test/integration/cluster_sbe/clustersbe/fixtures/catalog.json`; run
 `make cluster-sbe-catalog-regen` to refresh committed `hex` from `fields`.
 
@@ -152,20 +166,20 @@ Pin-bump workflow:
 2. Diff upstream `aeron-cluster/src/main/resources/cluster/aeron-cluster-codecs.xml` (client messages and shared types only).
 3. Port into `specs/cluster-codecs-client.xml`.
 4. `make sbe-generate`; commit flyweight diff if any.
-5. `make test-cluster-sbe-contract`; fix failures under `aeron/sbe/` and `test/integration/cluster_sbe/clustersbe/`.
+5. `make test-cluster-sbe-contract`; fix failures under `cluster/codecs/` and `test/integration/cluster_sbe/clustersbe/`.
 
 ### Benchmarks
 
 | Target | Tags | Packages |
 |--------|------|----------|
 | `make bench` (+ baseline, regression) | `bench` | `./test/bench/...` |
-| `make bench-micro` | `testhooks` | `./aeron/...` white-box |
+| `make bench-micro` | `testhooks` | `./agrona/...` `./aeron/...` white-box |
 
 ```bash
-make bench              # contract suite (quick)
-make bench-baseline     # .bench/baseline.txt (gitignored, per machine)
-make bench-regression   # vs baseline via benchstat; exit 1 on alloc regression (CI)
-make bench-micro        # white-box in-package (informational)
+make bench             # contract suite (quick)
+make bench-baseline    # .bench/baseline.txt (gitignored, per machine)
+make bench-regression  # vs baseline via benchstat; exit 1 on alloc regression (CI)
+make bench-micro       # white-box in-package (informational)
 ```
 
 Re-baseline after pulling `main` or when perf changes are intentional.

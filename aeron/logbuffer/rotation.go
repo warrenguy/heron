@@ -1,7 +1,7 @@
 package logbuffer
 
 import (
-	"github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 // RawTailVolatile reads active-term count then that partition's raw tail.

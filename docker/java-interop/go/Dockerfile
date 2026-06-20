@@ -8,6 +8,7 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY aeron ./aeron
+COPY agrona ./agrona
 COPY test/integration/harness ./test/integration/harness
 COPY test/integration/java_interop ./test/integration/java_interop
 

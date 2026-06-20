@@ -1,7 +1,7 @@
 package conductor
 
 import (
-	"github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 // LogFileName is decoded now; caller must mmap before Offer succeeds.

@@ -8,11 +8,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
-	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/aeron/ringbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/agrona/broadcast"
+	"github.com/warrenguy/heron/agrona/ringbuffer"
 )
 
 func (conductor *Conductor) DriverProxyForTest() *DriverProxy {
@@ -94,7 +94,7 @@ func NewConductorForTest(
 }
 
 func DecodeTrailingStringASCIIForTest(
-	buf aeronatomic.AtomicBuffer,
+	buf atomic.AtomicBuffer,
 	offset, bodyLength, stringOffset int,
 	wrapped error,
 ) (string, error) {
@@ -356,7 +356,7 @@ func newSyntheticLogBuffersForTest(tb testing.TB, logType byte) *logbuffer.LogBu
 
 	buf := make([]byte, computed)
 	metaStart := logbuffer.MetaDataOffset(termLength)
-	meta := aeronatomic.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
+	meta := atomic.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
 	rawTails := [logbuffer.PartitionCount]int64{
 		logbuffer.PackRawTail(initialTermID, 0),
 		logbuffer.PackRawTail(initialTermID-2, 0),

@@ -4,8 +4,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 type metadataFuzzKind uint8

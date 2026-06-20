@@ -3,8 +3,8 @@ package cnc_test
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 var (

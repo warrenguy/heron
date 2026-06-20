@@ -3,12 +3,12 @@ package aeron
 import (
 	"errors"
 	"fmt"
-	"sync/atomic"
+	stdatomic "sync/atomic"
 
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 // ExclusivePublication is a single-writer IPC publisher over a driver-mapped log buffer.
@@ -35,8 +35,8 @@ type ExclusivePublication struct {
 	channel                string
 
 	log                 *logbuffer.MappedLogBuffer
-	meta                aeronatomic.AtomicBuffer
-	termBuffers         [logbuffer.PartitionCount]aeronatomic.AtomicBuffer
+	meta                atomic.AtomicBuffer
+	termBuffers         [logbuffer.PartitionCount]atomic.AtomicBuffer
 	termBufferLength    int
 	positionBitsToShift int
 
@@ -55,7 +55,7 @@ type ExclusivePublication struct {
 	publicationLimit       cnc.CounterSlot
 	channelStatusCounterID int32
 
-	closed    atomic.Uint32
+	closed    stdatomic.Uint32
 	conductor *conductor.Conductor
 }
 
@@ -294,7 +294,7 @@ func (ep *ExclusivePublication) checkPublicationLimit(alignedLength int) int64 {
 }
 
 type exclusiveReservation struct {
-	termBuf          aeronatomic.AtomicBuffer
+	termBuf          atomic.AtomicBuffer
 	termID           int32
 	startOffset      int
 	resultingOffset  int
@@ -390,9 +390,9 @@ func (ep *ExclusivePublication) finalizeInFlightClaim(
 func (ep *ExclusivePublication) loadInFlightClaim(
 	termIndex int,
 	frameOffset int,
-) (aeronatomic.AtomicBuffer, int32, error) {
+) (atomic.AtomicBuffer, int32, error) {
 	if ep.IsClosed() {
-		return aeronatomic.AtomicBuffer{}, 0, errors.New("aeron: exclusive publication is closed")
+		return atomic.AtomicBuffer{}, 0, errors.New("aeron: exclusive publication is closed")
 	}
 	return loadInFlightClaimFrame(&ep.termBuffers, termIndex, frameOffset)
 }
@@ -413,7 +413,7 @@ func (ep *ExclusivePublication) rotateTerm() {
 }
 
 func (ep *ExclusivePublication) handleEndOfLog(
-	termBuf aeronatomic.AtomicBuffer,
+	termBuf atomic.AtomicBuffer,
 	termLength int,
 	termID int32,
 	termOffset int,

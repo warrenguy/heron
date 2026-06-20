@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/warrenguy/heron/aeron/atomic"
-	"github.com/warrenguy/heron/aeron/mmap"
+	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/agrona/mmap"
 )
 
 type MappedCncFile struct {

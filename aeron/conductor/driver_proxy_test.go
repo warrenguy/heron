@@ -7,11 +7,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/internal/testutil"
-	"github.com/warrenguy/heron/aeron/record"
-	"github.com/warrenguy/heron/aeron/ringbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/agrona/record"
+	"github.com/warrenguy/heron/agrona/ringbuffer"
 )
 
 const (
@@ -64,7 +64,7 @@ func TestDriverProxy_offerCorrelated_encodeGolden(t *testing.T) {
 			require.NoError(t, err)
 
 			payloadOffset := ringbuffer.EncodedMsgOffset(0)
-			bufferAtomic := aeronatomic.Wrap(buffer.Bytes())
+			bufferAtomic := atomic.Wrap(buffer.Bytes())
 			require.Equal(
 				t,
 				conductor.CorrelatedMessageBytes(test.clientID, conductor.NullCorrelationID),
@@ -78,7 +78,7 @@ func TestDriverProxy_offerCorrelated_encodeGolden(t *testing.T) {
 			}, decoded)
 
 			var gotTypeID int
-			readCount := ring.Read(func(msgTypeID int, buffer aeronatomic.AtomicBuffer, index, length int) {
+			readCount := ring.Read(func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
 				gotTypeID = msgTypeID
 				got, decodeErr := conductor.DecodeCorrelated(buffer, index)
 				require.NoError(t, decodeErr)
@@ -105,7 +105,7 @@ func TestDriverProxy_NextAvailableSessionID_encodeGolden(t *testing.T) {
 	require.NoError(t, err)
 
 	payloadOffset := ringbuffer.EncodedMsgOffset(0)
-	bufferAtomic := aeronatomic.Wrap(buffer.Bytes())
+	bufferAtomic := atomic.Wrap(buffer.Bytes())
 	require.Equal(
 		t,
 		conductor.CorrelatedMessageBytes(clientID, correlationID),
@@ -125,7 +125,7 @@ func TestDriverProxy_NextAvailableSessionID_encodeGolden(t *testing.T) {
 	}, decoded)
 
 	var gotTypeID int
-	readCount := ring.Read(func(msgTypeID int, buffer aeronatomic.AtomicBuffer, index, length int) {
+	readCount := ring.Read(func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
 		gotTypeID = msgTypeID
 		got, decodeErr := conductor.DecodeCorrelated(buffer, index)
 		require.NoError(t, decodeErr)
@@ -167,7 +167,7 @@ func TestDriverProxy_offerCorrelatedBody_bodyTooShort(t *testing.T) {
 		nil,
 	)
 	require.ErrorIs(t, err, conductor.ErrCorrelatedBodyTooShort)
-	require.Zero(t, ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {
+	require.Zero(t, ring.Read(func(int, atomic.AtomicBuffer, int, int) {
 		t.Fatal("short body should not claim")
 	}))
 }
@@ -197,7 +197,7 @@ func TestDriverProxy_offerCorrelated_invalidTypeID(t *testing.T) {
 
 			err := test.offer(proxy)
 			require.ErrorIs(t, err, record.ErrInvalidMessageTypeID)
-			require.Zero(t, ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {
+			require.Zero(t, ring.Read(func(int, atomic.AtomicBuffer, int, int) {
 				t.Fatal("invalid type should not write")
 			}))
 		})
@@ -219,7 +219,7 @@ func TestDriverProxy_offerCorrelated_encodeFailureAborts(t *testing.T) {
 
 func requireDriverProxyPublicationMessage(
 	t *testing.T,
-	buffer aeronatomic.AtomicBuffer,
+	buffer atomic.AtomicBuffer,
 	index, length int,
 	want conductor.PublicationMessage,
 ) {
@@ -251,7 +251,7 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 		driverProxyTestChannel,
 	)
 	publicationBodyLength := conductor.PublicationMessageBodyLength(driverProxyTestChannel)
-	requirePublication := func(t *testing.T, buffer aeronatomic.AtomicBuffer, index, length int) {
+	requirePublication := func(t *testing.T, buffer atomic.AtomicBuffer, index, length int) {
 		requireDriverProxyPublicationMessage(t, buffer, index, length, publicationWant)
 	}
 
@@ -261,7 +261,7 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 		offer      func(*conductor.DriverProxy) error
 		wantBody   []byte
 		bodyLength int
-		read       func(t *testing.T, buffer aeronatomic.AtomicBuffer, index, length int)
+		read       func(t *testing.T, buffer atomic.AtomicBuffer, index, length int)
 	}{
 		{
 			name:       "add publication",
@@ -297,7 +297,7 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 				driverProxyTestChannel,
 			),
 			bodyLength: conductor.SubscriptionMessageBodyLength(driverProxyTestChannel),
-			read: func(t *testing.T, buffer aeronatomic.AtomicBuffer, index, length int) {
+			read: func(t *testing.T, buffer atomic.AtomicBuffer, index, length int) {
 				got, err := conductor.DecodeSubscriptionMessage(buffer, index, length)
 				require.NoError(t, err)
 				require.Equal(t, conductor.SubscriptionMessage{
@@ -322,7 +322,7 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 				true,
 			),
 			bodyLength: conductor.RemovePublicationBodyLength,
-			read: func(t *testing.T, buffer aeronatomic.AtomicBuffer, index, length int) {
+			read: func(t *testing.T, buffer atomic.AtomicBuffer, index, length int) {
 				got, err := conductor.DecodeRemovePublicationMessage(
 					buffer,
 					index,
@@ -352,7 +352,7 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 				false,
 			),
 			bodyLength: conductor.RemovePublicationBodyLength,
-			read: func(t *testing.T, buffer aeronatomic.AtomicBuffer, index, length int) {
+			read: func(t *testing.T, buffer atomic.AtomicBuffer, index, length int) {
 				got, err := conductor.DecodeRemovePublicationMessage(
 					buffer,
 					index,
@@ -381,7 +381,7 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 				registrationID,
 			),
 			bodyLength: conductor.RemoveMessageBodyLength,
-			read: func(t *testing.T, buffer aeronatomic.AtomicBuffer, index, length int) {
+			read: func(t *testing.T, buffer atomic.AtomicBuffer, index, length int) {
 				got, err := conductor.DecodeRemoveMessage(buffer, index, length)
 				require.NoError(t, err)
 				require.Equal(t, conductor.RemoveMessage{
@@ -401,7 +401,7 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 			require.NoError(t, err)
 
 			payloadOffset := ringbuffer.EncodedMsgOffset(0)
-			bufferAtomic := aeronatomic.Wrap(buffer.Bytes())
+			bufferAtomic := atomic.Wrap(buffer.Bytes())
 			require.Equal(
 				t,
 				test.wantBody,
@@ -409,7 +409,7 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 			)
 
 			var gotTypeID int
-			readCount := ring.Read(func(msgTypeID int, buffer aeronatomic.AtomicBuffer, index, length int) {
+			readCount := ring.Read(func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
 				gotTypeID = msgTypeID
 				test.read(t, buffer, index, length)
 				require.Equal(t, test.bodyLength, length)
@@ -510,7 +510,7 @@ func TestDriverProxy_addChannelCommands_rejectNonASCII(t *testing.T) {
 					ring, _ := newDriverProxyTestRing(t)
 					proxy := conductor.NewDriverProxy(ring, 1)
 					err := test.offer(proxy, channelTest.channel)
-					require.ErrorIs(t, err, aeronatomic.ErrStringASCIINonASCII)
+					require.ErrorIs(t, err, atomic.ErrStringASCIINonASCII)
 					requireZeroDriverProxyCommittedRecords(t, ring)
 				})
 			}
@@ -590,7 +590,7 @@ func TestDriverProxy_offerBody_invalidTypeID(t *testing.T) {
 		func(_ int) error { return nil },
 	)
 	require.ErrorIs(t, err, record.ErrInvalidMessageTypeID)
-	require.Zero(t, ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {
+	require.Zero(t, ring.Read(func(int, atomic.AtomicBuffer, int, int) {
 		t.Fatal("invalid type should not write")
 	}))
 }
@@ -602,7 +602,7 @@ func TestDriverProxy_ClientClose_insufficientCapacity(t *testing.T) {
 	proxy := conductor.NewDriverProxy(ring, 1)
 	proxy.ClientClose()
 
-	require.Zero(t, ring.Read(func(int, aeronatomic.AtomicBuffer, int, int) {
+	require.Zero(t, ring.Read(func(int, atomic.AtomicBuffer, int, int) {
 		t.Fatal("close should not write when ring is full")
 	}))
 }
@@ -630,21 +630,21 @@ type driverProxyEncodeFailureInput struct {
 type driverProxyEncodeFailureCase struct {
 	MsgTypeID       int
 	BodyLength      int
-	Encode          func(buf aeronatomic.AtomicBuffer, encodedOffset int) error
+	Encode          func(buf atomic.AtomicBuffer, encodedOffset int) error
 	WantErr         error
 	OutOfBoundsKind string
 }
 
-func driverProxyEncodeAtClaimedOffset(_ aeronatomic.AtomicBuffer, encodedOffset int) int {
+func driverProxyEncodeAtClaimedOffset(_ atomic.AtomicBuffer, encodedOffset int) int {
 	return encodedOffset
 }
 
-func driverProxyEncodeAtWrongOffset(buf aeronatomic.AtomicBuffer) int {
+func driverProxyEncodeAtWrongOffset(buf atomic.AtomicBuffer) int {
 	return buf.Capacity()
 }
 
 func driverProxyEncodeFailureWriteOffset(
-	buf aeronatomic.AtomicBuffer,
+	buf atomic.AtomicBuffer,
 	encodedOffset int,
 	wrongOffset bool,
 ) int {
@@ -694,7 +694,7 @@ func driverProxyEncodeFailureCaseForKind(
 		return driverProxyEncodeFailureCase{
 			MsgTypeID:  conductor.ClientKeepalive,
 			BodyLength: conductor.CorrelatedMessageLength,
-			Encode: func(buf aeronatomic.AtomicBuffer, encodedOffset int) error {
+			Encode: func(buf atomic.AtomicBuffer, encodedOffset int) error {
 				return conductor.EncodeCorrelated(
 					buf,
 					driverProxyEncodeFailureWriteOffset(buf, encodedOffset, true),
@@ -709,7 +709,7 @@ func driverProxyEncodeFailureCaseForKind(
 		return driverProxyEncodeFailureCase{
 			MsgTypeID:  conductor.AddPublication,
 			BodyLength: conductor.PublicationMessageBodyLength(input.Channel),
-			Encode: func(buf aeronatomic.AtomicBuffer, encodedOffset int) error {
+			Encode: func(buf atomic.AtomicBuffer, encodedOffset int) error {
 				return conductor.EncodePublicationMessage(
 					buf,
 					driverProxyEncodeFailureWriteOffset(buf, encodedOffset, true),
@@ -726,7 +726,7 @@ func driverProxyEncodeFailureCaseForKind(
 		return driverProxyEncodeFailureCase{
 			MsgTypeID:  conductor.AddSubscription,
 			BodyLength: conductor.SubscriptionMessageBodyLength(input.Channel),
-			Encode: func(buf aeronatomic.AtomicBuffer, encodedOffset int) error {
+			Encode: func(buf atomic.AtomicBuffer, encodedOffset int) error {
 				return conductor.EncodeSubscriptionMessage(
 					buf,
 					driverProxyEncodeFailureWriteOffset(buf, encodedOffset, true),
@@ -744,7 +744,7 @@ func driverProxyEncodeFailureCaseForKind(
 		return driverProxyEncodeFailureCase{
 			MsgTypeID:  conductor.RemovePublication,
 			BodyLength: conductor.RemovePublicationBodyLength,
-			Encode: func(buf aeronatomic.AtomicBuffer, encodedOffset int) error {
+			Encode: func(buf atomic.AtomicBuffer, encodedOffset int) error {
 				return conductor.EncodeRemovePublicationMessage(
 					buf,
 					driverProxyEncodeFailureWriteOffset(buf, encodedOffset, true),
@@ -761,7 +761,7 @@ func driverProxyEncodeFailureCaseForKind(
 		return driverProxyEncodeFailureCase{
 			MsgTypeID:  conductor.RemoveSubscription,
 			BodyLength: conductor.RemoveMessageBodyLength,
-			Encode: func(buf aeronatomic.AtomicBuffer, encodedOffset int) error {
+			Encode: func(buf atomic.AtomicBuffer, encodedOffset int) error {
 				return conductor.EncodeRemoveMessage(
 					buf,
 					driverProxyEncodeFailureWriteOffset(buf, encodedOffset, true),
@@ -860,17 +860,17 @@ func requireZeroDriverProxyCommittedRecords(
 
 func newDriverProxyTestRing(
 	tb testing.TB,
-) (*ringbuffer.ManyToOneRingBuffer, aeronatomic.AtomicBuffer) {
+) (*ringbuffer.ManyToOneRingBuffer, atomic.AtomicBuffer) {
 	tb.Helper()
 
 	buf := make([]byte, ringbuffer.TotalBufferLength(driverProxyTestDataCapacity))
-	buffer := aeronatomic.Wrap(buf)
+	buffer := atomic.Wrap(buf)
 	ring, err := ringbuffer.NewManyToOneRingBuffer(buffer)
 	require.NoError(tb, err)
 	return ring, buffer
 }
 
-func seedFullDriverProxyRing(tb testing.TB, buffer aeronatomic.AtomicBuffer) {
+func seedFullDriverProxyRing(tb testing.TB, buffer atomic.AtomicBuffer) {
 	tb.Helper()
 
 	head := int64(0)

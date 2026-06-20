@@ -9,9 +9,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/cnc/cnctest"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 func openFDCount(t *testing.T) int {

@@ -1,8 +1,8 @@
 package aeron
 
 import (
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 const headerFragmentedFrameNotSet int32 = -1
@@ -12,7 +12,7 @@ const headerFragmentedFrameNotSet int32 = -1
 //
 // Handlers must not retain *Header past return.
 type Header struct {
-	buffer              aeronatomic.AtomicBuffer
+	buffer              atomic.AtomicBuffer
 	offset              int
 	initialTermID       int32
 	positionBitsToShift int32
@@ -75,7 +75,7 @@ func (header *Header) SetOffset(offset int) {
 	header.offset = offset
 }
 
-func (header *Header) SetBuffer(buffer aeronatomic.AtomicBuffer) {
+func (header *Header) SetBuffer(buffer atomic.AtomicBuffer) {
 	header.buffer = buffer
 }
 

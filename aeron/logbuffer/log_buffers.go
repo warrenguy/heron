@@ -3,7 +3,7 @@ package logbuffer
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 // LogBuffers wraps a MappedLogBuffer for shared pub/image IPC lifetime.

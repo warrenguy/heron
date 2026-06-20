@@ -8,14 +8,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/sbe"
-	gensbe "github.com/warrenguy/heron/aeron/sbe/generated/sbe"
+	"github.com/warrenguy/heron/cluster/codecs"
+	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
 	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe/catalogschema"
 )
 
 var (
 	blockLength99 = uint16(99)
-	blockLengthV5 = sbe.SessionEventBlockLength(5)
+	blockLengthV5 = codecs.SessionEventBlockLength(5)
 )
 
 func requireErrContains(t *testing.T, err error, substr string) {

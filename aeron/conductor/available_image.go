@@ -3,7 +3,7 @@ package conductor
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 type AvailableImage struct {

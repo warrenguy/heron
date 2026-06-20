@@ -12,7 +12,7 @@ import (
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/aeron/ringbuffer"
+	"github.com/warrenguy/heron/agrona/ringbuffer"
 )
 
 type lingerPublicationLifecycle struct {

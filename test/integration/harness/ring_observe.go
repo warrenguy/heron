@@ -1,9 +1,9 @@
 package harness
 
 import (
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
-	"github.com/warrenguy/heron/aeron/record"
-	"github.com/warrenguy/heron/aeron/ringbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/agrona/record"
+	"github.com/warrenguy/heron/agrona/ringbuffer"
 )
 
 func ringRecordLength(bodyLength int) int {
@@ -18,7 +18,7 @@ type toDriverObserveSpec[T any] struct {
 	messageTypeID int
 	recordLength  int
 	decodeMatch   func(
-		buffer aeronatomic.AtomicBuffer,
+		buffer atomic.AtomicBuffer,
 		payloadOffset, bodyLength int,
 	) (T, bool, error)
 	clearedValue func() T
@@ -35,7 +35,7 @@ func advanceRingScanPosition(messageTypeID, recordLength int) int64 {
 // recordLength <= 0 marks an in-flight producer tail; callers must poll until
 // quiescent (WaitForToDriverRingDrained) or retry with deadline.
 func nextRingRecord(
-	buffer aeronatomic.AtomicBuffer,
+	buffer atomic.AtomicBuffer,
 	mask int,
 	position int64,
 ) (

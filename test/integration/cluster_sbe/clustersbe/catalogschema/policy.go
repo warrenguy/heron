@@ -3,7 +3,7 @@ package catalogschema
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron/sbe"
+	"github.com/warrenguy/heron/cluster/codecs"
 )
 
 const (
@@ -13,7 +13,7 @@ const (
 )
 
 func connectVersionRequired(actingVersion uint16) bool {
-	return actingVersion < sbe.SessionConnectVersionMinVersion
+	return actingVersion < codecs.SessionConnectVersionMinVersion
 }
 
 func ValidateConnectVersion(template string, actingVersion uint16, fields map[string]any) error {
@@ -23,7 +23,7 @@ func ValidateConnectVersion(template string, actingVersion uint16, fields map[st
 	if _, ok := fields["version"]; !ok {
 		return fmt.Errorf(
 			"missing version for actingVersion < %d",
-			sbe.SessionConnectVersionMinVersion,
+			codecs.SessionConnectVersionMinVersion,
 		)
 	}
 	return nil
@@ -47,10 +47,10 @@ func ValidateSessionEventHeartbeat(template string, fields map[string]any) error
 // actingVersion is below SessionEventVersionMinVersion; the bool is false when
 // blockLength must be omitted.
 func SessionEventLegacyBlockLength(actingVersion uint16) (uint16, bool) {
-	if actingVersion >= sbe.SessionEventVersionMinVersion {
+	if actingVersion >= codecs.SessionEventVersionMinVersion {
 		return 0, false
 	}
-	return sbe.SessionEventBlockLength(actingVersion), true
+	return codecs.SessionEventBlockLength(actingVersion), true
 }
 
 func ValidateEntryBlockLength(entry FixtureEntry) error {

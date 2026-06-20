@@ -3,12 +3,12 @@ package aeron
 import (
 	"errors"
 	"fmt"
-	"sync/atomic"
+	stdatomic "sync/atomic"
 
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 // Image is a single session/source over a conductor-mapped log buffer.
@@ -37,8 +37,8 @@ type Image struct {
 	subscriberPos SubscriberPosition
 
 	logBuffers  *logbuffer.LogBuffers
-	termBuffers [logbuffer.PartitionCount]aeronatomic.AtomicBuffer
-	metaBuffer  aeronatomic.AtomicBuffer
+	termBuffers [logbuffer.PartitionCount]atomic.AtomicBuffer
+	metaBuffer  atomic.AtomicBuffer
 
 	initialTermID       int32
 	termLengthMask      int32
@@ -52,7 +52,7 @@ type Image struct {
 
 	lastCorruptReportPosition int64
 
-	isClosed atomic.Bool
+	isClosed stdatomic.Bool
 }
 
 func newImage(
@@ -204,7 +204,7 @@ func (image *Image) IsClosed() bool {
 	return image.isClosed.Load()
 }
 
-func (image *Image) activeTermBuffer(position int64) aeronatomic.AtomicBuffer {
+func (image *Image) activeTermBuffer(position int64) atomic.AtomicBuffer {
 	termIndex := logbuffer.IndexByPosition(position, image.positionBitsToShift)
 	return image.termBuffers[termIndex]
 }
@@ -294,7 +294,7 @@ func (image *Image) invokeSubscriberErrorHandler(err error) {
 
 func (image *Image) invokeFragmentHandler(
 	handler FragmentHandler,
-	termBuffer aeronatomic.AtomicBuffer,
+	termBuffer atomic.AtomicBuffer,
 	frameOffset int,
 	frameLength int32,
 	header *Header,
@@ -409,8 +409,8 @@ func (image *Image) internalClose() {
 	image.finalPosition = image.subscriberPos.Get()
 	image.isClosed.Store(true)
 	image.logBuffers = nil
-	image.metaBuffer = aeronatomic.AtomicBuffer{}
-	image.termBuffers = [logbuffer.PartitionCount]aeronatomic.AtomicBuffer{}
-	image.header.buffer = aeronatomic.AtomicBuffer{}
+	image.metaBuffer = atomic.AtomicBuffer{}
+	image.termBuffers = [logbuffer.PartitionCount]atomic.AtomicBuffer{}
+	image.header.buffer = atomic.AtomicBuffer{}
 	image.header.offset = 0
 }

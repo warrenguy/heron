@@ -5,9 +5,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
-	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/agrona/broadcast"
 )
 
 const copyBroadcastTestCapacity = 1024
@@ -26,7 +26,7 @@ func TestCopyBroadcastReceiver_receiveMessage(t *testing.T) {
 	)
 	count, err := copyReceiver.Receive(func(
 		msgTypeID int,
-		buffer aeronatomic.AtomicBuffer,
+		buffer atomic.AtomicBuffer,
 		offset int,
 		length int,
 	) {
@@ -44,7 +44,7 @@ func TestCopyBroadcastReceiver_emptyBuffer(t *testing.T) {
 	_, rx := newCopyBroadcastPair(t)
 	copyReceiver := conductor.NewCopyBroadcastReceiver(rx)
 
-	count, err := copyReceiver.Receive(func(int, aeronatomic.AtomicBuffer, int, int) {
+	count, err := copyReceiver.Receive(func(int, atomic.AtomicBuffer, int, int) {
 		t.Fatal("handler should not run")
 	})
 	require.NoError(t, err)
@@ -67,7 +67,7 @@ func TestCopyBroadcastReceiver_lappedDuringReceive(t *testing.T) {
 	buf.PutInt64Release(broadcast.LatestIndex(copyBroadcastTestCapacity), actualLatest)
 
 	copyReceiver := conductor.NewCopyBroadcastReceiver(rx)
-	_, err = copyReceiver.Receive(func(int, aeronatomic.AtomicBuffer, int, int) {
+	_, err = copyReceiver.Receive(func(int, atomic.AtomicBuffer, int, int) {
 		t.Fatal("handler should not run")
 	})
 	require.ErrorIs(t, err, conductor.ErrBroadcastLapped)
@@ -88,7 +88,7 @@ func TestCopyBroadcastReceiver_tailIntentCorruptionBeforeReceive(t *testing.T) {
 	)
 
 	handlerCalled := false
-	count, err := copyReceiver.Receive(func(int, aeronatomic.AtomicBuffer, int, int) {
+	count, err := copyReceiver.Receive(func(int, atomic.AtomicBuffer, int, int) {
 		handlerCalled = true
 	})
 	require.ErrorIs(t, err, conductor.ErrBroadcastLapped)
@@ -104,7 +104,7 @@ func TestCopyBroadcastReceiver_messageTooLong(t *testing.T) {
 	err := tx.Transmit(testBroadcastMsgTypeID, payload)
 	require.NoError(t, err)
 
-	count, err := copyReceiver.Receive(func(int, aeronatomic.AtomicBuffer, int, int) {
+	count, err := copyReceiver.Receive(func(int, atomic.AtomicBuffer, int, int) {
 		t.Fatal("handler should not run")
 	})
 	require.ErrorIs(t, err, conductor.ErrBroadcastMessageTooLong)
@@ -113,9 +113,9 @@ func TestCopyBroadcastReceiver_messageTooLong(t *testing.T) {
 
 const testBroadcastMsgTypeID = 7
 
-func newCopyBroadcastBuffer(tb testing.TB) aeronatomic.AtomicBuffer {
+func newCopyBroadcastBuffer(tb testing.TB) atomic.AtomicBuffer {
 	tb.Helper()
-	return aeronatomic.Wrap(make([]byte, broadcast.TotalBufferLength(copyBroadcastTestCapacity)))
+	return atomic.Wrap(make([]byte, broadcast.TotalBufferLength(copyBroadcastTestCapacity)))
 }
 
 func newCopyBroadcastPair(

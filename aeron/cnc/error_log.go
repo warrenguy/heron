@@ -1,6 +1,6 @@
 package cnc
 
-import "github.com/warrenguy/heron/aeron/atomic"
+import "github.com/warrenguy/heron/agrona/atomic"
 
 const ErrorLogEntryHeaderLength = 24
 

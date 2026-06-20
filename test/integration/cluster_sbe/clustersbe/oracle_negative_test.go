@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	gensbe "github.com/warrenguy/heron/aeron/sbe/generated/sbe"
+	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
 	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe"
 )
 

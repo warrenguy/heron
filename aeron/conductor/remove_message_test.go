@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 func TestRemoveMessageRoundtrip(t *testing.T) {

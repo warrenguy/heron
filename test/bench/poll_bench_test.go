@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/test/bench/harness"
 )
 

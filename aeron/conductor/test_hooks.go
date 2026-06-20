@@ -12,9 +12,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 func WriteMinimalLogFileForTest(tb testing.TB, path string) {
@@ -27,7 +27,7 @@ func WriteMinimalLogFileForTest(tb testing.TB, path string) {
 
 	buf := make([]byte, computed)
 	metaStart := logbuffer.MetaDataOffset(termLength)
-	meta := aeronatomic.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
+	meta := atomic.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
 	meta.PutInt32Release(logbuffer.OffsetTermLength, termLength)
 	meta.PutInt32(logbuffer.OffsetPageSize, pageSize)
 	meta.PutInt32(logbuffer.OffsetMTULength, 1408)

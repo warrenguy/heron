@@ -10,7 +10,7 @@ source "${ROOT}/scripts/lib/cache-fetch.sh"
 
 VERSIONS="${ROOT}/specs/versions.yaml"
 SCHEMA="${ROOT}/specs/cluster-codecs-client.xml"
-OUT_DIR="${ROOT}/aeron/sbe/generated"
+OUT_DIR="${ROOT}/cluster/codecs/generated"
 CACHE_DIR="${ROOT}/.cache/sbe-tool"
 
 require_sbe_versions "${VERSIONS}" || exit 1

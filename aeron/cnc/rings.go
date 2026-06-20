@@ -3,10 +3,10 @@ package cnc
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron/atomic"
-	"github.com/warrenguy/heron/aeron/broadcast"
-	"github.com/warrenguy/heron/aeron/mmap"
-	"github.com/warrenguy/heron/aeron/ringbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/agrona/broadcast"
+	"github.com/warrenguy/heron/agrona/mmap"
+	"github.com/warrenguy/heron/agrona/ringbuffer"
 )
 
 var ringWireRegionIDs = [2]int{cncRegionToDriver, cncRegionToClients}

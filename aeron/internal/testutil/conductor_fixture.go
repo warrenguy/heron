@@ -5,11 +5,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
-	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/ringbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/agrona/broadcast"
+	"github.com/warrenguy/heron/agrona/ringbuffer"
 )
 
 const (
@@ -69,7 +69,7 @@ type ConductorFixture struct {
 }
 
 func newTestRingBuffer() (*ringbuffer.ManyToOneRingBuffer, error) {
-	ringBuffer := aeronatomic.Wrap(
+	ringBuffer := atomic.Wrap(
 		make([]byte, ringbuffer.TotalBufferLength(TestRingDataCapacity)),
 	)
 	return ringbuffer.NewManyToOneRingBuffer(ringBuffer)
@@ -95,7 +95,7 @@ func newTestTransport(epochMs int64) (
 	}
 	ring.SetConsumerHeartbeatTime(epochMs)
 
-	broadcastBuffer := aeronatomic.Wrap(
+	broadcastBuffer := atomic.Wrap(
 		make([]byte, broadcast.TotalBufferLength(TestRingDataCapacity)),
 	)
 	receiver, err := broadcast.NewBroadcastReceiver(broadcastBuffer)

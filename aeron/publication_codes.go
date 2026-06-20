@@ -1,8 +1,8 @@
 package aeron
 
 import (
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 // Publication return codes mirror Aeron Java Publication / ConcurrentPublication.
@@ -36,7 +36,7 @@ const (
 )
 
 func backPressureStatusForLog(
-	meta aeronatomic.AtomicBuffer,
+	meta atomic.AtomicBuffer,
 	maxPossiblePosition int64,
 	position int64,
 	requiredSpan int64,

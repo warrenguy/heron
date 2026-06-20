@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/internal/testutil"
+	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 type eventFlyweightKind int

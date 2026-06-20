@@ -1,7 +1,7 @@
 package aeron
 
 import (
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 // FragmentHandler receives one committed fragment during Poll. Offset points past
@@ -12,7 +12,7 @@ import (
 // Handlers must not retain the Header pointer beyond the callback; copy fields if
 // needed after return.
 type FragmentHandler func(
-	buffer aeronatomic.AtomicBuffer,
+	buffer atomic.AtomicBuffer,
 	offset int,
 	length int,
 	header *Header,

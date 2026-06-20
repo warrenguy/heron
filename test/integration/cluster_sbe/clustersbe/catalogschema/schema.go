@@ -10,14 +10,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/warrenguy/heron/aeron/sbe"
-	gensbe "github.com/warrenguy/heron/aeron/sbe/generated/sbe"
+	"github.com/warrenguy/heron/cluster/codecs"
+	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
 )
 
 const SchemaVersion = 1
 
 // HeartbeatAbsentSentinel is the catalog JSON value for omitted leaderHeartbeatTimeoutNs.
-// Runtime loaders map it to math.MinInt64 in sbe.SessionEventFields.
+// Runtime loaders map it to math.MinInt64 in codecs.SessionEventFields.
 const HeartbeatAbsentSentinel = "absent"
 
 type wireTemplateSpec struct {
@@ -243,10 +243,10 @@ func Validate(catalog CatalogFile) error {
 		if spec.Repeat.Byte < 0 || spec.Repeat.Byte > 255 {
 			return fmt.Errorf("blob %q: repeat byte out of range", id)
 		}
-		if spec.Repeat.Len > sbe.ClusterCodecMaxVarLen {
+		if spec.Repeat.Len > codecs.ClusterCodecMaxVarLen {
 			return fmt.Errorf(
 				"blob %q: repeat len %d exceeds max %d",
-				id, spec.Repeat.Len, sbe.ClusterCodecMaxVarLen,
+				id, spec.Repeat.Len, codecs.ClusterCodecMaxVarLen,
 			)
 		}
 	}

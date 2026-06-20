@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/sbe"
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe"
 )
 
@@ -19,7 +19,7 @@ func TestWireFixtures_oracle(t *testing.T) {
 			t.Parallel()
 			wantWire := requireFixtureWire(t, fixture)
 
-			decoded, ok := sbe.TryDecodeByTemplate(wantWire, 0, sbe.ClusterCodecMaxVarLen)
+			decoded, ok := codecs.TryDecodeByTemplate(wantWire, 0, codecs.ClusterCodecMaxVarLen)
 			require.True(t, ok)
 			require.Equal(t, clustersbe.ExpectedDecodeFields(fixture), decoded.Fields)
 
@@ -52,9 +52,9 @@ func TestWireFixtures_tryDecodeRejectsCorruptWire(t *testing.T) {
 			t.Parallel()
 			maxLen := tc.maxLen
 			if maxLen == 0 {
-				maxLen = sbe.ClusterCodecMaxVarLen
+				maxLen = codecs.ClusterCodecMaxVarLen
 			}
-			_, ok := sbe.TryDecodeByTemplate(tc.wire, 0, maxLen)
+			_, ok := codecs.TryDecodeByTemplate(tc.wire, 0, maxLen)
 			require.False(t, ok)
 		})
 	}

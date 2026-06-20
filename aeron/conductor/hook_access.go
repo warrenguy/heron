@@ -5,11 +5,11 @@ package conductor
 import (
 	"sync"
 
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
-	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/aeron/ringbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/agrona/broadcast"
+	"github.com/warrenguy/heron/agrona/ringbuffer"
 )
 
 const testRingDataCapacity = 4096
@@ -185,7 +185,7 @@ func newConductorUncheckedHook(
 		countersReader = reader
 	}
 
-	ringBuffer := aeronatomic.Wrap(
+	ringBuffer := atomic.Wrap(
 		make([]byte, ringbuffer.TotalBufferLength(testRingDataCapacity)),
 	)
 	ring, err := ringbuffer.NewManyToOneRingBuffer(ringBuffer)
@@ -196,7 +196,7 @@ func newConductorUncheckedHook(
 		ring.SetConsumerHeartbeatTime(config.EpochClock())
 	}
 
-	broadcastBuffer := aeronatomic.Wrap(
+	broadcastBuffer := atomic.Wrap(
 		make([]byte, broadcast.TotalBufferLength(testRingDataCapacity)),
 	)
 	broadcastReceiver, err := broadcast.NewBroadcastReceiver(broadcastBuffer)

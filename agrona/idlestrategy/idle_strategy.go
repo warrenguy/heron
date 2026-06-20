@@ -1,6 +1,8 @@
 // Package idlestrategy provides Agrona-compatible agent idle pacing.
 //
-// Implementations are not thread-safe; use one strategy per agent goroutine.
+// Implementations are not thread-safe: use one strategy instance per agent
+// goroutine. Do not call Idle or Reset concurrently on the same instance.
+//
 // Busy-spin pacing uses runtime.procyield via //go:linkname; re-verify on Go upgrades.
 package idlestrategy
 

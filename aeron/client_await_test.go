@@ -6,9 +6,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	aeronatomic "github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/internal/testutil"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 const (
@@ -476,7 +476,7 @@ func TestClient_NextAvailableSessionID_offersCommand(t *testing.T) {
 	require.ErrorAs(t, err, &timeoutErr)
 
 	readCount := fixture.Ring.Read(
-		func(msgTypeID int, buffer aeronatomic.AtomicBuffer, index, length int) {
+		func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
 			require.Equal(t, conductor.GetNextAvailableSessionID, msgTypeID)
 			require.Equal(t, conductor.GetNextAvailableSessionIDBodyLength, length)
 		},

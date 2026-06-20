@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/warrenguy/heron/aeron/sbe"
+	"github.com/warrenguy/heron/cluster/codecs"
 )
 
 func ProjectCatalogToFields(
@@ -39,20 +39,22 @@ func ProjectCatalogToFields(
 	}
 }
 
-func decodeSessionCloseRequestFields(fields map[string]any) (sbe.SessionCloseRequestFields, error) {
+func decodeSessionCloseRequestFields(
+	fields map[string]any,
+) (codecs.SessionCloseRequestFields, error) {
 	termID, sessionID, err := requireSessionLeadershipPair(fields)
-	return sbe.SessionCloseRequestFields{LeadershipTermID: termID, ClusterSessionID: sessionID}, err
+	return codecs.SessionCloseRequestFields{LeadershipTermID: termID, ClusterSessionID: sessionID}, err
 }
 
-func decodeSessionKeepAliveFields(fields map[string]any) (sbe.SessionKeepAliveFields, error) {
+func decodeSessionKeepAliveFields(fields map[string]any) (codecs.SessionKeepAliveFields, error) {
 	termID, sessionID, err := requireSessionLeadershipPair(fields)
-	return sbe.SessionKeepAliveFields{LeadershipTermID: termID, ClusterSessionID: sessionID}, err
+	return codecs.SessionKeepAliveFields{LeadershipTermID: termID, ClusterSessionID: sessionID}, err
 }
 
 func decodeSessionMessageHeaderFields(
 	fields map[string]any,
-) (sbe.SessionMessageHeaderFields, error) {
-	var out sbe.SessionMessageHeaderFields
+) (codecs.SessionMessageHeaderFields, error) {
+	var out codecs.SessionMessageHeaderFields
 	var err error
 
 	out.LeadershipTermID, out.ClusterSessionID, err = requireSessionLeadershipPair(fields)
@@ -63,8 +65,8 @@ func decodeSessionMessageHeaderFields(
 	return out, err
 }
 
-func decodeSessionEventFields(fields map[string]any) (sbe.SessionEventFields, error) {
-	var out sbe.SessionEventFields
+func decodeSessionEventFields(fields map[string]any) (codecs.SessionEventFields, error) {
+	var out codecs.SessionEventFields
 	var err error
 
 	out.ClusterSessionID, err = requireInt64(fields, "clusterSessionId")
@@ -103,8 +105,8 @@ func decodeSessionConnectRequestFields(
 	fields map[string]any,
 	actingVersion uint16,
 	blobs map[string][]byte,
-) (sbe.SessionConnectRequestFields, error) {
-	var out sbe.SessionConnectRequestFields
+) (codecs.SessionConnectRequestFields, error) {
+	var out codecs.SessionConnectRequestFields
 	var err error
 
 	out.CorrelationID, err = requireInt64(fields, "correlationId")
@@ -135,8 +137,8 @@ func decodeSessionConnectRequestFields(
 	return out, err
 }
 
-func decodeNewLeaderEventFields(fields map[string]any) (sbe.NewLeaderEventFields, error) {
-	var out sbe.NewLeaderEventFields
+func decodeNewLeaderEventFields(fields map[string]any) (codecs.NewLeaderEventFields, error) {
+	var out codecs.NewLeaderEventFields
 	var err error
 
 	out.LeadershipTermID, out.ClusterSessionID, err = requireSessionLeadershipPair(fields)
@@ -154,8 +156,8 @@ func decodeNewLeaderEventFields(fields map[string]any) (sbe.NewLeaderEventFields
 func decodeChallengeFields(
 	fields map[string]any,
 	blobs map[string][]byte,
-) (sbe.ChallengeFields, error) {
-	var out sbe.ChallengeFields
+) (codecs.ChallengeFields, error) {
+	var out codecs.ChallengeFields
 	var err error
 
 	out.CorrelationID, out.ClusterSessionID, err = requireCorrelationClusterPair(fields)
@@ -169,8 +171,8 @@ func decodeChallengeFields(
 func decodeChallengeResponseFields(
 	fields map[string]any,
 	blobs map[string][]byte,
-) (sbe.ChallengeResponseFields, error) {
-	var out sbe.ChallengeResponseFields
+) (codecs.ChallengeResponseFields, error) {
+	var out codecs.ChallengeResponseFields
 	var err error
 
 	out.CorrelationID, out.ClusterSessionID, err = requireCorrelationClusterPair(fields)
@@ -184,8 +186,8 @@ func decodeChallengeResponseFields(
 func decodeAdminRequestFields(
 	fields map[string]any,
 	blobs map[string][]byte,
-) (sbe.AdminRequestFields, error) {
-	var out sbe.AdminRequestFields
+) (codecs.AdminRequestFields, error) {
+	var out codecs.AdminRequestFields
 	var err error
 
 	out.LeadershipTermID, out.ClusterSessionID, err = requireSessionLeadershipPair(fields)
@@ -207,8 +209,8 @@ func decodeAdminRequestFields(
 func decodeAdminResponseFields(
 	fields map[string]any,
 	blobs map[string][]byte,
-) (sbe.AdminResponseFields, error) {
-	var out sbe.AdminResponseFields
+) (codecs.AdminResponseFields, error) {
+	var out codecs.AdminResponseFields
 	var err error
 
 	out.ClusterSessionID, err = requireInt64(fields, "clusterSessionId")

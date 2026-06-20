@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/internal/testutil"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 var (

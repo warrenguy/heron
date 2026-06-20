@@ -1,6 +1,6 @@
 package conductor
 
-import "github.com/warrenguy/heron/aeron/atomic"
+import "github.com/warrenguy/heron/agrona/atomic"
 
 type correlatedStreamChannelLayout struct {
 	middleInt64Offset int

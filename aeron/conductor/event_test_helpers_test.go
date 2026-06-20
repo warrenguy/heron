@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/broadcast"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/agrona/broadcast"
 )
 
 // Golden bytes generated from Aeron 1.51.0 Java flyweight layouts via conductor encoders.

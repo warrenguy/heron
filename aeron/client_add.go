@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/warrenguy/heron/aeron/atomic"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 // AddPublication registers a concurrent publication on channel/streamID.

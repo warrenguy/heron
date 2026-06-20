@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 func resetPublicationTermWithTimer(

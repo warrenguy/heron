@@ -1,8 +1,8 @@
 package testutil
 
 import (
-	"github.com/warrenguy/heron/aeron/record"
-	"github.com/warrenguy/heron/aeron/ringbuffer"
+	"github.com/warrenguy/heron/agrona/record"
+	"github.com/warrenguy/heron/agrona/ringbuffer"
 )
 
 func visitCommittedNonPaddingRecords(

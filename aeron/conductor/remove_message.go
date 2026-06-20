@@ -3,7 +3,7 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/aeron/atomic"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 var ErrRemoveMessageOutOfBounds = errors.New("conductor: remove message out of bounds")

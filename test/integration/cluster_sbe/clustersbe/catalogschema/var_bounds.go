@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron/sbe"
+	"github.com/warrenguy/heron/cluster/codecs"
 )
 
 func validateFixtureVarFieldLengths(
@@ -27,10 +27,10 @@ func validateFixtureVarFieldLengths(
 		if err != nil {
 			return fmt.Errorf("field %q: %w", key, err)
 		}
-		if n > sbe.ClusterCodecMaxVarLen {
+		if n > codecs.ClusterCodecMaxVarLen {
 			return fmt.Errorf(
 				"field %q: length %d exceeds max %d",
-				key, n, sbe.ClusterCodecMaxVarLen,
+				key, n, codecs.ClusterCodecMaxVarLen,
 			)
 		}
 	}

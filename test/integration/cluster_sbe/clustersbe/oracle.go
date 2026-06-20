@@ -3,8 +3,8 @@ package clustersbe
 import (
 	"slices"
 
-	"github.com/warrenguy/heron/aeron/sbe"
-	gensbe "github.com/warrenguy/heron/aeron/sbe/generated/sbe"
+	"github.com/warrenguy/heron/cluster/codecs"
+	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
 )
 
 // Cross-language hex contract: Java encode must match catalog.hex
@@ -17,7 +17,7 @@ type WireFixture struct {
 	Fields        any
 }
 
-const oracleVarFieldSlot = sbe.ClusterCodecMaxVarLen + 8
+const oracleVarFieldSlot = codecs.ClusterCodecMaxVarLen + 8
 
 // Callers must treat returned fixtures as read-only.
 func Fixtures() []WireFixture {
@@ -33,18 +33,18 @@ func ReencodeWire(fixture WireFixture) ([]byte, bool) {
 	return buf[:wireEnd], true
 }
 
-// SessionEvent uses sbe.SessionEventOracleFields for heartbeat sentinel rules.
+// SessionEvent uses codecs.SessionEventOracleFields for heartbeat sentinel rules.
 func ExpectedDecodeFields(fixture WireFixture) any {
-	if fields, ok := fixture.Fields.(sbe.SessionEventFields); ok {
-		return sbe.SessionEventOracleFields(fields, fixture.ActingVersion)
+	if fields, ok := fixture.Fields.(codecs.SessionEventFields); ok {
+		return codecs.SessionEventOracleFields(fields, fixture.ActingVersion)
 	}
 	return fixture.Fields
 }
 
 func oracleEncodeBufLen(fixture WireFixture) int {
-	varCount, _ := sbe.ClusterVarFieldCount(fixture.TemplateID, fixture.ActingVersion)
-	rootLen := int(sbe.ClusterMinRootBlockLength(fixture.TemplateID, fixture.ActingVersion, 0))
-	return sbe.MessageHeaderEncodedLen() + rootLen + varCount*oracleVarFieldSlot
+	varCount, _ := codecs.ClusterVarFieldCount(fixture.TemplateID, fixture.ActingVersion)
+	rootLen := int(codecs.ClusterMinRootBlockLength(fixture.TemplateID, fixture.ActingVersion, 0))
+	return codecs.MessageHeaderEncodedLen() + rootLen + varCount*oracleVarFieldSlot
 }
 
 func encodeStandard[T any](
@@ -64,13 +64,13 @@ func encodeSessionEvent(
 	buf []byte,
 	offset int,
 	actingVersion uint16,
-	fields sbe.SessionEventFields,
+	fields codecs.SessionEventFields,
 ) (int, bool) {
-	return sbe.EncodeSessionEvent(
+	return codecs.EncodeSessionEvent(
 		buf,
 		offset,
 		actingVersion,
-		sbe.SessionEventBlockLength(actingVersion),
+		codecs.SessionEventBlockLength(actingVersion),
 		fields,
 	)
 }
@@ -78,25 +78,25 @@ func encodeSessionEvent(
 func encodeFixture(buf []byte, offset int, fixture WireFixture) (wireEnd int, ok bool) {
 	switch fixture.TemplateID {
 	case gensbe.SessionMessageHeaderSbeTemplateID:
-		return encodeStandard(buf, offset, fixture, sbe.EncodeSessionMessageHeader)
+		return encodeStandard(buf, offset, fixture, codecs.EncodeSessionMessageHeader)
 	case gensbe.SessionEventSbeTemplateID:
 		return encodeStandard(buf, offset, fixture, encodeSessionEvent)
 	case gensbe.SessionConnectRequestSbeTemplateID:
-		return encodeStandard(buf, offset, fixture, sbe.EncodeSessionConnectRequest)
+		return encodeStandard(buf, offset, fixture, codecs.EncodeSessionConnectRequest)
 	case gensbe.SessionCloseRequestSbeTemplateID:
-		return encodeStandard(buf, offset, fixture, sbe.EncodeSessionCloseRequest)
+		return encodeStandard(buf, offset, fixture, codecs.EncodeSessionCloseRequest)
 	case gensbe.SessionKeepAliveSbeTemplateID:
-		return encodeStandard(buf, offset, fixture, sbe.EncodeSessionKeepAlive)
+		return encodeStandard(buf, offset, fixture, codecs.EncodeSessionKeepAlive)
 	case gensbe.NewLeaderEventSbeTemplateID:
-		return encodeStandard(buf, offset, fixture, sbe.EncodeNewLeaderEvent)
+		return encodeStandard(buf, offset, fixture, codecs.EncodeNewLeaderEvent)
 	case gensbe.ChallengeSbeTemplateID:
-		return encodeStandard(buf, offset, fixture, sbe.EncodeChallenge)
+		return encodeStandard(buf, offset, fixture, codecs.EncodeChallenge)
 	case gensbe.ChallengeResponseSbeTemplateID:
-		return encodeStandard(buf, offset, fixture, sbe.EncodeChallengeResponse)
+		return encodeStandard(buf, offset, fixture, codecs.EncodeChallengeResponse)
 	case gensbe.AdminRequestSbeTemplateID:
-		return encodeStandard(buf, offset, fixture, sbe.EncodeAdminRequest)
+		return encodeStandard(buf, offset, fixture, codecs.EncodeAdminRequest)
 	case gensbe.AdminResponseSbeTemplateID:
-		return encodeStandard(buf, offset, fixture, sbe.EncodeAdminResponse)
+		return encodeStandard(buf, offset, fixture, codecs.EncodeAdminResponse)
 	default:
 		return 0, false
 	}

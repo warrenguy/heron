@@ -3,8 +3,8 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/aeron/atomic"
-	"github.com/warrenguy/heron/aeron/broadcast"
+	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/agrona/broadcast"
 )
 
 const ScratchBufferLength = 4096
