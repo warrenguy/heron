@@ -3,7 +3,6 @@ package client
 import (
 	"errors"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/warrenguy/heron/aeron"
@@ -106,6 +105,14 @@ func (ctx ClusterContext) Validate() error {
 	if ingressChannelIsIPC(ctx.IngressChannel) && ctx.IngressEndpoints != "" {
 		return errors.New("cluster client: IngressEndpoints must be empty for IPC ingress")
 	}
+	if ctx.IngressEndpoints != "" {
+		if ingressChannelIsUDP(ctx.IngressChannel) &&
+			ingressChannelQueryEndpointParamIndex(ctx.IngressChannel) >= 0 {
+			return errors.New(
+				"cluster client: IngressChannel must not use ?endpoint= when IngressEndpoints is configured",
+			)
+		}
+	}
 	if len(ctx.ClientName) > MaxClientNameLength {
 		return errors.New(
 			"cluster client: ClientName length must be <= " +
@@ -121,8 +128,7 @@ func (ctx ClusterContext) Validate() error {
 	if ctx.EgressHandler == nil {
 		return errors.New("cluster client: EgressHandler is required")
 	}
-	handlers, typed := ctx.EgressHandler.(*EgressHandlers)
-	if typed && handlers == nil {
+	if handlers, ok := ctx.EgressHandler.(*EgressHandlers); ok && handlers == nil {
 		return errors.New("cluster client: EgressHandler is required")
 	}
 	if ctx.CredentialsSupplier == nil {
@@ -141,10 +147,5 @@ func (ctx ClusterContext) OwnsAeronClient() bool {
 }
 
 func ingressChannelIsIPC(channel string) bool {
-	channel = strings.TrimPrefix(channel, "aeron-spy:")
-	if !strings.HasPrefix(channel, "aeron:") {
-		return false
-	}
-	media, _, _ := strings.Cut(channel[len("aeron:"):], "?")
-	return media == "ipc"
+	return ingressChannelMediaIs(channel, "ipc")
 }

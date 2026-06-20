@@ -13,6 +13,19 @@ import (
 	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
 )
 
+const (
+	testIngressEndpointsMap      = "0=localhost:20110"
+	errUDPIngressEndpointWithMap = "cluster client: IngressChannel must not use ?endpoint= " +
+		"when IngressEndpoints is configured"
+)
+
+func withIngressChannelAndEndpoints(channel, endpoints string) func(*client.ClusterContext) {
+	return func(ctx *client.ClusterContext) {
+		ctx.IngressChannel = channel
+		ctx.IngressEndpoints = endpoints
+	}
+}
+
 func validClusterContext() client.ClusterContext {
 	return client.ClusterContext{
 		IngressChannel:      "aeron:udp?endpoint=localhost:20110",
@@ -125,8 +138,7 @@ func TestNormalizeClusterContext_ingressExclusiveMutationDoesNotAffectFreshDefau
 	normalized := normalizedClusterContext(nil)
 	require.NotNil(t, normalized.IngressExclusive)
 
-	falseVal := false
-	*normalized.IngressExclusive = falseVal
+	*normalized.IngressExclusive = false
 
 	fresh := client.ClusterContext{}.Normalize()
 	require.NotNil(t, fresh.IngressExclusive)
@@ -163,28 +175,37 @@ func TestValidateClusterContext_errors(t *testing.T) {
 			wantErr: "cluster client: EgressChannel is required",
 		},
 		{
-			name: "ipc ingress with endpoints",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.IngressChannel = "aeron:ipc"
-				ctx.IngressEndpoints = "0=localhost:20110"
-			},
+			name:    "ipc ingress with endpoints",
+			mutate:  withIngressChannelAndEndpoints("aeron:ipc", testIngressEndpointsMap),
 			wantErr: "cluster client: IngressEndpoints must be empty for IPC ingress",
 		},
 		{
 			name: "ipc ingress with query and endpoints",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.IngressChannel = "aeron:ipc?alias=ingress"
-				ctx.IngressEndpoints = "0=localhost:20110"
-			},
+			mutate: withIngressChannelAndEndpoints(
+				"aeron:ipc?alias=ingress", testIngressEndpointsMap,
+			),
 			wantErr: "cluster client: IngressEndpoints must be empty for IPC ingress",
 		},
 		{
 			name: "spy ipc ingress with endpoints",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.IngressChannel = "aeron-spy:aeron:ipc"
-				ctx.IngressEndpoints = "0=localhost:20110"
-			},
+			mutate: withIngressChannelAndEndpoints(
+				"aeron-spy:aeron:ipc", testIngressEndpointsMap,
+			),
 			wantErr: "cluster client: IngressEndpoints must be empty for IPC ingress",
+		},
+		{
+			name: "udp ingress endpoint with ingress endpoints map",
+			mutate: withIngressChannelAndEndpoints(
+				"aeron:udp?endpoint=localhost:0", testIngressEndpointsMap,
+			),
+			wantErr: errUDPIngressEndpointWithMap,
+		},
+		{
+			name: "spy udp ingress endpoint with ingress endpoints map",
+			mutate: withIngressChannelAndEndpoints(
+				"aeron-spy:aeron:udp?endpoint=localhost:0", testIngressEndpointsMap,
+			),
+			wantErr: errUDPIngressEndpointWithMap,
 		},
 		{
 			name: "client name too long",
@@ -286,25 +307,38 @@ func TestValidateClusterContext_validCases(t *testing.T) {
 			},
 		},
 		{
-			name: "ipc ingress empty endpoints",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.IngressChannel = "aeron:ipc"
-				ctx.IngressEndpoints = ""
-			},
+			name:   "ipc ingress empty endpoints",
+			mutate: withIngressChannelAndEndpoints("aeron:ipc", ""),
 		},
 		{
-			name: "ipc ingress with query empty endpoints",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.IngressChannel = "aeron:ipc?alias=ingress"
-				ctx.IngressEndpoints = ""
-			},
+			name:   "ipc ingress with query empty endpoints",
+			mutate: withIngressChannelAndEndpoints("aeron:ipc?alias=ingress", ""),
 		},
 		{
-			name: "ipcx ingress with endpoints",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.IngressChannel = "aeron:ipcx"
-				ctx.IngressEndpoints = "0=localhost:20110"
-			},
+			name:   "ipcx ingress with endpoints",
+			mutate: withIngressChannelAndEndpoints("aeron:ipcx", testIngressEndpointsMap),
+		},
+		{
+			name: "ipcx ingress endpoint query with endpoints map",
+			mutate: withIngressChannelAndEndpoints(
+				"aeron:ipcx?endpoint=localhost:0", testIngressEndpointsMap,
+			),
+		},
+		{
+			name:   "udp ingress without endpoint with ingress endpoints map",
+			mutate: withIngressChannelAndEndpoints("aeron:udp?ttl=16", testIngressEndpointsMap),
+		},
+		{
+			name: "udp ingress piped endpoint with ingress endpoints map",
+			mutate: withIngressChannelAndEndpoints(
+				"aeron:udp?ttl=16|endpoint=localhost:0", testIngressEndpointsMap,
+			),
+		},
+		{
+			name: "udp ingress alias false positive endpoint with ingress endpoints map",
+			mutate: withIngressChannelAndEndpoints(
+				"aeron:udp?alias=endpoint=localhost:0", testIngressEndpointsMap,
+			),
 		},
 	}
 

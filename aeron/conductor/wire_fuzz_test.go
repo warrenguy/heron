@@ -178,16 +178,20 @@ func FuzzWireDecode(f *testing.F) {
 			return
 		}
 		buffer, bodyOffset := fuzzWireBuffer(int(offset%(fuzzWireMaxOffset+1)), body)
-		adapter := NewDriverEventsAdapter(
-			1,
-			nil,
-			nil,
-			nil,
-			DriverEventsAdapterHandlers{},
-			nil,
-		)
+		resolvedKind := wireFuzzKind(kind % uint8(wireFuzzKindCount))
+		var adapter *DriverEventsAdapter
+		if resolvedKind == fuzzAdapterDispatch {
+			adapter = NewDriverEventsAdapter(
+				1,
+				nil,
+				nil,
+				nil,
+				DriverEventsAdapterHandlers{},
+				nil,
+			)
+		}
 		runWireFuzzKind(
-			wireFuzzKind(kind%uint8(wireFuzzKindCount)),
+			resolvedKind,
 			adapter,
 			buffer,
 			bodyOffset,

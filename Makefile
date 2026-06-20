@@ -35,7 +35,8 @@ SHELL_SCRIPTS := $$(find . -name '*.sh' -type f ! -path './.git/*')
 export UNIT_TEST_TAGS := testhooks
 # Per-package go test deadline (replaces go default 10m on hung tests).
 TEST_TIMEOUT ?= 2m
-FUZZ_TIME ?= 30s
+# Per-package fuzz budget; 45s avoids deadline flake on heavy packages at 30s.
+FUZZ_TIME ?= 45s
 # Per-package go test deadline for make fuzz (baseline + FUZZ_TIME + minimization).
 FUZZ_TIMEOUT ?= 5m
 # Wall-clock cap for full check (check-static + unit + stress).
@@ -65,6 +66,11 @@ check-test:
 	+@$(MAKE) --no-print-directory -j2 test test-stress
 
 check-inner: check-static check-test
+
+.PHONY: test-all
+test-all:
+	+@$(MAKE) --no-print-directory check test-rapid test-integration \
+		test-java-interop
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
