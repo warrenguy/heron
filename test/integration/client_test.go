@@ -17,7 +17,11 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-const clientStayAliveDuration = 10 * time.Second
+const clientStayAliveDuration = 3 * time.Second
+
+type clientRegHandle interface {
+	RegistrationID() int64
+}
 
 func assertAddRejectedAfterClose(
 	t *testing.T,
@@ -43,7 +47,7 @@ func assertLookupHitThenMissAfterClose(
 	t *testing.T,
 	md *harness.MediaDriver,
 	streamID int32,
-	setup func(*aeron.Client, int32) (regID int64, want any, closeFn func() error),
+	setup func(*aeron.Client, int32) (clientRegHandle, func() error),
 	lookup func(*aeron.Client, int64) (any, bool),
 	requireMiss func(testing.TB, *aeron.Client, int64),
 ) {
@@ -51,10 +55,11 @@ func assertLookupHitThenMissAfterClose(
 
 	client := harness.ConnectClient(t, md, aeron.Context{})
 
-	regID, want, closeFn := setup(client, streamID)
+	handle, closeFn := setup(client, streamID)
+	regID := handle.RegistrationID()
 	got, ok := lookup(client, regID)
 	require.True(t, ok)
-	require.Same(t, want, got)
+	require.Same(t, handle, got)
 
 	require.NoError(t, closeFn())
 	requireMiss(t, client, regID)
@@ -235,11 +240,11 @@ func TestClientExclusivePublicationLookupByRegID(t *testing.T) {
 		t,
 		md,
 		7204,
-		func(client *aeron.Client, streamID int32) (int64, any, func() error) {
+		func(client *aeron.Client, streamID int32) (clientRegHandle, func() error) {
 			pub, err := client.AddExclusivePublication(streamID, harness.IPCChannel)
 			require.NoError(t, err)
 			require.NotNil(t, pub)
-			return pub.RegistrationID(), pub, pub.Close
+			return pub, pub.Close
 		},
 		func(client *aeron.Client, regID int64) (any, bool) {
 			return client.ExclusivePublication(regID)
@@ -291,11 +296,11 @@ func TestClientPublicationLookupByRegID(t *testing.T) {
 		t,
 		md,
 		7104,
-		func(client *aeron.Client, streamID int32) (int64, any, func() error) {
+		func(client *aeron.Client, streamID int32) (clientRegHandle, func() error) {
 			pub, err := client.AddPublication(streamID, harness.IPCChannel)
 			require.NoError(t, err)
 			require.NotNil(t, pub)
-			return pub.RegistrationID(), pub, pub.Close
+			return pub, pub.Close
 		},
 		func(client *aeron.Client, regID int64) (any, bool) {
 			return client.Publication(regID)
@@ -333,11 +338,11 @@ func TestClientSubscriptionLookupByRegID(t *testing.T) {
 		t,
 		md,
 		7107,
-		func(client *aeron.Client, streamID int32) (int64, any, func() error) {
+		func(client *aeron.Client, streamID int32) (clientRegHandle, func() error) {
 			sub, err := client.AddSubscription(streamID, harness.IPCChannel)
 			require.NoError(t, err)
 			require.NotNil(t, sub)
-			return sub.RegistrationID(), sub, sub.Close
+			return sub, sub.Close
 		},
 		func(client *aeron.Client, regID int64) (any, bool) {
 			return client.Subscription(regID)
@@ -536,8 +541,9 @@ func TestTwoClientsConcurrentRingOffers(t *testing.T) {
 	go offer(clientIDA, 10_000)
 	go offer(clientIDB, 20_000)
 	wg.Wait()
-	for len(offerErrs) > 0 {
-		require.NoError(t, <-offerErrs)
+	close(offerErrs)
+	for err := range offerErrs {
+		require.NoError(t, err)
 	}
 
 	producerAfter := toDriver.ProducerPosition()

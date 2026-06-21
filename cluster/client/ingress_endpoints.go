@@ -5,7 +5,29 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/warrenguy/heron/aeron/conductor"
 )
+
+func sortedMemberIDs(m MemberIngressMap) []int32 {
+	ids := make([]int32, 0, len(m))
+	for id, ingress := range m {
+		if ingress == nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+func memberIngressFromEndpoint(memberID int32, endpoint string) *MemberIngress {
+	return &MemberIngress{
+		MemberID:       memberID,
+		Endpoint:       endpoint,
+		RegistrationID: conductor.NullCorrelationID,
+	}
+}
 
 func parseIngressMemberID(pair, memberIDASCII string) (int32, error) {
 	n, err := strconv.ParseInt(memberIDASCII, 10, 32)
@@ -44,7 +66,7 @@ func ParseIngressEndpoints(endpoints string) (MemberIngressMap, error) {
 				"cluster client: ingress member endpoint is empty: %s", part,
 			)
 		}
-		out[memberID] = &MemberIngress{MemberID: memberID, Endpoint: ep}
+		out[memberID] = memberIngressFromEndpoint(memberID, ep)
 	}
 	return out, nil
 }
@@ -54,6 +76,9 @@ func ParseIngressEndpoints(endpoints string) (MemberIngressMap, error) {
 // Nil or empty input returns a non-nil empty map with no error. Non-empty input
 // delegates to ParseIngressEndpoints after copying to string once.
 func ParseIngressEndpointsBytes(endpoints []byte) (MemberIngressMap, error) {
+	if len(endpoints) == 0 {
+		return MemberIngressMap{}, nil
+	}
 	return ParseIngressEndpoints(string(endpoints))
 }
 
@@ -63,20 +88,10 @@ func ParseIngressEndpointsBytes(endpoints []byte) (MemberIngressMap, error) {
 // For tests and debug only; not used on hot paths. Nil or empty map returns "".
 // Nil map entries are omitted, consistent with Lookup.
 func FormatIngressEndpoints(m MemberIngressMap) string {
-	if len(m) == 0 {
-		return ""
-	}
-	ids := make([]int32, 0, len(m))
-	for id, ingress := range m {
-		if ingress == nil {
-			continue
-		}
-		ids = append(ids, id)
-	}
+	ids := sortedMemberIDs(m)
 	if len(ids) == 0 {
 		return ""
 	}
-	slices.Sort(ids)
 	var b strings.Builder
 	for i, id := range ids {
 		if i > 0 {

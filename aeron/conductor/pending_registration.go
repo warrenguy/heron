@@ -69,10 +69,7 @@ func (registry *pendingRegistry) Remove(correlationID int64) {
 }
 
 func (registry *pendingRegistry) Contains(correlationID int64) bool {
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-
-	_, ok := registry.entries[correlationID]
+	_, ok := registry.Get(correlationID)
 	return ok
 }
 
@@ -100,20 +97,29 @@ func (registry *pendingRegistry) ClearEach(fn func(PendingRegistration)) {
 	}
 }
 
-type pendingExpireCallback struct {
+type pendingExpireItem struct {
 	registration PendingRegistration
 	removed      bool
 }
 
+// ExpireBefore scans pending entries whose DeadlineNs has passed, excluding
+// receivedCorrelationID (the response just received on this conductor tick).
+//
+// For activeCorrelationID or add-pending kinds (publication, exclusive
+// publication, subscription), expired entries are retained: registration.Err is
+// set to ErrAwaitTimeout only while the add is still in-flight (no handle yet
+// and no prior error), removed is false, and the caller must complete or cancel
+// via PollPending/CancelPending. Succeeded-but-unpolled adds are left intact.
+// Non-add pending kinds are deleted from the registry; expireHandler receives
+// removed=true for those.
 func (registry *pendingRegistry) ExpireBefore(
 	nowNs int64,
 	receivedCorrelationID int64,
 	activeCorrelationID int64,
 	expireHandler func(registration PendingRegistration, removed bool),
 ) (workCount int, timedOutActiveCorrelationID int64) {
-	var callbacks []pendingExpireCallback
-
 	registry.mu.Lock()
+	var callbacks []pendingExpireItem
 	timedOutActiveCorrelationID = NullCorrelationID
 	for correlationID, registration := range registry.entries {
 		if correlationID == receivedCorrelationID {
@@ -122,12 +128,18 @@ func (registry *pendingRegistry) ExpireBefore(
 		if nowNs < registration.DeadlineNs {
 			continue
 		}
-		if correlationID == activeCorrelationID {
+		isActive := correlationID == activeCorrelationID
+		if isActive {
 			timedOutActiveCorrelationID = correlationID
-			if registration.Err != ErrAwaitTimeout {
+		}
+		isAddPending := addPendingKind(registration.Kind)
+		if isActive || isAddPending {
+			inFlight := registration.Err == nil &&
+				(!isAddPending || !pendingAddResolved(registration))
+			if inFlight {
 				registration.Err = ErrAwaitTimeout
 				workCount++
-				callbacks = append(callbacks, pendingExpireCallback{
+				callbacks = append(callbacks, pendingExpireItem{
 					registration: *registration,
 					removed:      false,
 				})
@@ -135,18 +147,17 @@ func (registry *pendingRegistry) ExpireBefore(
 			continue
 		}
 		workCount++
-		regCopy := *registration
 		delete(registry.entries, correlationID)
-		callbacks = append(callbacks, pendingExpireCallback{
-			registration: regCopy,
+		callbacks = append(callbacks, pendingExpireItem{
+			registration: *registration,
 			removed:      true,
 		})
 	}
 	registry.mu.Unlock()
 
 	if expireHandler != nil {
-		for _, callback := range callbacks {
-			expireHandler(callback.registration, callback.removed)
+		for _, item := range callbacks {
+			expireHandler(item.registration, item.removed)
 		}
 	}
 	return workCount, timedOutActiveCorrelationID
@@ -208,10 +219,11 @@ func (conductor *Conductor) registerPendingEntry(
 	if err := conductor.checkNotTerminating(); err != nil {
 		return err
 	}
-	if addPendingKind(registration.Kind) && !wantAdd {
+	isAddPending := addPendingKind(registration.Kind)
+	if isAddPending && !wantAdd {
 		return ErrAddPendingKindRequiresAddAPI
 	}
-	if !addPendingKind(registration.Kind) && wantAdd {
+	if !isAddPending && wantAdd {
 		return ErrNonAddPendingKindRequiresRegisterPending
 	}
 	return conductor.pending.Register(registration)
@@ -270,8 +282,20 @@ func (conductor *Conductor) RegisterPendingAddWithDeadline(
 	return nil
 }
 
-// PollPending returns a latched pending registration after adapter handlers set
-// receivedCorrelationID during DoWork.
+// PollPending returns a completed pending registration for correlationID.
+//
+// Primary path: receivedCorrelationID matches correlationID after adapter
+// handlers latch completion during DoWork.
+//
+// Multi-pending path: when receivedCorrelationID does not match
+// because another async add completed in the same DoWork tick, PollPending still
+// checks the pending map. If the entry exists and either (a) Err is nil with the
+// kind-appropriate handle populated (Publication, ExclusivePublication via
+// Publication, or Subscription), or (b) Err is non-nil, PollPending returns
+// done=true with the registration (including Err when set), removes the entry,
+// and applies RollbackAddPendingResources when Err is non-nil. receivedCorrelationID
+// is left unchanged when completion is observed via the map so other latched adds
+// remain pollable on subsequent ticks.
 //
 // Called from the client on the same goroutine as RegisterPending, after
 // doWorkLocked; not invoked from inside DoWork.
@@ -279,20 +303,57 @@ func (conductor *Conductor) PollPending(
 	correlationID int64,
 ) (done bool, registration PendingRegistration, err error) {
 	if conductor.receivedCorrelationID != correlationID {
+		return conductor.pollPendingFromMap(correlationID)
+	}
+	return conductor.pollPendingLatched(correlationID)
+}
+
+func (conductor *Conductor) pollPendingFromMap(
+	correlationID int64,
+) (done bool, registration PendingRegistration, err error) {
+	registrationPtr, ok := conductor.pending.Get(correlationID)
+	if !ok || !pendingAddResolved(registrationPtr) {
 		return false, PendingRegistration{}, nil
 	}
+	return conductor.completePendingPoll(*registrationPtr, false)
+}
+
+func (conductor *Conductor) pollPendingLatched(
+	correlationID int64,
+) (done bool, registration PendingRegistration, err error) {
 	registrationPtr, ok := conductor.pending.Get(correlationID)
 	if !ok {
 		conductor.receivedCorrelationID = NullCorrelationID
 		return true, PendingRegistration{}, ErrPendingNotFound
 	}
-	registration = *registrationPtr
-	conductor.pending.Remove(correlationID)
+	return conductor.completePendingPoll(*registrationPtr, true)
+}
+
+func (conductor *Conductor) completePendingPoll(
+	registration PendingRegistration,
+	clearLatch bool,
+) (bool, PendingRegistration, error) {
+	conductor.pending.Remove(registration.CorrelationID)
 	if registration.Err != nil {
 		conductor.RollbackAddPendingResources(registration)
 	}
-	conductor.receivedCorrelationID = NullCorrelationID
+	if clearLatch {
+		conductor.receivedCorrelationID = NullCorrelationID
+	}
 	return true, registration, registration.Err
+}
+
+func pendingAddResolved(registration *PendingRegistration) bool {
+	if registration.Err != nil {
+		return true
+	}
+	if addPublicationPendingKind(registration.Kind) {
+		return registration.Publication != nil || registration.RegistrationID != 0
+	}
+	if registration.Kind == PendingKindAddSubscription {
+		return registration.Subscription != nil || registration.RegistrationID != 0
+	}
+	return false
 }
 
 func (conductor *Conductor) CancelPending(correlationID int64) {
@@ -311,11 +372,24 @@ func (conductor *Conductor) CancelPending(correlationID int64) {
 }
 
 func (conductor *Conductor) ClearPending() {
+	conductor.clearPendingEntries()
+	conductor.activeCorrelationID = NullCorrelationID
+}
+
+// ClearPendingEntriesForClose rolls back in-flight add pendings during client
+// teardown. Does not clear activeCorrelationID so unsupported concurrent readers
+// of ActiveCorrelationID during Close do not race with teardown.
+func (conductor *Conductor) ClearPendingEntriesForClose() {
+	conductor.clearPendingEntries()
+}
+
+// clearPendingEntries rolls back and removes all pending registrations and clears
+// receivedCorrelationID. Does not clear activeCorrelationID.
+func (conductor *Conductor) clearPendingEntries() {
 	conductor.pending.ClearEach(func(registration PendingRegistration) {
 		conductor.RollbackAddPendingResources(registration)
 	})
 	conductor.receivedCorrelationID = NullCorrelationID
-	conductor.activeCorrelationID = NullCorrelationID
 }
 
 func (conductor *Conductor) SetActiveCorrelationID(correlationID int64) {

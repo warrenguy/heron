@@ -478,7 +478,7 @@ func TestDriverProxy_addChannelCommands_rejectNonASCII(t *testing.T) {
 		channel string
 	}{
 		{name: "high byte", channel: "aeron:\x80"},
-		{name: "utf8 multibyte", channel: "ü"},
+		{name: "utf8 multibyte", channel: "\u00fc"},
 	}
 	tests := []struct {
 		name  string

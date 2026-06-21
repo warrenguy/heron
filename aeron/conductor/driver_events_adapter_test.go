@@ -12,15 +12,14 @@ import (
 )
 
 func TestDriverEventsAdapter_clientTimeout_matchingClient(t *testing.T) {
-	var (
-		timeoutCalled bool
-		gotErrors     []error
-	)
+	errorHandler, gotErrors := collectConductorErrors()
+	var timeoutCalled bool
 	adapter := newDriverEventsAdapterForTest(
 		t,
 		42,
-		func(err error) { gotErrors = append(gotErrors, err) },
+		errorHandler,
 		func() { timeoutCalled = true },
+		conductor.DriverEventsAdapterHandlers{},
 	)
 
 	transmitConductorEvent(t, adapter, conductor.OnClientTimeout, testutil.ClientTimeoutPayload(42))
@@ -28,7 +27,7 @@ func TestDriverEventsAdapter_clientTimeout_matchingClient(t *testing.T) {
 	count := adapter.Receive(conductor.NullCorrelationID, nil)
 	require.Equal(t, 1, count)
 	require.True(t, timeoutCalled)
-	require.Empty(t, gotErrors)
+	require.Empty(t, *gotErrors)
 }
 
 func TestDriverEventsAdapter_duplicateClientTimeoutIgnored_adapterLevel(t *testing.T) {
@@ -51,12 +50,14 @@ func TestDriverEventsAdapter_duplicateClientTimeoutIgnored_adapterLevel(t *testi
 }
 
 func TestDriverEventsAdapter_clientTimeout_otherClient(t *testing.T) {
+	errorHandler := fatalDriverEventsAdapterErrorHandler(t)
 	var timeoutCalled bool
 	adapter := newDriverEventsAdapterForTest(
 		t,
 		42,
-		func(error) { t.Fatal("error handler should not run") },
+		errorHandler,
 		func() { timeoutCalled = true },
+		conductor.DriverEventsAdapterHandlers{},
 	)
 
 	transmitConductorEvent(t, adapter, conductor.OnClientTimeout, testutil.ClientTimeoutPayload(99))
@@ -99,13 +100,12 @@ func TestDriverEventsAdapter_nextAvailableSessionID(t *testing.T) {
 			setActiveCorrelation: true,
 			eventCorrelationID:   pendingTestCorrelationID,
 			eventSessionID:       nextSessionID,
-			eventPayload: func() []byte {
-				payload := conductor.CorrelationAndInt32Bytes(
+			eventPayload: paddedEventPayload(
+				conductor.CorrelationAndInt32Bytes(
 					pendingTestCorrelationID,
 					nextSessionID,
-				)
-				return append(payload, 0xFF)
-			}(),
+				),
+			),
 			receiveCorrelationID: pendingTestCorrelationID,
 			pendingKind:          conductor.PendingKindNextSessionID,
 			wantDone:             true,
@@ -173,10 +173,10 @@ func TestDriverEventsAdapter_nextAvailableSessionID(t *testing.T) {
 			)
 			require.NoError(
 				t,
-				conductorInstance.RegisterPending(
+				registerPendingKindForTest(
+					conductorInstance,
 					testCase.pendingKind,
 					pendingTestCorrelationID,
-					pendingTestTimeout,
 				),
 			)
 			if testCase.setActiveCorrelation {
@@ -198,15 +198,13 @@ func TestDriverEventsAdapter_nextAvailableSessionID(t *testing.T) {
 				payload,
 			)
 
-			var count int
-			if testCase.useNilPending {
-				count = adapter.Receive(testCase.receiveCorrelationID, nil)
-			} else {
-				count = adapter.Receive(
-					testCase.receiveCorrelationID,
-					conductorInstance,
-				)
-			}
+			count := receiveDriverEventForTest(
+				t,
+				adapter,
+				testCase.receiveCorrelationID,
+				conductorInstance,
+				testCase.useNilPending,
+			)
 			require.Equal(t, 1, count)
 			require.Equal(t, testCase.wantUnhandled, adapter.UnhandledEventCount())
 
@@ -228,11 +226,14 @@ func TestDriverEventsAdapter_nextAvailableSessionID(t *testing.T) {
 }
 
 func TestDriverEventsAdapter_clientTimeout_shortBody(t *testing.T) {
+	errorHandler := fatalDriverEventsAdapterErrorHandler(t)
+	timeoutHandler := fatalDriverEventsAdapterTimeoutHandler(t)
 	adapter := newDriverEventsAdapterForTest(
 		t,
 		42,
-		func(error) { t.Fatal("error handler should not run") },
-		func() { t.Fatal("timeout handler should not run") },
+		errorHandler,
+		timeoutHandler,
+		conductor.DriverEventsAdapterHandlers{},
 	)
 
 	transmitConductorEvent(t, adapter, conductor.OnClientTimeout, []byte{0x01})
@@ -249,10 +250,12 @@ func TestDriverEventsAdapter_errorEvent(t *testing.T) {
 		name                 string
 		setActiveCorrelation bool
 		registerPending      bool
+		registerOtherPending bool
 		pendingKind          conductor.PendingKind
 		eventCorrelationID   int64
 		eventPayload         []byte
 		receiveCorrelationID int64
+		pollCorrelationID    int64
 		useNilPending        bool
 		wantUnhandled        int64
 		wantDone             bool
@@ -307,6 +310,20 @@ func TestDriverEventsAdapter_errorEvent(t *testing.T) {
 			eventCorrelationID:   pendingTestOtherCorrelationID,
 			receiveCorrelationID: pendingTestCorrelationID,
 			wantUnhandled:        1,
+		},
+		{
+			name:                 "pendingRegistryNonActive",
+			setActiveCorrelation: true,
+			registerPending:      true,
+			registerOtherPending: true,
+			pendingKind:          conductor.PendingKindNextSessionID,
+			eventCorrelationID:   pendingTestOtherCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			pollCorrelationID:    pendingTestOtherCorrelationID,
+			wantDone:             true,
+			wantDriverError:      true,
+			wantErrorMessage:     "registration failed",
+			wantPendingRemoved:   true,
 		},
 		{
 			name:                 "nullCorrelationID",
@@ -372,14 +389,13 @@ func TestDriverEventsAdapter_errorEvent(t *testing.T) {
 		},
 		{
 			name: "bodyLongerThanDecoded",
-			eventPayload: func() []byte {
-				payload := conductor.ErrorResponseBytes(
+			eventPayload: paddedEventPayload(
+				conductor.ErrorResponseBytes(
 					pendingTestCorrelationID,
 					errorCode,
 					"fail",
-				)
-				return append(payload, 0xFF)
-			}(),
+				),
+			),
 			receiveCorrelationID: pendingTestCorrelationID,
 			wantUnhandled:        1,
 		},
@@ -409,15 +425,22 @@ func TestDriverEventsAdapter_errorEvent(t *testing.T) {
 				0,
 				0,
 			)
-			if testCase.registerPending {
+			registerErrorPending := func(correlationID int64) {
+				t.Helper()
 				require.NoError(
 					t,
-					conductorInstance.RegisterPending(
+					registerPendingKindForTest(
+						conductorInstance,
 						testCase.pendingKind,
-						pendingTestCorrelationID,
-						pendingTestTimeout,
+						correlationID,
 					),
 				)
+			}
+			if testCase.registerPending {
+				registerErrorPending(pendingTestCorrelationID)
+			}
+			if testCase.registerOtherPending {
+				registerErrorPending(pendingTestOtherCorrelationID)
 			}
 			if testCase.setActiveCorrelation {
 				conductorInstance.SetActiveCorrelationID(pendingTestCorrelationID)
@@ -434,40 +457,40 @@ func TestDriverEventsAdapter_errorEvent(t *testing.T) {
 			}
 			transmitConductorEvent(t, adapter, conductor.OnError, payload)
 
-			var count int
-			if testCase.useNilPending {
-				count = adapter.Receive(testCase.receiveCorrelationID, nil)
-			} else {
-				count = adapter.Receive(
-					testCase.receiveCorrelationID,
-					conductorInstance,
-				)
-			}
+			count := receiveDriverEventForTest(
+				t,
+				adapter,
+				testCase.receiveCorrelationID,
+				conductorInstance,
+				testCase.useNilPending,
+			)
 			require.Equal(t, 1, count)
 			require.Equal(t, testCase.wantUnhandled, adapter.UnhandledEventCount())
 
-			done, registration, err := conductorInstance.PollPending(
-				pendingTestCorrelationID,
-			)
+			pollCorrelationID := testCase.pollCorrelationID
+			if pollCorrelationID == 0 {
+				pollCorrelationID = pendingTestCorrelationID
+			}
+			done, registration, err := conductorInstance.PollPending(pollCorrelationID)
 			require.Equal(t, testCase.wantDone, done)
 			if testCase.wantDriverError {
 				var driverErr *conductor.DriverRegistrationError
 				require.ErrorAs(t, err, &driverErr)
-				require.Equal(t, pendingTestCorrelationID, driverErr.CorrelationID)
+				require.Equal(t, pollCorrelationID, driverErr.CorrelationID)
 				require.Equal(t, errorCode, driverErr.ErrorCode)
-				require.EqualError(
-					t,
-					err,
-					"conductor: driver registration error: correlation=7 code=11 message="+
-						testCase.wantErrorMessage,
-				)
+				require.Equal(t, testCase.wantErrorMessage, driverErr.Message)
+				require.EqualError(t, err, (&conductor.DriverRegistrationError{
+					CorrelationID: pollCorrelationID,
+					ErrorCode:     errorCode,
+					Message:       testCase.wantErrorMessage,
+				}).Error())
 			} else {
 				require.NoError(t, err)
 				require.Zero(t, registration)
 			}
 
 			if testCase.wantPendingRemoved {
-				_, ok := conductorInstance.PendingResult(pendingTestCorrelationID)
+				_, ok := conductorInstance.PendingResult(pollCorrelationID)
 				require.False(t, ok)
 			}
 		})
@@ -503,10 +526,9 @@ func TestDriverEventsAdapter_operationSuccess(t *testing.T) {
 			name:                 "paddedBody",
 			setActiveCorrelation: true,
 			eventCorrelationID:   pendingTestCorrelationID,
-			eventPayload: func() []byte {
-				payload := conductor.OperationSuccessBytes(pendingTestCorrelationID)
-				return append(payload, 0xFF)
-			}(),
+			eventPayload: paddedEventPayload(
+				conductor.OperationSuccessBytes(pendingTestCorrelationID),
+			),
 			receiveCorrelationID: pendingTestCorrelationID,
 			pendingKind:          conductor.PendingKindOperationSuccess,
 			wantDone:             true,
@@ -619,15 +641,13 @@ func TestDriverEventsAdapter_operationSuccess(t *testing.T) {
 			}
 			transmitConductorEvent(t, adapter, conductor.OnOperationSuccess, payload)
 
-			var count int
-			if testCase.useNilPending {
-				count = adapter.Receive(testCase.receiveCorrelationID, nil)
-			} else {
-				count = adapter.Receive(
-					testCase.receiveCorrelationID,
-					conductorInstance,
-				)
-			}
+			count := receiveDriverEventForTest(
+				t,
+				adapter,
+				testCase.receiveCorrelationID,
+				conductorInstance,
+				testCase.useNilPending,
+			)
 			require.Equal(t, 1, count)
 			require.Equal(t, testCase.wantUnhandled, adapter.UnhandledEventCount())
 
@@ -679,10 +699,10 @@ func TestDriverEventsAdapter_publicationReady_matchingCorrelation(t *testing.T) 
 			)
 			require.NoError(
 				t,
-				conductorInstance.RegisterPending(
+				registerPendingKindForTest(
+					conductorInstance,
 					conductor.PendingKindOperationSuccess,
 					goldenPublicationReadyCorrelationID,
-					pendingTestTimeout,
 				),
 			)
 			conductorInstance.SetActiveCorrelationID(goldenPublicationReadyCorrelationID)
@@ -717,18 +737,17 @@ func TestDriverEventsAdapter_publicationReady_matchingCorrelation_paddedBody(t *
 	)
 	require.NoError(
 		t,
-		conductorInstance.RegisterPending(
+		registerPendingKindForTest(
+			conductorInstance,
 			conductor.PendingKindOperationSuccess,
 			goldenPublicationReadyCorrelationID,
-			pendingTestTimeout,
 		),
 	)
 	conductorInstance.SetActiveCorrelationID(goldenPublicationReadyCorrelationID)
 
 	adapter := conductorInstance.EventsAdapterForTest()
-	payload := append(
+	payload := paddedEventPayload(
 		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
-		0xFF,
 	)
 	transmitConductorEvent(t, adapter, conductor.OnPublicationReady, payload)
 
@@ -746,10 +765,10 @@ func TestDriverEventsAdapter_publicationReady_pendingRegistryOnly(t *testing.T) 
 	)
 	require.NoError(
 		t,
-		conductorInstance.RegisterPending(
+		registerPendingKindForTest(
+			conductorInstance,
 			conductor.PendingKindOperationSuccess,
 			goldenPublicationReadyCorrelationID,
-			pendingTestTimeout,
 		),
 	)
 
@@ -794,19 +813,16 @@ func TestDriverEventsAdapter_subscriptionReady_wrongAddKind(t *testing.T) {
 
 func TestDriverEventsAdapter_publicationReady_unrelatedCorrelation(t *testing.T) {
 	var handlerCalled bool
-	_, rx := newCopyBroadcastPair(t)
-	copyReceiver := conductor.NewCopyBroadcastReceiver(rx)
-	adapter := conductor.NewDriverEventsAdapter(
+	adapter := newDriverEventsAdapterForTest(
+		t,
 		1,
-		copyReceiver,
-		func(error) { t.Fatal("error handler should not run") },
-		func() { t.Fatal("timeout handler should not run") },
+		fatalDriverEventsAdapterErrorHandler(t),
+		fatalDriverEventsAdapterTimeoutHandler(t),
 		conductor.DriverEventsAdapterHandlers{
 			PublicationReady: func(conductor.PublicationBuffersReady) {
 				handlerCalled = true
 			},
 		},
-		nil,
 	)
 
 	transmitConductorEvent(
@@ -831,10 +847,10 @@ func TestDriverEventsAdapter_publicationReady_foreignPendingCorrelation(t *testi
 	)
 	require.NoError(
 		t,
-		conductorInstance.RegisterPending(
+		registerPendingKindForTest(
+			conductorInstance,
 			conductor.PendingKindOperationSuccess,
 			pendingTestOtherCorrelationID,
-			pendingTestTimeout,
 		),
 	)
 
@@ -873,10 +889,10 @@ func TestDriverEventsAdapter_subscriptionReady_matchingCorrelation(t *testing.T)
 	)
 	require.NoError(
 		t,
-		conductorInstance.RegisterPending(
+		registerPendingKindForTest(
+			conductorInstance,
 			conductor.PendingKindOperationSuccess,
 			goldenSubscriptionReadyCorrelationID,
-			pendingTestTimeout,
 		),
 	)
 	conductorInstance.SetActiveCorrelationID(goldenSubscriptionReadyCorrelationID)
@@ -902,19 +918,16 @@ func TestDriverEventsAdapter_subscriptionReady_matchingCorrelation(t *testing.T)
 
 func TestDriverEventsAdapter_subscriptionReady_unrelatedCorrelation(t *testing.T) {
 	var handlerCalled bool
-	_, rx := newCopyBroadcastPair(t)
-	copyReceiver := conductor.NewCopyBroadcastReceiver(rx)
-	adapter := conductor.NewDriverEventsAdapter(
+	adapter := newDriverEventsAdapterForTest(
+		t,
 		1,
-		copyReceiver,
-		func(error) { t.Fatal("error handler should not run") },
-		func() { t.Fatal("timeout handler should not run") },
+		fatalDriverEventsAdapterErrorHandler(t),
+		fatalDriverEventsAdapterTimeoutHandler(t),
 		conductor.DriverEventsAdapterHandlers{
 			SubscriptionReady: func(conductor.SubscriptionReady) {
 				handlerCalled = true
 			},
 		},
-		nil,
 	)
 
 	transmitConductorEvent(
@@ -939,16 +952,18 @@ func TestDriverEventsAdapter_subscriptionReady_matchingCorrelation_paddedBody(t 
 	)
 	require.NoError(
 		t,
-		conductorInstance.RegisterPending(
+		registerPendingKindForTest(
+			conductorInstance,
 			conductor.PendingKindOperationSuccess,
 			goldenSubscriptionReadyCorrelationID,
-			pendingTestTimeout,
 		),
 	)
 	conductorInstance.SetActiveCorrelationID(goldenSubscriptionReadyCorrelationID)
 
 	adapter := conductorInstance.EventsAdapterForTest()
-	payload := append(conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent), 0xFF)
+	payload := paddedEventPayload(
+		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
+	)
 	transmitConductorEvent(t, adapter, conductor.OnSubscriptionReady, payload)
 
 	count := adapter.Receive(goldenSubscriptionReadyCorrelationID, conductorInstance)
@@ -965,10 +980,10 @@ func TestDriverEventsAdapter_subscriptionReady_foreignPendingCorrelation(t *test
 	)
 	require.NoError(
 		t,
-		conductorInstance.RegisterPending(
+		registerPendingKindForTest(
+			conductorInstance,
 			conductor.PendingKindOperationSuccess,
 			pendingTestOtherCorrelationID,
-			pendingTestTimeout,
 		),
 	)
 
@@ -996,10 +1011,10 @@ func TestDriverEventsAdapter_subscriptionReady_pendingRegistryOnly(t *testing.T)
 	)
 	require.NoError(
 		t,
-		conductorInstance.RegisterPending(
+		registerPendingKindForTest(
+			conductorInstance,
 			conductor.PendingKindOperationSuccess,
 			goldenSubscriptionReadyCorrelationID,
-			pendingTestTimeout,
 		),
 	)
 
@@ -1054,9 +1069,8 @@ func TestDriverEventsAdapter_availableImage_paddedBody(t *testing.T) {
 	conductorInstance := newConductorForImageAdapterTest(t, lifecycle, true)
 
 	adapter := conductorInstance.EventsAdapterForTest()
-	payload := append(
+	payload := paddedEventPayload(
 		conductor.AvailableImageBytes(goldenAvailableImageEvent),
-		0xFF,
 	)
 	transmitConductorEvent(t, adapter, conductor.OnAvailableImage, payload)
 
@@ -1106,9 +1120,8 @@ func TestDriverEventsAdapter_unavailableImage_paddedBody(t *testing.T) {
 	conductorInstance := newConductorForImageAdapterTest(t, lifecycle, false)
 
 	adapter := conductorInstance.EventsAdapterForTest()
-	payload := append(
+	payload := paddedEventPayload(
 		conductor.UnavailableImageBytes(goldenUnavailableImageEvent),
-		0xFF,
 	)
 	transmitConductorEvent(t, adapter, conductor.OnUnavailableImage, payload)
 
@@ -1171,11 +1184,14 @@ func TestDriverEventsAdapter_publicationError_decodeFailure(t *testing.T) {
 }
 
 func TestDriverEventsAdapter_unhandledEvent(t *testing.T) {
+	errorHandler := fatalDriverEventsAdapterErrorHandler(t)
+	timeoutHandler := fatalDriverEventsAdapterTimeoutHandler(t)
 	adapter := newDriverEventsAdapterForTest(
 		t,
 		1,
-		func(error) { t.Fatal("error handler should not run") },
-		func() { t.Fatal("timeout handler should not run") },
+		errorHandler,
+		timeoutHandler,
+		conductor.DriverEventsAdapterHandlers{},
 	)
 
 	transmitConductorEvent(t, adapter, 0xFFFF, []byte{0x01, 0x02})
@@ -1192,6 +1208,7 @@ func TestDriverEventsAdapter_broadcastLapped(t *testing.T) {
 		1,
 		func(err error) { gotErrors = append(gotErrors, err) },
 		func() { t.Fatal("timeout handler should not run") },
+		conductor.DriverEventsAdapterHandlers{},
 	)
 
 	copyReceiver := adapter.CopyReceiverForTest()
@@ -1230,11 +1247,22 @@ func newConductorForImageAdapterTest(
 	return conductorInstance
 }
 
+func fatalDriverEventsAdapterErrorHandler(t *testing.T) func(error) {
+	t.Helper()
+	return func(error) { t.Fatal("error handler should not run") }
+}
+
+func fatalDriverEventsAdapterTimeoutHandler(t *testing.T) func() {
+	t.Helper()
+	return func() { t.Fatal("timeout handler should not run") }
+}
+
 func newDriverEventsAdapterForTest(
 	t *testing.T,
 	clientID int64,
 	errorHandler func(error),
 	clientTimeoutHandler func(),
+	handlers conductor.DriverEventsAdapterHandlers,
 ) *conductor.DriverEventsAdapter {
 	t.Helper()
 
@@ -1245,9 +1273,27 @@ func newDriverEventsAdapterForTest(
 		copyReceiver,
 		errorHandler,
 		clientTimeoutHandler,
-		conductor.DriverEventsAdapterHandlers{},
+		handlers,
 		nil,
 	)
+}
+
+func receiveDriverEventForTest(
+	t *testing.T,
+	adapter *conductor.DriverEventsAdapter,
+	receiveCorrelationID int64,
+	conductorInstance *conductor.Conductor,
+	useNilPending bool,
+) int {
+	t.Helper()
+	if useNilPending {
+		return adapter.Receive(receiveCorrelationID, nil)
+	}
+	return adapter.Receive(receiveCorrelationID, conductorInstance)
+}
+
+func paddedEventPayload(payload []byte) []byte {
+	return append(payload, 0xFF)
 }
 
 func testDriverEventsAdapterOnReadyWrongAddKind(
@@ -1299,15 +1345,14 @@ func testDriverEventsAdapterEventDecodeFailure(
 ) {
 	t.Helper()
 
-	_, rx := newCopyBroadcastPair(t)
-	copyReceiver := conductor.NewCopyBroadcastReceiver(rx)
-	adapter := conductor.NewDriverEventsAdapter(
+	errorHandler := fatalDriverEventsAdapterErrorHandler(t)
+	timeoutHandler := fatalDriverEventsAdapterTimeoutHandler(t)
+	adapter := newDriverEventsAdapterForTest(
+		t,
 		1,
-		copyReceiver,
-		func(error) { t.Fatal("error handler should not run") },
-		func() { t.Fatal("timeout handler should not run") },
+		errorHandler,
+		timeoutHandler,
 		conductor.DriverEventsAdapterHandlers{},
-		nil,
 	)
 
 	transmitConductorEvent(t, adapter, msgTypeID, payload)

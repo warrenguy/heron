@@ -851,6 +851,41 @@ func (client *Client) AwaitPendingPollOneTickForTest(
 	)
 }
 
+func pollAddTestAwaitTick(
+	skipDoWork bool,
+	afterPollPending func(),
+) pollAddAwaitTickFunc {
+	return func(
+		client *Client,
+		conductorInstance *conductor.Conductor,
+		correlationID int64,
+		mapPollErr func(error) error,
+	) (conductor.PendingRegistration, bool, error) {
+		return client.awaitPendingPollTickForTest(
+			conductorInstance,
+			correlationID,
+			mapPollErr,
+			skipDoWork,
+			afterPollPending,
+		)
+	}
+}
+
+func pollAddForTest[T any](
+	client *Client,
+	correlationID int64,
+	convert func(conductor.PendingRegistration) (T, error),
+	skipDoWork bool,
+	afterPollPending func(),
+) (T, bool, error) {
+	return pollAddWith(
+		client,
+		correlationID,
+		convert,
+		pollAddTestAwaitTick(skipDoWork, afterPollPending),
+	)
+}
+
 func (client *Client) conductorForTest() *conductor.Conductor {
 	if client == nil || client.conductor == nil {
 		return nil

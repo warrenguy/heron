@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	soakDuration              = 15 * time.Second
-	soakPollInterval          = 500 * time.Millisecond
+	soakDuration              = 5 * time.Second
+	soakPollInterval          = 250 * time.Millisecond
 	defaultPollInterval       = 50 * time.Millisecond
 	heartbeatFreshMaxAgeMs    = 2_000
 	heartbeatFreshPollTimeout = 4 * time.Second
@@ -142,12 +142,9 @@ func WaitForToDriverRingDrainedWithClients(
 ) {
 	t.Helper()
 
-	if timeout == 0 {
-		timeout = ConnectedPollTimeout
-	}
 	pollUntil(
 		t,
-		timeout,
+		connectedPollTimeoutOr(timeout),
 		aeron.DefaultIdleSleepDuration,
 		func() bool {
 			clientA.DoWork()
@@ -263,33 +260,29 @@ func assertClientCloseOfferedOnRing(
 	}
 
 	provenClientClosePosition := int64(-1)
-	var decoded conductor.CorrelatedMessage
-	var pollErr error
-	found := pollUntilBool(commandPollDeadline, defaultPollInterval, func() bool {
-		var ok bool
-		decoded, ok, pollErr = observeClientClose(
-			ring,
-			clientID,
-			consumerBefore,
-			producerBefore,
-			&provenClientClosePosition,
-		)
-		if pollErr != nil {
-			return false
-		}
-		return ok
-	})
-
-	if pollErr != nil {
-		require.NoError(t, pollErr, "to-driver ring scan failed after client close poll timeout")
-	}
-	require.True(
+	decoded, found, pollErr := pollRingObservation(
+		commandPollDeadline,
+		defaultPollInterval,
+		func() (conductor.CorrelatedMessage, bool, error) {
+			return observeClientClose(
+				ring,
+				clientID,
+				consumerBefore,
+				producerBefore,
+				&provenClientClosePosition,
+			)
+		},
+	)
+	requireObservedRingMessage(
 		t,
+		decoded,
 		found,
+		pollErr,
+		want,
+		"to-driver ring scan failed after client close poll timeout",
 		"CLIENT_CLOSE not observed on to-driver ring for client %d",
 		clientID,
 	)
-	require.Equal(t, want, decoded)
 	return provenClientClosePosition
 }
 
@@ -308,32 +301,61 @@ func assertAddPublicationOfferedOnRing(
 	requireQuiescentSnapshotCoherence(t, consumerBefore, producerBefore)
 
 	provenAddPublicationPosition := int64(-1)
-	var decoded conductor.PublicationMessage
-	var pollErr error
-	found := pollUntilBool(commandPollDeadline, defaultPollInterval, func() bool {
+	decoded, found, pollErr := pollRingObservation(
+		commandPollDeadline,
+		defaultPollInterval,
+		func() (conductor.PublicationMessage, bool, error) {
+			return observeAddPublication(
+				ring,
+				want,
+				consumerBefore,
+				producerBefore,
+				&provenAddPublicationPosition,
+			)
+		},
+	)
+	requireObservedRingMessage(
+		t,
+		decoded,
+		found,
+		pollErr,
+		want,
+		"to-driver ring scan failed after add publication poll timeout",
+		"ADD_PUBLICATION not observed on to-driver ring for correlation %d",
+		want.CorrelationID,
+	)
+}
+
+func pollRingObservation[T any](
+	timeout, interval time.Duration,
+	observe func() (T, bool, error),
+) (decoded T, found bool, pollErr error) {
+	found = pollUntilBool(timeout, interval, func() bool {
 		var ok bool
-		decoded, ok, pollErr = observeAddPublication(
-			ring,
-			want,
-			consumerBefore,
-			producerBefore,
-			&provenAddPublicationPosition,
-		)
+		decoded, ok, pollErr = observe()
 		if pollErr != nil {
 			return false
 		}
 		return ok
 	})
+	return decoded, found, pollErr
+}
+
+func requireObservedRingMessage[T comparable](
+	t testing.TB,
+	decoded T,
+	found bool,
+	pollErr error,
+	want T,
+	pollErrMsg, notFoundFmt string,
+	notFoundArgs ...any,
+) {
+	t.Helper()
 
 	if pollErr != nil {
-		require.NoError(t, pollErr, "to-driver ring scan failed after add publication poll timeout")
+		require.NoError(t, pollErr, pollErrMsg)
 	}
-	require.True(
-		t,
-		found,
-		"ADD_PUBLICATION not observed on to-driver ring for correlation %d",
-		want.CorrelationID,
-	)
+	require.Truef(t, found, notFoundFmt, notFoundArgs...)
 	require.Equal(t, want, decoded)
 }
 
@@ -401,11 +423,8 @@ func RunSoak(t testing.TB, duration, interval time.Duration, tick func()) {
 
 	deadline := time.Now().Add(duration)
 	tick()
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for range ticker.C {
+	for {
+		time.Sleep(interval)
 		if !time.Now().Before(deadline) {
 			return
 		}

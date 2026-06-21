@@ -148,8 +148,19 @@ func (adapter *DriverEventsAdapter) handleMessage(
 			pending,
 		)
 	default:
-		adapter.unhandledEventCount++
+		adapter.markUnhandled()
 	}
+}
+
+func (adapter *DriverEventsAdapter) markUnhandled() {
+	adapter.unhandledEventCount++
+}
+
+func (adapter *DriverEventsAdapter) markUnhandledIf(reject bool) bool {
+	if reject {
+		adapter.markUnhandled()
+	}
+	return reject
 }
 
 func (adapter *DriverEventsAdapter) rejectUnlessActiveCorrelation(
@@ -157,16 +168,25 @@ func (adapter *DriverEventsAdapter) rejectUnlessActiveCorrelation(
 	pending PendingEventHandler,
 	correlationID int64,
 ) bool {
-	if activeCorrelationID == NullCorrelationID || pending == nil ||
-		correlationID != activeCorrelationID {
-		adapter.unhandledEventCount++
-		return true
-	}
-	return false
+	return adapter.markUnhandledIf(
+		activeCorrelationID == NullCorrelationID || pending == nil ||
+			correlationID != activeCorrelationID,
+	)
 }
 
-// correlated gates async ready events: active await OR pending registry entry.
-// rejectUnlessActiveCorrelation requires exact active match for correlated responses.
+func (adapter *DriverEventsAdapter) rejectUnlessCorrelated(
+	activeCorrelationID int64,
+	pending PendingEventHandler,
+	correlationID int64,
+) bool {
+	return adapter.markUnhandledIf(
+		pending == nil || !adapter.correlated(activeCorrelationID, correlationID),
+	)
+}
+
+// correlated gates async driver responses when the event correlation differs from
+// active: active await OR pending registry entry. rejectUnlessActiveCorrelation
+// still requires exact active match for operation success and next session ID.
 func (adapter *DriverEventsAdapter) correlated(
 	activeCorrelationID int64,
 	correlationID int64,
@@ -184,25 +204,18 @@ func (adapter *DriverEventsAdapter) handleOperationSuccess(
 	activeCorrelationID int64,
 	pending PendingEventHandler,
 ) {
-	if length < OperationSuccessBodyLength {
-		adapter.unhandledEventCount++
-		return
-	}
-	decoded, err := DecodeOperationSuccess(buffer, offset)
-	if err != nil {
-		adapter.unhandledEventCount++
-		return
-	}
-	if adapter.rejectUnlessActiveCorrelation(
+	handleFixedLengthPendingEvent(
+		adapter,
+		buffer,
+		offset,
+		length,
+		OperationSuccessBodyLength,
+		DecodeOperationSuccess,
 		activeCorrelationID,
 		pending,
-		decoded.CorrelationID,
-	) {
-		return
-	}
-	if !pending.OperationSucceeded(decoded.CorrelationID) {
-		adapter.unhandledEventCount++
-	}
+		operationSuccessEventCorrelationID,
+		applyOperationSuccess,
+	)
 }
 
 // Variable-length flyweight: decode requires exact body consumption; trailing bytes are rejected.
@@ -214,15 +227,15 @@ func (adapter *DriverEventsAdapter) handleError(
 	pending PendingEventHandler,
 ) {
 	if length < ErrorResponseMinBodyLength {
-		adapter.unhandledEventCount++
+		adapter.markUnhandled()
 		return
 	}
 	decoded, err := DecodeErrorResponse(buffer, offset, length)
 	if err != nil {
-		adapter.unhandledEventCount++
+		adapter.markUnhandled()
 		return
 	}
-	if adapter.rejectUnlessActiveCorrelation(
+	if adapter.rejectUnlessCorrelated(
 		activeCorrelationID,
 		pending,
 		decoded.OffendingCommandCorrelationID,
@@ -230,7 +243,7 @@ func (adapter *DriverEventsAdapter) handleError(
 		return
 	}
 	if !pending.DriverError(decoded) {
-		adapter.unhandledEventCount++
+		adapter.markUnhandled()
 	}
 }
 
@@ -243,25 +256,18 @@ func (adapter *DriverEventsAdapter) handleNextAvailableSessionID(
 	activeCorrelationID int64,
 	pending PendingEventHandler,
 ) {
-	if length < NextAvailableSessionIDBodyLength {
-		adapter.unhandledEventCount++
-		return
-	}
-	decoded, err := DecodeNextAvailableSessionID(buffer, offset)
-	if err != nil {
-		adapter.unhandledEventCount++
-		return
-	}
-	if adapter.rejectUnlessActiveCorrelation(
+	handleFixedLengthPendingEvent(
+		adapter,
+		buffer,
+		offset,
+		length,
+		NextAvailableSessionIDBodyLength,
+		DecodeNextAvailableSessionID,
 		activeCorrelationID,
 		pending,
-		decoded.CorrelationID,
-	) {
-		return
-	}
-	if !pending.NextSessionID(decoded.CorrelationID, decoded.Int32Value) {
-		adapter.unhandledEventCount++
-	}
+		correlationAndInt32EventCorrelationID,
+		applyNextAvailableSessionID,
+	)
 }
 
 func (adapter *DriverEventsAdapter) handleClientTimeout(
@@ -270,7 +276,7 @@ func (adapter *DriverEventsAdapter) handleClientTimeout(
 	length int,
 ) {
 	if length < ClientTimeoutBodyLength {
-		adapter.unhandledEventCount++
+		adapter.markUnhandled()
 		return
 	}
 
@@ -295,6 +301,66 @@ func peekEventCorrelationID(
 	return buffer.GetInt64(offset), true
 }
 
+func operationSuccessEventCorrelationID(event OperationSuccess) int64 {
+	return event.CorrelationID
+}
+
+func correlationAndInt32EventCorrelationID(event CorrelationAndInt32) int64 {
+	return event.CorrelationID
+}
+
+func applyOperationSuccess(handler PendingEventHandler, event OperationSuccess) bool {
+	return handler.OperationSucceeded(event.CorrelationID)
+}
+
+func applyNextAvailableSessionID(
+	handler PendingEventHandler,
+	event CorrelationAndInt32,
+) bool {
+	return handler.NextSessionID(event.CorrelationID, event.Int32Value)
+}
+
+func publicationBuffersReadyEventCorrelationID(event PublicationBuffersReady) int64 {
+	return event.CorrelationID
+}
+
+func subscriptionReadyEventCorrelationID(event SubscriptionReady) int64 {
+	return event.CorrelationID
+}
+
+func handleFixedLengthPendingEvent[T any](
+	adapter *DriverEventsAdapter,
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+	minBodyLength int,
+	decode func(atomic.AtomicBuffer, int) (T, error),
+	activeCorrelationID int64,
+	pending PendingEventHandler,
+	correlationFrom func(T) int64,
+	apply func(PendingEventHandler, T) bool,
+) {
+	if length < minBodyLength {
+		adapter.markUnhandled()
+		return
+	}
+	decoded, err := decode(buffer, offset)
+	if err != nil {
+		adapter.markUnhandled()
+		return
+	}
+	if adapter.rejectUnlessActiveCorrelation(
+		activeCorrelationID,
+		pending,
+		correlationFrom(decoded),
+	) {
+		return
+	}
+	if !apply(pending, decoded) {
+		adapter.markUnhandled()
+	}
+}
+
 func handleDecodedEvent[T any](
 	adapter *DriverEventsAdapter,
 	buffer atomic.AtomicBuffer,
@@ -305,7 +371,7 @@ func handleDecodedEvent[T any](
 ) {
 	decoded, err := decode(buffer, offset, length)
 	if err != nil {
-		adapter.unhandledEventCount++
+		adapter.markUnhandled()
 		return
 	}
 	if eventHandler != nil {
@@ -320,13 +386,12 @@ func handleCorrelatedReady[T any](
 	length int,
 	activeCorrelationID int64,
 	minimumBodyLength int,
-	peekCorrelationID func(atomic.AtomicBuffer, int, int) (int64, bool),
 	decode func(atomic.AtomicBuffer, int, int) (T, error),
-	correlationID func(T) int64,
+	correlationFrom func(T) int64,
 	readyHandler func(T),
 ) {
-	if peekCorrelationID != nil && length >= minimumBodyLength {
-		eventCorrelationID, ok := peekCorrelationID(buffer, offset, length)
+	if length >= minimumBodyLength {
+		eventCorrelationID, ok := peekEventCorrelationID(buffer, offset, length)
 		if ok && !adapter.correlated(activeCorrelationID, eventCorrelationID) {
 			return
 		}
@@ -334,25 +399,17 @@ func handleCorrelatedReady[T any](
 
 	decoded, err := decode(buffer, offset, length)
 	if err != nil {
-		adapter.unhandledEventCount++
+		adapter.markUnhandled()
 		return
 	}
 
-	eventCorrelationID := correlationID(decoded)
+	eventCorrelationID := correlationFrom(decoded)
 	if adapter.handlers.CorrelatedReady != nil {
 		adapter.handlers.CorrelatedReady(eventCorrelationID)
 	}
 	if readyHandler != nil {
 		readyHandler(decoded)
 	}
-}
-
-func publicationBuffersReadyCorrelationID(event PublicationBuffersReady) int64 {
-	return event.CorrelationID
-}
-
-func subscriptionReadyCorrelationID(event SubscriptionReady) int64 {
-	return event.CorrelationID
 }
 
 func (adapter *DriverEventsAdapter) handleAvailableImage(
@@ -384,9 +441,8 @@ func (adapter *DriverEventsAdapter) handlePublicationBuffersReady(
 		length,
 		activeCorrelationID,
 		PublicationBuffersReadyFixedLength+atomic.StringASCIIHeaderLength,
-		peekEventCorrelationID,
 		DecodePublicationBuffersReady,
-		publicationBuffersReadyCorrelationID,
+		publicationBuffersReadyEventCorrelationID,
 		handler,
 	)
 }
@@ -404,9 +460,8 @@ func (adapter *DriverEventsAdapter) handleSubscriptionReady(
 		length,
 		activeCorrelationID,
 		SubscriptionReadyBodyLength,
-		peekEventCorrelationID,
 		DecodeSubscriptionReady,
-		subscriptionReadyCorrelationID,
+		subscriptionReadyEventCorrelationID,
 		adapter.handlers.SubscriptionReady,
 	)
 }

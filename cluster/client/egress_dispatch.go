@@ -19,19 +19,17 @@ func handleEgressFragment(
 	length int,
 	header *aeron.Header,
 ) {
-	payload := buffer.Bytes()
-	if !egressFragmentSpanValid(payload, offset, length) {
+	fragment, ok := egressFragmentPayload(buffer, offset, length)
+	if !ok {
 		return
 	}
-
-	fragment := payload[offset : offset+length]
 	_, templateID, _, _, headerOK := codecs.DecodeMessageHeader(fragment, 0)
 	if headerOK && templateID == gensbe.ChallengeSbeTemplateID {
 		// Connect egress poller owns Challenge.
 		return
 	}
 
-	decoded, ok := codecs.TryDecodeByTemplate(fragment, 0, codecs.ClusterMaxVarLen)
+	decoded, ok := decodeEgressFragment(fragment)
 	if !ok {
 		return
 	}
@@ -102,4 +100,20 @@ func egressFragmentSpanValid(payload []byte, offset, length int) bool {
 		length >= 0 &&
 		length >= codecs.MessageHeaderEncodedLen() &&
 		offset <= len(payload)-length
+}
+
+func decodeEgressFragment(fragment []byte) (codecs.DecodedMessage, bool) {
+	return codecs.TryDecodeByTemplate(fragment, 0, codecs.ClusterMaxVarLen)
+}
+
+func egressFragmentPayload(
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+) ([]byte, bool) {
+	payload := buffer.Bytes()
+	if !egressFragmentSpanValid(payload, offset, length) {
+		return nil, false
+	}
+	return payload[offset : offset+length], true
 }

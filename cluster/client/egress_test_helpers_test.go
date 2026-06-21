@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -211,21 +212,40 @@ func encodeSessionMessageHeaderWire(
 	)
 }
 
-func encodeSessionEventWire(t *testing.T, clusterSessionID int64) []byte {
-	t.Helper()
-
-	fields := codecs.SessionEventFields{
-		ClusterSessionID: clusterSessionID,
+func defaultSessionEventFields(detail []byte) codecs.SessionEventFields {
+	return codecs.SessionEventFields{
 		CorrelationID:    77,
 		LeadershipTermID: 88,
 		LeaderMemberID:   3,
 		Code:             gensbe.EventCode_OK,
-		Detail:           []byte("session-event-detail"),
+		Detail:           detail,
 	}
+}
+
+func encodeSessionEventWire(t *testing.T, clusterSessionID int64) []byte {
+	t.Helper()
+
+	return encodeSessionEventWireWithFields(
+		t,
+		clusterSessionID,
+		defaultSessionEventFields([]byte("session-event-detail")),
+		gensbe.SessionEventSbeSchemaVersion,
+	)
+}
+
+func encodeSessionEventWireWithFields(
+	t *testing.T,
+	clusterSessionID int64,
+	fields codecs.SessionEventFields,
+	actingVersion uint16,
+) []byte {
+	t.Helper()
+
+	fields.ClusterSessionID = clusterSessionID
 
 	return encodeSchemaWire(
 		t,
-		gensbe.SessionEventSbeSchemaVersion,
+		actingVersion,
 		func(buf []byte, offset int, actingVersion uint16) (int, bool) {
 			blockLength := codecs.SessionEventBlockLength(actingVersion)
 			return codecs.EncodeSessionEvent(buf, offset, actingVersion, blockLength, fields)
@@ -233,15 +253,79 @@ func encodeSessionEventWire(t *testing.T, clusterSessionID int64) []byte {
 	)
 }
 
-func encodeNewLeaderWire(t *testing.T, clusterSessionID int64) []byte {
+func encodeSessionEventWireWithLeaderHeartbeat(
+	t *testing.T,
+	clusterSessionID int64,
+	leaderHeartbeatTimeoutNs int64,
+) []byte {
+	t.Helper()
+
+	fields := defaultSessionEventFields([]byte("session-event-detail"))
+	fields.LeaderHeartbeatTimeoutNs = leaderHeartbeatTimeoutNs
+	return encodeSessionEventWireWithFields(
+		t,
+		clusterSessionID,
+		fields,
+		gensbe.SessionEventSbeSchemaVersion,
+	)
+}
+
+func writePreV13SessionEventForConnect(
+	t *testing.T,
+	termBuffer atomic.AtomicBuffer,
+	correlationID int64,
+) {
+	t.Helper()
+
+	fields := defaultSessionEventFields([]byte("pre-v13-heartbeat"))
+	fields.CorrelationID = correlationID
+	writeUnfragmentedWireToTerm(
+		t,
+		termBuffer,
+		encodeSessionEventWireWithFields(
+			t,
+			egressTestClusterSessionID,
+			fields,
+			12,
+		),
+	)
+}
+
+func encodeSessionEventWireOmittedHeartbeat(t *testing.T, clusterSessionID int64) []byte {
+	t.Helper()
+
+	const actingVersion uint16 = 13
+
+	fields := defaultSessionEventFields([]byte("omit-heartbeat"))
+	fields.LeaderHeartbeatTimeoutNs = math.MinInt64
+	return encodeSessionEventWireWithFields(
+		t,
+		clusterSessionID,
+		fields,
+		actingVersion,
+	)
+}
+
+func encodeNewLeaderWireWithEndpoints(
+	t *testing.T,
+	clusterSessionID int64,
+	leaderMemberID int32,
+	ingressEndpoints []byte,
+) []byte {
 	t.Helper()
 
 	return encodeCodecWire(t, gensbe.NewLeaderEventSbeSchemaVersion, codecs.NewLeaderEventFields{
 		LeadershipTermID: 200,
 		ClusterSessionID: clusterSessionID,
-		LeaderMemberID:   1,
-		IngressEndpoints: []byte("0=localhost:20110"),
+		LeaderMemberID:   leaderMemberID,
+		IngressEndpoints: ingressEndpoints,
 	}, codecs.EncodeNewLeaderEvent)
+}
+
+func encodeNewLeaderWire(t *testing.T, clusterSessionID int64) []byte {
+	t.Helper()
+
+	return encodeNewLeaderWireWithEndpoints(t, clusterSessionID, 1, []byte("0=localhost:20110"))
 }
 
 func encodeAdminResponseWire(t *testing.T, clusterSessionID int64) []byte {
@@ -257,13 +341,33 @@ func encodeAdminResponseWire(t *testing.T, clusterSessionID int64) []byte {
 	}, codecs.EncodeAdminResponse)
 }
 
-func encodeChallengeWire(t *testing.T, clusterSessionID int64) []byte {
+func encodeChallengeWireWithCorrelation(
+	t *testing.T,
+	clusterSessionID int64,
+	correlationID int64,
+) []byte {
 	t.Helper()
 
 	return encodeCodecWire(t, gensbe.ChallengeSbeSchemaVersion, codecs.ChallengeFields{
-		CorrelationID:    404,
+		CorrelationID:    correlationID,
 		ClusterSessionID: clusterSessionID,
 		EncodedChallenge: []byte("challenge-bytes"),
+	}, codecs.EncodeChallenge)
+}
+
+func encodeChallengeWire(t *testing.T, clusterSessionID int64) []byte {
+	t.Helper()
+
+	return encodeChallengeWireWithCorrelation(t, clusterSessionID, 404)
+}
+
+func encodeChallengeWireEmpty(t *testing.T, clusterSessionID int64) []byte {
+	t.Helper()
+
+	return encodeCodecWire(t, gensbe.ChallengeSbeSchemaVersion, codecs.ChallengeFields{
+		CorrelationID:    505,
+		ClusterSessionID: clusterSessionID,
+		EncodedChallenge: nil,
 	}, codecs.EncodeChallenge)
 }
 
@@ -283,6 +387,65 @@ func encodeWireWithSchemaID(t *testing.T, schemaID uint16) []byte {
 	schemaOffset := codecs.MessageHeaderEncodedLen() - 4
 	binary.LittleEndian.PutUint16(wire[schemaOffset:], schemaID)
 	return wire
+}
+
+func newConnectEgressPollerForTest(sub *aeron.Subscription) *ConnectEgressPoller {
+	return NewConnectEgressPoller(sub, DefaultConnectEgressFragmentLimit)
+}
+
+func invokeHandleConnectEgressFragment(
+	t *testing.T,
+	poller *ConnectEgressPoller,
+	wire []byte,
+) {
+	t.Helper()
+	invokeHandleConnectEgressFragmentAt(t, poller, wire, 0, len(wire))
+}
+
+func invokeHandleConnectEgressFragmentAt(
+	t *testing.T,
+	poller *ConnectEgressPoller,
+	buf []byte,
+	offset int,
+	length int,
+) {
+	t.Helper()
+
+	handleConnectEgressFragment(poller, atomic.Wrap(buf), offset, length, &aeron.Header{})
+}
+
+func wireBufferWithPrefix(wire []byte, prefixLen int) []byte {
+	buf := make([]byte, prefixLen+len(wire))
+	copy(buf[prefixLen:], wire)
+	return buf
+}
+
+func invokeHandleConnectEgressFragmentWithPrefix(
+	t *testing.T,
+	poller *ConnectEgressPoller,
+	wire []byte,
+	prefixLen int,
+) {
+	t.Helper()
+	require.GreaterOrEqual(t, prefixLen, 0)
+
+	buf := wireBufferWithPrefix(wire, prefixLen)
+	invokeHandleConnectEgressFragmentAt(t, poller, buf, prefixLen, len(wire))
+}
+
+func requireHandleConnectEgressFragmentAtNoPanicNoCalls(
+	t *testing.T,
+	poller *ConnectEgressPoller,
+	buf []byte,
+	offset int,
+	length int,
+) {
+	t.Helper()
+
+	require.NotPanics(t, func() {
+		invokeHandleConnectEgressFragmentAt(t, poller, buf, offset, length)
+	})
+	require.False(t, poller.IsPollComplete())
 }
 
 func invokeHandleEgressFragment(
@@ -305,8 +468,7 @@ func invokeHandleEgressFragmentWithPrefix(
 	t.Helper()
 	require.GreaterOrEqual(t, prefixLen, 0)
 
-	buf := make([]byte, prefixLen+len(wire))
-	copy(buf[prefixLen:], wire)
+	buf := wireBufferWithPrefix(wire, prefixLen)
 	invokeHandleEgressFragmentAt(t, handler, clusterSessionID, buf, prefixLen, len(wire))
 }
 
@@ -435,20 +597,12 @@ const (
 	fragmentFrameTermID    = int32(7)
 )
 
-func fragmentTermCapacity(chunks [][]byte) int {
+func fragmentedFrameTermCapacity(specs []fragmentedFrameSpec) int {
 	total := 64
-	for _, chunk := range chunks {
-		total += logbuffer.AlignFrameLength(len(chunk) + logbuffer.DataHeaderLength)
+	for _, spec := range specs {
+		total += logbuffer.AlignFrameLength(len(spec.payload) + logbuffer.DataHeaderLength)
 	}
 	return total
-}
-
-func fragmentedFrameTermCapacity(specs []fragmentedFrameSpec) int {
-	payloads := make([][]byte, len(specs))
-	for i, spec := range specs {
-		payloads[i] = spec.payload
-	}
-	return fragmentTermCapacity(payloads)
 }
 
 func writeCommittedFragmentFrames(
@@ -521,4 +675,188 @@ func deliverFragment(
 	payloadLength := int(frameLength) - logbuffer.DataHeaderLength
 	header := fragmentHeaderAt(termBuffer, frameOffset)
 	assembler.Handler()(termBuffer, payloadOffset, payloadLength, header)
+}
+
+func unfragmentedFrameSpecs(wire []byte) []fragmentedFrameSpec {
+	return []fragmentedFrameSpec{{
+		flags:   logbuffer.Unfragmented,
+		payload: wire,
+	}}
+}
+
+func writeHookCommittedFragmentFrames(
+	t fragmentTestHelper,
+	termBuffer atomic.AtomicBuffer,
+	startOffset int,
+	specs []fragmentedFrameSpec,
+) {
+	t.Helper()
+
+	writeCommittedFragmentFramesForStream(
+		t,
+		termBuffer,
+		startOffset,
+		hookFrameSessionID,
+		hookFrameStreamID,
+		specs,
+	)
+}
+
+func writeUnfragmentedWireToTerm(
+	t fragmentTestHelper,
+	termBuffer atomic.AtomicBuffer,
+	wire []byte,
+) {
+	t.Helper()
+
+	writeHookCommittedFragmentFrames(t, termBuffer, 0, unfragmentedFrameSpecs(wire))
+}
+
+func appendUnfragmentedWireToTerm(
+	t fragmentTestHelper,
+	termBuffer atomic.AtomicBuffer,
+	wire []byte,
+) {
+	t.Helper()
+
+	offset := nextHookTermWriteOffset(termBuffer)
+	writeHookCommittedFragmentFrames(t, termBuffer, offset, unfragmentedFrameSpecs(wire))
+}
+
+func nextHookTermWriteOffset(termBuffer atomic.AtomicBuffer) int {
+	offset := 0
+	for {
+		frameLength := logbuffer.FrameLengthVolatile(termBuffer, offset)
+		if frameLength <= 0 {
+			return offset
+		}
+		next := offset + logbuffer.AlignFrameLength(int(frameLength))
+		if next >= termBuffer.Capacity() {
+			return offset
+		}
+		offset = next
+	}
+}
+
+func splitWireFragmentSpecs(wire []byte) []fragmentedFrameSpec {
+	split := len(wire) / 2
+	return []fragmentedFrameSpec{
+		{flags: logbuffer.BeginFlag, payload: wire[:split]},
+		{flags: logbuffer.EndFlag, payload: wire[split:]},
+	}
+}
+
+func writeFragmentedWireToTerm(
+	t fragmentTestHelper,
+	termBuffer atomic.AtomicBuffer,
+	wire []byte,
+) {
+	t.Helper()
+
+	writeHookCommittedFragmentFrames(t, termBuffer, 0, splitWireFragmentSpecs(wire))
+}
+
+func writeSessionEventForConnect(
+	t *testing.T,
+	termBuffer atomic.AtomicBuffer,
+	correlationID int64,
+) {
+	t.Helper()
+
+	writeSessionEventWireToTerm(t, termBuffer, correlationID, writeUnfragmentedWireToTerm)
+}
+
+func appendSessionEventForConnect(
+	t *testing.T,
+	termBuffer atomic.AtomicBuffer,
+	correlationID int64,
+) {
+	t.Helper()
+
+	writeSessionEventWireToTerm(t, termBuffer, correlationID, appendUnfragmentedWireToTerm)
+}
+
+func encodeSessionEventForConnectWire(t *testing.T, correlationID int64) []byte {
+	t.Helper()
+
+	fields := defaultSessionEventFields([]byte("session-event-detail"))
+	fields.CorrelationID = correlationID
+	return encodeSessionEventWireWithFields(
+		t,
+		egressTestClusterSessionID,
+		fields,
+		gensbe.SessionEventSbeSchemaVersion,
+	)
+}
+
+func encodeSessionEventRedirectWire(t *testing.T, correlationID int64, endpoints string) []byte {
+	t.Helper()
+
+	fields := defaultSessionEventFields([]byte(endpoints))
+	fields.CorrelationID = correlationID
+	fields.Code = gensbe.EventCode_REDIRECT
+	fields.LeaderMemberID = 1
+	return encodeSessionEventWireWithFields(
+		t,
+		egressTestClusterSessionID,
+		fields,
+		gensbe.SessionEventSbeSchemaVersion,
+	)
+}
+
+func writeSessionEventWireToTerm(
+	t *testing.T,
+	termBuffer atomic.AtomicBuffer,
+	correlationID int64,
+	write func(fragmentTestHelper, atomic.AtomicBuffer, []byte),
+) {
+	t.Helper()
+
+	write(t, termBuffer, encodeSessionEventForConnectWire(t, correlationID))
+}
+
+func writeChallengeForConnect(
+	t *testing.T,
+	termBuffer atomic.AtomicBuffer,
+	correlationID int64,
+) {
+	t.Helper()
+
+	writeUnfragmentedWireToTerm(
+		t,
+		termBuffer,
+		encodeChallengeWireWithCorrelation(t, egressTestClusterSessionID, correlationID),
+	)
+}
+
+func writeRedirectNewLeaderForConnect(
+	t *testing.T,
+	termBuffer atomic.AtomicBuffer,
+	leaderMemberID int32,
+	endpoints string,
+) {
+	t.Helper()
+
+	writeUnfragmentedWireToTerm(
+		t,
+		termBuffer,
+		encodeNewLeaderWireWithEndpoints(
+			t,
+			egressTestClusterSessionID,
+			leaderMemberID,
+			[]byte(endpoints),
+		),
+	)
+}
+
+func writeSessionEventRedirectForConnect(
+	t *testing.T,
+	termBuffer atomic.AtomicBuffer,
+	correlationID int64,
+	endpoints string,
+) {
+	t.Helper()
+
+	wire := encodeSessionEventRedirectWire(t, correlationID, endpoints)
+	writeUnfragmentedWireToTerm(t, termBuffer, wire)
 }

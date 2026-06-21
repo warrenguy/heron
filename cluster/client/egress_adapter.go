@@ -15,7 +15,7 @@ type EgressAdapter struct {
 
 // NewEgressAdapter constructs an EgressAdapter. fragmentLimit <= 0 uses
 // DefaultEgressFragmentLimit. handler must be non-nil before Poll; use
-// &EgressHandlers{} for noop optional callbacks. subscription must be non-nil before Poll.
+// &EgressHandlers{} for noop optional callbacks.
 func NewEgressAdapter(
 	handler EgressHandler,
 	clusterSessionID int64,
@@ -26,15 +26,18 @@ func NewEgressAdapter(
 	if fragmentLimit <= 0 {
 		fragmentLimit = DefaultEgressFragmentLimit
 	}
-	delegate := func(
-		buffer atomic.AtomicBuffer,
-		offset int,
-		length int,
-		header *aeron.Header,
-	) {
-		handleEgressFragment(handler, clusterSessionID, buffer, offset, length, header)
-	}
-	assembler := NewFragmentAssemblerWithOptions(delegate, 0, directAssemblers)
+	assembler := NewFragmentAssemblerWithOptions(
+		func(
+			buffer atomic.AtomicBuffer,
+			offset int,
+			length int,
+			header *aeron.Header,
+		) {
+			handleEgressFragment(handler, clusterSessionID, buffer, offset, length, header)
+		},
+		0,
+		directAssemblers,
+	)
 	return &EgressAdapter{
 		subscription:  subscription,
 		fragmentLimit: fragmentLimit,
@@ -43,7 +46,7 @@ func NewEgressAdapter(
 }
 
 // NewEgressAdapterFromContext constructs an EgressAdapter using DefaultEgressFragmentLimit
-// and ctx.DirectAssemblers. subscription must be non-nil before Poll.
+// and ctx.DirectAssemblers.
 func NewEgressAdapterFromContext(
 	ctx ClusterContext,
 	handler EgressHandler,
@@ -64,6 +67,11 @@ func (adapter *EgressAdapter) FragmentLimit() int {
 }
 
 // Poll polls the subscription and returns the fragment count (Java poll()).
+// Returns 0 when subscription is nil.
 func (adapter *EgressAdapter) Poll() int {
-	return adapter.subscription.Poll(adapter.assembler.Handler(), adapter.fragmentLimit)
+	return pollEgressSubscription(
+		adapter.subscription,
+		adapter.assembler.Handler(),
+		adapter.fragmentLimit,
+	)
 }

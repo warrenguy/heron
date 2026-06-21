@@ -284,8 +284,7 @@ func (conductor *Conductor) checkLiveness(nowNs int64) int {
 		return 1
 	}
 
-	heartbeatCounterUnset := conductor.heartbeatCounterID == cnc.NullCounterID
-	if heartbeatCounterUnset {
+	if conductor.heartbeatCounterID == cnc.NullCounterID {
 		counterID, ok := conductor.countersReader.FindHeartbeatCounter(
 			conductor.config.ClientID,
 			cnc.ClientHeartbeatTypeID,
@@ -333,12 +332,13 @@ func (conductor *Conductor) handleClientTimeout() {
 // PollPending would finish before metadata is filled.
 func (conductor *Conductor) handleCorrelatedEvent(correlationID int64) {
 	registration, ok := conductor.pending.Get(correlationID)
-	if ok {
-		conductor.cachedCorrelatedPending = registration
-	} else {
+	if !ok {
 		conductor.cachedCorrelatedPending = nil
+		conductor.receivedCorrelationID = correlationID
+		return
 	}
-	if !ok || !addPendingKind(registration.Kind) {
+	conductor.cachedCorrelatedPending = registration
+	if !addPendingKind(registration.Kind) {
 		conductor.receivedCorrelationID = correlationID
 	}
 }
@@ -357,7 +357,7 @@ func (conductor *Conductor) addReadyRegistration(
 	wantKind PendingKind,
 ) (*PendingRegistration, bool) {
 	registration, ok := conductor.pendingForReady(correlationID)
-	if !ok || registration.Kind != wantKind {
+	if !ok || registration.Kind != wantKind || registration.Err != nil {
 		return nil, false
 	}
 	return registration, true
@@ -607,7 +607,13 @@ func (conductor *Conductor) bindSubscriptionOnInsert(subscription SubscriptionHa
 	return conductor.resourceLifecycle.BindSubscription(subscription, conductor)
 }
 
-func (conductor *Conductor) handlePendingExpired(registration PendingRegistration, _ bool) {
+func (conductor *Conductor) handlePendingExpired(
+	registration PendingRegistration,
+	removed bool,
+) {
+	if !removed {
+		return
+	}
 	conductor.RollbackAddPendingResources(registration)
 }
 

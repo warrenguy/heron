@@ -4,12 +4,16 @@ package aeron
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/agrona/atomic"
 )
@@ -83,7 +87,22 @@ func NewFileBackedPublicationForHooks(tb testing.TB, logPath string) *Publicatio
 func NewTestExclusivePublicationForHooks(tb testing.TB) *ExclusivePublication {
 	tb.Helper()
 
-	log := newTestHookMappedLog(tb, logbuffer.LogBufferTypeExclusivePublication)
+	return NewTestExclusivePublicationForHooksWithConnected(tb, true)
+}
+
+// NewTestExclusivePublicationForHooksWithConnected builds an exclusive publication
+// with the log metadata is-connected flag set for connect-path tests.
+func NewTestExclusivePublicationForHooksWithConnected(
+	tb testing.TB,
+	connected bool,
+) *ExclusivePublication {
+	tb.Helper()
+
+	log := newTestHookMappedLogWithConnected(
+		tb,
+		logbuffer.LogBufferTypeExclusivePublication,
+		connected,
+	)
 	pub, err := newExclusivePublicationFromReady(
 		testHookPublicationBuffersReady(testHookMappedLogFileName),
 		log,
@@ -154,10 +173,24 @@ func seedTestHookPartitionRawTails(meta atomic.AtomicBuffer) {
 func prepareTestHookLogBuffer(tb testing.TB, logType byte) []byte {
 	tb.Helper()
 
+	return prepareTestHookLogBufferWithConnected(tb, logType, false)
+}
+
+func testHookConnectedInt32(connected bool) int32 {
+	if connected {
+		return 1
+	}
+	return 0
+}
+
+func prepareTestHookLogBufferWithConnected(tb testing.TB, logType byte, connected bool) []byte {
+	tb.Helper()
+
 	buf, meta := allocTestHookLogBuffer(tb)
 	initTestHookLogMetadata(meta)
 	seedTestHookPartitionRawTails(meta)
 	meta.Bytes()[logbuffer.OffsetLogType] = logType
+	meta.PutInt32Release(logbuffer.OffsetIsConnected, testHookConnectedInt32(connected))
 	return buf
 }
 
@@ -171,7 +204,17 @@ func writeTestHookLogFile(tb testing.TB, path string) {
 func newTestHookMappedLog(tb testing.TB, logType byte) *logbuffer.MappedLogBuffer {
 	tb.Helper()
 
-	buf := prepareTestHookLogBuffer(tb, logType)
+	return newTestHookMappedLogWithConnected(tb, logType, false)
+}
+
+func newTestHookMappedLogWithConnected(
+	tb testing.TB,
+	logType byte,
+	connected bool,
+) *logbuffer.MappedLogBuffer {
+	tb.Helper()
+
+	buf := prepareTestHookLogBufferWithConnected(tb, logType, connected)
 
 	log, err := logbuffer.MapLogBufferFromBytes(buf)
 	require.NoError(tb, err)
@@ -184,15 +227,31 @@ func newTestHookMappedLog(tb testing.TB, logType byte) *logbuffer.MappedLogBuffe
 func NewTestImageForHooks(tb testing.TB, sub *Subscription, joinPosition int64) *Image {
 	tb.Helper()
 
+	return NewTestImageForSubscriptionHooks(tb, sub, joinPosition)
+}
+
+// NewTestImageForSubscriptionHooks builds an image whose registration id matches sub.
+func NewTestImageForSubscriptionHooks(tb testing.TB, sub *Subscription, joinPosition int64) *Image {
+	tb.Helper()
+
 	log := newTestHookMappedLog(tb, logbuffer.LogBufferTypeConcurrentPublication)
 	logBuffers, err := logbuffer.NewLogBuffers(log)
 	require.NoError(tb, err)
 
+	event := testHookAvailableImage()
+	if sub != nil {
+		event.SubscriptionRegistrationID = sub.RegistrationID()
+		event.StreamID = sub.StreamID()
+	}
 	image, err := newImage(
 		sub,
-		testHookAvailableImage(),
+		event,
 		logBuffers,
-		newTestHookCountersReaderWithSubscriberPosition(tb, joinPosition),
+		newTestHookCountersReaderWithSubscriberRegistration(
+			tb,
+			event.SubscriptionRegistrationID,
+			joinPosition,
+		),
 		nil,
 	)
 	require.NoError(tb, err)
@@ -290,8 +349,435 @@ func newTestHookCountersReader(tb testing.TB) *cnc.CountersReader {
 	)
 }
 
-func newTestHookCountersReaderWithSubscriberPosition(
+// NewTestClientFromConductorFixture builds a transport client wired to a synthetic
+// conductor fixture for cross-package connect handshake tests.
+func NewTestClientFromConductorFixture(
 	tb testing.TB,
+	fixture *testutil.ConductorFixture,
+) *Client {
+	tb.Helper()
+
+	return &Client{
+		clientID:          testutil.TestClientID,
+		conductor:         fixture.Conductor,
+		driverProxy:       fixture.DriverProxy,
+		nanoClock:         fixture.NanoClock,
+		driverTimeout:     testutil.TestDriverTimeout,
+		idleSleepDuration: testutil.TestIdleSleepDuration,
+	}
+}
+
+const (
+	asyncConnectTestIngressRegID int64 = 3001
+)
+
+// AsyncConnectTestHarness wires a synthetic conductor fixture for cluster connect tests.
+type AsyncConnectTestHarness struct {
+	Client  *Client
+	LogPath string
+	// ConcurrentLogPath backs non-exclusive AddPublication responses.
+	ConcurrentLogPath string
+	// MediaDriverDir is the synthetic driver directory for member log paths.
+	MediaDriverDir string
+
+	fixture *testutil.ConductorFixture
+}
+
+// NewAsyncConnectTestHarness builds a synthetic driver-backed client for connect tests.
+func NewAsyncConnectTestHarness(tb testing.TB) *AsyncConnectTestHarness {
+	tb.Helper()
+
+	dir := tb.TempDir()
+	logPath := asyncConnectTestExclusiveLogPath(tb, dir)
+	concurrentLogPath := asyncConnectTestConcurrentLogPath(tb, dir)
+	config := testutil.DefaultConductorConfig(nil)
+	config.MediaDriverDir = dir
+	config.ImageLifecycle = ConductorImageLifecycle
+	config.ResourceLifecycle = ConductorResourceLifecycle
+	fixture := testutil.NewConductorFixture(tb, config)
+	client := NewTestClientFromConductorFixture(tb, fixture)
+	fixture.Conductor.SetCountersReaderForTest(asyncConnectTestCountersReader(tb))
+	harness := &AsyncConnectTestHarness{
+		Client:            client,
+		LogPath:           logPath,
+		ConcurrentLogPath: concurrentLogPath,
+		MediaDriverDir:    dir,
+		fixture:           fixture,
+	}
+	tb.Cleanup(func() {
+		if harness.Client != nil {
+			_ = harness.Client.Close()
+		}
+	})
+	return harness
+}
+
+// SetCountersReaderForRegs replaces the conductor counters reader for multi-member tests.
+func (harness *AsyncConnectTestHarness) SetCountersReaderForRegs(
+	tb testing.TB,
+	registrationIDs ...int64,
+) {
+	if harness == nil || harness.fixture == nil {
+		return
+	}
+	harness.fixture.Conductor.SetCountersReaderForTest(
+		asyncConnectTestCountersReaderForRegs(tb, registrationIDs...),
+	)
+}
+
+// Fixture exposes the synthetic conductor fixture for driver error injection in tests.
+func (harness *AsyncConnectTestHarness) Fixture() *testutil.ConductorFixture {
+	if harness == nil {
+		return nil
+	}
+	return harness.fixture
+}
+
+// DoWork runs one transport client tick.
+func (harness *AsyncConnectTestHarness) DoWork() {
+	if harness != nil && harness.Client != nil {
+		harness.Client.DoWork()
+	}
+}
+
+// RespondPendingAdds completes subscription and publication add commands on the ring.
+func (harness *AsyncConnectTestHarness) RespondPendingAdds() {
+	if harness == nil || harness.fixture == nil {
+		return
+	}
+	harness.respondPendingAddsWithLog(harness.LogPath, asyncConnectTestIngressRegID)
+}
+
+// RespondSubscriptionAdd completes only ADD_SUBSCRIPTION commands on the ring.
+func (harness *AsyncConnectTestHarness) RespondSubscriptionAdd() {
+	if harness == nil || harness.fixture == nil {
+		return
+	}
+	harness.pollRing(
+		500*time.Millisecond,
+		func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) bool {
+			if msgTypeID != conductor.AddSubscription {
+				return false
+			}
+			return harness.completeSubscriptionAdd(buffer, index, length)
+		},
+	)
+}
+
+// RespondExclusiveAdds completes exclusive publication adds with per-offer log paths.
+func (harness *AsyncConnectTestHarness) RespondExclusiveAdds(
+	logPaths []string,
+	registrationIDs []int64,
+) {
+	if harness == nil || harness.fixture == nil || len(logPaths) == 0 {
+		return
+	}
+	if len(registrationIDs) == 0 {
+		registrationIDs = []int64{asyncConnectTestIngressRegID}
+	}
+	pubIdx := 0
+	harness.pollRing(
+		200*time.Millisecond,
+		func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) bool {
+			if msgTypeID != conductor.AddExclusivePublication {
+				return false
+			}
+			decoded, err := conductor.DecodePublicationMessage(buffer, index, length)
+			if err != nil {
+				return false
+			}
+			path := logPaths[min(pubIdx, len(logPaths)-1)]
+			regID := registrationIDs[min(pubIdx, len(registrationIDs)-1)]
+			ready := asyncConnectTestExclusivePublicationReady(
+				decoded.CorrelationID,
+				path,
+				regID,
+				pubIdx,
+			)
+			conductor.ExclusivePublicationReadyForTest(harness.fixture.Conductor, ready)
+			pubIdx++
+			return true
+		},
+	)
+}
+
+// PendingResult reports whether a pending registration exists for correlationID.
+func (harness *AsyncConnectTestHarness) PendingResult(
+	correlationID int64,
+) (conductor.PendingRegistration, bool) {
+	if harness == nil || harness.fixture == nil {
+		return conductor.PendingRegistration{}, false
+	}
+	return harness.fixture.Conductor.PendingResult(correlationID)
+}
+
+// PublicationCount reports registered publications on the synthetic conductor.
+func (harness *AsyncConnectTestHarness) PublicationCount() int {
+	if harness == nil || harness.fixture == nil {
+		return 0
+	}
+	return conductor.PublicationCountForTest(harness.fixture.Conductor)
+}
+
+// ClientIsClosedForTest reports whether the transport client has completed Close.
+func ClientIsClosedForTest(client *Client) bool {
+	if client == nil {
+		return false
+	}
+	return client.closed.Load()
+}
+
+// ExclusiveMemberAdd maps an ingress endpoint substring to a synthetic log path and
+// registration id for multi-member connect tests.
+type ExclusiveMemberAdd struct {
+	EndpointSubstring string
+	LogPath           string
+	RegistrationID    int64
+	// CounterIndex selects publication limit/status counter ids (index*2, index*2+1)
+	// for SetCountersReaderForRegs ordering.
+	CounterIndex int
+}
+
+// RespondSubscriptionAndExclusiveMemberAdds completes subscription and pending
+// exclusive publication adds in one ring pass so mixed commands are not dropped.
+func (harness *AsyncConnectTestHarness) RespondSubscriptionAndExclusiveMemberAdds(
+	members []ExclusiveMemberAdd,
+) {
+	if harness == nil || harness.fixture == nil {
+		return
+	}
+	harness.fixture.Ring.Read(func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
+		switch msgTypeID {
+		case conductor.AddSubscription:
+			harness.completeSubscriptionAdd(buffer, index, length)
+		case conductor.AddExclusivePublication:
+			decoded, err := conductor.DecodePublicationMessage(buffer, index, length)
+			if err != nil {
+				return
+			}
+			for _, member := range members {
+				if member.LogPath == "" {
+					continue
+				}
+				if member.EndpointSubstring != "" &&
+					!strings.Contains(decoded.Channel, member.EndpointSubstring) {
+					continue
+				}
+				ready := asyncConnectTestExclusivePublicationReady(
+					decoded.CorrelationID,
+					member.LogPath,
+					member.RegistrationID,
+					member.CounterIndex,
+				)
+				conductor.ExclusivePublicationReadyForTest(harness.fixture.Conductor, ready)
+				return
+			}
+		}
+	})
+}
+
+// MemberExclusiveLogPath writes an exclusive publication log for multi-member connect tests.
+func MemberExclusiveLogPath(tb testing.TB, dir string, connected bool) string {
+	tb.Helper()
+
+	suffix := "disconnected"
+	if connected {
+		suffix = "connected"
+	}
+	logPath := filepath.Join(dir, "member-exclusive-"+suffix+".log")
+	writeAsyncConnectExclusiveLogFile(tb, logPath, connected)
+	return logPath
+}
+
+func (harness *AsyncConnectTestHarness) respondPendingAddsWithLog(
+	defaultLogPath string,
+	defaultRegID int64,
+) {
+	harness.pollRing(
+		200*time.Millisecond,
+		func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) bool {
+			switch msgTypeID {
+			case conductor.AddSubscription:
+				return harness.completeSubscriptionAdd(buffer, index, length)
+			case conductor.AddExclusivePublication:
+				decoded, err := conductor.DecodePublicationMessage(buffer, index, length)
+				if err != nil {
+					return false
+				}
+				ready := asyncConnectTestPublicationReady(
+					decoded.CorrelationID,
+					defaultLogPath,
+					defaultRegID,
+				)
+				conductor.ExclusivePublicationReadyForTest(harness.fixture.Conductor, ready)
+				return true
+			case conductor.AddPublication:
+				decoded, err := conductor.DecodePublicationMessage(buffer, index, length)
+				if err != nil {
+					return false
+				}
+				logPath := defaultLogPath
+				if harness.ConcurrentLogPath != "" {
+					logPath = harness.ConcurrentLogPath
+				}
+				ready := asyncConnectTestPublicationReady(
+					decoded.CorrelationID,
+					logPath,
+					defaultRegID,
+				)
+				conductor.PublicationReadyForTest(harness.fixture.Conductor, ready)
+				return true
+			default:
+				return false
+			}
+		},
+	)
+}
+
+func (harness *AsyncConnectTestHarness) pollRing(
+	timeout time.Duration,
+	handler func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) bool,
+) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var handled bool
+		harness.fixture.Ring.Read(func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
+			if handler(msgTypeID, buffer, index, length) {
+				handled = true
+			}
+		})
+		if handled {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func (harness *AsyncConnectTestHarness) completeSubscriptionAdd(
+	buffer atomic.AtomicBuffer,
+	index, length int,
+) bool {
+	decoded, err := conductor.DecodeSubscriptionMessage(buffer, index, length)
+	if err != nil {
+		return false
+	}
+	conductor.SubscriptionReadyForTest(
+		harness.fixture.Conductor,
+		asyncConnectTestSubscriptionReady(decoded.CorrelationID),
+	)
+	return true
+}
+
+func asyncConnectTestCountersReader(tb testing.TB) *cnc.CountersReader {
+	tb.Helper()
+
+	return asyncConnectTestCountersReaderForRegs(tb, asyncConnectTestIngressRegID)
+}
+
+func asyncConnectTestCountersReaderForRegs(
+	tb testing.TB,
+	registrationIDs ...int64,
+) *cnc.CountersReader {
+	tb.Helper()
+
+	if len(registrationIDs) == 0 {
+		registrationIDs = []int64{asyncConnectTestIngressRegID}
+	}
+	recordCount := len(registrationIDs) * 2
+	meta := make([]byte, cnc.CounterMetadataLength*recordCount)
+	values := make([]byte, cnc.CounterValueLength*recordCount)
+	for i, registrationID := range registrationIDs {
+		limitID := int32(i * 2)
+		statusID := int32(i*2 + 1)
+		cnc.WriteCounterRecord(
+			meta,
+			values,
+			limitID,
+			cnc.CounterRecordAllocated,
+			cnc.DriverPublisherLimitTypeID,
+			registrationID,
+			1<<40,
+		)
+		err := cnc.WriteChannelStatusCounterRecord(
+			meta,
+			values,
+			statusID,
+			cnc.CounterRecordAllocated,
+			cnc.DriverSendChannelStatusTypeID,
+			testHookIPCChannel,
+			registrationID,
+			1,
+		)
+		require.NoError(tb, err)
+	}
+	reader, err := cnc.NewCountersReader(meta, values)
+	require.NoError(tb, err)
+	return reader
+}
+
+func asyncConnectTestPublicationReady(
+	correlationID int64,
+	logPath string,
+	registrationID int64,
+) conductor.PublicationBuffersReady {
+	return conductor.PublicationBuffersReady{
+		CorrelationID:             correlationID,
+		RegistrationID:            registrationID,
+		SessionID:                 51,
+		StreamID:                  101,
+		PublicationLimitCounterID: 0,
+		ChannelStatusCounterID:    1,
+		LogFileName:               logPath,
+	}
+}
+
+func asyncConnectTestExclusivePublicationReady(
+	correlationID int64,
+	logPath string,
+	registrationID int64,
+	counterIndex int,
+) conductor.PublicationBuffersReady {
+	ready := asyncConnectTestPublicationReady(correlationID, logPath, registrationID)
+	ready.PublicationLimitCounterID = int32(counterIndex * 2)
+	ready.ChannelStatusCounterID = int32(counterIndex*2 + 1)
+	return ready
+}
+
+func asyncConnectTestSubscriptionReady(correlationID int64) conductor.SubscriptionReady {
+	return conductor.SubscriptionReady{
+		CorrelationID:          correlationID,
+		ChannelStatusCounterID: 3,
+	}
+}
+
+func asyncConnectTestExclusiveLogPath(tb testing.TB, dir string) string {
+	tb.Helper()
+
+	logPath := filepath.Join(dir, "exclusive-publication.log")
+	writeAsyncConnectExclusiveLogFile(tb, logPath, true)
+	return logPath
+}
+
+func asyncConnectTestConcurrentLogPath(tb testing.TB, dir string) string {
+	tb.Helper()
+
+	logPath := filepath.Join(dir, "concurrent-publication.log")
+	cfg := defaultInMemPublicationLogConfig()
+	require.NoError(tb, os.WriteFile(logPath, inMemPublicationLogBytes(cfg), 0o644))
+	return logPath
+}
+
+func writeAsyncConnectExclusiveLogFile(tb testing.TB, logPath string, connected bool) {
+	tb.Helper()
+
+	cfg := defaultInMemExclusivePublicationLogConfig()
+	cfg.IsConnected = testHookConnectedInt32(connected)
+	require.NoError(tb, os.WriteFile(logPath, inMemPublicationLogBytes(cfg), 0o644))
+}
+
+func newTestHookCountersReaderWithSubscriberRegistration(
+	tb testing.TB,
+	subscriptionRegistrationID int64,
 	joinPosition int64,
 ) *cnc.CountersReader {
 	tb.Helper()
@@ -306,7 +792,7 @@ func newTestHookCountersReaderWithSubscriberPosition(
 				testHookSubscriberPositionCounterID,
 				cnc.CounterRecordAllocated,
 				cnc.DriverSubscriberPositionTypeID,
-				testHookSubscriptionRegistrationID,
+				subscriptionRegistrationID,
 				joinPosition,
 			)
 		},

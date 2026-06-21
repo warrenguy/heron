@@ -19,9 +19,8 @@ type ClusterContext struct {
 	// IngressChannel is required for cluster connect.
 	IngressChannel string
 
-	// EgressChannel is required for cluster connect.
-	// UDP rejoin=false injection is applied at connect time; no channel URI parser
-	// exists in transport today.
+	// EgressChannel is required for cluster connect. ipc and ipcx only; UDP egress is
+	// rejected by ValidateForConnect.
 	EgressChannel string
 
 	// IngressEndpoints is "0=host:port,1=host:port"; empty means unset (Java null).
@@ -93,25 +92,32 @@ func (ctx ClusterContext) Normalize() ClusterContext {
 	return ctx
 }
 
-// Validate checks cluster context after Normalize. All errors use the cluster
-// client: prefix. Call Normalize before Validate and connect.
+// ValidateForConnect checks cluster context after Normalize for async connect.
+// Same as Validate except EgressHandler is not required. ControlledEgressHandler
+// is not validated by either method. All errors use the cluster client: prefix.
+// Call Normalize before ValidateForConnect and connect.
+func (ctx ClusterContext) ValidateForConnect() error {
+	return ctx.validateClusterContext(false)
+}
+
+// Validate checks cluster context after Normalize. Same as ValidateForConnect but
+// requires EgressHandler. Call Normalize before Validate and connect.
 func (ctx ClusterContext) Validate() error {
+	return ctx.validateClusterContext(true)
+}
+
+func (ctx ClusterContext) validateClusterContext(requireEgressHandler bool) error {
 	if ctx.IngressChannel == "" {
 		return errors.New("cluster client: IngressChannel is required")
 	}
 	if ctx.EgressChannel == "" {
 		return errors.New("cluster client: EgressChannel is required")
 	}
-	if ingressChannelIsIPC(ctx.IngressChannel) && ctx.IngressEndpoints != "" {
-		return errors.New("cluster client: IngressEndpoints must be empty for IPC ingress")
+	if err := validateClusterIngressEndpoints(ctx.IngressChannel, ctx.IngressEndpoints); err != nil {
+		return err
 	}
-	if ctx.IngressEndpoints != "" {
-		if ingressChannelIsUDP(ctx.IngressChannel) &&
-			ingressChannelQueryEndpointParamIndex(ctx.IngressChannel) >= 0 {
-			return errors.New(
-				"cluster client: IngressChannel must not use ?endpoint= when IngressEndpoints is configured",
-			)
-		}
+	if err := validateClusterEgressChannel(ctx.EgressChannel); err != nil {
+		return err
 	}
 	if len(ctx.ClientName) > MaxClientNameLength {
 		return errors.New(
@@ -125,10 +131,7 @@ func (ctx ClusterContext) Validate() error {
 	if ctx.NewLeaderTimeout < 0 {
 		return errors.New("cluster client: NewLeaderTimeout must not be negative")
 	}
-	if ctx.EgressHandler == nil {
-		return errors.New("cluster client: EgressHandler is required")
-	}
-	if handlers, ok := ctx.EgressHandler.(*EgressHandlers); ok && handlers == nil {
+	if requireEgressHandler && egressHandlerMissing(ctx.EgressHandler) {
 		return errors.New("cluster client: EgressHandler is required")
 	}
 	if ctx.CredentialsSupplier == nil {
@@ -140,12 +143,32 @@ func (ctx ClusterContext) Validate() error {
 	return nil
 }
 
+func validateClusterIngressEndpoints(ingressChannel, ingressEndpoints string) error {
+	if ingressChannelPassthrough(ingressChannel) && ingressEndpoints != "" {
+		return errors.New("cluster client: IngressEndpoints must be empty for ipc/ipcx ingress")
+	}
+	if ingressEndpoints == "" {
+		return nil
+	}
+	if ingressChannelIsUDP(ingressChannel) &&
+		ingressChannelQueryEndpointParamIndex(ingressChannel) >= 0 {
+		return errors.New(
+			"cluster client: IngressChannel must not use ?endpoint= when IngressEndpoints is configured",
+		)
+	}
+	return validateIngressChannelForMemberEndpoints(ingressChannel)
+}
+
+func egressHandlerMissing(handler EgressHandler) bool {
+	if handler == nil {
+		return true
+	}
+	handlers, isHandlers := handler.(*EgressHandlers)
+	return isHandlers && handlers == nil
+}
+
 // OwnsAeronClient reports whether connect should close the transport client.
 // false when ctx.Aeron is set; true when connect creates an owned client.
 func (ctx ClusterContext) OwnsAeronClient() bool {
 	return ctx.Aeron == nil
-}
-
-func ingressChannelIsIPC(channel string) bool {
-	return ingressChannelMediaIs(channel, "ipc")
 }

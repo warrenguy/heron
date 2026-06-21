@@ -15,8 +15,13 @@ import (
 
 const (
 	testIngressEndpointsMap      = "0=localhost:20110"
+	errPassthroughIngressWithMap = "cluster client: IngressEndpoints must be empty for " +
+		"ipc/ipcx ingress"
 	errUDPIngressEndpointWithMap = "cluster client: IngressChannel must not use ?endpoint= " +
 		"when IngressEndpoints is configured"
+	errEgressHandlerRequired    = "cluster client: EgressHandler is required"
+	errUDPEgressResponseChannel = "cluster client: UDP egress response channel not " +
+		"supported; use ipc or ipcx"
 )
 
 func withIngressChannelAndEndpoints(channel, endpoints string) func(*client.ClusterContext) {
@@ -26,10 +31,18 @@ func withIngressChannelAndEndpoints(channel, endpoints string) func(*client.Clus
 	}
 }
 
+func withNilEgressHandler(ctx *client.ClusterContext) {
+	ctx.EgressHandler = nil
+}
+
+func withTypedNilEgressHandlers(ctx *client.ClusterContext) {
+	ctx.EgressHandler = (*client.EgressHandlers)(nil)
+}
+
 func validClusterContext() client.ClusterContext {
 	return client.ClusterContext{
 		IngressChannel:      "aeron:udp?endpoint=localhost:20110",
-		EgressChannel:       "aeron:udp?endpoint=localhost:20111",
+		EgressChannel:       "aeron:ipc",
 		EgressHandler:       &client.EgressHandlers{},
 		CredentialsSupplier: client.NullCredentialsSupplier{},
 		IdleStrategy:        client.NewDefaultIdleStrategy(),
@@ -175,23 +188,70 @@ func TestValidateClusterContext_errors(t *testing.T) {
 			wantErr: "cluster client: EgressChannel is required",
 		},
 		{
+			name: "udp egress channel",
+			mutate: func(ctx *client.ClusterContext) {
+				ctx.EgressChannel = "aeron:udp?endpoint=localhost:20111"
+			},
+			wantErr: errUDPEgressResponseChannel,
+		},
+		{
+			name: "spy udp egress channel",
+			mutate: func(ctx *client.ClusterContext) {
+				ctx.EgressChannel = "aeron-spy:aeron:udp?endpoint=localhost:0"
+			},
+			wantErr: errUDPEgressResponseChannel,
+		},
+		{
+			name: "unknown egress media",
+			mutate: func(ctx *client.ClusterContext) {
+				ctx.EgressChannel = "aeron:unknown"
+			},
+			wantErr: "cluster client: unknown egress response channel not supported; use ipc or ipcx",
+		},
+		{
+			name: "invalid egress channel",
+			mutate: func(ctx *client.ClusterContext) {
+				ctx.EgressChannel = "not-a-channel"
+			},
+			wantErr: "cluster client: invalid egress channel: not-a-channel",
+		},
+		{
 			name:    "ipc ingress with endpoints",
 			mutate:  withIngressChannelAndEndpoints("aeron:ipc", testIngressEndpointsMap),
-			wantErr: "cluster client: IngressEndpoints must be empty for IPC ingress",
+			wantErr: errPassthroughIngressWithMap,
 		},
 		{
 			name: "ipc ingress with query and endpoints",
 			mutate: withIngressChannelAndEndpoints(
 				"aeron:ipc?alias=ingress", testIngressEndpointsMap,
 			),
-			wantErr: "cluster client: IngressEndpoints must be empty for IPC ingress",
+			wantErr: errPassthroughIngressWithMap,
 		},
 		{
 			name: "spy ipc ingress with endpoints",
 			mutate: withIngressChannelAndEndpoints(
 				"aeron-spy:aeron:ipc", testIngressEndpointsMap,
 			),
-			wantErr: "cluster client: IngressEndpoints must be empty for IPC ingress",
+			wantErr: errPassthroughIngressWithMap,
+		},
+		{
+			name:    "ipcx ingress with endpoints",
+			mutate:  withIngressChannelAndEndpoints("aeron:ipcx", testIngressEndpointsMap),
+			wantErr: errPassthroughIngressWithMap,
+		},
+		{
+			name: "ipcx ingress endpoint query with endpoints map",
+			mutate: withIngressChannelAndEndpoints(
+				"aeron:ipcx?endpoint=localhost:0", testIngressEndpointsMap,
+			),
+			wantErr: errPassthroughIngressWithMap,
+		},
+		{
+			name: "spy ipcx ingress with endpoints",
+			mutate: withIngressChannelAndEndpoints(
+				"aeron-spy:aeron:ipcx", testIngressEndpointsMap,
+			),
+			wantErr: errPassthroughIngressWithMap,
 		},
 		{
 			name: "udp ingress endpoint with ingress endpoints map",
@@ -229,18 +289,14 @@ func TestValidateClusterContext_errors(t *testing.T) {
 			wantErr: "cluster client: NewLeaderTimeout must not be negative",
 		},
 		{
-			name: "nil egress handler",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.EgressHandler = nil
-			},
-			wantErr: "cluster client: EgressHandler is required",
+			name:    "nil egress handler",
+			mutate:  withNilEgressHandler,
+			wantErr: errEgressHandlerRequired,
 		},
 		{
-			name: "typed nil egress handlers",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.EgressHandler = (*client.EgressHandlers)(nil)
-			},
-			wantErr: "cluster client: EgressHandler is required",
+			name:    "typed nil egress handlers",
+			mutate:  withTypedNilEgressHandlers,
+			wantErr: errEgressHandlerRequired,
 		},
 		{
 			name: "nil credentials supplier",
@@ -267,8 +323,7 @@ func TestValidateClusterContext_errors(t *testing.T) {
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			ctx := clusterContext(testCase.mutate)
-			ctx = ctx.Normalize()
+			ctx := normalizedClusterContext(testCase.mutate)
 			if testCase.afterNormalize != nil {
 				testCase.afterNormalize(&ctx)
 			}
@@ -295,6 +350,58 @@ func TestValidateClusterContext_zeroNewLeaderTimeoutWithoutNormalize(t *testing.
 	require.NoError(t, ctx.Validate())
 }
 
+func TestValidateClusterContext_unparseableIngressWithEndpoints(t *testing.T) {
+	tests := []struct {
+		name    string
+		channel string
+	}{
+		{name: "unknown media", channel: "aeron:unknown"},
+		{name: "missing aeron prefix", channel: "not-a-channel"},
+		{name: "empty media", channel: "aeron:"},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := normalizedClusterContext(
+				withIngressChannelAndEndpoints(testCase.channel, testIngressEndpointsMap),
+			)
+			wantErr := "cluster client: invalid ingress channel: " + testCase.channel
+
+			for _, validate := range []func() error{ctx.Validate, ctx.ValidateForConnect} {
+				require.EqualError(t, validate(), wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateForConnect_udpEgressRejected(t *testing.T) {
+	ctx := normalizedClusterContext(func(ctx *client.ClusterContext) {
+		ctx.EgressChannel = "aeron:udp?endpoint=localhost:20111"
+		ctx.EgressHandler = nil
+	})
+
+	require.EqualError(t, ctx.ValidateForConnect(), errUDPEgressResponseChannel)
+}
+
+func TestValidateForConnect_egressHandlerNotRequired(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*client.ClusterContext)
+	}{
+		{name: "nil", mutate: withNilEgressHandler},
+		{name: "typed nil", mutate: withTypedNilEgressHandlers},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := normalizedClusterContext(testCase.mutate)
+
+			require.NoError(t, ctx.ValidateForConnect())
+			require.EqualError(t, ctx.Validate(), errEgressHandlerRequired)
+		})
+	}
+}
+
 func TestValidateClusterContext_validCases(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -315,16 +422,6 @@ func TestValidateClusterContext_validCases(t *testing.T) {
 			mutate: withIngressChannelAndEndpoints("aeron:ipc?alias=ingress", ""),
 		},
 		{
-			name:   "ipcx ingress with endpoints",
-			mutate: withIngressChannelAndEndpoints("aeron:ipcx", testIngressEndpointsMap),
-		},
-		{
-			name: "ipcx ingress endpoint query with endpoints map",
-			mutate: withIngressChannelAndEndpoints(
-				"aeron:ipcx?endpoint=localhost:0", testIngressEndpointsMap,
-			),
-		},
-		{
 			name:   "udp ingress without endpoint with ingress endpoints map",
 			mutate: withIngressChannelAndEndpoints("aeron:udp?ttl=16", testIngressEndpointsMap),
 		},
@@ -340,12 +437,20 @@ func TestValidateClusterContext_validCases(t *testing.T) {
 				"aeron:udp?alias=endpoint=localhost:0", testIngressEndpointsMap,
 			),
 		},
+		{
+			name: "ipcx egress channel",
+			mutate: func(ctx *client.ClusterContext) {
+				ctx.EgressChannel = "aeron:ipcx?alias=egress"
+			},
+		},
 	}
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			ctx := normalizedClusterContext(testCase.mutate)
-			require.NoError(t, ctx.Validate())
+			for _, validate := range []func() error{ctx.Validate, ctx.ValidateForConnect} {
+				require.NoError(t, validate())
+			}
 		})
 	}
 }

@@ -10,6 +10,14 @@ import (
 	"github.com/warrenguy/heron/aeron/conductor"
 )
 
+type registerPendingAddErrorCase struct {
+	name       string
+	setup      func(*conductor.Conductor)
+	kind       conductor.PendingKind
+	wantErr    error
+	wantErrMsg string
+}
+
 const (
 	pendingTestCorrelationID      int64 = 7
 	pendingTestOtherCorrelationID int64 = 8
@@ -76,6 +84,53 @@ func registerPendingAddWithCorrelationForTest(
 	)
 }
 
+func registerTwoPendingKindWithDeadlineForTest(
+	tb testing.TB,
+	conductorInstance *conductor.Conductor,
+	kind conductor.PendingKind,
+	correlationID0 int64,
+	correlationID1 int64,
+	streamID int32,
+	channel string,
+	timeout time.Duration,
+) {
+	tb.Helper()
+	for _, correlationID := range []int64{correlationID0, correlationID1} {
+		require.NoError(
+			tb,
+			registerPendingKindWithDeadlineForTest(
+				conductorInstance,
+				kind,
+				correlationID,
+				streamID,
+				channel,
+				timeout,
+			),
+		)
+	}
+}
+
+func registerTwoPendingAddsWithDeadlineForTest(
+	tb testing.TB,
+	conductorInstance *conductor.Conductor,
+	kind conductor.PendingKind,
+	correlationID0 int64,
+	correlationID1 int64,
+	timeout time.Duration,
+) {
+	tb.Helper()
+	registerTwoPendingKindWithDeadlineForTest(
+		tb,
+		conductorInstance,
+		kind,
+		correlationID0,
+		correlationID1,
+		pendingTestStreamID,
+		pendingTestChannel,
+		timeout,
+	)
+}
+
 func registerPendingKindForTest(
 	conductorInstance *conductor.Conductor,
 	kind conductor.PendingKind,
@@ -106,7 +161,7 @@ var addPendingKindCases = []struct {
 	{name: "addExclusivePublication", kind: conductor.PendingKindAddExclusivePublication},
 }
 
-var addRemovePendingKindCases = func() []addRemovePendingKindCase {
+func addRemovePendingKindCases() []addRemovePendingKindCase {
 	cases := make([]addRemovePendingKindCase, 0, len(addPendingKindCases)+2)
 	for _, kindCase := range addPendingKindCases {
 		cases = append(cases, addRemovePendingKindCase{
@@ -126,7 +181,7 @@ var addRemovePendingKindCases = func() []addRemovePendingKindCase {
 			kind: conductor.PendingKindRemoveSubscription,
 		},
 	)
-}()
+}
 
 func registerAddRemovePendingKindCase(
 	conductorInstance *conductor.Conductor,
@@ -431,6 +486,112 @@ func TestConductor_ClearPending(t *testing.T) {
 	}
 }
 
+func TestConductor_PollPending_mapCompletionWhenLatchMismatch(t *testing.T) {
+	const (
+		correlationID0       int64 = 101
+		correlationID1       int64 = 102
+		correlationIDSuccess int64 = 201
+		correlationIDFail    int64 = 202
+	)
+
+	tests := []struct {
+		name         string
+		kind         conductor.PendingKind
+		correlation0 int64
+		correlation1 int64
+		complete     func(*testing.T, *conductor.Conductor)
+		assertFirst  func(*testing.T, conductor.PendingRegistration)
+		assertSecond func(*testing.T, conductor.PendingRegistration, error)
+	}{
+		{
+			name:         "successAndSuccess",
+			kind:         conductor.PendingKindAddSubscription,
+			correlation0: correlationID0,
+			correlation1: correlationID1,
+			complete: func(_ *testing.T, conductorInstance *conductor.Conductor) {
+				conductorInstance.SubscriptionReadyForTest(
+					goldenSubscriptionReadyWithCorrelation(correlationID0),
+				)
+				conductorInstance.SubscriptionReadyForTest(
+					goldenSubscriptionReadyWithCorrelation(correlationID1),
+				)
+			},
+			assertFirst: func(t *testing.T, registration conductor.PendingRegistration) {
+				require.Equal(t, correlationID0, registration.RegistrationID)
+			},
+			assertSecond: func(t *testing.T, registration conductor.PendingRegistration, err error) {
+				require.NoError(t, err)
+				require.Equal(t, correlationID1, registration.RegistrationID)
+			},
+		},
+		{
+			name:         "successAndError",
+			kind:         conductor.PendingKindAddPublication,
+			correlation0: correlationIDSuccess,
+			correlation1: correlationIDFail,
+			complete: func(t *testing.T, conductorInstance *conductor.Conductor) {
+				conductorInstance.PublicationReadyForTest(
+					goldenPublicationBuffersReadyWithCorrelation(correlationIDSuccess),
+				)
+				require.True(
+					t,
+					conductorInstance.DriverError(conductor.ErrorResponse{
+						OffendingCommandCorrelationID: correlationIDFail,
+						ErrorCode:                     11,
+						ErrorMessage:                  "add publication rejected",
+					}),
+				)
+			},
+			assertFirst: func(t *testing.T, registration conductor.PendingRegistration) {
+				require.Equal(
+					t,
+					goldenPublicationBuffersReadyEvent.RegistrationID,
+					registration.RegistrationID,
+				)
+			},
+			assertSecond: func(t *testing.T, registration conductor.PendingRegistration, err error) {
+				require.Error(t, err)
+				var driverErr *conductor.DriverRegistrationError
+				require.ErrorAs(t, registration.Err, &driverErr)
+				require.Equal(t, correlationIDFail, driverErr.CorrelationID)
+				require.Equal(t, int32(11), driverErr.ErrorCode)
+			},
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			conductorInstance := newConductorForTestAtWorkNano(
+				t,
+				func(error) {},
+				0,
+				0,
+			)
+			registerTwoPendingAddsWithDeadlineForTest(
+				t,
+				conductorInstance,
+				testCase.kind,
+				testCase.correlation0,
+				testCase.correlation1,
+				pendingTestTimeout,
+			)
+			testCase.complete(t, conductorInstance)
+			require.Equal(t, testCase.correlation1, conductorInstance.ReceivedCorrelationID())
+
+			done0, registration0, err := conductorInstance.PollPending(testCase.correlation0)
+			require.True(t, done0)
+			require.NoError(t, err)
+			testCase.assertFirst(t, registration0)
+			require.Equal(t, testCase.correlation1, conductorInstance.ReceivedCorrelationID())
+
+			done1, registration1, err := conductorInstance.PollPending(testCase.correlation1)
+			require.True(t, done1)
+			testCase.assertSecond(t, registration1, err)
+			require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+		})
+	}
+}
+
 func TestConductor_PollPending_wrongCorrelation(t *testing.T) {
 	conductorInstance := newConductorForTestAtWorkNano(
 		t,
@@ -636,7 +797,7 @@ func TestConductor_pendingHandler_wrongKind(t *testing.T) {
 		},
 	}
 
-	for _, testCase := range addRemovePendingKindCases {
+	for _, testCase := range addRemovePendingKindCases() {
 		kindCase := testCase
 		tests = append(tests, wrongKindTestCase{
 			name: "OnNextAvailableSessionID_" + kindCase.name,
@@ -697,6 +858,96 @@ func TestConductor_CompletePendingForTest_missingRegistrationOnError(t *testing.
 	err := conductorInstance.CompletePendingForTest(pendingTestCorrelationID, 0, driverErr)
 	require.ErrorIs(t, err, conductor.ErrPendingNotFound)
 	require.EqualError(t, err, "conductor: no pending registration for correlation")
+}
+
+func TestConductor_expirePending_preservesSucceededUnpolledAdd_multiPending(t *testing.T) {
+	const (
+		correlationID0 int64 = 101
+		correlationID1 int64 = 102
+		startNs              = int64(1_000)
+		expireNs             = 500 * time.Nanosecond
+	)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(t, func(error) {}, 0)
+	*nanoNs = startNs
+	registerTwoPendingAddsWithDeadlineForTest(
+		t,
+		conductorInstance,
+		conductor.PendingKindAddSubscription,
+		correlationID0,
+		correlationID1,
+		expireNs,
+	)
+	conductorInstance.SubscriptionReadyForTest(
+		goldenSubscriptionReadyWithCorrelation(correlationID0),
+	)
+
+	*nanoNs = startNs + int64(expireNs)
+	conductorInstance.SetActiveCorrelationID(correlationID1)
+	_ = conductorInstance.DoWork()
+
+	registration, ok := conductorInstance.PendingResult(correlationID0)
+	require.True(t, ok)
+	require.NoError(t, registration.Err)
+	require.Equal(t, correlationID0, registration.RegistrationID)
+
+	done, polledRegistration, err := conductorInstance.PollPending(correlationID0)
+	require.True(t, done)
+	require.NoError(t, err)
+	require.Equal(t, correlationID0, polledRegistration.RegistrationID)
+	_, ok = conductorInstance.PendingResult(correlationID0)
+	require.False(t, ok)
+
+	requirePendingAddExpiredForTest(t, conductorInstance, correlationID1)
+}
+
+func TestConductor_expirePending_preservesDriverError_multiPending(t *testing.T) {
+	const (
+		correlationIDSuccess int64 = 101
+		correlationIDFail    int64 = 102
+		startNs                    = int64(1_000)
+	)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(t, func(error) {}, 0)
+	*nanoNs = startNs
+	registerTwoPendingAddsWithDeadlineForTest(
+		t,
+		conductorInstance,
+		conductor.PendingKindAddSubscription,
+		correlationIDSuccess,
+		correlationIDFail,
+		pendingTestTimeout,
+	)
+	require.True(
+		t,
+		conductorInstance.DriverError(conductor.ErrorResponse{
+			OffendingCommandCorrelationID: correlationIDFail,
+			ErrorCode:                     11,
+			ErrorMessage:                  "add subscription rejected",
+		}),
+	)
+
+	*nanoNs = startNs + 500
+	_ = conductorInstance.DoWork()
+
+	registration, ok := conductorInstance.PendingResult(correlationIDFail)
+	require.True(t, ok)
+	var driverErr *conductor.DriverRegistrationError
+	require.ErrorAs(t, registration.Err, &driverErr)
+	require.Equal(t, correlationIDFail, driverErr.CorrelationID)
+	require.Equal(t, int32(11), driverErr.ErrorCode)
+	require.NotErrorIs(t, registration.Err, conductor.ErrAwaitTimeout)
+
+	done, polledRegistration, err := conductorInstance.PollPending(correlationIDFail)
+	require.True(t, done)
+	require.ErrorAs(t, polledRegistration.Err, &driverErr)
+	require.ErrorAs(t, err, &driverErr)
+	require.NotErrorIs(t, err, conductor.ErrAwaitTimeout)
+	_, ok = conductorInstance.PendingResult(correlationIDFail)
+	require.False(t, ok)
+
+	_, ok = conductorInstance.PendingResult(correlationIDSuccess)
+	require.True(t, ok)
 }
 
 func TestConductor_expirePending_viaDoWork(t *testing.T) {
@@ -862,13 +1113,7 @@ func TestConductor_service_resetsReceivedCorrelationIDEachTick(t *testing.T) {
 }
 
 func TestConductor_RegisterPendingAdd_errors(t *testing.T) {
-	tests := []struct {
-		name       string
-		setup      func(*conductor.Conductor)
-		kind       conductor.PendingKind
-		wantErr    error
-		wantErrMsg string
-	}{
+	tests := []registerPendingAddErrorCase{
 		{
 			name: "duplicate",
 			setup: func(conductorInstance *conductor.Conductor) {
@@ -902,13 +1147,7 @@ func TestConductor_RegisterPendingAdd_errors(t *testing.T) {
 		{name: "removeSubscription", kind: conductor.PendingKindRemoveSubscription},
 	}
 	for _, invalidCase := range invalidAddKindCases {
-		tests = append(tests, struct {
-			name       string
-			setup      func(*conductor.Conductor)
-			kind       conductor.PendingKind
-			wantErr    error
-			wantErrMsg string
-		}{
+		tests = append(tests, registerPendingAddErrorCase{
 			name:       invalidCase.name,
 			kind:       invalidCase.kind,
 			wantErr:    conductor.ErrNonAddPendingKindRequiresRegisterPending,
@@ -1738,11 +1977,8 @@ func TestConductor_expirePending_kinds(t *testing.T) {
 			workCount := conductorInstance.DoWork()
 			require.Equal(t, 1, workCount)
 
-			if testCase.active {
-				done, _, err := conductorInstance.PollPending(testCase.correlationID)
-				require.True(t, done)
-				require.ErrorIs(t, err, conductor.ErrAwaitTimeout)
-				require.EqualError(t, err, "conductor: await response timeout")
+			if testCase.active || conductor.AddPendingKindForTest(testCase.kind) {
+				requirePendingAddExpiredForTest(t, conductorInstance, testCase.correlationID)
 				return
 			}
 

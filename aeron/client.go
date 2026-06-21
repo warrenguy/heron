@@ -23,7 +23,8 @@ const (
 // to pump conductor service; there is no background conductor goroutine.
 //
 // One Client permits at most one blocking command (awaitResponse, awaitAdd,
-// Close teardown) at a time. clientLock enforces that contract.
+// OfferAdd*, PollAdd*, Close teardown) at a time. clientLock enforces that
+// contract.
 //
 // DoWork from another goroutine during a blocking await blocks until the await
 // completes.
@@ -40,8 +41,8 @@ const (
 // Poll loops under clientLock call doWorkLocked, not DoWork.
 //
 // Callbacks invoked from doWorkLocked (ErrorHandler, available/unavailable image
-// handlers) must not call DoWork, Close, Add*, NextAvailableSessionID, or
-// IsTerminating.
+// handlers) must not call DoWork, Close, Add*, OfferAdd*, PollAdd*,
+// NextAvailableSessionID, or IsTerminating.
 //
 // Publication Offer from other goroutines remains allowed when the caller does
 // not overlap blocking client APIs. Subscription and Image Poll stay on the
@@ -284,6 +285,7 @@ func (client *Client) Close() error {
 
 func (client *Client) closeTeardownLocked() error {
 	if client.conductor != nil {
+		client.conductor.ClearPendingEntriesForClose()
 		client.conductor.CloseAllResources()
 		client.drainCloseResponses()
 		client.awaitCloseLingerDrain()
@@ -325,9 +327,9 @@ func (client *Client) awaitCloseLingerDrain() {
 		return
 	}
 
-	lingerDuration := time.Duration(client.conductor.CloseLingerNs())
-	lingerDeadlineNs := nanoClock() + lingerDuration.Nanoseconds()
-	wallDeadline := time.Now().Add(lingerDuration)
+	lingerNs := client.conductor.CloseLingerNs()
+	lingerDeadlineNs := nanoClock() + lingerNs
+	wallDeadline := time.Now().Add(time.Duration(lingerNs))
 	for nanoClock() < lingerDeadlineNs && time.Now().Before(wallDeadline) {
 		client.conductor.DrainLingeringLogBuffers()
 		client.doWorkLocked()
@@ -337,6 +339,21 @@ func (client *Client) awaitCloseLingerDrain() {
 		time.Sleep(client.idleSleepDuration)
 	}
 	client.conductor.DrainLingeringLogBuffers()
+}
+
+// CancelPending abandons an in-flight OfferAdd registration.
+//
+// Idempotent when the pending entry is absent. Not safe for concurrent use with
+// OfferAdd* on the same correlation id.
+func (client *Client) CancelPending(correlationID int64) {
+	if client == nil || correlationID == conductor.NullCorrelationID {
+		return
+	}
+	client.lockClient()
+	defer client.unlockClient()
+	if client.conductor != nil {
+		client.conductor.CancelPending(correlationID)
+	}
 }
 
 // NextCorrelationID allocates the next correlation id from the driver ring.
@@ -470,12 +487,13 @@ func (client *Client) awaitResponse(
 	)
 	if completed {
 		pendingCompleted = true
+		if err != nil {
+			return conductor.PendingRegistration{}, err
+		}
+		return registration, nil
 	}
 	if err != nil {
 		return conductor.PendingRegistration{}, err
-	}
-	if completed {
-		return registration, nil
 	}
 	return conductor.PendingRegistration{}, newAwaitTimeoutError(correlationID, timeout)
 }

@@ -18,7 +18,7 @@ type streamChannelNonASCIICase struct {
 func streamChannelNonASCIICases() []streamChannelNonASCIICase {
 	return []streamChannelNonASCIICase{
 		{name: "high byte", channel: "aeron:\x80"},
-		{name: "utf8 multibyte", channel: "ü"},
+		{name: "utf8 multibyte", channel: "\u00fc"},
 	}
 }
 

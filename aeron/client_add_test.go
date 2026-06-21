@@ -12,10 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/agrona/atomic"
-
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/internal/testutil"
+	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/agrona/ringbuffer"
 )
 
@@ -75,32 +74,47 @@ func newClientAddFixture(
 	return client, fixture
 }
 
-func countersReaderForClientAddTest(tb testutil.TB) *cnc.CountersReader {
+func countersReaderForClientAddPublications(
+	tb testutil.TB,
+	registrationIDs ...int64,
+) *cnc.CountersReader {
 	tb.Helper()
-	return newTestCountersReaderFromRecords(3, func(meta, values []byte) {
-		cnc.WriteCounterRecord(
-			meta,
-			values,
-			0,
-			cnc.CounterRecordAllocated,
-			cnc.DriverPublisherLimitTypeID,
-			clientAddPublicationRegistrationID,
-			0,
-		)
-		err := cnc.WriteChannelStatusCounterRecord(
-			meta,
-			values,
-			1,
-			cnc.CounterRecordAllocated,
-			cnc.DriverSendChannelStatusTypeID,
-			clientAddChannel,
-			clientAddPublicationRegistrationID,
-			1,
-		)
-		if err != nil {
-			panic(err)
+	if len(registrationIDs) == 0 {
+		registrationIDs = []int64{clientAddPublicationRegistrationID}
+	}
+	recordCount := len(registrationIDs) * 2
+	return newTestCountersReaderFromRecords(recordCount, func(meta, values []byte) {
+		for i, registrationID := range registrationIDs {
+			record := int32(i * 2)
+			cnc.WriteCounterRecord(
+				meta,
+				values,
+				record,
+				cnc.CounterRecordAllocated,
+				cnc.DriverPublisherLimitTypeID,
+				registrationID,
+				0,
+			)
+			err := cnc.WriteChannelStatusCounterRecord(
+				meta,
+				values,
+				record+1,
+				cnc.CounterRecordAllocated,
+				cnc.DriverSendChannelStatusTypeID,
+				clientAddChannel,
+				registrationID,
+				1,
+			)
+			if err != nil {
+				panic(err)
+			}
 		}
 	})
+}
+
+func countersReaderForClientAddTest(tb testutil.TB) *cnc.CountersReader {
+	tb.Helper()
+	return countersReaderForClientAddPublications(tb, clientAddPublicationRegistrationID)
 }
 
 func setupClientAddPublicationLog(tb testing.TB) (dir, logPath string) {
@@ -125,6 +139,30 @@ func setupClientAddPublicationKindLog(tb testing.TB, exclusive bool) (dir, logPa
 	return dir, logPath
 }
 
+func clientAddMediaDir(t *testing.T) string {
+	return t.TempDir()
+}
+
+func requireRegisterClientAddPending(
+	t *testing.T,
+	fixture *testutil.ConductorFixture,
+	kind conductor.PendingKind,
+	correlationID int64,
+) {
+	t.Helper()
+
+	require.NoError(
+		t,
+		fixture.Conductor.RegisterPendingAdd(
+			kind,
+			correlationID,
+			clientAddStreamID,
+			clientAddChannel,
+			time.Second,
+		),
+	)
+}
+
 type clientAddPublicationKindCase struct {
 	name                   string
 	pendingKind            conductor.PendingKind
@@ -136,10 +174,15 @@ type clientAddPublicationKindCase struct {
 	registrationErrorLabel string
 	setupLog               func(testing.TB) (dir, logPath string)
 	add                    func(*Client) (any, error)
+	offerAdd               func(*Client) (int64, error)
+	pollAdd                func(*Client, int64) (any, bool, error)
+	pollOneTick            func(*Client, int64, bool, func()) (any, bool, error)
 	lookup                 func(*Client, int64) (any, bool)
 	oppositeLookup         func(*Client, int64) (any, bool)
 	signalReady            func(*conductor.Conductor, conductor.PublicationBuffersReady)
 	clientResultTimeoutMsg string
+	offerResultTimeoutMsg  string
+	pollTimeoutMsg         string
 	ringRespondTimeoutMsg  string
 }
 
@@ -188,6 +231,26 @@ func clientAddPublicationKindCases() []clientAddPublicationKindCase {
 			add: func(client *Client) (any, error) {
 				return client.AddPublication(clientAddStreamID, clientAddChannel)
 			},
+			offerAdd: func(client *Client) (int64, error) {
+				return client.OfferAddPublication(clientAddStreamID, clientAddChannel)
+			},
+			pollAdd: func(client *Client, correlationID int64) (any, bool, error) {
+				return client.PollAddPublication(correlationID)
+			},
+			pollOneTick: func(
+				client *Client,
+				correlationID int64,
+				skipDoWork bool,
+				afterPollPending func(),
+			) (any, bool, error) {
+				return pollAddForTest(
+					client,
+					correlationID,
+					publicationFromPending,
+					skipDoWork,
+					afterPollPending,
+				)
+			},
 			lookup: func(client *Client, regID int64) (any, bool) {
 				return client.Publication(regID)
 			},
@@ -196,6 +259,8 @@ func clientAddPublicationKindCases() []clientAddPublicationKindCase {
 			},
 			signalReady:            conductor.PublicationReadyForTest,
 			clientResultTimeoutMsg: "timed out waiting for AddPublication client result",
+			offerResultTimeoutMsg:  "timed out waiting for OfferAddPublication result",
+			pollTimeoutMsg:         "timed out waiting for PollAddPublication",
 			ringRespondTimeoutMsg:  "timed out waiting for AddPublication command on ring",
 		},
 		{
@@ -211,6 +276,26 @@ func clientAddPublicationKindCases() []clientAddPublicationKindCase {
 			add: func(client *Client) (any, error) {
 				return client.AddExclusivePublication(clientAddStreamID, clientAddChannel)
 			},
+			offerAdd: func(client *Client) (int64, error) {
+				return client.OfferAddExclusivePublication(clientAddStreamID, clientAddChannel)
+			},
+			pollAdd: func(client *Client, correlationID int64) (any, bool, error) {
+				return client.PollAddExclusivePublication(correlationID)
+			},
+			pollOneTick: func(
+				client *Client,
+				correlationID int64,
+				skipDoWork bool,
+				afterPollPending func(),
+			) (any, bool, error) {
+				return pollAddForTest(
+					client,
+					correlationID,
+					exclusivePublicationFromPending,
+					skipDoWork,
+					afterPollPending,
+				)
+			},
 			lookup: func(client *Client, regID int64) (any, bool) {
 				return client.ExclusivePublication(regID)
 			},
@@ -219,9 +304,92 @@ func clientAddPublicationKindCases() []clientAddPublicationKindCase {
 			},
 			signalReady:            conductor.ExclusivePublicationReadyForTest,
 			clientResultTimeoutMsg: "timed out waiting for AddExclusivePublication client result",
+			offerResultTimeoutMsg:  "timed out waiting for OfferAddExclusivePublication result",
+			pollTimeoutMsg:         "timed out waiting for PollAddExclusivePublication",
 			ringRespondTimeoutMsg:  "timed out waiting for AddExclusivePublication command on ring",
 		},
 	}
+}
+
+type clientOfferAddResult struct {
+	correlationID int64
+	err           error
+}
+
+type clientAddAsyncResult struct {
+	value any
+	err   error
+}
+
+func startClientAddAsync(
+	client *Client,
+	add func(*Client) (any, error),
+) <-chan clientAddAsyncResult {
+	resultCh := make(chan clientAddAsyncResult, 1)
+	go func() {
+		value, err := add(client)
+		resultCh <- clientAddAsyncResult{value: value, err: err}
+	}()
+	return resultCh
+}
+
+type clientOfferAddAsyncKindCase struct {
+	name                  string
+	offerAdd              func(*Client) (int64, error)
+	poll                  func(*Client, int64) (any, bool, error)
+	registrationKind      string
+	countFn               func(*Client) int
+	dir                   func(t *testing.T) string
+	addMsgType            int
+	offerResultTimeoutMsg string
+	pollOneTick           func(*Client, int64, bool, func()) (any, bool, error)
+}
+
+func clientOfferAddAsyncKindCases() []clientOfferAddAsyncKindCase {
+	pubCases := clientAddPublicationKindCases()
+	cases := make([]clientOfferAddAsyncKindCase, 0, len(pubCases)+1)
+	for _, pubCase := range pubCases {
+		cases = append(cases, clientOfferAddAsyncKindCase{
+			name:                  pubCase.name,
+			offerAdd:              pubCase.offerAdd,
+			poll:                  pubCase.pollAdd,
+			registrationKind:      registrationKindFor(pubCase.pendingKind),
+			countFn:               (*Client).PublicationCountForTest,
+			dir:                   clientAddMediaDir,
+			addMsgType:            pubCase.addMsgType,
+			offerResultTimeoutMsg: pubCase.offerResultTimeoutMsg,
+			pollOneTick:           pubCase.pollOneTick,
+		})
+	}
+	cases = append(cases, clientOfferAddAsyncKindCase{
+		name: "subscription",
+		offerAdd: func(client *Client) (int64, error) {
+			return client.OfferAddSubscription(clientAddStreamID, clientAddChannel)
+		},
+		poll: func(client *Client, correlationID int64) (any, bool, error) {
+			return client.PollAddSubscription(correlationID)
+		},
+		registrationKind:      registrationKindSubscription,
+		countFn:               (*Client).SubscriptionCountForTest,
+		dir:                   clientAddMediaDir,
+		addMsgType:            conductor.AddSubscription,
+		offerResultTimeoutMsg: "timed out waiting for OfferAddSubscription result",
+		pollOneTick: func(
+			client *Client,
+			correlationID int64,
+			skipDoWork bool,
+			afterPollPending func(),
+		) (any, bool, error) {
+			return pollAddForTest(
+				client,
+				correlationID,
+				subscriptionFromPending,
+				skipDoWork,
+				afterPollPending,
+			)
+		},
+	})
+	return cases
 }
 
 func clientAddPublicationKindCaseFor(kind conductor.PendingKind) clientAddPublicationKindCase {
@@ -279,6 +447,34 @@ func requireErrClientClosed(t *testing.T, err error) {
 
 	require.ErrorIs(t, err, ErrClientClosed)
 	require.EqualError(t, err, ErrClientClosed.Error())
+}
+
+func pollAddUntilReady[T any](
+	t *testing.T,
+	client *Client,
+	correlationID int64,
+	respond func(t *testing.T, deadline time.Time),
+	poll func(*Client, int64) (T, bool, error),
+	failMsg string,
+) T {
+	t.Helper()
+
+	pollDeadline := time.Now().Add(time.Second)
+	go respond(t, pollDeadline)
+
+	deadline := time.Now().Add(clientConcurrentResultTimeout)
+	for time.Now().Before(deadline) {
+		value, done, err := poll(client, correlationID)
+		if done {
+			require.NoError(t, err)
+			return value
+		}
+		require.NoError(t, err)
+		time.Sleep(time.Millisecond)
+	}
+	require.FailNow(t, failMsg)
+	var zero T
+	return zero
 }
 
 func receiveAddResult[T any](
@@ -345,13 +541,11 @@ func requireAddCommandNotOnRing(
 	)
 }
 
-func requireAddPhaseTimeout(
+func requireRegistrationTimeoutError(
 	t *testing.T,
-	fixture *testutil.ConductorFixture,
-	client *Client,
 	err error,
 	registrationKind string,
-	countFn func(*Client) int,
+	correlationID int64,
 	checkStreamChannel bool,
 ) {
 	t.Helper()
@@ -359,7 +553,6 @@ func requireAddPhaseTimeout(
 	var timeoutErr *RegistrationTimeoutError
 	require.ErrorAs(t, err, &timeoutErr)
 	require.Equal(t, registrationKind, timeoutErr.Kind)
-	correlationID := fixture.DriverProxy.NextCorrelationID() - 1
 	require.Equal(t, correlationID, timeoutErr.CorrelationID)
 	if checkStreamChannel {
 		require.Equal(t, clientAddStreamID, timeoutErr.StreamID)
@@ -375,6 +568,27 @@ func requireAddPhaseTimeout(
 			clientAddStreamID,
 			clientAddChannel,
 		),
+	)
+}
+
+func requireAddPhaseTimeout(
+	t *testing.T,
+	fixture *testutil.ConductorFixture,
+	client *Client,
+	err error,
+	registrationKind string,
+	countFn func(*Client) int,
+	checkStreamChannel bool,
+) {
+	t.Helper()
+
+	correlationID := fixture.DriverProxy.NextCorrelationID() - 1
+	requireRegistrationTimeoutError(
+		t,
+		err,
+		registrationKind,
+		correlationID,
+		checkStreamChannel,
 	)
 	_, ok := fixture.Conductor.PendingResult(correlationID)
 	require.False(t, ok)
@@ -751,15 +965,7 @@ func TestClient_AddPublicationKind_insertsMapOnSyntheticReady(t *testing.T) {
 			)
 			fixture.Conductor.SetCountersReaderForTest(countersReaderForClientAddTest(t))
 
-			type result struct {
-				pub any
-				err error
-			}
-			resultCh := make(chan result, 1)
-			go func() {
-				pub, err := testCase.add(client)
-				resultCh <- result{pub: pub, err: err}
-			}()
+			resultCh := startClientAddAsync(client, testCase.add)
 
 			pollDeadline := time.Now().Add(time.Second)
 			responded, correlationID := testCase.pollRespond(
@@ -778,16 +984,16 @@ func TestClient_AddPublicationKind_insertsMapOnSyntheticReady(t *testing.T) {
 				testCase.clientResultTimeoutMsg,
 			)
 			require.NoError(t, got.err)
-			require.NotNil(t, got.pub)
+			require.NotNil(t, got.value)
 			require.Equal(t, correlationID, fixture.DriverProxy.NextCorrelationID()-1)
 			require.Equal(
 				t,
 				clientAddPublicationRegistrationID,
-				addPublicationHandleRegistrationID(got.pub),
+				addPublicationHandleRegistrationID(got.value),
 			)
 			lookup, ok := testCase.lookup(client, clientAddPublicationRegistrationID)
 			require.True(t, ok)
-			require.Same(t, got.pub, lookup)
+			require.Same(t, got.value, lookup)
 			require.Equal(t, 1, client.PublicationCountForTest())
 			requireActiveCorrelationCleared(t, fixture)
 
@@ -810,15 +1016,7 @@ func TestClient_AddPublicationKind_driverRegistrationError_failsAwait(t *testing
 				dir,
 			)
 
-			type result struct {
-				pub any
-				err error
-			}
-			resultCh := make(chan result, 1)
-			go func() {
-				pub, err := testCase.add(client)
-				resultCh <- result{pub: pub, err: err}
-			}()
+			resultCh := startClientAddAsync(client, testCase.add)
 
 			pollDeadline := time.Now().Add(time.Second)
 			responded, correlationID := pollAndRespondToAddCommandError(
@@ -838,7 +1036,7 @@ func TestClient_AddPublicationKind_driverRegistrationError_failsAwait(t *testing
 				clientConcurrentResultTimeout,
 				testCase.clientResultTimeoutMsg,
 			)
-			require.Nil(t, got.pub)
+			require.Nil(t, got.value)
 			var registrationErr *RegistrationError
 			require.ErrorAs(t, got.err, &registrationErr)
 			require.Equal(t, registrationKindFor(testCase.pendingKind), registrationErr.Kind)
@@ -909,15 +1107,7 @@ func TestClient_AddPublicationKind_pollPhaseTimeout(t *testing.T) {
 				dir,
 			)
 
-			type result struct {
-				pub any
-				err error
-			}
-			resultCh := make(chan result, 1)
-			go func() {
-				pub, err := testCase.add(client)
-				resultCh <- result{pub: pub, err: err}
-			}()
+			resultCh := startClientAddAsync(client, testCase.add)
 
 			testCase.waitForCommand(t, fixture)
 			clock.EnterDeadlinePhase()
@@ -928,7 +1118,7 @@ func TestClient_AddPublicationKind_pollPhaseTimeout(t *testing.T) {
 				clientConcurrentResultTimeout,
 				testCase.clientResultTimeoutMsg,
 			)
-			require.Nil(t, got.pub)
+			require.Nil(t, got.value)
 			requireAddPhaseTimeout(
 				t,
 				fixture,
@@ -958,11 +1148,8 @@ func TestClient_Add_ringExhaustion_returnsRegistrationError(t *testing.T) {
 	tests := make([]ringExhaustionCase, 0, len(pubCases)+1)
 	for _, pubCase := range pubCases {
 		tests = append(tests, ringExhaustionCase{
-			name: pubCase.name,
-			dir: func(t *testing.T) string {
-				dir, _ := pubCase.setupLog(t)
-				return dir
-			},
+			name:             pubCase.name,
+			dir:              clientAddMediaDir,
 			addCall:          pubCase.add,
 			registrationKind: registrationKindFor(pubCase.pendingKind),
 			countFn:          (*Client).PublicationCountForTest,
@@ -970,9 +1157,7 @@ func TestClient_Add_ringExhaustion_returnsRegistrationError(t *testing.T) {
 	}
 	tests = append(tests, ringExhaustionCase{
 		name: "subscription",
-		dir: func(t *testing.T) string {
-			return t.TempDir()
-		},
+		dir:  clientAddMediaDir,
 		addCall: func(client *Client) (any, error) {
 			return client.AddSubscription(clientAddStreamID, clientAddChannel)
 		},
@@ -1021,15 +1206,7 @@ func TestClient_AddPublicationKind_ringBackpressureRetryThenSuccess(t *testing.T
 			fixture.Conductor.SetCountersReaderForTest(countersReaderForClientAddTest(t))
 			seedFullClientAddRing(t, fixture.Ring)
 
-			type result struct {
-				pub any
-				err error
-			}
-			resultCh := make(chan result, 1)
-			go func() {
-				pub, err := testCase.add(client)
-				resultCh <- result{pub: pub, err: err}
-			}()
+			resultCh := startClientAddAsync(client, testCase.add)
 
 			waitForClientAddClockReads(clock, 4)
 			resetClientAddRingEmpty(fixture.Ring)
@@ -1045,7 +1222,7 @@ func TestClient_AddPublicationKind_ringBackpressureRetryThenSuccess(t *testing.T
 				testCase.clientResultTimeoutMsg,
 			)
 			require.NoError(t, got.err)
-			require.NotNil(t, got.pub)
+			require.NotNil(t, got.value)
 			require.Equal(t, 1, client.PublicationCountForTest())
 			requireActiveCorrelationCleared(t, fixture)
 		})
@@ -1064,15 +1241,9 @@ func TestClient_AddSubscription_ringBackpressureRetryThenSuccess(t *testing.T) {
 	)
 	seedFullClientAddRing(t, fixture.Ring)
 
-	type result struct {
-		sub *Subscription
-		err error
-	}
-	resultCh := make(chan result, 1)
-	go func() {
-		sub, err := client.AddSubscription(clientAddStreamID, clientAddChannel)
-		resultCh <- result{sub: sub, err: err}
-	}()
+	resultCh := startClientAddAsync(client, func(client *Client) (any, error) {
+		return client.AddSubscription(clientAddStreamID, clientAddChannel)
+	})
 
 	waitForClientAddClockReads(clock, 4)
 	resetClientAddRingEmpty(fixture.Ring)
@@ -1088,7 +1259,7 @@ func TestClient_AddSubscription_ringBackpressureRetryThenSuccess(t *testing.T) {
 		"timed out waiting for AddSubscription client result",
 	)
 	require.NoError(t, got.err)
-	require.NotNil(t, got.sub)
+	require.NotNil(t, got.value)
 	require.Equal(t, 1, client.SubscriptionCountForTest())
 	requireActiveCorrelationCleared(t, fixture)
 }
@@ -1107,15 +1278,7 @@ func TestClient_AddPublicationKind_terminationDuringOfferRetry(t *testing.T) {
 			)
 			seedFullClientAddRing(t, fixture.Ring)
 
-			type result struct {
-				pub any
-				err error
-			}
-			resultCh := make(chan result, 1)
-			go func() {
-				pub, err := testCase.add(client)
-				resultCh <- result{pub: pub, err: err}
-			}()
+			resultCh := startClientAddAsync(client, testCase.add)
 
 			waitForClientAddClockReads(clock, 4)
 			requireAddCommandNotOnRing(t, fixture, testCase.addMsgType)
@@ -1134,7 +1297,7 @@ func TestClient_AddPublicationKind_terminationDuringOfferRetry(t *testing.T) {
 				clientConcurrentResultTimeout,
 				testCase.clientResultTimeoutMsg,
 			)
-			require.Nil(t, got.pub)
+			require.Nil(t, got.value)
 			requireDriverShutdownTimeout(t, got.err)
 			_, ok = fixture.Conductor.PendingResult(correlationID)
 			require.False(t, ok)
@@ -1156,15 +1319,9 @@ func TestClient_AddSubscription_terminationDuringOfferRetry(t *testing.T) {
 	)
 	seedFullClientAddRing(t, fixture.Ring)
 
-	type result struct {
-		sub *Subscription
-		err error
-	}
-	resultCh := make(chan result, 1)
-	go func() {
-		sub, err := client.AddSubscription(clientAddStreamID, clientAddChannel)
-		resultCh <- result{sub: sub, err: err}
-	}()
+	resultCh := startClientAddAsync(client, func(client *Client) (any, error) {
+		return client.AddSubscription(clientAddStreamID, clientAddChannel)
+	})
 
 	waitForClientAddClockReads(clock, 4)
 	requireAddCommandNotOnRing(t, fixture, conductor.AddSubscription)
@@ -1183,7 +1340,7 @@ func TestClient_AddSubscription_terminationDuringOfferRetry(t *testing.T) {
 		clientConcurrentResultTimeout,
 		"timed out waiting for AddSubscription client result",
 	)
-	require.Nil(t, got.sub)
+	require.Nil(t, got.value)
 	requireDriverShutdownTimeout(t, got.err)
 	_, ok = fixture.Conductor.PendingResult(correlationID)
 	require.False(t, ok)
@@ -1202,19 +1359,14 @@ func clientAddTerminationCases() []clientAddTerminationCase {
 	cases := make([]clientAddTerminationCase, 0, len(pubCases)+1)
 	for _, pubCase := range pubCases {
 		cases = append(cases, clientAddTerminationCase{
-			name: pubCase.name,
-			dir: func(t *testing.T) string {
-				dir, _ := pubCase.setupLog(t)
-				return dir
-			},
+			name:    pubCase.name,
+			dir:     clientAddMediaDir,
 			addCall: pubCase.add,
 		})
 	}
 	return append(cases, clientAddTerminationCase{
 		name: "subscription",
-		dir: func(t *testing.T) string {
-			return t.TempDir()
-		},
+		dir:  clientAddMediaDir,
 		addCall: func(client *Client) (any, error) {
 			return client.AddSubscription(clientAddStreamID, clientAddChannel)
 		},
@@ -1286,15 +1438,9 @@ func TestClient_AddSubscription_insertsMapOnSyntheticReady(t *testing.T) {
 		dir,
 	)
 
-	type result struct {
-		sub *Subscription
-		err error
-	}
-	resultCh := make(chan result, 1)
-	go func() {
-		sub, err := client.AddSubscription(clientAddStreamID, clientAddChannel)
-		resultCh <- result{sub: sub, err: err}
-	}()
+	resultCh := startClientAddAsync(client, func(client *Client) (any, error) {
+		return client.AddSubscription(clientAddStreamID, clientAddChannel)
+	})
 
 	pollDeadline := time.Now().Add(time.Second)
 	responded, correlationID := pollAndRespondToAddSubscriptionCommand(t, fixture, pollDeadline, nil)
@@ -1307,11 +1453,13 @@ func TestClient_AddSubscription_insertsMapOnSyntheticReady(t *testing.T) {
 		"timed out waiting for AddSubscription client result",
 	)
 	require.NoError(t, got.err)
-	require.NotNil(t, got.sub)
-	require.Equal(t, correlationID, got.sub.RegistrationID())
+	sub, ok := got.value.(*Subscription)
+	require.True(t, ok)
+	require.NotNil(t, sub)
+	require.Equal(t, correlationID, sub.RegistrationID())
 	lookup, ok := client.Subscription(correlationID)
 	require.True(t, ok)
-	require.Same(t, got.sub, lookup)
+	require.Same(t, sub, lookup)
 	require.Equal(t, 1, client.SubscriptionCountForTest())
 	requireActiveCorrelationCleared(t, fixture)
 }
@@ -1327,15 +1475,9 @@ func TestClient_AddSubscription_driverRegistrationError_failsAwait(t *testing.T)
 		dir,
 	)
 
-	type result struct {
-		sub *Subscription
-		err error
-	}
-	resultCh := make(chan result, 1)
-	go func() {
-		sub, err := client.AddSubscription(clientAddStreamID, clientAddChannel)
-		resultCh <- result{sub: sub, err: err}
-	}()
+	resultCh := startClientAddAsync(client, func(client *Client) (any, error) {
+		return client.AddSubscription(clientAddStreamID, clientAddChannel)
+	})
 
 	pollDeadline := time.Now().Add(time.Second)
 	responded, correlationID := pollAndRespondToAddCommandError(
@@ -1355,7 +1497,7 @@ func TestClient_AddSubscription_driverRegistrationError_failsAwait(t *testing.T)
 		clientConcurrentResultTimeout,
 		"timed out waiting for AddSubscription client result",
 	)
-	require.Nil(t, got.sub)
+	require.Nil(t, got.value)
 	var registrationErr *RegistrationError
 	require.ErrorAs(t, got.err, &registrationErr)
 	require.Equal(t, registrationKindSubscription, registrationErr.Kind)
@@ -1416,15 +1558,9 @@ func TestClient_AddSubscription_pollPhaseTimeout(t *testing.T) {
 		dir,
 	)
 
-	type result struct {
-		sub *Subscription
-		err error
-	}
-	resultCh := make(chan result, 1)
-	go func() {
-		sub, err := client.AddSubscription(clientAddStreamID, clientAddChannel)
-		resultCh <- result{sub: sub, err: err}
-	}()
+	resultCh := startClientAddAsync(client, func(client *Client) (any, error) {
+		return client.AddSubscription(clientAddStreamID, clientAddChannel)
+	})
 
 	waitForAddSubscriptionCommand(t, fixture)
 	clock.EnterDeadlinePhase()
@@ -1435,7 +1571,7 @@ func TestClient_AddSubscription_pollPhaseTimeout(t *testing.T) {
 		clientConcurrentResultTimeout,
 		"timed out waiting for AddSubscription client result",
 	)
-	require.Nil(t, got.sub)
+	require.Nil(t, got.value)
 	requireAddPhaseTimeout(
 		t,
 		fixture,
@@ -1490,15 +1626,11 @@ func TestClient_Add_registerPendingFailures(t *testing.T) {
 		{
 			name: "publicationDuplicatePending",
 			setup: func(t *testing.T, fixture *testutil.ConductorFixture, _ func(int64)) {
-				require.NoError(
+				requireRegisterClientAddPending(
 					t,
-					fixture.Conductor.RegisterPendingAdd(
-						conductor.PendingKindAddPublication,
-						pendingCorrelationID,
-						clientAddStreamID,
-						clientAddChannel,
-						time.Second,
-					),
+					fixture,
+					conductor.PendingKindAddPublication,
+					pendingCorrelationID,
 				)
 			},
 			addCall: func(client *Client) error {
@@ -1511,15 +1643,11 @@ func TestClient_Add_registerPendingFailures(t *testing.T) {
 		{
 			name: "exclusivePublicationDuplicatePending",
 			setup: func(t *testing.T, fixture *testutil.ConductorFixture, _ func(int64)) {
-				require.NoError(
+				requireRegisterClientAddPending(
 					t,
-					fixture.Conductor.RegisterPendingAdd(
-						conductor.PendingKindAddExclusivePublication,
-						pendingCorrelationID,
-						clientAddStreamID,
-						clientAddChannel,
-						time.Second,
-					),
+					fixture,
+					conductor.PendingKindAddExclusivePublication,
+					pendingCorrelationID,
 				)
 			},
 			addCall: func(client *Client) error {
@@ -1532,15 +1660,11 @@ func TestClient_Add_registerPendingFailures(t *testing.T) {
 		{
 			name: "subscriptionDuplicatePending",
 			setup: func(t *testing.T, fixture *testutil.ConductorFixture, _ func(int64)) {
-				require.NoError(
+				requireRegisterClientAddPending(
 					t,
-					fixture.Conductor.RegisterPendingAdd(
-						conductor.PendingKindAddSubscription,
-						pendingCorrelationID,
-						clientAddStreamID,
-						clientAddChannel,
-						time.Second,
-					),
+					fixture,
+					conductor.PendingKindAddSubscription,
+					pendingCorrelationID,
 				)
 			},
 			addCall: func(client *Client) error {
@@ -1570,6 +1694,87 @@ func TestClient_Add_registerPendingFailures(t *testing.T) {
 			require.EqualError(t, err, testCase.wantMsg)
 		})
 	}
+}
+
+func TestClient_Add_duplicatePendingAtNullCorrelationID_preservesExisting(t *testing.T) {
+	const existingCorrelationID int64 = 0
+
+	runCase := func(
+		t *testing.T,
+		pendingKind conductor.PendingKind,
+		add func(*Client) (any, error),
+	) {
+		t.Helper()
+
+		var nanoNs int64
+		client, fixture := newClientAddFixture(
+			t,
+			func() int64 { return nanoNs },
+			time.Second,
+			time.Millisecond,
+			t.TempDir(),
+		)
+		requireRegisterClientAddPending(t, fixture, pendingKind, existingCorrelationID)
+
+		_, err := add(client)
+		require.ErrorIs(t, err, ErrPendingAlreadyRegistered)
+		require.EqualError(t, err, "aeron: correlation already pending")
+
+		_, ok := fixture.Conductor.PendingResult(existingCorrelationID)
+		require.True(t, ok)
+		requireActiveCorrelationCleared(t, fixture)
+	}
+
+	for _, pubCase := range clientAddPublicationKindCases() {
+		t.Run(pubCase.name, func(t *testing.T) {
+			runCase(t, pubCase.pendingKind, pubCase.add)
+		})
+	}
+	t.Run("subscription", func(t *testing.T) {
+		runCase(t, conductor.PendingKindAddSubscription, func(client *Client) (any, error) {
+			return client.AddSubscription(clientAddStreamID, clientAddChannel)
+		})
+	})
+}
+
+func TestClient_OfferAdd_dupRegisterFailurePreservesPendingAtZero(t *testing.T) {
+	const (
+		existingCorrelationID  int64 = 0
+		conflictingCorrelation int64 = 1
+	)
+
+	var nanoNs int64
+	dir := t.TempDir()
+	client, fixture := newClientAddFixture(
+		t,
+		func() int64 { return nanoNs },
+		time.Second,
+		time.Millisecond,
+		dir,
+	)
+
+	correlationID, err := client.OfferAddSubscription(clientAddStreamID, clientAddChannel)
+	require.NoError(t, err)
+	require.Equal(t, existingCorrelationID, correlationID)
+	_, ok := fixture.Conductor.PendingResult(existingCorrelationID)
+	require.True(t, ok)
+
+	requireRegisterClientAddPending(
+		t,
+		fixture,
+		conductor.PendingKindAddSubscription,
+		conflictingCorrelation,
+	)
+
+	_, err = client.AddSubscription(clientAddStreamID, clientAddChannel)
+	require.ErrorIs(t, err, ErrPendingAlreadyRegistered)
+	require.EqualError(t, err, "aeron: correlation already pending")
+
+	_, ok = fixture.Conductor.PendingResult(existingCorrelationID)
+	require.True(t, ok)
+	_, ok = fixture.Conductor.PendingResult(conflictingCorrelation)
+	require.True(t, ok)
+	requireActiveCorrelationCleared(t, fixture)
 }
 
 func TestClient_AwaitDrainForTest_emptyClient(t *testing.T) {
@@ -1630,15 +1835,9 @@ func TestClient_Add_registerPendingSharedDeadline(t *testing.T) {
 		dir,
 	)
 
-	type result struct {
-		sub *Subscription
-		err error
-	}
-	resultCh := make(chan result, 1)
-	go func() {
-		sub, err := client.AddSubscription(clientAddStreamID, clientAddChannel)
-		resultCh <- result{sub: sub, err: err}
-	}()
+	resultCh := startClientAddAsync(client, func(client *Client) (any, error) {
+		return client.AddSubscription(clientAddStreamID, clientAddChannel)
+	})
 
 	correlationID := waitForAddSubscriptionCommand(t, fixture)
 	registration, ok := fixture.Conductor.PendingResult(correlationID)
@@ -1662,7 +1861,7 @@ func TestClient_Add_registerPendingSharedDeadline(t *testing.T) {
 		"timed out waiting for AddSubscription client result",
 	)
 	require.NoError(t, got.err)
-	require.NotNil(t, got.sub)
+	require.NotNil(t, got.value)
 }
 
 func TestClient_AddPublicationKind_pollPhaseLogMapFailure(t *testing.T) {
@@ -1680,15 +1879,7 @@ func TestClient_AddPublicationKind_pollPhaseLogMapFailure(t *testing.T) {
 			)
 			fixture.Conductor.SetCountersReaderForTest(countersReaderForClientAddTest(t))
 
-			type result struct {
-				pub any
-				err error
-			}
-			resultCh := make(chan result, 1)
-			go func() {
-				pub, err := testCase.add(client)
-				resultCh <- result{pub: pub, err: err}
-			}()
+			resultCh := startClientAddAsync(client, testCase.add)
 
 			pollDeadline := time.Now().Add(time.Second)
 			responded, correlationID := testCase.pollRespond(
@@ -1706,7 +1897,7 @@ func TestClient_AddPublicationKind_pollPhaseLogMapFailure(t *testing.T) {
 				clientConcurrentResultTimeout,
 				testCase.clientResultTimeoutMsg,
 			)
-			require.Nil(t, got.pub)
+			require.Nil(t, got.value)
 			var registrationErr *RegistrationError
 			require.ErrorAs(t, got.err, &registrationErr)
 			require.Equal(t, registrationKindFor(testCase.pendingKind), registrationErr.Kind)
@@ -1987,7 +2178,7 @@ func TestClient_Add_nonASCIIChannel(t *testing.T) {
 		channel string
 	}{
 		{name: "high byte", channel: "aeron:\x80"},
-		{name: "utf8 multibyte", channel: "ü"},
+		{name: "utf8 multibyte", channel: "\u00fc"},
 	}
 	tests := []struct {
 		name    string
@@ -2095,15 +2286,9 @@ func TestClient_AddPublication_refcountsLog(t *testing.T) {
 	fixture.Conductor.SetCountersReaderForTest(countersReaderForClientAddTest(t))
 	registry := conductor.LogBuffersRegistryForTest(fixture.Conductor)
 
-	type result struct {
-		pub *Publication
-		err error
-	}
-	resultCh := make(chan result, 1)
-	go func() {
-		pub, err := client.AddPublication(clientAddStreamID, clientAddChannel)
-		resultCh <- result{pub: pub, err: err}
-	}()
+	resultCh := startClientAddAsync(client, func(client *Client) (any, error) {
+		return client.AddPublication(clientAddStreamID, clientAddChannel)
+	})
 
 	pollDeadline := time.Now().Add(time.Second)
 	responded, _ := pollAndRespondToAddPublicationCommand(

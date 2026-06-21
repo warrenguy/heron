@@ -156,7 +156,68 @@ const (
 	registrationKindSubscription         = "subscription"
 )
 
+var nullPendingAddOfferContext = pendingAddOfferContext{
+	correlationID: conductor.NullCorrelationID,
+}
+
 type addOfferFunc func(proxy *conductor.DriverProxy, correlationID int64) error
+
+type pendingAddOfferContext struct {
+	correlationID    int64
+	deadlineNs       int64
+	registrationKind string
+}
+
+// registerAndOfferAddLocked registers a pending add and offers the driver command.
+// Caller holds clientLock and must clear active correlation when done.
+//
+// On any error the pending registration is rolled back and the returned
+// correlationID is NullCorrelationID; callers return the error directly.
+func (client *Client) registerAndOfferAddLocked(
+	pendingKind conductor.PendingKind,
+	streamID int32,
+	channel string,
+	offer addOfferFunc,
+) (pendingAddOfferContext, error) {
+	if err := client.requireReadyWithDriverProxy(); err != nil {
+		return nullPendingAddOfferContext, err
+	}
+
+	driverProxy := client.driverProxy
+	cncMappedAtOfferStart := client.mapped != nil
+	conductorInstance := client.conductor
+
+	offerCtx := pendingAddOfferContext{
+		correlationID:    driverProxy.NextCorrelationID(),
+		deadlineNs:       client.nanoClock() + client.driverTimeout.Nanoseconds(),
+		registrationKind: registrationKindFor(pendingKind),
+	}
+	if err := conductorInstance.RegisterPendingAddWithDeadline(
+		pendingKind,
+		offerCtx.correlationID,
+		streamID,
+		channel,
+		offerCtx.deadlineNs,
+	); err != nil {
+		return nullPendingAddOfferContext, mapRegistrationError(err)
+	}
+
+	conductorInstance.SetActiveCorrelationID(offerCtx.correlationID)
+	if err := client.offerAddCommand(
+		offerCtx,
+		streamID,
+		channel,
+		conductorInstance,
+		driverProxy,
+		cncMappedAtOfferStart,
+		offer,
+	); err != nil {
+		conductorInstance.CancelPending(offerCtx.correlationID)
+		return nullPendingAddOfferContext, err
+	}
+
+	return offerCtx, nil
+}
 
 func prepareAdd(client *Client, channel string) error {
 	if client == nil {
@@ -235,58 +296,37 @@ func (client *Client) awaitAdd(
 	client.lockClient()
 	defer client.unlockClient()
 
-	if err := client.requireReadyWithDriverProxy(); err != nil {
+	if err := client.requireReadyWithConductor(); err != nil {
 		return conductor.PendingRegistration{}, err
 	}
-	registrationKind := registrationKindFor(pendingKind)
-
-	driverProxy := client.driverProxy
-	cncMappedAtOfferStart := client.mapped != nil
 	conductorInstance := client.conductor
 	defer conductorInstance.SetActiveCorrelationID(conductor.NullCorrelationID)
 
-	correlationID := driverProxy.NextCorrelationID()
-	deadlineNs := client.nanoClock() + client.driverTimeout.Nanoseconds()
-	if err := conductorInstance.RegisterPendingAddWithDeadline(
+	offerCtx, err := client.registerAndOfferAddLocked(
 		pendingKind,
-		correlationID,
 		streamID,
 		channel,
-		deadlineNs,
-	); err != nil {
-		return conductor.PendingRegistration{}, mapRegistrationError(err)
+		offer,
+	)
+	if err != nil {
+		return conductor.PendingRegistration{}, err
 	}
 
 	pendingCompleted := false
 	defer func() {
 		if !pendingCompleted {
-			conductorInstance.CancelPending(correlationID)
+			conductorInstance.CancelPending(offerCtx.correlationID)
 		}
 	}()
 
-	conductorInstance.SetActiveCorrelationID(correlationID)
-	if err := client.offerAddCommand(
-		registrationKind,
-		correlationID,
-		streamID,
-		channel,
-		deadlineNs,
-		conductorInstance,
-		driverProxy,
-		cncMappedAtOfferStart,
-		offer,
-	); err != nil {
-		return conductor.PendingRegistration{}, err
-	}
-
 	registration, completed, err := client.awaitPendingPoll(
 		conductorInstance,
-		correlationID,
-		deadlineNs,
+		offerCtx.correlationID,
+		offerCtx.deadlineNs,
 		func(pollErr error) error {
 			return mapAddPollPendingError(
-				registrationKind,
-				correlationID,
+				offerCtx.registrationKind,
+				offerCtx.correlationID,
 				streamID,
 				channel,
 				pollErr,
@@ -304,8 +344,8 @@ func (client *Client) awaitAdd(
 	}
 
 	return conductor.PendingRegistration{}, newRegistrationTimeoutError(
-		registrationKind,
-		correlationID,
+		offerCtx.registrationKind,
+		offerCtx.correlationID,
 		streamID,
 		channel,
 	)
@@ -331,18 +371,16 @@ func (client *Client) guardClosedBeforeOffer(
 }
 
 func (client *Client) offerAddCommand(
-	registrationKind string,
-	correlationID int64,
+	offerCtx pendingAddOfferContext,
 	streamID int32,
 	channel string,
-	deadlineNs int64,
 	conductorInstance *conductor.Conductor,
 	driverProxy *conductor.DriverProxy,
 	cncMappedAtOfferStart bool,
 	offer addOfferFunc,
 ) error {
 	var lastOfferErr error
-	for client.nanoClock() < deadlineNs {
+	for client.nanoClock() < offerCtx.deadlineNs {
 		if err := client.guardClosedBeforeOffer(driverProxy, cncMappedAtOfferStart); err != nil {
 			return err
 		}
@@ -353,7 +391,7 @@ func (client *Client) offerAddCommand(
 		if err := client.guardClosedBeforeOffer(driverProxy, cncMappedAtOfferStart); err != nil {
 			return err
 		}
-		offerErr := offer(driverProxy, correlationID)
+		offerErr := offer(driverProxy, offerCtx.correlationID)
 		if offerErr == nil {
 			return nil
 		}
@@ -362,44 +400,29 @@ func (client *Client) offerAddCommand(
 			time.Sleep(client.idleSleepDuration)
 			continue
 		}
-		return mapAddOfferError(registrationKind, correlationID, offerErr)
+		return mapAddOfferError(offerCtx.registrationKind, offerCtx.correlationID, offerErr)
 	}
 	if errors.Is(lastOfferErr, conductor.ErrRingInsufficientCapacity) {
-		return mapAddOfferError(registrationKind, correlationID, conductor.ErrRingInsufficientCapacity)
-	}
-	return newRegistrationTimeoutError(registrationKind, correlationID, streamID, channel)
-}
-
-func fromPendingHandle[Handle, T any](
-	raw any,
-	fromHandle func(Handle) (T, error),
-	kindName string,
-	wantTypeName string,
-) (T, error) {
-	var zero T
-	if raw == nil {
-		var nilHandle Handle
-		return fromHandle(nilHandle)
-	}
-	handle, ok := raw.(Handle)
-	if !ok {
-		return zero, fmt.Errorf(
-			"aeron: %s handle %T is not %s",
-			kindName,
-			raw,
-			wantTypeName,
+		return mapAddOfferError(
+			offerCtx.registrationKind,
+			offerCtx.correlationID,
+			conductor.ErrRingInsufficientCapacity,
 		)
 	}
-	return fromHandle(handle)
+	return newRegistrationTimeoutError(
+		offerCtx.registrationKind,
+		offerCtx.correlationID,
+		streamID,
+		channel,
+	)
 }
 
 func publicationFromPending(
 	registration conductor.PendingRegistration,
 ) (*Publication, error) {
-	return fromPendingHandle(
+	return typedHandleFrom[*Publication](
 		registration.Publication,
-		publicationFromHandle,
-		"publication",
+		registrationKindPublication,
 		"*Publication",
 	)
 }
@@ -407,10 +430,9 @@ func publicationFromPending(
 func exclusivePublicationFromPending(
 	registration conductor.PendingRegistration,
 ) (*ExclusivePublication, error) {
-	return fromPendingHandle(
+	return typedHandleFrom[*ExclusivePublication](
 		registration.Publication,
-		exclusivePublicationFromHandle,
-		"exclusive publication",
+		registrationKindExclusivePublication,
 		"*ExclusivePublication",
 	)
 }
@@ -418,10 +440,9 @@ func exclusivePublicationFromPending(
 func subscriptionFromPending(
 	registration conductor.PendingRegistration,
 ) (*Subscription, error) {
-	return fromPendingHandle(
+	return typedHandleFrom[*Subscription](
 		registration.Subscription,
-		subscriptionFromHandle,
-		"subscription",
+		registrationKindSubscription,
 		"*Subscription",
 	)
 }

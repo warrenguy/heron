@@ -402,6 +402,84 @@ type expirePendingAddCase struct {
 	setActive     bool
 }
 
+func requirePendingAddExpiredResultForTest(
+	tb testing.TB,
+	conductorInstance *conductor.Conductor,
+	correlationID int64,
+) {
+	tb.Helper()
+
+	registration, ok := conductorInstance.PendingResult(correlationID)
+	require.True(tb, ok)
+	require.ErrorIs(tb, registration.Err, conductor.ErrAwaitTimeout)
+}
+
+func requirePendingAddExpiredForTest(
+	tb testing.TB,
+	conductorInstance *conductor.Conductor,
+	correlationID int64,
+) {
+	tb.Helper()
+
+	requirePendingAddExpiredResultForTest(tb, conductorInstance, correlationID)
+	done, _, pollErr := conductorInstance.PollPending(correlationID)
+	require.True(tb, done)
+	require.ErrorIs(tb, pollErr, conductor.ErrAwaitTimeout)
+}
+
+func setupInactiveExpireSubscriptionPendingForTest(
+	tb testing.TB,
+) (*conductor.Conductor, *recordingResourceLifecycle, *int64, int64) {
+	tb.Helper()
+
+	const startNs = int64(1_000)
+	nanoNs := startNs
+	conductorInstance, lifecycle := newConductorWithResourceLifecycleMutableNanoForTest(
+		tb,
+		0,
+		&nanoNs,
+	)
+	require.NoError(
+		tb,
+		conductorInstance.RegisterPendingAdd(
+			conductor.PendingKindAddSubscription,
+			pendingTestOtherCorrelationID,
+			pendingTestStreamID,
+			pendingTestChannel,
+			pendingAddExpireTimeout,
+		),
+	)
+	require.Equal(tb, 1, conductorInstance.SubscriptionCountForTest())
+	return conductorInstance, lifecycle, &nanoNs, startNs
+}
+
+func advancePendingAddExpireForTest(
+	nanoNs *int64,
+	startNs int64,
+	conductorInstance *conductor.Conductor,
+) {
+	*nanoNs = startNs + int64(pendingAddExpireTimeout)
+	_ = conductorInstance.DoWork()
+}
+
+func transmitLateSubscriptionReadyForTest(
+	t *testing.T,
+	conductorInstance *conductor.Conductor,
+	correlationID int64,
+) {
+	t.Helper()
+
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnSubscriptionReady,
+		conductor.SubscriptionReadyBytes(
+			goldenSubscriptionReadyWithCorrelation(correlationID),
+		),
+	)
+	_ = conductorInstance.DoWork()
+}
+
 func runExpirePendingAddCases(
 	t *testing.T,
 	kind conductor.PendingKind,
@@ -440,8 +518,9 @@ func runExpirePendingAddCases(
 			}
 			assertPreExpire(t, conductorInstance)
 
-			nanoNs = startNs + int64(pendingAddExpireTimeout)
-			_ = conductorInstance.DoWork()
+			advancePendingAddExpireForTest(&nanoNs, startNs, conductorInstance)
+			requirePendingAddExpiredForTest(t, conductorInstance, testCase.correlationID)
+
 			assertPostExpire(t, conductorInstance, lifecycle)
 		})
 	}
@@ -1524,40 +1603,42 @@ func TestConductor_addSubscriptionPending_teardownRollsBackPreInsert(t *testing.
 	)
 }
 
-func TestConductor_inactiveExpire_dropsLateSubscriptionReady(t *testing.T) {
-	const startNs = int64(1_000)
-	nanoNs := startNs
-	conductorInstance, lifecycle := newConductorWithResourceLifecycleMutableNanoForTest(
-		t,
-		0,
-		&nanoNs,
-	)
-	require.NoError(
-		t,
-		conductorInstance.RegisterPendingAdd(
-			conductor.PendingKindAddSubscription,
-			pendingTestOtherCorrelationID,
-			pendingTestStreamID,
-			pendingTestChannel,
-			pendingAddExpireTimeout,
-		),
-	)
-	require.Equal(t, 1, conductorInstance.SubscriptionCountForTest())
+func TestConductor_inactiveExpire_dropsLateSubscriptionReadyBeforePoll(t *testing.T) {
+	conductorInstance, lifecycle, nanoNs, startNs := setupInactiveExpireSubscriptionPendingForTest(t)
 
-	nanoNs = startNs + int64(pendingAddExpireTimeout)
-	_ = conductorInstance.DoWork()
+	advancePendingAddExpireForTest(nanoNs, startNs, conductorInstance)
+
+	requirePendingAddExpiredResultForTest(t, conductorInstance, pendingTestOtherCorrelationID)
+	require.Equal(t, 1, conductorInstance.SubscriptionCountForTest())
+	require.Equal(t, 0, lifecycle.retireSubscriptionCalls)
+
+	transmitLateSubscriptionReadyForTest(t, conductorInstance, pendingTestOtherCorrelationID)
+
+	require.Equal(t, 1, conductorInstance.SubscriptionCountForTest())
+	require.Equal(t, 0, lifecycle.retireSubscriptionCalls)
+	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+
+	done, _, pollErr := conductorInstance.PollPending(pendingTestOtherCorrelationID)
+	require.True(t, done)
+	require.EqualError(t, pollErr, "conductor: await response timeout")
+
+	require.Equal(t, 0, conductorInstance.SubscriptionCountForTest())
+	_, ok := conductorInstance.PendingResult(pendingTestOtherCorrelationID)
+	require.False(t, ok)
+	require.Equal(t, 1, lifecycle.retireSubscriptionCalls)
+}
+
+func TestConductor_inactiveExpire_dropsLateSubscriptionReady(t *testing.T) {
+	conductorInstance, lifecycle, nanoNs, startNs := setupInactiveExpireSubscriptionPendingForTest(t)
+
+	advancePendingAddExpireForTest(nanoNs, startNs, conductorInstance)
+	require.Equal(t, 1, conductorInstance.SubscriptionCountForTest())
+	require.Equal(t, 0, lifecycle.retireSubscriptionCalls)
+	requirePendingAddExpiredForTest(t, conductorInstance, pendingTestOtherCorrelationID)
 	require.Equal(t, 0, conductorInstance.SubscriptionCountForTest())
 	require.Equal(t, 1, lifecycle.retireSubscriptionCalls)
 
-	transmitConductorEvent(
-		t,
-		conductorInstance.EventsAdapterForTest(),
-		conductor.OnSubscriptionReady,
-		conductor.SubscriptionReadyBytes(
-			goldenSubscriptionReadyWithCorrelation(pendingTestOtherCorrelationID),
-		),
-	)
-	_ = conductorInstance.DoWork()
+	transmitLateSubscriptionReadyForTest(t, conductorInstance, pendingTestOtherCorrelationID)
 
 	require.Equal(t, 0, conductorInstance.SubscriptionCountForTest())
 	_, ok := conductorInstance.PendingResult(pendingTestOtherCorrelationID)

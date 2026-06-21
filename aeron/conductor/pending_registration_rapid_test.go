@@ -164,6 +164,22 @@ func rapidMapContains[K comparable, V any](values map[K]V) func(K) bool {
 	}
 }
 
+func drawRapidCorrelationID(
+	rt *rapid.T,
+	label string,
+	reject func(int64) bool,
+) int64 {
+	rt.Helper()
+
+	for {
+		correlationID := rapid.Int64().Draw(rt, label)
+		if reject(correlationID) {
+			continue
+		}
+		return correlationID
+	}
+}
+
 func drawPendingRapidUniqueCorrelationID(
 	rt *rapid.T,
 	isTaken func(int64) bool,
@@ -171,16 +187,9 @@ func drawPendingRapidUniqueCorrelationID(
 ) int64 {
 	rt.Helper()
 
-	for {
-		correlationID := rapid.Int64().Draw(rt, label)
-		if correlationID == conductor.NullCorrelationID {
-			continue
-		}
-		if isTaken(correlationID) {
-			continue
-		}
-		return correlationID
-	}
+	return drawRapidCorrelationID(rt, label, func(correlationID int64) bool {
+		return correlationID == conductor.NullCorrelationID || isTaken(correlationID)
+	})
 }
 
 func drawRapidAbsentCorrelationID(
@@ -190,25 +199,8 @@ func drawRapidAbsentCorrelationID(
 ) int64 {
 	rt.Helper()
 
-	for {
-		correlationID := rapid.Int64().Draw(rt, label)
-		if correlationID == conductor.NullCorrelationID || isPresent(correlationID) {
-			continue
-		}
-		return correlationID
-	}
-}
-
-func drawPendingRapidAbsentCorrelationID(
-	rt *rapid.T,
-	model pendingRapidMapModel,
-	label string,
-) int64 {
-	rt.Helper()
-
-	return drawRapidAbsentCorrelationID(rt, label, func(correlationID int64) bool {
-		_, exists := model.entries[correlationID]
-		return exists
+	return drawRapidCorrelationID(rt, label, func(correlationID int64) bool {
+		return correlationID == conductor.NullCorrelationID || isPresent(correlationID)
 	})
 }
 
@@ -271,22 +263,53 @@ func registerPendingRapidMapEntry(
 	}
 }
 
+func rapidPendingPollLatched(receivedCorrelationID, correlationID int64) bool {
+	return receivedCorrelationID == correlationID
+}
+
+func rapidPendingPollCompletes(receivedCorrelationID, correlationID int64, mapResolved bool) bool {
+	return rapidPendingPollLatched(receivedCorrelationID, correlationID) || mapResolved
+}
+
+func clearReceivedCorrelationIDIf(receivedCorrelationID *int64, correlationID int64) {
+	if *receivedCorrelationID == correlationID {
+		*receivedCorrelationID = conductor.NullCorrelationID
+	}
+}
+
+func receivedCorrelationMatches(
+	conductorInstance *conductor.Conductor,
+	correlationID int64,
+) bool {
+	return conductorInstance.ReceivedCorrelationID() == correlationID
+}
+
 func applyPendingRapidCancel(model *pendingRapidMapModel, correlationID int64) {
 	if _, ok := model.entries[correlationID]; !ok {
 		return
 	}
 	delete(model.entries, correlationID)
-	if model.receivedCorrelationID == correlationID {
-		model.receivedCorrelationID = conductor.NullCorrelationID
-	}
+	clearReceivedCorrelationIDIf(&model.receivedCorrelationID, correlationID)
+}
+
+func pendingRapidMapEntryResolved(entry pendingRapidMapEntry) bool {
+	return entry.err != nil || entry.driverErrored
 }
 
 func applyPendingRapidPoll(model *pendingRapidMapModel, correlationID int64) {
-	if model.receivedCorrelationID != correlationID {
+	entry, ok := model.entries[correlationID]
+	if !ok {
+		return
+	}
+	latched := rapidPendingPollLatched(model.receivedCorrelationID, correlationID)
+	mapResolved := pendingRapidMapEntryResolved(entry)
+	if !rapidPendingPollCompletes(model.receivedCorrelationID, correlationID, mapResolved) {
 		return
 	}
 	delete(model.entries, correlationID)
-	model.receivedCorrelationID = conductor.NullCorrelationID
+	if latched {
+		clearReceivedCorrelationIDIf(&model.receivedCorrelationID, correlationID)
+	}
 }
 
 func applyPendingRapidMapDriverError(model *pendingRapidMapModel, correlationID int64) {
@@ -419,10 +442,10 @@ func runPendingRapidMapOps(
 
 	case pendingRapidMapOpCancel:
 		if rapid.Bool().Draw(rt, fmt.Sprintf("cancelAbsent%d", step)) {
-			correlationID := drawPendingRapidAbsentCorrelationID(
+			correlationID := drawRapidAbsentCorrelationID(
 				rt,
-				*model,
 				fmt.Sprintf("cancelAbsentCorrelationID%d", step),
+				rapidMapContains(model.entries),
 			)
 			conductorInstance.CancelPending(correlationID)
 			return
@@ -440,10 +463,10 @@ func runPendingRapidMapOps(
 
 	case pendingRapidMapOpPoll:
 		if rapid.Bool().Draw(rt, fmt.Sprintf("pollAbsent%d", step)) {
-			correlationID := drawPendingRapidAbsentCorrelationID(
+			correlationID := drawRapidAbsentCorrelationID(
 				rt,
-				*model,
 				fmt.Sprintf("pollAbsentCorrelationID%d", step),
+				rapidMapContains(model.entries),
 			)
 			done, _, err := conductorInstance.PollPending(correlationID)
 			require.False(rt, done)
@@ -458,11 +481,15 @@ func runPendingRapidMapOps(
 		if !ok {
 			return
 		}
+		entry := model.entries[correlationID]
 		done, _, err := conductorInstance.PollPending(correlationID)
-		wantDone := model.receivedCorrelationID == correlationID
+		wantDone := rapidPendingPollCompletes(
+			model.receivedCorrelationID,
+			correlationID,
+			pendingRapidMapEntryResolved(entry),
+		)
 		require.Equal(rt, wantDone, done)
 		if wantDone {
-			entry := model.entries[correlationID]
 			switch {
 			case entry.driverErrored:
 				var driverErr *conductor.DriverRegistrationError
@@ -688,12 +715,19 @@ const (
 	addPendingRapidOpPoll
 )
 
+func addPendingRapidEntryCompletable(entry addPendingRapidEntry) bool {
+	return entry.present &&
+		!entry.readyLatched &&
+		!entry.driverErrored &&
+		!entry.timedOut
+}
+
 func drawAddPendingRapidCompletable(
 	model addPendingRapidModel,
 	kind conductor.PendingKind,
 ) (int64, bool) {
 	for correlationID, entry := range model.entries {
-		if !entry.present || entry.readyLatched || entry.driverErrored {
+		if !addPendingRapidEntryCompletable(entry) {
 			continue
 		}
 		if entry.kind == kind {
@@ -714,15 +748,50 @@ func drawAddPendingRapidPresent(
 	return 0, false
 }
 
-func drawAddPendingRapidPollable(model addPendingRapidModel) (int64, bool) {
-	if model.receivedCorrelationID == conductor.NullCorrelationID {
+func addPendingRapidEntryResolved(entry addPendingRapidEntry) bool {
+	if entry.timedOut || entry.driverErrored || entry.applyFailed {
+		return true
+	}
+	return entry.readyLatched && entry.registrationID != 0
+}
+
+func addPendingRapidEntryPollable(
+	model addPendingRapidModel,
+	correlationID int64,
+	entry addPendingRapidEntry,
+) bool {
+	if !entry.present {
+		return false
+	}
+	return rapidPendingPollCompletes(
+		model.receivedCorrelationID,
+		correlationID,
+		addPendingRapidEntryResolved(entry),
+	)
+}
+
+func addPendingRapidPollableIDs(model addPendingRapidModel) []int64 {
+	ids := make([]int64, 0, len(model.entries))
+	for correlationID, entry := range model.entries {
+		if addPendingRapidEntryPollable(model, correlationID, entry) {
+			ids = append(ids, correlationID)
+		}
+	}
+	return ids
+}
+
+func drawAddPendingRapidPollable(
+	rt *rapid.T,
+	model addPendingRapidModel,
+	label string,
+) (int64, bool) {
+	rt.Helper()
+
+	ids := addPendingRapidPollableIDs(model)
+	if len(ids) == 0 {
 		return 0, false
 	}
-	entry, ok := model.entries[model.receivedCorrelationID]
-	if !ok || !entry.present {
-		return 0, false
-	}
-	return model.receivedCorrelationID, true
+	return drawRapidInt64Key(rt, ids, label), true
 }
 
 func drawAddPendingRapidAbsentPresentCorrelationID(
@@ -902,9 +971,24 @@ func completeAddPendingRapidPublicationReady(
 	event := spec.eventFor(correlationID)
 	event.RegistrationID = correlationID + 1
 	spec.deliverReady(conductorInstance, event)
+	if !receivedCorrelationMatches(conductorInstance, correlationID) {
+		return
+	}
+	applyAddPendingRapidReadyLatch(model, correlationID, event.RegistrationID, nil)
+}
+
+func applyAddPendingRapidReadyLatch(
+	model *addPendingRapidModel,
+	correlationID int64,
+	registrationID int64,
+	mutate func(*addPendingRapidEntry),
+) {
 	entry := model.entries[correlationID]
 	entry.readyLatched = true
-	entry.registrationID = event.RegistrationID
+	entry.registrationID = registrationID
+	if mutate != nil {
+		mutate(&entry)
+	}
 	model.entries[correlationID] = entry
 	model.receivedCorrelationID = correlationID
 }
@@ -926,6 +1010,9 @@ func completeAddPendingBindRetirePublicationReady(
 	}
 	ensureRapidPublicationLogBuffersSeeded(t, conductorInstance, spec)
 	spec.deliverReady(conductorInstance, event)
+	if !receivedCorrelationMatches(conductorInstance, correlationID) {
+		return
+	}
 	entry := model.entries[correlationID]
 	entry.readyLatched = true
 	entry.registrationID = event.RegistrationID
@@ -946,9 +1033,7 @@ func applyAddPendingRapidCancel(model *addPendingRapidModel, correlationID int64
 	}
 	entry.present = false
 	model.entries[correlationID] = entry
-	if model.receivedCorrelationID == correlationID {
-		model.receivedCorrelationID = conductor.NullCorrelationID
-	}
+	clearReceivedCorrelationIDIf(&model.receivedCorrelationID, correlationID)
 }
 
 func applyAddPendingRapidClear(model *addPendingRapidModel) {
@@ -1003,15 +1088,17 @@ func applyAddPendingRapidPoll(model *addPendingRapidModel, correlationID int64) 
 	if !ok || !entry.present {
 		return
 	}
+	latched := rapidPendingPollLatched(model.receivedCorrelationID, correlationID)
 	entry.present = false
 	model.entries[correlationID] = entry
-	model.receivedCorrelationID = conductor.NullCorrelationID
+	if latched {
+		clearReceivedCorrelationIDIf(&model.receivedCorrelationID, correlationID)
+	}
 }
 
-func assertAddPendingRapidInvariants(
+func assertAddPendingRapidCorrelationInvariants(
 	rt *rapid.T,
 	conductorInstance *conductor.Conductor,
-	lifecycle *recordingResourceLifecycle,
 	model addPendingRapidModel,
 ) {
 	rt.Helper()
@@ -1027,6 +1114,17 @@ func assertAddPendingRapidInvariants(
 		require.True(rt, ok)
 		require.True(rt, model.entries[model.receivedCorrelationID].present)
 	}
+}
+
+func assertAddPendingRapidInvariants(
+	rt *rapid.T,
+	conductorInstance *conductor.Conductor,
+	lifecycle *recordingResourceLifecycle,
+	model addPendingRapidModel,
+) {
+	rt.Helper()
+
+	assertAddPendingRapidCorrelationInvariants(rt, conductorInstance, model)
 	require.Equal(
 		rt,
 		conductorInstance.SubscriptionCountForTest(),
@@ -1044,12 +1142,15 @@ type addPendingRapidEligibility struct {
 
 func scanAddPendingRapidEligibility(model addPendingRapidModel) addPendingRapidEligibility {
 	var eligibility addPendingRapidEligibility
-	for _, entry := range model.entries {
+	for correlationID, entry := range model.entries {
 		if !entry.present {
 			continue
 		}
 		eligibility.anyPresent = true
-		if entry.readyLatched || entry.driverErrored {
+		if addPendingRapidEntryPollable(model, correlationID, entry) {
+			eligibility.pollable = true
+		}
+		if !addPendingRapidEntryCompletable(entry) {
 			continue
 		}
 		switch entry.kind {
@@ -1061,7 +1162,6 @@ func scanAddPendingRapidEligibility(model addPendingRapidModel) addPendingRapidE
 			eligibility.completableSubscription = true
 		}
 	}
-	_, eligibility.pollable = drawAddPendingRapidPollable(model)
 	return eligibility
 }
 
@@ -1194,12 +1294,17 @@ func runAddPendingRapidStep(
 		}
 		event := goldenSubscriptionReadyWithCorrelation(correlationID)
 		conductorInstance.SubscriptionReadyForTest(event)
-		entry := model.entries[correlationID]
-		entry.readyLatched = true
-		entry.applyFailed = applyFails
-		entry.registrationID = correlationID
-		model.entries[correlationID] = entry
-		model.receivedCorrelationID = correlationID
+		if !receivedCorrelationMatches(conductorInstance, correlationID) {
+			return
+		}
+		applyAddPendingRapidReadyLatch(
+			model,
+			correlationID,
+			correlationID,
+			func(entry *addPendingRapidEntry) {
+				entry.applyFailed = applyFails
+			},
+		)
 
 	case addPendingRapidOpSetActive:
 		if len(model.entries) == 0 {
@@ -1270,7 +1375,11 @@ func runAddPendingRapidStep(
 		syncAddPendingRapidAfterDoWork(conductorInstance, model)
 
 	case addPendingRapidOpPoll:
-		correlationID, ok := drawAddPendingRapidPollable(*model)
+		correlationID, ok := drawAddPendingRapidPollable(
+			rt,
+			*model,
+			fmt.Sprintf("pollCorrelationID%d", step),
+		)
 		if !ok {
 			return
 		}
@@ -1539,25 +1648,17 @@ func drawAddPendingBindRetirePresent(
 	return drawAddPendingRapidPresent(model.baseModel())
 }
 
-func drawAddPendingBindRetirePollable(
-	model addPendingBindRetireRapidModel,
-) (int64, bool) {
-	return drawAddPendingRapidPollable(model.baseModel())
-}
-
 func applyAddPendingBindRetireCancel(
 	model *addPendingBindRetireRapidModel,
 	correlationID int64,
 ) {
-	base := model.baseModel()
-	applyAddPendingRapidCancel(&base, correlationID)
-	model.receivedCorrelationID = base.receivedCorrelationID
 	entry, ok := model.entries[correlationID]
-	if !ok {
+	if !ok || !entry.present {
 		return
 	}
-	entry.present = base.entries[correlationID].present
+	entry.present = false
 	model.entries[correlationID] = entry
+	clearReceivedCorrelationIDIf(&model.receivedCorrelationID, correlationID)
 }
 
 func applyAddPendingBindRetireClear(model *addPendingBindRetireRapidModel) {
@@ -1577,15 +1678,16 @@ func applyAddPendingBindRetirePoll(
 	model *addPendingBindRetireRapidModel,
 	correlationID int64,
 ) {
-	base := model.baseModel()
-	applyAddPendingRapidPoll(&base, correlationID)
-	model.receivedCorrelationID = base.receivedCorrelationID
 	entry, ok := model.entries[correlationID]
-	if !ok {
+	if !ok || !entry.present {
 		return
 	}
-	entry.present = base.entries[correlationID].present
+	latched := rapidPendingPollLatched(model.receivedCorrelationID, correlationID)
+	entry.present = false
 	model.entries[correlationID] = entry
+	if latched {
+		clearReceivedCorrelationIDIf(&model.receivedCorrelationID, correlationID)
+	}
 }
 
 func syncAddPendingBindRetireAfterDoWork(
@@ -1684,17 +1786,7 @@ func assertAddPendingBindRetireRapidInvariants(
 ) {
 	rt.Helper()
 
-	require.Equal(rt, model.receivedCorrelationID, conductorInstance.ReceivedCorrelationID())
-	require.Equal(rt, model.activeCorrelationID, conductorInstance.ActiveCorrelationID())
-	for correlationID, entry := range model.entries {
-		_, ok := conductorInstance.PendingResult(correlationID)
-		require.Equal(rt, entry.present, ok, "correlation %d pending membership", correlationID)
-	}
-	if model.receivedCorrelationID != conductor.NullCorrelationID {
-		_, ok := model.entries[model.receivedCorrelationID]
-		require.True(rt, ok)
-		require.True(rt, model.entries[model.receivedCorrelationID].present)
-	}
+	assertAddPendingRapidCorrelationInvariants(rt, conductorInstance, model.baseModel())
 	require.Equal(
 		rt,
 		conductorInstance.SubscriptionCountForTest(),
@@ -1850,6 +1942,9 @@ func runAddPendingBindRetireFailureRapidStep(
 		}
 		event := goldenSubscriptionReadyWithCorrelation(correlationID)
 		conductorInstance.SubscriptionReadyForTest(event)
+		if !receivedCorrelationMatches(conductorInstance, correlationID) {
+			return
+		}
 		entry := model.entries[correlationID]
 		entry.readyLatched = true
 		entry.registrationID = correlationID
@@ -1933,7 +2028,11 @@ func runAddPendingBindRetireFailureRapidStep(
 		}
 
 	case addPendingRapidOpPoll:
-		correlationID, ok := drawAddPendingBindRetirePollable(*model)
+		correlationID, ok := drawAddPendingRapidPollable(
+			rt,
+			model.baseModel(),
+			fmt.Sprintf("pollCorrelationID%d", step),
+		)
 		if !ok {
 			return
 		}

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -47,10 +48,10 @@ func ingressChannelIsUDP(channel string) bool {
 	return ingressChannelMediaIs(channel, "udp")
 }
 
-func ingressEndpointParamIndex(channel string, acceptPipeBoundary bool) int {
+func channelParamIndex(channel, param string, acceptPipeBoundary bool) int {
 	searchStart := 0
 	for searchStart < len(channel) {
-		rel := strings.Index(channel[searchStart:], ingressEndpointParam)
+		rel := strings.Index(channel[searchStart:], param)
 		if rel < 0 {
 			return -1
 		}
@@ -69,13 +70,59 @@ func ingressEndpointParamIndex(channel string, acceptPipeBoundary bool) int {
 // ingressChannelQueryEndpointParamIndex returns the index of endpoint= immediately
 // after ?, or -1 when absent. Piped |endpoint= is not matched.
 func ingressChannelQueryEndpointParamIndex(channel string) int {
-	return ingressEndpointParamIndex(channel, false)
+	return channelParamIndex(channel, ingressEndpointParam, false)
 }
 
 // ingressChannelEndpointParamIndex returns the index of endpoint= at a query param
 // boundary (immediately after ? or |), or -1 when absent.
 func ingressChannelEndpointParamIndex(channel string) int {
-	return ingressEndpointParamIndex(channel, true)
+	return channelParamIndex(channel, ingressEndpointParam, true)
+}
+
+func appendChannelParam(channel, param, value string) string {
+	if strings.HasSuffix(channel, "?") {
+		return channel + param + value
+	}
+	if strings.Contains(channel, "?") {
+		return channel + "|" + param + value
+	}
+	return channel + "?" + param + value
+}
+
+func replaceChannelParamValue(channel string, paramIdx int, param, value string) string {
+	start := paramIdx + len(param)
+	rest := channel[start:]
+	if pipe := strings.IndexByte(rest, '|'); pipe >= 0 {
+		return channel[:start] + value + rest[pipe:]
+	}
+	return channel[:start] + value
+}
+
+func validateIngressMemberEndpoint(memberEndpoint string) error {
+	if memberEndpoint == "" {
+		return errors.New("cluster client: ingress member endpoint is empty")
+	}
+	if strings.ContainsAny(memberEndpoint, "|?=") {
+		return fmt.Errorf(
+			"cluster client: invalid ingress member endpoint: %s",
+			memberEndpoint,
+		)
+	}
+	return nil
+}
+
+func validateIngressUDPChannel(ingressChannel string) error {
+	if !ingressChannelIsUDP(ingressChannel) {
+		return fmt.Errorf("cluster client: invalid ingress channel: %s", ingressChannel)
+	}
+	return nil
+}
+
+func validateIngressChannelForMemberEndpoints(ingressChannel string) error {
+	if ingressChannelPassthrough(ingressChannel) {
+		return nil
+	}
+	return validateIngressUDPChannel(ingressChannel)
 }
 
 // BuildIngressChannel returns the Aeron channel URI for offering to memberEndpoint.
@@ -87,24 +134,15 @@ func BuildIngressChannel(ingressChannel, memberEndpoint string) (string, error) 
 	if ingressChannelPassthrough(ingressChannel) {
 		return ingressChannel, nil
 	}
-	media, ok := ingressChannelMedia(ingressChannel)
-	if !ok || media != "udp" {
-		return "", fmt.Errorf("cluster client: invalid ingress channel: %s", ingressChannel)
+	if err := validateIngressUDPChannel(ingressChannel); err != nil {
+		return "", err
+	}
+	if err := validateIngressMemberEndpoint(memberEndpoint); err != nil {
+		return "", err
 	}
 	idx := ingressChannelEndpointParamIndex(ingressChannel)
 	if idx >= 0 {
-		start := idx + len(ingressEndpointParam)
-		rest := ingressChannel[start:]
-		if pipe := strings.IndexByte(rest, '|'); pipe >= 0 {
-			return ingressChannel[:start] + memberEndpoint + rest[pipe:], nil
-		}
-		return ingressChannel[:start] + memberEndpoint, nil
+		return replaceChannelParamValue(ingressChannel, idx, ingressEndpointParam, memberEndpoint), nil
 	}
-	if strings.HasSuffix(ingressChannel, "?") {
-		return ingressChannel + ingressEndpointParam + memberEndpoint, nil
-	}
-	if strings.Contains(ingressChannel, "?") {
-		return ingressChannel + "|" + ingressEndpointParam + memberEndpoint, nil
-	}
-	return ingressChannel + "?" + ingressEndpointParam + memberEndpoint, nil
+	return appendChannelParam(ingressChannel, ingressEndpointParam, memberEndpoint), nil
 }
