@@ -16,6 +16,14 @@
 // starts two such drivers: test/integration/harness and test/integration. TestMain
 // wiring lives in harness_test and integration_test source files. Packages that call
 // Shared(t) should add TestMain plus AssertSharedDriverWiring acceptance tests.
+//
+// Driver APIs:
+//   - StartParallel: calls t.Parallel(), then StartWithConfig with defaults.
+//   - Start, StartWithConfig: per-test ephemeral aeronmd; parallel-safe (isolated
+//     AERON_DIR, child cmd.Env only). Use StartWithConfig for cfg.Env overrides;
+//     call t.Parallel first or use StartParallel for defaults.
+//   - JoinExternal: attach to an already-running aeronmd at dir.
+//   - Shared, SharedAttachedCnc: package TestMain driver; not parallel-safe.
 package harness
 
 import (
@@ -169,9 +177,20 @@ func Start(t testing.TB) *MediaDriver {
 	return StartWithConfig(t, Config{})
 }
 
+// StartParallel calls t.Parallel and starts a per-test ephemeral aeronmd.
+// Do not call t.Parallel again in the same test or subtest; Go panics on a second call.
+func StartParallel(t *testing.T) *MediaDriver {
+	t.Helper()
+	t.Parallel()
+	return StartWithConfig(t, Config{})
+}
+
 // StartWithConfig starts aeronmd with defaultDriverEnv (64 KiB term buffers, SHARED threading),
 // merged under cfg.Env (overrides win), and AERON_DIR set to a fresh temp directory.
 // Start delegates here with an empty Config.
+//
+// Safe under t.Parallel when each test gets its own MediaDriver. Env overrides apply to the
+// child aeronmd process only; do not use os.Setenv here.
 func StartWithConfig(t testing.TB, cfg Config) *MediaDriver {
 	t.Helper()
 	aeronmd, err := resolveAeronmd()
@@ -403,6 +422,10 @@ func resolveAeronmd() (string, error) {
 		}
 		return path, nil
 	}
+	return defaultAeronmd()
+}
+
+var defaultAeronmd = sync.OnceValues(func() (string, error) {
 	if path := repoBinAeronmd(); path != "" {
 		return path, nil
 	}
@@ -411,28 +434,20 @@ func resolveAeronmd() (string, error) {
 		return "", errAeronmdNotFound
 	}
 	return path, nil
-}
-
-var (
-	repoBinAeronmdOnce sync.Once
-	repoBinAeronmdPath string
-)
+})
 
 func repoBinAeronmd() string {
-	repoBinAeronmdOnce.Do(func() {
-		out, err := exec.Command("go", "env", "GOMOD").Output()
-		if err != nil {
-			return
-		}
-		modRoot := strings.TrimSpace(string(out))
-		if modRoot == "" || modRoot == os.DevNull {
-			return
-		}
-		path := filepath.Join(filepath.Dir(modRoot), "bin", "aeronmd")
-		if _, err := os.Stat(path); err != nil {
-			return
-		}
-		repoBinAeronmdPath = path
-	})
-	return repoBinAeronmdPath
+	out, err := exec.Command("go", "env", "GOMOD").Output()
+	if err != nil {
+		return ""
+	}
+	modRoot := strings.TrimSpace(string(out))
+	if modRoot == "" || modRoot == os.DevNull {
+		return ""
+	}
+	path := filepath.Join(filepath.Dir(modRoot), "bin", "aeronmd")
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	return path
 }

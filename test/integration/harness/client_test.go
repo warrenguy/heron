@@ -14,6 +14,7 @@ import (
 )
 
 func TestPollUntilBool_earlyExit(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	ok := pollUntilBool(
 		100*time.Millisecond,
@@ -28,6 +29,7 @@ func TestPollUntilBool_earlyExit(t *testing.T) {
 }
 
 func TestPollUntilBool_timesOut(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	ok := pollUntilBool(
 		50*time.Millisecond,
@@ -104,7 +106,7 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			md := Shared(t)
+			md := StartParallel(t)
 			client := ConnectClient(t, md, aeron.Context{})
 
 			capture := &CaptureFailTB{TB: t}
@@ -117,7 +119,7 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 }
 
 func TestRequirePublicationLookupMiss_earlyExit(t *testing.T) {
-	md := Shared(t)
+	md := StartParallel(t)
 	client := ConnectClient(t, md, aeron.Context{})
 
 	pub, err := client.AddPublication(RequirePublicationLookupMissStreamID, IPCChannel)
@@ -131,7 +133,7 @@ func TestRequirePublicationLookupMiss_earlyExit(t *testing.T) {
 }
 
 func TestWaitForIPCLinkConnected_liveIPC(t *testing.T) {
-	md := Shared(t)
+	md := StartParallel(t)
 	client := ConnectClient(t, md, aeron.Context{})
 
 	pub, err := client.AddPublication(WaitForIPCLinkConnectedStreamID, IPCChannel)

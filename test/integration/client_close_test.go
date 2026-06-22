@@ -15,7 +15,7 @@ import (
 const closeDrainSoakDuration = 1 * time.Second
 
 func TestClientCloseLifecycle(t *testing.T) {
-	md := harness.Shared(t)
+	md := harness.StartParallel(t)
 
 	client, err := aeron.Connect(aeron.Context{AeronDir: md.Dir})
 	require.NoError(t, err)

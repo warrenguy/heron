@@ -15,8 +15,8 @@ jobs:
         include:
           - goarch: amd64
             runner: ubuntu-24.04
-          - goarch: arm64
-            runner: ubuntu-24.04-arm
+          # - goarch: arm64
+          #   runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     env: &go-arch-env
       GOARCH: ${{ matrix.goarch }}

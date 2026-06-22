@@ -16,7 +16,7 @@ import (
 // TestPublicationLimitCounterAliasesDriver proves Publication.PositionLimit
 // matches the driver publisher-limit counter on live aeronmd.
 func TestPublicationLimitCounterAliasesDriver(t *testing.T) {
-	md := harness.Shared(t)
+	md := harness.StartParallel(t)
 	client, hadClientError := harness.ConnectIPCClient(t, md)
 
 	pub, _ := harness.ConnectIPCPubSubClients(
@@ -51,7 +51,7 @@ func TestPublicationLimitCounterAliasesDriver(t *testing.T) {
 // TestPublicationLimitAdvancesAfterSubscriberDrain proves publication limit
 // advances after subscriber drain on live aeronmd.
 func TestPublicationLimitAdvancesAfterSubscriberDrain(t *testing.T) {
-	md := harness.Shared(t)
+	md := harness.StartParallel(t)
 	client, hadClientError := harness.ConnectIPCClient(t, md)
 
 	pub, sub := harness.ConnectIPCPubSubClients(

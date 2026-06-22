@@ -24,7 +24,7 @@ func finishPubSubIPCTest(t *testing.T, md *harness.MediaDriver, clientErrors ...
 
 // TestPubSubIPCRoundtrip proves IPC offer, poll delivery, and position advance on live aeronmd.
 func TestPubSubIPCRoundtrip(t *testing.T) {
-	md := harness.Shared(t)
+	md := harness.StartParallel(t)
 	client, hadClientError := harness.ConnectIPCClient(t, md)
 
 	const (
@@ -56,7 +56,7 @@ func TestPubSubIPCRoundtrip(t *testing.T) {
 // TestPubSubIPCTwoClientsRoundtrip proves split-client IPC offer, poll delivery,
 // and position advance on live aeronmd.
 func TestPubSubIPCTwoClientsRoundtrip(t *testing.T) {
-	md := harness.Shared(t)
+	md := harness.StartParallel(t)
 
 	splitClientCtx := aeron.Context{
 		InterServiceTimeout: harness.ConnectedPollTimeout,
@@ -92,7 +92,7 @@ func TestPubSubIPCTwoClientsRoundtrip(t *testing.T) {
 // TestPubSubIPCFragmentedRoundtrip proves fragmented Offer, PollReassembled delivery,
 // and aligned position advance on live aeronmd.
 func TestPubSubIPCFragmentedRoundtrip(t *testing.T) {
-	md := harness.Shared(t)
+	md := harness.StartParallel(t)
 	client, hadClientError := harness.ConnectIPCClient(t, md)
 
 	const (
@@ -123,6 +123,7 @@ func TestPubSubIPCFragmentedRoundtrip(t *testing.T) {
 // TestPublicationTermRollover proves sustained IPC offers cross a term boundary
 // without permanent stall and deliver all payloads in order on live aeronmd.
 func TestPublicationTermRollover(t *testing.T) {
+	t.Parallel()
 	md := harness.StartWithConfig(t, harness.Config{Env: harness.RolloverDriverEnv()})
 	client, hadClientError := harness.ConnectIPCClient(t, md)
 
