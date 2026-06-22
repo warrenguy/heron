@@ -11,6 +11,7 @@ import (
 )
 
 func TestJoinExternal_liveCnc(t *testing.T) {
+	t.Parallel()
 	dir := harness.Start(t).Dir
 
 	joined := harness.JoinExternal(t, dir)

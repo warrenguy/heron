@@ -382,6 +382,7 @@ func assertOtherRegistryRapidKeysUnchanged(
 }
 
 func TestLogBuffersRegistry_acquireReleaseLinger_invariants_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		registry, state := newRegistryRapidFixture(t, rt)
 		model := registryRapidModel{}
@@ -403,6 +404,7 @@ func TestLogBuffersRegistry_acquireReleaseLinger_invariants_rapid(t *testing.T) 
 }
 
 func TestLogBuffersRegistry_closePublicationLinger_invariants_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		fixture := newRegistryCloseRapidFixture(t, rt)
 		model := registryRapidModel{refCount: 1, contains: true}
@@ -430,6 +432,7 @@ func TestLogBuffersRegistry_closePublicationLinger_invariants_rapid(t *testing.T
 }
 
 func TestLogBuffersRegistry_multiKeyIsolation_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		keyCount := rapid.IntRange(2, 8).Draw(rt, "keyCount")
 		registry, states := newMultiKeyRegistryRapidFixture(t, rt, keyCount)

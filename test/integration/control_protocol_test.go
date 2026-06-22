@@ -47,7 +47,7 @@ func connectMPSCMatrixClient(
 // witnesses. Wire type-ID proof stays in harness unit tests; ring scan here is
 // failure diagnostics only.
 func TestMPSCCommandMatrix(t *testing.T) {
-	md, attach := harness.StartAttachedCnc(t)
+	md, attach := harness.SharedAttachedCnc(t)
 	toDriver := attach.Rings.ToDriver
 
 	clientA, hadClientErrorA := connectMPSCMatrixClient(t, md)

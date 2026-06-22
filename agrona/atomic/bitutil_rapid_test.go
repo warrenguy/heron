@@ -12,6 +12,7 @@ import (
 )
 
 func TestAlign_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		value := rapid.IntRange(0, 1<<18).Draw(t, "value")
 		shift := rapid.IntRange(0, 10).Draw(t, "shift")

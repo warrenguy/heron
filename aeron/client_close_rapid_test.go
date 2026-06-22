@@ -14,6 +14,7 @@ import (
 )
 
 func TestClient_firstDoWorkSeedsServiceTimestamps_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		nanoNs := testutil.TestStartNanoNs
 		interServiceTimeoutNs := testutil.TestInterServiceTimeout.Nanoseconds()
@@ -35,6 +36,7 @@ func TestClient_firstDoWorkSeedsServiceTimestamps_rapid(t *testing.T) {
 }
 
 func TestClient_conductorServiceTimeoutAfterInterval_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		var gotErr error
 		nanoNs := testutil.TestStartNanoNs

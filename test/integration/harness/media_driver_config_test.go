@@ -3,7 +3,6 @@
 package harness
 
 import (
-	"os"
 	"strings"
 	"testing"
 
@@ -13,16 +12,19 @@ import (
 )
 
 func TestStartWithConfig_defaultsApplied(t *testing.T) {
+	t.Parallel()
 	md := Start(t)
 	require.NotEmpty(t, md.Dir)
 
-	require.Equal(t, defaultDriverEnv[envTermBufferLength], os.Getenv(envTermBufferLength))
-	require.Equal(t, defaultDriverEnv[envIPCTermBufferLength], os.Getenv(envIPCTermBufferLength))
-	require.Equal(t, defaultDriverEnv[envThreadingMode], os.Getenv(envThreadingMode))
-	require.Equal(t, md.Dir, os.Getenv(envDir))
+	cmdEnv := envSliceToMap(t, md.CmdEnvForTest())
+	require.Equal(t, defaultDriverEnv[envTermBufferLength], cmdEnv[envTermBufferLength])
+	require.Equal(t, defaultDriverEnv[envIPCTermBufferLength], cmdEnv[envIPCTermBufferLength])
+	require.Equal(t, defaultDriverEnv[envThreadingMode], cmdEnv[envThreadingMode])
+	require.Equal(t, md.Dir, cmdEnv[envDir])
 }
 
 func TestStartWithConfig_envOverride(t *testing.T) {
+	t.Parallel()
 	const ipcTermBufferOverride = "131072"
 	md := StartWithConfig(t, Config{
 		Env: DriverEnv{
@@ -31,13 +33,15 @@ func TestStartWithConfig_envOverride(t *testing.T) {
 	})
 	require.NotEmpty(t, md.Dir)
 
-	require.Equal(t, defaultDriverEnv[envTermBufferLength], os.Getenv(envTermBufferLength))
-	require.Equal(t, ipcTermBufferOverride, os.Getenv(envIPCTermBufferLength))
-	require.Equal(t, defaultDriverEnv[envThreadingMode], os.Getenv(envThreadingMode))
-	require.Equal(t, md.Dir, os.Getenv(envDir))
+	cmdEnv := envSliceToMap(t, md.CmdEnvForTest())
+	require.Equal(t, defaultDriverEnv[envTermBufferLength], cmdEnv[envTermBufferLength])
+	require.Equal(t, ipcTermBufferOverride, cmdEnv[envIPCTermBufferLength])
+	require.Equal(t, defaultDriverEnv[envThreadingMode], cmdEnv[envThreadingMode])
+	require.Equal(t, md.Dir, cmdEnv[envDir])
 }
 
 func TestStartWithConfig_childCmdEnvOverride(t *testing.T) {
+	t.Parallel()
 	const ipcTermBufferOverride = "262144"
 	// Stale parent IPC stripping is covered by TestBuildDriverCmdEnv_table.
 
@@ -133,6 +137,7 @@ func TestBuildDriverCmdEnv_table(t *testing.T) {
 }
 
 func TestRolloverDriverEnv_matchesTermMinLength(t *testing.T) {
+	t.Parallel()
 	env := RolloverDriverEnv()
 
 	require.Equal(t, termBufferLength, env[envIPCTermBufferLength])
@@ -140,6 +145,7 @@ func TestRolloverDriverEnv_matchesTermMinLength(t *testing.T) {
 }
 
 func TestTermDataLengthFromCmdEnv_matchesStartedDriver(t *testing.T) {
+	t.Parallel()
 	md := StartWithConfig(t, Config{Env: RolloverDriverEnv()})
 
 	termLen, err := TermDataLengthFromCmdEnv(md)

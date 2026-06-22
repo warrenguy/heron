@@ -11,6 +11,7 @@ import (
 )
 
 func TestSubscriberPosition_setGetRoundtrip_rapid(t *testing.T) {
+	t.Parallel()
 	reader := NewTestCountersReaderWithSubscriberPositionForTest(t, TestSubscriberPositionAtJoin)
 	position := newSubscriberPosition(
 		TestSubscriberPositionCounterID,

@@ -53,6 +53,7 @@ func rapidWriteReadOnce(t *rapid.T, ring *ringbuffer.ManyToOneRingBuffer, maxLen
 }
 
 func TestManyToOneRingBuffer_WriteRead_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		dataCapacity := 1 << rapid.IntRange(4, 14).Draw(t, "shift")
 		ring, _ := newTestRingBuffer(t, dataCapacity)
@@ -62,6 +63,7 @@ func TestManyToOneRingBuffer_WriteRead_rapid(t *testing.T) {
 }
 
 func TestManyToOneRingBuffer_NextCorrelationId_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		steps := rapid.IntRange(1, 32).Draw(t, "steps")
 		ring, _ := newTestRingBuffer(t, testDataCapacity)
@@ -76,6 +78,7 @@ func TestManyToOneRingBuffer_NextCorrelationId_rapid(t *testing.T) {
 }
 
 func TestManyToOneRingBuffer_writeReadDrain_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		dataCapacity := 1 << rapid.IntRange(4, 12).Draw(t, "shift")
 		ring, _ := newTestRingBuffer(t, dataCapacity)
@@ -94,6 +97,7 @@ func TestManyToOneRingBuffer_writeReadDrain_rapid(t *testing.T) {
 }
 
 func TestManyToOneRingBuffer_tryClaimLifecycle_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		ring, buffer := newTestRingBuffer(t, testDataCapacity)
 		maxLen := clampMaxMsgLen(ring.MaxMsgLength(), 1)
@@ -136,6 +140,7 @@ func TestManyToOneRingBuffer_tryClaimLifecycle_rapid(t *testing.T) {
 }
 
 func TestManyToOneRingBuffer_controlledCommitAtEnd_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		dataCapacity := 1 << rapid.IntRange(6, 9).Draw(t, "shift")
 		ring, buffer := newTestRingBuffer(t, dataCapacity)
@@ -161,6 +166,7 @@ func TestManyToOneRingBuffer_controlledCommitAtEnd_rapid(t *testing.T) {
 }
 
 func TestManyToOneRingBuffer_readLimitNonPositive_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		ring, _ := newTestRingBuffer(t, testDataCapacity)
 		limit := rapid.SampledFrom([]int{-1, 0}).Draw(t, "limit")
@@ -186,6 +192,7 @@ func TestManyToOneRingBuffer_readLimitNonPositive_rapid(t *testing.T) {
 }
 
 func TestManyToOneRingBuffer_UnblockGap_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		messageLength := unblockMessageLength
 		shift := rapid.IntRange(4, 12).Draw(t, "shift")

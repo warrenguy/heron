@@ -5,6 +5,7 @@ package codecs_test
 import (
 	"flag"
 	"strconv"
+	"sync"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -16,6 +17,8 @@ const (
 	rapidChecksSessionConnectReq = 200
 )
 
+var rapidChecksFlagMu sync.Mutex
+
 func rapidCheck(tb testing.TB, checks int, prop func(*rapid.T)) {
 	tb.Helper()
 
@@ -25,11 +28,15 @@ func rapidCheck(tb testing.TB, checks int, prop func(*rapid.T)) {
 		return
 	}
 
+	rapidChecksFlagMu.Lock()
+	defer rapidChecksFlagMu.Unlock()
+
 	previous := f.Value.String()
+	defer func() { _ = flag.Set("rapid.checks", previous) }()
+
 	if err := flag.Set("rapid.checks", strconv.Itoa(checks)); err != nil {
 		tb.Fatalf("rapid.checks: %v", err)
 	}
-	tb.Cleanup(func() { _ = flag.Set("rapid.checks", previous) })
 
 	rapid.Check(tb, prop)
 }

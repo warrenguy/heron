@@ -13,6 +13,7 @@ import (
 )
 
 func TestCommittedFrameLengthVolatile_termEndSlack_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		paddingLength := rapid.Int32Range(1, 31).Draw(t, "paddingLength")
 

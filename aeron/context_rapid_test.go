@@ -62,6 +62,7 @@ func drawPartialContext(t *rapid.T) (
 }
 
 func TestNormalizeContext_durationFields_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		ctx, _, _, _, _ := drawPartialContext(t)
 		normalized := aeron.NormalizeContextForTest(ctx)
@@ -82,6 +83,7 @@ func TestNormalizeContext_durationFields_rapid(t *testing.T) {
 }
 
 func TestNormalizeContext_clocks_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		ctx, epochMs, nanoNs, customEpoch, customNano := drawPartialContext(t)
 		normalized := aeron.NormalizeContextForTest(ctx)
@@ -141,6 +143,7 @@ func requireNormalizedContextsEqual(
 }
 
 func TestNormalizeContext_idempotent_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		ctx, epochMs, nanoNs, customEpoch, customNano := drawPartialContext(t)
 		once := aeron.NormalizeContextForTest(ctx)

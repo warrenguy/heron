@@ -76,7 +76,7 @@ func assertLookupHitThenMissAfterClose(
 // TestClientAddPublicationIPC proves AddPublication blocks until ready, inserts
 // the handle into the client map, and Publication(regID) returns the same pointer.
 func TestClientAddPublicationIPC(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	client := harness.ConnectClient(t, md, aeron.Context{})
 
@@ -98,7 +98,7 @@ func TestClientAddPublicationIPC(t *testing.T) {
 // TestClientAddPublicationIsConnectedEventually proves IsConnected becomes true once
 // a matching IPC subscriber is registered and driver events are pumped via DoWork.
 func TestClientAddPublicationIsConnectedEventually(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	client := harness.ConnectClient(t, md, aeron.Context{})
 
@@ -124,7 +124,7 @@ func TestClientAddPublicationIsConnectedEventually(t *testing.T) {
 // ready, inserts the handle into the client map, and ExclusivePublication(regID)
 // returns the same pointer.
 func TestClientAddExclusivePublicationIPC(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	client := harness.ConnectClient(t, md, aeron.Context{})
 
@@ -146,7 +146,7 @@ func TestClientAddExclusivePublicationIPC(t *testing.T) {
 // TestClientAddExclusivePublicationIsConnectedEventually proves IsConnected becomes true
 // once a matching IPC subscriber is registered and driver events are pumped via DoWork.
 func TestClientAddExclusivePublicationIsConnectedEventually(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	client := harness.ConnectClient(t, md, aeron.Context{})
 
@@ -171,7 +171,7 @@ func TestClientAddExclusivePublicationIsConnectedEventually(t *testing.T) {
 // TestExclusivePublicationIPCRoundtrip proves exclusive IPC offer, poll delivery,
 // and position advance on live aeronmd.
 func TestExclusivePublicationIPCRoundtrip(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 	client, hadClientError := harness.ConnectIPCClient(t, md)
 
 	const (
@@ -199,7 +199,7 @@ func TestExclusivePublicationIPCRoundtrip(t *testing.T) {
 // TestExclusivePublicationIPCTwoClientsRoundtrip proves split-client exclusive IPC
 // offer, poll delivery, and position advance on live aeronmd.
 func TestExclusivePublicationIPCTwoClientsRoundtrip(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	splitClientCtx := aeron.Context{
 		InterServiceTimeout: harness.ConnectedPollTimeout,
@@ -234,7 +234,7 @@ func TestExclusivePublicationIPCTwoClientsRoundtrip(t *testing.T) {
 // TestClientExclusivePublicationLookupByRegID proves lookup hits while registered and
 // misses after Close removes the handle from the client map.
 func TestClientExclusivePublicationLookupByRegID(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	assertLookupHitThenMissAfterClose(
 		t,
@@ -256,7 +256,7 @@ func TestClientExclusivePublicationLookupByRegID(t *testing.T) {
 // TestClientAddExclusivePublicationRejectedAfterClose proves AddExclusivePublication on a
 // closed client returns ErrClientClosed without offering a new registration.
 func TestClientAddExclusivePublicationRejectedAfterClose(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	assertAddRejectedAfterClose(t, md, 7205, func(client *aeron.Client, streamID int32) (any, error) {
 		return client.AddExclusivePublication(streamID, harness.IPCChannel)
@@ -266,7 +266,7 @@ func TestClientAddExclusivePublicationRejectedAfterClose(t *testing.T) {
 // TestClientAddSubscriptionIPC proves AddSubscription blocks until ready and
 // Subscription(regID) returns the same pointer with stream and channel set.
 func TestClientAddSubscriptionIPC(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	client := harness.ConnectClient(t, md, aeron.Context{})
 
@@ -290,7 +290,7 @@ func TestClientAddSubscriptionIPC(t *testing.T) {
 // TestClientPublicationLookupByRegID proves lookup hits while registered and
 // misses after Close removes the handle from the client map.
 func TestClientPublicationLookupByRegID(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	assertLookupHitThenMissAfterClose(
 		t,
@@ -312,7 +312,7 @@ func TestClientPublicationLookupByRegID(t *testing.T) {
 // TestClientAddPublicationRejectedAfterClose proves AddPublication on a closed
 // client returns ErrClientClosed without offering a new registration.
 func TestClientAddPublicationRejectedAfterClose(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	assertAddRejectedAfterClose(t, md, 7105, func(client *aeron.Client, streamID int32) (any, error) {
 		return client.AddPublication(streamID, harness.IPCChannel)
@@ -322,7 +322,7 @@ func TestClientAddPublicationRejectedAfterClose(t *testing.T) {
 // TestClientAddSubscriptionRejectedAfterClose proves AddSubscription on a closed
 // client returns ErrClientClosed without offering a new registration.
 func TestClientAddSubscriptionRejectedAfterClose(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	assertAddRejectedAfterClose(t, md, 7106, func(client *aeron.Client, streamID int32) (any, error) {
 		return client.AddSubscription(streamID, harness.IPCChannel)
@@ -332,7 +332,7 @@ func TestClientAddSubscriptionRejectedAfterClose(t *testing.T) {
 // TestClientSubscriptionLookupByRegID proves lookup hits while registered and
 // misses after Close removes the handle from the client map.
 func TestClientSubscriptionLookupByRegID(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	assertLookupHitThenMissAfterClose(
 		t,
@@ -352,7 +352,7 @@ func TestClientSubscriptionLookupByRegID(t *testing.T) {
 }
 
 func TestClientStayAlive(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	client, err := aeron.Connect(aeron.Context{
 		AeronDir: md.Dir,
@@ -378,6 +378,7 @@ func TestClientStayAlive(t *testing.T) {
 }
 
 func TestClientDetectsDriverDeath(t *testing.T) {
+	t.Parallel()
 	md := harness.Start(t)
 
 	driverTimeout := 2 * time.Second
@@ -420,7 +421,7 @@ func TestClientDetectsDriverDeath(t *testing.T) {
 }
 
 func TestClientReadsSystemCounters(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	client, err := aeron.Connect(aeron.Context{
 		AeronDir: md.Dir,
@@ -439,7 +440,7 @@ func TestClientReadsSystemCounters(t *testing.T) {
 }
 
 func TestClientErrorLogReadable(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	client, err := aeron.Connect(aeron.Context{
 		AeronDir: md.Dir,
@@ -458,7 +459,7 @@ func TestClientErrorLogReadable(t *testing.T) {
 }
 
 func TestClientTwoClientsSameDriver(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	clientA, err := aeron.Connect(aeron.Context{AeronDir: md.Dir})
 	require.NoError(t, err)
@@ -484,7 +485,7 @@ func TestClientTwoClientsSameDriver(t *testing.T) {
 }
 
 func TestTwoClientsConcurrentRingOffers(t *testing.T) {
-	md, attach := harness.StartAttachedCnc(t)
+	md, attach := harness.SharedAttachedCnc(t)
 	// Harness attach and each Connect client map the same cnc.dat; ToDriver is one MPSC ring.
 	toDriver := attach.Rings.ToDriver
 
@@ -504,8 +505,7 @@ func TestTwoClientsConcurrentRingOffers(t *testing.T) {
 		require.NoError(t, clientB.Close())
 	})
 
-	consumerBefore := toDriver.ConsumerPosition()
-	producerBefore := toDriver.ProducerPosition()
+	consumerBefore, producerBefore := harness.QuiescentToDriverSnapshot(t, toDriver)
 
 	const offersPerClient = 32
 	const actionsPerType = offersPerClient / 2

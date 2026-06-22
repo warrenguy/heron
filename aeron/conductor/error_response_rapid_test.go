@@ -15,6 +15,7 @@ import (
 )
 
 func TestErrorResponse_roundtrip_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		correlationID := rapid.Int64().Draw(rt, "correlationID")
 		errorCode := rapid.Int32().Draw(rt, "errorCode")
@@ -45,6 +46,7 @@ func TestErrorResponse_roundtrip_rapid(t *testing.T) {
 }
 
 func TestErrorResponse_trailingPadding_rejects_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		correlationID := rapid.Int64().Draw(rt, "correlationID")
 		errorCode := rapid.Int32().Draw(rt, "errorCode")

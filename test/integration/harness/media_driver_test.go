@@ -17,6 +17,7 @@ import (
 )
 
 func TestMediaDriver_Kill(t *testing.T) {
+	t.Parallel()
 	md := harness.Start(t)
 
 	pid, err := md.ProcessPID()
@@ -30,9 +31,9 @@ func TestMediaDriver_Kill(t *testing.T) {
 }
 
 func TestMediaDriver(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
-	t.Run("StartStop", func(t *testing.T) {
+	t.Run("SharedDriverAvailable", func(t *testing.T) {
 		require.NotEmpty(t, md.Dir)
 	})
 

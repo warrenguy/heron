@@ -29,6 +29,7 @@ func drawChannelFlyweightKind(rt *rapid.T, name string) channelFlyweightKind {
 }
 
 func TestChannelFlyweight_roundtrip_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		kind := drawChannelFlyweightKind(rt, "flyweightKind")
 		clientID := rapid.Int64().Draw(rt, "clientID")
@@ -92,6 +93,7 @@ func TestChannelFlyweight_roundtrip_rapid(t *testing.T) {
 }
 
 func TestRemoveMessage_roundtrip_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		clientID := rapid.Int64().Draw(rt, "clientID")
 		correlationID := rapid.Int64().Draw(rt, "correlationID")
@@ -123,6 +125,7 @@ func TestRemoveMessage_roundtrip_rapid(t *testing.T) {
 }
 
 func TestRemovePublication_roundtrip_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		clientID := rapid.Int64().Draw(rt, "clientID")
 		correlationID := rapid.Int64().Draw(rt, "correlationID")
@@ -168,6 +171,7 @@ func TestRemovePublication_roundtrip_rapid(t *testing.T) {
 }
 
 func TestDecodeTrailingStringASCII_exactFit_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		flyweightKind := drawChannelFlyweightKind(rt, "flyweightKind")
 		clientID := rapid.Int64().Draw(rt, "clientID")

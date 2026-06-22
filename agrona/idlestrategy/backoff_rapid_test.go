@@ -80,6 +80,7 @@ func (m *backoffRapidModel) idleStep() {
 }
 
 func TestBackoff_idleSequence_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		maxSpins := rapid.IntRange(0, 32).Draw(rt, "maxSpins")
 		maxYields := rapid.IntRange(0, 32).Draw(rt, "maxYields")

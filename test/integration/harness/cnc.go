@@ -15,6 +15,7 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/cnc/cnctest"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/agrona/broadcast"
 	"github.com/warrenguy/heron/agrona/ringbuffer"
 )
 
@@ -170,6 +171,25 @@ func WaitForToDriverRingDrained(
 		},
 		"to-driver ring not drained",
 	)
+}
+
+// DrainToClients consumes broadcast records the shared driver retained from earlier
+// package tests, validating each. A positive limit caps drained records so a continuous
+// broadcast surfaces as the returned count exceeding the caller's bound instead of an
+// unbounded loop; limit <= 0 drains until empty. Returns the count drained.
+func DrainToClients(
+	t testing.TB,
+	ring *broadcast.BroadcastReceiver,
+	limit int,
+) int {
+	t.Helper()
+
+	drained := 0
+	for (limit <= 0 || drained < limit) && ring.ReceiveNext() {
+		require.True(t, ring.Validate())
+		drained++
+	}
+	return drained
 }
 
 func QuiescentToDriverSnapshot(

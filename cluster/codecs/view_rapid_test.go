@@ -14,6 +14,7 @@ import (
 )
 
 func TestReadVarSlice_rapid(t *testing.T) {
+	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
 		bufLen := rapid.IntRange(0, 256).Draw(rt, "bufLen")
 		buf := make([]byte, bufLen)

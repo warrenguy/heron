@@ -9,6 +9,7 @@ import (
 )
 
 func TestMediaDriver_notStarted(t *testing.T) {
+	t.Parallel()
 	var md MediaDriver
 
 	t.Run("ProcessPID", func(t *testing.T) {

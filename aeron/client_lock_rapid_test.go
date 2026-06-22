@@ -143,6 +143,7 @@ func wantGuardClosedBeforeOfferErr(
 }
 
 func TestClient_awaitPendingPoll_closedGuardAfterPollPending_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		rt.Helper()
 
@@ -162,6 +163,7 @@ func TestClient_awaitPendingPoll_closedGuardAfterPollPending_rapid(t *testing.T)
 }
 
 func TestClient_guardClosedBeforeOffer_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		rt.Helper()
 

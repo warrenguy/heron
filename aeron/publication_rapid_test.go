@@ -14,6 +14,7 @@ import (
 )
 
 func TestPublication_Offer_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		pub := aeron.NewTestPublicationWithoutTBForRapid(
 			aeron.DefaultTestPublicationLogConfig(),
@@ -48,6 +49,7 @@ func TestPublication_Offer_rapid(t *testing.T) {
 }
 
 func TestPublication_Offer_rapid_nonZeroStart(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
 		maxStart := int64(aeron.TestPublicationTermLength / 4)
@@ -86,6 +88,7 @@ func TestPublication_Offer_rapid_nonZeroStart(t *testing.T) {
 }
 
 func TestPublication_Offer_rapid_nearMaxPosition_fragmented(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		position := publicationPositionNearMaxPosition()
 		cfg := publicationLogConfigNearMaxPosition()
@@ -116,6 +119,7 @@ func TestPublication_Offer_rapid_nearMaxPosition_fragmented(t *testing.T) {
 }
 
 func TestPublication_Offer_rapid_nearMaxPosition(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		position := publicationPositionNearMaxPosition()
 		cfg := publicationLogConfigNearMaxPosition()
@@ -144,6 +148,7 @@ func TestPublication_Offer_rapid_nearMaxPosition(t *testing.T) {
 }
 
 func TestPublication_Offer_rapid_fragmented(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		pub := aeron.NewTestPublicationWithoutTBForRapid(
 			aeron.DefaultTestPublicationLogConfig(),
@@ -191,6 +196,7 @@ func TestPublication_Offer_rapid_fragmented(t *testing.T) {
 const limitGateRapidMaxDraw = 8192 // default 64 KiB term; avoid AdminAction rotation spin
 
 func TestPublication_Offer_limitGate_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		limit := rapid.Int64Range(256, limitGateRapidMaxDraw).Draw(t, "limit")
 		startPosition := rapid.Int64Range(0, limit).Draw(t, "startPosition")
@@ -234,6 +240,7 @@ func TestPublication_Offer_limitGate_rapid(t *testing.T) {
 }
 
 func TestPublication_TryClaim_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		pub := aeron.NewTestPublicationWithoutTBForRapid(
 			aeron.DefaultTestPublicationLogConfig(),

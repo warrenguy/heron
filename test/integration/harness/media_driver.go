@@ -1,5 +1,21 @@
 //go:build integration
 
+// Package harness provides integration-test fixtures for Aeron clients, CNC wiring,
+// and media drivers.
+//
+// HERON_SHARED_MEDIA_DRIVER controls shared driver mode. Unset means enabled; only "0"
+// disables shared mode. Any other value keeps shared mode (including "", "false", and
+// "1"). When disabled, RunTestMainWithSharedDriver skips start/stop and Shared(t)
+// falls back to Start(t).
+//
+// HERON_SHARED_MEDIA_DRIVER_KEEP is unset by default. When "1", stopSharedDriver skips
+// teardown entirely (process and CNC dir remain) for debugging stale CNC state.
+//
+// Shared driver scope is one long-lived aeronmd per Go test package binary that calls
+// RunTestMainWithSharedDriver in TestMain. make test-integration (./test/integration/...)
+// starts two such drivers: test/integration/harness and test/integration. TestMain
+// wiring lives in harness_test and integration_test source files. Packages that call
+// Shared(t) should add TestMain plus AssertSharedDriverWiring acceptance tests.
 package harness
 
 import (
@@ -52,14 +68,7 @@ func RolloverDriverEnv() DriverEnv {
 	}
 }
 
-func setupTestDriverEnv(
-	t testing.TB,
-	dir string,
-	overrides DriverEnv,
-	onFail func(),
-) (DriverEnv, int) {
-	t.Helper()
-
+func buildDriverEnv(dir string, overrides DriverEnv) (DriverEnv, int, error) {
 	env := make(DriverEnv, len(defaultDriverEnv)+len(overrides)+1)
 	maps.Copy(env, defaultDriverEnv)
 	maps.Copy(env, overrides)
@@ -67,19 +76,33 @@ func setupTestDriverEnv(
 
 	ipcTermDataLength, err := strconv.Atoi(env[envIPCTermBufferLength])
 	if err != nil {
-		if onFail != nil {
-			onFail()
-		}
-		t.Fatalf("harness: parse %s=%q: %v", envIPCTermBufferLength, env[envIPCTermBufferLength], err)
+		return nil, 0, fmt.Errorf(
+			"parse %s=%q: %w",
+			envIPCTermBufferLength,
+			env[envIPCTermBufferLength],
+			err,
+		)
 	}
 	if err := logbuffer.CheckTermLength(ipcTermDataLength); err != nil {
+		return nil, 0, fmt.Errorf("invalid %s=%d: %w", envIPCTermBufferLength, ipcTermDataLength, err)
+	}
+	return env, ipcTermDataLength, nil
+}
+
+func buildStartedDriverEnv(
+	t testing.TB,
+	dir string,
+	overrides DriverEnv,
+	onFail func(),
+) (DriverEnv, int) {
+	t.Helper()
+
+	env, ipcTermDataLength, err := buildDriverEnv(dir, overrides)
+	if err != nil {
 		if onFail != nil {
 			onFail()
 		}
-		t.Fatalf("harness: invalid %s=%d: %v", envIPCTermBufferLength, ipcTermDataLength, err)
-	}
-	for key, value := range env {
-		t.Setenv(key, value)
+		t.Fatalf("harness: %v", err)
 	}
 	return env, ipcTermDataLength
 }
@@ -162,16 +185,30 @@ func StartWithConfig(t testing.TB, cfg Config) *MediaDriver {
 	if err != nil {
 		t.Fatalf("harness: mkdir temp: %v", err)
 	}
-	env, ipcTermDataLength := setupTestDriverEnv(t, dir, cfg.Env, func() { _ = os.RemoveAll(dir) })
+	env, ipcTermDataLength := buildStartedDriverEnv(t, dir, cfg.Env, func() { _ = os.RemoveAll(dir) })
 
+	md, err := launchMediaDriver(aeronmd, dir, env, ipcTermDataLength)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		t.Fatalf("harness: %v", err)
+	}
+	t.Cleanup(func() { md.Stop() })
+	return md
+}
+
+func launchMediaDriver(
+	aeronmdPath string,
+	dir string,
+	env DriverEnv,
+	ipcTermDataLength int,
+) (*MediaDriver, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, aeronmd)
+	cmd := exec.CommandContext(ctx, aeronmdPath)
 	cmd.Dir = dir
 	cmd.Env = buildDriverCmdEnv(env)
 	if err := cmd.Start(); err != nil {
 		cancel()
-		_ = os.RemoveAll(dir)
-		t.Fatalf("harness: start aeronmd: %v", err)
+		return nil, fmt.Errorf("start aeronmd: %w", err)
 	}
 
 	md := &MediaDriver{
@@ -189,10 +226,9 @@ func StartWithConfig(t testing.TB, cfg Config) *MediaDriver {
 
 	if err := cnc.WaitCncReady(md.CncPath(), joinExternalCncReadyTimeout); err != nil {
 		md.Stop()
-		t.Fatalf("harness: %s not ready: %v", cnc.FileName, err)
+		return nil, fmt.Errorf("%s not ready: %w", cnc.FileName, err)
 	}
-	t.Cleanup(func() { md.Stop() })
-	return md
+	return md, nil
 }
 
 // JoinExternal attaches to an already-running aeronmd at dir without spawning a process.
@@ -211,7 +247,7 @@ func JoinExternalTimeout(t testing.TB, dir string, readyTimeout time.Duration) *
 	t.Helper()
 	require.NotEmpty(t, dir)
 
-	_, ipcTermDataLength := setupTestDriverEnv(t, dir, nil, nil)
+	_, ipcTermDataLength := buildStartedDriverEnv(t, dir, nil, nil)
 
 	if err := cnc.WaitCncReady(driverCncPath(dir), readyTimeout); err != nil {
 		t.Fatalf("harness: %s not ready: %v", cnc.FileName, err)

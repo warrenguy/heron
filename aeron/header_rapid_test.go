@@ -54,6 +54,7 @@ func drawCommittedFrame(
 }
 
 func TestHeader_positionMath_rapid(t *testing.T) {
+	t.Parallel()
 	image := headerRapidImage(t)
 	termBuffer := aeron.ImageTermBuffer0ForTest(image)
 	termLength := aeron.TestPublicationTermLength
@@ -113,6 +114,7 @@ func drawBeginEndFragmentSpecs(rt *rapid.T) []aeron.FragmentedFrameForTest {
 }
 
 func TestHeader_ConfigureCompletedFragment_rapid(t *testing.T) {
+	t.Parallel()
 	image := headerRapidImage(t)
 	termBuffer := aeron.ImageTermBuffer0ForTest(image)
 
@@ -126,6 +128,7 @@ func TestHeader_ConfigureCompletedFragment_rapid(t *testing.T) {
 }
 
 func TestHeader_frameFieldsRoundtrip_rapid(t *testing.T) {
+	t.Parallel()
 	image := headerRapidImage(t)
 	termBuffer := aeron.ImageTermBuffer0ForTest(image)
 	termLength := aeron.TestPublicationTermLength

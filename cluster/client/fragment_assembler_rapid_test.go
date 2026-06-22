@@ -19,6 +19,7 @@ const (
 )
 
 func TestFragmentAssembler_rapid_reassembly(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		payload := drawFragmentAssemblerPayload(rt)
 		maxChunks := min(len(payload), fragmentAssemblerRapidMaxChunks)
@@ -29,6 +30,7 @@ func TestFragmentAssembler_rapid_reassembly(t *testing.T) {
 }
 
 func TestFragmentAssembler_rapid_unfragmentedRoundtrip(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		payload := drawFragmentAssemblerPayload(rt)
 		deliverFragmentSpecsAndAssertPayload(rt, []fragmentedFrameSpec{{
@@ -39,6 +41,7 @@ func TestFragmentAssembler_rapid_unfragmentedRoundtrip(t *testing.T) {
 }
 
 func TestFragmentAssembler_rapid_orphanFragmentsNoDelegate(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		deliverEndOrphan := rapid.Bool().Draw(rt, "deliver_end_orphan")
 
@@ -73,6 +76,7 @@ func TestFragmentAssembler_rapid_orphanFragmentsNoDelegate(t *testing.T) {
 }
 
 func TestFragmentAssembler_rapid_termOffsetGapNoDelegate(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		payload := drawFragmentAssemblerPayloadMin(rt, 2)
 		specs := fragmentedSpecsFromChunks(splitPayloadIntoChunks(payload, 2))

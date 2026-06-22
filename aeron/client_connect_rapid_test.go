@@ -15,6 +15,7 @@ import (
 )
 
 func TestWaitForDriverHeartbeat_driverShutdown_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		timeoutMs := rapid.IntRange(1, 60_000).Draw(t, "timeoutMs")
 		startMs := int64(rapid.IntRange(1, 1_000_000).Draw(t, "startMs"))
@@ -33,6 +34,7 @@ func TestWaitForDriverHeartbeat_driverShutdown_rapid(t *testing.T) {
 }
 
 func TestWaitForDriverHeartbeat_freshHeartbeat_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		timeoutMs := rapid.IntRange(1, 60_000).Draw(t, "timeoutMs")
 		heartbeat := int64(rapid.IntRange(1, 1_000_000).Draw(t, "heartbeat"))
@@ -52,6 +54,7 @@ func TestWaitForDriverHeartbeat_freshHeartbeat_rapid(t *testing.T) {
 }
 
 func TestWaitForDriverHeartbeat_staleAtConnect_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		timeoutMs := rapid.IntRange(1, 60_000).Draw(t, "timeoutMs")
 		heartbeat := int64(rapid.IntRange(1, 1_000_000).Draw(t, "heartbeat"))
@@ -72,6 +75,7 @@ func TestWaitForDriverHeartbeat_staleAtConnect_rapid(t *testing.T) {
 }
 
 func TestWaitForDriverHeartbeat_notReady_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		timeoutMs := rapid.IntRange(1, 60_000).Draw(t, "timeoutMs")
 		startMs := int64(rapid.IntRange(1, 1_000_000).Draw(t, "startMs"))

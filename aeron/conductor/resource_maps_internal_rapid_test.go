@@ -105,6 +105,7 @@ func buildRapidPublicationHandleMap(
 }
 
 func TestIsAbsentMapValue_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		count := rapid.IntRange(0, 32).Draw(rt, "count")
 		resources, expectedAbsent := buildRapidPublicationHandleMap(
@@ -126,6 +127,7 @@ func TestIsAbsentMapValue_rapid(t *testing.T) {
 }
 
 func TestResourceByRegID_liveResourceCount_consistency_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		count := rapid.IntRange(0, 32).Draw(rt, "count")
 		resources, _ := buildRapidPublicationHandleMap(

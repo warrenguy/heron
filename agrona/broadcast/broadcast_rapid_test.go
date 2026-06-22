@@ -14,6 +14,7 @@ import (
 )
 
 func TestBroadcast_rapid_transmitReceiveOrder(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		capacity := rapidCapacity(t)
 		ab, tx, rx := rapidBroadcastPair(t, capacity)
@@ -32,6 +33,7 @@ func TestBroadcast_rapid_transmitReceiveOrder(t *testing.T) {
 }
 
 func TestBroadcast_rapid_tailIntentOrdering(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		capacity := rapidCapacity(t)
 		ab, tx, _ := rapidBroadcastPair(t, capacity)
@@ -47,6 +49,7 @@ func TestBroadcast_rapid_tailIntentOrdering(t *testing.T) {
 }
 
 func TestBroadcast_rapid_lapVsNoLap(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		capacity := rapidCapacity(t)
 		_, tx, rx := rapidBroadcastPair(t, capacity)
@@ -81,6 +84,7 @@ func TestBroadcast_rapid_lapVsNoLap(t *testing.T) {
 }
 
 func TestBroadcast_rapid_noTornReads(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		capacity := rapidCapacity(t)
 		_, tx, rx := rapidBroadcastPair(t, capacity)
@@ -104,6 +108,7 @@ func TestBroadcast_rapid_noTornReads(t *testing.T) {
 }
 
 func TestBroadcast_rapid_paddingWrap(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		// Smaller capacities increase wrap/padding frequency.
 		shift := rapid.IntRange(6, 9).Draw(t, "shift")
@@ -139,6 +144,7 @@ func TestBroadcast_rapid_paddingWrap(t *testing.T) {
 }
 
 func TestBroadcast_rapid_interleavedSchedule(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		capacity := rapidCapacity(t)
 		_, tx, rx := rapidBroadcastPair(t, capacity)
@@ -173,6 +179,7 @@ func TestBroadcast_rapid_interleavedSchedule(t *testing.T) {
 }
 
 func TestBroadcast_rapid_dualReceiver(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		capacity := rapidCapacity(t)
 		tx, fast, slow := rapidDualReceiverSetup(t, capacity)
@@ -197,6 +204,7 @@ func TestBroadcast_rapid_dualReceiver(t *testing.T) {
 }
 
 func TestBroadcast_rapid_lappedCountMonotonic(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		capacity := rapidCapacity(t)
 		_, tx, rx := rapidBroadcastPair(t, capacity)
@@ -244,6 +252,7 @@ func TestBroadcast_rapid_lappedCountMonotonic(t *testing.T) {
 }
 
 func TestBroadcast_rapid_validateImpliesReadable(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		capacity := rapidCapacity(t)
 		_, tx, rx := rapidBroadcastPair(t, capacity)

@@ -13,6 +13,7 @@ import (
 )
 
 func TestSessionMessageHeader_codec_rapid(t *testing.T) {
+	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
 		actingVersion, offset := rapidCodecContext(rt)
 		fields := codecs.SessionMessageHeaderFields{
@@ -33,6 +34,7 @@ func TestSessionMessageHeader_codec_rapid(t *testing.T) {
 }
 
 func TestSessionEvent_codec_rapid(t *testing.T) {
+	t.Parallel()
 	rapidCheck(t, rapidChecksSessionEvent, func(rt *rapid.T) {
 		actingVersion, offset := rapidCodecContext(rt)
 		blockLength := codecs.SessionEventBlockLength(actingVersion)
@@ -61,6 +63,7 @@ func TestSessionEvent_codec_rapid(t *testing.T) {
 }
 
 func TestSessionConnectRequest_codec_rapid(t *testing.T) {
+	t.Parallel()
 	rapidCheck(t, rapidChecksSessionConnectReq, func(rt *rapid.T) {
 		actingVersion, offset := rapidCodecContext(rt)
 
@@ -90,6 +93,7 @@ func TestSessionConnectRequest_codec_rapid(t *testing.T) {
 }
 
 func TestSessionCloseAndKeepAlive_codec_rapid(t *testing.T) {
+	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
 		actingVersion, offset := rapidCodecContext(rt)
 		closeFields := codecs.SessionCloseRequestFields{
@@ -122,6 +126,7 @@ func TestSessionCloseAndKeepAlive_codec_rapid(t *testing.T) {
 }
 
 func TestNewLeaderEvent_codec_rapid(t *testing.T) {
+	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
 		actingVersion, offset := rapidCodecContext(rt)
 		fields := codecs.NewLeaderEventFields{
@@ -143,6 +148,7 @@ func TestNewLeaderEvent_codec_rapid(t *testing.T) {
 }
 
 func TestChallenge_codec_rapid(t *testing.T) {
+	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
 		actingVersion, offset := rapidCodecContext(rt)
 		fields := codecs.ChallengeFields{
@@ -163,6 +169,7 @@ func TestChallenge_codec_rapid(t *testing.T) {
 }
 
 func TestChallengeResponse_codec_rapid(t *testing.T) {
+	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
 		actingVersion, offset := rapidCodecContext(rt)
 		fields := codecs.ChallengeResponseFields{
@@ -183,6 +190,7 @@ func TestChallengeResponse_codec_rapid(t *testing.T) {
 }
 
 func TestAdminRequest_codec_rapid(t *testing.T) {
+	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
 		actingVersion, offset := rapidCodecContext(rt)
 		fields := codecs.AdminRequestFields{
@@ -205,6 +213,7 @@ func TestAdminRequest_codec_rapid(t *testing.T) {
 }
 
 func TestAdminResponse_codec_rapid(t *testing.T) {
+	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
 		actingVersion, offset := rapidCodecContext(rt)
 		fields := codecs.AdminResponseFields{

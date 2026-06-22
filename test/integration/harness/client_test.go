@@ -4,6 +4,7 @@ package harness
 
 import (
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -40,62 +41,83 @@ func TestPollUntilBool_timesOut(t *testing.T) {
 	require.Positive(t, calls)
 }
 
+type connectedWaitFn func(
+	t testing.TB,
+	capture *CaptureFailTB,
+	client *aeron.Client,
+	streamID int32,
+) (io.Closer, string)
+
 func TestConnectedWait_timeoutMessages(t *testing.T) {
 	const connectedWaitTestTimeout = 50 * time.Millisecond
 
 	tests := []struct {
 		name   string
 		stream int32
-		wait   func(*CaptureFailTB, *aeron.Client, int32)
+		wait   connectedWaitFn
 	}{
 		{
 			name:   "publication",
 			stream: ConnectedWaitPublicationTimeoutStreamID,
-			wait: func(capture *CaptureFailTB, client *aeron.Client, streamID int32) {
+			wait: func(
+				t testing.TB,
+				capture *CaptureFailTB,
+				client *aeron.Client,
+				streamID int32,
+			) (io.Closer, string) {
 				pub, err := client.AddPublication(streamID, IPCChannel)
-				require.NoError(capture, err)
+				require.NoError(t, err)
+
 				PollUntilConnected(capture, client, pub, connectedWaitTestTimeout)
-				wantPublicationMsg := fmt.Sprintf(
+				wantMsg := fmt.Sprintf(
 					"publication %d (stream %d session %d) never connected; position=0 within %s",
 					pub.RegistrationID(),
 					pub.StreamID(),
 					pub.SessionID(),
 					connectedWaitTestTimeout,
 				)
-				require.Equal(capture, wantPublicationMsg, capture.lastMsg)
+				return pub, wantMsg
 			},
 		},
 		{
 			name:   "subscription",
 			stream: ConnectedWaitSubscriptionTimeoutStreamID,
-			wait: func(capture *CaptureFailTB, client *aeron.Client, streamID int32) {
+			wait: func(
+				t testing.TB,
+				capture *CaptureFailTB,
+				client *aeron.Client,
+				streamID int32,
+			) (io.Closer, string) {
 				sub, err := client.AddSubscription(streamID, IPCChannel)
-				require.NoError(capture, err)
+				require.NoError(t, err)
+
 				WaitForSubscriptionConnected(capture, client, sub, connectedWaitTestTimeout)
-				wantSubscriptionMsg := fmt.Sprintf(
+				wantMsg := fmt.Sprintf(
 					"subscription %d never connected within %s",
 					sub.RegistrationID(),
 					connectedWaitTestTimeout,
 				)
-				require.Equal(capture, wantSubscriptionMsg, capture.lastMsg)
+				return sub, wantMsg
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			md := Start(t)
+			md := Shared(t)
 			client := ConnectClient(t, md, aeron.Context{})
 
 			capture := &CaptureFailTB{TB: t}
-			tt.wait(capture, client, tt.stream)
+			closer, wantMsg := tt.wait(t, capture, client, tt.stream)
 			require.True(t, capture.failed)
+			require.Equal(t, wantMsg, capture.lastMsg)
+			CleanupClose(t, "close registration", closer.Close)
 		})
 	}
 }
 
 func TestRequirePublicationLookupMiss_earlyExit(t *testing.T) {
-	md := Start(t)
+	md := Shared(t)
 	client := ConnectClient(t, md, aeron.Context{})
 
 	pub, err := client.AddPublication(RequirePublicationLookupMissStreamID, IPCChannel)
@@ -109,7 +131,7 @@ func TestRequirePublicationLookupMiss_earlyExit(t *testing.T) {
 }
 
 func TestWaitForIPCLinkConnected_liveIPC(t *testing.T) {
-	md := Start(t)
+	md := Shared(t)
 	client := ConnectClient(t, md, aeron.Context{})
 
 	pub, err := client.AddPublication(WaitForIPCLinkConnectedStreamID, IPCChannel)

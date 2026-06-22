@@ -15,6 +15,7 @@ import (
 )
 
 func TestMapCncFile_roundtrip_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		meta := cnc.DrawRapidBufferLengths(rt, cnc.TestRapidMaxField)
 
@@ -40,6 +41,7 @@ func TestMapCncFile_roundtrip_rapid(t *testing.T) {
 }
 
 func TestMapCncFile_hugeMetadataShortFile_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		meta := cnc.DrawOverflowBufferLengths(rt)
 

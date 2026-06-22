@@ -70,6 +70,7 @@ func requireZeroOrPreserved[T comparable](t *rapid.T, drawn, got, defaultIfZero 
 }
 
 func TestNormalizeClusterContext_idempotent_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		ctx := drawPartialClusterContext(t)
 		once := ctx.Normalize()
@@ -79,6 +80,7 @@ func TestNormalizeClusterContext_idempotent_rapid(t *testing.T) {
 }
 
 func TestNormalizeClusterContext_streamDefaults_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		ctx, normalized := normalizeDrawnContext(t)
 
@@ -95,6 +97,7 @@ func TestNormalizeClusterContext_streamDefaults_rapid(t *testing.T) {
 }
 
 func TestNormalizeClusterContext_timeouts_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		ctx, normalized := normalizeDrawnContext(t)
 
@@ -108,6 +111,7 @@ func TestNormalizeClusterContext_timeouts_rapid(t *testing.T) {
 }
 
 func TestNormalizeClusterContext_ingressExclusive_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		ctx, normalized := normalizeDrawnContext(t)
 
@@ -121,6 +125,7 @@ func TestNormalizeClusterContext_ingressExclusive_rapid(t *testing.T) {
 }
 
 func TestNormalizeClusterContext_credentialsAndIdleStrategy_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		_, normalized := normalizeDrawnContext(t)
 
@@ -130,6 +135,7 @@ func TestNormalizeClusterContext_credentialsAndIdleStrategy_rapid(t *testing.T) 
 }
 
 func TestNormalizeClusterContext_aeronDirMerge_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		ctx, normalized := normalizeDrawnContext(t)
 

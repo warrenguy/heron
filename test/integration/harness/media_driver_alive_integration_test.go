@@ -11,6 +11,7 @@ import (
 )
 
 func TestAliveError_stoppedDriver(t *testing.T) {
+	t.Parallel()
 	md := Start(t)
 
 	pid, err := md.ProcessPID()

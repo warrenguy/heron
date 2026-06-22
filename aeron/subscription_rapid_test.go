@@ -55,6 +55,7 @@ func pickCorrelationID(rt *rapid.T, images map[int64]*aeron.Image, name string) 
 }
 
 func TestSubscription_imageMapInvariants_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		sub := testSubscription(t)
 
@@ -128,6 +129,7 @@ func addSubscriptionPollImageWithRandomFrames(
 }
 
 func TestSubscription_Poll_invariants_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		sub := testSubscription(t)
 		imageCount := rapid.IntRange(1, 4).Draw(rt, "imageCount")

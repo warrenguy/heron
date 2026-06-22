@@ -12,6 +12,7 @@ import (
 )
 
 func TestPublicationLimitCounterValue_counterNotFound(t *testing.T) {
+	t.Parallel()
 	meta := make([]byte, cnc.CounterMetadataLength)
 	values := make([]byte, cnc.CounterValueLength)
 

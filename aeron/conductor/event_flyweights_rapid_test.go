@@ -148,6 +148,7 @@ func padPayloadWithTrailingBytes(payload []byte, trailingExtra int) []byte {
 }
 
 func TestEventFlyweight_roundtrip_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		kind := drawEventFlyweightKind(rt, "flyweightKind")
 		offset := rapid.IntRange(0, 8).Draw(rt, "offset")
@@ -224,6 +225,7 @@ func TestEventFlyweight_roundtrip_rapid(t *testing.T) {
 }
 
 func TestEventFlyweight_trailingPadding_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		kind := drawStringBearingEventFlyweightKind(rt, "flyweightKind")
 		trailingExtra := rapid.IntRange(1, 8).Draw(rt, "trailingExtra")

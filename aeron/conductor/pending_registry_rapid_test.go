@@ -150,6 +150,7 @@ func assertPendingExpireRapidHandlerStep(
 }
 
 func TestPendingRegistry_ExpireBefore_opSequences_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		registry := newPendingRegistry()
 		count := rapid.IntRange(1, 16).Draw(rt, "count")

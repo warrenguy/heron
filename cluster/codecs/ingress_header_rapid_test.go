@@ -14,6 +14,7 @@ import (
 )
 
 func TestEncodeIngressHeader_rapid(t *testing.T) {
+	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
 		headerLen := codecs.SessionMessageHeaderEncodedLen()
 		bufLen := rapid.IntRange(0, 512).Draw(rt, "bufLen")

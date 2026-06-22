@@ -15,7 +15,7 @@ import (
 const closeDrainSoakDuration = 1 * time.Second
 
 func TestClientCloseLifecycle(t *testing.T) {
-	md := harness.Start(t)
+	md := harness.Shared(t)
 
 	client, err := aeron.Connect(aeron.Context{AeronDir: md.Dir})
 	require.NoError(t, err)
@@ -28,7 +28,7 @@ func TestClientCloseLifecycle(t *testing.T) {
 }
 
 func TestClientCloseOffersCLIENT_CLOSEOnLiveRing(t *testing.T) {
-	md, attach := harness.StartAttachedCnc(t)
+	md, attach := harness.SharedAttachedCnc(t)
 	toDriver := attach.Rings.ToDriver
 
 	client := harness.ConnectClient(t, md, aeron.Context{})
@@ -78,7 +78,7 @@ func setupIPCPubSubForCloseDrain(
 // TestClientCloseDrainsRegistrations proves live aeronmd drains active pub/sub
 // registrations before CLIENT_CLOSE and accepts ghost subscription reuse.
 func TestClientCloseDrainsRegistrations(t *testing.T) {
-	md, attach := harness.StartAttachedCnc(t)
+	md, attach := harness.SharedAttachedCnc(t)
 	toDriver := attach.Rings.ToDriver
 
 	client := harness.ConnectClient(t, md, aeron.Context{})

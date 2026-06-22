@@ -26,6 +26,7 @@ func drawWorkNanoWithinKeepAliveGate(t *rapid.T) int64 {
 }
 
 func TestConductor_driverTimeoutBoundaryAlive_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		driverHeartbeatMs := int64(rapid.IntRange(1, 1_000_000_000).Draw(rt, "driverHeartbeatMs"))
 		timeoutMs := conductorTestDriverTimeout.Milliseconds()
@@ -48,6 +49,7 @@ func TestConductor_driverTimeoutBoundaryAlive_rapid(t *testing.T) {
 }
 
 func TestConductor_driverTimeoutBoundaryStale_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		driverHeartbeatMs := int64(rapid.IntRange(1, 1_000_000_000).Draw(rt, "driverHeartbeatMs"))
 		timeoutMs := conductorTestDriverTimeout.Milliseconds()
@@ -75,6 +77,7 @@ func TestConductor_driverTimeoutBoundaryStale_rapid(t *testing.T) {
 }
 
 func TestConductor_unpublishedDriverHeartbeatNotStale_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		heartbeatMs := drawUnpublishedDriverHeartbeat(rt)
 		epochMs := int64(rapid.IntRange(1, 1_000_000_000).Draw(rt, "epochMs"))
@@ -96,6 +99,7 @@ func TestConductor_unpublishedDriverHeartbeatNotStale_rapid(t *testing.T) {
 }
 
 func TestConductor_keepAliveIntervalGating_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		driverHeartbeatMs := int64(rapid.IntRange(1, 1_000_000_000).Draw(rt, "driverHeartbeatMs"))
 		timeoutMs := conductorTestDriverTimeout.Milliseconds()
@@ -120,6 +124,7 @@ func TestConductor_keepAliveIntervalGating_rapid(t *testing.T) {
 }
 
 func TestConductor_serviceIntervalBoundaryAlive_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		epochMs := int64(rapid.IntRange(1, 1_000_000_000).Draw(rt, "epochMs"))
 		timeoutNs := conductorTestInterServiceTimeout.Nanoseconds()
@@ -142,6 +147,7 @@ func TestConductor_serviceIntervalBoundaryAlive_rapid(t *testing.T) {
 }
 
 func TestConductor_serviceIntervalBoundaryStale_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		epochMs := int64(rapid.IntRange(1, 1_000_000_000).Draw(rt, "epochMs"))
 		timeoutNs := conductorTestInterServiceTimeout.Nanoseconds()
@@ -166,6 +172,7 @@ func TestConductor_serviceIntervalBoundaryStale_rapid(t *testing.T) {
 }
 
 func TestConductor_serviceIntervalSeedingAvoidsFalseTimeout_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		epochMs := int64(rapid.IntRange(1, 1_000_000_000).Draw(rt, "epochMs"))
 		timeoutNs := conductorTestInterServiceTimeout.Nanoseconds()

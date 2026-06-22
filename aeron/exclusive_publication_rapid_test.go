@@ -21,6 +21,7 @@ func newExclusivePublicationNearTermEndForRapid(t *rapid.T) (*aeron.ExclusivePub
 }
 
 func TestExclusivePublication_Offer_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		ep := aeron.NewTestExclusivePublicationWithoutTBForRapid(
 			aeron.DefaultTestExclusivePublicationLogConfig(),
@@ -55,6 +56,7 @@ func TestExclusivePublication_Offer_rapid(t *testing.T) {
 }
 
 func TestExclusivePublication_TermRotation_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		ep, margin := newExclusivePublicationNearTermEndForRapid(t)
 
@@ -68,6 +70,7 @@ func TestExclusivePublication_TermRotation_rapid(t *testing.T) {
 }
 
 func TestExclusivePublication_TermRotation_TryClaim_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		ep, margin := newExclusivePublicationNearTermEndForRapid(t)
 

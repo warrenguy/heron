@@ -130,6 +130,7 @@ func lookupRegistrationID(
 }
 
 func TestConductor_resourceMap_operations_rapid(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		harness resourceMapRapidHarness

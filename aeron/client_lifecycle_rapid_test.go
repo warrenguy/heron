@@ -35,6 +35,7 @@ func rapidPreCloseDoWorkWithQueries(rt *rapid.T, client *aeron.Client, clientID 
 }
 
 func TestClient_closeDoWorkGuards_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		clientID := int64(rapid.IntRange(1, 1_000_000).Draw(t, "clientID"))
 		client := newRapidTestClient(t, clientID)
@@ -70,6 +71,7 @@ func rapidInterleaveDoWorkAndIsTerminating(rt *rapid.T, client *aeron.Client, co
 }
 
 func TestClient_doubleClose_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		client := newRapidTestClient(t, 0)
 

@@ -14,6 +14,7 @@ import (
 )
 
 func TestPutGetStringASCII_roundtrip_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		value := testutil.DrawASCIIString(rt, "value", 512)
 		offset := rapid.IntRange(0, 8).Draw(rt, "offset")
@@ -34,6 +35,7 @@ func TestPutGetStringASCII_roundtrip_rapid(t *testing.T) {
 }
 
 func TestPutStringASCII_rejectsNonASCII_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		value := testutil.DrawNonASCIIString(rt, "value", 256)
 		offset := rapid.IntRange(0, 8).Draw(rt, "offset")
@@ -48,6 +50,7 @@ func TestPutStringASCII_rejectsNonASCII_rapid(t *testing.T) {
 }
 
 func TestStringASCIIEncodedLength_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		n := rapid.IntRange(0, 1024).Draw(rt, "n")
 		require.Equal(rt, 4+n, atomic.StringASCIIEncodedLength(n))

@@ -12,6 +12,7 @@ import (
 )
 
 func TestTermMath_roundtrip_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		shift := rapid.IntRange(16, 20).Draw(t, "shift")
 		termLength := 1 << shift
@@ -46,6 +47,7 @@ func TestTermMath_roundtrip_rapid(t *testing.T) {
 }
 
 func TestIndexByTermCount_unsignedModulo_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		termCount := rapid.Int32().Draw(t, "termCount")
 		want := int(uint32(termCount) % uint32(logbuffer.PartitionCount))
@@ -54,6 +56,7 @@ func TestIndexByTermCount_unsignedModulo_rapid(t *testing.T) {
 }
 
 func TestWrapArithmetic_modular_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		a := rapid.Int32().Draw(t, "a")
 		b := rapid.Int32().Draw(t, "b")

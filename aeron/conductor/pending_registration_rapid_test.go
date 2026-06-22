@@ -73,6 +73,7 @@ func registerPendingForRapid(
 }
 
 func TestConductor_RegisterPending_correlationUniqueness_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		conductorInstance := newConductorForRapid(t, rt)
 		count := rapid.IntRange(1, 32).Draw(rt, "count")
@@ -560,6 +561,7 @@ func runPendingRapidMapOps(
 }
 
 func TestConductor_pendingRegistry_lifecycle_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		conductorInstance, nanoNs, model := newConductorForPendingRapidMap(t, rt)
 		seen := make(map[int64]struct{})
@@ -604,6 +606,7 @@ const (
 )
 
 func TestDriverEventsAdapter_correlated_gate_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		conductorInstance := newConductorForRapid(t, rt)
 		adapter := conductorInstance.EventsAdapterForTest()
@@ -1415,6 +1418,7 @@ func runAddPendingRapidStep(
 }
 
 func TestConductor_addPending_teardown_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		nanoNs := pendingRapidBaseNowNs
 		conductorInstance, lifecycle := newConductorWithResourceLifecycleMutableNanoForTest(t, 0, &nanoNs)
@@ -2074,6 +2078,7 @@ func runAddPendingBindRetireFailureRapidStep(
 }
 
 func TestConductor_addPending_teardown_bindRetireFailure_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		nanoNs := pendingRapidBaseNowNs
 		errorHandler, gotErrors := collectConductorErrors()
@@ -2108,6 +2113,7 @@ func TestConductor_addPending_teardown_bindRetireFailure_rapid(t *testing.T) {
 }
 
 func TestConductor_handlePublicationReady_buildFailure_refCount_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		spec := rapidAddPublicationSpec
 		if rapid.Bool().Draw(rt, "exclusive") {

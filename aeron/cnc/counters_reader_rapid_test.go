@@ -14,6 +14,7 @@ import (
 )
 
 func TestCountersReader_isCounterActiveRegistrationSource_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		typeID := rapid.SampledFrom([]int32{
 			cnc.DriverPublisherLimitTypeID,
@@ -54,6 +55,7 @@ func TestCountersReader_isCounterActiveRegistrationSource_rapid(t *testing.T) {
 }
 
 func TestCounterSlot_Get_matchesCounterValue_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		counterCount := rapid.IntRange(1, 8).Draw(rt, "counterCount")
 		counterID := rapid.Int32Range(0, int32(counterCount-1)).Draw(rt, "counterID")

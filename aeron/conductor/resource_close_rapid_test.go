@@ -57,6 +57,7 @@ func assertCloseOrderPublicationsBeforeSubscriptions(
 }
 
 func TestConductor_CloseAllResources_ordering_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		lifecycle := &closeOrderResourceLifecycle{}
 		conductorInstance, _ := newConductorWithCloseLingerForTest(t, 0, lifecycle)
@@ -101,6 +102,7 @@ func TestConductor_CloseAllResources_ordering_rapid(t *testing.T) {
 }
 
 func TestConductor_CloseResource_idempotent_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		lifecycle := &recordingResourceLifecycle{}
 		conductorInstance, _ := newConductorWithCloseLingerForTest(t, 0, lifecycle)

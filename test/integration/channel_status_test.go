@@ -19,7 +19,7 @@ import (
 const publicationReadyPollTimeout = 10 * time.Second
 
 func TestChannelStatusCounterIsCounterActive(t *testing.T) {
-	md, attach := harness.StartAttachedCnc(t)
+	md, attach := harness.SharedAttachedCnc(t)
 	toDriver := attach.Rings.ToDriver
 	toClients := attach.Rings.ToClients
 
@@ -33,7 +33,7 @@ func TestChannelStatusCounterIsCounterActive(t *testing.T) {
 	require.NoError(t, err)
 
 	const (
-		streamID int32 = 1001
+		streamID = harness.ChannelStatusCounterStreamID
 		// UDP publications receive a send channel-status counter from the driver (IPC may omit it).
 		channel = "aeron:udp?endpoint=127.0.0.1:24325"
 	)

@@ -12,7 +12,7 @@ import (
 )
 
 func TestCncRingsLive(t *testing.T) {
-	_, attach := harness.StartAttachedCnc(t)
+	_, attach := harness.SharedAttachedCnc(t)
 	require.Positive(t, attach.Rings.Meta.PID)
 	cnctest.AssertWiredRingsReady(t, attach.Mapped, attach.Rings)
 }

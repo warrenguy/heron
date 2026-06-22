@@ -38,6 +38,7 @@ func writePollTestRandomFrames(
 }
 
 func TestImage_joinAndLivePosition_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		joinPosition := rapid.Int64().Draw(rt, "joinPosition")
 
@@ -64,6 +65,7 @@ func TestImage_joinAndLivePosition_rapid(t *testing.T) {
 }
 
 func TestImage_Poll_positionMonotonic_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		image, capture := newPollImage(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
@@ -115,6 +117,7 @@ func TestImage_Poll_positionMonotonic_rapid(t *testing.T) {
 }
 
 func TestImage_Poll_paddingSkip_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		image, capture := newPollImage(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
@@ -136,6 +139,7 @@ func TestImage_Poll_paddingSkip_rapid(t *testing.T) {
 }
 
 func TestImage_Poll_fragmentBoundaries_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		image, capture := newPollImage(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
@@ -163,6 +167,7 @@ func TestImage_Poll_fragmentBoundaries_rapid(t *testing.T) {
 }
 
 func TestImage_Poll_alignRoundtrip_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		image, capture := newPollImage(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)

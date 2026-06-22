@@ -10,6 +10,7 @@ import (
 )
 
 func TestLayoutOffsetChain_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		meta := DrawRapidBufferLengths(t, TestRapidMaxFieldWide)
 		computedLength := meta.ComputedLength()
@@ -52,6 +53,7 @@ func TestLayoutOffsetChain_rapid(t *testing.T) {
 }
 
 func TestParseMetadata_roundtrip_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		meta := DrawRapidBufferLengths(t, TestRapidMaxFieldWide)
 		buf := make([]byte, MetaDataLength)
@@ -64,6 +66,7 @@ func TestParseMetadata_roundtrip_rapid(t *testing.T) {
 }
 
 func TestComputeCncFileLength_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		meta := DrawRapidBufferLengths(t, TestRapidMaxFieldWide)
 		computedLength := meta.ComputedLength()
@@ -100,6 +103,7 @@ func TestComputeCncFileLength_rapid(t *testing.T) {
 }
 
 func TestComputedLength_hugeMetadata_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		meta := DrawOverflowBufferLengths(t)
 

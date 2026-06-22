@@ -62,10 +62,12 @@ func drawValidMemberIngressMap(rt *rapid.T) client.MemberIngressMap {
 }
 
 func TestFormatIngressEndpoints_nil_rapid(t *testing.T) {
+	t.Parallel()
 	require.Empty(t, client.FormatIngressEndpoints(nil))
 }
 
 func TestParseIngressEndpoints_roundtrip_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		initial := drawValidMemberIngressMap(rt)
 		formatted := client.FormatIngressEndpoints(initial)
@@ -78,6 +80,7 @@ func TestParseIngressEndpoints_roundtrip_rapid(t *testing.T) {
 }
 
 func TestParseIngressEndpoints_invalid_rapid(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		switch rapid.IntRange(0, 4).Draw(rt, "invalidKind") {
 		case 0:
