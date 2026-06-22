@@ -4,16 +4,17 @@ package client
 
 import (
 	"errors"
-	"strconv"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster/codecs"
 	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/agrona/atomic"
 )
 
@@ -21,6 +22,23 @@ const (
 	asyncConnectIPCChannel     = "aeron:ipc"
 	asyncConnectPollTimeout    = 5 * time.Second
 	asyncConnectHarnessDoWorkN = 4
+
+	// Representative large credential payloads below codec layout caps.
+	connectEncodedCredentialsPastLayoutMax  = 1245
+	challengeResponseCredentialsAtLayoutMax = 1372
+
+	// pollSendMessageOversizeWireCredentialsLen yields ~8500-byte connect wire (> pub max).
+	pollSendMessageOversizeWireCredentialsLen = 8430
+
+	connectRequestClientInfo    = "name=" + defaultClusterClientName + " " + clusterConnectClientLabel
+	connectRequestClientInfoLen = len(connectRequestClientInfo)
+	connectRequestIPCChannelLen = len(asyncConnectIPCChannel)
+
+	// connectWireBufferCloseHighWaterCredentialsLen establishes cap > wireLen without Offer.
+	connectWireBufferCloseHighWaterCredentialsLen = 1500
+	// connectWireBufferPollHighWaterCredentialsLen must fit test-harness publication Offer.
+	connectWireBufferPollHighWaterCredentialsLen = 200
+	connectWireBufferSlackChallengeLen           = 32
 )
 
 type asyncConnectHarnessResponder func(*aeron.AsyncConnectTestHarness)
@@ -46,12 +64,9 @@ func setupAsyncConnect(
 	t *testing.T,
 	ingressEndpoints string,
 ) (*aeron.AsyncConnectTestHarness, *AsyncConnect) {
-	t.Helper()
-
-	harness := aeron.NewAsyncConnectTestHarness(t)
-	ac, err := NewAsyncConnect(baseAsyncConnectContext(harness.Client, ingressEndpoints))
-	require.NoError(t, err)
-	return harness, ac
+	return setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
+		return baseAsyncConnectContext(ctx.Aeron, ingressEndpoints)
+	})
 }
 
 func setupAsyncConnectWithContext(
@@ -109,6 +124,23 @@ func encodeOKSessionEventWireForConnect(
 	)
 }
 
+func writeOKSessionEventWireToTerm(
+	t *testing.T,
+	termBuffer atomic.AtomicBuffer,
+	correlationID int64,
+	leaderMemberID int32,
+	detail []byte,
+	write func(fragmentTestHelper, atomic.AtomicBuffer, []byte),
+) {
+	t.Helper()
+
+	write(
+		t,
+		termBuffer,
+		encodeOKSessionEventWireForConnect(t, correlationID, leaderMemberID, detail),
+	)
+}
+
 func writeOKSessionEventForConnect(
 	t *testing.T,
 	termBuffer atomic.AtomicBuffer,
@@ -118,10 +150,13 @@ func writeOKSessionEventForConnect(
 ) {
 	t.Helper()
 
-	writeUnfragmentedWireToTerm(
+	writeOKSessionEventWireToTerm(
 		t,
 		termBuffer,
-		encodeOKSessionEventWireForConnect(t, correlationID, leaderMemberID, detail),
+		correlationID,
+		leaderMemberID,
+		detail,
+		writeUnfragmentedWireToTerm,
 	)
 }
 
@@ -134,10 +169,13 @@ func appendOKSessionEventForConnect(
 ) {
 	t.Helper()
 
-	appendUnfragmentedWireToTerm(
+	writeOKSessionEventWireToTerm(
 		t,
 		termBuffer,
-		encodeOKSessionEventWireForConnect(t, correlationID, leaderMemberID, detail),
+		correlationID,
+		leaderMemberID,
+		detail,
+		appendUnfragmentedWireToTerm,
 	)
 }
 
@@ -164,6 +202,34 @@ func writeSessionEventWithHeartbeatForConnect(
 	)
 }
 
+func asyncConnectHarnessStep(
+	t *testing.T,
+	harness *aeron.AsyncConnectTestHarness,
+	ac *AsyncConnect,
+	respond asyncConnectHarnessResponder,
+) {
+	t.Helper()
+
+	for range asyncConnectHarnessDoWorkN {
+		harness.DoWork()
+	}
+	respond(harness)
+	attachEgressImageIfNeeded(t, ac.EgressSubscriptionForTest())
+}
+
+func failAsyncConnectPollTimeout(t *testing.T, ac *AsyncConnect) {
+	t.Helper()
+
+	require.FailNowf(
+		t,
+		"async connect poll timed out",
+		"state=%v step=%v correlation=%v",
+		ac.State(),
+		ac.Step(),
+		ac.CorrelationIDForTest(),
+	)
+}
+
 func pollAsyncConnectWithResponder(
 	t *testing.T,
 	ac *AsyncConnect,
@@ -175,11 +241,7 @@ func pollAsyncConnectWithResponder(
 
 	deadline := time.Now().Add(asyncConnectPollTimeout)
 	for time.Now().Before(deadline) {
-		for range asyncConnectHarnessDoWorkN {
-			harness.DoWork()
-		}
-		respond(harness)
-		attachEgressImageIfNeeded(t, ac.EgressSubscriptionForTest())
+		asyncConnectHarnessStep(t, harness, ac, respond)
 		if onStep != nil {
 			onStep(ac)
 		}
@@ -189,14 +251,7 @@ func pollAsyncConnectWithResponder(
 		}
 		time.Sleep(time.Millisecond)
 	}
-	require.FailNowf(
-		t,
-		"async connect poll timed out",
-		"state=%v step=%v correlation=%v",
-		ac.State(),
-		ac.Step(),
-		ac.CorrelationIDForTest(),
-	)
+	failAsyncConnectPollTimeout(t, ac)
 	return nil, nil
 }
 
@@ -237,11 +292,7 @@ func pollUntilConnectPollResponse(
 
 	deadline := time.Now().Add(asyncConnectPollTimeout)
 	for time.Now().Before(deadline) {
-		for range asyncConnectHarnessDoWorkN {
-			harness.DoWork()
-		}
-		respond(harness)
-		attachEgressImageIfNeeded(t, ac.EgressSubscriptionForTest())
+		asyncConnectHarnessStep(t, harness, ac, respond)
 		_, err := ac.Poll()
 		require.NoError(t, err)
 		if ac.State() == ConnectStatePollResponse &&
@@ -250,14 +301,79 @@ func pollUntilConnectPollResponse(
 		}
 		time.Sleep(time.Millisecond)
 	}
-	require.FailNowf(
+	failAsyncConnectPollTimeout(t, ac)
+}
+
+type asyncConnectChallengeRoundTripState struct {
+	challengeWritten         bool
+	challengeResponseOffered bool
+	sessionEventWritten      bool
+}
+
+func (state *asyncConnectChallengeRoundTripState) onStep(
+	t *testing.T,
+	ac *AsyncConnect,
+) {
+	t.Helper()
+
+	if state.challengeWritten && ac.State() == ConnectStateSendMessage {
+		state.challengeResponseOffered = true
+	}
+	withAsyncConnectEgressTerm(
 		t,
-		"async connect poll timed out",
-		"state=%v step=%v correlation=%v",
-		ac.State(),
-		ac.Step(),
-		ac.CorrelationIDForTest(),
+		ac,
+		func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+			switch {
+			case !state.challengeWritten && ac.State() == ConnectStatePollResponse:
+				writeChallengeForConnect(t, termBuffer, correlation)
+				state.challengeWritten = true
+			case state.challengeResponseOffered && !state.sessionEventWritten &&
+				ac.State() == ConnectStatePollResponse:
+				appendSessionEventForConnect(t, termBuffer, correlation)
+				state.sessionEventWritten = true
+			}
+		},
 	)
+}
+
+func requireConnectRequestWireLength(
+	t *testing.T,
+	ac *AsyncConnect,
+	responseChannelLen, encodedCredentialsLen, clientInfoLen int,
+) {
+	t.Helper()
+
+	wantWireLen, ok := codecs.SessionConnectRequestWireLen(
+		gensbe.SessionConnectRequestSbeSchemaVersion,
+		responseChannelLen,
+		encodedCredentialsLen,
+		clientInfoLen,
+	)
+	require.True(t, ok)
+	require.Equal(t, wantWireLen, ac.ConnectWireLengthForTest())
+}
+
+func requireChallengeResponseWireLength(
+	t *testing.T,
+	ac *AsyncConnect,
+	encodedCredentialsLen int,
+) {
+	t.Helper()
+
+	wantWireLen, ok := codecs.ClusterWireMessageLen(
+		gensbe.ChallengeResponseSbeBlockLength,
+		encodedCredentialsLen,
+	)
+	require.True(t, ok)
+	require.Equal(t, wantWireLen, ac.ConnectWireLengthForTest())
+}
+
+func requireConnectWireSlackCleared(t *testing.T, backing []byte, wireLen int, msg string) {
+	t.Helper()
+
+	for i := wireLen; i < len(backing); i++ {
+		require.Zero(t, backing[i], msg, i)
+	}
 }
 
 func egressTermBufferForAsyncConnect(t *testing.T, ac *AsyncConnect) atomic.AtomicBuffer {
@@ -313,19 +429,8 @@ func TestAsyncConnect_happyPathIPC(t *testing.T) {
 	harness, ac := setupAsyncConnect(t, "")
 	t.Cleanup(func() { _ = ac.Close() })
 
-	var sessionEventWritten bool
 	result, err := pollAsyncConnectUntil(t, ac, harness, func(ac *AsyncConnect) {
-		if sessionEventWritten {
-			return
-		}
-		withAsyncConnectEgressTerm(
-			t,
-			ac,
-			func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
-				writeSessionEventForConnect(t, termBuffer, correlation)
-				sessionEventWritten = true
-			},
-		)
+		withAsyncConnectEgressTerm(t, ac, writeSessionEventForConnect)
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -339,49 +444,15 @@ func TestAsyncConnect_challengeRoundTrip(t *testing.T) {
 	harness, ac := setupAsyncConnect(t, "")
 	t.Cleanup(func() { _ = ac.Close() })
 
-	deadline := time.Now().Add(5 * time.Second)
-	var result *ConnectResult
-	var pollErr error
-	challengeWritten := false
-	challengeResponseOffered := false
-	sessionEventWritten := false
-	for time.Now().Before(deadline) {
-		for range asyncConnectHarnessDoWorkN {
-			harness.DoWork()
-		}
-		harness.RespondPendingAdds()
-		attachEgressImageIfNeeded(t, ac.EgressSubscriptionForTest())
-
-		if challengeWritten && ac.State() == ConnectStateSendMessage {
-			challengeResponseOffered = true
-		}
-		withAsyncConnectEgressTerm(
-			t,
-			ac,
-			func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
-				switch {
-				case !challengeWritten && ac.State() == ConnectStatePollResponse:
-					writeChallengeForConnect(t, termBuffer, correlation)
-					challengeWritten = true
-				case challengeResponseOffered && !sessionEventWritten &&
-					ac.State() == ConnectStatePollResponse:
-					appendSessionEventForConnect(t, termBuffer, correlation)
-					sessionEventWritten = true
-				}
-			},
-		)
-
-		result, pollErr = ac.Poll()
-		if pollErr != nil || result != nil {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+	var roundTrip asyncConnectChallengeRoundTripState
+	result, pollErr := pollAsyncConnectUntil(t, ac, harness, func(ac *AsyncConnect) {
+		roundTrip.onStep(t, ac)
+	})
 	require.NoError(t, pollErr)
 	require.NotNil(t, result)
-	require.True(t, challengeWritten)
-	require.True(t, challengeResponseOffered)
-	require.True(t, sessionEventWritten)
+	require.True(t, roundTrip.challengeWritten)
+	require.True(t, roundTrip.challengeResponseOffered)
+	require.True(t, roundTrip.sessionEventWritten)
 	require.Equal(t, ConnectStateDone, ac.State())
 }
 
@@ -833,22 +904,9 @@ func TestAsyncConnect_ingressPublicationErrorDuringAwait(t *testing.T) {
 	harness, ac := setupAsyncConnect(t, "0=host-a:20110,1=host-b:20111")
 	t.Cleanup(func() { _ = ac.Close() })
 
-	deadline := time.Now().Add(8 * time.Second)
-	var err error
-	for time.Now().Before(deadline) {
-		for range asyncConnectHarnessDoWorkN {
-			harness.DoWork()
-		}
-		harness.RespondPendingAdds()
-		attachEgressImageIfNeeded(t, ac.EgressSubscriptionForTest())
-		_, err = ac.Poll()
-		require.NoError(t, err)
-		if ac.State() == ConnectStatePollResponse &&
-			ac.CorrelationIDForTest() != conductor.NullCorrelationID {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+	pollUntilConnectPollResponse(t, harness, ac, func(h *aeron.AsyncConnectTestHarness) {
+		h.RespondPendingAdds()
+	})
 	require.Equal(t, ConnectStatePollResponse, ac.State())
 	correlation := ac.CorrelationIDForTest()
 	writeSessionEventRedirectForConnect(
@@ -857,7 +915,7 @@ func TestAsyncConnect_ingressPublicationErrorDuringAwait(t *testing.T) {
 		correlation,
 		"1=host-c:20112",
 	)
-	_, err = ac.Poll()
+	_, err := ac.Poll()
 	require.NoError(t, err)
 	require.Equal(t, ConnectStateAwaitPublicationConnected, ac.State())
 
@@ -1031,36 +1089,13 @@ func setupAsyncConnectEgressReady(
 	attachEgressImageIfNeeded(t, ac.EgressSubscriptionForTest())
 }
 
-func TestAsyncConnect_prepareConnectRequest_wireLengthGuard(t *testing.T) {
-	const (
-		connectRequestClientInfo = "name=" + defaultClusterClientName +
-			" " + clusterConnectClientLabel
-		connectRequestClientInfoLen = len(connectRequestClientInfo)
-		connectRequestIPCChannel    = len(asyncConnectIPCChannel)
-	)
-	require.Equal(t, connectRequestIPCChannel, sessionConnectResponseChannelMaxLen)
+func TestAsyncConnect_prepareConnectRequest_credentialsSizing(t *testing.T) {
+	require.Equal(t, connectRequestIPCChannelLen, sessionConnectResponseChannelMaxLen)
 
-	t.Run("credentials_over_derived_max_fail_per_field_guard", func(t *testing.T) {
+	t.Run("encoded_credentials_large_encode_success", func(t *testing.T) {
 		harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
 			ctx.CredentialsSupplier = oversizedCredentialsSupplier{
-				encodedLen: maxEncodedCredentialsLen + 1,
-			}
-			return ctx
-		})
-		t.Cleanup(func() { _ = ac.Close() })
-		setupAsyncConnectEgressReady(t, harness, ac)
-
-		err := ac.PrepareConnectRequestForTest()
-		require.Error(t, err)
-		require.ErrorContains(t, err, "cluster client: encoded credentials exceed max length")
-		require.ErrorContains(t, err, strconv.Itoa(maxEncodedCredentialsLen))
-		require.Equal(t, 0, ac.ConnectWireLengthForTest())
-	})
-
-	t.Run("credentials_fitting_total_wire_encode", func(t *testing.T) {
-		harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
-			ctx.CredentialsSupplier = oversizedCredentialsSupplier{
-				encodedLen: maxEncodedCredentialsLen,
+				encodedLen: connectEncodedCredentialsPastLayoutMax,
 			}
 			return ctx
 		})
@@ -1068,43 +1103,70 @@ func TestAsyncConnect_prepareConnectRequest_wireLengthGuard(t *testing.T) {
 		setupAsyncConnectEgressReady(t, harness, ac)
 
 		require.NoError(t, ac.PrepareConnectRequestForTest())
-		require.Equal(
+		requireConnectRequestWireLength(
 			t,
-			sessionConnectRequestWireLen(
-				gensbe.SessionConnectRequestSbeSchemaVersion,
-				connectRequestIPCChannel,
-				maxEncodedCredentialsLen,
-				connectRequestClientInfoLen,
-			),
-			ac.ConnectWireLengthForTest(),
+			ac,
+			connectRequestIPCChannelLen,
+			connectEncodedCredentialsPastLayoutMax,
+			connectRequestClientInfoLen,
 		)
-		require.LessOrEqual(t, ac.ConnectWireLengthForTest(), connectWireBufferSize)
 	})
 }
 
-func TestAsyncConnect_prepareChallengeResponse_wireLengthGuard(t *testing.T) {
-	t.Run("credentials_over_derived_max_fail_per_field_guard", func(t *testing.T) {
-		_, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
-			ctx.CredentialsSupplier = oversizedCredentialsSupplier{
-				challengeLen: maxChallengeResponseLen + 1,
-			}
-			return ctx
-		})
-		t.Cleanup(func() { _ = ac.Close() })
-		ac.encodedChallenge = []byte("challenge")
-		ac.clusterSessionID = egressTestClusterSessionID
+func TestAsyncConnect_prepareConnectRequest_largeCredentials(t *testing.T) {
+	const encodedCredentialsLen = 1500
 
-		err := ac.PrepareChallengeResponseForTest()
-		require.Error(t, err)
-		require.ErrorContains(t, err, "cluster client: challenge response credentials exceed max length")
-		require.ErrorContains(t, err, strconv.Itoa(maxChallengeResponseLen))
-		require.Equal(t, 0, ac.ConnectWireLengthForTest())
+	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
+		ctx.CredentialsSupplier = oversizedCredentialsSupplier{
+			encodedLen: encodedCredentialsLen,
+		}
+		return ctx
 	})
+	t.Cleanup(func() { _ = ac.Close() })
+	setupAsyncConnectEgressReady(t, harness, ac)
 
-	t.Run("credentials_fitting_total_wire_encode", func(t *testing.T) {
+	require.NoError(t, ac.PrepareConnectRequestForTest())
+	requireConnectRequestWireLength(
+		t,
+		ac,
+		sessionConnectResponseChannelMaxLen,
+		encodedCredentialsLen,
+		connectRequestClientInfoLen,
+	)
+}
+
+func TestAsyncConnect_prepareConnectRequest_credentialsNearPublicationMax(t *testing.T) {
+	const targetWireLen = 7000
+	// Fixed overhead for default clientInfo + IPC channel.
+	const encodedCredentialsLen = targetWireLen - 70
+
+	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
+		ctx.CredentialsSupplier = oversizedCredentialsSupplier{
+			encodedLen: encodedCredentialsLen,
+		}
+		return ctx
+	})
+	t.Cleanup(func() { _ = ac.Close() })
+	setupAsyncConnectEgressReady(t, harness, ac)
+
+	require.NoError(t, ac.PrepareConnectRequestForTest())
+
+	wantWireLen, ok := codecs.SessionConnectRequestWireLen(
+		gensbe.SessionConnectRequestSbeSchemaVersion,
+		sessionConnectResponseChannelMaxLen,
+		encodedCredentialsLen,
+		connectRequestClientInfoLen,
+	)
+	require.True(t, ok)
+	require.InDelta(t, targetWireLen, wantWireLen, 32)
+	require.Equal(t, wantWireLen, ac.ConnectWireLengthForTest())
+}
+
+func TestAsyncConnect_prepareChallengeResponse_credentialsSizing(t *testing.T) {
+	t.Run("encoded_credentials_large_encode_success", func(t *testing.T) {
 		_, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
 			ctx.CredentialsSupplier = oversizedCredentialsSupplier{
-				challengeLen: maxChallengeResponseLen,
+				challengeLen: challengeResponseCredentialsAtLayoutMax,
 			}
 			return ctx
 		})
@@ -1113,66 +1175,243 @@ func TestAsyncConnect_prepareChallengeResponse_wireLengthGuard(t *testing.T) {
 		ac.clusterSessionID = egressTestClusterSessionID
 
 		require.NoError(t, ac.PrepareChallengeResponseForTest())
-		require.Equal(
-			t,
-			challengeResponseWireLen(maxChallengeResponseLen),
-			ac.ConnectWireLengthForTest(),
-		)
-		require.LessOrEqual(t, ac.ConnectWireLengthForTest(), connectWireBufferSize)
+		requireChallengeResponseWireLength(t, ac, challengeResponseCredentialsAtLayoutMax)
 	})
 }
 
-func TestAsyncConnect_encodedCredentialsTooLarge(t *testing.T) {
-	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
-		ctx.CredentialsSupplier = oversizedCredentialsSupplier{
-			encodedLen: maxEncodedCredentialsLen + 1,
-		}
-		return ctx
-	})
-	t.Cleanup(func() { _ = ac.Close() })
+func TestAsyncConnect_pollSendMessage_oversizeWireFailsFast(t *testing.T) {
+	pub := aeron.NewTestExclusivePublicationForHooksWithConnected(t, true)
+	maxMessageLength := pub.MaxMessageLengthForTest()
+	require.Equal(t, 8192, maxMessageLength)
 
-	_, pollErr := pollAsyncConnectUntil(t, ac, harness, nil)
-	require.Error(t, pollErr)
-	require.ErrorContains(t, pollErr, "cluster client: encoded credentials exceed max length")
-}
-
-func TestAsyncConnect_challengeResponseCredentialsTooLarge(t *testing.T) {
-	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
-		ctx.CredentialsSupplier = oversizedCredentialsSupplier{
-			challengeLen: maxChallengeResponseLen + 1,
-		}
-		return ctx
-	})
-	t.Cleanup(func() { _ = ac.Close() })
-
-	deadline := time.Now().Add(asyncConnectPollTimeout)
-	var pollErr error
-	challengeWritten := false
-	for time.Now().Before(deadline) && pollErr == nil {
-		for range asyncConnectHarnessDoWorkN {
-			harness.DoWork()
-		}
-		harness.RespondPendingAdds()
-		attachEgressImageIfNeeded(t, ac.EgressSubscriptionForTest())
-		withAsyncConnectEgressTerm(
-			t,
-			ac,
-			func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
-				if !challengeWritten && ac.State() == ConnectStatePollResponse {
-					writeChallengeForConnect(t, termBuffer, correlation)
-					challengeWritten = true
-				}
-			},
-		)
-		_, pollErr = ac.Poll()
-	}
-	require.True(t, challengeWritten)
-	require.Error(t, pollErr)
-	require.ErrorContains(
-		t,
-		pollErr,
-		"cluster client: challenge response credentials exceed max length",
+	wantWireLen, ok := codecs.SessionConnectRequestWireLen(
+		gensbe.SessionConnectRequestSbeSchemaVersion,
+		connectRequestIPCChannelLen,
+		pollSendMessageOversizeWireCredentialsLen,
+		connectRequestClientInfoLen,
 	)
+	require.True(t, ok)
+	require.Greater(t, wantWireLen, maxMessageLength)
+	require.Less(t, wantWireLen, logbuffer.MaxMessageLength)
+
+	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
+		ctx.CredentialsSupplier = oversizedCredentialsSupplier{
+			encodedLen: pollSendMessageOversizeWireCredentialsLen,
+		}
+		return ctx
+	})
+	t.Cleanup(func() { _ = ac.Close() })
+	setupAsyncConnectEgressReady(t, harness, ac)
+
+	require.NoError(t, ac.PrepareConnectRequestForTest())
+	require.Equal(t, wantWireLen, ac.ConnectWireLengthForTest())
+
+	ac.ingressPublication = pub
+	ac.state = ConnectStateSendMessage
+
+	start := time.Now()
+	_, err := ac.PollSendMessageForTest()
+	require.Error(t, err)
+	require.ErrorContains(t, err, "max message length")
+	require.Less(
+		t,
+		time.Since(start),
+		time.Second,
+		"oversize wire should fail fast, not retry until timeout",
+	)
+}
+
+func TestAsyncConnect_prepareConnectRequest_reachesPollResponse(t *testing.T) {
+	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
+		ctx.CredentialsSupplier = oversizedCredentialsSupplier{
+			encodedLen: connectEncodedCredentialsPastLayoutMax,
+		}
+		return ctx
+	})
+	t.Cleanup(func() { _ = ac.Close() })
+	setupAsyncConnectEgressReady(t, harness, ac)
+
+	pollUntilConnectPollResponse(t, harness, ac, func(h *aeron.AsyncConnectTestHarness) {
+		h.RespondPendingAdds()
+	})
+	requireConnectRequestWireLength(
+		t,
+		ac,
+		connectRequestIPCChannelLen,
+		connectEncodedCredentialsPastLayoutMax,
+		connectRequestClientInfoLen,
+	)
+}
+
+func TestAsyncConnect_resizeConnectWireBuffer_clearsAbandonedBackingOnGrow(t *testing.T) {
+	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
+		return ctx
+	})
+	t.Cleanup(func() { _ = ac.Close() })
+
+	setupAsyncConnectEgressReady(t, harness, ac)
+
+	require.NoError(t, ac.PrepareConnectRequestForTest())
+	buf := ac.ConnectWireBufferForTest()
+	require.NotNil(t, buf)
+	oldBacking := buf[:cap(buf)]
+	smallWireLen := ac.ConnectWireLengthForTest()
+	require.Equal(t, len(oldBacking), smallWireLen, "small connect should not over-allocate")
+
+	const sentinel = 0xCC
+	for i := range oldBacking {
+		oldBacking[i] = sentinel
+	}
+
+	ac.ctx.CredentialsSupplier = oversizedCredentialsSupplier{
+		challengeLen: connectWireBufferCloseHighWaterCredentialsLen,
+	}
+	ac.encodedChallenge = []byte("challenge")
+	ac.clusterSessionID = egressTestClusterSessionID
+	require.NoError(t, ac.PrepareChallengeResponseForTest())
+
+	newBuf := ac.ConnectWireBufferForTest()
+	require.NotNil(t, newBuf)
+	require.Greater(t, cap(newBuf), cap(oldBacking))
+
+	for i := range oldBacking {
+		require.Zero(t, oldBacking[i], "abandoned backing byte %d not cleared on grow", i)
+	}
+}
+
+func TestAsyncConnect_prepareChallengeResponse_clearsConnectWireBufferSlack(t *testing.T) {
+	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
+		ctx.CredentialsSupplier = oversizedCredentialsSupplier{
+			encodedLen: connectWireBufferCloseHighWaterCredentialsLen,
+		}
+		return ctx
+	})
+	t.Cleanup(func() { _ = ac.Close() })
+
+	backing, smallWireLen := establishConnectWireBufferHighWater(t, harness, ac)
+	requireConnectWireSlackCleared(
+		t,
+		backing,
+		smallWireLen,
+		"slack byte %d retained prior connect credentials",
+	)
+}
+
+func establishConnectWireBufferHighWater(
+	t *testing.T,
+	harness *aeron.AsyncConnectTestHarness,
+	ac *AsyncConnect,
+) (backing []byte, activeWireLen int) {
+	t.Helper()
+
+	setupAsyncConnectEgressReady(t, harness, ac)
+
+	require.NoError(t, ac.PrepareConnectRequestForTest())
+	buf := ac.ConnectWireBufferForTest()
+	require.NotNil(t, buf)
+	backing = buf[:cap(buf)]
+	largeWireLen := ac.ConnectWireLengthForTest()
+
+	ac.ctx.CredentialsSupplier = oversizedCredentialsSupplier{
+		challengeLen: connectWireBufferSlackChallengeLen,
+	}
+	ac.encodedChallenge = []byte("challenge")
+	ac.clusterSessionID = egressTestClusterSessionID
+	require.NoError(t, ac.PrepareChallengeResponseForTest())
+
+	activeWireLen = ac.ConnectWireLengthForTest()
+	require.Greater(t, len(backing), activeWireLen)
+	require.Less(t, activeWireLen, largeWireLen)
+
+	return backing, activeWireLen
+}
+
+func plantConnectWireBufferSlackSentinels(backing []byte, wireLen int, sentinel byte) {
+	for i := wireLen; i < len(backing); i++ {
+		backing[i] = sentinel
+	}
+}
+
+func captureConnectWireBufferSlackOnce(
+	planted *bool,
+	ac *AsyncConnect,
+	challengeWritten bool,
+	sentinel byte,
+) (backing []byte, slackWireLen int) {
+	if *planted || !challengeWritten {
+		return nil, 0
+	}
+	buf := ac.ConnectWireBufferForTest()
+	if buf == nil {
+		return nil, 0
+	}
+	capLen := cap(buf)
+	wireLen := ac.ConnectWireLengthForTest()
+	if capLen <= wireLen || wireLen <= 0 {
+		return nil, 0
+	}
+	backing = buf[:capLen]
+	plantConnectWireBufferSlackSentinels(backing, wireLen, sentinel)
+	*planted = true
+	return backing, wireLen
+}
+
+func TestAsyncConnect_zeroSensitiveBuffers_clearsConnectWireCapOnClose(t *testing.T) {
+	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
+		ctx.CredentialsSupplier = oversizedCredentialsSupplier{
+			encodedLen: connectWireBufferCloseHighWaterCredentialsLen,
+		}
+		return ctx
+	})
+
+	backing, wireLen := establishConnectWireBufferHighWater(t, harness, ac)
+	plantConnectWireBufferSlackSentinels(backing, wireLen, 0xCC)
+
+	require.NoError(t, ac.Close())
+	requireConnectWireSlackCleared(t, backing, wireLen, "slack byte %d not cleared on Close")
+	require.Nil(t, ac.ConnectWireBufferForTest())
+}
+
+func TestAsyncConnect_zeroSensitiveBuffers_clearsConnectWireCapOnSuccess(t *testing.T) {
+	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
+		ctx.CredentialsSupplier = oversizedCredentialsSupplier{
+			encodedLen:   connectWireBufferPollHighWaterCredentialsLen,
+			challengeLen: connectWireBufferSlackChallengeLen,
+		}
+		return ctx
+	})
+	t.Cleanup(func() { _ = ac.Close() })
+	setupAsyncConnectEgressReady(t, harness, ac)
+
+	var backing []byte
+	var slackWireLen int
+	sentinelsPlanted := false
+	var roundTrip asyncConnectChallengeRoundTripState
+
+	result, err := pollAsyncConnectUntil(t, ac, harness, func(ac *AsyncConnect) {
+		if capturedBacking, capturedWireLen := captureConnectWireBufferSlackOnce(
+			&sentinelsPlanted,
+			ac,
+			roundTrip.challengeWritten,
+			0xDD,
+		); capturedBacking != nil {
+			backing = capturedBacking
+			slackWireLen = capturedWireLen
+		}
+		if roundTrip.sessionEventWritten {
+			return
+		}
+		roundTrip.onStep(t, ac)
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, roundTrip.challengeWritten)
+	require.True(t, roundTrip.challengeResponseOffered)
+	require.True(t, roundTrip.sessionEventWritten)
+	require.True(t, sentinelsPlanted)
+	require.NotNil(t, backing)
+	requireConnectWireSlackCleared(t, backing, slackWireLen, "slack byte %d not cleared on success")
+	require.Nil(t, ac.ConnectWireBufferForTest())
 }
 
 func TestAsyncConnect_concludeConnect_leaderMissingFromIngressMap(t *testing.T) {
@@ -1318,11 +1557,9 @@ func TestAsyncConnect_concludeConnect_notBlockedByDeadline(t *testing.T) {
 	var pollErr error
 	sessionEventWritten := false
 	for time.Now().Before(deadline) {
-		for range asyncConnectHarnessDoWorkN {
-			harness.DoWork()
-		}
-		harness.RespondPendingAdds()
-		attachEgressImageIfNeeded(t, ac.EgressSubscriptionForTest())
+		asyncConnectHarnessStep(t, harness, ac, func(h *aeron.AsyncConnectTestHarness) {
+			h.RespondPendingAdds()
+		})
 		if !sessionEventWritten && ac.State() == ConnectStatePollResponse {
 			withAsyncConnectEgressTerm(
 				t,

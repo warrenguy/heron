@@ -84,6 +84,7 @@ func catalogEntryToWireFixture(entry FixtureEntry, blobs map[string][]byte) (Wir
 		ActingVersion: entry.ActingVersion,
 		Hex:           entry.Hex,
 		Fields:        fields,
+		LargeVar:      entry.LargeVar,
 	}, nil
 }
 
@@ -96,15 +97,11 @@ func CatalogEntryToWireFixtureForTest(
 
 // Regenerates committed fixture hex from catalog fields.
 func EncodeCatalogEntry(entry FixtureEntry, blobs map[string][]byte) ([]byte, error) {
-	templateID, fields, err := projectCatalogEntry(entry, blobs)
+	fixture, err := catalogEntryToWireFixture(entry, blobs)
 	if err != nil {
 		return nil, err
 	}
-	wire, ok := ReencodeWire(WireFixture{
-		TemplateID:    templateID,
-		ActingVersion: entry.ActingVersion,
-		Fields:        fields,
-	})
+	wire, ok := ReencodeWire(fixture)
 	if !ok {
 		return nil, fmt.Errorf(
 			"encode wire (template=%s actingVersion=%d)",

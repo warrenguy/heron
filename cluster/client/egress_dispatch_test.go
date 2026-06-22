@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"errors"
 	"math"
 	"testing"
@@ -202,7 +203,7 @@ func TestHandleEgressFragment_negativeLength(t *testing.T) {
 }
 
 func TestHandleEgressFragment_overflowBounds(t *testing.T) {
-	requireSessionEventFragmentAtNoPanicNoCalls(t, math.MaxInt-1, 2)
+	requireSessionEventFragmentAtNoPanicNoCalls(t, math.MaxInt-7, codecs.MessageHeaderEncodedLen())
 }
 
 func TestHandleEgressFragment_sessionEvent_truncatedBody(t *testing.T) {
@@ -284,6 +285,50 @@ func TestHandleEgressFragment_sessionMessageHeader_headerOnlySpan(t *testing.T) 
 	require.Nil(t, rec.gotMessagePayload)
 }
 
+func TestHandleEgressFragment_largeCapturedPayloads(t *testing.T) {
+	const payloadLen = 2000
+
+	cases := []struct {
+		name   string
+		encode func(t *testing.T) (wire, expected []byte)
+		assert func(t *testing.T, rec *recordingEgressHandlers, expected []byte)
+	}{
+		{
+			name: "detail",
+			encode: func(t *testing.T) ([]byte, []byte) {
+				detail := bytes.Repeat([]byte{0x34}, payloadLen)
+				return encodeSessionEventWireWithDetail(t, egressTestClusterSessionID, detail), detail
+			},
+			assert: func(t *testing.T, rec *recordingEgressHandlers, expected []byte) {
+				require.Equal(t, 1, rec.sessionEventCalls)
+				require.Equal(t, expected, rec.gotSessionEventDetail)
+			},
+		},
+		{
+			name: "ingressEndpoints",
+			encode: func(t *testing.T) ([]byte, []byte) {
+				endpoints := bytes.Repeat([]byte{0x31}, payloadLen)
+				return encodeNewLeaderWireWithEndpoints(t, egressTestClusterSessionID, 1, endpoints), endpoints
+			},
+			assert: func(t *testing.T, rec *recordingEgressHandlers, expected []byte) {
+				require.Equal(t, 1, rec.newLeaderCalls)
+				require.Equal(t, expected, rec.gotNewLeaderIngressEndpoints)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wire, expected := tc.encode(t)
+			rec := newRecordingEgressHandlers()
+
+			invokeHandleEgressFragment(t, rec, egressTestClusterSessionID, wire)
+
+			tc.assert(t, rec, expected)
+		})
+	}
+}
+
 func TestEgressFragmentSpanValid(t *testing.T) {
 	payload := []byte("0123456789")
 
@@ -339,6 +384,12 @@ func TestEgressFragmentSpanValid(t *testing.T) {
 			name:   "zero length",
 			offset: 0,
 			length: 0,
+			want:   false,
+		},
+		{
+			name:   "offset near max int",
+			offset: math.MaxInt - 7,
+			length: codecs.MessageHeaderEncodedLen(),
 			want:   false,
 		},
 	}

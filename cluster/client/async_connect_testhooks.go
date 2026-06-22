@@ -38,15 +38,15 @@ func notifyOwnedClientClosedOnMemberMapError(client *aeron.Client) {
 func (ac *AsyncConnect) pollAddEgressSubscription(
 	registrationID int64,
 ) (*aeron.Subscription, bool, error) {
-	if pollAddEgressSubscriptionHook != nil {
-		return pollAddEgressSubscriptionHook(ac.client, registrationID)
+	if hook := pollAddEgressSubscriptionHook; hook != nil {
+		return hook(ac.client, registrationID)
 	}
 	return ac.client.PollAddSubscription(registrationID)
 }
 
 func (ac *AsyncConnect) shouldRetryEgressSubscription() bool {
-	if egressSubscriptionRetryNotReadyHook != nil {
-		return egressSubscriptionRetryNotReadyHook()
+	if hook := egressSubscriptionRetryNotReadyHook; hook != nil {
+		return hook()
 	}
 	return false
 }
@@ -75,11 +75,8 @@ func (ac *AsyncConnect) ClusterContextForTest() ClusterContext {
 	return ac.ctx
 }
 
-func firstConnectedIngressPublicationForTest(
-	memberMap MemberIngressMap,
-) IngressPublication {
-	ac := &AsyncConnect{memberMap: memberMap}
-	return ac.firstConnectedIngressPublication()
+func firstConnectedIngressPublicationForTest(memberMap MemberIngressMap) IngressPublication {
+	return (&AsyncConnect{memberMap: memberMap}).firstConnectedIngressPublication()
 }
 
 // EgressRegIDForTest exposes the egress async add registration id during connect.
@@ -120,20 +117,21 @@ func (ac *AsyncConnect) MemberIngressPublicationForTest(memberID int32) IngressP
 	return ingress.Publication
 }
 
-// PrepareConnectRequestForTest exercises connect wire encoding during tests.
-func (ac *AsyncConnect) PrepareConnectRequestForTest() error {
+func (ac *AsyncConnect) runPrepareForTest(fn func(*AsyncConnect) error) error {
 	if ac == nil {
 		return errors.New("cluster client: nil async connect")
 	}
-	return ac.prepareConnectRequest()
+	return fn(ac)
+}
+
+// PrepareConnectRequestForTest exercises connect wire encoding during tests.
+func (ac *AsyncConnect) PrepareConnectRequestForTest() error {
+	return ac.runPrepareForTest((*AsyncConnect).prepareConnectRequest)
 }
 
 // PrepareChallengeResponseForTest exercises challenge wire encoding during tests.
 func (ac *AsyncConnect) PrepareChallengeResponseForTest() error {
-	if ac == nil {
-		return errors.New("cluster client: nil async connect")
-	}
-	return ac.prepareChallengeResponse()
+	return ac.runPrepareForTest((*AsyncConnect).prepareChallengeResponse)
 }
 
 // ConnectWireLengthForTest exposes the encoded connect wire length during tests.
@@ -142,4 +140,17 @@ func (ac *AsyncConnect) ConnectWireLengthForTest() int {
 		return 0
 	}
 	return ac.connectWireLength
+}
+
+// ConnectWireBufferForTest exposes the connect wire buffer during tests.
+func (ac *AsyncConnect) ConnectWireBufferForTest() []byte {
+	if ac == nil {
+		return nil
+	}
+	return ac.connectWireBuffer
+}
+
+// PollSendMessageForTest exercises pollSendMessage during connect tests.
+func (ac *AsyncConnect) PollSendMessageForTest() (*ConnectResult, error) {
+	return ac.pollSendMessage()
 }

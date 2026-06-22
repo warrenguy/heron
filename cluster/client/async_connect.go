@@ -72,7 +72,7 @@ type AsyncConnect struct {
 	clusterSessionID   int64
 	correlationID      int64
 	connectWireLength  int
-	connectWireBuffer  [connectWireBufferSize]byte
+	connectWireBuffer  []byte
 	encodedChallenge   []byte
 
 	closed bool
@@ -247,18 +247,17 @@ func (ac *AsyncConnect) checkDeadline() error {
 	if ac.nanoClock() <= ac.deadlineNs {
 		return nil
 	}
-	connected := false
-	if ac.egressSubscription != nil {
-		connected = ac.egressSubscription.IsConnected()
-	}
-	err := fmt.Errorf(
-		"cluster client: connect timeout in state %v egress=%s ingress=%s egressConnected=%t",
-		ac.state,
-		ac.ctx.EgressChannel,
-		ac.ctx.IngressChannel,
-		connected,
+	connected := ac.egressSubscription != nil && ac.egressSubscription.IsConnected()
+	return errors.Join(
+		fmt.Errorf(
+			"cluster client: connect timeout in state %v egress=%s ingress=%s egressConnected=%t",
+			ac.state,
+			ac.ctx.EgressChannel,
+			ac.ctx.IngressChannel,
+			connected,
+		),
+		ac.firstIngressPublicationErr(),
 	)
-	return errors.Join(err, ac.firstIngressPublicationErr())
 }
 
 func (ac *AsyncConnect) pollCreateEgressSubscription() (*ConnectResult, error) {
@@ -350,12 +349,23 @@ func (ac *AsyncConnect) pollSendMessage() (*ConnectResult, error) {
 	if ac.ingressPublication == nil {
 		return nil, errors.New("cluster client: ingress publication missing")
 	}
+	// Java does not pre-check against publication maxMessageLength at prepare time;
+	// MaxPositionExceeded / back-pressure from Offer is the practical connect ceiling.
 	result := ac.ingressPublication.Offer(ac.connectWireBuffer[:ac.connectWireLength])
-	if result == aeron.Closed || result == aeron.NotConnected {
+	switch result {
+	case aeron.Closed, aeron.NotConnected:
 		return nil, errors.New("cluster client: unexpected loss of connection")
-	}
-	if result <= 0 {
+	case aeron.BackPressured, aeron.AdminAction:
+		// BackPressured retry is intentional; the connect wire is fixed size.
 		return nil, nil
+	case aeron.MaxPositionExceeded:
+		return nil, fmt.Errorf(
+			"cluster client: connect wire length %d exceeds ingress publication max message length",
+			ac.connectWireLength,
+		)
+	}
+	if result < 0 {
+		return nil, fmt.Errorf("cluster client: ingress offer failed: status=%d", result)
 	}
 	ac.state = ConnectStatePollResponse
 	return nil, nil
@@ -369,10 +379,11 @@ func (ac *AsyncConnect) pollPollResponse() (*ConnectResult, error) {
 	if !ac.egressPoller.IsPollComplete() {
 		return nil, nil
 	}
-	if ac.egressPoller.TemplateID() == int32(gensbe.SessionMessageHeaderSbeTemplateID) {
+	templateID := ac.egressPoller.TemplateID()
+	if templateID == int32(gensbe.SessionMessageHeaderSbeTemplateID) {
 		return nil, nil
 	}
-	if ac.egressPoller.TemplateID() != int32(gensbe.NewLeaderEventSbeTemplateID) &&
+	if templateID != int32(gensbe.NewLeaderEventSbeTemplateID) &&
 		ac.correlationID != conductor.NullCorrelationID &&
 		ac.egressPoller.CorrelationID() != ac.correlationID {
 		return nil, nil
@@ -387,7 +398,7 @@ func (ac *AsyncConnect) pollPollResponse() (*ConnectResult, error) {
 		ac.state = ConnectStateSendMessage
 		return nil, nil
 	}
-	switch ac.egressPoller.TemplateID() {
+	switch templateID {
 	case int32(gensbe.NewLeaderEventSbeTemplateID):
 		return nil, ac.updateMembers()
 	case int32(gensbe.SessionEventSbeTemplateID):
@@ -445,33 +456,26 @@ func (ac *AsyncConnect) firstIngressPublicationErr() error {
 }
 
 func (ac *AsyncConnect) failIfIngressUnrecoverable() error {
-	var hasPublication, hasPending bool
+	var err error
 	for _, ingress := range ac.memberMap {
 		if ingress == nil {
 			continue
 		}
-		if ingress.Publication != nil {
-			hasPublication = true
+		if ingress.Publication != nil || ingress.RegistrationID != conductor.NullCorrelationID {
+			return nil
 		}
-		if ingress.RegistrationID != conductor.NullCorrelationID {
-			hasPending = true
+		if err == nil && ingress.PublicationErr != nil {
+			err = ingress.PublicationErr
 		}
 	}
-	if hasPublication || hasPending {
-		return nil
-	}
-	return ac.firstIngressPublicationErr()
+	return err
 }
 
 func (ac *AsyncConnect) firstConnectedIngressPublication() IngressPublication {
 	var best IngressPublication
-	bestID := int32(0)
+	var bestID int32
 	for memberID, ingress := range ac.memberMap {
-		pub := connectedPublicationOf(ingress)
-		if pub == nil {
-			continue
-		}
-		if best == nil || memberID < bestID {
+		if pub := connectedPublicationOf(ingress); pub != nil && (best == nil || memberID < bestID) {
 			best, bestID = pub, memberID
 		}
 	}
@@ -565,7 +569,8 @@ func (ac *AsyncConnect) releaseMemberResources() {
 }
 
 func (ac *AsyncConnect) zeroSensitiveBuffers() {
-	clear(ac.connectWireBuffer[:])
+	clear(ac.connectWireBuffer[:cap(ac.connectWireBuffer)])
+	ac.connectWireBuffer = nil
 	ac.connectWireLength = 0
 	ac.encodedChallenge = nil
 }
@@ -578,18 +583,12 @@ func (ac *AsyncConnect) clusterExceptionFromDetail(prefix string) error {
 	return fmt.Errorf("cluster client: %s: %s", prefix, strings.TrimSpace(string(detail)))
 }
 
-func normalizeLeaderHeartbeatTimeoutNs(ns int64) int64 {
-	if ns <= 0 || ns == math.MinInt64 {
-		return 0
-	}
-	return ns
-}
-
 func (ac *AsyncConnect) concludeConnect() (*ConnectResult, error) {
 	ctx := ac.ctx
-	leaderHeartbeatTimeoutNs := normalizeLeaderHeartbeatTimeoutNs(
-		ac.egressPoller.LeaderHeartbeatTimeoutNs(),
-	)
+	leaderHeartbeatTimeoutNs := ac.egressPoller.LeaderHeartbeatTimeoutNs()
+	if leaderHeartbeatTimeoutNs <= 0 || leaderHeartbeatTimeoutNs == math.MinInt64 {
+		leaderHeartbeatTimeoutNs = 0
+	}
 	if leaderHeartbeatTimeoutNs > 0 && !ac.newLeaderExplicit {
 		ctx.NewLeaderTimeout = 2 * time.Duration(leaderHeartbeatTimeoutNs)
 	}

@@ -2,7 +2,6 @@ package client
 
 import (
 	"errors"
-	"fmt"
 
 	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
 
@@ -10,63 +9,53 @@ import (
 )
 
 const (
-	connectWireBufferSize = codecs.ClusterMaxVarLen
-
-	// sessionConnectResponseChannelMaxLen is the responseChannel byte budget used
-	// when deriving maxEncodedCredentialsLen. Matches aeron:ipc returned by IPC egress
-	// subscriptions during async connect; longer subscription channels are rejected by
-	// the total wire-length guard in prepareConnectRequest.
-	sessionConnectResponseChannelMaxLen = len("aeron:ipc")
-
-	sessionConnectClientInfoPrefixLen = len("name=")
-	sessionConnectClientInfoSuffixLen = len(" " + clusterConnectClientLabel)
-
 	defaultClusterClientName  = "cluster-client"
 	clusterConnectClientLabel = "heron"
 )
 
-const sessionConnectClientInfoMaxLen = sessionConnectClientInfoPrefixLen +
-	MaxClientNameLength +
-	sessionConnectClientInfoSuffixLen
-
-var (
-	maxEncodedCredentialsLen = connectWireBufferSize - sessionConnectRequestWireLen(
-		gensbe.SessionConnectRequestSbeSchemaVersion,
-		sessionConnectResponseChannelMaxLen,
-		0,
-		sessionConnectClientInfoMaxLen,
-	)
-	maxChallengeResponseLen = connectWireBufferSize - challengeResponseWireLen(0)
-)
-
-func clusterVarDataWireLen(dataLen int) int {
-	return codecs.VarLengthPrefixSize + dataLen
-}
-
-func sessionConnectRequestWireLen(
-	actingVersion uint16,
-	responseChannelLen, encodedCredentialsLen, clientInfoLen int,
-) int {
-	blockLength := int(codecs.ClusterMinRootBlockLength(
-		gensbe.SessionConnectRequestSbeTemplateID,
-		actingVersion,
-		gensbe.SessionConnectRequestSbeBlockLength,
-	))
-	wireLen := codecs.MessageHeaderEncodedLen() + blockLength
-	wireLen += clusterVarDataWireLen(responseChannelLen)
-	wireLen += clusterVarDataWireLen(encodedCredentialsLen)
-	if actingVersion >= codecs.SessionConnectClientInfoMinVersion {
-		wireLen += clusterVarDataWireLen(clientInfoLen)
+func sessionConnectClientInfo(clientName string) []byte {
+	if clientName == "" {
+		clientName = defaultClusterClientName
 	}
-	return wireLen
+	return []byte("name=" + clientName + " " + clusterConnectClientLabel)
 }
 
-func challengeResponseWireLen(encodedCredentialsLen int) int {
-	return codecs.MessageHeaderEncodedLen() +
-		int(gensbe.ChallengeResponseSbeBlockLength) +
-		clusterVarDataWireLen(encodedCredentialsLen)
+// resizeConnectWireBuffer sizes ac.connectWireBuffer to wireLen. Reused backing stores
+// are fully cleared before re-slice so credential bytes from a prior prepare cannot
+// linger in [wireLen:cap] between connect and challenge handshake steps.
+func (ac *AsyncConnect) resizeConnectWireBuffer(wireLen int) {
+	if cap(ac.connectWireBuffer) < wireLen {
+		if cap(ac.connectWireBuffer) > 0 {
+			clear(ac.connectWireBuffer[:cap(ac.connectWireBuffer)])
+		}
+		ac.connectWireBuffer = make([]byte, wireLen)
+		return
+	}
+	clear(ac.connectWireBuffer[:cap(ac.connectWireBuffer)])
+	ac.connectWireBuffer = ac.connectWireBuffer[:wireLen]
 }
 
+func (ac *AsyncConnect) encodeConnectWire(
+	wireLen int,
+	ok bool,
+	invalidLenMsg, encodeFailMsg string,
+	encode func([]byte) (int, bool),
+) error {
+	if !ok {
+		return errors.New(invalidLenMsg)
+	}
+	ac.resizeConnectWireBuffer(wireLen)
+	end, ok := encode(ac.connectWireBuffer)
+	if !ok {
+		return errors.New(encodeFailMsg)
+	}
+	ac.connectWireLength = end
+	return nil
+}
+
+// prepareConnectRequest sizes and encodes the session connect wire message.
+// Wires larger than the publication maxMessageLength are not rejected here; Java
+// defers that ceiling to Publication.offer; see pollSendMessage.
 func (ac *AsyncConnect) prepareConnectRequest() error {
 	responseChannel, ok := resolveResponseChannel(ac.egressSubscription)
 	if !ok {
@@ -74,31 +63,14 @@ func (ac *AsyncConnect) prepareConnectRequest() error {
 	}
 	ac.ensureCorrelationID()
 	credentials := ac.ctx.CredentialsSupplier.EncodedCredentials()
-	if len(credentials) > maxEncodedCredentialsLen {
-		return fmt.Errorf(
-			"cluster client: encoded credentials exceed max length %d",
-			maxEncodedCredentialsLen,
-		)
-	}
-	clientName := ac.ctx.ClientName
-	if clientName == "" {
-		clientName = defaultClusterClientName
-	}
-	clientInfo := []byte("name=" + clientName + " " + clusterConnectClientLabel)
+	clientInfo := sessionConnectClientInfo(ac.ctx.ClientName)
 	actingVersion := gensbe.SessionConnectRequestSbeSchemaVersion
-	wireLen := sessionConnectRequestWireLen(
+	wireLen, ok := codecs.SessionConnectRequestWireLen(
 		actingVersion,
 		len(responseChannel),
 		len(credentials),
 		len(clientInfo),
 	)
-	if wireLen > connectWireBufferSize {
-		return fmt.Errorf(
-			"cluster client: session connect request wire length %d exceeds max %d",
-			wireLen,
-			connectWireBufferSize,
-		)
-	}
 	fields := codecs.SessionConnectRequestFields{
 		CorrelationID:      ac.correlationID,
 		ResponseStreamID:   ac.ctx.ResponseStreamID,
@@ -107,19 +79,19 @@ func (ac *AsyncConnect) prepareConnectRequest() error {
 		EncodedCredentials: credentials,
 		ClientInfo:         clientInfo,
 	}
-	end, ok := codecs.EncodeSessionConnectRequest(
-		ac.connectWireBuffer[:],
-		0,
-		actingVersion,
-		fields,
+	return ac.encodeConnectWire(
+		wireLen,
+		ok,
+		"cluster client: session connect request wire length invalid",
+		"cluster client: failed to encode session connect request",
+		func(dst []byte) (int, bool) {
+			return codecs.EncodeSessionConnectRequest(dst, 0, actingVersion, fields)
+		},
 	)
-	if !ok {
-		return errors.New("cluster client: failed to encode session connect request")
-	}
-	ac.connectWireLength = end
-	return nil
 }
 
+// prepareChallengeResponse sizes and encodes the challenge response wire message.
+// Publication maxMessageLength overflow is deferred to Offer; see pollSendMessage.
 func (ac *AsyncConnect) prepareChallengeResponse() error {
 	ac.ensureCorrelationID()
 	challenge := ac.encodedChallenge
@@ -127,35 +99,23 @@ func (ac *AsyncConnect) prepareChallengeResponse() error {
 		challenge = []byte{}
 	}
 	credentials := ac.ctx.CredentialsSupplier.RespondToChallenge(challenge)
-	if len(credentials) > maxChallengeResponseLen {
-		return fmt.Errorf(
-			"cluster client: challenge response credentials exceed max length %d",
-			maxChallengeResponseLen,
-		)
-	}
 	actingVersion := gensbe.ChallengeResponseSbeSchemaVersion
-	wireLen := challengeResponseWireLen(len(credentials))
-	if wireLen > connectWireBufferSize {
-		return fmt.Errorf(
-			"cluster client: challenge response wire length %d exceeds max %d",
-			wireLen,
-			connectWireBufferSize,
-		)
-	}
+	wireLen, ok := codecs.ClusterWireMessageLen(
+		gensbe.ChallengeResponseSbeBlockLength,
+		len(credentials),
+	)
 	fields := codecs.ChallengeResponseFields{
 		CorrelationID:      ac.correlationID,
 		ClusterSessionID:   ac.clusterSessionID,
 		EncodedCredentials: credentials,
 	}
-	end, ok := codecs.EncodeChallengeResponse(
-		ac.connectWireBuffer[:],
-		0,
-		actingVersion,
-		fields,
+	return ac.encodeConnectWire(
+		wireLen,
+		ok,
+		"cluster client: challenge response wire length invalid",
+		"cluster client: failed to encode challenge response",
+		func(dst []byte) (int, bool) {
+			return codecs.EncodeChallengeResponse(dst, 0, actingVersion, fields)
+		},
 	)
-	if !ok {
-		return errors.New("cluster client: failed to encode challenge response")
-	}
-	ac.connectWireLength = end
-	return nil
 }

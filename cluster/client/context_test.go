@@ -39,6 +39,14 @@ func withTypedNilEgressHandlers(ctx *client.ClusterContext) {
 	ctx.EgressHandler = (*client.EgressHandlers)(nil)
 }
 
+func withNilCredentialsSupplier(ctx *client.ClusterContext) {
+	ctx.CredentialsSupplier = nil
+}
+
+func withNilIdleStrategy(ctx *client.ClusterContext) {
+	ctx.IdleStrategy = nil
+}
+
 func validClusterContext() client.ClusterContext {
 	return client.ClusterContext{
 		IngressChannel:      "aeron:udp?endpoint=localhost:20110",
@@ -49,16 +57,30 @@ func validClusterContext() client.ClusterContext {
 	}
 }
 
-func clusterContext(mutate func(*client.ClusterContext)) client.ClusterContext {
+func normalizedClusterContext(mutate func(*client.ClusterContext)) client.ClusterContext {
 	ctx := validClusterContext()
 	if mutate != nil {
 		mutate(&ctx)
 	}
-	return ctx
+	return ctx.Normalize()
 }
 
-func normalizedClusterContext(mutate func(*client.ClusterContext)) client.ClusterContext {
-	return clusterContext(mutate).Normalize()
+func requireNoValidationErrors(t *testing.T, ctx client.ClusterContext) {
+	t.Helper()
+	require.NoError(t, ctx.Validate())
+	require.NoError(t, ctx.ValidateForConnect())
+}
+
+func requireValidationErrors(t *testing.T, ctx client.ClusterContext, wantErr string) {
+	t.Helper()
+	require.EqualError(t, ctx.Validate(), wantErr)
+	require.EqualError(t, ctx.ValidateForConnect(), wantErr)
+}
+
+func requireValidateErrorButConnectOK(t *testing.T, ctx client.ClusterContext, wantErr string) {
+	t.Helper()
+	require.EqualError(t, ctx.Validate(), wantErr)
+	require.NoError(t, ctx.ValidateForConnect())
 }
 
 func TestNormalizeClusterContext_defaults(t *testing.T) {
@@ -171,6 +193,7 @@ func TestValidateClusterContext_errors(t *testing.T) {
 		name           string
 		mutate         func(*client.ClusterContext)
 		afterNormalize func(*client.ClusterContext)
+		validateOnly   bool
 		wantErr        string
 	}{
 		{
@@ -289,35 +312,28 @@ func TestValidateClusterContext_errors(t *testing.T) {
 			wantErr: "cluster client: NewLeaderTimeout must not be negative",
 		},
 		{
-			name:    "nil egress handler",
-			mutate:  withNilEgressHandler,
-			wantErr: errEgressHandlerRequired,
+			name:         "nil egress handler",
+			mutate:       withNilEgressHandler,
+			validateOnly: true,
+			wantErr:      errEgressHandlerRequired,
 		},
 		{
-			name:    "typed nil egress handlers",
-			mutate:  withTypedNilEgressHandlers,
-			wantErr: errEgressHandlerRequired,
+			name:         "typed nil egress handlers",
+			mutate:       withTypedNilEgressHandlers,
+			validateOnly: true,
+			wantErr:      errEgressHandlerRequired,
 		},
 		{
-			name: "nil credentials supplier",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.CredentialsSupplier = nil
-			},
-			afterNormalize: func(ctx *client.ClusterContext) {
-				// Bypass normalize default that would mask the validation branch.
-				ctx.CredentialsSupplier = nil
-			},
-			wantErr: "cluster client: CredentialsSupplier is required",
+			name:           "nil credentials supplier",
+			mutate:         withNilCredentialsSupplier,
+			afterNormalize: withNilCredentialsSupplier,
+			wantErr:        "cluster client: CredentialsSupplier is required",
 		},
 		{
-			name: "nil idle strategy",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.IdleStrategy = nil
-			},
-			afterNormalize: func(ctx *client.ClusterContext) {
-				ctx.IdleStrategy = nil
-			},
-			wantErr: "cluster client: IdleStrategy is required",
+			name:           "nil idle strategy",
+			mutate:         withNilIdleStrategy,
+			afterNormalize: withNilIdleStrategy,
+			wantErr:        "cluster client: IdleStrategy is required",
 		},
 	}
 
@@ -328,26 +344,52 @@ func TestValidateClusterContext_errors(t *testing.T) {
 				testCase.afterNormalize(&ctx)
 			}
 
-			err := ctx.Validate()
-			require.EqualError(t, err, testCase.wantErr)
+			if testCase.validateOnly {
+				require.EqualError(t, ctx.Validate(), testCase.wantErr)
+			} else {
+				requireValidationErrors(t, ctx, testCase.wantErr)
+			}
 		})
 	}
 }
 
-func TestValidateClusterContext_zeroMessageTimeoutWithoutNormalize(t *testing.T) {
-	ctx := validClusterContext()
-	ctx.MessageTimeout = 0
+func TestValidateClusterContext_timeoutsWithoutNormalize(t *testing.T) {
+	tests := []struct {
+		name        string
+		mutate      func(*client.ClusterContext)
+		wantErr     string
+		wantNoError bool
+	}{
+		{
+			name: "zero message timeout",
+			mutate: func(ctx *client.ClusterContext) {
+				ctx.MessageTimeout = 0
+			},
+			wantErr: "cluster client: MessageTimeout must be positive",
+		},
+		{
+			name: "zero new leader timeout",
+			mutate: func(ctx *client.ClusterContext) {
+				ctx.MessageTimeout = 7 * time.Second
+				ctx.NewLeaderTimeout = 0
+			},
+			wantNoError: true,
+		},
+	}
 
-	err := ctx.Validate()
-	require.EqualError(t, err, "cluster client: MessageTimeout must be positive")
-}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := validClusterContext()
+			testCase.mutate(&ctx)
 
-func TestValidateClusterContext_zeroNewLeaderTimeoutWithoutNormalize(t *testing.T) {
-	ctx := validClusterContext()
-	ctx.MessageTimeout = 7 * time.Second
-	ctx.NewLeaderTimeout = 0
-
-	require.NoError(t, ctx.Validate())
+			err := ctx.Validate()
+			if testCase.wantNoError {
+				require.NoError(t, err)
+			} else {
+				require.EqualError(t, err, testCase.wantErr)
+			}
+		})
+	}
 }
 
 func TestValidateClusterContext_unparseableIngressWithEndpoints(t *testing.T) {
@@ -365,11 +407,9 @@ func TestValidateClusterContext_unparseableIngressWithEndpoints(t *testing.T) {
 			ctx := normalizedClusterContext(
 				withIngressChannelAndEndpoints(testCase.channel, testIngressEndpointsMap),
 			)
-			wantErr := "cluster client: invalid ingress channel: " + testCase.channel
-
-			for _, validate := range []func() error{ctx.Validate, ctx.ValidateForConnect} {
-				require.EqualError(t, validate(), wantErr)
-			}
+			requireValidationErrors(
+				t, ctx, "cluster client: invalid ingress channel: "+testCase.channel,
+			)
 		})
 	}
 }
@@ -380,7 +420,7 @@ func TestValidateForConnect_udpEgressRejected(t *testing.T) {
 		ctx.EgressHandler = nil
 	})
 
-	require.EqualError(t, ctx.ValidateForConnect(), errUDPEgressResponseChannel)
+	requireValidationErrors(t, ctx, errUDPEgressResponseChannel)
 }
 
 func TestValidateForConnect_egressHandlerNotRequired(t *testing.T) {
@@ -396,8 +436,7 @@ func TestValidateForConnect_egressHandlerNotRequired(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			ctx := normalizedClusterContext(testCase.mutate)
 
-			require.NoError(t, ctx.ValidateForConnect())
-			require.EqualError(t, ctx.Validate(), errEgressHandlerRequired)
+			requireValidateErrorButConnectOK(t, ctx, errEgressHandlerRequired)
 		})
 	}
 }
@@ -447,10 +486,7 @@ func TestValidateClusterContext_validCases(t *testing.T) {
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			ctx := normalizedClusterContext(testCase.mutate)
-			for _, validate := range []func() error{ctx.Validate, ctx.ValidateForConnect} {
-				require.NoError(t, validate())
-			}
+			requireNoValidationErrors(t, normalizedClusterContext(testCase.mutate))
 		})
 	}
 }
@@ -485,7 +521,7 @@ func TestProtocolSemanticVersion(t *testing.T) {
 	require.True(t, ok)
 	require.Positive(t, end)
 
-	decoded, ok := codecs.TryDecodeByTemplate(buf, 0, codecs.ClusterMaxVarLen)
+	decoded, ok := codecs.TryDecodeByTemplate(buf, 0, codecs.ClusterDecodeMaxVarLen)
 	require.True(t, ok)
 	require.Equal(t, gensbe.SessionConnectRequestSbeTemplateID, decoded.TemplateID)
 

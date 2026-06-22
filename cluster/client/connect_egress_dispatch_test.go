@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"math"
 	"testing"
 
@@ -213,5 +214,63 @@ func TestHandleConnectEgressFragment_negativeLength(t *testing.T) {
 }
 
 func TestHandleConnectEgressFragment_overflowBounds(t *testing.T) {
-	requireConnectEgressFragmentAtNoPanicNoCalls(t, math.MaxInt-1, 2)
+	requireConnectEgressFragmentAtNoPanicNoCalls(t, math.MaxInt-7, codecs.MessageHeaderEncodedLen())
+}
+
+func TestHandleConnectEgressFragment_largeCapturedPayloads(t *testing.T) {
+	const payloadLen = 2000
+
+	cases := []struct {
+		name   string
+		encode func(t *testing.T) (wire, expected []byte)
+		assert func(t *testing.T, poller *ConnectEgressPoller, expected []byte)
+	}{
+		{
+			name: "ingressEndpoints",
+			encode: func(t *testing.T) ([]byte, []byte) {
+				endpoints := bytes.Repeat([]byte{0x32}, payloadLen)
+				return encodeNewLeaderWireWithEndpoints(
+					t,
+					egressTestClusterSessionID,
+					1,
+					endpoints,
+				), endpoints
+			},
+			assert: func(t *testing.T, poller *ConnectEgressPoller, expected []byte) {
+				require.True(t, poller.IsPollComplete())
+				require.Equal(t, int32(gensbe.NewLeaderEventSbeTemplateID), poller.TemplateID())
+				require.Equal(t, expected, poller.Detail())
+			},
+		},
+		{
+			name: "detail",
+			encode: func(t *testing.T) ([]byte, []byte) {
+				detail := bytes.Repeat([]byte{0x33}, payloadLen)
+				fields := defaultSessionEventFields(detail)
+				fields.Code = gensbe.EventCode_REDIRECT
+				return encodeSessionEventWireWithFields(
+					t,
+					egressTestClusterSessionID,
+					fields,
+					gensbe.SessionEventSbeSchemaVersion,
+				), detail
+			},
+			assert: func(t *testing.T, poller *ConnectEgressPoller, expected []byte) {
+				require.True(t, poller.IsPollComplete())
+				require.Equal(t, int32(gensbe.SessionEventSbeTemplateID), poller.TemplateID())
+				require.Equal(t, expected, poller.Detail())
+				require.Equal(t, EventCodeRedirect, poller.EventCode())
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wire, expected := tc.encode(t)
+			poller := newConnectEgressPollerForTest(nil)
+
+			invokeHandleConnectEgressFragment(t, poller, wire)
+
+			tc.assert(t, poller, expected)
+		})
+	}
 }

@@ -5,14 +5,11 @@ import (
 	"math"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/warrenguy/heron/cluster/codecs"
 	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
 )
-
-type codecFieldsCase[T any] struct {
-	name   string
-	fields T
-}
 
 type codecFieldsActingCase[T any] struct {
 	name      string
@@ -20,26 +17,29 @@ type codecFieldsActingCase[T any] struct {
 	fields    T
 }
 
-func runCodecFieldsRoundtrips[T any](
-	t *testing.T,
-	templateID uint16,
-	actingVersion uint16,
-	fieldCases []codecFieldsCase[T],
-	encode func(buf []byte, offset int, actingVersion uint16, fields T) (int, bool),
-) {
-	t.Helper()
+func buildActingFieldRoundtripCases[T any](
+	defaultActingVer uint16,
+	fieldCases []codecFieldsActingCase[T],
+	encode func(buf []byte, offset int, actingVer uint16, fields T) (int, bool),
+	wantFields func(fields T, actingVer uint16) T,
+) []codecRoundtripCase {
 	cases := make([]codecRoundtripCase, len(fieldCases))
 	for i, tc := range fieldCases {
+		actingVer := tc.actingVer
+		if actingVer == 0 {
+			actingVer = defaultActingVer
+		}
 		fields := tc.fields
 		cases[i] = codecRoundtripCase{
-			name: tc.name,
+			name:      tc.name,
+			actingVer: tc.actingVer,
 			encode: func(buf []byte, offset int) (int, bool) {
-				return encode(buf, offset, actingVersion, fields)
+				return encode(buf, offset, actingVer, fields)
 			},
-			wantFields: fields,
+			wantFields: wantFields(fields, actingVer),
 		}
 	}
-	runCodecRoundtripCases(t, templateID, actingVersion, cases)
+	return cases
 }
 
 func runCodecFieldsActingRoundtrips[T any](
@@ -50,64 +50,46 @@ func runCodecFieldsActingRoundtrips[T any](
 	encode func(buf []byte, offset int, actingVer uint16, fields T) (int, bool),
 ) {
 	t.Helper()
-	cases := make([]codecRoundtripCase, len(fieldCases))
-	for i, tc := range fieldCases {
-		actingVer := tc.actingVer
-		fields := tc.fields
-		cases[i] = codecRoundtripCase{
-			name:      tc.name,
-			actingVer: actingVer,
-			encode: func(buf []byte, offset int) (int, bool) {
-				return encode(buf, offset, actingVer, fields)
-			},
-			wantFields: fields,
-		}
-	}
-	runCodecRoundtripCases(t, templateID, defaultActingVer, cases)
+	runCodecRoundtripCases(
+		t,
+		templateID,
+		defaultActingVer,
+		buildActingFieldRoundtripCases(defaultActingVer, fieldCases, encode, func(fields T, _ uint16) T {
+			return fields
+		}),
+	)
 }
 
-func sessionEventFieldRoundtripCases(
-	fieldCases []codecFieldsActingCase[codecs.SessionEventFields],
-) []codecRoundtripCase {
-	cases := make([]codecRoundtripCase, 0, len(fieldCases))
-	for _, tc := range fieldCases {
-		actingVer := tc.actingVer
-		blockLength := codecs.SessionEventBlockLength(actingVer)
-		fields := tc.fields
-		cases = append(cases, codecRoundtripCase{
-			name:      tc.name,
-			actingVer: actingVer,
-			encode: func(buf []byte, offset int) (int, bool) {
-				return codecs.EncodeSessionEvent(buf, offset, actingVer, blockLength, fields)
-			},
-			wantFields: codecs.SessionEventOracleFields(fields, actingVer),
-		})
-	}
-	return cases
+func encodeSessionEventRoundtrip(
+	buf []byte,
+	offset int,
+	actingVer uint16,
+	fields codecs.SessionEventFields,
+) (int, bool) {
+	return codecs.EncodeSessionEvent(
+		buf, offset, actingVer, codecs.SessionEventBlockLength(actingVer), fields,
+	)
 }
 
-func sessionEventCodeRoundtripCase(
-	actingVersion uint16,
-	blockLength uint16,
-	code gensbe.EventCode,
-) codecRoundtripCase {
-	fields := codecs.SessionEventFields{
-		ClusterSessionID:         50,
-		CorrelationID:            51,
-		LeadershipTermID:         52,
-		LeaderMemberID:           53,
-		Code:                     code,
-		Detail:                   []byte("code"),
-		LeaderHeartbeatTimeoutNs: 0,
-	}
-	return codecRoundtripCase{
-		name:      "event_code_" + code.String(),
-		actingVer: actingVersion,
-		encode: func(buf []byte, offset int) (int, bool) {
-			return codecs.EncodeSessionEvent(buf, offset, actingVersion, blockLength, fields)
-		},
-		wantFields: codecs.SessionEventOracleFields(fields, actingVersion),
-	}
+func sessionEventCodeRoundtripCase(actingVersion uint16, code gensbe.EventCode) codecRoundtripCase {
+	return buildActingFieldRoundtripCases(
+		actingVersion,
+		[]codecFieldsActingCase[codecs.SessionEventFields]{{
+			name:      "event_code_" + code.String(),
+			actingVer: actingVersion,
+			fields: codecs.SessionEventFields{
+				ClusterSessionID:         50,
+				CorrelationID:            51,
+				LeadershipTermID:         52,
+				LeaderMemberID:           53,
+				Code:                     code,
+				Detail:                   []byte("code"),
+				LeaderHeartbeatTimeoutNs: 0,
+			},
+		}},
+		encodeSessionEventRoundtrip,
+		codecs.SessionEventOracleFields,
+	)[0]
 }
 
 func TestSessionMessageHeader_roundtrip(t *testing.T) {
@@ -208,15 +190,19 @@ func TestSessionEvent_roundtrip(t *testing.T) {
 				Code:                     gensbe.EventCode_CLOSED,
 				Version:                  0,
 				LeaderHeartbeatTimeoutNs: math.MinInt64,
-				Detail:                   []byte("legacy"),
+				Detail:                   []byte("detail-v5"),
 			},
 		},
 	}
 
-	cases := sessionEventFieldRoundtripCases(fieldCases)
-	blockLength := codecs.SessionEventBlockLength(actingVersion)
+	cases := buildActingFieldRoundtripCases(
+		actingVersion,
+		fieldCases,
+		encodeSessionEventRoundtrip,
+		codecs.SessionEventOracleFields,
+	)
 	for _, code := range codecAllEventCodes {
-		cases = append(cases, sessionEventCodeRoundtripCase(actingVersion, blockLength, code))
+		cases = append(cases, sessionEventCodeRoundtripCase(actingVersion, code))
 	}
 
 	runCodecRoundtripCases(t, gensbe.SessionEventSbeTemplateID, actingVersion, cases)
@@ -322,7 +308,7 @@ func TestSessionKeepAlive_roundtrip(t *testing.T) {
 
 func TestNewLeaderEvent_roundtrip(t *testing.T) {
 	actingVersion := uint16(gensbe.NewLeaderEventSbeSchemaVersion)
-	fieldCases := []codecFieldsCase[codecs.NewLeaderEventFields]{
+	fieldCases := []codecFieldsActingCase[codecs.NewLeaderEventFields]{
 		{
 			name: "empty_ingress_endpoints",
 			fields: codecs.NewLeaderEventFields{
@@ -342,7 +328,7 @@ func TestNewLeaderEvent_roundtrip(t *testing.T) {
 		},
 	}
 
-	runCodecFieldsRoundtrips(
+	runCodecFieldsActingRoundtrips(
 		t,
 		gensbe.NewLeaderEventSbeTemplateID,
 		actingVersion,
@@ -353,7 +339,7 @@ func TestNewLeaderEvent_roundtrip(t *testing.T) {
 
 func TestChallenge_roundtrip(t *testing.T) {
 	actingVersion := uint16(gensbe.ChallengeSbeSchemaVersion)
-	fieldCases := []codecFieldsCase[codecs.ChallengeFields]{
+	fieldCases := []codecFieldsActingCase[codecs.ChallengeFields]{
 		{
 			name: "empty_challenge",
 			fields: codecs.ChallengeFields{
@@ -372,7 +358,7 @@ func TestChallenge_roundtrip(t *testing.T) {
 		},
 	}
 
-	runCodecFieldsRoundtrips(
+	runCodecFieldsActingRoundtrips(
 		t,
 		gensbe.ChallengeSbeTemplateID,
 		actingVersion,
@@ -383,7 +369,7 @@ func TestChallenge_roundtrip(t *testing.T) {
 
 func TestChallengeResponse_roundtrip(t *testing.T) {
 	actingVersion := uint16(gensbe.ChallengeResponseSbeSchemaVersion)
-	fieldCases := []codecFieldsCase[codecs.ChallengeResponseFields]{
+	fieldCases := []codecFieldsActingCase[codecs.ChallengeResponseFields]{
 		{
 			name: "empty_credentials",
 			fields: codecs.ChallengeResponseFields{
@@ -402,7 +388,7 @@ func TestChallengeResponse_roundtrip(t *testing.T) {
 		},
 	}
 
-	runCodecFieldsRoundtrips(
+	runCodecFieldsActingRoundtrips(
 		t,
 		gensbe.ChallengeResponseSbeTemplateID,
 		actingVersion,
@@ -413,7 +399,7 @@ func TestChallengeResponse_roundtrip(t *testing.T) {
 
 func TestAdminRequest_roundtrip(t *testing.T) {
 	actingVersion := uint16(gensbe.AdminRequestSbeSchemaVersion)
-	fieldCases := []codecFieldsCase[codecs.AdminRequestFields]{
+	fieldCases := []codecFieldsActingCase[codecs.AdminRequestFields]{
 		{
 			name: "empty_payload",
 			fields: codecs.AdminRequestFields{
@@ -435,7 +421,7 @@ func TestAdminRequest_roundtrip(t *testing.T) {
 		},
 	}
 
-	runCodecFieldsRoundtrips(
+	runCodecFieldsActingRoundtrips(
 		t,
 		gensbe.AdminRequestSbeTemplateID,
 		actingVersion,
@@ -446,7 +432,7 @@ func TestAdminRequest_roundtrip(t *testing.T) {
 
 func TestAdminResponse_roundtrip(t *testing.T) {
 	actingVersion := uint16(gensbe.AdminResponseSbeSchemaVersion)
-	fieldCases := []codecFieldsCase[codecs.AdminResponseFields]{
+	fieldCases := []codecFieldsActingCase[codecs.AdminResponseFields]{
 		{
 			name: "ok_with_message",
 			fields: codecs.AdminResponseFields{
@@ -470,11 +456,33 @@ func TestAdminResponse_roundtrip(t *testing.T) {
 		},
 	}
 
-	runCodecFieldsRoundtrips(
+	runCodecFieldsActingRoundtrips(
 		t,
 		gensbe.AdminResponseSbeTemplateID,
 		actingVersion,
 		fieldCases,
 		codecs.EncodeAdminResponse,
 	)
+}
+
+func TestTryDecodeByTemplate_largeDetail(t *testing.T) {
+	actingVersion := uint16(gensbe.SessionEventSbeSchemaVersion)
+	fields := codecs.SessionEventFields{
+		ClusterSessionID:         1,
+		CorrelationID:            2,
+		LeadershipTermID:         3,
+		LeaderMemberID:           4,
+		Code:                     gensbe.EventCode_OK,
+		Detail:                   clusterLargeVarPayload,
+		LeaderHeartbeatTimeoutNs: 0,
+	}
+	wire := encodeSessionEventWire(t, actingVersion, fields)
+
+	decoded, ok := codecs.TryDecodeByTemplate(wire, 0, codecs.ClusterDecodeMaxVarLen)
+	require.True(t, ok)
+	require.Equal(t, gensbe.SessionEventSbeTemplateID, decoded.TemplateID)
+
+	gotFields, ok := decoded.Fields.(codecs.SessionEventFields)
+	require.True(t, ok)
+	require.Len(t, gotFields.Detail, len(clusterLargeVarPayload))
 }

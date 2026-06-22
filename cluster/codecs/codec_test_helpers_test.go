@@ -33,9 +33,10 @@ var (
 		gensbe.AdminResponseCode_ERROR,
 		gensbe.AdminResponseCode_UNAUTHORISED_ACCESS,
 	}
+	// clusterLargeVarPayload is a multi-kilobyte var field for large-field encode/decode
+	// tests without materializing the full ClusterEncodeMaxVarLen bound.
+	clusterLargeVarPayload = bytes.Repeat([]byte{0x5A}, 2000)
 )
-
-var codecRoundtripOffsetValues = []int{0, 4}
 
 func encodeClusterInto(
 	t *testing.T,
@@ -61,7 +62,7 @@ func sessionEventEncodeFunc(
 	actingVersion uint16,
 	fields codecs.SessionEventFields,
 ) func(buf []byte) (wireEnd int, ok bool) {
-	return func(buf []byte) (int, bool) {
+	return func(buf []byte) (wireEnd int, ok bool) {
 		return codecs.EncodeSessionEvent(
 			buf, 0, actingVersion, codecs.SessionEventBlockLength(actingVersion), fields,
 		)
@@ -84,14 +85,21 @@ func encodeSessionEventWire(
 	return encodeClusterWire(t, sessionEventEncodeFunc(actingVersion, fields))
 }
 
+func sessionConnectRequestEncodeFunc(
+	actingVersion uint16,
+	fields codecs.SessionConnectRequestFields,
+) func(buf []byte) (wireEnd int, ok bool) {
+	return func(buf []byte) (wireEnd int, ok bool) {
+		return codecs.EncodeSessionConnectRequest(buf, 0, actingVersion, fields)
+	}
+}
+
 func encodeSessionConnectRequestWire(
 	t *testing.T,
 	actingVersion uint16,
 	fields codecs.SessionConnectRequestFields,
 ) []byte {
-	return encodeClusterWire(t, func(buf []byte) (int, bool) {
-		return codecs.EncodeSessionConnectRequest(buf, 0, actingVersion, fields)
-	})
+	return encodeClusterWire(t, sessionConnectRequestEncodeFunc(actingVersion, fields))
 }
 
 func requireBytesEqual(tb require.TestingT, want, got []byte) {
@@ -108,8 +116,8 @@ func requireDecodedFieldsEqual[T any](tb require.TestingT, want, got any) {
 
 // requireEncodedLengthMatchesWire checks header fields and total wire length.
 // Body length uses ClusterMessageWireEnd rather than generated DecodeLength/EncodedLength,
-// which assume the header blockLength equals SbeBlockLength() and panic on legacy
-// partial blocks (e.g. SessionEvent v5/32).
+// which assume the header blockLength equals SbeBlockLength() and panic on reduced
+// root blocks (e.g. SessionEvent acting version 5, block length 32).
 func requireEncodedLengthMatchesWire(
 	tb require.TestingT,
 	buf []byte,
@@ -224,7 +232,7 @@ func runCodecRoundtrip(
 	encode func(buf []byte, offset int) (wireEnd int, ok bool),
 	wantFields any,
 ) {
-	for _, offset := range codecRoundtripOffsetValues {
+	for _, offset := range []int{0, 4} {
 		runCodecRoundtripAtOffset(tb, templateID, actingVersion, offset, encode, wantFields)
 	}
 }
@@ -268,109 +276,125 @@ func codecFuzzSeedBuffers() [][]byte {
 			seeds = append(seeds, wire[:len(wire)-trunc])
 		}
 	}
+	addEncoded := func(encode func([]byte) (int, bool)) {
+		end, _ := encode(buf)
+		addSeed(end)
+	}
 
-	end, _ := codecs.EncodeSessionMessageHeader(
-		buf, 0, actingVersion, codecs.SessionMessageHeaderFields{
-			LeadershipTermID: 11,
-			ClusterSessionID: 22,
-			Timestamp:        33,
-		},
-	)
-	addSeed(end)
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeSessionMessageHeader(
+			b, 0, actingVersion, codecs.SessionMessageHeaderFields{
+				LeadershipTermID: 11,
+				ClusterSessionID: 22,
+				Timestamp:        33,
+			},
+		)
+	})
 
-	end, _ = codecs.EncodeSessionEvent(
-		buf, 0, actingVersion, codecs.SessionEventBlockLength(actingVersion), codecs.SessionEventFields{
-			ClusterSessionID: 1,
-			CorrelationID:    2,
-			LeadershipTermID: 3,
-			LeaderMemberID:   4,
-			Code:             gensbe.EventCode_OK,
-			Detail:           []byte("ok"),
-		},
-	)
-	addSeed(end)
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeSessionEvent(
+			b, 0, actingVersion, codecs.SessionEventBlockLength(actingVersion), codecs.SessionEventFields{
+				ClusterSessionID: 1,
+				CorrelationID:    2,
+				LeadershipTermID: 3,
+				LeaderMemberID:   4,
+				Code:             gensbe.EventCode_OK,
+				Detail:           []byte("ok"),
+			},
+		)
+	})
 
-	end, _ = codecs.EncodeSessionEvent(
-		buf, 0, 5, codecs.SessionEventBlockLength(5), codecs.SessionEventFields{
-			ClusterSessionID: 9,
-			CorrelationID:    8,
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeSessionEvent(
+			b, 0, 5, codecs.SessionEventBlockLength(5), codecs.SessionEventFields{
+				ClusterSessionID: 9,
+				CorrelationID:    8,
+				LeadershipTermID: 7,
+				LeaderMemberID:   6,
+				Code:             gensbe.EventCode_ERROR,
+				Detail:           nil,
+			},
+		)
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeSessionConnectRequest(
+			b, 0, actingVersion, codecs.SessionConnectRequestFields{
+				CorrelationID:      100,
+				ResponseStreamID:   200,
+				Version:            1,
+				ResponseChannel:    []byte("aeron:udp?endpoint=localhost:40123"),
+				EncodedCredentials: bytes.Repeat([]byte{0xAB}, 32),
+				ClientInfo:         []byte("go-client"),
+			},
+		)
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeSessionConnectRequest(b, 0, 1, codecs.SessionConnectRequestFields{
+			CorrelationID:    101,
+			ResponseStreamID: 201,
+			ResponseChannel:  nil,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeSessionCloseRequest(b, 0, actingVersion, codecs.SessionCloseRequestFields{
+			LeadershipTermID: 5,
+			ClusterSessionID: 6,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeSessionKeepAlive(b, 0, actingVersion, codecs.SessionKeepAliveFields{
 			LeadershipTermID: 7,
-			LeaderMemberID:   6,
-			Code:             gensbe.EventCode_ERROR,
-			Detail:           nil,
-		},
-	)
-	addSeed(end)
-
-	end, _ = codecs.EncodeSessionConnectRequest(
-		buf, 0, actingVersion, codecs.SessionConnectRequestFields{
-			CorrelationID:      100,
-			ResponseStreamID:   200,
-			Version:            1,
-			ResponseChannel:    []byte("aeron:udp?endpoint=localhost:40123"),
-			EncodedCredentials: bytes.Repeat([]byte{0xAB}, 32),
-			ClientInfo:         []byte("go-client"),
-		},
-	)
-	addSeed(end)
-
-	end, _ = codecs.EncodeSessionConnectRequest(buf, 0, 1, codecs.SessionConnectRequestFields{
-		CorrelationID:    101,
-		ResponseStreamID: 201,
-		ResponseChannel:  nil,
+			ClusterSessionID: 8,
+		})
 	})
-	addSeed(end)
 
-	end, _ = codecs.EncodeSessionCloseRequest(buf, 0, actingVersion, codecs.SessionCloseRequestFields{
-		LeadershipTermID: 5,
-		ClusterSessionID: 6,
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeNewLeaderEvent(b, 0, actingVersion, codecs.NewLeaderEventFields{
+			LeadershipTermID: 1,
+			ClusterSessionID: 2,
+			LeaderMemberID:   3,
+			IngressEndpoints: []byte("localhost:40123"),
+		})
 	})
-	addSeed(end)
 
-	end, _ = codecs.EncodeSessionKeepAlive(buf, 0, actingVersion, codecs.SessionKeepAliveFields{
-		LeadershipTermID: 7,
-		ClusterSessionID: 8,
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeChallenge(b, 0, actingVersion, codecs.ChallengeFields{
+			CorrelationID:    10,
+			ClusterSessionID: 11,
+			EncodedChallenge: bytes.Repeat([]byte{0xCD}, 32),
+		})
 	})
-	addSeed(end)
 
-	end, _ = codecs.EncodeNewLeaderEvent(buf, 0, actingVersion, codecs.NewLeaderEventFields{
-		LeadershipTermID: 1,
-		ClusterSessionID: 2,
-		LeaderMemberID:   3,
-		IngressEndpoints: []byte("localhost:40123"),
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeChallengeResponse(b, 0, actingVersion, codecs.ChallengeResponseFields{
+			CorrelationID:      12,
+			ClusterSessionID:   13,
+			EncodedCredentials: bytes.Repeat([]byte{0xEF}, 32),
+		})
 	})
-	addSeed(end)
 
-	end, _ = codecs.EncodeChallenge(buf, 0, actingVersion, codecs.ChallengeFields{
-		CorrelationID:    10,
-		ClusterSessionID: 11,
-		EncodedChallenge: bytes.Repeat([]byte{0xCD}, 32),
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeAdminRequest(b, 0, actingVersion, codecs.AdminRequestFields{
+			LeadershipTermID: 1,
+			ClusterSessionID: 2,
+			CorrelationID:    3,
+			RequestType:      gensbe.AdminRequestType_SNAPSHOT,
+		})
 	})
-	addSeed(end)
 
-	end, _ = codecs.EncodeChallengeResponse(buf, 0, actingVersion, codecs.ChallengeResponseFields{
-		CorrelationID:      12,
-		ClusterSessionID:   13,
-		EncodedCredentials: bytes.Repeat([]byte{0xEF}, 32),
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeAdminResponse(b, 0, actingVersion, codecs.AdminResponseFields{
+			ClusterSessionID: 4,
+			CorrelationID:    5,
+			RequestType:      gensbe.AdminRequestType_SNAPSHOT,
+			ResponseCode:     gensbe.AdminResponseCode_OK,
+			Message:          []byte("snapshot complete"),
+		})
 	})
-	addSeed(end)
-
-	end, _ = codecs.EncodeAdminRequest(buf, 0, actingVersion, codecs.AdminRequestFields{
-		LeadershipTermID: 1,
-		ClusterSessionID: 2,
-		CorrelationID:    3,
-		RequestType:      gensbe.AdminRequestType_SNAPSHOT,
-	})
-	addSeed(end)
-
-	end, _ = codecs.EncodeAdminResponse(buf, 0, actingVersion, codecs.AdminResponseFields{
-		ClusterSessionID: 4,
-		CorrelationID:    5,
-		RequestType:      gensbe.AdminRequestType_SNAPSHOT,
-		ResponseCode:     gensbe.AdminResponseCode_OK,
-		Message:          []byte("snapshot complete"),
-	})
-	addSeed(end)
 
 	return seeds
 }

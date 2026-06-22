@@ -26,7 +26,9 @@ func TestCatalog_parseAndWireParity(t *testing.T) {
 		require.NotEmpty(t, entry.Template)
 		require.NotEmpty(t, entry.Hex)
 		require.NotNil(t, entry.Fields)
-		require.Equal(t, byName[entry.Name].Hex, entry.Hex)
+		wire := byName[entry.Name]
+		require.Equal(t, wire.Hex, entry.Hex)
+		require.Equal(t, catalogschema.FixtureMaxVarLen(entry), wire.MaxVarLen(), entry.Name)
 	}
 }
 

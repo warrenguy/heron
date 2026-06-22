@@ -25,7 +25,7 @@ func ProjectCatalogToFields(
 	case "sessionKeepAlive":
 		return decodeSessionKeepAliveFields(fields)
 	case "newLeaderEvent":
-		return decodeNewLeaderEventFields(fields)
+		return decodeNewLeaderEventFields(fields, blobs)
 	case "challenge":
 		return decodeChallengeFields(fields, blobs)
 	case "challengeResponse":
@@ -137,7 +137,10 @@ func decodeSessionConnectRequestFields(
 	return out, err
 }
 
-func decodeNewLeaderEventFields(fields map[string]any) (codecs.NewLeaderEventFields, error) {
+func decodeNewLeaderEventFields(
+	fields map[string]any,
+	blobs map[string][]byte,
+) (codecs.NewLeaderEventFields, error) {
 	var out codecs.NewLeaderEventFields
 	var err error
 
@@ -149,7 +152,7 @@ func decodeNewLeaderEventFields(fields map[string]any) (codecs.NewLeaderEventFie
 	if err != nil {
 		return out, err
 	}
-	out.IngressEndpoints, err = optionalCatalogStringBytes(fields, "ingressEndpoints")
+	out.IngressEndpoints, err = optionalCatalogVarStringBytes(fields, blobs, "ingressEndpoints")
 	return out, err
 }
 
@@ -309,6 +312,22 @@ func optionalCatalogStringBytes(fields map[string]any, key string) ([]byte, erro
 	return data, nil
 }
 
+func optionalCatalogVarStringBytes(
+	fields map[string]any,
+	blobs map[string][]byte,
+	key string,
+) ([]byte, error) {
+	value, ok := fields[key]
+	if !ok {
+		return nil, nil
+	}
+	data, err := resolveCatalogVarStringField(key, value, blobs)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", key, err)
+	}
+	return data, nil
+}
+
 func optionalBytesField(
 	fields map[string]any,
 	blobs map[string][]byte,
@@ -318,6 +337,10 @@ func optionalBytesField(
 	if !ok {
 		return nil, nil
 	}
+	return decodeOptionalCatalogBytes(value, blobs, key)
+}
+
+func decodeOptionalCatalogBytes(value any, blobs map[string][]byte, key string) ([]byte, error) {
 	data, err := DecodeBytesValue(value, blobs)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", key, err)

@@ -233,6 +233,17 @@ func encodeSessionEventWire(t *testing.T, clusterSessionID int64) []byte {
 	)
 }
 
+func encodeSessionEventWireWithDetail(t *testing.T, clusterSessionID int64, detail []byte) []byte {
+	t.Helper()
+
+	return encodeSessionEventWireWithFields(
+		t,
+		clusterSessionID,
+		defaultSessionEventFields(detail),
+		gensbe.SessionEventSbeSchemaVersion,
+	)
+}
+
 func encodeSessionEventWireWithFields(
 	t *testing.T,
 	clusterSessionID int64,

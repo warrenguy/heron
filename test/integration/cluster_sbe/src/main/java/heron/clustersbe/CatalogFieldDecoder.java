@@ -6,6 +6,7 @@ import io.aeron.cluster.codecs.EventCode;
 import io.aeron.cluster.codecs.SessionConnectRequestEncoder;
 import io.aeron.cluster.codecs.SessionEventEncoder;
 
+import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
 import java.util.Map;
 
@@ -22,7 +23,7 @@ final class CatalogFieldDecoder {
             case "sessionConnectRequest" -> encodeSessionConnectRequestFields(entry, blobs);
             case "sessionCloseRequest" -> encodeSessionCloseRequestFields(entry.fields());
             case "sessionKeepAlive" -> encodeSessionKeepAliveFields(entry.fields());
-            case "newLeaderEvent" -> encodeNewLeaderEventFields(entry.fields());
+            case "newLeaderEvent" -> encodeNewLeaderEventFields(entry.fields(), blobs);
             case "challenge" -> encodeChallengeFields(entry.fields(), blobs);
             case "challengeResponse" -> encodeChallengeResponseFields(entry.fields(), blobs);
             case "adminRequest" -> encodeAdminRequestFields(entry.fields(), blobs);
@@ -89,12 +90,15 @@ final class CatalogFieldDecoder {
         );
     }
 
-    private static byte[] encodeNewLeaderEventFields(final Map<String, Object> fields) {
+    private static byte[] encodeNewLeaderEventFields(
+        final Map<String, Object> fields,
+        final Map<String, byte[]> blobs
+    ) {
         return ClusterSbeFixtures.encodeNewLeaderEvent(
             requireInt64(fields, "leadershipTermId"),
             requireInt64(fields, "clusterSessionId"),
             requireInt32(fields, "leaderMemberId"),
-            optionalString(fields, "ingressEndpoints")
+            optionalStringOrBlob(fields, "ingressEndpoints", blobs)
         );
     }
 
@@ -192,6 +196,21 @@ final class CatalogFieldDecoder {
             return null;
         }
         return stringField(fields, key);
+    }
+
+    private static String optionalStringOrBlob(
+        final Map<String, Object> fields,
+        final String key,
+        final Map<String, byte[]> blobs
+    ) {
+        if (!fields.containsKey(key)) {
+            return null;
+        }
+        final Object value = fields.get(key);
+        if (value instanceof String text) {
+            return text;
+        }
+        return new String(decodeBytesField(value, blobs), StandardCharsets.US_ASCII);
     }
 
     private static String stringField(final Map<String, Object> fields, final String key) {

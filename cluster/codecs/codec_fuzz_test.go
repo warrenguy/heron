@@ -12,8 +12,9 @@ func FuzzClusterCodecDecode(f *testing.F) {
 	for _, seed := range codecFuzzSeedBuffers() {
 		f.Add(seed, uint8(0))
 	}
-	for offset := 1; offset <= codecFuzzMaxOffset; offset++ {
-		f.Add([]byte{0x10, 0x00, 0x01, 0x00, 0x6f, 0x00, 0x10, 0x00}, uint8(offset))
+	offsetProbeWire := []byte{0x10, 0x00, 0x01, 0x00, 0x6f, 0x00, 0x10, 0x00}
+	for offset := uint8(1); offset <= codecFuzzMaxOffset; offset++ {
+		f.Add(offsetProbeWire, offset)
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte, offset uint8) {
@@ -21,7 +22,11 @@ func FuzzClusterCodecDecode(f *testing.F) {
 			return
 		}
 		require.NotPanics(t, func() {
-			_, _ = codecs.TryDecodeByTemplate(data, int(offset%codecFuzzOffsetSpan), codecs.ClusterMaxVarLen)
+			_, _ = codecs.TryDecodeByTemplate(
+				data,
+				int(offset%codecFuzzOffsetSpan),
+				codecs.ClusterDecodeMaxVarLen,
+			)
 		})
 	})
 }

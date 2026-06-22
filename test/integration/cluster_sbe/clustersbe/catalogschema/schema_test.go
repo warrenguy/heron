@@ -79,13 +79,51 @@ func mutateChallengeFields(c *catalogschema.CatalogFile, mut func(map[string]any
 	c.Fixtures[0].Fields = mutateFieldMap(validChallengeFields, mut)
 }
 
+func addIngress2000Blob(c *catalogschema.CatalogFile) {
+	c.Blobs["ingress2000"] = ingress2000BlobSpec()
+}
+
+func newLeaderEventIngressFields(
+	leadershipTermID, clusterSessionID int64,
+	leaderMemberID int32,
+) map[string]any {
+	return map[string]any{
+		"leadershipTermId": leadershipTermID,
+		"clusterSessionId": clusterSessionID,
+		"leaderMemberId":   leaderMemberID,
+		"ingressEndpoints": map[string]any{"ref": "ingress2000"},
+	}
+}
+
+func newLeaderEventIngressFixture(
+	name string,
+	leadershipTermID, clusterSessionID int64,
+	leaderMemberID int32,
+	largeVar bool,
+) catalogschema.FixtureEntry {
+	return catalogschema.FixtureEntry{
+		Name:          name,
+		Template:      "newLeaderEvent",
+		ActingVersion: gensbe.SessionMessageHeaderSbeSchemaVersion,
+		Hex:           "00",
+		LargeVar:      largeVar,
+		Fields: newLeaderEventIngressFields(
+			leadershipTermID, clusterSessionID, leaderMemberID,
+		),
+	}
+}
+
+func setSessionEventFields(c *catalogschema.CatalogFile, mut func(map[string]any)) {
+	c.Fixtures[0].Template = "sessionEvent"
+	c.Fixtures[0].Fields = mutateFieldMap(validSessionEventFields, mut)
+}
+
 func setSessionEventBlockLength(
 	c *catalogschema.CatalogFile,
 	actingVersion uint16,
 	blockLength *uint16,
 ) {
-	c.Fixtures[0].Template = "sessionEvent"
-	c.Fixtures[0].Fields = validSessionEventFields()
+	setSessionEventFields(c, nil)
 	c.Fixtures[0].ActingVersion = actingVersion
 	c.Fixtures[0].BlockLength = blockLength
 }
@@ -369,21 +407,71 @@ func TestValidate_errors(t *testing.T) {
 		{
 			name: "sessionEventMissingHeartbeat",
 			mutate: func(c *catalogschema.CatalogFile) {
-				c.Fixtures[0].Template = "sessionEvent"
-				c.Fixtures[0].Fields = validSessionEventFields()
-				delete(c.Fixtures[0].Fields, catalogschema.SessionEventHeartbeatField)
+				setSessionEventFields(c, func(fields map[string]any) {
+					delete(fields, catalogschema.SessionEventHeartbeatField)
+				})
 			},
 			wantErr: "missing leaderHeartbeatTimeoutNs",
 		},
 		{
 			name: "sessionEventDetailTooLong",
 			mutate: func(c *catalogschema.CatalogFile) {
-				c.Fixtures[0].Template = "sessionEvent"
-				fields := validSessionEventFields()
-				fields["detail"] = strings.Repeat("x", 300)
-				c.Fixtures[0].Fields = fields
+				setSessionEventFields(c, func(fields map[string]any) {
+					fields["detail"] = strings.Repeat("x", 300)
+				})
 			},
 			wantErr: "length 300 exceeds max",
+		},
+		{
+			name: "largeVarBlobWithoutTag",
+			mutate: func(c *catalogschema.CatalogFile) {
+				addIngress2000Blob(c)
+			},
+			wantErr: "repeat len 2000 exceeds max",
+		},
+		{
+			name: "largeVarWithoutOversizeField",
+			mutate: func(c *catalogschema.CatalogFile) {
+				c.Fixtures[0].LargeVar = true
+			},
+			wantErr: "largeVar fixture must include a var field longer than",
+		},
+		{
+			name: "largeVarOnTemplateWithoutVarFields",
+			mutate: func(c *catalogschema.CatalogFile) {
+				c.Fixtures[0].Template = "sessionMessageHeader"
+				c.Fixtures[0].Fields = map[string]any{
+					"leadershipTermId": int64(0),
+					"clusterSessionId": int64(0),
+					"timestamp":        int64(0),
+				}
+				c.Fixtures[0].LargeVar = true
+			},
+			wantErr: "largeVar set on template without var fields",
+		},
+		{
+			name: "ingressEndpointsBlobRefWithoutLargeVar",
+			mutate: func(c *catalogschema.CatalogFile) {
+				addIngress2000Blob(c)
+				c.Fixtures[0] = newLeaderEventIngressFixture(
+					"newLeaderEvent_untaggedLargeRef", 6, 7, 8, false,
+				)
+				// A largeVar fixture references the same blob so blob len validation
+				// passes; this entry lacks largeVar and must fail on field length.
+				c.Fixtures = append(c.Fixtures, newLeaderEventIngressFixture(
+					"newLeaderEvent_largeVarAnchor", 1, 2, 3, true,
+				))
+			},
+			wantErr: `field "ingressEndpoints": length 2000 exceeds max 256`,
+		},
+		{
+			name: "sessionEventDetailBlobRefRejected",
+			mutate: func(c *catalogschema.CatalogFile) {
+				setSessionEventFields(c, func(fields map[string]any) {
+					fields["detail"] = map[string]any{"ref": "challenge32"}
+				})
+			},
+			wantErr: `field "detail": expected string`,
 		},
 		{
 			name: "encodedChallengePlainStringRejected",
@@ -407,4 +495,18 @@ func TestValidate_errors(t *testing.T) {
 func TestValidate_acceptsValidCatalog(t *testing.T) {
 	t.Parallel()
 	require.NoError(t, catalogschema.Validate(validCatalog()))
+}
+
+func TestValidate_acceptsLargeVarFixture(t *testing.T) {
+	t.Parallel()
+
+	catalog := validCatalog()
+	addIngress2000Blob(&catalog)
+	catalog.Fixtures[0] = newLeaderEventIngressFixture(
+		"newLeaderEvent_largeEndpoints", 6, 7, 8, true,
+	)
+
+	require.NoError(t, catalogschema.Validate(catalog))
+	entry := catalog.Fixtures[0]
+	require.Equal(t, codecs.ClusterDecodeMaxVarLen, catalogschema.FixtureMaxVarLen(entry))
 }

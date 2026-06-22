@@ -5,6 +5,7 @@ import (
 
 	"github.com/warrenguy/heron/cluster/codecs"
 	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
+	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe/catalogschema"
 )
 
 // Cross-language hex contract: Java encode must match catalog.hex
@@ -15,6 +16,13 @@ type WireFixture struct {
 	ActingVersion uint16
 	Hex           string
 	Fields        any
+	// LargeVar; see catalogschema.FixtureEntry.LargeVar.
+	LargeVar bool
+}
+
+// Per-var TryDecodeByTemplate cap for oracle roundtrip.
+func (fixture WireFixture) MaxVarLen() int {
+	return catalogschema.MaxVarLenForLargeVar(fixture.LargeVar)
 }
 
 const oracleVarFieldSlot = codecs.ClusterCodecMaxVarLen + 8
@@ -42,9 +50,89 @@ func ExpectedDecodeFields(fixture WireFixture) any {
 }
 
 func oracleEncodeBufLen(fixture WireFixture) int {
+	if wireLen, ok := oracleExactWireLen(fixture); ok {
+		return wireLen
+	}
+
 	varCount, _ := codecs.ClusterVarFieldCount(fixture.TemplateID, fixture.ActingVersion)
 	rootLen := int(codecs.ClusterMinRootBlockLength(fixture.TemplateID, fixture.ActingVersion, 0))
-	return codecs.MessageHeaderEncodedLen() + rootLen + varCount*oracleVarFieldSlot
+	slot := oracleVarFieldSlot
+	if fixture.LargeVar {
+		slot = fixture.MaxVarLen() + codecs.VarLengthPrefixSize
+	}
+	return codecs.MessageHeaderEncodedLen() + rootLen + varCount*slot
+}
+
+func oracleExactWireLen(fixture WireFixture) (int, bool) {
+	varLens, ok := oracleVarFieldLens(fixture)
+	if !ok {
+		return 0, false
+	}
+	blockLength := oracleRootBlockLength(fixture)
+	return codecs.ClusterWireMessageLen(blockLength, varLens...)
+}
+
+func oracleRootBlockLength(fixture WireFixture) uint16 {
+	switch fixture.TemplateID {
+	case gensbe.SessionEventSbeTemplateID:
+		return codecs.SessionEventBlockLength(fixture.ActingVersion)
+	default:
+		return codecs.ClusterMinRootBlockLength(fixture.TemplateID, fixture.ActingVersion, 0)
+	}
+}
+
+func oracleVarFieldLensFrom[T any](fields any, lens func(T) []int) ([]int, bool) {
+	typed, ok := fields.(T)
+	if !ok {
+		return nil, false
+	}
+	return lens(typed), true
+}
+
+func oracleVarFieldLens(fixture WireFixture) ([]int, bool) {
+	switch fixture.TemplateID {
+	case gensbe.SessionMessageHeaderSbeTemplateID,
+		gensbe.SessionCloseRequestSbeTemplateID,
+		gensbe.SessionKeepAliveSbeTemplateID:
+		return []int{}, true
+	case gensbe.SessionEventSbeTemplateID:
+		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.SessionEventFields) []int {
+			return []int{len(fields.Detail)}
+		})
+	case gensbe.SessionConnectRequestSbeTemplateID:
+		fields, ok := fixture.Fields.(codecs.SessionConnectRequestFields)
+		if !ok {
+			return nil, false
+		}
+		return codecs.SessionConnectRequestVarLens(
+			fixture.ActingVersion,
+			len(fields.ResponseChannel),
+			len(fields.EncodedCredentials),
+			len(fields.ClientInfo),
+		)
+	case gensbe.NewLeaderEventSbeTemplateID:
+		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.NewLeaderEventFields) []int {
+			return []int{len(fields.IngressEndpoints)}
+		})
+	case gensbe.ChallengeSbeTemplateID:
+		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.ChallengeFields) []int {
+			return []int{len(fields.EncodedChallenge)}
+		})
+	case gensbe.ChallengeResponseSbeTemplateID:
+		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.ChallengeResponseFields) []int {
+			return []int{len(fields.EncodedCredentials)}
+		})
+	case gensbe.AdminRequestSbeTemplateID:
+		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.AdminRequestFields) []int {
+			return []int{len(fields.Payload)}
+		})
+	case gensbe.AdminResponseSbeTemplateID:
+		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.AdminResponseFields) []int {
+			return []int{len(fields.Message), len(fields.Payload)}
+		})
+	default:
+		return nil, false
+	}
 }
 
 func encodeStandard[T any](

@@ -21,6 +21,12 @@ func testBlobSpecs() map[string]catalogschema.BlobSpec {
 	}
 }
 
+func ingress2000BlobSpec() catalogschema.BlobSpec {
+	return catalogschema.BlobSpec{
+		Repeat: catalogschema.BlobRepeat{Byte: 105, Len: 2000},
+	}
+}
+
 func testBlobBytes() map[string][]byte {
 	return catalogschema.ResolveBlobs(testBlobSpecs())
 }

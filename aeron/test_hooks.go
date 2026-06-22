@@ -113,6 +113,14 @@ func NewTestExclusivePublicationForHooksWithConnected(
 	return pub
 }
 
+// MaxMessageLengthForTest returns maxMessageLength for hook-built exclusive publications.
+func (ep *ExclusivePublication) MaxMessageLengthForTest() int {
+	if ep == nil {
+		return 0
+	}
+	return ep.maxMessageLength
+}
+
 // NewTestPublicationForHooks builds a publication for cross-package close tests.
 func NewTestPublicationForHooks(tb testing.TB) *Publication {
 	tb.Helper()

@@ -182,6 +182,20 @@ type FixtureEntry struct {
 	Hex           string         `json:"hex"`
 	Fields        map[string]any `json:"fields"`
 	BlockLength   *uint16        `json:"blockLength,omitempty"`
+	// LargeVar opts a fixture into ClusterDecodeMaxVarLen validation and oracle
+	// decode bounds. Normal catalog entries stay at ClusterCodecMaxVarLen.
+	LargeVar bool `json:"largeVar,omitempty"`
+}
+
+func MaxVarLenForLargeVar(largeVar bool) int {
+	if largeVar {
+		return codecs.ClusterDecodeMaxVarLen
+	}
+	return codecs.ClusterCodecMaxVarLen
+}
+
+func FixtureMaxVarLen(entry FixtureEntry) int {
+	return MaxVarLenForLargeVar(entry.LargeVar)
 }
 
 func TemplateIDFromName(name string) (uint16, error) {
@@ -236,6 +250,8 @@ func Validate(catalog CatalogFile) error {
 		return errors.New("fixtures must be non-empty")
 	}
 
+	largeVarBlobs := largeVarBlobRefs(catalog)
+
 	for id, spec := range catalog.Blobs {
 		if spec.Repeat.Len <= 0 {
 			return fmt.Errorf("blob %q: repeat len must be positive", id)
@@ -243,10 +259,11 @@ func Validate(catalog CatalogFile) error {
 		if spec.Repeat.Byte < 0 || spec.Repeat.Byte > 255 {
 			return fmt.Errorf("blob %q: repeat byte out of range", id)
 		}
-		if spec.Repeat.Len > codecs.ClusterCodecMaxVarLen {
+		maxLen := MaxVarLenForLargeVar(largeVarBlobs[id])
+		if spec.Repeat.Len > maxLen {
 			return fmt.Errorf(
 				"blob %q: repeat len %d exceeds max %d",
-				id, spec.Repeat.Len, codecs.ClusterCodecMaxVarLen,
+				id, spec.Repeat.Len, maxLen,
 			)
 		}
 	}
@@ -293,7 +310,13 @@ func Validate(catalog CatalogFile) error {
 		if err := validateBlobRefs(entry.Fields, catalog.Blobs); err != nil {
 			return fmt.Errorf("fixture %q: %w", entry.Name, err)
 		}
+		if err := validateFixtureVarFieldShapes(entry); err != nil {
+			return fmt.Errorf("fixture %q: %w", entry.Name, err)
+		}
 		if err := validateFixtureVarFieldLengths(entry, resolvedBlobs); err != nil {
+			return fmt.Errorf("fixture %q: %w", entry.Name, err)
+		}
+		if err := validateLargeVarFixture(entry, resolvedBlobs); err != nil {
 			return fmt.Errorf("fixture %q: %w", entry.Name, err)
 		}
 	}

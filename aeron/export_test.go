@@ -432,10 +432,6 @@ func (ep *ExclusivePublication) MaxPayloadLengthForTest() int {
 	return ep.maxPayloadLength
 }
 
-func (ep *ExclusivePublication) MaxMessageLengthForTest() int {
-	return ep.maxMessageLength
-}
-
 func (ep *ExclusivePublication) MaxPossiblePositionForTest() int64 {
 	return ep.maxPossiblePosition
 }

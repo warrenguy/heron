@@ -23,9 +23,6 @@ func MessageHeaderEncodedLen() int {
 	return messageHeaderEncodedLength
 }
 
-// ClusterMaxVarLen bounds each varAscii/varData field during cluster egress decode.
-const ClusterMaxVarLen = 1400
-
 // DecodedMessage is a template ID plus plain field struct decoded from wire bytes.
 // Fields holds a concrete type from codec_fields.go (for example SessionEventFields).
 // Var payloads in Fields are copied out of buf; callers may retain them after buf is reused.
@@ -50,16 +47,13 @@ func DecodeMessageHeader(
 }
 
 // TryDecodeByTemplate decodes a cluster SBE message into plain field structs.
-// maxVarLen bounds each varAscii/varData field; use ClusterMaxVarLen for egress.
+// maxVarLen bounds each varAscii/varData field; use ClusterDecodeMaxVarLen for egress.
 // Rejects maxVarLen < 0. Trailing bytes after the last var field are ignored so
 // Aeron fragment buffers decode without requiring exact buffer length.
 func TryDecodeByTemplate(buf []byte, offset, maxVarLen int) (decoded DecodedMessage, ok bool) {
-	if maxVarLen < 0 {
-		return DecodedMessage{}, false
-	}
-	layout, ok := parseClusterMessage(buf, offset)
+	layout, ok := clusterMessageAt(buf, offset, maxVarLen)
 	if !ok {
-		return DecodedMessage{}, false
+		return decoded, ok
 	}
 
 	vars, _, ok := scanTemplateVarFields(
@@ -71,7 +65,7 @@ func TryDecodeByTemplate(buf []byte, offset, maxVarLen int) (decoded DecodedMess
 		true,
 	)
 	if !ok {
-		return DecodedMessage{}, false
+		return decoded, ok
 	}
 
 	fields, ok := decodeTemplateFields(
@@ -83,7 +77,7 @@ func TryDecodeByTemplate(buf []byte, offset, maxVarLen int) (decoded DecodedMess
 		vars,
 	)
 	if !ok {
-		return DecodedMessage{}, false
+		return decoded, ok
 	}
 	return DecodedMessage{TemplateID: layout.templateID, Fields: fields}, true
 }
@@ -177,7 +171,11 @@ type clusterMessageLayout struct {
 	blockLength, templateID, actingVersion uint16
 }
 
-func parseClusterMessage(buf []byte, offset int) (clusterMessageLayout, bool) {
+func clusterMessageAt(buf []byte, offset, maxVarLen int) (clusterMessageLayout, bool) {
+	if maxVarLen < 0 {
+		return clusterMessageLayout{}, false
+	}
+
 	blockLength, templateID, schemaID, actingVersion, ok := DecodeMessageHeader(buf, offset)
 	if !ok || schemaID != clusterSchemaID {
 		return clusterMessageLayout{}, false
@@ -205,12 +203,9 @@ func parseClusterMessage(buf []byte, offset int) (clusterMessageLayout, bool) {
 // ClusterMessageWireEnd returns the offset after the last var field for a cluster message.
 // Rejects maxVarLen < 0 (consistent with TryDecodeByTemplate).
 func ClusterMessageWireEnd(buf []byte, offset, maxVarLen int) (wireEnd int, ok bool) {
-	if maxVarLen < 0 {
-		return 0, false
-	}
-	layout, ok := parseClusterMessage(buf, offset)
+	layout, ok := clusterMessageAt(buf, offset, maxVarLen)
 	if !ok {
-		return 0, false
+		return wireEnd, ok
 	}
 	_, wireEnd, ok = scanTemplateVarFields(
 		buf,
@@ -249,11 +244,7 @@ func scanTemplateVarFields(
 			return templateVarFields{}, 0, false
 		}
 		if clone {
-			if len(slice.Data) == 0 {
-				raw[i] = nil
-			} else {
-				raw[i] = bytes.Clone(slice.Data)
-			}
+			raw[i] = cloneVarBytes(slice.Data)
 		}
 		pos = nextPos
 	}
@@ -262,6 +253,13 @@ func scanTemplateVarFields(
 	}
 	vars, ok = assignTemplateVarFields(templateID, raw)
 	return vars, pos, ok
+}
+
+func cloneVarBytes(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return bytes.Clone(b)
 }
 
 func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields, bool) {
@@ -273,7 +271,7 @@ func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields
 			responseChannel:    raw[0],
 			encodedCredentials: raw[1],
 		}
-		if len(raw) == 3 {
+		if len(raw) > 2 {
 			vars.clientInfo = raw[2]
 		}
 		return vars, true

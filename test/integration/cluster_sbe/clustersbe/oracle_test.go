@@ -19,13 +19,28 @@ func TestWireFixtures_oracle(t *testing.T) {
 			t.Parallel()
 			wantWire := requireFixtureWire(t, fixture)
 
-			decoded, ok := codecs.TryDecodeByTemplate(wantWire, 0, codecs.ClusterCodecMaxVarLen)
-			require.True(t, ok)
-			require.Equal(t, clustersbe.ExpectedDecodeFields(fixture), decoded.Fields)
+			requireDecodedFieldsMatch(t, wantWire, fixture.MaxVarLen(), fixture)
 
 			goWire, ok := clustersbe.ReencodeWire(fixture)
 			require.True(t, ok)
 			require.Equal(t, wantWire, goWire)
+		})
+	}
+}
+
+func TestWireFixtures_largeVar_requiresDecodeMax(t *testing.T) {
+	for _, fixture := range clustersbe.Fixtures() {
+		if !fixture.LargeVar {
+			continue
+		}
+		t.Run(fixture.Name, func(t *testing.T) {
+			t.Parallel()
+			wantWire := requireFixtureWire(t, fixture)
+
+			_, ok := codecs.TryDecodeByTemplate(wantWire, 0, codecs.ClusterCodecMaxVarLen)
+			require.False(t, ok, "largeVar fixture must not decode at ClusterCodecMaxVarLen")
+
+			requireDecodedFieldsMatch(t, wantWire, fixture.MaxVarLen(), fixture)
 		})
 	}
 }
@@ -65,6 +80,18 @@ func requireFixtureWire(t *testing.T, fixture clustersbe.WireFixture) []byte {
 	wantWire, err := hex.DecodeString(fixture.Hex)
 	require.NoError(t, err)
 	return wantWire
+}
+
+func requireDecodedFieldsMatch(
+	t *testing.T,
+	wire []byte,
+	maxLen int,
+	fixture clustersbe.WireFixture,
+) {
+	t.Helper()
+	decoded, ok := codecs.TryDecodeByTemplate(wire, 0, maxLen)
+	require.True(t, ok)
+	require.Equal(t, clustersbe.ExpectedDecodeFields(fixture), decoded.Fields)
 }
 
 func corruptWireByte(wire []byte, index int, value byte) []byte {

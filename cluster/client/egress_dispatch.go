@@ -23,11 +23,6 @@ func handleEgressFragment(
 	if !ok {
 		return
 	}
-	_, templateID, _, _, headerOK := codecs.DecodeMessageHeader(fragment, 0)
-	if headerOK && templateID == gensbe.ChallengeSbeTemplateID {
-		// Connect egress poller owns Challenge.
-		return
-	}
 
 	decoded, ok := decodeEgressFragment(fragment)
 	if !ok {
@@ -35,6 +30,10 @@ func handleEgressFragment(
 	}
 
 	switch decoded.TemplateID {
+	case gensbe.ChallengeSbeTemplateID:
+		// Connect egress poller owns Challenge.
+		return
+
 	case gensbe.SessionMessageHeaderSbeTemplateID:
 		fields, ok := decoded.Fields.(codecs.SessionMessageHeaderFields)
 		if !ok || fields.ClusterSessionID != clusterSessionID {
@@ -103,7 +102,7 @@ func egressFragmentSpanValid(payload []byte, offset, length int) bool {
 }
 
 func decodeEgressFragment(fragment []byte) (codecs.DecodedMessage, bool) {
-	return codecs.TryDecodeByTemplate(fragment, 0, codecs.ClusterMaxVarLen)
+	return codecs.TryDecodeByTemplate(fragment, 0, codecs.ClusterDecodeMaxVarLen)
 }
 
 func egressFragmentPayload(
