@@ -149,19 +149,10 @@ func (ingress *MemberIngress) asyncOfferAddChannel(
 	return nil
 }
 
-var memberIngressAsyncPollAddHook func(
-	ingress *MemberIngress,
-	ctx ClusterContext,
-	client *aeron.Client,
-) (bool, error)
-
-func (ingress *MemberIngress) asyncPollAdd(
+func (ingress *MemberIngress) asyncPollAddUnhooked(
 	ctx ClusterContext,
 	client *aeron.Client,
 ) (bool, error) {
-	if memberIngressAsyncPollAddHook != nil {
-		return memberIngressAsyncPollAddHook(ingress, ctx, client)
-	}
 	if ingress == nil {
 		return true, errors.New("cluster client: nil member ingress")
 	}

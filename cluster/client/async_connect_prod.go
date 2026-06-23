@@ -15,7 +15,3 @@ func (ac *AsyncConnect) shouldRetryEgressSubscription() bool {
 	// RESOURCE_TEMPORARILY_UNAVAILABLE on async subscription poll.
 	return false
 }
-
-func notifyOwnedClientClosedOnMemberMapError(client *aeron.Client) {}
-
-var newOwnedConnectClientHook func(ctx ClusterContext) (*aeron.Client, error)

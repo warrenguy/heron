@@ -398,6 +398,8 @@ func egressTermBufferForAsyncConnect(t *testing.T, ac *AsyncConnect) atomic.Atom
 }
 
 func TestAsyncConnectTestHarness_offerExclusivePoll(t *testing.T) {
+	t.Parallel()
+
 	harness := aeron.NewAsyncConnectTestHarness(t)
 	regID, err := harness.Client.OfferAddExclusivePublication(
 		DefaultIngressStreamID,
@@ -426,6 +428,8 @@ func TestAsyncConnectTestHarness_offerExclusivePoll(t *testing.T) {
 }
 
 func TestAsyncConnect_happyPathIPC(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "")
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -441,6 +445,8 @@ func TestAsyncConnect_happyPathIPC(t *testing.T) {
 }
 
 func TestAsyncConnect_challengeRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "")
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -457,6 +463,8 @@ func TestAsyncConnect_challengeRoundTrip(t *testing.T) {
 }
 
 func TestAsyncConnect_pollResponse_newLeaderWithActiveCorrelation(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "0=host-a:20110,1=host-b:20111")
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -482,6 +490,8 @@ func TestAsyncConnect_pollResponse_newLeaderWithActiveCorrelation(t *testing.T) 
 }
 
 func TestAsyncConnect_redirectRebuildsMap(t *testing.T) {
+	t.Parallel()
+
 	const (
 		member0RegID int64 = 3001
 		member1RegID int64 = 3002
@@ -576,6 +586,8 @@ func TestAsyncConnect_redirectRebuildsMap(t *testing.T) {
 }
 
 func TestAsyncConnect_timeout(t *testing.T) {
+	t.Parallel()
+
 	harness := aeron.NewAsyncConnectTestHarness(t)
 	ctx := baseAsyncConnectContext(harness.Client, "")
 	ctx.MessageTimeout = 5 * time.Millisecond
@@ -595,6 +607,8 @@ func TestAsyncConnect_timeout(t *testing.T) {
 }
 
 func TestNewAsyncConnect_udpEgressRejected(t *testing.T) {
+	t.Parallel()
+
 	harness := aeron.NewAsyncConnectTestHarness(t)
 	ctx := baseAsyncConnectContext(harness.Client, "")
 	ctx.EgressChannel = "aeron:udp?endpoint=localhost:0"
@@ -607,6 +621,8 @@ func TestNewAsyncConnect_udpEgressRejected(t *testing.T) {
 }
 
 func TestAsyncConnect_ownedClientClosedOnError(t *testing.T) {
+	t.Parallel()
+
 	ctx := ClusterContext{
 		IngressChannel: asyncConnectIPCChannel,
 		EgressChannel:  asyncConnectIPCChannel,
@@ -618,6 +634,8 @@ func TestAsyncConnect_ownedClientClosedOnError(t *testing.T) {
 }
 
 func TestAsyncConnect_closeReleasesPartialResources(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "0=host-a:20110,1=host-b:20111")
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -650,24 +668,26 @@ func TestAsyncConnect_closeReleasesPartialResources(t *testing.T) {
 }
 
 func TestAsyncConnect_egressSubscriptionRetryNotReady(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "")
 	t.Cleanup(func() { _ = ac.Close() })
 
 	var firstOffer int64
-	egressSubscriptionRetryNotReadyHook = func() bool { return true }
-	t.Cleanup(func() { egressSubscriptionRetryNotReadyHook = nil })
-
-	pollAddEgressSubscriptionHook = func(
-		c *aeron.Client,
-		registrationID int64,
-	) (*aeron.Subscription, bool, error) {
-		if firstOffer == 0 {
-			firstOffer = registrationID
-			return nil, false, nil
-		}
-		return c.PollAddSubscription(registrationID)
-	}
-	t.Cleanup(func() { pollAddEgressSubscriptionHook = nil })
+	ac.SetEgressHooksForTest(
+		t,
+		func(
+			c *aeron.Client,
+			registrationID int64,
+		) (*aeron.Subscription, bool, error) {
+			if firstOffer == 0 {
+				firstOffer = registrationID
+				return nil, false, nil
+			}
+			return c.PollAddSubscription(registrationID)
+		},
+		func() bool { return true },
+	)
 
 	result, err := pollAsyncConnectUntil(t, ac, harness, func(ac *AsyncConnect) {
 		withAsyncConnectEgressTerm(t, ac, writeSessionEventForConnect)
@@ -680,6 +700,8 @@ func TestAsyncConnect_egressSubscriptionRetryNotReady(t *testing.T) {
 }
 
 func TestAsyncConnect_pollResponse_ignoresMismatchedCorrelation(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "")
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -706,6 +728,8 @@ func TestAsyncConnect_pollResponse_ignoresMismatchedCorrelation(t *testing.T) {
 }
 
 func TestAsyncConnect_concludeConnect_setsNewLeaderTimeout(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "")
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -724,6 +748,8 @@ func TestAsyncConnect_concludeConnect_setsNewLeaderTimeout(t *testing.T) {
 }
 
 func TestAsyncConnect_awaitPublicationConnected_firstConnectedMember(t *testing.T) {
+	t.Parallel()
+
 	disconnectedPub := aeron.NewTestExclusivePublicationForHooksWithConnected(t, false)
 	require.False(t, disconnectedPub.IsConnected())
 	connectedPub := aeron.NewTestExclusivePublicationForHooksWithConnected(t, true)
@@ -738,6 +764,8 @@ func TestAsyncConnect_awaitPublicationConnected_firstConnectedMember(t *testing.
 }
 
 func TestAsyncConnect_awaitPublicationConnected_selectiveTwoMemberConnect(t *testing.T) {
+	t.Parallel()
+
 	const (
 		member0RegID int64 = 3001
 		member1RegID int64 = 3002
@@ -800,6 +828,8 @@ func TestAsyncConnect_awaitPublicationConnected_selectiveTwoMemberConnect(t *tes
 }
 
 func TestAsyncConnect_awaitPublicationConnected_deterministicMemberOrder(t *testing.T) {
+	t.Parallel()
+
 	member0Pub := aeron.NewTestExclusivePublicationForHooksWithConnected(t, true)
 	member1Pub := aeron.NewTestExclusivePublicationForHooksWithConnected(t, true)
 
@@ -812,6 +842,8 @@ func TestAsyncConnect_awaitPublicationConnected_deterministicMemberOrder(t *test
 }
 
 func TestAsyncConnect_awaitPublicationConnected_multiMemberIPC(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "0=host-a:20110,1=host-b:20111")
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -830,6 +862,8 @@ func TestAsyncConnect_awaitPublicationConnected_multiMemberIPC(t *testing.T) {
 }
 
 func TestAsyncConnect_successTransfersOwnershipWithoutClose(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "")
 
 	result, err := pollAsyncConnectUntil(t, ac, harness, func(ac *AsyncConnect) {
@@ -852,6 +886,8 @@ func TestAsyncConnect_successTransfersOwnershipWithoutClose(t *testing.T) {
 }
 
 func TestAsyncConnect_pollGuards(t *testing.T) {
+	t.Parallel()
+
 	var ac *AsyncConnect
 	_, err := ac.Poll()
 	require.EqualError(t, err, "cluster client: nil async connect")
@@ -873,6 +909,8 @@ func TestAsyncConnect_pollGuards(t *testing.T) {
 }
 
 func TestAsyncConnect_channelOnlyIngressPublicationError(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "")
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -901,6 +939,8 @@ func TestAsyncConnect_channelOnlyIngressPublicationError(t *testing.T) {
 }
 
 func TestAsyncConnect_ingressPublicationErrorDuringAwait(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "0=host-a:20110,1=host-b:20111")
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -934,6 +974,8 @@ func TestAsyncConnect_ingressPublicationErrorDuringAwait(t *testing.T) {
 }
 
 func TestAsyncConnect_pollResponse_sessionEventErrors(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name       string
 		code       gensbe.EventCode
@@ -961,6 +1003,8 @@ func TestAsyncConnect_pollResponse_sessionEventErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			harness, ac := setupAsyncConnect(t, "")
 			t.Cleanup(func() { _ = ac.Close() })
 
@@ -995,6 +1039,8 @@ func TestAsyncConnect_pollResponse_sessionEventErrors(t *testing.T) {
 }
 
 func TestAsyncConnect_pollResponse_sessionEventRedirectCode(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "0=host-a:20110,1=host-b:20111")
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -1019,6 +1065,8 @@ func TestAsyncConnect_pollResponse_sessionEventRedirectCode(t *testing.T) {
 }
 
 func TestAsyncConnect_concludeConnect_preservesExplicitNewLeaderTimeout(t *testing.T) {
+	t.Parallel()
+
 	const explicit = 9 * time.Second
 	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
 		ctx.NewLeaderTimeout = explicit
@@ -1041,30 +1089,29 @@ func TestAsyncConnect_concludeConnect_preservesExplicitNewLeaderTimeout(t *testi
 }
 
 func TestAsyncConnect_ownedClientClosedOnMemberMapError(t *testing.T) {
-	harness := aeron.NewAsyncConnectTestHarness(t)
-	var closedClient *aeron.Client
-	ownedClientClosedOnMemberMapErrorHook = func(client *aeron.Client) {
-		closedClient = client
-	}
-	t.Cleanup(func() { ownedClientClosedOnMemberMapErrorHook = nil })
+	t.Parallel()
 
-	newOwnedConnectClientHook = func(ClusterContext) (*aeron.Client, error) {
-		return harness.Client, nil
-	}
-	t.Cleanup(func() { newOwnedConnectClientHook = nil })
+	harness := aeron.NewAsyncConnectTestHarness(t)
+	aeronDir := t.TempDir()
+	SetConnectConstructionHooksForTest(
+		t,
+		aeronDir,
+		func(ClusterContext) (*aeron.Client, error) {
+			return harness.Client, nil
+		},
+	)
 
 	ctx := ClusterContext{
 		IngressChannel:   "aeron:udp?ttl=16",
 		EgressChannel:    asyncConnectIPCChannel,
 		IngressEndpoints: "not-valid-endpoints",
-		AeronDir:         t.TempDir(),
+		AeronDir:         aeronDir,
 		MessageTimeout:   time.Second,
 	}
 	_, err := NewAsyncConnect(ctx)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "cluster client:")
-	require.NotNil(t, closedClient)
-	require.True(t, aeron.ClientIsClosedForTest(closedClient))
+	require.True(t, aeron.ClientIsClosedForTest(harness.Client))
 }
 
 func setupAsyncConnectEgressReady(
@@ -1090,6 +1137,8 @@ func setupAsyncConnectEgressReady(
 }
 
 func TestAsyncConnect_prepareConnectRequest_credentialsSizing(t *testing.T) {
+	t.Parallel()
+
 	require.Equal(t, connectRequestIPCChannelLen, sessionConnectResponseChannelMaxLen)
 
 	t.Run("encoded_credentials_large_encode_success", func(t *testing.T) {
@@ -1114,6 +1163,8 @@ func TestAsyncConnect_prepareConnectRequest_credentialsSizing(t *testing.T) {
 }
 
 func TestAsyncConnect_prepareConnectRequest_largeCredentials(t *testing.T) {
+	t.Parallel()
+
 	const encodedCredentialsLen = 1500
 
 	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
@@ -1136,6 +1187,8 @@ func TestAsyncConnect_prepareConnectRequest_largeCredentials(t *testing.T) {
 }
 
 func TestAsyncConnect_prepareConnectRequest_credentialsNearPublicationMax(t *testing.T) {
+	t.Parallel()
+
 	const targetWireLen = 7000
 	// Fixed overhead for default clientInfo + IPC channel.
 	const encodedCredentialsLen = targetWireLen - 70
@@ -1163,6 +1216,8 @@ func TestAsyncConnect_prepareConnectRequest_credentialsNearPublicationMax(t *tes
 }
 
 func TestAsyncConnect_prepareChallengeResponse_credentialsSizing(t *testing.T) {
+	t.Parallel()
+
 	t.Run("encoded_credentials_large_encode_success", func(t *testing.T) {
 		_, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
 			ctx.CredentialsSupplier = oversizedCredentialsSupplier{
@@ -1180,6 +1235,8 @@ func TestAsyncConnect_prepareChallengeResponse_credentialsSizing(t *testing.T) {
 }
 
 func TestAsyncConnect_pollSendMessage_oversizeWireFailsFast(t *testing.T) {
+	t.Parallel()
+
 	pub := aeron.NewTestExclusivePublicationForHooksWithConnected(t, true)
 	maxMessageLength := pub.MaxMessageLengthForTest()
 	require.Equal(t, 8192, maxMessageLength)
@@ -1222,6 +1279,8 @@ func TestAsyncConnect_pollSendMessage_oversizeWireFailsFast(t *testing.T) {
 }
 
 func TestAsyncConnect_prepareConnectRequest_reachesPollResponse(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
 		ctx.CredentialsSupplier = oversizedCredentialsSupplier{
 			encodedLen: connectEncodedCredentialsPastLayoutMax,
@@ -1244,6 +1303,8 @@ func TestAsyncConnect_prepareConnectRequest_reachesPollResponse(t *testing.T) {
 }
 
 func TestAsyncConnect_resizeConnectWireBuffer_clearsAbandonedBackingOnGrow(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
 		return ctx
 	})
@@ -1280,6 +1341,8 @@ func TestAsyncConnect_resizeConnectWireBuffer_clearsAbandonedBackingOnGrow(t *te
 }
 
 func TestAsyncConnect_prepareChallengeResponse_clearsConnectWireBufferSlack(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
 		ctx.CredentialsSupplier = oversizedCredentialsSupplier{
 			encodedLen: connectWireBufferCloseHighWaterCredentialsLen,
@@ -1357,6 +1420,8 @@ func captureConnectWireBufferSlackOnce(
 }
 
 func TestAsyncConnect_zeroSensitiveBuffers_clearsConnectWireCapOnClose(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
 		ctx.CredentialsSupplier = oversizedCredentialsSupplier{
 			encodedLen: connectWireBufferCloseHighWaterCredentialsLen,
@@ -1373,6 +1438,8 @@ func TestAsyncConnect_zeroSensitiveBuffers_clearsConnectWireCapOnClose(t *testin
 }
 
 func TestAsyncConnect_zeroSensitiveBuffers_clearsConnectWireCapOnSuccess(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
 		ctx.CredentialsSupplier = oversizedCredentialsSupplier{
 			encodedLen:   connectWireBufferPollHighWaterCredentialsLen,
@@ -1415,6 +1482,8 @@ func TestAsyncConnect_zeroSensitiveBuffers_clearsConnectWireCapOnSuccess(t *test
 }
 
 func TestAsyncConnect_concludeConnect_leaderMissingFromIngressMap(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "0=host-a:20110,1=host-b:20111")
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -1443,6 +1512,8 @@ func TestAsyncConnect_concludeConnect_leaderMissingFromIngressMap(t *testing.T) 
 }
 
 func TestAsyncConnect_createIngressPublications_memberDriverErrorTolerance(t *testing.T) {
+	t.Parallel()
+
 	const (
 		member0RegID int64 = 3001
 		member1RegID int64 = 3002
@@ -1502,6 +1573,8 @@ func TestAsyncConnect_createIngressPublications_memberDriverErrorTolerance(t *te
 }
 
 func TestAsyncConnect_createIngressPublications_recoversWhenPeerAlreadyFailed(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "0=host-a:20110,1=host-b:20111")
 	t.Cleanup(func() { _ = ac.Close() })
 	setupAsyncConnectEgressReady(t, harness, ac)
@@ -1512,18 +1585,22 @@ func TestAsyncConnect_createIngressPublications_recoversWhenPeerAlreadyFailed(t 
 	member0.PublicationErr = errors.New("member 0 ingress rejected")
 	member0.RegistrationID = conductor.NullCorrelationID
 
+	member1, ok := ac.memberIngressForTest(1)
+	require.True(t, ok)
 	member1Pub := aeron.NewTestExclusivePublicationForHooks(t)
-	memberIngressAsyncPollAddHook = func(
-		ingress *MemberIngress,
-		ctx ClusterContext,
-		client *aeron.Client,
-	) (bool, error) {
-		require.Equal(t, int32(1), ingress.MemberID)
-		ingress.RegistrationID = conductor.NullCorrelationID
-		ingress.Publication = member1Pub
-		return true, nil
-	}
-	t.Cleanup(func() { memberIngressAsyncPollAddHook = nil })
+	member1.SetAsyncPollAddHookForTest(
+		t,
+		func(
+			ingress *MemberIngress,
+			ctx ClusterContext,
+			client *aeron.Client,
+		) (bool, error) {
+			require.Equal(t, int32(1), ingress.MemberID)
+			ingress.RegistrationID = conductor.NullCorrelationID
+			ingress.Publication = member1Pub
+			return true, nil
+		},
+	)
 
 	_, err := ac.pollCreateIngressPublications()
 	require.NoError(t, err)
@@ -1532,6 +1609,8 @@ func TestAsyncConnect_createIngressPublications_recoversWhenPeerAlreadyFailed(t 
 }
 
 func TestAsyncConnect_concludeConnect_normalizesPreV13Heartbeat(t *testing.T) {
+	t.Parallel()
+
 	harness, ac := setupAsyncConnect(t, "")
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -1544,6 +1623,8 @@ func TestAsyncConnect_concludeConnect_normalizesPreV13Heartbeat(t *testing.T) {
 }
 
 func TestAsyncConnect_concludeConnect_notBlockedByDeadline(t *testing.T) {
+	t.Parallel()
+
 	var now int64 = 1_000_000_000
 	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
 		ctx.AeronContext.NanoClock = func() int64 { return now }
@@ -1588,6 +1669,8 @@ func TestAsyncConnect_concludeConnect_notBlockedByDeadline(t *testing.T) {
 }
 
 func TestAsyncConnect_happyPathNonExclusiveIngress(t *testing.T) {
+	t.Parallel()
+
 	exclusive := false
 	harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
 		ctx.IngressExclusive = &exclusive

@@ -9,44 +9,20 @@ import (
 	"github.com/warrenguy/heron/aeron/conductor"
 )
 
-// Global testhook overrides; not safe for use with t.Parallel.
-//
-// pollAddEgressSubscriptionHook overrides egress PollAddSubscription in tests.
-// Nil uses the default client method.
-var pollAddEgressSubscriptionHook func(
-	client *aeron.Client,
-	registrationID int64,
-) (*aeron.Subscription, bool, error)
-
-// egressSubscriptionRetryNotReadyHook reports Java RESOURCE_TEMPORARILY_UNAVAILABLE
-// for the current egress poll when true.
-var egressSubscriptionRetryNotReadyHook func() bool
-
-// ownedClientClosedOnMemberMapErrorHook is invoked after an owned transport client
-// is closed due to member-map construction failure in NewAsyncConnect.
-var ownedClientClosedOnMemberMapErrorHook func(client *aeron.Client)
-
-// newOwnedConnectClientHook overrides owned-client creation in concludeClusterContext.
-var newOwnedConnectClientHook func(ctx ClusterContext) (*aeron.Client, error)
-
-func notifyOwnedClientClosedOnMemberMapError(client *aeron.Client) {
-	if hook := ownedClientClosedOnMemberMapErrorHook; hook != nil {
-		hook(client)
-	}
-}
-
 func (ac *AsyncConnect) pollAddEgressSubscription(
 	registrationID int64,
 ) (*aeron.Subscription, bool, error) {
-	if hook := pollAddEgressSubscriptionHook; hook != nil {
-		return hook(ac.client, registrationID)
+	hooks := asyncConnectEgressHooksFor(ac)
+	if hooks != nil && hooks.pollAddEgressSubscription != nil {
+		return hooks.pollAddEgressSubscription(ac.client, registrationID)
 	}
 	return ac.client.PollAddSubscription(registrationID)
 }
 
 func (ac *AsyncConnect) shouldRetryEgressSubscription() bool {
-	if hook := egressSubscriptionRetryNotReadyHook; hook != nil {
-		return hook()
+	hooks := asyncConnectEgressHooksFor(ac)
+	if hooks != nil && hooks.egressSubscriptionRetryNotReady != nil {
+		return hooks.egressSubscriptionRetryNotReady()
 	}
 	return false
 }

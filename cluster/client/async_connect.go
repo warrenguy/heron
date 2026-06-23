@@ -97,7 +97,6 @@ func NewAsyncConnect(ctx ClusterContext) (*AsyncConnect, error) {
 	if err != nil {
 		if owns && client != nil {
 			_ = client.Close()
-			notifyOwnedClientClosedOnMemberMapError(client)
 		}
 		return nil, err
 	}
@@ -227,8 +226,8 @@ func concludeClusterContext(ctx ClusterContext) (ClusterContext, *aeron.Client, 
 		client *aeron.Client
 		err    error
 	)
-	if newOwnedConnectClientHook != nil {
-		client, err = newOwnedConnectClientHook(ctx)
+	if factory, ok := ownedConnectClientFactoryForContext(ctx); ok {
+		client, err = factory(ctx)
 	} else {
 		client, err = aeron.Connect(aeronCtx)
 	}
