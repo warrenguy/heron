@@ -109,13 +109,15 @@ Notes:
 
 ### Building blocks
 
+Import paths below are under `github.com/warrenguy/heron/` (abbreviated `.../`).
+
 | Area | Import path | Detail |
 |------|-------------|--------|
-| Agrona primitives | `github.com/warrenguy/heron/agrona/...` | Per-package roles in [`agrona/README.md`](agrona/README.md) |
-| Cluster client | `github.com/warrenguy/heron/cluster/client` | `ClusterContext`, egress handlers, session API |
-| Cluster codecs | `github.com/warrenguy/heron/cluster/codecs` | SBE wire flyweights; see **Cluster SBE codecs** below |
-| Transport client | `github.com/warrenguy/heron/aeron` | `Connect`, `Client`, `Publication`, `Subscription` |
-| Transport internals | `github.com/warrenguy/heron/aeron/{conductor,cnc,logbuffer}` | Driver control protocol, CnC metadata, term framing |
+| Agrona primitives | `.../agrona/...` | [`agrona/README.md`](agrona/README.md) |
+| Cluster client | `.../cluster/client` | `ClusterContext`, egress handlers, sessions |
+| Cluster codecs | `.../cluster/codecs` | SBE flyweights; **Cluster SBE codecs** below |
+| Transport client | `.../aeron` | `Connect`, `Client`, `Publication`, `Subscription` |
+| Transport internals | `.../aeron/{conductor,cnc,logbuffer}` | Conductor, CnC, logbuffer |
 
 `ClusterContext.IdleStrategy` defaults via `.../cluster/client.NewDefaultIdleStrategy()`;
 import `.../agrona/idlestrategy` for custom strategies.
@@ -127,23 +129,31 @@ SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/ve
 ### Tests
 
 ```bash
-make check                       # lint, pins, SBE/catalog stale (opt), unit+stress
+make check          # lint, pins, SBE/catalog stale (opt), unit+stress,
+                    # contract-oracles (opt)
+make test-all       # check + rapid + integration + java-interop +
+                    # cluster-java smoke (Docker for smoke)
 make test-rapid                  # property tests (pgregory.net/rapid)
 make test-integration            # live C aeronmd (-tags=integration)
-make contract-oracles            # both contract suites below (needs mvn + java)
+make contract-oracles            # all three contract suites below (needs mvn + java)
 make test-java-interop-contract  # Go/Java smoke: streams, payloads, timeouts (no driver)
 make test-cluster-sbe-contract   # Go/Java cluster SBE wire bytes vs catalog.json (no driver)
+make test-cluster-java-contract  # Go/Java cluster harness constants (no driver)
 make test-java-interop           # Docker Compose smoke (bidirectional IPC pub/sub)
+make test-cluster-java           # Docker Compose smoke (cluster node + harness scaffold)
 ```
 
 - Contract targets run `mvn test` (Java goldens) then matching Go oracle tests; no aeronmd or
   Docker.
 - `test-java-interop-contract` checks shared constants for `make test-java-interop` (e.g. stream
   1100/1101, 32x32-byte `java-N` / `go-N` payloads) before the live smoke run.
+- `test-cluster-java-contract` checks shared harness constants for `make test-cluster-java` (e.g.
+  port 9000, streams 101/102, member topology strings) before the live smoke run.
 - `make test-integration` builds `bin/aeronmd` when needed; harness sets `AERON_DIR` per test.
 - Unit tests use `bench` and `testhooks` build tags.
 - Property tests live in `*_rapid_test.go` behind the `rapid` tag.
-- IDE/gopls: set `go.buildTags` to `testhooks rapid stress integration bench`.
+- IDE/gopls: set `go.buildTags` to
+  `testhooks rapid stress integration java_interop cluster_sbe cluster_java bench`.
 
 ```bash
 make test                                             # unit only
@@ -163,10 +173,12 @@ flyweights (`cluster/codecs/generated/`). Fixture oracle rows live in
 Pin-bump workflow:
 
 1. Bump `aeron.ref` in [`specs/versions.yaml`](specs/versions.yaml).
-2. Diff upstream `aeron-cluster/src/main/resources/cluster/aeron-cluster-codecs.xml` (client messages and shared types only).
+2. Diff upstream `aeron-cluster/src/main/resources/cluster/aeron-cluster-codecs.xml` (client
+   messages and shared types only).
 3. Port into `specs/cluster-codecs-client.xml`.
 4. `make sbe-generate`; commit flyweight diff if any.
-5. `make test-cluster-sbe-contract`; fix failures under `cluster/codecs/` and `test/integration/cluster_sbe/clustersbe/`.
+5. `make test-cluster-sbe-contract`; fix failures under `cluster/codecs/` and
+   `test/integration/cluster_sbe/clustersbe/`.
 
 ### Benchmarks
 
@@ -194,6 +206,4 @@ MIT - see [LICENSE](LICENSE).
 
 ## Third-party notices
 
-Cluster SBE wire XML and flyweights (see **Cluster SBE codecs** above) are ported from
-[Aeron](https://github.com/aeron-io/aeron) cluster codecs
-([Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0)).
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

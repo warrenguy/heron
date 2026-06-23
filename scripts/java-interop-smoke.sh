@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Bidirectional Java/Go IPC smoke: compose up -d (aeronmd + go + java), then
 # wait for go and java exit 0. Go runs TestJavaInteropDuplex; Java runs JavaDuplex.
+# See scripts/cluster-java-smoke.sh.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

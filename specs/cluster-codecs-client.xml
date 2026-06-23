@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Modified from Aeron 1.51.0 aeron-cluster-codecs.xml (Apache 2.0, Real Logic).
+  Client ingress/egress and admin wire subset only; consensus-module,
+  service-control, and related messages removed. See THIRD_PARTY_NOTICES.md.
+-->
 <sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe" package="io.aeron.cluster.codecs" id="111" version="16" semanticVersion="5.4" description="Message Codecs for communicating with, and within, an Aeron Cluster." byteOrder="littleEndian">
     <types>
         <composite name="messageHeader" description="Message identifiers and length of message root.">

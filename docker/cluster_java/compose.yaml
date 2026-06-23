@@ -1,0 +1,53 @@
+# tmpfs mounts at /dev/shm (parent) so cluster can delete/recreate AERON_DIR
+# subdirectory /dev/shm/aeron; mounting directly at that path blocks driver init.
+x-app-user: &app-user "${HERON_COMPOSE_UID:-1000}:${HERON_COMPOSE_GID:-1000}"
+# AERON_* term env drives Go harness + entrypoint -Daeron.* on cluster service; not read natively by Java driver.
+x-aeron-env: &aeron-env
+  AERON_DIR: /dev/shm/aeron
+  AERON_TERM_BUFFER_LENGTH: "65536"
+  AERON_IPC_TERM_BUFFER_LENGTH: "65536"
+x-aeron-vols: &aeron-vols
+  - aeron-media:/dev/shm
+
+services:
+  cluster:
+    image: cluster-java-cluster
+    build:
+      context: ../..
+      dockerfile: docker/cluster_java/java/Dockerfile
+    user: *app-user
+    environment: *aeron-env
+    volumes: *aeron-vols
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /dev/shm/aeron/cnc.dat"]
+      interval: 1s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  go:
+    image: cluster-java-go
+    build:
+      context: ../..
+      dockerfile: docker/cluster_java/go/Dockerfile
+      args:
+        GO_VERSION: ${GO_VERSION:-1.26.4}
+    user: *app-user
+    depends_on:
+      cluster:
+        condition: service_healthy
+    environment:
+      <<: *aeron-env
+      HERON_CLUSTER_JAVA_COMPOSE: "1"
+    volumes: *aeron-vols
+
+volumes:
+  # size=256m matches docker/java-interop at 64KiB pinned terms (3 term buffers per log).
+  # Cluster embeds MediaDriver; term length is pinned in entrypoint/ClusterConfig, not
+  # by AERON_* env alone.
+  aeron-media:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=256m,mode=1777
