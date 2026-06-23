@@ -53,10 +53,15 @@ func TestHarnessClusterContext_ipcDefaults(t *testing.T) {
 
 	require.Equal(t, clusterjava.IngressChannel, ctx.IngressChannel)
 	require.Equal(t, clusterjava.EgressChannel, ctx.EgressChannel)
-	require.Equal(t, clusterjava.IngressStreamID, ctx.IngressStreamID)
 	require.Equal(t, clusterjava.IngressEndpoints, ctx.IngressEndpoints)
-	require.Equal(t, clusterjava.EgressStreamID, ctx.ResponseStreamID)
 	require.Empty(t, ctx.AeronDir)
 	require.Empty(t, ctx.AeronContext.AeronDir)
+	require.Zero(t, ctx.IngressStreamID)
+	require.Zero(t, ctx.ResponseStreamID)
+
+	ctx = ctx.Normalize()
+
+	require.Equal(t, clusterjava.IngressStreamID, ctx.IngressStreamID)
+	require.Equal(t, clusterjava.EgressStreamID, ctx.ResponseStreamID)
 	require.NoError(t, ctx.ValidateForConnect())
 }

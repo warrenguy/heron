@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Cluster Java/Go IPC smoke: compose up -d (cluster + go), then wait for go exit 0.
-# Go runs TestClusterHarnessScaffold; cluster runs embedded ClusteredMediaDriver.
+# Cluster Java/Go IPC connect smoke: compose up -d (cluster + go), then wait for go exit 0.
+# Go runs TestClusterConnectSmoke (AsyncConnect IPC handshake); cluster runs embedded
+# ClusteredMediaDriver.
 # No versions.sh: no aeronmd; Aeron pinned in Dockerfiles/POM at build, not runtime clone.
 # See scripts/java-interop-smoke.sh for sibling compose smoke pattern.
 set -euo pipefail
@@ -42,16 +43,17 @@ trap 'compose down -v' EXIT
 compose build --parallel
 
 # up -d + wait go only: cluster is a long-running daemon (ShutdownSignalBarrier);
-# compose wait cluster would block forever. Go one-shot test exits when scaffold passes.
+# compose wait cluster would block forever. Go one-shot test exits when
+# TestClusterConnectSmoke passes.
 compose up -d --no-build
 
 smoke_logs() {
 	compose logs --no-color cluster go
 }
 
-# Outer wall clock: cluster healthcheck budget (~50s) + Go -test.timeout=120s.
+# Outer wall clock: ~50s health + 120s test + slack.
 if command -v timeout >/dev/null 2>&1; then
-	timeout 180 docker compose -f "${COMPOSE}" wait go
+	timeout 210 docker compose -f "${COMPOSE}" wait go
 else
 	compose wait go
 fi || {

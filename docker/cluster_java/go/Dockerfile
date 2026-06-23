@@ -9,6 +9,8 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY aeron ./aeron
 COPY agrona ./agrona
+# cluster/client + cluster/codecs (incl. generated/sbe) for AsyncConnect connect smoke.
+COPY cluster ./cluster
 COPY test/integration/harness ./test/integration/harness
 COPY test/integration/cluster_java ./test/integration/cluster_java
 
@@ -22,4 +24,5 @@ FROM ubuntu:24.04 AS runtime
 WORKDIR /app
 COPY --from=builder /out/cluster-java.test /app/cluster-java.test
 
-CMD ["./cluster-java.test", "-test.v", "-test.count=1", "-test.timeout=120s", "-test.run", "TestClusterHarnessScaffold"]
+# 120s harness limit; connect poll deadline is 60s (connect_test.go).
+CMD ["./cluster-java.test", "-test.v", "-test.count=1", "-test.timeout=120s", "-test.run", "TestClusterConnectSmoke"]

@@ -14,24 +14,58 @@ public final class ClusterNode
     {
     }
 
-    // Consensus IPC channels from ClusterConstants.
+    // Aeron 1.51.0 ConsensusModule.Context has no egressStreamId(); egress stream 102
+    // parity is checked via client AeronCluster default oracle in tests.
     static void configureConsensusIPC(final ClusterConfig clusterConfig)
     {
         clusterConfig.consensusModuleContext()
             .ingressChannel(ClusterConstants.INGRESS_CHANNEL)
             .egressChannel(ClusterConstants.EGRESS_CHANNEL)
-            .ingressStreamId(ClusterConstants.INGRESS_STREAM_ID);
+            .ingressStreamId(ClusterConstants.INGRESS_STREAM_ID)
+            // IPC channel-only connect requires leader ipc ingress subscription (Aeron default false).
+            .isIpcIngressAllowed(true);
     }
 
     /**
      * Heron single-node cluster launcher for compose harness.
      */
-    @SuppressWarnings("try")
     public static void main(final String[] args)
     {
-        final String aeronDir = Objects.requireNonNull(
-            System.getenv("AERON_DIR"),
-            "AERON_DIR required");
+        final int exitCode = startupExitCode(System.getenv("AERON_DIR"));
+        if (exitCode != 0)
+        {
+            System.exit(exitCode);
+        }
+        // Success path relies on implicit JVM exit 0 after barrier shutdown (no System.exit(0)).
+    }
+
+    static int startupExitCode(final String aeronDir)
+    {
+        try
+        {
+            runCluster(aeronDir);
+            return 0;
+        }
+        catch (final Exception e)
+        {
+            reportStartupFailure(e);
+            return 1;
+        }
+    }
+
+    static void reportStartupFailure(final Exception e)
+    {
+        System.err.println("heron: cluster node failed: " + e.getMessage());
+        if (Boolean.getBoolean("heron.debug"))
+        {
+            e.printStackTrace(System.err);
+        }
+    }
+
+    @SuppressWarnings("try")
+    static void runCluster(final String aeronDir)
+    {
+        Objects.requireNonNull(aeronDir, "AERON_DIR required");
         final List<String> hostnames = List.of(ClusterConstants.INGRESS_ENDPOINT_HOST);
         final ClusterConfig clusterConfig = ClusterConfig.create(
             ClusterConstants.MEMBER_ID, hostnames, ClusterConstants.PORT_BASE, new EchoService());

@@ -8,5 +8,6 @@ exec java \
 	-Daeron.dir="${AERON_DIR}" \
 	-Daeron.term.buffer.length="${AERON_TERM_BUFFER_LENGTH:-65536}" \
 	-Daeron.ipc.term.buffer.length="${AERON_IPC_TERM_BUFFER_LENGTH:-65536}" \
+	-Dheron.debug=true \
 	-cp /app/heron-cluster-java.jar \
 	heron.clusterjava.ClusterNode

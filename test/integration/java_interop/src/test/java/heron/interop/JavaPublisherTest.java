@@ -147,7 +147,9 @@ class JavaPublisherTest {
     }
 
     private void withProperty(final String key, final String value) {
-        savedProperties.putIfAbsent(key, System.getProperty(key));
+        if (!savedProperties.containsKey(key)) {
+            savedProperties.put(key, System.getProperty(key));
+        }
         applySystemProperty(key, value);
     }
 

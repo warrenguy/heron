@@ -59,7 +59,7 @@ func (ac *AsyncConnect) encodeConnectWire(
 func (ac *AsyncConnect) prepareConnectRequest() error {
 	responseChannel, ok := resolveResponseChannel(ac.egressSubscription)
 	if !ok {
-		return errors.New("cluster client: egress subscription not ready for response channel")
+		return errors.New("cluster client: egress subscription cannot resolve ipc/ipcx response channel")
 	}
 	ac.ensureCorrelationID()
 	credentials := ac.ctx.CredentialsSupplier.EncodedCredentials()

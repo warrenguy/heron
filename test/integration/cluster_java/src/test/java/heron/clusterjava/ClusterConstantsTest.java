@@ -1,6 +1,7 @@
 package heron.clusterjava;
 
 import io.aeron.cluster.ConsensusModule;
+import io.aeron.cluster.client.AeronCluster;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -10,17 +11,27 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ClusterConstantsTest {
     @Test
     void configureConsensusIPC_usesClusterConstants() {
         final ClusterConfig config = defaultClusterConfig();
-        ClusterNode.configureConsensusIPC(config);
         final ConsensusModule.Context consensus = config.consensusModuleContext();
+        assertFalse(consensus.isIpcIngressAllowed());
+        ClusterNode.configureConsensusIPC(config);
         assertEquals(ClusterConstants.INGRESS_CHANNEL, consensus.ingressChannel());
         assertEquals(ClusterConstants.EGRESS_CHANNEL, consensus.egressChannel());
         assertEquals(ClusterConstants.INGRESS_STREAM_ID, consensus.ingressStreamId());
+        assertEquals(true, consensus.isIpcIngressAllowed());
+    }
+
+    @Test
+    void egressStreamId_matchesClientDefaultOracle() {
+        // Java AeronCluster client default matches ClusterConstants; wire parity with Go
+        // ResponseStreamID is covered by harness goldens (ConsensusModule has no egressStreamId()).
+        assertEquals(ClusterConstants.EGRESS_STREAM_ID, new AeronCluster.Context().egressStreamId());
     }
 
     @Test

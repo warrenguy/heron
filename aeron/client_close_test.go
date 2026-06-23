@@ -402,9 +402,9 @@ func TestClient_Close_lingerDrainRunsConductorDoWork(t *testing.T) {
 	})
 	t.Cleanup(func() { fixture.Conductor.SetLingerSweepBlockerForTest(nil) })
 
+	sweepsBeforeClose := doWorkLingerSweeps.Load()
 	closeDone := closeClientAsync(client)
 	lingerScheduled := false
-	var sweepsAtLingerStart int32
 	advanceDeadline := time.After(2 * time.Second)
 advanceLoop:
 	for {
@@ -415,7 +415,7 @@ advanceLoop:
 			require.Greater(
 				t,
 				doWorkLingerSweeps.Load(),
-				sweepsAtLingerStart,
+				sweepsBeforeClose,
 				"conductor DoWork did not run during linger drain",
 			)
 			break advanceLoop
@@ -424,10 +424,7 @@ advanceLoop:
 		default:
 			registry := conductor.LogBuffersRegistryForTest(fixture.Conductor)
 			if registry.HasScheduledLinger() {
-				if !lingerScheduled {
-					lingerScheduled = true
-					sweepsAtLingerStart = doWorkLingerSweeps.Load()
-				}
+				lingerScheduled = true
 				nanoNs.Add(clientCloseLingerNs / 5)
 			}
 			time.Sleep(time.Microsecond)

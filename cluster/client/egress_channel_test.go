@@ -7,50 +7,52 @@ import (
 )
 
 type stubResponseChannelSub struct {
-	connected bool
-	channel   string
+	channel string
 }
 
-func (s stubResponseChannelSub) IsConnected() bool { return s.connected }
-func (s stubResponseChannelSub) Channel() string   { return s.channel }
+func (s stubResponseChannelSub) Channel() string { return s.channel }
 
 func TestResolveResponseChannel(t *testing.T) {
+	t.Run("nil sub", func(t *testing.T) {
+		got, ok := resolveResponseChannel(nil)
+		require.Empty(t, got)
+		require.False(t, ok)
+	})
+
 	tests := []struct {
 		name   string
 		sub    stubResponseChannelSub
 		want   string
 		wantOK bool
 	}{
-		{name: "nil disconnected", sub: stubResponseChannelSub{}, wantOK: false},
-		{
-			name:   "not connected",
-			sub:    stubResponseChannelSub{channel: "aeron:ipc"},
-			wantOK: false,
-		},
+		{name: "empty channel rejected", sub: stubResponseChannelSub{}, wantOK: false},
 		{
 			name:   "ipc",
-			sub:    stubResponseChannelSub{connected: true, channel: "aeron:ipc"},
+			sub:    stubResponseChannelSub{channel: "aeron:ipc"},
 			want:   "aeron:ipc",
 			wantOK: true,
 		},
 		{
 			name:   "spy ipc strips prefix",
-			sub:    stubResponseChannelSub{connected: true, channel: "aeron-spy:aeron:ipc"},
+			sub:    stubResponseChannelSub{channel: "aeron-spy:aeron:ipc"},
 			want:   "aeron:ipc",
 			wantOK: true,
 		},
 		{
-			name: "spy ipcx with params",
-			sub: stubResponseChannelSub{
-				connected: true,
-				channel:   "aeron-spy:aeron:ipcx?alias=egress",
-			},
+			name:   "ipcx",
+			sub:    stubResponseChannelSub{channel: "aeron:ipcx?alias=egress"},
+			want:   "aeron:ipcx?alias=egress",
+			wantOK: true,
+		},
+		{
+			name:   "spy ipcx with params",
+			sub:    stubResponseChannelSub{channel: "aeron-spy:aeron:ipcx?alias=egress"},
 			want:   "aeron:ipcx?alias=egress",
 			wantOK: true,
 		},
 		{
 			name:   "udp rejected",
-			sub:    stubResponseChannelSub{connected: true, channel: "aeron:udp?endpoint=localhost:0"},
+			sub:    stubResponseChannelSub{channel: "aeron:udp?endpoint=localhost:0"},
 			wantOK: false,
 		},
 	}

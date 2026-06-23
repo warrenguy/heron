@@ -51,16 +51,18 @@ func validateClusterEgressChannel(egressChannel string) error {
 }
 
 type responseChannelSubscription interface {
-	IsConnected() bool
 	Channel() string
 }
 
-// resolveResponseChannel returns the wire response channel when the egress subscription
-// is ready to embed in SessionConnectRequest.
+// resolveResponseChannel returns the wire response channel URI for SessionConnectRequest.
 //
-// IPC and ipcx only; UDP response-channel wildcard binding is not supported.
+// Returns the normalized aeron:ipc/ipcx URI (spy prefix stripped) when sub is non-nil and
+// the channel is passthrough; false when sub is nil or the channel is not passthrough
+// (e.g. UDP). Egress images are not required because the cluster creates the response
+// publication after connect (Java tryResolveChannelEndpointPort parity). Ingress
+// publication connectivity is gated separately in pollAwaitPublicationConnected.
 func resolveResponseChannel(sub responseChannelSubscription) (string, bool) {
-	if sub == nil || !sub.IsConnected() {
+	if sub == nil {
 		return "", false
 	}
 	channel := sub.Channel()
