@@ -3,10 +3,10 @@
 package client
 
 import (
-	"sync"
 	"testing"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/internal/testhook"
 )
 
 type memberIngressAsyncPollAddHook func(
@@ -15,22 +15,20 @@ type memberIngressAsyncPollAddHook func(
 	*aeron.Client,
 ) (bool, error)
 
-var (
-	memberIngressAsyncPollAddHooksMu sync.Mutex
-	memberIngressAsyncPollAddHooks   = make(map[*MemberIngress]memberIngressAsyncPollAddHook)
-)
+var memberIngressAsyncPollAddHooks = testhook.NewRegistry[
+	*MemberIngress,
+	memberIngressAsyncPollAddHook,
+]()
 
 func setMemberIngressAsyncPollAddHook(
 	ingress *MemberIngress,
 	hook memberIngressAsyncPollAddHook,
 ) {
-	memberIngressAsyncPollAddHooksMu.Lock()
-	defer memberIngressAsyncPollAddHooksMu.Unlock()
 	if hook == nil {
-		delete(memberIngressAsyncPollAddHooks, ingress)
+		memberIngressAsyncPollAddHooks.Delete(ingress)
 		return
 	}
-	memberIngressAsyncPollAddHooks[ingress] = hook
+	memberIngressAsyncPollAddHooks.Store(ingress, hook)
 }
 
 func memberIngressAsyncPollAddHookFor(
@@ -39,10 +37,7 @@ func memberIngressAsyncPollAddHookFor(
 	if ingress == nil {
 		return nil
 	}
-	memberIngressAsyncPollAddHooksMu.Lock()
-	hook := memberIngressAsyncPollAddHooks[ingress]
-	memberIngressAsyncPollAddHooksMu.Unlock()
-	return hook
+	return memberIngressAsyncPollAddHooks.Load(ingress)
 }
 
 // SetAsyncPollAddHookForTest overrides async ingress poll resolution for ingress.

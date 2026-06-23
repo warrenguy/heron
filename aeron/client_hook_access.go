@@ -2,20 +2,15 @@
 
 package aeron
 
-import "sync"
+import "github.com/warrenguy/heron/internal/testhook"
 
-var (
-	awaitPollSleepingHooks   = make(map[*Client]func())
-	awaitPollSleepingHooksMu sync.Mutex
-)
+var awaitPollSleepingHooks = testhook.NewRegistry[*Client, func()]()
 
 func invokeAwaitPollSleepingHook(client *Client) {
 	if client == nil {
 		return
 	}
-	awaitPollSleepingHooksMu.Lock()
-	hook := awaitPollSleepingHooks[client]
-	awaitPollSleepingHooksMu.Unlock()
+	hook := awaitPollSleepingHooks.Load(client)
 	if hook != nil {
 		hook()
 	}
@@ -25,11 +20,9 @@ func setAwaitPollSleepingHook(client *Client, hook func()) {
 	if client == nil {
 		return
 	}
-	awaitPollSleepingHooksMu.Lock()
-	defer awaitPollSleepingHooksMu.Unlock()
 	if hook == nil {
-		delete(awaitPollSleepingHooks, client)
+		awaitPollSleepingHooks.Delete(client)
 		return
 	}
-	awaitPollSleepingHooks[client] = hook
+	awaitPollSleepingHooks.Store(client, hook)
 }

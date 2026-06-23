@@ -3,10 +3,10 @@
 package client
 
 import (
-	"sync"
 	"testing"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/internal/testhook"
 )
 
 type asyncConnectEgressHooks struct {
@@ -14,29 +14,21 @@ type asyncConnectEgressHooks struct {
 	egressSubscriptionRetryNotReady func() bool
 }
 
-var (
-	asyncConnectEgressHooksMu  sync.Mutex
-	asyncConnectEgressHooksMap = make(map[*AsyncConnect]*asyncConnectEgressHooks)
-)
+var asyncConnectEgressHooksMap = testhook.NewRegistry[*AsyncConnect, *asyncConnectEgressHooks]()
 
 func setAsyncConnectEgressHooks(ac *AsyncConnect, hooks *asyncConnectEgressHooks) {
-	asyncConnectEgressHooksMu.Lock()
-	defer asyncConnectEgressHooksMu.Unlock()
 	if hooks == nil {
-		delete(asyncConnectEgressHooksMap, ac)
+		asyncConnectEgressHooksMap.Delete(ac)
 		return
 	}
-	asyncConnectEgressHooksMap[ac] = hooks
+	asyncConnectEgressHooksMap.Store(ac, hooks)
 }
 
 func asyncConnectEgressHooksFor(ac *AsyncConnect) *asyncConnectEgressHooks {
 	if ac == nil {
 		return nil
 	}
-	asyncConnectEgressHooksMu.Lock()
-	hooks := asyncConnectEgressHooksMap[ac]
-	asyncConnectEgressHooksMu.Unlock()
-	return hooks
+	return asyncConnectEgressHooksMap.Load(ac)
 }
 
 // SetEgressHooksForTest overrides egress PollAddSubscription and retry-not-ready for ac.

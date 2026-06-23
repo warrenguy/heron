@@ -3,39 +3,31 @@
 package client
 
 import (
-	"sync"
 	"testing"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/internal/testhook"
 )
 
 type connectConstructionHooks struct {
 	ownedClientFactory func(ClusterContext) (*aeron.Client, error)
 }
 
-var (
-	connectConstructionHooksMu  sync.Mutex
-	connectConstructionHooksMap = make(map[string]*connectConstructionHooks)
-)
+var connectConstructionHooksMap = testhook.NewRegistry[string, *connectConstructionHooks]()
 
 func setConnectConstructionHooks(aeronDir string, hooks *connectConstructionHooks) {
-	connectConstructionHooksMu.Lock()
-	defer connectConstructionHooksMu.Unlock()
 	if hooks == nil {
-		delete(connectConstructionHooksMap, aeronDir)
+		connectConstructionHooksMap.Delete(aeronDir)
 		return
 	}
-	connectConstructionHooksMap[aeronDir] = hooks
+	connectConstructionHooksMap.Store(aeronDir, hooks)
 }
 
 func connectConstructionHooksFor(aeronDir string) *connectConstructionHooks {
 	if aeronDir == "" {
 		return nil
 	}
-	connectConstructionHooksMu.Lock()
-	hooks := connectConstructionHooksMap[aeronDir]
-	connectConstructionHooksMu.Unlock()
-	return hooks
+	return connectConstructionHooksMap.Load(aeronDir)
 }
 
 // SetConnectConstructionHooksForTest registers owned-client connect overrides keyed by
