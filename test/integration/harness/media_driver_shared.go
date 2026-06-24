@@ -164,12 +164,20 @@ func Shared(t testing.TB) *MediaDriver {
 	return sharedDriver
 }
 
+// SharedParallel calls t.Parallel then returns the package-scoped shared driver.
+// Do not call t.Parallel again in the same test or subtest; Go panics on a second call.
+func SharedParallel(t *testing.T) *MediaDriver {
+	t.Helper()
+	t.Parallel()
+	return Shared(t)
+}
+
 // SharedAttachedCnc returns Shared(t) with CNC mmap attach and ToDriver/ToClients drain preflight.
 func SharedAttachedCnc(t testing.TB) (*MediaDriver, *cncAttach) {
 	t.Helper()
 	md := Shared(t)
 	attach := openCnc(t, md)
-	WaitForToDriverRingDrained(t, attach.Rings.ToDriver)
+	WaitForToDriverRingDrained(t, attach.Rings.ToDriver, 0)
 	DrainToClients(t, attach.Rings.ToClients, 0)
 	return md, attach
 }

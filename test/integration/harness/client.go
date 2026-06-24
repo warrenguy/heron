@@ -176,7 +176,7 @@ func RequirePublicationLookupMiss(
 ) {
 	t.Helper()
 
-	requireLookupMiss(t, client, commandPollDeadline, regID, "publication", client.Publication)
+	requireLookupMiss(t, client, CommandPollDeadline, regID, "publication", client.Publication)
 }
 
 // RequireExclusivePublicationLookupMiss polls DoWork until ExclusivePublication(regID) misses.
@@ -190,7 +190,7 @@ func RequireExclusivePublicationLookupMiss(
 	requireLookupMiss(
 		t,
 		client,
-		commandPollDeadline,
+		CommandPollDeadline,
 		regID,
 		"exclusive publication",
 		client.ExclusivePublication,
@@ -205,5 +205,5 @@ func RequireSubscriptionLookupMiss(
 ) {
 	t.Helper()
 
-	requireLookupMiss(t, client, commandPollDeadline, regID, "subscription", client.Subscription)
+	requireLookupMiss(t, client, CommandPollDeadline, regID, "subscription", client.Subscription)
 }

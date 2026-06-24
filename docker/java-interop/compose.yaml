@@ -28,7 +28,7 @@ services:
       interval: 1s
       timeout: 5s
       retries: 10
-      start_period: 5s
+      start_period: 3s
 
   go:
     image: java-interop-go

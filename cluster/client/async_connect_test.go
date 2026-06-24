@@ -620,13 +620,17 @@ func TestNewAsyncConnect_udpEgressRejected(t *testing.T) {
 	)
 }
 
-func TestAsyncConnect_ownedClientClosedOnError(t *testing.T) {
+func TestAsyncConnect_ownedConnectFailsWithoutDriver(t *testing.T) {
 	t.Parallel()
 
 	ctx := ClusterContext{
 		IngressChannel: asyncConnectIPCChannel,
 		EgressChannel:  asyncConnectIPCChannel,
 		AeronDir:       t.TempDir(),
+		AeronContext: aeron.Context{
+			// Match cncPollInterval; enough headroom under -race.
+			DriverTimeout: 50 * time.Millisecond,
+		},
 	}
 	_, err := NewAsyncConnect(ctx)
 	require.Error(t, err)

@@ -59,7 +59,7 @@ func TestMPSCCommandMatrix(t *testing.T) {
 	require.GreaterOrEqual(t, clientIDB, int64(0))
 	require.NotEqual(t, clientIDA, clientIDB)
 
-	_, producerBefore := harness.QuiescentToDriverSnapshot(t, toDriver)
+	_, producerBefore := harness.QuiescentToDriverSnapshot(t, toDriver, clientA, clientB)
 	t.Cleanup(func() {
 		harness.LogMPSCMatrixRingTypeIDsOnFailure(t, toDriver, producerBefore)
 	})
@@ -149,7 +149,7 @@ func TestMPSCCommandMatrix(t *testing.T) {
 	// REMOVE_SUBSCRIPTION (0x05): via sub.Close.
 	require.NoError(t, sub.Close())
 
-	harness.WaitForToDriverRingDrainedWithClients(t, toDriver, clientA, clientB, 0)
+	harness.WaitForToDriverRingDrainedWithClients(t, toDriver, 0, clientA, clientB)
 
 	// Remove completion: registration lookup miss after successful close.
 	harness.RequirePublicationLookupMiss(t, clientA, pubRegID)

@@ -32,11 +32,25 @@ COVERAGE_TEST_ARGS = $(if $(COVERAGE_SLICE),-cover -covermode=$(COVERAGE_MODE) \
 	-args -test.gocoverdir=$(COVERAGE_ROOT)/$(COVERAGE_SLICE),)
 GO_MODULE := github.com/warrenguy/heron
 GO_TEST_PKGS := ./...
+# Conductor cross-package test hooks (test_hooks.go, hook_access.go).
+export UNIT_TEST_TAGS := testhooks
+# Stress pass: packages that gain test files when the stress tag is enabled.
+STRESS_TEST_PKGS := $(shell paste \
+	<(go list -tags=$(UNIT_TEST_TAGS) -test \
+		-f '{{if not .ForTest}}{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}{{end}}' ./...) \
+	<(go list -tags=stress,$(UNIT_TEST_TAGS) -test \
+		-f '{{if not .ForTest}}{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}{{end}}' ./...) \
+	| awk 'NF && $$2+$$3 < $$5+$$6 {print $$1}')
+# Unit pass uses bench tag; omit test/bench root (benchmark-only; see make bench).
+UNIT_TEST_PKGS := $(shell go list -tags=bench,$(UNIT_TEST_TAGS) -f \
+	'{{if and (or .TestGoFiles .XTestGoFiles) (ne .ImportPath "$(GO_MODULE)/test/bench")}}{{\
+.ImportPath}}{{end}}' ./...)
+# Rapid pass uses rapid tag only; bench-tagged packages (e.g. test/bench/harness) are omitted.
+RAPID_TEST_PKGS := $(shell go list -tags=rapid,$(UNIT_TEST_TAGS) -f \
+	'{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
 GO_SOURCES := $$(grep -rl --include='*.go' -L 'DO NOT EDIT' \
 	--exclude-dir=docker .)
 SHELL_SCRIPTS := $$(find . -name '*.sh' -type f ! -path './.git/*')
-# Conductor cross-package test hooks (test_hooks.go, hook_access.go).
-export UNIT_TEST_TAGS := testhooks
 # Per-package go test deadline (replaces go default 10m on hung tests).
 TEST_TIMEOUT ?= 2m
 # Per-package fuzz budget; 45s avoids deadline flake on heavy packages at 30s.
@@ -175,12 +189,12 @@ define go-test-target
 .PHONY: test$(1)
 test$(1): ## $(4)
 	go test -timeout=$(TEST_TIMEOUT) -race -tags=$(2),$(UNIT_TEST_TAGS) \
-		-count=1 $(3) $(GO_TEST_PKGS) $(COVERAGE_TEST_ARGS)
+		-count=1 $(3) $(if $(5),$(5),$(GO_TEST_PKGS)) $(COVERAGE_TEST_ARGS)
 endef
 
-$(eval $(call go-test-target,,bench,,Unit tests))
-$(eval $(call go-test-target,-rapid,rapid,-run rapid,Property tests))
-$(eval $(call go-test-target,-stress,stress,-run Stress,Stress tests))
+$(eval $(call go-test-target,,bench,,Unit tests,$(UNIT_TEST_PKGS)))
+$(eval $(call go-test-target,-rapid,rapid,-run rapid,Property tests,$(RAPID_TEST_PKGS)))
+$(eval $(call go-test-target,-stress,stress,-run Stress,Stress tests,$(STRESS_TEST_PKGS)))
 
 BENCH_DIR := .bench
 BENCH_BASELINE := $(BENCH_DIR)/baseline.txt

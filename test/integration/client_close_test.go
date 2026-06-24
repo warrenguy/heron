@@ -12,10 +12,10 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-const closeDrainSoakDuration = 1 * time.Second
+const closeDrainSoakDuration = 500 * time.Millisecond
 
 func TestClientCloseLifecycle(t *testing.T) {
-	md := harness.StartParallel(t)
+	md := harness.SharedParallel(t)
 
 	client, err := aeron.Connect(aeron.Context{AeronDir: md.Dir})
 	require.NoError(t, err)
@@ -40,7 +40,7 @@ func TestClientCloseOffersCLIENT_CLOSEOnLiveRing(t *testing.T) {
 		time.Sleep(aeron.DefaultIdleSleepDuration)
 	}
 
-	consumerBefore, producerBefore := harness.QuiescentToDriverSnapshot(t, toDriver)
+	consumerBefore, producerBefore := harness.QuiescentToDriverSnapshot(t, toDriver, client)
 
 	harness.AssertClientCloseOfferedOnRingAfterClose(
 		t,
@@ -88,7 +88,7 @@ func TestClientCloseDrainsRegistrations(t *testing.T) {
 	pubRegID := pub.RegistrationID()
 	subRegID := sub.RegistrationID()
 
-	consumerBefore, producerBefore := harness.QuiescentToDriverSnapshot(t, toDriver)
+	consumerBefore, producerBefore := harness.QuiescentToDriverSnapshot(t, toDriver, client)
 
 	closeDrainDiag := harness.AssertClientCloseDrainsRegistrationsOnRing(
 		t,

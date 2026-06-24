@@ -38,7 +38,7 @@ func TestChannelStatusCounterIsCounterActive(t *testing.T) {
 		channel = "aeron:udp?endpoint=127.0.0.1:24325"
 	)
 
-	harness.WaitForToDriverRingDrained(t, toDriver)
+	harness.WaitForToDriverRingDrained(t, toDriver, 0)
 
 	correlationID := client.NextCorrelationID()
 	proxy := conductor.NewDriverProxy(toDriver, client.ClientId())
@@ -72,7 +72,7 @@ func TestChannelStatusCounterIsCounterActive(t *testing.T) {
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, statusValue, int64(0))
 
-	harness.WaitForToDriverRingDrained(t, toDriver)
+	harness.WaitForToDriverRingDrained(t, toDriver, 0)
 	md.AssertProcessAlive(t)
 }
 

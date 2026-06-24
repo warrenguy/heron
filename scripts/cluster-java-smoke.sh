@@ -40,12 +40,15 @@ export GO_VERSION
 
 trap 'compose down -v' EXIT
 
-compose build --parallel
-
 # up -d + wait go only: cluster is a long-running daemon (ShutdownSignalBarrier);
 # compose wait cluster would block forever. Go one-shot test exits when
 # TestClusterConnectSmoke passes.
-compose up -d --no-build
+# HERON_COMPOSE_SKIP_BUILD=1 reuses a prebuilt image; default rebuilds in one up pass.
+if [[ "${HERON_COMPOSE_SKIP_BUILD:-}" == "1" ]]; then
+	compose up -d --no-build
+else
+	compose up -d --build
+fi
 
 smoke_logs() {
 	compose logs --no-color cluster go

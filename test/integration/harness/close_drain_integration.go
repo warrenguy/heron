@@ -351,7 +351,7 @@ func captureCloseDrainWireDuringClientClose(
 		subRegistrationID,
 		producerBefore,
 		closeFn,
-		commandPollDeadline,
+		CommandPollDeadline,
 		time.Millisecond,
 	)
 	earlyProvenClosePosition := resolveProvenClientClosePosition(
@@ -445,7 +445,7 @@ func proveCloseDrainWireIdentity(
 			subRegistrationID,
 			consumerBefore,
 			producerBefore,
-			commandPollDeadline,
+			CommandPollDeadline,
 			defaultPollInterval,
 		)
 	}
@@ -458,7 +458,7 @@ func proveCloseDrainWireIdentity(
 			pubRegistrationID,
 			subRegistrationID,
 			producerBefore,
-			commandPollDeadline,
+			CommandPollDeadline,
 			defaultPollInterval,
 		)
 	}
@@ -468,7 +468,7 @@ func proveCloseDrainWireIdentity(
 			client,
 			pubRegistrationID,
 			subRegistrationID,
-			commandPollDeadline,
+			CommandPollDeadline,
 			defaultPollInterval,
 		) {
 		applyCloseDrainWireProofFromRegistrations(
@@ -553,7 +553,7 @@ func proveCloseDrainRecordOrdering(
 	)
 	require.NoError(t, scanErr)
 
-	WaitForToDriverRingDrained(t, ring)
+	WaitForToDriverRingDrained(t, ring, 0)
 
 	diagCtx.CloseDrainOrderingProof = assertCloseDrainRecordOrdering(
 		t,

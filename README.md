@@ -109,18 +109,13 @@ Notes:
 
 ### Building blocks
 
-Import paths below are under `github.com/warrenguy/heron/` (abbreviated `.../`).
-
 | Area | Import path | Detail |
 |------|-------------|--------|
-| Agrona primitives | `.../agrona/...` | [`agrona/README.md`](agrona/README.md) |
-| Cluster client | `.../cluster/client` | `ClusterContext`, egress handlers, sessions |
-| Cluster codecs | `.../cluster/codecs` | SBE flyweights; **Cluster SBE codecs** below |
-| Transport client | `.../aeron` | `Connect`, `Client`, `Publication`, `Subscription` |
-| Transport internals | `.../aeron/{conductor,cnc,logbuffer}` | Conductor, CnC, logbuffer |
-
-`ClusterContext.IdleStrategy` defaults via `.../cluster/client.NewDefaultIdleStrategy()`;
-import `.../agrona/idlestrategy` for custom strategies.
+| Agrona primitives | `github.com/warrenguy/heron/agrona/...` | [`agrona/README.md`](agrona/README.md) |
+| Cluster client | `github.com/warrenguy/heron/cluster/client` | `ClusterContext`, egress handlers, sessions |
+| Cluster codecs | `github.com/warrenguy/heron/cluster/codecs` | SBE flyweights; **Cluster SBE codecs** below |
+| Transport client | `github.com/warrenguy/heron/aeron` | `Connect`, `Client`, `Publication`, `Subscription` |
+| Transport internals | `github.com/warrenguy/heron/aeron/{conductor,cnc,logbuffer}` | Conductor, CnC, logbuffer |
 
 ### Pinned dependencies
 

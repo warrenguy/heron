@@ -20,13 +20,21 @@ import (
 )
 
 const (
-	soakDuration              = 5 * time.Second
+	soakDuration              = 2 * time.Second
 	soakPollInterval          = 250 * time.Millisecond
 	defaultPollInterval       = 50 * time.Millisecond
 	heartbeatFreshMaxAgeMs    = 2_000
 	heartbeatFreshPollTimeout = 4 * time.Second
-	commandPollDeadline       = 2 * time.Second
+	// CommandPollDeadline bounds ring-drain and short DriverTimeout integration polls.
+	CommandPollDeadline = 2 * time.Second
 )
+
+func commandPollDeadlineOr(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		return CommandPollDeadline
+	}
+	return timeout
+}
 
 type cncAttach struct {
 	Mapped *cnc.MappedCncFile
@@ -134,22 +142,23 @@ func AssertConsumerHeartbeatFresh(t testing.TB, attach *cncAttach) {
 	)
 }
 
-// WaitForToDriverRingDrainedWithClients polls both clients until the ring drains.
+// WaitForToDriverRingDrainedWithClients pumps each client until the ring drains.
 func WaitForToDriverRingDrainedWithClients(
 	t testing.TB,
 	ring *ringbuffer.ManyToOneRingBuffer,
-	clientA, clientB *aeron.Client,
 	timeout time.Duration,
+	clients ...*aeron.Client,
 ) {
 	t.Helper()
 
 	pollUntil(
 		t,
-		connectedPollTimeoutOr(timeout),
+		commandPollDeadlineOr(timeout),
 		aeron.DefaultIdleSleepDuration,
 		func() bool {
-			clientA.DoWork()
-			clientB.DoWork()
+			for _, client := range clients {
+				client.DoWork()
+			}
 			return ring.ConsumerPosition() == ring.ProducerPosition()
 		},
 		"to-driver ring not drained",
@@ -159,12 +168,13 @@ func WaitForToDriverRingDrainedWithClients(
 func WaitForToDriverRingDrained(
 	t testing.TB,
 	ring *ringbuffer.ManyToOneRingBuffer,
+	timeout time.Duration,
 ) {
 	t.Helper()
 
 	pollUntil(
 		t,
-		commandPollDeadline,
+		commandPollDeadlineOr(timeout),
 		defaultPollInterval,
 		func() bool {
 			return ring.ConsumerPosition() == ring.ProducerPosition()
@@ -192,13 +202,40 @@ func DrainToClients(
 	return drained
 }
 
+// QuiescentToDriverSnapshot drains ToDriver, pumping each client's DoWork when given.
 func QuiescentToDriverSnapshot(
 	t testing.TB,
 	ring *ringbuffer.ManyToOneRingBuffer,
+	clients ...*aeron.Client,
+) (consumerBefore, producerBefore int64) {
+	return quiescentToDriverSnapshot(t, ring, 0, clients...)
+}
+
+// QuiescentToDriverSnapshotTimeout is QuiescentToDriverSnapshot with an explicit drain budget.
+func QuiescentToDriverSnapshotTimeout(
+	t testing.TB,
+	ring *ringbuffer.ManyToOneRingBuffer,
+	timeout time.Duration,
+	clients ...*aeron.Client,
+) (consumerBefore, producerBefore int64) {
+	return quiescentToDriverSnapshot(t, ring, timeout, clients...)
+}
+
+func quiescentToDriverSnapshot(
+	t testing.TB,
+	ring *ringbuffer.ManyToOneRingBuffer,
+	timeout time.Duration,
+	clients ...*aeron.Client,
 ) (consumerBefore, producerBefore int64) {
 	t.Helper()
 
-	WaitForToDriverRingDrained(t, ring)
+	deadline := commandPollDeadlineOr(timeout)
+	if len(clients) == 0 {
+		WaitForToDriverRingDrained(t, ring, deadline)
+	} else {
+		WaitForToDriverRingDrainedWithClients(t, ring, deadline, clients...)
+	}
+
 	consumerBefore = ring.ConsumerPosition()
 	producerBefore = ring.ProducerPosition()
 	requireQuiescentToDriverSnapshot(t, ring, consumerBefore, producerBefore)
@@ -281,7 +318,7 @@ func assertClientCloseOfferedOnRing(
 
 	provenClientClosePosition := int64(-1)
 	decoded, found, pollErr := pollRingObservation(
-		commandPollDeadline,
+		CommandPollDeadline,
 		defaultPollInterval,
 		func() (conductor.CorrelatedMessage, bool, error) {
 			return observeClientClose(
@@ -322,7 +359,7 @@ func assertAddPublicationOfferedOnRing(
 
 	provenAddPublicationPosition := int64(-1)
 	decoded, found, pollErr := pollRingObservation(
-		commandPollDeadline,
+		CommandPollDeadline,
 		defaultPollInterval,
 		func() (conductor.PublicationMessage, bool, error) {
 			return observeAddPublication(

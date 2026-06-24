@@ -22,8 +22,8 @@ services:
       test: ["CMD-SHELL", "test -f /dev/shm/aeron/cnc.dat"]
       interval: 1s
       timeout: 5s
-      retries: 20
-      start_period: 30s
+      retries: 15
+      start_period: 20s
 
   go:
     image: cluster-java-go

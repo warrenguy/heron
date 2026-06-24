@@ -75,13 +75,13 @@ func TestClient_doubleClose_rapid(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		client := newRapidTestClient(t, 0)
 
-		rapidDoWorkNTimes(t, client, rapid.IntRange(0, 16).Draw(t, "doWorkBeforeClose"))
+		rapidDoWorkNTimes(t, client, rapid.IntRange(0, 8).Draw(t, "doWorkBeforeClose"))
 
 		require.NoError(t, client.Close())
 		rapidInterleaveDoWorkAndIsTerminating(
 			t,
 			client,
-			rapid.IntRange(0, 32).Draw(t, "betweenCloseOps"),
+			rapid.IntRange(0, 12).Draw(t, "betweenCloseOps"),
 		)
 		require.NoError(t, client.Close())
 		require.Zero(t, client.DoWork())

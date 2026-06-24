@@ -44,11 +44,14 @@ export GO_VERSION
 
 trap 'compose down -v' EXIT
 
-compose build --parallel
-
 # up -d + wait go: --exit-code-from implies --abort-on-container-exit, which
 # stops the Go duplex test when the Java one-shot duplex main exits.
-compose up -d --no-build
+# HERON_COMPOSE_SKIP_BUILD=1 reuses a prebuilt image; default rebuilds in one up pass.
+if [[ "${HERON_COMPOSE_SKIP_BUILD:-}" == "1" ]]; then
+	compose up -d --no-build
+else
+	compose up -d --build
+fi
 
 smoke_logs() {
 	compose logs --no-color go java

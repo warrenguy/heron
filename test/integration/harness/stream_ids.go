@@ -2,6 +2,11 @@
 
 package harness
 
+// Integration test stream IDs for IPC pub/sub and harness poll/offer helpers.
+//
+// Each constant must map to at most one parallel Shared(t) consumer per package
+// binary. Duplicate IDs on one shared aeronmd cause cross-test IPC interference
+// under t.Parallel. Add a new constant rather than reusing an existing one.
 const (
 	ChannelStatusCounterStreamID      int32 = 1001
 	PubSubRoundtripStreamID           int32 = 1007
@@ -42,10 +47,21 @@ const (
 
 	PollUntilNoActiveImagesTimeoutStreamID = 8012
 
-	PollSplitClientIPCLinkTimeoutStreamID       = 8014
+	PollSplitClientIPCLinkTimeoutStreamID = 8014
+	// Intentional pub/sub mismatch for TestPollSplitClientIPCLink_timeoutMessage.
+	// Isolated from PollUntilNoActiveImagesSplitTimeoutStreamID for shared-driver cross-test safety.
+	PollSplitClientIPCLinkSubStreamID           = 8023
 	PollUntilNoActiveImagesSplitTimeoutStreamID = 8015
 
 	PollDeliveredSplitTimeoutStreamID         = 8016
 	PollDeliveredSplitPartialDeliveryStreamID = 8017
 	PollDeliveredSplitInvalidWantStreamID     = 8018
+
+	// Isolated from PollUntilConnectedTimeoutStreamID for shared-driver cross-test safety.
+	OfferWithRetryNotConnectedTimeoutStreamID = 8019
+	// Isolated from WaitForIPCLinkConnectedStreamID for shared-driver cross-test safety.
+	OfferWithRetryNotConnectedThenConnectStreamID = 8020
+	// Isolated from ConnectedWaitPublicationTimeoutStreamID for shared-driver cross-test safety.
+	OfferWithRetryClosedPublicationStreamID = 8021
+	AssertSubscribeMetadataStreamID         = 8022
 )

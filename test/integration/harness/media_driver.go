@@ -13,17 +13,22 @@
 //
 // Shared driver scope is one long-lived aeronmd per Go test package binary that calls
 // RunTestMainWithSharedDriver in TestMain. make test-integration (./test/integration/...)
-// starts two such drivers: test/integration/harness and test/integration. TestMain
-// wiring lives in harness_test and integration_test source files. Packages that call
-// Shared(t) should add TestMain plus AssertSharedDriverWiring acceptance tests.
+// starts two such drivers: test/integration/harness (harness + harness_test) and
+// test/integration. TestMain wiring lives in shared_testmain_external_test.go and
+// shared_testmain_test.go. Packages that call Shared(t)
+// should add TestMain plus AssertSharedDriverWiring acceptance tests.
 //
 // Driver APIs:
-//   - StartParallel: calls t.Parallel(), then StartWithConfig with defaults.
+//   - StartParallel: calls t.Parallel(), then StartWithConfig with defaults. Use for
+//     tests that need per-test driver isolation (driver kill, env overrides, rollover).
 //   - Start, StartWithConfig: per-test ephemeral aeronmd; parallel-safe (isolated
 //     AERON_DIR, child cmd.Env only). Use StartWithConfig for cfg.Env overrides;
 //     call t.Parallel first or use StartParallel for defaults.
 //   - JoinExternal: attach to an already-running aeronmd at dir.
-//   - Shared, SharedAttachedCnc: package TestMain driver; not parallel-safe.
+//   - Shared, SharedAttachedCnc: package TestMain driver; parallel-safe when tests use
+//     isolated stream IDs and do not kill or irreversibly mutate shared driver state.
+//   - SharedParallel: calls t.Parallel(), then returns Shared. Default for migrated
+//     parallel IPC tests.
 package harness
 
 import (

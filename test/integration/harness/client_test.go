@@ -106,7 +106,7 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			md := StartParallel(t)
+			md := SharedParallel(t)
 			client := ConnectClient(t, md, aeron.Context{})
 
 			capture := &CaptureFailTB{TB: t}
@@ -119,7 +119,7 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 }
 
 func TestRequirePublicationLookupMiss_earlyExit(t *testing.T) {
-	md := StartParallel(t)
+	md := SharedParallel(t)
 	client := ConnectClient(t, md, aeron.Context{})
 
 	pub, err := client.AddPublication(RequirePublicationLookupMissStreamID, IPCChannel)
@@ -129,11 +129,11 @@ func TestRequirePublicationLookupMiss_earlyExit(t *testing.T) {
 
 	start := time.Now()
 	RequirePublicationLookupMiss(t, client, regID)
-	require.Less(t, time.Since(start), commandPollDeadline)
+	require.Less(t, time.Since(start), CommandPollDeadline)
 }
 
 func TestWaitForIPCLinkConnected_liveIPC(t *testing.T) {
-	md := StartParallel(t)
+	md := SharedParallel(t)
 	client := ConnectClient(t, md, aeron.Context{})
 
 	pub, err := client.AddPublication(WaitForIPCLinkConnectedStreamID, IPCChannel)

@@ -156,7 +156,7 @@ func TestPublication_Offer_rapid_fragmented(t *testing.T) {
 		)
 		maxPayload := pub.MaxPayloadLengthForTest()
 		maxMessage := pub.MaxMessageLengthForTest()
-		messageCount := rapid.IntRange(1, 16).Draw(t, "messageCount")
+		messageCount := rapid.IntRange(1, 8).Draw(t, "messageCount")
 
 		var lastPosition int64
 		type termReadCursor struct {

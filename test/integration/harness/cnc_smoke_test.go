@@ -124,9 +124,8 @@ func TestCncWiring(t *testing.T) {
 			producerBefore,
 		)
 
-		WaitForToDriverRingDrained(t, toDriver)
-		require.Greater(t, toDriver.ConsumerPosition(), consumerBefore)
-		require.Equal(t, toDriver.ProducerPosition(), toDriver.ConsumerPosition())
+		consumerAfter, _ := QuiescentToDriverSnapshot(t, toDriver)
+		require.Greater(t, consumerAfter, consumerBefore)
 
 		md.AssertProcessAlive(t)
 	})
