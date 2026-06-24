@@ -10,7 +10,7 @@ import (
 
 // handleEgressFragment decodes cluster egress SBE and dispatches to handler.
 // SessionEvent, NewLeader, and AdminResponse pass []byte views cloned by
-// TryDecodeByTemplate (retain-safe); Message uses the live fragment buffer.
+// TryDecodeFromClusterLayout (retain-safe); Message uses the live fragment buffer.
 func handleEgressFragment(
 	handler EgressHandler,
 	clusterSessionID int64,
@@ -24,25 +24,18 @@ func handleEgressFragment(
 		return
 	}
 
-	decoded, ok := decodeEgressFragment(fragment)
+	layout, ok := codecs.ClusterMessageLayoutAt(fragment, 0, codecs.ClusterDecodeMaxVarLen)
 	if !ok {
 		return
 	}
 
-	switch decoded.TemplateID {
-	case gensbe.ChallengeSbeTemplateID:
-		// Connect egress poller owns Challenge.
-		return
-
+	switch layout.TemplateID {
 	case gensbe.SessionMessageHeaderSbeTemplateID:
-		fields, ok := decoded.Fields.(codecs.SessionMessageHeaderFields)
+		fields, ok := codecs.SessionMessageHeaderFieldsFromLayout(fragment, layout)
 		if !ok || fields.ClusterSessionID != clusterSessionID {
 			return
 		}
 		hdrLen := SessionHeaderLength()
-		if length < hdrLen {
-			return
-		}
 		handler.Message(
 			fields.ClusterSessionID,
 			fields.Timestamp,
@@ -52,7 +45,15 @@ func handleEgressFragment(
 			header,
 		)
 
+	case gensbe.ChallengeSbeTemplateID:
+		// Connect egress poller owns Challenge.
+		return
+
 	case gensbe.SessionEventSbeTemplateID:
+		decoded, ok := codecs.TryDecodeFromClusterLayout(fragment, layout, codecs.ClusterDecodeMaxVarLen)
+		if !ok {
+			return
+		}
 		ev, ok := decoded.Fields.(codecs.SessionEventFields)
 		if !ok || ev.ClusterSessionID != clusterSessionID {
 			return
@@ -67,6 +68,10 @@ func handleEgressFragment(
 		)
 
 	case gensbe.NewLeaderEventSbeTemplateID:
+		decoded, ok := codecs.TryDecodeFromClusterLayout(fragment, layout, codecs.ClusterDecodeMaxVarLen)
+		if !ok {
+			return
+		}
 		leader, ok := decoded.Fields.(codecs.NewLeaderEventFields)
 		if !ok || leader.ClusterSessionID != clusterSessionID {
 			return
@@ -79,6 +84,10 @@ func handleEgressFragment(
 		)
 
 	case gensbe.AdminResponseSbeTemplateID:
+		decoded, ok := codecs.TryDecodeFromClusterLayout(fragment, layout, codecs.ClusterDecodeMaxVarLen)
+		if !ok {
+			return
+		}
 		admin, ok := decoded.Fields.(codecs.AdminResponseFields)
 		if !ok || admin.ClusterSessionID != clusterSessionID {
 			return

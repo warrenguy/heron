@@ -11,6 +11,62 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
+func TestEncodeIngressHeaderScratch_EncodesAtOffsetZero(t *testing.T) {
+	headerLen := codecs.SessionMessageHeaderEncodedLen()
+	buf := make([]byte, headerLen)
+	fields := codecs.IngressHeaderFields{
+		LeadershipTermID: 11,
+		ClusterSessionID: 22,
+		Timestamp:        33,
+	}
+
+	encoded, err := codecs.EncodeIngressHeaderScratch(buf, fields)
+	require.NoError(t, err)
+	require.Equal(t, headerLen, encoded)
+	requireDecodedIngressHeader(t, buf[:headerLen], fields)
+}
+
+func TestEncodeIngressHeaderScratch_BufferBounds(t *testing.T) {
+	headerLen := codecs.SessionMessageHeaderEncodedLen()
+	_, fields := ingressEncodeFixture(0)
+
+	cases := []struct {
+		name    string
+		bufLen  int
+		wantErr error
+	}{
+		{
+			name:    "exact_fit",
+			bufLen:  headerLen,
+			wantErr: nil,
+		},
+		{
+			name:    "one_byte_short",
+			bufLen:  headerLen - 1,
+			wantErr: codecs.ErrIngressHeaderBufferTooSmall,
+		},
+		{
+			name:    "empty",
+			bufLen:  0,
+			wantErr: codecs.ErrIngressHeaderBufferTooSmall,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := make([]byte, tc.bufLen)
+			encoded, err := codecs.EncodeIngressHeaderScratch(buf, fields)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, headerLen, encoded)
+		})
+	}
+}
+
 func TestEncodeIngressHeader_PayloadOffsetGolden(t *testing.T) {
 	const frameOffset = 128
 	headerLen := codecs.SessionMessageHeaderEncodedLen()

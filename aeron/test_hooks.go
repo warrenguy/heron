@@ -84,6 +84,8 @@ func NewFileBackedPublicationForHooks(tb testing.TB, logPath string) *Publicatio
 	return pub
 }
 
+// NewTestExclusivePublicationForHooks builds a connected exclusive publication
+// for cross-package connect and ingress tests.
 func NewTestExclusivePublicationForHooks(tb testing.TB) *ExclusivePublication {
 	tb.Helper()
 
@@ -121,11 +123,25 @@ func (ep *ExclusivePublication) MaxMessageLengthForTest() int {
 	return ep.maxMessageLength
 }
 
-// NewTestPublicationForHooks builds a publication for cross-package close tests.
+// NewTestPublicationForHooks builds a disconnected concurrent publication for
+// cross-package close tests. Connect-path tests that require IsConnected() ==
+// true must use NewTestPublicationForHooksWithConnected(tb, true).
 func NewTestPublicationForHooks(tb testing.TB) *Publication {
 	tb.Helper()
 
-	log := newTestHookMappedLog(tb, logbuffer.LogBufferTypeConcurrentPublication)
+	return NewTestPublicationForHooksWithConnected(tb, false)
+}
+
+// NewTestPublicationForHooksWithConnected builds a concurrent publication with the
+// log metadata is-connected flag set for connect-path tests.
+func NewTestPublicationForHooksWithConnected(tb testing.TB, connected bool) *Publication {
+	tb.Helper()
+
+	log := newTestHookMappedLogWithConnected(
+		tb,
+		logbuffer.LogBufferTypeConcurrentPublication,
+		connected,
+	)
 	pub, err := newPublicationFromReady(
 		testHookPublicationBuffersReady(testHookMappedLogFileName),
 		log,
@@ -242,11 +258,28 @@ func NewTestImageForHooks(tb testing.TB, sub *Subscription, joinPosition int64) 
 func NewTestImageForSubscriptionHooks(tb testing.TB, sub *Subscription, joinPosition int64) *Image {
 	tb.Helper()
 
+	return NewTestImageForSubscriptionHooksWithCorrelation(
+		tb,
+		sub,
+		joinPosition,
+		testHookImageCorrelationID,
+	)
+}
+
+// NewTestImageForSubscriptionHooksWithCorrelation builds an image with an explicit correlation id.
+func NewTestImageForSubscriptionHooksWithCorrelation(
+	tb testing.TB,
+	sub *Subscription,
+	joinPosition int64,
+	correlationID int64,
+) *Image {
+	tb.Helper()
+
 	log := newTestHookMappedLog(tb, logbuffer.LogBufferTypeConcurrentPublication)
 	logBuffers, err := logbuffer.NewLogBuffers(log)
 	require.NoError(tb, err)
 
-	event := testHookAvailableImage()
+	event := testHookAvailableImage(correlationID)
 	if sub != nil {
 		event.SubscriptionRegistrationID = sub.RegistrationID()
 		event.StreamID = sub.StreamID()
@@ -275,6 +308,29 @@ func SubscriptionAddImageForHooks(sub *Subscription, image *Image) bool {
 // ImageTermBufferForHooks returns partition 0 term buffer for frame writes.
 func ImageTermBufferForHooks(image *Image) atomic.AtomicBuffer {
 	return image.termBuffers[0]
+}
+
+// ImageInternalCloseForHooks closes the image handle for cross-package tests.
+//
+// Same as in-package ImageInternalCloseForTest: internalClose only. Does not
+// remove the image from subscription.images; conductor unavailable-image
+// teardown splices via removeImage before internalClose. Intended for cluster
+// tests that retire the connect-time egress handle and assert via
+// AeronCluster.egressImage, not subscription membership.
+func ImageInternalCloseForHooks(image *Image) {
+	if image == nil {
+		return
+	}
+	image.internalClose()
+}
+
+// ImageSetSubscriberPositionForHooks rewinds the subscriber position counter
+// so repeated poll zero-alloc iterations re-dispatch the same committed frame.
+func ImageSetSubscriberPositionForHooks(image *Image, position int64) {
+	if image == nil {
+		return
+	}
+	setInMemImageSubscriberPosition(image, position)
 }
 
 // WriteCommittedDataFrameForHooks commits a DATA frame at frameOffset. Unfragmented
@@ -309,9 +365,9 @@ func WriteCommittedDataFrameForHooks(
 	logbuffer.PutFrameLengthOrdered(termBuffer, frameOffset, frameLength)
 }
 
-func testHookAvailableImage() conductor.AvailableImage {
+func testHookAvailableImage(correlationID int64) conductor.AvailableImage {
 	return conductor.AvailableImage{
-		CorrelationID:              testHookImageCorrelationID,
+		CorrelationID:              correlationID,
 		SessionID:                  testHookImageSessionID,
 		StreamID:                   testHookSubscriptionStreamID,
 		SubscriptionRegistrationID: testHookSubscriptionRegistrationID,

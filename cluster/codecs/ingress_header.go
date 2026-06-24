@@ -25,9 +25,13 @@ type IngressHeaderFields struct {
 }
 
 // EncodeIngressHeader matches Java wrapAndApplyHeader layout at
-// frameOffset+logbuffer.OffsetFramePayload.
+// frameOffset+logbuffer.OffsetFramePayload. Use it when writing into a
+// logbuffer term frame (TryClaim/CommitClaim) where the Aeron frame header
+// precedes the payload.
 //
 // buf must provide at least SessionMessageHeaderEncodedLen bytes from that offset.
+//
+// For frameless scratch buffers (Offer), use EncodeIngressHeaderScratch instead.
 func EncodeIngressHeader(buf []byte, frameOffset int, fields IngressHeaderFields) (int, error) {
 	payloadOffset := frameOffset + logbuffer.OffsetFramePayload
 	bufLen := len(buf)
@@ -41,4 +45,14 @@ func EncodeIngressHeader(buf []byte, frameOffset int, fields IngressHeaderFields
 		SetClusterSessionId(fields.ClusterSessionID).
 		SetTimestamp(fields.Timestamp)
 	return sessionMessageHeaderEncodedLen, nil
+}
+
+// EncodeIngressHeaderScratch writes SessionMessageHeader at buf offset 0 for
+// frameless ingress scratch buffers used by Offer/OfferWithOffset. It is
+// equivalent to EncodeIngressHeader with frameOffset -logbuffer.OffsetFramePayload
+// so the header lands at the start of buf without an Aeron frame prefix.
+//
+// buf must provide at least SessionMessageHeaderEncodedLen bytes.
+func EncodeIngressHeaderScratch(buf []byte, fields IngressHeaderFields) (int, error) {
+	return EncodeIngressHeader(buf, -logbuffer.OffsetFramePayload, fields)
 }

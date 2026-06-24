@@ -55,17 +55,8 @@ func requireDispatchedDefaultSessionEvent(
 	}
 }
 
-func setupEgressAdapterPollFixtures(t *testing.T) (*aeron.Subscription, atomic.AtomicBuffer) {
-	t.Helper()
-
-	sub := aeron.NewTestSubscriptionForHooks(t)
-	image := aeron.NewTestImageForHooks(t, sub, 0)
-	require.True(t, aeron.SubscriptionAddImageForHooks(sub, image))
-	return sub, aeron.ImageTermBufferForHooks(image)
-}
-
 func TestEgressAdapter_Poll_dispatchesSessionEvent(t *testing.T) {
-	sub, termBuffer := setupEgressAdapterPollFixtures(t)
+	sub, _, termBuffer := setupEgressPollFixtures(t)
 
 	wire := encodeSessionEventWire(t, egressTestClusterSessionID)
 	writeUnfragmentedWireToTerm(t, termBuffer, wire)
@@ -78,7 +69,7 @@ func TestEgressAdapter_Poll_dispatchesSessionEvent(t *testing.T) {
 }
 
 func TestEgressAdapter_Poll_dispatchesNewLeader(t *testing.T) {
-	sub, termBuffer := setupEgressAdapterPollFixtures(t)
+	sub, _, termBuffer := setupEgressPollFixtures(t)
 
 	wire := encodeNewLeaderWire(t, egressTestClusterSessionID)
 	writeUnfragmentedWireToTerm(t, termBuffer, wire)
@@ -95,7 +86,7 @@ func TestEgressAdapter_Poll_dispatchesNewLeader(t *testing.T) {
 }
 
 func TestEgressAdapter_Poll_dispatchesAdminResponse(t *testing.T) {
-	sub, termBuffer := setupEgressAdapterPollFixtures(t)
+	sub, _, termBuffer := setupEgressPollFixtures(t)
 
 	wire := encodeAdminResponseWire(t, egressTestClusterSessionID)
 	writeUnfragmentedWireToTerm(t, termBuffer, wire)
@@ -114,7 +105,7 @@ func TestEgressAdapter_Poll_dispatchesAdminResponse(t *testing.T) {
 }
 
 func TestEgressAdapter_Poll_dispatchesSessionMessageHeader(t *testing.T) {
-	sub, termBuffer := setupEgressAdapterPollFixtures(t)
+	sub, _, termBuffer := setupEgressPollFixtures(t)
 
 	appPayload := []byte("poll-app-payload")
 	wire := encodeSessionMessageHeaderWire(
@@ -139,7 +130,7 @@ func TestEgressAdapter_Poll_dispatchesSessionMessageHeader(t *testing.T) {
 }
 
 func TestEgressAdapter_Poll_fragmentedSessionMessageHeader(t *testing.T) {
-	sub, termBuffer := setupEgressAdapterPollFixtures(t)
+	sub, _, termBuffer := setupEgressPollFixtures(t)
 
 	appPayload := []byte("fragmented-poll-payload")
 	wire := encodeSessionMessageHeaderWire(
@@ -176,7 +167,7 @@ func TestEgressAdapter_Poll_wrongClusterSessionIDIgnored(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sub, termBuffer := setupEgressAdapterPollFixtures(t)
+			sub, _, termBuffer := setupEgressPollFixtures(t)
 
 			wire := encodeSessionEventWire(t, egressTestOtherSessionID)
 			tc.writeWire(t, termBuffer, wire)
@@ -191,7 +182,7 @@ func TestEgressAdapter_Poll_wrongClusterSessionIDIgnored(t *testing.T) {
 }
 
 func TestEgressAdapter_Poll_fragmentedSessionEvent(t *testing.T) {
-	sub, termBuffer := setupEgressAdapterPollFixtures(t)
+	sub, _, termBuffer := setupEgressPollFixtures(t)
 
 	wire := encodeSessionEventWire(t, egressTestClusterSessionID)
 	writeFragmentedWireToTerm(t, termBuffer, wire)
@@ -204,16 +195,7 @@ func TestEgressAdapter_Poll_fragmentedSessionEvent(t *testing.T) {
 }
 
 func TestEgressAdapter_Poll_partialFragmentLimitCompletesAcrossPolls(t *testing.T) {
-	sub, termBuffer := setupEgressAdapterPollFixtures(t)
-
-	wire := encodeSessionEventWire(t, egressTestClusterSessionID)
-	writeFragmentedWireToTerm(t, termBuffer, wire)
-
-	rec := newRecordingEgressHandlers()
-	adapter := newTestEgressAdapter(rec, sub, 1)
-
-	require.Equal(t, 1, adapter.Poll())
-	requireZeroRecordingEgressCalls(t, rec)
+	adapter, rec := newEgressAdapterWithPendingBeginFragment(t)
 
 	require.Equal(t, 1, adapter.Poll())
 	requireDispatchedDefaultSessionEvent(t, rec)
@@ -239,7 +221,7 @@ func TestEgressAdapter_Poll_zeroWhenSubscriptionNil(t *testing.T) {
 }
 
 func TestEgressAdapter_Poll_zeroWhenClosed(t *testing.T) {
-	sub, termBuffer := setupEgressAdapterPollFixtures(t)
+	sub, _, termBuffer := setupEgressPollFixtures(t)
 
 	wire := encodeSessionEventWire(t, egressTestClusterSessionID)
 	writeUnfragmentedWireToTerm(t, termBuffer, wire)
@@ -250,6 +232,79 @@ func TestEgressAdapter_Poll_zeroWhenClosed(t *testing.T) {
 
 	require.Equal(t, 0, adapter.Poll())
 	requireZeroRecordingEgressCalls(t, rec)
+}
+
+func newEgressAdapterWithPendingBeginFragment(
+	t *testing.T,
+) (*EgressAdapter, *recordingEgressHandlers) {
+	t.Helper()
+
+	sub, _, termBuffer := setupEgressPollFixtures(t)
+	wire := encodeSessionEventWire(t, egressTestClusterSessionID)
+	writeFragmentedWireToTerm(t, termBuffer, wire)
+
+	rec := newRecordingEgressHandlers()
+	// fragmentLimit=1 polls only the BEGIN frame; END stays on the term
+	// buffer with in-progress assembler state until teardown or completion.
+	adapter := newTestEgressAdapter(rec, sub, 1)
+
+	require.Equal(t, 1, adapter.Poll())
+	requireZeroRecordingEgressCalls(t, rec)
+	return adapter, rec
+}
+
+func requirePollDoesNotCompletePendingFragment(
+	t *testing.T,
+	adapter *EgressAdapter,
+	rec *recordingEgressHandlers,
+) {
+	t.Helper()
+
+	require.Equal(t, 1, adapter.Poll())
+	requireZeroRecordingEgressCalls(t, rec)
+}
+
+func TestEgressAdapter_Clear(t *testing.T) {
+	adapter, rec := newEgressAdapterWithPendingBeginFragment(t)
+
+	adapter.Clear()
+
+	require.False(t, adapter.FreeSessionBuffer(hookFrameSessionID))
+	requirePollDoesNotCompletePendingFragment(t, adapter, rec)
+}
+
+func TestEgressAdapter_FreeSessionBuffer(t *testing.T) {
+	adapter, rec := newEgressAdapterWithPendingBeginFragment(t)
+
+	require.True(t, adapter.FreeSessionBuffer(hookFrameSessionID))
+	require.False(t, adapter.FreeSessionBuffer(hookFrameSessionID))
+
+	requirePollDoesNotCompletePendingFragment(t, adapter, rec)
+}
+
+func TestEgressAdapter_FreeSessionBuffer_wrongSessionID(t *testing.T) {
+	adapter, rec := newEgressAdapterWithPendingBeginFragment(t)
+
+	require.False(t, adapter.FreeSessionBuffer(hookFrameSessionID+1))
+	require.True(t, adapter.FreeSessionBuffer(hookFrameSessionID))
+
+	requirePollDoesNotCompletePendingFragment(t, adapter, rec)
+}
+
+func TestEgressAdapter_teardownGuards_nilAdapterOrAssembler(t *testing.T) {
+	cases := []struct {
+		name    string
+		adapter *EgressAdapter
+	}{
+		{name: "nil_adapter", adapter: nil},
+		{name: "nil_assembler", adapter: &EgressAdapter{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.False(t, tc.adapter.FreeSessionBuffer(hookFrameSessionID))
+			require.NotPanics(t, func() { tc.adapter.Clear() })
+		})
+	}
 }
 
 func TestNewEgressAdapter_nonPositiveFragmentLimitUsesDefault(t *testing.T) {

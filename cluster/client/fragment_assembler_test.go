@@ -228,6 +228,7 @@ func TestFragmentAssembler_malformedAssemblyDropped(t *testing.T) {
 			deliverFragments(t, assembler, termBuffer, offsets)
 
 			require.Empty(t, capture.payloads)
+			require.NotContains(t, assembler.builders, fragmentFrameSessionID)
 		})
 	}
 }
@@ -284,9 +285,12 @@ func TestFragmentAssembler_termOffsetGapResets(t *testing.T) {
 	capture := newFragmentDelegateCapture()
 	assembler := NewFragmentAssembler(capture.handler())
 	deliverFragment(t, assembler, termBuffer, beginOffset)
+
 	deliverFragment(t, assembler, termBuffer, gapOffset)
 
 	require.Empty(t, capture.payloads)
+	// Offset gap resets builder but retains map slot for a later BEGIN.
+	require.Contains(t, assembler.builders, fragmentFrameSessionID)
 }
 
 func TestFragmentAssembler_newBeginResetsInProgress(t *testing.T) {

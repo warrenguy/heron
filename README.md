@@ -109,13 +109,13 @@ Notes:
 
 ### Building blocks
 
-| Area | Import path | Detail |
+| Area | `github.com/warrenguy/heron/...` | Detail |
 |------|-------------|--------|
-| Agrona primitives | `github.com/warrenguy/heron/agrona/...` | [`agrona/README.md`](agrona/README.md) |
-| Cluster client | `github.com/warrenguy/heron/cluster/client` | `ClusterContext`, egress handlers, sessions |
-| Cluster codecs | `github.com/warrenguy/heron/cluster/codecs` | SBE flyweights; **Cluster SBE codecs** below |
-| Transport client | `github.com/warrenguy/heron/aeron` | `Connect`, `Client`, `Publication`, `Subscription` |
-| Transport internals | `github.com/warrenguy/heron/aeron/{conductor,cnc,logbuffer}` | Conductor, CnC, logbuffer |
+| Agrona primitives | `agrona/...` | [`agrona/README.md`](agrona/README.md) |
+| Cluster client | `cluster/client` | `ClusterContext`, egress handlers, sessions |
+| Cluster codecs | `cluster/codecs` | SBE flyweights; **Cluster SBE codecs** below |
+| Transport client | `aeron` | `Connect`, `Client`, `Publication`, `Subscription` |
+| Transport internals | `aeron/{conductor,cnc,logbuffer}` | Conductor, CnC, logbuffer |
 
 ### Pinned dependencies
 

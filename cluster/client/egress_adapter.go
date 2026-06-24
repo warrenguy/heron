@@ -75,3 +75,21 @@ func (adapter *EgressAdapter) Poll() int {
 		adapter.fragmentLimit,
 	)
 }
+
+// Clear drops all in-progress egress reassembly state.
+func (adapter *EgressAdapter) Clear() {
+	if adapter == nil || adapter.assembler == nil {
+		return
+	}
+	recordEgressAdapterOp("Clear")
+	adapter.assembler.Clear()
+}
+
+// FreeSessionBuffer evicts the reassembly builder for sessionID.
+func (adapter *EgressAdapter) FreeSessionBuffer(sessionID int32) bool {
+	if adapter == nil || adapter.assembler == nil {
+		return false
+	}
+	recordEgressAdapterOp("FreeSessionBuffer")
+	return adapter.assembler.FreeSessionBuffer(sessionID)
+}

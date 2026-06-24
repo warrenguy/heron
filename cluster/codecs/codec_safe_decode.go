@@ -46,21 +46,89 @@ func DecodeMessageHeader(
 	return blockLength, templateID, schemaID, version, true
 }
 
+// ClusterMessageLayout is the parsed SBE header and fixed block for a cluster message.
+type ClusterMessageLayout struct {
+	TemplateID    uint16
+	BodyOffset    int
+	BlockLength   uint16
+	ActingVersion uint16
+}
+
+// ClusterMessageLayoutAt parses the cluster message header and fixed block at offset.
+func ClusterMessageLayoutAt(buf []byte, offset, maxVarLen int) (ClusterMessageLayout, bool) {
+	return clusterMessageAt(buf, offset, maxVarLen)
+}
+
+// SessionMessageHeaderFieldsFromLayout decodes SessionMessageHeader from a parsed layout.
+func SessionMessageHeaderFieldsFromLayout(
+	buf []byte,
+	layout ClusterMessageLayout,
+) (SessionMessageHeaderFields, bool) {
+	if layout.TemplateID != gensbe.SessionMessageHeaderSbeTemplateID {
+		return SessionMessageHeaderFields{}, false
+	}
+	return decodeSessionMessageHeaderFields(
+		buf,
+		uint64(layout.BodyOffset),
+		uint64(layout.BlockLength),
+		uint64(layout.ActingVersion),
+		uint64(len(buf)),
+	), true
+}
+
+// TryDecodeSessionMessageHeaderAt decodes SessionMessageHeader without interface boxing.
+func TryDecodeSessionMessageHeaderAt(buf []byte, offset int) (SessionMessageHeaderFields, bool) {
+	layout, ok := ClusterMessageLayoutAt(buf, offset, 0)
+	if !ok || layout.TemplateID != gensbe.SessionMessageHeaderSbeTemplateID {
+		return SessionMessageHeaderFields{}, false
+	}
+	return SessionMessageHeaderFieldsFromLayout(buf, layout)
+}
+
+func decodeSessionMessageHeaderFields(
+	buf []byte,
+	body uint64,
+	block uint64,
+	version uint64,
+	bufLen uint64,
+) SessionMessageHeaderFields {
+	var msg gensbe.SessionMessageHeader
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return SessionMessageHeaderFields{
+		LeadershipTermID: msg.LeadershipTermId(),
+		ClusterSessionID: msg.ClusterSessionId(),
+		Timestamp:        msg.Timestamp(),
+	}
+}
+
 // TryDecodeByTemplate decodes a cluster SBE message into plain field structs.
 // maxVarLen bounds each varAscii/varData field; use ClusterDecodeMaxVarLen for egress.
 // Rejects maxVarLen < 0. Trailing bytes after the last var field are ignored so
 // Aeron fragment buffers decode without requiring exact buffer length.
 func TryDecodeByTemplate(buf []byte, offset, maxVarLen int) (decoded DecodedMessage, ok bool) {
-	layout, ok := clusterMessageAt(buf, offset, maxVarLen)
+	layout, ok := ClusterMessageLayoutAt(buf, offset, maxVarLen)
 	if !ok {
 		return decoded, ok
 	}
+	return TryDecodeFromClusterLayout(buf, layout, maxVarLen)
+}
 
+// TryDecodeFromClusterLayout decodes cluster message fields from a parsed layout.
+func TryDecodeFromClusterLayout(
+	buf []byte,
+	layout ClusterMessageLayout,
+	maxVarLen int,
+) (decoded DecodedMessage, ok bool) {
+	if maxVarLen < 0 {
+		return decoded, false
+	}
+
+	varOffset := layout.BodyOffset + int(layout.BlockLength)
 	vars, _, ok := scanTemplateVarFields(
 		buf,
-		layout.varOffset,
-		layout.templateID,
-		layout.actingVersion,
+		varOffset,
+		layout.TemplateID,
+		layout.ActingVersion,
 		maxVarLen,
 		true,
 	)
@@ -70,16 +138,16 @@ func TryDecodeByTemplate(buf []byte, offset, maxVarLen int) (decoded DecodedMess
 
 	fields, ok := decodeTemplateFields(
 		buf,
-		layout.bodyOffset,
-		layout.blockLength,
-		layout.templateID,
-		layout.actingVersion,
+		layout.BodyOffset,
+		layout.BlockLength,
+		layout.TemplateID,
+		layout.ActingVersion,
 		vars,
 	)
 	if !ok {
 		return decoded, ok
 	}
-	return DecodedMessage{TemplateID: layout.templateID, Fields: fields}, true
+	return DecodedMessage{TemplateID: layout.TemplateID, Fields: fields}, true
 }
 
 type templateVarFields struct {
@@ -166,37 +234,31 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 	}
 }
 
-type clusterMessageLayout struct {
-	bodyOffset, varOffset                  int
-	blockLength, templateID, actingVersion uint16
-}
-
-func clusterMessageAt(buf []byte, offset, maxVarLen int) (clusterMessageLayout, bool) {
+func clusterMessageAt(buf []byte, offset, maxVarLen int) (ClusterMessageLayout, bool) {
 	if maxVarLen < 0 {
-		return clusterMessageLayout{}, false
+		return ClusterMessageLayout{}, false
 	}
 
 	blockLength, templateID, schemaID, actingVersion, ok := DecodeMessageHeader(buf, offset)
 	if !ok || schemaID != clusterSchemaID {
-		return clusterMessageLayout{}, false
+		return ClusterMessageLayout{}, false
 	}
 
 	minBlock, maxBlock, known := ClusterRootBlockLengthBounds(templateID, actingVersion)
 	if !known || blockLength < minBlock || blockLength > maxBlock {
-		return clusterMessageLayout{}, false
+		return ClusterMessageLayout{}, false
 	}
 
 	bodyOffset := offset + messageHeaderEncodedLength
 	if len(buf)-bodyOffset < int(blockLength) {
-		return clusterMessageLayout{}, false
+		return ClusterMessageLayout{}, false
 	}
 
-	return clusterMessageLayout{
-		bodyOffset:    bodyOffset,
-		varOffset:     bodyOffset + int(blockLength),
-		blockLength:   blockLength,
-		templateID:    templateID,
-		actingVersion: actingVersion,
+	return ClusterMessageLayout{
+		BodyOffset:    bodyOffset,
+		BlockLength:   blockLength,
+		TemplateID:    templateID,
+		ActingVersion: actingVersion,
 	}, true
 }
 
@@ -207,11 +269,12 @@ func ClusterMessageWireEnd(buf []byte, offset, maxVarLen int) (wireEnd int, ok b
 	if !ok {
 		return wireEnd, ok
 	}
+	varOffset := layout.BodyOffset + int(layout.BlockLength)
 	_, wireEnd, ok = scanTemplateVarFields(
 		buf,
-		layout.varOffset,
-		layout.templateID,
-		layout.actingVersion,
+		varOffset,
+		layout.TemplateID,
+		layout.ActingVersion,
 		maxVarLen,
 		false,
 	)
@@ -310,13 +373,7 @@ func decodeTemplateFields(
 
 	switch templateID {
 	case gensbe.SessionMessageHeaderSbeTemplateID:
-		var msg gensbe.SessionMessageHeader
-		msg.WrapForDecode(buf, body, block, version, bufLen)
-		return SessionMessageHeaderFields{
-			LeadershipTermID: msg.LeadershipTermId(),
-			ClusterSessionID: msg.ClusterSessionId(),
-			Timestamp:        msg.Timestamp(),
-		}, true
+		return decodeSessionMessageHeaderFields(buf, body, block, version, bufLen), true
 	case gensbe.SessionEventSbeTemplateID:
 		var msg gensbe.SessionEvent
 		msg.WrapForDecode(buf, body, block, version, bufLen)

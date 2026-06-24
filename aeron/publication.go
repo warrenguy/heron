@@ -70,6 +70,12 @@ func (pub *Publication) MaxPayloadLength() int {
 	return pub.maxPayloadLength
 }
 
+// MaxMessageLength returns the largest total message length Offer will accept
+// before returning MaxPositionExceeded (fragmented payloads may span multiple frames).
+func (pub *Publication) MaxMessageLength() int {
+	return pub.maxMessageLength
+}
+
 // Offer publishes a message from buffer. Unfragmented payloads fit one DATA
 // frame; larger payloads up to maxMessageLength split into fragments.
 //
@@ -150,6 +156,17 @@ func (pub *Publication) Commit(termIndex, frameOffset int) error {
 // Abort retypes an in-flight claim as PAD on the termIndex partition from TryClaim.
 func (pub *Publication) Abort(termIndex, frameOffset int) error {
 	return pub.finalizeInFlightClaim(termIndex, frameOffset, true)
+}
+
+// TermBuffer returns the log partition term buffer for in-flight TryClaim writes.
+//
+// termIndex is the partition index returned by TryClaim.
+//
+// Valid only until Commit or Abort finalizes the claim on that partition.
+//
+// Panics when termIndex is out of range.
+func (pub *Publication) TermBuffer(termIndex int) atomic.AtomicBuffer {
+	return pub.termBuffers[termIndex]
 }
 
 // Position returns the publisher stream position or Closed (-4) when closed.

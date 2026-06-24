@@ -101,10 +101,7 @@ func NewAsyncConnect(ctx ClusterContext) (*AsyncConnect, error) {
 		return nil, err
 	}
 	memberMap = EnsureChannelOnlyMemberIngressMap(memberMap)
-	nanoClock := concluded.AeronContext.NanoClock
-	if nanoClock == nil {
-		nanoClock = func() int64 { return time.Now().UnixNano() }
-	}
+	nanoClock := resolveNanoClock(concluded.AeronContext.NanoClock)
 	return &AsyncConnect{
 		ctx:               concluded,
 		client:            client,
@@ -117,6 +114,14 @@ func NewAsyncConnect(ctx ClusterContext) (*AsyncConnect, error) {
 		correlationID:     conductor.NullCorrelationID,
 		memberMap:         memberMap,
 	}, nil
+}
+
+// resolveNanoClock returns nanoClock when set, else a wall-clock nanosecond source.
+func resolveNanoClock(nanoClock func() int64) func() int64 {
+	if nanoClock != nil {
+		return nanoClock
+	}
+	return func() int64 { return time.Now().UnixNano() }
 }
 
 // State returns the current connect state.

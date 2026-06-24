@@ -4,23 +4,16 @@ import (
 	"github.com/warrenguy/heron/aeron"
 )
 
-// IngressPublication is the connect-path ingress handle.
-//
-// Implemented by *aeron.ExclusivePublication (default) and *aeron.Publication.
-type IngressPublication interface {
-	Offer(buffer []byte) int64
-	IsConnected() bool
-	Close() error
-}
-
-var (
-	_ IngressPublication = (*aeron.ExclusivePublication)(nil)
-	_ IngressPublication = (*aeron.Publication)(nil)
-)
-
 // ConnectResult holds session handles and ids after a successful connect handshake.
 //
 // On success, Poll transfers ownership of session resources into ConnectResult.
+// After NewAeronCluster(result), the session owns IngressPublication,
+// EgressSubscription, EgressImage, and (when OwnsAeronClient) Aeron -- do not Close
+// those handles on the ConnectResult. NewAeronCluster nils transferred fields on
+// the passed-in struct to prevent double-close misuse. MemberIngressMap leader
+// Publication pointers alias the session ingress handle; do not Close map entries
+// separately after transfer.
+//
 // Discard AsyncConnect without Close; Close is a no-op after success. On failure,
 // call AsyncConnect.Close to release partial resources.
 type ConnectResult struct {

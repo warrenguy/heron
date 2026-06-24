@@ -127,12 +127,12 @@ func (assembler *FragmentAssembler) handleFragment(
 		if flags&logbuffer.EndFlag != 0 {
 			firstLen := builder.capturedFirstFrameLength()
 			if builder.limit <= 0 || firstLen <= int32(logbuffer.DataHeaderLength) {
-				builder.reset()
+				// Malformed END is terminal: no valid payload can be delivered.
+				// Evict the idle map entry. Transient failures (offset gap, append
+				// bounds) only reset the builder so a later BEGIN can reuse the slot.
+				delete(assembler.builders, sessionID)
 				return
 			}
-			// ConfigureCompletedFragment reads Image flyweight metadata from lastFragment
-			// (END header); all fragments share the same Image so END carries correct
-			// initialTermID/positionBitsToShift/context.
 			builder.completedHeader.ConfigureCompletedFragment(
 				builder.capturedFrameHeader[:],
 				builder.limit,

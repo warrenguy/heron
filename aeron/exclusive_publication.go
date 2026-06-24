@@ -80,6 +80,12 @@ func (ep *ExclusivePublication) MaxPayloadLength() int {
 	return ep.maxPayloadLength
 }
 
+// MaxMessageLength returns the largest total message length Offer will accept
+// before returning MaxPositionExceeded.
+func (ep *ExclusivePublication) MaxMessageLength() int {
+	return ep.maxMessageLength
+}
+
 // Offer publishes a message from buffer. Fragmented Offer (> maxPayloadLength) is
 // unsupported; payloads in (maxPayloadLength, maxMessageLength] return
 // UnsupportedMessageLength (-6).
@@ -172,6 +178,17 @@ func (ep *ExclusivePublication) Commit(termIndex, frameOffset int) error {
 // Abort retypes an in-flight claim as PAD on the termIndex partition from TryClaim.
 func (ep *ExclusivePublication) Abort(termIndex, frameOffset int) error {
 	return ep.finalizeInFlightClaim(termIndex, frameOffset, true)
+}
+
+// TermBuffer returns the log partition term buffer for in-flight TryClaim writes.
+//
+// termIndex is the partition index returned by TryClaim.
+//
+// Valid only until Commit or Abort finalizes the claim on that partition.
+//
+// Panics when termIndex is out of range.
+func (ep *ExclusivePublication) TermBuffer(termIndex int) atomic.AtomicBuffer {
+	return ep.termBuffers[termIndex]
 }
 
 // Position returns the publisher stream position or Closed (-4) when closed.
