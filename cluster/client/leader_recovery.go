@@ -112,6 +112,9 @@ func (ac *AeronCluster) leaderIngressForRecovery() IngressPublication {
 
 // pollLeaderRecovery advances async ingress registration and sends the first
 // SessionKeepAlive on the new leader publication during AWAIT_NEW_LEADER_CONNECTION.
+// One offerSessionKeepAlive attempt per PollEgress spin; BackPressured or
+// AdminAction returns zero work so the next PollEgress spin retries after caller
+// DoWork. Not public SendKeepAlive; recovery bypasses app session guards.
 func (ac *AeronCluster) pollLeaderRecovery() int {
 	if ac.sessionState != SessionStateAwaitNewLeaderConnection {
 		return 0

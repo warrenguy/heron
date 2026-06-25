@@ -133,7 +133,7 @@ make test-java-interop-contract  # Go/Java smoke: streams, payloads, timeouts (n
 make test-cluster-sbe-contract   # Go/Java cluster SBE wire bytes vs catalog.json (no driver)
 make test-cluster-java-contract  # Go/Java cluster harness constants (no driver)
 make test-java-interop           # Docker Compose smoke (bidirectional IPC pub/sub)
-make test-cluster-java           # Docker Compose smoke (AsyncConnect IPC handshake)
+make test-cluster-java           # Docker Compose smoke (AsyncConnect + echo roundtrip)
 ```
 
 - Contract targets run `mvn test` (Java goldens) then matching Go oracle tests; no aeronmd or

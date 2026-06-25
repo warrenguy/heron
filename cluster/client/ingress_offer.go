@@ -267,9 +267,20 @@ func (ac *AeronCluster) offerSessionKeepAlive(pub IngressPublication) int64 {
 	return position
 }
 
-// SendKeepAlive offers a SessionKeepAlive control frame via leader ingress.
-// Calls offerSessionKeepAlive (which tracks) when a connected leader ingress is
-// available; otherwise returns the session-guard or ingress code without tracking.
+// SendKeepAlive offers one SessionKeepAlive control frame via leader ingress.
+// Java sendKeepAlive retries tryClaim in a bounded loop; Heron offers once. The
+// application goroutine must call client.DoWork between spins and re-invoke on
+// BackPressured or AdminAction (invoker-only transport; no internal retry).
+//
+// Returns the publication stream position on success (>0) or Aeron publication
+// status codes on failure; no Go error on the hot path. Session-guard codes
+// (Closed, blocked NotConnected) return without tracking. When CONNECTED with a
+// disconnected ingress publication, returns NotConnected and tracks via
+// leaderIngressPublication, same as Offer and TryClaim.
+//
+// During leadership transition keep-alive may fail; keep calling PollEgress with
+// DoWork between spins. Recovery keep-alives are sent from pollLeaderRecovery, not
+// this API.
 func (ac *AeronCluster) SendKeepAlive() int64 {
 	pub, code := ac.leaderIngressForAppOffer()
 	if pub == nil {

@@ -317,7 +317,7 @@ endef
 test-java-interop: ## Docker smoke: Java/Go IPC duplex
 	./scripts/java-interop-smoke.sh
 
-test-cluster-java: ## Docker smoke: TestClusterConnectSmoke, AsyncConnect IPC handshake
+test-cluster-java: ## Docker smoke: AsyncConnect + echo roundtrip smoke
 	./scripts/cluster-java-smoke.sh
 
 $(eval $(call contract-oracle-module,java-interop,$(JAVA_INTEROP_POM),JAVA_INTEROP_ORACLE_TIMEOUT,JAVA_INTEROP_ORACLE_TAGS,./test/integration/java_interop/javainterop/))

@@ -7,6 +7,7 @@ import org.agrona.concurrent.ShutdownSignalBarrier;
 import java.io.File;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class ClusterNode
 {
@@ -73,12 +74,19 @@ public final class ClusterNode
         clusterConfig.aeronDirectoryName(aeronDir);
         clusterConfig.baseDir(new File(ClusterConstants.BASE_DIR));
         configureConsensusIPC(clusterConfig);
-        clusterConfig.errorHandler(
-            (Throwable throwable) ->
+        // Fatal agent errors exit immediately; SIGTERM still uses barrier teardown below.
+        final AtomicBoolean fatalExited = new AtomicBoolean(false);
+        clusterConfig.errorHandler((Throwable throwable) -> {
+            if (fatalExited.getAndSet(true))
             {
-                System.err.println("Cluster Node");
-                throwable.printStackTrace(System.err);
-            });
+                return;
+            }
+            System.err.println(
+                "heron: cluster fatal: "
+                    + Objects.toString(throwable.getMessage(), throwable.getClass().getSimpleName()));
+            throwable.printStackTrace(System.err);
+            System.exit(1);
+        });
 
         try (ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
             ClusteredMediaDriver _ = ClusteredMediaDriver.launch(

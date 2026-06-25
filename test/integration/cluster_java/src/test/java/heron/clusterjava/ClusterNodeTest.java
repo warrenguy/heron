@@ -67,7 +67,7 @@ class ClusterNodeTest {
         assertTrue(stderr.contains("\tat "));
     }
 
-    private String captureStderr(final Runnable action) {
+    static String captureStderr(final Runnable action) {
         final PrintStream originalErr = System.err;
         final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         System.setErr(new PrintStream(buffer, true, StandardCharsets.UTF_8));

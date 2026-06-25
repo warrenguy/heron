@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 // Modified from io.aeron.samples.cluster.EchoService at Aeron 1.51.0:
-// package renamed to heron.clusterjava; IdleStrategy and echo-offer loop removed;
-// onStart and onSessionMessage left as no-op stubs for compose harness scaffold.
+// package renamed to heron.clusterjava; echoes inbound session messages via session.offer
+// with cluster idle-strategy retries (integration smoke).
 package heron.clusterjava;
 
 import io.aeron.ExclusivePublication;
@@ -26,12 +26,18 @@ import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
 import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
+import org.agrona.concurrent.IdleStrategy;
 
-// Intentional no-op stubs for harness scaffold launch; echo roundtrip added with session harness.
 class EchoService implements ClusteredService
 {
+    static final int SEND_ATTEMPTS = 3;
+    static final String OFFER_EXHAUSTED_MESSAGE =
+        "heron: EchoService offer exhausted after " + SEND_ATTEMPTS + " attempts";
+    private IdleStrategy idleStrategy;
+
     public void onStart(final Cluster cluster, final Image snapshotImage)
     {
+        this.idleStrategy = cluster.idleStrategy();
     }
 
     public void onSessionOpen(final ClientSession session, final long timestamp)
@@ -50,6 +56,19 @@ class EchoService implements ClusteredService
         final int length,
         final Header header)
     {
+        idleStrategy.reset();
+        int attempts = SEND_ATTEMPTS;
+        do
+        {
+            final long result = session.offer(buffer, offset, length);
+            if (result > 0)
+            {
+                return;
+            }
+            idleStrategy.idle();
+        }
+        while (--attempts > 0);
+        System.err.println(OFFER_EXHAUSTED_MESSAGE);
     }
 
     public void onTimerEvent(final long correlationId, final long timestamp)

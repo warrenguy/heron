@@ -23,7 +23,8 @@ services:
       interval: 1s
       timeout: 5s
       retries: 15
-      start_period: 20s
+      # Embedded driver + cluster JVM need extra margin before cnc.dat appears.
+      start_period: 30s
 
   go:
     image: cluster-java-go
