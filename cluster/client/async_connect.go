@@ -197,7 +197,7 @@ func (ac *AsyncConnect) Close() error {
 	}
 	ac.closed = true
 	ac.zeroSensitiveBuffers()
-	ac.releaseMemberResources()
+	ac.memberMap.closeAll(ac.client)
 	if ac.egressRegID != conductor.NullCorrelationID && ac.client != nil {
 		ac.client.CancelPending(ac.egressRegID)
 		ac.egressRegID = conductor.NullCorrelationID
@@ -252,6 +252,7 @@ func (ac *AsyncConnect) checkDeadline() error {
 		return nil
 	}
 	connected := ac.egressSubscription != nil && ac.egressSubscription.IsConnected()
+	ingressErr := ac.memberMap.firstPublicationErr()
 	return errors.Join(
 		fmt.Errorf(
 			"cluster client: connect timeout in state %v egress=%s ingress=%s egressConnected=%t",
@@ -260,7 +261,7 @@ func (ac *AsyncConnect) checkDeadline() error {
 			ac.ctx.IngressChannel,
 			connected,
 		),
-		ac.firstIngressPublicationErr(),
+		ingressErr,
 	)
 }
 
@@ -321,7 +322,7 @@ func (ac *AsyncConnect) pollCreateIngressPublications() (*ConnectResult, error) 
 	if !allResolved {
 		return nil, nil
 	}
-	if err := ac.failIfIngressUnrecoverable(); err != nil {
+	if err := ac.memberMap.failIfIngressUnrecoverable(); err != nil {
 		return nil, err
 	}
 	ac.state = ConnectStateAwaitPublicationConnected
@@ -342,8 +343,8 @@ func (ac *AsyncConnect) pollAwaitPublicationConnected() (*ConnectResult, error) 
 			return nil, nil
 		}
 	}
-	ac.pollPendingMemberIngress()
-	if err := ac.failIfIngressUnrecoverable(); err != nil {
+	pollPendingMemberIngressRegistration(ac.memberMap, ac.ctx, ac.client)
+	if err := ac.memberMap.failIfIngressUnrecoverable(); err != nil {
 		return nil, err
 	}
 	return nil, nil
@@ -449,126 +450,50 @@ func (ac *AsyncConnect) transferConnectResourcesToResult() {
 	ac.ownsAeronClient = false
 }
 
-func (ac *AsyncConnect) firstIngressPublicationErr() error {
-	for _, ingress := range ac.memberMap {
-		if ingress == nil || ingress.PublicationErr == nil {
-			continue
-		}
-		return ingress.PublicationErr
-	}
-	return nil
-}
-
-func (ac *AsyncConnect) failIfIngressUnrecoverable() error {
-	var err error
-	for _, ingress := range ac.memberMap {
-		if ingress == nil {
-			continue
-		}
-		if ingress.Publication != nil || ingress.RegistrationID != conductor.NullCorrelationID {
-			return nil
-		}
-		if err == nil && ingress.PublicationErr != nil {
-			err = ingress.PublicationErr
-		}
-	}
-	return err
-}
-
 func (ac *AsyncConnect) firstConnectedIngressPublication() IngressPublication {
 	var best IngressPublication
 	var bestID int32
 	for memberID, ingress := range ac.memberMap {
-		if pub := connectedPublicationOf(ingress); pub != nil && (best == nil || memberID < bestID) {
+		pub := ingress.connectedPublication()
+		if pub == nil {
+			continue
+		}
+		if best == nil || memberID < bestID {
 			best, bestID = pub, memberID
 		}
 	}
 	return best
 }
 
-func connectedPublicationOf(ingress *MemberIngress) IngressPublication {
-	if ingress == nil || ingress.Publication == nil || !ingress.Publication.IsConnected() {
-		return nil
-	}
-	return ingress.Publication
-}
-
+// updateMembers rebuilds ingress after NewLeader/REDIRECT. Clears ingressPublication
+// before apply when the leader pub is not reused (connect-specific).
 func (ac *AsyncConnect) updateMembers() error {
 	ac.leaderMemberID = ac.egressPoller.LeaderMemberID()
-	oldLeader, hadOldLeader := ac.memberMap.Lookup(ac.leaderMemberID)
-	var oldEndpoint string
-	var oldPublication IngressPublication
-	var oldPublicationErr error
-	if hadOldLeader {
-		oldEndpoint = oldLeader.Endpoint
-		oldPublication = oldLeader.Publication
-		oldPublicationErr = oldLeader.PublicationErr
-	}
-	newMap, err := ParseIngressEndpointsBytes(ac.egressPoller.Detail())
+	plan, err := planMemberIngressMapRebuild(
+		ac.memberMap,
+		ac.leaderMemberID,
+		ac.egressPoller.Detail(),
+	)
 	if err != nil {
 		return err
 	}
-	reusePublication := false
-	if newLeader, ok := newMap.Lookup(ac.leaderMemberID); ok {
-		reusePublication = oldPublication != nil &&
-			oldPublicationErr == nil &&
-			newLeader.Endpoint == oldEndpoint
-	}
-	if !reusePublication {
+	if plan.reusedPub == nil {
 		ac.ingressPublication = nil
 	}
-	for memberID, ingress := range ac.memberMap {
-		if ingress == nil {
-			continue
-		}
-		if reusePublication && memberID == ac.leaderMemberID {
-			ingress.RegistrationID = conductor.NullCorrelationID
-			ingress.Publication = nil
-			ingress.PublicationErr = nil
-			continue
-		}
-		ingress.closePublication(ac.client)
-	}
+	newMap, leaderPub, err := applyMemberIngressMapRebuild(ac.client, ac.ctx, ac.memberMap, plan)
 	ac.memberMap = newMap
-	newLeader, ok := ac.memberMap.Lookup(ac.leaderMemberID)
-	if !ok {
-		return fmt.Errorf(
-			"cluster client: leader member id %d missing from redirect ingress map",
-			ac.leaderMemberID,
-		)
-	}
-	if reusePublication {
-		newLeader.Publication = oldPublication
-		ac.ingressPublication = oldPublication
-	} else if err := newLeader.asyncOfferAdd(ac.ctx, ac.client, ac.memberMap); err != nil {
+	if err != nil {
 		return err
 	}
+	ac.ingressPublication = leaderPub
 	ac.correlationID = conductor.NullCorrelationID
 	ac.state = ConnectStateAwaitPublicationConnected
 	return nil
 }
 
-func (ac *AsyncConnect) pollPendingMemberIngress() {
-	for _, ingress := range ac.memberMap {
-		if ingress == nil || ingress.RegistrationID == conductor.NullCorrelationID {
-			continue
-		}
-		_, _ = ingress.asyncPollAdd(ac.ctx, ac.client)
-	}
-}
-
 func (ac *AsyncConnect) ensureCorrelationID() {
 	if ac.correlationID == conductor.NullCorrelationID {
 		ac.correlationID = ac.client.NextCorrelationID()
-	}
-}
-
-func (ac *AsyncConnect) releaseMemberResources() {
-	for _, ingress := range ac.memberMap {
-		if ingress == nil {
-			continue
-		}
-		ingress.closePublication(ac.client)
 	}
 }
 

@@ -95,10 +95,7 @@ func captureConnectEgressTerminal(
 	poller.templateID = int32(templateID)
 	switch templateID {
 	case gensbe.SessionEventSbeTemplateID, gensbe.NewLeaderEventSbeTemplateID:
-		if header != nil {
-			image, _ := header.ImageFields().Context.(*aeron.Image)
-			poller.egressImage = image
-		}
+		poller.egressImage = imageFromHeader(header)
 	}
 	poller.pollComplete = true
 }

@@ -505,11 +505,25 @@ func (harness *AsyncConnectTestHarness) DoWork() {
 }
 
 // RespondPendingAdds completes subscription and publication add commands on the ring.
+// Blocks until a matching command is handled or the ring poll times out; use when
+// waiting for async commands to appear after DoWork.
 func (harness *AsyncConnectTestHarness) RespondPendingAdds() {
 	if harness == nil || harness.fixture == nil {
 		return
 	}
 	harness.respondPendingAddsWithLog(harness.LogPath, asyncConnectTestIngressRegID)
+}
+
+// TryRespondPendingAdds performs one non-blocking ring read for pending add commands.
+// Fast path for recovery poll loops; use RespondPendingAdds when waiting for async commands.
+func (harness *AsyncConnectTestHarness) TryRespondPendingAdds() {
+	if harness == nil || harness.fixture == nil {
+		return
+	}
+	handler := harness.pendingAddsHandler(harness.LogPath, asyncConnectTestIngressRegID)
+	harness.fixture.Ring.Read(func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
+		handler(msgTypeID, buffer, index, length)
+	})
 }
 
 // RespondSubscriptionAdd completes only ADD_SUBSCRIPTION commands on the ring.
@@ -657,45 +671,49 @@ func (harness *AsyncConnectTestHarness) respondPendingAddsWithLog(
 	defaultLogPath string,
 	defaultRegID int64,
 ) {
-	harness.pollRing(
-		200*time.Millisecond,
-		func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) bool {
-			switch msgTypeID {
-			case conductor.AddSubscription:
-				return harness.completeSubscriptionAdd(buffer, index, length)
-			case conductor.AddExclusivePublication:
-				decoded, err := conductor.DecodePublicationMessage(buffer, index, length)
-				if err != nil {
-					return false
-				}
-				ready := asyncConnectTestPublicationReady(
-					decoded.CorrelationID,
-					defaultLogPath,
-					defaultRegID,
-				)
-				conductor.ExclusivePublicationReadyForTest(harness.fixture.Conductor, ready)
-				return true
-			case conductor.AddPublication:
-				decoded, err := conductor.DecodePublicationMessage(buffer, index, length)
-				if err != nil {
-					return false
-				}
-				logPath := defaultLogPath
-				if harness.ConcurrentLogPath != "" {
-					logPath = harness.ConcurrentLogPath
-				}
-				ready := asyncConnectTestPublicationReady(
-					decoded.CorrelationID,
-					logPath,
-					defaultRegID,
-				)
-				conductor.PublicationReadyForTest(harness.fixture.Conductor, ready)
-				return true
-			default:
+	harness.pollRing(200*time.Millisecond, harness.pendingAddsHandler(defaultLogPath, defaultRegID))
+}
+
+func (harness *AsyncConnectTestHarness) pendingAddsHandler(
+	defaultLogPath string,
+	defaultRegID int64,
+) func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) bool {
+	return func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) bool {
+		switch msgTypeID {
+		case conductor.AddSubscription:
+			return harness.completeSubscriptionAdd(buffer, index, length)
+		case conductor.AddExclusivePublication:
+			decoded, err := conductor.DecodePublicationMessage(buffer, index, length)
+			if err != nil {
 				return false
 			}
-		},
-	)
+			ready := asyncConnectTestPublicationReady(
+				decoded.CorrelationID,
+				defaultLogPath,
+				defaultRegID,
+			)
+			conductor.ExclusivePublicationReadyForTest(harness.fixture.Conductor, ready)
+			return true
+		case conductor.AddPublication:
+			decoded, err := conductor.DecodePublicationMessage(buffer, index, length)
+			if err != nil {
+				return false
+			}
+			logPath := defaultLogPath
+			if harness.ConcurrentLogPath != "" {
+				logPath = harness.ConcurrentLogPath
+			}
+			ready := asyncConnectTestPublicationReady(
+				decoded.CorrelationID,
+				logPath,
+				defaultRegID,
+			)
+			conductor.PublicationReadyForTest(harness.fixture.Conductor, ready)
+			return true
+		default:
+			return false
+		}
+	}
 }
 
 func (harness *AsyncConnectTestHarness) pollRing(

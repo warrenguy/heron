@@ -2,12 +2,11 @@ package client
 
 import (
 	"errors"
-	"fmt"
 
 	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
@@ -36,18 +35,31 @@ type AeronCluster struct {
 	ingressScratch     []byte
 	controlScratch     []byte
 	closed             bool
+
+	memberMap MemberIngressMap
+
+	sessionState    SessionState
+	stateDeadlineNs int64
+
+	egressHooks egressDispatchHooks
 }
 
 // IngressClaim pins an in-flight TryClaim until CommitClaim or AbortClaim.
 //
 // The caller owns the claim between TryClaim success and commit/abort; Close does
 // not finalize pending claims. Position is the stream position returned by the
-// underlying TryClaim.
+// underlying TryClaim. publication stamps the ingress publication used to claim;
+// leadershipTermID stamps the session term encoded into the claim header.
+// CommitClaim and AbortClaim use the stamped publication and term, not the
+// session's current leader ingress, so stale claims abort instead of committing
+// with a wrong publication or leadership term.
 type IngressClaim struct {
-	TermIndex     int
-	FrameOffset   int
-	PayloadLength int
-	Position      int64
+	TermIndex        int
+	FrameOffset      int
+	PayloadLength    int
+	Position         int64
+	leadershipTermID int64
+	publication      IngressPublication
 }
 
 // NewAeronCluster constructs a session from a successful ConnectResult.
@@ -86,28 +98,18 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 	}
 
 	memberMap := result.MemberIngressMap
-	if !memberMap.IsChannelOnly() {
-		ingress, err := memberMap.Require(result.LeaderMemberID)
-		if err != nil {
-			return nil, err
-		}
-		if ingress.Publication == nil {
-			return nil, errors.New("cluster client: leader ingress publication missing")
-		}
-		if ingress.Publication != result.IngressPublication {
-			return nil, errors.New("cluster client: leader ingress publication mismatch")
-		}
+	ingress, err := memberMap.Require(leaderIngressMemberID(memberMap, result.LeaderMemberID))
+	if err != nil {
+		return nil, err
+	}
+	if ingress.Publication == nil {
+		return nil, errors.New("cluster client: leader ingress publication missing")
+	}
+	if ingress.Publication != result.IngressPublication {
+		return nil, errors.New("cluster client: leader ingress publication mismatch")
 	}
 
-	adapter := NewEgressAdapterFromContext(
-		ctx,
-		ctx.EgressHandler,
-		result.ClusterSessionID,
-		result.EgressSubscription,
-	)
-
-	ingressScratchLen, ingressMaxFrameLen := ingressSessionLimits(result.IngressPublication)
-	ingressScratch := make([]byte, ingressScratchLen)
+	ingressScratch, ingressMaxFrameLen := ingressScratchForPub(result.IngressPublication, nil)
 
 	closeWireLen, closeOK := codecs.ClusterWireMessageLen(
 		gensbe.SessionCloseRequestSbeBlockLength,
@@ -129,15 +131,27 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 		clusterSessionID:   result.ClusterSessionID,
 		leadershipTermID:   result.LeadershipTermID,
 		leaderMemberID:     result.LeaderMemberID,
-		ingressPublication: result.IngressPublication,
-		egressSubscription: result.EgressSubscription,
-		egressImage:        result.EgressImage,
-		egressAdapter:      adapter,
 		nanoClock:          nanoClock,
 		ingressMaxFrameLen: ingressMaxFrameLen,
 		ingressScratch:     ingressScratch,
 		controlScratch:     make([]byte, controlScratchLen),
+		memberMap:          memberMap,
+		sessionState:       SessionStateConnected,
 	}
+
+	ac.egressAdapter = newEgressAdapterWithHandler(
+		ctx.EgressHandler,
+		result.ClusterSessionID,
+		result.EgressSubscription,
+		0,
+		ctx.DirectAssemblers,
+		ac.dispatchSessionEgressFragment,
+	)
+
+	ac.ingressPublication = result.IngressPublication
+	ac.egressSubscription = result.EgressSubscription
+	ac.egressImage = result.EgressImage
+	ac.egressHooks = sessionEgressDispatchHooks(ac)
 
 	result.IngressPublication = nil
 	result.EgressSubscription = nil
@@ -150,131 +164,47 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 	return ac, nil
 }
 
-// Offer prepends a SessionMessageHeader and offers payload via the leader ingress
-// publication. Returns aeron publication status codes; no Go error on the hot path.
-// EncodeIngressHeader failure maps to NotConnected; ingressScratch is sized at
-// construct so encode cannot fail on valid session state. Exclusive publications
-// return UnsupportedMessageLength when header+payload exceeds maxPayloadLength;
-// concurrent publications may fragment larger totals via OfferWithOffset.
-func (ac *AeronCluster) Offer(payload []byte) int64 {
-	if ac.closed {
-		return aeron.Closed
-	}
-	pub := ac.leaderIngress()
-	if pub == nil {
-		return aeron.NotConnected
-	}
-	totalLen := SessionHeaderLength() + len(payload)
-	// Exclusive single-frame limit; concurrent Publication fragments above maxPayload.
-	if ac.ingressMaxFrameLen > 0 && totalLen > ac.ingressMaxFrameLen {
-		return aeron.UnsupportedMessageLength
-	}
-	if totalLen > len(ac.ingressScratch) {
-		return aeron.MaxPositionExceeded
-	}
-	fields := ac.ingressHeaderFields()
-	if _, encErr := codecs.EncodeIngressHeaderScratch(ac.ingressScratch, fields); encErr != nil {
-		return aeron.NotConnected
-	}
-	copy(ac.ingressScratch[SessionHeaderLength():], payload)
-	return pub.OfferWithOffset(ac.ingressScratch, 0, totalLen)
-}
-
-// TryClaim reserves ingress frame space for payloadLength application bytes plus the
-// SessionMessageHeader. Like Aeron TryClaim, only a single unfragmented frame is
-// produced; header+payload must fit ingressPublication.MaxPayloadLength(). Maximum
-// application payload is MaxPayloadLength()-SessionHeaderLength(). Unlike Offer,
-// which on concurrent *aeron.Publication may fragment totals larger than
-// maxPayloadLength via OfferWithOffset, oversize TryClaim returns a non-nil err rather
-// than fragmenting. Returns Aeron operational codes via position when err is nil;
-// programmer errors (negative length, oversize claim) return a non-nil err.
-func (ac *AeronCluster) TryClaim(payloadLength int) (IngressClaim, int64, error) {
-	if ac.closed {
-		return IngressClaim{}, aeron.Closed, nil
-	}
-	if payloadLength < 0 {
-		return IngressClaim{}, 0, fmt.Errorf("cluster client: negative payload length %d", payloadLength)
-	}
-	pub := ac.leaderIngress()
-	if pub == nil {
-		return IngressClaim{}, aeron.NotConnected, nil
-	}
-	totalLen := SessionHeaderLength() + payloadLength
-	termIndex, frameOffset, position, err := pub.TryClaim(totalLen)
-	if err != nil {
-		return IngressClaim{}, 0, err
-	}
-	if position <= 0 {
-		return IngressClaim{}, position, nil
-	}
-	// TermBuffer from IngressPublication; claim length already validated by TryClaim.
-	termBuf := pub.TermBuffer(termIndex)
-	fields := ac.ingressHeaderFields()
-	if _, encErr := codecs.EncodeIngressHeader(termBuf.Bytes(), frameOffset, fields); encErr != nil {
-		_ = pub.Abort(termIndex, frameOffset)
-		return IngressClaim{}, 0, encErr
-	}
-	claim := IngressClaim{
-		TermIndex:     termIndex,
-		FrameOffset:   frameOffset,
-		PayloadLength: payloadLength,
-		Position:      position,
-	}
-	return claim, position, nil
-}
-
-// CommitClaim copies payload into the claimed frame and commits the publication claim.
-//
-// Returns claim.Position on success. Operational/session state returns publication
-// codes (Closed, NotConnected) with nil err; programmer errors and transport
-// Commit/Abort failures return non-nil err. Uses ingressPublication directly for
-// in-flight claims; does not re-check IsConnected via leaderIngress.
-func (ac *AeronCluster) CommitClaim(claim IngressClaim, payload []byte) (int64, error) {
-	if ac.closed {
-		return aeron.Closed, nil
-	}
-	pub := ac.ingressPublication
-	if pub == nil {
-		return aeron.NotConnected, nil
-	}
-	if len(payload) != claim.PayloadLength {
-		_ = pub.Abort(claim.TermIndex, claim.FrameOffset)
-		return 0, fmt.Errorf(
-			"cluster client: payload length %d does not match claimed %d",
-			len(payload), claim.PayloadLength,
-		)
-	}
-	termBuf := pub.TermBuffer(claim.TermIndex) // IngressPublication term buffer for claim write.
-	payloadOffset := claim.FrameOffset + logbuffer.OffsetFramePayload + SessionHeaderLength()
-	termBuf.PutBytes(payloadOffset, payload)
-	if err := pub.Commit(claim.TermIndex, claim.FrameOffset); err != nil {
-		return 0, err
-	}
-	return claim.Position, nil
-}
-
-// AbortClaim best-effort aborts an in-flight ingress claim.
-func (ac *AeronCluster) AbortClaim(claim IngressClaim) error {
-	if ac.closed || ac.ingressPublication == nil {
-		return nil
-	}
-	return ac.ingressPublication.Abort(claim.TermIndex, claim.FrameOffset)
-}
-
 // PollEgress polls the egress subscription and dispatches to EgressHandler.
 //
-// When the connect-time egress image closes, the first poll frees its assembler
-// buffer and clears reassembly state, then returns 0; subsequent polls continue
-// on the subscription until Close.
+// When the tracked egress image is already closed at entry, teardown and reattach
+// run before the adapter poll so replacement-image fragments are not reassembled
+// and then discarded. Otherwise the adapter is polled first (Java parity). When
+// the tracked image closes during poll, post-poll teardown frees assembler state
+// and counts as work; pollLeaderRecovery and pollStateChanges run on every path
+// until Close.
 func (ac *AeronCluster) PollEgress() int {
 	if ac.closed || ac.egressAdapter == nil {
 		return 0
 	}
-	if ac.egressImageUnavailable() {
-		ac.teardownEgressImageState()
-		return 0
+
+	// Snapshot before teardown nils egressImage; drives handleDisconnected when reattach fails.
+	closedAtEntry := ac.egressImage != nil && ac.egressImage.IsClosed()
+	lostTrackedEgress := closedAtEntry
+
+	var work int
+	if closedAtEntry {
+		work += ac.pollEgressTeardownClosedImage()
+		ac.tryAttachEgressImage()
 	}
-	return ac.egressAdapter.Poll()
+
+	// Java polls the subscription every spin; adapter-first matches Java pollEgress work accounting.
+	work += ac.egressAdapter.Poll()
+
+	if ac.egressImage != nil && ac.egressImage.IsClosed() {
+		work += ac.pollEgressTeardownClosedImage()
+		lostTrackedEgress = true
+	}
+
+	if ac.egressImage == nil {
+		ac.tryAttachEgressImage()
+	}
+
+	work += ac.pollTransportDisconnect(lostTrackedEgress)
+
+	work += ac.pollLeaderRecovery()
+	work += ac.pollStateChanges()
+
+	return work
 }
 
 // Close sends a best-effort SessionCloseRequest and releases session resources.
@@ -284,11 +214,9 @@ func (ac *AeronCluster) Close() error {
 	}
 	ac.closed = true
 	ac.sendSessionCloseBestEffort()
+	ac.memberMap.closeAll(ac.aeron)
+	ac.ingressPublication = nil
 	ac.teardownEgressImageState()
-	if ac.ingressPublication != nil {
-		_ = ac.ingressPublication.Close()
-		ac.ingressPublication = nil
-	}
 	if ac.egressSubscription != nil {
 		_ = ac.egressSubscription.Close()
 		ac.egressSubscription = nil
@@ -298,27 +226,6 @@ func (ac *AeronCluster) Close() error {
 		ac.aeron = nil
 	}
 	return nil
-}
-
-// SendKeepAlive offers a SessionKeepAlive control frame via leader ingress.
-func (ac *AeronCluster) SendKeepAlive() int64 {
-	if ac.closed {
-		return aeron.Closed
-	}
-	pub := ac.leaderIngress()
-	if pub == nil {
-		return aeron.NotConnected
-	}
-	actingVersion := uint16(gensbe.SessionKeepAliveSbeSchemaVersion)
-	fields := codecs.SessionKeepAliveFields{
-		LeadershipTermID: ac.leadershipTermID,
-		ClusterSessionID: ac.clusterSessionID,
-	}
-	end, ok := codecs.EncodeSessionKeepAlive(ac.controlScratch, 0, actingVersion, fields)
-	if !ok {
-		return aeron.NotConnected
-	}
-	return pub.Offer(ac.controlScratch[:end])
 }
 
 // IsClosed reports whether Close has been invoked.
@@ -337,7 +244,10 @@ func (ac *AeronCluster) ClusterSessionID() int64 {
 	return ac.clusterSessionID
 }
 
-// LeadershipTermID returns the leadership term id from connect.
+// LeadershipTermID returns the live leadership term id for the session.
+//
+// Updated on leadership recovery before ingress reconnect completes. May diverge
+// from ConnectResult.LeadershipTermID after leader change.
 func (ac *AeronCluster) LeadershipTermID() int64 {
 	if ac == nil {
 		return 0
@@ -345,7 +255,10 @@ func (ac *AeronCluster) LeadershipTermID() int64 {
 	return ac.leadershipTermID
 }
 
-// LeaderMemberID returns the leader member id from connect.
+// LeaderMemberID returns the live leader member id for the session.
+//
+// Updated on leadership recovery. May diverge from ConnectResult.LeaderMemberID
+// after leader change.
 func (ac *AeronCluster) LeaderMemberID() int32 {
 	if ac == nil {
 		return 0
@@ -353,7 +266,25 @@ func (ac *AeronCluster) LeaderMemberID() int32 {
 	return ac.leaderMemberID
 }
 
-// IngressPublication returns the leader ingress publication handle.
+// MemberIngressMap returns the live session member map. Do not mutate entries or
+// close publications out of band; on leader change the session replaces the map
+// with a newly built one - do not cache the returned map reference across leader
+// changes. External mutation breaks session invariants. Tests may read entries;
+// use testhooks for injection.
+func (ac *AeronCluster) MemberIngressMap() MemberIngressMap {
+	if ac == nil {
+		return nil
+	}
+	return ac.memberMap
+}
+
+// IngressPublication returns the current leader ingress publication handle.
+//
+// Nil during AWAIT_NEW_LEADER until a NewLeader event triggers ingress rebuild.
+// Nil during AWAIT_NEW_LEADER_CONNECTION until pollLeaderRecovery reconnects via
+// keep-alive on the member-map leader publication. Cleared and repointed on leader
+// change. Do not cache the returned handle across PollEgress spins or leadership
+// recovery.
 func (ac *AeronCluster) IngressPublication() IngressPublication {
 	if ac == nil {
 		return nil
@@ -385,52 +316,49 @@ func (ac *AeronCluster) Aeron() *aeron.Client {
 	return ac.aeron
 }
 
-func (ac *AeronCluster) ingressHeaderFields() codecs.IngressHeaderFields {
-	return codecs.IngressHeaderFields{
-		LeadershipTermID: ac.leadershipTermID,
-		ClusterSessionID: ac.clusterSessionID,
-		Timestamp:        ac.nanoClock(),
-	}
+func (ac *AeronCluster) dispatchSessionEgressFragment(
+	buffer atomic.AtomicBuffer,
+	offset int,
+	length int,
+	header *aeron.Header,
+) {
+	dispatchSessionEgressFragment(
+		ac,
+		ac.ctx.EgressHandler,
+		ac.clusterSessionID,
+		buffer,
+		offset,
+		length,
+		header,
+	)
 }
 
-func (ac *AeronCluster) leaderIngress() IngressPublication {
-	pub := ac.ingressPublication
-	if pub == nil || !pub.IsConnected() {
-		return nil
-	}
-	return pub
+func (ac *AeronCluster) pollEgressTeardownClosedImage() int {
+	ac.teardownEgressImageState()
+	return 1 // Java counts disconnect teardown as poll work.
 }
 
-func (ac *AeronCluster) egressImageUnavailable() bool {
-	return ac.egressImage != nil && ac.egressImage.IsClosed()
+func (ac *AeronCluster) tryAttachEgressImage() {
+	if ac.egressSubscription == nil {
+		return
+	}
+	for i := range ac.egressSubscription.ImageCount() {
+		if image, ok := ac.egressSubscription.ImageAt(i); ok {
+			ac.egressImage = image
+			return
+		}
+	}
 }
 
 func (ac *AeronCluster) teardownEgressImageState() {
 	if ac.egressAdapter == nil {
 		return
 	}
-	// No egressImageTeardownDone flag: egressImage=nil after first pass makes
-	// egressImageUnavailable false, so repeat calls only re-Clear adapter state.
+	// No egressImageTeardownDone flag: egressImage=nil after first pass, so repeat
+	// calls only re-Clear adapter state.
 	if ac.egressImage != nil {
 		ac.egressAdapter.FreeSessionBuffer(ac.egressImage.SessionID())
 	}
 	ac.egressAdapter.Clear()
 	ac.egressImage = nil
-}
-
-func (ac *AeronCluster) sendSessionCloseBestEffort() {
-	// Close sets closed before this call; ac.closed is intentionally not checked here.
-	if ac.ingressPublication == nil || ac.ingressPublication.IsClosed() {
-		return
-	}
-	actingVersion := uint16(gensbe.SessionCloseRequestSbeSchemaVersion)
-	fields := codecs.SessionCloseRequestFields{
-		LeadershipTermID: ac.leadershipTermID,
-		ClusterSessionID: ac.clusterSessionID,
-	}
-	end, ok := codecs.EncodeSessionCloseRequest(ac.controlScratch, 0, actingVersion, fields)
-	if !ok {
-		return
-	}
-	_ = ac.ingressPublication.Offer(ac.controlScratch[:end])
 }

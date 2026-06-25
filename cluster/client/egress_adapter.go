@@ -23,26 +23,14 @@ func NewEgressAdapter(
 	fragmentLimit int,
 	directAssemblers bool,
 ) *EgressAdapter {
-	if fragmentLimit <= 0 {
-		fragmentLimit = DefaultEgressFragmentLimit
-	}
-	assembler := NewFragmentAssemblerWithOptions(
-		func(
-			buffer atomic.AtomicBuffer,
-			offset int,
-			length int,
-			header *aeron.Header,
-		) {
-			handleEgressFragment(handler, clusterSessionID, buffer, offset, length, header)
-		},
-		0,
+	return newEgressAdapterWithHandler(
+		handler,
+		clusterSessionID,
+		subscription,
+		fragmentLimit,
 		directAssemblers,
+		nil,
 	)
-	return &EgressAdapter{
-		subscription:  subscription,
-		fragmentLimit: fragmentLimit,
-		assembler:     assembler,
-	}
 }
 
 // NewEgressAdapterFromContext constructs an EgressAdapter using DefaultEgressFragmentLimit
@@ -54,6 +42,37 @@ func NewEgressAdapterFromContext(
 	subscription *aeron.Subscription,
 ) *EgressAdapter {
 	return NewEgressAdapter(handler, clusterSessionID, subscription, 0, ctx.DirectAssemblers)
+}
+
+// newEgressAdapterWithHandler constructs an EgressAdapter. When onFragment is non-nil
+// it replaces the default handleEgressFragment dispatch (session recovery wiring).
+func newEgressAdapterWithHandler(
+	handler EgressHandler,
+	clusterSessionID int64,
+	subscription *aeron.Subscription,
+	fragmentLimit int,
+	directAssemblers bool,
+	onFragment aeron.FragmentHandler,
+) *EgressAdapter {
+	if fragmentLimit <= 0 {
+		fragmentLimit = DefaultEgressFragmentLimit
+	}
+	if onFragment == nil {
+		onFragment = func(
+			buffer atomic.AtomicBuffer,
+			offset int,
+			length int,
+			header *aeron.Header,
+		) {
+			handleEgressFragment(handler, clusterSessionID, buffer, offset, length, header)
+		}
+	}
+	assembler := NewFragmentAssemblerWithOptions(onFragment, 0, directAssemblers)
+	return &EgressAdapter{
+		subscription:  subscription,
+		fragmentLimit: fragmentLimit,
+		assembler:     assembler,
+	}
 }
 
 // DirectAssemblers reports the isDirectAssemblers policy stored at construction.

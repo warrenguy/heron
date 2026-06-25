@@ -160,6 +160,19 @@ func TestNewAeronCluster_rejectsInvalidConnectResult(t *testing.T) {
 			},
 			wantErr: "cluster client: leader ingress publication mismatch",
 		},
+		{
+			name: "channel_only_ingress_mismatch",
+			mutate: func(result *client.ConnectResult) {
+				otherPub := aeron.NewTestExclusivePublicationForHooks(t)
+				result.MemberIngressMap = client.MemberIngressMap{
+					channelOnlyMemberID: &client.MemberIngress{
+						MemberID:    channelOnlyMemberID,
+						Publication: otherPub,
+					},
+				}
+			},
+			wantErr: "cluster client: leader ingress publication mismatch",
+		},
 	}
 
 	for _, tc := range tests {
@@ -328,6 +341,7 @@ func TestAeronCluster_Offer_payloadLengthBoundaries(t *testing.T) {
 		maxMessageLength := pub.MaxMessageLength()
 		oversizePayload := make([]byte, maxMessageLength-client.SessionHeaderLength()+1)
 		require.Equal(t, aeron.MaxPositionExceeded, ac.Offer(oversizePayload))
+		require.Equal(t, client.SessionStateConnected, ac.SessionState())
 	})
 }
 
@@ -355,6 +369,7 @@ func TestAeronCluster_TryClaimCommit_roundtrip(t *testing.T) {
 	committedPosition, err := ac.CommitClaim(claim, payload)
 	require.NoError(t, err)
 	require.Equal(t, position, committedPosition)
+	require.Equal(t, client.SessionStateConnected, ac.SessionState())
 	payloadOffset := headerStart + client.SessionHeaderLength()
 	require.Equal(t, payload, termBuf.Bytes()[payloadOffset:payloadOffset+len(payload)])
 

@@ -30,8 +30,10 @@ const channelOnlyMemberID int32 = 0
 // MemberIngressMap maps cluster memberId to ingress state. Java endpointByIdMap /
 // memberByIdMap parity.
 //
-// Built at connect and leadership recovery from parsed endpoints. Callers must
-// replace the map on leader change rather than mutating entries across goroutines.
+// Built at connect and leadership recovery from parsed endpoints. On leader change
+// the session replaces the map with a newly built one; do not cache a map reference
+// across leader changes or mutate entries in place.
+//
 // Typical cardinality is 1-5 members; memory is O(members x endpoint string length).
 type MemberIngressMap map[int32]*MemberIngress
 
@@ -55,6 +57,16 @@ func (m MemberIngressMap) Require(memberID int32) (*MemberIngress, error) {
 		return nil, fmt.Errorf("cluster client: member id %d not in ingress map", memberID)
 	}
 	return ingress, nil
+}
+
+// closeAll closes every member's publication. Ranging a nil map is a no-op.
+func (m MemberIngressMap) closeAll(client *aeron.Client) {
+	for _, ingress := range m {
+		if ingress == nil {
+			continue
+		}
+		ingress.closePublication(client)
+	}
 }
 
 // ChannelFor returns the Aeron ingress channel URI for offering to memberID.
@@ -130,7 +142,7 @@ func (ingress *MemberIngress) asyncOfferAddChannel(
 	if ingress == nil {
 		return errors.New("cluster client: nil member ingress")
 	}
-	if ingress.RegistrationID != conductor.NullCorrelationID {
+	if ingress.hasPendingRegistration() {
 		return nil
 	}
 	var (
@@ -159,7 +171,7 @@ func (ingress *MemberIngress) asyncPollAddUnhooked(
 	if ingress.Publication != nil || ingress.PublicationErr != nil {
 		return true, ingress.PublicationErr
 	}
-	if ingress.RegistrationID == conductor.NullCorrelationID {
+	if !ingress.hasPendingRegistration() {
 		return false, nil
 	}
 	var (
@@ -186,6 +198,82 @@ func (ingress *MemberIngress) asyncPollAddUnhooked(
 	}
 	ingress.Publication = pub
 	return true, nil
+}
+
+func (ingress *MemberIngress) hasPendingRegistration() bool {
+	return ingress != nil && ingress.RegistrationID != conductor.NullCorrelationID
+}
+
+// registrationSettledWithoutPublication reports async add completion with no pub.
+// Caller must ensure ingress is non-nil.
+func (ingress *MemberIngress) registrationSettledWithoutPublication() bool {
+	return ingress.RegistrationID == conductor.NullCorrelationID && ingress.Publication == nil
+}
+
+// connectedPublication returns the member ingress publication when it is open and
+// connected, otherwise nil. Nil receiver yields nil.
+func (ingress *MemberIngress) connectedPublication() IngressPublication {
+	if ingress == nil || ingress.Publication == nil || !ingress.Publication.IsConnected() {
+		return nil
+	}
+	return ingress.Publication
+}
+
+// reusablePublicationForEndpoint returns a connected publication when the member
+// endpoint matches and registration settled without error.
+func (ingress *MemberIngress) reusablePublicationForEndpoint(endpoint string) IngressPublication {
+	if ingress == nil || ingress.PublicationErr != nil {
+		return nil
+	}
+	pub := ingress.connectedPublication()
+	if pub == nil || ingress.Endpoint != endpoint {
+		return nil
+	}
+	return pub
+}
+
+// pollPendingMemberIngressRegistration polls async add registration for every map
+// entry with a pending RegistrationID. Shared by connect and session recovery.
+func pollPendingMemberIngressRegistration(
+	m MemberIngressMap,
+	ctx ClusterContext,
+	client *aeron.Client,
+) {
+	for _, ingress := range m {
+		if !ingress.hasPendingRegistration() {
+			continue
+		}
+		_, _ = ingress.asyncPollAdd(ctx, client)
+	}
+}
+
+// firstPublicationErr returns the first non-nil member PublicationErr, or nil.
+// Ranging a nil map is a no-op.
+func (m MemberIngressMap) firstPublicationErr() error {
+	for _, ingress := range m {
+		if ingress != nil && ingress.PublicationErr != nil {
+			return ingress.PublicationErr
+		}
+	}
+	return nil
+}
+
+// failIfIngressUnrecoverable reports a terminal PublicationErr when every member
+// registration has completed without a publication. Shared by connect and recovery.
+func (m MemberIngressMap) failIfIngressUnrecoverable() error {
+	var err error
+	for _, ingress := range m {
+		if ingress == nil {
+			continue
+		}
+		if !ingress.registrationSettledWithoutPublication() {
+			return nil
+		}
+		if err == nil && ingress.PublicationErr != nil {
+			err = ingress.PublicationErr
+		}
+	}
+	return err
 }
 
 func (ingress *MemberIngress) closePublication(client *aeron.Client) {

@@ -317,6 +317,19 @@ func encodeSessionEventWireOmittedHeartbeat(t *testing.T, clusterSessionID int64
 	)
 }
 
+func encodeSessionEventClosedWire(t *testing.T, clusterSessionID int64) []byte {
+	t.Helper()
+
+	fields := defaultSessionEventFields([]byte("session-closed"))
+	fields.Code = gensbe.EventCode_CLOSED
+	return encodeSessionEventWireWithFields(
+		t,
+		clusterSessionID,
+		fields,
+		gensbe.SessionEventSbeSchemaVersion,
+	)
+}
+
 func encodeNewLeaderWireWithEndpoints(
 	t *testing.T,
 	clusterSessionID int64,
@@ -494,6 +507,39 @@ func invokeHandleEgressFragmentAt(
 	t.Helper()
 
 	handleEgressFragment(handler, clusterSessionID, atomic.Wrap(buf), offset, length, &aeron.Header{})
+}
+
+func invokeHandleSessionEgressFragmentAt(
+	t *testing.T,
+	ac *AeronCluster,
+	handler EgressHandler,
+	clusterSessionID int64,
+	buf []byte,
+	offset int,
+	length int,
+) {
+	t.Helper()
+
+	dispatchSessionEgressFragment(
+		ac,
+		handler,
+		clusterSessionID,
+		atomic.Wrap(buf),
+		offset,
+		length,
+		&aeron.Header{},
+	)
+}
+
+func invokeHandleSessionEgressFragment(
+	t *testing.T,
+	ac *AeronCluster,
+	handler EgressHandler,
+	clusterSessionID int64,
+	wire []byte,
+) {
+	t.Helper()
+	invokeHandleSessionEgressFragmentAt(t, ac, handler, clusterSessionID, wire, 0, len(wire))
 }
 
 func requireHandleEgressFragmentNoPanic(
@@ -765,6 +811,27 @@ func writeFragmentedWireToTerm(
 	t.Helper()
 
 	writeHookCommittedFragmentFrames(t, termBuffer, 0, splitWireFragmentSpecs(wire))
+}
+
+func writeFirstSplitWireFragmentToTerm(
+	t fragmentTestHelper,
+	termBuffer atomic.AtomicBuffer,
+	wire []byte,
+) {
+	t.Helper()
+
+	writeHookCommittedFragmentFrames(t, termBuffer, 0, splitWireFragmentSpecs(wire)[:1])
+}
+
+func appendRemainingSplitWireFragmentsToTerm(
+	t fragmentTestHelper,
+	termBuffer atomic.AtomicBuffer,
+	wire []byte,
+) {
+	t.Helper()
+
+	offset := nextHookTermWriteOffset(termBuffer)
+	writeHookCommittedFragmentFrames(t, termBuffer, offset, splitWireFragmentSpecs(wire)[1:])
 }
 
 func writeSessionEventForConnect(

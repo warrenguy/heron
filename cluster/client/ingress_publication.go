@@ -40,3 +40,11 @@ func ingressSessionLimits(pub IngressPublication) (scratchLen, maxFrameLen int) 
 	}
 	return pub.MaxMessageLength(), 0
 }
+
+func ingressScratchForPub(pub IngressPublication, scratch []byte) ([]byte, int) {
+	scratchLen, maxFrame := ingressSessionLimits(pub)
+	if cap(scratch) != scratchLen {
+		return make([]byte, scratchLen), maxFrame
+	}
+	return scratch, maxFrame
+}

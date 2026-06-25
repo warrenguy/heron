@@ -16,8 +16,12 @@ import (
 )
 
 const (
-	testClusterSessionID   int64 = 4242
-	testLeadershipTermID   int64 = 100
+	testClusterSessionID int64 = 4242
+	testLeadershipTermID int64 = 100
+
+	// testLeaderMemberID is the wire leader id on connect fixtures. The default
+	// MemberIngressMap uses channelOnlyMemberID (0) for IPC channel-only smoke
+	// while LeaderMemberID stays 1; multi-member fixtures use matching ids.
 	testLeaderMemberID     int32 = 1
 	testIngressTimestampNs int64 = 1700000000123
 	channelOnlyMemberID    int32 = 0
