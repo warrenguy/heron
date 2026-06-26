@@ -51,17 +51,112 @@ const (
 	testHookImageCorrelationID          int64 = 9102
 	testHookImageSessionID              int32 = 1002
 	testHookSubscriberPositionCounterID int32 = 4
+
+	// TestHookSubscriptionRegistrationID is the registration id for cross-package subscription hooks.
+	TestHookSubscriptionRegistrationID = testHookSubscriptionRegistrationID
+	// TestHookSubscriptionStreamID is the stream id for cross-package subscription hooks.
+	TestHookSubscriptionStreamID = testHookSubscriptionStreamID
 )
 
 // NewTestSubscriptionForHooks builds a subscription for cross-package close tests.
 func NewTestSubscriptionForHooks(tb testing.TB) *Subscription {
 	tb.Helper()
 
-	return newSubscription(
+	return NewSubscriptionForHooks(
 		testHookSubscriptionRegistrationID,
 		testHookSubscriptionStreamID,
 		testHookIPCChannel,
 	)
+}
+
+// NewSubscriptionForHooks builds a subscription with caller-supplied channel URI.
+func NewSubscriptionForHooks(
+	registrationID int64,
+	streamID int32,
+	channel string,
+) *Subscription {
+	return newSubscription(registrationID, streamID, channel)
+}
+
+// SubscriptionApplyReadyForHooks applies SubscriptionReady channel-status counter wiring.
+func SubscriptionApplyReadyForHooks(sub *Subscription, channelStatusCounterID int32) {
+	sub.applySubscriptionReady(channelStatusCounterID)
+}
+
+// SubscriptionSetCountersForHooks binds a counters reader for channel-status reads.
+func SubscriptionSetCountersForHooks(sub *Subscription, counters *cnc.CountersReader) {
+	sub.counters = counters
+}
+
+// SubscriptionCountersForHooks returns the counters reader on sub.
+func SubscriptionCountersForHooks(sub *Subscription) *cnc.CountersReader {
+	if sub == nil {
+		return nil
+	}
+	return sub.counters
+}
+
+// SubscriptionSetReceiveChannelStatusForHooks seeds the receive channel-status counter value.
+func SubscriptionSetReceiveChannelStatusForHooks(sub *Subscription, value int64) {
+	if sub == nil || sub.counters == nil {
+		return
+	}
+	_ = sub.counters.SetCounterValue(sub.channelStatusCounterID, value)
+}
+
+// NewWildcardUDPReceiveCountersForHooks builds receive channel-status and optional
+// LOCAL_SOCKADDR counters for UDP endpoint=:0 wildcard resolution tests.
+func NewWildcardUDPReceiveCountersForHooks(
+	tb testing.TB,
+	channel string,
+	channelStatusCounterID int32,
+	bindAddress string,
+) *cnc.CountersReader {
+	tb.Helper()
+	require.Equal(tb, int32(0), channelStatusCounterID)
+
+	meta := make([]byte, cnc.CounterMetadataLength*2)
+	values := make([]byte, cnc.CounterValueLength*2)
+	require.NoError(tb, cnc.WriteChannelStatusCounterRecord(
+		meta,
+		values,
+		0,
+		cnc.CounterRecordAllocated,
+		cnc.DriverReceiveChannelStatusTypeID,
+		channel,
+		9001,
+		cnc.ChannelEndpointStatusActive,
+	))
+	if bindAddress != "" {
+		require.NoError(tb, cnc.WriteLocalSocketAddressCounterRecord(
+			meta,
+			values,
+			1,
+			cnc.CounterRecordAllocated,
+			9001,
+			channelStatusCounterID,
+			bindAddress,
+			cnc.ChannelEndpointStatusActive,
+		))
+	}
+
+	reader, err := cnc.NewCountersReader(meta, values)
+	require.NoError(tb, err)
+	return reader
+}
+
+// WireSubscriptionUDPWildcardForHooks applies subscription-ready wiring and counters
+// for UDP wildcard receive resolution tests.
+func WireSubscriptionUDPWildcardForHooks(
+	sub *Subscription,
+	counters *cnc.CountersReader,
+	receiveChannelActive bool,
+) {
+	SubscriptionApplyReadyForHooks(sub, 0)
+	SubscriptionSetCountersForHooks(sub, counters)
+	if receiveChannelActive {
+		SubscriptionSetReceiveChannelStatusForHooks(sub, cnc.ChannelEndpointStatusActive)
+	}
 }
 
 // NewFileBackedPublicationForHooks builds a file-backed publication for linger close tests.
@@ -432,7 +527,11 @@ func NewTestClientFromConductorFixture(
 }
 
 const (
-	asyncConnectTestIngressRegID int64 = 3001
+	// AsyncConnectTestIngressRegID is the synthetic ingress publication registration id
+	// used by AsyncConnectTestHarness.
+	AsyncConnectTestIngressRegID int64 = 3001
+
+	asyncConnectTestIngressRegID = AsyncConnectTestIngressRegID
 )
 
 // AsyncConnectTestHarness wires a synthetic conductor fixture for cluster connect tests.

@@ -47,10 +47,9 @@ func newPublicationFromReady(
 		counters.CounterValuesBuffer(),
 	)
 	if ready.ChannelStatusCounterID != cnc.NullCounterID {
-		if err := requireActiveCounter(
+		if err := requireAllocatedCounter(
 			counters,
 			ready.ChannelStatusCounterID,
-			ready.RegistrationID,
 			cnc.DriverSendChannelStatusTypeID,
 			"channel status",
 		); err != nil {
@@ -158,4 +157,21 @@ func requireActiveCounter(
 		counterID,
 		registrationID,
 	)
+}
+
+// requireAllocatedCounter validates a shared endpoint counter (send/receive channel
+// status) by allocation and type only. The counter's registration id is the channel
+// endpoint's, not this publication's, so it is not matched: a publication that reuses
+// an existing endpoint (e.g. ingress reconnect to a new leader) sees the endpoint's
+// original registration. Java does not validate this counter at construction.
+func requireAllocatedCounter(
+	counters *cnc.CountersReader,
+	counterID int32,
+	typeID int32,
+	label string,
+) error {
+	if counters.IsCounterAllocatedOfType(counterID, typeID) {
+		return nil
+	}
+	return fmt.Errorf("aeron: %s counter %d is not allocated", label, counterID)
 }

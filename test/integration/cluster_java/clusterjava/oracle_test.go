@@ -28,6 +28,37 @@ func TestHarnessConstants(t *testing.T) {
 		{name: "EgressChannel", got: clusterjava.EgressChannel, want: "aeron:ipc?term-length=64k"},
 		{name: "IngressEndpoints", got: clusterjava.IngressEndpoints, want: ""},
 		{name: "ComposeAeronDir", got: clusterjava.ComposeAeronDir, want: "/dev/shm/aeron"},
+		{name: "ComposeDir", got: clusterjava.ComposeDir, want: "/app/compose"},
+		{
+			name: "ComposeGateEnvKey",
+			got:  clusterjava.ComposeGateEnvKey,
+			want: "HERON_CLUSTER_JAVA_COMPOSE",
+		},
+		{
+			name: "FailoverComposeGateEnvKey",
+			got:  clusterjava.FailoverComposeGateEnvKey,
+			want: "HERON_CLUSTER_JAVA_FAILOVER_COMPOSE",
+		},
+		{
+			name: "ComposeSkipHint",
+			got:  clusterjava.ComposeSkipHint,
+			want: "cluster java requires docker compose; run make test-cluster-java",
+		},
+		{
+			name: "FailoverComposeSkipHint",
+			got:  clusterjava.FailoverComposeSkipHint,
+			want: "failover requires docker compose; run make test-cluster-java-failover",
+		},
+		{
+			name: "ComposeDirEnvKey",
+			got:  clusterjava.ComposeDirEnvKey,
+			want: "HERON_CLUSTER_JAVA_COMPOSE_DIR",
+		},
+		{
+			name: "FailoverComposeProfileName",
+			got:  clusterjava.FailoverComposeProfileName,
+			want: "failover",
+		},
 		{name: "BaseDir", got: clusterjava.BaseDir, want: "/tmp/heron-cluster-0"},
 		{
 			name: "ClusterMembersString",

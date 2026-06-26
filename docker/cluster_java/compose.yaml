@@ -31,6 +31,7 @@ services:
     build:
       context: ../..
       dockerfile: docker/cluster_java/go/Dockerfile
+      target: runtime
       args:
         GO_VERSION: ${GO_VERSION:-1.26.4}
     user: *app-user

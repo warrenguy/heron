@@ -50,7 +50,7 @@ type Publication struct {
 }
 
 // ChannelEndpointStatusActive mirrors Java ChannelEndpointStatus.ACTIVE.
-const ChannelEndpointStatusActive int64 = 1
+const ChannelEndpointStatusActive = cnc.ChannelEndpointStatusActive
 
 func (pub *Publication) RegistrationID() int64 {
 	return pub.registrationID

@@ -57,9 +57,9 @@ func (ac *AsyncConnect) encodeConnectWire(
 // Wires larger than the publication maxMessageLength are not rejected here; Java
 // defers that ceiling to Publication.offer; see pollSendMessage.
 func (ac *AsyncConnect) prepareConnectRequest() error {
-	responseChannel, ok := resolveResponseChannel(ac.egressSubscription)
+	responseChannel, ok := ac.resolvedResponseChannel()
 	if !ok {
-		return errors.New("cluster client: egress subscription cannot resolve ipc/ipcx response channel")
+		return errors.New("cluster client: egress subscription cannot resolve response channel")
 	}
 	ac.ensureCorrelationID()
 	credentials := ac.ctx.CredentialsSupplier.EncodedCredentials()

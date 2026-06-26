@@ -173,6 +173,23 @@ func (reader *CountersReader) IsCounterActive(
 	return reader.counterRecordMatches(counterID, registrationID, typeID)
 }
 
+// IsCounterAllocatedOfType reports whether counterID is allocated with typeID,
+// without matching a registration id.
+//
+// Use for shared endpoint counters (send/receive channel status) whose registration
+// id belongs to the channel endpoint, not the individual publication or subscription.
+func (reader *CountersReader) IsCounterAllocatedOfType(counterID, typeID int32) bool {
+	if reader == nil {
+		return false
+	}
+	if counterID < 0 || counterID > reader.maxCounterID {
+		return false
+	}
+	metadataOffset := counterMetadataOffset(counterID)
+	state := reader.metadata.GetInt32Volatile(metadataOffset + CounterMetadataStateOffset)
+	return reader.counterAllocatedOfTypeAt(metadataOffset, state, typeID)
+}
+
 func (reader *CountersReader) counterRecordMatches(
 	counterID int32,
 	registrationID int64,
@@ -194,10 +211,7 @@ func (reader *CountersReader) counterRecordMatchesAt(
 	registrationID int64,
 	typeID int32,
 ) bool {
-	if state != CounterRecordAllocated {
-		return false
-	}
-	if reader.metadata.GetInt32(metadataOffset+CounterMetadataTypeIDOffset) != typeID {
+	if !reader.counterAllocatedOfTypeAt(metadataOffset, state, typeID) {
 		return false
 	}
 
@@ -210,6 +224,17 @@ func (reader *CountersReader) counterRecordMatchesAt(
 		recordRegistrationID = reader.metadata.GetInt64(metadataOffset + CounterMetadataKeyOffset)
 	}
 	return recordRegistrationID == registrationID
+}
+
+func (reader *CountersReader) counterAllocatedOfTypeAt(
+	metadataOffset int,
+	state int32,
+	typeID int32,
+) bool {
+	if state != CounterRecordAllocated {
+		return false
+	}
+	return reader.metadata.GetInt32(metadataOffset+CounterMetadataTypeIDOffset) == typeID
 }
 
 func counterRegistrationIDInValuesBuffer(typeID int32) bool {

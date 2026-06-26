@@ -22,6 +22,7 @@ type Subscription struct {
 	channel        string
 
 	channelStatusCounterID int32
+	counters               *cnc.CountersReader
 
 	images []*Image
 	// roundRobinIndex advances each Poll for fairness. Java Subscription stores

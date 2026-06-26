@@ -4,12 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/warrenguy/heron/aeron"
 )
 
 const (
-	ingressEndpointParam = "endpoint="
-	aeronSchemePrefix    = "aeron:"
-	aeronSpyPrefix       = "aeron-spy:"
+	aeronSchemePrefix = "aeron:"
+	aeronSpyPrefix    = "aeron-spy:"
 )
 
 // ingressChannelMedia strips aeron-spy: and returns the media token (e.g. "ipc",
@@ -48,54 +49,16 @@ func ingressChannelIsUDP(channel string) bool {
 	return ingressChannelMediaIs(channel, "udp")
 }
 
-func channelParamIndex(channel, param string, acceptPipeBoundary bool) int {
-	searchStart := 0
-	for searchStart < len(channel) {
-		rel := strings.Index(channel[searchStart:], param)
-		if rel < 0 {
-			return -1
-		}
-		idx := searchStart + rel
-		if idx > 0 {
-			prev := channel[idx-1]
-			if prev == '?' || (acceptPipeBoundary && prev == '|') {
-				return idx
-			}
-		}
-		searchStart = idx + 1
-	}
-	return -1
-}
-
 // ingressChannelQueryEndpointParamIndex returns the index of endpoint= immediately
 // after ?, or -1 when absent. Piped |endpoint= is not matched.
 func ingressChannelQueryEndpointParamIndex(channel string) int {
-	return channelParamIndex(channel, ingressEndpointParam, false)
+	return aeron.ChannelParamIndex(channel, aeron.ChannelEndpointParam, false)
 }
 
 // ingressChannelEndpointParamIndex returns the index of endpoint= at a query param
 // boundary (immediately after ? or |), or -1 when absent.
 func ingressChannelEndpointParamIndex(channel string) int {
-	return channelParamIndex(channel, ingressEndpointParam, true)
-}
-
-func appendChannelParam(channel, param, value string) string {
-	if strings.HasSuffix(channel, "?") {
-		return channel + param + value
-	}
-	if strings.Contains(channel, "?") {
-		return channel + "|" + param + value
-	}
-	return channel + "?" + param + value
-}
-
-func replaceChannelParamValue(channel string, paramIdx int, param, value string) string {
-	start := paramIdx + len(param)
-	rest := channel[start:]
-	if pipe := strings.IndexByte(rest, '|'); pipe >= 0 {
-		return channel[:start] + value + rest[pipe:]
-	}
-	return channel[:start] + value
+	return aeron.ChannelParamIndex(channel, aeron.ChannelEndpointParam, true)
 }
 
 func validateIngressMemberEndpoint(memberEndpoint string) error {
@@ -142,7 +105,9 @@ func BuildIngressChannel(ingressChannel, memberEndpoint string) (string, error) 
 	}
 	idx := ingressChannelEndpointParamIndex(ingressChannel)
 	if idx >= 0 {
-		return replaceChannelParamValue(ingressChannel, idx, ingressEndpointParam, memberEndpoint), nil
+		return aeron.ReplaceChannelParamValue(
+			ingressChannel, idx, aeron.ChannelEndpointParam, memberEndpoint,
+		), nil
 	}
-	return appendChannelParam(ingressChannel, ingressEndpointParam, memberEndpoint), nil
+	return aeron.AppendChannelParam(ingressChannel, aeron.ChannelEndpointParam, memberEndpoint), nil
 }

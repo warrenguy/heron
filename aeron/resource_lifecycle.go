@@ -92,12 +92,7 @@ func (conductorResourceLifecycle) BindSubscription(
 	sub conductor.SubscriptionHandle,
 	clientConductor *conductor.Conductor,
 ) error {
-	subscription, err := subscriptionFromHandle(sub)
-	if err != nil {
-		return err
-	}
-	subscription.conductor = clientConductor
-	return nil
+	return bindSubscriptionHandle(sub, clientConductor)
 }
 
 func (conductorResourceLifecycle) MarkPublicationClosed(pub conductor.PublicationHandle) {

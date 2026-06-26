@@ -397,8 +397,28 @@ func TestNewExclusivePublicationFromReadyForTest_inactiveChannelCounter(t *testi
 	require.EqualError(
 		t,
 		err,
-		"aeron: channel status counter 2 is not active for registration 9001",
+		"aeron: channel status counter 2 is not allocated",
 	)
+}
+
+func TestNewExclusivePublicationFromReadyForTest_reusedEndpointChannelCounter(t *testing.T) {
+	log := aeron.NewTestMappedLogForTest(t, aeron.DefaultTestExclusivePublicationLogConfig())
+	t.Cleanup(func() { _ = log.Close() })
+
+	reader := aeron.NewTestCountersReaderMismatchedChannelStatusForTest(
+		t,
+		1_000_000,
+		aeron.TestPublicationRegistrationID+1,
+	)
+
+	pub, err := aeron.NewExclusivePublicationFromReadyForTest(
+		aeron.PublicationBuffersReadyForTest(),
+		log,
+		reader,
+		"aeron:ipc",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, pub)
 }
 
 func TestNewExclusivePublicationFromReadyForTest_invalidMetadata(t *testing.T) {

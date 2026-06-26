@@ -13,6 +13,7 @@ import (
 	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/agrona/atomic"
@@ -606,18 +607,255 @@ func TestAsyncConnect_timeout(t *testing.T) {
 	require.ErrorContains(t, pollErr, "cluster client: connect timeout")
 }
 
-func TestNewAsyncConnect_udpEgressRejected(t *testing.T) {
+func TestNewAsyncConnect_udpEgressAppliesRejoinFalse(t *testing.T) {
 	t.Parallel()
 
 	harness := aeron.NewAsyncConnectTestHarness(t)
 	ctx := baseAsyncConnectContext(harness.Client, "")
-	ctx.EgressChannel = "aeron:udp?endpoint=localhost:0"
-	_, err := NewAsyncConnect(ctx)
-	require.EqualError(
+	ctx.EgressChannel = asyncConnectUDPEgressWildcardChannel
+	ac, err := NewAsyncConnect(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ac.Close() })
+	require.Equal(
 		t,
-		err,
-		"cluster client: UDP egress response channel not supported; use ipc or ipcx",
+		asyncConnectUDPEgressWildcardWithRejoin,
+		ac.ClusterContextForTest().EgressChannel,
 	)
+}
+
+func TestConcludeClusterContext_invalidEgressChannel(t *testing.T) {
+	t.Parallel()
+
+	ctx := baseAsyncConnectContext(nil, "")
+	ctx.EgressChannel = "not-a-channel"
+	_, _, _, err := ConcludeClusterContextForTest(ctx)
+	require.EqualError(t, err, "cluster client: invalid egress channel: not-a-channel")
+}
+
+const (
+	asyncConnectUDPEgressWildcardChannel    = "aeron:udp?endpoint=localhost:0"
+	asyncConnectUDPEgressWildcardWithRejoin = asyncConnectUDPEgressWildcardChannel +
+		"|rejoin=false"
+
+	asyncConnectUDPEgressChannelStatusCounterID int32 = 3
+	asyncConnectUDPEgressBindAddress                  = "127.0.0.1:54321"
+	asyncConnectUDPEgressResolvedChannel              = "aeron:udp?endpoint=" +
+		asyncConnectUDPEgressBindAddress + "|rejoin=false"
+	errEgressCannotResolveResponseChannel = "cluster client: egress subscription cannot " +
+		"resolve response channel"
+)
+
+func asyncConnectContextWithUDPEgressWildcard(ctx ClusterContext) ClusterContext {
+	ctx.EgressChannel = asyncConnectUDPEgressWildcardChannel
+	return ctx
+}
+
+type asyncConnectUDPEgressCounters struct {
+	reader *cnc.CountersReader
+	meta   []byte
+	values []byte
+}
+
+func newAsyncConnectUDPEgressCounters(
+	t *testing.T,
+	bindAddress string,
+) *asyncConnectUDPEgressCounters {
+	t.Helper()
+
+	meta := make([]byte, cnc.CounterMetadataLength*5)
+	values := make([]byte, cnc.CounterValueLength*5)
+	cnc.WriteCounterRecord(
+		meta,
+		values,
+		0,
+		cnc.CounterRecordAllocated,
+		cnc.DriverPublisherLimitTypeID,
+		aeron.AsyncConnectTestIngressRegID,
+		1<<40,
+	)
+	require.NoError(t, cnc.WriteChannelStatusCounterRecord(
+		meta,
+		values,
+		1,
+		cnc.CounterRecordAllocated,
+		cnc.DriverSendChannelStatusTypeID,
+		asyncConnectIPCChannel,
+		aeron.AsyncConnectTestIngressRegID,
+		cnc.ChannelEndpointStatusActive,
+	))
+	// Slot 2 must be allocated so CNC scan reaches subscription channel-status id 3.
+	cnc.WriteCounterRecord(
+		meta,
+		values,
+		2,
+		cnc.CounterRecordAllocated,
+		cnc.ClientHeartbeatTypeID,
+		1,
+		0,
+	)
+	require.NoError(t, cnc.WriteChannelStatusCounterRecord(
+		meta,
+		values,
+		asyncConnectUDPEgressChannelStatusCounterID,
+		cnc.CounterRecordAllocated,
+		cnc.DriverReceiveChannelStatusTypeID,
+		asyncConnectUDPEgressWildcardWithRejoin,
+		aeron.TestHookSubscriptionRegistrationID,
+		cnc.ChannelEndpointStatusActive,
+	))
+	if bindAddress != "" {
+		require.NoError(t, cnc.WriteLocalSocketAddressCounterRecord(
+			meta,
+			values,
+			4,
+			cnc.CounterRecordAllocated,
+			aeron.TestHookSubscriptionRegistrationID,
+			asyncConnectUDPEgressChannelStatusCounterID,
+			bindAddress,
+			cnc.ChannelEndpointStatusActive,
+		))
+	}
+
+	reader, err := cnc.NewCountersReader(meta, values)
+	require.NoError(t, err)
+	return &asyncConnectUDPEgressCounters{
+		reader: reader,
+		meta:   meta,
+		values: values,
+	}
+}
+
+func (fixture *asyncConnectUDPEgressCounters) setBindAddress(
+	t *testing.T,
+	bindAddress string,
+) {
+	t.Helper()
+
+	require.NoError(t, cnc.WriteLocalSocketAddressCounterRecord(
+		fixture.meta,
+		fixture.values,
+		4,
+		cnc.CounterRecordAllocated,
+		aeron.TestHookSubscriptionRegistrationID,
+		asyncConnectUDPEgressChannelStatusCounterID,
+		bindAddress,
+		cnc.ChannelEndpointStatusActive,
+	))
+}
+
+func installAsyncConnectUDPEgressCounters(
+	t *testing.T,
+	harness *aeron.AsyncConnectTestHarness,
+	fixture *asyncConnectUDPEgressCounters,
+) {
+	t.Helper()
+
+	harness.Fixture().Conductor.SetCountersReaderForTest(fixture.reader)
+}
+
+func setupAsyncConnectUDPEgressAwait(
+	t *testing.T,
+) (*aeron.AsyncConnectTestHarness, *AsyncConnect, *asyncConnectUDPEgressCounters) {
+	t.Helper()
+
+	harness, ac := setupAsyncConnectWithContext(t, asyncConnectContextWithUDPEgressWildcard)
+	t.Cleanup(func() { _ = ac.Close() })
+
+	fixture := newAsyncConnectUDPEgressCounters(t, "")
+	installAsyncConnectUDPEgressCounters(t, harness, fixture)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		harness.DoWork()
+		harness.RespondPendingAdds()
+		_, err := ac.Poll()
+		require.NoError(t, err)
+		if ac.State() == ConnectStateAwaitPublicationConnected {
+			require.Same(
+				t,
+				fixture.reader,
+				aeron.SubscriptionCountersForHooks(ac.EgressSubscriptionForTest()),
+			)
+			return harness, ac, fixture
+		}
+		time.Sleep(time.Millisecond)
+	}
+	require.FailNow(t, "timed out waiting for AWAIT_PUBLICATION_CONNECTED")
+	return nil, nil, nil
+}
+
+func setupAsyncConnectUDPEgressPrepareConnect(
+	t *testing.T,
+	bindAddress string,
+) (*aeron.AsyncConnectTestHarness, *AsyncConnect) {
+	t.Helper()
+
+	harness, ac := setupAsyncConnectWithContext(t, asyncConnectContextWithUDPEgressWildcard)
+	t.Cleanup(func() { _ = ac.Close() })
+
+	fixture := newAsyncConnectUDPEgressCounters(t, bindAddress)
+	installAsyncConnectUDPEgressCounters(t, harness, fixture)
+	setupAsyncConnectEgressReady(t, harness, ac)
+	require.Same(t, fixture.reader, aeron.SubscriptionCountersForHooks(ac.EgressSubscriptionForTest()))
+	return harness, ac
+}
+
+func requireConnectRequestResponseChannel(t *testing.T, ac *AsyncConnect, want string) {
+	t.Helper()
+
+	decoded, ok := codecs.TryDecodeByTemplate(
+		ac.ConnectWireBufferForTest()[:ac.ConnectWireLengthForTest()],
+		0,
+		codecs.ClusterDecodeMaxVarLen,
+	)
+	require.True(t, ok)
+	fields, ok := decoded.Fields.(codecs.SessionConnectRequestFields)
+	require.True(t, ok)
+	require.Equal(t, want, string(fields.ResponseChannel))
+}
+
+func TestAsyncConnect_pollAwaitPublicationConnected_udpWildcardResolves(t *testing.T) {
+	t.Parallel()
+
+	harness, ac, fixture := setupAsyncConnectUDPEgressAwait(t)
+
+	harness.DoWork()
+	_, err := ac.Poll()
+	require.NoError(t, err)
+	require.Equal(t, ConnectStateAwaitPublicationConnected, ac.State())
+
+	fixture.setBindAddress(t, asyncConnectUDPEgressBindAddress)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		harness.DoWork()
+		_, err = ac.Poll()
+		require.NoError(t, err)
+		if ac.State() == ConnectStateSendMessage {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	require.Equal(t, ConnectStateSendMessage, ac.State())
+	requireConnectRequestResponseChannel(t, ac, asyncConnectUDPEgressResolvedChannel)
+}
+
+func TestAsyncConnect_prepareConnectRequest_udpUnresolvedResponseChannel(t *testing.T) {
+	t.Parallel()
+
+	_, ac := setupAsyncConnectUDPEgressPrepareConnect(t, "")
+
+	err := ac.PrepareConnectRequestForTest()
+	require.EqualError(t, err, errEgressCannotResolveResponseChannel)
+}
+
+func TestAsyncConnect_prepareConnectRequest_udpResolvedResponseChannel(t *testing.T) {
+	t.Parallel()
+
+	_, ac := setupAsyncConnectUDPEgressPrepareConnect(t, asyncConnectUDPEgressBindAddress)
+
+	require.NoError(t, ac.PrepareConnectRequestForTest())
+	requireConnectRequestResponseChannel(t, ac, asyncConnectUDPEgressResolvedChannel)
 }
 
 func TestAsyncConnect_ownedConnectFailsWithoutDriver(t *testing.T) {

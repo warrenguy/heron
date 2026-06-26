@@ -1,0 +1,159 @@
+# Overlay - use with --profile failover.
+
+x-project-name: &project-name heron-cluster-java-failover
+name: *project-name
+
+x-app-user: &app-user "${HERON_COMPOSE_UID:-1000}:${HERON_COMPOSE_GID:-1000}"
+
+x-aeron-term-env: &aeron-term-env
+  AERON_TERM_BUFFER_LENGTH: "65536"
+  AERON_IPC_TERM_BUFFER_LENGTH: "65536"
+
+x-cluster-env: &cluster-env
+  HERON_CLUSTER_MEMBER_COUNT: "3"
+  HERON_CLUSTER_HOSTNAMES: "cluster-0,cluster-1,cluster-2"
+  <<: *aeron-term-env
+
+x-failover-service: &failover-service
+  profiles: [failover]
+  networks: [cluster-java]
+  user: *app-user
+
+x-cluster-healthcheck: &cluster-healthcheck
+  interval: 1s
+  timeout: 5s
+  retries: 20
+  start_period: 45s
+
+x-cluster-member: &cluster-member
+  <<: *failover-service
+  image: cluster-java-cluster
+  environment:
+    <<: *cluster-env
+  healthcheck:
+    <<: *cluster-healthcheck
+
+x-aeron-tmpfs-opts: &aeron-tmpfs-opts
+  type: tmpfs
+  device: tmpfs
+  o: "size=512m,mode=1777"
+
+networks:
+  cluster-java:
+    driver: bridge
+
+services:
+  # Disable single-node cluster when --profile failover is active.
+  cluster:
+    profiles: [single]
+
+  cluster-0:
+    <<: *cluster-member
+    build:
+      context: ../..
+      dockerfile: docker/cluster_java/java/Dockerfile
+    hostname: cluster-0
+    environment:
+      <<: *cluster-env
+      HERON_CLUSTER_MEMBER_ID: "0"
+      AERON_DIR: /dev/shm/aeron-0
+    volumes:
+      - aeron-media-0:/dev/shm
+    healthcheck:
+      <<: *cluster-healthcheck
+      test: ["CMD-SHELL", "test -f /dev/shm/aeron-0/cnc.dat"]
+
+  # cluster-java-cluster image is built by cluster-0; cluster-1/2 reuse that tag.
+  cluster-1:
+    <<: *cluster-member
+    hostname: cluster-1
+    environment:
+      <<: *cluster-env
+      HERON_CLUSTER_MEMBER_ID: "1"
+      AERON_DIR: /dev/shm/aeron-1
+    volumes:
+      - aeron-media-1:/dev/shm
+    healthcheck:
+      <<: *cluster-healthcheck
+      test: ["CMD-SHELL", "test -f /dev/shm/aeron-1/cnc.dat"]
+
+  cluster-2:
+    <<: *cluster-member
+    hostname: cluster-2
+    environment:
+      <<: *cluster-env
+      HERON_CLUSTER_MEMBER_ID: "2"
+      AERON_DIR: /dev/shm/aeron-2
+    volumes:
+      - aeron-media-2:/dev/shm
+    healthcheck:
+      <<: *cluster-healthcheck
+      test: ["CMD-SHELL", "test -f /dev/shm/aeron-2/cnc.dat"]
+
+  aeronmd:
+    <<: *failover-service
+    image: java-interop-aeronmd
+    build:
+      context: ../..
+      dockerfile: docker/aeronmd/Dockerfile
+      target: runtime
+    environment:
+      <<: *aeron-term-env
+      AERON_DIR: /dev/shm/aeron
+      # Disable endpoint name re-resolution: the single-threaded resolver blocks on the
+      # killed leader's address during failover, stalling the new leader's publication add.
+      AERON_DRIVER_RERESOLUTION_CHECK_INTERVAL: "3600000000000"
+    volumes:
+      - aeron-media-client:/dev/shm
+    healthcheck:
+      <<: *cluster-healthcheck
+      test: ["CMD-SHELL", "test -f /dev/shm/aeron/cnc.dat"]
+      retries: 10
+      start_period: 5s
+
+  go:
+    <<: *failover-service
+    image: cluster-java-go-failover
+    build:
+      context: ../..
+      dockerfile: docker/cluster_java/go/Dockerfile
+      target: failover-runtime
+      args:
+        GO_VERSION: ${GO_VERSION:-1.26.4}
+    group_add:
+      - "${DOCKER_GID:-999}"
+    depends_on: !override
+      cluster-0:
+        condition: service_healthy
+      cluster-1:
+        condition: service_healthy
+      cluster-2:
+        condition: service_healthy
+      aeronmd:
+        condition: service_healthy
+    environment:
+      <<: *aeron-term-env
+      AERON_DIR: /dev/shm/aeron
+      HERON_CLUSTER_JAVA_FAILOVER_COMPOSE: "1"
+      HERON_CLUSTER_JAVA_COMPOSE_DIR: /app/compose
+      COMPOSE_PROJECT_NAME: *project-name
+    volumes:
+      - aeron-media-client:/dev/shm
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  aeron-media-0:
+    driver: local
+    driver_opts: *aeron-tmpfs-opts
+
+  aeron-media-1:
+    driver: local
+    driver_opts: *aeron-tmpfs-opts
+
+  aeron-media-2:
+    driver: local
+    driver_opts: *aeron-tmpfs-opts
+
+  aeron-media-client:
+    driver: local
+    driver_opts: *aeron-tmpfs-opts

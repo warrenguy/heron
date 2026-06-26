@@ -3,6 +3,8 @@ set -euo pipefail
 
 : "${AERON_DIR:?AERON_DIR required}"
 
+# HERON_CLUSTER_* env vars are optional; ClusterNode reads them from container env.
+
 exec java \
 	--add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
 	-Daeron.dir="${AERON_DIR}" \

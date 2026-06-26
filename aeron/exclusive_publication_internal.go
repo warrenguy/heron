@@ -47,10 +47,9 @@ func newExclusivePublicationFromReady(
 		counters.CounterValuesBuffer(),
 	)
 	if ready.ChannelStatusCounterID != cnc.NullCounterID {
-		if err := requireActiveCounter(
+		if err := requireAllocatedCounter(
 			counters,
 			ready.ChannelStatusCounterID,
-			ready.RegistrationID,
 			cnc.DriverSendChannelStatusTypeID,
 			"channel status",
 		); err != nil {

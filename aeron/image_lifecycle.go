@@ -123,6 +123,19 @@ func subscriptionFromHandle(sub conductor.SubscriptionHandle) (*Subscription, er
 	return typedHandleFrom[*Subscription](sub, "subscription", "*Subscription")
 }
 
+func bindSubscriptionHandle(
+	sub conductor.SubscriptionHandle,
+	clientConductor *conductor.Conductor,
+) error {
+	subscription, err := subscriptionFromHandle(sub)
+	if err != nil {
+		return err
+	}
+	subscription.conductor = clientConductor
+	subscription.counters = clientConductor.CountersReader()
+	return nil
+}
+
 func publicationFromHandle(pub conductor.PublicationHandle) (*Publication, error) {
 	return typedHandleFrom[*Publication](pub, "publication", "*Publication")
 }

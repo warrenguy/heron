@@ -12,6 +12,10 @@ type stubResponseChannelSub struct {
 
 func (s stubResponseChannelSub) Channel() string { return s.channel }
 
+func (s stubResponseChannelSub) TryResolveChannelEndpointPort() (string, bool) {
+	return s.channel, true
+}
+
 func TestResolveResponseChannel(t *testing.T) {
 	t.Run("nil sub", func(t *testing.T) {
 		got, ok := resolveResponseChannel(nil)
@@ -51,9 +55,15 @@ func TestResolveResponseChannel(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name:   "udp rejected",
-			sub:    stubResponseChannelSub{channel: "aeron:udp?endpoint=localhost:0"},
+			name:   "unknown media",
+			sub:    stubResponseChannelSub{channel: "aeron:unknown"},
 			wantOK: false,
+		},
+		{
+			name:   "spy udp fixed endpoint strips prefix",
+			sub:    stubResponseChannelSub{channel: "aeron-spy:aeron:udp?endpoint=localhost:20111"},
+			want:   "aeron:udp?endpoint=localhost:20111",
+			wantOK: true,
 		},
 	}
 
@@ -70,6 +80,36 @@ type applyUDPRejoinFalseWantCase struct {
 	name    string
 	channel string
 	want    string
+}
+
+func TestValidateClusterEgressChannel(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		channel string
+	}{
+		{name: "ipc", channel: "aeron:ipc"},
+		{name: "ipcx", channel: "aeron:ipcx?alias=egress"},
+		{name: "udp", channel: "aeron:udp?endpoint=localhost:0"},
+		{name: "spy udp", channel: "aeron-spy:aeron:udp?endpoint=localhost:0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, validateClusterEgressChannel(tc.channel))
+		})
+	}
+
+	t.Run("unknown media", func(t *testing.T) {
+		err := validateClusterEgressChannel("aeron:unknown")
+		require.EqualError(
+			t, err,
+			"cluster client: unknown egress response channel not supported; use ipc, ipcx, or udp",
+		)
+	})
+
+	t.Run("invalid channel", func(t *testing.T) {
+		const channel = "not-a-channel"
+		err := validateClusterEgressChannel(channel)
+		require.EqualError(t, err, "cluster client: invalid egress channel: "+channel)
+	})
 }
 
 func TestApplyUDPRejoinFalse(t *testing.T) {

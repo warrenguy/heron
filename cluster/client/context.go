@@ -19,8 +19,7 @@ type ClusterContext struct {
 	// IngressChannel is required for cluster connect.
 	IngressChannel string
 
-	// EgressChannel is required for cluster connect. ipc and ipcx only; UDP egress is
-	// rejected by ValidateForConnect.
+	// EgressChannel is required for cluster connect. Supported: ipc, ipcx, and udp.
 	EgressChannel string
 
 	// IngressEndpoints is "0=host:port,1=host:port"; empty means unset (Java null).

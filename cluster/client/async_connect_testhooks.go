@@ -43,6 +43,13 @@ func (ac *AsyncConnect) EgressSubscriptionForTest() *aeron.Subscription {
 	return ac.egressSubscription
 }
 
+// ConcludeClusterContextForTest exercises concludeClusterContext during connect tests.
+func ConcludeClusterContextForTest(
+	ctx ClusterContext,
+) (ClusterContext, *aeron.Client, bool, error) {
+	return concludeClusterContext(ctx)
+}
+
 // ClusterContextForTest exposes the concluded cluster context during connect tests.
 func (ac *AsyncConnect) ClusterContextForTest() ClusterContext {
 	if ac == nil {

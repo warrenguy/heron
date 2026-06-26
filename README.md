@@ -125,7 +125,7 @@ SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/ve
 
 ```bash
 make check        # lint, pins, SBE/catalog stale (opt), unit+stress, contract-oracles (opt)
-make test-all     # check + rapid + integration + java-interop + cluster-java smoke
+make test-all     # check + rapid + integration + java-interop + cluster-java smokes
 make test-rapid                  # property tests (pgregory.net/rapid)
 make test-integration            # live C aeronmd (-tags=integration)
 make contract-oracles            # all three contract suites below (needs mvn + java)
@@ -134,15 +134,15 @@ make test-cluster-sbe-contract   # Go/Java cluster SBE wire bytes vs catalog.jso
 make test-cluster-java-contract  # Go/Java cluster harness constants (no driver)
 make test-java-interop           # Docker Compose smoke (bidirectional IPC pub/sub)
 make test-cluster-java           # Docker Compose smoke (AsyncConnect + echo roundtrip)
+make test-cluster-java-failover  # Docker Compose 3-node leader failover
 ```
 
 - Contract targets run `mvn test` (Java goldens) then matching Go oracle tests; no aeronmd or
   Docker.
 - `test-java-interop-contract` checks shared constants for `make test-java-interop` (e.g. stream
   1100/1101, 32x32-byte `java-N` / `go-N` payloads) before the live smoke run.
-- `test-cluster-java-contract` checks shared harness constants for `make test-cluster-java` (e.g.
-  IPC channels, streams 101/102, ports 9000/9002, member topology strings) before the live smoke
-  run.
+- `test-cluster-java-contract` checks shared harness constants for `make test-cluster-java`
+  (e.g. IPC channels, streams 101/102, ports 9000/9002, failover topology goldens) before the live smoke run.
 - `make test-integration` builds `bin/aeronmd` when needed; harness sets `AERON_DIR` per test.
 - Unit tests use `bench` and `testhooks` build tags.
 - Property tests live in `*_rapid_test.go` behind the `rapid` tag.

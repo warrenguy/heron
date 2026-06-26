@@ -1,8 +1,8 @@
 //go:build integration && cluster_java
 
-// Package clusterjava is the cross-language harness contract oracle for the Java
-// cluster integration module. Constant goldens are hand-synced with Java
-// ClusterConstantsTest (like java_interop), not a shared artifact; keep both tables aligned.
+// Package clusterjava is the Java cluster integration contract oracle.
+// oracle.go: single-node IPC goldens; failover_oracle.go: 3-node UDP failover goldens.
+// Hand-sync with ClusterConstantsTest and ClusterConstantsFailoverTest (like java_interop).
 package clusterjava
 
 import (
@@ -21,12 +21,13 @@ const (
 const (
 	clientFacingPortOffset = 2
 	IngressEndpointPort    = PortBase + clientFacingPortOffset
+	termLength64kParam     = "term-length=64k"
 )
 
 const (
 	// IngressChannel and EgressChannel pin 64KiB term length for Java cluster IPC parity.
-	IngressChannel = harness.IPCChannel + "?term-length=64k"
-	EgressChannel  = harness.IPCChannel + "?term-length=64k"
+	IngressChannel = harness.IPCChannel + "?" + termLength64kParam
+	EgressChannel  = harness.IPCChannel + "?" + termLength64kParam
 
 	// IngressEndpoints is empty for IPC passthrough.
 	IngressEndpoints = ""
@@ -39,7 +40,19 @@ const (
 
 const (
 	ComposeAeronDir = "/dev/shm/aeron"
-	BaseDir         = "/tmp/heron-cluster-0"
+	// ComposeDir is where failover-runtime copies compose.yaml overlays in-container.
+	ComposeDir = "/app/compose"
+	BaseDir    = "/tmp/heron-cluster-0"
+)
+
+const (
+	ComposeGateEnvKey          = "HERON_CLUSTER_JAVA_COMPOSE"
+	FailoverComposeGateEnvKey  = "HERON_CLUSTER_JAVA_FAILOVER_COMPOSE"
+	ComposeDirEnvKey           = "HERON_CLUSTER_JAVA_COMPOSE_DIR"
+	FailoverComposeProfileName = "failover"
+	composeSkipRunMake         = "requires docker compose; run make "
+	ComposeSkipHint            = "cluster java " + composeSkipRunMake + "test-cluster-java"
+	FailoverComposeSkipHint    = "failover " + composeSkipRunMake + "test-cluster-java-failover"
 )
 
 const TermMinLength = logbuffer.TermMinLength
@@ -54,13 +67,25 @@ const ClusterMembersString = "0,localhost:9002,localhost:9003,localhost:9004,loc
 // client-facing offset 2 (port 9002).
 const IngressEndpointsString = "0=localhost:9002"
 
+func harnessClusterContext(
+	ingressChannel string,
+	egressChannel string,
+	ingressEndpoints string,
+) client.ClusterContext {
+	return client.ClusterContext{
+		IngressChannel:   ingressChannel,
+		EgressChannel:    egressChannel,
+		IngressEndpoints: ingressEndpoints,
+	}
+}
+
 // HarnessClusterContext returns cluster client defaults for IPC connect tests.
 // Stream IDs are left at zero so callers or NewAsyncConnect Normalize applies defaults.
 // AeronDir is unset; callers assign it from compose env before connect.
 func HarnessClusterContext() client.ClusterContext {
-	return client.ClusterContext{
-		IngressChannel:   IngressChannel,
-		EgressChannel:    EgressChannel,
-		IngressEndpoints: IngressEndpoints,
-	}
+	return harnessClusterContext(
+		IngressChannel,
+		EgressChannel,
+		IngressEndpoints,
+	)
 }

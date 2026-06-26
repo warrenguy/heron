@@ -64,10 +64,10 @@ CHECK_TIMEOUT ?= 5m
 help: ## List Makefile targets
 	@echo "Targets:"
 	@{ grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  %-22s %s\n", $$1, $$2}'; \
-		printf '  %-22s %s\n' test 'Unit tests'; \
-		printf '  %-22s %s\n' test-rapid 'Property tests'; \
-		printf '  %-22s %s\n' test-stress 'Stress tests'; \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  %-28s %s\n", $$1, $$2}'; \
+		printf '  %-28s %s\n' test 'Unit tests'; \
+		printf '  %-28s %s\n' test-rapid 'Property tests'; \
+		printf '  %-28s %s\n' test-stress 'Stress tests'; \
 	} | sort
 	@echo ""
 	@echo "Contract oracles per suite: test-<name>-{unit,oracle,contract}"
@@ -101,7 +101,7 @@ check-inner: check-static check-test
 .PHONY: test-all
 test-all: ## Full gate: check rapid integration Docker smokes
 	+@$(MAKE) --no-print-directory check test-rapid test-integration \
-		test-java-interop test-cluster-java
+		test-java-interop test-cluster-java test-cluster-java-failover
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
@@ -311,7 +311,7 @@ $(eval $(call integration-oracle,$(1),$($(3)),$(4),$(5)))
 $(eval $(call integration-contract,$(1)))
 endef
 
-.PHONY: test-java-interop test-cluster-java \
+.PHONY: test-java-interop test-cluster-java test-cluster-java-failover \
 	$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-unit test-$(s)-oracle test-$(s)-contract) \
 	contract-oracles contract-oracles-optional
 test-java-interop: ## Docker smoke: Java/Go IPC duplex
@@ -319,6 +319,9 @@ test-java-interop: ## Docker smoke: Java/Go IPC duplex
 
 test-cluster-java: ## Docker smoke: AsyncConnect + echo roundtrip smoke
 	./scripts/cluster-java-smoke.sh
+
+test-cluster-java-failover: ## Docker smoke: 3-node leader failover
+	./scripts/cluster-java-failover-smoke.sh
 
 $(eval $(call contract-oracle-module,java-interop,$(JAVA_INTEROP_POM),JAVA_INTEROP_ORACLE_TIMEOUT,JAVA_INTEROP_ORACLE_TAGS,./test/integration/java_interop/javainterop/))
 $(eval $(call contract-oracle-module,cluster-sbe,$(CLUSTER_SBE_POM),CLUSTER_SBE_ORACLE_TIMEOUT,CLUSTER_SBE_ORACLE_TAGS,./test/integration/cluster_sbe/clustersbe/))

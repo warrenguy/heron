@@ -3,8 +3,12 @@
 package cluster_java_test
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,47 +16,272 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	agronaatomic "github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-const connectSmokeTimeout = 60 * time.Second
+const (
+	echoSmokeTimeout        = 30 * time.Second
+	connectSmokeTimeout     = 60 * time.Second
+	failoverConnectTimeout  = 90 * time.Second // 3 JVM cold start
+	failoverRecoveryTimeout = 120 * time.Second
+	// Post-failover offer/echo budgets: ingress repoint + election can exceed IPC smoke defaults.
+	failoverPostRecoveryRoundTripTimeout = 60 * time.Second
+)
 
-func requireComposeEnv(t *testing.T) (string, *atomic.Bool, *aeron.Client) {
+type clusterComposeGate struct {
+	envKey         string
+	skipHint       string
+	requireDocker  bool
+	requireIPCTerm bool
+}
+
+func (g clusterComposeGate) enabled() bool {
+	return os.Getenv(g.envKey) == "1"
+}
+
+var (
+	clusterJavaComposeGate = clusterComposeGate{
+		envKey:         clusterjava.ComposeGateEnvKey,
+		skipHint:       clusterjava.ComposeSkipHint,
+		requireIPCTerm: true,
+	}
+	clusterJavaFailoverComposeGate = clusterComposeGate{
+		envKey:        clusterjava.FailoverComposeGateEnvKey,
+		skipHint:      clusterjava.FailoverComposeSkipHint,
+		requireDocker: true,
+	}
+)
+
+var (
+	echoPingPayload         = []byte("heron-cluster-echo-ping")
+	echoPostFailoverPayload = []byte("heron-cluster-echo-post-failover")
+)
+
+func newEchoCaptureHandlers() (*client.EgressHandlers, *[]byte) {
+	var echoed []byte
+	return &client.EgressHandlers{
+		MessageFunc: func(
+			_, _ int64,
+			buf agronaatomic.AtomicBuffer,
+			offset, length int,
+			_ *aeron.Header,
+		) {
+			echoed = append([]byte(nil), buf.Slice(offset, length).Bytes()...)
+		},
+	}, &echoed
+}
+
+// offerUntilPositive retries BackPressured/AdminAction only; PollEgress interleaves
+// egress during leader recovery mid-offer. Other offer codes fail immediately.
+func offerUntilPositive(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	session *client.AeronCluster,
+	payload []byte,
+	hadClientError *atomic.Bool,
+	offerTimeout time.Duration,
+) int64 {
 	t.Helper()
 
-	if os.Getenv("HERON_CLUSTER_JAVA_COMPOSE") != "1" {
-		t.Skip("cluster java requires docker compose; run make test-cluster-java")
+	deadline := time.Now().Add(offerTimeout)
+	var lastStatus int64
+	for time.Now().Before(deadline) {
+		require.False(t, hadClientError.Load(), "transport error during offer")
+		aeronClient.DoWork()
+		position := session.Offer(payload)
+		if position > 0 {
+			return position
+		}
+		lastStatus = position
+		switch position {
+		case aeron.BackPressured:
+			session.PollEgress()
+			aeronClient.DoWork()
+			time.Sleep(aeron.DefaultIdleSleepDuration)
+		case aeron.AdminAction:
+			session.PollEgress()
+		default:
+			t.Fatalf(
+				"cluster offer failed: status=%d sessionState=%v hadClientError=%v",
+				position, session.SessionState(), hadClientError.Load(),
+			)
+		}
 	}
+	t.Fatalf(
+		"cluster offer timed out: lastStatus=%d sessionState=%v hadClientError=%v",
+		lastStatus, session.SessionState(), hadClientError.Load(),
+	)
+	return 0 // unreachable; satisfies compiler after Fatalf
+}
+
+func pollEchoUntilMessage(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	session *client.AeronCluster,
+	hadClientError *atomic.Bool,
+	echoed *[]byte,
+	echoTimeout time.Duration,
+) {
+	t.Helper()
+
+	if len(*echoed) > 0 {
+		return
+	}
+	harness.PollClientUntilTransportClean(
+		t,
+		aeronClient,
+		hadClientError,
+		echoTimeout,
+		"transport error during echo poll",
+		func() bool {
+			session.PollEgress()
+			return len(*echoed) > 0
+		},
+		func() string {
+			return fmt.Sprintf(
+				"cluster echo poll timed out: echoedLen=%d sessionState=%v hadClientError=%v",
+				len(*echoed), session.SessionState(), hadClientError.Load(),
+			)
+		},
+	)
+}
+
+func roundTripEcho(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	session *client.AeronCluster,
+	hadClientError *atomic.Bool,
+	echoed *[]byte,
+	payload []byte,
+	offerTimeout, echoTimeout time.Duration,
+) int64 {
+	t.Helper()
+
+	pos := offerUntilPositive(
+		t, aeronClient, session, payload, hadClientError, offerTimeout,
+	)
+	pollEchoUntilMessage(t, aeronClient, session, hadClientError, echoed, echoTimeout)
+	require.Equal(t, payload, *echoed)
+	return pos
+}
+
+func requireAeronDir(t *testing.T) string {
+	t.Helper()
 
 	dir := os.Getenv("AERON_DIR")
 	require.NotEmpty(t, dir)
-	require.Equal(
-		t,
-		strconv.Itoa(clusterjava.TermMinLength),
-		os.Getenv("AERON_IPC_TERM_BUFFER_LENGTH"),
-	)
-
-	md := harness.JoinExternal(t, dir)
-	md.AssertAlive(t)
-	aeronClient, hadClientError := harness.ConnectIPCClient(t, md)
-	require.False(t, hadClientError.Load(), "transport errors before connect")
-	return dir, hadClientError, aeronClient
+	return dir
 }
 
-// Pass untyped nil for egressHandler, not (*client.EgressHandlers)(nil).
-func clusterContextForSmoke(
+func joinComposeIPCClient(
+	t *testing.T,
+	dir string,
+) (*atomic.Bool, *aeron.Client, *harness.MediaDriver) {
+	t.Helper()
+
+	md := harness.JoinExternal(t, dir)
+	aeronClient, hadClientError := harness.ConnectIPCClient(t, md)
+	require.False(t, hadClientError.Load(), "transport errors before connect")
+	return hadClientError, aeronClient, md
+}
+
+func requireClusterComposeEnv(
+	t *testing.T,
+	gate clusterComposeGate,
+) (string, *atomic.Bool, *aeron.Client, *harness.MediaDriver, string) {
+	t.Helper()
+
+	if !gate.enabled() {
+		t.Skip(gate.skipHint)
+	}
+	if gate.requireDocker {
+		requireDockerSocketAccess(t)
+	}
+
+	dir := requireAeronDir(t)
+	if gate.requireIPCTerm {
+		require.Equal(
+			t,
+			strconv.Itoa(clusterjava.TermMinLength),
+			os.Getenv("AERON_IPC_TERM_BUFFER_LENGTH"),
+		)
+	}
+
+	hadClientError, aeronClient, md := joinComposeIPCClient(t, dir)
+	composeDir := ""
+	if gate.requireDocker {
+		composeDir = clusterComposeDir()
+	}
+	return dir, hadClientError, aeronClient, md, composeDir
+}
+
+func smokeClusterContext(
+	base func() client.ClusterContext,
 	dir string,
 	aeronClient *aeron.Client,
 	egressHandler client.EgressHandler,
+	messageTimeout time.Duration,
 ) client.ClusterContext {
-	ctx := clusterjava.HarnessClusterContext()
+	ctx := base()
 	ctx.AeronDir = dir
 	ctx.Aeron = aeronClient
-	ctx.MessageTimeout = connectSmokeTimeout // compose cold-start; avoids 5s default
+	ctx.MessageTimeout = messageTimeout
 	ctx.EgressHandler = egressHandler
 	return ctx
+}
+
+func connectClusterAsync(
+	t *testing.T,
+	ctx client.ClusterContext,
+	aeronClient *aeron.Client,
+	hadClientError *atomic.Bool,
+	connectTimeout time.Duration,
+) *client.ConnectResult {
+	t.Helper()
+
+	ac, err := client.NewAsyncConnect(ctx)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "close async connect", ac.Close)
+	return pollAsyncConnectUntilResult(t, aeronClient, ac, hadClientError, connectTimeout)
+}
+
+func requireConnectResultHandlesTransferred(t *testing.T, result *client.ConnectResult) {
+	t.Helper()
+
+	require.Nil(t, result.IngressPublication)
+	require.Nil(t, result.EgressSubscription)
+	require.Nil(t, result.EgressImage)
+}
+
+func newConnectedClusterSession(
+	t *testing.T,
+	result *client.ConnectResult,
+) *client.AeronCluster {
+	t.Helper()
+
+	session, err := client.NewAeronCluster(result)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "close aeron cluster", session.Close)
+	require.Equal(t, client.SessionStateConnected, session.SessionState())
+	return session
+}
+
+func connectClusterUntilResult(
+	t *testing.T,
+	gate clusterComposeGate,
+	contextBase func() client.ClusterContext,
+	connectTimeout time.Duration,
+	egressHandler client.EgressHandler,
+) (*atomic.Bool, *aeron.Client, *harness.MediaDriver, *client.ConnectResult, string) {
+	t.Helper()
+
+	dir, hadClientError, aeronClient, md, composeDir := requireClusterComposeEnv(t, gate)
+	ctx := smokeClusterContext(contextBase, dir, aeronClient, egressHandler, connectTimeout)
+	result := connectClusterAsync(t, ctx, aeronClient, hadClientError, connectTimeout)
+	return hadClientError, aeronClient, md, result, composeDir
 }
 
 func asyncConnectUntilResult(
@@ -61,15 +290,143 @@ func asyncConnectUntilResult(
 ) (*aeron.Client, *atomic.Bool, *client.ConnectResult) {
 	t.Helper()
 
-	dir, hadClientError, aeronClient := requireComposeEnv(t)
-	ctx := clusterContextForSmoke(dir, aeronClient, egressHandler)
-
-	ac, err := client.NewAsyncConnect(ctx)
-	require.NoError(t, err)
-	harness.CleanupClose(t, "close async connect", ac.Close)
-
-	result := pollAsyncConnectUntilResult(t, aeronClient, ac, hadClientError)
+	hadClientError, aeronClient, md, result, _ := connectClusterUntilResult(
+		t,
+		clusterJavaComposeGate,
+		clusterjava.HarnessClusterContext,
+		connectSmokeTimeout,
+		egressHandler,
+	)
+	md.AssertAlive(t)
 	return aeronClient, hadClientError, result
+}
+
+var dockerSocketAccess = struct {
+	once   sync.Once
+	reason string
+}{}
+
+func requireDockerSocketAccess(t *testing.T) {
+	t.Helper()
+
+	dockerSocketAccess.once.Do(func() {
+		if _, err := os.Stat("/var/run/docker.sock"); err != nil {
+			dockerSocketAccess.reason = "docker socket not mounted; failover kill unavailable"
+			return
+		}
+		const dockerHint = "host: add user to docker group or set DOCKER_GID for group_add"
+		for _, check := range []struct {
+			args  []string
+			label string
+		}{
+			{[]string{"compose", "version"}, "docker compose unavailable"},
+			{[]string{"info"}, "docker daemon unavailable"},
+		} {
+			cmd := exec.Command("docker", check.args...)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				dockerSocketAccess.reason = fmt.Sprintf(
+					"%s (%v): %s\n%s", check.label, err, out, dockerHint,
+				)
+				return
+			}
+		}
+	})
+	if dockerSocketAccess.reason != "" {
+		t.Fatal(dockerSocketAccess.reason)
+	}
+}
+
+func clusterComposeDir() string {
+	if dir := os.Getenv(clusterjava.ComposeDirEnvKey); dir != "" {
+		return dir
+	}
+	return clusterjava.ComposeDir
+}
+
+func clusterFailoverComposeArgs(composeDir string) []string {
+	return []string{
+		"compose",
+		"-f", filepath.Join(composeDir, "compose.yaml"),
+		"-f", filepath.Join(composeDir, "compose.failover.yaml"),
+		"--profile", clusterjava.FailoverComposeProfileName,
+	}
+}
+
+type PollConfig struct {
+	KilledLeader int32
+	SessionID    int64
+	MinTerm      int64
+	Timeout      time.Duration
+}
+
+func pollUntilFailoverRecovered(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	session *client.AeronCluster,
+	hadClientError *atomic.Bool,
+	cfg PollConfig,
+) {
+	t.Helper()
+
+	start := time.Now()
+	harness.PollClientUntilTransportClean(
+		t,
+		aeronClient,
+		hadClientError,
+		cfg.Timeout,
+		"transport error during recovery",
+		func() bool {
+			session.PollEgress()
+			if session.SessionState() != client.SessionStateConnected ||
+				session.ClusterSessionID() != cfg.SessionID ||
+				session.LeadershipTermID() < cfg.MinTerm ||
+				session.LeaderMemberID() == cfg.KilledLeader {
+				return false
+			}
+			ingress := session.IngressPublication()
+			if ingress == nil || !ingress.IsConnected() {
+				return false
+			}
+			t.Logf(
+				"failover recovered: leader=%d term=%d state=%v elapsed=%s",
+				session.LeaderMemberID(),
+				session.LeadershipTermID(),
+				session.SessionState(),
+				time.Since(start),
+			)
+			return true
+		},
+		func() string {
+			ingress := session.IngressPublication()
+			ingressConnected := ingress != nil && ingress.IsConnected()
+			return fmt.Sprintf(
+				"failover recovery timeout after %s: state=%v leader=%d term=%d "+
+					"(want term>=%d) session=%d killed=%d ingressConnected=%v hadClientError=%v",
+				cfg.Timeout,
+				session.SessionState(),
+				session.LeaderMemberID(),
+				session.LeadershipTermID(),
+				cfg.MinTerm,
+				session.ClusterSessionID(),
+				cfg.KilledLeader,
+				ingressConnected,
+				hadClientError.Load(),
+			)
+		},
+	)
+}
+
+func killClusterMemberContainer(t *testing.T, memberID int32, composeDir string) {
+	t.Helper()
+
+	require.NotEmpty(t, composeDir, "failover compose dir required for container kill")
+	service := fmt.Sprintf("cluster-%d", memberID)
+	project := os.Getenv("COMPOSE_PROJECT_NAME")
+	t.Logf("killing leader container: service=%s project=%s", service, project)
+	args := append(clusterFailoverComposeArgs(composeDir), "kill", "-s", "SIGTERM", service)
+	cmd := exec.Command("docker", args...)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "kill %s: %s", service, out)
 }
 
 func pollAsyncConnectUntilResult(
@@ -77,30 +434,39 @@ func pollAsyncConnectUntilResult(
 	aeronClient *aeron.Client,
 	ac *client.AsyncConnect,
 	hadClientError *atomic.Bool,
+	pollTimeout time.Duration,
 ) *client.ConnectResult {
 	t.Helper()
 
-	deadline := time.Now().Add(connectSmokeTimeout)
-	for time.Now().Before(deadline) {
-		require.False(t, hadClientError.Load(), "transport error during connect poll")
-		aeronClient.DoWork()
-		result, err := ac.Poll()
-		if err != nil {
-			t.Fatalf(
-				"cluster connect failed: %v (state=%v step=%v hadClientError=%v)",
-				err, ac.State(), ac.Step(), hadClientError.Load(),
+	var got *client.ConnectResult
+	harness.PollClientUntilTransportClean(
+		t,
+		aeronClient,
+		hadClientError,
+		pollTimeout,
+		"transport error during connect poll",
+		func() bool {
+			result, err := ac.Poll()
+			if err != nil {
+				t.Fatalf(
+					"cluster connect failed: %v (state=%v step=%v hadClientError=%v)",
+					err, ac.State(), ac.Step(), hadClientError.Load(),
+				)
+			}
+			if result != nil {
+				got = result
+				return true
+			}
+			return false
+		},
+		func() string {
+			return fmt.Sprintf(
+				"cluster connect poll timed out after %s: state=%v step=%v hadClientError=%v",
+				pollTimeout, ac.State(), ac.Step(), hadClientError.Load(),
 			)
-		}
-		if result != nil {
-			return result
-		}
-		time.Sleep(aeron.DefaultIdleSleepDuration)
-	}
-	t.Fatalf(
-		"cluster connect poll timed out: state=%v step=%v hadClientError=%v",
-		ac.State(), ac.Step(), hadClientError.Load(),
+		},
 	)
-	return nil
+	return got
 }
 
 func cleanupConnectResultHandles(t *testing.T, result *client.ConnectResult) {

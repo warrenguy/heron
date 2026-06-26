@@ -28,3 +28,18 @@ COPY --from=builder /out/cluster-java.test /app/cluster-java.test
 # poll 30s; stacked worst case 60+10+30+60=160s plus overhead; 40s slack.
 # Outer scripts/cluster-java-smoke.sh timeout 210 stays adequate (~10s compose teardown).
 CMD ["./cluster-java.test", "-test.v", "-test.count=1", "-test.timeout=200s", "-test.run", "^TestCluster(Connect|Echo)Smoke$"]
+
+FROM runtime AS failover-runtime
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends \
+		docker.io \
+		docker-compose-v2 \
+	&& rm -rf /var/lib/apt/lists/*
+
+COPY docker/cluster_java/compose.yaml docker/cluster_java/compose.failover.yaml /app/compose/
+
+# Inner -test.timeout=400s: connect 90s + pre-kill echo 40s + recovery 120s +
+# post-recovery echo 120s (~375s stacked worst case) plus slack.
+# Outer scripts/cluster-java-failover-smoke.sh timeout 430 stays adequate.
+CMD ["./cluster-java.test", "-test.v", "-test.count=1", "-test.timeout=400s", "-test.run", "^TestClusterFailoverSmoke$"]

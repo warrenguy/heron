@@ -284,6 +284,26 @@ func TestExclusivePublicationFromHandle_errors(t *testing.T) {
 	)
 }
 
+func TestConductorResourceLifecycle_BindSubscription_wiresCountersReader(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance := testutil.NewConductorFixture(
+		t,
+		testutil.DefaultConductorConfig(nil),
+	).Conductor
+	reader := emptyCountersReaderForTest(t)
+	conductorInstance.SetCountersReaderForTest(reader)
+
+	sub := NewSubscriptionForTest(
+		TestSubscriptionRegistrationID,
+		TestPublicationStreamID,
+		TestImageSourceIdentity,
+	)
+
+	require.NoError(t, ConductorResourceLifecycle.BindSubscription(sub, conductorInstance))
+	require.Same(t, reader, SubscriptionCountersForTest(sub))
+}
+
 func TestConductorResourceLifecycle_BindPublication(t *testing.T) {
 	t.Parallel()
 

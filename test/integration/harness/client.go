@@ -100,6 +100,31 @@ func pollClientUntilDynamic(
 	t.FailNow()
 }
 
+// PollClientUntilTransportClean polls client.DoWork until ok returns true, failing
+// immediately on transport errors recorded in hadClientError.
+func PollClientUntilTransportClean(
+	t testing.TB,
+	client *aeron.Client,
+	hadClientError *atomic.Bool,
+	timeout time.Duration,
+	transportErrLabel string,
+	ok func() bool,
+	timeoutMsg func() string,
+) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		require.False(t, hadClientError.Load(), transportErrLabel)
+		client.DoWork()
+		if ok() {
+			return
+		}
+		time.Sleep(aeron.DefaultIdleSleepDuration)
+	}
+	require.FailNow(t, timeoutMsg())
+}
+
 func connectedPollTimeoutOr(timeout time.Duration) time.Duration {
 	if timeout == 0 {
 		return ConnectedPollTimeout

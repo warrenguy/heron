@@ -1,13 +1,19 @@
 package heron.clusterjava;
 
+import io.aeron.cluster.ConsensusModule;
+import io.aeron.exceptions.AeronException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -15,6 +21,14 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ClusterNodeTest {
+    private static final String STARTUP_FAILURE_PREFIX = "heron: cluster node failed: ";
+    private static final String HOSTNAMES_REQUIRED_MESSAGE =
+        "HERON_CLUSTER_HOSTNAMES required for memberCount=3; "
+            + "set comma-separated hostnames (e.g. cluster-0,cluster-1,cluster-2)";
+    private static final String EMPTY_HOSTNAME_MESSAGE =
+        "HERON_CLUSTER_HOSTNAMES contains empty hostname; "
+            + "use comma-separated hostnames without blanks";
+
     private final Map<String, String> savedProperties = new HashMap<>();
 
     @AfterEach
@@ -38,8 +52,45 @@ class ClusterNodeTest {
             () -> assertEquals(1, ClusterNode.startupExitCode(null))
         );
 
-        assertEquals("heron: cluster node failed: AERON_DIR required" + System.lineSeparator(), stderr);
+        assertEquals(STARTUP_FAILURE_PREFIX + "AERON_DIR required" + System.lineSeparator(), stderr);
         assertFalse(stderr.contains("\tat "));
+    }
+
+    @Test
+    void parseIntEnv_treatsBlankValuesAsDefault() {
+        assertEquals(ClusterConstants.MEMBER_ID, ClusterNode.parseIntEnv(
+            ClusterNode.ENV_MEMBER_ID, null, ClusterConstants.MEMBER_ID));
+        assertEquals(ClusterConstants.MEMBER_ID, ClusterNode.parseIntEnv(
+            ClusterNode.ENV_MEMBER_ID, "", ClusterConstants.MEMBER_ID));
+        assertEquals(ClusterConstants.MEMBER_ID, ClusterNode.parseIntEnv(
+            ClusterNode.ENV_MEMBER_ID, "   ", ClusterConstants.MEMBER_ID));
+        assertEquals(ClusterConstants.MEMBER_COUNT, ClusterNode.parseIntEnv(
+            ClusterNode.ENV_MEMBER_COUNT, "  \t  ", ClusterConstants.MEMBER_COUNT));
+    }
+
+    @Test
+    void startupExitCode_returnsOneWhenMemberIdEnvInvalid() {
+        assertStartupFailureStderr(
+            "HERON_CLUSTER_MEMBER_ID must be an integer (got \"foo\")",
+            () -> assertEquals(1, ClusterNode.startupExitCode("/dev/shm/aeron", "foo", null, null)));
+    }
+
+    @Test
+    void startupExitCode_returnsOneWhenMemberCountEnvInvalid() {
+        assertStartupFailureStderr(
+            "HERON_CLUSTER_MEMBER_COUNT must be an integer (got \"1.5\")",
+            () -> assertEquals(1, ClusterNode.startupExitCode("/dev/shm/aeron", null, "1.5", null)));
+    }
+
+    @Test
+    void isFatalClusterError_survivesWarnCategoryOnly() {
+        assertFalse(ClusterNode.isFatalClusterError(
+            new AeronException("could not re-resolve: endpoint=cluster-0:9003", AeronException.Category.WARN)));
+        assertTrue(ClusterNode.isFatalClusterError(
+            new AeronException("boom", AeronException.Category.ERROR)));
+        assertTrue(ClusterNode.isFatalClusterError(
+            new AeronException("boom", AeronException.Category.FATAL)));
+        assertTrue(ClusterNode.isFatalClusterError(new RuntimeException("boom")));
     }
 
     @Test
@@ -50,8 +101,190 @@ class ClusterNodeTest {
             () -> ClusterNode.reportStartupFailure(new NullPointerException("AERON_DIR required"))
         );
 
-        assertEquals("heron: cluster node failed: AERON_DIR required" + System.lineSeparator(), stderr);
+        assertEquals(STARTUP_FAILURE_PREFIX + "AERON_DIR required" + System.lineSeparator(), stderr);
         assertFalse(stderr.contains("\tat "));
+    }
+
+    @Test
+    void parseHostnames_usesFallbackWhenEnvMissingOrBlankAndMemberCountOne() {
+        assertEquals(List.of("localhost"), ClusterNode.parseHostnames(null, "localhost", 1));
+        assertEquals(List.of("localhost"), ClusterNode.parseHostnames("", "localhost", 1));
+        assertEquals(List.of("localhost"), ClusterNode.parseHostnames("   ", "localhost", 1));
+    }
+
+    @Test
+    void parseHostnames_acceptsExplicitSingleHostnameWhenMemberCountOne() {
+        assertEquals(List.of("custom-host"), ClusterNode.parseHostnames("custom-host", "localhost", 1));
+    }
+
+    @Test
+    void parseHostnames_requiresEnvWhenMemberCountGreaterThanOne() {
+        assertIllegalArgument(() -> ClusterNode.parseHostnames(null, "localhost", 3), HOSTNAMES_REQUIRED_MESSAGE);
+        assertIllegalArgument(() -> ClusterNode.parseHostnames("", "localhost", 3), HOSTNAMES_REQUIRED_MESSAGE);
+        assertIllegalArgument(() -> ClusterNode.parseHostnames("   ", "localhost", 3), HOSTNAMES_REQUIRED_MESSAGE);
+    }
+
+    @Test
+    void parseHostnames_rejectsMemberCountLessThanOne() {
+        assertIllegalArgument(
+            () -> ClusterNode.parseHostnames(null, "localhost", 0),
+            "memberCount must be >= 1 (got 0)");
+    }
+
+    @Test
+    void parseHostnames_requiresExactHostnameCount() {
+        assertIllegalArgument(
+            () -> ClusterNode.parseHostnames("cluster-0,cluster-1", "localhost", 3),
+            exactlyHostnamesMessage(3, 2));
+        assertIllegalArgument(
+            () -> ClusterNode.parseHostnames("cluster-0,cluster-1,cluster-2,cluster-3", "localhost", 3),
+            exactlyHostnamesMessage(3, 4));
+    }
+
+    @Test
+    void parseHostnames_rejectsEmptyHostnameTokens() {
+        assertIllegalArgument(
+            () -> ClusterNode.parseHostnames("cluster-0,,cluster-2", "localhost", 3),
+            EMPTY_HOSTNAME_MESSAGE);
+        assertIllegalArgument(
+            () -> ClusterNode.parseHostnames("cluster-0, ,cluster-2", "localhost", 3),
+            EMPTY_HOSTNAME_MESSAGE);
+        assertIllegalArgument(
+            () -> ClusterNode.parseHostnames("cluster-0,cluster-1,cluster-2,", "localhost", 3),
+            EMPTY_HOSTNAME_MESSAGE);
+    }
+
+    @Test
+    void parseHostnames_trimsWhitespaceAndAcceptsThreeHosts() {
+        assertEquals(
+            List.of("cluster-0", "cluster-1", "cluster-2"),
+            ClusterNode.parseHostnames("cluster-0, cluster-1 , cluster-2", "localhost", 3));
+    }
+
+    @Test
+    void parseHostnames_failoverHostnamesMatchGoldenStrings() {
+        final List<String> hostnames = ClusterNode.parseHostnames(
+            failoverHostnamesEnv(),
+            "localhost",
+            ClusterConstants.FAILOVER_MEMBER_COUNT);
+        assertEquals(
+            ClusterConstants.FAILOVER_CLUSTER_MEMBERS_STRING,
+            ClusterConfig.clusterMembers(hostnames, hostnames, ClusterConstants.PORT_BASE));
+        assertEquals(
+            ClusterConstants.FAILOVER_INGRESS_ENDPOINTS,
+            ClusterConfig.ingressEndpoints(
+                hostnames,
+                ClusterConstants.PORT_BASE,
+                ClusterConfig.CLIENT_FACING_PORT_OFFSET));
+    }
+
+    @Test
+    void baseDirForMember_usesClusterConstantsBaseDirForSingleNode() {
+        assertEquals(new File(ClusterConstants.BASE_DIR), ClusterNode.baseDirForMember(0, 1));
+    }
+
+    @Test
+    void baseDirForMember_usesShmPathForMultiNode() {
+        assertEquals(
+            new File(ClusterConstants.FAILOVER_BASE_DIR_PREFIX + "0"),
+            ClusterNode.baseDirForMember(0, 3));
+        assertEquals(
+            new File(ClusterConstants.FAILOVER_BASE_DIR_PREFIX + "2"),
+            ClusterNode.baseDirForMember(2, 3));
+    }
+
+    @Test
+    void launcherSettingsFromEnv_defaultsMatchSingleNodeConstants() {
+        final ClusterNode.LauncherSettings settings = ClusterNode.launcherSettingsFromEnv(null, null, null);
+
+        assertEquals(ClusterConstants.MEMBER_ID, settings.memberId);
+        assertEquals(ClusterConstants.MEMBER_COUNT, settings.memberCount);
+        assertEquals(List.of(ClusterConstants.INGRESS_ENDPOINT_HOST), settings.hostnames);
+        assertEquals(new File(ClusterConstants.BASE_DIR), ClusterNode.baseDirForMember(
+            settings.memberId,
+            settings.memberCount));
+    }
+
+    @Test
+    void launcherSettingsFromEnv_treatsBlankMemberEnvAsDefaults() {
+        final ClusterNode.LauncherSettings settings = ClusterNode.launcherSettingsFromEnv("   ", "  ", "  ");
+
+        assertEquals(ClusterConstants.MEMBER_ID, settings.memberId);
+        assertEquals(ClusterConstants.MEMBER_COUNT, settings.memberCount);
+        assertEquals(List.of(ClusterConstants.INGRESS_ENDPOINT_HOST), settings.hostnames);
+    }
+
+    @Test
+    void validateMemberCount_rejectsNonPositiveValues() {
+        assertIllegalArgument(() -> ClusterNode.validateMemberCount(0), memberCountNonPositiveMessage(0));
+        assertIllegalArgument(() -> ClusterNode.validateMemberCount(-1), memberCountNonPositiveMessage(-1));
+    }
+
+    @Test
+    void launcherSettingsFromEnv_rejectsNonPositiveMemberCount() {
+        assertIllegalArgument(
+            () -> ClusterNode.launcherSettingsFromEnv(null, "0", null),
+            memberCountNonPositiveMessage(0));
+        assertIllegalArgument(
+            () -> ClusterNode.launcherSettingsFromEnv(null, "-1", null),
+            memberCountNonPositiveMessage(-1));
+    }
+
+    @Test
+    void validateMemberId_rejectsNegativeMemberId() {
+        assertIllegalArgument(
+            () -> ClusterNode.validateMemberId(-1, 3),
+            memberIdOutOfRangeMessage(-1, 3));
+    }
+
+    @Test
+    void validateMemberId_rejectsMemberIdAtOrAboveMemberCount() {
+        assertIllegalArgument(
+            () -> ClusterNode.validateMemberId(3, 3),
+            memberIdOutOfRangeMessage(3, 3));
+        assertIllegalArgument(
+            () -> ClusterNode.validateMemberId(2, 2),
+            memberIdOutOfRangeMessage(2, 2));
+    }
+
+    @Test
+    void validateMemberId_rejectsSingleNodeMemberIdMismatch() {
+        assertIllegalArgument(
+            () -> ClusterNode.validateMemberId(1, 1),
+            memberIdOutOfRangeMessage(1, 1));
+    }
+
+    @Test
+    void startupExitCode_returnsOneWhenMemberIdOutOfRange() {
+        assertStartupFailureStderr(
+            memberIdOutOfRangeMessage(3, 3),
+            () -> assertEquals(1, ClusterNode.startupExitCode("/dev/shm/aeron", "3", "3", null)));
+    }
+
+    @Test
+    void startupExitCode_returnsOneWhenMemberCountNonPositive() {
+        assertStartupFailureStderr(
+            memberCountNonPositiveMessage(0),
+            () -> assertEquals(1, ClusterNode.startupExitCode("/dev/shm/aeron", null, "0", null)));
+    }
+
+    @Test
+    void multiNodeClusterConfig_usesFailoverUdpChannels() {
+        final ClusterNode.LauncherSettings settings = ClusterNode.launcherSettingsFromEnv(
+            "1",
+            String.valueOf(ClusterConstants.FAILOVER_MEMBER_COUNT),
+            failoverHostnamesEnv());
+        final ClusterConfig multiNodeConfig = createClusterConfig(settings.memberId, settings.hostnames);
+        multiNodeConfig.baseDir(ClusterNode.baseDirForMember(settings.memberId, settings.memberCount));
+        ClusterNode.configureConsensus(multiNodeConfig, settings.memberCount);
+
+        final ClusterConfig singleNodeConfig = createClusterConfig(
+            ClusterConstants.MEMBER_ID,
+            List.of(ClusterConstants.INGRESS_ENDPOINT_HOST));
+        ClusterNode.configureConsensus(singleNodeConfig, 1);
+
+        assertConsensusUsesUdpChannels(multiNodeConfig.consensusModuleContext());
+        assertConsensusUsesIpcChannels(singleNodeConfig.consensusModuleContext());
     }
 
     @Test
@@ -62,17 +295,81 @@ class ClusterNodeTest {
             () -> ClusterNode.reportStartupFailure(new NullPointerException("AERON_DIR required"))
         );
 
-        assertTrue(stderr.startsWith("heron: cluster node failed: AERON_DIR required"));
+        assertTrue(stderr.startsWith(STARTUP_FAILURE_PREFIX + "AERON_DIR required"));
         assertTrue(stderr.contains("java.lang.NullPointerException: AERON_DIR required"));
         assertTrue(stderr.contains("\tat "));
     }
 
-    static String captureStderr(final Runnable action) {
+    static final List<String> FAILOVER_HOSTS = IntStream.range(0, ClusterConstants.FAILOVER_MEMBER_COUNT)
+        .mapToObj(i -> "cluster-" + i)
+        .toList();
+
+    static List<String> failoverHosts() {
+        return FAILOVER_HOSTS;
+    }
+
+    static String failoverHostnamesEnv() {
+        return String.join(",", FAILOVER_HOSTS);
+    }
+
+    static ClusterConfig createClusterConfig(final int memberId, final List<String> hostnames) {
+        return ClusterConfig.create(memberId, hostnames, ClusterConstants.PORT_BASE, new EchoService());
+    }
+
+    static void assertConsensusUsesUdpChannels(final ConsensusModule.Context consensus) {
+        assertFalse(consensus.isIpcIngressAllowed());
+        assertEquals(ClusterConstants.FAILOVER_INGRESS_CHANNEL, consensus.ingressChannel());
+        assertEquals(ClusterConstants.FAILOVER_CONSENSUS_EGRESS_CHANNEL, consensus.egressChannel());
+        assertEquals(ClusterConstants.INGRESS_STREAM_ID, consensus.ingressStreamId());
+        assertEquals(ClusterConstants.FAILOVER_SESSION_TIMEOUT_NS, consensus.sessionTimeoutNs());
+        assertEquals(ClusterConstants.FAILOVER_CLUSTER_MEMBERS_STRING, consensus.clusterMembers());
+    }
+
+    static void assertConsensusUsesIpcChannels(final ConsensusModule.Context consensus) {
+        assertTrue(consensus.isIpcIngressAllowed());
+        assertEquals(ClusterConstants.INGRESS_CHANNEL, consensus.ingressChannel());
+        assertEquals(ClusterConstants.EGRESS_CHANNEL, consensus.egressChannel());
+        assertEquals(ClusterConstants.INGRESS_STREAM_ID, consensus.ingressStreamId());
+    }
+
+    private static String memberCountNonPositiveMessage(final int got) {
+        return "HERON_CLUSTER_MEMBER_COUNT must be >= 1 (got " + got + ")";
+    }
+
+    private static String memberIdOutOfRangeMessage(final int memberId, final int memberCount) {
+        return "HERON_CLUSTER_MEMBER_ID must satisfy 0 <= memberId < memberCount "
+            + "(got memberId=" + memberId + ", memberCount=" + memberCount + ")";
+    }
+
+    private static String exactlyHostnamesMessage(final int memberCount, final int got) {
+        return "HERON_CLUSTER_HOSTNAMES must list exactly " + memberCount + " hostnames (got " + got + ")";
+    }
+
+    private static void assertIllegalArgument(final Executable action, final String expectedMessage) {
+        final IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, action);
+        assertEquals(expectedMessage, ex.getMessage());
+    }
+
+    private static void assertStartupFailureStderr(final String failureDetail, final Executable startup) {
+        assertEquals(
+            STARTUP_FAILURE_PREFIX + failureDetail + System.lineSeparator(),
+            captureStderr(startup));
+    }
+
+    static String captureStderr(final Executable action) {
         final PrintStream originalErr = System.err;
         final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         System.setErr(new PrintStream(buffer, true, StandardCharsets.UTF_8));
         try {
-            action.run();
+            action.execute();
+        } catch (final Throwable t) {
+            if (t instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            if (t instanceof Error error) {
+                throw error;
+            }
+            throw new AssertionError(t);
         } finally {
             System.setErr(originalErr);
         }

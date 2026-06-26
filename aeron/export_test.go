@@ -565,6 +565,22 @@ func NewTestCountersReaderLimitOnlyForTest(tb testing.TB, limitPosition int64) *
 	return newTestCountersReaderLimitOnlyWithoutTB(limitPosition)
 }
 
+// NewTestCountersReaderMismatchedChannelStatusForTest builds a counters reader whose
+// publisher-limit counter is registered to the publication but whose send channel-status
+// counter is allocated under channelStatusRegistrationID.
+//
+// Models a shared endpoint counter: the send channel-status counter's registration id
+// belongs to the endpoint's first publication, not a later publication reusing the
+// endpoint. Publication construction must accept it on allocation and type alone.
+func NewTestCountersReaderMismatchedChannelStatusForTest(
+	tb testing.TB,
+	limitPosition int64,
+	channelStatusRegistrationID int64,
+) *cnc.CountersReader {
+	tb.Helper()
+	return inMemCountersReaderWithChannelStatusRegistration(limitPosition, channelStatusRegistrationID)
+}
+
 func PublicationActiveTermBufferForTest(pub *Publication) (int, atomic.AtomicBuffer) {
 	return publicationActiveTermBufferForTest(pub.meta, pub.termBuffers)
 }
@@ -1469,6 +1485,22 @@ func SubscriptionRoundRobinIndexForTest(sub *Subscription) uint32 {
 
 func SubscriptionChannelStatusCounterIDForTest(sub *Subscription) int32 {
 	return sub.channelStatusCounterID
+}
+
+func SubscriptionApplyReadyForTest(sub *Subscription, channelStatusCounterID int32) {
+	SubscriptionApplyReadyForHooks(sub, channelStatusCounterID)
+}
+
+func SubscriptionSetCountersForTest(sub *Subscription, counters *cnc.CountersReader) {
+	SubscriptionSetCountersForHooks(sub, counters)
+}
+
+func SubscriptionCountersForTest(sub *Subscription) *cnc.CountersReader {
+	return SubscriptionCountersForHooks(sub)
+}
+
+func SubscriptionSetReceiveChannelStatusForTest(sub *Subscription, value int64) {
+	SubscriptionSetReceiveChannelStatusForHooks(sub, value)
 }
 
 func newTestImage(

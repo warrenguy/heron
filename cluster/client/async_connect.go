@@ -75,6 +75,9 @@ type AsyncConnect struct {
 	connectWireBuffer  []byte
 	encodedChallenge   []byte
 
+	cachedResponseChannel   string
+	cachedResponseChannelOK bool
+
 	closed bool
 }
 
@@ -215,6 +218,15 @@ func (ac *AsyncConnect) Close() error {
 }
 
 func concludeClusterContext(ctx ClusterContext) (ClusterContext, *aeron.Client, bool, error) {
+	var (
+		err    error
+		client *aeron.Client
+	)
+	ctx.EgressChannel, err = applyUDPRejoinFalse(ctx.EgressChannel)
+	if err != nil {
+		return ClusterContext{}, nil, false, err
+	}
+
 	if ctx.Aeron != nil {
 		return ctx, ctx.Aeron, false, nil
 	}
@@ -227,10 +239,6 @@ func concludeClusterContext(ctx ClusterContext) (ClusterContext, *aeron.Client, 
 		// driver errors to surface misconfiguration during handshake setup.
 		aeronCtx.ErrorHandler = defaultClusterConnectErrorHandler
 	}
-	var (
-		client *aeron.Client
-		err    error
-	)
 	if factory, ok := ownedConnectClientFactoryForContext(ctx); ok {
 		client, err = factory(ctx)
 	} else {
@@ -329,11 +337,23 @@ func (ac *AsyncConnect) pollCreateIngressPublications() (*ConnectResult, error) 
 	return nil, nil
 }
 
+func (ac *AsyncConnect) resolvedResponseChannel() (string, bool) {
+	if ac.cachedResponseChannelOK {
+		return ac.cachedResponseChannel, true
+	}
+	channel, ok := resolveResponseChannel(ac.egressSubscription)
+	if ok {
+		ac.cachedResponseChannel = channel
+		ac.cachedResponseChannelOK = true
+	}
+	return channel, ok
+}
+
 func (ac *AsyncConnect) pollAwaitPublicationConnected() (*ConnectResult, error) {
 	if ac.egressSubscription == nil {
 		return nil, errors.New("cluster client: egress subscription missing")
 	}
-	if _, ok := resolveResponseChannel(ac.egressSubscription); ok {
+	if _, ok := ac.resolvedResponseChannel(); ok {
 		if pub := ac.firstConnectedIngressPublication(); pub != nil {
 			ac.ingressPublication = pub
 			if err := ac.prepareConnectRequest(); err != nil {

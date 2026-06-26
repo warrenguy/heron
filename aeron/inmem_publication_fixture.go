@@ -192,6 +192,16 @@ func inMemAvailableImage() conductor.AvailableImage {
 }
 
 func inMemCountersReaderWithoutTB(limitPosition int64) *cnc.CountersReader {
+	return inMemCountersReaderWithChannelStatusRegistration(
+		limitPosition,
+		inMemPublicationRegistrationID,
+	)
+}
+
+func inMemCountersReaderWithChannelStatusRegistration(
+	limitPosition int64,
+	channelStatusRegistrationID int64,
+) *cnc.CountersReader {
 	return inMemCountersReaderFromRecords(3, func(meta, values []byte) {
 		cnc.WriteCounterRecord(
 			meta,
@@ -209,7 +219,7 @@ func inMemCountersReaderWithoutTB(limitPosition int64) *cnc.CountersReader {
 			cnc.CounterRecordAllocated,
 			cnc.DriverSendChannelStatusTypeID,
 			inMemIPCChannel,
-			inMemPublicationRegistrationID,
+			channelStatusRegistrationID,
 			1,
 		)
 		if err != nil {
