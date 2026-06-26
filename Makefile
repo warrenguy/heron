@@ -74,7 +74,7 @@ help: ## List Makefile targets
 	@echo "  names: java-interop cluster-sbe cluster-java"
 
 # Without GNU timeout/gtimeout on PATH, CHECK_TIMEOUT is not enforced; TEST_TIMEOUT still applies.
-.PHONY: check check-inner check-static check-test check-aeron-versions \
+.PHONY: check check-inner check-static check-static-extra check-test check-aeron-versions \
 	check-sbe-stale check-sbe-stale-optional \
 	cluster-sbe-catalog-regen check-catalog-stale check-catalog-stale-optional \
 	check-catalog-stale-selftest \
@@ -88,7 +88,9 @@ check: ## Lint pins unit stress (contract-oracles opt)
 		$(MAKE) --no-print-directory check-inner; \
 	fi
 
-check-static: lint
+check-static: lint check-static-extra
+
+check-static-extra:
 	+@$(MAKE) --no-print-directory check-sbe-stale-optional
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) check-aeron-versions \
 		check-catalog-stale-optional contract-oracles-optional
@@ -107,9 +109,10 @@ check-aeron-versions:
 	@scripts/check-aeron-versions.sh
 
 # Run $(1) when $(2) succeeds; otherwise print skip message $(3).
+# $(4): + to forward the jobserver when $(1) fans out to a parallel sub-make.
 define optional-target
 $(1)-optional:
-	@if $(2); then \
+	$(4)@if $(2); then \
 		$(MAKE) --no-print-directory $(1); \
 	else \
 		echo "heron: skipping $(1) ($(3))"; \
@@ -129,9 +132,10 @@ cluster-sbe-catalog-regen: bin/cluster-sbe-catalog-gen
 	@$(CLUSTER_SBE_CATALOG_REGEN)
 
 check-catalog-stale: bin/cluster-sbe-catalog-gen
-	@set -euo pipefail; tmp=$$(mktemp); cp $(CLUSTER_SBE_CATALOG_JSON) "$$tmp"; \
-	trap 'cp "$$tmp" $(CLUSTER_SBE_CATALOG_JSON); rm -f "$$tmp"' EXIT; \
-	$(CLUSTER_SBE_CATALOG_REGEN); diff -u "$$tmp" $(CLUSTER_SBE_CATALOG_JSON)
+	@set -euo pipefail; tmp=$$(mktemp); \
+	trap 'rm -f "$$tmp"' EXIT; \
+	$(CLUSTER_SBE_CATALOG_GEN) -catalog $(CLUSTER_SBE_CATALOG_JSON) -out "$$tmp"; \
+	diff -u $(CLUSTER_SBE_CATALOG_JSON) "$$tmp"
 
 $(eval $(call optional-target,check-catalog-stale,command -v go >/dev/null,go not installed))
 
@@ -286,7 +290,7 @@ test-$(1)-unit:
 	if [ -z "$$$$mvn_ver" ] || [ -z "$$$$vsort" ] || ! printf '%s\n%s\n' "3.8.2" "$$$$mvn_ver" | $$$$vsort -V -C 2>/dev/null; then \
 		echo "heron: Maven 3.8.2+ required for parallel contract-oracles" >&2; \
 		exit 1; \
-	fi; \
+	fi
 	mvn -q -f $(2) test
 endef
 
@@ -331,7 +335,7 @@ contract-oracles: ## All three contract oracle suites (mvn + go)
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) \
 		$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-contract)
 
-$(eval $(call optional-target,contract-oracles,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
+$(eval $(call optional-target,contract-oracles,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed,+))
 
 bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd.sh
 	./scripts/build-aeronmd.sh

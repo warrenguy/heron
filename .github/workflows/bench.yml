@@ -55,7 +55,6 @@ jobs:
       fail-fast: false
       matrix: *bench-archs
     runs-on: ${{ matrix.runner }}
-    continue-on-error: true
     concurrency:
       group: bench-regression-${{ github.event.pull_request.number }}-${{ matrix.goarch }}
       cancel-in-progress: true
@@ -86,3 +85,17 @@ jobs:
 
       - name: Benchmark regression
         run: make bench-regression
+
+  bench-ok:
+    if: always()
+    needs: [bench-baseline, bench-regression]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify bench jobs
+        run: |
+          for r in ${{ join(needs.*.result, ' ') }}; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "bench job concluded: $r"; exit 1 ;;
+            esac
+          done

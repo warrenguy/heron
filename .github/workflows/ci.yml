@@ -5,10 +5,59 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 # GOARCH must match runner arch (see Makefile SUPPORTED_GOARCHES).
 jobs:
-  check:
+  lint:
+    runs-on: ubuntu-24.04
+    env: &amd64-env
+      GOARCH: amd64
+    steps:
+      - &checkout-step
+        uses: actions/checkout@v6
+
+      - &go-arch-cache-marker-step
+        name: Write Go arch cache marker
+        run: echo "${{ env.GOARCH }}" > .go-arch-cache-marker
+
+      - &setup-go-step
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            .go-arch-cache-marker
+
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-${{ runner.os }}-${{ env.GOARCH }}-${{ hashFiles('.golangci.yml', 'go.sum') }}
+          restore-keys: |
+            golangci-${{ runner.os }}-${{ env.GOARCH }}-
+
+      - name: Lint
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck && make lint
+
+  oracles:
+    runs-on: ubuntu-24.04
+    env: *amd64-env
+    steps:
+      - *checkout-step
+      - *go-arch-cache-marker-step
+      - *setup-go-step
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 26
+          cache: maven
+
+      - name: Contract oracles and stale checks
+        run: make check-static-extra
+
+  unit:
     strategy: &go-matrix
       fail-fast: false
       matrix:
@@ -21,59 +70,33 @@ jobs:
     env: &go-arch-env
       GOARCH: ${{ matrix.goarch }}
     steps:
-      - &checkout-step
-        uses: actions/checkout@v6
-
-      - &go-arch-cache-marker-step
-        name: Write Go arch cache marker
-        run: echo "${{ env.GOARCH }}" > .go-arch-cache-marker
-
-      - uses: actions/setup-go@v6
-        with: &go-setup-with
-          go-version-file: go.mod
-          cache: true
-          cache-dependency-path: |
-            go.sum
-            .go-arch-cache-marker
-
-      # amd64: Java, lint cache, shellcheck, and static checks (SBE, contract oracles).
-      - uses: actions/setup-java@v5
-        if: env.GOARCH == 'amd64'
-        with:
-          distribution: temurin
-          java-version: 26
-          cache: maven
-
-      - uses: actions/cache@v5
-        if: env.GOARCH == 'amd64'
-        with:
-          path: ~/.cache/golangci-lint
-          key: golangci-${{ runner.os }}-${{ env.GOARCH }}-${{ hashFiles('.golangci.yml', 'go.sum') }}
-          restore-keys: |
-            golangci-${{ runner.os }}-${{ env.GOARCH }}-
-
-      - name: Check static
-        if: env.GOARCH == 'amd64'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck && make check-static
+      - *checkout-step
+      - *go-arch-cache-marker-step
+      - *setup-go-step
 
       - name: Check test
         run: make check-test
 
+  property:
+    runs-on: ubuntu-24.04
+    env: *amd64-env
+    steps:
+      - *checkout-step
+      - *go-arch-cache-marker-step
+      - *setup-go-step
+
       - name: Property tests
-        if: env.GOARCH == 'amd64'
         run: make test-rapid
 
   integration:
-    needs: check
+    if: &skip-drafts github.event_name == 'push' || github.event.pull_request.draft == false
     strategy: *go-matrix
     runs-on: ${{ matrix.runner }}
     env: *go-arch-env
     steps:
       - *checkout-step
       - *go-arch-cache-marker-step
-
-      - uses: actions/setup-go@v6
-        with: *go-setup-with
+      - *setup-go-step
 
       - uses: actions/cache@v5
         id: aeronmd-cache
@@ -87,3 +110,33 @@ jobs:
 
       - name: Integration tests
         run: make test-integration
+
+  docker-smokes:
+    if: *skip-drafts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env: *amd64-env
+    steps:
+      - *checkout-step
+      - *go-arch-cache-marker-step
+      - *setup-go-step
+
+      - name: Docker smokes
+        run: |
+          make test-java-interop
+          make test-cluster-java
+          make test-cluster-java-failover
+
+  ci-ok:
+    if: always()
+    needs: [lint, oracles, unit, property, integration, docker-smokes]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify required jobs
+        run: |
+          for r in ${{ join(needs.*.result, ' ') }}; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "required job concluded: $r"; exit 1 ;;
+            esac
+          done
