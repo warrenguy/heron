@@ -30,8 +30,8 @@ func (ac *AeronCluster) appIngressBlockedCode() int64 {
 // When ingress is nil, returns NotConnected without tracking; PollEgress may
 // drive handleDisconnected. When ingress exists but is disconnected and session
 // is CONNECTED, tracks NotConnected before return. In AWAIT_NEW_LEADER_CONNECTION,
-// trackIngressPublicationResult(NotConnected) is a no-op; recovery uses
-// leaderIngressForRecovery and offerSessionKeepAlive instead.
+// trackIngressPublicationResult(NotConnected) is a no-op; recovery uses the
+// member-map leader entry (recoveryLeaderIngress) and offerSessionKeepAlive instead.
 func (ac *AeronCluster) leaderIngressPublication() (IngressPublication, int64) {
 	pub := ac.ingressPublication
 	if pub == nil || !pub.IsConnected() {
@@ -83,16 +83,27 @@ func (ac *AeronCluster) trackIngressPublicationResult(result int64) {
 }
 
 // Offer prepends a SessionMessageHeader and offers payload via the leader ingress
-// publication. Returns aeron publication status codes; no Go error on the hot path.
+// publication. Heron offers once on ingressScratch.
+//
+// The application goroutine must call client.DoWork between spins and re-invoke on
+// BackPressured or AdminAction (invoker-only transport; no internal retry).
+// Returns aeron publication status codes; no Go error on the hot path.
+//
 // EncodeIngressHeader failure maps to NotConnected; ingressScratch is sized at
 // construct so encode cannot fail on valid session state. Exclusive publications
 // return UnsupportedMessageLength when header+payload exceeds maxPayloadLength;
 // concurrent publications may fragment larger totals via OfferWithOffset.
 //
+// On concurrent *aeron.Publication, fragmented Offer under AdminAction may leave
+// orphan BEGIN frames (see
+// github.com/warrenguy/heron/test/integration/harness.OfferWithRetry).
+//
 // MaxPositionExceeded from ingressScratch capacity rejection is a local sizing
 // guard and does not enter PENDING_CLOSE. Publication-returned MaxPositionExceeded
 // enters PENDING_CLOSE via trackIngressPublicationResult; PollEgress completes
 // Close() via pollStateChanges.
+//
+// For paced retry, see IngressOfferUntilPositive (ingress_retry.go).
 func (ac *AeronCluster) Offer(payload []byte) int64 {
 	pub, code := ac.leaderIngressForAppOffer()
 	if pub == nil {
@@ -128,6 +139,12 @@ func (ac *AeronCluster) Offer(payload []byte) int64 {
 // programmer errors (negative length, oversize claim) return a non-nil err.
 // EncodeIngressHeader failure best-effort aborts the claim; abort cleanup errors
 // do not override the encode error.
+//
+// TryClaim/CommitClaim are not atomically retried: a failed CommitClaim or operational
+// code on TryClaim leaves the claim state caller-owned.
+//
+// Do not wrap claim+commit in IngressOfferUntilPositive offerFn without explicit
+// AbortClaim on retry paths.
 func (ac *AeronCluster) TryClaim(payloadLength int) (IngressClaim, int64, error) {
 	if payloadLength < 0 {
 		return IngressClaim{}, 0, fmt.Errorf("cluster client: negative payload length %d", payloadLength)
@@ -179,6 +196,8 @@ func (ac *AeronCluster) TryClaim(payloadLength int) (IngressClaim, int64, error)
 // trackIngressPublicationResult. In-flight claims on a disconnected-but-still-open
 // active ingress return NotConnected without tracking; PollEgress pollTransportDisconnect
 // detects that transport loss (intentional asymmetry with Offer/TryClaim).
+//
+// Claim+retry caveats: see TryClaim godoc.
 func (ac *AeronCluster) CommitClaim(claim IngressClaim, payload []byte) (int64, error) {
 	if ac.closed || ac.sessionState == SessionStatePendingClose {
 		return aeron.Closed, nil
@@ -294,6 +313,8 @@ func (ac *AeronCluster) offerSessionKeepAlive(pub IngressPublication) int64 {
 // During leadership transition keep-alive may fail; keep calling PollEgress with
 // DoWork between spins. Recovery keep-alives are sent from pollLeaderRecovery, not
 // this API.
+//
+// For paced retry, see SendKeepAliveUntilPositive (ingress_retry.go).
 func (ac *AeronCluster) SendKeepAlive() int64 {
 	pub, code := ac.leaderIngressForAppOffer()
 	if pub == nil {
@@ -342,6 +363,8 @@ func (ac *AeronCluster) offerSnapshotRequest(
 //
 // During leadership transition admin may fail; keep calling PollEgress with DoWork
 // between spins. Only SessionStateConnected with connected leader ingress proceeds.
+//
+// For paced retry, see IngressOfferUntilPositive (ingress_retry.go).
 func (ac *AeronCluster) SendSnapshotRequest(correlationID int64) int64 {
 	pub, code := ac.leaderIngressForAppOffer()
 	if pub == nil {

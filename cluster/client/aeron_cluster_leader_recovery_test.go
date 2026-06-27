@@ -97,12 +97,68 @@ func TestAeronCluster_channelOnly_emptyEndpoints_recovery(t *testing.T) {
 	require.Positive(t, pos)
 }
 
+// requireRecoveryCrossSpinUntilConnected models the invoker duty cycle for retriable
+// keep-alive sequences.
+//
+// zeroWorkSpins is len(offerResults)-1: each retriable code yields PollEgress work 0,
+// then one final DoWork+PollEgress spin succeeds.
+func requireRecoveryCrossSpinUntilConnected(
+	t *testing.T,
+	ac *AeronCluster,
+	seqPub *sequentialOfferResultIngressPublication,
+	zeroWorkSpins int,
+) {
+	t.Helper()
+
+	for range zeroWorkSpins {
+		ac.Aeron().DoWork()
+		requirePollLeaderRecoveryZeroWork(t, ac)
+	}
+	ac.Aeron().DoWork()
+	require.Equal(t, 1, ac.PollEgress())
+	require.Equal(t, SessionStateConnected, ac.SessionState())
+	require.NotNil(t, ac.IngressPublication())
+	require.Same(t, seqPub, ac.IngressPublication())
+	require.Equal(t, zeroWorkSpins+1, seqPub.calls)
+}
+
+// TestAeronCluster_pollLeaderRecovery_crossSpinSucceeds models the invoker duty cycle.
+//
+// DoWork before each PollEgress spin while keep-alive returns retriable codes.
+func TestAeronCluster_pollLeaderRecovery_crossSpinSucceeds(t *testing.T) {
+	tests := []struct {
+		name         string
+		offerResults []int64
+	}{
+		{
+			name:         "backPressured",
+			offerResults: []int64{aeron.BackPressured, aeron.BackPressured, 100},
+		},
+		{
+			name:         "adminAction",
+			offerResults: []int64{aeron.AdminAction, 100},
+		},
+		{
+			name:         "backPressuredThenAdminAction",
+			offerResults: []int64{aeron.BackPressured, aeron.AdminAction, 100},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ac, seqPub := channelOnlyAwaitWithSequentialOffers(t, tc.offerResults...)
+
+			requireRecoveryCrossSpinUntilConnected(t, ac, seqPub, len(tc.offerResults)-1)
+		})
+	}
+}
+
 func TestAeronCluster_pollLeaderRecovery_zeroWork(t *testing.T) {
 	tests := []struct {
 		name        string
 		offerResult int64
 	}{
-		{name: "backpressure", offerResult: aeron.BackPressured},
+		{name: "backPressured", offerResult: aeron.BackPressured},
 		{name: "adminAction", offerResult: aeron.AdminAction},
 	}
 

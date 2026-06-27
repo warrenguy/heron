@@ -16,6 +16,11 @@ import (
 // must invoke client.DoWork() on the transport *aeron.Client between Offer/TryClaim
 // and PollEgress spins, matching ClusterContext invoker-only rules. Callers must
 // CommitClaim or AbortClaim any in-flight TryClaim before Close.
+//
+// For paced ingress retry, call IngressOfferUntilPositive(session.Aeron(), session, cfg, offerFn)
+// with session.Offer, session.SendKeepAlive, or a closure around session.SendSnapshotRequest.
+//
+// SendKeepAliveUntilPositive is a keep-alive-only convenience wrapper.
 type AeronCluster struct {
 	ctx       ClusterContext
 	aeron     *aeron.Client

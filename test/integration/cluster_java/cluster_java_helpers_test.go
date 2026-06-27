@@ -17,6 +17,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	agronaatomic "github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/agrona/idlestrategy"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
 	"github.com/warrenguy/heron/test/integration/harness"
@@ -110,8 +111,13 @@ func newEchoAndAdminCaptureHandlers() (*client.EgressHandlers, *[]byte, *adminRe
 	}, &echoed, adminCap
 }
 
-// ingressOfferUntilPositive retries BackPressured/AdminAction only; PollEgress interleaves
-// egress during leader recovery mid-offer. Other publication codes fail immediately.
+// ingressOfferUntilPositive delegates retry pacing to client.IngressOfferUntilPositive.
+//
+// Timeout bounds use the production helper clock (session.nanoClock), not time.Now.
+// Zero offerTimeout uses DefaultIngressOfferTimeout per the production helper.
+//
+// Transport-error checking (hadClientError) stays in the test wrapper closure;
+// it runs after DoWork on each offer iteration (stricter than the old pre-DoWork check).
 func ingressOfferUntilPositive(
 	t *testing.T,
 	aeronClient *aeron.Client,
@@ -121,36 +127,26 @@ func ingressOfferUntilPositive(
 	offer func() int64,
 ) int64 {
 	t.Helper()
-
-	deadline := time.Now().Add(offerTimeout)
-	var lastStatus int64
-	for time.Now().Before(deadline) {
+	pos := client.IngressOfferUntilPositive(aeronClient, session, client.IngressOfferConfig{
+		Timeout: offerTimeout,
+		// NewSleeping(16ms) reproduces the inline loop's BackPressured pacing.
+		IdleStrategy: idlestrategy.NewSleeping(aeron.DefaultIdleSleepDuration),
+	}, func() int64 {
 		require.False(t, hadClientError.Load(), "transport error during offer")
-		aeronClient.DoWork()
-		position := offer()
-		if position > 0 {
-			return position
-		}
-		lastStatus = position
-		switch position {
-		case aeron.BackPressured:
-			session.PollEgress()
-			aeronClient.DoWork()
-			time.Sleep(aeron.DefaultIdleSleepDuration)
-		case aeron.AdminAction:
-			session.PollEgress()
-		default:
-			t.Fatalf(
-				"cluster offer failed: status=%d sessionState=%v hadClientError=%v",
-				position, session.SessionState(), hadClientError.Load(),
-			)
-		}
+		return offer()
+	})
+	if pos > 0 {
+		return pos
+	}
+	reason := "failed"
+	if client.IngressRetriableCode(pos) {
+		reason = "timed out"
 	}
 	t.Fatalf(
-		"cluster offer timed out: lastStatus=%d sessionState=%v hadClientError=%v",
-		lastStatus, session.SessionState(), hadClientError.Load(),
+		"cluster offer %s: lastStatus=%d sessionState=%v hadClientError=%v",
+		reason, pos, session.SessionState(), hadClientError.Load(),
 	)
-	return 0 // unreachable; satisfies compiler after Fatalf
+	return 0
 }
 
 func pollEgressUntil(

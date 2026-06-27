@@ -82,39 +82,60 @@ func (ac *AeronCluster) applyLeaderIngressRebuild(
 	return err
 }
 
+// recoveryLeaderIngress returns the member-map leader ingress entry for
+// AWAIT_NEW_LEADER_CONNECTION recovery callers.
+func (ac *AeronCluster) recoveryLeaderIngress() (*MemberIngress, bool) {
+	ingressMemberID := leaderIngressMemberID(ac.memberMap, ac.leaderMemberID)
+	leader, err := ac.memberMap.Require(ingressMemberID)
+	if err != nil {
+		return nil, false
+	}
+	return leader, true
+}
+
+// Publication vs connectedPublication asymmetry during AWAIT_NEW_LEADER_CONNECTION:
+// pollLeaderRecovery offers keep-alives only via connectedPublication() (open and
+// connected).
+//
+// Disconnect detection uses Publication directly: recoveryLeaderIngressDisconnected
+// and pollTransportDisconnect enter AWAIT_NEW_LEADER when the settled leader pub
+// exists but IsConnected() is false, without attempting a keep-alive offer.
+//
 // recoveryLeaderIngressDisconnected reports a settled leader publication in the
 // member map that is no longer connected during AWAIT_NEW_LEADER_CONNECTION.
 func (ac *AeronCluster) recoveryLeaderIngressDisconnected() bool {
 	if ac.sessionState != SessionStateAwaitNewLeaderConnection {
 		return false
 	}
-	ingressMemberID := leaderIngressMemberID(ac.memberMap, ac.leaderMemberID)
-	leader, err := ac.memberMap.Require(ingressMemberID)
-	if err != nil {
+	leader, ok := ac.recoveryLeaderIngress()
+	if !ok {
 		return false
 	}
 	pub := leader.Publication
 	return pub != nil && !pub.IsConnected()
 }
 
-// leaderIngressForRecovery is the recovery ingress entrypoint during
-// AWAIT_NEW_LEADER_CONNECTION. Bypasses app session guards and
-// leaderIngressPublication; pollLeaderRecovery drives reconnect via
-// offerSessionKeepAlive on the member-map leader publication.
-func (ac *AeronCluster) leaderIngressForRecovery() IngressPublication {
-	ingressMemberID := leaderIngressMemberID(ac.memberMap, ac.leaderMemberID)
-	leader, err := ac.memberMap.Require(ingressMemberID)
-	if err != nil {
-		return nil
-	}
-	return leader.connectedPublication()
-}
-
 // pollLeaderRecovery advances async ingress registration and sends the first
 // SessionKeepAlive on the new leader publication during AWAIT_NEW_LEADER_CONNECTION.
-// One offerSessionKeepAlive attempt per PollEgress spin; BackPressured or
-// AdminAction returns zero work so the next PollEgress spin retries after caller
-// DoWork. Not public SendKeepAlive; recovery bypasses app session guards.
+//
+// Returns 0 (no PollEgress work) when:
+//   - session state is not AWAIT_NEW_LEADER_CONNECTION;
+//   - recoveryLeaderIngress lookup fails;
+//   - leader.connectedPublication() is nil (pub missing, closed, or not connected);
+//   - offerSessionKeepAlive returns a retriable code (BackPressured, AdminAction);
+//   - failIfIngressUnrecoverable reports an error and stateDeadlineNs has expired
+//     (pollStateChanges closes the session on the same PollEgress spin).
+//
+// Returns 1 (counts as PollEgress work) when:
+//   - failIfIngressUnrecoverable reports an error before the deadline and enters
+//     AWAIT_NEW_LEADER;
+//   - offerSessionKeepAlive returns a non-retriable code, including success (>0),
+//     Closed, and NotConnected (Closed/NotConnected do not alter state here).
+//
+// Cross-spin callers must invoke client.DoWork before each PollEgress retry when
+// keep-alive returns retriable codes.
+//
+// Recovery bypasses app session guards; not public SendKeepAlive.
 func (ac *AeronCluster) pollLeaderRecovery() int {
 	if ac.sessionState != SessionStateAwaitNewLeaderConnection {
 		return 0
@@ -128,7 +149,11 @@ func (ac *AeronCluster) pollLeaderRecovery() int {
 		return 1
 	}
 
-	pub := ac.leaderIngressForRecovery()
+	leader, ok := ac.recoveryLeaderIngress()
+	if !ok {
+		return 0
+	}
+	pub := leader.connectedPublication()
 	if pub == nil {
 		return 0
 	}
@@ -138,11 +163,10 @@ func (ac *AeronCluster) pollLeaderRecovery() int {
 		ac.ingressPublication = pub
 		ac.refreshIngressSessionLimits(pub)
 	}
-	// Count one recovery spin unless backpressured/admin-action retry.
-	if pos != aeron.BackPressured && pos != aeron.AdminAction {
-		return 1
+	if IngressRetriableCode(pos) {
+		return 0
 	}
-	return 0
+	return 1
 }
 
 // refreshIngressSessionLimits resizes ingress scratch for the connected leader pub.

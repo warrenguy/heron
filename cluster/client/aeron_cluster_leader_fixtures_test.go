@@ -44,7 +44,7 @@ func (pub fixedOfferResultIngressPublication) OfferWithOffset(
 	buffer []byte,
 	offset, length int,
 ) int64 {
-	return pub.offerResult
+	return pub.Offer(buffer)
 }
 
 func (pub fixedOfferResultIngressPublication) TryClaim(
@@ -111,6 +111,32 @@ func channelOnlyAwaitNewLeaderConnectionFixture(
 	return ac, leader
 }
 
+// sequentialOfferResultIngressPublication returns scripted offer results for retry tests.
+//
+// Offer-only scripting; TryClaim delegates to the embedded IngressPublication.
+//
+// After the scripted slice is consumed, the final entry repeats (clamp semantics).
+type sequentialOfferResultIngressPublication struct {
+	IngressPublication
+	results []int64
+	calls   int
+}
+
+func (p *sequentialOfferResultIngressPublication) Offer([]byte) int64 {
+	r := p.results[min(p.calls, len(p.results)-1)]
+	p.calls++
+	return r
+}
+
+// OfferWithOffset delegates to Offer so offset-based offers share the call counter.
+func (p *sequentialOfferResultIngressPublication) OfferWithOffset(
+	buffer []byte,
+	offset, length int,
+) int64 {
+	return p.Offer(buffer)
+}
+
+// newFixedOfferResultIngressPublication builds a stateless fixture (value receiver).
 func newFixedOfferResultIngressPublication(
 	t *testing.T,
 	offerResult int64,
@@ -123,10 +149,61 @@ func newFixedOfferResultIngressPublication(
 	}
 }
 
+// newSequentialOfferResultIngressPublication builds a stateful fixture (pointer receiver).
+func newSequentialOfferResultIngressPublication(
+	t *testing.T,
+	results ...int64,
+) *sequentialOfferResultIngressPublication {
+	t.Helper()
+
+	require.NotEmpty(
+		t,
+		results,
+		"sequentialOfferResultIngressPublication requires at least one result",
+	)
+
+	return &sequentialOfferResultIngressPublication{
+		IngressPublication: aeron.NewTestExclusivePublicationForHooks(t),
+		results:            results,
+	}
+}
+
 func setLeaderFixedOfferResult(t *testing.T, leader *MemberIngress, offerResult int64) {
 	t.Helper()
 
 	leader.Publication = newFixedOfferResultIngressPublication(t, offerResult)
+}
+
+func channelOnlyAwaitWithSequentialOffers(
+	t *testing.T,
+	results ...int64,
+) (*AeronCluster, *sequentialOfferResultIngressPublication) {
+	t.Helper()
+
+	ac, leader := channelOnlyAwaitNewLeaderConnectionFixture(t, nil)
+	seqPub := newSequentialOfferResultIngressPublication(t, results...)
+	leader.Publication = seqPub
+	return ac, seqPub
+}
+
+// installConnectResultIngress configures channel-only ConnectResult fixtures.
+//
+// MemberIngressMap aliases pub so IngressPublication and member-0 share one publication.
+func installConnectResultIngress(result *ConnectResult, pub IngressPublication) {
+	result.IngressPublication = pub
+	result.MemberIngressMap = channelOnlyIngressMap(pub)
+}
+
+func withSequentialOfferResultIngress(
+	t *testing.T,
+	result *ConnectResult,
+	results ...int64,
+) *sequentialOfferResultIngressPublication {
+	t.Helper()
+
+	seqPub := newSequentialOfferResultIngressPublication(t, results...)
+	installConnectResultIngress(result, seqPub)
+	return seqPub
 }
 
 func requirePollLeaderRecoveryZeroWork(t *testing.T, ac *AeronCluster) {
@@ -140,9 +217,7 @@ func requirePollLeaderRecoveryZeroWork(t *testing.T, ac *AeronCluster) {
 func withFixedOfferResultIngress(t *testing.T, result *ConnectResult, offerResult int64) {
 	t.Helper()
 
-	wrapped := newFixedOfferResultIngressPublication(t, offerResult)
-	result.IngressPublication = wrapped
-	result.MemberIngressMap = channelOnlyIngressMap(wrapped)
+	installConnectResultIngress(result, newFixedOfferResultIngressPublication(t, offerResult))
 }
 
 func newMultiMemberAeronClusterInvalidIngress(

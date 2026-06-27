@@ -108,8 +108,7 @@ func TestAeronCluster_trackIngress_scratchOverflow_staysConnected(t *testing.T) 
 func TestAeronCluster_leaderIngressPublication_disconnected_entersAwaitNewLeader(t *testing.T) {
 	ac := newTrackIngressDeadlineOracleCluster(t, func(result *ConnectResult) {
 		disconnected := aeron.NewTestExclusivePublicationForHooksWithConnected(t, false)
-		result.IngressPublication = disconnected
-		result.MemberIngressMap = channelOnlyIngressMap(disconnected)
+		installConnectResultIngress(result, disconnected)
 	})
 
 	require.Equal(t, SessionStateConnected, ac.SessionState())
