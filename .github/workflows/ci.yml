@@ -127,16 +127,25 @@ jobs:
           make test-cluster-java
           make test-cluster-java-failover
 
-  ci-ok:
-    if: always()
+  ci-failed:
+    if: failure() || cancelled()
     needs: [lint, oracles, unit, property, integration, docker-smokes]
     runs-on: ubuntu-24.04
     steps:
-      - name: Verify required jobs
-        run: |
-          for r in ${{ join(needs.*.result, ' ') }}; do
-            case "$r" in
-              success|skipped) ;;
-              *) echo "required job concluded: $r"; exit 1 ;;
-            esac
-          done
+      - name: Report failed required jobs
+        run: exit 1
+
+  ci-ok:
+    if: |
+      always() &&
+      needs.lint.result == 'success' &&
+      needs.oracles.result == 'success' &&
+      needs.unit.result == 'success' &&
+      needs.property.result == 'success' &&
+      needs.integration.result == 'success' &&
+      needs.docker-smokes.result == 'success'
+    needs: [lint, oracles, unit, property, integration, docker-smokes]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: All required jobs passed
+        run: echo "all required jobs passed"

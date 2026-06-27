@@ -17,6 +17,7 @@ import (
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 const (
@@ -800,6 +801,17 @@ func setupAsyncConnectUDPEgressPrepareConnect(
 	return harness, ac
 }
 
+func setupAsyncConnectIPCPrepareConnect(
+	t *testing.T,
+) (*aeron.AsyncConnectTestHarness, *AsyncConnect) {
+	t.Helper()
+
+	harness, ac := setupAsyncConnect(t, "")
+	t.Cleanup(func() { _ = ac.Close() })
+	setupAsyncConnectEgressReady(t, harness, ac)
+	return harness, ac
+}
+
 func requireConnectRequestResponseChannel(t *testing.T, ac *AsyncConnect, want string) {
 	t.Helper()
 
@@ -856,6 +868,19 @@ func TestAsyncConnect_prepareConnectRequest_udpResolvedResponseChannel(t *testin
 
 	require.NoError(t, ac.PrepareConnectRequestForTest())
 	requireConnectRequestResponseChannel(t, ac, asyncConnectUDPEgressResolvedChannel)
+}
+
+func TestAsyncConnect_prepareConnectRequest_steadyEncode_ZeroAllocs(t *testing.T) {
+	// Steady-state connect encode after warm-up; AllocsPerRun panics under t.Parallel.
+	_, ac := setupAsyncConnectIPCPrepareConnect(t)
+
+	require.NoError(t, ac.PrepareConnectRequestForTest()) // warm connectWireBuffer growth
+
+	testutil.AssertZeroAllocs(t, "AsyncConnect_prepareConnectRequest", 1000, func() {
+		if err := ac.PrepareConnectRequestForTest(); err != nil {
+			panic(err)
+		}
+	})
 }
 
 func TestAsyncConnect_ownedConnectFailsWithoutDriver(t *testing.T) {

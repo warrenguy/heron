@@ -12,6 +12,10 @@ const (
 	// clusterWireMaxVarFieldCount is the maximum var fields on any cluster wire template
 	// (SessionConnectRequest with ClientInfo @ actingVersion >= 14).
 	clusterWireMaxVarFieldCount = 3
+	// sessionConnectRequestMaxVarFieldCount is SessionConnectRequest's own var-field
+	// cardinality at acting versions that admit ClientInfo; do not alias to
+	// clusterWireMaxVarFieldCount when another template may raise the global max.
+	sessionConnectRequestMaxVarFieldCount = 3
 )
 
 var (
@@ -61,34 +65,54 @@ func SessionConnectRequestVarLens(
 	actingVersion uint16,
 	responseChannelLen, encodedCredentialsLen, clientInfoLen int,
 ) (varLens []int, ok bool) {
-	if responseChannelLen < 0 || encodedCredentialsLen < 0 || clientInfoLen < 0 {
-		return nil, false
-	}
-	varLens = []int{responseChannelLen, encodedCredentialsLen, clientInfoLen}
-	if actingVersion < SessionConnectClientInfoMinVersion {
-		varLens = varLens[:2]
-	}
-	return varLens, true
-}
-
-// sessionConnectRequestVarLens returns the root block length and ordered var-field
-// lengths for a SessionConnectRequest at actingVersion.
-func sessionConnectRequestVarLens(
-	actingVersion uint16,
-	responseChannelLen, encodedCredentialsLen, clientInfoLen int,
-) (blockLength uint16, varLens []int) {
-	blockLength = ClusterMinRootBlockLength(
-		gensbe.SessionConnectRequestSbeTemplateID,
-		actingVersion,
-		gensbe.SessionConnectRequestSbeBlockLength,
-	)
-	varLens, _ = SessionConnectRequestVarLens(
+	var scratch [sessionConnectRequestMaxVarFieldCount]int
+	count, ok := sessionConnectRequestVarLensInto(
 		actingVersion,
 		responseChannelLen,
 		encodedCredentialsLen,
 		clientInfoLen,
+		scratch[:],
 	)
-	return blockLength, varLens
+	if !ok {
+		return nil, false
+	}
+	return append([]int(nil), scratch[:count]...), true
+}
+
+// sessionConnectRequestVarLensInto writes ordered var-field payload lengths into dst
+// without heap allocation. Callers pass a stack [sessionConnectRequestMaxVarFieldCount]int
+// scratch buffer for steady-state zero-alloc connect encode.
+func sessionConnectRequestVarLensInto(
+	actingVersion uint16,
+	responseChannelLen, encodedCredentialsLen, clientInfoLen int,
+	dst []int,
+) (count int, ok bool) {
+	if responseChannelLen < 0 || encodedCredentialsLen < 0 || clientInfoLen < 0 {
+		return 0, false
+	}
+	need := 2
+	if actingVersion >= SessionConnectClientInfoMinVersion {
+		need = sessionConnectRequestMaxVarFieldCount
+	}
+	if len(dst) < need {
+		return 0, false
+	}
+	dst[0] = responseChannelLen
+	dst[1] = encodedCredentialsLen
+	if need == sessionConnectRequestMaxVarFieldCount {
+		dst[2] = clientInfoLen
+	}
+	return need, true
+}
+
+// sessionConnectRequestBlockLength returns the SessionConnectRequest root block
+// length for actingVersion.
+func sessionConnectRequestBlockLength(actingVersion uint16) uint16 {
+	return ClusterMinRootBlockLength(
+		gensbe.SessionConnectRequestSbeTemplateID,
+		actingVersion,
+		gensbe.SessionConnectRequestSbeBlockLength,
+	)
 }
 
 // SessionConnectRequestWireLen returns the encoded wire length of a SessionConnectRequest
@@ -98,11 +122,19 @@ func SessionConnectRequestWireLen(
 	actingVersion uint16,
 	responseChannelLen, encodedCredentialsLen, clientInfoLen int,
 ) (int, bool) {
-	blockLength, varLens := sessionConnectRequestVarLens(
+	var varLensScratch [sessionConnectRequestMaxVarFieldCount]int
+	count, ok := sessionConnectRequestVarLensInto(
 		actingVersion,
 		responseChannelLen,
 		encodedCredentialsLen,
 		clientInfoLen,
+		varLensScratch[:],
 	)
-	return ClusterWireMessageLen(blockLength, varLens...)
+	if !ok {
+		return 0, false
+	}
+	return ClusterWireMessageLen(
+		sessionConnectRequestBlockLength(actingVersion),
+		varLensScratch[:count]...,
+	)
 }

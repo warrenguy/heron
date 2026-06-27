@@ -12,20 +12,9 @@ import (
 
 var publicationOfferSink int64
 
-func defaultBenchPublicationConfig() aeron.BenchPublicationConfig {
-	return aeron.DefaultBenchPublicationConfig()
-}
-
-func newOfferPublication() *aeron.Publication {
-	return aeron.NewInMemPublicationForBench(
-		defaultBenchPublicationConfig(),
-		aeron.BenchPublicationLimitPosition,
-	)
-}
-
 func newPublicationImagePair() (*aeron.Publication, *aeron.Image) {
 	return aeron.NewInMemPublicationImagePairForBench(
-		defaultBenchPublicationConfig(),
+		aeron.DefaultBenchPublicationConfig(),
 		aeron.BenchPublicationLimitPosition,
 	)
 }
@@ -36,6 +25,8 @@ type publicationOfferStep func(
 	payload []byte,
 ) int64
 
+// Mirrors runExclusivePublicationOfferBench in exclusive_publication_bench_test.go;
+// keep both in sync when the offer runner contract changes.
 func runPublicationOfferBench(
 	b *testing.B,
 	payload []byte,
@@ -43,7 +34,10 @@ func runPublicationOfferBench(
 ) {
 	b.Helper()
 
-	pub := newOfferPublication()
+	pub := aeron.NewInMemPublicationForBench(
+		aeron.DefaultBenchPublicationConfig(),
+		aeron.BenchPublicationLimitPosition,
+	)
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload)))
 	b.ResetTimer()

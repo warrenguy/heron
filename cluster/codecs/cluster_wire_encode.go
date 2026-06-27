@@ -125,19 +125,24 @@ func EncodeSessionConnectRequest(
 	actingVersion uint16,
 	fields SessionConnectRequestFields,
 ) (wireEnd int, ok bool) {
-	blockLength, varLens := sessionConnectRequestVarLens(
+	var scratch [sessionConnectRequestMaxVarFieldCount]int
+	count, ok := sessionConnectRequestVarLensInto(
 		actingVersion,
 		len(fields.ResponseChannel),
 		len(fields.EncodedCredentials),
 		len(fields.ClientInfo),
+		scratch[:],
 	)
+	if !ok {
+		return 0, false
+	}
 	return encodeWithClusterWireHeader(
 		buf,
 		offset,
-		blockLength,
+		sessionConnectRequestBlockLength(actingVersion),
 		gensbe.SessionConnectRequestSbeTemplateID,
 		actingVersion,
-		varLens,
+		scratch[:count],
 		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
 			var msg gensbe.SessionConnectRequest
 			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).

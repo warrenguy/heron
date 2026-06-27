@@ -8,12 +8,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestFilterPayloadSizes(t *testing.T) {
-	allowed := map[int]struct{}{
-		PayloadSize32:   {},
-		PayloadSize1400: {},
+func payloadSizeSet(sizes ...int) map[int]struct{} {
+	allowed := make(map[int]struct{}, len(sizes))
+	for _, size := range sizes {
+		allowed[size] = struct{}{}
 	}
-	require.Equal(t, []int{32, 1400}, filterPayloadSizes([]int{32, 64, 1400, 4000}, allowed))
+	return allowed
+}
+
+func TestFilterPayloadSizes(t *testing.T) {
+	allowed := payloadSizeSet(PayloadSize32, PayloadSize1400)
+	require.Equal(
+		t,
+		[]int{PayloadSize32, PayloadSize1400},
+		filterPayloadSizes(
+			[]int{PayloadSize32, PayloadSize64, PayloadSize1400, PayloadSize4000},
+			allowed,
+		),
+	)
 }
 
 func TestIsSupportedBenchPayloadSize(t *testing.T) {
@@ -23,17 +35,26 @@ func TestIsSupportedBenchPayloadSize(t *testing.T) {
 
 func TestBenchPayloadSizeFilterFromEnv(t *testing.T) {
 	t.Setenv("BENCH_PAYLOAD_SIZES", "32, 1400")
-	got := benchPayloadSizeFilterFromEnv()
-	require.Len(t, got, 2)
-	_, ok := got[32]
-	require.True(t, ok)
-	_, ok = got[1400]
-	require.True(t, ok)
+	require.Equal(t, payloadSizeSet(PayloadSize32, PayloadSize1400), benchPayloadSizeFilterFromEnv())
 }
 
 func TestBenchPayloadSizeFilterFromEnv_unset(t *testing.T) {
 	t.Setenv("BENCH_PAYLOAD_SIZES", "")
 	require.Nil(t, benchPayloadSizeFilterFromEnv())
+}
+
+func TestExclusiveOfferPayloadSizes_unfiltered(t *testing.T) {
+	require.Equal(t, allExclusiveOfferPayloadSizes, ExclusiveOfferPayloadSizes())
+}
+
+func TestExclusiveOfferPayloadSizeFilter_ciSubset(t *testing.T) {
+	allowed := payloadSizeSet(PayloadSize32, PayloadSize1400)
+	require.Equal(t, []int{PayloadSize32}, filterPayloadSizes(ExclusiveOfferPayloadSizes(), allowed))
+}
+
+func TestExclusiveOfferPayloadSizesForBenchFrom_fragmentedOnlyReturnsEmpty(t *testing.T) {
+	allowed := payloadSizeSet(PayloadSize1400)
+	require.Empty(t, exclusiveOfferPayloadSizesForBenchFrom(allowed))
 }
 
 func TestBenchPayloadSizeFilterFromEnv_invalid(t *testing.T) {

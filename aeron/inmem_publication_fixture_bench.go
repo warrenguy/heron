@@ -4,6 +4,7 @@ package aeron
 
 import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/agrona/atomic"
 )
 
 func newInMemImageFromLog(
@@ -50,12 +51,63 @@ func newInMemZeroAllocPollImage() *Image {
 	return newInMemImageFromLog(log, 0)
 }
 
-func resetInMemPublicationTerm(pub *Publication, cfg inMemPublicationLogConfig) {
+func resetInMemPublicationLogState(
+	meta atomic.AtomicBuffer,
+	termBuffers [logbuffer.PartitionCount]atomic.AtomicBuffer,
+	termBufferLength int,
+	cfg inMemPublicationLogConfig,
+) {
 	for partition := range logbuffer.PartitionCount {
-		_ = logbuffer.PutRawTail(pub.meta, partition, cfg.RawTails[partition])
-		termBuf := pub.termBuffers[partition]
-		clear(termBuf.Bytes()[:pub.termBufferLength])
+		_ = logbuffer.PutRawTail(meta, partition, cfg.RawTails[partition])
+		termBuf := termBuffers[partition]
+		clear(termBuf.Bytes()[:termBufferLength])
 	}
-	pub.meta.PutInt32(logbuffer.OffsetInitialTermID, cfg.InitialTermID)
-	pub.meta.PutInt32Release(logbuffer.OffsetActiveTermCount, cfg.ActiveTermCount)
+	meta.PutInt32(logbuffer.OffsetInitialTermID, cfg.InitialTermID)
+	meta.PutInt32Release(logbuffer.OffsetActiveTermCount, cfg.ActiveTermCount)
+}
+
+func resetInMemPublicationTerm(pub *Publication, cfg inMemPublicationLogConfig) {
+	resetInMemPublicationLogState(pub.meta, pub.termBuffers, pub.termBufferLength, cfg)
+}
+
+func exclusiveWriterCacheFromConfig(
+	cfg inMemPublicationLogConfig,
+	termBufferLength int,
+	positionBitsToShift int,
+) (
+	activePartitionIndex int,
+	termID int32,
+	termOffset int,
+	termBeginPosition int64,
+) {
+	activePartitionIndex = logbuffer.IndexByTermCount(cfg.ActiveTermCount)
+	rawTail := cfg.RawTails[activePartitionIndex]
+	termID = logbuffer.TermID(rawTail)
+	termOffset = int(logbuffer.TermOffset(rawTail, int32(termBufferLength)))
+	termBeginPosition = logbuffer.ComputeTermBeginPosition(
+		termID,
+		positionBitsToShift,
+		cfg.InitialTermID,
+	)
+	return activePartitionIndex, termID, termOffset, termBeginPosition
+}
+
+func syncExclusivePublicationWriterCacheFromConfig(
+	ep *ExclusivePublication,
+	cfg inMemPublicationLogConfig,
+) {
+	activePartitionIndex, termID, termOffset, termBeginPosition := exclusiveWriterCacheFromConfig(
+		cfg,
+		ep.termBufferLength,
+		ep.positionBitsToShift,
+	)
+	ep.activePartitionIndex = activePartitionIndex
+	ep.termID = termID
+	ep.termOffset = termOffset
+	ep.termBeginPosition = termBeginPosition
+}
+
+func resetInMemExclusivePublicationTerm(ep *ExclusivePublication, cfg inMemPublicationLogConfig) {
+	resetInMemPublicationLogState(ep.meta, ep.termBuffers, ep.termBufferLength, cfg)
+	syncExclusivePublicationWriterCacheFromConfig(ep, cfg)
 }

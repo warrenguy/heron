@@ -73,6 +73,22 @@ bench_cpus() {
 	grep -m1 '^cpu:' "$1" | sed 's/^cpu:[[:space:]]*//' || echo unknown
 }
 
+count_nonempty_lines() {
+	printf '%s\n' "$1" | grep -c . || true
+}
+
+summary_text_section() {
+	local title="$1"
+	local body="$2"
+	[[ -n "${body}" ]] || return 0
+	echo ""
+	echo "### ${title}"
+	echo ""
+	echo '```text'
+	printf '%s\n' "${body}"
+	echo '```'
+}
+
 write_step_summary() {
 	local status="$1"
 	[[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
@@ -83,22 +99,11 @@ write_step_summary() {
 		echo "|-------|-------|"
 		echo "| Baseline CPU | ${BASELINE_CPU:-unknown} |"
 		echo "| Current CPU | ${NEW_CPU:-unknown} |"
-		if [[ -n "${ALLOC_REGRESSIONS:-}" ]]; then
-			echo ""
-			echo "### allocation regressions"
-			echo ""
-			echo '```text'
-			printf '%s\n' "${ALLOC_REGRESSIONS}"
-			echo '```'
-		fi
-		if [[ -n "${TIME_WARNINGS:-}" ]]; then
-			echo ""
-			echo "### time warnings (>= ${THRESHOLD}% slower, not gated)"
-			echo ""
-			echo '```text'
-			printf '%s\n' "${TIME_WARNINGS}"
-			echo '```'
-		fi
+		summary_text_section 'non-zero allocs/op (contract gate)' \
+			"${BENCH_ALLOC_VIOLATIONS:-}"
+		summary_text_section 'allocation regressions' "${ALLOC_REGRESSIONS:-}"
+		summary_text_section "time warnings (>= ${THRESHOLD}% slower, not gated)" \
+			"${TIME_WARNINGS:-}"
 		if [[ -f "${BENCHSTAT_TEXT:-}" && -s "${BENCHSTAT_TEXT}" ]]; then
 			echo ""
 			echo "### benchstat"
@@ -151,6 +156,24 @@ then
 	fail 'go test failed' "" \
 		"go test failed (GOARCH=${GOARCH:-unknown}); see step summary" \
 		'go test failed'
+fi
+
+if [[ "${has_test_bench}" -eq 1 ]]; then
+	BENCH_ALLOC_VIOLATIONS="$(
+		awk '
+		/^Benchmark[^ ]/ && $NF == "allocs/op" && $(NF - 1) + 0 > 0 {
+			print $1 "," $(NF - 1)
+		}
+		' "${NEW}"
+	)"
+	if [[ -n "${BENCH_ALLOC_VIOLATIONS}" ]]; then
+		echo "${BENCH_ALLOC_VIOLATIONS}" >&2
+		violation_count="$(count_nonempty_lines "${BENCH_ALLOC_VIOLATIONS}")"
+		fail 'contract benchmark allocated' \
+			'test/bench requires 0 allocs/op in the timed loop' \
+			"failed: ${violation_count} contract benchmark(s) with allocs/op > 0" \
+			failed
+	fi
 fi
 
 NEW_CPU="$(bench_cpus "${NEW}")"
@@ -211,7 +234,7 @@ done < <(
 if [[ -n "${TIME_WARNINGS:-}" ]]; then
 	echo "bench-regression: warning: time >= ${THRESHOLD}% slower (not gated):" >&2
 	echo "${TIME_WARNINGS}" >&2
-	time_count="$(printf '%s\n' "${TIME_WARNINGS}" | grep -c . || true)"
+	time_count="$(count_nonempty_lines "${TIME_WARNINGS}")"
 	time_note="${time_count} time warning(s) >= ${THRESHOLD}% slower"
 	time_note="${time_note} (see step summary)"
 	workflow_warn "${time_note}"
@@ -219,7 +242,7 @@ fi
 
 if [[ -n "${ALLOC_REGRESSIONS:-}" ]]; then
 	echo "${ALLOC_REGRESSIONS}" >&2
-	alloc_count="$(printf '%s\n' "${ALLOC_REGRESSIONS}" | grep -c . || true)"
+	alloc_count="$(count_nonempty_lines "${ALLOC_REGRESSIONS}")"
 	fail 'new or increased allocations' \
 		'if intentional, run: make bench-baseline' \
 		"failed: ${alloc_count} allocation regression(s) (see step summary)" \

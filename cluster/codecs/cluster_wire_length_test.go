@@ -325,6 +325,40 @@ func requireClusterWireRejects(
 	require.Zero(t, wireLen)
 }
 
+func requireSessionConnectRequestWireRejects(
+	t *testing.T,
+	actingVersion uint16,
+	responseChannelLen, encodedCredentialsLen, clientInfoLen int,
+) {
+	t.Helper()
+	wireLen, ok := SessionConnectRequestWireLen(
+		actingVersion,
+		responseChannelLen,
+		encodedCredentialsLen,
+		clientInfoLen,
+	)
+	require.False(t, ok)
+	require.Zero(t, wireLen)
+}
+
+func requireSessionConnectRequestVarLensIntoRejects(
+	t *testing.T,
+	actingVersion uint16,
+	responseChannelLen, encodedCredentialsLen, clientInfoLen int,
+	dst []int,
+) {
+	t.Helper()
+	count, ok := sessionConnectRequestVarLensInto(
+		actingVersion,
+		responseChannelLen,
+		encodedCredentialsLen,
+		clientInfoLen,
+		dst,
+	)
+	require.False(t, ok)
+	require.Zero(t, count)
+}
+
 func TestClusterVarLenConstants_matchReassemblyBudget(t *testing.T) {
 	wantFixedOverhead := MessageHeaderEncodedLen() +
 		int(clusterWireMaxRootBlockLength) +
@@ -364,6 +398,73 @@ func TestClusterWireMetadataConstants_matchTemplateExtrema(t *testing.T) {
 
 	require.Equal(t, clusterWireMaxRootBlockLength, maxRoot)
 	require.Equal(t, clusterWireMaxVarFieldCount, maxVarCount)
+}
+
+func TestSessionConnectRequestMaxVarFieldCount_matchesOracle(t *testing.T) {
+	count, ok := ClusterVarFieldCount(
+		gensbe.SessionConnectRequestSbeTemplateID,
+		uint16(gensbe.SessionConnectRequestSbeSchemaVersion),
+	)
+	require.True(t, ok)
+	require.Equal(t, sessionConnectRequestMaxVarFieldCount, count)
+}
+
+func TestSessionConnectRequestWireLen_rejectsInvalidVarLens(t *testing.T) {
+	actingVersion := uint16(gensbe.SessionConnectRequestSbeSchemaVersion)
+
+	tests := []struct {
+		name                  string
+		responseChannelLen    int
+		encodedCredentialsLen int
+		clientInfoLen         int
+	}{
+		{name: "negative_response_channel_len", responseChannelLen: -1},
+		{name: "negative_encoded_credentials_len", encodedCredentialsLen: -1},
+		{name: "negative_client_info_len", clientInfoLen: -1},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			requireSessionConnectRequestWireRejects(
+				t,
+				actingVersion,
+				tc.responseChannelLen,
+				tc.encodedCredentialsLen,
+				tc.clientInfoLen,
+			)
+		})
+	}
+}
+
+func TestSessionConnectRequestVarLensInto_rejectsInsufficientDst(t *testing.T) {
+	twoVarConnectVersion := SessionConnectClientInfoMinVersion - 1
+	threeVarConnectVersion := uint16(gensbe.SessionConnectRequestSbeSchemaVersion)
+
+	tests := []struct {
+		name          string
+		actingVersion uint16
+		dstLen        int
+	}{
+		{
+			name:          "two_var_fields_need_two_slots",
+			actingVersion: twoVarConnectVersion,
+			dstLen:        1,
+		},
+		{
+			name:          "three_var_fields_need_three_slots",
+			actingVersion: threeVarConnectVersion,
+			dstLen:        2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dst := make([]int, tc.dstLen)
+			requireSessionConnectRequestVarLensIntoRejects(
+				t, tc.actingVersion, 9, 0, 20, dst,
+			)
+		})
+	}
 }
 
 func TestClusterWireBodyLen_rejectsInvalidLengths(t *testing.T) {

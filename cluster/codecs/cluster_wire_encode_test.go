@@ -8,7 +8,22 @@ import (
 
 	"github.com/warrenguy/heron/cluster/codecs"
 	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
+	"github.com/warrenguy/heron/internal/testutil"
 )
+
+func TestEncodeSessionKeepAlive_ZeroAllocs(t *testing.T) {
+	fields := codecs.SessionKeepAliveFields{
+		LeadershipTermID: 1,
+		ClusterSessionID: 2,
+	}
+	buf := make([]byte, messageHeaderLen+int(gensbe.SessionKeepAliveSbeBlockLength))
+
+	testutil.AssertZeroAllocs(t, "EncodeSessionKeepAlive", 1000, func() {
+		_, _ = codecs.EncodeSessionKeepAlive(
+			buf, 0, uint16(gensbe.SessionKeepAliveSbeSchemaVersion), fields,
+		)
+	})
+}
 
 func TestEncodeClusterWire_BufferBounds(t *testing.T) {
 	actingVersion := uint16(gensbe.SessionConnectRequestSbeSchemaVersion)
@@ -369,7 +384,7 @@ func TestEncodeClusterWire_OversizeVarField_returnsOkFalse(t *testing.T) {
 			CorrelationID:    2,
 			Detail:           make([]byte, oversizeVarLen),
 		}
-		buf := make([]byte, codecs.MessageHeaderEncodedLen()+int(blockLength)+codecs.VarLengthPrefixSize)
+		buf := make([]byte, messageHeaderLen+int(blockLength)+codecs.VarLengthPrefixSize)
 
 		wireEnd, ok := codecs.EncodeSessionEvent(buf, 0, actingVersion, blockLength, fields)
 

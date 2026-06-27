@@ -49,7 +49,6 @@ jobs:
   bench-regression:
     if: >-
       github.event_name == 'pull_request'
-      && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.draft == false
     strategy:
       fail-fast: false
@@ -86,16 +85,24 @@ jobs:
       - name: Benchmark regression
         run: make bench-regression
 
-  bench-ok:
-    if: always()
+  bench-failed:
+    if: failure() || cancelled()
     needs: [bench-baseline, bench-regression]
     runs-on: ubuntu-24.04
     steps:
-      - name: Verify bench jobs
-        run: |
-          for r in ${{ join(needs.*.result, ' ') }}; do
-            case "$r" in
-              success|skipped) ;;
-              *) echo "bench job concluded: $r"; exit 1 ;;
-            esac
-          done
+      - name: Report failed bench jobs
+        run: exit 1
+
+  bench-ok:
+    if: |
+      always() && (
+        (github.event_name == 'push' && needs.bench-baseline.result == 'success') ||
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.draft == false &&
+         needs.bench-regression.result == 'success')
+      )
+    needs: [bench-baseline, bench-regression]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Bench jobs passed
+        run: echo "bench jobs passed"

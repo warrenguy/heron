@@ -11,33 +11,39 @@ import (
 	"github.com/warrenguy/heron/agrona/atomic"
 )
 
+func resetTermWithTimer(b *testing.B, reset func()) {
+	b.StopTimer()
+	reset()
+	b.StartTimer()
+}
+
+// withAdminActionRetryExcludedFromTimer spins on AdminAction outside bench timing.
+// When the first attempt returns AdminAction, the whole spin and the successful
+// attempt that ends it are untimed; testing.B cannot exclude only the spin while
+// still timing that final attempt.
+func withAdminActionRetryExcludedFromTimer(b *testing.B, attempt func() int64) int64 {
+	pos := attempt()
+	if pos == aeron.AdminAction {
+		b.StopTimer()
+		for pos == aeron.AdminAction {
+			pos = attempt()
+		}
+		b.StartTimer()
+	}
+	return pos
+}
+
 func resetPublicationTermWithTimer(
 	b *testing.B,
 	pub *aeron.Publication,
 	rewindImage *aeron.Image,
 ) {
-	b.StopTimer()
-	aeron.ResetInMemPublicationTermForBench(pub)
-	if rewindImage != nil {
-		aeron.SetImageSubscriberPositionForBench(rewindImage, 0)
-	}
-	b.StartTimer()
-}
-
-func offerWithAdminActionRetryExcludedFromTimer(
-	b *testing.B,
-	pub *aeron.Publication,
-	payload []byte,
-) int64 {
-	pos := pub.Offer(payload)
-	if pos == aeron.AdminAction {
-		b.StopTimer()
-		for pos == aeron.AdminAction {
-			pos = pub.Offer(payload)
+	resetTermWithTimer(b, func() {
+		aeron.ResetInMemPublicationTermForBench(pub)
+		if rewindImage != nil {
+			aeron.SetImageSubscriberPositionForBench(rewindImage, 0)
 		}
-		b.StartTimer()
-	}
-	return pos
+	})
 }
 
 // OfferWithTermOverflowReset calls pub.Offer once per invocation. On any negative
@@ -55,7 +61,7 @@ func OfferWithTermOverflowReset(
 
 // OfferEndToEndWithOverflowReset calls pub.Offer once per invocation. On any negative
 // return (including AdminAction), it stops the bench timer, resets the publication
-// term, rewinds the poll image, and restarts the timer. Same contract reset-on-any-negative
+// term, rewinds the poll image, and restarts the timer. Same reset-on-any-negative
 // contract as OfferWithTermOverflowReset for steady single-term E2E measurement.
 func OfferEndToEndWithOverflowReset(
 	b *testing.B,
@@ -64,6 +70,19 @@ func OfferEndToEndWithOverflowReset(
 	payload []byte,
 ) int64 {
 	return offerOnceWithOverflowReset(b, pub, payload, image)
+}
+
+func offerRetryWithTermOverflowReset(
+	b *testing.B,
+	pub *aeron.Publication,
+	payload []byte,
+	rewindImage *aeron.Image,
+) int64 {
+	pos := withAdminActionRetryExcludedFromTimer(b, func() int64 { return pub.Offer(payload) })
+	if pos < 0 {
+		resetPublicationTermWithTimer(b, pub, rewindImage)
+	}
+	return pos
 }
 
 // OfferEndToEndRetryWithTermOverflowReset spins on AdminAction during Offer, then resets
@@ -76,11 +95,7 @@ func OfferEndToEndRetryWithTermOverflowReset(
 	image *aeron.Image,
 	payload []byte,
 ) int64 {
-	pos := offerWithAdminActionRetryExcludedFromTimer(b, pub, payload)
-	if pos < 0 {
-		resetPublicationTermWithTimer(b, pub, image)
-	}
-	return pos
+	return offerRetryWithTermOverflowReset(b, pub, payload, image)
 }
 
 func offerOnceWithOverflowReset(
@@ -121,9 +136,5 @@ func OfferRetryWithTermOverflowReset(
 	pub *aeron.Publication,
 	payload []byte,
 ) int64 {
-	pos := offerWithAdminActionRetryExcludedFromTimer(b, pub, payload)
-	if pos < 0 {
-		resetPublicationTermWithTimer(b, pub, nil)
-	}
-	return pos
+	return offerRetryWithTermOverflowReset(b, pub, payload, nil)
 }

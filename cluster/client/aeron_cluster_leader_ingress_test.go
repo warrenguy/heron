@@ -14,17 +14,13 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
+const (
+	trackIngressAwaitNewLeaderStartNs int64 = 2_000_000_000
+	trackIngressAwaitNewLeaderTimeout       = 7 * time.Second
+)
+
 func TestAeronCluster_trackIngress_notConnected_entersAwaitNewLeader(t *testing.T) {
-	const startNs int64 = 2_000_000_000
-	timeout := 7 * time.Second
-
-	var nowNs atomic.Int64
-	nowNs.Store(startNs)
-
-	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-		withConnectNanoClock(result, &nowNs, func(ctx *ClusterContext) {
-			ctx.NewLeaderTimeout = timeout
-		})
+	ac := newTrackIngressDeadlineOracleCluster(t, func(result *ConnectResult) {
 		withFixedOfferResultIngress(t, result, aeron.NotConnected)
 	})
 
@@ -34,18 +30,11 @@ func TestAeronCluster_trackIngress_notConnected_entersAwaitNewLeader(t *testing.
 
 	got := ac.Offer([]byte("payload"))
 	require.Equal(t, aeron.NotConnected, got)
-	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
-	require.Equal(t, startNs+timeout.Nanoseconds(), ac.stateDeadlineNs)
-	require.Nil(t, ac.IngressPublication())
-
-	leader, ok := ac.MemberIngressMap().Lookup(channelOnlyMemberID)
-	require.True(t, ok)
-	require.Nil(t, leader.Publication)
-	require.True(t, ingress.IsClosed())
+	requireIngressEntersAwaitNewLeaderWithDeadline(t, ac, ingress)
 }
 
 func TestAeronCluster_trackIngress_tryClaim_notConnected_entersAwaitNewLeader(t *testing.T) {
-	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
+	ac := newTrackIngressDeadlineOracleCluster(t, func(result *ConnectResult) {
 		withFixedOfferResultIngress(t, result, aeron.NotConnected)
 	})
 
@@ -56,26 +45,11 @@ func TestAeronCluster_trackIngress_tryClaim_notConnected_entersAwaitNewLeader(t 
 	require.NoError(t, err)
 	require.Equal(t, int64(aeron.NotConnected), position)
 	require.Zero(t, claim)
-	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
-	require.Nil(t, ac.IngressPublication())
-
-	leader, ok := ac.MemberIngressMap().Lookup(channelOnlyMemberID)
-	require.True(t, ok)
-	require.Nil(t, leader.Publication)
-	require.True(t, ingress.IsClosed())
+	requireIngressEntersAwaitNewLeaderWithDeadline(t, ac, ingress)
 }
 
 func TestAeronCluster_trackIngress_offerClosed_entersAwaitNewLeader(t *testing.T) {
-	const startNs int64 = 2_000_000_000
-	timeout := 7 * time.Second
-
-	var nowNs atomic.Int64
-	nowNs.Store(startNs)
-
-	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-		withConnectNanoClock(result, &nowNs, func(ctx *ClusterContext) {
-			ctx.NewLeaderTimeout = timeout
-		})
+	ac := newTrackIngressDeadlineOracleCluster(t, func(result *ConnectResult) {
 		withFixedOfferResultIngress(t, result, aeron.Closed)
 	})
 
@@ -86,27 +60,11 @@ func TestAeronCluster_trackIngress_offerClosed_entersAwaitNewLeader(t *testing.T
 
 	got := ac.Offer([]byte("payload"))
 	require.Equal(t, aeron.Closed, got)
-	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
-	require.Equal(t, startNs+timeout.Nanoseconds(), ac.stateDeadlineNs)
-	require.Nil(t, ac.IngressPublication())
-
-	leader, ok := ac.MemberIngressMap().Lookup(channelOnlyMemberID)
-	require.True(t, ok)
-	require.Nil(t, leader.Publication)
-	require.True(t, ingress.IsClosed())
+	requireIngressEntersAwaitNewLeaderWithDeadline(t, ac, ingress)
 }
 
 func TestAeronCluster_trackIngress_tryClaim_closed_entersAwaitNewLeader(t *testing.T) {
-	const startNs int64 = 2_000_000_000
-	timeout := 7 * time.Second
-
-	var nowNs atomic.Int64
-	nowNs.Store(startNs)
-
-	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-		withConnectNanoClock(result, &nowNs, func(ctx *ClusterContext) {
-			ctx.NewLeaderTimeout = timeout
-		})
+	ac := newTrackIngressDeadlineOracleCluster(t, func(result *ConnectResult) {
 		withFixedOfferResultIngress(t, result, aeron.Closed)
 	})
 
@@ -119,14 +77,7 @@ func TestAeronCluster_trackIngress_tryClaim_closed_entersAwaitNewLeader(t *testi
 	require.NoError(t, err)
 	require.Equal(t, int64(aeron.Closed), position)
 	require.Zero(t, claim)
-	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
-	require.Equal(t, startNs+timeout.Nanoseconds(), ac.stateDeadlineNs)
-	require.Nil(t, ac.IngressPublication())
-
-	leader, ok := ac.MemberIngressMap().Lookup(channelOnlyMemberID)
-	require.True(t, ok)
-	require.Nil(t, leader.Publication)
-	require.True(t, ingress.IsClosed())
+	requireIngressEntersAwaitNewLeaderWithDeadline(t, ac, ingress)
 }
 
 func TestAeronCluster_trackIngress_maxPositionExceeded_pendingClose(t *testing.T) {
@@ -155,19 +106,10 @@ func TestAeronCluster_trackIngress_scratchOverflow_staysConnected(t *testing.T) 
 }
 
 func TestAeronCluster_leaderIngressPublication_disconnected_entersAwaitNewLeader(t *testing.T) {
-	const startNs int64 = 2_000_000_000
-	timeout := 7 * time.Second
-
-	var nowNs atomic.Int64
-	nowNs.Store(startNs)
-
-	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
+	ac := newTrackIngressDeadlineOracleCluster(t, func(result *ConnectResult) {
 		disconnected := aeron.NewTestExclusivePublicationForHooksWithConnected(t, false)
 		result.IngressPublication = disconnected
 		result.MemberIngressMap = channelOnlyIngressMap(disconnected)
-		withConnectNanoClock(result, &nowNs, func(ctx *ClusterContext) {
-			ctx.NewLeaderTimeout = timeout
-		})
 	})
 
 	require.Equal(t, SessionStateConnected, ac.SessionState())
@@ -176,14 +118,7 @@ func TestAeronCluster_leaderIngressPublication_disconnected_entersAwaitNewLeader
 
 	got := ac.Offer([]byte("payload"))
 	require.Equal(t, aeron.NotConnected, got)
-	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
-	require.Equal(t, startNs+timeout.Nanoseconds(), ac.stateDeadlineNs)
-	require.Nil(t, ac.IngressPublication())
-
-	leader, ok := ac.MemberIngressMap().Lookup(channelOnlyMemberID)
-	require.True(t, ok)
-	require.Nil(t, leader.Publication)
-	require.True(t, disconnected.IsClosed())
+	requireIngressEntersAwaitNewLeaderWithDeadline(t, ac, disconnected)
 }
 
 func TestAeronCluster_TryClaim_negativeLengthBeforeSessionGuard(t *testing.T) {
@@ -279,17 +214,7 @@ func TestAeronCluster_CommitClaim_pendingClose_returnsClosed(t *testing.T) {
 }
 
 func TestAeronCluster_CommitClaim_closedIngress_entersAwaitNewLeader(t *testing.T) {
-	const startNs int64 = 2_000_000_000
-	timeout := 7 * time.Second
-
-	var nowNs atomic.Int64
-	nowNs.Store(startNs)
-
-	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-		withConnectNanoClock(result, &nowNs, func(ctx *ClusterContext) {
-			ctx.NewLeaderTimeout = timeout
-		})
-	})
+	ac := newTrackIngressDeadlineOracleCluster(t, nil)
 
 	claim, position, err := ac.TryClaim(4)
 	require.NoError(t, err)
@@ -301,14 +226,7 @@ func TestAeronCluster_CommitClaim_closedIngress_entersAwaitNewLeader(t *testing.
 	committed, err := ac.CommitClaim(claim, []byte("data"))
 	require.NoError(t, err)
 	require.Equal(t, int64(aeron.Closed), committed)
-	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
-	require.Equal(t, startNs+timeout.Nanoseconds(), ac.stateDeadlineNs)
-	require.Nil(t, ac.IngressPublication())
-
-	leader, ok := ac.MemberIngressMap().Lookup(channelOnlyMemberID)
-	require.True(t, ok)
-	require.Nil(t, leader.Publication)
-	require.True(t, pub.IsClosed())
+	requireIngressEntersAwaitNewLeaderWithDeadline(t, ac, pub)
 }
 
 func TestAeronCluster_CommitClaim_staleClosedClaimAfterRecovery_staysConnected(t *testing.T) {
@@ -525,4 +443,44 @@ func TestAeronCluster_CommitClaim_afterNewLeader_differentEndpoint_notConnected(
 	require.NoError(t, err)
 	require.Positive(t, position2)
 	require.NoError(t, ac.AbortClaim(claim2))
+}
+
+func newTrackIngressDeadlineOracleCluster(
+	t *testing.T,
+	mutate func(*ConnectResult),
+) *AeronCluster {
+	t.Helper()
+
+	var nowNs atomic.Int64
+	nowNs.Store(trackIngressAwaitNewLeaderStartNs)
+
+	return newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
+		withConnectNanoClock(result, &nowNs, func(ctx *ClusterContext) {
+			ctx.NewLeaderTimeout = trackIngressAwaitNewLeaderTimeout
+		})
+		if mutate != nil {
+			mutate(result)
+		}
+	})
+}
+
+func requireIngressEntersAwaitNewLeaderWithDeadline(
+	t *testing.T,
+	ac *AeronCluster,
+	ingress IngressPublication,
+) {
+	t.Helper()
+
+	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
+	require.Equal(
+		t,
+		trackIngressAwaitNewLeaderStartNs+trackIngressAwaitNewLeaderTimeout.Nanoseconds(),
+		ac.stateDeadlineNs,
+	)
+	require.Nil(t, ac.IngressPublication())
+
+	leader, ok := ac.MemberIngressMap().Lookup(channelOnlyMemberID)
+	require.True(t, ok)
+	require.Nil(t, leader.Publication)
+	require.True(t, ingress.IsClosed())
 }

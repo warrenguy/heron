@@ -17,11 +17,17 @@ const BenchPublicationLimitPosition int64 = 1 << 62
 // BenchPublicationConfig holds in-memory publication log metadata for bench fixtures.
 type BenchPublicationConfig = inMemPublicationLogConfig
 
-var benchPublicationLogConfigs sync.Map
+var benchLogConfigs sync.Map
 
 // DefaultBenchPublicationConfig returns defaults matching the in-package test publication.
 func DefaultBenchPublicationConfig() BenchPublicationConfig {
 	return defaultInMemPublicationLogConfig()
+}
+
+// DefaultBenchExclusivePublicationConfig returns defaults for exclusive in-memory bench
+// publications, including LogBufferTypeExclusivePublication.
+func DefaultBenchExclusivePublicationConfig() BenchPublicationConfig {
+	return defaultInMemExclusivePublicationLogConfig()
 }
 
 // NewInMemPublicationForBench builds an in-memory publication backed by the test log layout.
@@ -43,6 +49,31 @@ func NewInMemImageForBench(sharedLog *logbuffer.MappedLogBuffer) *Image {
 	return newInMemImageFromLog(sharedLog, 0)
 }
 
+// NewInMemExclusivePublicationForBench builds an in-memory exclusive publication backed by
+// the test log layout. cfg must use LogBufferTypeExclusivePublication; use
+// DefaultBenchExclusivePublicationConfig when the default layout is sufficient.
+// limitPosition seeds the publication-limit counter. The publication owns the mapped log
+// for process lifetime; fixtures do not close it.
+func NewInMemExclusivePublicationForBench(
+	cfg BenchPublicationConfig,
+	limitPosition int64,
+) *ExclusivePublication {
+	return newTrackedBenchExclusivePublication(newInMemMappedLog(cfg), cfg, limitPosition)
+}
+
+// ResetInMemExclusivePublicationTermForBench clears active term data, restores creation
+// metadata, and reinitializes the exclusive single-writer cache. Requires ep from
+// NewInMemExclusivePublicationForBench; untracked publications panic. Bench fixtures
+// assume one publication per benchmark instance; config entries are not removed from the
+// internal map.
+func ResetInMemExclusivePublicationTermForBench(ep *ExclusivePublication) {
+	if ep == nil {
+		panic("aeron: bench exclusive publication is nil")
+	}
+	cfg := benchLogConfigFor(ep, "aeron: bench exclusive publication config is untracked")
+	resetInMemExclusivePublicationTerm(ep, cfg)
+}
+
 // ResetInMemPublicationTermForBench clears active term data and restores creation metadata.
 // Requires pub from NewInMemPublicationForBench or NewInMemPublicationImagePairForBench;
 // untracked publications panic. Bench fixtures assume one publication per benchmark
@@ -51,7 +82,7 @@ func ResetInMemPublicationTermForBench(pub *Publication) {
 	if pub == nil {
 		panic("aeron: bench publication is nil")
 	}
-	cfg := benchPublicationConfigFor(pub)
+	cfg := benchLogConfigFor(pub, "aeron: bench publication config is untracked")
 	resetInMemPublicationTerm(pub, cfg)
 }
 
@@ -71,9 +102,7 @@ func NewInMemPublicationImagePairForBench(
 	limitPosition int64,
 ) (*Publication, *Image) {
 	log := newInMemMappedLog(cfg)
-	pub := newTrackedBenchPublication(log, cfg, limitPosition)
-	image := newInMemImageFromLog(log, 0)
-	return pub, image
+	return newTrackedBenchPublication(log, cfg, limitPosition), newInMemImageFromLog(log, 0)
 }
 
 // DefaultBenchPollImageForBench returns an image with one committed poll frame pre-seeded.
@@ -106,18 +135,24 @@ func newTrackedBenchPublication(
 	limitPosition int64,
 ) *Publication {
 	pub := newInMemPublicationFromLog(log, inMemCountersReaderWithoutTB(limitPosition))
-	trackBenchPublicationConfig(pub, cfg)
+	benchLogConfigs.Store(pub, cfg)
 	return pub
 }
 
-func trackBenchPublicationConfig(pub *Publication, cfg BenchPublicationConfig) {
-	benchPublicationLogConfigs.Store(pub, cfg)
+func newTrackedBenchExclusivePublication(
+	log *logbuffer.MappedLogBuffer,
+	cfg BenchPublicationConfig,
+	limitPosition int64,
+) *ExclusivePublication {
+	ep := newInMemExclusivePublicationFromLog(log, inMemCountersReaderWithoutTB(limitPosition))
+	benchLogConfigs.Store(ep, cfg)
+	return ep
 }
 
-func benchPublicationConfigFor(pub *Publication) BenchPublicationConfig {
-	cfg, ok := benchPublicationLogConfigs.Load(pub)
+func benchLogConfigFor(key any, untrackedMsg string) BenchPublicationConfig {
+	cfg, ok := benchLogConfigs.Load(key)
 	if !ok {
-		panic("aeron: bench publication config is untracked")
+		panic(untrackedMsg)
 	}
 	return cfg.(BenchPublicationConfig)
 }

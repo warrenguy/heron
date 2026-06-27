@@ -44,24 +44,42 @@ var (
 		{PayloadSize4000, Payload4000[:], true, true},
 		{PayloadSize8192, Payload8192[:], true, true},
 	}
-	offerPayloadSizes    []int
-	endToEndPayloadSizes []int
+	allExclusiveOfferPayloadSizes      []int
+	exclusiveOfferPayloadSizesForBench []int
+	offerPayloadSizes                  []int
+	endToEndPayloadSizes               []int
 )
 
 func init() {
+	offerPayloadSizes = make([]int, 0, len(benchPayloads))
+	endToEndPayloadSizes = make([]int, 0, len(benchPayloads))
+	allExclusiveOfferPayloadSizes = make([]int, 0, len(benchPayloads))
 	for _, entry := range benchPayloads {
 		offerPayloadSizes = append(offerPayloadSizes, entry.size)
+		if !entry.fragmented {
+			allExclusiveOfferPayloadSizes = append(allExclusiveOfferPayloadSizes, entry.size)
+		}
 		if entry.e2e {
 			endToEndPayloadSizes = append(endToEndPayloadSizes, entry.size)
 		}
 	}
-	if allowed := benchPayloadSizeFilterFromEnv(); allowed != nil {
+
+	allowed := benchPayloadSizeFilterFromEnv()
+	exclusiveOfferPayloadSizesForBench = exclusiveOfferPayloadSizesForBenchFrom(allowed)
+	if allowed != nil {
 		offerPayloadSizes = filterPayloadSizes(offerPayloadSizes, allowed)
 		endToEndPayloadSizes = filterPayloadSizes(endToEndPayloadSizes, allowed)
 		if len(offerPayloadSizes) == 0 || len(endToEndPayloadSizes) == 0 {
 			panic("harness: BENCH_PAYLOAD_SIZES excludes all offer or end-to-end payloads")
 		}
 	}
+}
+
+func exclusiveOfferPayloadSizesForBenchFrom(allowed map[int]struct{}) []int {
+	if allowed == nil {
+		return allExclusiveOfferPayloadSizes
+	}
+	return filterPayloadSizes(allExclusiveOfferPayloadSizes, allowed)
 }
 
 func benchPayloadSizeFilterFromEnv() map[int]struct{} {
@@ -107,6 +125,20 @@ func filterPayloadSizes(sizes []int, allowed map[int]struct{}) []int {
 		}
 	}
 	return filtered
+}
+
+// ExclusiveOfferPayloadSizes lists unfragmented exclusive offer lengths within typical
+// in-memory maxPayloadLength: 32, 64, 256, 512, 1024. Excludes fragmented concurrent-only
+// sizes (1400, 4000, 8192). Not narrowed by BENCH_PAYLOAD_SIZES.
+func ExclusiveOfferPayloadSizes() []int {
+	return allExclusiveOfferPayloadSizes
+}
+
+// ExclusiveOfferPayloadSizesForBench returns ExclusiveOfferPayloadSizes narrowed by
+// BENCH_PAYLOAD_SIZES. CI values such as 32,1400 yield {32} only because 1400 exceeds
+// exclusive maxPayloadLength and is not in the exclusive size list.
+func ExclusiveOfferPayloadSizesForBench() []int {
+	return exclusiveOfferPayloadSizesForBench
 }
 
 // PayloadSizes lists offer benchmark payload lengths: 32-1024 unfragmented;
