@@ -44,7 +44,8 @@ func (ac *AeronCluster) leaderIngressPublication() (IngressPublication, int64) {
 }
 
 // leaderIngressForAppOffer is the app ingress entrypoint: session guards then
-// leaderIngressPublication. Used by Offer, TryClaim, and SendKeepAlive.
+// leaderIngressPublication. Used by Offer, TryClaim, SendKeepAlive, and
+// SendSnapshotRequest.
 func (ac *AeronCluster) leaderIngressForAppOffer() (IngressPublication, int64) {
 	if code := ac.appIngressBlockedCode(); code != 0 {
 		return nil, code
@@ -248,23 +249,35 @@ func abortIngressClaim(pub IngressPublication, termIndex, frameOffset int) error
 	return pub.Abort(termIndex, frameOffset)
 }
 
-// offerSessionKeepAlive offers SessionKeepAlive on pub and tracks the result.
-func (ac *AeronCluster) offerSessionKeepAlive(pub IngressPublication) int64 {
+// offerTrackedControlFrame encodes into controlScratch, offers on pub, and tracks
+// the publication result. Guard failures (nil/closed pub, encode error) return
+// NotConnected without tracking.
+func (ac *AeronCluster) offerTrackedControlFrame(
+	pub IngressPublication,
+	encode func(scratch []byte) (end int, ok bool),
+) int64 {
 	if pub == nil || pub.IsClosed() {
 		return aeron.NotConnected
 	}
-	actingVersion := uint16(gensbe.SessionKeepAliveSbeSchemaVersion)
-	fields := codecs.SessionKeepAliveFields{
-		LeadershipTermID: ac.leadershipTermID,
-		ClusterSessionID: ac.clusterSessionID,
-	}
-	end, ok := codecs.EncodeSessionKeepAlive(ac.controlScratch, 0, actingVersion, fields)
+	end, ok := encode(ac.controlScratch)
 	if !ok {
 		return aeron.NotConnected
 	}
 	position := pub.Offer(ac.controlScratch[:end])
 	ac.trackIngressPublicationResult(position)
 	return position
+}
+
+// offerSessionKeepAlive offers SessionKeepAlive on pub and tracks the result.
+func (ac *AeronCluster) offerSessionKeepAlive(pub IngressPublication) int64 {
+	actingVersion := uint16(gensbe.SessionKeepAliveSbeSchemaVersion)
+	fields := codecs.SessionKeepAliveFields{
+		LeadershipTermID: ac.leadershipTermID,
+		ClusterSessionID: ac.clusterSessionID,
+	}
+	return ac.offerTrackedControlFrame(pub, func(scratch []byte) (end int, ok bool) {
+		return codecs.EncodeSessionKeepAlive(scratch, 0, actingVersion, fields)
+	})
 }
 
 // SendKeepAlive offers one SessionKeepAlive control frame via leader ingress.
@@ -289,6 +302,54 @@ func (ac *AeronCluster) SendKeepAlive() int64 {
 	return ac.offerSessionKeepAlive(pub)
 }
 
+// offerSnapshotRequest offers AdminRequest (template 26, SNAPSHOT, empty payload)
+// on pub and tracks the result.
+func (ac *AeronCluster) offerSnapshotRequest(
+	pub IngressPublication,
+	correlationID int64,
+) int64 {
+	actingVersion := uint16(gensbe.AdminRequestSbeSchemaVersion)
+	fields := codecs.AdminRequestFields{
+		LeadershipTermID: ac.leadershipTermID,
+		ClusterSessionID: ac.clusterSessionID,
+		CorrelationID:    correlationID,
+		RequestType:      gensbe.AdminRequestType_SNAPSHOT,
+		Payload:          nil,
+	}
+	return ac.offerTrackedControlFrame(pub, func(scratch []byte) (end int, ok bool) {
+		return codecs.EncodeAdminRequest(scratch, 0, actingVersion, fields)
+	})
+}
+
+// SendSnapshotRequest offers one AdminRequest (template 26, SNAPSHOT, empty
+// payload) on the leader ingress publication. Java equivalent:
+// AeronCluster.sendAdminRequestToTakeASnapshot; Heron offers once on
+// controlScratch. Requires elevated cluster privileges; the consensus module may
+// respond with AdminResponseCode_UNAUTHORISED_ACCESS.
+//
+// correlationID is caller-supplied and echoed on egress AdminResponse. Use
+// Aeron().NextCorrelationID() or an application sequence; the client does not
+// allocate or track correlation ids for admin.
+//
+// Returns publication stream position on success (>0) or Aeron publication status
+// codes on failure (BackPressured, NotConnected, Closed, etc.); no Go error on the
+// hot path. Session-guard codes (Closed, blocked NotConnected) return without
+// tracking. When CONNECTED with a disconnected ingress publication, returns
+// NotConnected and tracks via leaderIngressPublication, same as Offer and
+// SendKeepAlive. Single offer only; caller must invoke Aeron().DoWork() between
+// spins and re-invoke on BackPressured or AdminAction (invoker-only transport; no
+// internal retry).
+//
+// During leadership transition admin may fail; keep calling PollEgress with DoWork
+// between spins. Only SessionStateConnected with connected leader ingress proceeds.
+func (ac *AeronCluster) SendSnapshotRequest(correlationID int64) int64 {
+	pub, code := ac.leaderIngressForAppOffer()
+	if pub == nil {
+		return code
+	}
+	return ac.offerSnapshotRequest(pub, correlationID)
+}
+
 func (ac *AeronCluster) ingressHeaderFields() codecs.IngressHeaderFields {
 	return codecs.IngressHeaderFields{
 		LeadershipTermID: ac.leadershipTermID,
@@ -297,32 +358,15 @@ func (ac *AeronCluster) ingressHeaderFields() codecs.IngressHeaderFields {
 	}
 }
 
-// offerControlFrame offers a pre-sized control frame. It guards pub nil/IsClosed;
-// callers guard ac.closed: SendKeepAlive blocks closed sessions via
-// leaderIngressForAppOffer, sendSessionCloseBestEffort intentionally skips ac.closed
-// (Close sets it first).
-func (ac *AeronCluster) offerControlFrame(
-	pub IngressPublication,
-	encode func(scratch []byte) (end int, ok bool),
-) int64 {
-	if pub == nil || pub.IsClosed() {
-		return aeron.NotConnected
-	}
-	end, ok := encode(ac.controlScratch)
-	if !ok {
-		return aeron.NotConnected
-	}
-	return pub.Offer(ac.controlScratch[:end])
-}
-
 func (ac *AeronCluster) sendSessionCloseBestEffort() {
-	// Close sets closed before this call; offerControlFrame guards a nil/closed pub.
+	// Close sets closed before this call; trackIngressPublicationResult is a no-op
+	// when ac.closed, so offerTrackedControlFrame matches prior best-effort close.
 	actingVersion := uint16(gensbe.SessionCloseRequestSbeSchemaVersion)
 	fields := codecs.SessionCloseRequestFields{
 		LeadershipTermID: ac.leadershipTermID,
 		ClusterSessionID: ac.clusterSessionID,
 	}
-	_ = ac.offerControlFrame(ac.ingressPublication, func(scratch []byte) (end int, ok bool) {
+	_ = ac.offerTrackedControlFrame(ac.ingressPublication, func(scratch []byte) (end int, ok bool) {
 		return codecs.EncodeSessionCloseRequest(scratch, 0, actingVersion, fields)
 	})
 }

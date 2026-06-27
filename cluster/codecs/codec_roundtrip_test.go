@@ -454,6 +454,16 @@ func TestAdminResponse_roundtrip(t *testing.T) {
 				Payload:          []byte("detail"),
 			},
 		},
+		{
+			name: "unauthorised_access",
+			fields: codecs.AdminResponseFields{
+				ClusterSessionID: 5,
+				CorrelationID:    6,
+				RequestType:      gensbe.AdminRequestType_SNAPSHOT,
+				ResponseCode:     gensbe.AdminResponseCode_UNAUTHORISED_ACCESS,
+				Message:          []byte("denied"),
+			},
+		},
 	}
 
 	runCodecFieldsActingRoundtrips(

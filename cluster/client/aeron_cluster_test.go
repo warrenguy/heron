@@ -460,6 +460,27 @@ func TestAeronCluster_SendKeepAlive_encodesAndOffers(t *testing.T) {
 	require.Equal(t, testLeadershipTermID, fields.LeadershipTermID)
 }
 
+func TestAeronCluster_SendSnapshotRequest_encodesAndOffers(t *testing.T) {
+	ac := newTestAeronCluster(t, nil)
+
+	position := ac.SendSnapshotRequest(testAdminCorrelationID)
+	require.Positive(t, position)
+
+	pub := ac.IngressPublication().(*aeron.ExclusivePublication)
+	wire := exclusiveIngressTermBytes(t, pub, 0, 0)[logbuffer.OffsetFramePayload:]
+
+	fields := requireDecodedTemplate[codecs.AdminRequestFields](
+		t,
+		wire,
+		gensbe.AdminRequestSbeTemplateID,
+	)
+	require.Equal(t, testClusterSessionID, fields.ClusterSessionID)
+	require.Equal(t, testLeadershipTermID, fields.LeadershipTermID)
+	require.Equal(t, testAdminCorrelationID, fields.CorrelationID)
+	require.Equal(t, gensbe.AdminRequestType_SNAPSHOT, fields.RequestType)
+	require.Empty(t, fields.Payload)
+}
+
 func TestAeronCluster_Close_sendsSessionCloseBestEffort(t *testing.T) {
 	ac := newTestAeronCluster(t, nil)
 	pub := ac.IngressPublication().(*aeron.ExclusivePublication)
@@ -521,6 +542,7 @@ func TestAeronCluster_ingressMethods_returnClosedWhenClosed(t *testing.T) {
 	require.NoError(t, ac.AbortClaim(claim2))
 
 	require.Equal(t, aeron.Closed, ac.SendKeepAlive())
+	require.Equal(t, aeron.Closed, ac.SendSnapshotRequest(testAdminCorrelationID))
 }
 
 func TestAeronCluster_ingressMethods_returnNotConnectedWhenIngressClosed(t *testing.T) {
@@ -543,6 +565,7 @@ func TestAeronCluster_ingressMethods_returnNotConnectedWhenIngressClosed(t *test
 	require.Equal(t, aeron.NotConnected, ac.Offer(payload))
 
 	require.Equal(t, aeron.NotConnected, ac.SendKeepAlive())
+	require.Equal(t, aeron.NotConnected, ac.SendSnapshotRequest(testAdminCorrelationID))
 }
 
 func TestAeronCluster_AbortClaim_releasesClaimForReclaim(t *testing.T) {

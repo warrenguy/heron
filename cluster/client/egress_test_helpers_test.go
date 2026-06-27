@@ -104,7 +104,7 @@ func newRecordingEgressHandlers() *recordingEgressHandlers {
 		rec.gotSessionEventLeadershipTermID = leadershipTermID
 		rec.gotSessionEventLeaderMemberID = leaderMemberID
 		rec.gotSessionEventCode = code
-		rec.gotSessionEventDetail = bytes.Clone(detail)
+		rec.gotSessionEventDetail = detail
 	}
 	rec.NewLeaderFunc = func(
 		clusterSessionID int64,
@@ -116,7 +116,7 @@ func newRecordingEgressHandlers() *recordingEgressHandlers {
 		rec.gotNewLeaderClusterSessionID = clusterSessionID
 		rec.gotNewLeaderLeadershipTermID = leadershipTermID
 		rec.gotNewLeaderLeaderMemberID = leaderMemberID
-		rec.gotNewLeaderIngressEndpoints = bytes.Clone(ingressEndpoints)
+		rec.gotNewLeaderIngressEndpoints = ingressEndpoints
 	}
 	rec.AdminResponseFunc = func(
 		clusterSessionID int64,
@@ -131,8 +131,8 @@ func newRecordingEgressHandlers() *recordingEgressHandlers {
 		rec.gotAdminResponseCorrelationID = correlationID
 		rec.gotAdminResponseRequestType = requestType
 		rec.gotAdminResponseCode = responseCode
-		rec.gotAdminResponseMessage = bytes.Clone(message)
-		rec.gotAdminResponsePayload = bytes.Clone(payload)
+		rec.gotAdminResponseMessage = message
+		rec.gotAdminResponsePayload = payload
 	}
 	return rec
 }

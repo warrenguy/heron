@@ -86,6 +86,16 @@ func TestAeronCluster_SendKeepAlive_ZeroAllocs(t *testing.T) {
 	)
 }
 
+func TestAeronCluster_SendSnapshotRequest_ZeroAllocs(t *testing.T) {
+	testAeronClusterIngressPositionZeroAllocs(
+		t,
+		"AeronCluster_SendSnapshotRequest",
+		func(ac *client.AeronCluster) int64 {
+			return ac.SendSnapshotRequest(testAdminCorrelationID)
+		},
+	)
+}
+
 func TestAeronCluster_TryClaimCommit_ZeroAllocs(t *testing.T) {
 	ac := newTestAeronCluster(t, nil)
 

@@ -117,6 +117,20 @@ func BenchmarkAeronCluster_SendKeepAlive(b *testing.B) {
 	})
 }
 
+const benchAdminCorrelationID int64 = 303
+
+func BenchmarkAeronCluster_SendSnapshotRequest(b *testing.B) {
+	runAeronClusterIngressBench(b, nil, func(
+		b *testing.B,
+		ac *client.AeronCluster,
+		_ []byte,
+	) int64 {
+		return harness.SendSnapshotRequestAeronClusterWithTermOverflowReset(
+			b, ac, benchAdminCorrelationID,
+		)
+	})
+}
+
 func BenchmarkClusterCodec_EncodeSessionKeepAlive(b *testing.B) {
 	fields := codecs.SessionKeepAliveFields{
 		LeadershipTermID: harness.BenchLeadershipTermID,

@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Cluster Java/Go IPC smoke: compose up -d (cluster + go), then wait for go exit 0.
 # Go runs TestClusterConnectSmoke (AsyncConnect IPC handshake) and TestClusterEchoSmoke
-# (offer/egress round-trip); cluster runs embedded ClusteredMediaDriver.
+# (echo offer/egress round-trip plus admin SNAPSHOT on the same session); cluster runs
+# embedded ClusteredMediaDriver.
+#
 # Go test invocation: docker/cluster_java/go/Dockerfile CMD (-test.run
-# TestCluster(Connect|Echo)Smoke, -test.timeout=200s). Outer timeout 210 below.
+# TestCluster(Connect|Echo)Smoke, -test.timeout=300s).
+#
+# Outer timeout 310s: 300s test budget plus compose teardown (see wait block below).
+#
 # No versions.sh: no aeronmd; Aeron pinned in Dockerfiles/POM at build, not runtime clone.
 # See scripts/java-interop-smoke.sh for sibling compose smoke pattern.
 set -euo pipefail
@@ -11,9 +16,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="${ROOT}/docker/cluster_java/compose.yaml"
 GO_MOD="${ROOT}/go.mod"
+COMPOSE_CMD=(
+	docker compose
+	-f "${COMPOSE}"
+)
 
 compose() {
-	docker compose -f "${COMPOSE}" "$@"
+	"${COMPOSE_CMD[@]}" "$@"
 }
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -56,12 +65,10 @@ smoke_logs() {
 	compose logs --no-color cluster go
 }
 
-# Health/build during compose up -d above is outside the outer timeout wrapper.
-# Outer wall clock 210s: go-container runtime only; inner worst-case 160s (60+60+10+30)
-# + 40s slack = 200s (-test.timeout) per docker/cluster_java/go/Dockerfile CMD;
-# outer 210s = 200s + ~10s compose wait/teardown.
+# Outer timeout 310s: 300s test budget plus compose teardown. Build/up not wrapped.
+
 if command -v timeout >/dev/null 2>&1; then
-	timeout 210 docker compose -f "${COMPOSE}" wait go
+	timeout 310 "${COMPOSE_CMD[@]}" wait go
 else
 	compose wait go
 fi || {

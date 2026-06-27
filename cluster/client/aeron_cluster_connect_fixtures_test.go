@@ -15,6 +15,8 @@ import (
 )
 
 const (
+	// testAdminCorrelationID matches egress_dispatch_test.go admin literal.
+	testAdminCorrelationID         int64 = 303
 	connectFixtureLeadershipTermID int64 = 100
 	// connectFixtureLeaderMemberID is the wire leader id; default MemberIngressMap
 	// uses channelOnlyMemberID (0) for IPC channel-only smoke.

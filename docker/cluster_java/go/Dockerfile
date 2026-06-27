@@ -22,12 +22,15 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM ubuntu:24.04 AS runtime
 
 WORKDIR /app
+
 COPY --from=builder /out/cluster-java.test /app/cluster-java.test
 
-# Inner -test.timeout=200s: connect poll 60s per test; echo offer retry 10s and egress
-# poll 30s; stacked worst case 60+10+30+60=160s plus overhead; 40s slack.
-# Outer scripts/cluster-java-smoke.sh timeout 210 stays adequate (~10s compose teardown).
-CMD ["./cluster-java.test", "-test.v", "-test.count=1", "-test.timeout=200s", "-test.run", "^TestCluster(Connect|Echo)Smoke$"]
+# Inner -test.timeout=300s: connect poll 60s; echo+admin offer retry 10s each;
+# echo egress 30s; admin egress 60s. Stacked worst case ~230s plus overhead (~70s slack).
+
+# Outer cluster-java-smoke.sh timeout 310s: 300s test budget plus compose teardown.
+
+CMD ["./cluster-java.test", "-test.v", "-test.count=1", "-test.timeout=300s", "-test.run", "^TestCluster(Connect|Echo)Smoke$"]
 
 FROM runtime AS failover-runtime
 
@@ -39,7 +42,9 @@ RUN apt-get update \
 
 COPY docker/cluster_java/compose.yaml docker/cluster_java/compose.failover.yaml /app/compose/
 
-# Inner -test.timeout=400s: connect 90s + pre-kill echo 40s + recovery 120s +
-# post-recovery echo 120s (~375s stacked worst case) plus slack.
-# Outer scripts/cluster-java-failover-smoke.sh timeout 430 stays adequate.
+# Inner -test.timeout=400s: connect 90s, pre-kill echo 40s, recovery 120s,
+# post-recovery echo 120s. Stacked worst case ~375s plus slack.
+
+# Outer cluster-java-failover-smoke.sh timeout 430s: 400s test budget plus teardown.
+
 CMD ["./cluster-java.test", "-test.v", "-test.count=1", "-test.timeout=400s", "-test.run", "^TestClusterFailoverSmoke$"]

@@ -156,3 +156,17 @@ func SendKeepAliveAeronClusterWithTermOverflowReset(
 ) int64 {
 	return aeronClusterOpWithTermOverflowReset(b, ac, ac.SendKeepAlive)
 }
+
+// SendSnapshotRequestAeronClusterWithTermOverflowReset calls
+// ac.SendSnapshotRequest once per invocation. AdminAction retry spin is excluded
+// from bench timing; other non-positive returns stop the timer, reset the ingress
+// term, and restart the timer.
+func SendSnapshotRequestAeronClusterWithTermOverflowReset(
+	b *testing.B,
+	ac *client.AeronCluster,
+	correlationID int64,
+) int64 {
+	return aeronClusterOpWithTermOverflowReset(b, ac, func() int64 {
+		return ac.SendSnapshotRequest(correlationID)
+	})
+}

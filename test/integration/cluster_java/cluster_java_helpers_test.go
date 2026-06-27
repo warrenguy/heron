@@ -24,6 +24,7 @@ import (
 
 const (
 	echoSmokeTimeout        = 30 * time.Second
+	adminSmokeTimeout       = 60 * time.Second // snapshot archive IO; slower than echo poll
 	connectSmokeTimeout     = 60 * time.Second
 	failoverConnectTimeout  = 90 * time.Second // 3 JVM cold start
 	failoverRecoveryTimeout = 120 * time.Second
@@ -60,8 +61,24 @@ var (
 	echoPostFailoverPayload = []byte("heron-cluster-echo-post-failover")
 )
 
+type adminResponseCapture struct {
+	armed             bool
+	wantCorrelationID int64
+	requestType       client.AdminRequestType
+	responseCode      client.AdminResponseCode
+	message           []byte
+	payload           []byte
+	seen              bool
+}
+
 func newEchoCaptureHandlers() (*client.EgressHandlers, *[]byte) {
+	handlers, echoed, _ := newEchoAndAdminCaptureHandlers()
+	return handlers, echoed
+}
+
+func newEchoAndAdminCaptureHandlers() (*client.EgressHandlers, *[]byte, *adminResponseCapture) {
 	var echoed []byte
+	adminCap := &adminResponseCapture{}
 	return &client.EgressHandlers{
 		MessageFunc: func(
 			_, _ int64,
@@ -71,18 +88,37 @@ func newEchoCaptureHandlers() (*client.EgressHandlers, *[]byte) {
 		) {
 			echoed = append([]byte(nil), buf.Slice(offset, length).Bytes()...)
 		},
-	}, &echoed
+		AdminResponseFunc: func(
+			_ int64,
+			correlationID int64,
+			requestType client.AdminRequestType,
+			responseCode client.AdminResponseCode,
+			message, payload []byte,
+		) {
+			if adminCap.seen {
+				return
+			}
+			if !adminCap.armed || correlationID != adminCap.wantCorrelationID {
+				return
+			}
+			adminCap.requestType = requestType
+			adminCap.responseCode = responseCode
+			adminCap.message = message
+			adminCap.payload = payload
+			adminCap.seen = true
+		},
+	}, &echoed, adminCap
 }
 
-// offerUntilPositive retries BackPressured/AdminAction only; PollEgress interleaves
-// egress during leader recovery mid-offer. Other offer codes fail immediately.
-func offerUntilPositive(
+// ingressOfferUntilPositive retries BackPressured/AdminAction only; PollEgress interleaves
+// egress during leader recovery mid-offer. Other publication codes fail immediately.
+func ingressOfferUntilPositive(
 	t *testing.T,
 	aeronClient *aeron.Client,
 	session *client.AeronCluster,
-	payload []byte,
 	hadClientError *atomic.Bool,
 	offerTimeout time.Duration,
+	offer func() int64,
 ) int64 {
 	t.Helper()
 
@@ -91,7 +127,7 @@ func offerUntilPositive(
 	for time.Now().Before(deadline) {
 		require.False(t, hadClientError.Load(), "transport error during offer")
 		aeronClient.DoWork()
-		position := session.Offer(payload)
+		position := offer()
 		if position > 0 {
 			return position
 		}
@@ -117,6 +153,35 @@ func offerUntilPositive(
 	return 0 // unreachable; satisfies compiler after Fatalf
 }
 
+func pollEgressUntil(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	session *client.AeronCluster,
+	hadClientError *atomic.Bool,
+	timeout time.Duration,
+	transportErrMsg string,
+	done func() bool,
+	timeoutMsg func() string,
+) {
+	t.Helper()
+
+	if done() {
+		return
+	}
+	harness.PollClientUntilTransportClean(
+		t,
+		aeronClient,
+		hadClientError,
+		timeout,
+		transportErrMsg,
+		func() bool {
+			session.PollEgress()
+			return done()
+		},
+		timeoutMsg,
+	)
+}
+
 func pollEchoUntilMessage(
 	t *testing.T,
 	aeronClient *aeron.Client,
@@ -127,19 +192,10 @@ func pollEchoUntilMessage(
 ) {
 	t.Helper()
 
-	if len(*echoed) > 0 {
-		return
-	}
-	harness.PollClientUntilTransportClean(
-		t,
-		aeronClient,
-		hadClientError,
-		echoTimeout,
+	pollEgressUntil(
+		t, aeronClient, session, hadClientError, echoTimeout,
 		"transport error during echo poll",
-		func() bool {
-			session.PollEgress()
-			return len(*echoed) > 0
-		},
+		func() bool { return len(*echoed) > 0 },
 		func() string {
 			return fmt.Sprintf(
 				"cluster echo poll timed out: echoedLen=%d sessionState=%v hadClientError=%v",
@@ -160,11 +216,61 @@ func roundTripEcho(
 ) int64 {
 	t.Helper()
 
-	pos := offerUntilPositive(
-		t, aeronClient, session, payload, hadClientError, offerTimeout,
+	pos := ingressOfferUntilPositive(
+		t, aeronClient, session, hadClientError, offerTimeout,
+		func() int64 { return session.Offer(payload) },
 	)
 	pollEchoUntilMessage(t, aeronClient, session, hadClientError, echoed, echoTimeout)
 	require.Equal(t, payload, *echoed)
+	return pos
+}
+
+func pollAdminUntilResponse(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	session *client.AeronCluster,
+	hadClientError *atomic.Bool,
+	capture *adminResponseCapture,
+	adminTimeout time.Duration,
+) {
+	t.Helper()
+
+	pollEgressUntil(
+		t, aeronClient, session, hadClientError, adminTimeout,
+		"transport error during admin poll",
+		func() bool { return capture.seen },
+		func() string {
+			return fmt.Sprintf(
+				"cluster admin poll timed out: seen=%v armed=%v want=%d "+
+					"sessionState=%v hadClientError=%v",
+				capture.seen, capture.armed, capture.wantCorrelationID,
+				session.SessionState(), hadClientError.Load(),
+			)
+		},
+	)
+}
+
+func roundTripAdminSnapshot(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	session *client.AeronCluster,
+	hadClientError *atomic.Bool,
+	capture *adminResponseCapture,
+	correlationID int64,
+) int64 {
+	t.Helper()
+
+	capture.armed = true
+	capture.wantCorrelationID = correlationID
+	pos := ingressOfferUntilPositive(
+		t, aeronClient, session, hadClientError, harness.ConnectedPollTimeout,
+		func() int64 { return session.SendSnapshotRequest(correlationID) },
+	)
+	pollAdminUntilResponse(
+		t, aeronClient, session, hadClientError, capture, adminSmokeTimeout,
+	)
+	require.Equal(t, client.AdminRequestTypeSnapshot, capture.requestType)
+	require.Equal(t, client.AdminResponseCodeOK, capture.responseCode)
 	return pos
 }
 

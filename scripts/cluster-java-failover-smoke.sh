@@ -2,7 +2,9 @@
 # Failover compose smoke: 3 cluster nodes + aeronmd + go; wait for go exit 0.
 # Go runs TestClusterFailoverSmoke (leader kill). Needs docker.sock; DOCKER_GID from
 # getent group docker when present (override if socket GID differs).
-# Outer timeout 430s; see docker/cluster_java/go/Dockerfile failover-runtime CMD.
+#
+# Outer timeout 430s: 400s test budget plus compose teardown; see Dockerfile
+# failover-runtime CMD and wait block below.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -65,7 +67,8 @@ smoke_logs() {
 	compose logs --no-color cluster-0 cluster-1 cluster-2 aeronmd go
 }
 
-# Outer timeout 430s (400s -test.timeout + slack). Build/up not wrapped.
+# Outer timeout 430s: 400s test budget plus compose teardown. Build/up not wrapped.
+
 if command -v timeout >/dev/null 2>&1; then
 	timeout 430 "${COMPOSE_CMD[@]}" wait go
 else

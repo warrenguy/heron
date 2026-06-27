@@ -10,9 +10,10 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// TestClusterEchoSmoke proves byte-identical echo against live Java EchoService.
+// TestClusterEchoSmoke proves byte-identical echo against live Java EchoService,
+// then admin snapshot roundtrip on the same connected AeronCluster session.
 func TestClusterEchoSmoke(t *testing.T) {
-	handlers, echoed := newEchoCaptureHandlers()
+	handlers, echoed, adminCap := newEchoAndAdminCaptureHandlers()
 
 	aeronClient, hadClientError, result := asyncConnectUntilResult(t, handlers)
 
@@ -30,5 +31,16 @@ func TestClusterEchoSmoke(t *testing.T) {
 	t.Logf(
 		"cluster echo smoke passed: clusterSessionId=%d offerPosition=%d echoLength=%d",
 		result.ClusterSessionID, pos, len(*echoed),
+	)
+
+	correlationID := aeronClient.NextCorrelationID()
+	adminPos := roundTripAdminSnapshot(
+		t, aeronClient, session, hadClientError, adminCap, correlationID,
+	)
+	require.False(t, hadClientError.Load(), "transport errors during admin smoke")
+
+	t.Logf(
+		"cluster admin snapshot passed: correlationId=%d offerPosition=%d responseCode=%v",
+		correlationID, adminPos, adminCap.responseCode,
 	)
 }

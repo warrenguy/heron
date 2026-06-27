@@ -193,6 +193,9 @@ func TestAeronCluster_ingressGuards_blockBySessionState(t *testing.T) {
 			gotKeepAlive := ac.SendKeepAlive()
 			require.Equal(t, tc.wantOffer, gotKeepAlive)
 
+			gotAdmin := ac.SendSnapshotRequest(testAdminCorrelationID)
+			require.Equal(t, tc.wantOffer, gotAdmin)
+
 			require.Equal(t, tc.state, ac.SessionState())
 			require.Same(t, ingressBefore, ac.IngressPublication())
 		})

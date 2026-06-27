@@ -23,6 +23,7 @@ import io.aeron.cluster.ConsensusModule;
 import io.aeron.cluster.service.ClusteredService;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
+import io.aeron.security.AuthorisationService;
 import org.agrona.ErrorHandler;
 import org.agrona.concurrent.NoOpLock;
 
@@ -170,13 +171,16 @@ public final class ClusterConfig
             .controlResponseChannel(archiveContext.localControlChannel())
             .aeronDirectoryName(aeronDirName);
 
+        // Aeron 1.51.0 default authorisation denies AdminRequest (template 26); ALLOW_ALL is
+        // integration-smoke-only (production must configure authorisation explicitly).
         final ConsensusModule.Context consensusModuleContext = new ConsensusModule.Context()
             .clusterMemberId(memberId)
             .clusterMembers(clusterMembers)
             .clusterDir(new File(baseDir, CLUSTER_SUB_DIR))
             .archiveContext(aeronArchiveContext.clone())
             .serviceCount(1 + additionalServices.length)
-            .replicationChannel("aeron:udp?endpoint=" + hostname + ":0");
+            .replicationChannel("aeron:udp?endpoint=" + hostname + ":0")
+            .authorisationServiceSupplier(() -> AuthorisationService.ALLOW_ALL);
 
         final List<ClusteredServiceContainer.Context> serviceContexts = new ArrayList<>();
 

@@ -117,10 +117,14 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 	keepAliveWireLen, keepAliveOK := codecs.ClusterWireMessageLen(
 		gensbe.SessionKeepAliveSbeBlockLength,
 	)
-	if !closeOK || !keepAliveOK {
+	adminWireLen, adminOK := codecs.ClusterWireMessageLen(
+		gensbe.AdminRequestSbeBlockLength,
+		0,
+	)
+	if !closeOK || !keepAliveOK || !adminOK {
 		return nil, errors.New("cluster client: control frame wire length unavailable")
 	}
-	controlScratchLen := max(closeWireLen, keepAliveWireLen)
+	controlScratchLen := max(closeWireLen, keepAliveWireLen, adminWireLen)
 
 	nanoClock := resolveNanoClock(ctx.AeronContext.NanoClock)
 
