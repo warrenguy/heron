@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
+	"github.com/warrenguy/heron/cluster/codecs/gensbe"
 )
 
 var sessionMessageHeaderEncodedLen = int((&gensbe.SessionMessageHeader{}).SbeBlockAndHeaderLength())

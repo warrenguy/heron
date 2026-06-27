@@ -9,7 +9,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/cluster/codecs"
-	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
+	"github.com/warrenguy/heron/cluster/codecs/gensbe"
 )
 
 func TestSessionMessageHeader_codec_rapid(t *testing.T) {

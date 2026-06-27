@@ -3,7 +3,7 @@ package codecs
 import (
 	"math"
 
-	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
+	"github.com/warrenguy/heron/cluster/codecs/gensbe"
 )
 
 // ClusterCodecMaxVarLen sizes cluster codec var-field slots in test and

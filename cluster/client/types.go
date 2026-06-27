@@ -1,7 +1,7 @@
 package client
 
 import (
-	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
+	"github.com/warrenguy/heron/cluster/codecs/gensbe"
 )
 
 // EventCode is an SBE enum alias from gensbe for cluster session events.

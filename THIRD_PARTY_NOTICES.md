@@ -34,7 +34,7 @@ where applicable.
   and related messages plus unused shared types removed; schema id, version,
   and layout of retained client messages match upstream
 
-## `cluster/codecs/generated/sbe/`
+## `cluster/codecs/gensbe/`
 
 Go flyweights generated from `specs/cluster-codecs-client.xml` via the SBE tool
 (see `specs/versions.yaml`). Not copied from upstream Java sources.

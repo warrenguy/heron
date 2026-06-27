@@ -10,7 +10,7 @@ source "${ROOT}/scripts/lib/cache-fetch.sh"
 
 VERSIONS="${ROOT}/specs/versions.yaml"
 SCHEMA="${ROOT}/specs/cluster-codecs-client.xml"
-OUT_DIR="${ROOT}/cluster/codecs/generated"
+OUT_DIR="${ROOT}/cluster/codecs"
 CACHE_DIR="${ROOT}/.cache/sbe-tool"
 
 require_sbe_versions "${VERSIONS}" || exit 1
@@ -48,7 +48,7 @@ java \
 	-Dsbe.target.language=GOLANG \
 	-Dsbe.go.generate.generate.flyweights=true \
 	-Dsbe.output.dir="${OUT_DIR}" \
-	-Dsbe.target.namespace=sbe \
+	-Dsbe.target.namespace=gensbe \
 	-jar "${SBE_TOOL_JAR}" \
 	"${SCHEMA}"
 

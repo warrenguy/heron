@@ -143,7 +143,7 @@ check-catalog-stale-selftest:
 	@CLUSTER_SBE_CATALOG_JSON=$(CLUSTER_SBE_CATALOG_JSON) ./scripts/check-catalog-stale-selftest.sh
 
 check-sbe-stale: sbe-generate
-	@git diff --exit-code cluster/codecs/generated/
+	@git diff --exit-code cluster/codecs/gensbe/
 
 $(eval $(call optional-target,check-sbe-stale,command -v java >/dev/null,java not installed))
 

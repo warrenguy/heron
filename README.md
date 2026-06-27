@@ -160,7 +160,7 @@ Prefer Makefile targets over bare `go test`.
 ### Cluster SBE codecs
 
 Cluster codecs use in-tree SBE XML (`specs/cluster-codecs-client.xml`) and generated Go
-flyweights (`cluster/codecs/generated/`). Fixture oracle rows live in
+flyweights (`cluster/codecs/gensbe/`). Fixture oracle rows live in
 `test/integration/cluster_sbe/clustersbe/fixtures/catalog.json`; run
 `make cluster-sbe-catalog-regen` to refresh committed `hex` from `fields`.
 

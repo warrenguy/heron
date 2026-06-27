@@ -1,6 +1,6 @@
 package codecs
 
-import gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
+import "github.com/warrenguy/heron/cluster/codecs/gensbe"
 
 type SessionMessageHeaderFields = IngressHeaderFields
 

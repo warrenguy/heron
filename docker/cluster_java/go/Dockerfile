@@ -9,7 +9,7 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY aeron ./aeron
 COPY agrona ./agrona
-# cluster/client + cluster/codecs (incl. generated/sbe) for AsyncConnect + echo compose smokes.
+# cluster/client + cluster/codecs (incl. gensbe) for AsyncConnect + echo compose smokes.
 COPY cluster ./cluster
 COPY test/integration/harness ./test/integration/harness
 COPY test/integration/cluster_java ./test/integration/cluster_java

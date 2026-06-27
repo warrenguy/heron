@@ -3,7 +3,7 @@ package client
 import (
 	"errors"
 
-	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
+	"github.com/warrenguy/heron/cluster/codecs/gensbe"
 
 	"github.com/warrenguy/heron/cluster/codecs"
 )

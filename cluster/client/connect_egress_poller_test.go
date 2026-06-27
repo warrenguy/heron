@@ -9,7 +9,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/agrona/atomic"
-	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
+	"github.com/warrenguy/heron/cluster/codecs/gensbe"
 )
 
 func TestNewConnectEgressPoller_normalizesFragmentLimit(t *testing.T) {

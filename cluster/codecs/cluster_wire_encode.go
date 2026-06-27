@@ -4,7 +4,7 @@ import (
 	"math"
 	"unsafe"
 
-	gensbe "github.com/warrenguy/heron/cluster/codecs/generated/sbe"
+	"github.com/warrenguy/heron/cluster/codecs/gensbe"
 )
 
 // ClusterMinRootBlockLength returns the minimum root block length for templateID at
