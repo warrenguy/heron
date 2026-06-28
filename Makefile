@@ -49,8 +49,8 @@ UNIT_TEST_PKGS := $(shell go list -tags=bench,$(UNIT_TEST_TAGS) -f \
 RAPID_TEST_PKGS := $(shell go list -tags=rapid,$(UNIT_TEST_TAGS) -f \
 	'{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
 GO_SOURCES := $$(grep -rl --include='*.go' -L 'DO NOT EDIT' \
-	--exclude-dir=docker .)
-SHELL_SCRIPTS := $$(find . -name '*.sh' -type f ! -path './.git/*')
+	--exclude-dir=docker --exclude-dir=vendor .)
+SHELL_SCRIPTS := $$(find . -name '*.sh' -type f ! -path './.git/*' ! -path './vendor/*')
 # Per-package go test deadline (replaces go default 10m on hung tests).
 TEST_TIMEOUT ?= 2m
 # Per-package fuzz budget; 45s avoids deadline flake on heavy packages at 30s.
@@ -207,7 +207,8 @@ gofumpt: goimports ## gofumpt after goimports
 # -fuzz=Fuzz requires at most one matching Fuzz* per package (Go errors otherwise).
 fuzz: ## Run all Fuzz* tests
 	@set -euo pipefail; \
-	fuzz_pkgs=$$(grep -rl '^func Fuzz' --include='*_fuzz_test.go' . 2>/dev/null \
+	fuzz_pkgs=$$(grep -rl '^func Fuzz' --include='*_fuzz_test.go' \
+		--exclude-dir=vendor . 2>/dev/null \
 		| sed 's|/[^/]*$$||' | sort -u || true); \
 	[ -n "$$fuzz_pkgs" ] || { echo "no fuzz tests"; exit 1; }; \
 	for pkg in $$fuzz_pkgs; do \
