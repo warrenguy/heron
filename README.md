@@ -157,20 +157,27 @@ go test -race -tags=rapid,testhooks -run rapid ./...  # ad-hoc property
 
 Prefer Makefile targets over bare `go test`.
 
-### Cluster SBE codecs
+### SBE codecs (cluster + archive)
 
-Cluster codecs use in-tree SBE XML (`specs/cluster-codecs-client.xml`) and generated Go
-flyweights (`cluster/codecs/gensbe/`). Fixture oracle rows live in
+Cluster wire XML: `specs/cluster-codecs-client.xml`; flyweights:
+`cluster/codecs/gensbe/`. Archive control wire XML:
+`specs/archive-codecs-client.xml`; flyweights: `cluster/archive/codecs/gensbe/`.
+Cluster fixture oracle rows:
 `test/integration/cluster_sbe/clustersbe/fixtures/catalog.json`; run
 `make cluster-sbe-catalog-regen` to refresh committed `hex` from `fields`.
 
 Pin-bump workflow:
 
 1. Bump `aeron.ref` in [`specs/versions.yaml`](specs/versions.yaml).
-2. Diff upstream `aeron-cluster/src/main/resources/cluster/aeron-cluster-codecs.xml` (client
-   messages and shared types only).
-3. Port into `specs/cluster-codecs-client.xml`.
-4. `make sbe-generate`; commit flyweight diff if any.
+2. Cluster: diff upstream
+   `aeron-cluster/src/main/resources/cluster/aeron-cluster-codecs.xml` (client
+   messages and shared types only); port into `specs/cluster-codecs-client.xml`.
+3. Archive: diff upstream
+   `aeron-archive/src/main/resources/archive/aeron-archive-codecs.xml` (control
+   request, response, descriptor, and recording-signal messages plus shared
+   types only); port into `specs/archive-codecs-client.xml`.
+4. `make sbe-generate` and `make sbe-generate-archive`; commit flyweight diffs
+   if any.
 5. `make test-cluster-sbe-contract`; fix failures under `cluster/codecs/` and
    `test/integration/cluster_sbe/clustersbe/`.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch pinned sbe-tool JAR and generate Go flyweights from committed cluster wire XML.
+# Fetch pinned sbe-tool JAR and generate Go flyweights from committed wire XML.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,9 +8,23 @@ source "${ROOT}/scripts/lib/versions.sh"
 # shellcheck source=SCRIPTDIR/lib/cache-fetch.sh
 source "${ROOT}/scripts/lib/cache-fetch.sh"
 
+TARGET="${1:-cluster}"
+case "${TARGET}" in
+cluster)
+	SCHEMA="${ROOT}/specs/cluster-codecs-client.xml"
+	OUT_DIR="${ROOT}/cluster/codecs"
+	;;
+archive)
+	SCHEMA="${ROOT}/specs/archive-codecs-client.xml"
+	OUT_DIR="${ROOT}/cluster/archive/codecs"
+	;;
+*)
+	echo "heron: unknown sbe target ${TARGET} (want cluster or archive)" >&2
+	exit 1
+	;;
+esac
+
 VERSIONS="${ROOT}/specs/versions.yaml"
-SCHEMA="${ROOT}/specs/cluster-codecs-client.xml"
-OUT_DIR="${ROOT}/cluster/codecs"
 CACHE_DIR="${ROOT}/.cache/sbe-tool"
 
 require_sbe_versions "${VERSIONS}" || exit 1

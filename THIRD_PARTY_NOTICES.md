@@ -38,3 +38,19 @@ where applicable.
 
 Go flyweights generated from `specs/cluster-codecs-client.xml` via the SBE tool
 (see `specs/versions.yaml`). Not copied from upstream Java sources.
+
+## Aeron archive SBE wire schema
+
+### `specs/archive-codecs-client.xml`
+
+- **Source:** `aeron-archive-codecs.xml` (Aeron 1.51.0 aeron-archive)
+- **Changes:** subset for Heron archive client control request, response,
+  descriptor, and recording-signal wire codecs; catalog framing,
+  listing-with-groups, replication, segment, and legacy recording-events
+  messages plus unused shared types removed; schema id, version, and layout of
+  retained client messages match upstream
+
+## `cluster/archive/codecs/gensbe/`
+
+Go flyweights generated from `specs/archive-codecs-client.xml` via the SBE tool
+(see `specs/versions.yaml`). Not copied from upstream Java sources.

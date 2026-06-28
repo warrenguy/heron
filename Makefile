@@ -76,6 +76,7 @@ help: ## List Makefile targets
 # Without GNU timeout/gtimeout on PATH, CHECK_TIMEOUT is not enforced; TEST_TIMEOUT still applies.
 .PHONY: check check-inner check-static check-static-extra check-test check-aeron-versions \
 	check-sbe-stale check-sbe-stale-optional \
+	check-sbe-stale-archive check-sbe-stale-archive-optional \
 	cluster-sbe-catalog-regen check-catalog-stale check-catalog-stale-optional \
 	check-catalog-stale-selftest recordinglog-fixtures-regen \
 	recordinglog-fixtures-regen-optional \
@@ -92,7 +93,8 @@ check: ## Lint pins unit stress (contract-oracles opt)
 check-static: lint check-static-extra
 
 check-static-extra:
-	+@$(MAKE) --no-print-directory check-sbe-stale-optional
+	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) \
+		check-sbe-stale-optional check-sbe-stale-archive-optional
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) check-aeron-versions \
 		check-catalog-stale-optional contract-oracles-optional
 
@@ -118,6 +120,20 @@ $(1)-optional:
 	else \
 		echo "heron: skipping $(1) ($(3))"; \
 	fi
+endef
+
+# $(1)=target suffix (empty or -archive), $(2)=help label, $(3)=generate-sbe.sh arg
+define sbe-generate-target
+.PHONY: sbe-generate$(1)
+sbe-generate$(1): ## Regenerate $(2) SBE flyweights
+	./scripts/generate-sbe.sh $(3)
+endef
+
+# $(1)=target suffix (empty or -archive), $(2)=package path under repo root
+define sbe-stale-check
+check-sbe-stale$(1): sbe-generate$(1)
+	@git diff --exit-code $(2)/gensbe/
+$(eval $(call optional-target,check-sbe-stale$(1),command -v java >/dev/null,java not installed))
 endef
 
 # Cluster SBE codegen: catalog.json stale check in check-static.
@@ -155,10 +171,8 @@ $(eval $(call optional-target,check-catalog-stale,command -v go >/dev/null,go no
 check-catalog-stale-selftest:
 	@CLUSTER_SBE_CATALOG_JSON=$(CLUSTER_SBE_CATALOG_JSON) ./scripts/check-catalog-stale-selftest.sh
 
-check-sbe-stale: sbe-generate
-	@git diff --exit-code cluster/codecs/gensbe/
-
-$(eval $(call optional-target,check-sbe-stale,command -v java >/dev/null,java not installed))
+$(eval $(call sbe-stale-check,,cluster/codecs))
+$(eval $(call sbe-stale-check,-archive,cluster/archive/codecs))
 
 INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe,cluster_java
 
@@ -356,6 +370,5 @@ bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd
 aeronmd: bin/aeronmd ## Build C media driver binary
 
 # Java SBE codegen.
-.PHONY: sbe-generate
-sbe-generate: ## Regenerate cluster SBE flyweights
-	./scripts/generate-sbe.sh
+$(eval $(call sbe-generate-target,,cluster,))
+$(eval $(call sbe-generate-target,-archive,archive,archive))
