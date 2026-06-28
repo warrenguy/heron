@@ -1,0 +1,38 @@
+{
+  "fixtures": [
+    {
+      "file": "mixed-entries.recordinglog",
+      "entries": [
+        {"recordingId": 1, "leadershipTermId": 7, "termBaseLogPosition": 0, "logPosition": -1, "timestamp": 1000, "serviceId": -1, "type": 0, "valid": true, "archiveEndpoint": "", "position": 0, "index": 0},
+        {"recordingId": 3, "leadershipTermId": 7, "termBaseLogPosition": 0, "logPosition": 2048, "timestamp": 3000, "serviceId": 0, "type": 2, "valid": true, "archiveEndpoint": "aeron:udp?endpoint=standby.example.com:8020", "position": 128, "index": 2},
+        {"recordingId": 2, "leadershipTermId": 7, "termBaseLogPosition": 0, "logPosition": 1024, "timestamp": 2000, "serviceId": 0, "type": 1, "valid": true, "archiveEndpoint": "", "position": 64, "index": 1}
+      ]
+    },
+    {
+      "file": "standby-then-term.recordinglog",
+      "entries": [
+        {"recordingId": 3, "leadershipTermId": 1, "termBaseLogPosition": 0, "logPosition": 100, "timestamp": 2000, "serviceId": 0, "type": 2, "valid": true, "archiveEndpoint": "aeron:udp?endpoint=standby.example.com:8020", "position": 0, "index": 0},
+        {"recordingId": 10, "leadershipTermId": 2, "termBaseLogPosition": 0, "logPosition": -1, "timestamp": 3000, "serviceId": -1, "type": 0, "valid": true, "archiveEndpoint": "", "position": 128, "index": 1}
+      ]
+    },
+    {
+      "file": "invalid-snapshot.recordinglog",
+      "entries": [
+        {"recordingId": 5, "leadershipTermId": 3, "termBaseLogPosition": 0, "logPosition": 512, "timestamp": 4000, "serviceId": 0, "type": 1, "valid": false, "archiveEndpoint": "", "position": 0, "index": 0}
+      ]
+    },
+    {
+      "file": "null-slot.recordinglog",
+      "entries": [
+        {"recordingId": 9, "leadershipTermId": 0, "termBaseLogPosition": 0, "logPosition": -1, "timestamp": 1000, "serviceId": -1, "type": 0, "valid": true, "archiveEndpoint": "", "position": 0, "index": 0},
+        {"recordingId": 11, "leadershipTermId": 0, "termBaseLogPosition": 0, "logPosition": 128, "timestamp": 3000, "serviceId": 1, "type": 1, "valid": true, "archiveEndpoint": "", "position": 128, "index": 2}
+      ]
+    },
+    {
+      "file": "truncated-tail.recordinglog",
+      "entries": [
+        {"recordingId": 4, "leadershipTermId": 2, "termBaseLogPosition": 0, "logPosition": -1, "timestamp": 5000, "serviceId": -1, "type": 0, "valid": true, "archiveEndpoint": "", "position": 0, "index": 0}
+      ]
+    }
+  ]
+}

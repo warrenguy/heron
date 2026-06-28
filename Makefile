@@ -77,7 +77,8 @@ help: ## List Makefile targets
 .PHONY: check check-inner check-static check-static-extra check-test check-aeron-versions \
 	check-sbe-stale check-sbe-stale-optional \
 	cluster-sbe-catalog-regen check-catalog-stale check-catalog-stale-optional \
-	check-catalog-stale-selftest \
+	check-catalog-stale-selftest recordinglog-fixtures-regen \
+	recordinglog-fixtures-regen-optional \
 	contract-oracles-optional
 check: ## Lint pins unit stress (contract-oracles opt)
 	@T=$$(command -v timeout 2>/dev/null \
@@ -130,6 +131,18 @@ bin/cluster-sbe-catalog-gen: go.mod go.sum $(wildcard tools/cluster-sbe-catalog-
 
 cluster-sbe-catalog-regen: bin/cluster-sbe-catalog-gen
 	@$(CLUSTER_SBE_CATALOG_REGEN)
+
+RECORDINGLOG_FIXTURES_POM := test/integration/recordinglog_fixtures/pom.xml
+
+recordinglog-fixtures-regen: ## Regenerate cluster/recordinglog testdata from Java
+	@command -v mvn >/dev/null || { \
+		echo "heron: mvn required (JDK 26 per $(RECORDINGLOG_FIXTURES_POM))" >&2; \
+		exit 1; \
+	}
+	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
+		mvn -q -f $(RECORDINGLOG_FIXTURES_POM) compile exec:java
+
+$(eval $(call optional-target,recordinglog-fixtures-regen,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
 
 check-catalog-stale: bin/cluster-sbe-catalog-gen
 	@set -euo pipefail; tmp=$$(mktemp); \
