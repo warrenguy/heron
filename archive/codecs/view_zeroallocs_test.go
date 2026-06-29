@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/warrenguy/heron/cluster/archive/codecs"
+	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/internal/testutil"
 )
 

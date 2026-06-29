@@ -2,7 +2,7 @@ package codecs
 
 import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/gensbe"
 )
 
 const (

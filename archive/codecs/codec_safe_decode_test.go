@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/archive/codecs"
-	"github.com/warrenguy/heron/cluster/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs"
+	"github.com/warrenguy/heron/archive/codecs/gensbe"
 )
 
 func requireFastSlowParity[T any](

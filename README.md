@@ -161,7 +161,7 @@ Prefer Makefile targets over bare `go test`.
 
 Cluster wire XML: `specs/cluster-codecs-client.xml`; flyweights:
 `cluster/codecs/gensbe/`. Archive control wire XML:
-`specs/archive-codecs-client.xml`; flyweights: `cluster/archive/codecs/gensbe/`.
+`specs/archive-codecs-client.xml`; flyweights: `archive/codecs/gensbe/`.
 Cluster fixture oracle rows:
 `test/integration/cluster_sbe/clustersbe/fixtures/catalog.json`; run
 `make cluster-sbe-catalog-regen` to refresh committed `hex` from `fields`.

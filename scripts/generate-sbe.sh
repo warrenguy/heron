@@ -16,7 +16,7 @@ cluster)
 	;;
 archive)
 	SCHEMA="${ROOT}/specs/archive-codecs-client.xml"
-	OUT_DIR="${ROOT}/cluster/archive/codecs"
+	OUT_DIR="${ROOT}/archive/codecs"
 	;;
 *)
 	echo "heron: unknown sbe target ${TARGET} (want cluster or archive)" >&2

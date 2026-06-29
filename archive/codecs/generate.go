@@ -6,4 +6,4 @@
 // Java on PATH.
 package codecs
 
-//go:generate ../../../scripts/generate-sbe.sh archive
+//go:generate ../../scripts/generate-sbe.sh archive

@@ -3,7 +3,7 @@ package codecs
 import (
 	"unsafe"
 
-	"github.com/warrenguy/heron/cluster/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/gensbe"
 )
 
 // ArchiveMinRootBlockLength returns the minimum root block length for templateID at

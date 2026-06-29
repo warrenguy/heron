@@ -1,6 +1,6 @@
 package codecs
 
-import "github.com/warrenguy/heron/cluster/archive/codecs/gensbe"
+import "github.com/warrenguy/heron/archive/codecs/gensbe"
 
 type ControlResponseFields struct {
 	ControlSessionID int64

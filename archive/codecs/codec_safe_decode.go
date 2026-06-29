@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 
-	"github.com/warrenguy/heron/cluster/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/gensbe"
 )
 
 var (

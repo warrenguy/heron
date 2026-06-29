@@ -172,7 +172,7 @@ check-catalog-stale-selftest:
 	@CLUSTER_SBE_CATALOG_JSON=$(CLUSTER_SBE_CATALOG_JSON) ./scripts/check-catalog-stale-selftest.sh
 
 $(eval $(call sbe-stale-check,,cluster/codecs))
-$(eval $(call sbe-stale-check,-archive,cluster/archive/codecs))
+$(eval $(call sbe-stale-check,-archive,archive/codecs))
 
 INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe,cluster_java
 

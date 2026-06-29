@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/archive/codecs"
+	"github.com/warrenguy/heron/archive/codecs"
 )
 
 func mustEncodeArchiveWire[T any](
