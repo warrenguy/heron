@@ -112,10 +112,10 @@ check-aeron-versions:
 	@scripts/check-aeron-versions.sh
 
 # Run $(1) when $(2) succeeds; otherwise print skip message $(3).
-# $(4): + to forward the jobserver when $(1) fans out to a parallel sub-make.
+# Leading + forwards the jobserver to the recursive $(MAKE) under a parallel build.
 define optional-target
 $(1)-optional:
-	$(4)@if $(2); then \
+	+@if $(2); then \
 		$(MAKE) --no-print-directory $(1); \
 	else \
 		echo "heron: skipping $(1) ($(3))"; \
@@ -363,7 +363,7 @@ contract-oracles: ## All three contract oracle suites (mvn + go)
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) \
 		$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-contract)
 
-$(eval $(call optional-target,contract-oracles,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed,+))
+$(eval $(call optional-target,contract-oracles,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
 
 bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd.sh
 	./scripts/build-aeronmd.sh
