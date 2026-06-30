@@ -1,0 +1,44 @@
+{
+  "name": "docker",
+  "image": "mcr.microsoft.com/devcontainers/go:1.26-bookworm",
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": false,
+  "containerEnv": {
+    "HERON_TIER": "docker"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/java:1": {
+      "version": "26",
+      "installMaven": "true"
+    },
+    "ghcr.io/lukewiwa/features/shellcheck:0": {},
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  },
+  "postCreateCommand": "bash .devcontainer/scripts/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "go.goroot": "/usr/local/go",
+        "go.toolsManagement.autoUpdate": false,
+        "go.buildTags": "testhooks,rapid,stress,integration,java_interop,cluster_sbe,cluster_java,bench",
+        "go.lintTool": "golangci-lint",
+        "go.formatTool": "gofumpt",
+        "go.formatFlags": ["-extra"],
+        "go.testTags": "testhooks,bench",
+        "editor.formatOnSave": true,
+        "[go]": {
+          "editor.defaultFormatter": "golang.go"
+        },
+        "terminal.integrated.defaultProfile.linux": "bash"
+      },
+      "extensions": [
+        "golang.go",
+        "timonwong.shellcheck",
+        "redhat.vscode-yaml",
+        "redhat.java",
+        "vscjava.vscode-maven",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  }
+}

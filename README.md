@@ -201,6 +201,12 @@ Optional env: `BENCH_COUNT` (Makefile default 10), `BENCH_PAYLOAD_SIZES` (comma-
 filter; CI uses `32,1400`), `BENCH_THRESHOLD` (script default 10; CI sets 30 in
 `bench.yml`), `SKIP_BENCH_REGRESSION`.
 
+### Devcontainer
+
+VS Code / GitHub Codespaces configs live under `.devcontainer/`. Default (check) covers
+`make check`; docker adds Docker-outside-of-Docker for integration and compose smokes. See
+[.devcontainer/README.md](.devcontainer/README.md).
+
 ## License
 
 MIT - see [LICENSE](LICENSE).

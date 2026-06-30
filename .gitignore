@@ -12,6 +12,9 @@ worktrees/
 /dist/
 /vendor/
 
+# Devcontainer (local lockfiles from VS Code rebuilds)
+**/devcontainer-lock.json
+
 # IDE / editor
 .idea/
 .vscode/
