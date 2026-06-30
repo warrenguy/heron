@@ -1,9 +1,11 @@
 package recordinglog_test
 
 import (
+	"cmp"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -32,16 +34,22 @@ type manifest struct {
 	} `json:"fixtures"`
 }
 
-// TestReload_goldenFixtures decodes committed recording.log fixtures against fixtures.json.
-func TestReload_goldenFixtures(t *testing.T) {
-	t.Parallel()
-
+func loadManifest(t *testing.T) manifest {
+	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("testdata", "fixtures.json"))
 	require.NoError(t, err)
 
 	var m manifest
 	require.NoError(t, json.Unmarshal(raw, &m))
 	require.NotEmpty(t, m.Fixtures)
+	return m
+}
+
+// TestReload_goldenFixtures decodes committed recording.log fixtures against fixtures.json.
+func TestReload_goldenFixtures(t *testing.T) {
+	t.Parallel()
+
+	m := loadManifest(t)
 
 	for _, fixture := range m.Fixtures {
 		t.Run(fixture.File, func(t *testing.T) {
@@ -72,4 +80,80 @@ func TestReload_goldenFixtures(t *testing.T) {
 			require.Equal(t, want, entries)
 		})
 	}
+}
+
+// replayManifestEntries drives a fresh Log writer through the fixture's entries
+// in file order (ascending index) and returns the resulting file bytes. Term
+// logPosition is derived by the writer, not supplied, matching the append API.
+func replayManifestEntries(t *testing.T, entries []manifestEntry) []byte {
+	t.Helper()
+
+	log, path := newLog(t)
+
+	ordered := slices.Clone(entries)
+	slices.SortFunc(ordered, func(a, b manifestEntry) int {
+		return cmp.Compare(a.Index, b.Index)
+	})
+
+	for _, e := range ordered {
+		switch e.Type {
+		case recordinglog.EntryTypeTerm:
+			require.NoError(t, log.AppendTerm(
+				e.RecordingID, e.LeadershipTermID, e.TermBaseLogPosition, e.Timestamp,
+			))
+		case recordinglog.EntryTypeStandbySnapshot:
+			require.NoError(t, log.AppendStandbySnapshot(
+				e.RecordingID, e.LeadershipTermID, e.TermBaseLogPosition,
+				e.LogPosition, e.Timestamp, e.ServiceID, e.ArchiveEndpoint,
+			))
+		case recordinglog.EntryTypeSnapshot:
+			require.NoError(t, log.AppendSnapshot(
+				e.RecordingID, e.LeadershipTermID, e.TermBaseLogPosition,
+				e.LogPosition, e.Timestamp, e.ServiceID,
+			))
+		default:
+			t.Fatalf("unhandled entry type %d", e.Type)
+		}
+	}
+	require.NoError(t, log.Close())
+
+	written, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return written
+}
+
+// TestWriter_byteIdenticalToGolden reconstructs a Java-written golden through the
+// Go writer and asserts the bytes match exactly, proving record alignment,
+// padding, field order, and endpoint encoding agree with the reference.
+//
+// Only mixed-entries qualifies: it is append-only and fully zero-padded.
+// standby-then-term carries stale endpoint bytes inside a later record's padding
+// (an artifact of how the sample was authored, not writer output);
+// invalid-snapshot needs a term the single-entry fixture omits to invalidate
+// against; null-slot needs the deferred remove path; truncated-tail is a torn
+// sample, not clean writer output.
+func TestWriter_byteIdenticalToGolden(t *testing.T) {
+	t.Parallel()
+
+	const reproducible = "mixed-entries.recordinglog"
+
+	m := loadManifest(t)
+	var entries []manifestEntry
+	var found bool
+	for _, f := range m.Fixtures {
+		if f.File == reproducible {
+			entries = f.Entries
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "manifest missing fixture %q", reproducible)
+	require.NotEmpty(t, entries, "fixture %q has no entries", reproducible)
+
+	golden, err := os.ReadFile(filepath.Join("testdata", reproducible))
+	require.NoError(t, err)
+	require.NotEmpty(t, golden)
+
+	written := replayManifestEntries(t, entries)
+	require.Equal(t, golden, written)
 }

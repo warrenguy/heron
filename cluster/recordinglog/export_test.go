@@ -1,7 +1,5 @@
 package recordinglog
 
-import "github.com/warrenguy/heron/agrona/atomic"
-
 // DecodeEntries exposes the internal decodeEntries function for black-box tests.
 var DecodeEntries = decodeEntries
 
@@ -11,28 +9,38 @@ var Less = less
 // CompareEntries exposes the internal compareEntries ordering for black-box tests.
 var CompareEntries = compareEntries
 
-// EncodeEntry encodes e into a zero-padded byte slice using the recording.log
-// wire layout. Valid==false OR's entryTypeInvalidFlag into the type word. The
-// integer writes mirror the decoder's atomic reads; the endpoint is written
-// raw to match the decoder's tolerant manual read.
-func EncodeEntry(e Entry) []byte {
-	endpoint := e.ArchiveEndpoint
-	buf := make([]byte, alignedEntryLength(e.Type, endpoint))
-	atomicBuffer := atomic.Wrap(buf)
-	atomicBuffer.PutInt64(recordingIDOffset, e.RecordingID)
-	atomicBuffer.PutInt64(leadershipTermIDOffset, e.LeadershipTermID)
-	atomicBuffer.PutInt64(termBaseLogPositionOffset, e.TermBaseLogPosition)
-	atomicBuffer.PutInt64(logPositionOffset, e.LogPosition)
-	atomicBuffer.PutInt64(timestampOffset, e.Timestamp)
-	atomicBuffer.PutInt32(serviceIDOffset, e.ServiceID)
-	typeWord := e.Type
-	if !e.Valid {
-		typeWord |= entryTypeInvalidFlag
-	}
-	atomicBuffer.PutInt32(entryTypeOffset, typeWord)
-	if hasEndpoint(e.Type) {
-		atomicBuffer.PutInt32(endpointOffset, int32(len(endpoint)))
-		copy(buf[endpointOffset+atomic.StringASCIIHeaderLength:], endpoint)
-	}
-	return buf
+// EncodeEntry re-exports the production encodeEntry so tests share the single
+// encode reference and cannot drift from the bytes append writes.
+var EncodeEntry = encodeEntry
+
+// Black-box test exports for recordinglog_test.
+
+const (
+	MaxEndpointLen    = maxEndpointLen
+	RecordAlignment   = recordAlignment
+	LogPositionOffset = logPositionOffset
+	EntryTypeOffset   = entryTypeOffset
+	EndpointOffset    = endpointOffset
+)
+
+// FindLastTerm exposes the internal findLastTerm helper for black-box tests.
+func FindLastTerm(l *Log) *Entry {
+	return l.findLastTerm()
+}
+
+// InvalidSnapshots exposes the cache slot indices of invalid snapshots for
+// black-box tests that assert the append index shift.
+func InvalidSnapshots(l *Log) []int32 {
+	return l.invalidSnapshots
+}
+
+// InvalidateEntry exposes the internal invalidateEntry mutator for black-box
+// tests asserting the single-field invalidation write.
+func InvalidateEntry(l *Log, index int32) error {
+	return l.invalidateEntry(index)
+}
+
+// WriteFieldAt exposes the single-field write helper for the zero-alloc gate.
+func WriteFieldAt(l *Log, position int64, offset int, b []byte) error {
+	return l.writeFieldAt(position, offset, b)
 }

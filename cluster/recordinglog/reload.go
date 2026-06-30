@@ -19,9 +19,32 @@ var (
 
 	// ErrStandbyEndpointEmpty reports a zero-length standby snapshot endpoint.
 	ErrStandbyEndpointEmpty = errors.New("recordinglog: standby snapshot endpoint is empty")
+
+	// ErrDuplicateTerm reports an AppendTerm for a leadershipTermId already in the log.
+	ErrDuplicateTerm = errors.New("recordinglog: duplicate TERM entry for leadershipTermId")
+
+	// ErrShortWrite reports a WriteAt that persisted fewer bytes than requested.
+	ErrShortWrite = errors.New("recordinglog: short write")
+
+	// ErrInvalidRecordingID reports a snapshot append with recordingId == NULL_VALUE (-1).
+	ErrInvalidRecordingID = errors.New("recordinglog: recordingId is NULL_VALUE")
+
+	// ErrNoMatchingTermForSnapshot reports a snapshot whose leadershipTermId has no term entry.
+	ErrNoMatchingTermForSnapshot = errors.New("recordinglog: no matching term for snapshot")
+
+	// ErrUnknownLeadershipTermID reports a commit for a leadershipTermId absent from the log.
+	ErrUnknownLeadershipTermID = errors.New("recordinglog: unknown leadershipTermId")
+
+	// ErrPriorTermNotCommitted reports an EnsureCoherent whose last term is
+	// uncommitted and which supplied no termBaseLogPosition to commit it.
+	ErrPriorTermNotCommitted = errors.New("recordinglog: prior term was not committed")
 )
 
 const nullValue int64 = -1
+
+// NullPosition marks an uncommitted logPosition. It shares the value -1 with the
+// Aeron NULL_VALUE and NULL_POSITION sentinels.
+const NullPosition int64 = nullValue
 
 // Reload reads path, decodes entries, sorts them in comparator order, and
 // returns the slice.
@@ -51,17 +74,33 @@ func Reload(path string) ([]Entry, error) {
 }
 
 func decodeEntries(buf []byte) ([]Entry, error) {
+	entries, _, _, err := decodeEntriesAndCount(buf)
+	return entries, err
+}
+
+// decodeEntriesAndCount decodes buf and returns the next file-order entry
+// ordinal: one increment per logical on-disk record (decoded entry or NULL
+// removed slot), independent of encoded byte span. Seeds nextEntryIndex on Open.
+// Differs from len(entries) when the file holds removed slots.
+//
+// Byte consumption follows alignedEntryLength; standby entries may exceed
+// recordAlignment. The loop enters when at least 49 bytes remain so the type
+// word is readable. NULL slots advance consumed by recordAlignment even when
+// fewer than 64 bytes remain, so a truncated null record still bumps the entry
+// ordinal. Standby endpoint overruns and sub-49-byte tails break without
+// counting.
+func decodeEntriesAndCount(buf []byte) ([]Entry, int32, int64, error) {
 	buffer := atomic.Wrap(buf)
 	entries := make([]Entry, 0, len(buf)/recordAlignment)
 	consumed := 0
-	index := int32(0)
+	entryOrdinal := int32(0)
 	termRecordingID := nullValue
 
 	for consumed+endpointOffset < len(buf) {
 		rawType := buffer.GetInt32(consumed + entryTypeOffset)
 		if rawType == nullEntryType {
 			consumed += recordAlignment
-			index++
+			entryOrdinal++
 			continue
 		}
 		entryType := rawType &^ entryTypeInvalidFlag
@@ -76,10 +115,10 @@ func decodeEntries(buf []byte) ([]Entry, error) {
 			}
 			epLen := int(buffer.GetInt32(epOffset))
 			if epLen < 0 || epLen > maxEndpointLen {
-				return nil, ErrEndpointTooLong
+				return nil, 0, nullValue, ErrEndpointTooLong
 			}
 			if epLen == 0 {
-				return nil, ErrStandbyEndpointEmpty
+				return nil, 0, nullValue, ErrStandbyEndpointEmpty
 			}
 			if epDataOffset+epLen > len(buf) {
 				break
@@ -98,24 +137,24 @@ func decodeEntries(buf []byte) ([]Entry, error) {
 			Valid:               valid,
 			ArchiveEndpoint:     endpoint,
 			Position:            int64(consumed),
-			Index:               index,
+			Index:               entryOrdinal,
 		}
 
 		if entryType == EntryTypeTerm {
 			if entry.RecordingID == nullValue {
-				return nil, ErrTermRecordingIDInvalid
+				return nil, 0, nullValue, ErrTermRecordingIDInvalid
 			}
 			if termRecordingID == nullValue {
 				termRecordingID = entry.RecordingID
 			} else if entry.RecordingID != termRecordingID {
-				return nil, ErrTermRecordingIDMismatch
+				return nil, 0, nullValue, ErrTermRecordingIDMismatch
 			}
 		}
 		entries = append(entries, entry)
 
 		consumed += alignedEntryLength(entryType, endpoint)
-		index++
+		entryOrdinal++
 	}
 
-	return entries, nil
+	return entries, entryOrdinal, termRecordingID, nil
 }

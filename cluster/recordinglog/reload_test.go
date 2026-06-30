@@ -11,12 +11,8 @@ import (
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
-// Wire offsets mirrored locally for black-box buffer construction.
-const (
-	entryTypeWordOffset = 44
-	endpointWordOffset  = 48
-	recordSize          = 64
-)
+// Wire offsets mirrored locally only for malformed-buffer edge cases.
+const oversizedEndpointLen = recordinglog.MaxEndpointLen + 1
 
 func termEntry(recordingID int64) recordinglog.Entry {
 	return recordinglog.Entry{
@@ -33,20 +29,20 @@ func termEntry(recordingID int64) recordinglog.Entry {
 
 func nullSlotBuf(n int) []byte {
 	buf := make([]byte, n)
-	binary.LittleEndian.PutUint32(buf[entryTypeWordOffset:], 0xFFFFFFFF)
+	binary.LittleEndian.PutUint32(buf[recordinglog.EntryTypeOffset:], 0xFFFFFFFF)
 	return buf
 }
 
 func standbyBuf(n int) []byte {
 	buf := make([]byte, n)
 	standbyType := uint32(recordinglog.EntryTypeStandbySnapshot)
-	binary.LittleEndian.PutUint32(buf[entryTypeWordOffset:], standbyType)
+	binary.LittleEndian.PutUint32(buf[recordinglog.EntryTypeOffset:], standbyType)
 	return buf
 }
 
 func standbyEndpointBuf(n int, endpointLen int32) []byte {
 	buf := standbyBuf(n)
-	binary.LittleEndian.PutUint32(buf[endpointWordOffset:], uint32(endpointLen))
+	binary.LittleEndian.PutUint32(buf[recordinglog.EndpointOffset:], uint32(endpointLen))
 	return buf
 }
 
@@ -143,8 +139,11 @@ func TestDecodeEntries_errors(t *testing.T) {
 		wantErr error
 	}{
 		{
-			name:    "endpoint length above maximum",
-			buf:     standbyEndpointBuf(endpointWordOffset+4+5000+recordSize, 5000),
+			name: "endpoint length above maximum",
+			buf: standbyEndpointBuf(
+				recordinglog.EndpointOffset+4+oversizedEndpointLen+recordinglog.RecordAlignment,
+				int32(oversizedEndpointLen),
+			),
 			wantErr: recordinglog.ErrEndpointTooLong,
 		},
 		{
@@ -182,12 +181,12 @@ func TestDecodeEntries_nullSlotSkipped(t *testing.T) {
 	// A removed first slot must not shift the surviving entry's file-order
 	// Position and Index.
 	buf := nullSlotBuf(128)
-	copy(buf[recordSize:], recordinglog.EncodeEntry(termEntry(3)))
+	copy(buf[recordinglog.RecordAlignment:], recordinglog.EncodeEntry(termEntry(3)))
 
 	entries, err := recordinglog.DecodeEntries(buf)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
-	require.Equal(t, int64(recordSize), entries[0].Position)
+	require.Equal(t, int64(recordinglog.RecordAlignment), entries[0].Position)
 	require.Equal(t, int32(1), entries[0].Index)
 	require.Equal(t, int64(3), entries[0].RecordingID)
 }
@@ -195,7 +194,7 @@ func TestDecodeEntries_nullSlotSkipped(t *testing.T) {
 func TestDecodeEntries_truncatedFinalEntry(t *testing.T) {
 	t.Parallel()
 	// Fewer than 49 bytes after a full record cannot re-enter the decode loop.
-	buf := make([]byte, recordSize+30)
+	buf := make([]byte, recordinglog.RecordAlignment+30)
 	copy(buf, recordinglog.EncodeEntry(termEntry(1)))
 
 	entries, err := recordinglog.DecodeEntries(buf)
@@ -207,7 +206,7 @@ func TestDecodeEntries_truncatedFinalEntry(t *testing.T) {
 func TestDecodeEntries_zeroTailAfterTerm(t *testing.T) {
 	t.Parallel()
 	// 49-byte zero tail re-enters the loop as a spurious TERM with mismatched recordingId.
-	buf := make([]byte, recordSize+49)
+	buf := make([]byte, recordinglog.RecordAlignment+49)
 	copy(buf, recordinglog.EncodeEntry(termEntry(1)))
 
 	_, err := recordinglog.DecodeEntries(buf)
@@ -225,7 +224,7 @@ func TestDecodeEntries_64bytesOneEntry(t *testing.T) {
 	t.Parallel()
 	// Documents the true single-entry decode boundary (contrast: 63-byte null-slot test).
 	buf := recordinglog.EncodeEntry(termEntry(7))
-	require.Len(t, buf, recordSize)
+	require.Len(t, buf, recordinglog.RecordAlignment)
 	entries, err := recordinglog.DecodeEntries(buf)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
