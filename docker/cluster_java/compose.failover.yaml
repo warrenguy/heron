@@ -93,10 +93,6 @@ services:
   aeronmd:
     <<: *failover-service
     image: java-interop-aeronmd
-    build:
-      context: ../..
-      dockerfile: docker/aeronmd/Dockerfile
-      target: runtime
     environment:
       <<: *aeron-term-env
       AERON_DIR: /dev/shm/aeron

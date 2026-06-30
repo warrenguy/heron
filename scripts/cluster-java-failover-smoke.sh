@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Failover compose smoke: 3 cluster nodes + aeronmd + go; wait for go exit 0.
-# Go runs TestClusterFailoverSmoke (leader kill). Needs docker.sock; DOCKER_GID from
-# getent group docker when present (override if socket GID differs).
+# Requires java-interop-aeronmd image (make test-cluster-java-failover runs
+# aeronmd-compose-image). Go runs TestClusterFailoverSmoke (leader kill).
+# Needs docker.sock; DOCKER_GID from getent group docker when present (override if
+# socket GID differs).
 #
 # Outer timeout 430s: 400s test budget plus compose teardown; see Dockerfile
 # failover-runtime CMD and wait block below.
@@ -46,22 +48,23 @@ elif command -v getent >/dev/null 2>&1 && getent group docker >/dev/null 2>&1; t
 	export DOCKER_GID
 fi
 
-export DOCKER_BUILDKIT=1
-export COMPOSE_DOCKER_CLI_BUILD=1
+export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 GO_VERSION
 HERON_COMPOSE_UID="$(id -u)"
 export HERON_COMPOSE_UID
 HERON_COMPOSE_GID="$(id -g)"
 export HERON_COMPOSE_GID
-export GO_VERSION
+
+if ! docker image inspect java-interop-aeronmd >/dev/null 2>&1; then
+	echo "heron: missing image java-interop-aeronmd; run: make aeronmd-compose-image" >&2
+	exit 1
+fi
 
 trap 'compose down -v || true' EXIT
 
-# wait go only: cluster daemons never exit. HERON_COMPOSE_SKIP_BUILD=1 skips rebuild.
-if [[ "${HERON_COMPOSE_SKIP_BUILD:-}" == "1" ]]; then
-	compose up -d --no-build
-else
-	compose up -d --build
-fi
+# wait go only: cluster daemons never exit. Build cluster-0 and go only;
+# cluster-1/2 reuse cluster-0 image. aeronmd uses pre-tagged java-interop-aeronmd.
+compose build cluster-0 go
+compose up -d --no-build
 
 smoke_logs() {
 	compose logs --no-color cluster-0 cluster-1 cluster-2 aeronmd go

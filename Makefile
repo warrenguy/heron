@@ -105,7 +105,7 @@ check-inner: check-static check-test
 
 .PHONY: test-all
 test-all: ## Full gate: check rapid integration Docker smokes
-	+@$(MAKE) --no-print-directory check test-rapid test-integration \
+	+@$(MAKE) --no-print-directory check test-rapid test-integration aeronmd-compose-image \
 		test-java-interop test-cluster-java test-cluster-java-failover
 
 check-aeron-versions:
@@ -346,13 +346,13 @@ endef
 .PHONY: test-java-interop test-cluster-java test-cluster-java-failover \
 	$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-unit test-$(s)-oracle test-$(s)-contract) \
 	contract-oracles contract-oracles-optional
-test-java-interop: ## Docker smoke: Java/Go IPC duplex
+test-java-interop: aeronmd-compose-image ## Docker smoke: Java/Go IPC duplex
 	./scripts/java-interop-smoke.sh
 
 test-cluster-java: ## Docker smoke: AsyncConnect + echo roundtrip smoke
 	./scripts/cluster-java-smoke.sh
 
-test-cluster-java-failover: ## Docker smoke: 3-node leader failover
+test-cluster-java-failover: aeronmd-compose-image ## Docker smoke: 3-node leader failover
 	./scripts/cluster-java-failover-smoke.sh
 
 $(eval $(call contract-oracle-module,java-interop,$(JAVA_INTEROP_POM),JAVA_INTEROP_ORACLE_TIMEOUT,JAVA_INTEROP_ORACLE_TAGS,./test/integration/java_interop/javainterop/))
@@ -367,6 +367,10 @@ $(eval $(call optional-target,contract-oracles,command -v mvn >/dev/null && comm
 
 bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd.sh
 	./scripts/build-aeronmd.sh
+
+.PHONY: aeronmd-compose-image
+aeronmd-compose-image: bin/aeronmd docker/aeronmd/Dockerfile ## Package bin/aeronmd for compose smokes
+	docker build -f docker/aeronmd/Dockerfile --target runtime-bin -t java-interop-aeronmd .
 
 aeronmd: bin/aeronmd ## Build C media driver binary
 

@@ -98,13 +98,15 @@ jobs:
       - *go-arch-cache-marker-step
       - *setup-go-step
 
-      - uses: actions/cache@v5
+      - &aeronmd-cache-step
+        uses: actions/cache@v5
         id: aeronmd-cache
         with:
           path: bin/aeronmd
           key: aeronmd-${{ env.GOARCH }}-${{ hashFiles('specs/versions.yaml', 'docker/aeronmd/Dockerfile', 'scripts/build-aeronmd.sh') }}
 
-      - name: Refresh aeronmd mtime
+      - &aeronmd-cache-touch-step
+        name: Refresh aeronmd mtime
         if: steps.aeronmd-cache.outputs.cache-hit == 'true'
         run: touch bin/aeronmd
 
@@ -120,9 +122,12 @@ jobs:
       - *checkout-step
       - *go-arch-cache-marker-step
       - *setup-go-step
+      - *aeronmd-cache-step
+      - *aeronmd-cache-touch-step
 
       - name: Docker smokes
         run: |
+          make aeronmd-compose-image
           make test-java-interop
           make test-cluster-java
           make test-cluster-java-failover

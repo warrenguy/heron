@@ -12,14 +12,6 @@ x-aeron-vols: &aeron-vols
 services:
   aeronmd:
     image: java-interop-aeronmd
-    build:
-      context: ../..
-      dockerfile: docker/aeronmd/Dockerfile
-      target: runtime
-      args:
-        AERON_REF: ${AERON_REF}
-        AERON_REPOSITORY: ${AERON_REPOSITORY}
-        AERON_DRIVER_ARTIFACT: ${AERON_DRIVER_ARTIFACT}
     user: *app-user
     environment: *aeron-env
     volumes: *aeron-vols

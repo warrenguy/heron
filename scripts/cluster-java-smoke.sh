@@ -8,9 +8,6 @@
 # TestCluster(Connect|Echo)Smoke, -test.timeout=300s).
 #
 # Outer timeout 310s: 300s test budget plus compose teardown (see wait block below).
-#
-# No versions.sh: no aeronmd; Aeron pinned in Dockerfiles/POM at build, not runtime clone.
-# See scripts/java-interop-smoke.sh for sibling compose smoke pattern.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,25 +38,19 @@ if [[ -z "${GO_VERSION}" ]]; then
 	exit 1
 fi
 
-export DOCKER_BUILDKIT=1
-export COMPOSE_DOCKER_CLI_BUILD=1
+export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 GO_VERSION
 HERON_COMPOSE_UID="$(id -u)"
 export HERON_COMPOSE_UID
 HERON_COMPOSE_GID="$(id -g)"
 export HERON_COMPOSE_GID
-export GO_VERSION
 
 trap 'compose down -v' EXIT
 
 # up -d + wait go only: cluster is a long-running daemon (ShutdownSignalBarrier);
 # compose wait cluster would block forever. Go one-shot test exits when both
 # TestClusterConnectSmoke and TestClusterEchoSmoke pass.
-# HERON_COMPOSE_SKIP_BUILD=1 reuses a prebuilt image; default rebuilds in one up pass.
-if [[ "${HERON_COMPOSE_SKIP_BUILD:-}" == "1" ]]; then
-	compose up -d --no-build
-else
-	compose up -d --build
-fi
+compose build cluster go
+compose up -d --no-build
 
 smoke_logs() {
 	compose logs --no-color cluster go

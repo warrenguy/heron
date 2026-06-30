@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
 # Bidirectional Java/Go IPC smoke: compose up -d (aeronmd + go + java), then
 # wait for go and java exit 0. Go runs TestJavaInteropDuplex; Java runs JavaDuplex.
-# See scripts/cluster-java-smoke.sh.
+# Requires java-interop-aeronmd image (make test-java-interop runs aeronmd-compose-image).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=SCRIPTDIR/lib/versions.sh
-source "${ROOT}/scripts/lib/versions.sh"
 COMPOSE="${ROOT}/docker/java-interop/compose.yaml"
-VERSIONS="${ROOT}/specs/versions.yaml"
 GO_MOD="${ROOT}/go.mod"
 
 compose() {
@@ -31,27 +28,22 @@ if [[ -z "${GO_VERSION}" ]]; then
 	exit 1
 fi
 
-require_aeron_versions "${VERSIONS}" || exit 1
-export AERON_REPOSITORY AERON_REF AERON_DRIVER_ARTIFACT
-
-export DOCKER_BUILDKIT=1
-export COMPOSE_DOCKER_CLI_BUILD=1
+export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 GO_VERSION
 HERON_COMPOSE_UID="$(id -u)"
 export HERON_COMPOSE_UID
 HERON_COMPOSE_GID="$(id -g)"
 export HERON_COMPOSE_GID
-export GO_VERSION
+
+if ! docker image inspect java-interop-aeronmd >/dev/null 2>&1; then
+	echo "heron: missing image java-interop-aeronmd; run: make aeronmd-compose-image" >&2
+	exit 1
+fi
 
 trap 'compose down -v' EXIT
 
-# up -d + wait go: --exit-code-from implies --abort-on-container-exit, which
-# stops the Go duplex test when the Java one-shot duplex main exits.
-# HERON_COMPOSE_SKIP_BUILD=1 reuses a prebuilt image; default rebuilds in one up pass.
-if [[ "${HERON_COMPOSE_SKIP_BUILD:-}" == "1" ]]; then
-	compose up -d --no-build
-else
-	compose up -d --build
-fi
+# Build app services only; aeronmd uses pre-tagged java-interop-aeronmd.
+compose build go java
+compose up -d --no-build
 
 smoke_logs() {
 	compose logs --no-color go java

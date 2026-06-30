@@ -143,6 +143,10 @@ make test-cluster-java-failover  # Docker Compose 3-node leader failover
   1100/1101, 32x32-byte `java-N` / `go-N` payloads) before the live smoke run.
 - `test-cluster-java-contract` checks shared harness constants for `make test-cluster-java`
   (e.g. IPC channels, streams 101/102, ports 9000/9002, failover topology goldens) before the live smoke run.
+- `test-java-interop` and `test-cluster-java-failover` run `make aeronmd-compose-image` first to tag
+  `java-interop-aeronmd`. `test-cluster-java` uses an embedded driver and does not. Direct
+  `./scripts/java-interop-smoke.sh` or `./scripts/cluster-java-failover-smoke.sh` require
+  `make aeronmd-compose-image` (or a prior `make test-*`).
 - `make test-integration` builds `bin/aeronmd` when needed; harness sets `AERON_DIR` per test.
 - Unit tests use `bench` and `testhooks` build tags.
 - Property tests live in `*_rapid_test.go` behind the `rapid` tag.

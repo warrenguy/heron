@@ -1,6 +1,7 @@
 # Build pinned C media driver.
 # scripts/build-aeronmd.sh: --target builder, extract to bin/aeronmd
-# docker/java-interop compose: --target runtime
+# make aeronmd-compose-image: --target runtime-bin (COPY bin/aeronmd)
+# runtime: in-image C compile when host bin/aeronmd is absent (manual docker build only)
 FROM ubuntu:24.04 AS builder
 
 ARG AERON_REF=1.51.0
@@ -24,9 +25,7 @@ WORKDIR /src/aeron
 RUN ./cppbuild/cppbuild --no-tests --skip-archive-api \
 	&& test -x "cppbuild/Release/binaries/${AERON_DRIVER_ARTIFACT}"
 
-FROM ubuntu:24.04 AS runtime
-
-ARG AERON_DRIVER_ARTIFACT=aeronmd_s
+FROM ubuntu:24.04 AS runtime-base
 
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
@@ -34,12 +33,22 @@ RUN apt-get update \
 		uuid-runtime \
 	&& rm -rf /var/lib/apt/lists/*
 
+ENV AERON_TERM_BUFFER_LENGTH=65536
+ENV AERON_IPC_TERM_BUFFER_LENGTH=65536
+ENV AERON_THREADING_MODE=SHARED
+
+FROM runtime-base AS runtime
+
+ARG AERON_DRIVER_ARTIFACT=aeronmd_s
+
 COPY --from=builder \
 	/src/aeron/cppbuild/Release/binaries/${AERON_DRIVER_ARTIFACT} \
 	/usr/local/bin/aeronmd
 
-ENV AERON_TERM_BUFFER_LENGTH=65536
-ENV AERON_IPC_TERM_BUFFER_LENGTH=65536
-ENV AERON_THREADING_MODE=SHARED
+ENTRYPOINT ["/usr/local/bin/aeronmd"]
+
+FROM runtime-base AS runtime-bin
+
+COPY bin/aeronmd /usr/local/bin/aeronmd
 
 ENTRYPOINT ["/usr/local/bin/aeronmd"]
