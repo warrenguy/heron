@@ -40,11 +40,12 @@ if [[ -z "${GO_VERSION}" ]]; then
 	exit 1
 fi
 
-if [[ -S /var/run/docker.sock ]]; then
-	DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
-	export DOCKER_GID
-elif command -v getent >/dev/null 2>&1 && getent group docker >/dev/null 2>&1; then
-	DOCKER_GID="$(getent group docker | cut -d: -f3)"
+if [[ -z "${DOCKER_GID:-}" ]]; then
+	if command -v getent >/dev/null 2>&1 && getent group docker >/dev/null 2>&1; then
+		DOCKER_GID="$(getent group docker | cut -d: -f3)"
+	elif [[ -S /var/run/docker.sock ]]; then
+		DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+	fi
 	export DOCKER_GID
 fi
 

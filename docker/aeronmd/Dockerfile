@@ -2,7 +2,7 @@
 # scripts/build-aeronmd.sh: --target builder, extract to bin/aeronmd
 # make aeronmd-compose-image: --target runtime-bin (COPY bin/aeronmd)
 # runtime: in-image C compile when host bin/aeronmd is absent (manual docker build only)
-FROM ubuntu:24.04 AS builder
+FROM debian:bookworm-slim AS builder
 
 ARG AERON_REF=1.51.0
 ARG AERON_REPOSITORY=https://github.com/aeron-io/aeron.git
@@ -25,7 +25,7 @@ WORKDIR /src/aeron
 RUN ./cppbuild/cppbuild --no-tests --skip-archive-api \
 	&& test -x "cppbuild/Release/binaries/${AERON_DRIVER_ARTIFACT}"
 
-FROM ubuntu:24.04 AS runtime-base
+FROM debian:bookworm-slim AS runtime-base
 
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \

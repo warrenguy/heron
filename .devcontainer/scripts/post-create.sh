@@ -47,9 +47,7 @@ if command -v docker >/dev/null; then
 		fi
 	fi
 	if [[ -S /var/run/docker.sock ]]; then
-		if docker ps >/dev/null 2>&1; then
-			export HERON_DOCKER_PS_OK=1
-		else
+		if ! docker ps >/dev/null 2>&1; then
 			echo "heron: WARN docker socket present but not accessible" >&2
 		fi
 	elif [[ "${tier}" == "docker" ]]; then
@@ -58,5 +56,3 @@ if command -v docker >/dev/null; then
 elif [[ "${tier}" == "docker" ]]; then
 	echo "heron: WARN docker config but docker CLI missing" >&2
 fi
-
-bash .devcontainer/scripts/print-tier.sh
