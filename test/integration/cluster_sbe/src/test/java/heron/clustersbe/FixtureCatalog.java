@@ -1,8 +1,8 @@
 package heron.clustersbe;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -30,7 +30,7 @@ import java.util.Set;
  * needing only fixture rows use {@link CatalogFile#fixtures()}.
  */
 final class FixtureCatalog {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
     record BlobRepeat(int byteValue, int len) {
     }
@@ -95,7 +95,7 @@ final class FixtureCatalog {
         final JsonNode root;
         try {
             root = MAPPER.readTree(json);
-        } catch (final JsonProcessingException ex) {
+        } catch (final JacksonException ex) {
             throw catalogError("invalid catalog json: " + ex.getOriginalMessage());
         }
         if (!root.isObject()) {
