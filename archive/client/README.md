@@ -1,8 +1,9 @@
 # archive/client
 
-Landing zone for the Aeron Archive control client (`AeronArchive` analogue).
+Invoker-only Aeron Archive control client (`AeronArchive` analogue). Context and
+connect handshake, control proxy and poller, explicit offer retry. See package
+godoc for API surface and concurrency rules.
 
-Client API not implemented yet. Planned surface: Context, connect/disconnect,
-ArchiveProxy, ControlResponsePoller. Wire codecs live in `../codecs/`.
+Wire codecs live in `../codecs/`.
 
 Import path: `github.com/warrenguy/heron/archive/client`.
