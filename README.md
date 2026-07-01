@@ -1,13 +1,65 @@
 # Heron
 
-Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport client and Aeron Cluster client
-and server.
+Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport and Aeron Cluster client.
 
 ## Constraints
 
 - **Pure Go** - no cgo; uses `unsafe` and atomics on hot paths.
 - **GOARCH** - `amd64` and `arm64` only (little-endian).
 - **Media driver** - IPC/UDP uses external Aeron media driver (C or Java).
+
+## Capabilities
+
+Targets parity with the Java Aeron stack (transport, cluster, archive). Requires an external
+Aeron media driver (C or Java). Invoker-only today: the application calls `DoWork` and
+poll methods (no background conductor thread).
+
+### Implemented
+
+#### Transport (`aeron`)
+
+IPC and UDP; shared and exclusive publications; subscriptions; `Offer`, `OfferWithOffset`,
+`TryClaim`; fragmented publish and term rotation; publication limits and channel status;
+blocking and async add (`Add*` / `OfferAdd*` + `PollAdd*`); registration lookup; counters
+reader, CNC metadata, error log; driver liveness; close linger.
+
+#### Cluster (`cluster/client`)
+
+`AsyncConnect` (challenge, redirect, credentials); multi-member ingress; IPC, ipcx, and UDP
+egress; exclusive ingress; `AeronCluster` offer, claim, keepalive, close; `PollEgress`,
+egress handlers, fragment assembly; leader-change recovery; `SendSnapshotRequest`.
+
+#### Archive (`archive/codecs`, `archive/client`)
+
+SBE flyweights; `ArchiveContext`; `AsyncConnect` (challenge, credentials); `ArchiveProxy`
+(connect, keepalive, close session); `ControlResponsePoller`; `ControlOfferUntilPositive`;
+credentials and idle strategy; `MapControlResponse`; response channel resolve (IPC/UDP).
+See [`archive/client/README.md`](archive/client/README.md).
+
+### Planned
+
+#### Transport
+
+Counter registration; dynamic MDC destinations; controlled `Subscription.Poll`; public
+subscription image lifecycle callbacks.
+
+#### Cluster
+
+`ControlledEgressHandler` dispatch; general admin request API (beyond snapshot); cluster
+server / consensus service.
+
+#### Archive
+
+Recording start/stop, replay, and list APIs; `AeronArchive` session wrapper.
+
+#### Runtime
+
+Dedicated background conductor and cluster session threads (optional to invoker-only duty
+cycle).
+
+### Not planned
+
+- Embedded media driver (use external C or Java driver)
 
 ## Media driver (`aeronmd`)
 
@@ -21,6 +73,9 @@ Aeron release pinned in [`specs/versions.yaml`](specs/versions.yaml) (`aeron.ref
 
 ## Usage
 
+One goroutine per `*aeron.Client` should call `DoWork` and poll methods; `Publication.Offer`
+may run from other goroutines.
+
 ### Transport client
 
 Start media driver:
@@ -31,7 +86,7 @@ mkdir -p "$AERON_DIR"
 bin/aeronmd
 ```
 
-Minimal IPC pub/sub (caller goroutine pumps `DoWork`):
+Minimal IPC pub/sub:
 
 ```go
 package main
@@ -97,119 +152,95 @@ func pollOne(sub *aeron.Subscription, client *aeron.Client) []byte {
 }
 ```
 
-Notes:
+`AddPublication` / `AddSubscription` block until the driver responds; poll `IsConnected` /
+`ImageCount` (pumping `DoWork`) before `Offer` / `Poll`. Close publications and subscriptions
+before `client.Close()`.
 
-- `AddPublication` / `AddSubscription` block until the driver responds; poll `IsConnected` /
-  `ImageCount` after they return.
-- One goroutine should call `DoWork` and `Subscription.Poll` for a given client.
-  `Publication.Offer` may run from other goroutines.
-- Close publications and subscriptions before `client.Close()`.
+### Cluster client
 
-## Development
+Requires a running Aeron Cluster plus `aeronmd`. Pass an existing transport `*aeron.Client` in
+`ClusterContext.Aeron` so the duty cycle can call `DoWork` during `AsyncConnect.Poll`.
 
-### Building blocks
+```go
+package main
 
-| Area | `github.com/warrenguy/heron/...` | Detail |
-|------|-------------|--------|
-| Agrona primitives | `agrona/...` | [`agrona/README.md`](agrona/README.md) |
-| Cluster client | `cluster/client` | `ClusterContext`, egress handlers, sessions |
-| Cluster codecs | `cluster/codecs` | SBE flyweights; **Cluster SBE codecs** below |
-| Transport client | `aeron` | `Connect`, `Client`, `Publication`, `Subscription` |
-| Transport internals | `aeron/{conductor,cnc,logbuffer}` | Conductor, CnC, logbuffer |
+import (
+	"log"
 
-### Pinned dependencies
+	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/cluster/client"
+)
 
-SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/versions.yaml).
+func main() {
+	transport, err := aeron.Connect(aeron.Context{AeronDir: "/tmp/aeron"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer transport.Close()
 
-### Tests
+	handlers := &client.EgressHandlers{
+		MessageFunc: func(
+			_ int64,
+			_ int64,
+			buf atomic.AtomicBuffer,
+			off, n int,
+			_ *aeron.Header,
+		) {
+			log.Printf("egress: %s", buf.Bytes()[off:off+n])
+		},
+	}
+	ctx := client.ClusterContext{
+		Aeron:          transport,
+		IngressChannel: "aeron:ipc",
+		EgressChannel:  "aeron:ipc",
+		EgressHandler:  handlers,
+	}
 
-```bash
-make check        # lint, pins, SBE/catalog stale (opt), unit+stress, contract-oracles (opt)
-make test-all     # check + rapid + integration + java-interop + cluster-java smokes
-make test-rapid                  # property tests (pgregory.net/rapid)
-make test-integration            # live C aeronmd (-tags=integration)
-make contract-oracles            # all three contract suites below (needs mvn + java)
-make test-java-interop-contract  # Go/Java smoke: streams, payloads, timeouts (no driver)
-make test-cluster-sbe-contract   # Go/Java cluster SBE wire bytes vs catalog.json (no driver)
-make test-cluster-java-contract  # Go/Java cluster harness constants (no driver)
-make test-java-interop           # Docker Compose smoke (bidirectional IPC pub/sub)
-make test-cluster-java           # Docker Compose smoke (AsyncConnect + echo roundtrip)
-make test-cluster-java-failover  # Docker Compose 3-node leader failover
+	ac, err := client.NewAsyncConnect(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var result *client.ConnectResult
+	for result == nil {
+		transport.DoWork()
+		result, err = ac.Poll()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	session, err := client.NewAeronCluster(result)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close()
+
+	for {
+		transport.DoWork()
+		if session.PollEgress() > 0 {
+			continue
+		}
+		pos := client.IngressOfferUntilPositive(
+			transport,
+			session,
+			client.IngressOfferConfig{},
+			func() int64 {
+				return session.Offer([]byte("ping"))
+			},
+		)
+		if pos < 0 {
+			log.Printf("offer: %d", pos)
+		}
+	}
+}
 ```
 
-- Contract targets run `mvn test` (Java goldens) then matching Go oracle tests; no aeronmd or
-  Docker.
-- `test-java-interop-contract` checks shared constants for `make test-java-interop` (e.g. stream
-  1100/1101, 32x32-byte `java-N` / `go-N` payloads) before the live smoke run.
-- `test-cluster-java-contract` checks shared harness constants for `make test-cluster-java`
-  (e.g. IPC channels, streams 101/102, ports 9000/9002, failover topology goldens) before the live smoke run.
-- `test-java-interop` and `test-cluster-java-failover` run `make aeronmd-compose-image` first to tag
-  `java-interop-aeronmd`. `test-cluster-java` uses an embedded driver and does not. Direct
-  `./scripts/java-interop-smoke.sh` or `./scripts/cluster-java-failover-smoke.sh` require
-  `make aeronmd-compose-image` (or a prior `make test-*`).
-- `make test-integration` builds `bin/aeronmd` when needed; harness sets `AERON_DIR` per test.
-- Unit tests use `bench` and `testhooks` build tags.
-- Property tests live in `*_rapid_test.go` behind the `rapid` tag.
-- IDE/gopls: set `go.buildTags` to
-  `testhooks rapid stress integration java_interop cluster_sbe cluster_java bench`.
+## Contributing
 
-```bash
-make test                                             # unit only
-go test -race -tags=bench,testhooks ./...             # ad-hoc unit
-go test -race -tags=rapid,testhooks -run rapid ./...  # ad-hoc property
-```
-
-Prefer Makefile targets over bare `go test`.
-
-### SBE codecs (cluster + archive)
-
-Cluster wire XML: `specs/cluster-codecs-client.xml`; flyweights:
-`cluster/codecs/gensbe/`. Archive control wire XML:
-`specs/archive-codecs-client.xml`; flyweights: `archive/codecs/gensbe/`.
-Cluster fixture oracle rows:
-`test/integration/cluster_sbe/clustersbe/fixtures/catalog.json`; run
-`make cluster-sbe-catalog-regen` to refresh committed `hex` from `fields`.
-
-Pin-bump workflow:
-
-1. Bump `aeron.ref` in [`specs/versions.yaml`](specs/versions.yaml).
-2. Cluster: diff upstream
-   `aeron-cluster/src/main/resources/cluster/aeron-cluster-codecs.xml` (client
-   messages and shared types only); port into `specs/cluster-codecs-client.xml`.
-3. Archive: diff upstream
-   `aeron-archive/src/main/resources/archive/aeron-archive-codecs.xml` (control
-   request, response, descriptor, and recording-signal messages plus shared
-   types only); port into `specs/archive-codecs-client.xml`.
-4. `make sbe-generate` and `make sbe-generate-archive`; commit flyweight diffs
-   if any.
-5. `make test-cluster-sbe-contract`; fix failures under `cluster/codecs/` and
-   `test/integration/cluster_sbe/clustersbe/`.
-
-### Benchmarks
-
-| Target | Tags | Packages |
-|--------|------|----------|
-| `make bench` (+ baseline, regression) | `bench` | `./test/bench/...` |
-| `make bench-micro` | `testhooks` | `./agrona/...` `./aeron/...` white-box |
-
-```bash
-make bench             # contract suite (quick)
-make bench-baseline    # .bench/baseline.txt (gitignored, per machine)
-make bench-regression  # vs baseline via benchstat; exit 1 on alloc regression (CI)
-make bench-micro       # white-box in-package (informational)
-```
-
-Re-baseline after pulling `main` or when perf changes are intentional.
-
-Optional env: `BENCH_COUNT` (Makefile default 10), `BENCH_PAYLOAD_SIZES` (comma-separated
-filter; CI uses `32,1400`), `BENCH_THRESHOLD` (script default 10; CI sets 30 in
-`bench.yml`), `SKIP_BENCH_REGRESSION`.
-
-### Devcontainer
-
-VS Code / GitHub Codespaces configs live under `.devcontainer/`. Default (check) covers
-`make check`; docker adds Docker-outside-of-Docker for integration and compose smokes. See
-[.devcontainer/README.md](.devcontainer/README.md).
+- Build, test, SBE codec, and benchmark workflows: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Package docs: [`agrona/README.md`](agrona/README.md), [`archive/client/README.md`](archive/client/README.md)
 
 ## License
 

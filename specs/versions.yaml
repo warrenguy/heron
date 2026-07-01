@@ -1,5 +1,5 @@
 # Upstream and codegen pins.
-# aeron: scripts/build-aeronmd.sh; cluster + archive wire XML manual port (README Cluster/Archive SBE codecs)
+# aeron: scripts/build-aeronmd.sh; cluster + archive wire XML manual port (CONTRIBUTING.md SBE codecs)
 # sbe_tool: scripts/generate-sbe.sh
 
 aeron:
