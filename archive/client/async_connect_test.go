@@ -204,7 +204,7 @@ func TestAsyncConnect_pollResponse_controlResponseError(t *testing.T) {
 	var archiveErr *ArchiveException
 	require.ErrorAs(t, err, &archiveErr)
 	require.Equal(t, int32(ArchiveErrorAuthenticationRejected), archiveErr.ErrorCode)
-	require.Contains(t, archiveErr.Message, "authentication rejected")
+	require.Contains(t, archiveErr.Error(), "authentication rejected")
 }
 
 func TestAsyncConnect_prepareConnectRequest_unresolvedResponseChannel(t *testing.T) {

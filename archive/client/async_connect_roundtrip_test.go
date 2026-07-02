@@ -72,24 +72,19 @@ func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 	for time.Now().Before(deadline) {
 		harness.DoWork()
 		result.Poller.Poll()
-		if result.Poller.IsPollComplete() &&
-			result.Poller.CorrelationID() == keepAliveCorrelation {
+		resp, ok := result.Poller.Response()
+		if ok && resp.CorrelationID == keepAliveCorrelation {
 			break
 		}
 		time.Sleep(time.Millisecond)
 	}
 	require.True(t, result.Poller.IsPollComplete())
-	require.Equal(t, keepAliveCorrelation, result.Poller.CorrelationID())
-	require.Equal(t, gensbe.ControlResponseCode_OK, result.Poller.Code())
+	resp, ok := result.Poller.Response()
+	require.True(t, ok)
+	require.Equal(t, keepAliveCorrelation, resp.CorrelationID)
+	require.Equal(t, gensbe.ControlResponseCode_OK, resp.Code)
 
-	err = MapControlResponse(codecs.ControlResponseFields{
-		ControlSessionID: result.Poller.ControlSessionID(),
-		CorrelationID:    result.Poller.CorrelationID(),
-		RelevantID:       result.Poller.RelevantID(),
-		Code:             result.Poller.Code(),
-		Version:          result.Poller.Version(),
-		ErrorMessage:     result.Poller.ErrorMessage(),
-	})
+	err = MapControlResponse(resp)
 	require.NoError(t, err)
 }
 

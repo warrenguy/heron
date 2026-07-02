@@ -1,8 +1,8 @@
 # archive/client
 
-Invoker-only Aeron Archive control client (`AeronArchive` analogue). Context and
-connect handshake, control proxy and poller, explicit offer retry. See package
-godoc for API surface and concurrency rules.
+Invoker-only Aeron Archive control client: connect handshake, `AeronArchive` session,
+recording lifecycle, control demux, and explicit offer retry. See package godoc for API
+surface and concurrency rules.
 
 Wire codecs live in `../codecs/`.
 

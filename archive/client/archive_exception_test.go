@@ -41,7 +41,7 @@ func TestMapControlResponse(t *testing.T) {
 			want: &mapControlResponseExpect{
 				code:       42,
 				corr:       18,
-				exactError: "errorCode=42 correlationId=18",
+				exactError: "archive client: control response error (code=42, correlation_id=18)",
 			},
 		},
 		{
@@ -50,7 +50,7 @@ func TestMapControlResponse(t *testing.T) {
 			want: &mapControlResponseExpect{
 				code: 42,
 				corr: 0,
-				msg:  "connect failed (errorCode=42 correlationId=0)",
+				msg:  "connect failed (code=42, correlation_id=0)",
 			},
 		},
 		{
@@ -59,7 +59,7 @@ func TestMapControlResponse(t *testing.T) {
 			want: &mapControlResponseExpect{
 				code:       42,
 				corr:       0,
-				exactError: "errorCode=42 correlationId=0",
+				exactError: "archive client: control response error (code=42, correlation_id=0)",
 			},
 		},
 		{

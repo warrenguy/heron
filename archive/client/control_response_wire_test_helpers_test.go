@@ -99,16 +99,66 @@ func encodeRecordingSignalEventWire(
 	})
 }
 
+func encodeRecordingDescriptorWire(
+	t *testing.T,
+	fields codecs.RecordingDescriptorFields,
+) []byte {
+	t.Helper()
+
+	return encodeArchiveControlWire(t, func(buf []byte, offset int) int {
+		var msg gensbe.RecordingDescriptor
+		msg.WrapAndApplyHeader(buf, uint64(offset), uint64(len(buf))).
+			SetControlSessionId(fields.ControlSessionID).
+			SetCorrelationId(fields.CorrelationID).
+			SetRecordingId(fields.RecordingID).
+			SetStartTimestamp(fields.StartTimestamp).
+			SetStopTimestamp(fields.StopTimestamp).
+			SetStartPosition(fields.StartPosition).
+			SetStopPosition(fields.StopPosition).
+			SetInitialTermId(fields.InitialTermID).
+			SetSegmentFileLength(fields.SegmentFileLength).
+			SetTermBufferLength(fields.TermBufferLength).
+			SetMtuLength(fields.MtuLength).
+			SetSessionId(fields.SessionID).
+			SetStreamId(fields.StreamID)
+		msg.PutStrippedChannel(string(fields.StrippedChannel))
+		msg.PutOriginalChannel(string(fields.OriginalChannel))
+		msg.PutSourceIdentity(string(fields.SourceIdentity))
+		return int(msg.SbePosition())
+	})
+}
+
+func encodeKeepAliveRequestWire(t *testing.T, controlSessionID int64) []byte {
+	t.Helper()
+
+	return encodeArchiveControlWire(t, func(buf []byte, offset int) int {
+		end, ok := codecs.EncodeKeepAliveRequest(
+			buf,
+			offset,
+			gensbe.KeepAliveRequestSbeSchemaVersion,
+			codecs.KeepAliveRequestFields{
+				ControlSessionID: controlSessionID,
+				CorrelationID:    303,
+			},
+		)
+		require.True(t, ok)
+		return end
+	})
+}
+
 func encodeWireWithSchemaID(t *testing.T, schemaID uint16) []byte {
 	t.Helper()
 
-	wire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+	return overrideWireSchemaID(encodeControlResponseWire(t, codecs.ControlResponseFields{
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    controlResponseTestCorrelationID,
 		RelevantID:       7,
 		Code:             gensbe.ControlResponseCode_OK,
 		Version:          520,
-	})
+	}), schemaID)
+}
+
+func overrideWireSchemaID(wire []byte, schemaID uint16) []byte {
 	schemaOffset := codecs.MessageHeaderEncodedLen() - 4
 	binary.LittleEndian.PutUint16(wire[schemaOffset:], schemaID)
 	return wire

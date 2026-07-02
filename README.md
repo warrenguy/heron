@@ -21,7 +21,8 @@ poll methods (no background conductor thread).
 IPC and UDP; shared and exclusive publications; subscriptions; `Offer`, `OfferWithOffset`,
 `TryClaim`; fragmented publish and term rotation; publication limits and channel status;
 blocking and async add (`Add*` / `OfferAdd*` + `PollAdd*`); registration lookup; counters
-reader, CNC metadata, error log; driver liveness; close linger.
+reader, CNC metadata, archive recording-position counter lookup, error log; driver liveness;
+close linger.
 
 #### Cluster (`cluster/client`)
 
@@ -31,10 +32,11 @@ egress handlers, fragment assembly; leader-change recovery; `SendSnapshotRequest
 
 #### Archive (`archive/codecs`, `archive/client`)
 
-SBE flyweights; `ArchiveContext`; `AsyncConnect` (challenge, credentials); `ArchiveProxy`
-(connect, keepalive, close session); `ControlResponsePoller`; `ControlOfferUntilPositive`;
-credentials and idle strategy; `MapControlResponse`; response channel resolve (IPC/UDP).
-See [`archive/client/README.md`](archive/client/README.md).
+SBE flyweights; `ArchiveContext`; `AsyncConnect` / blocking `Connect`; `AeronArchive`
+session and recording lifecycle; `ArchiveProxy`; `ControlResponsePoller` and
+`RecordingDescriptorPoller`; `PollArchiveControlEvents` demux and recording signals;
+`ControlOfferUntilPositive`; credentials, idle strategy, `MapControlResponse`; response
+channel resolve (IPC/UDP). See [`archive/client/README.md`](archive/client/README.md).
 
 ### Planned
 
@@ -50,7 +52,7 @@ server / consensus service.
 
 #### Archive
 
-Recording start/stop, replay, and list APIs; `AeronArchive` session wrapper.
+Replay APIs.
 
 #### Runtime
 
@@ -236,6 +238,59 @@ func main() {
 	}
 }
 ```
+
+### Archive client
+
+Requires Aeron Archive plus `aeronmd` (default local IPC control). Pass an existing
+transport `*aeron.Client` in `ArchiveContext.Aeron` for a shared `DoWork` duty cycle.
+
+```go
+package main
+
+import (
+	"log"
+
+	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive/client"
+	"github.com/warrenguy/heron/archive/codecs"
+)
+
+func main() {
+	transport, err := aeron.Connect(aeron.Context{AeronDir: "/tmp/aeron"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer transport.Close()
+
+	archive, err := client.Connect(client.ArchiveContext{Aeron: transport})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer archive.Close()
+
+	archive.SetRecordingSignalHandler(client.RecordingSignalHandlerFunc(
+		func(event codecs.RecordingSignalEventFields) {
+			log.Printf("recording signal: recording=%d signal=%v",
+				event.RecordingID, event.Signal)
+		},
+	))
+
+	log.Printf("archive session %d archive id %d",
+		archive.ControlSessionID(), archive.ArchiveID())
+
+	for {
+		transport.DoWork()
+		archive.Poll()
+	}
+}
+```
+
+Blocking `Connect` and recording APIs drive `DoWork` during their await window. Between
+requests, pump `transport.DoWork()` then `archive.Poll()`. `Poll` never calls `DoWork`.
+Recording signals dispatch to the configured handler whenever control events are
+polled on explicit `Poll()` and inside blocking recording API awaits
+(`StartRecording`, `StopRecording`, `ListRecording`, and similar); without a
+handler, they drop.
 
 ## Contributing
 

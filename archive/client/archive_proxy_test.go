@@ -15,6 +15,8 @@ const (
 	archiveProxyTestOfferPosition      int64 = 2048
 	archiveProxyTestCorrelationID      int64 = 9001
 	archiveProxyTestResponseStreamID   int32 = 10
+	archiveProxyTestRecordingStreamID  int32 = 33
+	archiveProxyTestRecordingID        int64 = 7700
 	archiveProxyTestResponseChannel          = "aeron:ipc"
 	archiveProxyWireBufferHighWaterLen       = 500
 )
@@ -26,6 +28,7 @@ type stubControlPublication struct {
 	offerResult   int64
 	offered       [][]byte
 	maxMsgLen     int
+	closed        bool
 }
 
 func newStubControlPublication() *stubControlPublication {
@@ -56,7 +59,10 @@ func (publication *stubControlPublication) IsConnected() bool { return true }
 
 func (publication *stubControlPublication) IsClosed() bool { return false }
 
-func (publication *stubControlPublication) Close() error { return nil }
+func (publication *stubControlPublication) Close() error {
+	publication.closed = true
+	return nil
+}
 
 func (publication *stubControlPublication) MaxMessageLength() int { return publication.maxMsgLen }
 
@@ -248,6 +254,104 @@ func TestArchiveProxy_TryChallengeResponse_fieldValuesOnWire(t *testing.T) {
 	require.Equal(t, encodedCredentials, fields.EncodedCredentials)
 }
 
+func TestArchiveProxy_TryStartRecording_fieldValuesOnWire(t *testing.T) {
+	pub, proxy := newTestArchiveProxy(ArchiveContext{})
+
+	channel := []byte("aeron:udp?endpoint=localhost:9999")
+	pos, ok := proxy.TryStartRecording(
+		controlResponseTestControlSessionID,
+		archiveProxyTestCorrelationID,
+		archiveProxyTestRecordingStreamID,
+		gensbe.SourceLocation_REMOTE,
+		channel,
+	)
+	require.True(t, ok)
+
+	wire := pub.lastOffer()
+	require.Equal(t, archiveProxyTestOfferPosition+int64(len(wire)), pos)
+
+	fields := requireArchiveProxyWireFields[codecs.StartRecordingRequestFields](
+		t,
+		wire,
+		gensbe.StartRecordingRequestSbeTemplateID,
+	)
+	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
+	require.Equal(t, archiveProxyTestRecordingStreamID, fields.StreamID)
+	require.Equal(t, gensbe.SourceLocation_REMOTE, fields.SourceLocation)
+	require.Equal(t, channel, fields.Channel)
+
+	expectedLen, lenOK := codecs.ArchiveWireMessageLen(
+		gensbe.StartRecordingRequestSbeBlockLength,
+		len(channel),
+	)
+	require.True(t, lenOK)
+	require.NotZero(t, expectedLen)
+	require.Len(t, wire, expectedLen)
+}
+
+func TestArchiveProxy_TryStopRecording_fieldValuesOnWire(t *testing.T) {
+	pub, proxy := newTestArchiveProxy(ArchiveContext{})
+
+	channel := []byte("aeron:udp?endpoint=localhost:9999")
+	pos, ok := proxy.TryStopRecording(
+		controlResponseTestControlSessionID,
+		archiveProxyTestCorrelationID,
+		archiveProxyTestRecordingStreamID,
+		channel,
+	)
+	require.True(t, ok)
+
+	wire := pub.lastOffer()
+	require.Equal(t, archiveProxyTestOfferPosition+int64(len(wire)), pos)
+
+	fields := requireArchiveProxyWireFields[codecs.StopRecordingRequestFields](
+		t,
+		wire,
+		gensbe.StopRecordingRequestSbeTemplateID,
+	)
+	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
+	require.Equal(t, archiveProxyTestRecordingStreamID, fields.StreamID)
+	require.Equal(t, channel, fields.Channel)
+
+	expectedLen, lenOK := codecs.ArchiveWireMessageLen(
+		gensbe.StopRecordingRequestSbeBlockLength,
+		len(channel),
+	)
+	require.True(t, lenOK)
+	require.NotZero(t, expectedLen)
+	require.Len(t, wire, expectedLen)
+}
+
+func TestArchiveProxy_TryListRecording_fieldValuesOnWire(t *testing.T) {
+	pub, proxy := newTestArchiveProxy(ArchiveContext{})
+
+	pos, ok := proxy.TryListRecording(
+		controlResponseTestControlSessionID,
+		archiveProxyTestCorrelationID,
+		archiveProxyTestRecordingID,
+	)
+	require.True(t, ok)
+
+	wire := pub.lastOffer()
+	require.Equal(t, archiveProxyTestOfferPosition+int64(len(wire)), pos)
+
+	fields := requireArchiveProxyWireFields[codecs.ListRecordingRequestFields](
+		t,
+		wire,
+		gensbe.ListRecordingRequestSbeTemplateID,
+	)
+	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
+	require.Equal(t, archiveProxyTestRecordingID, fields.RecordingID)
+
+	expectedLen, lenOK := codecs.ArchiveWireMessageLen(gensbe.ListRecordingRequestSbeBlockLength)
+	require.True(t, lenOK)
+	require.NotZero(t, expectedLen)
+	require.Len(t, wire, expectedLen)
+}
+
 func TestArchiveProxy_TryChallengeResponse_clearsWireBufferSlackBetweenEncodes(t *testing.T) {
 	pub, proxy := newTestArchiveProxy(ArchiveContext{})
 
@@ -347,6 +451,29 @@ func TestArchiveProxy_encodePreflightFailure(t *testing.T) {
 					archiveProxyTestResponseChannelBytes,
 					archiveProxyTestResponseStreamID,
 					1,
+				)
+			},
+		},
+		{
+			name: "try_start_recording_channel",
+			offer: func(proxy *ArchiveProxy) (int64, bool) {
+				return proxy.TryStartRecording(
+					controlResponseTestControlSessionID,
+					archiveProxyTestCorrelationID,
+					archiveProxyTestRecordingStreamID,
+					gensbe.SourceLocation_LOCAL,
+					oversized,
+				)
+			},
+		},
+		{
+			name: "try_stop_recording_channel",
+			offer: func(proxy *ArchiveProxy) (int64, bool) {
+				return proxy.TryStopRecording(
+					controlResponseTestControlSessionID,
+					archiveProxyTestCorrelationID,
+					archiveProxyTestRecordingStreamID,
+					oversized,
 				)
 			},
 		},

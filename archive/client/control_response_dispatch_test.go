@@ -98,7 +98,11 @@ func TestHandleControlResponseFragment_capturedBytesSurviveWireMutation(t *testi
 			},
 			wantText: "auth rejected",
 			captured: func(poller *ControlResponsePoller) []byte {
-				return poller.ErrorMessage()
+				resp, ok := poller.Response()
+				if !ok {
+					return nil
+				}
+				return resp.ErrorMessage
 			},
 		},
 		{
@@ -113,7 +117,11 @@ func TestHandleControlResponseFragment_capturedBytesSurviveWireMutation(t *testi
 			},
 			wantText: "challenge-bytes",
 			captured: func(poller *ControlResponsePoller) []byte {
-				return poller.EncodedChallenge()
+				capture, ok := poller.Capture()
+				if !ok {
+					return nil
+				}
+				return capture.EncodedChallenge
 			},
 			challenge: true,
 		},

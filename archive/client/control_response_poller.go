@@ -10,33 +10,43 @@ import (
 
 const challengeSbeTemplateID = int32(gensbe.ChallengeSbeTemplateID)
 
+// ControlResponseCapture snapshots one terminal control-response or challenge capture.
+type ControlResponseCapture struct {
+	TemplateID       int32
+	ControlSessionID int64
+	CorrelationID    int64
+	RelevantID       int64
+	Code             gensbe.ControlResponseCode
+	Version          int32
+	ErrorMessage     []byte
+	EncodedChallenge []byte
+}
+
+// Challenged reports whether the capture is a Challenge terminal.
+func (capture ControlResponseCapture) Challenged() bool {
+	return capture.TemplateID == challengeSbeTemplateID
+}
+
 // ControlResponsePoller captures archive control response events for AsyncConnect
 // and post-connect session duty cycles. Terminal templates are stored on the
 // poller until the next Poll reset.
 //
 // Not safe for concurrent use.
 //
-// Captured byte slices remain valid until the next Poll that begins with a prior
-// pollComplete reset, or until the poller is discarded. Poll never calls DoWork.
+// Standalone Poll clones var-ascii at decode time; latched slices remain valid until
+// the next Poll that begins with a prior terminal capture reset, or until the poller is
+// discarded. Poll never calls DoWork.
+//
+// Demux capture via PollArchiveControlEvents keeps subscription-buffer views; consume or
+// copy ErrorMessage and EncodedChallenge before the next demux poll, or call
+// ResetCapture before re-arming an await.
 type ControlResponsePoller struct {
 	subscription  *aeron.Subscription
 	fragmentLimit int
 	assembler     *FragmentAssembler
 
-	pollComplete     bool
-	templateID       int32
-	controlSessionID int64
-	correlationID    int64
-	relevantID       int64
-	code             gensbe.ControlResponseCode
-	version          int32
-	errorMessage     []byte
-	encodedChallenge []byte
-
-	recordingID     int64
-	subscriptionID  int64
-	position        int64
-	recordingSignal gensbe.RecordingSignal
+	capture ControlResponseCapture
+	ready   bool
 }
 
 // NewControlResponsePoller constructs a control response poller. fragmentLimit <= 0
@@ -49,11 +59,12 @@ func NewControlResponsePoller(
 		fragmentLimit = DefaultControlResponseFragmentLimit
 	}
 	poller := &ControlResponsePoller{
-		subscription:    subscription,
-		fragmentLimit:   fragmentLimit,
-		correlationID:   conductor.NullCorrelationID,
-		code:            gensbe.ControlResponseCode_NULL_VALUE,
-		recordingSignal: gensbe.RecordingSignal_NULL_VALUE,
+		subscription:  subscription,
+		fragmentLimit: fragmentLimit,
+		capture: ControlResponseCapture{
+			CorrelationID: conductor.NullCorrelationID,
+			Code:          gensbe.ControlResponseCode_NULL_VALUE,
+		},
 	}
 	poller.assembler = NewFragmentAssembler(func(
 		buffer atomic.AtomicBuffer,
@@ -71,10 +82,10 @@ func (poller *ControlResponsePoller) FragmentLimit() int {
 	return poller.fragmentLimit
 }
 
-// Poll resets prior capture when pollComplete was set, then polls the subscription.
+// Poll resets prior capture when a terminal was latched, then polls the subscription.
 // Returns 0 when subscription is nil.
 func (poller *ControlResponsePoller) Poll() int {
-	if poller.pollComplete {
+	if poller.ready {
 		poller.resetCapture()
 	}
 	if poller.subscription == nil {
@@ -88,107 +99,94 @@ func (poller *ControlResponsePoller) Poll() int {
 
 // IsPollComplete reports whether the last poll captured a terminal control template.
 func (poller *ControlResponsePoller) IsPollComplete() bool {
-	return poller.pollComplete
+	return poller.ready
 }
 
-// IsChallenged reports whether the last poll captured Challenge (59). Requires
-// pollComplete; returns false when an unknown template was polled without capture.
+// IsChallenged reports whether the last poll captured Challenge (59).
 func (poller *ControlResponsePoller) IsChallenged() bool {
-	return poller.pollComplete && poller.templateID == challengeSbeTemplateID
+	return poller.ready && poller.capture.Challenged()
 }
 
-// TemplateID returns the captured SBE template id, or 0 when not captured.
-func (poller *ControlResponsePoller) TemplateID() int32 {
-	return poller.templateID
-}
-
-// ControlSessionID returns the captured control session id, or 0 when not captured.
-func (poller *ControlResponsePoller) ControlSessionID() int64 {
-	return poller.controlSessionID
-}
-
-// CorrelationID returns the captured correlation id, or conductor.NullCorrelationID
-// (-1) when not captured.
-func (poller *ControlResponsePoller) CorrelationID() int64 {
-	return poller.correlationID
-}
-
-// RelevantID returns the captured ControlResponse relevant id. Zero when not captured;
-// conductor.NullCorrelationID (-1) when Challenge was captured.
-func (poller *ControlResponsePoller) RelevantID() int64 {
-	return poller.relevantID
-}
-
-// Code returns the captured ControlResponse code, or NULL_VALUE when not captured or
-// when Challenge was captured. ControlResponseCode_OK is also 0; read only after
-// IsPollComplete with ControlResponse.
-func (poller *ControlResponsePoller) Code() gensbe.ControlResponseCode {
-	return poller.code
-}
-
-// Version returns the captured ControlResponse version, or 0 when not captured.
-func (poller *ControlResponsePoller) Version() int32 {
-	return poller.version
-}
-
-// ErrorMessage returns captured ControlResponse errorMessage bytes. Nil when not captured
-// or wire length is zero. Safe to retain until the next Poll reset.
-func (poller *ControlResponsePoller) ErrorMessage() []byte {
-	return poller.errorMessage
-}
-
-// EncodedChallenge returns the captured Challenge payload. Nil when not captured
-// or wire length is zero; AsyncConnect must treat nil like an empty challenge byte slice.
-// Safe to retain until the next Poll reset.
-func (poller *ControlResponsePoller) EncodedChallenge() []byte {
-	return poller.encodedChallenge
-}
-
-// RecordingID returns the captured RecordingSignalEvent recording id, or 0 when not captured.
-func (poller *ControlResponsePoller) RecordingID() int64 {
-	return poller.recordingID
-}
-
-// SubscriptionID returns the captured RecordingSignalEvent subscription id, or 0 when not captured.
-func (poller *ControlResponsePoller) SubscriptionID() int64 {
-	return poller.subscriptionID
-}
-
-// Position returns the captured RecordingSignalEvent position, or 0 when not captured.
-func (poller *ControlResponsePoller) Position() int64 {
-	return poller.position
-}
-
-// RecordingSignal returns the captured RecordingSignalEvent signal, or NULL_VALUE when
-// not captured.
-func (poller *ControlResponsePoller) RecordingSignal() gensbe.RecordingSignal {
-	return poller.recordingSignal
-}
-
-// CapturedControlResponseFields snapshots the last captured ControlResponse.
-func (poller *ControlResponsePoller) CapturedControlResponseFields() codecs.ControlResponseFields {
-	return codecs.ControlResponseFields{
-		ControlSessionID: poller.ControlSessionID(),
-		CorrelationID:    poller.CorrelationID(),
-		RelevantID:       poller.RelevantID(),
-		Code:             poller.Code(),
-		Version:          poller.Version(),
-		ErrorMessage:     poller.ErrorMessage(),
+// Capture returns the terminal capture when IsPollComplete is true.
+func (poller *ControlResponsePoller) Capture() (ControlResponseCapture, bool) {
+	if !poller.ready {
+		return ControlResponseCapture{}, false
 	}
+	return poller.capture, true
+}
+
+// Response returns the captured ControlResponse fields when the terminal template is
+// ControlResponse.
+func (poller *ControlResponsePoller) Response() (codecs.ControlResponseFields, bool) {
+	capture, ok := poller.Capture()
+	if !ok || capture.TemplateID != int32(gensbe.ControlResponseSbeTemplateID) {
+		return codecs.ControlResponseFields{}, false
+	}
+	return codecs.ControlResponseFields{
+		ControlSessionID: capture.ControlSessionID,
+		CorrelationID:    capture.CorrelationID,
+		RelevantID:       capture.RelevantID,
+		Code:             capture.Code,
+		Version:          capture.Version,
+		ErrorMessage:     capture.ErrorMessage,
+	}, true
+}
+
+// Challenge returns the captured Challenge fields when the terminal template is
+// Challenge.
+func (poller *ControlResponsePoller) Challenge() (codecs.ChallengeFields, bool) {
+	capture, ok := poller.Capture()
+	if !ok || !capture.Challenged() {
+		return codecs.ChallengeFields{}, false
+	}
+	return codecs.ChallengeFields{
+		ControlSessionID: capture.ControlSessionID,
+		CorrelationID:    capture.CorrelationID,
+		Version:          capture.Version,
+		EncodedChallenge: capture.EncodedChallenge,
+	}, true
+}
+
+// ResetCapture clears a terminal latch so demux routing can capture the next control
+// response. Call before a new blocking request on the demux path, after connect hands
+// the poller to AeronArchive, and after consuming a capture when polling via
+// PollArchiveControlEvents. Standalone Poll resets automatically; the demux does not.
+func (poller *ControlResponsePoller) ResetCapture() {
+	if poller == nil {
+		return
+	}
+	poller.resetCapture()
 }
 
 func (poller *ControlResponsePoller) resetCapture() {
-	poller.pollComplete = false
-	poller.templateID = 0
-	poller.controlSessionID = 0
-	poller.correlationID = conductor.NullCorrelationID
-	poller.relevantID = 0
-	poller.code = gensbe.ControlResponseCode_NULL_VALUE
-	poller.version = 0
-	poller.errorMessage = nil
-	poller.encodedChallenge = nil
-	poller.recordingID = 0
-	poller.subscriptionID = 0
-	poller.position = 0
-	poller.recordingSignal = gensbe.RecordingSignal_NULL_VALUE
+	poller.ready = false
+	poller.capture = ControlResponseCapture{
+		CorrelationID: conductor.NullCorrelationID,
+		RelevantID:    0,
+		Code:          gensbe.ControlResponseCode_NULL_VALUE,
+	}
+}
+
+func (poller *ControlResponsePoller) latchControlResponse(resp codecs.ControlResponseFields) {
+	poller.capture.ControlSessionID = resp.ControlSessionID
+	poller.capture.CorrelationID = resp.CorrelationID
+	poller.capture.RelevantID = resp.RelevantID
+	poller.capture.Code = resp.Code
+	poller.capture.Version = resp.Version
+	poller.capture.ErrorMessage = resp.ErrorMessage
+	poller.capture.EncodedChallenge = nil
+	poller.capture.TemplateID = int32(gensbe.ControlResponseSbeTemplateID)
+	poller.ready = true
+}
+
+func (poller *ControlResponsePoller) latchChallenge(challenge codecs.ChallengeFields) {
+	poller.capture.ControlSessionID = challenge.ControlSessionID
+	poller.capture.CorrelationID = challenge.CorrelationID
+	poller.capture.RelevantID = conductor.NullCorrelationID
+	poller.capture.Code = gensbe.ControlResponseCode_NULL_VALUE
+	poller.capture.Version = challenge.Version
+	poller.capture.ErrorMessage = nil
+	poller.capture.EncodedChallenge = challenge.EncodedChallenge
+	poller.capture.TemplateID = challengeSbeTemplateID
+	poller.ready = true
 }

@@ -11,10 +11,13 @@ const (
 	CounterValueLength    = 128
 	CounterMetadataLength = 512
 
-	CounterRecordUnused              int32 = 0
-	CounterRecordAllocated           int32 = 1
-	CounterRecordReclaimed           int32 = -1
-	NullCounterID                    int32 = -1
+	CounterRecordUnused    int32 = 0
+	CounterRecordAllocated int32 = 1
+	CounterRecordReclaimed int32 = -1
+	NullCounterID          int32 = -1
+
+	// NullValue mirrors Aeron.NULL_VALUE, the match-any or absent sentinel for id fields.
+	NullValue                        int64 = -1
 	SystemCounterTypeID              int32 = 0
 	DriverPublisherLimitTypeID       int32 = 1
 	DriverSubscriberPositionTypeID   int32 = 4
@@ -242,6 +245,8 @@ func counterRegistrationIDInValuesBuffer(typeID int32) bool {
 		typeID == DriverReceiveChannelStatusTypeID
 }
 
+// CounterValuesBuffer returns the counters values buffer for bound slot reads. Returns a
+// zero buffer when the reader is nil.
 func (reader *CountersReader) CounterValuesBuffer() atomic.AtomicBuffer {
 	if reader == nil {
 		return atomic.AtomicBuffer{}

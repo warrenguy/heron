@@ -1,6 +1,7 @@
 package client
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/warrenguy/heron/aeron/conductor"
@@ -19,15 +20,17 @@ const (
 	// ArchiveErrorAuthenticationRejected matches Java
 	// ArchiveException.AUTHENTICATION_REJECTED.
 	ArchiveErrorAuthenticationRejected = 10
-
-	// NotConnectedMsg is returned by future session APIs when the control session is
-	// not connected.
-	NotConnectedMsg = "not connected"
 )
+
+// NotConnectedMsg is the ErrNotConnected message string for wire/API parity.
+const NotConnectedMsg = "not connected"
+
+// ErrNotConnected reports that the archive control session is not connected.
+var ErrNotConnected = errors.New(NotConnectedMsg)
 
 // ArchiveException reports an archive control response error.
 type ArchiveException struct {
-	Message       string
+	msg           string
 	ErrorCode     int32
 	CorrelationID int64
 }
@@ -36,19 +39,30 @@ func (e *ArchiveException) Error() string {
 	if e == nil {
 		return ""
 	}
-	if e.Message == "" {
-		if e.CorrelationID != conductor.NullCorrelationID {
-			return fmt.Sprintf("errorCode=%d correlationId=%d", e.ErrorCode, e.CorrelationID)
-		}
-		return fmt.Sprintf("errorCode=%d", e.ErrorCode)
+	suffix := archiveExceptionSuffix(e.ErrorCode, e.CorrelationID)
+	if e.msg == "" {
+		return "archive client: control response error" + suffix
 	}
-	if e.CorrelationID != conductor.NullCorrelationID {
-		return fmt.Sprintf(
-			"%s (errorCode=%d correlationId=%d)",
-			e.Message,
-			e.ErrorCode,
-			e.CorrelationID,
-		)
+	return fmt.Sprintf("archive client: %s%s", e.msg, suffix)
+}
+
+func archiveExceptionSuffix(errorCode int32, correlationID int64) string {
+	if correlationID != conductor.NullCorrelationID {
+		return fmt.Sprintf(" (code=%d, correlation_id=%d)", errorCode, correlationID)
 	}
-	return fmt.Sprintf("%s (errorCode=%d)", e.Message, e.ErrorCode)
+	return fmt.Sprintf(" (code=%d)", errorCode)
+}
+
+// AsArchiveException reports whether err is or wraps an ArchiveException.
+func AsArchiveException(err error) (*ArchiveException, bool) {
+	return errors.AsType[*ArchiveException](err)
+}
+
+// ArchiveErrorCode reports the archive error code when err is an ArchiveException.
+func ArchiveErrorCode(err error) (int32, bool) {
+	archiveErr, ok := AsArchiveException(err)
+	if !ok {
+		return 0, false
+	}
+	return archiveErr.ErrorCode, true
 }

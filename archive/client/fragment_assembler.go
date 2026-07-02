@@ -21,6 +21,12 @@ type FragmentAssembler struct {
 	directAssemblers    bool
 	initialBufferLength int
 	builders            map[int32]*fragmentBufferBuilder
+
+	// demuxTargets and demuxWired let PollArchiveControlEvents route reassembled
+	// fragments by value, avoiding a per-poll delegate closure so the demux hot
+	// path stays allocation-free.
+	demuxTargets ArchiveControlPollTargets
+	demuxWired   bool
 }
 
 type fragmentBufferBuilder struct {

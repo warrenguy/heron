@@ -33,7 +33,7 @@ func MapControlResponse(resp codecs.ControlResponseFields) error {
 		)
 	default:
 		return &ArchiveException{
-			Message: fmt.Sprintf(
+			msg: fmt.Sprintf(
 				"unexpected control response code: %d",
 				resp.Code,
 			),
@@ -50,7 +50,7 @@ func archiveExceptionUnknownID(
 	correlationID int64,
 ) error {
 	return &ArchiveException{
-		Message:       fmt.Sprintf("unknown %s id: %d", entity, relevantID),
+		msg:           fmt.Sprintf("unknown %s id: %d", entity, relevantID),
 		ErrorCode:     errorCode,
 		CorrelationID: correlationID,
 	}
@@ -67,7 +67,7 @@ func archiveExceptionFromErrorResponse(resp codecs.ControlResponseFields) error 
 		}
 	}
 	return &ArchiveException{
-		Message:       message,
+		msg:           message,
 		ErrorCode:     int32(resp.RelevantID),
 		CorrelationID: resp.CorrelationID,
 	}

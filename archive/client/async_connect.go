@@ -395,26 +395,27 @@ func (ac *AsyncConnect) pollPollResponse() (*ConnectResult, error) {
 }
 
 func (ac *AsyncConnect) connectPollResponseIgnorable(poller *ControlResponsePoller) bool {
-	templateID := poller.TemplateID()
-	if templateID == int32(gensbe.RecordingSignalEventSbeTemplateID) {
+	capture, ok := poller.Capture()
+	if !ok {
 		return true
 	}
 	correlationID := ac.session.correlationID
 	if correlationID != conductor.NullCorrelationID &&
-		poller.CorrelationID() != correlationID {
+		capture.CorrelationID != correlationID {
 		return true
 	}
-	if poller.IsChallenged() {
+	if capture.Challenged() {
 		return false
 	}
-	return templateID != int32(gensbe.ControlResponseSbeTemplateID)
+	return capture.TemplateID != int32(gensbe.ControlResponseSbeTemplateID)
 }
 
 func (ac *AsyncConnect) handleConnectChallenge(
 	poller *ControlResponsePoller,
 ) (*ConnectResult, error) {
-	ac.wire.encodedChallenge = bytes.Clone(poller.EncodedChallenge())
-	ac.session.controlSessionID = poller.ControlSessionID()
+	capture, _ := poller.Capture()
+	ac.wire.encodedChallenge = bytes.Clone(capture.EncodedChallenge)
+	ac.session.controlSessionID = capture.ControlSessionID
 	ac.session.correlationID = conductor.NullCorrelationID
 	if err := ac.prepareChallengeResponse(); err != nil {
 		return nil, err
@@ -426,15 +427,19 @@ func (ac *AsyncConnect) handleConnectChallenge(
 func (ac *AsyncConnect) handleConnectControlResponse(
 	poller *ControlResponsePoller,
 ) (*ConnectResult, error) {
-	switch poller.Code() {
+	resp, ok := poller.Response()
+	if !ok {
+		return nil, errors.New("archive client: connect response missing")
+	}
+	switch resp.Code {
 	case gensbe.ControlResponseCode_OK:
-		ac.session.controlSessionID = poller.ControlSessionID()
-		ac.session.archiveID = poller.RelevantID()
-		ac.session.serverVersion = poller.Version()
+		ac.session.controlSessionID = resp.ControlSessionID
+		ac.session.archiveID = resp.RelevantID
+		ac.session.serverVersion = resp.Version
 		ac.state = ConnectStateConcludeConnect
 		return nil, nil
 	default:
-		return nil, MapControlResponse(poller.CapturedControlResponseFields())
+		return nil, MapControlResponse(resp)
 	}
 }
 

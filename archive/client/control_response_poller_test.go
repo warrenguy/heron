@@ -18,9 +18,10 @@ func TestNewControlResponsePoller_freshCaptureDefaults(t *testing.T) {
 	poller := NewControlResponsePoller(nil, DefaultConnectControlResponseFragmentLimit)
 
 	require.False(t, poller.IsPollComplete())
-	require.Equal(t, gensbe.RecordingSignal_NULL_VALUE, poller.RecordingSignal())
-	require.Equal(t, gensbe.ControlResponseCode_NULL_VALUE, poller.Code())
-	require.Equal(t, conductor.NullCorrelationID, poller.CorrelationID())
+	_, ok := poller.Capture()
+	require.False(t, ok)
+	_, ok = poller.Response()
+	require.False(t, ok)
 }
 
 func TestNewControlResponsePoller_normalizesFragmentLimit(t *testing.T) {
@@ -56,13 +57,17 @@ func TestControlResponsePoller_Poll_controlResponseOK(t *testing.T) {
 	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsPollComplete())
 	require.False(t, poller.IsChallenged())
-	require.Equal(t, int32(gensbe.ControlResponseSbeTemplateID), poller.TemplateID())
-	require.Equal(t, controlResponseTestControlSessionID, poller.ControlSessionID())
-	require.Equal(t, controlResponseTestCorrelationID, poller.CorrelationID())
-	require.Equal(t, int64(7), poller.RelevantID())
-	require.Equal(t, gensbe.ControlResponseCode_OK, poller.Code())
-	require.Equal(t, int32(520), poller.Version())
-	require.Nil(t, poller.ErrorMessage())
+	capture, ok := poller.Capture()
+	require.True(t, ok)
+	require.Equal(t, int32(gensbe.ControlResponseSbeTemplateID), capture.TemplateID)
+	resp, ok := poller.Response()
+	require.True(t, ok)
+	require.Equal(t, controlResponseTestControlSessionID, resp.ControlSessionID)
+	require.Equal(t, controlResponseTestCorrelationID, resp.CorrelationID)
+	require.Equal(t, int64(7), resp.RelevantID)
+	require.Equal(t, gensbe.ControlResponseCode_OK, resp.Code)
+	require.Equal(t, int32(520), resp.Version)
+	require.Nil(t, resp.ErrorMessage)
 }
 
 func TestControlResponsePoller_Poll_controlResponseError(t *testing.T) {
@@ -82,9 +87,11 @@ func TestControlResponsePoller_Poll_controlResponseError(t *testing.T) {
 
 	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsPollComplete())
-	require.Equal(t, gensbe.ControlResponseCode_ERROR, poller.Code())
-	require.Equal(t, int64(10), poller.RelevantID())
-	require.Equal(t, []byte("authentication rejected"), poller.ErrorMessage())
+	resp, ok := poller.Response()
+	require.True(t, ok)
+	require.Equal(t, gensbe.ControlResponseCode_ERROR, resp.Code)
+	require.Equal(t, int64(10), resp.RelevantID)
+	require.Equal(t, []byte("authentication rejected"), resp.ErrorMessage)
 }
 
 func TestControlResponsePoller_Poll_fragmentedChallenge(t *testing.T) {
@@ -105,10 +112,12 @@ func TestControlResponsePoller_Poll_fragmentedChallenge(t *testing.T) {
 
 	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsChallenged())
-	require.Equal(t, int32(gensbe.ChallengeSbeTemplateID), poller.TemplateID())
-	require.Equal(t, controlResponseTestControlSessionID, poller.ControlSessionID())
+	capture, ok := poller.Capture()
+	require.True(t, ok)
+	require.Equal(t, int32(gensbe.ChallengeSbeTemplateID), capture.TemplateID)
+	require.Equal(t, controlResponseTestControlSessionID, capture.ControlSessionID)
 	wantChallenge := bytes.Repeat([]byte("challenge-bytes"), 32)
-	require.Equal(t, []byte(wantChallenge), poller.EncodedChallenge())
+	require.Equal(t, []byte(wantChallenge), capture.EncodedChallenge)
 }
 
 func TestControlResponsePoller_Poll_fragmentedControlResponseError(t *testing.T) {
@@ -131,9 +140,11 @@ func TestControlResponsePoller_Poll_fragmentedControlResponseError(t *testing.T)
 
 	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsPollComplete())
-	require.Equal(t, gensbe.ControlResponseCode_ERROR, poller.Code())
+	resp, ok := poller.Response()
+	require.True(t, ok)
+	require.Equal(t, gensbe.ControlResponseCode_ERROR, resp.Code)
 	wantErrorMessage := bytes.Repeat([]byte("authentication rejected "), 8)
-	require.Equal(t, []byte(wantErrorMessage), poller.ErrorMessage())
+	require.Equal(t, []byte(wantErrorMessage), resp.ErrorMessage)
 }
 
 func TestControlResponsePoller_Poll_challenge(t *testing.T) {
@@ -145,13 +156,17 @@ func TestControlResponsePoller_Poll_challenge(t *testing.T) {
 
 	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsChallenged())
-	require.Equal(t, int32(gensbe.ChallengeSbeTemplateID), poller.TemplateID())
-	require.Equal(t, int64(404), poller.CorrelationID())
-	require.Equal(t, controlResponseTestControlSessionID, poller.ControlSessionID())
-	require.Equal(t, gensbe.ControlResponseCode_NULL_VALUE, poller.Code())
-	require.Equal(t, conductor.NullCorrelationID, poller.RelevantID())
-	require.Nil(t, poller.ErrorMessage())
-	require.Equal(t, []byte("challenge-bytes"), poller.EncodedChallenge())
+	challenge, ok := poller.Challenge()
+	require.True(t, ok)
+	require.Equal(t, int64(404), challenge.CorrelationID)
+	require.Equal(t, controlResponseTestControlSessionID, challenge.ControlSessionID)
+	require.Equal(t, []byte("challenge-bytes"), challenge.EncodedChallenge)
+	capture, ok := poller.Capture()
+	require.True(t, ok)
+	require.Equal(t, int32(gensbe.ChallengeSbeTemplateID), capture.TemplateID)
+	require.Equal(t, gensbe.ControlResponseCode_NULL_VALUE, capture.Code)
+	require.Equal(t, conductor.NullCorrelationID, capture.RelevantID)
+	require.Nil(t, capture.ErrorMessage)
 }
 
 func TestControlResponsePoller_Poll_challengeEmptyPayload(t *testing.T) {
@@ -169,10 +184,12 @@ func TestControlResponsePoller_Poll_challengeEmptyPayload(t *testing.T) {
 
 	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsChallenged())
-	require.Nil(t, poller.EncodedChallenge())
+	capture, ok := poller.Capture()
+	require.True(t, ok)
+	require.Nil(t, capture.EncodedChallenge)
 }
 
-func TestControlResponsePoller_Poll_recordingSignalEvent(t *testing.T) {
+func TestControlResponsePoller_Poll_recordingSignalIgnored(t *testing.T) {
 	sub, termBuffer := setupControlResponsePollFixtures(t)
 
 	wire := encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
@@ -188,15 +205,8 @@ func TestControlResponsePoller_Poll_recordingSignalEvent(t *testing.T) {
 	poller := newControlResponsePollerForTest(sub)
 
 	require.Equal(t, 1, poller.Poll())
-	require.True(t, poller.IsPollComplete())
+	require.False(t, poller.IsPollComplete())
 	require.False(t, poller.IsChallenged())
-	require.Equal(t, int32(gensbe.RecordingSignalEventSbeTemplateID), poller.TemplateID())
-	require.Equal(t, controlResponseTestControlSessionID, poller.ControlSessionID())
-	require.Equal(t, int64(909), poller.CorrelationID())
-	require.Equal(t, int64(1001), poller.RecordingID())
-	require.Equal(t, int64(2002), poller.SubscriptionID())
-	require.Equal(t, int64(3003), poller.Position())
-	require.Equal(t, gensbe.RecordingSignal_START, poller.RecordingSignal())
 }
 
 func TestControlResponsePoller_Poll_unknownTemplateIgnored(t *testing.T) {
@@ -233,11 +243,13 @@ func TestControlResponsePoller_Poll_resetCaptureClearsPriorCapture(t *testing.T)
 
 	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsPollComplete())
-	require.Equal(t, controlResponseTestCorrelationID, poller.CorrelationID())
-	require.Equal(t, controlResponseTestControlSessionID, poller.ControlSessionID())
-	require.Equal(t, int64(7), poller.RelevantID())
-	require.Equal(t, gensbe.ControlResponseCode_OK, poller.Code())
-	require.Equal(t, int32(520), poller.Version())
+	resp, ok := poller.Response()
+	require.True(t, ok)
+	require.Equal(t, controlResponseTestCorrelationID, resp.CorrelationID)
+	require.Equal(t, controlResponseTestControlSessionID, resp.ControlSessionID)
+	require.Equal(t, int64(7), resp.RelevantID)
+	require.Equal(t, gensbe.ControlResponseCode_OK, resp.Code)
+	require.Equal(t, int32(520), resp.Version)
 
 	require.Equal(t, 0, poller.Poll())
 	requirePollerCaptureCleared(t, poller)
@@ -247,18 +259,12 @@ func requirePollerCaptureCleared(t *testing.T, poller *ControlResponsePoller) {
 	t.Helper()
 
 	require.False(t, poller.IsPollComplete())
-	require.Zero(t, poller.TemplateID())
-	require.Zero(t, poller.ControlSessionID())
-	require.Equal(t, conductor.NullCorrelationID, poller.CorrelationID())
-	require.Zero(t, poller.RelevantID())
-	require.Equal(t, gensbe.ControlResponseCode_NULL_VALUE, poller.Code())
-	require.Zero(t, poller.Version())
-	require.Nil(t, poller.ErrorMessage())
-	require.Nil(t, poller.EncodedChallenge())
-	require.Zero(t, poller.RecordingID())
-	require.Zero(t, poller.SubscriptionID())
-	require.Zero(t, poller.Position())
-	require.Equal(t, gensbe.RecordingSignal_NULL_VALUE, poller.RecordingSignal())
+	_, ok := poller.Capture()
+	require.False(t, ok)
+	_, ok = poller.Response()
+	require.False(t, ok)
+	_, ok = poller.Challenge()
+	require.False(t, ok)
 }
 
 func TestControlResponsePoller_Poll_resetsAfterComplete(t *testing.T) {
@@ -270,13 +276,19 @@ func TestControlResponsePoller_Poll_resetsAfterComplete(t *testing.T) {
 
 	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsPollComplete())
-	require.Equal(t, controlResponseTestCorrelationID, poller.CorrelationID())
-	require.Equal(t, gensbe.ControlResponseCode_OK, poller.Code())
+	resp, ok := poller.Response()
+	require.True(t, ok)
+	require.Equal(t, controlResponseTestCorrelationID, resp.CorrelationID)
+	require.Equal(t, gensbe.ControlResponseCode_OK, resp.Code)
 
 	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsChallenged())
-	require.Equal(t, int64(404), poller.CorrelationID())
-	require.Equal(t, gensbe.ControlResponseCode_NULL_VALUE, poller.Code())
+	challenge, ok := poller.Challenge()
+	require.True(t, ok)
+	require.Equal(t, int64(404), challenge.CorrelationID)
+	capture, ok := poller.Capture()
+	require.True(t, ok)
+	require.Equal(t, gensbe.ControlResponseCode_NULL_VALUE, capture.Code)
 }
 
 func TestControlResponsePoller_Poll_fragmentLimitTwoCapturesFirstTerminalOnly(t *testing.T) {
@@ -289,9 +301,13 @@ func TestControlResponsePoller_Poll_fragmentLimitTwoCapturesFirstTerminalOnly(t 
 	require.Equal(t, 2, poller.Poll())
 	require.True(t, poller.IsPollComplete())
 	require.False(t, poller.IsChallenged())
-	require.Equal(t, controlResponseTestCorrelationID, poller.CorrelationID())
-	require.Equal(t, int32(gensbe.ControlResponseSbeTemplateID), poller.TemplateID())
-	require.Equal(t, gensbe.ControlResponseCode_OK, poller.Code())
+	resp, ok := poller.Response()
+	require.True(t, ok)
+	require.Equal(t, controlResponseTestCorrelationID, resp.CorrelationID)
+	capture, ok := poller.Capture()
+	require.True(t, ok)
+	require.Equal(t, int32(gensbe.ControlResponseSbeTemplateID), capture.TemplateID)
+	require.Equal(t, gensbe.ControlResponseCode_OK, resp.Code)
 }
 
 func controlResponsePollerTestOKFields() codecs.ControlResponseFields {

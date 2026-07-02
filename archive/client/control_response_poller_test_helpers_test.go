@@ -10,8 +10,6 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
 )
 
 func setupControlResponsePollFixtures(
@@ -23,24 +21,6 @@ func setupControlResponsePollFixtures(
 	image := aeron.NewTestImageForHooks(t, sub, 0)
 	require.True(t, aeron.SubscriptionAddImageForHooks(sub, image))
 	return sub, aeron.ImageTermBufferForHooks(image)
-}
-
-func encodeKeepAliveRequestWire(t *testing.T, controlSessionID int64) []byte {
-	t.Helper()
-
-	return encodeArchiveControlWire(t, func(buf []byte, offset int) int {
-		end, ok := codecs.EncodeKeepAliveRequest(
-			buf,
-			offset,
-			gensbe.KeepAliveRequestSbeSchemaVersion,
-			codecs.KeepAliveRequestFields{
-				ControlSessionID: controlSessionID,
-				CorrelationID:    303,
-			},
-		)
-		require.True(t, ok)
-		return end
-	})
 }
 
 func newControlResponsePollerForTest(sub *aeron.Subscription) *ControlResponsePoller {

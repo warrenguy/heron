@@ -29,6 +29,15 @@ func NewArchiveProxy(pub ControlPublication, ctx ArchiveContext) *ArchiveProxy {
 	}
 }
 
+// Close releases the control publication. Try methods offer on a closed publication
+// after Close and fail.
+func (p *ArchiveProxy) Close() error {
+	if p.publication == nil {
+		return nil
+	}
+	return p.publication.Close()
+}
+
 // TryConnect encodes AuthConnectRequest (template 58) and offers it once.
 func (p *ArchiveProxy) TryConnect(
 	responseChannel []byte,
@@ -101,11 +110,77 @@ func (p *ArchiveProxy) TryCloseSession(controlSessionID int64) (int64, bool) {
 	)
 }
 
+// TryStartRecording encodes StartRecordingRequest (template 4) and offers it once.
+func (p *ArchiveProxy) TryStartRecording(
+	controlSessionID int64,
+	correlationID int64,
+	streamID int32,
+	sourceLocation gensbe.SourceLocation,
+	channel []byte,
+) (int64, bool) {
+	fields := codecs.StartRecordingRequestFields{
+		ControlSessionID: controlSessionID,
+		CorrelationID:    correlationID,
+		StreamID:         streamID,
+		SourceLocation:   sourceLocation,
+		Channel:          channel,
+	}
+	return p.tryArchiveWireOffer(
+		gensbe.StartRecordingRequestSbeBlockLength,
+		func(dst []byte, actingVersion uint16) (int, bool) {
+			return codecs.EncodeStartRecordingRequest(dst, 0, actingVersion, fields)
+		},
+		len(channel),
+	)
+}
+
+// TryStopRecording encodes StopRecordingRequest (template 5) and offers it once.
+func (p *ArchiveProxy) TryStopRecording(
+	controlSessionID int64,
+	correlationID int64,
+	streamID int32,
+	channel []byte,
+) (int64, bool) {
+	fields := codecs.StopRecordingRequestFields{
+		ControlSessionID: controlSessionID,
+		CorrelationID:    correlationID,
+		StreamID:         streamID,
+		Channel:          channel,
+	}
+	return p.tryArchiveWireOffer(
+		gensbe.StopRecordingRequestSbeBlockLength,
+		func(dst []byte, actingVersion uint16) (int, bool) {
+			return codecs.EncodeStopRecordingRequest(dst, 0, actingVersion, fields)
+		},
+		len(channel),
+	)
+}
+
+// TryListRecording encodes ListRecordingRequest (template 10) and offers it once.
+func (p *ArchiveProxy) TryListRecording(
+	controlSessionID int64,
+	correlationID int64,
+	recordingID int64,
+) (int64, bool) {
+	fields := codecs.ListRecordingRequestFields{
+		ControlSessionID: controlSessionID,
+		CorrelationID:    correlationID,
+		RecordingID:      recordingID,
+	}
+	return p.tryArchiveWireOffer(
+		gensbe.ListRecordingRequestSbeBlockLength,
+		func(dst []byte, actingVersion uint16) (int, bool) {
+			return codecs.EncodeListRecordingRequest(dst, 0, actingVersion, fields)
+		},
+	)
+}
+
 func (p *ArchiveProxy) tryArchiveWireOffer(
 	blockLength uint16,
 	encode func([]byte, uint16) (int, bool),
+	varLens ...int,
 ) (int64, bool) {
-	wireLen, ok := codecs.ArchiveWireMessageLen(blockLength)
+	wireLen, ok := codecs.ArchiveWireMessageLen(blockLength, varLens...)
 	return p.tryOffer(wireLen, ok, func(dst []byte) (int, bool) {
 		return encode(dst, p.actingVersion)
 	})

@@ -1,6 +1,8 @@
 package codecs
 
-import "github.com/warrenguy/heron/archive/codecs/gensbe"
+import (
+	"github.com/warrenguy/heron/archive/codecs/gensbe"
+)
 
 type ControlResponseFields struct {
 	ControlSessionID int64
@@ -80,6 +82,17 @@ type RecordingDescriptorFields struct {
 	StrippedChannel   []byte
 	OriginalChannel   []byte
 	SourceIdentity    []byte
+}
+
+// CloneRecordingDescriptorFields deep-copies var-ascii byte slices for retention
+// past buffer reuse.
+func CloneRecordingDescriptorFields(
+	fields RecordingDescriptorFields,
+) RecordingDescriptorFields {
+	fields.StrippedChannel = cloneVarBytes(fields.StrippedChannel)
+	fields.OriginalChannel = cloneVarBytes(fields.OriginalChannel)
+	fields.SourceIdentity = cloneVarBytes(fields.SourceIdentity)
+	return fields
 }
 
 type RecordingSignalEventFields struct {
