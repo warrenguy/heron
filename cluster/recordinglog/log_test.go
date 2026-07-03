@@ -33,7 +33,7 @@ func openInDir(t *testing.T, content []byte, createNew bool) (*recordinglog.Log,
 // Close, and returns the open Log with the file path for Reload comparisons.
 func openWithEntries(t *testing.T, entries ...recordinglog.Entry) (*recordinglog.Log, string) {
 	t.Helper()
-	var content []byte
+	content := make([]byte, 0, len(entries)*int(recordinglog.RecordAlignment))
 	for _, e := range entries {
 		content = append(content, recordinglog.EncodeEntry(e)...)
 	}

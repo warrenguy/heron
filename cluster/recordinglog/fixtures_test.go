@@ -27,11 +27,21 @@ type manifestEntry struct {
 	Index               int32  `json:"index"`
 }
 
+type recoveryExpect struct {
+	ServiceCount        int   `json:"serviceCount"`
+	SnapshotCount       int   `json:"snapshotCount"`
+	LogRecordingID      int64 `json:"logRecordingId"`
+	LogLeadershipTermID int64 `json:"logLeadershipTermId"`
+}
+
+type manifestFixture struct {
+	File     string          `json:"file"`
+	Recovery *recoveryExpect `json:"recovery,omitempty"`
+	Entries  []manifestEntry `json:"entries"`
+}
+
 type manifest struct {
-	Fixtures []struct {
-		File    string          `json:"file"`
-		Entries []manifestEntry `json:"entries"`
-	} `json:"fixtures"`
+	Fixtures []manifestFixture `json:"fixtures"`
 }
 
 func loadManifest(t *testing.T) manifest {
@@ -156,4 +166,38 @@ func TestWriter_byteIdenticalToGolden(t *testing.T) {
 
 	written := replayManifestEntries(t, entries)
 	require.Equal(t, golden, written)
+}
+
+func TestPlanRecovery_fixtureExpectations(t *testing.T) {
+	t.Parallel()
+
+	m := loadManifest(t)
+
+	for _, fixture := range m.Fixtures {
+		if fixture.Recovery == nil {
+			continue
+		}
+		t.Run(fixture.File, func(t *testing.T) {
+			t.Parallel()
+
+			require.NotEmpty(t, fixture.Entries)
+
+			golden, err := os.ReadFile(filepath.Join("testdata", fixture.File))
+			require.NoError(t, err)
+			require.NotEmpty(t, golden)
+
+			log, _ := openInDir(t, golden, false)
+			want := fixture.Recovery
+
+			plan, err := log.PlanRecovery(
+				fakeArchiveForEntries(log.Entries()),
+				recoveryPlanConfig(want.ServiceCount),
+			)
+			require.NoError(t, err)
+			require.Len(t, plan.Snapshots, want.SnapshotCount)
+			require.NotNil(t, plan.Log)
+			require.Equal(t, want.LogRecordingID, plan.Log.Term.RecordingID)
+			require.Equal(t, want.LogLeadershipTermID, plan.Log.Term.LeadershipTermID)
+		})
+	}
 }

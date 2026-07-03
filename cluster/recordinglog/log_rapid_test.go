@@ -42,7 +42,7 @@ func writeLogFile(rt *rapid.T, dir string) int32 {
 			slots++
 			continue
 		}
-		e, updated := drawEntry(rt, strconv.Itoa(i), termRecordingID)
+		e, updated := recordinglog.DrawEntry(rt, strconv.Itoa(i), termRecordingID)
 		termRecordingID = updated
 		buf = append(buf, recordinglog.EncodeEntry(e)...)
 		slots++

@@ -27,6 +27,13 @@ func termEntry(recordingID int64) recordinglog.Entry {
 	}
 }
 
+func termEntryWith(recordingID, leadershipTermID, termBaseLogPosition int64) recordinglog.Entry {
+	e := termEntry(recordingID)
+	e.LeadershipTermID = leadershipTermID
+	e.TermBaseLogPosition = termBaseLogPosition
+	return e
+}
+
 func nullSlotBuf(n int) []byte {
 	buf := make([]byte, n)
 	binary.LittleEndian.PutUint32(buf[recordinglog.EntryTypeOffset:], 0xFFFFFFFF)

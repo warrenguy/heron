@@ -32,6 +32,20 @@ func isSnapshotType(entryType int32) bool {
 	return entryType == EntryTypeSnapshot || hasEndpoint(entryType)
 }
 
+// isValidSnapshot and isValidTerm live here (not recovery_plan.go) because log.go
+// also calls isValidTerm; recovery uses isValidSnapshot only (excludes standby).
+func isValidSnapshot(e Entry) bool {
+	return e.Valid && e.Type == EntryTypeSnapshot
+}
+
+func isValidTerm(e Entry) bool {
+	return e.Valid && e.Type == EntryTypeTerm
+}
+
+func isValidConsensusModuleSnapshot(e Entry) bool {
+	return isValidSnapshot(e) && e.ServiceID == consensusModuleServiceID
+}
+
 // Entry is one decoded recording.log record.
 //
 // A recording.log file is a sequence of 64-byte-aligned records that map

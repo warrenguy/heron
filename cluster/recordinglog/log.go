@@ -97,7 +97,7 @@ func (l *Log) reload() error {
 	for i := range entries {
 		entry := entries[i]
 		switch {
-		case entry.Valid && entry.Type == EntryTypeTerm:
+		case isValidTerm(entry):
 			l.indexByLeadershipTermID[entry.LeadershipTermID] = int32(i)
 		case !entry.Valid && isSnapshotType(entry.Type):
 			l.invalidSnapshots = append(l.invalidSnapshots, int32(i))

@@ -16,11 +16,12 @@ var EncodeEntry = encodeEntry
 // Black-box test exports for recordinglog_test.
 
 const (
-	MaxEndpointLen    = maxEndpointLen
-	RecordAlignment   = recordAlignment
-	LogPositionOffset = logPositionOffset
-	EntryTypeOffset   = entryTypeOffset
-	EndpointOffset    = endpointOffset
+	MaxEndpointLen           = maxEndpointLen
+	RecordAlignment          = recordAlignment
+	LogPositionOffset        = logPositionOffset
+	EntryTypeOffset          = entryTypeOffset
+	EndpointOffset           = endpointOffset
+	ConsensusModuleServiceID = consensusModuleServiceID
 )
 
 // FindLastTerm exposes the internal findLastTerm helper for black-box tests.
@@ -43,4 +44,13 @@ func InvalidateEntry(l *Log, index int32) error {
 // WriteFieldAt exposes the single-field write helper for the zero-alloc gate.
 func WriteFieldAt(l *Log, position int64, offset int, b []byte) error {
 	return l.writeFieldAt(position, offset, b)
+}
+
+// IsValidConsensusModuleSnapshot re-exports isValidConsensusModuleSnapshot for black-box tests.
+var IsValidConsensusModuleSnapshot = isValidConsensusModuleSnapshot
+
+// MatchesConsensusModuleSnapshotGroup re-exports matchesConsensusModuleSnapshotGroup for
+// black-box tests.
+func MatchesConsensusModuleSnapshotGroup(entry Entry, cm Snapshot) bool {
+	return matchesConsensusModuleSnapshotGroup(entry, cm)
 }

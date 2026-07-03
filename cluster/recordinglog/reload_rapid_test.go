@@ -29,45 +29,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// drawEntry draws a random Entry. termRecordingID is the shared RecordingID for
-// TERM entries (-1 if no TERM drawn yet in this sequence).
-func drawEntry(rt *rapid.T, name string, termRecordingID int64) (recordinglog.Entry, int64) {
-	rt.Helper()
-	entryType := rapid.SampledFrom([]int32{
-		recordinglog.EntryTypeTerm,
-		recordinglog.EntryTypeSnapshot,
-		recordinglog.EntryTypeStandbySnapshot,
-	}).Draw(rt, name+"_type")
-
-	recordingID := rapid.Int64Range(0, 1000).Draw(rt, name+"_recordingID")
-	if entryType == recordinglog.EntryTypeTerm {
-		if termRecordingID == -1 {
-			termRecordingID = recordingID
-		} else {
-			recordingID = termRecordingID
-		}
-	}
-
-	endpoint := ""
-	if entryType == recordinglog.EntryTypeStandbySnapshot {
-		epBytes := rapid.SliceOfN(rapid.ByteRange('a', 'z'), 1, 20).Draw(rt, name+"_ep")
-		endpoint = string(epBytes)
-	}
-
-	e := recordinglog.Entry{
-		RecordingID:         recordingID,
-		LeadershipTermID:    rapid.Int64Range(0, 10).Draw(rt, name+"_leadershipTermID"),
-		TermBaseLogPosition: rapid.Int64Range(0, 1000).Draw(rt, name+"_termBaseLogPos"),
-		LogPosition:         rapid.Int64Range(0, 1000).Draw(rt, name+"_logPosition"),
-		Timestamp:           rapid.Int64Range(0, 999999).Draw(rt, name+"_timestamp"),
-		ServiceID:           rapid.Int32Range(0, 10).Draw(rt, name+"_serviceID"),
-		Type:                entryType,
-		Valid:               rapid.Bool().Draw(rt, name+"_valid"),
-		ArchiveEndpoint:     endpoint,
-	}
-	return e, termRecordingID
-}
-
 func TestRoundtrip_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -77,7 +38,7 @@ func TestRoundtrip_rapid(t *testing.T) {
 		var buf []byte
 		pos := int64(0)
 		for i := range n {
-			e, updated := drawEntry(rt, strconv.Itoa(i), termRecordingID)
+			e, updated := recordinglog.DrawEntry(rt, strconv.Itoa(i), termRecordingID)
 			termRecordingID = updated
 			e.Position = pos
 			e.Index = int32(i)
@@ -114,7 +75,7 @@ func TestTruncationInvariant_rapid(t *testing.T) {
 		termRecordingID := int64(-1)
 		var buf []byte
 		for i := range n {
-			e, updated := drawEntry(rt, strconv.Itoa(i), termRecordingID)
+			e, updated := recordinglog.DrawEntry(rt, strconv.Itoa(i), termRecordingID)
 			termRecordingID = updated
 			buf = append(buf, recordinglog.EncodeEntry(e)...)
 		}

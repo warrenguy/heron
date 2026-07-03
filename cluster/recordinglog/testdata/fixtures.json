@@ -2,6 +2,12 @@
   "fixtures": [
     {
       "file": "mixed-entries.recordinglog",
+      "recovery": {
+        "serviceCount": 0,
+        "snapshotCount": 0,
+        "logRecordingId": 1,
+        "logLeadershipTermId": 7
+      },
       "entries": [
         {"recordingId": 1, "leadershipTermId": 7, "termBaseLogPosition": 0, "logPosition": -1, "timestamp": 1000, "serviceId": -1, "type": 0, "valid": true, "archiveEndpoint": "", "position": 0, "index": 0},
         {"recordingId": 3, "leadershipTermId": 7, "termBaseLogPosition": 0, "logPosition": 2048, "timestamp": 3000, "serviceId": 0, "type": 2, "valid": true, "archiveEndpoint": "aeron:udp?endpoint=standby.example.com:8020", "position": 128, "index": 2},
@@ -10,6 +16,12 @@
     },
     {
       "file": "standby-then-term.recordinglog",
+      "recovery": {
+        "serviceCount": 0,
+        "snapshotCount": 0,
+        "logRecordingId": 10,
+        "logLeadershipTermId": 2
+      },
       "entries": [
         {"recordingId": 3, "leadershipTermId": 1, "termBaseLogPosition": 0, "logPosition": 100, "timestamp": 2000, "serviceId": 0, "type": 2, "valid": true, "archiveEndpoint": "aeron:udp?endpoint=standby.example.com:8020", "position": 0, "index": 0},
         {"recordingId": 10, "leadershipTermId": 2, "termBaseLogPosition": 0, "logPosition": -1, "timestamp": 3000, "serviceId": -1, "type": 0, "valid": true, "archiveEndpoint": "", "position": 128, "index": 1}
