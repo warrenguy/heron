@@ -29,8 +29,12 @@ const (
 	connectSmokeTimeout     = 60 * time.Second
 	failoverConnectTimeout  = 90 * time.Second // 3 JVM cold start
 	failoverRecoveryTimeout = 120 * time.Second
+
 	// Post-failover offer/echo budgets: ingress repoint + election can exceed IPC smoke defaults.
 	failoverPostRecoveryRoundTripTimeout = 60 * time.Second
+
+	// dockerKillPollTimeout bounds compose kill while the IPC client must stay serviced.
+	dockerKillPollTimeout = 30 * time.Second
 )
 
 type clusterComposeGate struct {
@@ -471,14 +475,14 @@ func pollUntilFailoverRecovered(
 	t.Helper()
 
 	start := time.Now()
-	harness.PollClientUntilTransportClean(
+	pollEgressUntil(
 		t,
 		aeronClient,
+		session,
 		hadClientError,
 		cfg.Timeout,
 		"transport error during recovery",
 		func() bool {
-			session.PollEgress()
 			if session.SessionState() != client.SessionStateConnected ||
 				session.ClusterSessionID() != cfg.SessionID ||
 				session.LeadershipTermID() < cfg.MinTerm ||
@@ -518,7 +522,13 @@ func pollUntilFailoverRecovered(
 	)
 }
 
-func killClusterMemberContainer(t *testing.T, memberID int32, composeDir string) {
+func killClusterMemberContainer(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	hadClientError *atomic.Bool,
+	memberID int32,
+	composeDir string,
+) {
 	t.Helper()
 
 	require.NotEmpty(t, composeDir, "failover compose dir required for container kill")
@@ -526,9 +536,39 @@ func killClusterMemberContainer(t *testing.T, memberID int32, composeDir string)
 	project := os.Getenv("COMPOSE_PROJECT_NAME")
 	t.Logf("killing leader container: service=%s project=%s", service, project)
 	args := append(clusterFailoverComposeArgs(composeDir), "kill", "-s", "SIGTERM", service)
-	cmd := exec.Command("docker", args...)
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "kill %s: %s", service, out)
+	timeoutMsg := fmt.Sprintf(
+		"docker kill timeout after %s: service=%s project=%s",
+		dockerKillPollTimeout,
+		service,
+		project,
+	)
+	done := make(chan struct{})
+	var killErr error
+	go func() {
+		out, err := exec.Command("docker", args...).CombinedOutput()
+		if err != nil {
+			killErr = fmt.Errorf("kill %s: %w: %s", service, err, out)
+		}
+		close(done)
+	}()
+
+	harness.PollClientUntilTransportClean(
+		t,
+		aeronClient,
+		hadClientError,
+		dockerKillPollTimeout,
+		"transport error during leader kill",
+		func() bool {
+			select {
+			case <-done:
+				return true
+			default:
+				return false
+			}
+		},
+		func() string { return timeoutMsg },
+	)
+	require.NoError(t, killErr)
 }
 
 func pollAsyncConnectUntilResult(

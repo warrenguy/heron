@@ -133,25 +133,30 @@ jobs:
           make test-cluster-java-failover
           make test-archive-java
 
-  ci-failed:
-    if: failure() || cancelled()
-    needs: [lint, oracles, unit, property, integration, docker-smokes]
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Report failed required jobs
-        run: exit 1
-
   ci-ok:
     if: |
-      always() &&
-      needs.lint.result == 'success' &&
-      needs.oracles.result == 'success' &&
-      needs.unit.result == 'success' &&
-      needs.property.result == 'success' &&
-      needs.integration.result == 'success' &&
-      needs.docker-smokes.result == 'success'
+      always() && (
+        github.event_name != 'pull_request' ||
+        github.event.pull_request.draft == false
+      )
     needs: [lint, oracles, unit, property, integration, docker-smokes]
     runs-on: ubuntu-24.04
     steps:
+      - *checkout-step
       - name: All required jobs passed
-        run: echo "all required jobs passed"
+        env:
+          LINT: ${{ needs.lint.result }}
+          ORACLES: ${{ needs.oracles.result }}
+          UNIT: ${{ needs.unit.result }}
+          PROPERTY: ${{ needs.property.result }}
+          INTEGRATION: ${{ needs.integration.result }}
+          DOCKER_SMOKES: ${{ needs.docker-smokes.result }}
+        run: |
+          source .github/scripts/require-job-result.sh
+          require_job lint "${LINT}"
+          require_job oracles "${ORACLES}"
+          require_job unit "${UNIT}"
+          require_job property "${PROPERTY}"
+          require_job integration "${INTEGRATION}"
+          require_job docker-smokes "${DOCKER_SMOKES}"
+          require_jobs_exit "all required jobs passed"

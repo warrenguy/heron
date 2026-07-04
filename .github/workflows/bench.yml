@@ -85,24 +85,35 @@ jobs:
       - name: Benchmark regression
         run: make bench-regression
 
-  bench-failed:
-    if: failure() || cancelled()
-    needs: [bench-baseline, bench-regression]
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Report failed bench jobs
-        run: exit 1
-
   bench-ok:
     if: |
       always() && (
-        (github.event_name == 'push' && needs.bench-baseline.result == 'success') ||
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.draft == false &&
-         needs.bench-regression.result == 'success')
+        github.event_name != 'pull_request' ||
+        github.event.pull_request.draft == false
       )
     needs: [bench-baseline, bench-regression]
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v6
       - name: Bench jobs passed
-        run: echo "bench jobs passed"
+        env:
+          EVENT: ${{ github.event_name }}
+          BASELINE: ${{ needs.bench-baseline.result }}
+          REGRESSION: ${{ needs.bench-regression.result }}
+        run: |
+          source .github/scripts/require-job-result.sh
+          case "${EVENT}" in
+          push)
+            require_job bench-baseline "${BASELINE}"
+            require_job bench-regression "${REGRESSION}" true
+            ;;
+          pull_request)
+            require_job bench-regression "${REGRESSION}"
+            require_job bench-baseline "${BASELINE}" true
+            ;;
+          *)
+            echo "unexpected workflow event: ${EVENT}"
+            exit 1
+            ;;
+          esac
+          require_jobs_exit "bench jobs passed"

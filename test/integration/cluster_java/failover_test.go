@@ -42,7 +42,7 @@ func TestClusterFailoverSmoke(t *testing.T) {
 		harness.ConnectedPollTimeout, echoSmokeTimeout,
 	)
 
-	killClusterMemberContainer(t, leaderBefore, composeDir)
+	killClusterMemberContainer(t, aeronClient, hadClientError, leaderBefore, composeDir)
 
 	pollUntilFailoverRecovered(t, aeronClient, session, hadClientError, PollConfig{
 		KilledLeader: leaderBefore,
