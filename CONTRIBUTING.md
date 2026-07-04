@@ -14,6 +14,12 @@ Development workflows for this repository. User-facing overview and usage exampl
 | Transport client | `aeron` | `Connect`, `Client`, `Publication`, `Subscription`, `ExclusivePublication` |
 | Transport internals | `aeron/{conductor,cnc,logbuffer}` | Conductor, CnC, logbuffer |
 
+## Examples
+
+Runnable examples live under `examples/`. Importable subpackages (e.g. `auctionwire`) are
+included in `make check`; `package main` entrypoints use the `example` build tag. See
+[`examples/README.md`](examples/README.md) for run commands and the example index.
+
 ## Pinned dependencies
 
 SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/versions.yaml).

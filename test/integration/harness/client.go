@@ -125,6 +125,44 @@ func PollClientUntilTransportClean(
 	require.FailNow(t, timeoutMsg())
 }
 
+// PollClientDuring runs fn on a goroutine and polls client.DoWork until fn returns or
+// timeout elapses. Fails immediately on transport errors recorded in hadClientError.
+func PollClientDuring(
+	t testing.TB,
+	client *aeron.Client,
+	hadClientError *atomic.Bool,
+	timeout time.Duration,
+	transportErrLabel string,
+	timeoutMsg func() string,
+	fn func() error,
+) {
+	t.Helper()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- fn()
+	}()
+
+	var fnErr error
+	PollClientUntilTransportClean(
+		t,
+		client,
+		hadClientError,
+		timeout,
+		transportErrLabel,
+		func() bool {
+			select {
+			case fnErr = <-done:
+				return true
+			default:
+				return false
+			}
+		},
+		timeoutMsg,
+	)
+	require.NoError(t, fnErr)
+}
+
 func connectedPollTimeoutOr(timeout time.Duration) time.Duration {
 	if timeout == 0 {
 		return ConnectedPollTimeout

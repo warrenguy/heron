@@ -143,13 +143,13 @@ func (ctx ClusterContext) validateClusterContext(requireEgressHandler bool) erro
 }
 
 func validateClusterIngressEndpoints(ingressChannel, ingressEndpoints string) error {
-	if ingressChannelPassthrough(ingressChannel) && ingressEndpoints != "" {
+	if IngressChannelPassthrough(ingressChannel) && ingressEndpoints != "" {
 		return errors.New("cluster client: IngressEndpoints must be empty for ipc/ipcx ingress")
 	}
 	if ingressEndpoints == "" {
 		return nil
 	}
-	if ingressChannelIsUDP(ingressChannel) &&
+	if IngressChannelIsUDP(ingressChannel) &&
 		ingressChannelQueryEndpointParamIndex(ingressChannel) >= 0 {
 		return errors.New(
 			"cluster client: IngressChannel must not use ?endpoint= when IngressEndpoints is configured",

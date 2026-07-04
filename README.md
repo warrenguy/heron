@@ -280,6 +280,11 @@ Blocking `Connect` and recording APIs drive `DoWork` during awaits; otherwise pu
 `transport.DoWork()` then `archive.Poll()` (`Poll` never calls `DoWork`). Configure a
 recording signal handler or signals drop when control events are polled.
 
+## Examples
+
+Runnable end-to-end demos live under [`examples/`](examples/README.md). Each has its own
+README with prerequisites and run steps.
+
 ## Contributing
 
 Build, test, SBE codec, and benchmark workflows: [CONTRIBUTING.md](CONTRIBUTING.md).

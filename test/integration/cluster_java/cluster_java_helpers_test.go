@@ -536,39 +536,28 @@ func killClusterMemberContainer(
 	project := os.Getenv("COMPOSE_PROJECT_NAME")
 	t.Logf("killing leader container: service=%s project=%s", service, project)
 	args := append(clusterFailoverComposeArgs(composeDir), "kill", "-s", "SIGTERM", service)
-	timeoutMsg := fmt.Sprintf(
-		"docker kill timeout after %s: service=%s project=%s",
-		dockerKillPollTimeout,
-		service,
-		project,
-	)
-	done := make(chan struct{})
-	var killErr error
-	go func() {
-		out, err := exec.Command("docker", args...).CombinedOutput()
-		if err != nil {
-			killErr = fmt.Errorf("kill %s: %w: %s", service, err, out)
-		}
-		close(done)
-	}()
-
-	harness.PollClientUntilTransportClean(
+	harness.PollClientDuring(
 		t,
 		aeronClient,
 		hadClientError,
 		dockerKillPollTimeout,
 		"transport error during leader kill",
-		func() bool {
-			select {
-			case <-done:
-				return true
-			default:
-				return false
-			}
+		func() string {
+			return fmt.Sprintf(
+				"docker kill timeout after %s: service=%s project=%s",
+				dockerKillPollTimeout,
+				service,
+				project,
+			)
 		},
-		func() string { return timeoutMsg },
+		func() error {
+			out, err := exec.Command("docker", args...).CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("kill %s: %w: %s", service, err, out)
+			}
+			return nil
+		},
 	)
-	require.NoError(t, killErr)
 }
 
 func pollAsyncConnectUntilResult(

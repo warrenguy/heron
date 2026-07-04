@@ -36,16 +36,16 @@ func ingressPassthroughMedia(media string) bool {
 	return media == "ipc" || media == "ipcx"
 }
 
-// ingressChannelPassthrough reports media that do not receive endpoint substitution.
+// IngressChannelPassthrough reports media that do not receive endpoint substitution.
 //
 // ipc and ipcx are passthrough media; Java MemberIngress only mutates UDP channels.
-func ingressChannelPassthrough(channel string) bool {
+func IngressChannelPassthrough(channel string) bool {
 	media, ok := ingressChannelMedia(channel)
 	return ok && ingressPassthroughMedia(media)
 }
 
-// ingressChannelIsUDP reports UDP ingress (including aeron-spy:aeron:udp?...).
-func ingressChannelIsUDP(channel string) bool {
+// IngressChannelIsUDP reports UDP ingress (including aeron-spy:aeron:udp?...).
+func IngressChannelIsUDP(channel string) bool {
 	return ingressChannelMediaIs(channel, "udp")
 }
 
@@ -75,14 +75,14 @@ func validateIngressMemberEndpoint(memberEndpoint string) error {
 }
 
 func validateIngressUDPChannel(ingressChannel string) error {
-	if !ingressChannelIsUDP(ingressChannel) {
+	if !IngressChannelIsUDP(ingressChannel) {
 		return fmt.Errorf("cluster client: invalid ingress channel: %s", ingressChannel)
 	}
 	return nil
 }
 
 func validateIngressChannelForMemberEndpoints(ingressChannel string) error {
-	if ingressChannelPassthrough(ingressChannel) {
+	if IngressChannelPassthrough(ingressChannel) {
 		return nil
 	}
 	return validateIngressUDPChannel(ingressChannel)
@@ -94,7 +94,7 @@ func validateIngressChannelForMemberEndpoints(ingressChannel string) error {
 // substituted or appended. Unknown or malformed aeron: URIs return cluster client:
 // invalid ingress channel.
 func BuildIngressChannel(ingressChannel, memberEndpoint string) (string, error) {
-	if ingressChannelPassthrough(ingressChannel) {
+	if IngressChannelPassthrough(ingressChannel) {
 		return ingressChannel, nil
 	}
 	if err := validateIngressUDPChannel(ingressChannel); err != nil {

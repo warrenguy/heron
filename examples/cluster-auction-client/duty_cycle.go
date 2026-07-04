@@ -1,0 +1,160 @@
+//go:build example
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"math/rand/v2"
+	"os"
+	"time"
+
+	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/agrona/idlestrategy"
+	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/heron/examples/cluster-auction-client/auctionwire"
+)
+
+var auctionLog = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lmicroseconds)
+
+func newEgressHandlers(clientState *ClientState) *client.EgressHandlers {
+	return &client.EgressHandlers{
+		MessageFunc: func(
+			clusterSessionID int64,
+			_ int64,
+			buf atomic.AtomicBuffer,
+			offset int,
+			length int,
+			_ *aeron.Header,
+		) {
+			bid, ok := auctionwire.DecodeEgress(buf, offset, length)
+			if !ok {
+				log.Printf(
+					"cluster-auction-client: egress decode failed (length %d, need %d)",
+					length,
+					auctionwire.EgressMessageLength,
+				)
+				return
+			}
+			clientState.recordEgress(bid)
+			auctionLog.Printf(
+				"SessionMessage(%d, %d,%d, %d, %t)",
+				clusterSessionID,
+				bid.CorrelationID,
+				bid.CustomerID,
+				bid.Price,
+				bid.BidSucceeded,
+			)
+		},
+		SessionEventFunc: func(
+			correlationID int64,
+			_ int64,
+			leadershipTermID int64,
+			leaderMemberID int32,
+			code client.EventCode,
+			detail []byte,
+		) {
+			auctionLog.Printf(
+				"SessionEvent(%d, %d, %d, %s, %s)",
+				correlationID,
+				leadershipTermID,
+				leaderMemberID,
+				code,
+				detail,
+			)
+		},
+		NewLeaderFunc: func(
+			clusterSessionID int64,
+			leadershipTermID int64,
+			leaderMemberID int32,
+			_ []byte,
+		) {
+			auctionLog.Printf(
+				"NewLeader(%d, %d, %d)",
+				clusterSessionID,
+				leadershipTermID,
+				leaderMemberID,
+			)
+		},
+	}
+}
+
+func runDutyCycle(
+	ctx context.Context,
+	transport *aeron.Client,
+	session *client.AeronCluster,
+	config Config,
+	clientState *ClientState,
+	idleStrategy idlestrategy.IdleStrategy,
+) error {
+	offerConfig := client.IngressOfferConfig{IdleStrategy: idleStrategy}
+	clientState.nextBidDeadline = time.Now().Add(randomDelayMs(config.BidIntervalMs))
+	clientState.bidsLeftToSend = config.NumBids
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+
+		now := time.Now()
+
+		if clientState.bidDue(now) && clientState.bidsLeftToSend > 0 {
+			price := clientState.lastBidSeen + int64(rand.IntN(10))
+			correlationID := clientState.nextCorrelation()
+			pos := sendBid(transport, session, config, correlationID, price, offerConfig)
+			if pos <= 0 {
+				return fmt.Errorf("cluster-auction-client: bid offer failed with Aeron code %d", pos)
+			}
+			clientState.nextBidDeadline = now.Add(randomDelayMs(config.BidIntervalMs))
+			clientState.keepAliveDeadline = now.Add(time.Second)
+			clientState.bidsLeftToSend--
+			auctionLog.Printf(
+				"Sent(%d, %d, %d) bidsRemaining=%d",
+				correlationID,
+				config.CustomerID,
+				price,
+				clientState.bidsLeftToSend,
+			)
+		} else if clientState.keepAliveDue(now) {
+			if clientState.bidsLeftToSend <= 0 {
+				break
+			}
+			pos := client.SendKeepAliveUntilPositive(transport, session, offerConfig)
+			if pos <= 0 {
+				return fmt.Errorf("cluster-auction-client: keepalive failed with Aeron code %d", pos)
+			}
+			clientState.keepAliveDeadline = now.Add(time.Second)
+		}
+
+		transport.DoWork()
+		idleStrategy.Idle(session.PollEgress())
+	}
+
+	return nil
+}
+
+func sendBid(
+	transport *aeron.Client,
+	session *client.AeronCluster,
+	config Config,
+	correlationID int64,
+	price int64,
+	offerConfig client.IngressOfferConfig,
+) int64 {
+	var buf [auctionwire.BidMessageLength]byte
+	auctionwire.EncodeBid(buf[:], correlationID, config.CustomerID, price)
+	return client.IngressOfferUntilPositive(
+		transport,
+		session,
+		offerConfig,
+		func() int64 {
+			return session.Offer(buf[:])
+		},
+	)
+}
+
+func randomDelayMs(maxMs int) time.Duration {
+	return time.Duration(rand.IntN(maxMs)) * time.Millisecond
+}

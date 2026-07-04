@@ -125,8 +125,8 @@ func TestIngressChannelPredicates(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.wantUDP, ingressChannelIsUDP(tc.channel))
-			require.Equal(t, tc.wantPassThru, ingressChannelPassthrough(tc.channel))
+			require.Equal(t, tc.wantUDP, IngressChannelIsUDP(tc.channel))
+			require.Equal(t, tc.wantPassThru, IngressChannelPassthrough(tc.channel))
 		})
 	}
 }
