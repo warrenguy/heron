@@ -14,7 +14,6 @@ import (
 	clientpkg "github.com/warrenguy/heron/archive/client"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/gensbe"
-	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -55,6 +54,20 @@ func connectArchive(
 	return archive
 }
 
+func recordingDescriptorStopPending(
+	got codecs.RecordingDescriptorFields,
+	tracker *clientpkg.StopSignalTracker,
+	wantStopPosition int64,
+) bool {
+	if got.StopPosition <= got.StartPosition {
+		return true
+	}
+	if tracker.Stopped() && got.StopPosition != tracker.StoppedPosition() {
+		return true
+	}
+	return got.StopPosition < wantStopPosition
+}
+
 func recordArchiveSmoke(
 	t *testing.T,
 	client *aeron.Client,
@@ -64,6 +77,7 @@ func recordArchiveSmoke(
 	t.Helper()
 
 	expectedPayloads := archivejava.Payloads(archivejava.MessageCount, archivejava.PayloadSize)
+	wantStopPosition := harness.AlignedOfferAdvance(archivejava.PayloadSize, archivejava.MessageCount)
 
 	var recordingID int64
 	gotRecordingID := false
@@ -80,16 +94,18 @@ func recordArchiveSmoke(
 		},
 	))
 
-	_, err := archive.StartRecording(
+	pub, err := client.AddPublication(archivejava.RecordStreamID, archivejava.RecordChannel)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "close record publication", pub.Close)
+
+	_, err = archive.StartRecording(
 		archivejava.RecordStreamID,
 		gensbe.SourceLocation_LOCAL,
 		[]byte(archivejava.RecordChannel),
 	)
 	require.NoError(t, err)
 
-	pub, err := client.AddPublication(archivejava.RecordStreamID, archivejava.RecordChannel)
-	require.NoError(t, err)
-	harness.CleanupClose(t, "close record publication", pub.Close)
+	harness.PollUntilConnected(t, client, pub, harness.ConnectedPollTimeout)
 
 	for _, payload := range expectedPayloads {
 		harness.OfferWithRetry(t, client, pub, payload, harness.ConnectedPollTimeout)
@@ -130,10 +146,7 @@ func recordArchiveSmoke(
 			_ = archive.Poll()
 			got, listErr := archive.ListRecording(recordingID)
 			require.NoError(t, listErr)
-			if got.StopPosition == recordinglog.NullPosition {
-				return false
-			}
-			if tracker.Stopped() && got.StopPosition != tracker.StoppedPosition() {
+			if recordingDescriptorStopPending(got, tracker, wantStopPosition) {
 				return false
 			}
 			desc = got
@@ -147,8 +160,6 @@ func recordArchiveSmoke(
 	if tracker.Stopped() {
 		require.Equal(t, tracker.StoppedPosition(), desc.StopPosition)
 	}
-
-	wantStopPosition := harness.AlignedOfferAdvance(archivejava.PayloadSize, archivejava.MessageCount)
 	require.Equal(t, recordingID, desc.RecordingID)
 	require.Equal(t, int64(0), desc.StartPosition)
 	require.Greater(t, desc.StopPosition, desc.StartPosition)
