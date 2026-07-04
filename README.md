@@ -1,64 +1,49 @@
 # Heron
 
-Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport and Aeron Cluster client.
+Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport, cluster, and archive clients.
 
 ## Constraints
 
-- **Pure Go** - no cgo; uses `unsafe` and atomics on hot paths.
+- **Pure Go** - no cgo; uses `unsafe` for zero-copy buffer access.
 - **GOARCH** - `amd64` and `arm64` only (little-endian).
-- **Media driver** - IPC/UDP uses external Aeron media driver (C or Java).
+- **Media driver** - external only (C or Java); no embedded driver planned.
 
 ## Capabilities
 
-Targets parity with the Java Aeron stack (transport, cluster, archive). Requires an external
-Aeron media driver (C or Java). Invoker-only today: the application calls `DoWork` and
-poll methods (no background conductor thread).
+Targets parity with the Java Aeron stack (transport, cluster, archive). Invoker-only today:
+the application calls `DoWork` and poll methods. Background conductor and cluster session
+threads are planned.
 
-### Implemented
+### Transport (`aeron`)
 
-#### Transport (`aeron`)
+Transport client is substantially complete: IPC and UDP publications and subscriptions,
+shared and exclusive publish paths, offer and claim, fragmented publish and term rotation,
+publication limits and channel status, blocking and async resource add, registration
+lookup, counters reader, CNC metadata, error log, driver liveness, and close linger.
 
-IPC and UDP; shared and exclusive publications; subscriptions; `Offer`, `OfferWithOffset`,
-`TryClaim`; fragmented publish and term rotation; publication limits and channel status;
-blocking and async add (`Add*` / `OfferAdd*` + `PollAdd*`); registration lookup; counters
-reader, CNC metadata, archive recording-position counter lookup, error log; driver liveness;
-close linger.
+#### Planned
 
-#### Cluster (`cluster/client`)
-
-`AsyncConnect` (challenge, redirect, credentials); multi-member ingress; IPC, ipcx, and UDP
-egress; exclusive ingress; `AeronCluster` offer, claim, keepalive, close; `PollEgress`,
-egress handlers, fragment assembly; leader-change recovery; `SendSnapshotRequest`.
-
-#### Archive (`archive/codecs`, `archive/client`)
-
-SBE flyweights; `ArchiveContext`; `AsyncConnect` / blocking `Connect`; `AeronArchive`
-session and recording lifecycle; `ArchiveProxy`; `ControlResponsePoller` and
-`RecordingDescriptorPoller`; `PollArchiveControlEvents` demux and recording signals;
-`ControlOfferUntilPositive`; credentials, idle strategy, `MapControlResponse`; response
-channel resolve (IPC/UDP); `StartReplay` / `StopReplay`; `FindReplayImage` and
-`PollReplayFragments`.
-
-### Planned
-
-#### Transport
-
-Counter registration; dynamic MDC destinations; controlled `Subscription.Poll`; public
+Counter registration; dynamic MDC destinations; `Subscription.ControlledPoll`; public
 subscription image lifecycle callbacks.
 
-#### Cluster
+### Cluster (`cluster/client`)
+
+Session client is implemented: `AsyncConnect` (challenge, redirect, credentials),
+multi-member ingress, IPC, ipcx, and UDP egress, exclusive ingress, `AeronCluster`
+offer, claim, keepalive, and close, egress handlers and fragment assembly, leader-change
+recovery, and `SendSnapshotRequest`.
+
+#### Planned
 
 `ControlledEgressHandler` dispatch; general admin request API (beyond snapshot); cluster
 server / consensus service.
 
-#### Runtime
+### Archive (`archive/client`)
 
-Dedicated background conductor and cluster session threads (optional to invoker-only duty
-cycle).
-
-### Not planned
-
-- Embedded media driver (use external C or Java driver)
+Control and replay client is implemented: SBE flyweights, `ArchiveContext`, connect,
+`AeronArchive` session and recording lifecycle, `ArchiveProxy`, control and recording
+descriptor pollers, recording signals, replay start and stop, replay image discovery,
+and fragment poll.
 
 ## Media driver (`aeronmd`)
 
@@ -93,6 +78,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/agrona/atomic"
@@ -104,7 +90,12 @@ func main() {
 		channel  = "aeron:ipc"
 	)
 
-	client, err := aeron.Connect(aeron.Context{AeronDir: "/tmp/aeron"})
+	aeronDir := os.Getenv("AERON_DIR")
+	if aeronDir == "" {
+		aeronDir = "/tmp/aeron"
+	}
+
+	client, err := aeron.Connect(aeron.Context{AeronDir: aeronDir})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -236,6 +227,9 @@ func main() {
 }
 ```
 
+Pump `transport.DoWork()` during `AsyncConnect.Poll` and in the session loop. Close the
+session before the transport client.
+
 ### Archive client
 
 Requires Aeron Archive plus `aeronmd` (default local IPC control). Pass an existing
@@ -282,17 +276,13 @@ func main() {
 }
 ```
 
-Blocking `Connect` and recording APIs drive `DoWork` during their await window. Between
-requests, pump `transport.DoWork()` then `archive.Poll()`. `Poll` never calls `DoWork`.
-Recording signals dispatch to the configured handler whenever control events are
-polled on explicit `Poll()` and inside blocking recording API awaits
-(`StartRecording`, `StopRecording`, `ListRecording`, and similar); without a
-handler, they drop.
+Blocking `Connect` and recording APIs drive `DoWork` during awaits; otherwise pump
+`transport.DoWork()` then `archive.Poll()` (`Poll` never calls `DoWork`). Configure a
+recording signal handler or signals drop when control events are polled.
 
 ## Contributing
 
-- Build, test, SBE codec, and benchmark workflows: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Package docs: [`agrona/README.md`](agrona/README.md)
+Build, test, SBE codec, and benchmark workflows: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
