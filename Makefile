@@ -106,7 +106,7 @@ check-inner: check-static check-test
 .PHONY: test-all
 test-all: ## Full gate: check rapid integration Docker smokes
 	+@$(MAKE) --no-print-directory check test-rapid test-integration aeronmd-compose-image \
-		test-java-interop test-cluster-java test-cluster-java-failover
+		test-java-interop test-cluster-java test-cluster-java-failover test-archive-java
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
@@ -174,7 +174,7 @@ check-catalog-stale-selftest:
 $(eval $(call sbe-stale-check,,cluster/codecs))
 $(eval $(call sbe-stale-check,-archive,archive/codecs))
 
-INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe,cluster_java
+INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe,cluster_java,archive_java
 
 .PHONY: lint lint-golangci lint-shell goimports gofumpt
 lint: ## golangci-lint and shellcheck
@@ -297,14 +297,17 @@ test-integration: bin/aeronmd ## Live-driver integration tests
 JAVA_INTEROP_POM := test/integration/java_interop/pom.xml
 CLUSTER_SBE_POM := test/integration/cluster_sbe/pom.xml
 CLUSTER_JAVA_POM := test/integration/cluster_java/pom.xml
+ARCHIVE_JAVA_POM := test/integration/archive_java/pom.xml
 CONTRACT_ORACLE_TIMEOUT ?= 30s
 JAVA_INTEROP_ORACLE_TIMEOUT ?= $(CONTRACT_ORACLE_TIMEOUT)
 CLUSTER_SBE_ORACLE_TIMEOUT ?= $(CONTRACT_ORACLE_TIMEOUT)
 CLUSTER_JAVA_ORACLE_TIMEOUT ?= $(CONTRACT_ORACLE_TIMEOUT)
+ARCHIVE_JAVA_ORACLE_TIMEOUT ?= $(CONTRACT_ORACLE_TIMEOUT)
 JAVA_INTEROP_ORACLE_TAGS := testhooks,integration,java_interop
 CLUSTER_SBE_ORACLE_TAGS := integration,cluster_sbe
 CLUSTER_JAVA_ORACLE_TAGS := integration,cluster_java
-CONTRACT_ORACLE_SUITES := java-interop cluster-sbe cluster-java
+ARCHIVE_JAVA_ORACLE_TAGS := integration,archive_java
+CONTRACT_ORACLE_SUITES := java-interop cluster-sbe cluster-java archive-java
 
 # Run mvn test for an integration POM; $(1)=logical name, $(2)=pom path.
 define mvn-integration-unit
@@ -343,11 +346,14 @@ $(eval $(call integration-oracle,$(1),$($(3)),$(4),$(5)))
 $(eval $(call integration-contract,$(1)))
 endef
 
-.PHONY: test-java-interop test-cluster-java test-cluster-java-failover \
+.PHONY: test-java-interop test-cluster-java test-cluster-java-failover test-archive-java \
 	$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-unit test-$(s)-oracle test-$(s)-contract) \
 	contract-oracles contract-oracles-optional
 test-java-interop: aeronmd-compose-image ## Docker smoke: Java/Go IPC duplex
 	./scripts/java-interop-smoke.sh
+
+test-archive-java: aeronmd-compose-image ## Docker smoke: record, recording.log, PlanRecovery, replay (TestArchiveRecordingLog)
+	./scripts/archive-java-smoke.sh
 
 test-cluster-java: ## Docker smoke: AsyncConnect + echo roundtrip smoke
 	./scripts/cluster-java-smoke.sh
@@ -358,8 +364,9 @@ test-cluster-java-failover: aeronmd-compose-image ## Docker smoke: 3-node leader
 $(eval $(call contract-oracle-module,java-interop,$(JAVA_INTEROP_POM),JAVA_INTEROP_ORACLE_TIMEOUT,JAVA_INTEROP_ORACLE_TAGS,./test/integration/java_interop/javainterop/))
 $(eval $(call contract-oracle-module,cluster-sbe,$(CLUSTER_SBE_POM),CLUSTER_SBE_ORACLE_TIMEOUT,CLUSTER_SBE_ORACLE_TAGS,./test/integration/cluster_sbe/clustersbe/))
 $(eval $(call contract-oracle-module,cluster-java,$(CLUSTER_JAVA_POM),CLUSTER_JAVA_ORACLE_TIMEOUT,CLUSTER_JAVA_ORACLE_TAGS,./test/integration/cluster_java/clusterjava/))
+$(eval $(call contract-oracle-module,archive-java,$(ARCHIVE_JAVA_POM),ARCHIVE_JAVA_ORACLE_TIMEOUT,ARCHIVE_JAVA_ORACLE_TAGS,./test/integration/archive_java/archivejava/))
 
-contract-oracles: ## All three contract oracle suites (mvn + go)
+contract-oracles: ## All four contract oracle suites (mvn + go)
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) \
 		$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-contract)
 

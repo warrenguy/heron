@@ -106,17 +106,31 @@ func offeredArchiveCorrelationID(t *testing.T, wire []byte) int64 {
 		return fields.CorrelationID
 	case codecs.ListRecordingRequestFields:
 		return fields.CorrelationID
+	case codecs.ReplayRequestFields:
+		return fields.CorrelationID
+	case codecs.StopReplayRequestFields:
+		return fields.CorrelationID
 	default:
 		require.Failf(t, "unexpected offered template", "template=%d", decoded.TemplateID)
 		return 0
 	}
 }
 
-// respondListRecordingOnce writes an OK ControlResponse and a matching RecordingDescriptor
-// the first time the request has been offered, then polls descriptor-mode targets.
+func (h *lifecycleHarness) listRecordingOps(
+	pollFn func() int,
+	descriptorPoller *RecordingDescriptorPoller,
+) archiveControlOps {
+	ops := h.controlOps(pollFn)
+	ops.descriptorPoller = descriptorPoller
+	return ops
+}
+
+// respondListRecordingOnce writes list-recording wire the first time the request has been
+// offered, then polls descriptor-mode targets. withOK adds a preceding OK ControlResponse.
 func (h *lifecycleHarness) respondListRecordingOnce(
 	t *testing.T,
 	descriptor codecs.RecordingDescriptorFields,
+	withOK bool,
 	written *bool,
 	targets ArchiveControlPollTargets,
 ) func() int {
@@ -124,13 +138,15 @@ func (h *lifecycleHarness) respondListRecordingOnce(
 		if !*written {
 			if offered := h.pub.lastOffer(); offered != nil {
 				correlationID := offeredArchiveCorrelationID(t, offered)
-				responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
-					ControlSessionID: controlResponseTestControlSessionID,
-					CorrelationID:    correlationID,
-					Code:             gensbe.ControlResponseCode_OK,
-					Version:          520,
-				})
-				writeUnfragmentedWireToTerm(t, h.termBuffer, responseWire)
+				if withOK {
+					responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+						ControlSessionID: controlResponseTestControlSessionID,
+						CorrelationID:    correlationID,
+						Code:             gensbe.ControlResponseCode_OK,
+						Version:          520,
+					})
+					writeUnfragmentedWireToTerm(t, h.termBuffer, responseWire)
+				}
 				descriptor.ControlSessionID = controlResponseTestControlSessionID
 				descriptor.CorrelationID = correlationID
 				appendUnfragmentedWireToTerm(
@@ -154,6 +170,33 @@ func TestListRecording_nilDescriptorPollerReturnsError(t *testing.T) {
 	require.Contains(t, err.Error(), "non-nil")
 }
 
+func TestListRecording_descriptorOnlyCompletes(t *testing.T) {
+	h := newLifecycleHarness(t)
+	descriptorPoller := NewRecordingDescriptorPoller()
+	targets := ArchiveControlPollTargets{DescriptorPoller: descriptorPoller}
+	written := false
+	pollFn := h.respondListRecordingOnce(
+		t,
+		codecs.RecordingDescriptorFields{
+			RecordingID:   lifecycleRecordingID,
+			StartPosition: 0,
+			StopPosition:  2048,
+			StreamID:      archiveProxyTestRecordingStreamID,
+		},
+		false,
+		&written,
+		targets,
+	)
+
+	got, err := h.listRecordingOps(pollFn, descriptorPoller).listRecording(lifecycleRecordingID)
+	require.NoError(t, err)
+	require.Equal(t, lifecycleRecordingID, got.RecordingID)
+	require.Equal(t, int64(0), got.StartPosition)
+	require.Equal(t, int64(2048), got.StopPosition)
+	_, ok := descriptorPoller.ControlResponse()
+	require.False(t, ok, "descriptor-only list must not latch a ControlResponse")
+}
+
 func TestListRecording_returnsExtents(t *testing.T) {
 	h := newLifecycleHarness(t)
 	descriptorPoller := NewRecordingDescriptorPoller()
@@ -174,13 +217,12 @@ func TestListRecording_returnsExtents(t *testing.T) {
 			OriginalChannel:  []byte("aeron:ipc?alias=original"),
 			SourceIdentity:   []byte("source-identity"),
 		},
+		true,
 		&written,
 		targets,
 	)
 
-	ops := h.controlOps(pollFn)
-	ops.descriptorPoller = descriptorPoller
-	got, err := ops.listRecording(lifecycleRecordingID)
+	got, err := h.listRecordingOps(pollFn, descriptorPoller).listRecording(lifecycleRecordingID)
 	require.NoError(t, err)
 	require.Equal(t, lifecycleRecordingID, got.RecordingID)
 	require.Equal(t, int64(4096), got.StartPosition)
@@ -213,13 +255,12 @@ func TestListRecording_retainedDescriptorBytesValidAfterPoll(t *testing.T) {
 			OriginalChannel: []byte(originalChannel),
 			SourceIdentity:  []byte(sourceIdentity),
 		},
+		true,
 		&written,
 		targets,
 	)
 
-	ops := h.controlOps(pollFn)
-	ops.descriptorPoller = descriptorPoller
-	got, err := ops.listRecording(lifecycleRecordingID)
+	got, err := h.listRecordingOps(pollFn, descriptorPoller).listRecording(lifecycleRecordingID)
 	require.NoError(t, err)
 	require.NotEmpty(t, got.StrippedChannel)
 	require.Equal(t, strippedChannel, string(got.StrippedChannel))
@@ -276,9 +317,7 @@ func TestListRecording_errorResponseReturnsError(t *testing.T) {
 		targets,
 	)
 
-	ops := h.controlOps(pollFn)
-	ops.descriptorPoller = descriptorPoller
-	_, err := ops.listRecording(lifecycleRecordingID)
+	_, err := h.listRecordingOps(pollFn, descriptorPoller).listRecording(lifecycleRecordingID)
 	require.Error(t, err)
 }
 
@@ -287,7 +326,7 @@ func TestListRecording_descriptorTimeoutReturnsError(t *testing.T) {
 	descriptorPoller := NewRecordingDescriptorPoller()
 	targets := ArchiveControlPollTargets{DescriptorPoller: descriptorPoller}
 	written := false
-	// OK response with no descriptor: phase one completes, the descriptor wait times out.
+	// OK latched without descriptor; unified await times out.
 	pollFn := h.respondListRecordingControlResponseOnce(
 		t,
 		gensbe.ControlResponseCode_OK,
@@ -295,9 +334,7 @@ func TestListRecording_descriptorTimeoutReturnsError(t *testing.T) {
 		targets,
 	)
 
-	ops := h.controlOps(pollFn)
-	ops.descriptorPoller = descriptorPoller
-	_, err := ops.listRecording(lifecycleRecordingID)
+	_, err := h.listRecordingOps(pollFn, descriptorPoller).listRecording(lifecycleRecordingID)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "descriptor")
 }

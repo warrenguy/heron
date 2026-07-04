@@ -156,6 +156,50 @@ func (p *ArchiveProxy) TryStopRecording(
 	)
 }
 
+// TryReplay encodes ReplayRequest (template 6) and offers it once.
+func (p *ArchiveProxy) TryReplay(
+	controlSessionID int64,
+	correlationID int64,
+	recordingID int64,
+	position int64,
+	length int64,
+	replayStreamID int32,
+	replayChannel []byte,
+) (int64, bool) {
+	fields := codecs.ReplayRequestFields{
+		ControlSessionID: controlSessionID,
+		CorrelationID:    correlationID,
+		RecordingID:      recordingID,
+		Position:         position,
+		Length:           length,
+		ReplayStreamID:   replayStreamID,
+		ReplayChannel:    replayChannel,
+	}
+	wireLen, ok := codecs.ReplayRequestWireLen(p.actingVersion, len(replayChannel))
+	return p.tryOffer(wireLen, ok, func(dst []byte) (int, bool) {
+		return codecs.EncodeReplayRequest(dst, 0, p.actingVersion, fields)
+	})
+}
+
+// TryStopReplay encodes StopReplayRequest (template 7) and offers it once.
+func (p *ArchiveProxy) TryStopReplay(
+	controlSessionID int64,
+	correlationID int64,
+	replaySessionID int64,
+) (int64, bool) {
+	fields := codecs.StopReplayRequestFields{
+		ControlSessionID: controlSessionID,
+		CorrelationID:    correlationID,
+		ReplaySessionID:  replaySessionID,
+	}
+	return p.tryArchiveWireOffer(
+		gensbe.StopReplayRequestSbeBlockLength,
+		func(dst []byte, actingVersion uint16) (int, bool) {
+			return codecs.EncodeStopReplayRequest(dst, 0, actingVersion, fields)
+		},
+	)
+}
+
 // TryListRecording encodes ListRecordingRequest (template 10) and offers it once.
 func (p *ArchiveProxy) TryListRecording(
 	controlSessionID int64,

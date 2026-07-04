@@ -45,8 +45,8 @@ type ArchiveContext struct {
 	CredentialsSupplier CredentialsSupplier
 
 	// RecordingSignalHandler receives recording signals on Poll and during blocking
-	// control awaits that use this handler (StartRecording, StopRecording,
-	// ListRecording). StopRecordingAwaitSignal polls internally but routes STOP proofs
+	// control awaits that use this handler (StartRecording, StopRecording, StartReplay,
+	// StopReplay, ListRecording). StopRecordingAwaitSignal polls internally but routes STOP proofs
 	// to the per-call StopSignalTracker, not this handler. Nil drops signals until
 	// AeronArchive.SetRecordingSignalHandler installs a handler.
 	RecordingSignalHandler RecordingSignalHandler

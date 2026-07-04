@@ -32,8 +32,8 @@ func (archive *AeronArchive) sessionControlOps(pollFn func() int) archiveControl
 	}
 }
 
-// StartRecording offers a StartRecordingRequest and blocks until the archive replies
-// with a matching ControlResponse, returning the assigned recording id.
+// startRecording offers a StartRecordingRequest and blocks until the archive replies
+// with a matching ControlResponse. RelevantID semantics: see AeronArchive.StartRecording.
 func (ops archiveControlOps) startRecording(
 	streamID int32,
 	sourceLocation gensbe.SourceLocation,
@@ -86,9 +86,66 @@ func (ops archiveControlOps) stopRecording(streamID int32, channel []byte) error
 	return err
 }
 
+// startReplay offers a ReplayRequest and blocks until the archive replies with a
+// matching ControlResponse.
+func (ops archiveControlOps) startReplay(
+	recordingID int64,
+	position int64,
+	length int64,
+	replayStreamID int32,
+	replayChannel []byte,
+) (int64, error) {
+	correlationID := ops.aeronClient.NextCorrelationID()
+	fields, err := offerAndAwaitArchiveControlRequest(
+		ops.aeronClient,
+		ops.ctx,
+		ops.poll,
+		ops.responsePoller,
+		func() (int64, bool) {
+			return ops.proxy.TryReplay(
+				ops.controlSessionID,
+				correlationID,
+				recordingID,
+				position,
+				length,
+				replayStreamID,
+				replayChannel,
+			)
+		},
+		ops.controlSessionID,
+		correlationID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return fields.RelevantID, nil
+}
+
+// stopReplay offers a StopReplayRequest and blocks until the archive replies with a
+// matching OK ControlResponse.
+func (ops archiveControlOps) stopReplay(replaySessionID int64) error {
+	correlationID := ops.aeronClient.NextCorrelationID()
+	_, err := offerAndAwaitArchiveControlRequest(
+		ops.aeronClient,
+		ops.ctx,
+		ops.poll,
+		ops.responsePoller,
+		func() (int64, bool) {
+			return ops.proxy.TryStopReplay(
+				ops.controlSessionID,
+				correlationID,
+				replaySessionID,
+			)
+		},
+		ops.controlSessionID,
+		correlationID,
+	)
+	return err
+}
+
 // ListRecording offers a ListRecordingRequest and blocks until the archive replies with
-// an OK ControlResponse and the matching RecordingDescriptor, returning its fields with
-// var-ascii bytes cloned at latch time for retention.
+// the matching RecordingDescriptor (or a non-OK ControlResponse), returning its fields
+// with var-ascii bytes cloned at latch time for retention.
 func (ops archiveControlOps) listRecording(
 	recordingID int64,
 ) (codecs.RecordingDescriptorFields, error) {
@@ -109,7 +166,6 @@ func (ops archiveControlOps) listRecording(
 				recordingID,
 			)
 		},
-		correlationID,
 	)
 }
 

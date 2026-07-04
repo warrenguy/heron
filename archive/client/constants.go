@@ -49,8 +49,14 @@ const (
 	defaultArchiveClientName = "archive-client"
 )
 
-// ProtocolSemanticVersion returns the int32 wire value for AuthConnectRequest.version (5.2.0).
+// ProtocolSemanticVersion returns the int32 wire value for AuthConnectRequest.version (1.12.0).
+// Matches Java AeronArchive.Configuration PROTOCOL_*.
+//
+// Distinct from the SBE archive schema semantic version 5.2 (gensbe acting version): wire
+// version negotiates archive protocol compatibility; SBE version selects control-channel
+// message layout. Do not substitute ComposeSemanticVersion(5, 2, 0) here.
+//
 // Packing: (major << 16) | (minor << 8) | patch; Agrona SemanticVersion.compose.
 func ProtocolSemanticVersion() int32 {
-	return cnc.ComposeSemanticVersion(5, 2, 0)
+	return cnc.ComposeSemanticVersion(1, 12, 0)
 }

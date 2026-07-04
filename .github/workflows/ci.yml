@@ -131,6 +131,7 @@ jobs:
           make test-java-interop
           make test-cluster-java
           make test-cluster-java-failover
+          make test-archive-java
 
   ci-failed:
     if: failure() || cancelled()

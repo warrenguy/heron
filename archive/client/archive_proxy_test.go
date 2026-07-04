@@ -352,6 +352,80 @@ func TestArchiveProxy_TryListRecording_fieldValuesOnWire(t *testing.T) {
 	require.Len(t, wire, expectedLen)
 }
 
+func TestArchiveProxy_TryReplay_fieldValuesOnWire(t *testing.T) {
+	pub, proxy := newTestArchiveProxy(ArchiveContext{})
+
+	const (
+		replayPosition int64 = 4096
+		replayLength   int64 = 8192
+		replayStreamID int32 = 1201
+	)
+	channel := []byte("aeron:ipc?term-length=64k")
+	pos, ok := proxy.TryReplay(
+		controlResponseTestControlSessionID,
+		archiveProxyTestCorrelationID,
+		archiveProxyTestRecordingID,
+		replayPosition,
+		replayLength,
+		replayStreamID,
+		channel,
+	)
+	require.True(t, ok)
+
+	wire := pub.lastOffer()
+	require.Equal(t, archiveProxyTestOfferPosition+int64(len(wire)), pos)
+
+	fields := requireArchiveProxyWireFields[codecs.ReplayRequestFields](
+		t,
+		wire,
+		gensbe.ReplayRequestSbeTemplateID,
+	)
+	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
+	require.Equal(t, archiveProxyTestRecordingID, fields.RecordingID)
+	require.Equal(t, replayPosition, fields.Position)
+	require.Equal(t, replayLength, fields.Length)
+	require.Equal(t, replayStreamID, fields.ReplayStreamID)
+	require.Equal(t, channel, fields.ReplayChannel)
+
+	expectedLen, lenOK := codecs.ReplayRequestWireLen(
+		gensbe.MessageHeaderSbeSchemaVersion,
+		len(channel),
+	)
+	require.True(t, lenOK)
+	require.NotZero(t, expectedLen)
+	require.Len(t, wire, expectedLen)
+}
+
+func TestArchiveProxy_TryStopReplay_fieldValuesOnWire(t *testing.T) {
+	pub, proxy := newTestArchiveProxy(ArchiveContext{})
+
+	const replaySessionID int64 = 8800
+	pos, ok := proxy.TryStopReplay(
+		controlResponseTestControlSessionID,
+		archiveProxyTestCorrelationID,
+		replaySessionID,
+	)
+	require.True(t, ok)
+
+	wire := pub.lastOffer()
+	require.Equal(t, archiveProxyTestOfferPosition+int64(len(wire)), pos)
+
+	fields := requireArchiveProxyWireFields[codecs.StopReplayRequestFields](
+		t,
+		wire,
+		gensbe.StopReplayRequestSbeTemplateID,
+	)
+	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
+	require.Equal(t, replaySessionID, fields.ReplaySessionID)
+
+	expectedLen, lenOK := codecs.ArchiveWireMessageLen(gensbe.StopReplayRequestSbeBlockLength)
+	require.True(t, lenOK)
+	require.NotZero(t, expectedLen)
+	require.Len(t, wire, expectedLen)
+}
+
 func TestArchiveProxy_TryChallengeResponse_clearsWireBufferSlackBetweenEncodes(t *testing.T) {
 	pub, proxy := newTestArchiveProxy(ArchiveContext{})
 
@@ -473,6 +547,20 @@ func TestArchiveProxy_encodePreflightFailure(t *testing.T) {
 					controlResponseTestControlSessionID,
 					archiveProxyTestCorrelationID,
 					archiveProxyTestRecordingStreamID,
+					oversized,
+				)
+			},
+		},
+		{
+			name: "try_replay_replay_channel",
+			offer: func(proxy *ArchiveProxy) (int64, bool) {
+				return proxy.TryReplay(
+					controlResponseTestControlSessionID,
+					archiveProxyTestCorrelationID,
+					archiveProxyTestRecordingID,
+					4096,
+					8192,
+					int32(1201),
 					oversized,
 				)
 			},

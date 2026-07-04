@@ -37,5 +37,5 @@ func TestPollArchiveControlEvents_fragmentedDescriptorCapture(t *testing.T) {
 	require.Equal(t, "aeron:ipc?alias=stripped", string(got.StrippedChannel))
 	require.Equal(t, "aeron:ipc?alias=original", string(got.OriginalChannel))
 	require.Equal(t, "source-identity", string(got.SourceIdentity))
-	require.False(t, poller.IsPollComplete())
+	require.True(t, poller.IsPollComplete())
 }

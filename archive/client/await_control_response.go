@@ -27,7 +27,7 @@ func TryMatchControlResponse(
 	if !ok {
 		return codecs.ControlResponseFields{}, nil, false
 	}
-	return matchControlResponseFields(fields, controlSessionID, correlationID, true)
+	return matchControlResponseFields(fields, controlSessionID, correlationID)
 }
 
 // AwaitArchiveControlResponse loops DoWork then pollFn until TryMatchControlResponse

@@ -36,7 +36,8 @@ SBE flyweights; `ArchiveContext`; `AsyncConnect` / blocking `Connect`; `AeronArc
 session and recording lifecycle; `ArchiveProxy`; `ControlResponsePoller` and
 `RecordingDescriptorPoller`; `PollArchiveControlEvents` demux and recording signals;
 `ControlOfferUntilPositive`; credentials, idle strategy, `MapControlResponse`; response
-channel resolve (IPC/UDP). See [`archive/client/README.md`](archive/client/README.md).
+channel resolve (IPC/UDP); `StartReplay` / `StopReplay`; `FindReplayImage` and
+`PollReplayFragments`.
 
 ### Planned
 
@@ -49,10 +50,6 @@ subscription image lifecycle callbacks.
 
 `ControlledEgressHandler` dispatch; general admin request API (beyond snapshot); cluster
 server / consensus service.
-
-#### Archive
-
-Replay APIs.
 
 #### Runtime
 
@@ -295,7 +292,7 @@ handler, they drop.
 ## Contributing
 
 - Build, test, SBE codec, and benchmark workflows: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Package docs: [`agrona/README.md`](agrona/README.md), [`archive/client/README.md`](archive/client/README.md)
+- Package docs: [`agrona/README.md`](agrona/README.md)
 
 ## License
 

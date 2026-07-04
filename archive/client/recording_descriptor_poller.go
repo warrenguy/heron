@@ -5,32 +5,26 @@ import (
 	"github.com/warrenguy/heron/archive/codecs/gensbe"
 )
 
-type listRecordingAwaitPhase uint8
-
-const (
-	listRecordingAwaitingResponse listRecordingAwaitPhase = iota
-	listRecordingAwaitingDescriptor
-	listRecordingComplete
-)
-
 // RecordingDescriptorPoller holds list-recording capture state for the archive control
 // demux. It owns no subscription and no FragmentAssembler and exposes no standalone
 // Poll: PollArchiveControlEvents drives all capture.
 //
-// A list recording completes in two phases on one subscription: an OK ControlResponse
-// followed by the RecordingDescriptor carrying the same correlation id. The demux routes
-// both to this poller in descriptor mode. Call ResetAwait before each request.
+// A list recording completes when a matching RecordingDescriptor is captured, or when a
+// non-OK ControlResponse arrives. Java Aeron Archive list-by-id may send only the
+// descriptor; other flows may send an OK ControlResponse before the descriptor. The demux
+// routes both templates to this poller in descriptor mode. Call ResetAwait before each
+// request.
 //
 // Captured descriptor var-ascii fields are cloned at latch time for retention across
 // later polls.
 //
 // Not safe for concurrent use.
 type RecordingDescriptorPoller struct {
-	phase              listRecordingAwaitPhase
+	complete           bool
 	awaitCorrelationID int64
 	descriptor         codecs.RecordingDescriptorFields
 	response           codecs.ControlResponseFields
-	hasDescriptor      bool
+	hasResponse        bool
 }
 
 // NewRecordingDescriptorPoller returns an idle descriptor poller. Call ResetAwait before
@@ -41,17 +35,17 @@ func NewRecordingDescriptorPoller() *RecordingDescriptorPoller {
 
 // ResetAwait clears prior capture and arms the poller for correlationID.
 func (poller *RecordingDescriptorPoller) ResetAwait(correlationID int64) {
-	poller.phase = listRecordingAwaitingResponse
+	poller.complete = false
 	poller.awaitCorrelationID = correlationID
 	poller.descriptor = codecs.RecordingDescriptorFields{}
 	poller.response = codecs.ControlResponseFields{}
-	poller.hasDescriptor = false
+	poller.hasResponse = false
 }
 
-// IsPollComplete reports whether an OK ControlResponse and the matching
-// RecordingDescriptor were captured, or a non-OK response latched terminal completion.
+// IsPollComplete reports whether a matching RecordingDescriptor was captured, or a
+// non-OK ControlResponse latched terminal completion.
 func (poller *RecordingDescriptorPoller) IsPollComplete() bool {
-	return poller.phase == listRecordingComplete
+	return poller.complete
 }
 
 // Descriptor returns the captured RecordingDescriptor fields with var-ascii bytes
@@ -63,7 +57,7 @@ func (poller *RecordingDescriptorPoller) Descriptor() codecs.RecordingDescriptor
 // ControlResponse returns the captured ControlResponse fields and whether one was
 // captured for the awaited correlation id.
 func (poller *RecordingDescriptorPoller) ControlResponse() (codecs.ControlResponseFields, bool) {
-	if poller.phase == listRecordingAwaitingResponse {
+	if !poller.hasResponse {
 		return codecs.ControlResponseFields{}, false
 	}
 	return poller.response, true
@@ -71,24 +65,17 @@ func (poller *RecordingDescriptorPoller) ControlResponse() (codecs.ControlRespon
 
 func (poller *RecordingDescriptorPoller) latchResponse(resp codecs.ControlResponseFields) {
 	poller.response = resp
+	poller.hasResponse = true
 	if resp.Code != gensbe.ControlResponseCode_OK {
-		poller.phase = listRecordingComplete
-		return
+		poller.complete = true
 	}
-	poller.phase = listRecordingAwaitingDescriptor
-	poller.tryComplete()
 }
 
 func (poller *RecordingDescriptorPoller) latchDescriptor(
 	fields codecs.RecordingDescriptorFields,
 ) {
 	poller.descriptor = codecs.CloneRecordingDescriptorFields(fields)
-	poller.hasDescriptor = true
-	poller.tryComplete()
-}
-
-func (poller *RecordingDescriptorPoller) tryComplete() {
-	if poller.phase == listRecordingAwaitingDescriptor && poller.hasDescriptor {
-		poller.phase = listRecordingComplete
-	}
+	// Java list-by-id may send RecordingDescriptor without a preceding OK response;
+	// a matching descriptor always completes the await.
+	poller.complete = true
 }

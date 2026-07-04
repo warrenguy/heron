@@ -5,6 +5,7 @@ package harness
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -713,6 +714,17 @@ func ComputeRolloverMessageCount(termLen, payloadSize int) int {
 // AlignedOfferAdvance returns aligned DATA frame bytes for offerCount fixed-size payloads.
 func AlignedOfferAdvance(payloadSize, offerCount int) int64 {
 	return int64(logbuffer.AlignFragmentChunkLength(payloadSize)) * int64(offerCount)
+}
+
+// PayloadsWithPrefix builds count fixed-size payloads; index i is ASCII prefix
+// followed by decimal i, padded with 0x00 to size bytes.
+func PayloadsWithPrefix(prefix string, count, size int) [][]byte {
+	payloads := make([][]byte, count)
+	for index := range count {
+		payloads[index] = make([]byte, size)
+		copy(payloads[index], strconv.AppendInt([]byte(prefix), int64(index), 10))
+	}
+	return payloads
 }
 
 // DistinctIPCPayloads builds count same-size payloads; full slices differ when

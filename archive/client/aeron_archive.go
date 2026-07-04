@@ -13,7 +13,7 @@ import (
 // through PollArchiveControlEvents; it never polls the underlying pollers directly and
 // never calls DoWork. Recording signals are dropped until ArchiveContext.RecordingSignalHandler
 // or SetRecordingSignalHandler configures a handler; configured handlers also run during
-// blocking StartRecording, StopRecording, and ListRecording awaits.
+// blocking StartRecording, StopRecording, StartReplay, StopReplay, and ListRecording awaits.
 // ListRecording uses a descriptor-mode poll so its OK response routes to the descriptor
 // poller rather than the session control-response poller.
 //
@@ -188,13 +188,15 @@ func (archive *AeronArchive) pollStopRecordingAwaitSignal(
 
 // SetRecordingSignalHandler overrides ArchiveContext.RecordingSignalHandler for recording
 // signals on Poll and during blocking control awaits that use this handler
-// (StartRecording, StopRecording, ListRecording).
+// (StartRecording, StopRecording, StartReplay, StopReplay, ListRecording).
 func (archive *AeronArchive) SetRecordingSignalHandler(handler RecordingSignalHandler) {
 	archive.signalHandler = handler
 }
 
 // StartRecording offers a StartRecordingRequest and blocks until the archive replies
-// with a matching ControlResponse, returning the assigned recording id.
+// with a matching ControlResponse. The returned RelevantID is the subscription
+// registration id on the wire, not the catalog recording id; await RecordingSignal_START
+// for the assigned recording id.
 func (archive *AeronArchive) StartRecording(
 	streamID int32,
 	sourceLocation gensbe.SourceLocation,
@@ -232,6 +234,30 @@ func (archive *AeronArchive) StopRecordingAwaitSignal(
 		archive.sessionPollTargets(tracker),
 		tracker,
 	)
+}
+
+// StartReplay offers a ReplayRequest and blocks until the archive replies with a
+// matching ControlResponse, returning the assigned replay session id.
+func (archive *AeronArchive) StartReplay(
+	recordingID int64,
+	position int64,
+	length int64,
+	replayStreamID int32,
+	replayChannel []byte,
+) (int64, error) {
+	return archive.sessionControlOps(archive.Poll).startReplay(
+		recordingID,
+		position,
+		length,
+		replayStreamID,
+		replayChannel,
+	)
+}
+
+// StopReplay offers a StopReplayRequest and blocks until the archive replies with a
+// matching OK ControlResponse.
+func (archive *AeronArchive) StopReplay(replaySessionID int64) error {
+	return archive.sessionControlOps(archive.Poll).stopReplay(replaySessionID)
 }
 
 // ListRecording lists a single recording by id, returning its descriptor extent fields

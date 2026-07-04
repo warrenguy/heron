@@ -1,0 +1,81 @@
+# tmpfs mounts at /dev/shm (parent) so aeronmd can delete/recreate AERON_DIR
+# subdirectory /dev/shm/aeron; mounting directly at that path blocks driver init.
+x-app-user: &app-user "${HERON_COMPOSE_UID:-1000}:${HERON_COMPOSE_GID:-1000}"
+# Must match logbuffer.TermMinLength / harness defaultDriverEnv.
+x-aeron-env: &aeron-env
+  AERON_DIR: /dev/shm/aeron
+  AERON_TERM_BUFFER_LENGTH: "65536"
+  AERON_IPC_TERM_BUFFER_LENGTH: "65536"
+x-aeron-vols: &aeron-vols
+  - aeron-media:/dev/shm
+
+services:
+  aeronmd:
+    image: java-interop-aeronmd
+    user: *app-user
+    environment: *aeron-env
+    volumes: *aeron-vols
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /dev/shm/aeron/cnc.dat"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
+      start_period: 3s
+
+  archive:
+    image: archive-java-archive
+    build:
+      context: ../..
+      dockerfile: docker/archive_java/java/Dockerfile
+    user: *app-user
+    environment: *aeron-env
+    volumes:
+      - aeron-media:/dev/shm
+      - archive-data:/tmp/heron-archive
+    depends_on:
+      aeronmd:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/heron-archive/.heron-archive-ready"]
+      interval: 1s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  go:
+    image: archive-java-go
+    build:
+      context: ../..
+      dockerfile: docker/archive_java/go/Dockerfile
+      args:
+        GO_VERSION: ${GO_VERSION:-1.26.4}
+    user: *app-user
+    environment:
+      <<: *aeron-env
+      HERON_ARCHIVE_JAVA_COMPOSE: "1"
+    volumes:
+      - aeron-media:/dev/shm
+      - cluster-data:/tmp/heron-cluster-0
+    depends_on:
+      archive:
+        condition: service_healthy
+
+volumes:
+  aeron-media:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=256m,mode=1777
+  cluster-data:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=64m,mode=1777
+  archive-data:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=256m,mode=1777

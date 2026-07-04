@@ -5,6 +5,7 @@ package aeron
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -370,11 +371,32 @@ func NewTestImageForSubscriptionHooksWithCorrelation(
 ) *Image {
 	tb.Helper()
 
+	return NewTestImageForSubscriptionHooksWithSessionID(
+		tb,
+		sub,
+		testHookImageSessionID,
+		correlationID,
+		joinPosition,
+	)
+}
+
+// NewTestImageForSubscriptionHooksWithSessionID builds an image with explicit session and
+// correlation ids wired to sub.
+func NewTestImageForSubscriptionHooksWithSessionID(
+	tb testing.TB,
+	sub *Subscription,
+	sessionID int32,
+	correlationID int64,
+	joinPosition int64,
+) *Image {
+	tb.Helper()
+
 	log := newTestHookMappedLog(tb, logbuffer.LogBufferTypeConcurrentPublication)
 	logBuffers, err := logbuffer.NewLogBuffers(log)
 	require.NoError(tb, err)
 
 	event := testHookAvailableImage(correlationID)
+	event.SessionID = sessionID
 	if sub != nil {
 		event.SubscriptionRegistrationID = sub.RegistrationID()
 		event.StreamID = sub.StreamID()
@@ -392,6 +414,43 @@ func NewTestImageForSubscriptionHooksWithCorrelation(
 	)
 	require.NoError(tb, err)
 	return image
+}
+
+// SubscriptionInjectNilImageAtIndexForHooks inserts a nil image slot at index.
+func SubscriptionInjectNilImageAtIndexForHooks(sub *Subscription, index int) {
+	if sub == nil || index < 0 || index > len(sub.images) {
+		return
+	}
+	sub.images = slices.Insert(sub.images, index, nil)
+}
+
+// NewImageWithCommittedDataFrameForHooks returns an image with one committed data frame.
+func NewImageWithCommittedDataFrameForHooks(
+	tb testing.TB,
+	joinPosition int64,
+	frameOffset int,
+) (*Image, int32) {
+	tb.Helper()
+
+	sub := NewSubscriptionForHooks(
+		testHookSubscriptionRegistrationID,
+		testHookSubscriptionStreamID,
+		testHookIPCChannel,
+	)
+	image := NewTestImageForSubscriptionHooks(tb, sub, joinPosition)
+	termBuffer := ImageTermBufferForHooks(image)
+	payload := []byte("payload")
+	WriteCommittedDataFrameForHooks(
+		termBuffer,
+		frameOffset,
+		image.SessionID(),
+		image.StreamID(),
+		testHookPublicationInitialTermID,
+		int32(frameOffset),
+		logbuffer.Unfragmented,
+		payload,
+	)
+	return image, int32(len(payload) + logbuffer.DataHeaderLength)
 }
 
 // SubscriptionAddImageForHooks registers image on sub. False when image is nil

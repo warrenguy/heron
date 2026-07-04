@@ -35,12 +35,10 @@ const (
 )
 
 type descriptorPollerModel struct {
-	await         int64
-	complete      bool
-	hasResponse   bool
-	responseOK    bool
-	hasDescriptor bool
-	descriptorID  int64
+	await       int64
+	complete    bool
+	hasResponse bool
+	responseOK  bool
 }
 
 func (m *descriptorPollerModel) applyResponse(correlationID int64, ok bool) {
@@ -51,24 +49,15 @@ func (m *descriptorPollerModel) applyResponse(correlationID int64, ok bool) {
 	m.responseOK = ok
 	if !ok {
 		m.complete = true
-		return
 	}
-	m.refresh()
 }
 
 func (m *descriptorPollerModel) applyDescriptor(correlationID int64) {
 	if m.complete || correlationID != m.await {
 		return
 	}
-	m.hasDescriptor = true
-	m.descriptorID = correlationID
-	m.refresh()
-}
-
-func (m *descriptorPollerModel) refresh() {
-	if m.hasResponse && m.responseOK && m.hasDescriptor && m.descriptorID == m.await {
-		m.complete = true
-	}
+	// Matching descriptor always completes, with or without a preceding OK response.
+	m.complete = true
 }
 
 // TestRecordingDescriptorPoller_completionModel_rapid checks the descriptor poller
@@ -117,11 +106,14 @@ func TestRecordingDescriptorPoller_completionModel_rapid(t *testing.T) {
 
 			require.Equal(rt, model.complete, poller.IsPollComplete())
 
-			_, err, matched := TryMatchDescriptorControlResponse(poller, await)
-			require.Equal(rt, model.hasResponse, matched)
-			if matched {
-				require.Equal(rt, !model.responseOK, err != nil)
+			fields, ok := poller.ControlResponse()
+			require.Equal(rt, model.hasResponse, ok)
+			if !ok {
+				continue
 			}
+			require.Equal(rt, model.await, fields.CorrelationID)
+			err := MapControlResponse(fields)
+			require.Equal(rt, !model.responseOK, err != nil)
 		}
 	})
 }

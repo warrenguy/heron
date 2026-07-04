@@ -6,9 +6,8 @@ func matchControlResponseFields(
 	fields codecs.ControlResponseFields,
 	controlSessionID int64,
 	correlationID int64,
-	filterSession bool,
 ) (codecs.ControlResponseFields, error, bool) {
-	if filterSession && fields.ControlSessionID != controlSessionID {
+	if fields.ControlSessionID != controlSessionID {
 		return codecs.ControlResponseFields{}, nil, false
 	}
 	if fields.CorrelationID != correlationID {

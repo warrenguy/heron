@@ -100,11 +100,14 @@ func TestHandleRecordingDescriptorFragment(t *testing.T) {
 				require.Equal(t, "aeron:ipc?alias=stripped", string(got.StrippedChannel))
 				require.Equal(t, "aeron:ipc?alias=original", string(got.OriginalChannel))
 				require.Equal(t, "source-identity", string(got.SourceIdentity))
+				require.True(t, poller.IsPollComplete())
+				_, ok := poller.ControlResponse()
+				require.False(t, ok, "descriptor-only capture must not report ControlResponse")
 			} else {
 				require.Zero(t, got.RecordingID)
 				require.Empty(t, got.StrippedChannel)
+				require.False(t, poller.IsPollComplete())
 			}
-			require.False(t, poller.IsPollComplete())
 		})
 	}
 }
@@ -188,15 +191,14 @@ func TestHandleDescriptorControlResponseFragment(t *testing.T) {
 				handleDescriptorControlResponseFragment(poller, tc.wire(t))
 			})
 
-			_, ok := poller.ControlResponse()
+			fields, ok := poller.ControlResponse()
 			require.Equal(t, tc.wantResponse, ok)
 			require.Equal(t, tc.wantComplete, poller.IsPollComplete())
-
-			_, err, matched := TryMatchDescriptorControlResponse(
-				poller,
-				recordingDescriptorTestCorrelationID,
-			)
-			require.Equal(t, tc.wantResponse, matched)
+			if !ok {
+				return
+			}
+			require.Equal(t, recordingDescriptorTestCorrelationID, fields.CorrelationID)
+			err := MapControlResponse(fields)
 			if tc.wantMatchErr {
 				require.Error(t, err)
 			} else {
@@ -281,7 +283,8 @@ func TestRecordingDescriptorPoller_completesOnResponseAndDescriptor(t *testing.T
 				handleRecordingDescriptorFragment(poller, descriptorWire)
 			} else {
 				handleRecordingDescriptorFragment(poller, descriptorWire)
-				require.False(t, poller.IsPollComplete())
+				require.True(t, poller.IsPollComplete())
+				// Java list-by-id completes on descriptor only; a trailing OK is ignored.
 				handleDescriptorControlResponseFragment(poller, responseWire)
 			}
 
