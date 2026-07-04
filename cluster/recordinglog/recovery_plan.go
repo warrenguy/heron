@@ -27,8 +27,6 @@ var (
 
 // Snapshot is one snapshot step in a RecoveryPlan output. It is a plan-facing
 // DTO - not a second wire type. Populated only via snapshotFromEntry.
-//
-// Field layout matches Java RecordingLog.Snapshot (1.51.0) for downstream parity.
 type Snapshot struct {
 	RecordingID         int64
 	LeadershipTermID    int64
@@ -211,8 +209,6 @@ func termRefFromEntry(e Entry) TermRef {
 // recording id is absent from archive. selectRecoveryAnchor may return
 // *MissingServiceSnapshotError (errors.Is ErrSnapshotMissingForService) or
 // *SnapshotServiceIDOutOfRangeError (errors.Is ErrSnapshotServiceIDOutOfRange).
-//
-// Java equivalent: RecordingLog.createRecoveryPlan (1.51.0).
 func (l *Log) PlanRecovery(
 	archive ArchiveLister,
 	cfg RecoveryPlanConfig,
@@ -343,8 +339,8 @@ func selectRecoveryAnchor(entries []Entry, serviceCount int) (recoverySelection,
 // matchesConsensusModuleSnapshotGroup reports whether entry belongs to the consensus-
 // module snapshot group walk in selectRecoveryAnchor.
 //
-// Java RecordingLog.addSnapshots (1.51.0) matches raw ENTRY_TYPE_SNAPSHOT without
-// re-checking Valid; do not use isValidSnapshot here.
+// RecordingLog.addSnapshots matches raw ENTRY_TYPE_SNAPSHOT without re-checking
+// Valid; do not use isValidSnapshot here.
 func matchesConsensusModuleSnapshotGroup(entry Entry, cm Snapshot) bool {
 	return entry.Type == EntryTypeSnapshot &&
 		entry.LeadershipTermID == cm.LeadershipTermID &&

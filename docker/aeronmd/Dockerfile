@@ -4,7 +4,7 @@
 # runtime: in-image C compile when host bin/aeronmd is absent (manual docker build only)
 FROM debian:bookworm-slim AS builder
 
-ARG AERON_REF=1.51.0
+ARG AERON_REF=1.52.0
 ARG AERON_REPOSITORY=https://github.com/aeron-io/aeron.git
 ARG AERON_DRIVER_ARTIFACT=aeronmd_s
 

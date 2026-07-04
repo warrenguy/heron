@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-// Modified from io.aeron.samples.cluster.EchoService at Aeron 1.51.0:
+// Modified from io.aeron.samples.cluster.EchoService:
 // package renamed to heron.clusterjava; echoes inbound session messages via session.offer
 // with cluster idle-strategy retries (integration smoke).
 package heron.clusterjava;

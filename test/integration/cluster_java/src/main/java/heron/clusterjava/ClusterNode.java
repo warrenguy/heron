@@ -36,7 +36,7 @@ public final class ClusterNode
     {
     }
 
-    // Aeron 1.51.0 ConsensusModule.Context has no egressStreamId(); egress stream 102
+    // ConsensusModule.Context has no egressStreamId(); egress stream 102
     // parity is checked via client AeronCluster default oracle in tests.
     static void configureConsensusIPC(final ClusterConfig clusterConfig)
     {

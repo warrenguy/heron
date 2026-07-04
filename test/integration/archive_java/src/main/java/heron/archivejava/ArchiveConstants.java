@@ -20,10 +20,10 @@ public final class ArchiveConstants {
     // archivejava.ReplayChannel
     public static final String REPLAY_CHANNEL = IPC_CHANNEL_64K;
 
-    // Server-side UDP control (Aeron 1.51+); Go client uses local IPC control only.
+    // Server-side UDP control; Go client uses local IPC control only.
     public static final String CONTROL_CHANNEL = "aeron:udp?endpoint=localhost:9010";
 
-    // Required by Aeron 1.51+ Archive.Context; unused in this co-located smoke.
+    // Archive.Context replication channel; unused in this co-located smoke.
     public static final String REPLICATION_CHANNEL = "aeron:udp?endpoint=localhost:0";
 
     // archivejava.LocalControlChannel

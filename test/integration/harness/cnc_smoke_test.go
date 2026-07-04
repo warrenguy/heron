@@ -92,8 +92,8 @@ func TestCncWiring(t *testing.T) {
 		// Live-driver roundtrip via Client.NextAvailableSessionID await path
 		// (offer -> conductor -> broadcast -> Client return). Broadcast wire decode and correlation
 		// matching are covered in unit tests (aeron/client_await_test.go). Failure modes
-		// (timeout, ON_ERROR, driver death) stay in unit tests by design. Aeron 1.51.0 seeds
-		// next_session_id via aeron_randomised_int32(); values may be negative.
+		// (timeout, ON_ERROR, driver death) stay in unit tests by design.
+		// next_session_id is seeded via aeron_randomised_int32(); values may be negative.
 		t.Logf("next session ids: %d, %d", firstSessionID, secondSessionID)
 
 		// Client advances its own broadcast cursor; drain harness receiver so later subtests

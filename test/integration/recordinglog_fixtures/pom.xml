@@ -12,7 +12,7 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>26</maven.compiler.release>
-        <aeron.version>1.51.0</aeron.version>
+        <aeron.version>1.52.0</aeron.version>
         <junit.version>5.11.4</junit.version>
         <fixtures.dir>${project.basedir}/../../../cluster/recordinglog/testdata</fixtures.dir>
         <argLine>--add-opens java.base/jdk.internal.misc=ALL-UNNAMED</argLine>

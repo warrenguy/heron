@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-// Derived from io.aeron.samples.cluster.ClusterConfig at Aeron 1.51.0; package renamed.
+// Derived from io.aeron.samples.cluster.ClusterConfig; package renamed.
 package heron.clusterjava;
 
 import io.aeron.CommonContext;
@@ -171,7 +171,7 @@ public final class ClusterConfig
             .controlResponseChannel(archiveContext.localControlChannel())
             .aeronDirectoryName(aeronDirName);
 
-        // Aeron 1.51.0 default authorisation denies AdminRequest (template 26); ALLOW_ALL is
+        // Default authorisation denies AdminRequest (template 26); ALLOW_ALL is
         // integration-smoke-only (production must configure authorisation explicitly).
         final ConsensusModule.Context consensusModuleContext = new ConsensusModule.Context()
             .clusterMemberId(memberId)

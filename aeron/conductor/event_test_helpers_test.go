@@ -9,7 +9,6 @@ import (
 	"github.com/warrenguy/heron/agrona/broadcast"
 )
 
-// Golden bytes generated from Aeron 1.51.0 Java flyweight layouts via conductor encoders.
 const (
 	goldenPublicationReadyLogFileName            = "/dev/shm/aeron-publication.log"
 	goldenExclusivePublicationReadyLogFileName   = "/dev/shm/aeron-exclusive-publication.log"

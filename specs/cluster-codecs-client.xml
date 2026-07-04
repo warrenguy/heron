@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-  Modified from Aeron 1.51.0 aeron-cluster-codecs.xml (Apache 2.0, Real Logic).
+  Modified from upstream aeron-cluster-codecs.xml (Apache 2.0, Real Logic).
   Client ingress/egress and admin wire subset only; consensus-module,
   service-control, and related messages removed. See THIRD_PARTY_NOTICES.md.
 -->

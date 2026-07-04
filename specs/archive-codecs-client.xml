@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-  Modified from Aeron 1.51.0 aeron-archive-codecs.xml (Apache 2.0, Real Logic).
+  Modified from upstream aeron-archive-codecs.xml (Apache 2.0, Real Logic).
   Archive control request/response, descriptor, and recording-signal wire subset
   only; catalog framing, listing-with-groups, replication, segment, and legacy
   recording-events messages removed. See THIRD_PARTY_NOTICES.md.

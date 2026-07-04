@@ -15,7 +15,7 @@ const (
 	ControlledEgressContinue = ringbuffer.ControlledContinue
 )
 
-// ControlledEgressHandler mirrors Java ControlledEgressListener @ 1.51.0.
+// ControlledEgressHandler mirrors upstream ControlledEgressListener.
 // Only Message returns a controlled action; other callbacks always commit.
 // Buffer views are valid only for the callback duration; do not retain slices
 // or the Header pointer.

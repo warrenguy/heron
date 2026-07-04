@@ -51,8 +51,8 @@ func isValidConsensusModuleSnapshot(e Entry) bool {
 // A recording.log file is a sequence of 64-byte-aligned records that map
 // leadership terms and snapshots to Archive recording IDs. TERM, SNAPSHOT, and
 // removed slots occupy exactly 64 bytes; STANDBY_SNAPSHOT entries may span a
-// larger aligned region when carrying a length-prefixed archive endpoint. Wire
-// layout matches Aeron 1.51.0: little-endian fields, 64-byte record alignment.
+// larger aligned region when carrying a length-prefixed archive endpoint.
+// Wire layout: little-endian fields, 64-byte record alignment.
 //
 // Type holds the entry classification with the invalid flag already
 // stripped. Valid reports whether the invalid flag was absent. ArchiveEndpoint

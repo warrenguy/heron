@@ -127,7 +127,6 @@ func TestDecodeTrailingStringASCII_stringOffsetBeyondBodyLength(t *testing.T) {
 	)
 }
 
-// Java NextAvailableSessionIdFlyweight 1.51.0 (correlationID=99, nextSessionID=1001).
 func TestNextAvailableSessionIDBytes_golden(t *testing.T) {
 	require.Equal(
 		t,
