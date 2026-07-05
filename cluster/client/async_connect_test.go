@@ -608,6 +608,26 @@ func TestAsyncConnect_timeout(t *testing.T) {
 	require.ErrorContains(t, pollErr, "cluster client: connect timeout")
 }
 
+func TestAsyncConnect_handshakeTimeoutCloseReleasesEgress(t *testing.T) {
+	t.Parallel()
+
+	harness, ac := setupAsyncConnect(t, "")
+	t.Cleanup(func() { _ = ac.Close() })
+	setupAsyncConnectEgressReady(t, harness, ac)
+	require.NotNil(t, ac.EgressSubscriptionForTest())
+
+	ac.deadlineNs = ac.nanoClock() - 1
+	_, pollErr := ac.Poll()
+	require.ErrorContains(t, pollErr, "cluster client: connect timeout")
+	require.NotNil(t, ac.EgressSubscriptionForTest())
+
+	require.NoError(t, ac.Close())
+	_, err := ac.Poll()
+	require.EqualError(t, err, "cluster client: async connect closed")
+	require.Nil(t, ac.EgressSubscriptionForTest())
+	require.False(t, aeron.ClientIsClosedForTest(harness.Client))
+}
+
 func TestNewAsyncConnect_udpEgressAppliesRejoinFalse(t *testing.T) {
 	t.Parallel()
 
