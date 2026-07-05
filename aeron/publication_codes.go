@@ -1,6 +1,8 @@
 package aeron
 
 import (
+	"strconv"
+
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/agrona/atomic"
 )
@@ -34,6 +36,56 @@ const (
 	MaxPositionExceeded      int64 = -5
 	UnsupportedMessageLength int64 = -6
 )
+
+var publicationPositionCodeNames = map[int64]string{
+	NotConnected:             "NotConnected",
+	BackPressured:            "BackPressured",
+	AdminAction:              "AdminAction",
+	Closed:                   "Closed",
+	MaxPositionExceeded:      "MaxPositionExceeded",
+	UnsupportedMessageLength: "UnsupportedMessageLength",
+}
+
+// PositionCodeName returns a human-readable name for a publication Offer or TryClaim result.
+//
+//   - Negative values map to the exported constant names in this package.
+//   - Positive values are successful stream positions and are formatted as decimal strings.
+//   - Zero is formatted as "0".
+//   - Unknown negative values are formatted as "Unknown(n)".
+func PositionCodeName(position int64) string {
+	if position >= 0 {
+		return strconv.FormatInt(position, 10)
+	}
+	if name, ok := publicationPositionCodeNames[position]; ok {
+		return name
+	}
+	return "Unknown(" + strconv.FormatInt(position, 10) + ")"
+}
+
+// IsOfferRetriable reports whether position should be retried in a transport-level
+// offer retry loop that drives client.DoWork() between attempts.
+//
+// Retries BackPressured, AdminAction, and NotConnected (waiting for first subscriber).
+//
+// Terminal (do not retry): Closed, MaxPositionExceeded, UnsupportedMessageLength, 0, and
+// unknown negatives. Returns false for position > 0 (success).
+//
+// Do not use in ingress or archive control retry loops; use IsIngressRetriable instead.
+func IsOfferRetriable(position int64) bool {
+	return IsIngressRetriable(position) || position == NotConnected
+}
+
+// IsIngressRetriable reports whether position should be retried in an ingress or archive
+// control offer retry loop that calls PollEgress or a pollFn between attempts.
+//
+// Retries only BackPressured and AdminAction. NotConnected is terminal (session recovery
+// may surface NotConnected after a retriable code).
+//
+// Closed, MaxPositionExceeded, UnsupportedMessageLength, 0, and unknown negatives are
+// terminal. Returns false for position > 0.
+func IsIngressRetriable(position int64) bool {
+	return position == BackPressured || position == AdminAction
+}
 
 func backPressureStatusForLog(
 	meta atomic.AtomicBuffer,

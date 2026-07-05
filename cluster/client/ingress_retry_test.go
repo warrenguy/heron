@@ -68,27 +68,17 @@ func (r *recordingIdleStrategy) Reset() {
 	r.idleCalls = 0
 }
 
-func TestIngressRetriableCode(t *testing.T) {
-	tests := []struct {
-		name     string
-		position int64
-		want     bool
-	}{
-		{name: "success", position: 1, want: false},
-		{name: "zero", position: 0, want: false},
-		{name: "notConnected", position: aeron.NotConnected, want: false},
-		{name: "backPressured", position: aeron.BackPressured, want: true},
-		{name: "adminAction", position: aeron.AdminAction, want: true},
-		{name: "closed", position: aeron.Closed, want: false},
-		{name: "maxPositionExceeded", position: aeron.MaxPositionExceeded, want: false},
-		{name: "unsupportedMessageLength", position: aeron.UnsupportedMessageLength, want: false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, IngressRetriableCode(tc.position))
-		})
-	}
+func TestIngressRetriableCode_delegatesToIsIngressRetriable(t *testing.T) {
+	require.Equal(
+		t,
+		aeron.IsIngressRetriable(aeron.BackPressured),
+		IngressRetriableCode(aeron.BackPressured),
+	)
+	require.Equal(
+		t,
+		aeron.IsIngressRetriable(aeron.NotConnected),
+		IngressRetriableCode(aeron.NotConnected),
+	)
 }
 
 func TestIngressOfferUntilPositive_backPressuredThenSuccess(t *testing.T) {

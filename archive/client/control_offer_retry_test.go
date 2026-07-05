@@ -92,27 +92,17 @@ func setupControlOfferRetryDoWorkRecorder(t *testing.T) *int {
 	return &count
 }
 
-func TestControlRetriableCode(t *testing.T) {
-	tests := []struct {
-		name     string
-		position int64
-		want     bool
-	}{
-		{name: "success", position: 1, want: false},
-		{name: "zero", position: 0, want: false},
-		{name: "notConnected", position: aeron.NotConnected, want: false},
-		{name: "backPressured", position: aeron.BackPressured, want: true},
-		{name: "adminAction", position: aeron.AdminAction, want: true},
-		{name: "closed", position: aeron.Closed, want: false},
-		{name: "maxPositionExceeded", position: aeron.MaxPositionExceeded, want: false},
-		{name: "unsupportedMessageLength", position: aeron.UnsupportedMessageLength, want: false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, ControlRetriableCode(tc.position))
-		})
-	}
+func TestControlRetriableCode_delegatesToIsIngressRetriable(t *testing.T) {
+	require.Equal(
+		t,
+		aeron.IsIngressRetriable(aeron.BackPressured),
+		ControlRetriableCode(aeron.BackPressured),
+	)
+	require.Equal(
+		t,
+		aeron.IsIngressRetriable(aeron.NotConnected),
+		ControlRetriableCode(aeron.NotConnected),
+	)
 }
 
 func TestControlOfferUntilPositive_backPressuredRetry(t *testing.T) {

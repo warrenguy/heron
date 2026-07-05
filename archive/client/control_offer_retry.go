@@ -11,12 +11,9 @@ import (
 // ControlOfferConfig.Timeout is zero or negative.
 const DefaultControlOfferTimeout = 10 * time.Second
 
-// ControlRetriableCode reports whether a control offer result should be retried
-// after caller-driven DoWork and optional response polling. BackPressured and
-// AdminAction are transient under CONNECTED operation. NotConnected, Closed,
-// MaxPositionExceeded, and UnsupportedMessageLength are terminal.
+// ControlRetriableCode is an alias for aeron.IsIngressRetriable.
 func ControlRetriableCode(position int64) bool {
-	return position == aeron.BackPressured || position == aeron.AdminAction
+	return aeron.IsIngressRetriable(position)
 }
 
 // ControlOfferConfig holds retry pacing for ControlOfferUntilPositive.

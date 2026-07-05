@@ -11,13 +11,9 @@ import (
 // is zero or negative. 10s covers leader election plus ingress repoint during failover.
 const DefaultIngressOfferTimeout = 10 * time.Second
 
-// IngressRetriableCode reports whether an ingress offer result should be retried
-// after caller-driven DoWork and PollEgress. Matches cluster ingress contract:
-// BackPressured and AdminAction are transient under CONNECTED operation and
-// AWAIT_NEW_LEADER_CONNECTION recovery. NotConnected, Closed, MaxPositionExceeded,
-// and UnsupportedMessageLength are terminal.
+// IngressRetriableCode is an alias for aeron.IsIngressRetriable.
 func IngressRetriableCode(position int64) bool {
-	return position == aeron.BackPressured || position == aeron.AdminAction
+	return aeron.IsIngressRetriable(position)
 }
 
 // IngressOfferConfig holds retry pacing for IngressOfferUntilPositive.

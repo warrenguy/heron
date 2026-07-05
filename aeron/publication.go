@@ -80,6 +80,8 @@ func (pub *Publication) MaxMessageLength() int {
 // frame; larger payloads up to maxMessageLength split into fragments.
 //
 // Returns a new stream position (>0) or a negative status code (see publication_codes.go).
+//
+// See also PositionCodeName, IsOfferRetriable.
 func (pub *Publication) Offer(buffer []byte) int64 {
 	return pub.OfferWithOffset(buffer, 0, len(buffer))
 }
@@ -95,6 +97,8 @@ func (pub *Publication) Offer(buffer []byte) int64 {
 // length > maxMessageLength returns MaxPositionExceeded (-5).
 //
 // Prelude may return other negative codes (e.g. BackPressured) before that check.
+//
+// See also PositionCodeName, IsOfferRetriable.
 func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64 {
 	if pub.IsClosed() {
 		return Closed
@@ -122,8 +126,12 @@ func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64
 //     AdminAction - retry immediately in a tight loop;
 //     Closed and MaxPositionExceeded - stop publishing on this handle.
 //
+// See also PositionCodeName, IsOfferRetriable.
+//
 // A typical retry loop returns on err != nil, returns on success or a terminal
-// status, and spins only while position == AdminAction.
+// status. For transport-level retries use IsOfferRetriable with DoWork between
+// attempts; after BackPressured or NotConnected, pace with an idle strategy.
+// Only AdminAction warrants an inner tight spin before returning to the outer loop.
 func (pub *Publication) TryClaim(
 	length int,
 ) (termIndex, frameOffset int, position int64, err error) {

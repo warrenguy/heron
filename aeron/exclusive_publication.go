@@ -91,6 +91,8 @@ func (ep *ExclusivePublication) MaxMessageLength() int {
 // UnsupportedMessageLength (-6).
 //
 // Returns a new stream position (>0) or a negative status code (see publication_codes.go).
+//
+// See also PositionCodeName, IsOfferRetriable.
 func (ep *ExclusivePublication) Offer(buffer []byte) int64 {
 	return ep.OfferWithOffset(buffer, 0, len(buffer))
 }
@@ -102,6 +104,8 @@ func (ep *ExclusivePublication) Offer(buffer []byte) int64 {
 // length <= maxPayloadLength uses a single DATA frame. Payloads above maxPayloadLength
 // up to maxMessageLength return UnsupportedMessageLength (-6) until fragmented exclusive
 // Offer is implemented. length > maxMessageLength returns MaxPositionExceeded (-5).
+//
+// See also PositionCodeName, IsOfferRetriable.
 func (ep *ExclusivePublication) OfferWithOffset(buffer []byte, offset, length int) int64 {
 	if ep.IsClosed() {
 		return Closed
@@ -137,8 +141,12 @@ func (ep *ExclusivePublication) OfferWithOffset(buffer []byte, offset, length in
 //     AdminAction - retry immediately in a tight loop;
 //     Closed and MaxPositionExceeded - stop publishing on this handle.
 //
+// See also PositionCodeName, IsOfferRetriable.
+//
 // A typical retry loop returns on err != nil, returns on success or a terminal
-// status, and spins only while position == AdminAction.
+// status. For transport-level retries use IsOfferRetriable with DoWork between
+// attempts; after BackPressured or NotConnected, pace with an idle strategy.
+// Only AdminAction warrants an inner tight spin before returning to the outer loop.
 //
 // length > maxPayloadLength returns a Go error, not UnsupportedMessageLength (-6).
 func (ep *ExclusivePublication) TryClaim(

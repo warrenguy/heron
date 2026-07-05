@@ -120,7 +120,7 @@ func main() {
 	payload := []byte("hello")
 	pos := pub.Offer(payload)
 	if pos < 0 {
-		log.Fatalf("offer failed: %d", pos)
+		log.Fatalf("offer failed: %s", aeron.PositionCodeName(pos))
 	}
 
 	received := pollOne(sub, client)
