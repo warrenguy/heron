@@ -8,6 +8,7 @@ import (
 )
 
 const (
+	SizeByte   = int(unsafe.Sizeof(byte(0)))
 	SizeInt32  = int(unsafe.Sizeof(int32(0)))
 	SizeInt64  = int(unsafe.Sizeof(int64(0)))
 	SizeUint16 = int(unsafe.Sizeof(uint16(0)))
@@ -16,7 +17,7 @@ const (
 // AtomicBuffer provides typed access to a byte slice, including atomic
 // operations for shared mmap regions.
 //
-// Plain GetInt32/PutInt32 (and int64) are non-atomic loads/stores. Hot paths in
+// Plain GetInt32/PutInt32 (and int64, byte) are non-atomic loads/stores. Hot paths in
 // ringbuffer that publish record headers across goroutines should use
 // GetInt32Volatile/PutInt32Release. Broadcast pairs plain record writes with
 // ReleaseFence and volatile tail counters (BroadcastReceiver ordering); migrating
@@ -128,6 +129,20 @@ func (b AtomicBuffer) VolatileInt64At(offset int) int64 {
 
 func (b AtomicBuffer) PutInt64Release(offset int, value int64) {
 	atomic.StoreInt64((*int64)(addressAt(b.buf, offset, SizeInt64)), value)
+}
+
+func (b AtomicBuffer) GetByte(offset int) byte {
+	boundsCheck(b.buf, offset, SizeByte)
+	return b.ByteAt(offset)
+}
+
+func (b AtomicBuffer) PutByte(offset int, value byte) {
+	boundsCheck(b.buf, offset, SizeByte)
+	b.buf[offset] = value
+}
+
+func (b AtomicBuffer) ByteAt(offset int) byte {
+	return b.buf[offset]
 }
 
 func (b AtomicBuffer) CompareAndSwapInt64(offset int, expect, update int64) bool {

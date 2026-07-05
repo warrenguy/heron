@@ -59,7 +59,6 @@ func DecodeEgress(buf agronaatomic.AtomicBuffer, offset, length int) (EgressBid,
 		CorrelationID: buf.GetInt64(offset + CorrelationIDOffset),
 		CustomerID:    buf.GetInt64(offset + CustomerIDOffset),
 		Price:         buf.GetInt64(offset + PriceOffset),
-		// AtomicBuffer has no GetByte; upstream Java uses getByte for bidSucceeded.
-		BidSucceeded: buf.Bytes()[offset+BidSucceededOffset] != 0,
+		BidSucceeded:  buf.GetByte(offset+BidSucceededOffset) != 0,
 	}, true
 }

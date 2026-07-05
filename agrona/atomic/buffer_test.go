@@ -21,6 +21,12 @@ func newTestAtomicBuffer(tb testing.TB, size int) atomic.AtomicBuffer {
 	return atomic.Wrap(make([]byte, size))
 }
 
+func TestAtomicBuffer_ByteRoundtrip(t *testing.T) {
+	atomicBuffer := newTestAtomicBuffer(t, testAtomicBufferSize)
+	atomicBuffer.PutByte(0, 0xab)
+	require.Equal(t, byte(0xab), atomicBuffer.GetByte(0))
+}
+
 func TestAtomicBuffer_Int32Roundtrip(t *testing.T) {
 	atomicBuffer := newTestAtomicBuffer(t, testAtomicBufferSize)
 	atomicBuffer.PutInt32(0, 0x01020304)
@@ -83,6 +89,8 @@ func TestAtomicBuffer_ZeroAllocs(t *testing.T) {
 		{"GetAndAddInt64", func() { _ = atomicBuffer.GetAndAddInt64(0, 1) }},
 		{"SetBytes", func() { atomicBuffer.SetBytes(0, 8, 0) }},
 		{"SetBytes_zeroLength", func() { atomicBuffer.SetBytes(0, 0, 0) }},
+		{"GetByte", func() { _ = atomicBuffer.GetByte(0) }},
+		{"PutByte", func() { atomicBuffer.PutByte(0, 0x42) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -101,6 +109,7 @@ func TestAtomicBuffer_TrustedAt_matchesBoundedGetters(t *testing.T) {
 	atomicBuffer := newTestAtomicBuffer(t, testAtomicBufferSize)
 	atomicBuffer.PutInt32(0, 0x01020304)
 	atomicBuffer.PutInt64Release(8, 0x0A0B0C0D0E0F1011)
+	atomicBuffer.PutByte(4, 0x55)
 
 	cases := []struct {
 		name string
@@ -118,6 +127,9 @@ func TestAtomicBuffer_TrustedAt_matchesBoundedGetters(t *testing.T) {
 		{"VolatileInt64At", func(t *testing.T) {
 			require.Equal(t, atomicBuffer.GetInt64Volatile(8), atomicBuffer.VolatileInt64At(8))
 		}},
+		{"ByteAt", func(t *testing.T) {
+			require.Equal(t, atomicBuffer.GetByte(4), atomicBuffer.ByteAt(4))
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, tc.fn)
@@ -125,17 +137,28 @@ func TestAtomicBuffer_TrustedAt_matchesBoundedGetters(t *testing.T) {
 }
 
 func TestAtomicBuffer_TrustedAt_outOfBoundsPanics(t *testing.T) {
-	atomicBuffer := newTestAtomicBuffer(t, atomic.SizeInt32)
+	int32Buffer := newTestAtomicBuffer(t, atomic.SizeInt32)
+	int64Buffer := newTestAtomicBuffer(t, atomic.SizeInt64)
+	byteBuffer := newTestAtomicBuffer(t, atomic.SizeByte)
 	emptyBuffer := atomic.Wrap(nil)
 
 	cases := []struct {
 		name string
 		fn   func()
 	}{
-		{"GetInt32 out of bounds", func() { atomicBuffer.GetInt32(atomic.SizeInt32) }},
-		{"GetInt32Volatile out of bounds", func() { atomicBuffer.GetInt32Volatile(atomic.SizeInt32) }},
+		{"GetInt32 out of bounds", func() { int32Buffer.GetInt32(atomic.SizeInt32) }},
+		{"GetInt32Volatile out of bounds", func() { int32Buffer.GetInt32Volatile(atomic.SizeInt32) }},
+		{"GetInt64 out of bounds", func() { int64Buffer.GetInt64(atomic.SizeInt64) }},
+		{"GetInt64Volatile out of bounds", func() { int64Buffer.GetInt64Volatile(atomic.SizeInt64) }},
+		{"GetByte at capacity", func() { byteBuffer.GetByte(byteBuffer.Capacity()) }},
+		{"GetByte negative offset", func() { byteBuffer.GetByte(-1) }},
+		{"PutByte at capacity", func() { byteBuffer.PutByte(byteBuffer.Capacity(), 0x01) }},
+		{"PutByte negative offset", func() { byteBuffer.PutByte(-1, 0x01) }},
+		{"GetByte on nil buffer", func() { emptyBuffer.GetByte(0) }},
+		{"PutByte on nil buffer", func() { emptyBuffer.PutByte(0, 0x01) }},
 		{"VolatileInt32At on nil buffer", func() { emptyBuffer.VolatileInt32At(0) }},
 		{"VolatileInt64At on nil buffer", func() { emptyBuffer.VolatileInt64At(0) }},
+		{"ByteAt on nil buffer", func() { emptyBuffer.ByteAt(0) }},
 	}
 	for _, tc := range cases {
 		require.Panics(t, tc.fn, tc.name)
@@ -177,6 +200,7 @@ func TestAtomicBuffer_VerifyAlignment(t *testing.T) {
 }
 
 func TestAtomicPrimitiveSizes(t *testing.T) {
+	require.Equal(t, 1, atomic.SizeByte)
 	require.Equal(t, 4, atomic.SizeInt32)
 	require.Equal(t, 8, atomic.SizeInt64)
 	require.Equal(t, 2, atomic.SizeUint16)
