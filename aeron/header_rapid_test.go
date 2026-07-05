@@ -120,7 +120,7 @@ func TestHeader_ConfigureCompletedFragment_rapid(t *testing.T) {
 
 	rapid.Check(t, func(rt *rapid.T) {
 		fragments := drawBeginEndFragmentSpecs(rt)
-		frameOffsets := aeron.WriteCommittedFragmentedDataFramesForTest(termBuffer, 0, fragments)
+		frameOffsets := aeron.WriteCommittedDataFramesForTest(termBuffer, 0, fragments)
 		fixture := newCompletedFragmentFixture(image, termBuffer, frameOffsets, fragments)
 
 		assertConfigureCompletedFragmentOracle(rt, fixture, false)
@@ -150,8 +150,6 @@ func TestHeader_frameFieldsRoundtrip_rapid(t *testing.T) {
 			flags,
 			frame.payload,
 		)
-		writtenFlags := flags | logbuffer.Unfragmented
-
 		header := aeron.ImageHeaderForTest(image)
 		header.SetBuffer(termBuffer)
 		header.SetOffset(frame.frameOffset)
@@ -161,7 +159,7 @@ func TestHeader_frameFieldsRoundtrip_rapid(t *testing.T) {
 		require.Equal(rt, termID, header.TermID())
 		require.Equal(rt, frame.termOffset, header.TermOffset())
 		require.Equal(rt, int32(logbuffer.HdrTypeData), header.Type())
-		require.Equal(rt, byte(writtenFlags), header.Flags())
+		require.Equal(rt, byte(flags), header.Flags())
 		require.Equal(rt, int64(logbuffer.DefaultReservedValue), header.ReservedValue())
 		require.Equal(rt, frame.frameLength, header.FrameLength())
 		require.Equal(rt, frame.frameOffset, header.Offset())

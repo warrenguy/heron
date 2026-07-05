@@ -53,7 +53,7 @@ type ClusterContext struct {
 
 	IdleStrategy idlestrategy.IdleStrategy
 
-	// DirectAssemblers mirrors Java isDirectAssemblers; consumed by egress FragmentAssembler.
+	// DirectAssemblers mirrors Java isDirectAssemblers; passed to EgressAdapter reassembly.
 	DirectAssemblers bool
 }
 

@@ -16,6 +16,8 @@ import (
 
 const pollHarnessShortTimeout = 50 * time.Millisecond
 
+const invalidHarnessTimeout = -time.Second
+
 var invalidWantCases = []struct {
 	name string
 	want int
@@ -44,6 +46,24 @@ func offerSingleAlignedFragment(
 	require.Positive(t, result)
 	client.DoWork()
 	return AlignedOfferAdvance(len(payload), 1)
+}
+
+func TestPollUntilConnected_invalidTimeoutFails(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+
+	pub, err := client.AddPublication(PollUntilConnectedInvalidTimeoutStreamID, IPCChannel)
+	require.NoError(t, err)
+	CleanupClose(t, "close publication", pub.Close)
+
+	capture := &CaptureFailTB{TB: t}
+	PollUntilConnected(capture, client, pub, invalidHarnessTimeout)
+	require.True(t, capture.failed)
+	require.Equal(
+		t,
+		fmt.Sprintf("invalid timeout: %s", invalidHarnessTimeout),
+		capture.lastMsg,
+	)
 }
 
 func TestPollUntilConnected_timeoutMessage(t *testing.T) {
@@ -527,6 +547,25 @@ func TestPollReassembled_invalidWantFails(t *testing.T) {
 		require.Empty(t, got)
 		require.Zero(t, fragments)
 	})
+}
+
+func TestOfferWithRetry_invalidTimeoutFails(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+
+	pub, err := client.AddPublication(OfferWithRetryInvalidTimeoutStreamID, IPCChannel)
+	require.NoError(t, err)
+	CleanupClose(t, "close publication", pub.Close)
+
+	capture := &CaptureFailTB{TB: t}
+	got := OfferWithRetry(capture, client, pub, []byte{0x01}, invalidHarnessTimeout)
+	require.True(t, capture.failed)
+	require.Zero(t, got)
+	require.Equal(
+		t,
+		fmt.Sprintf("invalid timeout: %s", invalidHarnessTimeout),
+		capture.lastMsg,
+	)
 }
 
 func TestOfferWithRetry_notConnected_timesOut(t *testing.T) {

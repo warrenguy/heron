@@ -17,8 +17,8 @@ const (
 	// IPCChannel is the default channel for live-driver integration tests.
 	IPCChannel = "aeron:ipc"
 
-	// ConnectedPollTimeout matches default zero Context DriverTimeout (10s).
-	ConnectedPollTimeout = 10 * time.Second
+	// ConnectedPollTimeout matches aeron.DefaultConnectedPollTimeout.
+	ConnectedPollTimeout = aeron.DefaultConnectedPollTimeout
 )
 
 // ConnectClient connects to md and registers client.Close on t.Cleanup.
@@ -195,7 +195,7 @@ func WaitForSubscriptionConnected(
 func WaitForIPCLinkConnected(
 	t testing.TB,
 	client *aeron.Client,
-	pub ipcPublisher,
+	pub aeron.PublicationOfferer,
 	sub *aeron.Subscription,
 	timeout time.Duration,
 ) {

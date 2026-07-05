@@ -63,55 +63,6 @@ func writeTestHookCommittedDataFrame(
 	)
 }
 
-func requireHookFrameMatchesExportTest(
-	tb testing.TB,
-	frameOffset int,
-	sessionID int32,
-	streamID int32,
-	termID int32,
-	termOffset int32,
-	flags uint8,
-	payload []byte,
-) {
-	tb.Helper()
-
-	fragmented := flags&logbuffer.Unfragmented != logbuffer.Unfragmented
-	hookBuffer := testHookTermBuffer(tb)
-	exportBuffer := testHookTermBuffer(tb)
-
-	WriteCommittedDataFrameForHooks(
-		hookBuffer,
-		frameOffset,
-		sessionID,
-		streamID,
-		termID,
-		termOffset,
-		flags,
-		payload,
-	)
-	writeCommittedDataFrameForTest(
-		exportBuffer,
-		frameOffset,
-		sessionID,
-		streamID,
-		termID,
-		termOffset,
-		flags,
-		payload,
-		fragmented,
-	)
-
-	exportFrameLength := logbuffer.FrameLengthVolatile(exportBuffer, frameOffset)
-	hookFrameLength := logbuffer.FrameLengthVolatile(hookBuffer, frameOffset)
-	require.Equal(tb, exportFrameLength, hookFrameLength)
-	committedLen := int(exportFrameLength)
-	require.Equal(
-		tb,
-		exportBuffer.Bytes()[frameOffset:frameOffset+committedLen],
-		hookBuffer.Bytes()[frameOffset:frameOffset+committedLen],
-	)
-}
-
 func TestSubscriptionAddImageForHooks_registration(t *testing.T) {
 	sub, image := newTestHookSubscriptionWithImage(t)
 
@@ -153,50 +104,4 @@ func TestWriteCommittedDataFrameForHooks_fragmentedBeginFlag(t *testing.T) {
 
 	require.Equal(t, byte(logbuffer.BeginFlag), logbuffer.FrameFlags(termBuffer, 0))
 	require.NotEqual(t, byte(logbuffer.Unfragmented), logbuffer.FrameFlags(termBuffer, 0))
-}
-
-func TestWriteCommittedDataFrameForHooks_matchesExportTest(t *testing.T) {
-	const frameOffset = 64
-
-	cases := []struct {
-		name    string
-		flags   uint8
-		payload []byte
-	}{
-		{
-			name:    "unfragmented",
-			flags:   logbuffer.Unfragmented,
-			payload: []byte("whole-message"),
-		},
-		{
-			name:    "begin_fragment",
-			flags:   logbuffer.BeginFlag,
-			payload: []byte("begin-only"),
-		},
-		{
-			name:    "end_fragment",
-			flags:   logbuffer.EndFlag,
-			payload: []byte("end-only"),
-		},
-		{
-			name:    "middle_fragment",
-			flags:   0,
-			payload: []byte("middle-only"),
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			requireHookFrameMatchesExportTest(
-				t,
-				frameOffset,
-				TestPublicationSessionID,
-				TestPublicationStreamID,
-				TestPublicationInitialTermID,
-				frameOffset,
-				tc.flags,
-				tc.payload,
-			)
-		})
-	}
 }

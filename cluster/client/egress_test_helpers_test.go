@@ -1,3 +1,5 @@
+//go:build testhooks
+
 package client
 
 import (
@@ -222,6 +224,15 @@ func defaultSessionEventFields(detail []byte) codecs.SessionEventFields {
 	}
 }
 
+func sessionEventFieldsForCorrelation(
+	correlationID int64,
+	detail []byte,
+) codecs.SessionEventFields {
+	fields := defaultSessionEventFields(detail)
+	fields.CorrelationID = correlationID
+	return fields
+}
+
 func encodeSessionEventWire(t *testing.T, clusterSessionID int64) []byte {
 	t.Helper()
 
@@ -288,15 +299,13 @@ func writePreV13SessionEventForConnect(
 ) {
 	t.Helper()
 
-	fields := defaultSessionEventFields([]byte("pre-v13-heartbeat"))
-	fields.CorrelationID = correlationID
 	writeUnfragmentedWireToTerm(
 		t,
 		termBuffer,
 		encodeSessionEventWireWithFields(
 			t,
 			egressTestClusterSessionID,
-			fields,
+			sessionEventFieldsForCorrelation(correlationID, []byte("pre-v13-heartbeat")),
 			12,
 		),
 	)
@@ -605,139 +614,16 @@ func requireZeroRecordingEgressCalls(t *testing.T, rec *recordingEgressHandlers)
 	require.Zero(t, rec.adminResponseCalls)
 }
 
-type fragmentedFrameSpec struct {
-	flags   uint8
-	payload []byte
-}
-
-func writeCommittedFragmentFrame(
-	t fragmentTestHelper,
-	termBuffer atomic.AtomicBuffer,
-	frameOffset int,
-	sessionID int32,
-	streamID int32,
-	termID int32,
-	termOffset int32,
-	spec fragmentedFrameSpec,
-) int32 {
-	t.Helper()
-
-	writeHeader := logbuffer.WriteDataHeaderFragmented
-	if spec.flags&logbuffer.Unfragmented == logbuffer.Unfragmented {
-		writeHeader = logbuffer.WriteDataHeaderUnfragmented
-	}
-	err := writeHeader(
-		termBuffer,
-		frameOffset,
-		sessionID,
-		streamID,
-		termID,
-		termOffset,
-		spec.flags,
-	)
-	if err != nil {
-		t.Errorf("writeCommittedFragmentFrame: %v", err)
-		t.FailNow()
-	}
-
-	frameLength := int32(len(spec.payload) + logbuffer.DataHeaderLength)
-	termBuffer.PutBytes(frameOffset+logbuffer.OffsetFramePayload, spec.payload)
-	logbuffer.PutFrameLengthOrdered(termBuffer, frameOffset, frameLength)
-	return frameLength
-}
-
 const (
-	fragmentFrameSessionID = int32(1001)
-	fragmentFrameStreamID  = int32(2002)
-	hookFrameSessionID     = int32(1002)
-	hookFrameStreamID      = int32(2003)
-	fragmentFrameTermID    = int32(7)
+	hookFrameSessionID = int32(1002)
+	hookFrameStreamID  = int32(2003)
+	hookFrameTermID    = int32(7)
 )
 
-func fragmentedFrameTermCapacity(specs []fragmentedFrameSpec) int {
-	total := 64
-	for _, spec := range specs {
-		total += logbuffer.AlignFrameLength(len(spec.payload) + logbuffer.DataHeaderLength)
-	}
-	return total
-}
-
-func writeCommittedFragmentFrames(
-	t fragmentTestHelper,
-	termBuffer atomic.AtomicBuffer,
-	startOffset int,
-	specs []fragmentedFrameSpec,
-) []int {
-	t.Helper()
-	return writeCommittedFragmentFramesForStream(
-		t,
-		termBuffer,
-		startOffset,
-		fragmentFrameSessionID,
-		fragmentFrameStreamID,
-		specs,
-	)
-}
-
-func writeCommittedFragmentFramesForStream(
-	t fragmentTestHelper,
-	termBuffer atomic.AtomicBuffer,
-	startOffset int,
-	sessionID int32,
-	streamID int32,
-	specs []fragmentedFrameSpec,
-) []int {
-	t.Helper()
-
-	offsets := make([]int, len(specs))
-	offset := startOffset
-	for i, spec := range specs {
-		offsets[i] = offset
-		frameLength := writeCommittedFragmentFrame(
-			t,
-			termBuffer,
-			offset,
-			sessionID,
-			streamID,
-			fragmentFrameTermID,
-			int32(offset),
-			spec,
-		)
-		offset += logbuffer.AlignFrameLength(int(frameLength))
-	}
-	return offsets
-}
-
-func fragmentHeaderAt(
-	termBuffer atomic.AtomicBuffer,
-	frameOffset int,
-) *aeron.Header {
-	header := &aeron.Header{}
-	header.SetBuffer(termBuffer)
-	header.SetOffset(frameOffset)
-	header.ResetPollFragmentState()
-	return header
-}
-
-func deliverFragment(
-	t fragmentTestHelper,
-	assembler *FragmentAssembler,
-	termBuffer atomic.AtomicBuffer,
-	frameOffset int,
-) {
-	t.Helper()
-
-	frameLength := logbuffer.FrameLengthVolatile(termBuffer, frameOffset)
-	payloadOffset := frameOffset + logbuffer.OffsetFramePayload
-	payloadLength := int(frameLength) - logbuffer.DataHeaderLength
-	header := fragmentHeaderAt(termBuffer, frameOffset)
-	assembler.Handler()(termBuffer, payloadOffset, payloadLength, header)
-}
-
-func unfragmentedFrameSpecs(wire []byte) []fragmentedFrameSpec {
-	return []fragmentedFrameSpec{{
-		flags:   logbuffer.Unfragmented,
-		payload: wire,
+func unfragmentedFrameSpecs(wire []byte) []aeron.FragmentedFrameForTest {
+	return []aeron.FragmentedFrameForTest{{
+		Flags:   logbuffer.Unfragmented,
+		Payload: wire,
 	}}
 }
 
@@ -745,16 +631,16 @@ func writeHookCommittedFragmentFrames(
 	t fragmentTestHelper,
 	termBuffer atomic.AtomicBuffer,
 	startOffset int,
-	specs []fragmentedFrameSpec,
+	specs []aeron.FragmentedFrameForTest,
 ) {
 	t.Helper()
 
-	writeCommittedFragmentFramesForStream(
-		t,
+	aeron.WriteCommittedDataFramesForStreamForTest(
 		termBuffer,
 		startOffset,
 		hookFrameSessionID,
 		hookFrameStreamID,
+		hookFrameTermID,
 		specs,
 	)
 }
@@ -795,11 +681,11 @@ func nextHookTermWriteOffset(termBuffer atomic.AtomicBuffer) int {
 	}
 }
 
-func splitWireFragmentSpecs(wire []byte) []fragmentedFrameSpec {
+func splitWireFragmentSpecs(wire []byte) []aeron.FragmentedFrameForTest {
 	split := len(wire) / 2
-	return []fragmentedFrameSpec{
-		{flags: logbuffer.BeginFlag, payload: wire[:split]},
-		{flags: logbuffer.EndFlag, payload: wire[split:]},
+	return []aeron.FragmentedFrameForTest{
+		{Flags: logbuffer.BeginFlag, Payload: wire[:split]},
+		{Flags: logbuffer.EndFlag, Payload: wire[split:]},
 	}
 }
 
@@ -857,12 +743,10 @@ func appendSessionEventForConnect(
 func encodeSessionEventForConnectWire(t *testing.T, correlationID int64) []byte {
 	t.Helper()
 
-	fields := defaultSessionEventFields([]byte("session-event-detail"))
-	fields.CorrelationID = correlationID
 	return encodeSessionEventWireWithFields(
 		t,
 		egressTestClusterSessionID,
-		fields,
+		sessionEventFieldsForCorrelation(correlationID, []byte("session-event-detail")),
 		gensbe.SessionEventSbeSchemaVersion,
 	)
 }
@@ -870,8 +754,7 @@ func encodeSessionEventForConnectWire(t *testing.T, correlationID int64) []byte 
 func encodeSessionEventRedirectWire(t *testing.T, correlationID int64, endpoints string) []byte {
 	t.Helper()
 
-	fields := defaultSessionEventFields([]byte(endpoints))
-	fields.CorrelationID = correlationID
+	fields := sessionEventFieldsForCorrelation(correlationID, []byte(endpoints))
 	fields.Code = gensbe.EventCode_REDIRECT
 	fields.LeaderMemberID = 1
 	return encodeSessionEventWireWithFields(
@@ -935,6 +818,9 @@ func writeSessionEventRedirectForConnect(
 ) {
 	t.Helper()
 
-	wire := encodeSessionEventRedirectWire(t, correlationID, endpoints)
-	writeUnfragmentedWireToTerm(t, termBuffer, wire)
+	writeUnfragmentedWireToTerm(
+		t,
+		termBuffer,
+		encodeSessionEventRedirectWire(t, correlationID, endpoints),
+	)
 }

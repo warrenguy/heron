@@ -784,7 +784,7 @@ func TestImage_Poll_deliversFragmentedFramesIndividually(t *testing.T) {
 		{Flags: logbuffer.EndFlag, Payload: []byte("end")},
 	}
 
-	aeron.WriteCommittedFragmentedDataFramesForTest(termBuffer, 0, fragments)
+	aeron.WriteCommittedDataFramesForTest(termBuffer, 0, fragments)
 
 	got := image.Poll(capture.handler, len(fragments))
 

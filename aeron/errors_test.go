@@ -436,6 +436,149 @@ func TestMapAddPollPendingError(t *testing.T) {
 	}
 }
 
+func TestPollHelperTimeoutErrors_errorStrings(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "pollUntilConnected",
+			err: &aeron.PollUntilConnectedTimeoutError{
+				PublicationRegID: 42,
+				StreamID:         1001,
+				SessionID:        2002,
+				Timeout:          10 * time.Second,
+				Position:         0,
+			},
+			want: "aeron: publication 42 (stream 1001 session 2002) not connected within 10s; position=0",
+		},
+		{
+			name: "pollUntilImageCount",
+			err: &aeron.PollUntilImageCountTimeoutError{
+				RegistrationID: 77,
+				StreamID:       1001,
+				Want:           1,
+				Have:           0,
+				Timeout:        10 * time.Second,
+				Detail:         "no images",
+			},
+			want: "aeron: subscription 77 (stream 1001) active image count=0 want=1; no images within 10s",
+		},
+		{
+			name: "pollOneMessage",
+			err: &aeron.PollOneMessageTimeoutError{
+				RegistrationID: 77,
+				StreamID:       1001,
+				Timeout:        10 * time.Second,
+				Detail:         "no images",
+			},
+			want: "aeron: subscription 77 (stream 1001) received no message within 10s; no images",
+		},
+		{
+			name: "pollReassembledPrecondition",
+			err: &aeron.PollReassembledPreconditionError{
+				RegistrationID: 77,
+				Detail:         "no active images",
+			},
+			want: "aeron: subscription 77 reassembled 0/1 messages; fragments=0; no active images",
+		},
+		{
+			name: "pollReassembledLoopTimeout",
+			err: &aeron.PollReassembledTimeoutError{
+				RegistrationID: 77,
+				Timeout:        10 * time.Second,
+				Detail:         "active=1 [0 stream=1001 session=2002 position=128]",
+			},
+			want: "aeron: subscription 77 reassembled 0/1 messages; fragments=0; " +
+				"active=1 [0 stream=1001 session=2002 position=128] within 10s",
+		},
+		{
+			name: "runDuringClientWork",
+			err: &aeron.RunDuringClientWorkTimeoutError{
+				Timeout: 10 * time.Second,
+			},
+			want: "aeron: RunDuringClientWork timed out within 10s",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			require.EqualError(t, testCase.err, testCase.want)
+		})
+	}
+}
+
+func TestOfferHelperErrors(t *testing.T) {
+	const (
+		publicationRegID int64 = 42
+		streamID         int32 = 1001
+		sessionID        int32 = 2002
+	)
+	pub := "aeron: publication 42 (stream 1001 session 2002)"
+
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "terminal",
+			err: &aeron.OfferTerminalError{
+				Status:           aeron.Closed,
+				PublicationRegID: publicationRegID,
+				StreamID:         streamID,
+				SessionID:        sessionID,
+				Position:         128,
+			},
+			want: pub + " offer failed: status=Closed; position=128",
+		},
+		{
+			name: "timeout",
+			err: &aeron.OfferTimeoutError{
+				Status:           aeron.BackPressured,
+				PublicationRegID: publicationRegID,
+				StreamID:         streamID,
+				SessionID:        sessionID,
+				Position:         0,
+				Timeout:          10 * time.Second,
+			},
+			want: pub + " offer timed out within 10s; position=0; status=BackPressured",
+		},
+		{
+			name: "stall",
+			err: &aeron.OfferStallError{
+				Status:           aeron.BackPressured,
+				PublicationRegID: publicationRegID,
+				StreamID:         streamID,
+				SessionID:        sessionID,
+				Position:         0,
+				StallTimeout:     2 * time.Second,
+			},
+			want: pub + " offer stalled within 2s; position=0; status=BackPressured",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			require.EqualError(t, testCase.err, testCase.want)
+		})
+	}
+}
+
+func TestPollBufferTooSmallError_is(t *testing.T) {
+	err := &aeron.PollBufferTooSmallError{Required: 8, Have: 4}
+	require.ErrorIs(t, err, aeron.ErrPollBufferTooSmall)
+}
+
+func TestErrInvalidTimeout(t *testing.T) {
+	require.EqualError(t, aeron.ErrInvalidTimeout, "aeron: invalid timeout")
+}
+
+func TestErrInvalidWant(t *testing.T) {
+	require.EqualError(t, aeron.ErrInvalidWant, "aeron: invalid want")
+}
+
 func TestMapConductorError(t *testing.T) {
 	staleErr := &conductor.DriverKeepaliveStaleError{
 		AgeMs:     11_000,

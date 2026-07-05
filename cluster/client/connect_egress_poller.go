@@ -23,7 +23,7 @@ const (
 type ConnectEgressPoller struct {
 	subscription  *aeron.Subscription
 	fragmentLimit int
-	assembler     *FragmentAssembler
+	assembler     *aeron.FragmentAssembler
 
 	pollComplete             bool
 	templateID               int32
@@ -52,7 +52,7 @@ func NewConnectEgressPoller(
 		fragmentLimit: fragmentLimit,
 		correlationID: conductor.NullCorrelationID,
 	}
-	poller.assembler = NewFragmentAssembler(func(
+	poller.assembler = aeron.NewFragmentAssembler(func(
 		buffer atomic.AtomicBuffer,
 		offset int,
 		length int,

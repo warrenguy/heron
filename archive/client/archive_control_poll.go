@@ -40,8 +40,9 @@ type ArchiveControlPollTargets struct {
 // only correct poll for a post-connect session. A standalone ControlResponsePoller.Poll
 // or an isolated signal poll on the same subscription loses fragments.
 //
-// assembler must be non-nil and dedicated to the demux: PollArchiveControlEvents installs
-// its own reassembly delegate on first use and reads targets that it stores by value.
+// assembler must be non-nil and dedicated to the demux: use NewFragmentAssembler(nil)
+// so the reassembly delegate routes through dispatchArchiveControlFragment. Targets
+// are stored by value each poll.
 //
 // The demux does not reset targets.ResponsePoller; a reused poller that already latched
 // a terminal drops later responses. See ArchiveControlPollTargets.ResponsePoller.
@@ -57,10 +58,6 @@ func PollArchiveControlEvents(
 		return 0
 	}
 	assembler.demuxTargets = targets
-	if !assembler.demuxWired {
-		assembler.delegate = assembler.dispatchArchiveControlFragment
-		assembler.demuxWired = true
-	}
 	return subscription.Poll(assembler.Handler(), fragmentLimit)
 }
 
@@ -104,9 +101,7 @@ func handleArchiveControlFragment(
 	case gensbe.ControlResponseSbeTemplateID, gensbe.ChallengeSbeTemplateID:
 		if targets.ResponsePoller != nil {
 			handleControlResponseFromFragment(targets.ResponsePoller, fragment, templateID)
-			return
-		}
-		if templateID == gensbe.ControlResponseSbeTemplateID &&
+		} else if templateID == gensbe.ControlResponseSbeTemplateID &&
 			targets.DescriptorPoller != nil {
 			handleDescriptorControlResponseFragment(targets.DescriptorPoller, fragment)
 		}

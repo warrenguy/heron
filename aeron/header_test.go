@@ -62,7 +62,7 @@ func completedFragmentFixtureForFragments(
 	sub := testSubscription(tb)
 	image := testImage(tb, sub)
 	termBuffer := aeron.ImageTermBuffer0ForTest(image)
-	frameOffsets := aeron.WriteCommittedFragmentedDataFramesForTest(termBuffer, 0, fragments)
+	frameOffsets := aeron.WriteCommittedDataFramesForTest(termBuffer, 0, fragments)
 	return newCompletedFragmentFixture(image, termBuffer, frameOffsets, fragments)
 }
 

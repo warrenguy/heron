@@ -89,25 +89,79 @@ func closeEgressImageAndRequirePollWork(t *testing.T, ac *AeronCluster, image *a
 	require.Positive(t, ac.PollEgress())
 }
 
-func setupAeronClusterWithPendingEgressFragment(
+func writePendingEgressFragmentToTerm(
 	t *testing.T,
-	payload []byte,
-) (*AeronCluster, *aeron.Image, *FragmentAssembler) {
+	termBuffer agronaatomic.AtomicBuffer,
+	appPayload []byte,
+) []byte {
 	t.Helper()
 
-	sub, image, termBuffer := setupEgressPollFixtures(t)
 	wire := encodeSessionMessageHeaderWire(
 		t,
 		egressTestClusterSessionID,
 		egressTestMessageTimestamp,
-		payload,
+		appPayload,
 	)
 	writeFirstSplitWireFragmentToTerm(t, termBuffer, wire)
+	return wire
+}
+
+func requireFragmentAssemblerHasBuilder(
+	t *testing.T,
+	assembler *aeron.FragmentAssembler,
+	sessionID int32,
+	want bool,
+) {
+	t.Helper()
+
+	require.Equal(t, want, aeron.FragmentAssemblerHasBuilderForTest(assembler, sessionID))
+}
+
+func requireAwaitNewLeaderWithoutIngress(t *testing.T, ac *AeronCluster) {
+	t.Helper()
+
+	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
+	require.Nil(t, ac.IngressPublication())
+}
+
+func mutateConnectResultClosingImageOnFirstMessage(
+	imageToClose *aeron.Image,
+	closed *bool,
+) func(*ConnectResult) {
+	return func(result *ConnectResult) {
+		rec := newRecordingEgressHandlers()
+		recordMessage := rec.MessageFunc
+		rec.MessageFunc = func(
+			clusterSessionID int64,
+			timestamp int64,
+			buffer agronaatomic.AtomicBuffer,
+			offset int,
+			length int,
+			header *aeron.Header,
+		) {
+			if !*closed {
+				*closed = true
+				aeron.ImageInternalCloseForHooks(imageToClose)
+			}
+			recordMessage(clusterSessionID, timestamp, buffer, offset, length, header)
+		}
+		result.Context.EgressHandler = rec
+	}
+}
+
+func setupAeronClusterWithPendingEgressFragment(
+	t *testing.T,
+	payload []byte,
+) (*AeronCluster, *aeron.Image, *aeron.FragmentAssembler) {
+	t.Helper()
+
+	sub, image, termBuffer := setupEgressPollFixtures(t)
+	writePendingEgressFragmentToTerm(t, termBuffer, payload)
 
 	ac := newAeronClusterWithEgressImage(t, sub, image, nil)
 	assembler := ac.egressAdapter.assembler
 	require.Equal(t, 1, ac.PollEgress())
-	require.Contains(t, assembler.builders, hookFrameSessionID)
+	requireFragmentAssemblerHasBuilder(t, assembler, hookFrameSessionID, true)
 	return ac, image, assembler
 }
 
@@ -146,12 +200,11 @@ func TestAeronCluster_PollEgress_imageUnavailableClearsAssembler(t *testing.T) {
 	closeEgressImageAndRequirePollWork(t, ac, image)
 	require.Equal(t, []string{"FreeSessionBuffer", "Clear"}, teardownRecorder.Ops)
 	require.Nil(t, ac.egressImage)
-	require.NotContains(t, assembler.builders, hookFrameSessionID)
-	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
-	require.Nil(t, ac.IngressPublication())
+	requireFragmentAssemblerHasBuilder(t, assembler, hookFrameSessionID, false)
+	requireAwaitNewLeaderWithoutIngress(t, ac)
 
 	require.Equal(t, 0, ac.PollEgress())
-	require.NotContains(t, assembler.builders, image.SessionID())
+	requireFragmentAssemblerHasBuilder(t, assembler, image.SessionID(), false)
 }
 
 func TestAeronCluster_PollEgress_replacementClosesDuringPoll_entersAwaitNewLeader(t *testing.T) {
@@ -161,31 +214,17 @@ func TestAeronCluster_PollEgress_replacementClosesDuringPoll_entersAwaitNewLeade
 	writeDefaultSessionMessageToTerm(t, replacementTerm, []byte("close-replacement-during-poll"))
 
 	var closedReplacementDuringPoll bool
-	ac := newAeronClusterWithEgressImage(t, sub, image, func(result *ConnectResult) {
-		rec := newRecordingEgressHandlers()
-		recordMessage := rec.MessageFunc
-		rec.MessageFunc = func(
-			clusterSessionID int64,
-			timestamp int64,
-			buffer agronaatomic.AtomicBuffer,
-			offset int,
-			length int,
-			header *aeron.Header,
-		) {
-			if !closedReplacementDuringPoll {
-				closedReplacementDuringPoll = true
-				aeron.ImageInternalCloseForHooks(replacement)
-			}
-			recordMessage(clusterSessionID, timestamp, buffer, offset, length, header)
-		}
-		result.Context.EgressHandler = rec
-	})
+	ac := newAeronClusterWithEgressImage(
+		t,
+		sub,
+		image,
+		mutateConnectResultClosingImageOnFirstMessage(replacement, &closedReplacementDuringPoll),
+	)
 	aeron.ImageInternalCloseForHooks(image)
 
 	require.Positive(t, ac.PollEgress())
 	require.True(t, closedReplacementDuringPoll)
-	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
-	require.Nil(t, ac.IngressPublication())
+	requireAwaitNewLeaderWithoutIngress(t, ac)
 }
 
 func TestAeronCluster_PollEgress_closeDuringPoll_entersAwaitNewLeader(t *testing.T) {
@@ -193,31 +232,17 @@ func TestAeronCluster_PollEgress_closeDuringPoll_entersAwaitNewLeader(t *testing
 	writeDefaultSessionMessageToTerm(t, termBuffer, []byte("close-during-poll"))
 
 	var closedDuringPoll bool
-	ac := newAeronClusterWithEgressImage(t, sub, image, func(result *ConnectResult) {
-		rec := newRecordingEgressHandlers()
-		recordMessage := rec.MessageFunc
-		rec.MessageFunc = func(
-			clusterSessionID int64,
-			timestamp int64,
-			buffer agronaatomic.AtomicBuffer,
-			offset int,
-			length int,
-			header *aeron.Header,
-		) {
-			if !closedDuringPoll {
-				closedDuringPoll = true
-				aeron.ImageInternalCloseForHooks(image)
-			}
-			recordMessage(clusterSessionID, timestamp, buffer, offset, length, header)
-		}
-		result.Context.EgressHandler = rec
-	})
+	ac := newAeronClusterWithEgressImage(
+		t,
+		sub,
+		image,
+		mutateConnectResultClosingImageOnFirstMessage(image, &closedDuringPoll),
+	)
 
 	require.NotNil(t, ac.IngressPublication())
 	require.Positive(t, ac.PollEgress())
 	require.True(t, closedDuringPoll)
-	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
-	require.Nil(t, ac.IngressPublication())
+	requireAwaitNewLeaderWithoutIngress(t, ac)
 }
 
 func TestAeronCluster_PollEgress_closedEgressImage_entersAwaitNewLeader(t *testing.T) {
@@ -237,8 +262,7 @@ func TestAeronCluster_PollEgress_closedEgressImage_entersAwaitNewLeader(t *testi
 
 	require.NotNil(t, ac.IngressPublication())
 	closeEgressImageAndRequirePollWork(t, ac, image)
-	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
-	require.Nil(t, ac.IngressPublication())
+	requireAwaitNewLeaderWithoutIngress(t, ac)
 	require.Equal(t, startNs+timeout.Nanoseconds(), ac.stateDeadlineNs)
 }
 
@@ -250,11 +274,11 @@ func TestAeronCluster_PollEgress_stableAfterTeardown(t *testing.T) {
 
 	closeEgressImageAndRequirePollWork(t, ac, image)
 	require.Nil(t, ac.egressImage)
-	require.NotContains(t, assembler.builders, hookFrameSessionID)
+	requireFragmentAssemblerHasBuilder(t, assembler, hookFrameSessionID, false)
 
 	require.Equal(t, 0, ac.PollEgress())
 	require.Nil(t, ac.egressImage)
-	require.NotContains(t, assembler.builders, hookFrameSessionID)
+	requireFragmentAssemblerHasBuilder(t, assembler, hookFrameSessionID, false)
 }
 
 func TestAeronCluster_Close_afterPollTeardown_onlyClearsAdapter(t *testing.T) {
@@ -293,13 +317,7 @@ func TestAeronCluster_PollEgress_closedTracked_replacementFragmentDelivered(t *t
 	replacementTerm := aeron.ImageTermBufferForHooks(replacement)
 
 	appPayload := []byte("replacement-fragment-payload")
-	wire := encodeSessionMessageHeaderWire(
-		t,
-		egressTestClusterSessionID,
-		egressTestMessageTimestamp,
-		appPayload,
-	)
-	writeFirstSplitWireFragmentToTerm(t, replacementTerm, wire)
+	wire := writePendingEgressFragmentToTerm(t, replacementTerm, appPayload)
 
 	ac := newAeronClusterWithEgressImage(t, sub, image, nil)
 	aeron.ImageInternalCloseForHooks(image)

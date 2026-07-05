@@ -234,10 +234,12 @@ func (client *Client) DoWork() int {
 	}
 	client.lockClient()
 	defer client.unlockClient()
-	if client.closed.Load() || client.conductor == nil {
+	if client.closed.Load() {
 		return 0
 	}
-	return client.doWorkLocked()
+	workDone := client.doWorkLocked()
+	invokeDoWorkAfterHook(client)
+	return workDone
 }
 
 // IsTerminating reports whether the conductor has entered termination (driver

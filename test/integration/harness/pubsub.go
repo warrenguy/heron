@@ -3,10 +3,11 @@
 package harness
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,44 +19,23 @@ import (
 	"github.com/warrenguy/heron/agrona/atomic"
 )
 
-type ipcPublisher interface {
-	IsConnected() bool
-	RegistrationID() int64
-	StreamID() int32
-	SessionID() int32
-	Position() int64
-	Offer([]byte) int64
-}
-
-var (
-	_ ipcPublisher = (*aeron.Publication)(nil)
-	_ ipcPublisher = (*aeron.ExclusivePublication)(nil)
-)
-
 // PollUntilConnected polls DoWork until pub.IsConnected on live IPC.
 func PollUntilConnected(
 	t testing.TB,
 	client *aeron.Client,
-	pub ipcPublisher,
+	pub aeron.PublicationOfferer,
 	timeout time.Duration,
 ) {
 	t.Helper()
 
-	pollClientUntilDynamic(
-		t,
+	effectiveTimeout := connectedPollTimeoutOr(timeout)
+	err := aeron.PollUntilConnected(
+		context.Background(),
 		client,
-		connectedPollTimeoutOr(timeout),
-		pub.IsConnected,
-		func() string {
-			return fmt.Sprintf(
-				"publication %d (stream %d session %d) never connected; position=%d",
-				pub.RegistrationID(),
-				pub.StreamID(),
-				pub.SessionID(),
-				pub.Position(),
-			)
-		},
+		pub,
+		effectiveTimeout,
 	)
+	failPollTimeout(t, effectiveTimeout, err)
 }
 
 // PollUntilImageCount polls DoWork until the subscription has want non-closed images.
@@ -71,40 +51,76 @@ func PollUntilImageCount(
 		return
 	}
 
-	pollClientUntilDynamic(
-		t,
+	effectiveTimeout := connectedPollTimeoutOr(timeout)
+	err := aeron.PollUntilImageCount(
+		context.Background(),
 		client,
-		connectedPollTimeoutOr(timeout),
-		func() bool {
-			return SubscriptionActiveImageCountAtLeast(sub, want)
-		},
-		func() string {
-			return subscriptionImageCountFailMsg(sub, want)
-		},
+		sub,
+		want,
+		effectiveTimeout,
 	)
+	failPollTimeout(t, effectiveTimeout, err)
+}
+
+// failPollTimeout maps delegated aeron poll timeout errors into harness golden TB
+// strings. Intentionally differs from typed Error(): no aeron: prefix, timeout
+// appended here as " within %s", and harness phrasing ("never connected" vs aeron
+// "not connected within"). ErrInvalidTimeout uses "invalid timeout: %s". pubsub_test.go
+// locks this dialect. Each new delegated poll helper needs its own errors.As arm here.
+func failPollTimeout(t testing.TB, timeout time.Duration, err error) {
+	t.Helper()
+	if err == nil {
+		return
+	}
+
+	if errors.Is(err, aeron.ErrInvalidTimeout) {
+		t.Errorf("invalid timeout: %s", timeout)
+		t.FailNow()
+		return
+	}
+
+	var connected *aeron.PollUntilConnectedTimeoutError
+	if errors.As(err, &connected) {
+		t.Errorf(
+			"publication %d (stream %d session %d) never connected; position=%d within %s",
+			connected.PublicationRegID,
+			connected.StreamID,
+			connected.SessionID,
+			connected.Position,
+			connected.Timeout,
+		)
+		t.FailNow()
+		return
+	}
+
+	var imageCount *aeron.PollUntilImageCountTimeoutError
+	if errors.As(err, &imageCount) {
+		t.Errorf(
+			"%s within %s",
+			formatSubscriptionImageCountMsg(
+				imageCount.RegistrationID,
+				imageCount.StreamID,
+				imageCount.Have,
+				imageCount.Want,
+				imageCount.Detail,
+			),
+			imageCount.Timeout,
+		)
+		t.FailNow()
+		return
+	}
+
+	t.Errorf("unexpected poll error: %v", err)
+	t.FailNow()
 }
 
 // RequireNoActiveImages fails fast if the subscription has any active image.
 func RequireNoActiveImages(t testing.TB, sub *aeron.Subscription) {
 	t.Helper()
 
-	if SubscriptionActiveImageCountAtLeast(sub, 1) {
+	if aeron.SubscriptionActiveImageCountAtLeast(sub, 1) {
 		require.FailNow(t, subscriptionImageCountFailMsg(sub, 0))
 	}
-}
-
-// SubscriptionActiveImageCountAtLeast reports whether sub has at least want active images.
-func SubscriptionActiveImageCountAtLeast(sub *aeron.Subscription, want int) bool {
-	active := 0
-	for index := range sub.ImageCount() {
-		if _, ok := sub.ImageAt(index); ok {
-			active++
-			if active >= want {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func pollSplitClientsUntilDynamic(
@@ -155,7 +171,7 @@ func PollSplitClientsUntil(
 func PollSplitClientIPCLink(
 	t testing.TB,
 	pubClient, subClient *aeron.Client,
-	pub ipcPublisher,
+	pub aeron.PublicationOfferer,
 	sub *aeron.Subscription,
 	timeout time.Duration,
 ) {
@@ -167,7 +183,7 @@ func PollSplitClientIPCLink(
 		subClient,
 		timeout,
 		func() bool {
-			return pub.IsConnected() && SubscriptionActiveImageCountAtLeast(sub, 1)
+			return pub.IsConnected() && aeron.SubscriptionActiveImageCountAtLeast(sub, 1)
 		},
 		"split-client IPC link not ready",
 	)
@@ -175,7 +191,7 @@ func PollSplitClientIPCLink(
 
 type ipcPublication interface {
 	*aeron.Publication | *aeron.ExclusivePublication
-	ipcPublisher
+	aeron.PublicationOfferer
 	Close() error
 }
 
@@ -299,7 +315,7 @@ func PollUntilNoActiveImagesSplit(
 		subClient,
 		timeout,
 		func() bool {
-			return !SubscriptionActiveImageCountAtLeast(sub, 1)
+			return !aeron.SubscriptionActiveImageCountAtLeast(sub, 1)
 		},
 		subscriptionImageCountFailMsg(sub, 0),
 	)
@@ -319,7 +335,7 @@ func PollUntilNoActiveImages(
 		client,
 		connectedPollTimeoutOr(timeout),
 		func() bool {
-			return !SubscriptionActiveImageCountAtLeast(sub, 1)
+			return !aeron.SubscriptionActiveImageCountAtLeast(sub, 1)
 		},
 		func() string {
 			return subscriptionImageCountFailMsg(sub, 0)
@@ -398,7 +414,7 @@ func PollDeliveredSplit(
 func OfferWithRetry(
 	t testing.TB,
 	client *aeron.Client,
-	pub ipcPublisher,
+	pub aeron.PublicationOfferer,
 	payload []byte,
 	timeout time.Duration,
 ) int64 {
@@ -415,7 +431,7 @@ func OfferWithRetry(
 func OfferWithRetryWitness(
 	t testing.TB,
 	client *aeron.Client,
-	pub ipcPublisher,
+	pub aeron.PublicationOfferer,
 	payload []byte,
 	timeout time.Duration,
 ) (int64, bool) {
@@ -431,7 +447,7 @@ func OfferWithRetryWitness(
 func OfferWithRetryWitnessAfterNotify(
 	t testing.TB,
 	client *aeron.Client,
-	pub ipcPublisher,
+	pub aeron.PublicationOfferer,
 	payload []byte,
 	timeout time.Duration,
 	notify chan<- struct{},
@@ -443,101 +459,119 @@ func OfferWithRetryWitnessAfterNotify(
 
 // OfferStallTimeout derives stall timeout from offer retry timeout.
 func OfferStallTimeout(timeout time.Duration) time.Duration {
-	stall := timeout / 5
-	if stall < time.Second && timeout >= 5*time.Second {
-		return time.Second
-	}
-	return stall
+	return aeron.OfferStallTimeout(timeout)
 }
 
 func offerWithRetry(
 	t testing.TB,
 	client *aeron.Client,
-	pub ipcPublisher,
+	pub aeron.PublicationOfferer,
 	payload []byte,
 	timeout time.Duration,
 	notify chan<- struct{},
 ) (int64, bool) {
+	t.Helper()
+
 	timeout = connectedPollTimeoutOr(timeout)
-	stallTimeout := OfferStallTimeout(timeout)
-	deadline := time.Now().Add(timeout)
 	var (
-		lastStatus             int64
 		sawBackpressureOrAdmin bool
-		retryPosition          = pub.Position()
-		stallMarked            time.Time
+		notifySent             bool
 	)
-	for time.Now().Before(deadline) {
-		result := pub.Offer(payload)
-		if result > 0 {
-			return result, sawBackpressureOrAdmin
+	onRetriable := func(status int64) {
+		sawBackpressureOrAdmin = true
+		if notify == nil || notifySent {
+			return
 		}
-		lastStatus = result
-		position := pub.Position()
-		if position > retryPosition {
-			retryPosition = position
-			stallMarked = time.Time{}
-		} else if result == aeron.BackPressured || result == aeron.AdminAction {
-			if stallMarked.IsZero() {
-				stallMarked = time.Now()
-			} else if time.Since(stallMarked) >= stallTimeout {
-				t.Errorf(
-					"publication %d (stream %d session %d) offer stalled within %s; position=%d; status=%d",
-					pub.RegistrationID(),
-					pub.StreamID(),
-					pub.SessionID(),
-					stallTimeout,
-					position,
-					lastStatus,
-				)
-				t.FailNow()
-				return 0, sawBackpressureOrAdmin
-			}
-		} else if result == aeron.NotConnected {
-			stallMarked = time.Time{}
-		}
-		switch result {
-		case aeron.AdminAction, aeron.BackPressured:
-			if notify != nil {
-				select {
-				case notify <- struct{}{}:
-				default:
-				}
-				notify = nil
-			}
-			sawBackpressureOrAdmin = true
-			client.DoWork()
-			if result == aeron.BackPressured {
-				time.Sleep(aeron.DefaultIdleSleepDuration)
-			}
-		case aeron.NotConnected:
-			client.DoWork()
-			time.Sleep(aeron.DefaultIdleSleepDuration)
+		select {
+		case notify <- struct{}{}:
 		default:
-			t.Errorf(
-				"publication %d (stream %d session %d) offer failed: status=%d; position=%d",
-				pub.RegistrationID(),
-				pub.StreamID(),
-				pub.SessionID(),
-				result,
-				pub.Position(),
-			)
-			t.FailNow()
-			return result, sawBackpressureOrAdmin
 		}
+		notifySent = true
 	}
 
-	t.Errorf(
-		"publication %d (stream %d session %d) offer timed out within %s; position=%d; status=%d",
-		pub.RegistrationID(),
-		pub.StreamID(),
-		pub.SessionID(),
+	position, err := aeron.OfferWithRetryObserved(
+		client,
+		pub,
+		payload,
 		timeout,
-		pub.Position(),
-		lastStatus,
+		onRetriable,
 	)
+	if err == nil {
+		return position, sawBackpressureOrAdmin
+	}
+	return failOfferWithRetry(t, pub, timeout, err), sawBackpressureOrAdmin
+}
+
+// failOfferWithRetry maps delegated aeron offer errors into harness golden TB strings.
+//
+// Intentionally differs from Offer*Error.Error(): no aeron: prefix and numeric
+// status codes (not PositionCodeName). ErrInvalidTimeout uses "invalid timeout: %s".
+// pubsub_test.go locks this dialect.
+func failOfferWithRetry(
+	t testing.TB,
+	pub aeron.PublicationOfferer,
+	timeout time.Duration,
+	err error,
+) int64 {
+	t.Helper()
+
+	regID := pub.RegistrationID()
+	streamID := pub.StreamID()
+	sessionID := pub.SessionID()
+
+	var terminal *aeron.OfferTerminalError
+	if errors.As(err, &terminal) {
+		t.Errorf(
+			"publication %d (stream %d session %d) offer failed: status=%d; position=%d",
+			regID,
+			streamID,
+			sessionID,
+			terminal.Status,
+			terminal.Position,
+		)
+		t.FailNow()
+		return terminal.Status
+	}
+
+	var stall *aeron.OfferStallError
+	if errors.As(err, &stall) {
+		t.Errorf(
+			"publication %d (stream %d session %d) offer stalled within %s; position=%d; status=%d",
+			regID,
+			streamID,
+			sessionID,
+			stall.StallTimeout,
+			stall.Position,
+			stall.Status,
+		)
+		t.FailNow()
+		return 0
+	}
+
+	if errors.Is(err, aeron.ErrInvalidTimeout) {
+		t.Errorf("invalid timeout: %s", timeout)
+		t.FailNow()
+		return 0
+	}
+
+	var timeoutErr *aeron.OfferTimeoutError
+	if errors.As(err, &timeoutErr) {
+		t.Errorf(
+			"publication %d (stream %d session %d) offer timed out within %s; position=%d; status=%d",
+			regID,
+			streamID,
+			sessionID,
+			timeoutErr.Timeout,
+			timeoutErr.Position,
+			timeoutErr.Status,
+		)
+		t.FailNow()
+		return 0
+	}
+
+	t.Errorf("unexpected offer error: %v", err)
 	t.FailNow()
-	return 0, sawBackpressureOrAdmin
+	return 0
 }
 
 // Harness-only reassembly via Begin/Middle/End flags; not a production FragmentAssembler.
@@ -562,8 +596,8 @@ func PollReassembled(
 		return nil, 0
 	}
 
-	if !SubscriptionActiveImageCountAtLeast(sub, 1) {
-		_, detail := subscriptionImageSummary(sub)
+	if !aeron.SubscriptionActiveImageCountAtLeast(sub, 1) {
+		_, detail := aeron.SubscriptionImageSummary(sub)
 		t.Errorf(
 			"subscription %d reassembled 0/%d messages; fragments=0; %s",
 			sub.RegistrationID(),
@@ -638,7 +672,7 @@ func PollReassembled(
 			return len(received) >= want || failedCaptureTB(t)
 		},
 		func() string {
-			_, detail := subscriptionImageSummary(sub)
+			_, detail := aeron.SubscriptionImageSummary(sub)
 			return fmt.Sprintf(
 				"subscription %d reassembled %d/%d messages; fragments=%d; %s",
 				sub.RegistrationID(),
@@ -762,7 +796,7 @@ func FragmentedRoundtripPayload(maxPayload, extra int) []byte {
 func AssertPubSubIPCMetadata(
 	t testing.TB,
 	streamID int32,
-	pub ipcPublisher,
+	pub aeron.PublicationOfferer,
 	sub *aeron.Subscription,
 	pubPosBefore int64,
 	wantAdvance int64,
@@ -800,7 +834,7 @@ func AssertSubscribeMetadata(
 // AssertPubSubPositionsAdvanced checks publication and image positions advanced by advance.
 func AssertPubSubPositionsAdvanced(
 	t testing.TB,
-	pub ipcPublisher,
+	pub aeron.PublicationOfferer,
 	sub *aeron.Subscription,
 	pubPosBefore int64,
 	advance int64,
@@ -833,7 +867,7 @@ func preparePollWant(t testing.TB, want int) bool {
 }
 
 func pollDeliveredFailMsg(sub *aeron.Subscription, received, want int) string {
-	_, detail := subscriptionImageSummary(sub)
+	_, detail := aeron.SubscriptionImageSummary(sub)
 	return fmt.Sprintf(
 		"subscription %d delivered %d/%d fragments; %s",
 		sub.RegistrationID(),
@@ -843,42 +877,29 @@ func pollDeliveredFailMsg(sub *aeron.Subscription, received, want int) string {
 	)
 }
 
-func subscriptionImageCountFailMsg(sub *aeron.Subscription, want int) string {
-	active, detail := subscriptionImageSummary(sub)
+func formatSubscriptionImageCountMsg(
+	regID int64,
+	streamID int32,
+	active, want int,
+	detail string,
+) string {
 	return fmt.Sprintf(
 		"subscription %d (stream %d) active image count=%d want=%d; %s",
-		sub.RegistrationID(),
-		sub.StreamID(),
+		regID,
+		streamID,
 		active,
 		want,
 		detail,
 	)
 }
 
-func subscriptionImageSummary(sub *aeron.Subscription) (active int, detail string) {
-	imageCount := sub.ImageCount()
-	if imageCount == 0 {
-		return 0, "no images"
-	}
-
-	var positions strings.Builder
-	for index := range imageCount {
-		image, ok := sub.ImageAt(index)
-		if !ok {
-			continue
-		}
-		active++
-		fmt.Fprintf(
-			&positions,
-			" [%d stream=%d session=%d position=%d]",
-			index,
-			image.StreamID(),
-			image.SessionID(),
-			image.Position(),
-		)
-	}
-	if active == 0 {
-		return 0, fmt.Sprintf("active=0 slice=%d", imageCount)
-	}
-	return active, fmt.Sprintf("active=%d%s", active, positions.String())
+func subscriptionImageCountFailMsg(sub *aeron.Subscription, want int) string {
+	active, detail := aeron.SubscriptionImageSummary(sub)
+	return formatSubscriptionImageCountMsg(
+		sub.RegistrationID(),
+		sub.StreamID(),
+		active,
+		want,
+		detail,
+	)
 }

@@ -464,6 +464,11 @@ func ImageTermBufferForHooks(image *Image) atomic.AtomicBuffer {
 	return image.termBuffers[0]
 }
 
+// FragmentAssemblerHasBuilderForTest reports whether assembler has a builder for sessionID.
+func FragmentAssemblerHasBuilderForTest(assembler *FragmentAssembler, sessionID int32) bool {
+	return assembler != nil && assembler.builders[sessionID] != nil
+}
+
 // ImageInternalCloseForHooks closes the image handle for cross-package tests.
 //
 // Same as in-package ImageInternalCloseForTest: internalClose only. Does not
@@ -499,12 +504,7 @@ func WriteCommittedDataFrameForHooks(
 	flags uint8,
 	payload []byte,
 ) {
-	frameLength := int32(len(payload) + logbuffer.DataHeaderLength)
-	writeHeader := logbuffer.WriteDataHeaderUnfragmented
-	if flags&logbuffer.Unfragmented != logbuffer.Unfragmented {
-		writeHeader = logbuffer.WriteDataHeaderFragmented
-	}
-	if err := writeHeader(
+	writeCommittedDataFrameForTest(
 		termBuffer,
 		frameOffset,
 		sessionID,
@@ -512,11 +512,8 @@ func WriteCommittedDataFrameForHooks(
 		termID,
 		termOffset,
 		flags,
-	); err != nil {
-		panic(err)
-	}
-	termBuffer.PutBytes(frameOffset+logbuffer.OffsetFramePayload, payload)
-	logbuffer.PutFrameLengthOrdered(termBuffer, frameOffset, frameLength)
+		payload,
+	)
 }
 
 func testHookAvailableImage(correlationID int64) conductor.AvailableImage {

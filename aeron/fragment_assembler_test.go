@@ -1,12 +1,14 @@
-package client
+//go:build testhooks
+
+package aeron
 
 import (
+	"slices"
 	"testing"
 	"unsafe"
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/agrona/atomic"
 )
@@ -15,22 +17,18 @@ type fragmentDelegateCapture struct {
 	payloads    [][]byte
 	bufferPtrs  []uintptr
 	payloadPtrs []uintptr
-	headers     []*aeron.Header
-}
-
-func newFragmentDelegateCapture() *fragmentDelegateCapture {
-	return &fragmentDelegateCapture{}
+	headers     []*Header
 }
 
 func sliceDataPtr(b []byte) uintptr {
 	return uintptr(unsafe.Pointer(unsafe.SliceData(b)))
 }
 
-var noopFragmentHandler aeron.FragmentHandler = func(
+var noopFragmentHandler FragmentHandler = func(
 	_ atomic.AtomicBuffer,
 	_ int,
 	_ int,
-	_ *aeron.Header,
+	_ *Header,
 ) {
 }
 
@@ -62,13 +60,13 @@ func deliverFragmentsInOrder(
 func setupFragmentAssembler(
 	t *testing.T,
 	termSize int,
-	specs []fragmentedFrameSpec,
+	specs []FragmentedFrameForTest,
 ) (*fragmentDelegateCapture, *FragmentAssembler, atomic.AtomicBuffer, []int) {
 	t.Helper()
 
 	termBuffer := atomic.Wrap(make([]byte, termSize))
-	offsets := writeCommittedFragmentFrames(t, termBuffer, 0, specs)
-	capture := newFragmentDelegateCapture()
+	offsets := WriteCommittedDataFramesForTest(termBuffer, 0, specs)
+	capture := &fragmentDelegateCapture{}
 	assembler := NewFragmentAssembler(capture.handler())
 	return capture, assembler, termBuffer, offsets
 }
@@ -76,25 +74,22 @@ func setupFragmentAssembler(
 func newAssemblerWithPendingBeginFragment(t *testing.T) *FragmentAssembler {
 	t.Helper()
 
-	termBuffer := atomic.Wrap(make([]byte, 512))
-	offsets := writeCommittedFragmentFrames(t, termBuffer, 0, []fragmentedFrameSpec{
-		{flags: logbuffer.BeginFlag, payload: []byte("pending")},
+	_, assembler, termBuffer, offsets := setupFragmentAssembler(t, 512, []FragmentedFrameForTest{
+		{Flags: logbuffer.BeginFlag, Payload: []byte("pending")},
 	})
-
-	assembler := NewFragmentAssembler(noopFragmentHandler)
 	deliverFragment(t, assembler, termBuffer, offsets[0])
 	return assembler
 }
 
-func (capture *fragmentDelegateCapture) handler() aeron.FragmentHandler {
+func (capture *fragmentDelegateCapture) handler() FragmentHandler {
 	return func(
 		buffer atomic.AtomicBuffer,
 		offset int,
 		length int,
-		header *aeron.Header,
+		header *Header,
 	) {
 		bytes := buffer.Bytes()
-		payload := append([]byte(nil), bytes[offset:offset+length]...)
+		payload := slices.Clone(bytes[offset : offset+length])
 		capture.payloads = append(capture.payloads, payload)
 		capture.bufferPtrs = append(capture.bufferPtrs, sliceDataPtr(bytes))
 		if length > 0 {
@@ -111,12 +106,18 @@ func TestFragmentAssembler_unfragmentedDelegatesWithoutCopy(t *testing.T) {
 	termBytes := make([]byte, 256)
 	termBuffer := atomic.Wrap(termBytes)
 	payload := []byte("whole-message")
-	writeCommittedFragmentFrames(t, termBuffer, 0, []fragmentedFrameSpec{{
-		flags:   logbuffer.Unfragmented,
-		payload: payload,
-	}})
+	WriteCommittedDataFrameWithFlagsForTest(
+		termBuffer,
+		0,
+		TestPublicationSessionID,
+		TestPublicationStreamID,
+		TestPublicationInitialTermID,
+		0,
+		logbuffer.Unfragmented,
+		payload,
+	)
 
-	capture := newFragmentDelegateCapture()
+	capture := &fragmentDelegateCapture{}
 	assembler := NewFragmentAssembler(capture.handler())
 
 	deliverFragment(t, assembler, termBuffer, 0)
@@ -132,45 +133,40 @@ func TestFragmentAssembler_unfragmentedDelegatesWithoutCopy(t *testing.T) {
 
 	beginPayload := []byte("begin-part")
 	endPayload := []byte("end-part")
-	termBytes = make([]byte, 512)
-	termBuffer = atomic.Wrap(termBytes)
-	offsets := writeCommittedFragmentFrames(t, termBuffer, 0, []fragmentedFrameSpec{
-		{flags: logbuffer.BeginFlag, payload: beginPayload},
-		{flags: logbuffer.EndFlag, payload: endPayload},
+	capture, assembler, termBuffer, offsets := setupFragmentAssembler(t, 512, []FragmentedFrameForTest{
+		{Flags: logbuffer.BeginFlag, Payload: beginPayload},
+		{Flags: logbuffer.EndFlag, Payload: endPayload},
 	})
-
-	capture = newFragmentDelegateCapture()
-	assembler = NewFragmentAssembler(capture.handler())
 	deliverFragments(t, assembler, termBuffer, offsets)
 
 	require.Len(t, capture.payloads, 1)
 	require.Equal(t, append(beginPayload, endPayload...), capture.payloads[0])
-	require.NotEqual(t, sliceDataPtr(termBytes), capture.bufferPtrs[0])
+	require.NotEqual(t, sliceDataPtr(termBuffer.Bytes()), capture.bufferPtrs[0])
 }
 
 func TestFragmentAssembler_reassemblesFragments(t *testing.T) {
 	cases := []struct {
 		name     string
 		termSize int
-		specs    []fragmentedFrameSpec
+		specs    []FragmentedFrameForTest
 		want     []byte
 	}{
 		{
 			name:     "begin_end",
 			termSize: 512,
-			specs: []fragmentedFrameSpec{
-				{flags: logbuffer.BeginFlag, payload: []byte("hello-")},
-				{flags: logbuffer.EndFlag, payload: []byte("world")},
+			specs: []FragmentedFrameForTest{
+				{Flags: logbuffer.BeginFlag, Payload: []byte("hello-")},
+				{Flags: logbuffer.EndFlag, Payload: []byte("world")},
 			},
 			want: []byte("hello-world"),
 		},
 		{
 			name:     "begin_middle_end",
 			termSize: 1024,
-			specs: []fragmentedFrameSpec{
-				{flags: logbuffer.BeginFlag, payload: []byte("a")},
-				{flags: 0, payload: []byte("b")},
-				{flags: logbuffer.EndFlag, payload: []byte("c")},
+			specs: []FragmentedFrameForTest{
+				{Flags: logbuffer.BeginFlag, Payload: []byte("a")},
+				{Flags: 0, Payload: []byte("b")},
+				{Flags: logbuffer.EndFlag, Payload: []byte("c")},
 			},
 			want: []byte("abc"),
 		},
@@ -191,10 +187,14 @@ func TestFragmentAssembler_reassemblesFragments(t *testing.T) {
 // (0xC0); delegates without entering the reassembly builder.
 func TestFragmentAssembler_beginEndSingleFragment(t *testing.T) {
 	payload := []byte("single-fragment")
-	capture, assembler, termBuffer, offsets := setupFragmentAssembler(t, 256, []fragmentedFrameSpec{{
-		flags:   logbuffer.BeginFlag | logbuffer.EndFlag,
-		payload: payload,
-	}})
+	capture, assembler, termBuffer, offsets := setupFragmentAssembler(
+		t,
+		256,
+		[]FragmentedFrameForTest{{
+			Flags:   logbuffer.BeginFlag | logbuffer.EndFlag,
+			Payload: payload,
+		}},
+	)
 	deliverFragment(t, assembler, termBuffer, offsets[0])
 
 	require.Len(t, capture.payloads, 1)
@@ -204,20 +204,20 @@ func TestFragmentAssembler_beginEndSingleFragment(t *testing.T) {
 func TestFragmentAssembler_malformedAssemblyDropped(t *testing.T) {
 	cases := []struct {
 		name  string
-		specs []fragmentedFrameSpec
+		specs []FragmentedFrameForTest
 	}{
 		{
 			name: "headerOnlyBeginWithPayloadEnd",
-			specs: []fragmentedFrameSpec{
-				{flags: logbuffer.BeginFlag, payload: []byte{}},
-				{flags: logbuffer.EndFlag, payload: []byte("end")},
+			specs: []FragmentedFrameForTest{
+				{Flags: logbuffer.BeginFlag, Payload: []byte{}},
+				{Flags: logbuffer.EndFlag, Payload: []byte("end")},
 			},
 		},
 		{
 			name: "allEmptyFragments",
-			specs: []fragmentedFrameSpec{
-				{flags: logbuffer.BeginFlag, payload: []byte{}},
-				{flags: logbuffer.EndFlag, payload: []byte{}},
+			specs: []FragmentedFrameForTest{
+				{Flags: logbuffer.BeginFlag, Payload: []byte{}},
+				{Flags: logbuffer.EndFlag, Payload: []byte{}},
 			},
 		},
 	}
@@ -228,7 +228,7 @@ func TestFragmentAssembler_malformedAssemblyDropped(t *testing.T) {
 			deliverFragments(t, assembler, termBuffer, offsets)
 
 			require.Empty(t, capture.payloads)
-			require.NotContains(t, assembler.builders, fragmentFrameSessionID)
+			require.NotContains(t, assembler.builders, TestPublicationSessionID)
 		})
 	}
 }
@@ -245,10 +245,14 @@ func TestFragmentAssembler_orphanFragmentResets(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			capture, assembler, termBuffer, offsets := setupFragmentAssembler(t, 256, []fragmentedFrameSpec{{
-				flags:   tc.flags,
-				payload: tc.payload,
-			}})
+			capture, assembler, termBuffer, offsets := setupFragmentAssembler(
+				t,
+				256,
+				[]FragmentedFrameForTest{{
+					Flags:   tc.flags,
+					Payload: tc.payload,
+				}},
+			)
 			deliverFragment(t, assembler, termBuffer, offsets[0])
 
 			require.Empty(t, capture.payloads)
@@ -258,52 +262,36 @@ func TestFragmentAssembler_orphanFragmentResets(t *testing.T) {
 
 func TestFragmentAssembler_termOffsetGapResets(t *testing.T) {
 	termBuffer := atomic.Wrap(make([]byte, 1024))
-	beginOffset := 0
-	writeCommittedFragmentFrame(
-		t,
-		termBuffer,
-		beginOffset,
-		fragmentFrameSessionID,
-		fragmentFrameStreamID,
-		fragmentFrameTermID,
-		0,
-		fragmentedFrameSpec{flags: logbuffer.BeginFlag, payload: []byte("begin")},
-	)
+	offsets := WriteCommittedDataFramesForTest(termBuffer, 0, []FragmentedFrameForTest{
+		{Flags: logbuffer.BeginFlag, Payload: []byte("begin")},
+	})
 
-	gapOffset := 256
-	writeCommittedFragmentFrame(
-		t,
-		termBuffer,
-		gapOffset,
-		fragmentFrameSessionID,
-		fragmentFrameStreamID,
-		fragmentFrameTermID,
-		int32(gapOffset),
-		fragmentedFrameSpec{flags: logbuffer.EndFlag, payload: []byte("end")},
-	)
+	const gapOffset = 256
+	WriteCommittedDataFramesForTest(termBuffer, gapOffset, []FragmentedFrameForTest{
+		{Flags: logbuffer.EndFlag, Payload: []byte("end")},
+	})
 
-	capture := newFragmentDelegateCapture()
+	capture := &fragmentDelegateCapture{}
 	assembler := NewFragmentAssembler(capture.handler())
-	deliverFragment(t, assembler, termBuffer, beginOffset)
-
+	deliverFragment(t, assembler, termBuffer, offsets[0])
 	deliverFragment(t, assembler, termBuffer, gapOffset)
 
 	require.Empty(t, capture.payloads)
 	// Offset gap resets builder but retains map slot for a later BEGIN.
-	require.Contains(t, assembler.builders, fragmentFrameSessionID)
+	require.Contains(t, assembler.builders, TestPublicationSessionID)
 }
 
 func TestFragmentAssembler_newBeginResetsInProgress(t *testing.T) {
 	termBuffer := atomic.Wrap(make([]byte, 1024))
-	firstBegin := writeCommittedFragmentFrames(t, termBuffer, 0, []fragmentedFrameSpec{
-		{flags: logbuffer.BeginFlag, payload: []byte("stale-")},
+	firstBegin := WriteCommittedDataFramesForTest(termBuffer, 0, []FragmentedFrameForTest{
+		{Flags: logbuffer.BeginFlag, Payload: []byte("stale-")},
 	})
-	secondBegin := writeCommittedFragmentFrames(t, termBuffer, 512, []fragmentedFrameSpec{
-		{flags: logbuffer.BeginFlag, payload: []byte("fresh-")},
-		{flags: logbuffer.EndFlag, payload: []byte("done")},
+	secondBegin := WriteCommittedDataFramesForTest(termBuffer, 512, []FragmentedFrameForTest{
+		{Flags: logbuffer.BeginFlag, Payload: []byte("fresh-")},
+		{Flags: logbuffer.EndFlag, Payload: []byte("done")},
 	})
 
-	capture := newFragmentDelegateCapture()
+	capture := &fragmentDelegateCapture{}
 	assembler := NewFragmentAssembler(capture.handler())
 	deliverFragment(t, assembler, termBuffer, firstBegin[0])
 	deliverFragment(t, assembler, termBuffer, secondBegin[0])
@@ -316,59 +304,39 @@ func TestFragmentAssembler_newBeginResetsInProgress(t *testing.T) {
 func TestFragmentAssembler_multiSessionIsolated(t *testing.T) {
 	termBuffer := atomic.Wrap(make([]byte, 2048))
 
-	sessionABegin := 0
-	sessionABeginLen := writeCommittedFragmentFrame(
-		t,
+	offsetsA := WriteCommittedDataFramesForStreamForTest(
 		termBuffer,
-		sessionABegin,
-		fragmentFrameSessionID,
-		fragmentFrameStreamID,
-		fragmentFrameTermID,
 		0,
-		fragmentedFrameSpec{flags: logbuffer.BeginFlag, payload: []byte("A-")},
+		TestPublicationSessionID,
+		TestPublicationStreamID,
+		TestPublicationInitialTermID,
+		[]FragmentedFrameForTest{
+			{Flags: logbuffer.BeginFlag, Payload: []byte("A-")},
+			{Flags: logbuffer.EndFlag, Payload: []byte("A")},
+		},
 	)
-	sessionAEnd := logbuffer.AlignFrameLength(int(sessionABeginLen))
-	writeCommittedFragmentFrame(
-		t,
-		termBuffer,
-		sessionAEnd,
-		fragmentFrameSessionID,
-		fragmentFrameStreamID,
-		fragmentFrameTermID,
-		int32(sessionAEnd),
-		fragmentedFrameSpec{flags: logbuffer.EndFlag, payload: []byte("A")},
-	)
+	endFrameLen := logbuffer.FrameLengthVolatile(termBuffer, offsetsA[1])
+	sessionBOffset := offsetsA[1] + logbuffer.AlignFrameLength(int(endFrameLen))
 
-	sessionBOffset := sessionAEnd + logbuffer.AlignFrameLength(logbuffer.DataHeaderLength+1)
 	const sessionBID = int32(1002)
-	sessionBBeginLen := writeCommittedFragmentFrame(
-		t,
+	offsetsB := WriteCommittedDataFramesForStreamForTest(
 		termBuffer,
 		sessionBOffset,
 		sessionBID,
-		fragmentFrameStreamID,
-		fragmentFrameTermID,
-		int32(sessionBOffset),
-		fragmentedFrameSpec{flags: logbuffer.BeginFlag, payload: []byte("B-")},
-	)
-	sessionBEnd := sessionBOffset + logbuffer.AlignFrameLength(int(sessionBBeginLen))
-	writeCommittedFragmentFrame(
-		t,
-		termBuffer,
-		sessionBEnd,
-		sessionBID,
-		fragmentFrameStreamID,
-		fragmentFrameTermID,
-		int32(sessionBEnd),
-		fragmentedFrameSpec{flags: logbuffer.EndFlag, payload: []byte("B")},
+		TestPublicationStreamID,
+		TestPublicationInitialTermID,
+		[]FragmentedFrameForTest{
+			{Flags: logbuffer.BeginFlag, Payload: []byte("B-")},
+			{Flags: logbuffer.EndFlag, Payload: []byte("B")},
+		},
 	)
 
-	capture := newFragmentDelegateCapture()
+	capture := &fragmentDelegateCapture{}
 	assembler := NewFragmentAssembler(capture.handler())
-	deliverFragment(t, assembler, termBuffer, sessionABegin)
-	deliverFragment(t, assembler, termBuffer, sessionBOffset)
-	deliverFragment(t, assembler, termBuffer, sessionAEnd)
-	deliverFragment(t, assembler, termBuffer, sessionBEnd)
+	deliverFragment(t, assembler, termBuffer, offsetsA[0])
+	deliverFragment(t, assembler, termBuffer, offsetsB[0])
+	deliverFragment(t, assembler, termBuffer, offsetsA[1])
+	deliverFragment(t, assembler, termBuffer, offsetsB[1])
 
 	require.Len(t, capture.payloads, 2)
 	require.Equal(t, []byte("A-A"), capture.payloads[0])
@@ -387,7 +355,7 @@ func TestFragmentAssembler_multiFragmentCapacityGrowth(t *testing.T) {
 		payload[i] = byte(i % 251)
 	}
 
-	specs := make([]fragmentedFrameSpec, chunkCount)
+	specs := make([]FragmentedFrameForTest, chunkCount)
 	for i := range chunkCount {
 		var flags uint8
 		switch i {
@@ -396,23 +364,23 @@ func TestFragmentAssembler_multiFragmentCapacityGrowth(t *testing.T) {
 		case chunkCount - 1:
 			flags = logbuffer.EndFlag
 		}
-		specs[i] = fragmentedFrameSpec{
-			flags:   flags,
-			payload: payload[i*chunkSize : (i+1)*chunkSize],
+		specs[i] = FragmentedFrameForTest{
+			Flags:   flags,
+			Payload: payload[i*chunkSize : (i+1)*chunkSize],
 		}
 	}
 
-	termBuffer := atomic.Wrap(make([]byte, fragmentedFrameTermCapacity(specs)))
-	offsets := writeCommittedFragmentFrames(t, termBuffer, 0, specs)
+	termBuffer := atomic.Wrap(make([]byte, CommittedDataFramesTermCapacityForTest(specs)))
+	offsets := WriteCommittedDataFramesForTest(termBuffer, 0, specs)
 
-	capture := newFragmentDelegateCapture()
+	capture := &fragmentDelegateCapture{}
 	assembler := NewFragmentAssemblerWithOptions(capture.handler(), 1024, false)
 	deliverFragments(t, assembler, termBuffer, offsets)
 
 	require.Len(t, capture.payloads, 1)
 	require.Equal(t, payload, capture.payloads[0])
 
-	require.NotContains(t, assembler.builders, fragmentFrameSessionID)
+	require.NotContains(t, assembler.builders, TestPublicationSessionID)
 }
 
 func TestFragmentAssembler_oversizePayloadResets(t *testing.T) {
@@ -420,41 +388,23 @@ func TestFragmentAssembler_oversizePayloadResets(t *testing.T) {
 	require.False(t, builder.ensureCapacity(1, 0))
 
 	termBuffer := atomic.Wrap(make([]byte, 512))
-	beginOffset := 0
-	writeCommittedFragmentFrame(
-		t,
-		termBuffer,
-		beginOffset,
-		fragmentFrameSessionID,
-		fragmentFrameStreamID,
-		fragmentFrameTermID,
-		0,
-		fragmentedFrameSpec{flags: logbuffer.BeginFlag, payload: []byte("begin")},
-	)
-	endOffset := logbuffer.AlignFrameLength(logbuffer.DataHeaderLength + len("begin"))
-	writeCommittedFragmentFrame(
-		t,
-		termBuffer,
-		endOffset,
-		fragmentFrameSessionID,
-		fragmentFrameStreamID,
-		fragmentFrameTermID,
-		int32(endOffset),
-		fragmentedFrameSpec{flags: logbuffer.EndFlag, payload: []byte("x")},
-	)
+	offsets := WriteCommittedDataFramesForTest(termBuffer, 0, []FragmentedFrameForTest{
+		{Flags: logbuffer.BeginFlag, Payload: []byte("begin")},
+		{Flags: logbuffer.EndFlag, Payload: []byte("x")},
+	})
 
-	capture := newFragmentDelegateCapture()
+	capture := &fragmentDelegateCapture{}
 	assembler := NewFragmentAssembler(capture.handler())
-	deliverFragment(t, assembler, termBuffer, beginOffset)
+	deliverFragment(t, assembler, termBuffer, offsets[0])
 
-	primed := assembler.builders[fragmentFrameSessionID]
+	primed := assembler.builders[TestPublicationSessionID]
 	require.NotNil(t, primed)
 	primed.limit = logbuffer.MaxMessageLength
 
-	deliverFragment(t, assembler, termBuffer, endOffset)
+	deliverFragment(t, assembler, termBuffer, offsets[1])
 
 	require.Empty(t, capture.payloads)
-	require.True(t, assembler.FreeSessionBuffer(fragmentFrameSessionID))
+	require.True(t, assembler.FreeSessionBuffer(TestPublicationSessionID))
 }
 
 func TestFragmentAssembler_ensureCapacity_clampsOnOvershoot(t *testing.T) {
@@ -470,42 +420,42 @@ func TestFragmentAssembler_ensureCapacity_clampsOnOvershoot(t *testing.T) {
 func TestFragmentAssembler_middleWrongTermOffsetResets(t *testing.T) {
 	termBuffer := atomic.Wrap(make([]byte, 1024))
 	beginOffset := 0
-	beginLen := writeCommittedFragmentFrame(
-		t,
+	beginLen := WriteCommittedDataFrameWithFlagsForTest(
 		termBuffer,
 		beginOffset,
-		fragmentFrameSessionID,
-		fragmentFrameStreamID,
-		fragmentFrameTermID,
+		TestPublicationSessionID,
+		TestPublicationStreamID,
+		TestPublicationInitialTermID,
 		0,
-		fragmentedFrameSpec{flags: logbuffer.BeginFlag, payload: []byte("begin")},
+		logbuffer.BeginFlag,
+		[]byte("begin"),
 	)
 
 	middleOffset := logbuffer.AlignFrameLength(int(beginLen))
-	middleLen := writeCommittedFragmentFrame(
-		t,
+	middleLen := WriteCommittedDataFrameWithFlagsForTest(
 		termBuffer,
 		middleOffset,
-		fragmentFrameSessionID,
-		fragmentFrameStreamID,
-		fragmentFrameTermID,
+		TestPublicationSessionID,
+		TestPublicationStreamID,
+		TestPublicationInitialTermID,
 		999,
-		fragmentedFrameSpec{flags: 0, payload: []byte("middle")},
+		0,
+		[]byte("middle"),
 	)
 
 	endOffset := logbuffer.AlignFrameLength(middleOffset + int(middleLen))
-	writeCommittedFragmentFrame(
-		t,
+	WriteCommittedDataFrameWithFlagsForTest(
 		termBuffer,
 		endOffset,
-		fragmentFrameSessionID,
-		fragmentFrameStreamID,
-		fragmentFrameTermID,
+		TestPublicationSessionID,
+		TestPublicationStreamID,
+		TestPublicationInitialTermID,
 		int32(endOffset),
-		fragmentedFrameSpec{flags: logbuffer.EndFlag, payload: []byte("end")},
+		logbuffer.EndFlag,
+		[]byte("end"),
 	)
 
-	capture := newFragmentDelegateCapture()
+	capture := &fragmentDelegateCapture{}
 	assembler := NewFragmentAssembler(capture.handler())
 	deliverFragment(t, assembler, termBuffer, beginOffset)
 	deliverFragment(t, assembler, termBuffer, middleOffset)
@@ -517,23 +467,23 @@ func TestFragmentAssembler_middleWrongTermOffsetResets(t *testing.T) {
 func TestFragmentAssembler_outOfOrderFragmentsDropped(t *testing.T) {
 	cases := []struct {
 		name  string
-		specs []fragmentedFrameSpec
+		specs []FragmentedFrameForTest
 		order []int
 	}{
 		{
 			name: "end_before_begin",
-			specs: []fragmentedFrameSpec{
-				{flags: logbuffer.BeginFlag, payload: []byte("begin-")},
-				{flags: logbuffer.EndFlag, payload: []byte("end")},
+			specs: []FragmentedFrameForTest{
+				{Flags: logbuffer.BeginFlag, Payload: []byte("begin-")},
+				{Flags: logbuffer.EndFlag, Payload: []byte("end")},
 			},
 			order: []int{1, 0},
 		},
 		{
 			name: "middle_before_begin",
-			specs: []fragmentedFrameSpec{
-				{flags: logbuffer.BeginFlag, payload: []byte("a")},
-				{flags: 0, payload: []byte("b")},
-				{flags: logbuffer.EndFlag, payload: []byte("c")},
+			specs: []FragmentedFrameForTest{
+				{Flags: logbuffer.BeginFlag, Payload: []byte("a")},
+				{Flags: 0, Payload: []byte("b")},
+				{Flags: logbuffer.EndFlag, Payload: []byte("c")},
 			},
 			order: []int{1, 0, 2},
 		},
@@ -552,15 +502,15 @@ func TestFragmentAssembler_outOfOrderFragmentsDropped(t *testing.T) {
 func TestFragmentAssembler_FreeSessionBuffer(t *testing.T) {
 	assembler := newAssemblerWithPendingBeginFragment(t)
 
-	require.True(t, assembler.FreeSessionBuffer(fragmentFrameSessionID))
-	require.False(t, assembler.FreeSessionBuffer(fragmentFrameSessionID))
+	require.True(t, assembler.FreeSessionBuffer(TestPublicationSessionID))
+	require.False(t, assembler.FreeSessionBuffer(TestPublicationSessionID))
 }
 
 func TestFragmentAssembler_Clear(t *testing.T) {
 	assembler := newAssemblerWithPendingBeginFragment(t)
 	assembler.Clear()
 
-	require.False(t, assembler.FreeSessionBuffer(fragmentFrameSessionID))
+	require.False(t, assembler.FreeSessionBuffer(TestPublicationSessionID))
 }
 
 func TestFragmentAssembler_initialBufferLength_clamped(t *testing.T) {

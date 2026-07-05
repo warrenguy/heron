@@ -1,7 +1,6 @@
-package client
+package aeron
 
 import (
-	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/agrona/atomic"
 )
@@ -10,14 +9,14 @@ const fragmentBuilderIdleNextTermOffset int32 = -1
 
 const fragmentBuilderInitMinCapacity = 4096
 
-// FragmentAssembler reassembles B|E fragmented DATA frames and forwards whole
+// FragmentAssembler reassembles BEGIN/middle/END fragmented DATA frames and forwards whole
 // payloads to the delegate FragmentHandler. Unfragmented frames delegate without
 // copy. Reassembled delegates receive an assembler-owned buffer slice and
 // &builder.completedHeader; both are valid only for the delegate callback and
 // must not be retained past return. Not safe for concurrent use or reentrant
 // delegate callbacks that poll the same assembler.
 type FragmentAssembler struct {
-	delegate            aeron.FragmentHandler
+	delegate            FragmentHandler
 	directAssemblers    bool
 	initialBufferLength int
 	builders            map[int32]*fragmentBufferBuilder
@@ -28,11 +27,11 @@ type fragmentBufferBuilder struct {
 	limit               int
 	nextTermOffset      int32
 	capturedFrameHeader [logbuffer.DataHeaderLength]byte
-	completedHeader     aeron.Header
+	completedHeader     Header
 }
 
 // NewFragmentAssembler returns a FragmentAssembler with default options.
-func NewFragmentAssembler(delegate aeron.FragmentHandler) *FragmentAssembler {
+func NewFragmentAssembler(delegate FragmentHandler) *FragmentAssembler {
 	return NewFragmentAssemblerWithOptions(delegate, 0, false)
 }
 
@@ -42,16 +41,11 @@ func NewFragmentAssembler(delegate aeron.FragmentHandler) *FragmentAssembler {
 // initialBufferLength is clamped: negative values become 0; values above
 // logbuffer.MaxMessageLength become logbuffer.MaxMessageLength.
 func NewFragmentAssemblerWithOptions(
-	delegate aeron.FragmentHandler,
+	delegate FragmentHandler,
 	initialBufferLength int,
 	directAssemblers bool,
 ) *FragmentAssembler {
-	if initialBufferLength < 0 {
-		initialBufferLength = 0
-	}
-	if initialBufferLength > logbuffer.MaxMessageLength {
-		initialBufferLength = logbuffer.MaxMessageLength
-	}
+	initialBufferLength = max(0, min(initialBufferLength, logbuffer.MaxMessageLength))
 	return &FragmentAssembler{
 		delegate:            delegate,
 		directAssemblers:    directAssemblers,
@@ -61,7 +55,7 @@ func NewFragmentAssemblerWithOptions(
 }
 
 // Handler returns the FragmentHandler passed to Subscription.Poll.
-func (assembler *FragmentAssembler) Handler() aeron.FragmentHandler {
+func (assembler *FragmentAssembler) Handler() FragmentHandler {
 	return assembler.handleFragment
 }
 
@@ -87,7 +81,7 @@ func (assembler *FragmentAssembler) handleFragment(
 	buffer atomic.AtomicBuffer,
 	offset int,
 	length int,
-	header *aeron.Header,
+	header *Header,
 ) {
 	flags := header.Flags()
 	if flags&logbuffer.Unfragmented == logbuffer.Unfragmented {
@@ -98,8 +92,7 @@ func (assembler *FragmentAssembler) handleFragment(
 	sessionID := header.SessionID()
 	builder := assembler.builders[sessionID]
 
-	switch {
-	case flags&logbuffer.BeginFlag != 0:
+	if flags&logbuffer.BeginFlag != 0 {
 		if builder == nil {
 			builder = &fragmentBufferBuilder{}
 			assembler.builders[sessionID] = builder
@@ -109,9 +102,7 @@ func (assembler *FragmentAssembler) handleFragment(
 		if !builder.append(buffer, offset, length, assembler.initialBufferLength) {
 			return
 		}
-		builder.nextTermOffset = header.NextTermOffset()
-
-	default:
+	} else {
 		if builder == nil {
 			return
 		}
@@ -125,12 +116,12 @@ func (assembler *FragmentAssembler) handleFragment(
 			return
 		}
 		if flags&logbuffer.EndFlag != 0 {
-			firstLen := builder.capturedFirstFrameLength()
+			firstLen := logbuffer.FrameLength(atomic.Wrap(builder.capturedFrameHeader[:]), 0)
+			delete(assembler.builders, sessionID)
 			if builder.limit <= 0 || firstLen <= int32(logbuffer.DataHeaderLength) {
 				// Malformed END is terminal: no valid payload can be delivered.
 				// Evict the idle map entry. Transient failures (offset gap, append
 				// bounds) only reset the builder so a later BEGIN can reuse the slot.
-				delete(assembler.builders, sessionID)
 				return
 			}
 			builder.completedHeader.ConfigureCompletedFragment(
@@ -138,7 +129,6 @@ func (assembler *FragmentAssembler) handleFragment(
 				builder.limit,
 				header,
 			)
-			delete(assembler.builders, sessionID)
 			assembler.delegate(
 				atomic.Wrap(builder.payload),
 				0,
@@ -147,8 +137,8 @@ func (assembler *FragmentAssembler) handleFragment(
 			)
 			return
 		}
-		builder.nextTermOffset = header.NextTermOffset()
 	}
+	builder.nextTermOffset = header.NextTermOffset()
 }
 
 func (builder *fragmentBufferBuilder) reset() {
@@ -156,12 +146,8 @@ func (builder *fragmentBufferBuilder) reset() {
 	builder.nextTermOffset = fragmentBuilderIdleNextTermOffset
 }
 
-func (builder *fragmentBufferBuilder) capturedFirstFrameLength() int32 {
-	return logbuffer.FrameLength(atomic.Wrap(builder.capturedFrameHeader[:]), 0)
-}
-
 func (builder *fragmentBufferBuilder) captureHeader(
-	header *aeron.Header,
+	header *Header,
 	buffer atomic.AtomicBuffer,
 ) {
 	frameOffset := header.Offset()

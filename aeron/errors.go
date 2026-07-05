@@ -4,11 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/warrenguy/heron/aeron/conductor"
 )
 
 var (
+	// ErrInvalidTimeout reports a negative timeout argument to a poll/offer helper.
+	ErrInvalidTimeout = errors.New("aeron: invalid timeout")
+
+	// ErrInvalidWant reports a non-positive want argument to a poll helper.
+	ErrInvalidWant = errors.New("aeron: invalid want")
+
 	ErrClientClosed             = errors.New("aeron: client is closed")
 	ErrClientNotReady           = errors.New("aeron: client is not ready")
 	ErrConductorTerminating     = errors.New("aeron: conductor is terminating")
@@ -143,132 +147,4 @@ func newAwaitTimeoutError(correlationID int64, timeout time.Duration) *AwaitTime
 		CorrelationID: correlationID,
 		Timeout:       timeout,
 	}
-}
-
-// mapConductorError maps driver liveness failures to DriverTimeoutError.
-//
-// DriverRegistrationError and other conductor faults pass through unchanged;
-// add await maps registration errors via mapAddPollPendingError / mapAddAwaitError.
-//
-// ErrConductorServiceTimeout, ErrClientTimeout, and HeartbeatCounterClosedError
-// also pass through so callers can distinguish them.
-func mapConductorError(err error) error {
-	if err == nil {
-		return nil
-	}
-
-	var staleErr *conductor.DriverKeepaliveStaleError
-	if errors.As(err, &staleErr) || errors.Is(err, conductor.ErrDriverShutdown) {
-		return &DriverTimeoutError{Cause: err}
-	}
-	return err
-}
-
-func mapRegistrationError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, conductor.ErrConductorTerminating) {
-		return ErrConductorTerminating
-	}
-	if errors.Is(err, conductor.ErrPendingAlreadyRegistered) {
-		return ErrPendingAlreadyRegistered
-	}
-	return err
-}
-
-func registrationErrorFromDriver(
-	registrationErr *conductor.DriverRegistrationError,
-) RegistrationError {
-	return RegistrationError{
-		CorrelationID: registrationErr.CorrelationID,
-		ErrorCode:     registrationErr.ErrorCode,
-		Message:       registrationErr.Message,
-		Cause:         registrationErr,
-	}
-}
-
-func mapAwaitError(err error) error {
-	if err == nil {
-		return nil
-	}
-
-	if registrationErr, ok := errors.AsType[*conductor.DriverRegistrationError](err); ok {
-		mapped := registrationErrorFromDriver(registrationErr)
-		return &mapped
-	}
-	if errors.Is(err, conductor.ErrPendingNotFound) {
-		return ErrAwaitInterrupted
-	}
-	return err
-}
-
-func mapPollPendingError(
-	correlationID int64,
-	timeout time.Duration,
-	err error,
-) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, conductor.ErrAwaitTimeout) {
-		return newAwaitTimeoutError(correlationID, timeout)
-	}
-	return mapAwaitError(err)
-}
-
-func mapAddOfferError(registrationKind string, correlationID int64, err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, conductor.ErrRingInsufficientCapacity) {
-		return &RegistrationError{
-			Kind:          registrationKind,
-			CorrelationID: correlationID,
-			Cause:         err,
-		}
-	}
-	return err
-}
-
-func mapAddDriverRegistrationError(
-	registrationKind string,
-	registrationErr *conductor.DriverRegistrationError,
-) *RegistrationError {
-	mapped := registrationErrorFromDriver(registrationErr)
-	mapped.Kind = registrationKind
-	return &mapped
-}
-
-func mapAddAwaitError(registrationKind string, correlationID int64, err error) error {
-	if err == nil {
-		return nil
-	}
-	if registrationErr, ok := errors.AsType[*conductor.DriverRegistrationError](err); ok {
-		return mapAddDriverRegistrationError(registrationKind, registrationErr)
-	}
-	if errors.Is(err, conductor.ErrPendingNotFound) {
-		return ErrAwaitInterrupted
-	}
-	return &RegistrationError{
-		Kind:          registrationKind,
-		CorrelationID: correlationID,
-		Cause:         err,
-	}
-}
-
-func mapAddPollPendingError(
-	registrationKind string,
-	correlationID int64,
-	streamID int32,
-	channel string,
-	err error,
-) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, conductor.ErrAwaitTimeout) {
-		return newRegistrationTimeoutError(registrationKind, correlationID, streamID, channel)
-	}
-	return mapAddAwaitError(registrationKind, correlationID, err)
 }

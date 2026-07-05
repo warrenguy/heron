@@ -10,7 +10,7 @@ import (
 type EgressAdapter struct {
 	subscription  *aeron.Subscription
 	fragmentLimit int
-	assembler     *FragmentAssembler
+	assembler     *aeron.FragmentAssembler
 }
 
 // NewEgressAdapter constructs an EgressAdapter. fragmentLimit <= 0 uses
@@ -67,7 +67,7 @@ func newEgressAdapterWithHandler(
 			handleEgressFragment(handler, clusterSessionID, buffer, offset, length, header)
 		}
 	}
-	assembler := NewFragmentAssemblerWithOptions(onFragment, 0, directAssemblers)
+	assembler := aeron.NewFragmentAssemblerWithOptions(onFragment, 0, directAssemblers)
 	return &EgressAdapter{
 		subscription:  subscription,
 		fragmentLimit: fragmentLimit,

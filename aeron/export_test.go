@@ -1,6 +1,7 @@
 package aeron
 
 import (
+	"context"
 	"errors"
 	"os"
 	"slices"
@@ -335,11 +336,6 @@ func (pub *Publication) MaxMessageLengthForTest() int {
 }
 
 const maxFragmentedReadIterations = 64
-
-type FragmentedFrameForTest struct {
-	Flags   uint8
-	Payload []byte
-}
 
 func FragmentedMessageStartOffsetForTest(position int64, shift, totalAligned int) int {
 	termOffset := int(logbuffer.ComputeTermOffsetFromPosition(position, shift))
@@ -805,6 +801,13 @@ func (client *Client) SetAwaitPollSleepingHookForTest(hook func()) {
 	setAwaitPollSleepingHook(client, hook)
 }
 
+// SetDoWorkAfterHookForTest installs a hook invoked under clientLock after each
+// conductor DoWork tick and before DoWork returns. The hook must not call back
+// into Client APIs that take clientLock.
+func (client *Client) SetDoWorkAfterHookForTest(hook func()) {
+	setDoWorkAfterHook(client, hook)
+}
+
 // PublishClosedForTest sets closed without teardown; for guard tests only.
 func (client *Client) PublishClosedForTest() {
 	// CAS mirrors Close phase-1 publish; teardown is intentionally omitted.
@@ -1262,137 +1265,12 @@ func SetPollAfterPaddingAdvanceForTest(hook func()) {
 	setPollAfterPaddingAdvanceHook(hook)
 }
 
-func writeCommittedDataFrameForTest(
-	termBuffer atomic.AtomicBuffer,
-	frameOffset int,
-	sessionID int32,
-	streamID int32,
-	termID int32,
-	termOffset int32,
-	flags uint8,
-	payload []byte,
-	fragmented bool,
-) {
-	if !fragmented &&
-		sessionID == inMemPublicationSessionID &&
-		streamID == inMemPublicationStreamID {
-		writeInMemCommittedDataFrame(
-			termBuffer,
-			frameOffset,
-			termID,
-			termOffset,
-			flags,
-			payload,
-		)
-		return
-	}
-
-	frameLength := int32(len(payload) + logbuffer.DataHeaderLength)
-	var err error
-	if fragmented {
-		err = logbuffer.WriteDataHeaderFragmented(
-			termBuffer,
-			frameOffset,
-			sessionID,
-			streamID,
-			termID,
-			termOffset,
-			flags,
-		)
-	} else {
-		err = logbuffer.WriteDataHeaderUnfragmented(
-			termBuffer,
-			frameOffset,
-			sessionID,
-			streamID,
-			termID,
-			termOffset,
-			flags,
-		)
-	}
-	if err != nil {
-		panic(err)
-	}
-	termBuffer.PutBytes(frameOffset+logbuffer.OffsetFramePayload, payload)
-	logbuffer.PutFrameLengthOrdered(termBuffer, frameOffset, frameLength)
-}
-
-func WriteCommittedDataFrameForTest(
-	termBuffer atomic.AtomicBuffer,
-	frameOffset int,
-	sessionID int32,
-	streamID int32,
-	termID int32,
-	termOffset int32,
-	flags uint8,
-	payload []byte,
-) {
-	writeCommittedDataFrameForTest(
-		termBuffer,
-		frameOffset,
-		sessionID,
-		streamID,
-		termID,
-		termOffset,
-		flags,
-		payload,
-		false,
-	)
-}
-
 func ImageTermBuffer0ForTest(image *Image) atomic.AtomicBuffer {
 	return ImageTermBufferForTest(image, 0)
 }
 
 func ImageTermBufferForTest(image *Image, index int) atomic.AtomicBuffer {
 	return image.termBuffers[index]
-}
-
-func WriteCommittedFragmentedDataFrameForTest(
-	termBuffer atomic.AtomicBuffer,
-	frameOffset int,
-	sessionID int32,
-	streamID int32,
-	termID int32,
-	termOffset int32,
-	flags uint8,
-	payload []byte,
-) {
-	writeCommittedDataFrameForTest(
-		termBuffer,
-		frameOffset,
-		sessionID,
-		streamID,
-		termID,
-		termOffset,
-		flags,
-		payload,
-		true,
-	)
-}
-
-func WriteCommittedFragmentedDataFramesForTest(
-	termBuffer atomic.AtomicBuffer,
-	startOffset int,
-	fragments []FragmentedFrameForTest,
-) []int {
-	offsets := make([]int, len(fragments))
-	offset := startOffset
-	for i, fragment := range fragments {
-		offsets[i] = offset
-		WriteCommittedFragmentedDataFrameForTest(
-			termBuffer,
-			offset,
-			TestPublicationSessionID,
-			TestPublicationStreamID,
-			TestPublicationInitialTermID,
-			int32(offset),
-			fragment.Flags,
-			fragment.Payload,
-		)
-		offset += logbuffer.AlignFragmentChunkLength(len(fragment.Payload))
-	}
-	return offsets
 }
 
 func WriteMinimalTermEndPaddingForTest(
@@ -1527,4 +1405,12 @@ func newTestCountersReaderWithSubscriberPositionRegistration(
 	registrationID int64,
 ) *cnc.CountersReader {
 	return inMemCountersReaderWithSubscriberPosition(joinPosition, registrationID)
+}
+
+// PollDeadlineForTest exposes pollDeadline effective-timeout mapping for unit tests.
+func PollDeadlineForTest(
+	ctx context.Context,
+	timeout time.Duration,
+) (time.Time, time.Duration, error) {
+	return pollDeadline(ctx, timeout)
 }

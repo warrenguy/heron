@@ -4,25 +4,43 @@ package aeron
 
 import "github.com/warrenguy/heron/internal/testhook"
 
-var awaitPollSleepingHooks = testhook.NewRegistry[*Client, func()]()
+var (
+	awaitPollSleepingHooks = testhook.NewRegistry[*Client, func()]()
+	doWorkAfterHooks       = testhook.NewRegistry[*Client, func()]()
+)
 
-func invokeAwaitPollSleepingHook(client *Client) {
+func invokeClientHook(registry *testhook.Registry[*Client, func()], client *Client) {
 	if client == nil {
 		return
 	}
-	hook := awaitPollSleepingHooks.Load(client)
-	if hook != nil {
+	if hook := registry.Load(client); hook != nil {
 		hook()
 	}
 }
 
-func setAwaitPollSleepingHook(client *Client, hook func()) {
+func setClientHook(registry *testhook.Registry[*Client, func()], client *Client, hook func()) {
 	if client == nil {
 		return
 	}
 	if hook == nil {
-		awaitPollSleepingHooks.Delete(client)
+		registry.Delete(client)
 		return
 	}
-	awaitPollSleepingHooks.Store(client, hook)
+	registry.Store(client, hook)
+}
+
+func invokeDoWorkAfterHook(client *Client) {
+	invokeClientHook(doWorkAfterHooks, client)
+}
+
+func setDoWorkAfterHook(client *Client, hook func()) {
+	setClientHook(doWorkAfterHooks, client, hook)
+}
+
+func invokeAwaitPollSleepingHook(client *Client) {
+	invokeClientHook(awaitPollSleepingHooks, client)
+}
+
+func setAwaitPollSleepingHook(client *Client, hook func()) {
+	setClientHook(awaitPollSleepingHooks, client, hook)
 }
