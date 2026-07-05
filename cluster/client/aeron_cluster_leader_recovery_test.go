@@ -235,7 +235,22 @@ func TestAeronCluster_pollLeaderRecovery_pendingRegistrationResolves(t *testing.
 	require.Same(t, newPub, ac.IngressPublication())
 }
 
-func TestAeronCluster_pollLeaderRecovery_disconnectedLeader_entersAwaitNewLeader(t *testing.T) {
+func TestAeronCluster_pollLeaderRecovery_notYetConnectedLeader_staysAwaitConnection(t *testing.T) {
+	ac, leader := channelOnlyAwaitNewLeaderConnectionFixture(t, nil)
+	deadlineBefore := ac.stateDeadlineNs
+	notConnectedPub := aeron.NewTestExclusivePublicationForHooksWithConnected(t, false)
+	leader.Publication = notConnectedPub
+	leader.RegistrationID = conductor.NullCorrelationID
+
+	require.Equal(t, 0, ac.PollEgress())
+	require.Equal(t, SessionStateAwaitNewLeaderConnection, ac.SessionState())
+	require.Equal(t, deadlineBefore, ac.stateDeadlineNs)
+	require.Same(t, notConnectedPub, leader.Publication)
+	require.False(t, notConnectedPub.IsClosed())
+	require.Nil(t, ac.IngressPublication())
+}
+
+func TestAeronCluster_pollLeaderRecovery_closedLeader_entersAwaitNewLeader(t *testing.T) {
 	const startNs int64 = 2_000_000_000
 	timeout := 7 * time.Second
 
@@ -247,10 +262,10 @@ func TestAeronCluster_pollLeaderRecovery_disconnectedLeader_entersAwaitNewLeader
 			ctx.NewLeaderTimeout = timeout
 		})
 	})
-	disconnectedPub := aeron.NewTestExclusivePublicationForHooksWithConnected(t, false)
-	leader.Publication = disconnectedPub
-	leader.RegistrationID = 42
-	leader.PublicationErr = errors.New("stale registration err")
+	closedPub := aeron.NewTestExclusivePublicationForHooks(t)
+	require.NoError(t, closedPub.Close())
+	leader.Publication = closedPub
+	leader.RegistrationID = conductor.NullCorrelationID
 
 	require.Equal(t, 1, ac.PollEgress())
 	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
@@ -258,8 +273,7 @@ func TestAeronCluster_pollLeaderRecovery_disconnectedLeader_entersAwaitNewLeader
 	require.Nil(t, ac.IngressPublication())
 	require.Nil(t, leader.Publication)
 	require.Equal(t, conductor.NullCorrelationID, leader.RegistrationID)
-	require.NoError(t, leader.PublicationErr)
-	require.True(t, disconnectedPub.IsClosed())
+	require.True(t, closedPub.IsClosed())
 }
 
 func TestAeronCluster_pollLeaderRecovery_keepAliveClosed_staysAwaitConnection(t *testing.T) {
@@ -292,19 +306,29 @@ func TestAeronCluster_pollLeaderRecovery_keepAliveNotConnected_staysAwaitConnect
 	require.Nil(t, ac.IngressPublication())
 }
 
-func TestAeronCluster_pollLeaderRecovery_keepAliveClosedPub_staysAwaitConnection(t *testing.T) {
-	ac, leader := channelOnlyAwaitNewLeaderConnectionFixture(t, nil)
-	deadlineBefore := ac.stateDeadlineNs
+func TestAeronCluster_pollLeaderRecovery_connectedButClosedPub_entersAwaitNewLeader(t *testing.T) {
+	const startNs int64 = 4_000_000_000
+	timeout := 7 * time.Second
+
+	var nowNs atomic.Int64
+	nowNs.Store(startNs)
+
+	ac, leader := channelOnlyAwaitNewLeaderConnectionFixture(t, func(result *ConnectResult) {
+		withConnectNanoClock(result, &nowNs, func(ctx *ClusterContext) {
+			ctx.NewLeaderTimeout = timeout
+		})
+	})
 	basePub := aeron.NewTestExclusivePublicationForHooks(t)
 	closedPub := connectedButClosedIngressPublication{IngressPublication: basePub}
 	leader.Publication = closedPub
+	leader.RegistrationID = conductor.NullCorrelationID
 
 	require.Equal(t, 1, ac.PollEgress())
-	require.Equal(t, SessionStateAwaitNewLeaderConnection, ac.SessionState())
-	require.Equal(t, deadlineBefore, ac.stateDeadlineNs)
-	require.Equal(t, closedPub, leader.Publication)
-	require.True(t, closedPub.IsClosed())
+	require.Equal(t, SessionStateAwaitNewLeader, ac.SessionState())
+	require.Equal(t, startNs+timeout.Nanoseconds(), ac.stateDeadlineNs)
 	require.Nil(t, ac.IngressPublication())
+	require.Nil(t, leader.Publication)
+	require.True(t, closedPub.IsClosed())
 }
 
 func TestAeronCluster_pollLeaderRecovery_keepAliveMaxPosition_pendingClose(t *testing.T) {

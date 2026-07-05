@@ -334,7 +334,9 @@ func smokeClusterContext(
 	ctx := base()
 	ctx.AeronDir = dir
 	ctx.Aeron = aeronClient
-	ctx.MessageTimeout = messageTimeout
+	if ctx.MessageTimeout == 0 {
+		ctx.MessageTimeout = messageTimeout
+	}
 	ctx.EgressHandler = egressHandler
 	return ctx
 }

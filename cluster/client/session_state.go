@@ -124,11 +124,10 @@ func (ac *AeronCluster) pollStateChanges() int {
 // Active only in CONNECTED and AWAIT_NEW_LEADER_CONNECTION. When ingressPublication
 // is disconnected, CONNECTED calls trackIngressPublicationResult(NotConnected)
 // (-> handleDisconnected); recovery calls handleDisconnected directly. When
-// ingressPublication is nil during AWAIT_NEW_LEADER_CONNECTION, a disconnected
-// leader publication in the member
-// map also enters AWAIT_NEW_LEADER. A closed tracked egress image without
-// replacement enters AWAIT_NEW_LEADER. Re-checks sessionPollsTransportDisconnect
-// after ingress handling may change state.
+// ingressPublication is nil during AWAIT_NEW_LEADER_CONNECTION, a closed leader
+// publication in the member map also enters AWAIT_NEW_LEADER. A closed tracked
+// egress image without replacement enters AWAIT_NEW_LEADER. Re-checks
+// sessionPollsTransportDisconnect after ingress handling may change state.
 func (ac *AeronCluster) pollTransportDisconnect(trackedImageClosed bool) int {
 	if !sessionPollsTransportDisconnect(ac.sessionState) {
 		return 0

@@ -83,6 +83,7 @@ func TestFailoverHarnessClusterContext_udpDefaults(t *testing.T) {
 	require.Equal(t, clusterjava.FailoverEgressChannel, ctx.EgressChannel)
 	require.Equal(t, clusterjava.FailoverIngressEndpoints, ctx.IngressEndpoints)
 	require.Equal(t, clusterjava.FailoverNewLeaderTimeout, ctx.NewLeaderTimeout)
+	require.Equal(t, clusterjava.FailoverNewLeaderTimeout, ctx.MessageTimeout)
 	require.Empty(t, ctx.AeronDir)
 	require.Empty(t, ctx.AeronContext.AeronDir)
 	require.Zero(t, ctx.IngressStreamID)

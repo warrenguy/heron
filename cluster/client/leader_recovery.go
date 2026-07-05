@@ -97,14 +97,12 @@ func (ac *AeronCluster) recoveryLeaderIngress() (*MemberIngress, bool) {
 // pollLeaderRecovery offers keep-alives only via connectedPublication() (open and
 // connected).
 //
-// Disconnect detection uses Publication directly: recoveryLeaderIngressDisconnected
-// and pollTransportDisconnect enter AWAIT_NEW_LEADER when the settled leader pub
-// exists but IsConnected() is false, without attempting a keep-alive offer.
-//
-// recoveryLeaderIngressDisconnected reports a settled leader publication in the
-// member map that is no longer connected during AWAIT_NEW_LEADER_CONNECTION.
+// recoveryLeaderIngressDisconnected reports a closed leader publication in the
+// member map during AWAIT_NEW_LEADER_CONNECTION while ingressPublication is still
+// nil. !IsConnected during first UDP connect is normal; pollLeaderRecovery waits
+// until MessageTimeout. Closed leader pubs mirror Java onDisconnected.
 func (ac *AeronCluster) recoveryLeaderIngressDisconnected() bool {
-	if ac.sessionState != SessionStateAwaitNewLeaderConnection {
+	if ac.sessionState != SessionStateAwaitNewLeaderConnection || ac.ingressPublication != nil {
 		return false
 	}
 	leader, ok := ac.recoveryLeaderIngress()
@@ -112,7 +110,7 @@ func (ac *AeronCluster) recoveryLeaderIngressDisconnected() bool {
 		return false
 	}
 	pub := leader.Publication
-	return pub != nil && !pub.IsConnected()
+	return pub != nil && pub.IsClosed()
 }
 
 // pollLeaderRecovery advances async ingress registration and sends the first

@@ -55,5 +55,6 @@ func FailoverHarnessClusterContext() client.ClusterContext {
 		FailoverIngressEndpoints,
 	)
 	ctx.NewLeaderTimeout = FailoverNewLeaderTimeout
+	ctx.MessageTimeout = FailoverNewLeaderTimeout
 	return ctx
 }
