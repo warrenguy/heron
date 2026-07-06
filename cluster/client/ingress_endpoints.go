@@ -9,6 +9,26 @@ import (
 	"github.com/warrenguy/heron/aeron/conductor"
 )
 
+func appendIngressPairPrefix(b *strings.Builder, memberID int) {
+	if b.Len() > 0 {
+		b.WriteByte(',')
+	}
+	b.WriteString(strconv.Itoa(memberID))
+	b.WriteByte('=')
+}
+
+func appendIngressEndpointPair(b *strings.Builder, memberID int, endpoint string) {
+	appendIngressPairPrefix(b, memberID)
+	b.WriteString(endpoint)
+}
+
+func appendIngressHostnamePair(b *strings.Builder, memberID int, hostname string, port int) {
+	appendIngressPairPrefix(b, memberID)
+	b.WriteString(hostname)
+	b.WriteByte(':')
+	b.WriteString(strconv.Itoa(port))
+}
+
 func sortedMemberIDs(m MemberIngressMap) []int32 {
 	ids := make([]int32, 0, len(m))
 	for id, ingress := range m {
@@ -93,13 +113,77 @@ func FormatIngressEndpoints(m MemberIngressMap) string {
 		return ""
 	}
 	var b strings.Builder
-	for i, id := range ids {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString(strconv.FormatInt(int64(id), 10))
-		b.WriteByte('=')
-		b.WriteString(m[id].Endpoint)
+	for _, id := range ids {
+		appendIngressEndpointPair(&b, int(id), m[id].Endpoint)
+	}
+	return b.String()
+}
+
+const (
+	// DefaultIngressPortBase is the default cluster ingress port base (9000).
+	DefaultIngressPortBase = 9000
+
+	// DefaultIngressPortsPerNode is the default ports reserved per cluster member (100).
+	DefaultIngressPortsPerNode = 100
+
+	// DefaultClientFacingPortOffset is the client-facing ingress offset within each
+	// member's port block (CLIENT_FACING_PORT_OFFSET = 2).
+	DefaultClientFacingPortOffset = 2
+)
+
+// IngressPortForMember returns the UDP port for a cluster member's client-facing
+// ingress channel:
+//
+//	portBase + memberID*portsPerNode + clientFacingOffset
+//
+// Exported for tests and callers that need the port without formatting the full
+// endpoints string. memberID is the cluster member id (0-based).
+//
+// Java ClusterConfig.calculatePort uses the same formula with
+// ClusterConfig.PORTS_PER_NODE (100) hard-coded. This Go helper accepts
+// portsPerNode as a parameter.
+func IngressPortForMember(
+	memberID, portBase, portsPerNode, clientFacingOffset int,
+) int {
+	return portBase + memberID*portsPerNode + clientFacingOffset
+}
+
+// FormatIngressEndpointsFromHostnames builds a comma-separated ingress endpoints
+// string from hostnames and port parameters.
+//
+// memberId is the slice index (0..len(hostnames)-1). Each pair is
+// "memberId=hostname:port" with port from IngressPortForMember. Pairs appear in
+// ascending memberId order (slice iteration order). Member ids start at 0;
+// hostnames[0] is always member 0.
+//
+// Nil or empty hostnames returns "". Empty hostname elements are emitted as-is
+// (e.g. "0=:port"); callers should supply non-empty hostnames. Practical cluster
+// sizes only: member ids are slice indices and must fit int32 for
+// ParseIngressEndpoints roundtrip.
+//
+// UDP ingress only. For IPC or ipcx channels, leave ClusterContext.IngressEndpoints
+// empty; Validate rejects non-empty endpoints on passthrough channels
+// (validateClusterIngressEndpoints in context.go).
+//
+// Intended for ClusterContext.IngressEndpoints on UDP channels without ?endpoint=.
+// May be validated with ParseIngressEndpoints before assigning to ClusterContext.
+//
+// Not used on offer/poll hot paths.
+func FormatIngressEndpointsFromHostnames(
+	hostnames []string,
+	portBase, portsPerNode, clientFacingOffset int,
+) string {
+	if len(hostnames) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for memberID, hostname := range hostnames {
+		appendIngressHostnamePair(
+			&b,
+			memberID,
+			hostname,
+			IngressPortForMember(memberID, portBase, portsPerNode, clientFacingOffset),
+		)
 	}
 	return b.String()
 }

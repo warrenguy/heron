@@ -1,10 +1,24 @@
 package client_test
 
 import (
+	"strconv"
+
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster/client"
 )
+
+func wantIngressEndpointsFromHostnames(
+	hostnames []string,
+	portBase, portsPerNode, offset int,
+) map[int32]string {
+	want := make(map[int32]string, len(hostnames))
+	for i, hostname := range hostnames {
+		port := client.IngressPortForMember(i, portBase, portsPerNode, offset)
+		want[int32(i)] = hostname + ":" + strconv.Itoa(port)
+	}
+	return want
+}
 
 func requireMemberIngressMap(
 	t require.TestingT,

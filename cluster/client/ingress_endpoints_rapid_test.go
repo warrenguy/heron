@@ -130,3 +130,39 @@ func TestParseIngressEndpoints_invalid_rapid(t *testing.T) {
 		}
 	})
 }
+
+func drawIngressHostnames(rt *rapid.T) []string {
+	count := rapid.IntRange(1, 5).Draw(rt, "hostnameCount")
+	hostnames := make([]string, count)
+	for i := range hostnames {
+		hostnames[i] = drawIngressSafeASCII(rt, fmt.Sprintf("host%d", i), 1, 16)
+	}
+	return hostnames
+}
+
+func TestFormatIngressEndpointsFromHostnames_roundtrip_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		hostnames := drawIngressHostnames(rt)
+		portBase := rapid.IntRange(8000, 65000).Draw(rt, "portBase")
+		portsPerNode := rapid.IntRange(10, 200).Draw(rt, "portsPerNode")
+		offset := rapid.IntRange(0, 10).Draw(rt, "offset")
+
+		formatted := client.FormatIngressEndpointsFromHostnames(
+			hostnames,
+			portBase,
+			portsPerNode,
+			offset,
+		)
+		require.NotEmpty(rt, formatted)
+
+		parsed, err := client.ParseIngressEndpoints(formatted)
+		require.NoError(rt, err)
+
+		requireMemberIngressMap(
+			rt,
+			parsed,
+			wantIngressEndpointsFromHostnames(hostnames, portBase, portsPerNode, offset),
+		)
+	})
+}
