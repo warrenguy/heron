@@ -51,6 +51,8 @@ type ClusterContext struct {
 	EgressHandler           EgressHandler
 	ControlledEgressHandler ControlledEgressHandler
 
+	// IdleStrategy paces connect, SpinOnce, and ingress retry. Use one instance
+	// across the session lifetime; Connect resets it on exit before the duty cycle.
 	IdleStrategy idlestrategy.IdleStrategy
 
 	// DirectAssemblers mirrors Java isDirectAssemblers; passed to EgressAdapter reassembly.

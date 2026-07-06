@@ -94,6 +94,61 @@ func requireAsyncConnectClosedAfterConnectFailure(t *testing.T, ac *AsyncConnect
 	require.EqualError(t, pollErr, "cluster client: async connect closed")
 }
 
+func TestAwaitClusterConnect_idleStrategyPacing(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+
+		idle := &recordingIdleStrategy{}
+		harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
+			ctx = connectContextForTest(ctx.Aeron, "")
+			ctx.IdleStrategy = idle
+			return ctx
+		})
+		t.Cleanup(func() { _ = ac.Close() })
+
+		var steps int
+		registerConnectHarnessStepObserver(t, harness, ac, func(ac *AsyncConnect) {
+			steps++
+			if steps < 3 {
+				return
+			}
+			withAsyncConnectEgressTerm(t, ac, writeSessionEventForConnect)
+		})
+
+		result, err := awaitClusterConnect(ac)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Positive(t, idle.totalIdleCalls)
+		require.Zero(t, idle.lastWorkCount)
+		require.Equal(t, 1, idle.resetCalls)
+	})
+
+	t.Run("timeout", func(t *testing.T) {
+		t.Parallel()
+
+		idle := &recordingIdleStrategy{}
+		harness, ac := setupAsyncConnectWithContext(t, func(ctx ClusterContext) ClusterContext {
+			ctx = connectContextForTest(ctx.Aeron, "")
+			ctx.IdleStrategy = idle
+			return ctx
+		})
+		t.Cleanup(func() { _ = ac.Close() })
+
+		registerConnectHarnessStepObserver(t, harness, ac, func(ac *AsyncConnect) {
+			if ac.EgressSubscriptionForTest() != nil {
+				ac.deadlineNs = ac.nanoClock() - 1
+			}
+		})
+
+		_, err := awaitClusterConnect(ac)
+		require.Error(t, err)
+		require.Positive(t, idle.totalIdleCalls)
+		require.Equal(t, 1, idle.resetCalls)
+	})
+}
+
 func TestAwaitClusterConnect_success(t *testing.T) {
 	t.Parallel()
 
@@ -284,7 +339,9 @@ func TestConnect_timeout(t *testing.T) {
 			name: "handshake_poll_timeout",
 			buildCtx: func(t *testing.T, harness *aeron.AsyncConnectTestHarness) ClusterContext {
 				t.Helper()
-				return connectContextForTest(harness.Client, "")
+				ctx := connectContextForTest(harness.Client, "")
+				ctx.MessageTimeout = 5 * time.Millisecond
+				return ctx
 			},
 			onStep: func(ac *AsyncConnect) {
 				if ac.EgressSubscriptionForTest() != nil {

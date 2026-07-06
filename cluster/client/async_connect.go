@@ -84,8 +84,15 @@ type AsyncConnect struct {
 // NewAsyncConnect validates configuration, concludes cluster context, and starts
 // the connect state machine at CREATE_EGRESS_SUBSCRIPTION.
 //
-// newLeaderExplicit is captured before Normalize; callers must not pre-normalize ctx
-// or explicit NewLeaderTimeout detection will be wrong.
+// Pass a raw ClusterContext; NewAsyncConnect normalizes internally and must see
+// zero fields for default detection. newLeaderExplicit is captured before
+// Normalize; callers must not pre-normalize ctx or explicit NewLeaderTimeout
+// detection will be wrong.
+//
+// Invoke client.DoWork on the transport client between every Poll spin. Poll does
+// not accept context cancellation; wrap the outer poll loop with context.Context
+// and check cancelCtx.Err() between Poll calls. Call Close to abort connect and
+// release partial resources.
 func NewAsyncConnect(ctx ClusterContext) (*AsyncConnect, error) {
 	newLeaderExplicit := ctx.NewLeaderTimeout != 0
 	ctx = ctx.Normalize()

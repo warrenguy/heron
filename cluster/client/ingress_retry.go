@@ -21,9 +21,11 @@ type IngressOfferConfig struct {
 	// Timeout bounds the retry loop; zero or negative uses DefaultIngressOfferTimeout.
 	Timeout time.Duration
 
-	// IdleStrategy paces BackPressured retries. Nil uses NewDefaultIdleStrategy().
-	// Prefer a dedicated instance per retry loop; idle.Reset() runs on all exit
-	// paths so a shared strategy is not left in PARKING. For fixed-sleep pacing,
+	// IdleStrategy paces BackPressured retries. Nil uses session.Context().IdleStrategy
+	// when set; if that is also nil, NewDefaultIdleStrategy(). Requires a non-nil
+	// session (IngressOfferUntilPositive returns NotConnected otherwise). Use one
+	// instance across connect, SpinOnce, and ingress retry. idle.Reset() runs on all
+	// exit paths so a shared strategy is not left in PARKING. For fixed-sleep pacing,
 	// pass idlestrategy.NewSleeping(d).
 	IdleStrategy idlestrategy.IdleStrategy
 
@@ -32,6 +34,19 @@ type IngressOfferConfig struct {
 	// time.Now().UnixNano(). The clock must advance for Timeout to bound
 	// retries; a frozen clock causes unbounded retry.
 	NanoClock func() int64
+}
+
+func ingressOfferIdleStrategy(
+	cfg IngressOfferConfig,
+	session *AeronCluster,
+) idlestrategy.IdleStrategy {
+	if cfg.IdleStrategy != nil {
+		return cfg.IdleStrategy
+	}
+	if idle := session.ctx.IdleStrategy; idle != nil {
+		return idle
+	}
+	return NewDefaultIdleStrategy()
 }
 
 // IngressOfferUntilPositive retries offerFn on IngressRetriableCode until success,
@@ -48,9 +63,8 @@ type IngressOfferConfig struct {
 //     AdminAction retries immediately on the next iteration (no pacing),
 //     matching Publication offer semantics.
 //
-//   - Calls idle.Reset() on all exit paths (success, terminal, timeout). When
-//     cfg.IdleStrategy is nil, the default idle strategy is still reset on exit
-//     so a shared strategy is not left in PARKING.
+//   - Calls idle.Reset() on all exit paths (success, terminal, timeout). Nil
+//     cfg.IdleStrategy uses session context idle when set; otherwise default.
 //
 //   - Retry aborts on any non-retriable code, including session-guard NotConnected
 //     returned after PollEgress advances recovery or egress teardown mutates state.
@@ -71,6 +85,9 @@ type IngressOfferConfig struct {
 // of the retry loop only. The application still owns the outer duty cycle
 // (PollEgress between business logic, idle keep-alive timer, etc.).
 //
+// Prefer AeronCluster.IngressOfferUntilPositive when the session handle is available;
+// the aeronClient parameter duplicates session.Aeron().
+//
 // Not zero-alloc gated: intended for idle keep-alive and integration-style sends,
 // not per-message hot paths. Single-shot Offer/SendKeepAlive remain zero-alloc clean.
 func IngressOfferUntilPositive(
@@ -86,10 +103,7 @@ func IngressOfferUntilPositive(
 	if timeout <= 0 {
 		timeout = DefaultIngressOfferTimeout
 	}
-	idle := cfg.IdleStrategy
-	if idle == nil {
-		idle = NewDefaultIdleStrategy()
-	}
+	idle := ingressOfferIdleStrategy(cfg, session)
 	clock := cfg.NanoClock
 	if clock == nil {
 		clock = session.nanoClock
@@ -119,17 +133,33 @@ func IngressOfferUntilPositive(
 }
 
 // SendKeepAliveUntilPositive retries SendKeepAlive via IngressOfferUntilPositive.
-//
-// Inherits the full IngressOfferUntilPositive contract: requires non-nil
-// aeronClient and session, drives DoWork and PollEgress during retry, paces
-// BackPressured via IdleStrategy, and returns immediately on terminal codes
-// (Closed, NotConnected, MaxPositionExceeded, UnsupportedMessageLength).
-//
-// Intended for idle keep-alive duty cycles, not per-message hot paths.
+// Inherits that function's contract. Prefer AeronCluster.SendKeepAliveUntilPositive
+// when the session handle is available. Intended for idle keep-alive duty cycles,
+// not per-message hot paths.
 func SendKeepAliveUntilPositive(
 	aeronClient *aeron.Client,
 	session *AeronCluster,
 	cfg IngressOfferConfig,
 ) int64 {
 	return IngressOfferUntilPositive(aeronClient, session, cfg, session.SendKeepAlive)
+}
+
+// IngressOfferUntilPositive retries offerFn using this session's transport client.
+// Use for paced Offer, SendKeepAlive, or SendSnapshotRequest when the session
+// handle is available. Inherits the package function contract.
+func (ac *AeronCluster) IngressOfferUntilPositive(
+	cfg IngressOfferConfig,
+	offerFn func() int64,
+) int64 {
+	if ac == nil {
+		return aeron.NotConnected
+	}
+	return IngressOfferUntilPositive(ac.aeron, ac, cfg, offerFn)
+}
+
+// SendKeepAliveUntilPositive retries SendKeepAlive via IngressOfferUntilPositive.
+// Inherits that function's contract. Intended for idle keep-alive duty cycles, not
+// per-message hot paths.
+func (ac *AeronCluster) SendKeepAliveUntilPositive(cfg IngressOfferConfig) int64 {
+	return ac.IngressOfferUntilPositive(cfg, ac.SendKeepAlive)
 }

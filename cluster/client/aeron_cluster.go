@@ -12,15 +12,19 @@ import (
 
 // AeronCluster is a connected cluster client session. Not safe for concurrent use.
 //
-// Methods other than accessors require a non-nil receiver. The application goroutine
-// must invoke client.DoWork() on the transport *aeron.Client between Offer/TryClaim
-// and PollEgress spins, matching ClusterContext invoker-only rules. Callers must
-// CommitClaim or AbortClaim any in-flight TryClaim before Close.
+// The application goroutine owns transport pumping. Use SpinOnce for the standard
+// DoWork -> PollEgress -> idle duty cycle. For paced ingress retry, use
+// IngressOfferUntilPositive or SendKeepAliveUntilPositive.
 //
-// For paced ingress retry, call IngressOfferUntilPositive(session.Aeron(), session, cfg, offerFn)
-// with session.Offer, session.SendKeepAlive, or a closure around session.SendSnapshotRequest.
+// When driving PollEgress manually, invoke client.DoWork on the transport
+// *aeron.Client between Offer/TryClaim and each poll. Callers must CommitClaim
+// or AbortClaim any in-flight TryClaim before Close.
 //
-// SendKeepAliveUntilPositive is a keep-alive-only convenience wrapper.
+// SpinOnce does not accept context. Wrap the outer duty cycle with context.Context
+// and check ctx.Err() between SpinOnce calls.
+//
+// Accessors, SpinOnce, and session ingress-retry helpers tolerate a nil receiver;
+// other methods require a non-nil receiver.
 type AeronCluster struct {
 	ctx       ClusterContext
 	aeron     *aeron.Client

@@ -168,6 +168,24 @@ func withConnectNanoClock(
 	withAtomicNanoClock(result, nowNs)
 }
 
+func closedOwnedNilAeronCluster(
+	t *testing.T,
+	mutate func(*ConnectResult),
+) *AeronCluster {
+	t.Helper()
+
+	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
+		result.OwnsAeronClient = true
+		if mutate != nil {
+			mutate(result)
+		}
+	})
+	require.NoError(t, ac.Close())
+	require.Nil(t, ac.Aeron())
+	require.True(t, ac.IsClosed())
+	return ac
+}
+
 func newAeronClusterFromConnectFixtureRecording(
 	t *testing.T,
 	mutate func(*ConnectResult),

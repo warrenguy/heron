@@ -1,15 +1,27 @@
+// Package client implements the Aeron Cluster Java client contract.
 package client
 
 // Connect performs the blocking cluster connect handshake and returns a connected
 // AeronCluster session.
 //
+// Prefer Connect when a blocking handshake is acceptable. Pass a raw
+// ClusterContext; Connect normalizes internally and must see zero fields for
+// default detection (do not pre-normalize before Connect or NewAsyncConnect).
+//
 // It drives DoWork on the transport client until the handshake completes or
-// MessageTimeout elapses.
+// MessageTimeout elapses. The await loop paces via ctx.IdleStrategy.Idle(0) and
+// calls IdleStrategy.Reset on exit so a shared backoff instance is not left in
+// PARKING before the post-connect duty cycle.
 //
 // Requires a non-nil EgressHandler on ctx.
 //
 // Pass ctx.Aeron to share the transport client with the session; when Aeron is nil,
 // Connect creates an owned client that AeronCluster.Close releases.
+//
+// Connect blocks without context cancellation; it returns only on success or
+// MessageTimeout. For signal or shutdown during connect, use NewAsyncConnect,
+// wrap the poll loop with context.Context, and check cancelCtx.Err() between
+// Poll calls.
 //
 // On handshake failure, partial resources are released via AsyncConnect.Close.
 //
@@ -42,9 +54,6 @@ func Connect(ctx ClusterContext) (*AeronCluster, error) {
 
 func awaitClusterConnect(connect *AsyncConnect) (*ConnectResult, error) {
 	idle := connect.ctx.IdleStrategy
-	if idle == nil {
-		idle = NewDefaultIdleStrategy()
-	}
 	defer idle.Reset()
 
 	for {

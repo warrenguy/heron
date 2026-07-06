@@ -55,12 +55,14 @@ func clusterWithAtomicNanoClock(t *testing.T, startNs int64) (*AeronCluster, *at
 type recordingIdleStrategy struct {
 	idleCalls      int
 	totalIdleCalls int
+	lastWorkCount  int
 	resetCalls     int
 }
 
 func (r *recordingIdleStrategy) Idle(workCount int) {
 	r.idleCalls++
 	r.totalIdleCalls++
+	r.lastWorkCount = workCount
 }
 
 func (r *recordingIdleStrategy) Reset() {
@@ -89,12 +91,14 @@ func TestIngressOfferUntilPositive_backPressuredThenSuccess(t *testing.T) {
 		aeron.BackPressured,
 		100,
 	)
+	doWorkCount := setupIngressRetryDoWorkRecorder(t)
 
 	pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{
 		IdleStrategy: idle,
 	}, ac.SendKeepAlive)
 	require.Positive(t, pos)
 	require.Equal(t, 3, seqPub.calls)
+	require.Equal(t, 5, *doWorkCount)
 	require.Equal(t, 2, idle.totalIdleCalls)
 	require.Equal(t, 1, idle.resetCalls)
 }
@@ -114,47 +118,43 @@ func TestIngressOfferUntilPositive_immediateSuccess(t *testing.T) {
 	require.Equal(t, 1, idle.resetCalls)
 }
 
-func TestIngressOfferUntilPositive_backPressuredDoWorkCount(t *testing.T) {
-	ac, _ := clusterWithSequentialIngress(t, aeron.BackPressured, aeron.BackPressured, 100)
-	doWorkCount := setupIngressRetryDoWorkRecorder(t)
+func TestIngressOfferUntilPositive_adminActionRetry(t *testing.T) {
+	tests := []struct {
+		name         string
+		results      []int64
+		wantSeqCalls int
+		wantDoWork   int
+	}{
+		{
+			name:         "singleRetry",
+			results:      []int64{aeron.AdminAction, 100},
+			wantSeqCalls: 2,
+			wantDoWork:   2,
+		},
+		{
+			name:         "multiRetry",
+			results:      []int64{aeron.AdminAction, aeron.AdminAction, 100},
+			wantSeqCalls: 3,
+			wantDoWork:   3,
+		},
+	}
 
-	pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{}, ac.SendKeepAlive)
-	require.Positive(t, pos)
-	require.Equal(t, 5, *doWorkCount)
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			idle := &recordingIdleStrategy{}
+			ac, seqPub := clusterWithSequentialIngress(t, tc.results...)
+			doWorkCount := setupIngressRetryDoWorkRecorder(t)
 
-func TestIngressOfferUntilPositive_adminActionThenSuccess(t *testing.T) {
-	idle := &recordingIdleStrategy{}
-	ac, seqPub := clusterWithSequentialIngress(t, aeron.AdminAction, 100)
-
-	pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{
-		IdleStrategy: idle,
-	}, ac.SendKeepAlive)
-	require.Positive(t, pos)
-	require.Equal(t, 2, seqPub.calls)
-	require.Zero(t, idle.totalIdleCalls)
-}
-
-func TestIngressOfferUntilPositive_adminActionDoWorkCount(t *testing.T) {
-	ac, _ := clusterWithSequentialIngress(t, aeron.AdminAction, 100)
-	doWorkCount := setupIngressRetryDoWorkRecorder(t)
-
-	pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{}, ac.SendKeepAlive)
-	require.Positive(t, pos)
-	require.Equal(t, 2, *doWorkCount)
-}
-
-func TestIngressOfferUntilPositive_adminActionDoWorkCount_multiRetry(t *testing.T) {
-	idle := &recordingIdleStrategy{}
-	ac, _ := clusterWithSequentialIngress(t, aeron.AdminAction, aeron.AdminAction, 100)
-	doWorkCount := setupIngressRetryDoWorkRecorder(t)
-
-	pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{
-		IdleStrategy: idle,
-	}, ac.SendKeepAlive)
-	require.Positive(t, pos)
-	require.Equal(t, 3, *doWorkCount)
-	require.Zero(t, idle.totalIdleCalls)
+			pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{
+				IdleStrategy: idle,
+			}, ac.SendKeepAlive)
+			require.Positive(t, pos)
+			require.Equal(t, tc.wantSeqCalls, seqPub.calls)
+			require.Equal(t, tc.wantDoWork, *doWorkCount)
+			require.Zero(t, idle.totalIdleCalls)
+			require.Equal(t, 1, idle.resetCalls)
+		})
+	}
 }
 
 func TestIngressOfferUntilPositive_terminalNoRetry(t *testing.T) {
@@ -189,7 +189,9 @@ func TestIngressOfferUntilPositive_timeout(t *testing.T) {
 		idle := &recordingIdleStrategy{}
 		ac, nowNs := clusterWithAtomicNanoClock(t, 5_000_000_000)
 		doWorkCount := setupIngressRetryDoWorkRecorder(t)
+		var offerCalls int
 		offerFn := func() int64 {
+			offerCalls++
 			nowNs.Add(int64(time.Millisecond))
 			return aeron.BackPressured
 		}
@@ -199,6 +201,7 @@ func TestIngressOfferUntilPositive_timeout(t *testing.T) {
 			IdleStrategy: idle,
 		}, offerFn)
 		require.Equal(t, aeron.BackPressured, pos)
+		require.Equal(t, 1, offerCalls)
 		require.Equal(t, 2, *doWorkCount)
 		require.Positive(t, idle.totalIdleCalls)
 		require.Zero(t, idle.idleCalls)
@@ -357,10 +360,124 @@ func TestIngressOfferUntilPositive_terminalAfterRetriableRetry(t *testing.T) {
 	require.Equal(t, startNs, nowNs.Load(), "returned on terminal code, not deadline expiry")
 }
 
-func TestSendKeepAliveUntilPositive_delegates(t *testing.T) {
-	ac, seqPub := clusterWithSequentialIngress(t, aeron.AdminAction, 100)
+func TestIngressOfferUntilPositive_usesContextIdleStrategy(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(ac *AeronCluster) int64
+	}{
+		{
+			name: "package",
+			call: func(ac *AeronCluster) int64 {
+				return IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{}, ac.SendKeepAlive)
+			},
+		},
+		{
+			name: "session",
+			call: func(ac *AeronCluster) int64 {
+				return ac.IngressOfferUntilPositive(IngressOfferConfig{}, ac.SendKeepAlive)
+			},
+		},
+	}
 
-	pos := SendKeepAliveUntilPositive(ac.Aeron(), ac, IngressOfferConfig{})
-	require.Positive(t, pos)
-	require.Equal(t, 2, seqPub.calls)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			idle := &recordingIdleStrategy{}
+			var seqPub *sequentialOfferResultIngressPublication
+			ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
+				result.Context.IdleStrategy = idle
+				seqPub = withSequentialOfferResultIngress(
+					t,
+					result,
+					aeron.BackPressured,
+					aeron.BackPressured,
+					100,
+				)
+			})
+
+			pos := tc.call(ac)
+
+			require.Positive(t, pos)
+			require.Equal(t, 3, seqPub.calls)
+			require.Equal(t, 2, idle.totalIdleCalls)
+			require.Equal(t, 1, idle.resetCalls)
+		})
+	}
+}
+
+func TestSendKeepAliveUntilPositive_delegates(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(ac *AeronCluster) int64
+	}{
+		{
+			name: "package",
+			call: func(ac *AeronCluster) int64 {
+				return SendKeepAliveUntilPositive(ac.Aeron(), ac, IngressOfferConfig{})
+			},
+		},
+		{
+			name: "session",
+			call: func(ac *AeronCluster) int64 {
+				return ac.SendKeepAliveUntilPositive(IngressOfferConfig{})
+			},
+		},
+		{
+			name: "ingressOfferUntilPositive",
+			call: func(ac *AeronCluster) int64 {
+				return ac.IngressOfferUntilPositive(IngressOfferConfig{}, ac.SendKeepAlive)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ac, seqPub := clusterWithSequentialIngress(t, aeron.AdminAction, 100)
+
+			pos := tc.call(ac)
+			require.Positive(t, pos)
+			require.Equal(t, 2, seqPub.calls)
+		})
+	}
+}
+
+func TestAeronCluster_IngressOfferUntilPositive_closedNilAeron(t *testing.T) {
+	t.Run("offerFn", func(t *testing.T) {
+		ac := closedOwnedNilAeronCluster(t, nil)
+		var offerCalls int
+
+		pos := ac.IngressOfferUntilPositive(IngressOfferConfig{}, func() int64 {
+			offerCalls++
+			return 1
+		})
+
+		require.Equal(t, aeron.NotConnected, pos)
+		require.Zero(t, offerCalls)
+	})
+
+	t.Run("sendKeepAlive", func(t *testing.T) {
+		var seqPub *sequentialOfferResultIngressPublication
+		ac := closedOwnedNilAeronCluster(t, func(result *ConnectResult) {
+			seqPub = withSequentialOfferResultIngress(t, result, 100)
+		})
+
+		callsBefore := seqPub.calls
+		pos := ac.SendKeepAliveUntilPositive(IngressOfferConfig{})
+
+		require.Equal(t, aeron.NotConnected, pos)
+		require.Equal(t, callsBefore, seqPub.calls)
+	})
+
+	t.Run("borrowedClient", func(t *testing.T) {
+		var seqPub *sequentialOfferResultIngressPublication
+		ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
+			seqPub = withSequentialOfferResultIngress(t, result, 100)
+		})
+		require.NoError(t, ac.Close())
+		require.NotNil(t, ac.Aeron())
+		require.True(t, ac.IsClosed())
+
+		pos := ac.SendKeepAliveUntilPositive(IngressOfferConfig{})
+		require.Equal(t, aeron.Closed, pos)
+		require.Equal(t, 1, seqPub.calls)
+	})
 }
