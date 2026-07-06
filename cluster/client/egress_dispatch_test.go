@@ -61,43 +61,90 @@ func TestThrowingEgressHandler_message_panicsWithValue(t *testing.T) {
 	}
 }
 
-func TestHandleEgressFragment_sessionMessageHeader(t *testing.T) {
-	appPayload := []byte("app-payload")
-	wire := encodeSessionMessageHeaderWire(
-		t,
-		egressTestClusterSessionID,
-		egressTestMessageTimestamp,
-		appPayload,
-	)
-	rec := newRecordingEgressHandlers()
+func TestHandleEgressFragment_sessionMessageHeader_messageBytesFunc(t *testing.T) {
+	tests := []struct {
+		name       string
+		appPayload []byte
+		prefixLen  int
+	}{
+		{name: "zero_payload"},
+		{name: "with_payload", appPayload: []byte("app-payload")},
+		{
+			name:       "non_zero_offset",
+			appPayload: []byte("offset-payload"),
+			prefixLen:  24,
+		},
+	}
 
-	invokeHandleEgressFragment(t, rec, egressTestClusterSessionID, wire)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wire := encodeSessionMessageHeaderWire(
+				t,
+				egressTestClusterSessionID,
+				egressTestMessageTimestamp,
+				tt.appPayload,
+			)
+			rec := newRecordingEgressHandlers()
+			rec.configureMessageBytesRecorder(t)
 
-	require.Equal(t, 1, rec.messageCalls)
-	require.Equal(t, egressTestClusterSessionID, rec.gotMessageClusterSessionID)
-	require.Equal(t, egressTestMessageTimestamp, rec.gotMessageTimestamp)
-	require.Equal(t, SessionHeaderLength(), rec.gotMessageOffset)
-	require.Equal(t, len(appPayload), rec.gotMessageLength)
-	require.Equal(t, appPayload, rec.gotMessagePayload)
+			if tt.prefixLen > 0 {
+				invokeHandleEgressFragmentWithPrefix(
+					t,
+					rec,
+					egressTestClusterSessionID,
+					wire,
+					tt.prefixLen,
+				)
+			} else {
+				invokeHandleEgressFragment(t, rec, egressTestClusterSessionID, wire)
+			}
+
+			requireDispatchedSessionMessageBytes(t, rec, tt.appPayload)
+		})
+	}
 }
 
-func TestHandleEgressFragment_sessionMessageHeader_nonZeroOffset(t *testing.T) {
-	const prefixLen = 24
-	appPayload := []byte("offset-payload")
-	wire := encodeSessionMessageHeaderWire(
-		t,
-		egressTestClusterSessionID,
-		egressTestMessageTimestamp,
-		appPayload,
-	)
-	rec := newRecordingEgressHandlers()
+func TestHandleEgressFragment_sessionMessageHeader_messageFunc(t *testing.T) {
+	tests := []struct {
+		name       string
+		appPayload []byte
+		prefixLen  int
+	}{
+		{name: "zero_payload"},
+		{name: "with_payload", appPayload: []byte("app-payload")},
+		{name: "non_zero_offset", appPayload: []byte("offset-payload"), prefixLen: 24},
+	}
 
-	invokeHandleEgressFragmentWithPrefix(t, rec, egressTestClusterSessionID, wire, prefixLen)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wire := encodeSessionMessageHeaderWire(
+				t,
+				egressTestClusterSessionID,
+				egressTestMessageTimestamp,
+				tt.appPayload,
+			)
+			rec := newRecordingEgressHandlers()
 
-	require.Equal(t, 1, rec.messageCalls)
-	require.Equal(t, prefixLen+SessionHeaderLength(), rec.gotMessageOffset)
-	require.Equal(t, len(appPayload), rec.gotMessageLength)
-	require.Equal(t, appPayload, rec.gotMessagePayload)
+			if tt.prefixLen > 0 {
+				invokeHandleEgressFragmentWithPrefix(
+					t,
+					rec,
+					egressTestClusterSessionID,
+					wire,
+					tt.prefixLen,
+				)
+			} else {
+				invokeHandleEgressFragment(t, rec, egressTestClusterSessionID, wire)
+			}
+
+			requireDispatchedSessionMessage(
+				t,
+				rec,
+				tt.appPayload,
+				tt.prefixLen+SessionHeaderLength(),
+			)
+		})
+	}
 }
 
 func TestHandleEgressFragment_sessionEvent(t *testing.T) {
@@ -234,25 +281,6 @@ func TestHandleEgressFragment_sessionEvent_nonZeroOffset(t *testing.T) {
 	require.Equal(t, egressTestClusterSessionID, rec.gotSessionEventClusterSessionID)
 }
 
-func TestHandleEgressFragment_sessionMessageHeader_zeroPayload(t *testing.T) {
-	wire := encodeSessionMessageHeaderWire(
-		t,
-		egressTestClusterSessionID,
-		egressTestMessageTimestamp,
-		nil,
-	)
-	rec := newRecordingEgressHandlers()
-
-	invokeHandleEgressFragment(t, rec, egressTestClusterSessionID, wire)
-
-	require.Equal(t, 1, rec.messageCalls)
-	require.Equal(t, egressTestClusterSessionID, rec.gotMessageClusterSessionID)
-	require.Equal(t, egressTestMessageTimestamp, rec.gotMessageTimestamp)
-	require.Equal(t, SessionHeaderLength(), rec.gotMessageOffset)
-	require.Equal(t, 0, rec.gotMessageLength)
-	require.Nil(t, rec.gotMessagePayload)
-}
-
 func TestHandleEgressFragment_sessionMessageHeader_truncatedHeader(t *testing.T) {
 	wire := encodeSessionMessageHeaderWire(t, egressTestClusterSessionID, 1, []byte("payload"))
 	rec := newRecordingEgressHandlers()
@@ -279,12 +307,7 @@ func TestHandleEgressFragment_sessionMessageHeader_headerOnlySpan(t *testing.T) 
 
 	invokeHandleEgressFragmentAt(t, rec, egressTestClusterSessionID, wire, 0, SessionHeaderLength())
 
-	require.Equal(t, 1, rec.messageCalls)
-	require.Equal(t, egressTestClusterSessionID, rec.gotMessageClusterSessionID)
-	require.Equal(t, egressTestMessageTimestamp, rec.gotMessageTimestamp)
-	require.Equal(t, SessionHeaderLength(), rec.gotMessageOffset)
-	require.Equal(t, 0, rec.gotMessageLength)
-	require.Nil(t, rec.gotMessagePayload)
+	requireDispatchedSessionMessage(t, rec, nil, SessionHeaderLength())
 }
 
 func TestHandleEgressFragment_largeCapturedPayloads(t *testing.T) {

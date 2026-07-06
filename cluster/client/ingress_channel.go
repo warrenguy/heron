@@ -49,16 +49,26 @@ func IngressChannelIsUDP(channel string) bool {
 	return ingressChannelMediaIs(channel, "udp")
 }
 
-// ingressChannelQueryEndpointParamIndex returns the index of endpoint= immediately
-// after ?, or -1 when absent. Piped |endpoint= is not matched.
-func ingressChannelQueryEndpointParamIndex(channel string) int {
-	return aeron.ChannelParamIndex(channel, aeron.ChannelEndpointParam, false)
+// IngressChannelHasEndpointParam reports whether the ingress channel URI
+// contains an endpoint= parameter at a query boundary (? or |).
+//
+// Matches BuildIngressChannel substitution detection. Distinct from the
+// narrower query-only check in validateClusterIngressEndpoints when
+// IngressEndpoints is configured (that rule rejects only ?endpoint=, not
+// piped |endpoint=). Use this helper for CLI validation and documentation;
+// do not assume it mirrors Validate() behavior for map-based ingress.
+func IngressChannelHasEndpointParam(channel string) bool {
+	return aeron.ChannelEndpointParamIndex(channel) >= 0
 }
 
-// ingressChannelEndpointParamIndex returns the index of endpoint= at a query param
-// boundary (immediately after ? or |), or -1 when absent.
-func ingressChannelEndpointParamIndex(channel string) int {
-	return aeron.ChannelParamIndex(channel, aeron.ChannelEndpointParam, true)
+// ingressChannelQueryHasEndpointParam reports whether the ingress channel URI
+// contains endpoint= immediately after ?. Piped |endpoint= is not matched.
+//
+// Used by validateClusterIngressEndpoints when IngressEndpoints is configured.
+// Distinct from aeron.ChannelEndpointParamIndex, which also matches piped
+// |endpoint= for BuildIngressChannel substitution.
+func ingressChannelQueryHasEndpointParam(channel string) bool {
+	return aeron.ChannelParamIndex(channel, aeron.ChannelEndpointParam, false) >= 0
 }
 
 func validateIngressMemberEndpoint(memberEndpoint string) error {
@@ -103,7 +113,7 @@ func BuildIngressChannel(ingressChannel, memberEndpoint string) (string, error) 
 	if err := validateIngressMemberEndpoint(memberEndpoint); err != nil {
 		return "", err
 	}
-	idx := ingressChannelEndpointParamIndex(ingressChannel)
+	idx := aeron.ChannelEndpointParamIndex(ingressChannel)
 	if idx >= 0 {
 		return aeron.ReplaceChannelParamValue(
 			ingressChannel, idx, aeron.ChannelEndpointParam, memberEndpoint,

@@ -221,6 +221,17 @@ func (ac *AeronCluster) PollEgress() int {
 }
 
 // Close sends a best-effort SessionCloseRequest and releases session resources.
+//
+// Closes member ingress publications (including the current leader), egress
+// subscription, clears egress adapter state and the tracked egress image, and
+// clears the cached leader ingress handle. MemberIngressMap() still returns the
+// session map after Close; publications are closed but entries are not removed.
+//
+// When the session owns the transport client (OwnsAeronClient on ConnectResult),
+// Close also closes Aeron. When Aeron was injected via ClusterContext.Aeron, the
+// transport stays with the caller and Close does not close it.
+//
+// Idempotent after the first Close invocation.
 func (ac *AeronCluster) Close() error {
 	if ac.closed {
 		return nil

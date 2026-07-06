@@ -232,10 +232,57 @@ func TestEgressHandlers_postAssignMutationVisibleViaInterface(t *testing.T) {
 	require.True(t, called)
 }
 
-func TestValidateClusterContext_egressHandlersNilMessageFuncPasses(t *testing.T) {
-	ctx := validClusterContext().Normalize()
+func TestValidateClusterContext_egressHandlersMessageCallbacksPass(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler *client.EgressHandlers
+	}{
+		{name: "nil_callbacks", handler: &client.EgressHandlers{}},
+		{
+			name: "message_func_only",
+			handler: &client.EgressHandlers{
+				MessageFunc: func(
+					int64,
+					int64,
+					atomic.AtomicBuffer,
+					int,
+					int,
+					*aeron.Header,
+				) {
+				},
+			},
+		},
+		{
+			name: "message_bytes_func_only",
+			handler: &client.EgressHandlers{
+				MessageBytesFunc: func(int64, int64, []byte, *aeron.Header) {},
+			},
+		},
+		{
+			name: "both_callbacks_set",
+			handler: &client.EgressHandlers{
+				MessageFunc: func(
+					int64,
+					int64,
+					atomic.AtomicBuffer,
+					int,
+					int,
+					*aeron.Header,
+				) {
+				},
+				MessageBytesFunc: func(int64, int64, []byte, *aeron.Header) {},
+			},
+		},
+	}
 
-	require.NoError(t, ctx.Validate())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := validClusterContext().Normalize()
+			ctx.EgressHandler = tt.handler
+
+			requireNoValidationErrors(t, ctx)
+		})
+	}
 }
 
 func TestThrowingEgressHandler_panicsOnMessage(t *testing.T) {
@@ -281,4 +328,161 @@ func TestThrowingEgressHandler_otherMethodsNoOp(t *testing.T) {
 	require.NotPanics(t, func() {
 		invokeNonMessageEgressHandlerMethods(h)
 	})
+}
+
+func TestEgressHandlers_messageDispatchPrecedence(t *testing.T) {
+	raw := []byte("prefix-payload-suffix")
+	const offset = 7
+	const length = 7
+	wantPayload := raw[offset : offset+length]
+	header := &aeron.Header{}
+	buf := atomic.Wrap(raw)
+
+	t.Run("message_bytes_func_precedence", func(t *testing.T) {
+		var bytesCalls int
+		var gotClusterSessionID int64
+		var gotTimestamp int64
+		var gotPayload []byte
+		var gotHeader *aeron.Header
+
+		h := &client.EgressHandlers{
+			MessageBytesFunc: func(
+				csid int64,
+				ts int64,
+				payload []byte,
+				hdr *aeron.Header,
+			) {
+				bytesCalls++
+				gotClusterSessionID = csid
+				gotTimestamp = ts
+				gotPayload = payload
+				gotHeader = hdr
+			},
+			MessageFunc: func(
+				int64,
+				int64,
+				atomic.AtomicBuffer,
+				int,
+				int,
+				*aeron.Header,
+			) {
+				t.Fatal("MessageFunc must not run when MessageBytesFunc is set")
+			},
+		}
+
+		h.Message(testMessageClusterSessionID, testMessageTimestamp, buf, offset, length, header)
+
+		require.Equal(t, 1, bytesCalls)
+		require.Equal(t, testMessageClusterSessionID, gotClusterSessionID)
+		require.Equal(t, testMessageTimestamp, gotTimestamp)
+		require.Equal(t, wantPayload, gotPayload)
+		require.Equal(t, header, gotHeader)
+	})
+
+	t.Run("message_func_only", func(t *testing.T) {
+		var messageCalls int
+		var gotClusterSessionID int64
+		var gotTimestamp int64
+		var gotBuffer []byte
+		var gotOffset int
+		var gotLength int
+		var gotHeader *aeron.Header
+
+		h := &client.EgressHandlers{
+			MessageFunc: func(
+				csid int64,
+				ts int64,
+				buffer atomic.AtomicBuffer,
+				off int,
+				ln int,
+				hdr *aeron.Header,
+			) {
+				messageCalls++
+				gotClusterSessionID = csid
+				gotTimestamp = ts
+				gotBuffer = buffer.Bytes()
+				gotOffset = off
+				gotLength = ln
+				gotHeader = hdr
+			},
+		}
+
+		h.Message(testMessageClusterSessionID, testMessageTimestamp, buf, offset, length, header)
+
+		require.Equal(t, 1, messageCalls)
+		require.Equal(t, testMessageClusterSessionID, gotClusterSessionID)
+		require.Equal(t, testMessageTimestamp, gotTimestamp)
+		require.Equal(t, raw, gotBuffer)
+		require.Equal(t, offset, gotOffset)
+		require.Equal(t, length, gotLength)
+		require.Equal(t, header, gotHeader)
+	})
+}
+
+func TestEgressHandlers_messageBytesFuncCopySemantics(t *testing.T) {
+	raw := []byte("0123456789")
+	const offset = 2
+	const length = 4
+	wantPayload := raw[offset : offset+length]
+
+	var gotPayload []byte
+	h := &client.EgressHandlers{
+		MessageBytesFunc: func(
+			_ int64,
+			_ int64,
+			payload []byte,
+			_ *aeron.Header,
+		) {
+			gotPayload = payload
+		},
+	}
+
+	buf := atomic.Wrap(raw)
+	h.Message(0, 0, buf, offset, length, nil)
+
+	require.Equal(t, wantPayload, gotPayload)
+	gotPayload[0] = 'X'
+	require.Equal(t, raw, buf.Bytes())
+}
+
+func TestEgressHandlers_messageBytesFunc_nilPayloadSpans(t *testing.T) {
+	tests := []struct {
+		name        string
+		offset      int
+		length      int
+		wantPayload []byte
+	}{
+		{name: "zero length", offset: 0, length: 0},
+		{name: "length past buffer end", offset: 0, length: 99},
+		{name: "negative offset", offset: -1, length: 4},
+		{name: "negative length", offset: 0, length: -1},
+		{name: "offset past buffer end", offset: 7, length: 1},
+		{name: "partial overrun past buffer end", offset: 5, length: 4},
+		{name: "valid span", offset: 0, length: 7, wantPayload: []byte("payload")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := atomic.Wrap([]byte("payload"))
+
+			var gotPayload []byte
+			var called bool
+			h := &client.EgressHandlers{
+				MessageBytesFunc: func(
+					_ int64,
+					_ int64,
+					payload []byte,
+					_ *aeron.Header,
+				) {
+					called = true
+					gotPayload = payload
+				},
+			}
+
+			h.Message(0, 0, buf, tt.offset, tt.length, nil)
+
+			require.True(t, called)
+			require.Equal(t, tt.wantPayload, gotPayload)
+		})
+	}
 }

@@ -24,35 +24,17 @@ func newTestEgressAdapter(
 	return NewEgressAdapter(rec, egressTestClusterSessionID, sub, limit, false)
 }
 
-func requireDispatchedSessionMessage(
-	t *testing.T,
-	rec *recordingEgressHandlers,
-	appPayload []byte,
-	expectedOffset int,
-) {
-	t.Helper()
-
-	require.Equal(t, 1, rec.messageCalls)
-	require.Equal(t, egressTestClusterSessionID, rec.gotMessageClusterSessionID)
-	require.Equal(t, egressTestMessageTimestamp, rec.gotMessageTimestamp)
-	require.Equal(t, expectedOffset, rec.gotMessageOffset)
-	require.Equal(t, len(appPayload), rec.gotMessageLength)
-	require.Equal(t, appPayload, rec.gotMessagePayload)
-}
-
 func requireDispatchedDefaultSessionEvent(
 	t *testing.T,
 	rec *recordingEgressHandlers,
-	correlationID ...int64,
+	expectedCorrelationID int64,
 ) {
 	t.Helper()
 
 	require.Equal(t, 1, rec.sessionEventCalls)
 	require.Equal(t, egressTestClusterSessionID, rec.gotSessionEventClusterSessionID)
 	require.Equal(t, []byte("session-event-detail"), rec.gotSessionEventDetail)
-	if len(correlationID) > 0 {
-		require.Equal(t, correlationID[0], rec.gotSessionEventCorrelationID)
-	}
+	require.Equal(t, expectedCorrelationID, rec.gotSessionEventCorrelationID)
 }
 
 func TestEgressAdapter_Poll_dispatchesSessionEvent(t *testing.T) {
@@ -65,7 +47,7 @@ func TestEgressAdapter_Poll_dispatchesSessionEvent(t *testing.T) {
 	adapter := newTestEgressAdapter(rec, sub)
 
 	require.Equal(t, 1, adapter.Poll())
-	requireDispatchedDefaultSessionEvent(t, rec, 77)
+	requireDispatchedDefaultSessionEvent(t, rec, egressTestSessionEventCorrelationID)
 }
 
 func TestEgressAdapter_Poll_dispatchesNewLeader(t *testing.T) {
@@ -129,6 +111,26 @@ func TestEgressAdapter_Poll_dispatchesSessionMessageHeader(t *testing.T) {
 	)
 }
 
+func TestEgressAdapter_Poll_dispatchesSessionMessageHeader_messageBytesFunc(t *testing.T) {
+	sub, _, termBuffer := setupEgressPollFixtures(t)
+
+	appPayload := []byte("poll-app-payload")
+	wire := encodeSessionMessageHeaderWire(
+		t,
+		egressTestClusterSessionID,
+		egressTestMessageTimestamp,
+		appPayload,
+	)
+	writeUnfragmentedWireToTerm(t, termBuffer, wire)
+
+	rec := newRecordingEgressHandlers()
+	rec.configureMessageBytesRecorder(t)
+	adapter := newTestEgressAdapter(rec, sub)
+
+	require.Equal(t, 1, adapter.Poll())
+	requireDispatchedSessionMessageBytes(t, rec, appPayload)
+}
+
 func TestEgressAdapter_Poll_fragmentedSessionMessageHeader(t *testing.T) {
 	sub, _, termBuffer := setupEgressPollFixtures(t)
 
@@ -146,6 +148,26 @@ func TestEgressAdapter_Poll_fragmentedSessionMessageHeader(t *testing.T) {
 
 	require.Equal(t, 2, adapter.Poll())
 	requireDispatchedSessionMessage(t, rec, appPayload, SessionHeaderLength())
+}
+
+func TestEgressAdapter_Poll_fragmentedSessionMessageHeader_messageBytesFunc(t *testing.T) {
+	sub, _, termBuffer := setupEgressPollFixtures(t)
+
+	appPayload := []byte("fragmented-poll-payload")
+	wire := encodeSessionMessageHeaderWire(
+		t,
+		egressTestClusterSessionID,
+		egressTestMessageTimestamp,
+		appPayload,
+	)
+	writeFragmentedWireToTerm(t, termBuffer, wire)
+
+	rec := newRecordingEgressHandlers()
+	rec.configureMessageBytesRecorder(t)
+	adapter := newTestEgressAdapter(rec, sub)
+
+	require.Equal(t, 2, adapter.Poll())
+	requireDispatchedSessionMessageBytes(t, rec, appPayload)
 }
 
 func TestEgressAdapter_Poll_wrongClusterSessionIDIgnored(t *testing.T) {
@@ -191,14 +213,14 @@ func TestEgressAdapter_Poll_fragmentedSessionEvent(t *testing.T) {
 	adapter := newTestEgressAdapter(rec, sub)
 
 	require.Equal(t, 2, adapter.Poll())
-	requireDispatchedDefaultSessionEvent(t, rec)
+	requireDispatchedDefaultSessionEvent(t, rec, egressTestSessionEventCorrelationID)
 }
 
 func TestEgressAdapter_Poll_partialFragmentLimitCompletesAcrossPolls(t *testing.T) {
 	adapter, rec := newEgressAdapterWithPendingBeginFragment(t)
 
 	require.Equal(t, 1, adapter.Poll())
-	requireDispatchedDefaultSessionEvent(t, rec)
+	requireDispatchedDefaultSessionEvent(t, rec, egressTestSessionEventCorrelationID)
 }
 
 func TestNewEgressAdapterFromContext_directAssemblers(t *testing.T) {

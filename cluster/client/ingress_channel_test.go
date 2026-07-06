@@ -14,63 +14,50 @@ type ingressParamPresentCase struct {
 
 func runIngressParamPresent(
 	t *testing.T,
-	indexFn func(string) int,
+	presentFn func(string) bool,
 	tests []ingressParamPresentCase,
 ) {
+	t.Helper()
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := indexFn(tc.channel) >= 0
-			require.Equal(t, tc.want, got, tc.channel)
+			require.Equal(t, tc.want, presentFn(tc.channel), tc.channel)
 		})
 	}
 }
 
-type buildIngressPassthroughCase struct {
-	name     string
-	channel  string
-	endpoint string
-}
-
-func runBuildIngressPassthrough(t *testing.T, tests []buildIngressPassthroughCase) {
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := BuildIngressChannel(tc.channel, tc.endpoint)
-			require.NoError(t, err)
-			require.Equal(t, tc.channel, got)
-		})
-	}
-}
-
-type buildIngressWantCase struct {
+type buildIngressCase struct {
 	name     string
 	channel  string
 	endpoint string
 	want     string
-}
-
-func runBuildIngressWant(t *testing.T, tests []buildIngressWantCase) {
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := BuildIngressChannel(tc.channel, tc.endpoint)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, got)
-		})
-	}
-}
-
-type buildIngressErrCase struct {
-	name     string
-	channel  string
-	endpoint string
 	wantErr  string
 }
 
-func runBuildIngressErr(t *testing.T, tests []buildIngressErrCase) {
+func runBuildIngress(t *testing.T, tests []buildIngressCase) {
+	t.Helper()
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			require.False(
+				t,
+				tc.want != "" && tc.wantErr != "",
+				"test case %q: want and wantErr are mutually exclusive",
+				tc.name,
+			)
+
 			got, err := BuildIngressChannel(tc.channel, tc.endpoint)
-			require.Empty(t, got)
-			require.EqualError(t, err, tc.wantErr)
+			if tc.wantErr != "" {
+				require.Empty(t, got)
+				require.EqualError(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if tc.want != "" {
+				require.Equal(t, tc.want, got)
+				return
+			}
+			require.Equal(t, tc.channel, got)
 		})
 	}
 }
@@ -132,7 +119,7 @@ func TestIngressChannelPredicates(t *testing.T) {
 }
 
 func TestIngressChannelHasEndpointParam(t *testing.T) {
-	runIngressParamPresent(t, ingressChannelEndpointParamIndex, []ingressParamPresentCase{
+	runIngressParamPresent(t, IngressChannelHasEndpointParam, []ingressParamPresentCase{
 		{name: "udp endpoint", channel: "aeron:udp?endpoint=localhost:0", want: true},
 		{
 			name:    "spy udp endpoint",
@@ -155,8 +142,8 @@ func TestIngressChannelHasEndpointParam(t *testing.T) {
 	})
 }
 
-func TestIngressChannelQueryEndpointParamIndex(t *testing.T) {
-	runIngressParamPresent(t, ingressChannelQueryEndpointParamIndex, []ingressParamPresentCase{
+func TestIngressChannelQueryHasEndpointParam(t *testing.T) {
+	runIngressParamPresent(t, ingressChannelQueryHasEndpointParam, []ingressParamPresentCase{
 		{name: "udp endpoint", channel: "aeron:udp?endpoint=localhost:0", want: true},
 		{
 			name:    "piped endpoint",
@@ -175,7 +162,7 @@ func TestBuildIngressChannel(t *testing.T) {
 	const passthroughEndpoint = "localhost:20110"
 
 	t.Run("passthrough", func(t *testing.T) {
-		runBuildIngressPassthrough(t, []buildIngressPassthroughCase{
+		runBuildIngress(t, []buildIngressCase{
 			{name: "ipc", channel: "aeron:ipc", endpoint: passthroughEndpoint},
 			{name: "ipcx", channel: "aeron:ipcx", endpoint: passthroughEndpoint},
 			{
@@ -190,7 +177,7 @@ func TestBuildIngressChannel(t *testing.T) {
 	})
 
 	t.Run("udp", func(t *testing.T) {
-		runBuildIngressWant(t, []buildIngressWantCase{
+		runBuildIngress(t, []buildIngressCase{
 			{
 				name:     "replace",
 				channel:  "aeron:udp?endpoint=localhost:0",
@@ -243,7 +230,7 @@ func TestBuildIngressChannel(t *testing.T) {
 	})
 
 	t.Run("invalid member endpoint", func(t *testing.T) {
-		runBuildIngressErr(t, []buildIngressErrCase{
+		runBuildIngress(t, []buildIngressCase{
 			{
 				name:     "empty",
 				channel:  "aeron:udp?ttl=16",
@@ -272,7 +259,7 @@ func TestBuildIngressChannel(t *testing.T) {
 	})
 
 	t.Run("invalid", func(t *testing.T) {
-		runBuildIngressErr(t, []buildIngressErrCase{
+		runBuildIngress(t, []buildIngressCase{
 			{
 				name:     "unknown media",
 				channel:  "aeron:unknown",

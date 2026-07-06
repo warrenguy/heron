@@ -152,7 +152,7 @@ func validateClusterIngressEndpoints(ingressChannel, ingressEndpoints string) er
 		return nil
 	}
 	if IngressChannelIsUDP(ingressChannel) &&
-		ingressChannelQueryEndpointParamIndex(ingressChannel) >= 0 {
+		ingressChannelQueryHasEndpointParam(ingressChannel) {
 		return errors.New(
 			"cluster client: IngressChannel must not use ?endpoint= when IngressEndpoints is configured",
 		)

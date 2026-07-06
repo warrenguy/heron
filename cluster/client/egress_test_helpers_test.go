@@ -3,7 +3,6 @@
 package client
 
 import (
-	"bytes"
 	"encoding/binary"
 	"math"
 	"testing"
@@ -19,21 +18,11 @@ import (
 )
 
 const (
-	egressTestClusterSessionID int64 = 4242
-	egressTestOtherSessionID   int64 = 9999
-	egressTestMessageTimestamp int64 = 1700000000
+	egressTestClusterSessionID          int64 = 4242
+	egressTestOtherSessionID            int64 = 9999
+	egressTestMessageTimestamp          int64 = 1700000000
+	egressTestSessionEventCorrelationID int64 = 77
 )
-
-func atomicBufferBytesAt(buffer atomic.AtomicBuffer, offset, length int) []byte {
-	payload := buffer.Bytes()
-	if offset < 0 || length < 0 || offset > len(payload)-length {
-		return nil
-	}
-	if length == 0 {
-		return nil
-	}
-	return bytes.Clone(payload[offset : offset+length])
-}
 
 type fragmentTestHelper interface {
 	Helper()
@@ -45,15 +34,20 @@ type recordingEgressHandlers struct {
 	EgressHandlers
 
 	messageCalls       int
+	messageBytesCalls  int
 	sessionEventCalls  int
 	newLeaderCalls     int
 	adminResponseCalls int
 
-	gotMessageClusterSessionID int64
-	gotMessageTimestamp        int64
-	gotMessageOffset           int
-	gotMessageLength           int
-	gotMessagePayload          []byte
+	gotMessageFuncClusterSessionID int64
+	gotMessageFuncTimestamp        int64
+	gotMessageFuncOffset           int
+	gotMessageFuncLength           int
+	gotMessageFuncPayload          []byte
+
+	gotMessageBytesClusterSessionID int64
+	gotMessageBytesTimestamp        int64
+	gotMessageBytesPayload          []byte
 
 	gotSessionEventCorrelationID    int64
 	gotSessionEventClusterSessionID int64
@@ -75,6 +69,46 @@ type recordingEgressHandlers struct {
 	gotAdminResponsePayload          []byte
 }
 
+func messageFuncMustNotRun(t *testing.T) func(
+	int64,
+	int64,
+	atomic.AtomicBuffer,
+	int,
+	int,
+	*aeron.Header,
+) {
+	t.Helper()
+
+	return func(
+		int64,
+		int64,
+		atomic.AtomicBuffer,
+		int,
+		int,
+		*aeron.Header,
+	) {
+		t.Fatal("MessageFunc must not run when MessageBytesFunc is set")
+	}
+}
+
+func (rec *recordingEgressHandlers) configureMessageBytesRecorder(t *testing.T) {
+	t.Helper()
+
+	rec.MessageBytesFunc = func(
+		clusterSessionID int64,
+		timestamp int64,
+		payload []byte,
+		_ *aeron.Header,
+	) {
+		rec.messageBytesCalls++
+		rec.gotMessageBytesClusterSessionID = clusterSessionID
+		rec.gotMessageBytesTimestamp = timestamp
+		// payload is already cloned by EgressHandlers.Message; safe to retain for assertions.
+		rec.gotMessageBytesPayload = payload
+	}
+	rec.MessageFunc = messageFuncMustNotRun(t)
+}
+
 func newRecordingEgressHandlers() *recordingEgressHandlers {
 	rec := &recordingEgressHandlers{}
 	rec.MessageFunc = func(
@@ -86,11 +120,11 @@ func newRecordingEgressHandlers() *recordingEgressHandlers {
 		_ *aeron.Header,
 	) {
 		rec.messageCalls++
-		rec.gotMessageClusterSessionID = clusterSessionID
-		rec.gotMessageTimestamp = timestamp
-		rec.gotMessageOffset = offset
-		rec.gotMessageLength = length
-		rec.gotMessagePayload = atomicBufferBytesAt(buffer, offset, length)
+		rec.gotMessageFuncClusterSessionID = clusterSessionID
+		rec.gotMessageFuncTimestamp = timestamp
+		rec.gotMessageFuncOffset = offset
+		rec.gotMessageFuncLength = length
+		rec.gotMessageFuncPayload = cloneAtomicBufferSpan(buffer, offset, length)
 	}
 	rec.SessionEventFunc = func(
 		correlationID int64,
@@ -137,6 +171,37 @@ func newRecordingEgressHandlers() *recordingEgressHandlers {
 		rec.gotAdminResponsePayload = payload
 	}
 	return rec
+}
+
+func requireDispatchedSessionMessage(
+	t *testing.T,
+	rec *recordingEgressHandlers,
+	appPayload []byte,
+	expectedOffset int,
+) {
+	t.Helper()
+
+	require.Equal(t, 1, rec.messageCalls)
+	require.Zero(t, rec.messageBytesCalls)
+	require.Equal(t, egressTestClusterSessionID, rec.gotMessageFuncClusterSessionID)
+	require.Equal(t, egressTestMessageTimestamp, rec.gotMessageFuncTimestamp)
+	require.Equal(t, expectedOffset, rec.gotMessageFuncOffset)
+	require.Equal(t, len(appPayload), rec.gotMessageFuncLength)
+	require.Equal(t, appPayload, rec.gotMessageFuncPayload)
+}
+
+func requireDispatchedSessionMessageBytes(
+	t *testing.T,
+	rec *recordingEgressHandlers,
+	appPayload []byte,
+) {
+	t.Helper()
+
+	require.Equal(t, 1, rec.messageBytesCalls)
+	require.Zero(t, rec.messageCalls)
+	require.Equal(t, egressTestClusterSessionID, rec.gotMessageBytesClusterSessionID)
+	require.Equal(t, egressTestMessageTimestamp, rec.gotMessageBytesTimestamp)
+	require.Equal(t, appPayload, rec.gotMessageBytesPayload)
 }
 
 func encodeEgressWire(
@@ -216,7 +281,7 @@ func encodeSessionMessageHeaderWire(
 
 func defaultSessionEventFields(detail []byte) codecs.SessionEventFields {
 	return codecs.SessionEventFields{
-		CorrelationID:    77,
+		CorrelationID:    egressTestSessionEventCorrelationID,
 		LeadershipTermID: 88,
 		LeaderMemberID:   3,
 		Code:             gensbe.EventCode_OK,
@@ -609,6 +674,7 @@ func requireZeroRecordingEgressCalls(t *testing.T, rec *recordingEgressHandlers)
 	t.Helper()
 
 	require.Zero(t, rec.messageCalls)
+	require.Zero(t, rec.messageBytesCalls)
 	require.Zero(t, rec.sessionEventCalls)
 	require.Zero(t, rec.newLeaderCalls)
 	require.Zero(t, rec.adminResponseCalls)
