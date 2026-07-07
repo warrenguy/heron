@@ -7,9 +7,6 @@ import (
 )
 
 var (
-	// ErrInvalidTimeout reports a negative timeout argument to a poll/offer helper.
-	ErrInvalidTimeout = errors.New("aeron: invalid timeout")
-
 	// ErrInvalidWant reports a non-positive want argument to a poll helper.
 	ErrInvalidWant = errors.New("aeron: invalid want")
 

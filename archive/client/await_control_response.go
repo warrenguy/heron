@@ -37,8 +37,7 @@ func TryMatchControlResponse(
 // strategy paces empty polls and is reset on every exit path; a nil ctx.IdleStrategy
 // uses NewDefaultIdleStrategy.
 //
-// A non-positive responseTimeout defaults to DefaultControlOfferTimeout, mirroring
-// ControlOfferUntilPositive.
+// Uses ArchiveContext.ControlResponseTimeout.
 //
 // Returns the matched fields with a nil error, the mapped error for a non-OK response,
 // or a timeout error naming correlation_id when the deadline passes without a match.
@@ -49,13 +48,12 @@ func AwaitArchiveControlResponse(
 	poller *ControlResponsePoller,
 	controlSessionID int64,
 	correlationID int64,
-	responseTimeout time.Duration,
 ) (codecs.ControlResponseFields, error) {
 	return awaitMatchedControlResponse(
 		aeronClient,
 		ctx,
 		pollFn,
-		responseTimeout,
+		ctx.ControlResponseTimeout,
 		func() (codecs.ControlResponseFields, error, bool) {
 			return TryMatchControlResponse(poller, controlSessionID, correlationID)
 		},
@@ -121,11 +119,7 @@ func runArchiveControlAwaitLoop(
 	}
 	defer idle.Reset()
 
-	timeout := responseTimeout
-	if timeout <= 0 {
-		timeout = DefaultControlOfferTimeout
-	}
-	deadlineNs := clock() + timeout.Nanoseconds()
+	deadlineNs := clock() + responseTimeout.Nanoseconds()
 	if done, err := matchFn(); done {
 		return err
 	}
@@ -143,9 +137,9 @@ func runArchiveControlAwaitLoop(
 // offerAndAwaitArchiveControlRequest offers a control request until the publication
 // accepts it, then awaits the matching ControlResponse.
 //
-// The offer retry uses ctx.MessageTimeout as its budget. Once the offer succeeds, the
-// response await starts a fresh ctx.MessageTimeout window so a slow offer cannot starve
-// the response wait.
+// The offer retry uses ControlOfferRetryTimeout. Once the offer succeeds, the response
+// await starts a fresh ControlResponseTimeout window so a slow offer cannot starve the
+// response wait.
 func offerAndAwaitArchiveControlRequest(
 	aeronClient *aeron.Client,
 	ctx ArchiveContext,
@@ -169,7 +163,6 @@ func offerAndAwaitArchiveControlRequest(
 		poller,
 		controlSessionID,
 		correlationID,
-		ctx.MessageTimeout,
 	)
 }
 
@@ -179,8 +172,7 @@ func offerArchiveControlRequest(
 	pollFn func() int,
 	offerFn func() (int64, bool),
 ) (int64, error) {
-	pos := ControlOfferUntilPositive(aeronClient, ControlOfferConfig{
-		Timeout:      ctx.MessageTimeout,
+	pos := ControlOfferUntilPositive(aeronClient, ctx, ControlOfferConfig{
 		IdleStrategy: ctx.IdleStrategy,
 		NanoClock:    ctx.AeronContext.NanoClock,
 		PollFn:       pollFn,

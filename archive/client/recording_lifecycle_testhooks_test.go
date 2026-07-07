@@ -16,10 +16,10 @@ import (
 )
 
 const (
-	lifecycleMessageTimeout         = 500 * time.Millisecond
-	lifecycleRecordingID      int64 = 5150
-	lifecycleArchiveID        int64 = 919191
-	lifecycleRecordingChannel       = "aeron:ipc"
+	lifecycleControlResponseTimeout       = 500 * time.Millisecond
+	lifecycleRecordingID            int64 = 5150
+	lifecycleArchiveID              int64 = 919191
+	lifecycleRecordingChannel             = "aeron:ipc"
 )
 
 type lifecycleHarness struct {
@@ -40,8 +40,8 @@ func newLifecycleHarness(t *testing.T) *lifecycleHarness {
 	harness, nowNs := controlOfferRetryHarnessWithNanoClock(t, 5_000_000_000)
 	sub, termBuffer := setupControlResponsePollFixtures(t)
 	ctx := ArchiveContext{
-		MessageTimeout: lifecycleMessageTimeout,
-		IdleStrategy:   NewDefaultIdleStrategy(),
+		ControlResponseTimeout: lifecycleControlResponseTimeout,
+		IdleStrategy:           NewDefaultIdleStrategy(),
 		AeronContext: aeron.Context{
 			NanoClock: func() int64 { return nowNs.Load() },
 		},
@@ -61,7 +61,7 @@ func newLifecycleHarness(t *testing.T) *lifecycleHarness {
 }
 
 func (h *lifecycleHarness) advanceClock() {
-	h.nowNs.Add(int64(h.ctx.MessageTimeout) / 8)
+	h.nowNs.Add(int64(h.ctx.ControlResponseTimeout) / 8)
 }
 
 func (h *lifecycleHarness) demuxPoll(targets ArchiveControlPollTargets) int {
@@ -698,7 +698,7 @@ func TestStopRecordingAwaitSignal_timeout(t *testing.T) {
 	tracker := NewStopSignalTracker(controlResponseTestControlSessionID, -1)
 	targets := h.signalTargets(tracker)
 	pollFn := func() int {
-		h.nowNs.Add(int64(h.ctx.MessageTimeout))
+		h.nowNs.Add(int64(h.ctx.ControlResponseTimeout))
 		return h.demuxPoll(targets)
 	}
 

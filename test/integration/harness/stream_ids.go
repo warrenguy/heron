@@ -68,10 +68,4 @@ const (
 
 	// Isolated from AeronHelpersSmokeStreamID for shared-driver cross-test safety.
 	AeronHelpersFragmentedSmokeStreamID = 8025
-
-	// Isolated from PollUntilConnectedTimeoutStreamID for shared-driver cross-test safety.
-	PollUntilConnectedInvalidTimeoutStreamID = 8026
-
-	// Isolated from OfferWithRetryNotConnectedTimeoutStreamID for shared-driver cross-test safety.
-	OfferWithRetryInvalidTimeoutStreamID = 8027
 )

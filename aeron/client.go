@@ -55,6 +55,8 @@ type Client struct {
 	driverProxy             *conductor.DriverProxy
 	nanoClock               conductor.NanoClock
 	driverTimeout           time.Duration
+	pollTimeout             time.Duration
+	publicationOfferTimeout time.Duration
 	idleSleepDuration       time.Duration
 	serviceTimestampsSeeded bool
 	clientLock              sync.Mutex
@@ -104,6 +106,12 @@ func validateConnectContext(ctx Context) error {
 	}
 	if !ctx.useConductorInvokerEnabled() {
 		return errors.New("aeron: dedicated conductor invoker is not supported")
+	}
+	if ctx.PollTimeout < 0 {
+		return errors.New("aeron: PollTimeout must not be negative")
+	}
+	if ctx.PublicationOfferTimeout < 0 {
+		return errors.New("aeron: PublicationOfferTimeout must not be negative")
 	}
 	return nil
 }
@@ -202,14 +210,16 @@ func newConductorClient(
 	}
 
 	return &Client{
-		clientID:          clientID,
-		mapped:            mapped,
-		countersReader:    countersReader,
-		conductor:         conductorInstance,
-		driverProxy:       driverProxy,
-		nanoClock:         ctx.NanoClock,
-		driverTimeout:     ctx.DriverTimeout,
-		idleSleepDuration: ctx.IdleSleepDuration,
+		clientID:                clientID,
+		mapped:                  mapped,
+		countersReader:          countersReader,
+		conductor:               conductorInstance,
+		driverProxy:             driverProxy,
+		nanoClock:               ctx.NanoClock,
+		driverTimeout:           ctx.DriverTimeout,
+		pollTimeout:             ctx.PollTimeout,
+		publicationOfferTimeout: ctx.PublicationOfferTimeout,
+		idleSleepDuration:       ctx.IdleSleepDuration,
 	}, nil
 }
 

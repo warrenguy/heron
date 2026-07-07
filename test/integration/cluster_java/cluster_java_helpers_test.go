@@ -3,6 +3,7 @@
 package cluster_java_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -76,6 +77,10 @@ type adminResponseCapture struct {
 	seen              bool
 }
 
+func (c *adminResponseCapture) reset() {
+	*c = adminResponseCapture{}
+}
+
 func newEchoCaptureHandlers() (*client.EgressHandlers, *[]byte) {
 	handlers, echoed, _ := newEchoAndAdminCaptureHandlers()
 	return handlers, echoed
@@ -115,42 +120,40 @@ func newEchoAndAdminCaptureHandlers() (*client.EgressHandlers, *[]byte, *adminRe
 	}, &echoed, adminCap
 }
 
-// ingressOfferUntilPositive delegates retry pacing to client.IngressOfferUntilPositive.
-//
-// Timeout bounds use the production helper clock (session.nanoClock), not time.Now.
-// Zero offerTimeout uses DefaultIngressOfferTimeout per the production helper.
-//
-// Transport-error checking (hadClientError) stays in the test wrapper closure;
-// it runs after DoWork on each offer iteration (stricter than the old pre-DoWork check).
+// ingressOfferUntilPositive wraps session.IngressOfferUntilPositive; hadClientError
+// is checked inside offerFn after DoWork.
 func ingressOfferUntilPositive(
 	t *testing.T,
-	aeronClient *aeron.Client,
 	session *client.AeronCluster,
 	hadClientError *atomic.Bool,
 	offerTimeout time.Duration,
 	offer func() int64,
 ) int64 {
 	t.Helper()
-	pos := client.IngressOfferUntilPositive(aeronClient, session, client.IngressOfferConfig{
-		Timeout: offerTimeout,
-		// NewSleeping(16ms) reproduces the inline loop's BackPressured pacing.
-		IdleStrategy: idlestrategy.NewSleeping(aeron.DefaultIdleSleepDuration),
-	}, func() int64 {
-		require.False(t, hadClientError.Load(), "transport error during offer")
-		return offer()
-	})
-	if pos > 0 {
-		return pos
+	offerCtx := t.Context()
+	if offerTimeout > 0 {
+		var cancel context.CancelFunc
+		offerCtx, cancel = context.WithTimeout(offerCtx, offerTimeout)
+		defer cancel()
 	}
-	reason := "failed"
-	if client.IngressRetriableCode(pos) {
-		reason = "timed out"
-	}
-	t.Fatalf(
-		"cluster offer %s: lastStatus=%d sessionState=%v hadClientError=%v",
-		reason, pos, session.SessionState(), hadClientError.Load(),
+	pos, err := session.IngressOfferUntilPositive(
+		offerCtx,
+		client.IngressOfferConfig{
+			IdleStrategy: idlestrategy.NewSleeping(aeron.DefaultIdleSleepDuration),
+		}, func() int64 {
+			require.False(t, hadClientError.Load(), "transport error during offer")
+			return offer()
+		},
 	)
-	return 0
+	if err != nil {
+		t.Fatalf(
+			"cluster offer failed: %v sessionState=%v hadClientError=%v",
+			err,
+			session.SessionState(),
+			hadClientError.Load(),
+		)
+	}
+	return pos
 }
 
 func pollEgressUntil(
@@ -216,8 +219,9 @@ func roundTripEcho(
 ) int64 {
 	t.Helper()
 
+	*echoed = nil
 	pos := ingressOfferUntilPositive(
-		t, aeronClient, session, hadClientError, offerTimeout,
+		t, session, hadClientError, offerTimeout,
 		func() int64 { return session.Offer(payload) },
 	)
 	pollEchoUntilMessage(t, aeronClient, session, hadClientError, echoed, echoTimeout)
@@ -260,10 +264,11 @@ func roundTripAdminSnapshot(
 ) int64 {
 	t.Helper()
 
+	capture.reset()
 	capture.armed = true
 	capture.wantCorrelationID = correlationID
 	pos := ingressOfferUntilPositive(
-		t, aeronClient, session, hadClientError, harness.ConnectedPollTimeout,
+		t, session, hadClientError, harness.ConnectedPollTimeout,
 		func() int64 { return session.SendSnapshotRequest(correlationID) },
 	)
 	pollAdminUntilResponse(

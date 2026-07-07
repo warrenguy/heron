@@ -3,6 +3,7 @@
 package client
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,6 +12,23 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 )
+
+func requireIngressTerminal(tb testing.TB, err error, wantStatus int64) {
+	tb.Helper()
+
+	var terminal *IngressTerminalError
+	require.ErrorAs(tb, err, &terminal)
+	require.Equal(tb, wantStatus, terminal.Status)
+}
+
+func requireIngressTimeout(tb testing.TB, err error, wantStatus int64, wantTimeout time.Duration) {
+	tb.Helper()
+
+	var timeoutErr *IngressTimeoutError
+	require.ErrorAs(tb, err, &timeoutErr)
+	require.Equal(tb, wantStatus, timeoutErr.Status)
+	require.Equal(tb, wantTimeout, timeoutErr.Timeout)
+}
 
 // setupIngressRetryDoWorkRecorder installs a global DoWork counter.
 //
@@ -38,13 +56,20 @@ func clusterWithSequentialIngress(
 
 // clusterWithAtomicNanoClock wires session.nanoClock to nowNs so tests advance the
 // retry deadline from inside offerFn.
-func clusterWithAtomicNanoClock(t *testing.T, startNs int64) (*AeronCluster, *atomic.Int64) {
+func clusterWithAtomicNanoClock(
+	t *testing.T,
+	startNs int64,
+	ingressRetryTimeout time.Duration,
+) (*AeronCluster, *atomic.Int64) {
 	t.Helper()
 
 	nowNs := &atomic.Int64{}
 	nowNs.Store(startNs)
 	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
 		withAtomicNanoClock(result, nowNs)
+		mutateConnectContext(result, func(ctx *ClusterContext) {
+			ctx.IngressRetryTimeout = ingressRetryTimeout
+		})
 	})
 	return ac, nowNs
 }
@@ -70,17 +95,39 @@ func (r *recordingIdleStrategy) Reset() {
 	r.idleCalls = 0
 }
 
-func TestIngressRetriableCode_delegatesToIsIngressRetriable(t *testing.T) {
-	require.Equal(
-		t,
-		aeron.IsIngressRetriable(aeron.BackPressured),
-		IngressRetriableCode(aeron.BackPressured),
-	)
-	require.Equal(
-		t,
-		aeron.IsIngressRetriable(aeron.NotConnected),
-		IngressRetriableCode(aeron.NotConnected),
-	)
+func TestIngressRetryDeadlineNs_contextDeadlineSooner(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	startNs := time.Now().UnixNano()
+	_, bound := IngressRetryDeadlineNsForTest(ctx, startNs, time.Minute)
+	require.Less(t, bound, time.Minute)
+	require.InDelta(t, float64(50*time.Millisecond), float64(bound), float64(20*time.Millisecond))
+}
+
+func TestIngressRetryDeadlineNs_cfgTimeoutSooner(t *testing.T) {
+	startNs := time.Now().UnixNano()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+
+	const timeout = 25 * time.Millisecond
+	_, bound := IngressRetryDeadlineNsForTest(ctx, startNs, timeout)
+	require.Equal(t, timeout, bound)
+}
+
+func TestIngressRetryDeadlineNs_nonWallClockStartClampsToContext(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	// startNs from a non-wall-clock NanoClock (seeded far from the Unix epoch) must
+	// not skew the ctx-deadline clamp: bound derives from time.Now(), and startNs
+	// feeds only the returned deadlineNs. Interpreting startNs as epoch nanoseconds
+	// would place cfgDeadline in 1970 and leave bound unclamped at the full timeout.
+	const nonWallStartNs int64 = 5_000_000_000
+	deadlineNs, bound := IngressRetryDeadlineNsForTest(ctx, nonWallStartNs, time.Minute)
+	require.Less(t, bound, time.Minute)
+	require.InDelta(t, float64(50*time.Millisecond), float64(bound), float64(20*time.Millisecond))
+	require.Equal(t, nonWallStartNs+bound.Nanoseconds(), deadlineNs)
 }
 
 func TestIngressOfferUntilPositive_backPressuredThenSuccess(t *testing.T) {
@@ -93,9 +140,10 @@ func TestIngressOfferUntilPositive_backPressuredThenSuccess(t *testing.T) {
 	)
 	doWorkCount := setupIngressRetryDoWorkRecorder(t)
 
-	pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{
+	pos, err := ac.IngressOfferUntilPositive(t.Context(), IngressOfferConfig{
 		IdleStrategy: idle,
 	}, ac.SendKeepAlive)
+	require.NoError(t, err)
 	require.Positive(t, pos)
 	require.Equal(t, 3, seqPub.calls)
 	require.Equal(t, 5, *doWorkCount)
@@ -108,9 +156,10 @@ func TestIngressOfferUntilPositive_immediateSuccess(t *testing.T) {
 	ac, seqPub := clusterWithSequentialIngress(t, 100)
 	doWorkCount := setupIngressRetryDoWorkRecorder(t)
 
-	pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{
+	pos, err := ac.IngressOfferUntilPositive(t.Context(), IngressOfferConfig{
 		IdleStrategy: idle,
 	}, ac.SendKeepAlive)
+	require.NoError(t, err)
 	require.Equal(t, int64(100), pos)
 	require.Equal(t, 1, seqPub.calls)
 	require.Equal(t, 1, *doWorkCount)
@@ -145,9 +194,10 @@ func TestIngressOfferUntilPositive_adminActionRetry(t *testing.T) {
 			ac, seqPub := clusterWithSequentialIngress(t, tc.results...)
 			doWorkCount := setupIngressRetryDoWorkRecorder(t)
 
-			pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{
+			pos, err := ac.IngressOfferUntilPositive(t.Context(), IngressOfferConfig{
 				IdleStrategy: idle,
 			}, ac.SendKeepAlive)
+			require.NoError(t, err)
 			require.Positive(t, pos)
 			require.Equal(t, tc.wantSeqCalls, seqPub.calls)
 			require.Equal(t, tc.wantDoWork, *doWorkCount)
@@ -172,8 +222,12 @@ func TestIngressOfferUntilPositive_terminalNoRetry(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ac, seqPub := clusterWithSequentialIngress(t, tc.code)
 
-			pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{}, ac.SendKeepAlive)
-			require.Equal(t, tc.code, pos)
+			_, err := ac.IngressOfferUntilPositive(
+				t.Context(),
+				IngressOfferConfig{},
+				ac.SendKeepAlive,
+			)
+			requireIngressTerminal(t, err, tc.code)
 			require.Equal(t, 1, seqPub.calls)
 		})
 	}
@@ -187,7 +241,7 @@ func TestIngressOfferUntilPositive_terminalNoRetry(t *testing.T) {
 func TestIngressOfferUntilPositive_timeout(t *testing.T) {
 	t.Run("singleAdvance", func(t *testing.T) {
 		idle := &recordingIdleStrategy{}
-		ac, nowNs := clusterWithAtomicNanoClock(t, 5_000_000_000)
+		ac, nowNs := clusterWithAtomicNanoClock(t, 5_000_000_000, time.Millisecond)
 		doWorkCount := setupIngressRetryDoWorkRecorder(t)
 		var offerCalls int
 		offerFn := func() int64 {
@@ -196,11 +250,10 @@ func TestIngressOfferUntilPositive_timeout(t *testing.T) {
 			return aeron.BackPressured
 		}
 
-		pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{
-			Timeout:      time.Millisecond,
+		_, err := ac.IngressOfferUntilPositive(t.Context(), IngressOfferConfig{
 			IdleStrategy: idle,
 		}, offerFn)
-		require.Equal(t, aeron.BackPressured, pos)
+		requireIngressTimeout(t, err, aeron.BackPressured, time.Millisecond)
 		require.Equal(t, 1, offerCalls)
 		require.Equal(t, 2, *doWorkCount)
 		require.Positive(t, idle.totalIdleCalls)
@@ -213,7 +266,7 @@ func TestIngressOfferUntilPositive_timeout(t *testing.T) {
 		stepNs := timeout.Nanoseconds() / 4
 
 		idle := &recordingIdleStrategy{}
-		ac, nowNs := clusterWithAtomicNanoClock(t, 5_000_000_000)
+		ac, nowNs := clusterWithAtomicNanoClock(t, 5_000_000_000, timeout)
 		doWorkCount := setupIngressRetryDoWorkRecorder(t)
 		var offerCalls int
 		offerFn := func() int64 {
@@ -222,11 +275,10 @@ func TestIngressOfferUntilPositive_timeout(t *testing.T) {
 			return aeron.BackPressured
 		}
 
-		pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{
-			Timeout:      timeout,
+		_, err := ac.IngressOfferUntilPositive(t.Context(), IngressOfferConfig{
 			IdleStrategy: idle,
 		}, offerFn)
-		require.Equal(t, aeron.BackPressured, pos)
+		requireIngressTimeout(t, err, aeron.BackPressured, timeout)
 		require.Equal(t, 4, offerCalls)
 		require.Equal(t, 8, *doWorkCount)
 		require.Positive(t, idle.totalIdleCalls)
@@ -244,6 +296,7 @@ func TestIngressOfferUntilPositive_cfgNanoClockOverride(t *testing.T) {
 	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
 		mutateConnectContext(result, func(ctx *ClusterContext) {
 			ctx.AeronContext.NanoClock = func() int64 { return frozenNs }
+			ctx.IngressRetryTimeout = time.Millisecond
 		})
 	})
 	doWorkCount := setupIngressRetryDoWorkRecorder(t)
@@ -252,20 +305,19 @@ func TestIngressOfferUntilPositive_cfgNanoClockOverride(t *testing.T) {
 		return aeron.BackPressured
 	}
 
-	pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{
-		Timeout:      time.Millisecond,
+	_, err := ac.IngressOfferUntilPositive(t.Context(), IngressOfferConfig{
 		IdleStrategy: idle,
 		NanoClock:    func() int64 { return cfgNowNs.Load() },
 	}, offerFn)
-	require.Equal(t, aeron.BackPressured, pos)
+	requireIngressTimeout(t, err, aeron.BackPressured, time.Millisecond)
 	require.Equal(t, 2, *doWorkCount)
 	require.Positive(t, idle.totalIdleCalls)
 	require.Equal(t, 1, idle.resetCalls)
 }
 
 func TestIngressOfferUntilPositive_timeoutZeroUsesDefault(t *testing.T) {
-	step := DefaultIngressOfferTimeout.Nanoseconds() / 2
-	ac, nowNs := clusterWithAtomicNanoClock(t, 3_000_000_000)
+	step := DefaultIngressRetryTimeout.Nanoseconds() / 2
+	ac, nowNs := clusterWithAtomicNanoClock(t, 3_000_000_000, DefaultIngressRetryTimeout)
 	var offerCalls int
 	offerFn := func() int64 {
 		offerCalls++
@@ -273,10 +325,8 @@ func TestIngressOfferUntilPositive_timeoutZeroUsesDefault(t *testing.T) {
 		return aeron.BackPressured
 	}
 
-	pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{
-		Timeout: 0,
-	}, offerFn)
-	require.Equal(t, aeron.BackPressured, pos)
+	_, err := ac.IngressOfferUntilPositive(t.Context(), IngressOfferConfig{}, offerFn)
+	requireIngressTimeout(t, err, aeron.BackPressured, DefaultIngressRetryTimeout)
 	require.Equal(t, 2, offerCalls)
 }
 
@@ -290,18 +340,21 @@ func TestIngressOfferUntilPositive_expiredDeadlineAttemptsOnce(t *testing.T) {
 		}
 		return startNs + int64(time.Hour)
 	}
-	ac := newAeronClusterFromConnectFixture(t, nil)
+	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
+		mutateConnectContext(result, func(ctx *ClusterContext) {
+			ctx.IngressRetryTimeout = time.Millisecond
+		})
+	})
 	var offerCalls int
 	offerFn := func() int64 {
 		offerCalls++
 		return aeron.BackPressured
 	}
 
-	pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{
-		Timeout:   time.Millisecond,
+	_, err := ac.IngressOfferUntilPositive(t.Context(), IngressOfferConfig{
 		NanoClock: clockFn,
 	}, offerFn)
-	require.Equal(t, aeron.BackPressured, pos)
+	requireIngressTimeout(t, err, aeron.BackPressured, time.Millisecond)
 	require.Equal(t, 1, offerCalls)
 }
 
@@ -314,23 +367,41 @@ func TestIngressOfferUntilPositive_nilGuards(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		aeronClient *aeron.Client
-		session     *AeronCluster
-		offerFn     func() int64
+		name    string
+		session *AeronCluster
+		offerFn func() int64
+		wantErr error
 	}{
-		{name: "nilAeronClient", aeronClient: nil, session: ac, offerFn: offerFn},
-		{name: "nilSession", aeronClient: ac.Aeron(), session: nil, offerFn: offerFn},
-		{name: "nilOfferFn", aeronClient: ac.Aeron(), session: ac, offerFn: nil},
+		{
+			name:    "nilAeronClient",
+			session: closedOwnedNilAeronCluster(t, nil),
+			offerFn: offerFn,
+			wantErr: errNilIngressAeronClient,
+		},
+		{
+			name:    "nilSession",
+			session: nil,
+			offerFn: offerFn,
+			wantErr: errNilIngressSession,
+		},
+		{
+			name:    "nilOfferFn",
+			session: ac,
+			offerFn: nil,
+			wantErr: errNilIngressOfferFn,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(
-				t,
-				aeron.NotConnected,
-				IngressOfferUntilPositive(tc.aeronClient, tc.session, IngressOfferConfig{}, tc.offerFn),
+			pos, err := ingressOfferUntilPositive(
+				t.Context(),
+				tc.session,
+				IngressOfferConfig{},
+				tc.offerFn,
 			)
+			require.Zero(t, pos)
+			require.ErrorIs(t, err, tc.wantErr)
 		})
 	}
 	require.Zero(t, offerCalls)
@@ -342,7 +413,7 @@ func TestIngressOfferUntilPositive_nilGuards(t *testing.T) {
 // spin until test timeout rather than return NotConnected.
 func TestIngressOfferUntilPositive_terminalAfterRetriableRetry(t *testing.T) {
 	const startNs int64 = 9_000_000_000
-	ac, nowNs := clusterWithAtomicNanoClock(t, startNs)
+	ac, nowNs := clusterWithAtomicNanoClock(t, startNs, DefaultIngressRetryTimeout)
 	var offerCalls int
 	offerFn := func() int64 {
 		offerCalls++
@@ -352,92 +423,58 @@ func TestIngressOfferUntilPositive_terminalAfterRetriableRetry(t *testing.T) {
 		return aeron.NotConnected
 	}
 
-	pos := IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{
-		Timeout: DefaultIngressOfferTimeout,
-	}, offerFn)
-	require.Equal(t, aeron.NotConnected, pos)
+	_, err := ac.IngressOfferUntilPositive(t.Context(), IngressOfferConfig{}, offerFn)
+	requireIngressTerminal(t, err, aeron.NotConnected)
 	require.Equal(t, 2, offerCalls)
 	require.Equal(t, startNs, nowNs.Load(), "returned on terminal code, not deadline expiry")
 }
 
+func TestIngressOfferUntilPositive_terminalAfterCancel(t *testing.T) {
+	ac := newAeronClusterFromConnectFixture(t, nil)
+
+	cancelCtx, cancel := context.WithCancel(t.Context())
+	pos, err := ac.IngressOfferUntilPositive(cancelCtx, IngressOfferConfig{}, func() int64 {
+		cancel()
+		return aeron.Closed
+	})
+	require.Zero(t, pos)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestIngressOfferUntilPositive_usesContextIdleStrategy(t *testing.T) {
-	tests := []struct {
-		name string
-		call func(ac *AeronCluster) int64
-	}{
-		{
-			name: "package",
-			call: func(ac *AeronCluster) int64 {
-				return IngressOfferUntilPositive(ac.Aeron(), ac, IngressOfferConfig{}, ac.SendKeepAlive)
-			},
-		},
-		{
-			name: "session",
-			call: func(ac *AeronCluster) int64 {
-				return ac.IngressOfferUntilPositive(IngressOfferConfig{}, ac.SendKeepAlive)
-			},
-		},
-	}
+	idle := &recordingIdleStrategy{}
+	var seqPub *sequentialOfferResultIngressPublication
+	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
+		result.Context.IdleStrategy = idle
+		seqPub = withSequentialOfferResultIngress(
+			t,
+			result,
+			aeron.BackPressured,
+			aeron.BackPressured,
+			100,
+		)
+	})
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			idle := &recordingIdleStrategy{}
-			var seqPub *sequentialOfferResultIngressPublication
-			ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-				result.Context.IdleStrategy = idle
-				seqPub = withSequentialOfferResultIngress(
-					t,
-					result,
-					aeron.BackPressured,
-					aeron.BackPressured,
-					100,
-				)
-			})
+	pos, err := ac.IngressOfferUntilPositive(
+		t.Context(),
+		IngressOfferConfig{},
+		ac.SendKeepAlive,
+	)
 
-			pos := tc.call(ac)
-
-			require.Positive(t, pos)
-			require.Equal(t, 3, seqPub.calls)
-			require.Equal(t, 2, idle.totalIdleCalls)
-			require.Equal(t, 1, idle.resetCalls)
-		})
-	}
+	require.NoError(t, err)
+	require.Positive(t, pos)
+	require.Equal(t, 3, seqPub.calls)
+	require.Equal(t, 2, idle.totalIdleCalls)
+	require.Equal(t, 1, idle.resetCalls)
 }
 
 func TestSendKeepAliveUntilPositive_delegates(t *testing.T) {
-	tests := []struct {
-		name string
-		call func(ac *AeronCluster) int64
-	}{
-		{
-			name: "package",
-			call: func(ac *AeronCluster) int64 {
-				return SendKeepAliveUntilPositive(ac.Aeron(), ac, IngressOfferConfig{})
-			},
-		},
-		{
-			name: "session",
-			call: func(ac *AeronCluster) int64 {
-				return ac.SendKeepAliveUntilPositive(IngressOfferConfig{})
-			},
-		},
-		{
-			name: "ingressOfferUntilPositive",
-			call: func(ac *AeronCluster) int64 {
-				return ac.IngressOfferUntilPositive(IngressOfferConfig{}, ac.SendKeepAlive)
-			},
-		},
-	}
+	ac, seqPub := clusterWithSequentialIngress(t, aeron.AdminAction, 100)
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			ac, seqPub := clusterWithSequentialIngress(t, aeron.AdminAction, 100)
-
-			pos := tc.call(ac)
-			require.Positive(t, pos)
-			require.Equal(t, 2, seqPub.calls)
-		})
-	}
+	pos, err := ac.SendKeepAliveUntilPositive(t.Context(), IngressOfferConfig{})
+	require.NoError(t, err)
+	require.Positive(t, pos)
+	require.Equal(t, 2, seqPub.calls)
 }
 
 func TestAeronCluster_IngressOfferUntilPositive_closedNilAeron(t *testing.T) {
@@ -445,12 +482,13 @@ func TestAeronCluster_IngressOfferUntilPositive_closedNilAeron(t *testing.T) {
 		ac := closedOwnedNilAeronCluster(t, nil)
 		var offerCalls int
 
-		pos := ac.IngressOfferUntilPositive(IngressOfferConfig{}, func() int64 {
+		pos, err := ac.IngressOfferUntilPositive(t.Context(), IngressOfferConfig{}, func() int64 {
 			offerCalls++
 			return 1
 		})
 
-		require.Equal(t, aeron.NotConnected, pos)
+		require.ErrorIs(t, err, errNilIngressAeronClient)
+		require.Zero(t, pos)
 		require.Zero(t, offerCalls)
 	})
 
@@ -461,9 +499,10 @@ func TestAeronCluster_IngressOfferUntilPositive_closedNilAeron(t *testing.T) {
 		})
 
 		callsBefore := seqPub.calls
-		pos := ac.SendKeepAliveUntilPositive(IngressOfferConfig{})
+		pos, err := ac.SendKeepAliveUntilPositive(t.Context(), IngressOfferConfig{})
 
-		require.Equal(t, aeron.NotConnected, pos)
+		require.ErrorIs(t, err, errNilIngressAeronClient)
+		require.Zero(t, pos)
 		require.Equal(t, callsBefore, seqPub.calls)
 	})
 
@@ -476,8 +515,121 @@ func TestAeronCluster_IngressOfferUntilPositive_closedNilAeron(t *testing.T) {
 		require.NotNil(t, ac.Aeron())
 		require.True(t, ac.IsClosed())
 
-		pos := ac.SendKeepAliveUntilPositive(IngressOfferConfig{})
-		require.Equal(t, aeron.Closed, pos)
+		pos, err := ac.SendKeepAliveUntilPositive(t.Context(), IngressOfferConfig{})
+		requireIngressTerminal(t, err, aeron.Closed)
+		require.Zero(t, pos)
 		require.Equal(t, 1, seqPub.calls)
+	})
+}
+
+func TestIngressOfferUntilPositive_contextCanceled(t *testing.T) {
+	t.Run("preCanceled", func(t *testing.T) {
+		idle := &recordingIdleStrategy{}
+		ac, _ := clusterWithAtomicNanoClock(t, 5_000_000_000, DefaultIngressRetryTimeout)
+
+		cancelCtx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		var offerCalls int
+		pos, err := ac.IngressOfferUntilPositive(cancelCtx, IngressOfferConfig{
+			IdleStrategy: idle,
+		}, func() int64 {
+			offerCalls++
+			return 0
+		})
+		require.Zero(t, pos)
+		require.Zero(t, offerCalls)
+		require.ErrorIs(t, err, context.Canceled)
+		require.Equal(t, 1, idle.resetCalls)
+	})
+
+	t.Run("midLoop", func(t *testing.T) {
+		ac, nowNs := clusterWithAtomicNanoClock(t, 5_000_000_000, DefaultIngressRetryTimeout)
+		doWorkCount := setupIngressRetryDoWorkRecorder(t)
+
+		cancelCtx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+
+		var offerCalls int
+		offerFn := func() int64 {
+			offerCalls++
+			nowNs.Add(int64(time.Millisecond))
+			if offerCalls >= 2 {
+				cancel()
+			}
+			return aeron.BackPressured
+		}
+
+		pos, err := ac.IngressOfferUntilPositive(cancelCtx, IngressOfferConfig{}, offerFn)
+		require.Zero(t, pos)
+		require.Equal(t, 2, offerCalls)
+		require.Equal(t, 4, *doWorkCount)
+		require.ErrorIs(t, err, context.Canceled)
+	})
+}
+
+func TestIngressOfferUntilPositive_contextDeadline(t *testing.T) {
+	t.Run("preExpired", func(t *testing.T) {
+		idle := &recordingIdleStrategy{}
+		ac, _ := clusterWithAtomicNanoClock(t, 5_000_000_000, DefaultIngressRetryTimeout)
+
+		deadlineCtx, cancel := context.WithDeadline(
+			t.Context(),
+			time.Now().Add(-time.Second),
+		)
+		defer cancel()
+
+		var offerCalls int
+		pos, err := ac.IngressOfferUntilPositive(deadlineCtx, IngressOfferConfig{
+			IdleStrategy: idle,
+		}, func() int64 {
+			offerCalls++
+			return aeron.BackPressured
+		})
+		require.Zero(t, pos)
+		require.Zero(t, offerCalls)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Equal(t, 1, idle.resetCalls)
+	})
+
+	t.Run("ctxDeadlineSooner", func(t *testing.T) {
+		ac := newAeronClusterFromConnectFixture(t, nil)
+
+		deadlineCtx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
+		defer cancel()
+
+		start := time.Now()
+		pos, err := ac.IngressOfferUntilPositive(deadlineCtx, IngressOfferConfig{
+			NanoClock: func() int64 {
+				return time.Now().UnixNano()
+			},
+		}, func() int64 {
+			return aeron.BackPressured
+		})
+		elapsed := time.Since(start)
+
+		require.Zero(t, pos)
+		require.Less(t, elapsed, 50*time.Millisecond)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	})
+
+	t.Run("cfgTimeoutSooner", func(t *testing.T) {
+		const timeout = time.Millisecond
+		stepNs := timeout.Nanoseconds() / 4
+
+		ac, nowNs := clusterWithAtomicNanoClock(t, 5_000_000_000, timeout)
+		deadlineCtx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+
+		var offerCalls int
+		offerFn := func() int64 {
+			offerCalls++
+			nowNs.Add(stepNs)
+			return aeron.BackPressured
+		}
+
+		_, err := ac.IngressOfferUntilPositive(deadlineCtx, IngressOfferConfig{}, offerFn)
+		requireIngressTimeout(t, err, aeron.BackPressured, timeout)
+		require.Equal(t, 4, offerCalls)
 	})
 }

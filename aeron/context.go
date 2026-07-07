@@ -12,8 +12,12 @@ const (
 	defaultIdleSleepDuration   = 16 * time.Millisecond
 	defaultInterServiceTimeout = time.Second
 	defaultCloseLingerDuration = 3 * time.Second
+	defaultPollTimeout         = 10 * time.Second
 
 	DefaultIdleSleepDuration = defaultIdleSleepDuration
+
+	// DefaultPollTimeout is the fallback for Context.PollTimeout when it is zero.
+	DefaultPollTimeout = defaultPollTimeout
 )
 
 type Context struct {
@@ -23,10 +27,19 @@ type Context struct {
 	KeepAliveInterval   time.Duration
 	InterServiceTimeout time.Duration
 	IdleSleepDuration   time.Duration
+
 	// CloseLingerDuration schedules log unmap after publication or image close.
 	//
 	// Zero uses the default (3s), not immediate unmap.
 	CloseLingerDuration time.Duration
+
+	// PollTimeout bounds PollUntil*, PollOneMessage, PollReassembled, and
+	// RunDuringClientWork. Zero uses DefaultPollTimeout after Normalize.
+	PollTimeout time.Duration
+
+	// PublicationOfferTimeout bounds OfferWithRetry. Zero uses PollTimeout after
+	// Normalize.
+	PublicationOfferTimeout time.Duration
 
 	ErrorHandler func(error)
 
@@ -58,6 +71,12 @@ func normalizeContext(ctx Context) Context {
 	}
 	if ctx.CloseLingerDuration == 0 {
 		ctx.CloseLingerDuration = defaultCloseLingerDuration
+	}
+	if ctx.PollTimeout == 0 {
+		ctx.PollTimeout = defaultPollTimeout
+	}
+	if ctx.PublicationOfferTimeout == 0 {
+		ctx.PublicationOfferTimeout = ctx.PollTimeout
 	}
 	if ctx.EpochClock == nil {
 		ctx.EpochClock = func() int64 {

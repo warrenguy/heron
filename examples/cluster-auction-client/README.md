@@ -1,18 +1,18 @@
 # cluster-auction-client
 
-Runnable Heron example mirroring upstream Aeron `BasicAuctionClusterClient` against the
+Mirrors upstream Aeron `BasicAuctionClusterClient` against the
 unmodified Java `BasicAuctionClusteredService` on a UDP 3-node cluster.
 
 ## Prerequisites
 
 - `JAVA_HOME` set (upstream cluster scripts require it)
-- Aeron clone at `AERON_SRC` (default: `../aeron` from the Heron repo root) checked out at
+- Aeron clone at `AERON_SRC` (default: `../aeron`) checked out at
   the ref in `specs/versions.yaml`
 - `aeron-all` and `aeron-agent` built in that checkout (`basic-auction-cluster` needs the
   agent shadow JAR)
 - Ports 9002, 9102, and 9202 free for the default 3-node topology
 
-The Java cluster embeds its own media drivers. The Go client uses a separate Heron
+The Java cluster embeds its own media drivers. The Go client uses a separate
 `bin/aeronmd` instance and `AERON_DIR`.
 
 ## Run end-to-end
@@ -54,7 +54,7 @@ wrapper follows that file when started through `run-upstream-cluster.sh`).
 
 ### 2. Start the Go client
 
-In another terminal, from the Heron repo root:
+In another terminal, from the repo root:
 
 ```bash
 export AERON_DIR=/tmp/aeron
@@ -63,7 +63,7 @@ make aeronmd
 bin/aeronmd
 ```
 
-In a third terminal, also from the Heron repo root:
+In a third terminal, also from the repo root:
 
 ```bash
 go run -tags=example ./examples/cluster-auction-client/ \
@@ -102,13 +102,3 @@ From `$AERON_SRC/aeron-samples/scripts/cluster` with the cluster already running
 When `-ingress-endpoints` is empty and ingress media is UDP, endpoints are built as
 `0=localhost:9002,1=localhost:9102,2=localhost:9202` (matching upstream tutorial ports).
 For `ipc`/`ipcx` ingress, endpoints are forced empty.
-
-## Troubleshooting
-
-| Symptom | Check |
-|---------|-------|
-| Offer failed with Aeron code `-1` (`NotConnected`) | All three nodes up; ports 9002/9102/9202 listening |
-| Connect timeout | `aeronmd` running; `-aeron-dir` matches the driver |
-| No egress output | Cluster running; UDP egress not firewalled |
-| Cluster script fails | `JAVA_HOME` set; Aeron ref matches `specs/versions.yaml`; agent JAR built |
-| Stale cluster processes | Stop with `pkill -f BasicAuctionClusteredServiceNode` if a prior run left JVMs up |

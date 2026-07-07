@@ -1,6 +1,7 @@
 package aeron_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -106,7 +107,6 @@ func TestOfferStallTimeout(t *testing.T) {
 
 func TestOfferWithRetry_table(t *testing.T) {
 	client := aeron.NewClientForTest(nil, func() int64 { return 0 })
-	zeroCalls := 0
 	twoCalls := 2
 
 	tests := []struct {
@@ -117,27 +117,6 @@ func TestOfferWithRetry_table(t *testing.T) {
 		wantCalls *int
 		checkErr  func(t *testing.T, err error)
 	}{
-		{
-			name:      "negativeTimeout",
-			pub:       offerRetryTestPub(nil),
-			timeout:   -time.Second,
-			wantCalls: &zeroCalls,
-			checkErr: func(t *testing.T, err error) {
-				t.Helper()
-				require.ErrorIs(t, err, aeron.ErrInvalidTimeout)
-			},
-		},
-		{
-			name: "zeroTimeoutTerminal",
-			pub: offerRetryTestPub(func(pub *fakePublicationOfferer) {
-				pub.results = []int64{aeron.Closed}
-			}),
-			timeout: 0,
-			checkErr: func(t *testing.T, err error) {
-				t.Helper()
-				requireOfferTerminalStatus(t, err, aeron.Closed)
-			},
-		},
 		{
 			name: "successAfterBackpressure",
 			pub: offerRetryTestPub(func(pub *fakePublicationOfferer) {
@@ -242,7 +221,8 @@ func TestOfferWithRetry_table(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			pos, err := aeron.OfferWithRetry(client, tc.pub, []byte{0x01}, tc.timeout)
+			aeron.SetClientPollTimeoutsForTest(client, tc.timeout, tc.timeout)
+			pos, err := aeron.OfferWithRetry(t.Context(), client, tc.pub, []byte{0x01})
 			if tc.checkErr != nil {
 				tc.checkErr(t, err)
 			} else {
@@ -264,15 +244,115 @@ func TestOfferWithRetryObserved_retriableObserver(t *testing.T) {
 
 	var observed []int64
 	pos, err := aeron.OfferWithRetryObserved(
-		client,
-		pub,
-		[]byte{0x01},
-		5*time.Second,
-		func(status int64) {
+		t.Context(), client, pub, []byte{0x01}, func(status int64) {
 			observed = append(observed, status)
 		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, int64(512), pos)
 	require.Equal(t, []int64{aeron.BackPressured, aeron.AdminAction}, observed)
+}
+
+func TestOfferWithRetry_contextCanceled(t *testing.T) {
+	client := aeron.NewClientForTest(nil, func() int64 { return 0 })
+
+	t.Run("preCanceled", func(t *testing.T) {
+		pub := offerRetryTestPub(func(pub *fakePublicationOfferer) {
+			pub.exhausted = aeron.BackPressured
+		})
+
+		cancelCtx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		pos, err := aeron.OfferWithRetry(cancelCtx, client, pub, []byte{0x01})
+		require.Zero(t, pos)
+		require.Zero(t, pub.call)
+		require.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("midLoop", func(t *testing.T) {
+		pub := offerRetryTestPub(func(pub *fakePublicationOfferer) {
+			pub.exhausted = aeron.BackPressured
+		})
+
+		cancelCtx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+
+		pos, err := aeron.OfferWithRetryObserved(
+			cancelCtx, client, pub, []byte{0x01}, func(int64) {
+				if pub.call >= 2 {
+					cancel()
+				}
+			},
+		)
+		require.Zero(t, pos)
+		require.Equal(t, 2, pub.call)
+		require.ErrorIs(t, err, context.Canceled)
+	})
+}
+
+func TestOfferWithRetry_contextDeadline(t *testing.T) {
+	client := aeron.NewClientForTest(nil, func() int64 { return 0 })
+
+	t.Run("preExpired", func(t *testing.T) {
+		pub := offerRetryTestPub(func(pub *fakePublicationOfferer) {
+			pub.exhausted = aeron.BackPressured
+		})
+
+		deadlineCtx, cancel := context.WithDeadline(
+			t.Context(),
+			time.Now().Add(-time.Second),
+		)
+		defer cancel()
+
+		pos, err := aeron.OfferWithRetry(deadlineCtx, client, pub, []byte{0x01})
+		require.Zero(t, pos)
+		require.Zero(t, pub.call)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	})
+
+	t.Run("ctxDeadlineSooner", func(t *testing.T) {
+		pub := offerRetryTestPub(func(pub *fakePublicationOfferer) {
+			pub.exhausted = aeron.BackPressured
+		})
+
+		deadlineCtx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
+		defer cancel()
+
+		start := time.Now()
+		pos, err := aeron.OfferWithRetry(deadlineCtx, client, pub, []byte{0x01})
+		elapsed := time.Since(start)
+
+		require.Zero(t, pos)
+		require.Equal(t, 1, pub.call)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Less(t, elapsed, 200*time.Millisecond)
+	})
+}
+
+type cancelOnOfferPublication struct {
+	*fakePublicationOfferer
+	cancel context.CancelFunc
+}
+
+func (pub *cancelOnOfferPublication) Offer(payload []byte) int64 {
+	pub.cancel()
+	return pub.fakePublicationOfferer.Offer(payload)
+}
+
+func TestOfferWithRetry_terminalAfterCancel(t *testing.T) {
+	client := aeron.NewClientForTest(nil, func() int64 { return 0 })
+
+	cancelCtx, cancel := context.WithCancel(t.Context())
+	pub := &cancelOnOfferPublication{
+		fakePublicationOfferer: offerRetryTestPub(func(pub *fakePublicationOfferer) {
+			pub.exhausted = aeron.Closed
+		}),
+		cancel: cancel,
+	}
+
+	pos, err := aeron.OfferWithRetry(cancelCtx, client, pub, []byte{0x01})
+	require.Zero(t, pos)
+	require.Equal(t, 1, pub.call)
+	require.ErrorIs(t, err, context.Canceled)
 }

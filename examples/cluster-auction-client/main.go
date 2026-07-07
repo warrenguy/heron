@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"os/signal"
@@ -35,43 +36,22 @@ func main() {
 
 	clientState := newClientState()
 	clusterCtx := config.clusterContext(transport, newEgressHandlers(clientState))
-	normalizedCtx := clusterCtx.Normalize()
 
-	asyncConnect, err := client.NewAsyncConnect(clusterCtx)
+	session, err := client.Connect(ctx, clusterCtx)
 	if err != nil {
-		log.Fatal(err)
-	}
-	defer closeWithLog(asyncConnect.Close)
-
-	idleStrategy := normalizedCtx.IdleStrategy
-	var result *client.ConnectResult
-	for result == nil {
-		if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.Canceled) {
 			return
 		}
-		transport.DoWork()
-		result, err = asyncConnect.Poll()
-		if err != nil {
-			log.Fatal(err)
-		}
-		if result == nil {
-			idleStrategy.Idle(0)
-		}
-	}
-
-	session, err := client.NewAeronCluster(result)
-	if err != nil {
 		log.Fatal(err)
 	}
 	defer closeWithLog(session.Close)
 
 	if err := runDutyCycle(
 		ctx,
-		transport,
 		session,
 		config,
 		clientState,
-		normalizedCtx.IdleStrategy,
+		session.Context().IdleStrategy,
 	); err != nil {
 		log.Fatal(err)
 	}

@@ -203,7 +203,7 @@ func (ops archiveControlOps) stopRecordingAwaitSignal(
 		ops.aeronClient,
 		ops.ctx,
 		ops.poll,
-		ops.ctx.MessageTimeout,
+		ops.ctx.ControlResponseTimeout,
 		func() (bool, error) {
 			return stopRecordingProof(
 				targets.ResponsePoller,

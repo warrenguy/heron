@@ -89,10 +89,13 @@ type AsyncConnect struct {
 // Normalize; callers must not pre-normalize ctx or explicit NewLeaderTimeout
 // detection will be wrong.
 //
-// Invoke client.DoWork on the transport client between every Poll spin. Poll does
-// not accept context cancellation; wrap the outer poll loop with context.Context
-// and check cancelCtx.Err() between Poll calls. Call Close to abort connect and
-// release partial resources.
+// Invoke client.DoWork on the transport client between every Poll spin. Prefer
+// Connect for a blocking handshake with cancel support. Poll does not
+// accept context cancellation; use the manual loop only when stepping between
+// Poll calls. If that loop must be cancellable, check cancelCtx.Err() between
+// Poll calls and call Close on cancel. After each in-progress Poll, pace with
+// ctx.IdleStrategy.Idle(0) and call IdleStrategy.Reset when the loop exits.
+// Call Close to abort connect and release partial resources.
 func NewAsyncConnect(ctx ClusterContext) (*AsyncConnect, error) {
 	newLeaderExplicit := ctx.NewLeaderTimeout != 0
 	ctx = ctx.Normalize()

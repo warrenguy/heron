@@ -31,8 +31,13 @@ const (
 	// DefaultConnectTimeout matches Java CONNECT_TIMEOUT_DEFAULT_NS (5 seconds).
 	DefaultConnectTimeout = 5 * time.Second
 
-	// DefaultMessageTimeout matches Java MESSAGE_TIMEOUT_DEFAULT_NS (5 seconds).
-	DefaultMessageTimeout = 5 * time.Second
+	// DefaultControlResponseTimeout matches Java messageTimeoutNs for control response
+	// awaits (5 seconds).
+	DefaultControlResponseTimeout = 5 * time.Second
+
+	// DefaultControlOfferRetryTimeout bounds ControlOfferUntilPositive when
+	// ArchiveContext.ControlOfferRetryTimeout is zero.
+	DefaultControlOfferRetryTimeout = 10 * time.Second
 
 	// DefaultMessageRetryAttempts matches Java MESSAGE_RETRY_ATTEMPTS_DEFAULT.
 	DefaultMessageRetryAttempts = 3

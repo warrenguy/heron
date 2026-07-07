@@ -29,8 +29,12 @@ type ClusterContext struct {
 	EgressStreamID   int32
 	ResponseStreamID int32
 
-	MessageTimeout   time.Duration
-	NewLeaderTimeout time.Duration
+	MessageTimeout time.Duration
+	// IngressRetryTimeout bounds IngressOfferUntilPositive and
+	// SendKeepAliveUntilPositive. Zero uses DefaultIngressRetryTimeout after
+	// Normalize.
+	IngressRetryTimeout time.Duration
+	NewLeaderTimeout    time.Duration
 
 	AeronDir string
 	Aeron    *aeron.Client
@@ -73,6 +77,9 @@ func (ctx ClusterContext) Normalize() ClusterContext {
 	}
 	if ctx.MessageTimeout == 0 {
 		ctx.MessageTimeout = DefaultMessageTimeout
+	}
+	if ctx.IngressRetryTimeout == 0 {
+		ctx.IngressRetryTimeout = DefaultIngressRetryTimeout
 	}
 	if ctx.NewLeaderTimeout == 0 {
 		ctx.NewLeaderTimeout = ctx.MessageTimeout
@@ -128,6 +135,9 @@ func (ctx ClusterContext) validateClusterContext(requireEgressHandler bool) erro
 	}
 	if ctx.MessageTimeout <= 0 {
 		return errors.New("cluster client: MessageTimeout must be positive")
+	}
+	if ctx.IngressRetryTimeout <= 0 {
+		return errors.New("cluster client: IngressRetryTimeout must be positive")
 	}
 	if ctx.NewLeaderTimeout < 0 {
 		return errors.New("cluster client: NewLeaderTimeout must not be negative")

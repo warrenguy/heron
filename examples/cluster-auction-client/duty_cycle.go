@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -83,7 +84,6 @@ func newEgressHandlers(clientState *ClientState) *client.EgressHandlers {
 
 func runDutyCycle(
 	ctx context.Context,
-	transport *aeron.Client,
 	session *client.AeronCluster,
 	config Config,
 	clientState *ClientState,
@@ -103,12 +103,16 @@ func runDutyCycle(
 		if clientState.bidDue(now) && clientState.bidsLeftToSend > 0 {
 			price := clientState.lastBidSeen + int64(rand.IntN(10))
 			correlationID := clientState.nextCorrelation()
-			pos := sendBid(transport, session, config, correlationID, price, offerConfig)
-			if pos <= 0 {
-				return fmt.Errorf("cluster-auction-client: bid offer failed with Aeron code %d", pos)
+			err := sendBid(ctx, session, config, correlationID, price, offerConfig)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				return fmt.Errorf("cluster-auction-client: bid offer: %w", err)
 			}
-			clientState.nextBidDeadline = now.Add(randomDelayMs(config.BidIntervalMs))
-			clientState.keepAliveDeadline = now.Add(time.Second)
+			completed := time.Now()
+			clientState.nextBidDeadline = completed.Add(randomDelayMs(config.BidIntervalMs))
+			clientState.keepAliveDeadline = completed.Add(time.Second)
 			clientState.bidsLeftToSend--
 			auctionLog.Printf(
 				"Sent(%d, %d, %d) bidsRemaining=%d",
@@ -121,14 +125,17 @@ func runDutyCycle(
 			if clientState.bidsLeftToSend <= 0 {
 				break
 			}
-			pos := client.SendKeepAliveUntilPositive(transport, session, offerConfig)
-			if pos <= 0 {
-				return fmt.Errorf("cluster-auction-client: keepalive failed with Aeron code %d", pos)
+			_, err := session.SendKeepAliveUntilPositive(ctx, offerConfig)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				return fmt.Errorf("cluster-auction-client: keepalive: %w", err)
 			}
-			clientState.keepAliveDeadline = now.Add(time.Second)
+			clientState.keepAliveDeadline = time.Now().Add(time.Second)
 		}
 
-		transport.DoWork()
+		session.Aeron().DoWork()
 		idleStrategy.Idle(session.PollEgress())
 	}
 
@@ -136,23 +143,23 @@ func runDutyCycle(
 }
 
 func sendBid(
-	transport *aeron.Client,
+	ctx context.Context,
 	session *client.AeronCluster,
 	config Config,
 	correlationID int64,
 	price int64,
 	offerConfig client.IngressOfferConfig,
-) int64 {
+) error {
 	var buf [auctionwire.BidMessageLength]byte
 	auctionwire.EncodeBid(buf[:], correlationID, config.CustomerID, price)
-	return client.IngressOfferUntilPositive(
-		transport,
-		session,
+	_, err := session.IngressOfferUntilPositive(
+		ctx,
 		offerConfig,
 		func() int64 {
 			return session.Offer(buf[:])
 		},
 	)
+	return err
 }
 
 func randomDelayMs(maxMs int) time.Duration {

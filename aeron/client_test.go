@@ -32,6 +32,22 @@ func TestConnect_validationErrors(t *testing.T) {
 			wantErr: "aeron: CloseLingerDuration must not be negative",
 		},
 		{
+			name: "rejects negative poll timeout",
+			ctx: aeron.Context{
+				AeronDir:    "unused",
+				PollTimeout: -time.Second,
+			},
+			wantErr: "aeron: PollTimeout must not be negative",
+		},
+		{
+			name: "rejects negative publication offer timeout",
+			ctx: aeron.Context{
+				AeronDir:                "unused",
+				PublicationOfferTimeout: -time.Second,
+			},
+			wantErr: "aeron: PublicationOfferTimeout must not be negative",
+		},
+		{
 			name: "rejects dedicated conductor invoker",
 			ctx: aeron.Context{
 				AeronDir:            "unused",

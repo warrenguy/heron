@@ -20,6 +20,10 @@ const (
 	// DefaultMessageTimeout matches Java messageTimeoutNs (5 seconds).
 	DefaultMessageTimeout = 5 * time.Second
 
+	// DefaultIngressRetryTimeout bounds IngressOfferUntilPositive when
+	// ClusterContext.IngressRetryTimeout is zero.
+	DefaultIngressRetryTimeout = 10 * time.Second
+
 	// MaxClientNameLength is the wire limit for SessionConnectRequest.clientInfo.
 	MaxClientNameLength = 100
 )

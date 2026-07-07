@@ -161,7 +161,7 @@ func (ac *AeronCluster) pollLeaderRecovery() int {
 		ac.ingressPublication = pub
 		ac.refreshIngressSessionLimits(pub)
 	}
-	if IngressRetriableCode(pos) {
+	if aeron.IsIngressRetriable(pos) {
 		return 0
 	}
 	return 1

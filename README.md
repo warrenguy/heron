@@ -70,165 +70,20 @@ mkdir -p "$AERON_DIR"
 bin/aeronmd
 ```
 
-Minimal IPC pub/sub:
+Runnable IPC echo with public helpers (`PollUntilConnected`, `PollUntilImageCount`,
+`OfferWithRetry`, `PollOneMessage`): [`examples/ipc-echo`](examples/ipc-echo/).
 
-```go
-package main
-
-import (
-	"fmt"
-	"log"
-	"os"
-
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
-)
-
-func main() {
-	const (
-		streamID = 1001
-		channel  = "aeron:ipc"
-	)
-
-	aeronDir := os.Getenv("AERON_DIR")
-	if aeronDir == "" {
-		aeronDir = "/tmp/aeron"
-	}
-
-	client, err := aeron.Connect(aeron.Context{AeronDir: aeronDir})
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer client.Close()
-
-	pub, err := client.AddPublication(streamID, channel)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer pub.Close()
-
-	sub, err := client.AddSubscription(streamID, channel)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer sub.Close()
-
-	for !pub.IsConnected() || sub.ImageCount() == 0 {
-		client.DoWork()
-	}
-
-	payload := []byte("hello")
-	pos := pub.Offer(payload)
-	if pos < 0 {
-		log.Fatalf("offer failed: %s", aeron.PositionCodeName(pos))
-	}
-
-	received := pollOne(sub, client)
-	fmt.Println(string(received))
-}
-
-func pollOne(sub *aeron.Subscription, client *aeron.Client) []byte {
-	var msg []byte
-	handler := func(buf atomic.AtomicBuffer, off, n int, _ *aeron.Header) {
-		msg = append(msg, buf.Bytes()[off:off+n]...)
-	}
-	for {
-		if sub.Poll(handler, 1) > 0 {
-			break
-		}
-		client.DoWork()
-	}
-	return msg
-}
-```
-
-`AddPublication` / `AddSubscription` block until the driver responds; poll `IsConnected` /
-`ImageCount` (pumping `DoWork`) before `Offer` / `Poll`. Close publications and subscriptions
-before `client.Close()`.
+`AddPublication` / `AddSubscription` block until the driver responds. Close publications and
+subscriptions before `client.Close()`.
 
 ### Cluster client
 
-Requires a running Aeron Cluster plus `aeronmd`. Pass an existing transport `*aeron.Client` in
-`ClusterContext.Aeron` so the duty cycle can call `DoWork` during `AsyncConnect.Poll`.
+External cluster stack required; setup and duty-cycle patterns are in the examples below.
 
-```go
-package main
-
-import (
-	"log"
-
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/cluster/client"
-)
-
-func main() {
-	transport, err := aeron.Connect(aeron.Context{AeronDir: "/tmp/aeron"})
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer transport.Close()
-
-	handlers := &client.EgressHandlers{
-		MessageFunc: func(
-			_ int64,
-			_ int64,
-			buf atomic.AtomicBuffer,
-			off, n int,
-			_ *aeron.Header,
-		) {
-			log.Printf("egress: %s", buf.Bytes()[off:off+n])
-		},
-	}
-	ctx := client.ClusterContext{
-		Aeron:          transport,
-		IngressChannel: "aeron:ipc",
-		EgressChannel:  "aeron:ipc",
-		EgressHandler:  handlers,
-	}
-
-	ac, err := client.NewAsyncConnect(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	var result *client.ConnectResult
-	for result == nil {
-		transport.DoWork()
-		result, err = ac.Poll()
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	session, err := client.NewAeronCluster(result)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer session.Close()
-
-	for {
-		transport.DoWork()
-		if session.PollEgress() > 0 {
-			continue
-		}
-		pos := client.IngressOfferUntilPositive(
-			transport,
-			session,
-			client.IngressOfferConfig{},
-			func() int64 {
-				return session.Offer([]byte("ping"))
-			},
-		)
-		if pos < 0 {
-			log.Printf("offer: %d", pos)
-		}
-	}
-}
-```
-
-Pump `transport.DoWork()` during `AsyncConnect.Poll` and in the session loop. Close the
-session before the transport client.
+- [`examples/cluster-echo-client`](examples/cluster-echo-client/) - IPC echo against
+  `docker/cluster_java`
+- [`examples/cluster-auction-client`](examples/cluster-auction-client/) - UDP auction
+  duty cycle against upstream Java cluster
 
 ### Archive client
 
@@ -282,7 +137,7 @@ recording signal handler or signals drop when control events are polled.
 
 ## Examples
 
-Runnable end-to-end demos live under [`examples/`](examples/README.md). Each has its own
+Runnable end-to-end demos live under [`examples/`](examples/). Each has its own
 README with prerequisites and run steps.
 
 ## Contributing

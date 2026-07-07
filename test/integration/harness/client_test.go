@@ -70,7 +70,7 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 				pub, err := client.AddPublication(streamID, IPCChannel)
 				require.NoError(t, err)
 
-				PollUntilConnected(capture, client, pub, connectedWaitTestTimeout)
+				PollUntilConnected(capture, client, pub)
 				wantMsg := fmt.Sprintf(
 					"publication %d (stream %d session %d) never connected; position=0 within %s",
 					pub.RegistrationID(),
@@ -107,7 +107,7 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			md := SharedParallel(t)
-			client := ConnectClient(t, md, aeron.Context{})
+			client := ConnectClient(t, md, shortPollAeronContext())
 
 			capture := &CaptureFailTB{TB: t}
 			closer, wantMsg := tt.wait(t, capture, client, tt.stream)

@@ -573,12 +573,14 @@ func NewTestClientFromConductorFixture(
 	tb.Helper()
 
 	return &Client{
-		clientID:          testutil.TestClientID,
-		conductor:         fixture.Conductor,
-		driverProxy:       fixture.DriverProxy,
-		nanoClock:         fixture.NanoClock,
-		driverTimeout:     testutil.TestDriverTimeout,
-		idleSleepDuration: testutil.TestIdleSleepDuration,
+		clientID:                testutil.TestClientID,
+		conductor:               fixture.Conductor,
+		driverProxy:             fixture.DriverProxy,
+		nanoClock:               fixture.NanoClock,
+		driverTimeout:           testutil.TestDriverTimeout,
+		pollTimeout:             defaultPollTimeout,
+		publicationOfferTimeout: defaultPollTimeout,
+		idleSleepDuration:       testutil.TestIdleSleepDuration,
 	}
 }
 

@@ -3,6 +3,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	stdatomic "sync/atomic"
 	"testing"
@@ -117,7 +118,7 @@ func TestAwaitClusterConnect_idleStrategyPacing(t *testing.T) {
 			withAsyncConnectEgressTerm(t, ac, writeSessionEventForConnect)
 		})
 
-		result, err := awaitClusterConnect(ac)
+		result, err := awaitClusterConnect(t.Context(), ac)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.Positive(t, idle.totalIdleCalls)
@@ -142,7 +143,7 @@ func TestAwaitClusterConnect_idleStrategyPacing(t *testing.T) {
 			}
 		})
 
-		_, err := awaitClusterConnect(ac)
+		_, err := awaitClusterConnect(t.Context(), ac)
 		require.Error(t, err)
 		require.Positive(t, idle.totalIdleCalls)
 		require.Equal(t, 1, idle.resetCalls)
@@ -160,13 +161,113 @@ func TestAwaitClusterConnect_success(t *testing.T) {
 		withAsyncConnectEgressTerm(t, ac, writeSessionEventForConnect)
 	})
 
-	result, err := awaitClusterConnect(ac)
+	result, err := awaitClusterConnect(t.Context(), ac)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, result.EgressSubscription)
 	require.True(t, result.EgressSubscription.IsConnected())
 	require.NotNil(t, result.IngressPublication)
 	require.True(t, result.IngressPublication.IsConnected())
+}
+
+func TestConnect_canceled(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		buildCtx         func(t *testing.T, harness *aeron.AsyncConnectTestHarness) ClusterContext
+		preCancel        bool
+		onStep           func(cancel context.CancelFunc) func(*AsyncConnect)
+		wantClientClosed bool
+	}{
+		{
+			name: "already_canceled",
+			buildCtx: func(t *testing.T, harness *aeron.AsyncConnectTestHarness) ClusterContext {
+				t.Helper()
+				return connectContextForTest(harness.Client, "")
+			},
+			preCancel:        true,
+			wantClientClosed: false,
+		},
+		{
+			name: "owned_client_already_canceled",
+			buildCtx: func(t *testing.T, harness *aeron.AsyncConnectTestHarness) ClusterContext {
+				t.Helper()
+				return ownedConnectContextForTest(t, harness, func(ClusterContext) (*aeron.Client, error) {
+					return harness.Client, nil
+				})
+			},
+			preCancel:        true,
+			wantClientClosed: true,
+		},
+		{
+			name: "canceled_during_handshake",
+			buildCtx: func(t *testing.T, harness *aeron.AsyncConnectTestHarness) ClusterContext {
+				t.Helper()
+				ctx := connectContextForTest(harness.Client, "")
+				ctx.MessageTimeout = time.Minute
+				return ctx
+			},
+			onStep: func(cancel context.CancelFunc) func(*AsyncConnect) {
+				var steps int
+				return func(ac *AsyncConnect) {
+					steps++
+					if steps >= 3 {
+						cancel()
+					}
+				}
+			},
+			wantClientClosed: false,
+		},
+		{
+			name: "owned_client_canceled_during_handshake",
+			buildCtx: func(t *testing.T, harness *aeron.AsyncConnectTestHarness) ClusterContext {
+				t.Helper()
+				ctx := ownedConnectContextForTest(t, harness, func(ClusterContext) (*aeron.Client, error) {
+					return harness.Client, nil
+				})
+				ctx.MessageTimeout = time.Minute
+				return ctx
+			},
+			onStep: func(cancel context.CancelFunc) func(*AsyncConnect) {
+				var steps int
+				return func(ac *AsyncConnect) {
+					steps++
+					if steps >= 3 {
+						cancel()
+					}
+				}
+			},
+			wantClientClosed: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness := aeron.NewAsyncConnectTestHarness(t)
+			clusterCtx := tc.buildCtx(t, harness)
+
+			cancelCtx, cancel := context.WithCancel(t.Context())
+			if tc.preCancel {
+				cancel()
+			} else {
+				t.Cleanup(cancel)
+			}
+
+			var onStep func(*AsyncConnect)
+			if tc.onStep != nil {
+				onStep = tc.onStep(cancel)
+			}
+			observedAC := connectTestHarnessDriver(t, harness, onStep)
+
+			_, err := Connect(cancelCtx, clusterCtx)
+			require.ErrorIs(t, err, context.Canceled)
+			requireAsyncConnectClosedAfterConnectFailure(t, observedAC())
+			require.Equal(t, tc.wantClientClosed, aeron.ClientIsClosedForTest(harness.Client))
+		})
+	}
 }
 
 func TestConnect_concludeConnect_setsNewLeaderTimeout(t *testing.T) {
@@ -186,7 +287,7 @@ func TestConnect_concludeConnect_setsNewLeaderTimeout(t *testing.T) {
 		)
 	})
 
-	session, err := Connect(ctx)
+	session, err := Connect(t.Context(), ctx)
 	require.NoError(t, err)
 	require.NotNil(t, session)
 	t.Cleanup(func() { _ = session.Close() })
@@ -203,7 +304,7 @@ func TestConnect_success(t *testing.T) {
 		withAsyncConnectEgressTerm(t, ac, writeSessionEventForConnect)
 	})
 
-	session, err := Connect(ctx)
+	session, err := Connect(t.Context(), ctx)
 	require.NoError(t, err)
 	require.NotNil(t, session)
 	t.Cleanup(func() { _ = session.Close() })
@@ -230,7 +331,7 @@ func TestConnect_success_ownedClient(t *testing.T) {
 
 	require.False(t, aeron.ClientIsClosedForTest(harness.Client))
 
-	session, err := Connect(ctx)
+	session, err := Connect(t.Context(), ctx)
 	require.NoError(t, err)
 	require.NotNil(t, session)
 	t.Cleanup(func() { _ = session.Close() })
@@ -257,7 +358,7 @@ func TestConnect_challengeRoundTrip(t *testing.T) {
 		roundTrip.onStep(t, ac)
 	})
 
-	session, err := Connect(ctx)
+	session, err := Connect(t.Context(), ctx)
 	require.NoError(t, err)
 	require.NotNil(t, session)
 	t.Cleanup(func() { _ = session.Close() })
@@ -298,7 +399,7 @@ func TestConnect_sessionEventAuthenticationRejected(t *testing.T) {
 		)
 	})
 
-	_, err := Connect(ctx)
+	_, err := Connect(t.Context(), ctx)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "cluster client: authentication rejected")
 	requireAsyncConnectClosedAfterConnectFailure(t, observedAC())
@@ -361,13 +462,130 @@ func TestConnect_timeout(t *testing.T) {
 
 			observedAC := connectTestHarnessDriver(t, harness, tc.onStep)
 
-			_, err := Connect(ctx)
+			_, err := Connect(t.Context(), ctx)
 			require.Error(t, err)
 			require.ErrorContains(t, err, "cluster client: connect timeout")
 			require.Equal(t, tc.wantClientClosed, aeron.ClientIsClosedForTest(harness.Client))
 			requireAsyncConnectClosedAfterConnectFailure(t, observedAC())
 		})
 	}
+}
+
+func TestConnect_contextDeadline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		buildCtx        func(t *testing.T, harness *aeron.AsyncConnectTestHarness) ClusterContext
+		connectCtx      func(t *testing.T) (context.Context, context.CancelFunc)
+		wantErr         error
+		wantErrContains string
+	}{
+		{
+			name: "preExpired",
+			buildCtx: func(t *testing.T, harness *aeron.AsyncConnectTestHarness) ClusterContext {
+				t.Helper()
+				ctx := connectContextForTest(harness.Client, "")
+				ctx.MessageTimeout = time.Minute
+				return ctx
+			},
+			connectCtx: func(t *testing.T) (context.Context, context.CancelFunc) {
+				t.Helper()
+				deadlineCtx, cancel := context.WithDeadline(
+					t.Context(),
+					time.Now().Add(-time.Second),
+				)
+				return deadlineCtx, cancel
+			},
+			wantErr: context.DeadlineExceeded,
+		},
+		{
+			name: "ctxDeadlineSooner",
+			buildCtx: func(t *testing.T, harness *aeron.AsyncConnectTestHarness) ClusterContext {
+				t.Helper()
+				ctx := connectContextForTest(harness.Client, "")
+				ctx.MessageTimeout = time.Minute
+				return ctx
+			},
+			connectCtx: func(t *testing.T) (context.Context, context.CancelFunc) {
+				t.Helper()
+				return context.WithTimeout(t.Context(), 5*time.Millisecond)
+			},
+			wantErr: context.DeadlineExceeded,
+		},
+		{
+			name: "messageTimeoutSooner",
+			buildCtx: func(t *testing.T, harness *aeron.AsyncConnectTestHarness) ClusterContext {
+				t.Helper()
+				ctx := connectContextForTest(harness.Client, "")
+				ctx.MessageTimeout = 5 * time.Millisecond
+				return ctx
+			},
+			connectCtx: func(t *testing.T) (context.Context, context.CancelFunc) {
+				t.Helper()
+				return context.WithTimeout(t.Context(), time.Minute)
+			},
+			wantErrContains: "cluster client: connect timeout",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness := aeron.NewAsyncConnectTestHarness(t)
+			clusterCtx := tc.buildCtx(t, harness)
+			connectCtx, cancel := tc.connectCtx(t)
+			defer cancel()
+
+			observedAC := connectTestHarnessDriver(t, harness, nil)
+
+			start := time.Now()
+			_, err := Connect(connectCtx, clusterCtx)
+			elapsed := time.Since(start)
+
+			switch {
+			case tc.wantErr != nil:
+				require.ErrorIs(t, err, tc.wantErr)
+			case tc.wantErrContains != "":
+				require.ErrorContains(t, err, tc.wantErrContains)
+			default:
+				t.Fatal("test case must set wantErr or wantErrContains")
+			}
+			requireAsyncConnectClosedAfterConnectFailure(t, observedAC())
+
+			if tc.name == "ctxDeadlineSooner" {
+				require.Less(t, elapsed, time.Second)
+			}
+		})
+	}
+}
+
+func TestConnect_successWinsOverConcurrentCancel(t *testing.T) {
+	t.Parallel()
+
+	harness := aeron.NewAsyncConnectTestHarness(t)
+	clusterCtx := connectContextForTest(harness.Client, "")
+	clusterCtx.MessageTimeout = time.Minute
+
+	connectCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	connectTestHarnessDriver(t, harness, func(ac *AsyncConnect) {
+		switch ac.State() {
+		case ConnectStatePollResponse:
+			withAsyncConnectEgressTerm(t, ac, writeSessionEventForConnect)
+		case ConnectStateConcludeConnect:
+			cancel()
+		}
+	})
+
+	session, err := Connect(connectCtx, clusterCtx)
+	require.NoError(t, err)
+	require.NotNil(t, session)
+	t.Cleanup(func() { _ = session.Close() })
+
+	require.NotZero(t, session.ClusterSessionID())
 }
 
 func TestConnect_validateRejectsMissingEgressHandler(t *testing.T) {
@@ -377,7 +595,7 @@ func TestConnect_validateRejectsMissingEgressHandler(t *testing.T) {
 	ctx := baseAsyncConnectContext(harness.Client, "")
 	ctx.CredentialsSupplier = NullCredentialsSupplier{}
 
-	_, err := Connect(ctx)
+	_, err := Connect(t.Context(), ctx)
 	require.EqualError(t, err, "cluster client: EgressHandler is required")
 }
 
@@ -434,7 +652,7 @@ func TestConnect_newAsyncConnectFailure(t *testing.T) {
 			harness := aeron.NewAsyncConnectTestHarness(t)
 			ctx := tc.buildCtx(t, harness)
 
-			_, err := Connect(ctx)
+			_, err := Connect(t.Context(), ctx)
 			require.EqualError(t, err, tc.wantErr)
 			require.Equal(t, tc.wantClientClosed, aeron.ClientIsClosedForTest(harness.Client))
 		})
@@ -464,7 +682,7 @@ func TestConnect_newAeronClusterFailureReleasesResult(t *testing.T) {
 		},
 	)
 
-	_, err := Connect(ctx)
+	_, err := Connect(t.Context(), ctx)
 	require.EqualError(t, err, injectedErr)
 	require.NotNil(t, capturedIngress)
 	require.NotNil(t, capturedSub)

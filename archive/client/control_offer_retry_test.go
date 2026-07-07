@@ -158,9 +158,14 @@ func TestControlOfferUntilPositive_backPressuredRetry(t *testing.T) {
 			idle := &recordingControlIdleStrategy{}
 			doWorkCount := setupControlOfferRetryDoWorkRecorder(t)
 
-			pos := ControlOfferUntilPositive(harness.Client, tc.cfg(idle), func() int64 {
-				return seqPub.Offer(nil)
-			})
+			pos := ControlOfferUntilPositive(
+				harness.Client,
+				ArchiveContext{}.Normalize(),
+				tc.cfg(idle),
+				func() int64 {
+					return seqPub.Offer(nil)
+				},
+			)
 			require.Positive(t, pos)
 			tc.assert(t, idle, doWorkCount, seqPub)
 		})
@@ -172,9 +177,12 @@ func TestControlOfferUntilPositive_immediateSuccess(t *testing.T) {
 	harness, seqPub := controlOfferRetryHarnessWithSequentialOffers(t, 100)
 	doWorkCount := setupControlOfferRetryDoWorkRecorder(t)
 
-	pos := ControlOfferUntilPositive(harness.Client, ControlOfferConfig{
-		IdleStrategy: idle,
-	}, func() int64 { return seqPub.Offer(nil) })
+	pos := ControlOfferUntilPositive(
+		harness.Client,
+		ArchiveContext{}.Normalize(),
+		ControlOfferConfig{IdleStrategy: idle},
+		func() int64 { return seqPub.Offer(nil) },
+	)
 	require.Equal(t, int64(100), pos)
 	require.Equal(t, 1, seqPub.calls)
 	require.Equal(t, 1, *doWorkCount)
@@ -186,12 +194,17 @@ func TestControlOfferUntilPositive_pollFnOnRetriable(t *testing.T) {
 	harness, seqPub := controlOfferRetryHarnessWithSequentialOffers(t, aeron.BackPressured, 100)
 	var pollCalls int
 
-	pos := ControlOfferUntilPositive(harness.Client, ControlOfferConfig{
-		PollFn: func() int {
-			pollCalls++
-			return 0
+	pos := ControlOfferUntilPositive(
+		harness.Client,
+		ArchiveContext{}.Normalize(),
+		ControlOfferConfig{
+			PollFn: func() int {
+				pollCalls++
+				return 0
+			},
 		},
-	}, func() int64 { return seqPub.Offer(nil) })
+		func() int64 { return seqPub.Offer(nil) },
+	)
 	require.Positive(t, pos)
 	require.Equal(t, 1, pollCalls)
 }
@@ -200,9 +213,12 @@ func TestControlOfferUntilPositive_adminActionThenSuccess(t *testing.T) {
 	idle := &recordingControlIdleStrategy{}
 	harness, seqPub := controlOfferRetryHarnessWithSequentialOffers(t, aeron.AdminAction, 100)
 
-	pos := ControlOfferUntilPositive(harness.Client, ControlOfferConfig{
-		IdleStrategy: idle,
-	}, func() int64 { return seqPub.Offer(nil) })
+	pos := ControlOfferUntilPositive(
+		harness.Client,
+		ArchiveContext{}.Normalize(),
+		ControlOfferConfig{IdleStrategy: idle},
+		func() int64 { return seqPub.Offer(nil) },
+	)
 	require.Positive(t, pos)
 	require.Equal(t, 2, seqPub.calls)
 	require.Zero(t, idle.totalIdleCalls)
@@ -223,9 +239,12 @@ func TestControlOfferUntilPositive_terminalNoRetry(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			harness, seqPub := controlOfferRetryHarnessWithSequentialOffers(t, tc.code)
 
-			pos := ControlOfferUntilPositive(harness.Client, ControlOfferConfig{}, func() int64 {
-				return seqPub.Offer(nil)
-			})
+			pos := ControlOfferUntilPositive(
+				harness.Client,
+				ArchiveContext{}.Normalize(),
+				ControlOfferConfig{},
+				func() int64 { return seqPub.Offer(nil) },
+			)
 			require.Equal(t, tc.code, pos)
 			require.Equal(t, 1, seqPub.calls)
 		})
@@ -246,11 +265,15 @@ func TestControlOfferUntilPositive_timeout(t *testing.T) {
 		return aeron.BackPressured
 	}
 
-	pos := ControlOfferUntilPositive(harness.Client, ControlOfferConfig{
-		Timeout:      time.Millisecond,
-		IdleStrategy: idle,
-		NanoClock:    func() int64 { return nowNs.Load() },
-	}, offerFn)
+	pos := ControlOfferUntilPositive(
+		harness.Client,
+		ArchiveContext{ControlOfferRetryTimeout: time.Millisecond}.Normalize(),
+		ControlOfferConfig{
+			IdleStrategy: idle,
+			NanoClock:    func() int64 { return nowNs.Load() },
+		},
+		offerFn,
+	)
 	require.Equal(t, aeron.BackPressured, pos)
 	require.Equal(t, 2, *doWorkCount)
 	require.Positive(t, idle.totalIdleCalls)
@@ -260,7 +283,7 @@ func TestControlOfferUntilPositive_timeout(t *testing.T) {
 
 func TestControlOfferUntilPositive_timeoutZeroUsesDefault(t *testing.T) {
 	harness, nowNs := controlOfferRetryHarnessWithNanoClock(t, 3_000_000_000)
-	step := DefaultControlOfferTimeout.Nanoseconds() / 2
+	step := DefaultControlOfferRetryTimeout.Nanoseconds() / 2
 	var offerCalls int
 	offerFn := func() int64 {
 		offerCalls++
@@ -268,10 +291,14 @@ func TestControlOfferUntilPositive_timeoutZeroUsesDefault(t *testing.T) {
 		return aeron.BackPressured
 	}
 
-	pos := ControlOfferUntilPositive(harness.Client, ControlOfferConfig{
-		Timeout:   0,
-		NanoClock: func() int64 { return nowNs.Load() },
-	}, offerFn)
+	pos := ControlOfferUntilPositive(
+		harness.Client,
+		ArchiveContext{}.Normalize(),
+		ControlOfferConfig{
+			NanoClock: func() int64 { return nowNs.Load() },
+		},
+		offerFn,
+	)
 	require.Equal(t, aeron.BackPressured, pos)
 	require.Equal(t, 2, offerCalls)
 }
@@ -298,7 +325,12 @@ func TestControlOfferUntilPositive_nilGuards(t *testing.T) {
 			require.Equal(
 				t,
 				aeron.NotConnected,
-				ControlOfferUntilPositive(tc.aeronClient, ControlOfferConfig{}, tc.offerFn),
+				ControlOfferUntilPositive(
+					tc.aeronClient,
+					ArchiveContext{}.Normalize(),
+					ControlOfferConfig{},
+					tc.offerFn,
+				),
 			)
 		})
 	}

@@ -34,9 +34,14 @@ type ArchiveContext struct {
 	ControlResponseStreamID int32
 	LocalControlStreamID    int32
 
-	ConnectTimeout       time.Duration
-	MessageTimeout       time.Duration
-	MessageRetryAttempts int
+	ConnectTimeout time.Duration
+	// ControlResponseTimeout bounds control RPC response awaits. Zero uses
+	// DefaultControlResponseTimeout after Normalize. Java parity: messageTimeoutNs.
+	ControlResponseTimeout time.Duration
+	// ControlOfferRetryTimeout bounds ControlOfferUntilPositive. Zero uses
+	// DefaultControlOfferRetryTimeout after Normalize.
+	ControlOfferRetryTimeout time.Duration
+	MessageRetryAttempts     int
 
 	AeronDir     string
 	Aeron        *aeron.Client
@@ -98,8 +103,11 @@ func (ctx ArchiveContext) Normalize() ArchiveContext {
 	if ctx.ConnectTimeout == 0 {
 		ctx.ConnectTimeout = DefaultConnectTimeout
 	}
-	if ctx.MessageTimeout == 0 {
-		ctx.MessageTimeout = DefaultMessageTimeout
+	if ctx.ControlResponseTimeout == 0 {
+		ctx.ControlResponseTimeout = DefaultControlResponseTimeout
+	}
+	if ctx.ControlOfferRetryTimeout == 0 {
+		ctx.ControlOfferRetryTimeout = DefaultControlOfferRetryTimeout
 	}
 	if ctx.MessageRetryAttempts == 0 {
 		ctx.MessageRetryAttempts = DefaultMessageRetryAttempts
@@ -139,8 +147,11 @@ func (ctx ArchiveContext) ValidateForConnect() error {
 	if ctx.ConnectTimeout <= 0 {
 		return errors.New("archive client: ConnectTimeout must be positive")
 	}
-	if ctx.MessageTimeout <= 0 {
-		return errors.New("archive client: MessageTimeout must be positive")
+	if ctx.ControlResponseTimeout <= 0 {
+		return errors.New("archive client: ControlResponseTimeout must be positive")
+	}
+	if ctx.ControlOfferRetryTimeout <= 0 {
+		return errors.New("archive client: ControlOfferRetryTimeout must be positive")
 	}
 	if ctx.MessageRetryAttempts <= 0 {
 		return errors.New("archive client: MessageRetryAttempts must be positive")

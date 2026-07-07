@@ -1,44 +1,54 @@
 // Package client implements the Aeron Cluster Java client contract.
 package client
 
+import (
+	"context"
+
+	"github.com/warrenguy/heron/aeron"
+)
+
 // Connect performs the blocking cluster connect handshake and returns a connected
 // AeronCluster session.
 //
-// Prefer Connect when a blocking handshake is acceptable. Pass a raw
-// ClusterContext; Connect normalizes internally and must see zero fields for
-// default detection (do not pre-normalize before Connect or NewAsyncConnect).
+// It drives DoWork on the transport client until the handshake completes,
+// ctx is canceled or its deadline is exceeded, or MessageTimeout elapses. The await loop paces via
+// clusterCtx.IdleStrategy.Idle(0) and calls IdleStrategy.Reset on exit so a shared
+// backoff instance is not left in PARKING before the post-connect duty cycle.
 //
-// It drives DoWork on the transport client until the handshake completes or
-// MessageTimeout elapses. The await loop paces via ctx.IdleStrategy.Idle(0) and
-// calls IdleStrategy.Reset on exit so a shared backoff instance is not left in
-// PARKING before the post-connect duty cycle.
+// Pass a raw ClusterContext; Connect normalizes internally and must see
+// zero fields for default detection (do not pre-normalize before Connect or
+// NewAsyncConnect).
 //
-// Requires a non-nil EgressHandler on ctx.
+// Requires a non-nil EgressHandler on clusterCtx.
 //
-// Pass ctx.Aeron to share the transport client with the session; when Aeron is nil,
-// Connect creates an owned client that AeronCluster.Close releases.
+// Pass clusterCtx.Aeron to share the transport client with the session; when Aeron
+// is nil, Connect creates an owned client that AeronCluster.Close releases.
 //
-// Connect blocks without context cancellation; it returns only on success or
-// MessageTimeout. For signal or shutdown during connect, use NewAsyncConnect,
-// wrap the poll loop with context.Context, and check cancelCtx.Err() between
-// Poll calls.
+// On handshake failure or ctx cancellation, partial resources are released via
+// AsyncConnect.Close.
 //
-// On handshake failure, partial resources are released via AsyncConnect.Close.
+// Returns ctx.Err() when the context is done before handshake success
+// (context.Canceled or context.DeadlineExceeded). Connect timeout errors apply
+// only while the context remains active. A completed handshake returns a
+// session even if ctx is canceled concurrently on that iteration.
 //
 // Not safe for concurrent use during connect.
-func Connect(ctx ClusterContext) (*AeronCluster, error) {
-	if err := ctx.Normalize().Validate(); err != nil {
+func Connect(
+	ctx context.Context,
+	clusterCtx ClusterContext,
+) (*AeronCluster, error) {
+	if err := clusterCtx.Normalize().Validate(); err != nil {
 		return nil, err
 	}
 
-	connect, err := NewAsyncConnect(ctx)
+	connect, err := NewAsyncConnect(clusterCtx)
 	if err != nil {
 		return nil, err
 	}
 
 	notifyConnectAsyncConnectObserver(connect)
 
-	result, err := awaitClusterConnect(connect)
+	result, err := awaitClusterConnect(ctx, connect)
 	if err != nil {
 		_ = connect.Close()
 		return nil, err
@@ -52,21 +62,30 @@ func Connect(ctx ClusterContext) (*AeronCluster, error) {
 	return session, nil
 }
 
-func awaitClusterConnect(connect *AsyncConnect) (*ConnectResult, error) {
+func awaitClusterConnect(
+	ctx context.Context,
+	connect *AsyncConnect,
+) (*ConnectResult, error) {
 	idle := connect.ctx.IdleStrategy
 	defer idle.Reset()
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		notifyAwaitClusterConnectStepObserver(connect)
 		if connect.client != nil {
 			connect.client.DoWork()
 		}
 		result, err := connect.Poll()
 		if err != nil {
-			return nil, err
+			return nil, aeron.PreferContextError(ctx, err)
 		}
 		if result != nil {
 			return result, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		idle.Idle(0)
 	}

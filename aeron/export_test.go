@@ -1144,12 +1144,14 @@ func NewClientForTestWithDriverProxy(
 	idleSleepDuration time.Duration,
 ) *Client {
 	return &Client{
-		clientID:          clientID,
-		conductor:         conductorInstance,
-		driverProxy:       driverProxy,
-		nanoClock:         nanoClock,
-		driverTimeout:     driverTimeout,
-		idleSleepDuration: idleSleepDuration,
+		clientID:                clientID,
+		conductor:               conductorInstance,
+		driverProxy:             driverProxy,
+		nanoClock:               nanoClock,
+		driverTimeout:           driverTimeout,
+		pollTimeout:             defaultPollTimeout,
+		publicationOfferTimeout: defaultPollTimeout,
+		idleSleepDuration:       idleSleepDuration,
 	}
 }
 
@@ -1407,10 +1409,20 @@ func newTestCountersReaderWithSubscriberPositionRegistration(
 	return inMemCountersReaderWithSubscriberPosition(joinPosition, registrationID)
 }
 
-// PollDeadlineForTest exposes pollDeadline effective-timeout mapping for unit tests.
+// PollDeadlineForTest exposes retryDeadline effective-timeout mapping for unit tests.
 func PollDeadlineForTest(
 	ctx context.Context,
-	timeout time.Duration,
+	client *Client,
 ) (time.Time, time.Duration, error) {
-	return pollDeadline(ctx, timeout)
+	return retryDeadline(ctx, client.pollTimeout)
+}
+
+// SetClientPollTimeoutsForTest sets poll and offer retry budgets on a test client.
+func SetClientPollTimeoutsForTest(
+	client *Client,
+	pollTimeout time.Duration,
+	publicationOfferTimeout time.Duration,
+) {
+	client.pollTimeout = pollTimeout
+	client.publicationOfferTimeout = publicationOfferTimeout
 }

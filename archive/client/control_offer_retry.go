@@ -7,10 +7,6 @@ import (
 	"github.com/warrenguy/heron/agrona/idlestrategy"
 )
 
-// DefaultControlOfferTimeout bounds control offer retry loops when
-// ControlOfferConfig.Timeout is zero or negative.
-const DefaultControlOfferTimeout = 10 * time.Second
-
 // ControlRetriableCode is an alias for aeron.IsIngressRetriable.
 func ControlRetriableCode(position int64) bool {
 	return aeron.IsIngressRetriable(position)
@@ -18,9 +14,6 @@ func ControlRetriableCode(position int64) bool {
 
 // ControlOfferConfig holds retry pacing for ControlOfferUntilPositive.
 type ControlOfferConfig struct {
-	// Timeout bounds the retry loop; zero or negative uses DefaultControlOfferTimeout.
-	Timeout time.Duration
-
 	// IdleStrategy paces BackPressured retries. Nil uses NewDefaultIdleStrategy().
 	IdleStrategy idlestrategy.IdleStrategy
 
@@ -51,22 +44,22 @@ type ControlOfferConfig struct {
 //   - Returns stream position (>0) on success. Returns terminal codes immediately.
 //     On timeout after retriable codes, returns the last retriable status.
 //
+// Uses ArchiveContext.ControlOfferRetryTimeout.
+//
 // Invoker-only: this helper drives DoWork on behalf of the caller for the duration
 // of the retry loop only. Archive control request and response share one driver
 // client; polling the response subscription during offer retry unblocks publication
 // backpressure when the archive replies on the response stream.
 func ControlOfferUntilPositive(
 	aeronClient *aeron.Client,
+	ctx ArchiveContext,
 	cfg ControlOfferConfig,
 	offerFn func() int64,
 ) int64 {
 	if aeronClient == nil || offerFn == nil {
 		return aeron.NotConnected
 	}
-	timeout := cfg.Timeout
-	if timeout <= 0 {
-		timeout = DefaultControlOfferTimeout
-	}
+	timeout := ctx.ControlOfferRetryTimeout
 	idle := cfg.IdleStrategy
 	if idle == nil {
 		idle = NewDefaultIdleStrategy()

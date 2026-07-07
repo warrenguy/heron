@@ -1,6 +1,7 @@
 package aeron
 
 import (
+	"context"
 	"time"
 )
 
@@ -13,6 +14,12 @@ type PublicationOfferer interface {
 	SessionID() int32
 	Position() int64
 	Offer([]byte) int64
+}
+
+// isOfferStallCandidate reports persistent BackPressured or AdminAction without
+// position advance. NotConnected is excluded; transport wait uses OfferTimeoutError.
+func isOfferStallCandidate(status int64) bool {
+	return status == BackPressured || status == AdminAction
 }
 
 // OfferStallTimeout derives stall detection window from overall retry timeout.
@@ -77,15 +84,15 @@ func offerTimeoutError(
 // AdminAction before retrying. Not invoked for NotConnected.
 type OfferRetriableObserver func(status int64)
 
-// OfferWithRetry offers payload until success, timeout, stall, or terminal code.
-// See OfferWithRetryObserved.
+// OfferWithRetry offers payload until success, timeout, stall, terminal code, or ctx
+// cancellation. See OfferWithRetryObserved.
 func OfferWithRetry(
+	ctx context.Context,
 	client *Client,
 	pub PublicationOfferer,
 	payload []byte,
-	timeout time.Duration,
 ) (int64, error) {
-	return OfferWithRetryObserved(client, pub, payload, timeout, nil)
+	return OfferWithRetryObserved(ctx, client, pub, payload, nil)
 }
 
 // OfferWithRetryObserved offers payload until success (position > 0), timeout, stall,
@@ -97,13 +104,18 @@ func OfferWithRetry(
 // BackPressured and NotConnected.
 //
 // Stall detection: if BackPressured or AdminAction persists without position advance for
-// OfferStallTimeout(timeout), returns OfferStallError.
+// OfferStallTimeout of the effective bound (the earlier of PublicationOfferTimeout and
+// ctx.Deadline()), returns OfferStallError.
 //
 // Terminal codes (Closed, MaxPositionExceeded, UnsupportedMessageLength, unknown negatives)
 // return OfferTerminalError immediately with PositionCodeName in Error().
 //
-// Timeout: negative timeout returns ErrInvalidTimeout immediately (no Offer). Zero timeout
-// maps to DefaultConnectedPollTimeout.
+// Timeout: uses Context.PublicationOfferTimeout. When ctx carries a deadline, the
+// effective bound is the earlier of PublicationOfferTimeout and ctx.Deadline().
+//
+// Returns ctx.Err() when the context is done before success (context.Canceled or
+// context.DeadlineExceeded). OfferTimeoutError, OfferStallError, and OfferTerminalError
+// apply only while the context remains active.
 //
 // Do not use in cluster ingress or archive control offer loops; those paths require
 // ingress retriability helpers (IsIngressRetriable), not IsOfferRetriable.
@@ -117,20 +129,17 @@ func OfferWithRetry(
 //
 // Cold-path integration ergonomics: allocates for error strings. Not zero-alloc.
 func OfferWithRetryObserved(
+	ctx context.Context,
 	client *Client,
 	pub PublicationOfferer,
 	payload []byte,
-	timeout time.Duration,
 	onRetriable OfferRetriableObserver,
 ) (int64, error) {
-	if timeout < 0 {
-		return 0, ErrInvalidTimeout
+	deadline, effective, err := retryDeadline(ctx, client.publicationOfferTimeout)
+	if err != nil {
+		return 0, err
 	}
-	if timeout == 0 {
-		timeout = DefaultConnectedPollTimeout
-	}
-	deadline := time.Now().Add(timeout)
-	stallTimeout := OfferStallTimeout(timeout)
+	stallTimeout := OfferStallTimeout(effective)
 
 	var (
 		lastStatus    int64
@@ -139,6 +148,9 @@ func OfferWithRetryObserved(
 	)
 
 	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		result := pub.Offer(payload)
 		if result > 0 {
 			return result, nil
@@ -149,18 +161,18 @@ func OfferWithRetryObserved(
 		if position > retryPosition {
 			retryPosition = position
 			stallMarked = time.Time{}
-		} else if IsIngressRetriable(result) {
+		} else if isOfferStallCandidate(result) {
 			if stallMarked.IsZero() {
 				stallMarked = time.Now()
 			} else if time.Since(stallMarked) >= stallTimeout {
-				return 0, offerStallError(pub, lastStatus, position, stallTimeout)
+				return 0, PreferContextError(ctx, offerStallError(pub, lastStatus, position, stallTimeout))
 			}
 		} else if result == NotConnected {
 			stallMarked = time.Time{}
 		}
 
 		if !IsOfferRetriable(result) {
-			return 0, offerTerminalError(pub, result, position)
+			return 0, PreferContextError(ctx, offerTerminalError(pub, result, position))
 		}
 
 		switch result {
@@ -181,5 +193,5 @@ func OfferWithRetryObserved(
 		}
 	}
 
-	return 0, offerTimeoutError(pub, lastStatus, timeout)
+	return 0, PreferContextError(ctx, offerTimeoutError(pub, lastStatus, effective))
 }

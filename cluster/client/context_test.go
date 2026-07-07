@@ -49,6 +49,8 @@ func validClusterContext() client.ClusterContext {
 	return client.ClusterContext{
 		IngressChannel:      "aeron:udp?endpoint=localhost:20110",
 		EgressChannel:       "aeron:ipc",
+		MessageTimeout:      client.DefaultMessageTimeout,
+		IngressRetryTimeout: client.DefaultIngressRetryTimeout,
 		EgressHandler:       &client.EgressHandlers{},
 		CredentialsSupplier: client.NullCredentialsSupplier{},
 		IdleStrategy:        client.NewDefaultIdleStrategy(),
@@ -88,6 +90,7 @@ func TestNormalizeClusterContext_defaults(t *testing.T) {
 	require.Equal(t, client.DefaultEgressStreamID, ctx.EgressStreamID)
 	require.Equal(t, client.DefaultEgressStreamID, ctx.ResponseStreamID)
 	require.Equal(t, client.DefaultMessageTimeout, ctx.MessageTimeout)
+	require.Equal(t, client.DefaultIngressRetryTimeout, ctx.IngressRetryTimeout)
 	require.Equal(t, client.DefaultMessageTimeout, ctx.NewLeaderTimeout)
 	require.IsType(t, client.NullCredentialsSupplier{}, ctx.CredentialsSupplier)
 	require.NotNil(t, ctx.IdleStrategy)
@@ -287,6 +290,13 @@ func TestValidateClusterContext_errors(t *testing.T) {
 				ctx.MessageTimeout = -time.Second
 			},
 			wantErr: "cluster client: MessageTimeout must be positive",
+		},
+		{
+			name: "non positive ingress retry timeout",
+			mutate: func(ctx *client.ClusterContext) {
+				ctx.IngressRetryTimeout = -time.Second
+			},
+			wantErr: "cluster client: IngressRetryTimeout must be positive",
 		},
 		{
 			name: "negative new leader timeout",

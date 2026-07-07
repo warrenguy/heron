@@ -3,7 +3,6 @@ package client
 import (
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
@@ -21,13 +20,12 @@ var errNilDescriptorPoller = errors.New(
 // descriptorPoller must be non-nil: it carries the awaited correlation id and captured
 // descriptor state.
 //
-// A non-positive responseTimeout defaults to DefaultControlOfferTimeout.
+// Uses ArchiveContext.ControlResponseTimeout.
 func AwaitArchiveListRecording(
 	aeronClient *aeron.Client,
 	ctx ArchiveContext,
 	pollFn func() int,
 	descriptorPoller *RecordingDescriptorPoller,
-	responseTimeout time.Duration,
 ) error {
 	if descriptorPoller == nil {
 		return errNilDescriptorPoller
@@ -37,7 +35,7 @@ func AwaitArchiveListRecording(
 		aeronClient,
 		ctx,
 		pollFn,
-		responseTimeout,
+		ctx.ControlResponseTimeout,
 		func() (bool, error) {
 			return descriptorPoller.IsPollComplete(), nil
 		},
@@ -54,8 +52,8 @@ func AwaitArchiveListRecording(
 // accepts it, then awaits the matching RecordingDescriptor or a non-OK ControlResponse.
 //
 // Java Aeron Archive list-by-id typically sends only RecordingDescriptor; some flows may
-// precede it with an OK ControlResponse. The offer retry uses ctx.MessageTimeout as its
-// budget. The descriptor await starts a fresh ctx.MessageTimeout window so a slow offer
+// precede it with an OK ControlResponse. The offer retry uses ControlOfferRetryTimeout.
+// The descriptor await starts a fresh ControlResponseTimeout window so a slow offer
 // cannot starve the response wait. Var-ascii fields are cloned at descriptor latch time
 // for retention past later polls.
 func offerAndAwaitListRecording(
@@ -74,7 +72,6 @@ func offerAndAwaitListRecording(
 		ctx,
 		pollFn,
 		descriptorPoller,
-		ctx.MessageTimeout,
 	); err != nil {
 		return codecs.RecordingDescriptorFields{}, err
 	}

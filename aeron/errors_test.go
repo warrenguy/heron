@@ -571,10 +571,6 @@ func TestPollBufferTooSmallError_is(t *testing.T) {
 	require.ErrorIs(t, err, aeron.ErrPollBufferTooSmall)
 }
 
-func TestErrInvalidTimeout(t *testing.T) {
-	require.EqualError(t, aeron.ErrInvalidTimeout, "aeron: invalid timeout")
-}
-
 func TestErrInvalidWant(t *testing.T) {
 	require.EqualError(t, aeron.ErrInvalidWant, "aeron: invalid want")
 }

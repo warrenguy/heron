@@ -16,7 +16,12 @@ import (
 
 const pollHarnessShortTimeout = 50 * time.Millisecond
 
-const invalidHarnessTimeout = -time.Second
+func shortPollAeronContext() aeron.Context {
+	return aeron.Context{
+		PollTimeout:             pollHarnessShortTimeout,
+		PublicationOfferTimeout: pollHarnessShortTimeout,
+	}
+}
 
 var invalidWantCases = []struct {
 	name string
@@ -48,34 +53,68 @@ func offerSingleAlignedFragment(
 	return AlignedOfferAdvance(len(payload), 1)
 }
 
-func TestPollUntilConnected_invalidTimeoutFails(t *testing.T) {
-	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+func testFailDelegatedContextErrors(
+	t *testing.T,
+	verb string,
+	run func(capture *CaptureFailTB, err error),
+) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "canceled", err: context.Canceled},
+		{name: "deadlineExceeded", err: context.DeadlineExceeded},
+	}
 
-	pub, err := client.AddPublication(PollUntilConnectedInvalidTimeoutStreamID, IPCChannel)
-	require.NoError(t, err)
-	CleanupClose(t, "close publication", pub.Close)
-
-	capture := &CaptureFailTB{TB: t}
-	PollUntilConnected(capture, client, pub, invalidHarnessTimeout)
-	require.True(t, capture.failed)
-	require.Equal(
-		t,
-		fmt.Sprintf("invalid timeout: %s", invalidHarnessTimeout),
-		capture.lastMsg,
-	)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			capture := &CaptureFailTB{TB: t}
+			run(capture, tc.err)
+			require.True(t, capture.failed)
+			require.Equal(t, fmt.Sprintf("%s: %v", verb, tc.err), capture.lastMsg)
+		})
+	}
 }
+
+func TestFailPollTimeout_contextErrors(t *testing.T) {
+	testFailDelegatedContextErrors(t, "poll", func(capture *CaptureFailTB, err error) {
+		failPollTimeout(capture, err)
+	})
+}
+
+func TestFailOfferWithRetry_contextErrors(t *testing.T) {
+	pub := offerRetryFailStubPub{}
+	testFailDelegatedContextErrors(t, "offer", func(capture *CaptureFailTB, err error) {
+		got := failOfferWithRetry(capture, pub, err)
+		require.Zero(t, got)
+	})
+}
+
+type offerRetryFailStubPub struct{}
+
+func (offerRetryFailStubPub) IsConnected() bool { return false }
+
+func (offerRetryFailStubPub) RegistrationID() int64 { return 1 }
+
+func (offerRetryFailStubPub) StreamID() int32 { return 100 }
+
+func (offerRetryFailStubPub) SessionID() int32 { return 200 }
+
+func (offerRetryFailStubPub) Position() int64 { return 0 }
+
+func (offerRetryFailStubPub) Offer([]byte) int64 { return aeron.NotConnected }
 
 func TestPollUntilConnected_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, shortPollAeronContext())
 
 	pub, err := client.AddPublication(PollUntilConnectedTimeoutStreamID, IPCChannel)
 	require.NoError(t, err)
 	CleanupClose(t, "close publication", pub.Close)
 
 	capture := &CaptureFailTB{TB: t}
-	PollUntilConnected(capture, client, pub, pollHarnessShortTimeout)
+	PollUntilConnected(capture, client, pub)
 	require.True(t, capture.failed)
 	wantMsg := fmt.Sprintf(
 		"publication %d (stream %d session %d) never connected; position=0 within %s",
@@ -90,14 +129,14 @@ func TestPollUntilConnected_timeoutMessage(t *testing.T) {
 func TestPollUntilImageCount_timeoutMessage(t *testing.T) {
 	t.Run("zeroActiveImages", func(t *testing.T) {
 		md := SharedParallel(t)
-		client := ConnectClient(t, md, aeron.Context{})
+		client := ConnectClient(t, md, shortPollAeronContext())
 
 		sub, err := client.AddSubscription(PollUntilImageCountZeroActiveStreamID, IPCChannel)
 		require.NoError(t, err)
 		CleanupClose(t, "close subscription", sub.Close)
 
 		capture := &CaptureFailTB{TB: t}
-		PollUntilImageCount(capture, client, sub, 1, pollHarnessShortTimeout)
+		PollUntilImageCount(capture, client, sub, 1)
 		require.True(t, capture.failed)
 		wantMsg := fmt.Sprintf(
 			"subscription %d (stream %d) active image count=0 want=1; no images within %s",
@@ -110,12 +149,12 @@ func TestPollUntilImageCount_timeoutMessage(t *testing.T) {
 
 	t.Run("oneActiveImageWantTwo", func(t *testing.T) {
 		md := SharedParallel(t)
-		client := ConnectClient(t, md, aeron.Context{})
+		client := ConnectClient(t, md, shortPollAeronContext())
 
 		pub, sub := connectIPCPubSub(t, client, PollUntilImageCountOneWantTwoStreamID)
 
 		capture := &CaptureFailTB{TB: t}
-		PollUntilImageCount(capture, client, sub, 2, pollHarnessShortTimeout)
+		PollUntilImageCount(capture, client, sub, 2)
 		require.True(t, capture.failed)
 		wantMsg := fmt.Sprintf(
 			"subscription %d (stream %d) active image count=1 want=2; "+
@@ -233,7 +272,7 @@ func TestPollUntilImageCount_invalidWantFails(t *testing.T) {
 		sub *aeron.Subscription,
 		want int,
 	) {
-		PollUntilImageCount(capture, client, sub, want, time.Second)
+		PollUntilImageCount(capture, client, sub, want)
 	})
 }
 
@@ -549,28 +588,9 @@ func TestPollReassembled_invalidWantFails(t *testing.T) {
 	})
 }
 
-func TestOfferWithRetry_invalidTimeoutFails(t *testing.T) {
-	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
-
-	pub, err := client.AddPublication(OfferWithRetryInvalidTimeoutStreamID, IPCChannel)
-	require.NoError(t, err)
-	CleanupClose(t, "close publication", pub.Close)
-
-	capture := &CaptureFailTB{TB: t}
-	got := OfferWithRetry(capture, client, pub, []byte{0x01}, invalidHarnessTimeout)
-	require.True(t, capture.failed)
-	require.Zero(t, got)
-	require.Equal(
-		t,
-		fmt.Sprintf("invalid timeout: %s", invalidHarnessTimeout),
-		capture.lastMsg,
-	)
-}
-
 func TestOfferWithRetry_notConnected_timesOut(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, shortPollAeronContext())
 
 	pub, err := client.AddPublication(OfferWithRetryNotConnectedTimeoutStreamID, IPCChannel)
 	require.NoError(t, err)
@@ -578,7 +598,7 @@ func TestOfferWithRetry_notConnected_timesOut(t *testing.T) {
 
 	payload := []byte{0x01}
 	capture := &CaptureFailTB{TB: t}
-	got := OfferWithRetry(capture, client, pub, payload, pollHarnessShortTimeout)
+	got := OfferWithRetry(capture, client, pub, payload)
 	require.True(t, capture.failed)
 	require.Zero(t, got)
 	wantMsg := fmt.Sprintf(
@@ -614,7 +634,7 @@ func TestOfferWithRetry_notConnected_thenConnect_succeeds(t *testing.T) {
 	}()
 
 	payload := []byte{0xAB}
-	result := OfferWithRetry(t, client, pub, payload, ConnectedPollTimeout)
+	result := OfferWithRetry(t, client, pub, payload)
 
 	res := <-subReady
 	require.NoError(t, res.err)
@@ -631,7 +651,7 @@ func TestOfferWithRetry_closedPublication_failsImmediately(t *testing.T) {
 	require.NoError(t, pub.Close())
 
 	capture := &CaptureFailTB{TB: t}
-	got := OfferWithRetry(capture, client, pub, []byte{0x01}, time.Second)
+	got := OfferWithRetry(capture, client, pub, []byte{0x01})
 	require.True(t, capture.failed)
 	require.Equal(t, aeron.Closed, got)
 	wantMsg := fmt.Sprintf(
@@ -657,7 +677,7 @@ func TestPollReassembled_liveIPC_fragmented(t *testing.T) {
 	pubPosBefore := pub.Position()
 	wantAdvance := int64(logbuffer.ComputeFragmentedFrameLength(len(payload), maxPayload))
 
-	result := OfferWithRetry(t, client, pub, payload, ConnectedPollTimeout)
+	result := OfferWithRetry(t, client, pub, payload)
 	require.Positive(t, result)
 	client.DoWork()
 
@@ -724,7 +744,7 @@ func TestOfferWithRetryWitness_cleanSuccess_returnsFalse(t *testing.T) {
 
 	pubPosBefore := pub.Position()
 	payload := []byte{0x01}
-	pos, witness := OfferWithRetryWitness(t, client, pub, payload, ConnectedPollTimeout)
+	pos, witness := OfferWithRetryWitness(t, client, pub, payload)
 	require.False(t, witness)
 	require.Positive(t, pos)
 	require.Greater(t, pos, pubPosBefore)
@@ -793,7 +813,6 @@ func TestOfferWithRetryWitness_backPressured_returnsTrue(t *testing.T) {
 		pubClient,
 		pub,
 		payload,
-		ConnectedPollTimeout,
 		transientSeen,
 	)
 	stopDrain()
@@ -822,7 +841,7 @@ func TestAssertSubscribeMetadata_liveIPC(t *testing.T) {
 	payloads := DistinctIPCPayloads(messageCount, payloadSize, 0xD0)
 
 	for _, payload := range payloads {
-		OfferWithRetry(t, client, pub, payload, ConnectedPollTimeout)
+		OfferWithRetry(t, client, pub, payload)
 	}
 	_ = PollDelivered(t, client, sub, messageCount, ConnectedPollTimeout)
 

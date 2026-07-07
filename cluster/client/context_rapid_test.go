@@ -37,6 +37,7 @@ func drawPartialClusterContext(t *rapid.T) client.ClusterContext {
 	ctx.ResponseStreamID = drawOptionalInt32(t, "response_stream_zero", "response_stream_id")
 	ctx.MessageTimeout = drawOptionalDuration(t, "message_timeout")
 	ctx.NewLeaderTimeout = drawOptionalDuration(t, "new_leader_timeout")
+	ctx.IngressRetryTimeout = drawOptionalDuration(t, "ingress_retry_timeout")
 
 	switch rapid.IntRange(0, 2).Draw(t, "ingress_exclusive_mode") {
 	case 0:
@@ -106,6 +107,9 @@ func TestNormalizeClusterContext_timeouts_rapid(t *testing.T) {
 		)
 		requireZeroOrPreserved(
 			t, ctx.NewLeaderTimeout, normalized.NewLeaderTimeout, normalized.MessageTimeout,
+		)
+		requireZeroOrPreserved(
+			t, ctx.IngressRetryTimeout, normalized.IngressRetryTimeout, client.DefaultIngressRetryTimeout,
 		)
 	})
 }

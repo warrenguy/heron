@@ -4,8 +4,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/warrenguy/heron/aeron"
 )
 
 func TestNilSession_smoke(t *testing.T) {
@@ -24,12 +22,15 @@ func TestNilSession_smoke(t *testing.T) {
 	require.Zero(t, ac.SpinOnce())
 
 	var offerCalls int
-	pos := ac.IngressOfferUntilPositive(IngressOfferConfig{}, func() int64 {
+	pos, err := ac.IngressOfferUntilPositive(t.Context(), IngressOfferConfig{}, func() int64 {
 		offerCalls++
 		return 1
 	})
-	require.Equal(t, aeron.NotConnected, pos)
+	require.ErrorIs(t, err, errNilIngressSession)
+	require.Zero(t, pos)
 	require.Zero(t, offerCalls)
 
-	require.Equal(t, aeron.NotConnected, ac.SendKeepAliveUntilPositive(IngressOfferConfig{}))
+	pos, err = ac.SendKeepAliveUntilPositive(t.Context(), IngressOfferConfig{})
+	require.ErrorIs(t, err, errNilIngressSession)
+	require.Zero(t, pos)
 }

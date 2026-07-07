@@ -14,7 +14,7 @@ import (
 )
 
 // TestOfferAndAwait_offerRetryDoesNotStarveResponseAwait proves the response await
-// starts a fresh MessageTimeout window after the offer succeeds: the offer consumes the
+// starts a fresh ControlResponseTimeout window after the offer succeeds: the offer consumes the
 // entire offer-phase budget, yet the already-buffered response is still matched.
 func TestOfferAndAwait_offerRetryDoesNotStarveResponseAwait(t *testing.T) {
 	const messageTimeout = 100 * time.Millisecond
@@ -25,8 +25,9 @@ func TestOfferAndAwait_offerRetryDoesNotStarveResponseAwait(t *testing.T) {
 
 	correlationID := int64(9100)
 	ctx := ArchiveContext{
-		MessageTimeout: messageTimeout,
-		IdleStrategy:   NewDefaultIdleStrategy(),
+		ControlResponseTimeout:   messageTimeout,
+		ControlOfferRetryTimeout: messageTimeout,
+		IdleStrategy:             NewDefaultIdleStrategy(),
 		AeronContext: aeron.Context{
 			NanoClock: func() int64 { return nowNs.Load() },
 		},
@@ -68,8 +69,9 @@ func TestAwaitArchiveControlResponse_timeout(t *testing.T) {
 
 	correlationID := int64(9999)
 	ctx := ArchiveContext{
-		MessageTimeout: time.Millisecond,
-		IdleStrategy:   NewDefaultIdleStrategy(),
+		ControlResponseTimeout:   time.Millisecond,
+		ControlOfferRetryTimeout: time.Millisecond,
+		IdleStrategy:             NewDefaultIdleStrategy(),
 		AeronContext: aeron.Context{
 			NanoClock: func() int64 { return nowNs.Load() },
 		},
@@ -87,7 +89,6 @@ func TestAwaitArchiveControlResponse_timeout(t *testing.T) {
 		poller,
 		controlResponseTestControlSessionID,
 		correlationID,
-		time.Millisecond,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "timeout")

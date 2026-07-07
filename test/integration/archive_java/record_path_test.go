@@ -105,10 +105,10 @@ func recordArchiveSmoke(
 	)
 	require.NoError(t, err)
 
-	harness.PollUntilConnected(t, client, pub, harness.ConnectedPollTimeout)
+	harness.PollUntilConnected(t, client, pub)
 
 	for _, payload := range expectedPayloads {
-		harness.OfferWithRetry(t, client, pub, payload, harness.ConnectedPollTimeout)
+		harness.OfferWithRetry(t, client, pub, payload)
 	}
 
 	harness.PollClientUntilTransportClean(

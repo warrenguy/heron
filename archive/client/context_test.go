@@ -59,7 +59,8 @@ func TestNormalizeArchiveContext_defaultsIpc(t *testing.T) {
 	require.Equal(t, client.DefaultControlRequestStreamID, ctx.ControlRequestStreamID)
 	require.Equal(t, client.DefaultControlResponseStreamID, ctx.ControlResponseStreamID)
 	require.Equal(t, client.DefaultConnectTimeout, ctx.ConnectTimeout)
-	require.Equal(t, client.DefaultMessageTimeout, ctx.MessageTimeout)
+	require.Equal(t, client.DefaultControlResponseTimeout, ctx.ControlResponseTimeout)
+	require.Equal(t, client.DefaultControlOfferRetryTimeout, ctx.ControlOfferRetryTimeout)
 	require.Equal(t, client.DefaultMessageRetryAttempts, ctx.MessageRetryAttempts)
 	require.Equal(t, "archive-client", ctx.ClientName)
 	require.IsType(t, client.NullCredentialsSupplier{}, ctx.CredentialsSupplier)
@@ -134,9 +135,9 @@ func TestValidateArchiveContext_errors(t *testing.T) {
 		{
 			name: "message timeout negative",
 			mutate: func(ctx *client.ArchiveContext) {
-				ctx.MessageTimeout = -time.Second
+				ctx.ControlResponseTimeout = -time.Second
 			},
-			wantErr: "archive client: MessageTimeout must be positive",
+			wantErr: "archive client: ControlResponseTimeout must be positive",
 		},
 		{
 			name: "client name too long",

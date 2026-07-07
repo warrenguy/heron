@@ -1,0 +1,12 @@
+# Overlay - host-run clients (examples/cluster-echo-client). Replaces the isolated
+# aeron-media tmpfs with a host bind so a client outside the compose network can join
+# the embedded driver. Mounts /dev/shm (parent), not /dev/shm/aeron: the driver
+# deletes and recreates the aeron subdirectory on startup.
+
+x-project-name: &project-name heron-cluster-echo
+name: *project-name
+
+services:
+  cluster:
+    volumes:
+      - /dev/shm:/dev/shm

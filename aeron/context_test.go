@@ -17,6 +17,8 @@ func TestNormalizeContext_defaults(t *testing.T) {
 	require.Equal(t, time.Second, normalized.InterServiceTimeout)
 	require.Equal(t, 16*time.Millisecond, normalized.IdleSleepDuration)
 	require.Equal(t, 3*time.Second, normalized.CloseLingerDuration)
+	require.Equal(t, 10*time.Second, normalized.PollTimeout)
+	require.Equal(t, 10*time.Second, normalized.PublicationOfferTimeout)
 	require.NotNil(t, normalized.EpochClock)
 	require.NotNil(t, normalized.NanoClock)
 	require.Positive(t, normalized.EpochClock())
@@ -37,11 +39,13 @@ func TestNormalizeContext_preservesExplicitValues(t *testing.T) {
 	useInvoker := false
 
 	normalized := aeron.NormalizeContextForTest(aeron.Context{
-		DriverTimeout:       3 * time.Second,
-		KeepAliveInterval:   250 * time.Millisecond,
-		InterServiceTimeout: 2 * time.Second,
-		IdleSleepDuration:   8 * time.Millisecond,
-		CloseLingerDuration: 7 * time.Second,
+		DriverTimeout:           3 * time.Second,
+		KeepAliveInterval:       250 * time.Millisecond,
+		InterServiceTimeout:     2 * time.Second,
+		IdleSleepDuration:       8 * time.Millisecond,
+		CloseLingerDuration:     7 * time.Second,
+		PollTimeout:             4 * time.Second,
+		PublicationOfferTimeout: 3 * time.Second,
 		EpochClock: func() int64 {
 			return epochMs
 		},
@@ -56,6 +60,8 @@ func TestNormalizeContext_preservesExplicitValues(t *testing.T) {
 	require.Equal(t, 2*time.Second, normalized.InterServiceTimeout)
 	require.Equal(t, 8*time.Millisecond, normalized.IdleSleepDuration)
 	require.Equal(t, 7*time.Second, normalized.CloseLingerDuration)
+	require.Equal(t, 4*time.Second, normalized.PollTimeout)
+	require.Equal(t, 3*time.Second, normalized.PublicationOfferTimeout)
 	require.Equal(t, epochMs, normalized.EpochClock())
 	require.Equal(t, nanoNs, normalized.NanoClock())
 	require.False(t, normalized.UseConductorInvokerEnabledForTest())

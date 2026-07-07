@@ -81,7 +81,7 @@ help: ## List Makefile targets
 	check-catalog-stale-selftest recordinglog-fixtures-regen \
 	recordinglog-fixtures-regen-optional \
 	contract-oracles-optional
-check: ## Lint pins unit stress (contract-oracles opt)
+check: ## Lint pins unit stress examples (contract-oracles opt)
 	@T=$$(command -v timeout 2>/dev/null \
 		|| command -v gtimeout 2>/dev/null); \
 	if [ -n "$$T" ]; then \
@@ -99,7 +99,7 @@ check-static-extra:
 		check-catalog-stale-optional contract-oracles-optional
 
 check-test:
-	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) test test-stress
+	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) test test-stress build-examples
 
 check-inner: check-static check-test
 
@@ -284,10 +284,10 @@ coverage: coverage.html ## Coverage HTML and summary
 	@go tool cover -func=$(COVERAGE_PROFILE) | tail -1
 
 .PHONY: clean
-clean: ## Remove coverage bench artifacts and aeronmd
+clean: ## Remove coverage bench artifacts and bin build outputs
 	rm -rf $(COVERAGE_DIR)
 	rm -f $(COVERAGE_PROFILE) coverage.html
-	rm -f bin/aeronmd
+	rm -rf bin
 	find . -type d -path '*/testdata/rapid' -prune -exec rm -rf {} +
 
 .PHONY: test-integration aeronmd
@@ -380,6 +380,18 @@ aeronmd-compose-image: bin/aeronmd docker/aeronmd/Dockerfile ## Package bin/aero
 	docker build -f docker/aeronmd/Dockerfile --target runtime-bin -t java-interop-aeronmd .
 
 aeronmd: bin/aeronmd ## Build C media driver binary
+
+EXAMPLE_BINS := $(patsubst examples/%/main.go,%,$(wildcard examples/*/main.go))
+
+define build-example-bin
+bin/$(1): go.mod go.sum $(wildcard examples/$(1)/*.go) $(wildcard examples/$(1)/*/*.go)
+	go build -tags=example -o bin/$(1) ./examples/$(1)
+endef
+
+$(foreach e,$(EXAMPLE_BINS),$(eval $(call build-example-bin,$(e))))
+
+.PHONY: build-examples
+build-examples: $(addprefix bin/,$(EXAMPLE_BINS)) ## Compile example binaries (requires example build tag)
 
 # Java SBE codegen.
 $(eval $(call sbe-generate-target,,cluster,))

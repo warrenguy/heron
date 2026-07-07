@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"context"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -17,8 +18,8 @@ const (
 	// IPCChannel is the default channel for live-driver integration tests.
 	IPCChannel = "aeron:ipc"
 
-	// ConnectedPollTimeout matches aeron.DefaultConnectedPollTimeout.
-	ConnectedPollTimeout = aeron.DefaultConnectedPollTimeout
+	// ConnectedPollTimeout matches aeron.DefaultPollTimeout.
+	ConnectedPollTimeout = aeron.DefaultPollTimeout
 )
 
 // ConnectClient connects to md and registers client.Close on t.Cleanup.
@@ -204,7 +205,10 @@ func WaitForIPCLinkConnected(
 	timeout = connectedPollTimeoutOr(timeout)
 	deadline := time.Now().Add(timeout)
 	WaitForSubscriptionConnected(t, client, sub, time.Until(deadline))
-	PollUntilConnected(t, client, pub, time.Until(deadline))
+
+	pubCtx, cancel := context.WithTimeout(t.Context(), time.Until(deadline))
+	defer cancel()
+	pollUntilConnectedCtx(t, pubCtx, client, pub)
 }
 
 func requireLookupMiss[T any](

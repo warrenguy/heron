@@ -10,25 +10,49 @@ import (
 	"github.com/warrenguy/heron/agrona/atomic"
 )
 
-// DefaultConnectedPollTimeout matches harness ConnectedPollTimeout (10s).
-const DefaultConnectedPollTimeout = 10 * time.Second
+// EffectiveRetryBound returns the earlier of effective and the remaining ctx deadline
+// measured from now. Callers normalize timeout (zero default, negative policy) first.
+func EffectiveRetryBound(
+	ctx context.Context,
+	effective time.Duration,
+	now time.Time,
+) time.Duration {
+	ctxDeadline, ok := ctx.Deadline()
+	if !ok {
+		return effective
+	}
+	cfgDeadline := now.Add(effective)
+	if !ctxDeadline.Before(cfgDeadline) {
+		return effective
+	}
+	return max(ctxDeadline.Sub(now), 0)
+}
 
-func pollDeadline(ctx context.Context, timeout time.Duration) (time.Time, time.Duration, error) {
-	if timeout < 0 {
-		return time.Time{}, 0, ErrInvalidTimeout
-	}
-	effective := timeout
-	if effective == 0 {
-		effective = DefaultConnectedPollTimeout
-	}
-	deadline := time.Now().Add(effective)
-	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-		deadline = ctxDeadline
-	}
+func retryDeadline(
+	ctx context.Context,
+	timeout time.Duration,
+) (time.Time, time.Duration, error) {
+	now := time.Now()
+	effective := EffectiveRetryBound(ctx, timeout, now)
+	deadline := now.Add(effective)
 	if err := ctx.Err(); err != nil {
 		return time.Time{}, 0, err
 	}
 	return deadline, effective, nil
+}
+
+// PreferContextError returns ctx.Err() when the context is canceled or its deadline
+// has passed; otherwise returns err. Use on retry-loop exits so typed timeout or
+// terminal errors apply only while the context remains active.
+func PreferContextError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	ctxDeadline, ok := ctx.Deadline()
+	if ok && !time.Now().Before(ctxDeadline) {
+		return context.DeadlineExceeded
+	}
+	return err
 }
 
 // pollWorkLoop drives client.DoWork until ready is true, ctx is canceled, or deadline passes.
@@ -80,9 +104,10 @@ func SubscriptionActiveImageCountAtLeast(sub *Subscription, want int) bool {
 	return false
 }
 
-// PollUntilConnected polls until pub.IsConnected or timeout.
+// PollUntilConnected polls until pub.IsConnected or Context.PollTimeout elapses.
 //
-// Zero timeout maps to DefaultConnectedPollTimeout.
+// When ctx carries a deadline, the effective bound is the earlier of PollTimeout and
+// ctx.Deadline().
 //
 // This helper drives client.DoWork() inside its wait loop; the caller need not
 // invoke DoWork separately while blocked here.
@@ -91,9 +116,8 @@ func PollUntilConnected(
 	ctx context.Context,
 	client *Client,
 	pub PublicationOfferer,
-	timeout time.Duration,
 ) error {
-	deadline, effective, err := pollDeadline(ctx, timeout)
+	deadline, effective, err := retryDeadline(ctx, client.pollTimeout)
 	if err != nil {
 		return err
 	}
@@ -104,18 +128,20 @@ func PollUntilConnected(
 	} else if ok {
 		return nil
 	}
-	return &PollUntilConnectedTimeoutError{
+	return PreferContextError(ctx, &PollUntilConnectedTimeoutError{
 		PublicationRegID: pub.RegistrationID(),
 		StreamID:         pub.StreamID(),
 		SessionID:        pub.SessionID(),
 		Timeout:          effective,
 		Position:         pub.Position(),
-	}
+	})
 }
 
-// PollUntilImageCount polls until the subscription has want active images or timeout.
+// PollUntilImageCount polls until the subscription has want active images or
+// Context.PollTimeout elapses.
 //
-// Zero timeout maps to DefaultConnectedPollTimeout.
+// When ctx carries a deadline, the effective bound is the earlier of PollTimeout and
+// ctx.Deadline().
 //
 // This helper drives client.DoWork() inside its wait loop; the caller need not
 // invoke DoWork separately while blocked here.
@@ -125,12 +151,11 @@ func PollUntilImageCount(
 	client *Client,
 	sub *Subscription,
 	want int,
-	timeout time.Duration,
 ) error {
 	if want <= 0 {
 		return ErrInvalidWant
 	}
-	deadline, effective, err := pollDeadline(ctx, timeout)
+	deadline, effective, err := retryDeadline(ctx, client.pollTimeout)
 	if err != nil {
 		return err
 	}
@@ -142,14 +167,14 @@ func PollUntilImageCount(
 		return nil
 	}
 	active, detail := SubscriptionImageSummary(sub)
-	return &PollUntilImageCountTimeoutError{
+	return PreferContextError(ctx, &PollUntilImageCountTimeoutError{
 		RegistrationID: sub.RegistrationID(),
 		StreamID:       sub.StreamID(),
 		Want:           want,
 		Have:           active,
 		Timeout:        effective,
 		Detail:         detail,
-	}
+	})
 }
 
 // PollOneMessage receives one unfragmented payload. Does not use FragmentAssembler.
@@ -159,10 +184,11 @@ func PollUntilImageCount(
 // Clones that fragment into a newly allocated slice.
 //
 // Callers should wait for subscriber readiness first, e.g.
-// PollUntilImageCount(ctx, client, sub, 1, timeout), because this helper does not
-// fail fast on zero active images. For fragmented payloads use PollReassembled.
+// PollUntilImageCount(ctx, client, sub, 1), because this helper does not fail fast on
+// zero active images. For fragmented payloads use PollReassembled.
 //
-// Zero timeout maps to DefaultConnectedPollTimeout.
+// When ctx carries a deadline, the effective bound is the earlier of PollTimeout and
+// ctx.Deadline().
 //
 // This helper drives client.DoWork() inside its wait loop; the caller need not
 // invoke DoWork separately while blocked here.
@@ -171,9 +197,8 @@ func PollOneMessage(
 	ctx context.Context,
 	client *Client,
 	sub *Subscription,
-	timeout time.Duration,
 ) ([]byte, error) {
-	deadline, effective, err := pollDeadline(ctx, timeout)
+	deadline, effective, err := retryDeadline(ctx, client.pollTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -197,12 +222,12 @@ func PollOneMessage(
 		return msg, nil
 	}
 	_, detail := SubscriptionImageSummary(sub)
-	return nil, &PollOneMessageTimeoutError{
+	return nil, PreferContextError(ctx, &PollOneMessageTimeoutError{
 		RegistrationID: sub.RegistrationID(),
 		StreamID:       sub.StreamID(),
 		Timeout:        effective,
 		Detail:         detail,
-	}
+	})
 }
 
 // PollReassembled receives one logical message using FragmentAssembler.
@@ -215,7 +240,8 @@ func PollOneMessage(
 // with a larger buffer will not re-read the same message.
 // On success returns (n, nil) where n is payload length copied into buf[:n].
 //
-// Zero timeout maps to DefaultConnectedPollTimeout.
+// When ctx carries a deadline, the effective bound is the earlier of PollTimeout and
+// ctx.Deadline().
 //
 // This helper drives client.DoWork() inside its wait loop; the caller need not
 // invoke DoWork separately while blocked here.
@@ -224,10 +250,9 @@ func PollReassembled(
 	ctx context.Context,
 	client *Client,
 	sub *Subscription,
-	timeout time.Duration,
 	buf []byte,
 ) (int, error) {
-	deadline, effective, err := pollDeadline(ctx, timeout)
+	deadline, effective, err := retryDeadline(ctx, client.pollTimeout)
 	if err != nil {
 		return 0, err
 	}
@@ -273,12 +298,12 @@ func PollReassembled(
 		return finish()
 	}
 	_, detail := SubscriptionImageSummary(sub)
-	return 0, &PollReassembledTimeoutError{
+	return 0, PreferContextError(ctx, &PollReassembledTimeoutError{
 		RegistrationID: sub.RegistrationID(),
 		StreamID:       sub.StreamID(),
 		Timeout:        effective,
 		Detail:         detail,
-	}
+	})
 }
 
 // RunDuringClientWork runs fn on a goroutine and drives client.DoWork until fn returns,
@@ -287,7 +312,8 @@ func PollReassembled(
 // Timeout or cancellation returns promptly; fn continues running in the background until
 // it finishes on its own; this helper does not wait for fn to exit after returning.
 //
-// Zero timeout maps to DefaultConnectedPollTimeout.
+// When ctx carries a deadline, the effective bound is the earlier of PollTimeout and
+// ctx.Deadline().
 //
 // Does not install an ErrorHandler; callers should wrap client.Context.ErrorHandler
 // if transport errors must fail the wait.
@@ -298,10 +324,9 @@ func PollReassembled(
 func RunDuringClientWork(
 	ctx context.Context,
 	client *Client,
-	timeout time.Duration,
 	fn func() error,
 ) error {
-	deadline, effective, err := pollDeadline(ctx, timeout)
+	deadline, effective, err := retryDeadline(ctx, client.pollTimeout)
 	if err != nil {
 		return err
 	}
@@ -322,9 +347,9 @@ func RunDuringClientWork(
 			return err
 		}
 		if time.Now().After(deadline) {
-			return &RunDuringClientWorkTimeoutError{
+			return PreferContextError(ctx, &RunDuringClientWorkTimeoutError{
 				Timeout: effective,
-			}
+			})
 		}
 		client.DoWork()
 		if err := ctx.Err(); err != nil {

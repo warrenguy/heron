@@ -3,7 +3,6 @@
 package integration_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -17,8 +16,7 @@ func TestAeronHelpers_unfragmentedRoundtrip(t *testing.T) {
 	md := harness.SharedParallel(t)
 	client, hadClientError := harness.ConnectIPCClient(t, md)
 
-	ctx := context.Background()
-	timeout := aeron.DefaultConnectedPollTimeout
+	ctx := t.Context()
 	payload := []byte("aeron-helpers-smoke")
 
 	pub, sub := harness.ConnectIPCPubSubClients(t, client, client, harness.AeronHelpersSmokeStreamID)
@@ -26,11 +24,11 @@ func TestAeronHelpers_unfragmentedRoundtrip(t *testing.T) {
 	pubPosBefore := pub.Position()
 	wantAdvance := harness.AlignedOfferAdvance(len(payload), 1)
 
-	position, err := aeron.OfferWithRetry(client, pub, payload, timeout)
+	position, err := aeron.OfferWithRetry(ctx, client, pub, payload)
 	require.NoError(t, err)
 	require.Positive(t, position)
 
-	got, err := aeron.PollOneMessage(ctx, client, sub, timeout)
+	got, err := aeron.PollOneMessage(ctx, client, sub)
 	require.NoError(t, err)
 	require.Equal(t, payload, got)
 	harness.AssertPubSubPositionsAdvanced(t, pub, sub, pubPosBefore, wantAdvance)
@@ -41,8 +39,7 @@ func TestAeronHelpers_fragmentedRoundtrip(t *testing.T) {
 	md := harness.SharedParallel(t)
 	client, hadClientError := harness.ConnectIPCClient(t, md)
 
-	ctx := context.Background()
-	timeout := aeron.DefaultConnectedPollTimeout
+	ctx := t.Context()
 
 	pub, sub := harness.ConnectIPCPubSubClients(
 		t,
@@ -58,11 +55,11 @@ func TestAeronHelpers_fragmentedRoundtrip(t *testing.T) {
 	pubPosBefore := pub.Position()
 	wantAdvance := int64(logbuffer.ComputeFragmentedFrameLength(len(payload), maxPayload))
 
-	position, err := aeron.OfferWithRetry(client, pub, payload, timeout)
+	position, err := aeron.OfferWithRetry(ctx, client, pub, payload)
 	require.NoError(t, err)
 	require.Positive(t, position)
 
-	n, err := aeron.PollReassembled(ctx, client, sub, timeout, buf)
+	n, err := aeron.PollReassembled(ctx, client, sub, buf)
 	require.NoError(t, err)
 	require.Equal(t, payload, buf[:n])
 

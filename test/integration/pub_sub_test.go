@@ -108,7 +108,7 @@ func TestPubSubIPCFragmentedRoundtrip(t *testing.T) {
 	pubPosBefore := pub.Position()
 	wantAdvance := int64(logbuffer.ComputeFragmentedFrameLength(len(payload), maxPayload))
 
-	result := harness.OfferWithRetry(t, client, pub, payload, 0)
+	result := harness.OfferWithRetry(t, client, pub, payload)
 	require.Equal(t, pubPosBefore+wantAdvance, result)
 	client.DoWork()
 
@@ -153,11 +153,7 @@ func TestPublicationTermRollover(t *testing.T) {
 	received := make([][]byte, 0, messagesToRollover)
 	for _, payload := range payloads {
 		result, sawTransient := harness.OfferWithRetryWitness(
-			t,
-			client,
-			pub,
-			payload,
-			harness.ConnectedPollTimeout,
+			t, client, pub, payload,
 		)
 		sawBackpressureOrAdmin = sawBackpressureOrAdmin || sawTransient
 		require.Greater(t, result, prevPosition)

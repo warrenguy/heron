@@ -24,18 +24,20 @@ func PollUntilConnected(
 	t testing.TB,
 	client *aeron.Client,
 	pub aeron.PublicationOfferer,
-	timeout time.Duration,
 ) {
 	t.Helper()
 
-	effectiveTimeout := connectedPollTimeoutOr(timeout)
-	err := aeron.PollUntilConnected(
-		context.Background(),
-		client,
-		pub,
-		effectiveTimeout,
-	)
-	failPollTimeout(t, effectiveTimeout, err)
+	pollUntilConnectedCtx(t, t.Context(), client, pub)
+}
+
+func pollUntilConnectedCtx(
+	t testing.TB,
+	ctx context.Context,
+	client *aeron.Client,
+	pub aeron.PublicationOfferer,
+) {
+	t.Helper()
+	failPollTimeout(t, aeron.PollUntilConnected(ctx, client, pub))
 }
 
 // PollUntilImageCount polls DoWork until the subscription has want non-closed images.
@@ -44,43 +46,41 @@ func PollUntilImageCount(
 	client *aeron.Client,
 	sub *aeron.Subscription,
 	want int,
-	timeout time.Duration,
 ) {
 	t.Helper()
 	if !preparePollWant(t, want) {
 		return
 	}
 
-	effectiveTimeout := connectedPollTimeoutOr(timeout)
-	err := aeron.PollUntilImageCount(
-		context.Background(),
-		client,
-		sub,
-		want,
-		effectiveTimeout,
-	)
-	failPollTimeout(t, effectiveTimeout, err)
+	err := aeron.PollUntilImageCount(t.Context(), client, sub, want)
+	failPollTimeout(t, err)
 }
 
-// failPollTimeout maps delegated aeron poll timeout errors into harness golden TB
-// strings. Intentionally differs from typed Error(): no aeron: prefix, timeout
-// appended here as " within %s", and harness phrasing ("never connected" vs aeron
-// "not connected within"). ErrInvalidTimeout uses "invalid timeout: %s". pubsub_test.go
-// locks this dialect. Each new delegated poll helper needs its own errors.As arm here.
-func failPollTimeout(t testing.TB, timeout time.Duration, err error) {
+func failDelegatedContext(
+	t testing.TB,
+	err error,
+	verb string,
+) bool {
+	t.Helper()
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("%s: %v", verb, err)
+		t.FailNow()
+		return true
+	}
+	return false
+}
+
+func failPollTimeout(t testing.TB, err error) {
 	t.Helper()
 	if err == nil {
 		return
 	}
 
-	if errors.Is(err, aeron.ErrInvalidTimeout) {
-		t.Errorf("invalid timeout: %s", timeout)
-		t.FailNow()
+	if failDelegatedContext(t, err, "poll") {
 		return
 	}
 
-	var connected *aeron.PollUntilConnectedTimeoutError
-	if errors.As(err, &connected) {
+	if connected, ok := errors.AsType[*aeron.PollUntilConnectedTimeoutError](err); ok {
 		t.Errorf(
 			"publication %d (stream %d session %d) never connected; position=%d within %s",
 			connected.PublicationRegID,
@@ -93,8 +93,7 @@ func failPollTimeout(t testing.TB, timeout time.Duration, err error) {
 		return
 	}
 
-	var imageCount *aeron.PollUntilImageCountTimeoutError
-	if errors.As(err, &imageCount) {
+	if imageCount, ok := errors.AsType[*aeron.PollUntilImageCountTimeoutError](err); ok {
 		t.Errorf(
 			"%s within %s",
 			formatSubscriptionImageCountMsg(
@@ -416,11 +415,10 @@ func OfferWithRetry(
 	client *aeron.Client,
 	pub aeron.PublicationOfferer,
 	payload []byte,
-	timeout time.Duration,
 ) int64 {
 	t.Helper()
 
-	position, _ := offerWithRetry(t, client, pub, payload, timeout, nil)
+	position, _ := offerWithRetry(t, client, pub, payload, nil)
 	return position
 }
 
@@ -433,11 +431,10 @@ func OfferWithRetryWitness(
 	client *aeron.Client,
 	pub aeron.PublicationOfferer,
 	payload []byte,
-	timeout time.Duration,
 ) (int64, bool) {
 	t.Helper()
 
-	return offerWithRetry(t, client, pub, payload, timeout, nil)
+	return offerWithRetry(t, client, pub, payload, nil)
 }
 
 // OfferWithRetryWitnessAfterNotify is OfferWithRetryWitness and sends one
@@ -449,12 +446,11 @@ func OfferWithRetryWitnessAfterNotify(
 	client *aeron.Client,
 	pub aeron.PublicationOfferer,
 	payload []byte,
-	timeout time.Duration,
 	notify chan<- struct{},
 ) (int64, bool) {
 	t.Helper()
 
-	return offerWithRetry(t, client, pub, payload, timeout, notify)
+	return offerWithRetry(t, client, pub, payload, notify)
 }
 
 // OfferStallTimeout derives stall timeout from offer retry timeout.
@@ -467,12 +463,10 @@ func offerWithRetry(
 	client *aeron.Client,
 	pub aeron.PublicationOfferer,
 	payload []byte,
-	timeout time.Duration,
 	notify chan<- struct{},
 ) (int64, bool) {
 	t.Helper()
 
-	timeout = connectedPollTimeoutOr(timeout)
 	var (
 		sawBackpressureOrAdmin bool
 		notifySent             bool
@@ -490,27 +484,21 @@ func offerWithRetry(
 	}
 
 	position, err := aeron.OfferWithRetryObserved(
+		t.Context(),
 		client,
 		pub,
 		payload,
-		timeout,
 		onRetriable,
 	)
 	if err == nil {
 		return position, sawBackpressureOrAdmin
 	}
-	return failOfferWithRetry(t, pub, timeout, err), sawBackpressureOrAdmin
+	return failOfferWithRetry(t, pub, err), sawBackpressureOrAdmin
 }
 
-// failOfferWithRetry maps delegated aeron offer errors into harness golden TB strings.
-//
-// Intentionally differs from Offer*Error.Error(): no aeron: prefix and numeric
-// status codes (not PositionCodeName). ErrInvalidTimeout uses "invalid timeout: %s".
-// pubsub_test.go locks this dialect.
 func failOfferWithRetry(
 	t testing.TB,
 	pub aeron.PublicationOfferer,
-	timeout time.Duration,
 	err error,
 ) int64 {
 	t.Helper()
@@ -519,8 +507,7 @@ func failOfferWithRetry(
 	streamID := pub.StreamID()
 	sessionID := pub.SessionID()
 
-	var terminal *aeron.OfferTerminalError
-	if errors.As(err, &terminal) {
+	if terminal, ok := errors.AsType[*aeron.OfferTerminalError](err); ok {
 		t.Errorf(
 			"publication %d (stream %d session %d) offer failed: status=%d; position=%d",
 			regID,
@@ -533,8 +520,7 @@ func failOfferWithRetry(
 		return terminal.Status
 	}
 
-	var stall *aeron.OfferStallError
-	if errors.As(err, &stall) {
+	if stall, ok := errors.AsType[*aeron.OfferStallError](err); ok {
 		t.Errorf(
 			"publication %d (stream %d session %d) offer stalled within %s; position=%d; status=%d",
 			regID,
@@ -548,14 +534,11 @@ func failOfferWithRetry(
 		return 0
 	}
 
-	if errors.Is(err, aeron.ErrInvalidTimeout) {
-		t.Errorf("invalid timeout: %s", timeout)
-		t.FailNow()
+	if failDelegatedContext(t, err, "offer") {
 		return 0
 	}
 
-	var timeoutErr *aeron.OfferTimeoutError
-	if errors.As(err, &timeoutErr) {
+	if timeoutErr, ok := errors.AsType[*aeron.OfferTimeoutError](err); ok {
 		t.Errorf(
 			"publication %d (stream %d session %d) offer timed out within %s; position=%d; status=%d",
 			regID,

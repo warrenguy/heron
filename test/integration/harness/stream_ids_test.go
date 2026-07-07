@@ -52,8 +52,6 @@ var sharedDriverStreamIDs = map[string]int32{
 	"AssertSubscribeMetadataStreamID":                 AssertSubscribeMetadataStreamID,
 	"AeronHelpersSmokeStreamID":                       AeronHelpersSmokeStreamID,
 	"AeronHelpersFragmentedSmokeStreamID":             AeronHelpersFragmentedSmokeStreamID,
-	"PollUntilConnectedInvalidTimeoutStreamID":        PollUntilConnectedInvalidTimeoutStreamID,
-	"OfferWithRetryInvalidTimeoutStreamID":            OfferWithRetryInvalidTimeoutStreamID,
 }
 
 func TestSharedDriverStreamIDs_unique(t *testing.T) {
