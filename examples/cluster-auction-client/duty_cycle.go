@@ -15,7 +15,6 @@ import (
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/examples/cluster-auction-client/auctionwire"
-	"github.com/warrenguy/heron/idlestrategy"
 )
 
 var auctionLog = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lmicroseconds)
@@ -87,9 +86,8 @@ func runDutyCycle(
 	session *client.AeronCluster,
 	config Config,
 	clientState *ClientState,
-	idleStrategy idlestrategy.IdleStrategy,
 ) error {
-	offerConfig := client.IngressOfferConfig{IdleStrategy: idleStrategy}
+	offerConfig := client.IngressOfferConfig{}
 	clientState.nextBidDeadline = time.Now().Add(randomDelayMs(config.BidIntervalMs))
 	clientState.bidsLeftToSend = config.NumBids
 
@@ -135,8 +133,7 @@ func runDutyCycle(
 			clientState.keepAliveDeadline = time.Now().Add(time.Second)
 		}
 
-		session.Aeron().DoWork()
-		idleStrategy.Idle(session.PollEgress())
+		session.SpinOnce()
 	}
 
 	return nil

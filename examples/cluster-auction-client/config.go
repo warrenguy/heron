@@ -11,7 +11,6 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/examples/cluster-auction-client/auctionwire"
 )
 
 // Config holds parsed CLI settings for the cluster auction client example.
@@ -57,17 +56,17 @@ func parseConfig(args []string) (Config, error) {
 	)
 	portBase := fs.Int(
 		"port-base",
-		auctionwire.DefaultPortBase,
+		client.DefaultIngressPortBase,
 		"port base for auto ingress endpoints",
 	)
 	portsPerNode := fs.Int(
 		"ports-per-node",
-		auctionwire.DefaultPortsPerNode,
+		client.DefaultIngressPortsPerNode,
 		"ports per node for auto ingress endpoints",
 	)
 	clientFacingPortOffset := fs.Int(
 		"client-facing-port-offset",
-		auctionwire.DefaultClientFacingPortOffset,
+		client.DefaultClientFacingPortOffset,
 		"client-facing port offset for auto ingress endpoints",
 	)
 
@@ -123,7 +122,7 @@ func resolveIngressEndpoints(
 		if len(hostnames) == 0 {
 			return errors.New("cluster-auction-client: -hostnames required for UDP ingress auto-build")
 		}
-		config.IngressEndpoints = auctionwire.IngressEndpoints(
+		config.IngressEndpoints = client.FormatIngressEndpointsFromHostnames(
 			hostnames,
 			portBase,
 			portsPerNode,
@@ -133,12 +132,18 @@ func resolveIngressEndpoints(
 	return nil
 }
 
+// clusterContext builds a raw ClusterContext for client.Connect.
+//
+// Do not call Normalize here: NewAsyncConnect records whether NewLeaderTimeout was
+// explicitly set before it normalizes; pre-normalizing makes that look explicit and
+// disables heartbeat-derived NewLeaderTimeout in concludeConnect.
 func (config Config) clusterContext(
 	transport *aeron.Client,
 	handlers *client.EgressHandlers,
 ) client.ClusterContext {
 	return client.ClusterContext{
 		Aeron:            transport,
+		AeronDir:         config.AeronDir,
 		IngressChannel:   config.IngressChannel,
 		EgressChannel:    config.EgressChannel,
 		IngressEndpoints: config.IngressEndpoints,

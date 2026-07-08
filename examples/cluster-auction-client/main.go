@@ -46,13 +46,7 @@ func main() {
 	}
 	defer closeWithLog(session.Close)
 
-	if err := runDutyCycle(
-		ctx,
-		session,
-		config,
-		clientState,
-		session.Context().IdleStrategy,
-	); err != nil {
+	if err := runDutyCycle(ctx, session, config, clientState); err != nil {
 		log.Fatal(err)
 	}
 }

@@ -13,7 +13,9 @@ unmodified Java `BasicAuctionClusteredService` on a UDP 3-node cluster.
 - Ports 9002, 9102, and 9202 free for the default 3-node topology
 
 The Java cluster embeds its own media drivers. The Go client uses a separate
-`bin/aeronmd` instance and `AERON_DIR`.
+`bin/aeronmd` instance and `AERON_DIR` (dual driver topology). For the IPC
+shared-CNC model (no separate `aeronmd`), see
+[`cluster-echo-client` driver model](../cluster-echo-client/README.md#driver-model-ipc-default).
 
 ## Run end-to-end
 
@@ -100,5 +102,5 @@ From `$AERON_SRC/aeron-samples/scripts/cluster` with the cluster already running
 | `-client-facing-port-offset` | `2` | Auto endpoint offset |
 
 When `-ingress-endpoints` is empty and ingress media is UDP, endpoints are built as
-`0=localhost:9002,1=localhost:9102,2=localhost:9202` (matching upstream tutorial ports).
+`0=localhost:9002,1=localhost:9102,2=localhost:9202` (matching upstream default ports).
 For `ipc`/`ipcx` ingress, endpoints are forced empty.

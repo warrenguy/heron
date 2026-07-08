@@ -1,5 +1,5 @@
 // Package auctionwire encodes and decodes fixed-width auction cluster application
-// payloads and derives the tutorial cluster's client-facing ingress endpoints.
+// payloads.
 //
 // Bid and egress layout matches upstream Aeron BasicAuctionClusterClient.
 //
@@ -9,6 +9,7 @@ package auctionwire
 
 import (
 	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/wire"
 )
 
 const (
@@ -59,6 +60,6 @@ func DecodeEgress(buf atomicbuffer.AtomicBuffer, offset, length int) (EgressBid,
 		CorrelationID: buf.GetInt64(offset + CorrelationIDOffset),
 		CustomerID:    buf.GetInt64(offset + CustomerIDOffset),
 		Price:         buf.GetInt64(offset + PriceOffset),
-		BidSucceeded:  buf.GetByte(offset+BidSucceededOffset) != 0,
+		BidSucceeded:  wire.GetBoolByte(buf, offset+BidSucceededOffset),
 	}, true
 }
