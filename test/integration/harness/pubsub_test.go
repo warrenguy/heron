@@ -5,6 +5,7 @@ package harness
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,6 +170,24 @@ func TestPollUntilImageCount_timeoutMessage(t *testing.T) {
 	})
 }
 
+func TestPollUntilNoActiveImagesCtx_contextDeadline(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+
+	_, sub := connectIPCPubSub(t, client, PollUntilNoActiveImagesCtxDeadlineStreamID)
+
+	ctx, cancel := context.WithTimeout(t.Context(), pollHarnessShortTimeout)
+	defer cancel()
+
+	capture := &CaptureFailTB{TB: t}
+	PollUntilNoActiveImagesCtx(capture, ctx, client, sub)
+	require.True(t, capture.failed)
+	wantPrefix := subscriptionImageCountFailMsg(sub, 0)
+	require.True(t, strings.HasPrefix(capture.lastMsg, wantPrefix))
+	require.Contains(t, capture.lastMsg, "within")
+	require.NotContains(t, capture.lastMsg, "poll: context deadline exceeded")
+}
+
 func TestPollUntilNoActiveImages_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
 	client := ConnectClient(t, md, aeron.Context{})
@@ -176,7 +195,7 @@ func TestPollUntilNoActiveImages_timeoutMessage(t *testing.T) {
 	_, sub := connectIPCPubSub(t, client, PollUntilNoActiveImagesTimeoutStreamID)
 
 	capture := &CaptureFailTB{TB: t}
-	PollUntilNoActiveImages(capture, client, sub, pollHarnessShortTimeout)
+	pollUntilNoActiveImagesCtx(capture, t.Context(), client, sub, pollHarnessShortTimeout)
 	require.True(t, capture.failed)
 	wantMsg := fmt.Sprintf(
 		"%s within %s",
@@ -193,13 +212,14 @@ func TestPollSplitClientsUntil_timeoutMessage(t *testing.T) {
 
 	const failMsg = "split poll condition not met"
 	capture := &CaptureFailTB{TB: t}
-	PollSplitClientsUntil(
+	pollSplitClientsUntilDynamicCtx(
 		capture,
+		t.Context(),
 		clientA,
 		clientB,
 		pollHarnessShortTimeout,
 		func() bool { return false },
-		failMsg,
+		func() string { return failMsg },
 	)
 	require.True(t, capture.failed)
 	wantMsg := fmt.Sprintf("%s within %s", failMsg, pollHarnessShortTimeout)
@@ -220,8 +240,9 @@ func TestPollSplitClientIPCLink_timeoutMessage(t *testing.T) {
 	CleanupClose(t, "close subscription", sub.Close)
 
 	capture := &CaptureFailTB{TB: t}
-	PollSplitClientIPCLink(
+	pollSplitClientIPCLinkCtx(
 		capture,
+		t.Context(),
 		pubClient,
 		subClient,
 		pub,
@@ -249,8 +270,9 @@ func TestPollUntilNoActiveImagesSplit_timeoutMessage(t *testing.T) {
 	)
 
 	capture := &CaptureFailTB{TB: t}
-	PollUntilNoActiveImagesSplit(
+	pollUntilNoActiveImagesSplitCtx(
 		capture,
+		t.Context(),
 		pubClient,
 		subClient,
 		sub,
@@ -306,7 +328,7 @@ func TestPollDelivered_timeoutMessage(t *testing.T) {
 	pub, sub := connectIPCPubSub(t, client, PollDeliveredTimeoutStreamID)
 
 	capture := &CaptureFailTB{TB: t}
-	got := PollDelivered(capture, client, sub, 1, pollHarnessShortTimeout)
+	got := pollDeliveredCtx(capture, t.Context(), client, sub, 1, pollHarnessShortTimeout)
 	require.True(t, capture.failed)
 	require.Empty(t, got)
 	wantMsg := fmt.Sprintf(
@@ -329,7 +351,7 @@ func TestPollDelivered_partialDelivery_timeoutMessage(t *testing.T) {
 	alignedAdvance := offerSingleAlignedFragment(t, client, pub)
 
 	capture := &CaptureFailTB{TB: t}
-	got := PollDelivered(capture, client, sub, 2, pollHarnessShortTimeout)
+	got := pollDeliveredCtx(capture, t.Context(), client, sub, 2, pollHarnessShortTimeout)
 	require.True(t, capture.failed)
 	require.Len(t, got, 1)
 	wantMsg := fmt.Sprintf(
@@ -351,7 +373,7 @@ func TestPollDelivered_invalidWantFails(t *testing.T) {
 		sub *aeron.Subscription,
 		want int,
 	) {
-		got := PollDelivered(capture, client, sub, want, time.Second)
+		got := PollDelivered(capture, client, sub, want)
 		require.Empty(t, got)
 	})
 }
@@ -371,7 +393,7 @@ func TestPollDelivered_liveIPC(t *testing.T) {
 	require.Positive(t, result)
 	client.DoWork()
 
-	got := PollDelivered(t, client, sub, 1, ConnectedPollTimeout)
+	got := PollDelivered(t, client, sub, 1)
 	require.Len(t, got, 1)
 	require.Equal(t, payload, got[0])
 
@@ -391,8 +413,9 @@ func TestPollDeliveredSplit_timeoutMessage(t *testing.T) {
 	)
 
 	capture := &CaptureFailTB{TB: t}
-	got := PollDeliveredSplit(
+	got := pollDeliveredSplitCtx(
 		capture,
+		t.Context(),
 		pubClient,
 		subClient,
 		sub,
@@ -427,8 +450,9 @@ func TestPollDeliveredSplit_partialDelivery_timeoutMessage(t *testing.T) {
 	alignedAdvance := offerSingleAlignedFragmentSplit(t, pubClient, pub)
 
 	capture := &CaptureFailTB{TB: t}
-	got := PollDeliveredSplit(
+	got := pollDeliveredSplitCtx(
 		capture,
+		t.Context(),
 		pubClient,
 		subClient,
 		sub,
@@ -463,7 +487,6 @@ func TestPollDeliveredSplit_invalidWantFails(t *testing.T) {
 			subClient,
 			sub,
 			want,
-			time.Second,
 		)
 		require.Empty(t, got)
 	})
@@ -514,7 +537,7 @@ func TestPollReassembled_timeoutMessage(t *testing.T) {
 	pub, sub := connectIPCPubSub(t, client, PollReassembledTimeoutStreamID)
 
 	capture := &CaptureFailTB{TB: t}
-	got, fragments := PollReassembled(capture, client, sub, 1, pollHarnessShortTimeout)
+	got, fragments := pollReassembledCtx(capture, t.Context(), client, sub, 1, pollHarnessShortTimeout)
 	require.True(t, capture.failed)
 	require.Empty(t, got)
 	require.Zero(t, fragments)
@@ -538,7 +561,7 @@ func TestPollReassembled_noActiveImage_failsFast(t *testing.T) {
 	CleanupClose(t, "close subscription", sub.Close)
 
 	capture := &CaptureFailTB{TB: t}
-	got, fragments := PollReassembled(capture, client, sub, 1, pollHarnessShortTimeout)
+	got, fragments := PollReassembled(capture, client, sub, 1)
 	require.True(t, capture.failed)
 	require.Empty(t, got)
 	require.Zero(t, fragments)
@@ -558,7 +581,7 @@ func TestPollReassembled_partialDelivery_timeoutMessage(t *testing.T) {
 	alignedAdvance := offerSingleAlignedFragment(t, client, pub)
 
 	capture := &CaptureFailTB{TB: t}
-	got, fragments := PollReassembled(capture, client, sub, 2, pollHarnessShortTimeout)
+	got, fragments := pollReassembledCtx(capture, t.Context(), client, sub, 2, pollHarnessShortTimeout)
 	require.True(t, capture.failed)
 	require.Len(t, got, 1)
 	require.Equal(t, []byte{0x01, 0x02, 0x03}, got[0])
@@ -582,7 +605,7 @@ func TestPollReassembled_invalidWantFails(t *testing.T) {
 		sub *aeron.Subscription,
 		want int,
 	) {
-		got, fragments := PollReassembled(capture, client, sub, want, time.Second)
+		got, fragments := PollReassembled(capture, client, sub, want)
 		require.Empty(t, got)
 		require.Zero(t, fragments)
 	})
@@ -681,7 +704,7 @@ func TestPollReassembled_liveIPC_fragmented(t *testing.T) {
 	require.Positive(t, result)
 	client.DoWork()
 
-	got, fragments := PollReassembled(t, client, sub, 1, ConnectedPollTimeout)
+	got, fragments := PollReassembled(t, client, sub, 1)
 	require.Len(t, got, 1)
 	require.Equal(t, payload, got[0])
 	require.Equal(t, 2, fragments)
@@ -843,7 +866,7 @@ func TestAssertSubscribeMetadata_liveIPC(t *testing.T) {
 	for _, payload := range payloads {
 		OfferWithRetry(t, client, pub, payload)
 	}
-	_ = PollDelivered(t, client, sub, messageCount, ConnectedPollTimeout)
+	_ = PollDelivered(t, client, sub, messageCount)
 
 	sessionID := pub.SessionID()
 	witnessCases := []struct {

@@ -102,7 +102,7 @@ func TestPublicationLimitAdvancesAfterSubscriberDrain(t *testing.T) {
 	windowBeforeDrain := pub.AvailableWindow()
 
 	// Drain every offered message; partial drain left window at 0 after multi-message burst.
-	harness.PollDelivered(t, client, sub, offered, harness.ConnectedPollTimeout)
+	harness.PollDelivered(t, client, sub, offered)
 
 	pollStart := time.Now()
 	deadline := pollStart.Add(harness.ConnectedPollTimeout)

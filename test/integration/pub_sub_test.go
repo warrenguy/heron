@@ -45,7 +45,7 @@ func TestPubSubIPCRoundtrip(t *testing.T) {
 		client.DoWork()
 	}
 
-	received := harness.PollDelivered(t, client, sub, messageCount, 0)
+	received := harness.PollDelivered(t, client, sub, messageCount)
 
 	require.Equal(t, payloads, received)
 
@@ -82,7 +82,7 @@ func TestPubSubIPCTwoClientsRoundtrip(t *testing.T) {
 		subClient.DoWork()
 	}
 
-	received := harness.PollDeliveredSplit(t, pubClient, subClient, sub, messageCount, 0)
+	received := harness.PollDeliveredSplit(t, pubClient, subClient, sub, messageCount)
 	require.Equal(t, payloads, received)
 
 	harness.AssertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
@@ -112,7 +112,7 @@ func TestPubSubIPCFragmentedRoundtrip(t *testing.T) {
 	require.Equal(t, pubPosBefore+wantAdvance, result)
 	client.DoWork()
 
-	received, fragments := harness.PollReassembled(t, client, sub, messageCount, 0)
+	received, fragments := harness.PollReassembled(t, client, sub, messageCount)
 	require.Equal(t, [][]byte{payload}, received)
 	require.Equal(t, 2, fragments)
 
@@ -178,7 +178,7 @@ func TestPublicationTermRollover(t *testing.T) {
 	)
 
 	if remaining := messagesToRollover - len(received); remaining > 0 {
-		tail := harness.PollDelivered(t, client, sub, remaining, 0)
+		tail := harness.PollDelivered(t, client, sub, remaining)
 		received = append(received, tail...)
 	}
 	require.Equal(t, payloads, received)

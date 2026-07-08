@@ -135,16 +135,16 @@ func TestMPSCCommandMatrix(t *testing.T) {
 	// Split-client IPC link and data offer on test goroutine after concurrent Add*;
 	// mirrors ConnectIPCPubSubClients. Avoids testify in workers and lost offers
 	// when subscriber image is not yet attached.
-	harness.PollSplitClientIPCLink(t, clientA, clientB, pub, sub, 0)
+	harness.PollSplitClientIPCLink(t, clientA, clientB, pub, sub)
 	harness.OfferWithRetry(t, clientA, pub, []byte("mpsc-A"))
 
-	fragments := harness.PollDelivered(t, clientB, sub, 1, 0)
+	fragments := harness.PollDelivered(t, clientB, sub, 1)
 	require.Equal(t, []byte("mpsc-A"), fragments[0])
 
 	// REMOVE_PUBLICATION (0x02): via pub.Close.
 	require.NoError(t, pub.Close())
 	// ON_UNAVAILABLE_IMAGE: subscriber drops image while sub still open.
-	harness.PollUntilNoActiveImagesSplit(t, clientA, clientB, sub, 0)
+	harness.PollUntilNoActiveImagesSplit(t, clientA, clientB, sub)
 
 	// REMOVE_SUBSCRIPTION (0x05): via sub.Close.
 	require.NoError(t, sub.Close())

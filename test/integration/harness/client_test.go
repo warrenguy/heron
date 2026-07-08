@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"testing"
@@ -93,7 +94,13 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 				sub, err := client.AddSubscription(streamID, IPCChannel)
 				require.NoError(t, err)
 
-				WaitForSubscriptionConnected(capture, client, sub, connectedWaitTestTimeout)
+				waitForSubscriptionConnectedCtx(
+					capture,
+					t.Context(),
+					client,
+					sub,
+					connectedWaitTestTimeout,
+				)
 				wantMsg := fmt.Sprintf(
 					"subscription %d never connected within %s",
 					sub.RegistrationID(),
@@ -118,6 +125,31 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 	}
 }
 
+func TestPollClientUntilDynamicCtx_contextCanceled(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	go func() {
+		time.Sleep(aeron.DefaultIdleSleepDuration * 2)
+		cancel()
+	}()
+
+	capture := &CaptureFailTB{TB: t}
+	pollClientUntilDynamicCtx(
+		capture,
+		ctx,
+		client,
+		ConnectedPollTimeout,
+		func() bool { return false },
+		func() string { return "condition not met" },
+	)
+	require.True(t, capture.failed)
+	require.Equal(t, "poll: context canceled", capture.lastMsg)
+}
+
 func TestRequirePublicationLookupMiss_earlyExit(t *testing.T) {
 	md := SharedParallel(t)
 	client := ConnectClient(t, md, aeron.Context{})
@@ -132,6 +164,34 @@ func TestRequirePublicationLookupMiss_earlyExit(t *testing.T) {
 	require.Less(t, time.Since(start), CommandPollDeadline)
 }
 
+func TestRequirePublicationLookupMiss_timeoutMessage(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+
+	pub, err := client.AddPublication(RequirePublicationLookupMissTimeoutStreamID, IPCChannel)
+	require.NoError(t, err)
+	CleanupClose(t, "close publication", pub.Close)
+	regID := pub.RegistrationID()
+
+	capture := &CaptureFailTB{TB: t}
+	requireLookupMissCtx(
+		capture,
+		t.Context(),
+		client,
+		pollHarnessShortTimeout,
+		regID,
+		"publication",
+		client.Publication,
+	)
+	require.True(t, capture.failed)
+	wantMsg := fmt.Sprintf(
+		"publication %d still registered after close within %s",
+		regID,
+		pollHarnessShortTimeout,
+	)
+	require.Equal(t, wantMsg, capture.lastMsg)
+}
+
 func TestWaitForIPCLinkConnected_liveIPC(t *testing.T) {
 	md := SharedParallel(t)
 	client := ConnectClient(t, md, aeron.Context{})
@@ -144,5 +204,58 @@ func TestWaitForIPCLinkConnected_liveIPC(t *testing.T) {
 	require.NoError(t, err)
 	CleanupClose(t, "close subscription", sub.Close)
 
-	WaitForIPCLinkConnected(t, client, pub, sub, ConnectedPollTimeout)
+	WaitForIPCLinkConnected(t, client, pub, sub)
+}
+
+func TestWaitForIPCLinkConnected_subscriptionTimeout(t *testing.T) {
+	const linkWaitTestTimeout = 50 * time.Millisecond
+
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+
+	pub, err := client.AddPublication(WaitForIPCLinkConnectedSubTimeoutPubStreamID, IPCChannel)
+	require.NoError(t, err)
+	CleanupClose(t, "close publication", pub.Close)
+
+	sub, err := client.AddSubscription(
+		WaitForIPCLinkConnectedSubscriptionOnlyTimeoutStreamID,
+		IPCChannel,
+	)
+	require.NoError(t, err)
+	CleanupClose(t, "close subscription", sub.Close)
+
+	ctx, cancel := context.WithTimeout(t.Context(), linkWaitTestTimeout)
+	defer cancel()
+
+	start := time.Now()
+	capture := &CaptureFailTB{TB: t}
+	waitForIPCLinkConnectedCtx(capture, ctx, client, pub, sub)
+	require.True(t, capture.failed)
+	require.Less(t, time.Since(start), ConnectedPollTimeout)
+	wantSubMsg := fmt.Sprintf("subscription %d never connected", sub.RegistrationID())
+	require.Contains(t, capture.lastMsg, wantSubMsg)
+	require.Contains(t, capture.lastMsg, "within")
+	require.NotContains(t, capture.lastMsg, "publication")
+	require.NotContains(t, capture.lastMsg, "poll: context deadline exceeded")
+}
+
+func TestPollClientUntilDynamicCtx_zeroBoundPollsOnce(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+
+	calls := 0
+	capture := &CaptureFailTB{TB: t}
+	pollClientUntilDynamicCtx(
+		capture,
+		t.Context(),
+		client,
+		0,
+		func() bool {
+			calls++
+			return true
+		},
+		func() string { return "condition not met" },
+	)
+	require.False(t, capture.failed)
+	require.Equal(t, 1, calls)
 }

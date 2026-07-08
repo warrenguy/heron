@@ -113,7 +113,7 @@ func TestClientAddPublicationIsConnectedEventually(t *testing.T) {
 	require.NotNil(t, sub)
 	harness.CleanupClose(t, "close subscription", sub.Close)
 
-	harness.WaitForIPCLinkConnected(t, client, pub, sub, 0)
+	harness.WaitForIPCLinkConnected(t, client, pub, sub)
 
 	require.NoError(t, pub.Close())
 	md.AssertProcessAlive(t)
@@ -161,7 +161,7 @@ func TestClientAddExclusivePublicationIsConnectedEventually(t *testing.T) {
 	require.NotNil(t, sub)
 	harness.CleanupClose(t, "close subscription", sub.Close)
 
-	harness.WaitForIPCLinkConnected(t, client, pub, sub, 0)
+	harness.WaitForIPCLinkConnected(t, client, pub, sub)
 
 	require.NoError(t, pub.Close())
 	md.AssertProcessAlive(t)
@@ -189,7 +189,7 @@ func TestExclusivePublicationIPCRoundtrip(t *testing.T) {
 		client.DoWork()
 	}
 
-	received := harness.PollDelivered(t, client, sub, messageCount, 0)
+	received := harness.PollDelivered(t, client, sub, messageCount)
 	require.Equal(t, payloads, received)
 	harness.AssertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
 	finishPubSubIPCTest(t, md, hadClientError)
@@ -223,7 +223,7 @@ func TestExclusivePublicationIPCTwoClientsRoundtrip(t *testing.T) {
 		subClient.DoWork()
 	}
 
-	received := harness.PollDeliveredSplit(t, pubClient, subClient, sub, messageCount, 0)
+	received := harness.PollDeliveredSplit(t, pubClient, subClient, sub, messageCount)
 	require.Equal(t, payloads, received)
 
 	harness.AssertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)

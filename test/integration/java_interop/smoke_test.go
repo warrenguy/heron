@@ -52,7 +52,6 @@ func TestJavaInteropDuplex(t *testing.T) {
 		client,
 		javaToGoSub,
 		javainterop.MessageCount,
-		harness.ConnectedPollTimeout,
 	)
 	require.Equal(t, expectedJavaPayloads, receivedJava)
 
@@ -94,7 +93,6 @@ func TestJavaInteropDuplex(t *testing.T) {
 		client,
 		goToJavaSub,
 		javainterop.MessageCount,
-		harness.ConnectedPollTimeout,
 	)
 	require.Equal(t, expectedGoPayloads, receivedGo)
 

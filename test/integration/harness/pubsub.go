@@ -122,45 +122,45 @@ func RequireNoActiveImages(t testing.TB, sub *aeron.Subscription) {
 	}
 }
 
-func pollSplitClientsUntilDynamic(
+func pollSplitClientsUntilDynamicCtx(
 	t testing.TB,
+	ctx context.Context,
 	clientA, clientB *aeron.Client,
-	timeout time.Duration,
+	bound time.Duration,
 	ok func() bool,
 	failMsg func() string,
 ) {
 	t.Helper()
 
-	if pollUntilBool(
-		timeout,
-		aeron.DefaultIdleSleepDuration,
-		func() bool {
+	pollUntilDynamicCtx(
+		t,
+		ctx,
+		bound,
+		func() {
 			clientA.DoWork()
 			clientB.DoWork()
-			return ok()
 		},
-	) {
-		return
-	}
-	t.Errorf("%s within %s", failMsg(), timeout)
-	t.FailNow()
+		ok,
+		failMsg,
+	)
 }
 
-// PollSplitClientsUntil polls DoWork on both clients until ok or timeout.
+// PollSplitClientsUntil polls DoWork on both clients until ok or the poll bound
+// elapses (caller ctx may clamp via EffectiveRetryBound).
 func PollSplitClientsUntil(
 	t testing.TB,
 	clientA, clientB *aeron.Client,
-	timeout time.Duration,
 	ok func() bool,
 	failMsg string,
 ) {
 	t.Helper()
 
-	pollSplitClientsUntilDynamic(
+	pollSplitClientsUntilDynamicCtx(
 		t,
+		t.Context(),
 		clientA,
 		clientB,
-		connectedPollTimeoutOr(timeout),
+		ConnectedPollTimeout,
 		ok,
 		func() string { return failMsg },
 	)
@@ -172,19 +172,40 @@ func PollSplitClientIPCLink(
 	pubClient, subClient *aeron.Client,
 	pub aeron.PublicationOfferer,
 	sub *aeron.Subscription,
-	timeout time.Duration,
 ) {
 	t.Helper()
 
-	PollSplitClientsUntil(
+	pollSplitClientIPCLinkCtx(
 		t,
+		t.Context(),
 		pubClient,
 		subClient,
-		timeout,
+		pub,
+		sub,
+		ConnectedPollTimeout,
+	)
+}
+
+func pollSplitClientIPCLinkCtx(
+	t testing.TB,
+	ctx context.Context,
+	pubClient, subClient *aeron.Client,
+	pub aeron.PublicationOfferer,
+	sub *aeron.Subscription,
+	bound time.Duration,
+) {
+	t.Helper()
+
+	pollSplitClientsUntilDynamicCtx(
+		t,
+		ctx,
+		pubClient,
+		subClient,
+		bound,
 		func() bool {
 			return pub.IsConnected() && aeron.SubscriptionActiveImageCountAtLeast(sub, 1)
 		},
-		"split-client IPC link not ready",
+		func() string { return "split-client IPC link not ready" },
 	)
 }
 
@@ -213,7 +234,7 @@ func connectIPCPubSubClients[P ipcPublication](
 		require.NoError(t, err)
 		CleanupClose(t, "close subscription", sub.Close)
 
-		WaitForIPCLinkConnected(t, pubClient, pub, sub, ConnectedPollTimeout)
+		WaitForIPCLinkConnected(t, pubClient, pub, sub)
 		return pub, sub
 	}
 
@@ -249,7 +270,7 @@ func connectIPCPubSubClients[P ipcPublication](
 	require.NoError(t, pubErr)
 	require.NoError(t, subErr)
 
-	PollSplitClientIPCLink(t, pubClient, subClient, pub, sub, ConnectedPollTimeout)
+	PollSplitClientIPCLink(t, pubClient, subClient, pub, sub)
 	return pub, sub
 }
 
@@ -304,19 +325,40 @@ func PollUntilNoActiveImagesSplit(
 	t testing.TB,
 	pubClient, subClient *aeron.Client,
 	sub *aeron.Subscription,
-	timeout time.Duration,
 ) {
 	t.Helper()
 
-	PollSplitClientsUntil(
+	pollUntilNoActiveImagesSplitCtx(
 		t,
+		t.Context(),
 		pubClient,
 		subClient,
-		timeout,
+		sub,
+		ConnectedPollTimeout,
+	)
+}
+
+func pollUntilNoActiveImagesSplitCtx(
+	t testing.TB,
+	ctx context.Context,
+	pubClient, subClient *aeron.Client,
+	sub *aeron.Subscription,
+	bound time.Duration,
+) {
+	t.Helper()
+
+	pollSplitClientsUntilDynamicCtx(
+		t,
+		ctx,
+		pubClient,
+		subClient,
+		bound,
 		func() bool {
 			return !aeron.SubscriptionActiveImageCountAtLeast(sub, 1)
 		},
-		subscriptionImageCountFailMsg(sub, 0),
+		func() string {
+			return subscriptionImageCountFailMsg(sub, 0)
+		},
 	)
 }
 
@@ -325,14 +367,40 @@ func PollUntilNoActiveImages(
 	t testing.TB,
 	client *aeron.Client,
 	sub *aeron.Subscription,
-	timeout time.Duration,
 ) {
 	t.Helper()
 
-	pollClientUntilDynamic(
+	pollUntilNoActiveImagesCtx(t, t.Context(), client, sub, ConnectedPollTimeout)
+}
+
+// PollUntilNoActiveImagesCtx polls DoWork until the subscription has zero active images
+// or ConnectedPollTimeout elapses. When ctx carries a deadline, the effective bound is
+// the earlier of ConnectedPollTimeout and the remaining ctx deadline.
+func PollUntilNoActiveImagesCtx(
+	t testing.TB,
+	ctx context.Context,
+	client *aeron.Client,
+	sub *aeron.Subscription,
+) {
+	t.Helper()
+
+	pollUntilNoActiveImagesCtx(t, ctx, client, sub, ConnectedPollTimeout)
+}
+
+func pollUntilNoActiveImagesCtx(
+	t testing.TB,
+	ctx context.Context,
+	client *aeron.Client,
+	sub *aeron.Subscription,
+	bound time.Duration,
+) {
+	t.Helper()
+
+	pollClientUntilDynamicCtx(
 		t,
+		ctx,
 		client,
-		connectedPollTimeoutOr(timeout),
+		bound,
 		func() bool {
 			return !aeron.SubscriptionActiveImageCountAtLeast(sub, 1)
 		},
@@ -348,7 +416,19 @@ func PollDelivered(
 	client *aeron.Client,
 	sub *aeron.Subscription,
 	want int,
-	timeout time.Duration,
+) [][]byte {
+	t.Helper()
+
+	return pollDeliveredCtx(t, t.Context(), client, sub, want, ConnectedPollTimeout)
+}
+
+func pollDeliveredCtx(
+	t testing.TB,
+	ctx context.Context,
+	client *aeron.Client,
+	sub *aeron.Subscription,
+	want int,
+	bound time.Duration,
 ) [][]byte {
 	t.Helper()
 	if !preparePollWant(t, want) {
@@ -357,10 +437,11 @@ func PollDelivered(
 
 	received := make([][]byte, 0, want)
 
-	pollClientUntilDynamic(
+	pollClientUntilDynamicCtx(
 		t,
+		ctx,
 		client,
-		connectedPollTimeoutOr(timeout),
+		bound,
 		func() bool {
 			received = CollectSubscriptionFragments(sub, want, received)
 			return len(received) >= want
@@ -379,7 +460,27 @@ func PollDeliveredSplit(
 	pubClient, subClient *aeron.Client,
 	sub *aeron.Subscription,
 	want int,
-	timeout time.Duration,
+) [][]byte {
+	t.Helper()
+
+	return pollDeliveredSplitCtx(
+		t,
+		t.Context(),
+		pubClient,
+		subClient,
+		sub,
+		want,
+		ConnectedPollTimeout,
+	)
+}
+
+func pollDeliveredSplitCtx(
+	t testing.TB,
+	ctx context.Context,
+	pubClient, subClient *aeron.Client,
+	sub *aeron.Subscription,
+	want int,
+	bound time.Duration,
 ) [][]byte {
 	t.Helper()
 	if !preparePollWant(t, want) {
@@ -388,11 +489,12 @@ func PollDeliveredSplit(
 
 	received := make([][]byte, 0, want)
 
-	pollSplitClientsUntilDynamic(
+	pollSplitClientsUntilDynamicCtx(
 		t,
+		ctx,
 		pubClient,
 		subClient,
-		connectedPollTimeoutOr(timeout),
+		bound,
 		func() bool {
 			received = CollectSubscriptionFragments(sub, want, received)
 			return len(received) >= want
@@ -572,7 +674,19 @@ func PollReassembled(
 	client *aeron.Client,
 	sub *aeron.Subscription,
 	want int,
-	timeout time.Duration,
+) ([][]byte, int) {
+	t.Helper()
+
+	return pollReassembledCtx(t, t.Context(), client, sub, want, ConnectedPollTimeout)
+}
+
+func pollReassembledCtx(
+	t testing.TB,
+	ctx context.Context,
+	client *aeron.Client,
+	sub *aeron.Subscription,
+	want int,
+	bound time.Duration,
 ) ([][]byte, int) {
 	t.Helper()
 	if !preparePollWant(t, want) {
@@ -642,10 +756,11 @@ func PollReassembled(
 		}
 	}
 
-	pollClientUntilDynamic(
+	pollClientUntilDynamicCtx(
 		t,
+		ctx,
 		client,
-		connectedPollTimeoutOr(timeout),
+		bound,
 		func() bool {
 			if failedCaptureTB(t) {
 				return true

@@ -3,6 +3,7 @@
 package integration_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -66,11 +67,11 @@ func setupIPCPubSubForCloseDrain(
 	sub, err := client.AddSubscription(streamID, harness.IPCChannel)
 	require.NoError(t, err)
 
-	harness.WaitForIPCLinkConnected(t, client, pub, sub, harness.ConnectedPollTimeout)
+	harness.WaitForIPCLinkConnected(t, client, pub, sub)
 
 	payload := []byte("close-drain")
 	require.Positive(t, pub.Offer(payload))
-	harness.PollDelivered(t, client, sub, 1, harness.ConnectedPollTimeout)
+	harness.PollDelivered(t, client, sub, 1)
 
 	return pub, sub
 }
@@ -112,7 +113,9 @@ func TestClientCloseDrainsRegistrations(t *testing.T) {
 	require.NoError(t, err)
 	harness.CleanupClose(t, "close ghost subscription", sub2.Close)
 
-	harness.PollUntilNoActiveImages(t, client2, sub2, closeDrainSoakDuration)
+	drainCtx, drainCancel := context.WithTimeout(t.Context(), closeDrainSoakDuration)
+	defer drainCancel()
+	harness.PollUntilNoActiveImagesCtx(t, drainCtx, client2, sub2)
 
 	harness.RunSoak(t, closeDrainSoakDuration, aeron.DefaultIdleSleepDuration, func() {
 		client2.DoWork()

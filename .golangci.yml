@@ -26,9 +26,6 @@ linters:
   enable:
     - lll
     - testifylint
-  exclusions:
-    paths:
-      - vendor
   settings:
     lll:
       line-length: 100
