@@ -7,13 +7,13 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 // claimingPublication is the TryClaim term-buffer surface shared by
 // Publication and ExclusivePublication.
 type claimingPublication interface {
-	TermBuffer(termIndex int) atomic.AtomicBuffer
+	TermBuffer(termIndex int) atomicbuffer.AtomicBuffer
 	TryClaim(length int) (termIndex, frameOffset int, position int64, err error)
 	Commit(termIndex, frameOffset int) error
 }
@@ -29,8 +29,8 @@ var termBufferInvalidIndexCases = []struct {
 
 func requireTermBufferSameBacking(
 	tb testing.TB,
-	want atomic.AtomicBuffer,
-	got atomic.AtomicBuffer,
+	want atomicbuffer.AtomicBuffer,
+	got atomicbuffer.AtomicBuffer,
 ) {
 	tb.Helper()
 	require.Equal(tb, want.Capacity(), got.Capacity())
@@ -45,7 +45,7 @@ func requireTermBufferSameBacking(
 func requireTermBufferMatchesOracle(
 	t *testing.T,
 	pub claimingPublication,
-	oracle func(termIndex int) atomic.AtomicBuffer,
+	oracle func(termIndex int) atomicbuffer.AtomicBuffer,
 ) {
 	t.Helper()
 	for termIndex := range logbuffer.PartitionCount {
@@ -60,7 +60,7 @@ func requireTermBufferMatchesOracle(
 func requireTermBufferInvalidIndexPanics(
 	t *testing.T,
 	pub claimingPublication,
-	oracle func(termIndex int) atomic.AtomicBuffer,
+	oracle func(termIndex int) atomicbuffer.AtomicBuffer,
 ) {
 	t.Helper()
 	for _, tc := range termBufferInvalidIndexCases {
@@ -90,14 +90,14 @@ func requireTermBufferTryClaimCommit(t *testing.T, pub claimingPublication) {
 
 func TestPublication_TermBuffer(t *testing.T) {
 	pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), 1_000_000)
-	requireTermBufferMatchesOracle(t, pub, func(termIndex int) atomic.AtomicBuffer {
+	requireTermBufferMatchesOracle(t, pub, func(termIndex int) atomicbuffer.AtomicBuffer {
 		return aeron.PublicationTermBufferForTest(pub, termIndex)
 	})
 }
 
 func TestPublication_TermBuffer_invalidIndex(t *testing.T) {
 	pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), 1_000_000)
-	requireTermBufferInvalidIndexPanics(t, pub, func(termIndex int) atomic.AtomicBuffer {
+	requireTermBufferInvalidIndexPanics(t, pub, func(termIndex int) atomicbuffer.AtomicBuffer {
 		return aeron.PublicationTermBufferForTest(pub, termIndex)
 	})
 }
@@ -113,7 +113,7 @@ func TestExclusivePublication_TermBuffer(t *testing.T) {
 		aeron.DefaultTestExclusivePublicationLogConfig(),
 		1_000_000,
 	)
-	requireTermBufferMatchesOracle(t, ep, func(termIndex int) atomic.AtomicBuffer {
+	requireTermBufferMatchesOracle(t, ep, func(termIndex int) atomicbuffer.AtomicBuffer {
 		return aeron.ExclusivePublicationTermBufferForTest(ep, termIndex)
 	})
 }
@@ -124,7 +124,7 @@ func TestExclusivePublication_TermBuffer_invalidIndex(t *testing.T) {
 		aeron.DefaultTestExclusivePublicationLogConfig(),
 		1_000_000,
 	)
-	requireTermBufferInvalidIndexPanics(t, ep, func(termIndex int) atomic.AtomicBuffer {
+	requireTermBufferInvalidIndexPanics(t, ep, func(termIndex int) atomicbuffer.AtomicBuffer {
 		return aeron.ExclusivePublicationTermBufferForTest(ep, termIndex)
 	})
 }

@@ -17,9 +17,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	agronaatomic "github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/idlestrategy"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/heron/idlestrategy"
 	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -92,7 +92,7 @@ func newEchoAndAdminCaptureHandlers() (*client.EgressHandlers, *[]byte, *adminRe
 	return &client.EgressHandlers{
 		MessageFunc: func(
 			_, _ int64,
-			buf agronaatomic.AtomicBuffer,
+			buf atomicbuffer.AtomicBuffer,
 			offset, length int,
 			_ *aeron.Header,
 		) {

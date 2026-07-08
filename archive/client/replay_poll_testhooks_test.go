@@ -9,12 +9,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func appendClonedFragmentHandler(dst *[][]byte) aeron.FragmentHandler {
 	return func(
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		_ *aeron.Header,
@@ -330,7 +330,7 @@ func closedReplayImageAtStopPositionForTest(t *testing.T) (*aeron.Image, int64) 
 
 	image, frameLength := aeron.NewImageWithCommittedDataFrameForHooks(t, 0, 0)
 	image.Poll(func(
-		_ atomic.AtomicBuffer,
+		_ atomicbuffer.AtomicBuffer,
 		_ int,
 		_ int,
 		_ *aeron.Header,

@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestNewCountersReaderRejectsEmptyValues(t *testing.T) {
@@ -349,8 +349,8 @@ func TestCountersReaderIsCounterActiveChannelStatus(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	metaBuffer := atomic.Wrap(meta)
-	gotChannel, _, err := atomic.GetStringASCII(
+	metaBuffer := atomicbuffer.Wrap(meta)
+	gotChannel, _, err := atomicbuffer.GetStringASCII(
 		metaBuffer,
 		cnc.CounterMetadataLength*0+cnc.CounterMetadataKeyOffset,
 	)
@@ -361,7 +361,7 @@ func TestCountersReaderIsCounterActiveChannelStatus(t *testing.T) {
 	require.Equal(
 		t,
 		registrationID,
-		atomic.Wrap(values).GetInt64(cnc.CounterValueLength*0+cnc.CounterValueRegistrationIDOffset),
+		atomicbuffer.Wrap(values).GetInt64(cnc.CounterValueLength*0+cnc.CounterValueRegistrationIDOffset),
 	)
 
 	reader, err := cnc.NewCountersReader(meta, values)
@@ -461,12 +461,12 @@ func TestCountersReaderNilReceiver(t *testing.T) {
 	require.False(t, ok)
 	require.Equal(t, cnc.NullCounterID, counterID)
 	require.False(t, reader.IsCounterActive(0, 1, cnc.ClientHeartbeatTypeID))
-	require.Equal(t, atomic.AtomicBuffer{}, reader.CounterValuesBuffer())
+	require.Equal(t, atomicbuffer.AtomicBuffer{}, reader.CounterValuesBuffer())
 }
 
 func TestNewCounterSlot_outOfBoundsPanics(t *testing.T) {
 	_, values := syntheticCountersBuffers(t, 1)
-	buffer := atomic.Wrap(values)
+	buffer := atomicbuffer.Wrap(values)
 
 	cases := []struct {
 		name      string

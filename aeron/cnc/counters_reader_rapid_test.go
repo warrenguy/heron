@@ -10,7 +10,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestCountersReader_isCounterActiveRegistrationSource_rapid(t *testing.T) {
@@ -45,7 +45,7 @@ func TestCountersReader_isCounterActiveRegistrationSource_rapid(t *testing.T) {
 
 		if typeID == cnc.DriverSendChannelStatusTypeID ||
 			typeID == cnc.DriverReceiveChannelStatusTypeID {
-			atomic.Wrap(meta).PutInt64(
+			atomicbuffer.Wrap(meta).PutInt64(
 				counterMetadataRegistrationKeyOffset(counterID),
 				wrongRegistrationID+999,
 			)

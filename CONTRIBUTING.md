@@ -5,14 +5,25 @@ Development workflows for this repository. User-facing overview and usage exampl
 
 ## Building blocks
 
+Agrona-compatible layout primitives shared by `aeron/` and `cluster/`; module importers
+may use them directly.
+
 | Area | `github.com/warrenguy/heron/...` | Detail |
 |------|-------------|--------|
-| Agrona primitives | `agrona/...` | [`agrona/README.md`](agrona/README.md) |
+| Atomic buffer | `atomicbuffer` | `AtomicBuffer` over byte slices; bit and ASCII string helpers |
+| Broadcast buffer | `broadcast` | One-to-many broadcast buffer: fixed Agrona wire layout for driver/CnC |
+| Idle strategy | `idlestrategy` | Agent idle pacing (`IdleStrategy`, backoff, spin/yield/sleep) |
+| Mmap | `mmap` | Unix mmap for driver/CnC shared-memory files |
+| Record | `record` | Shared record header constants for ring and broadcast buffers |
+| Ring buffer | `ringbuffer` | `ManyToOneRingBuffer`: fixed Agrona wire layout for CnC/driver rings |
 | Cluster client | `cluster/client` | `ClusterContext`, `AsyncConnect`, `AeronCluster`, egress handlers |
 | Cluster codecs | `cluster/codecs` | SBE flyweights in `gensbe/`; see **SBE codecs** below |
 | Archive codecs / client | `archive/codecs`, `archive/client` | SBE flyweights in `gensbe/`; `ArchiveContext`, `AsyncConnect`, `ArchiveProxy` - see [capabilities](README.md#capabilities) |
 | Transport client | `aeron` | `Connect`, `Client`, `Publication`, `Subscription`, `ExclusivePublication` |
 | Transport internals | `aeron/{conductor,cnc,logbuffer}` | Conductor, CnC, logbuffer |
+
+`ringbuffer` and `broadcast` are layout-coupled ports, not generic queues; see package
+godoc for layout and concurrency constraints.
 
 ## Examples
 
@@ -98,7 +109,7 @@ Pin-bump workflow:
 | Target | Tags | Packages |
 |--------|------|----------|
 | `make bench` (+ baseline, regression) | `bench` | `./test/bench/...` |
-| `make bench-micro` | `testhooks` | `./agrona/...` `./aeron/...` white-box |
+| `make bench-micro` | `testhooks` | `BENCH_MICRO_PKGS` in Makefile (layout primitives + `./aeron/...`) |
 
 ```bash
 make bench             # contract suite (quick)

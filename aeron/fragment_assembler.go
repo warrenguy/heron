@@ -2,7 +2,7 @@ package aeron
 
 import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const fragmentBuilderIdleNextTermOffset int32 = -1
@@ -78,7 +78,7 @@ func (assembler *FragmentAssembler) FreeSessionBuffer(sessionID int32) bool {
 }
 
 func (assembler *FragmentAssembler) handleFragment(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *Header,
@@ -116,7 +116,7 @@ func (assembler *FragmentAssembler) handleFragment(
 			return
 		}
 		if flags&logbuffer.EndFlag != 0 {
-			firstLen := logbuffer.FrameLength(atomic.Wrap(builder.capturedFrameHeader[:]), 0)
+			firstLen := logbuffer.FrameLength(atomicbuffer.Wrap(builder.capturedFrameHeader[:]), 0)
 			delete(assembler.builders, sessionID)
 			if builder.limit <= 0 || firstLen <= int32(logbuffer.DataHeaderLength) {
 				// Malformed END is terminal: no valid payload can be delivered.
@@ -130,7 +130,7 @@ func (assembler *FragmentAssembler) handleFragment(
 				header,
 			)
 			assembler.delegate(
-				atomic.Wrap(builder.payload),
+				atomicbuffer.Wrap(builder.payload),
 				0,
 				builder.limit,
 				&builder.completedHeader,
@@ -148,7 +148,7 @@ func (builder *fragmentBufferBuilder) reset() {
 
 func (builder *fragmentBufferBuilder) captureHeader(
 	header *Header,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 ) {
 	frameOffset := header.Offset()
 	copy(
@@ -158,7 +158,7 @@ func (builder *fragmentBufferBuilder) captureHeader(
 }
 
 func (builder *fragmentBufferBuilder) appendAtExpectedOffset(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	termOffset int32,
@@ -172,7 +172,7 @@ func (builder *fragmentBufferBuilder) appendAtExpectedOffset(
 }
 
 func (builder *fragmentBufferBuilder) append(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	initialBufferLength int,

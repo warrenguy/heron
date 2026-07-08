@@ -2,8 +2,8 @@ package client
 
 import (
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/ringbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/ringbuffer"
 )
 
 type ControlledEgressAction = ringbuffer.ControlledAction
@@ -24,7 +24,7 @@ type ControlledEgressHandler interface {
 	Message(
 		clusterSessionID int64,
 		timestamp int64,
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		header *aeron.Header,

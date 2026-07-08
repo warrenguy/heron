@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func subscriptionMessageIPCBytes() []byte {
@@ -25,7 +25,7 @@ func subscriptionMessageHarness() streamChannelMessageHarness {
 		errOutOfBounds:    conductor.ErrSubscriptionMessageOutOfBounds,
 		bodyLength:        conductor.SubscriptionMessageBodyLength,
 		encode: func(
-			buffer atomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			offset int,
 			clientID int64,
 			correlationID int64,
@@ -43,7 +43,7 @@ func subscriptionMessageHarness() streamChannelMessageHarness {
 			)
 		},
 		decode: func(
-			buffer atomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			offset int,
 			bodyLength int,
 		) (int64, int64, int32, string, error) {
@@ -86,7 +86,7 @@ func TestSubscriptionMessageRoundtrip(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			bodyLength := conductor.SubscriptionMessageBodyLength(test.channel)
-			buffer := atomic.Wrap(make([]byte, bodyLength))
+			buffer := atomicbuffer.Wrap(make([]byte, bodyLength))
 			err := conductor.EncodeSubscriptionMessage(
 				buffer,
 				0,
@@ -140,7 +140,7 @@ func TestDecodeSubscriptionMessage_channelTruncated(t *testing.T) {
 		subscriptionMessageHarness(),
 		subscriptionMessageIPCBytes(),
 		36,
-		"atomic: string ascii out of bounds: offset=4 capacity=8",
+		"atomicbuffer: string ascii out of bounds: offset=4 capacity=8",
 	)
 }
 

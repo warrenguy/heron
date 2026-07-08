@@ -1,8 +1,6 @@
 package logbuffer
 
-import (
-	"github.com/warrenguy/heron/agrona/atomic"
-)
+import "github.com/warrenguy/heron/atomicbuffer"
 
 // RawTailVolatile reads active-term count then that partition's raw tail.
 //
@@ -12,27 +10,27 @@ import (
 // Transient count/tail skew during rotation is accepted; matches C/Java rawTailVolatile.
 //
 // Callers re-read on hot paths.
-func RawTailVolatile(meta atomic.AtomicBuffer) (int64, error) {
-	atomic.AcquireFence()
+func RawTailVolatile(meta atomicbuffer.AtomicBuffer) (int64, error) {
+	atomicbuffer.AcquireFence()
 	activeTermCount := meta.GetInt32Volatile(OffsetActiveTermCount)
 	partition := IndexByTermCount(activeTermCount)
-	atomic.AcquireFence()
+	atomicbuffer.AcquireFence()
 	return GetRawTail(meta, partition)
 }
 
-func ActiveTermCount(meta atomic.AtomicBuffer) int32 {
-	atomic.AcquireFence()
+func ActiveTermCount(meta atomicbuffer.AtomicBuffer) int32 {
+	atomicbuffer.AcquireFence()
 	return meta.GetInt32Volatile(OffsetActiveTermCount)
 }
 
-func GetRawTail(meta atomic.AtomicBuffer, partitionIndex int) (int64, error) {
+func GetRawTail(meta atomicbuffer.AtomicBuffer, partitionIndex int) (int64, error) {
 	if err := ValidateTermIndex(partitionIndex, "partition index"); err != nil {
 		return 0, err
 	}
 	return meta.GetInt64Volatile(OffsetTermTailCounter(partitionIndex)), nil
 }
 
-func PutRawTail(meta atomic.AtomicBuffer, partitionIndex int, rawTail int64) error {
+func PutRawTail(meta atomicbuffer.AtomicBuffer, partitionIndex int, rawTail int64) error {
 	if err := ValidateTermIndex(partitionIndex, "partition index"); err != nil {
 		return err
 	}
@@ -41,7 +39,7 @@ func PutRawTail(meta atomic.AtomicBuffer, partitionIndex int, rawTail int64) err
 }
 
 func CasRawTail(
-	meta atomic.AtomicBuffer,
+	meta atomicbuffer.AtomicBuffer,
 	partitionIndex int,
 	expect int64,
 	update int64,
@@ -57,7 +55,7 @@ func CasRawTail(
 }
 
 func CasActiveTermCount(
-	meta atomic.AtomicBuffer,
+	meta atomicbuffer.AtomicBuffer,
 	expect int32,
 	update int32,
 ) bool {
@@ -73,7 +71,7 @@ func CasActiveTermCount(
 //
 // Callers must retry Offer/TryClaim on AdminAction.
 func RotateLog(
-	meta atomic.AtomicBuffer,
+	meta atomicbuffer.AtomicBuffer,
 	currentTermCount int32,
 	currentTermID int32,
 ) bool {
@@ -84,7 +82,7 @@ func RotateLog(
 
 	for {
 		// C aeron ordering even though the prior IndexByTermCount bounds nextIndex.
-		atomic.AcquireFence()
+		atomicbuffer.AcquireFence()
 		rawTail, err := GetRawTail(meta, nextIndex)
 		if err != nil {
 			// nextIndex is always in [0, PartitionCount); kept for C parity.

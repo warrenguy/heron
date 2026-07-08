@@ -3,7 +3,7 @@ package recordinglog
 import (
 	"math"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 // Entry type constants. Values match the recording.log on-disk encoding.
@@ -87,7 +87,7 @@ type Entry struct {
 func encodeEntry(e Entry) []byte {
 	endpoint := e.ArchiveEndpoint
 	buf := make([]byte, alignedEntryLength(e.Type, endpoint))
-	buffer := atomic.Wrap(buf)
+	buffer := atomicbuffer.Wrap(buf)
 	buffer.PutInt64(recordingIDOffset, e.RecordingID)
 	buffer.PutInt64(leadershipTermIDOffset, e.LeadershipTermID)
 	buffer.PutInt64(termBaseLogPositionOffset, e.TermBaseLogPosition)
@@ -103,7 +103,7 @@ func encodeEntry(e Entry) []byte {
 
 	if hasEndpoint(e.Type) {
 		buffer.PutInt32(endpointOffset, int32(len(endpoint)))
-		copy(buf[endpointOffset+atomic.StringASCIIHeaderLength:], endpoint)
+		copy(buf[endpointOffset+atomicbuffer.StringASCIIHeaderLength:], endpoint)
 	}
 	return buf
 }

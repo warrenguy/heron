@@ -9,7 +9,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func newTestEgressAdapter(
@@ -173,7 +173,7 @@ func TestEgressAdapter_Poll_fragmentedSessionMessageHeader_messageBytesFunc(t *t
 func TestEgressAdapter_Poll_wrongClusterSessionIDIgnored(t *testing.T) {
 	cases := []struct {
 		name      string
-		writeWire func(t fragmentTestHelper, termBuffer atomic.AtomicBuffer, wire []byte)
+		writeWire func(t fragmentTestHelper, termBuffer atomicbuffer.AtomicBuffer, wire []byte)
 		pollCount int
 	}{
 		{

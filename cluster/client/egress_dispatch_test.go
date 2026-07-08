@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
@@ -32,7 +32,7 @@ func runHandleEgressFragmentNoDispatchCases(t *testing.T, cases []handleEgressFr
 
 func TestThrowingEgressHandler_message_panicsWithValue(t *testing.T) {
 	customErr := errors.New("custom egress error")
-	buf := atomic.Wrap([]byte("payload"))
+	buf := atomicbuffer.Wrap([]byte("payload"))
 	payloadLen := len(buf.Bytes())
 
 	tests := []struct {

@@ -3,7 +3,7 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 var ErrPublicationMessageOutOfBounds = errors.New("conductor: publication message out of bounds")
@@ -20,7 +20,7 @@ func PublicationMessageBodyLength(channel string) int {
 }
 
 func EncodePublicationMessage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	clientID, correlationID int64,
 	streamID int32,
@@ -39,7 +39,7 @@ func EncodePublicationMessage(
 }
 
 func DecodePublicationMessage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset, bodyLength int,
 ) (PublicationMessage, error) {
 	decoded, err := decodeCorrelatedStreamChannelMessage(
@@ -67,7 +67,7 @@ func PublicationMessageBytes(
 ) []byte {
 	return encodeToBytes(
 		PublicationMessageBodyLength(channel),
-		func(buf atomic.AtomicBuffer, offset int) error {
+		func(buf atomicbuffer.AtomicBuffer, offset int) error {
 			return EncodePublicationMessage(buf, offset, clientID, correlationID, streamID, channel)
 		},
 	)

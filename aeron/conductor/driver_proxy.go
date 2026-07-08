@@ -3,7 +3,7 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/agrona/ringbuffer"
+	"github.com/warrenguy/heron/ringbuffer"
 )
 
 const (
@@ -72,7 +72,7 @@ func (proxy *DriverProxy) NextAvailableSessionID(
 
 // AddPublication offers ADD_PUBLICATION on the to-driver ring.
 //
-// Channel must be ASCII; other bytes return atomic.ErrStringASCIINonASCII.
+// Channel must be ASCII; other bytes return atomicbuffer.ErrStringASCIINonASCII.
 //
 // Agrona putStringAscii replaces high bytes with '?'; encode rejects non-ASCII.
 func (proxy *DriverProxy) AddPublication(
@@ -96,7 +96,7 @@ func (proxy *DriverProxy) AddExclusivePublication(
 
 // AddSubscription offers ADD_SUBSCRIPTION on the to-driver ring.
 //
-// Channel must be ASCII; other bytes return atomic.ErrStringASCIINonASCII.
+// Channel must be ASCII; other bytes return atomicbuffer.ErrStringASCIINonASCII.
 //
 // Agrona putStringAscii replaces high bytes with '?'; encode rejects non-ASCII.
 func (proxy *DriverProxy) AddSubscription(

@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/agrona/mmap"
+	"github.com/warrenguy/heron/mmap"
 )
 
 func testReadyFileLength() int {

@@ -7,14 +7,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestRotateLog_synthetic(t *testing.T) {
 	full := make([]byte, logbuffer.TestComputedLength)
 	logbuffer.WriteSyntheticMetadata(full, logbuffer.DefaultSyntheticMetadataConfig())
 	metaStart := logbuffer.MetaDataOffset(logbuffer.TestTermLength)
-	meta := atomic.Wrap(full[metaStart : metaStart+logbuffer.MetaDataLength])
+	meta := atomicbuffer.Wrap(full[metaStart : metaStart+logbuffer.MetaDataLength])
 
 	tail0Before, err := logbuffer.GetRawTail(meta, 0)
 	require.NoError(t, err)
@@ -42,7 +42,7 @@ func TestRotateLog_synthetic(t *testing.T) {
 
 func TestCasRawTail(t *testing.T) {
 	buf := make([]byte, logbuffer.MetaDataLength)
-	meta := atomic.Wrap(buf)
+	meta := atomicbuffer.Wrap(buf)
 
 	initial := logbuffer.PackRawTail(5, 0)
 	require.NoError(t, logbuffer.PutRawTail(meta, 1, initial))
@@ -60,7 +60,7 @@ func TestCasRawTail(t *testing.T) {
 }
 
 func TestCasRawTail_invalidPartition(t *testing.T) {
-	meta := atomic.Wrap(make([]byte, logbuffer.MetaDataLength))
+	meta := atomicbuffer.Wrap(make([]byte, logbuffer.MetaDataLength))
 	_, err := logbuffer.GetRawTail(meta, 3)
 	require.EqualError(t, err, "logbuffer: invalid partition index: 3")
 	require.EqualError(t, logbuffer.PutRawTail(meta, -1, 0), "logbuffer: invalid partition index: -1")
@@ -72,7 +72,7 @@ func TestCasRawTail_invalidPartition(t *testing.T) {
 
 func TestCasActiveTermCount(t *testing.T) {
 	buf := make([]byte, logbuffer.MetaDataLength)
-	meta := atomic.Wrap(buf)
+	meta := atomicbuffer.Wrap(buf)
 	meta.PutInt32Release(logbuffer.OffsetActiveTermCount, 0)
 
 	require.True(t, logbuffer.CasActiveTermCount(meta, 0, 1))
@@ -82,7 +82,7 @@ func TestCasActiveTermCount(t *testing.T) {
 
 func TestRotateLog_preconditionMismatchStillAdvancesCount(t *testing.T) {
 	buf := make([]byte, logbuffer.MetaDataLength)
-	meta := atomic.Wrap(buf)
+	meta := atomicbuffer.Wrap(buf)
 	require.NoError(t, logbuffer.PutRawTail(meta, 1, logbuffer.PackRawTail(99, 0)))
 	meta.PutInt32Release(logbuffer.OffsetActiveTermCount, 0)
 
@@ -95,7 +95,7 @@ func TestRotateLog_preconditionMismatchStillAdvancesCount(t *testing.T) {
 
 func TestRotateLog_staleCurrentTermCountCASFails(t *testing.T) {
 	buf := make([]byte, logbuffer.MetaDataLength)
-	meta := atomic.Wrap(buf)
+	meta := atomicbuffer.Wrap(buf)
 	meta.PutInt32Release(logbuffer.OffsetActiveTermCount, 2)
 
 	require.False(t, logbuffer.RotateLog(meta, 0, 7))
@@ -104,7 +104,7 @@ func TestRotateLog_staleCurrentTermCountCASFails(t *testing.T) {
 
 func TestRotateLog_casRawTailRetry(t *testing.T) {
 	buf := make([]byte, logbuffer.MetaDataLength)
-	meta := atomic.Wrap(buf)
+	meta := atomicbuffer.Wrap(buf)
 	require.NoError(t, logbuffer.PutRawTail(meta, 1, logbuffer.PackRawTail(5, 0)))
 	meta.PutInt32Release(logbuffer.OffsetActiveTermCount, 0)
 
@@ -153,7 +153,7 @@ func TestRotateLog_casRawTailRetry(t *testing.T) {
 
 func TestRawTailVolatile_activeTermCountZero(t *testing.T) {
 	buf := make([]byte, logbuffer.MetaDataLength)
-	meta := atomic.Wrap(buf)
+	meta := atomicbuffer.Wrap(buf)
 	require.NoError(t, logbuffer.PutRawTail(meta, 0, logbuffer.PackRawTail(7, 128)))
 	meta.PutInt32Release(logbuffer.OffsetActiveTermCount, 0)
 

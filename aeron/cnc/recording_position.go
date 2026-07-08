@@ -1,6 +1,6 @@
 package cnc
 
-import "github.com/warrenguy/heron/agrona/atomic"
+import "github.com/warrenguy/heron/atomicbuffer"
 
 const (
 	// ArchiveRecordingPositionCounterTypeID mirrors Java
@@ -89,8 +89,8 @@ func WriteRecordingPositionCounterRecord(
 	archiveID int64,
 	value int64,
 ) error {
-	metaBuffer := atomic.Wrap(meta)
-	valuesBuffer := atomic.Wrap(values)
+	metaBuffer := atomicbuffer.Wrap(meta)
+	valuesBuffer := atomicbuffer.Wrap(values)
 	return writeCounterRecord(
 		metaBuffer,
 		valuesBuffer,

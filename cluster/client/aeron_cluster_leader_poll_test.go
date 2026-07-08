@@ -14,7 +14,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	agronaatomic "github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
@@ -48,7 +48,7 @@ func newMultiMemberWireRecoveryCluster(
 
 func writeNewLeaderEventToEgressTerm(
 	t *testing.T,
-	termBuffer agronaatomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	leaderMemberID int32,
 	endpoints []byte,
 ) {
@@ -68,7 +68,7 @@ func writeNewLeaderEventToEgressTerm(
 
 func writeSessionEventRedirectToEgressTerm(
 	t *testing.T,
-	termBuffer agronaatomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 	endpoints string,
 ) {
@@ -131,7 +131,7 @@ func pollEgressLeaderRecoveryOnce(
 func applyWireNewLeaderAndPoll(
 	t *testing.T,
 	ac *AeronCluster,
-	termBuffer agronaatomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	endpoints []byte,
 ) {
 	t.Helper()
@@ -143,7 +143,7 @@ func applyWireNewLeaderAndPoll(
 func applyWireRedirectAndPoll(
 	t *testing.T,
 	ac *AeronCluster,
-	termBuffer agronaatomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 	endpoints string,
 ) {
@@ -435,7 +435,7 @@ func TestAeronCluster_PollEgress_ingressPlanError_noMutation(t *testing.T) {
 		apply func(
 			t *testing.T,
 			ac *AeronCluster,
-			termBuffer agronaatomic.AtomicBuffer,
+			termBuffer atomicbuffer.AtomicBuffer,
 			endpoints []byte,
 		)
 		handlerCalls func(rec *recordingEgressHandlers) int
@@ -447,7 +447,7 @@ func TestAeronCluster_PollEgress_ingressPlanError_noMutation(t *testing.T) {
 			apply: func(
 				t *testing.T,
 				ac *AeronCluster,
-				termBuffer agronaatomic.AtomicBuffer,
+				termBuffer atomicbuffer.AtomicBuffer,
 				endpoints []byte,
 			) {
 				applyWireNewLeaderAndPoll(t, ac, termBuffer, endpoints)
@@ -459,7 +459,7 @@ func TestAeronCluster_PollEgress_ingressPlanError_noMutation(t *testing.T) {
 			apply: func(
 				t *testing.T,
 				ac *AeronCluster,
-				termBuffer agronaatomic.AtomicBuffer,
+				termBuffer atomicbuffer.AtomicBuffer,
 				endpoints []byte,
 			) {
 				applyWireRedirectAndPoll(t, ac, termBuffer, 77, string(endpoints))
@@ -490,14 +490,14 @@ func TestAeronCluster_PollEgress_applyError_entersAwaitNewLeader(t *testing.T) {
 	tests := []struct {
 		name    string
 		startNs int64
-		apply   func(t *testing.T, ac *AeronCluster, termBuffer agronaatomic.AtomicBuffer)
+		apply   func(t *testing.T, ac *AeronCluster, termBuffer atomicbuffer.AtomicBuffer)
 		verify  func(t *testing.T, ac *AeronCluster, termBefore int64)
 		calls   func(rec *recordingEgressHandlers) int
 	}{
 		{
 			name:    "newLeader",
 			startNs: 8_000_000_000,
-			apply: func(t *testing.T, ac *AeronCluster, termBuffer agronaatomic.AtomicBuffer) {
+			apply: func(t *testing.T, ac *AeronCluster, termBuffer atomicbuffer.AtomicBuffer) {
 				applyWireNewLeaderAndPoll(t, ac, termBuffer, multiMemberEndpointsAC)
 			},
 			verify: func(t *testing.T, ac *AeronCluster, _ int64) {
@@ -508,7 +508,7 @@ func TestAeronCluster_PollEgress_applyError_entersAwaitNewLeader(t *testing.T) {
 		{
 			name:    "redirect",
 			startNs: 9_000_000_000,
-			apply: func(t *testing.T, ac *AeronCluster, termBuffer agronaatomic.AtomicBuffer) {
+			apply: func(t *testing.T, ac *AeronCluster, termBuffer atomicbuffer.AtomicBuffer) {
 				applyWireRedirectAndPoll(t, ac, termBuffer, 77, string(multiMemberEndpointsAC))
 			},
 			verify: func(t *testing.T, ac *AeronCluster, termBefore int64) {

@@ -2,7 +2,7 @@ package client
 
 import (
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 // IngressPublication is the connect-path ingress handle.
@@ -16,7 +16,7 @@ type IngressPublication interface {
 	Abort(termIndex, frameOffset int) error
 	MaxPayloadLength() int
 	MaxMessageLength() int
-	TermBuffer(termIndex int) atomic.AtomicBuffer
+	TermBuffer(termIndex int) atomicbuffer.AtomicBuffer
 	IsConnected() bool
 	IsClosed() bool
 	Close() error

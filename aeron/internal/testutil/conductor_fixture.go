@@ -7,9 +7,9 @@ import (
 
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/broadcast"
-	"github.com/warrenguy/heron/agrona/ringbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/broadcast"
+	"github.com/warrenguy/heron/ringbuffer"
 )
 
 const (
@@ -69,7 +69,7 @@ type ConductorFixture struct {
 }
 
 func newTestRingBuffer() (*ringbuffer.ManyToOneRingBuffer, error) {
-	ringBuffer := atomic.Wrap(
+	ringBuffer := atomicbuffer.Wrap(
 		make([]byte, ringbuffer.TotalBufferLength(TestRingDataCapacity)),
 	)
 	return ringbuffer.NewManyToOneRingBuffer(ringBuffer)
@@ -95,7 +95,7 @@ func newTestTransport(epochMs int64) (
 	}
 	ring.SetConsumerHeartbeatTime(epochMs)
 
-	broadcastBuffer := atomic.Wrap(
+	broadcastBuffer := atomicbuffer.Wrap(
 		make([]byte, broadcast.TotalBufferLength(TestRingDataCapacity)),
 	)
 	receiver, err := broadcast.NewBroadcastReceiver(broadcastBuffer)

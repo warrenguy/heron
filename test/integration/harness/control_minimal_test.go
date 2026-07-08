@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/record"
-	"github.com/warrenguy/heron/agrona/ringbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/record"
+	"github.com/warrenguy/heron/ringbuffer"
 )
 
 const (
@@ -284,7 +284,7 @@ func TestObserveClientClose(t *testing.T) {
 		setup func(
 			t *testing.T,
 			ring *ringbuffer.ManyToOneRingBuffer,
-			buffer atomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			consumerBefore int64,
 			producerBefore int64,
 		)
@@ -295,7 +295,7 @@ func TestObserveClientClose(t *testing.T) {
 			setup: func(
 				t *testing.T,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				_ atomic.AtomicBuffer,
+				_ atomicbuffer.AtomicBuffer,
 				_, _ int64,
 			) {
 				t.Helper()
@@ -307,7 +307,7 @@ func TestObserveClientClose(t *testing.T) {
 			setup: func(
 				t *testing.T,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				buffer atomic.AtomicBuffer,
+				buffer atomicbuffer.AtomicBuffer,
 				consumerBefore, _ int64,
 			) {
 				t.Helper()
@@ -320,7 +320,7 @@ func TestObserveClientClose(t *testing.T) {
 			setup: func(
 				t *testing.T,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				buffer atomic.AtomicBuffer,
+				buffer atomicbuffer.AtomicBuffer,
 				consumerBefore, _ int64,
 			) {
 				t.Helper()
@@ -337,7 +337,7 @@ func TestObserveClientClose(t *testing.T) {
 			setup: func(
 				t *testing.T,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				buffer atomic.AtomicBuffer,
+				buffer atomicbuffer.AtomicBuffer,
 				consumerBefore, producerBefore int64,
 			) {
 				t.Helper()
@@ -806,7 +806,7 @@ func TestObserveAddPublication(t *testing.T) {
 		setup func(
 			t *testing.T,
 			ring *ringbuffer.ManyToOneRingBuffer,
-			buffer atomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			consumerBefore int64,
 			producerBefore int64,
 		)
@@ -817,7 +817,7 @@ func TestObserveAddPublication(t *testing.T) {
 			setup: func(
 				t *testing.T,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				_ atomic.AtomicBuffer,
+				_ atomicbuffer.AtomicBuffer,
 				_, _ int64,
 			) {
 				t.Helper()
@@ -830,7 +830,7 @@ func TestObserveAddPublication(t *testing.T) {
 			setup: func(
 				t *testing.T,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				_ atomic.AtomicBuffer,
+				_ atomicbuffer.AtomicBuffer,
 				_, _ int64,
 			) {
 				t.Helper()
@@ -846,7 +846,7 @@ func TestObserveAddPublication(t *testing.T) {
 			setup: func(
 				t *testing.T,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				buffer atomic.AtomicBuffer,
+				buffer atomicbuffer.AtomicBuffer,
 				consumerBefore, _ int64,
 			) {
 				t.Helper()
@@ -862,7 +862,7 @@ func TestObserveAddPublication(t *testing.T) {
 			setup: func(
 				t *testing.T,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				buffer atomic.AtomicBuffer,
+				buffer atomicbuffer.AtomicBuffer,
 				consumerBefore, _ int64,
 			) {
 				t.Helper()
@@ -882,7 +882,7 @@ func TestObserveAddPublication(t *testing.T) {
 			setup: func(
 				t *testing.T,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				buffer atomic.AtomicBuffer,
+				buffer atomicbuffer.AtomicBuffer,
 				consumerBefore, producerBefore int64,
 			) {
 				t.Helper()
@@ -952,7 +952,7 @@ func TestFindConsumedAddPublicationAt_clearedKeepaliveRejected(t *testing.T) {
 func seedControlMinimalRingNearWrap(
 	t *testing.T,
 	ring *ringbuffer.ManyToOneRingBuffer,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 ) {
 	t.Helper()
 
@@ -964,7 +964,7 @@ func seedControlMinimalRingNearWrap(
 
 func requireWrapPaddingAddPublicationLayout(
 	t *testing.T,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	producerBefore int64,
 	recordLength int,
 	producerAfter int64,
@@ -991,7 +991,7 @@ func requireWrapPaddingAddPublicationLayout(
 func offerAddPublicationAcrossWrap(
 	t *testing.T,
 	ring *ringbuffer.ManyToOneRingBuffer,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 ) (
 	want conductor.PublicationMessage,
 	consumerBefore int64,
@@ -1019,7 +1019,7 @@ func offerAddPublicationAcrossWrap(
 func advanceControlMinimalConsumerTo(
 	t *testing.T,
 	ring *ringbuffer.ManyToOneRingBuffer,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	position int64,
 ) {
 	t.Helper()
@@ -1029,14 +1029,14 @@ func advanceControlMinimalConsumerTo(
 	buffer.PutInt64Release(ringbuffer.HeadIndex(ring.Capacity()), position)
 }
 
-func clearRecordAtIndex0(buffer atomic.AtomicBuffer, recordLength int) {
+func clearRecordAtIndex0(buffer atomicbuffer.AtomicBuffer, recordLength int) {
 	buffer.SetBytes(0, recordLength, 0)
 }
 
 func advanceControlMinimalConsumerByRecordLength(
 	t *testing.T,
 	ring *ringbuffer.ManyToOneRingBuffer,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	consumerBefore, producerAfter int64,
 	recordLength int,
 ) {
@@ -1056,7 +1056,7 @@ func advanceControlMinimalConsumerByRecordLength(
 func advanceControlMinimalConsumer(
 	t *testing.T,
 	ring *ringbuffer.ManyToOneRingBuffer,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	consumerBefore, producerAfter int64,
 ) {
 	t.Helper()
@@ -1072,11 +1072,11 @@ func advanceControlMinimalConsumer(
 
 func newControlMinimalTestRingBuffer(
 	t *testing.T,
-) (*ringbuffer.ManyToOneRingBuffer, atomic.AtomicBuffer) {
+) (*ringbuffer.ManyToOneRingBuffer, atomicbuffer.AtomicBuffer) {
 	t.Helper()
 
 	buf := make([]byte, ringbuffer.TotalBufferLength(controlMinimalTestDataCapacity))
-	buffer := atomic.Wrap(buf)
+	buffer := atomicbuffer.Wrap(buf)
 	ring, err := ringbuffer.NewManyToOneRingBuffer(buffer)
 	require.NoError(t, err)
 	return ring, buffer
@@ -1292,7 +1292,7 @@ func (ops removeTestOps) findOfferedAtWrap(
 func (ops removeTestOps) offerAcrossWrap(
 	t *testing.T,
 	ring *ringbuffer.ManyToOneRingBuffer,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 ) removeAcrossWrapOffer {
 	t.Helper()
 
@@ -1625,7 +1625,7 @@ func TestObserveRemove(t *testing.T) {
 			t *testing.T,
 			ops removeTestOps,
 			ring *ringbuffer.ManyToOneRingBuffer,
-			buffer atomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			clientID, registrationID int64,
 			recordLength int,
 			consumerBefore, producerBefore int64,
@@ -1637,7 +1637,7 @@ func TestObserveRemove(t *testing.T) {
 				t *testing.T,
 				ops removeTestOps,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				_ atomic.AtomicBuffer,
+				_ atomicbuffer.AtomicBuffer,
 				clientID, registrationID int64,
 				_ int,
 				_, _ int64,
@@ -1652,7 +1652,7 @@ func TestObserveRemove(t *testing.T) {
 				t *testing.T,
 				ops removeTestOps,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				_ atomic.AtomicBuffer,
+				_ atomicbuffer.AtomicBuffer,
 				clientID, registrationID int64,
 				_ int,
 				_, _ int64,
@@ -1670,7 +1670,7 @@ func TestObserveRemove(t *testing.T) {
 				t *testing.T,
 				ops removeTestOps,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				buffer atomic.AtomicBuffer,
+				buffer atomicbuffer.AtomicBuffer,
 				clientID, registrationID int64,
 				recordLength int,
 				consumerBefore, _ int64,
@@ -1688,7 +1688,7 @@ func TestObserveRemove(t *testing.T) {
 				t *testing.T,
 				ops removeTestOps,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				buffer atomic.AtomicBuffer,
+				buffer atomicbuffer.AtomicBuffer,
 				clientID, registrationID int64,
 				recordLength int,
 				consumerBefore, _ int64,
@@ -1710,7 +1710,7 @@ func TestObserveRemove(t *testing.T) {
 				t *testing.T,
 				ops removeTestOps,
 				ring *ringbuffer.ManyToOneRingBuffer,
-				buffer atomic.AtomicBuffer,
+				buffer atomicbuffer.AtomicBuffer,
 				clientID, registrationID int64,
 				recordLength int,
 				consumerBefore, producerBefore int64,
@@ -1849,7 +1849,7 @@ func TestDecodeMatchingRemove_ignoresCorrelationID(t *testing.T) {
 
 func requireWrapPaddingRemoveLayout(
 	t *testing.T,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	producerBefore int64,
 	recordLength int,
 	producerAfter int64,

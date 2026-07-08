@@ -3,10 +3,10 @@ package cnc
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/broadcast"
-	"github.com/warrenguy/heron/agrona/mmap"
-	"github.com/warrenguy/heron/agrona/ringbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/broadcast"
+	"github.com/warrenguy/heron/mmap"
+	"github.com/warrenguy/heron/ringbuffer"
 )
 
 var ringWireRegionIDs = [2]int{cncRegionToDriver, cncRegionToClients}
@@ -57,14 +57,14 @@ func wireRings(mapping *mmap.Mapping, meta Metadata) (*Rings, error) {
 	}
 
 	toDriver, err := ringbuffer.NewManyToOneRingBuffer(
-		atomic.Wrap(data[bounds[0].start:bounds[0].end]),
+		atomicbuffer.Wrap(data[bounds[0].start:bounds[0].end]),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("cnc: to-driver ring: %w", err)
 	}
 
 	toClients, err := broadcast.NewBroadcastReceiver(
-		atomic.Wrap(data[bounds[1].start:bounds[1].end]),
+		atomicbuffer.Wrap(data[bounds[1].start:bounds[1].end]),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("cnc: to-clients broadcast: %w", err)

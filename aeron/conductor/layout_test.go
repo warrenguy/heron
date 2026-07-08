@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestLayout_goldenOffsets(t *testing.T) {
@@ -173,7 +173,7 @@ func TestLayout_goldenOffsets(t *testing.T) {
 			require.Equal(t, test.want, test.got)
 		})
 	}
-	require.Equal(t, 2*atomic.SizeInt64, conductor.CorrelatedMessageLength)
+	require.Equal(t, 2*atomicbuffer.SizeInt64, conductor.CorrelatedMessageLength)
 	require.Equal(
 		t,
 		net.IPv6len,
@@ -183,41 +183,41 @@ func TestLayout_goldenOffsets(t *testing.T) {
 	require.Equal(
 		t,
 		conductor.SubscriptionReadyBodyLength,
-		conductor.SubscriptionReadyChannelStatusCounterIDOffset+atomic.SizeInt32,
+		conductor.SubscriptionReadyChannelStatusCounterIDOffset+atomicbuffer.SizeInt32,
 	)
 	require.Equal(
 		t,
 		conductor.UnavailableImageFixedLength,
-		conductor.UnavailableImageStreamIDOffset+atomic.SizeInt32,
+		conductor.UnavailableImageStreamIDOffset+atomicbuffer.SizeInt32,
 	)
 	require.Equal(
 		t,
 		conductor.AvailableImageFixedLength,
-		conductor.AvailableImageSubscriberPositionIDOffset+atomic.SizeInt32,
+		conductor.AvailableImageSubscriberPositionIDOffset+atomicbuffer.SizeInt32,
 	)
 	require.Equal(
 		t,
 		conductor.PublicationBuffersReadyFixedLength,
-		conductor.PublicationBuffersReadyChannelStatusCounterIDOffset+atomic.SizeInt32,
+		conductor.PublicationBuffersReadyChannelStatusCounterIDOffset+atomicbuffer.SizeInt32,
 	)
 	require.Equal(
 		t,
 		conductor.PublicationErrorFixedLength,
-		conductor.PublicationErrorErrorCodeOffset+atomic.SizeInt32,
+		conductor.PublicationErrorErrorCodeOffset+atomicbuffer.SizeInt32,
 	)
 	require.Equal(
 		t,
 		conductor.ErrorResponseFixedBodyLength,
-		conductor.ErrorResponseErrorMessageLengthOffset+atomic.SizeInt32,
+		conductor.ErrorResponseErrorMessageLengthOffset+atomicbuffer.SizeInt32,
 	)
 	require.Equal(
 		t,
 		conductor.PublicationMessageMinimumBodyLength,
-		conductor.PublicationMessageChannelOffset+atomic.SizeInt32,
+		conductor.PublicationMessageChannelOffset+atomicbuffer.SizeInt32,
 	)
 	require.Equal(
 		t,
 		conductor.SubscriptionMessageMinimumBodyLength,
-		conductor.SubscriptionMessageChannelOffset+atomic.SizeInt32,
+		conductor.SubscriptionMessageChannelOffset+atomicbuffer.SizeInt32,
 	)
 }

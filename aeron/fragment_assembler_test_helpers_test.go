@@ -2,7 +2,7 @@ package aeron
 
 import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 type fragmentTestHelper interface {
@@ -14,7 +14,7 @@ type fragmentTestHelper interface {
 func deliverFragment(
 	t fragmentTestHelper,
 	assembler *FragmentAssembler,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	frameOffset int,
 ) {
 	t.Helper()

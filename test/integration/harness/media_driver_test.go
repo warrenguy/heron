@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/broadcast"
-	"github.com/warrenguy/heron/agrona/ringbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/broadcast"
+	"github.com/warrenguy/heron/ringbuffer"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
@@ -44,7 +44,7 @@ func TestMediaDriver(t *testing.T) {
 		require.Positive(t, meta.ToClientsBufferLength)
 		require.Positive(t, meta.PID)
 		require.Positive(t, meta.FilePageSize)
-		require.True(t, atomic.IsPowerOfTwo(int(meta.FilePageSize)))
+		require.True(t, atomicbuffer.IsPowerOfTwo(int(meta.FilePageSize)))
 		require.Positive(t, meta.ClientLivenessTimeoutNs)
 	})
 

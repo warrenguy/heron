@@ -1,6 +1,6 @@
 package client
 
-import "github.com/warrenguy/heron/agrona/idlestrategy"
+import "github.com/warrenguy/heron/idlestrategy"
 
 // NewDefaultIdleStrategy returns the shared archive/cluster default backoff idle strategy.
 func NewDefaultIdleStrategy() idlestrategy.IdleStrategy {

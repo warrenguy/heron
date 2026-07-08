@@ -2,7 +2,7 @@ package aeron
 
 import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const headerFragmentedFrameNotSet int32 = -1
@@ -14,7 +14,7 @@ const headerFragmentedFrameNotSet int32 = -1
 // ConfigureCompletedFragment on the Image.Poll flyweight; use the
 // FragmentAssembler completedHeader only.
 type Header struct {
-	buffer              atomic.AtomicBuffer
+	buffer              atomicbuffer.AtomicBuffer
 	offset              int
 	initialTermID       int32
 	positionBitsToShift int32
@@ -79,7 +79,7 @@ func (header *Header) SetOffset(offset int) {
 	header.offset = offset
 }
 
-func (header *Header) SetBuffer(buffer atomic.AtomicBuffer) {
+func (header *Header) SetBuffer(buffer atomicbuffer.AtomicBuffer) {
 	header.buffer = buffer
 }
 
@@ -144,7 +144,7 @@ func (header *Header) ConfigureCompletedFragment(
 	}
 	dataHeaderLength := int32(logbuffer.DataHeaderLength)
 
-	buf := atomic.Wrap(capturedFrameHeader)
+	buf := atomicbuffer.Wrap(capturedFrameHeader)
 	firstFrameLength := logbuffer.FrameLength(buf, 0)
 	if firstFrameLength <= dataHeaderLength {
 		panic("aeron: firstFrameLength must exceed data header length")

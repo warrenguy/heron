@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/gensbe"
 
@@ -16,7 +17,6 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/internal/testutil"
 )
 
@@ -96,7 +96,7 @@ func attachEgressImageIfNeeded(t *testing.T, sub *aeron.Subscription) {
 func withAsyncConnectEgressTerm(
 	t *testing.T,
 	ac *AsyncConnect,
-	fn func(*testing.T, atomic.AtomicBuffer, int64),
+	fn func(*testing.T, atomicbuffer.AtomicBuffer, int64),
 ) {
 	t.Helper()
 
@@ -128,11 +128,11 @@ func encodeOKSessionEventWireForConnect(
 
 func writeOKSessionEventWireToTerm(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 	leaderMemberID int32,
 	detail []byte,
-	write func(fragmentTestHelper, atomic.AtomicBuffer, []byte),
+	write func(fragmentTestHelper, atomicbuffer.AtomicBuffer, []byte),
 ) {
 	t.Helper()
 
@@ -145,7 +145,7 @@ func writeOKSessionEventWireToTerm(
 
 func writeOKSessionEventForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 	leaderMemberID int32,
 	detail []byte,
@@ -164,7 +164,7 @@ func writeOKSessionEventForConnect(
 
 func appendOKSessionEventForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 	leaderMemberID int32,
 	detail []byte,
@@ -183,7 +183,7 @@ func appendOKSessionEventForConnect(
 
 func writeSessionEventWithHeartbeatForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 	heartbeatNs int64,
 ) {
@@ -324,7 +324,7 @@ func (state *asyncConnectChallengeRoundTripState) onStep(
 	withAsyncConnectEgressTerm(
 		t,
 		ac,
-		func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+		func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 			switch {
 			case !state.challengeWritten && ac.State() == ConnectStatePollResponse:
 				writeChallengeForConnect(t, termBuffer, correlation)
@@ -378,7 +378,7 @@ func requireConnectWireSlackCleared(t *testing.T, backing []byte, wireLen int, m
 	}
 }
 
-func egressTermBufferForAsyncConnect(t *testing.T, ac *AsyncConnect) atomic.AtomicBuffer {
+func egressTermBufferForAsyncConnect(t *testing.T, ac *AsyncConnect) atomicbuffer.AtomicBuffer {
 	t.Helper()
 
 	sub := ac.EgressSubscriptionForTest()
@@ -557,7 +557,7 @@ func TestAsyncConnect_redirectRebuildsMap(t *testing.T) {
 			withAsyncConnectEgressTerm(
 				t,
 				ac,
-				func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+				func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 					if sessionEventWritten {
 						return
 					}
@@ -1025,7 +1025,7 @@ func TestAsyncConnect_concludeConnect_setsNewLeaderTimeout(t *testing.T) {
 		withAsyncConnectEgressTerm(
 			t,
 			ac,
-			func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+			func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 				writeSessionEventWithHeartbeatForConnect(t, termBuffer, correlation, heartbeatNs)
 			},
 		)
@@ -1096,7 +1096,7 @@ func TestAsyncConnect_awaitPublicationConnected_selectiveTwoMemberConnect(t *tes
 		withAsyncConnectEgressTerm(
 			t,
 			ac,
-			func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+			func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 				writeOKSessionEventForConnect(t, termBuffer, correlation, 1, []byte("selective-member-ok"))
 			},
 		)
@@ -1138,7 +1138,7 @@ func TestAsyncConnect_awaitPublicationConnected_multiMemberIPC(t *testing.T) {
 		withAsyncConnectEgressTerm(
 			t,
 			ac,
-			func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+			func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 				writeOKSessionEventForConnect(t, termBuffer, correlation, 0, []byte("multi-member-ok"))
 			},
 		)
@@ -1302,7 +1302,7 @@ func TestAsyncConnect_pollResponse_sessionEventErrors(t *testing.T) {
 				withAsyncConnectEgressTerm(
 					t,
 					ac,
-					func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+					func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 						fields := defaultSessionEventFields(tc.detail)
 						fields.CorrelationID = correlation
 						fields.Code = tc.code
@@ -1336,7 +1336,7 @@ func TestAsyncConnect_pollResponse_sessionEventRedirectCode(t *testing.T) {
 		withAsyncConnectEgressTerm(
 			t,
 			ac,
-			func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+			func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 				if !redirected {
 					writeSessionEventRedirectForConnect(t, termBuffer, correlation, "1=host-b:20111")
 					redirected = true
@@ -1366,7 +1366,7 @@ func TestAsyncConnect_concludeConnect_preservesExplicitNewLeaderTimeout(t *testi
 		withAsyncConnectEgressTerm(
 			t,
 			ac,
-			func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+			func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 				writeSessionEventWithHeartbeatForConnect(t, termBuffer, correlation, heartbeatNs)
 			},
 		)
@@ -1779,7 +1779,7 @@ func TestAsyncConnect_concludeConnect_leaderMissingFromIngressMap(t *testing.T) 
 		withAsyncConnectEgressTerm(
 			t,
 			ac,
-			func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+			func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 				writeOKSessionEventForConnect(
 					t,
 					termBuffer,
@@ -1841,7 +1841,7 @@ func TestAsyncConnect_createIngressPublications_memberDriverErrorTolerance(t *te
 		withAsyncConnectEgressTerm(
 			t,
 			ac,
-			func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+			func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 				writeOKSessionEventForConnect(t, termBuffer, correlation, 1, []byte("member1-ok"))
 			},
 		)
@@ -1932,7 +1932,7 @@ func TestAsyncConnect_concludeConnect_notBlockedByDeadline(t *testing.T) {
 			withAsyncConnectEgressTerm(
 				t,
 				ac,
-				func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+				func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 					writeSessionEventForConnect(t, termBuffer, correlation)
 					sessionEventWritten = true
 				},

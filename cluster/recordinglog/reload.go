@@ -4,7 +4,7 @@ import (
 	"errors"
 	"os"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 var (
@@ -90,7 +90,7 @@ func decodeEntries(buf []byte) ([]Entry, error) {
 // ordinal. Standby endpoint overruns and sub-49-byte tails break without
 // counting.
 func decodeEntriesAndCount(buf []byte) ([]Entry, int32, int64, error) {
-	buffer := atomic.Wrap(buf)
+	buffer := atomicbuffer.Wrap(buf)
 	entries := make([]Entry, 0, len(buf)/recordAlignment)
 	consumed := 0
 	entryOrdinal := int32(0)
@@ -109,7 +109,7 @@ func decodeEntriesAndCount(buf []byte) ([]Entry, int32, int64, error) {
 		endpoint := ""
 		if hasEndpoint(entryType) {
 			epOffset := consumed + endpointOffset
-			epDataOffset := epOffset + atomic.StringASCIIHeaderLength
+			epDataOffset := epOffset + atomicbuffer.StringASCIIHeaderLength
 			if epDataOffset > len(buf) {
 				break
 			}

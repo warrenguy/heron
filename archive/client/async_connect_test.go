@@ -11,9 +11,9 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 type asyncConnectCredentialsSupplier struct {
@@ -185,7 +185,7 @@ func TestAsyncConnect_pollResponse_controlResponseError(t *testing.T) {
 	withAsyncConnectControlResponseTerm(
 		t,
 		ac,
-		func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+		func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 			writeUnfragmentedWireToTerm(
 				t,
 				termBuffer,
@@ -287,7 +287,7 @@ func TestAsyncConnect_pollResponse_emptyChallengeNormalized(t *testing.T) {
 	withAsyncConnectControlResponseTerm(
 		t,
 		ac,
-		func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+		func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 			writeUnfragmentedWireToTerm(
 				t,
 				termBuffer,
@@ -329,7 +329,7 @@ func TestAsyncConnect_prepareChallengeResponse_encodeFailure(t *testing.T) {
 	withAsyncConnectControlResponseTerm(
 		t,
 		ac,
-		func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+		func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 			writeChallengeForConnect(t, termBuffer, correlation)
 		},
 	)

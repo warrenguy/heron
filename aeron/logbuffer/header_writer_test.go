@@ -6,12 +6,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestHeaderWriter_Write_commitProtocol(t *testing.T) {
 	metaBuf := make([]byte, logbuffer.MetaDataLength)
-	meta := atomic.Wrap(metaBuf)
+	meta := atomicbuffer.Wrap(metaBuf)
 	meta.PutInt32(logbuffer.OffsetDefaultFrameHeaderLength, logbuffer.DataHeaderLength)
 	require.NoError(t, logbuffer.WriteDataHeaderUnfragmented(
 		meta,
@@ -30,7 +30,7 @@ func TestHeaderWriter_Write_commitProtocol(t *testing.T) {
 	)
 
 	termBuf := make([]byte, 256)
-	term := atomic.Wrap(termBuf)
+	term := atomicbuffer.Wrap(termBuf)
 	const (
 		termOffset  = 64
 		frameLength = int32(96)
@@ -52,13 +52,13 @@ func TestHeaderWriter_Write_commitProtocol(t *testing.T) {
 }
 
 func TestHeaderWriter_NewHeaderWriter_clampsShortTemplate(t *testing.T) {
-	shortTemplate := atomic.Wrap(make([]byte, 16))
+	shortTemplate := atomicbuffer.Wrap(make([]byte, 16))
 	shortTemplate.Bytes()[logbuffer.OffsetVersion] = byte(logbuffer.FrameHeaderVersion)
 
 	writer := logbuffer.NewHeaderWriter(shortTemplate, 99, 100)
 
 	termBuf := make([]byte, logbuffer.DataHeaderLength)
-	term := atomic.Wrap(termBuf)
+	term := atomicbuffer.Wrap(termBuf)
 	writer.Write(term, 0, 32, 1)
 
 	require.Equal(t, int8(logbuffer.FrameHeaderVersion), logbuffer.FrameVersion(term, 0))

@@ -9,12 +9,12 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func setupControlResponsePollFixtures(
 	t testing.TB,
-) (*aeron.Subscription, atomic.AtomicBuffer) {
+) (*aeron.Subscription, atomicbuffer.AtomicBuffer) {
 	t.Helper()
 
 	sub := aeron.NewTestSubscriptionForHooks(t)
@@ -29,7 +29,7 @@ func newControlResponsePollerForTest(sub *aeron.Subscription) *ControlResponsePo
 
 func writeUnfragmentedWireToTerm(
 	t testing.TB,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	wire []byte,
 ) {
 	t.Helper()
@@ -39,7 +39,7 @@ func writeUnfragmentedWireToTerm(
 
 func appendUnfragmentedWireToTerm(
 	t testing.TB,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	wire []byte,
 ) {
 	t.Helper()
@@ -54,7 +54,7 @@ func appendUnfragmentedWireToTerm(
 
 func writeUnfragmentedWireToTermAt(
 	t testing.TB,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	offset int,
 	wire []byte,
 ) {
@@ -71,7 +71,7 @@ func writeUnfragmentedWireToTermAt(
 
 func writeTwoSequentialUnfragmentedWiresToTerm(
 	t testing.TB,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	first, second []byte,
 ) {
 	t.Helper()
@@ -82,7 +82,7 @@ func writeTwoSequentialUnfragmentedWiresToTerm(
 
 func writeControlResponseCommittedFragmentFrame(
 	t testing.TB,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	frameOffset int,
 	sessionID int32,
 	streamID int32,
@@ -133,7 +133,7 @@ func splitControlResponseWireFragmentSpecs(wire []byte) []controlResponseFragmen
 
 func writeControlResponseHookCommittedFragmentFrames(
 	t testing.TB,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	startOffset int,
 	flags uint8,
 	payload []byte,
@@ -150,7 +150,7 @@ func writeControlResponseHookCommittedFragmentFrames(
 
 func writeControlResponseHookCommittedFragmentFrameSpecs(
 	t testing.TB,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	startOffset int,
 	specs []controlResponseFragmentFrameSpec,
 ) {
@@ -176,7 +176,7 @@ func writeControlResponseHookCommittedFragmentFrameSpecs(
 
 func writeFragmentedWireToTerm(
 	t testing.TB,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	wire []byte,
 ) {
 	t.Helper()
@@ -189,7 +189,7 @@ func writeFragmentedWireToTerm(
 	)
 }
 
-func nextControlResponseHookTermWriteOffset(termBuffer atomic.AtomicBuffer) int {
+func nextControlResponseHookTermWriteOffset(termBuffer atomicbuffer.AtomicBuffer) int {
 	offset := 0
 	for {
 		frameLength := logbuffer.FrameLengthVolatile(termBuffer, offset)

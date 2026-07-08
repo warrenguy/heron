@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestRemoveMessageRoundtrip(t *testing.T) {
@@ -16,7 +16,7 @@ func TestRemoveMessageRoundtrip(t *testing.T) {
 		registrationID int64 = 9001
 	)
 
-	buffer := atomic.Wrap(make([]byte, conductor.RemoveMessageBodyLength))
+	buffer := atomicbuffer.Wrap(make([]byte, conductor.RemoveMessageBodyLength))
 	err := conductor.EncodeRemoveMessage(
 		buffer,
 		0,
@@ -53,7 +53,7 @@ func TestRemovePublicationMessage_revokeFlag(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			buffer := atomic.Wrap(make([]byte, conductor.RemovePublicationBodyLength))
+			buffer := atomicbuffer.Wrap(make([]byte, conductor.RemovePublicationBodyLength))
 			err := conductor.EncodeRemovePublicationMessage(
 				buffer,
 				0,
@@ -77,7 +77,7 @@ func TestRemovePublicationMessage_revokeFlag(t *testing.T) {
 }
 
 func TestDecodeRemovePublicationMessage_shortBody(t *testing.T) {
-	buffer := atomic.Wrap(conductor.RemoveMessageBytes(1, 42, 9001))
+	buffer := atomicbuffer.Wrap(conductor.RemoveMessageBytes(1, 42, 9001))
 
 	got, err := conductor.DecodeRemovePublicationMessage(buffer, 0, conductor.RemoveMessageBodyLength)
 	require.NoError(t, err)
@@ -90,7 +90,7 @@ func TestDecodeRemovePublicationMessage_shortBody(t *testing.T) {
 }
 
 func TestDecodeRemovePublicationMessage_flagsTruncated(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, conductor.RemoveMessageBodyLength))
+	buffer := atomicbuffer.Wrap(make([]byte, conductor.RemoveMessageBodyLength))
 
 	_, err := conductor.DecodeRemovePublicationMessage(
 		buffer,
@@ -106,7 +106,7 @@ func TestDecodeRemovePublicationMessage_flagsTruncated(t *testing.T) {
 }
 
 func TestDecodeRemovePublicationMessage_bodyTooShort(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, conductor.RemoveMessageBodyLength))
+	buffer := atomicbuffer.Wrap(make([]byte, conductor.RemoveMessageBodyLength))
 
 	_, err := conductor.DecodeRemovePublicationMessage(buffer, 0, 20)
 	require.ErrorIs(t, err, conductor.ErrRemoveMessageOutOfBounds)
@@ -118,7 +118,7 @@ func TestDecodeRemovePublicationMessage_bodyTooShort(t *testing.T) {
 }
 
 func TestDecodeRemoveMessage_bodyTooShort(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, conductor.RemoveMessageBodyLength))
+	buffer := atomicbuffer.Wrap(make([]byte, conductor.RemoveMessageBodyLength))
 
 	_, err := conductor.DecodeRemoveMessage(buffer, 0, 20)
 	require.ErrorIs(t, err, conductor.ErrRemoveMessageOutOfBounds)
@@ -130,7 +130,7 @@ func TestDecodeRemoveMessage_bodyTooShort(t *testing.T) {
 }
 
 func TestEncodeRemoveMessage_outOfBounds(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, conductor.RemoveMessageBodyLength))
+	buffer := atomicbuffer.Wrap(make([]byte, conductor.RemoveMessageBodyLength))
 	wantErr := "conductor: remove message out of bounds: offset=8 capacity=24"
 
 	err := conductor.EncodeRemoveMessage(buffer, 8, 1, 42, 9001)

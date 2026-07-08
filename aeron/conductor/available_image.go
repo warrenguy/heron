@@ -3,7 +3,7 @@ package conductor
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 type AvailableImage struct {
@@ -17,11 +17,11 @@ type AvailableImage struct {
 }
 
 func availableImageSourceIdentityOffset(logFileNameFieldEnd int) int {
-	return atomic.Align(logFileNameFieldEnd, sizeOfInt32)
+	return atomicbuffer.Align(logFileNameFieldEnd, sizeOfInt32)
 }
 
 func SourceIdentityOffset(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	bodyOffset, bodyLength, logFileNameFieldOffset int,
 ) (int, error) {
 	if err := bodyBoundsError(buf, bodyOffset, bodyLength, ErrEventBodyTooShort); err != nil {
@@ -40,11 +40,11 @@ func SourceIdentityOffset(
 	}
 
 	aligned := availableImageSourceIdentityOffset(logFileNameEnd)
-	if aligned+atomic.StringASCIIHeaderLength > bodyLength {
+	if aligned+atomicbuffer.StringASCIIHeaderLength > bodyLength {
 		return 0, fmt.Errorf(
 			"%w: need=%d got=%d",
 			ErrEventBodyTooShort,
-			aligned+atomic.StringASCIIHeaderLength,
+			aligned+atomicbuffer.StringASCIIHeaderLength,
 			bodyLength,
 		)
 	}
@@ -53,19 +53,19 @@ func SourceIdentityOffset(
 
 func AvailableImageBodyLength(logFileName, sourceIdentity string) int {
 	logFileNameFieldEnd := AvailableImageFixedLength +
-		atomic.StringASCIIEncodedLength(len(logFileName))
+		atomicbuffer.StringASCIIEncodedLength(len(logFileName))
 	sourceIdentityOffset := availableImageSourceIdentityOffset(logFileNameFieldEnd)
-	return sourceIdentityOffset + atomic.StringASCIIEncodedLength(len(sourceIdentity))
+	return sourceIdentityOffset + atomicbuffer.StringASCIIEncodedLength(len(sourceIdentity))
 }
 
 func DecodeAvailableImage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	capacity int,
 ) (AvailableImage, error) {
 	if err := decodeMinimumBodyLengthError(
 		capacity,
-		AvailableImageFixedLength+atomic.StringASCIIHeaderLength,
+		AvailableImageFixedLength+atomicbuffer.StringASCIIHeaderLength,
 		ErrEventBodyTooShort,
 	); err != nil {
 		return AvailableImage{}, err
@@ -109,7 +109,7 @@ func DecodeAvailableImage(
 }
 
 func EncodeAvailableImage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	event AvailableImage,
 ) error {
@@ -148,7 +148,7 @@ func EncodeAvailableImage(
 func AvailableImageBytes(event AvailableImage) []byte {
 	return encodeToBytes(
 		AvailableImageBodyLength(event.LogFileName, event.SourceIdentity),
-		func(buf atomic.AtomicBuffer, offset int) error {
+		func(buf atomicbuffer.AtomicBuffer, offset int) error {
 			return EncodeAvailableImage(buf, offset, event)
 		},
 	)

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func resetTermWithTimer(b *testing.B, reset func()) {
@@ -112,13 +112,13 @@ func offerOnceWithOverflowReset(
 }
 
 func PollZeroAllocHandler(sink *int) func(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *aeron.Header,
 ) {
 	return func(
-		_ atomic.AtomicBuffer,
+		_ atomicbuffer.AtomicBuffer,
 		_ int,
 		length int,
 		_ *aeron.Header,

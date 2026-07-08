@@ -4,7 +4,7 @@ package client
 
 import (
 	"context"
-	stdatomic "sync/atomic"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,7 +22,7 @@ func connectTestHarnessDriver(
 ) func() *AsyncConnect {
 	t.Helper()
 
-	var observedAC stdatomic.Pointer[AsyncConnect]
+	var observedAC atomic.Pointer[AsyncConnect]
 	SetConnectAsyncConnectObserverForTest(t, harness.Client, func(ac *AsyncConnect) {
 		observedAC.Store(ac)
 		registerConnectHarnessStepObserver(t, harness, ac, onStep)

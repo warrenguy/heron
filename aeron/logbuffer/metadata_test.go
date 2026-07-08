@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestMetadataOffsets(t *testing.T) {
@@ -54,7 +54,7 @@ func TestTermOffset_clamp(t *testing.T) {
 
 func TestRawTailVolatile(t *testing.T) {
 	buf := make([]byte, logbuffer.MetaDataLength)
-	meta := atomic.Wrap(buf)
+	meta := atomicbuffer.Wrap(buf)
 
 	require.NoError(t, logbuffer.PutRawTail(meta, 1, logbuffer.PackRawTail(9, 512)))
 	meta.PutInt32Release(logbuffer.OffsetActiveTermCount, 1)
@@ -71,7 +71,7 @@ func TestParseMetadataView_roundtrip(t *testing.T) {
 
 	metaStart := logbuffer.MetaDataOffset(logbuffer.TestTermLength)
 	metaBuf := buf[metaStart : metaStart+logbuffer.MetaDataLength]
-	view, err := logbuffer.ParseMetadataView(atomic.Wrap(metaBuf))
+	view, err := logbuffer.ParseMetadataView(atomicbuffer.Wrap(metaBuf))
 	require.NoError(t, err)
 	require.Equal(t, cfg.InitialTermID, view.InitialTermID)
 	require.Equal(t, int32(logbuffer.TestTermLength), view.TermLength)
@@ -86,7 +86,7 @@ func TestParseMetadataView_roundtrip(t *testing.T) {
 
 func TestMetadataVolatileAccessors(t *testing.T) {
 	buf := make([]byte, logbuffer.MetaDataLength)
-	meta := atomic.Wrap(buf)
+	meta := atomicbuffer.Wrap(buf)
 	meta.PutInt32(logbuffer.OffsetMTULength, logbuffer.TestMTULength)
 	meta.PutInt32Release(logbuffer.OffsetIsConnected, 1)
 
@@ -115,7 +115,7 @@ func TestDefaultFrameHeaderBuffer(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			buf := make([]byte, logbuffer.MetaDataLength)
-			meta := atomic.Wrap(buf)
+			meta := atomicbuffer.Wrap(buf)
 			meta.PutInt32(logbuffer.OffsetDefaultFrameHeaderLength, tc.headerLength)
 
 			got := logbuffer.DefaultFrameHeaderBuffer(meta)
@@ -125,7 +125,7 @@ func TestDefaultFrameHeaderBuffer(t *testing.T) {
 }
 
 func TestParseMetadataView_bufferTooShort(t *testing.T) {
-	_, err := logbuffer.ParseMetadataView(atomic.Wrap(make([]byte, logbuffer.MetaDataLength-1)))
+	_, err := logbuffer.ParseMetadataView(atomicbuffer.Wrap(make([]byte, logbuffer.MetaDataLength-1)))
 	require.EqualError(
 		t,
 		err,
@@ -139,7 +139,7 @@ func TestParseMetadataView_bufferTooShort(t *testing.T) {
 
 func TestParseMetadataView_invalidTermLength(t *testing.T) {
 	buf := make([]byte, logbuffer.MetaDataLength)
-	meta := atomic.Wrap(buf)
+	meta := atomicbuffer.Wrap(buf)
 	meta.PutInt32(logbuffer.OffsetTermLength, 1000)
 	meta.PutInt32(logbuffer.OffsetPageSize, logbuffer.TestPageSize)
 
@@ -156,7 +156,7 @@ func TestParseMetadataView_invalidTermLength(t *testing.T) {
 
 func TestParseMetadataView_invalidPageSize(t *testing.T) {
 	buf := make([]byte, logbuffer.MetaDataLength)
-	meta := atomic.Wrap(buf)
+	meta := atomicbuffer.Wrap(buf)
 	meta.PutInt32(logbuffer.OffsetTermLength, logbuffer.TestTermLength)
 	meta.PutInt32(logbuffer.OffsetPageSize, 1000)
 

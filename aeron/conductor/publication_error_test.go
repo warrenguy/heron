@@ -6,11 +6,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestDecodePublicationError_shortBody(t *testing.T) {
-	minimum := PublicationErrorFixedLength + atomic.StringASCIIHeaderLength
+	minimum := PublicationErrorFixedLength + atomicbuffer.StringASCIIHeaderLength
 
 	testDecodeEventShortBody(
 		t,
@@ -35,8 +35,8 @@ func TestDecodePublicationError_truncatedErrorMessage(t *testing.T) {
 	}
 	payload := truncateEncodedPayload(t, PublicationErrorBytes(event), 2)
 
-	_, err := DecodePublicationError(atomic.Wrap(payload), 0, len(payload))
-	require.ErrorIs(t, err, atomic.ErrStringASCIIOutOfBounds)
+	_, err := DecodePublicationError(atomicbuffer.Wrap(payload), 0, len(payload))
+	require.ErrorIs(t, err, atomicbuffer.ErrStringASCIIOutOfBounds)
 }
 
 func TestDecodePublicationError_bodyLongerThanDecoded(t *testing.T) {
@@ -75,7 +75,7 @@ func TestPublicationError_roundtrip_nonZeroScalars(t *testing.T) {
 	}
 	payload := PublicationErrorBytes(event)
 
-	decoded, err := DecodePublicationError(atomic.Wrap(payload), 0, len(payload))
+	decoded, err := DecodePublicationError(atomicbuffer.Wrap(payload), 0, len(payload))
 	require.NoError(t, err)
 	require.Equal(t, event, decoded)
 }
@@ -93,7 +93,7 @@ func TestDecodePublicationError_ipv4AddressBlock(t *testing.T) {
 	event.Address[3] = 1
 	payload := PublicationErrorBytes(event)
 
-	decoded, err := DecodePublicationError(atomic.Wrap(payload), 0, len(payload))
+	decoded, err := DecodePublicationError(atomicbuffer.Wrap(payload), 0, len(payload))
 	require.NoError(t, err)
 	require.Equal(t, int16(1), decoded.AddressType)
 	require.Equal(t, uint16(8080), decoded.AddressPort)

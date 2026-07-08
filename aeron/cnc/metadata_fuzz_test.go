@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 var (
@@ -17,7 +17,7 @@ var (
 	seedIncompatibleMetadata = func() []byte {
 		buf := make([]byte, cnc.MetaDataLength)
 		cnc.WriteMetadataFieldsToBuffer(buf, cnc.ReadyMetadata())
-		atomic.Wrap(buf).PutInt32Release(
+		atomicbuffer.Wrap(buf).PutInt32Release(
 			cnc.OffsetCncVersion,
 			cnc.ComposeSemanticVersion(99, 0, 0),
 		)

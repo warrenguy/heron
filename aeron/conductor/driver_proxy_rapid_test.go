@@ -11,7 +11,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/conductor"
 	aerontestutil "github.com/warrenguy/heron/aeron/internal/testutil"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/internal/testutil"
 )
 
@@ -29,7 +29,7 @@ const (
 
 type driverProxyExpectedRecord struct {
 	msgTypeID int
-	verify    func(t *rapid.T, buffer atomic.AtomicBuffer, index, length int)
+	verify    func(t *rapid.T, buffer atomicbuffer.AtomicBuffer, index, length int)
 }
 
 func drawDriverProxyOp(rt *rapid.T, name string) driverProxyOp {
@@ -46,7 +46,7 @@ func verifyDriverProxyWantRecords(
 	rt.Helper()
 	gotIndex := 0
 	readCount := ring.Ring().Read(
-		func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
+		func(msgTypeID int, buffer atomicbuffer.AtomicBuffer, index, length int) {
 			require.Less(rt, gotIndex, len(want), "unexpected committed record")
 			expected := want[gotIndex]
 			require.Equal(rt, expected.msgTypeID, msgTypeID)
@@ -68,7 +68,7 @@ func appendDriverProxyAddPublicationWant(
 ) []driverProxyExpectedRecord {
 	return append(want, driverProxyExpectedRecord{
 		msgTypeID: msgTypeID,
-		verify: func(t *rapid.T, buffer atomic.AtomicBuffer, index, length int) {
+		verify: func(t *rapid.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
 			got, decodeErr := conductor.DecodePublicationMessage(buffer, index, length)
 			require.NoError(t, decodeErr)
 			require.Equal(t, conductor.PublicationMessage{
@@ -175,7 +175,7 @@ func TestDriverProxy_offerReadRoundtrip_rapid(t *testing.T) {
 				}
 				want = append(want, driverProxyExpectedRecord{
 					msgTypeID: conductor.ClientKeepalive,
-					verify: func(t *rapid.T, buffer atomic.AtomicBuffer, index, length int) {
+					verify: func(t *rapid.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
 						got, decodeErr := conductor.DecodeCorrelated(buffer, index)
 						require.NoError(t, decodeErr)
 						require.Equal(t, conductor.CorrelatedMessage{
@@ -219,7 +219,7 @@ func TestDriverProxy_offerReadRoundtrip_rapid(t *testing.T) {
 				bodyLength := conductor.SubscriptionMessageBodyLength(channel)
 				want = append(want, driverProxyExpectedRecord{
 					msgTypeID: conductor.AddSubscription,
-					verify: func(t *rapid.T, buffer atomic.AtomicBuffer, index, length int) {
+					verify: func(t *rapid.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
 						got, decodeErr := conductor.DecodeSubscriptionMessage(buffer, index, length)
 						require.NoError(t, decodeErr)
 						require.Equal(t, conductor.SubscriptionMessage{
@@ -242,7 +242,7 @@ func TestDriverProxy_offerReadRoundtrip_rapid(t *testing.T) {
 				}
 				want = append(want, driverProxyExpectedRecord{
 					msgTypeID: conductor.RemovePublication,
-					verify: func(t *rapid.T, buffer atomic.AtomicBuffer, index, length int) {
+					verify: func(t *rapid.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
 						got, decodeErr := conductor.DecodeRemovePublicationMessage(
 							buffer,
 							index,
@@ -269,7 +269,7 @@ func TestDriverProxy_offerReadRoundtrip_rapid(t *testing.T) {
 				}
 				want = append(want, driverProxyExpectedRecord{
 					msgTypeID: conductor.RemoveSubscription,
-					verify: func(t *rapid.T, buffer atomic.AtomicBuffer, index, length int) {
+					verify: func(t *rapid.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
 						got, decodeErr := conductor.DecodeRemoveMessage(buffer, index, length)
 						require.NoError(t, decodeErr)
 						require.Equal(t, conductor.RemoveMessage{
@@ -289,7 +289,7 @@ func TestDriverProxy_offerReadRoundtrip_rapid(t *testing.T) {
 				}
 				want = append(want, driverProxyExpectedRecord{
 					msgTypeID: conductor.GetNextAvailableSessionID,
-					verify: func(t *rapid.T, buffer atomic.AtomicBuffer, index, length int) {
+					verify: func(t *rapid.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
 						got, decodeErr := conductor.DecodeCorrelated(buffer, index)
 						require.NoError(t, decodeErr)
 						require.Equal(t, conductor.CorrelatedMessage{

@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestParseMetadataSmoke(t *testing.T) {
@@ -72,7 +72,7 @@ func TestParseMetadataNotReady(t *testing.T) {
 func TestParseMetadataIncompatibleMajor(t *testing.T) {
 	buf := make([]byte, cnc.MetaDataLength)
 	writeReadyMetadata(t, buf)
-	atomic.Wrap(buf).PutInt32Release(
+	atomicbuffer.Wrap(buf).PutInt32Release(
 		cnc.OffsetCncVersion,
 		cnc.ComposeSemanticVersion(99, 0, 0),
 	)
@@ -84,7 +84,7 @@ func TestParseMetadataIncompatibleMajor(t *testing.T) {
 func writeMetadataNegativeDriverLength(t *testing.T, buf []byte) {
 	t.Helper()
 	writeReadyMetadata(t, buf)
-	atomic.Wrap(buf).PutInt32(cnc.OffsetToDriverBufferLength, -1)
+	atomicbuffer.Wrap(buf).PutInt32(cnc.OffsetToDriverBufferLength, -1)
 }
 
 func TestParseMetadataNegativeLength(t *testing.T) {
@@ -108,7 +108,7 @@ func TestParseMetadata_rejectsZeroRingBuffers(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			buf := make([]byte, cnc.MetaDataLength)
 			writeReadyMetadata(t, buf)
-			atomic.Wrap(buf).PutInt32(test.offset, 0)
+			atomicbuffer.Wrap(buf).PutInt32(test.offset, 0)
 
 			_, err := cnc.ParseMetadata(buf)
 			require.ErrorContains(t, err, "must be positive")
@@ -118,7 +118,7 @@ func TestParseMetadata_rejectsZeroRingBuffers(t *testing.T) {
 
 func TestCncVersionVolatile(t *testing.T) {
 	buf := make([]byte, cnc.MetaDataLength)
-	atomicBuffer := atomic.Wrap(buf)
+	atomicBuffer := atomicbuffer.Wrap(buf)
 	atomicBuffer.PutInt32Release(cnc.OffsetCncVersion, cnc.Version)
 	require.Equal(t, cnc.Version, cnc.CncVersionVolatile(buf))
 }
@@ -130,7 +130,7 @@ func TestCncVersionVolatile_bufferTooShort(t *testing.T) {
 func TestComputeCncFileLength(t *testing.T) {
 	ready := cnc.ReadyMetadata()
 	total := ready.ComputedLength() - cnc.MetaDataLength
-	want := atomic.Align(cnc.MetaDataLength+total, int(cnc.TestFilePageSize))
+	want := atomicbuffer.Align(cnc.MetaDataLength+total, int(cnc.TestFilePageSize))
 
 	got, err := cnc.ComputeCncFileLength(total, int(cnc.TestFilePageSize))
 	require.NoError(t, err)

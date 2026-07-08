@@ -1,6 +1,6 @@
 package recordinglog
 
-import "github.com/warrenguy/heron/agrona/atomic"
+import "github.com/warrenguy/heron/atomicbuffer"
 
 const (
 	recordingIDOffset         = 0
@@ -12,9 +12,9 @@ const (
 	entryTypeOffset           = 44
 	endpointOffset            = 48
 
-	recordAlignment = atomic.CacheLineLength
+	recordAlignment = atomicbuffer.CacheLineLength
 	maxEntryLength  = 4096
-	maxEndpointLen  = maxEntryLength - endpointOffset - atomic.StringASCIIHeaderLength
+	maxEndpointLen  = maxEntryLength - endpointOffset - atomicbuffer.StringASCIIHeaderLength
 )
 
 // Endpoint-carrying entries occupy a recordAlignment-byte-aligned span large
@@ -24,8 +24,8 @@ const (
 // bytes.
 func alignedEntryLength(entryType int32, endpoint string) int {
 	if hasEndpoint(entryType) {
-		return atomic.Align(
-			endpointOffset+atomic.StringASCIIEncodedLength(len(endpoint)),
+		return atomicbuffer.Align(
+			endpointOffset+atomicbuffer.StringASCIIEncodedLength(len(endpoint)),
 			recordAlignment,
 		)
 	}

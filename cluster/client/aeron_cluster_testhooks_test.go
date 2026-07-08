@@ -11,7 +11,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	agronaatomic "github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/internal/testutil"
 )
 
@@ -36,7 +36,7 @@ func setupEgressAdapterOpRecorder(t *testing.T) *egressAdapterOpLog {
 
 func writeDefaultSessionMessageToTerm(
 	t *testing.T,
-	termBuffer agronaatomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	appPayload []byte,
 ) {
 	t.Helper()
@@ -91,7 +91,7 @@ func closeEgressImageAndRequirePollWork(t *testing.T, ac *AeronCluster, image *a
 
 func writePendingEgressFragmentToTerm(
 	t *testing.T,
-	termBuffer agronaatomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	appPayload []byte,
 ) []byte {
 	t.Helper()
@@ -134,7 +134,7 @@ func mutateConnectResultClosingImageOnFirstMessage(
 		rec.MessageFunc = func(
 			clusterSessionID int64,
 			timestamp int64,
-			buffer agronaatomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			offset int,
 			length int,
 			header *aeron.Header,

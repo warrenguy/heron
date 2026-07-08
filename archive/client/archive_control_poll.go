@@ -2,9 +2,9 @@ package client
 
 import (
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 // ArchiveControlPollTargets routes archive control fragments during a demux poll.
@@ -62,7 +62,7 @@ func PollArchiveControlEvents(
 }
 
 func (assembler *FragmentAssembler) dispatchArchiveControlFragment(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *aeron.Header,
@@ -75,7 +75,7 @@ func (assembler *FragmentAssembler) dispatchArchiveControlFragment(
 // and bounds, so a foreign-schema fragment routed by template id is dropped there.
 func handleArchiveControlFragment(
 	targets ArchiveControlPollTargets,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *aeron.Header,

@@ -1,8 +1,6 @@
 package conductor
 
-import (
-	"github.com/warrenguy/heron/agrona/atomic"
-)
+import "github.com/warrenguy/heron/atomicbuffer"
 
 const RemovePublicationFlagRevoke = int64(0x1)
 
@@ -12,7 +10,7 @@ type RemovePublicationMessage struct {
 }
 
 func EncodeRemovePublicationMessage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	clientID, correlationID, registrationID int64,
 	revoke bool,
@@ -48,7 +46,7 @@ func EncodeRemovePublicationMessage(
 //
 // Matches Aeron Java revoke(messageLength).
 func DecodeRemovePublicationMessage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset, bodyLength int,
 ) (RemovePublicationMessage, error) {
 	removeMessage, err := DecodeRemoveMessage(buf, offset, bodyLength)
@@ -79,7 +77,10 @@ func RemovePublicationMessageBytes(
 	clientID, correlationID, registrationID int64,
 	revoke bool,
 ) []byte {
-	return encodeToBytes(RemovePublicationBodyLength, func(buf atomic.AtomicBuffer, offset int) error {
+	return encodeToBytes(RemovePublicationBodyLength, func(
+		buf atomicbuffer.AtomicBuffer,
+		offset int,
+	) error {
 		return EncodeRemovePublicationMessage(
 			buf,
 			offset,

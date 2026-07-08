@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func requireEventBodyTooShortMessage(
@@ -28,13 +28,13 @@ func requireEventBodyTooShortMessage(
 
 func putNegativeStringLengthPrefix(fixedLength int) []byte {
 	return putNegativeStringLengthAtFieldOffset(
-		make([]byte, fixedLength+atomic.StringASCIIHeaderLength),
+		make([]byte, fixedLength+atomicbuffer.StringASCIIHeaderLength),
 		fixedLength,
 	)
 }
 
 func putNegativeStringLengthAtFieldOffset(payload []byte, fieldOffset int) []byte {
-	buffer := atomic.Wrap(payload)
+	buffer := atomicbuffer.Wrap(payload)
 	buffer.PutInt32(fieldOffset, -1)
 	return payload
 }
@@ -48,7 +48,7 @@ func testDecodeEventShortBody[T any](
 	t *testing.T,
 	minimum int,
 	cases []shortBodyTestCase,
-	decode func(atomic.AtomicBuffer, int, int) (T, error),
+	decode func(atomicbuffer.AtomicBuffer, int, int) (T, error),
 ) {
 	t.Helper()
 
@@ -56,7 +56,7 @@ func testDecodeEventShortBody[T any](
 		t.Run(testCase.name, func(t *testing.T) {
 			payload := make([]byte, testCase.bodyLength)
 
-			_, err := decode(atomic.Wrap(payload), 0, len(payload))
+			_, err := decode(atomicbuffer.Wrap(payload), 0, len(payload))
 			requireEventBodyTooShortMessage(t, err, testCase.bodyLength, minimum)
 		})
 	}
@@ -65,26 +65,26 @@ func testDecodeEventShortBody[T any](
 func testDecodeEventNegativeStringLength[T any](
 	t *testing.T,
 	fixedLength int,
-	decode func(atomic.AtomicBuffer, int, int) (T, error),
+	decode func(atomicbuffer.AtomicBuffer, int, int) (T, error),
 ) {
 	t.Helper()
 
 	payload := putNegativeStringLengthPrefix(fixedLength)
 
-	_, err := decode(atomic.Wrap(payload), 0, len(payload))
-	require.ErrorIs(t, err, atomic.ErrStringASCIILengthInvalid)
+	_, err := decode(atomicbuffer.Wrap(payload), 0, len(payload))
+	require.ErrorIs(t, err, atomicbuffer.ErrStringASCIILengthInvalid)
 }
 
 func testDecodeEventAllowsTrailingPadding[T any](
 	t *testing.T,
 	payload []byte,
-	decode func(atomic.AtomicBuffer, int, int) (T, error),
+	decode func(atomicbuffer.AtomicBuffer, int, int) (T, error),
 ) T {
 	t.Helper()
 
 	padded := append(append([]byte(nil), payload...), 0xFF)
 
-	decoded, err := decode(atomic.Wrap(padded), 0, len(padded))
+	decoded, err := decode(atomicbuffer.Wrap(padded), 0, len(padded))
 	require.NoError(t, err)
 	return decoded
 }

@@ -2,7 +2,7 @@ package client
 
 import (
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 // EgressAdapter polls an egress subscription and dispatches cluster SBE events
@@ -59,7 +59,7 @@ func newEgressAdapterWithHandler(
 	}
 	if onFragment == nil {
 		onFragment = func(
-			buffer atomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			offset int,
 			length int,
 			header *aeron.Header,

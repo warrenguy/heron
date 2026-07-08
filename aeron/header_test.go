@@ -8,7 +8,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 var compactTwoFragments = []aeron.FragmentedFrameForTest{
@@ -17,7 +17,7 @@ var compactTwoFragments = []aeron.FragmentedFrameForTest{
 }
 
 type completedFragmentFixture struct {
-	termBuffer         atomic.AtomicBuffer
+	termBuffer         atomicbuffer.AtomicBuffer
 	beginFrameOffset   int
 	endFrameOffset     int
 	completedHeaderBuf [logbuffer.DataHeaderLength]byte
@@ -28,7 +28,7 @@ type completedFragmentFixture struct {
 
 func newCompletedFragmentFixture(
 	image *aeron.Image,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	frameOffsets []int,
 	fragments []aeron.FragmentedFrameForTest,
 ) completedFragmentFixture {
@@ -267,7 +267,7 @@ func TestHeader_ConfigureCompletedFragment_invalidInputsPanic(t *testing.T) {
 			call: func(header *aeron.Header, fixture completedFragmentFixture) {
 				shortHeader := fixture.completedHeaderBuf
 				logbuffer.PutFrameLengthOrdered(
-					atomic.Wrap(shortHeader[:]),
+					atomicbuffer.Wrap(shortHeader[:]),
 					0,
 					int32(logbuffer.DataHeaderLength-1),
 				)
@@ -283,7 +283,7 @@ func TestHeader_ConfigureCompletedFragment_invalidInputsPanic(t *testing.T) {
 			call: func(header *aeron.Header, fixture completedFragmentFixture) {
 				equalHeader := fixture.completedHeaderBuf
 				logbuffer.PutFrameLengthOrdered(
-					atomic.Wrap(equalHeader[:]),
+					atomicbuffer.Wrap(equalHeader[:]),
 					0,
 					int32(logbuffer.DataHeaderLength),
 				)

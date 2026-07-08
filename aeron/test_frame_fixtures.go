@@ -4,7 +4,7 @@ package aeron
 
 import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 type FragmentedFrameForTest struct {
@@ -13,7 +13,7 @@ type FragmentedFrameForTest struct {
 }
 
 func writeCommittedDataFrameForTest(
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	frameOffset int,
 	sessionID int32,
 	streamID int32,
@@ -68,7 +68,7 @@ func writeCommittedDataFrameForTest(
 }
 
 func WriteCommittedDataFrameForTest(
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	frameOffset int,
 	sessionID int32,
 	streamID int32,
@@ -90,7 +90,7 @@ func WriteCommittedDataFrameForTest(
 }
 
 func WriteCommittedDataFrameWithFlagsForTest(
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	frameOffset int,
 	sessionID int32,
 	streamID int32,
@@ -121,7 +121,7 @@ func CommittedDataFramesTermCapacityForTest(frames []FragmentedFrameForTest) int
 }
 
 func WriteCommittedDataFramesForStreamForTest(
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	startOffset int,
 	sessionID int32,
 	streamID int32,
@@ -148,7 +148,7 @@ func WriteCommittedDataFramesForStreamForTest(
 }
 
 func WriteCommittedDataFramesForTest(
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	startOffset int,
 	frames []FragmentedFrameForTest,
 ) []int {

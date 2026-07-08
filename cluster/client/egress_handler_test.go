@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/client"
 )
 
@@ -37,8 +37,8 @@ const (
 	testAdminResponseCorrelationID    int64 = 2
 )
 
-func testEgressPayload() atomic.AtomicBuffer {
-	return atomic.Wrap(testEgressPayloadData)
+func testEgressPayload() atomicbuffer.AtomicBuffer {
+	return atomicbuffer.Wrap(testEgressPayloadData)
 }
 
 func invokeNonMessageEgressHandlerMethods(h client.EgressHandler) {
@@ -91,7 +91,7 @@ func TestEgressHandlers_dispatchSetFuncs(t *testing.T) {
 	var (
 		gotMessageClusterSessionID int64
 		gotMessageTimestamp        int64
-		gotMessageBuffer           atomic.AtomicBuffer
+		gotMessageBuffer           atomicbuffer.AtomicBuffer
 		gotMessageOffset           int
 		gotMessageLength           int
 		gotMessageHeader           *aeron.Header
@@ -120,7 +120,7 @@ func TestEgressHandlers_dispatchSetFuncs(t *testing.T) {
 		MessageFunc: func(
 			clusterSessionID int64,
 			timestamp int64,
-			buffer atomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			offset int,
 			length int,
 			header *aeron.Header,
@@ -212,7 +212,7 @@ func TestEgressHandlers_postAssignMutationVisibleViaInterface(t *testing.T) {
 	h.MessageFunc = func(
 		int64,
 		int64,
-		atomic.AtomicBuffer,
+		atomicbuffer.AtomicBuffer,
 		int,
 		int,
 		*aeron.Header,
@@ -244,7 +244,7 @@ func TestValidateClusterContext_egressHandlersMessageCallbacksPass(t *testing.T)
 				MessageFunc: func(
 					int64,
 					int64,
-					atomic.AtomicBuffer,
+					atomicbuffer.AtomicBuffer,
 					int,
 					int,
 					*aeron.Header,
@@ -264,7 +264,7 @@ func TestValidateClusterContext_egressHandlersMessageCallbacksPass(t *testing.T)
 				MessageFunc: func(
 					int64,
 					int64,
-					atomic.AtomicBuffer,
+					atomicbuffer.AtomicBuffer,
 					int,
 					int,
 					*aeron.Header,
@@ -336,7 +336,7 @@ func TestEgressHandlers_messageDispatchPrecedence(t *testing.T) {
 	const length = 7
 	wantPayload := raw[offset : offset+length]
 	header := &aeron.Header{}
-	buf := atomic.Wrap(raw)
+	buf := atomicbuffer.Wrap(raw)
 
 	t.Run("message_bytes_func_precedence", func(t *testing.T) {
 		var bytesCalls int
@@ -361,7 +361,7 @@ func TestEgressHandlers_messageDispatchPrecedence(t *testing.T) {
 			MessageFunc: func(
 				int64,
 				int64,
-				atomic.AtomicBuffer,
+				atomicbuffer.AtomicBuffer,
 				int,
 				int,
 				*aeron.Header,
@@ -392,7 +392,7 @@ func TestEgressHandlers_messageDispatchPrecedence(t *testing.T) {
 			MessageFunc: func(
 				csid int64,
 				ts int64,
-				buffer atomic.AtomicBuffer,
+				buffer atomicbuffer.AtomicBuffer,
 				off int,
 				ln int,
 				hdr *aeron.Header,
@@ -437,7 +437,7 @@ func TestEgressHandlers_messageBytesFuncCopySemantics(t *testing.T) {
 		},
 	}
 
-	buf := atomic.Wrap(raw)
+	buf := atomicbuffer.Wrap(raw)
 	h.Message(0, 0, buf, offset, length, nil)
 
 	require.Equal(t, wantPayload, gotPayload)
@@ -463,7 +463,7 @@ func TestEgressHandlers_messageBytesFunc_nilPayloadSpans(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			buf := atomic.Wrap([]byte("payload"))
+			buf := atomicbuffer.Wrap([]byte("payload"))
 
 			var gotPayload []byte
 			var called bool

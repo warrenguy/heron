@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 var errEgressHandlerMessageNotConfigured = errors.New(
@@ -20,7 +20,7 @@ type EgressHandler interface {
 	Message(
 		clusterSessionID int64,
 		timestamp int64,
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		header *aeron.Header,
@@ -93,7 +93,7 @@ type EgressHandlers struct {
 	MessageFunc func(
 		clusterSessionID int64,
 		timestamp int64,
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		header *aeron.Header,
@@ -127,7 +127,7 @@ var _ EgressHandler = (*EgressHandlers)(nil)
 func (h *EgressHandlers) Message(
 	clusterSessionID int64,
 	timestamp int64,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *aeron.Header,
@@ -142,7 +142,7 @@ func (h *EgressHandlers) Message(
 	}
 }
 
-func cloneAtomicBufferSpan(buffer atomic.AtomicBuffer, offset, length int) []byte {
+func cloneAtomicBufferSpan(buffer atomicbuffer.AtomicBuffer, offset, length int) []byte {
 	if length <= 0 {
 		return nil
 	}
@@ -240,7 +240,7 @@ var _ EgressHandler = ThrowingEgressHandler{}
 func (h ThrowingEgressHandler) Message(
 	_ int64,
 	_ int64,
-	_ atomic.AtomicBuffer,
+	_ atomicbuffer.AtomicBuffer,
 	_ int,
 	_ int,
 	_ *aeron.Header,

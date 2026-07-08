@@ -6,9 +6,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/internal/testutil"
 )
 
@@ -52,7 +52,7 @@ func invokeHandleArchiveControlFragment(
 	wire []byte,
 ) {
 	t.Helper()
-	handleArchiveControlFragment(targets, atomic.Wrap(wire), 0, len(wire), &aeron.Header{})
+	handleArchiveControlFragment(targets, atomicbuffer.Wrap(wire), 0, len(wire), &aeron.Header{})
 }
 
 func TestHandleArchiveControlFragment_signalDispatch(t *testing.T) {
@@ -301,7 +301,7 @@ func TestHandleArchiveControlFragment_foreignSchemaDropped(t *testing.T) {
 
 func TestHandleArchiveControlFragment_DispatchSTART_ZeroAllocs(t *testing.T) {
 	wire := recordingSignalWire(t, gensbe.RecordingSignal_START)
-	buffer := atomic.Wrap(wire)
+	buffer := atomicbuffer.Wrap(wire)
 	header := &aeron.Header{}
 	var captured capturedRecordingSignal
 	targets := ArchiveControlPollTargets{SignalHandler: recordingSignalCapture(&captured)}

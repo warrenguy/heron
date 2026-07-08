@@ -3,7 +3,7 @@ package logbuffer
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 // LogBuffers wraps a MappedLogBuffer for shared pub/image IPC lifetime.
@@ -27,18 +27,18 @@ func (buffers *LogBuffers) mappedOrErr() (*MappedLogBuffer, error) {
 	return buffers.mapped, nil
 }
 
-func (buffers *LogBuffers) MetaDataBuffer() (atomic.AtomicBuffer, error) {
+func (buffers *LogBuffers) MetaDataBuffer() (atomicbuffer.AtomicBuffer, error) {
 	mapped, err := buffers.mappedOrErr()
 	if err != nil {
-		return atomic.AtomicBuffer{}, err
+		return atomicbuffer.AtomicBuffer{}, err
 	}
 	return mapped.MetaDataBuffer()
 }
 
-func (buffers *LogBuffers) TermBuffers() ([PartitionCount]atomic.AtomicBuffer, error) {
+func (buffers *LogBuffers) TermBuffers() ([PartitionCount]atomicbuffer.AtomicBuffer, error) {
 	mapped, err := buffers.mappedOrErr()
 	if err != nil {
-		return [PartitionCount]atomic.AtomicBuffer{}, err
+		return [PartitionCount]atomicbuffer.AtomicBuffer{}, err
 	}
 	return mapped.TermBuffers()
 }

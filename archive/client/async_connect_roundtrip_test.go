@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
@@ -126,7 +126,7 @@ func (state *asyncConnectChallengeRoundTripState) onStep(
 	withAsyncConnectControlResponseTerm(
 		t,
 		ac,
-		func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+		func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 			switch {
 			case !state.challengeWritten && ac.State() == ConnectStatePollResponse:
 				writeChallengeForConnect(t, termBuffer, correlation)

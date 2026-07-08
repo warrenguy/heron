@@ -8,7 +8,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/internal/testutil"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -476,7 +476,7 @@ func TestClient_NextAvailableSessionID_offersCommand(t *testing.T) {
 	require.ErrorAs(t, err, &timeoutErr)
 
 	readCount := fixture.Ring.Read(
-		func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
+		func(msgTypeID int, buffer atomicbuffer.AtomicBuffer, index, length int) {
 			require.Equal(t, conductor.GetNextAvailableSessionID, msgTypeID)
 			require.Equal(t, conductor.GetNextAvailableSessionIDBodyLength, length)
 		},

@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestNewControlResponsePoller_freshCaptureDefaults(t *testing.T) {
@@ -337,7 +337,7 @@ func encodeControlResponsePollerTestChallengeWire(t *testing.T) []byte {
 
 func writeControlResponsePollerTestOKThenChallengeWires(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 ) {
 	t.Helper()
 	writeTwoSequentialUnfragmentedWiresToTerm(

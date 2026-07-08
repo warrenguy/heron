@@ -4,12 +4,12 @@ import (
 	"fmt"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/ringbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/ringbuffer"
 )
 
 func decodeMatchingClientClose(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	payloadOffset int,
 	bodyLength int,
 	clientID int64,
@@ -45,7 +45,7 @@ func clientCloseObserveSpec(clientID int64) toDriverObserveSpec[conductor.Correl
 		messageTypeID: conductor.ClientClose,
 		recordLength:  conductor.CorrelatedRingRecordLength(),
 		decodeMatch: func(
-			buffer atomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			payloadOffset, bodyLength int,
 		) (conductor.CorrelatedMessage, bool, error) {
 			return decodeMatchingClientClose(buffer, payloadOffset, bodyLength, clientID)
@@ -72,7 +72,7 @@ func observeClientClose(
 }
 
 func decodeMatchingAddPublication(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	payloadOffset int,
 	bodyLength int,
 	want conductor.PublicationMessage,
@@ -98,7 +98,7 @@ func addPublicationObserveSpec(
 		messageTypeID: conductor.AddPublication,
 		recordLength:  ringRecordLength(conductor.PublicationMessageBodyLength(want.Channel)),
 		decodeMatch: func(
-			buffer atomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			payloadOffset, bodyLength int,
 		) (conductor.PublicationMessage, bool, error) {
 			return decodeMatchingAddPublication(buffer, payloadOffset, bodyLength, want)
@@ -125,7 +125,7 @@ func observeAddPublication(
 }
 
 func decodeMatchingRemovePublication(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	payloadOffset int,
 	bodyLength int,
 	clientID, registrationID int64,
@@ -142,7 +142,7 @@ func decodeMatchingRemovePublication(
 }
 
 func decodeMatchingRemoveSubscription(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	payloadOffset int,
 	bodyLength int,
 	clientID, registrationID int64,
@@ -178,7 +178,7 @@ func removePublicationObserveSpec(
 		messageTypeID: conductor.RemovePublication,
 		recordLength:  ringRecordLength(conductor.RemovePublicationBodyLength),
 		decodeMatch: func(
-			buffer atomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			payloadOffset, bodyLength int,
 		) (conductor.RemovePublicationMessage, bool, error) {
 			return decodeMatchingRemovePublication(
@@ -202,7 +202,7 @@ func removeSubscriptionObserveSpec(
 		messageTypeID: conductor.RemoveSubscription,
 		recordLength:  ringRecordLength(conductor.RemoveMessageBodyLength),
 		decodeMatch: func(
-			buffer atomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			payloadOffset, bodyLength int,
 		) (conductor.RemoveMessage, bool, error) {
 			return decodeMatchingRemoveSubscription(

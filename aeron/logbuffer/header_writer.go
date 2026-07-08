@@ -1,15 +1,13 @@
 package logbuffer
 
-import (
-	"github.com/warrenguy/heron/agrona/atomic"
-)
+import "github.com/warrenguy/heron/atomicbuffer"
 
 type HeaderWriter struct {
 	header [DataHeaderLength]byte
 }
 
 func NewHeaderWriter(
-	template atomic.AtomicBuffer,
+	template atomicbuffer.AtomicBuffer,
 	sessionID int32,
 	streamID int32,
 ) HeaderWriter {
@@ -24,7 +22,7 @@ func NewHeaderWriter(
 		copy(writer.header[:], template.Bytes()[:copyLength])
 	}
 
-	atomicBuf := atomic.Wrap(writer.header[:])
+	atomicBuf := atomicbuffer.Wrap(writer.header[:])
 	PutFrameSessionID(atomicBuf, 0, sessionID)
 	PutFrameStreamID(atomicBuf, 0, streamID)
 
@@ -32,7 +30,7 @@ func NewHeaderWriter(
 }
 
 func (writer *HeaderWriter) Write(
-	termBuf atomic.AtomicBuffer,
+	termBuf atomicbuffer.AtomicBuffer,
 	termOffset int,
 	frameLength int32,
 	termID int32,
@@ -41,7 +39,7 @@ func (writer *HeaderWriter) Write(
 }
 
 func (writer *HeaderWriter) WriteWithFlags(
-	termBuf atomic.AtomicBuffer,
+	termBuf atomicbuffer.AtomicBuffer,
 	termOffset int,
 	frameLength int32,
 	termID int32,
@@ -51,14 +49,14 @@ func (writer *HeaderWriter) WriteWithFlags(
 }
 
 func (writer *HeaderWriter) writeHeader(
-	termBuf atomic.AtomicBuffer,
+	termBuf atomicbuffer.AtomicBuffer,
 	termOffset int,
 	frameLength int32,
 	termID int32,
 	flags uint8,
 ) {
 	PutFrameLengthRelease(termBuf, termOffset, -frameLength)
-	atomic.ReleaseFence()
+	atomicbuffer.ReleaseFence()
 	termBuf.PutBytes(termOffset+OffsetVersion, writer.header[OffsetVersion:OffsetFlags])
 	PutFrameFlags(termBuf, termOffset, flags)
 	termBuf.PutBytes(termOffset+OffsetFrameType, writer.header[OffsetFrameType:OffsetTermOffset])

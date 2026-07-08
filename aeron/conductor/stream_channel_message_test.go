@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 type streamChannelNonASCIICase struct {
@@ -27,7 +27,7 @@ type streamChannelMessageHarness struct {
 	errOutOfBounds    error
 	bodyLength        func(string) int
 	encode            func(
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		clientID int64,
 		correlationID int64,
@@ -35,7 +35,7 @@ type streamChannelMessageHarness struct {
 		channel string,
 	) error
 	decode func(
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		bodyLength int,
 	) (clientID, correlationID int64, streamID int32, channel string, err error)
@@ -64,7 +64,7 @@ func testStreamChannelMessageRoundtrip(
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			bodyLength := harness.bodyLength(test.channel)
-			buffer := atomic.Wrap(make([]byte, test.offset+bodyLength))
+			buffer := atomicbuffer.Wrap(make([]byte, test.offset+bodyLength))
 			err := harness.encode(
 				buffer,
 				test.offset,
@@ -98,7 +98,7 @@ func testStreamChannelMessageBodyLength(
 	const channel = "aeron:ipc"
 	require.Equal(
 		t,
-		harness.minimumBodyLength+atomic.StringASCIIEncodedLength(len(channel))-4,
+		harness.minimumBodyLength+atomicbuffer.StringASCIIEncodedLength(len(channel))-4,
 		harness.bodyLength(channel),
 	)
 }
@@ -110,7 +110,7 @@ func testDecodeStreamChannelMessageBodyTooShort(
 ) {
 	t.Helper()
 
-	buffer := atomic.Wrap(make([]byte, harness.minimumBodyLength))
+	buffer := atomicbuffer.Wrap(make([]byte, harness.minimumBodyLength))
 
 	_, _, _, _, err := harness.decode(buffer, 0, shortBodyLength)
 	require.ErrorIs(t, err, harness.errOutOfBounds)
@@ -133,10 +133,10 @@ func testDecodeStreamChannelMessageChannelTruncated(
 ) {
 	t.Helper()
 
-	buffer := atomic.Wrap(payload)
+	buffer := atomicbuffer.Wrap(payload)
 
 	_, _, _, _, err := harness.decode(buffer, 0, shortBodyLength)
-	require.ErrorIs(t, err, atomic.ErrStringASCIIOutOfBounds)
+	require.ErrorIs(t, err, atomicbuffer.ErrStringASCIIOutOfBounds)
 	require.EqualError(t, err, wantErr)
 }
 
@@ -151,7 +151,7 @@ func testDecodeStreamChannelMessageDecodedLengthMismatch(
 
 	buf := make([]byte, bodyLength)
 	copy(buf, payload)
-	buffer := atomic.Wrap(buf)
+	buffer := atomicbuffer.Wrap(buf)
 
 	_, _, _, _, err := harness.decode(buffer, 0, bodyLength)
 	require.ErrorIs(t, err, harness.errOutOfBounds)
@@ -171,7 +171,7 @@ func testEncodeStreamChannelMessageOutOfBounds(
 ) {
 	t.Helper()
 
-	buffer := atomic.Wrap(make([]byte, harness.minimumBodyLength))
+	buffer := atomicbuffer.Wrap(make([]byte, harness.minimumBodyLength))
 	wantErr := harness.errOutOfBounds.Error() +
 		": offset=8 capacity=" +
 		strconv.Itoa(harness.minimumBodyLength)
@@ -195,7 +195,7 @@ func testStreamChannelMessageRejectsNonASCII(
 	for _, channelTest := range streamChannelNonASCIICases() {
 		t.Run(channelTest.name, func(t *testing.T) {
 			bodyLength := harness.bodyLength(channelTest.channel)
-			buffer := atomic.Wrap(make([]byte, bodyLength))
+			buffer := atomicbuffer.Wrap(make([]byte, bodyLength))
 			err := harness.encode(
 				buffer,
 				0,
@@ -204,7 +204,7 @@ func testStreamChannelMessageRejectsNonASCII(
 				streamID,
 				channelTest.channel,
 			)
-			require.ErrorIs(t, err, atomic.ErrStringASCIINonASCII)
+			require.ErrorIs(t, err, atomicbuffer.ErrStringASCIINonASCII)
 		})
 	}
 }

@@ -3,7 +3,7 @@ package client
 import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -53,7 +53,7 @@ func NewConnectEgressPoller(
 		correlationID: conductor.NullCorrelationID,
 	}
 	poller.assembler = aeron.NewFragmentAssembler(func(
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		header *aeron.Header,

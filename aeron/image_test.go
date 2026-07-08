@@ -10,7 +10,7 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestImage_newImage_recordsJoinPosition(t *testing.T) {
@@ -256,19 +256,19 @@ func TestImage_newImage_metadataErrors(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		mutate       func(atomic.AtomicBuffer)
+		mutate       func(atomicbuffer.AtomicBuffer)
 		wantContains string
 	}{
 		{
 			name: "parseMetadataFailure",
-			mutate: func(meta atomic.AtomicBuffer) {
+			mutate: func(meta atomicbuffer.AtomicBuffer) {
 				meta.PutInt32(logbuffer.OffsetPageSize, 3)
 			},
 			wantContains: "page size",
 		},
 		{
 			name: "metadataTermLengthMismatch",
-			mutate: func(meta atomic.AtomicBuffer) {
+			mutate: func(meta atomicbuffer.AtomicBuffer) {
 				meta.PutInt32(logbuffer.OffsetTermLength, aeron.TestPublicationTermLength*2)
 			},
 			wantContains: "metadata term length",
@@ -334,17 +334,17 @@ func TestImage_Poll_stopsOnUncommitted(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		blockNext func(t *testing.T, termBuffer atomic.AtomicBuffer)
+		blockNext func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer)
 	}{
 		{
 			name: "zeroFrameLength",
-			blockNext: func(t *testing.T, termBuffer atomic.AtomicBuffer) {
+			blockNext: func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer) {
 				require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(termBuffer, nextOffset))
 			},
 		},
 		{
 			name: "negativeFrameLength",
-			blockNext: func(_ *testing.T, termBuffer atomic.AtomicBuffer) {
+			blockNext: func(_ *testing.T, termBuffer atomicbuffer.AtomicBuffer) {
 				logbuffer.PutFrameLengthRelease(termBuffer, nextOffset, -int32(nextOffset))
 			},
 		},
@@ -400,7 +400,7 @@ func TestImage_Poll_resetsFragmentedFrameLen(t *testing.T) {
 	aeron.HeaderSetFragmentedFrameLenForTest(aeron.ImageHeaderForTest(image), 256)
 
 	fragments := image.Poll(func(
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		header *aeron.Header,
@@ -511,7 +511,7 @@ func TestImage_Poll_nilHandlerAndZeroLimit(t *testing.T) {
 
 	for _, tc := range []struct {
 		name    string
-		handler func(atomic.AtomicBuffer, int, int, *aeron.Header)
+		handler func(atomicbuffer.AtomicBuffer, int, int, *aeron.Header)
 		limit   int
 	}{
 		{name: "nilHandler", handler: nil, limit: 1},
@@ -526,7 +526,7 @@ func TestImage_Poll_nilHandlerAndZeroLimit(t *testing.T) {
 func TestImage_Poll_handlerPanic(t *testing.T) {
 	const wantErr = "poll handler failed"
 	panicPayload := []byte("panic")
-	pollPanicHandler := func(atomic.AtomicBuffer, int, int, *aeron.Header) {
+	pollPanicHandler := func(atomicbuffer.AtomicBuffer, int, int, *aeron.Header) {
 		panic(errors.New(wantErr))
 	}
 
@@ -578,7 +578,7 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 		firstSpan := logbuffer.AlignFragmentChunkLength(len(chainPayload))
 
 		attempts := 0
-		nthFramePanicHandler := func(atomic.AtomicBuffer, int, int, *aeron.Header) {
+		nthFramePanicHandler := func(atomicbuffer.AtomicBuffer, int, int, *aeron.Header) {
 			attempts++
 			if attempts == 2 {
 				panic(errors.New(wantErr))
@@ -647,7 +647,7 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 			panicPayload,
 		)
 
-		nonErrorPanicHandler := func(atomic.AtomicBuffer, int, int, *aeron.Header) {
+		nonErrorPanicHandler := func(atomicbuffer.AtomicBuffer, int, int, *aeron.Header) {
 			panic(panicValue)
 		}
 
@@ -752,7 +752,7 @@ func TestImage_Poll_closeSkipsCounterStore(t *testing.T) {
 					logbuffer.Unfragmented,
 					[]byte("close-in-handler"),
 				)
-				return func(atomic.AtomicBuffer, int, int, *aeron.Header) {
+				return func(atomicbuffer.AtomicBuffer, int, int, *aeron.Header) {
 					aeron.ImageInternalCloseForTest(image)
 				}
 			},
@@ -893,36 +893,36 @@ func TestImage_Poll_consumesTermEndPadding(t *testing.T) {
 	tests := []struct {
 		name          string
 		padLength     int32
-		setup         func(termBuffer atomic.AtomicBuffer, paddingOffset int)
-		assertPrePoll func(t *testing.T, termBuffer atomic.AtomicBuffer, paddingOffset int)
+		setup         func(termBuffer atomicbuffer.AtomicBuffer, paddingOffset int)
+		assertPrePoll func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, paddingOffset int)
 	}{
 		{
 			name:      "slack1",
 			padLength: 1,
-			setup: func(termBuffer atomic.AtomicBuffer, paddingOffset int) {
+			setup: func(termBuffer atomicbuffer.AtomicBuffer, paddingOffset int) {
 				aeron.WriteMinimalTermEndPaddingForTest(termBuffer, paddingOffset, 1)
 			},
-			assertPrePoll: func(t *testing.T, termBuffer atomic.AtomicBuffer, paddingOffset int) {
+			assertPrePoll: func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, paddingOffset int) {
 				require.Zero(t, logbuffer.FrameLengthVolatile(termBuffer, paddingOffset))
 			},
 		},
 		{
 			name:      "slack7",
 			padLength: 7,
-			setup: func(termBuffer atomic.AtomicBuffer, paddingOffset int) {
+			setup: func(termBuffer atomicbuffer.AtomicBuffer, paddingOffset int) {
 				aeron.WriteMinimalTermEndPaddingForTest(termBuffer, paddingOffset, 7)
 			},
-			assertPrePoll: func(t *testing.T, termBuffer atomic.AtomicBuffer, paddingOffset int) {
+			assertPrePoll: func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, paddingOffset int) {
 				require.Equal(t, int32(7), termBuffer.GetInt32(paddingOffset))
 			},
 		},
 		{
 			name:      "minimal",
 			padLength: pollTestMinimalPadLength,
-			setup: func(termBuffer atomic.AtomicBuffer, paddingOffset int) {
+			setup: func(termBuffer atomicbuffer.AtomicBuffer, paddingOffset int) {
 				aeron.WriteMinimalTermEndPaddingForTest(termBuffer, paddingOffset, pollTestMinimalPadLength)
 			},
-			assertPrePoll: func(t *testing.T, termBuffer atomic.AtomicBuffer, paddingOffset int) {
+			assertPrePoll: func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, paddingOffset int) {
 				require.Equal(t, pollTestMinimalPadLength, termBuffer.GetInt32(paddingOffset))
 				require.Equal(t, int16(logbuffer.HdrTypePad), logbuffer.FrameType(termBuffer, paddingOffset))
 			},
@@ -930,7 +930,7 @@ func TestImage_Poll_consumesTermEndPadding(t *testing.T) {
 		{
 			name:      "full",
 			padLength: pollTestTermEndFullPadLength,
-			setup: func(termBuffer atomic.AtomicBuffer, paddingOffset int) {
+			setup: func(termBuffer atomicbuffer.AtomicBuffer, paddingOffset int) {
 				aeron.WriteCommittedPaddingFrameForTest(
 					termBuffer,
 					paddingOffset,
@@ -939,7 +939,7 @@ func TestImage_Poll_consumesTermEndPadding(t *testing.T) {
 					pollTestTermEndFullPadLength,
 				)
 			},
-			assertPrePoll: func(t *testing.T, termBuffer atomic.AtomicBuffer, paddingOffset int) {
+			assertPrePoll: func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, paddingOffset int) {
 				require.Equal(t, pollTestTermEndFullPadLength, termBuffer.GetInt32(paddingOffset))
 				require.True(t, logbuffer.IsPaddingFrame(termBuffer, paddingOffset))
 			},

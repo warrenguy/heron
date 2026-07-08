@@ -10,7 +10,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -114,8 +114,8 @@ func drawFragmentAssemblerChunkCount(rt *rapid.T, payload []byte, minChunks, max
 func setupFragmentAssemblerRapid(
 	rt *rapid.T,
 	specs []FragmentedFrameForTest,
-) (*FragmentAssembler, atomic.AtomicBuffer, []int, *fragmentDelegateCapture) {
-	termBuffer := atomic.Wrap(make([]byte, CommittedDataFramesTermCapacityForTest(specs)))
+) (*FragmentAssembler, atomicbuffer.AtomicBuffer, []int, *fragmentDelegateCapture) {
+	termBuffer := atomicbuffer.Wrap(make([]byte, CommittedDataFramesTermCapacityForTest(specs)))
 	offsets := WriteCommittedDataFramesForTest(termBuffer, 0, specs)
 
 	capture := &fragmentDelegateCapture{}

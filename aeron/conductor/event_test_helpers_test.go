@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/broadcast"
+	"github.com/warrenguy/heron/broadcast"
 )
 
 const (

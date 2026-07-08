@@ -7,9 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -40,7 +40,7 @@ func invokeHandleControlResponseFragment(
 	if length < 0 {
 		length = len(wire) - offset
 	}
-	handleControlResponseFragment(poller, atomic.Wrap(wire), offset, length, &aeron.Header{})
+	handleControlResponseFragment(poller, atomicbuffer.Wrap(wire), offset, length, &aeron.Header{})
 }
 
 func encodeControlResponseWire(

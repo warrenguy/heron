@@ -11,7 +11,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/cnc/cnctest"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestMapCncFile_roundtrip_rapid(t *testing.T) {
@@ -33,7 +33,7 @@ func TestMapCncFile_roundtrip_rapid(t *testing.T) {
 			toDriverAtomic := mapped.ToDriverAtomic()
 			toDriverAtomic.PutInt32(0, 7)
 			require.Equal(
-				rt, int32(7), atomic.Wrap(toDriver).GetInt32(0),
+				rt, int32(7), atomicbuffer.Wrap(toDriver).GetInt32(0),
 				"atomic write not visible in mapped to-driver buffer",
 			)
 		}

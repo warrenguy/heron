@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/idlestrategy"
+	"github.com/warrenguy/heron/idlestrategy"
 )
 
 // ArchiveContext holds invoker-only Aeron Archive control client configuration.

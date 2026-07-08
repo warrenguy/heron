@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"net"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 type PublicationError struct {
@@ -26,13 +26,13 @@ func PublicationErrorBodyLength(errorMessage string) int {
 }
 
 func DecodePublicationError(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	capacity int,
 ) (PublicationError, error) {
 	if err := decodeMinimumBodyLengthError(
 		capacity,
-		PublicationErrorFixedLength+atomic.StringASCIIHeaderLength,
+		PublicationErrorFixedLength+atomicbuffer.StringASCIIHeaderLength,
 		ErrEventBodyTooShort,
 	); err != nil {
 		return PublicationError{}, err
@@ -77,7 +77,7 @@ func DecodePublicationError(
 }
 
 func EncodePublicationError(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	event PublicationError,
 ) error {
@@ -117,7 +117,7 @@ func EncodePublicationError(
 func PublicationErrorBytes(event PublicationError) []byte {
 	return encodeToBytes(
 		PublicationErrorBodyLength(event.ErrorMessage),
-		func(buf atomic.AtomicBuffer, offset int) error {
+		func(buf atomicbuffer.AtomicBuffer, offset int) error {
 			return EncodePublicationError(buf, offset, event)
 		},
 	)

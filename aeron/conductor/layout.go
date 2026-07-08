@@ -3,13 +3,13 @@ package conductor
 import (
 	"net"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
-	sizeOfInt32  = atomic.SizeInt32
-	sizeOfInt64  = atomic.SizeInt64
-	sizeOfUint16 = atomic.SizeUint16
+	sizeOfInt32  = atomicbuffer.SizeInt32
+	sizeOfInt64  = atomicbuffer.SizeInt64
+	sizeOfUint16 = atomicbuffer.SizeUint16
 
 	CorrelatedMessageClientIDOffset      = 0
 	CorrelatedMessageCorrelationIDOffset = CorrelatedMessageClientIDOffset + sizeOfInt64

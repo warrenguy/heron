@@ -1,8 +1,6 @@
 package conductor
 
-import (
-	"github.com/warrenguy/heron/agrona/atomic"
-)
+import "github.com/warrenguy/heron/atomicbuffer"
 
 // LogFileName is decoded now; caller must mmap before Offer succeeds.
 type PublicationBuffersReady struct {
@@ -20,13 +18,13 @@ func PublicationBuffersReadyBodyLength(logFileName string) int {
 }
 
 func DecodePublicationBuffersReady(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	capacity int,
 ) (PublicationBuffersReady, error) {
 	if err := decodeMinimumBodyLengthError(
 		capacity,
-		PublicationBuffersReadyFixedLength+atomic.StringASCIIHeaderLength,
+		PublicationBuffersReadyFixedLength+atomicbuffer.StringASCIIHeaderLength,
 		ErrEventBodyTooShort,
 	); err != nil {
 		return PublicationBuffersReady{}, err
@@ -62,7 +60,7 @@ func DecodePublicationBuffersReady(
 }
 
 func EncodePublicationBuffersReady(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	event PublicationBuffersReady,
 ) error {
@@ -95,7 +93,7 @@ func EncodePublicationBuffersReady(
 func PublicationBuffersReadyBytes(event PublicationBuffersReady) []byte {
 	return encodeToBytes(
 		PublicationBuffersReadyBodyLength(event.LogFileName),
-		func(buf atomic.AtomicBuffer, offset int) error {
+		func(buf atomicbuffer.AtomicBuffer, offset int) error {
 			return EncodePublicationBuffersReady(buf, offset, event)
 		},
 	)

@@ -1,6 +1,6 @@
 package wire
 
-import "github.com/warrenguy/heron/agrona/atomic"
+import "github.com/warrenguy/heron/atomicbuffer"
 
 // CheckLength reports whether length is at least minimum.
 //
@@ -13,12 +13,12 @@ func CheckLength(length, minimum int) bool {
 
 // GetInt64 reads little-endian int64 from payload at offset.
 func GetInt64(payload []byte, offset int) int64 {
-	return atomic.Wrap(payload).GetInt64(offset)
+	return atomicbuffer.Wrap(payload).GetInt64(offset)
 }
 
 // PutInt64 writes little-endian int64 to payload at offset.
 func PutInt64(payload []byte, offset int, value int64) {
-	atomic.Wrap(payload).PutInt64(offset, value)
+	atomicbuffer.Wrap(payload).PutInt64(offset, value)
 }
 
 func wireBoolFromByte(b byte) bool {
@@ -26,23 +26,23 @@ func wireBoolFromByte(b byte) bool {
 }
 
 // GetBoolByte reads one-byte wire bool: 0 is false, any non-zero is true.
-func GetBoolByte(buf atomic.AtomicBuffer, offset int) bool {
+func GetBoolByte(buf atomicbuffer.AtomicBuffer, offset int) bool {
 	return wireBoolFromByte(buf.GetByte(offset))
 }
 
 // PutBoolByte writes 0 or 1 for false or true.
-func PutBoolByte(buf atomic.AtomicBuffer, offset int, value bool) {
+func PutBoolByte(buf atomicbuffer.AtomicBuffer, offset int, value bool) {
 	buf.PutByte(offset, encodeWireBoolByte(value))
 }
 
 // GetBoolByteBytes reads one-byte wire bool from payload at offset.
 func GetBoolByteBytes(payload []byte, offset int) bool {
-	return GetBoolByte(atomic.Wrap(payload), offset)
+	return GetBoolByte(atomicbuffer.Wrap(payload), offset)
 }
 
 // PutBoolByteBytes writes 0 or 1 for false or true to payload at offset.
 func PutBoolByteBytes(payload []byte, offset int, value bool) {
-	PutBoolByte(atomic.Wrap(payload), offset, value)
+	PutBoolByte(atomicbuffer.Wrap(payload), offset, value)
 }
 
 func encodeWireBoolByte(value bool) byte {

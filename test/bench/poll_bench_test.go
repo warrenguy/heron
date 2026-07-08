@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/test/bench/harness"
 )
 
@@ -18,7 +18,7 @@ var (
 func benchmarkImagePoll(
 	b *testing.B,
 	handler func(
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		header *aeron.Header,

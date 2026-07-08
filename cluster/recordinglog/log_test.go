@@ -11,7 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/internal/testutil"
 )
@@ -697,7 +697,7 @@ func TestWriteFieldAt_zeroAlloc(t *testing.T) {
 	require.NoError(t, log.AppendTerm(9, 5, 100, 1000))
 
 	var field [8]byte
-	atomic.Wrap(field[:]).PutInt64(0, 555)
+	atomicbuffer.Wrap(field[:]).PutInt64(0, 555)
 	testutil.AssertZeroAllocs(t, "writeFieldAt", 100, func() {
 		_ = recordinglog.WriteFieldAt(log, 0, recordinglog.LogPositionOffset, field[:])
 	})

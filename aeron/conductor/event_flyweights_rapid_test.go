@@ -11,7 +11,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/internal/testutil"
 )
 
@@ -109,10 +109,10 @@ func requireEventEncodeDecodeRoundtrip[T any](
 	offset int,
 	bodyLength int,
 	want T,
-	encode func(atomic.AtomicBuffer, int, T) error,
-	decode func(atomic.AtomicBuffer, int, int) (T, error),
+	encode func(atomicbuffer.AtomicBuffer, int, T) error,
+	decode func(atomicbuffer.AtomicBuffer, int, int) (T, error),
 ) {
-	buffer := atomic.Wrap(make([]byte, offset+bodyLength))
+	buffer := atomicbuffer.Wrap(make([]byte, offset+bodyLength))
 	prefix := testutil.SnapshotBufferPrefix(buffer, offset)
 	require.NoError(rt, encode(buffer, offset, want))
 	require.True(rt, bytes.Equal(prefix, buffer.Bytes()[:offset]))
@@ -124,7 +124,7 @@ func requireEventEncodeDecodeRoundtrip[T any](
 
 func requireAvailableImageSourceIdentityAligned(
 	rt *rapid.T,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	bodyLength int,
 ) {
@@ -185,7 +185,7 @@ func TestEventFlyweight_roundtrip_rapid(t *testing.T) {
 			bodyLength := conductor.AvailableImageBodyLength(want.LogFileName, want.SourceIdentity)
 			require.Len(rt, conductor.AvailableImageBytes(want), bodyLength)
 
-			buffer := atomic.Wrap(make([]byte, offset+bodyLength))
+			buffer := atomicbuffer.Wrap(make([]byte, offset+bodyLength))
 			prefix := testutil.SnapshotBufferPrefix(buffer, offset)
 			require.NoError(rt, conductor.EncodeAvailableImage(buffer, offset, want))
 			require.True(rt, bytes.Equal(prefix, buffer.Bytes()[:offset]))
@@ -236,7 +236,7 @@ func TestEventFlyweight_trailingPadding_rapid(t *testing.T) {
 			payload := conductor.PublicationBuffersReadyBytes(want)
 			padded := padPayloadWithTrailingBytes(payload, trailingExtra)
 
-			got, err := conductor.DecodePublicationBuffersReady(atomic.Wrap(padded), 0, len(padded))
+			got, err := conductor.DecodePublicationBuffersReady(atomicbuffer.Wrap(padded), 0, len(padded))
 			require.NoError(rt, err)
 			require.Equal(rt, want, got)
 
@@ -245,7 +245,7 @@ func TestEventFlyweight_trailingPadding_rapid(t *testing.T) {
 			payload := conductor.AvailableImageBytes(want)
 			padded := padPayloadWithTrailingBytes(payload, trailingExtra)
 
-			got, err := conductor.DecodeAvailableImage(atomic.Wrap(padded), 0, len(padded))
+			got, err := conductor.DecodeAvailableImage(atomicbuffer.Wrap(padded), 0, len(padded))
 			require.NoError(rt, err)
 			require.Equal(rt, want, got)
 
@@ -254,7 +254,7 @@ func TestEventFlyweight_trailingPadding_rapid(t *testing.T) {
 			payload := conductor.UnavailableImageBytes(want)
 			padded := padPayloadWithTrailingBytes(payload, trailingExtra)
 
-			got, err := conductor.DecodeUnavailableImage(atomic.Wrap(padded), 0, len(padded))
+			got, err := conductor.DecodeUnavailableImage(atomicbuffer.Wrap(padded), 0, len(padded))
 			require.NoError(rt, err)
 			require.Equal(rt, want, got)
 
@@ -263,7 +263,7 @@ func TestEventFlyweight_trailingPadding_rapid(t *testing.T) {
 			payload := conductor.PublicationErrorBytes(want)
 			padded := padPayloadWithTrailingBytes(payload, trailingExtra)
 
-			got, err := conductor.DecodePublicationError(atomic.Wrap(padded), 0, len(padded))
+			got, err := conductor.DecodePublicationError(atomicbuffer.Wrap(padded), 0, len(padded))
 			require.NoError(rt, err)
 			require.Equal(rt, want, got)
 		}

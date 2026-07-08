@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/idlestrategy"
+	"github.com/warrenguy/heron/idlestrategy"
 )
 
 // ClusterContext holds cluster client configuration. Normalize before Validate and

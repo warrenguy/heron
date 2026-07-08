@@ -11,8 +11,8 @@ import (
 
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/broadcast"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/broadcast"
 )
 
 const (
@@ -129,7 +129,7 @@ func availableImageBytesWithRawLogPathForConductorTest(
 ) []byte {
 	bodyLength := conductor.AvailableImageBodyLength(logFileName, event.SourceIdentity)
 	payload := make([]byte, bodyLength)
-	buffer := atomic.Wrap(payload)
+	buffer := atomicbuffer.Wrap(payload)
 
 	buffer.PutInt64(conductor.AvailableImageCorrelationIDOffset, event.CorrelationID)
 	buffer.PutInt32(conductor.AvailableImageSessionIDOffset, event.SessionID)
@@ -146,15 +146,16 @@ func availableImageBytesWithRawLogPathForConductorTest(
 	logFileNameFieldOffset := conductor.AvailableImageFixedLength
 	buffer.PutInt32(logFileNameFieldOffset, int32(len(logFileName)))
 	buffer.PutStringBytes(
-		logFileNameFieldOffset+atomic.StringASCIIHeaderLength,
+		logFileNameFieldOffset+atomicbuffer.StringASCIIHeaderLength,
 		logFileName,
 	)
 
-	logFileNameFieldEnd := logFileNameFieldOffset + atomic.StringASCIIEncodedLength(len(logFileName))
-	sourceIdentityOffset := atomic.Align(logFileNameFieldEnd, atomic.SizeInt32)
+	logFileNameFieldEnd := logFileNameFieldOffset +
+		atomicbuffer.StringASCIIEncodedLength(len(logFileName))
+	sourceIdentityOffset := atomicbuffer.Align(logFileNameFieldEnd, atomicbuffer.SizeInt32)
 	buffer.PutInt32(sourceIdentityOffset, int32(len(event.SourceIdentity)))
 	buffer.PutStringBytes(
-		sourceIdentityOffset+atomic.StringASCIIHeaderLength,
+		sourceIdentityOffset+atomicbuffer.StringASCIIHeaderLength,
 		event.SourceIdentity,
 	)
 
@@ -541,7 +542,7 @@ func TestConductor_handleUnavailableImage_closesImage(t *testing.T) {
 	require.Zero(t, conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
 	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 	require.Zero(t, detachedImage.Poll(func(
-		atomic.AtomicBuffer,
+		atomicbuffer.AtomicBuffer,
 		int,
 		int,
 		*Header,

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
-	stdatomic "sync/atomic"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,8 +14,8 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/internal/testutil"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/ringbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/ringbuffer"
 )
 
 const (
@@ -169,7 +169,7 @@ type clientAddPublicationKindCase struct {
 	addMsgType             int
 	readyMsgType           int
 	commandName            string
-	decodeCorrelationID    func(atomic.AtomicBuffer, int, int) (int64, error)
+	decodeCorrelationID    func(atomicbuffer.AtomicBuffer, int, int) (int64, error)
 	driverRejectMessage    string
 	registrationErrorLabel string
 	setupLog               func(testing.TB) (dir, logPath string)
@@ -402,7 +402,7 @@ func clientAddPublicationKindCaseFor(kind conductor.PendingKind) clientAddPublic
 }
 
 func decodeAddPublicationCorrelationID(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	index int,
 	length int,
 ) (int64, error) {
@@ -414,7 +414,7 @@ func decodeAddPublicationCorrelationID(
 }
 
 func decodeAddSubscriptionCorrelationID(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	index int,
 	length int,
 ) (int64, error) {
@@ -426,7 +426,7 @@ func decodeAddSubscriptionCorrelationID(
 }
 
 func decodeCorrelatedCorrelationID(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	index int,
 	_ int,
 ) (int64, error) {
@@ -662,10 +662,10 @@ func setupClientAddConductorTerminating(
 type clientAddTestClock struct {
 	startNs            int64
 	timeout            time.Duration
-	pastDeadline       stdatomic.Bool
-	reads              stdatomic.Int64
+	pastDeadline       atomic.Bool
+	reads              atomic.Int64
 	deadlineAfterReads int64
-	nanoNs             stdatomic.Int64
+	nanoNs             atomic.Int64
 }
 
 func newClientAddTestClock(startNs int64, timeout time.Duration) *clientAddTestClock {
@@ -738,7 +738,7 @@ func pollAndRespondToAddCommand(
 	t *testing.T,
 	fixture *testutil.ConductorFixture,
 	msgTypeID int,
-	decode func(atomic.AtomicBuffer, int, int) (int64, error),
+	decode func(atomicbuffer.AtomicBuffer, int, int) (int64, error),
 	deadline time.Time,
 	buildResponse func(correlationID int64) (eventType int, payload []byte),
 	onCommandSeen func(correlationID int64),
@@ -748,7 +748,7 @@ func pollAndRespondToAddCommand(
 	for time.Now().Before(deadline) {
 		var responded bool
 		var correlationID int64
-		fixture.Ring.Read(func(ringMsgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
+		fixture.Ring.Read(func(ringMsgTypeID int, buffer atomicbuffer.AtomicBuffer, index, length int) {
 			if ringMsgTypeID != msgTypeID {
 				return
 			}
@@ -846,7 +846,7 @@ func pollAndRespondToAddCommandError(
 	t *testing.T,
 	fixture *testutil.ConductorFixture,
 	msgTypeID int,
-	decode func(atomic.AtomicBuffer, int, int) (int64, error),
+	decode func(atomicbuffer.AtomicBuffer, int, int) (int64, error),
 	deadline time.Time,
 	errorCode int32,
 	message string,
@@ -874,7 +874,7 @@ func waitForAddCommand(
 	t *testing.T,
 	fixture *testutil.ConductorFixture,
 	msgTypeID int,
-	decode func(atomic.AtomicBuffer, int, int) (int64, error),
+	decode func(atomicbuffer.AtomicBuffer, int, int) (int64, error),
 	commandName string,
 ) int64 {
 	t.Helper()
@@ -883,7 +883,7 @@ func waitForAddCommand(
 	for time.Now().Before(deadline) {
 		var correlationID int64
 		var sawCommand bool
-		fixture.Ring.Read(func(ringMsgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
+		fixture.Ring.Read(func(ringMsgTypeID int, buffer atomicbuffer.AtomicBuffer, index, length int) {
 			if ringMsgTypeID != msgTypeID {
 				return
 			}

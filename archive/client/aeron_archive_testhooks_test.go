@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestNewAeronArchive_transfersOwnsAeronClient(t *testing.T) {
@@ -56,7 +56,7 @@ func TestNewAeronArchive_wiresContextRecordingSignalHandler(t *testing.T) {
 func newAeronArchiveForDemuxTest(
 	t *testing.T,
 	handler RecordingSignalHandler,
-) (*AeronArchive, atomic.AtomicBuffer) {
+) (*AeronArchive, atomicbuffer.AtomicBuffer) {
 	t.Helper()
 
 	sub, termBuffer := setupControlResponsePollFixtures(t)

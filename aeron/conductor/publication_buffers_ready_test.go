@@ -5,11 +5,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestDecodePublicationBuffersReady_shortBody(t *testing.T) {
-	minimum := PublicationBuffersReadyFixedLength + atomic.StringASCIIHeaderLength
+	minimum := PublicationBuffersReadyFixedLength + atomicbuffer.StringASCIIHeaderLength
 
 	testDecodeEventShortBody(
 		t,
@@ -53,8 +53,8 @@ func TestDecodePublicationBuffersReady_truncatedLogFileName(t *testing.T) {
 	}
 	payload := truncateEncodedPayload(t, PublicationBuffersReadyBytes(event), 2)
 
-	_, err := DecodePublicationBuffersReady(atomic.Wrap(payload), 0, len(payload))
-	require.ErrorIs(t, err, atomic.ErrStringASCIIOutOfBounds)
+	_, err := DecodePublicationBuffersReady(atomicbuffer.Wrap(payload), 0, len(payload))
+	require.ErrorIs(t, err, atomicbuffer.ErrStringASCIIOutOfBounds)
 }
 
 func TestDecodePublicationBuffersReady_maxLengthLogPath(t *testing.T) {
@@ -69,7 +69,7 @@ func TestDecodePublicationBuffersReady_maxLengthLogPath(t *testing.T) {
 	}
 	payload := PublicationBuffersReadyBytes(event)
 
-	decoded, err := DecodePublicationBuffersReady(atomic.Wrap(payload), 0, len(payload))
+	decoded, err := DecodePublicationBuffersReady(atomicbuffer.Wrap(payload), 0, len(payload))
 	require.NoError(t, err)
 	require.Equal(t, event.LogFileName, decoded.LogFileName)
 }

@@ -8,18 +8,18 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 type inMemBenchTermLog struct {
-	meta             atomic.AtomicBuffer
-	termBuffers      [logbuffer.PartitionCount]atomic.AtomicBuffer
+	meta             atomicbuffer.AtomicBuffer
+	termBuffers      [logbuffer.PartitionCount]atomicbuffer.AtomicBuffer
 	termBufferLength int
 }
 
 func newInMemBenchTermLog(
-	meta atomic.AtomicBuffer,
-	termBuffers [logbuffer.PartitionCount]atomic.AtomicBuffer,
+	meta atomicbuffer.AtomicBuffer,
+	termBuffers [logbuffer.PartitionCount]atomicbuffer.AtomicBuffer,
 	termBufferLength int,
 ) inMemBenchTermLog {
 	return inMemBenchTermLog{
@@ -90,7 +90,7 @@ func TestResetInMemPublicationTermForBench_pairOfferPollAfterFill(t *testing.T) 
 
 	var polledLength int
 	polled := image.Poll(func(
-		_ atomic.AtomicBuffer,
+		_ atomicbuffer.AtomicBuffer,
 		_ int,
 		length int,
 		_ *Header,

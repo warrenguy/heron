@@ -9,11 +9,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs/gensbe"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
@@ -72,7 +72,7 @@ type recordingEgressHandlers struct {
 func messageFuncMustNotRun(t *testing.T) func(
 	int64,
 	int64,
-	atomic.AtomicBuffer,
+	atomicbuffer.AtomicBuffer,
 	int,
 	int,
 	*aeron.Header,
@@ -82,7 +82,7 @@ func messageFuncMustNotRun(t *testing.T) func(
 	return func(
 		int64,
 		int64,
-		atomic.AtomicBuffer,
+		atomicbuffer.AtomicBuffer,
 		int,
 		int,
 		*aeron.Header,
@@ -114,7 +114,7 @@ func newRecordingEgressHandlers() *recordingEgressHandlers {
 	rec.MessageFunc = func(
 		clusterSessionID int64,
 		timestamp int64,
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		_ *aeron.Header,
@@ -359,7 +359,7 @@ func encodeSessionEventWireWithLeaderHeartbeat(
 
 func writePreV13SessionEventForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 ) {
 	t.Helper()
@@ -509,7 +509,7 @@ func invokeHandleConnectEgressFragmentAt(
 ) {
 	t.Helper()
 
-	handleConnectEgressFragment(poller, atomic.Wrap(buf), offset, length, &aeron.Header{})
+	handleConnectEgressFragment(poller, atomicbuffer.Wrap(buf), offset, length, &aeron.Header{})
 }
 
 func wireBufferWithPrefix(wire []byte, prefixLen int) []byte {
@@ -580,7 +580,14 @@ func invokeHandleEgressFragmentAt(
 ) {
 	t.Helper()
 
-	handleEgressFragment(handler, clusterSessionID, atomic.Wrap(buf), offset, length, &aeron.Header{})
+	handleEgressFragment(
+		handler,
+		clusterSessionID,
+		atomicbuffer.Wrap(buf),
+		offset,
+		length,
+		&aeron.Header{},
+	)
 }
 
 func invokeHandleSessionEgressFragmentAt(
@@ -598,7 +605,7 @@ func invokeHandleSessionEgressFragmentAt(
 		ac,
 		handler,
 		clusterSessionID,
-		atomic.Wrap(buf),
+		atomicbuffer.Wrap(buf),
 		offset,
 		length,
 		&aeron.Header{},
@@ -695,7 +702,7 @@ func unfragmentedFrameSpecs(wire []byte) []aeron.FragmentedFrameForTest {
 
 func writeHookCommittedFragmentFrames(
 	t fragmentTestHelper,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	startOffset int,
 	specs []aeron.FragmentedFrameForTest,
 ) {
@@ -713,7 +720,7 @@ func writeHookCommittedFragmentFrames(
 
 func writeUnfragmentedWireToTerm(
 	t fragmentTestHelper,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	wire []byte,
 ) {
 	t.Helper()
@@ -723,7 +730,7 @@ func writeUnfragmentedWireToTerm(
 
 func appendUnfragmentedWireToTerm(
 	t fragmentTestHelper,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	wire []byte,
 ) {
 	t.Helper()
@@ -732,7 +739,7 @@ func appendUnfragmentedWireToTerm(
 	writeHookCommittedFragmentFrames(t, termBuffer, offset, unfragmentedFrameSpecs(wire))
 }
 
-func nextHookTermWriteOffset(termBuffer atomic.AtomicBuffer) int {
+func nextHookTermWriteOffset(termBuffer atomicbuffer.AtomicBuffer) int {
 	offset := 0
 	for {
 		frameLength := logbuffer.FrameLengthVolatile(termBuffer, offset)
@@ -757,7 +764,7 @@ func splitWireFragmentSpecs(wire []byte) []aeron.FragmentedFrameForTest {
 
 func writeFragmentedWireToTerm(
 	t fragmentTestHelper,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	wire []byte,
 ) {
 	t.Helper()
@@ -767,7 +774,7 @@ func writeFragmentedWireToTerm(
 
 func writeFirstSplitWireFragmentToTerm(
 	t fragmentTestHelper,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	wire []byte,
 ) {
 	t.Helper()
@@ -777,7 +784,7 @@ func writeFirstSplitWireFragmentToTerm(
 
 func appendRemainingSplitWireFragmentsToTerm(
 	t fragmentTestHelper,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	wire []byte,
 ) {
 	t.Helper()
@@ -788,7 +795,7 @@ func appendRemainingSplitWireFragmentsToTerm(
 
 func writeSessionEventForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 ) {
 	t.Helper()
@@ -798,7 +805,7 @@ func writeSessionEventForConnect(
 
 func appendSessionEventForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 ) {
 	t.Helper()
@@ -833,9 +840,9 @@ func encodeSessionEventRedirectWire(t *testing.T, correlationID int64, endpoints
 
 func writeSessionEventWireToTerm(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
-	write func(fragmentTestHelper, atomic.AtomicBuffer, []byte),
+	write func(fragmentTestHelper, atomicbuffer.AtomicBuffer, []byte),
 ) {
 	t.Helper()
 
@@ -844,7 +851,7 @@ func writeSessionEventWireToTerm(
 
 func writeChallengeForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 ) {
 	t.Helper()
@@ -858,7 +865,7 @@ func writeChallengeForConnect(
 
 func writeRedirectNewLeaderForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	leaderMemberID int32,
 	endpoints string,
 ) {
@@ -878,7 +885,7 @@ func writeRedirectNewLeaderForConnect(
 
 func writeSessionEventRedirectForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 	endpoints string,
 ) {

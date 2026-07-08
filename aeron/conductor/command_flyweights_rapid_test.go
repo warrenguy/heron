@@ -11,7 +11,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/internal/testutil"
 )
 
@@ -41,7 +41,7 @@ func TestChannelFlyweight_roundtrip_rapid(t *testing.T) {
 		switch kind {
 		case channelFlyweightPublication:
 			bodyLength := conductor.PublicationMessageBodyLength(channel)
-			buffer := atomic.Wrap(make([]byte, offset+bodyLength))
+			buffer := atomicbuffer.Wrap(make([]byte, offset+bodyLength))
 			prefix := testutil.SnapshotBufferPrefix(buffer, offset)
 			err := conductor.EncodePublicationMessage(
 				buffer,
@@ -65,7 +65,7 @@ func TestChannelFlyweight_roundtrip_rapid(t *testing.T) {
 		case channelFlyweightSubscription:
 			registrationCorrelationID := rapid.Int64().Draw(rt, "registrationCorrelationID")
 			bodyLength := conductor.SubscriptionMessageBodyLength(channel)
-			buffer := atomic.Wrap(make([]byte, offset+bodyLength))
+			buffer := atomicbuffer.Wrap(make([]byte, offset+bodyLength))
 			prefix := testutil.SnapshotBufferPrefix(buffer, offset)
 			err := conductor.EncodeSubscriptionMessage(
 				buffer,
@@ -100,7 +100,7 @@ func TestRemoveMessage_roundtrip_rapid(t *testing.T) {
 		registrationID := rapid.Int64().Draw(rt, "registrationID")
 		offset := rapid.IntRange(0, 8).Draw(rt, "offset")
 
-		buffer := atomic.Wrap(make([]byte, offset+conductor.RemoveMessageBodyLength))
+		buffer := atomicbuffer.Wrap(make([]byte, offset+conductor.RemoveMessageBodyLength))
 		err := conductor.EncodeRemoveMessage(
 			buffer,
 			offset,
@@ -133,7 +133,7 @@ func TestRemovePublication_roundtrip_rapid(t *testing.T) {
 		revoke := rapid.Bool().Draw(rt, "revoke")
 		offset := rapid.IntRange(0, 8).Draw(rt, "offset")
 
-		buffer := atomic.Wrap(make([]byte, offset+conductor.RemovePublicationBodyLength))
+		buffer := atomicbuffer.Wrap(make([]byte, offset+conductor.RemovePublicationBodyLength))
 		err := conductor.EncodeRemovePublicationMessage(
 			buffer,
 			offset,
@@ -184,14 +184,14 @@ func TestDecodeTrailingStringASCII_exactFit_rapid(t *testing.T) {
 			bodyLength   int
 			stringOffset int
 			wrappedErr   error
-			buffer       atomic.AtomicBuffer
+			buffer       atomicbuffer.AtomicBuffer
 		)
 		switch flyweightKind {
 		case channelFlyweightPublication:
 			bodyLength = conductor.PublicationMessageBodyLength(channel)
 			stringOffset = conductor.PublicationMessageChannelOffset
 			wrappedErr = conductor.ErrPublicationMessageOutOfBounds
-			buffer = atomic.Wrap(make([]byte, offset+bodyLength+1))
+			buffer = atomicbuffer.Wrap(make([]byte, offset+bodyLength+1))
 			err := conductor.EncodePublicationMessage(
 				buffer,
 				offset,
@@ -206,7 +206,7 @@ func TestDecodeTrailingStringASCII_exactFit_rapid(t *testing.T) {
 			bodyLength = conductor.SubscriptionMessageBodyLength(channel)
 			stringOffset = conductor.SubscriptionMessageChannelOffset
 			wrappedErr = conductor.ErrSubscriptionMessageOutOfBounds
-			buffer = atomic.Wrap(make([]byte, offset+bodyLength+1))
+			buffer = atomicbuffer.Wrap(make([]byte, offset+bodyLength+1))
 			err := conductor.EncodeSubscriptionMessage(
 				buffer,
 				offset,
@@ -237,13 +237,13 @@ func TestDecodeTrailingStringASCII_exactFit_rapid(t *testing.T) {
 			stringOffset,
 			wrappedErr,
 		)
-		require.ErrorIs(rt, err, atomic.ErrStringASCIIOutOfBounds)
+		require.ErrorIs(rt, err, atomicbuffer.ErrStringASCIIOutOfBounds)
 		require.EqualError(
 			rt,
 			err,
 			fmt.Sprintf(
-				"atomic: string ascii out of bounds: offset=%d capacity=%d",
-				atomic.StringASCIIHeaderLength,
+				"atomicbuffer: string ascii out of bounds: offset=%d capacity=%d",
+				atomicbuffer.StringASCIIHeaderLength,
 				shortBodyLength-stringOffset,
 			),
 		)

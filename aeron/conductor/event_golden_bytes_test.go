@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestPublicationBuffersReadyBytes_golden(t *testing.T) {
@@ -27,7 +27,7 @@ func TestPublicationBuffersReadyBytes_golden(t *testing.T) {
 	}
 	require.Equal(t, PublicationBuffersReadyBytes(event), payload)
 
-	decoded, err := DecodePublicationBuffersReady(atomic.Wrap(payload), 0, len(payload))
+	decoded, err := DecodePublicationBuffersReady(atomicbuffer.Wrap(payload), 0, len(payload))
 	require.NoError(t, err)
 	require.Equal(t, event, decoded)
 }
@@ -40,7 +40,7 @@ func TestSubscriptionReadyBytes_golden(t *testing.T) {
 	event := SubscriptionReady{CorrelationID: 3003, ChannelStatusCounterID: 12}
 	require.Equal(t, SubscriptionReadyBytes(event), payload)
 
-	decoded, err := DecodeSubscriptionReady(atomic.Wrap(payload), 0, len(payload))
+	decoded, err := DecodeSubscriptionReady(atomicbuffer.Wrap(payload), 0, len(payload))
 	require.NoError(t, err)
 	require.Equal(t, event, decoded)
 }
@@ -63,7 +63,7 @@ func TestAvailableImageBytes_golden(t *testing.T) {
 	}
 	require.Equal(t, AvailableImageBytes(event), payload)
 
-	decoded, err := DecodeAvailableImage(atomic.Wrap(payload), 0, len(payload))
+	decoded, err := DecodeAvailableImage(atomicbuffer.Wrap(payload), 0, len(payload))
 	require.NoError(t, err)
 	require.Equal(t, event, decoded)
 }
@@ -81,7 +81,7 @@ func TestUnavailableImageBytes_golden(t *testing.T) {
 	}
 	require.Equal(t, UnavailableImageBytes(event), payload)
 
-	decoded, err := DecodeUnavailableImage(atomic.Wrap(payload), 0, len(payload))
+	decoded, err := DecodeUnavailableImage(atomicbuffer.Wrap(payload), 0, len(payload))
 	require.NoError(t, err)
 	require.Equal(t, event, decoded)
 }
@@ -102,7 +102,7 @@ func TestPublicationErrorBytes_golden(t *testing.T) {
 	}
 	require.Equal(t, PublicationErrorBytes(event), payload)
 
-	decoded, err := DecodePublicationError(atomic.Wrap(payload), 0, len(payload))
+	decoded, err := DecodePublicationError(atomicbuffer.Wrap(payload), 0, len(payload))
 	require.NoError(t, err)
 	require.Equal(t, event, decoded)
 }
@@ -136,7 +136,7 @@ func TestPublicationErrorBytes_nonZeroScalars_golden(t *testing.T) {
 	}
 	require.Equal(t, PublicationErrorBytes(event), payload)
 
-	decoded, err := DecodePublicationError(atomic.Wrap(payload), 0, len(payload))
+	decoded, err := DecodePublicationError(atomicbuffer.Wrap(payload), 0, len(payload))
 	require.NoError(t, err)
 	require.Equal(t, event, decoded)
 }

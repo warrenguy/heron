@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/mmap"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/mmap"
 )
 
 type MappedCncFile struct {
@@ -240,10 +240,10 @@ func (f *MappedCncFile) sliceRegion(region int) []byte {
 	return sliceCncRegion(data, meta, region)
 }
 
-func (f *MappedCncFile) ToDriverAtomic() atomic.AtomicBuffer {
-	return atomic.Wrap(f.ToDriverBuffer())
+func (f *MappedCncFile) ToDriverAtomic() atomicbuffer.AtomicBuffer {
+	return atomicbuffer.Wrap(f.ToDriverBuffer())
 }
 
-func (f *MappedCncFile) ToClientsAtomic() atomic.AtomicBuffer {
-	return atomic.Wrap(f.ToClientsBuffer())
+func (f *MappedCncFile) ToClientsAtomic() atomicbuffer.AtomicBuffer {
+	return atomicbuffer.Wrap(f.ToClientsBuffer())
 }

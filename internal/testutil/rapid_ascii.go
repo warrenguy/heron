@@ -3,7 +3,7 @@ package testutil
 import (
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func DrawASCIIString(t *rapid.T, name string, maxLen int) string {
@@ -28,6 +28,6 @@ func DrawNonASCIIString(t *rapid.T, name string, maxLen int) string {
 	return string(b)
 }
 
-func SnapshotBufferPrefix(buffer atomic.AtomicBuffer, offset int) []byte {
+func SnapshotBufferPrefix(buffer atomicbuffer.AtomicBuffer, offset int) []byte {
 	return append([]byte(nil), buffer.Bytes()[:offset]...)
 }

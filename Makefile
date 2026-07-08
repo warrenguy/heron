@@ -232,6 +232,8 @@ BENCH_DIR := .bench
 BENCH_BASELINE := $(BENCH_DIR)/baseline.txt
 BENCH_COUNT ?= 10
 BENCH_PKGS ?= ./test/bench/...
+BENCH_MICRO_PKGS ?= ./atomicbuffer/... ./mmap/... ./record/... ./ringbuffer/... \
+	./idlestrategy/... ./broadcast/... ./aeron/...
 BENCH_TAGS := bench
 export BENCH_PKGS
 export BENCH_COUNT BENCH_BASELINE GOARCH
@@ -241,9 +243,9 @@ bench: ## Quick benchmarks (test/bench)
 	go test -tags=$(BENCH_TAGS) -run '^$$' -bench=. -benchmem \
 		-benchtime=1s $(BENCH_PKGS)
 
-bench-micro: ## Micro-benchmarks (agrona aeron)
+bench-micro: ## Micro-benchmarks (hoisted layout primitives + aeron)
 	go test -run '^$$' -tags=testhooks -bench=. -benchmem \
-		./agrona/... ./aeron/...
+		$(BENCH_MICRO_PKGS)
 
 bench-baseline: ## Record benchmark baseline to .bench/
 	@mkdir -p $(BENCH_DIR) && set -o pipefail && \

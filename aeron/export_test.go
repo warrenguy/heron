@@ -15,8 +15,8 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc/cnctest"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/ringbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/ringbuffer"
 )
 
 const (
@@ -343,7 +343,7 @@ func FragmentedMessageStartOffsetForTest(position int64, shift, totalAligned int
 }
 
 func ReadFragmentedMessageFramesForTest(
-	termBuf atomic.AtomicBuffer,
+	termBuf atomicbuffer.AtomicBuffer,
 	startOffset int,
 ) ([]FragmentedFrameForTest, bool) {
 	var frames []FragmentedFrameForTest
@@ -375,7 +375,7 @@ func ReadFragmentedMessageFramesForTest(
 
 func ReadFragmentedMessageForTest(
 	tb testing.TB,
-	termBuf atomic.AtomicBuffer,
+	termBuf atomicbuffer.AtomicBuffer,
 	startOffset int,
 ) []FragmentedFrameForTest {
 	tb.Helper()
@@ -385,7 +385,7 @@ func ReadFragmentedMessageForTest(
 	return frames
 }
 
-func (pub *Publication) MetaDataBufferForTest() atomic.AtomicBuffer {
+func (pub *Publication) MetaDataBufferForTest() atomicbuffer.AtomicBuffer {
 	return pub.meta
 }
 
@@ -432,11 +432,11 @@ func (ep *ExclusivePublication) MaxPossiblePositionForTest() int64 {
 	return ep.maxPossiblePosition
 }
 
-func (ep *ExclusivePublication) MetaDataBufferForTest() atomic.AtomicBuffer {
+func (ep *ExclusivePublication) MetaDataBufferForTest() atomicbuffer.AtomicBuffer {
 	return ep.meta
 }
 
-func publicationActiveTermCountForTest(meta atomic.AtomicBuffer) int32 {
+func publicationActiveTermCountForTest(meta atomicbuffer.AtomicBuffer) int32 {
 	return logbuffer.ActiveTermCount(meta)
 }
 
@@ -445,29 +445,29 @@ func publicationLimitSlotForTest(limit cnc.CounterSlot) int64 {
 }
 
 func publicationActiveTermBufferForTest(
-	meta atomic.AtomicBuffer,
-	termBuffers [logbuffer.PartitionCount]atomic.AtomicBuffer,
-) (int, atomic.AtomicBuffer) {
+	meta atomicbuffer.AtomicBuffer,
+	termBuffers [logbuffer.PartitionCount]atomicbuffer.AtomicBuffer,
+) (int, atomicbuffer.AtomicBuffer) {
 	index := logbuffer.IndexByTermCount(publicationActiveTermCountForTest(meta))
 	return index, termBuffers[index]
 }
 
 func publicationTermBufferForTest(
-	termBuffers [logbuffer.PartitionCount]atomic.AtomicBuffer,
+	termBuffers [logbuffer.PartitionCount]atomicbuffer.AtomicBuffer,
 	index int,
-) atomic.AtomicBuffer {
+) atomicbuffer.AtomicBuffer {
 	return termBuffers[index]
 }
 
 func setPublicationRawTailForTest(
-	meta atomic.AtomicBuffer,
+	meta atomicbuffer.AtomicBuffer,
 	partitionIndex int,
 	rawTail int64,
 ) {
 	_ = logbuffer.PutRawTail(meta, partitionIndex, rawTail)
 }
 
-func setPublicationActiveTermCountForTest(meta atomic.AtomicBuffer, termCount int32) {
+func setPublicationActiveTermCountForTest(meta atomicbuffer.AtomicBuffer, termCount int32) {
 	meta.PutInt32Release(logbuffer.OffsetActiveTermCount, termCount)
 }
 
@@ -485,14 +485,14 @@ func ExclusivePublicationConductorForTest(ep *ExclusivePublication) *conductor.C
 
 func ExclusivePublicationActiveTermBufferForTest(
 	ep *ExclusivePublication,
-) (int, atomic.AtomicBuffer) {
+) (int, atomicbuffer.AtomicBuffer) {
 	return publicationActiveTermBufferForTest(ep.meta, ep.termBuffers)
 }
 
 func ExclusivePublicationTermBufferForTest(
 	ep *ExclusivePublication,
 	index int,
-) atomic.AtomicBuffer {
+) atomicbuffer.AtomicBuffer {
 	return publicationTermBufferForTest(ep.termBuffers, index)
 }
 
@@ -513,7 +513,7 @@ func RotateExclusivePublicationForTest(ep *ExclusivePublication) {
 }
 
 func (ep *ExclusivePublication) HandleEndOfLogForTest(
-	termBuf atomic.AtomicBuffer,
+	termBuf atomicbuffer.AtomicBuffer,
 	termLength int,
 	termID int32,
 	termOffset int,
@@ -577,11 +577,11 @@ func NewTestCountersReaderMismatchedChannelStatusForTest(
 	return inMemCountersReaderWithChannelStatusRegistration(limitPosition, channelStatusRegistrationID)
 }
 
-func PublicationActiveTermBufferForTest(pub *Publication) (int, atomic.AtomicBuffer) {
+func PublicationActiveTermBufferForTest(pub *Publication) (int, atomicbuffer.AtomicBuffer) {
 	return publicationActiveTermBufferForTest(pub.meta, pub.termBuffers)
 }
 
-func PublicationTermBufferForTest(pub *Publication, index int) atomic.AtomicBuffer {
+func PublicationTermBufferForTest(pub *Publication, index int) atomicbuffer.AtomicBuffer {
 	return publicationTermBufferForTest(pub.termBuffers, index)
 }
 
@@ -1267,16 +1267,16 @@ func SetPollAfterPaddingAdvanceForTest(hook func()) {
 	setPollAfterPaddingAdvanceHook(hook)
 }
 
-func ImageTermBuffer0ForTest(image *Image) atomic.AtomicBuffer {
+func ImageTermBuffer0ForTest(image *Image) atomicbuffer.AtomicBuffer {
 	return ImageTermBufferForTest(image, 0)
 }
 
-func ImageTermBufferForTest(image *Image, index int) atomic.AtomicBuffer {
+func ImageTermBufferForTest(image *Image, index int) atomicbuffer.AtomicBuffer {
 	return image.termBuffers[index]
 }
 
 func WriteMinimalTermEndPaddingForTest(
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	frameOffset int,
 	paddingLength int32,
 ) {
@@ -1284,7 +1284,7 @@ func WriteMinimalTermEndPaddingForTest(
 }
 
 func WriteCommittedPaddingFrameForTest(
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	frameOffset int,
 	termID int32,
 	termOffset int32,

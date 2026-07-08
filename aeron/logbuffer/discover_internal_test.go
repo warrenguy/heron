@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestDiscoverDimensionsFromBuffer_shortMetaSpan(t *testing.T) {
@@ -15,7 +15,7 @@ func TestDiscoverDimensionsFromBuffer_shortMetaSpan(t *testing.T) {
 	require.Less(t, shortLen, metaStart+MetaDataLength)
 
 	buf := make([]byte, shortLen)
-	meta := atomic.Wrap(buf[metaStart:])
+	meta := atomicbuffer.Wrap(buf[metaStart:])
 	meta.PutInt32(OffsetTermLength, termLength)
 	meta.PutInt32(OffsetPageSize, TestPageSize)
 

@@ -1,8 +1,6 @@
 package conductor
 
-import (
-	"github.com/warrenguy/heron/agrona/atomic"
-)
+import "github.com/warrenguy/heron/atomicbuffer"
 
 const ClientTimeoutBodyLength = 8
 
@@ -71,7 +69,7 @@ func (adapter *DriverEventsAdapter) Receive(
 
 	count, err := adapter.copyReceiver.Receive(func(
 		msgTypeID int,
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 	) {
@@ -95,7 +93,7 @@ func (adapter *DriverEventsAdapter) UnhandledEventCount() int64 {
 
 func (adapter *DriverEventsAdapter) handleMessage(
 	msgTypeID int,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	activeCorrelationID int64,
@@ -198,7 +196,7 @@ func (adapter *DriverEventsAdapter) correlated(
 // Fixed flyweight: broadcast length may exceed the body;
 // decode reads OperationSuccessBodyLength only.
 func (adapter *DriverEventsAdapter) handleOperationSuccess(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	activeCorrelationID int64,
@@ -220,7 +218,7 @@ func (adapter *DriverEventsAdapter) handleOperationSuccess(
 
 // Variable-length flyweight: decode requires exact body consumption; trailing bytes are rejected.
 func (adapter *DriverEventsAdapter) handleError(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	activeCorrelationID int64,
@@ -250,7 +248,7 @@ func (adapter *DriverEventsAdapter) handleError(
 // Fixed flyweight: broadcast length may exceed the body;
 // decode reads NextAvailableSessionIDBodyLength only.
 func (adapter *DriverEventsAdapter) handleNextAvailableSessionID(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	activeCorrelationID int64,
@@ -271,7 +269,7 @@ func (adapter *DriverEventsAdapter) handleNextAvailableSessionID(
 }
 
 func (adapter *DriverEventsAdapter) handleClientTimeout(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 ) {
@@ -291,7 +289,7 @@ func (adapter *DriverEventsAdapter) handleClientTimeout(
 }
 
 func peekEventCorrelationID(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 ) (int64, bool) {
@@ -330,11 +328,11 @@ func subscriptionReadyEventCorrelationID(event SubscriptionReady) int64 {
 
 func handleFixedLengthPendingEvent[T any](
 	adapter *DriverEventsAdapter,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	minBodyLength int,
-	decode func(atomic.AtomicBuffer, int) (T, error),
+	decode func(atomicbuffer.AtomicBuffer, int) (T, error),
 	activeCorrelationID int64,
 	pending PendingEventHandler,
 	correlationFrom func(T) int64,
@@ -363,10 +361,10 @@ func handleFixedLengthPendingEvent[T any](
 
 func handleDecodedEvent[T any](
 	adapter *DriverEventsAdapter,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
-	decode func(atomic.AtomicBuffer, int, int) (T, error),
+	decode func(atomicbuffer.AtomicBuffer, int, int) (T, error),
 	eventHandler func(T),
 ) {
 	decoded, err := decode(buffer, offset, length)
@@ -381,12 +379,12 @@ func handleDecodedEvent[T any](
 
 func handleCorrelatedReady[T any](
 	adapter *DriverEventsAdapter,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	activeCorrelationID int64,
 	minimumBodyLength int,
-	decode func(atomic.AtomicBuffer, int, int) (T, error),
+	decode func(atomicbuffer.AtomicBuffer, int, int) (T, error),
 	correlationFrom func(T) int64,
 	readyHandler func(T),
 ) {
@@ -413,7 +411,7 @@ func handleCorrelatedReady[T any](
 }
 
 func (adapter *DriverEventsAdapter) handleAvailableImage(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 ) {
@@ -428,7 +426,7 @@ func (adapter *DriverEventsAdapter) handleAvailableImage(
 }
 
 func (adapter *DriverEventsAdapter) handlePublicationBuffersReady(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	activeCorrelationID int64,
@@ -440,7 +438,7 @@ func (adapter *DriverEventsAdapter) handlePublicationBuffersReady(
 		offset,
 		length,
 		activeCorrelationID,
-		PublicationBuffersReadyFixedLength+atomic.StringASCIIHeaderLength,
+		PublicationBuffersReadyFixedLength+atomicbuffer.StringASCIIHeaderLength,
 		DecodePublicationBuffersReady,
 		publicationBuffersReadyEventCorrelationID,
 		handler,
@@ -448,7 +446,7 @@ func (adapter *DriverEventsAdapter) handlePublicationBuffersReady(
 }
 
 func (adapter *DriverEventsAdapter) handleSubscriptionReady(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	activeCorrelationID int64,
@@ -467,7 +465,7 @@ func (adapter *DriverEventsAdapter) handleSubscriptionReady(
 }
 
 func (adapter *DriverEventsAdapter) handleUnavailableImage(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 ) {
@@ -489,7 +487,7 @@ func (adapter *DriverEventsAdapter) handleUnavailableImage(
 }
 
 func (adapter *DriverEventsAdapter) handlePublicationError(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 ) {

@@ -10,9 +10,9 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -74,7 +74,7 @@ func registerAsyncConnectClose(t *testing.T, ac *AsyncConnect) {
 
 type asyncConnectHarnessResponder func(*aeron.AsyncConnectTestHarness)
 
-func ensureSubscriptionImage(t *testing.T, sub *aeron.Subscription) atomic.AtomicBuffer {
+func ensureSubscriptionImage(t *testing.T, sub *aeron.Subscription) atomicbuffer.AtomicBuffer {
 	t.Helper()
 
 	require.NotNil(t, sub)
@@ -204,7 +204,7 @@ func pollUntilConnectPollResponse(
 func controlResponseTermBufferForSubscription(
 	t *testing.T,
 	sub *aeron.Subscription,
-) atomic.AtomicBuffer {
+) atomicbuffer.AtomicBuffer {
 	t.Helper()
 	return ensureSubscriptionImage(t, sub)
 }
@@ -212,7 +212,7 @@ func controlResponseTermBufferForSubscription(
 func controlResponseTermBufferForAsyncConnect(
 	t *testing.T,
 	ac *AsyncConnect,
-) atomic.AtomicBuffer {
+) atomicbuffer.AtomicBuffer {
 	t.Helper()
 
 	return controlResponseTermBufferForSubscription(t, ac.ControlResponseSubscriptionForTest())
@@ -221,7 +221,7 @@ func controlResponseTermBufferForAsyncConnect(
 func withAsyncConnectControlResponseTerm(
 	t *testing.T,
 	ac *AsyncConnect,
-	fn func(*testing.T, atomic.AtomicBuffer, int64),
+	fn func(*testing.T, atomicbuffer.AtomicBuffer, int64),
 ) {
 	t.Helper()
 
@@ -255,7 +255,7 @@ func encodeConnectChallengeWire(t *testing.T, correlationID int64) []byte {
 
 func writeControlResponseOKForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 ) {
 	t.Helper()
@@ -269,7 +269,7 @@ func writeControlResponseOKForConnect(
 
 func writeChallengeForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 ) {
 	t.Helper()
@@ -279,7 +279,7 @@ func writeChallengeForConnect(
 
 func appendChallengeForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 ) {
 	t.Helper()
@@ -289,7 +289,7 @@ func appendChallengeForConnect(
 
 func appendControlResponseOKForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 ) {
 	t.Helper()
@@ -421,7 +421,7 @@ func captureConnectWireBufferSlackOnce(
 
 func writeRecordingSignalEventForConnect(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	correlationID int64,
 ) {
 	t.Helper()

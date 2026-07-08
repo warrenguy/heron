@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestNewLogBuffers_nilMapped(t *testing.T) {
@@ -53,8 +53,8 @@ func TestLogBuffers_termBuffersMatchIndividual(t *testing.T) {
 
 func requireTermBufferSameBacking(
 	tb testing.TB,
-	batch atomic.AtomicBuffer,
-	individual atomic.AtomicBuffer,
+	batch atomicbuffer.AtomicBuffer,
+	individual atomicbuffer.AtomicBuffer,
 ) {
 	tb.Helper()
 	require.Equal(tb, individual.Capacity(), batch.Capacity())

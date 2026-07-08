@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/idlestrategy"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/examples/cluster-auction-client/auctionwire"
+	"github.com/warrenguy/heron/idlestrategy"
 )
 
 var auctionLog = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lmicroseconds)
@@ -25,7 +25,7 @@ func newEgressHandlers(clientState *ClientState) *client.EgressHandlers {
 		MessageFunc: func(
 			clusterSessionID int64,
 			_ int64,
-			buf atomic.AtomicBuffer,
+			buf atomicbuffer.AtomicBuffer,
 			offset int,
 			length int,
 			_ *aeron.Header,

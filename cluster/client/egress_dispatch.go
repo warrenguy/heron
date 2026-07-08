@@ -1,10 +1,10 @@
 package client
 
 import (
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs/gensbe"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
@@ -32,7 +32,7 @@ type egressDispatchHooks struct {
 func handleEgressFragment(
 	handler EgressHandler,
 	clusterSessionID int64,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *aeron.Header,
@@ -55,7 +55,7 @@ func dispatchSessionEgressFragment(
 	ac *AeronCluster,
 	handler EgressHandler,
 	clusterSessionID int64,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *aeron.Header,
@@ -95,7 +95,7 @@ func sessionEgressDispatchHooks(ac *AeronCluster) egressDispatchHooks {
 }
 
 func decodeEgressFragmentLayout(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 ) (fragment []byte, layout codecs.ClusterMessageLayout, ok bool) {
@@ -113,7 +113,7 @@ func decodeEgressFragmentLayout(
 func dispatchEgressFragmentCore(
 	handler EgressHandler,
 	clusterSessionID int64,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *aeron.Header,
@@ -216,7 +216,7 @@ func decodeEgressFragment(fragment []byte) (codecs.DecodedMessage, bool) {
 }
 
 func egressFragmentPayload(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 ) ([]byte, bool) {

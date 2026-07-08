@@ -6,12 +6,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func errorLogBufferWithHeaderLength(length int32) []byte {
 	buffer := make([]byte, cnc.ErrorLogEntryHeaderLength)
-	atomic.Wrap(buffer).PutInt32Release(0, length)
+	atomicbuffer.Wrap(buffer).PutInt32Release(0, length)
 	return buffer
 }
 

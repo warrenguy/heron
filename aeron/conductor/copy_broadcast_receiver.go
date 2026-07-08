@@ -3,8 +3,8 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/broadcast"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/broadcast"
 )
 
 const ScratchBufferLength = 4096
@@ -18,14 +18,14 @@ var (
 
 type EventMessageHandler func(
 	msgTypeID int,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 )
 
 type CopyBroadcastReceiver struct {
 	receiver      *broadcast.BroadcastReceiver
-	scratch       atomic.AtomicBuffer
+	scratch       atomicbuffer.AtomicBuffer
 	scratchLength int
 }
 
@@ -39,7 +39,7 @@ func newCopyBroadcastReceiver(
 ) *CopyBroadcastReceiver {
 	return &CopyBroadcastReceiver{
 		receiver:      receiver,
-		scratch:       atomic.Wrap(make([]byte, scratchLength)),
+		scratch:       atomicbuffer.Wrap(make([]byte, scratchLength)),
 		scratchLength: scratchLength,
 	}
 }

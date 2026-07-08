@@ -9,8 +9,8 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/internal/testutil"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/broadcast"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/broadcast"
 )
 
 const (
@@ -973,7 +973,7 @@ func fillBroadcastUntilLap(
 
 func rewindBroadcastTailForLap(
 	tb testing.TB,
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	capacity int,
 ) {
 	tb.Helper()

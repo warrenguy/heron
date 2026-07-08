@@ -10,9 +10,9 @@ import (
 
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/broadcast"
-	"github.com/warrenguy/heron/agrona/ringbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/broadcast"
+	"github.com/warrenguy/heron/ringbuffer"
 )
 
 func (conductor *Conductor) DriverProxyForTest() *DriverProxy {
@@ -94,7 +94,7 @@ func NewConductorForTest(
 }
 
 func DecodeTrailingStringASCIIForTest(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset, bodyLength, stringOffset int,
 	wrapped error,
 ) (string, error) {
@@ -356,7 +356,7 @@ func newSyntheticLogBuffersForTest(tb testing.TB, logType byte) *logbuffer.LogBu
 
 	buf := make([]byte, computed)
 	metaStart := logbuffer.MetaDataOffset(termLength)
-	meta := atomic.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
+	meta := atomicbuffer.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
 	rawTails := [logbuffer.PartitionCount]int64{
 		logbuffer.PackRawTail(initialTermID, 0),
 		logbuffer.PackRawTail(initialTermID-2, 0),

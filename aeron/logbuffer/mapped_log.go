@@ -5,8 +5,8 @@ import (
 	"math"
 	"os"
 
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/mmap"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/mmap"
 )
 
 // MappedLogBuffer owns mmap until Close.
@@ -22,8 +22,8 @@ type MappedLogBuffer struct {
 	computed   int
 	metadata   MetadataView
 	closed     bool
-	termViews  [PartitionCount]atomic.AtomicBuffer
-	metaView   atomic.AtomicBuffer
+	termViews  [PartitionCount]atomicbuffer.AtomicBuffer
+	metaView   atomicbuffer.AtomicBuffer
 }
 
 func errSpanTooShort(label string, got, need int) error {
@@ -156,7 +156,7 @@ func buildMappedLogBuffer(
 		return nil, err
 	}
 
-	metaBuffer := atomic.Wrap(meta)
+	metaBuffer := atomicbuffer.Wrap(meta)
 	metadata, err := ParseMetadataView(metaBuffer)
 	if err != nil {
 		return nil, err
@@ -181,7 +181,7 @@ func buildMappedLogBuffer(
 		metaView:   metaBuffer,
 	}
 	for i := range PartitionCount {
-		mapped.termViews[i] = atomic.Wrap(terms[i])
+		mapped.termViews[i] = atomicbuffer.Wrap(terms[i])
 	}
 	return mapped, nil
 }
@@ -215,8 +215,8 @@ func (mapped *MappedLogBuffer) Close() error {
 	}
 	mapped.data = nil
 	mapped.metadata = MetadataView{}
-	mapped.metaView = atomic.AtomicBuffer{}
-	mapped.termViews = [PartitionCount]atomic.AtomicBuffer{}
+	mapped.metaView = atomicbuffer.AtomicBuffer{}
+	mapped.termViews = [PartitionCount]atomicbuffer.AtomicBuffer{}
 	return err
 }
 
@@ -270,12 +270,12 @@ func (mapped *MappedLogBuffer) closedErr() error {
 //
 // Retaining it across Close is use-after-unmap on the MapLogFile path;
 // heap-backed MapLogBuffer differs.
-func (mapped *MappedLogBuffer) TermBuffer(index int) (atomic.AtomicBuffer, error) {
+func (mapped *MappedLogBuffer) TermBuffer(index int) (atomicbuffer.AtomicBuffer, error) {
 	if err := mapped.closedErr(); err != nil {
-		return atomic.AtomicBuffer{}, err
+		return atomicbuffer.AtomicBuffer{}, err
 	}
 	if err := ValidateTermIndex(index, "term index"); err != nil {
-		return atomic.AtomicBuffer{}, err
+		return atomicbuffer.AtomicBuffer{}, err
 	}
 	return mapped.termViews[index], nil
 }
@@ -284,9 +284,9 @@ func (mapped *MappedLogBuffer) TermBuffer(index int) (atomic.AtomicBuffer, error
 //
 // Retaining them across Close is use-after-unmap on the MapLogFile path;
 // heap-backed MapLogBuffer differs.
-func (mapped *MappedLogBuffer) TermBuffers() ([PartitionCount]atomic.AtomicBuffer, error) {
+func (mapped *MappedLogBuffer) TermBuffers() ([PartitionCount]atomicbuffer.AtomicBuffer, error) {
 	if err := mapped.closedErr(); err != nil {
-		return [PartitionCount]atomic.AtomicBuffer{}, err
+		return [PartitionCount]atomicbuffer.AtomicBuffer{}, err
 	}
 	return mapped.termViews, nil
 }
@@ -295,9 +295,9 @@ func (mapped *MappedLogBuffer) TermBuffers() ([PartitionCount]atomic.AtomicBuffe
 //
 // Retaining it across Close is use-after-unmap on the MapLogFile path;
 // heap-backed MapLogBuffer differs.
-func (mapped *MappedLogBuffer) MetaDataBuffer() (atomic.AtomicBuffer, error) {
+func (mapped *MappedLogBuffer) MetaDataBuffer() (atomicbuffer.AtomicBuffer, error) {
 	if err := mapped.closedErr(); err != nil {
-		return atomic.AtomicBuffer{}, err
+		return atomicbuffer.AtomicBuffer{}, err
 	}
 	return mapped.metaView, nil
 }

@@ -12,7 +12,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/broadcast"
+	"github.com/warrenguy/heron/broadcast"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 

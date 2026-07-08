@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 // AddPublication registers a concurrent publication on channel/streamID.
@@ -247,7 +247,7 @@ func validateChannel(channel string) error {
 	if channel == "" {
 		return errors.New("aeron: channel is required")
 	}
-	if err := atomic.ValidateStringASCII(channel); err != nil {
+	if err := atomicbuffer.ValidateStringASCII(channel); err != nil {
 		return errors.New("aeron: channel must be ASCII")
 	}
 	return nil

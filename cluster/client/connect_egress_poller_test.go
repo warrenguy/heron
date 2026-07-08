@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs/gensbe"
 )
 
@@ -37,7 +37,7 @@ func TestConnectEgressPoller_Poll_zeroWhenNilSubscription(t *testing.T) {
 
 func writeTwoSequentialUnfragmentedWiresToTerm(
 	t *testing.T,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	first, second []byte,
 ) {
 	t.Helper()

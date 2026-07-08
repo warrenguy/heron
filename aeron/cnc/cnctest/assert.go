@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/broadcast"
-	"github.com/warrenguy/heron/agrona/ringbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/broadcast"
+	"github.com/warrenguy/heron/ringbuffer"
 )
 
 const (
@@ -92,7 +92,7 @@ func accessorTestMetadata() cnc.Metadata {
 }
 
 func writeMetadataFieldsToBuffer(buf []byte, meta cnc.Metadata) {
-	atomicBuffer := atomic.Wrap(buf)
+	atomicBuffer := atomicbuffer.Wrap(buf)
 	atomicBuffer.PutInt32(cnc.OffsetToDriverBufferLength, meta.ToDriverBufferLength)
 	atomicBuffer.PutInt32(cnc.OffsetToClientsBufferLength, meta.ToClientsBufferLength)
 	atomicBuffer.PutInt32(

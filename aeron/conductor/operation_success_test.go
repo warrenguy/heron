@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestOperationSuccessBytes_golden(t *testing.T) {
@@ -18,7 +18,7 @@ func TestOperationSuccessBytes_golden(t *testing.T) {
 }
 
 func TestDecodeOperationSuccess_golden(t *testing.T) {
-	buffer := atomic.Wrap(conductor.OperationSuccessBytes(7))
+	buffer := atomicbuffer.Wrap(conductor.OperationSuccessBytes(7))
 
 	got, err := conductor.DecodeOperationSuccess(buffer, 0)
 	require.NoError(t, err)
@@ -26,7 +26,7 @@ func TestDecodeOperationSuccess_golden(t *testing.T) {
 }
 
 func TestDecodeOperationSuccess_tooShort(t *testing.T) {
-	buffer := atomic.Wrap([]byte{0x01, 0x02, 0x03})
+	buffer := atomicbuffer.Wrap([]byte{0x01, 0x02, 0x03})
 
 	_, err := conductor.DecodeOperationSuccess(buffer, 0)
 	require.ErrorIs(t, err, conductor.ErrOperationSuccessTooShort)
@@ -38,7 +38,7 @@ func TestDecodeOperationSuccess_tooShort(t *testing.T) {
 }
 
 func TestEncodeOperationSuccess_outOfBounds(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, 4))
+	buffer := atomicbuffer.Wrap(make([]byte, 4))
 
 	err := conductor.EncodeOperationSuccess(buffer, 0, 7)
 	require.ErrorIs(t, err, conductor.ErrOperationSuccessTooShort)
@@ -51,7 +51,7 @@ func TestEncodeOperationSuccess_outOfBounds(t *testing.T) {
 
 func TestOperationSuccess_roundtrip(t *testing.T) {
 	const correlationID int64 = 42
-	buffer := atomic.Wrap(make([]byte, conductor.OperationSuccessBodyLength))
+	buffer := atomicbuffer.Wrap(make([]byte, conductor.OperationSuccessBodyLength))
 
 	require.NoError(t, conductor.EncodeOperationSuccess(buffer, 0, correlationID))
 

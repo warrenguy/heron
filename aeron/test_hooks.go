@@ -16,7 +16,7 @@ import (
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 // HeaderSetFragmentedFrameLenForTest seeds fragmentedFrameLen on a poll flyweight.
@@ -259,7 +259,7 @@ func testHookPublicationBuffersReady(logFileName string) conductor.PublicationBu
 	}
 }
 
-func allocTestHookLogBuffer(tb testing.TB) ([]byte, atomic.AtomicBuffer) {
+func allocTestHookLogBuffer(tb testing.TB) ([]byte, atomicbuffer.AtomicBuffer) {
 	tb.Helper()
 
 	computed, err := logbuffer.ComputeLogLength(logbuffer.TermMinLength, logbuffer.PageMinSize)
@@ -267,10 +267,10 @@ func allocTestHookLogBuffer(tb testing.TB) ([]byte, atomic.AtomicBuffer) {
 
 	buf := make([]byte, computed)
 	metaStart := logbuffer.MetaDataOffset(logbuffer.TermMinLength)
-	return buf, atomic.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
+	return buf, atomicbuffer.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
 }
 
-func initTestHookLogMetadata(meta atomic.AtomicBuffer) {
+func initTestHookLogMetadata(meta atomicbuffer.AtomicBuffer) {
 	meta.PutInt32Release(logbuffer.OffsetTermLength, logbuffer.TermMinLength)
 	meta.PutInt32(logbuffer.OffsetPageSize, logbuffer.PageMinSize)
 	meta.PutInt32(logbuffer.OffsetMTULength, testHookPublicationMTULength)
@@ -278,7 +278,7 @@ func initTestHookLogMetadata(meta atomic.AtomicBuffer) {
 	meta.PutInt32(logbuffer.OffsetDefaultFrameHeaderLength, logbuffer.DataHeaderLength)
 }
 
-func seedTestHookPartitionRawTails(meta atomic.AtomicBuffer) {
+func seedTestHookPartitionRawTails(meta atomicbuffer.AtomicBuffer) {
 	rawTails := [logbuffer.PartitionCount]int64{
 		logbuffer.PackRawTail(testHookPublicationInitialTermID, 0),
 		logbuffer.PackRawTail(testHookPublicationInitialTermID-2, 0),
@@ -460,7 +460,7 @@ func SubscriptionAddImageForHooks(sub *Subscription, image *Image) bool {
 }
 
 // ImageTermBufferForHooks returns partition 0 term buffer for frame writes.
-func ImageTermBufferForHooks(image *Image) atomic.AtomicBuffer {
+func ImageTermBufferForHooks(image *Image) atomicbuffer.AtomicBuffer {
 	return image.termBuffers[0]
 }
 
@@ -495,7 +495,7 @@ func ImageSetSubscriberPositionForHooks(image *Image, position int64) {
 // WriteCommittedDataFrameForHooks commits a DATA frame at frameOffset. Unfragmented
 // flags use WriteDataHeaderUnfragmented; other flags use WriteDataHeaderFragmented.
 func WriteCommittedDataFrameForHooks(
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	frameOffset int,
 	sessionID int32,
 	streamID int32,
@@ -678,7 +678,11 @@ func (harness *AsyncConnectTestHarness) TryRespondPendingAdds() {
 		return
 	}
 	handler := harness.pendingAddsHandler(harness.LogPath, asyncConnectTestIngressRegID)
-	harness.fixture.Ring.Read(func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
+	harness.fixture.Ring.Read(func(
+		msgTypeID int,
+		buffer atomicbuffer.AtomicBuffer,
+		index, length int,
+	) {
 		handler(msgTypeID, buffer, index, length)
 	})
 }
@@ -690,7 +694,7 @@ func (harness *AsyncConnectTestHarness) RespondSubscriptionAdd() {
 	}
 	harness.pollRing(
 		500*time.Millisecond,
-		func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) bool {
+		func(msgTypeID int, buffer atomicbuffer.AtomicBuffer, index, length int) bool {
 			if msgTypeID != conductor.AddSubscription {
 				return false
 			}
@@ -713,7 +717,7 @@ func (harness *AsyncConnectTestHarness) RespondExclusiveAdds(
 	pubIdx := 0
 	harness.pollRing(
 		200*time.Millisecond,
-		func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) bool {
+		func(msgTypeID int, buffer atomicbuffer.AtomicBuffer, index, length int) bool {
 			if msgTypeID != conductor.AddExclusivePublication {
 				return false
 			}
@@ -781,7 +785,11 @@ func (harness *AsyncConnectTestHarness) RespondSubscriptionAndExclusiveMemberAdd
 	if harness == nil || harness.fixture == nil {
 		return
 	}
-	harness.fixture.Ring.Read(func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
+	harness.fixture.Ring.Read(func(
+		msgTypeID int,
+		buffer atomicbuffer.AtomicBuffer,
+		index, length int,
+	) {
 		switch msgTypeID {
 		case conductor.AddSubscription:
 			harness.completeSubscriptionAdd(buffer, index, length)
@@ -834,8 +842,8 @@ func (harness *AsyncConnectTestHarness) respondPendingAddsWithLog(
 func (harness *AsyncConnectTestHarness) pendingAddsHandler(
 	defaultLogPath string,
 	defaultRegID int64,
-) func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) bool {
-	return func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) bool {
+) func(msgTypeID int, buffer atomicbuffer.AtomicBuffer, index, length int) bool {
+	return func(msgTypeID int, buffer atomicbuffer.AtomicBuffer, index, length int) bool {
 		switch msgTypeID {
 		case conductor.AddSubscription:
 			return harness.completeSubscriptionAdd(buffer, index, length)
@@ -875,12 +883,16 @@ func (harness *AsyncConnectTestHarness) pendingAddsHandler(
 
 func (harness *AsyncConnectTestHarness) pollRing(
 	timeout time.Duration,
-	handler func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) bool,
+	handler func(msgTypeID int, buffer atomicbuffer.AtomicBuffer, index, length int) bool,
 ) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		var handled bool
-		harness.fixture.Ring.Read(func(msgTypeID int, buffer atomic.AtomicBuffer, index, length int) {
+		harness.fixture.Ring.Read(func(
+			msgTypeID int,
+			buffer atomicbuffer.AtomicBuffer,
+			index, length int,
+		) {
 			if handler(msgTypeID, buffer, index, length) {
 				handled = true
 			}
@@ -893,7 +905,7 @@ func (harness *AsyncConnectTestHarness) pollRing(
 }
 
 func (harness *AsyncConnectTestHarness) completeSubscriptionAdd(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	index, length int,
 ) bool {
 	decoded, err := conductor.DecodeSubscriptionMessage(buffer, index, length)

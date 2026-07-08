@@ -5,11 +5,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestDecodeUnavailableImage_shortBody(t *testing.T) {
-	minimum := UnavailableImageFixedLength + atomic.StringASCIIHeaderLength
+	minimum := UnavailableImageFixedLength + atomicbuffer.StringASCIIHeaderLength
 
 	testDecodeEventShortBody(
 		t,
@@ -49,6 +49,6 @@ func TestDecodeUnavailableImage_truncatedChannel(t *testing.T) {
 	}
 	payload := truncateEncodedPayload(t, UnavailableImageBytes(event), 2)
 
-	_, err := DecodeUnavailableImage(atomic.Wrap(payload), 0, len(payload))
-	require.ErrorIs(t, err, atomic.ErrStringASCIIOutOfBounds)
+	_, err := DecodeUnavailableImage(atomicbuffer.Wrap(payload), 0, len(payload))
+	require.ErrorIs(t, err, atomicbuffer.ErrStringASCIIOutOfBounds)
 }

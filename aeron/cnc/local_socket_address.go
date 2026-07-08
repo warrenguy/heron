@@ -3,7 +3,7 @@ package cnc
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 var errLocalSocketAddressStringOutOfBounds = errors.New(
@@ -19,8 +19,8 @@ const (
 	DriverLocalSocketAddressStatusTypeID int32 = 14
 
 	localSocketAddressChannelStatusIDOffset = 0
-	localSocketAddressLengthOffset          = atomic.SizeInt32
-	localSocketAddressStringOffset          = localSocketAddressLengthOffset + atomic.SizeInt32
+	localSocketAddressLengthOffset          = atomicbuffer.SizeInt32
+	localSocketAddressStringOffset          = localSocketAddressLengthOffset + atomicbuffer.SizeInt32
 )
 
 // FindLocalSocketAddress returns the bind address linked to channelStatusCounterID
@@ -76,7 +76,7 @@ func (reader *CountersReader) FindLocalSocketAddress(
 }
 
 func readLocalSocketAddressString(
-	metadata atomic.AtomicBuffer,
+	metadata atomicbuffer.AtomicBuffer,
 	keyIndex int,
 	length int32,
 ) (
@@ -106,8 +106,8 @@ func WriteLocalSocketAddressCounterRecord(
 	bindAddress string,
 	value int64,
 ) error {
-	metaBuffer := atomic.Wrap(meta)
-	valuesBuffer := atomic.Wrap(values)
+	metaBuffer := atomicbuffer.Wrap(meta)
+	valuesBuffer := atomicbuffer.Wrap(values)
 	return writeCounterRecord(
 		metaBuffer,
 		valuesBuffer,

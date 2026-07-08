@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
@@ -409,7 +409,7 @@ func TestEnsureCoherentNonEmptyLog_rapid(t *testing.T) {
 func minTruncToKeep(rec recordinglog.Entry) int {
 	base := int(rec.Position) + recordinglog.EndpointOffset
 	if rec.Type == recordinglog.EntryTypeStandbySnapshot {
-		return base + atomic.StringASCIIEncodedLength(len(rec.ArchiveEndpoint))
+		return base + atomicbuffer.StringASCIIEncodedLength(len(rec.ArchiveEndpoint))
 	}
 	return base + 1
 }

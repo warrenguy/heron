@@ -7,7 +7,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const termRotationTestMargin = 64
@@ -18,7 +18,7 @@ func publicationLogConfigNearTermEnd(margin int) aeron.TestPublicationLogConfig 
 
 func requireEndOfTermPaddingOnBuffer(
 	tb testing.TB,
-	termBuf atomic.AtomicBuffer,
+	termBuf atomicbuffer.AtomicBuffer,
 	termLength, margin int,
 ) {
 	tb.Helper()
@@ -30,7 +30,7 @@ func requireEndOfTermPaddingOnBuffer(
 
 func requireRotatedToNextTermMeta(
 	tb testing.TB,
-	meta atomic.AtomicBuffer,
+	meta atomicbuffer.AtomicBuffer,
 	termLength int,
 	wantTermCount int32,
 ) int {

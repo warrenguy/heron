@@ -1,8 +1,6 @@
 package conductor
 
-import (
-	"github.com/warrenguy/heron/agrona/atomic"
-)
+import "github.com/warrenguy/heron/atomicbuffer"
 
 type SubscriptionReady struct {
 	CorrelationID          int64
@@ -10,7 +8,7 @@ type SubscriptionReady struct {
 }
 
 func DecodeSubscriptionReady(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	capacity int,
 ) (SubscriptionReady, error) {
@@ -32,7 +30,7 @@ func DecodeSubscriptionReady(
 }
 
 func EncodeSubscriptionReady(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	event SubscriptionReady,
 ) error {
@@ -53,7 +51,7 @@ func EncodeSubscriptionReady(
 func SubscriptionReadyBytes(event SubscriptionReady) []byte {
 	return encodeToBytes(
 		SubscriptionReadyBodyLength,
-		func(buf atomic.AtomicBuffer, offset int) error {
+		func(buf atomicbuffer.AtomicBuffer, offset int) error {
 			return EncodeSubscriptionReady(buf, offset, event)
 		},
 	)

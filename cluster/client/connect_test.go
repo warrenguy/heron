@@ -5,14 +5,14 @@ package client
 import (
 	"context"
 	"errors"
-	stdatomic "sync/atomic"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs/gensbe"
 )
 
@@ -29,7 +29,7 @@ func connectTestHarnessDriver(
 ) func() *AsyncConnect {
 	t.Helper()
 
-	var observedAC stdatomic.Pointer[AsyncConnect]
+	var observedAC atomic.Pointer[AsyncConnect]
 	SetConnectAsyncConnectObserverForTest(t, harness.Client, func(ac *AsyncConnect) {
 		observedAC.Store(ac)
 		registerConnectHarnessStepObserver(t, harness, ac, onStep)
@@ -281,7 +281,7 @@ func TestConnect_concludeConnect_setsNewLeaderTimeout(t *testing.T) {
 		withAsyncConnectEgressTerm(
 			t,
 			ac,
-			func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+			func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 				writeSessionEventWithHeartbeatForConnect(t, termBuffer, correlation, heartbeatNs)
 			},
 		)
@@ -381,7 +381,7 @@ func TestConnect_sessionEventAuthenticationRejected(t *testing.T) {
 		withAsyncConnectEgressTerm(
 			t,
 			ac,
-			func(t *testing.T, termBuffer atomic.AtomicBuffer, correlation int64) {
+			func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 				fields := defaultSessionEventFields([]byte("bad credentials"))
 				fields.CorrelationID = correlation
 				fields.Code = gensbe.EventCode_AUTHENTICATION_REJECTED

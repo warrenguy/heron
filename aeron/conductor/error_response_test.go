@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestErrorResponseBytes_golden(t *testing.T) {
@@ -33,7 +33,7 @@ func TestErrorResponseBytes_golden(t *testing.T) {
 
 func TestDecodeErrorResponse_golden(t *testing.T) {
 	payload := conductor.ErrorResponseBytes(7, 11, "fail")
-	buffer := atomic.Wrap(payload)
+	buffer := atomicbuffer.Wrap(payload)
 
 	got, err := conductor.DecodeErrorResponse(buffer, 0, len(payload))
 	require.NoError(t, err)
@@ -46,7 +46,7 @@ func TestDecodeErrorResponse_golden(t *testing.T) {
 
 func TestDecodeErrorResponse_emptyMessage(t *testing.T) {
 	payload := conductor.ErrorResponseBytes(7, 0, "")
-	buffer := atomic.Wrap(payload)
+	buffer := atomicbuffer.Wrap(payload)
 
 	got, err := conductor.DecodeErrorResponse(buffer, 0, len(payload))
 	require.NoError(t, err)
@@ -58,7 +58,7 @@ func TestDecodeErrorResponse_emptyMessage(t *testing.T) {
 }
 
 func TestDecodeErrorResponse_tooShort(t *testing.T) {
-	buffer := atomic.Wrap([]byte{0x01, 0x02, 0x03})
+	buffer := atomicbuffer.Wrap([]byte{0x01, 0x02, 0x03})
 
 	_, err := conductor.DecodeErrorResponse(buffer, 0, 3)
 	require.ErrorIs(t, err, conductor.ErrErrorResponseTooShort)
@@ -70,7 +70,7 @@ func TestDecodeErrorResponse_tooShort(t *testing.T) {
 }
 
 func TestDecodeErrorResponse_bufferOutOfBounds(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, 10))
+	buffer := atomicbuffer.Wrap(make([]byte, 10))
 
 	_, err := conductor.DecodeErrorResponse(buffer, 0, 16)
 	require.ErrorIs(t, err, conductor.ErrErrorResponseTooShort)
@@ -82,7 +82,7 @@ func TestDecodeErrorResponse_bufferOutOfBounds(t *testing.T) {
 }
 
 func TestDecodeErrorResponse_negativeMessageLength(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, 16))
+	buffer := atomicbuffer.Wrap(make([]byte, 16))
 	buffer.PutInt64(conductor.ErrorResponseOffendingCommandCorrelationIDOffset, 7)
 	buffer.PutInt32(conductor.ErrorResponseErrorCodeOffset, 1)
 	buffer.PutInt32(conductor.ErrorResponseErrorMessageLengthOffset, -1)
@@ -93,7 +93,7 @@ func TestDecodeErrorResponse_negativeMessageLength(t *testing.T) {
 }
 
 func TestDecodeErrorResponse_lengthMismatch(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, 16))
+	buffer := atomicbuffer.Wrap(make([]byte, 16))
 	buffer.PutInt64(conductor.ErrorResponseOffendingCommandCorrelationIDOffset, 7)
 	buffer.PutInt32(conductor.ErrorResponseErrorCodeOffset, 1)
 	buffer.PutInt32(conductor.ErrorResponseErrorMessageLengthOffset, 8)
@@ -109,7 +109,7 @@ func TestDecodeErrorResponse_lengthMismatch(t *testing.T) {
 
 func TestDecodeErrorResponse_bodyLongerThanDecoded(t *testing.T) {
 	payload := conductor.ErrorResponseBytes(7, 1, "fail")
-	buffer := atomic.Wrap(append(payload, 0xFF))
+	buffer := atomicbuffer.Wrap(append(payload, 0xFF))
 
 	_, err := conductor.DecodeErrorResponse(buffer, 0, len(payload)+1)
 	require.ErrorIs(t, err, conductor.ErrErrorResponseTooShort)
@@ -122,7 +122,7 @@ func TestDecodeErrorResponse_bodyLongerThanDecoded(t *testing.T) {
 
 func TestDecodeErrorResponse_truncatedMessage(t *testing.T) {
 	payload := conductor.ErrorResponseBytes(7, 1, "fail")
-	buffer := atomic.Wrap(payload)
+	buffer := atomicbuffer.Wrap(payload)
 
 	_, err := conductor.DecodeErrorResponse(buffer, 0, len(payload)-1)
 	require.ErrorIs(t, err, conductor.ErrErrorResponseTooShort)
@@ -135,7 +135,7 @@ func TestDecodeErrorResponse_truncatedMessage(t *testing.T) {
 
 func TestEncodeErrorResponse_nonASCII(t *testing.T) {
 	const nonASCIIMessage = "fail\x80"
-	buffer := atomic.Wrap(
+	buffer := atomicbuffer.Wrap(
 		make([]byte, conductor.ErrorResponseTotalLength(len(nonASCIIMessage))),
 	)
 
@@ -144,12 +144,12 @@ func TestEncodeErrorResponse_nonASCII(t *testing.T) {
 		ErrorCode:                     1,
 		ErrorMessage:                  nonASCIIMessage,
 	})
-	require.ErrorIs(t, err, atomic.ErrStringASCIINonASCII)
-	require.EqualError(t, err, "atomic: string ascii non-ascii")
+	require.ErrorIs(t, err, atomicbuffer.ErrStringASCIINonASCII)
+	require.EqualError(t, err, "atomicbuffer: string ascii non-ascii")
 }
 
 func TestEncodeErrorResponse_outOfBounds(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, 16))
+	buffer := atomicbuffer.Wrap(make([]byte, 16))
 
 	err := conductor.EncodeErrorResponse(buffer, 0, conductor.ErrorResponse{
 		OffendingCommandCorrelationID: 7,

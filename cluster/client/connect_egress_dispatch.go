@@ -1,10 +1,10 @@
 package client
 
 import (
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs/gensbe"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
@@ -15,7 +15,7 @@ const challengeSbeTemplateID = int32(gensbe.ChallengeSbeTemplateID)
 // clusterSessionID filter and Challenge is captured.
 func handleConnectEgressFragment(
 	poller *ConnectEgressPoller,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *aeron.Header,

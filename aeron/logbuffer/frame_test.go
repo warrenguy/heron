@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestDataHeaderLength(t *testing.T) {
@@ -15,7 +15,7 @@ func TestDataHeaderLength(t *testing.T) {
 
 func TestWriteReadDataHeader(t *testing.T) {
 	buf := make([]byte, logbuffer.DataHeaderLength)
-	buffer := atomic.Wrap(buf)
+	buffer := atomicbuffer.Wrap(buf)
 
 	const (
 		sessionID  = int32(11)
@@ -48,7 +48,7 @@ func TestWriteReadDataHeader(t *testing.T) {
 
 func TestDataHeader_goldenBytes(t *testing.T) {
 	buf := make([]byte, logbuffer.DataHeaderLength)
-	buffer := atomic.Wrap(buf)
+	buffer := atomicbuffer.Wrap(buf)
 	require.NoError(t, logbuffer.WriteDataHeaderUnfragmented(buffer, 0, 11, 22, 7, 128, 0x01))
 	logbuffer.PutFrameLengthOrdered(buffer, 0, 64)
 
@@ -68,7 +68,7 @@ func TestDataHeader_goldenBytes(t *testing.T) {
 
 func TestIsPaddingFrame(t *testing.T) {
 	buf := make([]byte, logbuffer.DataHeaderLength)
-	buffer := atomic.Wrap(buf)
+	buffer := atomicbuffer.Wrap(buf)
 	require.NoError(t, logbuffer.WritePaddingFrame(buffer, 0, 7, 65520))
 	require.True(t, logbuffer.IsPaddingFrame(buffer, 0))
 
@@ -78,7 +78,7 @@ func TestIsPaddingFrame(t *testing.T) {
 
 func TestIsPaddingFrame_lowByteOnlyMismatch(t *testing.T) {
 	buf := make([]byte, logbuffer.DataHeaderLength)
-	buffer := atomic.Wrap(buf)
+	buffer := atomicbuffer.Wrap(buf)
 	buf[logbuffer.OffsetFrameType] = 0
 	buf[logbuffer.OffsetFrameType+1] = 0x01
 
@@ -93,13 +93,13 @@ func TestAlignFrameLength(t *testing.T) {
 
 func TestFrameLengthVolatile(t *testing.T) {
 	buf := make([]byte, logbuffer.DataHeaderLength)
-	buffer := atomic.Wrap(buf)
+	buffer := atomicbuffer.Wrap(buf)
 	logbuffer.PutFrameLengthRelease(buffer, 0, -64)
 	require.Equal(t, int32(-64), logbuffer.FrameLengthVolatile(buffer, 0))
 }
 
 func TestPutFrameMutators_outOfBounds(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, logbuffer.DataHeaderLength-1))
+	buffer := atomicbuffer.Wrap(make([]byte, logbuffer.DataHeaderLength-1))
 	require.NotPanics(t, func() {
 		logbuffer.PutFrameLengthOrdered(buffer, 0, 64)
 		logbuffer.PutFrameLengthRelease(buffer, 0, -64)
@@ -112,7 +112,7 @@ func TestPutFrameMutators_outOfBounds(t *testing.T) {
 }
 
 func TestFrameRead_outOfBounds(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, logbuffer.DataHeaderLength-1))
+	buffer := atomicbuffer.Wrap(make([]byte, logbuffer.DataHeaderLength-1))
 	require.Equal(t, int32(0), logbuffer.FrameLength(buffer, 0))
 	require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(buffer, 0))
 	require.Equal(t, int8(0), logbuffer.FrameVersion(buffer, 0))
@@ -127,7 +127,7 @@ func TestFrameRead_outOfBounds(t *testing.T) {
 }
 
 func TestWriteDataHeaderUnfragmented_outOfBounds(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, logbuffer.DataHeaderLength-1))
+	buffer := atomicbuffer.Wrap(make([]byte, logbuffer.DataHeaderLength-1))
 	err := logbuffer.WriteDataHeaderUnfragmented(buffer, 0, 1, 2, 3, 4, 0)
 	require.EqualError(t, err, "logbuffer: frame header out of bounds")
 }
@@ -155,7 +155,7 @@ func TestWriteDataHeaderFragmented_beginMiddleEndGoldenBytes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			buf := make([]byte, logbuffer.DataHeaderLength)
-			buffer := atomic.Wrap(buf)
+			buffer := atomicbuffer.Wrap(buf)
 			require.NoError(t, logbuffer.WriteDataHeaderFragmented(
 				buffer,
 				0,
@@ -184,20 +184,20 @@ func TestWriteDataHeaderFragmented_beginMiddleEndGoldenBytes(t *testing.T) {
 }
 
 func TestWriteDataHeaderFragmented_outOfBounds(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, logbuffer.DataHeaderLength-1))
+	buffer := atomicbuffer.Wrap(make([]byte, logbuffer.DataHeaderLength-1))
 	err := logbuffer.WriteDataHeaderFragmented(buffer, 0, 1, 2, 3, 4, logbuffer.BeginFlag)
 	require.EqualError(t, err, "logbuffer: frame header out of bounds")
 }
 
 func TestWritePaddingFrame_outOfBounds(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, logbuffer.DataHeaderLength-1))
+	buffer := atomicbuffer.Wrap(make([]byte, logbuffer.DataHeaderLength-1))
 	err := logbuffer.WritePaddingFrame(buffer, 0, 1, 2)
 	require.EqualError(t, err, "logbuffer: frame header out of bounds")
 }
 
 func TestIsPaddingFrameInTerm_fullHeader(t *testing.T) {
 	buf := make([]byte, logbuffer.DataHeaderLength)
-	buffer := atomic.Wrap(buf)
+	buffer := atomicbuffer.Wrap(buf)
 	require.NoError(t, logbuffer.WritePaddingFrame(buffer, 0, 7, 65520))
 	require.True(t, logbuffer.IsPaddingFrameInTerm(buffer, 0))
 	require.Equal(t, logbuffer.IsPaddingFrame(buffer, 0), logbuffer.IsPaddingFrameInTerm(buffer, 0))
@@ -221,7 +221,7 @@ func TestIsPaddingFrameInTerm_termEndSlack(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			buf := make([]byte, tt.paddingLength)
-			buffer := atomic.Wrap(buf)
+			buffer := atomicbuffer.Wrap(buf)
 			logbuffer.CommitMinimalTermEndPadding(buffer, 0, tt.paddingLength)
 
 			require.False(t, logbuffer.IsPaddingFrame(buffer, 0))
@@ -245,7 +245,7 @@ func TestCommittedFrameLengthVolatile_termEndSlack(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			buf := make([]byte, tt.paddingLength)
-			buffer := atomic.Wrap(buf)
+			buffer := atomicbuffer.Wrap(buf)
 			logbuffer.CommitMinimalTermEndPadding(buffer, 0, tt.paddingLength)
 
 			require.Zero(t, logbuffer.FrameLengthVolatile(buffer, 0))
@@ -278,7 +278,7 @@ func TestCommitMinimalTermEndPadding_partialGaps(t *testing.T) {
 			for i := range buf {
 				buf[i] = 0xFF
 			}
-			buffer := atomic.Wrap(buf)
+			buffer := atomicbuffer.Wrap(buf)
 
 			logbuffer.CommitMinimalTermEndPadding(buffer, termOffset, tt.paddingLength)
 

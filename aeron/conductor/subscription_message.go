@@ -3,7 +3,7 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 var ErrSubscriptionMessageOutOfBounds = errors.New("conductor: subscription message out of bounds")
@@ -23,7 +23,7 @@ func SubscriptionMessageBodyLength(channel string) int {
 }
 
 func EncodeSubscriptionMessage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	clientID, correlationID, registrationCorrelationID int64,
 	streamID int32,
@@ -42,7 +42,7 @@ func EncodeSubscriptionMessage(
 }
 
 func DecodeSubscriptionMessage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset, bodyLength int,
 ) (SubscriptionMessage, error) {
 	decoded, err := decodeCorrelatedStreamChannelMessage(
@@ -71,7 +71,7 @@ func SubscriptionMessageBytes(
 ) []byte {
 	return encodeToBytes(
 		SubscriptionMessageBodyLength(channel),
-		func(buf atomic.AtomicBuffer, offset int) error {
+		func(buf atomicbuffer.AtomicBuffer, offset int) error {
 			return EncodeSubscriptionMessage(
 				buf,
 				offset,

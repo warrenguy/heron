@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const recordingLogFileName = "recording.log"
@@ -91,7 +91,7 @@ func (l *Log) reload() error {
 	// reference writer rather than decoder consumed bytes. A torn tail ignored on
 	// read may be zero-padded into a full record on append; reload can then fail
 	// decode validation on truncated files.
-	l.writeOffset = int64(atomic.Align(len(buf), recordAlignment))
+	l.writeOffset = int64(atomicbuffer.Align(len(buf), recordAlignment))
 	l.termRecordingID = termRecordingID
 
 	for i := range entries {
@@ -727,13 +727,13 @@ func (l *Log) shiftIndicesAt(insertionIndex int32) {
 
 func (l *Log) writeInt64FieldAt(position int64, offset int, value int64) error {
 	var field [8]byte
-	atomic.Wrap(field[:]).PutInt64(0, value)
+	atomicbuffer.Wrap(field[:]).PutInt64(0, value)
 	return l.writeFieldAt(position, offset, field[:])
 }
 
 func (l *Log) writeInt32FieldAt(position int64, offset int, value int32) error {
 	var field [4]byte
-	atomic.Wrap(field[:]).PutInt32(0, value)
+	atomicbuffer.Wrap(field[:]).PutInt32(0, value)
 	return l.writeFieldAt(position, offset, field[:])
 }
 

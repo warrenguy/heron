@@ -5,13 +5,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/examples/cluster-auction-client/auctionwire"
 )
 
-func wrapSizedBuffer(offset, length int) (atomic.AtomicBuffer, []byte) {
+func wrapSizedBuffer(offset, length int) (atomicbuffer.AtomicBuffer, []byte) {
 	payload := make([]byte, offset+length)
-	return atomic.Wrap(payload), payload
+	return atomicbuffer.Wrap(payload), payload
 }
 
 func TestEncodeBid_lengthAndLayout(t *testing.T) {
@@ -30,7 +30,7 @@ func TestEncodeBid_lengthAndLayout(t *testing.T) {
 	auctionwire.EncodeBid(dst, correlationID, customerID, price)
 	require.Equal(t, want, dst)
 
-	buf := atomic.Wrap(make([]byte, auctionwire.BidMessageLength+4))
+	buf := atomicbuffer.Wrap(make([]byte, auctionwire.BidMessageLength+4))
 	auctionwire.EncodeBidBuffer(buf, 4, correlationID, customerID, price)
 	require.Equal(t, want, buf.Bytes()[4:4+auctionwire.BidMessageLength])
 }

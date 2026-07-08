@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestLayout_goldenOffsets(t *testing.T) {
@@ -28,11 +28,11 @@ func TestLayout_goldenOffsets(t *testing.T) {
 		})
 	}
 
-	require.Equal(t, atomic.SizeInt32, cnc.CounterMetadataTypeIDOffset)
+	require.Equal(t, atomicbuffer.SizeInt32, cnc.CounterMetadataTypeIDOffset)
 	require.Equal(
 		t,
 		cnc.CounterMetadataKeyOffset,
-		cnc.CounterMetadataFreeForReuseDeadlineOffset+atomic.SizeInt64,
+		cnc.CounterMetadataFreeForReuseDeadlineOffset+atomicbuffer.SizeInt64,
 	)
-	require.Equal(t, atomic.SizeInt64, cnc.CounterValueRegistrationIDOffset)
+	require.Equal(t, atomicbuffer.SizeInt64, cnc.CounterValueRegistrationIDOffset)
 }

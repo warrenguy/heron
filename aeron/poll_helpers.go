@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 // EffectiveRetryBound returns the earlier of effective and the remaining ctx deadline
@@ -221,7 +221,7 @@ func PollOneMessage(
 		msg      []byte
 		received bool
 	)
-	handler := func(buf atomic.AtomicBuffer, off, length int, _ *Header) {
+	handler := func(buf atomicbuffer.AtomicBuffer, off, length int, _ *Header) {
 		if received {
 			return
 		}
@@ -283,7 +283,11 @@ func PollReassembled(
 		copied     bool
 		payloadLen int
 	)
-	assembler := NewFragmentAssembler(func(termBuf atomic.AtomicBuffer, off, length int, _ *Header) {
+	assembler := NewFragmentAssembler(func(
+		termBuf atomicbuffer.AtomicBuffer,
+		off, length int,
+		_ *Header,
+	) {
 		if ready {
 			return
 		}

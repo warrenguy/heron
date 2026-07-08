@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestDecodeAvailableImage_sourceIdentityAligned(t *testing.T) {
@@ -16,7 +16,7 @@ func TestDecodeAvailableImage_sourceIdentityAligned(t *testing.T) {
 		SourceIdentity: "bar",
 	}
 	payload := AvailableImageBytes(event)
-	buffer := atomic.Wrap(payload)
+	buffer := atomicbuffer.Wrap(payload)
 
 	sourceIdentityOffset, err := SourceIdentityOffset(
 		buffer,
@@ -33,7 +33,7 @@ func TestDecodeAvailableImage_sourceIdentityAligned(t *testing.T) {
 }
 
 func TestDecodeAvailableImage_shortBody(t *testing.T) {
-	minimum := AvailableImageFixedLength + atomic.StringASCIIHeaderLength
+	minimum := AvailableImageFixedLength + atomicbuffer.StringASCIIHeaderLength
 
 	testDecodeEventShortBody(
 		t,
@@ -59,8 +59,8 @@ func TestDecodeAvailableImage_truncatedLogFileName(t *testing.T) {
 	}
 	payload := truncateEncodedPayload(t, AvailableImageBytes(event), 1)
 
-	_, err := DecodeAvailableImage(atomic.Wrap(payload), 0, len(payload))
-	require.ErrorIs(t, err, atomic.ErrStringASCIIOutOfBounds)
+	_, err := DecodeAvailableImage(atomicbuffer.Wrap(payload), 0, len(payload))
+	require.ErrorIs(t, err, atomicbuffer.ErrStringASCIIOutOfBounds)
 }
 
 func TestDecodeAvailableImage_truncatedSourceIdentity(t *testing.T) {
@@ -71,8 +71,8 @@ func TestDecodeAvailableImage_truncatedSourceIdentity(t *testing.T) {
 	}
 	payload := truncateEncodedPayload(t, AvailableImageBytes(event), 2)
 
-	_, err := DecodeAvailableImage(atomic.Wrap(payload), 0, len(payload))
-	require.ErrorIs(t, err, atomic.ErrStringASCIIOutOfBounds)
+	_, err := DecodeAvailableImage(atomicbuffer.Wrap(payload), 0, len(payload))
+	require.ErrorIs(t, err, atomicbuffer.ErrStringASCIIOutOfBounds)
 }
 
 func TestDecodeAvailableImage_bodyLongerThanDecoded(t *testing.T) {
@@ -97,7 +97,7 @@ func TestDecodeAvailableImage_negativeSourceIdentityLength(t *testing.T) {
 	}
 	payload := AvailableImageBytes(event)
 	sourceIdentityOffset, err := SourceIdentityOffset(
-		atomic.Wrap(payload),
+		atomicbuffer.Wrap(payload),
 		0,
 		len(payload),
 		AvailableImageFixedLength,
@@ -105,19 +105,19 @@ func TestDecodeAvailableImage_negativeSourceIdentityLength(t *testing.T) {
 	require.NoError(t, err)
 	payload = putNegativeStringLengthAtFieldOffset(payload, sourceIdentityOffset)
 
-	_, err = DecodeAvailableImage(atomic.Wrap(payload), 0, len(payload))
-	require.ErrorIs(t, err, atomic.ErrStringASCIILengthInvalid)
+	_, err = DecodeAvailableImage(atomicbuffer.Wrap(payload), 0, len(payload))
+	require.ErrorIs(t, err, atomicbuffer.ErrStringASCIILengthInvalid)
 }
 
 func TestSourceIdentityOffset_outOfBounds(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, AvailableImageFixedLength))
+	buffer := atomicbuffer.Wrap(make([]byte, AvailableImageFixedLength))
 
 	_, err := SourceIdentityOffset(buffer, 0, len(buffer.Bytes()), AvailableImageFixedLength)
 	require.ErrorIs(t, err, ErrEventBodyTooShort)
 }
 
 func TestSourceIdentityOffset_bodyLengthExceedsBuffer(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, 32))
+	buffer := atomicbuffer.Wrap(make([]byte, 32))
 
 	_, err := SourceIdentityOffset(buffer, 0, 36, AvailableImageFixedLength)
 	require.ErrorIs(t, err, ErrEventBodyTooShort)
@@ -132,6 +132,6 @@ func TestSourceIdentityOffset_insufficientHeaderRoom(t *testing.T) {
 	payload := AvailableImageBytes(event)
 	require.Len(t, payload, 36)
 
-	_, err := SourceIdentityOffset(atomic.Wrap(payload[:32]), 0, 32, AvailableImageFixedLength)
+	_, err := SourceIdentityOffset(atomicbuffer.Wrap(payload[:32]), 0, 32, AvailableImageFixedLength)
 	require.ErrorIs(t, err, ErrEventBodyTooShort)
 }

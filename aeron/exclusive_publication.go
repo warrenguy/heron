@@ -3,12 +3,12 @@ package aeron
 import (
 	"errors"
 	"fmt"
-	stdatomic "sync/atomic"
+	"sync/atomic"
 
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 // ExclusivePublication is a single-writer IPC publisher over a driver-mapped log buffer.
@@ -35,8 +35,8 @@ type ExclusivePublication struct {
 	channel                string
 
 	log                 *logbuffer.MappedLogBuffer
-	meta                atomic.AtomicBuffer
-	termBuffers         [logbuffer.PartitionCount]atomic.AtomicBuffer
+	meta                atomicbuffer.AtomicBuffer
+	termBuffers         [logbuffer.PartitionCount]atomicbuffer.AtomicBuffer
 	termBufferLength    int
 	positionBitsToShift int
 
@@ -55,7 +55,7 @@ type ExclusivePublication struct {
 	publicationLimit       cnc.CounterSlot
 	channelStatusCounterID int32
 
-	closed    stdatomic.Uint32
+	closed    atomic.Uint32
 	conductor *conductor.Conductor
 }
 
@@ -195,7 +195,7 @@ func (ep *ExclusivePublication) Abort(termIndex, frameOffset int) error {
 // Valid only until Commit or Abort finalizes the claim on that partition.
 //
 // Panics when termIndex is out of range.
-func (ep *ExclusivePublication) TermBuffer(termIndex int) atomic.AtomicBuffer {
+func (ep *ExclusivePublication) TermBuffer(termIndex int) atomicbuffer.AtomicBuffer {
 	return ep.termBuffers[termIndex]
 }
 
@@ -319,7 +319,7 @@ func (ep *ExclusivePublication) checkPublicationLimit(alignedLength int) int64 {
 }
 
 type exclusiveReservation struct {
-	termBuf          atomic.AtomicBuffer
+	termBuf          atomicbuffer.AtomicBuffer
 	termID           int32
 	startOffset      int
 	resultingOffset  int
@@ -415,9 +415,9 @@ func (ep *ExclusivePublication) finalizeInFlightClaim(
 func (ep *ExclusivePublication) loadInFlightClaim(
 	termIndex int,
 	frameOffset int,
-) (atomic.AtomicBuffer, int32, error) {
+) (atomicbuffer.AtomicBuffer, int32, error) {
 	if ep.IsClosed() {
-		return atomic.AtomicBuffer{}, 0, errors.New("aeron: exclusive publication is closed")
+		return atomicbuffer.AtomicBuffer{}, 0, errors.New("aeron: exclusive publication is closed")
 	}
 	return loadInFlightClaimFrame(&ep.termBuffers, termIndex, frameOffset)
 }
@@ -438,7 +438,7 @@ func (ep *ExclusivePublication) rotateTerm() {
 }
 
 func (ep *ExclusivePublication) handleEndOfLog(
-	termBuf atomic.AtomicBuffer,
+	termBuf atomicbuffer.AtomicBuffer,
 	termLength int,
 	termID int32,
 	termOffset int,

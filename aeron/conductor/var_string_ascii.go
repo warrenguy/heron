@@ -3,11 +3,11 @@ package conductor
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func decodeStringASCIIInBody(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	bodyOffset, bodyLength, fieldOffset int,
 	wrapped error,
 ) (string, int, error) {
@@ -20,17 +20,17 @@ func decodeStringASCIIInBody(
 		)
 	}
 	remaining := bodyLength - fieldOffset
-	if remaining < atomic.StringASCIIHeaderLength {
+	if remaining < atomicbuffer.StringASCIIHeaderLength {
 		return "", 0, fmt.Errorf(
 			"%w: need=%d got=%d",
 			wrapped,
-			atomic.StringASCIIHeaderLength,
+			atomicbuffer.StringASCIIHeaderLength,
 			remaining,
 		)
 	}
 
 	stringStart := bodyOffset + fieldOffset
-	value, encodedLength, err := atomic.GetStringASCII(
+	value, encodedLength, err := atomicbuffer.GetStringASCII(
 		buf.Slice(stringStart, remaining),
 		0,
 	)
@@ -41,11 +41,11 @@ func decodeStringASCIIInBody(
 }
 
 func encodeStringASCIIInBody(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	bodyOffset, fieldOffset int,
 	value string,
 ) (int, error) {
-	encodedLength, err := atomic.PutStringASCII(buf, bodyOffset+fieldOffset, value)
+	encodedLength, err := atomicbuffer.PutStringASCII(buf, bodyOffset+fieldOffset, value)
 	if err != nil {
 		return 0, err
 	}
@@ -53,5 +53,5 @@ func encodeStringASCIIInBody(
 }
 
 func fixedPlusTrailingStringBodyLength(fixedLength int, value string) int {
-	return fixedLength + atomic.StringASCIIEncodedLength(len(value))
+	return fixedLength + atomicbuffer.StringASCIIEncodedLength(len(value))
 }

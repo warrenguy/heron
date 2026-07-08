@@ -3,7 +3,7 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 var ErrRemoveMessageOutOfBounds = errors.New("conductor: remove message out of bounds")
@@ -15,7 +15,7 @@ type RemoveMessage struct {
 }
 
 func EncodeRemoveMessage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	clientID, correlationID, registrationID int64,
 ) error {
@@ -31,7 +31,7 @@ func EncodeRemoveMessage(
 }
 
 func encodeRemoveMessageFields(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	clientID, correlationID, registrationID int64,
 ) error {
@@ -41,7 +41,7 @@ func encodeRemoveMessageFields(
 }
 
 func DecodeRemoveMessage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset, bodyLength int,
 ) (RemoveMessage, error) {
 	if err := decodeMinimumBodyLengthError(
@@ -73,7 +73,10 @@ func DecodeRemoveMessage(
 }
 
 func RemoveMessageBytes(clientID, correlationID, registrationID int64) []byte {
-	return encodeToBytes(RemoveMessageBodyLength, func(buf atomic.AtomicBuffer, offset int) error {
+	return encodeToBytes(RemoveMessageBodyLength, func(
+		buf atomicbuffer.AtomicBuffer,
+		offset int,
+	) error {
 		return EncodeRemoveMessage(buf, offset, clientID, correlationID, registrationID)
 	})
 }

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -28,19 +28,19 @@ const (
 	SystemCounterControlProtocolVersionID int32 = 43
 
 	CounterMetadataStateOffset  = 0
-	CounterMetadataTypeIDOffset = atomic.SizeInt32
+	CounterMetadataTypeIDOffset = atomicbuffer.SizeInt32
 	// Agrona FREE_FOR_REUSE_DEADLINE at byte 8.
-	counterMetaDeadlineOffset = CounterMetadataTypeIDOffset + atomic.SizeInt32
-	counterMetaKeyOffset      = counterMetaDeadlineOffset + atomic.SizeInt64
+	counterMetaDeadlineOffset = CounterMetadataTypeIDOffset + atomicbuffer.SizeInt32
+	counterMetaKeyOffset      = counterMetaDeadlineOffset + atomicbuffer.SizeInt64
 
 	CounterMetadataFreeForReuseDeadlineOffset = counterMetaDeadlineOffset
 	CounterMetadataKeyOffset                  = counterMetaKeyOffset
-	CounterValueRegistrationIDOffset          = atomic.SizeInt64
+	CounterValueRegistrationIDOffset          = atomicbuffer.SizeInt64
 )
 
 type CountersReader struct {
-	metadata     atomic.AtomicBuffer
-	values       atomic.AtomicBuffer
+	metadata     atomicbuffer.AtomicBuffer
+	values       atomicbuffer.AtomicBuffer
 	maxCounterID int32
 }
 
@@ -52,13 +52,13 @@ type CountersReader struct {
 type CounterSlot struct {
 	counterID    int32
 	valuesOffset int
-	values       atomic.AtomicBuffer
+	values       atomicbuffer.AtomicBuffer
 }
 
-func NewCounterSlot(counterID int32, values atomic.AtomicBuffer) CounterSlot {
+func NewCounterSlot(counterID int32, values atomicbuffer.AtomicBuffer) CounterSlot {
 	offset := CounterOffset(counterID)
 	capacity := values.Capacity()
-	if offset < 0 || offset+atomic.SizeInt64 > capacity {
+	if offset < 0 || offset+atomicbuffer.SizeInt64 > capacity {
 		panic(fmt.Sprintf(
 			"cnc: counter slot offset out of bounds: counterID=%d offset=%d capacity=%d",
 			counterID,
@@ -104,8 +104,8 @@ func NewCountersReader(meta, values []byte) (*CountersReader, error) {
 	}
 
 	return &CountersReader{
-		metadata:     atomic.Wrap(meta[:requiredMetaLength]),
-		values:       atomic.Wrap(values),
+		metadata:     atomicbuffer.Wrap(meta[:requiredMetaLength]),
+		values:       atomicbuffer.Wrap(values),
 		maxCounterID: int32(counterCount - 1),
 	}, nil
 }
@@ -247,9 +247,9 @@ func counterRegistrationIDInValuesBuffer(typeID int32) bool {
 
 // CounterValuesBuffer returns the counters values buffer for bound slot reads. Returns a
 // zero buffer when the reader is nil.
-func (reader *CountersReader) CounterValuesBuffer() atomic.AtomicBuffer {
+func (reader *CountersReader) CounterValuesBuffer() atomicbuffer.AtomicBuffer {
 	if reader == nil {
-		return atomic.AtomicBuffer{}
+		return atomicbuffer.AtomicBuffer{}
 	}
 	return reader.values
 }
@@ -278,8 +278,8 @@ func WriteCounterRecord(
 		)
 	}
 
-	metaBuffer := atomic.Wrap(meta)
-	valuesBuffer := atomic.Wrap(values)
+	metaBuffer := atomicbuffer.Wrap(meta)
+	valuesBuffer := atomicbuffer.Wrap(values)
 	_ = writeCounterRecord(
 		metaBuffer,
 		valuesBuffer,
@@ -312,8 +312,8 @@ func WriteChannelStatusCounterRecord(
 		)
 	}
 
-	metaBuffer := atomic.Wrap(meta)
-	valuesBuffer := atomic.Wrap(values)
+	metaBuffer := atomicbuffer.Wrap(meta)
+	valuesBuffer := atomicbuffer.Wrap(values)
 	return writeCounterRecord(
 		metaBuffer,
 		valuesBuffer,
@@ -322,7 +322,7 @@ func WriteChannelStatusCounterRecord(
 		typeID,
 		value,
 		func(metaOffset, valuesOffset int) error {
-			if _, err := atomic.PutStringASCII(
+			if _, err := atomicbuffer.PutStringASCII(
 				metaBuffer,
 				metaOffset+CounterMetadataKeyOffset,
 				channel,
@@ -339,8 +339,8 @@ func WriteChannelStatusCounterRecord(
 }
 
 func writeCounterRecord(
-	metaBuffer atomic.AtomicBuffer,
-	valuesBuffer atomic.AtomicBuffer,
+	metaBuffer atomicbuffer.AtomicBuffer,
+	valuesBuffer atomicbuffer.AtomicBuffer,
 	counterID int32,
 	state int32,
 	typeID int32,

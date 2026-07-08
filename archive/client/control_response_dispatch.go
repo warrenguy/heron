@@ -2,9 +2,9 @@ package client
 
 import (
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 // handleControlResponseFragment decodes an archive control response fragment and captures
@@ -12,7 +12,7 @@ import (
 // (cluster connect egress parity); production poller does not throw.
 func handleControlResponseFragment(
 	poller *ControlResponsePoller,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	_ *aeron.Header,
@@ -82,7 +82,7 @@ func captureDecodedControlResponse(
 }
 
 func controlResponseFragmentPayload(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 ) ([]byte, bool) {

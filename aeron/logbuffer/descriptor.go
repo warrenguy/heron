@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -17,7 +17,7 @@ const (
 	PageMaxSize   = 1024 * 1024 * 1024
 
 	PaddingSize                        = 64
-	DefaultFrameHeaderMaxLength        = atomic.CacheLineLength * 2
+	DefaultFrameHeaderMaxLength        = atomicbuffer.CacheLineLength * 2
 	MetaDataLength                     = PageMinSize
 	FrameAlignment                     = 32
 	LogMetaDataSectionIndex            = 3
@@ -34,7 +34,7 @@ func checkPowerOfTwoRange(name string, value, min, max int) error {
 	if value > max {
 		return fmt.Errorf("logbuffer: %s above maximum: %d > %d", name, value, max)
 	}
-	if !atomic.IsPowerOfTwo(value) {
+	if !atomicbuffer.IsPowerOfTwo(value) {
 		return fmt.Errorf("logbuffer: %s not a power of two: %d", name, value)
 	}
 	return nil
@@ -69,7 +69,7 @@ func ComputeLogLength(termLength, pageSize int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return atomic.Align(int(raw), pageSize), nil
+	return atomicbuffer.Align(int(raw), pageSize), nil
 }
 
 // SectionTermOffset returns the byte offset of term partition sectionIndex.
@@ -83,7 +83,7 @@ func MetaDataOffset(termLength int) int {
 }
 
 func PositionBitsToShift(termLength int) int {
-	return atomic.NumberOfTrailingZeroes(int32(termLength))
+	return atomicbuffer.NumberOfTrailingZeroes(int32(termLength))
 }
 
 func ComputeMaxMessageLength(termLength int) int {
@@ -95,7 +95,7 @@ func ComputeMaxMessageLength(termLength int) int {
 }
 
 func AlignFrameLength(length int) int {
-	return atomic.Align(length, FrameAlignment)
+	return atomicbuffer.Align(length, FrameAlignment)
 }
 
 // ComputeFragmentedFrameLength returns the aligned term space for a payload

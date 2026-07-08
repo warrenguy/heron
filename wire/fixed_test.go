@@ -5,12 +5,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/internal/testutil"
 	"github.com/warrenguy/heron/wire"
 )
 
-const atomicBoundsPanic = "atomic: offset out of bounds"
+const atomicbufferBoundsPanic = "atomicbuffer: offset out of bounds"
 
 // Local auction-layout constants (mirrors auctionwire; no examples/ import).
 const (
@@ -65,20 +65,20 @@ func TestCheckLength_passes_but_field_read_panics(t *testing.T) {
 	)
 
 	t.Run("offset_zero", func(t *testing.T) {
-		buf := atomic.Wrap(make([]byte, reportedLength-1))
+		buf := atomicbuffer.Wrap(make([]byte, reportedLength-1))
 
 		require.True(t, wire.CheckLength(reportedLength, reportedLength))
-		require.PanicsWithValue(t, atomicBoundsPanic, func() {
+		require.PanicsWithValue(t, atomicbufferBoundsPanic, func() {
 			wire.GetBoolByte(buf, boolFieldOffset)
 		})
 	})
 
 	t.Run("non_zero_offset", func(t *testing.T) {
 		const offset = 4
-		buf := atomic.Wrap(make([]byte, offset+reportedLength-1))
+		buf := atomicbuffer.Wrap(make([]byte, offset+reportedLength-1))
 
 		require.True(t, wire.CheckLength(reportedLength, reportedLength))
-		require.PanicsWithValue(t, atomicBoundsPanic, func() {
+		require.PanicsWithValue(t, atomicbufferBoundsPanic, func() {
 			wire.GetBoolByte(buf, offset+boolFieldOffset)
 		})
 	})
@@ -113,7 +113,7 @@ func TestInt64_roundtrip(t *testing.T) {
 }
 
 func TestInt64_oob_panics(t *testing.T) {
-	payload := make([]byte, atomic.SizeInt64)
+	payload := make([]byte, atomicbuffer.SizeInt64)
 	cases := []struct {
 		name string
 		fn   func()
@@ -129,7 +129,7 @@ func TestInt64_oob_panics(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.PanicsWithValue(t, atomicBoundsPanic, tc.fn)
+			require.PanicsWithValue(t, atomicbufferBoundsPanic, tc.fn)
 		})
 	}
 }
@@ -145,7 +145,7 @@ func TestBoolByte_buffer_roundtrip(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			buf := atomic.Wrap(make([]byte, tc.bufLen))
+			buf := atomicbuffer.Wrap(make([]byte, tc.bufLen))
 
 			wire.PutBoolByte(buf, tc.offset, false)
 			require.False(t, wire.GetBoolByte(buf, tc.offset))
@@ -174,7 +174,7 @@ func TestBoolByte_non_zero_ff_is_true(t *testing.T) {
 	payload := make([]byte, 1)
 	payload[0] = 0xff
 	require.True(t, wire.GetBoolByteBytes(payload, 0))
-	require.True(t, wire.GetBoolByte(atomic.Wrap(payload), 0))
+	require.True(t, wire.GetBoolByte(atomicbuffer.Wrap(payload), 0))
 }
 
 type boolOOBAccessors struct {
@@ -201,15 +201,15 @@ func runBoolOOBPanics(t *testing.T, acc boolOOBAccessors) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.PanicsWithValue(t, atomicBoundsPanic, tc.fn)
+			require.PanicsWithValue(t, atomicbufferBoundsPanic, tc.fn)
 		})
 	}
 }
 
 func TestBoolByte_oob_panics(t *testing.T) {
 	t.Run("buffer", func(t *testing.T) {
-		byteBuffer := atomic.Wrap(make([]byte, atomic.SizeByte))
-		emptyBuffer := atomic.Wrap(nil)
+		byteBuffer := atomicbuffer.Wrap(make([]byte, atomicbuffer.SizeByte))
+		emptyBuffer := atomicbuffer.Wrap(nil)
 		runBoolOOBPanics(t, boolOOBAccessors{
 			get:            func(offset int) { wire.GetBoolByte(byteBuffer, offset) },
 			put:            func(offset int) { wire.PutBoolByte(byteBuffer, offset, true) },
@@ -220,7 +220,7 @@ func TestBoolByte_oob_panics(t *testing.T) {
 	})
 
 	t.Run("bytes", func(t *testing.T) {
-		payload := make([]byte, atomic.SizeByte)
+		payload := make([]byte, atomicbuffer.SizeByte)
 		runBoolOOBPanics(t, boolOOBAccessors{
 			get:            func(offset int) { wire.GetBoolByteBytes(payload, offset) },
 			put:            func(offset int) { wire.PutBoolByteBytes(payload, offset, true) },
@@ -301,7 +301,7 @@ func TestAuctionLayout_egressRoundtrip(t *testing.T) {
 
 func TestWirePrimitives_zeroAllocs(t *testing.T) {
 	payload := make([]byte, 32)
-	buf := atomic.Wrap(payload)
+	buf := atomicbuffer.Wrap(payload)
 	var i64 int64
 
 	cases := []struct {

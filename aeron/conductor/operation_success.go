@@ -3,7 +3,7 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 var ErrOperationSuccessTooShort = errors.New("conductor: operation success too short")
@@ -16,7 +16,7 @@ type OperationSuccess struct {
 //
 // The caller must ensure the broadcast body length is at least OperationSuccessBodyLength.
 func DecodeOperationSuccess(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 ) (OperationSuccess, error) {
 	if err := bodyBoundsError(
@@ -33,7 +33,7 @@ func DecodeOperationSuccess(
 }
 
 func EncodeOperationSuccess(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	correlationID int64,
 ) error {
@@ -52,7 +52,7 @@ func EncodeOperationSuccess(
 func OperationSuccessBytes(correlationID int64) []byte {
 	return encodeToBytes(
 		OperationSuccessBodyLength,
-		func(buf atomic.AtomicBuffer, offset int) error {
+		func(buf atomicbuffer.AtomicBuffer, offset int) error {
 			return EncodeOperationSuccess(buf, offset, correlationID)
 		},
 	)

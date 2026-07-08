@@ -4,7 +4,7 @@ import (
 	"strconv"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 // Publication return codes mirror Aeron Java Publication / ConcurrentPublication.
@@ -88,7 +88,7 @@ func IsIngressRetriable(position int64) bool {
 }
 
 func backPressureStatusForLog(
-	meta atomic.AtomicBuffer,
+	meta atomicbuffer.AtomicBuffer,
 	maxPossiblePosition int64,
 	position int64,
 	requiredSpan int64,

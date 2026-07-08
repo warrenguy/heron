@@ -8,7 +8,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -34,7 +34,7 @@ func (capture *pollCapture) reset() {
 }
 
 func (capture *pollCapture) handler(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *aeron.Header,
@@ -68,7 +68,7 @@ func newPollImageWithErrorHandler(
 }
 
 func writePollTestDataFrame(
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	frameOffset int,
 	termOffset int32,
 	flags uint8,
@@ -87,7 +87,7 @@ func writePollTestDataFrame(
 }
 
 func writePollTestPaddingThenData(
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	paddingLength int32,
 	payload []byte,
 ) {
@@ -108,7 +108,7 @@ func writePollTestPaddingThenData(
 }
 
 func writePollTestCommittedThenCorrupt(
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	payload []byte,
 	corruptOffset int,
 ) {
@@ -123,7 +123,7 @@ func writePollTestCommittedThenCorrupt(
 
 func writeDataFrameChain(
 	tb testing.TB,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	startOffset int,
 	frameCount int,
 	payload []byte,
@@ -141,7 +141,7 @@ func writeDataFrameChain(
 var imagePollSink int
 
 func imagePollZeroAllocHandler(
-	_ atomic.AtomicBuffer,
+	_ atomicbuffer.AtomicBuffer,
 	_ int,
 	length int,
 	_ *aeron.Header,
@@ -236,7 +236,7 @@ func subscriptionPollOnFirstFragment(
 
 	var handlerCalls int
 	return func(
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		header *aeron.Header,

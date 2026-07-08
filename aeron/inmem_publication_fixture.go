@@ -7,7 +7,7 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -116,7 +116,7 @@ func newInMemExclusivePublicationFromLog(
 
 func writeInMemPublicationMetadata(buf []byte, cfg inMemPublicationLogConfig) {
 	metaStart := logbuffer.MetaDataOffset(inMemPublicationTermLength)
-	meta := atomic.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
+	meta := atomicbuffer.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
 
 	for partition := range logbuffer.PartitionCount {
 		_ = logbuffer.PutRawTail(meta, partition, cfg.RawTails[partition])
@@ -145,7 +145,7 @@ func writeInMemPublicationMetadata(buf []byte, cfg inMemPublicationLogConfig) {
 }
 
 func writeInMemCommittedDataFrame(
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	frameOffset int,
 	termID int32,
 	termOffset int32,

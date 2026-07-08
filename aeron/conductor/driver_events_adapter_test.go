@@ -7,8 +7,8 @@ import (
 
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/internal/testutil"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/broadcast"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/broadcast"
 )
 
 func TestDriverEventsAdapter_clientTimeout_matchingClient(t *testing.T) {
@@ -364,7 +364,7 @@ func TestDriverEventsAdapter_errorEvent(t *testing.T) {
 			name: "lengthMismatch",
 			eventPayload: func() []byte {
 				payload := make([]byte, conductor.ErrorResponseMinBodyLength)
-				buffer := atomic.Wrap(payload)
+				buffer := atomicbuffer.Wrap(payload)
 				correlationOffset := conductor.ErrorResponseOffendingCommandCorrelationIDOffset
 				buffer.PutInt64(correlationOffset, pendingTestCorrelationID)
 				buffer.PutInt32(conductor.ErrorResponseErrorCodeOffset, errorCode)
@@ -405,7 +405,7 @@ func TestDriverEventsAdapter_errorEvent(t *testing.T) {
 			registerPending:      true,
 			eventPayload: func() []byte {
 				payload := make([]byte, conductor.ErrorResponseMinBodyLength)
-				buffer := atomic.Wrap(payload)
+				buffer := atomicbuffer.Wrap(payload)
 				correlationOffset := conductor.ErrorResponseOffendingCommandCorrelationIDOffset
 				buffer.PutInt64(correlationOffset, pendingTestCorrelationID)
 				buffer.PutInt32(conductor.ErrorResponseErrorCodeOffset, errorCode)
@@ -874,7 +874,7 @@ func TestDriverEventsAdapter_publicationReady_decodeFailure(t *testing.T) {
 		t,
 		conductor.OnPublicationReady,
 		bodyOneByteShort(
-			conductor.PublicationBuffersReadyFixedLength+atomic.StringASCIIHeaderLength,
+			conductor.PublicationBuffersReadyFixedLength+atomicbuffer.StringASCIIHeaderLength,
 		),
 		goldenPublicationReadyCorrelationID,
 	)
@@ -1085,7 +1085,7 @@ func TestDriverEventsAdapter_availableImage_decodeFailure(t *testing.T) {
 		t,
 		conductor.OnAvailableImage,
 		bodyOneByteShort(
-			conductor.AvailableImageFixedLength+atomic.StringASCIIHeaderLength,
+			conductor.AvailableImageFixedLength+atomicbuffer.StringASCIIHeaderLength,
 		),
 		conductor.NullCorrelationID,
 	)
@@ -1141,7 +1141,7 @@ func TestDriverEventsAdapter_unavailableImage_decodeFailure(t *testing.T) {
 		t,
 		conductor.OnUnavailableImage,
 		bodyOneByteShort(
-			conductor.UnavailableImageFixedLength+atomic.StringASCIIHeaderLength,
+			conductor.UnavailableImageFixedLength+atomicbuffer.StringASCIIHeaderLength,
 		),
 		conductor.NullCorrelationID,
 	)
@@ -1177,7 +1177,7 @@ func TestDriverEventsAdapter_publicationError_decodeFailure(t *testing.T) {
 		t,
 		conductor.OnPublicationError,
 		bodyOneByteShort(
-			conductor.PublicationErrorFixedLength+atomic.StringASCIIHeaderLength,
+			conductor.PublicationErrorFixedLength+atomicbuffer.StringASCIIHeaderLength,
 		),
 		conductor.NullCorrelationID,
 	)

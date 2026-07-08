@@ -1,8 +1,6 @@
 package conductor
 
-import (
-	"github.com/warrenguy/heron/agrona/atomic"
-)
+import "github.com/warrenguy/heron/atomicbuffer"
 
 type UnavailableImage struct {
 	CorrelationID              int64
@@ -16,13 +14,13 @@ func UnavailableImageBodyLength(channel string) int {
 }
 
 func DecodeUnavailableImage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	capacity int,
 ) (UnavailableImage, error) {
 	if err := decodeMinimumBodyLengthError(
 		capacity,
-		UnavailableImageFixedLength+atomic.StringASCIIHeaderLength,
+		UnavailableImageFixedLength+atomicbuffer.StringASCIIHeaderLength,
 		ErrEventBodyTooShort,
 	); err != nil {
 		return UnavailableImage{}, err
@@ -53,7 +51,7 @@ func DecodeUnavailableImage(
 }
 
 func EncodeUnavailableImage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	event UnavailableImage,
 ) error {
@@ -75,7 +73,7 @@ func EncodeUnavailableImage(
 func UnavailableImageBytes(event UnavailableImage) []byte {
 	return encodeToBytes(
 		UnavailableImageBodyLength(event.Channel),
-		func(buf atomic.AtomicBuffer, offset int) error {
+		func(buf atomicbuffer.AtomicBuffer, offset int) error {
 			return EncodeUnavailableImage(buf, offset, event)
 		},
 	)

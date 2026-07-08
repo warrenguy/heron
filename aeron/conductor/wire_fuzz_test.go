@@ -3,7 +3,7 @@ package conductor
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const fuzzWireMaxOffset = 8
@@ -87,15 +87,15 @@ type wireFuzzSeed struct {
 	body      []byte
 }
 
-func fuzzWireBodyBuffer(offset int, body []byte) (atomic.AtomicBuffer, int) {
+func fuzzWireBodyBuffer(offset int, body []byte) (atomicbuffer.AtomicBuffer, int) {
 	buf := make([]byte, offset+len(body))
 	copy(buf[offset:], body)
-	return atomic.Wrap(buf), offset
+	return atomicbuffer.Wrap(buf), offset
 }
 
-func fuzzWireBuffer(offset int, body []byte) (atomic.AtomicBuffer, int) {
+func fuzzWireBuffer(offset int, body []byte) (atomicbuffer.AtomicBuffer, int) {
 	if offset == 0 {
-		return atomic.Wrap(body), 0
+		return atomicbuffer.Wrap(body), 0
 	}
 	return fuzzWireBodyBuffer(offset, body)
 }
@@ -103,7 +103,7 @@ func fuzzWireBuffer(offset int, body []byte) (atomic.AtomicBuffer, int) {
 func runWireFuzzKind(
 	kind wireFuzzKind,
 	adapter *DriverEventsAdapter,
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	bodyOffset int,
 	bodyLen int,
 	msgTypeID int32,

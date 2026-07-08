@@ -16,7 +16,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 // PollUntilConnected polls DoWork until pub.IsConnected on live IPC.
@@ -709,7 +709,7 @@ func pollReassembledCtx(
 	var pending []byte
 	fragmentsPolled := 0
 	handler := func(
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		header *aeron.Header,
@@ -796,7 +796,7 @@ func pollSubscriptionFragments(
 }
 
 func discardSubscriptionFragment(
-	_ atomic.AtomicBuffer,
+	_ atomicbuffer.AtomicBuffer,
 	_ int,
 	_ int,
 	_ *aeron.Header,
@@ -816,7 +816,7 @@ func CollectSubscriptionFragments(
 	received [][]byte,
 ) [][]byte {
 	pollSubscriptionFragments(sub, want, len(received), func(
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		_ *aeron.Header,

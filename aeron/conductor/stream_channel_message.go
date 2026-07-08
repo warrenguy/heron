@@ -1,6 +1,6 @@
 package conductor
 
-import "github.com/warrenguy/heron/agrona/atomic"
+import "github.com/warrenguy/heron/atomicbuffer"
 
 type correlatedStreamChannelLayout struct {
 	middleInt64Offset int
@@ -38,7 +38,7 @@ func correlatedStreamChannelBodyLength(
 	layout correlatedStreamChannelLayout,
 	channel string,
 ) int {
-	return layout.channelOffset + atomic.StringASCIIEncodedLength(len(channel))
+	return layout.channelOffset + atomicbuffer.StringASCIIEncodedLength(len(channel))
 }
 
 // Bounds failures return before any write.
@@ -46,7 +46,7 @@ func correlatedStreamChannelBodyLength(
 // Other encode failures may leave fixed-prefix fields written; DriverProxy aborts
 // uncommitted ring claims; standalone callers must not use the buffer.
 func encodeCorrelatedStreamChannelMessage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	layout correlatedStreamChannelLayout,
 	clientID, correlationID int64,
@@ -73,12 +73,12 @@ func encodeCorrelatedStreamChannelMessage(
 		buf.PutInt64(offset+layout.middleInt64Offset, *middleInt64)
 	}
 	buf.PutInt32(offset+layout.streamIDOffset, streamID)
-	_, err := atomic.PutStringASCII(buf, offset+layout.channelOffset, channel)
+	_, err := atomicbuffer.PutStringASCII(buf, offset+layout.channelOffset, channel)
 	return err
 }
 
 func decodeCorrelatedStreamChannelMessage(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset, bodyLength int,
 	layout correlatedStreamChannelLayout,
 ) (correlatedStreamChannelDecoded, error) {

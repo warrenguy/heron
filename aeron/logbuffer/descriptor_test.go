@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestDescriptorConstants(t *testing.T) {
@@ -50,13 +50,13 @@ func TestDescriptorConstants(t *testing.T) {
 
 func TestLayoutInvariants(t *testing.T) {
 	require.Equal(t, logbuffer.MetaDataLength, logbuffer.PageMinSize)
-	require.True(t, atomic.IsPowerOfTwo(logbuffer.TermMinLength))
-	require.True(t, atomic.IsPowerOfTwo(logbuffer.FrameAlignment))
+	require.True(t, atomicbuffer.IsPowerOfTwo(logbuffer.TermMinLength))
+	require.True(t, atomicbuffer.IsPowerOfTwo(logbuffer.FrameAlignment))
 	require.Equal(t, 0, logbuffer.OffsetTermTailCounters)
 	require.Equal(
 		t,
 		logbuffer.OffsetActiveTermCount,
-		logbuffer.OffsetTermTailCounters+logbuffer.PartitionCount*atomic.SizeInt64,
+		logbuffer.OffsetTermTailCounters+logbuffer.PartitionCount*atomicbuffer.SizeInt64,
 	)
 }
 
@@ -67,8 +67,8 @@ func TestOffsetTermTailCounter_golden(t *testing.T) {
 		want           int
 	}{
 		{"partition0", 0, 0},
-		{"partition1", 1, atomic.SizeInt64},
-		{"partition2", 2, 2 * atomic.SizeInt64},
+		{"partition1", 1, atomicbuffer.SizeInt64},
+		{"partition2", 2, 2 * atomicbuffer.SizeInt64},
 	}
 
 	for _, test := range tests {

@@ -1,8 +1,6 @@
 package aeron
 
-import (
-	"github.com/warrenguy/heron/agrona/atomic"
-)
+import "github.com/warrenguy/heron/atomicbuffer"
 
 // FragmentHandler receives one committed fragment during Poll. Offset points past
 // the 32-byte frame header at payload start.
@@ -12,7 +10,7 @@ import (
 // Handlers must not retain the Header pointer beyond the callback; copy fields if
 // needed after return.
 type FragmentHandler func(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *Header,

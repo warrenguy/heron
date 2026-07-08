@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 type metadataFuzzKind uint8
@@ -34,7 +34,7 @@ func goldenSyntheticMetadataBytes() []byte {
 	return goldenSyntheticMetadata
 }
 
-func fuzzMetadataBuffer(data []byte, padToFull bool) atomic.AtomicBuffer {
+func fuzzMetadataBuffer(data []byte, padToFull bool) atomicbuffer.AtomicBuffer {
 	if len(data) > logbuffer.MetaDataLength {
 		data = data[:logbuffer.MetaDataLength]
 	}
@@ -44,7 +44,7 @@ func fuzzMetadataBuffer(data []byte, padToFull bool) atomic.AtomicBuffer {
 	}
 	buf := make([]byte, size)
 	copy(buf, data)
-	return atomic.Wrap(buf)
+	return atomicbuffer.Wrap(buf)
 }
 
 func FuzzMetadata(f *testing.F) {

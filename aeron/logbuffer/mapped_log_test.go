@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/mmap"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/mmap"
 )
 
 func openFDCount(t *testing.T) int {
@@ -74,7 +74,7 @@ func write8192PageLogBuffer(t *testing.T) ([]byte, int) {
 	buf := make([]byte, computed)
 	logbuffer.WriteSyntheticMetadata(buf, logbuffer.DefaultSyntheticMetadataConfig())
 	metaStart := logbuffer.MetaDataOffset(logbuffer.TestTermLength)
-	atomic.Wrap(buf[metaStart:]).PutInt32(logbuffer.OffsetPageSize, 8192)
+	atomicbuffer.Wrap(buf[metaStart:]).PutInt32(logbuffer.OffsetPageSize, 8192)
 	return buf, computed
 }
 
@@ -109,7 +109,7 @@ func TestMapLogFile_invalidTermLength(t *testing.T) {
 	buf := make([]byte, logbuffer.TestComputedLength)
 	logbuffer.WriteSyntheticMetadata(buf, logbuffer.DefaultSyntheticMetadataConfig())
 	metaStart := logbuffer.MetaDataOffset(logbuffer.TestTermLength)
-	atomic.Wrap(buf[metaStart:]).PutInt32(logbuffer.OffsetTermLength, 1000)
+	atomicbuffer.Wrap(buf[metaStart:]).PutInt32(logbuffer.OffsetTermLength, 1000)
 	require.NoError(t, os.WriteFile(path, buf, 0o644))
 
 	_, err := logbuffer.MapLogFile(path)
@@ -151,7 +151,7 @@ func TestMapLogBuffer_invalidMetadata(t *testing.T) {
 	buf := make([]byte, logbuffer.TestComputedLength)
 	logbuffer.WriteSyntheticMetadata(buf, logbuffer.DefaultSyntheticMetadataConfig())
 	metaStart := logbuffer.MetaDataOffset(logbuffer.TestTermLength)
-	atomic.Wrap(buf[metaStart:]).PutInt32(logbuffer.OffsetPageSize, 1000)
+	atomicbuffer.Wrap(buf[metaStart:]).PutInt32(logbuffer.OffsetPageSize, 1000)
 
 	_, err := logbuffer.MapLogBuffer(buf)
 	require.EqualError(
@@ -304,7 +304,7 @@ func TestMapLogFile_errorPathsNoFDLeak(t *testing.T) {
 				buf := make([]byte, logbuffer.TestComputedLength)
 				logbuffer.WriteSyntheticMetadata(buf, logbuffer.DefaultSyntheticMetadataConfig())
 				metaStart := logbuffer.MetaDataOffset(logbuffer.TestTermLength)
-				atomic.Wrap(buf[metaStart:]).PutInt32(logbuffer.OffsetTermLength, 1000)
+				atomicbuffer.Wrap(buf[metaStart:]).PutInt32(logbuffer.OffsetTermLength, 1000)
 				require.NoError(t, os.WriteFile(path, buf, 0o644))
 				return path
 			},

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const ErrorResponseMinBodyLength = ErrorResponseFixedBodyLength
@@ -22,7 +22,7 @@ func ErrorResponseTotalLength(messageLen int) int {
 }
 
 func DecodeErrorResponse(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 ) (ErrorResponse, error) {
@@ -83,7 +83,7 @@ func DecodeErrorResponse(
 }
 
 func EncodeErrorResponse(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	response ErrorResponse,
 ) error {
@@ -103,7 +103,7 @@ func EncodeErrorResponse(
 		response.OffendingCommandCorrelationID,
 	)
 	buf.PutInt32(offset+ErrorResponseErrorCodeOffset, response.ErrorCode)
-	_, err := atomic.PutStringASCII(
+	_, err := atomicbuffer.PutStringASCII(
 		buf,
 		offset+ErrorResponseErrorMessageLengthOffset,
 		response.ErrorMessage,
@@ -118,7 +118,7 @@ func ErrorResponseBytes(
 ) []byte {
 	return encodeToBytes(
 		ErrorResponseTotalLength(len(message)),
-		func(buf atomic.AtomicBuffer, offset int) error {
+		func(buf atomicbuffer.AtomicBuffer, offset int) error {
 			return EncodeErrorResponse(buf, offset, ErrorResponse{
 				OffendingCommandCorrelationID: correlationID,
 				ErrorCode:                     errorCode,

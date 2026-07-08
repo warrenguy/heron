@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 type fragmentDelegateCapture struct {
@@ -25,7 +25,7 @@ func sliceDataPtr(b []byte) uintptr {
 }
 
 var noopFragmentHandler FragmentHandler = func(
-	_ atomic.AtomicBuffer,
+	_ atomicbuffer.AtomicBuffer,
 	_ int,
 	_ int,
 	_ *Header,
@@ -35,7 +35,7 @@ var noopFragmentHandler FragmentHandler = func(
 func deliverFragments(
 	t fragmentTestHelper,
 	assembler *FragmentAssembler,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	offsets []int,
 ) {
 	t.Helper()
@@ -47,7 +47,7 @@ func deliverFragments(
 func deliverFragmentsInOrder(
 	t fragmentTestHelper,
 	assembler *FragmentAssembler,
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	offsets []int,
 	order []int,
 ) {
@@ -61,10 +61,10 @@ func setupFragmentAssembler(
 	t *testing.T,
 	termSize int,
 	specs []FragmentedFrameForTest,
-) (*fragmentDelegateCapture, *FragmentAssembler, atomic.AtomicBuffer, []int) {
+) (*fragmentDelegateCapture, *FragmentAssembler, atomicbuffer.AtomicBuffer, []int) {
 	t.Helper()
 
-	termBuffer := atomic.Wrap(make([]byte, termSize))
+	termBuffer := atomicbuffer.Wrap(make([]byte, termSize))
 	offsets := WriteCommittedDataFramesForTest(termBuffer, 0, specs)
 	capture := &fragmentDelegateCapture{}
 	assembler := NewFragmentAssembler(capture.handler())
@@ -83,7 +83,7 @@ func newAssemblerWithPendingBeginFragment(t *testing.T) *FragmentAssembler {
 
 func (capture *fragmentDelegateCapture) handler() FragmentHandler {
 	return func(
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		header *Header,
@@ -104,7 +104,7 @@ func (capture *fragmentDelegateCapture) handler() FragmentHandler {
 
 func TestFragmentAssembler_unfragmentedDelegatesWithoutCopy(t *testing.T) {
 	termBytes := make([]byte, 256)
-	termBuffer := atomic.Wrap(termBytes)
+	termBuffer := atomicbuffer.Wrap(termBytes)
 	payload := []byte("whole-message")
 	WriteCommittedDataFrameWithFlagsForTest(
 		termBuffer,
@@ -261,7 +261,7 @@ func TestFragmentAssembler_orphanFragmentResets(t *testing.T) {
 }
 
 func TestFragmentAssembler_termOffsetGapResets(t *testing.T) {
-	termBuffer := atomic.Wrap(make([]byte, 1024))
+	termBuffer := atomicbuffer.Wrap(make([]byte, 1024))
 	offsets := WriteCommittedDataFramesForTest(termBuffer, 0, []FragmentedFrameForTest{
 		{Flags: logbuffer.BeginFlag, Payload: []byte("begin")},
 	})
@@ -282,7 +282,7 @@ func TestFragmentAssembler_termOffsetGapResets(t *testing.T) {
 }
 
 func TestFragmentAssembler_newBeginResetsInProgress(t *testing.T) {
-	termBuffer := atomic.Wrap(make([]byte, 1024))
+	termBuffer := atomicbuffer.Wrap(make([]byte, 1024))
 	firstBegin := WriteCommittedDataFramesForTest(termBuffer, 0, []FragmentedFrameForTest{
 		{Flags: logbuffer.BeginFlag, Payload: []byte("stale-")},
 	})
@@ -302,7 +302,7 @@ func TestFragmentAssembler_newBeginResetsInProgress(t *testing.T) {
 }
 
 func TestFragmentAssembler_multiSessionIsolated(t *testing.T) {
-	termBuffer := atomic.Wrap(make([]byte, 2048))
+	termBuffer := atomicbuffer.Wrap(make([]byte, 2048))
 
 	offsetsA := WriteCommittedDataFramesForStreamForTest(
 		termBuffer,
@@ -370,7 +370,7 @@ func TestFragmentAssembler_multiFragmentCapacityGrowth(t *testing.T) {
 		}
 	}
 
-	termBuffer := atomic.Wrap(make([]byte, CommittedDataFramesTermCapacityForTest(specs)))
+	termBuffer := atomicbuffer.Wrap(make([]byte, CommittedDataFramesTermCapacityForTest(specs)))
 	offsets := WriteCommittedDataFramesForTest(termBuffer, 0, specs)
 
 	capture := &fragmentDelegateCapture{}
@@ -387,7 +387,7 @@ func TestFragmentAssembler_oversizePayloadResets(t *testing.T) {
 	builder := &fragmentBufferBuilder{limit: logbuffer.MaxMessageLength}
 	require.False(t, builder.ensureCapacity(1, 0))
 
-	termBuffer := atomic.Wrap(make([]byte, 512))
+	termBuffer := atomicbuffer.Wrap(make([]byte, 512))
 	offsets := WriteCommittedDataFramesForTest(termBuffer, 0, []FragmentedFrameForTest{
 		{Flags: logbuffer.BeginFlag, Payload: []byte("begin")},
 		{Flags: logbuffer.EndFlag, Payload: []byte("x")},
@@ -418,7 +418,7 @@ func TestFragmentAssembler_ensureCapacity_clampsOnOvershoot(t *testing.T) {
 }
 
 func TestFragmentAssembler_middleWrongTermOffsetResets(t *testing.T) {
-	termBuffer := atomic.Wrap(make([]byte, 1024))
+	termBuffer := atomicbuffer.Wrap(make([]byte, 1024))
 	beginOffset := 0
 	beginLen := WriteCommittedDataFrameWithFlagsForTest(
 		termBuffer,

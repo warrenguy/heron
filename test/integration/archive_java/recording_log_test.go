@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/agrona/atomic"
 	clientpkg "github.com/warrenguy/heron/archive/client"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
 	"github.com/warrenguy/heron/test/integration/harness"
@@ -192,7 +192,7 @@ func TestArchiveRecordingLog(t *testing.T) {
 
 func appendReplayPayload(dst *[][]byte) aeron.FragmentHandler {
 	return func(
-		buffer atomic.AtomicBuffer,
+		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		_ *aeron.Header,

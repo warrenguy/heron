@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/mmap"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/mmap"
 )
 
 func WireRingsFromMapping(mapping *mmap.Mapping, meta Metadata) (*Rings, error) {
@@ -81,7 +81,7 @@ func OverflowComputedLengthMetadata() Metadata {
 	}
 }
 
-func writeReadyHeaderFields(atomicBuffer atomic.AtomicBuffer) {
+func writeReadyHeaderFields(atomicBuffer atomicbuffer.AtomicBuffer) {
 	atomicBuffer.PutInt64(OffsetClientLivenessTimeout, TestClientLivenessTimeoutNs)
 	atomicBuffer.PutInt64(OffsetStartTimestamp, TestStartTimestampMs)
 	atomicBuffer.PutInt64(OffsetPID, TestPID)
@@ -90,7 +90,7 @@ func writeReadyHeaderFields(atomicBuffer atomic.AtomicBuffer) {
 }
 
 func WriteMetadataFieldsToBuffer(buf []byte, meta Metadata) {
-	atomicBuffer := atomic.Wrap(buf)
+	atomicBuffer := atomicbuffer.Wrap(buf)
 	atomicBuffer.PutInt32(OffsetToDriverBufferLength, meta.ToDriverBufferLength)
 	atomicBuffer.PutInt32(OffsetToClientsBufferLength, meta.ToClientsBufferLength)
 	atomicBuffer.PutInt32(OffsetCountersMetaDataBufferLength, meta.CountersMetaDataBufferLength)

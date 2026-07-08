@@ -8,7 +8,7 @@
 package auctionwire
 
 import (
-	agronaatomic "github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -24,14 +24,14 @@ const (
 //
 // dst must be at least BidMessageLength bytes.
 func EncodeBid(dst []byte, correlationID, customerID, price int64) {
-	EncodeBidBuffer(agronaatomic.Wrap(dst), 0, correlationID, customerID, price)
+	EncodeBidBuffer(atomicbuffer.Wrap(dst), 0, correlationID, customerID, price)
 }
 
 // EncodeBidBuffer writes a 24-byte ingress bid at offset in buf.
 //
 // len(buf.Bytes()) must be at least offset+BidMessageLength.
 func EncodeBidBuffer(
-	buf agronaatomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	correlationID, customerID, price int64,
 ) {
@@ -51,7 +51,7 @@ type EgressBid struct {
 // DecodeEgress reads an egress auction payload from buf at offset.
 //
 // ok is false when length is less than EgressMessageLength.
-func DecodeEgress(buf agronaatomic.AtomicBuffer, offset, length int) (EgressBid, bool) {
+func DecodeEgress(buf atomicbuffer.AtomicBuffer, offset, length int) (EgressBid, bool) {
 	if length < EgressMessageLength {
 		return EgressBid{}, false
 	}

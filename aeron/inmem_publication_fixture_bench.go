@@ -4,7 +4,7 @@ package aeron
 
 import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func newInMemImageFromLog(
@@ -52,8 +52,8 @@ func newInMemZeroAllocPollImage() *Image {
 }
 
 func resetInMemPublicationLogState(
-	meta atomic.AtomicBuffer,
-	termBuffers [logbuffer.PartitionCount]atomic.AtomicBuffer,
+	meta atomicbuffer.AtomicBuffer,
+	termBuffers [logbuffer.PartitionCount]atomicbuffer.AtomicBuffer,
 	termBufferLength int,
 	cfg inMemPublicationLogConfig,
 ) {

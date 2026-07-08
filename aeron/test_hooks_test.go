@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 type testHookPollCapture struct {
@@ -18,7 +18,7 @@ type testHookPollCapture struct {
 }
 
 func (capture *testHookPollCapture) handler(
-	buffer atomic.AtomicBuffer,
+	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *Header,
@@ -35,7 +35,7 @@ func newTestHookSubscriptionWithImage(tb testing.TB) (*Subscription, *Image) {
 	return sub, NewTestImageForHooks(tb, sub, 0)
 }
 
-func testHookTermBuffer(tb testing.TB) atomic.AtomicBuffer {
+func testHookTermBuffer(tb testing.TB) atomicbuffer.AtomicBuffer {
 	tb.Helper()
 
 	log := newTestHookMappedLog(tb, logbuffer.LogBufferTypeConcurrentPublication)
@@ -45,7 +45,7 @@ func testHookTermBuffer(tb testing.TB) atomic.AtomicBuffer {
 }
 
 func writeTestHookCommittedDataFrame(
-	termBuffer atomic.AtomicBuffer,
+	termBuffer atomicbuffer.AtomicBuffer,
 	frameOffset int,
 	termOffset int32,
 	flags uint8,

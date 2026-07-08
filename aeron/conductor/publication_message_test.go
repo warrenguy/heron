@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func publicationMessageHarness() streamChannelMessageHarness {
@@ -15,7 +15,7 @@ func publicationMessageHarness() streamChannelMessageHarness {
 		errOutOfBounds:    conductor.ErrPublicationMessageOutOfBounds,
 		bodyLength:        conductor.PublicationMessageBodyLength,
 		encode: func(
-			buffer atomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			offset int,
 			clientID int64,
 			correlationID int64,
@@ -32,7 +32,7 @@ func publicationMessageHarness() streamChannelMessageHarness {
 			)
 		},
 		decode: func(
-			buffer atomic.AtomicBuffer,
+			buffer atomicbuffer.AtomicBuffer,
 			offset int,
 			bodyLength int,
 		) (int64, int64, int32, string, error) {
@@ -111,7 +111,7 @@ func TestDecodePublicationMessage_channelTruncated(t *testing.T) {
 		harness,
 		harness.bytes(1, 42, 1001, "aeron:ipc"),
 		30,
-		"atomic: string ascii out of bounds: offset=4 capacity=10",
+		"atomicbuffer: string ascii out of bounds: offset=4 capacity=10",
 	)
 }
 

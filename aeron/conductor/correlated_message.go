@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/agrona/atomic"
-	"github.com/warrenguy/heron/agrona/record"
-	"github.com/warrenguy/heron/agrona/ringbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/record"
+	"github.com/warrenguy/heron/ringbuffer"
 )
 
 var (
@@ -39,11 +39,11 @@ type CorrelationAndInt32 struct {
 }
 
 func bodyBoundsError(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset, bodyLength int,
 	wrapped error,
 ) error {
-	return atomic.BoundsWrapError(buf, offset, bodyLength, wrapped)
+	return atomicbuffer.BoundsWrapError(buf, offset, bodyLength, wrapped)
 }
 
 func decodeMinimumBodyLengthError(
@@ -62,7 +62,7 @@ func decodeMinimumBodyLengthError(
 }
 
 func putCorrelatedFields(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	clientID, correlationID int64,
 ) {
@@ -71,7 +71,7 @@ func putCorrelatedFields(
 }
 
 func decodeTrailingStringASCII(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset, bodyLength, stringOffset int,
 	wrapped error,
 ) (string, error) {
@@ -83,7 +83,7 @@ func decodeTrailingStringASCII(
 			bodyLength,
 		)
 	}
-	value, encodedLength, err := atomic.GetStringASCII(
+	value, encodedLength, err := atomicbuffer.GetStringASCII(
 		buf.Slice(offset+stringOffset, bodyLength-stringOffset),
 		0,
 	)
@@ -104,7 +104,7 @@ func decodeTrailingStringASCII(
 }
 
 func EncodeCorrelated(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	clientID, correlationID int64,
 ) error {
@@ -122,22 +122,25 @@ func EncodeCorrelated(
 
 func encodeToBytes(
 	length int,
-	encode func(buf atomic.AtomicBuffer, offset int) error,
+	encode func(buf atomicbuffer.AtomicBuffer, offset int) error,
 ) []byte {
 	buffer := make([]byte, length)
-	if err := encode(atomic.Wrap(buffer), 0); err != nil {
+	if err := encode(atomicbuffer.Wrap(buffer), 0); err != nil {
 		panic(err)
 	}
 	return buffer
 }
 
 func CorrelatedMessageBytes(clientID, correlationID int64) []byte {
-	return encodeToBytes(CorrelatedMessageLength, func(buf atomic.AtomicBuffer, offset int) error {
+	return encodeToBytes(CorrelatedMessageLength, func(
+		buf atomicbuffer.AtomicBuffer,
+		offset int,
+	) error {
 		return EncodeCorrelated(buf, offset, clientID, correlationID)
 	})
 }
 
-func DecodeCorrelated(buf atomic.AtomicBuffer, offset int) (CorrelatedMessage, error) {
+func DecodeCorrelated(buf atomicbuffer.AtomicBuffer, offset int) (CorrelatedMessage, error) {
 	if err := bodyBoundsError(
 		buf,
 		offset,
@@ -153,7 +156,7 @@ func DecodeCorrelated(buf atomic.AtomicBuffer, offset int) (CorrelatedMessage, e
 }
 
 func EncodeCorrelationAndInt32(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 	correlationID int64,
 	int32Value int32,
@@ -174,13 +177,16 @@ func EncodeCorrelationAndInt32(
 func CorrelationAndInt32Bytes(correlationID int64, int32Value int32) []byte {
 	return encodeToBytes(
 		CorrelationAndInt32BodyLength,
-		func(buf atomic.AtomicBuffer, offset int) error {
+		func(buf atomicbuffer.AtomicBuffer, offset int) error {
 			return EncodeCorrelationAndInt32(buf, offset, correlationID, int32Value)
 		},
 	)
 }
 
-func DecodeCorrelationAndInt32(buf atomic.AtomicBuffer, offset int) (CorrelationAndInt32, error) {
+func DecodeCorrelationAndInt32(
+	buf atomicbuffer.AtomicBuffer,
+	offset int,
+) (CorrelationAndInt32, error) {
 	if err := bodyBoundsError(
 		buf,
 		offset,
@@ -199,7 +205,7 @@ func DecodeCorrelationAndInt32(buf atomic.AtomicBuffer, offset int) (Correlation
 //
 // The caller must ensure the broadcast body length is at least NextAvailableSessionIDBodyLength.
 func DecodeNextAvailableSessionID(
-	buf atomic.AtomicBuffer,
+	buf atomicbuffer.AtomicBuffer,
 	offset int,
 ) (CorrelationAndInt32, error) {
 	return DecodeCorrelationAndInt32(buf, offset)

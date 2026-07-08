@@ -7,13 +7,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
 	FileName = "cnc.dat"
 
-	MetaDataLength = atomic.CacheLineLength * 2
+	MetaDataLength = atomicbuffer.CacheLineLength * 2
 
 	cncPollInterval = 50 * time.Millisecond
 
@@ -62,7 +62,7 @@ func ParseMetadata(buf []byte) (Metadata, error) {
 	if len(buf) < MetaDataLength {
 		return Metadata{}, fmt.Errorf("cnc: buffer too short: %d < %d", len(buf), MetaDataLength)
 	}
-	atomicBuffer := atomic.Wrap(buf)
+	atomicBuffer := atomicbuffer.Wrap(buf)
 	version := atomicBuffer.GetInt32Volatile(OffsetCncVersion)
 	if version == 0 {
 		return Metadata{}, ErrNotReady
@@ -80,7 +80,7 @@ func validateMajorVersion(version int32) error {
 	return nil
 }
 
-func parseMetadata(atomicBuffer atomic.AtomicBuffer, version int32) (Metadata, error) {
+func parseMetadata(atomicBuffer atomicbuffer.AtomicBuffer, version int32) (Metadata, error) {
 	meta := Metadata{
 		CncVersion:                   version,
 		ToDriverBufferLength:         atomicBuffer.GetInt32(OffsetToDriverBufferLength),
@@ -132,7 +132,7 @@ func CncVersionVolatile(buf []byte) int32 {
 	if len(buf) < OffsetCncVersion+4 {
 		return 0
 	}
-	return atomic.Wrap(buf).GetInt32Volatile(OffsetCncVersion)
+	return atomicbuffer.Wrap(buf).GetInt32Volatile(OffsetCncVersion)
 }
 
 // WaitCncReady polls until cnc.dat exists, version is published with a compatible major
@@ -337,8 +337,8 @@ func ErrorLogOffset(m Metadata) int {
 }
 
 func ComputeCncFileLength(totalBufferLengths, alignment int) (int, error) {
-	if alignment <= 0 || !atomic.IsPowerOfTwo(alignment) {
+	if alignment <= 0 || !atomicbuffer.IsPowerOfTwo(alignment) {
 		return 0, fmt.Errorf("cnc: alignment must be a positive power of two: %d", alignment)
 	}
-	return atomic.Align(MetaDataLength+totalBufferLengths, alignment), nil
+	return atomicbuffer.Align(MetaDataLength+totalBufferLengths, alignment), nil
 }

@@ -1,8 +1,6 @@
 package logbuffer
 
-import (
-	"github.com/warrenguy/heron/agrona/atomic"
-)
+import "github.com/warrenguy/heron/atomicbuffer"
 
 const (
 	OffsetTermTailCounters               = 0
@@ -47,7 +45,7 @@ const (
 // partitionIndex must be in [0, PartitionCount); out of range yields wrong
 // metadata offsets with no bounds check.
 func OffsetTermTailCounter(partitionIndex int) int {
-	return OffsetTermTailCounters + partitionIndex*atomic.SizeInt64
+	return OffsetTermTailCounters + partitionIndex*atomicbuffer.SizeInt64
 }
 
 type MetadataView struct {
@@ -64,7 +62,7 @@ type MetadataView struct {
 
 // Point-in-time snapshot; not for hot-path volatile polling - use
 // IsConnectedVolatile etc. on the live buffer instead.
-func ParseMetadataView(meta atomic.AtomicBuffer) (MetadataView, error) {
+func ParseMetadataView(meta atomicbuffer.AtomicBuffer) (MetadataView, error) {
 	termLength, pageSize, err := readTermLengthAndPageSize(meta)
 	if err != nil {
 		return MetadataView{}, err
@@ -84,24 +82,24 @@ func ParseMetadataView(meta atomic.AtomicBuffer) (MetadataView, error) {
 	}, nil
 }
 
-func MTULength(meta atomic.AtomicBuffer) int32 {
+func MTULength(meta atomicbuffer.AtomicBuffer) int32 {
 	return meta.GetInt32(OffsetMTULength)
 }
 
-func IsConnectedVolatile(meta atomic.AtomicBuffer) int32 {
-	atomic.AcquireFence()
+func IsConnectedVolatile(meta atomicbuffer.AtomicBuffer) int32 {
+	atomicbuffer.AcquireFence()
 	return meta.GetInt32Volatile(OffsetIsConnected)
 }
 
 // Returns the default frame header slice from metadata. Length is clamped
 // between DataHeaderLength and DefaultFrameHeaderMaxLength.
-func DefaultFrameHeaderBuffer(meta atomic.AtomicBuffer) atomic.AtomicBuffer {
+func DefaultFrameHeaderBuffer(meta atomicbuffer.AtomicBuffer) atomicbuffer.AtomicBuffer {
 	storedLength := meta.GetInt32(OffsetDefaultFrameHeaderLength)
 	headerLength := min(max(storedLength, DataHeaderLength), DefaultFrameHeaderMaxLength)
 	return meta.Slice(OffsetDefaultFrameHeader, int(headerLength))
 }
 
-func readTermLengthAndPageSize(meta atomic.AtomicBuffer) (int32, int32, error) {
+func readTermLengthAndPageSize(meta atomicbuffer.AtomicBuffer) (int32, int32, error) {
 	if meta.Capacity() < MetaDataLength {
 		return 0, 0, errSpanTooShort("buffer", meta.Capacity(), MetaDataLength)
 	}

@@ -11,7 +11,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/cnc/cnctest"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func openFDCount(t *testing.T) int {
@@ -137,11 +137,11 @@ func TestMappedCncFile_atomicViews(t *testing.T) {
 	toDriverAtomic := mapped.ToDriverAtomic()
 	require.Equal(t, len(toDriver), toDriverAtomic.Capacity())
 	toDriverAtomic.PutInt32(0, 42)
-	require.Equal(t, int32(42), atomic.Wrap(toDriver).GetInt32(0))
+	require.Equal(t, int32(42), atomicbuffer.Wrap(toDriver).GetInt32(0))
 
 	toClients := mapped.ToClientsBuffer()
 	toClientsAtomic := mapped.ToClientsAtomic()
 	require.Equal(t, len(toClients), toClientsAtomic.Capacity())
 	toClientsAtomic.PutInt32(0, 99)
-	require.Equal(t, int32(99), atomic.Wrap(toClients).GetInt32(0))
+	require.Equal(t, int32(99), atomicbuffer.Wrap(toClients).GetInt32(0))
 }

@@ -10,7 +10,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/internal/testutil"
 )
 
@@ -34,7 +34,7 @@ func TestErrorResponse_roundtrip_rapid(t *testing.T) {
 			bodyLength,
 		)
 
-		buffer := atomic.Wrap(make([]byte, offset+bodyLength))
+		buffer := atomicbuffer.Wrap(make([]byte, offset+bodyLength))
 		prefix := testutil.SnapshotBufferPrefix(buffer, offset)
 		require.NoError(rt, conductor.EncodeErrorResponse(buffer, offset, want))
 		require.True(rt, bytes.Equal(prefix, buffer.Bytes()[:offset]))
@@ -56,7 +56,7 @@ func TestErrorResponse_trailingPadding_rejects_rapid(t *testing.T) {
 		payload := conductor.ErrorResponseBytes(correlationID, errorCode, message)
 		padded := append(append([]byte(nil), payload...), make([]byte, trailingExtra)...)
 
-		_, err := conductor.DecodeErrorResponse(atomic.Wrap(padded), 0, len(padded))
+		_, err := conductor.DecodeErrorResponse(atomicbuffer.Wrap(padded), 0, len(padded))
 		require.ErrorIs(rt, err, conductor.ErrErrorResponseTooShort)
 	})
 }

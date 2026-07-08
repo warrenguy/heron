@@ -9,7 +9,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestCommittedFrameLengthVolatile_termEndSlack_rapid(t *testing.T) {
@@ -23,7 +23,7 @@ func TestCommittedFrameLengthVolatile_termEndSlack_rapid(t *testing.T) {
 		}
 
 		buf := make([]byte, paddingLength)
-		buffer := atomic.Wrap(buf)
+		buffer := atomicbuffer.Wrap(buf)
 		logbuffer.CommitMinimalTermEndPadding(buffer, 0, paddingLength)
 
 		require.Zero(t, logbuffer.FrameLengthVolatile(buffer, 0))

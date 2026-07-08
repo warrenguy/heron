@@ -10,8 +10,8 @@ import (
 
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/mmap"
-	"github.com/warrenguy/heron/agrona/ringbuffer"
+	"github.com/warrenguy/heron/mmap"
+	"github.com/warrenguy/heron/ringbuffer"
 )
 
 const (

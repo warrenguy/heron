@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -46,7 +46,7 @@ func DefaultSyntheticMetadataConfig() SyntheticMetadataConfig {
 
 func WriteSyntheticMetadata(buf []byte, cfg SyntheticMetadataConfig) {
 	metaStart := MetaDataOffset(TestTermLength)
-	meta := atomic.Wrap(buf[metaStart : metaStart+MetaDataLength])
+	meta := atomicbuffer.Wrap(buf[metaStart : metaStart+MetaDataLength])
 
 	for i := range PartitionCount {
 		_ = PutRawTail(meta, i, cfg.RawTails[i])

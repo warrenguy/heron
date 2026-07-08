@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/agrona/atomic"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestCorrelatedMessageBytes_golden(t *testing.T) {
@@ -49,7 +49,7 @@ func TestCorrelatedMessageRoundtrip(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			buffer := atomic.Wrap(make([]byte, test.offset+conductor.CorrelatedMessageLength))
+			buffer := atomicbuffer.Wrap(make([]byte, test.offset+conductor.CorrelatedMessageLength))
 			err := conductor.EncodeCorrelated(buffer, test.offset, test.clientID, test.correlationID)
 			require.NoError(t, err)
 
@@ -64,7 +64,7 @@ func TestCorrelatedMessageRoundtrip(t *testing.T) {
 }
 
 func TestCorrelatedMessageOutOfBounds(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, conductor.CorrelatedMessageLength))
+	buffer := atomicbuffer.Wrap(make([]byte, conductor.CorrelatedMessageLength))
 	wantErr := "conductor: correlated message out of bounds: offset=8 capacity=16"
 
 	t.Run("encode", func(t *testing.T) {
@@ -81,7 +81,7 @@ func TestCorrelatedMessageOutOfBounds(t *testing.T) {
 }
 
 func TestCorrelatedMessageNegativeOffset(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, conductor.CorrelatedMessageLength))
+	buffer := atomicbuffer.Wrap(make([]byte, conductor.CorrelatedMessageLength))
 	wantErr := "conductor: correlated message out of bounds: offset=-8 capacity=16"
 
 	t.Run("encode", func(t *testing.T) {
@@ -98,7 +98,7 @@ func TestCorrelatedMessageNegativeOffset(t *testing.T) {
 }
 
 func TestCorrelationAndInt32NegativeOffset(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, conductor.CorrelationAndInt32BodyLength))
+	buffer := atomicbuffer.Wrap(make([]byte, conductor.CorrelationAndInt32BodyLength))
 
 	_, err := conductor.DecodeCorrelationAndInt32(buffer, -1)
 	require.ErrorIs(t, err, conductor.ErrCorrelationAndInt32OutOfBounds)
@@ -110,7 +110,7 @@ func TestCorrelationAndInt32NegativeOffset(t *testing.T) {
 }
 
 func TestDecodeTrailingStringASCII_stringOffsetBeyondBodyLength(t *testing.T) {
-	buffer := atomic.Wrap(make([]byte, 32))
+	buffer := atomicbuffer.Wrap(make([]byte, 32))
 
 	_, err := conductor.DecodeTrailingStringASCIIForTest(
 		buffer,
@@ -139,7 +139,7 @@ func TestNextAvailableSessionIDBytes_golden(t *testing.T) {
 }
 
 func TestDecodeNextAvailableSessionID_golden(t *testing.T) {
-	buffer := atomic.Wrap(conductor.CorrelationAndInt32Bytes(99, 1001))
+	buffer := atomicbuffer.Wrap(conductor.CorrelationAndInt32Bytes(99, 1001))
 
 	got, err := conductor.DecodeNextAvailableSessionID(buffer, 0)
 	require.NoError(t, err)
@@ -151,7 +151,7 @@ func TestDecodeNextAvailableSessionID_golden(t *testing.T) {
 
 func TestCorrelationAndInt32(t *testing.T) {
 	t.Run("decode golden", func(t *testing.T) {
-		buffer := atomic.Wrap(conductor.CorrelationAndInt32Bytes(42, 12345))
+		buffer := atomicbuffer.Wrap(conductor.CorrelationAndInt32Bytes(42, 12345))
 
 		got, err := conductor.DecodeCorrelationAndInt32(buffer, 0)
 		require.NoError(t, err)
@@ -162,7 +162,7 @@ func TestCorrelationAndInt32(t *testing.T) {
 	})
 
 	t.Run("decode out of bounds", func(t *testing.T) {
-		buffer := atomic.Wrap(make([]byte, 8))
+		buffer := atomicbuffer.Wrap(make([]byte, 8))
 
 		_, err := conductor.DecodeCorrelationAndInt32(buffer, 0)
 		require.ErrorIs(t, err, conductor.ErrCorrelationAndInt32OutOfBounds)

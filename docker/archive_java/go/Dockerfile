@@ -8,7 +8,12 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY aeron ./aeron
-COPY agrona ./agrona
+COPY atomicbuffer ./atomicbuffer
+COPY idlestrategy ./idlestrategy
+COPY mmap ./mmap
+COPY record ./record
+COPY ringbuffer ./ringbuffer
+COPY broadcast ./broadcast
 COPY archive ./archive
 COPY cluster/recordinglog ./cluster/recordinglog
 COPY test/integration/harness ./test/integration/harness
