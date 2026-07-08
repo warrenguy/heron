@@ -54,7 +54,7 @@ func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 	keepAliveCorrelation := harness.Client.NextCorrelationID()
 	archiveCtx := result.Context
 	archiveCtx.ControlOfferRetryTimeout = 5 * time.Second
-	pos := ControlOfferUntilPositive(harness.Client, archiveCtx, ControlOfferConfig{
+	pos, err := ControlOfferUntilPositive(t.Context(), harness.Client, archiveCtx, ControlOfferConfig{
 		IdleStrategy: NewDefaultIdleStrategy(),
 		NanoClock:    result.Context.AeronContext.NanoClock,
 		PollFn:       result.Poller.Poll,
@@ -65,6 +65,7 @@ func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 		)
 		return position
 	})
+	require.NoError(t, err)
 	require.Positive(t, pos)
 
 	termBuffer := controlResponseTermBufferForSubscription(t, result.ControlSubscription)

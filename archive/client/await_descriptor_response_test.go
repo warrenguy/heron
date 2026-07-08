@@ -8,6 +8,7 @@ import (
 
 func TestAwaitArchiveListRecording_nilDescriptorPollerReturnsError(t *testing.T) {
 	err := AwaitArchiveListRecording(
+		t.Context(),
 		nil,
 		ArchiveContext{},
 		func() int { return 0 },

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -49,12 +50,18 @@ func (a archiveLister) ListRecording(recordingID int64) (recordinglog.LogRecordi
 
 // NewArchiveLister wraps AeronArchive.ListRecording for recordinglog.PlanRecovery.
 //
-// archive must be non-nil.
-func NewArchiveLister(archive *AeronArchive) recordinglog.ArchiveLister {
+// archive must be non-nil. ctx bounds every subsequent ListRecording call made through
+// the returned lister; the closure retains ctx beyond this constructor call.
+func NewArchiveLister(
+	ctx context.Context,
+	archive *AeronArchive,
+) recordinglog.ArchiveLister {
 	if archive == nil {
 		panic("archive/client: NewArchiveLister: archive must be non-nil")
 	}
-	return archiveLister{listFn: archive.ListRecording}
+	return archiveLister{listFn: func(recordingID int64) (codecs.RecordingDescriptorFields, error) {
+		return archive.ListRecording(ctx, recordingID)
+	}}
 }
 
 // MapListRecordingError translates archive/client errors into recordinglog sentinels.

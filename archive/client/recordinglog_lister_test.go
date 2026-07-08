@@ -194,7 +194,7 @@ func TestArchiveLister_listRecording(t *testing.T) {
 func TestNewArchiveLister_delegatesToArchiveListRecording(t *testing.T) {
 	t.Parallel()
 
-	lister := NewArchiveLister(&AeronArchive{})
+	lister := NewArchiveLister(t.Context(), &AeronArchive{})
 	got, err := lister.ListRecording(1)
 	require.Error(t, err)
 	require.Equal(t, recordinglog.LogRecordingExtents{}, got)
@@ -206,7 +206,7 @@ func TestNewArchiveLister_nilArchivePanics(t *testing.T) {
 	t.Parallel()
 
 	require.Panics(t, func() {
-		NewArchiveLister(nil)
+		NewArchiveLister(t.Context(), nil)
 	})
 }
 

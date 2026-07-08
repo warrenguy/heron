@@ -28,6 +28,20 @@ func EffectiveRetryBound(
 	return max(ctxDeadline.Sub(now), 0)
 }
 
+// RetryDeadlineNs returns a retry-loop expiry deadline on the caller's NanoClock
+// epoch along with the effective bound. bound clamps timeout to ctx.Deadline() via
+// EffectiveRetryBound using wall-clock time.Now(); startNs is the loop NanoClock
+// reading at loop entry and feeds only the returned deadlineNs expiry check inside
+// the loop.
+func RetryDeadlineNs(
+	ctx context.Context,
+	startNs int64,
+	timeout time.Duration,
+) (deadlineNs int64, bound time.Duration) {
+	bound = EffectiveRetryBound(ctx, timeout, time.Now())
+	return startNs + bound.Nanoseconds(), bound
+}
+
 func retryDeadline(
 	ctx context.Context,
 	timeout time.Duration,

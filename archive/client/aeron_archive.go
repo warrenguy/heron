@@ -1,6 +1,8 @@
 package client
 
 import (
+	"context"
+
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/gensbe"
@@ -43,14 +45,31 @@ type AeronArchive struct {
 // Connect performs the blocking archive control connect handshake and returns a session
 // wrapper.
 //
-// It drives DoWork on the transport client until the handshake completes or the connect
-// timeout elapses.
-func Connect(ctx ArchiveContext) (*AeronArchive, error) {
-	connect, err := NewAsyncConnect(ctx)
+// It drives DoWork on the transport client until the handshake completes,
+// ctx is canceled or its deadline is exceeded, or ConnectTimeout elapses. The await loop
+// paces via archiveCtx.IdleStrategy.Idle(0) and calls IdleStrategy.Reset on exit so a
+// shared backoff instance is not left in PARKING before the post-connect duty cycle.
+//
+// NewAsyncConnect normalizes and validates archiveCtx; pre-normalizing is harmless.
+//
+// On handshake failure or ctx cancellation, partial resources are released via
+// AsyncConnect.Close.
+//
+// Returns ctx.Err() when the context is done before handshake success
+// (context.Canceled or context.DeadlineExceeded). Connect timeout errors apply only
+// while the context remains active. A completed handshake returns a session even if ctx
+// is canceled concurrently on that iteration.
+//
+// Not safe for concurrent use during connect.
+func Connect(ctx context.Context, archiveCtx ArchiveContext) (*AeronArchive, error) {
+	connect, err := NewAsyncConnect(archiveCtx)
 	if err != nil {
 		return nil, err
 	}
-	result, err := awaitArchiveConnect(connect)
+
+	notifyConnectAsyncConnectObserver(connect)
+
+	result, err := awaitArchiveConnect(ctx, connect)
 	if err != nil {
 		_ = connect.Close()
 		return nil, err
@@ -58,20 +77,21 @@ func Connect(ctx ArchiveContext) (*AeronArchive, error) {
 	return newAeronArchive(result), nil
 }
 
-func awaitArchiveConnect(connect *AsyncConnect) (*ConnectResult, error) {
+func awaitArchiveConnect(ctx context.Context, connect *AsyncConnect) (*ConnectResult, error) {
 	idle := connect.ctx.IdleStrategy
-	if idle == nil {
-		idle = NewDefaultIdleStrategy()
-	}
 	defer idle.Reset()
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		notifyAwaitArchiveConnectStepObserver(connect)
 		if connect.client != nil {
 			connect.client.DoWork()
 		}
 		result, err := connect.Poll()
 		if err != nil {
-			return nil, err
+			return nil, aeron.PreferContextError(ctx, err)
 		}
 		if result != nil {
 			return result, nil
@@ -197,12 +217,16 @@ func (archive *AeronArchive) SetRecordingSignalHandler(handler RecordingSignalHa
 // with a matching ControlResponse. The returned RelevantID is the subscription
 // registration id on the wire, not the catalog recording id; await RecordingSignal_START
 // for the assigned recording id.
+//
+// Returns ctx.Err() when the context is done before a response is received.
 func (archive *AeronArchive) StartRecording(
+	ctx context.Context,
 	streamID int32,
 	sourceLocation gensbe.SourceLocation,
 	channel []byte,
 ) (int64, error) {
 	return archive.sessionControlOps(archive.Poll).startRecording(
+		ctx,
 		streamID,
 		sourceLocation,
 		channel,
@@ -211,8 +235,14 @@ func (archive *AeronArchive) StartRecording(
 
 // StopRecording offers a StopRecordingRequest and blocks until the archive replies with
 // a matching OK ControlResponse.
-func (archive *AeronArchive) StopRecording(streamID int32, channel []byte) error {
-	return archive.sessionControlOps(archive.Poll).stopRecording(streamID, channel)
+//
+// Returns ctx.Err() when the context is done before a response is received.
+func (archive *AeronArchive) StopRecording(
+	ctx context.Context,
+	streamID int32,
+	channel []byte,
+) error {
+	return archive.sessionControlOps(archive.Poll).stopRecording(ctx, streamID, channel)
 }
 
 // StopRecordingAwaitSignal offers a StopRecordingRequest and blocks until the archive
@@ -221,7 +251,10 @@ func (archive *AeronArchive) StopRecording(streamID int32, channel []byte) error
 //
 // tracker must be non-nil: it carries the STOP signal proof and is dereferenced on
 // every proof check.
+//
+// Returns ctx.Err() when the context is done before proof is received.
 func (archive *AeronArchive) StopRecordingAwaitSignal(
+	ctx context.Context,
 	streamID int32,
 	channel []byte,
 	tracker *StopSignalTracker,
@@ -229,6 +262,7 @@ func (archive *AeronArchive) StopRecordingAwaitSignal(
 	return archive.sessionControlOps(
 		archive.pollStopRecordingAwaitSignal(tracker),
 	).stopRecordingAwaitSignal(
+		ctx,
 		streamID,
 		channel,
 		archive.sessionPollTargets(tracker),
@@ -238,7 +272,10 @@ func (archive *AeronArchive) StopRecordingAwaitSignal(
 
 // StartReplay offers a ReplayRequest and blocks until the archive replies with a
 // matching ControlResponse, returning the assigned replay session id.
+//
+// Returns ctx.Err() when the context is done before a response is received.
 func (archive *AeronArchive) StartReplay(
+	ctx context.Context,
 	recordingID int64,
 	position int64,
 	length int64,
@@ -246,6 +283,7 @@ func (archive *AeronArchive) StartReplay(
 	replayChannel []byte,
 ) (int64, error) {
 	return archive.sessionControlOps(archive.Poll).startReplay(
+		ctx,
 		recordingID,
 		position,
 		length,
@@ -256,16 +294,21 @@ func (archive *AeronArchive) StartReplay(
 
 // StopReplay offers a StopReplayRequest and blocks until the archive replies with a
 // matching OK ControlResponse.
-func (archive *AeronArchive) StopReplay(replaySessionID int64) error {
-	return archive.sessionControlOps(archive.Poll).stopReplay(replaySessionID)
+//
+// Returns ctx.Err() when the context is done before a response is received.
+func (archive *AeronArchive) StopReplay(ctx context.Context, replaySessionID int64) error {
+	return archive.sessionControlOps(archive.Poll).stopReplay(ctx, replaySessionID)
 }
 
 // ListRecording lists a single recording by id, returning its descriptor extent fields
 // with var-ascii bytes cloned at latch time for retention.
+//
+// Returns ctx.Err() when the context is done before a response is received.
 func (archive *AeronArchive) ListRecording(
+	ctx context.Context,
 	recordingID int64,
 ) (codecs.RecordingDescriptorFields, error) {
-	return archive.sessionControlOps(archive.pollListRecording).listRecording(recordingID)
+	return archive.sessionControlOps(archive.pollListRecording).listRecording(ctx, recordingID)
 }
 
 func (archive *AeronArchive) sessionPollTargets(

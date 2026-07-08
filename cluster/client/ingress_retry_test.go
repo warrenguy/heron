@@ -95,41 +95,6 @@ func (r *recordingIdleStrategy) Reset() {
 	r.idleCalls = 0
 }
 
-func TestIngressRetryDeadlineNs_contextDeadlineSooner(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
-
-	startNs := time.Now().UnixNano()
-	_, bound := IngressRetryDeadlineNsForTest(ctx, startNs, time.Minute)
-	require.Less(t, bound, time.Minute)
-	require.InDelta(t, float64(50*time.Millisecond), float64(bound), float64(20*time.Millisecond))
-}
-
-func TestIngressRetryDeadlineNs_cfgTimeoutSooner(t *testing.T) {
-	startNs := time.Now().UnixNano()
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-
-	const timeout = 25 * time.Millisecond
-	_, bound := IngressRetryDeadlineNsForTest(ctx, startNs, timeout)
-	require.Equal(t, timeout, bound)
-}
-
-func TestIngressRetryDeadlineNs_nonWallClockStartClampsToContext(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
-
-	// startNs from a non-wall-clock NanoClock (seeded far from the Unix epoch) must
-	// not skew the ctx-deadline clamp: bound derives from time.Now(), and startNs
-	// feeds only the returned deadlineNs. Interpreting startNs as epoch nanoseconds
-	// would place cfgDeadline in 1970 and leave bound unclamped at the full timeout.
-	const nonWallStartNs int64 = 5_000_000_000
-	deadlineNs, bound := IngressRetryDeadlineNsForTest(ctx, nonWallStartNs, time.Minute)
-	require.Less(t, bound, time.Minute)
-	require.InDelta(t, float64(50*time.Millisecond), float64(bound), float64(20*time.Millisecond))
-	require.Equal(t, nonWallStartNs+bound.Nanoseconds(), deadlineNs)
-}
-
 func TestIngressOfferUntilPositive_backPressuredThenSuccess(t *testing.T) {
 	idle := &recordingIdleStrategy{}
 	ac, seqPub := clusterWithSequentialIngress(

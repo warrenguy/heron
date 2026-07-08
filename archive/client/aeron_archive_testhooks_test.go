@@ -199,7 +199,7 @@ func TestAeronArchiveListRecording_forwardsSignalsDuringAwait(t *testing.T) {
 		recordingSignalWire(t, gensbe.RecordingSignal_EXTEND),
 	)
 
-	got, err := archive.ListRecording(lifecycleRecordingID)
+	got, err := archive.ListRecording(t.Context(), lifecycleRecordingID)
 	require.NoError(t, err)
 	require.Equal(t, lifecycleRecordingID, got.RecordingID)
 	require.Equal(t, 1, captured.calls)
@@ -232,6 +232,7 @@ func TestAeronArchiveStopRecordingAwaitSignal_routesSTOPToTracker(t *testing.T) 
 	appendUnfragmentedWireToTerm(t, h.termBuffer, signalWire)
 
 	err := archive.StopRecordingAwaitSignal(
+		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		[]byte(lifecycleRecordingChannel),
 		tracker,

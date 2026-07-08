@@ -3,6 +3,7 @@
 package archive_java_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -72,7 +73,7 @@ func TestArchiveRecordingLog(t *testing.T) {
 
 	// Recovery planning uses the crash-sim reopen handle (Open false), not Reload bytes.
 	plan, err := reopened.PlanRecovery(
-		clientpkg.NewArchiveLister(archive),
+		clientpkg.NewArchiveLister(context.Background(), archive),
 		recordinglog.NewRecoveryPlanConfig(0),
 	)
 	require.NoError(t, err)
@@ -101,6 +102,7 @@ func TestArchiveRecordingLog(t *testing.T) {
 	replayStop := stopPosition
 
 	replaySessionID, err := archive.StartReplay(
+		t.Context(),
 		recordingID,
 		replayStart,
 		replayStop-replayStart,
@@ -110,7 +112,7 @@ func TestArchiveRecordingLog(t *testing.T) {
 	require.NoError(t, err)
 	require.Positive(t, replaySessionID)
 	harness.CleanupClose(t, "stop replay", func() error {
-		return archive.StopReplay(replaySessionID)
+		return archive.StopReplay(context.Background(), replaySessionID)
 	})
 
 	var replayImage *aeron.Image

@@ -23,6 +23,7 @@ func (h *lifecycleHarness) newAeronArchive() *AeronArchive {
 		archiveID:           lifecycleArchiveID,
 		proxy:               h.proxy,
 		controlPoller:       h.poller,
+		descriptorPoller:    NewRecordingDescriptorPoller(),
 		controlSubscription: h.sub,
 		controlAssembler:    h.assembler,
 		aeronClient:         h.client,
@@ -63,6 +64,7 @@ func TestStartReplay_awaitReturnsReplaySessionId(t *testing.T) {
 	)
 
 	got, err := h.controlOps(pollFn).startReplay(
+		t.Context(),
 		lifecycleRecordingID,
 		4096,
 		8192,
@@ -86,6 +88,7 @@ func TestStartReplay_errorResponseReturnsError(t *testing.T) {
 	)
 
 	_, err := h.controlOps(pollFn).startReplay(
+		t.Context(),
 		lifecycleRecordingID,
 		4096,
 		8192,
@@ -107,7 +110,7 @@ func TestStopReplay_awaitOK(t *testing.T) {
 		targets,
 	)
 
-	err := h.controlOps(pollFn).stopReplay(lifecycleReplaySessionID)
+	err := h.controlOps(pollFn).stopReplay(t.Context(), lifecycleReplaySessionID)
 	require.NoError(t, err)
 }
 
@@ -123,7 +126,7 @@ func TestStopReplay_errorResponseReturnsError(t *testing.T) {
 		targets,
 	)
 
-	err := h.controlOps(pollFn).stopReplay(lifecycleReplaySessionID)
+	err := h.controlOps(pollFn).stopReplay(t.Context(), lifecycleReplaySessionID)
 	require.Error(t, err)
 }
 
@@ -133,6 +136,7 @@ func TestAeronArchiveStartReplay_methodReturnsReplaySessionId(t *testing.T) {
 	h.writeNextControlResponse(t, lifecycleReplaySessionID, gensbe.ControlResponseCode_OK)
 
 	got, err := archive.StartReplay(
+		t.Context(),
 		lifecycleRecordingID,
 		4096,
 		8192,
@@ -152,6 +156,7 @@ func TestStartReplay_timeout(t *testing.T) {
 	}
 
 	_, err := h.controlOps(pollFn).startReplay(
+		t.Context(),
 		lifecycleRecordingID,
 		4096,
 		8192,
@@ -159,7 +164,9 @@ func TestStartReplay_timeout(t *testing.T) {
 		[]byte(lifecycleReplayChannel),
 	)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "timeout")
+	var timeoutErr *ControlResponseTimeoutError
+	require.ErrorAs(t, err, &timeoutErr)
+	require.Equal(t, ControlResponseAwaitOperation, timeoutErr.Operation)
 }
 
 func TestStopReplay_timeout(t *testing.T) {
@@ -170,9 +177,11 @@ func TestStopReplay_timeout(t *testing.T) {
 		return h.demuxPoll(targets)
 	}
 
-	err := h.controlOps(pollFn).stopReplay(lifecycleReplaySessionID)
+	err := h.controlOps(pollFn).stopReplay(t.Context(), lifecycleReplaySessionID)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "timeout")
+	var timeoutErr *ControlResponseTimeoutError
+	require.ErrorAs(t, err, &timeoutErr)
+	require.Equal(t, ControlResponseAwaitOperation, timeoutErr.Operation)
 }
 
 func TestAeronArchiveStopReplay_methodOK(t *testing.T) {
@@ -180,7 +189,7 @@ func TestAeronArchiveStopReplay_methodOK(t *testing.T) {
 	archive := h.newAeronArchive()
 	h.writeNextControlResponse(t, 0, gensbe.ControlResponseCode_OK)
 
-	err := archive.StopReplay(lifecycleReplaySessionID)
+	err := archive.StopReplay(t.Context(), lifecycleReplaySessionID)
 	require.NoError(t, err)
 }
 
@@ -189,6 +198,6 @@ func TestAeronArchiveStopReplay_errorResponse(t *testing.T) {
 	archive := h.newAeronArchive()
 	h.writeNextControlResponse(t, 0, gensbe.ControlResponseCode_ERROR)
 
-	err := archive.StopReplay(lifecycleReplaySessionID)
+	err := archive.StopReplay(t.Context(), lifecycleReplaySessionID)
 	require.Error(t, err)
 }

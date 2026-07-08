@@ -45,7 +45,7 @@ func newLifecycleHarness(t *testing.T) *lifecycleHarness {
 		AeronContext: aeron.Context{
 			NanoClock: func() int64 { return nowNs.Load() },
 		},
-	}
+	}.Normalize()
 	pub, proxy := newTestArchiveProxy(ctx)
 	return &lifecycleHarness{
 		client:     harness.Client,
@@ -165,7 +165,7 @@ func (h *lifecycleHarness) respondListRecordingOnce(
 func TestListRecording_nilDescriptorPollerReturnsError(t *testing.T) {
 	h := newLifecycleHarness(t)
 
-	_, err := h.controlOps(func() int { return 0 }).listRecording(lifecycleRecordingID)
+	_, err := h.controlOps(func() int { return 0 }).listRecording(t.Context(), lifecycleRecordingID)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "non-nil")
 }
@@ -188,7 +188,8 @@ func TestListRecording_descriptorOnlyCompletes(t *testing.T) {
 		targets,
 	)
 
-	got, err := h.listRecordingOps(pollFn, descriptorPoller).listRecording(lifecycleRecordingID)
+	got, err := h.listRecordingOps(pollFn, descriptorPoller).
+		listRecording(t.Context(), lifecycleRecordingID)
 	require.NoError(t, err)
 	require.Equal(t, lifecycleRecordingID, got.RecordingID)
 	require.Equal(t, int64(0), got.StartPosition)
@@ -222,7 +223,8 @@ func TestListRecording_returnsExtents(t *testing.T) {
 		targets,
 	)
 
-	got, err := h.listRecordingOps(pollFn, descriptorPoller).listRecording(lifecycleRecordingID)
+	got, err := h.listRecordingOps(pollFn, descriptorPoller).
+		listRecording(t.Context(), lifecycleRecordingID)
 	require.NoError(t, err)
 	require.Equal(t, lifecycleRecordingID, got.RecordingID)
 	require.Equal(t, int64(4096), got.StartPosition)
@@ -260,7 +262,8 @@ func TestListRecording_retainedDescriptorBytesValidAfterPoll(t *testing.T) {
 		targets,
 	)
 
-	got, err := h.listRecordingOps(pollFn, descriptorPoller).listRecording(lifecycleRecordingID)
+	got, err := h.listRecordingOps(pollFn, descriptorPoller).
+		listRecording(t.Context(), lifecycleRecordingID)
 	require.NoError(t, err)
 	require.NotEmpty(t, got.StrippedChannel)
 	require.Equal(t, strippedChannel, string(got.StrippedChannel))
@@ -317,7 +320,8 @@ func TestListRecording_errorResponseReturnsError(t *testing.T) {
 		targets,
 	)
 
-	_, err := h.listRecordingOps(pollFn, descriptorPoller).listRecording(lifecycleRecordingID)
+	_, err := h.listRecordingOps(pollFn, descriptorPoller).
+		listRecording(t.Context(), lifecycleRecordingID)
 	require.Error(t, err)
 }
 
@@ -334,8 +338,12 @@ func TestListRecording_descriptorTimeoutReturnsError(t *testing.T) {
 		targets,
 	)
 
-	_, err := h.listRecordingOps(pollFn, descriptorPoller).listRecording(lifecycleRecordingID)
+	_, err := h.listRecordingOps(pollFn, descriptorPoller).
+		listRecording(t.Context(), lifecycleRecordingID)
 	require.Error(t, err)
+	var timeoutErr *ControlResponseTimeoutError
+	require.ErrorAs(t, err, &timeoutErr)
+	require.Equal(t, ListRecordingDescriptorAwaitOperation, timeoutErr.Operation)
 	require.Contains(t, err.Error(), "descriptor")
 }
 
@@ -383,7 +391,7 @@ func TestAeronArchiveListRecording_methodReturnsDescriptor(t *testing.T) {
 		}),
 	)
 
-	got, err := archive.ListRecording(lifecycleRecordingID)
+	got, err := archive.ListRecording(t.Context(), lifecycleRecordingID)
 	require.NoError(t, err)
 	require.Equal(t, lifecycleRecordingID, got.RecordingID)
 	require.Equal(t, int64(4096), got.StartPosition)
@@ -473,6 +481,7 @@ func TestStartRecording_clearsPriorDemuxLatch(t *testing.T) {
 		targets,
 	)
 	got, err := h.controlOps(pollFn).startRecording(
+		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		gensbe.SourceLocation_LOCAL,
 		[]byte(lifecycleRecordingChannel),
@@ -495,6 +504,7 @@ func TestStartRecording_sequentialRequestsReusePoller(t *testing.T) {
 			targets,
 		)
 		got, err := h.controlOps(pollFn).startRecording(
+			t.Context(),
 			archiveProxyTestRecordingStreamID,
 			gensbe.SourceLocation_LOCAL,
 			[]byte(lifecycleRecordingChannel),
@@ -517,6 +527,7 @@ func TestStartRecording_awaitReturnsRecordingId(t *testing.T) {
 	)
 
 	got, err := h.controlOps(pollFn).startRecording(
+		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		gensbe.SourceLocation_LOCAL,
 		[]byte(lifecycleRecordingChannel),
@@ -538,6 +549,7 @@ func TestStartRecording_errorResponseReturnsError(t *testing.T) {
 	)
 
 	got, err := h.controlOps(pollFn).startRecording(
+		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		gensbe.SourceLocation_LOCAL,
 		[]byte(lifecycleRecordingChannel),
@@ -559,6 +571,7 @@ func TestStopRecording_awaitOK(t *testing.T) {
 	)
 
 	err := h.controlOps(pollFn).stopRecording(
+		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		[]byte(lifecycleRecordingChannel),
 	)
@@ -588,6 +601,7 @@ func TestStopRecording_awaitSTOPSignal(t *testing.T) {
 	}
 
 	err := h.controlOps(pollFn).stopRecordingAwaitSignal(
+		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		[]byte(lifecycleRecordingChannel),
 		targets,
@@ -613,6 +627,7 @@ func TestStopRecordingAwaitSignal_awaitOKResponse(t *testing.T) {
 	)
 
 	err := h.controlOps(pollFn).stopRecordingAwaitSignal(
+		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		[]byte(lifecycleRecordingChannel),
 		targets,
@@ -636,6 +651,7 @@ func TestStopRecordingAwaitSignal_errorResponseReturnsError(t *testing.T) {
 	)
 
 	err := h.controlOps(pollFn).stopRecordingAwaitSignal(
+		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		[]byte(lifecycleRecordingChannel),
 		targets,
@@ -669,6 +685,7 @@ func TestStopRecordingAwaitSignal_reusedTrackerWaitsForNewProof(t *testing.T) {
 	)
 
 	err := h.controlOps(pollFn).stopRecordingAwaitSignal(
+		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		[]byte(lifecycleRecordingChannel),
 		targets,
@@ -684,6 +701,7 @@ func TestStopRecordingAwaitSignal_nilTrackerReturnsError(t *testing.T) {
 	targets := h.responseTargets()
 
 	err := h.controlOps(func() int { return h.demuxPoll(targets) }).stopRecordingAwaitSignal(
+		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		[]byte(lifecycleRecordingChannel),
 		targets,
@@ -703,11 +721,14 @@ func TestStopRecordingAwaitSignal_timeout(t *testing.T) {
 	}
 
 	err := h.controlOps(pollFn).stopRecordingAwaitSignal(
+		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		[]byte(lifecycleRecordingChannel),
 		targets,
 		tracker,
 	)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "timeout")
+	var timeoutErr *ControlResponseTimeoutError
+	require.ErrorAs(t, err, &timeoutErr)
+	require.Equal(t, StopRecordingAwaitOperation, timeoutErr.Operation)
 }

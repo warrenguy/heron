@@ -94,6 +94,7 @@ transport `*aeron.Client` in `ArchiveContext.Aeron` for a shared `DoWork` duty c
 package main
 
 import (
+	"context"
 	"log"
 
 	"github.com/warrenguy/heron/aeron"
@@ -108,7 +109,7 @@ func main() {
 	}
 	defer transport.Close()
 
-	archive, err := client.Connect(client.ArchiveContext{Aeron: transport})
+	archive, err := client.Connect(context.Background(), client.ArchiveContext{Aeron: transport})
 	if err != nil {
 		log.Fatal(err)
 	}

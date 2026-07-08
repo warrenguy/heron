@@ -71,15 +71,6 @@ func ingressOfferIdleStrategy(
 	return NewDefaultIdleStrategy()
 }
 
-func ingressRetryDeadlineNs(
-	ctx context.Context,
-	startNs int64,
-	ingressRetryTimeout time.Duration,
-) (deadlineNs int64, bound time.Duration) {
-	bound = aeron.EffectiveRetryBound(ctx, ingressRetryTimeout, time.Now())
-	return startNs + bound.Nanoseconds(), bound
-}
-
 func ingressOfferUntilPositive(
 	ctx context.Context,
 	session *AeronCluster,
@@ -103,7 +94,7 @@ func ingressOfferUntilPositive(
 		clock = session.nanoClock
 	}
 	startNs := clock()
-	deadlineNs, bound := ingressRetryDeadlineNs(ctx, startNs, session.ctx.IngressRetryTimeout)
+	deadlineNs, bound := aeron.RetryDeadlineNs(ctx, startNs, session.ctx.IngressRetryTimeout)
 	doTransportWork := func() {
 		aeronClient.DoWork()
 		recordIngressRetryDoWork()

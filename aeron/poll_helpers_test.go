@@ -57,6 +57,72 @@ func TestPollDeadline_contextDeadlineSooner_effectiveBound(t *testing.T) {
 	require.InDelta(t, float64(50*time.Millisecond), float64(effective), float64(20*time.Millisecond))
 }
 
+func TestRetryDeadlineNs(t *testing.T) {
+	tests := []struct {
+		name       string
+		ctxTimeout time.Duration
+		startNs    int64
+		timeout    time.Duration
+		wantBound  time.Duration
+		boundDelta time.Duration
+	}{
+		{
+			name:       "contextDeadlineSooner",
+			ctxTimeout: 50 * time.Millisecond,
+			startNs:    time.Now().UnixNano(),
+			timeout:    time.Minute,
+			wantBound:  50 * time.Millisecond,
+			boundDelta: 20 * time.Millisecond,
+		},
+		{
+			name:       "cfgTimeoutSooner",
+			ctxTimeout: time.Minute,
+			startNs:    time.Now().UnixNano(),
+			timeout:    25 * time.Millisecond,
+			wantBound:  25 * time.Millisecond,
+		},
+		{
+			name:       "nonWallClockStartClampsToContext",
+			ctxTimeout: 50 * time.Millisecond,
+
+			// startNs from a non-wall-clock NanoClock (seeded far from the Unix epoch) must
+			// not skew the ctx-deadline clamp: bound derives from time.Now(), and startNs
+			// feeds only the returned deadlineNs. Interpreting startNs as epoch nanoseconds
+			// would place cfgDeadline in 1970 and leave bound unclamped at the full timeout.
+			startNs:    5_000_000_000,
+			timeout:    time.Minute,
+			wantBound:  50 * time.Millisecond,
+			boundDelta: 20 * time.Millisecond,
+		},
+		{
+			name:      "noContextDeadlineUsesCfgTimeout",
+			startNs:   9_000_000_000,
+			timeout:   25 * time.Millisecond,
+			wantBound: 25 * time.Millisecond,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.ctxTimeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(t.Context(), tc.ctxTimeout)
+				defer cancel()
+			}
+
+			deadlineNs, bound := aeron.RetryDeadlineNs(ctx, tc.startNs, tc.timeout)
+
+			if tc.boundDelta > 0 {
+				require.InDelta(t, float64(tc.wantBound), float64(bound), float64(tc.boundDelta))
+			} else {
+				require.Equal(t, tc.wantBound, bound)
+			}
+			require.Equal(t, tc.startNs+bound.Nanoseconds(), deadlineNs)
+		})
+	}
+}
+
 func TestPreferContextError(t *testing.T) {
 	sentinel := errors.New("sentinel")
 

@@ -1,8 +1,8 @@
 package client
 
 import (
+	"context"
 	"errors"
-	"fmt"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
@@ -32,31 +32,40 @@ func (archive *AeronArchive) sessionControlOps(pollFn func() int) archiveControl
 	}
 }
 
-// startRecording offers a StartRecordingRequest and blocks until the archive replies
-// with a matching ControlResponse. RelevantID semantics: see AeronArchive.StartRecording.
-func (ops archiveControlOps) startRecording(
-	streamID int32,
-	sourceLocation gensbe.SourceLocation,
-	channel []byte,
-) (int64, error) {
+func (ops archiveControlOps) offerAndAwait(
+	ctx context.Context,
+	offer func(correlationID int64) (int64, bool),
+) (codecs.ControlResponseFields, error) {
 	correlationID := ops.aeronClient.NextCorrelationID()
-	fields, err := offerAndAwaitArchiveControlRequest(
+	return offerAndAwaitArchiveControlRequest(
+		ctx,
 		ops.aeronClient,
 		ops.ctx,
 		ops.poll,
 		ops.responsePoller,
-		func() (int64, bool) {
-			return ops.proxy.TryStartRecording(
-				ops.controlSessionID,
-				correlationID,
-				streamID,
-				sourceLocation,
-				channel,
-			)
-		},
+		func() (int64, bool) { return offer(correlationID) },
 		ops.controlSessionID,
 		correlationID,
 	)
+}
+
+// startRecording offers a StartRecordingRequest and blocks until the archive replies
+// with a matching ControlResponse. RelevantID semantics: see AeronArchive.StartRecording.
+func (ops archiveControlOps) startRecording(
+	ctx context.Context,
+	streamID int32,
+	sourceLocation gensbe.SourceLocation,
+	channel []byte,
+) (int64, error) {
+	fields, err := ops.offerAndAwait(ctx, func(correlationID int64) (int64, bool) {
+		return ops.proxy.TryStartRecording(
+			ops.controlSessionID,
+			correlationID,
+			streamID,
+			sourceLocation,
+			channel,
+		)
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -65,56 +74,43 @@ func (ops archiveControlOps) startRecording(
 
 // StopRecording offers a StopRecordingRequest and blocks until the archive replies with
 // a matching OK ControlResponse.
-func (ops archiveControlOps) stopRecording(streamID int32, channel []byte) error {
-	correlationID := ops.aeronClient.NextCorrelationID()
-	_, err := offerAndAwaitArchiveControlRequest(
-		ops.aeronClient,
-		ops.ctx,
-		ops.poll,
-		ops.responsePoller,
-		func() (int64, bool) {
-			return ops.proxy.TryStopRecording(
-				ops.controlSessionID,
-				correlationID,
-				streamID,
-				channel,
-			)
-		},
-		ops.controlSessionID,
-		correlationID,
-	)
+func (ops archiveControlOps) stopRecording(
+	ctx context.Context,
+	streamID int32,
+	channel []byte,
+) error {
+	_, err := ops.offerAndAwait(ctx, func(correlationID int64) (int64, bool) {
+		return ops.proxy.TryStopRecording(
+			ops.controlSessionID,
+			correlationID,
+			streamID,
+			channel,
+		)
+	})
 	return err
 }
 
 // startReplay offers a ReplayRequest and blocks until the archive replies with a
 // matching ControlResponse.
 func (ops archiveControlOps) startReplay(
+	ctx context.Context,
 	recordingID int64,
 	position int64,
 	length int64,
 	replayStreamID int32,
 	replayChannel []byte,
 ) (int64, error) {
-	correlationID := ops.aeronClient.NextCorrelationID()
-	fields, err := offerAndAwaitArchiveControlRequest(
-		ops.aeronClient,
-		ops.ctx,
-		ops.poll,
-		ops.responsePoller,
-		func() (int64, bool) {
-			return ops.proxy.TryReplay(
-				ops.controlSessionID,
-				correlationID,
-				recordingID,
-				position,
-				length,
-				replayStreamID,
-				replayChannel,
-			)
-		},
-		ops.controlSessionID,
-		correlationID,
-	)
+	fields, err := ops.offerAndAwait(ctx, func(correlationID int64) (int64, bool) {
+		return ops.proxy.TryReplay(
+			ops.controlSessionID,
+			correlationID,
+			recordingID,
+			position,
+			length,
+			replayStreamID,
+			replayChannel,
+		)
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -123,23 +119,14 @@ func (ops archiveControlOps) startReplay(
 
 // stopReplay offers a StopReplayRequest and blocks until the archive replies with a
 // matching OK ControlResponse.
-func (ops archiveControlOps) stopReplay(replaySessionID int64) error {
-	correlationID := ops.aeronClient.NextCorrelationID()
-	_, err := offerAndAwaitArchiveControlRequest(
-		ops.aeronClient,
-		ops.ctx,
-		ops.poll,
-		ops.responsePoller,
-		func() (int64, bool) {
-			return ops.proxy.TryStopReplay(
-				ops.controlSessionID,
-				correlationID,
-				replaySessionID,
-			)
-		},
-		ops.controlSessionID,
-		correlationID,
-	)
+func (ops archiveControlOps) stopReplay(ctx context.Context, replaySessionID int64) error {
+	_, err := ops.offerAndAwait(ctx, func(correlationID int64) (int64, bool) {
+		return ops.proxy.TryStopReplay(
+			ops.controlSessionID,
+			correlationID,
+			replaySessionID,
+		)
+	})
 	return err
 }
 
@@ -147,6 +134,7 @@ func (ops archiveControlOps) stopReplay(replaySessionID int64) error {
 // the matching RecordingDescriptor (or a non-OK ControlResponse), returning its fields
 // with var-ascii bytes cloned at latch time for retention.
 func (ops archiveControlOps) listRecording(
+	ctx context.Context,
 	recordingID int64,
 ) (codecs.RecordingDescriptorFields, error) {
 	if ops.descriptorPoller == nil {
@@ -155,6 +143,7 @@ func (ops archiveControlOps) listRecording(
 	correlationID := ops.aeronClient.NextCorrelationID()
 	ops.descriptorPoller.ResetAwait(correlationID)
 	return offerAndAwaitListRecording(
+		ctx,
 		ops.aeronClient,
 		ops.ctx,
 		ops.poll,
@@ -173,6 +162,7 @@ func (ops archiveControlOps) listRecording(
 // proves the stop with either a matching OK ControlResponse or a STOP
 // RecordingSignalEvent recorded by tracker.
 func (ops archiveControlOps) stopRecordingAwaitSignal(
+	ctx context.Context,
 	streamID int32,
 	channel []byte,
 	targets ArchiveControlPollTargets,
@@ -186,35 +176,34 @@ func (ops archiveControlOps) stopRecordingAwaitSignal(
 		targets.ResponsePoller.ResetCapture()
 	}
 	correlationID := ops.aeronClient.NextCorrelationID()
-	if _, err := offerArchiveControlRequest(ops.aeronClient, ops.ctx, ops.poll, func() (int64, bool) {
-		return ops.proxy.TryStopRecording(
-			ops.controlSessionID,
-			correlationID,
-			streamID,
-			channel,
-		)
-	}); err != nil {
+	if err := offerArchiveControlRequest(
+		ctx, ops.aeronClient, ops.ctx, ops.poll, func() (int64, bool) {
+			return ops.proxy.TryStopRecording(
+				ops.controlSessionID,
+				correlationID,
+				streamID,
+				channel,
+			)
+		},
+	); err != nil {
 		return err
 	}
 
 	// ControlOfferUntilPositive drives poll during the offer retry, so a proof may
 	// already be captured before the await loop begins.
 	return runArchiveControlAwaitLoop(
+		ctx,
 		ops.aeronClient,
 		ops.ctx,
 		ops.poll,
 		ops.ctx.ControlResponseTimeout,
+		correlationID,
+		StopRecordingAwaitOperation,
 		func() (bool, error) {
 			return stopRecordingProof(
 				targets.ResponsePoller,
 				tracker,
 				ops.controlSessionID,
-				correlationID,
-			)
-		},
-		func() error {
-			return fmt.Errorf(
-				"archive client: stop recording timeout: correlation_id=%d",
 				correlationID,
 			)
 		},

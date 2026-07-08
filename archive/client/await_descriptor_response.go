@@ -1,8 +1,8 @@
 package client
 
 import (
+	"context"
 	"errors"
-	"fmt"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
@@ -20,30 +20,30 @@ var errNilDescriptorPoller = errors.New(
 // descriptorPoller must be non-nil: it carries the awaited correlation id and captured
 // descriptor state.
 //
-// Uses ArchiveContext.ControlResponseTimeout.
+// Uses ArchiveContext.ControlResponseTimeout. When ctx carries a deadline, the effective
+// bound is the earlier of ControlResponseTimeout and ctx.Deadline().
 func AwaitArchiveListRecording(
+	ctx context.Context,
 	aeronClient *aeron.Client,
-	ctx ArchiveContext,
+	archiveCtx ArchiveContext,
 	pollFn func() int,
 	descriptorPoller *RecordingDescriptorPoller,
 ) error {
 	if descriptorPoller == nil {
 		return errNilDescriptorPoller
 	}
+	archiveCtx = archiveCtx.Normalize()
 	correlationID := descriptorPoller.awaitCorrelationID
 	return runArchiveControlAwaitLoop(
-		aeronClient,
 		ctx,
+		aeronClient,
+		archiveCtx,
 		pollFn,
-		ctx.ControlResponseTimeout,
+		archiveCtx.ControlResponseTimeout,
+		correlationID,
+		ListRecordingDescriptorAwaitOperation,
 		func() (bool, error) {
 			return descriptorPoller.IsPollComplete(), nil
-		},
-		func() error {
-			return fmt.Errorf(
-				"archive client: list recording descriptor timeout: correlation_id=%d",
-				correlationID,
-			)
 		},
 	)
 }
@@ -57,19 +57,23 @@ func AwaitArchiveListRecording(
 // cannot starve the response wait. Var-ascii fields are cloned at descriptor latch time
 // for retention past later polls.
 func offerAndAwaitListRecording(
+	ctx context.Context,
 	aeronClient *aeron.Client,
-	ctx ArchiveContext,
+	archiveCtx ArchiveContext,
 	pollFn func() int,
 	descriptorPoller *RecordingDescriptorPoller,
 	offerFn func() (int64, bool),
 ) (codecs.RecordingDescriptorFields, error) {
-	if _, err := offerArchiveControlRequest(aeronClient, ctx, pollFn, offerFn); err != nil {
+	if err := offerArchiveControlRequest(
+		ctx, aeronClient, archiveCtx, pollFn, offerFn,
+	); err != nil {
 		return codecs.RecordingDescriptorFields{}, err
 	}
 
 	if err := AwaitArchiveListRecording(
-		aeronClient,
 		ctx,
+		aeronClient,
+		archiveCtx,
 		pollFn,
 		descriptorPoller,
 	); err != nil {

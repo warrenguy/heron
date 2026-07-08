@@ -3,6 +3,7 @@
 package archive_java_test
 
 import (
+	"context"
 	"os"
 	"strconv"
 	"sync/atomic"
@@ -48,7 +49,7 @@ func connectArchive(
 		AeronDir: dir,
 		Aeron:    client,
 	}.Normalize()
-	archive, err := clientpkg.Connect(archiveCtx)
+	archive, err := clientpkg.Connect(context.Background(), archiveCtx)
 	require.NoError(t, err)
 	harness.CleanupClose(t, "close archive", archive.Close)
 	return archive
@@ -99,6 +100,7 @@ func recordArchiveSmoke(
 	harness.CleanupClose(t, "close record publication", pub.Close)
 
 	_, err = archive.StartRecording(
+		t.Context(),
 		archivejava.RecordStreamID,
 		gensbe.SourceLocation_LOCAL,
 		[]byte(archivejava.RecordChannel),
@@ -129,6 +131,7 @@ func recordArchiveSmoke(
 
 	tracker := clientpkg.NewStopSignalTracker(archive.ControlSessionID(), recordingID)
 	err = archive.StopRecordingAwaitSignal(
+		t.Context(),
 		archivejava.RecordStreamID,
 		[]byte(archivejava.RecordChannel),
 		tracker,
@@ -144,7 +147,7 @@ func recordArchiveSmoke(
 		"client transport error during recording descriptor poll",
 		func() bool {
 			_ = archive.Poll()
-			got, listErr := archive.ListRecording(recordingID)
+			got, listErr := archive.ListRecording(t.Context(), recordingID)
 			require.NoError(t, listErr)
 			if recordingDescriptorStopPending(got, tracker, wantStopPosition) {
 				return false

@@ -1,7 +1,7 @@
 package client
 
 import (
-	"fmt"
+	"context"
 	"time"
 
 	"github.com/warrenguy/heron/aeron"
@@ -34,34 +34,34 @@ func TryMatchControlResponse(
 // reports a match for controlSessionID and correlationID, or responseTimeout elapses.
 //
 // It drives DoWork on aeronClient for the duration of the await window only. The idle
-// strategy paces empty polls and is reset on every exit path; a nil ctx.IdleStrategy
+// strategy paces empty polls and is reset on every exit path; a nil archiveCtx.IdleStrategy
 // uses NewDefaultIdleStrategy.
 //
-// Uses ArchiveContext.ControlResponseTimeout.
+// Uses ArchiveContext.ControlResponseTimeout. When ctx carries a deadline, the effective
+// bound is the earlier of ControlResponseTimeout and ctx.Deadline().
 //
 // Returns the matched fields with a nil error, the mapped error for a non-OK response,
-// or a timeout error naming correlation_id when the deadline passes without a match.
+// ControlResponseTimeoutError on timeout, or ctx.Err() when the context is done.
 func AwaitArchiveControlResponse(
+	ctx context.Context,
 	aeronClient *aeron.Client,
-	ctx ArchiveContext,
+	archiveCtx ArchiveContext,
 	pollFn func() int,
 	poller *ControlResponsePoller,
 	controlSessionID int64,
 	correlationID int64,
 ) (codecs.ControlResponseFields, error) {
+	archiveCtx = archiveCtx.Normalize()
 	return awaitMatchedControlResponse(
-		aeronClient,
 		ctx,
+		aeronClient,
+		archiveCtx,
 		pollFn,
-		ctx.ControlResponseTimeout,
+		archiveCtx.ControlResponseTimeout,
+		correlationID,
+		ControlResponseAwaitOperation,
 		func() (codecs.ControlResponseFields, error, bool) {
 			return TryMatchControlResponse(poller, controlSessionID, correlationID)
-		},
-		func() error {
-			return fmt.Errorf(
-				"archive client: control response timeout: correlation_id=%d",
-				correlationID,
-			)
 		},
 	)
 }
@@ -70,12 +70,14 @@ func AwaitArchiveControlResponse(
 // response, or responseTimeout elapses, returning the matched fields with their mapped
 // error status.
 func awaitMatchedControlResponse(
+	ctx context.Context,
 	aeronClient *aeron.Client,
-	ctx ArchiveContext,
+	archiveCtx ArchiveContext,
 	pollFn func() int,
 	responseTimeout time.Duration,
+	correlationID int64,
+	operation string,
 	tryMatch func() (codecs.ControlResponseFields, error, bool),
-	timeoutFn func() error,
 ) (codecs.ControlResponseFields, error) {
 	var matched codecs.ControlResponseFields
 	var matchErr error
@@ -83,10 +85,13 @@ func awaitMatchedControlResponse(
 	// ControlResponsePoller.Poll resets the capture once pollComplete is set, which would
 	// otherwise discard it. runArchiveControlAwaitLoop matches once before polling.
 	err := runArchiveControlAwaitLoop(
-		aeronClient,
 		ctx,
+		aeronClient,
+		archiveCtx,
 		pollFn,
 		responseTimeout,
+		correlationID,
+		operation,
 		func() (bool, error) {
 			fields, err, ok := tryMatch()
 			if !ok {
@@ -96,7 +101,6 @@ func awaitMatchedControlResponse(
 			matchErr = err
 			return true, nil
 		},
-		timeoutFn,
 	)
 	if err != nil {
 		return codecs.ControlResponseFields{}, err
@@ -104,26 +108,34 @@ func awaitMatchedControlResponse(
 	return matched, matchErr
 }
 
+// runArchiveControlAwaitLoop requires a normalized archiveCtx: it reads IdleStrategy
+// without a nil fallback.
 func runArchiveControlAwaitLoop(
+	ctx context.Context,
 	aeronClient *aeron.Client,
-	ctx ArchiveContext,
+	archiveCtx ArchiveContext,
 	pollFn func() int,
 	responseTimeout time.Duration,
+	correlationID int64,
+	operation string,
 	matchFn func() (done bool, err error),
-	timeoutFn func() error,
 ) error {
-	clock := resolveNanoClock(ctx.AeronContext.NanoClock)
-	idle := ctx.IdleStrategy
-	if idle == nil {
-		idle = NewDefaultIdleStrategy()
+	if aeronClient == nil {
+		return errNilControlAeronClient
 	}
+	clock := resolveNanoClock(archiveCtx.AeronContext.NanoClock)
+	idle := archiveCtx.IdleStrategy
 	defer idle.Reset()
 
-	deadlineNs := clock() + responseTimeout.Nanoseconds()
+	startNs := clock()
+	deadlineNs, bound := aeron.RetryDeadlineNs(ctx, startNs, responseTimeout)
 	if done, err := matchFn(); done {
 		return err
 	}
 	for clock() < deadlineNs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		aeronClient.DoWork()
 		work := pollFn()
 		if done, err := matchFn(); done {
@@ -131,7 +143,11 @@ func runArchiveControlAwaitLoop(
 		}
 		idle.Idle(work)
 	}
-	return timeoutFn()
+	return aeron.PreferContextError(ctx, &ControlResponseTimeoutError{
+		Operation:     operation,
+		CorrelationID: correlationID,
+		Timeout:       bound,
+	})
 }
 
 // offerAndAwaitArchiveControlRequest offers a control request until the publication
@@ -141,8 +157,9 @@ func runArchiveControlAwaitLoop(
 // await starts a fresh ControlResponseTimeout window so a slow offer cannot starve the
 // response wait.
 func offerAndAwaitArchiveControlRequest(
+	ctx context.Context,
 	aeronClient *aeron.Client,
-	ctx ArchiveContext,
+	archiveCtx ArchiveContext,
 	pollFn func() int,
 	poller *ControlResponsePoller,
 	offerFn func() (int64, bool),
@@ -152,13 +169,16 @@ func offerAndAwaitArchiveControlRequest(
 	if poller != nil {
 		poller.ResetCapture()
 	}
-	if _, err := offerArchiveControlRequest(aeronClient, ctx, pollFn, offerFn); err != nil {
+	if err := offerArchiveControlRequest(
+		ctx, aeronClient, archiveCtx, pollFn, offerFn,
+	); err != nil {
 		return codecs.ControlResponseFields{}, err
 	}
 
 	return AwaitArchiveControlResponse(
-		aeronClient,
 		ctx,
+		aeronClient,
+		archiveCtx,
 		pollFn,
 		poller,
 		controlSessionID,
@@ -167,14 +187,15 @@ func offerAndAwaitArchiveControlRequest(
 }
 
 func offerArchiveControlRequest(
+	ctx context.Context,
 	aeronClient *aeron.Client,
-	ctx ArchiveContext,
+	archiveCtx ArchiveContext,
 	pollFn func() int,
 	offerFn func() (int64, bool),
-) (int64, error) {
-	pos := ControlOfferUntilPositive(aeronClient, ctx, ControlOfferConfig{
-		IdleStrategy: ctx.IdleStrategy,
-		NanoClock:    ctx.AeronContext.NanoClock,
+) error {
+	_, err := ControlOfferUntilPositive(ctx, aeronClient, archiveCtx, ControlOfferConfig{
+		IdleStrategy: archiveCtx.IdleStrategy,
+		NanoClock:    archiveCtx.AeronContext.NanoClock,
 		PollFn:       pollFn,
 	}, func() int64 {
 		// Pass the raw position through: a retriable negative code (BackPressured,
@@ -183,8 +204,5 @@ func offerArchiveControlRequest(
 		position, _ := offerFn()
 		return position
 	})
-	if pos <= 0 {
-		return 0, fmt.Errorf("archive client: control offer failed: status=%d", pos)
-	}
-	return pos, nil
+	return err
 }

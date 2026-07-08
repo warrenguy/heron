@@ -1,16 +1,17 @@
 package client
 
 import (
-	"time"
+	"context"
+	"errors"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/agrona/idlestrategy"
 )
 
-// ControlRetriableCode is an alias for aeron.IsIngressRetriable.
-func ControlRetriableCode(position int64) bool {
-	return aeron.IsIngressRetriable(position)
-}
+var (
+	errNilControlAeronClient = errors.New("archive client: nil aeron client")
+	errNilControlOfferFn     = errors.New("archive client: nil offer function")
+)
 
 // ControlOfferConfig holds retry pacing for ControlOfferUntilPositive.
 type ControlOfferConfig struct {
@@ -18,7 +19,10 @@ type ControlOfferConfig struct {
 	IdleStrategy idlestrategy.IdleStrategy
 
 	// NanoClock supplies nanosecond timestamps for deadline checks.
-	// Nil uses time.Now().UnixNano().
+	// Nil uses time.Now().UnixNano(). The clock must advance for
+	// ControlOfferRetryTimeout to bound retries; a frozen clock causes unbounded
+	// retry. The head ctx.Err() check bounds frozen-clock spins only for
+	// cancelable contexts.
 	NanoClock func() int64
 
 	// PollFn optionally polls the control response subscription during retriable
@@ -26,7 +30,7 @@ type ControlOfferConfig struct {
 	PollFn func() int
 }
 
-// ControlOfferUntilPositive retries offerFn on ControlRetriableCode until success,
+// ControlOfferUntilPositive retries offerFn on aeron.IsIngressRetriable until success,
 // timeout, or a terminal publication code.
 //
 // Contract:
@@ -41,34 +45,41 @@ type ControlOfferConfig struct {
 //
 //   - Calls idle.Reset() on all exit paths (success, terminal, timeout).
 //
-//   - Returns stream position (>0) on success. Returns terminal codes immediately.
-//     On timeout after retriable codes, returns the last retriable status.
+//   - Returns stream position (>0) and nil error on success. On failure returns 0 and a
+//     non-nil error: ControlTerminalError, ControlOfferTimeoutError, ctx.Err(), or a
+//     nil-argument error.
 //
-// Uses ArchiveContext.ControlOfferRetryTimeout.
+// Uses ArchiveContext.ControlOfferRetryTimeout. When ctx carries a deadline, the
+// effective bound is the earlier of ControlOfferRetryTimeout and ctx.Deadline().
 //
 // Invoker-only: this helper drives DoWork on behalf of the caller for the duration
 // of the retry loop only. Archive control request and response share one driver
 // client; polling the response subscription during offer retry unblocks publication
 // backpressure when the archive replies on the response stream.
 func ControlOfferUntilPositive(
+	ctx context.Context,
 	aeronClient *aeron.Client,
-	ctx ArchiveContext,
+	archiveCtx ArchiveContext,
 	cfg ControlOfferConfig,
 	offerFn func() int64,
-) int64 {
-	if aeronClient == nil || offerFn == nil {
-		return aeron.NotConnected
+) (int64, error) {
+	switch {
+	case aeronClient == nil:
+		return 0, errNilControlAeronClient
+	case offerFn == nil:
+		return 0, errNilControlOfferFn
 	}
-	timeout := ctx.ControlOfferRetryTimeout
+	timeout := archiveCtx.ControlOfferRetryTimeout
+	if timeout == 0 {
+		timeout = DefaultControlOfferRetryTimeout
+	}
 	idle := cfg.IdleStrategy
 	if idle == nil {
 		idle = NewDefaultIdleStrategy()
 	}
-	clock := cfg.NanoClock
-	if clock == nil {
-		clock = func() int64 { return time.Now().UnixNano() }
-	}
-	deadlineNs := clock() + timeout.Nanoseconds()
+	clock := resolveNanoClock(cfg.NanoClock)
+	startNs := clock()
+	deadlineNs, bound := aeron.RetryDeadlineNs(ctx, startNs, timeout)
 	defer idle.Reset()
 	doTransportWork := func() {
 		aeronClient.DoWork()
@@ -76,10 +87,16 @@ func ControlOfferUntilPositive(
 	}
 	var pos int64
 	for {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		doTransportWork()
 		pos = offerFn()
-		if pos > 0 || !ControlRetriableCode(pos) {
-			return pos
+		if pos > 0 {
+			return pos, nil
+		}
+		if !aeron.IsIngressRetriable(pos) {
+			return 0, aeron.PreferContextError(ctx, &ControlTerminalError{Status: pos})
 		}
 		if cfg.PollFn != nil {
 			cfg.PollFn()
@@ -89,7 +106,7 @@ func ControlOfferUntilPositive(
 			idle.Idle(0)
 		}
 		if clock() >= deadlineNs {
-			return pos
+			return 0, aeron.PreferContextError(ctx, &ControlOfferTimeoutError{Status: pos, Timeout: bound})
 		}
 	}
 }
