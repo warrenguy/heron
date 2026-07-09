@@ -12,7 +12,7 @@ import (
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
@@ -120,7 +120,7 @@ func TestAsyncConnect_pollResponse_ignoresMismatchedControlResponseCorrelation(t
 			ControlSessionID: asyncConnectFixtureControlSessionID,
 			CorrelationID:    correlation + 999,
 			RelevantID:       asyncConnectFixtureArchiveID,
-			Code:             gensbe.ControlResponseCode_OK,
+			Code:             archivewire.ControlResponseCode_OK,
 			Version:          asyncConnectFixtureServerVersion,
 		}),
 	)
@@ -171,7 +171,7 @@ func TestAsyncConnect_pollResponse_ignoresMismatchedChallengeCorrelation(t *test
 		codecs.ArchiveDecodeMaxVarLen,
 	)
 	require.True(t, ok)
-	require.Equal(t, gensbe.ChallengeResponseSbeTemplateID, decoded.TemplateID)
+	require.Equal(t, archivewire.ChallengeResponseSbeTemplateID, decoded.TemplateID)
 	challengeFields, ok := decoded.Fields.(codecs.ChallengeResponseFields)
 	require.True(t, ok)
 	require.Equal(t, challengeCorrelation, challengeFields.CorrelationID)
@@ -193,7 +193,7 @@ func TestAsyncConnect_pollResponse_controlResponseError(t *testing.T) {
 					ControlSessionID: asyncConnectFixtureControlSessionID,
 					CorrelationID:    correlation,
 					RelevantID:       ArchiveErrorAuthenticationRejected,
-					Code:             gensbe.ControlResponseCode_ERROR,
+					Code:             archivewire.ControlResponseCode_ERROR,
 					ErrorMessage:     []byte("bad credentials"),
 				}),
 			)

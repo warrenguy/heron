@@ -11,7 +11,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
@@ -237,7 +237,7 @@ func connectControlResponseOKFields(correlationID int64) codecs.ControlResponseF
 		ControlSessionID: asyncConnectFixtureControlSessionID,
 		CorrelationID:    correlationID,
 		RelevantID:       asyncConnectFixtureArchiveID,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          asyncConnectFixtureServerVersion,
 	}
 }
@@ -435,7 +435,7 @@ func writeRecordingSignalEventForConnect(
 			RecordingID:      99,
 			SubscriptionID:   88,
 			Position:         77,
-			Signal:           gensbe.RecordingSignal_START,
+			Signal:           archivewire.RecordingSignal_START,
 		}),
 	)
 }

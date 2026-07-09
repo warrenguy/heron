@@ -9,7 +9,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 func TestNewConnectEgressPoller_normalizesFragmentLimit(t *testing.T) {
@@ -71,7 +71,7 @@ func TestConnectEgressPoller_Poll_sessionEventOK(t *testing.T) {
 	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsPollComplete())
 	require.Equal(t, EventCodeOK, poller.EventCode())
-	require.Equal(t, int32(gensbe.SessionEventSbeTemplateID), poller.TemplateID())
+	require.Equal(t, int32(clusterwire.SessionEventSbeTemplateID), poller.TemplateID())
 	require.NotNil(t, poller.EgressImage())
 }
 
@@ -85,7 +85,7 @@ func TestConnectEgressPoller_Poll_newLeader(t *testing.T) {
 
 	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsPollComplete())
-	require.Equal(t, int32(gensbe.NewLeaderEventSbeTemplateID), poller.TemplateID())
+	require.Equal(t, int32(clusterwire.NewLeaderEventSbeTemplateID), poller.TemplateID())
 	require.Equal(t, []byte("0=localhost:20110"), poller.Detail())
 	require.NotNil(t, poller.EgressImage())
 }
@@ -105,7 +105,7 @@ func TestConnectEgressPoller_Poll_sessionMessageHeader(t *testing.T) {
 
 	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsPollComplete())
-	require.Equal(t, int32(gensbe.SessionMessageHeaderSbeTemplateID), poller.TemplateID())
+	require.Equal(t, int32(clusterwire.SessionMessageHeaderSbeTemplateID), poller.TemplateID())
 	require.Zero(t, poller.ClusterSessionID())
 	require.Zero(t, poller.LeadershipTermID())
 	require.Nil(t, poller.EgressImage())
@@ -205,5 +205,5 @@ func TestConnectEgressPoller_Poll_fragmentLimitTwoCapturesFirstTerminalOnly(t *t
 	require.True(t, poller.IsPollComplete())
 	require.False(t, poller.IsChallenged())
 	require.Equal(t, int64(77), poller.CorrelationID())
-	require.Equal(t, int32(gensbe.SessionEventSbeTemplateID), poller.TemplateID())
+	require.Equal(t, int32(clusterwire.SessionEventSbeTemplateID), poller.TemplateID())
 }

@@ -11,7 +11,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	agatomic "github.com/warrenguy/heron/atomicbuffer"
 )
 
@@ -142,7 +142,7 @@ func (h *lifecycleHarness) respondListRecordingOnce(
 					responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
 						ControlSessionID: controlResponseTestControlSessionID,
 						CorrelationID:    correlationID,
-						Code:             gensbe.ControlResponseCode_OK,
+						Code:             archivewire.ControlResponseCode_OK,
 						Version:          520,
 					})
 					writeUnfragmentedWireToTerm(t, h.termBuffer, responseWire)
@@ -286,7 +286,7 @@ func TestListRecording_retainedDescriptorBytesValidAfterPoll(t *testing.T) {
 // descriptor-mode targets.
 func (h *lifecycleHarness) respondListRecordingControlResponseOnce(
 	t *testing.T,
-	code gensbe.ControlResponseCode,
+	code archivewire.ControlResponseCode,
 	written *bool,
 	targets ArchiveControlPollTargets,
 ) func() int {
@@ -315,7 +315,7 @@ func TestListRecording_errorResponseReturnsError(t *testing.T) {
 	written := false
 	pollFn := h.respondListRecordingControlResponseOnce(
 		t,
-		gensbe.ControlResponseCode_ERROR,
+		archivewire.ControlResponseCode_ERROR,
 		&written,
 		targets,
 	)
@@ -333,7 +333,7 @@ func TestListRecording_descriptorTimeoutReturnsError(t *testing.T) {
 	// OK latched without descriptor; unified await times out.
 	pollFn := h.respondListRecordingControlResponseOnce(
 		t,
-		gensbe.ControlResponseCode_OK,
+		archivewire.ControlResponseCode_OK,
 		&written,
 		targets,
 	)
@@ -372,7 +372,7 @@ func TestAeronArchiveListRecording_methodReturnsDescriptor(t *testing.T) {
 	responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    correlationID,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	})
 	writeUnfragmentedWireToTerm(t, h.termBuffer, responseWire)
@@ -404,7 +404,7 @@ func TestAeronArchiveListRecording_methodReturnsDescriptor(t *testing.T) {
 func (h *lifecycleHarness) respondControlResponseAppendedOnce(
 	t *testing.T,
 	relevantID int64,
-	code gensbe.ControlResponseCode,
+	code archivewire.ControlResponseCode,
 	written *bool,
 	targets ArchiveControlPollTargets,
 ) func() int {
@@ -432,7 +432,7 @@ func (h *lifecycleHarness) respondControlResponseAppendedOnce(
 func (h *lifecycleHarness) respondControlResponseOnce(
 	t *testing.T,
 	relevantID int64,
-	code gensbe.ControlResponseCode,
+	code archivewire.ControlResponseCode,
 	written *bool,
 	targets ArchiveControlPollTargets,
 ) func() int {
@@ -462,13 +462,13 @@ func TestStartRecording_clearsPriorDemuxLatch(t *testing.T) {
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    controlResponseTestCorrelationID,
 		RelevantID:       1,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	})
 	handleControlResponseFromFragment(
 		h.poller,
 		priorWire,
-		gensbe.ControlResponseSbeTemplateID,
+		archivewire.ControlResponseSbeTemplateID,
 	)
 	require.True(t, h.poller.IsPollComplete())
 
@@ -476,14 +476,14 @@ func TestStartRecording_clearsPriorDemuxLatch(t *testing.T) {
 	pollFn := h.respondControlResponseOnce(
 		t,
 		lifecycleRecordingID,
-		gensbe.ControlResponseCode_OK,
+		archivewire.ControlResponseCode_OK,
 		&written,
 		targets,
 	)
 	got, err := h.controlOps(pollFn).startRecording(
 		t.Context(),
 		archiveProxyTestRecordingStreamID,
-		gensbe.SourceLocation_LOCAL,
+		archivewire.SourceLocation_LOCAL,
 		[]byte(lifecycleRecordingChannel),
 	)
 	require.NoError(t, err)
@@ -499,14 +499,14 @@ func TestStartRecording_sequentialRequestsReusePoller(t *testing.T) {
 		pollFn := h.respondControlResponseAppendedOnce(
 			t,
 			wantID,
-			gensbe.ControlResponseCode_OK,
+			archivewire.ControlResponseCode_OK,
 			&written,
 			targets,
 		)
 		got, err := h.controlOps(pollFn).startRecording(
 			t.Context(),
 			archiveProxyTestRecordingStreamID,
-			gensbe.SourceLocation_LOCAL,
+			archivewire.SourceLocation_LOCAL,
 			[]byte(lifecycleRecordingChannel),
 		)
 		require.NoError(t, err)
@@ -521,7 +521,7 @@ func TestStartRecording_awaitReturnsRecordingId(t *testing.T) {
 	pollFn := h.respondControlResponseOnce(
 		t,
 		lifecycleRecordingID,
-		gensbe.ControlResponseCode_OK,
+		archivewire.ControlResponseCode_OK,
 		&written,
 		targets,
 	)
@@ -529,7 +529,7 @@ func TestStartRecording_awaitReturnsRecordingId(t *testing.T) {
 	got, err := h.controlOps(pollFn).startRecording(
 		t.Context(),
 		archiveProxyTestRecordingStreamID,
-		gensbe.SourceLocation_LOCAL,
+		archivewire.SourceLocation_LOCAL,
 		[]byte(lifecycleRecordingChannel),
 	)
 	require.NoError(t, err)
@@ -543,7 +543,7 @@ func TestStartRecording_errorResponseReturnsError(t *testing.T) {
 	pollFn := h.respondControlResponseOnce(
 		t,
 		0,
-		gensbe.ControlResponseCode_ERROR,
+		archivewire.ControlResponseCode_ERROR,
 		&written,
 		targets,
 	)
@@ -551,7 +551,7 @@ func TestStartRecording_errorResponseReturnsError(t *testing.T) {
 	got, err := h.controlOps(pollFn).startRecording(
 		t.Context(),
 		archiveProxyTestRecordingStreamID,
-		gensbe.SourceLocation_LOCAL,
+		archivewire.SourceLocation_LOCAL,
 		[]byte(lifecycleRecordingChannel),
 	)
 	require.Error(t, err)
@@ -565,7 +565,7 @@ func TestStopRecording_awaitOK(t *testing.T) {
 	pollFn := h.respondControlResponseOnce(
 		t,
 		0,
-		gensbe.ControlResponseCode_OK,
+		archivewire.ControlResponseCode_OK,
 		&written,
 		targets,
 	)
@@ -591,7 +591,7 @@ func TestStopRecording_awaitSTOPSignal(t *testing.T) {
 				RecordingID:      lifecycleRecordingID,
 				SubscriptionID:   2002,
 				Position:         3003,
-				Signal:           gensbe.RecordingSignal_STOP,
+				Signal:           archivewire.RecordingSignal_STOP,
 			})
 			writeUnfragmentedWireToTerm(t, h.termBuffer, signalWire)
 			written = true
@@ -621,7 +621,7 @@ func TestStopRecordingAwaitSignal_awaitOKResponse(t *testing.T) {
 	pollFn := h.respondControlResponseOnce(
 		t,
 		0,
-		gensbe.ControlResponseCode_OK,
+		archivewire.ControlResponseCode_OK,
 		&written,
 		targets,
 	)
@@ -645,7 +645,7 @@ func TestStopRecordingAwaitSignal_errorResponseReturnsError(t *testing.T) {
 	pollFn := h.respondControlResponseOnce(
 		t,
 		0,
-		gensbe.ControlResponseCode_ERROR,
+		archivewire.ControlResponseCode_ERROR,
 		&written,
 		targets,
 	)
@@ -670,7 +670,7 @@ func TestStopRecordingAwaitSignal_reusedTrackerWaitsForNewProof(t *testing.T) {
 		RecordingID:      lifecycleRecordingID,
 		SubscriptionID:   2002,
 		Position:         3003,
-		Signal:           gensbe.RecordingSignal_STOP,
+		Signal:           archivewire.RecordingSignal_STOP,
 	})
 	require.True(t, tracker.Stopped())
 
@@ -679,7 +679,7 @@ func TestStopRecordingAwaitSignal_reusedTrackerWaitsForNewProof(t *testing.T) {
 	pollFn := h.respondControlResponseOnce(
 		t,
 		0,
-		gensbe.ControlResponseCode_OK,
+		archivewire.ControlResponseCode_OK,
 		&written,
 		targets,
 	)

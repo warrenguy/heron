@@ -2,7 +2,7 @@ package client
 
 import (
 	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
@@ -125,7 +125,7 @@ func dispatchEgressFragmentCore(
 	}
 
 	switch layout.TemplateID {
-	case gensbe.SessionMessageHeaderSbeTemplateID:
+	case clusterwire.SessionMessageHeaderSbeTemplateID:
 		fields, ok := codecs.SessionMessageHeaderFieldsFromLayout(fragment, layout)
 		if !ok || fields.ClusterSessionID != clusterSessionID {
 			return
@@ -140,11 +140,11 @@ func dispatchEgressFragmentCore(
 			header,
 		)
 
-	case gensbe.ChallengeSbeTemplateID:
+	case clusterwire.ChallengeSbeTemplateID:
 		// Connect egress poller owns Challenge.
 		return
 
-	case gensbe.SessionEventSbeTemplateID:
+	case clusterwire.SessionEventSbeTemplateID:
 		decoded, ok := codecs.TryDecodeFromClusterLayout(fragment, layout, codecs.ClusterDecodeMaxVarLen)
 		if !ok {
 			return
@@ -165,7 +165,7 @@ func dispatchEgressFragmentCore(
 			ev.Detail,
 		)
 
-	case gensbe.NewLeaderEventSbeTemplateID:
+	case clusterwire.NewLeaderEventSbeTemplateID:
 		decoded, ok := codecs.TryDecodeFromClusterLayout(fragment, layout, codecs.ClusterDecodeMaxVarLen)
 		if !ok {
 			return
@@ -184,7 +184,7 @@ func dispatchEgressFragmentCore(
 			leader.IngressEndpoints,
 		)
 
-	case gensbe.AdminResponseSbeTemplateID:
+	case clusterwire.AdminResponseSbeTemplateID:
 		decoded, ok := codecs.TryDecodeFromClusterLayout(fragment, layout, codecs.ClusterDecodeMaxVarLen)
 		if !ok {
 			return

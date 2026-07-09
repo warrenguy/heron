@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe/catalogschema"
 )
 
@@ -55,7 +55,7 @@ func validChallengeFixture() catalogschema.FixtureEntry {
 	return catalogschema.FixtureEntry{
 		Name:          "ok",
 		Template:      "challenge",
-		ActingVersion: gensbe.SessionMessageHeaderSbeSchemaVersion,
+		ActingVersion: clusterwire.SessionMessageHeaderSbeSchemaVersion,
 		Hex:           "00",
 		Fields:        validChallengeFields(),
 	}
@@ -104,7 +104,7 @@ func newLeaderEventIngressFixture(
 	return catalogschema.FixtureEntry{
 		Name:          name,
 		Template:      "newLeaderEvent",
-		ActingVersion: gensbe.SessionMessageHeaderSbeSchemaVersion,
+		ActingVersion: clusterwire.SessionMessageHeaderSbeSchemaVersion,
 		Hex:           "00",
 		LargeVar:      largeVar,
 		Fields: newLeaderEventIngressFields(
@@ -226,7 +226,7 @@ func TestLookupEnums(t *testing.T) {
 
 	eventCode, err := catalogschema.LookupEventCode("OK")
 	require.NoError(t, err)
-	require.Equal(t, gensbe.EventCode_OK, eventCode)
+	require.Equal(t, clusterwire.EventCode_OK, eventCode)
 
 	_, err = catalogschema.LookupEventCode("NOPE")
 	require.Error(t, err)
@@ -234,11 +234,11 @@ func TestLookupEnums(t *testing.T) {
 
 	requestType, err := catalogschema.LookupAdminRequestType("SNAPSHOT")
 	require.NoError(t, err)
-	require.Equal(t, gensbe.AdminRequestType_SNAPSHOT, requestType)
+	require.Equal(t, clusterwire.AdminRequestType_SNAPSHOT, requestType)
 
 	responseCode, err := catalogschema.LookupAdminResponseCode("ERROR")
 	require.NoError(t, err)
-	require.Equal(t, gensbe.AdminResponseCode_ERROR, responseCode)
+	require.Equal(t, clusterwire.AdminResponseCode_ERROR, responseCode)
 }
 
 func TestValidate_errors(t *testing.T) {

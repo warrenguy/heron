@@ -7,7 +7,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 const (
@@ -26,9 +26,9 @@ const sessionConnectClientInfoMaxLen = sessionConnectClientInfoPrefixLen +
 
 func sessionConnectBlockLength(actingVersion uint16) uint16 {
 	return codecs.ClusterMinRootBlockLength(
-		gensbe.SessionConnectRequestSbeTemplateID,
+		clusterwire.SessionConnectRequestSbeTemplateID,
 		actingVersion,
-		gensbe.SessionConnectRequestSbeBlockLength,
+		clusterwire.SessionConnectRequestSbeBlockLength,
 	)
 }
 
@@ -127,7 +127,7 @@ const largeEncodedCredentialsLen = 2000
 
 func TestSessionConnectRequestWireLen_matchesClusterWireMessageLen(t *testing.T) {
 	twoVarVersion := codecs.SessionConnectClientInfoMinVersion - 1
-	threeVarVersion := uint16(gensbe.SessionConnectRequestSbeSchemaVersion)
+	threeVarVersion := uint16(clusterwire.SessionConnectRequestSbeSchemaVersion)
 	defaultClientInfoLen := len(sessionConnectClientInfo(""))
 
 	cases := []struct {
@@ -174,7 +174,7 @@ func TestSessionConnectRequestWireLen_matchesClusterWireMessageLen(t *testing.T)
 }
 
 func TestSessionConnectRequestWireLen_rejectsTotalWireOverMaxMessageLength(t *testing.T) {
-	actingVersion := uint16(gensbe.SessionConnectRequestSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionConnectRequestSbeSchemaVersion)
 	blockLength := sessionConnectBlockLength(actingVersion)
 
 	budget := logbuffer.MaxMessageLength - codecs.MessageHeaderEncodedLen() - int(blockLength)

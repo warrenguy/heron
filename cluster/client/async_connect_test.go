@@ -11,7 +11,7 @@ import (
 
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
@@ -122,7 +122,7 @@ func encodeOKSessionEventWireForConnect(
 		t,
 		egressTestClusterSessionID,
 		fields,
-		gensbe.SessionEventSbeSchemaVersion,
+		clusterwire.SessionEventSbeSchemaVersion,
 	)
 }
 
@@ -199,7 +199,7 @@ func writeSessionEventWithHeartbeatForConnect(
 			t,
 			egressTestClusterSessionID,
 			fields,
-			gensbe.SessionEventSbeSchemaVersion,
+			clusterwire.SessionEventSbeSchemaVersion,
 		),
 	)
 }
@@ -346,7 +346,7 @@ func requireConnectRequestWireLength(
 	t.Helper()
 
 	wantWireLen, ok := codecs.SessionConnectRequestWireLen(
-		gensbe.SessionConnectRequestSbeSchemaVersion,
+		clusterwire.SessionConnectRequestSbeSchemaVersion,
 		responseChannelLen,
 		encodedCredentialsLen,
 		clientInfoLen,
@@ -363,7 +363,7 @@ func requireChallengeResponseWireLength(
 	t.Helper()
 
 	wantWireLen, ok := codecs.ClusterWireMessageLen(
-		gensbe.ChallengeResponseSbeBlockLength,
+		clusterwire.ChallengeResponseSbeBlockLength,
 		encodedCredentialsLen,
 	)
 	require.True(t, ok)
@@ -1265,25 +1265,25 @@ func TestAsyncConnect_pollResponse_sessionEventErrors(t *testing.T) {
 
 	cases := []struct {
 		name       string
-		code       gensbe.EventCode
+		code       clusterwire.EventCode
 		detail     []byte
 		wantPrefix string
 	}{
 		{
 			name:       "authentication_rejected",
-			code:       gensbe.EventCode_AUTHENTICATION_REJECTED,
+			code:       clusterwire.EventCode_AUTHENTICATION_REJECTED,
 			detail:     []byte("bad credentials"),
 			wantPrefix: "cluster client: authentication rejected",
 		},
 		{
 			name:       "error",
-			code:       gensbe.EventCode_ERROR,
+			code:       clusterwire.EventCode_ERROR,
 			detail:     []byte("connect failed"),
 			wantPrefix: "cluster client: connect error",
 		},
 		{
 			name:       "unknown_code",
-			code:       gensbe.EventCode(99),
+			code:       clusterwire.EventCode(99),
 			detail:     []byte("unknown"),
 			wantPrefix: "cluster client: unexpected session event code 99",
 		},
@@ -1313,7 +1313,7 @@ func TestAsyncConnect_pollResponse_sessionEventErrors(t *testing.T) {
 								t,
 								egressTestClusterSessionID,
 								fields,
-								gensbe.SessionEventSbeSchemaVersion,
+								clusterwire.SessionEventSbeSchemaVersion,
 							),
 						)
 					},
@@ -1492,7 +1492,7 @@ func TestAsyncConnect_prepareConnectRequest_credentialsNearPublicationMax(t *tes
 	require.NoError(t, ac.PrepareConnectRequestForTest())
 
 	wantWireLen, ok := codecs.SessionConnectRequestWireLen(
-		gensbe.SessionConnectRequestSbeSchemaVersion,
+		clusterwire.SessionConnectRequestSbeSchemaVersion,
 		sessionConnectResponseChannelMaxLen,
 		encodedCredentialsLen,
 		connectRequestClientInfoLen,
@@ -1529,7 +1529,7 @@ func TestAsyncConnect_pollSendMessage_oversizeWireFailsFast(t *testing.T) {
 	require.Equal(t, 8192, maxMessageLength)
 
 	wantWireLen, ok := codecs.SessionConnectRequestWireLen(
-		gensbe.SessionConnectRequestSbeSchemaVersion,
+		clusterwire.SessionConnectRequestSbeSchemaVersion,
 		connectRequestIPCChannelLen,
 		pollSendMessageOversizeWireCredentialsLen,
 		connectRequestClientInfoLen,

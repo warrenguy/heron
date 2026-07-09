@@ -9,13 +9,13 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 func descriptorRapidResponseWire(
 	t *testing.T,
 	correlationID int64,
-	code gensbe.ControlResponseCode,
+	code archivewire.ControlResponseCode,
 ) []byte {
 	t.Helper()
 	return encodeControlResponseWire(t, codecs.ControlResponseFields{
@@ -84,7 +84,7 @@ func TestRecordingDescriptorPoller_completionModel_rapid(t *testing.T) {
 				wire := descriptorRapidResponseWire(
 					t,
 					correlationID,
-					gensbe.ControlResponseCode_OK,
+					archivewire.ControlResponseCode_OK,
 				)
 				handleDescriptorControlResponseFragment(poller, wire)
 				model.applyResponse(correlationID, true)
@@ -92,7 +92,7 @@ func TestRecordingDescriptorPoller_completionModel_rapid(t *testing.T) {
 				wire := descriptorRapidResponseWire(
 					t,
 					correlationID,
-					gensbe.ControlResponseCode_ERROR,
+					archivewire.ControlResponseCode_ERROR,
 				)
 				handleDescriptorControlResponseFragment(poller, wire)
 				model.applyResponse(correlationID, false)

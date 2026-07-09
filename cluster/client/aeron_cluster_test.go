@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
@@ -51,7 +51,7 @@ func requireDecodedSessionMessageHeader(
 	fields := requireDecodedTemplate[codecs.SessionMessageHeaderFields](
 		t,
 		wire,
-		gensbe.SessionMessageHeaderSbeTemplateID,
+		clusterwire.SessionMessageHeaderSbeTemplateID,
 	)
 	require.Equal(t, wantClusterSessionID, fields.ClusterSessionID)
 	require.Equal(t, wantLeadershipTermID, fields.LeadershipTermID)
@@ -454,7 +454,7 @@ func TestAeronCluster_SendKeepAlive_encodesAndOffers(t *testing.T) {
 	fields := requireDecodedTemplate[codecs.SessionKeepAliveFields](
 		t,
 		wire,
-		gensbe.SessionKeepAliveSbeTemplateID,
+		clusterwire.SessionKeepAliveSbeTemplateID,
 	)
 	require.Equal(t, testClusterSessionID, fields.ClusterSessionID)
 	require.Equal(t, testLeadershipTermID, fields.LeadershipTermID)
@@ -472,12 +472,12 @@ func TestAeronCluster_SendSnapshotRequest_encodesAndOffers(t *testing.T) {
 	fields := requireDecodedTemplate[codecs.AdminRequestFields](
 		t,
 		wire,
-		gensbe.AdminRequestSbeTemplateID,
+		clusterwire.AdminRequestSbeTemplateID,
 	)
 	require.Equal(t, testClusterSessionID, fields.ClusterSessionID)
 	require.Equal(t, testLeadershipTermID, fields.LeadershipTermID)
 	require.Equal(t, testAdminCorrelationID, fields.CorrelationID)
-	require.Equal(t, gensbe.AdminRequestType_SNAPSHOT, fields.RequestType)
+	require.Equal(t, clusterwire.AdminRequestType_SNAPSHOT, fields.RequestType)
 	require.Empty(t, fields.Payload)
 }
 
@@ -494,7 +494,7 @@ func TestAeronCluster_Close_sendsSessionCloseBestEffort(t *testing.T) {
 	fields := requireDecodedTemplate[codecs.SessionCloseRequestFields](
 		t,
 		payloadWire,
-		gensbe.SessionCloseRequestSbeTemplateID,
+		clusterwire.SessionCloseRequestSbeTemplateID,
 	)
 	require.Equal(t, testClusterSessionID, fields.ClusterSessionID)
 	require.Equal(t, testLeadershipTermID, fields.LeadershipTermID)

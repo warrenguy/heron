@@ -3,7 +3,7 @@ package codecs
 import (
 	"unsafe"
 
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 // ArchiveMinRootBlockLength returns the minimum root block length for templateID at
@@ -35,7 +35,7 @@ func encodeWithArchiveWireHeader(
 	if wireEnd > len(buf) {
 		return 0, false
 	}
-	var hdr gensbe.MessageHeader
+	var hdr archivewire.MessageHeader
 	hdr.Wrap(buf, uint64(offset), uint64(actingVersion), uint64(len(buf)))
 	hdr.SetBlockLength(blockLength).
 		SetTemplateId(templateID).
@@ -60,11 +60,11 @@ func EncodeConnectRequest(
 		buf,
 		offset,
 		connectRequestBlockLength(actingVersion),
-		gensbe.ConnectRequestSbeTemplateID,
+		archivewire.ConnectRequestSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.ResponseChannel)},
 		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
-			var msg gensbe.ConnectRequest
+			var msg archivewire.ConnectRequest
 			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetCorrelationId(fields.CorrelationID).
 				SetResponseStreamId(fields.ResponseStreamID)
@@ -98,11 +98,11 @@ func EncodeAuthConnectRequest(
 		buf,
 		offset,
 		authConnectRequestBlockLength(actingVersion),
-		gensbe.AuthConnectRequestSbeTemplateID,
+		archivewire.AuthConnectRequestSbeTemplateID,
 		actingVersion,
 		scratch[:count],
 		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
-			var msg gensbe.AuthConnectRequest
+			var msg archivewire.AuthConnectRequest
 			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetCorrelationId(fields.CorrelationID).
 				SetResponseStreamId(fields.ResponseStreamID).
@@ -126,12 +126,12 @@ func EncodeCloseSessionRequest(
 	return encodeWithArchiveWireHeader(
 		buf,
 		offset,
-		gensbe.CloseSessionRequestSbeBlockLength,
-		gensbe.CloseSessionRequestSbeTemplateID,
+		archivewire.CloseSessionRequestSbeBlockLength,
+		archivewire.CloseSessionRequestSbeTemplateID,
 		actingVersion,
 		nil,
 		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
-			var msg gensbe.CloseSessionRequest
+			var msg archivewire.CloseSessionRequest
 			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetControlSessionId(fields.ControlSessionID)
 		},
@@ -148,12 +148,12 @@ func EncodeStartRecordingRequest(
 	return encodeWithArchiveWireHeader(
 		buf,
 		offset,
-		gensbe.StartRecordingRequestSbeBlockLength,
-		gensbe.StartRecordingRequestSbeTemplateID,
+		archivewire.StartRecordingRequestSbeBlockLength,
+		archivewire.StartRecordingRequestSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.Channel)},
 		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
-			var msg gensbe.StartRecordingRequest
+			var msg archivewire.StartRecordingRequest
 			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetControlSessionId(fields.ControlSessionID).
 				SetCorrelationId(fields.CorrelationID).
@@ -174,12 +174,12 @@ func EncodeStartRecordingRequest2(
 	return encodeWithArchiveWireHeader(
 		buf,
 		offset,
-		gensbe.StartRecordingRequest2SbeBlockLength,
-		gensbe.StartRecordingRequest2SbeTemplateID,
+		archivewire.StartRecordingRequest2SbeBlockLength,
+		archivewire.StartRecordingRequest2SbeTemplateID,
 		actingVersion,
 		[]int{len(fields.Channel)},
 		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
-			var msg gensbe.StartRecordingRequest2
+			var msg archivewire.StartRecordingRequest2
 			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetControlSessionId(fields.ControlSessionID).
 				SetCorrelationId(fields.CorrelationID).
@@ -201,12 +201,12 @@ func EncodeStopRecordingRequest(
 	return encodeWithArchiveWireHeader(
 		buf,
 		offset,
-		gensbe.StopRecordingRequestSbeBlockLength,
-		gensbe.StopRecordingRequestSbeTemplateID,
+		archivewire.StopRecordingRequestSbeBlockLength,
+		archivewire.StopRecordingRequestSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.Channel)},
 		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
-			var msg gensbe.StopRecordingRequest
+			var msg archivewire.StopRecordingRequest
 			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetControlSessionId(fields.ControlSessionID).
 				SetCorrelationId(fields.CorrelationID).
@@ -226,12 +226,12 @@ func EncodeListRecordingRequest(
 	return encodeWithArchiveWireHeader(
 		buf,
 		offset,
-		gensbe.ListRecordingRequestSbeBlockLength,
-		gensbe.ListRecordingRequestSbeTemplateID,
+		archivewire.ListRecordingRequestSbeBlockLength,
+		archivewire.ListRecordingRequestSbeTemplateID,
 		actingVersion,
 		nil,
 		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
-			var msg gensbe.ListRecordingRequest
+			var msg archivewire.ListRecordingRequest
 			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetControlSessionId(fields.ControlSessionID).
 				SetCorrelationId(fields.CorrelationID).
@@ -251,11 +251,11 @@ func EncodeReplayRequest(
 		buf,
 		offset,
 		replayRequestBlockLength(actingVersion),
-		gensbe.ReplayRequestSbeTemplateID,
+		archivewire.ReplayRequestSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.ReplayChannel)},
 		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
-			var msg gensbe.ReplayRequest
+			var msg archivewire.ReplayRequest
 			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetControlSessionId(fields.ControlSessionID).
 				SetCorrelationId(fields.CorrelationID).
@@ -284,12 +284,12 @@ func EncodeStopReplayRequest(
 	return encodeWithArchiveWireHeader(
 		buf,
 		offset,
-		gensbe.StopReplayRequestSbeBlockLength,
-		gensbe.StopReplayRequestSbeTemplateID,
+		archivewire.StopReplayRequestSbeBlockLength,
+		archivewire.StopReplayRequestSbeTemplateID,
 		actingVersion,
 		nil,
 		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
-			var msg gensbe.StopReplayRequest
+			var msg archivewire.StopReplayRequest
 			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetControlSessionId(fields.ControlSessionID).
 				SetCorrelationId(fields.CorrelationID).
@@ -308,12 +308,12 @@ func EncodeChallengeResponse(
 	return encodeWithArchiveWireHeader(
 		buf,
 		offset,
-		gensbe.ChallengeResponseSbeBlockLength,
-		gensbe.ChallengeResponseSbeTemplateID,
+		archivewire.ChallengeResponseSbeBlockLength,
+		archivewire.ChallengeResponseSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.EncodedCredentials)},
 		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
-			var msg gensbe.ChallengeResponse
+			var msg archivewire.ChallengeResponse
 			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetControlSessionId(fields.ControlSessionID).
 				SetCorrelationId(fields.CorrelationID)
@@ -332,12 +332,12 @@ func EncodeKeepAliveRequest(
 	return encodeWithArchiveWireHeader(
 		buf,
 		offset,
-		gensbe.KeepAliveRequestSbeBlockLength,
-		gensbe.KeepAliveRequestSbeTemplateID,
+		archivewire.KeepAliveRequestSbeBlockLength,
+		archivewire.KeepAliveRequestSbeTemplateID,
 		actingVersion,
 		nil,
 		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
-			var msg gensbe.KeepAliveRequest
+			var msg archivewire.KeepAliveRequest
 			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetControlSessionId(fields.ControlSessionID).
 				SetCorrelationId(fields.CorrelationID)

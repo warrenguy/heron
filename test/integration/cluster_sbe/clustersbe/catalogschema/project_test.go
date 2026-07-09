@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe/catalogschema"
 )
 
@@ -69,7 +69,7 @@ func TestProjectCatalogToFields_newLeaderEvent_ingressEndpoints(t *testing.T) {
 			t.Parallel()
 			got, err := catalogschema.ProjectCatalogToFields(
 				"newLeaderEvent",
-				gensbe.SessionMessageHeaderSbeSchemaVersion,
+				clusterwire.SessionMessageHeaderSbeSchemaVersion,
 				baseFields(tc.value),
 				blobs,
 			)

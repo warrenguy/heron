@@ -11,7 +11,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 func requireControlResponseTimeout(
@@ -76,7 +76,7 @@ func TestOfferAndAwait_offerRetryDoesNotStarveResponseAwait(t *testing.T) {
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    correlationID,
 		RelevantID:       777,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	})
 	writeUnfragmentedWireToTerm(t, termBuffer, responseWire)
@@ -348,7 +348,7 @@ func TestOfferAndAwait_offerTerminal(t *testing.T) {
 	_, err := h.controlOps(func() int { return 0 }).startRecording(
 		t.Context(),
 		archiveProxyTestRecordingStreamID,
-		gensbe.SourceLocation_LOCAL,
+		archivewire.SourceLocation_LOCAL,
 		[]byte(lifecycleRecordingChannel),
 	)
 	requireControlTerminal(t, err, aeron.NotConnected)

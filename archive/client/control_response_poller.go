@@ -4,11 +4,11 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
-const challengeSbeTemplateID = int32(gensbe.ChallengeSbeTemplateID)
+const challengeSbeTemplateID = int32(archivewire.ChallengeSbeTemplateID)
 
 // ControlResponseCapture snapshots one terminal control-response or challenge capture.
 type ControlResponseCapture struct {
@@ -16,7 +16,7 @@ type ControlResponseCapture struct {
 	ControlSessionID int64
 	CorrelationID    int64
 	RelevantID       int64
-	Code             gensbe.ControlResponseCode
+	Code             archivewire.ControlResponseCode
 	Version          int32
 	ErrorMessage     []byte
 	EncodedChallenge []byte
@@ -63,7 +63,7 @@ func NewControlResponsePoller(
 		fragmentLimit: fragmentLimit,
 		capture: ControlResponseCapture{
 			CorrelationID: conductor.NullCorrelationID,
-			Code:          gensbe.ControlResponseCode_NULL_VALUE,
+			Code:          archivewire.ControlResponseCode_NULL_VALUE,
 		},
 	}
 	poller.assembler = NewFragmentAssembler(func(
@@ -119,7 +119,7 @@ func (poller *ControlResponsePoller) Capture() (ControlResponseCapture, bool) {
 // ControlResponse.
 func (poller *ControlResponsePoller) Response() (codecs.ControlResponseFields, bool) {
 	capture, ok := poller.Capture()
-	if !ok || capture.TemplateID != int32(gensbe.ControlResponseSbeTemplateID) {
+	if !ok || capture.TemplateID != int32(archivewire.ControlResponseSbeTemplateID) {
 		return codecs.ControlResponseFields{}, false
 	}
 	return codecs.ControlResponseFields{
@@ -163,7 +163,7 @@ func (poller *ControlResponsePoller) resetCapture() {
 	poller.capture = ControlResponseCapture{
 		CorrelationID: conductor.NullCorrelationID,
 		RelevantID:    0,
-		Code:          gensbe.ControlResponseCode_NULL_VALUE,
+		Code:          archivewire.ControlResponseCode_NULL_VALUE,
 	}
 }
 
@@ -175,7 +175,7 @@ func (poller *ControlResponsePoller) latchControlResponse(resp codecs.ControlRes
 	poller.capture.Version = resp.Version
 	poller.capture.ErrorMessage = resp.ErrorMessage
 	poller.capture.EncodedChallenge = nil
-	poller.capture.TemplateID = int32(gensbe.ControlResponseSbeTemplateID)
+	poller.capture.TemplateID = int32(archivewire.ControlResponseSbeTemplateID)
 	poller.ready = true
 }
 
@@ -183,7 +183,7 @@ func (poller *ControlResponsePoller) latchChallenge(challenge codecs.ChallengeFi
 	poller.capture.ControlSessionID = challenge.ControlSessionID
 	poller.capture.CorrelationID = challenge.CorrelationID
 	poller.capture.RelevantID = conductor.NullCorrelationID
-	poller.capture.Code = gensbe.ControlResponseCode_NULL_VALUE
+	poller.capture.Code = archivewire.ControlResponseCode_NULL_VALUE
 	poller.capture.Version = challenge.Version
 	poller.capture.ErrorMessage = nil
 	poller.capture.EncodedChallenge = challenge.EncodedChallenge

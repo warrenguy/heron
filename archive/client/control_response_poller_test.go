@@ -10,7 +10,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
@@ -59,13 +59,13 @@ func TestControlResponsePoller_Poll_controlResponseOK(t *testing.T) {
 	require.False(t, poller.IsChallenged())
 	capture, ok := poller.Capture()
 	require.True(t, ok)
-	require.Equal(t, int32(gensbe.ControlResponseSbeTemplateID), capture.TemplateID)
+	require.Equal(t, int32(archivewire.ControlResponseSbeTemplateID), capture.TemplateID)
 	resp, ok := poller.Response()
 	require.True(t, ok)
 	require.Equal(t, controlResponseTestControlSessionID, resp.ControlSessionID)
 	require.Equal(t, controlResponseTestCorrelationID, resp.CorrelationID)
 	require.Equal(t, int64(7), resp.RelevantID)
-	require.Equal(t, gensbe.ControlResponseCode_OK, resp.Code)
+	require.Equal(t, archivewire.ControlResponseCode_OK, resp.Code)
 	require.Equal(t, int32(520), resp.Version)
 	require.Nil(t, resp.ErrorMessage)
 }
@@ -77,7 +77,7 @@ func TestControlResponsePoller_Poll_controlResponseError(t *testing.T) {
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    controlResponseTestCorrelationID,
 		RelevantID:       10,
-		Code:             gensbe.ControlResponseCode_ERROR,
+		Code:             archivewire.ControlResponseCode_ERROR,
 		Version:          0,
 		ErrorMessage:     []byte("authentication rejected"),
 	})
@@ -89,7 +89,7 @@ func TestControlResponsePoller_Poll_controlResponseError(t *testing.T) {
 	require.True(t, poller.IsPollComplete())
 	resp, ok := poller.Response()
 	require.True(t, ok)
-	require.Equal(t, gensbe.ControlResponseCode_ERROR, resp.Code)
+	require.Equal(t, archivewire.ControlResponseCode_ERROR, resp.Code)
 	require.Equal(t, int64(10), resp.RelevantID)
 	require.Equal(t, []byte("authentication rejected"), resp.ErrorMessage)
 }
@@ -114,7 +114,7 @@ func TestControlResponsePoller_Poll_fragmentedChallenge(t *testing.T) {
 	require.True(t, poller.IsChallenged())
 	capture, ok := poller.Capture()
 	require.True(t, ok)
-	require.Equal(t, int32(gensbe.ChallengeSbeTemplateID), capture.TemplateID)
+	require.Equal(t, int32(archivewire.ChallengeSbeTemplateID), capture.TemplateID)
 	require.Equal(t, controlResponseTestControlSessionID, capture.ControlSessionID)
 	wantChallenge := bytes.Repeat([]byte("challenge-bytes"), 32)
 	require.Equal(t, []byte(wantChallenge), capture.EncodedChallenge)
@@ -127,7 +127,7 @@ func TestControlResponsePoller_Poll_fragmentedControlResponseError(t *testing.T)
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    controlResponseTestCorrelationID,
 		RelevantID:       10,
-		Code:             gensbe.ControlResponseCode_ERROR,
+		Code:             archivewire.ControlResponseCode_ERROR,
 		Version:          0,
 		ErrorMessage:     bytes.Repeat([]byte("authentication rejected "), 8),
 	})
@@ -142,7 +142,7 @@ func TestControlResponsePoller_Poll_fragmentedControlResponseError(t *testing.T)
 	require.True(t, poller.IsPollComplete())
 	resp, ok := poller.Response()
 	require.True(t, ok)
-	require.Equal(t, gensbe.ControlResponseCode_ERROR, resp.Code)
+	require.Equal(t, archivewire.ControlResponseCode_ERROR, resp.Code)
 	wantErrorMessage := bytes.Repeat([]byte("authentication rejected "), 8)
 	require.Equal(t, []byte(wantErrorMessage), resp.ErrorMessage)
 }
@@ -163,8 +163,8 @@ func TestControlResponsePoller_Poll_challenge(t *testing.T) {
 	require.Equal(t, []byte("challenge-bytes"), challenge.EncodedChallenge)
 	capture, ok := poller.Capture()
 	require.True(t, ok)
-	require.Equal(t, int32(gensbe.ChallengeSbeTemplateID), capture.TemplateID)
-	require.Equal(t, gensbe.ControlResponseCode_NULL_VALUE, capture.Code)
+	require.Equal(t, int32(archivewire.ChallengeSbeTemplateID), capture.TemplateID)
+	require.Equal(t, archivewire.ControlResponseCode_NULL_VALUE, capture.Code)
 	require.Equal(t, conductor.NullCorrelationID, capture.RelevantID)
 	require.Nil(t, capture.ErrorMessage)
 }
@@ -198,7 +198,7 @@ func TestControlResponsePoller_Poll_recordingSignalIgnored(t *testing.T) {
 		RecordingID:      1001,
 		SubscriptionID:   2002,
 		Position:         3003,
-		Signal:           gensbe.RecordingSignal_START,
+		Signal:           archivewire.RecordingSignal_START,
 	})
 	writeUnfragmentedWireToTerm(t, termBuffer, wire)
 
@@ -248,7 +248,7 @@ func TestControlResponsePoller_Poll_resetCaptureClearsPriorCapture(t *testing.T)
 	require.Equal(t, controlResponseTestCorrelationID, resp.CorrelationID)
 	require.Equal(t, controlResponseTestControlSessionID, resp.ControlSessionID)
 	require.Equal(t, int64(7), resp.RelevantID)
-	require.Equal(t, gensbe.ControlResponseCode_OK, resp.Code)
+	require.Equal(t, archivewire.ControlResponseCode_OK, resp.Code)
 	require.Equal(t, int32(520), resp.Version)
 
 	require.Equal(t, 0, poller.Poll())
@@ -279,7 +279,7 @@ func TestControlResponsePoller_Poll_resetsAfterComplete(t *testing.T) {
 	resp, ok := poller.Response()
 	require.True(t, ok)
 	require.Equal(t, controlResponseTestCorrelationID, resp.CorrelationID)
-	require.Equal(t, gensbe.ControlResponseCode_OK, resp.Code)
+	require.Equal(t, archivewire.ControlResponseCode_OK, resp.Code)
 
 	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsChallenged())
@@ -288,7 +288,7 @@ func TestControlResponsePoller_Poll_resetsAfterComplete(t *testing.T) {
 	require.Equal(t, int64(404), challenge.CorrelationID)
 	capture, ok := poller.Capture()
 	require.True(t, ok)
-	require.Equal(t, gensbe.ControlResponseCode_NULL_VALUE, capture.Code)
+	require.Equal(t, archivewire.ControlResponseCode_NULL_VALUE, capture.Code)
 }
 
 func TestControlResponsePoller_Poll_fragmentLimitTwoCapturesFirstTerminalOnly(t *testing.T) {
@@ -306,8 +306,8 @@ func TestControlResponsePoller_Poll_fragmentLimitTwoCapturesFirstTerminalOnly(t 
 	require.Equal(t, controlResponseTestCorrelationID, resp.CorrelationID)
 	capture, ok := poller.Capture()
 	require.True(t, ok)
-	require.Equal(t, int32(gensbe.ControlResponseSbeTemplateID), capture.TemplateID)
-	require.Equal(t, gensbe.ControlResponseCode_OK, resp.Code)
+	require.Equal(t, int32(archivewire.ControlResponseSbeTemplateID), capture.TemplateID)
+	require.Equal(t, archivewire.ControlResponseCode_OK, resp.Code)
 }
 
 func controlResponsePollerTestOKFields() codecs.ControlResponseFields {
@@ -315,7 +315,7 @@ func controlResponsePollerTestOKFields() codecs.ControlResponseFields {
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    controlResponseTestCorrelationID,
 		RelevantID:       7,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	}
 }

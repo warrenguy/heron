@@ -8,7 +8,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 func rapidParityWire[T any](
@@ -48,7 +48,7 @@ func TestControlResponse_fastSlowDecodeParity(t *testing.T) {
 		rapidChecksVarHeavy,
 		rapidControlResponseFields,
 		encodeControlResponseAt,
-		gensbe.ControlResponseSbeTemplateID,
+		archivewire.ControlResponseSbeTemplateID,
 		codecs.TryDecodeControlResponseAt,
 	)
 }
@@ -59,7 +59,7 @@ func TestRecordingSignalEvent_fastSlowDecodeParity(t *testing.T) {
 		rapidChecksSBEDefault,
 		rapidRecordingSignalEventFields,
 		encodeRecordingSignalEventAt,
-		gensbe.RecordingSignalEventSbeTemplateID,
+		archivewire.RecordingSignalEventSbeTemplateID,
 		codecs.TryDecodeRecordingSignalEventAt,
 	)
 }
@@ -70,7 +70,7 @@ func TestRecordingDescriptor_fastSlowDecodeParity(t *testing.T) {
 		rapidChecksVarHeavy,
 		rapidRecordingDescriptorFields,
 		encodeRecordingDescriptorAt,
-		gensbe.RecordingDescriptorSbeTemplateID,
+		archivewire.RecordingDescriptorSbeTemplateID,
 		codecs.TryDecodeRecordingDescriptorAt,
 	)
 }
@@ -81,7 +81,7 @@ func TestChallenge_fastSlowDecodeParity(t *testing.T) {
 		rapidChecksVarHeavy,
 		rapidChallengeFields,
 		encodeChallengeAt,
-		gensbe.ChallengeSbeTemplateID,
+		archivewire.ChallengeSbeTemplateID,
 		codecs.TryDecodeChallengeAt,
 	)
 }

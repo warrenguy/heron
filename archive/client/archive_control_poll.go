@@ -3,7 +3,7 @@ package client
 import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
@@ -91,22 +91,22 @@ func handleArchiveControlFragment(
 		return
 	}
 	switch templateID {
-	case gensbe.RecordingSignalEventSbeTemplateID:
+	case archivewire.RecordingSignalEventSbeTemplateID:
 		handleRecordingSignalFromFragment(
 			targets.SignalHandler,
 			targets.ControlSessionID,
 			fragment,
 		)
 
-	case gensbe.ControlResponseSbeTemplateID, gensbe.ChallengeSbeTemplateID:
+	case archivewire.ControlResponseSbeTemplateID, archivewire.ChallengeSbeTemplateID:
 		if targets.ResponsePoller != nil {
 			handleControlResponseFromFragment(targets.ResponsePoller, fragment, templateID)
-		} else if templateID == gensbe.ControlResponseSbeTemplateID &&
+		} else if templateID == archivewire.ControlResponseSbeTemplateID &&
 			targets.DescriptorPoller != nil {
 			handleDescriptorControlResponseFragment(targets.DescriptorPoller, fragment)
 		}
 
-	case gensbe.RecordingDescriptorSbeTemplateID:
+	case archivewire.RecordingDescriptorSbeTemplateID:
 		if targets.DescriptorPoller != nil {
 			handleRecordingDescriptorFragment(targets.DescriptorPoller, fragment)
 		}

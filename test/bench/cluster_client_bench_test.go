@@ -7,7 +7,7 @@ import (
 
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/test/bench/harness"
 )
 
@@ -19,7 +19,7 @@ var (
 )
 
 func init() {
-	wireLen, ok := codecs.ClusterWireMessageLen(gensbe.SessionKeepAliveSbeBlockLength)
+	wireLen, ok := codecs.ClusterWireMessageLen(clusterwire.SessionKeepAliveSbeBlockLength)
 	if !ok {
 		panic("bench_test: SessionKeepAlive wire length unavailable")
 	}
@@ -136,7 +136,7 @@ func BenchmarkClusterCodec_EncodeSessionKeepAlive(b *testing.B) {
 		LeadershipTermID: harness.BenchLeadershipTermID,
 		ClusterSessionID: harness.BenchClusterSessionID,
 	}
-	actingVersion := uint16(gensbe.SessionKeepAliveSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionKeepAliveSbeSchemaVersion)
 
 	b.ReportAllocs()
 	b.ResetTimer()

@@ -4,10 +4,11 @@ import (
 	"errors"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-var sessionMessageHeaderEncodedLen = int((&gensbe.SessionMessageHeader{}).SbeBlockAndHeaderLength())
+var sessionMessageHeaderEncodedLen = int((&clusterwire.SessionMessageHeader{}).
+	SbeBlockAndHeaderLength())
 
 // SessionMessageHeaderEncodedLen is the wire size of MessageHeader plus SessionMessageHeader.
 func SessionMessageHeaderEncodedLen() int {
@@ -39,7 +40,7 @@ func EncodeIngressHeader(buf []byte, frameOffset int, fields IngressHeaderFields
 		return 0, ErrIngressHeaderBufferTooSmall
 	}
 
-	var header gensbe.SessionMessageHeader
+	var header clusterwire.SessionMessageHeader
 	header.WrapAndApplyHeader(buf, uint64(payloadOffset), uint64(bufLen)).
 		SetLeadershipTermId(fields.LeadershipTermID).
 		SetClusterSessionId(fields.ClusterSessionID).

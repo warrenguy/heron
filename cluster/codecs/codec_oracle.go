@@ -3,28 +3,24 @@ package codecs
 import (
 	"math"
 
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 // ClusterCodecMaxVarLen sizes cluster codec var-field slots in test and
 // cross-language wire oracles. Largest committed fixture var field is 32 B.
 const ClusterCodecMaxVarLen = 256
 
-var SessionEventLeaderHeartbeatMinVersion = uint16(
-	(&gensbe.SessionEvent{}).LeaderHeartbeatTimeoutNsSinceVersion(),
-)
+var SessionEventLeaderHeartbeatMinVersion = uint16((&clusterwire.SessionEvent{}).
+	LeaderHeartbeatTimeoutNsSinceVersion())
 
-var SessionConnectClientInfoMinVersion = uint16(
-	(&gensbe.SessionConnectRequest{}).ClientInfoSinceVersion(),
-)
+var SessionConnectClientInfoMinVersion = uint16((&clusterwire.SessionConnectRequest{}).
+	ClientInfoSinceVersion())
 
-var SessionEventVersionMinVersion = uint16(
-	(&gensbe.SessionEvent{}).VersionSinceVersion(),
-)
+var SessionEventVersionMinVersion = uint16((&clusterwire.SessionEvent{}).
+	VersionSinceVersion())
 
-var SessionConnectVersionMinVersion = uint16(
-	(&gensbe.SessionConnectRequest{}).VersionSinceVersion(),
-)
+var SessionConnectVersionMinVersion = uint16((&clusterwire.SessionConnectRequest{}).
+	VersionSinceVersion())
 
 // SessionEventOracleFields applies LeaderHeartbeatTimeoutNs oracle rules.
 //

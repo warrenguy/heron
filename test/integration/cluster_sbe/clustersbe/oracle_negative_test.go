@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe"
 )
 
@@ -26,7 +26,7 @@ func TestReencodeWire_rejects(t *testing.T) {
 		{
 			name: "wrongFieldsType",
 			mutate: func(f *clustersbe.WireFixture) {
-				f.TemplateID = gensbe.SessionEventSbeTemplateID
+				f.TemplateID = clusterwire.SessionEventSbeTemplateID
 			},
 		},
 		{

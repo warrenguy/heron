@@ -2,13 +2,13 @@ package codecs
 
 import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 const (
 	// clusterWireMaxRootBlockLength is the largest cluster root block used in the
 	// per-field var-length DoS budget (SessionEvent @ current schema version).
-	clusterWireMaxRootBlockLength = gensbe.SessionEventSbeBlockLength
+	clusterWireMaxRootBlockLength = clusterwire.SessionEventSbeBlockLength
 	// clusterWireMaxVarFieldCount is the maximum var fields on any cluster wire template
 	// (SessionConnectRequest with ClientInfo @ actingVersion >= 14).
 	clusterWireMaxVarFieldCount = 3
@@ -109,9 +109,9 @@ func sessionConnectRequestVarLensInto(
 // length for actingVersion.
 func sessionConnectRequestBlockLength(actingVersion uint16) uint16 {
 	return ClusterMinRootBlockLength(
-		gensbe.SessionConnectRequestSbeTemplateID,
+		clusterwire.SessionConnectRequestSbeTemplateID,
 		actingVersion,
-		gensbe.SessionConnectRequestSbeBlockLength,
+		clusterwire.SessionConnectRequestSbeBlockLength,
 	)
 }
 

@@ -10,7 +10,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
@@ -46,7 +46,7 @@ func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 	require.NotEmpty(t, connectWire)
 	decoded, ok := codecs.TryDecodeByTemplate(connectWire, 0, codecs.ArchiveDecodeMaxVarLen)
 	require.True(t, ok)
-	require.Equal(t, gensbe.AuthConnectRequestSbeTemplateID, decoded.TemplateID)
+	require.Equal(t, archivewire.AuthConnectRequestSbeTemplateID, decoded.TemplateID)
 	authFields, ok := decoded.Fields.(codecs.AuthConnectRequestFields)
 	require.True(t, ok)
 	require.Equal(t, connectCorrelation, authFields.CorrelationID)
@@ -84,7 +84,7 @@ func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 	resp, ok := result.Poller.Response()
 	require.True(t, ok)
 	require.Equal(t, keepAliveCorrelation, resp.CorrelationID)
-	require.Equal(t, gensbe.ControlResponseCode_OK, resp.Code)
+	require.Equal(t, archivewire.ControlResponseCode_OK, resp.Code)
 
 	err = MapControlResponse(resp)
 	require.NoError(t, err)

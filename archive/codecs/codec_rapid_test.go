@@ -12,7 +12,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 const (
@@ -130,22 +130,22 @@ func rapidChallengeFields(rt *rapid.T) codecs.ChallengeFields {
 	}
 }
 
-func rapidSourceLocation(rt *rapid.T) gensbe.SourceLocation {
+func rapidSourceLocation(rt *rapid.T) archivewire.SourceLocation {
 	rt.Helper()
 	return rapid.SampledFrom(archiveAllSourceLocations).Draw(rt, "sourceLocation")
 }
 
-func rapidBooleanType(rt *rapid.T) gensbe.BooleanType {
+func rapidBooleanType(rt *rapid.T) archivewire.BooleanType {
 	rt.Helper()
 	return rapid.SampledFrom(archiveAllBooleanTypes).Draw(rt, "autoStop")
 }
 
-func rapidControlResponseCode(rt *rapid.T) gensbe.ControlResponseCode {
+func rapidControlResponseCode(rt *rapid.T) archivewire.ControlResponseCode {
 	rt.Helper()
 	return rapid.SampledFrom(archiveAllControlResponseCodes).Draw(rt, "code")
 }
 
-func rapidRecordingSignal(rt *rapid.T) gensbe.RecordingSignal {
+func rapidRecordingSignal(rt *rapid.T) archivewire.RecordingSignal {
 	rt.Helper()
 	return rapid.SampledFrom(archiveAllRecordingSignals).Draw(rt, "signal")
 }
@@ -163,7 +163,7 @@ func TestConnectRequest_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.ConnectRequestSbeTemplateID,
+			archivewire.ConnectRequestSbeTemplateID,
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeConnectRequest),
@@ -187,7 +187,7 @@ func TestAuthConnectRequest_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.AuthConnectRequestSbeTemplateID,
+			archivewire.AuthConnectRequestSbeTemplateID,
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeAuthConnectRequest),
@@ -214,7 +214,7 @@ func TestReplayRequest_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.ReplayRequestSbeTemplateID,
+			archivewire.ReplayRequestSbeTemplateID,
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeReplayRequest),
@@ -237,7 +237,7 @@ func TestStartRecordingRequest_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.StartRecordingRequestSbeTemplateID,
+			archivewire.StartRecordingRequestSbeTemplateID,
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeStartRecordingRequest),
@@ -261,7 +261,7 @@ func TestStartRecordingRequest2_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.StartRecordingRequest2SbeTemplateID,
+			archivewire.StartRecordingRequest2SbeTemplateID,
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeStartRecordingRequest2),
@@ -283,7 +283,7 @@ func TestStopRecordingRequest_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.StopRecordingRequestSbeTemplateID,
+			archivewire.StopRecordingRequestSbeTemplateID,
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeStopRecordingRequest),
@@ -304,7 +304,7 @@ func TestListRecordingRequest_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.ListRecordingRequestSbeTemplateID,
+			archivewire.ListRecordingRequestSbeTemplateID,
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeListRecordingRequest),
@@ -325,7 +325,7 @@ func TestStopReplayRequest_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.StopReplayRequestSbeTemplateID,
+			archivewire.StopReplayRequestSbeTemplateID,
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeStopReplayRequest),
@@ -344,7 +344,7 @@ func TestCloseSessionRequest_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.CloseSessionRequestSbeTemplateID,
+			archivewire.CloseSessionRequestSbeTemplateID,
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeCloseSessionRequest),
@@ -364,7 +364,7 @@ func TestKeepAliveRequest_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.KeepAliveRequestSbeTemplateID,
+			archivewire.KeepAliveRequestSbeTemplateID,
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeKeepAliveRequest),
@@ -385,7 +385,7 @@ func TestChallengeResponse_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.ChallengeResponseSbeTemplateID,
+			archivewire.ChallengeResponseSbeTemplateID,
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeChallengeResponse),
@@ -402,7 +402,7 @@ func TestControlResponse_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.ControlResponseSbeTemplateID,
+			archivewire.ControlResponseSbeTemplateID,
 			archiveSchemaVersion,
 			offset,
 			func(buf []byte, offset int) (int, bool) {
@@ -421,7 +421,7 @@ func TestChallenge_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.ChallengeSbeTemplateID,
+			archivewire.ChallengeSbeTemplateID,
 			archiveSchemaVersion,
 			offset,
 			func(buf []byte, offset int) (int, bool) {
@@ -440,7 +440,7 @@ func TestRecordingSignalEvent_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.RecordingSignalEventSbeTemplateID,
+			archivewire.RecordingSignalEventSbeTemplateID,
 			archiveSchemaVersion,
 			offset,
 			func(buf []byte, offset int) (int, bool) {
@@ -459,7 +459,7 @@ func TestRecordingDescriptor_codec_rapid(t *testing.T) {
 
 		runArchiveCodecRoundtripAtOffset(
 			rt,
-			gensbe.RecordingDescriptorSbeTemplateID,
+			archivewire.RecordingDescriptorSbeTemplateID,
 			archiveSchemaVersion,
 			offset,
 			func(buf []byte, offset int) (int, bool) {

@@ -14,7 +14,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	clientpkg "github.com/warrenguy/heron/archive/client"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -84,7 +84,7 @@ func recordArchiveSmoke(
 	gotRecordingID := false
 	archive.SetRecordingSignalHandler(clientpkg.RecordingSignalHandlerFunc(
 		func(event codecs.RecordingSignalEventFields) {
-			if event.Signal != gensbe.RecordingSignal_START {
+			if event.Signal != archivewire.RecordingSignal_START {
 				return
 			}
 			if event.ControlSessionID != archive.ControlSessionID() {
@@ -102,7 +102,7 @@ func recordArchiveSmoke(
 	_, err = archive.StartRecording(
 		t.Context(),
 		archivejava.RecordStreamID,
-		gensbe.SourceLocation_LOCAL,
+		archivewire.SourceLocation_LOCAL,
 		[]byte(archivejava.RecordChannel),
 	)
 	require.NoError(t, err)

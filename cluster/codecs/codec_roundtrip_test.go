@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 type codecFieldsActingCase[T any] struct {
@@ -71,7 +71,10 @@ func encodeSessionEventRoundtrip(
 	)
 }
 
-func sessionEventCodeRoundtripCase(actingVersion uint16, code gensbe.EventCode) codecRoundtripCase {
+func sessionEventCodeRoundtripCase(
+	actingVersion uint16,
+	code clusterwire.EventCode,
+) codecRoundtripCase {
 	return buildActingFieldRoundtripCases(
 		actingVersion,
 		[]codecFieldsActingCase[codecs.SessionEventFields]{{
@@ -98,10 +101,10 @@ func TestSessionMessageHeader_roundtrip(t *testing.T) {
 		ClusterSessionID: 99,
 		Timestamp:        123456789,
 	}
-	actingVersion := uint16(gensbe.SessionMessageHeaderSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionMessageHeaderSbeSchemaVersion)
 	runCodecRoundtrip(
 		t,
-		gensbe.SessionMessageHeaderSbeTemplateID,
+		clusterwire.SessionMessageHeaderSbeTemplateID,
 		actingVersion,
 		func(buf []byte, offset int) (int, bool) {
 			return codecs.EncodeSessionMessageHeader(buf, offset, actingVersion, fields)
@@ -111,7 +114,7 @@ func TestSessionMessageHeader_roundtrip(t *testing.T) {
 }
 
 func TestSessionEvent_roundtrip(t *testing.T) {
-	actingVersion := uint16(gensbe.SessionEventSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionEventSbeSchemaVersion)
 
 	fieldCases := []codecFieldsActingCase[codecs.SessionEventFields]{
 		{
@@ -122,7 +125,7 @@ func TestSessionEvent_roundtrip(t *testing.T) {
 				CorrelationID:            2,
 				LeadershipTermID:         3,
 				LeaderMemberID:           4,
-				Code:                     gensbe.EventCode_OK,
+				Code:                     clusterwire.EventCode_OK,
 				LeaderHeartbeatTimeoutNs: 0,
 			},
 		},
@@ -134,7 +137,7 @@ func TestSessionEvent_roundtrip(t *testing.T) {
 				CorrelationID:            11,
 				LeadershipTermID:         12,
 				LeaderMemberID:           13,
-				Code:                     gensbe.EventCode_ERROR,
+				Code:                     clusterwire.EventCode_ERROR,
 				Detail:                   []byte("boom"),
 				LeaderHeartbeatTimeoutNs: 0,
 			},
@@ -147,7 +150,7 @@ func TestSessionEvent_roundtrip(t *testing.T) {
 				CorrelationID:            21,
 				LeadershipTermID:         22,
 				LeaderMemberID:           23,
-				Code:                     gensbe.EventCode_REDIRECT,
+				Code:                     clusterwire.EventCode_REDIRECT,
 				Version:                  7,
 				Detail:                   []byte("redirect"),
 				LeaderHeartbeatTimeoutNs: math.MinInt64,
@@ -161,7 +164,7 @@ func TestSessionEvent_roundtrip(t *testing.T) {
 				CorrelationID:            31,
 				LeadershipTermID:         32,
 				LeaderMemberID:           33,
-				Code:                     gensbe.EventCode_OK,
+				Code:                     clusterwire.EventCode_OK,
 				LeaderHeartbeatTimeoutNs: 5_000_000_000,
 				Detail:                   []byte("hb"),
 			},
@@ -174,7 +177,7 @@ func TestSessionEvent_roundtrip(t *testing.T) {
 				CorrelationID:            61,
 				LeadershipTermID:         62,
 				LeaderMemberID:           63,
-				Code:                     gensbe.EventCode_OK,
+				Code:                     clusterwire.EventCode_OK,
 				LeaderHeartbeatTimeoutNs: math.MinInt64, // encode omit sentinel; decode 0
 				Detail:                   []byte("omit-hb"),
 			},
@@ -187,7 +190,7 @@ func TestSessionEvent_roundtrip(t *testing.T) {
 				CorrelationID:            41,
 				LeadershipTermID:         42,
 				LeaderMemberID:           43,
-				Code:                     gensbe.EventCode_CLOSED,
+				Code:                     clusterwire.EventCode_CLOSED,
 				Version:                  0,
 				LeaderHeartbeatTimeoutNs: math.MinInt64,
 				Detail:                   []byte("detail-v5"),
@@ -205,12 +208,12 @@ func TestSessionEvent_roundtrip(t *testing.T) {
 		cases = append(cases, sessionEventCodeRoundtripCase(actingVersion, code))
 	}
 
-	runCodecRoundtripCases(t, gensbe.SessionEventSbeTemplateID, actingVersion, cases)
+	runCodecRoundtripCases(t, clusterwire.SessionEventSbeTemplateID, actingVersion, cases)
 }
 
 func TestSessionConnectRequest_roundtrip(t *testing.T) {
 	maxVar := bytes.Repeat([]byte{0x5A}, codecTestMaxVarLen)
-	actingVersion := uint16(gensbe.SessionConnectRequestSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionConnectRequestSbeSchemaVersion)
 
 	fieldCases := []codecFieldsActingCase[codecs.SessionConnectRequestFields]{
 		{
@@ -271,7 +274,7 @@ func TestSessionConnectRequest_roundtrip(t *testing.T) {
 
 	runCodecFieldsActingRoundtrips(
 		t,
-		gensbe.SessionConnectRequestSbeTemplateID,
+		clusterwire.SessionConnectRequestSbeTemplateID,
 		actingVersion,
 		fieldCases,
 		codecs.EncodeSessionConnectRequest,
@@ -280,10 +283,10 @@ func TestSessionConnectRequest_roundtrip(t *testing.T) {
 
 func TestSessionCloseRequest_roundtrip(t *testing.T) {
 	fields := codecs.SessionCloseRequestFields{LeadershipTermID: 7, ClusterSessionID: 8}
-	actingVersion := uint16(gensbe.SessionCloseRequestSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionCloseRequestSbeSchemaVersion)
 	runCodecRoundtrip(
 		t,
-		gensbe.SessionCloseRequestSbeTemplateID,
+		clusterwire.SessionCloseRequestSbeTemplateID,
 		actingVersion,
 		func(buf []byte, offset int) (int, bool) {
 			return codecs.EncodeSessionCloseRequest(buf, offset, actingVersion, fields)
@@ -294,10 +297,10 @@ func TestSessionCloseRequest_roundtrip(t *testing.T) {
 
 func TestSessionKeepAlive_roundtrip(t *testing.T) {
 	fields := codecs.SessionKeepAliveFields{LeadershipTermID: 9, ClusterSessionID: 10}
-	actingVersion := uint16(gensbe.SessionKeepAliveSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionKeepAliveSbeSchemaVersion)
 	runCodecRoundtrip(
 		t,
-		gensbe.SessionKeepAliveSbeTemplateID,
+		clusterwire.SessionKeepAliveSbeTemplateID,
 		actingVersion,
 		func(buf []byte, offset int) (int, bool) {
 			return codecs.EncodeSessionKeepAlive(buf, offset, actingVersion, fields)
@@ -307,7 +310,7 @@ func TestSessionKeepAlive_roundtrip(t *testing.T) {
 }
 
 func TestNewLeaderEvent_roundtrip(t *testing.T) {
-	actingVersion := uint16(gensbe.NewLeaderEventSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.NewLeaderEventSbeSchemaVersion)
 	fieldCases := []codecFieldsActingCase[codecs.NewLeaderEventFields]{
 		{
 			name: "empty_ingress_endpoints",
@@ -330,7 +333,7 @@ func TestNewLeaderEvent_roundtrip(t *testing.T) {
 
 	runCodecFieldsActingRoundtrips(
 		t,
-		gensbe.NewLeaderEventSbeTemplateID,
+		clusterwire.NewLeaderEventSbeTemplateID,
 		actingVersion,
 		fieldCases,
 		codecs.EncodeNewLeaderEvent,
@@ -338,7 +341,7 @@ func TestNewLeaderEvent_roundtrip(t *testing.T) {
 }
 
 func TestChallenge_roundtrip(t *testing.T) {
-	actingVersion := uint16(gensbe.ChallengeSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.ChallengeSbeSchemaVersion)
 	fieldCases := []codecFieldsActingCase[codecs.ChallengeFields]{
 		{
 			name: "empty_challenge",
@@ -360,7 +363,7 @@ func TestChallenge_roundtrip(t *testing.T) {
 
 	runCodecFieldsActingRoundtrips(
 		t,
-		gensbe.ChallengeSbeTemplateID,
+		clusterwire.ChallengeSbeTemplateID,
 		actingVersion,
 		fieldCases,
 		codecs.EncodeChallenge,
@@ -368,7 +371,7 @@ func TestChallenge_roundtrip(t *testing.T) {
 }
 
 func TestChallengeResponse_roundtrip(t *testing.T) {
-	actingVersion := uint16(gensbe.ChallengeResponseSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.ChallengeResponseSbeSchemaVersion)
 	fieldCases := []codecFieldsActingCase[codecs.ChallengeResponseFields]{
 		{
 			name: "empty_credentials",
@@ -390,7 +393,7 @@ func TestChallengeResponse_roundtrip(t *testing.T) {
 
 	runCodecFieldsActingRoundtrips(
 		t,
-		gensbe.ChallengeResponseSbeTemplateID,
+		clusterwire.ChallengeResponseSbeTemplateID,
 		actingVersion,
 		fieldCases,
 		codecs.EncodeChallengeResponse,
@@ -398,7 +401,7 @@ func TestChallengeResponse_roundtrip(t *testing.T) {
 }
 
 func TestAdminRequest_roundtrip(t *testing.T) {
-	actingVersion := uint16(gensbe.AdminRequestSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.AdminRequestSbeSchemaVersion)
 	fieldCases := []codecFieldsActingCase[codecs.AdminRequestFields]{
 		{
 			name: "empty_payload",
@@ -406,7 +409,7 @@ func TestAdminRequest_roundtrip(t *testing.T) {
 				LeadershipTermID: 1,
 				ClusterSessionID: 2,
 				CorrelationID:    3,
-				RequestType:      gensbe.AdminRequestType_SNAPSHOT,
+				RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
 			},
 		},
 		{
@@ -415,7 +418,7 @@ func TestAdminRequest_roundtrip(t *testing.T) {
 				LeadershipTermID: 4,
 				ClusterSessionID: 5,
 				CorrelationID:    6,
-				RequestType:      gensbe.AdminRequestType_SNAPSHOT,
+				RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
 				Payload:          bytes.Repeat([]byte{0x33}, 16),
 			},
 		},
@@ -423,7 +426,7 @@ func TestAdminRequest_roundtrip(t *testing.T) {
 
 	runCodecFieldsActingRoundtrips(
 		t,
-		gensbe.AdminRequestSbeTemplateID,
+		clusterwire.AdminRequestSbeTemplateID,
 		actingVersion,
 		fieldCases,
 		codecs.EncodeAdminRequest,
@@ -431,15 +434,15 @@ func TestAdminRequest_roundtrip(t *testing.T) {
 }
 
 func TestAdminResponse_roundtrip(t *testing.T) {
-	actingVersion := uint16(gensbe.AdminResponseSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.AdminResponseSbeSchemaVersion)
 	fieldCases := []codecFieldsActingCase[codecs.AdminResponseFields]{
 		{
 			name: "ok_with_message",
 			fields: codecs.AdminResponseFields{
 				ClusterSessionID: 1,
 				CorrelationID:    2,
-				RequestType:      gensbe.AdminRequestType_SNAPSHOT,
-				ResponseCode:     gensbe.AdminResponseCode_OK,
+				RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
+				ResponseCode:     clusterwire.AdminResponseCode_OK,
 				Message:          []byte("done"),
 			},
 		},
@@ -448,8 +451,8 @@ func TestAdminResponse_roundtrip(t *testing.T) {
 			fields: codecs.AdminResponseFields{
 				ClusterSessionID: 3,
 				CorrelationID:    4,
-				RequestType:      gensbe.AdminRequestType_SNAPSHOT,
-				ResponseCode:     gensbe.AdminResponseCode_ERROR,
+				RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
+				ResponseCode:     clusterwire.AdminResponseCode_ERROR,
 				Message:          []byte("failed"),
 				Payload:          []byte("detail"),
 			},
@@ -459,8 +462,8 @@ func TestAdminResponse_roundtrip(t *testing.T) {
 			fields: codecs.AdminResponseFields{
 				ClusterSessionID: 5,
 				CorrelationID:    6,
-				RequestType:      gensbe.AdminRequestType_SNAPSHOT,
-				ResponseCode:     gensbe.AdminResponseCode_UNAUTHORISED_ACCESS,
+				RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
+				ResponseCode:     clusterwire.AdminResponseCode_UNAUTHORISED_ACCESS,
 				Message:          []byte("denied"),
 			},
 		},
@@ -468,7 +471,7 @@ func TestAdminResponse_roundtrip(t *testing.T) {
 
 	runCodecFieldsActingRoundtrips(
 		t,
-		gensbe.AdminResponseSbeTemplateID,
+		clusterwire.AdminResponseSbeTemplateID,
 		actingVersion,
 		fieldCases,
 		codecs.EncodeAdminResponse,
@@ -476,13 +479,13 @@ func TestAdminResponse_roundtrip(t *testing.T) {
 }
 
 func TestTryDecodeByTemplate_largeDetail(t *testing.T) {
-	actingVersion := uint16(gensbe.SessionEventSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionEventSbeSchemaVersion)
 	fields := codecs.SessionEventFields{
 		ClusterSessionID:         1,
 		CorrelationID:            2,
 		LeadershipTermID:         3,
 		LeaderMemberID:           4,
-		Code:                     gensbe.EventCode_OK,
+		Code:                     clusterwire.EventCode_OK,
 		Detail:                   clusterLargeVarPayload,
 		LeaderHeartbeatTimeoutNs: 0,
 	}
@@ -490,7 +493,7 @@ func TestTryDecodeByTemplate_largeDetail(t *testing.T) {
 
 	decoded, ok := codecs.TryDecodeByTemplate(wire, 0, codecs.ClusterDecodeMaxVarLen)
 	require.True(t, ok)
-	require.Equal(t, gensbe.SessionEventSbeTemplateID, decoded.TemplateID)
+	require.Equal(t, clusterwire.SessionEventSbeTemplateID, decoded.TemplateID)
 
 	gotFields, ok := decoded.Fields.(codecs.SessionEventFields)
 	require.True(t, ok)

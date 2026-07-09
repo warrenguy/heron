@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 func requireFastSlowParity[T any](
@@ -70,7 +70,7 @@ func TestControlResponse_fastSlowDecodeParity_table(t *testing.T) {
 		t,
 		testControlResponseBoom,
 		encodeControlResponseAt,
-		gensbe.ControlResponseSbeTemplateID,
+		archivewire.ControlResponseSbeTemplateID,
 		codecs.TryDecodeControlResponseAt,
 	)
 }
@@ -80,7 +80,7 @@ func TestRecordingSignalEvent_fastSlowDecodeParity_table(t *testing.T) {
 		t,
 		testRecordingSignalEventStart,
 		encodeRecordingSignalEventAt,
-		gensbe.RecordingSignalEventSbeTemplateID,
+		archivewire.RecordingSignalEventSbeTemplateID,
 		codecs.TryDecodeRecordingSignalEventAt,
 	)
 }
@@ -90,7 +90,7 @@ func TestRecordingDescriptor_fastSlowDecodeParity_table(t *testing.T) {
 		t,
 		testRecordingDescriptorChannels,
 		encodeRecordingDescriptorAt,
-		gensbe.RecordingDescriptorSbeTemplateID,
+		archivewire.RecordingDescriptorSbeTemplateID,
 		codecs.TryDecodeRecordingDescriptorAt,
 	)
 }
@@ -100,7 +100,7 @@ func TestChallenge_fastSlowDecodeParity_table(t *testing.T) {
 		t,
 		testChallengeWithBytes,
 		encodeChallengeAt,
-		gensbe.ChallengeSbeTemplateID,
+		archivewire.ChallengeSbeTemplateID,
 		codecs.TryDecodeChallengeAt,
 	)
 }

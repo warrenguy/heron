@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 const (
@@ -37,7 +37,7 @@ func (h *lifecycleHarness) newAeronArchive() *AeronArchive {
 func (h *lifecycleHarness) writeNextControlResponse(
 	t *testing.T,
 	relevantID int64,
-	code gensbe.ControlResponseCode,
+	code archivewire.ControlResponseCode,
 ) {
 	t.Helper()
 
@@ -58,7 +58,7 @@ func TestStartReplay_awaitReturnsReplaySessionId(t *testing.T) {
 	pollFn := h.respondControlResponseOnce(
 		t,
 		lifecycleReplaySessionID,
-		gensbe.ControlResponseCode_OK,
+		archivewire.ControlResponseCode_OK,
 		&written,
 		targets,
 	)
@@ -82,7 +82,7 @@ func TestStartReplay_errorResponseReturnsError(t *testing.T) {
 	pollFn := h.respondControlResponseOnce(
 		t,
 		0,
-		gensbe.ControlResponseCode_ERROR,
+		archivewire.ControlResponseCode_ERROR,
 		&written,
 		targets,
 	)
@@ -105,7 +105,7 @@ func TestStopReplay_awaitOK(t *testing.T) {
 	pollFn := h.respondControlResponseOnce(
 		t,
 		0,
-		gensbe.ControlResponseCode_OK,
+		archivewire.ControlResponseCode_OK,
 		&written,
 		targets,
 	)
@@ -121,7 +121,7 @@ func TestStopReplay_errorResponseReturnsError(t *testing.T) {
 	pollFn := h.respondControlResponseOnce(
 		t,
 		0,
-		gensbe.ControlResponseCode_ERROR,
+		archivewire.ControlResponseCode_ERROR,
 		&written,
 		targets,
 	)
@@ -133,7 +133,7 @@ func TestStopReplay_errorResponseReturnsError(t *testing.T) {
 func TestAeronArchiveStartReplay_methodReturnsReplaySessionId(t *testing.T) {
 	h := newLifecycleHarness(t)
 	archive := h.newAeronArchive()
-	h.writeNextControlResponse(t, lifecycleReplaySessionID, gensbe.ControlResponseCode_OK)
+	h.writeNextControlResponse(t, lifecycleReplaySessionID, archivewire.ControlResponseCode_OK)
 
 	got, err := archive.StartReplay(
 		t.Context(),
@@ -187,7 +187,7 @@ func TestStopReplay_timeout(t *testing.T) {
 func TestAeronArchiveStopReplay_methodOK(t *testing.T) {
 	h := newLifecycleHarness(t)
 	archive := h.newAeronArchive()
-	h.writeNextControlResponse(t, 0, gensbe.ControlResponseCode_OK)
+	h.writeNextControlResponse(t, 0, archivewire.ControlResponseCode_OK)
 
 	err := archive.StopReplay(t.Context(), lifecycleReplaySessionID)
 	require.NoError(t, err)
@@ -196,7 +196,7 @@ func TestAeronArchiveStopReplay_methodOK(t *testing.T) {
 func TestAeronArchiveStopReplay_errorResponse(t *testing.T) {
 	h := newLifecycleHarness(t)
 	archive := h.newAeronArchive()
-	h.writeNextControlResponse(t, 0, gensbe.ControlResponseCode_ERROR)
+	h.writeNextControlResponse(t, 0, archivewire.ControlResponseCode_ERROR)
 
 	err := archive.StopReplay(t.Context(), lifecycleReplaySessionID)
 	require.Error(t, err)

@@ -1,14 +1,14 @@
 package codecs
 
 import (
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 type ControlResponseFields struct {
 	ControlSessionID int64
 	CorrelationID    int64
 	RelevantID       int64
-	Code             gensbe.ControlResponseCode
+	Code             archivewire.ControlResponseCode
 	Version          int32
 	ErrorMessage     []byte
 }
@@ -28,7 +28,7 @@ type StartRecordingRequestFields struct {
 	ControlSessionID int64
 	CorrelationID    int64
 	StreamID         int32
-	SourceLocation   gensbe.SourceLocation
+	SourceLocation   archivewire.SourceLocation
 	Channel          []byte
 }
 
@@ -101,7 +101,7 @@ type RecordingSignalEventFields struct {
 	RecordingID      int64
 	SubscriptionID   int64
 	Position         int64
-	Signal           gensbe.RecordingSignal
+	Signal           archivewire.RecordingSignal
 }
 
 type AuthConnectRequestFields struct {
@@ -135,7 +135,7 @@ type StartRecordingRequest2Fields struct {
 	ControlSessionID int64
 	CorrelationID    int64
 	StreamID         int32
-	SourceLocation   gensbe.SourceLocation
-	AutoStop         gensbe.BooleanType
+	SourceLocation   archivewire.SourceLocation
+	AutoStop         archivewire.BooleanType
 	Channel          []byte
 }

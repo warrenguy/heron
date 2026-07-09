@@ -4,7 +4,7 @@ import (
 	"slices"
 
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe/catalogschema"
 )
 
@@ -74,7 +74,7 @@ func oracleExactWireLen(fixture WireFixture) (int, bool) {
 
 func oracleRootBlockLength(fixture WireFixture) uint16 {
 	switch fixture.TemplateID {
-	case gensbe.SessionEventSbeTemplateID:
+	case clusterwire.SessionEventSbeTemplateID:
 		return codecs.SessionEventBlockLength(fixture.ActingVersion)
 	default:
 		return codecs.ClusterMinRootBlockLength(fixture.TemplateID, fixture.ActingVersion, 0)
@@ -91,15 +91,15 @@ func oracleVarFieldLensFrom[T any](fields any, lens func(T) []int) ([]int, bool)
 
 func oracleVarFieldLens(fixture WireFixture) ([]int, bool) {
 	switch fixture.TemplateID {
-	case gensbe.SessionMessageHeaderSbeTemplateID,
-		gensbe.SessionCloseRequestSbeTemplateID,
-		gensbe.SessionKeepAliveSbeTemplateID:
+	case clusterwire.SessionMessageHeaderSbeTemplateID,
+		clusterwire.SessionCloseRequestSbeTemplateID,
+		clusterwire.SessionKeepAliveSbeTemplateID:
 		return []int{}, true
-	case gensbe.SessionEventSbeTemplateID:
+	case clusterwire.SessionEventSbeTemplateID:
 		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.SessionEventFields) []int {
 			return []int{len(fields.Detail)}
 		})
-	case gensbe.SessionConnectRequestSbeTemplateID:
+	case clusterwire.SessionConnectRequestSbeTemplateID:
 		fields, ok := fixture.Fields.(codecs.SessionConnectRequestFields)
 		if !ok {
 			return nil, false
@@ -110,23 +110,23 @@ func oracleVarFieldLens(fixture WireFixture) ([]int, bool) {
 			len(fields.EncodedCredentials),
 			len(fields.ClientInfo),
 		)
-	case gensbe.NewLeaderEventSbeTemplateID:
+	case clusterwire.NewLeaderEventSbeTemplateID:
 		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.NewLeaderEventFields) []int {
 			return []int{len(fields.IngressEndpoints)}
 		})
-	case gensbe.ChallengeSbeTemplateID:
+	case clusterwire.ChallengeSbeTemplateID:
 		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.ChallengeFields) []int {
 			return []int{len(fields.EncodedChallenge)}
 		})
-	case gensbe.ChallengeResponseSbeTemplateID:
+	case clusterwire.ChallengeResponseSbeTemplateID:
 		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.ChallengeResponseFields) []int {
 			return []int{len(fields.EncodedCredentials)}
 		})
-	case gensbe.AdminRequestSbeTemplateID:
+	case clusterwire.AdminRequestSbeTemplateID:
 		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.AdminRequestFields) []int {
 			return []int{len(fields.Payload)}
 		})
-	case gensbe.AdminResponseSbeTemplateID:
+	case clusterwire.AdminResponseSbeTemplateID:
 		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.AdminResponseFields) []int {
 			return []int{len(fields.Message), len(fields.Payload)}
 		})
@@ -165,25 +165,25 @@ func encodeSessionEvent(
 
 func encodeFixture(buf []byte, offset int, fixture WireFixture) (wireEnd int, ok bool) {
 	switch fixture.TemplateID {
-	case gensbe.SessionMessageHeaderSbeTemplateID:
+	case clusterwire.SessionMessageHeaderSbeTemplateID:
 		return encodeStandard(buf, offset, fixture, codecs.EncodeSessionMessageHeader)
-	case gensbe.SessionEventSbeTemplateID:
+	case clusterwire.SessionEventSbeTemplateID:
 		return encodeStandard(buf, offset, fixture, encodeSessionEvent)
-	case gensbe.SessionConnectRequestSbeTemplateID:
+	case clusterwire.SessionConnectRequestSbeTemplateID:
 		return encodeStandard(buf, offset, fixture, codecs.EncodeSessionConnectRequest)
-	case gensbe.SessionCloseRequestSbeTemplateID:
+	case clusterwire.SessionCloseRequestSbeTemplateID:
 		return encodeStandard(buf, offset, fixture, codecs.EncodeSessionCloseRequest)
-	case gensbe.SessionKeepAliveSbeTemplateID:
+	case clusterwire.SessionKeepAliveSbeTemplateID:
 		return encodeStandard(buf, offset, fixture, codecs.EncodeSessionKeepAlive)
-	case gensbe.NewLeaderEventSbeTemplateID:
+	case clusterwire.NewLeaderEventSbeTemplateID:
 		return encodeStandard(buf, offset, fixture, codecs.EncodeNewLeaderEvent)
-	case gensbe.ChallengeSbeTemplateID:
+	case clusterwire.ChallengeSbeTemplateID:
 		return encodeStandard(buf, offset, fixture, codecs.EncodeChallenge)
-	case gensbe.ChallengeResponseSbeTemplateID:
+	case clusterwire.ChallengeResponseSbeTemplateID:
 		return encodeStandard(buf, offset, fixture, codecs.EncodeChallengeResponse)
-	case gensbe.AdminRequestSbeTemplateID:
+	case clusterwire.AdminRequestSbeTemplateID:
 		return encodeStandard(buf, offset, fixture, codecs.EncodeAdminRequest)
-	case gensbe.AdminResponseSbeTemplateID:
+	case clusterwire.AdminResponseSbeTemplateID:
 		return encodeStandard(buf, offset, fixture, codecs.EncodeAdminResponse)
 	default:
 		return 0, false

@@ -2,7 +2,7 @@ package client
 
 import (
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 // RecordingDescriptorPoller holds list-recording capture state for the archive control
@@ -66,7 +66,7 @@ func (poller *RecordingDescriptorPoller) ControlResponse() (codecs.ControlRespon
 func (poller *RecordingDescriptorPoller) latchResponse(resp codecs.ControlResponseFields) {
 	poller.response = resp
 	poller.hasResponse = true
-	if resp.Code != gensbe.ControlResponseCode_OK {
+	if resp.Code != archivewire.ControlResponseCode_OK {
 		poller.complete = true
 	}
 }

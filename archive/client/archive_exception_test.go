@@ -7,7 +7,7 @@ import (
 
 	"github.com/warrenguy/heron/archive/client"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 type mapControlResponseExpect struct {
@@ -27,7 +27,7 @@ func TestMapControlResponse(t *testing.T) {
 	}{
 		{
 			name: "ok",
-			resp: controlResponse(gensbe.ControlResponseCode_OK, 0, 7),
+			resp: controlResponse(archivewire.ControlResponseCode_OK, 0, 7),
 		},
 		{
 			name: "error_generic",
@@ -64,7 +64,7 @@ func TestMapControlResponse(t *testing.T) {
 		},
 		{
 			name: "recording_unknown",
-			resp: controlResponse(gensbe.ControlResponseCode_RECORDING_UNKNOWN, 99, 17),
+			resp: controlResponse(archivewire.ControlResponseCode_RECORDING_UNKNOWN, 99, 17),
 			want: &mapControlResponseExpect{
 				code: client.ArchiveErrorUnknownRecording,
 				corr: 17,
@@ -73,7 +73,7 @@ func TestMapControlResponse(t *testing.T) {
 		},
 		{
 			name: "subscription_unknown",
-			resp: controlResponse(gensbe.ControlResponseCode_SUBSCRIPTION_UNKNOWN, 88, 19),
+			resp: controlResponse(archivewire.ControlResponseCode_SUBSCRIPTION_UNKNOWN, 88, 19),
 			want: &mapControlResponseExpect{
 				code: client.ArchiveErrorUnknownSubscription,
 				corr: 19,
@@ -82,7 +82,7 @@ func TestMapControlResponse(t *testing.T) {
 		},
 		{
 			name: "null_value_unknown",
-			resp: controlResponse(gensbe.ControlResponseCode_NULL_VALUE, 0, 21),
+			resp: controlResponse(archivewire.ControlResponseCode_NULL_VALUE, 0, 21),
 			want: &mapControlResponseExpect{
 				code: client.ArchiveErrorGeneric,
 				corr: 21,
@@ -91,7 +91,7 @@ func TestMapControlResponse(t *testing.T) {
 		},
 		{
 			name: "error_unknown_wire_code",
-			resp: controlResponse(gensbe.ControlResponseCode(99), 0, 23),
+			resp: controlResponse(archivewire.ControlResponseCode(99), 0, 23),
 			want: &mapControlResponseExpect{
 				code: client.ArchiveErrorGeneric,
 				corr: 23,
@@ -160,7 +160,7 @@ func TestMapControlResponse_authenticationRejected(t *testing.T) {
 }
 
 func controlResponse(
-	code gensbe.ControlResponseCode,
+	code archivewire.ControlResponseCode,
 	relevantID int64,
 	correlationID int64,
 ) codecs.ControlResponseFields {
@@ -175,7 +175,7 @@ func errorControlResponse(
 	relevantID, correlationID int64,
 	message ...string,
 ) codecs.ControlResponseFields {
-	resp := controlResponse(gensbe.ControlResponseCode_ERROR, relevantID, correlationID)
+	resp := controlResponse(archivewire.ControlResponseCode_ERROR, relevantID, correlationID)
 	if len(message) > 0 {
 		resp.ErrorMessage = []byte(message[0])
 	}

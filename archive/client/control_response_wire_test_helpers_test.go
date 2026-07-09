@@ -8,7 +8,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
@@ -50,7 +50,7 @@ func encodeControlResponseWire(
 	t.Helper()
 
 	return encodeArchiveControlWire(t, func(buf []byte, offset int) int {
-		var msg gensbe.ControlResponse
+		var msg archivewire.ControlResponse
 		msg.WrapAndApplyHeader(buf, uint64(offset), uint64(len(buf))).
 			SetControlSessionId(fields.ControlSessionID).
 			SetCorrelationId(fields.CorrelationID).
@@ -71,7 +71,7 @@ func encodeChallengeWire(
 	t.Helper()
 
 	return encodeArchiveControlWire(t, func(buf []byte, offset int) int {
-		var msg gensbe.Challenge
+		var msg archivewire.Challenge
 		msg.WrapAndApplyHeader(buf, uint64(offset), uint64(len(buf))).
 			SetControlSessionId(controlSessionID).
 			SetCorrelationId(correlationID)
@@ -87,7 +87,7 @@ func encodeRecordingSignalEventWire(
 	t.Helper()
 
 	return encodeArchiveControlWire(t, func(buf []byte, offset int) int {
-		var msg gensbe.RecordingSignalEvent
+		var msg archivewire.RecordingSignalEvent
 		msg.WrapAndApplyHeader(buf, uint64(offset), uint64(len(buf))).
 			SetControlSessionId(fields.ControlSessionID).
 			SetCorrelationId(fields.CorrelationID).
@@ -106,7 +106,7 @@ func encodeRecordingDescriptorWire(
 	t.Helper()
 
 	return encodeArchiveControlWire(t, func(buf []byte, offset int) int {
-		var msg gensbe.RecordingDescriptor
+		var msg archivewire.RecordingDescriptor
 		msg.WrapAndApplyHeader(buf, uint64(offset), uint64(len(buf))).
 			SetControlSessionId(fields.ControlSessionID).
 			SetCorrelationId(fields.CorrelationID).
@@ -135,7 +135,7 @@ func encodeKeepAliveRequestWire(t *testing.T, controlSessionID int64) []byte {
 		end, ok := codecs.EncodeKeepAliveRequest(
 			buf,
 			offset,
-			gensbe.KeepAliveRequestSbeSchemaVersion,
+			archivewire.KeepAliveRequestSbeSchemaVersion,
 			codecs.KeepAliveRequestFields{
 				ControlSessionID: controlSessionID,
 				CorrelationID:    303,
@@ -153,7 +153,7 @@ func encodeWireWithSchemaID(t *testing.T, schemaID uint16) []byte {
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    controlResponseTestCorrelationID,
 		RelevantID:       7,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	}), schemaID)
 }

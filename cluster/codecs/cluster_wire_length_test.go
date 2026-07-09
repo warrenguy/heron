@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 type clusterWireOracleCase struct {
@@ -43,16 +43,16 @@ func flyweightBufLens(
 
 func clusterWireOracleCases() []clusterWireOracleCase {
 	twoVarConnectVersion := SessionConnectClientInfoMinVersion - 1
-	threeVarConnectVersion := uint16(gensbe.SessionConnectRequestSbeSchemaVersion)
+	threeVarConnectVersion := uint16(clusterwire.SessionConnectRequestSbeSchemaVersion)
 
 	return []clusterWireOracleCase{
 		{
 			name:          "session_message_header",
-			templateID:    gensbe.SessionMessageHeaderSbeTemplateID,
-			blockLength:   gensbe.SessionMessageHeaderSbeBlockLength,
-			actingVersion: gensbe.SessionMessageHeaderSbeSchemaVersion,
+			templateID:    clusterwire.SessionMessageHeaderSbeTemplateID,
+			blockLength:   clusterwire.SessionMessageHeaderSbeBlockLength,
+			actingVersion: clusterwire.SessionMessageHeaderSbeSchemaVersion,
 			encodeBody: func(buf []byte, bodyOffset int, blockLength, actingVersion uint16) int {
-				var msg gensbe.SessionMessageHeader
+				var msg clusterwire.SessionMessageHeader
 				o, l, bl, av := flyweightBufLens(buf, bodyOffset, blockLength, actingVersion)
 				msg.Wrap(buf, o, l, bl, av).
 					SetLeadershipTermId(1).
@@ -63,19 +63,19 @@ func clusterWireOracleCases() []clusterWireOracleCase {
 		},
 		{
 			name:          "session_event",
-			templateID:    gensbe.SessionEventSbeTemplateID,
-			blockLength:   SessionEventBlockLength(gensbe.SessionEventSbeSchemaVersion),
-			actingVersion: gensbe.SessionEventSbeSchemaVersion,
+			templateID:    clusterwire.SessionEventSbeTemplateID,
+			blockLength:   SessionEventBlockLength(clusterwire.SessionEventSbeSchemaVersion),
+			actingVersion: clusterwire.SessionEventSbeSchemaVersion,
 			varLens:       []int{5},
 			encodeBody: func(buf []byte, bodyOffset int, blockLength, actingVersion uint16) int {
-				var msg gensbe.SessionEvent
+				var msg clusterwire.SessionEvent
 				o, l, bl, av := flyweightBufLens(buf, bodyOffset, blockLength, actingVersion)
 				msg.Wrap(buf, o, l, bl, av).
 					SetClusterSessionId(1).
 					SetCorrelationId(2).
 					SetLeadershipTermId(3).
 					SetLeaderMemberId(4).
-					SetCode(gensbe.EventCode_OK)
+					SetCode(clusterwire.EventCode_OK)
 				msg.PutDetail("hello")
 				return int(msg.EncodedLength())
 			},
@@ -87,30 +87,30 @@ func clusterWireOracleCases() []clusterWireOracleCase {
 			actingVersion: 5,
 			varLens:       []int{9},
 			encodeBody: func(buf []byte, bodyOffset int, blockLength, actingVersion uint16) int {
-				var msg gensbe.SessionEvent
+				var msg clusterwire.SessionEvent
 				o, l, bl, av := flyweightBufLens(buf, bodyOffset, blockLength, actingVersion)
 				msg.Wrap(buf, o, l, bl, av).
 					SetClusterSessionId(40).
 					SetCorrelationId(41).
 					SetLeadershipTermId(42).
 					SetLeaderMemberId(43).
-					SetCode(gensbe.EventCode_CLOSED)
+					SetCode(clusterwire.EventCode_CLOSED)
 				msg.PutDetail("detail-v5")
 				return int(msg.EncodedLength())
 			},
 		},
 		{
 			name:       "session_connect_request_two_var",
-			templateID: gensbe.SessionConnectRequestSbeTemplateID,
+			templateID: clusterwire.SessionConnectRequestSbeTemplateID,
 			blockLength: ClusterMinRootBlockLength(
-				gensbe.SessionConnectRequestSbeTemplateID,
+				clusterwire.SessionConnectRequestSbeTemplateID,
 				twoVarConnectVersion,
-				gensbe.SessionConnectRequestSbeBlockLength,
+				clusterwire.SessionConnectRequestSbeBlockLength,
 			),
 			actingVersion: twoVarConnectVersion,
 			varLens:       []int{9, 3},
 			encodeBody: func(buf []byte, bodyOffset int, blockLength, actingVersion uint16) int {
-				var msg gensbe.SessionConnectRequest
+				var msg clusterwire.SessionConnectRequest
 				o, l, bl, av := flyweightBufLens(buf, bodyOffset, blockLength, actingVersion)
 				msg.Wrap(buf, o, l, bl, av).
 					SetCorrelationId(1).
@@ -122,16 +122,16 @@ func clusterWireOracleCases() []clusterWireOracleCase {
 		},
 		{
 			name:       "session_connect_request_three_var",
-			templateID: gensbe.SessionConnectRequestSbeTemplateID,
+			templateID: clusterwire.SessionConnectRequestSbeTemplateID,
 			blockLength: ClusterMinRootBlockLength(
-				gensbe.SessionConnectRequestSbeTemplateID,
+				clusterwire.SessionConnectRequestSbeTemplateID,
 				threeVarConnectVersion,
-				gensbe.SessionConnectRequestSbeBlockLength,
+				clusterwire.SessionConnectRequestSbeBlockLength,
 			),
 			actingVersion: threeVarConnectVersion,
 			varLens:       []int{9, 3, 6},
 			encodeBody: func(buf []byte, bodyOffset int, blockLength, actingVersion uint16) int {
-				var msg gensbe.SessionConnectRequest
+				var msg clusterwire.SessionConnectRequest
 				o, l, bl, av := flyweightBufLens(buf, bodyOffset, blockLength, actingVersion)
 				msg.Wrap(buf, o, l, bl, av).
 					SetCorrelationId(1).
@@ -144,11 +144,11 @@ func clusterWireOracleCases() []clusterWireOracleCase {
 		},
 		{
 			name:          "session_close_request",
-			templateID:    gensbe.SessionCloseRequestSbeTemplateID,
-			blockLength:   gensbe.SessionCloseRequestSbeBlockLength,
-			actingVersion: gensbe.SessionCloseRequestSbeSchemaVersion,
+			templateID:    clusterwire.SessionCloseRequestSbeTemplateID,
+			blockLength:   clusterwire.SessionCloseRequestSbeBlockLength,
+			actingVersion: clusterwire.SessionCloseRequestSbeSchemaVersion,
 			encodeBody: func(buf []byte, bodyOffset int, blockLength, actingVersion uint16) int {
-				var msg gensbe.SessionCloseRequest
+				var msg clusterwire.SessionCloseRequest
 				o, l, bl, av := flyweightBufLens(buf, bodyOffset, blockLength, actingVersion)
 				msg.Wrap(buf, o, l, bl, av).
 					SetLeadershipTermId(1).
@@ -158,11 +158,11 @@ func clusterWireOracleCases() []clusterWireOracleCase {
 		},
 		{
 			name:          "session_keep_alive",
-			templateID:    gensbe.SessionKeepAliveSbeTemplateID,
-			blockLength:   gensbe.SessionKeepAliveSbeBlockLength,
-			actingVersion: gensbe.SessionKeepAliveSbeSchemaVersion,
+			templateID:    clusterwire.SessionKeepAliveSbeTemplateID,
+			blockLength:   clusterwire.SessionKeepAliveSbeBlockLength,
+			actingVersion: clusterwire.SessionKeepAliveSbeSchemaVersion,
 			encodeBody: func(buf []byte, bodyOffset int, blockLength, actingVersion uint16) int {
-				var msg gensbe.SessionKeepAlive
+				var msg clusterwire.SessionKeepAlive
 				o, l, bl, av := flyweightBufLens(buf, bodyOffset, blockLength, actingVersion)
 				msg.Wrap(buf, o, l, bl, av).
 					SetLeadershipTermId(1).
@@ -172,12 +172,12 @@ func clusterWireOracleCases() []clusterWireOracleCase {
 		},
 		{
 			name:          "new_leader_event",
-			templateID:    gensbe.NewLeaderEventSbeTemplateID,
-			blockLength:   gensbe.NewLeaderEventSbeBlockLength,
-			actingVersion: gensbe.NewLeaderEventSbeSchemaVersion,
+			templateID:    clusterwire.NewLeaderEventSbeTemplateID,
+			blockLength:   clusterwire.NewLeaderEventSbeBlockLength,
+			actingVersion: clusterwire.NewLeaderEventSbeSchemaVersion,
 			varLens:       []int{15},
 			encodeBody: func(buf []byte, bodyOffset int, blockLength, actingVersion uint16) int {
-				var msg gensbe.NewLeaderEvent
+				var msg clusterwire.NewLeaderEvent
 				o, l, bl, av := flyweightBufLens(buf, bodyOffset, blockLength, actingVersion)
 				msg.Wrap(buf, o, l, bl, av).
 					SetLeadershipTermId(1).
@@ -189,12 +189,12 @@ func clusterWireOracleCases() []clusterWireOracleCase {
 		},
 		{
 			name:          "challenge",
-			templateID:    gensbe.ChallengeSbeTemplateID,
-			blockLength:   gensbe.ChallengeSbeBlockLength,
-			actingVersion: gensbe.ChallengeSbeSchemaVersion,
+			templateID:    clusterwire.ChallengeSbeTemplateID,
+			blockLength:   clusterwire.ChallengeSbeBlockLength,
+			actingVersion: clusterwire.ChallengeSbeSchemaVersion,
 			varLens:       []int{4},
 			encodeBody: func(buf []byte, bodyOffset int, blockLength, actingVersion uint16) int {
-				var msg gensbe.Challenge
+				var msg clusterwire.Challenge
 				o, l, bl, av := flyweightBufLens(buf, bodyOffset, blockLength, actingVersion)
 				msg.Wrap(buf, o, l, bl, av).
 					SetCorrelationId(1).
@@ -205,12 +205,12 @@ func clusterWireOracleCases() []clusterWireOracleCase {
 		},
 		{
 			name:          "challenge_response",
-			templateID:    gensbe.ChallengeResponseSbeTemplateID,
-			blockLength:   gensbe.ChallengeResponseSbeBlockLength,
-			actingVersion: gensbe.ChallengeResponseSbeSchemaVersion,
+			templateID:    clusterwire.ChallengeResponseSbeTemplateID,
+			blockLength:   clusterwire.ChallengeResponseSbeBlockLength,
+			actingVersion: clusterwire.ChallengeResponseSbeSchemaVersion,
 			varLens:       []int{4},
 			encodeBody: func(buf []byte, bodyOffset int, blockLength, actingVersion uint16) int {
-				var msg gensbe.ChallengeResponse
+				var msg clusterwire.ChallengeResponse
 				o, l, bl, av := flyweightBufLens(buf, bodyOffset, blockLength, actingVersion)
 				msg.Wrap(buf, o, l, bl, av).
 					SetCorrelationId(1).
@@ -221,36 +221,36 @@ func clusterWireOracleCases() []clusterWireOracleCase {
 		},
 		{
 			name:          "admin_request",
-			templateID:    gensbe.AdminRequestSbeTemplateID,
-			blockLength:   gensbe.AdminRequestSbeBlockLength,
-			actingVersion: gensbe.AdminRequestSbeSchemaVersion,
+			templateID:    clusterwire.AdminRequestSbeTemplateID,
+			blockLength:   clusterwire.AdminRequestSbeBlockLength,
+			actingVersion: clusterwire.AdminRequestSbeSchemaVersion,
 			varLens:       []int{7},
 			encodeBody: func(buf []byte, bodyOffset int, blockLength, actingVersion uint16) int {
-				var msg gensbe.AdminRequest
+				var msg clusterwire.AdminRequest
 				o, l, bl, av := flyweightBufLens(buf, bodyOffset, blockLength, actingVersion)
 				msg.Wrap(buf, o, l, bl, av).
 					SetLeadershipTermId(1).
 					SetClusterSessionId(2).
 					SetCorrelationId(3).
-					SetRequestType(gensbe.AdminRequestType_SNAPSHOT)
+					SetRequestType(clusterwire.AdminRequestType_SNAPSHOT)
 				msg.PutPayload("payload")
 				return int(msg.EncodedLength())
 			},
 		},
 		{
 			name:          "admin_response",
-			templateID:    gensbe.AdminResponseSbeTemplateID,
-			blockLength:   gensbe.AdminResponseSbeBlockLength,
-			actingVersion: gensbe.AdminResponseSbeSchemaVersion,
+			templateID:    clusterwire.AdminResponseSbeTemplateID,
+			blockLength:   clusterwire.AdminResponseSbeBlockLength,
+			actingVersion: clusterwire.AdminResponseSbeSchemaVersion,
 			varLens:       []int{7, 7},
 			encodeBody: func(buf []byte, bodyOffset int, blockLength, actingVersion uint16) int {
-				var msg gensbe.AdminResponse
+				var msg clusterwire.AdminResponse
 				o, l, bl, av := flyweightBufLens(buf, bodyOffset, blockLength, actingVersion)
 				msg.Wrap(buf, o, l, bl, av).
 					SetClusterSessionId(1).
 					SetCorrelationId(2).
-					SetRequestType(gensbe.AdminRequestType_SNAPSHOT).
-					SetResponseCode(gensbe.AdminResponseCode_OK)
+					SetRequestType(clusterwire.AdminRequestType_SNAPSHOT).
+					SetResponseCode(clusterwire.AdminResponseCode_OK)
 				msg.PutMessage("message")
 				msg.PutPayload("payload")
 				return int(msg.EncodedLength())
@@ -372,16 +372,19 @@ func TestClusterWireMetadataConstants_matchTemplateExtrema(t *testing.T) {
 		templateID uint16
 		version    uint16
 	}{
-		{gensbe.SessionMessageHeaderSbeTemplateID, gensbe.SessionMessageHeaderSbeSchemaVersion},
-		{gensbe.SessionEventSbeTemplateID, gensbe.SessionEventSbeSchemaVersion},
-		{gensbe.SessionConnectRequestSbeTemplateID, gensbe.SessionConnectRequestSbeSchemaVersion},
-		{gensbe.SessionCloseRequestSbeTemplateID, gensbe.SessionCloseRequestSbeSchemaVersion},
-		{gensbe.SessionKeepAliveSbeTemplateID, gensbe.SessionKeepAliveSbeSchemaVersion},
-		{gensbe.NewLeaderEventSbeTemplateID, gensbe.NewLeaderEventSbeSchemaVersion},
-		{gensbe.ChallengeSbeTemplateID, gensbe.ChallengeSbeSchemaVersion},
-		{gensbe.ChallengeResponseSbeTemplateID, gensbe.ChallengeResponseSbeSchemaVersion},
-		{gensbe.AdminRequestSbeTemplateID, gensbe.AdminRequestSbeSchemaVersion},
-		{gensbe.AdminResponseSbeTemplateID, gensbe.AdminResponseSbeSchemaVersion},
+		{clusterwire.SessionMessageHeaderSbeTemplateID, clusterwire.SessionMessageHeaderSbeSchemaVersion},
+		{clusterwire.SessionEventSbeTemplateID, clusterwire.SessionEventSbeSchemaVersion},
+		{
+			clusterwire.SessionConnectRequestSbeTemplateID,
+			clusterwire.SessionConnectRequestSbeSchemaVersion,
+		},
+		{clusterwire.SessionCloseRequestSbeTemplateID, clusterwire.SessionCloseRequestSbeSchemaVersion},
+		{clusterwire.SessionKeepAliveSbeTemplateID, clusterwire.SessionKeepAliveSbeSchemaVersion},
+		{clusterwire.NewLeaderEventSbeTemplateID, clusterwire.NewLeaderEventSbeSchemaVersion},
+		{clusterwire.ChallengeSbeTemplateID, clusterwire.ChallengeSbeSchemaVersion},
+		{clusterwire.ChallengeResponseSbeTemplateID, clusterwire.ChallengeResponseSbeSchemaVersion},
+		{clusterwire.AdminRequestSbeTemplateID, clusterwire.AdminRequestSbeSchemaVersion},
+		{clusterwire.AdminResponseSbeTemplateID, clusterwire.AdminResponseSbeSchemaVersion},
 	}
 
 	var maxRoot uint16
@@ -402,15 +405,15 @@ func TestClusterWireMetadataConstants_matchTemplateExtrema(t *testing.T) {
 
 func TestSessionConnectRequestMaxVarFieldCount_matchesOracle(t *testing.T) {
 	count, ok := ClusterVarFieldCount(
-		gensbe.SessionConnectRequestSbeTemplateID,
-		uint16(gensbe.SessionConnectRequestSbeSchemaVersion),
+		clusterwire.SessionConnectRequestSbeTemplateID,
+		uint16(clusterwire.SessionConnectRequestSbeSchemaVersion),
 	)
 	require.True(t, ok)
 	require.Equal(t, sessionConnectRequestMaxVarFieldCount, count)
 }
 
 func TestSessionConnectRequestWireLen_rejectsInvalidVarLens(t *testing.T) {
-	actingVersion := uint16(gensbe.SessionConnectRequestSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionConnectRequestSbeSchemaVersion)
 
 	tests := []struct {
 		name                  string
@@ -438,7 +441,7 @@ func TestSessionConnectRequestWireLen_rejectsInvalidVarLens(t *testing.T) {
 
 func TestSessionConnectRequestVarLensInto_rejectsInsufficientDst(t *testing.T) {
 	twoVarConnectVersion := SessionConnectClientInfoMinVersion - 1
-	threeVarConnectVersion := uint16(gensbe.SessionConnectRequestSbeSchemaVersion)
+	threeVarConnectVersion := uint16(clusterwire.SessionConnectRequestSbeSchemaVersion)
 
 	tests := []struct {
 		name          string
@@ -468,7 +471,7 @@ func TestSessionConnectRequestVarLensInto_rejectsInsufficientDst(t *testing.T) {
 }
 
 func TestClusterWireBodyLen_rejectsInvalidLengths(t *testing.T) {
-	blockLength := gensbe.SessionEventSbeBlockLength
+	blockLength := clusterwire.SessionEventSbeBlockLength
 
 	t.Run("negative_var_len", func(t *testing.T) {
 		requireClusterWireRejects(t, blockLength, -1)

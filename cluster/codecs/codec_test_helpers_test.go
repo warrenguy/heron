@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 const (
@@ -21,17 +21,17 @@ var (
 	messageHeaderLen                      = codecs.MessageHeaderEncodedLen()
 	sessionConnectClientInfoMinVersion    = codecs.SessionConnectClientInfoMinVersion
 	sessionEventLeaderHeartbeatMinVersion = codecs.SessionEventLeaderHeartbeatMinVersion
-	codecAllEventCodes                    = []gensbe.EventCode{
-		gensbe.EventCode_OK,
-		gensbe.EventCode_ERROR,
-		gensbe.EventCode_REDIRECT,
-		gensbe.EventCode_AUTHENTICATION_REJECTED,
-		gensbe.EventCode_CLOSED,
+	codecAllEventCodes                    = []clusterwire.EventCode{
+		clusterwire.EventCode_OK,
+		clusterwire.EventCode_ERROR,
+		clusterwire.EventCode_REDIRECT,
+		clusterwire.EventCode_AUTHENTICATION_REJECTED,
+		clusterwire.EventCode_CLOSED,
 	}
-	codecAllAdminResponseCodes = []gensbe.AdminResponseCode{
-		gensbe.AdminResponseCode_OK,
-		gensbe.AdminResponseCode_ERROR,
-		gensbe.AdminResponseCode_UNAUTHORISED_ACCESS,
+	codecAllAdminResponseCodes = []clusterwire.AdminResponseCode{
+		clusterwire.AdminResponseCode_OK,
+		clusterwire.AdminResponseCode_ERROR,
+		clusterwire.AdminResponseCode_UNAUTHORISED_ACCESS,
 	}
 	// clusterLargeVarPayload is a multi-kilobyte var field for large-field encode/decode
 	// tests without materializing the full ClusterEncodeMaxVarLen bound.
@@ -128,7 +128,7 @@ func requireEncodedLengthMatchesWire(
 	_, gotTemplateID, schemaID, version, ok := codecs.DecodeMessageHeader(buf, offset)
 	require.True(tb, ok)
 	require.Equal(tb, templateID, gotTemplateID)
-	require.Equal(tb, gensbe.MessageHeaderSbeSchemaID, schemaID)
+	require.Equal(tb, clusterwire.MessageHeaderSbeSchemaID, schemaID)
 	require.Equal(tb, actingVersion, version)
 
 	bodyEnd, ok := codecs.ClusterMessageWireEnd(buf, offset, codecTestMaxVarLen)
@@ -264,7 +264,7 @@ func runCodecRoundtripCases(
 
 func codecFuzzSeedBuffers() [][]byte {
 	const (
-		actingVersion   = gensbe.SessionMessageHeaderSbeSchemaVersion
+		actingVersion   = clusterwire.SessionMessageHeaderSbeSchemaVersion
 		seedEncodeCount = 12
 	)
 	buf := make([]byte, fuzzClusterCodecMaxLen)
@@ -298,7 +298,7 @@ func codecFuzzSeedBuffers() [][]byte {
 				CorrelationID:    2,
 				LeadershipTermID: 3,
 				LeaderMemberID:   4,
-				Code:             gensbe.EventCode_OK,
+				Code:             clusterwire.EventCode_OK,
 				Detail:           []byte("ok"),
 			},
 		)
@@ -311,7 +311,7 @@ func codecFuzzSeedBuffers() [][]byte {
 				CorrelationID:    8,
 				LeadershipTermID: 7,
 				LeaderMemberID:   6,
-				Code:             gensbe.EventCode_ERROR,
+				Code:             clusterwire.EventCode_ERROR,
 				Detail:           nil,
 			},
 		)
@@ -382,7 +382,7 @@ func codecFuzzSeedBuffers() [][]byte {
 			LeadershipTermID: 1,
 			ClusterSessionID: 2,
 			CorrelationID:    3,
-			RequestType:      gensbe.AdminRequestType_SNAPSHOT,
+			RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
 		})
 	})
 
@@ -390,8 +390,8 @@ func codecFuzzSeedBuffers() [][]byte {
 		return codecs.EncodeAdminResponse(b, 0, actingVersion, codecs.AdminResponseFields{
 			ClusterSessionID: 4,
 			CorrelationID:    5,
-			RequestType:      gensbe.AdminRequestType_SNAPSHOT,
-			ResponseCode:     gensbe.AdminResponseCode_OK,
+			RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
+			ResponseCode:     clusterwire.AdminResponseCode_OK,
 			Message:          []byte("snapshot complete"),
 		})
 	})

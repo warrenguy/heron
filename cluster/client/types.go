@@ -1,27 +1,27 @@
 package client
 
 import (
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-// EventCode is an SBE enum alias from gensbe for cluster session events.
-type EventCode = gensbe.EventCode
+// EventCode is an SBE enum alias from clusterwire for cluster session events.
+type EventCode = clusterwire.EventCode
 
-// AdminRequestType is an SBE enum alias from gensbe for admin request types.
-type AdminRequestType = gensbe.AdminRequestType
+// AdminRequestType is an SBE enum alias from clusterwire for admin request types.
+type AdminRequestType = clusterwire.AdminRequestType
 
-// AdminResponseCode is an SBE enum alias from gensbe for admin response codes.
-type AdminResponseCode = gensbe.AdminResponseCode
+// AdminResponseCode is an SBE enum alias from clusterwire for admin response codes.
+type AdminResponseCode = clusterwire.AdminResponseCode
 
-// Cluster egress and admin SBE enum wire values re-exported from gensbe.
+// Cluster egress and admin SBE enum wire values re-exported from clusterwire.
 const (
-	EventCodeOK                         = gensbe.EventCode_OK
-	EventCodeError                      = gensbe.EventCode_ERROR
-	EventCodeRedirect                   = gensbe.EventCode_REDIRECT
-	EventCodeAuthenticationRejected     = gensbe.EventCode_AUTHENTICATION_REJECTED
-	EventCodeClosed                     = gensbe.EventCode_CLOSED
-	AdminRequestTypeSnapshot            = gensbe.AdminRequestType_SNAPSHOT
-	AdminResponseCodeOK                 = gensbe.AdminResponseCode_OK
-	AdminResponseCodeError              = gensbe.AdminResponseCode_ERROR
-	AdminResponseCodeUnauthorisedAccess = gensbe.AdminResponseCode_UNAUTHORISED_ACCESS
+	EventCodeOK                         = clusterwire.EventCode_OK
+	EventCodeError                      = clusterwire.EventCode_ERROR
+	EventCodeRedirect                   = clusterwire.EventCode_REDIRECT
+	EventCodeAuthenticationRejected     = clusterwire.EventCode_AUTHENTICATION_REJECTED
+	EventCodeClosed                     = clusterwire.EventCode_CLOSED
+	AdminRequestTypeSnapshot            = clusterwire.AdminRequestType_SNAPSHOT
+	AdminResponseCodeOK                 = clusterwire.AdminResponseCode_OK
+	AdminResponseCodeError              = clusterwire.AdminResponseCode_ERROR
+	AdminResponseCodeUnauthorisedAccess = clusterwire.AdminResponseCode_UNAUTHORISED_ACCESS
 )

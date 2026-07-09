@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 func TestTryDecodeByTemplate_rejects(t *testing.T) {
@@ -63,7 +63,7 @@ func TestTryDecodeByTemplate_rejects(t *testing.T) {
 			name: "block_length_below_min",
 			buf: func() []byte {
 				return cloneAndMutate(validWire, func(w []byte) {
-					w[0] = byte(gensbe.ControlResponseSbeBlockLength - 1)
+					w[0] = byte(archivewire.ControlResponseSbeBlockLength - 1)
 					w[1] = 0
 				})
 			},
@@ -72,7 +72,7 @@ func TestTryDecodeByTemplate_rejects(t *testing.T) {
 			name: "block_length_above_max",
 			buf: func() []byte {
 				return cloneAndMutate(validWire, func(w []byte) {
-					w[0] = byte(gensbe.ControlResponseSbeBlockLength + 1)
+					w[0] = byte(archivewire.ControlResponseSbeBlockLength + 1)
 					w[1] = 0
 				})
 			},
@@ -135,7 +135,7 @@ func TestTryDecodeAt_rejects(t *testing.T) {
 				return ok
 			},
 			hasVar:  true,
-			wrongID: gensbe.ConnectRequestSbeTemplateID,
+			wrongID: archivewire.ConnectRequestSbeTemplateID,
 		},
 		{
 			name: "recording_signal_event",
@@ -147,7 +147,7 @@ func TestTryDecodeAt_rejects(t *testing.T) {
 				return ok
 			},
 			hasVar:  false,
-			wrongID: gensbe.ControlResponseSbeTemplateID,
+			wrongID: archivewire.ControlResponseSbeTemplateID,
 		},
 		{
 			name: "recording_descriptor",
@@ -159,7 +159,7 @@ func TestTryDecodeAt_rejects(t *testing.T) {
 				return ok
 			},
 			hasVar:  true,
-			wrongID: gensbe.RecordingSignalEventSbeTemplateID,
+			wrongID: archivewire.RecordingSignalEventSbeTemplateID,
 		},
 		{
 			name: "challenge",
@@ -171,7 +171,7 @@ func TestTryDecodeAt_rejects(t *testing.T) {
 				return ok
 			},
 			hasVar:  true,
-			wrongID: gensbe.ChallengeResponseSbeTemplateID,
+			wrongID: archivewire.ChallengeResponseSbeTemplateID,
 		},
 	}
 
@@ -255,7 +255,7 @@ func TestArchiveMessageWireEnd_rejects_negative_max_var_len(t *testing.T) {
 		ControlSessionID: 1,
 		CorrelationID:    2,
 		RelevantID:       3,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          7,
 		ErrorMessage:     []byte("x"),
 	})
@@ -275,7 +275,7 @@ func TestTryDecodeByTemplate_allows_trailing_bytes(t *testing.T) {
 	buf[wireEnd+1] = 0xAD
 	decoded, ok := codecs.TryDecodeByTemplate(buf[:wireEnd+8], 0, codecTestMaxVarLen)
 	require.True(t, ok)
-	require.Equal(t, gensbe.StartRecordingRequestSbeTemplateID, decoded.TemplateID)
+	require.Equal(t, archivewire.StartRecordingRequestSbeTemplateID, decoded.TemplateID)
 	requireDecodedArchiveFields(t, fields, decoded.Fields)
 }
 
@@ -284,7 +284,7 @@ func TestTryDecodeByTemplate_truncated_request_var_field(t *testing.T) {
 		ControlSessionID: 1,
 		CorrelationID:    2,
 		StreamID:         3,
-		SourceLocation:   gensbe.SourceLocation_REMOTE,
+		SourceLocation:   archivewire.SourceLocation_REMOTE,
 		Channel:          bytes.Repeat([]byte{0x41}, 16),
 	}
 	buf := make([]byte, fuzzArchiveCodecMaxLen)
@@ -298,7 +298,7 @@ func TestTryDecodeByTemplate_truncated_request_var_field(t *testing.T) {
 func TestEncodeArchiveWire_bufferBounds(t *testing.T) {
 	fields := testStartRecordingRequestIPC
 	wireLen, ok := codecs.ArchiveWireMessageLen(
-		gensbe.StartRecordingRequestSbeBlockLength,
+		archivewire.StartRecordingRequestSbeBlockLength,
 		len(fields.Channel),
 	)
 	require.True(t, ok)
@@ -334,7 +334,7 @@ func TestEncodeArchiveWire_bufferBounds(t *testing.T) {
 func TestEncodeArchiveWire_oversizeVarField(t *testing.T) {
 	t.Run("wire_message_len_rejects_per_field_over_encode_max", func(t *testing.T) {
 		wireLen, ok := codecs.ArchiveWireMessageLen(
-			gensbe.StartRecordingRequestSbeBlockLength,
+			archivewire.StartRecordingRequestSbeBlockLength,
 			codecs.ArchiveEncodeMaxVarLen+1,
 		)
 		require.False(t, ok)
@@ -346,11 +346,11 @@ func TestEncodeArchiveWire_oversizeVarField(t *testing.T) {
 			ControlSessionID: 1,
 			CorrelationID:    2,
 			StreamID:         3,
-			SourceLocation:   gensbe.SourceLocation_LOCAL,
+			SourceLocation:   archivewire.SourceLocation_LOCAL,
 			Channel:          make([]byte, codecs.ArchiveEncodeMaxVarLen+1),
 		}
 		bufLen := messageHeaderLen +
-			int(gensbe.StartRecordingRequestSbeBlockLength) +
+			int(archivewire.StartRecordingRequestSbeBlockLength) +
 			codecs.VarLengthPrefixSize
 		buf := make([]byte, bufLen)
 		wireEnd, ok := codecs.EncodeStartRecordingRequest(buf, 0, archiveSchemaVersion, fields)

@@ -13,12 +13,12 @@ case "${TARGET}" in
 cluster)
 	SCHEMA="${ROOT}/specs/cluster-codecs-client.xml"
 	OUT_DIR="${ROOT}/cluster/codecs"
-	NAMESPACE="gensbe"
+	NAMESPACE="clusterwire"
 	;;
 archive)
 	SCHEMA="${ROOT}/specs/archive-codecs-client.xml"
 	OUT_DIR="${ROOT}/archive/codecs"
-	NAMESPACE="gensbe"
+	NAMESPACE="archivewire"
 	;;
 nodestate)
 	SCHEMA="${ROOT}/specs/node-state-codecs.xml"

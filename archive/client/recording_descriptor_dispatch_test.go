@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/internal/testutil"
 )
 
@@ -33,7 +33,7 @@ func recordingDescriptorTestFields(correlationID int64) codecs.RecordingDescript
 func recordingDescriptorControlResponseWire(
 	t *testing.T,
 	correlationID int64,
-	code gensbe.ControlResponseCode,
+	code archivewire.ControlResponseCode,
 ) []byte {
 	t.Helper()
 	return encodeControlResponseWire(t, codecs.ControlResponseFields{
@@ -66,7 +66,7 @@ func TestHandleRecordingDescriptorFragment(t *testing.T) {
 				return recordingDescriptorControlResponseWire(
 					t,
 					recordingDescriptorTestCorrelationID,
-					gensbe.ControlResponseCode_OK,
+					archivewire.ControlResponseCode_OK,
 				)
 			},
 			wantCapture: false,
@@ -126,7 +126,7 @@ func TestHandleDescriptorControlResponseFragment(t *testing.T) {
 				return recordingDescriptorControlResponseWire(
 					t,
 					recordingDescriptorTestCorrelationID,
-					gensbe.ControlResponseCode_OK,
+					archivewire.ControlResponseCode_OK,
 				)
 			},
 			wantResponse: true,
@@ -139,7 +139,7 @@ func TestHandleDescriptorControlResponseFragment(t *testing.T) {
 				return recordingDescriptorControlResponseWire(
 					t,
 					recordingDescriptorTestCorrelationID,
-					gensbe.ControlResponseCode_ERROR,
+					archivewire.ControlResponseCode_ERROR,
 				)
 			},
 			wantResponse: true,
@@ -152,7 +152,7 @@ func TestHandleDescriptorControlResponseFragment(t *testing.T) {
 				return recordingDescriptorControlResponseWire(
 					t,
 					recordingDescriptorTestCorrelationID+1,
-					gensbe.ControlResponseCode_OK,
+					archivewire.ControlResponseCode_OK,
 				)
 			},
 			wantResponse: false,
@@ -174,7 +174,7 @@ func TestHandleDescriptorControlResponseFragment(t *testing.T) {
 					recordingDescriptorControlResponseWire(
 						t,
 						recordingDescriptorTestCorrelationID,
-						gensbe.ControlResponseCode_OK,
+						archivewire.ControlResponseCode_OK,
 					),
 					0xFFFF,
 				)
@@ -243,7 +243,7 @@ func TestRecordingDescriptorPoller_descriptorFirstRetainsChannelAfterBufferOverw
 		recordingDescriptorControlResponseWire(
 			t,
 			recordingDescriptorTestCorrelationID,
-			gensbe.ControlResponseCode_OK,
+			archivewire.ControlResponseCode_OK,
 		),
 	)
 
@@ -270,7 +270,7 @@ func TestRecordingDescriptorPoller_completesOnResponseAndDescriptor(t *testing.T
 			responseWire := recordingDescriptorControlResponseWire(
 				t,
 				recordingDescriptorTestCorrelationID,
-				gensbe.ControlResponseCode_OK,
+				archivewire.ControlResponseCode_OK,
 			)
 			descriptorWire := encodeRecordingDescriptorWire(
 				t,
@@ -303,7 +303,7 @@ func TestRecordingDescriptorPoller_foreignDescriptorLeavesIncomplete(t *testing.
 		recordingDescriptorControlResponseWire(
 			t,
 			recordingDescriptorTestCorrelationID,
-			gensbe.ControlResponseCode_OK,
+			archivewire.ControlResponseCode_OK,
 		),
 	)
 	handleRecordingDescriptorFragment(
@@ -323,7 +323,7 @@ func TestHandleDescriptorControlResponseFragment_ZeroAllocs(t *testing.T) {
 	wire := recordingDescriptorControlResponseWire(
 		t,
 		recordingDescriptorTestCorrelationID,
-		gensbe.ControlResponseCode_OK,
+		archivewire.ControlResponseCode_OK,
 	)
 
 	testutil.AssertZeroAllocs(t, "handleDescriptorControlResponseFragment", 100, func() {

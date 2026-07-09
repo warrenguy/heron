@@ -132,10 +132,11 @@ sbe-generate$(1): ## Regenerate $(2) SBE flyweights
 	./scripts/generate-sbe.sh $(3)
 endef
 
-# $(1)=target suffix (empty, -archive, or -nodestate), $(2)=parent package dir, $(3)=generated subdir (default gensbe)
+# $(1)=target suffix (empty, -archive, or -nodestate), $(2)=parent package dir, $(3)=generated subdir
 define sbe-stale-check
+$(if $(3),,$(error sbe-stale-check: missing generated subdir arg for $(2)))
 check-sbe-stale$(1): sbe-generate$(1)
-	@git diff --exit-code $(2)/$(or $(3),gensbe)/
+	@git diff --exit-code $(2)/$(3)/
 $(eval $(call optional-target,check-sbe-stale$(1),command -v java >/dev/null,java not installed))
 endef
 
@@ -174,8 +175,8 @@ $(eval $(call optional-target,check-catalog-stale,command -v go >/dev/null,go no
 check-catalog-stale-selftest:
 	@CLUSTER_SBE_CATALOG_JSON=$(CLUSTER_SBE_CATALOG_JSON) ./scripts/check-catalog-stale-selftest.sh
 
-$(eval $(call sbe-stale-check,,cluster/codecs))
-$(eval $(call sbe-stale-check,-archive,archive/codecs))
+$(eval $(call sbe-stale-check,,cluster/codecs,clusterwire))
+$(eval $(call sbe-stale-check,-archive,archive/codecs,archivewire))
 $(eval $(call sbe-stale-check,-nodestate,cluster/election,nodewire))
 
 INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe,cluster_java,archive_java

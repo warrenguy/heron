@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
@@ -261,7 +261,7 @@ func encodeSessionMessageHeaderWire(
 
 	return encodeSchemaWire(
 		t,
-		gensbe.SessionMessageHeaderSbeSchemaVersion,
+		clusterwire.SessionMessageHeaderSbeSchemaVersion,
 		func(buf []byte, offset int, actingVersion uint16) (int, bool) {
 			end, ok := codecs.EncodeSessionMessageHeader(buf, offset, actingVersion, fields)
 			if !ok {
@@ -284,7 +284,7 @@ func defaultSessionEventFields(detail []byte) codecs.SessionEventFields {
 		CorrelationID:    egressTestSessionEventCorrelationID,
 		LeadershipTermID: 88,
 		LeaderMemberID:   3,
-		Code:             gensbe.EventCode_OK,
+		Code:             clusterwire.EventCode_OK,
 		Detail:           detail,
 	}
 }
@@ -305,7 +305,7 @@ func encodeSessionEventWire(t *testing.T, clusterSessionID int64) []byte {
 		t,
 		clusterSessionID,
 		defaultSessionEventFields([]byte("session-event-detail")),
-		gensbe.SessionEventSbeSchemaVersion,
+		clusterwire.SessionEventSbeSchemaVersion,
 	)
 }
 
@@ -316,7 +316,7 @@ func encodeSessionEventWireWithDetail(t *testing.T, clusterSessionID int64, deta
 		t,
 		clusterSessionID,
 		defaultSessionEventFields(detail),
-		gensbe.SessionEventSbeSchemaVersion,
+		clusterwire.SessionEventSbeSchemaVersion,
 	)
 }
 
@@ -353,7 +353,7 @@ func encodeSessionEventWireWithLeaderHeartbeat(
 		t,
 		clusterSessionID,
 		fields,
-		gensbe.SessionEventSbeSchemaVersion,
+		clusterwire.SessionEventSbeSchemaVersion,
 	)
 }
 
@@ -395,12 +395,12 @@ func encodeSessionEventClosedWire(t *testing.T, clusterSessionID int64) []byte {
 	t.Helper()
 
 	fields := defaultSessionEventFields([]byte("session-closed"))
-	fields.Code = gensbe.EventCode_CLOSED
+	fields.Code = clusterwire.EventCode_CLOSED
 	return encodeSessionEventWireWithFields(
 		t,
 		clusterSessionID,
 		fields,
-		gensbe.SessionEventSbeSchemaVersion,
+		clusterwire.SessionEventSbeSchemaVersion,
 	)
 }
 
@@ -412,7 +412,7 @@ func encodeNewLeaderWireWithEndpoints(
 ) []byte {
 	t.Helper()
 
-	return encodeCodecWire(t, gensbe.NewLeaderEventSbeSchemaVersion, codecs.NewLeaderEventFields{
+	return encodeCodecWire(t, clusterwire.NewLeaderEventSbeSchemaVersion, codecs.NewLeaderEventFields{
 		LeadershipTermID: 200,
 		ClusterSessionID: clusterSessionID,
 		LeaderMemberID:   leaderMemberID,
@@ -429,11 +429,11 @@ func encodeNewLeaderWire(t *testing.T, clusterSessionID int64) []byte {
 func encodeAdminResponseWire(t *testing.T, clusterSessionID int64) []byte {
 	t.Helper()
 
-	return encodeCodecWire(t, gensbe.AdminResponseSbeSchemaVersion, codecs.AdminResponseFields{
+	return encodeCodecWire(t, clusterwire.AdminResponseSbeSchemaVersion, codecs.AdminResponseFields{
 		ClusterSessionID: clusterSessionID,
 		CorrelationID:    303,
-		RequestType:      gensbe.AdminRequestType_SNAPSHOT,
-		ResponseCode:     gensbe.AdminResponseCode_OK,
+		RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
+		ResponseCode:     clusterwire.AdminResponseCode_OK,
 		Message:          []byte("admin-ok"),
 		Payload:          []byte("admin-payload"),
 	}, codecs.EncodeAdminResponse)
@@ -446,7 +446,7 @@ func encodeChallengeWireWithCorrelation(
 ) []byte {
 	t.Helper()
 
-	return encodeCodecWire(t, gensbe.ChallengeSbeSchemaVersion, codecs.ChallengeFields{
+	return encodeCodecWire(t, clusterwire.ChallengeSbeSchemaVersion, codecs.ChallengeFields{
 		CorrelationID:    correlationID,
 		ClusterSessionID: clusterSessionID,
 		EncodedChallenge: []byte("challenge-bytes"),
@@ -462,7 +462,7 @@ func encodeChallengeWire(t *testing.T, clusterSessionID int64) []byte {
 func encodeChallengeWireEmpty(t *testing.T, clusterSessionID int64) []byte {
 	t.Helper()
 
-	return encodeCodecWire(t, gensbe.ChallengeSbeSchemaVersion, codecs.ChallengeFields{
+	return encodeCodecWire(t, clusterwire.ChallengeSbeSchemaVersion, codecs.ChallengeFields{
 		CorrelationID:    505,
 		ClusterSessionID: clusterSessionID,
 		EncodedChallenge: nil,
@@ -472,10 +472,14 @@ func encodeChallengeWireEmpty(t *testing.T, clusterSessionID int64) []byte {
 func encodeSessionKeepAliveWire(t *testing.T, clusterSessionID int64) []byte {
 	t.Helper()
 
-	return encodeCodecWire(t, gensbe.SessionKeepAliveSbeSchemaVersion, codecs.SessionKeepAliveFields{
-		LeadershipTermID: 1,
-		ClusterSessionID: clusterSessionID,
-	}, codecs.EncodeSessionKeepAlive)
+	return encodeCodecWire(
+		t,
+		clusterwire.SessionKeepAliveSbeSchemaVersion,
+		codecs.SessionKeepAliveFields{
+			LeadershipTermID: 1,
+			ClusterSessionID: clusterSessionID,
+		}, codecs.EncodeSessionKeepAlive,
+	)
 }
 
 func encodeWireWithSchemaID(t *testing.T, schemaID uint16) []byte {
@@ -820,7 +824,7 @@ func encodeSessionEventForConnectWire(t *testing.T, correlationID int64) []byte 
 		t,
 		egressTestClusterSessionID,
 		sessionEventFieldsForCorrelation(correlationID, []byte("session-event-detail")),
-		gensbe.SessionEventSbeSchemaVersion,
+		clusterwire.SessionEventSbeSchemaVersion,
 	)
 }
 
@@ -828,13 +832,13 @@ func encodeSessionEventRedirectWire(t *testing.T, correlationID int64, endpoints
 	t.Helper()
 
 	fields := sessionEventFieldsForCorrelation(correlationID, []byte(endpoints))
-	fields.Code = gensbe.EventCode_REDIRECT
+	fields.Code = clusterwire.EventCode_REDIRECT
 	fields.LeaderMemberID = 1
 	return encodeSessionEventWireWithFields(
 		t,
 		egressTestClusterSessionID,
 		fields,
-		gensbe.SessionEventSbeSchemaVersion,
+		clusterwire.SessionEventSbeSchemaVersion,
 	)
 }
 

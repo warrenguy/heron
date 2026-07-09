@@ -7,7 +7,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/internal/testutil"
 )
@@ -18,7 +18,7 @@ type capturedRecordingSignal struct {
 	recordingID      int64
 	subscriptionID   int64
 	position         int64
-	signal           gensbe.RecordingSignal
+	signal           archivewire.RecordingSignal
 	calls            int
 }
 
@@ -34,7 +34,7 @@ func recordingSignalCapture(captured *capturedRecordingSignal) RecordingSignalHa
 	}
 }
 
-func recordingSignalWire(t *testing.T, signal gensbe.RecordingSignal) []byte {
+func recordingSignalWire(t *testing.T, signal archivewire.RecordingSignal) []byte {
 	t.Helper()
 	return encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
 		ControlSessionID: controlResponseTestControlSessionID,
@@ -58,10 +58,10 @@ func invokeHandleArchiveControlFragment(
 func TestHandleArchiveControlFragment_signalDispatch(t *testing.T) {
 	cases := []struct {
 		name   string
-		signal gensbe.RecordingSignal
+		signal archivewire.RecordingSignal
 	}{
-		{name: "start", signal: gensbe.RecordingSignal_START},
-		{name: "stop", signal: gensbe.RecordingSignal_STOP},
+		{name: "start", signal: archivewire.RecordingSignal_START},
+		{name: "stop", signal: archivewire.RecordingSignal_STOP},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,7 +87,7 @@ func TestHandleArchiveControlFragment_signalSessionFilter(t *testing.T) {
 		ControlSessionID: controlResponseTestControlSessionID + 1,
 	}
 
-	wire := recordingSignalWire(t, gensbe.RecordingSignal_START)
+	wire := recordingSignalWire(t, archivewire.RecordingSignal_START)
 	invokeHandleArchiveControlFragment(t, targets, wire)
 
 	require.Zero(t, captured.calls)
@@ -101,7 +101,7 @@ func TestHandleArchiveControlFragment_signalRoutesToHandlerNotPoller(t *testing.
 		ResponsePoller: poller,
 	}
 
-	wire := recordingSignalWire(t, gensbe.RecordingSignal_START)
+	wire := recordingSignalWire(t, archivewire.RecordingSignal_START)
 	invokeHandleArchiveControlFragment(t, targets, wire)
 
 	require.Equal(t, 1, captured.calls)
@@ -120,7 +120,7 @@ func TestHandleArchiveControlFragment_controlResponseToPoller(t *testing.T) {
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    controlResponseTestCorrelationID,
 		RelevantID:       7700,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	})
 	invokeHandleArchiveControlFragment(t, targets, wire)
@@ -129,7 +129,7 @@ func TestHandleArchiveControlFragment_controlResponseToPoller(t *testing.T) {
 	require.True(t, poller.IsPollComplete())
 	capture, ok := poller.Capture()
 	require.True(t, ok)
-	require.Equal(t, int32(gensbe.ControlResponseSbeTemplateID), capture.TemplateID)
+	require.Equal(t, int32(archivewire.ControlResponseSbeTemplateID), capture.TemplateID)
 	resp, ok := poller.Response()
 	require.True(t, ok)
 	require.Equal(t, int64(7700), resp.RelevantID)
@@ -155,7 +155,7 @@ func TestHandleArchiveControlFragment_dropsUnroutable(t *testing.T) {
 			name:    "nil_signal_handler",
 			targets: ArchiveControlPollTargets{},
 			wire: func(t *testing.T) []byte {
-				return recordingSignalWire(t, gensbe.RecordingSignal_START)
+				return recordingSignalWire(t, archivewire.RecordingSignal_START)
 			},
 		},
 		{
@@ -165,7 +165,7 @@ func TestHandleArchiveControlFragment_dropsUnroutable(t *testing.T) {
 				return encodeControlResponseWire(t, codecs.ControlResponseFields{
 					ControlSessionID: controlResponseTestControlSessionID,
 					CorrelationID:    controlResponseTestCorrelationID,
-					Code:             gensbe.ControlResponseCode_OK,
+					Code:             archivewire.ControlResponseCode_OK,
 				})
 			},
 		},
@@ -207,7 +207,7 @@ func TestPollArchiveControlEvents_listRecording_OKAndDescriptor(t *testing.T) {
 		recordingDescriptorControlResponseWire(
 			t,
 			recordingDescriptorTestCorrelationID,
-			gensbe.ControlResponseCode_OK,
+			archivewire.ControlResponseCode_OK,
 		),
 	)
 	require.False(t, poller.IsPollComplete())
@@ -237,7 +237,7 @@ func TestPollArchiveControlEvents_descriptorMode_ControlResponseToDescriptorPoll
 		recordingDescriptorControlResponseWire(
 			t,
 			recordingDescriptorTestCorrelationID,
-			gensbe.ControlResponseCode_OK,
+			archivewire.ControlResponseCode_OK,
 		),
 	)
 
@@ -252,7 +252,7 @@ func TestHandleArchiveControlFragment_signalTruncatedBodyDropped(t *testing.T) {
 
 	// Header claims RecordingSignalEvent, but the body is truncated to zero bytes, so the
 	// typed decode rejects it after the template routes to the signal handler.
-	fullSignal := recordingSignalWire(t, gensbe.RecordingSignal_START)
+	fullSignal := recordingSignalWire(t, archivewire.RecordingSignal_START)
 	headerOnly := fullSignal[:codecs.MessageHeaderEncodedLen()]
 	require.NotPanics(t, func() {
 		invokeHandleArchiveControlFragment(t, targets, headerOnly)
@@ -276,7 +276,7 @@ func TestHandleArchiveControlFragment_foreignSchemaDropped(t *testing.T) {
 			name: "recording_signal_template",
 			wire: func(t *testing.T) []byte {
 				return overrideWireSchemaID(
-					recordingSignalWire(t, gensbe.RecordingSignal_START),
+					recordingSignalWire(t, archivewire.RecordingSignal_START),
 					foreignSchemaID,
 				)
 			},
@@ -300,7 +300,7 @@ func TestHandleArchiveControlFragment_foreignSchemaDropped(t *testing.T) {
 }
 
 func TestHandleArchiveControlFragment_DispatchSTART_ZeroAllocs(t *testing.T) {
-	wire := recordingSignalWire(t, gensbe.RecordingSignal_START)
+	wire := recordingSignalWire(t, archivewire.RecordingSignal_START)
 	buffer := atomicbuffer.Wrap(wire)
 	header := &aeron.Header{}
 	var captured capturedRecordingSignal
@@ -319,7 +319,7 @@ func TestStopSignalTracker(t *testing.T) {
 		trackerRecording int64
 		signalSessionID  int64
 		signalRecording  int64
-		signal           gensbe.RecordingSignal
+		signal           archivewire.RecordingSignal
 		resetCapture     bool
 		wantStopped      bool
 	}{
@@ -329,7 +329,7 @@ func TestStopSignalTracker(t *testing.T) {
 			trackerRecording: 6001,
 			signalSessionID:  controlResponseTestControlSessionID,
 			signalRecording:  6001,
-			signal:           gensbe.RecordingSignal_STOP,
+			signal:           archivewire.RecordingSignal_STOP,
 			wantStopped:      true,
 		},
 		{
@@ -338,7 +338,7 @@ func TestStopSignalTracker(t *testing.T) {
 			trackerRecording: 6001,
 			signalSessionID:  controlResponseTestControlSessionID,
 			signalRecording:  6001,
-			signal:           gensbe.RecordingSignal_START,
+			signal:           archivewire.RecordingSignal_START,
 			wantStopped:      false,
 		},
 		{
@@ -347,7 +347,7 @@ func TestStopSignalTracker(t *testing.T) {
 			trackerRecording: 6001,
 			signalSessionID:  controlResponseTestControlSessionID + 1,
 			signalRecording:  6001,
-			signal:           gensbe.RecordingSignal_STOP,
+			signal:           archivewire.RecordingSignal_STOP,
 			wantStopped:      false,
 		},
 		{
@@ -356,7 +356,7 @@ func TestStopSignalTracker(t *testing.T) {
 			trackerRecording: 6001,
 			signalSessionID:  controlResponseTestControlSessionID,
 			signalRecording:  6002,
-			signal:           gensbe.RecordingSignal_STOP,
+			signal:           archivewire.RecordingSignal_STOP,
 			wantStopped:      false,
 		},
 		{
@@ -365,7 +365,7 @@ func TestStopSignalTracker(t *testing.T) {
 			trackerRecording: -1,
 			signalSessionID:  controlResponseTestControlSessionID,
 			signalRecording:  9999,
-			signal:           gensbe.RecordingSignal_STOP,
+			signal:           archivewire.RecordingSignal_STOP,
 			wantStopped:      true,
 		},
 		{
@@ -374,7 +374,7 @@ func TestStopSignalTracker(t *testing.T) {
 			trackerRecording: 6001,
 			signalSessionID:  controlResponseTestControlSessionID,
 			signalRecording:  6001,
-			signal:           gensbe.RecordingSignal_STOP,
+			signal:           archivewire.RecordingSignal_STOP,
 			resetCapture:     true,
 			wantStopped:      false,
 		},
@@ -411,7 +411,7 @@ func TestStopSignalTracker_secondStopIgnored(t *testing.T) {
 		RecordingID:      6001,
 		SubscriptionID:   2002,
 		Position:         100,
-		Signal:           gensbe.RecordingSignal_STOP,
+		Signal:           archivewire.RecordingSignal_STOP,
 	})
 	tracker.RecordingSignal(codecs.RecordingSignalEventFields{
 		ControlSessionID: controlResponseTestControlSessionID,
@@ -419,7 +419,7 @@ func TestStopSignalTracker_secondStopIgnored(t *testing.T) {
 		RecordingID:      6001,
 		SubscriptionID:   2002,
 		Position:         999,
-		Signal:           gensbe.RecordingSignal_STOP,
+		Signal:           archivewire.RecordingSignal_STOP,
 	})
 	require.True(t, tracker.Stopped())
 	require.Equal(t, int64(6001), tracker.StoppedRecordingID())

@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 
 	"github.com/warrenguy/heron/cluster/codecs"
 )
@@ -22,7 +22,7 @@ func TestHandleConnectEgressFragment_sessionEvent(t *testing.T) {
 	invokeHandleConnectEgressFragment(t, poller, wire)
 
 	require.True(t, poller.IsPollComplete())
-	require.Equal(t, int32(gensbe.SessionEventSbeTemplateID), poller.TemplateID())
+	require.Equal(t, int32(clusterwire.SessionEventSbeTemplateID), poller.TemplateID())
 	require.Equal(t, egressTestClusterSessionID, poller.ClusterSessionID())
 	require.Equal(t, int64(77), poller.CorrelationID())
 	require.Equal(t, int64(88), poller.LeadershipTermID())
@@ -114,7 +114,7 @@ func TestHandleConnectEgressFragment_newLeader(t *testing.T) {
 	invokeHandleConnectEgressFragment(t, poller, wire)
 
 	require.True(t, poller.IsPollComplete())
-	require.Equal(t, int32(gensbe.NewLeaderEventSbeTemplateID), poller.TemplateID())
+	require.Equal(t, int32(clusterwire.NewLeaderEventSbeTemplateID), poller.TemplateID())
 	require.Equal(t, egressTestClusterSessionID, poller.ClusterSessionID())
 	require.Equal(t, int64(200), poller.LeadershipTermID())
 	require.Equal(t, int32(1), poller.LeaderMemberID())
@@ -137,7 +137,7 @@ func TestHandleConnectEgressFragment_sessionMessageHeader(t *testing.T) {
 	invokeHandleConnectEgressFragment(t, poller, wire)
 
 	require.True(t, poller.IsPollComplete())
-	require.Equal(t, int32(gensbe.SessionMessageHeaderSbeTemplateID), poller.TemplateID())
+	require.Equal(t, int32(clusterwire.SessionMessageHeaderSbeTemplateID), poller.TemplateID())
 	require.Zero(t, poller.ClusterSessionID())
 	require.Zero(t, poller.LeadershipTermID())
 	require.Equal(t, conductor.NullCorrelationID, poller.CorrelationID())
@@ -240,7 +240,7 @@ func TestHandleConnectEgressFragment_largeCapturedPayloads(t *testing.T) {
 			},
 			assert: func(t *testing.T, poller *ConnectEgressPoller, expected []byte) {
 				require.True(t, poller.IsPollComplete())
-				require.Equal(t, int32(gensbe.NewLeaderEventSbeTemplateID), poller.TemplateID())
+				require.Equal(t, int32(clusterwire.NewLeaderEventSbeTemplateID), poller.TemplateID())
 				require.Equal(t, expected, poller.Detail())
 			},
 		},
@@ -249,17 +249,17 @@ func TestHandleConnectEgressFragment_largeCapturedPayloads(t *testing.T) {
 			encode: func(t *testing.T) ([]byte, []byte) {
 				detail := bytes.Repeat([]byte{0x33}, payloadLen)
 				fields := defaultSessionEventFields(detail)
-				fields.Code = gensbe.EventCode_REDIRECT
+				fields.Code = clusterwire.EventCode_REDIRECT
 				return encodeSessionEventWireWithFields(
 					t,
 					egressTestClusterSessionID,
 					fields,
-					gensbe.SessionEventSbeSchemaVersion,
+					clusterwire.SessionEventSbeSchemaVersion,
 				), detail
 			},
 			assert: func(t *testing.T, poller *ConnectEgressPoller, expected []byte) {
 				require.True(t, poller.IsPollComplete())
-				require.Equal(t, int32(gensbe.SessionEventSbeTemplateID), poller.TemplateID())
+				require.Equal(t, int32(clusterwire.SessionEventSbeTemplateID), poller.TemplateID())
 				require.Equal(t, expected, poller.Detail())
 				require.Equal(t, EventCodeRedirect, poller.EventCode())
 			},

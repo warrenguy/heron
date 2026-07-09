@@ -1,6 +1,6 @@
 package codecs
 
-import "github.com/warrenguy/heron/cluster/codecs/gensbe"
+import "github.com/warrenguy/heron/cluster/codecs/clusterwire"
 
 type SessionMessageHeaderFields = IngressHeaderFields
 
@@ -9,7 +9,7 @@ type SessionEventFields struct {
 	CorrelationID    int64
 	LeadershipTermID int64
 	LeaderMemberID   int32
-	Code             gensbe.EventCode
+	Code             clusterwire.EventCode
 	Version          int32
 	// LeaderHeartbeatTimeoutNs is math.MinInt64 when actingVersion < 13 (field absent).
 	// When actingVersion >= 13 and the encoder omitted SetLeaderHeartbeatTimeoutNs,
@@ -60,15 +60,15 @@ type AdminRequestFields struct {
 	LeadershipTermID int64
 	ClusterSessionID int64
 	CorrelationID    int64
-	RequestType      gensbe.AdminRequestType
+	RequestType      clusterwire.AdminRequestType
 	Payload          []byte
 }
 
 type AdminResponseFields struct {
 	ClusterSessionID int64
 	CorrelationID    int64
-	RequestType      gensbe.AdminRequestType
-	ResponseCode     gensbe.AdminResponseCode
+	RequestType      clusterwire.AdminRequestType
+	ResponseCode     clusterwire.AdminResponseCode
 	Message          []byte
 	Payload          []byte
 }

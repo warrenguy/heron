@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"encoding/binary"
 
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 var (
-	messageHeaderLayout = &gensbe.MessageHeader{}
+	messageHeaderLayout = &archivewire.MessageHeader{}
 
 	messageHeaderEncodedLength       = int(messageHeaderLayout.EncodedLength())
 	archiveSchemaID                  = messageHeaderLayout.SbeSchemaId()
@@ -63,7 +63,7 @@ func ArchiveMessageLayoutAt(buf []byte, offset, maxVarLen int) (ArchiveMessageLa
 // returned ErrorMessage is a sub-slice view into buf; consume before buf is reused.
 func TryDecodeControlResponseAt(buf []byte, offset, maxVarLen int) (ControlResponseFields, bool) {
 	layout, ok := archiveMessageAt(buf, offset, maxVarLen)
-	if !ok || layout.TemplateID != gensbe.ControlResponseSbeTemplateID {
+	if !ok || layout.TemplateID != archivewire.ControlResponseSbeTemplateID {
 		return ControlResponseFields{}, false
 	}
 	var views [archiveWireMaxVarFieldCount]VarSlice
@@ -86,7 +86,7 @@ func TryDecodeRecordingSignalEventAt(
 	offset, maxVarLen int,
 ) (RecordingSignalEventFields, bool) {
 	layout, ok := archiveMessageAt(buf, offset, maxVarLen)
-	if !ok || layout.TemplateID != gensbe.RecordingSignalEventSbeTemplateID {
+	if !ok || layout.TemplateID != archivewire.RecordingSignalEventSbeTemplateID {
 		return RecordingSignalEventFields{}, false
 	}
 	return decodeRecordingSignalEventFields(
@@ -106,7 +106,7 @@ func TryDecodeRecordingDescriptorAt(
 	offset, maxVarLen int,
 ) (RecordingDescriptorFields, bool) {
 	layout, ok := archiveMessageAt(buf, offset, maxVarLen)
-	if !ok || layout.TemplateID != gensbe.RecordingDescriptorSbeTemplateID {
+	if !ok || layout.TemplateID != archivewire.RecordingDescriptorSbeTemplateID {
 		return RecordingDescriptorFields{}, false
 	}
 	var views [archiveWireMaxVarFieldCount]VarSlice
@@ -129,7 +129,7 @@ func TryDecodeRecordingDescriptorAt(
 // EncodedChallenge is a sub-slice view into buf; consume before buf is reused.
 func TryDecodeChallengeAt(buf []byte, offset, maxVarLen int) (ChallengeFields, bool) {
 	layout, ok := archiveMessageAt(buf, offset, maxVarLen)
-	if !ok || layout.TemplateID != gensbe.ChallengeSbeTemplateID {
+	if !ok || layout.TemplateID != archivewire.ChallengeSbeTemplateID {
 		return ChallengeFields{}, false
 	}
 	var views [archiveWireMaxVarFieldCount]VarSlice
@@ -186,7 +186,7 @@ func decodeControlResponseFields(
 	bufLen uint64,
 	errorMessage []byte,
 ) ControlResponseFields {
-	var msg gensbe.ControlResponse
+	var msg archivewire.ControlResponse
 	msg.WrapForDecode(buf, body, block, version, bufLen)
 	return ControlResponseFields{
 		ControlSessionID: msg.ControlSessionId(),
@@ -205,7 +205,7 @@ func decodeRecordingSignalEventFields(
 	version uint64,
 	bufLen uint64,
 ) RecordingSignalEventFields {
-	var msg gensbe.RecordingSignalEvent
+	var msg archivewire.RecordingSignalEvent
 	msg.WrapForDecode(buf, body, block, version, bufLen)
 	return RecordingSignalEventFields{
 		ControlSessionID: msg.ControlSessionId(),
@@ -227,7 +227,7 @@ func decodeRecordingDescriptorFields(
 	originalChannel []byte,
 	sourceIdentity []byte,
 ) RecordingDescriptorFields {
-	var msg gensbe.RecordingDescriptor
+	var msg archivewire.RecordingDescriptor
 	msg.WrapForDecode(buf, body, block, version, bufLen)
 	return RecordingDescriptorFields{
 		ControlSessionID:  msg.ControlSessionId(),
@@ -257,7 +257,7 @@ func decodeChallengeFields(
 	bufLen uint64,
 	encodedChallenge []byte,
 ) ChallengeFields {
-	var msg gensbe.Challenge
+	var msg archivewire.Challenge
 	msg.WrapForDecode(buf, body, block, version, bufLen)
 	return ChallengeFields{
 		ControlSessionID: msg.ControlSessionId(),
@@ -335,29 +335,29 @@ func ArchiveRootBlockLengthBounds(
 	templateID, actingVersion uint16,
 ) (minBlock, maxBlock uint16, ok bool) {
 	switch templateID {
-	case gensbe.ControlResponseSbeTemplateID:
-		maxBlock = gensbe.ControlResponseSbeBlockLength
+	case archivewire.ControlResponseSbeTemplateID:
+		maxBlock = archivewire.ControlResponseSbeBlockLength
 		if actingVersion < archiveControlResponseVersionMinVersion {
 			return 28, maxBlock, true
 		}
 		return maxBlock, maxBlock, true
-	case gensbe.ConnectRequestSbeTemplateID:
-		maxBlock = gensbe.ConnectRequestSbeBlockLength
+	case archivewire.ConnectRequestSbeTemplateID:
+		maxBlock = archivewire.ConnectRequestSbeBlockLength
 		if actingVersion < archiveConnectRequestVersionMinVersion {
 			return 12, maxBlock, true
 		}
 		return maxBlock, maxBlock, true
-	case gensbe.CloseSessionRequestSbeTemplateID:
-		bl := gensbe.CloseSessionRequestSbeBlockLength
+	case archivewire.CloseSessionRequestSbeTemplateID:
+		bl := archivewire.CloseSessionRequestSbeBlockLength
 		return bl, bl, true
-	case gensbe.StartRecordingRequestSbeTemplateID:
-		bl := gensbe.StartRecordingRequestSbeBlockLength
+	case archivewire.StartRecordingRequestSbeTemplateID:
+		bl := archivewire.StartRecordingRequestSbeBlockLength
 		return bl, bl, true
-	case gensbe.StopRecordingRequestSbeTemplateID:
-		bl := gensbe.StopRecordingRequestSbeBlockLength
+	case archivewire.StopRecordingRequestSbeTemplateID:
+		bl := archivewire.StopRecordingRequestSbeBlockLength
 		return bl, bl, true
-	case gensbe.ReplayRequestSbeTemplateID:
-		maxBlock = gensbe.ReplayRequestSbeBlockLength
+	case archivewire.ReplayRequestSbeTemplateID:
+		maxBlock = archivewire.ReplayRequestSbeBlockLength
 		switch {
 		case actingVersion < replayRequestFileIoMaxLengthMinVersion:
 			return 44, maxBlock, true
@@ -366,32 +366,32 @@ func ArchiveRootBlockLengthBounds(
 		default:
 			return maxBlock, maxBlock, true
 		}
-	case gensbe.StopReplayRequestSbeTemplateID:
-		bl := gensbe.StopReplayRequestSbeBlockLength
+	case archivewire.StopReplayRequestSbeTemplateID:
+		bl := archivewire.StopReplayRequestSbeBlockLength
 		return bl, bl, true
-	case gensbe.ListRecordingRequestSbeTemplateID:
-		bl := gensbe.ListRecordingRequestSbeBlockLength
+	case archivewire.ListRecordingRequestSbeTemplateID:
+		bl := archivewire.ListRecordingRequestSbeBlockLength
 		return bl, bl, true
-	case gensbe.RecordingDescriptorSbeTemplateID:
-		bl := gensbe.RecordingDescriptorSbeBlockLength
+	case archivewire.RecordingDescriptorSbeTemplateID:
+		bl := archivewire.RecordingDescriptorSbeBlockLength
 		return bl, bl, true
-	case gensbe.RecordingSignalEventSbeTemplateID:
-		bl := gensbe.RecordingSignalEventSbeBlockLength
+	case archivewire.RecordingSignalEventSbeTemplateID:
+		bl := archivewire.RecordingSignalEventSbeBlockLength
 		return bl, bl, true
-	case gensbe.AuthConnectRequestSbeTemplateID:
-		bl := gensbe.AuthConnectRequestSbeBlockLength
+	case archivewire.AuthConnectRequestSbeTemplateID:
+		bl := archivewire.AuthConnectRequestSbeBlockLength
 		return bl, bl, true
-	case gensbe.ChallengeSbeTemplateID:
-		bl := gensbe.ChallengeSbeBlockLength
+	case archivewire.ChallengeSbeTemplateID:
+		bl := archivewire.ChallengeSbeBlockLength
 		return bl, bl, true
-	case gensbe.ChallengeResponseSbeTemplateID:
-		bl := gensbe.ChallengeResponseSbeBlockLength
+	case archivewire.ChallengeResponseSbeTemplateID:
+		bl := archivewire.ChallengeResponseSbeBlockLength
 		return bl, bl, true
-	case gensbe.KeepAliveRequestSbeTemplateID:
-		bl := gensbe.KeepAliveRequestSbeBlockLength
+	case archivewire.KeepAliveRequestSbeTemplateID:
+		bl := archivewire.KeepAliveRequestSbeBlockLength
 		return bl, bl, true
-	case gensbe.StartRecordingRequest2SbeTemplateID:
-		bl := gensbe.StartRecordingRequest2SbeBlockLength
+	case archivewire.StartRecordingRequest2SbeTemplateID:
+		bl := archivewire.StartRecordingRequest2SbeBlockLength
 		return bl, bl, true
 	default:
 		return 0, 0, false
@@ -402,24 +402,24 @@ func ArchiveRootBlockLengthBounds(
 // at actingVersion.
 func ArchiveVarFieldCount(templateID, actingVersion uint16) (count int, ok bool) {
 	switch templateID {
-	case gensbe.CloseSessionRequestSbeTemplateID,
-		gensbe.StopReplayRequestSbeTemplateID,
-		gensbe.ListRecordingRequestSbeTemplateID,
-		gensbe.RecordingSignalEventSbeTemplateID,
-		gensbe.KeepAliveRequestSbeTemplateID:
+	case archivewire.CloseSessionRequestSbeTemplateID,
+		archivewire.StopReplayRequestSbeTemplateID,
+		archivewire.ListRecordingRequestSbeTemplateID,
+		archivewire.RecordingSignalEventSbeTemplateID,
+		archivewire.KeepAliveRequestSbeTemplateID:
 		return 0, true
-	case gensbe.ControlResponseSbeTemplateID,
-		gensbe.ConnectRequestSbeTemplateID,
-		gensbe.StartRecordingRequestSbeTemplateID,
-		gensbe.StopRecordingRequestSbeTemplateID,
-		gensbe.ReplayRequestSbeTemplateID,
-		gensbe.ChallengeSbeTemplateID,
-		gensbe.ChallengeResponseSbeTemplateID,
-		gensbe.StartRecordingRequest2SbeTemplateID:
+	case archivewire.ControlResponseSbeTemplateID,
+		archivewire.ConnectRequestSbeTemplateID,
+		archivewire.StartRecordingRequestSbeTemplateID,
+		archivewire.StopRecordingRequestSbeTemplateID,
+		archivewire.ReplayRequestSbeTemplateID,
+		archivewire.ChallengeSbeTemplateID,
+		archivewire.ChallengeResponseSbeTemplateID,
+		archivewire.StartRecordingRequest2SbeTemplateID:
 		return 1, true
-	case gensbe.RecordingDescriptorSbeTemplateID:
+	case archivewire.RecordingDescriptorSbeTemplateID:
 		return 3, true
-	case gensbe.AuthConnectRequestSbeTemplateID:
+	case archivewire.AuthConnectRequestSbeTemplateID:
 		if actingVersion >= authConnectRequestClientInfoMinVersion {
 			return authConnectRequestMaxVarFieldCount, true
 		}
@@ -529,23 +529,23 @@ func cloneVarBytes(b []byte) []byte {
 
 func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields, bool) {
 	switch templateID {
-	case gensbe.ControlResponseSbeTemplateID:
+	case archivewire.ControlResponseSbeTemplateID:
 		return templateVarFields{errorMessage: raw[0]}, true
-	case gensbe.ConnectRequestSbeTemplateID:
+	case archivewire.ConnectRequestSbeTemplateID:
 		return templateVarFields{responseChannel: raw[0]}, true
-	case gensbe.StartRecordingRequestSbeTemplateID,
-		gensbe.StopRecordingRequestSbeTemplateID,
-		gensbe.StartRecordingRequest2SbeTemplateID:
+	case archivewire.StartRecordingRequestSbeTemplateID,
+		archivewire.StopRecordingRequestSbeTemplateID,
+		archivewire.StartRecordingRequest2SbeTemplateID:
 		return templateVarFields{channel: raw[0]}, true
-	case gensbe.ReplayRequestSbeTemplateID:
+	case archivewire.ReplayRequestSbeTemplateID:
 		return templateVarFields{replayChannel: raw[0]}, true
-	case gensbe.RecordingDescriptorSbeTemplateID:
+	case archivewire.RecordingDescriptorSbeTemplateID:
 		return templateVarFields{
 			strippedChannel: raw[0],
 			originalChannel: raw[1],
 			sourceIdentity:  raw[2],
 		}, true
-	case gensbe.AuthConnectRequestSbeTemplateID:
+	case archivewire.AuthConnectRequestSbeTemplateID:
 		vars := templateVarFields{
 			responseChannel:    raw[0],
 			encodedCredentials: raw[1],
@@ -554,9 +554,9 @@ func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields
 			vars.clientInfo = raw[2]
 		}
 		return vars, true
-	case gensbe.ChallengeSbeTemplateID:
+	case archivewire.ChallengeSbeTemplateID:
 		return templateVarFields{encodedChallenge: raw[0]}, true
-	case gensbe.ChallengeResponseSbeTemplateID:
+	case archivewire.ChallengeResponseSbeTemplateID:
 		return templateVarFields{encodedCredentials: raw[0]}, true
 	default:
 		return templateVarFields{}, false
@@ -582,10 +582,10 @@ func decodeTemplateFields(
 	version := uint64(actingVersion)
 
 	switch templateID {
-	case gensbe.ControlResponseSbeTemplateID:
+	case archivewire.ControlResponseSbeTemplateID:
 		return decodeControlResponseFields(buf, body, block, version, bufLen, vars.errorMessage), true
-	case gensbe.ConnectRequestSbeTemplateID:
-		var msg gensbe.ConnectRequest
+	case archivewire.ConnectRequestSbeTemplateID:
+		var msg archivewire.ConnectRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return ConnectRequestFields{
 			CorrelationID:    msg.CorrelationId(),
@@ -593,14 +593,14 @@ func decodeTemplateFields(
 			Version:          msg.Version(),
 			ResponseChannel:  vars.responseChannel,
 		}, true
-	case gensbe.CloseSessionRequestSbeTemplateID:
-		var msg gensbe.CloseSessionRequest
+	case archivewire.CloseSessionRequestSbeTemplateID:
+		var msg archivewire.CloseSessionRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return CloseSessionRequestFields{
 			ControlSessionID: msg.ControlSessionId(),
 		}, true
-	case gensbe.StartRecordingRequestSbeTemplateID:
-		var msg gensbe.StartRecordingRequest
+	case archivewire.StartRecordingRequestSbeTemplateID:
+		var msg archivewire.StartRecordingRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return StartRecordingRequestFields{
 			ControlSessionID: msg.ControlSessionId(),
@@ -609,8 +609,8 @@ func decodeTemplateFields(
 			SourceLocation:   msg.SourceLocation(),
 			Channel:          vars.channel,
 		}, true
-	case gensbe.StopRecordingRequestSbeTemplateID:
-		var msg gensbe.StopRecordingRequest
+	case archivewire.StopRecordingRequestSbeTemplateID:
+		var msg archivewire.StopRecordingRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return StopRecordingRequestFields{
 			ControlSessionID: msg.ControlSessionId(),
@@ -618,8 +618,8 @@ func decodeTemplateFields(
 			StreamID:         msg.StreamId(),
 			Channel:          vars.channel,
 		}, true
-	case gensbe.ReplayRequestSbeTemplateID:
-		var msg gensbe.ReplayRequest
+	case archivewire.ReplayRequestSbeTemplateID:
+		var msg archivewire.ReplayRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return ReplayRequestFields{
 			ControlSessionID: msg.ControlSessionId(),
@@ -632,23 +632,23 @@ func decodeTemplateFields(
 			ReplayToken:      msg.ReplayToken(),
 			ReplayChannel:    vars.replayChannel,
 		}, true
-	case gensbe.StopReplayRequestSbeTemplateID:
-		var msg gensbe.StopReplayRequest
+	case archivewire.StopReplayRequestSbeTemplateID:
+		var msg archivewire.StopReplayRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return StopReplayRequestFields{
 			ControlSessionID: msg.ControlSessionId(),
 			CorrelationID:    msg.CorrelationId(),
 			ReplaySessionID:  msg.ReplaySessionId(),
 		}, true
-	case gensbe.ListRecordingRequestSbeTemplateID:
-		var msg gensbe.ListRecordingRequest
+	case archivewire.ListRecordingRequestSbeTemplateID:
+		var msg archivewire.ListRecordingRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return ListRecordingRequestFields{
 			ControlSessionID: msg.ControlSessionId(),
 			CorrelationID:    msg.CorrelationId(),
 			RecordingID:      msg.RecordingId(),
 		}, true
-	case gensbe.RecordingDescriptorSbeTemplateID:
+	case archivewire.RecordingDescriptorSbeTemplateID:
 		return decodeRecordingDescriptorFields(
 			buf,
 			body,
@@ -659,10 +659,10 @@ func decodeTemplateFields(
 			vars.originalChannel,
 			vars.sourceIdentity,
 		), true
-	case gensbe.RecordingSignalEventSbeTemplateID:
+	case archivewire.RecordingSignalEventSbeTemplateID:
 		return decodeRecordingSignalEventFields(buf, body, block, version, bufLen), true
-	case gensbe.AuthConnectRequestSbeTemplateID:
-		var msg gensbe.AuthConnectRequest
+	case archivewire.AuthConnectRequestSbeTemplateID:
+		var msg archivewire.AuthConnectRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return AuthConnectRequestFields{
 			CorrelationID:      msg.CorrelationId(),
@@ -672,25 +672,25 @@ func decodeTemplateFields(
 			EncodedCredentials: vars.encodedCredentials,
 			ClientInfo:         vars.clientInfo,
 		}, true
-	case gensbe.ChallengeSbeTemplateID:
+	case archivewire.ChallengeSbeTemplateID:
 		return decodeChallengeFields(buf, body, block, version, bufLen, vars.encodedChallenge), true
-	case gensbe.ChallengeResponseSbeTemplateID:
-		var msg gensbe.ChallengeResponse
+	case archivewire.ChallengeResponseSbeTemplateID:
+		var msg archivewire.ChallengeResponse
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return ChallengeResponseFields{
 			ControlSessionID:   msg.ControlSessionId(),
 			CorrelationID:      msg.CorrelationId(),
 			EncodedCredentials: vars.encodedCredentials,
 		}, true
-	case gensbe.KeepAliveRequestSbeTemplateID:
-		var msg gensbe.KeepAliveRequest
+	case archivewire.KeepAliveRequestSbeTemplateID:
+		var msg archivewire.KeepAliveRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return KeepAliveRequestFields{
 			ControlSessionID: msg.ControlSessionId(),
 			CorrelationID:    msg.CorrelationId(),
 		}, true
-	case gensbe.StartRecordingRequest2SbeTemplateID:
-		var msg gensbe.StartRecordingRequest2
+	case archivewire.StartRecordingRequest2SbeTemplateID:
+		var msg archivewire.StartRecordingRequest2
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return StartRecordingRequest2Fields{
 			ControlSessionID: msg.ControlSessionId(),

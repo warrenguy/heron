@@ -13,7 +13,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 // connectTestHarnessDriver registers an await-loop step observer that completes pending
@@ -384,7 +384,7 @@ func TestConnect_sessionEventAuthenticationRejected(t *testing.T) {
 			func(t *testing.T, termBuffer atomicbuffer.AtomicBuffer, correlation int64) {
 				fields := defaultSessionEventFields([]byte("bad credentials"))
 				fields.CorrelationID = correlation
-				fields.Code = gensbe.EventCode_AUTHENTICATION_REJECTED
+				fields.Code = clusterwire.EventCode_AUTHENTICATION_REJECTED
 				writeUnfragmentedWireToTerm(
 					t,
 					termBuffer,
@@ -392,7 +392,7 @@ func TestConnect_sessionEventAuthenticationRejected(t *testing.T) {
 						t,
 						egressTestClusterSessionID,
 						fields,
-						gensbe.SessionEventSbeSchemaVersion,
+						clusterwire.SessionEventSbeSchemaVersion,
 					),
 				)
 			},

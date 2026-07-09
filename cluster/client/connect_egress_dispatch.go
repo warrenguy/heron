@@ -2,13 +2,13 @@ package client
 
 import (
 	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
-const challengeSbeTemplateID = int32(gensbe.ChallengeSbeTemplateID)
+const challengeSbeTemplateID = int32(clusterwire.ChallengeSbeTemplateID)
 
 // handleConnectEgressFragment decodes cluster connect egress SBE and captures
 // terminal templates on poller. Unlike handleEgressFragment there is no
@@ -33,10 +33,10 @@ func handleConnectEgressFragment(
 		return
 	}
 	switch templateID {
-	case gensbe.SessionEventSbeTemplateID,
-		gensbe.NewLeaderEventSbeTemplateID,
-		gensbe.ChallengeSbeTemplateID,
-		gensbe.SessionMessageHeaderSbeTemplateID:
+	case clusterwire.SessionEventSbeTemplateID,
+		clusterwire.NewLeaderEventSbeTemplateID,
+		clusterwire.ChallengeSbeTemplateID,
+		clusterwire.SessionMessageHeaderSbeTemplateID:
 	default:
 		return
 	}
@@ -47,7 +47,7 @@ func handleConnectEgressFragment(
 	}
 
 	switch decoded.TemplateID {
-	case gensbe.SessionEventSbeTemplateID:
+	case clusterwire.SessionEventSbeTemplateID:
 		ev, ok := decoded.Fields.(codecs.SessionEventFields)
 		if !ok {
 			return
@@ -61,7 +61,7 @@ func handleConnectEgressFragment(
 		poller.detail = ev.Detail
 		captureConnectEgressTerminal(poller, decoded.TemplateID, header)
 
-	case gensbe.NewLeaderEventSbeTemplateID:
+	case clusterwire.NewLeaderEventSbeTemplateID:
 		leader, ok := decoded.Fields.(codecs.NewLeaderEventFields)
 		if !ok {
 			return
@@ -72,7 +72,7 @@ func handleConnectEgressFragment(
 		poller.detail = leader.IngressEndpoints
 		captureConnectEgressTerminal(poller, decoded.TemplateID, header)
 
-	case gensbe.ChallengeSbeTemplateID:
+	case clusterwire.ChallengeSbeTemplateID:
 		challenge, ok := decoded.Fields.(codecs.ChallengeFields)
 		if !ok {
 			return
@@ -82,7 +82,7 @@ func handleConnectEgressFragment(
 		poller.encodedChallenge = challenge.EncodedChallenge
 		captureConnectEgressTerminal(poller, decoded.TemplateID, header)
 
-	case gensbe.SessionMessageHeaderSbeTemplateID:
+	case clusterwire.SessionMessageHeaderSbeTemplateID:
 		captureConnectEgressTerminal(poller, decoded.TemplateID, header)
 	}
 }
@@ -94,7 +94,7 @@ func captureConnectEgressTerminal(
 ) {
 	poller.templateID = int32(templateID)
 	switch templateID {
-	case gensbe.SessionEventSbeTemplateID, gensbe.NewLeaderEventSbeTemplateID:
+	case clusterwire.SessionEventSbeTemplateID, clusterwire.NewLeaderEventSbeTemplateID:
 		poller.egressImage = imageFromHeader(header)
 	}
 	poller.pollComplete = true

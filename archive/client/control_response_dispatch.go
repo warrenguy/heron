@@ -3,7 +3,7 @@ package client
 import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
@@ -43,14 +43,14 @@ func handleControlResponseFromFragment(
 		return
 	}
 	switch templateID {
-	case gensbe.ControlResponseSbeTemplateID:
+	case archivewire.ControlResponseSbeTemplateID:
 		resp, ok := codecs.TryDecodeControlResponseAt(fragment, 0, codecs.ArchiveDecodeMaxVarLen)
 		if !ok {
 			return
 		}
 		poller.latchControlResponse(resp)
 
-	case gensbe.ChallengeSbeTemplateID:
+	case archivewire.ChallengeSbeTemplateID:
 		challenge, ok := codecs.TryDecodeChallengeAt(fragment, 0, codecs.ArchiveDecodeMaxVarLen)
 		if !ok {
 			return
@@ -65,14 +65,14 @@ func captureDecodedControlResponse(
 	fields any,
 ) {
 	switch templateID {
-	case gensbe.ControlResponseSbeTemplateID:
+	case archivewire.ControlResponseSbeTemplateID:
 		resp, ok := fields.(codecs.ControlResponseFields)
 		if !ok {
 			return
 		}
 		poller.latchControlResponse(resp)
 
-	case gensbe.ChallengeSbeTemplateID:
+	case archivewire.ChallengeSbeTemplateID:
 		challenge, ok := fields.(codecs.ChallengeFields)
 		if !ok {
 			return

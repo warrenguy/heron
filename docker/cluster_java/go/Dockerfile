@@ -14,7 +14,7 @@ COPY mmap ./mmap
 COPY record ./record
 COPY ringbuffer ./ringbuffer
 COPY broadcast ./broadcast
-# cluster/client + cluster/codecs (incl. gensbe) for AsyncConnect + echo compose smokes.
+# cluster/client + cluster/codecs (incl. clusterwire) for AsyncConnect + echo compose smokes.
 COPY cluster ./cluster
 COPY test/integration/harness ./test/integration/harness
 COPY test/integration/cluster_java ./test/integration/cluster_java

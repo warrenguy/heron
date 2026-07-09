@@ -2,16 +2,18 @@ package codecs
 
 import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 const (
 	// archiveWireMaxRootBlockLength is the largest archive root block used in the
 	// per-field var-length DoS budget (RecordingDescriptor @ current schema version).
-	archiveWireMaxRootBlockLength = gensbe.RecordingDescriptorSbeBlockLength
+	archiveWireMaxRootBlockLength = archivewire.RecordingDescriptorSbeBlockLength
+
 	// archiveWireMaxVarFieldCount is the maximum var fields on any archive wire template
 	// (RecordingDescriptor with three varAscii, AuthConnectRequest with ClientInfo).
 	archiveWireMaxVarFieldCount = 3
+
 	// authConnectRequestMaxVarFieldCount is AuthConnectRequest's own var-field
 	// cardinality at acting versions that admit ClientInfo; do not alias to
 	// archiveWireMaxVarFieldCount when another template may raise the global max.
@@ -19,21 +21,16 @@ const (
 )
 
 var (
-	archiveControlResponseVersionMinVersion = uint16(
-		(&gensbe.ControlResponse{}).VersionSinceVersion(),
-	)
-	archiveConnectRequestVersionMinVersion = uint16(
-		(&gensbe.ConnectRequest{}).VersionSinceVersion(),
-	)
-	authConnectRequestClientInfoMinVersion = uint16(
-		(&gensbe.AuthConnectRequest{}).ClientInfoSinceVersion(),
-	)
-	replayRequestFileIoMaxLengthMinVersion = uint16(
-		(&gensbe.ReplayRequest{}).FileIoMaxLengthSinceVersion(),
-	)
-	replayRequestReplayTokenMinVersion = uint16(
-		(&gensbe.ReplayRequest{}).ReplayTokenSinceVersion(),
-	)
+	archiveControlResponseVersionMinVersion = uint16((&archivewire.ControlResponse{}).
+						VersionSinceVersion())
+	archiveConnectRequestVersionMinVersion = uint16((&archivewire.ConnectRequest{}).
+						VersionSinceVersion())
+	authConnectRequestClientInfoMinVersion = uint16((&archivewire.AuthConnectRequest{}).
+						ClientInfoSinceVersion())
+	replayRequestFileIoMaxLengthMinVersion = uint16((&archivewire.ReplayRequest{}).
+						FileIoMaxLengthSinceVersion())
+	replayRequestReplayTokenMinVersion = uint16((&archivewire.ReplayRequest{}).
+						ReplayTokenSinceVersion())
 )
 
 var (
@@ -45,6 +42,7 @@ var (
 	// TryDecodeByTemplate. Per-field cap is logbuffer.MaxMessageLength minus
 	// archiveVarLenFixedOverhead.
 	ArchiveDecodeMaxVarLen = logbuffer.MaxMessageLength - archiveVarLenFixedOverhead
+
 	// ArchiveEncodeMaxVarLen bounds each var field during Encode* preflight
 	// (archiveWireBodyLen). Same per-field cap; total wire is also capped at
 	// logbuffer.MaxMessageLength.
@@ -124,9 +122,9 @@ func authConnectRequestVarLensInto(
 // actingVersion.
 func connectRequestBlockLength(actingVersion uint16) uint16 {
 	return ArchiveMinRootBlockLength(
-		gensbe.ConnectRequestSbeTemplateID,
+		archivewire.ConnectRequestSbeTemplateID,
 		actingVersion,
-		gensbe.ConnectRequestSbeBlockLength,
+		archivewire.ConnectRequestSbeBlockLength,
 	)
 }
 
@@ -149,9 +147,9 @@ func ConnectRequestWireLen(
 // for actingVersion. The version_t field sits in the base block at all versions.
 func authConnectRequestBlockLength(actingVersion uint16) uint16 {
 	return ArchiveMinRootBlockLength(
-		gensbe.AuthConnectRequestSbeTemplateID,
+		archivewire.AuthConnectRequestSbeTemplateID,
 		actingVersion,
-		gensbe.AuthConnectRequestSbeBlockLength,
+		archivewire.AuthConnectRequestSbeBlockLength,
 	)
 }
 
@@ -183,9 +181,9 @@ func AuthConnectRequestWireLen(
 // actingVersion.
 func replayRequestBlockLength(actingVersion uint16) uint16 {
 	return ArchiveMinRootBlockLength(
-		gensbe.ReplayRequestSbeTemplateID,
+		archivewire.ReplayRequestSbeTemplateID,
 		actingVersion,
-		gensbe.ReplayRequestSbeBlockLength,
+		archivewire.ReplayRequestSbeBlockLength,
 	)
 }
 

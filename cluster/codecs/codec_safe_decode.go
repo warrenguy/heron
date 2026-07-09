@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"encoding/binary"
 
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 var (
-	messageHeaderLayout = &gensbe.MessageHeader{}
+	messageHeaderLayout = &clusterwire.MessageHeader{}
 
 	messageHeaderEncodedLength       = int(messageHeaderLayout.EncodedLength())
 	clusterSchemaID                  = messageHeaderLayout.SbeSchemaId()
@@ -64,7 +64,7 @@ func SessionMessageHeaderFieldsFromLayout(
 	buf []byte,
 	layout ClusterMessageLayout,
 ) (SessionMessageHeaderFields, bool) {
-	if layout.TemplateID != gensbe.SessionMessageHeaderSbeTemplateID {
+	if layout.TemplateID != clusterwire.SessionMessageHeaderSbeTemplateID {
 		return SessionMessageHeaderFields{}, false
 	}
 	return decodeSessionMessageHeaderFields(
@@ -79,7 +79,7 @@ func SessionMessageHeaderFieldsFromLayout(
 // TryDecodeSessionMessageHeaderAt decodes SessionMessageHeader without interface boxing.
 func TryDecodeSessionMessageHeaderAt(buf []byte, offset int) (SessionMessageHeaderFields, bool) {
 	layout, ok := ClusterMessageLayoutAt(buf, offset, 0)
-	if !ok || layout.TemplateID != gensbe.SessionMessageHeaderSbeTemplateID {
+	if !ok || layout.TemplateID != clusterwire.SessionMessageHeaderSbeTemplateID {
 		return SessionMessageHeaderFields{}, false
 	}
 	return SessionMessageHeaderFieldsFromLayout(buf, layout)
@@ -92,7 +92,7 @@ func decodeSessionMessageHeaderFields(
 	version uint64,
 	bufLen uint64,
 ) SessionMessageHeaderFields {
-	var msg gensbe.SessionMessageHeader
+	var msg clusterwire.SessionMessageHeader
 	msg.WrapForDecode(buf, body, block, version, bufLen)
 	return SessionMessageHeaderFields{
 		LeadershipTermID: msg.LeadershipTermId(),
@@ -171,10 +171,10 @@ func ClusterRootBlockLengthBounds(
 	templateID, actingVersion uint16,
 ) (minBlock, maxBlock uint16, ok bool) {
 	switch templateID {
-	case gensbe.SessionMessageHeaderSbeTemplateID:
-		return clusterFixedBlockLength(gensbe.SessionMessageHeaderSbeBlockLength)
-	case gensbe.SessionEventSbeTemplateID:
-		maxBlock = gensbe.SessionEventSbeBlockLength
+	case clusterwire.SessionMessageHeaderSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.SessionMessageHeaderSbeBlockLength)
+	case clusterwire.SessionEventSbeTemplateID:
+		maxBlock = clusterwire.SessionEventSbeBlockLength
 		switch {
 		case actingVersion < SessionEventVersionMinVersion:
 			return 32, maxBlock, true
@@ -183,26 +183,26 @@ func ClusterRootBlockLengthBounds(
 		default:
 			return clusterFixedBlockLength(maxBlock)
 		}
-	case gensbe.SessionConnectRequestSbeTemplateID:
-		maxBlock = gensbe.SessionConnectRequestSbeBlockLength
+	case clusterwire.SessionConnectRequestSbeTemplateID:
+		maxBlock = clusterwire.SessionConnectRequestSbeBlockLength
 		if actingVersion < SessionConnectVersionMinVersion {
 			return 12, maxBlock, true
 		}
 		return clusterFixedBlockLength(maxBlock)
-	case gensbe.SessionCloseRequestSbeTemplateID:
-		return clusterFixedBlockLength(gensbe.SessionCloseRequestSbeBlockLength)
-	case gensbe.SessionKeepAliveSbeTemplateID:
-		return clusterFixedBlockLength(gensbe.SessionKeepAliveSbeBlockLength)
-	case gensbe.NewLeaderEventSbeTemplateID:
-		return clusterFixedBlockLength(gensbe.NewLeaderEventSbeBlockLength)
-	case gensbe.ChallengeSbeTemplateID:
-		return clusterFixedBlockLength(gensbe.ChallengeSbeBlockLength)
-	case gensbe.ChallengeResponseSbeTemplateID:
-		return clusterFixedBlockLength(gensbe.ChallengeResponseSbeBlockLength)
-	case gensbe.AdminRequestSbeTemplateID:
-		return clusterFixedBlockLength(gensbe.AdminRequestSbeBlockLength)
-	case gensbe.AdminResponseSbeTemplateID:
-		return clusterFixedBlockLength(gensbe.AdminResponseSbeBlockLength)
+	case clusterwire.SessionCloseRequestSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.SessionCloseRequestSbeBlockLength)
+	case clusterwire.SessionKeepAliveSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.SessionKeepAliveSbeBlockLength)
+	case clusterwire.NewLeaderEventSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.NewLeaderEventSbeBlockLength)
+	case clusterwire.ChallengeSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.ChallengeSbeBlockLength)
+	case clusterwire.ChallengeResponseSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.ChallengeResponseSbeBlockLength)
+	case clusterwire.AdminRequestSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.AdminRequestSbeBlockLength)
+	case clusterwire.AdminResponseSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.AdminResponseSbeBlockLength)
 	default:
 		return 0, 0, false
 	}
@@ -212,22 +212,22 @@ func ClusterRootBlockLengthBounds(
 // at actingVersion.
 func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool) {
 	switch templateID {
-	case gensbe.SessionMessageHeaderSbeTemplateID,
-		gensbe.SessionCloseRequestSbeTemplateID,
-		gensbe.SessionKeepAliveSbeTemplateID:
+	case clusterwire.SessionMessageHeaderSbeTemplateID,
+		clusterwire.SessionCloseRequestSbeTemplateID,
+		clusterwire.SessionKeepAliveSbeTemplateID:
 		return 0, true
-	case gensbe.SessionEventSbeTemplateID,
-		gensbe.NewLeaderEventSbeTemplateID,
-		gensbe.ChallengeSbeTemplateID,
-		gensbe.ChallengeResponseSbeTemplateID,
-		gensbe.AdminRequestSbeTemplateID:
+	case clusterwire.SessionEventSbeTemplateID,
+		clusterwire.NewLeaderEventSbeTemplateID,
+		clusterwire.ChallengeSbeTemplateID,
+		clusterwire.ChallengeResponseSbeTemplateID,
+		clusterwire.AdminRequestSbeTemplateID:
 		return 1, true
-	case gensbe.SessionConnectRequestSbeTemplateID:
+	case clusterwire.SessionConnectRequestSbeTemplateID:
 		if actingVersion >= SessionConnectClientInfoMinVersion {
 			return 3, true
 		}
 		return 2, true
-	case gensbe.AdminResponseSbeTemplateID:
+	case clusterwire.AdminResponseSbeTemplateID:
 		return 2, true
 	default:
 		return 0, false
@@ -327,9 +327,9 @@ func cloneVarBytes(b []byte) []byte {
 
 func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields, bool) {
 	switch templateID {
-	case gensbe.SessionEventSbeTemplateID:
+	case clusterwire.SessionEventSbeTemplateID:
 		return templateVarFields{detail: raw[0]}, true
-	case gensbe.SessionConnectRequestSbeTemplateID:
+	case clusterwire.SessionConnectRequestSbeTemplateID:
 		vars := templateVarFields{
 			responseChannel:    raw[0],
 			encodedCredentials: raw[1],
@@ -338,15 +338,15 @@ func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields
 			vars.clientInfo = raw[2]
 		}
 		return vars, true
-	case gensbe.NewLeaderEventSbeTemplateID:
+	case clusterwire.NewLeaderEventSbeTemplateID:
 		return templateVarFields{ingressEndpoints: raw[0]}, true
-	case gensbe.ChallengeSbeTemplateID:
+	case clusterwire.ChallengeSbeTemplateID:
 		return templateVarFields{encodedChallenge: raw[0]}, true
-	case gensbe.ChallengeResponseSbeTemplateID:
+	case clusterwire.ChallengeResponseSbeTemplateID:
 		return templateVarFields{encodedCredentials: raw[0]}, true
-	case gensbe.AdminRequestSbeTemplateID:
+	case clusterwire.AdminRequestSbeTemplateID:
 		return templateVarFields{payload: raw[0]}, true
-	case gensbe.AdminResponseSbeTemplateID:
+	case clusterwire.AdminResponseSbeTemplateID:
 		return templateVarFields{message: raw[0], payload: raw[1]}, true
 	default:
 		return templateVarFields{}, false
@@ -372,10 +372,10 @@ func decodeTemplateFields(
 	version := uint64(actingVersion)
 
 	switch templateID {
-	case gensbe.SessionMessageHeaderSbeTemplateID:
+	case clusterwire.SessionMessageHeaderSbeTemplateID:
 		return decodeSessionMessageHeaderFields(buf, body, block, version, bufLen), true
-	case gensbe.SessionEventSbeTemplateID:
-		var msg gensbe.SessionEvent
+	case clusterwire.SessionEventSbeTemplateID:
+		var msg clusterwire.SessionEvent
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return SessionEventFields{
 			ClusterSessionID:         msg.ClusterSessionId(),
@@ -387,8 +387,8 @@ func decodeTemplateFields(
 			LeaderHeartbeatTimeoutNs: msg.LeaderHeartbeatTimeoutNs(),
 			Detail:                   vars.detail,
 		}, true
-	case gensbe.SessionConnectRequestSbeTemplateID:
-		var msg gensbe.SessionConnectRequest
+	case clusterwire.SessionConnectRequestSbeTemplateID:
+		var msg clusterwire.SessionConnectRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return SessionConnectRequestFields{
 			CorrelationID:      msg.CorrelationId(),
@@ -398,22 +398,22 @@ func decodeTemplateFields(
 			EncodedCredentials: vars.encodedCredentials,
 			ClientInfo:         vars.clientInfo,
 		}, true
-	case gensbe.SessionCloseRequestSbeTemplateID:
-		var msg gensbe.SessionCloseRequest
+	case clusterwire.SessionCloseRequestSbeTemplateID:
+		var msg clusterwire.SessionCloseRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return SessionCloseRequestFields{
 			LeadershipTermID: msg.LeadershipTermId(),
 			ClusterSessionID: msg.ClusterSessionId(),
 		}, true
-	case gensbe.SessionKeepAliveSbeTemplateID:
-		var msg gensbe.SessionKeepAlive
+	case clusterwire.SessionKeepAliveSbeTemplateID:
+		var msg clusterwire.SessionKeepAlive
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return SessionKeepAliveFields{
 			LeadershipTermID: msg.LeadershipTermId(),
 			ClusterSessionID: msg.ClusterSessionId(),
 		}, true
-	case gensbe.NewLeaderEventSbeTemplateID:
-		var msg gensbe.NewLeaderEvent
+	case clusterwire.NewLeaderEventSbeTemplateID:
+		var msg clusterwire.NewLeaderEvent
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return NewLeaderEventFields{
 			LeadershipTermID: msg.LeadershipTermId(),
@@ -421,24 +421,24 @@ func decodeTemplateFields(
 			LeaderMemberID:   msg.LeaderMemberId(),
 			IngressEndpoints: vars.ingressEndpoints,
 		}, true
-	case gensbe.ChallengeSbeTemplateID:
-		var msg gensbe.Challenge
+	case clusterwire.ChallengeSbeTemplateID:
+		var msg clusterwire.Challenge
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return ChallengeFields{
 			CorrelationID:    msg.CorrelationId(),
 			ClusterSessionID: msg.ClusterSessionId(),
 			EncodedChallenge: vars.encodedChallenge,
 		}, true
-	case gensbe.ChallengeResponseSbeTemplateID:
-		var msg gensbe.ChallengeResponse
+	case clusterwire.ChallengeResponseSbeTemplateID:
+		var msg clusterwire.ChallengeResponse
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return ChallengeResponseFields{
 			CorrelationID:      msg.CorrelationId(),
 			ClusterSessionID:   msg.ClusterSessionId(),
 			EncodedCredentials: vars.encodedCredentials,
 		}, true
-	case gensbe.AdminRequestSbeTemplateID:
-		var msg gensbe.AdminRequest
+	case clusterwire.AdminRequestSbeTemplateID:
+		var msg clusterwire.AdminRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return AdminRequestFields{
 			LeadershipTermID: msg.LeadershipTermId(),
@@ -447,8 +447,8 @@ func decodeTemplateFields(
 			RequestType:      msg.RequestType(),
 			Payload:          vars.payload,
 		}, true
-	case gensbe.AdminResponseSbeTemplateID:
-		var msg gensbe.AdminResponse
+	case clusterwire.AdminResponseSbeTemplateID:
+		var msg clusterwire.AdminResponse
 		msg.WrapForDecode(buf, body, block, version, bufLen)
 		return AdminResponseFields{
 			ClusterSessionID: msg.ClusterSessionId(),

@@ -9,7 +9,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 func TestSessionMessageHeader_codec_rapid(t *testing.T) {
@@ -24,7 +24,7 @@ func TestSessionMessageHeader_codec_rapid(t *testing.T) {
 
 		runCodecRoundtripAtOffset(
 			rt,
-			gensbe.SessionMessageHeaderSbeTemplateID,
+			clusterwire.SessionMessageHeaderSbeTemplateID,
 			actingVersion,
 			offset,
 			rapidEncodeAt(actingVersion, fields, codecs.EncodeSessionMessageHeader),
@@ -53,7 +53,7 @@ func TestSessionEvent_codec_rapid(t *testing.T) {
 		wantFields := codecs.SessionEventOracleFields(fields, actingVersion)
 		runCodecRoundtripAtOffset(
 			rt,
-			gensbe.SessionEventSbeTemplateID,
+			clusterwire.SessionEventSbeTemplateID,
 			actingVersion,
 			offset,
 			rapidEncodeSessionEvent(actingVersion, blockLength, fields),
@@ -83,7 +83,7 @@ func TestSessionConnectRequest_codec_rapid(t *testing.T) {
 
 		runCodecRoundtripAtOffset(
 			rt,
-			gensbe.SessionConnectRequestSbeTemplateID,
+			clusterwire.SessionConnectRequestSbeTemplateID,
 			actingVersion,
 			offset,
 			rapidEncodeAt(actingVersion, fields, codecs.EncodeSessionConnectRequest),
@@ -107,7 +107,7 @@ func TestSessionCloseAndKeepAlive_codec_rapid(t *testing.T) {
 
 		runCodecRoundtripAtOffset(
 			rt,
-			gensbe.SessionCloseRequestSbeTemplateID,
+			clusterwire.SessionCloseRequestSbeTemplateID,
 			actingVersion,
 			offset,
 			rapidEncodeAt(actingVersion, closeFields, codecs.EncodeSessionCloseRequest),
@@ -116,7 +116,7 @@ func TestSessionCloseAndKeepAlive_codec_rapid(t *testing.T) {
 
 		runCodecRoundtripAtOffset(
 			rt,
-			gensbe.SessionKeepAliveSbeTemplateID,
+			clusterwire.SessionKeepAliveSbeTemplateID,
 			actingVersion,
 			offset,
 			rapidEncodeAt(actingVersion, keepAliveFields, codecs.EncodeSessionKeepAlive),
@@ -138,7 +138,7 @@ func TestNewLeaderEvent_codec_rapid(t *testing.T) {
 
 		runCodecRoundtripAtOffset(
 			rt,
-			gensbe.NewLeaderEventSbeTemplateID,
+			clusterwire.NewLeaderEventSbeTemplateID,
 			actingVersion,
 			offset,
 			rapidEncodeAt(actingVersion, fields, codecs.EncodeNewLeaderEvent),
@@ -159,7 +159,7 @@ func TestChallenge_codec_rapid(t *testing.T) {
 
 		runCodecRoundtripAtOffset(
 			rt,
-			gensbe.ChallengeSbeTemplateID,
+			clusterwire.ChallengeSbeTemplateID,
 			actingVersion,
 			offset,
 			rapidEncodeAt(actingVersion, fields, codecs.EncodeChallenge),
@@ -180,7 +180,7 @@ func TestChallengeResponse_codec_rapid(t *testing.T) {
 
 		runCodecRoundtripAtOffset(
 			rt,
-			gensbe.ChallengeResponseSbeTemplateID,
+			clusterwire.ChallengeResponseSbeTemplateID,
 			actingVersion,
 			offset,
 			rapidEncodeAt(actingVersion, fields, codecs.EncodeChallengeResponse),
@@ -197,13 +197,13 @@ func TestAdminRequest_codec_rapid(t *testing.T) {
 			LeadershipTermID: rapid.Int64().Draw(rt, "leadershipTermID"),
 			ClusterSessionID: rapid.Int64().Draw(rt, "clusterSessionID"),
 			CorrelationID:    rapid.Int64().Draw(rt, "correlationID"),
-			RequestType:      gensbe.AdminRequestType_SNAPSHOT,
+			RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
 			Payload:          rapidVarDataBytes(rt, "payload"),
 		}
 
 		runCodecRoundtripAtOffset(
 			rt,
-			gensbe.AdminRequestSbeTemplateID,
+			clusterwire.AdminRequestSbeTemplateID,
 			actingVersion,
 			offset,
 			rapidEncodeAt(actingVersion, fields, codecs.EncodeAdminRequest),
@@ -219,7 +219,7 @@ func TestAdminResponse_codec_rapid(t *testing.T) {
 		fields := codecs.AdminResponseFields{
 			ClusterSessionID: rapid.Int64().Draw(rt, "clusterSessionID"),
 			CorrelationID:    rapid.Int64().Draw(rt, "correlationID"),
-			RequestType:      gensbe.AdminRequestType_SNAPSHOT,
+			RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
 			ResponseCode:     rapidAdminResponseCode(rt),
 			Message:          rapidASCIIBytes(rt, "message"),
 			Payload:          rapidVarDataBytes(rt, "payload"),
@@ -227,7 +227,7 @@ func TestAdminResponse_codec_rapid(t *testing.T) {
 
 		runCodecRoundtripAtOffset(
 			rt,
-			gensbe.AdminResponseSbeTemplateID,
+			clusterwire.AdminResponseSbeTemplateID,
 			actingVersion,
 			offset,
 			rapidEncodeAt(actingVersion, fields, codecs.EncodeAdminResponse),
@@ -307,12 +307,12 @@ func rapidLeaderHeartbeatTimeoutNs(rt *rapid.T, actingVersion uint16) int64 {
 	return rapid.Int64Range(math.MinInt64+1, math.MaxInt64).Draw(rt, "leaderHeartbeatTimeoutNs")
 }
 
-func rapidEventCode(rt *rapid.T) gensbe.EventCode {
+func rapidEventCode(rt *rapid.T) clusterwire.EventCode {
 	rt.Helper()
 	return rapid.SampledFrom(codecAllEventCodes).Draw(rt, "eventCode")
 }
 
-func rapidAdminResponseCode(rt *rapid.T) gensbe.AdminResponseCode {
+func rapidAdminResponseCode(rt *rapid.T) clusterwire.AdminResponseCode {
 	rt.Helper()
 	return rapid.SampledFrom(codecAllAdminResponseCodes).Draw(rt, "responseCode")
 }

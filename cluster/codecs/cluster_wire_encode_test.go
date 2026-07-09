@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/internal/testutil"
 )
 
@@ -16,17 +16,17 @@ func TestEncodeSessionKeepAlive_ZeroAllocs(t *testing.T) {
 		LeadershipTermID: 1,
 		ClusterSessionID: 2,
 	}
-	buf := make([]byte, messageHeaderLen+int(gensbe.SessionKeepAliveSbeBlockLength))
+	buf := make([]byte, messageHeaderLen+int(clusterwire.SessionKeepAliveSbeBlockLength))
 
 	testutil.AssertZeroAllocs(t, "EncodeSessionKeepAlive", 1000, func() {
 		_, _ = codecs.EncodeSessionKeepAlive(
-			buf, 0, uint16(gensbe.SessionKeepAliveSbeSchemaVersion), fields,
+			buf, 0, uint16(clusterwire.SessionKeepAliveSbeSchemaVersion), fields,
 		)
 	})
 }
 
 func TestEncodeClusterWire_BufferBounds(t *testing.T) {
-	actingVersion := uint16(gensbe.SessionConnectRequestSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionConnectRequestSbeSchemaVersion)
 	connectFields := codecs.SessionConnectRequestFields{
 		CorrelationID:      1,
 		ResponseStreamID:   2,
@@ -36,9 +36,9 @@ func TestEncodeClusterWire_BufferBounds(t *testing.T) {
 		ClientInfo:         []byte("client"),
 	}
 	connectBlockLength := codecs.ClusterMinRootBlockLength(
-		gensbe.SessionConnectRequestSbeTemplateID,
+		clusterwire.SessionConnectRequestSbeTemplateID,
 		actingVersion,
-		gensbe.SessionConnectRequestSbeBlockLength,
+		clusterwire.SessionConnectRequestSbeBlockLength,
 	)
 	connectWireLen, ok := codecs.ClusterWireMessageLen(
 		connectBlockLength,
@@ -54,7 +54,7 @@ func TestEncodeClusterWire_BufferBounds(t *testing.T) {
 		EncodedCredentials: []byte{6, 7, 8},
 	}
 	challengeWireLen, ok := codecs.ClusterWireMessageLen(
-		gensbe.ChallengeResponseSbeBlockLength,
+		clusterwire.ChallengeResponseSbeBlockLength,
 		len(challengeFields.EncodedCredentials),
 	)
 	require.True(t, ok)
@@ -62,7 +62,7 @@ func TestEncodeClusterWire_BufferBounds(t *testing.T) {
 	connectEncode := sessionConnectRequestEncodeFunc(actingVersion, connectFields)
 	challengeEncode := func(buf []byte) (int, bool) {
 		return codecs.EncodeChallengeResponse(
-			buf, 0, uint16(gensbe.ChallengeResponseSbeSchemaVersion), challengeFields,
+			buf, 0, uint16(clusterwire.ChallengeResponseSbeSchemaVersion), challengeFields,
 		)
 	}
 
@@ -155,20 +155,20 @@ func assertEncodeWireEndMatchesMessageLen(
 
 func TestEncodeClusterWire_wireEndMatchesClusterWireMessageLen(t *testing.T) {
 	twoVarConnectVersion := codecs.SessionConnectClientInfoMinVersion - 1
-	threeVarConnectVersion := uint16(gensbe.SessionConnectRequestSbeSchemaVersion)
+	threeVarConnectVersion := uint16(clusterwire.SessionConnectRequestSbeSchemaVersion)
 	maxVar := clusterLargeVarPayload
 
 	twoVarConnectBlockLength := codecs.ClusterMinRootBlockLength(
-		gensbe.SessionConnectRequestSbeTemplateID,
+		clusterwire.SessionConnectRequestSbeTemplateID,
 		twoVarConnectVersion,
-		gensbe.SessionConnectRequestSbeBlockLength,
+		clusterwire.SessionConnectRequestSbeBlockLength,
 	)
 	threeVarConnectBlockLength := codecs.ClusterMinRootBlockLength(
-		gensbe.SessionConnectRequestSbeTemplateID,
+		clusterwire.SessionConnectRequestSbeTemplateID,
 		threeVarConnectVersion,
-		gensbe.SessionConnectRequestSbeBlockLength,
+		clusterwire.SessionConnectRequestSbeBlockLength,
 	)
-	sessionEventVersion := uint16(gensbe.SessionEventSbeSchemaVersion)
+	sessionEventVersion := uint16(clusterwire.SessionEventSbeSchemaVersion)
 	sessionEventBlockLength := codecs.SessionEventBlockLength(sessionEventVersion)
 
 	cases := []struct {
@@ -181,10 +181,10 @@ func TestEncodeClusterWire_wireEndMatchesClusterWireMessageLen(t *testing.T) {
 		{
 			name:        "session_message_header",
 			offset:      4,
-			blockLength: gensbe.SessionMessageHeaderSbeBlockLength,
+			blockLength: clusterwire.SessionMessageHeaderSbeBlockLength,
 			encode: func(buf []byte, offset int) (int, bool) {
 				return codecs.EncodeSessionMessageHeader(
-					buf, offset, gensbe.SessionMessageHeaderSbeSchemaVersion,
+					buf, offset, clusterwire.SessionMessageHeaderSbeSchemaVersion,
 					codecs.SessionMessageHeaderFields{
 						LeadershipTermID: 1,
 						ClusterSessionID: 2,
@@ -218,7 +218,7 @@ func TestEncodeClusterWire_wireEndMatchesClusterWireMessageLen(t *testing.T) {
 					CorrelationID:            41,
 					LeadershipTermID:         42,
 					LeaderMemberID:           43,
-					Code:                     gensbe.EventCode_CLOSED,
+					Code:                     clusterwire.EventCode_CLOSED,
 					LeaderHeartbeatTimeoutNs: math.MinInt64,
 					Detail:                   maxVar,
 				})
@@ -255,33 +255,33 @@ func TestEncodeClusterWire_wireEndMatchesClusterWireMessageLen(t *testing.T) {
 		},
 		{
 			name:        "session_close_request",
-			blockLength: gensbe.SessionCloseRequestSbeBlockLength,
+			blockLength: clusterwire.SessionCloseRequestSbeBlockLength,
 			encode: func(buf []byte, offset int) (int, bool) {
 				fields := codecs.SessionCloseRequestFields{
 					LeadershipTermID: 1,
 					ClusterSessionID: 2,
 				}
 				return codecs.EncodeSessionCloseRequest(
-					buf, offset, uint16(gensbe.SessionCloseRequestSbeSchemaVersion), fields,
+					buf, offset, uint16(clusterwire.SessionCloseRequestSbeSchemaVersion), fields,
 				)
 			},
 		},
 		{
 			name:        "session_keep_alive",
-			blockLength: gensbe.SessionKeepAliveSbeBlockLength,
+			blockLength: clusterwire.SessionKeepAliveSbeBlockLength,
 			encode: func(buf []byte, offset int) (int, bool) {
 				fields := codecs.SessionKeepAliveFields{
 					LeadershipTermID: 1,
 					ClusterSessionID: 2,
 				}
 				return codecs.EncodeSessionKeepAlive(
-					buf, offset, uint16(gensbe.SessionKeepAliveSbeSchemaVersion), fields,
+					buf, offset, uint16(clusterwire.SessionKeepAliveSbeSchemaVersion), fields,
 				)
 			},
 		},
 		{
 			name:        "new_leader_event_at_max_var",
-			blockLength: gensbe.NewLeaderEventSbeBlockLength,
+			blockLength: clusterwire.NewLeaderEventSbeBlockLength,
 			varLens:     repeatLargeVarLens(1),
 			encode: func(buf []byte, offset int) (int, bool) {
 				fields := codecs.NewLeaderEventFields{
@@ -291,13 +291,13 @@ func TestEncodeClusterWire_wireEndMatchesClusterWireMessageLen(t *testing.T) {
 					IngressEndpoints: maxVar,
 				}
 				return codecs.EncodeNewLeaderEvent(
-					buf, offset, uint16(gensbe.NewLeaderEventSbeSchemaVersion), fields,
+					buf, offset, uint16(clusterwire.NewLeaderEventSbeSchemaVersion), fields,
 				)
 			},
 		},
 		{
 			name:        "challenge_at_max_var",
-			blockLength: gensbe.ChallengeSbeBlockLength,
+			blockLength: clusterwire.ChallengeSbeBlockLength,
 			varLens:     repeatLargeVarLens(1),
 			encode: func(buf []byte, offset int) (int, bool) {
 				fields := codecs.ChallengeFields{
@@ -305,12 +305,17 @@ func TestEncodeClusterWire_wireEndMatchesClusterWireMessageLen(t *testing.T) {
 					ClusterSessionID: 2,
 					EncodedChallenge: maxVar,
 				}
-				return codecs.EncodeChallenge(buf, offset, uint16(gensbe.ChallengeSbeSchemaVersion), fields)
+				return codecs.EncodeChallenge(
+					buf,
+					offset,
+					uint16(clusterwire.ChallengeSbeSchemaVersion),
+					fields,
+				)
 			},
 		},
 		{
 			name:        "challenge_response_at_max_var",
-			blockLength: gensbe.ChallengeResponseSbeBlockLength,
+			blockLength: clusterwire.ChallengeResponseSbeBlockLength,
 			varLens:     repeatLargeVarLens(1),
 			encode: func(buf []byte, offset int) (int, bool) {
 				fields := codecs.ChallengeResponseFields{
@@ -319,42 +324,42 @@ func TestEncodeClusterWire_wireEndMatchesClusterWireMessageLen(t *testing.T) {
 					EncodedCredentials: maxVar,
 				}
 				return codecs.EncodeChallengeResponse(
-					buf, offset, uint16(gensbe.ChallengeResponseSbeSchemaVersion), fields,
+					buf, offset, uint16(clusterwire.ChallengeResponseSbeSchemaVersion), fields,
 				)
 			},
 		},
 		{
 			name:        "admin_request_at_max_var",
-			blockLength: gensbe.AdminRequestSbeBlockLength,
+			blockLength: clusterwire.AdminRequestSbeBlockLength,
 			varLens:     repeatLargeVarLens(1),
 			encode: func(buf []byte, offset int) (int, bool) {
 				fields := codecs.AdminRequestFields{
 					LeadershipTermID: 1,
 					ClusterSessionID: 2,
 					CorrelationID:    3,
-					RequestType:      gensbe.AdminRequestType_SNAPSHOT,
+					RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
 					Payload:          maxVar,
 				}
 				return codecs.EncodeAdminRequest(
-					buf, offset, uint16(gensbe.AdminRequestSbeSchemaVersion), fields,
+					buf, offset, uint16(clusterwire.AdminRequestSbeSchemaVersion), fields,
 				)
 			},
 		},
 		{
 			name:        "admin_response_at_max_var",
-			blockLength: gensbe.AdminResponseSbeBlockLength,
+			blockLength: clusterwire.AdminResponseSbeBlockLength,
 			varLens:     repeatLargeVarLens(2),
 			encode: func(buf []byte, offset int) (int, bool) {
 				fields := codecs.AdminResponseFields{
 					ClusterSessionID: 1,
 					CorrelationID:    2,
-					RequestType:      gensbe.AdminRequestType_SNAPSHOT,
-					ResponseCode:     gensbe.AdminResponseCode_OK,
+					RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
+					ResponseCode:     clusterwire.AdminResponseCode_OK,
 					Message:          maxVar,
 					Payload:          maxVar,
 				}
 				return codecs.EncodeAdminResponse(
-					buf, offset, uint16(gensbe.AdminResponseSbeSchemaVersion), fields,
+					buf, offset, uint16(clusterwire.AdminResponseSbeSchemaVersion), fields,
 				)
 			},
 		},
@@ -368,7 +373,7 @@ func TestEncodeClusterWire_wireEndMatchesClusterWireMessageLen(t *testing.T) {
 }
 
 func TestEncodeClusterWire_OversizeVarField_returnsOkFalse(t *testing.T) {
-	actingVersion := uint16(gensbe.SessionEventSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionEventSbeSchemaVersion)
 	blockLength := codecs.SessionEventBlockLength(actingVersion)
 	oversizeVarLen := codecs.ClusterEncodeMaxVarLen + 1
 

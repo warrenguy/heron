@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
@@ -27,7 +27,7 @@ func TestNewAeronArchive_transfersOwnsAeronClient(t *testing.T) {
 }
 
 func TestNewAeronArchive_wiresContextRecordingSignalHandler(t *testing.T) {
-	var gotSignal gensbe.RecordingSignal
+	var gotSignal archivewire.RecordingSignal
 	handlers := &RecordingSignalHandlers{
 		SignalFunc: func(event codecs.RecordingSignalEventFields) {
 			gotSignal = event.Signal
@@ -47,10 +47,10 @@ func TestNewAeronArchive_wiresContextRecordingSignalHandler(t *testing.T) {
 	appendUnfragmentedWireToTerm(
 		t,
 		termBuffer,
-		recordingSignalWire(t, gensbe.RecordingSignal_START),
+		recordingSignalWire(t, archivewire.RecordingSignal_START),
 	)
 	archive.Poll()
-	require.Equal(t, gensbe.RecordingSignal_START, gotSignal)
+	require.Equal(t, archivewire.RecordingSignal_START, gotSignal)
 }
 
 func newAeronArchiveForDemuxTest(
@@ -79,7 +79,7 @@ func TestAeronArchive_handoffClearsConnectLatch(t *testing.T) {
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    controlResponseTestCorrelationID,
 		RelevantID:       1,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	})
 	writeUnfragmentedWireToTerm(t, termBuffer, priorWire)
@@ -93,7 +93,7 @@ func TestAeronArchive_handoffClearsConnectLatch(t *testing.T) {
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    nextCorrelationID,
 		RelevantID:       88002,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	})
 	appendUnfragmentedWireToTerm(t, termBuffer, nextWire)
@@ -116,11 +116,15 @@ func TestAeronArchivePoll_routesThroughDemux(t *testing.T) {
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    controlResponseTestCorrelationID,
 		RelevantID:       7700,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	})
 	writeUnfragmentedWireToTerm(t, termBuffer, responseWire)
-	appendUnfragmentedWireToTerm(t, termBuffer, recordingSignalWire(t, gensbe.RecordingSignal_START))
+	appendUnfragmentedWireToTerm(
+		t,
+		termBuffer,
+		recordingSignalWire(t, archivewire.RecordingSignal_START),
+	)
 
 	n := archive.Poll()
 	require.Equal(t, 2, n)
@@ -129,7 +133,7 @@ func TestAeronArchivePoll_routesThroughDemux(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, int64(7700), resp.RelevantID)
 	require.Equal(t, 1, captured.calls)
-	require.Equal(t, gensbe.RecordingSignal_START, captured.signal)
+	require.Equal(t, archivewire.RecordingSignal_START, captured.signal)
 	require.False(t, archive.descriptorPoller.IsPollComplete())
 }
 
@@ -144,7 +148,7 @@ func TestAeronArchiveListRecording_usesDescriptorMode(t *testing.T) {
 	responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    correlationID,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	})
 	writeUnfragmentedWireToTerm(t, termBuffer, responseWire)
@@ -178,7 +182,7 @@ func TestAeronArchiveListRecording_forwardsSignalsDuringAwait(t *testing.T) {
 	responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    correlationID,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	})
 	descriptorWire := encodeRecordingDescriptorWire(t, codecs.RecordingDescriptorFields{
@@ -196,14 +200,14 @@ func TestAeronArchiveListRecording_forwardsSignalsDuringAwait(t *testing.T) {
 	appendUnfragmentedWireToTerm(
 		t,
 		h.termBuffer,
-		recordingSignalWire(t, gensbe.RecordingSignal_EXTEND),
+		recordingSignalWire(t, archivewire.RecordingSignal_EXTEND),
 	)
 
 	got, err := archive.ListRecording(t.Context(), lifecycleRecordingID)
 	require.NoError(t, err)
 	require.Equal(t, lifecycleRecordingID, got.RecordingID)
 	require.Equal(t, 1, captured.calls)
-	require.Equal(t, gensbe.RecordingSignal_EXTEND, captured.signal)
+	require.Equal(t, archivewire.RecordingSignal_EXTEND, captured.signal)
 }
 
 // TestAeronArchiveStopRecordingAwaitSignal_routesSTOPToTracker proves the session method
@@ -227,7 +231,7 @@ func TestAeronArchiveStopRecordingAwaitSignal_routesSTOPToTracker(t *testing.T) 
 		RecordingID:      lifecycleRecordingID,
 		SubscriptionID:   2002,
 		Position:         3003,
-		Signal:           gensbe.RecordingSignal_STOP,
+		Signal:           archivewire.RecordingSignal_STOP,
 	})
 	appendUnfragmentedWireToTerm(t, h.termBuffer, signalWire)
 
@@ -270,7 +274,7 @@ func TestAeronArchiveClose_releasesResourcesAndIsIdempotent(t *testing.T) {
 	fields := requireArchiveProxyWireFields[codecs.CloseSessionRequestFields](
 		t,
 		h.pub.offered[0],
-		gensbe.CloseSessionRequestSbeTemplateID,
+		archivewire.CloseSessionRequestSbeTemplateID,
 	)
 	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
 

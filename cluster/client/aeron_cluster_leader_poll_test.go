@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
@@ -265,7 +265,7 @@ func requireExclusivePubFirstOfferIsSessionKeepAlive(
 
 	decoded, ok := codecs.TryDecodeByTemplate(wire, 0, codecs.ClusterDecodeMaxVarLen)
 	require.True(t, ok)
-	require.Equal(t, gensbe.SessionKeepAliveSbeTemplateID, decoded.TemplateID)
+	require.Equal(t, clusterwire.SessionKeepAliveSbeTemplateID, decoded.TemplateID)
 
 	fields, ok := decoded.Fields.(codecs.SessionKeepAliveFields)
 	require.True(t, ok)

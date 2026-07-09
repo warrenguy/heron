@@ -8,17 +8,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func TestPollArchiveControlEvents_signalDispatch(t *testing.T) {
 	cases := []struct {
 		name   string
-		signal gensbe.RecordingSignal
+		signal archivewire.RecordingSignal
 	}{
-		{name: "start", signal: gensbe.RecordingSignal_START},
-		{name: "stop", signal: gensbe.RecordingSignal_STOP},
+		{name: "start", signal: archivewire.RecordingSignal_START},
+		{name: "stop", signal: archivewire.RecordingSignal_STOP},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -52,7 +52,7 @@ func TestPollArchiveControlEvents_controlResponseToResponsePoller(t *testing.T) 
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    controlResponseTestCorrelationID,
 		RelevantID:       7700,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	})
 	writeUnfragmentedWireToTerm(t, termBuffer, responseWire)
@@ -110,7 +110,7 @@ func TestStandalonePollers_loseFragments(t *testing.T) {
 		t,
 		termBuffer,
 		encodeControlResponsePollerTestOKWire(t),
-		recordingSignalWire(t, gensbe.RecordingSignal_START),
+		recordingSignalWire(t, archivewire.RecordingSignal_START),
 	)
 
 	poller := NewControlResponsePoller(sub, DefaultControlResponseFragmentLimit)

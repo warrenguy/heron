@@ -3,7 +3,7 @@ package client
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
@@ -289,7 +289,7 @@ func (ac *AeronCluster) offerTrackedControlFrame(
 
 // offerSessionKeepAlive offers SessionKeepAlive on pub and tracks the result.
 func (ac *AeronCluster) offerSessionKeepAlive(pub IngressPublication) int64 {
-	actingVersion := uint16(gensbe.SessionKeepAliveSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionKeepAliveSbeSchemaVersion)
 	fields := codecs.SessionKeepAliveFields{
 		LeadershipTermID: ac.leadershipTermID,
 		ClusterSessionID: ac.clusterSessionID,
@@ -329,12 +329,12 @@ func (ac *AeronCluster) offerSnapshotRequest(
 	pub IngressPublication,
 	correlationID int64,
 ) int64 {
-	actingVersion := uint16(gensbe.AdminRequestSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.AdminRequestSbeSchemaVersion)
 	fields := codecs.AdminRequestFields{
 		LeadershipTermID: ac.leadershipTermID,
 		ClusterSessionID: ac.clusterSessionID,
 		CorrelationID:    correlationID,
-		RequestType:      gensbe.AdminRequestType_SNAPSHOT,
+		RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
 		Payload:          nil,
 	}
 	return ac.offerTrackedControlFrame(pub, func(scratch []byte) (end int, ok bool) {
@@ -384,7 +384,7 @@ func (ac *AeronCluster) ingressHeaderFields() codecs.IngressHeaderFields {
 func (ac *AeronCluster) sendSessionCloseBestEffort() {
 	// Close sets closed before this call; trackIngressPublicationResult is a no-op
 	// when ac.closed, so offerTrackedControlFrame matches prior best-effort close.
-	actingVersion := uint16(gensbe.SessionCloseRequestSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionCloseRequestSbeSchemaVersion)
 	fields := codecs.SessionCloseRequestFields{
 		LeadershipTermID: ac.leadershipTermID,
 		ClusterSessionID: ac.clusterSessionID,

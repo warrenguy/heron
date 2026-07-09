@@ -8,17 +8,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 func TestTryDecodeByTemplate_rejects(t *testing.T) {
-	actingVersion := gensbe.SessionEventSbeSchemaVersion
+	actingVersion := clusterwire.SessionEventSbeSchemaVersion
 	validEvent := codecs.SessionEventFields{
 		ClusterSessionID:         1,
 		CorrelationID:            2,
 		LeadershipTermID:         3,
 		LeaderMemberID:           4,
-		Code:                     gensbe.EventCode_OK,
+		Code:                     clusterwire.EventCode_OK,
 		Detail:                   []byte("x"),
 		LeaderHeartbeatTimeoutNs: 0,
 	}
@@ -82,7 +82,7 @@ func TestTryDecodeByTemplate_rejects(t *testing.T) {
 			name: "block_length_above_max",
 			buf: func() []byte {
 				return mutateEventWire(func(w []byte) {
-					w[0] = byte(gensbe.SessionEventSbeBlockLength + 1)
+					w[0] = byte(clusterwire.SessionEventSbeBlockLength + 1)
 					w[1] = 0
 				})
 			},
@@ -133,10 +133,10 @@ func TestClusterMessageWireEnd_rejects_negative_max_var_len(t *testing.T) {
 		CorrelationID:    2,
 		LeadershipTermID: 3,
 		LeaderMemberID:   4,
-		Code:             gensbe.EventCode_OK,
+		Code:             clusterwire.EventCode_OK,
 		Detail:           []byte("x"),
 	}
-	wire := encodeSessionEventWire(t, gensbe.SessionEventSbeSchemaVersion, fields)
+	wire := encodeSessionEventWire(t, clusterwire.SessionEventSbeSchemaVersion, fields)
 
 	_, ok := codecs.ClusterMessageWireEnd(wire, 0, -1)
 	require.False(t, ok)
@@ -148,21 +148,21 @@ func TestTryDecodeByTemplate_allows_trailing_bytes(t *testing.T) {
 		CorrelationID:            2,
 		LeadershipTermID:         3,
 		LeaderMemberID:           4,
-		Code:                     gensbe.EventCode_OK,
+		Code:                     clusterwire.EventCode_OK,
 		Detail:                   []byte("tail"),
 		LeaderHeartbeatTimeoutNs: 0,
 	}
-	buf, wireEnd := encodeSessionEventInto(t, gensbe.SessionEventSbeSchemaVersion, fields)
+	buf, wireEnd := encodeSessionEventInto(t, clusterwire.SessionEventSbeSchemaVersion, fields)
 
 	// Simulate Aeron fragment buffer with trailing garbage after the message.
 	buf[wireEnd] = 0xDE
 	buf[wireEnd+1] = 0xAD
 	decoded, ok := codecs.TryDecodeByTemplate(buf[:wireEnd+8], 0, codecTestMaxVarLen)
 	require.True(t, ok)
-	require.Equal(t, gensbe.SessionEventSbeTemplateID, decoded.TemplateID)
+	require.Equal(t, clusterwire.SessionEventSbeTemplateID, decoded.TemplateID)
 	requireDecodedClusterFields(
 		t,
-		codecs.SessionEventOracleFields(fields, gensbe.SessionEventSbeSchemaVersion),
+		codecs.SessionEventOracleFields(fields, clusterwire.SessionEventSbeSchemaVersion),
 		decoded.Fields,
 	)
 }

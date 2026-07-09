@@ -10,7 +10,7 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 const (
@@ -512,7 +512,7 @@ func TestProtocolSemanticVersion(t *testing.T) {
 	require.Equal(t, int32(768), version)
 	require.Equal(t, cnc.ComposeSemanticVersion(0, 3, 0), version)
 
-	actingVersion := uint16(gensbe.SessionConnectRequestSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionConnectRequestSbeSchemaVersion)
 	require.GreaterOrEqual(t, actingVersion, uint16(2))
 
 	fields := codecs.SessionConnectRequestFields{
@@ -527,7 +527,7 @@ func TestProtocolSemanticVersion(t *testing.T) {
 
 	decoded, ok := codecs.TryDecodeByTemplate(buf, 0, codecs.ClusterDecodeMaxVarLen)
 	require.True(t, ok)
-	require.Equal(t, gensbe.SessionConnectRequestSbeTemplateID, decoded.TemplateID)
+	require.Equal(t, clusterwire.SessionConnectRequestSbeTemplateID, decoded.TemplateID)
 
 	gotFields, ok := decoded.Fields.(codecs.SessionConnectRequestFields)
 	require.True(t, ok)

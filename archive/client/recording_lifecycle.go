@@ -6,7 +6,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 // archiveControlOps bundles session deps for blocking archive control lifecycle helpers.
@@ -54,7 +54,7 @@ func (ops archiveControlOps) offerAndAwait(
 func (ops archiveControlOps) startRecording(
 	ctx context.Context,
 	streamID int32,
-	sourceLocation gensbe.SourceLocation,
+	sourceLocation archivewire.SourceLocation,
 	channel []byte,
 ) (int64, error) {
 	fields, err := ops.offerAndAwait(ctx, func(correlationID int64) (int64, bool) {
@@ -258,7 +258,7 @@ func (t *StopSignalTracker) Reset() {
 
 // RecordingSignal records the first matching STOP signal.
 func (t *StopSignalTracker) RecordingSignal(event codecs.RecordingSignalEventFields) {
-	if event.Signal != gensbe.RecordingSignal_STOP {
+	if event.Signal != archivewire.RecordingSignal_STOP {
 		return
 	}
 	if t.controlSessionID != 0 && event.ControlSessionID != t.controlSessionID {

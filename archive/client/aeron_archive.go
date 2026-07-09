@@ -5,7 +5,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 // AeronArchive is a connected archive control session over one control-response
@@ -222,7 +222,7 @@ func (archive *AeronArchive) SetRecordingSignalHandler(handler RecordingSignalHa
 func (archive *AeronArchive) StartRecording(
 	ctx context.Context,
 	streamID int32,
-	sourceLocation gensbe.SourceLocation,
+	sourceLocation archivewire.SourceLocation,
 	channel []byte,
 ) (int64, error) {
 	return archive.sessionControlOps(archive.Poll).startRecording(

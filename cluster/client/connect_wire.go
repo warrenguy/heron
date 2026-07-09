@@ -3,7 +3,7 @@ package client
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 
 	"github.com/warrenguy/heron/cluster/codecs"
 )
@@ -64,7 +64,7 @@ func (ac *AsyncConnect) prepareConnectRequest() error {
 	ac.ensureCorrelationID()
 	credentials := ac.ctx.CredentialsSupplier.EncodedCredentials()
 	clientInfo := sessionConnectClientInfo(ac.ctx.ClientName)
-	actingVersion := gensbe.SessionConnectRequestSbeSchemaVersion
+	actingVersion := clusterwire.SessionConnectRequestSbeSchemaVersion
 	wireLen, ok := codecs.SessionConnectRequestWireLen(
 		actingVersion,
 		len(responseChannel),
@@ -99,9 +99,9 @@ func (ac *AsyncConnect) prepareChallengeResponse() error {
 		challenge = []byte{}
 	}
 	credentials := ac.ctx.CredentialsSupplier.RespondToChallenge(challenge)
-	actingVersion := gensbe.ChallengeResponseSbeSchemaVersion
+	actingVersion := clusterwire.ChallengeResponseSbeSchemaVersion
 	wireLen, ok := codecs.ClusterWireMessageLen(
-		gensbe.ChallengeResponseSbeBlockLength,
+		clusterwire.ChallengeResponseSbeBlockLength,
 		len(credentials),
 	)
 	fields := codecs.ChallengeResponseFields{

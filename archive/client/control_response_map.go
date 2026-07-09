@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 const authenticationRejectedMessage = "authentication rejected"
@@ -13,18 +13,18 @@ const authenticationRejectedMessage = "authentication rejected"
 // MapControlResponse maps archive ControlResponse wire fields to a Go error.
 func MapControlResponse(resp codecs.ControlResponseFields) error {
 	switch resp.Code {
-	case gensbe.ControlResponseCode_OK:
+	case archivewire.ControlResponseCode_OK:
 		return nil
-	case gensbe.ControlResponseCode_ERROR:
+	case archivewire.ControlResponseCode_ERROR:
 		return archiveExceptionFromErrorResponse(resp)
-	case gensbe.ControlResponseCode_RECORDING_UNKNOWN:
+	case archivewire.ControlResponseCode_RECORDING_UNKNOWN:
 		return archiveExceptionUnknownID(
 			"recording",
 			resp.RelevantID,
 			ArchiveErrorUnknownRecording,
 			resp.CorrelationID,
 		)
-	case gensbe.ControlResponseCode_SUBSCRIPTION_UNKNOWN:
+	case archivewire.ControlResponseCode_SUBSCRIPTION_UNKNOWN:
 		return archiveExceptionUnknownID(
 			"subscription",
 			resp.RelevantID,

@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 func TestHandleControlResponseFragment_truncatedBodiesIgnored(t *testing.T) {
@@ -25,7 +25,7 @@ func TestHandleControlResponseFragment_truncatedBodiesIgnored(t *testing.T) {
 					ControlSessionID: controlResponseTestControlSessionID,
 					CorrelationID:    controlResponseTestCorrelationID,
 					RelevantID:       7,
-					Code:             gensbe.ControlResponseCode_OK,
+					Code:             archivewire.ControlResponseCode_OK,
 					Version:          520,
 				})
 			},
@@ -50,7 +50,7 @@ func TestHandleControlResponseFragment_truncatedBodiesIgnored(t *testing.T) {
 					RecordingID:      1001,
 					SubscriptionID:   2002,
 					Position:         3003,
-					Signal:           gensbe.RecordingSignal_START,
+					Signal:           archivewire.RecordingSignal_START,
 				})
 			},
 		},
@@ -92,7 +92,7 @@ func TestHandleControlResponseFragment_capturedBytesSurviveWireMutation(t *testi
 					ControlSessionID: controlResponseTestControlSessionID,
 					CorrelationID:    controlResponseTestCorrelationID,
 					RelevantID:       10,
-					Code:             gensbe.ControlResponseCode_ERROR,
+					Code:             archivewire.ControlResponseCode_ERROR,
 					ErrorMessage:     []byte("auth rejected"),
 				})
 			},

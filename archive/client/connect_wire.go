@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 const archiveConnectClientLabel = "heron"
@@ -20,7 +20,7 @@ func authConnectRequestWireLen(
 	responseChannelLen, credentialsLen, clientInfoLen int,
 ) (int, bool) {
 	return codecs.AuthConnectRequestWireLen(
-		gensbe.MessageHeaderSbeSchemaVersion,
+		archivewire.MessageHeaderSbeSchemaVersion,
 		responseChannelLen,
 		credentialsLen,
 		clientInfoLen,
@@ -46,14 +46,14 @@ func encodeAuthConnectRequest(
 	return codecs.EncodeAuthConnectRequest(
 		dst,
 		0,
-		gensbe.MessageHeaderSbeSchemaVersion,
+		archivewire.MessageHeaderSbeSchemaVersion,
 		fields,
 	)
 }
 
 func challengeResponseWireLen(encodedCredentialsLen int) (int, bool) {
 	return codecs.ArchiveWireMessageLen(
-		gensbe.ChallengeResponseSbeBlockLength,
+		archivewire.ChallengeResponseSbeBlockLength,
 		encodedCredentialsLen,
 	)
 }
@@ -72,7 +72,7 @@ func encodeChallengeResponseRequest(
 	return codecs.EncodeChallengeResponse(
 		dst,
 		0,
-		gensbe.ChallengeResponseSbeSchemaVersion,
+		archivewire.ChallengeResponseSbeSchemaVersion,
 		fields,
 	)
 }

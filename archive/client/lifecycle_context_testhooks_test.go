@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
@@ -27,7 +27,7 @@ func TestAeronArchiveLifecycle_contextDone(t *testing.T) {
 				_, err := archive.StartRecording(
 					ctx,
 					archiveProxyTestRecordingStreamID,
-					gensbe.SourceLocation_LOCAL,
+					archivewire.SourceLocation_LOCAL,
 					[]byte(lifecycleRecordingChannel),
 				)
 				return err
@@ -127,7 +127,7 @@ func TestAeronArchiveStartRecording_contextCanceledMidLoop(t *testing.T) {
 	_, err := archive.StartRecording(
 		cancelCtx,
 		archiveProxyTestRecordingStreamID,
-		gensbe.SourceLocation_LOCAL,
+		archivewire.SourceLocation_LOCAL,
 		[]byte(lifecycleRecordingChannel),
 	)
 	require.ErrorIs(t, err, context.Canceled)

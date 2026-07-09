@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 const (
@@ -19,49 +19,51 @@ const (
 
 var (
 	messageHeaderLen     = codecs.MessageHeaderEncodedLen()
-	archiveSchemaID      = gensbe.MessageHeaderSbeSchemaID
-	archiveSchemaVersion = gensbe.MessageHeaderSbeSchemaVersion
+	archiveSchemaID      = archivewire.MessageHeaderSbeSchemaID
+	archiveSchemaVersion = archivewire.MessageHeaderSbeSchemaVersion
 
-	controlResponseVersionMinVersion = uint16((&gensbe.ControlResponse{}).VersionSinceVersion())
-	connectRequestVersionMinVersion  = uint16((&gensbe.ConnectRequest{}).VersionSinceVersion())
-	authConnectClientInfoMinVersion  = uint16((&gensbe.AuthConnectRequest{}).ClientInfoSinceVersion())
-	replayFileIoMaxLengthMinVersion  = uint16((&gensbe.ReplayRequest{}).FileIoMaxLengthSinceVersion())
-	replayTokenMinVersion            = uint16((&gensbe.ReplayRequest{}).ReplayTokenSinceVersion())
+	controlResponseVersionMinVersion = uint16((&archivewire.ControlResponse{}).VersionSinceVersion())
+	connectRequestVersionMinVersion  = uint16((&archivewire.ConnectRequest{}).VersionSinceVersion())
+	authConnectClientInfoMinVersion  = uint16((&archivewire.AuthConnectRequest{}).
+						ClientInfoSinceVersion())
+	replayFileIoMaxLengthMinVersion = uint16((&archivewire.ReplayRequest{}).
+					FileIoMaxLengthSinceVersion())
+	replayTokenMinVersion = uint16((&archivewire.ReplayRequest{}).ReplayTokenSinceVersion())
 
-	connectRequestVersionNull      = (&gensbe.ConnectRequest{}).VersionNullValue()
-	replayFileIoMaxLengthNullValue = (&gensbe.ReplayRequest{}).FileIoMaxLengthNullValue()
-	replayTokenNullValue           = (&gensbe.ReplayRequest{}).ReplayTokenNullValue()
+	connectRequestVersionNull      = (&archivewire.ConnectRequest{}).VersionNullValue()
+	replayFileIoMaxLengthNullValue = (&archivewire.ReplayRequest{}).FileIoMaxLengthNullValue()
+	replayTokenNullValue           = (&archivewire.ReplayRequest{}).ReplayTokenNullValue()
 
-	archiveAllControlResponseCodes = []gensbe.ControlResponseCode{
-		gensbe.ControlResponseCode_OK,
-		gensbe.ControlResponseCode_ERROR,
-		gensbe.ControlResponseCode_RECORDING_UNKNOWN,
-		gensbe.ControlResponseCode_SUBSCRIPTION_UNKNOWN,
+	archiveAllControlResponseCodes = []archivewire.ControlResponseCode{
+		archivewire.ControlResponseCode_OK,
+		archivewire.ControlResponseCode_ERROR,
+		archivewire.ControlResponseCode_RECORDING_UNKNOWN,
+		archivewire.ControlResponseCode_SUBSCRIPTION_UNKNOWN,
 	}
-	archiveAllSourceLocations = []gensbe.SourceLocation{
-		gensbe.SourceLocation_LOCAL,
-		gensbe.SourceLocation_REMOTE,
+	archiveAllSourceLocations = []archivewire.SourceLocation{
+		archivewire.SourceLocation_LOCAL,
+		archivewire.SourceLocation_REMOTE,
 	}
-	archiveAllBooleanTypes = []gensbe.BooleanType{
-		gensbe.BooleanType_FALSE,
-		gensbe.BooleanType_TRUE,
+	archiveAllBooleanTypes = []archivewire.BooleanType{
+		archivewire.BooleanType_FALSE,
+		archivewire.BooleanType_TRUE,
 	}
-	archiveAllRecordingSignals = []gensbe.RecordingSignal{
-		gensbe.RecordingSignal_START,
-		gensbe.RecordingSignal_STOP,
-		gensbe.RecordingSignal_EXTEND,
-		gensbe.RecordingSignal_REPLICATE,
-		gensbe.RecordingSignal_MERGE,
-		gensbe.RecordingSignal_SYNC,
-		gensbe.RecordingSignal_DELETE,
-		gensbe.RecordingSignal_REPLICATE_END,
+	archiveAllRecordingSignals = []archivewire.RecordingSignal{
+		archivewire.RecordingSignal_START,
+		archivewire.RecordingSignal_STOP,
+		archivewire.RecordingSignal_EXTEND,
+		archivewire.RecordingSignal_REPLICATE,
+		archivewire.RecordingSignal_MERGE,
+		archivewire.RecordingSignal_SYNC,
+		archivewire.RecordingSignal_DELETE,
+		archivewire.RecordingSignal_REPLICATE_END,
 	}
 
 	testControlResponseBoom = codecs.ControlResponseFields{
 		ControlSessionID: 1,
 		CorrelationID:    2,
 		RelevantID:       3,
-		Code:             gensbe.ControlResponseCode_ERROR,
+		Code:             archivewire.ControlResponseCode_ERROR,
 		Version:          7,
 		ErrorMessage:     []byte("boom"),
 	}
@@ -71,7 +73,7 @@ var (
 		RecordingID:      3,
 		SubscriptionID:   4,
 		Position:         5,
-		Signal:           gensbe.RecordingSignal_START,
+		Signal:           archivewire.RecordingSignal_START,
 	}
 	testRecordingDescriptorChannels = codecs.RecordingDescriptorFields{
 		ControlSessionID:  1,
@@ -101,7 +103,7 @@ var (
 		ControlSessionID: 1,
 		CorrelationID:    2,
 		StreamID:         3,
-		SourceLocation:   gensbe.SourceLocation_LOCAL,
+		SourceLocation:   archivewire.SourceLocation_LOCAL,
 		Channel:          []byte("aeron:ipc"),
 	}
 )
@@ -146,7 +148,7 @@ func replayRequestOracle(
 }
 
 func encodeControlResponseAt(buf []byte, offset int, f codecs.ControlResponseFields) (int, bool) {
-	var msg gensbe.ControlResponse
+	var msg archivewire.ControlResponse
 	msg.WrapAndApplyHeader(buf, uint64(offset), uint64(len(buf))).
 		SetControlSessionId(f.ControlSessionID).
 		SetCorrelationId(f.CorrelationID).
@@ -165,15 +167,15 @@ func encodeControlResponseVersionAbsentAt(
 	offset int,
 	f codecs.ControlResponseFields,
 ) (int, bool) {
-	const reducedBlockLength = gensbe.ControlResponseSbeBlockLength - 4
-	var hdr gensbe.MessageHeader
+	const reducedBlockLength = archivewire.ControlResponseSbeBlockLength - 4
+	var hdr archivewire.MessageHeader
 	hdr.Wrap(buf, uint64(offset), 0, uint64(len(buf)))
 	hdr.SetBlockLength(reducedBlockLength).
-		SetTemplateId(gensbe.ControlResponseSbeTemplateID).
+		SetTemplateId(archivewire.ControlResponseSbeTemplateID).
 		SetSchemaId(archiveSchemaID).
 		SetVersion(0)
 
-	var msg gensbe.ControlResponse
+	var msg archivewire.ControlResponse
 	msg.Wrap(buf, uint64(offset)+hdr.EncodedLength(), uint64(len(buf)), uint64(reducedBlockLength), 0).
 		SetControlSessionId(f.ControlSessionID).
 		SetCorrelationId(f.CorrelationID).
@@ -184,7 +186,7 @@ func encodeControlResponseVersionAbsentAt(
 }
 
 func encodeChallengeAt(buf []byte, offset int, f codecs.ChallengeFields) (int, bool) {
-	var msg gensbe.Challenge
+	var msg archivewire.Challenge
 	msg.WrapAndApplyHeader(buf, uint64(offset), uint64(len(buf))).
 		SetControlSessionId(f.ControlSessionID).
 		SetCorrelationId(f.CorrelationID).
@@ -198,7 +200,7 @@ func encodeRecordingSignalEventAt(
 	offset int,
 	f codecs.RecordingSignalEventFields,
 ) (int, bool) {
-	var msg gensbe.RecordingSignalEvent
+	var msg archivewire.RecordingSignalEvent
 	msg.WrapAndApplyHeader(buf, uint64(offset), uint64(len(buf))).
 		SetControlSessionId(f.ControlSessionID).
 		SetCorrelationId(f.CorrelationID).
@@ -214,7 +216,7 @@ func encodeRecordingDescriptorAt(
 	offset int,
 	f codecs.RecordingDescriptorFields,
 ) (int, bool) {
-	var msg gensbe.RecordingDescriptor
+	var msg archivewire.RecordingDescriptor
 	msg.WrapAndApplyHeader(buf, uint64(offset), uint64(len(buf))).
 		SetControlSessionId(f.ControlSessionID).
 		SetCorrelationId(f.CorrelationID).
@@ -408,20 +410,20 @@ func TestMessageHeader_roundtrip(t *testing.T) {
 	}{
 		{
 			name:        "control_response",
-			blockLength: gensbe.ControlResponseSbeBlockLength,
-			templateID:  gensbe.ControlResponseSbeTemplateID,
+			blockLength: archivewire.ControlResponseSbeBlockLength,
+			templateID:  archivewire.ControlResponseSbeTemplateID,
 			version:     archiveSchemaVersion,
 		},
 		{
 			name:        "recording_descriptor",
-			blockLength: gensbe.RecordingDescriptorSbeBlockLength,
-			templateID:  gensbe.RecordingDescriptorSbeTemplateID,
+			blockLength: archivewire.RecordingDescriptorSbeBlockLength,
+			templateID:  archivewire.RecordingDescriptorSbeTemplateID,
 			version:     archiveSchemaVersion,
 		},
 		{
 			name:        "reduced_block_v0",
 			blockLength: 28,
-			templateID:  gensbe.ControlResponseSbeTemplateID,
+			templateID:  archivewire.ControlResponseSbeTemplateID,
 			version:     0,
 		},
 	}
@@ -429,7 +431,7 @@ func TestMessageHeader_roundtrip(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			buf := make([]byte, messageHeaderLen)
-			var hdr gensbe.MessageHeader
+			var hdr archivewire.MessageHeader
 			hdr.Wrap(buf, 0, uint64(tc.version), uint64(len(buf)))
 			hdr.SetBlockLength(tc.blockLength).
 				SetTemplateId(tc.templateID).
@@ -457,7 +459,7 @@ func TestControlResponse_roundtrip(t *testing.T) {
 				ControlSessionID: 1,
 				CorrelationID:    2,
 				RelevantID:       3,
-				Code:             gensbe.ControlResponseCode_OK,
+				Code:             archivewire.ControlResponseCode_OK,
 				Version:          4,
 			},
 		},
@@ -467,7 +469,7 @@ func TestControlResponse_roundtrip(t *testing.T) {
 				ControlSessionID: 10,
 				CorrelationID:    11,
 				RelevantID:       12,
-				Code:             gensbe.ControlResponseCode_ERROR,
+				Code:             archivewire.ControlResponseCode_ERROR,
 				Version:          7,
 				ErrorMessage:     []byte("boom"),
 			},
@@ -478,7 +480,7 @@ func TestControlResponse_roundtrip(t *testing.T) {
 				ControlSessionID: 20,
 				CorrelationID:    21,
 				RelevantID:       22,
-				Code:             gensbe.ControlResponseCode_RECORDING_UNKNOWN,
+				Code:             archivewire.ControlResponseCode_RECORDING_UNKNOWN,
 				Version:          9,
 				ErrorMessage:     bytes.Repeat([]byte{0x41}, codecTestMaxVarLen),
 			},
@@ -490,7 +492,7 @@ func TestControlResponse_roundtrip(t *testing.T) {
 			fields := tc.fields
 			runArchiveCodecRoundtrip(
 				t,
-				gensbe.ControlResponseSbeTemplateID,
+				archivewire.ControlResponseSbeTemplateID,
 				archiveSchemaVersion,
 				func(buf []byte, offset int) (int, bool) {
 					return encodeControlResponseAt(buf, offset, fields)
@@ -530,7 +532,7 @@ func TestChallenge_roundtrip(t *testing.T) {
 			fields := tc.fields
 			runArchiveCodecRoundtrip(
 				t,
-				gensbe.ChallengeSbeTemplateID,
+				archivewire.ChallengeSbeTemplateID,
 				archiveSchemaVersion,
 				func(buf []byte, offset int) (int, bool) {
 					return encodeChallengeAt(buf, offset, fields)
@@ -554,7 +556,7 @@ func TestRecordingSignalEvent_roundtrip(t *testing.T) {
 			}
 			runArchiveCodecRoundtrip(
 				t,
-				gensbe.RecordingSignalEventSbeTemplateID,
+				archivewire.RecordingSignalEventSbeTemplateID,
 				archiveSchemaVersion,
 				func(buf []byte, offset int) (int, bool) {
 					return encodeRecordingSignalEventAt(buf, offset, fields)
@@ -616,7 +618,7 @@ func TestRecordingDescriptor_roundtrip(t *testing.T) {
 			fields := tc.fields
 			runArchiveCodecRoundtrip(
 				t,
-				gensbe.RecordingDescriptorSbeTemplateID,
+				archivewire.RecordingDescriptorSbeTemplateID,
 				archiveSchemaVersion,
 				func(buf []byte, offset int) (int, bool) {
 					return encodeRecordingDescriptorAt(buf, offset, fields)
@@ -669,7 +671,7 @@ func TestConnectRequest_roundtrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			runArchiveCodecRoundtrip(
 				t,
-				gensbe.ConnectRequestSbeTemplateID,
+				archivewire.ConnectRequestSbeTemplateID,
 				tc.actingVer,
 				encodeAt(tc.actingVer, tc.fields, codecs.EncodeConnectRequest),
 				connectRequestOracle(tc.fields, tc.actingVer),
@@ -679,7 +681,7 @@ func TestConnectRequest_roundtrip(t *testing.T) {
 }
 
 func TestEncodeConnectRequest_nullVersion_clearsStaleBlockSlot(t *testing.T) {
-	versionOffset := messageHeaderLen + int((&gensbe.ConnectRequest{}).VersionEncodingOffset())
+	versionOffset := messageHeaderLen + int((&archivewire.ConnectRequest{}).VersionEncodingOffset())
 
 	fields := codecs.ConnectRequestFields{
 		CorrelationID:    1,
@@ -738,7 +740,7 @@ func TestAuthConnectRequest_roundtrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			runArchiveCodecRoundtrip(
 				t,
-				gensbe.AuthConnectRequestSbeTemplateID,
+				archivewire.AuthConnectRequestSbeTemplateID,
 				tc.actingVer,
 				encodeAt(tc.actingVer, tc.fields, codecs.EncodeAuthConnectRequest),
 				authConnectRequestOracle(tc.fields, tc.actingVer),
@@ -804,7 +806,7 @@ func TestReplayRequest_roundtrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			runArchiveCodecRoundtrip(
 				t,
-				gensbe.ReplayRequestSbeTemplateID,
+				archivewire.ReplayRequestSbeTemplateID,
 				tc.actingVer,
 				encodeAt(tc.actingVer, tc.fields, codecs.EncodeReplayRequest),
 				replayRequestOracle(tc.fields, tc.actingVer),
@@ -818,12 +820,12 @@ func TestStartRecordingRequest_roundtrip(t *testing.T) {
 		ControlSessionID: 1,
 		CorrelationID:    2,
 		StreamID:         3,
-		SourceLocation:   gensbe.SourceLocation_LOCAL,
+		SourceLocation:   archivewire.SourceLocation_LOCAL,
 		Channel:          []byte("aeron:udp?endpoint=localhost:40123"),
 	}
 	runArchiveCodecRoundtrip(
 		t,
-		gensbe.StartRecordingRequestSbeTemplateID,
+		archivewire.StartRecordingRequestSbeTemplateID,
 		archiveSchemaVersion,
 		encodeAt(archiveSchemaVersion, fields, codecs.EncodeStartRecordingRequest),
 		fields,
@@ -835,13 +837,13 @@ func TestStartRecordingRequest2_roundtrip(t *testing.T) {
 		ControlSessionID: 1,
 		CorrelationID:    2,
 		StreamID:         3,
-		SourceLocation:   gensbe.SourceLocation_REMOTE,
-		AutoStop:         gensbe.BooleanType_TRUE,
+		SourceLocation:   archivewire.SourceLocation_REMOTE,
+		AutoStop:         archivewire.BooleanType_TRUE,
 		Channel:          []byte("aeron:ipc"),
 	}
 	runArchiveCodecRoundtrip(
 		t,
-		gensbe.StartRecordingRequest2SbeTemplateID,
+		archivewire.StartRecordingRequest2SbeTemplateID,
 		archiveSchemaVersion,
 		encodeAt(archiveSchemaVersion, fields, codecs.EncodeStartRecordingRequest2),
 		fields,
@@ -857,7 +859,7 @@ func TestStopRecordingRequest_roundtrip(t *testing.T) {
 	}
 	runArchiveCodecRoundtrip(
 		t,
-		gensbe.StopRecordingRequestSbeTemplateID,
+		archivewire.StopRecordingRequestSbeTemplateID,
 		archiveSchemaVersion,
 		encodeAt(archiveSchemaVersion, fields, codecs.EncodeStopRecordingRequest),
 		fields,
@@ -872,7 +874,7 @@ func TestListRecordingRequest_roundtrip(t *testing.T) {
 	}
 	runArchiveCodecRoundtrip(
 		t,
-		gensbe.ListRecordingRequestSbeTemplateID,
+		archivewire.ListRecordingRequestSbeTemplateID,
 		archiveSchemaVersion,
 		encodeAt(archiveSchemaVersion, fields, codecs.EncodeListRecordingRequest),
 		fields,
@@ -887,7 +889,7 @@ func TestStopReplayRequest_roundtrip(t *testing.T) {
 	}
 	runArchiveCodecRoundtrip(
 		t,
-		gensbe.StopReplayRequestSbeTemplateID,
+		archivewire.StopReplayRequestSbeTemplateID,
 		archiveSchemaVersion,
 		encodeAt(archiveSchemaVersion, fields, codecs.EncodeStopReplayRequest),
 		fields,
@@ -898,7 +900,7 @@ func TestCloseSessionRequest_roundtrip(t *testing.T) {
 	fields := codecs.CloseSessionRequestFields{ControlSessionID: 42}
 	runArchiveCodecRoundtrip(
 		t,
-		gensbe.CloseSessionRequestSbeTemplateID,
+		archivewire.CloseSessionRequestSbeTemplateID,
 		archiveSchemaVersion,
 		encodeAt(archiveSchemaVersion, fields, codecs.EncodeCloseSessionRequest),
 		fields,
@@ -909,7 +911,7 @@ func TestKeepAliveRequest_roundtrip(t *testing.T) {
 	fields := codecs.KeepAliveRequestFields{ControlSessionID: 1, CorrelationID: 2}
 	runArchiveCodecRoundtrip(
 		t,
-		gensbe.KeepAliveRequestSbeTemplateID,
+		archivewire.KeepAliveRequestSbeTemplateID,
 		archiveSchemaVersion,
 		encodeAt(archiveSchemaVersion, fields, codecs.EncodeKeepAliveRequest),
 		fields,
@@ -942,7 +944,7 @@ func TestChallengeResponse_roundtrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			runArchiveCodecRoundtrip(
 				t,
-				gensbe.ChallengeResponseSbeTemplateID,
+				archivewire.ChallengeResponseSbeTemplateID,
 				archiveSchemaVersion,
 				encodeAt(archiveSchemaVersion, tc.fields, codecs.EncodeChallengeResponse),
 				tc.fields,
@@ -956,7 +958,7 @@ func TestControlResponse_roundtrip_versionAbsentReducedBlock(t *testing.T) {
 		ControlSessionID: 5,
 		CorrelationID:    6,
 		RelevantID:       7,
-		Code:             gensbe.ControlResponseCode_RECORDING_UNKNOWN,
+		Code:             archivewire.ControlResponseCode_RECORDING_UNKNOWN,
 		Version:          9,
 		ErrorMessage:     []byte("absent"),
 	}
@@ -965,7 +967,7 @@ func TestControlResponse_roundtrip_versionAbsentReducedBlock(t *testing.T) {
 
 	runArchiveCodecRoundtrip(
 		t,
-		gensbe.ControlResponseSbeTemplateID,
+		archivewire.ControlResponseSbeTemplateID,
 		0,
 		func(buf []byte, offset int) (int, bool) {
 			return encodeControlResponseVersionAbsentAt(buf, offset, fields)
@@ -985,7 +987,7 @@ func TestTryDecodeByTemplate_largeVarField(t *testing.T) {
 		SourceIdentity:   large,
 	}
 	wireLen, ok := codecs.ArchiveWireMessageLen(
-		gensbe.RecordingDescriptorSbeBlockLength,
+		archivewire.RecordingDescriptorSbeBlockLength,
 		len(fields.StrippedChannel),
 		len(fields.OriginalChannel),
 		len(fields.SourceIdentity),
@@ -999,7 +1001,7 @@ func TestTryDecodeByTemplate_largeVarField(t *testing.T) {
 
 	decoded, ok := codecs.TryDecodeByTemplate(buf[:wireEnd], 0, codecs.ArchiveDecodeMaxVarLen)
 	require.True(t, ok)
-	require.Equal(t, gensbe.RecordingDescriptorSbeTemplateID, decoded.TemplateID)
+	require.Equal(t, archivewire.RecordingDescriptorSbeTemplateID, decoded.TemplateID)
 
 	gotFields, ok := decoded.Fields.(codecs.RecordingDescriptorFields)
 	require.True(t, ok)
@@ -1018,58 +1020,58 @@ func TestArchiveRootBlockLengthBounds(t *testing.T) {
 	}{
 		{
 			name:       "control_response_version_absent",
-			templateID: gensbe.ControlResponseSbeTemplateID,
+			templateID: archivewire.ControlResponseSbeTemplateID,
 			version:    controlResponseVersionMinVersion - 1,
 			wantMin:    28,
-			wantMax:    gensbe.ControlResponseSbeBlockLength,
+			wantMax:    archivewire.ControlResponseSbeBlockLength,
 			wantOK:     true,
 		},
 		{
 			name:       "control_response_current",
-			templateID: gensbe.ControlResponseSbeTemplateID,
+			templateID: archivewire.ControlResponseSbeTemplateID,
 			version:    archiveSchemaVersion,
-			wantMin:    gensbe.ControlResponseSbeBlockLength,
-			wantMax:    gensbe.ControlResponseSbeBlockLength,
+			wantMin:    archivewire.ControlResponseSbeBlockLength,
+			wantMax:    archivewire.ControlResponseSbeBlockLength,
 			wantOK:     true,
 		},
 		{
 			name:       "connect_request_version_absent",
-			templateID: gensbe.ConnectRequestSbeTemplateID,
+			templateID: archivewire.ConnectRequestSbeTemplateID,
 			version:    connectRequestVersionMinVersion - 1,
 			wantMin:    12,
-			wantMax:    gensbe.ConnectRequestSbeBlockLength,
+			wantMax:    archivewire.ConnectRequestSbeBlockLength,
 			wantOK:     true,
 		},
 		{
 			name:       "replay_request_file_io_absent",
-			templateID: gensbe.ReplayRequestSbeTemplateID,
+			templateID: archivewire.ReplayRequestSbeTemplateID,
 			version:    replayFileIoMaxLengthMinVersion - 1,
 			wantMin:    44,
-			wantMax:    gensbe.ReplayRequestSbeBlockLength,
+			wantMax:    archivewire.ReplayRequestSbeBlockLength,
 			wantOK:     true,
 		},
 		{
 			name:       "replay_request_token_absent",
-			templateID: gensbe.ReplayRequestSbeTemplateID,
+			templateID: archivewire.ReplayRequestSbeTemplateID,
 			version:    replayTokenMinVersion - 1,
 			wantMin:    48,
-			wantMax:    gensbe.ReplayRequestSbeBlockLength,
+			wantMax:    archivewire.ReplayRequestSbeBlockLength,
 			wantOK:     true,
 		},
 		{
 			name:       "replay_request_current",
-			templateID: gensbe.ReplayRequestSbeTemplateID,
+			templateID: archivewire.ReplayRequestSbeTemplateID,
 			version:    archiveSchemaVersion,
-			wantMin:    gensbe.ReplayRequestSbeBlockLength,
-			wantMax:    gensbe.ReplayRequestSbeBlockLength,
+			wantMin:    archivewire.ReplayRequestSbeBlockLength,
+			wantMax:    archivewire.ReplayRequestSbeBlockLength,
 			wantOK:     true,
 		},
 		{
 			name:       "start_recording_request_fixed",
-			templateID: gensbe.StartRecordingRequestSbeTemplateID,
+			templateID: archivewire.StartRecordingRequestSbeTemplateID,
 			version:    archiveSchemaVersion,
-			wantMin:    gensbe.StartRecordingRequestSbeBlockLength,
-			wantMax:    gensbe.StartRecordingRequestSbeBlockLength,
+			wantMin:    archivewire.StartRecordingRequestSbeBlockLength,
+			wantMax:    archivewire.StartRecordingRequestSbeBlockLength,
 			wantOK:     true,
 		},
 		{
@@ -1098,14 +1100,14 @@ func TestArchiveMinRootBlockLength(t *testing.T) {
 		t,
 		uint16(28),
 		codecs.ArchiveMinRootBlockLength(
-			gensbe.ControlResponseSbeTemplateID, controlResponseVersionMinVersion-1, 999,
+			archivewire.ControlResponseSbeTemplateID, controlResponseVersionMinVersion-1, 999,
 		),
 	)
 	require.Equal(
 		t,
-		gensbe.ControlResponseSbeBlockLength,
+		archivewire.ControlResponseSbeBlockLength,
 		codecs.ArchiveMinRootBlockLength(
-			gensbe.ControlResponseSbeTemplateID, archiveSchemaVersion, 999,
+			archivewire.ControlResponseSbeTemplateID, archiveSchemaVersion, 999,
 		),
 	)
 	require.Equal(
@@ -1125,35 +1127,35 @@ func TestArchiveVarFieldCount(t *testing.T) {
 	}{
 		{
 			name:       "close_session_zero_var",
-			templateID: gensbe.CloseSessionRequestSbeTemplateID,
+			templateID: archivewire.CloseSessionRequestSbeTemplateID,
 			version:    archiveSchemaVersion,
 			want:       0,
 			wantOK:     true,
 		},
 		{
 			name:       "control_response_one_var",
-			templateID: gensbe.ControlResponseSbeTemplateID,
+			templateID: archivewire.ControlResponseSbeTemplateID,
 			version:    archiveSchemaVersion,
 			want:       1,
 			wantOK:     true,
 		},
 		{
 			name:       "recording_descriptor_three_var",
-			templateID: gensbe.RecordingDescriptorSbeTemplateID,
+			templateID: archivewire.RecordingDescriptorSbeTemplateID,
 			version:    archiveSchemaVersion,
 			want:       3,
 			wantOK:     true,
 		},
 		{
 			name:       "auth_connect_two_var_pre_client_info",
-			templateID: gensbe.AuthConnectRequestSbeTemplateID,
+			templateID: archivewire.AuthConnectRequestSbeTemplateID,
 			version:    authConnectClientInfoMinVersion - 1,
 			want:       2,
 			wantOK:     true,
 		},
 		{
 			name:       "auth_connect_three_var_with_client_info",
-			templateID: gensbe.AuthConnectRequestSbeTemplateID,
+			templateID: archivewire.AuthConnectRequestSbeTemplateID,
 			version:    authConnectClientInfoMinVersion,
 			want:       3,
 			wantOK:     true,
@@ -1179,7 +1181,7 @@ func TestArchiveVarFieldCount(t *testing.T) {
 }
 
 func TestArchiveWireMessageLen(t *testing.T) {
-	block := gensbe.RecordingDescriptorSbeBlockLength
+	block := archivewire.RecordingDescriptorSbeBlockLength
 
 	t.Run("header_plus_block_plus_var", func(t *testing.T) {
 		got, ok := codecs.ArchiveWireMessageLen(block, 10)
@@ -1188,9 +1190,9 @@ func TestArchiveWireMessageLen(t *testing.T) {
 	})
 
 	t.Run("no_var_fields", func(t *testing.T) {
-		got, ok := codecs.ArchiveWireMessageLen(gensbe.KeepAliveRequestSbeBlockLength)
+		got, ok := codecs.ArchiveWireMessageLen(archivewire.KeepAliveRequestSbeBlockLength)
 		require.True(t, ok)
-		require.Equal(t, messageHeaderLen+int(gensbe.KeepAliveRequestSbeBlockLength), got)
+		require.Equal(t, messageHeaderLen+int(archivewire.KeepAliveRequestSbeBlockLength), got)
 	})
 
 	t.Run("negative_var_len_rejected", func(t *testing.T) {
@@ -1227,9 +1229,9 @@ func TestConnectRequestWireLen(t *testing.T) {
 		require.True(t, ok)
 		want, ok := codecs.ArchiveWireMessageLen(
 			codecs.ArchiveMinRootBlockLength(
-				gensbe.ConnectRequestSbeTemplateID,
+				archivewire.ConnectRequestSbeTemplateID,
 				archiveSchemaVersion,
-				gensbe.ConnectRequestSbeBlockLength,
+				archivewire.ConnectRequestSbeBlockLength,
 			),
 			9,
 		)

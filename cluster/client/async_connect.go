@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
@@ -415,10 +415,10 @@ func (ac *AsyncConnect) pollPollResponse() (*ConnectResult, error) {
 		return nil, nil
 	}
 	templateID := ac.egressPoller.TemplateID()
-	if templateID == int32(gensbe.SessionMessageHeaderSbeTemplateID) {
+	if templateID == int32(clusterwire.SessionMessageHeaderSbeTemplateID) {
 		return nil, nil
 	}
-	if templateID != int32(gensbe.NewLeaderEventSbeTemplateID) &&
+	if templateID != int32(clusterwire.NewLeaderEventSbeTemplateID) &&
 		ac.correlationID != conductor.NullCorrelationID &&
 		ac.egressPoller.CorrelationID() != ac.correlationID {
 		return nil, nil
@@ -434,9 +434,9 @@ func (ac *AsyncConnect) pollPollResponse() (*ConnectResult, error) {
 		return nil, nil
 	}
 	switch templateID {
-	case int32(gensbe.NewLeaderEventSbeTemplateID):
+	case int32(clusterwire.NewLeaderEventSbeTemplateID):
 		return nil, ac.updateMembers()
-	case int32(gensbe.SessionEventSbeTemplateID):
+	case int32(clusterwire.SessionEventSbeTemplateID):
 		switch ac.egressPoller.EventCode() {
 		case EventCodeOK:
 			ac.leaderMemberID = ac.egressPoller.LeaderMemberID()

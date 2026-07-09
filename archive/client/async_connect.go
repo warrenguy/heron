@@ -8,7 +8,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 // ConnectState mirrors Java AeronArchive.AsyncConnect step values.
@@ -407,7 +407,7 @@ func (ac *AsyncConnect) connectPollResponseIgnorable(poller *ControlResponsePoll
 	if capture.Challenged() {
 		return false
 	}
-	return capture.TemplateID != int32(gensbe.ControlResponseSbeTemplateID)
+	return capture.TemplateID != int32(archivewire.ControlResponseSbeTemplateID)
 }
 
 func (ac *AsyncConnect) handleConnectChallenge(
@@ -432,7 +432,7 @@ func (ac *AsyncConnect) handleConnectControlResponse(
 		return nil, errors.New("archive client: connect response missing")
 	}
 	switch resp.Code {
-	case gensbe.ControlResponseCode_OK:
+	case archivewire.ControlResponseCode_OK:
 		ac.session.controlSessionID = resp.ControlSessionID
 		ac.session.archiveID = resp.RelevantID
 		ac.session.serverVersion = resp.Version

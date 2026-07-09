@@ -2,7 +2,7 @@ package client
 
 import (
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 // ArchiveProxy encodes archive control requests and offers them on the control
@@ -23,7 +23,7 @@ func NewArchiveProxy(pub ControlPublication, ctx ArchiveContext) *ArchiveProxy {
 	ctx = ctx.Normalize()
 	return &ArchiveProxy{
 		publication:   pub,
-		actingVersion: gensbe.MessageHeaderSbeSchemaVersion,
+		actingVersion: archivewire.MessageHeaderSbeSchemaVersion,
 		credentials:   ctx.CredentialsSupplier,
 		clientInfo:    archiveConnectClientInfo(ctx.ClientName),
 	}
@@ -89,7 +89,7 @@ func (p *ArchiveProxy) TryKeepAlive(
 		CorrelationID:    correlationID,
 	}
 	return p.tryArchiveWireOffer(
-		gensbe.KeepAliveRequestSbeBlockLength,
+		archivewire.KeepAliveRequestSbeBlockLength,
 		func(dst []byte, actingVersion uint16) (int, bool) {
 			return codecs.EncodeKeepAliveRequest(dst, 0, actingVersion, fields)
 		},
@@ -103,7 +103,7 @@ func (p *ArchiveProxy) TryCloseSession(controlSessionID int64) (int64, bool) {
 		ControlSessionID: controlSessionID,
 	}
 	return p.tryArchiveWireOffer(
-		gensbe.CloseSessionRequestSbeBlockLength,
+		archivewire.CloseSessionRequestSbeBlockLength,
 		func(dst []byte, actingVersion uint16) (int, bool) {
 			return codecs.EncodeCloseSessionRequest(dst, 0, actingVersion, fields)
 		},
@@ -115,7 +115,7 @@ func (p *ArchiveProxy) TryStartRecording(
 	controlSessionID int64,
 	correlationID int64,
 	streamID int32,
-	sourceLocation gensbe.SourceLocation,
+	sourceLocation archivewire.SourceLocation,
 	channel []byte,
 ) (int64, bool) {
 	fields := codecs.StartRecordingRequestFields{
@@ -126,7 +126,7 @@ func (p *ArchiveProxy) TryStartRecording(
 		Channel:          channel,
 	}
 	return p.tryArchiveWireOffer(
-		gensbe.StartRecordingRequestSbeBlockLength,
+		archivewire.StartRecordingRequestSbeBlockLength,
 		func(dst []byte, actingVersion uint16) (int, bool) {
 			return codecs.EncodeStartRecordingRequest(dst, 0, actingVersion, fields)
 		},
@@ -148,7 +148,7 @@ func (p *ArchiveProxy) TryStopRecording(
 		Channel:          channel,
 	}
 	return p.tryArchiveWireOffer(
-		gensbe.StopRecordingRequestSbeBlockLength,
+		archivewire.StopRecordingRequestSbeBlockLength,
 		func(dst []byte, actingVersion uint16) (int, bool) {
 			return codecs.EncodeStopRecordingRequest(dst, 0, actingVersion, fields)
 		},
@@ -193,7 +193,7 @@ func (p *ArchiveProxy) TryStopReplay(
 		ReplaySessionID:  replaySessionID,
 	}
 	return p.tryArchiveWireOffer(
-		gensbe.StopReplayRequestSbeBlockLength,
+		archivewire.StopReplayRequestSbeBlockLength,
 		func(dst []byte, actingVersion uint16) (int, bool) {
 			return codecs.EncodeStopReplayRequest(dst, 0, actingVersion, fields)
 		},
@@ -212,7 +212,7 @@ func (p *ArchiveProxy) TryListRecording(
 		RecordingID:      recordingID,
 	}
 	return p.tryArchiveWireOffer(
-		gensbe.ListRecordingRequestSbeBlockLength,
+		archivewire.ListRecordingRequestSbeBlockLength,
 		func(dst []byte, actingVersion uint16) (int, bool) {
 			return codecs.EncodeListRecordingRequest(dst, 0, actingVersion, fields)
 		},

@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 func captureControlResponseOnPoller(
@@ -25,7 +25,7 @@ func TestTryMatchControlResponse_matchOK(t *testing.T) {
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    controlResponseTestCorrelationID,
 		RelevantID:       555,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	})
 	require.True(t, poller.IsPollComplete())
@@ -62,7 +62,7 @@ func TestTryMatchControlResponse_noMatch(t *testing.T) {
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    controlResponseTestCorrelationID,
 		RelevantID:       555,
-		Code:             gensbe.ControlResponseCode_OK,
+		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	})
 	require.True(t, poller.IsPollComplete())
@@ -82,7 +82,7 @@ func TestTryMatchControlResponse_errorCodeMapsToError(t *testing.T) {
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    controlResponseTestCorrelationID,
 		RelevantID:       99,
-		Code:             gensbe.ControlResponseCode_ERROR,
+		Code:             archivewire.ControlResponseCode_ERROR,
 		ErrorMessage:     []byte("boom"),
 	})
 	require.True(t, poller.IsPollComplete())

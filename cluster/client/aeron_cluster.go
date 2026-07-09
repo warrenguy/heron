@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
@@ -121,13 +121,13 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 	ingressScratch, ingressMaxFrameLen := ingressScratchForPub(result.IngressPublication, nil)
 
 	closeWireLen, closeOK := codecs.ClusterWireMessageLen(
-		gensbe.SessionCloseRequestSbeBlockLength,
+		clusterwire.SessionCloseRequestSbeBlockLength,
 	)
 	keepAliveWireLen, keepAliveOK := codecs.ClusterWireMessageLen(
-		gensbe.SessionKeepAliveSbeBlockLength,
+		clusterwire.SessionKeepAliveSbeBlockLength,
 	)
 	adminWireLen, adminOK := codecs.ClusterWireMessageLen(
-		gensbe.AdminRequestSbeBlockLength,
+		clusterwire.AdminRequestSbeBlockLength,
 		0,
 	)
 	if !closeOK || !keepAliveOK || !adminOK {

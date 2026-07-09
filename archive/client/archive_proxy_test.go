@@ -8,7 +8,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/gensbe"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
 const (
@@ -124,7 +124,7 @@ func TestArchiveProxy_TryConnect_wireTemplateAndLength(t *testing.T) {
 	fields := requireArchiveProxyWireFields[codecs.AuthConnectRequestFields](
 		t,
 		wire,
-		gensbe.AuthConnectRequestSbeTemplateID,
+		archivewire.AuthConnectRequestSbeTemplateID,
 	)
 	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
 	require.Equal(t, archiveProxyTestResponseStreamID, fields.ResponseStreamID)
@@ -132,7 +132,7 @@ func TestArchiveProxy_TryConnect_wireTemplateAndLength(t *testing.T) {
 	require.Equal(t, archiveProxyTestResponseChannelBytes, fields.ResponseChannel)
 
 	expectedLen, lenOK := codecs.AuthConnectRequestWireLen(
-		gensbe.MessageHeaderSbeSchemaVersion,
+		archivewire.MessageHeaderSbeSchemaVersion,
 		len(archiveProxyTestResponseChannelBytes),
 		0,
 		len(proxy.clientInfo),
@@ -173,7 +173,7 @@ func TestArchiveProxy_TryConnect_clientInfoOnWire(t *testing.T) {
 			fields := requireArchiveProxyWireFields[codecs.AuthConnectRequestFields](
 				t,
 				pub.lastOffer(),
-				gensbe.AuthConnectRequestSbeTemplateID,
+				archivewire.AuthConnectRequestSbeTemplateID,
 			)
 			require.Equal(t, tc.want, fields.ClientInfo)
 		})
@@ -196,7 +196,7 @@ func TestArchiveProxy_TryConnect_encodedCredentialsOnWire(t *testing.T) {
 	fields := requireArchiveProxyWireFields[codecs.AuthConnectRequestFields](
 		t,
 		pub.lastOffer(),
-		gensbe.AuthConnectRequestSbeTemplateID,
+		archivewire.AuthConnectRequestSbeTemplateID,
 	)
 	require.Equal(t, credentials, fields.EncodedCredentials)
 }
@@ -210,7 +210,7 @@ func TestArchiveProxy_TryCloseSession_fieldValuesOnWire(t *testing.T) {
 	fields := requireArchiveProxyWireFields[codecs.CloseSessionRequestFields](
 		t,
 		pub.lastOffer(),
-		gensbe.CloseSessionRequestSbeTemplateID,
+		archivewire.CloseSessionRequestSbeTemplateID,
 	)
 	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
 }
@@ -227,7 +227,7 @@ func TestArchiveProxy_TryKeepAlive_fieldValuesOnWire(t *testing.T) {
 	fields := requireArchiveProxyWireFields[codecs.KeepAliveRequestFields](
 		t,
 		pub.lastOffer(),
-		gensbe.KeepAliveRequestSbeTemplateID,
+		archivewire.KeepAliveRequestSbeTemplateID,
 	)
 	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
 	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
@@ -247,7 +247,7 @@ func TestArchiveProxy_TryChallengeResponse_fieldValuesOnWire(t *testing.T) {
 	fields := requireArchiveProxyWireFields[codecs.ChallengeResponseFields](
 		t,
 		pub.lastOffer(),
-		gensbe.ChallengeResponseSbeTemplateID,
+		archivewire.ChallengeResponseSbeTemplateID,
 	)
 	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
 	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
@@ -262,7 +262,7 @@ func TestArchiveProxy_TryStartRecording_fieldValuesOnWire(t *testing.T) {
 		controlResponseTestControlSessionID,
 		archiveProxyTestCorrelationID,
 		archiveProxyTestRecordingStreamID,
-		gensbe.SourceLocation_REMOTE,
+		archivewire.SourceLocation_REMOTE,
 		channel,
 	)
 	require.True(t, ok)
@@ -273,16 +273,16 @@ func TestArchiveProxy_TryStartRecording_fieldValuesOnWire(t *testing.T) {
 	fields := requireArchiveProxyWireFields[codecs.StartRecordingRequestFields](
 		t,
 		wire,
-		gensbe.StartRecordingRequestSbeTemplateID,
+		archivewire.StartRecordingRequestSbeTemplateID,
 	)
 	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
 	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
 	require.Equal(t, archiveProxyTestRecordingStreamID, fields.StreamID)
-	require.Equal(t, gensbe.SourceLocation_REMOTE, fields.SourceLocation)
+	require.Equal(t, archivewire.SourceLocation_REMOTE, fields.SourceLocation)
 	require.Equal(t, channel, fields.Channel)
 
 	expectedLen, lenOK := codecs.ArchiveWireMessageLen(
-		gensbe.StartRecordingRequestSbeBlockLength,
+		archivewire.StartRecordingRequestSbeBlockLength,
 		len(channel),
 	)
 	require.True(t, lenOK)
@@ -308,7 +308,7 @@ func TestArchiveProxy_TryStopRecording_fieldValuesOnWire(t *testing.T) {
 	fields := requireArchiveProxyWireFields[codecs.StopRecordingRequestFields](
 		t,
 		wire,
-		gensbe.StopRecordingRequestSbeTemplateID,
+		archivewire.StopRecordingRequestSbeTemplateID,
 	)
 	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
 	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
@@ -316,7 +316,7 @@ func TestArchiveProxy_TryStopRecording_fieldValuesOnWire(t *testing.T) {
 	require.Equal(t, channel, fields.Channel)
 
 	expectedLen, lenOK := codecs.ArchiveWireMessageLen(
-		gensbe.StopRecordingRequestSbeBlockLength,
+		archivewire.StopRecordingRequestSbeBlockLength,
 		len(channel),
 	)
 	require.True(t, lenOK)
@@ -340,13 +340,13 @@ func TestArchiveProxy_TryListRecording_fieldValuesOnWire(t *testing.T) {
 	fields := requireArchiveProxyWireFields[codecs.ListRecordingRequestFields](
 		t,
 		wire,
-		gensbe.ListRecordingRequestSbeTemplateID,
+		archivewire.ListRecordingRequestSbeTemplateID,
 	)
 	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
 	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
 	require.Equal(t, archiveProxyTestRecordingID, fields.RecordingID)
 
-	expectedLen, lenOK := codecs.ArchiveWireMessageLen(gensbe.ListRecordingRequestSbeBlockLength)
+	expectedLen, lenOK := codecs.ArchiveWireMessageLen(archivewire.ListRecordingRequestSbeBlockLength)
 	require.True(t, lenOK)
 	require.NotZero(t, expectedLen)
 	require.Len(t, wire, expectedLen)
@@ -378,7 +378,7 @@ func TestArchiveProxy_TryReplay_fieldValuesOnWire(t *testing.T) {
 	fields := requireArchiveProxyWireFields[codecs.ReplayRequestFields](
 		t,
 		wire,
-		gensbe.ReplayRequestSbeTemplateID,
+		archivewire.ReplayRequestSbeTemplateID,
 	)
 	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
 	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
@@ -389,7 +389,7 @@ func TestArchiveProxy_TryReplay_fieldValuesOnWire(t *testing.T) {
 	require.Equal(t, channel, fields.ReplayChannel)
 
 	expectedLen, lenOK := codecs.ReplayRequestWireLen(
-		gensbe.MessageHeaderSbeSchemaVersion,
+		archivewire.MessageHeaderSbeSchemaVersion,
 		len(channel),
 	)
 	require.True(t, lenOK)
@@ -414,13 +414,13 @@ func TestArchiveProxy_TryStopReplay_fieldValuesOnWire(t *testing.T) {
 	fields := requireArchiveProxyWireFields[codecs.StopReplayRequestFields](
 		t,
 		wire,
-		gensbe.StopReplayRequestSbeTemplateID,
+		archivewire.StopReplayRequestSbeTemplateID,
 	)
 	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
 	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
 	require.Equal(t, replaySessionID, fields.ReplaySessionID)
 
-	expectedLen, lenOK := codecs.ArchiveWireMessageLen(gensbe.StopReplayRequestSbeBlockLength)
+	expectedLen, lenOK := codecs.ArchiveWireMessageLen(archivewire.StopReplayRequestSbeBlockLength)
 	require.True(t, lenOK)
 	require.NotZero(t, expectedLen)
 	require.Len(t, wire, expectedLen)
@@ -439,7 +439,7 @@ func TestArchiveProxy_TryChallengeResponse_clearsWireBufferSlackBetweenEncodes(t
 
 	shortCreds := []byte("ok")
 	smallWireLen, lenOK := codecs.ArchiveWireMessageLen(
-		gensbe.ChallengeResponseSbeBlockLength,
+		archivewire.ChallengeResponseSbeBlockLength,
 		len(shortCreds),
 	)
 	require.True(t, lenOK)
@@ -535,7 +535,7 @@ func TestArchiveProxy_encodePreflightFailure(t *testing.T) {
 					controlResponseTestControlSessionID,
 					archiveProxyTestCorrelationID,
 					archiveProxyTestRecordingStreamID,
-					gensbe.SourceLocation_LOCAL,
+					archivewire.SourceLocation_LOCAL,
 					oversized,
 				)
 			},

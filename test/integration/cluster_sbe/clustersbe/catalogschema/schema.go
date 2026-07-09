@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 const SchemaVersion = 1
@@ -33,12 +33,12 @@ type wireTemplateSpec struct {
 // specs/cluster-codecs-client.xml.
 var wireTemplateCatalog = []wireTemplateSpec{
 	{
-		id:               gensbe.SessionMessageHeaderSbeTemplateID,
+		id:               clusterwire.SessionMessageHeaderSbeTemplateID,
 		name:             "sessionMessageHeader",
 		allowedFieldKeys: []string{"leadershipTermId", "clusterSessionId", "timestamp"},
 	},
 	{
-		id:   gensbe.SessionEventSbeTemplateID,
+		id:   clusterwire.SessionEventSbeTemplateID,
 		name: "sessionEvent",
 		allowedFieldKeys: []string{
 			"clusterSessionId", "correlationId", "leadershipTermId", "leaderMemberId",
@@ -47,7 +47,7 @@ var wireTemplateCatalog = []wireTemplateSpec{
 		varFieldKeys: []string{"detail"},
 	},
 	{
-		id:   gensbe.SessionConnectRequestSbeTemplateID,
+		id:   clusterwire.SessionConnectRequestSbeTemplateID,
 		name: "sessionConnectRequest",
 		allowedFieldKeys: []string{
 			"correlationId", "responseStreamId", "version", "responseChannel",
@@ -57,17 +57,17 @@ var wireTemplateCatalog = []wireTemplateSpec{
 		varBytesFieldKeys: []string{"encodedCredentials"},
 	},
 	{
-		id:               gensbe.SessionCloseRequestSbeTemplateID,
+		id:               clusterwire.SessionCloseRequestSbeTemplateID,
 		name:             "sessionCloseRequest",
 		allowedFieldKeys: []string{"leadershipTermId", "clusterSessionId"},
 	},
 	{
-		id:               gensbe.SessionKeepAliveSbeTemplateID,
+		id:               clusterwire.SessionKeepAliveSbeTemplateID,
 		name:             "sessionKeepAlive",
 		allowedFieldKeys: []string{"leadershipTermId", "clusterSessionId"},
 	},
 	{
-		id:   gensbe.NewLeaderEventSbeTemplateID,
+		id:   clusterwire.NewLeaderEventSbeTemplateID,
 		name: "newLeaderEvent",
 		allowedFieldKeys: []string{
 			"leadershipTermId", "clusterSessionId", "leaderMemberId", "ingressEndpoints",
@@ -75,21 +75,21 @@ var wireTemplateCatalog = []wireTemplateSpec{
 		varFieldKeys: []string{"ingressEndpoints"},
 	},
 	{
-		id:                gensbe.ChallengeSbeTemplateID,
+		id:                clusterwire.ChallengeSbeTemplateID,
 		name:              "challenge",
 		allowedFieldKeys:  []string{"correlationId", "clusterSessionId", "encodedChallenge"},
 		varFieldKeys:      []string{"encodedChallenge"},
 		varBytesFieldKeys: []string{"encodedChallenge"},
 	},
 	{
-		id:                gensbe.ChallengeResponseSbeTemplateID,
+		id:                clusterwire.ChallengeResponseSbeTemplateID,
 		name:              "challengeResponse",
 		allowedFieldKeys:  []string{"correlationId", "clusterSessionId", "encodedCredentials"},
 		varFieldKeys:      []string{"encodedCredentials"},
 		varBytesFieldKeys: []string{"encodedCredentials"},
 	},
 	{
-		id:   gensbe.AdminRequestSbeTemplateID,
+		id:   clusterwire.AdminRequestSbeTemplateID,
 		name: "adminRequest",
 		allowedFieldKeys: []string{
 			"leadershipTermId", "clusterSessionId", "correlationId", "requestType", "payload",
@@ -98,7 +98,7 @@ var wireTemplateCatalog = []wireTemplateSpec{
 		varBytesFieldKeys: []string{"payload"},
 	},
 	{
-		id:   gensbe.AdminResponseSbeTemplateID,
+		id:   clusterwire.AdminResponseSbeTemplateID,
 		name: "adminResponse",
 		allowedFieldKeys: []string{
 			"clusterSessionId", "correlationId", "requestType", "responseCode", "message", "payload",
@@ -109,20 +109,20 @@ var wireTemplateCatalog = []wireTemplateSpec{
 }
 
 var (
-	eventCodeByName = map[string]gensbe.EventCode{
-		"OK":                      gensbe.EventCode_OK,
-		"ERROR":                   gensbe.EventCode_ERROR,
-		"REDIRECT":                gensbe.EventCode_REDIRECT,
-		"AUTHENTICATION_REJECTED": gensbe.EventCode_AUTHENTICATION_REJECTED,
-		"CLOSED":                  gensbe.EventCode_CLOSED,
+	eventCodeByName = map[string]clusterwire.EventCode{
+		"OK":                      clusterwire.EventCode_OK,
+		"ERROR":                   clusterwire.EventCode_ERROR,
+		"REDIRECT":                clusterwire.EventCode_REDIRECT,
+		"AUTHENTICATION_REJECTED": clusterwire.EventCode_AUTHENTICATION_REJECTED,
+		"CLOSED":                  clusterwire.EventCode_CLOSED,
 	}
-	adminRequestTypeByName = map[string]gensbe.AdminRequestType{
-		"SNAPSHOT": gensbe.AdminRequestType_SNAPSHOT,
+	adminRequestTypeByName = map[string]clusterwire.AdminRequestType{
+		"SNAPSHOT": clusterwire.AdminRequestType_SNAPSHOT,
 	}
-	adminResponseCodeByName = map[string]gensbe.AdminResponseCode{
-		"OK":                  gensbe.AdminResponseCode_OK,
-		"ERROR":               gensbe.AdminResponseCode_ERROR,
-		"UNAUTHORISED_ACCESS": gensbe.AdminResponseCode_UNAUTHORISED_ACCESS,
+	adminResponseCodeByName = map[string]clusterwire.AdminResponseCode{
+		"OK":                  clusterwire.AdminResponseCode_OK,
+		"ERROR":               clusterwire.AdminResponseCode_ERROR,
+		"UNAUTHORISED_ACCESS": clusterwire.AdminResponseCode_UNAUTHORISED_ACCESS,
 	}
 )
 
@@ -206,15 +206,15 @@ func TemplateIDFromName(name string) (uint16, error) {
 	return id, nil
 }
 
-func LookupEventCode(name string) (gensbe.EventCode, error) {
+func LookupEventCode(name string) (clusterwire.EventCode, error) {
 	return lookupEnumValue(name, eventCodeByName, "EventCode")
 }
 
-func LookupAdminRequestType(name string) (gensbe.AdminRequestType, error) {
+func LookupAdminRequestType(name string) (clusterwire.AdminRequestType, error) {
 	return lookupEnumValue(name, adminRequestTypeByName, "AdminRequestType")
 }
 
-func LookupAdminResponseCode(name string) (gensbe.AdminResponseCode, error) {
+func LookupAdminResponseCode(name string) (clusterwire.AdminResponseCode, error) {
 	return lookupEnumValue(name, adminResponseCodeByName, "AdminResponseCode")
 }
 

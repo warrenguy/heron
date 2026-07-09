@@ -8,14 +8,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/gensbe"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 func requireSessionMessageHeaderFastSlowParity(tb require.TestingT, buf []byte, offset int) {
 	fast, fastOK := codecs.TryDecodeSessionMessageHeaderAt(buf, offset)
 	slow, slowOK := codecs.TryDecodeByTemplate(buf, offset, codecTestMaxVarLen)
 
-	slowHeaderOK := slowOK && slow.TemplateID == gensbe.SessionMessageHeaderSbeTemplateID
+	slowHeaderOK := slowOK && slow.TemplateID == clusterwire.SessionMessageHeaderSbeTemplateID
 	require.Equal(tb, fastOK, slowHeaderOK)
 
 	if fastOK {
@@ -36,7 +36,7 @@ func encodeSessionMessageHeaderAt(
 }
 
 func TestSessionMessageHeader_fastSlowDecodeParity_table(t *testing.T) {
-	actingVersion := uint16(gensbe.SessionMessageHeaderSbeSchemaVersion)
+	actingVersion := uint16(clusterwire.SessionMessageHeaderSbeSchemaVersion)
 	fields := codecs.SessionMessageHeaderFields{
 		LeadershipTermID: 1,
 		ClusterSessionID: 2,
