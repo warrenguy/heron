@@ -16,6 +16,9 @@ import (
 //
 // The images slice is mutated only by the conductor via addImage and
 // removeImage; application code must not modify it.
+//
+// Image lifecycle callbacks are configured on Context at Connect, not on
+// Subscription directly.
 type Subscription struct {
 	registrationID int64
 	streamID       int32
@@ -31,8 +34,8 @@ type Subscription struct {
 
 	closed bool
 
-	availableImageHandler   func(*Image)
-	unavailableImageHandler func(*Image)
+	availableImageHandler   AvailableImageHandler
+	unavailableImageHandler UnavailableImageHandler
 	conductor               *conductor.Conductor
 }
 
@@ -40,12 +43,16 @@ func newSubscription(
 	registrationID int64,
 	streamID int32,
 	channel string,
+	available AvailableImageHandler,
+	unavailable UnavailableImageHandler,
 ) *Subscription {
 	return &Subscription{
-		registrationID:         registrationID,
-		streamID:               streamID,
-		channel:                channel,
-		channelStatusCounterID: cnc.NullCounterID,
+		registrationID:          registrationID,
+		streamID:                streamID,
+		channel:                 channel,
+		channelStatusCounterID:  cnc.NullCounterID,
+		availableImageHandler:   available,
+		unavailableImageHandler: unavailable,
 	}
 }
 

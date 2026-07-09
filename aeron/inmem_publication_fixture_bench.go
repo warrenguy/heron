@@ -20,6 +20,8 @@ func newInMemImageFromLog(
 		inMemSubscriptionRegistrationID,
 		inMemPublicationStreamID,
 		inMemImageSourceIdentity,
+		nil,
+		nil,
 	)
 	counters := inMemCountersReaderWithSubscriberPosition(
 		joinPosition,

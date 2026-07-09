@@ -6,9 +6,12 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
-type conductorResourceLifecycle struct{}
+type conductorResourceLifecycle struct {
+	availableImageHandler   AvailableImageHandler
+	unavailableImageHandler UnavailableImageHandler
+}
 
-// ConductorResourceLifecycle wires conductor ready events to aeron types.
+// ConductorResourceLifecycle is the nil-handler default for tests and internal fixtures.
 var ConductorResourceLifecycle conductor.ResourceLifecycle = conductorResourceLifecycle{}
 
 func (conductorResourceLifecycle) NewPublication(
@@ -34,12 +37,18 @@ func (conductorResourceLifecycle) NewExclusivePublication(
 	)
 }
 
-func (conductorResourceLifecycle) NewPreSubscription(
+func (lifecycle conductorResourceLifecycle) NewPreSubscription(
 	registrationID int64,
 	streamID int32,
 	channel string,
 ) conductor.SubscriptionHandle {
-	return newSubscription(registrationID, streamID, channel)
+	return newSubscription(
+		registrationID,
+		streamID,
+		channel,
+		lifecycle.availableImageHandler,
+		lifecycle.unavailableImageHandler,
+	)
 }
 
 func (conductorResourceLifecycle) ApplySubscriptionReady(

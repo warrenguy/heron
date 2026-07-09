@@ -115,7 +115,7 @@ Pin-bump workflow:
 make bench             # contract suite (quick)
 make bench-baseline    # .bench/baseline.txt (gitignored, per machine)
 make bench-regression  # vs baseline via benchstat; exit 1 on alloc regression (CI)
-make bench-micro       # white-box in-package (informational)
+make bench-micro       # in-package (informational)
 ```
 
 Re-baseline after pulling `main` or when perf changes are intentional.

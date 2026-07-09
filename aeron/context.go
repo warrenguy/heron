@@ -43,6 +43,16 @@ type Context struct {
 
 	ErrorHandler func(error)
 
+	// AvailableImageHandler is copied to each Subscription on the Client
+	// returned by Connect. Nil means no callback. See AvailableImageHandler for
+	// invocation contract.
+	AvailableImageHandler AvailableImageHandler
+
+	// UnavailableImageHandler is copied to each Subscription on the Client
+	// returned by Connect. Nil means no callback. See UnavailableImageHandler for
+	// invocation contract.
+	UnavailableImageHandler UnavailableImageHandler
+
 	EpochClock conductor.EpochClock
 	NanoClock  conductor.NanoClock
 

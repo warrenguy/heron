@@ -1160,7 +1160,7 @@ func NewSubscriptionForTest(
 	streamID int32,
 	channel string,
 ) *Subscription {
-	return newSubscription(registrationID, streamID, channel)
+	return newSubscription(registrationID, streamID, channel, nil, nil)
 }
 
 func AvailableImageForTest() conductor.AvailableImage {
@@ -1193,7 +1193,7 @@ func NewImageWithCommittedDataFrameForTest(
 ) (*Image, int32) {
 	tb.Helper()
 
-	sub := newSubscription(
+	sub := NewSubscriptionForTest(
 		TestSubscriptionRegistrationID,
 		TestPublicationStreamID,
 		TestImageSourceIdentity,
@@ -1347,14 +1347,14 @@ func SubscriptionSetRoundRobinIndexForTest(sub *Subscription, index uint32) {
 
 func SubscriptionSetAvailableImageHandlerForTest(
 	sub *Subscription,
-	handler func(*Image),
+	handler AvailableImageHandler,
 ) {
 	sub.availableImageHandler = handler
 }
 
 func SubscriptionSetUnavailableImageHandlerForTest(
 	sub *Subscription,
-	handler func(*Image),
+	handler UnavailableImageHandler,
 ) {
 	sub.unavailableImageHandler = handler
 }
@@ -1425,4 +1425,16 @@ func SetClientPollTimeoutsForTest(
 ) {
 	client.pollTimeout = pollTimeout
 	client.publicationOfferTimeout = publicationOfferTimeout
+}
+
+func ConductorConnectConfigForTest(ctx Context, clientID int64) conductor.Config {
+	return conductorConnectConfig(ctx, clientID)
+}
+
+func SubscriptionAvailableImageHandlerForTest(sub *Subscription) AvailableImageHandler {
+	return sub.availableImageHandler
+}
+
+func SubscriptionUnavailableImageHandlerForTest(sub *Subscription) UnavailableImageHandler {
+	return sub.unavailableImageHandler
 }

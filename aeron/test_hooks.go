@@ -76,7 +76,7 @@ func NewSubscriptionForHooks(
 	streamID int32,
 	channel string,
 ) *Subscription {
-	return newSubscription(registrationID, streamID, channel)
+	return newSubscription(registrationID, streamID, channel, nil, nil)
 }
 
 // SubscriptionApplyReadyForHooks applies SubscriptionReady channel-status counter wiring.

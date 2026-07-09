@@ -33,19 +33,20 @@ type TB interface {
 }
 
 type ConductorConfig struct {
-	ClientID            int64
-	DriverTimeout       time.Duration
-	KeepAliveInterval   time.Duration
-	IdleSleepDuration   time.Duration
-	InterServiceTimeout time.Duration
-	EpochMs             int64
-	NanoNs              *int64
-	NanoClock           func() int64
-	ErrorHandler        func(error)
-	ImageLifecycle      conductor.ImageLifecycle
-	ResourceLifecycle   conductor.ResourceLifecycle
-	MediaDriverDir      string
-	CloseLingerNs       int64
+	ClientID               int64
+	DriverTimeout          time.Duration
+	KeepAliveInterval      time.Duration
+	IdleSleepDuration      time.Duration
+	InterServiceTimeout    time.Duration
+	EpochMs                int64
+	NanoNs                 *int64
+	NanoClock              func() int64
+	ErrorHandler           func(error)
+	SubscriberErrorHandler func(error)
+	ImageLifecycle         conductor.ImageLifecycle
+	ResourceLifecycle      conductor.ResourceLifecycle
+	MediaDriverDir         string
+	CloseLingerNs          int64
 }
 
 func DefaultConductorConfig(nanoNs *int64) ConductorConfig {
@@ -144,12 +145,13 @@ func NewConductorFixture(tb TB, config ConductorConfig) *ConductorFixture {
 		EpochClock: func() int64 {
 			return cfg.EpochMs
 		},
-		NanoClock:         nanoClock,
-		ErrorHandler:      cfg.ErrorHandler,
-		ImageLifecycle:    cfg.ImageLifecycle,
-		ResourceLifecycle: cfg.ResourceLifecycle,
-		MediaDriverDir:    cfg.MediaDriverDir,
-		CloseLingerNs:     cfg.CloseLingerNs,
+		NanoClock:              nanoClock,
+		ErrorHandler:           cfg.ErrorHandler,
+		SubscriberErrorHandler: cfg.SubscriberErrorHandler,
+		ImageLifecycle:         cfg.ImageLifecycle,
+		ResourceLifecycle:      cfg.ResourceLifecycle,
+		MediaDriverDir:         cfg.MediaDriverDir,
+		CloseLingerNs:          cfg.CloseLingerNs,
 	}
 
 	driverProxy := conductor.NewDriverProxy(ring, cfg.ClientID)

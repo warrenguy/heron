@@ -284,6 +284,20 @@ func TestExclusivePublicationFromHandle_errors(t *testing.T) {
 	)
 }
 
+func TestConductorResourceLifecycle_NewPreSubscription_nilHandlers(t *testing.T) {
+	t.Parallel()
+
+	sub := ConductorResourceLifecycle.NewPreSubscription(
+		TestSubscriptionRegistrationID,
+		TestPublicationStreamID,
+		TestImageSourceIdentity,
+	)
+	subscription, err := subscriptionFromHandle(sub)
+	require.NoError(t, err)
+	require.Nil(t, SubscriptionAvailableImageHandlerForTest(subscription))
+	require.Nil(t, SubscriptionUnavailableImageHandlerForTest(subscription))
+}
+
 func TestConductorResourceLifecycle_BindSubscription_wiresCountersReader(t *testing.T) {
 	t.Parallel()
 

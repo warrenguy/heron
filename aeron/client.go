@@ -40,9 +40,12 @@ const (
 //
 // Poll loops under clientLock call doWorkLocked, not DoWork.
 //
-// Callbacks invoked from doWorkLocked (ErrorHandler, available/unavailable image
-// handlers) must not call DoWork, Close, Add*, OfferAdd*, PollAdd*,
-// NextAvailableSessionID, or IsTerminating.
+// Callbacks invoked from doWorkLocked (ErrorHandler, AvailableImageHandler,
+// UnavailableImageHandler) must not call DoWork, Close, Add*, OfferAdd*,
+// PollAdd*, NextAvailableSessionID, or IsTerminating. See AvailableImageHandler
+// and UnavailableImageHandler for the full invocation contract (write-lock
+// suspend, safe Client lookups, nested suppression, and Client.DoWork deadlock
+// risk).
 //
 // Publication Offer from other goroutines remains allowed when the caller does
 // not overlap blocking client APIs. Subscription and Image Poll stay on the
@@ -158,9 +161,12 @@ func conductorConnectConfig(ctx Context, clientID int64) conductor.Config {
 		NanoClock:              ctx.NanoClock,
 		SubscriberErrorHandler: ctx.ErrorHandler,
 		ImageLifecycle:         ConductorImageLifecycle,
-		ResourceLifecycle:      ConductorResourceLifecycle,
-		MediaDriverDir:         ctx.AeronDir,
-		CloseLingerNs:          ctx.CloseLingerDuration.Nanoseconds(),
+		ResourceLifecycle: conductorResourceLifecycle{
+			availableImageHandler:   ctx.AvailableImageHandler,
+			unavailableImageHandler: ctx.UnavailableImageHandler,
+		},
+		MediaDriverDir: ctx.AeronDir,
+		CloseLingerNs:  ctx.CloseLingerDuration.Nanoseconds(),
 	}
 	if handler := ctx.ErrorHandler; handler != nil {
 		config.ErrorHandler = func(err error) {

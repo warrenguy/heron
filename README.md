@@ -19,12 +19,13 @@ threads are planned.
 Transport client is substantially complete: IPC and UDP publications and subscriptions,
 shared and exclusive publish paths, offer and claim, fragmented publish and term rotation,
 publication limits and channel status, blocking and async resource add, registration
-lookup, counters reader, CNC metadata, error log, driver liveness, and close linger.
+lookup, counters reader, CNC metadata, error log, driver liveness, close linger, and
+optional `Context.AvailableImageHandler` / `Context.UnavailableImageHandler` callbacks
+copied to each subscription at registration.
 
 #### Planned
 
-Counter registration; dynamic MDC destinations; `Subscription.ControlledPoll`; public
-subscription image lifecycle callbacks.
+Counter registration; dynamic MDC destinations; `Subscription.ControlledPoll`.
 
 ### Cluster (`cluster/client`)
 

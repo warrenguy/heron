@@ -74,6 +74,67 @@ func newClientAddFixture(
 	return client, fixture
 }
 
+func conductorFixtureConfigFromConnect(connectConfig conductor.Config) testutil.ConductorConfig {
+	config := testutil.DefaultConductorConfig(nil)
+	config.DriverTimeout = connectConfig.DriverTimeout
+	config.KeepAliveInterval = connectConfig.KeepAliveInterval
+	config.IdleSleepDuration = connectConfig.IdleSleepDuration
+	config.InterServiceTimeout = connectConfig.InterServiceTimeout
+	config.ImageLifecycle = connectConfig.ImageLifecycle
+	config.ResourceLifecycle = connectConfig.ResourceLifecycle
+	config.MediaDriverDir = connectConfig.MediaDriverDir
+	config.ErrorHandler = connectConfig.ErrorHandler
+	config.SubscriberErrorHandler = connectConfig.SubscriberErrorHandler
+	config.CloseLingerNs = connectConfig.CloseLingerNs
+	return config
+}
+
+func TestConductorFixtureConfigFromConnect_propagatesSubscriberErrorHandler(t *testing.T) {
+	t.Parallel()
+
+	var subscriberCalls int
+	ctx := Context{
+		ErrorHandler: func(error) { subscriberCalls++ },
+	}
+	connectConfig := ConductorConnectConfigForTest(ctx, testutil.TestClientID)
+	fixtureConfig := conductorFixtureConfigFromConnect(connectConfig)
+	require.NotNil(t, fixtureConfig.SubscriberErrorHandler)
+	fixtureConfig.SubscriberErrorHandler(errors.New("subscriber-side fault"))
+	require.Equal(t, 1, subscriberCalls)
+	require.NotNil(t, fixtureConfig.ErrorHandler)
+}
+
+// newClientAddFixtureWithContext wires the conductor fixture from
+// ConductorConnectConfigForTest (production Connect path) and overrides only
+// test timing: NanoClock->0, DriverTimeout->1s, IdleSleepDuration->1ms.
+func newClientAddFixtureWithContext(
+	tb testing.TB,
+	ctx Context,
+) (*Client, *testutil.ConductorFixture) {
+	tb.Helper()
+
+	connectCtx := ctx
+	if connectCtx.AeronDir == "" {
+		connectCtx.AeronDir = tb.TempDir()
+	}
+
+	connectConfig := ConductorConnectConfigForTest(connectCtx, testutil.TestClientID)
+	config := conductorFixtureConfigFromConnect(connectConfig)
+	config.NanoClock = func() int64 { return 0 }
+	config.DriverTimeout = time.Second
+	config.IdleSleepDuration = time.Millisecond
+	fixture := testutil.NewConductorFixture(tb, config)
+	client := NewClientForTestWithDriverProxy(
+		fixture.Conductor,
+		fixture.DriverProxy,
+		fixture.NanoClock,
+		config.ClientID,
+		config.DriverTimeout,
+		config.IdleSleepDuration,
+	)
+	return client, fixture
+}
+
 func countersReaderForClientAddPublications(
 	tb testutil.TB,
 	registrationIDs ...int64,

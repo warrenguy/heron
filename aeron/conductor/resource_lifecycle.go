@@ -8,8 +8,8 @@ import (
 // ResourceLifecycle constructs and tears down publications and subscriptions for
 // the conductor without importing package aeron.
 //
-// Internal wiring seam only: production uses aeron.ConductorResourceLifecycle.
-// The interface may grow without a backward-compat split; out-of-tree
+// Internal wiring seam only; the production implementation lives in package
+// aeron. The interface may grow without a backward-compat split; out-of-tree
 // implementations are unsupported.
 type ResourceLifecycle interface {
 	NewPublication(
