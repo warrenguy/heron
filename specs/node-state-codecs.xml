@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Modified from Aeron 1.52.0 aeron-cluster-node-state-codecs.xml (Apache 2.0, Real Logic).
+  Node-state.dat durable subset only (nodeStateHeader, candidateTerm, nodeStateFooter).
+  ClusterMembers deferred. See THIRD_PARTY_NOTICES.md.
+  messageHeader is 16 bytes (frameLength, padding) per upstream on-disk framing;
+  do not collapse to the 8-byte cluster/archive client wire header.
+-->
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
+                   package="io.aeron.cluster.codecs.node"
+                   id="112"
+                   version="10"
+                   semanticVersion="5.3"
+                   description="Message Codecs for the persistent state of a node in Aeron Cluster."
+                   byteOrder="littleEndian">
+    <types>
+        <composite name="messageHeader" description="Message identifiers and length of message root.">
+            <type name="blockLength" primitiveType="uint16" />
+            <type name="templateId" primitiveType="uint16" />
+            <type name="schemaId" primitiveType="uint16" />
+            <type name="version" primitiveType="uint16" />
+            <type name="frameLength" primitiveType="int32" />
+            <type name="padding" primitiveType="int32" />
+        </composite>
+        <type name="time_t" primitiveType="int64" description="Epoch time in milliseconds since 1 Jan 1970 UTC." />
+    </types>
+
+    <sbe:message name="nodeStateHeader" id="300">
+        <field name="version" id="1" type="int32" />
+        <field name="padding" id="2" type="int32" />
+    </sbe:message>
+
+    <sbe:message name="candidateTerm" id="301">
+        <field name="candidateTermId" id="1" type="int64" />
+        <field name="timestamp" id="2" type="time_t" />
+        <field name="logPosition" id="3" type="int64" />
+    </sbe:message>
+
+    <sbe:message name="nodeStateFooter" id="304" />
+</sbe:messageSchema>

@@ -77,6 +77,7 @@ help: ## List Makefile targets
 .PHONY: check check-inner check-static check-static-extra check-test check-aeron-versions \
 	check-sbe-stale check-sbe-stale-optional \
 	check-sbe-stale-archive check-sbe-stale-archive-optional \
+	check-sbe-stale-nodestate check-sbe-stale-nodestate-optional \
 	cluster-sbe-catalog-regen check-catalog-stale check-catalog-stale-optional \
 	check-catalog-stale-selftest recordinglog-fixtures-regen \
 	recordinglog-fixtures-regen-optional \
@@ -94,7 +95,9 @@ check-static: lint check-static-extra
 
 check-static-extra:
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) \
-		check-sbe-stale-optional check-sbe-stale-archive-optional
+		check-sbe-stale-optional \
+		check-sbe-stale-archive-optional \
+		check-sbe-stale-nodestate-optional
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) check-aeron-versions \
 		check-catalog-stale-optional contract-oracles-optional
 
@@ -122,17 +125,17 @@ $(1)-optional:
 	fi
 endef
 
-# $(1)=target suffix (empty or -archive), $(2)=help label, $(3)=generate-sbe.sh arg
+# $(1)=target suffix (empty, -archive, or -nodestate), $(2)=help label, $(3)=generate-sbe.sh arg
 define sbe-generate-target
 .PHONY: sbe-generate$(1)
 sbe-generate$(1): ## Regenerate $(2) SBE flyweights
 	./scripts/generate-sbe.sh $(3)
 endef
 
-# $(1)=target suffix (empty or -archive), $(2)=package path under repo root
+# $(1)=target suffix (empty, -archive, or -nodestate), $(2)=parent package dir, $(3)=generated subdir (default gensbe)
 define sbe-stale-check
 check-sbe-stale$(1): sbe-generate$(1)
-	@git diff --exit-code $(2)/gensbe/
+	@git diff --exit-code $(2)/$(or $(3),gensbe)/
 $(eval $(call optional-target,check-sbe-stale$(1),command -v java >/dev/null,java not installed))
 endef
 
@@ -173,6 +176,7 @@ check-catalog-stale-selftest:
 
 $(eval $(call sbe-stale-check,,cluster/codecs))
 $(eval $(call sbe-stale-check,-archive,archive/codecs))
+$(eval $(call sbe-stale-check,-nodestate,cluster/election,nodewire))
 
 INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe,cluster_java,archive_java
 
@@ -398,3 +402,4 @@ build-examples: $(addprefix bin/,$(EXAMPLE_BINS)) ## Compile example binaries (r
 # Java SBE codegen.
 $(eval $(call sbe-generate-target,,cluster,))
 $(eval $(call sbe-generate-target,-archive,archive,archive))
+$(eval $(call sbe-generate-target,-nodestate,nodestate,nodestate))

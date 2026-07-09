@@ -54,3 +54,19 @@ Go flyweights generated from `specs/cluster-codecs-client.xml` via the SBE tool
 
 Go flyweights generated from `specs/archive-codecs-client.xml` via the SBE tool
 (see `specs/versions.yaml`). Not copied from upstream Java sources.
+
+## Aeron cluster node-state SBE durable file schema
+
+### `specs/node-state-codecs.xml`
+
+- **Source:** `aeron-cluster-node-state-codecs.xml` (aeron-cluster) @ pinned
+  `aeron.ref` in `specs/versions.yaml`
+- **Changes:** subset for Heron `node-state.dat` durable file codecs;
+  `nodeStateHeader`, `candidateTerm`, and `nodeStateFooter` only;
+  `ClusterMembers` and unused shared types deferred; schema id, version, and
+  layout of retained messages match upstream
+
+## `cluster/election/nodewire/`
+
+Go flyweights generated from `specs/node-state-codecs.xml` via the SBE tool
+(see `specs/versions.yaml`). Not copied from upstream Java sources.

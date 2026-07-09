@@ -80,11 +80,13 @@ go test -race -tags=rapid,testhooks -run rapid ./...  # ad-hoc property
 
 Prefer Makefile targets over bare `go test`.
 
-## SBE codecs (cluster + archive)
+## SBE codecs (cluster + archive + node-state)
 
 Cluster wire XML: `specs/cluster-codecs-client.xml`; flyweights:
 `cluster/codecs/gensbe/`. Archive control wire XML:
 `specs/archive-codecs-client.xml`; flyweights: `archive/codecs/gensbe/`.
+Node-state file wire XML: `specs/node-state-codecs.xml`; flyweights:
+`cluster/election/nodewire/`.
 Cluster fixture oracle rows:
 `test/integration/cluster_sbe/clustersbe/fixtures/catalog.json`; run
 `make cluster-sbe-catalog-regen` to refresh committed `hex` from `fields`.
@@ -99,10 +101,19 @@ Pin-bump workflow:
    `aeron-archive/src/main/resources/archive/aeron-archive-codecs.xml` (control
    request, response, descriptor, and recording-signal messages plus shared
    types only); port into `specs/archive-codecs-client.xml`.
-4. `make sbe-generate` and `make sbe-generate-archive`; commit flyweight diffs
-   if any.
-5. `make test-cluster-sbe-contract`; fix failures under `cluster/codecs/` and
-   `test/integration/cluster_sbe/clustersbe/`.
+4. Node-state: diff upstream
+   `aeron-cluster/src/main/resources/cluster/aeron-cluster-node-state-codecs.xml`;
+   port into `specs/node-state-codecs.xml` (preserve trimmed message set unless
+   PR scope expands).
+5. `make sbe-generate`, `make sbe-generate-archive`, and
+   `make sbe-generate-nodestate`; commit flyweight diffs if any.
+6. `make check` (optional SBE stale gates for cluster, archive, and nodestate
+   when Java is installed) and `make test-rapid`.
+7. `make test-cluster-sbe-contract`; fix failures under `cluster/codecs/` and
+   `test/integration/cluster_sbe/clustersbe/`. Node-state flyweight or codec
+   failures from step 6 are fixed under `cluster/election/` and
+   `cluster/election/nodewire/` (`make check` / `make test-rapid`; not
+   `test-cluster-sbe-contract`).
 
 ## Benchmarks
 

@@ -13,13 +13,20 @@ case "${TARGET}" in
 cluster)
 	SCHEMA="${ROOT}/specs/cluster-codecs-client.xml"
 	OUT_DIR="${ROOT}/cluster/codecs"
+	NAMESPACE="gensbe"
 	;;
 archive)
 	SCHEMA="${ROOT}/specs/archive-codecs-client.xml"
 	OUT_DIR="${ROOT}/archive/codecs"
+	NAMESPACE="gensbe"
+	;;
+nodestate)
+	SCHEMA="${ROOT}/specs/node-state-codecs.xml"
+	OUT_DIR="${ROOT}/cluster/election"
+	NAMESPACE="nodewire"
 	;;
 *)
-	echo "heron: unknown sbe target ${TARGET} (want cluster or archive)" >&2
+	echo "heron: unknown sbe target ${TARGET} (want cluster, archive, or nodestate)" >&2
 	exit 1
 	;;
 esac
@@ -57,12 +64,12 @@ cache_fetch_if_missing "${SBE_TOOL_JAR}" "${url}"
 
 mkdir -p "${OUT_DIR}"
 
-echo "heron: generating SBE flyweights into ${OUT_DIR}"
+echo "heron: generating SBE flyweights into ${OUT_DIR} (namespace ${NAMESPACE})"
 java \
 	-Dsbe.target.language=GOLANG \
 	-Dsbe.go.generate.generate.flyweights=true \
 	-Dsbe.output.dir="${OUT_DIR}" \
-	-Dsbe.target.namespace=gensbe \
+	-Dsbe.target.namespace="${NAMESPACE}" \
 	-jar "${SBE_TOOL_JAR}" \
 	"${SCHEMA}"
 
