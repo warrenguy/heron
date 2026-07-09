@@ -4,8 +4,10 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -237,6 +239,136 @@ func TestWaitForIPCLinkConnected_subscriptionTimeout(t *testing.T) {
 	require.Contains(t, capture.lastMsg, "within")
 	require.NotContains(t, capture.lastMsg, "publication")
 	require.NotContains(t, capture.lastMsg, "poll: context deadline exceeded")
+}
+
+func TestPollClientDuring_happyPath(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+	hadClientError := &atomic.Bool{}
+
+	PollClientDuring(
+		t,
+		client,
+		hadClientError,
+		ConnectedPollTimeout,
+		"transport error",
+		func() string { return "unexpected timeout" },
+		func() error { return nil },
+	)
+}
+
+func TestPollClientDuring_fnError(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+	hadClientError := &atomic.Bool{}
+	fnErr := errors.New("fn failed")
+
+	capture := &CaptureFailTB{TB: t}
+	PollClientDuring(
+		capture,
+		client,
+		hadClientError,
+		ConnectedPollTimeout,
+		"transport error",
+		func() string { return "unexpected timeout" },
+		func() error { return fnErr },
+	)
+	require.True(t, capture.failed)
+	require.Equal(t, "fn failed", capture.lastMsg)
+}
+
+func TestPollClientDuring_fnReturnsDeadlineExceeded(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+	hadClientError := &atomic.Bool{}
+
+	capture := &CaptureFailTB{TB: t}
+	timeoutLabel := "poll client during timed out"
+	PollClientDuring(
+		capture,
+		client,
+		hadClientError,
+		ConnectedPollTimeout,
+		"transport error",
+		func() string { return timeoutLabel },
+		func() error { return context.DeadlineExceeded },
+	)
+	require.True(t, capture.failed)
+	require.NotEqual(t, timeoutLabel, capture.lastMsg)
+	require.Equal(t, "poll: context deadline exceeded", capture.lastMsg)
+}
+
+func TestPollClientDuring_timeoutMessage(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, shortPollAeronContext())
+	hadClientError := &atomic.Bool{}
+
+	capture := &CaptureFailTB{TB: t}
+	PollClientDuring(
+		capture,
+		client,
+		hadClientError,
+		pollHarnessShortTimeout,
+		"transport error",
+		func() string { return "poll client during timed out" },
+		func() error {
+			time.Sleep(pollHarnessShortTimeout * 4)
+			return nil
+		},
+	)
+	require.True(t, capture.failed)
+	require.Equal(t, "poll client during timed out", capture.lastMsg)
+}
+
+func TestPollClientDuring_transportErrorGate(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+	hadClientError := &atomic.Bool{}
+	hadClientError.Store(true)
+
+	capture := &CaptureFailTB{TB: t}
+	PollClientDuring(
+		capture,
+		client,
+		hadClientError,
+		ConnectedPollTimeout,
+		"transport error during poll",
+		func() string { return "unexpected timeout" },
+		func() error {
+			time.Sleep(ConnectedPollTimeout)
+			return nil
+		},
+	)
+	require.True(t, capture.failed)
+	require.Equal(t, "transport error during poll", capture.lastMsg)
+}
+
+func TestPollClientDuring_transportErrorGateAsync(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+	hadClientError := &atomic.Bool{}
+
+	capture := &CaptureFailTB{TB: t}
+
+	// ErrorHandler records transport error mid-poll while fn still runs.
+	go func() {
+		time.Sleep(aeron.DefaultIdleSleepDuration * 3)
+		hadClientError.Store(true)
+	}()
+	PollClientDuring(
+		capture,
+		client,
+		hadClientError,
+		ConnectedPollTimeout,
+		"transport error during async poll",
+		func() string { return "unexpected timeout" },
+		func() error {
+			time.Sleep(ConnectedPollTimeout)
+			return nil
+		},
+	)
+	require.True(t, capture.failed)
+	require.Equal(t, "transport error during async poll", capture.lastMsg)
 }
 
 func TestPollClientUntilDynamicCtx_zeroBoundPollsOnce(t *testing.T) {

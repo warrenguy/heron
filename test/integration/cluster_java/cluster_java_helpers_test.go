@@ -294,6 +294,7 @@ func joinComposeIPCClient(
 	t.Helper()
 
 	md := harness.JoinExternal(t, dir)
+
 	aeronClient, hadClientError := harness.ConnectIPCClientContext(t, md, aeron.Context{
 		InterServiceTimeout: harness.ConnectedPollTimeout,
 	})
@@ -545,6 +546,7 @@ func killClusterMemberContainer(
 	project := os.Getenv("COMPOSE_PROJECT_NAME")
 	t.Logf("killing leader container: service=%s project=%s", service, project)
 	args := append(clusterFailoverComposeArgs(composeDir), "kill", "-s", "SIGTERM", service)
+
 	harness.PollClientDuring(
 		t,
 		aeronClient,

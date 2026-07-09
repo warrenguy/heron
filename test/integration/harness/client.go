@@ -170,24 +170,30 @@ func PollClientDuring(
 		done <- fn()
 	}()
 
-	var fnErr error
-	PollClientUntilTransportClean(
-		t,
-		client,
-		hadClientError,
-		timeout,
-		transportErrLabel,
-		func() bool {
-			select {
-			case fnErr = <-done:
-				return true
-			default:
-				return false
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if hadClientError.Load() {
+			t.Errorf("%s", transportErrLabel)
+			t.FailNow()
+			return
+		}
+		client.DoWork()
+		select {
+		case fnErr := <-done:
+			if fnErr != nil {
+				if failDelegatedContext(t, fnErr, "poll") {
+					return
+				}
+				t.Errorf("%v", fnErr)
+				t.FailNow()
 			}
-		},
-		timeoutMsg,
-	)
-	require.NoError(t, fnErr)
+			return
+		default:
+		}
+		time.Sleep(aeron.DefaultIdleSleepDuration)
+	}
+	t.Errorf("%s", timeoutMsg())
+	t.FailNow()
 }
 
 // WaitForSubscriptionConnected polls DoWork until the subscription reports connected.

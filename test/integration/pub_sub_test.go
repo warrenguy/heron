@@ -114,7 +114,11 @@ func TestPubSubIPCFragmentedRoundtrip(t *testing.T) {
 
 	received, fragments := harness.PollReassembled(t, client, sub, messageCount)
 	require.Equal(t, [][]byte{payload}, received)
-	require.Equal(t, 2, fragments)
+	require.Zero(
+		t,
+		fragments,
+		"want=1 delegates to aeron.PollReassembled; fragment oracle is harness-only for want>1",
+	)
 
 	harness.AssertPubSubIPCMetadata(t, streamID, pub, sub, pubPosBefore, wantAdvance)
 	finishPubSubIPCTest(t, md, hadClientError)

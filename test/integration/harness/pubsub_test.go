@@ -4,6 +4,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -92,17 +93,22 @@ func TestFailOfferWithRetry_contextErrors(t *testing.T) {
 	})
 }
 
-type offerRetryFailStubPub struct{}
+type offerRetryFailStubPub struct {
+	regID     int64
+	streamID  int32
+	sessionID int32
+	position  int64
+}
 
-func (offerRetryFailStubPub) IsConnected() bool { return false }
+func (pub offerRetryFailStubPub) IsConnected() bool { return false }
 
-func (offerRetryFailStubPub) RegistrationID() int64 { return 1 }
+func (pub offerRetryFailStubPub) RegistrationID() int64 { return pub.regID }
 
-func (offerRetryFailStubPub) StreamID() int32 { return 100 }
+func (pub offerRetryFailStubPub) StreamID() int32 { return pub.streamID }
 
-func (offerRetryFailStubPub) SessionID() int32 { return 200 }
+func (pub offerRetryFailStubPub) SessionID() int32 { return pub.sessionID }
 
-func (offerRetryFailStubPub) Position() int64 { return 0 }
+func (pub offerRetryFailStubPub) Position() int64 { return pub.position }
 
 func (offerRetryFailStubPub) Offer([]byte) int64 { return aeron.NotConnected }
 
@@ -625,12 +631,12 @@ func TestOfferWithRetry_notConnected_timesOut(t *testing.T) {
 	require.True(t, capture.failed)
 	require.Zero(t, got)
 	wantMsg := fmt.Sprintf(
-		"publication %d (stream %d session %d) offer timed out within %s; position=0; status=%d",
+		"publication %d (stream %d session %d) offer timed out within %s; position=0; status=%s",
 		pub.RegistrationID(),
 		pub.StreamID(),
 		pub.SessionID(),
 		pollHarnessShortTimeout,
-		aeron.NotConnected,
+		aeron.PositionCodeName(aeron.NotConnected),
 	)
 	require.Equal(t, wantMsg, capture.lastMsg)
 }
@@ -678,14 +684,207 @@ func TestOfferWithRetry_closedPublication_failsImmediately(t *testing.T) {
 	require.True(t, capture.failed)
 	require.Equal(t, aeron.Closed, got)
 	wantMsg := fmt.Sprintf(
-		"publication %d (stream %d session %d) offer failed: status=%d; position=%d",
+		"publication %d (stream %d session %d) offer failed: status=%s; position=%d",
 		pub.RegistrationID(),
 		pub.StreamID(),
 		pub.SessionID(),
-		aeron.Closed,
+		aeron.PositionCodeName(aeron.Closed),
 		aeron.Closed,
 	)
 	require.Equal(t, wantMsg, capture.lastMsg)
+}
+
+func TestFailOfferWithRetry_typedErrors(t *testing.T) {
+	pub := offerRetryFailStubPub{
+		regID:     42,
+		streamID:  1001,
+		sessionID: 2002,
+		position:  128,
+	}
+
+	tests := []struct {
+		name    string
+		err     error
+		wantMsg string
+	}{
+		{
+			name: "stall",
+			err: &aeron.OfferStallError{
+				Status:           aeron.BackPressured,
+				PublicationRegID: pub.regID,
+				StreamID:         pub.streamID,
+				SessionID:        pub.sessionID,
+				Position:         pub.position,
+				StallTimeout:     2 * time.Second,
+			},
+			wantMsg: fmt.Sprintf(
+				"publication %d (stream %d session %d) offer stalled within %s; position=%d; status=%s",
+				pub.regID,
+				pub.streamID,
+				pub.sessionID,
+				2*time.Second,
+				pub.position,
+				aeron.PositionCodeName(aeron.BackPressured),
+			),
+		},
+		{
+			name: "terminalUnsupportedLength",
+			err: &aeron.OfferTerminalError{
+				Status:           aeron.UnsupportedMessageLength,
+				PublicationRegID: pub.regID,
+				StreamID:         pub.streamID,
+				SessionID:        pub.sessionID,
+				Position:         pub.position,
+			},
+			wantMsg: fmt.Sprintf(
+				"publication %d (stream %d session %d) offer failed: status=%s; position=%d",
+				pub.regID,
+				pub.streamID,
+				pub.sessionID,
+				aeron.PositionCodeName(aeron.UnsupportedMessageLength),
+				pub.position,
+			),
+		},
+		{
+			name: "timeoutNotConnected",
+			err: &aeron.OfferTimeoutError{
+				Status:           aeron.NotConnected,
+				PublicationRegID: pub.regID,
+				StreamID:         pub.streamID,
+				SessionID:        pub.sessionID,
+				Position:         pub.position,
+				Timeout:          pollHarnessShortTimeout,
+			},
+			wantMsg: fmt.Sprintf(
+				"publication %d (stream %d session %d) offer timed out within %s; position=%d; status=%s",
+				pub.regID,
+				pub.streamID,
+				pub.sessionID,
+				pollHarnessShortTimeout,
+				pub.position,
+				aeron.PositionCodeName(aeron.NotConnected),
+			),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			capture := &CaptureFailTB{TB: t}
+			got := failOfferWithRetry(capture, pub, tt.err)
+			require.True(t, capture.failed)
+			require.Equal(t, tt.wantMsg, capture.lastMsg)
+			if terminal, ok := errors.AsType[*aeron.OfferTerminalError](tt.err); ok {
+				require.Equal(t, terminal.Status, got)
+			} else {
+				require.Zero(t, got)
+			}
+		})
+	}
+}
+
+func TestFailPollReassembledDelegated_errors(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+
+	pub, linkedSub := connectIPCPubSub(t, client, PollReassembledTimeoutStreamID)
+	_, detail := aeron.SubscriptionImageSummary(linkedSub)
+
+	noImageSub, err := client.AddSubscription(PollReassembledNoImageStreamID, IPCChannel)
+	require.NoError(t, err)
+	CleanupClose(t, "close subscription", noImageSub.Close)
+
+	tests := []struct {
+		name          string
+		sub           *aeron.Subscription
+		err           error
+		effectiveWait time.Duration
+		wantMsg       string
+	}{
+		{
+			name:          "deadlineExceeded",
+			sub:           linkedSub,
+			err:           context.DeadlineExceeded,
+			effectiveWait: pollHarnessShortTimeout,
+			wantMsg: fmt.Sprintf(
+				"subscription %d reassembled 0/1 messages; fragments=0; %s within %s",
+				linkedSub.RegistrationID(),
+				detail,
+				pollHarnessShortTimeout,
+			),
+		},
+		{
+			name: "typedTimeout",
+			sub:  linkedSub,
+			err: &aeron.PollReassembledTimeoutError{
+				Detail:  detail,
+				Timeout: pollHarnessShortTimeout,
+			},
+			effectiveWait: pollHarnessShortTimeout,
+			wantMsg: fmt.Sprintf(
+				"subscription %d reassembled 0/1 messages; fragments=0; %s within %s",
+				linkedSub.RegistrationID(),
+				detail,
+				pollHarnessShortTimeout,
+			),
+		},
+		{
+			name: "bufferTooSmall",
+			sub:  linkedSub,
+			err: &aeron.PollBufferTooSmallError{
+				Required: 8192,
+				Have:     pollReassembledDelegatedMaxBuf,
+			},
+			effectiveWait: pollHarnessShortTimeout,
+			wantMsg: fmt.Sprintf(
+				"poll buffer too small: required=8192 have=%d",
+				pollReassembledDelegatedMaxBuf,
+			),
+		},
+		{
+			name:          "precondition",
+			sub:           noImageSub,
+			err:           &aeron.PollReassembledPreconditionError{Detail: "no active images"},
+			effectiveWait: pollHarnessShortTimeout,
+			wantMsg: fmt.Sprintf(
+				"subscription %d reassembled 0/1 messages; fragments=0; no images",
+				noImageSub.RegistrationID(),
+			),
+		},
+		{
+			name:          "canceled",
+			sub:           linkedSub,
+			err:           context.Canceled,
+			effectiveWait: pollHarnessShortTimeout,
+			wantMsg:       "poll: context canceled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capture := &CaptureFailTB{TB: t}
+			failPollReassembledDelegated(capture, tt.sub, tt.err, tt.effectiveWait)
+			require.True(t, capture.failed)
+			require.Equal(t, tt.wantMsg, capture.lastMsg)
+		})
+	}
+	_ = pub
+}
+
+func TestPollReassembledDelegatedMaxBuf_coversFragmentedRoundtrip(t *testing.T) {
+	md := SharedParallel(t)
+	client := ConnectClient(t, md, aeron.Context{})
+
+	pub, err := client.AddPublication(PollReassembledLiveIPCStreamID, IPCChannel)
+	require.NoError(t, err)
+	CleanupClose(t, "close publication", pub.Close)
+
+	maxPayload := pub.MaxPayloadLength()
+	require.LessOrEqual(
+		t,
+		len(FragmentedRoundtripPayload(maxPayload, FragmentedRoundtripExtraBytes)),
+		pollReassembledDelegatedMaxBuf,
+	)
 }
 
 func TestPollReassembled_liveIPC_fragmented(t *testing.T) {
@@ -707,7 +906,11 @@ func TestPollReassembled_liveIPC_fragmented(t *testing.T) {
 	got, fragments := PollReassembled(t, client, sub, 1)
 	require.Len(t, got, 1)
 	require.Equal(t, payload, got[0])
-	require.Equal(t, 2, fragments)
+	require.Zero(
+		t,
+		fragments,
+		"want=1 delegates to aeron.PollReassembled; fragment oracle is harness-only for want>1",
+	)
 
 	AssertPubSubPositionsAdvanced(t, pub, sub, pubPosBefore, wantAdvance)
 }
