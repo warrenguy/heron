@@ -74,9 +74,6 @@ bin/aeronmd
 Runnable IPC echo with public helpers (`PollUntilConnected`, `PollUntilImageCount`,
 `OfferWithRetry`, `PollOneMessage`): [`examples/ipc-echo`](examples/ipc-echo/).
 
-`AddPublication` / `AddSubscription` block until the driver responds. Close publications and
-subscriptions before `client.Close()`.
-
 ### Cluster client
 
 External cluster stack required; setup and duty-cycle patterns are in the examples below.
