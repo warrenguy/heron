@@ -72,3 +72,63 @@ type AdminResponseFields struct {
 	Message          []byte
 	Payload          []byte
 }
+
+type CanvassPositionFields struct {
+	LogLeadershipTermID int64
+	LogPosition         int64
+	LeadershipTermID    int64
+	FollowerMemberID    int32
+	// ProtocolVersion is 0 when actingVersion < 9 (field absent on wire).
+	ProtocolVersion int32
+}
+
+type RequestVoteFields struct {
+	LogLeadershipTermID int64
+	LogPosition         int64
+	CandidateTermID     int64
+	CandidateMemberID   int32
+	// ProtocolVersion is 0 when actingVersion < 9 (field absent on wire).
+	ProtocolVersion int32
+}
+
+type VoteFields struct {
+	CandidateTermID     int64
+	LogLeadershipTermID int64
+	LogPosition         int64
+	CandidateMemberID   int32
+	FollowerMemberID    int32
+	Vote                clusterwire.BooleanType
+}
+
+type NewLeadershipTermFields struct {
+	LogLeadershipTermID     int64
+	NextLeadershipTermID    int64
+	NextTermBaseLogPosition int64
+	NextLogPosition         int64
+	LeadershipTermID        int64
+	TermBaseLogPosition     int64
+	LogPosition             int64
+	LeaderRecordingID       int64
+	Timestamp               int64
+	LeaderMemberID          int32
+	LogSessionID            int32
+	// AppVersion: version_t; 0 means omit SetAppVersion on encode (optional field).
+	AppVersion int32
+	IsStartup  clusterwire.BooleanType
+	// CommitPosition is 0 when actingVersion < 15 (field absent on wire).
+	CommitPosition int64
+}
+
+type AppendPositionFields struct {
+	LeadershipTermID int64
+	LogPosition      int64
+	FollowerMemberID int32
+	// Flags is 0 when actingVersion < 8 (field absent on wire).
+	Flags uint8
+}
+
+type CommitPositionFields struct {
+	LeadershipTermID int64
+	LogPosition      int64
+	LeaderMemberID   int32
+}

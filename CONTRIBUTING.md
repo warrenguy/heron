@@ -83,7 +83,8 @@ Prefer Makefile targets over bare `go test`.
 
 ## SBE codecs (cluster + archive + node-state)
 
-Cluster wire XML: `specs/cluster-codecs-client.xml`; flyweights:
+Cluster wire XML source: `specs/cluster-codecs-wire.xml` (verbatim upstream
+`aeron-cluster-codecs.xml` @ pinned `aeron.ref`). Flyweights:
 `cluster/codecs/clusterwire/`. Archive control wire XML:
 `specs/archive-codecs-client.xml`; flyweights: `archive/codecs/archivewire/`.
 Node-state file wire XML: `specs/node-state-codecs.xml`; flyweights:
@@ -96,8 +97,8 @@ Pin-bump workflow:
 
 1. Bump `aeron.ref` in [`specs/versions.yaml`](specs/versions.yaml).
 2. Cluster: diff upstream
-   `aeron-cluster/src/main/resources/cluster/aeron-cluster-codecs.xml` (client
-   messages and shared types only); port into `specs/cluster-codecs-client.xml`.
+   `aeron-cluster/src/main/resources/cluster/aeron-cluster-codecs.xml`; copy
+   verbatim into `specs/cluster-codecs-wire.xml`.
 3. Archive: diff upstream
    `aeron-archive/src/main/resources/archive/aeron-archive-codecs.xml` (control
    request, response, descriptor, and recording-signal messages plus shared
@@ -106,8 +107,8 @@ Pin-bump workflow:
    `aeron-cluster/src/main/resources/cluster/aeron-cluster-node-state-codecs.xml`;
    port into `specs/node-state-codecs.xml` (preserve trimmed message set unless
    PR scope expands).
-5. `make sbe-generate`, `make sbe-generate-archive`, and
-   `make sbe-generate-nodestate`; commit flyweight diffs if any.
+5. `make sbe-generate`, `make sbe-generate-archive`, and `make sbe-generate-nodestate`;
+   commit `specs/cluster-codecs-wire.xml` and flyweight diffs if any.
 6. `make check` (optional SBE stale gates for cluster, archive, and nodestate
    when Java is installed) and `make test-rapid`.
 7. `make test-cluster-sbe-contract`; fix failures under `cluster/codecs/` and

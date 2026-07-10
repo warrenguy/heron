@@ -161,79 +161,6 @@ type templateVarFields struct {
 	payload            []byte
 }
 
-func clusterFixedBlockLength(blockLength uint16) (minBlock, maxBlock uint16, ok bool) {
-	return blockLength, blockLength, true
-}
-
-// ClusterRootBlockLengthBounds returns min and max blockLength accepted for templateID
-// at actingVersion.
-func ClusterRootBlockLengthBounds(
-	templateID, actingVersion uint16,
-) (minBlock, maxBlock uint16, ok bool) {
-	switch templateID {
-	case clusterwire.SessionMessageHeaderSbeTemplateID:
-		return clusterFixedBlockLength(clusterwire.SessionMessageHeaderSbeBlockLength)
-	case clusterwire.SessionEventSbeTemplateID:
-		maxBlock = clusterwire.SessionEventSbeBlockLength
-		switch {
-		case actingVersion < SessionEventVersionMinVersion:
-			return 32, maxBlock, true
-		case actingVersion < SessionEventLeaderHeartbeatMinVersion:
-			return 36, maxBlock, true
-		default:
-			return clusterFixedBlockLength(maxBlock)
-		}
-	case clusterwire.SessionConnectRequestSbeTemplateID:
-		maxBlock = clusterwire.SessionConnectRequestSbeBlockLength
-		if actingVersion < SessionConnectVersionMinVersion {
-			return 12, maxBlock, true
-		}
-		return clusterFixedBlockLength(maxBlock)
-	case clusterwire.SessionCloseRequestSbeTemplateID:
-		return clusterFixedBlockLength(clusterwire.SessionCloseRequestSbeBlockLength)
-	case clusterwire.SessionKeepAliveSbeTemplateID:
-		return clusterFixedBlockLength(clusterwire.SessionKeepAliveSbeBlockLength)
-	case clusterwire.NewLeaderEventSbeTemplateID:
-		return clusterFixedBlockLength(clusterwire.NewLeaderEventSbeBlockLength)
-	case clusterwire.ChallengeSbeTemplateID:
-		return clusterFixedBlockLength(clusterwire.ChallengeSbeBlockLength)
-	case clusterwire.ChallengeResponseSbeTemplateID:
-		return clusterFixedBlockLength(clusterwire.ChallengeResponseSbeBlockLength)
-	case clusterwire.AdminRequestSbeTemplateID:
-		return clusterFixedBlockLength(clusterwire.AdminRequestSbeBlockLength)
-	case clusterwire.AdminResponseSbeTemplateID:
-		return clusterFixedBlockLength(clusterwire.AdminResponseSbeBlockLength)
-	default:
-		return 0, 0, false
-	}
-}
-
-// ClusterVarFieldCount returns the number of variable-length fields for templateID
-// at actingVersion.
-func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool) {
-	switch templateID {
-	case clusterwire.SessionMessageHeaderSbeTemplateID,
-		clusterwire.SessionCloseRequestSbeTemplateID,
-		clusterwire.SessionKeepAliveSbeTemplateID:
-		return 0, true
-	case clusterwire.SessionEventSbeTemplateID,
-		clusterwire.NewLeaderEventSbeTemplateID,
-		clusterwire.ChallengeSbeTemplateID,
-		clusterwire.ChallengeResponseSbeTemplateID,
-		clusterwire.AdminRequestSbeTemplateID:
-		return 1, true
-	case clusterwire.SessionConnectRequestSbeTemplateID:
-		if actingVersion >= SessionConnectClientInfoMinVersion {
-			return 3, true
-		}
-		return 2, true
-	case clusterwire.AdminResponseSbeTemplateID:
-		return 2, true
-	default:
-		return 0, false
-	}
-}
-
 func clusterMessageAt(buf []byte, offset, maxVarLen int) (ClusterMessageLayout, bool) {
 	if maxVarLen < 0 {
 		return ClusterMessageLayout{}, false
@@ -458,6 +385,18 @@ func decodeTemplateFields(
 			Message:          vars.message,
 			Payload:          vars.payload,
 		}, true
+	case clusterwire.CanvassPositionSbeTemplateID:
+		return decodeCanvassPositionFields(buf, body, block, version, bufLen), true
+	case clusterwire.RequestVoteSbeTemplateID:
+		return decodeRequestVoteFields(buf, body, block, version, bufLen), true
+	case clusterwire.VoteSbeTemplateID:
+		return decodeVoteFields(buf, body, block, version, bufLen), true
+	case clusterwire.NewLeadershipTermSbeTemplateID:
+		return decodeNewLeadershipTermFields(buf, body, block, version, bufLen), true
+	case clusterwire.AppendPositionSbeTemplateID:
+		return decodeAppendPositionFields(buf, body, block, version, bufLen), true
+	case clusterwire.CommitPositionSbeTemplateID:
+		return decodeCommitPositionFields(buf, body, block, version, bufLen), true
 	default:
 		return nil, false
 	}

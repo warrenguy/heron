@@ -7,8 +7,8 @@ import (
 
 const (
 	// clusterWireMaxRootBlockLength is the largest cluster root block used in the
-	// per-field var-length DoS budget (SessionEvent @ current schema version).
-	clusterWireMaxRootBlockLength = clusterwire.SessionEventSbeBlockLength
+	// per-field var-length DoS budget (NewLeadershipTerm @ current schema version).
+	clusterWireMaxRootBlockLength = clusterwire.NewLeadershipTermSbeBlockLength
 	// clusterWireMaxVarFieldCount is the maximum var fields on any cluster wire template
 	// (SessionConnectRequest with ClientInfo @ actingVersion >= 14).
 	clusterWireMaxVarFieldCount = 3
@@ -25,7 +25,7 @@ var (
 
 	// ClusterDecodeMaxVarLen bounds each varAscii/varData field during egress
 	// TryDecodeByTemplate. Per-field cap is logbuffer.MaxMessageLength minus
-	// clusterVarLenFixedOverhead (~16 MiB - 64).
+	// clusterVarLenFixedOverhead (~16 MiB - 116).
 	ClusterDecodeMaxVarLen = logbuffer.MaxMessageLength - clusterVarLenFixedOverhead
 	// ClusterEncodeMaxVarLen bounds each var field during Encode* preflight
 	// (clusterWireBodyLen). Same per-field cap; total wire is also capped at

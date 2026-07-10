@@ -11,7 +11,7 @@ source "${ROOT}/scripts/lib/cache-fetch.sh"
 TARGET="${1:-cluster}"
 case "${TARGET}" in
 cluster)
-	SCHEMA="${ROOT}/specs/cluster-codecs-client.xml"
+	SCHEMA="${ROOT}/specs/cluster-codecs-wire.xml"
 	OUT_DIR="${ROOT}/cluster/codecs"
 	NAMESPACE="clusterwire"
 	;;

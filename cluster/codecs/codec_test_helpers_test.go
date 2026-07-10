@@ -200,6 +200,18 @@ func requireDecodedClusterFields(tb require.TestingT, want, got any) {
 		require.Equal(tb, wantFields.ResponseCode, gotFields.ResponseCode)
 		requireBytesEqual(tb, wantFields.Message, gotFields.Message)
 		requireBytesEqual(tb, wantFields.Payload, gotFields.Payload)
+	case codecs.CanvassPositionFields:
+		requireDecodedFieldsEqual[codecs.CanvassPositionFields](tb, wantFields, got)
+	case codecs.RequestVoteFields:
+		requireDecodedFieldsEqual[codecs.RequestVoteFields](tb, wantFields, got)
+	case codecs.VoteFields:
+		requireDecodedFieldsEqual[codecs.VoteFields](tb, wantFields, got)
+	case codecs.NewLeadershipTermFields:
+		requireDecodedFieldsEqual[codecs.NewLeadershipTermFields](tb, wantFields, got)
+	case codecs.AppendPositionFields:
+		requireDecodedFieldsEqual[codecs.AppendPositionFields](tb, wantFields, got)
+	case codecs.CommitPositionFields:
+		requireDecodedFieldsEqual[codecs.CommitPositionFields](tb, wantFields, got)
 	default:
 		require.Fail(tb, "unsupported fields type")
 	}
@@ -265,7 +277,7 @@ func runCodecRoundtripCases(
 func codecFuzzSeedBuffers() [][]byte {
 	const (
 		actingVersion   = clusterwire.SessionMessageHeaderSbeSchemaVersion
-		seedEncodeCount = 12
+		seedEncodeCount = 18
 	)
 	buf := make([]byte, fuzzClusterCodecMaxLen)
 	seeds := make([][]byte, 0, seedEncodeCount*(1+codecFuzzMaxOffset))
@@ -396,5 +408,153 @@ func codecFuzzSeedBuffers() [][]byte {
 		})
 	})
 
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeCanvassPosition(b, 0, actingVersion, codecs.CanvassPositionFields{
+			LogLeadershipTermID: 1, LogPosition: 2, LeadershipTermID: 3,
+			FollowerMemberID: 4, ProtocolVersion: 5,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeRequestVote(b, 0, actingVersion, codecs.RequestVoteFields{
+			LogLeadershipTermID: 1, LogPosition: 2, CandidateTermID: 3,
+			CandidateMemberID: 4, ProtocolVersion: 5,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeVote(b, 0, actingVersion, codecs.VoteFields{
+			CandidateTermID: 1, LogLeadershipTermID: 2, LogPosition: 3,
+			CandidateMemberID: 4, FollowerMemberID: 5, Vote: clusterwire.BooleanType_TRUE,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeNewLeadershipTerm(b, 0, actingVersion, codecs.NewLeadershipTermFields{
+			LogLeadershipTermID: 1, NextLeadershipTermID: 2, NextTermBaseLogPosition: 3,
+			NextLogPosition: 4, LeadershipTermID: 5, TermBaseLogPosition: 6, LogPosition: 7,
+			LeaderRecordingID: 8, Timestamp: 9, LeaderMemberID: 10, LogSessionID: 11,
+			AppVersion: 12, IsStartup: clusterwire.BooleanType_TRUE, CommitPosition: 13,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeAppendPosition(b, 0, actingVersion, codecs.AppendPositionFields{
+			LeadershipTermID: 1, LogPosition: 2, FollowerMemberID: 3, Flags: 4,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeCommitPosition(b, 0, actingVersion, codecs.CommitPositionFields{
+			LeadershipTermID: 1, LogPosition: 2, LeaderMemberID: 3,
+		})
+	})
+
 	return seeds
+}
+
+type tryDecodeRejectCase struct {
+	name   string
+	buf    func() []byte
+	offset int
+	maxLen int
+}
+
+func rejectCaseName(prefix, suffix string) string {
+	if prefix == "" {
+		return suffix
+	}
+	return prefix + "_" + suffix
+}
+
+func cloneMutatedWire(wire []byte, mutate func([]byte)) []byte {
+	out := append([]byte(nil), wire...)
+	mutate(out)
+	return out
+}
+
+func fixedBlockRejectCases(
+	prefix string,
+	validWire []byte,
+	maxBlock uint16,
+	belowMin uint8,
+	truncateBodyLen int,
+) []tryDecodeRejectCase {
+	return []tryDecodeRejectCase{
+		{
+			name: rejectCaseName(prefix, "block_length_below_min"),
+			buf: func() []byte {
+				return cloneMutatedWire(validWire, func(w []byte) { w[0] = belowMin })
+			},
+		},
+		{
+			name: rejectCaseName(prefix, "block_length_above_max"),
+			buf: func() []byte {
+				return cloneMutatedWire(validWire, func(w []byte) {
+					w[0] = byte(maxBlock + 1)
+					w[1] = 0
+				})
+			},
+		},
+		{
+			name: rejectCaseName(prefix, "truncated_fixed_block"),
+			buf: func() []byte {
+				return validWire[:messageHeaderLen+truncateBodyLen]
+			},
+		},
+	}
+}
+
+func wireHeaderRejectCases(validWire []byte) []tryDecodeRejectCase {
+	return []tryDecodeRejectCase{
+		{
+			name: "truncated_header",
+			buf:  func() []byte { return validWire[:4] },
+		},
+		{
+			name: "schema_mismatch",
+			buf: func() []byte {
+				return cloneMutatedWire(validWire, func(w []byte) { w[4], w[5] = 0, 0 })
+			},
+		},
+		{
+			name: "unknown_template_id",
+			buf: func() []byte {
+				return cloneMutatedWire(validWire, func(w []byte) { w[2], w[3] = 0xFF, 0x7F })
+			},
+		},
+	}
+}
+
+func fixedBlockRejectAboveMaxAtVersion(
+	prefix string,
+	validWire []byte,
+	actingVersion uint16,
+	maxBlock uint16,
+	versionSuffix string,
+) tryDecodeRejectCase {
+	return tryDecodeRejectCase{
+		name: prefix + "_block_length_above_max_" + versionSuffix,
+		buf: func() []byte {
+			return cloneMutatedWire(validWire, func(w []byte) {
+				w[6], w[7] = byte(actingVersion), 0
+				w[0] = byte(maxBlock + 1)
+				w[1] = 0
+			})
+		},
+	}
+}
+
+func runTryDecodeRejectCases(t *testing.T, cases []tryDecodeRejectCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			maxLen := tc.maxLen
+			if maxLen == 0 {
+				maxLen = codecTestMaxVarLen
+			}
+			_, ok := codecs.TryDecodeByTemplate(tc.buf(), tc.offset, maxLen)
+			require.False(t, ok)
+		})
+	}
 }

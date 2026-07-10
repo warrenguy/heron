@@ -17,6 +17,7 @@ import (
 const SchemaVersion = 1
 
 // HeartbeatAbsentSentinel is the catalog JSON value for omitted leaderHeartbeatTimeoutNs.
+//
 // Runtime loaders map it to math.MinInt64 in codecs.SessionEventFields.
 const HeartbeatAbsentSentinel = "absent"
 
@@ -28,9 +29,11 @@ type wireTemplateSpec struct {
 	varBytesFieldKeys []string
 }
 
-// wireTemplateCatalog lists each cluster client message: SBE template id, catalog
-// discriminator, and allowed JSON field keys in wire order. Hand-maintained from
-// specs/cluster-codecs-client.xml.
+// wireTemplateCatalog lists each cluster client ingress/egress template: SBE template
+// id, catalog discriminator, and allowed JSON field keys in wire order.
+//
+// Hand-maintained catalog for client templates only; flyweight/schema source is full
+// upstream specs/cluster-codecs-wire.xml.
 var wireTemplateCatalog = []wireTemplateSpec{
 	{
 		id:               clusterwire.SessionMessageHeaderSbeTemplateID,
@@ -183,7 +186,9 @@ type FixtureEntry struct {
 	Fields        map[string]any `json:"fields"`
 	BlockLength   *uint16        `json:"blockLength,omitempty"`
 	// LargeVar opts a fixture into ClusterDecodeMaxVarLen validation and oracle
-	// decode bounds. Normal catalog entries stay at ClusterCodecMaxVarLen.
+	// decode bounds.
+	//
+	// Normal catalog entries stay at ClusterCodecMaxVarLen.
 	LargeVar bool `json:"largeVar,omitempty"`
 }
 
@@ -228,8 +233,10 @@ func ParseJSON(data []byte) (CatalogFile, error) {
 }
 
 // MarshalCanonical encodes the catalog in committed-file form: two-space indent,
-// HTML escaping disabled, trailing newline. Inverse of ParseJSON; the embedded
-// catalog.json and any regenerated copy must agree byte-for-byte.
+// HTML escaping disabled, trailing newline.
+//
+// Inverse of ParseJSON; the embedded catalog.json and any regenerated copy must
+// agree byte-for-byte.
 func MarshalCanonical(catalog CatalogFile) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.Grow(16 * 1024)

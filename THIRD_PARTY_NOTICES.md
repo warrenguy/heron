@@ -26,17 +26,17 @@ where applicable.
 
 ## Aeron cluster SBE wire schema
 
-### `specs/cluster-codecs-client.xml`
+### `specs/cluster-codecs-wire.xml`
 
-- **Source:** `aeron-cluster-codecs.xml` (aeron-cluster)
-- **Changes:** subset for Heron cluster client ingress, egress, and admin wire
-  codecs; consensus-module log, service-control, membership, backup, snapshot,
-  and related messages plus unused shared types removed; schema id, version,
-  and layout of retained client messages match upstream
+- **Source:** `aeron-cluster-codecs.xml` (aeron-cluster) @ pinned `aeron.ref`
+  in `specs/versions.yaml`
+- **Changes:** verbatim copy; hand codecs
+  implement client messages and consensus templates 50-55 only; unused upstream
+  templates have flyweights but no hand decode
 
 ## `cluster/codecs/clusterwire/`
 
-Go flyweights generated from `specs/cluster-codecs-client.xml` via the SBE tool
+Go flyweights generated from `specs/cluster-codecs-wire.xml` via the SBE tool
 (see `specs/versions.yaml`). Not copied from upstream Java sources.
 
 ## Aeron archive SBE wire schema
