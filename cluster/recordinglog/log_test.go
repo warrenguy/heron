@@ -58,6 +58,19 @@ func TestOpen_newFileEmptyCacheZeroSeed(t *testing.T) {
 	require.Equal(t, int32(0), log.NextEntryIndex())
 }
 
+func TestSyncDirectory_exportedAndOpenCreateNewStillCreatesFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	recordinglog.SyncDirectory(dir)
+
+	log, err := recordinglog.Open(dir, true)
+	require.NoError(t, err)
+	require.NoError(t, log.Close())
+
+	_, err = os.Stat(filepath.Join(dir, "recording.log"))
+	require.NoError(t, err)
+}
+
 func TestOpen_missingFileWithoutCreate(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

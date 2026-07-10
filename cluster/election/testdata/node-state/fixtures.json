@@ -1,0 +1,25 @@
+{
+  "prefixLength": 128,
+  "fixtures": [
+    {
+      "file": "new.dat",
+      "action": "create",
+      "description": "Java NodeStateFile after createNew=true (initialiseDecodersOnCreation)",
+      "candidateTerm": {
+        "candidateTermId": -1,
+        "timestampMs": -1,
+        "logPosition": -1
+      }
+    },
+    {
+      "file": "updated.dat",
+      "action": "update",
+      "description": "Java NodeStateFile after updateCandidateTermId (NodeStateFileTest.shouldPersistCandidateTermId)",
+      "candidateTerm": {
+        "candidateTermId": 832234,
+        "timestampMs": 324234,
+        "logPosition": 8923423
+      }
+    }
+  ]
+}

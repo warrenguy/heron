@@ -101,6 +101,13 @@ func PreTouch(data []byte, pageSize int) {
 	}
 }
 
+func (m *Mapping) Sync() error {
+	if m == nil || m.file == nil {
+		return nil
+	}
+	return m.file.Sync()
+}
+
 func (m *Mapping) Close() error {
 	if m == nil {
 		return nil

@@ -352,7 +352,7 @@ func TestCountersReaderIsCounterActiveChannelStatus(t *testing.T) {
 	metaBuffer := atomicbuffer.Wrap(meta)
 	gotChannel, _, err := atomicbuffer.GetStringASCII(
 		metaBuffer,
-		cnc.CounterMetadataLength*0+cnc.CounterMetadataKeyOffset,
+		cnc.CounterMetadataKeyOffset,
 	)
 	require.NoError(t, err)
 	require.Equal(t, channel, gotChannel)
@@ -361,7 +361,7 @@ func TestCountersReaderIsCounterActiveChannelStatus(t *testing.T) {
 	require.Equal(
 		t,
 		registrationID,
-		atomicbuffer.Wrap(values).GetInt64(cnc.CounterValueLength*0+cnc.CounterValueRegistrationIDOffset),
+		atomicbuffer.Wrap(values).GetInt64(cnc.CounterValueRegistrationIDOffset),
 	)
 
 	reader, err := cnc.NewCountersReader(meta, values)

@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>heron</groupId>
+    <artifactId>heron-golden-fixtures</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>26</maven.compiler.release>
+        <aeron.version>1.52.0</aeron.version>
+        <junit.version>5.11.4</junit.version>
+        <recordinglog.fixtures.dir>${project.basedir}/../../../cluster/recordinglog/testdata</recordinglog.fixtures.dir>
+        <nodestate.fixtures.dir>${project.basedir}/../../../cluster/election/testdata/node-state</nodestate.fixtures.dir>
+        <argLine>--add-opens java.base/jdk.internal.misc=ALL-UNNAMED</argLine>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.aeron</groupId>
+            <artifactId>aeron-cluster</artifactId>
+            <version>${aeron.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
+                <configuration>
+                    <argLine>${argLine}</argLine>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>recordinglog</id>
+                        <configuration>
+                            <mainClass>io.aeron.cluster.RecordingLogFixtureGenerator</mainClass>
+                            <arguments>
+                                <argument>${recordinglog.fixtures.dir}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>node-state</id>
+                        <configuration>
+                            <mainClass>heron.goldenfixtures.NodeStateFixtureGenerator</mainClass>
+                            <arguments>
+                                <argument>${nodestate.fixtures.dir}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

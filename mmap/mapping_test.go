@@ -179,6 +179,26 @@ func TestMapExisting_partialMap(t *testing.T) {
 	})
 }
 
+func TestMapping_Sync_roundtrip(t *testing.T) {
+	path := testMapPath(t, "sync.bin")
+	const length = 4096
+
+	m, err := mmap.MapCreate(path, length)
+	require.NoError(t, err)
+	m.Data[0] = 0x42
+	require.NoError(t, m.Sync())
+	require.NoError(t, m.Close())
+
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, byte(0x42), raw[0])
+}
+
+func TestMapping_Sync_nilMapping(t *testing.T) {
+	var mapping *mmap.Mapping
+	require.NoError(t, mapping.Sync())
+}
+
 func TestMapCreateWouldDestroyLiveFile(t *testing.T) {
 	path := testMapPath(t, "live.bin")
 	const (

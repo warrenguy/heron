@@ -62,7 +62,7 @@ func Open(dir string, createNew bool) (*Log, error) {
 	}
 
 	if missingFile {
-		syncDirectory(dir)
+		SyncDirectory(dir)
 		return l, nil
 	}
 
@@ -701,9 +701,9 @@ func (l *Log) Force(level FileSyncLevel) error {
 	return nil
 }
 
-// syncDirectory fsyncs dir so a newly created file's directory entry is durable.
+// SyncDirectory fsyncs dir so a newly created file's directory entry is durable.
 // Errors are ignored: the file open already succeeded.
-func syncDirectory(dir string) {
+func SyncDirectory(dir string) {
 	d, err := os.Open(dir)
 	if err != nil {
 		return

@@ -27,17 +27,9 @@ type manifestEntry struct {
 	Index               int32  `json:"index"`
 }
 
-type recoveryExpect struct {
-	ServiceCount        int   `json:"serviceCount"`
-	SnapshotCount       int   `json:"snapshotCount"`
-	LogRecordingID      int64 `json:"logRecordingId"`
-	LogLeadershipTermID int64 `json:"logLeadershipTermId"`
-}
-
 type manifestFixture struct {
-	File     string          `json:"file"`
-	Recovery *recoveryExpect `json:"recovery,omitempty"`
-	Entries  []manifestEntry `json:"entries"`
+	File    string          `json:"file"`
+	Entries []manifestEntry `json:"entries"`
 }
 
 type manifest struct {
@@ -168,36 +160,54 @@ func TestWriter_byteIdenticalToGolden(t *testing.T) {
 	require.Equal(t, golden, written)
 }
 
+// TestPlanRecovery_fixtureExpectations pins PlanRecovery output over committed
+// golden logs. Expectations live here, not in fixtures.json: the manifest is
+// generator output and regen would drop hand-authored values.
 func TestPlanRecovery_fixtureExpectations(t *testing.T) {
 	t.Parallel()
 
-	m := loadManifest(t)
+	cases := []struct {
+		file                string
+		serviceCount        int
+		snapshotCount       int
+		logRecordingID      int64
+		logLeadershipTermID int64
+	}{
+		{
+			file:                "mixed-entries.recordinglog",
+			serviceCount:        0,
+			snapshotCount:       0,
+			logRecordingID:      1,
+			logLeadershipTermID: 7,
+		},
+		{
+			file:                "standby-then-term.recordinglog",
+			serviceCount:        0,
+			snapshotCount:       0,
+			logRecordingID:      10,
+			logLeadershipTermID: 2,
+		},
+	}
 
-	for _, fixture := range m.Fixtures {
-		if fixture.Recovery == nil {
-			continue
-		}
-		t.Run(fixture.File, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
 			t.Parallel()
 
-			require.NotEmpty(t, fixture.Entries)
-
-			golden, err := os.ReadFile(filepath.Join("testdata", fixture.File))
+			golden, err := os.ReadFile(filepath.Join("testdata", tc.file))
 			require.NoError(t, err)
 			require.NotEmpty(t, golden)
 
 			log, _ := openInDir(t, golden, false)
-			want := fixture.Recovery
 
 			plan, err := log.PlanRecovery(
 				fakeArchiveForEntries(log.Entries()),
-				recoveryPlanConfig(want.ServiceCount),
+				recoveryPlanConfig(tc.serviceCount),
 			)
 			require.NoError(t, err)
-			require.Len(t, plan.Snapshots, want.SnapshotCount)
+			require.Len(t, plan.Snapshots, tc.snapshotCount)
 			require.NotNil(t, plan.Log)
-			require.Equal(t, want.LogRecordingID, plan.Log.Term.RecordingID)
-			require.Equal(t, want.LogLeadershipTermID, plan.Log.Term.LeadershipTermID)
+			require.Equal(t, tc.logRecordingID, plan.Log.Term.RecordingID)
+			require.Equal(t, tc.logLeadershipTermID, plan.Log.Term.LeadershipTermID)
 		})
 	}
 }

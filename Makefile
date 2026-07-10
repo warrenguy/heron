@@ -1,4 +1,5 @@
 ROOT := $(CURDIR)
+# Integration harness finds bin/aeronmd via exec.LookPath.
 export PATH := $(ROOT)/bin:$(PATH)
 SHELL := /bin/bash
 
@@ -30,6 +31,7 @@ COVERAGE_PREPARED := $(COVERAGE_ROOT)/.prepared
 COVERAGE_SLICE ?=
 COVERAGE_TEST_ARGS = $(if $(COVERAGE_SLICE),-cover -covermode=$(COVERAGE_MODE) \
 	-args -test.gocoverdir=$(COVERAGE_ROOT)/$(COVERAGE_SLICE),)
+
 GO_MODULE := github.com/warrenguy/heron
 GO_TEST_PKGS := ./...
 # Conductor cross-package test hooks (test_hooks.go, hook_access.go).
@@ -48,9 +50,12 @@ UNIT_TEST_PKGS := $(shell go list -tags=bench,$(UNIT_TEST_TAGS) -f \
 # Rapid pass uses rapid tag only; bench-tagged packages (e.g. test/bench/harness) are omitted.
 RAPID_TEST_PKGS := $(shell go list -tags=rapid,$(UNIT_TEST_TAGS) -f \
 	'{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
+# Non-generated files only (grep -L drops DO NOT EDIT headers); $$ defers
+# expansion to the recipe shell so the list is fresh per run.
 GO_SOURCES := $$(grep -rl --include='*.go' -L 'DO NOT EDIT' \
 	--exclude-dir=docker --exclude-dir=vendor .)
 SHELL_SCRIPTS := $$(find . -name '*.sh' -type f ! -path './.git/*' ! -path './vendor/*')
+
 # Per-package go test deadline (replaces go default 10m on hung tests).
 TEST_TIMEOUT ?= 2m
 # Per-package fuzz budget; 45s avoids deadline flake on heavy packages at 30s.
@@ -71,7 +76,8 @@ help: ## List Makefile targets
 	} | sort
 	@echo ""
 	@echo "Contract oracles per suite: test-<name>-{unit,oracle,contract}"
-	@echo "  names: java-interop cluster-sbe cluster-java"
+	@echo "  names: $(CONTRACT_ORACLE_SUITES)"
+	@echo "Golden fixtures (mvn only): test-golden-fixtures-unit"
 
 # Without GNU timeout/gtimeout on PATH, CHECK_TIMEOUT is not enforced; TEST_TIMEOUT still applies.
 .PHONY: check check-inner check-static check-static-extra check-test check-aeron-versions \
@@ -81,7 +87,9 @@ help: ## List Makefile targets
 	cluster-sbe-catalog-regen check-catalog-stale check-catalog-stale-optional \
 	check-catalog-stale-selftest recordinglog-fixtures-regen \
 	recordinglog-fixtures-regen-optional \
+	node-state-fixtures-regen node-state-fixtures-regen-optional \
 	contract-oracles-optional
+
 check: ## Lint pins unit stress examples (contract-oracles opt)
 	@T=$$(command -v timeout 2>/dev/null \
 		|| command -v gtimeout 2>/dev/null); \
@@ -99,7 +107,8 @@ check-static-extra:
 		check-sbe-stale-archive-optional \
 		check-sbe-stale-nodestate-optional
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) check-aeron-versions \
-		check-catalog-stale-optional contract-oracles-optional
+		check-catalog-stale-optional contract-oracles-optional \
+		test-golden-fixtures-unit-optional
 
 check-test:
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) test test-stress build-examples
@@ -152,17 +161,26 @@ bin/cluster-sbe-catalog-gen: go.mod go.sum $(wildcard tools/cluster-sbe-catalog-
 cluster-sbe-catalog-regen: bin/cluster-sbe-catalog-gen
 	@$(CLUSTER_SBE_CATALOG_REGEN)
 
-RECORDINGLOG_FIXTURES_POM := test/integration/recordinglog_fixtures/pom.xml
+GOLDEN_FIXTURES_POM := test/integration/golden_fixtures/pom.xml
 
 recordinglog-fixtures-regen: ## Regenerate cluster/recordinglog testdata from Java
 	@command -v mvn >/dev/null || { \
-		echo "heron: mvn required (JDK 26 per $(RECORDINGLOG_FIXTURES_POM))" >&2; \
+		echo "heron: mvn required (JDK 26 per $(GOLDEN_FIXTURES_POM))" >&2; \
 		exit 1; \
 	}
 	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
-		mvn -q -f $(RECORDINGLOG_FIXTURES_POM) compile exec:java
+		mvn -q -f $(GOLDEN_FIXTURES_POM) compile exec:java@recordinglog
+
+node-state-fixtures-regen: ## Regenerate cluster/election/testdata/node-state from Java
+	@command -v mvn >/dev/null || { \
+		echo "heron: mvn required (JDK 26 per $(GOLDEN_FIXTURES_POM))" >&2; \
+		exit 1; \
+	}
+	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
+		mvn -q -f $(GOLDEN_FIXTURES_POM) compile exec:java@node-state
 
 $(eval $(call optional-target,recordinglog-fixtures-regen,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
+$(eval $(call optional-target,node-state-fixtures-regen,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
 
 check-catalog-stale: bin/cluster-sbe-catalog-gen
 	@set -euo pipefail; tmp=$$(mktemp); \
@@ -175,6 +193,7 @@ $(eval $(call optional-target,check-catalog-stale,command -v go >/dev/null,go no
 check-catalog-stale-selftest:
 	@CLUSTER_SBE_CATALOG_JSON=$(CLUSTER_SBE_CATALOG_JSON) ./scripts/check-catalog-stale-selftest.sh
 
+# Regenerate SBE flyweights and fail on diff vs committed output.
 $(eval $(call sbe-stale-check,,cluster/codecs,clusterwire))
 $(eval $(call sbe-stale-check,-archive,archive/codecs,archivewire))
 $(eval $(call sbe-stale-check,-nodestate,cluster/election,nodewire))
@@ -222,6 +241,7 @@ fuzz: ## Run all Fuzz* tests
 	done
 
 # Unit tests need -tags=testhooks,bench; use make test.
+# $(1)=target suffix, $(2)=extra tags, $(3)=test flags, $(4)=help label, $(5)=packages (default GO_TEST_PKGS)
 define go-test-target
 .PHONY: test$(1)
 test$(1): ## $(4)
@@ -240,6 +260,7 @@ BENCH_PKGS ?= ./test/bench/...
 BENCH_MICRO_PKGS ?= ./atomicbuffer/... ./mmap/... ./record/... ./ringbuffer/... \
 	./idlestrategy/... ./broadcast/... ./aeron/...
 BENCH_TAGS := bench
+# Env fallbacks read by scripts/bench-regression.sh.
 export BENCH_PKGS
 export BENCH_COUNT BENCH_BASELINE GOARCH
 
@@ -262,12 +283,15 @@ bench-baseline: ## Record benchmark baseline to .bench/
 bench-regression: ## Compare benchmarks to baseline
 	@UNIT_TEST_TAGS=$(BENCH_TAGS) scripts/bench-regression.sh
 
+# Stamp file: reset slice dirs once per profile build so stale coverage
+# data cannot leak into the merge.
 $(COVERAGE_PREPARED):
 	@rm -rf $(COVERAGE_DIR)
 	@mkdir -p $(COVERAGE_ROOT)/unit $(COVERAGE_ROOT)/rapid \
 		$(COVERAGE_ROOT)/stress $(COVERAGE_ROOT)/merged
 	@touch $@
 
+# Collect one coverage slice; $(1)=slice name, $(2)=test target suffix (empty, -rapid, or -stress)
 define coverage-slice-target
 .PHONY: coverage-$(1)
 coverage-$(1): $(COVERAGE_PREPARED)
@@ -305,11 +329,13 @@ JAVA_INTEROP_POM := test/integration/java_interop/pom.xml
 CLUSTER_SBE_POM := test/integration/cluster_sbe/pom.xml
 CLUSTER_JAVA_POM := test/integration/cluster_java/pom.xml
 ARCHIVE_JAVA_POM := test/integration/archive_java/pom.xml
+
 CONTRACT_ORACLE_TIMEOUT ?= 30s
 JAVA_INTEROP_ORACLE_TIMEOUT ?= $(CONTRACT_ORACLE_TIMEOUT)
 CLUSTER_SBE_ORACLE_TIMEOUT ?= $(CONTRACT_ORACLE_TIMEOUT)
 CLUSTER_JAVA_ORACLE_TIMEOUT ?= $(CONTRACT_ORACLE_TIMEOUT)
 ARCHIVE_JAVA_ORACLE_TIMEOUT ?= $(CONTRACT_ORACLE_TIMEOUT)
+
 JAVA_INTEROP_ORACLE_TAGS := testhooks,integration,java_interop
 CLUSTER_SBE_ORACLE_TAGS := integration,cluster_sbe
 CLUSTER_JAVA_ORACLE_TAGS := integration,cluster_java
@@ -355,7 +381,9 @@ endef
 
 .PHONY: test-java-interop test-cluster-java test-cluster-java-failover test-archive-java \
 	$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-unit test-$(s)-oracle test-$(s)-contract) \
-	contract-oracles contract-oracles-optional
+	contract-oracles contract-oracles-optional \
+	test-golden-fixtures-unit test-golden-fixtures-unit-optional
+
 test-java-interop: aeronmd-compose-image ## Docker smoke: Java/Go IPC duplex
 	./scripts/java-interop-smoke.sh
 
@@ -379,6 +407,9 @@ contract-oracles: ## All four contract oracle suites (mvn + go)
 
 $(eval $(call optional-target,contract-oracles,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
 
+$(eval $(call mvn-integration-unit,golden-fixtures,$(GOLDEN_FIXTURES_POM)))
+$(eval $(call optional-target,test-golden-fixtures-unit,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
+
 bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd.sh
 	./scripts/build-aeronmd.sh
 
@@ -390,6 +421,7 @@ aeronmd: bin/aeronmd ## Build C media driver binary
 
 EXAMPLE_BINS := $(patsubst examples/%/main.go,%,$(wildcard examples/*/main.go))
 
+# Build one example binary; $(1)=example dir name under examples/
 define build-example-bin
 bin/$(1): go.mod go.sum $(wildcard examples/$(1)/*.go) $(wildcard examples/$(1)/*/*.go)
 	go build -tags=example -o bin/$(1) ./examples/$(1)

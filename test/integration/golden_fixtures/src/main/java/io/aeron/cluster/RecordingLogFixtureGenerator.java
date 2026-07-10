@@ -12,6 +12,8 @@ import java.util.List;
 
 import org.agrona.IoUtil;
 
+import static heron.goldenfixtures.Json.quote;
+
 /**
  * Writes cluster/recordinglog golden fixtures via the Aeron RecordingLog write API.
  * Package io.aeron.cluster grants access to invalidateEntry and removeEntry.
@@ -213,24 +215,6 @@ public final class RecordingLogFixtureGenerator
             + "\"position\": " + row.position() + ", "
             + "\"index\": " + row.index()
             + "}";
-    }
-
-    private static String quote(final String value)
-    {
-        final StringBuilder out = new StringBuilder(value.length() + 2);
-        out.append('"');
-        for (int i = 0; i < value.length(); i++)
-        {
-            final char c = value.charAt(i);
-            switch (c)
-            {
-                case '"' -> out.append("\\\"");
-                case '\\' -> out.append("\\\\");
-                default -> out.append(c);
-            }
-        }
-        out.append('"');
-        return out.toString();
     }
 
     private static Field positionField()
