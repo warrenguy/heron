@@ -193,16 +193,18 @@ func offerArchiveControlRequest(
 	pollFn func() int,
 	offerFn func() (int64, bool),
 ) error {
-	_, err := ControlOfferUntilPositive(ctx, aeronClient, archiveCtx, ControlOfferConfig{
-		IdleStrategy: archiveCtx.IdleStrategy,
-		NanoClock:    archiveCtx.AeronContext.NanoClock,
-		PollFn:       pollFn,
-	}, func() int64 {
-		// Pass the raw position through: a retriable negative code (BackPressured,
-		// AdminAction) must reach ControlOfferUntilPositive to trigger a retry.
-		// Collapsing !ok to 0 would make retriable failures look terminal.
-		position, _ := offerFn()
-		return position
-	})
+	_, err := controlOfferUntilPositive(
+		ctx,
+		aeronClient,
+		archiveCtx,
+		ControlOfferConfig{PollFn: pollFn},
+		func() int64 {
+			// Pass the raw position through: a retriable negative code (BackPressured,
+			// AdminAction) must reach controlOfferUntilPositive to trigger a retry.
+			// Collapsing !ok to 0 would make retriable failures look terminal.
+			position, _ := offerFn()
+			return position
+		},
+	)
 	return err
 }

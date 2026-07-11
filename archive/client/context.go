@@ -38,7 +38,8 @@ type ArchiveContext struct {
 	// ControlResponseTimeout bounds control RPC response awaits. Zero uses
 	// DefaultControlResponseTimeout after Normalize. Java parity: messageTimeoutNs.
 	ControlResponseTimeout time.Duration
-	// ControlOfferRetryTimeout bounds ControlOfferUntilPositive. Zero uses
+	// ControlOfferRetryTimeout bounds control offer retries, including
+	// [AeronArchive.ControlOfferUntilPositive]. Zero uses
 	// DefaultControlOfferRetryTimeout after Normalize.
 	ControlOfferRetryTimeout time.Duration
 	MessageRetryAttempts     int

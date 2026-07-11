@@ -130,6 +130,15 @@ func (archive *AeronArchive) ArchiveID() int64 {
 	return archive.archiveID
 }
 
+// Context returns the normalized archive context stored at connect.
+// Nil receiver returns a zero ArchiveContext.
+func (archive *AeronArchive) Context() ArchiveContext {
+	if archive == nil {
+		return ArchiveContext{}
+	}
+	return archive.ctx
+}
+
 // Close sends a best-effort CloseSessionRequest, then releases the control publication
 // and subscription. When Connect created the underlying Aeron client, Close closes it
 // too; a user-supplied client is left open.

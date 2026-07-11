@@ -189,7 +189,7 @@ func (ops archiveControlOps) stopRecordingAwaitSignal(
 		return err
 	}
 
-	// ControlOfferUntilPositive drives poll during the offer retry, so a proof may
+	// controlOfferUntilPositive drives poll during the offer retry, so a proof may
 	// already be captured before the await loop begins.
 	return runArchiveControlAwaitLoop(
 		ctx,

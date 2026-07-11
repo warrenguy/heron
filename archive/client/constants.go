@@ -35,7 +35,7 @@ const (
 	// awaits (5 seconds).
 	DefaultControlResponseTimeout = 5 * time.Second
 
-	// DefaultControlOfferRetryTimeout bounds ControlOfferUntilPositive when
+	// DefaultControlOfferRetryTimeout bounds archive control offer retries when
 	// ArchiveContext.ControlOfferRetryTimeout is zero.
 	DefaultControlOfferRetryTimeout = 10 * time.Second
 

@@ -10,7 +10,7 @@ import (
 //
 // Proxy Try methods and Poller.Poll never call DoWork; the caller must drive
 // Aeron.DoWork between post-connect poll and offer steps (or use
-// ControlOfferUntilPositive for offer retries).
+// [AeronArchive.ControlOfferUntilPositive] for offer retries).
 type ConnectResult struct {
 	ControlSessionID int64
 	ArchiveID        int64
