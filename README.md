@@ -71,7 +71,7 @@ mkdir -p "$AERON_DIR"
 bin/aeronmd
 ```
 
-Runnable IPC echo with public helpers (`PollUntilConnected`, `PollUntilImageCount`,
+Runnable IPC echo with `(*Client)` helpers (`PollUntilConnected`, `PollUntilImageCount`,
 `OfferWithRetry`, `PollOneMessage`): [`examples/ipc-echo`](examples/ipc-echo/).
 
 ### Cluster client

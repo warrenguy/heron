@@ -4,7 +4,7 @@
 //
 // Prerequisites: run aeronmd with AERON_DIR set to the same directory this
 // process uses (see README). No cluster framing; only the public aeron
-// Connect, Add*, poll, and offer helpers.
+// Connect, Add*, and (*Client) poll/offer helpers.
 //
 // Flow: register a publication and subscription on one IPC stream, poll until
 // the link is live, offer one payload, receive it on the subscription, verify
@@ -67,7 +67,7 @@ func main() {
 	defer closeWithLog(sub.Close)
 
 	// Wait until the publication sees the subscription before sending data.
-	if err := aeron.PollUntilConnected(ctx, client, pub); err != nil {
+	if err := client.PollUntilConnected(ctx, pub); err != nil {
 		if exitOnCancel(err) {
 			return
 		}
@@ -75,7 +75,7 @@ func main() {
 	}
 
 	// Wait until the subscription is linked to the publication before receiving.
-	if err := aeron.PollUntilImageCount(ctx, client, sub, 1); err != nil {
+	if err := client.PollUntilImageCount(ctx, sub, 1); err != nil {
 		if exitOnCancel(err) {
 			return
 		}
@@ -83,7 +83,7 @@ func main() {
 	}
 
 	// Send the payload, retrying while the stream is momentarily full or busy.
-	pos, err := aeron.OfferWithRetry(ctx, client, pub, echoPayload)
+	pos, err := client.OfferWithRetry(ctx, pub, echoPayload)
 	if err != nil {
 		if exitOnCancel(err) {
 			return
@@ -93,7 +93,7 @@ func main() {
 	log.Printf("ipc-echo: offered at position %d", pos)
 
 	// Poll the subscription until the message we sent on the publication arrives.
-	received, err := aeron.PollOneMessage(ctx, client, sub)
+	received, err := client.PollOneMessage(ctx, sub)
 	if err != nil {
 		if exitOnCancel(err) {
 			return

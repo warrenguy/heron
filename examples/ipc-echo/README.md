@@ -1,6 +1,6 @@
 # ipc-echo
 
-Minimal IPC pub/sub using public `aeron` poll/offer helpers (no local `pollOne`).
+Minimal IPC pub/sub using `(*Client)` poll/offer helpers (no local `pollOne`).
 
 ## Prerequisites
 

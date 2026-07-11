@@ -909,7 +909,7 @@ func TestPollReassembled_liveIPC_fragmented(t *testing.T) {
 	require.Zero(
 		t,
 		fragments,
-		"want=1 delegates to aeron.PollReassembled; fragment oracle is harness-only for want>1",
+		"want=1 delegates to client.PollReassembled; fragment oracle is harness-only for want>1",
 	)
 
 	AssertPubSubPositionsAdvanced(t, pub, sub, pubPosBefore, wantAdvance)

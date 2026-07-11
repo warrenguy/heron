@@ -37,7 +37,7 @@ func pollUntilConnectedCtx(
 	pub aeron.PublicationOfferer,
 ) {
 	t.Helper()
-	failPollTimeout(t, aeron.PollUntilConnected(ctx, client, pub))
+	failPollTimeout(t, client.PollUntilConnected(ctx, pub))
 }
 
 // PollUntilImageCount polls DoWork until the subscription has want non-closed images.
@@ -52,7 +52,7 @@ func PollUntilImageCount(
 		return
 	}
 
-	err := aeron.PollUntilImageCount(t.Context(), client, sub, want)
+	err := client.PollUntilImageCount(t.Context(), sub, want)
 	failPollTimeout(t, err)
 }
 
@@ -414,7 +414,7 @@ func pollUntilNoActiveImagesCtx(
 //
 // Harness-only integration oracle: batch multi-fragment delivery with partial-tick
 // accumulation and want counting. Not promoted to public aeron API; apps should
-// compose aeron.PollOneMessage in a loop for multi-message receive.
+// compose client.PollOneMessage in a loop for multi-message receive.
 func PollDelivered(
 	t testing.TB,
 	client *aeron.Client,
@@ -519,7 +519,7 @@ func pollDeliveredSplitCtx(
 // full retry.
 //
 // Terminal codes (Closed, MaxPositionExceeded, UnsupportedMessageLength) fail
-// immediately. Delegates to aeron.OfferWithRetryObserved; maps typed errors to
+// immediately. Delegates to client.OfferWithRetryObserved; maps typed errors to
 // testing.TB failures.
 func OfferWithRetry(
 	t testing.TB,
@@ -598,9 +598,8 @@ func offerWithRetry(
 		notifySent = true
 	}
 
-	position, err := aeron.OfferWithRetryObserved(
+	position, err := client.OfferWithRetryObserved(
 		t.Context(),
-		client,
 		pub,
 		payload,
 		onRetriable,
@@ -672,14 +671,14 @@ func failOfferWithRetry(
 	return 0
 }
 
-// pollReassembledDelegatedMaxBuf sizes the buffer for aeron.PollReassembled on the
+// pollReassembledDelegatedMaxBuf sizes the buffer for client.PollReassembled on the
 // want=1 delegated path. Covers FragmentedRoundtripPayload (maxPayload+512) with
 // headroom; live IPC maxPayloadLength is well below this cap.
 const pollReassembledDelegatedMaxBuf = 256 * 1024
 
 // PollReassembled receives want logical messages on live IPC.
 //
-// When want==1, delegates reassembly to aeron.PollReassembled (FragmentAssembler).
+// When want==1, delegates reassembly to client.PollReassembled (FragmentAssembler).
 // The returned fragment count is zero on that path; poll-fragment oracle metrics are
 // only reported by the harness B/E stitch implementation below.
 //
@@ -735,7 +734,7 @@ func pollReassembledSingleDelegatedCtx(
 	effectiveWait := aeron.EffectiveRetryBound(ctx, bound, time.Now())
 
 	buf := make([]byte, pollReassembledDelegatedMaxBuf)
-	n, err := aeron.PollReassembled(pollCtx, client, sub, buf)
+	n, err := client.PollReassembled(pollCtx, sub, buf)
 	if err == nil {
 		return [][]byte{slices.Clone(buf[:n])}, 0
 	}

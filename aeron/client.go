@@ -40,6 +40,19 @@ const (
 //
 // Poll loops under clientLock call doWorkLocked, not DoWork.
 //
+// PollUntil*, [Client.PollOneMessage], [Client.PollReassembled], and
+// [Client.RunDuringClientWork] are cold-path integration helpers bound by
+// [Context.PollTimeout]. [Client.OfferWithRetry] and [Client.OfferWithRetryObserved] are
+// the offer-side equivalents bound by [Context.PublicationOfferTimeout]. When ctx carries a
+// deadline, the effective bound is the earlier of the configured timeout and ctx.Deadline().
+//
+// Each helper drives DoWork inside its wait or retry loop; the caller need not invoke
+// DoWork separately while blocked there. Typed timeout errors apply while the context
+// remains active; [PreferContextError] yields ctx.Err() when the context is done first.
+//
+// Cold-path integration ergonomics: may allocate for error strings, cloned payloads,
+// [FragmentAssembler], or goroutine bookkeeping. Not zero-alloc.
+//
 // Callbacks invoked from doWorkLocked (ErrorHandler, AvailableImageHandler,
 // UnavailableImageHandler) must not call DoWork, Close, Add*, OfferAdd*,
 // PollAdd*, NextAvailableSessionID, or IsTerminating. See AvailableImageHandler

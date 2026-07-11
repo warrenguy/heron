@@ -222,7 +222,7 @@ func TestOfferWithRetry_table(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			aeron.SetClientPollTimeoutsForTest(client, tc.timeout, tc.timeout)
-			pos, err := aeron.OfferWithRetry(t.Context(), client, tc.pub, []byte{0x01})
+			pos, err := client.OfferWithRetry(t.Context(), tc.pub, []byte{0x01})
 			if tc.checkErr != nil {
 				tc.checkErr(t, err)
 			} else {
@@ -243,8 +243,8 @@ func TestOfferWithRetryObserved_retriableObserver(t *testing.T) {
 	})
 
 	var observed []int64
-	pos, err := aeron.OfferWithRetryObserved(
-		t.Context(), client, pub, []byte{0x01}, func(status int64) {
+	pos, err := client.OfferWithRetryObserved(
+		t.Context(), pub, []byte{0x01}, func(status int64) {
 			observed = append(observed, status)
 		},
 	)
@@ -264,7 +264,7 @@ func TestOfferWithRetry_contextCanceled(t *testing.T) {
 		cancelCtx, cancel := context.WithCancel(t.Context())
 		cancel()
 
-		pos, err := aeron.OfferWithRetry(cancelCtx, client, pub, []byte{0x01})
+		pos, err := client.OfferWithRetry(cancelCtx, pub, []byte{0x01})
 		require.Zero(t, pos)
 		require.Zero(t, pub.call)
 		require.ErrorIs(t, err, context.Canceled)
@@ -278,8 +278,8 @@ func TestOfferWithRetry_contextCanceled(t *testing.T) {
 		cancelCtx, cancel := context.WithCancel(t.Context())
 		t.Cleanup(cancel)
 
-		pos, err := aeron.OfferWithRetryObserved(
-			cancelCtx, client, pub, []byte{0x01}, func(int64) {
+		pos, err := client.OfferWithRetryObserved(
+			cancelCtx, pub, []byte{0x01}, func(int64) {
 				if pub.call >= 2 {
 					cancel()
 				}
@@ -305,7 +305,7 @@ func TestOfferWithRetry_contextDeadline(t *testing.T) {
 		)
 		defer cancel()
 
-		pos, err := aeron.OfferWithRetry(deadlineCtx, client, pub, []byte{0x01})
+		pos, err := client.OfferWithRetry(deadlineCtx, pub, []byte{0x01})
 		require.Zero(t, pos)
 		require.Zero(t, pub.call)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
@@ -320,7 +320,7 @@ func TestOfferWithRetry_contextDeadline(t *testing.T) {
 		defer cancel()
 
 		start := time.Now()
-		pos, err := aeron.OfferWithRetry(deadlineCtx, client, pub, []byte{0x01})
+		pos, err := client.OfferWithRetry(deadlineCtx, pub, []byte{0x01})
 		elapsed := time.Since(start)
 
 		require.Zero(t, pos)
@@ -351,7 +351,7 @@ func TestOfferWithRetry_terminalAfterCancel(t *testing.T) {
 		cancel: cancel,
 	}
 
-	pos, err := aeron.OfferWithRetry(cancelCtx, client, pub, []byte{0x01})
+	pos, err := client.OfferWithRetry(cancelCtx, pub, []byte{0x01})
 	require.Zero(t, pos)
 	require.Equal(t, 1, pub.call)
 	require.ErrorIs(t, err, context.Canceled)
