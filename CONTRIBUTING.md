@@ -71,7 +71,7 @@ make test-archive-java           # Docker Compose smoke (record, recording.log, 
 - Unit tests use `bench` and `testhooks` build tags.
 - Property tests live in `*_rapid_test.go` behind the `rapid` tag.
 - IDE/gopls: set `go.buildTags` to
-  `testhooks rapid stress integration java_interop cluster_sbe cluster_java archive_java bench`.
+  `testhooks rapid stress integration example java_interop cluster_sbe cluster_java archive_java bench`.
 
 ```bash
 make test                                             # unit only

@@ -19,6 +19,7 @@ import (
 
 var auctionLog = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lmicroseconds)
 
+// newEgressHandlers decodes auction egress bids and logs cluster session events.
 func newEgressHandlers(clientState *ClientState) *client.EgressHandlers {
 	return &client.EgressHandlers{
 		MessageFunc: func(
@@ -87,6 +88,8 @@ func runDutyCycle(
 	config Config,
 	clientState *ClientState,
 ) error {
+	// Loop until all bids are sent: offer on a random schedule, keepalive between
+	// bids, pump transport and poll egress each turn.
 	offerConfig := client.IngressOfferConfig{}
 	clientState.nextBidDeadline = time.Now().Add(randomDelayMs(config.BidIntervalMs))
 	clientState.bidsLeftToSend = config.NumBids
@@ -99,6 +102,7 @@ func runDutyCycle(
 		now := time.Now()
 
 		if clientState.bidDue(now) && clientState.bidsLeftToSend > 0 {
+			// Bid slightly above the last price reported on egress.
 			price := clientState.lastBidSeen + int64(rand.IntN(10))
 			correlationID := clientState.nextCorrelation()
 			err := sendBid(ctx, session, config, correlationID, price, offerConfig)
@@ -120,6 +124,7 @@ func runDutyCycle(
 				clientState.bidsLeftToSend,
 			)
 		} else if clientState.keepAliveDue(now) {
+			// Send ingress traffic while waiting between bids so the session stays open.
 			if clientState.bidsLeftToSend <= 0 {
 				break
 			}
@@ -133,6 +138,7 @@ func runDutyCycle(
 			clientState.keepAliveDeadline = time.Now().Add(time.Second)
 		}
 
+		// Pump transport and poll egress once; yield when nothing arrived.
 		session.SpinOnce()
 	}
 

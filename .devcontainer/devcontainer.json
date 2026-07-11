@@ -19,11 +19,11 @@
       "settings": {
         "go.goroot": "/usr/local/go",
         "go.toolsManagement.autoUpdate": false,
-        "go.buildTags": "testhooks,rapid,stress,integration,java_interop,cluster_sbe,cluster_java,bench",
+        "go.buildTags": "testhooks,rapid,stress,integration,example,java_interop,cluster_sbe,cluster_java,archive_java,bench",
         "go.lintTool": "golangci-lint",
         "go.formatTool": "gofumpt",
         "go.formatFlags": ["-extra"],
-        "go.testTags": "testhooks,bench",
+        "go.testTags": "testhooks,bench,example",
         "editor.formatOnSave": true,
         "[go]": {
           "editor.defaultFormatter": "golang.go"
