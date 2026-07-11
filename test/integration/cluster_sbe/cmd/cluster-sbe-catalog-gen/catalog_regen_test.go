@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe"
 	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe/catalogschema"
 )
 
@@ -27,11 +26,14 @@ func committedCatalogPath(t *testing.T) string {
 
 func TestRegenCatalogFromFile_matchesCommittedCatalog(t *testing.T) {
 	t.Parallel()
-	catalog, err := regenCatalogFromFile(committedCatalogPath(t))
+	path := committedCatalogPath(t)
+	catalog, err := regenCatalogFromFile(path)
 	require.NoError(t, err)
 	out, err := catalogschema.MarshalCanonical(catalog)
 	require.NoError(t, err)
-	require.Equal(t, clustersbe.CatalogJSONForTest(), out)
+	want, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, want, out)
 }
 
 func TestRegenCatalogFromFile_errors(t *testing.T) {

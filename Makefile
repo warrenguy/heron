@@ -84,8 +84,7 @@ help: ## List Makefile targets
 	check-sbe-stale check-sbe-stale-optional \
 	check-sbe-stale-archive check-sbe-stale-archive-optional \
 	check-sbe-stale-nodestate check-sbe-stale-nodestate-optional \
-	cluster-sbe-catalog-regen check-catalog-stale check-catalog-stale-optional \
-	check-catalog-stale-selftest recordinglog-fixtures-regen \
+	cluster-sbe-catalog-regen recordinglog-fixtures-regen \
 	recordinglog-fixtures-regen-optional \
 	node-state-fixtures-regen node-state-fixtures-regen-optional \
 	contract-oracles-optional
@@ -107,8 +106,7 @@ check-static-extra:
 		check-sbe-stale-archive-optional \
 		check-sbe-stale-nodestate-optional
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) check-aeron-versions \
-		check-catalog-stale-optional contract-oracles-optional \
-		test-golden-fixtures-unit-optional
+		contract-oracles-optional test-golden-fixtures-unit-optional
 
 check-test:
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) test test-stress check-examples
@@ -149,17 +147,14 @@ check-sbe-stale$(1): sbe-generate$(1)
 $(eval $(call optional-target,check-sbe-stale$(1),command -v java >/dev/null,java not installed))
 endef
 
-# Cluster SBE codegen: catalog.json stale check in check-static.
+# Cluster SBE catalog regen; stale hex/fields parity is enforced by
+# ./test/integration/cluster_sbe/cmd/cluster-sbe-catalog-gen unit tests in make test.
 CLUSTER_SBE_CATALOG_JSON := test/integration/cluster_sbe/clustersbe/fixtures/catalog.json
-CLUSTER_SBE_CATALOG_GEN := bin/cluster-sbe-catalog-gen
-CLUSTER_SBE_CATALOG_REGEN := $(CLUSTER_SBE_CATALOG_GEN) \
-	-catalog $(CLUSTER_SBE_CATALOG_JSON) -out $(CLUSTER_SBE_CATALOG_JSON)
+CLUSTER_SBE_CATALOG_GEN_SRC := test/integration/cluster_sbe/cmd/cluster-sbe-catalog-gen
 
-bin/cluster-sbe-catalog-gen: go.mod go.sum $(wildcard tools/cluster-sbe-catalog-gen/*.go)
-	go build -o $@ ./tools/cluster-sbe-catalog-gen
-
-cluster-sbe-catalog-regen: bin/cluster-sbe-catalog-gen
-	@$(CLUSTER_SBE_CATALOG_REGEN)
+cluster-sbe-catalog-regen: ## Regenerate cluster SBE catalog.json hex from fields
+	go run ./$(CLUSTER_SBE_CATALOG_GEN_SRC) \
+		-catalog $(CLUSTER_SBE_CATALOG_JSON) -out $(CLUSTER_SBE_CATALOG_JSON)
 
 GOLDEN_FIXTURES_POM := test/integration/golden_fixtures/pom.xml
 
@@ -181,17 +176,6 @@ node-state-fixtures-regen: ## Regenerate cluster/election/testdata/node-state fr
 
 $(eval $(call optional-target,recordinglog-fixtures-regen,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
 $(eval $(call optional-target,node-state-fixtures-regen,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
-
-check-catalog-stale: bin/cluster-sbe-catalog-gen
-	@set -euo pipefail; tmp=$$(mktemp); \
-	trap 'rm -f "$$tmp"' EXIT; \
-	$(CLUSTER_SBE_CATALOG_GEN) -catalog $(CLUSTER_SBE_CATALOG_JSON) -out "$$tmp"; \
-	diff -u $(CLUSTER_SBE_CATALOG_JSON) "$$tmp"
-
-$(eval $(call optional-target,check-catalog-stale,command -v go >/dev/null,go not installed))
-
-check-catalog-stale-selftest:
-	@CLUSTER_SBE_CATALOG_JSON=$(CLUSTER_SBE_CATALOG_JSON) ./scripts/check-catalog-stale-selftest.sh
 
 # Regenerate SBE flyweights and fail on diff vs committed output.
 $(eval $(call sbe-stale-check,,cluster/codecs,clusterwire))
