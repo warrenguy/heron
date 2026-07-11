@@ -111,7 +111,7 @@ check-static-extra:
 		test-golden-fixtures-unit-optional
 
 check-test:
-	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) test test-stress build-examples
+	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) test test-stress check-examples
 
 check-inner: check-static check-test
 
@@ -429,8 +429,11 @@ endef
 
 $(foreach e,$(EXAMPLE_BINS),$(eval $(call build-example-bin,$(e))))
 
-.PHONY: build-examples
+.PHONY: build-examples check-examples
 build-examples: $(addprefix bin/,$(EXAMPLE_BINS)) ## Compile example binaries (requires example build tag)
+
+check-examples: ## Verify example packages compile (example build tag)
+	go build -tags=example -o /dev/null ./examples/...
 
 # Java SBE codegen.
 $(eval $(call sbe-generate-target,,cluster,))
