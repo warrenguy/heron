@@ -24,9 +24,12 @@ formatters:
 linters:
   default: standard
   enable:
+    - exhaustive
     - lll
     - testifylint
   settings:
+    exhaustive:
+      explicit-exhaustive-switch: true
     lll:
       line-length: 100
     staticcheck:

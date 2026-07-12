@@ -23,3 +23,8 @@ const (
 
 // NodeStateSemanticVersion is ClusterMarkFile.SEMANTIC_VERSION (0.3.0) for Aeron Cluster 1.52.0.
 var NodeStateSemanticVersion = cnc.ComposeSemanticVersion(0, 3, 0)
+
+// ProtocolSemanticVersion is ConsensusModule.Configuration.PROTOCOL_SEMANTIC_VERSION (0.3.0).
+func ProtocolSemanticVersion() int32 {
+	return cnc.ComposeSemanticVersion(0, 3, 0)
+}
