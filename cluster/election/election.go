@@ -138,7 +138,6 @@ func validateElectionDeps(cfg ElectionConfig, deps ElectionDeps) map[int32]*Memb
 }
 
 func (e *Election) DoWork(nowNs int64) int {
-	//exhaustive:enforce
 	switch e.electionState {
 	case ElectionStateInit:
 		return e.handleInit(nowNs)

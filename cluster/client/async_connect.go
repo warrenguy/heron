@@ -191,6 +191,8 @@ func (ac *AsyncConnect) Poll() (*ConnectResult, error) {
 		return ac.pollPollResponse()
 	case ConnectStateConcludeConnect:
 		return ac.pollConcludeConnect()
+	case ConnectStateDone:
+		return nil, errors.New("cluster client: async connect already completed")
 	default:
 		return nil, fmt.Errorf("cluster client: invalid connect state %d", ac.state)
 	}

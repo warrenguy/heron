@@ -20,6 +20,7 @@ const (
 	EventCodeRedirect                   = clusterwire.EventCode_REDIRECT
 	EventCodeAuthenticationRejected     = clusterwire.EventCode_AUTHENTICATION_REJECTED
 	EventCodeClosed                     = clusterwire.EventCode_CLOSED
+	EventCodeNullValue                  = clusterwire.EventCode_NULL_VALUE
 	AdminRequestTypeSnapshot            = clusterwire.AdminRequestType_SNAPSHOT
 	AdminResponseCodeOK                 = clusterwire.AdminResponseCode_OK
 	AdminResponseCodeError              = clusterwire.AdminResponseCode_ERROR

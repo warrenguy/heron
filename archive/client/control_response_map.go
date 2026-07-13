@@ -31,15 +31,19 @@ func MapControlResponse(resp codecs.ControlResponseFields) error {
 			ArchiveErrorUnknownSubscription,
 			resp.CorrelationID,
 		)
-	default:
-		return &ArchiveException{
-			msg: fmt.Sprintf(
-				"unexpected control response code: %d",
-				resp.Code,
-			),
-			ErrorCode:     ArchiveErrorGeneric,
-			CorrelationID: resp.CorrelationID,
-		}
+	case archivewire.ControlResponseCode_NULL_VALUE:
+	}
+	return archiveExceptionUnexpectedCode(resp)
+}
+
+func archiveExceptionUnexpectedCode(resp codecs.ControlResponseFields) error {
+	return &ArchiveException{
+		msg: fmt.Sprintf(
+			"unexpected control response code: %d",
+			resp.Code,
+		),
+		ErrorCode:     ArchiveErrorGeneric,
+		CorrelationID: resp.CorrelationID,
 	}
 }
 

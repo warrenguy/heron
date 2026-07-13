@@ -231,6 +231,7 @@ func prepareAdd(client *Client, channel string) error {
 }
 
 func registrationKindFor(pendingKind conductor.PendingKind) string {
+	//exhaustive:ignore panic default rejects non-add kinds
 	switch pendingKind {
 	case conductor.PendingKindAddPublication:
 		return registrationKindPublication

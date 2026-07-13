@@ -175,6 +175,8 @@ func (ac *AsyncConnect) Poll() (*ConnectResult, error) {
 		return ac.pollPollResponse()
 	case ConnectStateConcludeConnect:
 		return ac.pollConcludeConnect()
+	case ConnectStateDone:
+		return nil, errors.New("archive client: async connect already completed")
 	default:
 		return nil, fmt.Errorf("archive client: invalid connect state %d", ac.state)
 	}
@@ -431,16 +433,14 @@ func (ac *AsyncConnect) handleConnectControlResponse(
 	if !ok {
 		return nil, errors.New("archive client: connect response missing")
 	}
-	switch resp.Code {
-	case archivewire.ControlResponseCode_OK:
-		ac.session.controlSessionID = resp.ControlSessionID
-		ac.session.archiveID = resp.RelevantID
-		ac.session.serverVersion = resp.Version
-		ac.state = ConnectStateConcludeConnect
-		return nil, nil
-	default:
+	if resp.Code != archivewire.ControlResponseCode_OK {
 		return nil, MapControlResponse(resp)
 	}
+	ac.session.controlSessionID = resp.ControlSessionID
+	ac.session.archiveID = resp.RelevantID
+	ac.session.serverVersion = resp.Version
+	ac.state = ConnectStateConcludeConnect
+	return nil, nil
 }
 
 func (ac *AsyncConnect) pollConcludeConnect() (*ConnectResult, error) {

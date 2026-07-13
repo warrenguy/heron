@@ -21,9 +21,9 @@ func (ac *AeronCluster) appIngressBlockedCode() int64 {
 		return 0
 	case SessionStatePendingClose:
 		return aeron.Closed
-	default:
-		return aeron.NotConnected
+	case SessionStateAwaitNewLeader, SessionStateAwaitNewLeaderConnection:
 	}
+	return aeron.NotConnected
 }
 
 // leaderIngressPublication returns ac.ingressPublication when connected.
@@ -79,6 +79,7 @@ func (ac *AeronCluster) trackIngressPublicationResult(result int64) {
 				ac.enterConnected()
 			}
 		}
+	case SessionStateAwaitNewLeader, SessionStatePendingClose:
 	}
 }
 

@@ -1,8 +1,6 @@
 package conductor
 
 import (
-	"reflect"
-
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
@@ -13,16 +11,7 @@ type PublicationHandle interface {
 }
 
 func isAbsentMapValue[T any](value T) bool {
-	if any(value) == nil {
-		return true
-	}
-	v := reflect.ValueOf(value)
-	switch v.Kind() {
-	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.Interface:
-		return v.IsNil()
-	default:
-		return false
-	}
+	return any(value) == nil || isTypedNilHandle(value)
 }
 
 func resourceByRegID[T any](resources map[int64]T, registrationID int64) (T, bool) {

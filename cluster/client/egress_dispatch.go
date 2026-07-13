@@ -79,6 +79,7 @@ func sessionEgressDispatchHooks(ac *AeronCluster) egressDispatchHooks {
 				return ac.handleRedirect(ev.LeaderMemberID, ev.Detail, imageFromHeader(header)) != nil
 			case EventCodeClosed:
 				ac.enterPendingClose()
+			case EventCodeOK, EventCodeError, EventCodeAuthenticationRejected, EventCodeNullValue:
 			}
 			return false
 		},

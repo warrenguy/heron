@@ -550,9 +550,6 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 	if conductor.resourceLifecycle == nil {
 		return
 	}
-	if !addPendingKind(registration.Kind) {
-		return
-	}
 	conductor.underResourceWriteLock(func() {
 		switch registration.Kind {
 		case PendingKindAddSubscription:
@@ -569,10 +566,7 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 				conductor.releaseLogBuffersByKey(registryKey, 0)
 			}
 			conductor.removeSubscription(registration.CorrelationID)
-		default:
-			if !addPublicationPendingKind(registration.Kind) {
-				return
-			}
+		case PendingKindAddPublication, PendingKindAddExclusivePublication:
 			if registration.RegistrationID == 0 {
 				return
 			}
@@ -589,6 +583,10 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 				conductor.releaseLogBuffersByKey(registryKey, 0)
 			}
 			conductor.removePublication(registration.RegistrationID)
+		case PendingKindOperationSuccess,
+			PendingKindNextSessionID,
+			PendingKindRemovePublication,
+			PendingKindRemoveSubscription:
 		}
 	})
 }
@@ -647,9 +645,13 @@ func newPublicationForPendingKind(
 		return lifecycle.NewPublication(event, logBuffers, countersReader, channel)
 	case PendingKindAddExclusivePublication:
 		return lifecycle.NewExclusivePublication(event, logBuffers, countersReader, channel)
+	case PendingKindOperationSuccess,
+		PendingKindNextSessionID,
+		PendingKindAddSubscription,
+		PendingKindRemovePublication,
+		PendingKindRemoveSubscription:
 	}
-	var absent PublicationHandle
-	return absent, nil
+	return nil, fmt.Errorf("conductor: pending kind %v is not a publication kind", kind)
 }
 
 func invokeErrorHandler(handler func(error), err error) {

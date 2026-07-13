@@ -112,6 +112,8 @@ func (ac *AeronCluster) pollStateChanges() int {
 		if ac.stateDeadlineNs == 0 || ac.nanoClock() < ac.stateDeadlineNs {
 			return 0
 		}
+	case SessionStateConnected:
+		return 0
 	default:
 		return 0
 	}

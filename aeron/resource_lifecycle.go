@@ -20,7 +20,16 @@ func (conductorResourceLifecycle) NewPublication(
 	countersReader *cnc.CountersReader,
 	channel string,
 ) (conductor.PublicationHandle, error) {
-	return newPublicationFromReady(event, logBuffers.MappedLogBuffer(), countersReader, channel)
+	publication, err := newPublicationFromReady(
+		event,
+		logBuffers.MappedLogBuffer(),
+		countersReader,
+		channel,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return publication, nil
 }
 
 func (conductorResourceLifecycle) NewExclusivePublication(
@@ -29,12 +38,16 @@ func (conductorResourceLifecycle) NewExclusivePublication(
 	countersReader *cnc.CountersReader,
 	channel string,
 ) (conductor.PublicationHandle, error) {
-	return newExclusivePublicationFromReady(
+	publication, err := newExclusivePublicationFromReady(
 		event,
 		logBuffers.MappedLogBuffer(),
 		countersReader,
 		channel,
 	)
+	if err != nil {
+		return nil, err
+	}
+	return publication, nil
 }
 
 func (lifecycle conductorResourceLifecycle) NewPreSubscription(

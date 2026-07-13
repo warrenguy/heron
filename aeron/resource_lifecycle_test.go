@@ -8,6 +8,7 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/internal/testutil"
+	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
 var conductorSubscriptionHandleErrorCases = []struct {
@@ -55,6 +56,23 @@ var publicationKindLogConfigCases = []struct {
 	},
 }
 
+func newPublicationViaLifecycle(
+	exclusive bool,
+	ready conductor.PublicationBuffersReady,
+	logBuffers *logbuffer.LogBuffers,
+	counters *cnc.CountersReader,
+) (conductor.PublicationHandle, error) {
+	if exclusive {
+		return ConductorResourceLifecycle.NewExclusivePublication(
+			ready,
+			logBuffers,
+			counters,
+			"aeron:ipc",
+		)
+	}
+	return ConductorResourceLifecycle.NewPublication(ready, logBuffers, counters, "aeron:ipc")
+}
+
 func TestConductorResourceLifecycle_NewPublication_inactiveLimitCounter(t *testing.T) {
 	t.Parallel()
 
@@ -65,25 +83,57 @@ func TestConductorResourceLifecycle_NewPublication_inactiveLimitCounter(t *testi
 			t.Parallel()
 
 			logBuffers := NewTestLogBuffersForTest(t, tt.logCfg)
-			ready := testPublicationBuffersReady()
-
-			var err error
-			if tt.exclusive {
-				_, err = ConductorResourceLifecycle.NewExclusivePublication(
-					ready,
-					logBuffers,
-					emptyReader,
-					"aeron:ipc",
-				)
-			} else {
-				_, err = ConductorResourceLifecycle.NewPublication(
-					ready,
-					logBuffers,
-					emptyReader,
-					"aeron:ipc",
-				)
-			}
+			_, err := newPublicationViaLifecycle(
+				tt.exclusive,
+				testPublicationBuffersReady(),
+				logBuffers,
+				emptyReader,
+			)
 			require.ErrorContains(t, err, "publication limit counter")
+		})
+	}
+}
+
+// TestConductorResourceLifecycle_NewPublication_handleContract pins the
+// ResourceLifecycle seam contract: error paths return an untyped nil handle
+// (never a typed-nil boxed *Publication), success paths return a live handle.
+func TestConductorResourceLifecycle_NewPublication_handleContract(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range publicationKindLogConfigCases {
+		t.Run(tt.name+" error untyped nil", func(t *testing.T) {
+			t.Parallel()
+
+			logBuffers := NewTestLogBuffersForTest(t, tt.logCfg)
+			handle, err := newPublicationViaLifecycle(
+				tt.exclusive,
+				testPublicationBuffersReady(),
+				logBuffers,
+				emptyCountersReaderForTest(t),
+			)
+			require.Error(t, err)
+			if handle != nil {
+				t.Fatalf("error path returned typed-nil handle %#v", handle)
+			}
+		})
+		t.Run(tt.name+" success live handle", func(t *testing.T) {
+			t.Parallel()
+
+			logBuffers := NewTestLogBuffersForTest(t, tt.logCfg)
+			ready := testPublicationBuffersReady()
+			ready.ChannelStatusCounterID = cnc.NullCounterID
+			counters := NewTestCountersReaderLimitOnlyForTest(t, int64(1)<<40)
+			handle, err := newPublicationViaLifecycle(tt.exclusive, ready, logBuffers, counters)
+			require.NoError(t, err)
+
+			// From-handle helpers reject nil and typed-nil, so they are the
+			// live-handle oracle.
+			if tt.exclusive {
+				_, err = exclusivePublicationFromHandle(handle)
+			} else {
+				_, err = publicationFromHandle(handle)
+			}
+			require.NoError(t, err)
 		})
 	}
 }
