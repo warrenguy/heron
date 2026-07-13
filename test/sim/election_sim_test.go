@@ -20,10 +20,9 @@ func TestElectionSim_threeNode_happyPath(t *testing.T) {
 
 	sim.Run(t, sim.Config{Seed: 42}, func(s *sim.ElectionSim) {
 		require.NoError(t, s.RunSteps(3))
-		require.ErrorIs(t, s.RunSteps(1), sim.ErrQueueEmpty)
 
 		for _, node := range s.Nodes() {
-			require.Equal(t, election.ElectionStateInit, node.Election().State())
+			require.Equal(t, election.ElectionStateCanvass, node.Election().State())
 		}
 		require.GreaterOrEqual(t, len(s.Timeline()), 3)
 	})
@@ -146,6 +145,7 @@ func TestElectionSim_runUntilEmptyQueue(t *testing.T) {
 	sim.Run(t, sim.Config{Seed: 42}, func(s *sim.ElectionSim) {
 		require.NoError(t, s.RunSteps(3))
 		require.NoError(t, s.RunUntil(func(*sim.ElectionSim) bool { return false }))
+		require.ErrorIs(t, s.RunSteps(1), sim.ErrQueueEmpty)
 	})
 }
 
@@ -153,14 +153,20 @@ func TestElectionSim_runUntilPredicateSteps(t *testing.T) {
 	t.Parallel()
 
 	sim.Run(t, sim.Config{Seed: 42}, func(s *sim.ElectionSim) {
-		before := len(s.Timeline())
 		calls := 0
 		require.NoError(t, s.RunUntil(func(*sim.ElectionSim) bool {
 			calls++
 			return calls > 2
 		}))
 		require.Equal(t, 3, calls)
-		require.Len(t, s.Timeline(), before+2)
+
+		ticks := 0
+		for _, e := range s.Timeline() {
+			if e.Kind == "tick" {
+				ticks++
+			}
+		}
+		require.Equal(t, 2, ticks)
 	})
 }
 

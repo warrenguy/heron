@@ -1,0 +1,105 @@
+package election
+
+import "github.com/warrenguy/heron/cluster/codecs"
+
+func hasUpdateIntervalExpired(nowNs, lastUpdateNs, intervalNs int64) bool {
+	return nowNs >= lastUpdateNs+intervalNs
+}
+
+func (e *Election) nominationDelayNs() int64 {
+	r := 0.0
+	if e.deps.NominationRand != nil {
+		r = e.deps.NominationRand()
+	}
+	return int64(r * float64(e.cfg.ElectionTimeoutNs>>1))
+}
+
+func (e *Election) placeVote(candidateTermID int64, candidateMemberID int32, vote bool) {
+	candidate := e.memberByID[candidateMemberID]
+	if candidate == nil {
+		return
+	}
+	e.deps.Publisher.PlaceVote(
+		PublicationTarget{MemberID: candidateMemberID},
+		candidateTermID,
+		e.logLeadershipTermID,
+		e.appendPosition,
+		candidateMemberID,
+		e.thisMember.ID,
+		vote,
+	)
+}
+
+func (e *Election) completeElection(nowNs int64) bool {
+	if !e.deps.Host.AppendNewLeadershipTermEvent(nowNs) {
+		return false
+	}
+	e.deps.Handler.ElectionComplete(nowNs)
+	e.state(ElectionStateClosed, nowNs, "")
+	return true
+}
+
+func (e *Election) prepareForNewLeadership(nowNs int64) {
+	e.appendPosition = e.deps.Handler.PrepareForNewLeadership(e.logPosition, nowNs)
+}
+
+func (e *Election) durableCandidateTermID() int64 {
+	ct, err := e.deps.NodeState.CandidateTerm()
+	if err != nil {
+		// A closed or unreadable node-state file cannot raise the candidate term;
+		// fall back to the known leadership term so init still makes progress.
+		return e.leadershipTermID
+	}
+	return max(ct.CandidateTermID(), e.leadershipTermID)
+}
+
+func (e *Election) isSingleNodeCluster() bool {
+	return len(e.clusterMembers) == 1
+}
+
+func (e *Election) isBallotState() bool {
+	return e.electionState == ElectionStateCanvass ||
+		e.electionState == ElectionStateNominate ||
+		e.electionState == ElectionStateCandidateBallot ||
+		e.electionState == ElectionStateFollowerBallot
+}
+
+func (e *Election) publishNewLeadershipTerm(nowNs int64) {
+	fields := codecs.NewLeadershipTermFields{
+		LogLeadershipTermID: e.logLeadershipTermID,
+		LeadershipTermID:    e.leadershipTermID,
+		TermBaseLogPosition: e.cfg.TermBaseLogPosition,
+		LogPosition:         e.appendPosition,
+		LeaderRecordingID:   e.leaderRecordingID,
+		Timestamp:           nowNs,
+		LeaderMemberID:      e.thisMember.ID,
+		LogSessionID:        e.logSessionID,
+		AppVersion:          e.cfg.AppVersion,
+		IsStartup:           boolToClusterwire(e.isLeaderStartup),
+		// NextLeadershipTermID, NextTermBaseLogPosition, NextLogPosition, and
+		// CommitPosition stay zero: the successor-term values come from real log
+		// replication state that is not computed here, and a follower reads only
+		// the current-term fields. A speculative non-oracle value would mislead.
+	}
+	for _, member := range e.clusterMembers {
+		if member.ID == e.thisMember.ID {
+			continue
+		}
+		e.deps.Publisher.NewLeadershipTerm(PublicationTarget{MemberID: member.ID}, fields)
+	}
+}
+
+func (e *Election) publishCanvassPosition() {
+	for _, member := range e.clusterMembers {
+		if member.ID == e.thisMember.ID {
+			continue
+		}
+		e.deps.Publisher.CanvassPosition(
+			PublicationTarget{MemberID: member.ID},
+			e.logLeadershipTermID,
+			e.appendPosition,
+			e.leadershipTermID,
+			e.thisMember.ID,
+		)
+	}
+}

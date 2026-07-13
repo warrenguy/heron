@@ -17,6 +17,12 @@ type ElectionDeps struct {
 	NanoClock  func() int64
 	EpochClock func() int64
 
+	// NominationRand seeds the randomized nomination back-off. Callers must
+	// return a value in [0, 1) (e.g. rand.Float64); it scales half the election
+	// timeout. Nil yields a zero delay, which keeps unit and sim scenarios
+	// deterministic.
+	NominationRand func() float64
+
 	NodeState  CandidateTermStore
 	Members    []*Member
 	ThisMember *Member

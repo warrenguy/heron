@@ -49,6 +49,9 @@ type Election struct {
 var _ consensus.ElectionRunner = (*Election)(nil)
 
 func NewElection(cfg ElectionConfig, deps ElectionDeps) *Election {
+	if err := ValidateElectionConfig(cfg); err != nil {
+		panic(err.Error())
+	}
 	memberByID := validateElectionDeps(cfg, deps)
 
 	nowNs := deps.NanoClock()
@@ -180,7 +183,50 @@ func (e *Election) DoWork(nowNs int64) int {
 	}
 }
 
-func (e *Election) state(next ElectionState, nowNs int64) {
+// state applies a transition and its entry side effects. reason mirrors the
+// Java win-reason strings and is reserved for a future electiontrace build tag.
+func (e *Election) state(next ElectionState, nowNs int64, reason string) {
+	_ = reason
+
+	switch next {
+	case ElectionStateCanvass:
+		ResetMembers(e.clusterMembers)
+
+		// ResetMembers clears this node too; restore its advertised position so
+		// it counts toward its own quorum and unanimous candidacy.
+		e.thisMember.LeadershipTermID = e.leadershipTermID
+		e.thisMember.LogPosition = e.appendPosition
+
+		// Preserve the startup canvass window on the first entry from init; a
+		// re-canvass from a ballot state drops it so the shorter heartbeat
+		// timeout applies.
+		if e.electionState != ElectionStateInit {
+			e.isExtendedCanvass = false
+		}
+		e.deps.Host.RoleSet(consensus.RoleFollower)
+	case ElectionStateCandidateBallot:
+		e.deps.Host.RoleSet(consensus.RoleCandidate)
+	case ElectionStateLeaderLogReplication:
+		e.deps.Host.RoleSet(consensus.RoleLeader)
+		e.logSessionID = e.deps.Host.AddLogPublication(e.appendPosition)
+	case ElectionStateFollowerReplay:
+		e.deps.Host.RoleSet(consensus.RoleFollower)
+	case ElectionStateInit,
+		ElectionStateNominate,
+		ElectionStateFollowerBallot,
+		ElectionStateLeaderReplay,
+		ElectionStateLeaderInit,
+		ElectionStateLeaderReady,
+		ElectionStateFollowerLogReplication,
+		ElectionStateFollowerCatchupInit,
+		ElectionStateFollowerCatchupAwait,
+		ElectionStateFollowerCatchup,
+		ElectionStateFollowerLogInit,
+		ElectionStateFollowerLogAwait,
+		ElectionStateFollowerReady,
+		ElectionStateClosed:
+	}
+
 	e.electionState = next
 	e.timeOfLastStateChangeNs = nowNs
 	if e.deps.StateObserver != nil {

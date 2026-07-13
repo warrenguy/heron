@@ -152,9 +152,9 @@ func openNodeState(baseDir string, memberID int32) (election.CandidateTermStore,
 }
 
 func defaultElectionConfig() election.ElectionConfig {
-	return election.ElectionConfig{
-		LeadershipTermID: 5,
-		LogPosition:      100,
-		AppendPosition:   200,
-	}
+	cfg := election.ElectionTestConfig()
+	cfg.LeadershipTermID = 5
+	cfg.LogPosition = 100
+	cfg.AppendPosition = 200
+	return cfg
 }

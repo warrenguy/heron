@@ -1,7 +1,5 @@
 // Package sim provides a deterministic discrete-event election simulator:
 // scheduler, in-memory network, and Node wiring around election.Election.
-// Stub handlers keep state at INIT; the harness validates orchestration,
-// seeded rerun, and message plumbing until scenario tests drive transitions.
 package sim
 
 import (

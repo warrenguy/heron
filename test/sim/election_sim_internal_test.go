@@ -45,27 +45,23 @@ func TestElectionSim_deliverUnknownTargetNoFollowUpTick(t *testing.T) {
 	s.Node(0).Publisher().CanvassPosition(dst, 1, 2, 3, 4)
 	require.NoError(t, s.RunSteps(4))
 
-	var (
-		tickCount    int
-		deliverFound bool
-	)
+	deliverFound := false
 	for _, e := range s.Timeline() {
-		switch e.Kind {
-		case "tick":
-			tickCount++
-			require.NotEqual(t, int32(99), e.NodeID)
-		case "deliver":
-			if e.To == 99 {
-				deliverFound = true
-				require.False(t, e.HandedOff)
-			}
+		if e.Kind == "deliver" && e.To == 99 {
+			deliverFound = true
+			require.False(t, e.HandedOff)
 		}
 	}
 	require.True(t, deliverFound)
-	require.Equal(t, 3, tickCount)
 
-	_, ok := s.scheduler.PeekNext()
-	require.False(t, ok)
+	// Unknown-target deliver hands off nothing, so it never schedules a tick for
+	// member 99. Drain the queue and confirm no such tick ever runs.
+	require.NoError(t, s.RunUntil(func(*ElectionSim) bool { return false }))
+	for _, e := range s.Timeline() {
+		if e.Kind == "tick" {
+			require.NotEqual(t, int32(99), e.NodeID)
+		}
+	}
 }
 
 func TestElectionSim_initialTickMemberIDOrder(t *testing.T) {

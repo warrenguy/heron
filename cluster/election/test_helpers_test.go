@@ -7,6 +7,7 @@ import (
 
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/election/electiontest"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
 type FakeClock struct {
@@ -22,6 +23,7 @@ type FakeEpochClock struct {
 func (c *FakeEpochClock) TimeMs() int64 { return c.nowMs }
 
 type recordingNodeState struct {
+	store        election.CandidateTermStore
 	proposeCalls []struct {
 		candidateTermID int64
 		logPosition     int64
@@ -30,13 +32,13 @@ type recordingNodeState struct {
 }
 
 func (r *recordingNodeState) CandidateTerm() (election.CandidateTerm, error) {
-	return election.CandidateTerm{}, nil
+	return r.store.CandidateTerm()
 }
 
 func (r *recordingNodeState) UpdateCandidateTermID(
 	candidateTermID, logPosition, timestampMs int64,
 ) error {
-	return nil
+	return r.store.UpdateCandidateTermID(candidateTermID, logPosition, timestampMs)
 }
 
 func (r *recordingNodeState) ProposeMaxCandidateTermID(
@@ -47,10 +49,56 @@ func (r *recordingNodeState) ProposeMaxCandidateTermID(
 		logPosition     int64
 		timestampMs     int64
 	}{candidateTermID, logPosition, timestampMs})
-	return candidateTermID, nil
+	return r.store.ProposeMaxCandidateTermID(candidateTermID, logPosition, timestampMs)
 }
 
 func (r *recordingNodeState) Close() error { return nil }
+
+// failingNodeState reads from store but fails every write with err.
+type failingNodeState struct {
+	store election.CandidateTermStore
+	err   error
+}
+
+func (f *failingNodeState) CandidateTerm() (election.CandidateTerm, error) {
+	return f.store.CandidateTerm()
+}
+
+func (f *failingNodeState) UpdateCandidateTermID(int64, int64, int64) error {
+	return f.err
+}
+
+func (f *failingNodeState) ProposeMaxCandidateTermID(int64, int64, int64) (int64, error) {
+	return 0, f.err
+}
+
+func (f *failingNodeState) Close() error { return nil }
+
+type recordingAgentHandler struct {
+	electiontest.NoopAgentHandler
+	electionCompleteNs []int64
+}
+
+func (h *recordingAgentHandler) ElectionComplete(nowNs int64) {
+	h.electionCompleteNs = append(h.electionCompleteNs, nowNs)
+}
+
+// appendPositionFailPublisher fails AppendPosition and counts attempts;
+// other publishes pass through to the embedded SbePublisher.
+type appendPositionFailPublisher struct {
+	*election.SbePublisher
+	attempts int
+}
+
+func (p *appendPositionFailPublisher) AppendPosition(
+	election.PublicationTarget,
+	int64, int64,
+	int32,
+	uint8,
+) bool {
+	p.attempts++
+	return false
+}
 
 type recordingStateObserver struct {
 	states []election.ElectionState
@@ -60,7 +108,7 @@ func (o *recordingStateObserver) OnElectionStateChange(s election.ElectionState)
 	o.states = append(o.states, s)
 }
 
-func testElectionDeps(t *testing.T) (
+func electionDepsForMembers(t *testing.T, members []election.Member) (
 	election.ElectionConfig,
 	election.ElectionDeps,
 	*FakeClock,
@@ -71,20 +119,17 @@ func testElectionDeps(t *testing.T) (
 
 	clock := &FakeClock{nowNs: 1_000_000_000}
 	epochClock := &FakeEpochClock{nowMs: 42_000}
-	nodeState := &recordingNodeState{}
-	members := []election.Member{
-		{ID: 0},
-		{ID: 1},
-		{ID: 2},
-	}
+
+	store, err := election.OpenNodeStateFile(t.TempDir(), true, recordinglog.FileSyncNone)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	nodeState := &recordingNodeState{store: store}
+
 	memberPtrs := election.MembersPtrs(members)
 
-	cfg := election.ElectionConfig{
-		LeadershipTermID: 5,
-		LogPosition:      100,
-		AppendPosition:   200,
-		MemberID:         0,
-	}
+	cfg := election.ElectionTestConfig()
+	cfg.MemberID = memberPtrs[0].ID
+
 	deps := election.ElectionDeps{
 		Handler:    electiontest.NoopAgentHandler{},
 		Host:       electiontest.NoopElectionHost{},
@@ -96,6 +141,33 @@ func testElectionDeps(t *testing.T) (
 		ThisMember: memberPtrs[0],
 	}
 	return cfg, deps, clock, epochClock, nodeState
+}
+
+func testElectionDeps(t *testing.T) (
+	election.ElectionConfig,
+	election.ElectionDeps,
+	*FakeClock,
+	*FakeEpochClock,
+	*recordingNodeState,
+) {
+	t.Helper()
+
+	cfg, deps, clock, epochClock, nodeState := electionDepsForMembers(t, []election.Member{
+		{ID: 0},
+		{ID: 1},
+		{ID: 2},
+	})
+	cfg.LeadershipTermID = 5
+	cfg.LogPosition = 100
+	cfg.AppendPosition = 200
+	return cfg, deps, clock, epochClock, nodeState
+}
+
+func singleNodeElectionDeps(t *testing.T) (election.ElectionConfig, election.ElectionDeps) {
+	t.Helper()
+
+	cfg, deps, _, _, _ := electionDepsForMembers(t, []election.Member{{ID: 0}})
+	return cfg, deps
 }
 
 func requireNodeStatePrefixHex(t *testing.T, buf []byte, n int) {

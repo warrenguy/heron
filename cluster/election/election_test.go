@@ -7,21 +7,38 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 )
 
-func TestElection_DoWork_allStatesReturnZero(t *testing.T) {
+func TestSnapshotForTest_capturesObservableState(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, _, _, _ := testElectionDeps(t)
+	pub := deps.Publisher.(*election.SbePublisher)
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateCandidateBallot)
+	pub.RequestVote(election.PublicationTarget{MemberID: 1}, 1, 2, 3, 4)
+
+	snap := election.SnapshotForTest(e, consensus.RoleCandidate, pub)
+
+	require.Equal(t, election.ElectionStateCandidateBallot, snap.State)
+	require.Equal(t, consensus.RoleCandidate, snap.Role)
+	require.Equal(t, cfg.LeadershipTermID, snap.LeadershipTermID)
+	require.Equal(t, cfg.LeadershipTermID, snap.CandidateTermID)
+	require.Len(t, snap.MemberSnapshots, 3)
+	require.Equal(t, int32(0), snap.MemberSnapshots[0].ID)
+	require.Equal(t, 1, snap.PublishedCount)
+}
+
+func TestElection_DoWork_closedReturnsZero(t *testing.T) {
 	t.Parallel()
 
 	cfg, deps, _, _, _ := testElectionDeps(t)
 	e := election.NewElection(cfg, deps)
 
-	for code := range int64(election.ElectionStateNameCount()) {
-		s, err := election.ElectionStateFromCode(code)
-		require.NoError(t, err)
-		election.SetStateForTest(e, s)
-		require.Equal(t, 0, e.DoWork(1_000), "state %s", s)
-	}
+	election.SetStateForTest(e, election.ElectionStateClosed)
+	require.Equal(t, 0, e.DoWork(1_000))
 }
 
 func TestElection_DoWork_panicsOnUnknownState(t *testing.T) {
@@ -60,6 +77,76 @@ func TestNewElection_initializesFields(t *testing.T) {
 	initialUpdate := clock.nowNs - int64(24*time.Hour)
 	require.Equal(t, initialUpdate, election.TimeOfLastUpdateNsForTest(e))
 	require.Equal(t, initialUpdate, election.TimeOfLastCommitPositionUpdateNsForTest(e))
+}
+
+func TestElectionConfig_defaults(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, election.DefaultElectionConfig(), election.ElectionTestConfig())
+
+	cfg := election.DefaultElectionConfig()
+	require.Equal(t, int64(1_000_000_000), cfg.ElectionTimeoutNs)
+	require.Equal(t, int64(100_000_000), cfg.ElectionStatusIntervalNs)
+	require.Equal(t, int64(60_000_000_000), cfg.StartupCanvassTimeoutNs)
+	require.Equal(t, int64(10_000_000_000), cfg.LeaderHeartbeatTimeoutNs)
+	require.Equal(t, int64(200_000_000), cfg.LeaderHeartbeatIntervalNs)
+	require.NoError(t, election.ValidateElectionConfig(cfg))
+}
+
+func TestValidateElectionConfig_rejectsZeroTimeouts(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		mut  func(*election.ElectionConfig)
+		msg  string
+	}{
+		{
+			"zero ElectionTimeoutNs",
+			func(c *election.ElectionConfig) { c.ElectionTimeoutNs = 0 },
+			"ElectionTimeoutNs must be positive",
+		},
+		{
+			"zero ElectionStatusIntervalNs",
+			func(c *election.ElectionConfig) { c.ElectionStatusIntervalNs = 0 },
+			"ElectionStatusIntervalNs must be positive",
+		},
+		{
+			"zero LeaderHeartbeatTimeoutNs",
+			func(c *election.ElectionConfig) { c.LeaderHeartbeatTimeoutNs = 0 },
+			"LeaderHeartbeatTimeoutNs must be positive",
+		},
+		{
+			"zero StartupCanvassTimeoutNs",
+			func(c *election.ElectionConfig) { c.StartupCanvassTimeoutNs = 0 },
+			"StartupCanvassTimeoutNs must be positive",
+		},
+		{
+			"zero LeaderHeartbeatIntervalNs",
+			func(c *election.ElectionConfig) { c.LeaderHeartbeatIntervalNs = 0 },
+			"LeaderHeartbeatIntervalNs must be positive",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := election.DefaultElectionConfig()
+			tc.mut(&cfg)
+			err := election.ValidateElectionConfig(cfg)
+			require.EqualError(t, err, "election: "+tc.msg)
+		})
+	}
+}
+
+func TestNewElection_rejectsZeroTimeout(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, _, _, _ := testElectionDeps(t)
+	cfg.ElectionTimeoutNs = 0
+
+	require.PanicsWithValue(t, "election: ElectionTimeoutNs must be positive", func() {
+		election.NewElection(cfg, deps)
+	})
 }
 
 func TestNewElection_validationPanics(t *testing.T) {
