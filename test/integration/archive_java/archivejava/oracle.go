@@ -6,7 +6,7 @@ package archivejava
 
 import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/archive/client"
+	client "github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 

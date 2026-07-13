@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/client"
+	client "github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
@@ -76,7 +76,7 @@ func TestArchiveRecordingLog(t *testing.T) {
 
 	// Recovery planning uses the crash-sim reopen handle (Open false), not Reload bytes.
 	plan, err := reopened.PlanRecovery(
-		client.NewArchiveLister(context.Background(), archive),
+		client.NewLister(context.Background(), archive),
 		recordinglog.NewRecoveryPlanConfig(0),
 	)
 	require.NoError(t, err)

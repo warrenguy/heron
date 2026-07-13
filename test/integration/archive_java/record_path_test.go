@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/client"
+	client "github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
@@ -43,10 +43,10 @@ func connectArchive(
 	t *testing.T,
 	dir string,
 	aeronClient *aeron.Client,
-) *client.AeronArchive {
+) *client.Client {
 	t.Helper()
 
-	archiveCtx := client.ArchiveContext{
+	archiveCtx := client.Context{
 		AeronDir: dir,
 		Aeron:    aeronClient,
 	}.Normalize()
@@ -88,7 +88,7 @@ func recordArchiveSmoke(
 	t *testing.T,
 	aeronClient *aeron.Client,
 	hadClientError *atomic.Bool,
-	archive *client.AeronArchive,
+	archive *client.Client,
 ) codecs.RecordingDescriptorFields {
 	t.Helper()
 

@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/archive/client"
+	client "github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
 )
 

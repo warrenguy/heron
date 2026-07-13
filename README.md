@@ -39,10 +39,10 @@ recovery, and `SendSnapshotRequest`.
 `ControlledEgressHandler` dispatch; general admin request API (beyond snapshot); cluster
 server / consensus service.
 
-### Archive (`archive/client`)
+### Archive (`archive`)
 
-Control and replay client is implemented: SBE flyweights, `ArchiveContext`, connect,
-`AeronArchive` session and recording lifecycle, `ArchiveProxy`, control and recording
+Control and replay client is implemented: SBE flyweights, `Context`, connect,
+`Client` session and recording lifecycle, `Proxy`, control and recording
 descriptor pollers, recording signals, replay start and stop, replay image discovery,
 and fragment poll.
 
@@ -86,7 +86,7 @@ External cluster stack required; setup and duty-cycle patterns are in the exampl
 ### Archive client
 
 Requires Aeron Archive plus `aeronmd` (default local IPC control). Pass an existing
-transport `*aeron.Client` in `ArchiveContext.Aeron` for a shared `DoWork` duty cycle.
+transport `*aeron.Client` in `Context.Aeron` for a shared `DoWork` duty cycle.
 
 ```go
 package main
@@ -96,7 +96,7 @@ import (
 	"log"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/client"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/archive/codecs"
 )
 
@@ -107,13 +107,13 @@ func main() {
 	}
 	defer transport.Close()
 
-	archive, err := client.Connect(context.Background(), client.ArchiveContext{Aeron: transport})
+	session, err := archive.Connect(context.Background(), archive.Context{Aeron: transport})
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer archive.Close()
+	defer session.Close()
 
-	archive.SetRecordingSignalHandler(client.RecordingSignalHandlerFunc(
+	session.SetRecordingSignalHandler(archive.RecordingSignalHandlerFunc(
 		func(event codecs.RecordingSignalEventFields) {
 			log.Printf("recording signal: recording=%d signal=%v",
 				event.RecordingID, event.Signal)
@@ -121,17 +121,17 @@ func main() {
 	))
 
 	log.Printf("archive session %d archive id %d",
-		archive.ControlSessionID(), archive.ArchiveID())
+		session.ControlSessionID(), session.ArchiveID())
 
 	for {
 		transport.DoWork()
-		archive.Poll()
+		session.Poll()
 	}
 }
 ```
 
 Blocking `Connect` and recording APIs drive `DoWork` during awaits; otherwise pump
-`transport.DoWork()` then `archive.Poll()` (`Poll` never calls `DoWork`). Configure a
+`transport.DoWork()` then `session.Poll()` (`Poll` never calls `DoWork`). Configure a
 recording signal handler or signals drop when control events are polled.
 
 ## Examples

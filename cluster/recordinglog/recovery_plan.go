@@ -120,7 +120,8 @@ func NewRecoveryPlanConfig(serviceCount int) RecoveryPlanConfig {
 
 // ArchiveLister looks up recording extents.
 //
-// Production adapters call archive/client.ListRecording; unit tests use map-backed fakes.
+// Production adapters use archive.NewLister, which wraps archive.Client.ListRecording;
+// unit tests use map-backed fakes.
 type ArchiveLister interface {
 	ListRecording(recordingID int64) (LogRecordingExtents, error)
 }
@@ -202,11 +203,11 @@ func termRefFromEntry(e Entry) TermRef {
 //
 // cfg.ServiceCount must be non-negative; ErrInvalidServiceCount otherwise.
 //
-// archive must be non-nil when the plan needs a ListRecording lookup: empty
+// The ArchiveLister argument must be non-nil when the plan needs a ListRecording lookup: empty
 // log with ReplicatedRecordingID set, or when recovery selects a term entry.
 //
-// archive.ListRecording errors propagate; ErrUnknownRecordingID when the
-// recording id is absent from archive. selectRecoveryAnchor may return
+// ArchiveLister.ListRecording errors propagate; ErrUnknownRecordingID when the
+// recording id is absent from the lister. selectRecoveryAnchor may return
 // *MissingServiceSnapshotError (errors.Is ErrSnapshotMissingForService) or
 // *SnapshotServiceIDOutOfRangeError (errors.Is ErrSnapshotServiceIDOutOfRange).
 func (l *Log) PlanRecovery(

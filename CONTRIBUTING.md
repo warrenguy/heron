@@ -19,7 +19,7 @@ may use them directly.
 | Cluster client | `cluster/client` | `ClusterContext`, `AsyncConnect`, `AeronCluster`, egress handlers |
 | Cluster codecs | `cluster/codecs` | SBE flyweights in `clusterwire/`; see **SBE codecs** below |
 | Cluster election | `cluster/election` | SBE flyweights in `nodewire/`; see **SBE codecs** below |
-| Archive codecs / client | `archive/codecs`, `archive/client` | SBE flyweights in `archivewire/`; `ArchiveContext`, `AsyncConnect`, `ArchiveProxy` - see [capabilities](README.md#capabilities) |
+| Archive codecs / client | `archive/codecs`, `archive` | SBE flyweights in `archivewire/`; `Context`, `AsyncConnect`, `Proxy`, `Client` - see [capabilities](README.md#capabilities) |
 | Transport client | `aeron` | `Connect`, `Client`, `Publication`, `Subscription`, `ExclusivePublication` |
 | Transport internals | `aeron/{conductor,cnc,logbuffer}` | Conductor, CnC, logbuffer |
 

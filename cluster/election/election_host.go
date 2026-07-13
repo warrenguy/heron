@@ -9,7 +9,7 @@ import (
 type RecordingSignal = archivewire.RecordingSignal
 
 // LogReplay is a stub duty-cycle helper for leader/follower replay paths.
-// Replace with archive/client-backed implementation when agent wiring lands.
+// Replace with archive-backed implementation when agent wiring lands.
 type LogReplay interface {
 	DoWork(nowNs int64) int
 	IsDone() bool
