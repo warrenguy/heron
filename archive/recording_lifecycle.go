@@ -20,15 +20,15 @@ type archiveControlOps struct {
 	controlSessionID int64
 }
 
-func (archive *Client) sessionControlOps(pollFn func() int) archiveControlOps {
+func (client *Client) sessionControlOps(pollFn func() int) archiveControlOps {
 	return archiveControlOps{
-		aeronClient:      archive.aeronClient,
-		ctx:              archive.ctx,
-		proxy:            archive.proxy,
+		aeronClient:      client.aeronClient,
+		ctx:              client.ctx,
+		proxy:            client.proxy,
 		poll:             pollFn,
-		responsePoller:   archive.controlPoller,
-		descriptorPoller: archive.descriptorPoller,
-		controlSessionID: archive.controlSessionID,
+		responsePoller:   client.controlPoller,
+		descriptorPoller: client.descriptorPoller,
+		controlSessionID: client.controlSessionID,
 	}
 }
 

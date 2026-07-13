@@ -101,7 +101,7 @@ func awaitConnect(ctx context.Context, connect *AsyncConnect) (*ConnectResult, e
 }
 
 func newClient(result *ConnectResult) *Client {
-	archive := &Client{
+	client := &Client{
 		controlSessionID:    result.ControlSessionID,
 		archiveID:           result.ArchiveID,
 		proxy:               result.Proxy,
@@ -114,29 +114,29 @@ func newClient(result *ConnectResult) *Client {
 		ownsAeronClient:     result.OwnsAeronClient,
 		ctx:                 result.Context,
 	}
-	if archive.controlPoller != nil {
-		archive.controlPoller.ResetCapture()
+	if client.controlPoller != nil {
+		client.controlPoller.ResetCapture()
 	}
-	return archive
+	return client
 }
 
 // ControlSessionID returns the archive control session id assigned at connect.
-func (archive *Client) ControlSessionID() int64 {
-	return archive.controlSessionID
+func (client *Client) ControlSessionID() int64 {
+	return client.controlSessionID
 }
 
 // ArchiveID returns the archive id reported at connect.
-func (archive *Client) ArchiveID() int64 {
-	return archive.archiveID
+func (client *Client) ArchiveID() int64 {
+	return client.archiveID
 }
 
 // Context returns the normalized archive context stored at connect.
 // Nil receiver returns a zero Context.
-func (archive *Client) Context() Context {
-	if archive == nil {
+func (client *Client) Context() Context {
+	if client == nil {
 		return Context{}
 	}
-	return archive.ctx
+	return client.ctx
 }
 
 // Close sends a best-effort CloseSessionRequest, then releases the control publication
@@ -144,72 +144,72 @@ func (archive *Client) Context() Context {
 // too; a user-supplied client is left open.
 //
 // Close is idempotent: after the first call it releases nothing further and returns nil.
-func (archive *Client) Close() error {
-	if archive.closed {
+func (client *Client) Close() error {
+	if client.closed {
 		return nil
 	}
-	archive.closed = true
-	if archive.proxy != nil {
-		_, _ = archive.proxy.TryCloseSession(archive.controlSessionID)
-		_ = archive.proxy.Close()
+	client.closed = true
+	if client.proxy != nil {
+		_, _ = client.proxy.TryCloseSession(client.controlSessionID)
+		_ = client.proxy.Close()
 	}
-	if archive.controlSubscription != nil {
-		_ = archive.controlSubscription.Close()
-		archive.controlSubscription = nil
+	if client.controlSubscription != nil {
+		_ = client.controlSubscription.Close()
+		client.controlSubscription = nil
 	}
-	if archive.ownsAeronClient && archive.aeronClient != nil {
-		_ = archive.aeronClient.Close()
-		archive.aeronClient = nil
+	if client.ownsAeronClient && client.aeronClient != nil {
+		_ = client.aeronClient.Close()
+		client.aeronClient = nil
 	}
 	return nil
 }
 
 // IsClosed reports whether Close has been invoked.
-func (archive *Client) IsClosed() bool {
-	if archive == nil {
+func (client *Client) IsClosed() bool {
+	if client == nil {
 		return true
 	}
-	return archive.closed
+	return client.closed
 }
 
 // Poll performs one demux poll of the control-response subscription, dispatching control
 // responses and recording descriptors to the session pollers. Recording signals are
 // dropped until a signal handler is configured. It never calls DoWork.
-func (archive *Client) Poll() int {
+func (client *Client) Poll() int {
 	return PollControlEvents(
-		archive.controlSubscription,
+		client.controlSubscription,
 		DefaultControlResponseFragmentLimit,
-		archive.controlAssembler,
-		archive.sessionPollTargets(archive.signalHandler),
+		client.controlAssembler,
+		client.sessionPollTargets(client.signalHandler),
 	)
 }
 
-func (archive *Client) listRecordingPollTargets() ControlPollTargets {
+func (client *Client) listRecordingPollTargets() ControlPollTargets {
 	return ControlPollTargets{
-		SignalHandler:    archive.signalHandler,
-		ControlSessionID: archive.controlSessionID,
-		DescriptorPoller: archive.descriptorPoller,
+		SignalHandler:    client.signalHandler,
+		ControlSessionID: client.controlSessionID,
+		DescriptorPoller: client.descriptorPoller,
 	}
 }
 
-func (archive *Client) pollListRecording() int {
+func (client *Client) pollListRecording() int {
 	return PollControlEvents(
-		archive.controlSubscription,
+		client.controlSubscription,
 		DefaultControlResponseFragmentLimit,
-		archive.controlAssembler,
-		archive.listRecordingPollTargets(),
+		client.controlAssembler,
+		client.listRecordingPollTargets(),
 	)
 }
 
-func (archive *Client) pollStopRecordingAwaitSignal(
+func (client *Client) pollStopRecordingAwaitSignal(
 	tracker *StopSignalTracker,
 ) func() int {
-	targets := archive.sessionPollTargets(tracker)
+	targets := client.sessionPollTargets(tracker)
 	return func() int {
 		return PollControlEvents(
-			archive.controlSubscription,
+			client.controlSubscription,
 			DefaultControlResponseFragmentLimit,
-			archive.controlAssembler,
+			client.controlAssembler,
 			targets,
 		)
 	}
@@ -218,8 +218,8 @@ func (archive *Client) pollStopRecordingAwaitSignal(
 // SetRecordingSignalHandler overrides Context.RecordingSignalHandler for recording
 // signals on Poll and during blocking control awaits that use this handler
 // (StartRecording, StopRecording, StartReplay, StopReplay, ListRecording).
-func (archive *Client) SetRecordingSignalHandler(handler RecordingSignalHandler) {
-	archive.signalHandler = handler
+func (client *Client) SetRecordingSignalHandler(handler RecordingSignalHandler) {
+	client.signalHandler = handler
 }
 
 // StartRecording offers a StartRecordingRequest and blocks until the archive replies
@@ -228,13 +228,13 @@ func (archive *Client) SetRecordingSignalHandler(handler RecordingSignalHandler)
 // for the assigned recording id.
 //
 // Returns ctx.Err() when the context is done before a response is received.
-func (archive *Client) StartRecording(
+func (client *Client) StartRecording(
 	ctx context.Context,
 	streamID int32,
 	sourceLocation archivewire.SourceLocation,
 	channel []byte,
 ) (int64, error) {
-	return archive.sessionControlOps(archive.Poll).startRecording(
+	return client.sessionControlOps(client.Poll).startRecording(
 		ctx,
 		streamID,
 		sourceLocation,
@@ -246,12 +246,12 @@ func (archive *Client) StartRecording(
 // a matching OK ControlResponse.
 //
 // Returns ctx.Err() when the context is done before a response is received.
-func (archive *Client) StopRecording(
+func (client *Client) StopRecording(
 	ctx context.Context,
 	streamID int32,
 	channel []byte,
 ) error {
-	return archive.sessionControlOps(archive.Poll).stopRecording(ctx, streamID, channel)
+	return client.sessionControlOps(client.Poll).stopRecording(ctx, streamID, channel)
 }
 
 // StopRecordingAwaitSignal offers a StopRecordingRequest and blocks until the archive
@@ -262,19 +262,19 @@ func (archive *Client) StopRecording(
 // every proof check.
 //
 // Returns ctx.Err() when the context is done before proof is received.
-func (archive *Client) StopRecordingAwaitSignal(
+func (client *Client) StopRecordingAwaitSignal(
 	ctx context.Context,
 	streamID int32,
 	channel []byte,
 	tracker *StopSignalTracker,
 ) error {
-	return archive.sessionControlOps(
-		archive.pollStopRecordingAwaitSignal(tracker),
+	return client.sessionControlOps(
+		client.pollStopRecordingAwaitSignal(tracker),
 	).stopRecordingAwaitSignal(
 		ctx,
 		streamID,
 		channel,
-		archive.sessionPollTargets(tracker),
+		client.sessionPollTargets(tracker),
 		tracker,
 	)
 }
@@ -283,7 +283,7 @@ func (archive *Client) StopRecordingAwaitSignal(
 // matching ControlResponse, returning the assigned replay session id.
 //
 // Returns ctx.Err() when the context is done before a response is received.
-func (archive *Client) StartReplay(
+func (client *Client) StartReplay(
 	ctx context.Context,
 	recordingID int64,
 	position int64,
@@ -291,7 +291,7 @@ func (archive *Client) StartReplay(
 	replayStreamID int32,
 	replayChannel []byte,
 ) (int64, error) {
-	return archive.sessionControlOps(archive.Poll).startReplay(
+	return client.sessionControlOps(client.Poll).startReplay(
 		ctx,
 		recordingID,
 		position,
@@ -305,28 +305,28 @@ func (archive *Client) StartReplay(
 // matching OK ControlResponse.
 //
 // Returns ctx.Err() when the context is done before a response is received.
-func (archive *Client) StopReplay(ctx context.Context, replaySessionID int64) error {
-	return archive.sessionControlOps(archive.Poll).stopReplay(ctx, replaySessionID)
+func (client *Client) StopReplay(ctx context.Context, replaySessionID int64) error {
+	return client.sessionControlOps(client.Poll).stopReplay(ctx, replaySessionID)
 }
 
 // ListRecording lists a single recording by id, returning its descriptor extent fields
 // with var-ascii bytes cloned at latch time for retention.
 //
 // Returns ctx.Err() when the context is done before a response is received.
-func (archive *Client) ListRecording(
+func (client *Client) ListRecording(
 	ctx context.Context,
 	recordingID int64,
 ) (codecs.RecordingDescriptorFields, error) {
-	return archive.sessionControlOps(archive.pollListRecording).listRecording(ctx, recordingID)
+	return client.sessionControlOps(client.pollListRecording).listRecording(ctx, recordingID)
 }
 
-func (archive *Client) sessionPollTargets(
+func (client *Client) sessionPollTargets(
 	handler RecordingSignalHandler,
 ) ControlPollTargets {
 	return ControlPollTargets{
 		SignalHandler:    handler,
-		ControlSessionID: archive.controlSessionID,
-		ResponsePoller:   archive.controlPoller,
-		DescriptorPoller: archive.descriptorPoller,
+		ControlSessionID: client.controlSessionID,
+		ResponsePoller:   client.controlPoller,
+		DescriptorPoller: client.descriptorPoller,
 	}
 }

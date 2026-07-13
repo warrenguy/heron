@@ -664,20 +664,20 @@ func TestControlOfferUntilPositive_contextDeadline(t *testing.T) {
 }
 
 func TestClient_Context_nilReceiver(t *testing.T) {
-	var archive *Client
-	require.Equal(t, Context{}, archive.Context())
+	var client *Client
+	require.Equal(t, Context{}, client.Context())
 }
 
 func TestClient_Context_returnsSessionCtx(t *testing.T) {
 	want := Context{ControlOfferRetryTimeout: 3 * time.Second}.Normalize()
-	archive := newClient(&ConnectResult{Context: want})
-	require.Equal(t, want, archive.Context())
+	client := newClient(&ConnectResult{Context: want})
+	require.Equal(t, want, client.Context())
 }
 
 func TestClient_ControlOfferUntilPositive_nilSession(t *testing.T) {
-	var archive *Client
+	var client *Client
 	var offerCalls int
-	pos, err := archive.ControlOfferUntilPositive(
+	pos, err := client.ControlOfferUntilPositive(
 		t.Context(),
 		ControlOfferConfig{},
 		func() int64 {

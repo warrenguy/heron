@@ -19,12 +19,12 @@ func TestClientLifecycle_contextDone(t *testing.T) {
 
 	ops := []struct {
 		name string
-		run  func(archive *Client, ctx context.Context) error
+		run  func(client *Client, ctx context.Context) error
 	}{
 		{
 			name: "startRecording",
-			run: func(archive *Client, ctx context.Context) error {
-				_, err := archive.StartRecording(
+			run: func(client *Client, ctx context.Context) error {
+				_, err := client.StartRecording(
 					ctx,
 					archiveProxyTestRecordingStreamID,
 					archivewire.SourceLocation_LOCAL,
@@ -35,16 +35,16 @@ func TestClientLifecycle_contextDone(t *testing.T) {
 		},
 		{
 			name: "listRecording",
-			run: func(archive *Client, ctx context.Context) error {
-				_, err := archive.ListRecording(ctx, lifecycleRecordingID)
+			run: func(client *Client, ctx context.Context) error {
+				_, err := client.ListRecording(ctx, lifecycleRecordingID)
 				return err
 			},
 		},
 		{
 			name: "stopRecordingAwaitSignal",
-			run: func(archive *Client, ctx context.Context) error {
+			run: func(client *Client, ctx context.Context) error {
 				tracker := NewStopSignalTracker(controlResponseTestControlSessionID, -1)
-				return archive.StopRecordingAwaitSignal(
+				return client.StopRecordingAwaitSignal(
 					ctx,
 					archiveProxyTestRecordingStreamID,
 					[]byte(lifecycleRecordingChannel),
@@ -87,9 +87,9 @@ func TestClientLifecycle_contextDone(t *testing.T) {
 				t.Parallel()
 
 				h := newLifecycleHarness(t)
-				archive := h.newClient()
+				client := h.newClient()
 
-				err := op.run(archive, mode.buildCtx(t))
+				err := op.run(client, mode.buildCtx(t))
 				require.ErrorIs(t, err, mode.wantErr)
 			})
 		}
@@ -121,10 +121,10 @@ func TestClientStartRecording_contextCanceledMidLoop(t *testing.T) {
 		threshold:              2,
 		cancel:                 cancel,
 	}
-	archive := h.newClient()
-	archive.proxy = NewProxy(pub, h.ctx)
+	client := h.newClient()
+	client.proxy = NewProxy(pub, h.ctx)
 
-	_, err := archive.StartRecording(
+	_, err := client.StartRecording(
 		cancelCtx,
 		archiveProxyTestRecordingStreamID,
 		archivewire.SourceLocation_LOCAL,
@@ -136,12 +136,12 @@ func TestClientStartRecording_contextCanceledMidLoop(t *testing.T) {
 
 func TestNewLister_contextCanceled(t *testing.T) {
 	h := newLifecycleHarness(t)
-	archive := h.newClient()
+	client := h.newClient()
 
 	cancelCtx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	lister := NewLister(cancelCtx, archive)
+	lister := NewLister(cancelCtx, client)
 	got, err := lister.ListRecording(lifecycleRecordingID)
 	require.Error(t, err)
 	require.Equal(t, recordinglog.LogRecordingExtents{}, got)
@@ -150,14 +150,14 @@ func TestNewLister_contextCanceled(t *testing.T) {
 
 func TestClientListRecording_contextDeadlineSooner(t *testing.T) {
 	h := newLifecycleHarness(t)
-	archive := h.newClient()
+	client := h.newClient()
 	h.pub.offerResult = aeron.BackPressured
 
 	deadlineCtx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
-	_, err := archive.ListRecording(deadlineCtx, lifecycleRecordingID)
+	_, err := client.ListRecording(deadlineCtx, lifecycleRecordingID)
 	elapsed := time.Since(start)
 
 	require.ErrorIs(t, err, context.DeadlineExceeded)

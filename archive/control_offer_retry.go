@@ -131,18 +131,18 @@ func controlOfferUntilPositive(
 //	pos, err := archive.ControlOfferUntilPositive(ctx, ControlOfferConfig{
 //	    PollFn: archive.Poll, // operation-specific
 //	}, offerFn)
-func (archive *Client) ControlOfferUntilPositive(
+func (client *Client) ControlOfferUntilPositive(
 	ctx context.Context,
 	cfg ControlOfferConfig,
 	offerFn func() int64,
 ) (int64, error) {
-	if archive == nil {
+	if client == nil {
 		return 0, errNilSession
 	}
 	return controlOfferUntilPositive(
 		ctx,
-		archive.aeronClient,
-		archive.ctx,
+		client.aeronClient,
+		client.ctx,
 		cfg,
 		offerFn,
 	)

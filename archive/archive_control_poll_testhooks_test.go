@@ -81,7 +81,7 @@ func TestPollControlEvents_controlResponseToResponsePoller(t *testing.T) {
 // TestPollControlEvents_ZeroAllocs gates the steady-state demux wrapper on the
 // real poll path: after the delegate is wired, each poll stores targets by value and
 // polls the subscription without allocating. Fragment dispatch is gated by
-// TestHandleArchiveControlFragment_DispatchSTART_ZeroAllocs.
+// TestHandleControlFragment_DispatchSTART_ZeroAllocs.
 func TestPollControlEvents_ZeroAllocs(t *testing.T) {
 	sub, _ := setupControlResponsePollFixtures(t)
 	poller := newControlResponsePollerForTest(sub)

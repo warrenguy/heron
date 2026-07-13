@@ -202,7 +202,7 @@ func TestNewLister_delegatesToArchiveListRecording(t *testing.T) {
 	require.NotErrorIs(t, err, recordinglog.ErrUnknownRecordingID)
 }
 
-func TestNewLister_nilArchivePanics(t *testing.T) {
+func TestNewLister_nilClientPanics(t *testing.T) {
 	t.Parallel()
 
 	require.Panics(t, func() {

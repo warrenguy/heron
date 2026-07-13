@@ -50,17 +50,17 @@ func (a archiveLister) ListRecording(recordingID int64) (recordinglog.LogRecordi
 
 // NewLister wraps Client.ListRecording for recordinglog.PlanRecovery.
 //
-// archive must be non-nil. ctx bounds every subsequent ListRecording call made through
+// client must be non-nil. ctx bounds every subsequent ListRecording call made through
 // the returned lister; the closure retains ctx beyond this constructor call.
 func NewLister(
 	ctx context.Context,
-	archive *Client,
+	client *Client,
 ) recordinglog.ArchiveLister {
-	if archive == nil {
-		panic("archive: NewLister: archive must be non-nil")
+	if client == nil {
+		panic("archive: NewLister: client must be non-nil")
 	}
 	return archiveLister{listFn: func(recordingID int64) (codecs.RecordingDescriptorFields, error) {
-		return archive.ListRecording(ctx, recordingID)
+		return client.ListRecording(ctx, recordingID)
 	}}
 }
 

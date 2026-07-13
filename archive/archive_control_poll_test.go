@@ -46,7 +46,7 @@ func recordingSignalWire(t *testing.T, signal archivewire.RecordingSignal) []byt
 	})
 }
 
-func invokeHandleArchiveControlFragment(
+func invokeHandleControlFragment(
 	t *testing.T,
 	targets ControlPollTargets,
 	wire []byte,
@@ -55,7 +55,7 @@ func invokeHandleArchiveControlFragment(
 	handleControlFragment(targets, atomicbuffer.Wrap(wire), 0, len(wire), &aeron.Header{})
 }
 
-func TestHandleArchiveControlFragment_signalDispatch(t *testing.T) {
+func TestHandleControlFragment_signalDispatch(t *testing.T) {
 	cases := []struct {
 		name   string
 		signal archivewire.RecordingSignal
@@ -68,7 +68,7 @@ func TestHandleArchiveControlFragment_signalDispatch(t *testing.T) {
 			var captured capturedRecordingSignal
 			targets := ControlPollTargets{SignalHandler: recordingSignalCapture(&captured)}
 
-			invokeHandleArchiveControlFragment(t, targets, recordingSignalWire(t, tc.signal))
+			invokeHandleControlFragment(t, targets, recordingSignalWire(t, tc.signal))
 
 			require.Equal(t, 1, captured.calls)
 			require.Equal(t, controlResponseTestControlSessionID, captured.controlSessionID)
@@ -80,7 +80,7 @@ func TestHandleArchiveControlFragment_signalDispatch(t *testing.T) {
 	}
 }
 
-func TestHandleArchiveControlFragment_signalSessionFilter(t *testing.T) {
+func TestHandleControlFragment_signalSessionFilter(t *testing.T) {
 	var captured capturedRecordingSignal
 	targets := ControlPollTargets{
 		SignalHandler:    recordingSignalCapture(&captured),
@@ -88,12 +88,12 @@ func TestHandleArchiveControlFragment_signalSessionFilter(t *testing.T) {
 	}
 
 	wire := recordingSignalWire(t, archivewire.RecordingSignal_START)
-	invokeHandleArchiveControlFragment(t, targets, wire)
+	invokeHandleControlFragment(t, targets, wire)
 
 	require.Zero(t, captured.calls)
 }
 
-func TestHandleArchiveControlFragment_signalRoutesToHandlerNotPoller(t *testing.T) {
+func TestHandleControlFragment_signalRoutesToHandlerNotPoller(t *testing.T) {
 	var captured capturedRecordingSignal
 	poller := NewControlResponsePoller(nil, 1)
 	targets := ControlPollTargets{
@@ -102,13 +102,13 @@ func TestHandleArchiveControlFragment_signalRoutesToHandlerNotPoller(t *testing.
 	}
 
 	wire := recordingSignalWire(t, archivewire.RecordingSignal_START)
-	invokeHandleArchiveControlFragment(t, targets, wire)
+	invokeHandleControlFragment(t, targets, wire)
 
 	require.Equal(t, 1, captured.calls)
 	require.False(t, poller.IsPollComplete())
 }
 
-func TestHandleArchiveControlFragment_controlResponseToPoller(t *testing.T) {
+func TestHandleControlFragment_controlResponseToPoller(t *testing.T) {
 	var captured capturedRecordingSignal
 	poller := NewControlResponsePoller(nil, 1)
 	targets := ControlPollTargets{
@@ -123,7 +123,7 @@ func TestHandleArchiveControlFragment_controlResponseToPoller(t *testing.T) {
 		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
 	})
-	invokeHandleArchiveControlFragment(t, targets, wire)
+	invokeHandleControlFragment(t, targets, wire)
 
 	require.Zero(t, captured.calls)
 	require.True(t, poller.IsPollComplete())
@@ -135,17 +135,17 @@ func TestHandleArchiveControlFragment_controlResponseToPoller(t *testing.T) {
 	require.Equal(t, int64(7700), resp.RelevantID)
 }
 
-func TestHandleArchiveControlFragment_challengeToPoller(t *testing.T) {
+func TestHandleControlFragment_challengeToPoller(t *testing.T) {
 	poller := NewControlResponsePoller(nil, 1)
 	targets := ControlPollTargets{ResponsePoller: poller}
 
 	wire := encodeChallengeWire(t, controlResponseTestControlSessionID, 404, []byte("challenge-bytes"))
-	invokeHandleArchiveControlFragment(t, targets, wire)
+	invokeHandleControlFragment(t, targets, wire)
 
 	require.True(t, poller.IsChallenged())
 }
 
-func TestHandleArchiveControlFragment_dropsUnroutable(t *testing.T) {
+func TestHandleControlFragment_dropsUnroutable(t *testing.T) {
 	cases := []struct {
 		name    string
 		targets ControlPollTargets
@@ -187,7 +187,7 @@ func TestHandleArchiveControlFragment_dropsUnroutable(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			require.NotPanics(t, func() {
-				invokeHandleArchiveControlFragment(t, tc.targets, tc.wire(t))
+				invokeHandleControlFragment(t, tc.targets, tc.wire(t))
 			})
 			if tc.targets.ResponsePoller != nil {
 				require.False(t, tc.targets.ResponsePoller.IsPollComplete())
@@ -201,7 +201,7 @@ func TestPollControlEvents_listRecording_OKAndDescriptor(t *testing.T) {
 	poller.ResetAwait(recordingDescriptorTestCorrelationID)
 	targets := ControlPollTargets{DescriptorPoller: poller}
 
-	invokeHandleArchiveControlFragment(
+	invokeHandleControlFragment(
 		t,
 		targets,
 		recordingDescriptorControlResponseWire(
@@ -212,7 +212,7 @@ func TestPollControlEvents_listRecording_OKAndDescriptor(t *testing.T) {
 	)
 	require.False(t, poller.IsPollComplete())
 
-	invokeHandleArchiveControlFragment(
+	invokeHandleControlFragment(
 		t,
 		targets,
 		encodeRecordingDescriptorWire(
@@ -231,7 +231,7 @@ func TestPollControlEvents_descriptorMode_ControlResponseToDescriptorPoller(t *t
 	descriptorPoller.ResetAwait(recordingDescriptorTestCorrelationID)
 	targets := ControlPollTargets{DescriptorPoller: descriptorPoller}
 
-	invokeHandleArchiveControlFragment(
+	invokeHandleControlFragment(
 		t,
 		targets,
 		recordingDescriptorControlResponseWire(
@@ -246,7 +246,7 @@ func TestPollControlEvents_descriptorMode_ControlResponseToDescriptorPoller(t *t
 	require.Equal(t, recordingDescriptorTestCorrelationID, resp.CorrelationID)
 }
 
-func TestHandleArchiveControlFragment_signalTruncatedBodyDropped(t *testing.T) {
+func TestHandleControlFragment_signalTruncatedBodyDropped(t *testing.T) {
 	var captured capturedRecordingSignal
 	targets := ControlPollTargets{SignalHandler: recordingSignalCapture(&captured)}
 
@@ -255,12 +255,12 @@ func TestHandleArchiveControlFragment_signalTruncatedBodyDropped(t *testing.T) {
 	fullSignal := recordingSignalWire(t, archivewire.RecordingSignal_START)
 	headerOnly := fullSignal[:codecs.MessageHeaderEncodedLen()]
 	require.NotPanics(t, func() {
-		invokeHandleArchiveControlFragment(t, targets, headerOnly)
+		invokeHandleControlFragment(t, targets, headerOnly)
 	})
 	require.Zero(t, captured.calls)
 }
 
-func TestHandleArchiveControlFragment_foreignSchemaDropped(t *testing.T) {
+func TestHandleControlFragment_foreignSchemaDropped(t *testing.T) {
 	const foreignSchemaID uint16 = 0xFFFF
 	cases := []struct {
 		name string
@@ -291,7 +291,7 @@ func TestHandleArchiveControlFragment_foreignSchemaDropped(t *testing.T) {
 				ResponsePoller: poller,
 			}
 
-			invokeHandleArchiveControlFragment(t, targets, tc.wire(t))
+			invokeHandleControlFragment(t, targets, tc.wire(t))
 
 			require.Zero(t, captured.calls)
 			require.False(t, poller.IsPollComplete())
@@ -299,7 +299,7 @@ func TestHandleArchiveControlFragment_foreignSchemaDropped(t *testing.T) {
 	}
 }
 
-func TestHandleArchiveControlFragment_DispatchSTART_ZeroAllocs(t *testing.T) {
+func TestHandleControlFragment_DispatchSTART_ZeroAllocs(t *testing.T) {
 	wire := recordingSignalWire(t, archivewire.RecordingSignal_START)
 	buffer := atomicbuffer.Wrap(wire)
 	header := &aeron.Header{}

@@ -140,7 +140,7 @@ func TestAwaitControlResponse_timeout(t *testing.T) {
 	)
 }
 
-func TestRunArchiveControlAwaitLoop_nilAeronClient(t *testing.T) {
+func TestRunControlAwaitLoop_nilAeronClient(t *testing.T) {
 	err := runAwaitLoopNeverMatching(
 		t.Context(),
 		nil,
@@ -152,7 +152,7 @@ func TestRunArchiveControlAwaitLoop_nilAeronClient(t *testing.T) {
 	require.ErrorIs(t, err, errNilControlAeronClient)
 }
 
-func TestRunArchiveControlAwaitLoop_deadlineBoundaryPollCount(t *testing.T) {
+func TestRunControlAwaitLoop_deadlineBoundaryPollCount(t *testing.T) {
 	harness := aeron.NewAsyncConnectTestHarness(t)
 	const startNs int64 = 5_000_000_000
 	var pollCalls int
@@ -177,7 +177,7 @@ func TestRunArchiveControlAwaitLoop_deadlineBoundaryPollCount(t *testing.T) {
 	require.Zero(t, pollCalls, "clock() == deadlineNs must not enter poll loop")
 }
 
-func TestRunArchiveControlAwaitLoop_contextCanceled(t *testing.T) {
+func TestRunControlAwaitLoop_contextCanceled(t *testing.T) {
 	t.Run("preCanceled", func(t *testing.T) {
 		harness := aeron.NewAsyncConnectTestHarness(t)
 		cancelCtx, cancel := context.WithCancel(t.Context())
@@ -230,7 +230,7 @@ func TestRunArchiveControlAwaitLoop_contextCanceled(t *testing.T) {
 	})
 }
 
-func TestRunArchiveControlAwaitLoop_contextDeadline(t *testing.T) {
+func TestRunControlAwaitLoop_contextDeadline(t *testing.T) {
 	t.Run("preExpired", func(t *testing.T) {
 		harness := aeron.NewAsyncConnectTestHarness(t)
 		deadlineCtx, cancel := context.WithDeadline(
