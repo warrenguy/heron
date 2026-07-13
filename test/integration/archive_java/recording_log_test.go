@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	clientpkg "github.com/warrenguy/heron/archive/client"
+	"github.com/warrenguy/heron/archive/client"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
@@ -22,10 +22,10 @@ import (
 )
 
 func TestArchiveRecordingLog(t *testing.T) {
-	md, client, hadClientError := requireArchiveComposeIPC(t)
-	archive := connectArchive(t, md.Dir, client)
+	md, aeronClient, hadClientError := requireArchiveComposeIPC(t)
+	archive := connectArchive(t, md.Dir, aeronClient)
 
-	desc := recordArchiveSmoke(t, client, hadClientError, archive)
+	desc := recordArchiveSmoke(t, aeronClient, hadClientError, archive)
 	recordingID := desc.RecordingID
 	expectedPayloads := archivejava.Payloads(archivejava.MessageCount, archivejava.PayloadSize)
 	stopPosition := desc.StopPosition
@@ -45,9 +45,11 @@ func TestArchiveRecordingLog(t *testing.T) {
 	require.NoError(t, err)
 	err = recLog.CommitLogPosition(1, stopPosition)
 	require.NoError(t, err)
+
 	// Force is the recordinglog Sync API; FileSyncFull fsyncs before cross-handle read.
 	err = recLog.Force(recordinglog.FileSyncFull)
 	require.NoError(t, err)
+
 	// Release write handle so Reload reads bytes from disk, not an open fd cache.
 	require.NoError(t, recLog.Close())
 
@@ -68,12 +70,13 @@ func TestArchiveRecordingLog(t *testing.T) {
 	reopened, err := recordinglog.Open(archivejava.ClusterDir, false)
 	require.NoError(t, err)
 	harness.CleanupClose(t, "close reopened recording log", reopened.Close)
+
 	// Cross-handle compare: on-disk bytes match decoded cache; not recovery planning.
 	require.Equal(t, reloaded, reopened.Entries())
 
 	// Recovery planning uses the crash-sim reopen handle (Open false), not Reload bytes.
 	plan, err := reopened.PlanRecovery(
-		clientpkg.NewArchiveLister(context.Background(), archive),
+		client.NewArchiveLister(context.Background(), archive),
 		recordinglog.NewRecoveryPlanConfig(0),
 	)
 	require.NoError(t, err)
@@ -86,15 +89,19 @@ func TestArchiveRecordingLog(t *testing.T) {
 		LogPosition:         term.LogPosition,
 	}
 	require.Equal(t, wantTerm, plan.Log.Term)
-	require.Equal(t, clientpkg.LogRecordingExtentsFromDescriptor(desc), plan.Log.Extent)
+	require.Equal(t, client.LogRecordingExtentsFromDescriptor(desc), plan.Log.Extent)
 	require.Equal(t, term.LeadershipTermID, plan.LastLeadershipTermID)
 	require.Equal(t, term.TermBaseLogPosition, plan.LastTermBaseLogPosition)
 	require.Equal(t, stopPosition, plan.AppendedLogPosition)
 	require.Equal(t, stopPosition, plan.CommittedLogPosition)
 
-	replaySub, err := client.AddSubscription(archivejava.ReplayStreamID, archivejava.ReplayChannel)
+	replaySub, err := aeronClient.AddSubscription(
+		archivejava.ReplayStreamID,
+		archivejava.ReplayChannel,
+	)
 	require.NoError(t, err)
 	harness.CleanupClose(t, "close replay subscription", replaySub.Close)
+
 	// Registration only: no replay image exists until StartReplay; polling
 	// IsConnected/ImageCount here deadlocks.
 
@@ -118,12 +125,12 @@ func TestArchiveRecordingLog(t *testing.T) {
 	var replayImage *aeron.Image
 	harness.PollClientUntilTransportClean(
 		t,
-		client,
+		aeronClient,
 		hadClientError,
 		harness.ConnectedPollTimeout,
 		"client transport error during replay image poll",
 		func() bool {
-			image, ok, findErr := clientpkg.FindReplayImage(replaySub, replaySessionID)
+			image, ok, findErr := client.FindReplayImage(replaySub, replaySessionID)
 			if findErr != nil {
 				t.Fatal(findErr)
 			}
@@ -145,13 +152,13 @@ func TestArchiveRecordingLog(t *testing.T) {
 	collect := appendReplayPayload(&received)
 	harness.PollClientUntilTransportClean(
 		t,
-		client,
+		aeronClient,
 		hadClientError,
 		harness.ConnectedPollTimeout,
 		"client transport error during replay fragment drain",
 		func() bool {
 			_ = archive.Poll()
-			_, done, err := clientpkg.PollReplayFragments(
+			_, done, err := client.PollReplayFragments(
 				replayImage,
 				archivejava.MessageCount,
 				replayStop,
@@ -171,6 +178,7 @@ func TestArchiveRecordingLog(t *testing.T) {
 		},
 	)
 	require.Equal(t, expectedPayloads, received)
+
 	t.Logf(
 		"replay complete: sessionId=%d joinPosition=%d imagePosition=%d fragments=%d",
 		replaySessionID,
