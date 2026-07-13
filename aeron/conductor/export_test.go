@@ -244,11 +244,11 @@ func (conductor *Conductor) RemoveSubscriptionForTest(registrationID int64) {
 }
 
 func (conductor *Conductor) PublicationCountForTest() int {
-	return withResourceRLock(conductor, conductor.publicationCount)
+	return withResourceRead(conductor, conductor.publicationCount)
 }
 
 func (conductor *Conductor) SubscriptionCountForTest() int {
-	return withResourceRLock(conductor, conductor.subscriptionCount)
+	return withResourceRead(conductor, conductor.subscriptionCount)
 }
 
 func (conductor *Conductor) ResourceWriteLockDepthForTest() int32 {

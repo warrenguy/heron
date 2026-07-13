@@ -154,13 +154,13 @@ func (conductor *Conductor) HasScheduledLinger() bool {
 }
 
 func (conductor *Conductor) snapshotPublications() []PublicationHandle {
-	return withResourceRLock(conductor, func() []PublicationHandle {
+	return withResourceRead(conductor, func() []PublicationHandle {
 		return snapshotLiveResources(conductor.publications)
 	})
 }
 
 func (conductor *Conductor) snapshotSubscriptions() []SubscriptionHandle {
-	return withResourceRLock(conductor, func() []SubscriptionHandle {
+	return withResourceRead(conductor, func() []SubscriptionHandle {
 		return snapshotLiveResources(conductor.subscriptions)
 	})
 }

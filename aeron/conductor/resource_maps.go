@@ -51,23 +51,16 @@ func insertResource[T any](resources map[int64]T, registrationID int64, resource
 	resources[registrationID] = resource
 }
 
-func withResourceMuRLock(conductor *Conductor, work func()) {
+func withResourceRead[T any](conductor *Conductor, work func() T) T {
 	conductor.resourceMu.RLock()
 	defer conductor.resourceMu.RUnlock()
-	work()
+	return work()
 }
 
-func withResourceRLock[T any](conductor *Conductor, work func() T) T {
-	var result T
-	withResourceMuRLock(conductor, func() { result = work() })
-	return result
-}
-
-func withResourceRLock2[T any](conductor *Conductor, work func() (T, bool)) (T, bool) {
-	var value T
-	var ok bool
-	withResourceMuRLock(conductor, func() { value, ok = work() })
-	return value, ok
+func withResourceLookup[T any](conductor *Conductor, work func() (T, bool)) (T, bool) {
+	conductor.resourceMu.RLock()
+	defer conductor.resourceMu.RUnlock()
+	return work()
 }
 
 // PublicationByRegID returns a publication handle under RLock.
@@ -77,7 +70,7 @@ func withResourceRLock2[T any](conductor *Conductor, work func() (T, bool)) (T, 
 func (conductor *Conductor) PublicationByRegID(
 	registrationID int64,
 ) (PublicationHandle, bool) {
-	return withResourceRLock2(conductor, func() (PublicationHandle, bool) {
+	return withResourceLookup(conductor, func() (PublicationHandle, bool) {
 		return resourceByRegID(conductor.publications, registrationID)
 	})
 }
@@ -98,7 +91,7 @@ func (conductor *Conductor) publicationByRegID(
 func (conductor *Conductor) SubscriptionByRegID(
 	registrationID int64,
 ) (SubscriptionHandle, bool) {
-	return withResourceRLock2(conductor, func() (SubscriptionHandle, bool) {
+	return withResourceLookup(conductor, func() (SubscriptionHandle, bool) {
 		return resourceByRegID(conductor.subscriptions, registrationID)
 	})
 }

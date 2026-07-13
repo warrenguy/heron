@@ -64,11 +64,11 @@ func logBuffersRegistryHook(conductor *Conductor) *LogBuffersRegistry {
 }
 
 func publicationCountHook(conductor *Conductor) int {
-	return withResourceRLock(conductor, conductor.publicationCount)
+	return withResourceRead(conductor, conductor.publicationCount)
 }
 
 func subscriptionCountHook(conductor *Conductor) int {
-	return withResourceRLock(conductor, conductor.subscriptionCount)
+	return withResourceRead(conductor, conductor.subscriptionCount)
 }
 
 func logBuffersRegistryRefCountHook(
