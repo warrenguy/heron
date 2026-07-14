@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	client "github.com/warrenguy/heron/archive"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
 )
 
@@ -26,12 +26,12 @@ func TestHarnessConstants(t *testing.T) {
 		{
 			name: "LocalControlChannel",
 			got:  archivejava.LocalControlChannel,
-			want: client.DefaultLocalControlChannel,
+			want: archive.DefaultLocalControlChannel,
 		},
 		{
 			name: "LocalControlStreamID",
 			got:  archivejava.LocalControlStreamID,
-			want: client.DefaultLocalControlStreamID,
+			want: archive.DefaultLocalControlStreamID,
 		},
 		{name: "ClusterDir", got: archivejava.ClusterDir, want: "/tmp/heron-cluster-0"},
 		{name: "RecordingLogFileName", got: archivejava.RecordingLogFileName, want: "recording.log"},

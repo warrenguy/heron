@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	client "github.com/warrenguy/heron/archive"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
@@ -23,9 +23,9 @@ import (
 
 func TestArchiveRecordingLog(t *testing.T) {
 	md, aeronClient, hadClientError := requireArchiveComposeIPC(t)
-	archive := connectArchive(t, md.Dir, aeronClient)
+	archiveClient := connectArchive(t, md.Dir, aeronClient)
 
-	desc := recordArchiveSmoke(t, aeronClient, hadClientError, archive)
+	desc := recordArchiveSmoke(t, aeronClient, hadClientError, archiveClient)
 	recordingID := desc.RecordingID
 	expectedPayloads := archivejava.Payloads(archivejava.MessageCount, archivejava.PayloadSize)
 	stopPosition := desc.StopPosition
@@ -76,7 +76,7 @@ func TestArchiveRecordingLog(t *testing.T) {
 
 	// Recovery planning uses the crash-sim reopen handle (Open false), not Reload bytes.
 	plan, err := reopened.PlanRecovery(
-		client.NewLister(context.Background(), archive),
+		archive.NewLister(context.Background(), archiveClient),
 		recordinglog.NewRecoveryPlanConfig(0),
 	)
 	require.NoError(t, err)
@@ -89,7 +89,7 @@ func TestArchiveRecordingLog(t *testing.T) {
 		LogPosition:         term.LogPosition,
 	}
 	require.Equal(t, wantTerm, plan.Log.Term)
-	require.Equal(t, client.LogRecordingExtentsFromDescriptor(desc), plan.Log.Extent)
+	require.Equal(t, archive.LogRecordingExtentsFromDescriptor(desc), plan.Log.Extent)
 	require.Equal(t, term.LeadershipTermID, plan.LastLeadershipTermID)
 	require.Equal(t, term.TermBaseLogPosition, plan.LastTermBaseLogPosition)
 	require.Equal(t, stopPosition, plan.AppendedLogPosition)
@@ -108,7 +108,7 @@ func TestArchiveRecordingLog(t *testing.T) {
 	replayStart := desc.StartPosition
 	replayStop := stopPosition
 
-	replaySessionID, err := archive.StartReplay(
+	replaySessionID, err := archiveClient.StartReplay(
 		t.Context(),
 		recordingID,
 		replayStart,
@@ -119,7 +119,7 @@ func TestArchiveRecordingLog(t *testing.T) {
 	require.NoError(t, err)
 	require.Positive(t, replaySessionID)
 	harness.CleanupClose(t, "stop replay", func() error {
-		return archive.StopReplay(context.Background(), replaySessionID)
+		return archiveClient.StopReplay(context.Background(), replaySessionID)
 	})
 
 	var replayImage *aeron.Image
@@ -130,7 +130,7 @@ func TestArchiveRecordingLog(t *testing.T) {
 		harness.ConnectedPollTimeout,
 		"client transport error during replay image poll",
 		func() bool {
-			image, ok, findErr := client.FindReplayImage(replaySub, replaySessionID)
+			image, ok, findErr := archive.FindReplayImage(replaySub, replaySessionID)
 			if findErr != nil {
 				t.Fatal(findErr)
 			}
@@ -157,8 +157,8 @@ func TestArchiveRecordingLog(t *testing.T) {
 		harness.ConnectedPollTimeout,
 		"client transport error during replay fragment drain",
 		func() bool {
-			_ = archive.Poll()
-			_, done, err := client.PollReplayFragments(
+			_ = archiveClient.Poll()
+			_, done, err := archive.PollReplayFragments(
 				replayImage,
 				archivejava.MessageCount,
 				replayStop,

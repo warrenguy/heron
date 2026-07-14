@@ -6,7 +6,7 @@ package archivejava
 
 import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	client "github.com/warrenguy/heron/archive"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
@@ -19,8 +19,8 @@ const (
 	termLength64kParam   = "term-length=64k"
 	RecordChannel        = harness.IPCChannel + "?" + termLength64kParam
 	ReplayChannel        = harness.IPCChannel + "?" + termLength64kParam
-	LocalControlChannel  = client.DefaultLocalControlChannel
-	LocalControlStreamID = client.DefaultLocalControlStreamID
+	LocalControlChannel  = archive.DefaultLocalControlChannel
+	LocalControlStreamID = archive.DefaultLocalControlStreamID
 )
 
 const (

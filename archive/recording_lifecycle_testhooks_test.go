@@ -12,7 +12,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	agatomic "github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -26,7 +26,7 @@ type lifecycleHarness struct {
 	client     *aeron.Client
 	nowNs      *atomic.Int64
 	sub        *aeron.Subscription
-	termBuffer agatomic.AtomicBuffer
+	termBuffer atomicbuffer.AtomicBuffer
 	poller     *ControlResponsePoller
 	assembler  *FragmentAssembler
 	pub        *stubControlPublication

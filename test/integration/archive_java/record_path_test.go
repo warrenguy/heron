@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	client "github.com/warrenguy/heron/archive"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
@@ -43,17 +43,17 @@ func connectArchive(
 	t *testing.T,
 	dir string,
 	aeronClient *aeron.Client,
-) *client.Client {
+) *archive.Client {
 	t.Helper()
 
-	archiveCtx := client.Context{
+	archiveCtx := archive.Context{
 		AeronDir: dir,
 		Aeron:    aeronClient,
 	}.Normalize()
-	archive, err := client.Connect(context.Background(), archiveCtx)
+	archiveClient, err := archive.Connect(context.Background(), archiveCtx)
 	require.NoError(t, err)
-	harness.CleanupClose(t, "close archive", archive.Close)
-	return archive
+	harness.CleanupClose(t, "close archive", archiveClient.Close)
+	return archiveClient
 }
 
 func archiveSmokePollBudget(t *testing.T, reserve time.Duration) time.Duration {
@@ -76,7 +76,7 @@ func archiveSmokePollBudget(t *testing.T, reserve time.Duration) time.Duration {
 
 func recordingCatalogStopPending(
 	got codecs.RecordingDescriptorFields,
-	tracker *client.StopSignalTracker,
+	tracker *archive.StopSignalTracker,
 ) bool {
 	if got.StopPosition <= got.StartPosition {
 		return true
@@ -88,7 +88,7 @@ func recordArchiveSmoke(
 	t *testing.T,
 	aeronClient *aeron.Client,
 	hadClientError *atomic.Bool,
-	archive *client.Client,
+	archiveClient *archive.Client,
 ) codecs.RecordingDescriptorFields {
 	t.Helper()
 
@@ -97,12 +97,12 @@ func recordArchiveSmoke(
 
 	var recordingID int64
 	gotRecordingID := false
-	archive.SetRecordingSignalHandler(client.RecordingSignalHandlerFunc(
+	archiveClient.SetRecordingSignalHandler(archive.RecordingSignalHandlerFunc(
 		func(event codecs.RecordingSignalEventFields) {
 			if event.Signal != archivewire.RecordingSignal_START {
 				return
 			}
-			if event.ControlSessionID != archive.ControlSessionID() {
+			if event.ControlSessionID != archiveClient.ControlSessionID() {
 				return
 			}
 			recordingID = event.RecordingID
@@ -114,7 +114,7 @@ func recordArchiveSmoke(
 	require.NoError(t, err)
 	harness.CleanupClose(t, "close record publication", pub.Close)
 
-	_, err = archive.StartRecording(
+	_, err = archiveClient.StartRecording(
 		t.Context(),
 		archivejava.RecordStreamID,
 		archivewire.SourceLocation_LOCAL,
@@ -153,7 +153,7 @@ func recordArchiveSmoke(
 		harness.ConnectedPollTimeout,
 		"client transport error during recording start signal poll",
 		func() bool {
-			_ = archive.Poll()
+			_ = archiveClient.Poll()
 			return gotRecordingID
 		},
 		func() string {
@@ -162,8 +162,8 @@ func recordArchiveSmoke(
 		},
 	)
 
-	tracker := client.NewStopSignalTracker(archive.ControlSessionID(), recordingID)
-	err = archive.StopRecordingAwaitSignal(
+	tracker := archive.NewStopSignalTracker(archiveClient.ControlSessionID(), recordingID)
+	err = archiveClient.StopRecordingAwaitSignal(
 		t.Context(),
 		archivejava.RecordStreamID,
 		[]byte(archivejava.RecordChannel),
@@ -173,7 +173,7 @@ func recordArchiveSmoke(
 
 	// StopRecordingAwaitSignal may return on OK before STOP is latched; wire the
 	// tracker so a later Poll cannot drop the authoritative stop position.
-	archive.SetRecordingSignalHandler(tracker)
+	archiveClient.SetRecordingSignalHandler(tracker)
 	harness.PollClientUntilTransportClean(
 		t,
 		aeronClient,
@@ -181,7 +181,7 @@ func recordArchiveSmoke(
 		harness.ConnectedPollTimeout,
 		"client transport error during recording STOP signal poll",
 		func() bool {
-			_ = archive.Poll()
+			_ = archiveClient.Poll()
 			return tracker.Stopped() && tracker.StoppedPosition() >= wantStopPosition
 		},
 		func() string {
@@ -201,8 +201,8 @@ func recordArchiveSmoke(
 		catalogSyncTimeout,
 		"client transport error during recording descriptor poll",
 		func() bool {
-			_ = archive.Poll()
-			got, listErr := archive.ListRecording(t.Context(), recordingID)
+			_ = archiveClient.Poll()
+			got, listErr := archiveClient.ListRecording(t.Context(), recordingID)
 			require.NoError(t, listErr)
 			if recordingCatalogStopPending(got, tracker) {
 				return false
@@ -228,9 +228,9 @@ func recordArchiveSmoke(
 
 func TestArchiveRecordPath(t *testing.T) {
 	md, aeronClient, hadClientError := requireArchiveComposeIPC(t)
-	archive := connectArchive(t, md.Dir, aeronClient)
+	archiveClient := connectArchive(t, md.Dir, aeronClient)
 
-	desc := recordArchiveSmoke(t, aeronClient, hadClientError, archive)
+	desc := recordArchiveSmoke(t, aeronClient, hadClientError, archiveClient)
 
 	t.Logf(
 		"recordingId=%d startPosition=%d stopPosition=%d streamId=%d",
