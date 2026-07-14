@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/election/electiontest"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
@@ -19,12 +19,20 @@ const defaultThreeNodeMemberSpec = "" +
 	"1,localhost:9102,localhost:9103,localhost:9104,localhost:9105,localhost:9101|" +
 	"2,localhost:9202,localhost:9203,localhost:9204,localhost:9205,localhost:9201|"
 
+// DefaultSingleNodeMemberSpec is the embedded 1-node ParseMembers fixture for
+// single-node election scenarios.
+func DefaultSingleNodeMemberSpec() string { return defaultSingleNodeMemberSpec }
+
+const defaultSingleNodeMemberSpec = "" +
+	"0,localhost:9002,localhost:9003,localhost:9004,localhost:9005,localhost:9001|"
+
 // Node wraps one Election with simulated clocks and network-routed publishes.
 type Node struct {
 	id        int32
 	members   []election.Member
 	election  *election.Election
 	publisher *election.SbePublisher
+	host      *simElectionHost
 	clock     *NodeClock
 	nodeState election.CandidateTermStore
 	observer  *StateObserver
@@ -37,6 +45,9 @@ func (n *Node) Election() *election.Election { return n.election }
 
 // Publisher returns the routed publisher for this node.
 func (n *Node) Publisher() *election.SbePublisher { return n.publisher }
+
+// HostRole returns the role the election host last had set on it.
+func (n *Node) HostRole() consensus.Role { return n.host.Role() }
 
 // Tick runs one Election.DoWork cycle at nowNs.
 func (n *Node) Tick(nowNs int64) int {
@@ -81,12 +92,13 @@ func (n *Node) Close() error {
 }
 
 type nodeBuildConfig struct {
-	id           int32
-	members      []election.Member
-	electionCfg  election.ElectionConfig
-	nodeStateDir string
-	network      *Network
-	sim          *ElectionSim
+	id               int32
+	members          []election.Member
+	electionCfg      election.ElectionConfig
+	perNodeOverrides func(id int32, cfg *election.ElectionConfig)
+	nodeStateDir     string
+	network          *Network
+	sim              *ElectionSim
 }
 
 func newNode(cfg nodeBuildConfig) (*Node, error) {
@@ -117,12 +129,17 @@ func newNode(cfg nodeBuildConfig) (*Node, error) {
 
 	electionCfg := cfg.electionCfg
 	electionCfg.MemberID = cfg.id
+	if cfg.perNodeOverrides != nil {
+		cfg.perNodeOverrides(cfg.id, &electionCfg)
+	}
 
 	observer := &StateObserver{sim: cfg.sim, nodeID: cfg.id}
 
+	host := &simElectionHost{now: clock.TimeNs}
+
 	deps := election.ElectionDeps{
-		Handler:       electiontest.NoopAgentHandler{},
-		Host:          electiontest.NoopElectionHost{},
+		Handler:       simAgentHandler{},
+		Host:          host,
 		Publisher:     publisher,
 		NanoClock:     clock.TimeNs,
 		EpochClock:    clock.TimeMs,
@@ -137,6 +154,7 @@ func newNode(cfg nodeBuildConfig) (*Node, error) {
 		members:   members,
 		election:  election.NewElection(electionCfg, deps),
 		publisher: publisher,
+		host:      host,
 		clock:     clock,
 		nodeState: nodeState,
 		observer:  observer,
@@ -151,10 +169,15 @@ func openNodeState(baseDir string, memberID int32) (election.CandidateTermStore,
 	return election.OpenNodeStateFile(dir, true, recordinglog.FileSyncNone)
 }
 
-func defaultElectionConfig() election.ElectionConfig {
+// DefaultElectionConfig is the base a sim node takes when Config.ElectionConfig
+// is the zero value: the Java ElectionTest starting positions (null leadership
+// term, zero log and append positions, startup true). Scenarios seed from it so
+// the harness default and the scenarios share one authority.
+func DefaultElectionConfig() election.ElectionConfig {
 	cfg := election.ElectionTestConfig()
-	cfg.LeadershipTermID = 5
-	cfg.LogPosition = 100
-	cfg.AppendPosition = 200
+	cfg.LeadershipTermID = election.NullValue
+	cfg.LogPosition = 0
+	cfg.AppendPosition = 0
+	cfg.IsNodeStartup = true
 	return cfg
 }

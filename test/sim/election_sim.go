@@ -28,6 +28,12 @@ type Config struct {
 	// The zero value takes harness defaults, any other value is used verbatim.
 	ElectionConfig election.ElectionConfig
 
+	// PerNodeOverrides mutates a node's ElectionConfig after the MemberID is set.
+	// Nil applies no per-node change. Clearing IsNodeStartup on one member
+	// switches its canvass deadline from StartupCanvassTimeoutNs to the leader
+	// heartbeat path (TimeOfLastLeaderUpdateNs + LeaderHeartbeatTimeoutNs).
+	PerNodeOverrides func(id int32, cfg *election.ElectionConfig)
+
 	// NodeStateDir holds per-node durable state under node-<id>/.
 	// Empty defaults to tb.TempDir().
 	NodeStateDir string
@@ -58,7 +64,7 @@ func NewElectionSim(tb testing.TB, cfg Config) (*ElectionSim, error) {
 	}
 	cfg.Seed = SeedFromEnv(tb, cfg.Seed)
 	if cfg.ElectionConfig == (election.ElectionConfig{}) {
-		cfg.ElectionConfig = defaultElectionConfig()
+		cfg.ElectionConfig = DefaultElectionConfig()
 	}
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = defaultMaxSteps
@@ -87,12 +93,13 @@ func NewElectionSim(tb testing.TB, cfg Config) (*ElectionSim, error) {
 
 	for i := range parsed {
 		node, err := newNode(nodeBuildConfig{
-			id:           parsed[i].ID,
-			members:      parsed,
-			electionCfg:  cfg.ElectionConfig,
-			nodeStateDir: cfg.NodeStateDir,
-			network:      s.network,
-			sim:          s,
+			id:               parsed[i].ID,
+			members:          parsed,
+			electionCfg:      cfg.ElectionConfig,
+			perNodeOverrides: cfg.PerNodeOverrides,
+			nodeStateDir:     cfg.NodeStateDir,
+			network:          s.network,
+			sim:              s,
 		})
 		if err != nil {
 			for _, built := range s.nodes {
@@ -136,8 +143,10 @@ func (s *ElectionSim) RunSteps(n int) error {
 	return nil
 }
 
-// RunUntil loops until fn returns true, queue is empty, or MaxSteps is hit.
-// An empty queue before the next step is a normal stop and returns nil.
+// RunUntil loops until fn returns true, the scheduler queue is empty, or
+// MaxSteps is hit. An empty queue before the next step is a normal stop and
+// returns nil. A predicate that always returns false drains pending events
+// without asserting a target state.
 func (s *ElectionSim) RunUntil(fn func(*ElectionSim) bool) error {
 	for {
 		if fn(s) {
@@ -169,6 +178,10 @@ func (s *ElectionSim) AdvanceTo(deadlineNs int64) error {
 		}
 	}
 }
+
+// Now returns the current master simulated time in nanoseconds. Scenarios use
+// it to derive AdvanceTo deadlines relative to the point a state was reached.
+func (s *ElectionSim) Now() int64 { return s.scheduler.Now() }
 
 // Timeline returns a copy of recorded timeline entries.
 func (s *ElectionSim) Timeline() []TimelineEntry {
