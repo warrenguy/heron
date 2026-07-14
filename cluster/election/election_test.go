@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 )
@@ -197,4 +198,150 @@ func TestNewElection_validationPanics(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestElection_shouldElectSingleNodeClusterLeader(t *testing.T) {
+	t.Parallel()
+
+	fx := newElectionFixture(t, withSingleNode(), withPositions(0, 0, 0))
+	fx.driveUntilState(election.ElectionStateLeaderReady, 10)
+
+	require.Equal(t, consensus.RoleLeader, fx.host.role)
+	require.Len(t, fx.host.addLogPublicationCalls, 1)
+	require.Equal(t, fixtureLogSessionID, fx.election.LogSessionID())
+
+	require.Len(t, fx.agent.joinLeaderCalls, 1)
+	require.Equal(t, int64(1), fx.agent.joinLeaderCalls[0].leadershipTermID)
+	require.Equal(t, fixtureLogSessionID, fx.agent.joinLeaderCalls[0].logSessionID)
+
+	fx.requireLocalLeader()
+	require.Equal(t, int64(1), fx.election.LeadershipTermID())
+}
+
+func TestElection_shouldElectAppointedLeader(t *testing.T) {
+	t.Parallel()
+
+	fx := newElectionFixture(t, withAppointedLeaderID(0))
+
+	fx.canvassTo(election.ElectionStateCandidateBallot)
+
+	fx.requireRequestVoteBroadcast()
+	fx.injectVote(1, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition, true)
+	fx.injectVote(2, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition, true)
+	fx.driveUntilState(election.ElectionStateLeaderReady, 20)
+	require.Equal(t, consensus.RoleLeader, fx.host.role)
+
+	fx.injectAppendPosition(1, fx.election.LeadershipTermID(), fx.cfg.AppendPosition)
+
+	require.Equal(t, election.ElectionStateClosed, fx.election.State())
+	require.Len(t, fx.host.appendNewLeadershipTermEventCalls, 1)
+	require.Len(t, fx.agent.electionCompleteNs, 1)
+	fx.requireLocalLeader()
+}
+
+func TestElection_shouldVoteForAppointedLeader(t *testing.T) {
+	t.Parallel()
+
+	fx := newElectionFixture(t, withAppointedLeaderID(1))
+
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+
+	fx.injectRequestVote(1, 6, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition)
+	fx.requireVoteSentFor(1)
+
+	fx.injectNewLeadershipTerm(1, 6, fixtureLogSessionID)
+	require.Equal(t, election.ElectionStateFollowerReplay, fx.election.State())
+
+	fx.driveUntilState(election.ElectionStateClosed, 20)
+
+	require.Equal(t, consensus.RoleFollower, fx.host.role)
+	require.Equal(t, 1, fx.agent.joinFollowerCalls)
+	require.Len(t, fx.agent.electionCompleteNs, 1)
+	require.NotNil(t, fx.election.Leader())
+	require.Equal(t, int32(1), fx.election.Leader().ID)
+	require.Equal(t, int64(6), fx.election.LeadershipTermID())
+	require.Equal(t, fixtureLogSessionID, fx.election.LogSessionID())
+}
+
+func TestElection_shouldCanvassMembersInSuccessfulLeadershipBid(t *testing.T) {
+	t.Parallel()
+
+	fx := newElectionFixture(t)
+
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+
+	fx.publisher.Reset()
+	fx.doWork()
+	require.Len(t, fx.publisher.Sent, 2)
+	targets := map[int32]struct{}{}
+	for _, msg := range fx.publisher.Sent {
+		require.Equal(t, uint16(clusterwire.CanvassPositionSbeTemplateID), msg.TemplateID)
+		targets[msg.Dst.MemberID] = struct{}{}
+	}
+	require.Equal(t, map[int32]struct{}{1: {}, 2: {}}, targets)
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+
+	fx.injectBaselineCanvassPositions()
+	require.Equal(t, fx.cfg.AppendPosition, fx.member(1).LogPosition)
+	require.Equal(t, fx.cfg.AppendPosition, fx.member(2).LogPosition)
+
+	fx.driveUntilState(election.ElectionStateNominate, 20)
+}
+
+func TestElection_shouldVoteForCandidateDuringNomination(t *testing.T) {
+	t.Parallel()
+
+	fx := newElectionFixture(t)
+
+	fx.canvassTo(election.ElectionStateNominate)
+
+	fx.publisher.Reset()
+	fx.injectRequestVote(1, 7, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition)
+	fx.requireVoteSentFor(1)
+}
+
+func TestElection_shouldWinCandidateBallotWithMajority(t *testing.T) {
+	t.Parallel()
+
+	fx := newElectionFixture(t, withNodeStartup(false))
+
+	fx.canvassTo(election.ElectionStateCandidateBallot)
+	require.Equal(t, 1, fx.agent.prepareCalls)
+
+	fx.requireRequestVoteBroadcast()
+
+	fx.injectVote(1, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition, true)
+
+	fx.advance(fx.cfg.ElectionTimeoutNs)
+	fx.doWork()
+
+	require.Equal(t, election.ElectionStateLeaderLogReplication, fx.election.State())
+	require.Equal(t, consensus.RoleLeader, fx.host.role)
+	fx.requireLocalLeader()
+}
+
+func TestElection_shouldElectCandidateWithFullVote(t *testing.T) {
+	t.Parallel()
+
+	fx := newElectionFixture(t)
+
+	fx.canvassTo(election.ElectionStateCandidateBallot)
+
+	// Nomination proposes candidateTermID+1 once through the monotonic node state.
+	require.Len(t, fx.nodeState.proposeCalls, 1)
+	require.Equal(t, fx.cfg.LeadershipTermID+1, fx.nodeState.proposeCalls[0].candidateTermID)
+	require.Equal(t, fx.cfg.LogPosition, fx.nodeState.proposeCalls[0].logPosition)
+	require.Equal(t, fx.cfg.LeadershipTermID+1, election.CandidateTermIDForTest(fx.election))
+
+	fx.requireRequestVoteBroadcast()
+
+	fx.injectVote(1, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition, true)
+	fx.injectVote(2, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition, true)
+	fx.doWork()
+
+	require.Equal(t, election.ElectionStateLeaderLogReplication, fx.election.State())
+	require.Equal(t, consensus.RoleLeader, fx.host.role)
+	fx.requireLocalLeader()
 }

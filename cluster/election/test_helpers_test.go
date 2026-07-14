@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/election/electiontest"
 	"github.com/warrenguy/heron/cluster/recordinglog"
@@ -74,9 +75,45 @@ func (f *failingNodeState) ProposeMaxCandidateTermID(int64, int64, int64) (int64
 
 func (f *failingNodeState) Close() error { return nil }
 
+type joinLogAsLeaderCall struct {
+	leadershipTermID int64
+	logPosition      int64
+	logSessionID     int32
+	isStartup        bool
+}
+
 type recordingAgentHandler struct {
 	electiontest.NoopAgentHandler
+
+	appendPositionReturn int64
+
+	prepareCalls       int
+	joinLeaderCalls    []joinLogAsLeaderCall
+	joinFollowerCalls  int
 	electionCompleteNs []int64
+}
+
+func (h *recordingAgentHandler) PrepareForNewLeadership(int64, int64) int64 {
+	h.prepareCalls++
+	return h.appendPositionReturn
+}
+
+func (h *recordingAgentHandler) JoinLogAsLeader(
+	leadershipTermID, logPosition int64,
+	logSessionID int32,
+	isStartup bool,
+) {
+	h.joinLeaderCalls = append(h.joinLeaderCalls, joinLogAsLeaderCall{
+		leadershipTermID: leadershipTermID,
+		logPosition:      logPosition,
+		logSessionID:     logSessionID,
+		isStartup:        isStartup,
+	})
+}
+
+func (h *recordingAgentHandler) JoinLogAsFollower(consensus.FollowerLogJoinParams, int64) bool {
+	h.joinFollowerCalls++
+	return true
 }
 
 func (h *recordingAgentHandler) ElectionComplete(nowNs int64) {
@@ -143,6 +180,13 @@ func electionDepsForMembers(t *testing.T, members []election.Member) (
 	return cfg, deps, clock, epochClock, nodeState
 }
 
+// Baseline term and positions shared by testElectionDeps and newElectionFixture.
+const (
+	testLeadershipTermID = 5
+	testLogPosition      = 100
+	testAppendPosition   = 200
+)
+
 func testElectionDeps(t *testing.T) (
 	election.ElectionConfig,
 	election.ElectionDeps,
@@ -157,9 +201,9 @@ func testElectionDeps(t *testing.T) (
 		{ID: 1},
 		{ID: 2},
 	})
-	cfg.LeadershipTermID = 5
-	cfg.LogPosition = 100
-	cfg.AppendPosition = 200
+	cfg.LeadershipTermID = testLeadershipTermID
+	cfg.LogPosition = testLogPosition
+	cfg.AppendPosition = testAppendPosition
 	return cfg, deps, clock, epochClock, nodeState
 }
 
