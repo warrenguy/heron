@@ -28,8 +28,8 @@ type ElectionConfig struct {
 // member id (0 included) is mistaken for an appointed or gracefully-closed leader.
 func DefaultElectionConfig() ElectionConfig {
 	return ElectionConfig{
-		AppointedLeaderID:         int32(NullValue),
-		GracefulClosedLeaderID:    int32(NullValue),
+		AppointedLeaderID:         NullMemberID,
+		GracefulClosedLeaderID:    NullMemberID,
 		ElectionTimeoutNs:         1_000_000_000,
 		ElectionStatusIntervalNs:  100_000_000,
 		StartupCanvassTimeoutNs:   60_000_000_000,

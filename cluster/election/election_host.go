@@ -12,6 +12,7 @@ type RecordingSignal = archivewire.RecordingSignal
 // Replace with archive-backed implementation when agent wiring lands.
 type LogReplay interface {
 	DoWork(nowNs int64) int
+	Position() int64
 	IsDone() bool
 }
 
@@ -57,7 +58,13 @@ type ElectionHost interface {
 	AppendNewLeadershipTermEvent(nowNs int64) bool
 
 	PollArchiveEvents() int
-	LogRecordingID(recordingID int64)
+	LocalLogRecordingID() int64
+	SetLogRecordingID(recordingID int64)
 	TruncateLogEntry(leadershipTermID, logPosition int64)
 	AwaitLocalSocketsClosed(registrationID int64)
+
+	// FollowerLogJoinReady reports whether the live log image for logSessionID
+	// is available to join and returns its join parameters. The election
+	// overwrites IsLeaderStartup with its own value before the join.
+	FollowerLogJoinReady(logSessionID int32) (consensus.FollowerLogJoinParams, bool)
 }

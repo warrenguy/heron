@@ -62,13 +62,19 @@ func (NoopElectionHost) CatchupLogDestinationSet(string) {}
 
 func (NoopElectionHost) PublishCommitPosition(int64, int64) {}
 
-func (NoopElectionHost) AddLogPublication(int64) int32 { return int32(election.NullValue) }
+func (NoopElectionHost) AddLogPublication(int64) int32 { return election.NullMemberID }
 
 func (NoopElectionHost) AppendNewLeadershipTermEvent(int64) bool { return false }
 
 func (NoopElectionHost) PollArchiveEvents() int { return 0 }
 
-func (NoopElectionHost) LogRecordingID(int64) {}
+func (NoopElectionHost) LocalLogRecordingID() int64 { return election.NullValue }
+
+func (NoopElectionHost) SetLogRecordingID(int64) {}
+
+func (NoopElectionHost) FollowerLogJoinReady(int32) (consensus.FollowerLogJoinParams, bool) {
+	return consensus.FollowerLogJoinParams{}, false
+}
 
 func (NoopElectionHost) TruncateLogEntry(int64, int64) {}
 

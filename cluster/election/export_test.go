@@ -19,6 +19,16 @@ func SetStateForTest(e *Election, s ElectionState) { e.electionState = s }
 
 func SetLogReplicationForTest(e *Election, lr LogReplication) { e.logReplication = lr }
 
+// SetLogSessionIDForTest seeds the log session id without running AddLogPublication.
+//
+// Use only to preset leader replication preconditions; observed session ids come
+// from Election paths.
+func SetLogSessionIDForTest(e *Election, id int32) { e.logSessionID = id }
+
+// IsLeaderStartupForTest exposes the leader startup flag for startup-flag
+// oracle parity tests. Test-only; production paths set this from NewLeadershipTerm.
+func IsLeaderStartupForTest(e *Election) bool { return e.isLeaderStartup }
+
 func ElectionStateNameCount() int { return len(electionStateNames) }
 
 func TimeOfLastUpdateNsForTest(e *Election) int64 { return e.timeOfLastUpdateNs }
@@ -38,6 +48,12 @@ func SetNominationDeadlineNsForTest(e *Election, ns int64) { e.nominationDeadlin
 func CandidateTermIDForTest(e *Election) int64 { return e.candidateTermID }
 
 func IsExtendedCanvassForTest(e *Election) bool { return e.isExtendedCanvass }
+
+func LogLeadershipTermIDForTest(e *Election) int64 { return e.logLeadershipTermID }
+
+func ReplicationForTest(e *Election) (leadershipTermID, stopPosition, termBaseLogPosition int64) {
+	return e.replicationLeadershipTermID, e.replicationStopPosition, e.replicationTermBaseLogPosition
+}
 
 // ElectionSnapshot captures handler-visible state for drift and parity tests.
 type ElectionSnapshot struct {

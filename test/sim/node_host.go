@@ -20,6 +20,20 @@ type simElectionHost struct {
 	now func() int64
 
 	role consensus.Role
+
+	quorumSequence             []int64
+	quorumCallCount            int
+	localLogRecordingID        int64
+	followerLogJoinOK          bool
+	catchupNearLive            bool
+	catchupPollCalls           int
+	publishCommitPositionCalls []publishCommitPositionCall
+}
+
+// publishCommitPositionCall records one PublishCommitPosition host invocation.
+type publishCommitPositionCall struct {
+	commitPosition   int64
+	leadershipTermID int64
 }
 
 func (h *simElectionHost) Role() consensus.Role { return h.role }
@@ -27,6 +41,24 @@ func (h *simElectionHost) Role() consensus.Role { return h.role }
 func (h *simElectionHost) RoleSet(role consensus.Role) { h.role = role }
 
 func (h *simElectionHost) AddLogPublication(int64) int32 { return simLogSessionID }
+
+func (h *simElectionHost) QuorumPositionBoundedByLeaderLog(int64, int64) int64 {
+	if len(h.quorumSequence) == 0 {
+		return h.NoopElectionHost.QuorumPositionBoundedByLeaderLog(0, 0)
+	}
+	idx := min(h.quorumCallCount, len(h.quorumSequence)-1)
+	h.quorumCallCount++
+	return h.quorumSequence[idx]
+}
+
+func (h *simElectionHost) LocalLogRecordingID() int64 { return h.localLogRecordingID }
+
+func (h *simElectionHost) PublishCommitPosition(commitPosition, leadershipTermID int64) {
+	h.publishCommitPositionCalls = append(h.publishCommitPositionCalls, publishCommitPositionCall{
+		commitPosition:   commitPosition,
+		leadershipTermID: leadershipTermID,
+	})
+}
 
 func (h *simElectionHost) UpdateMemberLogPosition(
 	member *election.Member,
@@ -39,10 +71,40 @@ func (h *simElectionHost) UpdateMemberLogPosition(
 
 func (h *simElectionHost) AppendNewLeadershipTermEvent(int64) bool { return true }
 
+func (h *simElectionHost) CatchupPoll(int64, int64) int {
+	h.catchupPollCalls++
+	return 0
+}
+
+func (h *simElectionHost) IsCatchupNearLive(int64) bool { return h.catchupNearLive }
+
+// FollowerLogJoinReady reports the live log image immediately joinable: sim
+// nodes carry no replicated log, so the join position pins to the harness
+// start position zero.
+func (h *simElectionHost) FollowerLogJoinReady(
+	logSessionID int32,
+) (consensus.FollowerLogJoinParams, bool) {
+	if !h.followerLogJoinOK {
+		return consensus.FollowerLogJoinParams{}, false
+	}
+	return consensus.FollowerLogJoinParams{
+		LogChannel:      "log=sim",
+		LogStreamID:     100,
+		LogSessionID:    logSessionID,
+		LogJoinPosition: 0,
+	}, true
+}
+
 var _ election.ElectionHost = (*simElectionHost)(nil)
 
-// simAgentHandler joins the follower log unconditionally so thin-stub follower
-// close paths can run without a real replicated log. Other callbacks fall
+// joinLogCall records one JoinLogAsFollower invocation from the election handler.
+type joinLogCall struct {
+	params consensus.FollowerLogJoinParams
+	nowNs  int64
+}
+
+// simAgentHandler records follower log joins and returns joinReturns so
+// scenarios can exercise join success and stall paths. Other callbacks fall
 // through to the noop handler.
 type simAgentHandler struct {
 	electiontest.NoopAgentHandler
@@ -50,6 +112,9 @@ type simAgentHandler struct {
 	prepareCalls       int
 	prepareLogPosition int64
 	prepareNowNs       int64
+
+	joinLogCalls []joinLogCall
+	joinReturns  bool
 }
 
 func (h *simAgentHandler) PrepareForNewLeadership(logPosition, nowNs int64) int64 {
@@ -59,8 +124,12 @@ func (h *simAgentHandler) PrepareForNewLeadership(logPosition, nowNs int64) int6
 	return logPosition
 }
 
-func (h *simAgentHandler) JoinLogAsFollower(consensus.FollowerLogJoinParams, int64) bool {
-	return true
+func (h *simAgentHandler) JoinLogAsFollower(
+	params consensus.FollowerLogJoinParams,
+	nowNs int64,
+) bool {
+	h.joinLogCalls = append(h.joinLogCalls, joinLogCall{params: params, nowNs: nowNs})
+	return h.joinReturns
 }
 
 var _ consensus.AgentHandler = (*simAgentHandler)(nil)

@@ -31,6 +31,9 @@ type Election struct {
 	isFirstInit                      bool
 	isLeaderStartup                  bool
 	leaderMember                     *Member
+	initialTimeOfLastUpdateNs        int64
+	initialLogLeadershipTermID       int64
+	initialTermBaseLogPosition       int64
 	timeOfLastStateChangeNs          int64
 	timeOfLastUpdateNs               int64
 	timeOfLastCommitPositionUpdateNs int64
@@ -80,13 +83,16 @@ func NewElection(cfg ElectionConfig, deps ElectionDeps) *Election {
 		lastPublishedCommitPosition:      0,
 		lastPublishedAppendPosition:      0,
 		leaderRecordingID:                NullValue,
-		logSessionID:                     int32(NullValue),
+		logSessionID:                     NullMemberID,
 		gracefulClosedLeaderID:           cfg.GracefulClosedLeaderID,
 		isNodeStartup:                    cfg.IsNodeStartup,
 		isExtendedCanvass:                cfg.IsNodeStartup,
 		isFirstInit:                      true,
 		isLeaderStartup:                  false,
 		leaderMember:                     nil,
+		initialTimeOfLastUpdateNs:        initialTimeOfLastUpdateNs,
+		initialLogLeadershipTermID:       cfg.LeadershipTermID,
+		initialTermBaseLogPosition:       cfg.TermBaseLogPosition,
 		timeOfLastStateChangeNs:          nowNs,
 		timeOfLastUpdateNs:               initialTimeOfLastUpdateNs,
 		timeOfLastCommitPositionUpdateNs: initialTimeOfLastUpdateNs,
@@ -185,8 +191,20 @@ func (e *Election) DoWork(nowNs int64) int {
 
 // state applies a transition and its entry side effects. reason mirrors the
 // Java win-reason strings and is reserved for a future electiontrace build tag.
+//
+// A same-state call is a no-op; entry side effects and interval-timer resets
+// apply only when the state actually changes.
 func (e *Election) state(next ElectionState, nowNs int64, reason string) {
 	_ = reason
+	if next == e.electionState {
+		return
+	}
+
+	// Leaving canvass consumes the startup canvass window; a later re-canvass
+	// uses the shorter leader-heartbeat deadline.
+	if e.electionState == ElectionStateCanvass {
+		e.isExtendedCanvass = false
+	}
 
 	switch next {
 	case ElectionStateCanvass:
@@ -196,20 +214,13 @@ func (e *Election) state(next ElectionState, nowNs int64, reason string) {
 		// it counts toward its own quorum and unanimous candidacy.
 		e.thisMember.LeadershipTermID = e.leadershipTermID
 		e.thisMember.LogPosition = e.appendPosition
-
-		// Preserve the startup canvass window on the first entry from init; a
-		// re-canvass from a ballot state drops it so the shorter heartbeat
-		// timeout applies.
-		if e.electionState != ElectionStateInit {
-			e.isExtendedCanvass = false
-		}
 		e.deps.Host.RoleSet(consensus.RoleFollower)
 	case ElectionStateCandidateBallot:
 		e.deps.Host.RoleSet(consensus.RoleCandidate)
 	case ElectionStateLeaderLogReplication:
 		e.deps.Host.RoleSet(consensus.RoleLeader)
 		e.logSessionID = e.deps.Host.AddLogPublication(e.appendPosition)
-	case ElectionStateFollowerReplay:
+	case ElectionStateFollowerLogReplication, ElectionStateFollowerReplay:
 		e.deps.Host.RoleSet(consensus.RoleFollower)
 	case ElectionStateInit,
 		ElectionStateNominate,
@@ -217,7 +228,6 @@ func (e *Election) state(next ElectionState, nowNs int64, reason string) {
 		ElectionStateLeaderReplay,
 		ElectionStateLeaderInit,
 		ElectionStateLeaderReady,
-		ElectionStateFollowerLogReplication,
 		ElectionStateFollowerCatchupInit,
 		ElectionStateFollowerCatchupAwait,
 		ElectionStateFollowerCatchup,
@@ -229,6 +239,8 @@ func (e *Election) state(next ElectionState, nowNs int64, reason string) {
 
 	e.electionState = next
 	e.timeOfLastStateChangeNs = nowNs
+	e.timeOfLastUpdateNs = e.initialTimeOfLastUpdateNs
+	e.timeOfLastCommitPositionUpdateNs = e.initialTimeOfLastUpdateNs
 	if e.deps.StateObserver != nil {
 		e.deps.StateObserver.OnElectionStateChange(next)
 	}

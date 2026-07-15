@@ -114,17 +114,9 @@ func TestSim_appointedLeader_closed(t *testing.T) {
 		requireReaches(t, s, 0, election.ElectionStateLeaderReady)
 		require.Equal(t, consensus.RoleLeader, s.Node(0).HostRole())
 
-		// The thin leader stub reaches READY without replicating its log to the
-		// quorum, so inject the follower append position that closes the leader.
-		leaderTerm := s.Node(0).Election().LeadershipTermID()
-		s.Node(1).Publisher().AppendPosition(
-			election.PublicationTarget{MemberID: 0},
-			leaderTerm,
-			0,
-			1,
-			0,
-		)
-
+		// The leader's interval NewLeadershipTerm publishes drive the followers
+		// through their join path; their append positions close the leader once
+		// a quorum reaches the log position.
 		requireReaches(t, s, 0, election.ElectionStateClosed)
 		require.Equal(t, int32(0), s.Node(0).Election().Leader().ID)
 	})
@@ -138,21 +130,12 @@ func TestSim_voteForAppointedLeader_closed(t *testing.T) {
 	cfg.MaxSteps = 4000
 
 	sim.Run(t, cfg, func(s *sim.ElectionSim) {
-		requireReaches(t, s, 0, election.ElectionStateLeaderReady)
 		requireReaches(t, s, 1, election.ElectionStateFollowerBallot)
 		requireVoteFor(t, s.Node(1), 0)
 
-		// The leader stub never publishes NewLeadershipTerm; inject it so the
-		// follower runs the replay-through-ready close path.
-		s.Node(0).Publisher().NewLeadershipTerm(
-			election.PublicationTarget{MemberID: 1},
-			codecs.NewLeadershipTermFields{
-				LeadershipTermID: s.Node(0).Election().LeadershipTermID(),
-				LeaderMemberID:   0,
-				LogSessionID:     s.Node(0).Election().LogSessionID(),
-			},
-		)
-
+		// The elected leader publishes NewLeadershipTerm on its heartbeat
+		// interval, so the follower runs the replay-through-ready close path
+		// without injection.
 		requireReaches(t, s, 1, election.ElectionStateClosed)
 		require.Equal(t, consensus.RoleFollower, s.Node(1).HostRole())
 		require.Equal(t, int32(0), s.Node(1).Election().Leader().ID)

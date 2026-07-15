@@ -16,7 +16,7 @@ func (e *Election) handleInit(nowNs int64) int {
 		}
 	} else {
 		e.prepareForNewLeadership(nowNs)
-		e.logSessionID = int32(NullValue)
+		e.logSessionID = NullMemberID
 	}
 
 	e.notifiedCommitPosition = 0
@@ -51,7 +51,7 @@ func (e *Election) handleCanvass(nowNs int64) int {
 		workCount++
 	}
 
-	if e.cfg.AppointedLeaderID != int32(NullValue) && e.cfg.AppointedLeaderID != e.thisMember.ID {
+	if e.cfg.AppointedLeaderID != NullMemberID && e.cfg.AppointedLeaderID != e.thisMember.ID {
 		return workCount
 	}
 
@@ -143,15 +143,13 @@ func (e *Election) handleFollowerBallot(nowNs int64) int {
 }
 
 func (e *Election) handleLeaderLogReplication(nowNs int64) int {
-	workCount := 0
-
-	if hasUpdateIntervalExpired(nowNs, e.timeOfLastUpdateNs, e.cfg.LeaderHeartbeatIntervalNs) {
-		e.timeOfLastUpdateNs = nowNs
-		e.publishNewLeadershipTerm(nowNs)
-		workCount++
-	}
+	e.thisMember.LogPosition = e.appendPosition
+	e.thisMember.TimeOfLastAppendPositionNs = nowNs
 
 	quorum := e.deps.Host.QuorumPositionBoundedByLeaderLog(e.appendPosition, nowNs)
+	workCount := e.publishNewLeadershipTermOnInterval(quorum, nowNs)
+	workCount += e.publishCommitPositionOnInterval(quorum, nowNs)
+
 	if quorum >= e.appendPosition {
 		e.state(ElectionStateLeaderReplay, nowNs, "")
 		workCount++
@@ -160,11 +158,36 @@ func (e *Election) handleLeaderLogReplication(nowNs int64) int {
 }
 
 func (e *Election) handleLeaderReplay(nowNs int64) int {
-	if e.logReplay == nil || e.logReplay.IsDone() {
-		e.state(ElectionStateLeaderInit, nowNs, "")
-		return 1
+	workCount := 0
+
+	if e.logReplay == nil {
+		if e.logPosition < e.appendPosition {
+			e.logReplay = e.deps.Host.NewLogReplay(e.logPosition, e.appendPosition)
+		} else {
+			e.state(ElectionStateLeaderInit, nowNs, "")
+		}
+		workCount++
+
+		// The startup flag reverts to this node's own startup state on every
+		// replay start, including the immediate no-replay path: a leader joins
+		// its log with its own history, not the previous leader's flag.
+		e.isLeaderStartup = e.isNodeStartup
+		e.thisMember.LeadershipTermID = e.leadershipTermID
+		e.thisMember.LogPosition = e.appendPosition
+		e.thisMember.TimeOfLastAppendPositionNs = nowNs
+	} else {
+		workCount += e.logReplay.DoWork(nowNs)
+		if e.logReplay.IsDone() {
+			e.logPosition = e.appendPosition
+			e.stopReplay()
+			e.state(ElectionStateLeaderInit, nowNs, "")
+		}
 	}
-	return e.logReplay.DoWork(nowNs)
+
+	quorum := e.deps.Host.QuorumPositionBoundedByLeaderLog(e.appendPosition, nowNs)
+	workCount += e.publishNewLeadershipTermOnInterval(quorum, nowNs)
+	workCount += e.publishCommitPositionOnInterval(quorum, nowNs)
+	return workCount
 }
 
 func (e *Election) handleLeaderInit(nowNs int64) int {
@@ -174,38 +197,148 @@ func (e *Election) handleLeaderInit(nowNs int64) int {
 		e.logSessionID,
 		e.isLeaderStartup,
 	)
+	if err := e.commitRecordingLogTerm(e.leadershipTermID, e.logPosition, NullValue); err != nil {
+		e.HandleError(nowNs, err)
+		return 1
+	}
 	e.state(ElectionStateLeaderReady, nowNs, "")
 	return 1
 }
 
-func (e *Election) handleLeaderReady(int64) int { return 0 }
+func (e *Election) handleLeaderReady(nowNs int64) int {
+	quorum := e.deps.Host.QuorumPositionBoundedByLeaderLog(e.appendPosition, nowNs)
+	workCount := e.deps.Host.UpdateLeaderPosition(nowNs, e.appendPosition, quorum)
+	workCount += e.publishNewLeadershipTermOnInterval(quorum, nowNs)
 
-func (e *Election) handleFollowerLogReplication(int64) int { return 0 }
-
-func (e *Election) handleFollowerReplay(nowNs int64) int {
-	e.state(ElectionStateFollowerLogInit, nowNs, "")
-	return 1
+	hasQuorum := HasQuorumAtPosition(
+		e.clusterMembers,
+		e.leadershipTermID,
+		e.logPosition,
+		nowNs,
+		e.cfg.LeaderHeartbeatTimeoutNs,
+	)
+	if hasQuorum && e.completeElection(nowNs) {
+		workCount++
+	}
+	return workCount
 }
 
-func (e *Election) handleFollowerCatchupInit(int64) int { return 0 }
+// handleFollowerLogReplication handles the caught-up and timeout paths only;
+// archive log replication is not wired, so no LogReplication is created here.
+func (e *Election) handleFollowerLogReplication(nowNs int64) int {
+	// A NullPosition stop position means the state was entered without an
+	// install (test or simulation injection); fall through to the deadline
+	// reset instead of committing a sentinel term.
+	caughtUp := e.replicationStopPosition != NullPosition &&
+		e.appendPosition >= e.replicationStopPosition
+	if caughtUp {
+		err := e.commitRecordingLogTerm(
+			e.replicationLeadershipTermID,
+			e.replicationTermBaseLogPosition,
+			e.replicationStopPosition,
+		)
+		if err != nil {
+			e.HandleError(nowNs, err)
+			return 1
+		}
+		e.state(ElectionStateCanvass, nowNs, "")
+		return 0
+	}
+	if nowNs >= e.replicationDeadlineNs {
+		e.HandleError(nowNs, errors.New("election: timeout awaiting commit position"))
+		return 1
+	}
+	return 0
+}
+
+func (e *Election) handleFollowerReplay(nowNs int64) int {
+	workCount := 0
+
+	if e.logReplay == nil {
+		if e.logPosition >= e.appendPosition {
+			e.state(e.followerJoinState(), nowNs, "nothing to replay")
+			return 1
+		}
+		if e.notifiedCommitPosition == 0 {
+			return e.publishFollowerAppendPosition(nowNs)
+		}
+		if e.logPosition >= e.notifiedCommitPosition {
+			e.state(ElectionStateCanvass, nowNs, "log replay rejected")
+			return 0
+		}
+		e.logReplay = e.deps.Host.NewLogReplay(
+			e.logPosition,
+			min(e.appendPosition, e.notifiedCommitPosition),
+		)
+		return 1
+	}
+
+	workCount += e.logReplay.DoWork(nowNs)
+	if e.logReplay.IsDone() {
+		e.logPosition = e.logReplay.Position()
+		e.stopReplay()
+		if e.logPosition == e.appendPosition {
+			e.state(e.followerJoinState(), nowNs, "log replay done")
+		} else {
+			e.state(ElectionStateCanvass, nowNs, "incomplete log replay")
+		}
+	}
+	return workCount
+}
+
+func (e *Election) handleFollowerCatchupInit(nowNs int64) int {
+	// No archive catchup or replication is wired yet.
+	//
+	// The install path always sets catchupJoinPosition; the notified-commit
+	// fallback covers states entered without an install (test and simulation
+	// injection).
+	pos := e.catchupJoinPosition
+	if pos == NullPosition {
+		pos = e.notifiedCommitPosition
+	}
+	if e.deps.Host.IsCatchupNearLive(pos) {
+		e.state(ElectionStateFollowerLogInit, nowNs, "catchup near live")
+		return 1
+	}
+	return 0
+}
 
 func (e *Election) handleFollowerCatchupAwait(int64) int { return 0 }
 
 func (e *Election) handleFollowerCatchup(int64) int { return 0 }
 
 func (e *Election) handleFollowerLogInit(nowNs int64) int {
-	e.state(ElectionStateFollowerLogAwait, nowNs, "")
+	if e.logSessionID != NullMemberID {
+		e.state(ElectionStateFollowerLogAwait, nowNs, "")
+	}
 	return 1
 }
 
 func (e *Election) handleFollowerLogAwait(nowNs int64) int {
-	params := consensus.FollowerLogJoinParams{
-		LogSessionID:    e.logSessionID,
-		LogJoinPosition: e.logPosition,
-		IsLeaderStartup: e.isLeaderStartup,
+	params, ok := e.deps.Host.FollowerLogJoinReady(e.logSessionID)
+	if !ok {
+		if nowNs >= e.timeOfLastStateChangeNs+e.cfg.LeaderHeartbeatTimeoutNs {
+			e.HandleError(nowNs, errors.New("election: failed to join live log"))
+			return 1
+		}
+		return 0
 	}
+	if params.LogJoinPosition != e.logPosition {
+		e.HandleError(nowNs, errors.New("election: log join position mismatch"))
+		return 1
+	}
+
+	params.IsLeaderStartup = e.isLeaderStartup
 	if e.deps.Handler.JoinLogAsFollower(params, nowNs) {
+		if err := e.commitRecordingLogTerm(e.leadershipTermID, e.logPosition, NullValue); err != nil {
+			e.HandleError(nowNs, err)
+			return 1
+		}
 		e.state(ElectionStateFollowerReady, nowNs, "")
+		return 1
+	}
+	if nowNs >= e.timeOfLastStateChangeNs+e.cfg.LeaderHeartbeatTimeoutNs {
+		e.HandleError(nowNs, errors.New("election: failed to join live log as follower"))
 		return 1
 	}
 	return 0
@@ -290,7 +423,7 @@ func (e *Election) OnCanvassPosition(fields codecs.CanvassPositionFields) {
 		return
 	}
 	if fields.FollowerMemberID == e.gracefulClosedLeaderID {
-		e.gracefulClosedLeaderID = int32(NullValue)
+		e.gracefulClosedLeaderID = NullMemberID
 	}
 
 	follower := e.memberByID[fields.FollowerMemberID]
@@ -373,54 +506,154 @@ func (e *Election) OnVote(fields codecs.VoteFields) {
 }
 
 func (e *Election) OnNewLeadershipTerm(fields codecs.NewLeadershipTermFields) {
-	accepts := e.electionState == ElectionStateCanvass ||
-		e.electionState == ElectionStateFollowerBallot ||
-		e.electionState == ElectionStateCandidateBallot
-	if !accepts {
+	if e.electionState == ElectionStateInit {
 		return
 	}
-
-	// Ignore a term the node already advanced past; only a term at or above the
-	// current ballot can install a new leader.
-	if fields.LeadershipTermID < e.candidateTermID {
-		return
-	}
-
 	leader := e.memberByID[fields.LeaderMemberID]
 	if leader == nil {
 		return
 	}
+	if fields.LeaderMemberID == e.thisMember.ID && fields.LeadershipTermID == e.leadershipTermID {
+		return
+	}
+	if fields.LeaderMemberID == e.gracefulClosedLeaderID {
+		e.gracefulClosedLeaderID = NullMemberID
+	}
+	nowNs := e.deps.NanoClock()
+
+	// A ballot state only accepts the term it is voting on; canvass accepts
+	// any term from a known leader.
+	inBallotOrCanvass :=
+		((e.electionState == ElectionStateFollowerBallot ||
+			e.electionState == ElectionStateCandidateBallot) &&
+			fields.LeadershipTermID == e.candidateTermID) ||
+			e.electionState == ElectionStateCanvass
+
+	if inBallotOrCanvass {
+		if fields.LogLeadershipTermID == e.logLeadershipTermID {
+			e.installLeadershipTerm(leader, fields, nowNs)
+		} else {
+			e.state(ElectionStateCanvass, nowNs, "")
+		}
+	}
+
+	if e.electionState == ElectionStateFollowerLogReplication &&
+		fields.LogLeadershipTermID == e.logLeadershipTermID &&
+		e.leaderMember != nil && e.leaderMember.ID == fields.LeaderMemberID {
+		e.replicationDeadlineNs = nowNs + e.cfg.LeaderHeartbeatTimeoutNs
+	}
+}
+
+// installLeadershipTerm adopts leader's term and routes to the follower
+// replay or log-replication path.
+func (e *Election) installLeadershipTerm(
+	leader *Member,
+	fields codecs.NewLeadershipTermFields,
+	nowNs int64,
+) {
+	truncating := fields.NextTermBaseLogPosition != NullPosition &&
+		fields.NextTermBaseLogPosition < e.appendPosition
+	if truncating {
+		e.deps.Host.TruncateLogEntry(fields.LogLeadershipTermID, fields.NextTermBaseLogPosition)
+		e.appendPosition = fields.NextTermBaseLogPosition
+		e.HandleError(nowNs, errors.New("election: truncating cluster log"))
+		return
+	}
+
 	e.leaderMember = leader
+	e.isLeaderStartup = fields.IsStartup == clusterwire.BooleanType_TRUE
 	e.leadershipTermID = fields.LeadershipTermID
+	e.candidateTermID = max(fields.LeadershipTermID, e.candidateTermID)
 	e.logSessionID = fields.LogSessionID
-	e.state(ElectionStateFollowerReplay, e.deps.NanoClock(), "")
+	e.leaderRecordingID = fields.LeaderRecordingID
+	if e.appendPosition < fields.LogPosition {
+		e.catchupJoinPosition = fields.LogPosition
+	} else {
+		e.catchupJoinPosition = NullPosition
+	}
+	e.notifiedCommitPosition = max(e.notifiedCommitPosition, fields.CommitPosition)
+
+	if e.appendPosition >= fields.TermBaseLogPosition {
+		e.state(ElectionStateFollowerReplay, nowNs, "")
+		return
+	}
+	if fields.NextLeadershipTermID == NullValue {
+		e.HandleError(nowNs, errors.New("election: invalid newLeadershipTerm"))
+		return
+	}
+	if e.appendPosition < fields.NextTermBaseLogPosition {
+		e.replicationLeadershipTermID = fields.LogLeadershipTermID
+
+		// An open but uncommitted term: its base position is already known, so
+		// there is no need to look it up from the recording log.
+		e.replicationTermBaseLogPosition = NullValue
+		e.replicationStopPosition = fields.NextTermBaseLogPosition
+		e.state(ElectionStateFollowerLogReplication, nowNs, "")
+		return
+	}
+	if e.appendPosition == fields.NextTermBaseLogPosition &&
+		fields.NextLogPosition != NullPosition {
+		e.replicationLeadershipTermID = fields.NextLeadershipTermID
+		e.replicationStopPosition = fields.NextLogPosition
+		e.replicationTermBaseLogPosition = fields.NextTermBaseLogPosition
+		e.state(ElectionStateFollowerLogReplication, nowNs, "")
+	}
 }
 
 func (e *Election) OnAppendPosition(fields codecs.AppendPositionFields) {
 	if e.electionState == ElectionStateInit {
 		return
 	}
-
+	if fields.LeadershipTermID > e.leadershipTermID {
+		return
+	}
 	follower := e.memberByID[fields.FollowerMemberID]
 	if follower == nil {
 		return
 	}
+	e.deps.Host.UpdateMemberLogPosition(follower, fields.LeadershipTermID, fields.LogPosition)
+	e.deps.Host.TrackCatchupCompletion(follower, fields.LeadershipTermID, fields.Flags)
 
-	if fields.LeadershipTermID <= e.leadershipTermID {
-		e.deps.Host.UpdateMemberLogPosition(follower, fields.LeadershipTermID, fields.LogPosition)
-		e.deps.Host.TrackCatchupCompletion(follower, fields.LeadershipTermID, fields.Flags)
-	}
-
-	if e.electionState == ElectionStateLeaderReady {
+	// A follower still on an older term learns the current one from a leader
+	// republish; election closure stays with the LEADER_READY duty cycle.
+	if fields.LeadershipTermID < e.leadershipTermID &&
+		e.deps.Host.Role() == consensus.RoleLeader {
 		nowNs := e.deps.NanoClock()
 		quorum := e.deps.Host.QuorumPositionBoundedByLeaderLog(e.appendPosition, nowNs)
-		if quorum >= e.appendPosition {
-			e.completeElection(nowNs)
-		}
+		e.publishNewLeadershipTermToMember(
+			follower,
+			fields.LeadershipTermID,
+			quorum,
+			e.deps.EpochClock(),
+		)
 	}
 }
 
-func (e *Election) OnCommitPosition(codecs.CommitPositionFields) {}
+// OnCommitPosition intentionally skips a leadershipTermID equality check:
+// older leaders published a CommitPosition term that did not match their
+// NewLeadershipTerm event, so only the leader identity gates the update.
+func (e *Election) OnCommitPosition(fields codecs.CommitPositionFields) {
+	if e.electionState == ElectionStateInit {
+		return
+	}
+
+	leader := e.leaderMember
+	if leader != nil && leader.ID == fields.LeaderMemberID {
+		e.notifiedCommitPosition = max(e.notifiedCommitPosition, fields.LogPosition)
+		if e.electionState == ElectionStateFollowerLogReplication {
+			e.replicationDeadlineNs = e.deps.NanoClock() + e.cfg.LeaderHeartbeatTimeoutNs
+		}
+		return
+	}
+
+	if fields.LeadershipTermID > e.leadershipTermID &&
+		e.electionState == ElectionStateLeaderReady {
+		e.HandleError(
+			e.deps.NanoClock(),
+			errors.New("election: new leader detected from commit position"),
+		)
+	}
+}
 
 // OnRecordingSignal handles archive recording signals during log replication.
 // Mirrors Election.onRecordingSignal. Stub until logReplication.OnSignal is wired.
@@ -433,7 +666,7 @@ func (e *Election) OnRecordingSignal(
 	}
 	if e.logReplication != nil {
 		e.logReplication.OnSignal(correlationID, recordingID, position, signal)
-		e.deps.Host.LogRecordingID(e.logReplication.RecordingID())
+		e.deps.Host.SetLogRecordingID(e.logReplication.RecordingID())
 	}
 }
 

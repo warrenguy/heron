@@ -27,5 +27,12 @@ type ElectionDeps struct {
 	Members    []*Member
 	ThisMember *Member
 
+	// RecordingLog and RecordingLogLookup are the recording-log seams for term
+	// coherency and successor-term lookup. Both may be nil until the consensus
+	// module wires the real recording log: a nil RecordingLog skips coherency
+	// writes and a nil RecordingLogLookup publishes current-term defaults.
+	RecordingLog       RecordingLogCoherency
+	RecordingLogLookup RecordingLogLookup
+
 	StateObserver StateObserver
 }

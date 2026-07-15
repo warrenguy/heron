@@ -366,7 +366,7 @@ func TestIsQuorumLeader(t *testing.T) {
 func TestIsUnanimousLeader(t *testing.T) {
 	t.Parallel()
 
-	const gracefulClosedLeaderID = int32(election.NullValue)
+	const gracefulClosedLeaderID = election.NullMemberID
 
 	t.Run("negative vote", func(t *testing.T) {
 		t.Parallel()

@@ -18,6 +18,7 @@ type fixtureParams struct {
 	singleNode        bool
 	memberID          int32
 	appointedLeaderID int32
+	appVersion        int32
 	isNodeStartup     bool
 	leadershipTermID  int64
 	logPosition       int64
@@ -60,6 +61,10 @@ func withStateObserver(o *recordingStateObserver) fixtureOption {
 	return func(p *fixtureParams) { p.stateObserver = o }
 }
 
+func withAppVersion(v int32) fixtureOption {
+	return func(p *fixtureParams) { p.appVersion = v }
+}
+
 // electionFixture mirrors Java ElectionTest.newElection: an Election over a
 // recording host and agent driven by a manually advanced clock.
 type electionFixture struct {
@@ -83,7 +88,7 @@ func newElectionFixture(t *testing.T, opts ...fixtureOption) *electionFixture {
 		leadershipTermID:  testLeadershipTermID,
 		logPosition:       testLogPosition,
 		appendPosition:    testAppendPosition,
-		appointedLeaderID: int32(election.NullValue),
+		appointedLeaderID: election.NullMemberID,
 		hostRole:          consensus.RoleFollower,
 	}
 	for _, opt := range opts {
@@ -100,17 +105,27 @@ func newElectionFixture(t *testing.T, opts ...fixtureOption) *electionFixture {
 	)
 	cfg.IsNodeStartup = p.isNodeStartup
 	cfg.AppointedLeaderID = p.appointedLeaderID
+	cfg.AppVersion = p.appVersion
 	cfg.LeadershipTermID = p.leadershipTermID
 	cfg.LogPosition = p.logPosition
 	cfg.AppendPosition = p.appendPosition
 
 	host := &recordingElectionHost{
-		clock:          clock,
-		role:           p.hostRole,
-		logSessionID:   fixtureLogSessionID,
-		quorumPosition: p.appendPosition,
+		clock:               clock,
+		role:                p.hostRole,
+		logSessionID:        fixtureLogSessionID,
+		quorumPosition:      p.appendPosition,
+		localLogRecordingID: int64(election.NullValue),
+
+		// Join succeeds immediately by default; override followerLogJoinOK or
+		// agent.joinFollowerReturn for stall/timeout paths.
+		followerLogJoinOK:       true,
+		followerLogJoinPosition: p.logPosition,
 	}
-	agent := &recordingAgentHandler{appendPositionReturn: p.appendPosition}
+	agent := &recordingAgentHandler{
+		appendPositionReturn: p.appendPosition,
+		joinFollowerReturn:   true,
+	}
 	deps.Host = host
 	deps.Handler = agent
 	deps.NominationRand = func() float64 { return 0 }
@@ -217,12 +232,12 @@ func (fx *electionFixture) injectVote(followerID int32, logTerm, logPos int64, v
 	})
 }
 
-func (fx *electionFixture) injectNewLeadershipTerm(leaderID int32, term int64, sessionID int32) {
-	fx.election.OnNewLeadershipTerm(codecs.NewLeadershipTermFields{
-		LeadershipTermID: term,
-		LeaderMemberID:   leaderID,
-		LogSessionID:     sessionID,
-	})
+// injectNewLeadershipTerm delivers a NewLeadershipTerm anchored at the
+// fixture's baseline log term and position: the log term matches this node's
+// so the install path runs, and the successor-term fields carry the null
+// sentinels a leader with no recording log publishes.
+func (fx *electionFixture) injectNewLeadershipTerm(leaderID int32, term int64) {
+	fx.election.OnNewLeadershipTerm(installNewLeadershipTermFields(fx.cfg, leaderID, term))
 }
 
 func (fx *electionFixture) injectAppendPosition(followerID int32, term, pos int64) {
@@ -279,16 +294,40 @@ type recordingElectionHost struct {
 	logSessionID   int32
 	quorumPosition int64
 
+	// quorumSequence returns successive quorum values for commit/NLT interval
+	// oracle tests; unset hosts keep using quorumPosition.
+	quorumSequence  []int64
+	quorumCallCount int
+
+	localLogRecordingID     int64
+	followerLogJoinOK       bool
+	followerLogJoinPosition int64
+	catchupNearLive         bool
+
 	addLogPublicationCalls            []int64
 	appendNewLeadershipTermEventCalls []int64
+	publishCommitPositionCalls        []publishCommitPositionCall
+	followerLogJoinReadyCalls         []int32
+	catchupNearLiveCalls              []int64
+	truncateCalls                     []truncateCall
 
 	trackCatchupCalls []trackCatchupCall
+}
+
+type truncateCall struct {
+	leadershipTermID int64
+	logPosition      int64
 }
 
 type trackCatchupCall struct {
 	memberID         int32
 	leadershipTermID int64
 	flags            uint8
+}
+
+type publishCommitPositionCall struct {
+	commitPosition   int64
+	leadershipTermID int64
 }
 
 func (h *recordingElectionHost) Role() consensus.Role { return h.role }
@@ -301,8 +340,72 @@ func (h *recordingElectionHost) AddLogPublication(appendPosition int64) int32 {
 }
 
 func (h *recordingElectionHost) QuorumPositionBoundedByLeaderLog(int64, int64) int64 {
+	if len(h.quorumSequence) > 0 {
+		idx := h.quorumCallCount
+		h.quorumCallCount++
+		if idx < len(h.quorumSequence) {
+			return h.quorumSequence[idx]
+		}
+		return h.quorumSequence[len(h.quorumSequence)-1]
+	}
 	return h.quorumPosition
 }
+
+func (h *recordingElectionHost) LocalLogRecordingID() int64 { return h.localLogRecordingID }
+
+func (h *recordingElectionHost) PublishCommitPosition(commitPosition, leadershipTermID int64) {
+	h.publishCommitPositionCalls = append(h.publishCommitPositionCalls, publishCommitPositionCall{
+		commitPosition:   commitPosition,
+		leadershipTermID: leadershipTermID,
+	})
+}
+
+func (h *recordingElectionHost) FollowerLogJoinReady(
+	logSessionID int32,
+) (consensus.FollowerLogJoinParams, bool) {
+	h.followerLogJoinReadyCalls = append(h.followerLogJoinReadyCalls, logSessionID)
+	if !h.followerLogJoinOK {
+		return consensus.FollowerLogJoinParams{}, false
+	}
+	return consensus.FollowerLogJoinParams{
+		LogChannel:      "log=test",
+		LogStreamID:     100,
+		LogSessionID:    logSessionID,
+		LogJoinPosition: h.followerLogJoinPosition,
+
+		// Deliberately wrong: the election must overwrite this with its own
+		// isLeaderStartup, so tests observe the overwrite direction.
+		IsLeaderStartup: true,
+	}, true
+}
+
+func (h *recordingElectionHost) TruncateLogEntry(leadershipTermID, logPosition int64) {
+	h.truncateCalls = append(h.truncateCalls, truncateCall{
+		leadershipTermID: leadershipTermID,
+		logPosition:      logPosition,
+	})
+}
+
+func (h *recordingElectionHost) IsCatchupNearLive(position int64) bool {
+	h.catchupNearLiveCalls = append(h.catchupNearLiveCalls, position)
+	return h.catchupNearLive
+}
+
+// NewLogReplay returns an immediately done replay so leader and follower
+// replay paths advance to the target position on the next tick.
+func (h *recordingElectionHost) NewLogReplay(_, appendPosition int64) election.LogReplay {
+	return &stubLogReplay{position: appendPosition}
+}
+
+type stubLogReplay struct {
+	position int64
+}
+
+func (r *stubLogReplay) DoWork(int64) int { return 0 }
+
+func (r *stubLogReplay) Position() int64 { return r.position }
+
+func (r *stubLogReplay) IsDone() bool { return true }
 
 func (h *recordingElectionHost) UpdateMemberLogPosition(
 	member *election.Member,

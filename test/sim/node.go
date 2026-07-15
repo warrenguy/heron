@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
@@ -76,12 +77,7 @@ func (n *Node) ReceivedFromOrderForTest() []int32 {
 // hasDelivered reports whether the message at the source's Sent index has been
 // delivered to this node.
 func (n *Node) hasDelivered(key deliveredKey) bool {
-	for _, k := range n.receivedMsgKeys {
-		if k == key {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(n.receivedMsgKeys, key)
 }
 
 // Snapshot returns observable per-node state.
@@ -154,8 +150,8 @@ func newNode(cfg nodeBuildConfig) (*Node, error) {
 
 	observer := &StateObserver{sim: cfg.sim, nodeID: cfg.id}
 
-	host := &simElectionHost{now: clock.TimeNs}
-	agent := &simAgentHandler{}
+	host := &simElectionHost{now: clock.TimeNs, followerLogJoinOK: true}
+	agent := &simAgentHandler{joinReturns: true}
 
 	deps := election.ElectionDeps{
 		Handler:       agent,

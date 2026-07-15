@@ -37,6 +37,32 @@ func TestElectionState_nameCount(t *testing.T) {
 	require.Equal(t, 18, election.ElectionStateNameCount())
 }
 
+func TestState_transitionResetsUpdateTimers(t *testing.T) {
+	t.Parallel()
+
+	fx := newElectionFixture(t, withSingleNode(), withPositions(0, 0, 0))
+
+	// A fresh election carries the construction anchor in both interval timers.
+	initialUpdateNs := election.TimeOfLastUpdateNsForTest(fx.election)
+
+	fx.doWork()
+	require.Equal(t, election.ElectionStateLeaderLogReplication, fx.election.State())
+
+	// The replication duty cycle stamps both interval timers with now before
+	// the quorum check advances the state; the transition must reset them to
+	// the construction anchor so the next state's first publish fires at once.
+	fx.advance(1)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateLeaderReplay, fx.election.State())
+
+	require.Equal(t, initialUpdateNs, election.TimeOfLastUpdateNsForTest(fx.election))
+	require.Equal(
+		t,
+		initialUpdateNs,
+		election.TimeOfLastCommitPositionUpdateNsForTest(fx.election),
+	)
+}
+
 func TestElectionState_string(t *testing.T) {
 	t.Parallel()
 

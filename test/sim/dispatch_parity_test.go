@@ -66,8 +66,9 @@ func (p *parityElection) snapshot() election.ElectionSnapshot {
 // (HandleConsensusMessage decode plus template routing) applies every consensus
 // message with an observable election side effect identically to a direct
 // On-handler call, so the SBE-wire sim cannot silently drift from production
-// dispatch. CommitPosition is excluded while OnCommitPosition is a no-op: the
-// baseline guard requires each delivered message to change the snapshot.
+// dispatch. CommitPosition is excluded: its notifiedCommitPosition update is
+// not snapshot-visible, and the baseline guard requires each delivered message
+// to change the snapshot.
 func TestDispatchParity_wireMatchesDirect(t *testing.T) {
 	t.Parallel()
 
@@ -124,10 +125,17 @@ func TestDispatchParity_wireMatchesDirect(t *testing.T) {
 			templateID: uint16(clusterwire.NewLeadershipTermSbeTemplateID),
 			state:      election.ElectionStateFollowerBallot,
 			encode: func(enc *election.SbePublisher) {
+				// Log term 5 matches the parity election's baseline and the null
+				// successor sentinels select the install path, so the message has
+				// an observable state effect on both dispatch routes.
 				enc.NewLeadershipTerm(target, codecs.NewLeadershipTermFields{
-					LeadershipTermID: 6,
-					LeaderMemberID:   1,
-					LogSessionID:     simLogSessionID,
+					LogLeadershipTermID:     5,
+					NextLeadershipTermID:    election.NullValue,
+					NextTermBaseLogPosition: election.NullPosition,
+					NextLogPosition:         election.NullPosition,
+					LeadershipTermID:        5,
+					LeaderMemberID:          1,
+					LogSessionID:            simLogSessionID,
 				})
 			},
 			direct: func(t *testing.T, e *election.Election, wire []byte) {

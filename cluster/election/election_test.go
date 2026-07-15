@@ -6,7 +6,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
@@ -42,6 +41,42 @@ func TestElection_DoWork_closedReturnsZero(t *testing.T) {
 	require.Equal(t, 0, e.DoWork(1_000))
 }
 
+func TestElection_DoWork_stubStatesReturnZero(t *testing.T) {
+	t.Parallel()
+
+	states := []election.ElectionState{
+		election.ElectionStateFollowerCatchupInit,
+		election.ElectionStateFollowerCatchupAwait,
+		election.ElectionStateFollowerCatchup,
+	}
+	for _, state := range states {
+		t.Run(state.String(), func(t *testing.T) {
+			t.Parallel()
+
+			cfg, deps, clock, _, _ := testElectionDeps(t)
+			e := election.NewElection(cfg, deps)
+			election.SetStateForTest(e, state)
+
+			require.Equal(t, 0, e.DoWork(clock.nowNs))
+			require.Equal(t, state, e.State())
+		})
+	}
+}
+
+func TestElection_DoWork_leaderLogReplicationReturnsWork(t *testing.T) {
+	t.Parallel()
+
+	fx := newElectionFixture(t, withSingleNode(), withPositions(0, 0, 0))
+
+	fx.doWork()
+	require.Equal(t, election.ElectionStateLeaderLogReplication, fx.election.State())
+
+	// Quorum equals the append position, so one duty cycle publishes and
+	// advances to replay.
+	require.Positive(t, fx.doWork())
+	require.Equal(t, election.ElectionStateLeaderReplay, fx.election.State())
+}
+
 func TestElection_DoWork_panicsOnUnknownState(t *testing.T) {
 	t.Parallel()
 
@@ -71,7 +106,7 @@ func TestNewElection_initializesFields(t *testing.T) {
 	require.Equal(t, cfg.AppendPosition, e.AppendPosition())
 	require.Equal(t, cfg.MemberID, e.ThisMemberID())
 	require.Nil(t, e.Leader())
-	require.Equal(t, int32(cnc.NullValue), e.LogSessionID())
+	require.Equal(t, election.NullMemberID, e.LogSessionID())
 	require.Equal(t, int64(0), e.NotifiedCommitPosition())
 	require.Equal(t, []election.ElectionState{election.ElectionStateInit}, observer.states)
 
@@ -231,7 +266,14 @@ func TestElection_shouldElectAppointedLeader(t *testing.T) {
 	fx.driveUntilState(election.ElectionStateLeaderReady, 20)
 	require.Equal(t, consensus.RoleLeader, fx.host.role)
 
+	// Follower append positions only update member state; closure happens on
+	// the next LEADER_READY duty cycle once a quorum has reached the position.
 	fx.injectAppendPosition(1, fx.election.LeadershipTermID(), fx.cfg.AppendPosition)
+	require.Equal(t, election.ElectionStateLeaderReady, fx.election.State())
+	fx.injectAppendPosition(2, fx.election.LeadershipTermID(), fx.cfg.AppendPosition)
+	require.Equal(t, election.ElectionStateLeaderReady, fx.election.State())
+
+	fx.doWork()
 
 	require.Equal(t, election.ElectionStateClosed, fx.election.State())
 	require.Len(t, fx.host.appendNewLeadershipTermEventCalls, 1)
@@ -242,7 +284,13 @@ func TestElection_shouldElectAppointedLeader(t *testing.T) {
 func TestElection_shouldVoteForAppointedLeader(t *testing.T) {
 	t.Parallel()
 
-	fx := newElectionFixture(t, withAppointedLeaderID(1))
+	// Log and append positions match, as in the Java oracle: the follower joins
+	// the live log with nothing to replay.
+	fx := newElectionFixture(
+		t,
+		withAppointedLeaderID(1),
+		withPositions(testLeadershipTermID, testLogPosition, testLogPosition),
+	)
 
 	fx.doWork()
 	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
@@ -250,7 +298,7 @@ func TestElection_shouldVoteForAppointedLeader(t *testing.T) {
 	fx.injectRequestVote(1, 6, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition)
 	fx.requireVoteSentFor(1)
 
-	fx.injectNewLeadershipTerm(1, 6, fixtureLogSessionID)
+	fx.injectNewLeadershipTerm(1, 6)
 	require.Equal(t, election.ElectionStateFollowerReplay, fx.election.State())
 
 	fx.driveUntilState(election.ElectionStateClosed, 20)

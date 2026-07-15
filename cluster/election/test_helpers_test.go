@@ -86,12 +86,15 @@ type recordingAgentHandler struct {
 	electiontest.NoopAgentHandler
 
 	appendPositionReturn int64
+	joinFollowerReturn   bool
 
 	prepareCalls       int
 	prepareLogPosition int64
 	prepareNowNs       int64
 	joinLeaderCalls    []joinLogAsLeaderCall
 	joinFollowerCalls  int
+	joinFollowerParams []consensus.FollowerLogJoinParams
+	joinFollowerNowNs  []int64
 	electionCompleteNs []int64
 }
 
@@ -115,9 +118,14 @@ func (h *recordingAgentHandler) JoinLogAsLeader(
 	})
 }
 
-func (h *recordingAgentHandler) JoinLogAsFollower(consensus.FollowerLogJoinParams, int64) bool {
+func (h *recordingAgentHandler) JoinLogAsFollower(
+	params consensus.FollowerLogJoinParams,
+	nowNs int64,
+) bool {
 	h.joinFollowerCalls++
-	return true
+	h.joinFollowerParams = append(h.joinFollowerParams, params)
+	h.joinFollowerNowNs = append(h.joinFollowerNowNs, nowNs)
+	return h.joinFollowerReturn
 }
 
 func (h *recordingAgentHandler) ElectionComplete(nowNs int64) {
@@ -252,4 +260,14 @@ func requireNodeStatePrefixEqual(t *testing.T, got, want []byte, n int) {
 	want = want[:n]
 	requireNodeStatePrefixHex(t, got, n)
 	require.Equal(t, want, got[:n])
+}
+
+type recordingLogCoherencySpy struct {
+	calls []recordinglog.EnsureCoherentParams
+	err   error
+}
+
+func (s *recordingLogCoherencySpy) EnsureCoherent(p recordinglog.EnsureCoherentParams) error {
+	s.calls = append(s.calls, p)
+	return s.err
 }

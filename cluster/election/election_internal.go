@@ -1,7 +1,5 @@
 package election
 
-import "github.com/warrenguy/heron/cluster/codecs"
-
 func hasUpdateIntervalExpired(nowNs, lastUpdateNs, intervalNs int64) bool {
 	return nowNs >= lastUpdateNs+intervalNs
 }
@@ -64,29 +62,18 @@ func (e *Election) isBallotState() bool {
 		e.electionState == ElectionStateFollowerBallot
 }
 
-func (e *Election) publishNewLeadershipTerm(nowNs int64) {
-	fields := codecs.NewLeadershipTermFields{
-		LogLeadershipTermID: e.logLeadershipTermID,
-		LeadershipTermID:    e.leadershipTermID,
-		TermBaseLogPosition: e.cfg.TermBaseLogPosition,
-		LogPosition:         e.appendPosition,
-		LeaderRecordingID:   e.leaderRecordingID,
-		Timestamp:           nowNs,
-		LeaderMemberID:      e.thisMember.ID,
-		LogSessionID:        e.logSessionID,
-		AppVersion:          e.cfg.AppVersion,
-		IsStartup:           boolToClusterwire(e.isLeaderStartup),
-		// NextLeadershipTermID, NextTermBaseLogPosition, NextLogPosition, and
-		// CommitPosition stay zero: the successor-term values come from real log
-		// replication state that is not computed here, and a follower reads only
-		// the current-term fields. A speculative non-oracle value would mislead.
+func (e *Election) stopReplay() {
+	e.logReplay = nil
+	e.lastPublishedAppendPosition = 0
+}
+
+// followerJoinState selects catchup init when the leader's live log is ahead
+// of this node's append position, live log init otherwise.
+func (e *Election) followerJoinState() ElectionState {
+	if e.catchupJoinPosition != NullPosition {
+		return ElectionStateFollowerCatchupInit
 	}
-	for _, member := range e.clusterMembers {
-		if member.ID == e.thisMember.ID {
-			continue
-		}
-		e.deps.Publisher.NewLeadershipTerm(PublicationTarget{MemberID: member.ID}, fields)
-	}
+	return ElectionStateFollowerLogInit
 }
 
 func (e *Election) publishCanvassPosition() {
