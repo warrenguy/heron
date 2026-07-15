@@ -1,92 +1,31 @@
 # Heron
 
-Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport, cluster, and archive clients.
+Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport, cluster, and
+archive clients.
 
-## Constraints
+Heron speaks Aeron's shared-memory and wire protocols directly against a
+standard C or Java media driver, targeting behavioural parity with the Java
+client stack. It uses no cgo (`unsafe` only for zero-copy buffer access),
+supports little-endian `amd64` and `arm64`, and embeds no media driver.
 
-- **Pure Go** - no cgo; uses `unsafe` for zero-copy buffer access.
-- **GOARCH** - `amd64` and `arm64` only (little-endian).
-- **Media driver** - external only (C or Java); no embedded driver planned.
-
-## Capabilities
-
-Targets parity with the Java Aeron stack (transport, cluster, archive). Invoker-only today:
-the application calls `DoWork` and poll methods. Background conductor and cluster session
-threads are planned.
-
-### Transport (`aeron`)
-
-Transport client is substantially complete: IPC and UDP publications and subscriptions,
-shared and exclusive publish paths, offer and claim, fragmented publish and term rotation,
-publication limits and channel status, blocking and async resource add, registration
-lookup, counters reader, CNC metadata, error log, driver liveness, close linger, and
-optional `Context.AvailableImageHandler` / `Context.UnavailableImageHandler` callbacks
-copied to each subscription at registration.
-
-#### Planned
-
-Counter registration; dynamic MDC destinations; `Subscription.ControlledPoll`.
-
-### Cluster (`cluster/client`)
-
-Session client is implemented: `AsyncConnect` (challenge, redirect, credentials),
-multi-member ingress, IPC, ipcx, and UDP egress, exclusive ingress, `AeronCluster`
-offer, claim, keepalive, and close, egress handlers and fragment assembly, leader-change
-recovery, and `SendSnapshotRequest`.
-
-#### Planned
-
-`ControlledEgressHandler` dispatch; general admin request API (beyond snapshot); cluster
-server / consensus service.
-
-### Archive (`archive`)
-
-Control and replay client is implemented: SBE flyweights, `Context`, connect,
-`Client` session and recording lifecycle, `Proxy`, control and recording
-descriptor pollers, recording signals, replay start and stop, replay image discovery,
-and fragment poll.
-
-## Media driver (`aeronmd`)
-
-Build `aeronmd` (Aeron C media driver) via Docker:
+## Getting started
 
 ```bash
-make aeronmd  # requires Docker; output bin/aeronmd
+go get github.com/warrenguy/heron
 ```
 
-Aeron release pinned in [`specs/versions.yaml`](specs/versions.yaml) (`aeron.ref`).
-
-## Usage
-
-One goroutine per `*aeron.Client` should call `DoWork` and poll methods; `Publication.Offer`
-may run from other goroutines.
-
-### Transport client
-
-Start media driver:
+A media driver must be running. Build the pinned C driver and start it:
 
 ```bash
+make aeronmd                 # requires Docker; output bin/aeronmd
 export AERON_DIR=/tmp/aeron
 mkdir -p "$AERON_DIR"
 bin/aeronmd
 ```
 
-Runnable IPC echo with `(*Client)` helpers (`PollUntilConnected`, `PollUntilImageCount`,
-`OfferWithRetry`, `PollOneMessage`): [`examples/ipc-echo`](examples/ipc-echo/).
+The Aeron release is pinned in [`specs/versions.yaml`](specs/versions.yaml).
 
-### Cluster client
-
-External cluster stack required; setup and duty-cycle patterns are in the examples below.
-
-- [`examples/cluster-echo-client`](examples/cluster-echo-client/) - IPC echo against
-  `docker/cluster_java`
-- [`examples/cluster-auction-client`](examples/cluster-auction-client/) - UDP auction
-  duty cycle against upstream Java cluster
-
-### Archive client
-
-Requires Aeron Archive plus `aeronmd` (default local IPC control). Pass an existing
-transport `*aeron.Client` in `Context.Aeron` for a shared `DoWork` duty cycle.
+Publish and receive a message over IPC:
 
 ```go
 package main
@@ -96,37 +35,92 @@ import (
 	"log"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/archive/codecs"
 )
 
 func main() {
-	transport, err := aeron.Connect(aeron.Context{AeronDir: "/tmp/aeron"})
+	client, err := aeron.Connect(aeron.Context{AeronDir: "/tmp/aeron"})
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer transport.Close()
+	defer client.Close()
 
-	session, err := archive.Connect(context.Background(), archive.Context{Aeron: transport})
+	pub, err := client.AddPublication(1001, "aeron:ipc")
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer session.Close()
-
-	session.SetRecordingSignalHandler(archive.RecordingSignalHandlerFunc(
-		func(event codecs.RecordingSignalEventFields) {
-			log.Printf("recording signal: recording=%d signal=%v",
-				event.RecordingID, event.Signal)
-		},
-	))
-
-	log.Printf("archive session %d archive id %d",
-		session.ControlSessionID(), session.ArchiveID())
-
-	for {
-		transport.DoWork()
-		session.Poll()
+	sub, err := client.AddSubscription(1001, "aeron:ipc")
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	ctx := context.Background()
+	if err := client.PollUntilConnected(ctx, pub); err != nil {
+		log.Fatal(err)
+	}
+	if err := client.PollUntilImageCount(ctx, sub, 1); err != nil {
+		log.Fatal(err)
+	}
+
+	if _, err := client.OfferWithRetry(ctx, pub, []byte("hello")); err != nil {
+		log.Fatal(err)
+	}
+	msg, err := client.PollOneMessage(ctx, sub)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("received %q", msg)
+}
+```
+
+The `(*Client)` poll helpers above call `DoWork` internally. Runnable one-shot
+sample: [`examples/ipc-echo`](examples/ipc-echo/).
+
+A long-running application drives the client directly: one goroutine per
+`*aeron.Client` calls `DoWork` and the poll methods, while `Publication.Offer`
+may run from other goroutines.
+
+```go
+handler := aeron.AdaptFragmentHandlerBytes(func(payload []byte, _ *aeron.Header) {
+	log.Printf("received %q", payload)
+})
+
+for {
+	client.DoWork()
+	sub.Poll(handler, 10)
+}
+```
+
+Runnable long-running sample (paced offer, idle, signal stop):
+[`examples/ipc-duty-cycle`](examples/ipc-duty-cycle/).
+
+## Cluster client
+
+[`cluster/client`](cluster/client/) connects to an Aeron Cluster:
+`Connect`/`AsyncConnect` handle authentication challenges and member redirects;
+sessions offer and claim ingress, poll egress with fragment assembly, and
+recover across leader changes. An external cluster stack is required:
+
+- [`examples/cluster-echo-client`](examples/cluster-echo-client/) - IPC echo
+  against `docker/cluster_java`
+- [`examples/cluster-auction-client`](examples/cluster-auction-client/) - UDP
+  auction duty cycle against the upstream Java cluster
+
+## Archive client
+
+[`archive`](archive/) connects to Aeron Archive for recording control and
+replay. Pass an existing transport client in `Context.Aeron` to share one duty
+cycle:
+
+```go
+transport, err := aeron.Connect(aeron.Context{AeronDir: "/tmp/aeron"})
+// ...
+session, err := archive.Connect(context.Background(), archive.Context{Aeron: transport})
+// ...
+defer session.Close()
+
+for {
+	transport.DoWork()
+	session.Poll()
 }
 ```
 
@@ -134,10 +128,19 @@ Blocking `Connect` and recording APIs drive `DoWork` during awaits; otherwise pu
 `transport.DoWork()` then `session.Poll()` (`Poll` never calls `DoWork`). Configure a
 recording signal handler or signals drop when control events are polled.
 
+## Status
+
+The transport client and the cluster and archive session clients are
+functional against the pinned Aeron release. All clients are invoker-driven
+today; background conductor and cluster session threads are planned, as are
+transport counter registration, dynamic MDC destinations,
+`Subscription.ControlledPoll`, `ControlledEgressHandler` dispatch, cluster
+admin requests beyond snapshot, and the cluster server (consensus service).
+
 ## Examples
 
-Runnable end-to-end demos live under [`examples/`](examples/). Each has its own
-README with prerequisites and run steps.
+Runnable end-to-end demos live under [`examples/`](examples/), each with its
+own README covering prerequisites and run steps.
 
 ## Contributing
 
@@ -145,8 +148,4 @@ Build, test, SBE codec, and benchmark workflows: [CONTRIBUTING.md](CONTRIBUTING.
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
-
-## Third-party notices
-
-See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT - see [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

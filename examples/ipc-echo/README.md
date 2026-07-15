@@ -2,6 +2,9 @@
 
 Minimal IPC pub/sub using `(*Client)` poll/offer helpers (no local `pollOne`).
 
+For an explicit `DoWork` / `Offer` / `Poll` invoker loop, see
+[`../ipc-duty-cycle`](../ipc-duty-cycle/).
+
 ## Prerequisites
 
 - Go toolchain matching `go.mod`

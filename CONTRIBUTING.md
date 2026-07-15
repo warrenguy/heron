@@ -5,26 +5,29 @@ Development workflows for this repository. User-facing overview and usage exampl
 
 ## Building blocks
 
-Agrona-compatible layout primitives shared by `aeron/` and `cluster/`; module importers
-may use them directly.
+Importable packages under `github.com/warrenguy/heron/...`.
 
-| Area | `github.com/warrenguy/heron/...` | Detail |
-|------|-------------|--------|
-| Atomic buffer | `atomicbuffer` | `AtomicBuffer` over byte slices; bit and ASCII string helpers |
-| Broadcast buffer | `broadcast` | One-to-many broadcast buffer: fixed Agrona wire layout for driver/CnC |
-| Idle strategy | `idlestrategy` | Agent idle pacing (`IdleStrategy`, backoff, spin/yield/sleep) |
-| Mmap | `mmap` | Unix mmap for driver/CnC shared-memory files |
-| Record | `record` | Shared record header constants for ring and broadcast buffers |
-| Ring buffer | `ringbuffer` | `ManyToOneRingBuffer`: fixed Agrona wire layout for CnC/driver rings |
-| Cluster client | `cluster/client` | `ClusterContext`, `AsyncConnect`, `AeronCluster`, egress handlers |
-| Cluster codecs | `cluster/codecs` | SBE flyweights in `clusterwire/`; see **SBE codecs** below |
-| Cluster election | `cluster/election` | SBE flyweights in `nodewire/`; see **SBE codecs** below |
-| Archive codecs / client | `archive/codecs`, `archive` | SBE flyweights in `archivewire/`; `Context`, `AsyncConnect`, `Proxy`, `Client` - see [capabilities](README.md#capabilities) |
-| Transport client | `aeron` | `Connect`, `Client`, `Publication`, `Subscription`, `ExclusivePublication` |
-| Transport internals | `aeron/{conductor,cnc,logbuffer}` | Conductor, CnC, logbuffer |
+| Package | Detail |
+|---------|--------|
+| `atomicbuffer` | `AtomicBuffer` over byte slices; bit and ASCII string helpers |
+| `broadcast` | One-to-many broadcast buffer: fixed Agrona wire layout for driver/CnC |
+| `idlestrategy` | Agent idle pacing (`IdleStrategy`, backoff, spin/yield/sleep) |
+| `mmap` | Unix mmap for driver/CnC shared-memory files |
+| `record` | Shared record header constants for ring and broadcast buffers |
+| `ringbuffer` | `ManyToOneRingBuffer`: fixed Agrona wire layout for CnC/driver rings |
+| `wire` | Wire primitives: `CheckLength`, fixed-width int64 and bool-byte put/get |
+| `cluster/client` | `ClusterContext`, `AsyncConnect`, `AeronCluster`, egress handlers |
+| `cluster/codecs` | SBE flyweights in `clusterwire/`; see **SBE codecs** below |
+| `cluster/consensus` | `Role`, `ElectionRunner`, `AgentHandler`, cluster counter type IDs |
+| `cluster/election` | SBE flyweights in `nodewire/`; see **SBE codecs** below |
+| `cluster/recordinglog` | Recording log: `Open`, `Reload`, entry compare, recovery plan over `recording.log` |
+| `archive`, `archive/codecs` | Client + codecs: SBE flyweights in `archivewire/`; `Context`, `AsyncConnect`, `Proxy`, `Client` - see [archive client](README.md#archive-client) |
+| `aeron` | Transport client: `Connect`, `Client`, `Publication`, `Subscription`, `ExclusivePublication` |
+| `aeron/{conductor,cnc,logbuffer}` | Transport internals: conductor, CnC, logbuffer |
 
-`ringbuffer` and `broadcast` are layout-coupled ports, not generic queues; see package
-godoc for layout and concurrency constraints.
+Low-level layout packages (`atomicbuffer`, `broadcast`, `record`, `ringbuffer`, `wire`)
+follow Agrona/C driver memory layouts. `ringbuffer` and `broadcast` are layout-coupled
+ports, not generic queues; see package godoc for layout and concurrency constraints.
 
 ## Examples
 
@@ -40,7 +43,7 @@ SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/ve
 
 ```bash
 make check        # lint, pins, SBE/catalog stale (opt), unit+stress, contract-oracles (opt)
-make test-all     # check + rapid + integration + java-interop + cluster-java + archive-java smokes
+make test-all     # check + rapid + integration + java-interop + cluster-java + failover + archive-java smokes
 make test-rapid                  # property tests (pgregory.net/rapid)
 make test-integration            # live C aeronmd (-tags=integration)
 make contract-oracles            # all four contract suites below (needs mvn + java)
@@ -54,24 +57,38 @@ make test-cluster-java-failover  # Docker Compose 3-node leader failover
 make test-archive-java           # Docker Compose smoke (record, recording.log, PlanRecovery, replay)
 ```
 
-- Contract targets run `mvn test` (Java goldens) then matching Go oracle tests; no aeronmd or
-  Docker.
-- `test-java-interop-contract` checks shared constants for `make test-java-interop` (e.g. stream
-  1100/1101, 32x32-byte `java-N` / `go-N` payloads) before the live smoke run.
-- `test-cluster-java-contract` checks shared harness constants for `make test-cluster-java`
-  (e.g. IPC channels, streams 101/102, ports 9000/9002, failover topology goldens) before the live smoke run.
-- `test-archive-java-contract` checks shared harness constants for `make test-archive-java`
-  (e.g. record/replay streams 1200/1201, IPC channels, archive dir layout) before the live smoke run.
-- `test-java-interop`, `test-cluster-java-failover`, and `test-archive-java` run
-  `make aeronmd-compose-image` first to tag `java-interop-aeronmd`. `test-cluster-java` uses an
-  embedded driver and does not. Direct `./scripts/java-interop-smoke.sh`,
-  `./scripts/cluster-java-failover-smoke.sh`, or `./scripts/archive-java-smoke.sh` require
-  `make aeronmd-compose-image` (or a prior `make test-*`).
-- `make test-integration` builds `bin/aeronmd` when needed; harness sets `AERON_DIR` per test.
-- Unit tests use `bench` and `testhooks` build tags.
-- Property tests live in `*_rapid_test.go` behind the `rapid` tag.
-- IDE/gopls: set `go.buildTags` to
-  `testhooks rapid stress integration example java_interop cluster_sbe cluster_java archive_java bench`.
+**Contract suites** (`make contract-oracles` and the four `*-contract` targets): run `mvn test`
+(Java goldens) then matching Go oracle tests. No aeronmd or Docker.
+
+| Target | Live smoke | What it checks (examples) |
+|--------|------------|---------------------------|
+| `test-java-interop-contract` | `test-java-interop` | streams 1100/1101; 32x32-byte `java-N` / `go-N` payloads |
+| `test-cluster-java-contract` | `test-cluster-java` | IPC channels; streams 101/102; ports 9000/9002; failover topology goldens |
+| `test-archive-java-contract` | `test-archive-java` | record/replay streams 1200/1201; IPC channels; archive dir layout |
+| `test-cluster-sbe-contract` | (none; wire oracle only) | cluster SBE bytes vs `catalog.json` |
+
+**Compose smokes** (Docker Compose). Image tag: `java-interop-aeronmd`.
+
+| Make target | Script | Media driver |
+|-------------|--------|--------------|
+| `test-java-interop` | `scripts/java-interop-smoke.sh` | Compose image (built by make target) |
+| `test-cluster-java-failover` | `scripts/cluster-java-failover-smoke.sh` | Compose image (built by make target) |
+| `test-archive-java` | `scripts/archive-java-smoke.sh` | Compose image (built by make target) |
+| `test-cluster-java` | (none) | Embedded (no image step) |
+
+Scripts do not build the image. Run `make aeronmd-compose-image` first, or any of the
+Compose-image rows above.
+
+**Integration:** `make test-integration` builds `bin/aeronmd` when needed; the harness sets
+`AERON_DIR` per test.
+
+**Build tags**
+
+| Kind | Tags / location |
+|------|-----------------|
+| Unit | `bench`, `testhooks` |
+| Property | `rapid` (`*_rapid_test.go`) |
+| IDE / gopls (`go.buildTags`) | `testhooks rapid stress integration example java_interop cluster_sbe cluster_java archive_java bench` |
 
 ```bash
 make test                                             # unit only
@@ -83,39 +100,49 @@ Prefer Makefile targets over bare `go test`.
 
 ## SBE codecs (cluster + archive + node-state)
 
-Cluster wire XML source: `specs/cluster-codecs-wire.xml` (verbatim upstream
-`aeron-cluster-codecs.xml` @ pinned `aeron.ref`). Flyweights:
-`cluster/codecs/clusterwire/`. Archive control wire XML:
-`specs/archive-codecs-client.xml`; flyweights: `archive/codecs/archivewire/`.
-Node-state file wire XML: `specs/node-state-codecs.xml`; flyweights:
-`cluster/election/nodewire/`.
-Cluster fixture oracle rows:
-`test/integration/cluster_sbe/clustersbe/fixtures/catalog.json`; run
-`make cluster-sbe-catalog-regen` to refresh committed `hex` from `fields`.
+Pinned Aeron ref: `aeron.ref` in [`specs/versions.yaml`](specs/versions.yaml).
 
-Pin-bump workflow:
+| Area | Spec XML | Flyweights | Upstream (at pin) | Port notes |
+|------|----------|------------|-------------------|------------|
+| Cluster wire | `specs/cluster-codecs-wire.xml` | `cluster/codecs/clusterwire/` | `aeron-cluster/.../aeron-cluster-codecs.xml` | Copy verbatim |
+| Archive control | `specs/archive-codecs-client.xml` | `archive/codecs/archivewire/` | `aeron-archive/.../aeron-archive-codecs.xml` | Subset: control request, response, descriptor, recording-signal, shared types |
+| Node-state file | `specs/node-state-codecs.xml` | `cluster/election/nodewire/` | `aeron-cluster/.../aeron-cluster-node-state-codecs.xml` | Keep trimmed message set unless PR expands scope |
 
-1. Bump `aeron.ref` in [`specs/versions.yaml`](specs/versions.yaml).
-2. Cluster: diff upstream
-   `aeron-cluster/src/main/resources/cluster/aeron-cluster-codecs.xml`; copy
-   verbatim into `specs/cluster-codecs-wire.xml`.
-3. Archive: diff upstream
-   `aeron-archive/src/main/resources/archive/aeron-archive-codecs.xml` (control
-   request, response, descriptor, and recording-signal messages plus shared
-   types only); port into `specs/archive-codecs-client.xml`.
-4. Node-state: diff upstream
-   `aeron-cluster/src/main/resources/cluster/aeron-cluster-node-state-codecs.xml`;
-   port into `specs/node-state-codecs.xml` (preserve trimmed message set unless
-   PR scope expands).
-5. `make sbe-generate`, `make sbe-generate-archive`, and `make sbe-generate-nodestate`;
-   commit `specs/cluster-codecs-wire.xml` and flyweight diffs if any.
-6. `make check` (optional SBE stale gates for cluster, archive, and nodestate
-   when Java is installed) and `make test-rapid`.
-7. `make test-cluster-sbe-contract`; fix failures under `cluster/codecs/` and
-   `test/integration/cluster_sbe/clustersbe/`. Node-state flyweight or codec
-   failures from step 6 are fixed under `cluster/election/` and
-   `cluster/election/nodewire/` (`make check` / `make test-rapid`; not
-   `test-cluster-sbe-contract`).
+Upstream path prefixes under the matching Aeron module:
+
+- Cluster / node-state: `src/main/resources/cluster/`
+- Archive: `src/main/resources/archive/`
+
+**Fixture regen**
+
+| Target | What it refreshes | Needs |
+|--------|-------------------|-------|
+| `make cluster-sbe-catalog-regen` | `hex` from `fields` in `test/integration/cluster_sbe/clustersbe/fixtures/catalog.json` | (none) |
+| `make node-state-fixtures-regen` | committed node-state oracle bytes | mvn + java |
+| `make recordinglog-fixtures-regen` | committed recording-log oracle bytes | mvn + java |
+
+Java golden fixture layout:
+[`test/integration/golden_fixtures/README.md`](test/integration/golden_fixtures/README.md).
+
+**Pin-bump workflow**
+
+1. Bump `aeron.ref` in `specs/versions.yaml`.
+2. Diff each upstream XML against the matching Spec XML row above; update per Port notes.
+3. Generate flyweights:
+   - `make sbe-generate`
+   - `make sbe-generate-archive`
+   - `make sbe-generate-nodestate`
+4. Commit spec XML and flyweight diffs if any.
+5. If port notes or subset changed, update the matching entries in
+   [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+6. `make check` (optional SBE stale gates when Java is installed) and `make test-rapid`.
+7. `make test-cluster-sbe-contract` for cluster wire. Fix failures under:
+   - `cluster/codecs/`
+   - `test/integration/cluster_sbe/clustersbe/`
+8. Node-state failures from step 6: fix under
+   - `cluster/election/`
+   - `cluster/election/nodewire/`
+   Use `make check` / `make test-rapid` (not `test-cluster-sbe-contract`).
 
 ## Benchmarks
 
@@ -133,9 +160,14 @@ make bench-micro       # in-package (informational)
 
 Re-baseline after pulling `main` or when perf changes are intentional.
 
-Optional env: `BENCH_COUNT` (Makefile default 10), `BENCH_PAYLOAD_SIZES` (comma-separated
-filter; CI uses `32,1400`), `BENCH_THRESHOLD` (script default 10; CI sets 30 in
-`bench.yml`), `SKIP_BENCH_REGRESSION`.
+Optional env:
+
+| Variable | Role | Defaults |
+|----------|------|----------|
+| `BENCH_COUNT` | bench iterations | Makefile: 10 |
+| `BENCH_PAYLOAD_SIZES` | comma-separated payload filter | CI: `32,1400` |
+| `BENCH_THRESHOLD` | alloc regression threshold | script: 10; CI (`bench.yml`): 30 |
+| `SKIP_BENCH_REGRESSION` | skip regression gate | unset |
 
 ## Devcontainer
 
