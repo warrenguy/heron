@@ -8,6 +8,7 @@ import (
 
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 )
 
@@ -666,6 +667,124 @@ func TestHandleCanvass_publishesToPeers(t *testing.T) {
 		require.Equal(t, uint16(clusterwire.CanvassPositionSbeTemplateID), m.TemplateID)
 	}
 	require.Equal(t, election.ElectionStateCanvass, e.State())
+}
+
+func TestHandleCanvass_quorumAtDeadlineEntersNominate(t *testing.T) {
+	t.Parallel()
+
+	timeoutNs := election.ElectionTestConfig().StartupCanvassTimeoutNs
+	for _, tc := range []struct {
+		name    string
+		deltaNs int64
+		want    election.ElectionState
+	}{
+		{"just before deadline", timeoutNs - 1, election.ElectionStateCanvass},
+		{"at deadline", timeoutNs, election.ElectionStateNominate},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, deps, clock, _, _ := testElectionDeps(t)
+			cfg.IsNodeStartup = true
+			host := &recordingElectionHost{clock: clock, role: consensus.RoleFollower}
+			deps.Host = host
+			e := election.NewElection(cfg, deps)
+
+			require.Equal(t, 1, e.DoWork(clock.nowNs))
+			require.Equal(t, election.ElectionStateCanvass, e.State())
+			require.True(t, election.IsExtendedCanvassForTest(e))
+
+			// Quorum via self plus one peer; peer 2 stays unreported so unanimity cannot fire early.
+			e.OnCanvassPosition(codecs.CanvassPositionFields{
+				LogLeadershipTermID: cfg.LeadershipTermID,
+				LogPosition:         cfg.AppendPosition,
+				LeadershipTermID:    cfg.LeadershipTermID,
+				FollowerMemberID:    1,
+			})
+			require.Equal(t, cfg.AppendPosition, election.MemberForTest(e, 1).LogPosition)
+
+			require.Positive(t, e.DoWork(clock.nowNs+tc.deltaNs))
+			require.Equal(t, tc.want, e.State())
+		})
+	}
+}
+
+func TestOnAppendPosition_updatesMemberLogPositionDuringCanvass(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name           string
+		leadershipTerm int64
+		wantUpdated    bool
+	}{
+		{
+			name:           "current term updates member",
+			leadershipTerm: testLeadershipTermID,
+			wantUpdated:    true,
+		},
+		{
+			name:           "stale term ignored",
+			leadershipTerm: testLeadershipTermID + 1,
+			wantUpdated:    false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, deps, clock, _, _ := testElectionDeps(t)
+			host := &recordingElectionHost{clock: clock, role: consensus.RoleFollower}
+			deps.Host = host
+			e := election.NewElection(cfg, deps)
+
+			require.Equal(t, 1, e.DoWork(clock.nowNs))
+			require.Equal(t, election.ElectionStateCanvass, e.State())
+
+			follower := election.MemberForTest(e, 1)
+			require.Equal(t, election.NullPosition, follower.LogPosition)
+
+			const flags uint8 = 0x02
+			e.OnAppendPosition(codecs.AppendPositionFields{
+				LeadershipTermID: tc.leadershipTerm,
+				LogPosition:      cfg.AppendPosition + 50,
+				FollowerMemberID: 1,
+				Flags:            flags,
+			})
+
+			if !tc.wantUpdated {
+				require.Equal(t, election.NullPosition, follower.LogPosition)
+				require.Empty(t, host.trackCatchupCalls)
+				return
+			}
+			require.Equal(t, tc.leadershipTerm, follower.LeadershipTermID)
+			require.Equal(t, cfg.AppendPosition+50, follower.LogPosition)
+			require.Equal(t, clock.nowNs, follower.TimeOfLastAppendPositionNs)
+			require.Len(t, host.trackCatchupCalls, 1)
+			require.Equal(t, int32(1), host.trackCatchupCalls[0].memberID)
+			require.Equal(t, tc.leadershipTerm, host.trackCatchupCalls[0].leadershipTermID)
+			require.Equal(t, flags, host.trackCatchupCalls[0].flags)
+		})
+	}
+}
+
+func TestHandleInit_nonStartupPreparesForNewLeadershipOnce(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	cfg.IsNodeStartup = false
+	preparedAppend := cfg.AppendPosition + 1
+	handler := &recordingAgentHandler{appendPositionReturn: preparedAppend}
+	host := &recordingElectionHost{clock: clock, role: consensus.RoleLeader}
+	deps.Handler = handler
+	deps.Host = host
+	e := election.NewElection(cfg, deps)
+
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+	require.Equal(t, 1, handler.prepareCalls)
+	require.Equal(t, cfg.LogPosition, handler.prepareLogPosition)
+	require.Equal(t, clock.nowNs, handler.prepareNowNs)
+	require.Equal(t, consensus.RoleFollower, host.role)
+	require.Equal(t, preparedAppend, e.AppendPosition())
 }
 
 func TestHandleCanvass_unanimousEntersNominate(t *testing.T) {

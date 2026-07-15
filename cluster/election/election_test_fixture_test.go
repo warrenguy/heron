@@ -16,11 +16,14 @@ const fixtureLogSessionID int32 = 777
 
 type fixtureParams struct {
 	singleNode        bool
+	memberID          int32
 	appointedLeaderID int32
 	isNodeStartup     bool
 	leadershipTermID  int64
 	logPosition       int64
 	appendPosition    int64
+	hostRole          consensus.Role
+	stateObserver     *recordingStateObserver
 }
 
 type fixtureOption func(*fixtureParams)
@@ -45,6 +48,18 @@ func withPositions(leadershipTermID, logPosition, appendPosition int64) fixtureO
 	}
 }
 
+func withMemberID(id int32) fixtureOption {
+	return func(p *fixtureParams) { p.memberID = id }
+}
+
+func withHostRole(role consensus.Role) fixtureOption {
+	return func(p *fixtureParams) { p.hostRole = role }
+}
+
+func withStateObserver(o *recordingStateObserver) fixtureOption {
+	return func(p *fixtureParams) { p.stateObserver = o }
+}
+
 // electionFixture mirrors Java ElectionTest.newElection: an Election over a
 // recording host and agent driven by a manually advanced clock.
 type electionFixture struct {
@@ -52,6 +67,7 @@ type electionFixture struct {
 	election   *election.Election
 	host       *recordingElectionHost
 	agent      *recordingAgentHandler
+	observer   *recordingStateObserver
 	publisher  *election.SbePublisher
 	clock      *FakeClock
 	epochClock *FakeEpochClock
@@ -68,6 +84,7 @@ func newElectionFixture(t *testing.T, opts ...fixtureOption) *electionFixture {
 		logPosition:       testLogPosition,
 		appendPosition:    testAppendPosition,
 		appointedLeaderID: int32(election.NullValue),
+		hostRole:          consensus.RoleFollower,
 	}
 	for _, opt := range opts {
 		opt(&p)
@@ -78,7 +95,9 @@ func newElectionFixture(t *testing.T, opts ...fixtureOption) *electionFixture {
 		members = []election.Member{{ID: 0}}
 	}
 
-	cfg, deps, clock, epochClock, nodeState := electionDepsForMembers(t, members)
+	cfg, deps, clock, epochClock, nodeState := electionDepsForMemberPtrs(
+		t, election.MembersPtrs(members), p.memberID,
+	)
 	cfg.IsNodeStartup = p.isNodeStartup
 	cfg.AppointedLeaderID = p.appointedLeaderID
 	cfg.LeadershipTermID = p.leadershipTermID
@@ -87,7 +106,7 @@ func newElectionFixture(t *testing.T, opts ...fixtureOption) *electionFixture {
 
 	host := &recordingElectionHost{
 		clock:          clock,
-		role:           consensus.RoleFollower,
+		role:           p.hostRole,
 		logSessionID:   fixtureLogSessionID,
 		quorumPosition: p.appendPosition,
 	}
@@ -95,12 +114,16 @@ func newElectionFixture(t *testing.T, opts ...fixtureOption) *electionFixture {
 	deps.Host = host
 	deps.Handler = agent
 	deps.NominationRand = func() float64 { return 0 }
+	if p.stateObserver != nil {
+		deps.StateObserver = p.stateObserver
+	}
 
 	return &electionFixture{
 		t:          t,
 		election:   election.NewElection(cfg, deps),
 		host:       host,
 		agent:      agent,
+		observer:   p.stateObserver,
 		publisher:  deps.Publisher.(*election.SbePublisher),
 		clock:      clock,
 		epochClock: epochClock,
@@ -258,6 +281,14 @@ type recordingElectionHost struct {
 
 	addLogPublicationCalls            []int64
 	appendNewLeadershipTermEventCalls []int64
+
+	trackCatchupCalls []trackCatchupCall
+}
+
+type trackCatchupCall struct {
+	memberID         int32
+	leadershipTermID int64
+	flags            uint8
 }
 
 func (h *recordingElectionHost) Role() consensus.Role { return h.role }
@@ -287,4 +318,32 @@ func (h *recordingElectionHost) AppendNewLeadershipTermEvent(nowNs int64) bool {
 	return true
 }
 
+func (h *recordingElectionHost) TrackCatchupCompletion(
+	member *election.Member,
+	leadershipTermID int64,
+	flags uint8,
+) {
+	h.trackCatchupCalls = append(h.trackCatchupCalls, trackCatchupCall{
+		memberID:         member.ID,
+		leadershipTermID: leadershipTermID,
+		flags:            flags,
+	})
+}
+
 var _ election.ElectionHost = (*recordingElectionHost)(nil)
+
+// newTimeoutElection builds the 3-node ElectionTest fixture for node memberID
+// with Java-parity timeout defaults: null leadership term, zero positions,
+// startup canvass, and a state observer recording every transition.
+func newTimeoutElection(
+	t *testing.T, memberID int32, opts ...fixtureOption,
+) *electionFixture {
+	t.Helper()
+
+	base := []fixtureOption{
+		withMemberID(memberID),
+		withPositions(election.NullValue, 0, 0),
+		withStateObserver(&recordingStateObserver{}),
+	}
+	return newElectionFixture(t, append(base, opts...)...)
+}

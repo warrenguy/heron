@@ -46,9 +46,20 @@ var _ election.ElectionHost = (*simElectionHost)(nil)
 // through to the noop handler.
 type simAgentHandler struct {
 	electiontest.NoopAgentHandler
+
+	prepareCalls       int
+	prepareLogPosition int64
+	prepareNowNs       int64
 }
 
-func (simAgentHandler) JoinLogAsFollower(consensus.FollowerLogJoinParams, int64) bool {
+func (h *simAgentHandler) PrepareForNewLeadership(logPosition, nowNs int64) int64 {
+	h.prepareCalls++
+	h.prepareLogPosition = logPosition
+	h.prepareNowNs = nowNs
+	return logPosition
+}
+
+func (h *simAgentHandler) JoinLogAsFollower(consensus.FollowerLogJoinParams, int64) bool {
 	return true
 }
 

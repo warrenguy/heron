@@ -44,13 +44,16 @@ func (e TimelineEntry) detail() string {
 
 // NodeSnapshot captures per-node observable state.
 type NodeSnapshot struct {
-	NodeID           int32
-	ElectionState    election.ElectionState
-	LeadershipTermID int64
-	LogPosition      int64
-	CandidateTermID  int64
-	PublishedCount   int
-	InboundCount     int
+	NodeID             int32
+	ElectionState      election.ElectionState
+	LeadershipTermID   int64
+	LogPosition        int64
+	CandidateTermID    int64
+	PublishedCount     int
+	InboundCount       int
+	PrepareCalls       int
+	PrepareLogPosition int64
+	PrepareNowNs       int64
 }
 
 // TimelineCanonicalBytes returns stable newline-delimited timeline bytes for replay tests.

@@ -42,6 +42,13 @@ type Config struct {
 	MaxSteps         int
 	Nemesis          Nemesis
 	NetworkPolicy    NetworkPolicy
+
+	// FocusNodeID limits ticking and inbound delivery to one member when non-nil.
+	// Timeout scenarios set it so only the subject node runs Election.DoWork while
+	// peers act as wire inject sources. Without it, the default three-node exchange
+	// reaches NOMINATE before scripted timeout jumps. Nil restores full multi-node
+	// sim behavior for canvass regression scenarios.
+	FocusNodeID *int32
 }
 
 // ElectionSim orchestrates scheduler, network, and Node instances.
@@ -89,7 +96,14 @@ func NewElectionSim(tb testing.TB, cfg Config) (*ElectionSim, error) {
 		scheduler: NewScheduler(simStartTimeNs),
 		rng:       NewRNG(cfg.Seed),
 	}
-	s.network = NewNetwork(s, s.scheduler, cfg.NetworkPolicy, cfg.DeliverLatencyNs)
+	policy := cfg.NetworkPolicy
+	if cfg.FocusNodeID != nil {
+		if policy == nil {
+			policy = AllowAllPolicy{}
+		}
+		policy = focusOnlyPolicy{focus: *cfg.FocusNodeID, inner: policy}
+	}
+	s.network = NewNetwork(s, s.scheduler, policy, cfg.DeliverLatencyNs)
 
 	for i := range parsed {
 		node, err := newNode(nodeBuildConfig{
@@ -159,6 +173,21 @@ func (s *ElectionSim) RunUntil(fn func(*ElectionSim) bool) error {
 			return err
 		}
 	}
+}
+
+// AdvanceToPhase advances toward targetNs, schedules a tick for nodeID at the
+// resulting master time, and runs one scheduler step so Election.DoWork
+// evaluates timeout branches. A targetNs before the current clock does not
+// regress it: AdvanceTo clamps, and the tick fires at the current master time.
+func (s *ElectionSim) AdvanceToPhase(nodeID int32, targetNs int64) error {
+	if s.Node(nodeID) == nil {
+		return fmt.Errorf("sim: unknown phase node %d", nodeID)
+	}
+	if err := s.AdvanceTo(targetNs); err != nil {
+		return err
+	}
+	s.scheduleEvent(s.Now(), EventNodeTick, nodeID, nil)
+	return s.RunSteps(1)
 }
 
 // AdvanceTo runs events while the next event time is <= deadlineNs, then advances
@@ -237,7 +266,9 @@ func (s *ElectionSim) step() error {
 		coalesceSeq := s.scheduler.ReserveSeq()
 		work := node.Tick(pop.AtNs)
 		s.appendTimeline(pop, "tick", TimelineEntry{State: node.election.State(), Work: work})
-		if work > 0 {
+		// Focused timeout scenarios advance one DoWork per AdvanceToPhase; coalesced
+		// re-ticks would run before scripted inject delivery and skip heartbeat steps.
+		if work > 0 && s.cfg.FocusNodeID == nil {
 			s.scheduler.ScheduleReserved(pop.AtNs, coalesceSeq, ScheduledEvent{
 				Kind:   EventNodeTick,
 				NodeID: node.id,
@@ -255,7 +286,8 @@ func (s *ElectionSim) step() error {
 			TemplateID: payload.Msg.TemplateID,
 			HandedOff:  handedOff,
 		})
-		if handedOff {
+		// Focused timeout scenarios schedule ticks explicitly via AdvanceToPhase.
+		if handedOff && s.cfg.FocusNodeID == nil {
 			s.scheduleEvent(pop.AtNs, EventNodeTick, payload.To, nil)
 		}
 	case EventNemesis:
@@ -299,6 +331,15 @@ func (s *ElectionSim) appendTimelineNow(kind string, nodeID int32, entry Timelin
 
 func (s *ElectionSim) scheduleInitialTicks() {
 	for _, node := range s.nodes {
-		s.scheduleEvent(simStartTimeNs, EventNodeTick, node.id, nil)
+		if s.ticksNode(node.id) {
+			s.scheduleEvent(simStartTimeNs, EventNodeTick, node.id, nil)
+		}
 	}
+}
+
+func (s *ElectionSim) ticksNode(nodeID int32) bool {
+	if s.cfg.FocusNodeID == nil {
+		return true
+	}
+	return *s.cfg.FocusNodeID == nodeID
 }

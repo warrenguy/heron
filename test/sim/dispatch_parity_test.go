@@ -41,7 +41,7 @@ func newParityElection(t *testing.T) *parityElection {
 	cfg.MemberID = 0
 
 	deps := election.ElectionDeps{
-		Handler:    simAgentHandler{},
+		Handler:    &simAgentHandler{},
 		Host:       host,
 		Publisher:  publisher,
 		NanoClock:  clock.TimeNs,

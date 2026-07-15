@@ -11,6 +11,18 @@ type DeliverPayload struct {
 	From int32
 	To   int32
 	Msg  election.SentMessage
+
+	// SentIndex is the message's position in the source publisher's Sent log,
+	// stamped at enqueue so a delivery identifies the exact published message.
+	SentIndex int
+}
+
+// deliveredKey identifies a delivered message by source and that source's
+// publisher Sent index, letting inject wait for its own publish rather than any
+// inbound traffic to the target.
+type deliveredKey struct {
+	from  int32
+	index int
 }
 
 // NetworkPolicy controls drop and latency for future nemesis fault injection.
@@ -23,6 +35,24 @@ type AllowAllPolicy struct{}
 
 func (AllowAllPolicy) Allow(int32, int32, election.SentMessage, *rand.Rand) (bool, int64) {
 	return false, 0
+}
+
+// focusOnlyPolicy drops every message not addressed to the focus node and
+// defers focus-bound traffic to the inner policy.
+type focusOnlyPolicy struct {
+	focus int32
+	inner NetworkPolicy
+}
+
+func (p focusOnlyPolicy) Allow(
+	from, to int32,
+	msg election.SentMessage,
+	rng *rand.Rand,
+) (bool, int64) {
+	if to != p.focus {
+		return true, 0
+	}
+	return p.inner.Allow(from, to, msg, rng)
 }
 
 // Network routes published wire messages between nodes.
@@ -69,12 +99,24 @@ func (n *Network) Enqueue(from int32, msg election.SentMessage) {
 	}
 	latency := n.latencyNs + extraLatency
 	payload := &DeliverPayload{
-		From: from,
-		To:   to,
-		Msg:  msg,
+		From:      from,
+		To:        to,
+		Msg:       msg,
+		SentIndex: n.sentIndex(from),
 	}
 	n.sim.scheduleEvent(n.scheduler.Now()+latency, EventDeliver, to, payload)
 	n.sim.appendTimelineNow("publish", from, entry)
+}
+
+// sentIndex returns the just-published message's position in the source
+// publisher's Sent log. publish appends before invoking the SentHandler that
+// calls Enqueue, so the message is the final Sent entry.
+func (n *Network) sentIndex(from int32) int {
+	src, ok := n.nodes[from]
+	if !ok {
+		return -1
+	}
+	return len(src.publisher.Sent) - 1
 }
 
 // Deliver hands the recorded wire bytes to the destination Election's
@@ -91,6 +133,7 @@ func (n *Network) Deliver(p DeliverPayload) bool {
 	delivered := dst.Election().HandleConsensusMessage(p.Msg.Wire, 0)
 	if delivered {
 		dst.receivedFromOrder = append(dst.receivedFromOrder, p.From)
+		dst.receivedMsgKeys = append(dst.receivedMsgKeys, deliveredKey{from: p.From, index: p.SentIndex})
 	}
 	return delivered
 }

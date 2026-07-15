@@ -33,11 +33,13 @@ type Node struct {
 	election  *election.Election
 	publisher *election.SbePublisher
 	host      *simElectionHost
+	agent     *simAgentHandler
 	clock     *NodeClock
 	nodeState election.CandidateTermStore
 	observer  *StateObserver
 
 	receivedFromOrder []int32
+	receivedMsgKeys   []deliveredKey
 }
 
 // Election returns the underlying election instance.
@@ -48,6 +50,9 @@ func (n *Node) Publisher() *election.SbePublisher { return n.publisher }
 
 // HostRole returns the role the election host last had set on it.
 func (n *Node) HostRole() consensus.Role { return n.host.Role() }
+
+// SetHostRole seeds the election host role before the first tick.
+func (n *Node) SetHostRole(role consensus.Role) { n.host.role = role }
 
 // Tick runs one Election.DoWork cycle at nowNs.
 func (n *Node) Tick(nowNs int64) int {
@@ -68,6 +73,17 @@ func (n *Node) ReceivedFromOrderForTest() []int32 {
 	return append([]int32(nil), n.receivedFromOrder...)
 }
 
+// hasDelivered reports whether the message at the source's Sent index has been
+// delivered to this node.
+func (n *Node) hasDelivered(key deliveredKey) bool {
+	for _, k := range n.receivedMsgKeys {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
 // Snapshot returns observable per-node state.
 func (n *Node) Snapshot() NodeSnapshot {
 	candidateTermID := election.NullValue
@@ -76,13 +92,16 @@ func (n *Node) Snapshot() NodeSnapshot {
 		candidateTermID = ct.CandidateTermID()
 	}
 	return NodeSnapshot{
-		NodeID:           n.id,
-		ElectionState:    n.election.State(),
-		LeadershipTermID: n.election.LeadershipTermID(),
-		LogPosition:      n.election.LogPosition(),
-		CandidateTermID:  candidateTermID,
-		PublishedCount:   len(n.publisher.Sent),
-		InboundCount:     len(n.receivedFromOrder),
+		NodeID:             n.id,
+		ElectionState:      n.election.State(),
+		LeadershipTermID:   n.election.LeadershipTermID(),
+		LogPosition:        n.election.LogPosition(),
+		CandidateTermID:    candidateTermID,
+		PublishedCount:     len(n.publisher.Sent),
+		InboundCount:       len(n.receivedFromOrder),
+		PrepareCalls:       n.agent.prepareCalls,
+		PrepareLogPosition: n.agent.prepareLogPosition,
+		PrepareNowNs:       n.agent.prepareNowNs,
 	}
 }
 
@@ -136,9 +155,10 @@ func newNode(cfg nodeBuildConfig) (*Node, error) {
 	observer := &StateObserver{sim: cfg.sim, nodeID: cfg.id}
 
 	host := &simElectionHost{now: clock.TimeNs}
+	agent := &simAgentHandler{}
 
 	deps := election.ElectionDeps{
-		Handler:       simAgentHandler{},
+		Handler:       agent,
 		Host:          host,
 		Publisher:     publisher,
 		NanoClock:     clock.TimeNs,
@@ -155,6 +175,7 @@ func newNode(cfg nodeBuildConfig) (*Node, error) {
 		election:  election.NewElection(electionCfg, deps),
 		publisher: publisher,
 		host:      host,
+		agent:     agent,
 		clock:     clock,
 		nodeState: nodeState,
 		observer:  observer,

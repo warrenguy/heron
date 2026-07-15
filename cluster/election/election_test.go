@@ -345,3 +345,229 @@ func TestElection_shouldElectCandidateWithFullVote(t *testing.T) {
 	require.Equal(t, consensus.RoleLeader, fx.host.role)
 	fx.requireLocalLeader()
 }
+
+func TestElection_shouldTimeoutCanvassWithMajority(t *testing.T) {
+	t.Parallel()
+
+	fx := newTimeoutElection(t, 1)
+
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+
+	fx.injectAppendPosition(0, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition)
+	require.Equal(t, fx.cfg.AppendPosition, fx.member(0).LogPosition)
+	require.Equal(t, election.NullPosition, fx.member(2).LogPosition)
+
+	fx.advance(1)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+
+	fx.advance(fx.cfg.StartupCanvassTimeoutNs - 2)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+
+	fx.advance(2)
+	fx.doWork()
+
+	require.Equal(t, election.ElectionStateNominate, fx.election.State())
+	require.Equal(t, []election.ElectionState{
+		election.ElectionStateInit,
+		election.ElectionStateCanvass,
+		election.ElectionStateNominate,
+	}, fx.observer.states)
+}
+
+func TestElection_shouldTimeoutCandidateBallotWithoutMajority(t *testing.T) {
+	t.Parallel()
+
+	fx := newTimeoutElection(t, 1)
+
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+
+	fx.injectCanvassPosition(0, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition)
+	fx.injectCanvassPosition(2, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition)
+
+	fx.advance(1)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateNominate, fx.election.State())
+
+	// NominationRand=0 collapses nominationDelayNs to zero; the half-timeout step
+	// still mirrors Java's clock increment before the first post-nominate DoWork.
+	fx.advance(fx.cfg.ElectionTimeoutNs >> 1)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCandidateBallot, fx.election.State())
+
+	fx.advance(fx.cfg.ElectionTimeoutNs - 1)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCandidateBallot, fx.election.State())
+
+	fx.advance(1)
+	fx.doWork()
+
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+	require.False(t, election.IsExtendedCanvassForTest(fx.election))
+	require.Equal(t, election.NullValue, fx.election.LeadershipTermID())
+	require.Equal(t, []election.ElectionState{
+		election.ElectionStateInit,
+		election.ElectionStateCanvass,
+		election.ElectionStateNominate,
+		election.ElectionStateCandidateBallot,
+		election.ElectionStateCanvass,
+	}, fx.observer.states)
+}
+
+func TestElection_shouldTimeoutFailedCandidateBallotOnSplitVoteThenSucceedOnRetry(t *testing.T) {
+	t.Parallel()
+
+	fx := newTimeoutElection(t, 1)
+
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+
+	fx.injectCanvassPosition(0, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition)
+
+	fx.advance(fx.cfg.StartupCanvassTimeoutNs - 2)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+
+	fx.advance(2)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateNominate, fx.election.State())
+
+	fx.advance(fx.cfg.ElectionTimeoutNs >> 1)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCandidateBallot, fx.election.State())
+
+	require.Equal(t, election.NullValue+1, election.CandidateTermIDForTest(fx.election))
+	fx.injectVote(2, election.NullValue, fx.cfg.AppendPosition, false)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCandidateBallot, fx.election.State())
+	require.NotNil(t, fx.member(2).Vote)
+	require.False(t, *fx.member(2).Vote)
+	require.Equal(t, election.NullValue, fx.member(2).LeadershipTermID)
+	require.Equal(t, election.NullValue+1, fx.member(2).CandidateTermID)
+
+	fx.advance(fx.cfg.ElectionTimeoutNs - 1)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCandidateBallot, fx.election.State())
+
+	fx.advance(1)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+	require.False(t, election.IsExtendedCanvassForTest(fx.election))
+	require.Equal(t, election.NullValue, fx.election.LeadershipTermID())
+
+	fx.injectCanvassPosition(0, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition)
+
+	// Noop host returns TimeOfLastLeaderUpdateNs() == 0, so the re-canvass
+	// deadline is anchored at epoch 0 rather than the last leader heartbeat.
+	fx.advance(fx.cfg.LeaderHeartbeatTimeoutNs)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateNominate, fx.election.State())
+
+	fx.advance(fx.cfg.ElectionTimeoutNs)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCandidateBallot, fx.election.State())
+
+	require.Equal(t, election.NullValue+2, election.CandidateTermIDForTest(fx.election))
+	fx.injectVote(2, election.NullValue+1, fx.cfg.AppendPosition, true)
+	require.NotNil(t, fx.member(2).Vote)
+	require.True(t, *fx.member(2).Vote)
+	require.Equal(t, election.NullValue+1, fx.member(2).LeadershipTermID)
+	require.Equal(t, election.NullValue+2, fx.member(2).CandidateTermID)
+
+	fx.advance(fx.cfg.ElectionTimeoutNs - 1)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCandidateBallot, fx.election.State())
+
+	fx.advance(1)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateLeaderLogReplication, fx.election.State())
+
+	fx.doWork()
+	require.Equal(t, election.ElectionStateLeaderReplay, fx.election.State())
+
+	fx.doWork()
+	require.Equal(t, election.ElectionStateLeaderInit, fx.election.State())
+
+	fx.doWork()
+	require.Equal(t, election.ElectionStateLeaderReady, fx.election.State())
+	require.Equal(t, election.NullValue+2, fx.election.LeadershipTermID())
+	require.Equal(t, consensus.RoleLeader, fx.host.role)
+	fx.requireLocalLeader()
+	require.Len(t, fx.agent.joinLeaderCalls, 1)
+	require.Equal(t, election.NullValue+2, fx.agent.joinLeaderCalls[0].leadershipTermID)
+	require.Equal(t, fixtureLogSessionID, fx.agent.joinLeaderCalls[0].logSessionID)
+	require.Equal(t, []election.ElectionState{
+		election.ElectionStateInit,
+		election.ElectionStateCanvass,
+		election.ElectionStateNominate,
+		election.ElectionStateCandidateBallot,
+		election.ElectionStateCanvass,
+		election.ElectionStateNominate,
+		election.ElectionStateCandidateBallot,
+		election.ElectionStateLeaderLogReplication,
+		election.ElectionStateLeaderReplay,
+		election.ElectionStateLeaderInit,
+		election.ElectionStateLeaderReady,
+	}, fx.observer.states)
+}
+
+func TestElection_shouldTimeoutFollowerBallotWithoutLeaderEmerging(t *testing.T) {
+	t.Parallel()
+
+	fx := newTimeoutElection(t, 1)
+
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+
+	candidateTermID := fx.cfg.LeadershipTermID + 1
+	fx.injectRequestVote(0, candidateTermID, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition)
+	require.Len(t, fx.publisher.Sent, 1)
+	require.Equal(t, uint16(clusterwire.VoteSbeTemplateID), fx.publisher.Sent[0].TemplateID)
+
+	fx.advance(1)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateFollowerBallot, fx.election.State())
+
+	fx.advance(fx.cfg.ElectionTimeoutNs - 2)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateFollowerBallot, fx.election.State())
+
+	fx.advance(2)
+	fx.doWork()
+
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+	require.Equal(t, election.NullValue, fx.election.LeadershipTermID())
+	require.Equal(t, []election.ElectionState{
+		election.ElectionStateInit,
+		election.ElectionStateCanvass,
+		election.ElectionStateFollowerBallot,
+		election.ElectionStateCanvass,
+	}, fx.observer.states)
+}
+
+func TestElection_shouldBecomeFollowerIfEnteringNewElection(t *testing.T) {
+	t.Parallel()
+
+	fx := newTimeoutElection(
+		t, 0,
+		withNodeStartup(false),
+		withPositions(1, 120, 120),
+		withHostRole(consensus.RoleLeader),
+	)
+
+	fx.doWork()
+
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+	require.Equal(t, 1, fx.agent.prepareCalls)
+	require.Equal(t, int64(120), fx.agent.prepareLogPosition)
+	require.Equal(t, fx.clock.nowNs, fx.agent.prepareNowNs)
+	require.Equal(t, int64(120), fx.election.AppendPosition())
+	require.Equal(t, consensus.RoleFollower, fx.host.role)
+	require.Equal(t, []election.ElectionState{
+		election.ElectionStateInit,
+		election.ElectionStateCanvass,
+	}, fx.observer.states)
+}

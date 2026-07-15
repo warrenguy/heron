@@ -88,13 +88,17 @@ type recordingAgentHandler struct {
 	appendPositionReturn int64
 
 	prepareCalls       int
+	prepareLogPosition int64
+	prepareNowNs       int64
 	joinLeaderCalls    []joinLogAsLeaderCall
 	joinFollowerCalls  int
 	electionCompleteNs []int64
 }
 
-func (h *recordingAgentHandler) PrepareForNewLeadership(int64, int64) int64 {
+func (h *recordingAgentHandler) PrepareForNewLeadership(logPosition, nowNs int64) int64 {
 	h.prepareCalls++
+	h.prepareLogPosition = logPosition
+	h.prepareNowNs = nowNs
 	return h.appendPositionReturn
 }
 
@@ -153,6 +157,17 @@ func electionDepsForMembers(t *testing.T, members []election.Member) (
 	*recordingNodeState,
 ) {
 	t.Helper()
+	return electionDepsForMemberPtrs(t, election.MembersPtrs(members), members[0].ID)
+}
+
+func electionDepsForMemberPtrs(t *testing.T, memberPtrs []*election.Member, memberID int32) (
+	election.ElectionConfig,
+	election.ElectionDeps,
+	*FakeClock,
+	*FakeEpochClock,
+	*recordingNodeState,
+) {
+	t.Helper()
 
 	clock := &FakeClock{nowNs: 1_000_000_000}
 	epochClock := &FakeEpochClock{nowMs: 42_000}
@@ -162,10 +177,11 @@ func electionDepsForMembers(t *testing.T, members []election.Member) (
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
 	nodeState := &recordingNodeState{store: store}
 
-	memberPtrs := election.MembersPtrs(members)
+	thisMember := memberPtrForID(memberPtrs, memberID)
+	require.NotNil(t, thisMember, "member id %d not in cluster", memberID)
 
 	cfg := election.ElectionTestConfig()
-	cfg.MemberID = memberPtrs[0].ID
+	cfg.MemberID = memberID
 
 	deps := election.ElectionDeps{
 		Handler:    electiontest.NoopAgentHandler{},
@@ -175,9 +191,18 @@ func electionDepsForMembers(t *testing.T, members []election.Member) (
 		EpochClock: epochClock.TimeMs,
 		NodeState:  nodeState,
 		Members:    memberPtrs,
-		ThisMember: memberPtrs[0],
+		ThisMember: thisMember,
 	}
 	return cfg, deps, clock, epochClock, nodeState
+}
+
+func memberPtrForID(memberPtrs []*election.Member, memberID int32) *election.Member {
+	for _, m := range memberPtrs {
+		if m.ID == memberID {
+			return m
+		}
+	}
+	return nil
 }
 
 // Baseline term and positions shared by testElectionDeps and newElectionFixture.
