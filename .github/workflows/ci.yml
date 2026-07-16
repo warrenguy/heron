@@ -15,7 +15,7 @@ jobs:
       GOARCH: amd64
     steps:
       - &checkout-step
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - &go-arch-cache-marker-step
         name: Write Go arch cache marker

@@ -31,7 +31,7 @@ jobs:
     env: &bench-per-arch-env
       GOARCH: ${{ matrix.goarch }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
@@ -59,7 +59,7 @@ jobs:
       cancel-in-progress: true
     env: *bench-per-arch-env
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/cache/restore@v6
         id: bench-cache
@@ -94,7 +94,7 @@ jobs:
     needs: [bench-baseline, bench-regression]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Bench jobs passed
         env:
           EVENT: ${{ github.event_name }}
