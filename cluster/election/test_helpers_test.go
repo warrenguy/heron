@@ -23,6 +23,11 @@ type FakeEpochClock struct {
 
 func (c *FakeEpochClock) TimeMs() int64 { return c.nowMs }
 
+func advanceFakeClocks(clock *FakeClock, epoch *FakeEpochClock, deltaNs int64) {
+	clock.nowNs += deltaNs
+	epoch.nowMs += deltaNs / 1_000_000
+}
+
 type recordingNodeState struct {
 	store        election.CandidateTermStore
 	proposeCalls []struct {
@@ -30,6 +35,18 @@ type recordingNodeState struct {
 		logPosition     int64
 		timestampMs     int64
 	}
+	// durableSeen mirrors the wrapped fresh-file store's candidate term:
+	// UpdateCandidateTermID sets it, ProposeMaxCandidateTermID takes the max,
+	// NullValue before any write. Oracle for durable candidate-term invariants.
+	durableSeen    int64
+	durableTracked bool
+}
+
+func (r *recordingNodeState) expectedCandidateTerm() int64 {
+	if !r.durableTracked {
+		return election.NullValue
+	}
+	return r.durableSeen
 }
 
 func (r *recordingNodeState) CandidateTerm() (election.CandidateTerm, error) {
@@ -39,6 +56,8 @@ func (r *recordingNodeState) CandidateTerm() (election.CandidateTerm, error) {
 func (r *recordingNodeState) UpdateCandidateTermID(
 	candidateTermID, logPosition, timestampMs int64,
 ) error {
+	r.durableSeen = candidateTermID
+	r.durableTracked = true
 	return r.store.UpdateCandidateTermID(candidateTermID, logPosition, timestampMs)
 }
 
@@ -50,6 +69,13 @@ func (r *recordingNodeState) ProposeMaxCandidateTermID(
 		logPosition     int64
 		timestampMs     int64
 	}{candidateTermID, logPosition, timestampMs})
+	if !r.durableTracked {
+		r.durableSeen = election.NullValue
+		r.durableTracked = true
+	}
+	if candidateTermID > r.durableSeen {
+		r.durableSeen = candidateTermID
+	}
 	return r.store.ProposeMaxCandidateTermID(candidateTermID, logPosition, timestampMs)
 }
 

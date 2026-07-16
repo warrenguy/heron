@@ -51,6 +51,13 @@ func IsExtendedCanvassForTest(e *Election) bool { return e.isExtendedCanvass }
 
 func LogLeadershipTermIDForTest(e *Election) int64 { return e.logLeadershipTermID }
 
+// SetLogLeadershipTermIDForTest seeds the log leadership term without running
+// installLeadershipTerm.
+//
+// Use only to restore canvass/vote log identity after a mid-run NewElection when
+// cfg.LeadershipTermID alone is insufficient.
+func SetLogLeadershipTermIDForTest(e *Election, id int64) { e.logLeadershipTermID = id }
+
 func ReplicationForTest(e *Election) (leadershipTermID, stopPosition, termBaseLogPosition int64) {
 	return e.replicationLeadershipTermID, e.replicationStopPosition, e.replicationTermBaseLogPosition
 }

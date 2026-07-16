@@ -65,6 +65,30 @@ func withAppVersion(v int32) fixtureOption {
 	return func(p *fixtureParams) { p.appVersion = v }
 }
 
+func newRecordingHostAndAgent(
+	clock *FakeClock,
+	role consensus.Role,
+	logPosition, appendPosition int64,
+) (*recordingElectionHost, *recordingAgentHandler) {
+	host := &recordingElectionHost{
+		clock:               clock,
+		role:                role,
+		logSessionID:        fixtureLogSessionID,
+		quorumPosition:      appendPosition,
+		localLogRecordingID: int64(election.NullValue),
+
+		// Join succeeds immediately by default; override followerLogJoinOK or
+		// agent.joinFollowerReturn for stall/timeout paths.
+		followerLogJoinOK:       true,
+		followerLogJoinPosition: logPosition,
+	}
+	agent := &recordingAgentHandler{
+		appendPositionReturn: appendPosition,
+		joinFollowerReturn:   true,
+	}
+	return host, agent
+}
+
 // electionFixture mirrors Java ElectionTest.newElection: an Election over a
 // recording host and agent driven by a manually advanced clock.
 type electionFixture struct {
@@ -110,22 +134,7 @@ func newElectionFixture(t *testing.T, opts ...fixtureOption) *electionFixture {
 	cfg.LogPosition = p.logPosition
 	cfg.AppendPosition = p.appendPosition
 
-	host := &recordingElectionHost{
-		clock:               clock,
-		role:                p.hostRole,
-		logSessionID:        fixtureLogSessionID,
-		quorumPosition:      p.appendPosition,
-		localLogRecordingID: int64(election.NullValue),
-
-		// Join succeeds immediately by default; override followerLogJoinOK or
-		// agent.joinFollowerReturn for stall/timeout paths.
-		followerLogJoinOK:       true,
-		followerLogJoinPosition: p.logPosition,
-	}
-	agent := &recordingAgentHandler{
-		appendPositionReturn: p.appendPosition,
-		joinFollowerReturn:   true,
-	}
+	host, agent := newRecordingHostAndAgent(clock, p.hostRole, p.logPosition, p.appendPosition)
 	deps.Host = host
 	deps.Handler = agent
 	deps.NominationRand = func() float64 { return 0 }
@@ -150,8 +159,7 @@ func newElectionFixture(t *testing.T, opts ...fixtureOption) *electionFixture {
 func (fx *electionFixture) doWork() int { return fx.election.DoWork(fx.clock.nowNs) }
 
 func (fx *electionFixture) advance(deltaNs int64) {
-	fx.clock.nowNs += deltaNs
-	fx.epochClock.nowMs += deltaNs / 1_000_000
+	advanceFakeClocks(fx.clock, fx.epochClock, deltaNs)
 }
 
 func (fx *electionFixture) driveUntilState(target election.ElectionState, maxIter int) {
@@ -193,13 +201,17 @@ func (fx *electionFixture) member(id int32) *election.Member {
 	return election.MemberForTest(fx.election, id)
 }
 
-func (fx *electionFixture) injectCanvassPosition(followerID int32, logTerm, logPos int64) {
-	fx.election.OnCanvassPosition(codecs.CanvassPositionFields{
+func injectCanvassPosition(e *election.Election, followerID int32, logTerm, logPos int64) {
+	e.OnCanvassPosition(codecs.CanvassPositionFields{
 		LogLeadershipTermID: logTerm,
 		LogPosition:         logPos,
 		LeadershipTermID:    logTerm,
 		FollowerMemberID:    followerID,
 	})
+}
+
+func (fx *electionFixture) injectCanvassPosition(followerID int32, logTerm, logPos int64) {
+	injectCanvassPosition(fx.election, followerID, logTerm, logPos)
 }
 
 func (fx *electionFixture) injectRequestVote(
