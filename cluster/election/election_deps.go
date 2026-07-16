@@ -1,6 +1,9 @@
 package election
 
-import "github.com/warrenguy/heron/cluster/consensus"
+import (
+	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/cluster/recordinglog"
+)
 
 // StateObserver receives each applied election state transition. Production
 // wiring updates the CLUSTER_ELECTION_STATE_TYPE_ID counter; tests record
@@ -28,11 +31,16 @@ type ElectionDeps struct {
 	ThisMember *Member
 
 	// RecordingLog and RecordingLogLookup are the recording-log seams for term
-	// coherency and successor-term lookup. Both may be nil until the consensus
-	// module wires the real recording log: a nil RecordingLog skips coherency
-	// writes and a nil RecordingLogLookup publishes current-term defaults.
-	RecordingLog       RecordingLogCoherency
-	RecordingLogLookup RecordingLogLookup
+	// coherency and successor-term lookup. Both may be nil when the agent
+	// omits a recording log: nil RecordingLog skips writes; nil
+	// RecordingLogLookup publishes current-term defaults.
+	//
+	// Production and tests should set both to the same *recordinglog.Log.
+	// RecordingLogFileSyncLevel is zero (FileSyncNone) by default; production
+	// agents must set FileSyncData or FileSyncFull.
+	RecordingLog              RecordingLogCoherency
+	RecordingLogLookup        RecordingLogLookup
+	RecordingLogFileSyncLevel recordinglog.FileSyncLevel
 
 	StateObserver StateObserver
 }

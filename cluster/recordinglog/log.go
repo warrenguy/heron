@@ -163,7 +163,7 @@ func (l *Log) AppendTerm(
 				return err
 			}
 		}
-		if nextTerm := l.findTermEntry(leadershipTermID + 1); nextTerm != nil {
+		if nextTerm := l.FindTermEntry(leadershipTermID + 1); nextTerm != nil {
 			logPosition = nextTerm.TermBaseLogPosition
 		}
 	}
@@ -399,7 +399,7 @@ func (l *Log) InvalidateLatestSnapshot() (bool, error) {
 		if entry.LogPosition < highLogPosition {
 			break
 		}
-		if l.findTermEntry(entry.LeadershipTermID) == nil {
+		if l.FindTermEntry(entry.LeadershipTermID) == nil {
 			return false, ErrNoMatchingTermForSnapshot
 		}
 		if entry.LogPosition > highLogPosition {
@@ -529,9 +529,10 @@ type EnsureCoherentParams struct {
 	FileSyncLevel              FileSyncLevel
 }
 
-// findTermEntry returns the cached valid TERM entry for leadershipTermID, or nil
-// when no such term exists.
-func (l *Log) findTermEntry(leadershipTermID int64) *Entry {
+// FindTermEntry returns the cached valid TERM entry for leadershipTermID, or nil
+// when no such term exists. The entry aliases internal state; callers must not
+// mutate it and must copy to retain it across further operations.
+func (l *Log) FindTermEntry(leadershipTermID int64) *Entry {
 	index, ok := l.indexByLeadershipTermID[leadershipTermID]
 	if !ok {
 		return nil
@@ -563,7 +564,7 @@ func (l *Log) findLastTerm() *Entry {
 	if !ok {
 		return nil
 	}
-	return l.findTermEntry(maxID)
+	return l.FindTermEntry(maxID)
 }
 
 // findGreatestTermBelow returns the highest valid TERM entry whose
@@ -574,7 +575,7 @@ func (l *Log) findGreatestTermBelow(leadershipTermID int64) *Entry {
 	if !ok {
 		return nil
 	}
-	return l.findTermEntry(maxBelow)
+	return l.FindTermEntry(maxBelow)
 }
 
 func (l *Log) appendInitialTerms(p EnsureCoherentParams, skipExisting bool) error {
@@ -608,7 +609,7 @@ func (l *Log) backfillTermsToTarget(p EnsureCoherentParams, anchor *Entry) error
 		if err := l.CommitLogPosition(anchor.LeadershipTermID, p.TermBaseLogPosition); err != nil {
 			return err
 		}
-		anchor = l.findTermEntry(anchor.LeadershipTermID)
+		anchor = l.FindTermEntry(anchor.LeadershipTermID)
 	}
 	backfillBase := anchor.LogPosition
 	for termID := anchor.LeadershipTermID + 1; termID < p.LeadershipTermID; termID++ {
@@ -659,7 +660,7 @@ func (l *Log) backfillTermsToTarget(p EnsureCoherentParams, anchor *Entry) error
 // any AppendTerm, CommitLogPosition, or Force error. Every non-error path ends
 // with Force.
 func (l *Log) EnsureCoherent(p EnsureCoherentParams) error {
-	if l.findTermEntry(p.LeadershipTermID) == nil {
+	if l.FindTermEntry(p.LeadershipTermID) == nil {
 		if err := l.backfillMissingTargetTerm(p); err != nil {
 			return err
 		}

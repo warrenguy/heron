@@ -60,6 +60,10 @@ type ElectionHost interface {
 	PollArchiveEvents() int
 	LocalLogRecordingID() int64
 	SetLogRecordingID(recordingID int64)
+
+	// TruncateLogEntry records an explicit cluster-log truncation request.
+	// Production agents log and schedule archive truncate; test hosts record
+	// the call only. Does not mutate recording.log TERM rows.
 	TruncateLogEntry(leadershipTermID, logPosition int64)
 	AwaitLocalSocketsClosed(registrationID int64)
 

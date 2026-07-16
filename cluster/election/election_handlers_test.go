@@ -870,7 +870,7 @@ func TestEnsureRecordingLogCoherent_nullRecordingIDSkips(t *testing.T) {
 	))
 	require.Empty(t, spy.calls)
 
-	// Nil log tolerated until real recording-log wiring lands.
+	// Nil log is a no-op.
 	require.NoError(t, election.EnsureRecordingLogCoherent(
 		nil,
 		recordinglog.EnsureCoherentParams{RecordingID: 42},
@@ -922,32 +922,12 @@ func TestUpdateRecordingLog_propagation(t *testing.T) {
 		t.Parallel()
 
 		cfg, deps, clock, epochClock, _ := testElectionDeps(t)
-		host := &recordingElectionHost{
-			clock:                   clock,
-			localLogRecordingID:     42,
-			followerLogJoinOK:       true,
-			followerLogJoinPosition: cfg.LogPosition,
-		}
-		deps.Host = host
 		spy := &recordingLogCoherencySpy{}
 		deps.RecordingLog = spy
-		handler := &recordingAgentHandler{joinFollowerReturn: true}
-		deps.Handler = handler
-		e := election.NewElection(cfg, deps)
+		adoptedTerm := driveFollowerLogJoinToReady(t, cfg, deps, clock)
 
-		adoptedTerm := cfg.LeadershipTermID + 2
-		election.SetStateForTest(e, election.ElectionStateCanvass)
-		e.OnNewLeadershipTerm(installNewLeadershipTermFields(cfg, 1, adoptedTerm))
-		require.Equal(t, election.ElectionStateFollowerReplay, e.State())
-		require.Equal(t, cfg.LeadershipTermID, election.LogLeadershipTermIDForTest(e))
-
-		election.SetStateForTest(e, election.ElectionStateFollowerLogAwait)
-		require.Equal(t, 1, e.DoWork(clock.nowNs))
-
-		require.Equal(t, election.ElectionStateFollowerReady, e.State())
-		require.Equal(t, adoptedTerm, election.LogLeadershipTermIDForTest(e))
 		require.Equal(t, []recordinglog.EnsureCoherentParams{{
-			RecordingID:                42,
+			RecordingID:                testRecordingID,
 			InitialLogLeadershipTermID: cfg.LeadershipTermID,
 			InitialTermBaseLogPosition: cfg.TermBaseLogPosition,
 			LeadershipTermID:           adoptedTerm,
@@ -956,6 +936,66 @@ func TestUpdateRecordingLog_propagation(t *testing.T) {
 			Timestamp:                  epochClock.nowMs,
 		}}, spy.calls)
 	})
+
+	t.Run("forwards file sync level from deps", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, deps, clock, epochClock, _ := testElectionDeps(t)
+		host := &recordingElectionHost{clock: clock, localLogRecordingID: 42}
+		deps.Host = host
+		spy := &recordingLogCoherencySpy{}
+		deps.RecordingLog = spy
+		deps.RecordingLogFileSyncLevel = recordinglog.FileSyncData
+		e := election.NewElection(cfg, deps)
+		election.SetStateForTest(e, election.ElectionStateLeaderInit)
+
+		require.Equal(t, 1, e.DoWork(clock.nowNs))
+		require.Equal(t, election.ElectionStateLeaderReady, e.State())
+		require.Equal(t, []recordinglog.EnsureCoherentParams{{
+			RecordingID:                42,
+			InitialLogLeadershipTermID: cfg.LeadershipTermID,
+			InitialTermBaseLogPosition: cfg.TermBaseLogPosition,
+			LeadershipTermID:           cfg.LeadershipTermID,
+			TermBaseLogPosition:        cfg.LogPosition,
+			LogPosition:                election.NullValue,
+			Timestamp:                  epochClock.nowMs,
+			FileSyncLevel:              recordinglog.FileSyncData,
+		}}, spy.calls)
+	})
+}
+
+// driveFollowerLogJoinToReady adopts a successor term via NewLeadershipTerm,
+// replays, and joins the follower log, asserting the FollowerReady transition
+// and returning the adopted term. Callers set deps.RecordingLog before the
+// drive; Host and Handler are installed here.
+func driveFollowerLogJoinToReady(
+	t *testing.T,
+	cfg election.ElectionConfig,
+	deps election.ElectionDeps,
+	clock *FakeClock,
+) int64 {
+	t.Helper()
+
+	deps.Host = &recordingElectionHost{
+		clock:                   clock,
+		localLogRecordingID:     testRecordingID,
+		followerLogJoinOK:       true,
+		followerLogJoinPosition: cfg.LogPosition,
+	}
+	deps.Handler = &recordingAgentHandler{joinFollowerReturn: true}
+	e := election.NewElection(cfg, deps)
+
+	adoptedTerm := cfg.LeadershipTermID + 2
+	election.SetStateForTest(e, election.ElectionStateCanvass)
+	e.OnNewLeadershipTerm(installNewLeadershipTermFields(cfg, 1, adoptedTerm))
+	require.Equal(t, election.ElectionStateFollowerReplay, e.State())
+	require.Equal(t, cfg.LeadershipTermID, election.LogLeadershipTermIDForTest(e))
+
+	election.SetStateForTest(e, election.ElectionStateFollowerLogAwait)
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateFollowerReady, e.State())
+	require.Equal(t, adoptedTerm, election.LogLeadershipTermIDForTest(e))
+	return adoptedTerm
 }
 
 // driveToFollowerLogReplication installs a successor term whose base position
@@ -1093,8 +1133,10 @@ func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {
 		t.Parallel()
 
 		cfg, deps, clock, _, _ := testElectionDeps(t)
-		host := &recordingElectionHost{clock: clock}
+		host := &recordingElectionHost{clock: clock, localLogRecordingID: 42}
 		deps.Host = host
+		spy := &recordingLogCoherencySpy{}
+		deps.RecordingLog = spy
 		e := election.NewElection(cfg, deps)
 		election.SetStateForTest(e, election.ElectionStateCanvass)
 
@@ -1107,6 +1149,7 @@ func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {
 			leadershipTermID: cfg.LeadershipTermID,
 			logPosition:      cfg.AppendPosition - 50,
 		}}, host.truncateCalls)
+		require.Empty(t, spy.calls)
 		require.Equal(t, cfg.AppendPosition-50, e.AppendPosition())
 		require.Equal(t, election.ElectionStateInit, e.State())
 	})

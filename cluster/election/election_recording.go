@@ -3,7 +3,7 @@ package election
 import "github.com/warrenguy/heron/cluster/recordinglog"
 
 // RecordingLogCoherency is the recording-log seam for term-adoption coherency.
-// Nil is tolerated until the consensus module wires the real recording log.
+// Nil skips coherency writes when the agent omits a recording log.
 type RecordingLogCoherency interface {
 	EnsureCoherent(recordinglog.EnsureCoherentParams) error
 }
@@ -13,6 +13,11 @@ type RecordingLogCoherency interface {
 type RecordingLogLookup interface {
 	FindTermEntry(logLeadershipTermID int64) *recordinglog.Entry
 }
+
+var (
+	_ RecordingLogCoherency = (*recordinglog.Log)(nil)
+	_ RecordingLogLookup    = (*recordinglog.Log)(nil)
+)
 
 // EnsureRecordingLogCoherent brings the recording log up to
 // params.LeadershipTermID.
@@ -49,6 +54,7 @@ func (e *Election) commitRecordingLogTerm(
 		TermBaseLogPosition:        termBaseLogPosition,
 		LogPosition:                logPosition,
 		Timestamp:                  e.deps.EpochClock(),
+		FileSyncLevel:              e.deps.RecordingLogFileSyncLevel,
 	})
 	if err != nil {
 		return err

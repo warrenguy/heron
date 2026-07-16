@@ -97,6 +97,24 @@ type RecoveryPlan struct {
 	Log *RecoveryPlanLog
 }
 
+// IsEmpty reports whether the plan holds no log term and no snapshots.
+//
+// Do not key emptiness on LastLeadershipTermID == NullRecordingID: computed
+// empty plans carry that sentinel, but a zero-value RecoveryPlan has
+// LastLeadershipTermID == 0 and is still empty.
+func (p RecoveryPlan) IsEmpty() bool {
+	return p.Log == nil && len(p.Snapshots) == 0
+}
+
+// TermRecordingID returns the log term recording id, or NullRecordingID when
+// the plan has no log term.
+func (p RecoveryPlan) TermRecordingID() int64 {
+	if p.Log == nil {
+		return NullRecordingID
+	}
+	return p.Log.Term.RecordingID
+}
+
 // RecoveryPlanConfig holds inputs for PlanRecovery.
 type RecoveryPlanConfig struct {
 	// ServiceCount is the number of clustered services (excluding the consensus module).
