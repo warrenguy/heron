@@ -14,9 +14,11 @@ import (
 //
 // ResponsePoller captures ControlResponse and Challenge terminals. The demux never
 // resets it: once it latches a terminal capture, handleControlResponseFromFragment drops later
-// responses, and the poller's own Poll reset is bypassed here. Reuse across separate
-// awaits requires an unlatched poller: call ResetCapture before each new demux await, or
-// supply a fresh poller.
+// responses, and the poller's own Poll reset is bypassed here. Session awaits ResetAwait the
+// outstanding correlation before offer so offer-retry and response polls share the filter,
+// and discard any remaining non-matching terminal between polls; direct demux use
+// requires an unlatched poller: call ResetCapture or ResetAwait before each new demux
+// await, or supply a fresh poller.
 //
 // DescriptorPoller captures RecordingDescriptor fragments. In descriptor mode
 // (ResponsePoller nil, DescriptorPoller set) ControlResponse also routes to the

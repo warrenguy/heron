@@ -119,6 +119,95 @@ func TestTryMatchControlResponse_noCapture(t *testing.T) {
 	}
 }
 
+func TestTryMatchControlResponseDiscardStale(t *testing.T) {
+	matchingResponse := codecs.ControlResponseFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    controlResponseTestCorrelationID,
+		RelevantID:       555,
+		Code:             archivewire.ControlResponseCode_OK,
+		Version:          520,
+	}
+	cases := []struct {
+		name        string
+		poller      func(t *testing.T) *ControlResponsePoller
+		wantMatch   bool
+		wantLatched bool
+	}{
+		{
+			name: "match_stays_latched",
+			poller: func(t *testing.T) *ControlResponsePoller {
+				return captureControlResponseOnPoller(t, matchingResponse)
+			},
+			wantMatch:   true,
+			wantLatched: true,
+		},
+		{
+			name: "stale_correlation_discarded",
+			poller: func(t *testing.T) *ControlResponsePoller {
+				stale := matchingResponse
+				stale.CorrelationID++
+				return captureControlResponseOnPoller(t, stale)
+			},
+		},
+		{
+			name: "stale_control_session_discarded",
+			poller: func(t *testing.T) *ControlResponsePoller {
+				stale := matchingResponse
+				stale.ControlSessionID++
+				return captureControlResponseOnPoller(t, stale)
+			},
+		},
+		{
+			name: "stale_challenge_discarded",
+			poller: func(t *testing.T) *ControlResponsePoller {
+				poller := NewControlResponsePoller(nil, 1)
+				invokeHandleControlResponseFragment(
+					t,
+					poller,
+					encodeChallengeWire(
+						t,
+						controlResponseTestControlSessionID,
+						controlResponseTestCorrelationID,
+						[]byte("challenge-bytes"),
+					),
+					0,
+					-1,
+				)
+				return poller
+			},
+		},
+		{
+			name: "no_capture_no_op",
+			poller: func(t *testing.T) *ControlResponsePoller {
+				return NewControlResponsePoller(nil, 1)
+			},
+		},
+		{
+			name:   "nil_poller",
+			poller: func(t *testing.T) *ControlResponsePoller { return nil },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			poller := tc.poller(t)
+
+			fields, err, ok := tryMatchControlResponseDiscardStale(
+				poller,
+				controlResponseTestControlSessionID,
+				controlResponseTestCorrelationID,
+			)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantMatch, ok)
+			if tc.wantMatch {
+				require.Equal(t, int64(555), fields.RelevantID)
+			}
+			if poller != nil {
+				require.Equal(t, tc.wantLatched, poller.IsPollComplete())
+			}
+		})
+	}
+}
+
 func TestTryMatchControlResponse_wrongTemplateIgnored(t *testing.T) {
 	poller := NewControlResponsePoller(nil, 1)
 	invokeHandleControlResponseFragment(

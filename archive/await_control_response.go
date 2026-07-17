@@ -30,8 +30,32 @@ func TryMatchControlResponse(
 	return matchControlResponseFields(fields, controlSessionID, correlationID)
 }
 
-// AwaitControlResponse loops DoWork then pollFn until TryMatchControlResponse
-// reports a match for controlSessionID and correlationID, or responseTimeout elapses.
+// tryMatchControlResponseDiscardStale matches like TryMatchControlResponse and clears a
+// latched terminal that is not the awaited ControlResponse (wrong kind or wrong IDs).
+// The session runs one outstanding request at a time, so a non-matching terminal is
+// stale; left latched it holds the demux ready gate and the awaited response would be
+// dropped (PollControlEvents never resets the poller). Prefer ResetAwait so non-matching
+// fragments never latch during offer retries or the response await; this clear remains as
+// a belt for unarmed demux, Challenge, and wrong control session.
+func tryMatchControlResponseDiscardStale(
+	poller *ControlResponsePoller,
+	controlSessionID int64,
+	correlationID int64,
+) (codecs.ControlResponseFields, error, bool) {
+	fields, err, ok := TryMatchControlResponse(poller, controlSessionID, correlationID)
+	if !ok && poller != nil && poller.IsPollComplete() {
+		poller.ResetCapture()
+	}
+	return fields, err, ok
+}
+
+// AwaitControlResponse loops DoWork then pollFn until a ControlResponse matching
+// controlSessionID and correlationID is captured, or responseTimeout elapses.
+// Arms poller for correlationID so demux drops non-matching terminals without latching.
+// Session offer paths should call ResetAwait before offer so offer-retry polls share that
+// filter; this re-arm is safe when already armed. A latched terminal that is not the
+// awaited ControlResponse is cleared so it does not hold the demux ready gate and drop
+// the awaited response.
 //
 // It drives DoWork on aeronClient for the duration of the await window only. The idle
 // strategy paces empty polls and is reset on every exit path; a nil archiveCtx.IdleStrategy
@@ -52,6 +76,10 @@ func AwaitControlResponse(
 	correlationID int64,
 ) (codecs.ControlResponseFields, error) {
 	archiveCtx = archiveCtx.Normalize()
+	if poller != nil {
+		poller.ArmAwait(correlationID)
+		defer poller.ArmAwait(0)
+	}
 	return awaitMatchedControlResponse(
 		ctx,
 		aeronClient,
@@ -61,7 +89,7 @@ func AwaitControlResponse(
 		correlationID,
 		ControlResponseAwaitOperation,
 		func() (codecs.ControlResponseFields, error, bool) {
-			return TryMatchControlResponse(poller, controlSessionID, correlationID)
+			return tryMatchControlResponseDiscardStale(poller, controlSessionID, correlationID)
 		},
 	)
 }
@@ -153,6 +181,7 @@ func runControlAwaitLoop(
 // offerAndAwaitControlRequest offers a control request until the publication
 // accepts it, then awaits the matching ControlResponse.
 //
+// ResetAwait arms the poller before offer so offer-retry polls filter by correlationID.
 // The offer retry uses ControlOfferRetryTimeout. Once the offer succeeds, the response
 // await starts a fresh ControlResponseTimeout window so a slow offer cannot starve the
 // response wait.
@@ -167,7 +196,8 @@ func offerAndAwaitControlRequest(
 	correlationID int64,
 ) (codecs.ControlResponseFields, error) {
 	if poller != nil {
-		poller.ResetCapture()
+		poller.ResetAwait(correlationID)
+		defer poller.ArmAwait(0)
 	}
 	if err := offerControlRequest(
 		ctx, aeronClient, archiveCtx, pollFn, offerFn,

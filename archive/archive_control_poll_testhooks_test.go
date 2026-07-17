@@ -101,6 +101,50 @@ func TestPollControlEvents_ZeroAllocs(t *testing.T) {
 	})
 }
 
+// TestPollControlEvents_ArmAwait_staleThenMatchSameBatch proves dispatch-time filter:
+// a stale ControlResponse before the awaited one in one demux batch must not latch ready
+// and drop the match.
+func TestPollControlEvents_ArmAwait_staleThenMatchSameBatch(t *testing.T) {
+	sub, termBuffer := setupControlResponsePollFixtures(t)
+	stale := codecs.ControlResponseFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    controlResponseTestCorrelationID + 1,
+		RelevantID:       1,
+		Code:             archivewire.ControlResponseCode_OK,
+		Version:          520,
+	}
+	match := codecs.ControlResponseFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    controlResponseTestCorrelationID,
+		RelevantID:       7700,
+		Code:             archivewire.ControlResponseCode_OK,
+		Version:          520,
+	}
+	writeTwoSequentialUnfragmentedWiresToTerm(
+		t,
+		termBuffer,
+		encodeControlResponseWire(t, stale),
+		encodeControlResponseWire(t, match),
+	)
+
+	poller := newControlResponsePollerForTest(sub)
+	poller.ArmAwait(controlResponseTestCorrelationID)
+	assembler := NewFragmentAssembler(nil)
+
+	n := PollControlEvents(
+		sub,
+		DefaultControlResponseFragmentLimit,
+		assembler,
+		ControlPollTargets{ResponsePoller: poller},
+	)
+	require.Equal(t, 2, n)
+	require.True(t, poller.IsPollComplete())
+	resp, ok := poller.Response()
+	require.True(t, ok)
+	require.Equal(t, controlResponseTestCorrelationID, resp.CorrelationID)
+	require.Equal(t, int64(7700), resp.RelevantID)
+}
+
 // TestStandalonePollers_loseFragments documents the footgun the demux fixes: a
 // ControlResponsePoller.Poll consuming a batch that also holds a signal advances past
 // the signal, so a later signal poll on the same subscription never sees it.

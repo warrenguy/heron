@@ -310,6 +310,87 @@ func TestControlResponsePoller_Poll_fragmentLimitTwoCapturesFirstTerminalOnly(t 
 	require.Equal(t, archivewire.ControlResponseCode_OK, resp.Code)
 }
 
+func TestControlResponsePoller_ArmAwait_skipsNonMatchingLatch(t *testing.T) {
+	poller := NewControlResponsePoller(nil, 1)
+	poller.ArmAwait(controlResponseTestCorrelationID)
+
+	stale := controlResponsePollerTestOKFields()
+	stale.CorrelationID = controlResponseTestCorrelationID + 1
+	invokeHandleControlResponseFragment(t, poller, encodeControlResponseWire(t, stale), 0, -1)
+	require.False(t, poller.IsPollComplete())
+
+	invokeHandleControlResponseFragment(
+		t,
+		poller,
+		encodeControlResponseWire(t, controlResponsePollerTestOKFields()),
+		0,
+		-1,
+	)
+	require.True(t, poller.IsPollComplete())
+	resp, ok := poller.Response()
+	require.True(t, ok)
+	require.Equal(t, controlResponseTestCorrelationID, resp.CorrelationID)
+	require.Equal(t, int64(7), resp.RelevantID)
+}
+
+func TestControlResponsePoller_ResetAwait_clearsLatchAndArms(t *testing.T) {
+	poller := NewControlResponsePoller(nil, 1)
+	invokeHandleControlResponseFragment(
+		t,
+		poller,
+		encodeControlResponseWire(t, controlResponsePollerTestOKFields()),
+		0,
+		-1,
+	)
+	require.True(t, poller.IsPollComplete())
+
+	poller.ResetAwait(controlResponseTestCorrelationID + 1)
+	require.False(t, poller.IsPollComplete())
+
+	stale := controlResponsePollerTestOKFields()
+	invokeHandleControlResponseFragment(t, poller, encodeControlResponseWire(t, stale), 0, -1)
+	require.False(t, poller.IsPollComplete())
+
+	match := controlResponsePollerTestOKFields()
+	match.CorrelationID = controlResponseTestCorrelationID + 1
+	match.RelevantID = 99
+	invokeHandleControlResponseFragment(t, poller, encodeControlResponseWire(t, match), 0, -1)
+	require.True(t, poller.IsPollComplete())
+	resp, ok := poller.Response()
+	require.True(t, ok)
+	require.Equal(t, controlResponseTestCorrelationID+1, resp.CorrelationID)
+	require.Equal(t, int64(99), resp.RelevantID)
+}
+
+func TestControlResponsePoller_ArmAwait_skipsNonMatchingChallenge(t *testing.T) {
+	poller := NewControlResponsePoller(nil, 1)
+	poller.ArmAwait(controlResponseTestCorrelationID)
+
+	invokeHandleControlResponseFragment(
+		t,
+		poller,
+		encodeChallengeWire(
+			t,
+			controlResponseTestControlSessionID,
+			controlResponseTestCorrelationID+1,
+			[]byte("challenge-bytes"),
+		),
+		0,
+		-1,
+	)
+	require.False(t, poller.IsPollComplete())
+
+	invokeHandleControlResponseFragment(
+		t,
+		poller,
+		encodeControlResponseWire(t, controlResponsePollerTestOKFields()),
+		0,
+		-1,
+	)
+	require.True(t, poller.IsPollComplete())
+	require.False(t, poller.IsChallenged())
+}
+
 func controlResponsePollerTestOKFields() codecs.ControlResponseFields {
 	return codecs.ControlResponseFields{
 		ControlSessionID: controlResponseTestControlSessionID,

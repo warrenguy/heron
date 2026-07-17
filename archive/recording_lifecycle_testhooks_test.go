@@ -613,7 +613,7 @@ func TestStopRecording_awaitSTOPSignal(t *testing.T) {
 	require.Equal(t, int64(3003), tracker.StoppedPosition())
 }
 
-func TestStopRecordingAwaitSignal_awaitOKResponse(t *testing.T) {
+func TestStopRecordingAwaitSignal_OKAloneDoesNotComplete(t *testing.T) {
 	h := newLifecycleHarness(t)
 	tracker := NewStopSignalTracker(controlResponseTestControlSessionID, -1)
 	targets := h.signalTargets(tracker)
@@ -633,8 +633,139 @@ func TestStopRecordingAwaitSignal_awaitOKResponse(t *testing.T) {
 		targets,
 		tracker,
 	)
-	require.NoError(t, err)
+	require.Error(t, err)
+	var timeoutErr *ControlResponseTimeoutError
+	require.ErrorAs(t, err, &timeoutErr)
+	require.Equal(t, StopRecordingAwaitOperation, timeoutErr.Operation)
+	require.True(t, written)
 	require.False(t, tracker.Stopped())
+}
+
+func TestStopRecordingAwaitSignal_OKThenSTOP(t *testing.T) {
+	h := newLifecycleHarness(t)
+	tracker := NewStopSignalTracker(controlResponseTestControlSessionID, lifecycleRecordingID)
+	targets := h.signalTargets(tracker)
+	okWritten := false
+	stopWritten := false
+	pollFn := func() int {
+		if offered := h.pub.lastOffer(); offered != nil {
+			if !okWritten {
+				responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+					ControlSessionID: controlResponseTestControlSessionID,
+					CorrelationID:    offeredArchiveCorrelationID(t, offered),
+					Code:             archivewire.ControlResponseCode_OK,
+					Version:          520,
+				})
+				writeUnfragmentedWireToTerm(t, h.termBuffer, responseWire)
+				okWritten = true
+			} else if !stopWritten {
+				signalWire := encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
+					ControlSessionID: controlResponseTestControlSessionID,
+					CorrelationID:    909,
+					RecordingID:      lifecycleRecordingID,
+					SubscriptionID:   2002,
+					Position:         3003,
+					Signal:           archivewire.RecordingSignal_STOP,
+				})
+				appendUnfragmentedWireToTerm(t, h.termBuffer, signalWire)
+				stopWritten = true
+			}
+		}
+		h.advanceClock()
+		return h.demuxPoll(targets)
+	}
+
+	err := h.controlOps(pollFn).stopRecordingAwaitSignal(
+		t.Context(),
+		archiveProxyTestRecordingStreamID,
+		[]byte(lifecycleRecordingChannel),
+		targets,
+		tracker,
+	)
+	require.NoError(t, err)
+	require.True(t, okWritten)
+	require.True(t, stopWritten)
+	require.True(t, tracker.Stopped())
+	require.Equal(t, int64(3003), tracker.StoppedPosition())
+	require.False(t, h.poller.IsPollComplete())
+}
+
+// TestStopRecordingAwaitSignal_trailingOKFilteredByNextAwait proves a stop OK that
+// lands after the STOP proof returned does not block the next control await: ResetAwait
+// arms the new correlation before offer and demux, so the old-corr OK never latches.
+func TestStopRecordingAwaitSignal_trailingOKFilteredByNextAwait(t *testing.T) {
+	h := newLifecycleHarness(t)
+	tracker := NewStopSignalTracker(controlResponseTestControlSessionID, lifecycleRecordingID)
+	targets := h.signalTargets(tracker)
+	var stopCorrelationID int64
+	stopWritten := false
+	pollFn := func() int {
+		if offered := h.pub.lastOffer(); !stopWritten && offered != nil {
+			stopCorrelationID = offeredArchiveCorrelationID(t, offered)
+			signalWire := encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
+				ControlSessionID: controlResponseTestControlSessionID,
+				CorrelationID:    909,
+				RecordingID:      lifecycleRecordingID,
+				SubscriptionID:   2002,
+				Position:         3003,
+				Signal:           archivewire.RecordingSignal_STOP,
+			})
+			writeUnfragmentedWireToTerm(t, h.termBuffer, signalWire)
+			stopWritten = true
+		}
+		h.advanceClock()
+		return h.demuxPoll(targets)
+	}
+
+	err := h.controlOps(pollFn).stopRecordingAwaitSignal(
+		t.Context(),
+		archiveProxyTestRecordingStreamID,
+		[]byte(lifecycleRecordingChannel),
+		targets,
+		tracker,
+	)
+	require.NoError(t, err)
+	require.True(t, tracker.Stopped())
+	require.False(t, h.poller.IsPollComplete())
+
+	trailingWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    stopCorrelationID,
+		Code:             archivewire.ControlResponseCode_OK,
+		Version:          520,
+	})
+	appendUnfragmentedWireToTerm(t, h.termBuffer, trailingWire)
+
+	// First demux poll sees the trailing OK under the new await correlation filter; it
+	// must not latch ready. Matching OK for the new correlation is written only after
+	// that poll so the real response can still capture.
+	responseTargets := h.responseTargets()
+	staleDispatched := false
+	okWritten := false
+	nextPollFn := func() int {
+		if offered := h.pub.lastOffer(); staleDispatched && !okWritten && offered != nil {
+			responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+				ControlSessionID: controlResponseTestControlSessionID,
+				CorrelationID:    offeredArchiveCorrelationID(t, offered),
+				Code:             archivewire.ControlResponseCode_OK,
+				Version:          520,
+			})
+			appendUnfragmentedWireToTerm(t, h.termBuffer, responseWire)
+			okWritten = true
+		}
+		h.advanceClock()
+		work := h.demuxPoll(responseTargets)
+		staleDispatched = true
+		return work
+	}
+
+	err = h.controlOps(nextPollFn).stopRecording(
+		t.Context(),
+		archiveProxyTestRecordingStreamID,
+		[]byte(lifecycleRecordingChannel),
+	)
+	require.NoError(t, err)
+	require.True(t, okWritten)
 }
 
 func TestStopRecordingAwaitSignal_errorResponseReturnsError(t *testing.T) {
@@ -675,14 +806,23 @@ func TestStopRecordingAwaitSignal_reusedTrackerWaitsForNewProof(t *testing.T) {
 	require.True(t, tracker.Stopped())
 
 	targets := h.signalTargets(tracker)
-	written := false
-	pollFn := h.respondControlResponseOnce(
-		t,
-		0,
-		archivewire.ControlResponseCode_OK,
-		&written,
-		targets,
-	)
+	stopWritten := false
+	pollFn := func() int {
+		if !stopWritten && h.pub.lastOffer() != nil {
+			signalWire := encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
+				ControlSessionID: controlResponseTestControlSessionID,
+				CorrelationID:    910,
+				RecordingID:      lifecycleRecordingID,
+				SubscriptionID:   2002,
+				Position:         4004,
+				Signal:           archivewire.RecordingSignal_STOP,
+			})
+			writeUnfragmentedWireToTerm(t, h.termBuffer, signalWire)
+			stopWritten = true
+		}
+		h.advanceClock()
+		return h.demuxPoll(targets)
+	}
 
 	err := h.controlOps(pollFn).stopRecordingAwaitSignal(
 		t.Context(),
@@ -692,8 +832,9 @@ func TestStopRecordingAwaitSignal_reusedTrackerWaitsForNewProof(t *testing.T) {
 		tracker,
 	)
 	require.NoError(t, err)
-	require.True(t, written)
-	require.False(t, tracker.Stopped())
+	require.True(t, stopWritten)
+	require.True(t, tracker.Stopped())
+	require.Equal(t, int64(4004), tracker.StoppedPosition())
 }
 
 func TestStopRecordingAwaitSignal_nilTrackerReturnsError(t *testing.T) {

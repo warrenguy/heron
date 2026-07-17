@@ -46,9 +46,12 @@ func connectArchive(
 ) *archive.Client {
 	t.Helper()
 
+	// Docker STOP can lag control under load. Prior shape had ~15s headroom
+	// (control await + ConnectedPollTimeout STOP poll); await now owns STOP only.
 	archiveCtx := archive.Context{
-		AeronDir: dir,
-		Aeron:    aeronClient,
+		AeronDir:               dir,
+		Aeron:                  aeronClient,
+		ControlResponseTimeout: archive.DefaultControlResponseTimeout + harness.ConnectedPollTimeout,
 	}.Normalize()
 	archiveClient, err := archive.Connect(context.Background(), archiveCtx)
 	require.NoError(t, err)
@@ -162,7 +165,10 @@ func recordArchiveSmoke(
 		},
 	)
 
+	// Session sink for steady-state Poll/ListRecording after await. Await demuxes
+	// STOP to the per-call tracker itself; return already proves the latch.
 	tracker := archive.NewStopSignalTracker(archiveClient.ControlSessionID(), recordingID)
+	archiveClient.SetRecordingSignalHandler(tracker)
 	err = archiveClient.StopRecordingAwaitSignal(
 		t.Context(),
 		archivejava.RecordStreamID,
@@ -170,24 +176,14 @@ func recordArchiveSmoke(
 		tracker,
 	)
 	require.NoError(t, err)
-
-	// StopRecordingAwaitSignal may return on OK before STOP is latched; wire the
-	// tracker so a later Poll cannot drop the authoritative stop position.
-	archiveClient.SetRecordingSignalHandler(tracker)
-	harness.PollClientUntilTransportClean(
+	require.True(t, tracker.Stopped(), "StopRecordingAwaitSignal returned without STOP latch")
+	require.GreaterOrEqual(
 		t,
-		aeronClient,
-		hadClientError,
-		harness.ConnectedPollTimeout,
-		"client transport error during recording STOP signal poll",
-		func() bool {
-			_ = archiveClient.Poll()
-			return tracker.Stopped() && tracker.StoppedPosition() >= wantStopPosition
-		},
-		func() string {
-			return "archive recording STOP signal not received within " +
-				harness.ConnectedPollTimeout.String()
-		},
+		tracker.StoppedPosition(),
+		wantStopPosition,
+		"STOP position %d below publication extent %d",
+		tracker.StoppedPosition(),
+		wantStopPosition,
 	)
 
 	// Catalog metadata can trail the STOP signal under load; sync to the signal

@@ -159,8 +159,18 @@ func (ops archiveControlOps) listRecording(
 }
 
 // StopRecordingAwaitSignal offers a StopRecordingRequest and blocks until the archive
-// proves the stop with either a matching OK ControlResponse or a STOP
-// RecordingSignalEvent recorded by tracker.
+// records a matching STOP RecordingSignalEvent on tracker. A latched STOP wins over a
+// matching ControlResponse in the same window: ERROR fails only when STOP is not yet
+// latched. A matching OK alone does not complete: control OK can race ahead of the STOP
+// signal, and callers need the latched stop position.
+//
+// ControlResponseTimeout bounds the whole wait after a successful offer. Timeout may
+// fire after a matching OK was consumed if STOP is not latched in time; treat that as
+// inconclusive for stop success. Use StopRecording when only an OK ControlResponse proof
+// is required.
+//
+// tracker matching follows NewStopSignalTracker: a negative recordingID latches the first
+// STOP for the session, including unrelated recordings.
 func (ops archiveControlOps) stopRecordingAwaitSignal(
 	ctx context.Context,
 	streamID int32,
@@ -172,10 +182,11 @@ func (ops archiveControlOps) stopRecordingAwaitSignal(
 		return errors.New("archive: stop recording await signal: tracker must be non-nil")
 	}
 	tracker.Reset()
-	if targets.ResponsePoller != nil {
-		targets.ResponsePoller.ResetCapture()
-	}
 	correlationID := ops.aeronClient.NextCorrelationID()
+	if targets.ResponsePoller != nil {
+		targets.ResponsePoller.ResetAwait(correlationID)
+		defer targets.ResponsePoller.ArmAwait(0)
+	}
 	if err := offerControlRequest(
 		ctx, ops.aeronClient, ops.ctx, ops.poll, func() (int64, bool) {
 			return ops.proxy.TryStopRecording(
@@ -210,9 +221,9 @@ func (ops archiveControlOps) stopRecordingAwaitSignal(
 	)
 }
 
-// stopRecordingProof reports whether the stop completed and, on a ControlResponse
-// proof, the mapped response error. A matching OK or error ControlResponse and a
-// recorded STOP signal both complete; the signal proof carries a nil error.
+// stopRecordingProof reports whether stop completed via a latched STOP signal, or fails
+// on a matching error ControlResponse. A matching OK is consumed without completing:
+// keep polling for STOP so the tracker carries the authoritative stop position.
 func stopRecordingProof(
 	poller *ControlResponsePoller,
 	tracker *StopSignalTracker,
@@ -222,9 +233,18 @@ func stopRecordingProof(
 	if tracker.Stopped() {
 		return true, nil
 	}
-	if _, mapped, ok := TryMatchControlResponse(poller, controlSessionID, correlationID); ok {
+	_, mapped, ok := tryMatchControlResponseDiscardStale(
+		poller,
+		controlSessionID,
+		correlationID,
+	)
+	if !ok {
+		return false, nil
+	}
+	if mapped != nil {
 		return true, mapped
 	}
+	poller.ResetCapture()
 	return false, nil
 }
 

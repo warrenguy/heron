@@ -255,11 +255,19 @@ func (client *Client) StopRecording(
 }
 
 // StopRecordingAwaitSignal offers a StopRecordingRequest and blocks until the archive
-// proves the stop with either a matching OK ControlResponse or a STOP signal recorded
-// by tracker.
+// records a matching STOP signal on tracker. A latched STOP wins over a matching
+// ControlResponse in the same window: ERROR fails only when STOP is not yet latched. A
+// matching OK alone does not complete: control OK can race ahead of the STOP signal, and
+// callers need the latched stop position.
+//
+// ControlResponseTimeout bounds the whole wait after a successful offer. Timeout may
+// fire after a matching OK was consumed if STOP is not latched in time; treat that as
+// inconclusive for stop success. Use StopRecording when only an OK ControlResponse proof
+// is required.
 //
 // tracker must be non-nil: it carries the STOP signal proof and is dereferenced on
-// every proof check.
+// every proof check. Matching follows NewStopSignalTracker: a negative recordingID
+// latches the first STOP for the session, including unrelated recordings.
 //
 // Returns ctx.Err() when the context is done before proof is received.
 func (client *Client) StopRecordingAwaitSignal(

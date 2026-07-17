@@ -39,14 +39,20 @@ func (capture ControlResponseCapture) Challenged() bool {
 //
 // Demux capture via PollControlEvents keeps subscription-buffer views; consume or
 // copy ErrorMessage and EncodedChallenge before the next demux poll, or call
-// ResetCapture before re-arming an await.
+// ResetCapture / ResetAwait before a new outstanding request.
+//
+// ResetAwait clears any latch and arms the correlation filter for a session offer+await.
+// ArmAwait alone sets the filter without clearing. Non-matching ControlResponse and
+// Challenge fragments are dropped without setting ready, so a later match in the same
+// poll batch can still capture. Zero awaits any correlation (connect and unarmed demux).
 type ControlResponsePoller struct {
 	subscription  *aeron.Subscription
 	fragmentLimit int
 	assembler     *FragmentAssembler
 
-	capture ControlResponseCapture
-	ready   bool
+	capture            ControlResponseCapture
+	ready              bool
+	awaitCorrelationID int64
 }
 
 // NewControlResponsePoller constructs a control response poller. fragmentLimit <= 0
@@ -148,14 +154,40 @@ func (poller *ControlResponsePoller) Challenge() (codecs.ChallengeFields, bool) 
 }
 
 // ResetCapture clears a terminal latch so demux routing can capture the next control
-// response. Call before a new blocking request on the demux path, after connect hands
-// the poller to Client, and after consuming a capture when polling via
-// PollControlEvents. Standalone Poll resets automatically; the demux does not.
+// response. Call after connect hands the poller to Client, after consuming a capture when
+// polling via PollControlEvents, and when clearing a matched terminal mid-await (for
+// example stop OK while waiting for STOP). Standalone Poll resets automatically; the
+// demux does not.
+//
+// Does not clear ArmAwait. Prefer ResetAwait when starting a new outstanding request so
+// the correlation filter covers offer-retry polls as well as the response await.
 func (poller *ControlResponsePoller) ResetCapture() {
 	if poller == nil {
 		return
 	}
 	poller.resetCapture()
+}
+
+// ResetAwait clears a terminal latch and arms the correlation filter for correlationID.
+// Zero accepts any correlation. Session offer+await paths call this before offer so
+// offer-retry polls use the same filter as the response await; defer ArmAwait(0) after
+// the whole operation (including offer failure).
+func (poller *ControlResponsePoller) ResetAwait(correlationID int64) {
+	if poller == nil {
+		return
+	}
+	poller.resetCapture()
+	poller.awaitCorrelationID = correlationID
+}
+
+// ArmAwait sets the correlation filter for demux and standalone latch without clearing a
+// prior capture. Zero accepts any correlation. Prefer ResetAwait at the start of a new
+// outstanding request; use ArmAwait(0) to disarm after offer+await.
+func (poller *ControlResponsePoller) ArmAwait(correlationID int64) {
+	if poller == nil {
+		return
+	}
+	poller.awaitCorrelationID = correlationID
 }
 
 func (poller *ControlResponsePoller) resetCapture() {
@@ -167,7 +199,14 @@ func (poller *ControlResponsePoller) resetCapture() {
 	}
 }
 
+func (poller *ControlResponsePoller) matchesAwaitCorrelation(correlationID int64) bool {
+	return poller.awaitCorrelationID == 0 || poller.awaitCorrelationID == correlationID
+}
+
 func (poller *ControlResponsePoller) latchControlResponse(resp codecs.ControlResponseFields) {
+	if !poller.matchesAwaitCorrelation(resp.CorrelationID) {
+		return
+	}
 	poller.capture.ControlSessionID = resp.ControlSessionID
 	poller.capture.CorrelationID = resp.CorrelationID
 	poller.capture.RelevantID = resp.RelevantID
@@ -180,6 +219,9 @@ func (poller *ControlResponsePoller) latchControlResponse(resp codecs.ControlRes
 }
 
 func (poller *ControlResponsePoller) latchChallenge(challenge codecs.ChallengeFields) {
+	if !poller.matchesAwaitCorrelation(challenge.CorrelationID) {
+		return
+	}
 	poller.capture.ControlSessionID = challenge.ControlSessionID
 	poller.capture.CorrelationID = challenge.CorrelationID
 	poller.capture.RelevantID = conductor.NullCorrelationID
