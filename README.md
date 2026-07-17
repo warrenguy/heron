@@ -3,8 +3,8 @@
 Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport, cluster, and
 archive clients.
 
-Heron speaks Aeron's shared-memory and wire protocols directly against a
-standard C or Java media driver, targeting behavioural parity with the Java
+Heron implements Aeron's shared-memory and wire protocols directly against an
+Aeron media driver (C or Java), targeting behavioural parity with the Java
 client stack. It uses no cgo (`unsafe` only for zero-copy buffer access),
 supports little-endian `amd64` and `arm64`, and embeds no media driver.
 

@@ -10,6 +10,7 @@ import (
 )
 
 // TimelineEntry records one simulation event for replay and failure dumps.
+//
 // Kind selects which event-specific fields are meaningful; detail strings are
 // formatted only when a timeline is dumped or canonicalized.
 type TimelineEntry struct {
@@ -24,21 +25,31 @@ type TimelineEntry struct {
 	State      election.ElectionState
 	Work       int
 	HandedOff  bool
+	Skipped    bool
+	Action     string
+	Detail     string
 }
 
 func (e TimelineEntry) detail() string {
 	switch e.Kind {
 	case "tick":
 		return fmt.Sprintf("state=%s work=%d", e.State, e.Work)
-	case "deliver":
-		return fmt.Sprintf("from=%d to=%d template=%d handed_off=%v",
-			e.From, e.To, e.TemplateID, e.HandedOff)
+	case "tick_skip":
+		return "skipped=true"
+	case "deliver", "deliver_skip":
+		return fmt.Sprintf("from=%d to=%d template=%d handed_off=%v skipped=%v",
+			e.From, e.To, e.TemplateID, e.HandedOff, e.Skipped)
 	case "publish", "drop":
 		return fmt.Sprintf("to=%d template=%d", e.To, e.TemplateID)
 	case "state":
 		return fmt.Sprintf("election_state=%s", e.State)
+	case "nemesis":
+		if e.Action != "" {
+			return fmt.Sprintf("action=%s", e.Action)
+		}
+		return e.Detail
 	default:
-		return ""
+		return e.Detail
 	}
 }
 
@@ -107,6 +118,14 @@ func dumpElectionSim(tb testing.TB, s *ElectionSim) {
 	tb.Logf("seed: %d", s.cfg.Seed)
 	tb.Logf("steps: %d", s.steps)
 	tb.Logf("master_now_ns: %d", s.scheduler.Now())
+	if s.safetyErr != nil {
+		tb.Logf("safety_err: %v", s.safetyErr)
+	} else {
+		tb.Log("safety_err: (none)")
+	}
+	for _, node := range s.nodes {
+		tb.Logf("live node=%d %v", node.id, s.IsLive(node.id))
+	}
 	tb.Log("-- timeline --")
 	tb.Log(formatTimelineDump(s.timeline))
 	for _, node := range s.nodes {

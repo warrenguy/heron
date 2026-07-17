@@ -90,7 +90,7 @@ func inject(
 		len(source.Publisher().Sent) != before+1 {
 		return fmt.Errorf("sim: %s encode failed from %d to %d", kind, fromID, toID)
 	}
-	want := deliveredKey{from: fromID, index: before}
+	want := deliveredKey{from: fromID, index: before, gen: source.publishGen}
 	delivered := func(*ElectionSim) bool { return target.hasDelivered(want) }
 	if err := s.RunUntil(delivered); err != nil {
 		return err

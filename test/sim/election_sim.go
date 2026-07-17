@@ -5,7 +5,9 @@ package sim
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand/v2"
+	"slices"
 	"testing"
 
 	"github.com/warrenguy/heron/cluster/election"
@@ -25,16 +27,19 @@ type Config struct {
 	MemberSpec string
 
 	// ElectionConfig seeds every node; MemberID is overwritten per node.
+	//
 	// The zero value takes harness defaults, any other value is used verbatim.
 	ElectionConfig election.ElectionConfig
 
 	// PerNodeOverrides mutates a node's ElectionConfig after the MemberID is set.
+	//
 	// Nil applies no per-node change. Clearing IsNodeStartup on one member
 	// switches its canvass deadline from StartupCanvassTimeoutNs to the leader
 	// heartbeat path (TimeOfLastLeaderUpdateNs + LeaderHeartbeatTimeoutNs).
 	PerNodeOverrides func(id int32, cfg *election.ElectionConfig)
 
 	// NodeStateDir holds per-node durable state under node-<id>/.
+	//
 	// Empty defaults to tb.TempDir().
 	NodeStateDir string
 
@@ -49,18 +54,32 @@ type Config struct {
 	// reaches NOMINATE before scripted timeout jumps. Nil restores full multi-node
 	// sim behavior for canvass regression scenarios.
 	FocusNodeID *int32
+
+	// SkipSplitBrainCheck disables the after-step scan for two live members in
+	// self-leader states on the same term. Transition-time first-winner
+	// recording (leaderWins) and candidate-term monotonicity still run under
+	// testhooks. Set when a script intentionally forms illegal intermediate
+	// wire state and must not stop the step loop on the live scan alone.
+	SkipSplitBrainCheck bool
 }
 
 // ElectionSim orchestrates scheduler, network, and Node instances.
 type ElectionSim struct {
-	cfg       Config
-	scheduler *Scheduler
-	network   *Network
-	nodes     []*Node
-	timeline  []TimelineEntry
-	rng       *rand.Rand
-	steps     int
-	closed    bool
+	cfg         Config
+	scheduler   *Scheduler
+	network     *Network
+	nodes       []*Node
+	timeline    []TimelineEntry
+	rng         *rand.Rand
+	steps       int
+	closed      bool
+	innerPolicy NetworkPolicy
+	safetyErr   error
+	leaderWins  map[int64]int32
+
+	// restartLeaveInitHook replaces post-rebuild Init DoWork when non-nil
+	// (stuck-Init rollback tests under testhooks).
+	restartLeaveInitHook func(*Node, int64)
 }
 
 // NewElectionSim constructs and fully wires a simulation.
@@ -92,18 +111,13 @@ func NewElectionSim(tb testing.TB, cfg Config) (*ElectionSim, error) {
 	}
 
 	s := &ElectionSim{
-		cfg:       cfg,
-		scheduler: NewScheduler(simStartTimeNs),
-		rng:       NewRNG(cfg.Seed),
+		cfg:        cfg,
+		scheduler:  NewScheduler(simStartTimeNs),
+		rng:        NewRNG(cfg.Seed),
+		leaderWins: make(map[int64]int32),
 	}
-	policy := cfg.NetworkPolicy
-	if cfg.FocusNodeID != nil {
-		if policy == nil {
-			policy = AllowAllPolicy{}
-		}
-		policy = focusOnlyPolicy{focus: *cfg.FocusNodeID, inner: policy}
-	}
-	s.network = NewNetwork(s, s.scheduler, policy, cfg.DeliverLatencyNs)
+	s.innerPolicy = normalizeNetworkPolicy(cfg.NetworkPolicy)
+	s.network = NewNetwork(s, s.scheduler, s.wrapPolicy(s.innerPolicy), cfg.DeliverLatencyNs)
 
 	for i := range parsed {
 		node, err := newNode(nodeBuildConfig{
@@ -133,6 +147,76 @@ func NewElectionSim(tb testing.TB, cfg Config) (*ElectionSim, error) {
 	}
 	return s, nil
 }
+
+// IsLive reports whether node id is currently live (not crashed).
+//
+// Liveness is node.election != nil: CrashNode nils it, RestartNode rebuilds it.
+func (s *ElectionSim) IsLive(id int32) bool {
+	node := s.Node(id)
+	return node != nil && node.election != nil
+}
+
+// SetNetworkPolicy sets the INNER policy and re-wraps focus when FocusNodeID set.
+func (s *ElectionSim) SetNetworkPolicy(inner NetworkPolicy) {
+	s.innerPolicy = normalizeNetworkPolicy(inner)
+	s.network.setPolicy(s.wrapPolicy(s.innerPolicy))
+}
+
+// InnerNetworkPolicy returns the mutable inner policy (not the focus wrap).
+func (s *ElectionSim) InnerNetworkPolicy() NetworkPolicy {
+	return s.innerPolicy
+}
+
+// ScheduleNemesis schedules an EventNemesis at atNs with the given payload.
+func (s *ElectionSim) ScheduleNemesis(atNs int64, payload NemesisPayload) {
+	s.scheduleEvent(atNs, EventNemesis, payload.NodeID, payload)
+}
+
+// SafetyErr returns the first recorded safety violation, if any.
+func (s *ElectionSim) SafetyErr() error {
+	return s.safetyErr
+}
+
+// LeaderWins returns a copy of term -> first member to enter a self-leader
+// state for that leadership term. Nil when empty.
+func (s *ElectionSim) LeaderWins() map[int64]int32 {
+	if len(s.leaderWins) == 0 {
+		return nil
+	}
+	out := make(map[int64]int32, len(s.leaderWins))
+	maps.Copy(out, s.leaderWins)
+	return out
+}
+
+func normalizeNetworkPolicy(p NetworkPolicy) NetworkPolicy {
+	if p == nil {
+		return AllowAllPolicy{}
+	}
+	return p
+}
+
+func (s *ElectionSim) wrapPolicy(inner NetworkPolicy) NetworkPolicy {
+	if s.cfg.FocusNodeID == nil {
+		return inner
+	}
+	return focusOnlyPolicy{focus: *s.cfg.FocusNodeID, inner: inner}
+}
+
+// recordSafetyErr stores the first safety violation only (later calls no-op).
+func (s *ElectionSim) recordSafetyErr(err error) {
+	if err == nil || s.safetyErr != nil {
+		return
+	}
+	s.safetyErr = err
+	s.appendTimelineNow("safety", 0, TimelineEntry{Detail: err.Error()})
+}
+
+// continuousSafetyAfterStep is set under testhooks to run after each step:
+// candidate-term monotonicity, and (unless SkipSplitBrainCheck) the live
+// two-self-leaders scan.
+//
+// Untagged builds leave it nil.
+var continuousSafetyAfterStep func(*ElectionSim) error
 
 // Node returns the Node for a member id, nil when unknown.
 func (s *ElectionSim) Node(id int32) *Node {
@@ -192,6 +276,7 @@ func (s *ElectionSim) AdvanceToPhase(nodeID int32, targetNs int64) error {
 
 // AdvanceTo runs events while the next event time is <= deadlineNs, then advances
 // master time to deadlineNs when it is not before the current master time.
+//
 // A deadline before the current master time does not regress the clock.
 func (s *ElectionSim) AdvanceTo(deadlineNs int64) error {
 	for {
@@ -214,9 +299,21 @@ func (s *ElectionSim) Now() int64 { return s.scheduler.Now() }
 
 // Timeline returns a copy of recorded timeline entries.
 func (s *ElectionSim) Timeline() []TimelineEntry {
-	out := make([]TimelineEntry, len(s.timeline))
-	copy(out, s.timeline)
-	return out
+	return s.TimelineSince(0)
+}
+
+// TimelineLen returns the number of recorded timeline entries.
+func (s *ElectionSim) TimelineLen() int { return len(s.timeline) }
+
+// TimelineSince returns a copy of timeline entries from index start.
+//
+// RunUntil predicates track a scanned offset with it instead of re-copying
+// the whole timeline every step.
+func (s *ElectionSim) TimelineSince(start int) []TimelineEntry {
+	if start >= len(s.timeline) {
+		return nil
+	}
+	return slices.Clone(s.timeline[start:])
 }
 
 // DumpOnFail writes seed, timeline, and per-node state when the test failed.
@@ -263,12 +360,22 @@ func (s *ElectionSim) step() error {
 		if node == nil {
 			return fmt.Errorf("sim: unknown tick node %d", pop.NodeID)
 		}
-		coalesceSeq := s.scheduler.ReserveSeq()
+		if node.election == nil {
+			s.appendTimeline(pop, "tick_skip", TimelineEntry{Skipped: true})
+			break
+		}
+
+		// Reserve coalesce seq before Tick so re-tick precedes same-instant delivers.
+		//
+		// Focused timeout scenarios skip coalesce: one DoWork per AdvanceToPhase.
+		coalesce := s.cfg.FocusNodeID == nil
+		var coalesceSeq uint64
+		if coalesce {
+			coalesceSeq = s.scheduler.ReserveSeq()
+		}
 		work := node.Tick(pop.AtNs)
 		s.appendTimeline(pop, "tick", TimelineEntry{State: node.election.State(), Work: work})
-		// Focused timeout scenarios advance one DoWork per AdvanceToPhase; coalesced
-		// re-ticks would run before scripted inject delivery and skip heartbeat steps.
-		if work > 0 && s.cfg.FocusNodeID == nil {
+		if work > 0 && coalesce {
 			s.scheduler.ScheduleReserved(pop.AtNs, coalesceSeq, ScheduledEvent{
 				Kind:   EventNodeTick,
 				NodeID: node.id,
@@ -279,26 +386,48 @@ func (s *ElectionSim) step() error {
 		if !ok || payload == nil {
 			return errors.New("sim: deliver event missing payload")
 		}
-		handedOff := s.network.Deliver(*payload)
-		s.appendTimeline(pop, "deliver", TimelineEntry{
+		entry := TimelineEntry{
 			From:       payload.From,
 			To:         payload.To,
 			TemplateID: payload.Msg.TemplateID,
-			HandedOff:  handedOff,
-		})
+		}
+
+		// Registered but dead: no-op without panic. Unknown targets still take
+		// the Deliver path (handed_off=false) so isolation tests see "deliver".
+		if dst := s.Node(payload.To); dst != nil && dst.election == nil {
+			entry.Skipped = true
+			s.appendTimeline(pop, "deliver_skip", entry)
+			break
+		}
+		entry.HandedOff = s.network.Deliver(*payload)
+		s.appendTimeline(pop, "deliver", entry)
+
 		// Focused timeout scenarios schedule ticks explicitly via AdvanceToPhase.
-		if handedOff && s.cfg.FocusNodeID == nil {
+		if entry.HandedOff && s.cfg.FocusNodeID == nil {
 			s.scheduleEvent(pop.AtNs, EventNodeTick, payload.To, nil)
 		}
 	case EventNemesis:
 		if err := s.cfg.Nemesis.OnEvent(s, pop); err != nil {
 			return err
 		}
-		s.appendTimeline(pop, "nemesis", TimelineEntry{})
+		action := ""
+		if p, ok := pop.Payload.(NemesisPayload); ok {
+			action = p.Action
+		}
+		s.appendTimeline(pop, "nemesis", TimelineEntry{Action: action})
 	default:
 		return fmt.Errorf("sim: unknown event kind %d", pop.Kind)
 	}
 
+	// Safety before MaxSteps: over-budget step must not bury a violation.
+	if s.safetyErr != nil {
+		return s.safetyErr
+	}
+	if continuousSafetyAfterStep != nil {
+		if err := continuousSafetyAfterStep(s); err != nil {
+			return err
+		}
+	}
 	if s.steps > s.cfg.MaxSteps {
 		return ErrMaxSteps
 	}

@@ -27,3 +27,6 @@ func (c *NodeClock) TimeMs() int64 { return c.epochOffsetMs + c.nowNs/1_000_000 
 
 // Set advances the clock to scheduler dispatch time.
 func (c *NodeClock) Set(nowNs int64) { c.nowNs = nowNs }
+
+// AdvanceEpoch shifts the epoch clock by dMs without changing nano time.
+func (c *NodeClock) AdvanceEpoch(dMs int64) { c.epochOffsetMs += dMs }

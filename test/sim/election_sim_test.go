@@ -173,7 +173,8 @@ func TestElectionSim_runUntilPredicateSteps(t *testing.T) {
 func TestElectionSim_invalidSeedFromEnv(t *testing.T) {
 	t.Setenv("HERON_SIM_SEED", "not-a-number")
 
-	s, err := sim.NewElectionSim(t, sim.Config{Seed: 42})
+	// Seed 0 so SeedFromEnv reads HERON_SIM_SEED (non-zero short-circuits env).
+	s, err := sim.NewElectionSim(t, sim.Config{Seed: 0})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, s.Close()) })
 }

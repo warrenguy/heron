@@ -8,10 +8,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// SeedFromEnv returns HERON_SIM_SEED when set, otherwise defaultSeed.
-// Invalid values are logged and fall back to defaultSeed.
+// SeedFromEnv returns HERON_SIM_SEED when set and defaultSeed is 0.
+//
+// Non-zero defaultSeed is authoritative (env does not override).
+//
+// Invalid env values are logged and fall back to defaultSeed.
 func SeedFromEnv(tb testing.TB, defaultSeed uint64) uint64 {
 	tb.Helper()
+	if defaultSeed != 0 {
+		return defaultSeed
+	}
 	v := os.Getenv("HERON_SIM_SEED")
 	if v == "" {
 		return defaultSeed

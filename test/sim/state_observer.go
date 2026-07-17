@@ -13,8 +13,16 @@ type StateObserver struct {
 
 func (o *StateObserver) OnElectionStateChange(s election.ElectionState) {
 	o.States = append(o.States, s)
-	if o.sim == nil {
-		return
-	}
 	o.sim.appendTimelineNow("state", o.nodeID, TimelineEntry{State: s})
+}
+
+// StatesCopy implements stateHistory.
+func (o *StateObserver) StatesCopy() []election.ElectionState {
+	return append([]election.ElectionState(nil), o.States...)
+}
+
+// newElectionStateObserver builds the timeline-only observer. Testhooks may
+// replace this var in init with the safety-aware observer.
+var newElectionStateObserver = func(sim *ElectionSim, node *Node) election.StateObserver {
+	return &StateObserver{sim: sim, nodeID: node.id}
 }
