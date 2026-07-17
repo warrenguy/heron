@@ -25,51 +25,28 @@ bin/aeronmd
 
 The Aeron release is pinned in [`specs/versions.yaml`](specs/versions.yaml).
 
-Publish and receive a message over IPC:
+Publish and receive a message over IPC (error handling omitted):
 
 ```go
-package main
+import "github.com/warrenguy/heron/aeron"
 
-import (
-	"context"
-	"log"
+client, err := aeron.Connect(aeron.Context{AeronDir: "/tmp/aeron"})
+if err != nil { /* ... */ }
+defer client.Close()
 
-	"github.com/warrenguy/heron/aeron"
-)
+pub, err := client.AddPublication(1001, "aeron:ipc")
+if err != nil { /* ... */ }
+sub, err := client.AddSubscription(1001, "aeron:ipc")
+if err != nil { /* ... */ }
 
-func main() {
-	client, err := aeron.Connect(aeron.Context{AeronDir: "/tmp/aeron"})
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer client.Close()
+ctx := context.Background()
+if err := client.PollUntilConnected(ctx, pub); err != nil { /* ... */ }
+if err := client.PollUntilImageCount(ctx, sub, 1); err != nil { /* ... */ }
 
-	pub, err := client.AddPublication(1001, "aeron:ipc")
-	if err != nil {
-		log.Fatal(err)
-	}
-	sub, err := client.AddSubscription(1001, "aeron:ipc")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	ctx := context.Background()
-	if err := client.PollUntilConnected(ctx, pub); err != nil {
-		log.Fatal(err)
-	}
-	if err := client.PollUntilImageCount(ctx, sub, 1); err != nil {
-		log.Fatal(err)
-	}
-
-	if _, err := client.OfferWithRetry(ctx, pub, []byte("hello")); err != nil {
-		log.Fatal(err)
-	}
-	msg, err := client.PollOneMessage(ctx, sub)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("received %q", msg)
-}
+if _, err := client.OfferWithRetry(ctx, pub, []byte("hello")); err != nil { /* ... */ }
+msg, err := client.PollOneMessage(ctx, sub)
+if err != nil { /* ... */ }
+log.Printf("received %q", msg)
 ```
 
 The `(*Client)` poll helpers above call `DoWork` internally. Runnable one-shot
