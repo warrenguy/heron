@@ -1,7 +1,8 @@
 # Overlay - use with --profile failover.
 #
-# Project name comes from HERON_COMPOSE_PROJECT (fixed by the smoke script).
-# Default keeps the same name for manual compose without the script.
+# Project name comes from HERON_COMPOSE_PROJECT (per-run from the smoke script,
+# e.g. heron-cluster-java-failover-$$). Default is for manual compose without
+# the script.
 # Go container must see the same value as COMPOSE_PROJECT_NAME for leader kill.
 
 name: ${HERON_COMPOSE_PROJECT:-heron-cluster-java-failover}
