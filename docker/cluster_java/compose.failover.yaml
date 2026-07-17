@@ -1,7 +1,10 @@
 # Overlay - use with --profile failover.
+#
+# Project name comes from HERON_COMPOSE_PROJECT (fixed by the smoke script).
+# Default keeps the same name for manual compose without the script.
+# Go container must see the same value as COMPOSE_PROJECT_NAME for leader kill.
 
-x-project-name: &project-name heron-cluster-java-failover
-name: *project-name
+name: ${HERON_COMPOSE_PROJECT:-heron-cluster-java-failover}
 
 x-app-user: &app-user "${HERON_COMPOSE_UID:-1000}:${HERON_COMPOSE_GID:-1000}"
 
@@ -132,7 +135,7 @@ services:
       AERON_DIR: /dev/shm/aeron
       HERON_CLUSTER_JAVA_FAILOVER_COMPOSE: "1"
       HERON_CLUSTER_JAVA_COMPOSE_DIR: /app/compose
-      COMPOSE_PROJECT_NAME: *project-name
+      COMPOSE_PROJECT_NAME: ${HERON_COMPOSE_PROJECT:-heron-cluster-java-failover}
     volumes:
       - aeron-media-client:/dev/shm
       - /var/run/docker.sock:/var/run/docker.sock

@@ -6,19 +6,28 @@
 # Go test invocation: docker/archive_java/go/Dockerfile CMD (-test.run
 # TestArchiveRecordingLog, -test.timeout=120s).
 #
+# Fixed compose project + pre-up down + force-recreate so a leftover one-shot go
+# container cannot be restarted by up -d (appended logs / second suite).
+#
 # Outer timeout 130s: 120s test budget plus compose teardown (see wait block below).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="${ROOT}/docker/archive_java/compose.yaml"
 GO_MOD="${ROOT}/go.mod"
+COMPOSE_PROJECT="heron-archive-java"
 COMPOSE_CMD=(
 	docker compose
+	-p "${COMPOSE_PROJECT}"
 	-f "${COMPOSE}"
 )
 
 compose() {
 	"${COMPOSE_CMD[@]}" "$@"
+}
+
+compose_cleanup() {
+	compose down -v >/dev/null 2>&1 || true
 }
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -48,13 +57,19 @@ if ! docker image inspect java-interop-aeronmd >/dev/null 2>&1; then
 	exit 1
 fi
 
-trap 'compose down -v' EXIT
+trap compose_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Drop legacy default project leftovers and any half-created run.
+docker compose -f "${COMPOSE}" -p archive_java down -v >/dev/null 2>&1 || true
+compose_cleanup
 
 # up -d + wait go only: archive is a long-running daemon (ShutdownSignalBarrier);
 # compose wait archive would block forever. Go one-shot test exits when
 # TestArchiveRecordingLog passes.
 compose build archive go
-compose up -d --no-build
+compose up -d --force-recreate --no-build
 
 smoke_logs() {
 	compose logs --no-color archive go

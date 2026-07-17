@@ -2,14 +2,27 @@
 # Bidirectional Java/Go IPC smoke: compose up -d (aeronmd + go + java), then
 # wait for go and java exit 0. Go runs TestJavaInteropDuplex; Java runs JavaDuplex.
 # Requires java-interop-aeronmd image (make test-java-interop runs aeronmd-compose-image).
+#
+# Fixed compose project + pre-up down + force-recreate so leftover one-shot go/java
+# containers cannot be restarted by up -d (appended logs / second suite).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="${ROOT}/docker/java-interop/compose.yaml"
 GO_MOD="${ROOT}/go.mod"
+COMPOSE_PROJECT="heron-java-interop"
+COMPOSE_CMD=(
+	docker compose
+	-p "${COMPOSE_PROJECT}"
+	-f "${COMPOSE}"
+)
 
 compose() {
-	docker compose -f "${COMPOSE}" "$@"
+	"${COMPOSE_CMD[@]}" "$@"
+}
+
+compose_cleanup() {
+	compose down -v >/dev/null 2>&1 || true
 }
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -39,11 +52,17 @@ if ! docker image inspect java-interop-aeronmd >/dev/null 2>&1; then
 	exit 1
 fi
 
-trap 'compose down -v' EXIT
+trap compose_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Drop legacy default project leftovers and any half-created run.
+docker compose -f "${COMPOSE}" -p java-interop down -v >/dev/null 2>&1 || true
+compose_cleanup
 
 # Build app services only; aeronmd uses pre-tagged java-interop-aeronmd.
 compose build go java
-compose up -d --no-build
+compose up -d --force-recreate --no-build
 
 smoke_logs() {
 	compose logs --no-color go java

@@ -5,6 +5,10 @@
 # Needs docker.sock; DOCKER_GID from getent group docker when present (override if
 # socket GID differs).
 #
+# Fixed compose project (HERON_COMPOSE_PROJECT + -p). Go leader-kill reads
+# COMPOSE_PROJECT_NAME from the same value (compose.failover.yaml). Pre-up down
+# + force-recreate avoid restarting a stale one-shot go container.
+#
 # Outer timeout 430s: 400s test budget plus compose teardown; see Dockerfile
 # failover-runtime CMD and wait block below.
 set -euo pipefail
@@ -13,8 +17,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_BASE="${ROOT}/docker/cluster_java/compose.yaml"
 COMPOSE_FAILOVER="${ROOT}/docker/cluster_java/compose.failover.yaml"
 GO_MOD="${ROOT}/go.mod"
+export HERON_COMPOSE_PROJECT="heron-cluster-java-failover"
 COMPOSE_CMD=(
 	docker compose
+	-p "${HERON_COMPOSE_PROJECT}"
 	-f "${COMPOSE_BASE}"
 	-f "${COMPOSE_FAILOVER}"
 	--profile failover
@@ -22,6 +28,10 @@ COMPOSE_CMD=(
 
 compose() {
 	"${COMPOSE_CMD[@]}" "$@"
+}
+
+compose_cleanup() {
+	compose down -v >/dev/null 2>&1 || true
 }
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -60,12 +70,17 @@ if ! docker image inspect java-interop-aeronmd >/dev/null 2>&1; then
 	exit 1
 fi
 
-trap 'compose down -v || true' EXIT
+trap compose_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Drop any half-created run (fixed project name).
+compose_cleanup
 
 # wait go only: cluster daemons never exit. Build cluster-0 and go only;
 # cluster-1/2 reuse cluster-0 image. aeronmd uses pre-tagged java-interop-aeronmd.
 compose build cluster-0 go
-compose up -d --no-build
+compose up -d --force-recreate --no-build
 
 smoke_logs() {
 	compose logs --no-color cluster-0 cluster-1 cluster-2 aeronmd go

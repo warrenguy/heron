@@ -7,19 +7,28 @@
 # Go test invocation: docker/cluster_java/go/Dockerfile CMD (-test.run
 # TestCluster(Connect|Echo)Smoke, -test.timeout=300s).
 #
+# Fixed compose project + pre-up down + force-recreate so a leftover one-shot go
+# container cannot be restarted by up -d (appended logs / second suite).
+#
 # Outer timeout 310s: 300s test budget plus compose teardown (see wait block below).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="${ROOT}/docker/cluster_java/compose.yaml"
 GO_MOD="${ROOT}/go.mod"
+COMPOSE_PROJECT="heron-cluster-java"
 COMPOSE_CMD=(
 	docker compose
+	-p "${COMPOSE_PROJECT}"
 	-f "${COMPOSE}"
 )
 
 compose() {
 	"${COMPOSE_CMD[@]}" "$@"
+}
+
+compose_cleanup() {
+	compose down -v >/dev/null 2>&1 || true
 }
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -44,13 +53,19 @@ export HERON_COMPOSE_UID
 HERON_COMPOSE_GID="$(id -g)"
 export HERON_COMPOSE_GID
 
-trap 'compose down -v' EXIT
+trap compose_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Drop legacy default project leftovers and any half-created run.
+docker compose -f "${COMPOSE}" -p cluster_java down -v >/dev/null 2>&1 || true
+compose_cleanup
 
 # up -d + wait go only: cluster is a long-running daemon (ShutdownSignalBarrier);
 # compose wait cluster would block forever. Go one-shot test exits when both
 # TestClusterConnectSmoke and TestClusterEchoSmoke pass.
 compose build cluster go
-compose up -d --no-build
+compose up -d --force-recreate --no-build
 
 smoke_logs() {
 	compose logs --no-color cluster go
