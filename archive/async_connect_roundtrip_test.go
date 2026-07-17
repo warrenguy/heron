@@ -17,7 +17,7 @@ import (
 func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := newAsyncConnectFixture(t, func(ctx Context) Context { return ctx })
+	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
 	registerAsyncConnectClose(t, ac)
 
 	var connectWire []byte
@@ -95,7 +95,7 @@ func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 func TestAsyncConnect_happyPathIPC(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := newAsyncConnectFixture(t, func(ctx Context) Context { return ctx })
+	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
 	registerAsyncConnectClose(t, ac)
 
 	result, err := pollAsyncConnectUntil(t, ac, harness, func(ac *AsyncConnect) {
@@ -145,7 +145,7 @@ func (state *asyncConnectChallengeRoundTripState) onStep(
 func TestAsyncConnect_challengeRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := newAsyncConnectFixture(t, func(ctx Context) Context { return ctx })
+	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
 	registerAsyncConnectClose(t, ac)
 
 	var roundTrip asyncConnectChallengeRoundTripState

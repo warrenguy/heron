@@ -226,9 +226,9 @@ func TestEgressAdapter_Poll_partialFragmentLimitCompletesAcrossPolls(t *testing.
 func TestNewEgressAdapterFromContext_directAssemblers(t *testing.T) {
 	sub := aeron.NewTestSubscriptionForHooks(t)
 	rec := newRecordingEgressHandlers()
-	ctx := ClusterContext{DirectAssemblers: true}
+	clusterCtx := ClusterContext{DirectAssemblers: true}
 
-	adapter := NewEgressAdapterFromContext(ctx, rec, egressTestClusterSessionID, sub)
+	adapter := NewEgressAdapterFromContext(clusterCtx, rec, egressTestClusterSessionID, sub)
 
 	require.True(t, adapter.DirectAssemblers())
 	require.Equal(t, DefaultEgressFragmentLimit, adapter.FragmentLimit())

@@ -18,7 +18,7 @@ const closeDrainSoakDuration = 500 * time.Millisecond
 func TestClientCloseLifecycle(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client, err := aeron.Connect(aeron.Context{AeronDir: md.Dir})
+	client, err := aeron.Connect(t.Context(), aeron.Context{AeronDir: md.Dir})
 	require.NoError(t, err)
 
 	require.NoError(t, client.Close())

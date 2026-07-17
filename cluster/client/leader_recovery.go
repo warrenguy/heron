@@ -67,7 +67,7 @@ func (ac *AeronCluster) applyLeaderIngressRebuild(
 
 	ac.ingressPublication = nil
 
-	newMap, _, err := applyMemberIngressMapRebuild(ac.aeron, ac.ctx, ac.memberMap, plan)
+	newMap, _, err := applyMemberIngressMapRebuild(ac.aeron, ac.clusterCtx, ac.memberMap, plan)
 	ac.memberMap = newMap
 	if err != nil {
 		ac.enterAwaitNewLeader()
@@ -138,7 +138,7 @@ func (ac *AeronCluster) pollLeaderRecovery() int {
 	if ac.sessionState != SessionStateAwaitNewLeaderConnection {
 		return 0
 	}
-	pollPendingMemberIngressRegistration(ac.memberMap, ac.ctx, ac.aeron)
+	pollPendingMemberIngressRegistration(ac.memberMap, ac.clusterCtx, ac.aeron)
 	if err := ac.memberMap.failIfIngressUnrecoverable(); err != nil {
 		if ac.stateDeadlineNs != 0 && ac.nanoClock() >= ac.stateDeadlineNs {
 			return 0 // pollStateChanges closes on expired MessageTimeout

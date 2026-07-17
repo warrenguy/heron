@@ -1,6 +1,7 @@
 package cnc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -137,12 +138,24 @@ func CncVersionVolatile(buf []byte) int32 {
 
 // WaitCncReady polls until cnc.dat exists, version is published with a compatible major
 // version, and file length matches metadata.
-func WaitCncReady(path string, timeout time.Duration) error {
+//
+// Bounds the wait by the earlier of timeout and ctx.Deadline(). Returns ctx.Err() when
+// the context is canceled or its deadline elapses first.
+func WaitCncReady(ctx context.Context, path string, timeout time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	deadline := time.Now().Add(timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
 	metaBuf := make([]byte, MetaDataLength)
 	for {
-		if time.Now().After(deadline) {
-			return errors.New("cnc: timeout waiting for ready")
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return preferContextError(ctx, errors.New("cnc: timeout waiting for ready"))
 		}
 		ready, err := tryCncReady(path, metaBuf)
 		if err != nil {
@@ -151,7 +164,36 @@ func WaitCncReady(path string, timeout time.Duration) error {
 		if ready {
 			return nil
 		}
-		time.Sleep(cncPollInterval)
+		if err := sleepContext(ctx, cncPollInterval); err != nil {
+			return err
+		}
+	}
+}
+
+// preferContextError returns ctx.Err() when the context is canceled or its deadline
+// has passed; otherwise returns err. Same policy as aeron.PreferContextError; kept
+// local so cnc does not import aeron.
+func preferContextError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	ctxDeadline, ok := ctx.Deadline()
+	if ok && !time.Now().Before(ctxDeadline) {
+		return context.DeadlineExceeded
+	}
+	return err
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	select {
+	case <-ctx.Done():
+		if !timer.Stop() {
+			<-timer.C
+		}
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

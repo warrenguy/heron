@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"time"
@@ -74,68 +75,68 @@ type Context struct {
 // WithRemoteControl opts out of the IPC-first LocalControlChannel default applied by
 // Normalize. Remote archive connect uses ControlRequestChannel and
 // ControlResponseChannel after Normalize.
-func (ctx Context) WithRemoteControl() Context {
-	ctx.remoteControlExplicit = true
-	ctx.LocalControlChannel = ""
-	return ctx
+func (archiveCtx Context) WithRemoteControl() Context {
+	archiveCtx.remoteControlExplicit = true
+	archiveCtx.LocalControlChannel = ""
+	return archiveCtx
 }
 
 // Normalize applies archive defaults. Zero duration and stream ID fields mean
 // apply default. Idempotent.
-func (ctx Context) Normalize() Context {
-	if !ctx.remoteControlExplicit && ctx.LocalControlChannel == "" {
-		ctx.LocalControlChannel = DefaultLocalControlChannel
+func (archiveCtx Context) Normalize() Context {
+	if !archiveCtx.remoteControlExplicit && archiveCtx.LocalControlChannel == "" {
+		archiveCtx.LocalControlChannel = DefaultLocalControlChannel
 	}
-	if ctx.ControlRequestChannel == "" {
-		ctx.ControlRequestChannel = DefaultControlRequestChannel
+	if archiveCtx.ControlRequestChannel == "" {
+		archiveCtx.ControlRequestChannel = DefaultControlRequestChannel
 	}
-	if ctx.ControlResponseChannel == "" {
-		ctx.ControlResponseChannel = DefaultControlResponseChannel
+	if archiveCtx.ControlResponseChannel == "" {
+		archiveCtx.ControlResponseChannel = DefaultControlResponseChannel
 	}
-	if ctx.LocalControlStreamID == 0 {
-		ctx.LocalControlStreamID = DefaultLocalControlStreamID
+	if archiveCtx.LocalControlStreamID == 0 {
+		archiveCtx.LocalControlStreamID = DefaultLocalControlStreamID
 	}
-	if ctx.ControlRequestStreamID == 0 {
-		ctx.ControlRequestStreamID = DefaultControlRequestStreamID
+	if archiveCtx.ControlRequestStreamID == 0 {
+		archiveCtx.ControlRequestStreamID = DefaultControlRequestStreamID
 	}
-	if ctx.ControlResponseStreamID == 0 {
-		ctx.ControlResponseStreamID = DefaultControlResponseStreamID
+	if archiveCtx.ControlResponseStreamID == 0 {
+		archiveCtx.ControlResponseStreamID = DefaultControlResponseStreamID
 	}
-	if ctx.ConnectTimeout == 0 {
-		ctx.ConnectTimeout = DefaultConnectTimeout
+	if archiveCtx.ConnectTimeout == 0 {
+		archiveCtx.ConnectTimeout = DefaultConnectTimeout
 	}
-	if ctx.ControlResponseTimeout == 0 {
-		ctx.ControlResponseTimeout = DefaultControlResponseTimeout
+	if archiveCtx.ControlResponseTimeout == 0 {
+		archiveCtx.ControlResponseTimeout = DefaultControlResponseTimeout
 	}
-	if ctx.ControlOfferRetryTimeout == 0 {
-		ctx.ControlOfferRetryTimeout = DefaultControlOfferRetryTimeout
+	if archiveCtx.ControlOfferRetryTimeout == 0 {
+		archiveCtx.ControlOfferRetryTimeout = DefaultControlOfferRetryTimeout
 	}
-	if ctx.MessageRetryAttempts == 0 {
-		ctx.MessageRetryAttempts = DefaultMessageRetryAttempts
+	if archiveCtx.MessageRetryAttempts == 0 {
+		archiveCtx.MessageRetryAttempts = DefaultMessageRetryAttempts
 	}
-	if ctx.CredentialsSupplier == nil {
-		ctx.CredentialsSupplier = NullCredentialsSupplier{}
+	if archiveCtx.CredentialsSupplier == nil {
+		archiveCtx.CredentialsSupplier = NullCredentialsSupplier{}
 	}
-	if ctx.IdleStrategy == nil {
-		ctx.IdleStrategy = NewDefaultIdleStrategy()
+	if archiveCtx.IdleStrategy == nil {
+		archiveCtx.IdleStrategy = NewDefaultIdleStrategy()
 	}
-	if ctx.ClientName == "" {
-		ctx.ClientName = defaultClientName
+	if archiveCtx.ClientName == "" {
+		archiveCtx.ClientName = defaultClientName
 	}
-	if ctx.AeronDir != "" && ctx.AeronContext.AeronDir == "" {
-		ctx.AeronContext.AeronDir = ctx.AeronDir
+	if archiveCtx.AeronDir != "" && archiveCtx.AeronContext.AeronDir == "" {
+		archiveCtx.AeronContext.AeronDir = archiveCtx.AeronDir
 	}
-	return ctx
+	return archiveCtx
 }
 
 // ValidateForConnect checks archive context for async connect. Applies Normalize and
 // effective channel selection on a stack copy without mutating the receiver. All
 // errors use the archive: prefix.
-func (ctx Context) ValidateForConnect() error {
-	ctx = applyEffectiveChannels(ctx.Normalize())
+func (archiveCtx Context) ValidateForConnect() error {
+	archiveCtx = applyEffectiveChannels(archiveCtx.Normalize())
 
-	requestChannel := ctx.effectiveControlRequestChannel
-	responseChannel := ctx.effectiveControlResponseChannel
+	requestChannel := archiveCtx.effectiveControlRequestChannel
+	responseChannel := archiveCtx.effectiveControlResponseChannel
 	if err := validateArchiveIngressChannel(requestChannel, "request"); err != nil {
 		return err
 	}
@@ -145,124 +146,131 @@ func (ctx Context) ValidateForConnect() error {
 		}
 	}
 
-	if ctx.ConnectTimeout <= 0 {
+	if archiveCtx.ConnectTimeout <= 0 {
 		return errors.New("archive: ConnectTimeout must be positive")
 	}
-	if ctx.ControlResponseTimeout <= 0 {
+	if archiveCtx.ControlResponseTimeout <= 0 {
 		return errors.New("archive: ControlResponseTimeout must be positive")
 	}
-	if ctx.ControlOfferRetryTimeout <= 0 {
+	if archiveCtx.ControlOfferRetryTimeout <= 0 {
 		return errors.New("archive: ControlOfferRetryTimeout must be positive")
 	}
-	if ctx.MessageRetryAttempts <= 0 {
+	if archiveCtx.MessageRetryAttempts <= 0 {
 		return errors.New("archive: MessageRetryAttempts must be positive")
 	}
-	if len(ctx.ClientName) > MaxClientNameLength {
+	if len(archiveCtx.ClientName) > MaxClientNameLength {
 		return errors.New(
 			"archive: ClientName length must be <= " +
 				strconv.Itoa(MaxClientNameLength),
 		)
 	}
-	if ctx.Aeron == nil && archiveAeronDir(ctx) == "" {
+	if archiveCtx.Aeron == nil && archiveAeronDir(archiveCtx) == "" {
 		return errors.New("archive: AeronDir is required when Aeron is not set")
 	}
 	return nil
 }
 
 // EffectiveControlRequestChannel returns the request URI after IPC-first selection.
-func (ctx Context) EffectiveControlRequestChannel() string {
-	return ctx.effectiveControlRequestChannel
+func (archiveCtx Context) EffectiveControlRequestChannel() string {
+	return archiveCtx.effectiveControlRequestChannel
 }
 
 // EffectiveControlResponseChannel returns the response subscription URI after
 // IPC-first selection.
-func (ctx Context) EffectiveControlResponseChannel() string {
-	return ctx.effectiveControlResponseChannel
+func (archiveCtx Context) EffectiveControlResponseChannel() string {
+	return archiveCtx.effectiveControlResponseChannel
 }
 
 // EffectiveControlRequestStreamID returns the request stream id after IPC-first
 // selection.
-func (ctx Context) EffectiveControlRequestStreamID() int32 {
-	return ctx.effectiveControlRequestStreamID
+func (archiveCtx Context) EffectiveControlRequestStreamID() int32 {
+	return archiveCtx.effectiveControlRequestStreamID
 }
 
 // EffectiveControlResponseStreamID returns the response stream id after IPC-first
 // selection.
-func (ctx Context) EffectiveControlResponseStreamID() int32 {
-	return ctx.effectiveControlResponseStreamID
+func (archiveCtx Context) EffectiveControlResponseStreamID() int32 {
+	return archiveCtx.effectiveControlResponseStreamID
 }
 
 // OwnsAeronClient reports whether connect should close the transport client.
-// false when ctx.Aeron is set; true when connect creates an owned client.
-func (ctx Context) OwnsAeronClient() bool {
-	return ctx.Aeron == nil
+// false when archiveCtx.Aeron is set; true when connect creates an owned client.
+func (archiveCtx Context) OwnsAeronClient() bool {
+	return archiveCtx.Aeron == nil
 }
 
-func applyEffectiveChannels(ctx Context) Context {
-	if ctx.LocalControlChannel != "" {
-		requestStreamID := ctx.LocalControlStreamID
+func applyEffectiveChannels(archiveCtx Context) Context {
+	if archiveCtx.LocalControlChannel != "" {
+		requestStreamID := archiveCtx.LocalControlStreamID
 		if requestStreamID == 0 {
-			requestStreamID = ctx.ControlRequestStreamID
+			requestStreamID = archiveCtx.ControlRequestStreamID
 		}
-		ctx.effectiveControlRequestChannel = ctx.LocalControlChannel
-		ctx.effectiveControlResponseChannel = ctx.LocalControlChannel
-		ctx.effectiveControlRequestStreamID = requestStreamID
-		ctx.effectiveControlResponseStreamID = requestStreamID
-		return ctx
+		archiveCtx.effectiveControlRequestChannel = archiveCtx.LocalControlChannel
+		archiveCtx.effectiveControlResponseChannel = archiveCtx.LocalControlChannel
+		archiveCtx.effectiveControlRequestStreamID = requestStreamID
+		archiveCtx.effectiveControlResponseStreamID = requestStreamID
+		return archiveCtx
 	}
 
-	responseChannel := ctx.ControlResponseChannel
+	responseChannel := archiveCtx.ControlResponseChannel
 	if responseChannel == "" {
-		responseChannel = ctx.ControlRequestChannel
+		responseChannel = archiveCtx.ControlRequestChannel
 	}
-	requestStreamID := ctx.ControlRequestStreamID
-	responseStreamID := ctx.ControlResponseStreamID
+	requestStreamID := archiveCtx.ControlRequestStreamID
+	responseStreamID := archiveCtx.ControlResponseStreamID
 	if responseStreamID == 0 {
 		responseStreamID = requestStreamID
 	}
-	ctx.effectiveControlRequestChannel = ctx.ControlRequestChannel
-	ctx.effectiveControlResponseChannel = responseChannel
-	ctx.effectiveControlRequestStreamID = requestStreamID
-	ctx.effectiveControlResponseStreamID = responseStreamID
-	return ctx
+	archiveCtx.effectiveControlRequestChannel = archiveCtx.ControlRequestChannel
+	archiveCtx.effectiveControlResponseChannel = responseChannel
+	archiveCtx.effectiveControlRequestStreamID = requestStreamID
+	archiveCtx.effectiveControlResponseStreamID = responseStreamID
+	return archiveCtx
 }
 
-func archiveAeronDir(ctx Context) string {
-	if ctx.AeronDir != "" {
-		return ctx.AeronDir
+func archiveAeronDir(archiveCtx Context) string {
+	if archiveCtx.AeronDir != "" {
+		return archiveCtx.AeronDir
 	}
-	return ctx.AeronContext.AeronDir
+	return archiveCtx.AeronContext.AeronDir
 }
 
-func concludeContext(ctx Context) (Context, *aeron.Client, bool, error) {
-	ctx = applyEffectiveChannels(ctx)
-	responseChannel, err := applyUDPRejoinFalse(ctx.effectiveControlResponseChannel)
+// concludeContext finalizes channel defaults and resolves the transport client.
+//
+// ctx bounds owned transport attach via aeron.Connect only. Shared Aeron and
+// test factories ignore ctx. Do not store ctx on Context.
+func concludeContext(
+	ctx context.Context,
+	archiveCtx Context,
+) (Context, *aeron.Client, bool, error) {
+	archiveCtx = applyEffectiveChannels(archiveCtx)
+	responseChannel, err := applyUDPRejoinFalse(archiveCtx.effectiveControlResponseChannel)
 	if err != nil {
 		return Context{}, nil, false, err
 	}
-	ctx.effectiveControlResponseChannel = responseChannel
+	archiveCtx.effectiveControlResponseChannel = responseChannel
 
-	if ctx.Aeron != nil {
-		return ctx, ctx.Aeron, false, nil
+	if archiveCtx.Aeron != nil {
+		return archiveCtx, archiveCtx.Aeron, false, nil
 	}
-	aeronCtx := ctx.AeronContext
-	if dir := archiveAeronDir(ctx); dir != "" {
+	aeronCtx := archiveCtx.AeronContext
+	if dir := archiveAeronDir(archiveCtx); dir != "" {
 		aeronCtx.AeronDir = dir
 	}
 	if aeronCtx.ErrorHandler == nil {
 		aeronCtx.ErrorHandler = defaultArchiveConnectErrorHandler
 	}
 	var client *aeron.Client
-	if factory, ok := ownedConnectClientFactoryForContext(ctx); ok {
-		client, err = factory(ctx)
+	if factory, ok := ownedConnectClientFactoryForContext(archiveCtx); ok {
+		client, err = factory(archiveCtx)
 	} else {
-		client, err = aeron.Connect(aeronCtx)
+		client, err = aeron.Connect(ctx, aeronCtx)
 	}
 	if err != nil {
 		return Context{}, nil, false, err
 	}
-	ctx.Aeron = client
-	return ctx, client, true, nil
+	archiveCtx.Aeron = client
+	return archiveCtx, client, true, nil
 }
 
 func defaultArchiveConnectErrorHandler(err error) {

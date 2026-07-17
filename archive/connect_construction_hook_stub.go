@@ -5,7 +5,7 @@ package archive
 import "github.com/warrenguy/heron/aeron"
 
 func ownedConnectClientFactoryForContext(
-	ctx Context,
+	archiveCtx Context,
 ) (func(Context) (*aeron.Client, error), bool) {
 	return nil, false
 }

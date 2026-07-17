@@ -49,12 +49,12 @@ const FailoverClusterMembersString = "0,cluster-0:9002,cluster-0:9003,cluster-0:
 // connect tests. Stream IDs are left at zero so callers or NewAsyncConnect Normalize
 // applies defaults. AeronDir is unset; callers assign it from compose env before connect.
 func FailoverHarnessClusterContext() client.ClusterContext {
-	ctx := harnessClusterContext(
+	clusterCtx := harnessClusterContext(
 		FailoverIngressChannel,
 		FailoverEgressChannel,
 		FailoverIngressEndpoints,
 	)
-	ctx.NewLeaderTimeout = FailoverNewLeaderTimeout
-	ctx.MessageTimeout = FailoverNewLeaderTimeout
-	return ctx
+	clusterCtx.NewLeaderTimeout = FailoverNewLeaderTimeout
+	clusterCtx.MessageTimeout = FailoverNewLeaderTimeout
+	return clusterCtx
 }

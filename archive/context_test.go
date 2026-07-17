@@ -19,21 +19,21 @@ func validContext(aeronDir string) archive.Context {
 	}
 }
 
-func withRemoteControl(ctx *archive.Context) {
-	*ctx = ctx.WithRemoteControl()
+func withRemoteControl(archiveCtx *archive.Context) {
+	*archiveCtx = archiveCtx.WithRemoteControl()
 }
 
 func withRemoteRequestChannel(channel string) func(*archive.Context) {
-	return func(ctx *archive.Context) {
-		withRemoteControl(ctx)
-		ctx.ControlRequestChannel = channel
+	return func(archiveCtx *archive.Context) {
+		withRemoteControl(archiveCtx)
+		archiveCtx.ControlRequestChannel = channel
 	}
 }
 
 func withRemoteResponseChannel(channel string) func(*archive.Context) {
-	return func(ctx *archive.Context) {
-		withRemoteControl(ctx)
-		ctx.ControlResponseChannel = channel
+	return func(archiveCtx *archive.Context) {
+		withRemoteControl(archiveCtx)
+		archiveCtx.ControlResponseChannel = channel
 	}
 }
 
@@ -42,47 +42,47 @@ func normalizedContext(
 	mutate func(*archive.Context),
 ) archive.Context {
 	t.Helper()
-	ctx := validContext(t.TempDir())
+	archiveCtx := validContext(t.TempDir())
 	if mutate != nil {
-		mutate(&ctx)
+		mutate(&archiveCtx)
 	}
-	return ctx.Normalize()
+	return archiveCtx.Normalize()
 }
 
 func TestNormalizeContext_defaultsIpc(t *testing.T) {
-	ctx := normalizedContext(t, nil)
+	archiveCtx := normalizedContext(t, nil)
 
-	require.Equal(t, archive.DefaultLocalControlChannel, ctx.LocalControlChannel)
-	require.Equal(t, archive.DefaultControlRequestChannel, ctx.ControlRequestChannel)
-	require.Equal(t, archive.DefaultControlResponseChannel, ctx.ControlResponseChannel)
-	require.Equal(t, archive.DefaultLocalControlStreamID, ctx.LocalControlStreamID)
-	require.Equal(t, archive.DefaultControlRequestStreamID, ctx.ControlRequestStreamID)
-	require.Equal(t, archive.DefaultControlResponseStreamID, ctx.ControlResponseStreamID)
-	require.Equal(t, archive.DefaultConnectTimeout, ctx.ConnectTimeout)
-	require.Equal(t, archive.DefaultControlResponseTimeout, ctx.ControlResponseTimeout)
-	require.Equal(t, archive.DefaultControlOfferRetryTimeout, ctx.ControlOfferRetryTimeout)
-	require.Equal(t, archive.DefaultMessageRetryAttempts, ctx.MessageRetryAttempts)
-	require.Equal(t, "archive-client", ctx.ClientName)
-	require.IsType(t, archive.NullCredentialsSupplier{}, ctx.CredentialsSupplier)
-	require.NotNil(t, ctx.IdleStrategy)
+	require.Equal(t, archive.DefaultLocalControlChannel, archiveCtx.LocalControlChannel)
+	require.Equal(t, archive.DefaultControlRequestChannel, archiveCtx.ControlRequestChannel)
+	require.Equal(t, archive.DefaultControlResponseChannel, archiveCtx.ControlResponseChannel)
+	require.Equal(t, archive.DefaultLocalControlStreamID, archiveCtx.LocalControlStreamID)
+	require.Equal(t, archive.DefaultControlRequestStreamID, archiveCtx.ControlRequestStreamID)
+	require.Equal(t, archive.DefaultControlResponseStreamID, archiveCtx.ControlResponseStreamID)
+	require.Equal(t, archive.DefaultConnectTimeout, archiveCtx.ConnectTimeout)
+	require.Equal(t, archive.DefaultControlResponseTimeout, archiveCtx.ControlResponseTimeout)
+	require.Equal(t, archive.DefaultControlOfferRetryTimeout, archiveCtx.ControlOfferRetryTimeout)
+	require.Equal(t, archive.DefaultMessageRetryAttempts, archiveCtx.MessageRetryAttempts)
+	require.Equal(t, "archive-client", archiveCtx.ClientName)
+	require.IsType(t, archive.NullCredentialsSupplier{}, archiveCtx.CredentialsSupplier)
+	require.NotNil(t, archiveCtx.IdleStrategy)
 }
 
 func TestNormalizeContext_withRemoteControl(t *testing.T) {
-	ctx := normalizedContext(t, withRemoteControl)
+	archiveCtx := normalizedContext(t, withRemoteControl)
 
-	require.Empty(t, ctx.LocalControlChannel)
-	require.Equal(t, archive.DefaultControlRequestChannel, ctx.ControlRequestChannel)
-	require.Equal(t, archive.DefaultControlResponseChannel, ctx.ControlResponseChannel)
+	require.Empty(t, archiveCtx.LocalControlChannel)
+	require.Equal(t, archive.DefaultControlRequestChannel, archiveCtx.ControlRequestChannel)
+	require.Equal(t, archive.DefaultControlResponseChannel, archiveCtx.ControlResponseChannel)
 }
 
 func TestNormalizeContext_preservesExplicitLocalControl(t *testing.T) {
-	ctx := normalizedContext(t, func(ctx *archive.Context) {
-		ctx.LocalControlChannel = archive.DefaultLocalControlChannel
-		ctx.LocalControlStreamID = 77
+	archiveCtx := normalizedContext(t, func(archiveCtx *archive.Context) {
+		archiveCtx.LocalControlChannel = archive.DefaultLocalControlChannel
+		archiveCtx.LocalControlStreamID = 77
 	})
 
-	require.Equal(t, archive.DefaultLocalControlChannel, ctx.LocalControlChannel)
-	require.Equal(t, int32(77), ctx.LocalControlStreamID)
+	require.Equal(t, archive.DefaultLocalControlChannel, archiveCtx.LocalControlChannel)
+	require.Equal(t, int32(77), archiveCtx.LocalControlStreamID)
 }
 
 func TestNormalizeContext_idempotent(t *testing.T) {
@@ -94,9 +94,9 @@ func TestNormalizeContext_idempotent(t *testing.T) {
 }
 
 func TestValidateContext_acceptsDefault(t *testing.T) {
-	ctx := normalizedContext(t, nil)
+	archiveCtx := normalizedContext(t, nil)
 
-	require.NoError(t, ctx.ValidateForConnect())
+	require.NoError(t, archiveCtx.ValidateForConnect())
 }
 
 func TestValidateContext_errors(t *testing.T) {
@@ -127,48 +127,48 @@ func TestValidateContext_errors(t *testing.T) {
 		},
 		{
 			name: "connect timeout negative",
-			mutate: func(ctx *archive.Context) {
-				ctx.ConnectTimeout = -time.Second
+			mutate: func(archiveCtx *archive.Context) {
+				archiveCtx.ConnectTimeout = -time.Second
 			},
 			wantErr: "archive: ConnectTimeout must be positive",
 		},
 		{
 			name: "message timeout negative",
-			mutate: func(ctx *archive.Context) {
-				ctx.ControlResponseTimeout = -time.Second
+			mutate: func(archiveCtx *archive.Context) {
+				archiveCtx.ControlResponseTimeout = -time.Second
 			},
 			wantErr: "archive: ControlResponseTimeout must be positive",
 		},
 		{
 			name: "client name too long",
-			mutate: func(ctx *archive.Context) {
-				ctx.ClientName = strings.Repeat("x", archive.MaxClientNameLength+1)
+			mutate: func(archiveCtx *archive.Context) {
+				archiveCtx.ClientName = strings.Repeat("x", archive.MaxClientNameLength+1)
 			},
 			wantErr: "archive: ClientName length must be <= 100",
 		},
 		{
 			name: "missing aeron dir",
-			mutate: func(ctx *archive.Context) {
-				ctx.AeronDir = ""
-				ctx.AeronContext = aeron.Context{}
+			mutate: func(archiveCtx *archive.Context) {
+				archiveCtx.AeronDir = ""
+				archiveCtx.AeronContext = aeron.Context{}
 			},
 			wantErr: "archive: AeronDir is required when Aeron is not set",
 		},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			ctx := normalizedContext(t, testCase.mutate)
-			err := ctx.ValidateForConnect()
+			archiveCtx := normalizedContext(t, testCase.mutate)
+			err := archiveCtx.ValidateForConnect()
 			require.EqualError(t, err, testCase.wantErr)
 		})
 	}
 }
 
 func TestValidateContext_aeronContextDirAccepted(t *testing.T) {
-	ctx := normalizedContext(t, func(ctx *archive.Context) {
-		ctx.AeronDir = ""
-		ctx.AeronContext = aeron.Context{AeronDir: t.TempDir()}
+	archiveCtx := normalizedContext(t, func(archiveCtx *archive.Context) {
+		archiveCtx.AeronDir = ""
+		archiveCtx.AeronContext = aeron.Context{AeronDir: t.TempDir()}
 	})
 
-	require.NoError(t, ctx.ValidateForConnect())
+	require.NoError(t, archiveCtx.ValidateForConnect())
 }

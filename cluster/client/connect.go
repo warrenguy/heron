@@ -15,6 +15,9 @@ import (
 // clusterCtx.IdleStrategy.Idle(0) and calls IdleStrategy.Reset on exit so a shared
 // backoff instance is not left in PARKING before the post-connect duty cycle.
 //
+// When clusterCtx.Aeron is nil, ctx also bounds owned transport attach (CNC ready
+// and driver heartbeat) via NewAsyncConnect. Shared Aeron skips that wait.
+//
 // Pass a raw ClusterContext; Connect normalizes internally and must see
 // zero fields for default detection (do not pre-normalize before Connect or
 // NewAsyncConnect).
@@ -41,7 +44,7 @@ func Connect(
 		return nil, err
 	}
 
-	connect, err := NewAsyncConnect(clusterCtx)
+	connect, err := NewAsyncConnect(ctx, clusterCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +69,7 @@ func awaitClusterConnect(
 	ctx context.Context,
 	connect *AsyncConnect,
 ) (*ConnectResult, error) {
-	idle := connect.ctx.IdleStrategy
+	idle := connect.clusterCtx.IdleStrategy
 	defer idle.Reset()
 
 	for {

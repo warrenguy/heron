@@ -457,8 +457,8 @@ func newTrackIngressDeadlineOracleCluster(
 	nowNs.Store(trackIngressAwaitNewLeaderStartNs)
 
 	return newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-		withConnectNanoClock(result, &nowNs, func(ctx *ClusterContext) {
-			ctx.NewLeaderTimeout = trackIngressAwaitNewLeaderTimeout
+		withConnectNanoClock(result, &nowNs, func(clusterCtx *ClusterContext) {
+			clusterCtx.NewLeaderTimeout = trackIngressAwaitNewLeaderTimeout
 		})
 		if mutate != nil {
 			mutate(result)

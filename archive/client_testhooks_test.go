@@ -175,7 +175,7 @@ func TestClientListRecording_forwardsSignalsDuringAwait(t *testing.T) {
 		controlSubscription: h.sub,
 		controlAssembler:    h.assembler,
 		aeronClient:         h.client,
-		ctx:                 h.ctx,
+		archiveCtx:          h.archiveCtx,
 	}
 
 	correlationID := h.client.NextCorrelationID() + 1
@@ -222,7 +222,7 @@ func TestClientStopRecordingAwaitSignal_routesSTOPToTracker(t *testing.T) {
 		controlSubscription: h.sub,
 		controlAssembler:    h.assembler,
 		aeronClient:         h.client,
-		ctx:                 h.ctx,
+		archiveCtx:          h.archiveCtx,
 	}
 	tracker := NewStopSignalTracker(controlResponseTestControlSessionID, lifecycleRecordingID)
 	signalWire := encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
@@ -259,7 +259,7 @@ func TestClientClose_releasesResourcesAndIsIdempotent(t *testing.T) {
 		controlAssembler:    h.assembler,
 		aeronClient:         h.client,
 		ownsAeronClient:     true,
-		ctx:                 h.ctx,
+		archiveCtx:          h.archiveCtx,
 	}
 
 	require.NoError(t, archive.Close())
@@ -293,7 +293,7 @@ func TestClientClose_leavesUserSuppliedClientOpen(t *testing.T) {
 		controlAssembler: h.assembler,
 		aeronClient:      h.client,
 		ownsAeronClient:  false,
-		ctx:              h.ctx,
+		archiveCtx:       h.archiveCtx,
 	}
 
 	require.NoError(t, archive.Close())

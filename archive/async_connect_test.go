@@ -56,19 +56,19 @@ func newAsyncConnectFixtureWithCredentialLens(
 ) (*aeron.AsyncConnectTestHarness, *AsyncConnect) {
 	t.Helper()
 
-	return newAsyncConnectFixture(t, func(ctx Context) Context {
-		ctx.CredentialsSupplier = asyncConnectCredentialsSupplier{
+	return newAsyncConnectFixture(t, func(archiveCtx Context) Context {
+		archiveCtx.CredentialsSupplier = asyncConnectCredentialsSupplier{
 			encodedLen:   encodedLen,
 			challengeLen: challengeLen,
 		}
-		return ctx
+		return archiveCtx
 	})
 }
 
 func setupAsyncConnectAtPollResponse(t *testing.T) *AsyncConnect {
 	t.Helper()
 
-	harness, ac := newAsyncConnectFixture(t, func(ctx Context) Context { return ctx })
+	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
 	registerAsyncConnectClose(t, ac)
 	pollUntilConnectPollResponse(t, harness, ac, func(h *aeron.AsyncConnectTestHarness) {
 		h.RespondPendingAdds()
@@ -79,7 +79,7 @@ func setupAsyncConnectAtPollResponse(t *testing.T) *AsyncConnect {
 func setupAsyncConnectPreparedSendMessage(t *testing.T) (*AsyncConnect, *stubControlPublication) {
 	t.Helper()
 
-	harness, ac := newAsyncConnectFixture(t, func(ctx Context) Context { return ctx })
+	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
 	registerAsyncConnectClose(t, ac)
 	setupAsyncConnectControlReady(t, harness, ac)
 	require.NoError(t, ac.PrepareConnectRequestForTest())
@@ -210,7 +210,7 @@ func TestAsyncConnect_pollResponse_controlResponseError(t *testing.T) {
 func TestAsyncConnect_prepareConnectRequest_unresolvedResponseChannel(t *testing.T) {
 	t.Parallel()
 
-	_, ac := newAsyncConnectFixture(t, func(ctx Context) Context { return ctx })
+	_, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
 	registerAsyncConnectClose(t, ac)
 
 	err := ac.PrepareConnectRequestForTest()
@@ -258,9 +258,9 @@ func TestAsyncConnect_prepareChallengeResponse_nilChallengeNormalized(t *testing
 	t.Parallel()
 
 	var captured []byte
-	_, ac := newAsyncConnectFixture(t, func(ctx Context) Context {
-		ctx.CredentialsSupplier = challengeCapturingCredentialsSupplier{captured: &captured}
-		return ctx
+	_, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context {
+		archiveCtx.CredentialsSupplier = challengeCapturingCredentialsSupplier{captured: &captured}
+		return archiveCtx
 	})
 	registerAsyncConnectClose(t, ac)
 	ac.wire.encodedChallenge = nil
@@ -275,9 +275,9 @@ func TestAsyncConnect_pollResponse_emptyChallengeNormalized(t *testing.T) {
 	t.Parallel()
 
 	var captured []byte
-	harness, ac := newAsyncConnectFixture(t, func(ctx Context) Context {
-		ctx.CredentialsSupplier = challengeCapturingCredentialsSupplier{captured: &captured}
-		return ctx
+	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context {
+		archiveCtx.CredentialsSupplier = challengeCapturingCredentialsSupplier{captured: &captured}
+		return archiveCtx
 	})
 	registerAsyncConnectClose(t, ac)
 	pollUntilConnectPollResponse(t, harness, ac, func(h *aeron.AsyncConnectTestHarness) {
@@ -310,11 +310,11 @@ func TestAsyncConnect_pollResponse_emptyChallengeNormalized(t *testing.T) {
 func TestAsyncConnect_prepareConnectRequest_encodeFailure(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := newAsyncConnectFixture(t, func(ctx Context) Context { return ctx })
+	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
 	registerAsyncConnectClose(t, ac)
 
 	setupAsyncConnectControlReady(t, harness, ac)
-	ac.ctx.CredentialsSupplier = asyncConnectCredentialsSupplier{
+	ac.archiveCtx.CredentialsSupplier = asyncConnectCredentialsSupplier{
 		encodedLen: codecs.ArchiveEncodeMaxVarLen + 1,
 	}
 	err := ac.PrepareConnectRequestForTest()
@@ -338,7 +338,7 @@ func TestAsyncConnect_prepareChallengeResponse_encodeFailure(t *testing.T) {
 	require.Equal(t, ConnectStateSendMessage, ac.State())
 
 	ac.session.correlationID = conductor.NullCorrelationID
-	ac.ctx.CredentialsSupplier = asyncConnectCredentialsSupplier{
+	ac.archiveCtx.CredentialsSupplier = asyncConnectCredentialsSupplier{
 		challengeLen: codecs.ArchiveEncodeMaxVarLen + 1,
 	}
 	err = ac.PrepareChallengeResponseForTest()
@@ -349,11 +349,11 @@ func TestAsyncConnect_timeout(t *testing.T) {
 	t.Parallel()
 
 	harness := aeron.NewAsyncConnectTestHarness(t)
-	ctx := validConnectFixtureContext()
-	ctx.Aeron = harness.Client
-	ctx.ConnectTimeout = 5 * time.Millisecond
-	ctx.AeronContext.NanoClock = func() int64 { return time.Now().UnixNano() }
-	ac, err := NewAsyncConnect(ctx)
+	archiveCtx := validConnectFixtureContext()
+	archiveCtx.Aeron = harness.Client
+	archiveCtx.ConnectTimeout = 5 * time.Millisecond
+	archiveCtx.AeronContext.NanoClock = func() int64 { return time.Now().UnixNano() }
+	ac, err := NewAsyncConnect(t.Context(), archiveCtx)
 	require.NoError(t, err)
 	registerAsyncConnectClose(t, ac)
 
@@ -507,7 +507,7 @@ func TestAsyncConnect_pollSendMessage_oversizeWireFailsFast(t *testing.T) {
 func TestAsyncConnect_resizeConnectWireBuffer_clearsAbandonedBackingOnGrow(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := newAsyncConnectFixture(t, func(ctx Context) Context { return ctx })
+	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
 	registerAsyncConnectClose(t, ac)
 	setupAsyncConnectControlReady(t, harness, ac)
 
@@ -523,7 +523,7 @@ func TestAsyncConnect_resizeConnectWireBuffer_clearsAbandonedBackingOnGrow(t *te
 		oldBacking[i] = sentinel
 	}
 
-	ac.ctx.CredentialsSupplier = asyncConnectCredentialsSupplier{
+	ac.archiveCtx.CredentialsSupplier = asyncConnectCredentialsSupplier{
 		challengeLen: connectWireBufferCloseHighWaterCredentialsLen,
 	}
 	ac.wire.encodedChallenge = []byte("challenge")

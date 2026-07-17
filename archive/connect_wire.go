@@ -126,8 +126,8 @@ func (ac *AsyncConnect) prepareConnectRequest() error {
 	}
 	ac.ensureCorrelationID()
 	responseChannelBytes := []byte(responseChannel)
-	credentials := ac.ctx.CredentialsSupplier.EncodedCredentials()
-	clientInfo := archiveConnectClientInfo(ac.ctx.ClientName)
+	credentials := ac.archiveCtx.CredentialsSupplier.EncodedCredentials()
+	clientInfo := archiveConnectClientInfo(ac.archiveCtx.ClientName)
 	wireLen, ok := authConnectRequestWireLen(
 		len(responseChannelBytes),
 		len(credentials),
@@ -142,7 +142,7 @@ func (ac *AsyncConnect) prepareConnectRequest() error {
 			return encodeAuthConnectRequest(
 				dst,
 				ac.session.correlationID,
-				ac.ctx.EffectiveControlResponseStreamID(),
+				ac.archiveCtx.EffectiveControlResponseStreamID(),
 				responseChannelBytes,
 				credentials,
 				clientInfo,
@@ -159,7 +159,7 @@ func (ac *AsyncConnect) prepareChallengeResponse() error {
 	if challenge == nil {
 		challenge = []byte{}
 	}
-	credentials := ac.ctx.CredentialsSupplier.RespondToChallenge(challenge)
+	credentials := ac.archiveCtx.CredentialsSupplier.RespondToChallenge(challenge)
 	wireLen, ok := challengeResponseWireLen(len(credentials))
 	return ac.encodeConnectWire(
 		wireLen,

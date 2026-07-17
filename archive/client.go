@@ -38,7 +38,7 @@ type Client struct {
 	controlAssembler    *FragmentAssembler
 	aeronClient         *aeron.Client
 	ownsAeronClient     bool
-	ctx                 Context
+	archiveCtx          Context
 	closed              bool
 }
 
@@ -49,6 +49,9 @@ type Client struct {
 // ctx is canceled or its deadline is exceeded, or ConnectTimeout elapses. The await loop
 // paces via archiveCtx.IdleStrategy.Idle(0) and calls IdleStrategy.Reset on exit so a
 // shared backoff instance is not left in PARKING before the post-connect duty cycle.
+//
+// When archiveCtx.Aeron is nil, ctx also bounds owned transport attach (CNC ready and
+// driver heartbeat) via NewAsyncConnect. Shared Aeron skips that wait.
 //
 // NewAsyncConnect normalizes and validates archiveCtx; pre-normalizing is harmless.
 //
@@ -62,7 +65,7 @@ type Client struct {
 //
 // Not safe for concurrent use during connect.
 func Connect(ctx context.Context, archiveCtx Context) (*Client, error) {
-	connect, err := NewAsyncConnect(archiveCtx)
+	connect, err := NewAsyncConnect(ctx, archiveCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +81,7 @@ func Connect(ctx context.Context, archiveCtx Context) (*Client, error) {
 }
 
 func awaitConnect(ctx context.Context, connect *AsyncConnect) (*ConnectResult, error) {
-	idle := connect.ctx.IdleStrategy
+	idle := connect.archiveCtx.IdleStrategy
 	defer idle.Reset()
 
 	for {
@@ -112,7 +115,7 @@ func newClient(result *ConnectResult) *Client {
 		controlAssembler:    NewFragmentAssembler(nil),
 		aeronClient:         result.Aeron,
 		ownsAeronClient:     result.OwnsAeronClient,
-		ctx:                 result.Context,
+		archiveCtx:          result.Context,
 	}
 	if client.controlPoller != nil {
 		client.controlPoller.ResetCapture()
@@ -136,7 +139,7 @@ func (client *Client) Context() Context {
 	if client == nil {
 		return Context{}
 	}
-	return client.ctx
+	return client.archiveCtx
 }
 
 // Close sends a best-effort CloseSessionRequest, then releases the control publication

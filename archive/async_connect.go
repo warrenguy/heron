@@ -2,6 +2,7 @@ package archive
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -73,7 +74,7 @@ type connectWireState struct {
 //
 // Not safe for concurrent use.
 type AsyncConnect struct {
-	ctx             Context
+	archiveCtx      Context
 	client          *aeron.Client
 	ownsAeronClient bool
 
@@ -91,18 +92,23 @@ type AsyncConnect struct {
 
 // NewAsyncConnect validates configuration, concludes archive context, and starts
 // the connect state machine at CREATE_CONTROL_RESPONSE_SUBSCRIPTION.
-func NewAsyncConnect(ctx Context) (*AsyncConnect, error) {
-	ctx = ctx.Normalize()
-	if err := ctx.ValidateForConnect(); err != nil {
+//
+// ctx bounds owned transport attach only (aeron.Connect wait for CNC ready and
+// driver heartbeat). Prefer Connect for a blocking handshake with cancel support.
+// Poll does not accept context cancellation; check cancel between Poll calls and
+// call Close on cancel. ctx is not retained on AsyncConnect.
+func NewAsyncConnect(ctx context.Context, archiveCtx Context) (*AsyncConnect, error) {
+	archiveCtx = archiveCtx.Normalize()
+	if err := archiveCtx.ValidateForConnect(); err != nil {
 		return nil, err
 	}
-	concluded, client, owns, err := concludeContext(ctx)
+	concluded, client, owns, err := concludeContext(ctx, archiveCtx)
 	if err != nil {
 		return nil, err
 	}
 	nanoClock := resolveNanoClock(concluded.AeronContext.NanoClock)
 	return &AsyncConnect{
-		ctx:             concluded,
+		archiveCtx:      concluded,
 		client:          client,
 		ownsAeronClient: owns,
 		state:           ConnectStateCreateControlResponseSubscription,
@@ -222,8 +228,8 @@ func (ac *AsyncConnect) checkDeadline() error {
 	return fmt.Errorf(
 		"archive: connect timeout in state %v request=%s response=%s responseConnected=%t",
 		ac.state,
-		ac.ctx.EffectiveControlRequestChannel(),
-		ac.ctx.EffectiveControlResponseChannel(),
+		ac.archiveCtx.EffectiveControlRequestChannel(),
+		ac.archiveCtx.EffectiveControlResponseChannel(),
 		connected,
 	)
 }
@@ -263,8 +269,8 @@ func (ac *AsyncConnect) pollCreateControlResponseSubscription() (*ConnectResult,
 		&ac.transport.responseRegID,
 		func() (int64, error) {
 			return ac.client.OfferAddSubscription(
-				ac.ctx.EffectiveControlResponseStreamID(),
-				ac.ctx.EffectiveControlResponseChannel(),
+				ac.archiveCtx.EffectiveControlResponseStreamID(),
+				ac.archiveCtx.EffectiveControlResponseChannel(),
 			)
 		},
 		ac.pollAddControlResponseSubscription,
@@ -293,8 +299,8 @@ func (ac *AsyncConnect) pollCreateControlRequestPublication() (*ConnectResult, e
 		&ac.transport.requestRegID,
 		func() (int64, error) {
 			return ac.client.OfferAddExclusivePublication(
-				ac.ctx.EffectiveControlRequestStreamID(),
-				ac.ctx.EffectiveControlRequestChannel(),
+				ac.archiveCtx.EffectiveControlRequestStreamID(),
+				ac.archiveCtx.EffectiveControlRequestChannel(),
 			)
 		},
 		ac.pollAddControlRequestPublication,
@@ -450,11 +456,11 @@ func (ac *AsyncConnect) pollConcludeConnect() (*ConnectResult, error) {
 		ServerVersion:       ac.session.serverVersion,
 		ControlPublication:  ac.transport.requestPublication,
 		ControlSubscription: ac.transport.responseSubscription,
-		Proxy:               NewProxy(ac.transport.requestPublication, ac.ctx),
+		Proxy:               NewProxy(ac.transport.requestPublication, ac.archiveCtx),
 		Poller:              ac.transport.responsePoller,
 		Aeron:               ac.client,
 		OwnsAeronClient:     ac.ownsAeronClient,
-		Context:             ac.ctx,
+		Context:             ac.archiveCtx,
 	}
 	ac.transferConnectResourcesToResult()
 	ac.zeroSensitiveBuffers()

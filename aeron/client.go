@@ -1,6 +1,7 @@
 package aeron
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -87,13 +88,24 @@ func (client *Client) unlockClient() {
 	client.clientLock.Unlock()
 }
 
-func Connect(ctx Context) (*Client, error) {
-	ctx = normalizeContext(ctx)
-	if err := validateConnectContext(ctx); err != nil {
+// Connect maps CNC and builds a Client.
+//
+// ctx bounds CNC ready and driver heartbeat waits only (earlier of
+// [Context.DriverTimeout] and ctx.Deadline()). A successful Client is independent
+// of ctx; callers must Close it. Cancel does not close a live client.
+//
+// Returns ctx.Err() when the context is done before connect succeeds. Driver
+// timeout errors apply only while the context remains active.
+func Connect(ctx context.Context, aeronCtx Context) (*Client, error) {
+	aeronCtx = normalizeContext(aeronCtx)
+	if err := validateConnectContext(aeronCtx); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	mapped, rings, err := openCnc(ctx)
+	mapped, rings, err := openCnc(ctx, aeronCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +117,7 @@ func Connect(ctx Context) (*Client, error) {
 		}
 	}()
 
-	client, err := newConductorClient(ctx, mapped, rings)
+	client, err := newConductorClient(ctx, aeronCtx, mapped, rings)
 	if err != nil {
 		return nil, err
 	}
@@ -132,9 +144,9 @@ func validateConnectContext(ctx Context) error {
 	return nil
 }
 
-func openCnc(ctx Context) (*cnc.MappedCncFile, *cnc.Rings, error) {
-	cncPath := filepath.Join(ctx.AeronDir, cnc.FileName)
-	if err := cnc.WaitCncReady(cncPath, ctx.DriverTimeout); err != nil {
+func openCnc(ctx context.Context, aeronCtx Context) (*cnc.MappedCncFile, *cnc.Rings, error) {
+	cncPath := filepath.Join(aeronCtx.AeronDir, cnc.FileName)
+	if err := cnc.WaitCncReady(ctx, cncPath, aeronCtx.DriverTimeout); err != nil {
 		return nil, nil, fmt.Errorf("aeron: wait for cnc ready: %w", err)
 	}
 
@@ -190,11 +202,17 @@ func conductorConnectConfig(ctx Context, clientID int64) conductor.Config {
 }
 
 func newConductorClient(
-	ctx Context,
+	ctx context.Context,
+	aeronCtx Context,
 	mapped *cnc.MappedCncFile,
 	rings *cnc.Rings,
 ) (*Client, error) {
-	if err := waitForDriverHeartbeat(rings.ToDriver, ctx.DriverTimeout, ctx.EpochClock); err != nil {
+	if err := waitForDriverHeartbeat(
+		ctx,
+		rings.ToDriver,
+		aeronCtx.DriverTimeout,
+		aeronCtx.EpochClock,
+	); err != nil {
 		return nil, err
 	}
 
@@ -216,7 +234,7 @@ func newConductorClient(
 	}
 
 	driverProxy := conductor.NewDriverProxy(rings.ToDriver, clientID)
-	config := conductorConnectConfig(ctx, clientID)
+	config := conductorConnectConfig(aeronCtx, clientID)
 
 	conductorInstance, err := conductor.NewConductor(
 		driverProxy,
@@ -234,11 +252,11 @@ func newConductorClient(
 		countersReader:          countersReader,
 		conductor:               conductorInstance,
 		driverProxy:             driverProxy,
-		nanoClock:               ctx.NanoClock,
-		driverTimeout:           ctx.DriverTimeout,
-		pollTimeout:             ctx.PollTimeout,
-		publicationOfferTimeout: ctx.PublicationOfferTimeout,
-		idleSleepDuration:       ctx.IdleSleepDuration,
+		nanoClock:               aeronCtx.NanoClock,
+		driverTimeout:           aeronCtx.DriverTimeout,
+		pollTimeout:             aeronCtx.PollTimeout,
+		publicationOfferTimeout: aeronCtx.PublicationOfferTimeout,
+		idleSleepDuration:       aeronCtx.IdleSleepDuration,
 	}, nil
 }
 
@@ -648,21 +666,34 @@ func driverShutdownHeartbeatError(heartbeatMs int64) error {
 
 // Epoch deadline is the connect timeout; wall clock and driverHeartbeatPollInterval
 // backstop frozen-epoch tests and shutdown observed after the poll sleep only.
+//
+// Wall wait uses the earlier of timeout and ctx.Deadline(). Returns ctx.Err() when
+// the context is done before a heartbeat is accepted.
 func waitForDriverHeartbeat(
+	ctx context.Context,
 	toDriver *ringbuffer.ManyToOneRingBuffer,
 	timeout time.Duration,
 	epochClock conductor.EpochClock,
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	driverTimeoutMs := timeout.Milliseconds()
 	startMs := epochClock()
 	deadlineMs := startMs + driverTimeoutMs
-	wallDeadline := time.Now().Add(timeout)
+	wallBound := EffectiveRetryBound(ctx, timeout, time.Now())
+	wallDeadline := time.Now().Add(wallBound)
 	sawPositiveHeartbeat := false
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		heartbeatMs := toDriver.ConsumerHeartbeatTime()
 		if err := driverShutdownHeartbeatError(heartbeatMs); err != nil {
-			return err
+			return PreferContextError(ctx, err)
 		}
 
 		nowMs := epochClock()
@@ -678,18 +709,33 @@ func waitForDriverHeartbeat(
 		if nowMs >= deadlineMs || !time.Now().Before(wallDeadline) {
 			break
 		}
-		time.Sleep(driverHeartbeatPollInterval)
+		if err := sleepContext(ctx, driverHeartbeatPollInterval); err != nil {
+			return err
+		}
 	}
 
 	if err := driverShutdownHeartbeatError(toDriver.ConsumerHeartbeatTime()); err != nil {
-		return err
+		return PreferContextError(ctx, err)
 	}
 
 	cause := ErrDriverHeartbeatNotReady
 	if sawPositiveHeartbeat {
 		cause = ErrDriverHeartbeatStaleAtConnect
 	}
-	return &DriverTimeoutError{Cause: cause}
+	return PreferContextError(ctx, &DriverTimeoutError{Cause: cause})
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	select {
+	case <-ctx.Done():
+		if !timer.Stop() {
+			<-timer.C
+		}
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func validateClientID(clientID int64) error {

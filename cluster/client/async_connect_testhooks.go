@@ -3,6 +3,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 
 	"github.com/warrenguy/heron/aeron"
@@ -44,10 +45,14 @@ func (ac *AsyncConnect) EgressSubscriptionForTest() *aeron.Subscription {
 }
 
 // ConcludeClusterContextForTest exercises concludeClusterContext during connect tests.
+//
+// ctx bounds owned transport attach; tests that inject Aeron or factories
+// may pass context.Background().
 func ConcludeClusterContextForTest(
-	ctx ClusterContext,
+	ctx context.Context,
+	clusterCtx ClusterContext,
 ) (ClusterContext, *aeron.Client, bool, error) {
-	return concludeClusterContext(ctx)
+	return concludeClusterContext(ctx, clusterCtx)
 }
 
 // ClusterContextForTest exposes the concluded cluster context during connect tests.
@@ -55,7 +60,7 @@ func (ac *AsyncConnect) ClusterContextForTest() ClusterContext {
 	if ac == nil {
 		return ClusterContext{}
 	}
-	return ac.ctx
+	return ac.clusterCtx
 }
 
 func firstConnectedIngressPublicationForTest(memberMap MemberIngressMap) IngressPublication {

@@ -320,13 +320,13 @@ func TestRunControlAwaitLoop_contextDeadline(t *testing.T) {
 
 func TestOfferAndAwait_offerTimeout(t *testing.T) {
 	h := newLifecycleHarness(t)
-	h.ctx.ControlOfferRetryTimeout = time.Millisecond
+	h.archiveCtx.ControlOfferRetryTimeout = time.Millisecond
 	h.pub.offerResult = aeron.BackPressured
 
 	_, err := offerAndAwaitControlRequest(
 		t.Context(),
 		h.client,
-		h.ctx,
+		h.archiveCtx,
 		func() int {
 			h.advanceClock()
 			return 0

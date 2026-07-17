@@ -21,17 +21,17 @@ func TestClusterContext_connectReadyContract(t *testing.T) {
 	transport := &aeron.Client{}
 	handlers := &client.EgressHandlers{}
 
-	ctx := config.clusterContext(transport, handlers)
+	clusterCtx := config.clusterContext(transport, handlers)
 
-	require.Equal(t, config.AeronDir, ctx.AeronDir)
-	require.Equal(t, transport, ctx.Aeron)
-	require.Equal(t, config.IngressChannel, ctx.IngressChannel)
-	require.Equal(t, config.EgressChannel, ctx.EgressChannel)
-	require.Equal(t, config.IngressEndpoints, ctx.IngressEndpoints)
-	require.Equal(t, handlers, ctx.EgressHandler)
-	require.Equal(t, "cluster-auction-client", ctx.ClientName)
-	require.Zero(t, ctx.NewLeaderTimeout, "must not pre-normalize before Connect")
-	require.Zero(t, ctx.MessageTimeout)
-	require.Zero(t, ctx.IngressStreamID)
-	require.Nil(t, ctx.IdleStrategy)
+	require.Equal(t, config.AeronDir, clusterCtx.AeronDir)
+	require.Equal(t, transport, clusterCtx.Aeron)
+	require.Equal(t, config.IngressChannel, clusterCtx.IngressChannel)
+	require.Equal(t, config.EgressChannel, clusterCtx.EgressChannel)
+	require.Equal(t, config.IngressEndpoints, clusterCtx.IngressEndpoints)
+	require.Equal(t, handlers, clusterCtx.EgressHandler)
+	require.Equal(t, "cluster-auction-client", clusterCtx.ClientName)
+	require.Zero(t, clusterCtx.NewLeaderTimeout, "must not pre-normalize before Connect")
+	require.Zero(t, clusterCtx.MessageTimeout)
+	require.Zero(t, clusterCtx.IngressStreamID)
+	require.Nil(t, clusterCtx.IdleStrategy)
 }

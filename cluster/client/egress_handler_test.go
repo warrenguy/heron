@@ -277,10 +277,10 @@ func TestValidateClusterContext_egressHandlersMessageCallbacksPass(t *testing.T)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := validClusterContext().Normalize()
-			ctx.EgressHandler = tt.handler
+			clusterCtx := validClusterContext().Normalize()
+			clusterCtx.EgressHandler = tt.handler
 
-			requireNoValidationErrors(t, ctx)
+			requireNoValidationErrors(t, clusterCtx)
 		})
 	}
 }

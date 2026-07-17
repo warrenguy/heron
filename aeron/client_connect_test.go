@@ -1,6 +1,7 @@
 package aeron_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -79,6 +80,7 @@ func TestWaitForDriverHeartbeat_timeouts(t *testing.T) {
 			}
 
 			err := aeron.WaitForDriverHeartbeatForTest(
+				context.Background(),
 				ring,
 				testCase.timeout,
 				newAdvancingEpochClock(testCase.epochStart, testCase.epochStep),
@@ -93,6 +95,7 @@ func TestWaitForDriverHeartbeat_freshHeartbeat(t *testing.T) {
 	ring.SetConsumerHeartbeatTime(9_500)
 
 	err := aeron.WaitForDriverHeartbeatForTest(
+		context.Background(),
 		ring,
 		time.Second,
 		func() int64 { return 10_000 },
@@ -105,6 +108,7 @@ func TestWaitForDriverHeartbeat_freshAtEpochDeadlineBoundary(t *testing.T) {
 	ring.SetConsumerHeartbeatTime(1_000)
 
 	err := aeron.WaitForDriverHeartbeatForTest(
+		context.Background(),
 		ring,
 		5*time.Second,
 		newAdvancingEpochClock(1_000, 5_000),
@@ -117,6 +121,7 @@ func TestWaitForDriverHeartbeat_frozenEpochClockWallBackstop(t *testing.T) {
 
 	start := time.Now()
 	err := aeron.WaitForDriverHeartbeatForTest(
+		context.Background(),
 		ring,
 		50*time.Millisecond,
 		func() int64 { return 1_000 },
@@ -126,6 +131,38 @@ func TestWaitForDriverHeartbeat_frozenEpochClockWallBackstop(t *testing.T) {
 	requireDriverTimeoutCause(t, err, aeron.ErrDriverHeartbeatNotReady)
 	require.Greater(t, elapsed, 40*time.Millisecond)
 	require.Less(t, elapsed, 200*time.Millisecond)
+}
+
+func TestWaitForDriverHeartbeat_contextCanceled(t *testing.T) {
+	ring := testutil.NewTestRing(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err := aeron.WaitForDriverHeartbeatForTest(
+		ctx,
+		ring,
+		time.Second,
+		func() int64 { return 1_000 },
+	)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestWaitForDriverHeartbeat_contextDeadline(t *testing.T) {
+	ring := testutil.NewTestRing(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := aeron.WaitForDriverHeartbeatForTest(
+		ctx,
+		ring,
+		5*time.Second,
+		func() int64 { return 1_000 },
+	)
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, elapsed, time.Second)
 }
 
 func TestValidateClientID(t *testing.T) {

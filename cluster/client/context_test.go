@@ -23,26 +23,26 @@ const (
 )
 
 func withIngressChannelAndEndpoints(channel, endpoints string) func(*client.ClusterContext) {
-	return func(ctx *client.ClusterContext) {
-		ctx.IngressChannel = channel
-		ctx.IngressEndpoints = endpoints
+	return func(clusterCtx *client.ClusterContext) {
+		clusterCtx.IngressChannel = channel
+		clusterCtx.IngressEndpoints = endpoints
 	}
 }
 
-func withNilEgressHandler(ctx *client.ClusterContext) {
-	ctx.EgressHandler = nil
+func withNilEgressHandler(clusterCtx *client.ClusterContext) {
+	clusterCtx.EgressHandler = nil
 }
 
-func withTypedNilEgressHandlers(ctx *client.ClusterContext) {
-	ctx.EgressHandler = (*client.EgressHandlers)(nil)
+func withTypedNilEgressHandlers(clusterCtx *client.ClusterContext) {
+	clusterCtx.EgressHandler = (*client.EgressHandlers)(nil)
 }
 
-func withNilCredentialsSupplier(ctx *client.ClusterContext) {
-	ctx.CredentialsSupplier = nil
+func withNilCredentialsSupplier(clusterCtx *client.ClusterContext) {
+	clusterCtx.CredentialsSupplier = nil
 }
 
-func withNilIdleStrategy(ctx *client.ClusterContext) {
-	ctx.IdleStrategy = nil
+func withNilIdleStrategy(clusterCtx *client.ClusterContext) {
+	clusterCtx.IdleStrategy = nil
 }
 
 func validClusterContext() client.ClusterContext {
@@ -58,61 +58,65 @@ func validClusterContext() client.ClusterContext {
 }
 
 func normalizedClusterContext(mutate func(*client.ClusterContext)) client.ClusterContext {
-	ctx := validClusterContext()
+	clusterCtx := validClusterContext()
 	if mutate != nil {
-		mutate(&ctx)
+		mutate(&clusterCtx)
 	}
-	return ctx.Normalize()
+	return clusterCtx.Normalize()
 }
 
-func requireNoValidationErrors(t *testing.T, ctx client.ClusterContext) {
+func requireNoValidationErrors(t *testing.T, clusterCtx client.ClusterContext) {
 	t.Helper()
-	require.NoError(t, ctx.Validate())
-	require.NoError(t, ctx.ValidateForConnect())
+	require.NoError(t, clusterCtx.Validate())
+	require.NoError(t, clusterCtx.ValidateForConnect())
 }
 
-func requireValidationErrors(t *testing.T, ctx client.ClusterContext, wantErr string) {
+func requireValidationErrors(t *testing.T, clusterCtx client.ClusterContext, wantErr string) {
 	t.Helper()
-	require.EqualError(t, ctx.Validate(), wantErr)
-	require.EqualError(t, ctx.ValidateForConnect(), wantErr)
+	require.EqualError(t, clusterCtx.Validate(), wantErr)
+	require.EqualError(t, clusterCtx.ValidateForConnect(), wantErr)
 }
 
-func requireValidateErrorButConnectOK(t *testing.T, ctx client.ClusterContext, wantErr string) {
+func requireValidateErrorButConnectOK(
+	t *testing.T,
+	clusterCtx client.ClusterContext,
+	wantErr string,
+) {
 	t.Helper()
-	require.EqualError(t, ctx.Validate(), wantErr)
-	require.NoError(t, ctx.ValidateForConnect())
+	require.EqualError(t, clusterCtx.Validate(), wantErr)
+	require.NoError(t, clusterCtx.ValidateForConnect())
 }
 
 func TestNormalizeClusterContext_defaults(t *testing.T) {
-	ctx := normalizedClusterContext(nil)
+	clusterCtx := normalizedClusterContext(nil)
 
-	require.Equal(t, client.DefaultIngressStreamID, ctx.IngressStreamID)
-	require.Equal(t, client.DefaultEgressStreamID, ctx.EgressStreamID)
-	require.Equal(t, client.DefaultEgressStreamID, ctx.ResponseStreamID)
-	require.Equal(t, client.DefaultMessageTimeout, ctx.MessageTimeout)
-	require.Equal(t, client.DefaultIngressRetryTimeout, ctx.IngressRetryTimeout)
-	require.Equal(t, client.DefaultMessageTimeout, ctx.NewLeaderTimeout)
-	require.IsType(t, client.NullCredentialsSupplier{}, ctx.CredentialsSupplier)
-	require.NotNil(t, ctx.IdleStrategy)
-	require.NotNil(t, ctx.IngressExclusive)
-	require.True(t, *ctx.IngressExclusive)
+	require.Equal(t, client.DefaultIngressStreamID, clusterCtx.IngressStreamID)
+	require.Equal(t, client.DefaultEgressStreamID, clusterCtx.EgressStreamID)
+	require.Equal(t, client.DefaultEgressStreamID, clusterCtx.ResponseStreamID)
+	require.Equal(t, client.DefaultMessageTimeout, clusterCtx.MessageTimeout)
+	require.Equal(t, client.DefaultIngressRetryTimeout, clusterCtx.IngressRetryTimeout)
+	require.Equal(t, client.DefaultMessageTimeout, clusterCtx.NewLeaderTimeout)
+	require.IsType(t, client.NullCredentialsSupplier{}, clusterCtx.CredentialsSupplier)
+	require.NotNil(t, clusterCtx.IdleStrategy)
+	require.NotNil(t, clusterCtx.IngressExclusive)
+	require.True(t, *clusterCtx.IngressExclusive)
 }
 
 func TestNormalizeClusterContext_newLeaderTimeoutZeroUsesMessageTimeout(t *testing.T) {
-	ctx := normalizedClusterContext(func(ctx *client.ClusterContext) {
-		ctx.MessageTimeout = 7 * time.Second
+	clusterCtx := normalizedClusterContext(func(clusterCtx *client.ClusterContext) {
+		clusterCtx.MessageTimeout = 7 * time.Second
 	})
 
-	require.Equal(t, 7*time.Second, ctx.NewLeaderTimeout)
+	require.Equal(t, 7*time.Second, clusterCtx.NewLeaderTimeout)
 }
 
 func TestNormalizeClusterContext_responseStreamIDDefaultsToEgress(t *testing.T) {
-	ctx := normalizedClusterContext(func(ctx *client.ClusterContext) {
-		ctx.EgressStreamID = 200
-		ctx.ResponseStreamID = 0
+	clusterCtx := normalizedClusterContext(func(clusterCtx *client.ClusterContext) {
+		clusterCtx.EgressStreamID = 200
+		clusterCtx.ResponseStreamID = 0
 	})
 
-	require.Equal(t, int32(200), ctx.ResponseStreamID)
+	require.Equal(t, int32(200), clusterCtx.ResponseStreamID)
 }
 
 func TestNormalizeClusterContext_preservesExplicitValues(t *testing.T) {
@@ -120,52 +124,52 @@ func TestNormalizeClusterContext_preservesExplicitValues(t *testing.T) {
 	customTimeout := 11 * time.Second
 	customNewLeader := 22 * time.Second
 
-	ctx := normalizedClusterContext(func(ctx *client.ClusterContext) {
-		ctx.IngressStreamID = 111
-		ctx.EgressStreamID = 222
-		ctx.ResponseStreamID = 333
-		ctx.MessageTimeout = customTimeout
-		ctx.NewLeaderTimeout = customNewLeader
-		ctx.IngressExclusive = &exclusive
+	clusterCtx := normalizedClusterContext(func(clusterCtx *client.ClusterContext) {
+		clusterCtx.IngressStreamID = 111
+		clusterCtx.EgressStreamID = 222
+		clusterCtx.ResponseStreamID = 333
+		clusterCtx.MessageTimeout = customTimeout
+		clusterCtx.NewLeaderTimeout = customNewLeader
+		clusterCtx.IngressExclusive = &exclusive
 	})
 
-	require.Equal(t, int32(111), ctx.IngressStreamID)
-	require.Equal(t, int32(222), ctx.EgressStreamID)
-	require.Equal(t, int32(333), ctx.ResponseStreamID)
-	require.Equal(t, customTimeout, ctx.MessageTimeout)
-	require.Equal(t, customNewLeader, ctx.NewLeaderTimeout)
-	require.NotNil(t, ctx.IngressExclusive)
-	require.False(t, *ctx.IngressExclusive)
+	require.Equal(t, int32(111), clusterCtx.IngressStreamID)
+	require.Equal(t, int32(222), clusterCtx.EgressStreamID)
+	require.Equal(t, int32(333), clusterCtx.ResponseStreamID)
+	require.Equal(t, customTimeout, clusterCtx.MessageTimeout)
+	require.Equal(t, customNewLeader, clusterCtx.NewLeaderTimeout)
+	require.NotNil(t, clusterCtx.IngressExclusive)
+	require.False(t, *clusterCtx.IngressExclusive)
 }
 
 func TestNormalizeClusterContext_mergesAeronDirOnly(t *testing.T) {
 	customEpoch := func() int64 { return 42 }
 	customNano := func() int64 { return 99 }
 
-	ctx := normalizedClusterContext(func(ctx *client.ClusterContext) {
-		ctx.AeronDir = "/tmp/heron-aeron"
-		ctx.AeronContext = aeron.Context{
+	clusterCtx := normalizedClusterContext(func(clusterCtx *client.ClusterContext) {
+		clusterCtx.AeronDir = "/tmp/heron-aeron"
+		clusterCtx.AeronContext = aeron.Context{
 			EpochClock: customEpoch,
 			NanoClock:  customNano,
 		}
 	})
 
-	require.Equal(t, "/tmp/heron-aeron", ctx.AeronContext.AeronDir)
-	require.NotNil(t, ctx.AeronContext.EpochClock)
-	require.Equal(t, int64(42), ctx.AeronContext.EpochClock())
-	require.NotNil(t, ctx.AeronContext.NanoClock)
-	require.Equal(t, int64(99), ctx.AeronContext.NanoClock())
+	require.Equal(t, "/tmp/heron-aeron", clusterCtx.AeronContext.AeronDir)
+	require.NotNil(t, clusterCtx.AeronContext.EpochClock)
+	require.Equal(t, int64(42), clusterCtx.AeronContext.EpochClock())
+	require.NotNil(t, clusterCtx.AeronContext.NanoClock)
+	require.Equal(t, int64(99), clusterCtx.AeronContext.NanoClock())
 }
 
 func TestNormalizeClusterContext_preservesNestedAeronDir(t *testing.T) {
-	ctx := normalizedClusterContext(func(ctx *client.ClusterContext) {
-		ctx.AeronDir = "/tmp/top-level"
-		ctx.AeronContext = aeron.Context{
+	clusterCtx := normalizedClusterContext(func(clusterCtx *client.ClusterContext) {
+		clusterCtx.AeronDir = "/tmp/top-level"
+		clusterCtx.AeronContext = aeron.Context{
 			AeronDir: "/tmp/nested",
 		}
 	})
 
-	require.Equal(t, "/tmp/nested", ctx.AeronContext.AeronDir)
+	require.Equal(t, "/tmp/nested", clusterCtx.AeronContext.AeronDir)
 }
 
 func TestNormalizeClusterContext_ingressExclusiveMutationDoesNotAffectFreshDefault(
@@ -199,29 +203,29 @@ func TestValidateClusterContext_errors(t *testing.T) {
 	}{
 		{
 			name: "missing ingress channel",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.IngressChannel = ""
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.IngressChannel = ""
 			},
 			wantErr: "cluster client: IngressChannel is required",
 		},
 		{
 			name: "missing egress channel",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.EgressChannel = ""
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.EgressChannel = ""
 			},
 			wantErr: "cluster client: EgressChannel is required",
 		},
 		{
 			name: "unknown egress media",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.EgressChannel = "aeron:unknown"
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.EgressChannel = "aeron:unknown"
 			},
 			wantErr: "cluster client: unknown egress response channel not supported; use ipc, ipcx, or udp",
 		},
 		{
 			name: "invalid egress channel",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.EgressChannel = "not-a-channel"
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.EgressChannel = "not-a-channel"
 			},
 			wantErr: "cluster client: invalid egress channel: not-a-channel",
 		},
@@ -279,29 +283,29 @@ func TestValidateClusterContext_errors(t *testing.T) {
 		},
 		{
 			name: "client name too long",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.ClientName = string(make([]byte, client.MaxClientNameLength+1))
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.ClientName = string(make([]byte, client.MaxClientNameLength+1))
 			},
 			wantErr: "cluster client: ClientName length must be <= 100",
 		},
 		{
 			name: "non positive message timeout",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.MessageTimeout = -time.Second
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.MessageTimeout = -time.Second
 			},
 			wantErr: "cluster client: MessageTimeout must be positive",
 		},
 		{
 			name: "non positive ingress retry timeout",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.IngressRetryTimeout = -time.Second
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.IngressRetryTimeout = -time.Second
 			},
 			wantErr: "cluster client: IngressRetryTimeout must be positive",
 		},
 		{
 			name: "negative new leader timeout",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.NewLeaderTimeout = -time.Second
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.NewLeaderTimeout = -time.Second
 			},
 			wantErr: "cluster client: NewLeaderTimeout must not be negative",
 		},
@@ -333,15 +337,15 @@ func TestValidateClusterContext_errors(t *testing.T) {
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			ctx := normalizedClusterContext(testCase.mutate)
+			clusterCtx := normalizedClusterContext(testCase.mutate)
 			if testCase.afterNormalize != nil {
-				testCase.afterNormalize(&ctx)
+				testCase.afterNormalize(&clusterCtx)
 			}
 
 			if testCase.validateOnly {
-				require.EqualError(t, ctx.Validate(), testCase.wantErr)
+				require.EqualError(t, clusterCtx.Validate(), testCase.wantErr)
 			} else {
-				requireValidationErrors(t, ctx, testCase.wantErr)
+				requireValidationErrors(t, clusterCtx, testCase.wantErr)
 			}
 		})
 	}
@@ -356,16 +360,16 @@ func TestValidateClusterContext_timeoutsWithoutNormalize(t *testing.T) {
 	}{
 		{
 			name: "zero message timeout",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.MessageTimeout = 0
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.MessageTimeout = 0
 			},
 			wantErr: "cluster client: MessageTimeout must be positive",
 		},
 		{
 			name: "zero new leader timeout",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.MessageTimeout = 7 * time.Second
-				ctx.NewLeaderTimeout = 0
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.MessageTimeout = 7 * time.Second
+				clusterCtx.NewLeaderTimeout = 0
 			},
 			wantNoError: true,
 		},
@@ -373,10 +377,10 @@ func TestValidateClusterContext_timeoutsWithoutNormalize(t *testing.T) {
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			ctx := validClusterContext()
-			testCase.mutate(&ctx)
+			clusterCtx := validClusterContext()
+			testCase.mutate(&clusterCtx)
 
-			err := ctx.Validate()
+			err := clusterCtx.Validate()
 			if testCase.wantNoError {
 				require.NoError(t, err)
 			} else {
@@ -398,11 +402,11 @@ func TestValidateClusterContext_unparseableIngressWithEndpoints(t *testing.T) {
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			ctx := normalizedClusterContext(
+			clusterCtx := normalizedClusterContext(
 				withIngressChannelAndEndpoints(testCase.channel, testIngressEndpointsMap),
 			)
 			requireValidationErrors(
-				t, ctx, "cluster client: invalid ingress channel: "+testCase.channel,
+				t, clusterCtx, "cluster client: invalid ingress channel: "+testCase.channel,
 			)
 		})
 	}
@@ -417,18 +421,18 @@ func TestValidateForConnect_egressHandlerNotRequired(t *testing.T) {
 		{name: "typed nil", mutate: withTypedNilEgressHandlers},
 		{
 			name: "nil with udp egress",
-			mutate: func(ctx *client.ClusterContext) {
-				withNilEgressHandler(ctx)
-				ctx.EgressChannel = "aeron:udp?endpoint=localhost:20111"
+			mutate: func(clusterCtx *client.ClusterContext) {
+				withNilEgressHandler(clusterCtx)
+				clusterCtx.EgressChannel = "aeron:udp?endpoint=localhost:20111"
 			},
 		},
 	}
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			ctx := normalizedClusterContext(testCase.mutate)
+			clusterCtx := normalizedClusterContext(testCase.mutate)
 
-			requireValidateErrorButConnectOK(t, ctx, errEgressHandlerRequired)
+			requireValidateErrorButConnectOK(t, clusterCtx, errEgressHandlerRequired)
 		})
 	}
 }
@@ -440,8 +444,8 @@ func TestValidateClusterContext_validCases(t *testing.T) {
 	}{
 		{
 			name: "client name at max length",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.ClientName = string(make([]byte, client.MaxClientNameLength))
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.ClientName = string(make([]byte, client.MaxClientNameLength))
 			},
 		},
 		{
@@ -470,20 +474,20 @@ func TestValidateClusterContext_validCases(t *testing.T) {
 		},
 		{
 			name: "ipcx egress channel",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.EgressChannel = "aeron:ipcx?alias=egress"
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.EgressChannel = "aeron:ipcx?alias=egress"
 			},
 		},
 		{
 			name: "udp egress channel",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.EgressChannel = "aeron:udp?endpoint=localhost:0|term-length=64k"
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.EgressChannel = "aeron:udp?endpoint=localhost:0|term-length=64k"
 			},
 		},
 		{
 			name: "spy udp egress channel",
-			mutate: func(ctx *client.ClusterContext) {
-				ctx.EgressChannel = "aeron-spy:aeron:udp?endpoint=localhost:0"
+			mutate: func(clusterCtx *client.ClusterContext) {
+				clusterCtx.EgressChannel = "aeron-spy:aeron:udp?endpoint=localhost:0"
 			},
 		},
 	}
@@ -497,11 +501,11 @@ func TestValidateClusterContext_validCases(t *testing.T) {
 
 func TestOwnsAeronClient(t *testing.T) {
 	external := &aeron.Client{}
-	ctx := normalizedClusterContext(func(ctx *client.ClusterContext) {
-		ctx.Aeron = external
+	clusterCtx := normalizedClusterContext(func(clusterCtx *client.ClusterContext) {
+		clusterCtx.Aeron = external
 	})
 
-	require.False(t, ctx.OwnsAeronClient())
+	require.False(t, clusterCtx.OwnsAeronClient())
 
 	owned := normalizedClusterContext(nil)
 	require.True(t, owned.OwnsAeronClient())

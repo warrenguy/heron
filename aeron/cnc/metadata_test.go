@@ -1,6 +1,7 @@
 package cnc_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -193,14 +194,14 @@ func TestWaitCncReady_readyFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), cnc.FileName)
 	writeReadyCncFile(t, path)
 
-	require.NoError(t, cnc.WaitCncReady(path, time.Second))
+	require.NoError(t, cnc.WaitCncReady(t.Context(), path, time.Second))
 }
 
 func TestWaitCncReady_hugeMetadataShortFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), cnc.FileName)
 	writeWrappedPositiveOverflowCncFile(t, path)
 
-	err := cnc.WaitCncReady(path, 100*time.Millisecond)
+	err := cnc.WaitCncReady(t.Context(), path, 100*time.Millisecond)
 	require.ErrorContains(t, err, "insufficient for metadata")
 }
 
@@ -212,13 +213,55 @@ func TestWaitCncReady_insufficientFileLength(t *testing.T) {
 	shortFile := cnc.TestShortCncFileLength
 	require.NoError(t, os.WriteFile(path, buf[:shortFile], 0o644))
 
-	err := cnc.WaitCncReady(path, 100*time.Millisecond)
+	err := cnc.WaitCncReady(t.Context(), path, 100*time.Millisecond)
 	require.ErrorContains(t, err, "insufficient for metadata")
 }
 
 func TestWaitCncReady_missingFile(t *testing.T) {
-	err := cnc.WaitCncReady(t.TempDir()+"/missing.dat", 10*time.Millisecond)
+	err := cnc.WaitCncReady(t.Context(), t.TempDir()+"/missing.dat", 10*time.Millisecond)
 	require.Error(t, err, "expected timeout")
+}
+
+func TestWaitCncReady_contextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err := cnc.WaitCncReady(ctx, t.TempDir()+"/missing.dat", time.Second)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestWaitCncReady_contextDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := cnc.WaitCncReady(ctx, t.TempDir()+"/missing.dat", 5*time.Second)
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, elapsed, time.Second)
+}
+
+// pastDeadlineContext reports a deadline that has already elapsed while Done/Err
+// stay open from the parent. Forces wall-expiry preference without relying on the
+// scheduler race between wall clock and context timer.
+type pastDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c pastDeadlineContext) Deadline() (time.Time, bool) {
+	return c.deadline, true
+}
+
+func TestWaitCncReady_preferContextDeadlineOnWallExpiry(t *testing.T) {
+	ctx := pastDeadlineContext{
+		Context:  t.Context(),
+		deadline: time.Now().Add(-time.Millisecond),
+	}
+
+	err := cnc.WaitCncReady(ctx, t.TempDir()+"/missing.dat", 5*time.Second)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func TestWaitCncReady_invalidMetadata(t *testing.T) {
@@ -228,6 +271,6 @@ func TestWaitCncReady_invalidMetadata(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(path, buf, 0o644))
 
-	err := cnc.WaitCncReady(path, 100*time.Millisecond)
+	err := cnc.WaitCncReady(t.Context(), path, 100*time.Millisecond)
 	require.ErrorContains(t, err, "must be positive")
 }

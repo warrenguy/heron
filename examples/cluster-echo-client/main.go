@@ -45,7 +45,7 @@ func main() {
 	// Connect to the cluster's embedded media driver.
 	//
 	// ErrorHandler logs asynchronous driver faults not returned by the calls below.
-	transport, err := aeron.Connect(aeron.Context{
+	transport, err := aeron.Connect(context.Background(), aeron.Context{
 		AeronDir:            aeronDir,
 		InterServiceTimeout: 10 * time.Second,
 		ErrorHandler: func(err error) {

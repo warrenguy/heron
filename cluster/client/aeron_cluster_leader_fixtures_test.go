@@ -228,8 +228,8 @@ func newMultiMemberAeronClusterInvalidIngress(
 	leaderPub := aeron.NewTestExclusivePublicationForHooks(t)
 	result := newMultiMemberConnectResult(t, connectFixtureLeaderMemberID, leaderPub)
 	installConnectFixtureEgressHandler(result, func(r *ConnectResult) {
-		mutateConnectContext(r, func(ctx *ClusterContext) {
-			ctx.IngressChannel = invalidIngressClusterContext().IngressChannel
+		mutateConnectContext(r, func(clusterCtx *ClusterContext) {
+			clusterCtx.IngressChannel = invalidIngressClusterContext().IngressChannel
 		})
 	})
 	rec, ok := result.Context.EgressHandler.(*recordingEgressHandlers)

@@ -31,7 +31,7 @@ func assertAddRejectedAfterClose(
 	t.Helper()
 
 	// Client must stay closed; ConnectClient cleanup would re-close.
-	client, err := aeron.Connect(aeron.Context{AeronDir: md.Dir})
+	client, err := aeron.Connect(t.Context(), aeron.Context{AeronDir: md.Dir})
 	require.NoError(t, err)
 	require.NoError(t, client.Close())
 	require.Zero(t, client.DoWork())
@@ -353,7 +353,7 @@ func TestClientSubscriptionLookupByRegID(t *testing.T) {
 func TestClientStayAlive(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client, err := aeron.Connect(aeron.Context{
+	client, err := aeron.Connect(t.Context(), aeron.Context{
 		AeronDir: md.Dir,
 		ErrorHandler: func(err error) {
 			require.FailNow(t, "unexpected client error during stay-alive", "%v", err)
@@ -382,7 +382,7 @@ func TestClientDetectsDriverDeath(t *testing.T) {
 
 	driverTimeout := 2 * time.Second
 	var gotErr error
-	client, err := aeron.Connect(aeron.Context{
+	client, err := aeron.Connect(t.Context(), aeron.Context{
 		AeronDir:      md.Dir,
 		DriverTimeout: driverTimeout,
 		ErrorHandler: func(err error) {
@@ -422,7 +422,7 @@ func TestClientDetectsDriverDeath(t *testing.T) {
 func TestClientReadsSystemCounters(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client, err := aeron.Connect(aeron.Context{
+	client, err := aeron.Connect(t.Context(), aeron.Context{
 		AeronDir: md.Dir,
 	})
 	require.NoError(t, err)
@@ -441,7 +441,7 @@ func TestClientReadsSystemCounters(t *testing.T) {
 func TestClientErrorLogReadable(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client, err := aeron.Connect(aeron.Context{
+	client, err := aeron.Connect(t.Context(), aeron.Context{
 		AeronDir: md.Dir,
 	})
 	require.NoError(t, err)
@@ -460,9 +460,9 @@ func TestClientErrorLogReadable(t *testing.T) {
 func TestClientTwoClientsSameDriver(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	clientA, err := aeron.Connect(aeron.Context{AeronDir: md.Dir})
+	clientA, err := aeron.Connect(t.Context(), aeron.Context{AeronDir: md.Dir})
 	require.NoError(t, err)
-	clientB, err := aeron.Connect(aeron.Context{AeronDir: md.Dir})
+	clientB, err := aeron.Connect(t.Context(), aeron.Context{AeronDir: md.Dir})
 	require.NoError(t, err)
 
 	clientIDA := clientA.ClientId()
@@ -499,9 +499,9 @@ func TestTwoClientsConcurrentRingOffers(t *testing.T) {
 		},
 	}
 
-	clientA, err := aeron.Connect(connectCtx)
+	clientA, err := aeron.Connect(t.Context(), connectCtx)
 	require.NoError(t, err)
-	clientB, err := aeron.Connect(connectCtx)
+	clientB, err := aeron.Connect(t.Context(), connectCtx)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		if !t.Failed() {

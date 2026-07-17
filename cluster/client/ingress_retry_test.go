@@ -67,8 +67,8 @@ func clusterWithAtomicNanoClock(
 	nowNs.Store(startNs)
 	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
 		withAtomicNanoClock(result, nowNs)
-		mutateConnectContext(result, func(ctx *ClusterContext) {
-			ctx.IngressRetryTimeout = ingressRetryTimeout
+		mutateConnectContext(result, func(clusterCtx *ClusterContext) {
+			clusterCtx.IngressRetryTimeout = ingressRetryTimeout
 		})
 	})
 	return ac, nowNs
@@ -259,9 +259,9 @@ func TestIngressOfferUntilPositive_cfgNanoClockOverride(t *testing.T) {
 
 	idle := &recordingIdleStrategy{}
 	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-		mutateConnectContext(result, func(ctx *ClusterContext) {
-			ctx.AeronContext.NanoClock = func() int64 { return frozenNs }
-			ctx.IngressRetryTimeout = time.Millisecond
+		mutateConnectContext(result, func(clusterCtx *ClusterContext) {
+			clusterCtx.AeronContext.NanoClock = func() int64 { return frozenNs }
+			clusterCtx.IngressRetryTimeout = time.Millisecond
 		})
 	})
 	doWorkCount := setupIngressRetryDoWorkRecorder(t)
@@ -306,8 +306,8 @@ func TestIngressOfferUntilPositive_expiredDeadlineAttemptsOnce(t *testing.T) {
 		return startNs + int64(time.Hour)
 	}
 	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-		mutateConnectContext(result, func(ctx *ClusterContext) {
-			ctx.IngressRetryTimeout = time.Millisecond
+		mutateConnectContext(result, func(clusterCtx *ClusterContext) {
+			clusterCtx.IngressRetryTimeout = time.Millisecond
 		})
 	})
 	var offerCalls int

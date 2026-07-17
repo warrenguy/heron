@@ -3,6 +3,7 @@
 package archive
 
 import (
+	"context"
 	"testing"
 
 	"github.com/warrenguy/heron/aeron"
@@ -15,8 +16,8 @@ var connectConstructionHooksMap = testhook.NewRegistry[
 ]()
 
 // SetConnectConstructionHooksForTest registers owned-client connect overrides keyed by
-// ctx.AeronDir or ctx.AeronContext.AeronDir. Each parallel test must use a distinct
-// AeronDir such as t.TempDir().
+// archiveCtx.AeronDir or archiveCtx.AeronContext.AeronDir. Each parallel test must use a
+// distinct AeronDir such as t.TempDir().
 func SetConnectConstructionHooksForTest(
 	tb testing.TB,
 	aeronDir string,
@@ -31,15 +32,19 @@ func SetConnectConstructionHooksForTest(
 }
 
 func ownedConnectClientFactoryForContext(
-	ctx Context,
+	archiveCtx Context,
 ) (func(Context) (*aeron.Client, error), bool) {
-	factory := connectConstructionHooksMap.Load(archiveAeronDir(ctx))
+	factory := connectConstructionHooksMap.Load(archiveAeronDir(archiveCtx))
 	return factory, factory != nil
 }
 
 // ConcludeContextForTest exercises concludeContext during connect tests.
+//
+// ctx bounds owned transport attach; tests that inject Aeron or factories
+// may pass context.Background().
 func ConcludeContextForTest(
-	ctx Context,
+	ctx context.Context,
+	archiveCtx Context,
 ) (Context, *aeron.Client, bool, error) {
-	return concludeContext(ctx)
+	return concludeContext(ctx, archiveCtx)
 }

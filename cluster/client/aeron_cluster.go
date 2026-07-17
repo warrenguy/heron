@@ -26,9 +26,9 @@ import (
 // Accessors, SpinOnce, and session ingress-retry helpers tolerate a nil receiver;
 // other methods require a non-nil receiver.
 type AeronCluster struct {
-	ctx       ClusterContext
-	aeron     *aeron.Client
-	ownsAeron bool
+	clusterCtx ClusterContext
+	aeron      *aeron.Client
+	ownsAeron  bool
 
 	clusterSessionID int64
 	leadershipTermID int64
@@ -101,8 +101,8 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 		return nil, errors.New("cluster client: egress image is closed")
 	}
 
-	ctx := result.Context.Normalize()
-	if err := ctx.Validate(); err != nil {
+	clusterCtx := result.Context.Normalize()
+	if err := clusterCtx.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -135,10 +135,10 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 	}
 	controlScratchLen := max(closeWireLen, keepAliveWireLen, adminWireLen)
 
-	nanoClock := resolveNanoClock(ctx.AeronContext.NanoClock)
+	nanoClock := resolveNanoClock(clusterCtx.AeronContext.NanoClock)
 
 	ac := &AeronCluster{
-		ctx:                ctx,
+		clusterCtx:         clusterCtx,
 		aeron:              result.Aeron,
 		ownsAeron:          result.OwnsAeronClient,
 		clusterSessionID:   result.ClusterSessionID,
@@ -153,11 +153,11 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 	}
 
 	ac.egressAdapter = newEgressAdapterWithHandler(
-		ctx.EgressHandler,
+		clusterCtx.EgressHandler,
 		result.ClusterSessionID,
 		result.EgressSubscription,
 		0,
-		ctx.DirectAssemblers,
+		clusterCtx.DirectAssemblers,
 		ac.dispatchSessionEgressFragment,
 	)
 
@@ -329,7 +329,7 @@ func (ac *AeronCluster) Context() ClusterContext {
 	if ac == nil {
 		return ClusterContext{}
 	}
-	return ac.ctx
+	return ac.clusterCtx
 }
 
 // Aeron returns the transport client. Nil after Close when the session owned the client.
@@ -348,7 +348,7 @@ func (ac *AeronCluster) dispatchSessionEgressFragment(
 ) {
 	dispatchSessionEgressFragment(
 		ac,
-		ac.ctx.EgressHandler,
+		ac.clusterCtx.EgressHandler,
 		ac.clusterSessionID,
 		buffer,
 		offset,

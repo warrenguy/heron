@@ -30,10 +30,10 @@ func DefaultBenchClusterContextForBench() ClusterContext {
 // connectWireBuffer before the benchmark timer starts. Correlation ID stays 0
 // (not NullCorrelationID) so prepareConnectRequest needs no live Aeron client.
 func NewAsyncConnectForBenchEncode() (*AsyncConnect, error) {
-	ctx := DefaultBenchClusterContextForBench()
+	clusterCtx := DefaultBenchClusterContextForBench()
 	ac := &AsyncConnect{
-		ctx:                     ctx,
-		cachedResponseChannel:   ctx.EgressChannel,
+		clusterCtx:              clusterCtx,
+		cachedResponseChannel:   clusterCtx.EgressChannel,
 		cachedResponseChannelOK: true,
 	}
 	if err := ac.prepareConnectRequest(); err != nil {

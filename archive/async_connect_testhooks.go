@@ -47,7 +47,7 @@ func (ac *AsyncConnect) ContextForTest() Context {
 	if ac == nil {
 		return Context{}
 	}
-	return ac.ctx
+	return ac.archiveCtx
 }
 
 // ControlResponseRegIDForTest exposes the control response async add registration id.

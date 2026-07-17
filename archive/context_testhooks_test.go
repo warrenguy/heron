@@ -13,10 +13,10 @@ import (
 
 func concludeContext(
 	t *testing.T,
-	ctx archive.Context,
+	archiveCtx archive.Context,
 ) (archive.Context, *aeron.Client, bool) {
 	t.Helper()
-	concluded, clientOut, owns, err := archive.ConcludeContextForTest(ctx)
+	concluded, clientOut, owns, err := archive.ConcludeContextForTest(t.Context(), archiveCtx)
 	require.NoError(t, err)
 	return concluded, clientOut, owns
 }
@@ -26,19 +26,19 @@ func concludedContext(
 	mutate func(*archive.Context),
 ) archive.Context {
 	t.Helper()
-	ctx := normalizedContext(t, mutate)
-	ctx.Aeron = &aeron.Client{}
-	concluded, _, _ := concludeContext(t, ctx)
+	archiveCtx := normalizedContext(t, mutate)
+	archiveCtx.Aeron = &aeron.Client{}
+	concluded, _, _ := concludeContext(t, archiveCtx)
 	return concluded
 }
 
 func TestConcludeContext_injectedAeron(t *testing.T) {
 	injected := &aeron.Client{}
-	ctx := normalizedContext(t, func(ctx *archive.Context) {
-		ctx.Aeron = injected
+	archiveCtx := normalizedContext(t, func(archiveCtx *archive.Context) {
+		archiveCtx.Aeron = injected
 	})
 
-	concluded, clientOut, owns := concludeContext(t, ctx)
+	concluded, clientOut, owns := concludeContext(t, archiveCtx)
 	require.False(t, owns)
 	require.Same(t, injected, clientOut)
 	require.Same(t, injected, concluded.Aeron)
@@ -50,30 +50,30 @@ func TestConcludeContext_ownedClientFactory(t *testing.T) {
 	archive.SetConnectConstructionHooksForTest(
 		t,
 		aeronDir,
-		func(ctx archive.Context) (*aeron.Client, error) {
+		func(archiveCtx archive.Context) (*aeron.Client, error) {
 			return owned, nil
 		},
 	)
 
-	ctx := normalizedContext(t, func(ctx *archive.Context) {
-		ctx.AeronDir = ""
-		ctx.AeronContext = aeron.Context{AeronDir: aeronDir}
+	archiveCtx := normalizedContext(t, func(archiveCtx *archive.Context) {
+		archiveCtx.AeronDir = ""
+		archiveCtx.AeronContext = aeron.Context{AeronDir: aeronDir}
 	})
 
-	concluded, clientOut, owns := concludeContext(t, ctx)
+	concluded, clientOut, owns := concludeContext(t, archiveCtx)
 	require.True(t, owns)
 	require.Same(t, owned, clientOut)
 	require.Same(t, owned, concluded.Aeron)
 }
 
 func TestConcludeContext_invalidResponseChannel(t *testing.T) {
-	ctx := normalizedContext(t, func(ctx *archive.Context) {
-		withRemoteControl(ctx)
-		ctx.ControlResponseChannel = "not-a-channel"
-		ctx.Aeron = &aeron.Client{}
+	archiveCtx := normalizedContext(t, func(archiveCtx *archive.Context) {
+		withRemoteControl(archiveCtx)
+		archiveCtx.ControlResponseChannel = "not-a-channel"
+		archiveCtx.Aeron = &aeron.Client{}
 	})
 
-	_, _, _, err := archive.ConcludeContextForTest(ctx)
+	_, _, _, err := archive.ConcludeContextForTest(t.Context(), archiveCtx)
 	require.EqualError(t, err, "archive: invalid control response channel: not-a-channel")
 }
 

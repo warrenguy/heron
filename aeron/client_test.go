@@ -1,6 +1,7 @@
 package aeron_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func TestConnect_validationErrors(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			var err error
 			if testCase.fullConnect {
-				_, err = aeron.Connect(testCase.ctx)
+				_, err = aeron.Connect(t.Context(), testCase.ctx)
 			} else {
 				err = aeron.ValidateConnectContextForTest(
 					aeron.NormalizeContextForTest(testCase.ctx),
@@ -79,4 +80,30 @@ func TestConnect_validationErrors(t *testing.T) {
 			require.EqualError(t, err, testCase.wantErr)
 		})
 	}
+}
+
+func TestConnect_contextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := aeron.Connect(ctx, aeron.Context{
+		AeronDir:      t.TempDir(),
+		DriverTimeout: time.Second,
+	})
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestConnect_contextDeadlineDuringCncWait(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := aeron.Connect(ctx, aeron.Context{
+		AeronDir:      t.TempDir(),
+		DriverTimeout: 5 * time.Second,
+	})
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, elapsed, time.Second)
 }

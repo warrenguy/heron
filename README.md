@@ -30,7 +30,8 @@ Publish and receive a message over IPC (error handling omitted):
 ```go
 import "github.com/warrenguy/heron/aeron"
 
-client, err := aeron.Connect(aeron.Context{AeronDir: "/tmp/aeron"})
+ctx := context.Background()
+client, err := aeron.Connect(ctx, aeron.Context{AeronDir: "/tmp/aeron"})
 if err != nil { /* ... */ }
 defer client.Close()
 
@@ -39,7 +40,6 @@ if err != nil { /* ... */ }
 sub, err := client.AddSubscription(1001, "aeron:ipc")
 if err != nil { /* ... */ }
 
-ctx := context.Background()
 if err := client.PollUntilConnected(ctx, pub); err != nil { /* ... */ }
 if err := client.PollUntilImageCount(ctx, sub, 1); err != nil { /* ... */ }
 
@@ -89,7 +89,7 @@ replay. Pass an existing transport client in `Context.Aeron` to share one duty
 cycle:
 
 ```go
-transport, err := aeron.Connect(aeron.Context{AeronDir: "/tmp/aeron"})
+transport, err := aeron.Connect(context.Background(), aeron.Context{AeronDir: "/tmp/aeron"})
 // ...
 session, err := archive.Connect(context.Background(), archive.Context{Aeron: transport})
 // ...

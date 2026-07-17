@@ -71,11 +71,11 @@ func (m MemberIngressMap) closeAll(client *aeron.Client) {
 
 // ChannelFor returns the Aeron ingress channel URI for offering to memberID.
 //
-// Delegates to Require, then BuildIngressChannel with ctx.IngressChannel and the
+// Delegates to Require, then BuildIngressChannel with clusterCtx.IngressChannel and the
 // member endpoint. Missing member ids return the Require error; channel substitution
 // errors propagate from BuildIngressChannel.
 func (m MemberIngressMap) ChannelFor(
-	ctx ClusterContext,
+	clusterCtx ClusterContext,
 	memberID int32,
 ) (string, error) {
 	ingress, err := m.Require(memberID)
@@ -83,9 +83,9 @@ func (m MemberIngressMap) ChannelFor(
 		return "", err
 	}
 	if ingress.Endpoint == "" {
-		return ctx.IngressChannel, nil
+		return clusterCtx.IngressChannel, nil
 	}
-	return BuildIngressChannel(ctx.IngressChannel, ingress.Endpoint)
+	return BuildIngressChannel(clusterCtx.IngressChannel, ingress.Endpoint)
 }
 
 // IsChannelOnly reports whether m is the single synthetic entry used when
@@ -113,29 +113,29 @@ func EnsureChannelOnlyMemberIngressMap(m MemberIngressMap) MemberIngressMap {
 
 // ingressExclusive reports whether connect should use exclusive ingress publications.
 // Nil IngressExclusive defaults to true (Java isIngressExclusive default).
-func ingressExclusive(ctx ClusterContext) bool {
-	return ctx.IngressExclusive == nil || *ctx.IngressExclusive
+func ingressExclusive(clusterCtx ClusterContext) bool {
+	return clusterCtx.IngressExclusive == nil || *clusterCtx.IngressExclusive
 }
 
 // asyncOfferAdd resolves the per-member channel via ChannelFor on memberMap rather
 // than a pre-built ingressChannel argument.
 func (ingress *MemberIngress) asyncOfferAdd(
-	ctx ClusterContext,
+	clusterCtx ClusterContext,
 	client *aeron.Client,
 	memberMap MemberIngressMap,
 ) error {
 	if ingress == nil {
 		return errors.New("cluster client: nil member ingress")
 	}
-	channel, err := memberMap.ChannelFor(ctx, ingress.MemberID)
+	channel, err := memberMap.ChannelFor(clusterCtx, ingress.MemberID)
 	if err != nil {
 		return err
 	}
-	return ingress.asyncOfferAddChannel(ctx, client, channel)
+	return ingress.asyncOfferAddChannel(clusterCtx, client, channel)
 }
 
 func (ingress *MemberIngress) asyncOfferAddChannel(
-	ctx ClusterContext,
+	clusterCtx ClusterContext,
 	client *aeron.Client,
 	channel string,
 ) error {
@@ -149,10 +149,10 @@ func (ingress *MemberIngress) asyncOfferAddChannel(
 		regID int64
 		err   error
 	)
-	if ingressExclusive(ctx) {
-		regID, err = client.OfferAddExclusivePublication(ctx.IngressStreamID, channel)
+	if ingressExclusive(clusterCtx) {
+		regID, err = client.OfferAddExclusivePublication(clusterCtx.IngressStreamID, channel)
 	} else {
-		regID, err = client.OfferAddPublication(ctx.IngressStreamID, channel)
+		regID, err = client.OfferAddPublication(clusterCtx.IngressStreamID, channel)
 	}
 	if err != nil {
 		return err
@@ -162,7 +162,7 @@ func (ingress *MemberIngress) asyncOfferAddChannel(
 }
 
 func (ingress *MemberIngress) asyncPollAddUnhooked(
-	ctx ClusterContext,
+	clusterCtx ClusterContext,
 	client *aeron.Client,
 ) (bool, error) {
 	if ingress == nil {
@@ -179,7 +179,7 @@ func (ingress *MemberIngress) asyncPollAddUnhooked(
 		done bool
 		err  error
 	)
-	if ingressExclusive(ctx) {
+	if ingressExclusive(clusterCtx) {
 		var ep *aeron.ExclusivePublication
 		ep, done, err = client.PollAddExclusivePublication(ingress.RegistrationID)
 		pub = ep
@@ -236,14 +236,14 @@ func (ingress *MemberIngress) reusablePublicationForEndpoint(endpoint string) In
 // entry with a pending RegistrationID. Shared by connect and session recovery.
 func pollPendingMemberIngressRegistration(
 	m MemberIngressMap,
-	ctx ClusterContext,
+	clusterCtx ClusterContext,
 	client *aeron.Client,
 ) {
 	for _, ingress := range m {
 		if !ingress.hasPendingRegistration() {
 			continue
 		}
-		_, _ = ingress.asyncPollAdd(ctx, client)
+		_, _ = ingress.asyncPollAdd(clusterCtx, client)
 	}
 }
 

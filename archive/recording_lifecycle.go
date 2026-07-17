@@ -12,7 +12,7 @@ import (
 // archiveControlOps bundles session deps for blocking archive control lifecycle helpers.
 type archiveControlOps struct {
 	aeronClient      *aeron.Client
-	ctx              Context
+	archiveCtx       Context
 	proxy            *Proxy
 	poll             func() int
 	responsePoller   *ControlResponsePoller
@@ -23,7 +23,7 @@ type archiveControlOps struct {
 func (client *Client) sessionControlOps(pollFn func() int) archiveControlOps {
 	return archiveControlOps{
 		aeronClient:      client.aeronClient,
-		ctx:              client.ctx,
+		archiveCtx:       client.archiveCtx,
 		proxy:            client.proxy,
 		poll:             pollFn,
 		responsePoller:   client.controlPoller,
@@ -40,7 +40,7 @@ func (ops archiveControlOps) offerAndAwait(
 	return offerAndAwaitControlRequest(
 		ctx,
 		ops.aeronClient,
-		ops.ctx,
+		ops.archiveCtx,
 		ops.poll,
 		ops.responsePoller,
 		func() (int64, bool) { return offer(correlationID) },
@@ -145,7 +145,7 @@ func (ops archiveControlOps) listRecording(
 	return offerAndAwaitListRecording(
 		ctx,
 		ops.aeronClient,
-		ops.ctx,
+		ops.archiveCtx,
 		ops.poll,
 		ops.descriptorPoller,
 		func() (int64, bool) {
@@ -188,7 +188,7 @@ func (ops archiveControlOps) stopRecordingAwaitSignal(
 		defer targets.ResponsePoller.ArmAwait(0)
 	}
 	if err := offerControlRequest(
-		ctx, ops.aeronClient, ops.ctx, ops.poll, func() (int64, bool) {
+		ctx, ops.aeronClient, ops.archiveCtx, ops.poll, func() (int64, bool) {
 			return ops.proxy.TryStopRecording(
 				ops.controlSessionID,
 				correlationID,
@@ -205,9 +205,9 @@ func (ops archiveControlOps) stopRecordingAwaitSignal(
 	return runControlAwaitLoop(
 		ctx,
 		ops.aeronClient,
-		ops.ctx,
+		ops.archiveCtx,
 		ops.poll,
-		ops.ctx.ControlResponseTimeout,
+		ops.archiveCtx.ControlResponseTimeout,
 		correlationID,
 		StopRecordingAwaitOperation,
 		func() (bool, error) {

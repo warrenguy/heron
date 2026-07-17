@@ -31,7 +31,7 @@ type lifecycleHarness struct {
 	assembler  *FragmentAssembler
 	pub        *stubControlPublication
 	proxy      *Proxy
-	ctx        Context
+	archiveCtx Context
 }
 
 func newLifecycleHarness(t *testing.T) *lifecycleHarness {
@@ -39,14 +39,14 @@ func newLifecycleHarness(t *testing.T) *lifecycleHarness {
 
 	harness, nowNs := controlOfferRetryHarnessWithNanoClock(t, 5_000_000_000)
 	sub, termBuffer := setupControlResponsePollFixtures(t)
-	ctx := Context{
+	archiveCtx := Context{
 		ControlResponseTimeout: lifecycleControlResponseTimeout,
 		IdleStrategy:           NewDefaultIdleStrategy(),
 		AeronContext: aeron.Context{
 			NanoClock: func() int64 { return nowNs.Load() },
 		},
 	}.Normalize()
-	pub, proxy := newTestProxy(ctx)
+	pub, proxy := newTestProxy(archiveCtx)
 	return &lifecycleHarness{
 		client:     harness.Client,
 		nowNs:      nowNs,
@@ -56,12 +56,12 @@ func newLifecycleHarness(t *testing.T) *lifecycleHarness {
 		assembler:  NewFragmentAssembler(nil),
 		pub:        pub,
 		proxy:      proxy,
-		ctx:        ctx,
+		archiveCtx: archiveCtx,
 	}
 }
 
 func (h *lifecycleHarness) advanceClock() {
-	h.nowNs.Add(int64(h.ctx.ControlResponseTimeout) / 8)
+	h.nowNs.Add(int64(h.archiveCtx.ControlResponseTimeout) / 8)
 }
 
 func (h *lifecycleHarness) demuxPoll(targets ControlPollTargets) int {
@@ -86,7 +86,7 @@ func (h *lifecycleHarness) signalTargets(handler RecordingSignalHandler) Control
 func (h *lifecycleHarness) controlOps(pollFn func() int) archiveControlOps {
 	return archiveControlOps{
 		aeronClient:      h.client,
-		ctx:              h.ctx,
+		archiveCtx:       h.archiveCtx,
 		proxy:            h.proxy,
 		poll:             pollFn,
 		responsePoller:   h.poller,
@@ -361,7 +361,7 @@ func TestClientListRecording_methodReturnsDescriptor(t *testing.T) {
 		controlSubscription: h.sub,
 		controlAssembler:    h.assembler,
 		aeronClient:         h.client,
-		ctx:                 h.ctx,
+		archiveCtx:          h.archiveCtx,
 	}
 	require.Equal(t, controlResponseTestControlSessionID, archive.ControlSessionID())
 	require.Equal(t, lifecycleArchiveID, archive.ArchiveID())
@@ -857,7 +857,7 @@ func TestStopRecordingAwaitSignal_timeout(t *testing.T) {
 	tracker := NewStopSignalTracker(controlResponseTestControlSessionID, -1)
 	targets := h.signalTargets(tracker)
 	pollFn := func() int {
-		h.nowNs.Add(int64(h.ctx.ControlResponseTimeout))
+		h.nowNs.Add(int64(h.archiveCtx.ControlResponseTimeout))
 		return h.demuxPoll(targets)
 	}
 

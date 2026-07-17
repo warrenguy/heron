@@ -41,7 +41,7 @@ func newMultiMemberWireRecoveryCluster(
 	result.EgressSubscription = sub
 	result.EgressImage = image
 	ac := newAeronClusterFromConnectFixtureResult(t, result, mutate)
-	rec, ok := ac.ctx.EgressHandler.(*recordingEgressHandlers)
+	rec, ok := ac.clusterCtx.EgressHandler.(*recordingEgressHandlers)
 	require.True(t, ok, "wire recovery cluster requires recording egress handler")
 	return ac, harness, leaderPub, rec
 }
@@ -214,9 +214,9 @@ func newWireRecoveryClusterWithInvalidIngress(
 		sub,
 		image,
 		func(result *ConnectResult) {
-			mutateConnectContext(result, func(ctx *ClusterContext) {
-				ctx.IngressChannel = invalidIngressClusterContext().IngressChannel
-				ctx.NewLeaderTimeout = timeout
+			mutateConnectContext(result, func(clusterCtx *ClusterContext) {
+				clusterCtx.IngressChannel = invalidIngressClusterContext().IngressChannel
+				clusterCtx.NewLeaderTimeout = timeout
 			})
 			withAtomicNanoClock(result, &nowNs)
 		},
@@ -390,8 +390,8 @@ func TestAeronCluster_awaitNewLeader_timeout(t *testing.T) {
 
 	sub, image, _ := setupEgressPollFixtures(t)
 	ac := newAeronClusterWithEgressImage(t, sub, image, func(result *ConnectResult) {
-		mutateConnectContext(result, func(ctx *ClusterContext) {
-			ctx.NewLeaderTimeout = timeout
+		mutateConnectContext(result, func(clusterCtx *ClusterContext) {
+			clusterCtx.NewLeaderTimeout = timeout
 		})
 		withAtomicNanoClock(result, &nowNs)
 	})
@@ -632,7 +632,7 @@ func TestImageFromHeader_nonImageContextReturnsNil(t *testing.T) {
 func TestAeronCluster_handleSessionEgressFragment_nilHeaderImage_skipsRebind(t *testing.T) {
 	sub, image, _ := setupEgressPollFixtures(t)
 	ac := newAeronClusterWithEgressImage(t, sub, image, nil)
-	rec := ac.ctx.EgressHandler.(*recordingEgressHandlers)
+	rec := ac.clusterCtx.EgressHandler.(*recordingEgressHandlers)
 
 	wire := encodeNewLeaderWireWithEndpoints(
 		t,

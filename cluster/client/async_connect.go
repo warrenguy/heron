@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -53,7 +54,7 @@ func (state ConnectState) String() string {
 //
 // Not safe for concurrent use.
 type AsyncConnect struct {
-	ctx               ClusterContext
+	clusterCtx        ClusterContext
 	client            *aeron.Client
 	ownsAeronClient   bool
 	newLeaderExplicit bool
@@ -86,23 +87,27 @@ type AsyncConnect struct {
 //
 // Pass a raw ClusterContext; NewAsyncConnect normalizes internally and must see
 // zero fields for default detection. newLeaderExplicit is captured before
-// Normalize; callers must not pre-normalize ctx or explicit NewLeaderTimeout
+// Normalize; callers must not pre-normalize clusterCtx or explicit NewLeaderTimeout
 // detection will be wrong.
 //
-// Invoke client.DoWork on the transport client between every Poll spin. Prefer
-// Connect for a blocking handshake with cancel support. Poll does not
-// accept context cancellation; use the manual loop only when stepping between
-// Poll calls. If that loop must be cancellable, check cancelCtx.Err() between
-// Poll calls and call Close on cancel. After each in-progress Poll, pace with
-// ctx.IdleStrategy.Idle(0) and call IdleStrategy.Reset when the loop exits.
-// Call Close to abort connect and release partial resources.
-func NewAsyncConnect(ctx ClusterContext) (*AsyncConnect, error) {
-	newLeaderExplicit := ctx.NewLeaderTimeout != 0
-	ctx = ctx.Normalize()
-	if err := ctx.ValidateForConnect(); err != nil {
+// ctx bounds owned transport attach only (aeron.Connect wait for CNC ready and
+// driver heartbeat). Prefer Connect for a blocking handshake with cancel support.
+// Poll does not accept context cancellation; use the manual loop only when
+// stepping between Poll calls. If that loop must be cancellable, check
+// cancelCtx.Err() between Poll calls and call Close on cancel. After each
+// in-progress Poll, pace with clusterCtx.IdleStrategy.Idle(0) and call
+// IdleStrategy.Reset when the loop exits. Call Close to abort connect and release
+// partial resources. ctx is not retained on AsyncConnect.
+func NewAsyncConnect(
+	ctx context.Context,
+	clusterCtx ClusterContext,
+) (*AsyncConnect, error) {
+	newLeaderExplicit := clusterCtx.NewLeaderTimeout != 0
+	clusterCtx = clusterCtx.Normalize()
+	if err := clusterCtx.ValidateForConnect(); err != nil {
 		return nil, err
 	}
-	concluded, client, owns, err := concludeClusterContext(ctx)
+	concluded, client, owns, err := concludeClusterContext(ctx, clusterCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +121,7 @@ func NewAsyncConnect(ctx ClusterContext) (*AsyncConnect, error) {
 	memberMap = EnsureChannelOnlyMemberIngressMap(memberMap)
 	nanoClock := resolveNanoClock(concluded.AeronContext.NanoClock)
 	return &AsyncConnect{
-		ctx:               concluded,
+		clusterCtx:        concluded,
 		client:            client,
 		ownsAeronClient:   owns,
 		newLeaderExplicit: newLeaderExplicit,
@@ -229,38 +234,46 @@ func (ac *AsyncConnect) Close() error {
 	return nil
 }
 
-func concludeClusterContext(ctx ClusterContext) (ClusterContext, *aeron.Client, bool, error) {
+// concludeClusterContext finalizes egress channel defaults and resolves the
+// transport client.
+//
+// ctx bounds owned transport attach via aeron.Connect only. Shared Aeron and
+// test factories ignore ctx. Do not store ctx on ClusterContext.
+func concludeClusterContext(
+	ctx context.Context,
+	clusterCtx ClusterContext,
+) (ClusterContext, *aeron.Client, bool, error) {
 	var (
 		err    error
 		client *aeron.Client
 	)
-	ctx.EgressChannel, err = applyUDPRejoinFalse(ctx.EgressChannel)
+	clusterCtx.EgressChannel, err = applyUDPRejoinFalse(clusterCtx.EgressChannel)
 	if err != nil {
 		return ClusterContext{}, nil, false, err
 	}
 
-	if ctx.Aeron != nil {
-		return ctx, ctx.Aeron, false, nil
+	if clusterCtx.Aeron != nil {
+		return clusterCtx, clusterCtx.Aeron, false, nil
 	}
-	aeronCtx := ctx.AeronContext
-	if ctx.AeronDir != "" {
-		aeronCtx.AeronDir = ctx.AeronDir
+	aeronCtx := clusterCtx.AeronContext
+	if clusterCtx.AeronDir != "" {
+		aeronCtx.AeronDir = clusterCtx.AeronDir
 	}
 	if aeronCtx.ErrorHandler == nil {
 		// Owned-client connect requires an explicit ErrorHandler; default panics on
 		// driver errors to surface misconfiguration during handshake setup.
 		aeronCtx.ErrorHandler = defaultClusterConnectErrorHandler
 	}
-	if factory, ok := ownedConnectClientFactoryForContext(ctx); ok {
-		client, err = factory(ctx)
+	if factory, ok := ownedConnectClientFactoryForContext(clusterCtx); ok {
+		client, err = factory(clusterCtx)
 	} else {
-		client, err = aeron.Connect(aeronCtx)
+		client, err = aeron.Connect(ctx, aeronCtx)
 	}
 	if err != nil {
 		return ClusterContext{}, nil, false, err
 	}
-	ctx.Aeron = client
-	return ctx, client, true, nil
+	clusterCtx.Aeron = client
+	return clusterCtx, client, true, nil
 }
 
 func defaultClusterConnectErrorHandler(err error) {
@@ -277,8 +290,8 @@ func (ac *AsyncConnect) checkDeadline() error {
 		fmt.Errorf(
 			"cluster client: connect timeout in state %v egress=%s ingress=%s egressConnected=%t",
 			ac.state,
-			ac.ctx.EgressChannel,
-			ac.ctx.IngressChannel,
+			ac.clusterCtx.EgressChannel,
+			ac.clusterCtx.IngressChannel,
 			connected,
 		),
 		ingressErr,
@@ -288,8 +301,8 @@ func (ac *AsyncConnect) checkDeadline() error {
 func (ac *AsyncConnect) pollCreateEgressSubscription() (*ConnectResult, error) {
 	if ac.egressRegID == conductor.NullCorrelationID {
 		regID, err := ac.client.OfferAddSubscription(
-			ac.ctx.EgressStreamID,
-			ac.ctx.EgressChannel,
+			ac.clusterCtx.EgressStreamID,
+			ac.clusterCtx.EgressChannel,
 		)
 		if err != nil {
 			return nil, err
@@ -327,11 +340,11 @@ func (ac *AsyncConnect) pollCreateIngressPublications() (*ConnectResult, error) 
 			continue
 		}
 		if ingress.RegistrationID == conductor.NullCorrelationID {
-			if err := ingress.asyncOfferAdd(ac.ctx, ac.client, ac.memberMap); err != nil {
+			if err := ingress.asyncOfferAdd(ac.clusterCtx, ac.client, ac.memberMap); err != nil {
 				return nil, err
 			}
 		}
-		done, err := ingress.asyncPollAdd(ac.ctx, ac.client)
+		done, err := ingress.asyncPollAdd(ac.clusterCtx, ac.client)
 		if err != nil {
 			continue
 		}
@@ -375,7 +388,7 @@ func (ac *AsyncConnect) pollAwaitPublicationConnected() (*ConnectResult, error) 
 			return nil, nil
 		}
 	}
-	pollPendingMemberIngressRegistration(ac.memberMap, ac.ctx, ac.client)
+	pollPendingMemberIngressRegistration(ac.memberMap, ac.clusterCtx, ac.client)
 	if err := ac.memberMap.failIfIngressUnrecoverable(); err != nil {
 		return nil, err
 	}
@@ -512,7 +525,12 @@ func (ac *AsyncConnect) updateMembers() error {
 	if plan.reusedPub == nil {
 		ac.ingressPublication = nil
 	}
-	newMap, leaderPub, err := applyMemberIngressMapRebuild(ac.client, ac.ctx, ac.memberMap, plan)
+	newMap, leaderPub, err := applyMemberIngressMapRebuild(
+		ac.client,
+		ac.clusterCtx,
+		ac.memberMap,
+		plan,
+	)
 	ac.memberMap = newMap
 	if err != nil {
 		return err
@@ -545,13 +563,13 @@ func (ac *AsyncConnect) clusterExceptionFromDetail(prefix string) error {
 }
 
 func (ac *AsyncConnect) concludeConnect() (*ConnectResult, error) {
-	ctx := ac.ctx
+	clusterCtx := ac.clusterCtx
 	leaderHeartbeatTimeoutNs := ac.egressPoller.LeaderHeartbeatTimeoutNs()
 	if leaderHeartbeatTimeoutNs <= 0 || leaderHeartbeatTimeoutNs == math.MinInt64 {
 		leaderHeartbeatTimeoutNs = 0
 	}
 	if leaderHeartbeatTimeoutNs > 0 && !ac.newLeaderExplicit {
-		ctx.NewLeaderTimeout = 2 * time.Duration(leaderHeartbeatTimeoutNs)
+		clusterCtx.NewLeaderTimeout = 2 * time.Duration(leaderHeartbeatTimeoutNs)
 	}
 	channelOnly := ac.memberMap.IsChannelOnly()
 	if !channelOnly {
@@ -591,7 +609,7 @@ func (ac *AsyncConnect) concludeConnect() (*ConnectResult, error) {
 		MemberIngressMap:         ac.memberMap,
 		Aeron:                    ac.client,
 		OwnsAeronClient:          ac.ownsAeronClient,
-		Context:                  ctx,
+		Context:                  clusterCtx,
 	}
 	return result, nil
 }

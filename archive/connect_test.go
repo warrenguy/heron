@@ -51,12 +51,12 @@ func registerConnectHarnessStepObserver(
 }
 
 func connectContextForTest(client *aeron.Client) Context {
-	ctx := validConnectFixtureContext()
-	ctx.Aeron = client
+	archiveCtx := validConnectFixtureContext()
+	archiveCtx.Aeron = client
 
 	// Wall-clock NanoClock so ConnectTimeout can elapse in blocking connect tests.
-	ctx.AeronContext.NanoClock = nil
-	return ctx
+	archiveCtx.AeronContext.NanoClock = nil
+	return archiveCtx
 }
 
 func ownedConnectContextForTest(
@@ -69,10 +69,10 @@ func ownedConnectContextForTest(
 	SetConnectConstructionHooksForTest(t, aeronDir, func(Context) (*aeron.Client, error) {
 		return harness.Client, nil
 	})
-	ctx := connectContextForTest(nil)
-	ctx.AeronDir = aeronDir
-	ctx.ConnectTimeout = time.Second
-	return ctx
+	archiveCtx := connectContextForTest(nil)
+	archiveCtx.AeronDir = aeronDir
+	archiveCtx.ConnectTimeout = time.Second
+	return archiveCtx
 }
 
 func requireAsyncConnectClosedAfterConnectFailure(t *testing.T, ac *AsyncConnect) {
@@ -91,10 +91,10 @@ func TestAwaitArchiveConnect_idleStrategyPacing(t *testing.T) {
 		t.Parallel()
 
 		idle := &recordingControlIdleStrategy{}
-		harness, ac := newAsyncConnectFixture(t, func(ctx Context) Context {
-			ctx = connectContextForTest(ctx.Aeron)
-			ctx.IdleStrategy = idle
-			return ctx
+		harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context {
+			archiveCtx = connectContextForTest(archiveCtx.Aeron)
+			archiveCtx.IdleStrategy = idle
+			return archiveCtx
 		})
 		t.Cleanup(func() { _ = ac.Close() })
 
@@ -118,10 +118,10 @@ func TestAwaitArchiveConnect_idleStrategyPacing(t *testing.T) {
 		t.Parallel()
 
 		idle := &recordingControlIdleStrategy{}
-		harness, ac := newAsyncConnectFixture(t, func(ctx Context) Context {
-			ctx = connectContextForTest(ctx.Aeron)
-			ctx.IdleStrategy = idle
-			return ctx
+		harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context {
+			archiveCtx = connectContextForTest(archiveCtx.Aeron)
+			archiveCtx.IdleStrategy = idle
+			return archiveCtx
 		})
 		t.Cleanup(func() { _ = ac.Close() })
 
@@ -141,7 +141,7 @@ func TestAwaitArchiveConnect_idleStrategyPacing(t *testing.T) {
 func TestAwaitArchiveConnect_success(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := newAsyncConnectFixture(t, func(ctx Context) Context { return ctx })
+	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
 	t.Cleanup(func() { _ = ac.Close() })
 
 	registerConnectHarnessStepObserver(t, harness, ac, func(ac *AsyncConnect) {

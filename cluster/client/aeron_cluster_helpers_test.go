@@ -30,8 +30,8 @@ const (
 )
 
 func validTestClusterContext() client.ClusterContext {
-	return normalizedClusterContext(func(ctx *client.ClusterContext) {
-		ctx.AeronContext = aeron.Context{
+	return normalizedClusterContext(func(clusterCtx *client.ClusterContext) {
+		clusterCtx.AeronContext = aeron.Context{
 			NanoClock: func() int64 { return testIngressTimestampNs },
 		}
 	})

@@ -42,7 +42,7 @@ func main() {
 	// Connect to aeronmd over shared memory.
 	//
 	// ErrorHandler logs asynchronous driver faults not returned by the calls below.
-	client, err := aeron.Connect(aeron.Context{
+	client, err := aeron.Connect(context.Background(), aeron.Context{
 		AeronDir: aeronDir,
 		ErrorHandler: func(err error) {
 			log.Printf("ipc-echo: aeron error: %v", err)

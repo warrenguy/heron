@@ -1083,11 +1083,12 @@ func (ctx Context) UseConductorInvokerEnabledForTest() bool {
 }
 
 func WaitForDriverHeartbeatForTest(
+	ctx context.Context,
 	toDriver *ringbuffer.ManyToOneRingBuffer,
 	timeout time.Duration,
 	epochClock conductor.EpochClock,
 ) error {
-	return waitForDriverHeartbeat(toDriver, timeout, epochClock)
+	return waitForDriverHeartbeat(ctx, toDriver, timeout, epochClock)
 }
 
 func ValidateControlProtocolVersionForTest(reader *cnc.CountersReader) error {

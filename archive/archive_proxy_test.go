@@ -38,9 +38,9 @@ func newStubControlPublication() *stubControlPublication {
 	}
 }
 
-func newTestProxy(ctx Context) (*stubControlPublication, *Proxy) {
+func newTestProxy(archiveCtx Context) (*stubControlPublication, *Proxy) {
 	pub := newStubControlPublication()
-	return pub, NewProxy(pub, ctx)
+	return pub, NewProxy(pub, archiveCtx)
 }
 
 func (publication *stubControlPublication) Offer(buffer []byte) int64 {
@@ -499,9 +499,9 @@ func TestProxy_encodePreflightFailure(t *testing.T) {
 	oversized := make([]byte, codecs.ArchiveEncodeMaxVarLen+1)
 
 	cases := []struct {
-		name  string
-		ctx   Context
-		offer func(proxy *Proxy) (int64, bool)
+		name       string
+		archiveCtx Context
+		offer      func(proxy *Proxy) (int64, bool)
 	}{
 		{
 			name: "try_connect_response_channel",
@@ -517,7 +517,7 @@ func TestProxy_encodePreflightFailure(t *testing.T) {
 		},
 		{
 			name: "try_connect_encoded_credentials",
-			ctx: Context{
+			archiveCtx: Context{
 				CredentialsSupplier: stubCredentialsSupplier{encoded: oversized},
 			},
 			offer: func(proxy *Proxy) (int64, bool) {
@@ -568,7 +568,7 @@ func TestProxy_encodePreflightFailure(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			pub, proxy := newTestProxy(tc.ctx)
+			pub, proxy := newTestProxy(tc.archiveCtx)
 
 			pos, ok := tc.offer(proxy)
 			require.False(t, ok)

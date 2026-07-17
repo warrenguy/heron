@@ -42,7 +42,7 @@ func main() {
 
 	// ErrorHandler runs from DoWork (must not call back into Client APIs).
 	// Log only; the invoker loop exits on IsTerminating after DoWork.
-	client, err := aeron.Connect(aeron.Context{
+	client, err := aeron.Connect(context.Background(), aeron.Context{
 		AeronDir: aeronDir,
 		ErrorHandler: func(err error) {
 			log.Printf("ipc-duty-cycle: aeron error: %v", err)

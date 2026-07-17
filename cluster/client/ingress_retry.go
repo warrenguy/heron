@@ -65,7 +65,7 @@ func ingressOfferIdleStrategy(
 	if cfg.IdleStrategy != nil {
 		return cfg.IdleStrategy
 	}
-	if idle := session.ctx.IdleStrategy; idle != nil {
+	if idle := session.clusterCtx.IdleStrategy; idle != nil {
 		return idle
 	}
 	return NewDefaultIdleStrategy()
@@ -94,7 +94,7 @@ func ingressOfferUntilPositive(
 		clock = session.nanoClock
 	}
 	startNs := clock()
-	deadlineNs, bound := aeron.RetryDeadlineNs(ctx, startNs, session.ctx.IngressRetryTimeout)
+	deadlineNs, bound := aeron.RetryDeadlineNs(ctx, startNs, session.clusterCtx.IngressRetryTimeout)
 	doTransportWork := func() {
 		aeronClient.DoWork()
 		recordIngressRetryDoWork()

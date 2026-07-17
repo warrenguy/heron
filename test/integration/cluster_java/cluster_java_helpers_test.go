@@ -339,26 +339,26 @@ func smokeClusterContext(
 	egressHandler client.EgressHandler,
 	messageTimeout time.Duration,
 ) client.ClusterContext {
-	ctx := base()
-	ctx.AeronDir = dir
-	ctx.Aeron = aeronClient
-	if ctx.MessageTimeout == 0 {
-		ctx.MessageTimeout = messageTimeout
+	clusterCtx := base()
+	clusterCtx.AeronDir = dir
+	clusterCtx.Aeron = aeronClient
+	if clusterCtx.MessageTimeout == 0 {
+		clusterCtx.MessageTimeout = messageTimeout
 	}
-	ctx.EgressHandler = egressHandler
-	return ctx
+	clusterCtx.EgressHandler = egressHandler
+	return clusterCtx
 }
 
 func connectClusterAsync(
 	t *testing.T,
-	ctx client.ClusterContext,
+	clusterCtx client.ClusterContext,
 	aeronClient *aeron.Client,
 	hadClientError *atomic.Bool,
 	connectTimeout time.Duration,
 ) *client.ConnectResult {
 	t.Helper()
 
-	ac, err := client.NewAsyncConnect(ctx)
+	ac, err := client.NewAsyncConnect(t.Context(), clusterCtx)
 	require.NoError(t, err)
 	harness.CleanupClose(t, "close async connect", ac.Close)
 	return pollAsyncConnectUntilResult(t, aeronClient, ac, hadClientError, connectTimeout)
@@ -395,8 +395,8 @@ func connectClusterUntilResult(
 	t.Helper()
 
 	dir, hadClientError, aeronClient, md, composeDir := requireClusterComposeEnv(t, gate)
-	ctx := smokeClusterContext(contextBase, dir, aeronClient, egressHandler, connectTimeout)
-	result := connectClusterAsync(t, ctx, aeronClient, hadClientError, connectTimeout)
+	clusterCtx := smokeClusterContext(contextBase, dir, aeronClient, egressHandler, connectTimeout)
+	result := connectClusterAsync(t, clusterCtx, aeronClient, hadClientError, connectTimeout)
 	return hadClientError, aeronClient, md, result, composeDir
 }
 

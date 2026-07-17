@@ -122,7 +122,7 @@ func TestClientStartRecording_contextCanceledMidLoop(t *testing.T) {
 		cancel:                 cancel,
 	}
 	client := h.newClient()
-	client.proxy = NewProxy(pub, h.ctx)
+	client.proxy = NewProxy(pub, h.archiveCtx)
 
 	_, err := client.StartRecording(
 		cancelCtx,

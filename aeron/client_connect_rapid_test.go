@@ -3,6 +3,7 @@
 package aeron_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ func TestWaitForDriverHeartbeat_driverShutdown_rapid(t *testing.T) {
 		ring.SetConsumerHeartbeatTime(conductor.DriverShutdownHeartbeat)
 
 		err := aeron.WaitForDriverHeartbeatForTest(
+			context.Background(),
 			ring,
 			time.Duration(timeoutMs)*time.Millisecond,
 			newAdvancingEpochClock(startMs, 0),
@@ -45,6 +47,7 @@ func TestWaitForDriverHeartbeat_freshHeartbeat_rapid(t *testing.T) {
 		ring.SetConsumerHeartbeatTime(heartbeat)
 
 		err := aeron.WaitForDriverHeartbeatForTest(
+			context.Background(),
 			ring,
 			time.Duration(timeoutMs)*time.Millisecond,
 			newAdvancingEpochClock(nowMs, 0),
@@ -66,6 +69,7 @@ func TestWaitForDriverHeartbeat_staleAtConnect_rapid(t *testing.T) {
 		ring.SetConsumerHeartbeatTime(heartbeat)
 
 		err := aeron.WaitForDriverHeartbeatForTest(
+			context.Background(),
 			ring,
 			time.Duration(timeoutMs)*time.Millisecond,
 			newAdvancingEpochClock(nowMs, 0),
@@ -89,6 +93,7 @@ func TestWaitForDriverHeartbeat_notReady_rapid(t *testing.T) {
 		}
 
 		err := aeron.WaitForDriverHeartbeatForTest(
+			context.Background(),
 			ring,
 			time.Duration(timeoutMs)*time.Millisecond,
 			newAdvancingEpochClock(startMs, stepMs),

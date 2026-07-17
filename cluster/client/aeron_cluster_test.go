@@ -17,9 +17,9 @@ import (
 
 func withConnectContext(mutate func(*client.ClusterContext)) func(*client.ConnectResult) {
 	return func(result *client.ConnectResult) {
-		ctx := result.Context
-		mutate(&ctx)
-		result.Context = ctx
+		clusterCtx := result.Context
+		mutate(&clusterCtx)
+		result.Context = clusterCtx
 	}
 }
 

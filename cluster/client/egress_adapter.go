@@ -36,12 +36,12 @@ func NewEgressAdapter(
 // NewEgressAdapterFromContext constructs an EgressAdapter using DefaultEgressFragmentLimit
 // and ctx.DirectAssemblers.
 func NewEgressAdapterFromContext(
-	ctx ClusterContext,
+	clusterCtx ClusterContext,
 	handler EgressHandler,
 	clusterSessionID int64,
 	subscription *aeron.Subscription,
 ) *EgressAdapter {
-	return NewEgressAdapter(handler, clusterSessionID, subscription, 0, ctx.DirectAssemblers)
+	return NewEgressAdapter(handler, clusterSessionID, subscription, 0, clusterCtx.DirectAssemblers)
 }
 
 // newEgressAdapterWithHandler constructs an EgressAdapter. When onFragment is non-nil

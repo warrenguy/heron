@@ -59,10 +59,10 @@ func newAsyncConnectFixture(
 	t.Helper()
 
 	harness := aeron.NewAsyncConnectTestHarness(t)
-	ctx := mutate(validConnectFixtureContext())
-	ctx.Aeron = harness.Client
-	ctx.ConnectTimeout = 30 * time.Second
-	ac, err := NewAsyncConnect(ctx)
+	archiveCtx := mutate(validConnectFixtureContext())
+	archiveCtx.Aeron = harness.Client
+	archiveCtx.ConnectTimeout = 30 * time.Second
+	ac, err := NewAsyncConnect(t.Context(), archiveCtx)
 	require.NoError(t, err)
 	return harness, ac
 }
@@ -375,7 +375,7 @@ func establishConnectWireBufferHighWater(
 	backing = buf[:cap(buf)]
 	largeWireLen := ac.ConnectWireLengthForTest()
 
-	ac.ctx.CredentialsSupplier = asyncConnectCredentialsSupplier{
+	ac.archiveCtx.CredentialsSupplier = asyncConnectCredentialsSupplier{
 		challengeLen: connectWireBufferSlackChallengeLen,
 	}
 	ac.wire.encodedChallenge = []byte("challenge")

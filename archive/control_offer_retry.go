@@ -142,7 +142,7 @@ func (client *Client) ControlOfferUntilPositive(
 	return controlOfferUntilPositive(
 		ctx,
 		client.aeronClient,
-		client.ctx,
+		client.archiveCtx,
 		cfg,
 		offerFn,
 	)

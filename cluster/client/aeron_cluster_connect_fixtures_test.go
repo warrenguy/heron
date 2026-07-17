@@ -148,14 +148,14 @@ func installConnectFixtureEgressHandler(result *ConnectResult, mutate func(*Conn
 }
 
 func mutateConnectContext(result *ConnectResult, mutate func(*ClusterContext)) {
-	ctx := result.Context
-	mutate(&ctx)
-	result.Context = ctx
+	clusterCtx := result.Context
+	mutate(&clusterCtx)
+	result.Context = clusterCtx
 }
 
 func withAtomicNanoClock(result *ConnectResult, nowNs *atomic.Int64) {
-	mutateConnectContext(result, func(ctx *ClusterContext) {
-		ctx.AeronContext.NanoClock = func() int64 { return nowNs.Load() }
+	mutateConnectContext(result, func(clusterCtx *ClusterContext) {
+		clusterCtx.AeronContext.NanoClock = func() int64 { return nowNs.Load() }
 	})
 }
 

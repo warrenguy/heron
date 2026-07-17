@@ -19,7 +19,7 @@ func (ac *AeronCluster) SpinOnce() int {
 	if ac == nil {
 		return 0
 	}
-	return ac.spinOnce(ac.ctx.IdleStrategy)
+	return ac.spinOnce(ac.clusterCtx.IdleStrategy)
 }
 
 func (ac *AeronCluster) spinOnce(idle idlestrategy.IdleStrategy) int {

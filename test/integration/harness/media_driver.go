@@ -248,7 +248,12 @@ func launchMediaDriver(
 		close(md.exited)
 	}()
 
-	if err := cnc.WaitCncReady(md.CncPath(), joinExternalCncReadyTimeout); err != nil {
+	err := cnc.WaitCncReady(
+		context.Background(),
+		md.CncPath(),
+		joinExternalCncReadyTimeout,
+	)
+	if err != nil {
 		md.Stop()
 		return nil, fmt.Errorf("%s not ready: %w", cnc.FileName, err)
 	}
@@ -273,7 +278,7 @@ func JoinExternalTimeout(t testing.TB, dir string, readyTimeout time.Duration) *
 
 	_, ipcTermDataLength := buildStartedDriverEnv(t, dir, nil, nil)
 
-	if err := cnc.WaitCncReady(driverCncPath(dir), readyTimeout); err != nil {
+	if err := cnc.WaitCncReady(t.Context(), driverCncPath(dir), readyTimeout); err != nil {
 		t.Fatalf("harness: %s not ready: %v", cnc.FileName, err)
 	}
 

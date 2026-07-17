@@ -188,11 +188,11 @@ func FormatIngressEndpointsFromHostnames(
 	return b.String()
 }
 
-// NewMemberIngressMapFromContext parses ctx.IngressEndpoints.
+// NewMemberIngressMapFromContext parses clusterCtx.IngressEndpoints.
 //
 // Caller should pass a normalized context; structural validation (IPC+endpoints,
 // UDP endpoint= with ingress map) is enforced by Validate, not here. Invalid endpoint
 // grammar returns a parse error.
-func NewMemberIngressMapFromContext(ctx ClusterContext) (MemberIngressMap, error) {
-	return ParseIngressEndpoints(ctx.IngressEndpoints)
+func NewMemberIngressMapFromContext(clusterCtx ClusterContext) (MemberIngressMap, error) {
+	return ParseIngressEndpoints(clusterCtx.IngressEndpoints)
 }

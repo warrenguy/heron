@@ -77,31 +77,31 @@ func TestFailoverHarnessConstants(t *testing.T) {
 }
 
 func TestFailoverHarnessClusterContext_udpDefaults(t *testing.T) {
-	ctx := clusterjava.FailoverHarnessClusterContext()
+	clusterCtx := clusterjava.FailoverHarnessClusterContext()
 
-	require.Equal(t, clusterjava.FailoverIngressChannel, ctx.IngressChannel)
-	require.Equal(t, clusterjava.FailoverEgressChannel, ctx.EgressChannel)
-	require.Equal(t, clusterjava.FailoverIngressEndpoints, ctx.IngressEndpoints)
-	require.Equal(t, clusterjava.FailoverNewLeaderTimeout, ctx.NewLeaderTimeout)
-	require.Equal(t, clusterjava.FailoverNewLeaderTimeout, ctx.MessageTimeout)
-	require.Empty(t, ctx.AeronDir)
-	require.Empty(t, ctx.AeronContext.AeronDir)
-	require.Zero(t, ctx.IngressStreamID)
-	require.Zero(t, ctx.ResponseStreamID)
+	require.Equal(t, clusterjava.FailoverIngressChannel, clusterCtx.IngressChannel)
+	require.Equal(t, clusterjava.FailoverEgressChannel, clusterCtx.EgressChannel)
+	require.Equal(t, clusterjava.FailoverIngressEndpoints, clusterCtx.IngressEndpoints)
+	require.Equal(t, clusterjava.FailoverNewLeaderTimeout, clusterCtx.NewLeaderTimeout)
+	require.Equal(t, clusterjava.FailoverNewLeaderTimeout, clusterCtx.MessageTimeout)
+	require.Empty(t, clusterCtx.AeronDir)
+	require.Empty(t, clusterCtx.AeronContext.AeronDir)
+	require.Zero(t, clusterCtx.IngressStreamID)
+	require.Zero(t, clusterCtx.ResponseStreamID)
 
-	ctx = ctx.Normalize()
+	clusterCtx = clusterCtx.Normalize()
 
-	require.Equal(t, clusterjava.IngressStreamID, ctx.IngressStreamID)
-	require.Equal(t, clusterjava.EgressStreamID, ctx.ResponseStreamID)
-	require.NoError(t, ctx.ValidateForConnect())
+	require.Equal(t, clusterjava.IngressStreamID, clusterCtx.IngressStreamID)
+	require.Equal(t, clusterjava.EgressStreamID, clusterCtx.ResponseStreamID)
+	require.NoError(t, clusterCtx.ValidateForConnect())
 }
 
 func TestFailoverHarnessClusterContext_validateForConnect(t *testing.T) {
-	ctx := clusterjava.FailoverHarnessClusterContext()
-	ctx.IngressChannel = "aeron:udp?endpoint=cluster-0:9002"
-	ctx.EgressChannel = clusterjava.EgressChannel
+	clusterCtx := clusterjava.FailoverHarnessClusterContext()
+	clusterCtx.IngressChannel = "aeron:udp?endpoint=cluster-0:9002"
+	clusterCtx.EgressChannel = clusterjava.EgressChannel
 
-	err := ctx.Normalize().ValidateForConnect()
+	err := clusterCtx.Normalize().ValidateForConnect()
 	require.EqualError(t, err, errUDPIngressEndpointWithMap)
 }
 
