@@ -2,9 +2,13 @@ package sim
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/warrenguy/heron/cluster/election"
 )
@@ -112,24 +116,134 @@ func formatNodeDump(node *Node) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func dumpElectionSim(tb testing.TB, s *ElectionSim) {
-	tb.Helper()
-	tb.Log("=== ElectionSim failure dump ===")
-	tb.Logf("seed: %d", s.cfg.Seed)
-	tb.Logf("steps: %d", s.steps)
-	tb.Logf("master_now_ns: %d", s.scheduler.Now())
+func formatDumpHeader(s *ElectionSim) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "=== ElectionSim failure dump ===\n")
+	fmt.Fprintf(&b, "derived_seed: %d\n", s.cfg.Seed)
+	if attr := s.cfg.SeedAttribution; attr.Scenario != "" {
+		fmt.Fprintf(&b, "base_seed: %d\n", attr.BaseSeed)
+		fmt.Fprintf(&b, "scenario: %s\n", attr.Scenario)
+		fmt.Fprintf(&b, "run_index: %d\n", attr.RunIndex)
+	}
+	fmt.Fprintf(&b, "steps: %d\n", s.steps)
+	fmt.Fprintf(&b, "master_now_ns: %d\n", s.scheduler.Now())
 	if s.safetyErr != nil {
-		tb.Logf("safety_err: %v", s.safetyErr)
+		fmt.Fprintf(&b, "safety_err: %v\n", s.safetyErr)
 	} else {
-		tb.Log("safety_err: (none)")
+		fmt.Fprintf(&b, "safety_err: (none)\n")
 	}
 	for _, node := range s.nodes {
-		tb.Logf("live node=%d %v", node.id, s.IsLive(node.id))
+		fmt.Fprintf(&b, "live node=%d %v\n", node.id, s.IsLive(node.id))
 	}
+	return b.String()
+}
+
+func formatNodesDump(s *ElectionSim) string {
+	var b strings.Builder
+	for _, node := range s.nodes {
+		fmt.Fprintf(&b, "-- node %d --\n", node.id)
+		fmt.Fprintf(&b, "%s\n", formatNodeDump(node))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// dumpElectionSim logs state and, when HERON_SIM_SAVE=1, writes under
+// FailureDumpsDir. Returns the dump directory path on successful save; "" when
+// save is off or write fails (write errors are logged only).
+func dumpElectionSim(tb testing.TB, s *ElectionSim) string {
+	tb.Helper()
+	header := formatDumpHeader(s)
+	timeline := formatTimelineDump(s.timeline)
+	nodes := formatNodesDump(s)
+
+	tb.Log(strings.TrimRight(header, "\n"))
 	tb.Log("-- timeline --")
-	tb.Log(formatTimelineDump(s.timeline))
-	for _, node := range s.nodes {
-		tb.Logf("-- node %d --", node.id)
-		tb.Log(formatNodeDump(node))
+	tb.Log(timeline)
+	for line := range strings.SplitSeq(nodes, "\n") {
+		tb.Log(line)
 	}
+
+	if os.Getenv("HERON_SIM_SAVE") != "1" {
+		return ""
+	}
+	dir, err := saveDumpToDisk(tb, s, header, timeline, nodes)
+	if err != nil {
+		tb.Logf("sim: HERON_SIM_SAVE write failed: %v", err)
+		return ""
+	}
+	return dir
+}
+
+// failureDumpRel is the dump root relative to the module root (go.mod).
+const failureDumpRel = "test/sim/testdata/sim/failures"
+
+// FailureDumpsDir returns the absolute path of the failure dump directory
+// under the module root (walk cwd parents for go.mod).
+//
+// Path is always module-root/test/sim/testdata/sim/failures regardless of the
+// package directory go test uses as cwd.
+func FailureDumpsDir() (string, error) {
+	root, err := findModuleRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, filepath.FromSlash(failureDumpRel)), nil
+}
+
+func findModuleRoot() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	dir := wd
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", errors.New("sim: go.mod not found from working directory")
+		}
+		dir = parent
+	}
+}
+
+func saveDumpToDisk(
+	tb testing.TB,
+	s *ElectionSim,
+	header, timeline, nodes string,
+) (string, error) {
+	tb.Helper()
+	root, err := FailureDumpsDir()
+	if err != nil {
+		return "", err
+	}
+	name := sanitizeDumpName(tb.Name())
+	dir := filepath.Join(
+		root,
+		fmt.Sprintf("%s-seed-%d-%d", name, s.cfg.Seed, time.Now().Unix()),
+	)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	writes := []struct {
+		name string
+		body string
+	}{
+		{"dump.txt", header},
+		{"timeline.txt", timeline + "\n"},
+		{"nodes.txt", nodes + "\n"},
+	}
+	for _, w := range writes {
+		if err := os.WriteFile(filepath.Join(dir, w.name), []byte(w.body), 0o644); err != nil {
+			return "", err
+		}
+	}
+	tb.Logf("sim: saved failure dump to %s", dir)
+	return dir, nil
+}
+
+func sanitizeDumpName(name string) string {
+	r := strings.NewReplacer("/", "_", " ", "_", "\\", "_")
+	return r.Replace(name)
 }

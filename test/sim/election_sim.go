@@ -61,6 +61,38 @@ type Config struct {
 	// testhooks. Set when a script intentionally forms illegal intermediate
 	// wire state and must not stop the step loop on the live scan alone.
 	SkipSplitBrainCheck bool
+
+	// NominationRand seeds per-node nomination back-off. Nil leaves election
+	// deps at zero delay (default). Scenarios that need randomness call
+	// ConfigWithSimRand; NewElectionSim never invents a default RNG.
+	NominationRand func() float64
+
+	// AttachRecordingLog opens a real recording.log under each node dir and
+	// wires it into election deps. Default false keeps soak seeds cheap.
+	AttachRecordingLog bool
+
+	// SeedAttribution is optional scenario run identity for failure dumps.
+	// Empty Scenario skips base/scenario/index dump lines.
+	SeedAttribution SeedAttribution
+}
+
+// SeedAttribution names base, scenario, and run index for failure dumps.
+type SeedAttribution struct {
+	BaseSeed uint64
+	Scenario string
+	RunIndex int
+}
+
+// ConfigWithSimRand returns cfg with NominationRand bound to a deterministic
+// RNG seeded from cfg.Seed. Call after Seed is final.
+//
+// NewElectionSim never applies this; nil NominationRand stays zero delay.
+func ConfigWithSimRand(cfg Config) Config {
+	rng := NewRNG(cfg.Seed)
+	cfg.NominationRand = func() float64 {
+		return rng.Float64()
+	}
+	return cfg
 }
 
 // ElectionSim orchestrates scheduler, network, and Node instances.
@@ -121,13 +153,14 @@ func NewElectionSim(tb testing.TB, cfg Config) (*ElectionSim, error) {
 
 	for i := range parsed {
 		node, err := newNode(nodeBuildConfig{
-			id:               parsed[i].ID,
-			members:          parsed,
-			electionCfg:      cfg.ElectionConfig,
-			perNodeOverrides: cfg.PerNodeOverrides,
-			nodeStateDir:     cfg.NodeStateDir,
-			network:          s.network,
-			sim:              s,
+			id:                 parsed[i].ID,
+			members:            parsed,
+			electionCfg:        cfg.ElectionConfig,
+			perNodeOverrides:   cfg.PerNodeOverrides,
+			nodeStateDir:       cfg.NodeStateDir,
+			network:            s.network,
+			sim:                s,
+			attachRecordingLog: cfg.AttachRecordingLog,
 		})
 		if err != nil {
 			for _, built := range s.nodes {
@@ -297,6 +330,9 @@ func (s *ElectionSim) AdvanceTo(deadlineNs int64) error {
 // it to derive AdvanceTo deadlines relative to the point a state was reached.
 func (s *ElectionSim) Now() int64 { return s.scheduler.Now() }
 
+// Steps returns how many scheduler events have been processed.
+func (s *ElectionSim) Steps() int { return s.steps }
+
 // Timeline returns a copy of recorded timeline entries.
 func (s *ElectionSim) Timeline() []TimelineEntry {
 	return s.TimelineSince(0)
@@ -325,10 +361,14 @@ func (s *ElectionSim) DumpOnFail(tb testing.TB) {
 	s.Dump(tb)
 }
 
-// Dump unconditionally writes simulation state to tb.Log.
-func (s *ElectionSim) Dump(tb testing.TB) {
+// Dump writes simulation state to tb.Log.
+//
+// When HERON_SIM_SAVE=1, also writes under FailureDumpsDir and returns that
+// directory path. Returns "" when save is off or the write fails (write errors
+// are logged only so DumpOnFail never fails the failure dump).
+func (s *ElectionSim) Dump(tb testing.TB) string {
 	tb.Helper()
-	dumpElectionSim(tb, s)
+	return dumpElectionSim(tb, s)
 }
 
 // Close releases per-node durable state.

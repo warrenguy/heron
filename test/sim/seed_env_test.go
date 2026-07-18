@@ -28,6 +28,26 @@ func TestSeedFromEnv(t *testing.T) {
 	}
 }
 
+func TestConfigWithSimRand_setsNominationRand(t *testing.T) {
+	t.Parallel()
+
+	cfg := ConfigWithSimRand(Config{Seed: 99})
+	require.NotNil(t, cfg.NominationRand)
+	a := cfg.NominationRand()
+	b := cfg.NominationRand()
+
+	// Distinct draws from the same RNG (not a constant stub).
+	require.NotEqual(t, a, b)
+
+	// Same seed yields the same first draw.
+	cfg2 := ConfigWithSimRand(Config{Seed: 99})
+	cfg3 := ConfigWithSimRand(Config{Seed: 99})
+	require.InDelta(t, cfg2.NominationRand(), cfg3.NominationRand(), 0)
+
+	// Zero-value config leaves NominationRand nil.
+	require.Nil(t, Config{}.NominationRand)
+}
+
 func TestAdvanceEpoch_shiftsEpochOnly(t *testing.T) {
 	t.Parallel()
 

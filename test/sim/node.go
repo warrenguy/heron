@@ -40,6 +40,9 @@ type Node struct {
 	observer  election.StateObserver
 	network   *Network
 
+	// recordingLog is optional; set when Config.AttachRecordingLog is true.
+	recordingLog *recordinglog.Log
+
 	// crashSnap holds log identity for RestartNode; set only while crashed.
 	crashSnap *crashSnap
 
@@ -153,19 +156,41 @@ func (n *Node) Snapshot() NodeSnapshot {
 	return snap
 }
 
-// Close releases durable node state.
+// ID returns the cluster member id for this node.
+func (n *Node) ID() int32 { return n.id }
+
+// RecordingLog returns the optional attached recording log, or nil.
+func (n *Node) RecordingLog() *recordinglog.Log { return n.recordingLog }
+
+// Close releases election, optional recording log, then durable node state.
+//
+// Order: nil election -> recordingLog.Close -> nodeState.Close.
 func (n *Node) Close() error {
-	return n.nodeState.Close()
+	n.election = nil
+	var first error
+	if n.recordingLog != nil {
+		if err := n.recordingLog.Close(); err != nil && first == nil {
+			first = err
+		}
+		n.recordingLog = nil
+	}
+	if n.nodeState != nil {
+		if err := n.nodeState.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 type nodeBuildConfig struct {
-	id               int32
-	members          []election.Member
-	electionCfg      election.ElectionConfig
-	perNodeOverrides func(id int32, cfg *election.ElectionConfig)
-	nodeStateDir     string
-	network          *Network
-	sim              *ElectionSim
+	id                 int32
+	members            []election.Member
+	electionCfg        election.ElectionConfig
+	perNodeOverrides   func(id int32, cfg *election.ElectionConfig)
+	nodeStateDir       string
+	network            *Network
+	sim                *ElectionSim
+	attachRecordingLog bool
 }
 
 func newNode(cfg nodeBuildConfig) (*Node, error) {
@@ -174,19 +199,30 @@ func newNode(cfg nodeBuildConfig) (*Node, error) {
 		return nil, err
 	}
 
-	nodeState, err := openNodeState(cfg.nodeStateDir, cfg.id)
+	nodeDir := filepath.Join(cfg.nodeStateDir, fmt.Sprintf("node-%d", cfg.id))
+	nodeState, err := openNodeStateDir(nodeDir)
 	if err != nil {
 		return nil, err
+	}
+
+	var recLog *recordinglog.Log
+	if cfg.attachRecordingLog {
+		recLog, err = openNodeRecordingLog(nodeDir)
+		if err != nil {
+			_ = nodeState.Close()
+			return nil, err
+		}
 	}
 
 	electionCfg := perNodeElectionConfig(cfg.electionCfg, cfg.id, cfg.perNodeOverrides)
 
 	node := &Node{
-		id:        cfg.id,
-		members:   members,
-		clock:     NewNodeClock(simStartTimeNs, defaultEpochMs),
-		nodeState: nodeState,
-		network:   cfg.network,
+		id:           cfg.id,
+		members:      members,
+		clock:        NewNodeClock(simStartTimeNs, defaultEpochMs),
+		nodeState:    nodeState,
+		network:      cfg.network,
+		recordingLog: recLog,
 	}
 	if err := attachLiveElection(cfg.sim, node, electionCfg); err != nil {
 		_ = node.Close()
@@ -250,15 +286,22 @@ func attachLiveElection(sim *ElectionSim, node *Node, cfg election.ElectionConfi
 	}
 
 	deps := election.ElectionDeps{
-		Handler:       agent,
-		Host:          host,
-		Publisher:     publisher,
-		NanoClock:     node.clock.TimeNs,
-		EpochClock:    node.clock.TimeMs,
-		NodeState:     node.nodeState,
-		Members:       election.MembersPtrs(node.members),
-		ThisMember:    thisMember,
-		StateObserver: observer,
+		Handler:        agent,
+		Host:           host,
+		Publisher:      publisher,
+		NanoClock:      node.clock.TimeNs,
+		EpochClock:     node.clock.TimeMs,
+		NominationRand: sim.cfg.NominationRand,
+		NodeState:      node.nodeState,
+		Members:        election.MembersPtrs(node.members),
+		ThisMember:     thisMember,
+		StateObserver:  observer,
+	}
+	if node.recordingLog != nil {
+		deps.RecordingLog = node.recordingLog
+		deps.RecordingLogLookup = node.recordingLog
+		deps.RecordingLogFileSyncLevel = recordinglog.FileSyncNone
+		host.localLogRecordingID = LocalLogRecordingID
 	}
 	node.election = election.NewElection(cfg, deps)
 	return nil
@@ -278,10 +321,29 @@ func scrubDeliveredFrom(n *Node, from int32) {
 
 func openNodeState(baseDir string, memberID int32) (election.CandidateTermStore, error) {
 	dir := filepath.Join(baseDir, fmt.Sprintf("node-%d", memberID))
+	return openNodeStateDir(dir)
+}
+
+func openNodeStateDir(dir string) (election.CandidateTermStore, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	return election.OpenNodeStateFile(dir, true, recordinglog.FileSyncNone)
+}
+
+// LocalLogRecordingID is the host recording id when AttachRecordingLog is set.
+const LocalLogRecordingID int64 = 1
+
+// openNodeRecordingLog opens recording.log under nodeDir/recording/.
+//
+// createNew is always true so Open creates a missing file and reloads an
+// existing one (O_CREATE without O_TRUNC).
+func openNodeRecordingLog(nodeDir string) (*recordinglog.Log, error) {
+	recDir := filepath.Join(nodeDir, "recording")
+	if err := os.MkdirAll(recDir, 0o700); err != nil {
+		return nil, err
+	}
+	return recordinglog.Open(recDir, true)
 }
 
 // DefaultElectionConfig is the base a sim node takes when Config.ElectionConfig

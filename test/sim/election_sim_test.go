@@ -4,6 +4,7 @@ package sim_test
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -90,6 +91,42 @@ func TestElectionSim_dumpOnFailure(t *testing.T) {
 		require.NotPanics(t, func() { s.DumpOnFail(dt) })
 		require.Contains(t, dt.logs(), "ElectionSim failure dump")
 	})
+}
+
+func TestElectionSim_dumpSaveToDisk(t *testing.T) {
+	t.Setenv("HERON_SIM_SAVE", "1")
+
+	s, err := sim.NewElectionSim(t, sim.Config{
+		Seed: 17,
+		SeedAttribution: sim.SeedAttribution{
+			BaseSeed: 1,
+			Scenario: "dump_save",
+			RunIndex: 0,
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, s.Close()) })
+	require.NoError(t, s.RunSteps(1))
+
+	// Dump always logs; with HERON_SIM_SAVE=1 also writes under module root.
+	dir := s.Dump(t)
+	require.NotEmpty(t, dir)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	// Path must be module-root/test/sim/testdata/sim/failures/..., not package-cwd nested.
+	require.Contains(t, dir, filepath.FromSlash("test/sim/testdata/sim/failures"))
+	require.NotContains(t, dir, filepath.FromSlash("test/sim/test/sim"))
+
+	require.FileExists(t, filepath.Join(dir, "dump.txt"))
+	require.FileExists(t, filepath.Join(dir, "timeline.txt"))
+	require.FileExists(t, filepath.Join(dir, "nodes.txt"))
+
+	header, err := os.ReadFile(filepath.Join(dir, "dump.txt"))
+	require.NoError(t, err)
+	require.Contains(t, string(header), "derived_seed: 17")
+	require.Contains(t, string(header), "base_seed: 1")
+	require.Contains(t, string(header), "scenario: dump_save")
+	require.Contains(t, string(header), "run_index: 0")
 }
 
 type dumpTB struct {

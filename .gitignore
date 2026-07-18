@@ -26,6 +26,7 @@ worktrees/
 
 # Test artifacts
 **/testdata/rapid/
+**/testdata/sim/failures/
 **/*.fail
 .coverage/
 coverage.out
