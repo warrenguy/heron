@@ -18,7 +18,7 @@ func TestClusterFailoverSmoke(t *testing.T) {
 	hadClientError, aeronClient, md, result, composeDir := connectClusterUntilResult(
 		t,
 		clusterJavaFailoverComposeGate,
-		clusterjava.FailoverHarnessClusterContext,
+		clusterjava.FailoverHarnessConfig,
 		failoverConnectTimeout,
 		handlers,
 	)

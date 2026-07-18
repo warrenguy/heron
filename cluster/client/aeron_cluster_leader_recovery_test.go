@@ -179,8 +179,8 @@ func TestAeronCluster_pollLeaderRecovery_publicationErr_entersAwaitNewLeader(t *
 	nowNs.Store(startNs)
 
 	ac, leader := channelOnlyAwaitNewLeaderConnectionFixture(t, func(result *ConnectResult) {
-		withConnectNanoClock(result, &nowNs, func(clusterCtx *ClusterContext) {
-			clusterCtx.NewLeaderTimeout = timeout
+		withConnectNanoClock(result, &nowNs, func(cfg *Config) {
+			cfg.NewLeaderTimeout = timeout
 		})
 	})
 	leader.Publication = nil
@@ -200,8 +200,8 @@ func TestAeronCluster_pollLeaderRecovery_expiredTimeoutClosesOnPublicationErr(t 
 	nowNs.Store(startNs)
 
 	ac, leader := channelOnlyAwaitNewLeaderConnectionFixture(t, func(result *ConnectResult) {
-		withConnectNanoClock(result, &nowNs, func(clusterCtx *ClusterContext) {
-			clusterCtx.MessageTimeout = timeout
+		withConnectNanoClock(result, &nowNs, func(cfg *Config) {
+			cfg.MessageTimeout = timeout
 		})
 	})
 	leader.Publication = nil
@@ -222,7 +222,7 @@ func TestAeronCluster_pollLeaderRecovery_pendingRegistrationResolves(t *testing.
 	leader.RegistrationID = 42
 	leader.SetAsyncPollAddHookForTest(t, func(
 		ing *MemberIngress,
-		_ ClusterContext,
+		_ Config,
 		_ *aeron.Client,
 	) (bool, error) {
 		ing.RegistrationID = conductor.NullCorrelationID
@@ -258,8 +258,8 @@ func TestAeronCluster_pollLeaderRecovery_closedLeader_entersAwaitNewLeader(t *te
 	nowNs.Store(startNs)
 
 	ac, leader := channelOnlyAwaitNewLeaderConnectionFixture(t, func(result *ConnectResult) {
-		withConnectNanoClock(result, &nowNs, func(clusterCtx *ClusterContext) {
-			clusterCtx.NewLeaderTimeout = timeout
+		withConnectNanoClock(result, &nowNs, func(cfg *Config) {
+			cfg.NewLeaderTimeout = timeout
 		})
 	})
 	closedPub := aeron.NewTestExclusivePublicationForHooks(t)
@@ -314,8 +314,8 @@ func TestAeronCluster_pollLeaderRecovery_connectedButClosedPub_entersAwaitNewLea
 	nowNs.Store(startNs)
 
 	ac, leader := channelOnlyAwaitNewLeaderConnectionFixture(t, func(result *ConnectResult) {
-		withConnectNanoClock(result, &nowNs, func(clusterCtx *ClusterContext) {
-			clusterCtx.NewLeaderTimeout = timeout
+		withConnectNanoClock(result, &nowNs, func(cfg *Config) {
+			cfg.NewLeaderTimeout = timeout
 		})
 	})
 	basePub := aeron.NewTestExclusivePublicationForHooks(t)
@@ -366,8 +366,8 @@ func TestAeronCluster_handleNewLeader_success_entersAwaitConnection(t *testing.T
 	nowNs.Store(startNs)
 
 	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-		withConnectNanoClock(result, &nowNs, func(clusterCtx *ClusterContext) {
-			clusterCtx.MessageTimeout = timeout
+		withConnectNanoClock(result, &nowNs, func(cfg *Config) {
+			cfg.MessageTimeout = timeout
 		})
 	})
 	ingressBefore := ac.IngressPublication()
@@ -417,9 +417,9 @@ func TestAeronCluster_handleNewLeader_applyError_entersAwaitNewLeader(t *testing
 
 	leaderPub := aeron.NewTestExclusivePublicationForHooks(t)
 	result := newMultiMemberConnectResult(t, connectFixtureLeaderMemberID, leaderPub)
-	withConnectNanoClock(result, &nowNs, func(clusterCtx *ClusterContext) {
-		clusterCtx.IngressChannel = invalidIngressClusterContext().IngressChannel
-		clusterCtx.NewLeaderTimeout = timeout
+	withConnectNanoClock(result, &nowNs, func(cfg *Config) {
+		cfg.IngressChannel = invalidIngressConfig().IngressChannel
+		cfg.NewLeaderTimeout = timeout
 	})
 
 	ac := newAeronClusterFromConnectResult(t, result)
@@ -463,15 +463,15 @@ func TestAeronCluster_pollStateChanges_timeoutCloses(t *testing.T) {
 		state            SessionState
 		startNs          int64
 		timeout          time.Duration
-		configureTimeout func(*ClusterContext, time.Duration)
+		configureTimeout func(*Config, time.Duration)
 	}{
 		{
 			name:    "await_new_leader",
 			state:   SessionStateAwaitNewLeader,
 			startNs: 1_000_000_000,
 			timeout: 5 * time.Second,
-			configureTimeout: func(clusterCtx *ClusterContext, timeout time.Duration) {
-				clusterCtx.NewLeaderTimeout = timeout
+			configureTimeout: func(cfg *Config, timeout time.Duration) {
+				cfg.NewLeaderTimeout = timeout
 			},
 		},
 		{
@@ -479,8 +479,8 @@ func TestAeronCluster_pollStateChanges_timeoutCloses(t *testing.T) {
 			state:   SessionStateAwaitNewLeaderConnection,
 			startNs: 3_000_000_000,
 			timeout: 3 * time.Second,
-			configureTimeout: func(clusterCtx *ClusterContext, timeout time.Duration) {
-				clusterCtx.MessageTimeout = timeout
+			configureTimeout: func(cfg *Config, timeout time.Duration) {
+				cfg.MessageTimeout = timeout
 			},
 		},
 	}
@@ -491,8 +491,8 @@ func TestAeronCluster_pollStateChanges_timeoutCloses(t *testing.T) {
 			nowNs.Store(tc.startNs)
 
 			ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-				withConnectNanoClock(result, &nowNs, func(clusterCtx *ClusterContext) {
-					tc.configureTimeout(clusterCtx, tc.timeout)
+				withConnectNanoClock(result, &nowNs, func(cfg *Config) {
+					tc.configureTimeout(cfg, tc.timeout)
 				})
 			})
 

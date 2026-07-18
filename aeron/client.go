@@ -43,8 +43,8 @@ const (
 //
 // PollUntil*, [Client.PollOneMessage], [Client.PollReassembled], and
 // [Client.RunDuringClientWork] are cold-path integration helpers bound by
-// [Context.PollTimeout]. [Client.OfferWithRetry] and [Client.OfferWithRetryObserved] are
-// the offer-side equivalents bound by [Context.PublicationOfferTimeout]. When ctx carries a
+// [Config.PollTimeout]. [Client.OfferWithRetry] and [Client.OfferWithRetryObserved] are
+// the offer-side equivalents bound by [Config.PublicationOfferTimeout]. When ctx carries a
 // deadline, the effective bound is the earlier of the configured timeout and ctx.Deadline().
 //
 // Each helper drives DoWork inside its wait or retry loop; the caller need not invoke
@@ -91,21 +91,21 @@ func (client *Client) unlockClient() {
 // Connect maps CNC and builds a Client.
 //
 // ctx bounds CNC ready and driver heartbeat waits only (earlier of
-// [Context.DriverTimeout] and ctx.Deadline()). A successful Client is independent
+// [Config.DriverTimeout] and ctx.Deadline()). A successful Client is independent
 // of ctx; callers must Close it. Cancel does not close a live client.
 //
 // Returns ctx.Err() when the context is done before connect succeeds. Driver
 // timeout errors apply only while the context remains active.
-func Connect(ctx context.Context, aeronCtx Context) (*Client, error) {
-	aeronCtx = normalizeContext(aeronCtx)
-	if err := validateConnectContext(aeronCtx); err != nil {
+func Connect(ctx context.Context, cfg Config) (*Client, error) {
+	cfg = normalizeConfig(cfg)
+	if err := validateConnectConfig(cfg); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	mapped, rings, err := openCnc(ctx, aeronCtx)
+	mapped, rings, err := openCnc(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func Connect(ctx context.Context, aeronCtx Context) (*Client, error) {
 		}
 	}()
 
-	client, err := newConductorClient(ctx, aeronCtx, mapped, rings)
+	client, err := newConductorClient(ctx, cfg, mapped, rings)
 	if err != nil {
 		return nil, err
 	}
@@ -125,28 +125,28 @@ func Connect(ctx context.Context, aeronCtx Context) (*Client, error) {
 	return client, nil
 }
 
-func validateConnectContext(ctx Context) error {
-	if ctx.AeronDir == "" {
+func validateConnectConfig(cfg Config) error {
+	if cfg.AeronDir == "" {
 		return errors.New("aeron: AeronDir is required")
 	}
-	if ctx.CloseLingerDuration < 0 {
+	if cfg.CloseLingerDuration < 0 {
 		return errors.New("aeron: CloseLingerDuration must not be negative")
 	}
-	if !ctx.useConductorInvokerEnabled() {
+	if !cfg.useConductorInvokerEnabled() {
 		return errors.New("aeron: dedicated conductor invoker is not supported")
 	}
-	if ctx.PollTimeout < 0 {
+	if cfg.PollTimeout < 0 {
 		return errors.New("aeron: PollTimeout must not be negative")
 	}
-	if ctx.PublicationOfferTimeout < 0 {
+	if cfg.PublicationOfferTimeout < 0 {
 		return errors.New("aeron: PublicationOfferTimeout must not be negative")
 	}
 	return nil
 }
 
-func openCnc(ctx context.Context, aeronCtx Context) (*cnc.MappedCncFile, *cnc.Rings, error) {
-	cncPath := filepath.Join(aeronCtx.AeronDir, cnc.FileName)
-	if err := cnc.WaitCncReady(ctx, cncPath, aeronCtx.DriverTimeout); err != nil {
+func openCnc(ctx context.Context, cfg Config) (*cnc.MappedCncFile, *cnc.Rings, error) {
+	cncPath := filepath.Join(cfg.AeronDir, cnc.FileName)
+	if err := cnc.WaitCncReady(ctx, cncPath, cfg.DriverTimeout); err != nil {
 		return nil, nil, fmt.Errorf("aeron: wait for cnc ready: %w", err)
 	}
 
@@ -175,25 +175,25 @@ func openCnc(ctx context.Context, aeronCtx Context) (*cnc.MappedCncFile, *cnc.Ri
 	return mapped, rings, nil
 }
 
-func conductorConnectConfig(ctx Context, clientID int64) conductor.Config {
+func conductorConnectConfig(cfg Config, clientID int64) conductor.Config {
 	config := conductor.Config{
 		ClientID:               clientID,
-		DriverTimeout:          ctx.DriverTimeout,
-		KeepAliveInterval:      ctx.KeepAliveInterval,
-		IdleSleepDuration:      ctx.IdleSleepDuration,
-		InterServiceTimeout:    ctx.InterServiceTimeout,
-		EpochClock:             ctx.EpochClock,
-		NanoClock:              ctx.NanoClock,
-		SubscriberErrorHandler: ctx.ErrorHandler,
+		DriverTimeout:          cfg.DriverTimeout,
+		KeepAliveInterval:      cfg.KeepAliveInterval,
+		IdleSleepDuration:      cfg.IdleSleepDuration,
+		InterServiceTimeout:    cfg.InterServiceTimeout,
+		EpochClock:             cfg.EpochClock,
+		NanoClock:              cfg.NanoClock,
+		SubscriberErrorHandler: cfg.ErrorHandler,
 		ImageLifecycle:         ConductorImageLifecycle,
 		ResourceLifecycle: conductorResourceLifecycle{
-			availableImageHandler:   ctx.AvailableImageHandler,
-			unavailableImageHandler: ctx.UnavailableImageHandler,
+			availableImageHandler:   cfg.AvailableImageHandler,
+			unavailableImageHandler: cfg.UnavailableImageHandler,
 		},
-		MediaDriverDir: ctx.AeronDir,
-		CloseLingerNs:  ctx.CloseLingerDuration.Nanoseconds(),
+		MediaDriverDir: cfg.AeronDir,
+		CloseLingerNs:  cfg.CloseLingerDuration.Nanoseconds(),
 	}
-	if handler := ctx.ErrorHandler; handler != nil {
+	if handler := cfg.ErrorHandler; handler != nil {
 		config.ErrorHandler = func(err error) {
 			handler(mapConductorError(err))
 		}
@@ -203,15 +203,15 @@ func conductorConnectConfig(ctx Context, clientID int64) conductor.Config {
 
 func newConductorClient(
 	ctx context.Context,
-	aeronCtx Context,
+	cfg Config,
 	mapped *cnc.MappedCncFile,
 	rings *cnc.Rings,
 ) (*Client, error) {
 	if err := waitForDriverHeartbeat(
 		ctx,
 		rings.ToDriver,
-		aeronCtx.DriverTimeout,
-		aeronCtx.EpochClock,
+		cfg.DriverTimeout,
+		cfg.EpochClock,
 	); err != nil {
 		return nil, err
 	}
@@ -234,7 +234,7 @@ func newConductorClient(
 	}
 
 	driverProxy := conductor.NewDriverProxy(rings.ToDriver, clientID)
-	config := conductorConnectConfig(aeronCtx, clientID)
+	config := conductorConnectConfig(cfg, clientID)
 
 	conductorInstance, err := conductor.NewConductor(
 		driverProxy,
@@ -252,11 +252,11 @@ func newConductorClient(
 		countersReader:          countersReader,
 		conductor:               conductorInstance,
 		driverProxy:             driverProxy,
-		nanoClock:               aeronCtx.NanoClock,
-		driverTimeout:           aeronCtx.DriverTimeout,
-		pollTimeout:             aeronCtx.PollTimeout,
-		publicationOfferTimeout: aeronCtx.PublicationOfferTimeout,
-		idleSleepDuration:       aeronCtx.IdleSleepDuration,
+		nanoClock:               cfg.NanoClock,
+		driverTimeout:           cfg.DriverTimeout,
+		pollTimeout:             cfg.PollTimeout,
+		publicationOfferTimeout: cfg.PublicationOfferTimeout,
+		idleSleepDuration:       cfg.IdleSleepDuration,
 	}, nil
 }
 

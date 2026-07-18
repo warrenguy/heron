@@ -4,8 +4,8 @@ package client
 
 import "github.com/warrenguy/heron/aeron"
 
-func ownedConnectClientFactoryForContext(
-	clusterCtx ClusterContext,
-) (func(ClusterContext) (*aeron.Client, error), bool) {
+func ownedConnectClientFactoryForConfig(
+	cfg Config,
+) (func(Config) (*aeron.Client, error), bool) {
 	return nil, false
 }

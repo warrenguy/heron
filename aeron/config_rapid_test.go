@@ -23,24 +23,24 @@ func drawOptionalDuration(t *rapid.T, name string) time.Duration {
 	return time.Duration(n)
 }
 
-func drawPartialContext(t *rapid.T) (
-	ctx aeron.Context,
+func drawPartialConfig(t *rapid.T) (
+	cfg aeron.Config,
 	epochMs int64,
 	nanoNs int64,
 	customEpoch bool,
 	customNano bool,
 ) {
-	ctx.AeronDir = rapid.StringN(0, 32, 64).Draw(t, "aeron_dir")
-	ctx.DriverTimeout = drawOptionalDuration(t, "driver_timeout")
-	ctx.KeepAliveInterval = drawOptionalDuration(t, "keep_alive")
-	ctx.InterServiceTimeout = drawOptionalDuration(t, "inter_service")
-	ctx.IdleSleepDuration = drawOptionalDuration(t, "idle_sleep")
-	ctx.CloseLingerDuration = drawOptionalDuration(t, "close_linger")
+	cfg.AeronDir = rapid.StringN(0, 32, 64).Draw(t, "aeron_dir")
+	cfg.DriverTimeout = drawOptionalDuration(t, "driver_timeout")
+	cfg.KeepAliveInterval = drawOptionalDuration(t, "keep_alive")
+	cfg.InterServiceTimeout = drawOptionalDuration(t, "inter_service")
+	cfg.IdleSleepDuration = drawOptionalDuration(t, "idle_sleep")
+	cfg.CloseLingerDuration = drawOptionalDuration(t, "close_linger")
 
 	customEpoch = rapid.Bool().Draw(t, "custom_epoch")
 	if customEpoch {
 		epochMs = rapid.Int64Range(1, 1<<40).Draw(t, "epoch_ms")
-		ctx.EpochClock = func() int64 {
+		cfg.EpochClock = func() int64 {
 			return epochMs
 		}
 	}
@@ -48,30 +48,30 @@ func drawPartialContext(t *rapid.T) (
 	customNano = rapid.Bool().Draw(t, "custom_nano")
 	if customNano {
 		nanoNs = rapid.Int64Range(1, 1<<40).Draw(t, "nano_ns")
-		ctx.NanoClock = func() int64 {
+		cfg.NanoClock = func() int64 {
 			return nanoNs
 		}
 	}
 
 	if rapid.Bool().Draw(t, "use_conductor_invoker") {
 		enabled := rapid.Bool().Draw(t, "conductor_invoker_enabled")
-		ctx.UseConductorInvoker = &enabled
+		cfg.UseConductorInvoker = &enabled
 	}
 
-	return ctx, epochMs, nanoNs, customEpoch, customNano
+	return cfg, epochMs, nanoNs, customEpoch, customNano
 }
 
-func TestNormalizeContext_durationFields_rapid(t *testing.T) {
+func TestNormalizeConfig_durationFields_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
-		ctx, _, _, _, _ := drawPartialContext(t)
-		normalized := aeron.NormalizeContextForTest(ctx)
-		want := aeron.NormalizeContextForTest(aeron.Context{
-			DriverTimeout:       ctx.DriverTimeout,
-			KeepAliveInterval:   ctx.KeepAliveInterval,
-			InterServiceTimeout: ctx.InterServiceTimeout,
-			IdleSleepDuration:   ctx.IdleSleepDuration,
-			CloseLingerDuration: ctx.CloseLingerDuration,
+		cfg, _, _, _, _ := drawPartialConfig(t)
+		normalized := aeron.NormalizeConfigForTest(cfg)
+		want := aeron.NormalizeConfigForTest(aeron.Config{
+			DriverTimeout:       cfg.DriverTimeout,
+			KeepAliveInterval:   cfg.KeepAliveInterval,
+			InterServiceTimeout: cfg.InterServiceTimeout,
+			IdleSleepDuration:   cfg.IdleSleepDuration,
+			CloseLingerDuration: cfg.CloseLingerDuration,
 		})
 
 		require.Equal(t, want.DriverTimeout, normalized.DriverTimeout)
@@ -82,11 +82,11 @@ func TestNormalizeContext_durationFields_rapid(t *testing.T) {
 	})
 }
 
-func TestNormalizeContext_clocks_rapid(t *testing.T) {
+func TestNormalizeConfig_clocks_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
-		ctx, epochMs, nanoNs, customEpoch, customNano := drawPartialContext(t)
-		normalized := aeron.NormalizeContextForTest(ctx)
+		cfg, epochMs, nanoNs, customEpoch, customNano := drawPartialConfig(t)
+		normalized := aeron.NormalizeConfigForTest(cfg)
 
 		require.NotNil(t, normalized.EpochClock)
 		require.NotNil(t, normalized.NanoClock)
@@ -105,9 +105,9 @@ func TestNormalizeContext_clocks_rapid(t *testing.T) {
 	})
 }
 
-func requireNormalizedContextsEqual(
+func requireNormalizedConfigsEqual(
 	t *rapid.T,
-	want, got aeron.Context,
+	want, got aeron.Config,
 	customEpoch, customNano bool,
 	epochMs, nanoNs int64,
 ) {
@@ -142,12 +142,12 @@ func requireNormalizedContextsEqual(
 	}
 }
 
-func TestNormalizeContext_idempotent_rapid(t *testing.T) {
+func TestNormalizeConfig_idempotent_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
-		ctx, epochMs, nanoNs, customEpoch, customNano := drawPartialContext(t)
-		once := aeron.NormalizeContextForTest(ctx)
-		twice := aeron.NormalizeContextForTest(once)
-		requireNormalizedContextsEqual(t, once, twice, customEpoch, customNano, epochMs, nanoNs)
+		cfg, epochMs, nanoNs, customEpoch, customNano := drawPartialConfig(t)
+		once := aeron.NormalizeConfigForTest(cfg)
+		twice := aeron.NormalizeConfigForTest(once)
+		requireNormalizedConfigsEqual(t, once, twice, customEpoch, customNano, epochMs, nanoNs)
 	})
 }

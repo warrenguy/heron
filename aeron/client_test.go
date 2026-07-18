@@ -15,18 +15,18 @@ func TestConnect_validationErrors(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		ctx         aeron.Context
+		cfg         aeron.Config
 		wantErr     string
 		fullConnect bool
 	}{
 		{
 			name:    "requires aeron dir",
-			ctx:     aeron.Context{},
+			cfg:     aeron.Config{},
 			wantErr: "aeron: AeronDir is required",
 		},
 		{
 			name: "rejects negative close linger duration",
-			ctx: aeron.Context{
+			cfg: aeron.Config{
 				AeronDir:            "unused",
 				CloseLingerDuration: -time.Second,
 			},
@@ -34,7 +34,7 @@ func TestConnect_validationErrors(t *testing.T) {
 		},
 		{
 			name: "rejects negative poll timeout",
-			ctx: aeron.Context{
+			cfg: aeron.Config{
 				AeronDir:    "unused",
 				PollTimeout: -time.Second,
 			},
@@ -42,7 +42,7 @@ func TestConnect_validationErrors(t *testing.T) {
 		},
 		{
 			name: "rejects negative publication offer timeout",
-			ctx: aeron.Context{
+			cfg: aeron.Config{
 				AeronDir:                "unused",
 				PublicationOfferTimeout: -time.Second,
 			},
@@ -50,7 +50,7 @@ func TestConnect_validationErrors(t *testing.T) {
 		},
 		{
 			name: "rejects dedicated conductor invoker",
-			ctx: aeron.Context{
+			cfg: aeron.Config{
 				AeronDir:            "unused",
 				UseConductorInvoker: &useInvoker,
 			},
@@ -58,7 +58,7 @@ func TestConnect_validationErrors(t *testing.T) {
 		},
 		{
 			name: "wait cnc ready timeout",
-			ctx: aeron.Context{
+			cfg: aeron.Config{
 				AeronDir:      t.TempDir(),
 				DriverTimeout: 10 * time.Millisecond,
 			},
@@ -71,10 +71,10 @@ func TestConnect_validationErrors(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			var err error
 			if testCase.fullConnect {
-				_, err = aeron.Connect(t.Context(), testCase.ctx)
+				_, err = aeron.Connect(t.Context(), testCase.cfg)
 			} else {
-				err = aeron.ValidateConnectContextForTest(
-					aeron.NormalizeContextForTest(testCase.ctx),
+				err = aeron.ValidateConnectConfigForTest(
+					aeron.NormalizeConfigForTest(testCase.cfg),
 				)
 			}
 			require.EqualError(t, err, testCase.wantErr)
@@ -86,7 +86,7 @@ func TestConnect_contextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	_, err := aeron.Connect(ctx, aeron.Context{
+	_, err := aeron.Connect(ctx, aeron.Config{
 		AeronDir:      t.TempDir(),
 		DriverTimeout: time.Second,
 	})
@@ -98,7 +98,7 @@ func TestConnect_contextDeadlineDuringCncWait(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := aeron.Connect(ctx, aeron.Context{
+	_, err := aeron.Connect(ctx, aeron.Config{
 		AeronDir:      t.TempDir(),
 		DriverTimeout: 5 * time.Second,
 	})

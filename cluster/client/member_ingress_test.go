@@ -17,8 +17,8 @@ func TestMemberIngressMap_nilEntry(t *testing.T) {
 	_, err := m.Require(0)
 	require.EqualError(t, err, "cluster client: member id 0 not in ingress map")
 
-	clusterCtx := client.ClusterContext{IngressChannel: "aeron:udp?ttl=16"}
-	_, err = m.ChannelFor(clusterCtx, 0)
+	cfg := client.Config{IngressChannel: "aeron:udp?ttl=16"}
+	_, err = m.ChannelFor(cfg, 0)
 	require.EqualError(t, err, "cluster client: member id 0 not in ingress map")
 }
 
@@ -83,10 +83,10 @@ func TestMemberIngressMap_Require_notFound(t *testing.T) {
 }
 
 func TestMemberIngressMap_ChannelFor_notFound(t *testing.T) {
-	clusterCtx := client.ClusterContext{IngressChannel: "aeron:udp?ttl=16"}
+	cfg := client.Config{IngressChannel: "aeron:udp?ttl=16"}
 
 	for _, m := range []client.MemberIngressMap{nil, {}} {
-		_, err := m.ChannelFor(clusterCtx, 0)
+		_, err := m.ChannelFor(cfg, 0)
 		require.EqualError(t, err, "cluster client: member id 0 not in ingress map")
 	}
 }
@@ -95,8 +95,8 @@ func TestMemberIngressMap_ChannelFor(t *testing.T) {
 	m, err := client.ParseIngressEndpoints("0=192.168.1.10:20110")
 	require.NoError(t, err)
 
-	clusterCtx := client.ClusterContext{IngressChannel: "aeron:udp?ttl=16"}
-	got, err := m.ChannelFor(clusterCtx, 0)
+	cfg := client.Config{IngressChannel: "aeron:udp?ttl=16"}
+	got, err := m.ChannelFor(cfg, 0)
 	require.NoError(t, err)
 	require.Equal(t, "aeron:udp?ttl=16|endpoint=192.168.1.10:20110", got)
 }
@@ -105,7 +105,7 @@ func TestMemberIngressMap_ChannelFor_buildError(t *testing.T) {
 	m, err := client.ParseIngressEndpoints("0=host:20110")
 	require.NoError(t, err)
 
-	clusterCtx := client.ClusterContext{IngressChannel: "aeron:unknown"}
-	_, err = m.ChannelFor(clusterCtx, 0)
+	cfg := client.Config{IngressChannel: "aeron:unknown"}
+	_, err = m.ChannelFor(cfg, 0)
 	require.EqualError(t, err, "cluster client: invalid ingress channel: aeron:unknown")
 }

@@ -10,7 +10,7 @@ import (
 )
 
 type connectConstructionHooks struct {
-	ownedClientFactory func(ClusterContext) (*aeron.Client, error)
+	ownedClientFactory func(Config) (*aeron.Client, error)
 }
 
 var connectConstructionHooksMap = testhook.NewRegistry[string, *connectConstructionHooks]()
@@ -31,11 +31,11 @@ func connectConstructionHooksFor(aeronDir string) *connectConstructionHooks {
 }
 
 // SetConnectConstructionHooksForTest registers owned-client connect overrides keyed by
-// clusterCtx.AeronDir. Each parallel test must use a distinct AeronDir such as t.TempDir().
+// cfg.AeronDir. Each parallel test must use a distinct AeronDir such as t.TempDir().
 func SetConnectConstructionHooksForTest(
 	tb testing.TB,
 	aeronDir string,
-	ownedClientFactory func(ClusterContext) (*aeron.Client, error),
+	ownedClientFactory func(Config) (*aeron.Client, error),
 ) {
 	tb.Helper()
 	if aeronDir == "" {
@@ -47,10 +47,10 @@ func SetConnectConstructionHooksForTest(
 	tb.Cleanup(func() { setConnectConstructionHooks(aeronDir, nil) })
 }
 
-func ownedConnectClientFactoryForContext(
-	clusterCtx ClusterContext,
-) (func(ClusterContext) (*aeron.Client, error), bool) {
-	hooks := connectConstructionHooksFor(clusterCtx.AeronDir)
+func ownedConnectClientFactoryForConfig(
+	cfg Config,
+) (func(Config) (*aeron.Client, error), bool) {
+	hooks := connectConstructionHooksFor(cfg.AeronDir)
 	if hooks == nil || hooks.ownedClientFactory == nil {
 		return nil, false
 	}

@@ -11,7 +11,7 @@ const rejoinParam = "rejoin="
 
 // applyUDPRejoinFalse returns egressChannel with rejoin=false on UDP media.
 //
-// Called from concludeClusterContext after ValidateForConnect. Idempotent when
+// Called from concludeConfig after ValidateForConnect. Idempotent when
 // rejoin=false is already set. IPC, ipcx, and other valid aeron: media pass
 // through unchanged. Malformed aeron: URIs return cluster client: invalid egress
 // channel.

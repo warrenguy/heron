@@ -5,11 +5,11 @@ package client
 import "github.com/warrenguy/heron/aeron"
 
 func (ingress *MemberIngress) asyncPollAdd(
-	clusterCtx ClusterContext,
+	cfg Config,
 	client *aeron.Client,
 ) (bool, error) {
 	if hook := memberIngressAsyncPollAddHookFor(ingress); hook != nil {
-		return hook(ingress, clusterCtx, client)
+		return hook(ingress, cfg, client)
 	}
-	return ingress.asyncPollAddUnhooked(clusterCtx, client)
+	return ingress.asyncPollAddUnhooked(cfg, client)
 }

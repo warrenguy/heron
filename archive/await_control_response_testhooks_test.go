@@ -35,7 +35,7 @@ func requireControlResponseTimeout(
 func runAwaitLoopNeverMatching(
 	ctx context.Context,
 	aeronClient *aeron.Client,
-	archiveCtx Context,
+	cfg Config,
 	pollFn func() int,
 	timeout time.Duration,
 	correlationID int64,
@@ -43,7 +43,7 @@ func runAwaitLoopNeverMatching(
 	return runControlAwaitLoop(
 		ctx,
 		aeronClient,
-		archiveCtx,
+		cfg,
 		pollFn,
 		timeout,
 		correlationID,
@@ -63,11 +63,11 @@ func TestOfferAndAwait_offerRetryDoesNotStarveResponseAwait(t *testing.T) {
 	poller := newControlResponsePollerForTest(sub)
 
 	correlationID := int64(9100)
-	archiveCtx := Context{
+	cfg := Config{
 		ControlResponseTimeout:   messageTimeout,
 		ControlOfferRetryTimeout: messageTimeout,
 		IdleStrategy:             NewDefaultIdleStrategy(),
-		AeronContext: aeron.Context{
+		AeronConfig: aeron.Config{
 			NanoClock: func() int64 { return nowNs.Load() },
 		},
 	}
@@ -85,7 +85,7 @@ func TestOfferAndAwait_offerRetryDoesNotStarveResponseAwait(t *testing.T) {
 	fields, err := offerAndAwaitControlRequest(
 		t.Context(),
 		harness.Client,
-		archiveCtx,
+		cfg,
 		poller.Poll,
 		poller,
 		func() (int64, bool) {
@@ -108,11 +108,11 @@ func TestAwaitControlResponse_timeout(t *testing.T) {
 	poller := newControlResponsePollerForTest(sub)
 
 	correlationID := int64(9999)
-	archiveCtx := Context{
+	cfg := Config{
 		ControlResponseTimeout:   time.Millisecond,
 		ControlOfferRetryTimeout: time.Millisecond,
 		IdleStrategy:             NewDefaultIdleStrategy(),
-		AeronContext: aeron.Context{
+		AeronConfig: aeron.Config{
 			NanoClock: func() int64 { return nowNs.Load() },
 		},
 	}
@@ -125,7 +125,7 @@ func TestAwaitControlResponse_timeout(t *testing.T) {
 	_, err := AwaitControlResponse(
 		t.Context(),
 		harness.Client,
-		archiveCtx,
+		cfg,
 		pollFn,
 		poller,
 		controlResponseTestControlSessionID,
@@ -144,7 +144,7 @@ func TestRunControlAwaitLoop_nilAeronClient(t *testing.T) {
 	err := runAwaitLoopNeverMatching(
 		t.Context(),
 		nil,
-		Context{IdleStrategy: NewDefaultIdleStrategy()},
+		Config{IdleStrategy: NewDefaultIdleStrategy()},
 		func() int { return 0 },
 		time.Minute,
 		1,
@@ -160,9 +160,9 @@ func TestRunControlAwaitLoop_deadlineBoundaryPollCount(t *testing.T) {
 	err := runAwaitLoopNeverMatching(
 		t.Context(),
 		harness.Client,
-		Context{
+		Config{
 			IdleStrategy: NewDefaultIdleStrategy(),
-			AeronContext: aeron.Context{
+			AeronConfig: aeron.Config{
 				NanoClock: func() int64 { return startNs },
 			},
 		},
@@ -187,7 +187,7 @@ func TestRunControlAwaitLoop_contextCanceled(t *testing.T) {
 		err := runAwaitLoopNeverMatching(
 			cancelCtx,
 			harness.Client,
-			Context{IdleStrategy: NewDefaultIdleStrategy()},
+			Config{IdleStrategy: NewDefaultIdleStrategy()},
 			func() int {
 				pollCalls++
 				return 0
@@ -208,9 +208,9 @@ func TestRunControlAwaitLoop_contextCanceled(t *testing.T) {
 		err := runAwaitLoopNeverMatching(
 			cancelCtx,
 			harness.Client,
-			Context{
+			Config{
 				IdleStrategy: NewDefaultIdleStrategy(),
-				AeronContext: aeron.Context{
+				AeronConfig: aeron.Config{
 					NanoClock: func() int64 { return nowNs.Load() },
 				},
 			},
@@ -243,7 +243,7 @@ func TestRunControlAwaitLoop_contextDeadline(t *testing.T) {
 		err := runAwaitLoopNeverMatching(
 			deadlineCtx,
 			harness.Client,
-			Context{IdleStrategy: NewDefaultIdleStrategy()},
+			Config{IdleStrategy: NewDefaultIdleStrategy()},
 			func() int {
 				pollCalls++
 				return 0
@@ -264,9 +264,9 @@ func TestRunControlAwaitLoop_contextDeadline(t *testing.T) {
 		err := runAwaitLoopNeverMatching(
 			deadlineCtx,
 			harness.Client,
-			Context{
+			Config{
 				IdleStrategy: NewDefaultIdleStrategy(),
-				AeronContext: aeron.Context{
+				AeronConfig: aeron.Config{
 					NanoClock: func() int64 { return time.Now().UnixNano() },
 				},
 			},
@@ -292,10 +292,10 @@ func TestRunControlAwaitLoop_contextDeadline(t *testing.T) {
 		err := runAwaitLoopNeverMatching(
 			deadlineCtx,
 			harness.Client,
-			Context{
+			Config{
 				ControlResponseTimeout: timeout,
 				IdleStrategy:           NewDefaultIdleStrategy(),
-				AeronContext: aeron.Context{
+				AeronConfig: aeron.Config{
 					NanoClock: func() int64 { return nowNs.Load() },
 				},
 			},
@@ -320,13 +320,13 @@ func TestRunControlAwaitLoop_contextDeadline(t *testing.T) {
 
 func TestOfferAndAwait_offerTimeout(t *testing.T) {
 	h := newLifecycleHarness(t)
-	h.archiveCtx.ControlOfferRetryTimeout = time.Millisecond
+	h.cfg.ControlOfferRetryTimeout = time.Millisecond
 	h.pub.offerResult = aeron.BackPressured
 
 	_, err := offerAndAwaitControlRequest(
 		t.Context(),
 		h.client,
-		h.archiveCtx,
+		h.cfg,
 		func() int {
 			h.advanceClock()
 			return 0
@@ -359,10 +359,10 @@ func TestAwaitListRecording_timeout(t *testing.T) {
 	descriptorPoller := NewRecordingDescriptorPoller()
 	descriptorPoller.ResetAwait(8888)
 
-	archiveCtx := Context{
+	cfg := Config{
 		ControlResponseTimeout: time.Millisecond,
 		IdleStrategy:           NewDefaultIdleStrategy(),
-		AeronContext: aeron.Context{
+		AeronConfig: aeron.Config{
 			NanoClock: func() int64 { return nowNs.Load() },
 		},
 	}
@@ -375,7 +375,7 @@ func TestAwaitListRecording_timeout(t *testing.T) {
 	err := AwaitListRecording(
 		t.Context(),
 		harness.Client,
-		archiveCtx,
+		cfg,
 		pollFn,
 		descriptorPoller,
 	)

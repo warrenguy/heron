@@ -45,15 +45,15 @@ const (
 
 type asyncConnectHarnessResponder func(*aeron.AsyncConnectTestHarness)
 
-func baseAsyncConnectContext(
+func baseAsyncConnectConfig(
 	client *aeron.Client,
 	ingressEndpoints string,
-) ClusterContext {
+) Config {
 	ingressChannel := asyncConnectIPCChannel
 	if ingressEndpoints != "" {
 		ingressChannel = "aeron:udp?ttl=16"
 	}
-	return ClusterContext{
+	return Config{
 		IngressChannel:   ingressChannel,
 		EgressChannel:    asyncConnectIPCChannel,
 		IngressEndpoints: ingressEndpoints,
@@ -66,20 +66,20 @@ func setupAsyncConnect(
 	t *testing.T,
 	ingressEndpoints string,
 ) (*aeron.AsyncConnectTestHarness, *AsyncConnect) {
-	return setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-		return baseAsyncConnectContext(clusterCtx.Aeron, ingressEndpoints)
+	return setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+		return baseAsyncConnectConfig(cfg.Aeron, ingressEndpoints)
 	})
 }
 
-func setupAsyncConnectWithContext(
+func setupAsyncConnectWithConfig(
 	t *testing.T,
-	mutate func(ClusterContext) ClusterContext,
+	mutate func(Config) Config,
 ) (*aeron.AsyncConnectTestHarness, *AsyncConnect) {
 	t.Helper()
 
 	harness := aeron.NewAsyncConnectTestHarness(t)
-	clusterCtx := mutate(baseAsyncConnectContext(harness.Client, ""))
-	ac, err := NewAsyncConnect(t.Context(), clusterCtx)
+	cfg := mutate(baseAsyncConnectConfig(harness.Client, ""))
+	ac, err := NewAsyncConnect(t.Context(), cfg)
 	require.NoError(t, err)
 	return harness, ac
 }
@@ -591,9 +591,9 @@ func TestAsyncConnect_timeout(t *testing.T) {
 	t.Parallel()
 
 	harness := aeron.NewAsyncConnectTestHarness(t)
-	clusterCtx := baseAsyncConnectContext(harness.Client, "")
-	clusterCtx.MessageTimeout = 5 * time.Millisecond
-	ac, err := NewAsyncConnect(t.Context(), clusterCtx)
+	cfg := baseAsyncConnectConfig(harness.Client, "")
+	cfg.MessageTimeout = 5 * time.Millisecond
+	ac, err := NewAsyncConnect(t.Context(), cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -632,24 +632,24 @@ func TestNewAsyncConnect_udpEgressAppliesRejoinFalse(t *testing.T) {
 	t.Parallel()
 
 	harness := aeron.NewAsyncConnectTestHarness(t)
-	clusterCtx := baseAsyncConnectContext(harness.Client, "")
-	clusterCtx.EgressChannel = asyncConnectUDPEgressWildcardChannel
-	ac, err := NewAsyncConnect(t.Context(), clusterCtx)
+	cfg := baseAsyncConnectConfig(harness.Client, "")
+	cfg.EgressChannel = asyncConnectUDPEgressWildcardChannel
+	ac, err := NewAsyncConnect(t.Context(), cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ac.Close() })
 	require.Equal(
 		t,
 		asyncConnectUDPEgressWildcardWithRejoin,
-		ac.ClusterContextForTest().EgressChannel,
+		ac.ConfigForTest().EgressChannel,
 	)
 }
 
-func TestConcludeClusterContext_invalidEgressChannel(t *testing.T) {
+func TestConcludeConfig_invalidEgressChannel(t *testing.T) {
 	t.Parallel()
 
-	clusterCtx := baseAsyncConnectContext(nil, "")
-	clusterCtx.EgressChannel = "not-a-channel"
-	_, _, _, err := ConcludeClusterContextForTest(t.Context(), clusterCtx)
+	cfg := baseAsyncConnectConfig(nil, "")
+	cfg.EgressChannel = "not-a-channel"
+	_, _, _, err := ConcludeConfigForTest(t.Context(), cfg)
 	require.EqualError(t, err, "cluster client: invalid egress channel: not-a-channel")
 }
 
@@ -666,9 +666,9 @@ const (
 		"resolve response channel"
 )
 
-func asyncConnectContextWithUDPEgressWildcard(clusterCtx ClusterContext) ClusterContext {
-	clusterCtx.EgressChannel = asyncConnectUDPEgressWildcardChannel
-	return clusterCtx
+func asyncConnectConfigWithUDPEgressWildcard(cfg Config) Config {
+	cfg.EgressChannel = asyncConnectUDPEgressWildcardChannel
+	return cfg
 }
 
 type asyncConnectUDPEgressCounters struct {
@@ -779,7 +779,7 @@ func setupAsyncConnectUDPEgressAwait(
 ) (*aeron.AsyncConnectTestHarness, *AsyncConnect, *asyncConnectUDPEgressCounters) {
 	t.Helper()
 
-	harness, ac := setupAsyncConnectWithContext(t, asyncConnectContextWithUDPEgressWildcard)
+	harness, ac := setupAsyncConnectWithConfig(t, asyncConnectConfigWithUDPEgressWildcard)
 	t.Cleanup(func() { _ = ac.Close() })
 
 	fixture := newAsyncConnectUDPEgressCounters(t, "")
@@ -811,7 +811,7 @@ func setupAsyncConnectUDPEgressPrepareConnect(
 ) (*aeron.AsyncConnectTestHarness, *AsyncConnect) {
 	t.Helper()
 
-	harness, ac := setupAsyncConnectWithContext(t, asyncConnectContextWithUDPEgressWildcard)
+	harness, ac := setupAsyncConnectWithConfig(t, asyncConnectConfigWithUDPEgressWildcard)
 	t.Cleanup(func() { _ = ac.Close() })
 
 	fixture := newAsyncConnectUDPEgressCounters(t, bindAddress)
@@ -906,16 +906,16 @@ func TestAsyncConnect_prepareConnectRequest_steadyEncode_ZeroAllocs(t *testing.T
 func TestAsyncConnect_ownedConnectFailsWithoutDriver(t *testing.T) {
 	t.Parallel()
 
-	clusterCtx := ClusterContext{
+	cfg := Config{
 		IngressChannel: asyncConnectIPCChannel,
 		EgressChannel:  asyncConnectIPCChannel,
 		AeronDir:       t.TempDir(),
-		AeronContext: aeron.Context{
+		AeronConfig: aeron.Config{
 			// Match cncPollInterval; enough headroom under -race.
 			DriverTimeout: 50 * time.Millisecond,
 		},
 	}
-	_, err := NewAsyncConnect(t.Context(), clusterCtx)
+	_, err := NewAsyncConnect(t.Context(), cfg)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "aeron:")
 }
@@ -1031,7 +1031,7 @@ func TestAsyncConnect_concludeConnect_setsNewLeaderTimeout(t *testing.T) {
 		)
 	})
 	require.NoError(t, err)
-	require.Equal(t, 2*time.Duration(heartbeatNs), result.Context.NewLeaderTimeout)
+	require.Equal(t, 2*time.Duration(heartbeatNs), result.Config.NewLeaderTimeout)
 }
 
 func TestAsyncConnect_awaitPublicationConnected_firstConnectedMember(t *testing.T) {
@@ -1184,7 +1184,7 @@ func TestAsyncConnect_pollGuards(t *testing.T) {
 	_, err = ac.Poll()
 	require.EqualError(t, err, "cluster client: async connect closed")
 
-	ac, err = NewAsyncConnect(t.Context(), baseAsyncConnectContext(harness.Client, ""))
+	ac, err = NewAsyncConnect(t.Context(), baseAsyncConnectConfig(harness.Client, ""))
 	require.NoError(t, err)
 	result, err := pollAsyncConnectUntil(t, ac, harness, func(ac *AsyncConnect) {
 		withAsyncConnectEgressTerm(t, ac, writeSessionEventForConnect)
@@ -1355,9 +1355,9 @@ func TestAsyncConnect_concludeConnect_preservesExplicitNewLeaderTimeout(t *testi
 	t.Parallel()
 
 	const explicit = 9 * time.Second
-	harness, ac := setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-		clusterCtx.NewLeaderTimeout = explicit
-		return clusterCtx
+	harness, ac := setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+		cfg.NewLeaderTimeout = explicit
+		return cfg
 	})
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -1372,7 +1372,7 @@ func TestAsyncConnect_concludeConnect_preservesExplicitNewLeaderTimeout(t *testi
 		)
 	})
 	require.NoError(t, err)
-	require.Equal(t, explicit, result.Context.NewLeaderTimeout)
+	require.Equal(t, explicit, result.Config.NewLeaderTimeout)
 }
 
 func TestAsyncConnect_ownedClientClosedOnMemberMapError(t *testing.T) {
@@ -1383,19 +1383,19 @@ func TestAsyncConnect_ownedClientClosedOnMemberMapError(t *testing.T) {
 	SetConnectConstructionHooksForTest(
 		t,
 		aeronDir,
-		func(ClusterContext) (*aeron.Client, error) {
+		func(Config) (*aeron.Client, error) {
 			return harness.Client, nil
 		},
 	)
 
-	clusterCtx := ClusterContext{
+	cfg := Config{
 		IngressChannel:   "aeron:udp?ttl=16",
 		EgressChannel:    asyncConnectIPCChannel,
 		IngressEndpoints: "not-valid-endpoints",
 		AeronDir:         aeronDir,
 		MessageTimeout:   time.Second,
 	}
-	_, err := NewAsyncConnect(t.Context(), clusterCtx)
+	_, err := NewAsyncConnect(t.Context(), cfg)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "cluster client:")
 	require.True(t, aeron.ClientIsClosedForTest(harness.Client))
@@ -1429,11 +1429,11 @@ func TestAsyncConnect_prepareConnectRequest_credentialsSizing(t *testing.T) {
 	require.Equal(t, connectRequestIPCChannelLen, sessionConnectResponseChannelMaxLen)
 
 	t.Run("encoded_credentials_large_encode_success", func(t *testing.T) {
-		harness, ac := setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-			clusterCtx.CredentialsSupplier = oversizedCredentialsSupplier{
+		harness, ac := setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+			cfg.CredentialsSupplier = oversizedCredentialsSupplier{
 				encodedLen: connectEncodedCredentialsPastLayoutMax,
 			}
-			return clusterCtx
+			return cfg
 		})
 		t.Cleanup(func() { _ = ac.Close() })
 		setupAsyncConnectEgressReady(t, harness, ac)
@@ -1454,11 +1454,11 @@ func TestAsyncConnect_prepareConnectRequest_largeCredentials(t *testing.T) {
 
 	const encodedCredentialsLen = 1500
 
-	harness, ac := setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-		clusterCtx.CredentialsSupplier = oversizedCredentialsSupplier{
+	harness, ac := setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+		cfg.CredentialsSupplier = oversizedCredentialsSupplier{
 			encodedLen: encodedCredentialsLen,
 		}
-		return clusterCtx
+		return cfg
 	})
 	t.Cleanup(func() { _ = ac.Close() })
 	setupAsyncConnectEgressReady(t, harness, ac)
@@ -1480,11 +1480,11 @@ func TestAsyncConnect_prepareConnectRequest_credentialsNearPublicationMax(t *tes
 	// Fixed overhead for default clientInfo + IPC channel.
 	const encodedCredentialsLen = targetWireLen - 70
 
-	harness, ac := setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-		clusterCtx.CredentialsSupplier = oversizedCredentialsSupplier{
+	harness, ac := setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+		cfg.CredentialsSupplier = oversizedCredentialsSupplier{
 			encodedLen: encodedCredentialsLen,
 		}
-		return clusterCtx
+		return cfg
 	})
 	t.Cleanup(func() { _ = ac.Close() })
 	setupAsyncConnectEgressReady(t, harness, ac)
@@ -1506,11 +1506,11 @@ func TestAsyncConnect_prepareChallengeResponse_credentialsSizing(t *testing.T) {
 	t.Parallel()
 
 	t.Run("encoded_credentials_large_encode_success", func(t *testing.T) {
-		_, ac := setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-			clusterCtx.CredentialsSupplier = oversizedCredentialsSupplier{
+		_, ac := setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+			cfg.CredentialsSupplier = oversizedCredentialsSupplier{
 				challengeLen: challengeResponseCredentialsAtLayoutMax,
 			}
-			return clusterCtx
+			return cfg
 		})
 		t.Cleanup(func() { _ = ac.Close() })
 		ac.encodedChallenge = []byte("challenge")
@@ -1538,11 +1538,11 @@ func TestAsyncConnect_pollSendMessage_oversizeWireFailsFast(t *testing.T) {
 	require.Greater(t, wantWireLen, maxMessageLength)
 	require.Less(t, wantWireLen, logbuffer.MaxMessageLength)
 
-	harness, ac := setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-		clusterCtx.CredentialsSupplier = oversizedCredentialsSupplier{
+	harness, ac := setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+		cfg.CredentialsSupplier = oversizedCredentialsSupplier{
 			encodedLen: pollSendMessageOversizeWireCredentialsLen,
 		}
-		return clusterCtx
+		return cfg
 	})
 	t.Cleanup(func() { _ = ac.Close() })
 	setupAsyncConnectEgressReady(t, harness, ac)
@@ -1568,11 +1568,11 @@ func TestAsyncConnect_pollSendMessage_oversizeWireFailsFast(t *testing.T) {
 func TestAsyncConnect_prepareConnectRequest_reachesPollResponse(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-		clusterCtx.CredentialsSupplier = oversizedCredentialsSupplier{
+	harness, ac := setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+		cfg.CredentialsSupplier = oversizedCredentialsSupplier{
 			encodedLen: connectEncodedCredentialsPastLayoutMax,
 		}
-		return clusterCtx
+		return cfg
 	})
 	t.Cleanup(func() { _ = ac.Close() })
 	setupAsyncConnectEgressReady(t, harness, ac)
@@ -1592,8 +1592,8 @@ func TestAsyncConnect_prepareConnectRequest_reachesPollResponse(t *testing.T) {
 func TestAsyncConnect_resizeConnectWireBuffer_clearsAbandonedBackingOnGrow(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-		return clusterCtx
+	harness, ac := setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+		return cfg
 	})
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -1611,7 +1611,7 @@ func TestAsyncConnect_resizeConnectWireBuffer_clearsAbandonedBackingOnGrow(t *te
 		oldBacking[i] = sentinel
 	}
 
-	ac.clusterCtx.CredentialsSupplier = oversizedCredentialsSupplier{
+	ac.cfg.CredentialsSupplier = oversizedCredentialsSupplier{
 		challengeLen: connectWireBufferCloseHighWaterCredentialsLen,
 	}
 	ac.encodedChallenge = []byte("challenge")
@@ -1630,11 +1630,11 @@ func TestAsyncConnect_resizeConnectWireBuffer_clearsAbandonedBackingOnGrow(t *te
 func TestAsyncConnect_prepareChallengeResponse_clearsConnectWireBufferSlack(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-		clusterCtx.CredentialsSupplier = oversizedCredentialsSupplier{
+	harness, ac := setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+		cfg.CredentialsSupplier = oversizedCredentialsSupplier{
 			encodedLen: connectWireBufferCloseHighWaterCredentialsLen,
 		}
-		return clusterCtx
+		return cfg
 	})
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -1662,7 +1662,7 @@ func establishConnectWireBufferHighWater(
 	backing = buf[:cap(buf)]
 	largeWireLen := ac.ConnectWireLengthForTest()
 
-	ac.clusterCtx.CredentialsSupplier = oversizedCredentialsSupplier{
+	ac.cfg.CredentialsSupplier = oversizedCredentialsSupplier{
 		challengeLen: connectWireBufferSlackChallengeLen,
 	}
 	ac.encodedChallenge = []byte("challenge")
@@ -1709,11 +1709,11 @@ func captureConnectWireBufferSlackOnce(
 func TestAsyncConnect_zeroSensitiveBuffers_clearsConnectWireCapOnClose(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-		clusterCtx.CredentialsSupplier = oversizedCredentialsSupplier{
+	harness, ac := setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+		cfg.CredentialsSupplier = oversizedCredentialsSupplier{
 			encodedLen: connectWireBufferCloseHighWaterCredentialsLen,
 		}
-		return clusterCtx
+		return cfg
 	})
 
 	backing, wireLen := establishConnectWireBufferHighWater(t, harness, ac)
@@ -1727,12 +1727,12 @@ func TestAsyncConnect_zeroSensitiveBuffers_clearsConnectWireCapOnClose(t *testin
 func TestAsyncConnect_zeroSensitiveBuffers_clearsConnectWireCapOnSuccess(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-		clusterCtx.CredentialsSupplier = oversizedCredentialsSupplier{
+	harness, ac := setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+		cfg.CredentialsSupplier = oversizedCredentialsSupplier{
 			encodedLen:   connectWireBufferPollHighWaterCredentialsLen,
 			challengeLen: connectWireBufferSlackChallengeLen,
 		}
-		return clusterCtx
+		return cfg
 	})
 	t.Cleanup(func() { _ = ac.Close() })
 	setupAsyncConnectEgressReady(t, harness, ac)
@@ -1879,7 +1879,7 @@ func TestAsyncConnect_createIngressPublications_recoversWhenPeerAlreadyFailed(t 
 		t,
 		func(
 			ingress *MemberIngress,
-			clusterCtx ClusterContext,
+			cfg Config,
 			client *aeron.Client,
 		) (bool, error) {
 			require.Equal(t, int32(1), ingress.MemberID)
@@ -1913,10 +1913,10 @@ func TestAsyncConnect_concludeConnect_notBlockedByDeadline(t *testing.T) {
 	t.Parallel()
 
 	var now int64 = 1_000_000_000
-	harness, ac := setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-		clusterCtx.AeronContext.NanoClock = func() int64 { return now }
-		clusterCtx.MessageTimeout = time.Second
-		return clusterCtx
+	harness, ac := setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+		cfg.AeronConfig.NanoClock = func() int64 { return now }
+		cfg.MessageTimeout = time.Second
+		return cfg
 	})
 	t.Cleanup(func() { _ = ac.Close() })
 
@@ -1959,9 +1959,9 @@ func TestAsyncConnect_happyPathNonExclusiveIngress(t *testing.T) {
 	t.Parallel()
 
 	exclusive := false
-	harness, ac := setupAsyncConnectWithContext(t, func(clusterCtx ClusterContext) ClusterContext {
-		clusterCtx.IngressExclusive = &exclusive
-		return clusterCtx
+	harness, ac := setupAsyncConnectWithConfig(t, func(cfg Config) Config {
+		cfg.IngressExclusive = &exclusive
+		return cfg
 	})
 	t.Cleanup(func() { _ = ac.Close() })
 

@@ -44,7 +44,7 @@ func (err *IngressTimeoutError) Error() string {
 
 // IngressOfferConfig holds retry pacing for IngressOfferUntilPositive.
 type IngressOfferConfig struct {
-	// IdleStrategy paces BackPressured retries. Nil uses session.Context().IdleStrategy
+	// IdleStrategy paces BackPressured retries. Nil uses session.Config().IdleStrategy
 	// when set; if that is also nil, NewDefaultIdleStrategy(). Requires a non-nil
 	// session. Use one instance across connect, SpinOnce, and ingress retry.
 	// idle.Reset() runs on all exit paths so a shared strategy is not left in PARKING.
@@ -65,7 +65,7 @@ func ingressOfferIdleStrategy(
 	if cfg.IdleStrategy != nil {
 		return cfg.IdleStrategy
 	}
-	if idle := session.clusterCtx.IdleStrategy; idle != nil {
+	if idle := session.cfg.IdleStrategy; idle != nil {
 		return idle
 	}
 	return NewDefaultIdleStrategy()
@@ -94,7 +94,7 @@ func ingressOfferUntilPositive(
 		clock = session.nanoClock
 	}
 	startNs := clock()
-	deadlineNs, bound := aeron.RetryDeadlineNs(ctx, startNs, session.clusterCtx.IngressRetryTimeout)
+	deadlineNs, bound := aeron.RetryDeadlineNs(ctx, startNs, session.cfg.IngressRetryTimeout)
 	doTransportWork := func() {
 		aeronClient.DoWork()
 		recordIngressRetryDoWork()
@@ -136,7 +136,7 @@ func ingressOfferUntilPositive(
 //     semantics.
 //
 //   - Calls idle.Reset() on all exit paths (success, terminal, timeout). Nil
-//     cfg.IdleStrategy uses session context idle when set; otherwise default.
+//     cfg.IdleStrategy uses session Config.IdleStrategy when set; otherwise default.
 //
 //   - Retry aborts on any non-retriable code, including session-guard NotConnected
 //     returned after PollEgress advances recovery or egress teardown mutates state.
@@ -157,7 +157,7 @@ func ingressOfferUntilPositive(
 // while the context remains active. Use single-shot Offer or SendKeepAlive when the
 // Aeron status code itself is the contract.
 //
-// Uses ClusterContext.IngressRetryTimeout. When ctx carries a deadline, the effective
+// Uses Config.IngressRetryTimeout. When ctx carries a deadline, the effective
 // bound is the earlier of IngressRetryTimeout and ctx.Deadline().
 //
 // Invoker-only: this helper drives DoWork on behalf of the caller for the duration

@@ -9,13 +9,13 @@ import (
 	"github.com/warrenguy/heron/idlestrategy"
 )
 
-// ClusterContext holds cluster client configuration. Normalize before Validate and
+// Config holds cluster client configuration. Normalize before Validate and
 // before connect.
 //
 // Heron transport is invoker-only: during AsyncConnect.Poll() and the session duty
 // cycle, the caller must invoke client.DoWork() on the transport *aeron.Client
-// between idle/backoff steps. There is no AgentInvoker context field.
-type ClusterContext struct {
+// between idle/backoff steps. There is no AgentInvoker field on Config.
+type Config struct {
 	// IngressChannel is required for cluster connect.
 	IngressChannel string
 
@@ -38,10 +38,10 @@ type ClusterContext struct {
 
 	AeronDir string
 	Aeron    *aeron.Client
-	// AeronContext is passed to aeron.Connect when connect creates the transport
+	// AeronConfig is passed to aeron.Connect when connect creates the transport
 	// client. Transport defaults are applied by aeron.Connect, not
-	// ClusterContext.Normalize.
-	AeronContext aeron.Context
+	// Config.Normalize.
+	AeronConfig aeron.Config
 
 	// IngressExclusive nil means true (Java isIngressExclusive default).
 	// Explicit false disables exclusive ingress publications.
@@ -65,94 +65,94 @@ type ClusterContext struct {
 
 // Normalize applies cluster client defaults. Zero duration and stream ID fields mean
 // apply default. Idempotent.
-func (clusterCtx ClusterContext) Normalize() ClusterContext {
-	if clusterCtx.IngressStreamID == 0 {
-		clusterCtx.IngressStreamID = DefaultIngressStreamID
+func (cfg Config) Normalize() Config {
+	if cfg.IngressStreamID == 0 {
+		cfg.IngressStreamID = DefaultIngressStreamID
 	}
-	if clusterCtx.EgressStreamID == 0 {
-		clusterCtx.EgressStreamID = DefaultEgressStreamID
+	if cfg.EgressStreamID == 0 {
+		cfg.EgressStreamID = DefaultEgressStreamID
 	}
-	if clusterCtx.ResponseStreamID == 0 {
-		clusterCtx.ResponseStreamID = clusterCtx.EgressStreamID
+	if cfg.ResponseStreamID == 0 {
+		cfg.ResponseStreamID = cfg.EgressStreamID
 	}
-	if clusterCtx.MessageTimeout == 0 {
-		clusterCtx.MessageTimeout = DefaultMessageTimeout
+	if cfg.MessageTimeout == 0 {
+		cfg.MessageTimeout = DefaultMessageTimeout
 	}
-	if clusterCtx.IngressRetryTimeout == 0 {
-		clusterCtx.IngressRetryTimeout = DefaultIngressRetryTimeout
+	if cfg.IngressRetryTimeout == 0 {
+		cfg.IngressRetryTimeout = DefaultIngressRetryTimeout
 	}
-	if clusterCtx.NewLeaderTimeout == 0 {
-		clusterCtx.NewLeaderTimeout = clusterCtx.MessageTimeout
+	if cfg.NewLeaderTimeout == 0 {
+		cfg.NewLeaderTimeout = cfg.MessageTimeout
 	}
-	if clusterCtx.CredentialsSupplier == nil {
-		clusterCtx.CredentialsSupplier = NullCredentialsSupplier{}
+	if cfg.CredentialsSupplier == nil {
+		cfg.CredentialsSupplier = NullCredentialsSupplier{}
 	}
-	if clusterCtx.IdleStrategy == nil {
-		clusterCtx.IdleStrategy = NewDefaultIdleStrategy()
+	if cfg.IdleStrategy == nil {
+		cfg.IdleStrategy = NewDefaultIdleStrategy()
 	}
-	if clusterCtx.IngressExclusive == nil {
+	if cfg.IngressExclusive == nil {
 		v := true
-		clusterCtx.IngressExclusive = &v
+		cfg.IngressExclusive = &v
 	}
-	if clusterCtx.AeronDir != "" && clusterCtx.AeronContext.AeronDir == "" {
-		clusterCtx.AeronContext.AeronDir = clusterCtx.AeronDir
+	if cfg.AeronDir != "" && cfg.AeronConfig.AeronDir == "" {
+		cfg.AeronConfig.AeronDir = cfg.AeronDir
 	}
-	return clusterCtx
+	return cfg
 }
 
-// ValidateForConnect checks cluster context after Normalize for async connect.
+// ValidateForConnect checks cluster config after Normalize for async connect.
 // Same as Validate except EgressHandler is not required. ControlledEgressHandler
 // is not validated by either method. All errors use the cluster client: prefix.
 // Call Normalize before ValidateForConnect and connect.
-func (clusterCtx ClusterContext) ValidateForConnect() error {
-	return clusterCtx.validateClusterContext(false)
+func (cfg Config) ValidateForConnect() error {
+	return cfg.validateConfig(false)
 }
 
-// Validate checks cluster context after Normalize. Same as ValidateForConnect but
+// Validate checks cluster config after Normalize. Same as ValidateForConnect but
 // requires EgressHandler. Call Normalize before Validate and connect.
-func (clusterCtx ClusterContext) Validate() error {
-	return clusterCtx.validateClusterContext(true)
+func (cfg Config) Validate() error {
+	return cfg.validateConfig(true)
 }
 
-func (clusterCtx ClusterContext) validateClusterContext(requireEgressHandler bool) error {
-	if clusterCtx.IngressChannel == "" {
+func (cfg Config) validateConfig(requireEgressHandler bool) error {
+	if cfg.IngressChannel == "" {
 		return errors.New("cluster client: IngressChannel is required")
 	}
-	if clusterCtx.EgressChannel == "" {
+	if cfg.EgressChannel == "" {
 		return errors.New("cluster client: EgressChannel is required")
 	}
 	err := validateClusterIngressEndpoints(
-		clusterCtx.IngressChannel,
-		clusterCtx.IngressEndpoints,
+		cfg.IngressChannel,
+		cfg.IngressEndpoints,
 	)
 	if err != nil {
 		return err
 	}
-	if err := validateClusterEgressChannel(clusterCtx.EgressChannel); err != nil {
+	if err := validateClusterEgressChannel(cfg.EgressChannel); err != nil {
 		return err
 	}
-	if len(clusterCtx.ClientName) > MaxClientNameLength {
+	if len(cfg.ClientName) > MaxClientNameLength {
 		return errors.New(
 			"cluster client: ClientName length must be <= " +
 				strconv.Itoa(MaxClientNameLength),
 		)
 	}
-	if clusterCtx.MessageTimeout <= 0 {
+	if cfg.MessageTimeout <= 0 {
 		return errors.New("cluster client: MessageTimeout must be positive")
 	}
-	if clusterCtx.IngressRetryTimeout <= 0 {
+	if cfg.IngressRetryTimeout <= 0 {
 		return errors.New("cluster client: IngressRetryTimeout must be positive")
 	}
-	if clusterCtx.NewLeaderTimeout < 0 {
+	if cfg.NewLeaderTimeout < 0 {
 		return errors.New("cluster client: NewLeaderTimeout must not be negative")
 	}
-	if requireEgressHandler && egressHandlerMissing(clusterCtx.EgressHandler) {
+	if requireEgressHandler && egressHandlerMissing(cfg.EgressHandler) {
 		return errors.New("cluster client: EgressHandler is required")
 	}
-	if clusterCtx.CredentialsSupplier == nil {
+	if cfg.CredentialsSupplier == nil {
 		return errors.New("cluster client: CredentialsSupplier is required")
 	}
-	if clusterCtx.IdleStrategy == nil {
+	if cfg.IdleStrategy == nil {
 		return errors.New("cluster client: IdleStrategy is required")
 	}
 	return nil
@@ -183,7 +183,7 @@ func egressHandlerMissing(handler EgressHandler) bool {
 }
 
 // OwnsAeronClient reports whether connect should close the transport client.
-// false when clusterCtx.Aeron is set; true when connect creates an owned client.
-func (clusterCtx ClusterContext) OwnsAeronClient() bool {
-	return clusterCtx.Aeron == nil
+// false when cfg.Aeron is set; true when connect creates an owned client.
+func (cfg Config) OwnsAeronClient() bool {
+	return cfg.Aeron == nil
 }

@@ -15,7 +15,7 @@ func TestNilSession_smoke(t *testing.T) {
 	require.Nil(t, ac.MemberIngressMap())
 	require.Nil(t, ac.IngressPublication())
 	require.Nil(t, ac.EgressSubscription())
-	require.Equal(t, ClusterContext{}, ac.Context())
+	require.Equal(t, Config{}, ac.Config())
 	require.Nil(t, ac.Aeron())
 	require.Equal(t, SessionStateConnected, ac.SessionState())
 

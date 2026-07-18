@@ -12,19 +12,19 @@ import (
 //
 // It drives DoWork on the transport client until the handshake completes,
 // ctx is canceled or its deadline is exceeded, or MessageTimeout elapses. The await loop paces via
-// clusterCtx.IdleStrategy.Idle(0) and calls IdleStrategy.Reset on exit so a shared
+// cfg.IdleStrategy.Idle(0) and calls IdleStrategy.Reset on exit so a shared
 // backoff instance is not left in PARKING before the post-connect duty cycle.
 //
-// When clusterCtx.Aeron is nil, ctx also bounds owned transport attach (CNC ready
+// When cfg.Aeron is nil, ctx also bounds owned transport attach (CNC ready
 // and driver heartbeat) via NewAsyncConnect. Shared Aeron skips that wait.
 //
-// Pass a raw ClusterContext; Connect normalizes internally and must see
+// Pass a raw Config; Connect normalizes internally and must see
 // zero fields for default detection (do not pre-normalize before Connect or
 // NewAsyncConnect).
 //
-// Requires a non-nil EgressHandler on clusterCtx.
+// Requires a non-nil EgressHandler on cfg.
 //
-// Pass clusterCtx.Aeron to share the transport client with the session; when Aeron
+// Pass cfg.Aeron to share the transport client with the session; when Aeron
 // is nil, Connect creates an owned client that AeronCluster.Close releases.
 //
 // On handshake failure or ctx cancellation, partial resources are released via
@@ -38,13 +38,13 @@ import (
 // Not safe for concurrent use during connect.
 func Connect(
 	ctx context.Context,
-	clusterCtx ClusterContext,
+	cfg Config,
 ) (*AeronCluster, error) {
-	if err := clusterCtx.Normalize().Validate(); err != nil {
+	if err := cfg.Normalize().Validate(); err != nil {
 		return nil, err
 	}
 
-	connect, err := NewAsyncConnect(ctx, clusterCtx)
+	connect, err := NewAsyncConnect(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +69,7 @@ func awaitClusterConnect(
 	ctx context.Context,
 	connect *AsyncConnect,
 ) (*ConnectResult, error) {
-	idle := connect.clusterCtx.IdleStrategy
+	idle := connect.cfg.IdleStrategy
 	defer idle.Reset()
 
 	for {

@@ -64,14 +64,14 @@ func TestSpinOnce_postClose(t *testing.T) {
 	}
 }
 
-func TestSpinOnce_usesContextIdleStrategy(t *testing.T) {
+func TestSpinOnce_usesConfigIdleStrategy(t *testing.T) {
 	sub, image, termBuffer := setupEgressPollFixtures(t)
 	appPayload := []byte("spin-once-context-idle")
 	writeDefaultSessionMessageToTerm(t, termBuffer, appPayload)
 
 	idle := &recordingIdleStrategy{}
 	ac := newAeronClusterWithEgressImage(t, sub, image, func(result *ConnectResult) {
-		result.Context.IdleStrategy = idle
+		result.Config.IdleStrategy = idle
 	})
 
 	work := ac.SpinOnce()

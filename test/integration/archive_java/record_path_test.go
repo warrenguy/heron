@@ -48,12 +48,12 @@ func connectArchive(
 
 	// Docker STOP can lag control under load. Prior shape had ~15s headroom
 	// (control await + ConnectedPollTimeout STOP poll); await now owns STOP only.
-	archiveCtx := archive.Context{
+	cfg := archive.Config{
 		AeronDir:               dir,
 		Aeron:                  aeronClient,
 		ControlResponseTimeout: archive.DefaultControlResponseTimeout + harness.ConnectedPollTimeout,
 	}.Normalize()
-	archiveClient, err := archive.Connect(context.Background(), archiveCtx)
+	archiveClient, err := archive.Connect(context.Background(), cfg)
 	require.NoError(t, err)
 	harness.CleanupClose(t, "close archive", archiveClient.Close)
 	return archiveClient

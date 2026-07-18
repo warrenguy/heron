@@ -32,10 +32,10 @@ func singleMemberIngressMap(
 	}
 }
 
-func invalidIngressClusterContext() ClusterContext {
-	clusterCtx := validConnectFixtureClusterContext()
-	clusterCtx.IngressChannel = "not-a-valid-channel"
-	return clusterCtx
+func invalidIngressConfig() Config {
+	cfg := validConnectFixtureConfig()
+	cfg.IngressChannel = "not-a-valid-channel"
+	return cfg
 }
 
 func TestLeaderIngressMemberID_channelOnlyUsesSyntheticZero(t *testing.T) {
@@ -151,7 +151,7 @@ func TestApplyMemberIngressMapRebuild_reusePreservesPublication(t *testing.T) {
 
 	newMap, gotPub, err := applyMemberIngressMapRebuild(
 		&aeron.Client{},
-		validConnectFixtureClusterContext(),
+		validConnectFixtureConfig(),
 		oldMap,
 		plan,
 	)
@@ -174,13 +174,13 @@ func TestMemberIngressMapRebuild_invalidChannelReturnsPartialMap(t *testing.T) {
 		leaderPub,
 	)
 	endpoints := []byte("0=host-a:20110,1=host-c:20113")
-	clusterCtx := invalidIngressClusterContext()
+	cfg := invalidIngressConfig()
 
 	plan, err := planMemberIngressMapRebuild(oldMap, connectFixtureLeaderMemberID, endpoints)
 	require.NoError(t, err)
 	require.Nil(t, plan.reusedPub)
 
-	newMap, gotPub, err := applyMemberIngressMapRebuild(&aeron.Client{}, clusterCtx, oldMap, plan)
+	newMap, gotPub, err := applyMemberIngressMapRebuild(&aeron.Client{}, cfg, oldMap, plan)
 	require.Error(t, err)
 	require.Nil(t, gotPub)
 	require.NotNil(t, newMap)
@@ -230,7 +230,7 @@ func TestApplyMemberIngressMapRebuild_closesEvictedMemberPublications(t *testing
 
 	_, _, err = applyMemberIngressMapRebuild(
 		&aeron.Client{},
-		validConnectFixtureClusterContext(),
+		validConnectFixtureConfig(),
 		oldMap,
 		plan,
 	)
@@ -319,7 +319,7 @@ func TestFailIfIngressUnrecoverable(t *testing.T) {
 func TestPollPendingMemberIngressRegistration(t *testing.T) {
 	t.Parallel()
 
-	clusterCtx := validConnectFixtureClusterContext()
+	cfg := validConnectFixtureConfig()
 	client := &aeron.Client{}
 
 	tests := []struct {
@@ -336,7 +336,7 @@ func TestPollPendingMemberIngressRegistration(t *testing.T) {
 						},
 						1: {RegistrationID: conductor.NullCorrelationID},
 					},
-					clusterCtx,
+					cfg,
 					client,
 				)
 			},
@@ -348,7 +348,7 @@ func TestPollPendingMemberIngressRegistration(t *testing.T) {
 				var polled bool
 				ingress.SetAsyncPollAddHookForTest(t, func(
 					*MemberIngress,
-					ClusterContext,
+					Config,
 					*aeron.Client,
 				) (bool, error) {
 					polled = true
@@ -356,7 +356,7 @@ func TestPollPendingMemberIngressRegistration(t *testing.T) {
 				})
 				pollPendingMemberIngressRegistration(
 					MemberIngressMap{channelOnlyMemberID: ingress},
-					clusterCtx,
+					cfg,
 					client,
 				)
 				require.True(t, polled)

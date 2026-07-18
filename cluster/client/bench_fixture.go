@@ -9,17 +9,17 @@ import (
 
 const benchNanoClockNs int64 = 1700000000123
 
-// DefaultBenchClusterContextForBench returns a normalized cluster context for contract
+// DefaultBenchConfigForBench returns a normalized cluster config for contract
 // benchmarks: IPC ingress and egress, noop egress handler, null credentials, and a
 // fixed NanoClock.
-func DefaultBenchClusterContextForBench() ClusterContext {
-	return ClusterContext{
+func DefaultBenchConfigForBench() Config {
+	return Config{
 		IngressChannel:      "aeron:ipc",
 		EgressChannel:       "aeron:ipc",
 		EgressHandler:       &EgressHandlers{},
 		CredentialsSupplier: NullCredentialsSupplier{},
 		IdleStrategy:        NewDefaultIdleStrategy(),
-		AeronContext: aeron.Context{
+		AeronConfig: aeron.Config{
 			NanoClock: func() int64 { return benchNanoClockNs },
 		},
 	}.Normalize()
@@ -30,10 +30,10 @@ func DefaultBenchClusterContextForBench() ClusterContext {
 // connectWireBuffer before the benchmark timer starts. Correlation ID stays 0
 // (not NullCorrelationID) so prepareConnectRequest needs no live Aeron client.
 func NewAsyncConnectForBenchEncode() (*AsyncConnect, error) {
-	clusterCtx := DefaultBenchClusterContextForBench()
+	cfg := DefaultBenchConfigForBench()
 	ac := &AsyncConnect{
-		clusterCtx:              clusterCtx,
-		cachedResponseChannel:   clusterCtx.EgressChannel,
+		cfg:                     cfg,
+		cachedResponseChannel:   cfg.EgressChannel,
 		cachedResponseChannelOK: true,
 	}
 	if err := ac.prepareConnectRequest(); err != nil {

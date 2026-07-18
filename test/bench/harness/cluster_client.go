@@ -42,7 +42,7 @@ func NewAeronClusterForBench() *client.AeronCluster {
 		},
 		Aeron:           &aeron.Client{},
 		OwnsAeronClient: false,
-		Context:         client.DefaultBenchClusterContextForBench(),
+		Config:          client.DefaultBenchConfigForBench(),
 	}
 	ac, err := client.NewAeronCluster(result)
 	if err != nil {

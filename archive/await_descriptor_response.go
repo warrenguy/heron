@@ -20,26 +20,26 @@ var errNilDescriptorPoller = errors.New(
 // descriptorPoller must be non-nil: it carries the awaited correlation id and captured
 // descriptor state.
 //
-// Uses Context.ControlResponseTimeout. When ctx carries a deadline, the effective
+// Uses Config.ControlResponseTimeout. When ctx carries a deadline, the effective
 // bound is the earlier of ControlResponseTimeout and ctx.Deadline().
 func AwaitListRecording(
 	ctx context.Context,
 	aeronClient *aeron.Client,
-	archiveCtx Context,
+	cfg Config,
 	pollFn func() int,
 	descriptorPoller *RecordingDescriptorPoller,
 ) error {
 	if descriptorPoller == nil {
 		return errNilDescriptorPoller
 	}
-	archiveCtx = archiveCtx.Normalize()
+	cfg = cfg.Normalize()
 	correlationID := descriptorPoller.awaitCorrelationID
 	return runControlAwaitLoop(
 		ctx,
 		aeronClient,
-		archiveCtx,
+		cfg,
 		pollFn,
-		archiveCtx.ControlResponseTimeout,
+		cfg.ControlResponseTimeout,
 		correlationID,
 		ListRecordingDescriptorAwaitOperation,
 		func() (bool, error) {
@@ -59,13 +59,13 @@ func AwaitListRecording(
 func offerAndAwaitListRecording(
 	ctx context.Context,
 	aeronClient *aeron.Client,
-	archiveCtx Context,
+	cfg Config,
 	pollFn func() int,
 	descriptorPoller *RecordingDescriptorPoller,
 	offerFn func() (int64, bool),
 ) (codecs.RecordingDescriptorFields, error) {
 	if err := offerControlRequest(
-		ctx, aeronClient, archiveCtx, pollFn, offerFn,
+		ctx, aeronClient, cfg, pollFn, offerFn,
 	); err != nil {
 		return codecs.RecordingDescriptorFields{}, err
 	}
@@ -73,7 +73,7 @@ func offerAndAwaitListRecording(
 	if err := AwaitListRecording(
 		ctx,
 		aeronClient,
-		archiveCtx,
+		cfg,
 		pollFn,
 		descriptorPoller,
 	); err != nil {

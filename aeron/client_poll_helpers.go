@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// PollUntilConnected polls until pub.IsConnected or [Context.PollTimeout] elapses.
+// PollUntilConnected polls until pub.IsConnected or [Config.PollTimeout] elapses.
 //
 // See [Client] for poll wait timeout and DoWork contract.
 func (client *Client) PollUntilConnected(
@@ -25,7 +25,7 @@ func (client *Client) PollUntilConnected(
 }
 
 // PollUntilImageCount polls until the subscription has want active images or
-// [Context.PollTimeout] elapses.
+// [Config.PollTimeout] elapses.
 //
 // Non-positive want returns [ErrInvalidWant].
 //
@@ -171,12 +171,12 @@ func (client *Client) PollReassembled(
 }
 
 // RunDuringClientWork runs fn on a goroutine and drives DoWork until fn returns,
-// ctx is canceled, or [Context.PollTimeout] elapses.
+// ctx is canceled, or [Config.PollTimeout] elapses.
 //
 // Timeout or cancellation returns promptly; fn continues running in the background until
 // it finishes on its own; this method does not wait for fn to exit after returning.
 //
-// Does not install an ErrorHandler; callers should wrap [Context.ErrorHandler]
+// Does not install an ErrorHandler; callers should wrap [Config.ErrorHandler]
 // if transport errors must fail the wait.
 //
 // See [Client] for poll wait timeout and DoWork contract.
@@ -212,7 +212,7 @@ func (client *Client) RunDuringClientWork(
 	return fnErr
 }
 
-// pollUntil drives pollWorkLoop under [Context.PollTimeout] until ready is true.
+// pollUntil drives pollWorkLoop under [Config.PollTimeout] until ready is true.
 //
 // Expiry maps to [PreferContextError] over timeoutErr called with the effective bound.
 //

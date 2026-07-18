@@ -26,7 +26,7 @@ func TestNewClient_transfersOwnsAeronClient(t *testing.T) {
 	require.True(t, owned.ownsAeronClient)
 }
 
-func TestNewClient_wiresContextRecordingSignalHandler(t *testing.T) {
+func TestNewClient_wiresConfigRecordingSignalHandler(t *testing.T) {
 	var gotSignal archivewire.RecordingSignal
 	handlers := &RecordingSignalHandlers{
 		SignalFunc: func(event codecs.RecordingSignalEventFields) {
@@ -39,7 +39,7 @@ func TestNewClient_wiresContextRecordingSignalHandler(t *testing.T) {
 		ControlSessionID:    controlResponseTestControlSessionID,
 		Poller:              newControlResponsePollerForTest(sub),
 		ControlSubscription: sub,
-		Context: Context{
+		Config: Config{
 			RecordingSignalHandler: handlers,
 		},
 	})
@@ -175,7 +175,7 @@ func TestClientListRecording_forwardsSignalsDuringAwait(t *testing.T) {
 		controlSubscription: h.sub,
 		controlAssembler:    h.assembler,
 		aeronClient:         h.client,
-		archiveCtx:          h.archiveCtx,
+		cfg:                 h.cfg,
 	}
 
 	correlationID := h.client.NextCorrelationID() + 1
@@ -222,7 +222,7 @@ func TestClientStopRecordingAwaitSignal_routesSTOPToTracker(t *testing.T) {
 		controlSubscription: h.sub,
 		controlAssembler:    h.assembler,
 		aeronClient:         h.client,
-		archiveCtx:          h.archiveCtx,
+		cfg:                 h.cfg,
 	}
 	tracker := NewStopSignalTracker(controlResponseTestControlSessionID, lifecycleRecordingID)
 	signalWire := encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
@@ -259,7 +259,7 @@ func TestClientClose_releasesResourcesAndIsIdempotent(t *testing.T) {
 		controlAssembler:    h.assembler,
 		aeronClient:         h.client,
 		ownsAeronClient:     true,
-		archiveCtx:          h.archiveCtx,
+		cfg:                 h.cfg,
 	}
 
 	require.NoError(t, archive.Close())
@@ -284,7 +284,7 @@ func TestClientClose_releasesResourcesAndIsIdempotent(t *testing.T) {
 }
 
 // TestClientClose_leavesUserSuppliedClientOpen proves Close does not close a client
-// the caller supplied via Context.Aeron (ownsAeronClient false).
+// the caller supplied via Config.Aeron (ownsAeronClient false).
 func TestClientClose_leavesUserSuppliedClientOpen(t *testing.T) {
 	h := newLifecycleHarness(t)
 	archive := &Client{
@@ -293,7 +293,7 @@ func TestClientClose_leavesUserSuppliedClientOpen(t *testing.T) {
 		controlAssembler: h.assembler,
 		aeronClient:      h.client,
 		ownsAeronClient:  false,
-		archiveCtx:       h.archiveCtx,
+		cfg:              h.cfg,
 	}
 
 	require.NoError(t, archive.Close())

@@ -35,10 +35,10 @@ func connectAsyncConnectObserverFor(client *aeron.Client) connectAsyncConnectObs
 // *aeron.Client pointer. Connect looks up the observer with ac.client after
 // NewAsyncConnect.
 //
-// Injected-client tests: pass clusterCtx.Aeron (e.g. harness.Client).
-// Owned-client tests: clusterCtx.Aeron is nil before Connect; register on the same
+// Injected-client tests: pass cfg.Aeron (e.g. harness.Client).
+// Owned-client tests: cfg.Aeron is nil before Connect; register on the same
 // *aeron.Client returned by SetConnectConstructionHooksForTest's factory (see
-// ownedConnectContextForTest). A mismatched pointer silently skips the observer.
+// ownedConnectConfigForTest). A mismatched pointer silently skips the observer.
 func SetConnectAsyncConnectObserverForTest(
 	tb testing.TB,
 	client *aeron.Client,
@@ -133,7 +133,7 @@ func connectSessionHookFor(client *aeron.Client) connectSessionHook {
 // Keyed by result.Aeron (the transport client at handshake completion).
 //
 // Injected-client tests: pass harness.Client before Connect.
-// Owned-client tests: pass the factory-returned *aeron.Client, not pre-connect clusterCtx.Aeron.
+// Owned-client tests: pass the factory-returned *aeron.Client, not pre-connect cfg.Aeron.
 func SetNewAeronClusterHookForTest(
 	tb testing.TB,
 	client *aeron.Client,

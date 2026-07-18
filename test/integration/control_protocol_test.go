@@ -33,7 +33,7 @@ func connectMPSCMatrixClient(
 	t.Helper()
 
 	var hadClientError atomic.Bool
-	client := harness.ConnectClient(t, md, aeron.Context{
+	client := harness.ConnectClient(t, md, aeron.Config{
 		InterServiceTimeout: harness.ConnectedPollTimeout,
 		ErrorHandler: func(err error) {
 			hadClientError.Store(true)

@@ -60,7 +60,7 @@ func requireAeronClusterDispatchedSessionMessage(
 ) {
 	t.Helper()
 
-	rec := ac.clusterCtx.EgressHandler.(*recordingEgressHandlers)
+	rec := ac.cfg.EgressHandler.(*recordingEgressHandlers)
 	requireDispatchedSessionMessage(
 		t,
 		rec,
@@ -145,7 +145,7 @@ func mutateConnectResultClosingImageOnFirstMessage(
 			}
 			recordMessage(clusterSessionID, timestamp, buffer, offset, length, header)
 		}
-		result.Context.EgressHandler = rec
+		result.Config.EgressHandler = rec
 	}
 }
 
@@ -254,8 +254,8 @@ func TestAeronCluster_PollEgress_closedEgressImage_entersAwaitNewLeader(t *testi
 
 	sub, image, _ := setupEgressPollFixtures(t)
 	result := newConnectResultWithEgressImage(t, sub, image)
-	mutateConnectContext(result, func(clusterCtx *ClusterContext) {
-		clusterCtx.NewLeaderTimeout = timeout
+	mutateConnectConfig(result, func(cfg *Config) {
+		cfg.NewLeaderTimeout = timeout
 	})
 	withAtomicNanoClock(result, &nowNs)
 	ac := newAeronClusterFromConnectResult(t, result)
@@ -330,7 +330,7 @@ func TestAeronCluster_PollEgress_closedTracked_replacementFragmentDelivered(t *t
 
 	require.Positive(t, ac.PollEgress())
 
-	rec := ac.clusterCtx.EgressHandler.(*recordingEgressHandlers)
+	rec := ac.cfg.EgressHandler.(*recordingEgressHandlers)
 	requireDispatchedSessionMessage(t, rec, appPayload, SessionHeaderLength())
 }
 
@@ -375,7 +375,7 @@ func TestAeronCluster_PollEgress_wrongSessionIgnored(t *testing.T) {
 	)
 
 	ac := newAeronClusterWithEgressImage(t, sub, image, nil)
-	rec := ac.clusterCtx.EgressHandler.(*recordingEgressHandlers)
+	rec := ac.cfg.EgressHandler.(*recordingEgressHandlers)
 
 	require.Equal(t, 1, ac.PollEgress())
 	requireZeroRecordingEgressCalls(t, rec)

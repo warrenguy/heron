@@ -67,23 +67,23 @@ const ClusterMembersString = "0,localhost:9002,localhost:9003,localhost:9004,loc
 // client-facing offset 2 (port 9002).
 const IngressEndpointsString = "0=localhost:9002"
 
-func harnessClusterContext(
+func harnessConfig(
 	ingressChannel string,
 	egressChannel string,
 	ingressEndpoints string,
-) client.ClusterContext {
-	return client.ClusterContext{
+) client.Config {
+	return client.Config{
 		IngressChannel:   ingressChannel,
 		EgressChannel:    egressChannel,
 		IngressEndpoints: ingressEndpoints,
 	}
 }
 
-// HarnessClusterContext returns cluster client defaults for IPC connect tests.
+// HarnessConfig returns cluster client defaults for IPC connect tests.
 // Stream IDs are left at zero so callers or NewAsyncConnect Normalize applies defaults.
 // AeronDir is unset; callers assign it from compose env before connect.
-func HarnessClusterContext() client.ClusterContext {
-	return harnessClusterContext(
+func HarnessConfig() client.Config {
+	return harnessConfig(
 		IngressChannel,
 		EgressChannel,
 		IngressEndpoints,

@@ -50,29 +50,29 @@ func registerConnectHarnessStepObserver(
 	})
 }
 
-func connectContextForTest(client *aeron.Client) Context {
-	archiveCtx := validConnectFixtureContext()
-	archiveCtx.Aeron = client
+func connectConfigForTest(client *aeron.Client) Config {
+	cfg := validConnectFixtureConfig()
+	cfg.Aeron = client
 
 	// Wall-clock NanoClock so ConnectTimeout can elapse in blocking connect tests.
-	archiveCtx.AeronContext.NanoClock = nil
-	return archiveCtx
+	cfg.AeronConfig.NanoClock = nil
+	return cfg
 }
 
-func ownedConnectContextForTest(
+func ownedConnectConfigForTest(
 	t *testing.T,
 	harness *aeron.AsyncConnectTestHarness,
-) Context {
+) Config {
 	t.Helper()
 
 	aeronDir := t.TempDir()
-	SetConnectConstructionHooksForTest(t, aeronDir, func(Context) (*aeron.Client, error) {
+	SetConnectConstructionHooksForTest(t, aeronDir, func(Config) (*aeron.Client, error) {
 		return harness.Client, nil
 	})
-	archiveCtx := connectContextForTest(nil)
-	archiveCtx.AeronDir = aeronDir
-	archiveCtx.ConnectTimeout = time.Second
-	return archiveCtx
+	cfg := connectConfigForTest(nil)
+	cfg.AeronDir = aeronDir
+	cfg.ConnectTimeout = time.Second
+	return cfg
 }
 
 func requireAsyncConnectClosedAfterConnectFailure(t *testing.T, ac *AsyncConnect) {
@@ -91,10 +91,10 @@ func TestAwaitArchiveConnect_idleStrategyPacing(t *testing.T) {
 		t.Parallel()
 
 		idle := &recordingControlIdleStrategy{}
-		harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context {
-			archiveCtx = connectContextForTest(archiveCtx.Aeron)
-			archiveCtx.IdleStrategy = idle
-			return archiveCtx
+		harness, ac := newAsyncConnectFixture(t, func(cfg Config) Config {
+			cfg = connectConfigForTest(cfg.Aeron)
+			cfg.IdleStrategy = idle
+			return cfg
 		})
 		t.Cleanup(func() { _ = ac.Close() })
 
@@ -118,10 +118,10 @@ func TestAwaitArchiveConnect_idleStrategyPacing(t *testing.T) {
 		t.Parallel()
 
 		idle := &recordingControlIdleStrategy{}
-		harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context {
-			archiveCtx = connectContextForTest(archiveCtx.Aeron)
-			archiveCtx.IdleStrategy = idle
-			return archiveCtx
+		harness, ac := newAsyncConnectFixture(t, func(cfg Config) Config {
+			cfg = connectConfigForTest(cfg.Aeron)
+			cfg.IdleStrategy = idle
+			return cfg
 		})
 		t.Cleanup(func() { _ = ac.Close() })
 
@@ -141,7 +141,7 @@ func TestAwaitArchiveConnect_idleStrategyPacing(t *testing.T) {
 func TestAwaitArchiveConnect_success(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
+	harness, ac := newAsyncConnectFixture(t, func(cfg Config) Config { return cfg })
 	t.Cleanup(func() { _ = ac.Close() })
 
 	registerConnectHarnessStepObserver(t, harness, ac, func(ac *AsyncConnect) {
@@ -176,11 +176,11 @@ func TestConnect_canceled(t *testing.T) {
 			t.Parallel()
 
 			harness := aeron.NewAsyncConnectTestHarness(t)
-			var archiveCtx Context
+			var cfg Config
 			if tc.owned {
-				archiveCtx = ownedConnectContextForTest(t, harness)
+				cfg = ownedConnectConfigForTest(t, harness)
 			} else {
-				archiveCtx = connectContextForTest(harness.Client)
+				cfg = connectConfigForTest(harness.Client)
 			}
 
 			cancelCtx, cancel := context.WithCancel(t.Context())
@@ -189,7 +189,7 @@ func TestConnect_canceled(t *testing.T) {
 				cancel()
 			} else {
 				t.Cleanup(cancel)
-				archiveCtx.ConnectTimeout = time.Minute
+				cfg.ConnectTimeout = time.Minute
 				var steps int
 				onStep = func(*AsyncConnect) {
 					steps++
@@ -200,7 +200,7 @@ func TestConnect_canceled(t *testing.T) {
 			}
 			observedAC := connectTestHarnessDriver(t, harness, onStep)
 
-			_, err := Connect(cancelCtx, archiveCtx)
+			_, err := Connect(cancelCtx, cfg)
 			require.ErrorIs(t, err, context.Canceled)
 			requireAsyncConnectClosedAfterConnectFailure(t, observedAC())
 
@@ -248,8 +248,8 @@ func TestConnect_contextDeadline(t *testing.T) {
 			t.Parallel()
 
 			harness := aeron.NewAsyncConnectTestHarness(t)
-			archiveCtx := connectContextForTest(harness.Client)
-			archiveCtx.ConnectTimeout = tc.connectTimeout
+			cfg := connectConfigForTest(harness.Client)
+			cfg.ConnectTimeout = tc.connectTimeout
 
 			var connectCtx context.Context
 			var cancel context.CancelFunc
@@ -266,7 +266,7 @@ func TestConnect_contextDeadline(t *testing.T) {
 			observedAC := connectTestHarnessDriver(t, harness, nil)
 
 			start := time.Now()
-			_, err := Connect(connectCtx, archiveCtx)
+			_, err := Connect(connectCtx, cfg)
 			elapsed := time.Since(start)
 
 			if tc.wantErr != nil {
@@ -283,24 +283,24 @@ func TestConnect_contextDeadline(t *testing.T) {
 	}
 }
 
-func TestConnect_invalidContext(t *testing.T) {
+func TestConnect_invalidConfig(t *testing.T) {
 	t.Parallel()
 
 	harness := aeron.NewAsyncConnectTestHarness(t)
 
 	tests := []struct {
 		name    string
-		archive Context
+		archive Config
 		wantErr string
 	}{
 		{
 			name:    "missingAeronDir",
-			archive: Context{},
+			archive: Config{},
 			wantErr: "archive: AeronDir is required when Aeron is not set",
 		},
 		{
 			name: "negativeConnectTimeout",
-			archive: Context{
+			archive: Config{
 				Aeron:          harness.Client,
 				ConnectTimeout: -time.Second,
 			},
@@ -322,8 +322,8 @@ func TestConnect_contextWinsOverConnectTimeoutOnPollError(t *testing.T) {
 	t.Parallel()
 
 	harness := aeron.NewAsyncConnectTestHarness(t)
-	archiveCtx := connectContextForTest(harness.Client)
-	archiveCtx.ConnectTimeout = time.Minute
+	cfg := connectConfigForTest(harness.Client)
+	cfg.ConnectTimeout = time.Minute
 
 	connectCtx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -336,7 +336,7 @@ func TestConnect_contextWinsOverConnectTimeoutOnPollError(t *testing.T) {
 		cancel()
 	})
 
-	_, err := Connect(connectCtx, archiveCtx)
+	_, err := Connect(connectCtx, cfg)
 	require.ErrorIs(t, err, context.Canceled)
 	require.NotContains(t, err.Error(), "connect timeout")
 }
@@ -345,8 +345,8 @@ func TestConnect_successWinsOverConcurrentCancel(t *testing.T) {
 	t.Parallel()
 
 	harness := aeron.NewAsyncConnectTestHarness(t)
-	archiveCtx := connectContextForTest(harness.Client)
-	archiveCtx.ConnectTimeout = time.Minute
+	cfg := connectConfigForTest(harness.Client)
+	cfg.ConnectTimeout = time.Minute
 
 	connectCtx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -360,7 +360,7 @@ func TestConnect_successWinsOverConcurrentCancel(t *testing.T) {
 		}
 	})
 
-	archive, err := Connect(connectCtx, archiveCtx)
+	archive, err := Connect(connectCtx, cfg)
 	require.NoError(t, err)
 	require.NotNil(t, archive)
 	t.Cleanup(func() { _ = archive.Close() })

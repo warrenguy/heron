@@ -116,7 +116,7 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			md := SharedParallel(t)
-			client := ConnectClient(t, md, shortPollAeronContext())
+			client := ConnectClient(t, md, shortPollAeronConfig())
 
 			capture := &CaptureFailTB{TB: t}
 			closer, wantMsg := tt.wait(t, capture, client, tt.stream)
@@ -129,7 +129,7 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 
 func TestPollClientUntilDynamicCtx_contextCanceled(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -154,7 +154,7 @@ func TestPollClientUntilDynamicCtx_contextCanceled(t *testing.T) {
 
 func TestRequirePublicationLookupMiss_earlyExit(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, err := client.AddPublication(RequirePublicationLookupMissStreamID, IPCChannel)
 	require.NoError(t, err)
@@ -168,7 +168,7 @@ func TestRequirePublicationLookupMiss_earlyExit(t *testing.T) {
 
 func TestRequirePublicationLookupMiss_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, err := client.AddPublication(RequirePublicationLookupMissTimeoutStreamID, IPCChannel)
 	require.NoError(t, err)
@@ -196,7 +196,7 @@ func TestRequirePublicationLookupMiss_timeoutMessage(t *testing.T) {
 
 func TestWaitForIPCLinkConnected_liveIPC(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, err := client.AddPublication(WaitForIPCLinkConnectedStreamID, IPCChannel)
 	require.NoError(t, err)
@@ -213,7 +213,7 @@ func TestWaitForIPCLinkConnected_subscriptionTimeout(t *testing.T) {
 	const linkWaitTestTimeout = 50 * time.Millisecond
 
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, err := client.AddPublication(WaitForIPCLinkConnectedSubTimeoutPubStreamID, IPCChannel)
 	require.NoError(t, err)
@@ -243,7 +243,7 @@ func TestWaitForIPCLinkConnected_subscriptionTimeout(t *testing.T) {
 
 func TestPollClientDuring_happyPath(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 	hadClientError := &atomic.Bool{}
 
 	PollClientDuring(
@@ -259,7 +259,7 @@ func TestPollClientDuring_happyPath(t *testing.T) {
 
 func TestPollClientDuring_fnError(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 	hadClientError := &atomic.Bool{}
 	fnErr := errors.New("fn failed")
 
@@ -279,7 +279,7 @@ func TestPollClientDuring_fnError(t *testing.T) {
 
 func TestPollClientDuring_fnReturnsDeadlineExceeded(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 	hadClientError := &atomic.Bool{}
 
 	capture := &CaptureFailTB{TB: t}
@@ -300,7 +300,7 @@ func TestPollClientDuring_fnReturnsDeadlineExceeded(t *testing.T) {
 
 func TestPollClientDuring_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, shortPollAeronContext())
+	client := ConnectClient(t, md, shortPollAeronConfig())
 	hadClientError := &atomic.Bool{}
 
 	capture := &CaptureFailTB{TB: t}
@@ -322,7 +322,7 @@ func TestPollClientDuring_timeoutMessage(t *testing.T) {
 
 func TestPollClientDuring_transportErrorGate(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 	hadClientError := &atomic.Bool{}
 	hadClientError.Store(true)
 
@@ -345,7 +345,7 @@ func TestPollClientDuring_transportErrorGate(t *testing.T) {
 
 func TestPollClientDuring_transportErrorGateAsync(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 	hadClientError := &atomic.Bool{}
 
 	capture := &CaptureFailTB{TB: t}
@@ -373,7 +373,7 @@ func TestPollClientDuring_transportErrorGateAsync(t *testing.T) {
 
 func TestPollClientUntilDynamicCtx_zeroBoundPollsOnce(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	calls := 0
 	capture := &CaptureFailTB{TB: t}

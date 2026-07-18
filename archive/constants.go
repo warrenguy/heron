@@ -36,13 +36,13 @@ const (
 	DefaultControlResponseTimeout = 5 * time.Second
 
 	// DefaultControlOfferRetryTimeout bounds archive control offer retries when
-	// Context.ControlOfferRetryTimeout is zero.
+	// Config.ControlOfferRetryTimeout is zero.
 	DefaultControlOfferRetryTimeout = 10 * time.Second
 
 	// DefaultMessageRetryAttempts matches Java MESSAGE_RETRY_ATTEMPTS_DEFAULT.
 	DefaultMessageRetryAttempts = 3
 
-	// MaxClientNameLength caps Context.ClientName at connect validation;
+	// MaxClientNameLength caps Config.ClientName at connect validation;
 	// wire clientInfo encodes as "name=<ClientName> heron".
 	MaxClientNameLength = 100
 

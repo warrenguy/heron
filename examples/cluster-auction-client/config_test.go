@@ -11,7 +11,7 @@ import (
 	"github.com/warrenguy/heron/cluster/client"
 )
 
-func TestClusterContext_connectReadyContract(t *testing.T) {
+func TestClusterConfig_connectReadyContract(t *testing.T) {
 	config := Config{
 		AeronDir:         "/tmp/aeron-auction",
 		IngressChannel:   "aeron:udp",
@@ -21,17 +21,17 @@ func TestClusterContext_connectReadyContract(t *testing.T) {
 	transport := &aeron.Client{}
 	handlers := &client.EgressHandlers{}
 
-	clusterCtx := config.clusterContext(transport, handlers)
+	cfg := config.clusterConfig(transport, handlers)
 
-	require.Equal(t, config.AeronDir, clusterCtx.AeronDir)
-	require.Equal(t, transport, clusterCtx.Aeron)
-	require.Equal(t, config.IngressChannel, clusterCtx.IngressChannel)
-	require.Equal(t, config.EgressChannel, clusterCtx.EgressChannel)
-	require.Equal(t, config.IngressEndpoints, clusterCtx.IngressEndpoints)
-	require.Equal(t, handlers, clusterCtx.EgressHandler)
-	require.Equal(t, "cluster-auction-client", clusterCtx.ClientName)
-	require.Zero(t, clusterCtx.NewLeaderTimeout, "must not pre-normalize before Connect")
-	require.Zero(t, clusterCtx.MessageTimeout)
-	require.Zero(t, clusterCtx.IngressStreamID)
-	require.Nil(t, clusterCtx.IdleStrategy)
+	require.Equal(t, config.AeronDir, cfg.AeronDir)
+	require.Equal(t, transport, cfg.Aeron)
+	require.Equal(t, config.IngressChannel, cfg.IngressChannel)
+	require.Equal(t, config.EgressChannel, cfg.EgressChannel)
+	require.Equal(t, config.IngressEndpoints, cfg.IngressEndpoints)
+	require.Equal(t, handlers, cfg.EgressHandler)
+	require.Equal(t, "cluster-auction-client", cfg.ClientName)
+	require.Zero(t, cfg.NewLeaderTimeout, "must not pre-normalize before Connect")
+	require.Zero(t, cfg.MessageTimeout)
+	require.Zero(t, cfg.IngressStreamID)
+	require.Nil(t, cfg.IdleStrategy)
 }

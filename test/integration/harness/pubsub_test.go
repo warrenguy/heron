@@ -18,8 +18,8 @@ import (
 
 const pollHarnessShortTimeout = 50 * time.Millisecond
 
-func shortPollAeronContext() aeron.Context {
-	return aeron.Context{
+func shortPollAeronConfig() aeron.Config {
+	return aeron.Config{
 		PollTimeout:             pollHarnessShortTimeout,
 		PublicationOfferTimeout: pollHarnessShortTimeout,
 	}
@@ -114,7 +114,7 @@ func (offerRetryFailStubPub) Offer([]byte) int64 { return aeron.NotConnected }
 
 func TestPollUntilConnected_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, shortPollAeronContext())
+	client := ConnectClient(t, md, shortPollAeronConfig())
 
 	pub, err := client.AddPublication(PollUntilConnectedTimeoutStreamID, IPCChannel)
 	require.NoError(t, err)
@@ -136,7 +136,7 @@ func TestPollUntilConnected_timeoutMessage(t *testing.T) {
 func TestPollUntilImageCount_timeoutMessage(t *testing.T) {
 	t.Run("zeroActiveImages", func(t *testing.T) {
 		md := SharedParallel(t)
-		client := ConnectClient(t, md, shortPollAeronContext())
+		client := ConnectClient(t, md, shortPollAeronConfig())
 
 		sub, err := client.AddSubscription(PollUntilImageCountZeroActiveStreamID, IPCChannel)
 		require.NoError(t, err)
@@ -156,7 +156,7 @@ func TestPollUntilImageCount_timeoutMessage(t *testing.T) {
 
 	t.Run("oneActiveImageWantTwo", func(t *testing.T) {
 		md := SharedParallel(t)
-		client := ConnectClient(t, md, shortPollAeronContext())
+		client := ConnectClient(t, md, shortPollAeronConfig())
 
 		pub, sub := connectIPCPubSub(t, client, PollUntilImageCountOneWantTwoStreamID)
 
@@ -178,7 +178,7 @@ func TestPollUntilImageCount_timeoutMessage(t *testing.T) {
 
 func TestPollUntilNoActiveImagesCtx_contextDeadline(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	_, sub := connectIPCPubSub(t, client, PollUntilNoActiveImagesCtxDeadlineStreamID)
 
@@ -196,7 +196,7 @@ func TestPollUntilNoActiveImagesCtx_contextDeadline(t *testing.T) {
 
 func TestPollUntilNoActiveImages_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	_, sub := connectIPCPubSub(t, client, PollUntilNoActiveImagesTimeoutStreamID)
 
@@ -213,8 +213,8 @@ func TestPollUntilNoActiveImages_timeoutMessage(t *testing.T) {
 
 func TestPollSplitClientsUntil_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	clientA := ConnectClient(t, md, aeron.Context{})
-	clientB := ConnectClient(t, md, aeron.Context{})
+	clientA := ConnectClient(t, md, aeron.Config{})
+	clientB := ConnectClient(t, md, aeron.Config{})
 
 	const failMsg = "split poll condition not met"
 	capture := &CaptureFailTB{TB: t}
@@ -234,8 +234,8 @@ func TestPollSplitClientsUntil_timeoutMessage(t *testing.T) {
 
 func TestPollSplitClientIPCLink_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	pubClient := ConnectClient(t, md, aeron.Context{})
-	subClient := ConnectClient(t, md, aeron.Context{})
+	pubClient := ConnectClient(t, md, aeron.Config{})
+	subClient := ConnectClient(t, md, aeron.Config{})
 
 	pub, err := pubClient.AddPublication(PollSplitClientIPCLinkTimeoutStreamID, IPCChannel)
 	require.NoError(t, err)
@@ -265,8 +265,8 @@ func TestPollSplitClientIPCLink_timeoutMessage(t *testing.T) {
 
 func TestPollUntilNoActiveImagesSplit_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	pubClient := ConnectClient(t, md, aeron.Context{})
-	subClient := ConnectClient(t, md, aeron.Context{})
+	pubClient := ConnectClient(t, md, aeron.Config{})
+	subClient := ConnectClient(t, md, aeron.Config{})
 
 	_, sub := ConnectIPCPubSubClients(
 		t,
@@ -313,7 +313,7 @@ func testInvalidPollWant(
 	for _, tt := range invalidWantCases {
 		t.Run(tt.name, func(t *testing.T) {
 			md := SharedParallel(t)
-			client := ConnectClient(t, md, aeron.Context{})
+			client := ConnectClient(t, md, aeron.Config{})
 
 			sub, err := client.AddSubscription(streamID, IPCChannel)
 			require.NoError(t, err)
@@ -329,7 +329,7 @@ func testInvalidPollWant(
 
 func TestPollDelivered_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, sub := connectIPCPubSub(t, client, PollDeliveredTimeoutStreamID)
 
@@ -350,7 +350,7 @@ func TestPollDelivered_timeoutMessage(t *testing.T) {
 
 func TestPollDelivered_partialDelivery_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, sub := connectIPCPubSub(t, client, PollDeliveredPartialDeliveryStreamID)
 
@@ -386,7 +386,7 @@ func TestPollDelivered_invalidWantFails(t *testing.T) {
 
 func TestPollDelivered_liveIPC(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	payload := []byte{0xAB, 0xCD, 0xEF}
 
@@ -408,8 +408,8 @@ func TestPollDelivered_liveIPC(t *testing.T) {
 
 func TestPollDeliveredSplit_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	pubClient := ConnectClient(t, md, aeron.Context{})
-	subClient := ConnectClient(t, md, aeron.Context{})
+	pubClient := ConnectClient(t, md, aeron.Config{})
+	subClient := ConnectClient(t, md, aeron.Config{})
 
 	pub, sub := ConnectIPCPubSubClients(
 		t,
@@ -443,8 +443,8 @@ func TestPollDeliveredSplit_timeoutMessage(t *testing.T) {
 
 func TestPollDeliveredSplit_partialDelivery_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	pubClient := ConnectClient(t, md, aeron.Context{})
-	subClient := ConnectClient(t, md, aeron.Context{})
+	pubClient := ConnectClient(t, md, aeron.Config{})
+	subClient := ConnectClient(t, md, aeron.Config{})
 
 	pub, sub := ConnectIPCPubSubClients(
 		t,
@@ -521,8 +521,8 @@ func testInvalidPollWantSplit(
 	for _, tt := range invalidWantCases {
 		t.Run(tt.name, func(t *testing.T) {
 			md := SharedParallel(t)
-			pubClient := ConnectClient(t, md, aeron.Context{})
-			subClient := ConnectClient(t, md, aeron.Context{})
+			pubClient := ConnectClient(t, md, aeron.Config{})
+			subClient := ConnectClient(t, md, aeron.Config{})
 
 			sub, err := subClient.AddSubscription(streamID, IPCChannel)
 			require.NoError(t, err)
@@ -538,7 +538,7 @@ func testInvalidPollWantSplit(
 
 func TestPollReassembled_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, sub := connectIPCPubSub(t, client, PollReassembledTimeoutStreamID)
 
@@ -560,7 +560,7 @@ func TestPollReassembled_timeoutMessage(t *testing.T) {
 
 func TestPollReassembled_noActiveImage_failsFast(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	sub, err := client.AddSubscription(PollReassembledNoImageStreamID, IPCChannel)
 	require.NoError(t, err)
@@ -580,7 +580,7 @@ func TestPollReassembled_noActiveImage_failsFast(t *testing.T) {
 
 func TestPollReassembled_partialDelivery_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, sub := connectIPCPubSub(t, client, PollReassembledPartialDeliveryStreamID)
 
@@ -619,7 +619,7 @@ func TestPollReassembled_invalidWantFails(t *testing.T) {
 
 func TestOfferWithRetry_notConnected_timesOut(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, shortPollAeronContext())
+	client := ConnectClient(t, md, shortPollAeronConfig())
 
 	pub, err := client.AddPublication(OfferWithRetryNotConnectedTimeoutStreamID, IPCChannel)
 	require.NoError(t, err)
@@ -643,7 +643,7 @@ func TestOfferWithRetry_notConnected_timesOut(t *testing.T) {
 
 func TestOfferWithRetry_notConnected_thenConnect_succeeds(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, err := client.AddPublication(OfferWithRetryNotConnectedThenConnectStreamID, IPCChannel)
 	require.NoError(t, err)
@@ -673,7 +673,7 @@ func TestOfferWithRetry_notConnected_thenConnect_succeeds(t *testing.T) {
 
 func TestOfferWithRetry_closedPublication_failsImmediately(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, err := client.AddPublication(OfferWithRetryClosedPublicationStreamID, IPCChannel)
 	require.NoError(t, err)
@@ -785,7 +785,7 @@ func TestFailOfferWithRetry_typedErrors(t *testing.T) {
 
 func TestFailPollReassembledDelegated_errors(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, linkedSub := connectIPCPubSub(t, client, PollReassembledTimeoutStreamID)
 	_, detail := aeron.SubscriptionImageSummary(linkedSub)
@@ -873,7 +873,7 @@ func TestFailPollReassembledDelegated_errors(t *testing.T) {
 
 func TestPollReassembledDelegatedMaxBuf_coversFragmentedRoundtrip(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, err := client.AddPublication(PollReassembledLiveIPCStreamID, IPCChannel)
 	require.NoError(t, err)
@@ -889,7 +889,7 @@ func TestPollReassembledDelegatedMaxBuf_coversFragmentedRoundtrip(t *testing.T) 
 
 func TestPollReassembled_liveIPC_fragmented(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, sub := connectIPCPubSub(t, client, PollReassembledLiveIPCStreamID)
 
@@ -964,7 +964,7 @@ func TestComputeRolloverMessageCount_table(t *testing.T) {
 
 func TestOfferWithRetryWitness_cleanSuccess_returnsFalse(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, _ := connectIPCPubSub(t, client, OfferWithRetryWitnessCleanStreamID)
 
@@ -978,8 +978,8 @@ func TestOfferWithRetryWitness_cleanSuccess_returnsFalse(t *testing.T) {
 
 func TestOfferWithRetryWitness_backPressured_returnsTrue(t *testing.T) {
 	md := SharedParallel(t)
-	pubClient := ConnectClient(t, md, aeron.Context{})
-	subClient := ConnectClient(t, md, aeron.Context{})
+	pubClient := ConnectClient(t, md, aeron.Config{})
+	subClient := ConnectClient(t, md, aeron.Config{})
 
 	pub, sub := ConnectIPCPubSubClients(
 		t,
@@ -1053,7 +1053,7 @@ func TestOfferWithRetryWitness_backPressured_returnsTrue(t *testing.T) {
 // session, and position checks on live aeronmd IPC pub/sub.
 func TestAssertSubscribeMetadata_liveIPC(t *testing.T) {
 	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Context{})
+	client := ConnectClient(t, md, aeron.Config{})
 
 	pub, sub := ConnectIPCPubSubClients(t, client, client, AssertSubscribeMetadataStreamID)
 

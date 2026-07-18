@@ -144,9 +144,9 @@ func TestFormatIngressEndpoints_skipsNilEntry(t *testing.T) {
 	require.Equal(t, "1=host:1", client.FormatIngressEndpoints(m))
 }
 
-func TestNewMemberIngressMapFromContext(t *testing.T) {
-	clusterCtx := client.ClusterContext{IngressEndpoints: sampleIngressEndpoints}
-	got, err := client.NewMemberIngressMapFromContext(clusterCtx)
+func TestNewMemberIngressMapFromConfig(t *testing.T) {
+	cfg := client.Config{IngressEndpoints: sampleIngressEndpoints}
+	got, err := client.NewMemberIngressMapFromConfig(cfg)
 	require.NoError(t, err)
 	requireMemberIngressMap(t, got, map[int32]string{
 		0: "localhost:20110",
@@ -154,9 +154,9 @@ func TestNewMemberIngressMapFromContext(t *testing.T) {
 	})
 }
 
-func TestNewMemberIngressMapFromContext_invalid(t *testing.T) {
-	clusterCtx := client.ClusterContext{IngressEndpoints: "bad"}
-	got, err := client.NewMemberIngressMapFromContext(clusterCtx)
+func TestNewMemberIngressMapFromConfig_invalid(t *testing.T) {
+	cfg := client.Config{IngressEndpoints: "bad"}
+	got, err := client.NewMemberIngressMapFromConfig(cfg)
 	require.Nil(t, got)
 	require.EqualError(t, err, "cluster client: endpoint missing '=' separator: bad")
 }

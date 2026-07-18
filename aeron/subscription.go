@@ -17,7 +17,7 @@ import (
 // The images slice is mutated only by the conductor via addImage and
 // removeImage; application code must not modify it.
 //
-// Image lifecycle callbacks are configured on Context at Connect, not on
+// Image lifecycle callbacks are configured on Config at Connect, not on
 // Subscription directly.
 type Subscription struct {
 	registrationID int64

@@ -58,11 +58,11 @@ func TestPubSubIPCRoundtrip(t *testing.T) {
 func TestPubSubIPCTwoClientsRoundtrip(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	splitClientCtx := aeron.Context{
+	splitClientCfg := aeron.Config{
 		InterServiceTimeout: harness.ConnectedPollTimeout,
 	}
-	pubClient, hadPubClientError := harness.ConnectIPCClientContext(t, md, splitClientCtx)
-	subClient, hadSubClientError := harness.ConnectIPCClientContext(t, md, splitClientCtx)
+	pubClient, hadPubClientError := harness.ConnectIPCClientConfig(t, md, splitClientCfg)
+	subClient, hadSubClientError := harness.ConnectIPCClientConfig(t, md, splitClientCfg)
 
 	const (
 		streamID     = harness.PubSubTwoClientsRoundtripStreamID

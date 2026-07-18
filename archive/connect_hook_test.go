@@ -11,7 +11,7 @@ import (
 func TestConnectHookObservers_notifyAndCleanup(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
+	harness, ac := newAsyncConnectFixture(t, func(cfg Config) Config { return cfg })
 	registerAsyncConnectClose(t, ac)
 
 	var asyncConnectCalls int

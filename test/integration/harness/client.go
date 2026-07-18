@@ -24,13 +24,13 @@ const (
 )
 
 // ConnectClient connects to md and registers client.Close on t.Cleanup.
-func ConnectClient(t testing.TB, md *MediaDriver, aeronCtx aeron.Context) *aeron.Client {
+func ConnectClient(t testing.TB, md *MediaDriver, aeronCfg aeron.Config) *aeron.Client {
 	t.Helper()
 
-	if aeronCtx.AeronDir == "" {
-		aeronCtx.AeronDir = md.Dir
+	if aeronCfg.AeronDir == "" {
+		aeronCfg.AeronDir = md.Dir
 	}
-	client, err := aeron.Connect(t.Context(), aeronCtx)
+	client, err := aeron.Connect(t.Context(), aeronCfg)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		if err := client.Close(); err != nil {
@@ -44,20 +44,20 @@ func ConnectClient(t testing.TB, md *MediaDriver, aeronCtx aeron.Context) *aeron
 func ConnectIPCClient(t testing.TB, md *MediaDriver) (*aeron.Client, *atomic.Bool) {
 	t.Helper()
 
-	return ConnectIPCClientContext(t, md, aeron.Context{})
+	return ConnectIPCClientConfig(t, md, aeron.Config{})
 }
 
-// ConnectIPCClientContext connects with ctx and records client errors in the returned flag.
-func ConnectIPCClientContext(
+// ConnectIPCClientConfig connects with config and records client errors in the returned flag.
+func ConnectIPCClientConfig(
 	t testing.TB,
 	md *MediaDriver,
-	aeronCtx aeron.Context,
+	aeronCfg aeron.Config,
 ) (*aeron.Client, *atomic.Bool) {
 	t.Helper()
 
 	var hadClientError atomic.Bool
-	callerHandler := aeronCtx.ErrorHandler
-	aeronCtx.ErrorHandler = func(err error) {
+	callerHandler := aeronCfg.ErrorHandler
+	aeronCfg.ErrorHandler = func(err error) {
 		hadClientError.Store(true)
 		if callerHandler != nil {
 			callerHandler(err)
@@ -66,7 +66,7 @@ func ConnectIPCClientContext(
 		}
 	}
 
-	return ConnectClient(t, md, aeronCtx), &hadClientError
+	return ConnectClient(t, md, aeronCfg), &hadClientError
 }
 
 // CleanupClose registers closeFn on t.Cleanup; records errors without masking test failure.

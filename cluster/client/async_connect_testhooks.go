@@ -44,23 +44,23 @@ func (ac *AsyncConnect) EgressSubscriptionForTest() *aeron.Subscription {
 	return ac.egressSubscription
 }
 
-// ConcludeClusterContextForTest exercises concludeClusterContext during connect tests.
+// ConcludeConfigForTest exercises concludeConfig during connect tests.
 //
 // ctx bounds owned transport attach; tests that inject Aeron or factories
 // may pass context.Background().
-func ConcludeClusterContextForTest(
+func ConcludeConfigForTest(
 	ctx context.Context,
-	clusterCtx ClusterContext,
-) (ClusterContext, *aeron.Client, bool, error) {
-	return concludeClusterContext(ctx, clusterCtx)
+	cfg Config,
+) (Config, *aeron.Client, bool, error) {
+	return concludeConfig(ctx, cfg)
 }
 
-// ClusterContextForTest exposes the concluded cluster context during connect tests.
-func (ac *AsyncConnect) ClusterContextForTest() ClusterContext {
+// ConfigForTest exposes the concluded cluster config during connect tests.
+func (ac *AsyncConnect) ConfigForTest() Config {
 	if ac == nil {
-		return ClusterContext{}
+		return Config{}
 	}
-	return ac.clusterCtx
+	return ac.cfg
 }
 
 func firstConnectedIngressPublicationForTest(memberMap MemberIngressMap) IngressPublication {

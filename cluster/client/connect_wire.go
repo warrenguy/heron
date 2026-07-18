@@ -62,8 +62,8 @@ func (ac *AsyncConnect) prepareConnectRequest() error {
 		return errors.New("cluster client: egress subscription cannot resolve response channel")
 	}
 	ac.ensureCorrelationID()
-	credentials := ac.clusterCtx.CredentialsSupplier.EncodedCredentials()
-	clientInfo := sessionConnectClientInfo(ac.clusterCtx.ClientName)
+	credentials := ac.cfg.CredentialsSupplier.EncodedCredentials()
+	clientInfo := sessionConnectClientInfo(ac.cfg.ClientName)
 	actingVersion := clusterwire.SessionConnectRequestSbeSchemaVersion
 	wireLen, ok := codecs.SessionConnectRequestWireLen(
 		actingVersion,
@@ -73,7 +73,7 @@ func (ac *AsyncConnect) prepareConnectRequest() error {
 	)
 	fields := codecs.SessionConnectRequestFields{
 		CorrelationID:      ac.correlationID,
-		ResponseStreamID:   ac.clusterCtx.ResponseStreamID,
+		ResponseStreamID:   ac.cfg.ResponseStreamID,
 		Version:            ProtocolSemanticVersion(),
 		ResponseChannel:    []byte(responseChannel),
 		EncodedCredentials: credentials,
@@ -98,7 +98,7 @@ func (ac *AsyncConnect) prepareChallengeResponse() error {
 	if challenge == nil {
 		challenge = []byte{}
 	}
-	credentials := ac.clusterCtx.CredentialsSupplier.RespondToChallenge(challenge)
+	credentials := ac.cfg.CredentialsSupplier.RespondToChallenge(challenge)
 	actingVersion := clusterwire.ChallengeResponseSbeSchemaVersion
 	wireLen, ok := codecs.ClusterWireMessageLen(
 		clusterwire.ChallengeResponseSbeBlockLength,

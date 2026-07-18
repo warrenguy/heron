@@ -31,7 +31,7 @@ Publish and receive a message over IPC (error handling omitted):
 import "github.com/warrenguy/heron/aeron"
 
 ctx := context.Background()
-client, err := aeron.Connect(ctx, aeron.Context{AeronDir: "/tmp/aeron"})
+client, err := aeron.Connect(ctx, aeron.Config{AeronDir: "/tmp/aeron"})
 if err != nil { /* ... */ }
 defer client.Close()
 
@@ -85,13 +85,13 @@ recover across leader changes. An external cluster stack is required:
 ## Archive client
 
 [`archive`](archive/) connects to Aeron Archive for recording control and
-replay. Pass an existing transport client in `Context.Aeron` to share one duty
+replay. Pass an existing transport client in `Config.Aeron` to share one duty
 cycle:
 
 ```go
-transport, err := aeron.Connect(context.Background(), aeron.Context{AeronDir: "/tmp/aeron"})
+transport, err := aeron.Connect(context.Background(), aeron.Config{AeronDir: "/tmp/aeron"})
 // ...
-session, err := archive.Connect(context.Background(), archive.Context{Aeron: transport})
+session, err := archive.Connect(context.Background(), archive.Config{Aeron: transport})
 // ...
 defer session.Close()
 

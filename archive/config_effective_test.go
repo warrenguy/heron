@@ -8,51 +8,51 @@ import (
 
 func requireEffectiveControl(
 	t *testing.T,
-	archiveCtx Context,
+	cfg Config,
 	wantReqCh, wantRespCh string,
 	wantReqStream, wantRespStream int32,
 ) {
 	t.Helper()
-	require.Equal(t, wantReqCh, archiveCtx.EffectiveControlRequestChannel())
-	require.Equal(t, wantRespCh, archiveCtx.EffectiveControlResponseChannel())
-	require.Equal(t, wantReqStream, archiveCtx.EffectiveControlRequestStreamID())
-	require.Equal(t, wantRespStream, archiveCtx.EffectiveControlResponseStreamID())
+	require.Equal(t, wantReqCh, cfg.EffectiveControlRequestChannel())
+	require.Equal(t, wantRespCh, cfg.EffectiveControlResponseChannel())
+	require.Equal(t, wantReqStream, cfg.EffectiveControlRequestStreamID())
+	require.Equal(t, wantRespStream, cfg.EffectiveControlResponseStreamID())
 }
 
-func requireEffectiveStreamIDs(t *testing.T, archiveCtx Context, want int32) {
+func requireEffectiveStreamIDs(t *testing.T, cfg Config, want int32) {
 	t.Helper()
-	require.Equal(t, want, archiveCtx.EffectiveControlRequestStreamID())
-	require.Equal(t, want, archiveCtx.EffectiveControlResponseStreamID())
+	require.Equal(t, want, cfg.EffectiveControlRequestStreamID())
+	require.Equal(t, want, cfg.EffectiveControlResponseStreamID())
 }
 
 func TestEffectiveChannels(t *testing.T) {
 	tests := []struct {
 		name       string
-		archiveCtx Context
+		cfg        Config
 		wantReqCh  string
 		wantRespCh string
 		wantStream int32
 	}{
 		{
 			name:       "ipc default",
-			archiveCtx: Context{}.Normalize(),
+			cfg:        Config{}.Normalize(),
 			wantReqCh:  DefaultLocalControlChannel,
 			wantRespCh: DefaultLocalControlChannel,
 			wantStream: DefaultLocalControlStreamID,
 		},
 		{
 			name:       "remote",
-			archiveCtx: Context{}.WithRemoteControl().Normalize(),
+			cfg:        Config{}.WithRemoteControl().Normalize(),
 			wantReqCh:  DefaultControlRequestChannel,
 			wantRespCh: DefaultControlResponseChannel,
 			wantStream: DefaultControlRequestStreamID,
 		},
 		{
 			name: "explicit local after remote opt out",
-			archiveCtx: func() Context {
-				archiveCtx := Context{}.WithRemoteControl().Normalize()
-				archiveCtx.LocalControlChannel = DefaultLocalControlChannel
-				return archiveCtx
+			cfg: func() Config {
+				cfg := Config{}.WithRemoteControl().Normalize()
+				cfg.LocalControlChannel = DefaultLocalControlChannel
+				return cfg
 			}(),
 			wantReqCh:  DefaultLocalControlChannel,
 			wantRespCh: DefaultLocalControlChannel,
@@ -61,8 +61,8 @@ func TestEffectiveChannels(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			archiveCtx := applyEffectiveChannels(tc.archiveCtx)
-			requireEffectiveControl(t, archiveCtx, tc.wantReqCh, tc.wantRespCh, tc.wantStream, tc.wantStream)
+			cfg := applyEffectiveChannels(tc.cfg)
+			requireEffectiveControl(t, cfg, tc.wantReqCh, tc.wantRespCh, tc.wantStream, tc.wantStream)
 		})
 	}
 }
@@ -70,13 +70,13 @@ func TestEffectiveChannels(t *testing.T) {
 func TestEffectiveChannels_ipcStreamID(t *testing.T) {
 	tests := []struct {
 		name      string
-		input     Context
+		input     Config
 		normalize bool
 		want      int32
 	}{
 		{
 			name: "explicit",
-			input: Context{
+			input: Config{
 				LocalControlChannel:  DefaultLocalControlChannel,
 				LocalControlStreamID: 77,
 			},
@@ -85,7 +85,7 @@ func TestEffectiveChannels_ipcStreamID(t *testing.T) {
 		},
 		{
 			name: "fallback",
-			input: Context{
+			input: Config{
 				LocalControlChannel:    DefaultLocalControlChannel,
 				LocalControlStreamID:   0,
 				ControlRequestStreamID: 42,
@@ -95,12 +95,12 @@ func TestEffectiveChannels_ipcStreamID(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			archiveCtx := tc.input
+			cfg := tc.input
 			if tc.normalize {
-				archiveCtx = archiveCtx.Normalize()
+				cfg = cfg.Normalize()
 			}
-			archiveCtx = applyEffectiveChannels(archiveCtx)
-			requireEffectiveStreamIDs(t, archiveCtx, tc.want)
+			cfg = applyEffectiveChannels(cfg)
+			requireEffectiveStreamIDs(t, cfg, tc.want)
 		})
 	}
 }

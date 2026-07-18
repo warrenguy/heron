@@ -76,7 +76,7 @@ func TestCncWiring(t *testing.T) {
 	t.Run("GetNextSessionIDRoundtrip", func(t *testing.T) {
 		const sessionIDStreamID int32 = 100
 
-		client, err := aeron.Connect(t.Context(), aeron.Context{AeronDir: md.Dir})
+		client, err := aeron.Connect(t.Context(), aeron.Config{AeronDir: md.Dir})
 		require.NoError(t, err)
 		require.GreaterOrEqual(t, client.ClientId(), int64(0))
 		t.Cleanup(func() {

@@ -79,20 +79,20 @@ func TestHarnessConstants(t *testing.T) {
 	}
 }
 
-func TestHarnessClusterContext_ipcDefaults(t *testing.T) {
-	clusterCtx := clusterjava.HarnessClusterContext()
+func TestHarnessConfig_ipcDefaults(t *testing.T) {
+	cfg := clusterjava.HarnessConfig()
 
-	require.Equal(t, clusterjava.IngressChannel, clusterCtx.IngressChannel)
-	require.Equal(t, clusterjava.EgressChannel, clusterCtx.EgressChannel)
-	require.Equal(t, clusterjava.IngressEndpoints, clusterCtx.IngressEndpoints)
-	require.Empty(t, clusterCtx.AeronDir)
-	require.Empty(t, clusterCtx.AeronContext.AeronDir)
-	require.Zero(t, clusterCtx.IngressStreamID)
-	require.Zero(t, clusterCtx.ResponseStreamID)
+	require.Equal(t, clusterjava.IngressChannel, cfg.IngressChannel)
+	require.Equal(t, clusterjava.EgressChannel, cfg.EgressChannel)
+	require.Equal(t, clusterjava.IngressEndpoints, cfg.IngressEndpoints)
+	require.Empty(t, cfg.AeronDir)
+	require.Empty(t, cfg.AeronConfig.AeronDir)
+	require.Zero(t, cfg.IngressStreamID)
+	require.Zero(t, cfg.ResponseStreamID)
 
-	clusterCtx = clusterCtx.Normalize()
+	cfg = cfg.Normalize()
 
-	require.Equal(t, clusterjava.IngressStreamID, clusterCtx.IngressStreamID)
-	require.Equal(t, clusterjava.EgressStreamID, clusterCtx.ResponseStreamID)
-	require.NoError(t, clusterCtx.ValidateForConnect())
+	require.Equal(t, clusterjava.IngressStreamID, cfg.IngressStreamID)
+	require.Equal(t, clusterjava.EgressStreamID, cfg.ResponseStreamID)
+	require.NoError(t, cfg.ValidateForConnect())
 }

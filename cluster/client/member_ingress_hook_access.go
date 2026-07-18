@@ -11,7 +11,7 @@ import (
 
 type memberIngressAsyncPollAddHook func(
 	*MemberIngress,
-	ClusterContext,
+	Config,
 	*aeron.Client,
 ) (bool, error)
 
@@ -43,7 +43,7 @@ func memberIngressAsyncPollAddHookFor(
 // SetAsyncPollAddHookForTest overrides async ingress poll resolution for ingress.
 func (ingress *MemberIngress) SetAsyncPollAddHookForTest(
 	tb testing.TB,
-	hook func(*MemberIngress, ClusterContext, *aeron.Client) (bool, error),
+	hook func(*MemberIngress, Config, *aeron.Client) (bool, error),
 ) {
 	tb.Helper()
 	if ingress == nil {

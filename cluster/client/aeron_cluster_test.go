@@ -15,11 +15,11 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
-func withConnectContext(mutate func(*client.ClusterContext)) func(*client.ConnectResult) {
+func withConnectConfig(mutate func(*client.Config)) func(*client.ConnectResult) {
 	return func(result *client.ConnectResult) {
-		clusterCtx := result.Context
-		mutate(&clusterCtx)
-		result.Context = clusterCtx
+		cfg := result.Config
+		mutate(&cfg)
+		result.Config = cfg
 	}
 }
 
@@ -103,12 +103,12 @@ func TestNewAeronCluster_rejectsInvalidConnectResult(t *testing.T) {
 		},
 		{
 			name:    "nil_egress_handler",
-			mutate:  withConnectContext(withNilEgressHandler),
+			mutate:  withConnectConfig(withNilEgressHandler),
 			wantErr: errEgressHandlerRequired,
 		},
 		{
 			name:    "typed_nil_egress_handler",
-			mutate:  withConnectContext(withTypedNilEgressHandlers),
+			mutate:  withConnectConfig(withTypedNilEgressHandlers),
 			wantErr: errEgressHandlerRequired,
 		},
 		{

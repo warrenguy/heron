@@ -21,7 +21,7 @@ const (
 	DefaultMessageTimeout = 5 * time.Second
 
 	// DefaultIngressRetryTimeout bounds IngressOfferUntilPositive when
-	// ClusterContext.IngressRetryTimeout is zero.
+	// Config.IngressRetryTimeout is zero.
 	DefaultIngressRetryTimeout = 10 * time.Second
 
 	// MaxClientNameLength is the wire limit for SessionConnectRequest.clientInfo.

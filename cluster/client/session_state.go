@@ -58,7 +58,7 @@ func (ac *AeronCluster) sessionTerminallyClosing() bool {
 // MessageTimeout deadline.
 func (ac *AeronCluster) enterAwaitNewLeaderConnection() {
 	ac.sessionState = SessionStateAwaitNewLeaderConnection
-	ac.stateDeadlineNs = ac.nanoClock() + ac.clusterCtx.MessageTimeout.Nanoseconds()
+	ac.stateDeadlineNs = ac.nanoClock() + ac.cfg.MessageTimeout.Nanoseconds()
 }
 
 // handleDisconnected clears ingressPublication, closes the leader member-map
@@ -82,7 +82,7 @@ func (ac *AeronCluster) handleDisconnected() {
 // enterAwaitNewLeader sets AWAIT_NEW_LEADER with a NewLeaderTimeout deadline.
 func (ac *AeronCluster) enterAwaitNewLeader() {
 	ac.sessionState = SessionStateAwaitNewLeader
-	ac.stateDeadlineNs = ac.nanoClock() + ac.clusterCtx.NewLeaderTimeout.Nanoseconds()
+	ac.stateDeadlineNs = ac.nanoClock() + ac.cfg.NewLeaderTimeout.Nanoseconds()
 }
 
 // enterPendingClose sets PENDING_CLOSE with no deadline; the next pollStateChanges

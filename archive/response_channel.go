@@ -33,7 +33,7 @@ func ingressPassthroughMedia(media string) bool {
 
 // applyUDPRejoinFalse returns channel with rejoin=false on UDP media.
 //
-// Called from concludeContext after ValidateForConnect. Idempotent when
+// Called from concludeConfig after ValidateForConnect. Idempotent when
 // rejoin=false is already set. IPC, ipcx, and other valid aeron: media pass
 // through unchanged. Malformed aeron: URIs return archive: invalid control
 // response channel.

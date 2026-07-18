@@ -19,13 +19,13 @@ type Proxy struct {
 }
 
 // NewProxy constructs a post-connect control request encoder.
-func NewProxy(pub ControlPublication, archiveCtx Context) *Proxy {
-	archiveCtx = archiveCtx.Normalize()
+func NewProxy(pub ControlPublication, cfg Config) *Proxy {
+	cfg = cfg.Normalize()
 	return &Proxy{
 		publication:   pub,
 		actingVersion: archivewire.MessageHeaderSbeSchemaVersion,
-		credentials:   archiveCtx.CredentialsSupplier,
-		clientInfo:    archiveConnectClientInfo(archiveCtx.ClientName),
+		credentials:   cfg.CredentialsSupplier,
+		clientInfo:    archiveConnectClientInfo(cfg.ClientName),
 	}
 }
 

@@ -29,9 +29,9 @@ const (
 	channelOnlyMemberID    int32 = 0
 )
 
-func validTestClusterContext() client.ClusterContext {
-	return normalizedClusterContext(func(clusterCtx *client.ClusterContext) {
-		clusterCtx.AeronContext = aeron.Context{
+func validTestConfig() client.Config {
+	return normalizedConfig(func(cfg *client.Config) {
+		cfg.AeronConfig = aeron.Config{
 			NanoClock: func() int64 { return testIngressTimestampNs },
 		}
 	})
@@ -57,7 +57,7 @@ func newTestConnectResult(tb testing.TB, mutate func(*client.ConnectResult)) *cl
 		},
 		Aeron:           &aeron.Client{},
 		OwnsAeronClient: false,
-		Context:         validTestClusterContext(),
+		Config:          validTestConfig(),
 	}
 	if mutate != nil {
 		mutate(result)

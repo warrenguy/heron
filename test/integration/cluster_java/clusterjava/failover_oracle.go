@@ -45,16 +45,16 @@ const FailoverClusterMembersString = "0,cluster-0:9002,cluster-0:9003,cluster-0:
 	"cluster-1:9105,cluster-1:9101|2,cluster-2:9202,cluster-2:9203,cluster-2:9204," +
 	"cluster-2:9205,cluster-2:9201|"
 
-// FailoverHarnessClusterContext returns cluster client defaults for UDP 3-node failover
+// FailoverHarnessConfig returns cluster client defaults for UDP 3-node failover
 // connect tests. Stream IDs are left at zero so callers or NewAsyncConnect Normalize
 // applies defaults. AeronDir is unset; callers assign it from compose env before connect.
-func FailoverHarnessClusterContext() client.ClusterContext {
-	clusterCtx := harnessClusterContext(
+func FailoverHarnessConfig() client.Config {
+	cfg := harnessConfig(
 		FailoverIngressChannel,
 		FailoverEgressChannel,
 		FailoverIngressEndpoints,
 	)
-	clusterCtx.NewLeaderTimeout = FailoverNewLeaderTimeout
-	clusterCtx.MessageTimeout = FailoverNewLeaderTimeout
-	return clusterCtx
+	cfg.NewLeaderTimeout = FailoverNewLeaderTimeout
+	cfg.MessageTimeout = FailoverNewLeaderTimeout
+	return cfg
 }

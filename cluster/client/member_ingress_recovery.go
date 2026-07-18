@@ -59,7 +59,7 @@ func planMemberIngressMapRebuild(
 // pubs, assigns newMap, wires reused leader pub or starts asyncOfferAdd for new leader.
 func applyMemberIngressMapRebuild(
 	client *aeron.Client,
-	clusterCtx ClusterContext,
+	cfg Config,
 	oldMap MemberIngressMap,
 	plan memberIngressMapPlan,
 ) (newMap MemberIngressMap, leaderPub IngressPublication, err error) {
@@ -82,7 +82,7 @@ func applyMemberIngressMapRebuild(
 		leader.Publication = plan.reusedPub
 		return newMap, plan.reusedPub, nil
 	}
-	if err := leader.asyncOfferAdd(clusterCtx, client, newMap); err != nil {
+	if err := leader.asyncOfferAdd(cfg, client, newMap); err != nil {
 		return newMap, nil, err
 	}
 	return newMap, nil, nil

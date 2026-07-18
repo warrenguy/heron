@@ -20,10 +20,10 @@ func requireImageHandlerEqual[T ~func(*Image)](tb testing.TB, want, got T) {
 	require.Equal(tb, reflect.ValueOf(want).Pointer(), reflect.ValueOf(got).Pointer())
 }
 
-func representativeContextForConnectConfigTest(tb testing.TB) Context {
+func representativeConfigForConnectConfigTest(tb testing.TB) Config {
 	tb.Helper()
 
-	return Context{
+	return Config{
 		AeronDir:            tb.TempDir(),
 		DriverTimeout:       7 * time.Second,
 		KeepAliveInterval:   100 * time.Millisecond,
@@ -36,24 +36,24 @@ func representativeContextForConnectConfigTest(tb testing.TB) Context {
 	}
 }
 
-func TestConductorConnectConfig_propagatesContextScalarFields(t *testing.T) {
+func TestConductorConnectConfig_propagatesConfigScalarFields(t *testing.T) {
 	t.Parallel()
 
-	ctx := representativeContextForConnectConfigTest(t)
-	config := ConductorConnectConfigForTest(ctx, testutil.TestClientID)
+	cfg := representativeConfigForConnectConfigTest(t)
+	config := ConductorConnectConfigForTest(cfg, testutil.TestClientID)
 
 	require.Equal(t, ConductorImageLifecycle, config.ImageLifecycle)
 	require.NotNil(t, config.ResourceLifecycle)
-	require.Equal(t, ctx.AeronDir, config.MediaDriverDir)
+	require.Equal(t, cfg.AeronDir, config.MediaDriverDir)
 	require.Equal(
 		t,
-		ctx.CloseLingerDuration.Nanoseconds(),
+		cfg.CloseLingerDuration.Nanoseconds(),
 		config.CloseLingerNs,
 	)
-	require.Equal(t, ctx.DriverTimeout, config.DriverTimeout)
-	require.Equal(t, ctx.KeepAliveInterval, config.KeepAliveInterval)
-	require.Equal(t, ctx.IdleSleepDuration, config.IdleSleepDuration)
-	require.Equal(t, ctx.InterServiceTimeout, config.InterServiceTimeout)
+	require.Equal(t, cfg.DriverTimeout, config.DriverTimeout)
+	require.Equal(t, cfg.KeepAliveInterval, config.KeepAliveInterval)
+	require.Equal(t, cfg.IdleSleepDuration, config.IdleSleepDuration)
+	require.Equal(t, cfg.InterServiceTimeout, config.InterServiceTimeout)
 	require.Equal(t, testutil.TestClientID, config.ClientID)
 	require.Equal(t, int64(42), config.EpochClock())
 	require.Equal(t, int64(99), config.NanoClock())
@@ -68,13 +68,13 @@ func TestConductorConnectConfig_propagatesHandlersToPreSubscription(t *testing.T
 
 	tests := []struct {
 		name            string
-		ctx             Context
+		cfg             Config
 		wantAvailable   AvailableImageHandler
 		wantUnavailable UnavailableImageHandler
 	}{
 		{
 			name: "both",
-			ctx: Context{
+			cfg: Config{
 				AvailableImageHandler:   availableHandler,
 				UnavailableImageHandler: unavailableHandler,
 			},
@@ -83,14 +83,14 @@ func TestConductorConnectConfig_propagatesHandlersToPreSubscription(t *testing.T
 		},
 		{
 			name: "available only",
-			ctx: Context{
+			cfg: Config{
 				AvailableImageHandler: availableHandler,
 			},
 			wantAvailable: availableHandler,
 		},
 		{
 			name: "unavailable only",
-			ctx: Context{
+			cfg: Config{
 				UnavailableImageHandler: unavailableHandler,
 			},
 			wantUnavailable: unavailableHandler,
@@ -101,7 +101,7 @@ func TestConductorConnectConfig_propagatesHandlersToPreSubscription(t *testing.T
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			config := ConductorConnectConfigForTest(tt.ctx, testutil.TestClientID)
+			config := ConductorConnectConfigForTest(tt.cfg, testutil.TestClientID)
 			require.Nil(t, config.ErrorHandler)
 			sub := config.ResourceLifecycle.NewPreSubscription(
 				TestSubscriptionRegistrationID,
@@ -214,20 +214,20 @@ func deliverUnavailableImageToClientSubscription(
 	require.Equal(tb, 1, client.DoWork())
 }
 
-func TestClient_ContextAvailableImageHandler_invoked(t *testing.T) {
+func TestClient_ConfigAvailableImageHandler_invoked(t *testing.T) {
 	t.Parallel()
 
 	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
 
 	var attachedImage *Image
-	ctx := Context{
+	cfg := Config{
 		AeronDir: dir,
 		AvailableImageHandler: func(image *Image) {
 			attachedImage = image
 		},
 	}
 
-	client, fixture := newClientAddFixtureWithContext(t, ctx)
+	client, fixture := newClientAddFixtureWithConfig(t, cfg)
 
 	correlationID, err := client.OfferAddSubscription(
 		conductorImageLifecycleGoldenAvailableImage.StreamID,
@@ -245,20 +245,20 @@ func TestClient_ContextAvailableImageHandler_invoked(t *testing.T) {
 	requireAvailableImageHandlerIdentity(t, sub, attachedImage)
 }
 
-func TestClient_ContextUnavailableImageHandler_invoked(t *testing.T) {
+func TestClient_ConfigUnavailableImageHandler_invoked(t *testing.T) {
 	t.Parallel()
 
 	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
 
 	var detachedImage *Image
-	ctx := Context{
+	cfg := Config{
 		AeronDir: dir,
 		UnavailableImageHandler: func(image *Image) {
 			detachedImage = image
 		},
 	}
 
-	client, fixture := newClientAddFixtureWithContext(t, ctx)
+	client, fixture := newClientAddFixtureWithConfig(t, cfg)
 
 	correlationID, err := client.OfferAddSubscription(
 		conductorImageLifecycleGoldenAvailableImage.StreamID,
@@ -290,8 +290,8 @@ func TestClient_nilHandlers_lifecycleSucceeds(t *testing.T) {
 
 	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
 
-	ctx := Context{AeronDir: dir}
-	client, fixture := newClientAddFixtureWithContext(t, ctx)
+	cfg := Config{AeronDir: dir}
+	client, fixture := newClientAddFixtureWithConfig(t, cfg)
 
 	correlationID, err := client.OfferAddSubscription(
 		conductorImageLifecycleGoldenAvailableImage.StreamID,

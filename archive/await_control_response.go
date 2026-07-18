@@ -58,10 +58,10 @@ func tryMatchControlResponseDiscardStale(
 // the awaited response.
 //
 // It drives DoWork on aeronClient for the duration of the await window only. The idle
-// strategy paces empty polls and is reset on every exit path; a nil archiveCtx.IdleStrategy
+// strategy paces empty polls and is reset on every exit path; a nil cfg.IdleStrategy
 // uses NewDefaultIdleStrategy.
 //
-// Uses Context.ControlResponseTimeout. When ctx carries a deadline, the effective
+// Uses Config.ControlResponseTimeout. When ctx carries a deadline, the effective
 // bound is the earlier of ControlResponseTimeout and ctx.Deadline().
 //
 // Returns the matched fields with a nil error, the mapped error for a non-OK response,
@@ -69,13 +69,13 @@ func tryMatchControlResponseDiscardStale(
 func AwaitControlResponse(
 	ctx context.Context,
 	aeronClient *aeron.Client,
-	archiveCtx Context,
+	cfg Config,
 	pollFn func() int,
 	poller *ControlResponsePoller,
 	controlSessionID int64,
 	correlationID int64,
 ) (codecs.ControlResponseFields, error) {
-	archiveCtx = archiveCtx.Normalize()
+	cfg = cfg.Normalize()
 	if poller != nil {
 		poller.ArmAwait(correlationID)
 		defer poller.ArmAwait(0)
@@ -83,9 +83,9 @@ func AwaitControlResponse(
 	return awaitMatchedControlResponse(
 		ctx,
 		aeronClient,
-		archiveCtx,
+		cfg,
 		pollFn,
-		archiveCtx.ControlResponseTimeout,
+		cfg.ControlResponseTimeout,
 		correlationID,
 		ControlResponseAwaitOperation,
 		func() (codecs.ControlResponseFields, error, bool) {
@@ -100,7 +100,7 @@ func AwaitControlResponse(
 func awaitMatchedControlResponse(
 	ctx context.Context,
 	aeronClient *aeron.Client,
-	archiveCtx Context,
+	cfg Config,
 	pollFn func() int,
 	responseTimeout time.Duration,
 	correlationID int64,
@@ -115,7 +115,7 @@ func awaitMatchedControlResponse(
 	err := runControlAwaitLoop(
 		ctx,
 		aeronClient,
-		archiveCtx,
+		cfg,
 		pollFn,
 		responseTimeout,
 		correlationID,
@@ -136,12 +136,12 @@ func awaitMatchedControlResponse(
 	return matched, matchErr
 }
 
-// runControlAwaitLoop requires a normalized archiveCtx: it reads IdleStrategy
+// runControlAwaitLoop requires a normalized cfg: it reads IdleStrategy
 // without a nil fallback.
 func runControlAwaitLoop(
 	ctx context.Context,
 	aeronClient *aeron.Client,
-	archiveCtx Context,
+	cfg Config,
 	pollFn func() int,
 	responseTimeout time.Duration,
 	correlationID int64,
@@ -151,8 +151,8 @@ func runControlAwaitLoop(
 	if aeronClient == nil {
 		return errNilControlAeronClient
 	}
-	clock := resolveNanoClock(archiveCtx.AeronContext.NanoClock)
-	idle := archiveCtx.IdleStrategy
+	clock := resolveNanoClock(cfg.AeronConfig.NanoClock)
+	idle := cfg.IdleStrategy
 	defer idle.Reset()
 
 	startNs := clock()
@@ -188,7 +188,7 @@ func runControlAwaitLoop(
 func offerAndAwaitControlRequest(
 	ctx context.Context,
 	aeronClient *aeron.Client,
-	archiveCtx Context,
+	cfg Config,
 	pollFn func() int,
 	poller *ControlResponsePoller,
 	offerFn func() (int64, bool),
@@ -200,7 +200,7 @@ func offerAndAwaitControlRequest(
 		defer poller.ArmAwait(0)
 	}
 	if err := offerControlRequest(
-		ctx, aeronClient, archiveCtx, pollFn, offerFn,
+		ctx, aeronClient, cfg, pollFn, offerFn,
 	); err != nil {
 		return codecs.ControlResponseFields{}, err
 	}
@@ -208,7 +208,7 @@ func offerAndAwaitControlRequest(
 	return AwaitControlResponse(
 		ctx,
 		aeronClient,
-		archiveCtx,
+		cfg,
 		pollFn,
 		poller,
 		controlSessionID,
@@ -219,14 +219,14 @@ func offerAndAwaitControlRequest(
 func offerControlRequest(
 	ctx context.Context,
 	aeronClient *aeron.Client,
-	archiveCtx Context,
+	cfg Config,
 	pollFn func() int,
 	offerFn func() (int64, bool),
 ) error {
 	_, err := controlOfferUntilPositive(
 		ctx,
 		aeronClient,
-		archiveCtx,
+		cfg,
 		ControlOfferConfig{PollFn: pollFn},
 		func() int64 {
 			// Pass the raw position through: a retriable negative code (BackPressured,

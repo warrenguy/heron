@@ -13,10 +13,10 @@ func TestConductorConnectConfig_errorHandlerWrapsMappedErrors(t *testing.T) {
 	t.Parallel()
 
 	var received error
-	ctx := Context{
+	cfg := Config{
 		ErrorHandler: func(err error) { received = err },
 	}
-	config := ConductorConnectConfigForTest(ctx, testutil.TestClientID)
+	config := ConductorConnectConfigForTest(cfg, testutil.TestClientID)
 	require.NotNil(t, config.ErrorHandler)
 
 	staleErr := &conductor.DriverKeepaliveStaleError{

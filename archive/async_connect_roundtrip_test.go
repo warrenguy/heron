@@ -17,7 +17,7 @@ import (
 func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
+	harness, ac := newAsyncConnectFixture(t, func(cfg Config) Config { return cfg })
 	registerAsyncConnectClose(t, ac)
 
 	var connectWire []byte
@@ -52,12 +52,12 @@ func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 	require.Equal(t, connectCorrelation, authFields.CorrelationID)
 
 	keepAliveCorrelation := harness.Client.NextCorrelationID()
-	archiveCtx := result.Context
-	archiveCtx.ControlOfferRetryTimeout = 5 * time.Second
+	cfg := result.Config
+	cfg.ControlOfferRetryTimeout = 5 * time.Second
 	pos, err := controlOfferUntilPositive(
 		t.Context(),
 		harness.Client,
-		archiveCtx,
+		cfg,
 		ControlOfferConfig{PollFn: result.Poller.Poll},
 		func() int64 {
 			position, _ := result.Proxy.TryKeepAlive(
@@ -95,7 +95,7 @@ func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 func TestAsyncConnect_happyPathIPC(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
+	harness, ac := newAsyncConnectFixture(t, func(cfg Config) Config { return cfg })
 	registerAsyncConnectClose(t, ac)
 
 	result, err := pollAsyncConnectUntil(t, ac, harness, func(ac *AsyncConnect) {
@@ -145,7 +145,7 @@ func (state *asyncConnectChallengeRoundTripState) onStep(
 func TestAsyncConnect_challengeRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := newAsyncConnectFixture(t, func(archiveCtx Context) Context { return archiveCtx })
+	harness, ac := newAsyncConnectFixture(t, func(cfg Config) Config { return cfg })
 	registerAsyncConnectClose(t, ac)
 
 	var roundTrip asyncConnectChallengeRoundTripState

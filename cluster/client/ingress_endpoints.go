@@ -161,12 +161,12 @@ func IngressPortForMember(
 // sizes only: member ids are slice indices and must fit int32 for
 // ParseIngressEndpoints roundtrip.
 //
-// UDP ingress only. For IPC or ipcx channels, leave ClusterContext.IngressEndpoints
+// UDP ingress only. For IPC or ipcx channels, leave Config.IngressEndpoints
 // empty; Validate rejects non-empty endpoints on passthrough channels
-// (validateClusterIngressEndpoints in context.go).
+// (validateClusterIngressEndpoints in config.go).
 //
-// Intended for ClusterContext.IngressEndpoints on UDP channels without ?endpoint=.
-// May be validated with ParseIngressEndpoints before assigning to ClusterContext.
+// Intended for Config.IngressEndpoints on UDP channels without ?endpoint=.
+// May be validated with ParseIngressEndpoints before assigning to Config.
 //
 // Not used on offer/poll hot paths.
 func FormatIngressEndpointsFromHostnames(
@@ -188,11 +188,11 @@ func FormatIngressEndpointsFromHostnames(
 	return b.String()
 }
 
-// NewMemberIngressMapFromContext parses clusterCtx.IngressEndpoints.
+// NewMemberIngressMapFromConfig parses cfg.IngressEndpoints.
 //
-// Caller should pass a normalized context; structural validation (IPC+endpoints,
+// Caller should pass a normalized config; structural validation (IPC+endpoints,
 // UDP endpoint= with ingress map) is enforced by Validate, not here. Invalid endpoint
 // grammar returns a parse error.
-func NewMemberIngressMapFromContext(clusterCtx ClusterContext) (MemberIngressMap, error) {
-	return ParseIngressEndpoints(clusterCtx.IngressEndpoints)
+func NewMemberIngressMapFromConfig(cfg Config) (MemberIngressMap, error) {
+	return ParseIngressEndpoints(cfg.IngressEndpoints)
 }

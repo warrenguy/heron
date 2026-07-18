@@ -23,7 +23,7 @@ package aeron
 // from Java Aeron, which delivers nested image handlers.
 //
 // Panics in the handler are recovered during Client.DoWork. When
-// Context.ErrorHandler is non-nil, the recovered value is delivered there. A nil
+// Config.ErrorHandler is non-nil, the recovered value is delivered there. A nil
 // ErrorHandler discards the panic silently and the conductor continues.
 //
 // Unlike Image.Poll fragment handlers, panics do not propagate to the caller.

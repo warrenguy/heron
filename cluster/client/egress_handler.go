@@ -66,7 +66,7 @@ type EgressHandler interface {
 // bytes.Clone copy retain-safe after return. A nil EgressHandler interface value or typed-nil
 // *EgressHandlers fails validation.
 //
-// Store *EgressHandlers in ClusterContext.EgressHandler (or keep one pointer when
+// Store *EgressHandlers in Config.EgressHandler (or keep one pointer when
 // setting func fields after construction). Assigning a struct value copies handler
 // state; later field writes on the original variable do not update the interface.
 type EgressHandlers struct {

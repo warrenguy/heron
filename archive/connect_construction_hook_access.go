@@ -12,16 +12,16 @@ import (
 
 var connectConstructionHooksMap = testhook.NewRegistry[
 	string,
-	func(Context) (*aeron.Client, error),
+	func(Config) (*aeron.Client, error),
 ]()
 
 // SetConnectConstructionHooksForTest registers owned-client connect overrides keyed by
-// archiveCtx.AeronDir or archiveCtx.AeronContext.AeronDir. Each parallel test must use a
+// cfg.AeronDir or cfg.AeronConfig.AeronDir. Each parallel test must use a
 // distinct AeronDir such as t.TempDir().
 func SetConnectConstructionHooksForTest(
 	tb testing.TB,
 	aeronDir string,
-	ownedClientFactory func(Context) (*aeron.Client, error),
+	ownedClientFactory func(Config) (*aeron.Client, error),
 ) {
 	tb.Helper()
 	if aeronDir == "" {
@@ -31,20 +31,20 @@ func SetConnectConstructionHooksForTest(
 	tb.Cleanup(func() { connectConstructionHooksMap.Delete(aeronDir) })
 }
 
-func ownedConnectClientFactoryForContext(
-	archiveCtx Context,
-) (func(Context) (*aeron.Client, error), bool) {
-	factory := connectConstructionHooksMap.Load(archiveAeronDir(archiveCtx))
+func ownedConnectClientFactoryForConfig(
+	cfg Config,
+) (func(Config) (*aeron.Client, error), bool) {
+	factory := connectConstructionHooksMap.Load(archiveAeronDir(cfg))
 	return factory, factory != nil
 }
 
-// ConcludeContextForTest exercises concludeContext during connect tests.
+// ConcludeConfigForTest exercises concludeConfig during connect tests.
 //
 // ctx bounds owned transport attach; tests that inject Aeron or factories
 // may pass context.Background().
-func ConcludeContextForTest(
+func ConcludeConfigForTest(
 	ctx context.Context,
-	archiveCtx Context,
-) (Context, *aeron.Client, bool, error) {
-	return concludeContext(ctx, archiveCtx)
+	cfg Config,
+) (Config, *aeron.Client, bool, error) {
+	return concludeConfig(ctx, cfg)
 }

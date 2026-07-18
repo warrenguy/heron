@@ -27,7 +27,7 @@ func (h *lifecycleHarness) newClient() *Client {
 		controlSubscription: h.sub,
 		controlAssembler:    h.assembler,
 		aeronClient:         h.client,
-		archiveCtx:          h.archiveCtx,
+		cfg:                 h.cfg,
 	}
 }
 
@@ -151,7 +151,7 @@ func TestStartReplay_timeout(t *testing.T) {
 	h := newLifecycleHarness(t)
 	targets := h.responseTargets()
 	pollFn := func() int {
-		h.nowNs.Add(int64(h.archiveCtx.ControlResponseTimeout))
+		h.nowNs.Add(int64(h.cfg.ControlResponseTimeout))
 		return h.demuxPoll(targets)
 	}
 
@@ -173,7 +173,7 @@ func TestStopReplay_timeout(t *testing.T) {
 	h := newLifecycleHarness(t)
 	targets := h.responseTargets()
 	pollFn := func() int {
-		h.nowNs.Add(int64(h.archiveCtx.ControlResponseTimeout))
+		h.nowNs.Add(int64(h.cfg.ControlResponseTimeout))
 		return h.demuxPoll(targets)
 	}
 

@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	// Literal from cluster/client/context.go validateClusterIngressEndpoints.
+	// Literal from cluster/client/config.go validateClusterIngressEndpoints.
 	errUDPIngressEndpointWithMap = "cluster client: IngressChannel must not use ?endpoint= " +
 		"when IngressEndpoints is configured"
 )
@@ -76,32 +76,32 @@ func TestFailoverHarnessConstants(t *testing.T) {
 	})
 }
 
-func TestFailoverHarnessClusterContext_udpDefaults(t *testing.T) {
-	clusterCtx := clusterjava.FailoverHarnessClusterContext()
+func TestFailoverHarnessConfig_udpDefaults(t *testing.T) {
+	cfg := clusterjava.FailoverHarnessConfig()
 
-	require.Equal(t, clusterjava.FailoverIngressChannel, clusterCtx.IngressChannel)
-	require.Equal(t, clusterjava.FailoverEgressChannel, clusterCtx.EgressChannel)
-	require.Equal(t, clusterjava.FailoverIngressEndpoints, clusterCtx.IngressEndpoints)
-	require.Equal(t, clusterjava.FailoverNewLeaderTimeout, clusterCtx.NewLeaderTimeout)
-	require.Equal(t, clusterjava.FailoverNewLeaderTimeout, clusterCtx.MessageTimeout)
-	require.Empty(t, clusterCtx.AeronDir)
-	require.Empty(t, clusterCtx.AeronContext.AeronDir)
-	require.Zero(t, clusterCtx.IngressStreamID)
-	require.Zero(t, clusterCtx.ResponseStreamID)
+	require.Equal(t, clusterjava.FailoverIngressChannel, cfg.IngressChannel)
+	require.Equal(t, clusterjava.FailoverEgressChannel, cfg.EgressChannel)
+	require.Equal(t, clusterjava.FailoverIngressEndpoints, cfg.IngressEndpoints)
+	require.Equal(t, clusterjava.FailoverNewLeaderTimeout, cfg.NewLeaderTimeout)
+	require.Equal(t, clusterjava.FailoverNewLeaderTimeout, cfg.MessageTimeout)
+	require.Empty(t, cfg.AeronDir)
+	require.Empty(t, cfg.AeronConfig.AeronDir)
+	require.Zero(t, cfg.IngressStreamID)
+	require.Zero(t, cfg.ResponseStreamID)
 
-	clusterCtx = clusterCtx.Normalize()
+	cfg = cfg.Normalize()
 
-	require.Equal(t, clusterjava.IngressStreamID, clusterCtx.IngressStreamID)
-	require.Equal(t, clusterjava.EgressStreamID, clusterCtx.ResponseStreamID)
-	require.NoError(t, clusterCtx.ValidateForConnect())
+	require.Equal(t, clusterjava.IngressStreamID, cfg.IngressStreamID)
+	require.Equal(t, clusterjava.EgressStreamID, cfg.ResponseStreamID)
+	require.NoError(t, cfg.ValidateForConnect())
 }
 
-func TestFailoverHarnessClusterContext_validateForConnect(t *testing.T) {
-	clusterCtx := clusterjava.FailoverHarnessClusterContext()
-	clusterCtx.IngressChannel = "aeron:udp?endpoint=cluster-0:9002"
-	clusterCtx.EgressChannel = clusterjava.EgressChannel
+func TestFailoverHarnessConfig_validateForConnect(t *testing.T) {
+	cfg := clusterjava.FailoverHarnessConfig()
+	cfg.IngressChannel = "aeron:udp?endpoint=cluster-0:9002"
+	cfg.EgressChannel = clusterjava.EgressChannel
 
-	err := clusterCtx.Normalize().ValidateForConnect()
+	err := cfg.Normalize().ValidateForConnect()
 	require.EqualError(t, err, errUDPIngressEndpointWithMap)
 }
 

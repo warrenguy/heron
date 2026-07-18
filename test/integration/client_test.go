@@ -31,7 +31,7 @@ func assertAddRejectedAfterClose(
 	t.Helper()
 
 	// Client must stay closed; ConnectClient cleanup would re-close.
-	client, err := aeron.Connect(t.Context(), aeron.Context{AeronDir: md.Dir})
+	client, err := aeron.Connect(t.Context(), aeron.Config{AeronDir: md.Dir})
 	require.NoError(t, err)
 	require.NoError(t, client.Close())
 	require.Zero(t, client.DoWork())
@@ -52,7 +52,7 @@ func assertLookupHitThenMissAfterClose(
 ) {
 	t.Helper()
 
-	client := harness.ConnectClient(t, md, aeron.Context{})
+	client := harness.ConnectClient(t, md, aeron.Config{})
 
 	handle, closeFn := setup(client, streamID)
 	regID := handle.RegistrationID()
@@ -77,7 +77,7 @@ func assertLookupHitThenMissAfterClose(
 func TestClientAddPublicationIPC(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client := harness.ConnectClient(t, md, aeron.Context{})
+	client := harness.ConnectClient(t, md, aeron.Config{})
 
 	const streamID int32 = 7101
 	pub, err := client.AddPublication(streamID, harness.IPCChannel)
@@ -99,7 +99,7 @@ func TestClientAddPublicationIPC(t *testing.T) {
 func TestClientAddPublicationIsConnectedEventually(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client := harness.ConnectClient(t, md, aeron.Context{})
+	client := harness.ConnectClient(t, md, aeron.Config{})
 
 	const streamID int32 = 7102
 	pub, err := client.AddPublication(streamID, harness.IPCChannel)
@@ -125,7 +125,7 @@ func TestClientAddPublicationIsConnectedEventually(t *testing.T) {
 func TestClientAddExclusivePublicationIPC(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client := harness.ConnectClient(t, md, aeron.Context{})
+	client := harness.ConnectClient(t, md, aeron.Config{})
 
 	const streamID int32 = 7201
 	pub, err := client.AddExclusivePublication(streamID, harness.IPCChannel)
@@ -147,7 +147,7 @@ func TestClientAddExclusivePublicationIPC(t *testing.T) {
 func TestClientAddExclusivePublicationIsConnectedEventually(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client := harness.ConnectClient(t, md, aeron.Context{})
+	client := harness.ConnectClient(t, md, aeron.Config{})
 
 	const streamID int32 = 7203
 	pub, err := client.AddExclusivePublication(streamID, harness.IPCChannel)
@@ -200,11 +200,11 @@ func TestExclusivePublicationIPCRoundtrip(t *testing.T) {
 func TestExclusivePublicationIPCTwoClientsRoundtrip(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	splitClientCtx := aeron.Context{
+	splitClientCfg := aeron.Config{
 		InterServiceTimeout: harness.ConnectedPollTimeout,
 	}
-	pubClient, hadPubClientError := harness.ConnectIPCClientContext(t, md, splitClientCtx)
-	subClient, hadSubClientError := harness.ConnectIPCClientContext(t, md, splitClientCtx)
+	pubClient, hadPubClientError := harness.ConnectIPCClientConfig(t, md, splitClientCfg)
+	subClient, hadSubClientError := harness.ConnectIPCClientConfig(t, md, splitClientCfg)
 
 	const (
 		streamID     = harness.ExclusivePublicationTwoClientsRoundtripStreamID
@@ -267,7 +267,7 @@ func TestClientAddExclusivePublicationRejectedAfterClose(t *testing.T) {
 func TestClientAddSubscriptionIPC(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client := harness.ConnectClient(t, md, aeron.Context{})
+	client := harness.ConnectClient(t, md, aeron.Config{})
 
 	const streamID int32 = 7103
 	sub, err := client.AddSubscription(streamID, harness.IPCChannel)
@@ -353,7 +353,7 @@ func TestClientSubscriptionLookupByRegID(t *testing.T) {
 func TestClientStayAlive(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client, err := aeron.Connect(t.Context(), aeron.Context{
+	client, err := aeron.Connect(t.Context(), aeron.Config{
 		AeronDir: md.Dir,
 		ErrorHandler: func(err error) {
 			require.FailNow(t, "unexpected client error during stay-alive", "%v", err)
@@ -382,7 +382,7 @@ func TestClientDetectsDriverDeath(t *testing.T) {
 
 	driverTimeout := 2 * time.Second
 	var gotErr error
-	client, err := aeron.Connect(t.Context(), aeron.Context{
+	client, err := aeron.Connect(t.Context(), aeron.Config{
 		AeronDir:      md.Dir,
 		DriverTimeout: driverTimeout,
 		ErrorHandler: func(err error) {
@@ -422,7 +422,7 @@ func TestClientDetectsDriverDeath(t *testing.T) {
 func TestClientReadsSystemCounters(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client, err := aeron.Connect(t.Context(), aeron.Context{
+	client, err := aeron.Connect(t.Context(), aeron.Config{
 		AeronDir: md.Dir,
 	})
 	require.NoError(t, err)
@@ -441,7 +441,7 @@ func TestClientReadsSystemCounters(t *testing.T) {
 func TestClientErrorLogReadable(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client, err := aeron.Connect(t.Context(), aeron.Context{
+	client, err := aeron.Connect(t.Context(), aeron.Config{
 		AeronDir: md.Dir,
 	})
 	require.NoError(t, err)
@@ -460,9 +460,9 @@ func TestClientErrorLogReadable(t *testing.T) {
 func TestClientTwoClientsSameDriver(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	clientA, err := aeron.Connect(t.Context(), aeron.Context{AeronDir: md.Dir})
+	clientA, err := aeron.Connect(t.Context(), aeron.Config{AeronDir: md.Dir})
 	require.NoError(t, err)
-	clientB, err := aeron.Connect(t.Context(), aeron.Context{AeronDir: md.Dir})
+	clientB, err := aeron.Connect(t.Context(), aeron.Config{AeronDir: md.Dir})
 	require.NoError(t, err)
 
 	clientIDA := clientA.ClientId()
@@ -491,7 +491,7 @@ func TestTwoClientsConcurrentRingOffers(t *testing.T) {
 	// Orphan ToClients responses from raw NextAvailableSessionID offers need a short
 	// DriverTimeout and explicit DoWork pump before Close; ring drain shares that budget.
 	var hadClientError atomic.Bool
-	connectCtx := aeron.Context{
+	connectCfg := aeron.Config{
 		AeronDir:      md.Dir,
 		DriverTimeout: harness.CommandPollDeadline,
 		ErrorHandler: func(err error) {
@@ -499,9 +499,9 @@ func TestTwoClientsConcurrentRingOffers(t *testing.T) {
 		},
 	}
 
-	clientA, err := aeron.Connect(t.Context(), connectCtx)
+	clientA, err := aeron.Connect(t.Context(), connectCfg)
 	require.NoError(t, err)
-	clientB, err := aeron.Connect(t.Context(), connectCtx)
+	clientB, err := aeron.Connect(t.Context(), connectCfg)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		if !t.Failed() {

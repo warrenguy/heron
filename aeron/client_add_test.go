@@ -93,10 +93,10 @@ func TestConductorFixtureConfigFromConnect_propagatesSubscriberErrorHandler(t *t
 	t.Parallel()
 
 	var subscriberCalls int
-	ctx := Context{
+	cfg := Config{
 		ErrorHandler: func(error) { subscriberCalls++ },
 	}
-	connectConfig := ConductorConnectConfigForTest(ctx, testutil.TestClientID)
+	connectConfig := ConductorConnectConfigForTest(cfg, testutil.TestClientID)
 	fixtureConfig := conductorFixtureConfigFromConnect(connectConfig)
 	require.NotNil(t, fixtureConfig.SubscriberErrorHandler)
 	fixtureConfig.SubscriberErrorHandler(errors.New("subscriber-side fault"))
@@ -104,21 +104,21 @@ func TestConductorFixtureConfigFromConnect_propagatesSubscriberErrorHandler(t *t
 	require.NotNil(t, fixtureConfig.ErrorHandler)
 }
 
-// newClientAddFixtureWithContext wires the conductor fixture from
+// newClientAddFixtureWithConfig wires the conductor fixture from
 // ConductorConnectConfigForTest (production Connect path) and overrides only
 // test timing: NanoClock->0, DriverTimeout->1s, IdleSleepDuration->1ms.
-func newClientAddFixtureWithContext(
+func newClientAddFixtureWithConfig(
 	tb testing.TB,
-	ctx Context,
+	cfg Config,
 ) (*Client, *testutil.ConductorFixture) {
 	tb.Helper()
 
-	connectCtx := ctx
-	if connectCtx.AeronDir == "" {
-		connectCtx.AeronDir = tb.TempDir()
+	connectCfg := cfg
+	if connectCfg.AeronDir == "" {
+		connectCfg.AeronDir = tb.TempDir()
 	}
 
-	connectConfig := ConductorConnectConfigForTest(connectCtx, testutil.TestClientID)
+	connectConfig := ConductorConnectConfigForTest(connectCfg, testutil.TestClientID)
 	config := conductorFixtureConfigFromConnect(connectConfig)
 	config.NanoClock = func() int64 { return 0 }
 	config.DriverTimeout = time.Second

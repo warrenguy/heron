@@ -3,7 +3,7 @@ package client
 import "github.com/warrenguy/heron/idlestrategy"
 
 // SpinOnce runs one duty-cycle iteration: DoWork, PollEgress, then idle pacing via
-// the session context IdleStrategy. Returns the PollEgress work count.
+// the session config IdleStrategy. Returns the PollEgress work count.
 //
 // DoWork runs before PollEgress so conductor work is pumped before egress is polled.
 //
@@ -19,7 +19,7 @@ func (ac *AeronCluster) SpinOnce() int {
 	if ac == nil {
 		return 0
 	}
-	return ac.spinOnce(ac.clusterCtx.IdleStrategy)
+	return ac.spinOnce(ac.cfg.IdleStrategy)
 }
 
 func (ac *AeronCluster) spinOnce(idle idlestrategy.IdleStrategy) int {

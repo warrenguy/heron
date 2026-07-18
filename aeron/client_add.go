@@ -13,7 +13,7 @@ import (
 //
 // Blocks until ON_PUBLICATION_READY is processed, the log is mmap'd, and the
 // Publication handle is inserted into the conductor resource map, or until
-// Context.DriverTimeout elapses. DriverTimeout covers both to-driver ring offer
+// Config.DriverTimeout elapses. DriverTimeout covers both to-driver ring offer
 // retries and the wait for the driver response; sustained ring backpressure can
 // shorten the response poll window.
 //
@@ -41,7 +41,7 @@ func (client *Client) AddPublication(streamID int32, channel string) (*Publicati
 //
 // Blocks until ON_EXCLUSIVE_PUBLICATION_READY is processed, the log is mmap'd, and
 // the ExclusivePublication handle is inserted into the conductor resource map, or
-// until Context.DriverTimeout elapses. DriverTimeout covers both to-driver ring
+// until Config.DriverTimeout elapses. DriverTimeout covers both to-driver ring
 // offer retries and the wait for the driver response; sustained ring backpressure
 // can shorten the response poll window.
 //
@@ -71,7 +71,7 @@ func (client *Client) AddExclusivePublication(
 // AddSubscription registers a subscription on channel/streamID.
 //
 // Blocks until ON_SUBSCRIPTION_READY is processed and the Subscription handle
-// is inserted into the resource map, or until Context.DriverTimeout elapses.
+// is inserted into the resource map, or until Config.DriverTimeout elapses.
 // DriverTimeout covers both to-driver ring offer retries and the wait for the
 // driver response; sustained ring backpressure can shorten the response poll
 // window.

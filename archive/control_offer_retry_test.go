@@ -166,7 +166,7 @@ func TestControlOfferUntilPositive_backPressuredRetry(t *testing.T) {
 			pos, err := controlOfferUntilPositive(
 				t.Context(),
 				harness.Client,
-				Context{}.Normalize(),
+				Config{}.Normalize(),
 				tc.cfg(idle),
 				func() int64 {
 					return seqPub.Offer(nil)
@@ -187,7 +187,7 @@ func TestControlOfferUntilPositive_immediateSuccess(t *testing.T) {
 	pos, err := controlOfferUntilPositive(
 		t.Context(),
 		harness.Client,
-		Context{}.Normalize(),
+		Config{}.Normalize(),
 		ControlOfferConfig{IdleStrategy: idle},
 		func() int64 { return seqPub.Offer(nil) },
 	)
@@ -206,7 +206,7 @@ func TestControlOfferUntilPositive_pollFnOnRetriable(t *testing.T) {
 	pos, err := controlOfferUntilPositive(
 		t.Context(),
 		harness.Client,
-		Context{}.Normalize(),
+		Config{}.Normalize(),
 		ControlOfferConfig{
 			PollFn: func() int {
 				pollCalls++
@@ -227,7 +227,7 @@ func TestControlOfferUntilPositive_adminActionThenSuccess(t *testing.T) {
 	pos, err := controlOfferUntilPositive(
 		t.Context(),
 		harness.Client,
-		Context{}.Normalize(),
+		Config{}.Normalize(),
 		ControlOfferConfig{IdleStrategy: idle},
 		func() int64 { return seqPub.Offer(nil) },
 	)
@@ -255,7 +255,7 @@ func TestControlOfferUntilPositive_terminalNoRetry(t *testing.T) {
 			_, err := controlOfferUntilPositive(
 				t.Context(),
 				harness.Client,
-				Context{}.Normalize(),
+				Config{}.Normalize(),
 				ControlOfferConfig{},
 				func() int64 { return seqPub.Offer(nil) },
 			)
@@ -285,7 +285,7 @@ func TestControlOfferUntilPositive_timeout(t *testing.T) {
 		_, err := controlOfferUntilPositive(
 			t.Context(),
 			harness.Client,
-			Context{ControlOfferRetryTimeout: time.Millisecond}.Normalize(),
+			Config{ControlOfferRetryTimeout: time.Millisecond}.Normalize(),
 			ControlOfferConfig{
 				IdleStrategy: idle,
 				NanoClock:    func() int64 { return nowNs.Load() },
@@ -317,7 +317,7 @@ func TestControlOfferUntilPositive_timeout(t *testing.T) {
 		_, err := controlOfferUntilPositive(
 			t.Context(),
 			harness.Client,
-			Context{ControlOfferRetryTimeout: timeout}.Normalize(),
+			Config{ControlOfferRetryTimeout: timeout}.Normalize(),
 			ControlOfferConfig{
 				IdleStrategy: idle,
 				NanoClock:    func() int64 { return nowNs.Load() },
@@ -345,7 +345,7 @@ func TestControlOfferUntilPositive_timeoutZeroUsesDefault(t *testing.T) {
 	_, err := controlOfferUntilPositive(
 		t.Context(),
 		harness.Client,
-		Context{},
+		Config{},
 		ControlOfferConfig{
 			NanoClock: func() int64 { return nowNs.Load() },
 		},
@@ -375,7 +375,7 @@ func TestControlOfferUntilPositive_expiredDeadlineAttemptsOnce(t *testing.T) {
 	_, err := controlOfferUntilPositive(
 		t.Context(),
 		harness.Client,
-		Context{ControlOfferRetryTimeout: time.Millisecond}.Normalize(),
+		Config{ControlOfferRetryTimeout: time.Millisecond}.Normalize(),
 		ControlOfferConfig{
 			NanoClock: clockFn,
 		},
@@ -402,9 +402,9 @@ func TestControlOfferUntilPositive_cfgNanoClockOverride(t *testing.T) {
 	_, err := controlOfferUntilPositive(
 		t.Context(),
 		harness.Client,
-		Context{
+		Config{
 			ControlOfferRetryTimeout: time.Millisecond,
-			AeronContext: aeron.Context{
+			AeronConfig: aeron.Config{
 				NanoClock: func() int64 { return frozenNs },
 			},
 		}.Normalize(),
@@ -420,7 +420,7 @@ func TestControlOfferUntilPositive_cfgNanoClockOverride(t *testing.T) {
 	require.Equal(t, 1, idle.resetCalls)
 }
 
-func TestControlOfferUntilPositive_sessionContextFallback(t *testing.T) {
+func TestControlOfferUntilPositive_sessionConfigFallback(t *testing.T) {
 	const timeout = time.Millisecond
 	harness, nowNs := controlOfferRetryHarnessWithNanoClock(t, 7_000_000_000)
 	sessionIdle := &recordingControlIdleStrategy{}
@@ -435,10 +435,10 @@ func TestControlOfferUntilPositive_sessionContextFallback(t *testing.T) {
 	_, err := controlOfferUntilPositive(
 		t.Context(),
 		harness.Client,
-		Context{
+		Config{
 			ControlOfferRetryTimeout: timeout,
 			IdleStrategy:             sessionIdle,
-			AeronContext: aeron.Context{
+			AeronConfig: aeron.Config{
 				NanoClock: func() int64 { return nowNs.Load() },
 			},
 		},
@@ -446,8 +446,8 @@ func TestControlOfferUntilPositive_sessionContextFallback(t *testing.T) {
 		offerFn,
 	)
 	requireControlTimeout(t, err, aeron.BackPressured, timeout)
-	require.Equal(t, 4, offerCalls, "empty cfg deadline runs on session context clock")
-	require.Equal(t, 4, sessionIdle.totalIdleCalls, "empty cfg paces via session context idle")
+	require.Equal(t, 4, offerCalls, "empty cfg deadline runs on session AeronConfig.NanoClock")
+	require.Equal(t, 4, sessionIdle.totalIdleCalls, "empty cfg paces via session Config.IdleStrategy")
 	require.Equal(t, 1, sessionIdle.resetCalls)
 }
 
@@ -466,7 +466,7 @@ func TestControlOfferUntilPositive_terminalAfterRetriableRetry(t *testing.T) {
 	_, err := controlOfferUntilPositive(
 		t.Context(),
 		harness.Client,
-		Context{}.Normalize(),
+		Config{}.Normalize(),
 		ControlOfferConfig{},
 		offerFn,
 	)
@@ -482,7 +482,7 @@ func TestControlOfferUntilPositive_terminalAfterCancel(t *testing.T) {
 	pos, err := controlOfferUntilPositive(
 		cancelCtx,
 		harness.Client,
-		Context{}.Normalize(),
+		Config{}.Normalize(),
 		ControlOfferConfig{},
 		func() int64 {
 			cancel()
@@ -516,7 +516,7 @@ func TestControlOfferUntilPositive_nilGuards(t *testing.T) {
 			pos, err := controlOfferUntilPositive(
 				t.Context(),
 				tc.aeronClient,
-				Context{}.Normalize(),
+				Config{}.Normalize(),
 				ControlOfferConfig{},
 				tc.offerFn,
 			)
@@ -539,7 +539,7 @@ func TestControlOfferUntilPositive_contextCanceled(t *testing.T) {
 		pos, err := controlOfferUntilPositive(
 			cancelCtx,
 			harness.Client,
-			Context{}.Normalize(),
+			Config{}.Normalize(),
 			ControlOfferConfig{IdleStrategy: idle},
 			func() int64 {
 				offerCalls++
@@ -572,7 +572,7 @@ func TestControlOfferUntilPositive_contextCanceled(t *testing.T) {
 		pos, err := controlOfferUntilPositive(
 			cancelCtx,
 			harness.Client,
-			Context{}.Normalize(),
+			Config{}.Normalize(),
 			ControlOfferConfig{},
 			offerFn,
 		)
@@ -598,7 +598,7 @@ func TestControlOfferUntilPositive_contextDeadline(t *testing.T) {
 		pos, err := controlOfferUntilPositive(
 			deadlineCtx,
 			harness.Client,
-			Context{}.Normalize(),
+			Config{}.Normalize(),
 			ControlOfferConfig{IdleStrategy: idle},
 			func() int64 {
 				offerCalls++
@@ -621,7 +621,7 @@ func TestControlOfferUntilPositive_contextDeadline(t *testing.T) {
 		pos, err := controlOfferUntilPositive(
 			deadlineCtx,
 			harness.Client,
-			Context{}.Normalize(),
+			Config{}.Normalize(),
 			ControlOfferConfig{
 				NanoClock: func() int64 { return time.Now().UnixNano() },
 			},
@@ -652,7 +652,7 @@ func TestControlOfferUntilPositive_contextDeadline(t *testing.T) {
 		_, err := controlOfferUntilPositive(
 			deadlineCtx,
 			harness.Client,
-			Context{ControlOfferRetryTimeout: timeout}.Normalize(),
+			Config{ControlOfferRetryTimeout: timeout}.Normalize(),
 			ControlOfferConfig{
 				NanoClock: func() int64 { return nowNs.Load() },
 			},
@@ -663,15 +663,15 @@ func TestControlOfferUntilPositive_contextDeadline(t *testing.T) {
 	})
 }
 
-func TestClient_Context_nilReceiver(t *testing.T) {
+func TestClient_Config_nilReceiver(t *testing.T) {
 	var client *Client
-	require.Equal(t, Context{}, client.Context())
+	require.Equal(t, Config{}, client.Config())
 }
 
-func TestClient_Context_returnsSessionCtx(t *testing.T) {
-	want := Context{ControlOfferRetryTimeout: 3 * time.Second}.Normalize()
-	client := newClient(&ConnectResult{Context: want})
-	require.Equal(t, want, client.Context())
+func TestClient_Config_returnsSessionConfig(t *testing.T) {
+	want := Config{ControlOfferRetryTimeout: 3 * time.Second}.Normalize()
+	client := newClient(&ConnectResult{Config: want})
+	require.Equal(t, want, client.Config())
 }
 
 func TestClient_ControlOfferUntilPositive_nilSession(t *testing.T) {
@@ -695,7 +695,7 @@ func TestClient_ControlOfferUntilPositive_emptyCfgUsesSessionIdle(t *testing.T) 
 	harness, seqPub := controlOfferRetryHarnessWithSequentialOffers(t, aeron.BackPressured, 100)
 	archive := newClient(&ConnectResult{
 		Aeron: harness.Client,
-		Context: Context{
+		Config: Config{
 			IdleStrategy: sessionIdle,
 		}.Normalize(),
 	})
@@ -714,8 +714,8 @@ func TestClient_ControlOfferUntilPositive_emptyCfgUsesSessionIdle(t *testing.T) 
 func TestClient_ControlOfferUntilPositive_withSessionPoll(t *testing.T) {
 	harness, seqPub := controlOfferRetryHarnessWithSequentialOffers(t, aeron.BackPressured, 100)
 	archive := newClient(&ConnectResult{
-		Aeron:   harness.Client,
-		Context: Context{}.Normalize(),
+		Aeron:  harness.Client,
+		Config: Config{}.Normalize(),
 	})
 	var pollCalls int
 	// Inline poll fn substitutes for archive.Poll so poll invocations are countable;
@@ -763,7 +763,7 @@ func TestClient_ControlOfferUntilPositive_closedSession(t *testing.T) {
 		archive := newClient(&ConnectResult{
 			Aeron:           harness.Client,
 			OwnsAeronClient: false,
-			Context:         Context{}.Normalize(),
+			Config:          Config{}.Normalize(),
 		})
 		require.NoError(t, archive.Close())
 		require.NotNil(t, archive.aeronClient)

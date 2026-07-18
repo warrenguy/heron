@@ -42,12 +42,12 @@ func (ac *AsyncConnect) ControlResponseSubscriptionForTest() *aeron.Subscription
 	return ac.transport.responseSubscription
 }
 
-// ContextForTest exposes the concluded archive context during connect tests.
-func (ac *AsyncConnect) ContextForTest() Context {
+// ConfigForTest exposes the concluded archive config during connect tests.
+func (ac *AsyncConnect) ConfigForTest() Config {
 	if ac == nil {
-		return Context{}
+		return Config{}
 	}
-	return ac.archiveCtx
+	return ac.cfg
 }
 
 // ControlResponseRegIDForTest exposes the control response async add registration id.

@@ -22,7 +22,7 @@ func (client *Client) OfferWithRetry(
 // Sleeps [DefaultIdleSleepDuration] on BackPressured and NotConnected.
 //
 // Stall detection: if BackPressured or AdminAction persists without position advance for
-// [OfferStallTimeout] of the effective bound (the earlier of [Context.PublicationOfferTimeout] and
+// [OfferStallTimeout] of the effective bound (the earlier of [Config.PublicationOfferTimeout] and
 // ctx.Deadline()), maps to [PreferContextError] over [OfferStallError].
 //
 // Terminal codes (Closed, MaxPositionExceeded, UnsupportedMessageLength, unknown negatives)

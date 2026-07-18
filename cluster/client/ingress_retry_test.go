@@ -67,8 +67,8 @@ func clusterWithAtomicNanoClock(
 	nowNs.Store(startNs)
 	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
 		withAtomicNanoClock(result, nowNs)
-		mutateConnectContext(result, func(clusterCtx *ClusterContext) {
-			clusterCtx.IngressRetryTimeout = ingressRetryTimeout
+		mutateConnectConfig(result, func(cfg *Config) {
+			cfg.IngressRetryTimeout = ingressRetryTimeout
 		})
 	})
 	return ac, nowNs
@@ -259,9 +259,9 @@ func TestIngressOfferUntilPositive_cfgNanoClockOverride(t *testing.T) {
 
 	idle := &recordingIdleStrategy{}
 	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-		mutateConnectContext(result, func(clusterCtx *ClusterContext) {
-			clusterCtx.AeronContext.NanoClock = func() int64 { return frozenNs }
-			clusterCtx.IngressRetryTimeout = time.Millisecond
+		mutateConnectConfig(result, func(cfg *Config) {
+			cfg.AeronConfig.NanoClock = func() int64 { return frozenNs }
+			cfg.IngressRetryTimeout = time.Millisecond
 		})
 	})
 	doWorkCount := setupIngressRetryDoWorkRecorder(t)
@@ -306,8 +306,8 @@ func TestIngressOfferUntilPositive_expiredDeadlineAttemptsOnce(t *testing.T) {
 		return startNs + int64(time.Hour)
 	}
 	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-		mutateConnectContext(result, func(clusterCtx *ClusterContext) {
-			clusterCtx.IngressRetryTimeout = time.Millisecond
+		mutateConnectConfig(result, func(cfg *Config) {
+			cfg.IngressRetryTimeout = time.Millisecond
 		})
 	})
 	var offerCalls int
@@ -406,11 +406,11 @@ func TestIngressOfferUntilPositive_terminalAfterCancel(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
-func TestIngressOfferUntilPositive_usesContextIdleStrategy(t *testing.T) {
+func TestIngressOfferUntilPositive_usesConfigIdleStrategy(t *testing.T) {
 	idle := &recordingIdleStrategy{}
 	var seqPub *sequentialOfferResultIngressPublication
 	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-		result.Context.IdleStrategy = idle
+		result.Config.IdleStrategy = idle
 		seqPub = withSequentialOfferResultIngress(
 			t,
 			result,

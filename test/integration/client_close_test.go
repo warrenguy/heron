@@ -18,7 +18,7 @@ const closeDrainSoakDuration = 500 * time.Millisecond
 func TestClientCloseLifecycle(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client, err := aeron.Connect(t.Context(), aeron.Context{AeronDir: md.Dir})
+	client, err := aeron.Connect(t.Context(), aeron.Config{AeronDir: md.Dir})
 	require.NoError(t, err)
 
 	require.NoError(t, client.Close())
@@ -32,7 +32,7 @@ func TestClientCloseOffersCLIENT_CLOSEOnLiveRing(t *testing.T) {
 	md, attach := harness.SharedAttachedCnc(t)
 	toDriver := attach.Rings.ToDriver
 
-	client := harness.ConnectClient(t, md, aeron.Context{})
+	client := harness.ConnectClient(t, md, aeron.Config{})
 	clientID := client.ClientId()
 	require.GreaterOrEqual(t, clientID, int64(0))
 
@@ -82,7 +82,7 @@ func TestClientCloseDrainsRegistrations(t *testing.T) {
 	md, attach := harness.SharedAttachedCnc(t)
 	toDriver := attach.Rings.ToDriver
 
-	client := harness.ConnectClient(t, md, aeron.Context{})
+	client := harness.ConnectClient(t, md, aeron.Config{})
 
 	streamID := harness.PubSubCloseDrainStreamID
 	pub, sub := setupIPCPubSubForCloseDrain(t, client, streamID)

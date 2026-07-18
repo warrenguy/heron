@@ -26,9 +26,9 @@ import (
 // Accessors, SpinOnce, and session ingress-retry helpers tolerate a nil receiver;
 // other methods require a non-nil receiver.
 type AeronCluster struct {
-	clusterCtx ClusterContext
-	aeron      *aeron.Client
-	ownsAeron  bool
+	cfg       Config
+	aeron     *aeron.Client
+	ownsAeron bool
 
 	clusterSessionID int64
 	leadershipTermID int64
@@ -73,7 +73,7 @@ type IngressClaim struct {
 
 // NewAeronCluster constructs a session from a successful ConnectResult.
 //
-// Runs result.Context.Normalize().Validate() -- requires non-nil EgressHandler.
+// Runs result.Config.Normalize().Validate() -- requires non-nil EgressHandler.
 // Rejects nil result, nil required handles, closed ingress/subscription handles,
 // or missing leader ingress publication. Transfers resource ownership from
 // ConnectResult into AeronCluster; after success the result's transport handles
@@ -101,8 +101,8 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 		return nil, errors.New("cluster client: egress image is closed")
 	}
 
-	clusterCtx := result.Context.Normalize()
-	if err := clusterCtx.Validate(); err != nil {
+	cfg := result.Config.Normalize()
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -135,10 +135,10 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 	}
 	controlScratchLen := max(closeWireLen, keepAliveWireLen, adminWireLen)
 
-	nanoClock := resolveNanoClock(clusterCtx.AeronContext.NanoClock)
+	nanoClock := resolveNanoClock(cfg.AeronConfig.NanoClock)
 
 	ac := &AeronCluster{
-		clusterCtx:         clusterCtx,
+		cfg:                cfg,
 		aeron:              result.Aeron,
 		ownsAeron:          result.OwnsAeronClient,
 		clusterSessionID:   result.ClusterSessionID,
@@ -153,11 +153,11 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 	}
 
 	ac.egressAdapter = newEgressAdapterWithHandler(
-		clusterCtx.EgressHandler,
+		cfg.EgressHandler,
 		result.ClusterSessionID,
 		result.EgressSubscription,
 		0,
-		clusterCtx.DirectAssemblers,
+		cfg.DirectAssemblers,
 		ac.dispatchSessionEgressFragment,
 	)
 
@@ -228,7 +228,7 @@ func (ac *AeronCluster) PollEgress() int {
 // session map after Close; publications are closed but entries are not removed.
 //
 // When the session owns the transport client (OwnsAeronClient on ConnectResult),
-// Close also closes Aeron. When Aeron was injected via ClusterContext.Aeron, the
+// Close also closes Aeron. When Aeron was injected via Config.Aeron, the
 // transport stays with the caller and Close does not close it.
 //
 // Idempotent after the first Close invocation.
@@ -324,12 +324,12 @@ func (ac *AeronCluster) EgressSubscription() *aeron.Subscription {
 	return ac.egressSubscription
 }
 
-// Context returns the normalized cluster context used by the session.
-func (ac *AeronCluster) Context() ClusterContext {
+// Config returns the normalized cluster config used by the session.
+func (ac *AeronCluster) Config() Config {
 	if ac == nil {
-		return ClusterContext{}
+		return Config{}
 	}
-	return ac.clusterCtx
+	return ac.cfg
 }
 
 // Aeron returns the transport client. Nil after Close when the session owned the client.
@@ -348,7 +348,7 @@ func (ac *AeronCluster) dispatchSessionEgressFragment(
 ) {
 	dispatchSessionEgressFragment(
 		ac,
-		ac.clusterCtx.EgressHandler,
+		ac.cfg.EgressHandler,
 		ac.clusterSessionID,
 		buffer,
 		offset,

@@ -10,7 +10,7 @@ func TestAwaitListRecording_nilDescriptorPollerReturnsError(t *testing.T) {
 	err := AwaitListRecording(
 		t.Context(),
 		nil,
-		Context{},
+		Config{},
 		func() int { return 0 },
 		nil,
 	)

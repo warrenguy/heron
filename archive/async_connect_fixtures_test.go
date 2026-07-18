@@ -41,12 +41,12 @@ const (
 
 var archiveConnectClientInfoLen = len(archiveConnectClientInfo(""))
 
-func validConnectFixtureContext() Context {
-	return Context{
+func validConnectFixtureConfig() Config {
+	return Config{
 		LocalControlChannel: DefaultLocalControlChannel,
 		CredentialsSupplier: NullCredentialsSupplier{},
 		IdleStrategy:        NewDefaultIdleStrategy(),
-		AeronContext: aeron.Context{
+		AeronConfig: aeron.Config{
 			NanoClock: func() int64 { return asyncConnectFixtureTimestamp },
 		},
 	}.Normalize()
@@ -54,15 +54,15 @@ func validConnectFixtureContext() Context {
 
 func newAsyncConnectFixture(
 	t *testing.T,
-	mutate func(Context) Context,
+	mutate func(Config) Config,
 ) (*aeron.AsyncConnectTestHarness, *AsyncConnect) {
 	t.Helper()
 
 	harness := aeron.NewAsyncConnectTestHarness(t)
-	archiveCtx := mutate(validConnectFixtureContext())
-	archiveCtx.Aeron = harness.Client
-	archiveCtx.ConnectTimeout = 30 * time.Second
-	ac, err := NewAsyncConnect(t.Context(), archiveCtx)
+	cfg := mutate(validConnectFixtureConfig())
+	cfg.Aeron = harness.Client
+	cfg.ConnectTimeout = 30 * time.Second
+	ac, err := NewAsyncConnect(t.Context(), cfg)
 	require.NoError(t, err)
 	return harness, ac
 }
@@ -375,7 +375,7 @@ func establishConnectWireBufferHighWater(
 	backing = buf[:cap(buf)]
 	largeWireLen := ac.ConnectWireLengthForTest()
 
-	ac.archiveCtx.CredentialsSupplier = asyncConnectCredentialsSupplier{
+	ac.cfg.CredentialsSupplier = asyncConnectCredentialsSupplier{
 		challengeLen: connectWireBufferSlackChallengeLen,
 	}
 	ac.wire.encodedChallenge = []byte("challenge")

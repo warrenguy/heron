@@ -45,5 +45,5 @@ type ConnectResult struct {
 
 	Aeron           *aeron.Client
 	OwnsAeronClient bool
-	Context         ClusterContext
+	Config          Config
 }

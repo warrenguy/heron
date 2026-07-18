@@ -16,11 +16,11 @@ const (
 
 	DefaultIdleSleepDuration = defaultIdleSleepDuration
 
-	// DefaultPollTimeout is the fallback for Context.PollTimeout when it is zero.
+	// DefaultPollTimeout is the fallback for Config.PollTimeout when it is zero.
 	DefaultPollTimeout = defaultPollTimeout
 )
 
-type Context struct {
+type Config struct {
 	AeronDir string
 
 	DriverTimeout       time.Duration
@@ -59,44 +59,44 @@ type Context struct {
 	UseConductorInvoker *bool
 }
 
-func (ctx Context) useConductorInvokerEnabled() bool {
-	if ctx.UseConductorInvoker == nil {
+func (cfg Config) useConductorInvokerEnabled() bool {
+	if cfg.UseConductorInvoker == nil {
 		return true
 	}
-	return *ctx.UseConductorInvoker
+	return *cfg.UseConductorInvoker
 }
 
-func normalizeContext(ctx Context) Context {
-	if ctx.DriverTimeout == 0 {
-		ctx.DriverTimeout = defaultDriverTimeout
+func normalizeConfig(cfg Config) Config {
+	if cfg.DriverTimeout == 0 {
+		cfg.DriverTimeout = defaultDriverTimeout
 	}
-	if ctx.KeepAliveInterval == 0 {
-		ctx.KeepAliveInterval = defaultKeepAliveInterval
+	if cfg.KeepAliveInterval == 0 {
+		cfg.KeepAliveInterval = defaultKeepAliveInterval
 	}
-	if ctx.InterServiceTimeout == 0 {
-		ctx.InterServiceTimeout = defaultInterServiceTimeout
+	if cfg.InterServiceTimeout == 0 {
+		cfg.InterServiceTimeout = defaultInterServiceTimeout
 	}
-	if ctx.IdleSleepDuration == 0 {
-		ctx.IdleSleepDuration = defaultIdleSleepDuration
+	if cfg.IdleSleepDuration == 0 {
+		cfg.IdleSleepDuration = defaultIdleSleepDuration
 	}
-	if ctx.CloseLingerDuration == 0 {
-		ctx.CloseLingerDuration = defaultCloseLingerDuration
+	if cfg.CloseLingerDuration == 0 {
+		cfg.CloseLingerDuration = defaultCloseLingerDuration
 	}
-	if ctx.PollTimeout == 0 {
-		ctx.PollTimeout = defaultPollTimeout
+	if cfg.PollTimeout == 0 {
+		cfg.PollTimeout = defaultPollTimeout
 	}
-	if ctx.PublicationOfferTimeout == 0 {
-		ctx.PublicationOfferTimeout = ctx.PollTimeout
+	if cfg.PublicationOfferTimeout == 0 {
+		cfg.PublicationOfferTimeout = cfg.PollTimeout
 	}
-	if ctx.EpochClock == nil {
-		ctx.EpochClock = func() int64 {
+	if cfg.EpochClock == nil {
+		cfg.EpochClock = func() int64 {
 			return time.Now().UnixMilli()
 		}
 	}
-	if ctx.NanoClock == nil {
-		ctx.NanoClock = func() int64 {
+	if cfg.NanoClock == nil {
+		cfg.NanoClock = func() int64 {
 			return time.Now().UnixNano()
 		}
 	}
-	return ctx
+	return cfg
 }

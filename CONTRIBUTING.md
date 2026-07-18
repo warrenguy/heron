@@ -16,12 +16,12 @@ Importable packages under `github.com/warrenguy/heron/...`.
 | `record` | Shared record header constants for ring and broadcast buffers |
 | `ringbuffer` | `ManyToOneRingBuffer`: fixed Agrona wire layout for CnC/driver rings |
 | `wire` | Wire primitives: `CheckLength`, fixed-width int64 and bool-byte put/get |
-| `cluster/client` | `ClusterContext`, `AsyncConnect`, `AeronCluster`, egress handlers |
+| `cluster/client` | `Config`, `AsyncConnect`, `AeronCluster`, egress handlers |
 | `cluster/codecs` | SBE flyweights in `clusterwire/`; see **SBE codecs** below |
 | `cluster/consensus` | `Role`, `ElectionRunner`, `AgentHandler`, cluster counter type IDs |
 | `cluster/election` | SBE flyweights in `nodewire/`; see **SBE codecs** below |
 | `cluster/recordinglog` | Recording log: `Open`, `Reload`, entry compare, recovery plan over `recording.log` |
-| `archive`, `archive/codecs` | Client + codecs: SBE flyweights in `archivewire/`; `Context`, `AsyncConnect`, `Proxy`, `Client` - see [archive client](README.md#archive-client) |
+| `archive`, `archive/codecs` | Client + codecs: SBE flyweights in `archivewire/`; `Config`, `AsyncConnect`, `Proxy`, `Client` - see [archive client](README.md#archive-client) |
 | `aeron` | Transport client: `Connect`, `Client`, `Publication`, `Subscription`, `ExclusivePublication` |
 | `aeron/{conductor,cnc,logbuffer}` | Transport internals: conductor, CnC, logbuffer |
 

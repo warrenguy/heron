@@ -9,8 +9,8 @@ import (
 	"github.com/warrenguy/heron/aeron"
 )
 
-func TestNormalizeContext_defaults(t *testing.T) {
-	normalized := aeron.NormalizeContextForTest(aeron.Context{})
+func TestNormalizeConfig_defaults(t *testing.T) {
+	normalized := aeron.NormalizeConfigForTest(aeron.Config{})
 
 	require.Equal(t, 10*time.Second, normalized.DriverTimeout)
 	require.Equal(t, 500*time.Millisecond, normalized.KeepAliveInterval)
@@ -25,20 +25,20 @@ func TestNormalizeContext_defaults(t *testing.T) {
 	require.Positive(t, normalized.NanoClock())
 }
 
-func TestNormalizeContext_zeroCloseLingerUsesDefault(t *testing.T) {
-	normalized := aeron.NormalizeContextForTest(aeron.Context{
+func TestNormalizeConfig_zeroCloseLingerUsesDefault(t *testing.T) {
+	normalized := aeron.NormalizeConfigForTest(aeron.Config{
 		CloseLingerDuration: 0,
 	})
 
 	require.Equal(t, 3*time.Second, normalized.CloseLingerDuration)
 }
 
-func TestNormalizeContext_preservesExplicitValues(t *testing.T) {
+func TestNormalizeConfig_preservesExplicitValues(t *testing.T) {
 	epochMs := int64(42)
 	nanoNs := int64(99)
 	useInvoker := false
 
-	normalized := aeron.NormalizeContextForTest(aeron.Context{
+	normalized := aeron.NormalizeConfigForTest(aeron.Config{
 		DriverTimeout:           3 * time.Second,
 		KeepAliveInterval:       250 * time.Millisecond,
 		InterServiceTimeout:     2 * time.Second,

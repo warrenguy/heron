@@ -38,9 +38,9 @@ func newStubControlPublication() *stubControlPublication {
 	}
 }
 
-func newTestProxy(archiveCtx Context) (*stubControlPublication, *Proxy) {
+func newTestProxy(cfg Config) (*stubControlPublication, *Proxy) {
 	pub := newStubControlPublication()
-	return pub, NewProxy(pub, archiveCtx)
+	return pub, NewProxy(pub, cfg)
 }
 
 func (publication *stubControlPublication) Offer(buffer []byte) int64 {
@@ -109,7 +109,7 @@ func (supplier stubCredentialsSupplier) EncodedCredentials() []byte {
 func (supplier stubCredentialsSupplier) RespondToChallenge([]byte) []byte { return nil }
 
 func TestProxy_TryConnect_wireTemplateAndLength(t *testing.T) {
-	pub, proxy := newTestProxy(Context{})
+	pub, proxy := newTestProxy(Config{})
 
 	pos, ok := proxy.TryConnect(
 		archiveProxyTestResponseChannelBytes,
@@ -161,7 +161,7 @@ func TestProxy_TryConnect_clientInfoOnWire(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			pub, proxy := newTestProxy(Context{ClientName: tc.clientName})
+			pub, proxy := newTestProxy(Config{ClientName: tc.clientName})
 
 			_, ok := proxy.TryConnect(
 				archiveProxyTestResponseChannelBytes,
@@ -182,7 +182,7 @@ func TestProxy_TryConnect_clientInfoOnWire(t *testing.T) {
 
 func TestProxy_TryConnect_encodedCredentialsOnWire(t *testing.T) {
 	credentials := archiveProxyTestCredBytes(0x5A)
-	pub, proxy := newTestProxy(Context{
+	pub, proxy := newTestProxy(Config{
 		CredentialsSupplier: stubCredentialsSupplier{encoded: credentials},
 	})
 
@@ -202,7 +202,7 @@ func TestProxy_TryConnect_encodedCredentialsOnWire(t *testing.T) {
 }
 
 func TestProxy_TryCloseSession_fieldValuesOnWire(t *testing.T) {
-	pub, proxy := newTestProxy(Context{})
+	pub, proxy := newTestProxy(Config{})
 
 	_, ok := proxy.TryCloseSession(controlResponseTestControlSessionID)
 	require.True(t, ok)
@@ -216,7 +216,7 @@ func TestProxy_TryCloseSession_fieldValuesOnWire(t *testing.T) {
 }
 
 func TestProxy_TryKeepAlive_fieldValuesOnWire(t *testing.T) {
-	pub, proxy := newTestProxy(Context{})
+	pub, proxy := newTestProxy(Config{})
 
 	_, ok := proxy.TryKeepAlive(
 		controlResponseTestControlSessionID,
@@ -235,7 +235,7 @@ func TestProxy_TryKeepAlive_fieldValuesOnWire(t *testing.T) {
 
 func TestProxy_TryChallengeResponse_fieldValuesOnWire(t *testing.T) {
 	encodedCredentials := archiveProxyTestCredBytes(0x3C)
-	pub, proxy := newTestProxy(Context{})
+	pub, proxy := newTestProxy(Config{})
 
 	_, ok := proxy.TryChallengeResponse(
 		controlResponseTestControlSessionID,
@@ -255,7 +255,7 @@ func TestProxy_TryChallengeResponse_fieldValuesOnWire(t *testing.T) {
 }
 
 func TestProxy_TryStartRecording_fieldValuesOnWire(t *testing.T) {
-	pub, proxy := newTestProxy(Context{})
+	pub, proxy := newTestProxy(Config{})
 
 	channel := []byte("aeron:udp?endpoint=localhost:9999")
 	pos, ok := proxy.TryStartRecording(
@@ -291,7 +291,7 @@ func TestProxy_TryStartRecording_fieldValuesOnWire(t *testing.T) {
 }
 
 func TestProxy_TryStopRecording_fieldValuesOnWire(t *testing.T) {
-	pub, proxy := newTestProxy(Context{})
+	pub, proxy := newTestProxy(Config{})
 
 	channel := []byte("aeron:udp?endpoint=localhost:9999")
 	pos, ok := proxy.TryStopRecording(
@@ -325,7 +325,7 @@ func TestProxy_TryStopRecording_fieldValuesOnWire(t *testing.T) {
 }
 
 func TestProxy_TryListRecording_fieldValuesOnWire(t *testing.T) {
-	pub, proxy := newTestProxy(Context{})
+	pub, proxy := newTestProxy(Config{})
 
 	pos, ok := proxy.TryListRecording(
 		controlResponseTestControlSessionID,
@@ -353,7 +353,7 @@ func TestProxy_TryListRecording_fieldValuesOnWire(t *testing.T) {
 }
 
 func TestProxy_TryReplay_fieldValuesOnWire(t *testing.T) {
-	pub, proxy := newTestProxy(Context{})
+	pub, proxy := newTestProxy(Config{})
 
 	const (
 		replayPosition int64 = 4096
@@ -398,7 +398,7 @@ func TestProxy_TryReplay_fieldValuesOnWire(t *testing.T) {
 }
 
 func TestProxy_TryStopReplay_fieldValuesOnWire(t *testing.T) {
-	pub, proxy := newTestProxy(Context{})
+	pub, proxy := newTestProxy(Config{})
 
 	const replaySessionID int64 = 8800
 	pos, ok := proxy.TryStopReplay(
@@ -427,7 +427,7 @@ func TestProxy_TryStopReplay_fieldValuesOnWire(t *testing.T) {
 }
 
 func TestProxy_TryChallengeResponse_clearsWireBufferSlackBetweenEncodes(t *testing.T) {
-	pub, proxy := newTestProxy(Context{})
+	pub, proxy := newTestProxy(Config{})
 
 	longCreds := bytes.Repeat([]byte{0xAB}, archiveProxyWireBufferHighWaterLen)
 	_, ok := proxy.TryChallengeResponse(10, 20, longCreds)
@@ -473,7 +473,7 @@ func TestProxy_tryOffer_negativeOfferCodes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			pub, proxy := newTestProxy(Context{})
+			pub, proxy := newTestProxy(Config{})
 			pub.offerResult = tc.offerResult
 
 			pos, ok := proxy.TryKeepAlive(1, 2)
@@ -485,7 +485,7 @@ func TestProxy_tryOffer_negativeOfferCodes(t *testing.T) {
 }
 
 func TestProxy_tryOffer_encodeFailure(t *testing.T) {
-	pub, proxy := newTestProxy(Context{})
+	pub, proxy := newTestProxy(Config{})
 
 	pos, ok := proxy.tryOffer(32, true, func([]byte) (int, bool) {
 		return 0, false
@@ -499,9 +499,9 @@ func TestProxy_encodePreflightFailure(t *testing.T) {
 	oversized := make([]byte, codecs.ArchiveEncodeMaxVarLen+1)
 
 	cases := []struct {
-		name       string
-		archiveCtx Context
-		offer      func(proxy *Proxy) (int64, bool)
+		name  string
+		cfg   Config
+		offer func(proxy *Proxy) (int64, bool)
 	}{
 		{
 			name: "try_connect_response_channel",
@@ -517,7 +517,7 @@ func TestProxy_encodePreflightFailure(t *testing.T) {
 		},
 		{
 			name: "try_connect_encoded_credentials",
-			archiveCtx: Context{
+			cfg: Config{
 				CredentialsSupplier: stubCredentialsSupplier{encoded: oversized},
 			},
 			offer: func(proxy *Proxy) (int64, bool) {
@@ -568,7 +568,7 @@ func TestProxy_encodePreflightFailure(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			pub, proxy := newTestProxy(tc.archiveCtx)
+			pub, proxy := newTestProxy(tc.cfg)
 
 			pos, ok := tc.offer(proxy)
 			require.False(t, ok)
@@ -579,7 +579,7 @@ func TestProxy_encodePreflightFailure(t *testing.T) {
 }
 
 func TestProxy_resizeWireBuffer_clearsAbandonedBackingOnGrow(t *testing.T) {
-	_, proxy := newTestProxy(Context{})
+	_, proxy := newTestProxy(Config{})
 
 	shortCreds := []byte("x")
 	_, ok := proxy.TryChallengeResponse(1, 2, shortCreds)

@@ -13,7 +13,7 @@ import (
 //
 // Poll demuxes control responses and recording descriptors on the shared subscription
 // through PollControlEvents; it never polls the underlying pollers directly and
-// never calls DoWork. Recording signals are dropped until Context.RecordingSignalHandler
+// never calls DoWork. Recording signals are dropped until Config.RecordingSignalHandler
 // or SetRecordingSignalHandler configures a handler; configured handlers also run during
 // blocking StartRecording, StopRecording, StartReplay, StopReplay, and ListRecording awaits.
 // ListRecording uses a descriptor-mode poll so its OK response routes to the descriptor
@@ -38,7 +38,7 @@ type Client struct {
 	controlAssembler    *FragmentAssembler
 	aeronClient         *aeron.Client
 	ownsAeronClient     bool
-	archiveCtx          Context
+	cfg                 Config
 	closed              bool
 }
 
@@ -47,13 +47,13 @@ type Client struct {
 //
 // It drives DoWork on the transport client until the handshake completes,
 // ctx is canceled or its deadline is exceeded, or ConnectTimeout elapses. The await loop
-// paces via archiveCtx.IdleStrategy.Idle(0) and calls IdleStrategy.Reset on exit so a
+// paces via cfg.IdleStrategy.Idle(0) and calls IdleStrategy.Reset on exit so a
 // shared backoff instance is not left in PARKING before the post-connect duty cycle.
 //
-// When archiveCtx.Aeron is nil, ctx also bounds owned transport attach (CNC ready and
+// When cfg.Aeron is nil, ctx also bounds owned transport attach (CNC ready and
 // driver heartbeat) via NewAsyncConnect. Shared Aeron skips that wait.
 //
-// NewAsyncConnect normalizes and validates archiveCtx; pre-normalizing is harmless.
+// NewAsyncConnect normalizes and validates cfg; pre-normalizing is harmless.
 //
 // On handshake failure or ctx cancellation, partial resources are released via
 // AsyncConnect.Close.
@@ -64,8 +64,8 @@ type Client struct {
 // is canceled concurrently on that iteration.
 //
 // Not safe for concurrent use during connect.
-func Connect(ctx context.Context, archiveCtx Context) (*Client, error) {
-	connect, err := NewAsyncConnect(ctx, archiveCtx)
+func Connect(ctx context.Context, cfg Config) (*Client, error) {
+	connect, err := NewAsyncConnect(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +81,7 @@ func Connect(ctx context.Context, archiveCtx Context) (*Client, error) {
 }
 
 func awaitConnect(ctx context.Context, connect *AsyncConnect) (*ConnectResult, error) {
-	idle := connect.archiveCtx.IdleStrategy
+	idle := connect.cfg.IdleStrategy
 	defer idle.Reset()
 
 	for {
@@ -110,12 +110,12 @@ func newClient(result *ConnectResult) *Client {
 		proxy:               result.Proxy,
 		controlPoller:       result.Poller,
 		descriptorPoller:    NewRecordingDescriptorPoller(),
-		signalHandler:       result.Context.RecordingSignalHandler,
+		signalHandler:       result.Config.RecordingSignalHandler,
 		controlSubscription: result.ControlSubscription,
 		controlAssembler:    NewFragmentAssembler(nil),
 		aeronClient:         result.Aeron,
 		ownsAeronClient:     result.OwnsAeronClient,
-		archiveCtx:          result.Context,
+		cfg:                 result.Config,
 	}
 	if client.controlPoller != nil {
 		client.controlPoller.ResetCapture()
@@ -133,13 +133,13 @@ func (client *Client) ArchiveID() int64 {
 	return client.archiveID
 }
 
-// Context returns the normalized archive context stored at connect.
-// Nil receiver returns a zero Context.
-func (client *Client) Context() Context {
+// Config returns the normalized archive config stored at connect.
+// Nil receiver returns a zero Config.
+func (client *Client) Config() Config {
 	if client == nil {
-		return Context{}
+		return Config{}
 	}
-	return client.archiveCtx
+	return client.cfg
 }
 
 // Close sends a best-effort CloseSessionRequest, then releases the control publication
@@ -218,7 +218,7 @@ func (client *Client) pollStopRecordingAwaitSignal(
 	}
 }
 
-// SetRecordingSignalHandler overrides Context.RecordingSignalHandler for recording
+// SetRecordingSignalHandler overrides Config.RecordingSignalHandler for recording
 // signals on Poll and during blocking control awaits that use this handler
 // (StartRecording, StopRecording, StartReplay, StopReplay, ListRecording).
 func (client *Client) SetRecordingSignalHandler(handler RecordingSignalHandler) {

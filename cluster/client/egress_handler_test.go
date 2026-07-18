@@ -232,7 +232,7 @@ func TestEgressHandlers_postAssignMutationVisibleViaInterface(t *testing.T) {
 	require.True(t, called)
 }
 
-func TestValidateClusterContext_egressHandlersMessageCallbacksPass(t *testing.T) {
+func TestValidateConfig_egressHandlersMessageCallbacksPass(t *testing.T) {
 	tests := []struct {
 		name    string
 		handler *client.EgressHandlers
@@ -277,10 +277,10 @@ func TestValidateClusterContext_egressHandlersMessageCallbacksPass(t *testing.T)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clusterCtx := validClusterContext().Normalize()
-			clusterCtx.EgressHandler = tt.handler
+			cfg := validConfig().Normalize()
+			cfg.EgressHandler = tt.handler
 
-			requireNoValidationErrors(t, clusterCtx)
+			requireNoValidationErrors(t, cfg)
 		})
 	}
 }

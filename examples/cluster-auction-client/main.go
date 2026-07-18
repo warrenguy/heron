@@ -36,7 +36,7 @@ func main() {
 	// Connect to this process's own aeronmd, not the Java cluster drivers.
 	//
 	// ErrorHandler logs asynchronous driver faults not returned by the calls below.
-	transport, err := aeron.Connect(context.Background(), aeron.Context{
+	transport, err := aeron.Connect(context.Background(), aeron.Config{
 		AeronDir: config.AeronDir,
 		ErrorHandler: func(err error) {
 			log.Printf("cluster-auction-client: aeron error: %v", err)
@@ -51,10 +51,10 @@ func main() {
 	clientState := newClientState()
 
 	// UDP ingress endpoints target the running cluster members.
-	clusterCtx := config.clusterContext(transport, newEgressHandlers(clientState))
+	cfg := config.clusterConfig(transport, newEgressHandlers(clientState))
 
 	// Open a cluster client session against the configured ingress and egress.
-	session, err := client.Connect(ctx, clusterCtx)
+	session, err := client.Connect(ctx, cfg)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return

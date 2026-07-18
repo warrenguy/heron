@@ -10,7 +10,7 @@ import (
 //
 // Does not wait for driver registration to complete; loop PollAddPublication until
 // done or terminal error. Pending remains until PollAdd completes, CancelPending,
-// Context.DriverTimeout elapses, or Client.Close. To abandon without Close, call
+// Config.DriverTimeout elapses, or Client.Close. To abandon without Close, call
 // CancelPending or continue polling until done or a terminal err.
 //
 // DriverTimeout covers both to-driver ring offer retries and the wait for the
@@ -41,7 +41,7 @@ func (client *Client) OfferAddPublication(streamID int32, channel string) (int64
 //
 // Does not wait for driver registration to complete; loop
 // PollAddExclusivePublication until done or terminal error. Pending remains until
-// PollAdd completes, CancelPending, Context.DriverTimeout elapses, or Client.Close.
+// PollAdd completes, CancelPending, Config.DriverTimeout elapses, or Client.Close.
 // To abandon without Close, call CancelPending or continue polling until done or a
 // terminal err.
 //
@@ -75,7 +75,7 @@ func (client *Client) OfferAddExclusivePublication(
 //
 // Does not wait for driver registration to complete; loop PollAddSubscription
 // until done or terminal error. Pending remains until PollAdd completes,
-// CancelPending, Context.DriverTimeout elapses, or Client.Close. To abandon
+// CancelPending, Config.DriverTimeout elapses, or Client.Close. To abandon
 // without Close, call CancelPending or continue polling until done or a terminal err.
 //
 // DriverTimeout covers both to-driver ring offer retries and the wait for the

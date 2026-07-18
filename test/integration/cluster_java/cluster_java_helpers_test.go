@@ -295,7 +295,7 @@ func joinComposeIPCClient(
 
 	md := harness.JoinExternal(t, dir)
 
-	aeronClient, hadClientError := harness.ConnectIPCClientContext(t, md, aeron.Context{
+	aeronClient, hadClientError := harness.ConnectIPCClientConfig(t, md, aeron.Config{
 		InterServiceTimeout: harness.ConnectedPollTimeout,
 	})
 	require.False(t, hadClientError.Load(), "transport errors before connect")
@@ -332,33 +332,33 @@ func requireClusterComposeEnv(
 	return dir, hadClientError, aeronClient, md, composeDir
 }
 
-func smokeClusterContext(
-	base func() client.ClusterContext,
+func smokeConfig(
+	base func() client.Config,
 	dir string,
 	aeronClient *aeron.Client,
 	egressHandler client.EgressHandler,
 	messageTimeout time.Duration,
-) client.ClusterContext {
-	clusterCtx := base()
-	clusterCtx.AeronDir = dir
-	clusterCtx.Aeron = aeronClient
-	if clusterCtx.MessageTimeout == 0 {
-		clusterCtx.MessageTimeout = messageTimeout
+) client.Config {
+	cfg := base()
+	cfg.AeronDir = dir
+	cfg.Aeron = aeronClient
+	if cfg.MessageTimeout == 0 {
+		cfg.MessageTimeout = messageTimeout
 	}
-	clusterCtx.EgressHandler = egressHandler
-	return clusterCtx
+	cfg.EgressHandler = egressHandler
+	return cfg
 }
 
 func connectClusterAsync(
 	t *testing.T,
-	clusterCtx client.ClusterContext,
+	cfg client.Config,
 	aeronClient *aeron.Client,
 	hadClientError *atomic.Bool,
 	connectTimeout time.Duration,
 ) *client.ConnectResult {
 	t.Helper()
 
-	ac, err := client.NewAsyncConnect(t.Context(), clusterCtx)
+	ac, err := client.NewAsyncConnect(t.Context(), cfg)
 	require.NoError(t, err)
 	harness.CleanupClose(t, "close async connect", ac.Close)
 	return pollAsyncConnectUntilResult(t, aeronClient, ac, hadClientError, connectTimeout)
@@ -388,15 +388,15 @@ func newConnectedClusterSession(
 func connectClusterUntilResult(
 	t *testing.T,
 	gate clusterComposeGate,
-	contextBase func() client.ClusterContext,
+	contextBase func() client.Config,
 	connectTimeout time.Duration,
 	egressHandler client.EgressHandler,
 ) (*atomic.Bool, *aeron.Client, *harness.MediaDriver, *client.ConnectResult, string) {
 	t.Helper()
 
 	dir, hadClientError, aeronClient, md, composeDir := requireClusterComposeEnv(t, gate)
-	clusterCtx := smokeClusterContext(contextBase, dir, aeronClient, egressHandler, connectTimeout)
-	result := connectClusterAsync(t, clusterCtx, aeronClient, hadClientError, connectTimeout)
+	cfg := smokeConfig(contextBase, dir, aeronClient, egressHandler, connectTimeout)
+	result := connectClusterAsync(t, cfg, aeronClient, hadClientError, connectTimeout)
 	return hadClientError, aeronClient, md, result, composeDir
 }
 
@@ -409,7 +409,7 @@ func asyncConnectUntilResult(
 	hadClientError, aeronClient, md, result, _ := connectClusterUntilResult(
 		t,
 		clusterJavaComposeGate,
-		clusterjava.HarnessClusterContext,
+		clusterjava.HarnessConfig,
 		connectSmokeTimeout,
 		egressHandler,
 	)
@@ -633,9 +633,9 @@ func requireConnectSmokeResult(
 	require.True(t, result.IngressPublication.IsConnected())
 	require.True(t, result.EgressSubscription.IsConnected())
 	require.NotNil(t, result.EgressImage)
-	require.Equal(t, clusterjava.IngressChannel, result.Context.IngressChannel)
-	require.Equal(t, clusterjava.EgressChannel, result.Context.EgressChannel)
-	require.Equal(t, clusterjava.IngressStreamID, result.Context.IngressStreamID)
-	require.Equal(t, clusterjava.EgressStreamID, result.Context.ResponseStreamID)
-	require.Equal(t, clusterjava.IngressEndpoints, result.Context.IngressEndpoints)
+	require.Equal(t, clusterjava.IngressChannel, result.Config.IngressChannel)
+	require.Equal(t, clusterjava.EgressChannel, result.Config.EgressChannel)
+	require.Equal(t, clusterjava.IngressStreamID, result.Config.IngressStreamID)
+	require.Equal(t, clusterjava.EgressStreamID, result.Config.ResponseStreamID)
+	require.Equal(t, clusterjava.IngressEndpoints, result.Config.IngressEndpoints)
 }

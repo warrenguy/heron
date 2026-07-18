@@ -259,7 +259,7 @@ func TestAeronCluster_CommitClaim_staleClosedClaimAfterRecovery_staysConnected(t
 	require.True(t, ok)
 	leader.SetAsyncPollAddHookForTest(t, func(
 		ing *MemberIngress,
-		_ ClusterContext,
+		_ Config,
 		_ *aeron.Client,
 	) (bool, error) {
 		ing.RegistrationID = conductor.NullCorrelationID
@@ -430,7 +430,7 @@ func TestAeronCluster_CommitClaim_afterNewLeader_differentEndpoint_notConnected(
 	newLeaderPub := aeron.NewTestExclusivePublicationForHooks(t)
 	leader.SetAsyncPollAddHookForTest(t, func(
 		ing *MemberIngress,
-		_ ClusterContext,
+		_ Config,
 		_ *aeron.Client,
 	) (bool, error) {
 		ing.RegistrationID = conductor.NullCorrelationID
@@ -457,8 +457,8 @@ func newTrackIngressDeadlineOracleCluster(
 	nowNs.Store(trackIngressAwaitNewLeaderStartNs)
 
 	return newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
-		withConnectNanoClock(result, &nowNs, func(clusterCtx *ClusterContext) {
-			clusterCtx.NewLeaderTimeout = trackIngressAwaitNewLeaderTimeout
+		withConnectNanoClock(result, &nowNs, func(cfg *Config) {
+			cfg.NewLeaderTimeout = trackIngressAwaitNewLeaderTimeout
 		})
 		if mutate != nil {
 			mutate(result)

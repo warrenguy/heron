@@ -24,14 +24,14 @@ const (
 	connectFixtureIngressTimestamp int64 = 1700000000123
 )
 
-func validConnectFixtureClusterContext() ClusterContext {
-	return ClusterContext{
+func validConnectFixtureConfig() Config {
+	return Config{
 		IngressChannel:      "aeron:udp?endpoint=localhost:20110",
 		EgressChannel:       "aeron:ipc",
 		EgressHandler:       &EgressHandlers{},
 		CredentialsSupplier: NullCredentialsSupplier{},
 		IdleStrategy:        NewDefaultIdleStrategy(),
-		AeronContext: aeron.Context{
+		AeronConfig: aeron.Config{
 			NanoClock: func() int64 { return connectFixtureIngressTimestamp },
 		},
 	}.Normalize()
@@ -57,7 +57,7 @@ func newConnectResultFixture(
 		},
 		Aeron:           &aeron.Client{},
 		OwnsAeronClient: false,
-		Context:         validConnectFixtureClusterContext(),
+		Config:          validConnectFixtureConfig(),
 	}
 	if mutate != nil {
 		mutate(result)
@@ -138,33 +138,33 @@ func newAeronClusterFromConnectFixtureResult(
 // callers can install a custom EgressHandler; installs recordingEgressHandlers when
 // mutate leaves handler nil.
 func installConnectFixtureEgressHandler(result *ConnectResult, mutate func(*ConnectResult)) {
-	result.Context.EgressHandler = nil
+	result.Config.EgressHandler = nil
 	if mutate != nil {
 		mutate(result)
 	}
-	if result.Context.EgressHandler == nil {
-		result.Context.EgressHandler = newRecordingEgressHandlers()
+	if result.Config.EgressHandler == nil {
+		result.Config.EgressHandler = newRecordingEgressHandlers()
 	}
 }
 
-func mutateConnectContext(result *ConnectResult, mutate func(*ClusterContext)) {
-	clusterCtx := result.Context
-	mutate(&clusterCtx)
-	result.Context = clusterCtx
+func mutateConnectConfig(result *ConnectResult, mutate func(*Config)) {
+	cfg := result.Config
+	mutate(&cfg)
+	result.Config = cfg
 }
 
 func withAtomicNanoClock(result *ConnectResult, nowNs *atomic.Int64) {
-	mutateConnectContext(result, func(clusterCtx *ClusterContext) {
-		clusterCtx.AeronContext.NanoClock = func() int64 { return nowNs.Load() }
+	mutateConnectConfig(result, func(cfg *Config) {
+		cfg.AeronConfig.NanoClock = func() int64 { return nowNs.Load() }
 	})
 }
 
 func withConnectNanoClock(
 	result *ConnectResult,
 	nowNs *atomic.Int64,
-	mutateCtx func(*ClusterContext),
+	mutateCtx func(*Config),
 ) {
-	mutateConnectContext(result, mutateCtx)
+	mutateConnectConfig(result, mutateCtx)
 	withAtomicNanoClock(result, nowNs)
 }
 
@@ -194,7 +194,7 @@ func newAeronClusterFromConnectFixtureRecording(
 
 	result := newConnectResultWithEgressSubscription(t)
 	installConnectFixtureEgressHandler(result, mutate)
-	rec, ok := result.Context.EgressHandler.(*recordingEgressHandlers)
+	rec, ok := result.Config.EgressHandler.(*recordingEgressHandlers)
 	require.True(t, ok)
 	ac := newAeronClusterFromConnectResult(t, result)
 	return ac, rec

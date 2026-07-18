@@ -1062,12 +1062,12 @@ func (client *Client) PollAwaitForTest(correlationID int64) error {
 	return mapErr(err)
 }
 
-func NormalizeContextForTest(ctx Context) Context {
-	return normalizeContext(ctx)
+func NormalizeConfigForTest(cfg Config) Config {
+	return normalizeConfig(cfg)
 }
 
-func ValidateConnectContextForTest(ctx Context) error {
-	return validateConnectContext(ctx)
+func ValidateConnectConfigForTest(cfg Config) error {
+	return validateConnectConfig(cfg)
 }
 
 func (client *Client) SetCloseLingerDurationForTest(duration time.Duration) {
@@ -1078,8 +1078,8 @@ func (client *Client) SetCloseLingerDurationForTest(duration time.Duration) {
 	conductor.SetCloseLingerNsForTest(conductorInstance, duration.Nanoseconds())
 }
 
-func (ctx Context) UseConductorInvokerEnabledForTest() bool {
-	return ctx.useConductorInvokerEnabled()
+func (cfg Config) UseConductorInvokerEnabledForTest() bool {
+	return cfg.useConductorInvokerEnabled()
 }
 
 func WaitForDriverHeartbeatForTest(
@@ -1428,8 +1428,8 @@ func SetClientPollTimeoutsForTest(
 	client.publicationOfferTimeout = publicationOfferTimeout
 }
 
-func ConductorConnectConfigForTest(ctx Context, clientID int64) conductor.Config {
-	return conductorConnectConfig(ctx, clientID)
+func ConductorConnectConfigForTest(cfg Config, clientID int64) conductor.Config {
+	return conductorConnectConfig(cfg, clientID)
 }
 
 func SubscriptionAvailableImageHandlerForTest(sub *Subscription) AvailableImageHandler {

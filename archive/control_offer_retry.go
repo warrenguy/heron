@@ -16,12 +16,12 @@ var (
 
 // ControlOfferConfig holds retry pacing for archive control offer retries.
 type ControlOfferConfig struct {
-	// IdleStrategy paces BackPressured retries. Nil uses Context.IdleStrategy
+	// IdleStrategy paces BackPressured retries. Nil uses Config.IdleStrategy
 	// when set; if that is also nil, NewDefaultIdleStrategy().
 	IdleStrategy idlestrategy.IdleStrategy
 
 	// NanoClock supplies nanosecond timestamps for deadline checks.
-	// Nil uses Context.AeronContext.NanoClock when set, else wall-clock
+	// Nil uses Config.AeronConfig.NanoClock when set, else wall-clock
 	// time.Now().UnixNano(). The clock must advance for ControlOfferRetryTimeout
 	// to bound retries; a frozen clock causes unbounded retry. The head ctx.Err()
 	// check bounds frozen-clock spins only for cancelable contexts.
@@ -38,8 +38,8 @@ type ControlOfferConfig struct {
 func controlOfferUntilPositive(
 	ctx context.Context,
 	aeronClient *aeron.Client,
-	archiveCtx Context,
-	cfg ControlOfferConfig,
+	cfg Config,
+	offerCfg ControlOfferConfig,
 	offerFn func() int64,
 ) (int64, error) {
 	switch {
@@ -48,20 +48,20 @@ func controlOfferUntilPositive(
 	case offerFn == nil:
 		return 0, errNilControlOfferFn
 	}
-	timeout := archiveCtx.ControlOfferRetryTimeout
+	timeout := cfg.ControlOfferRetryTimeout
 	if timeout == 0 {
 		timeout = DefaultControlOfferRetryTimeout
 	}
-	idle := cfg.IdleStrategy
+	idle := offerCfg.IdleStrategy
 	if idle == nil {
-		idle = archiveCtx.IdleStrategy
+		idle = cfg.IdleStrategy
 	}
 	if idle == nil {
 		idle = NewDefaultIdleStrategy()
 	}
-	clock := cfg.NanoClock
+	clock := offerCfg.NanoClock
 	if clock == nil {
-		clock = archiveCtx.AeronContext.NanoClock
+		clock = cfg.AeronConfig.NanoClock
 	}
 	clock = resolveNanoClock(clock)
 	startNs := clock()
@@ -84,8 +84,8 @@ func controlOfferUntilPositive(
 		if !aeron.IsIngressRetriable(pos) {
 			return 0, aeron.PreferContextError(ctx, &ControlTerminalError{Status: pos})
 		}
-		if cfg.PollFn != nil {
-			cfg.PollFn()
+		if offerCfg.PollFn != nil {
+			offerCfg.PollFn()
 		}
 		if pos == aeron.BackPressured {
 			doTransportWork()
@@ -109,15 +109,15 @@ func controlOfferUntilPositive(
 //     immediately on the next iteration (no pacing).
 //
 //   - Calls idle.Reset() on all exit paths (success, terminal, timeout). Nil
-//     cfg.IdleStrategy uses session context idle when set; otherwise default. Nil
-//     cfg.NanoClock uses the session context clock, else wall clock.
+//     cfg.IdleStrategy uses session Config.IdleStrategy when set; otherwise default.
+//     Nil cfg.NanoClock uses session AeronConfig.NanoClock when set, else wall clock.
 //
 //   - Returns stream position (>0) and nil error on success. On failure returns 0 and a
 //     non-nil error: ControlTerminalError, ControlOfferTimeoutError, ctx.Err(), or a
 //     nil-argument error (nil session, nil offerFn, or nil client, including after
 //     Close on an owned client).
 //
-// Uses [Context.ControlOfferRetryTimeout] from the connected session. When ctx
+// Uses [Config.ControlOfferRetryTimeout] from the connected session. When ctx
 // carries a deadline, the effective bound is the earlier of ControlOfferRetryTimeout and
 // ctx.Deadline().
 //
@@ -142,7 +142,7 @@ func (client *Client) ControlOfferUntilPositive(
 	return controlOfferUntilPositive(
 		ctx,
 		client.aeronClient,
-		client.archiveCtx,
+		client.cfg,
 		cfg,
 		offerFn,
 	)

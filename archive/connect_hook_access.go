@@ -35,10 +35,10 @@ func connectAsyncConnectObserverFor(client *aeron.Client) connectAsyncConnectObs
 // *aeron.Client pointer. Connect looks up the observer with ac.client after
 // NewAsyncConnect.
 //
-// Injected-client tests: pass archiveCtx.Aeron (e.g. harness.Client).
-// Owned-client tests: archiveCtx.Aeron is nil before Connect; register on the same
+// Injected-client tests: pass cfg.Aeron (e.g. harness.Client).
+// Owned-client tests: cfg.Aeron is nil before Connect; register on the same
 // *aeron.Client returned by SetConnectConstructionHooksForTest's factory (see
-// ownedConnectContextForTest). A mismatched pointer silently skips the observer.
+// ownedConnectConfigForTest). A mismatched pointer silently skips the observer.
 func SetConnectAsyncConnectObserverForTest(
 	tb testing.TB,
 	client *aeron.Client,

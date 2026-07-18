@@ -132,16 +132,16 @@ func resolveIngressEndpoints(
 	return nil
 }
 
-// clusterContext builds a raw ClusterContext for client.Connect.
+// clusterConfig builds a raw Config for client.Connect.
 //
 // Do not call Normalize here: NewAsyncConnect records whether NewLeaderTimeout was
 // explicitly set before it normalizes; pre-normalizing makes that look explicit and
 // disables heartbeat-derived NewLeaderTimeout in concludeConnect.
-func (config Config) clusterContext(
+func (config Config) clusterConfig(
 	transport *aeron.Client,
 	handlers *client.EgressHandlers,
-) client.ClusterContext {
-	return client.ClusterContext{
+) client.Config {
+	return client.Config{
 		Aeron:            transport,
 		AeronDir:         config.AeronDir,
 		IngressChannel:   config.IngressChannel,
