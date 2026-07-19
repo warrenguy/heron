@@ -136,7 +136,7 @@ func TestMPSCCommandMatrix(t *testing.T) {
 	// mirrors ConnectIPCPubSubClients. Avoids testify in workers and lost offers
 	// when subscriber image is not yet attached.
 	harness.PollSplitClientIPCLink(t, clientA, clientB, pub, sub)
-	harness.OfferWithRetry(t, clientA, pub, []byte("mpsc-A"))
+	harness.OfferWithRetry(t, pub, []byte("mpsc-A"))
 
 	fragments := harness.PollDelivered(t, clientB, sub, 1)
 	require.Equal(t, []byte("mpsc-A"), fragments[0])

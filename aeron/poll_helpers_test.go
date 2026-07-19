@@ -151,9 +151,8 @@ func TestPreferContextError(t *testing.T) {
 	})
 }
 
-func TestPollUntilImageCount_invalidWant(t *testing.T) {
+func TestWaitUntilImageCount_invalidWant(t *testing.T) {
 	ctx := context.Background()
-	client := pollTestClient(t)
 	sub := aeron.NewSubscriptionForTest(77, 1001, "aeron:ipc")
 
 	tests := []struct {
@@ -166,24 +165,82 @@ func TestPollUntilImageCount_invalidWant(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := client.PollUntilImageCount(ctx, sub, tc.want)
+			err := sub.WaitUntilImageCount(ctx, tc.want)
 			require.ErrorIs(t, err, aeron.ErrInvalidWant)
 		})
 	}
 }
 
-func TestPollUntilConnected_canceledContext(t *testing.T) {
+func TestResourceHelpers_clientNotBound(t *testing.T) {
+	ctx := context.Background()
+	pub := &aeron.Publication{}
+	ep := &aeron.ExclusivePublication{}
+	sub := aeron.NewSubscriptionForTest(77, 1001, "aeron:ipc")
+
+	require.ErrorIs(t, pub.WaitUntilConnected(ctx), aeron.ErrClientNotBound)
+	require.ErrorIs(t, ep.WaitUntilConnected(ctx), aeron.ErrClientNotBound)
+
+	// OfferWithRetry delegates to Observed; one unbound path per type.
+	_, err := pub.OfferWithRetry(ctx, []byte{0x01})
+	require.ErrorIs(t, err, aeron.ErrClientNotBound)
+	_, err = ep.OfferWithRetry(ctx, []byte{0x01})
+	require.ErrorIs(t, err, aeron.ErrClientNotBound)
+
+	require.ErrorIs(t, sub.WaitUntilImageCount(ctx, 1), aeron.ErrClientNotBound)
+	_, err = sub.PollOneMessage(ctx)
+	require.ErrorIs(t, err, aeron.ErrClientNotBound)
+	_, err = sub.PollReassembled(ctx, make([]byte, 8))
+	require.ErrorIs(t, err, aeron.ErrClientNotBound)
+}
+
+func TestPublicationHelpers_boundResourceMethods(t *testing.T) {
+	client := pollTestClient(t)
+
+	t.Run("waitUntilConnected_concurrent", func(t *testing.T) {
+		pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+		aeron.BindClientForTest(pub, client)
+		require.NoError(t, pub.WaitUntilConnected(t.Context()))
+	})
+
+	t.Run("waitUntilConnected_exclusive", func(t *testing.T) {
+		ep := aeron.NewTestExclusivePublicationForHooksWithConnected(t, true)
+		aeron.BindClientForTest(ep, client)
+		require.NoError(t, ep.WaitUntilConnected(t.Context()))
+	})
+
+	t.Run("offerWithRetry_concurrent", func(t *testing.T) {
+		pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), 1_000_000)
+		aeron.BindClientForTest(pub, client)
+		pos, err := pub.OfferWithRetry(t.Context(), []byte{0x01})
+		require.NoError(t, err)
+		require.Positive(t, pos)
+	})
+
+	t.Run("offerWithRetry_exclusive", func(t *testing.T) {
+		ep := aeron.NewTestExclusivePublication(
+			t,
+			aeron.DefaultTestExclusivePublicationLogConfig(),
+			1_000_000,
+		)
+		aeron.BindClientForTest(ep, client)
+		pos, err := ep.OfferWithRetry(t.Context(), []byte{0x01})
+		require.NoError(t, err)
+		require.Positive(t, pos)
+	})
+}
+
+func TestWaitUntilConnected_canceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	client := pollTestClient(t)
 	pub := &fakePublicationOfferer{registrationID: 1, streamID: 100, sessionID: 200}
 
-	err := client.PollUntilConnected(ctx, pub)
+	err := aeron.WaitUntilConnectedForTest(ctx, client, pub)
 	require.ErrorIs(t, err, context.Canceled)
 }
 
-func TestPollUntilConnected_success(t *testing.T) {
+func TestWaitUntilConnected_success(t *testing.T) {
 	ctx := context.Background()
 	client := pollTestClient(t)
 	pub := &fakePublicationOfferer{
@@ -193,10 +250,10 @@ func TestPollUntilConnected_success(t *testing.T) {
 		connected:      true,
 	}
 
-	require.NoError(t, client.PollUntilConnected(ctx, pub))
+	require.NoError(t, aeron.WaitUntilConnectedForTest(ctx, client, pub))
 }
 
-func TestPollUntilConnected_successWinsOverConcurrentCancel(t *testing.T) {
+func TestWaitUntilConnected_successWinsOverConcurrentCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -213,11 +270,11 @@ func TestPollUntilConnected_successWinsOverConcurrentCancel(t *testing.T) {
 	})
 	t.Cleanup(func() { client.SetDoWorkAfterHookForTest(nil) })
 
-	err := client.PollUntilConnected(ctx, pub)
+	err := aeron.WaitUntilConnectedForTest(ctx, client, pub)
 	require.NoError(t, err)
 }
 
-func TestPollUntilConnected_timeoutError(t *testing.T) {
+func TestWaitUntilConnected_timeoutError(t *testing.T) {
 	ctx := context.Background()
 	client := pollTestClientShort(t)
 	pub := &fakePublicationOfferer{
@@ -227,8 +284,8 @@ func TestPollUntilConnected_timeoutError(t *testing.T) {
 		position:       0,
 	}
 
-	err := client.PollUntilConnected(ctx, pub)
-	var pollErr *aeron.PollUntilConnectedTimeoutError
+	err := aeron.WaitUntilConnectedForTest(ctx, client, pub)
+	var pollErr *aeron.WaitUntilConnectedTimeoutError
 	require.ErrorAs(t, err, &pollErr)
 	require.EqualError(
 		t,
@@ -237,13 +294,14 @@ func TestPollUntilConnected_timeoutError(t *testing.T) {
 	)
 }
 
-func TestPollUntilImageCount_timeoutError(t *testing.T) {
+func TestWaitUntilImageCount_timeoutError(t *testing.T) {
 	ctx := context.Background()
 	client := pollTestClientShort(t)
 	sub := aeron.NewSubscriptionForTest(77, 1001, "aeron:ipc")
 
-	err := client.PollUntilImageCount(ctx, sub, 1)
-	var pollErr *aeron.PollUntilImageCountTimeoutError
+	aeron.BindClientForTest(sub, client)
+	err := sub.WaitUntilImageCount(ctx, 1)
+	var pollErr *aeron.WaitUntilImageCountTimeoutError
 	require.ErrorAs(t, err, &pollErr)
 	require.Contains(t, err.Error(), "active image count=0 want=1")
 	require.Contains(t, err.Error(), "within 5ms")
@@ -316,7 +374,8 @@ func TestPollOneMessage_table(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, sub, pollClient := tc.setup(t)
-			got, err := pollClient.PollOneMessage(ctx, sub)
+			aeron.BindClientForTest(sub, pollClient)
+			got, err := sub.PollOneMessage(ctx)
 			if tc.wantErr != nil {
 				tc.wantErr(t, err)
 				return
@@ -332,7 +391,8 @@ func TestPollReassembled_preconditionNoActiveImages(t *testing.T) {
 	client := pollTestClient(t)
 	sub := aeron.NewSubscriptionForTest(77, 1001, "aeron:ipc")
 
-	_, err := client.PollReassembled(ctx, sub, make([]byte, 64))
+	aeron.BindClientForTest(sub, client)
+	_, err := sub.PollReassembled(ctx, make([]byte, 64))
 	var pollErr *aeron.PollReassembledPreconditionError
 	require.ErrorAs(t, err, &pollErr)
 	require.Equal(t, "no active images", pollErr.Detail)
@@ -365,7 +425,8 @@ func TestPollReassembled_bufferTooSmall(t *testing.T) {
 	)
 	aeron.SubscriptionAddImageForTest(sub, image)
 
-	_, err := client.PollReassembled(ctx, sub, make([]byte, 4))
+	aeron.BindClientForTest(sub, client)
+	_, err := sub.PollReassembled(ctx, make([]byte, 4))
 	var bufErr *aeron.PollBufferTooSmallError
 	require.ErrorAs(t, err, &bufErr)
 	require.ErrorIs(t, err, aeron.ErrPollBufferTooSmall)
@@ -374,7 +435,8 @@ func TestPollReassembled_bufferTooSmall(t *testing.T) {
 
 	// Message was consumed; retry with adequate buffer cannot recover it.
 	retryBuf := make([]byte, len(payload))
-	n, retryErr := shortClient.PollReassembled(ctx, sub, retryBuf)
+	aeron.BindClientForTest(sub, shortClient)
+	n, retryErr := sub.PollReassembled(ctx, retryBuf)
 	require.Zero(t, n)
 	var pollErr *aeron.PollReassembledTimeoutError
 	require.ErrorAs(t, retryErr, &pollErr)
@@ -387,7 +449,8 @@ func TestPollReassembled_loopTimeout(t *testing.T) {
 	sub := testSubscription(t)
 	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID)
 
-	_, err := client.PollReassembled(ctx, sub, make([]byte, 64))
+	aeron.BindClientForTest(sub, client)
+	_, err := sub.PollReassembled(ctx, make([]byte, 64))
 	var pollErr *aeron.PollReassembledTimeoutError
 	require.ErrorAs(t, err, &pollErr)
 	require.NotEqual(t, "no active images", pollErr.Detail)
@@ -463,7 +526,7 @@ func TestPollDeadline_contextDeadlineSooner(t *testing.T) {
 	pub := &fakePublicationOfferer{registrationID: 1, streamID: 100, sessionID: 200}
 
 	start := time.Now()
-	err := client.PollUntilConnected(ctx, pub)
+	err := aeron.WaitUntilConnectedForTest(ctx, client, pub)
 	elapsed := time.Since(start)
 
 	require.ErrorIs(t, err, context.DeadlineExceeded)

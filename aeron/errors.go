@@ -10,6 +10,11 @@ var (
 	// ErrInvalidWant reports a non-positive want argument to a poll helper.
 	ErrInvalidWant = errors.New("aeron: invalid want")
 
+	// ErrClientNotBound reports a cold-path helper on an unbound resource.
+	//
+	// Typical callers: fixtures, in-mem benches.
+	ErrClientNotBound = errors.New("aeron: client not bound")
+
 	ErrClientClosed             = errors.New("aeron: client is closed")
 	ErrClientNotReady           = errors.New("aeron: client is not ready")
 	ErrConductorTerminating     = errors.New("aeron: conductor is terminating")

@@ -40,16 +40,16 @@ if err != nil { /* ... */ }
 sub, err := client.AddSubscription(1001, "aeron:ipc")
 if err != nil { /* ... */ }
 
-if err := client.PollUntilConnected(ctx, pub); err != nil { /* ... */ }
-if err := client.PollUntilImageCount(ctx, sub, 1); err != nil { /* ... */ }
+if err := pub.WaitUntilConnected(ctx); err != nil { /* ... */ }
+if err := sub.WaitUntilImageCount(ctx, 1); err != nil { /* ... */ }
 
-if _, err := client.OfferWithRetry(ctx, pub, []byte("hello")); err != nil { /* ... */ }
-msg, err := client.PollOneMessage(ctx, sub)
+if _, err := pub.OfferWithRetry(ctx, []byte("hello")); err != nil { /* ... */ }
+msg, err := sub.PollOneMessage(ctx)
 if err != nil { /* ... */ }
 log.Printf("received %q", msg)
 ```
 
-The `(*Client)` poll helpers above call `DoWork` internally. Runnable one-shot
+Resource poll/offer helpers above call client `DoWork` internally. Runnable one-shot
 sample: [`examples/ipc-echo`](examples/ipc-echo/).
 
 A long-running application drives the client directly: one goroutine per

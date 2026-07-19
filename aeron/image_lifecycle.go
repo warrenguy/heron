@@ -126,6 +126,7 @@ func subscriptionFromHandle(sub conductor.SubscriptionHandle) (*Subscription, er
 func bindSubscriptionHandle(
 	sub conductor.SubscriptionHandle,
 	clientConductor *conductor.Conductor,
+	client *Client,
 ) error {
 	subscription, err := subscriptionFromHandle(sub)
 	if err != nil {
@@ -133,6 +134,7 @@ func bindSubscriptionHandle(
 	}
 	subscription.conductor = clientConductor
 	subscription.counters = clientConductor.CountersReader()
+	subscription.client = client
 	return nil
 }
 

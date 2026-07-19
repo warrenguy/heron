@@ -112,16 +112,16 @@ func (pub offerRetryFailStubPub) Position() int64 { return pub.position }
 
 func (offerRetryFailStubPub) Offer([]byte) int64 { return aeron.NotConnected }
 
-func TestPollUntilConnected_timeoutMessage(t *testing.T) {
+func TestWaitUntilConnected_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
 	client := ConnectClient(t, md, shortPollAeronConfig())
 
-	pub, err := client.AddPublication(PollUntilConnectedTimeoutStreamID, IPCChannel)
+	pub, err := client.AddPublication(WaitUntilConnectedTimeoutStreamID, IPCChannel)
 	require.NoError(t, err)
 	CleanupClose(t, "close publication", pub.Close)
 
 	capture := &CaptureFailTB{TB: t}
-	PollUntilConnected(capture, client, pub)
+	WaitUntilConnected(capture, pub)
 	require.True(t, capture.failed)
 	wantMsg := fmt.Sprintf(
 		"publication %d (stream %d session %d) never connected; position=0 within %s",
@@ -133,17 +133,17 @@ func TestPollUntilConnected_timeoutMessage(t *testing.T) {
 	require.Equal(t, wantMsg, capture.lastMsg)
 }
 
-func TestPollUntilImageCount_timeoutMessage(t *testing.T) {
+func TestWaitUntilImageCount_timeoutMessage(t *testing.T) {
 	t.Run("zeroActiveImages", func(t *testing.T) {
 		md := SharedParallel(t)
 		client := ConnectClient(t, md, shortPollAeronConfig())
 
-		sub, err := client.AddSubscription(PollUntilImageCountZeroActiveStreamID, IPCChannel)
+		sub, err := client.AddSubscription(WaitUntilImageCountZeroActiveStreamID, IPCChannel)
 		require.NoError(t, err)
 		CleanupClose(t, "close subscription", sub.Close)
 
 		capture := &CaptureFailTB{TB: t}
-		PollUntilImageCount(capture, client, sub, 1)
+		WaitUntilImageCount(capture, sub, 1)
 		require.True(t, capture.failed)
 		wantMsg := fmt.Sprintf(
 			"subscription %d (stream %d) active image count=0 want=1; no images within %s",
@@ -158,10 +158,10 @@ func TestPollUntilImageCount_timeoutMessage(t *testing.T) {
 		md := SharedParallel(t)
 		client := ConnectClient(t, md, shortPollAeronConfig())
 
-		pub, sub := connectIPCPubSub(t, client, PollUntilImageCountOneWantTwoStreamID)
+		pub, sub := connectIPCPubSub(t, client, WaitUntilImageCountOneWantTwoStreamID)
 
 		capture := &CaptureFailTB{TB: t}
-		PollUntilImageCount(capture, client, sub, 2)
+		WaitUntilImageCount(capture, sub, 2)
 		require.True(t, capture.failed)
 		wantMsg := fmt.Sprintf(
 			"subscription %d (stream %d) active image count=1 want=2; "+
@@ -293,14 +293,14 @@ func TestPollUntilNoActiveImagesSplit_timeoutMessage(t *testing.T) {
 	require.Equal(t, wantMsg, capture.lastMsg)
 }
 
-func TestPollUntilImageCount_invalidWantFails(t *testing.T) {
-	testInvalidPollWant(t, PollUntilImageCountInvalidWantStreamID, func(
+func TestWaitUntilImageCount_invalidWantFails(t *testing.T) {
+	testInvalidPollWant(t, WaitUntilImageCountInvalidWantStreamID, func(
 		capture *CaptureFailTB,
 		client *aeron.Client,
 		sub *aeron.Subscription,
 		want int,
 	) {
-		PollUntilImageCount(capture, client, sub, want)
+		WaitUntilImageCount(capture, sub, want)
 	})
 }
 
@@ -627,7 +627,7 @@ func TestOfferWithRetry_notConnected_timesOut(t *testing.T) {
 
 	payload := []byte{0x01}
 	capture := &CaptureFailTB{TB: t}
-	got := OfferWithRetry(capture, client, pub, payload)
+	got := OfferWithRetry(capture, pub, payload)
 	require.True(t, capture.failed)
 	require.Zero(t, got)
 	wantMsg := fmt.Sprintf(
@@ -663,7 +663,7 @@ func TestOfferWithRetry_notConnected_thenConnect_succeeds(t *testing.T) {
 	}()
 
 	payload := []byte{0xAB}
-	result := OfferWithRetry(t, client, pub, payload)
+	result := OfferWithRetry(t, pub, payload)
 
 	res := <-subReady
 	require.NoError(t, res.err)
@@ -680,7 +680,7 @@ func TestOfferWithRetry_closedPublication_failsImmediately(t *testing.T) {
 	require.NoError(t, pub.Close())
 
 	capture := &CaptureFailTB{TB: t}
-	got := OfferWithRetry(capture, client, pub, []byte{0x01})
+	got := OfferWithRetry(capture, pub, []byte{0x01})
 	require.True(t, capture.failed)
 	require.Equal(t, aeron.Closed, got)
 	wantMsg := fmt.Sprintf(
@@ -899,7 +899,7 @@ func TestPollReassembled_liveIPC_fragmented(t *testing.T) {
 	pubPosBefore := pub.Position()
 	wantAdvance := int64(logbuffer.ComputeFragmentedFrameLength(len(payload), maxPayload))
 
-	result := OfferWithRetry(t, client, pub, payload)
+	result := OfferWithRetry(t, pub, payload)
 	require.Positive(t, result)
 	client.DoWork()
 
@@ -909,7 +909,7 @@ func TestPollReassembled_liveIPC_fragmented(t *testing.T) {
 	require.Zero(
 		t,
 		fragments,
-		"want=1 delegates to client.PollReassembled; fragment oracle is harness-only for want>1",
+		"want=1 delegates to Subscription.PollReassembled; fragment oracle is harness-only for want>1",
 	)
 
 	AssertPubSubPositionsAdvanced(t, pub, sub, pubPosBefore, wantAdvance)
@@ -970,7 +970,7 @@ func TestOfferWithRetryWitness_cleanSuccess_returnsFalse(t *testing.T) {
 
 	pubPosBefore := pub.Position()
 	payload := []byte{0x01}
-	pos, witness := OfferWithRetryWitness(t, client, pub, payload)
+	pos, witness := OfferWithRetryWitness(t, pub, payload)
 	require.False(t, witness)
 	require.Positive(t, pos)
 	require.Greater(t, pos, pubPosBefore)
@@ -1034,13 +1034,7 @@ func TestOfferWithRetryWitness_backPressured_returnsTrue(t *testing.T) {
 		}
 	}()
 
-	pos, witness := OfferWithRetryWitnessAfterNotify(
-		t,
-		pubClient,
-		pub,
-		payload,
-		transientSeen,
-	)
+	pos, witness := OfferWithRetryWitnessAfterNotify(t, pub, payload, transientSeen)
 	stopDrain()
 	// stopDrain cancels drainCtx; goroutine closes drainDone after at most one poll loop.
 	<-drainDone
@@ -1067,7 +1061,7 @@ func TestAssertSubscribeMetadata_liveIPC(t *testing.T) {
 	payloads := DistinctIPCPayloads(messageCount, payloadSize, 0xD0)
 
 	for _, payload := range payloads {
-		OfferWithRetry(t, client, pub, payload)
+		OfferWithRetry(t, pub, payload)
 	}
 	_ = PollDelivered(t, client, sub, messageCount)
 

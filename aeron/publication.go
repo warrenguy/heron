@@ -47,6 +47,7 @@ type Publication struct {
 
 	closed    atomic.Uint32
 	conductor *conductor.Conductor
+	client    *Client
 }
 
 // ChannelEndpointStatusActive mirrors Java ChannelEndpointStatus.ACTIVE.

@@ -78,7 +78,7 @@ func TestJavaInteropDuplex(t *testing.T) {
 	pubPosBefore := goToJavaPub.Position()
 
 	for _, payload := range expectedGoPayloads {
-		harness.OfferWithRetry(t, client, goToJavaPub, payload)
+		harness.OfferWithRetry(t, goToJavaPub, payload)
 	}
 	t.Logf(
 		"offered %d go payloads on stream %d (pubPosition=%d sessionId=%d)",

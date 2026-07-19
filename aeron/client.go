@@ -41,18 +41,16 @@ const (
 //
 // Poll loops under clientLock call doWorkLocked, not DoWork.
 //
-// PollUntil*, [Client.PollOneMessage], [Client.PollReassembled], and
-// [Client.RunDuringClientWork] are cold-path integration helpers bound by
-// [Config.PollTimeout]. [Client.OfferWithRetry] and [Client.OfferWithRetryObserved] are
-// the offer-side equivalents bound by [Config.PublicationOfferTimeout]. When ctx carries a
-// deadline, the effective bound is the earlier of the configured timeout and ctx.Deadline().
+// Resource cold-path helpers on Publication, ExclusivePublication, and Subscription,
+// plus [Client.RunDuringClientWork], use [Config.PollTimeout] or
+// [Config.PublicationOfferTimeout]. When ctx has a deadline, the effective bound is
+// the earlier of that timeout and ctx.Deadline().
 //
-// Each helper drives DoWork inside its wait or retry loop; the caller need not invoke
-// DoWork separately while blocked there. Typed timeout errors apply while the context
-// remains active; [PreferContextError] yields ctx.Err() when the context is done first.
+// Each helper drives DoWork in its wait or retry loop. Typed timeout errors apply
+// while the context remains active; [PreferContextError] yields ctx.Err() when the
+// context is done first.
 //
-// Cold-path integration ergonomics: may allocate for error strings, cloned payloads,
-// [FragmentAssembler], or goroutine bookkeeping. Not zero-alloc.
+// Cold-path only: may allocate; not zero-alloc.
 //
 // Callbacks invoked from doWorkLocked (ErrorHandler, AvailableImageHandler,
 // UnavailableImageHandler) must not call DoWork, Close, Add*, OfferAdd*,
@@ -175,7 +173,7 @@ func openCnc(ctx context.Context, cfg Config) (*cnc.MappedCncFile, *cnc.Rings, e
 	return mapped, rings, nil
 }
 
-func conductorConnectConfig(cfg Config, clientID int64) conductor.Config {
+func conductorConnectConfig(cfg Config, clientID int64, client *Client) conductor.Config {
 	config := conductor.Config{
 		ClientID:               clientID,
 		DriverTimeout:          cfg.DriverTimeout,
@@ -189,6 +187,7 @@ func conductorConnectConfig(cfg Config, clientID int64) conductor.Config {
 		ResourceLifecycle: conductorResourceLifecycle{
 			availableImageHandler:   cfg.AvailableImageHandler,
 			unavailableImageHandler: cfg.UnavailableImageHandler,
+			client:                  client,
 		},
 		MediaDriverDir: cfg.AeronDir,
 		CloseLingerNs:  cfg.CloseLingerDuration.Nanoseconds(),
@@ -234,7 +233,21 @@ func newConductorClient(
 	}
 
 	driverProxy := conductor.NewDriverProxy(rings.ToDriver, clientID)
-	config := conductorConnectConfig(cfg, clientID)
+
+	// Client exists before NewConductor so ResourceLifecycle can bind it on Add*.
+	client := &Client{
+		clientID:                clientID,
+		mapped:                  mapped,
+		countersReader:          countersReader,
+		driverProxy:             driverProxy,
+		nanoClock:               cfg.NanoClock,
+		driverTimeout:           cfg.DriverTimeout,
+		pollTimeout:             cfg.PollTimeout,
+		publicationOfferTimeout: cfg.PublicationOfferTimeout,
+		idleSleepDuration:       cfg.IdleSleepDuration,
+	}
+
+	config := conductorConnectConfig(cfg, clientID, client)
 
 	conductorInstance, err := conductor.NewConductor(
 		driverProxy,
@@ -245,19 +258,8 @@ func newConductorClient(
 	if err != nil {
 		return nil, err
 	}
-
-	return &Client{
-		clientID:                clientID,
-		mapped:                  mapped,
-		countersReader:          countersReader,
-		conductor:               conductorInstance,
-		driverProxy:             driverProxy,
-		nanoClock:               cfg.NanoClock,
-		driverTimeout:           cfg.DriverTimeout,
-		pollTimeout:             cfg.PollTimeout,
-		publicationOfferTimeout: cfg.PublicationOfferTimeout,
-		idleSleepDuration:       cfg.IdleSleepDuration,
-	}, nil
+	client.conductor = conductorInstance
+	return client, nil
 }
 
 func (client *Client) doWorkLocked() int {

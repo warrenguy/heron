@@ -1428,8 +1428,64 @@ func SetClientPollTimeoutsForTest(
 	client.publicationOfferTimeout = publicationOfferTimeout
 }
 
+// BindClientForTest sets resource.client for unit fixtures that call cold-path
+// helpers without a live Add* bind.
+func BindClientForTest(resource any, client *Client) {
+	switch r := resource.(type) {
+	case *Publication:
+		r.client = client
+	case *ExclusivePublication:
+		r.client = client
+	case *Subscription:
+		r.client = client
+	default:
+		panic("aeron: BindClientForTest: unsupported resource type")
+	}
+}
+
+// PublicationClientForTest returns the client bound on pub.
+func PublicationClientForTest(pub *Publication) *Client {
+	return pub.client
+}
+
+// ExclusivePublicationClientForTest returns the client bound on ep.
+func ExclusivePublicationClientForTest(ep *ExclusivePublication) *Client {
+	return ep.client
+}
+
+// SubscriptionClientForTest returns the client bound on sub.
+func SubscriptionClientForTest(sub *Subscription) *Client {
+	return sub.client
+}
+
+// OfferWithRetryObservedForTest runs offerWithRetryObserved for unit fakes.
+//
+// Pass nil onRetriable for plain retry.
+func OfferWithRetryObservedForTest(
+	ctx context.Context,
+	client *Client,
+	pub PublicationOfferer,
+	payload []byte,
+	onRetriable OfferRetriableObserver,
+) (int64, error) {
+	return offerWithRetryObserved(ctx, client, pub, payload, onRetriable)
+}
+
+// WaitUntilConnectedForTest runs waitUntilConnected for unit fakes.
+func WaitUntilConnectedForTest(
+	ctx context.Context,
+	client *Client,
+	pub PublicationOfferer,
+) error {
+	return waitUntilConnected(ctx, client, pub)
+}
+
+// ConductorConnectConfigForTest matches Connect but leaves ResourceLifecycle.client
+// nil.
+//
+// Unit Add fixtures skip cold-path helpers; live Connect passes *Client.
 func ConductorConnectConfigForTest(cfg Config, clientID int64) conductor.Config {
-	return conductorConnectConfig(cfg, clientID)
+	return conductorConnectConfig(cfg, clientID, nil)
 }
 
 func SubscriptionAvailableImageHandlerForTest(sub *Subscription) AvailableImageHandler {

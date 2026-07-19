@@ -37,10 +37,10 @@ const (
 	// Sub-only stream for TestWaitForIPCLinkConnected_subscriptionTimeout (no matching pub).
 	WaitForIPCLinkConnectedSubscriptionOnlyTimeoutStreamID int32 = 8030
 
-	PollUntilConnectedTimeoutStreamID      int32 = 7990
-	PollUntilImageCountZeroActiveStreamID  int32 = 7995
-	PollUntilImageCountOneWantTwoStreamID  int32 = 7999
-	PollUntilImageCountInvalidWantStreamID int32 = 8000
+	WaitUntilConnectedTimeoutStreamID      int32 = 7990
+	WaitUntilImageCountZeroActiveStreamID  int32 = 7995
+	WaitUntilImageCountOneWantTwoStreamID  int32 = 7999
+	WaitUntilImageCountInvalidWantStreamID int32 = 8000
 	PollUntilNoActiveImagesTimeoutStreamID int32 = 8012
 	// Isolated from PollUntilNoActiveImagesTimeoutStreamID for shared-driver cross-test safety.
 	PollUntilNoActiveImagesCtxDeadlineStreamID  int32 = 8027
@@ -66,7 +66,7 @@ const (
 
 	OfferWithRetryWitnessCleanStreamID         int32 = 8010
 	OfferWithRetryWitnessBackPressuredStreamID int32 = 8011
-	// Isolated from PollUntilConnectedTimeoutStreamID for shared-driver cross-test safety.
+	// Isolated from WaitUntilConnectedTimeoutStreamID for shared-driver cross-test safety.
 	OfferWithRetryNotConnectedTimeoutStreamID int32 = 8019
 	// Isolated from WaitForIPCLinkConnectedStreamID for shared-driver cross-test safety.
 	OfferWithRetryNotConnectedThenConnectStreamID int32 = 8020

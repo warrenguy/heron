@@ -10,8 +10,8 @@ import (
 // Use errors.As into PollBufferTooSmallError for Required length.
 var ErrPollBufferTooSmall = errors.New("aeron: poll buffer too small")
 
-// PollUntilConnectedTimeoutError reports PollUntilConnected deadline expiry.
-type PollUntilConnectedTimeoutError struct {
+// WaitUntilConnectedTimeoutError reports WaitUntilConnected deadline expiry.
+type WaitUntilConnectedTimeoutError struct {
 	PublicationRegID int64
 	StreamID         int32
 	SessionID        int32
@@ -19,7 +19,7 @@ type PollUntilConnectedTimeoutError struct {
 	Position         int64
 }
 
-func (err *PollUntilConnectedTimeoutError) Error() string {
+func (err *WaitUntilConnectedTimeoutError) Error() string {
 	return formatPublicationError(
 		err.PublicationRegID,
 		err.StreamID,
@@ -28,8 +28,8 @@ func (err *PollUntilConnectedTimeoutError) Error() string {
 	)
 }
 
-// PollUntilImageCountTimeoutError reports PollUntilImageCount deadline expiry.
-type PollUntilImageCountTimeoutError struct {
+// WaitUntilImageCountTimeoutError reports WaitUntilImageCount deadline expiry.
+type WaitUntilImageCountTimeoutError struct {
 	RegistrationID int64
 	StreamID       int32
 	Want           int
@@ -38,7 +38,7 @@ type PollUntilImageCountTimeoutError struct {
 	Detail         string
 }
 
-func (err *PollUntilImageCountTimeoutError) Error() string {
+func (err *WaitUntilImageCountTimeoutError) Error() string {
 	return fmt.Sprintf(
 		"aeron: subscription %d (stream %d) active image count=%d want=%d; %s within %s",
 		err.RegistrationID,

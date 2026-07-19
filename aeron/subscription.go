@@ -37,6 +37,7 @@ type Subscription struct {
 	availableImageHandler   AvailableImageHandler
 	unavailableImageHandler UnavailableImageHandler
 	conductor               *conductor.Conductor
+	client                  *Client
 }
 
 func newSubscription(

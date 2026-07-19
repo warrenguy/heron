@@ -57,6 +57,7 @@ type ExclusivePublication struct {
 
 	closed    atomic.Uint32
 	conductor *conductor.Conductor
+	client    *Client
 }
 
 // RegistrationID returns the driver registration id for this publication.

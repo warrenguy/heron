@@ -23,11 +23,11 @@ func TestAeronHelpers_unfragmentedRoundtrip(t *testing.T) {
 	pubPosBefore := pub.Position()
 	wantAdvance := harness.AlignedOfferAdvance(len(payload), 1)
 
-	position, err := client.OfferWithRetry(ctx, pub, payload)
+	position, err := pub.OfferWithRetry(ctx, payload)
 	require.NoError(t, err)
 	require.Positive(t, position)
 
-	got, err := client.PollOneMessage(ctx, sub)
+	got, err := sub.PollOneMessage(ctx)
 	require.NoError(t, err)
 	require.Equal(t, payload, got)
 	harness.AssertPubSubPositionsAdvanced(t, pub, sub, pubPosBefore, wantAdvance)
@@ -54,11 +54,11 @@ func TestAeronHelpers_fragmentedRoundtrip(t *testing.T) {
 	pubPosBefore := pub.Position()
 	wantAdvance := int64(logbuffer.ComputeFragmentedFrameLength(len(payload), maxPayload))
 
-	position, err := client.OfferWithRetry(ctx, pub, payload)
+	position, err := pub.OfferWithRetry(ctx, payload)
 	require.NoError(t, err)
 	require.Positive(t, position)
 
-	n, err := client.PollReassembled(ctx, sub, buf)
+	n, err := sub.PollReassembled(ctx, buf)
 	require.NoError(t, err)
 	require.Equal(t, payload, buf[:n])
 

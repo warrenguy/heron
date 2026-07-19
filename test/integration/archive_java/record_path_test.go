@@ -125,10 +125,10 @@ func recordArchiveSmoke(
 	)
 	require.NoError(t, err)
 
-	harness.PollUntilConnected(t, aeronClient, pub)
+	harness.WaitUntilConnected(t, pub)
 
 	for _, payload := range expectedPayloads {
-		harness.OfferWithRetry(t, aeronClient, pub, payload)
+		harness.OfferWithRetry(t, pub, payload)
 	}
 
 	// Stop must not run until the publication has advanced past every offered frame.

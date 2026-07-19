@@ -443,8 +443,8 @@ func TestPollHelperTimeoutErrors_errorStrings(t *testing.T) {
 		want string
 	}{
 		{
-			name: "pollUntilConnected",
-			err: &aeron.PollUntilConnectedTimeoutError{
+			name: "waitUntilConnected",
+			err: &aeron.WaitUntilConnectedTimeoutError{
 				PublicationRegID: 42,
 				StreamID:         1001,
 				SessionID:        2002,
@@ -454,8 +454,8 @@ func TestPollHelperTimeoutErrors_errorStrings(t *testing.T) {
 			want: "aeron: publication 42 (stream 1001 session 2002) not connected within 10s; position=0",
 		},
 		{
-			name: "pollUntilImageCount",
-			err: &aeron.PollUntilImageCountTimeoutError{
+			name: "waitUntilImageCount",
+			err: &aeron.WaitUntilImageCountTimeoutError{
 				RegistrationID: 77,
 				StreamID:       1001,
 				Want:           1,
@@ -573,6 +573,10 @@ func TestPollBufferTooSmallError_is(t *testing.T) {
 
 func TestErrInvalidWant(t *testing.T) {
 	require.EqualError(t, aeron.ErrInvalidWant, "aeron: invalid want")
+}
+
+func TestErrClientNotBound(t *testing.T) {
+	require.EqualError(t, aeron.ErrClientNotBound, "aeron: client not bound")
 }
 
 func TestMapConductorError(t *testing.T) {

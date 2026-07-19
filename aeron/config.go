@@ -33,12 +33,15 @@ type Config struct {
 	// Zero uses the default (3s), not immediate unmap.
 	CloseLingerDuration time.Duration
 
-	// PollTimeout bounds (*Client) PollUntil*, [Client.PollOneMessage], [Client.PollReassembled], and
-	// [Client.RunDuringClientWork] methods. Zero uses DefaultPollTimeout after Normalize.
+	// PollTimeout bounds resource WaitUntil* and receive poll helpers, plus
+	// [Client.RunDuringClientWork].
+	//
+	// Zero uses DefaultPollTimeout after Normalize.
 	PollTimeout time.Duration
 
-	// PublicationOfferTimeout bounds [Client.OfferWithRetry] methods. Zero uses
-	// PollTimeout after Normalize.
+	// PublicationOfferTimeout bounds OfferWithRetry helpers.
+	//
+	// Zero uses PollTimeout after Normalize.
 	PublicationOfferTimeout time.Duration
 
 	ErrorHandler func(error)

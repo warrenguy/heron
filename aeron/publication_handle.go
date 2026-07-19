@@ -13,9 +13,9 @@ import (
 )
 
 type publicationHandleOps struct {
-	registryKey  string
-	markClosed   func() error
-	setConductor func(*conductor.Conductor)
+	registryKey string
+	markClosed  func() error
+	bind        func(*conductor.Conductor, *Client)
 }
 
 func retirePublicationHandle(pub conductor.PublicationHandle) (string, error) {
@@ -29,12 +29,13 @@ func retirePublicationHandle(pub conductor.PublicationHandle) (string, error) {
 func bindPublicationHandle(
 	pub conductor.PublicationHandle,
 	clientConductor *conductor.Conductor,
+	client *Client,
 ) error {
 	ops, err := publicationHandleOpsFor(pub)
 	if err != nil {
 		return err
 	}
-	ops.setConductor(clientConductor)
+	ops.bind(clientConductor, client)
 	return nil
 }
 
@@ -58,8 +59,9 @@ func publicationHandleOpsFor(pub conductor.PublicationHandle) (publicationHandle
 		return publicationHandleOps{
 			registryKey: publicationRegistryKey(p.log),
 			markClosed:  p.markClosed,
-			setConductor: func(c *conductor.Conductor) {
+			bind: func(c *conductor.Conductor, client *Client) {
 				p.conductor = c
+				p.client = client
 			},
 		}, nil
 	case *ExclusivePublication:
@@ -69,8 +71,9 @@ func publicationHandleOpsFor(pub conductor.PublicationHandle) (publicationHandle
 		return publicationHandleOps{
 			registryKey: publicationRegistryKey(p.log),
 			markClosed:  p.markClosed,
-			setConductor: func(c *conductor.Conductor) {
+			bind: func(c *conductor.Conductor, client *Client) {
 				p.conductor = c
+				p.client = client
 			},
 		}, nil
 	default:

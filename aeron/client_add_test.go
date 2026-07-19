@@ -104,9 +104,10 @@ func TestConductorFixtureConfigFromConnect_propagatesSubscriberErrorHandler(t *t
 	require.NotNil(t, fixtureConfig.ErrorHandler)
 }
 
-// newClientAddFixtureWithConfig wires the conductor fixture from
-// ConductorConnectConfigForTest (production Connect path) and overrides only
-// test timing: NanoClock->0, DriverTimeout->1s, IdleSleepDuration->1ms.
+// newClientAddFixtureWithConfig builds a Connect-shaped fixture via
+// ConductorConnectConfigForTest (client nil on ResourceLifecycle).
+//
+// Overrides test timing: NanoClock->0, DriverTimeout->1s, IdleSleepDuration->1ms.
 func newClientAddFixtureWithConfig(
 	tb testing.TB,
 	cfg Config,

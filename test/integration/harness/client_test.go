@@ -73,7 +73,7 @@ func TestConnectedWait_timeoutMessages(t *testing.T) {
 				pub, err := client.AddPublication(streamID, IPCChannel)
 				require.NoError(t, err)
 
-				PollUntilConnected(capture, client, pub)
+				WaitUntilConnected(capture, pub)
 				wantMsg := fmt.Sprintf(
 					"publication %d (stream %d session %d) never connected; position=0 within %s",
 					pub.RegistrationID(),

@@ -348,54 +348,89 @@ func TestConductorResourceLifecycle_NewPreSubscription_nilHandlers(t *testing.T)
 	require.Nil(t, SubscriptionUnavailableImageHandlerForTest(subscription))
 }
 
-func TestConductorResourceLifecycle_BindSubscription_wiresCountersReader(t *testing.T) {
+var bindClientCases = []struct {
+	name       string
+	withClient bool
+}{
+	{name: "nilClient"},
+	{name: "withClient", withClient: true},
+}
+
+func bindLifecycleForTest(withClient bool) (*Client, conductor.ResourceLifecycle) {
+	if !withClient {
+		return nil, ConductorResourceLifecycle
+	}
+	client := NewClientForTest(nil, func() int64 { return 0 })
+	return client, conductorResourceLifecycle{client: client}
+}
+
+func TestConductorResourceLifecycle_BindSubscription(t *testing.T) {
 	t.Parallel()
 
-	conductorInstance := testutil.NewConductorFixture(
-		t,
-		testutil.DefaultConductorConfig(nil),
-	).Conductor
-	reader := emptyCountersReaderForTest(t)
-	conductorInstance.SetCountersReaderForTest(reader)
+	for _, tt := range bindClientCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	sub := NewSubscriptionForTest(
-		TestSubscriptionRegistrationID,
-		TestPublicationStreamID,
-		TestImageSourceIdentity,
-	)
+			conductorInstance := testutil.NewConductorFixture(
+				t,
+				testutil.DefaultConductorConfig(nil),
+			).Conductor
+			reader := emptyCountersReaderForTest(t)
+			conductorInstance.SetCountersReaderForTest(reader)
 
-	require.NoError(t, ConductorResourceLifecycle.BindSubscription(sub, conductorInstance))
-	require.Same(t, reader, SubscriptionCountersForTest(sub))
+			client, lifecycle := bindLifecycleForTest(tt.withClient)
+
+			sub := NewSubscriptionForTest(
+				TestSubscriptionRegistrationID,
+				TestPublicationStreamID,
+				TestImageSourceIdentity,
+			)
+
+			require.NoError(t, lifecycle.BindSubscription(sub, conductorInstance))
+			require.Same(t, reader, SubscriptionCountersForTest(sub))
+			require.Same(t, client, SubscriptionClientForTest(sub))
+		})
+	}
 }
 
 func TestConductorResourceLifecycle_BindPublication(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range publicationKindLogConfigCases {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, clientCase := range bindClientCases {
+		t.Run(clientCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			fixture := newRetirePublicationFixture(t, tt.logCfg, tt.exclusive)
-			conductorInstance := testutil.NewConductorFixture(
-				t,
-				testutil.DefaultConductorConfig(nil),
-			).Conductor
-			require.NoError(
-				t,
-				ConductorResourceLifecycle.BindPublication(fixture.handle, conductorInstance),
-			)
+			client, lifecycle := bindLifecycleForTest(clientCase.withClient)
 
-			switch handle := fixture.handle.(type) {
-			case *Publication:
-				require.Equal(t, conductorInstance, PublicationConductorForTest(handle))
-			case *ExclusivePublication:
-				require.Equal(
-					t,
-					conductorInstance,
-					ExclusivePublicationConductorForTest(handle),
-				)
-			default:
-				t.Fatalf("unexpected publication handle type %T", fixture.handle)
+			for _, tt := range publicationKindLogConfigCases {
+				t.Run(tt.name, func(t *testing.T) {
+					t.Parallel()
+
+					fixture := newRetirePublicationFixture(t, tt.logCfg, tt.exclusive)
+					conductorInstance := testutil.NewConductorFixture(
+						t,
+						testutil.DefaultConductorConfig(nil),
+					).Conductor
+					require.NoError(
+						t,
+						lifecycle.BindPublication(fixture.handle, conductorInstance),
+					)
+
+					switch handle := fixture.handle.(type) {
+					case *Publication:
+						require.Equal(t, conductorInstance, PublicationConductorForTest(handle))
+						require.Same(t, client, PublicationClientForTest(handle))
+					case *ExclusivePublication:
+						require.Equal(
+							t,
+							conductorInstance,
+							ExclusivePublicationConductorForTest(handle),
+						)
+						require.Same(t, client, ExclusivePublicationClientForTest(handle))
+					default:
+						t.Fatalf("unexpected publication handle type %T", fixture.handle)
+					}
+				})
 			}
 		})
 	}

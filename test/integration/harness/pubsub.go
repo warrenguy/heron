@@ -19,31 +19,40 @@ import (
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
-// PollUntilConnected polls DoWork until pub.IsConnected on live IPC.
-func PollUntilConnected(
+// boundPublication is *aeron.Publication or *aeron.ExclusivePublication.
+type boundPublication interface {
+	aeron.PublicationOfferer
+	WaitUntilConnected(context.Context) error
+	OfferWithRetryObserved(
+		context.Context,
+		[]byte,
+		aeron.OfferRetriableObserver,
+	) (int64, error)
+}
+
+// WaitUntilConnected is harness wrap of [aeron.Publication.WaitUntilConnected]
+// (and exclusive counterpart) on live IPC.
+func WaitUntilConnected(
 	t testing.TB,
-	client *aeron.Client,
-	pub aeron.PublicationOfferer,
+	pub boundPublication,
 ) {
 	t.Helper()
 
-	pollUntilConnectedCtx(t, t.Context(), client, pub)
+	waitUntilConnectedCtx(t, t.Context(), pub)
 }
 
-func pollUntilConnectedCtx(
+func waitUntilConnectedCtx(
 	t testing.TB,
 	ctx context.Context,
-	client *aeron.Client,
-	pub aeron.PublicationOfferer,
+	pub boundPublication,
 ) {
 	t.Helper()
-	failPollTimeout(t, client.PollUntilConnected(ctx, pub))
+	failPollTimeout(t, pub.WaitUntilConnected(ctx))
 }
 
-// PollUntilImageCount polls DoWork until the subscription has want non-closed images.
-func PollUntilImageCount(
+// WaitUntilImageCount is harness wrap of [aeron.Subscription.WaitUntilImageCount].
+func WaitUntilImageCount(
 	t testing.TB,
-	client *aeron.Client,
 	sub *aeron.Subscription,
 	want int,
 ) {
@@ -52,7 +61,7 @@ func PollUntilImageCount(
 		return
 	}
 
-	err := client.PollUntilImageCount(t.Context(), sub, want)
+	err := sub.WaitUntilImageCount(t.Context(), want)
 	failPollTimeout(t, err)
 }
 
@@ -80,7 +89,7 @@ func failPollTimeout(t testing.TB, err error) {
 		return
 	}
 
-	if connected, ok := errors.AsType[*aeron.PollUntilConnectedTimeoutError](err); ok {
+	if connected, ok := errors.AsType[*aeron.WaitUntilConnectedTimeoutError](err); ok {
 		t.Errorf(
 			"publication %d (stream %d session %d) never connected; position=%d within %s",
 			connected.PublicationRegID,
@@ -93,7 +102,7 @@ func failPollTimeout(t testing.TB, err error) {
 		return
 	}
 
-	if imageCount, ok := errors.AsType[*aeron.PollUntilImageCountTimeoutError](err); ok {
+	if imageCount, ok := errors.AsType[*aeron.WaitUntilImageCountTimeoutError](err); ok {
 		t.Errorf(
 			"%s within %s",
 			formatSubscriptionImageCountMsg(
@@ -211,7 +220,7 @@ func pollSplitClientIPCLinkCtx(
 
 type ipcPublication interface {
 	*aeron.Publication | *aeron.ExclusivePublication
-	aeron.PublicationOfferer
+	boundPublication
 	Close() error
 }
 
@@ -410,11 +419,9 @@ func pollUntilNoActiveImagesCtx(
 	)
 }
 
-// PollDelivered polls DoWork and sub.Poll until want payload fragments are collected.
+// PollDelivered collects want payload fragments via DoWork and sub.Poll.
 //
-// Harness-only integration oracle: batch multi-fragment delivery with partial-tick
-// accumulation and want counting. Not promoted to public aeron API; apps should
-// compose client.PollOneMessage in a loop for multi-message receive.
+// Harness-only batch oracle; apps loop Subscription.PollOneMessage instead.
 func PollDelivered(
 	t testing.TB,
 	client *aeron.Client,
@@ -513,59 +520,48 @@ func pollDeliveredSplitCtx(
 	return received
 }
 
-// Retries BackPressured and NotConnected with DoWork and idle sleep. AdminAction
-// retries with DoWork only; Aeron requires retrying AdminAction, and a mid-fragment
-// AdminAction may leave a padding-terminated partial in the log before a successful
-// full retry.
+// OfferWithRetry delegates to resource OfferWithRetryObserved and maps typed
+// errors to testing.TB failures.
 //
-// Terminal codes (Closed, MaxPositionExceeded, UnsupportedMessageLength) fail
-// immediately. Delegates to client.OfferWithRetryObserved; maps typed errors to
-// testing.TB failures.
+// See [aeron.Publication.OfferWithRetryObserved].
 func OfferWithRetry(
 	t testing.TB,
-	client *aeron.Client,
-	pub aeron.PublicationOfferer,
+	pub boundPublication,
 	payload []byte,
 ) int64 {
 	t.Helper()
 
-	position, _ := offerWithRetry(t, client, pub, payload, nil)
+	position, _ := offerWithRetry(t, pub, payload, nil)
 	return position
 }
 
-// OfferWithRetryWitness is OfferWithRetry and reports whether any transient
-// BackPressured or AdminAction occurred before a successful offer.
+// OfferWithRetryWitness is OfferWithRetry plus a saw-BackPressured-or-AdminAction
+// flag.
 //
-// Harness/test-only oracle for backpressure witness scenarios; not promoted to
-// public aeron API. Returns the successful publication position and
-// sawBackpressureOrAdmin.
+// Harness-only oracle; not public aeron API.
 func OfferWithRetryWitness(
 	t testing.TB,
-	client *aeron.Client,
-	pub aeron.PublicationOfferer,
+	pub boundPublication,
 	payload []byte,
 ) (int64, bool) {
 	t.Helper()
 
-	return offerWithRetry(t, client, pub, payload, nil)
+	return offerWithRetry(t, pub, payload, nil)
 }
 
-// OfferWithRetryWitnessAfterNotify is OfferWithRetryWitness and sends one
-// non-blocking signal on notify when the first transient BackPressured or
-// AdminAction is observed, so callers can gate work (e.g. subscriber drain)
-// until the witness has seen backpressure.
+// OfferWithRetryWitnessAfterNotify is OfferWithRetryWitness and signals notify
+// once on the first BackPressured or AdminAction (non-blocking send).
 //
-// Harness/test-only; not promoted to public aeron API.
+// Harness-only; not public aeron API.
 func OfferWithRetryWitnessAfterNotify(
 	t testing.TB,
-	client *aeron.Client,
-	pub aeron.PublicationOfferer,
+	pub boundPublication,
 	payload []byte,
 	notify chan<- struct{},
 ) (int64, bool) {
 	t.Helper()
 
-	return offerWithRetry(t, client, pub, payload, notify)
+	return offerWithRetry(t, pub, payload, notify)
 }
 
 // OfferStallTimeout derives stall timeout from offer retry timeout.
@@ -575,8 +571,7 @@ func OfferStallTimeout(timeout time.Duration) time.Duration {
 
 func offerWithRetry(
 	t testing.TB,
-	client *aeron.Client,
-	pub aeron.PublicationOfferer,
+	pub boundPublication,
 	payload []byte,
 	notify chan<- struct{},
 ) (int64, bool) {
@@ -598,12 +593,7 @@ func offerWithRetry(
 		notifySent = true
 	}
 
-	position, err := client.OfferWithRetryObserved(
-		t.Context(),
-		pub,
-		payload,
-		onRetriable,
-	)
+	position, err := pub.OfferWithRetryObserved(t.Context(), payload, onRetriable)
 	if err == nil {
 		return position, sawBackpressureOrAdmin
 	}
@@ -671,25 +661,22 @@ func failOfferWithRetry(
 	return 0
 }
 
-// pollReassembledDelegatedMaxBuf sizes the buffer for client.PollReassembled on the
-// want=1 delegated path. Covers FragmentedRoundtripPayload (maxPayload+512) with
-// headroom; live IPC maxPayloadLength is well below this cap.
+// pollReassembledDelegatedMaxBuf sizes the want=1 Subscription.PollReassembled
+// path.
+//
+// Covers FragmentedRoundtripPayload (maxPayload+512) with headroom.
 const pollReassembledDelegatedMaxBuf = 256 * 1024
 
 // PollReassembled receives want logical messages on live IPC.
 //
-// When want==1, delegates reassembly to client.PollReassembled (FragmentAssembler).
-// The returned fragment count is zero on that path; poll-fragment oracle metrics are
-// only reported by the harness B/E stitch implementation below.
+// want==1 delegates to Subscription.PollReassembled; fragment count is always
+// zero on that path (not a poll-fragment oracle).
 //
-// When want>1, uses harness-only Begin/Middle/End stitch oracle (not production
-// FragmentAssembler). Assumes a single assembly context, a single publisher/image,
-// and in-order sequential fragmented messages only; not safe for multi-image or
-// interleaved fragmentation. Orphan middle or END fragments fail fast. A new BEGIN
-// resets in-progress assembly (expected after AdminAction partial + retry).
+// want>1 uses harness-only B/E stitch (not production FragmentAssembler):
+// single image, in-order sequential fragments only. Orphan middle/END fails
+// fast. New BEGIN resets partial assembly (AdminAction partial + retry).
 //
-// Returns reassembled payloads and the number of poll fragments seen. When want==1 the
-// fragment count is always zero; callers must not interpret it as a poll-fragment oracle.
+// Caller must drive client DoWork on the want>1 path.
 func PollReassembled(
 	t testing.TB,
 	client *aeron.Client,
@@ -714,7 +701,7 @@ func pollReassembledCtx(
 		return nil, 0
 	}
 	if want == 1 {
-		return pollReassembledSingleDelegatedCtx(t, ctx, client, sub, bound)
+		return pollReassembledSingleDelegatedCtx(t, ctx, sub, bound)
 	}
 	return pollReassembledHarnessOracleCtx(t, ctx, client, sub, want, bound)
 }
@@ -722,7 +709,6 @@ func pollReassembledCtx(
 func pollReassembledSingleDelegatedCtx(
 	t testing.TB,
 	ctx context.Context,
-	client *aeron.Client,
 	sub *aeron.Subscription,
 	bound time.Duration,
 ) ([][]byte, int) {
@@ -734,7 +720,7 @@ func pollReassembledSingleDelegatedCtx(
 	effectiveWait := aeron.EffectiveRetryBound(ctx, bound, time.Now())
 
 	buf := make([]byte, pollReassembledDelegatedMaxBuf)
-	n, err := client.PollReassembled(pollCtx, sub, buf)
+	n, err := sub.PollReassembled(pollCtx, buf)
 	if err == nil {
 		return [][]byte{slices.Clone(buf[:n])}, 0
 	}

@@ -9,6 +9,7 @@ import (
 type conductorResourceLifecycle struct {
 	availableImageHandler   AvailableImageHandler
 	unavailableImageHandler UnavailableImageHandler
+	client                  *Client
 }
 
 // ConductorResourceLifecycle is the nil-handler default for tests and internal fixtures.
@@ -103,18 +104,18 @@ func (conductorResourceLifecycle) RetirePublication(
 	return retirePublicationHandle(pub)
 }
 
-func (conductorResourceLifecycle) BindPublication(
+func (lifecycle conductorResourceLifecycle) BindPublication(
 	pub conductor.PublicationHandle,
 	clientConductor *conductor.Conductor,
 ) error {
-	return bindPublicationHandle(pub, clientConductor)
+	return bindPublicationHandle(pub, clientConductor, lifecycle.client)
 }
 
-func (conductorResourceLifecycle) BindSubscription(
+func (lifecycle conductorResourceLifecycle) BindSubscription(
 	sub conductor.SubscriptionHandle,
 	clientConductor *conductor.Conductor,
 ) error {
-	return bindSubscriptionHandle(sub, clientConductor)
+	return bindSubscriptionHandle(sub, clientConductor, lifecycle.client)
 }
 
 func (conductorResourceLifecycle) MarkPublicationClosed(pub conductor.PublicationHandle) {

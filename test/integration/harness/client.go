@@ -233,7 +233,7 @@ func waitForSubscriptionConnectedCtx(
 func WaitForIPCLinkConnected(
 	t testing.TB,
 	client *aeron.Client,
-	pub aeron.PublicationOfferer,
+	pub boundPublication,
 	sub *aeron.Subscription,
 ) {
 	t.Helper()
@@ -245,7 +245,7 @@ func waitForIPCLinkConnectedCtx(
 	t testing.TB,
 	ctx context.Context,
 	client *aeron.Client,
-	pub aeron.PublicationOfferer,
+	pub boundPublication,
 	sub *aeron.Subscription,
 ) {
 	t.Helper()
@@ -258,7 +258,7 @@ func waitForIPCLinkConnectedCtx(
 	if failedCaptureTB(t) {
 		return
 	}
-	pollUntilConnectedCtx(t, linkCtx, client, pub)
+	waitUntilConnectedCtx(t, linkCtx, pub)
 }
 
 func requireLookupMissCtx[T any](

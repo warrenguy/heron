@@ -67,7 +67,7 @@ func main() {
 	defer closeWithLog(sub.Close)
 
 	// Wait until the publication sees the subscription before sending data.
-	if err := client.PollUntilConnected(ctx, pub); err != nil {
+	if err := pub.WaitUntilConnected(ctx); err != nil {
 		if exitOnCancel(err) {
 			return
 		}
@@ -75,7 +75,7 @@ func main() {
 	}
 
 	// Wait until the subscription is linked to the publication before receiving.
-	if err := client.PollUntilImageCount(ctx, sub, 1); err != nil {
+	if err := sub.WaitUntilImageCount(ctx, 1); err != nil {
 		if exitOnCancel(err) {
 			return
 		}
@@ -83,7 +83,7 @@ func main() {
 	}
 
 	// Send the payload, retrying while the stream is momentarily full or busy.
-	pos, err := client.OfferWithRetry(ctx, pub, echoPayload)
+	pos, err := pub.OfferWithRetry(ctx, echoPayload)
 	if err != nil {
 		if exitOnCancel(err) {
 			return
@@ -93,7 +93,7 @@ func main() {
 	log.Printf("ipc-echo: offered at position %d", pos)
 
 	// Poll the subscription until the message we sent on the publication arrives.
-	received, err := client.PollOneMessage(ctx, sub)
+	received, err := sub.PollOneMessage(ctx)
 	if err != nil {
 		if exitOnCancel(err) {
 			return
