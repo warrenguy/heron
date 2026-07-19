@@ -237,6 +237,16 @@ $(eval $(call go-test-target,,bench,,Unit tests,$(UNIT_TEST_PKGS)))
 $(eval $(call go-test-target,-rapid,rapid,-run rapid,Property tests,$(RAPID_TEST_PKGS)))
 $(eval $(call go-test-target,-stress,stress,-run Stress,Stress tests,$(STRESS_TEST_PKGS)))
 
+ELECTION_SIM_RUNS ?= 1000
+ELECTION_SIM_TIMEOUT ?= 4m
+ELECTION_SIM_TAGS := electionsim,$(UNIT_TEST_TAGS)
+
+.PHONY: test-election-sim
+test-election-sim: ## Election fault sim soak (not part of make check)
+	ELECTION_SIM_RUNS=$(ELECTION_SIM_RUNS) HERON_SIM_SAVE=$${HERON_SIM_SAVE:-0} \
+	  go test -timeout=$(ELECTION_SIM_TIMEOUT) -race -tags=$(ELECTION_SIM_TAGS) \
+	  -count=1 -run 'TestElectionSimSoak' ./test/sim/scenarios/
+
 BENCH_DIR := .bench
 BENCH_BASELINE := $(BENCH_DIR)/baseline.txt
 BENCH_COUNT ?= 10

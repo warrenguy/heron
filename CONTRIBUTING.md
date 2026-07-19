@@ -45,6 +45,7 @@ SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/ve
 make check        # lint, pins, SBE/catalog stale (opt), unit+stress, contract-oracles (opt)
 make test-all     # check + rapid + integration + java-interop + cluster-java + failover + archive-java smokes
 make test-rapid                  # property tests (pgregory.net/rapid)
+make test-election-sim           # election fault sim soak (CI; not part of make check)
 make test-integration            # live C aeronmd (-tags=integration)
 make contract-oracles            # all four contract suites below (needs mvn + java)
 make test-java-interop-contract  # Go/Java smoke: streams, payloads, timeouts (no driver)
