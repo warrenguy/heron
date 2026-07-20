@@ -31,6 +31,45 @@ func QuorumThreshold(memberCount int) int {
 	return (memberCount >> 1) + 1
 }
 
+// QuorumPosition returns the log position reached by a quorum of active members.
+//
+// Only members for which IsActive(nowNs, timeoutNs) is true contribute.
+// LeadershipTermID is not consulted.
+//
+// ranked is a caller-owned scratch buffer. Its length is the ranking depth and
+// must equal QuorumThreshold(len(members)) for majority semantics. The function
+// zeros ranked on entry and returns ranked[len(ranked)-1]. No allocation is
+// performed.
+//
+// An empty ranked panics.
+//
+// Concurrency: not safe for concurrent use of the same ranked buffer.
+func QuorumPosition(members []*Member, ranked []int64, nowNs, timeoutNs int64) int64 {
+	length := len(ranked)
+	clear(ranked)
+
+	for _, member := range members {
+		if !member.IsActive(nowNs, timeoutNs) {
+			continue
+		}
+		newPosition := member.LogPosition
+
+		// Ranked stays descending; values at or below the floor never displace.
+		if newPosition <= ranked[length-1] {
+			continue
+		}
+		for i := range length {
+			rankedPosition := ranked[i]
+			if newPosition > rankedPosition {
+				ranked[i] = newPosition
+				newPosition = rankedPosition
+			}
+		}
+	}
+
+	return ranked[length-1]
+}
+
 // WillVoteFor reports whether member would vote for candidate.
 // IsActive is deliberately omitted: during nomination, peers may stop advancing
 // timeOfLastAppendPositionNs (crash, partition) and an active check would block candidacy.

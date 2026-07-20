@@ -1,6 +1,7 @@
 package election_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -52,6 +53,341 @@ func TestQuorumThreshold(t *testing.T) {
 			require.Equal(t, tt.want, election.QuorumThreshold(tt.memberCount))
 		})
 	}
+}
+
+// requireQuorumPosition builds a ranked scratch and asserts QuorumPosition.
+//
+// Params:
+//   - members: cluster membership under test
+//   - nowNs, timeoutNs: passed to QuorumPosition / IsActive (active when
+//     TimeOfLastAppendPositionNs+timeoutNs > nowNs)
+//   - want: expected return value
+//
+// Ranked length is QuorumThreshold(len(members)) (1 when n=0).
+// Callers document their own k and expected meaning of want.
+func requireQuorumPosition(
+	t *testing.T,
+	members []*election.Member,
+	nowNs, timeoutNs, want int64,
+) {
+	t.Helper()
+	ranked := make([]int64, election.QuorumThreshold(len(members)))
+	got := election.QuorumPosition(members, ranked, nowNs, timeoutNs)
+	require.Equal(t, want, got)
+}
+
+// TestQuorumPosition_threeMembers ranks LogPosition among three always-active
+// members.
+//
+// Fixed setup:
+//   - n = 3 members
+//   - timeOfLastAppend = 0 for every member (all active under the window below)
+//   - nowNs = 0, timeoutNs = 10
+//   - leadership term = 0
+//
+// Ranking for this test:
+//   - k = QuorumThreshold(3) = 2 (len of ranked scratch)
+//   - k-th = k-th highest LogPosition after sort descending (index k-1);
+//     missing ranks stay 0 (zero-fill); only strict > displaces a ranked slot
+//
+// Table row fields:
+//   - pos[i]: LogPosition for member i
+//   - want: expected QuorumPosition (= k-th under the rules above)
+//
+// Asserts via requireQuorumPosition. Permutation rows of {1,3,5} prove member
+// order does not change the result.
+func TestQuorumPosition_threeMembers(t *testing.T) {
+	t.Parallel()
+
+	// All members stay active: ts+timeout > now.
+	const (
+		nowNs     int64 = 0
+		timeoutNs int64 = 10
+	)
+
+	tests := []struct {
+		name string
+		pos  [3]int64
+		want int64
+	}{
+		{name: "all zero", pos: [3]int64{0, 0, 0}, want: 0},
+		// One positive cannot fill k=2; floor stays 0.
+		{name: "one at 123", pos: [3]int64{123, 0, 0}, want: 0},
+		{name: "two at 123", pos: [3]int64{123, 123, 0}, want: 123},
+		{name: "three at 123", pos: [3]int64{123, 123, 123}, want: 123},
+		{name: "last two at 123", pos: [3]int64{0, 123, 123}, want: 123},
+		{name: "only third at 123", pos: [3]int64{0, 0, 123}, want: 0},
+		// Desc 200,123,0 -> k-th = 123.
+		{name: "mixed 0 123 200", pos: [3]int64{0, 123, 200}, want: 123},
+		// All six orders of {1,3,5}: k-th is always 3.
+		{name: "5 3 1", pos: [3]int64{5, 3, 1}, want: 3},
+		{name: "5 1 3", pos: [3]int64{5, 1, 3}, want: 3},
+		{name: "1 3 5", pos: [3]int64{1, 3, 5}, want: 3},
+		{name: "1 5 3", pos: [3]int64{1, 5, 3}, want: 3},
+		{name: "3 1 5", pos: [3]int64{3, 1, 5}, want: 3},
+		{name: "3 5 1", pos: [3]int64{3, 5, 1}, want: 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			members := make([]*election.Member, 3)
+			for i, p := range tt.pos {
+				members[i] = newTestMemberWithLog(int32(i), 0, p, 0)
+			}
+			requireQuorumPosition(t, members, nowNs, timeoutNs, tt.want)
+		})
+	}
+}
+
+// TestQuorumPosition_activeOnly ranks five members with mixed activity.
+// Inactive members are excluded before ranking.
+//
+// Fixed setup:
+//   - n = 5 members
+//   - leadership term = 0
+//
+// Ranking for this test:
+//   - k = QuorumThreshold(5) = 3 (len of ranked scratch)
+//   - k-th = k-th highest active LogPosition after sort descending (index k-1);
+//     missing ranks stay 0 (zero-fill); only strict > displaces a ranked slot
+//
+// Table row fields:
+//   - pos[i]: LogPosition for member i
+//   - ts[i]: TimeOfLastAppendPositionNs for member i
+//   - nowNs, timeoutNs: IsActive window (active when ts[i]+timeoutNs > nowNs)
+//   - want: expected QuorumPosition (= k-th under the rules above)
+//
+// Asserts via requireQuorumPosition.
+func TestQuorumPosition_activeOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		pos       [5]int64
+		ts        [5]int64
+		nowNs     int64
+		timeoutNs int64
+		want      int64
+	}{
+		// All active; all positions zero.
+		{
+			name: "all zero",
+			pos:  [5]int64{0, 0, 0, 0, 0}, ts: [5]int64{0, 0, 0, 0, 0},
+			nowNs: 0, timeoutNs: 10, want: 0,
+		},
+		// Desc 5,4,3,2,1 -> k-th = 3.
+		{
+			name: "all active ascending",
+			pos:  [5]int64{1, 2, 3, 4, 5}, ts: [5]int64{0, 0, 0, 0, 0},
+			nowNs: 5, timeoutNs: 10, want: 3,
+		},
+		// Desc 5,3,2,2,1 -> k-th = 2.
+		{
+			name: "all active with ties",
+			pos:  [5]int64{1, 2, 3, 2, 5}, ts: [5]int64{0, 0, 0, 0, 0},
+			nowNs: 5, timeoutNs: 10, want: 2,
+		},
+		// now=5, timeout=5: active when ts > 0. Actives pos 1,3,5 -> k-th = 1.
+		{
+			name: "three active timeout 5",
+			pos:  [5]int64{1, 2, 3, 2, 5}, ts: [5]int64{1, 0, 1, 0, 1},
+			nowNs: 5, timeoutNs: 5, want: 1,
+		},
+		// Same activity mask; positions reordered; k-th still 1.
+		{
+			name: "three active reordered",
+			pos:  [5]int64{5, 2, 3, 2, 1}, ts: [5]int64{1, 0, 1, 0, 1},
+			nowNs: 5, timeoutNs: 5, want: 1,
+		},
+		// Only two actives: pad to k=3 with 0.
+		{
+			name: "two active yields zero",
+			pos:  [5]int64{5, 2, 3, 2, 1}, ts: [5]int64{0, 1, 0, 1, 0},
+			nowNs: 5, timeoutNs: 5, want: 0,
+		},
+		// Actives pos 2,2,1 -> k-th = 1.
+		{
+			name: "three active mixed times",
+			pos:  [5]int64{5, 2, 3, 2, 1}, ts: [5]int64{0, 1, 0, 1, 1},
+			nowNs: 5, timeoutNs: 5, want: 1,
+		},
+		// Actives pos 2,3,2 -> k-th = 2.
+		{
+			name: "three active higher quorum",
+			pos:  [5]int64{5, 2, 3, 2, 1}, ts: [5]int64{0, 1, 1, 1, 0},
+			nowNs: 5, timeoutNs: 5, want: 2,
+		},
+		// now=8, timeout=7: active when ts > 1. Actives m1,m2,m4 at 2,3,1 -> k-th = 1.
+		{
+			name: "three active late now",
+			pos:  [5]int64{5, 2, 3, 2, 1}, ts: [5]int64{0, 2, 3, 1, 5},
+			nowNs: 8, timeoutNs: 7, want: 1,
+		},
+		// All ts=0 under now=8, timeout=7: no actives.
+		{
+			name: "none active late now",
+			pos:  [5]int64{5, 2, 3, 2, 1}, ts: [5]int64{0, 0, 0, 0, 0},
+			nowNs: 8, timeoutNs: 7, want: 0,
+		},
+		// Only m0 active: one contributor, pad to k=3 -> 0.
+		{
+			name: "one active early ts",
+			pos:  [5]int64{5, 2, 3, 2, 1}, ts: [5]int64{5, 0, 0, 0, 0},
+			nowNs: 8, timeoutNs: 7, want: 0,
+		},
+		// Two actives (m0,m1): still below k=3 -> 0.
+		{
+			name: "two active still zero",
+			pos:  [5]int64{5, 2, 3, 2, 1}, ts: [5]int64{5, 5, 0, 0, 0},
+			nowNs: 8, timeoutNs: 7, want: 0,
+		},
+		// Actives pos 5,2,3 -> k-th = 2.
+		{
+			name: "three active at 5",
+			pos:  [5]int64{5, 2, 3, 2, 1}, ts: [5]int64{5, 5, 5, 0, 0},
+			nowNs: 8, timeoutNs: 7, want: 2,
+		},
+		// Actives pos 4,2,4 -> k-th = 2.
+		{
+			name: "three active ties at 4",
+			pos:  [5]int64{4, 2, 4, 2, 1}, ts: [5]int64{5, 5, 5, 0, 0},
+			nowNs: 8, timeoutNs: 7, want: 2,
+		},
+		// Four actives (m3 inactive); desc 4,4,3,2 -> k-th = 3.
+		{
+			name: "four active quorum 3",
+			pos:  [5]int64{4, 2, 4, 2, 3}, ts: [5]int64{5, 5, 5, 0, 3},
+			nowNs: 8, timeoutNs: 7, want: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			members := make([]*election.Member, 5)
+			for i := range members {
+				members[i] = newTestMemberWithLog(int32(i), 0, tt.pos[i], tt.ts[i])
+			}
+			requireQuorumPosition(t, members, tt.nowNs, tt.timeoutNs, tt.want)
+		})
+	}
+}
+
+// TestQuorumPosition_edges covers contract edges outside the main tables.
+//
+// Ranking terms used in subtests:
+//   - k = QuorumThreshold(n) unless a subtest passes an explicit ranked slice
+//   - k-th = k-th highest active LogPosition after sort descending (index k-1);
+//     missing ranks stay 0 (zero-fill); only strict > displaces a ranked slot
+//
+// Cases:
+//   - empty/nil membership
+//   - n=1 active and inactive
+//   - LeadershipTermID ignored for ranking
+//   - NullPosition cluster-start (zero-fill + strict >)
+//   - MaxInt64 positions
+//   - dirty ranked buffer zeroed on entry
+//   - empty ranked panics
+//
+// requireQuorumPosition subtests pass (members, nowNs, timeoutNs, want).
+// buffer zeroed and empty ranked panics call QuorumPosition directly.
+func TestQuorumPosition_edges(t *testing.T) {
+	t.Parallel()
+
+	// High positions but timed out: nowNs=100, timeoutNs=1, ts=0 => inactive.
+	t.Run("all inactive", func(t *testing.T) {
+		t.Parallel()
+		requireQuorumPosition(t, memberPtrs(
+			newTestMemberWithLog(0, 0, 100, 0),
+			newTestMemberWithLog(1, 0, 200, 0),
+			newTestMemberWithLog(2, 0, 300, 0),
+		), 100, 1, 0)
+	})
+
+	// No members: QuorumThreshold(0)=1; result stays zero-filled.
+	t.Run("nil members", func(t *testing.T) {
+		t.Parallel()
+		requireQuorumPosition(t, nil, 0, 10, 0)
+	})
+
+	t.Run("empty members", func(t *testing.T) {
+		t.Parallel()
+		requireQuorumPosition(t, []*election.Member{}, 0, 10, 0)
+	})
+
+	// n=1, k=1: sole active LogPosition is the quorum position.
+	t.Run("single active n=1", func(t *testing.T) {
+		t.Parallel()
+		requireQuorumPosition(t, memberPtrs(newTestMemberWithLog(0, 0, 42, 0)), 0, 10, 42)
+	})
+
+	// Same member, timed out (now=100, timeout=1, ts=0).
+	t.Run("n=1 inactive", func(t *testing.T) {
+		t.Parallel()
+		requireQuorumPosition(t, memberPtrs(newTestMemberWithLog(0, 0, 42, 0)), 100, 1, 0)
+	})
+
+	// newTestMemberWithLog(id, leadershipTermID, logPosition, timeOfLastAppend).
+	// Terms 1 vs 99 must not filter; only activity and LogPosition rank.
+	t.Run("term ignored", func(t *testing.T) {
+		t.Parallel()
+		members := memberPtrs(
+			newTestMemberWithLog(0, 1, 100, 0),
+			newTestMemberWithLog(1, 99, 100, 0),
+			newTestMemberWithLog(2, 1, 50, 0),
+		)
+
+		// Drop member 2 so actives are two at pos 100 with different terms.
+		members[2].TimeOfLastAppendPositionNs = -1000
+		requireQuorumPosition(t, members, 0, 10, 100)
+	})
+
+	// All LogPosition=NullPosition (-1). Strict > vs zero-fill never inserts
+	// negatives; result 0 (cluster-start shape).
+	t.Run("null position active", func(t *testing.T) {
+		t.Parallel()
+		requireQuorumPosition(t, memberPtrs(
+			newTestMemberWithLog(0, 0, election.NullPosition, 0),
+			newTestMemberWithLog(1, 0, election.NullPosition, 0),
+			newTestMemberWithLog(2, 0, election.NullPosition, 0),
+		), 0, 10, 0)
+	})
+
+	// Two actives at MaxInt64 fill k=2; no overflow in compare/insert.
+	t.Run("max int64", func(t *testing.T) {
+		t.Parallel()
+		requireQuorumPosition(t, memberPtrs(
+			newTestMemberWithLog(0, 0, math.MaxInt64, 0),
+			newTestMemberWithLog(1, 0, math.MaxInt64, 0),
+			newTestMemberWithLog(2, 0, 0, 0),
+		), 0, 10, math.MaxInt64)
+	})
+
+	// Dirty caller-owned ranked must clear on entry. Members inactive under
+	// (nowNs=100, timeoutNs=1) so only the zero-fill is observed.
+	t.Run("buffer zeroed", func(t *testing.T) {
+		t.Parallel()
+		members := memberPtrs(
+			newTestMemberWithLog(0, 0, 100, 0),
+			newTestMemberWithLog(1, 0, 200, 0),
+			newTestMemberWithLog(2, 0, 300, 0),
+		)
+
+		ranked := []int64{999, 888}
+		got := election.QuorumPosition(members, ranked, 100, 1)
+		require.Equal(t, int64(0), got)
+		require.Equal(t, []int64{0, 0}, ranked)
+	})
+
+	// len(ranked)==0 is a programming error; access of last slot panics.
+	t.Run("empty ranked panics", func(t *testing.T) {
+		t.Parallel()
+		members := memberPtrs(newTestMemberWithLog(0, 0, 42, 0))
+		require.Panics(t, func() {
+			election.QuorumPosition(members, []int64{}, 0, 10)
+		})
+	})
 }
 
 func TestCompareLog(t *testing.T) {
