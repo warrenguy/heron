@@ -10,5 +10,6 @@ import (
 
 func TestClusterCounterTypeIDsMatchAeron(t *testing.T) {
 	require.Equal(t, int32(201), consensus.ClusterNodeRoleCounterTypeID)
+	require.Equal(t, int32(203), consensus.ClusterCommitPositionCounterTypeID)
 	require.Equal(t, int32(207), consensus.ClusterElectionStateCounterTypeID)
 }

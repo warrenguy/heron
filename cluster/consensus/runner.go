@@ -1,12 +1,16 @@
 package consensus
 
-// ElectionRunner is the agent-to-election boundary for driving the state machine.
-// The consensus module agent holds a field of this type so it need not import
-// cluster/election. Concrete implementations are provided outside this package
-// (for example, by cluster/election).
+// ElectionRunner is the agent-to-election boundary.
+// Concrete type: *election.Election (outside this package).
 //
-// DoWork (doWork) is called each tick when the agent holds a non-nil
-// ElectionRunner, mirroring ConsensusModuleAgent.
+// Method semantics:
+//   - DoWork: one election duty-cycle tick
+//   - HandleConsensusMessage: decode consensus wire and dispatch On* handlers.
+//     Returns true when decode succeeds. ElectionStateInit gates handler bodies
+//     only (return may still be true when handlers are skipped).
+//
+// Held by [Agent]; never the reverse import.
 type ElectionRunner interface {
 	DoWork(nowNs int64) int
+	HandleConsensusMessage(buf []byte, offset int) bool
 }

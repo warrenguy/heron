@@ -5,24 +5,16 @@ import (
 	"github.com/warrenguy/heron/cluster/consensus"
 )
 
-// RecordingSignal is the archive recording signal code (io.aeron.archive.codecs.RecordingSignal).
+// RecordingSignal is the archive recording signal code.
 type RecordingSignal = archivewire.RecordingSignal
 
-// LogReplay is a stub duty-cycle helper for leader/follower replay paths.
-// Replace with archive-backed implementation when agent wiring lands.
-type LogReplay interface {
-	DoWork(nowNs int64) int
-	Position() int64
-	IsDone() bool
-}
+// LogReplay aliases [consensus.LogReplay] so election call sites keep the short
+// name.
+type LogReplay = consensus.LogReplay
 
-// LogReplication is a stub duty-cycle helper for follower log replication.
-type LogReplication interface {
-	DoWork(nowNs int64) int
-	RecordingID() int64
-	IsDone() bool
-	OnSignal(correlationID, recordingID, position int64, signal RecordingSignal)
-}
+// LogReplication aliases [consensus.LogReplication] so election call sites keep
+// the short name.
+type LogReplication = consensus.LogReplication
 
 // ElectionHost is the election-to-agent duty-cycle boundary.
 // Implemented by ConsensusModuleAgent; mocked in election tests.
