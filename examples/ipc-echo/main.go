@@ -42,13 +42,16 @@ func main() {
 	// Connect to aeronmd over shared memory.
 	//
 	// ErrorHandler logs asynchronous driver faults not returned by the calls below.
-	client, err := aeron.Connect(context.Background(), aeron.Config{
+	client, err := aeron.Connect(ctx, aeron.Config{
 		AeronDir: aeronDir,
 		ErrorHandler: func(err error) {
 			log.Printf("ipc-echo: aeron error: %v", err)
 		},
 	})
 	if err != nil {
+		if exitOnCancel(err) {
+			return
+		}
 		log.Fatalf("ipc-echo: connect: %v", err)
 	}
 	defer closeWithLog(client.Close)

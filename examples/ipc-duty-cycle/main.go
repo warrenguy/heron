@@ -14,6 +14,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -42,13 +43,16 @@ func main() {
 
 	// ErrorHandler runs from DoWork (must not call back into Client APIs).
 	// Log only; the invoker loop exits on IsTerminating after DoWork.
-	client, err := aeron.Connect(context.Background(), aeron.Config{
+	client, err := aeron.Connect(ctx, aeron.Config{
 		AeronDir: aeronDir,
 		ErrorHandler: func(err error) {
 			log.Printf("ipc-duty-cycle: aeron error: %v", err)
 		},
 	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
 		log.Fatalf("ipc-duty-cycle: connect: %v", err)
 	}
 	defer closeWithLog(client.Close)

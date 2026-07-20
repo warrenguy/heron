@@ -36,13 +36,16 @@ func main() {
 	// Connect to this process's own aeronmd, not the Java cluster drivers.
 	//
 	// ErrorHandler logs asynchronous driver faults not returned by the calls below.
-	transport, err := aeron.Connect(context.Background(), aeron.Config{
+	transport, err := aeron.Connect(ctx, aeron.Config{
 		AeronDir: config.AeronDir,
 		ErrorHandler: func(err error) {
 			log.Printf("cluster-auction-client: aeron error: %v", err)
 		},
 	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
 		log.Fatal(err)
 	}
 	defer closeWithLog(transport.Close)
