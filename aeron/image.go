@@ -301,6 +301,33 @@ func (image *Image) invokeSubscriberErrorHandler(err error) {
 	image.errorHandler(err)
 }
 
+func (image *Image) recoverFragmentHandlerPanic(ok *bool) {
+	recovered := recover()
+	if recovered == nil {
+		return
+	}
+	*ok = false
+	err, isErr := recovered.(error)
+	if !isErr {
+		err = fmt.Errorf("aeron: fragment handler panic: %v", recovered)
+	}
+	image.invokeSubscriberErrorHandler(err)
+}
+
+func preparePollFragment(
+	termBuffer atomicbuffer.AtomicBuffer,
+	frameOffset int,
+	frameLength int32,
+	header *Header,
+) (payloadOffset, payloadLength int) {
+	header.SetBuffer(termBuffer)
+	header.ResetPollFragmentState()
+	header.SetOffset(frameOffset)
+	payloadOffset = frameOffset + logbuffer.OffsetFramePayload
+	payloadLength = int(frameLength) - logbuffer.DataHeaderLength
+	return payloadOffset, payloadLength
+}
+
 func (image *Image) invokeFragmentHandler(
 	handler FragmentHandler,
 	termBuffer atomicbuffer.AtomicBuffer,
@@ -308,24 +335,15 @@ func (image *Image) invokeFragmentHandler(
 	frameLength int32,
 	header *Header,
 ) (ok bool) {
-	header.SetBuffer(termBuffer)
-	header.ResetPollFragmentState()
-	header.SetOffset(frameOffset)
-
-	payloadOffset := frameOffset + logbuffer.OffsetFramePayload
-	payloadLength := int(frameLength) - logbuffer.DataHeaderLength
+	payloadOffset, payloadLength := preparePollFragment(
+		termBuffer,
+		frameOffset,
+		frameLength,
+		header,
+	)
 	ok = true
 	if image.errorHandler != nil {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				ok = false
-				err, isErr := recovered.(error)
-				if !isErr {
-					err = fmt.Errorf("aeron: fragment handler panic: %v", recovered)
-				}
-				image.invokeSubscriberErrorHandler(err)
-			}
-		}()
+		defer image.recoverFragmentHandlerPanic(&ok)
 	}
 
 	handler(termBuffer, payloadOffset, payloadLength, header)
@@ -404,6 +422,17 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 		fragmentsRead++
 	}
 
+	image.publishPollConsumePosition(initialPosition, initialOffset, offset)
+	return fragmentsRead
+}
+
+// Shared store for Poll and controlled scan: one SetRelease + corrupt debounce path.
+// Returns the computed consume position (whether or not a store ran).
+func (image *Image) publishPollConsumePosition(
+	initialPosition int64,
+	initialOffset int,
+	offset int,
+) int64 {
 	newPosition := pollConsumePosition(initialPosition, initialOffset, offset)
 	if newPosition > initialPosition && !image.isClosed.Load() {
 		image.subscriberPos.SetRelease(newPosition)
@@ -411,8 +440,7 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 			image.lastCorruptReportPosition = -1
 		}
 	}
-
-	return fragmentsRead
+	return newPosition
 }
 
 func (image *Image) internalClose() {

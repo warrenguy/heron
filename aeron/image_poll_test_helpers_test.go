@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/atomicbuffer"
 )
@@ -45,12 +46,89 @@ func (capture *pollCapture) handler(
 	capture.headers = append(capture.headers, headerCopy)
 }
 
-func newPollImage(tb testing.TB, joinPosition int64) (*aeron.Image, *pollCapture) {
+type controlledPollCapture struct {
+	pollCapture
+	actions []aeron.ControlledAction
+}
+
+func (capture *controlledPollCapture) reset() {
+	capture.pollCapture.reset()
+	capture.actions = nil
+}
+
+func (capture *controlledPollCapture) handler(
+	buffer atomicbuffer.AtomicBuffer,
+	offset int,
+	length int,
+	header *aeron.Header,
+) aeron.ControlledAction {
+	capture.pollCapture.handler(buffer, offset, length, header)
+	action := aeron.ControlledContinue
+	i := len(capture.payloads) - 1
+	if i < len(capture.actions) {
+		action = capture.actions[i]
+	}
+	return action
+}
+
+func newTestPollImage(tb testing.TB, joinPosition int64) *aeron.Image {
+	tb.Helper()
+	return aeron.NewImageForTest(tb, testSubscription(tb), joinPosition)
+}
+
+func newTestPollImageWithErrorHandler(
+	tb testing.TB,
+	joinPosition int64,
+) (*aeron.Image, func() error) {
+	tb.Helper()
+
+	var handled error
+	image := aeron.NewImageForTestWithErrorHandler(
+		tb,
+		testSubscription(tb),
+		joinPosition,
+		func(err error) {
+			handled = err
+		},
+	)
+	return image, func() error { return handled }
+}
+
+func newControlledPollImage(
+	tb testing.TB,
+	joinPosition int64,
+) (*aeron.Image, *controlledPollCapture) {
+	tb.Helper()
+	return newTestPollImage(tb, joinPosition), &controlledPollCapture{}
+}
+
+func newControlledPollImageWithErrorHandler(
+	tb testing.TB,
+	joinPosition int64,
+) (*aeron.Image, *controlledPollCapture, func() error) {
+	tb.Helper()
+
+	image, handledErr := newTestPollImageWithErrorHandler(tb, joinPosition)
+	return image, &controlledPollCapture{}, handledErr
+}
+
+func newDirectPollImage(
+	tb testing.TB,
+	joinPosition int64,
+) (*aeron.Image, *cnc.CountersReader) {
 	tb.Helper()
 
 	sub := testSubscription(tb)
-	image := aeron.NewImageForTest(tb, sub, joinPosition)
-	return image, &pollCapture{}
+	logBuffers := aeron.NewTestLogBuffersForTest(tb, aeron.DefaultTestPublicationLogConfig())
+	counters := aeron.NewTestCountersReaderWithSubscriberPositionForTest(tb, joinPosition)
+	image, err := aeron.NewImageDirectForTest(sub, aeron.AvailableImageForTest(), logBuffers, counters)
+	require.NoError(tb, err)
+	return image, counters
+}
+
+func newPollImage(tb testing.TB, joinPosition int64) (*aeron.Image, *pollCapture) {
+	tb.Helper()
+	return newTestPollImage(tb, joinPosition), &pollCapture{}
 }
 
 func newPollImageWithErrorHandler(
@@ -59,12 +137,8 @@ func newPollImageWithErrorHandler(
 ) (*aeron.Image, *pollCapture, func() error) {
 	tb.Helper()
 
-	var handled error
-	sub := testSubscription(tb)
-	image := aeron.NewImageForTestWithErrorHandler(tb, sub, joinPosition, func(err error) {
-		handled = err
-	})
-	return image, &pollCapture{}, func() error { return handled }
+	image, handledErr := newTestPollImageWithErrorHandler(tb, joinPosition)
+	return image, &pollCapture{}, handledErr
 }
 
 func writePollTestDataFrame(

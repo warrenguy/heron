@@ -4,16 +4,16 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-// EventCode is an SBE enum alias from clusterwire for cluster session events.
+// EventCode is [clusterwire.EventCode] for cluster session events.
 type EventCode = clusterwire.EventCode
 
-// AdminRequestType is an SBE enum alias from clusterwire for admin request types.
+// AdminRequestType is [clusterwire.AdminRequestType] for admin request types.
 type AdminRequestType = clusterwire.AdminRequestType
 
-// AdminResponseCode is an SBE enum alias from clusterwire for admin response codes.
+// AdminResponseCode is [clusterwire.AdminResponseCode] for admin response codes.
 type AdminResponseCode = clusterwire.AdminResponseCode
 
-// Cluster egress and admin SBE enum wire values re-exported from clusterwire.
+// Cluster egress and admin SBE enum wire values re-exported from [clusterwire].
 const (
 	EventCodeOK                         = clusterwire.EventCode_OK
 	EventCodeError                      = clusterwire.EventCode_ERROR

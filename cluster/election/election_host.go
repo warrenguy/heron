@@ -5,18 +5,17 @@ import (
 	"github.com/warrenguy/heron/cluster/consensus"
 )
 
-// RecordingSignal is the archive recording signal code.
+// RecordingSignal is [archivewire.RecordingSignal].
 type RecordingSignal = archivewire.RecordingSignal
 
-// LogReplay aliases [consensus.LogReplay] so election call sites keep the short
-// name.
+// LogReplay is [consensus.LogReplay].
 type LogReplay = consensus.LogReplay
 
-// LogReplication aliases [consensus.LogReplication] so election call sites keep
-// the short name.
+// LogReplication is [consensus.LogReplication].
 type LogReplication = consensus.LogReplication
 
 // ElectionHost is the election-to-agent duty-cycle boundary.
+//
 // Implemented by ConsensusModuleAgent; mocked in election tests.
 type ElectionHost interface {
 	Role() consensus.Role

@@ -22,16 +22,29 @@ type MessageHandler func(
 	length int,
 )
 
-// ControlledAction matches Agrona ControlledMessageHandler / Aeron ControlledFragmentHandler.
+// ControlledAction is the ordinal home for controlled consumer position actions.
+//
+// Same ordinals as Agrona ControlledMessageHandler / Aeron ControlledFragmentHandler.
+//
+// Package aeron re-exports these for Image controlled poll and cluster egress.
+// Ring [ControlledRead] uses this type directly.
+//
+// Values: [ControlledAbort], [ControlledBreak], [ControlledCommit],
+// [ControlledContinue].
 type ControlledAction int
 
 const (
+	// ControlledAbort stops without advancing past the current item.
 	ControlledAbort ControlledAction = iota
+	// ControlledBreak stops after committing the current item.
 	ControlledBreak
+	// ControlledCommit publishes progress through the current item and continues.
 	ControlledCommit
+	// ControlledContinue continues; progress commits at consumer end or after Commit.
 	ControlledContinue
 )
 
+// ControlledMessageHandler is a ring Read handler that returns [ControlledAction].
 type ControlledMessageHandler func(
 	msgTypeID int,
 	buffer atomicbuffer.AtomicBuffer,
