@@ -22,14 +22,15 @@ const nullValue = -1
 // Lifetime: the host adapter outlives the election as implementer of positions
 // and egress. [Agent.ElectionComplete] clears the election runner field only.
 //
-// Seams: positions and egress use post-construct injection via
-// [Agent.SetHostSeams] (bootstrap chicken-egg: Agent must exist before the host
-// adapter can take *Agent; the adapter then wires reverse ifaces). Constructor
-// may also set them for unit tests that skip the host adapter.
+// Positions and egress may be set at construct or later via [Agent.SetPositions]
+// / [Agent.SetEgress] (Agent must exist before the host adapter can take
+// *Agent). Constructor may also set them for unit tests that skip the host
+// adapter.
 type Agent struct {
 	// election is nil in steady-state after [Agent.ElectionComplete].
 	election ElectionRunner
-	// positions / egress: same host adapter instance after [Agent.SetHostSeams].
+	// positions / egress: usually the same host adapter after SetPositions /
+	// SetEgress.
 	positions PositionTable
 	egress    ConsensusEgress
 
@@ -46,12 +47,12 @@ type Agent struct {
 
 // AgentConfig is the constructor bag. Nil interface fields are legal for unit
 // tests that exercise Agent host-delegate stubs only, and for production
-// bootstrap before the host adapter exists (then call [Agent.SetHostSeams] /
-// [Agent.SetElection]).
+// bootstrap before the host adapter exists (then call [Agent.SetPositions] /
+// [Agent.SetEgress] / [Agent.SetElection]).
 type AgentConfig struct {
 	Election  ElectionRunner  // optional until election wired
-	Positions PositionTable   // optional at construct; set via [Agent.SetHostSeams]
-	Egress    ConsensusEgress // optional at construct; set via [Agent.SetHostSeams]
+	Positions PositionTable   // optional at construct; set via [Agent.SetPositions]
+	Egress    ConsensusEgress // optional at construct; set via [Agent.SetEgress]
 	// Commit is mode-1 injected *atomic.Int64. Nil commit:
 	// [Agent.ProposeMaxCommit] and [Agent.CommitPosition] return 0 (no store).
 	// Production bootstrap passes non-nil.
@@ -65,8 +66,9 @@ type AgentConfig struct {
 //
 // Concurrency: invoker-only after construction; see [Agent].
 //
-// Lifetime: caller owns the returned Agent; host seams and election may be
-// wired later via [Agent.SetHostSeams] / [Agent.SetElection].
+// Lifetime: caller owns the returned Agent; positions, egress, and election
+// may be wired later via [Agent.SetPositions] / [Agent.SetEgress] /
+// [Agent.SetElection].
 func NewAgent(cfg AgentConfig) *Agent {
 	return &Agent{
 		election:            cfg.Election,
@@ -78,16 +80,25 @@ func NewAgent(cfg AgentConfig) *Agent {
 	}
 }
 
-// SetHostSeams wires reverse-facing ifaces after host adapter construction.
-// Same host adapter instance is typically both [PositionTable] and
-// [ConsensusEgress]. Idempotent replace.
+// SetPositions sets the [PositionTable] used for ranking and member updates.
+// Idempotent replace.
 //
 // Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
 //
-// Production bootstrap passes non-nil. Nil is legal assign; later ranking and
-// egress become no-ops until rewired.
-func (a *Agent) SetHostSeams(positions PositionTable, egress ConsensusEgress) {
+// Production bootstrap passes non-nil. Nil is legal; ranking becomes a no-op
+// until rewired.
+func (a *Agent) SetPositions(positions PositionTable) {
 	a.positions = positions
+}
+
+// SetEgress sets the [ConsensusEgress] used for commit/append publish.
+// Idempotent replace.
+//
+// Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
+//
+// Production bootstrap passes non-nil. Nil is legal; egress becomes a no-op
+// until rewired.
+func (a *Agent) SetEgress(egress ConsensusEgress) {
 	a.egress = egress
 }
 

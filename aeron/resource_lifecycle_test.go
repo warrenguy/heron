@@ -95,7 +95,7 @@ func TestConductorResourceLifecycle_NewPublication_inactiveLimitCounter(t *testi
 }
 
 // TestConductorResourceLifecycle_NewPublication_handleContract pins the
-// ResourceLifecycle seam contract: error paths return an untyped nil handle
+// ResourceLifecycle handle contract: error paths return an untyped nil handle
 // (never a typed-nil boxed *Publication), success paths return a live handle.
 func TestConductorResourceLifecycle_NewPublication_handleContract(t *testing.T) {
 	t.Parallel()

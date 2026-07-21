@@ -92,18 +92,20 @@ func TestUpdateLeaderPosition_doesNotWriteTimeOfLastLeaderUpdateNs(t *testing.T)
 	require.Equal(t, int64(42), a.TimeOfLastLeaderUpdateNs())
 }
 
-func TestSetHostSeams_wiresAndClears(t *testing.T) {
+func TestSetPositions_andSetEgress_wireAndClear(t *testing.T) {
 	a := NewAgent(AgentConfig{})
 	require.Nil(t, a.Positions())
 	require.Nil(t, a.Egress())
 
 	pt := &stubPositionTable{}
 	eg := &stubConsensusEgress{}
-	a.SetHostSeams(pt, eg)
+	a.SetPositions(pt)
+	a.SetEgress(eg)
 	require.Equal(t, PositionTable(pt), a.Positions())
 	require.Equal(t, ConsensusEgress(eg), a.Egress())
 
-	a.SetHostSeams(nil, nil)
+	a.SetPositions(nil)
+	a.SetEgress(nil)
 	require.Nil(t, a.Positions())
 	require.Nil(t, a.Egress())
 }

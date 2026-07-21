@@ -2,8 +2,8 @@ package election
 
 import "github.com/warrenguy/heron/cluster/recordinglog"
 
-// RecordingLogCoherency is the recording-log seam for term-adoption coherency.
-// Nil skips coherency writes when the agent omits a recording log.
+// RecordingLogCoherency is the recording-log interface for term-adoption
+// coherency. Nil skips coherency writes when the agent omits a recording log.
 type RecordingLogCoherency interface {
 	EnsureCoherent(recordinglog.EnsureCoherentParams) error
 }

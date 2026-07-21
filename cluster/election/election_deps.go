@@ -30,8 +30,8 @@ type ElectionDeps struct {
 	Members    []*Member
 	ThisMember *Member
 
-	// RecordingLog and RecordingLogLookup are the recording-log seams for term
-	// coherency and successor-term lookup. Both may be nil when the agent
+	// RecordingLog and RecordingLogLookup are optional recording-log deps for
+	// term coherency and successor-term lookup. Both may be nil when the agent
 	// omits a recording log: nil RecordingLog skips writes; nil
 	// RecordingLogLookup publishes current-term defaults.
 	//

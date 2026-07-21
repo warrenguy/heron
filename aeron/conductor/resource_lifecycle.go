@@ -8,9 +8,9 @@ import (
 // ResourceLifecycle constructs and tears down publications and subscriptions for
 // the conductor without importing package aeron.
 //
-// Internal wiring seam only; the production implementation lives in package
-// aeron. The interface may grow without a backward-compat split; out-of-tree
-// implementations are unsupported.
+// Internal package boundary only; the production implementation lives in
+// package aeron. The interface may grow without a backward-compat split;
+// out-of-tree implementations are unsupported.
 //
 // New* implementations must not wrap a nil concrete pointer in a returned
 // handle (a typed-nil). Production builds cannot distinguish it from a live
