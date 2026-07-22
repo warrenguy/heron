@@ -41,14 +41,6 @@ type HostAdapter struct {
 
 	// nanoClock stamps TimeOfLastAppendPositionNs on member position updates.
 	nanoClock func() int64
-
-	// leaderMemberID is the PublishAppendPosition target (follower to leader).
-	//
-	// NullMemberID means no target; PublishAppendPosition returns false.
-	//
-	// HostAdapter does not observe Election.leaderMember. Callers set this when
-	// leadership is known or cleared.
-	leaderMemberID int32
 }
 
 // HostAdapterConfig is the constructor bag.
@@ -58,9 +50,9 @@ type HostAdapterConfig struct {
 
 	// Publisher is required.
 	//
-	// Same instance should be passed to ElectionDeps.Publisher for ballot/NLT
-	// paths. HostAdapter uses it for Commit/Append egress only. Agent never
-	// holds Publisher.
+	// Same instance should be passed to ElectionDeps.Publisher for ballot and
+	// NewLeadershipTerm paths. HostAdapter uses it for Commit/Append egress only.
+	// Agent never holds Publisher.
 	Publisher Publisher
 
 	// Members is required and non-empty.
@@ -79,6 +71,8 @@ type HostAdapterConfig struct {
 	// same *Member.
 	//
 	// Pass the same thisMember pointer into HostAdapter and ElectionDeps.
+	// Construct seeds Agent.ThisMemberID from ThisMember.ID (steady leader
+	// stamp store).
 	ThisMember *Member
 
 	// LeaderHeartbeatTimeoutNs is required and must be positive.
@@ -93,7 +87,8 @@ type HostAdapterConfig struct {
 	NanoClock func() int64
 
 	// LeaderMemberID is optional. Pass NullMemberID when unset (member id 0 is
-	// a valid leader). Constructor stores the value as given.
+	// a valid leader). Constructor seeds Agent via SetLeaderMemberID (single
+	// store; HostAdapter has no separate leader field).
 	LeaderMemberID int32
 }
 
@@ -148,7 +143,7 @@ func NewHostAdapter(cfg HostAdapterConfig) *HostAdapter {
 		panic("election: ThisMember not in Members")
 	}
 
-	return &HostAdapter{
+	h := &HostAdapter{
 		agent:                    cfg.Agent,
 		pub:                      cfg.Publisher,
 		members:                  cfg.Members,
@@ -157,23 +152,30 @@ func NewHostAdapter(cfg HostAdapterConfig) *HostAdapter {
 		ranked:                   make([]int64, QuorumThreshold(len(cfg.Members))),
 		leaderHeartbeatTimeoutNs: cfg.LeaderHeartbeatTimeoutNs,
 		nanoClock:                cfg.NanoClock,
-		leaderMemberID:           cfg.LeaderMemberID,
 	}
+	// Agent stores for self id (steady stamp) and leader id (append target).
+	h.agent.SetThisMemberID(cfg.ThisMember.ID)
+	h.agent.SetLeaderMemberID(cfg.LeaderMemberID)
+	return h
 }
 
-// SetLeaderMemberID sets the AppendPosition publish target for
-// [consensus.ConsensusEgress.PublishAppendPosition].
+// SetLeaderMemberID sets Agent leader id (PublishAppendPosition target and
+// steady notify gates). Clear with NullMemberID when this node is leader or
+// the leader is unknown. Member id 0 is valid.
 //
-// Concurrency: invoker-only.
-//
-// HostAdapter does not read Election.leaderMember or Role. Callers must set
-// this when this node becomes a follower under a known leader, when leadership
-// changes, or clear it (NullMemberID) when this node is leader or the leader
-// is unknown.
-func (h *HostAdapter) SetLeaderMemberID(id int32) { h.leaderMemberID = id }
+// Callers: installLeadershipTerm after follower adopt; tests.
+func (h *HostAdapter) SetLeaderMemberID(id int32) {
+	h.agent.SetLeaderMemberID(id)
+}
 
-// LeaderMemberID returns the current AppendPosition target.
-func (h *HostAdapter) LeaderMemberID() int32 { return h.leaderMemberID }
+// ApplyLeadershipTerm forwards the adopted leadership term onto Agent for
+// steady ingress gates after ElectionComplete (follower install handoff).
+func (h *HostAdapter) ApplyLeadershipTerm(term int64) {
+	h.agent.SetLeadershipTermID(term)
+}
+
+// LeaderMemberID returns the current AppendPosition target (Agent store).
+func (h *HostAdapter) LeaderMemberID() int32 { return h.agent.LeaderMemberID() }
 
 func (h *HostAdapter) QuorumPositionBoundedByLeaderLog(appendPosition, nowNs int64) int64 {
 	return min(
@@ -204,7 +206,7 @@ func (h *HostAdapter) UpdateMemberPosition(
 func (h *HostAdapter) UpdateLeaderPosition(nowNs, appendPosition, quorumPosition int64) int {
 	h.thisMember.LogPosition = appendPosition
 	h.thisMember.TimeOfLastAppendPositionNs = nowNs
-	return h.agent.UpdateLeaderPosition(nowNs, appendPosition, quorumPosition)
+	return h.agent.UpdateLeaderPosition(nowNs, quorumPosition)
 }
 
 func (h *HostAdapter) PublishCommitPosition(commitPosition, leadershipTermID int64) {
@@ -226,11 +228,12 @@ func (h *HostAdapter) PublishAppendPosition(
 	leadershipTermID, logPosition int64,
 	flags uint8,
 ) bool {
-	if h.leaderMemberID == NullMemberID || h.leaderMemberID == h.thisMember.ID {
+	leaderID := h.agent.LeaderMemberID()
+	if leaderID == NullMemberID || leaderID == h.thisMember.ID {
 		return false
 	}
 	return h.pub.AppendPosition(
-		PublicationTarget{MemberID: h.leaderMemberID},
+		PublicationTarget{MemberID: leaderID},
 		leadershipTermID,
 		logPosition,
 		h.thisMember.ID,
@@ -241,12 +244,7 @@ func (h *HostAdapter) PublishAppendPosition(
 // TrackCatchupCompletion is a no-op until archive stop/catchup is wired.
 //
 // Kept so [ElectionHost] is fully implemented.
-func (h *HostAdapter) TrackCatchupCompletion(
-	member *Member,
-	leadershipTermID int64,
-	flags uint8,
-) {
-}
+func (h *HostAdapter) TrackCatchupCompletion(*Member, int64, uint8) {}
 
 func (h *HostAdapter) Role() consensus.Role { return h.agent.Role() }
 

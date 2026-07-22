@@ -12,7 +12,10 @@ func (NoopAgentHandler) PrepareForNewLeadership(int64, int64) int64 { return 0 }
 
 func (NoopAgentHandler) JoinLogAsLeader(int64, int64, int32, bool) {}
 
-func (NoopAgentHandler) JoinLogAsFollower(consensus.FollowerLogJoinParams, int64) bool {
+func (NoopAgentHandler) JoinLogAsFollower(
+	consensus.FollowerLogJoinParams,
+	int64,
+) bool {
 	return false
 }
 
@@ -38,8 +41,11 @@ func (NoopElectionHost) TrackCatchupCompletion(*election.Member, int64, uint8) {
 func (NoopElectionHost) NewLogReplay(int64, int64) election.LogReplay { return nil }
 
 func (NoopElectionHost) NewLogReplication(
-	leaderArchiveEndpoint, responseArchiveEndpoint string,
-	leaderRecordingID, stopPosition, nowNs int64,
+	string,
+	string,
+	int64,
+	int64,
+	int64,
 ) election.LogReplication {
 	return nil
 }
@@ -72,13 +78,17 @@ func (NoopElectionHost) LocalLogRecordingID() int64 { return election.NullValue 
 
 func (NoopElectionHost) SetLogRecordingID(int64) {}
 
+func (NoopElectionHost) TruncateLogEntry(int64, int64) {}
+
+func (NoopElectionHost) AwaitLocalSocketsClosed(int64) {}
+
 func (NoopElectionHost) FollowerLogJoinReady(int32) (consensus.FollowerLogJoinParams, bool) {
 	return consensus.FollowerLogJoinParams{}, false
 }
 
-func (NoopElectionHost) TruncateLogEntry(int64, int64) {}
+func (NoopElectionHost) SetLeaderMemberID(int32) {}
 
-func (NoopElectionHost) AwaitLocalSocketsClosed(int64) {}
+func (NoopElectionHost) ApplyLeadershipTerm(int64) {}
 
 var _ consensus.AgentHandler = (*NoopAgentHandler)(nil)
 

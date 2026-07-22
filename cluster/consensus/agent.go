@@ -15,8 +15,10 @@ type FollowerLogJoinParams struct {
 // Implemented by the consensus module agent; mocked in election tests.
 //
 // Method semantics follow aeron ConsensusModuleAgent:
-//   - PrepareForNewLeadership resets role to FOLLOWER, tears down log/ingress,
-//     returns lastAppendPosition (int64).
+//   - PrepareForNewLeadership resets role to FOLLOWER, clears the known leader,
+//     resets follower AppendPosition cadence fields, keeps commit, returns
+//     lastAppendPosition (int64). Log/ingress tear-down is deferred until full
+//     agent wiring.
 //   - JoinLogAsLeader blocks until append position counter exists and services ready.
 //   - JoinLogAsFollower (tryJoinLogAsFollower) returns true when the join succeeded.
 //   - ElectionComplete finalises term, activates toggles, clears the election field.

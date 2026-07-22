@@ -10,6 +10,10 @@ import "testing"
 // concurrently with Agent.DoWork.
 var agentDoWorkStepRecorder func(step string)
 
+// agentUnexpectedHigherTermRecorder is unsynchronized. Same invoker-only rule
+// as agentDoWorkStepRecorder.
+var agentUnexpectedHigherTermRecorder func(nowNs, term int64)
+
 // SetDoWorkStepRecorderForTest installs a callback invoked at each DoWork step
 // boundary (slow tick, ingress poll, election or consensus work).
 func SetDoWorkStepRecorderForTest(tb testing.TB, recorder func(step string)) {
@@ -18,8 +22,25 @@ func SetDoWorkStepRecorderForTest(tb testing.TB, recorder func(step string)) {
 	tb.Cleanup(func() { agentDoWorkStepRecorder = nil })
 }
 
+// SetUnexpectedHigherTermRecorderForTest installs a callback invoked when
+// steady ingress observes a leadership term above Agent's current term.
+func SetUnexpectedHigherTermRecorderForTest(
+	tb testing.TB,
+	recorder func(nowNs, term int64),
+) {
+	tb.Helper()
+	agentUnexpectedHigherTermRecorder = recorder
+	tb.Cleanup(func() { agentUnexpectedHigherTermRecorder = nil })
+}
+
 func noteDoWorkStep(step string) {
 	if agentDoWorkStepRecorder != nil {
 		agentDoWorkStepRecorder(step)
+	}
+}
+
+func noteUnexpectedHigherTerm(nowNs, term int64) {
+	if agentUnexpectedHigherTermRecorder != nil {
+		agentUnexpectedHigherTermRecorder(nowNs, term)
 	}
 }

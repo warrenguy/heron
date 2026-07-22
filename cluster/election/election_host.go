@@ -16,7 +16,7 @@ type LogReplication = consensus.LogReplication
 
 // ElectionHost is the election-to-agent duty-cycle boundary.
 //
-// Implemented by ConsensusModuleAgent; mocked in election tests.
+// Implemented by [HostAdapter]; mocked in election tests.
 type ElectionHost interface {
 	Role() consensus.Role
 	RoleSet(role consensus.Role)
@@ -53,7 +53,7 @@ type ElectionHost interface {
 	SetLogRecordingID(recordingID int64)
 
 	// TruncateLogEntry records an explicit cluster-log truncation request.
-	// Production agents log and schedule archive truncate; test hosts record
+	// Production hosts log and schedule archive truncate; test hosts record
 	// the call only. Does not mutate recording.log TERM rows.
 	TruncateLogEntry(leadershipTermID, logPosition int64)
 	AwaitLocalSocketsClosed(registrationID int64)
@@ -62,4 +62,12 @@ type ElectionHost interface {
 	// is available to join and returns its join parameters. The election
 	// overwrites IsLeaderStartup with its own value before the join.
 	FollowerLogJoinReady(logSessionID int32) (consensus.FollowerLogJoinParams, bool)
+
+	// SetLeaderMemberID sets the known leader id for AppendPosition publish and
+	// steady notify gates. Member id 0 is valid; use NullMemberID for unset.
+	SetLeaderMemberID(id int32)
+
+	// ApplyLeadershipTerm copies the adopted term onto the agent for steady
+	// ingress gates after ElectionComplete (follower install handoff).
+	ApplyLeadershipTerm(term int64)
 }

@@ -35,8 +35,10 @@ func newTestHostAdapter(
 	pub := &election.SbePublisher{}
 	commit := new(atomic.Int64)
 	agent := consensus.NewAgent(consensus.AgentConfig{
-		Commit: commit,
-		Role:   consensus.RoleFollower,
+		Commit:         commit,
+		Role:           consensus.RoleFollower,
+		ThisMemberID:   members[thisIdx].ID,
+		LeaderMemberID: election.NullMemberID,
 	})
 	cfg := election.HostAdapterConfig{
 		Agent:                    agent,
@@ -54,6 +56,51 @@ func newTestHostAdapter(
 	agent.SetPositions(host)
 	agent.SetEgress(host)
 	return host, agent, pub, clock
+}
+
+// newHostAdapterWithElection wires a real HostAdapter as ElectionHost over
+// baseline testElectionDeps members (thisIdx 0).
+func newHostAdapterWithElection(t *testing.T) (
+	cfg election.ElectionConfig,
+	host *election.HostAdapter,
+	agent *consensus.Agent,
+	e *election.Election,
+) {
+	t.Helper()
+	cfg, deps, _, _, _ := testElectionDeps(t)
+	host, agent, _, _ = newTestHostAdapter(t, deps.Members, 0)
+	deps.Host = host
+	deps.Publisher = &election.SbePublisher{}
+	e = election.NewElection(cfg, deps)
+	return cfg, host, agent, e
+}
+
+// requireCommitPositionFanOut asserts CommitPosition messages in sent match
+// term/logPos/leaderID and exactly the wantDst member set (skip-self peers).
+func requireCommitPositionFanOut(
+	t *testing.T,
+	sent []election.SentMessage,
+	term, logPos int64,
+	leaderID int32,
+	wantDst map[int32]struct{},
+) {
+	t.Helper()
+	commits := make([]election.SentMessage, 0, len(wantDst))
+	for _, msg := range sent {
+		if msg.TemplateID == clusterwire.CommitPositionSbeTemplateID {
+			commits = append(commits, msg)
+		}
+	}
+	require.Len(t, commits, len(wantDst))
+	dsts := make(map[int32]struct{}, len(wantDst))
+	for _, msg := range commits {
+		fields := msg.Fields.(codecs.CommitPositionFields)
+		require.Equal(t, term, fields.LeadershipTermID)
+		require.Equal(t, logPos, fields.LogPosition)
+		require.Equal(t, leaderID, fields.LeaderMemberID)
+		dsts[msg.Dst.MemberID] = struct{}{}
+	}
+	require.Equal(t, wantDst, dsts)
 }
 
 func TestNewHostAdapter_panics(t *testing.T) {
@@ -187,22 +234,232 @@ func TestNewHostAdapter_leaderMemberID_zeroIsValid(t *testing.T) {
 		c.LeaderMemberID = 0
 	})
 	require.Equal(t, int32(0), host.LeaderMemberID())
+
+	// Construct seeds Agent via SetLeaderMemberID (single store).
+	require.Equal(t, int32(0), agent.LeaderMemberID())
 	require.Same(t, host, agent.Positions())
 	require.Same(t, host, agent.Egress())
+}
+
+// Construct seeds Agent.ThisMemberID from ThisMember even when AgentConfig
+// left the default zero (zero is a valid member id elsewhere).
+func TestNewHostAdapter_seedsThisMemberID(t *testing.T) {
+	t.Parallel()
+
+	members := hostAdapterMembers(3)
+	const thisIdx = 2
+	clock := &FakeClock{nowNs: 1_000_000_000}
+	pub := &election.SbePublisher{}
+	// AgentConfig omits ThisMemberID (default 0). Host ThisMember is id 2.
+	agent := consensus.NewAgent(consensus.AgentConfig{
+		Commit:         new(atomic.Int64),
+		Role:           consensus.RoleLeader,
+		LeaderMemberID: election.NullMemberID,
+	})
+	require.Equal(t, int32(0), agent.ThisMemberID())
+
+	host := election.NewHostAdapter(election.HostAdapterConfig{
+		Agent:                    agent,
+		Publisher:                pub,
+		Members:                  members,
+		ThisMember:               members[thisIdx],
+		LeaderHeartbeatTimeoutNs: 10_000_000_000,
+		NanoClock:                clock.TimeNs,
+		LeaderMemberID:           election.NullMemberID,
+	})
+	agent.SetPositions(host)
+	agent.SetEgress(host)
+
+	require.Equal(t, members[thisIdx].ID, agent.ThisMemberID())
+	require.Equal(t, int32(2), agent.ThisMemberID())
+
+	// Steady leader stamp uses the seeded id, not default 0.
+	appendV := new(atomic.Int64)
+	appendV.Store(100)
+	agent.SetAppendSource(&consensus.AtomicAppendPosition{V: appendV})
+	// Pre-seed peer activity so quorum can form; stamp still records thisMember.
+	host.UpdateMemberPosition(0, 1, 100)
+	host.UpdateMemberPosition(1, 1, 100)
+	agent.SetLeadershipTermID(1)
+	require.Equal(t, 1, agent.DoWork(clock.TimeNs()))
+	require.Equal(t, int64(100), members[thisIdx].LogPosition)
+	require.Equal(t, int64(1), members[thisIdx].LeadershipTermID)
+	// Member 0 must not have been overwritten by a mistaken self-stamp of id 0
+	// after the pre-seed (self is 2).
+	require.Equal(t, int64(100), members[0].LogPosition)
 }
 
 func TestHostAdapter_SetLeaderMemberID(t *testing.T) {
 	t.Parallel()
 
 	members := hostAdapterMembers(3)
-	host, _, _, _ := newTestHostAdapter(t, members, 0)
+	host, agent, _, _ := newTestHostAdapter(t, members, 0)
 	require.Equal(t, election.NullMemberID, host.LeaderMemberID())
+	require.Equal(t, election.NullMemberID, agent.LeaderMemberID())
 
 	host.SetLeaderMemberID(2)
 	require.Equal(t, int32(2), host.LeaderMemberID())
+	require.Equal(t, int32(2), agent.LeaderMemberID())
+
+	// Member id 0 is valid; must not rewrite to NullMemberID.
+	host.SetLeaderMemberID(0)
+	require.Equal(t, int32(0), host.LeaderMemberID())
+	require.Equal(t, int32(0), agent.LeaderMemberID())
 
 	host.SetLeaderMemberID(election.NullMemberID)
 	require.Equal(t, election.NullMemberID, host.LeaderMemberID())
+	require.Equal(t, election.NullMemberID, agent.LeaderMemberID())
+
+	// Agent and Host read the same Agent store.
+	agent.SetLeaderMemberID(1)
+	require.Equal(t, int32(1), host.LeaderMemberID())
+	require.Equal(t, int32(1), agent.LeaderMemberID())
+}
+
+func TestHostAdapter_ApplyLeadershipTerm(t *testing.T) {
+	t.Parallel()
+
+	members := hostAdapterMembers(3)
+	host, agent, _, _ := newTestHostAdapter(t, members, 0)
+	require.Equal(t, int64(0), agent.LeadershipTermID())
+
+	host.ApplyLeadershipTerm(7)
+	require.Equal(t, int64(7), agent.LeadershipTermID())
+
+	host.ApplyLeadershipTerm(0)
+	require.Equal(t, int64(0), agent.LeadershipTermID())
+}
+
+// TestInstallLeadershipTerm_handoffAgentLeaderAndTerm drives follower
+// NewLeadershipTerm install through HostAdapter + real Agent and asserts
+// leader id and Agent leadership term handoff. Truncating path must not hand
+// off. After complete, same-term steady Commit advances NotifiedCommitPosition.
+func TestInstallLeadershipTerm_handoffAgentLeaderAndTerm(t *testing.T) {
+	t.Parallel()
+
+	const leaderID int32 = 1
+
+	t.Run("adopt sets leader and term on Agent", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, host, agent, e := newHostAdapterWithElection(t)
+		election.SetStateForTest(e, election.ElectionStateCanvass)
+
+		require.Equal(t, election.NullMemberID, host.LeaderMemberID())
+		require.Equal(t, election.NullMemberID, agent.LeaderMemberID())
+		require.Equal(t, int64(0), agent.LeadershipTermID())
+
+		fields := installNewLeadershipTermFields(cfg, leaderID, cfg.LeadershipTermID)
+		e.OnNewLeadershipTerm(fields)
+
+		require.Equal(t, election.ElectionStateFollowerReplay, e.State())
+		require.Equal(t, leaderID, host.LeaderMemberID())
+		require.Equal(t, leaderID, agent.LeaderMemberID())
+		require.Equal(t, fields.LeadershipTermID, agent.LeadershipTermID())
+		require.Equal(t, fields.LeadershipTermID, e.LeadershipTermID())
+	})
+
+	t.Run("after complete steady commit notifies", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, _, agent, e := newHostAdapterWithElection(t)
+
+		// Wire election onto Agent so ElectionComplete clears a live runner.
+		agent.SetElection(e)
+		election.SetStateForTest(e, election.ElectionStateCanvass)
+
+		fields := installNewLeadershipTermFields(cfg, leaderID, cfg.LeadershipTermID)
+		e.OnNewLeadershipTerm(fields)
+		require.Equal(t, leaderID, agent.LeaderMemberID())
+		require.Equal(t, fields.LeadershipTermID, agent.LeadershipTermID())
+		require.Equal(t, consensus.RoleFollower, agent.Role())
+		require.Equal(t, int64(0), agent.NotifiedCommitPosition())
+
+		const completeNs int64 = 2_000
+		agent.ElectionComplete(completeNs)
+		require.Nil(t, agent.Election())
+
+		// Handoff fields survive complete.
+		require.Equal(t, leaderID, agent.LeaderMemberID())
+		require.Equal(t, fields.LeadershipTermID, agent.LeadershipTermID())
+
+		const commitPos int64 = 777
+		const pollNs int64 = 3_000
+		q := &consensus.QueueConsensusIngress{}
+		agent.SetIngress(q)
+		q.Enqueue(encodeCommitPositionWireForTest(t, codecs.CommitPositionFields{
+			LeadershipTermID: fields.LeadershipTermID,
+			LogPosition:      commitPos,
+			LeaderMemberID:   leaderID,
+		}))
+
+		// DoWork: pollIngress (steady) then consensusWork stub.
+		work := agent.DoWork(pollNs)
+		require.Equal(t, 1, work)
+		require.Equal(t, commitPos, agent.NotifiedCommitPosition())
+		require.Equal(t, pollNs, agent.TimeOfLastLeaderUpdateNs())
+	})
+
+	t.Run("truncate skips handoff", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, host, agent, e := newHostAdapterWithElection(t)
+
+		// Pre-seed a non-null leader/term so a mistaken handoff is visible.
+		const seedLeader int32 = 2
+		const seedTerm int64 = 3
+		host.SetLeaderMemberID(seedLeader)
+		host.ApplyLeadershipTerm(seedTerm)
+		require.Equal(t, seedLeader, agent.LeaderMemberID())
+		require.Equal(t, seedTerm, agent.LeadershipTermID())
+
+		election.SetStateForTest(e, election.ElectionStateCanvass)
+
+		fields := installNewLeadershipTermFields(cfg, leaderID, cfg.LeadershipTermID)
+		fields.NextLeadershipTermID = cfg.LeadershipTermID + 1
+		fields.NextTermBaseLogPosition = cfg.AppendPosition - 50
+		e.OnNewLeadershipTerm(fields)
+
+		require.Equal(t, election.ElectionStateInit, e.State())
+		require.Equal(t, cfg.AppendPosition-50, e.AppendPosition())
+		require.Equal(t, seedLeader, host.LeaderMemberID())
+		require.Equal(t, seedLeader, agent.LeaderMemberID())
+		require.Equal(t, seedTerm, agent.LeadershipTermID())
+	})
+
+	// Lagging append with null successor term: handoff runs on adopt, then
+	// HandleError returns to Init. Agent/host stay on adopted leader+term.
+	t.Run("invalid NewLeadershipTerm after handoff keeps adopted leader and term", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, host, agent, e := newHostAdapterWithElection(t)
+		election.SetStateForTest(e, election.ElectionStateCanvass)
+
+		fields := installNewLeadershipTermFields(cfg, leaderID, cfg.LeadershipTermID)
+		fields.TermBaseLogPosition = cfg.AppendPosition + 100
+		e.OnNewLeadershipTerm(fields)
+
+		require.Equal(t, election.ElectionStateInit, e.State())
+		require.Equal(t, leaderID, host.LeaderMemberID())
+		require.Equal(t, leaderID, agent.LeaderMemberID())
+		require.Equal(t, fields.LeadershipTermID, agent.LeadershipTermID())
+		require.Equal(t, fields.LeadershipTermID, e.LeadershipTermID())
+	})
+}
+
+// encodeCommitPositionWireForTest builds a full CommitPosition SBE frame via
+// [election.SbePublisher] for steady Agent ingress inject.
+func encodeCommitPositionWireForTest(t *testing.T, fields codecs.CommitPositionFields) []byte {
+	t.Helper()
+	pub := &election.SbePublisher{}
+	pub.CommitPosition(
+		election.PublicationTarget{MemberID: 0},
+		fields.LeadershipTermID,
+		fields.LogPosition,
+		fields.LeaderMemberID,
+	)
+	require.Len(t, pub.Sent, 1)
+	return pub.Sent[0].Wire
 }
 
 func TestHostAdapter_QuorumPositionBoundedByLeaderLog_min(t *testing.T) {
@@ -222,6 +479,7 @@ func TestHostAdapter_QuorumPositionBoundedByLeaderLog_min(t *testing.T) {
 	}{
 		// Positions 200,100,50 -> quorum 100; min(100,150)=100.
 		{name: "quorum less than append", pos: [3]int64{200, 100, 50}, append: 150, want: 100},
+
 		// Quorum 200; append 100 -> min = 100.
 		{name: "quorum greater than append", pos: [3]int64{200, 200, 200}, append: 100, want: 100},
 		{name: "quorum equals append", pos: [3]int64{150, 150, 0}, append: 150, want: 150},
@@ -334,23 +592,10 @@ func TestHostAdapter_PublishCommitPosition_fanOut(t *testing.T) {
 	tests := []struct {
 		name    string
 		thisIdx int
-		wantDst map[int32]struct{}
 	}{
-		{
-			name:    "thisIdx 0 skips self",
-			thisIdx: 0,
-			wantDst: map[int32]struct{}{1: {}, 2: {}},
-		},
-		{
-			name:    "thisIdx 1 skips self",
-			thisIdx: 1,
-			wantDst: map[int32]struct{}{0: {}, 2: {}},
-		},
-		{
-			name:    "thisIdx 2 skips self",
-			thisIdx: 2,
-			wantDst: map[int32]struct{}{0: {}, 1: {}},
-		},
+		{name: "thisIdx 0 skips self", thisIdx: 0},
+		{name: "thisIdx 1 skips self", thisIdx: 1},
+		{name: "thisIdx 2 skips self", thisIdx: 2},
 	}
 
 	for _, tt := range tests {
@@ -360,21 +605,16 @@ func TestHostAdapter_PublishCommitPosition_fanOut(t *testing.T) {
 			host, _, pub, _ := newTestHostAdapter(t, members, tt.thisIdx)
 			selfID := members[tt.thisIdx].ID
 
-			host.PublishCommitPosition(commit, term)
-
-			require.Len(t, pub.Sent, 2)
-			dsts := make(map[int32]struct{}, 2)
-			for _, msg := range pub.Sent {
-				require.Equal(t, uint16(clusterwire.CommitPositionSbeTemplateID), msg.TemplateID)
-				fields := msg.Fields.(codecs.CommitPositionFields)
-				require.Equal(t, term, fields.LeadershipTermID)
-				require.Equal(t, commit, fields.LogPosition)
-				require.Equal(t, selfID, fields.LeaderMemberID)
-				dsts[msg.Dst.MemberID] = struct{}{}
+			wantDst := make(map[int32]struct{}, len(members)-1)
+			for _, m := range members {
+				if m.ID != selfID {
+					wantDst[m.ID] = struct{}{}
+				}
 			}
-			require.Equal(t, tt.wantDst, dsts)
-			_, selfSent := dsts[selfID]
-			require.False(t, selfSent)
+
+			host.PublishCommitPosition(commit, term)
+			require.Len(t, pub.Sent, len(wantDst))
+			requireCommitPositionFanOut(t, pub.Sent, term, commit, selfID, wantDst)
 		})
 	}
 }
@@ -400,50 +640,66 @@ func TestHostAdapter_PublishAppendPosition_toLeader(t *testing.T) {
 	require.Equal(t, uint8(3), fields.Flags)
 }
 
-func TestHostAdapter_PublishAppendPosition_nullLeader(t *testing.T) {
+func TestHostAdapter_PublishAppendPosition_noTarget(t *testing.T) {
 	t.Parallel()
 
-	members := hostAdapterMembers(3)
-	host, _, pub, _ := newTestHostAdapter(t, members, 0)
-	require.False(t, host.PublishAppendPosition(1, 2, 0))
-	require.Empty(t, pub.Sent)
-}
+	tests := []struct {
+		name     string
+		leaderID int32
+	}{
+		{name: "null leader", leaderID: election.NullMemberID},
+		{name: "leader is self", leaderID: 0},
+	}
 
-func TestHostAdapter_PublishAppendPosition_leaderIsSelf(t *testing.T) {
-	t.Parallel()
-
-	members := hostAdapterMembers(3)
-	host, _, pub, _ := newTestHostAdapter(t, members, 0, func(c *election.HostAdapterConfig) {
-		c.LeaderMemberID = 0
-	})
-	require.False(t, host.PublishAppendPosition(1, 2, 0))
-	require.Empty(t, pub.Sent)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			members := hostAdapterMembers(3)
+			host, _, pub, _ := newTestHostAdapter(t, members, 0, func(c *election.HostAdapterConfig) {
+				c.LeaderMemberID = tt.leaderID
+			})
+			require.False(t, host.PublishAppendPosition(1, 2, 0))
+			require.Empty(t, pub.Sent)
+		})
+	}
 }
 
 func TestHostAdapter_UpdateLeaderPosition_stampsThenForwards(t *testing.T) {
 	t.Parallel()
 
+	const (
+		term   int64 = 11
+		quorum int64 = 150
+	)
+
 	members := hostAdapterMembers(3)
 	host, agent, pub, _ := newTestHostAdapter(t, members, 0)
+	agent.SetLeadershipTermID(term)
+	selfID := members[0].ID
 
 	// ThisMember is members[0]; stamp must mutate the ranked slice element.
 	require.Equal(t, int64(0), agent.CommitPosition())
 	require.Equal(t, int64(0), members[0].LogPosition)
 
-	work := host.UpdateLeaderPosition(9_000, 200, 150)
+	work := host.UpdateLeaderPosition(9_000, 200, quorum)
 	require.Equal(t, 1, work)
-	require.Equal(t, int64(150), agent.CommitPosition())
+	require.Equal(t, quorum, agent.CommitPosition())
 	require.Equal(t, int64(200), members[0].LogPosition)
 	require.Equal(t, int64(9_000), members[0].TimeOfLastAppendPositionNs)
 
-	// Stamp-then-forward only; commit egress stays on PublishCommitPosition.
-	require.Empty(t, pub.Sent)
+	// HostAdapter.UpdateLeaderPosition only stamps then forwards; Agent gate
+	// publishes CommitPosition via the egress surface (same HostAdapter).
+	// Skip-self fan-out to the other two members.
+	wantDst := map[int32]struct{}{1: {}, 2: {}}
+	require.Len(t, pub.Sent, len(wantDst))
+	requireCommitPositionFanOut(t, pub.Sent, term, quorum, selfID, wantDst)
+	firstSent := len(pub.Sent)
 
-	// Same quorum does not re-advance commit.
-	require.Equal(t, 0, host.UpdateLeaderPosition(9_001, 200, 150))
-	require.Equal(t, int64(150), agent.CommitPosition())
+	// Same quorum inside heartbeat interval: no re-publish, stamp still runs.
+	require.Equal(t, 0, host.UpdateLeaderPosition(9_001, 200, quorum))
+	require.Equal(t, quorum, agent.CommitPosition())
 	require.Equal(t, int64(9_001), members[0].TimeOfLastAppendPositionNs)
-	require.Empty(t, pub.Sent)
+	require.Len(t, pub.Sent, firstSent)
 }
 
 func TestHostAdapter_forwardSmoke(t *testing.T) {
@@ -501,7 +757,7 @@ func TestHostAdapter_leaderLogReplicationCommitFanOut(t *testing.T) {
 	const followerLogPos int64 = 50
 
 	members := hostAdapterMembers(3)
-	cfg, deps, _, _, _ := electionDepsForMemberPtrs(t, members, 0)
+	cfg, deps, _, epochClock, _ := electionDepsForMemberPtrs(t, members, 0)
 	cfg.IsNodeStartup = true
 	cfg.LeadershipTermID = testLeadershipTermID
 	cfg.LogPosition = testLogPosition
@@ -511,7 +767,6 @@ func TestHostAdapter_leaderLogReplicationCommitFanOut(t *testing.T) {
 	host, agent, pub, clock := newTestHostAdapter(t, members, 0, func(c *election.HostAdapterConfig) {
 		c.LeaderHeartbeatTimeoutNs = cfg.LeaderHeartbeatTimeoutNs
 	})
-	epochClock := &FakeEpochClock{nowMs: 42_000}
 
 	deps.Host = host
 	deps.Handler = agent
@@ -536,40 +791,32 @@ func TestHostAdapter_leaderLogReplicationCommitFanOut(t *testing.T) {
 			break
 		}
 		e.DoWork(clock.nowNs)
-		clock.nowNs += cfg.ElectionStatusIntervalNs
-		epochClock.nowMs += cfg.ElectionStatusIntervalNs / 1_000_000
+		advanceFakeClocks(clock, epochClock, cfg.ElectionStatusIntervalNs)
 	}
 	require.Equal(t, election.ElectionStateCandidateBallot, e.State())
 
-	yes := clusterwire.BooleanType_TRUE
-	e.OnVote(codecs.VoteFields{
-		CandidateTermID:     election.CandidateTermIDForTest(e),
-		LogLeadershipTermID: cfg.LeadershipTermID,
-		LogPosition:         followerLogPos,
-		CandidateMemberID:   e.ThisMemberID(),
-		FollowerMemberID:    1,
-		Vote:                yes,
-	})
-	e.OnVote(codecs.VoteFields{
-		CandidateTermID:     election.CandidateTermIDForTest(e),
-		LogLeadershipTermID: cfg.LeadershipTermID,
-		LogPosition:         followerLogPos,
-		CandidateMemberID:   e.ThisMemberID(),
-		FollowerMemberID:    2,
-		Vote:                yes,
-	})
-	require.Equal(t, followerLogPos, members[1].LogPosition)
-	require.Equal(t, followerLogPos, members[2].LogPosition)
-	require.Equal(t, cfg.LeadershipTermID, members[1].LeadershipTermID)
-	require.Equal(t, cfg.LeadershipTermID, members[2].LeadershipTermID)
-	require.Equal(t, clock.nowNs, members[1].TimeOfLastAppendPositionNs)
-	require.Equal(t, clock.nowNs, members[2].TimeOfLastAppendPositionNs)
+	for _, followerID := range []int32{1, 2} {
+		e.OnVote(codecs.VoteFields{
+			CandidateTermID:     election.CandidateTermIDForTest(e),
+			LogLeadershipTermID: cfg.LeadershipTermID,
+			LogPosition:         followerLogPos,
+			CandidateMemberID:   e.ThisMemberID(),
+			FollowerMemberID:    followerID,
+			Vote:                clusterwire.BooleanType_TRUE,
+		})
+	}
+	for _, followerID := range []int32{1, 2} {
+		m := members[followerID]
+		require.Equal(t, followerLogPos, m.LogPosition)
+		require.Equal(t, cfg.LeadershipTermID, m.LeadershipTermID)
+		require.Equal(t, clock.nowNs, m.TimeOfLastAppendPositionNs)
+	}
 
 	e.DoWork(clock.nowNs)
 	require.Equal(t, election.ElectionStateLeaderLogReplication, e.State())
 	require.Equal(t, consensus.RoleLeader, host.Role())
 
-	// NLT encode needs a real log session; commit fan-out does not.
+	// NewLeadershipTerm encode needs a real log session; commit fan-out does not.
 	election.SetLogSessionIDForTest(e, fixtureLogSessionID)
 	pub.Reset()
 
@@ -580,21 +827,8 @@ func TestHostAdapter_leaderLogReplicationCommitFanOut(t *testing.T) {
 	require.Equal(t, cfg.AppendPosition, members[0].LogPosition)
 	require.Equal(t, clock.nowNs, members[0].TimeOfLastAppendPositionNs)
 
-	var commits []election.SentMessage
-	for _, msg := range pub.Sent {
-		if msg.TemplateID == clusterwire.CommitPositionSbeTemplateID {
-			commits = append(commits, msg)
-		}
-	}
-	require.Len(t, commits, 2, "commit fan-out must reach both peers")
-	term := e.LeadershipTermID()
-	dsts := make(map[int32]struct{}, 2)
-	for _, msg := range commits {
-		fields := msg.Fields.(codecs.CommitPositionFields)
-		require.Equal(t, term, fields.LeadershipTermID)
-		require.Equal(t, followerLogPos, fields.LogPosition)
-		require.Equal(t, int32(0), fields.LeaderMemberID)
-		dsts[msg.Dst.MemberID] = struct{}{}
-	}
-	require.Equal(t, map[int32]struct{}{1: {}, 2: {}}, dsts)
+	requireCommitPositionFanOut(
+		t, pub.Sent, e.LeadershipTermID(), followerLogPos, 0,
+		map[int32]struct{}{1: {}, 2: {}},
+	)
 }

@@ -9,14 +9,14 @@ import (
 )
 
 func (e *Election) handleInit(nowNs int64) int {
-	if e.isFirstInit {
+	firstInit := e.isFirstInit
+	if firstInit {
 		e.isFirstInit = false
-		if !e.isNodeStartup {
-			e.prepareForNewLeadership(nowNs)
-		}
 	} else {
-		e.prepareForNewLeadership(nowNs)
 		e.logSessionID = NullMemberID
+	}
+	if !firstInit || !e.isNodeStartup {
+		e.prepareForNewLeadership(nowNs)
 	}
 
 	e.notifiedCommitPosition = 0
@@ -33,9 +33,7 @@ func (e *Election) handleInit(nowNs int64) int {
 			e.HandleError(nowNs, err)
 			return 1
 		}
-		e.leaderMember = e.thisMember
-		e.leadershipTermID = e.candidateTermID
-		e.state(ElectionStateLeaderLogReplication, nowNs, "single-node cluster leader")
+		e.becomeSelfLeader(nowNs, "single-node cluster leader")
 	} else {
 		e.state(ElectionStateCanvass, nowNs, "")
 	}
@@ -101,17 +99,13 @@ func (e *Election) handleCandidateBallot(nowNs int64) int {
 	workCount := 0
 
 	if IsUnanimousLeader(e.clusterMembers, e.candidateTermID, e.gracefulClosedLeaderID) {
-		e.leaderMember = e.thisMember
-		e.leadershipTermID = e.candidateTermID
-		e.state(ElectionStateLeaderLogReplication, nowNs, "unanimous leader")
+		e.becomeSelfLeader(nowNs, "unanimous leader")
 		return 1
 	}
 
 	if nowNs >= e.timeOfLastStateChangeNs+e.cfg.ElectionTimeoutNs {
 		if IsQuorumLeader(e.clusterMembers, e.candidateTermID) {
-			e.leaderMember = e.thisMember
-			e.leadershipTermID = e.candidateTermID
-			e.state(ElectionStateLeaderLogReplication, nowNs, "quorum leader")
+			e.becomeSelfLeader(nowNs, "quorum leader")
 		} else {
 			e.state(ElectionStateCanvass, nowNs, "")
 		}
@@ -345,17 +339,14 @@ func (e *Election) handleFollowerLogAwait(nowNs int64) int {
 }
 
 func (e *Election) handleFollowerReady(nowNs int64) int {
-	published := false
-	if leader := e.leaderMember; leader != nil {
-		published = e.deps.Publisher.AppendPosition(
-			PublicationTarget{MemberID: leader.ID},
-			e.leadershipTermID,
-			e.logPosition,
-			e.thisMember.ID,
-			0,
-		)
-	}
-
+	leader := e.leaderMember
+	published := leader != nil && e.deps.Publisher.AppendPosition(
+		PublicationTarget{MemberID: leader.ID},
+		e.leadershipTermID,
+		e.logPosition,
+		e.thisMember.ID,
+		0,
+	)
 	if published {
 		e.deps.Handler.ElectionComplete(nowNs)
 		e.state(ElectionStateClosed, nowNs, "")
@@ -363,6 +354,12 @@ func (e *Election) handleFollowerReady(nowNs int64) int {
 		e.HandleError(nowNs, errors.New("election: ready follower failed to notify leader"))
 	}
 	return 1
+}
+
+func (e *Election) becomeSelfLeader(nowNs int64, reason string) {
+	e.leaderMember = e.thisMember
+	e.leadershipTermID = e.candidateTermID
+	e.state(ElectionStateLeaderLogReplication, nowNs, reason)
 }
 
 // HandleConsensusMessage decodes consensus wire and dispatches to On* handlers.
@@ -419,7 +416,7 @@ func dispatchWire[F any](
 }
 
 func (e *Election) OnCanvassPosition(fields codecs.CanvassPositionFields) {
-	if e.electionState == ElectionStateInit {
+	if !e.acceptsConsensusInbound() {
 		return
 	}
 	if fields.FollowerMemberID == e.gracefulClosedLeaderID {
@@ -434,7 +431,7 @@ func (e *Election) OnCanvassPosition(fields codecs.CanvassPositionFields) {
 }
 
 func (e *Election) OnRequestVote(fields codecs.RequestVoteFields) {
-	if e.electionState == ElectionStateInit {
+	if !e.acceptsConsensusInbound() {
 		return
 	}
 	if fields.CandidateMemberID == e.thisMember.ID {
@@ -453,20 +450,9 @@ func (e *Election) OnRequestVote(fields codecs.RequestVoteFields) {
 		fields.LogPosition,
 	) > 0
 	if weAreAhead {
-		proposed, err := e.deps.NodeState.ProposeMaxCandidateTermID(
-			fields.CandidateTermID,
-			fields.LogPosition,
-			e.deps.EpochClock(),
-		)
-		if err != nil {
-			e.HandleError(e.deps.NanoClock(), err)
-			return
-		}
-		e.candidateTermID = proposed
-		e.placeVote(fields.CandidateTermID, fields.CandidateMemberID, false)
-
 		// A leader-role node also publishes NewLeadershipTerm toward the candidate
 		// here; that path is not wired until log replication lands.
+		e.proposeCandidateTermAndVote(fields, false, e.deps.NanoClock())
 		return
 	}
 
@@ -474,6 +460,17 @@ func (e *Election) OnRequestVote(fields codecs.RequestVoteFields) {
 		return
 	}
 	nowNs := e.deps.NanoClock()
+	if !e.proposeCandidateTermAndVote(fields, true, nowNs) {
+		return
+	}
+	e.state(ElectionStateFollowerBallot, nowNs, "")
+}
+
+func (e *Election) proposeCandidateTermAndVote(
+	fields codecs.RequestVoteFields,
+	vote bool,
+	nowNs int64,
+) bool {
 	proposed, err := e.deps.NodeState.ProposeMaxCandidateTermID(
 		fields.CandidateTermID,
 		fields.LogPosition,
@@ -481,11 +478,11 @@ func (e *Election) OnRequestVote(fields codecs.RequestVoteFields) {
 	)
 	if err != nil {
 		e.HandleError(nowNs, err)
-		return
+		return false
 	}
 	e.candidateTermID = proposed
-	e.placeVote(fields.CandidateTermID, fields.CandidateMemberID, true)
-	e.state(ElectionStateFollowerBallot, nowNs, "")
+	e.placeVote(fields.CandidateTermID, fields.CandidateMemberID, vote)
+	return true
 }
 
 func (e *Election) OnVote(fields codecs.VoteFields) {
@@ -506,7 +503,7 @@ func (e *Election) OnVote(fields codecs.VoteFields) {
 }
 
 func (e *Election) OnNewLeadershipTerm(fields codecs.NewLeadershipTermFields) {
-	if e.electionState == ElectionStateInit {
+	if !e.acceptsConsensusInbound() {
 		return
 	}
 	leader := e.memberByID[fields.LeaderMemberID]
@@ -521,15 +518,7 @@ func (e *Election) OnNewLeadershipTerm(fields codecs.NewLeadershipTermFields) {
 	}
 	nowNs := e.deps.NanoClock()
 
-	// A ballot state only accepts the term it is voting on; canvass accepts
-	// any term from a known leader.
-	inBallotOrCanvass :=
-		((e.electionState == ElectionStateFollowerBallot ||
-			e.electionState == ElectionStateCandidateBallot) &&
-			fields.LeadershipTermID == e.candidateTermID) ||
-			e.electionState == ElectionStateCanvass
-
-	if inBallotOrCanvass {
+	if e.acceptsLeadershipInstall(fields.LeadershipTermID) {
 		if fields.LogLeadershipTermID == e.logLeadershipTermID {
 			e.installLeadershipTerm(leader, fields, nowNs)
 		} else {
@@ -542,6 +531,17 @@ func (e *Election) OnNewLeadershipTerm(fields codecs.NewLeadershipTermFields) {
 		e.leaderMember != nil && e.leaderMember.ID == fields.LeaderMemberID {
 		e.replicationDeadlineNs = nowNs + e.cfg.LeaderHeartbeatTimeoutNs
 	}
+}
+
+// acceptsLeadershipInstall is true for canvass (any term) and for ballot
+// states when termID matches the term under vote.
+func (e *Election) acceptsLeadershipInstall(termID int64) bool {
+	if e.electionState == ElectionStateCanvass {
+		return true
+	}
+	inBallot := e.electionState == ElectionStateFollowerBallot ||
+		e.electionState == ElectionStateCandidateBallot
+	return inBallot && termID == e.candidateTermID
 }
 
 // installLeadershipTerm adopts leader's term and routes to the follower
@@ -573,6 +573,10 @@ func (e *Election) installLeadershipTerm(
 	}
 	e.notifiedCommitPosition = max(e.notifiedCommitPosition, fields.CommitPosition)
 
+	// Handoff leader id + Agent term for post-election steady notify gates.
+	e.deps.Host.SetLeaderMemberID(leader.ID)
+	e.deps.Host.ApplyLeadershipTerm(fields.LeadershipTermID)
+
 	if e.appendPosition >= fields.TermBaseLogPosition {
 		e.state(ElectionStateFollowerReplay, nowNs, "")
 		return
@@ -601,7 +605,7 @@ func (e *Election) installLeadershipTerm(
 }
 
 func (e *Election) OnAppendPosition(fields codecs.AppendPositionFields) {
-	if e.electionState == ElectionStateInit {
+	if !e.acceptsConsensusInbound() {
 		return
 	}
 	if fields.LeadershipTermID > e.leadershipTermID {
@@ -633,7 +637,7 @@ func (e *Election) OnAppendPosition(fields codecs.AppendPositionFields) {
 // older leaders published a CommitPosition term that did not match their
 // NewLeadershipTerm event, so only the leader identity gates the update.
 func (e *Election) OnCommitPosition(fields codecs.CommitPositionFields) {
-	if e.electionState == ElectionStateInit {
+	if !e.acceptsConsensusInbound() {
 		return
 	}
 

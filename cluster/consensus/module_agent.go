@@ -1,18 +1,33 @@
 package consensus
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+)
 
 // nullValue mirrors aeron cnc NullValue (-1) for recording IDs and null session.
 // Local unexported const - do not import election.
 const nullValue = -1
+
+// nullMemberID is the unset member-id sentinel. Same numeric value as
+// election.NullMemberID / cnc.NullValue. Member id 0 is valid - never treat
+// zero as "unset".
+const nullMemberID int32 = int32(nullValue)
+
+// DefaultLeaderHeartbeatIntervalNs is the default commit re-publish and
+// follower append cadence (200ms).
+const DefaultLeaderHeartbeatIntervalNs int64 = 200_000_000
 
 // Agent is the consensus module duty-cycle owner.
 //
 //   - Implements [AgentHandler]
 //   - Exposes host-delegate methods the election host adapter forwards
 //     (member-free host duties)
-//   - Holds only consensus-facing interfaces for election, positions, and
-//     egress ([ElectionRunner], [PositionTable], [ConsensusEgress]); never
+//   - Holds consensus-facing interfaces for election, positions, egress,
+//     ingress, and append high-water ([ElectionRunner], [PositionTable],
+//     [ConsensusEgress], [ConsensusIngress], [AppendPositionSource]); never
 //     election concrete types
 //
 // Concurrency: invoker-only. Caller runs media-driver/client duty cycle and
@@ -43,12 +58,68 @@ type Agent struct {
 	liveLogDestination       string
 	catchupLogDestination    string
 	localLogRecordingID      int64
+
+	// leadershipTermID is the current term for publish and ingress term gates.
+	// Default 0 is a legal term id (first term) - not a sentinel.
+	leadershipTermID int64
+
+	// thisMemberID is this node's cluster member id for steady leader stamp.
+	// Default 0 is a valid member id; tests that need "unset" pass
+	// nullMemberID (-1). HostAdapter construct seeds from ThisMember.ID.
+	thisMemberID int32
+
+	// leaderMemberID is the known leader id for steady notify gates and
+	// AppendPosition publish target (HostAdapter reads this store). Default 0
+	// is a valid member id; use nullMemberID (-1) for unset.
+	leaderMemberID int32
+
+	// timeOfLastLogUpdateNs gates commit heartbeat re-publish inside
+	// [Agent.UpdateLeaderPosition]. Distinct from timeOfLastLeaderUpdateNs
+	// (canvass base; ingress NewLeadershipTerm / CommitPosition only).
+	timeOfLastLogUpdateNs int64
+
+	// leaderHeartbeatIntervalNs is the commit re-publish and follower
+	// AppendPosition send cadence.
+	leaderHeartbeatIntervalNs int64
+
+	// notifiedCommitPosition is the follower-visible commit high-water.
+	// Written by steady ingress CommitPosition and NewLeadershipTerm
+	// handlers; [Agent.NotifiedCommitPosition] exposes it.
+	notifiedCommitPosition int64
+
+	// ingress polls consensus channel fragments. Nil: pollConsensusIngress
+	// returns 0 (unit tests inject via [QueueConsensusIngress] or direct
+	// handler calls).
+	ingress ConsensusIngress
+
+	// ingressPollNowNs is the duty-cycle clock for the current
+	// pollConsensusIngress batch. Set before Poll; read by onIngressFragment
+	// so the fragment handler is a method value (no per-poll closure).
+	ingressPollNowNs int64
+
+	// appendSource supplies local log append high-water for leader rank and
+	// follower AppendPosition publish. Nil: leader consensusWork returns 0.
+	appendSource AppendPositionSource
+
+	// lastPublishedAppendPosition is the last successfully published follower
+	// append high-water (advanced path only).
+	lastPublishedAppendPosition int64
+
+	// timeOfLastAppendPositionSendNs gates follower AppendPosition re-publish
+	// on the heartbeat interval.
+	timeOfLastAppendPositionSendNs int64
 }
 
 // AgentConfig is the constructor bag. Nil interface fields are legal for unit
 // tests that exercise Agent host-delegate stubs only, and for production
 // bootstrap before the host adapter exists (then call [Agent.SetPositions] /
 // [Agent.SetEgress] / [Agent.SetElection]).
+//
+// Member ids: zero is a valid member id. Constructor stores ThisMemberID and
+// LeaderMemberID as given - never rewrites 0 to -1. Production: HostAdapter
+// construct seeds ThisMemberID from ThisMember.ID and LeaderMemberID from
+// config (including 0 / -1). Unit tests that need "unset" pass -1
+// (nullMemberID) explicitly.
 type AgentConfig struct {
 	Election  ElectionRunner  // optional until election wired
 	Positions PositionTable   // optional at construct; set via [Agent.SetPositions]
@@ -59,10 +130,38 @@ type AgentConfig struct {
 	Commit *atomic.Int64
 	// Role seeds [Agent.Role] / [Agent.RoleSet]. Default [RoleFollower] (zero value).
 	Role Role
+
+	// LeaderHeartbeatIntervalNs: zero -> DefaultLeaderHeartbeatIntervalNs
+	// (200_000_000). Negative panics at NewAgent.
+	LeaderHeartbeatIntervalNs int64
+
+	// LeadershipTermID seeds a.leadershipTermID (default 0 is legal term).
+	LeadershipTermID int64
+
+	// ThisMemberID seeds a.thisMemberID as given. Zero is valid.
+	// HostAdapter construct overwrites via [Agent.SetThisMemberID] from
+	// ThisMember.ID when the host is wired.
+	ThisMemberID int32
+
+	// LeaderMemberID seeds a.leaderMemberID as given. Zero is valid; use -1
+	// for unset until leader install. HostAdapter construct overwrites via
+	// [Agent.SetLeaderMemberID].
+	LeaderMemberID int32
+
+	// Ingress optional; nil until subscription wired. Tests inject
+	// [QueueConsensusIngress].
+	Ingress ConsensusIngress
+
+	// AppendSource optional mode-1 inject for leader rank and follower
+	// AppendPosition publish. Nil until wired via config or [Agent.SetAppendSource].
+	AppendSource AppendPositionSource
 }
 
 // NewAgent constructs an [Agent] from cfg. localLogRecordingID defaults to
-// nullValue.
+// nullValue. LeaderHeartbeatIntervalNs zero becomes
+// DefaultLeaderHeartbeatIntervalNs; negative panics.
+//
+// Member ids are stored as given (0 is valid; -1 is unset).
 //
 // Concurrency: invoker-only after construction; see [Agent].
 //
@@ -70,13 +169,26 @@ type AgentConfig struct {
 // may be wired later via [Agent.SetPositions] / [Agent.SetEgress] /
 // [Agent.SetElection].
 func NewAgent(cfg AgentConfig) *Agent {
+	interval := cfg.LeaderHeartbeatIntervalNs
+	if interval == 0 {
+		interval = DefaultLeaderHeartbeatIntervalNs
+	}
+	if interval < 0 {
+		panic("consensus: negative LeaderHeartbeatIntervalNs")
+	}
 	return &Agent{
-		election:            cfg.Election,
-		positions:           cfg.Positions,
-		egress:              cfg.Egress,
-		commit:              cfg.Commit,
-		role:                cfg.Role,
-		localLogRecordingID: nullValue,
+		election:                  cfg.Election,
+		positions:                 cfg.Positions,
+		egress:                    cfg.Egress,
+		commit:                    cfg.Commit,
+		role:                      cfg.Role,
+		localLogRecordingID:       nullValue,
+		leadershipTermID:          cfg.LeadershipTermID,
+		thisMemberID:              cfg.ThisMemberID,
+		leaderMemberID:            cfg.LeaderMemberID,
+		leaderHeartbeatIntervalNs: interval,
+		ingress:                   cfg.Ingress,
+		appendSource:              cfg.AppendSource,
 	}
 }
 
@@ -105,6 +217,16 @@ func (a *Agent) SetEgress(egress ConsensusEgress) {
 // SetElection wires or clears the [ElectionRunner] (bootstrap /
 // [Agent.ElectionComplete]).
 func (a *Agent) SetElection(runner ElectionRunner) { a.election = runner }
+
+// SetIngress replaces the consensus ingress poller.
+//
+// Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
+//
+// Nil is legal; [Agent.pollConsensusIngress] returns 0 until rewired.
+func (a *Agent) SetIngress(ingress ConsensusIngress) { a.ingress = ingress }
+
+// Ingress returns the wired [ConsensusIngress], or nil if unset.
+func (a *Agent) Ingress() ConsensusIngress { return a.ingress }
 
 // Election returns the current [ElectionRunner], or nil in steady-state.
 func (a *Agent) Election() ElectionRunner { return a.election }
@@ -147,33 +269,76 @@ func (a *Agent) ProposeMaxCommit(pos int64) int64 {
 	return pos
 }
 
-// UpdateLeaderPosition proposes max of quorum onto the commit value when commit
-// is bound. Returns 1 when the commit advanced, else 0. Nil commit returns 0
-// without claiming work.
+// UpdateLeaderPosition applies the leader commit gate.
 //
-// nowNs and appendPosition are ignored in this skeleton; the host adapter stamps
-// member append state before calling this path.
+// Preconditions: host adapter (or test) has stamped thisMember when using the
+// election-host path. Agent does not stamp member state. Host keeps the
+// three-arg form (stamps append, then forwards quorum here).
 //
-// Do not write a.timeOfLastLeaderUpdateNs here.
+// Gate: quorumPosition > commit OR nowNs >= timeOfLastLogUpdateNs + interval.
+// On pass: PublishCommitPosition(quorum, leadershipTermID), ProposeMaxCommit,
+// set timeOfLastLogUpdateNs, sweepUncommitted (no-op stub), return 1.
 //
-// aeron ConsensusModuleAgent.updateLeaderPosition never touches that clock; it
-// is set only on inbound NewLeadershipTerm / CommitPosition. Writing it here
-// would delay canvass nomination when the host adapter delegates both methods
-// to Agent ([Agent.TimeOfLastLeaderUpdateNs] is the canvass base).
-func (a *Agent) UpdateLeaderPosition(nowNs, appendPosition, quorumPosition int64) int {
-	prev := a.CommitPosition()
-	next := a.ProposeMaxCommit(quorumPosition)
-	if next != prev {
-		return 1
+// Does NOT write timeOfLastLeaderUpdateNs (ingress only).
+//
+// Nil commit: still may publish and return 1 on gate pass. ProposeMax is a
+// no-op on a missing counter, but work and clock still advance.
+func (a *Agent) UpdateLeaderPosition(nowNs, quorumPosition int64) int {
+	commit := a.CommitPosition()
+	intervalDue := nowNs >= a.timeOfLastLogUpdateNs+a.leaderHeartbeatIntervalNs
+	if quorumPosition <= commit && !intervalDue {
+		return 0
 	}
-	return 0
+
+	if a.egress != nil {
+		a.egress.PublishCommitPosition(quorumPosition, a.leadershipTermID)
+	}
+	_ = a.ProposeMaxCommit(quorumPosition)
+	a.timeOfLastLogUpdateNs = nowNs
+	a.sweepUncommittedEntriesTo(quorumPosition)
+	return 1
+}
+
+func (a *Agent) sweepUncommittedEntriesTo(quorumPosition int64) {
+	// No-op until client sessions / uncommitted entry lists exist.
+	_ = quorumPosition
 }
 
 // TimeOfLastLeaderUpdateNs returns the last inbound leader-update clock.
-// This skeleton never writes the field; it stays 0 until ingress wiring lands.
+// Written only on inbound NewLeadershipTerm / CommitPosition (ingress path).
 func (a *Agent) TimeOfLastLeaderUpdateNs() int64 {
 	return a.timeOfLastLeaderUpdateNs
 }
+
+// LeadershipTermID returns the current leadership term.
+func (a *Agent) LeadershipTermID() int64 { return a.leadershipTermID }
+
+// SetLeadershipTermID is the Agent-local term setter (bootstrap, host install
+// handoff, tests). No egress.
+func (a *Agent) SetLeadershipTermID(id int64) { a.leadershipTermID = id }
+
+// ThisMemberID returns this node's cluster member id. Zero is a valid member
+// id; -1 means unset only when bootstrap or a caller stored -1.
+func (a *Agent) ThisMemberID() int32 { return a.thisMemberID }
+
+// SetThisMemberID sets this node's cluster member id (steady leader stamp via
+// [PositionTable.UpdateMemberPosition]). Used by HostAdapter construct and
+// tests. Member id 0 is valid; use -1 for unset.
+func (a *Agent) SetThisMemberID(id int32) { a.thisMemberID = id }
+
+// LeaderMemberID returns the stored leader member id. Zero is a valid member
+// id; -1 means unset only when bootstrap or a caller stored -1.
+func (a *Agent) LeaderMemberID() int32 { return a.leaderMemberID }
+
+// SetLeaderMemberID sets the known leader id (steady notify gates and
+// AppendPosition target). Used by JoinLogAsLeader, HostAdapter install
+// handoff, and tests. Member id 0 is valid; use -1 for unset.
+func (a *Agent) SetLeaderMemberID(id int32) { a.leaderMemberID = id }
+
+// NotifiedCommitPosition returns the follower-visible commit high-water.
+// Steady-state CommitPosition / NewLeadershipTerm handlers advance this via
+// max with the inbound position when term and leader gates pass.
+func (a *Agent) NotifiedCommitPosition() int64 { return a.notifiedCommitPosition }
 
 // doneLogReplay is an immediately-complete [LogReplay] at a fixed position.
 // Avoids livelock on leader-replay gap when archive helpers are not yet wired.
@@ -261,16 +426,21 @@ func (a *Agent) FollowerLogJoinReady(logSessionID int32) (FollowerLogJoinParams,
 	return FollowerLogJoinParams{}, false
 }
 
-// PrepareForNewLeadership sets role [RoleFollower] and returns logPosition as
-// the last-append placeholder. Log/ingress tear-down lands with full agent
-// wiring.
+// PrepareForNewLeadership sets role [RoleFollower], clears the known leader,
+// resets follower append cadence state, and returns logPosition as the
+// last-append placeholder. Commit value is kept. Log/ingress tear-down lands
+// with full agent wiring.
 func (a *Agent) PrepareForNewLeadership(logPosition, nowNs int64) int64 {
 	a.RoleSet(RoleFollower)
+	a.SetLeaderMemberID(nullMemberID)
+	a.lastPublishedAppendPosition = 0
+	a.timeOfLastAppendPositionSendNs = 0
+	_ = nowNs
 	return logPosition
 }
 
-// JoinLogAsLeader sets role [RoleLeader]. Service readiness blocks land with
-// full wiring.
+// JoinLogAsLeader sets role [RoleLeader], records the leadership term, and
+// clears the follower append target (leaderMemberID -> nullMemberID).
 func (a *Agent) JoinLogAsLeader(
 	leadershipTermID int64,
 	logPosition int64,
@@ -278,6 +448,9 @@ func (a *Agent) JoinLogAsLeader(
 	isStartup bool,
 ) {
 	a.RoleSet(RoleLeader)
+	a.leadershipTermID = leadershipTermID
+	a.SetLeaderMemberID(nullMemberID)
+	_, _, _ = logPosition, logSessionID, isStartup
 }
 
 // JoinLogAsFollower is a skeleton; reports not ready.
@@ -316,17 +489,238 @@ func (a *Agent) DoWork(nowNs int64) int {
 func (a *Agent) slowTickIfDue(nowNs int64) int { return 0 }
 
 func (a *Agent) pollConsensusIngress(nowNs int64) int {
-	// When wired:
-	//   - election non-nil: [ElectionRunner.HandleConsensusMessage]
-	//   - else: steady-state decode AppendPosition / CommitPosition
-	return 0
+	if a.ingress == nil {
+		return 0
+	}
+	a.ingressPollNowNs = nowNs
+	return a.ingress.Poll(defaultConsensusIngressFragmentLimit, a.onIngressFragment)
+}
+
+func (a *Agent) onIngressFragment(buf []byte, offset int) {
+	a.handleConsensusFragment(buf, offset, a.ingressPollNowNs)
+}
+
+// handleConsensusFragment routes one consensus frame.
+//
+// When election is live: stamp leader-update clock for NewLeadershipTerm /
+// CommitPosition (term >= current), then
+// [ElectionRunner.HandleConsensusMessage]. When election is nil: steady-state
+// AppendPosition / CommitPosition / NewLeadershipTerm dispatch.
+func (a *Agent) handleConsensusFragment(buf []byte, offset int, nowNs int64) {
+	if a.election != nil {
+		a.noteLeaderUpdateClockFromFragment(buf, offset, nowNs)
+		_ = a.election.HandleConsensusMessage(buf, offset)
+		return
+	}
+	a.handleSteadyConsensusFragment(buf, offset, nowNs)
+}
+
+// noteLeaderUpdateClockFromFragment peeks MessageHeader and stamps
+// timeOfLastLeaderUpdateNs for NewLeadershipTerm or CommitPosition when
+// decoded leadershipTermID >= a.leadershipTermID. Used on the election
+// ingress path before HandleConsensusMessage (clock first, then dispatch).
+func (a *Agent) noteLeaderUpdateClockFromFragment(buf []byte, offset int, nowNs int64) {
+	templateID, ok := consensusMessageTemplateID(buf, offset)
+	if !ok {
+		return
+	}
+	switch templateID {
+	case clusterwire.NewLeadershipTermSbeTemplateID:
+		fields, ok := codecs.TryDecodeNewLeadershipTermAt(buf, offset)
+		if ok {
+			a.stampLeaderUpdateClock(fields.LeadershipTermID, nowNs)
+		}
+	case clusterwire.CommitPositionSbeTemplateID:
+		fields, ok := codecs.TryDecodeCommitPositionAt(buf, offset)
+		if ok {
+			a.stampLeaderUpdateClock(fields.LeadershipTermID, nowNs)
+		}
+	}
+}
+
+// consensusMessageTemplateID returns the SBE template id when the MessageHeader
+// is valid for the cluster schema.
+func consensusMessageTemplateID(buf []byte, offset int) (templateID uint16, ok bool) {
+	_, templateID, schemaID, _, ok := codecs.DecodeMessageHeader(buf, offset)
+	if !ok || schemaID != clusterwire.MessageHeaderSbeSchemaID {
+		return 0, false
+	}
+	return templateID, true
+}
+
+// stampLeaderUpdateClock sets timeOfLastLeaderUpdateNs when termID is current
+// or higher.
+func (a *Agent) stampLeaderUpdateClock(termID, nowNs int64) {
+	if termID >= a.leadershipTermID {
+		a.timeOfLastLeaderUpdateNs = nowNs
+	}
+}
+
+func (a *Agent) handleSteadyConsensusFragment(buf []byte, offset int, nowNs int64) {
+	templateID, ok := consensusMessageTemplateID(buf, offset)
+	if !ok {
+		return
+	}
+	switch templateID {
+	case clusterwire.AppendPositionSbeTemplateID:
+		if fields, ok := codecs.TryDecodeAppendPositionAt(buf, offset); ok {
+			a.onSteadyAppendPosition(fields, nowNs)
+		}
+	case clusterwire.CommitPositionSbeTemplateID:
+		if fields, ok := codecs.TryDecodeCommitPositionAt(buf, offset); ok {
+			a.onSteadyCommitPosition(fields, nowNs)
+		}
+	case clusterwire.NewLeadershipTermSbeTemplateID:
+		if fields, ok := codecs.TryDecodeNewLeadershipTermAt(buf, offset); ok {
+			a.onSteadyNewLeadershipTerm(fields, nowNs)
+		}
+	}
+}
+
+// onSteadyAppendPosition applies a follower AppendPosition on the leader only.
+// Higher-term appends are ignored (no member update).
+func (a *Agent) onSteadyAppendPosition(fields codecs.AppendPositionFields, nowNs int64) {
+	_ = nowNs
+	if a.role != RoleLeader {
+		return
+	}
+	if fields.LeadershipTermID > a.leadershipTermID {
+		return
+	}
+	if a.positions == nil {
+		return
+	}
+	a.positions.UpdateMemberPosition(
+		fields.FollowerMemberID,
+		fields.LeadershipTermID,
+		fields.LogPosition,
+	)
+}
+
+// onSteadyCommitPosition stamps the leader-update clock on term >= current,
+// and advances follower notified commit only for same-term CommitPosition from
+// the known leader (leaderMemberID must not be null).
+func (a *Agent) onSteadyCommitPosition(fields codecs.CommitPositionFields, nowNs int64) {
+	a.applySteadyLeaderCommitNotify(
+		fields.LeadershipTermID,
+		fields.LeaderMemberID,
+		fields.LogPosition,
+		nowNs,
+	)
+}
+
+// onSteadyNewLeadershipTerm stamps the leader-update clock on term >= current.
+// Same-term follower notify from a known leader advances notified commit from
+// the NewLeadershipTerm commit field; higher term invokes
+// [Agent.onUnexpectedHigherTerm].
+func (a *Agent) onSteadyNewLeadershipTerm(fields codecs.NewLeadershipTermFields, nowNs int64) {
+	a.applySteadyLeaderCommitNotify(
+		fields.LeadershipTermID,
+		fields.LeaderMemberID,
+		fields.CommitPosition,
+		nowNs,
+	)
+}
+
+// applySteadyLeaderCommitNotify is the shared steady-state gate for
+// CommitPosition and NewLeadershipTerm:
+//
+//   - term >= current: stamp timeOfLastLeaderUpdateNs
+//   - term > current: [Agent.onUnexpectedHigherTerm], no notify
+//   - term < current: no stamp, no notify
+//   - same term: follower notify only from known leader
+//
+// Fail-closed: null or mismatched leaderMemberID must not advance notified
+// commit.
+func (a *Agent) applySteadyLeaderCommitNotify(
+	termID int64,
+	leaderMemberID int32,
+	commitPosition int64,
+	nowNs int64,
+) {
+	switch {
+	case termID > a.leadershipTermID:
+		a.stampLeaderUpdateClock(termID, nowNs)
+		a.onUnexpectedHigherTerm(nowNs, termID)
+		return
+	case termID < a.leadershipTermID:
+		return
+	}
+
+	a.stampLeaderUpdateClock(termID, nowNs)
+
+	// Same term: follower notify only from known leader.
+	if a.role != RoleFollower {
+		return
+	}
+
+	// Fail-closed: unknown or mismatched leader must not advance notified commit.
+	if a.leaderMemberID == nullMemberID || leaderMemberID != a.leaderMemberID {
+		return
+	}
+	a.notifiedCommitPosition = max(a.notifiedCommitPosition, commitPosition)
+	a.timeOfLastLogUpdateNs = nowNs
+}
+
+// onUnexpectedHigherTerm is the residual hook for inbound leadership terms
+// above Agent's current term. Does not construct an election; bootstrap or a
+// later path installs election when ready.
+func (a *Agent) onUnexpectedHigherTerm(nowNs, term int64) {
+	noteUnexpectedHigherTerm(nowNs, term)
 }
 
 func (a *Agent) consensusWork(nowNs int64) int {
-	// When wired:
-	//   - leader: rank and commit
-	//   - follower: append-position interval
-	return 0
+	if a.role == RoleLeader {
+		return a.leaderConsensusWork(nowNs)
+	}
+	return a.followerConsensusWork(nowNs)
+}
+
+// leaderConsensusWork stamps this member (when set), ranks quorum, and runs the
+// commit gate. ACTIVE timer poll is not in this path.
+func (a *Agent) leaderConsensusWork(nowNs int64) int {
+	if a.appendSource == nil || a.positions == nil {
+		return 0
+	}
+	appendPos := a.appendSource.AppendPosition()
+	// Steady stamp via PositionTable only. Skip when thisMemberID is unset;
+	// rank and gate still run.
+	if a.thisMemberID != nullMemberID {
+		a.positions.UpdateMemberPosition(a.thisMemberID, a.leadershipTermID, appendPos)
+	}
+	quorum := a.positions.QuorumPositionBoundedByLeaderLog(appendPos, nowNs)
+	return a.UpdateLeaderPosition(nowNs, quorum)
+}
+
+// followerConsensusWork publishes AppendPosition on advance or interval.
+// LogAdapter poll is deferred.
+func (a *Agent) followerConsensusWork(nowNs int64) int {
+	return a.updateFollowerPosition(nowNs)
+}
+
+func (a *Agent) updateFollowerPosition(nowNs int64) int {
+	if a.egress == nil {
+		return 0
+	}
+	recorded := int64(0)
+	if a.appendSource != nil {
+		recorded = a.appendSource.AppendPosition()
+	}
+	position := max(recorded, a.lastPublishedAppendPosition)
+	advanced := position > a.lastPublishedAppendPosition
+	intervalDue := nowNs >= a.timeOfLastAppendPositionSendNs+a.leaderHeartbeatIntervalNs
+	if !advanced && !intervalDue {
+		return 0
+	}
+	ok := a.egress.PublishAppendPosition(a.leadershipTermID, position, 0 /* flags none */)
+	if !ok {
+		return 0
+	}
+	if advanced {
+		a.lastPublishedAppendPosition = position
+	}
+	a.timeOfLastAppendPositionSendNs = nowNs
+	return 1
 }
 
 var _ AgentHandler = (*Agent)(nil)
