@@ -381,6 +381,10 @@ func TestClusterWireMetadataConstants_matchTemplateExtrema(t *testing.T) {
 		{clusterwire.SessionCloseRequestSbeTemplateID, clusterwire.SessionCloseRequestSbeSchemaVersion},
 		{clusterwire.SessionKeepAliveSbeTemplateID, clusterwire.SessionKeepAliveSbeSchemaVersion},
 		{clusterwire.NewLeaderEventSbeTemplateID, clusterwire.NewLeaderEventSbeSchemaVersion},
+		{
+			clusterwire.NewLeadershipTermEventSbeTemplateID,
+			clusterwire.NewLeadershipTermEventSbeSchemaVersion,
+		},
 		{clusterwire.ChallengeSbeTemplateID, clusterwire.ChallengeSbeSchemaVersion},
 		{clusterwire.ChallengeResponseSbeTemplateID, clusterwire.ChallengeResponseSbeSchemaVersion},
 		{clusterwire.AdminRequestSbeTemplateID, clusterwire.AdminRequestSbeSchemaVersion},

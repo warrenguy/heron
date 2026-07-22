@@ -101,6 +101,38 @@ func decodeSessionMessageHeaderFields(
 	}
 }
 
+func decodeNewLeadershipTermEventFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) NewLeadershipTermEventFields {
+	var msg clusterwire.NewLeadershipTermEvent
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return NewLeadershipTermEventFields{
+		LeadershipTermID:    msg.LeadershipTermId(),
+		LogPosition:         msg.LogPosition(),
+		Timestamp:           msg.Timestamp(),
+		TermBaseLogPosition: msg.TermBaseLogPosition(),
+		LeaderMemberID:      msg.LeaderMemberId(),
+		LogSessionID:        msg.LogSessionId(),
+		TimeUnit:            msg.TimeUnit(),
+		AppVersion:          msg.AppVersion(),
+	}
+}
+
+// TryDecodeNewLeadershipTermEventAt decodes NewLeadershipTermEvent (template 24)
+// without interface boxing.
+func TryDecodeNewLeadershipTermEventAt(
+	buf []byte,
+	offset int,
+) (NewLeadershipTermEventFields, bool) {
+	return tryDecodeClusterAt(
+		buf,
+		offset,
+		clusterwire.NewLeadershipTermEventSbeTemplateID,
+		decodeNewLeadershipTermEventFields,
+	)
+}
+
 // TryDecodeByTemplate decodes a cluster SBE message into plain field structs.
 // maxVarLen bounds each varAscii/varData field; use ClusterDecodeMaxVarLen for egress.
 // Rejects maxVarLen < 0. Trailing bytes after the last var field are ignored so
@@ -339,6 +371,8 @@ func decodeTemplateFields(
 			LeadershipTermID: msg.LeadershipTermId(),
 			ClusterSessionID: msg.ClusterSessionId(),
 		}, true
+	case clusterwire.NewLeadershipTermEventSbeTemplateID:
+		return decodeNewLeadershipTermEventFields(buf, body, block, version, bufLen), true
 	case clusterwire.NewLeaderEventSbeTemplateID:
 		var msg clusterwire.NewLeaderEvent
 		msg.WrapForDecode(buf, body, block, version, bufLen)

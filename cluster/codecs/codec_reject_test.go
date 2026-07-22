@@ -81,6 +81,72 @@ func TestTryDecodeByTemplate_rejects(t *testing.T) {
 	runTryDecodeRejectCases(t, cases)
 }
 
+func TestTryDecodeByTemplate_rejects_newLeadershipTermEvent(t *testing.T) {
+	v16 := uint16(clusterwire.NewLeadershipTermEventSbeSchemaVersion)
+
+	validEventV16Wire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeNewLeadershipTermEvent(
+			buf, 0, v16, newLeadershipTermEventSampleFields(),
+		)
+	})
+
+	cases := []tryDecodeRejectCase{}
+	cases = append(cases, fixedBlockRejectCases(
+		"nlt_event",
+		validEventV16Wire,
+		clusterwire.NewLeadershipTermEventSbeBlockLength,
+		47,
+		39,
+	)...)
+	// v3 min root is 40; v16 suite already covers above-max and truncate at max block 48.
+	cases = append(cases, tryDecodeRejectCase{
+		name: rejectCaseName("nlt_event_v3", "block_length_below_min"),
+		buf: func() []byte {
+			return cloneMutatedWire(validEventV16Wire, func(w []byte) {
+				w[0] = 39
+				w[6], w[7] = 3, 0
+			})
+		},
+	})
+
+	runTryDecodeRejectCases(t, cases)
+
+	// A genuine template-53 wire passes template-53 layout bounds, so the
+	// reject can only come from the template-id guard.
+	t.Run("wrong_template_53_into_event_try_decode", func(t *testing.T) {
+		_, ok := codecs.TryDecodeNewLeadershipTermEventAt(encodeNewLeadershipTermWire(t), 0)
+		require.False(t, ok)
+	})
+	t.Run("wrong_template_24_into_consensus_try_decode", func(t *testing.T) {
+		_, ok := codecs.TryDecodeNewLeadershipTermAt(validEventV16Wire, 0)
+		require.False(t, ok)
+	})
+}
+
+func encodeNewLeadershipTermWire(t *testing.T) []byte {
+	t.Helper()
+	return encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeNewLeadershipTerm(
+			buf, 0, clusterwire.NewLeadershipTermSbeSchemaVersion,
+			codecs.NewLeadershipTermFields{
+				LogLeadershipTermID:     1,
+				NextLeadershipTermID:    2,
+				NextTermBaseLogPosition: 3,
+				NextLogPosition:         4,
+				LeadershipTermID:        5,
+				TermBaseLogPosition:     6,
+				LogPosition:             7,
+				LeaderRecordingID:       8,
+				Timestamp:               9,
+				LeaderMemberID:          10,
+				LogSessionID:            11,
+				IsStartup:               clusterwire.BooleanType_FALSE,
+				CommitPosition:          12,
+			},
+		)
+	})
+}
+
 func TestTryDecodeByTemplate_rejects_consensus(t *testing.T) {
 	v16 := uint16(clusterwire.NewLeadershipTermSbeSchemaVersion)
 	v8 := uint16(8)
@@ -88,40 +154,48 @@ func TestTryDecodeByTemplate_rejects_consensus(t *testing.T) {
 
 	validCanvassWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
 		return codecs.EncodeCanvassPosition(buf, 0, v16, codecs.CanvassPositionFields{
-			LogLeadershipTermID: 1, LogPosition: 2, LeadershipTermID: 3,
-			FollowerMemberID: 4, ProtocolVersion: 5,
+			LogLeadershipTermID: 1,
+			LogPosition:         2,
+			LeadershipTermID:    3,
+			FollowerMemberID:    4,
+			ProtocolVersion:     5,
 		})
 	})
 	validRequestVoteWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
 		return codecs.EncodeRequestVote(buf, 0, v16, codecs.RequestVoteFields{
-			LogLeadershipTermID: 1, LogPosition: 2, CandidateTermID: 3,
-			CandidateMemberID: 4, ProtocolVersion: 5,
+			LogLeadershipTermID: 1,
+			LogPosition:         2,
+			CandidateTermID:     3,
+			CandidateMemberID:   4,
+			ProtocolVersion:     5,
 		})
 	})
 	validAppendV16Wire := encodeClusterWire(t, func(buf []byte) (int, bool) {
 		return codecs.EncodeAppendPosition(buf, 0, v16, codecs.AppendPositionFields{
-			LeadershipTermID: 1, LogPosition: 2, FollowerMemberID: 3, Flags: 4,
+			LeadershipTermID: 1,
+			LogPosition:      2,
+			FollowerMemberID: 3,
+			Flags:            4,
 		})
 	})
 	validAppendV7Wire := encodeClusterWire(t, func(buf []byte) (int, bool) {
 		return codecs.EncodeAppendPosition(buf, 0, v7, codecs.AppendPositionFields{
-			LeadershipTermID: 1, LogPosition: 2, FollowerMemberID: 3,
+			LeadershipTermID: 1,
+			LogPosition:      2,
+			FollowerMemberID: 3,
 		})
 	})
 	validVoteWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
 		return codecs.EncodeVote(buf, 0, v16, codecs.VoteFields{
-			CandidateTermID: 1, LogLeadershipTermID: 2, LogPosition: 3,
-			CandidateMemberID: 4, FollowerMemberID: 5, Vote: clusterwire.BooleanType_TRUE,
+			CandidateTermID:     1,
+			LogLeadershipTermID: 2,
+			LogPosition:         3,
+			CandidateMemberID:   4,
+			FollowerMemberID:    5,
+			Vote:                clusterwire.BooleanType_TRUE,
 		})
 	})
-	validLeadershipWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
-		return codecs.EncodeNewLeadershipTerm(buf, 0, v16, codecs.NewLeadershipTermFields{
-			LogLeadershipTermID: 1, NextLeadershipTermID: 2, NextTermBaseLogPosition: 3,
-			NextLogPosition: 4, LeadershipTermID: 5, TermBaseLogPosition: 6, LogPosition: 7,
-			LeaderRecordingID: 8, Timestamp: 9, LeaderMemberID: 10, LogSessionID: 11,
-			IsStartup: clusterwire.BooleanType_FALSE, CommitPosition: 12,
-		})
-	})
+	validLeadershipWire := encodeNewLeadershipTermWire(t)
 
 	cases := []tryDecodeRejectCase{}
 	cases = append(cases, fixedBlockRejectCases(

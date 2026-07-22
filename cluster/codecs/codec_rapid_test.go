@@ -147,6 +147,37 @@ func TestNewLeaderEvent_codec_rapid(t *testing.T) {
 	})
 }
 
+func TestNewLeadershipTermEvent_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.NewLeadershipTermEventFields{
+			LeadershipTermID:    rapid.Int64().Draw(rt, "leadershipTermID"),
+			LogPosition:         rapid.Int64().Draw(rt, "logPosition"),
+			Timestamp:           rapid.Int64().Draw(rt, "timestamp"),
+			TermBaseLogPosition: rapid.Int64().Draw(rt, "termBaseLogPosition"),
+			LeaderMemberID:      rapid.Int32().Draw(rt, "leaderMemberID"),
+			LogSessionID:        rapid.Int32().Draw(rt, "logSessionID"),
+			TimeUnit: rapid.SampledFrom([]clusterwire.ClusterTimeUnit{
+				clusterwire.ClusterTimeUnit_MILLIS,
+				clusterwire.ClusterTimeUnit_MICROS,
+				clusterwire.ClusterTimeUnit_NANOS,
+				clusterwire.ClusterTimeUnit_NULL_VALUE,
+			}).Draw(rt, "timeUnit"),
+			AppVersion: rapid.Int32().Draw(rt, "appVersion"),
+		}
+		wantFields := codecs.NewLeadershipTermEventOracleFields(fields, actingVersion)
+		runCodecRoundtripAtOffset(
+			rt,
+			clusterwire.NewLeadershipTermEventSbeTemplateID,
+			actingVersion,
+			offset,
+			rapidEncodeAt(actingVersion, fields, codecs.EncodeNewLeadershipTermEvent),
+			wantFields,
+		)
+	})
+}
+
 func TestChallenge_codec_rapid(t *testing.T) {
 	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {

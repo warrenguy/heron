@@ -26,6 +26,83 @@ func SessionEventBlockLength(actingVersion uint16) uint16 {
 	)
 }
 
+// NewLeadershipTermEventBlockLength returns the NewLeadershipTermEvent root block
+// length for actingVersion.
+//
+// Below NewLeadershipTermEventTimeUnitMinVersion the min root is 40 (ids 1-6).
+// At and above that version the full schema block is 48.
+func NewLeadershipTermEventBlockLength(actingVersion uint16) uint16 {
+	return ClusterMinRootBlockLength(
+		clusterwire.NewLeadershipTermEventSbeTemplateID,
+		actingVersion,
+		clusterwire.NewLeadershipTermEventSbeBlockLength,
+	)
+}
+
+// newLeadershipTermEventEncodedLen caches MessageHeader + full schema block
+// (8+48=56) for the exclusive tryClaim hot path.
+var newLeadershipTermEventEncodedLen = int(
+	(&clusterwire.NewLeadershipTermEvent{}).SbeBlockAndHeaderLength(),
+)
+
+// NewLeadershipTermEventEncodedLen is MessageHeader plus full schema block
+// (8+48=56).
+//
+// Production tryClaim always uses schema version 16 full block, matching Java:
+// MessageHeaderEncoder.ENCODED_LENGTH + NewLeadershipTermEventEncoder.BLOCK_LENGTH.
+// Encoding below NewLeadershipTermEventTimeUnitMinVersion writes a shorter wire
+// (8+40=48), so a claim sized by this length must encode at or above that
+// version or the trailing 8 claimed bytes stay unwritten.
+func NewLeadershipTermEventEncodedLen() int {
+	return newLeadershipTermEventEncodedLen
+}
+
+// EncodeNewLeadershipTermEvent writes a cluster NewLeadershipTermEvent (SBE
+// template id 24) at offset.
+//
+// MessageHeader carries versioned root blockLength, template 24, schema 111,
+// and actingVersion. Required body fields (ids 1-6) always write. When
+// actingVersion >= NewLeadershipTermEventTimeUnitMinVersion, TimeUnit and
+// AppVersion always write, including AppVersion 0: exclusive tryClaim term
+// buffers are not zeroed, so omit would leave residual bytes. Matches Java
+// LogPublisher chaining timeUnit and appVersion on every append.
+//
+// Pure: no shared mutable state.
+//
+// Caller owns buf for the write and for lifetime of returned wire bytes.
+//
+// Short or mis-offset buffers return wireEnd=0, ok=false without panic.
+func EncodeNewLeadershipTermEvent(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields NewLeadershipTermEventFields,
+) (wireEnd int, ok bool) {
+	blockLength := NewLeadershipTermEventBlockLength(actingVersion)
+	return encodeWithClusterWireHeader(
+		buf,
+		offset,
+		blockLength,
+		clusterwire.NewLeadershipTermEventSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+			var msg clusterwire.NewLeadershipTermEvent
+			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.SetLeadershipTermId(fields.LeadershipTermID).
+				SetLogPosition(fields.LogPosition).
+				SetTimestamp(fields.Timestamp).
+				SetTermBaseLogPosition(fields.TermBaseLogPosition).
+				SetLeaderMemberId(fields.LeaderMemberID).
+				SetLogSessionId(fields.LogSessionID)
+			if actingVersion >= NewLeadershipTermEventTimeUnitMinVersion {
+				msg.SetTimeUnit(fields.TimeUnit)
+				msg.SetAppVersion(fields.AppVersion)
+			}
+		},
+	)
+}
+
 func encodeWithClusterWireHeader(
 	buf []byte,
 	offset int,

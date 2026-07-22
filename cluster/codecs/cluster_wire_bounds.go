@@ -41,6 +41,15 @@ func ClusterRootBlockLengthBounds(
 		return clusterFixedBlockLength(clusterwire.SessionKeepAliveSbeBlockLength)
 	case clusterwire.NewLeaderEventSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.NewLeaderEventSbeBlockLength)
+
+	case clusterwire.NewLeadershipTermEventSbeTemplateID:
+		maxBlock = clusterwire.NewLeadershipTermEventSbeBlockLength
+		if actingVersion < NewLeadershipTermEventTimeUnitMinVersion {
+			// ids 1-6 only (timeUnit + appVersion sinceVersion 4).
+			return 40, maxBlock, true
+		}
+		return clusterFixedBlockLength(maxBlock)
+
 	case clusterwire.ChallengeSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.ChallengeSbeBlockLength)
 	case clusterwire.ChallengeResponseSbeTemplateID:
@@ -99,7 +108,8 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 	switch templateID {
 	case clusterwire.SessionMessageHeaderSbeTemplateID,
 		clusterwire.SessionCloseRequestSbeTemplateID,
-		clusterwire.SessionKeepAliveSbeTemplateID:
+		clusterwire.SessionKeepAliveSbeTemplateID,
+		clusterwire.NewLeadershipTermEventSbeTemplateID:
 		return 0, true
 
 	case clusterwire.SessionEventSbeTemplateID,

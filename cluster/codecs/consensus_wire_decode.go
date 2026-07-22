@@ -112,11 +112,11 @@ func decodeCommitPositionFields(
 	}
 }
 
-// tryDecodeConsensusAt parses the cluster header at offset, checks the template
+// tryDecodeClusterAt parses the cluster header at offset, checks the template
 // ID, and decodes the fixed block via decode. It stays allocation-free: T is a
 // concrete field struct (no interface boxing) and decode is a package-level
 // function reference, so each instantiation is monomorphized.
-func tryDecodeConsensusAt[T any](
+func tryDecodeClusterAt[T any](
 	buf []byte,
 	offset int,
 	templateID uint16,
@@ -137,35 +137,35 @@ func tryDecodeConsensusAt[T any](
 }
 
 func TryDecodeCanvassPositionAt(buf []byte, offset int) (CanvassPositionFields, bool) {
-	return tryDecodeConsensusAt(
+	return tryDecodeClusterAt(
 		buf, offset, clusterwire.CanvassPositionSbeTemplateID, decodeCanvassPositionFields,
 	)
 }
 
 func TryDecodeRequestVoteAt(buf []byte, offset int) (RequestVoteFields, bool) {
-	return tryDecodeConsensusAt(
+	return tryDecodeClusterAt(
 		buf, offset, clusterwire.RequestVoteSbeTemplateID, decodeRequestVoteFields,
 	)
 }
 
 func TryDecodeVoteAt(buf []byte, offset int) (VoteFields, bool) {
-	return tryDecodeConsensusAt(buf, offset, clusterwire.VoteSbeTemplateID, decodeVoteFields)
+	return tryDecodeClusterAt(buf, offset, clusterwire.VoteSbeTemplateID, decodeVoteFields)
 }
 
 func TryDecodeNewLeadershipTermAt(buf []byte, offset int) (NewLeadershipTermFields, bool) {
-	return tryDecodeConsensusAt(
+	return tryDecodeClusterAt(
 		buf, offset, clusterwire.NewLeadershipTermSbeTemplateID, decodeNewLeadershipTermFields,
 	)
 }
 
 func TryDecodeAppendPositionAt(buf []byte, offset int) (AppendPositionFields, bool) {
-	return tryDecodeConsensusAt(
+	return tryDecodeClusterAt(
 		buf, offset, clusterwire.AppendPositionSbeTemplateID, decodeAppendPositionFields,
 	)
 }
 
 func TryDecodeCommitPositionAt(buf []byte, offset int) (CommitPositionFields, bool) {
-	return tryDecodeConsensusAt(
+	return tryDecodeClusterAt(
 		buf, offset, clusterwire.CommitPositionSbeTemplateID, decodeCommitPositionFields,
 	)
 }

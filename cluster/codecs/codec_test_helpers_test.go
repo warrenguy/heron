@@ -164,6 +164,8 @@ func requireDecodedClusterFields(tb require.TestingT, want, got any) {
 		requireDecodedFieldsEqual[codecs.SessionCloseRequestFields](tb, wantFields, got)
 	case codecs.SessionKeepAliveFields:
 		requireDecodedFieldsEqual[codecs.SessionKeepAliveFields](tb, wantFields, got)
+	case codecs.NewLeadershipTermEventFields:
+		requireDecodedFieldsEqual[codecs.NewLeadershipTermEventFields](tb, wantFields, got)
 	case codecs.NewLeaderEventFields:
 		gotFields, ok := got.(codecs.NewLeaderEventFields)
 		require.True(tb, ok)
@@ -277,7 +279,7 @@ func runCodecRoundtripCases(
 func codecFuzzSeedBuffers() [][]byte {
 	const (
 		actingVersion   = clusterwire.SessionMessageHeaderSbeSchemaVersion
-		seedEncodeCount = 18
+		seedEncodeCount = 20
 	)
 	buf := make([]byte, fuzzClusterCodecMaxLen)
 	seeds := make([][]byte, 0, seedEncodeCount*(1+codecFuzzMaxOffset))
@@ -374,6 +376,40 @@ func codecFuzzSeedBuffers() [][]byte {
 	})
 
 	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeNewLeadershipTermEvent(
+			b,
+			0,
+			actingVersion,
+			codecs.NewLeadershipTermEventFields{
+				LeadershipTermID:    1,
+				LogPosition:         2,
+				Timestamp:           3,
+				TermBaseLogPosition: 4,
+				LeaderMemberID:      5,
+				LogSessionID:        6,
+				TimeUnit:            clusterwire.ClusterTimeUnit_NANOS,
+				AppVersion:          7,
+			},
+		)
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeNewLeadershipTermEvent(
+			b,
+			0,
+			3,
+			codecs.NewLeadershipTermEventFields{
+				LeadershipTermID:    8,
+				LogPosition:         9,
+				Timestamp:           10,
+				TermBaseLogPosition: 11,
+				LeaderMemberID:      12,
+				LogSessionID:        13,
+			},
+		)
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
 		return codecs.EncodeChallenge(b, 0, actingVersion, codecs.ChallengeFields{
 			CorrelationID:    10,
 			ClusterSessionID: 11,
@@ -410,43 +446,68 @@ func codecFuzzSeedBuffers() [][]byte {
 
 	addEncoded(func(b []byte) (int, bool) {
 		return codecs.EncodeCanvassPosition(b, 0, actingVersion, codecs.CanvassPositionFields{
-			LogLeadershipTermID: 1, LogPosition: 2, LeadershipTermID: 3,
-			FollowerMemberID: 4, ProtocolVersion: 5,
+			LogLeadershipTermID: 1,
+			LogPosition:         2,
+			LeadershipTermID:    3,
+			FollowerMemberID:    4,
+			ProtocolVersion:     5,
 		})
 	})
 
 	addEncoded(func(b []byte) (int, bool) {
 		return codecs.EncodeRequestVote(b, 0, actingVersion, codecs.RequestVoteFields{
-			LogLeadershipTermID: 1, LogPosition: 2, CandidateTermID: 3,
-			CandidateMemberID: 4, ProtocolVersion: 5,
+			LogLeadershipTermID: 1,
+			LogPosition:         2,
+			CandidateTermID:     3,
+			CandidateMemberID:   4,
+			ProtocolVersion:     5,
 		})
 	})
 
 	addEncoded(func(b []byte) (int, bool) {
 		return codecs.EncodeVote(b, 0, actingVersion, codecs.VoteFields{
-			CandidateTermID: 1, LogLeadershipTermID: 2, LogPosition: 3,
-			CandidateMemberID: 4, FollowerMemberID: 5, Vote: clusterwire.BooleanType_TRUE,
+			CandidateTermID:     1,
+			LogLeadershipTermID: 2,
+			LogPosition:         3,
+			CandidateMemberID:   4,
+			FollowerMemberID:    5,
+			Vote:                clusterwire.BooleanType_TRUE,
 		})
 	})
 
 	addEncoded(func(b []byte) (int, bool) {
 		return codecs.EncodeNewLeadershipTerm(b, 0, actingVersion, codecs.NewLeadershipTermFields{
-			LogLeadershipTermID: 1, NextLeadershipTermID: 2, NextTermBaseLogPosition: 3,
-			NextLogPosition: 4, LeadershipTermID: 5, TermBaseLogPosition: 6, LogPosition: 7,
-			LeaderRecordingID: 8, Timestamp: 9, LeaderMemberID: 10, LogSessionID: 11,
-			AppVersion: 12, IsStartup: clusterwire.BooleanType_TRUE, CommitPosition: 13,
+			LogLeadershipTermID:     1,
+			NextLeadershipTermID:    2,
+			NextTermBaseLogPosition: 3,
+			NextLogPosition:         4,
+			LeadershipTermID:        5,
+			TermBaseLogPosition:     6,
+			LogPosition:             7,
+			LeaderRecordingID:       8,
+			Timestamp:               9,
+			LeaderMemberID:          10,
+			LogSessionID:            11,
+			AppVersion:              12,
+			IsStartup:               clusterwire.BooleanType_TRUE,
+			CommitPosition:          13,
 		})
 	})
 
 	addEncoded(func(b []byte) (int, bool) {
 		return codecs.EncodeAppendPosition(b, 0, actingVersion, codecs.AppendPositionFields{
-			LeadershipTermID: 1, LogPosition: 2, FollowerMemberID: 3, Flags: 4,
+			LeadershipTermID: 1,
+			LogPosition:      2,
+			FollowerMemberID: 3,
+			Flags:            4,
 		})
 	})
 
 	addEncoded(func(b []byte) (int, bool) {
 		return codecs.EncodeCommitPosition(b, 0, actingVersion, codecs.CommitPositionFields{
-			LeadershipTermID: 1, LogPosition: 2, LeaderMemberID: 3,
+			LeadershipTermID: 1,
+			LogPosition:      2,
+			LeaderMemberID:   3,
 		})
 	})
 

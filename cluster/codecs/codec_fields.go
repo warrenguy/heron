@@ -119,6 +119,24 @@ type NewLeadershipTermFields struct {
 	CommitPosition int64
 }
 
+// NewLeadershipTermEventFields holds fixed body fields for NewLeadershipTermEvent
+// (SBE template id 24, cluster log event).
+type NewLeadershipTermEventFields struct {
+	LeadershipTermID    int64
+	LogPosition         int64
+	Timestamp           int64
+	TermBaseLogPosition int64
+	LeaderMemberID      int32
+	LogSessionID        int32
+	// TimeUnit is written when actingVersion >= NewLeadershipTermEventTimeUnitMinVersion.
+	// Always SetTimeUnit on encode at that version. Wire zero is MILLIS (0), not NULL_VALUE.
+	TimeUnit clusterwire.ClusterTimeUnit
+	// AppVersion is version_t. Always SetAppVersion when actingVersion >= min version
+	// (including 0). Differs from NewLeadershipTermFields (template 53) omit-on-0:
+	// sole production writer is exclusive TryClaim, which does not zero payload.
+	AppVersion int32
+}
+
 type AppendPositionFields struct {
 	LeadershipTermID int64
 	LogPosition      int64
