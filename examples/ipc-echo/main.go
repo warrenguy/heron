@@ -4,7 +4,7 @@
 //
 // Prerequisites: run aeronmd with AERON_DIR set to the same directory this
 // process uses (see README). No cluster framing; only the public aeron
-// Connect, Add*, and (*Client) poll/offer helpers.
+// Connect, Add*, and Publication/Subscription wait and offer helpers.
 //
 // Flow: register a publication and subscription on one IPC stream, poll until
 // the link is live, offer one payload, receive it on the subscription, verify

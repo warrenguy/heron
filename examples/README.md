@@ -7,7 +7,7 @@ Upstream Java sources live in the Aeron checkout at the pin in [`specs/versions.
 
 | Example | Purpose |
 |---------|---------|
-| [`ipc-echo`](ipc-echo/) | IPC pub/sub with `(*Client)` poll/offer helpers |
+| [`ipc-echo`](ipc-echo/) | IPC pub/sub with Publication/Subscription wait and offer helpers |
 | [`ipc-duty-cycle`](ipc-duty-cycle/) | Long-running IPC invoker: `DoWork` / `Offer` / `Poll` until signal |
 | [`cluster-echo-client`](cluster-echo-client/) | IPC cluster echo via `client.Connect` and `SpinOnce` |
 | [`cluster-auction-client`](cluster-auction-client/) | UDP auction duty cycle against upstream Java cluster |

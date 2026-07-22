@@ -1,7 +1,7 @@
 //go:build example
 
 // ipc-duty-cycle is a long-running IPC pub/sub sample that drives Client.DoWork
-// and Subscription.Poll on one invoker goroutine (no (*Client) poll/offer helpers).
+// and Subscription.Poll on one invoker goroutine (no resource wait/offer helpers).
 //
 // Prerequisites: run aeronmd with AERON_DIR set to the same directory this
 // process uses (see README).

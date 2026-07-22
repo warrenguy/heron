@@ -121,8 +121,8 @@ own README covering prerequisites and run steps.
 
 ## Contributing
 
-Build, test, SBE codec, and benchmark workflows: [CONTRIBUTING.md](CONTRIBUTING.md).
+Build, test, SBE codec, and benchmark workflows: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
 
-MIT - see [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT - see [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)

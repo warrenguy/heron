@@ -1,7 +1,7 @@
 # ipc-duty-cycle
 
 Long-running IPC pub/sub driven by an explicit invoker loop: `Client.DoWork`,
-`Publication.Offer`, and `Subscription.Poll` (no `(*Client)` poll/offer helpers).
+`Publication.Offer`, and `Subscription.Poll` (no resource wait/offer helpers).
 Offers a sequenced payload about once per second until Ctrl-C / SIGTERM or
 media-driver loss (`IsTerminating` after `DoWork`; `ErrorHandler` logs faults).
 

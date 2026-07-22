@@ -1,6 +1,7 @@
 # ipc-echo
 
-Minimal IPC pub/sub using `(*Client)` poll/offer helpers (no local `pollOne`).
+Minimal IPC pub/sub using Publication/Subscription helpers
+(`WaitUntilConnected`, `WaitUntilImageCount`, `OfferWithRetry`, `PollOneMessage`).
 
 For an explicit `DoWork` / `Offer` / `Poll` invoker loop, see
 [`../ipc-duty-cycle`](../ipc-duty-cycle/).
