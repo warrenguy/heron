@@ -119,6 +119,24 @@ func decodeNewLeadershipTermEventFields(
 	}
 }
 
+// NewLeadershipTermEventFieldsFromLayout decodes NewLeadershipTermEvent from a
+// parsed layout.
+func NewLeadershipTermEventFieldsFromLayout(
+	buf []byte,
+	layout ClusterMessageLayout,
+) (NewLeadershipTermEventFields, bool) {
+	if layout.TemplateID != clusterwire.NewLeadershipTermEventSbeTemplateID {
+		return NewLeadershipTermEventFields{}, false
+	}
+	return decodeNewLeadershipTermEventFields(
+		buf,
+		uint64(layout.BodyOffset),
+		uint64(layout.BlockLength),
+		uint64(layout.ActingVersion),
+		uint64(len(buf)),
+	), true
+}
+
 // TryDecodeNewLeadershipTermEventAt decodes NewLeadershipTermEvent (template 24)
 // without interface boxing.
 func TryDecodeNewLeadershipTermEventAt(

@@ -680,6 +680,37 @@ func TestFollowerConsensusWork_nilEgress_zero(t *testing.T) {
 	require.Equal(t, 0, a.consensusWork(0))
 }
 
+func TestFollowerConsensusWork_nilAdapter_appendOnly(t *testing.T) {
+	// Nil LogAdapter: append publish only; commit not advanced via proposeMax.
+	appendV := new(atomic.Int64)
+	appendV.Store(40)
+	eg := &recordingEgress{}
+	commit := new(atomic.Int64)
+	commit.Store(10)
+	a := NewAgent(AgentConfig{
+		Role:             RoleFollower,
+		Egress:           eg,
+		AppendSource:     &AtomicAppendPosition{V: appendV},
+		Commit:           commit,
+		LeadershipTermID: 3,
+	})
+	require.Nil(t, a.logAdapter)
+
+	require.Equal(t, 1, a.consensusWork(0))
+	require.Equal(t, []appendPublishCall{{term: 3, pos: 40, flags: 0}}, eg.appends)
+	require.Equal(t, int64(10), a.CommitPosition())
+}
+
+func TestFollowerLogPollBound_nilAppendSource(t *testing.T) {
+	a := NewAgent(AgentConfig{})
+	require.Nil(t, a.AppendSource())
+
+	const notify int64 = 4242
+	a.notifiedCommitPosition = notify
+	// Nil append: bound is notified only.
+	require.Equal(t, notify, a.followerLogPollBound())
+}
+
 func TestSetAppendSource_wireAndClear(t *testing.T) {
 	a := NewAgent(AgentConfig{})
 	require.Nil(t, a.AppendSource())

@@ -113,6 +113,12 @@ type Agent struct {
 	// log publication. Nil until wired via config or [Agent.SetLogPublisher].
 	logPublisher *LogPublisher
 
+	// logAdapter polls the live log Image under the follower commit bound.
+	//
+	// Nil: followerConsensusWork skips poll and proposeMax from adapter
+	// (AppendPosition interval path still runs).
+	logAdapter *LogAdapter
+
 	// termBaseLogPosition is the term base written into NewLeadershipTermEvent.
 	// Seeded by [Agent.SetTermBaseLogPosition] or [Agent.JoinLogAsLeader]
 	// logPosition.
@@ -173,6 +179,10 @@ type AgentConfig struct {
 	// Nil until wired via config or [Agent.SetLogPublisher].
 	LogPublisher *LogPublisher
 
+	// LogAdapter optional inject for follower log poll. Nil until wired via
+	// config or [Agent.SetLogAdapter].
+	LogAdapter *LogAdapter
+
 	// AppVersion seeds a.appVersion for NewLeadershipTermEvent (default 0 legal).
 	AppVersion int32
 
@@ -214,6 +224,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		ingress:                   cfg.Ingress,
 		appendSource:              cfg.AppendSource,
 		logPublisher:              cfg.LogPublisher,
+		logAdapter:                cfg.LogAdapter,
 		termBaseLogPosition:       cfg.TermBaseLogPosition,
 		appVersion:                cfg.AppVersion,
 	}
@@ -428,6 +439,11 @@ func (a *Agent) CatchupLogDestinationSet(destination string) {
 //
 // Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
 func (a *Agent) SetLogPublisher(p *LogPublisher) { a.logPublisher = p }
+
+// SetLogAdapter wires or clears the [LogAdapter] used for follower log poll.
+//
+// Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
+func (a *Agent) SetLogAdapter(adapter *LogAdapter) { a.logAdapter = adapter }
 
 // SetTermBaseLogPosition sets the term base written into NewLeadershipTermEvent.
 // Prefer [Agent.JoinLogAsLeader] on the leader-join path; use this setter for
@@ -764,10 +780,27 @@ func (a *Agent) leaderConsensusWork(nowNs int64) int {
 	return a.UpdateLeaderPosition(nowNs, quorum)
 }
 
-// followerConsensusWork publishes AppendPosition on advance or interval.
-// LogAdapter poll is deferred.
+// followerConsensusWork polls the log under the commit/append bound, advances
+// local commit from adapter position, then publishes AppendPosition on interval.
 func (a *Agent) followerConsensusWork(nowNs int64) int {
-	return a.updateFollowerPosition(nowNs)
+	work := 0
+	if a.logAdapter != nil {
+		work += a.logAdapter.Poll(a.followerLogPollBound())
+		// proposeMax even when poll count is 0 (position may already match prior consume)
+		_ = a.ProposeMaxCommit(a.logAdapter.Position())
+	}
+	work += a.updateFollowerPosition(nowNs)
+	return work
+}
+
+// followerLogPollBound is min(notifiedCommit, appendLimit).
+//
+// Nil AppendPositionSource: bound is notifiedCommit only.
+func (a *Agent) followerLogPollBound() int64 {
+	if a.appendSource == nil {
+		return a.notifiedCommitPosition
+	}
+	return min(a.notifiedCommitPosition, a.appendSource.AppendPosition())
 }
 
 func (a *Agent) updateFollowerPosition(nowNs int64) int {
