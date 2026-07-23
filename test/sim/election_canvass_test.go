@@ -185,10 +185,10 @@ func TestSim_canvassQuorum_nominatesAtHeartbeatDeadline(t *testing.T) {
 		require.NoError(t, s.AdvanceTo(deadline))
 		s.Node(0).Publisher().CanvassPosition(
 			election.PublicationTarget{MemberID: 1},
-			election.NullValue,
-			0,
-			election.NullValue,
-			0,
+			codecs.CanvassPositionFields{
+				LogLeadershipTermID: election.NullValue,
+				LeadershipTermID:    election.NullValue,
+			},
 		)
 
 		requireReaches(t, s, 1, election.ElectionStateNominate)
@@ -236,10 +236,7 @@ func TestSim_candidateBallot_majorityWin(t *testing.T) {
 		require.NoError(t, s.AdvanceTo(deadline))
 		s.Node(0).Publisher().CanvassPosition(
 			election.PublicationTarget{MemberID: 1},
-			0,
-			0,
-			0,
-			0,
+			codecs.CanvassPositionFields{},
 		)
 
 		requireReaches(t, s, 1, election.ElectionStateLeaderLogReplication)

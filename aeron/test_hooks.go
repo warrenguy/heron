@@ -297,6 +297,21 @@ func initTestHookLogMetadata(meta atomicbuffer.AtomicBuffer) {
 	meta.PutInt32(logbuffer.OffsetMTULength, testHookPublicationMTULength)
 	meta.PutInt32(logbuffer.OffsetInitialTermID, testHookPublicationInitialTermID)
 	meta.PutInt32(logbuffer.OffsetDefaultFrameHeaderLength, logbuffer.DataHeaderLength)
+
+	// Default frame header template feeds the publication HeaderWriter; without
+	// it committed claims carry frame type 0 (PAD) instead of HdrTypeData.
+	// Mirrors writeInMemPublicationMetadata.
+	if err := logbuffer.WriteDataHeaderUnfragmented(
+		meta,
+		logbuffer.OffsetDefaultFrameHeader,
+		testHookPublicationSessionID,
+		testHookPublicationStreamID,
+		testHookPublicationInitialTermID,
+		0,
+		logbuffer.Unfragmented,
+	); err != nil {
+		panic(err)
+	}
 }
 
 func seedTestHookPartitionRawTails(meta atomicbuffer.AtomicBuffer) {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
@@ -18,7 +19,15 @@ func TestSnapshotForTest_capturesObservableState(t *testing.T) {
 	pub := deps.Publisher.(*election.SbePublisher)
 	e := election.NewElection(cfg, deps)
 	election.SetStateForTest(e, election.ElectionStateCandidateBallot)
-	pub.RequestVote(election.PublicationTarget{MemberID: 1}, 1, 2, 3, 4)
+	pub.RequestVote(
+		election.PublicationTarget{MemberID: 1},
+		codecs.RequestVoteFields{
+			LogLeadershipTermID: 1,
+			LogPosition:         2,
+			CandidateTermID:     3,
+			CandidateMemberID:   4,
+		},
+	)
 
 	snap := election.SnapshotForTest(e, consensus.RoleCandidate, pub)
 

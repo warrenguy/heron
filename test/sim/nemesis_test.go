@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/test/sim"
 )
@@ -35,7 +36,9 @@ func runNemesisUntilAction(t *testing.T, s *sim.ElectionSim, payload sim.Nemesis
 func publishCanvass(s *sim.ElectionSim, from, to int32, logLeadershipTermID int64) {
 	s.Node(from).Publisher().CanvassPosition(
 		election.PublicationTarget{MemberID: to},
-		logLeadershipTermID, 0, 0, 0,
+		codecs.CanvassPositionFields{
+			LogLeadershipTermID: logLeadershipTermID,
+		},
 	)
 }
 

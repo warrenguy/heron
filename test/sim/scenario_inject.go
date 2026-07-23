@@ -3,6 +3,8 @@ package sim
 import (
 	"fmt"
 
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/election"
 )
 
@@ -11,20 +13,45 @@ import (
 // The caller advances time with AdvanceToPhase or RunSteps when a post-inject
 // tick is required.
 func InjectCanvassPosition(s *ElectionSim, fromID, toID int32, logTerm, logPos int64) error {
-	return inject(s, fromID, toID, "canvass position",
+	return inject(
+		s,
+		fromID,
+		toID,
+		"canvass position",
 		func(dst election.PublicationTarget) bool {
-			s.Node(fromID).Publisher().CanvassPosition(dst, logTerm, logPos, logTerm, fromID)
+			s.Node(fromID).Publisher().CanvassPosition(
+				dst,
+				codecs.CanvassPositionFields{
+					LogLeadershipTermID: logTerm,
+					LogPosition:         logPos,
+					LeadershipTermID:    logTerm,
+					FollowerMemberID:    fromID,
+				},
+			)
 			return true
-		})
+		},
+	)
 }
 
 // InjectAppendPosition publishes an append position from fromID, enqueues delivery
 // through the sim network, and drains the scheduler until the message lands.
 func InjectAppendPosition(s *ElectionSim, fromID, toID int32, term, pos int64) error {
-	return inject(s, fromID, toID, "append position",
+	return inject(
+		s,
+		fromID,
+		toID,
+		"append position",
 		func(dst election.PublicationTarget) bool {
-			return s.Node(fromID).Publisher().AppendPosition(dst, term, pos, fromID, 0)
-		})
+			return s.Node(fromID).Publisher().AppendPosition(
+				dst,
+				codecs.AppendPositionFields{
+					LeadershipTermID: term,
+					LogPosition:      pos,
+					FollowerMemberID: fromID,
+				},
+			)
+		},
+	)
 }
 
 // InjectVote publishes a ballot vote from the voter fromID for the candidate
@@ -36,19 +63,30 @@ func InjectVote(
 	candidateTerm, logTerm, pos int64,
 	vote bool,
 ) error {
-	return inject(s, fromID, toID, "vote",
+	voteVal := clusterwire.BooleanType_FALSE
+	if vote {
+		voteVal = clusterwire.BooleanType_TRUE
+	}
+	return inject(
+		s,
+		fromID,
+		toID,
+		"vote",
 		func(dst election.PublicationTarget) bool {
 			s.Node(fromID).Publisher().PlaceVote(
 				dst,
-				candidateTerm,
-				logTerm,
-				pos,
-				toID,
-				fromID,
-				vote,
+				codecs.VoteFields{
+					CandidateTermID:     candidateTerm,
+					LogLeadershipTermID: logTerm,
+					LogPosition:         pos,
+					CandidateMemberID:   toID,
+					FollowerMemberID:    fromID,
+					Vote:                voteVal,
+				},
 			)
 			return true
-		})
+		},
+	)
 }
 
 // InjectRequestVote publishes a request vote for candidate fromID, enqueues
@@ -59,16 +97,23 @@ func InjectRequestVote(
 	fromID, toID int32,
 	candidateTerm, logTerm, pos int64,
 ) error {
-	return inject(s, fromID, toID, "request vote",
+	return inject(
+		s,
+		fromID,
+		toID,
+		"request vote",
 		func(dst election.PublicationTarget) bool {
 			return s.Node(fromID).Publisher().RequestVote(
 				dst,
-				logTerm,
-				pos,
-				candidateTerm,
-				fromID,
+				codecs.RequestVoteFields{
+					LogLeadershipTermID: logTerm,
+					LogPosition:         pos,
+					CandidateTermID:     candidateTerm,
+					CandidateMemberID:   fromID,
+				},
 			)
-		})
+		},
+	)
 }
 
 func inject(

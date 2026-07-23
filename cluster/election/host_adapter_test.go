@@ -452,12 +452,7 @@ func TestInstallLeadershipTerm_handoffAgentLeaderAndTerm(t *testing.T) {
 func encodeCommitPositionWireForTest(t *testing.T, fields codecs.CommitPositionFields) []byte {
 	t.Helper()
 	pub := &election.SbePublisher{}
-	pub.CommitPosition(
-		election.PublicationTarget{MemberID: 0},
-		fields.LeadershipTermID,
-		fields.LogPosition,
-		fields.LeaderMemberID,
-	)
+	pub.CommitPosition(election.PublicationTarget{MemberID: 0}, fields)
 	require.Len(t, pub.Sent, 1)
 	return pub.Sent[0].Wire
 }

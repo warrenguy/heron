@@ -11,38 +11,16 @@ type PublicationTarget struct {
 	MemberID int32
 }
 
+// Publisher sends consensus messages to a peer. Methods take codecs field
+// structs so call sites name each field; ProtocolVersion on canvass and
+// request-vote is filled from ActingVersion inside each implementation.
 type Publisher interface {
-	CanvassPosition(
-		dst PublicationTarget,
-		logLeadershipTermID, logPosition, leadershipTermID int64,
-		followerMemberID int32,
-	)
-	RequestVote(
-		dst PublicationTarget,
-		logLeadershipTermID, logPosition, candidateTermID int64,
-		candidateMemberID int32,
-	) bool
-	PlaceVote(
-		dst PublicationTarget,
-		candidateTermID, logLeadershipTermID, logPosition int64,
-		candidateMemberID, followerMemberID int32,
-		vote bool,
-	)
-	NewLeadershipTerm(
-		dst PublicationTarget,
-		fields codecs.NewLeadershipTermFields,
-	)
-	AppendPosition(
-		dst PublicationTarget,
-		leadershipTermID, logPosition int64,
-		followerMemberID int32,
-		flags uint8,
-	) bool
-	CommitPosition(
-		dst PublicationTarget,
-		leadershipTermID, logPosition int64,
-		leaderMemberID int32,
-	)
+	CanvassPosition(dst PublicationTarget, fields codecs.CanvassPositionFields)
+	RequestVote(dst PublicationTarget, fields codecs.RequestVoteFields) bool
+	PlaceVote(dst PublicationTarget, fields codecs.VoteFields)
+	NewLeadershipTerm(dst PublicationTarget, fields codecs.NewLeadershipTermFields)
+	AppendPosition(dst PublicationTarget, fields codecs.AppendPositionFields) bool
+	CommitPosition(dst PublicationTarget, fields codecs.CommitPositionFields)
 }
 
 type SentMessage struct {
@@ -73,4 +51,28 @@ func boolToClusterwire(v bool) clusterwire.BooleanType {
 		return clusterwire.BooleanType_TRUE
 	}
 	return clusterwire.BooleanType_FALSE
+}
+
+// applyCanvassProtocolVersion sets ProtocolVersion from the publisher acting version.
+func applyCanvassProtocolVersion(
+	ver uint16,
+	fields codecs.CanvassPositionFields,
+) codecs.CanvassPositionFields {
+	fields.ProtocolVersion = protocolVersionFor(
+		ver,
+		codecs.CanvassProtocolVersionMinVersion,
+	)
+	return fields
+}
+
+// applyRequestVoteProtocolVersion sets ProtocolVersion from the publisher acting version.
+func applyRequestVoteProtocolVersion(
+	ver uint16,
+	fields codecs.RequestVoteFields,
+) codecs.RequestVoteFields {
+	fields.ProtocolVersion = protocolVersionFor(
+		ver,
+		codecs.RequestVoteProtocolVersionMinVersion,
+	)
+	return fields
 }

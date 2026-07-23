@@ -118,10 +118,11 @@ func (e *Election) publishFollowerAppendPosition(nowNs int64) int {
 	}
 	published := e.deps.Publisher.AppendPosition(
 		PublicationTarget{MemberID: leader.ID},
-		e.leadershipTermID,
-		e.appendPosition,
-		e.thisMember.ID,
-		0,
+		codecs.AppendPositionFields{
+			LeadershipTermID: e.leadershipTermID,
+			LogPosition:      e.appendPosition,
+			FollowerMemberID: e.thisMember.ID,
+		},
 	)
 	if !published {
 		return 0

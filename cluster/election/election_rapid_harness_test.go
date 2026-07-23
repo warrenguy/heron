@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 )
@@ -81,9 +82,11 @@ func (h *bagCommitHost) PublishCommitPosition(commitPosition, leadershipTermID i
 	for _, peerID := range h.peerIDs {
 		h.publisher.CommitPosition(
 			election.PublicationTarget{MemberID: peerID},
-			leadershipTermID,
-			commitPosition,
-			h.leaderID,
+			codecs.CommitPositionFields{
+				LeadershipTermID: leadershipTermID,
+				LogPosition:      commitPosition,
+				LeaderMemberID:   h.leaderID,
+			},
 		)
 	}
 }

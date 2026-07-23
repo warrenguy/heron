@@ -86,7 +86,15 @@ func TestDispatchParity_wireMatchesDirect(t *testing.T) {
 			templateID: uint16(clusterwire.CanvassPositionSbeTemplateID),
 			state:      election.ElectionStateCanvass,
 			encode: func(enc *election.SbePublisher) {
-				enc.CanvassPosition(target, 5, 42, 5, 1)
+				enc.CanvassPosition(
+					target,
+					codecs.CanvassPositionFields{
+						LogLeadershipTermID: 5,
+						LogPosition:         42,
+						LeadershipTermID:    5,
+						FollowerMemberID:    1,
+					},
+				)
 			},
 			direct: func(t *testing.T, e *election.Election, wire []byte) {
 				f, ok := codecs.TryDecodeCanvassPositionAt(wire, 0)
@@ -99,7 +107,15 @@ func TestDispatchParity_wireMatchesDirect(t *testing.T) {
 			templateID: uint16(clusterwire.RequestVoteSbeTemplateID),
 			state:      election.ElectionStateCanvass,
 			encode: func(enc *election.SbePublisher) {
-				enc.RequestVote(target, 5, 0, 6, 1)
+				enc.RequestVote(
+					target,
+					codecs.RequestVoteFields{
+						LogLeadershipTermID: 5,
+						LogPosition:         0,
+						CandidateTermID:     6,
+						CandidateMemberID:   1,
+					},
+				)
 			},
 			direct: func(t *testing.T, e *election.Election, wire []byte) {
 				f, ok := codecs.TryDecodeRequestVoteAt(wire, 0)
@@ -112,7 +128,17 @@ func TestDispatchParity_wireMatchesDirect(t *testing.T) {
 			templateID: uint16(clusterwire.VoteSbeTemplateID),
 			state:      election.ElectionStateCandidateBallot,
 			encode: func(enc *election.SbePublisher) {
-				enc.PlaceVote(target, 5, 5, 30, 0, 1, true)
+				enc.PlaceVote(
+					target,
+					codecs.VoteFields{
+						CandidateTermID:     5,
+						LogLeadershipTermID: 5,
+						LogPosition:         30,
+						CandidateMemberID:   0,
+						FollowerMemberID:    1,
+						Vote:                clusterwire.BooleanType_TRUE,
+					},
+				)
 			},
 			direct: func(t *testing.T, e *election.Election, wire []byte) {
 				f, ok := codecs.TryDecodeVoteAt(wire, 0)
@@ -128,15 +154,18 @@ func TestDispatchParity_wireMatchesDirect(t *testing.T) {
 				// Log term 5 matches the parity election's baseline and the null
 				// successor sentinels select the install path, so the message has
 				// an observable state effect on both dispatch routes.
-				enc.NewLeadershipTerm(target, codecs.NewLeadershipTermFields{
-					LogLeadershipTermID:     5,
-					NextLeadershipTermID:    election.NullValue,
-					NextTermBaseLogPosition: election.NullPosition,
-					NextLogPosition:         election.NullPosition,
-					LeadershipTermID:        5,
-					LeaderMemberID:          1,
-					LogSessionID:            simLogSessionID,
-				})
+				enc.NewLeadershipTerm(
+					target,
+					codecs.NewLeadershipTermFields{
+						LogLeadershipTermID:     5,
+						NextLeadershipTermID:    election.NullValue,
+						NextTermBaseLogPosition: election.NullPosition,
+						NextLogPosition:         election.NullPosition,
+						LeadershipTermID:        5,
+						LeaderMemberID:          1,
+						LogSessionID:            simLogSessionID,
+					},
+				)
 			},
 			direct: func(t *testing.T, e *election.Election, wire []byte) {
 				f, ok := codecs.TryDecodeNewLeadershipTermAt(wire, 0)
@@ -149,7 +178,14 @@ func TestDispatchParity_wireMatchesDirect(t *testing.T) {
 			templateID: uint16(clusterwire.AppendPositionSbeTemplateID),
 			state:      election.ElectionStateLeaderReady,
 			encode: func(enc *election.SbePublisher) {
-				enc.AppendPosition(target, 5, 30, 1, 0)
+				enc.AppendPosition(
+					target,
+					codecs.AppendPositionFields{
+						LeadershipTermID: 5,
+						LogPosition:      30,
+						FollowerMemberID: 1,
+					},
+				)
 			},
 			direct: func(t *testing.T, e *election.Election, wire []byte) {
 				f, ok := codecs.TryDecodeAppendPositionAt(wire, 0)

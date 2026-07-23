@@ -1,6 +1,9 @@
 package election
 
-import "github.com/warrenguy/heron/cluster/consensus"
+import (
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/consensus"
+)
 
 // HostAdapter bridges ElectionHost duties to *consensus.Agent and implements
 // the reverse-facing PositionTable and ConsensusEgress held by Agent.
@@ -217,9 +220,11 @@ func (h *HostAdapter) PublishCommitPosition(commitPosition, leadershipTermID int
 		}
 		h.pub.CommitPosition(
 			PublicationTarget{MemberID: member.ID},
-			leadershipTermID,
-			commitPosition,
-			leaderID,
+			codecs.CommitPositionFields{
+				LeadershipTermID: leadershipTermID,
+				LogPosition:      commitPosition,
+				LeaderMemberID:   leaderID,
+			},
 		)
 	}
 }
@@ -234,10 +239,12 @@ func (h *HostAdapter) PublishAppendPosition(
 	}
 	return h.pub.AppendPosition(
 		PublicationTarget{MemberID: leaderID},
-		leadershipTermID,
-		logPosition,
-		h.thisMember.ID,
-		flags,
+		codecs.AppendPositionFields{
+			LeadershipTermID: leadershipTermID,
+			LogPosition:      logPosition,
+			FollowerMemberID: h.thisMember.ID,
+			Flags:            flags,
+		},
 	)
 }
 

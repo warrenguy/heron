@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/test/sim"
@@ -51,7 +52,15 @@ func TestElectionSim_manualMessageDelivery(t *testing.T) {
 
 	sim.Run(t, sim.Config{Seed: 11}, func(s *sim.ElectionSim) {
 		dst := election.PublicationTarget{MemberID: 1}
-		s.Node(0).Publisher().CanvassPosition(dst, 1, 2, 3, 4)
+		s.Node(0).Publisher().CanvassPosition(
+			dst,
+			codecs.CanvassPositionFields{
+				LogLeadershipTermID: 1,
+				LogPosition:         2,
+				LeadershipTermID:    3,
+				FollowerMemberID:    4,
+			},
+		)
 		require.NoError(t, s.RunSteps(4))
 
 		found := false

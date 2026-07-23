@@ -60,7 +60,7 @@ func EncodeCanvassPosition(
 				SetLogPosition(fields.LogPosition).
 				SetLeadershipTermId(fields.LeadershipTermID).
 				SetFollowerMemberId(fields.FollowerMemberID)
-			if actingVersion >= CanvassProtocolVersionMinVersion && fields.ProtocolVersion != 0 {
+			if actingVersion >= CanvassProtocolVersionMinVersion {
 				msg.SetProtocolVersion(fields.ProtocolVersion)
 			}
 		},
@@ -89,7 +89,7 @@ func EncodeRequestVote(
 				SetLogPosition(fields.LogPosition).
 				SetCandidateTermId(fields.CandidateTermID).
 				SetCandidateMemberId(fields.CandidateMemberID)
-			if actingVersion >= RequestVoteProtocolVersionMinVersion && fields.ProtocolVersion != 0 {
+			if actingVersion >= RequestVoteProtocolVersionMinVersion {
 				msg.SetProtocolVersion(fields.ProtocolVersion)
 			}
 		},
@@ -153,9 +153,10 @@ func EncodeNewLeadershipTerm(
 				SetLeaderMemberId(fields.LeaderMemberID).
 				SetLogSessionId(fields.LogSessionID).
 				SetIsStartup(fields.IsStartup)
-			if fields.AppVersion != 0 {
-				msg.SetAppVersion(fields.AppVersion)
-			}
+
+			// AppVersion always writes, zero included: exclusive tryClaim term
+			// buffers are not zeroed, so omit would leave residual bytes.
+			msg.SetAppVersion(fields.AppVersion)
 			if actingVersion >= NewLeadershipTermCommitPositionMinVersion {
 				msg.SetCommitPosition(fields.CommitPosition)
 			}

@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/election/electiontest"
@@ -167,9 +169,7 @@ type appendPositionFailPublisher struct {
 
 func (p *appendPositionFailPublisher) AppendPosition(
 	election.PublicationTarget,
-	int64, int64,
-	int32,
-	uint8,
+	codecs.AppendPositionFields,
 ) bool {
 	p.attempts++
 	return false
@@ -296,4 +296,188 @@ type recordingLogCoherencySpy struct {
 func (s *recordingLogCoherencySpy) EnsureCoherent(p recordinglog.EnsureCoherentParams) error {
 	s.calls = append(s.calls, p)
 	return s.err
+}
+
+// publisherRoundtripCase drives one message through any Publisher and checks
+// the decoded wire. Shared by the SbePublisher and AeronPublisher roundtrip
+// tests so template coverage cannot drift between implementations.
+type publisherRoundtripCase struct {
+	name       string
+	publish    func(p election.Publisher)
+	templateID uint16
+	decode     func(wire []byte) (any, bool)
+	want       any
+}
+
+func publisherRoundtripCases(dst election.PublicationTarget) []publisherRoundtripCase {
+	return []publisherRoundtripCase{
+		{
+			name: "CanvassPosition",
+			publish: func(p election.Publisher) {
+				p.CanvassPosition(
+					dst,
+					codecs.CanvassPositionFields{
+						LogLeadershipTermID: 1,
+						LogPosition:         2,
+						LeadershipTermID:    3,
+						FollowerMemberID:    4,
+					},
+				)
+			},
+			templateID: clusterwire.CanvassPositionSbeTemplateID,
+			decode: func(wire []byte) (any, bool) {
+				return codecs.TryDecodeCanvassPositionAt(wire, 0)
+			},
+			want: codecs.CanvassPositionFields{
+				LogLeadershipTermID: 1,
+				LogPosition:         2,
+				LeadershipTermID:    3,
+				FollowerMemberID:    4,
+				ProtocolVersion:     election.ProtocolSemanticVersion(),
+			},
+		},
+		{
+			name: "RequestVote",
+			publish: func(p election.Publisher) {
+				p.RequestVote(
+					dst,
+					codecs.RequestVoteFields{
+						LogLeadershipTermID: 10,
+						LogPosition:         20,
+						CandidateTermID:     30,
+						CandidateMemberID:   40,
+					},
+				)
+			},
+			templateID: clusterwire.RequestVoteSbeTemplateID,
+			decode: func(wire []byte) (any, bool) {
+				return codecs.TryDecodeRequestVoteAt(wire, 0)
+			},
+			want: codecs.RequestVoteFields{
+				LogLeadershipTermID: 10,
+				LogPosition:         20,
+				CandidateTermID:     30,
+				CandidateMemberID:   40,
+				ProtocolVersion:     election.ProtocolSemanticVersion(),
+			},
+		},
+		{
+			name: "Vote",
+			publish: func(p election.Publisher) {
+				p.PlaceVote(
+					dst,
+					codecs.VoteFields{
+						CandidateTermID:     1,
+						LogLeadershipTermID: 2,
+						LogPosition:         3,
+						CandidateMemberID:   4,
+						FollowerMemberID:    5,
+						Vote:                clusterwire.BooleanType_TRUE,
+					},
+				)
+			},
+			templateID: clusterwire.VoteSbeTemplateID,
+			decode: func(wire []byte) (any, bool) {
+				return codecs.TryDecodeVoteAt(wire, 0)
+			},
+			want: codecs.VoteFields{
+				CandidateTermID:     1,
+				LogLeadershipTermID: 2,
+				LogPosition:         3,
+				CandidateMemberID:   4,
+				FollowerMemberID:    5,
+				Vote:                clusterwire.BooleanType_TRUE,
+			},
+		},
+		{
+			name: "NewLeadershipTerm_v16",
+			publish: func(p election.Publisher) {
+				p.NewLeadershipTerm(
+					dst,
+					codecs.NewLeadershipTermFields{
+						LogLeadershipTermID:     1,
+						NextLeadershipTermID:    2,
+						NextTermBaseLogPosition: 3,
+						NextLogPosition:         4,
+						LeadershipTermID:        5,
+						TermBaseLogPosition:     6,
+						LogPosition:             7,
+						LeaderRecordingID:       8,
+						Timestamp:               9,
+						LeaderMemberID:          10,
+						LogSessionID:            11,
+						AppVersion:              12,
+						IsStartup:               clusterwire.BooleanType_FALSE,
+						CommitPosition:          99,
+					},
+				)
+			},
+			templateID: clusterwire.NewLeadershipTermSbeTemplateID,
+			decode: func(wire []byte) (any, bool) {
+				return codecs.TryDecodeNewLeadershipTermAt(wire, 0)
+			},
+			want: codecs.NewLeadershipTermFields{
+				LogLeadershipTermID:     1,
+				NextLeadershipTermID:    2,
+				NextTermBaseLogPosition: 3,
+				NextLogPosition:         4,
+				LeadershipTermID:        5,
+				TermBaseLogPosition:     6,
+				LogPosition:             7,
+				LeaderRecordingID:       8,
+				Timestamp:               9,
+				LeaderMemberID:          10,
+				LogSessionID:            11,
+				AppVersion:              12,
+				IsStartup:               clusterwire.BooleanType_FALSE,
+				CommitPosition:          99,
+			},
+		},
+		{
+			name: "AppendPosition",
+			publish: func(p election.Publisher) {
+				p.AppendPosition(
+					dst,
+					codecs.AppendPositionFields{
+						LeadershipTermID: 7,
+						LogPosition:      8,
+						FollowerMemberID: 9,
+						Flags:            0x02,
+					},
+				)
+			},
+			templateID: clusterwire.AppendPositionSbeTemplateID,
+			decode: func(wire []byte) (any, bool) {
+				return codecs.TryDecodeAppendPositionAt(wire, 0)
+			},
+			want: codecs.AppendPositionFields{
+				LeadershipTermID: 7,
+				LogPosition:      8,
+				FollowerMemberID: 9,
+				Flags:            0x02,
+			},
+		},
+		{
+			name: "CommitPosition",
+			publish: func(p election.Publisher) {
+				p.CommitPosition(
+					dst,
+					codecs.CommitPositionFields{
+						LeadershipTermID: 11,
+						LogPosition:      12,
+						LeaderMemberID:   13,
+					},
+				)
+			},
+			templateID: clusterwire.CommitPositionSbeTemplateID,
+			decode: func(wire []byte) (any, bool) {
+				return codecs.TryDecodeCommitPositionAt(wire, 0)
+			},
+			want: codecs.CommitPositionFields{
+				LeadershipTermID: 11,
+				LogPosition:      12,
+				LeaderMemberID:   13,
+			},
+		},
+	}
 }

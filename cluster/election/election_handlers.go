@@ -119,10 +119,12 @@ func (e *Election) handleCandidateBallot(nowNs int64) int {
 		workCount++
 		member.IsBallotSent = e.deps.Publisher.RequestVote(
 			PublicationTarget{MemberID: member.ID},
-			e.logLeadershipTermID,
-			e.appendPosition,
-			e.candidateTermID,
-			e.thisMember.ID,
+			codecs.RequestVoteFields{
+				LogLeadershipTermID: e.logLeadershipTermID,
+				LogPosition:         e.appendPosition,
+				CandidateTermID:     e.candidateTermID,
+				CandidateMemberID:   e.thisMember.ID,
+			},
 		)
 	}
 	return workCount
@@ -342,10 +344,11 @@ func (e *Election) handleFollowerReady(nowNs int64) int {
 	leader := e.leaderMember
 	published := leader != nil && e.deps.Publisher.AppendPosition(
 		PublicationTarget{MemberID: leader.ID},
-		e.leadershipTermID,
-		e.logPosition,
-		e.thisMember.ID,
-		0,
+		codecs.AppendPositionFields{
+			LeadershipTermID: e.leadershipTermID,
+			LogPosition:      e.logPosition,
+			FollowerMemberID: e.thisMember.ID,
+		},
 	)
 	if published {
 		e.deps.Handler.ElectionComplete(nowNs)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/election"
 )
 
@@ -137,7 +138,10 @@ func TestInject_ignoresUnrelatedDelivery(t *testing.T) {
 	// the inject drain, so success must still hinge on node 2's dropped message.
 	s.Node(0).Publisher().CanvassPosition(
 		election.PublicationTarget{MemberID: focus},
-		election.NullValue, 0, election.NullValue, 0,
+		codecs.CanvassPositionFields{
+			LogLeadershipTermID: election.NullValue,
+			LeadershipTermID:    election.NullValue,
+		},
 	)
 	before := s.Node(focus).Snapshot().InboundCount
 

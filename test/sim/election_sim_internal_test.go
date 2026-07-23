@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/election"
 )
 
@@ -42,7 +43,15 @@ func TestElectionSim_deliverUnknownTargetNoFollowUpTick(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, s.Close()) })
 
 	dst := election.PublicationTarget{MemberID: 99}
-	s.Node(0).Publisher().CanvassPosition(dst, 1, 2, 3, 4)
+	s.Node(0).Publisher().CanvassPosition(
+		dst,
+		codecs.CanvassPositionFields{
+			LogLeadershipTermID: 1,
+			LogPosition:         2,
+			LeadershipTermID:    3,
+			FollowerMemberID:    4,
+		},
+	)
 	require.NoError(t, s.RunSteps(4))
 
 	deliverFound := false
@@ -121,8 +130,14 @@ func TestNetwork_sameAtNsDeliverOrder(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, s.Close()) })
 
 	dst := election.PublicationTarget{MemberID: 2}
-	s.Node(0).Publisher().CanvassPosition(dst, 1, 2, 3, 4)
-	s.Node(1).Publisher().CanvassPosition(dst, 1, 2, 3, 4)
+	fields := codecs.CanvassPositionFields{
+		LogLeadershipTermID: 1,
+		LogPosition:         2,
+		LeadershipTermID:    3,
+		FollowerMemberID:    4,
+	}
+	s.Node(0).Publisher().CanvassPosition(dst, fields)
+	s.Node(1).Publisher().CanvassPosition(dst, fields)
 	require.NoError(t, s.RunSteps(5))
 
 	require.Equal(t, []int32{0, 1}, s.Node(2).ReceivedFromOrderForTest())

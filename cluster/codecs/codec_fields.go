@@ -112,7 +112,8 @@ type NewLeadershipTermFields struct {
 	Timestamp               int64
 	LeaderMemberID          int32
 	LogSessionID            int32
-	// AppVersion: version_t; 0 means omit SetAppVersion on encode (optional field).
+	// AppVersion is version_t. Always written on encode, zero included:
+	// exclusive TryClaim buffers are not zeroed.
 	AppVersion int32
 	IsStartup  clusterwire.BooleanType
 	// CommitPosition is 0 when actingVersion < 15 (field absent on wire).
@@ -132,8 +133,7 @@ type NewLeadershipTermEventFields struct {
 	// Always SetTimeUnit on encode at that version. Wire zero is MILLIS (0), not NULL_VALUE.
 	TimeUnit clusterwire.ClusterTimeUnit
 	// AppVersion is version_t. Always SetAppVersion when actingVersion >= min version
-	// (including 0). Differs from NewLeadershipTermFields (template 53) omit-on-0:
-	// sole production writer is exclusive TryClaim, which does not zero payload.
+	// (including 0): exclusive TryClaim does not zero payload.
 	AppVersion int32
 }
 

@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/election"
 )
 
@@ -38,7 +39,7 @@ func TestNetwork_focusNodeIDDropsNonFocusDelivery(t *testing.T) {
 
 	sim.Node(0).Publisher().CanvassPosition(
 		election.PublicationTarget{MemberID: 2},
-		0, 0, 0, 0,
+		codecs.CanvassPositionFields{},
 	)
 	require.NoError(t, sim.RunSteps(1))
 

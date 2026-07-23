@@ -1,5 +1,7 @@
 package election
 
+import "github.com/warrenguy/heron/cluster/codecs"
+
 func hasUpdateIntervalExpired(nowNs, lastUpdateNs, intervalNs int64) bool {
 	return nowNs >= lastUpdateNs+intervalNs
 }
@@ -19,12 +21,14 @@ func (e *Election) placeVote(candidateTermID int64, candidateMemberID int32, vot
 	}
 	e.deps.Publisher.PlaceVote(
 		PublicationTarget{MemberID: candidateMemberID},
-		candidateTermID,
-		e.logLeadershipTermID,
-		e.appendPosition,
-		candidateMemberID,
-		e.thisMember.ID,
-		vote,
+		codecs.VoteFields{
+			CandidateTermID:     candidateTermID,
+			LogLeadershipTermID: e.logLeadershipTermID,
+			LogPosition:         e.appendPosition,
+			CandidateMemberID:   candidateMemberID,
+			FollowerMemberID:    e.thisMember.ID,
+			Vote:                boolToClusterwire(vote),
+		},
 	)
 }
 
@@ -83,10 +87,12 @@ func (e *Election) publishCanvassPosition() {
 		}
 		e.deps.Publisher.CanvassPosition(
 			PublicationTarget{MemberID: member.ID},
-			e.logLeadershipTermID,
-			e.appendPosition,
-			e.leadershipTermID,
-			e.thisMember.ID,
+			codecs.CanvassPositionFields{
+				LogLeadershipTermID: e.logLeadershipTermID,
+				LogPosition:         e.appendPosition,
+				LeadershipTermID:    e.leadershipTermID,
+				FollowerMemberID:    e.thisMember.ID,
+			},
 		)
 	}
 }

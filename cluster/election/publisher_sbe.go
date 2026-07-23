@@ -55,74 +55,48 @@ func publish[F any](
 
 func (p *SbePublisher) CanvassPosition(
 	dst PublicationTarget,
-	logLeadershipTermID, logPosition, leadershipTermID int64,
-	followerMemberID int32,
+	fields codecs.CanvassPositionFields,
 ) {
 	ver := actingVersion(p.ActingVersion)
 	publish(
-		p, dst,
+		p,
+		dst,
 		clusterwire.CanvassPositionSbeTemplateID,
 		codecs.CanvassPositionBlockLength(ver),
 		ver,
-		codecs.CanvassPositionFields{
-			LogLeadershipTermID: logLeadershipTermID,
-			LogPosition:         logPosition,
-			LeadershipTermID:    leadershipTermID,
-			FollowerMemberID:    followerMemberID,
-			ProtocolVersion: protocolVersionFor(
-				ver,
-				codecs.CanvassProtocolVersionMinVersion,
-			),
-		},
+		applyCanvassProtocolVersion(ver, fields),
 		codecs.EncodeCanvassPosition,
 	)
 }
 
 func (p *SbePublisher) RequestVote(
 	dst PublicationTarget,
-	logLeadershipTermID, logPosition, candidateTermID int64,
-	candidateMemberID int32,
+	fields codecs.RequestVoteFields,
 ) bool {
 	ver := actingVersion(p.ActingVersion)
 	return publish(
-		p, dst,
+		p,
+		dst,
 		clusterwire.RequestVoteSbeTemplateID,
 		codecs.RequestVoteBlockLength(ver),
 		ver,
-		codecs.RequestVoteFields{
-			LogLeadershipTermID: logLeadershipTermID,
-			LogPosition:         logPosition,
-			CandidateTermID:     candidateTermID,
-			CandidateMemberID:   candidateMemberID,
-			ProtocolVersion: protocolVersionFor(
-				ver,
-				codecs.RequestVoteProtocolVersionMinVersion,
-			),
-		},
+		applyRequestVoteProtocolVersion(ver, fields),
 		codecs.EncodeRequestVote,
 	)
 }
 
 func (p *SbePublisher) PlaceVote(
 	dst PublicationTarget,
-	candidateTermID, logLeadershipTermID, logPosition int64,
-	candidateMemberID, followerMemberID int32,
-	vote bool,
+	fields codecs.VoteFields,
 ) {
 	ver := actingVersion(p.ActingVersion)
 	publish(
-		p, dst,
+		p,
+		dst,
 		clusterwire.VoteSbeTemplateID,
 		clusterwire.VoteSbeBlockLength,
 		ver,
-		codecs.VoteFields{
-			CandidateTermID:     candidateTermID,
-			LogLeadershipTermID: logLeadershipTermID,
-			LogPosition:         logPosition,
-			CandidateMemberID:   candidateMemberID,
-			FollowerMemberID:    followerMemberID,
-			Vote:                boolToClusterwire(vote),
-		},
+		fields,
 		codecs.EncodeVote,
 	)
 }
@@ -133,7 +107,8 @@ func (p *SbePublisher) NewLeadershipTerm(
 ) {
 	ver := actingVersion(p.ActingVersion)
 	publish(
-		p, dst,
+		p,
+		dst,
 		clusterwire.NewLeadershipTermSbeTemplateID,
 		codecs.NewLeadershipTermBlockLength(ver),
 		ver,
@@ -144,42 +119,32 @@ func (p *SbePublisher) NewLeadershipTerm(
 
 func (p *SbePublisher) AppendPosition(
 	dst PublicationTarget,
-	leadershipTermID, logPosition int64,
-	followerMemberID int32,
-	flags uint8,
+	fields codecs.AppendPositionFields,
 ) bool {
 	ver := actingVersion(p.ActingVersion)
 	return publish(
-		p, dst,
+		p,
+		dst,
 		clusterwire.AppendPositionSbeTemplateID,
 		codecs.AppendPositionBlockLength(ver),
 		ver,
-		codecs.AppendPositionFields{
-			LeadershipTermID: leadershipTermID,
-			LogPosition:      logPosition,
-			FollowerMemberID: followerMemberID,
-			Flags:            flags,
-		},
+		fields,
 		codecs.EncodeAppendPosition,
 	)
 }
 
 func (p *SbePublisher) CommitPosition(
 	dst PublicationTarget,
-	leadershipTermID, logPosition int64,
-	leaderMemberID int32,
+	fields codecs.CommitPositionFields,
 ) {
 	ver := actingVersion(p.ActingVersion)
 	publish(
-		p, dst,
+		p,
+		dst,
 		clusterwire.CommitPositionSbeTemplateID,
 		clusterwire.CommitPositionSbeBlockLength,
 		ver,
-		codecs.CommitPositionFields{
-			LeadershipTermID: leadershipTermID,
-			LogPosition:      logPosition,
-			LeaderMemberID:   leaderMemberID,
-		},
+		fields,
 		codecs.EncodeCommitPosition,
 	)
 }

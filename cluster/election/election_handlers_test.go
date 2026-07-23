@@ -27,13 +27,29 @@ func TestHandleConsensusMessage_roundtrip(t *testing.T) {
 		{
 			name: "CanvassPosition",
 			publish: func() {
-				pub.CanvassPosition(dst, 1, 2, 3, 4)
+				pub.CanvassPosition(
+					dst,
+					codecs.CanvassPositionFields{
+						LogLeadershipTermID: 1,
+						LogPosition:         2,
+						LeadershipTermID:    3,
+						FollowerMemberID:    4,
+					},
+				)
 			},
 		},
 		{
 			name: "RequestVote",
 			publish: func() {
-				pub.RequestVote(dst, 10, 20, 30, 40)
+				pub.RequestVote(
+					dst,
+					codecs.RequestVoteFields{
+						LogLeadershipTermID: 10,
+						LogPosition:         20,
+						CandidateTermID:     30,
+						CandidateMemberID:   40,
+					},
+				)
 			},
 			spy: func(t *testing.T, nodeState *recordingNodeState, epochClock *FakeEpochClock) {
 				t.Helper()
@@ -46,29 +62,57 @@ func TestHandleConsensusMessage_roundtrip(t *testing.T) {
 		{
 			name: "Vote",
 			publish: func() {
-				pub.PlaceVote(dst, 1, 2, 3, 4, 5, true)
+				pub.PlaceVote(
+					dst,
+					codecs.VoteFields{
+						CandidateTermID:     1,
+						LogLeadershipTermID: 2,
+						LogPosition:         3,
+						CandidateMemberID:   4,
+						FollowerMemberID:    5,
+						Vote:                clusterwire.BooleanType_TRUE,
+					},
+				)
 			},
 		},
 		{
 			name: "NewLeadershipTerm",
 			publish: func() {
-				pub.NewLeadershipTerm(dst, codecs.NewLeadershipTermFields{
-					LogLeadershipTermID:  1,
-					NextLeadershipTermID: 2,
-					LeaderMemberID:       3,
-				})
+				pub.NewLeadershipTerm(
+					dst,
+					codecs.NewLeadershipTermFields{
+						LogLeadershipTermID:  1,
+						NextLeadershipTermID: 2,
+						LeaderMemberID:       3,
+					},
+				)
 			},
 		},
 		{
 			name: "AppendPosition",
 			publish: func() {
-				pub.AppendPosition(dst, 7, 8, 9, 0x01)
+				pub.AppendPosition(
+					dst,
+					codecs.AppendPositionFields{
+						LeadershipTermID: 7,
+						LogPosition:      8,
+						FollowerMemberID: 9,
+						Flags:            0x01,
+					},
+				)
 			},
 		},
 		{
 			name: "CommitPosition",
 			publish: func() {
-				pub.CommitPosition(dst, 11, 12, 13)
+				pub.CommitPosition(
+					dst,
+					codecs.CommitPositionFields{
+						LeadershipTermID: 11,
+						LogPosition:      12,
+						LeaderMemberID:   13,
+					},
+				)
 			},
 		},
 	}
@@ -99,7 +143,15 @@ func TestHandleConsensusMessage_rejectsBadInput(t *testing.T) {
 
 	dst := election.PublicationTarget{MemberID: 1}
 	pub := &election.SbePublisher{ActingVersion: clusterwire.CanvassPositionSbeSchemaVersion}
-	pub.CanvassPosition(dst, 1, 2, 3, 4)
+	pub.CanvassPosition(
+		dst,
+		codecs.CanvassPositionFields{
+			LogLeadershipTermID: 1,
+			LogPosition:         2,
+			LeadershipTermID:    3,
+			FollowerMemberID:    4,
+		},
+	)
 	wire := pub.Sent[0].Wire
 
 	t.Run("bad schema id", func(t *testing.T) {
@@ -135,7 +187,15 @@ func TestHandleConsensusMessage_gatedInInit(t *testing.T) {
 
 	dst := election.PublicationTarget{MemberID: 1}
 	pub := &election.SbePublisher{ActingVersion: clusterwire.CanvassPositionSbeSchemaVersion}
-	pub.RequestVote(dst, 10, 20, 30, 40)
+	pub.RequestVote(
+		dst,
+		codecs.RequestVoteFields{
+			LogLeadershipTermID: 10,
+			LogPosition:         20,
+			CandidateTermID:     30,
+			CandidateMemberID:   40,
+		},
+	)
 	require.Len(t, pub.Sent, 1)
 	require.True(t, e.HandleConsensusMessage(pub.Sent[0].Wire, 0))
 	require.Empty(t, nodeState.proposeCalls)
@@ -1112,11 +1172,13 @@ func TestHandleFollowerLogReplication_branches(t *testing.T) {
 
 		extendNs := t0 + cfg.LeaderHeartbeatTimeoutNs - 1
 		clock.nowNs = extendNs
-		e.OnCommitPosition(codecs.CommitPositionFields{
-			LeadershipTermID: cfg.LeadershipTermID,
-			LogPosition:      0,
-			LeaderMemberID:   1,
-		})
+		e.OnCommitPosition(
+			codecs.CommitPositionFields{
+				LeadershipTermID: cfg.LeadershipTermID,
+				LogPosition:      0,
+				LeaderMemberID:   1,
+			},
+		)
 
 		require.Equal(t, 0, e.DoWork(t0+cfg.LeaderHeartbeatTimeoutNs))
 		require.Equal(t, election.ElectionStateFollowerLogReplication, e.State())
@@ -1229,18 +1291,22 @@ func TestOnCommitPosition_branches(t *testing.T) {
 		e.OnNewLeadershipTerm(installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID))
 		require.Equal(t, election.ElectionStateFollowerReplay, e.State())
 
-		e.OnCommitPosition(codecs.CommitPositionFields{
-			LeadershipTermID: cfg.LeadershipTermID,
-			LogPosition:      500,
-			LeaderMemberID:   1,
-		})
+		e.OnCommitPosition(
+			codecs.CommitPositionFields{
+				LeadershipTermID: cfg.LeadershipTermID,
+				LogPosition:      500,
+				LeaderMemberID:   1,
+			},
+		)
 		require.Equal(t, int64(500), e.NotifiedCommitPosition())
 
-		e.OnCommitPosition(codecs.CommitPositionFields{
-			LeadershipTermID: cfg.LeadershipTermID,
-			LogPosition:      400,
-			LeaderMemberID:   1,
-		})
+		e.OnCommitPosition(
+			codecs.CommitPositionFields{
+				LeadershipTermID: cfg.LeadershipTermID,
+				LogPosition:      400,
+				LeaderMemberID:   1,
+			},
+		)
 		require.Equal(t, int64(500), e.NotifiedCommitPosition())
 	})
 
@@ -1252,11 +1318,13 @@ func TestOnCommitPosition_branches(t *testing.T) {
 		election.SetStateForTest(e, election.ElectionStateCanvass)
 		e.OnNewLeadershipTerm(installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID))
 
-		e.OnCommitPosition(codecs.CommitPositionFields{
-			LeadershipTermID: cfg.LeadershipTermID,
-			LogPosition:      500,
-			LeaderMemberID:   2,
-		})
+		e.OnCommitPosition(
+			codecs.CommitPositionFields{
+				LeadershipTermID: cfg.LeadershipTermID,
+				LogPosition:      500,
+				LeaderMemberID:   2,
+			},
+		)
 		require.Equal(t, int64(0), e.NotifiedCommitPosition())
 	})
 
@@ -1266,11 +1334,13 @@ func TestOnCommitPosition_branches(t *testing.T) {
 		cfg, deps, _, _, _ := testElectionDeps(t)
 		e := election.NewElection(cfg, deps)
 
-		e.OnCommitPosition(codecs.CommitPositionFields{
-			LeadershipTermID: cfg.LeadershipTermID + 1,
-			LogPosition:      500,
-			LeaderMemberID:   1,
-		})
+		e.OnCommitPosition(
+			codecs.CommitPositionFields{
+				LeadershipTermID: cfg.LeadershipTermID + 1,
+				LogPosition:      500,
+				LeaderMemberID:   1,
+			},
+		)
 		require.Equal(t, election.ElectionStateInit, e.State())
 		require.Equal(t, int64(0), e.NotifiedCommitPosition())
 	})
@@ -1282,11 +1352,13 @@ func TestOnCommitPosition_branches(t *testing.T) {
 		e := election.NewElection(cfg, deps)
 		election.SetStateForTest(e, election.ElectionStateLeaderReady)
 
-		e.OnCommitPosition(codecs.CommitPositionFields{
-			LeadershipTermID: cfg.LeadershipTermID + 1,
-			LogPosition:      500,
-			LeaderMemberID:   1,
-		})
+		e.OnCommitPosition(
+			codecs.CommitPositionFields{
+				LeadershipTermID: cfg.LeadershipTermID + 1,
+				LogPosition:      500,
+				LeaderMemberID:   1,
+			},
+		)
 		require.Equal(t, election.ElectionStateInit, e.State())
 	})
 
@@ -1303,11 +1375,13 @@ func TestOnCommitPosition_branches(t *testing.T) {
 		fx.doWork()
 		require.Equal(t, election.ElectionStateFollowerReplay, fx.election.State())
 
-		fx.election.OnCommitPosition(codecs.CommitPositionFields{
-			LeadershipTermID: fx.election.LeadershipTermID(),
-			LogPosition:      fx.cfg.AppendPosition,
-			LeaderMemberID:   1,
-		})
+		fx.election.OnCommitPosition(
+			codecs.CommitPositionFields{
+				LeadershipTermID: fx.election.LeadershipTermID(),
+				LogPosition:      fx.cfg.AppendPosition,
+				LeaderMemberID:   1,
+			},
+		)
 
 		fx.doWork()
 		require.Equal(t, election.ElectionStateFollowerReplay, fx.election.State())
@@ -1618,12 +1692,14 @@ func TestHandleCanvass_quorumAtDeadlineEntersNominate(t *testing.T) {
 			require.True(t, election.IsExtendedCanvassForTest(e))
 
 			// Quorum via self plus one peer; peer 2 stays unreported so unanimity cannot fire early.
-			e.OnCanvassPosition(codecs.CanvassPositionFields{
-				LogLeadershipTermID: cfg.LeadershipTermID,
-				LogPosition:         cfg.AppendPosition,
-				LeadershipTermID:    cfg.LeadershipTermID,
-				FollowerMemberID:    1,
-			})
+			e.OnCanvassPosition(
+				codecs.CanvassPositionFields{
+					LogLeadershipTermID: cfg.LeadershipTermID,
+					LogPosition:         cfg.AppendPosition,
+					LeadershipTermID:    cfg.LeadershipTermID,
+					FollowerMemberID:    1,
+				},
+			)
 			require.Equal(t, cfg.AppendPosition, election.MemberForTest(e, 1).LogPosition)
 
 			require.Positive(t, e.DoWork(clock.nowNs+tc.deltaNs))
@@ -1666,12 +1742,14 @@ func TestOnAppendPosition_updatesMemberLogPositionDuringCanvass(t *testing.T) {
 			require.Equal(t, election.NullPosition, follower.LogPosition)
 
 			const flags uint8 = 0x02
-			e.OnAppendPosition(codecs.AppendPositionFields{
-				LeadershipTermID: tc.leadershipTerm,
-				LogPosition:      cfg.AppendPosition + 50,
-				FollowerMemberID: 1,
-				Flags:            flags,
-			})
+			e.OnAppendPosition(
+				codecs.AppendPositionFields{
+					LeadershipTermID: tc.leadershipTerm,
+					LogPosition:      cfg.AppendPosition + 50,
+					FollowerMemberID: 1,
+					Flags:            flags,
+				},
+			)
 
 			if !tc.wantUpdated {
 				require.Equal(t, election.NullPosition, follower.LogPosition)
@@ -1842,12 +1920,14 @@ func TestOnVote_recordsOnlyInCandidateBallot(t *testing.T) {
 			e := election.NewElection(cfg, deps)
 			election.SetStateForTest(e, tc.state)
 
-			e.OnVote(codecs.VoteFields{
-				CandidateTermID:   cfg.LeadershipTermID,
-				CandidateMemberID: e.ThisMemberID(),
-				FollowerMemberID:  1,
-				Vote:              clusterwire.BooleanType_TRUE,
-			})
+			e.OnVote(
+				codecs.VoteFields{
+					CandidateTermID:   cfg.LeadershipTermID,
+					CandidateMemberID: e.ThisMemberID(),
+					FollowerMemberID:  1,
+					Vote:              clusterwire.BooleanType_TRUE,
+				},
+			)
 
 			voter := election.MemberForTest(e, 1)
 			if !tc.wantRecorded {
