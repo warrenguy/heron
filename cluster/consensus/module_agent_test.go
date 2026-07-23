@@ -342,6 +342,7 @@ func TestJoinLogAsLeader_setsTermAndClearsLeaderTarget(t *testing.T) {
 	require.Equal(t, RoleLeader, a.Role())
 	require.Equal(t, int64(9), a.LeadershipTermID())
 	require.Equal(t, nullMemberID, a.LeaderMemberID())
+	require.Equal(t, int64(100), a.termBaseLogPosition)
 }
 
 func TestNewAgent_memberIDsZeroValid(t *testing.T) {

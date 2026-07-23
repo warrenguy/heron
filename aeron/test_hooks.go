@@ -190,8 +190,29 @@ func NewTestExclusivePublicationForHooks(tb testing.TB) *ExclusivePublication {
 
 // NewTestExclusivePublicationForHooksWithConnected builds an exclusive publication
 // with the log metadata is-connected flag set for connect-path tests.
+//
+// Uses the default high publication-limit counter so Offer succeeds at position 0.
 func NewTestExclusivePublicationForHooksWithConnected(
 	tb testing.TB,
+	connected bool,
+) *ExclusivePublication {
+	tb.Helper()
+
+	return NewTestExclusivePublicationForHooksWithLimit(
+		tb,
+		testHookPublicationLimitPosition,
+		connected,
+	)
+}
+
+// NewTestExclusivePublicationForHooksWithLimit builds an exclusive publication
+// with caller-chosen publication-limit counter value and is-connected flag.
+//
+// Cross-package consensus tests use limit 0 to hit checkPublicationLimit at
+// position 0 (retriable NotConnected or BackPressured).
+func NewTestExclusivePublicationForHooksWithLimit(
+	tb testing.TB,
+	limitPosition int64,
 	connected bool,
 ) *ExclusivePublication {
 	tb.Helper()
@@ -204,7 +225,7 @@ func NewTestExclusivePublicationForHooksWithConnected(
 	pub, err := newExclusivePublicationFromReady(
 		testHookPublicationBuffersReady(testHookMappedLogFileName),
 		log,
-		newTestHookCountersReader(tb),
+		newTestHookCountersReaderWithLimit(tb, limitPosition),
 		testHookIPCChannel,
 	)
 	require.NoError(tb, err)
@@ -547,6 +568,15 @@ func newTestHookCountersReaderFromRecords(
 func newTestHookCountersReader(tb testing.TB) *cnc.CountersReader {
 	tb.Helper()
 
+	return newTestHookCountersReaderWithLimit(tb, testHookPublicationLimitPosition)
+}
+
+func newTestHookCountersReaderWithLimit(
+	tb testing.TB,
+	limitPosition int64,
+) *cnc.CountersReader {
+	tb.Helper()
+
 	return newTestHookCountersReaderFromRecords(
 		tb,
 		int(testHookPublicationLimitCounterID)+1,
@@ -558,7 +588,7 @@ func newTestHookCountersReader(tb testing.TB) *cnc.CountersReader {
 				cnc.CounterRecordAllocated,
 				cnc.DriverPublisherLimitTypeID,
 				testHookPublicationRegistrationID,
-				testHookPublicationLimitPosition,
+				limitPosition,
 			)
 		},
 	)

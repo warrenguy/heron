@@ -108,6 +108,19 @@ type Agent struct {
 	// timeOfLastAppendPositionSendNs gates follower AppendPosition re-publish
 	// on the heartbeat interval.
 	timeOfLastAppendPositionSendNs int64
+
+	// logPublisher appends leadership-term and session frames on the exclusive
+	// log publication. Nil until wired via config or [Agent.SetLogPublisher].
+	logPublisher *LogPublisher
+
+	// termBaseLogPosition is the term base written into NewLeadershipTermEvent.
+	// Seeded by [Agent.SetTermBaseLogPosition] or [Agent.JoinLogAsLeader]
+	// logPosition.
+	termBaseLogPosition int64
+
+	// appVersion is the application version for NewLeadershipTermEvent.
+	// Default 0 is legal on the wire.
+	appVersion int32
 }
 
 // AgentConfig is the constructor bag. Nil interface fields are legal for unit
@@ -155,6 +168,17 @@ type AgentConfig struct {
 	// AppendSource optional mode-1 inject for leader rank and follower
 	// AppendPosition publish. Nil until wired via config or [Agent.SetAppendSource].
 	AppendSource AppendPositionSource
+
+	// LogPublisher optional inject for log append and NewLeadershipTermEvent.
+	// Nil until wired via config or [Agent.SetLogPublisher].
+	LogPublisher *LogPublisher
+
+	// AppVersion seeds a.appVersion for NewLeadershipTermEvent (default 0 legal).
+	AppVersion int32
+
+	// TermBaseLogPosition seeds a.termBaseLogPosition (default 0). Also set by
+	// [Agent.JoinLogAsLeader] logPosition or [Agent.SetTermBaseLogPosition].
+	TermBaseLogPosition int64
 }
 
 // NewAgent constructs an [Agent] from cfg. localLogRecordingID defaults to
@@ -189,6 +213,9 @@ func NewAgent(cfg AgentConfig) *Agent {
 		leaderHeartbeatIntervalNs: interval,
 		ingress:                   cfg.Ingress,
 		appendSource:              cfg.AppendSource,
+		logPublisher:              cfg.LogPublisher,
+		termBaseLogPosition:       cfg.TermBaseLogPosition,
+		appVersion:                cfg.AppVersion,
 	}
 }
 
@@ -396,13 +423,53 @@ func (a *Agent) CatchupLogDestinationSet(destination string) {
 	a.catchupLogDestination = destination
 }
 
-// AddLogPublication is a stub; returns null session id (-1).
+// SetLogPublisher wires or clears the [LogPublisher] used for log append and
+// NewLeadershipTermEvent.
+//
+// Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
+func (a *Agent) SetLogPublisher(p *LogPublisher) { a.logPublisher = p }
+
+// SetTermBaseLogPosition sets the term base written into NewLeadershipTermEvent.
+// Prefer [Agent.JoinLogAsLeader] on the leader-join path; use this setter for
+// tests or bootstrap that skip join.
+func (a *Agent) SetTermBaseLogPosition(pos int64) { a.termBaseLogPosition = pos }
+
+// AddLogPublication returns the bound log publication session id when a
+// [LogPublisher] with a publication is already injected; otherwise null session
+// id (-1). Does not create a publication or parse channel/MDC settings.
+//
+// Required inject order: [Agent.SetLogPublisher] and [LogPublisher.SetPublication]
+// before any caller that stores the returned session id (for example election
+// leader-log replication). Bind after this call leaves the caller with -1 while
+// later NewLeadershipTermEvent would write a real session id.
+//
+// appendPosition is reserved for initialPosition wiring and ignored here.
 func (a *Agent) AddLogPublication(appendPosition int64) int32 {
+	_ = appendPosition
+	if a.logPublisher != nil && a.logPublisher.Publication() != nil {
+		return a.logPublisher.SessionID()
+	}
 	return int32(nullValue)
 }
 
-// AppendNewLeadershipTermEvent is a stub; returns false.
-func (a *Agent) AppendNewLeadershipTermEvent(nowNs int64) bool { return false }
+// AppendNewLeadershipTermEvent appends a NewLeadershipTermEvent via the wired
+// [LogPublisher]. Returns false when logPublisher is nil or the append fails.
+//
+// TimeUnit is always NANOS (SBE zero is MILLIS - never treat Go zero as unset).
+func (a *Agent) AppendNewLeadershipTermEvent(nowNs int64) bool {
+	if a.logPublisher == nil {
+		return false
+	}
+	return a.logPublisher.AppendNewLeadershipTermEvent(
+		a.leadershipTermID,
+		nowNs,
+		a.termBaseLogPosition,
+		a.thisMemberID,
+		a.logPublisher.SessionID(),
+		clusterwire.ClusterTimeUnit_NANOS,
+		a.appVersion,
+	)
+}
 
 // PollArchiveEvents is a stub; returns 0.
 func (a *Agent) PollArchiveEvents() int { return 0 }
@@ -439,8 +506,12 @@ func (a *Agent) PrepareForNewLeadership(logPosition, nowNs int64) int64 {
 	return logPosition
 }
 
-// JoinLogAsLeader sets role [RoleLeader], records the leadership term, and
-// clears the follower append target (leaderMemberID -> nullMemberID).
+// JoinLogAsLeader sets role [RoleLeader], records the leadership term, stores
+// logPosition as the NewLeadershipTermEvent term base, and clears the follower
+// append target (leaderMemberID -> nullMemberID).
+//
+// logSessionID and isStartup are accepted for host-signature parity; full
+// session create and startup branch land later.
 func (a *Agent) JoinLogAsLeader(
 	leadershipTermID int64,
 	logPosition int64,
@@ -450,7 +521,8 @@ func (a *Agent) JoinLogAsLeader(
 	a.RoleSet(RoleLeader)
 	a.leadershipTermID = leadershipTermID
 	a.SetLeaderMemberID(nullMemberID)
-	_, _, _ = logPosition, logSessionID, isStartup
+	a.termBaseLogPosition = logPosition
+	_, _ = logSessionID, isStartup
 }
 
 // JoinLogAsFollower is a skeleton; reports not ready.

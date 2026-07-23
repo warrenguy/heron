@@ -105,3 +105,34 @@ func TestWriteCommittedDataFrameForHooks_fragmentedBeginFlag(t *testing.T) {
 	require.Equal(t, byte(logbuffer.BeginFlag), logbuffer.FrameFlags(termBuffer, 0))
 	require.NotEqual(t, byte(logbuffer.Unfragmented), logbuffer.FrameFlags(termBuffer, 0))
 }
+
+func TestNewTestExclusivePublicationForHooksWithLimit_retriableCodes(t *testing.T) {
+	tests := []struct {
+		name      string
+		connected bool
+		want      int64
+	}{
+		{name: "limit 0 disconnected yields NotConnected", connected: false, want: NotConnected},
+		{name: "limit 0 connected yields BackPressured", connected: true, want: BackPressured},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ep := NewTestExclusivePublicationForHooksWithLimit(t, 0, tt.connected)
+
+			require.Equal(t, tt.want, ep.Offer([]byte{1}))
+			_, _, position, err := ep.TryClaim(1)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, position)
+		})
+	}
+}
+
+func TestNewTestExclusivePublicationForHooksWithConnected_highLimitSucceedsWhenDisconnected(
+	t *testing.T,
+) {
+	// High default limit: disconnected alone is not a NotConnected recipe.
+	ep := NewTestExclusivePublicationForHooksWithConnected(t, false)
+
+	got := ep.Offer([]byte{1})
+	require.Positive(t, got)
+}
