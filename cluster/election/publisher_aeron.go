@@ -2,7 +2,6 @@ package election
 
 import (
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
@@ -54,14 +53,9 @@ func (p *AeronPublisher) Publication(memberID int32) *aeron.ExclusivePublication
 
 // publishClaim encodes fields into a TryClaim reservation and commits.
 //
-// Returns true only after successful Commit. Returns false when:
-//   - pub nil / missing member
-//   - wire length cannot be computed or exceeds MaxPayloadLength
-//   - all SEND_ATTEMPTS exhausted with retriable codes
-//   - Closed / MaxPositionExceeded (stop immediately; no throw)
-//   - encode fails or Commit fails (Abort best-effort)
-//
-// No idle or Client.DoWork inside. Tight spin of aeronPublisherSendAttempts only.
+// Returns false when the member publication is missing, wire length cannot be
+// computed, wire length exceeds MaxPayloadLength, or encode fails. Claim retry,
+// abort, and commit policy is [aeron.ExclusivePublication.ClaimFillCommit].
 func publishClaim[F any](
 	p *AeronPublisher,
 	dst PublicationTarget,
@@ -78,34 +72,14 @@ func publishClaim[F any](
 	if !ok || wireLen > pub.MaxPayloadLength() {
 		return false
 	}
-
-	for range aeronPublisherSendAttempts {
-		termIndex, frameOffset, position, err := pub.TryClaim(wireLen)
-		if err != nil {
-			// Fixed consensus sizes must fit MTU; fail closed on programmer path.
-			return false
-		}
-		if position <= 0 {
-			if !aeron.IsOfferRetriable(position) {
-				return false
-			}
-			continue
-		}
-
-		termBuf := pub.TermBuffer(termIndex)
-		payloadOff := frameOffset + logbuffer.OffsetFramePayload
-		wireEnd, ok := encode(termBuf.Bytes(), payloadOff, ver, fields)
-		if !ok || wireEnd-payloadOff != wireLen {
-			_ = pub.Abort(termIndex, frameOffset)
-			return false
-		}
-		if err := pub.Commit(termIndex, frameOffset); err != nil {
-			_ = pub.Abort(termIndex, frameOffset)
-			return false
-		}
-		return true
-	}
-	return false
+	return pub.ClaimFillCommit(
+		wireLen,
+		aeronPublisherSendAttempts,
+		func(term []byte, payloadOff int, _ int64) bool {
+			wireEnd, ok := encode(term, payloadOff, ver, fields)
+			return ok && wireEnd-payloadOff == wireLen
+		},
+	)
 }
 
 func (p *AeronPublisher) CanvassPosition(

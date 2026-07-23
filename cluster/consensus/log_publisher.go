@@ -2,7 +2,6 @@ package consensus
 
 import (
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
@@ -125,19 +124,11 @@ func (p *LogPublisher) AppendMessage(
 // AppendNewLeadershipTermEvent reserves a fixed 56-byte unfragmented claim,
 // encodes NewLeadershipTermEvent (template 24) into the term buffer, and commits.
 //
-// LogPosition on the wire is the successful claim end position (equal to
-// TryClaim reserved position on success; pre-claim Position plus aligned
-// fragment length).
+// LogPosition on the wire is the successful claim end position (pre-claim
+// Position plus aligned fragment length).
 //
-// Returns true only after successful Commit. Returns false when:
-//   - nil receiver or nil publication
-//   - all send attempts exhausted with position <= 0
-//   - TryClaim returns a non-nil err (invalid length - should not happen for 56)
-//   - encode fails (Abort best-effort)
-//   - Commit fails (Abort best-effort)
-//
-// Closed and MaxPositionExceeded stop immediately without retries. Does not
-// throw; callers may inspect publication state separately.
+// Returns false when receiver or publication is nil, or when encode fails.
+// Claim retry, abort, and commit policy is [aeron.ExclusivePublication.ClaimFillCommit].
 func (p *LogPublisher) AppendNewLeadershipTermEvent(
 	leadershipTermID int64,
 	timestamp int64,
@@ -147,57 +138,33 @@ func (p *LogPublisher) AppendNewLeadershipTermEvent(
 	timeUnit clusterwire.ClusterTimeUnit,
 	appVersion int32,
 ) bool {
-	if p == nil || p.publication == nil {
+	if p == nil {
 		return false
 	}
-	pub := p.publication
 	length := codecs.NewLeadershipTermEventEncodedLen()
 	actingVersion := uint16(clusterwire.NewLeadershipTermEventSbeSchemaVersion)
 
-	for range logPublisherSendAttempts {
-		termIndex, frameOffset, position, err := pub.TryClaim(length)
-		if err != nil {
-			// Fixed length 56 with sane MTU; fail closed on programmer path.
-			return false
-		}
-		if position <= 0 {
-			if !aeron.IsOfferRetriable(position) {
-				return false
+	return p.publication.ClaimFillCommit(
+		length,
+		logPublisherSendAttempts,
+		func(term []byte, payloadOff int, claimPos int64) bool {
+			fields := codecs.NewLeadershipTermEventFields{
+				LeadershipTermID:    leadershipTermID,
+				LogPosition:         claimPos,
+				Timestamp:           timestamp,
+				TermBaseLogPosition: termBaseLogPosition,
+				LeaderMemberID:      leaderMemberID,
+				LogSessionID:        logSessionID,
+				TimeUnit:            timeUnit,
+				AppVersion:          appVersion,
 			}
-			continue
-		}
-
-		fields := codecs.NewLeadershipTermEventFields{
-			LeadershipTermID:    leadershipTermID,
-			LogPosition:         position,
-			Timestamp:           timestamp,
-			TermBaseLogPosition: termBaseLogPosition,
-			LeaderMemberID:      leaderMemberID,
-			LogSessionID:        logSessionID,
-			TimeUnit:            timeUnit,
-			AppVersion:          appVersion,
-		}
-
-		termBuf := pub.TermBuffer(termIndex)
-
-		// Claim payload starts at frameOffset + DataHeaderLength (header pre-written).
-		payloadOff := frameOffset + logbuffer.OffsetFramePayload
-		wireEnd, ok := codecs.EncodeNewLeadershipTermEvent(
-			termBuf.Bytes(),
-			payloadOff,
-			actingVersion,
-			fields,
-		)
-		if !ok || wireEnd-payloadOff != length {
-			_ = pub.Abort(termIndex, frameOffset)
-			return false
-		}
-		if err := pub.Commit(termIndex, frameOffset); err != nil {
-			// Commit failed after fill; best-effort Abort if still in-flight.
-			_ = pub.Abort(termIndex, frameOffset)
-			return false
-		}
-		return true
-	}
-	return false
+			wireEnd, ok := codecs.EncodeNewLeadershipTermEvent(
+				term,
+				payloadOff,
+				actingVersion,
+				fields,
+			)
+			return ok && wireEnd-payloadOff == length
+		},
+	)
 }
