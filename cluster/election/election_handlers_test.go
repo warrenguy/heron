@@ -894,6 +894,10 @@ func TestHandleFollowerCatchupInit_nearLiveSkipsToLogInit(t *testing.T) {
 			require.Equal(t, tc.wantWork, fx.doWork())
 			require.Equal(t, tc.wantState, fx.election.State())
 			require.Equal(t, []int64{catchupJoinPosition}, fx.host.catchupNearLiveCalls)
+
+			// Neither branch calls catchup start on the host: near-live is
+			// skip-to-log-init only, and stall ticks idle.
+			require.Empty(t, fx.host.catchupInitiatedCalls)
 		})
 	}
 }
@@ -913,6 +917,85 @@ func TestHandleFollowerCatchupInit_notifiedCommitFallback(t *testing.T) {
 	require.Equal(t, 0, e.DoWork(clock.nowNs))
 	require.Equal(t, election.ElectionStateFollowerCatchupInit, e.State())
 	require.Equal(t, []int64{0}, host.catchupNearLiveCalls)
+	require.Empty(t, host.catchupInitiatedCalls)
+}
+
+func TestHandleFollowerCatchup_pollLimit(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name           string
+		commitPosition int64
+		// LogPosition on install is AppendPosition + joinAhead.
+		joinAhead  int64
+		pollResult int
+		// When true, want limit is AppendPosition+joinAhead; else wantLimit.
+		wantJoinLimit bool
+		wantLimit     int64
+	}{
+		{
+			name:           "notified commit",
+			commitPosition: 500,
+			pollResult:     5,
+			wantLimit:      500,
+		},
+		{
+			name:           "zero commit falls back to join position",
+			commitPosition: 0,
+			joinAhead:      100,
+			pollResult:     2,
+			wantJoinLimit:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, deps, clock, _, _ := testElectionDeps(t)
+			host := &recordingElectionHost{clock: clock, catchupPollResult: tc.pollResult}
+			deps.Host = host
+			e := election.NewElection(cfg, deps)
+
+			// Install so leader identity and commit bound are set, then inject catchup.
+			election.SetStateForTest(e, election.ElectionStateCanvass)
+			fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
+			fields.CommitPosition = tc.commitPosition
+			fields.LogPosition = cfg.AppendPosition + tc.joinAhead
+			e.OnNewLeadershipTerm(fields)
+			require.Equal(t, tc.commitPosition, e.NotifiedCommitPosition())
+
+			election.SetStateForTest(e, election.ElectionStateFollowerCatchup)
+			t0 := clock.nowNs
+			require.Equal(t, tc.pollResult, e.DoWork(t0))
+			require.Equal(t, election.ElectionStateFollowerCatchup, e.State())
+
+			wantLimit := tc.wantLimit
+			if tc.wantJoinLimit {
+				wantLimit = cfg.AppendPosition + tc.joinAhead
+			}
+			require.Equal(t, []catchupPollCall{{
+				limitPosition: wantLimit,
+				nowNs:         t0,
+			}}, host.catchupPollCalls)
+		})
+	}
+}
+
+func TestHandleFollowerCatchup_noImageReturnsZero(t *testing.T) {
+	t.Parallel()
+
+	// Default recording host poll result is 0 (no image -> zero work).
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	host := &recordingElectionHost{clock: clock}
+	deps.Host = host
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateFollowerCatchup)
+
+	require.Equal(t, 0, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateFollowerCatchup, e.State())
+	require.Len(t, host.catchupPollCalls, 1)
+
+	// Both bounds unset: notified 0 falls back to NullPosition join.
+	require.Equal(t, int64(election.NullPosition), host.catchupPollCalls[0].limitPosition)
 }
 
 func TestEnsureRecordingLogCoherent_nullRecordingIDSkips(t *testing.T) {
@@ -1186,6 +1269,100 @@ func TestHandleFollowerLogReplication_branches(t *testing.T) {
 		require.Equal(t, 1, e.DoWork(extendNs+cfg.LeaderHeartbeatTimeoutNs))
 		require.Equal(t, election.ElectionStateInit, e.State())
 	})
+}
+
+func TestHandleFollowerLogReplication_timeoutClearsHelperForReinstall(t *testing.T) {
+	t.Parallel()
+
+	// IsDone keeps the helper resident while lagging.
+	//
+	// Timeout leave must clear it so a later FOLLOWER_LOG_REPLICATION visit
+	// can install again.
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	installs := 0
+	host := &recordingElectionHost{
+		clock: clock,
+		newLogReplication: func(_, _ string, _, _, _ int64) election.LogReplication {
+			installs++
+			return &countingLogReplicationForTest{
+				work:        1,
+				done:        true,
+				recordingID: int64(90 + installs),
+			}
+		},
+	}
+	deps.Host = host
+	e := election.NewElection(cfg, deps)
+	driveToFollowerLogReplication(t, e, cfg, cfg.AppendPosition+50, election.NullPosition)
+
+	t0 := clock.nowNs
+	require.Positive(t, e.DoWork(t0))
+	require.Equal(t, 1, installs)
+	require.Len(t, host.newLogReplicationCalls, 1)
+	require.Equal(t, election.ElectionStateFollowerLogReplication, e.State())
+
+	// Resident done helper blocks reinstall while still in this visit.
+	require.Equal(t, 0, e.DoWork(t0+1))
+	require.Equal(t, 1, installs)
+
+	require.Equal(t, 1, e.DoWork(t0+cfg.LeaderHeartbeatTimeoutNs))
+	require.Equal(t, election.ElectionStateInit, e.State())
+
+	// Re-enter FOLLOWER_LOG_REPLICATION after leave: factory must run again.
+	driveToFollowerLogReplication(t, e, cfg, cfg.AppendPosition+50, election.NullPosition)
+	require.Positive(t, e.DoWork(clock.nowNs))
+	require.Equal(t, 2, installs)
+	require.Len(t, host.newLogReplicationCalls, 2)
+	require.Equal(t, election.ElectionStateFollowerLogReplication, e.State())
+}
+
+func TestHandleFollowerLogReplication_caughtUpClearsHelperForReinstall(t *testing.T) {
+	t.Parallel()
+
+	// Already at stop: install + IsDone then caught-up leave must clear the
+	// helper so a later FOLLOWER_LOG_REPLICATION visit can install again.
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	installs := 0
+	host := &recordingElectionHost{
+		clock:               clock,
+		localLogRecordingID: 42,
+		newLogReplication: func(_, _ string, _, _, _ int64) election.LogReplication {
+			installs++
+			return &countingLogReplicationForTest{
+				work:        0,
+				done:        true,
+				recordingID: int64(50 + installs),
+			}
+		},
+	}
+	deps.Host = host
+	deps.RecordingLog = &recordingLogCoherencySpy{}
+	e := election.NewElection(cfg, deps)
+
+	driveToFollowerLogReplication(t, e, cfg, cfg.AppendPosition, cfg.AppendPosition)
+	_ = e.DoWork(clock.nowNs)
+	require.Equal(t, 1, installs)
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+
+	// Lagging re-enter after caught-up leave: factory runs again.
+	//
+	// Caught-up commit advances log term; NewLeadershipTerm must match for
+	// install.
+	logTerm := election.LogLeadershipTermIDForTest(e)
+	appendPos := e.AppendPosition()
+	fields := installNewLeadershipTermFields(cfg, 1, logTerm)
+	fields.LogLeadershipTermID = logTerm
+	fields.LeadershipTermID = logTerm
+	fields.TermBaseLogPosition = appendPos + 100
+	fields.NextLeadershipTermID = logTerm + 1
+	fields.NextTermBaseLogPosition = appendPos + 50
+	fields.NextLogPosition = election.NullPosition
+	e.OnNewLeadershipTerm(fields)
+	require.Equal(t, election.ElectionStateFollowerLogReplication, e.State())
+
+	require.Positive(t, e.DoWork(clock.nowNs))
+	require.Equal(t, 2, installs)
+	require.Equal(t, election.ElectionStateFollowerLogReplication, e.State())
 }
 
 func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {
@@ -1954,3 +2131,23 @@ func (n *noopLogReplicationForTest) IsDone() bool { return false }
 func (n *noopLogReplicationForTest) OnSignal(int64, int64, int64, election.RecordingSignal) {
 	n.called = true
 }
+
+// countingLogReplicationForTest is a duty-cycle double for install / IsDone
+// wire tests. It does not advance append position.
+type countingLogReplicationForTest struct {
+	doWorkCalls int
+	work        int
+	done        bool
+	recordingID int64
+}
+
+func (c *countingLogReplicationForTest) DoWork(int64) int {
+	c.doWorkCalls++
+	return c.work
+}
+
+func (c *countingLogReplicationForTest) RecordingID() int64 { return c.recordingID }
+
+func (c *countingLogReplicationForTest) IsDone() bool { return c.done }
+
+func (c *countingLogReplicationForTest) OnSignal(int64, int64, int64, election.RecordingSignal) {}

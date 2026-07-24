@@ -316,14 +316,39 @@ type recordingElectionHost struct {
 	followerLogJoinPosition int64
 	catchupNearLive         bool
 
+	// newLogReplication overrides Noop nil factory for duty-cycle tests.
+	newLogReplication func(
+		leaderArchiveEndpoint, responseArchiveEndpoint string,
+		leaderRecordingID, stopPosition, nowNs int64,
+	) election.LogReplication
+
+	catchupPollResult int
+
 	addLogPublicationCalls            []int64
 	appendNewLeadershipTermEventCalls []int64
 	publishCommitPositionCalls        []publishCommitPositionCall
 	followerLogJoinReadyCalls         []int32
 	catchupNearLiveCalls              []int64
+	catchupInitiatedCalls             []int64
+	catchupPollCalls                  []catchupPollCall
+	newLogReplicationCalls            []newLogReplicationCall
+	setLogRecordingIDCalls            []int64
 	truncateCalls                     []truncateCall
 
 	trackCatchupCalls []trackCatchupCall
+}
+
+type catchupPollCall struct {
+	limitPosition int64
+	nowNs         int64
+}
+
+type newLogReplicationCall struct {
+	leaderArchiveEndpoint   string
+	responseArchiveEndpoint string
+	leaderRecordingID       int64
+	stopPosition            int64
+	nowNs                   int64
 }
 
 type truncateCall struct {
@@ -401,6 +426,46 @@ func (h *recordingElectionHost) TruncateLogEntry(leadershipTermID, logPosition i
 func (h *recordingElectionHost) IsCatchupNearLive(position int64) bool {
 	h.catchupNearLiveCalls = append(h.catchupNearLiveCalls, position)
 	return h.catchupNearLive
+}
+
+func (h *recordingElectionHost) NewLogReplication(
+	leaderArchiveEndpoint, responseArchiveEndpoint string,
+	leaderRecordingID, stopPosition, nowNs int64,
+) election.LogReplication {
+	h.newLogReplicationCalls = append(h.newLogReplicationCalls, newLogReplicationCall{
+		leaderArchiveEndpoint:   leaderArchiveEndpoint,
+		responseArchiveEndpoint: responseArchiveEndpoint,
+		leaderRecordingID:       leaderRecordingID,
+		stopPosition:            stopPosition,
+		nowNs:                   nowNs,
+	})
+	if h.newLogReplication != nil {
+		return h.newLogReplication(
+			leaderArchiveEndpoint,
+			responseArchiveEndpoint,
+			leaderRecordingID,
+			stopPosition,
+			nowNs,
+		)
+	}
+	return nil
+}
+
+func (h *recordingElectionHost) CatchupInitiated(nowNs int64) {
+	h.catchupInitiatedCalls = append(h.catchupInitiatedCalls, nowNs)
+}
+
+func (h *recordingElectionHost) CatchupPoll(limitPosition, nowNs int64) int {
+	h.catchupPollCalls = append(h.catchupPollCalls, catchupPollCall{
+		limitPosition: limitPosition,
+		nowNs:         nowNs,
+	})
+	return h.catchupPollResult
+}
+
+func (h *recordingElectionHost) SetLogRecordingID(recordingID int64) {
+	h.setLogRecordingIDCalls = append(h.setLogRecordingIDCalls, recordingID)
+	h.localLogRecordingID = recordingID
 }
 
 // NewLogReplay returns an immediately done replay so leader and follower

@@ -50,25 +50,16 @@ func TestElection_DoWork_closedReturnsZero(t *testing.T) {
 	require.Equal(t, 0, e.DoWork(1_000))
 }
 
-func TestElection_DoWork_stubStatesReturnZero(t *testing.T) {
+func TestElection_DoWork_catchupAwaitReturnsZero(t *testing.T) {
 	t.Parallel()
 
-	states := []election.ElectionState{
-		election.ElectionStateFollowerCatchupInit,
-		election.ElectionStateFollowerCatchupAwait,
-		election.ElectionStateFollowerCatchup,
-	}
-	for _, state := range states {
-		t.Run(state.String(), func(t *testing.T) {
-			t.Parallel()
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateFollowerCatchupAwait)
 
-			cfg, deps, clock, _, _ := testElectionDeps(t)
-			e := election.NewElection(cfg, deps)
-			election.SetStateForTest(e, state)
-
-			require.Equal(t, 0, e.DoWork(clock.nowNs))
-			require.Equal(t, state, e.State())
-		})
+	for i := range 3 {
+		require.Equal(t, 0, e.DoWork(clock.nowNs+int64(i)))
+		require.Equal(t, election.ElectionStateFollowerCatchupAwait, e.State())
 	}
 }
 

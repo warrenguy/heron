@@ -219,15 +219,44 @@ func (e *Election) handleLeaderReady(nowNs int64) int {
 	return workCount
 }
 
-// handleFollowerLogReplication handles the caught-up and timeout paths only;
-// archive log replication is not wired, so no LogReplication is created here.
+// handleFollowerLogReplication installs a host LogReplication helper while
+// lagging, runs its duty cycle, and keeps the caught-up and timeout exits.
+//
+// IsDone does not advance appendPosition and is not a Canvass path. Canvass
+// still requires appendPosition at the stop position.
+//
+// A nil host factory re-calls each tick (cheap no-op). A finished helper stays
+// installed so it is not rebuilt while still lagging; idle ticks skip its
+// duty cycle and leave paths clear the pointer. The done check runs on the
+// install tick regardless, so a helper that is done at construction still
+// publishes its recording id exactly once.
 func (e *Election) handleFollowerLogReplication(nowNs int64) int {
+	workCount := 0
+
+	installed := false
+	if e.logReplication == nil {
+		e.logReplication = e.newFollowerLogReplication(nowNs)
+		installed = e.logReplication != nil
+		if installed {
+			workCount++
+		}
+	}
+
+	if rep := e.logReplication; rep != nil && (installed || !rep.IsDone()) {
+		workCount += rep.DoWork(nowNs)
+		if rep.IsDone() {
+			e.deps.Host.SetLogRecordingID(rep.RecordingID())
+			workCount++
+		}
+	}
+
 	// A NullPosition stop position means the state was entered without an
 	// install (test or simulation injection); fall through to the deadline
 	// reset instead of committing a sentinel term.
 	caughtUp := e.replicationStopPosition != NullPosition &&
 		e.appendPosition >= e.replicationStopPosition
 	if caughtUp {
+		e.clearLogReplication()
 		err := e.commitRecordingLogTerm(
 			e.replicationLeadershipTermID,
 			e.replicationTermBaseLogPosition,
@@ -238,13 +267,34 @@ func (e *Election) handleFollowerLogReplication(nowNs int64) int {
 			return 1
 		}
 		e.state(ElectionStateCanvass, nowNs, "")
-		return 0
+		return workCount
 	}
 	if nowNs >= e.replicationDeadlineNs {
+		e.clearLogReplication()
 		e.HandleError(nowNs, errors.New("election: timeout awaiting commit position"))
 		return 1
 	}
-	return 0
+	return workCount
+}
+
+// newFollowerLogReplication asks the host for a replication helper. Returns nil
+// when no leader is set or the host factory returns nil.
+func (e *Election) newFollowerLogReplication(nowNs int64) LogReplication {
+	leader := e.leaderMember
+	if leader == nil {
+		return nil
+	}
+	return e.deps.Host.NewLogReplication(
+		leader.ArchiveEndpoint,
+		leader.ArchiveResponseEndpoint,
+		e.leaderRecordingID,
+		e.replicationStopPosition,
+		nowNs,
+	)
+}
+
+func (e *Election) clearLogReplication() {
+	e.logReplication = nil
 }
 
 func (e *Election) handleFollowerReplay(nowNs int64) int {
@@ -283,7 +333,7 @@ func (e *Election) handleFollowerReplay(nowNs int64) int {
 }
 
 func (e *Election) handleFollowerCatchupInit(nowNs int64) int {
-	// No archive catchup or replication is wired yet.
+	// Near-live short-circuits to LOG_INIT only; it is not catchup complete.
 	//
 	// The install path always sets catchupJoinPosition; the notified-commit
 	// fallback covers states entered without an install (test and simulation
@@ -301,7 +351,18 @@ func (e *Election) handleFollowerCatchupInit(nowNs int64) int {
 
 func (e *Election) handleFollowerCatchupAwait(int64) int { return 0 }
 
-func (e *Election) handleFollowerCatchup(int64) int { return 0 }
+// handleFollowerCatchup polls the host for catchup progress up to the notified
+// commit bound.
+//
+// Unset notified commit is 0 (field init), not NullPosition; a zero limit falls
+// back to catchupJoinPosition.
+func (e *Election) handleFollowerCatchup(nowNs int64) int {
+	limit := e.notifiedCommitPosition
+	if limit == 0 {
+		limit = e.catchupJoinPosition
+	}
+	return e.deps.Host.CatchupPoll(limit, nowNs)
+}
 
 func (e *Election) handleFollowerLogInit(nowNs int64) int {
 	if e.logSessionID != NullMemberID {
@@ -662,8 +723,8 @@ func (e *Election) OnCommitPosition(fields codecs.CommitPositionFields) {
 	}
 }
 
-// OnRecordingSignal handles archive recording signals during log replication.
-// Mirrors Election.onRecordingSignal. Stub until logReplication.OnSignal is wired.
+// OnRecordingSignal forwards archive recording signals to the installed
+// LogReplication helper when present and publishes its recording id to the host.
 func (e *Election) OnRecordingSignal(
 	correlationID, recordingID, position int64,
 	signal RecordingSignal,
@@ -671,10 +732,12 @@ func (e *Election) OnRecordingSignal(
 	if !e.acceptsConsensusInbound() {
 		return
 	}
-	if e.logReplication != nil {
-		e.logReplication.OnSignal(correlationID, recordingID, position, signal)
-		e.deps.Host.SetLogRecordingID(e.logReplication.RecordingID())
+	rep := e.logReplication
+	if rep == nil {
+		return
 	}
+	rep.OnSignal(correlationID, recordingID, position, signal)
+	e.deps.Host.SetLogRecordingID(rep.RecordingID())
 }
 
 // HandleError resets the election to Init regardless of err. Mirrors

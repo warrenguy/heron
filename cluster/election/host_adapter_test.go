@@ -250,6 +250,7 @@ func TestNewHostAdapter_seedsThisMemberID(t *testing.T) {
 	const thisIdx = 2
 	clock := &FakeClock{nowNs: 1_000_000_000}
 	pub := &election.SbePublisher{}
+
 	// AgentConfig omits ThisMemberID (default 0). Host ThisMember is id 2.
 	agent := consensus.NewAgent(consensus.AgentConfig{
 		Commit:         new(atomic.Int64),
@@ -277,6 +278,7 @@ func TestNewHostAdapter_seedsThisMemberID(t *testing.T) {
 	appendV := new(atomic.Int64)
 	appendV.Store(100)
 	agent.SetAppendSource(&consensus.AtomicAppendPosition{V: appendV})
+
 	// Pre-seed peer activity so quorum can form; stamp still records thisMember.
 	host.UpdateMemberPosition(0, 1, 100)
 	host.UpdateMemberPosition(1, 1, 100)
@@ -284,6 +286,7 @@ func TestNewHostAdapter_seedsThisMemberID(t *testing.T) {
 	require.Equal(t, 1, agent.DoWork(clock.TimeNs()))
 	require.Equal(t, int64(100), members[thisIdx].LogPosition)
 	require.Equal(t, int64(1), members[thisIdx].LeadershipTermID)
+
 	// Member 0 must not have been overwritten by a mistaken self-stamp of id 0
 	// after the pre-seed (self is 2).
 	require.Equal(t, int64(100), members[0].LogPosition)
@@ -740,6 +743,40 @@ func TestHostAdapter_forwardSmoke(t *testing.T) {
 	require.True(t, replay.IsDone())
 	require.Equal(t, int64(200), replay.Position())
 	require.Equal(t, 0, replay.DoWork(0))
+}
+
+// HostAdapter TrackCatchupCompletion is a no-op (does not panic).
+//
+// OnAppendPosition still invokes TrackCatchup on the election host.
+func TestTrackCatchupCompletion_hostAdapterNoOp(t *testing.T) {
+	t.Parallel()
+
+	members := hostAdapterMembers(3)
+	host, _, _, _ := newTestHostAdapter(t, members, 0)
+
+	require.NotPanics(t, func() {
+		host.TrackCatchupCompletion(members[1], 1, 0x03)
+		host.TrackCatchupCompletion(nil, 0, 0)
+	})
+
+	// OnAppendPosition still reaches TrackCatchupCompletion via ElectionHost.
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	recording := &recordingElectionHost{clock: clock, role: consensus.RoleFollower}
+	deps.Host = recording
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateCanvass)
+
+	const flags uint8 = 0x04
+	e.OnAppendPosition(codecs.AppendPositionFields{
+		LeadershipTermID: testLeadershipTermID,
+		LogPosition:      100,
+		FollowerMemberID: 1,
+		Flags:            flags,
+	})
+	require.Len(t, recording.trackCatchupCalls, 1)
+	require.Equal(t, int32(1), recording.trackCatchupCalls[0].memberID)
+	require.Equal(t, int64(testLeadershipTermID), recording.trackCatchupCalls[0].leadershipTermID)
+	require.Equal(t, flags, recording.trackCatchupCalls[0].flags)
 }
 
 // TestHostAdapter_leaderLogReplicationCommitFanOut proves live ranking and

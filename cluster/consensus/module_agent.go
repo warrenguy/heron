@@ -44,6 +44,7 @@ const DefaultLeaderHeartbeatIntervalNs int64 = 200_000_000
 type Agent struct {
 	// election is nil in steady-state after [Agent.ElectionComplete].
 	election ElectionRunner
+
 	// positions / egress: usually the same host adapter after SetPositions /
 	// SetEgress.
 	positions PositionTable
@@ -117,7 +118,19 @@ type Agent struct {
 	//
 	// Nil: followerConsensusWork skips poll and proposeMax from adapter
 	// (AppendPosition interval path still runs).
+	//
+	// CatchupPoll uses the same adapter when an Image is bound.
 	logAdapter *LogAdapter
+
+	// logReplicationFactory optional inject for [Agent.NewLogReplication].
+	//
+	// Nil: NewLogReplication returns nil.
+	logReplicationFactory LogReplicationFactory
+
+	// logReplayFactory optional inject for [Agent.NewLogReplay].
+	//
+	// Nil: NewLogReplay returns done-stub at appendPosition.
+	logReplayFactory LogReplayFactory
 
 	// termBaseLogPosition is the term base written into NewLeadershipTermEvent.
 	// Seeded by [Agent.SetTermBaseLogPosition] or [Agent.JoinLogAsLeader]
@@ -143,10 +156,12 @@ type AgentConfig struct {
 	Election  ElectionRunner  // optional until election wired
 	Positions PositionTable   // optional at construct; set via [Agent.SetPositions]
 	Egress    ConsensusEgress // optional at construct; set via [Agent.SetEgress]
+
 	// Commit is mode-1 injected *atomic.Int64. Nil commit:
 	// [Agent.ProposeMaxCommit] and [Agent.CommitPosition] return 0 (no store).
 	// Production bootstrap passes non-nil.
 	Commit *atomic.Int64
+
 	// Role seeds [Agent.Role] / [Agent.RoleSet]. Default [RoleFollower] (zero value).
 	Role Role
 
@@ -388,14 +403,54 @@ func (r *doneLogReplay) IsDone() bool     { return true }
 
 var _ LogReplay = (*doneLogReplay)(nil)
 
-// NewLogReplay returns a done-stub at appendPosition ([LogReplay.IsDone] true,
-// [LogReplay.DoWork] 0).
-func (a *Agent) NewLogReplay(_, appendPosition int64) LogReplay {
+// LogReplayFactory builds a [LogReplay] helper for [Agent.NewLogReplay].
+//
+// Nil factory field: NewLogReplay returns a done-stub at appendPosition.
+// A non-nil factory that returns nil also falls through to the done-stub
+// (avoids soft livelock on leader-replay construction).
+type LogReplayFactory func(logPosition, appendPosition int64) LogReplay
+
+// LogReplicationFactory builds a follower [LogReplication] helper for
+// [Agent.NewLogReplication].
+//
+// Nil factory: NewLogReplication returns nil.
+type LogReplicationFactory func(
+	leaderArchiveEndpoint, responseArchiveEndpoint string,
+	leaderRecordingID, stopPosition, nowNs int64,
+) LogReplication
+
+// SetLogReplayFactory wires or clears the optional [LogReplayFactory].
+//
+// Nil restores the done-stub default for [Agent.NewLogReplay].
+//
+// Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
+func (a *Agent) SetLogReplayFactory(f LogReplayFactory) { a.logReplayFactory = f }
+
+// SetLogReplicationFactory wires or clears the optional [LogReplicationFactory].
+//
+// Nil restores the default nil return from [Agent.NewLogReplication].
+//
+// Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
+func (a *Agent) SetLogReplicationFactory(f LogReplicationFactory) { a.logReplicationFactory = f }
+
+// NewLogReplay returns a [LogReplay] for the logPosition/appendPosition gap.
+//
+// When a [LogReplayFactory] is set and returns non-nil, returns that result.
+// Nil factory field or factory result falls through to a done-stub at
+// appendPosition ([LogReplay.IsDone] true, [LogReplay.DoWork] 0).
+func (a *Agent) NewLogReplay(logPosition, appendPosition int64) LogReplay {
+	if f := a.logReplayFactory; f != nil {
+		if r := f(logPosition, appendPosition); r != nil {
+			return r
+		}
+	}
 	return &doneLogReplay{position: appendPosition}
 }
 
-// NewLogReplication returns nil until archive-backed follower [LogReplication]
-// lands.
+// NewLogReplication returns a follower [LogReplication] helper, or nil.
+//
+// When a [LogReplicationFactory] is set, returns the factory result. Otherwise
+// returns nil (full archive replicate mesh not wired).
 func (a *Agent) NewLogReplication(
 	leaderArchiveEndpoint string,
 	responseArchiveEndpoint string,
@@ -403,20 +458,54 @@ func (a *Agent) NewLogReplication(
 	stopPosition int64,
 	nowNs int64,
 ) LogReplication {
-	return nil
+	f := a.logReplicationFactory
+	if f == nil {
+		return nil
+	}
+	return f(
+		leaderArchiveEndpoint,
+		responseArchiveEndpoint,
+		leaderRecordingID,
+		stopPosition,
+		nowNs,
+	)
 }
 
-// CatchupPoll is a no-op stub; returns 0.
-func (a *Agent) CatchupPoll(limitPosition, nowNs int64) int { return 0 }
+// CatchupPoll polls catchup/live log progress under limitPosition.
+//
+// When a [LogAdapter] Image is bound, polls with bound = limitPosition (same
+// BoundedControlledPoll substrate as followerConsensusWork) and advances
+// commit via [Agent.ProposeMaxCommit] from adapter position. Returns 0 when
+// adapter or image is nil, or when the bound yields no work.
+//
+// Concurrency: invoker-only. Election-live catchup is the sole consumer while
+// an election runner is set; steady followerConsensusWork does not run then.
+//
+// nowNs is reserved for future pacing and ignored here.
+func (a *Agent) CatchupPoll(limitPosition, nowNs int64) int {
+	_ = nowNs
+	adapter := a.logAdapter
+	if adapter == nil || adapter.Image() == nil {
+		return 0
+	}
+	return a.pollLogAndProposeMax(adapter, limitPosition)
+}
 
-// CatchupInitiated is a no-op stub.
-func (a *Agent) CatchupInitiated(nowNs int64) {}
+// CatchupInitiated is a no-op host hook.
+//
+// Real catchup start (subscription / replicate mesh) is not performed here.
+func (a *Agent) CatchupInitiated(int64) {}
 
-// StopAllCatchups is a no-op stub.
+// StopAllCatchups is a no-op host hook.
+//
+// Stop mesh for live catchup sessions is not performed here.
 func (a *Agent) StopAllCatchups() {}
 
-// IsCatchupNearLive is a no-op stub; returns false.
-func (a *Agent) IsCatchupNearLive(position int64) bool { return false }
+// IsCatchupNearLive reports whether catchup can skip to log-init.
+//
+// Production Agent always returns false. Alternate ElectionHost
+// implementations (for example sim) may report near-live.
+func (a *Agent) IsCatchupNearLive(int64) bool { return false }
 
 // LiveLogDestination returns the live log destination channel URI.
 func (a *Agent) LiveLogDestination() string { return a.liveLogDestination }
@@ -771,6 +860,7 @@ func (a *Agent) leaderConsensusWork(nowNs int64) int {
 		return 0
 	}
 	appendPos := a.appendSource.AppendPosition()
+
 	// Steady stamp via PositionTable only. Skip when thisMemberID is unset;
 	// rank and gate still run.
 	if a.thisMemberID != nullMemberID {
@@ -785,11 +875,18 @@ func (a *Agent) leaderConsensusWork(nowNs int64) int {
 func (a *Agent) followerConsensusWork(nowNs int64) int {
 	work := 0
 	if a.logAdapter != nil {
-		work += a.logAdapter.Poll(a.followerLogPollBound())
-		// proposeMax even when poll count is 0 (position may already match prior consume)
-		_ = a.ProposeMaxCommit(a.logAdapter.Position())
+		work += a.pollLogAndProposeMax(a.logAdapter, a.followerLogPollBound())
 	}
 	work += a.updateFollowerPosition(nowNs)
+	return work
+}
+
+// pollLogAndProposeMax polls adapter under boundPosition and advances commit
+// from adapter position. ProposeMax runs even when poll returns 0 (position
+// may already match prior consume). Caller must pass non-nil adapter.
+func (a *Agent) pollLogAndProposeMax(adapter *LogAdapter, boundPosition int64) int {
+	work := adapter.Poll(boundPosition)
+	_ = a.ProposeMaxCommit(adapter.Position())
 	return work
 }
 
