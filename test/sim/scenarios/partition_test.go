@@ -14,9 +14,9 @@ var majorityIsolateEdges = [][2]int32{{0, 1}, {2, 1}}
 // scenarioPartitionMajority cuts 1 vs {0,2}, runs a bounded partitioned
 // window, heals, then expects soft liveness. Liveness is not asserted while
 // the partition holds.
-func scenarioPartitionMajority() ScenarioSpec {
-	const deadline = DefaultLivenessDeadlineSteps
-	return ScenarioSpec{
+func scenarioPartitionMajority() sim.ScenarioSpec {
+	const deadline = sim.DefaultLivenessDeadlineSteps
+	return sim.ScenarioSpec{
 		Name:           "partition_majority",
 		Weight:         250,
 		ExpectLiveness: true,
@@ -25,10 +25,10 @@ func scenarioPartitionMajority() ScenarioSpec {
 			cfg := baseConfig(seed)
 			cfg.Nemesis = part
 			return cfg, func(s *sim.ElectionSim) error {
-				if err := applyNemesisBatch(
+				if err := sim.ApplyNemesisBatch(
 					s, sim.ActionPartition, len(majorityIsolateEdges), deadline,
 					func() {
-						schedulePartitionEdges(
+						sim.SchedulePartitionEdges(
 							s, s.Now(), sim.ActionPartition, majorityIsolateEdges, true,
 						)
 					},
@@ -42,10 +42,10 @@ func scenarioPartitionMajority() ScenarioSpec {
 				}
 
 				// Apply heal before soft liveness: majority may already hold leadership.
-				if err := applyNemesisBatch(
+				if err := sim.ApplyNemesisBatch(
 					s, sim.ActionHeal, len(majorityIsolateEdges), deadline,
 					func() {
-						schedulePartitionEdges(
+						sim.SchedulePartitionEdges(
 							s, s.Now(), sim.ActionHeal, majorityIsolateEdges, true,
 						)
 					},
@@ -60,8 +60,8 @@ func scenarioPartitionMajority() ScenarioSpec {
 
 // scenarioPartitionAsymmetric applies directed cuts only. Safety continuous;
 // no soft liveness.
-func scenarioPartitionAsymmetric() ScenarioSpec {
-	return ScenarioSpec{
+func scenarioPartitionAsymmetric() sim.ScenarioSpec {
+	return sim.ScenarioSpec{
 		Name:           "partition_asymmetric",
 		Weight:         50,
 		ExpectLiveness: false,
@@ -71,10 +71,10 @@ func scenarioPartitionAsymmetric() ScenarioSpec {
 			cfg.Nemesis = part
 			return cfg, func(s *sim.ElectionSim) error {
 				edges := [][2]int32{{0, 1}, {1, 2}}
-				if err := applyNemesisBatch(
-					s, sim.ActionPartition, len(edges), DefaultLivenessDeadlineSteps,
+				if err := sim.ApplyNemesisBatch(
+					s, sim.ActionPartition, len(edges), sim.DefaultLivenessDeadlineSteps,
 					func() {
-						schedulePartitionEdges(s, s.Now(), sim.ActionPartition, edges, false)
+						sim.SchedulePartitionEdges(s, s.Now(), sim.ActionPartition, edges, false)
 					},
 				); err != nil {
 					return err

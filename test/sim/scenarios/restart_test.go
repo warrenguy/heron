@@ -16,9 +16,9 @@ import (
 
 // scenarioRestart crashes one node after progress, restarts it, then expects
 // soft liveness once the cluster settles.
-func scenarioRestart() ScenarioSpec {
-	const deadline = DefaultLivenessDeadlineSteps
-	return ScenarioSpec{
+func scenarioRestart() sim.ScenarioSpec {
+	const deadline = sim.DefaultLivenessDeadlineSteps
+	return sim.ScenarioSpec{
 		Name:           "restart",
 		Weight:         200,
 		ExpectLiveness: true,
@@ -58,8 +58,8 @@ func scenarioRestart() ScenarioSpec {
 
 // scenarioRestartRecordingLog is a thin durability check excluded from the
 // weighted 1000 soak. ExpectLiveness is false; TERM identity is the assert.
-func scenarioRestartRecordingLog() ScenarioSpec {
-	return ScenarioSpec{
+func scenarioRestartRecordingLog() sim.ScenarioSpec {
+	return sim.ScenarioSpec{
 		Name:           "restart_recordinglog",
 		Weight:         0,
 		ExpectLiveness: false,
@@ -67,7 +67,7 @@ func scenarioRestartRecordingLog() ScenarioSpec {
 			cfg := baseConfig(seed)
 			cfg.AttachRecordingLog = true
 			return cfg, func(s *sim.ElectionSim) error {
-				return runUntil(s, 0, hasRecordingLogTerm)
+				return sim.PumpUntil(s, 0, hasRecordingLogTerm)
 			}
 		},
 	}
@@ -93,7 +93,7 @@ func TestScenario_restartRecordingLog(t *testing.T) {
 func runRestartRecordingLog(t *testing.T, base uint64, runIndex int) {
 	t.Helper()
 	sc := scenarioRestartRecordingLog()
-	seed := nonZeroSeed(DeriveSeed(base, sc.Name, runIndex))
+	seed := sim.NonZeroSeed(sim.DeriveSeed(base, sc.Name, runIndex))
 	stateDir := t.TempDir()
 
 	cfg, body := sc.Build(seed, runIndex)

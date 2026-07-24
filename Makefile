@@ -247,6 +247,16 @@ test-election-sim: ## Election fault sim soak (not part of make check)
 	  go test -timeout=$(ELECTION_SIM_TIMEOUT) -race -tags=$(ELECTION_SIM_TAGS) \
 	  -count=1 -run 'TestElectionSimSoak' ./test/sim/scenarios/
 
+REPLICATION_SIM_RUNS ?= 180
+REPLICATION_SIM_TIMEOUT ?= 3m
+REPLICATION_SIM_TAGS := replicationsim,$(UNIT_TEST_TAGS)
+
+.PHONY: test-replication-sim
+test-replication-sim: ## Replication safety sim catalog (not part of make check)
+	REPLICATION_SIM_RUNS=$(REPLICATION_SIM_RUNS) HERON_SIM_SAVE=$${HERON_SIM_SAVE:-0} \
+	  go test -timeout=$(REPLICATION_SIM_TIMEOUT) -race -tags=$(REPLICATION_SIM_TAGS) \
+	  -count=1 -run 'TestReplicationSimSoak' ./test/sim/replication/
+
 BENCH_DIR := .bench
 BENCH_BASELINE := $(BENCH_DIR)/baseline.txt
 BENCH_COUNT ?= 10

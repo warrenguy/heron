@@ -113,7 +113,9 @@ func CheckCandidateTermMonotonicity(s *ElectionSim) error {
 // checkContinuousSafety runs after every step under testhooks.
 //
 // Always checks candidate-term monotonicity. Checks for two live self-leaders
-// on the same term unless SkipSplitBrainCheck is set.
+// on the same term unless SkipSplitBrainCheck is set. When UseReplicationHost
+// is set and SkipReplicationSafety is false, also runs continuous commit
+// safety (monotonic, floor-on-advance, single authority).
 func checkContinuousSafety(s *ElectionSim) error {
 	if s.safetyErr != nil {
 		return s.safetyErr
@@ -124,12 +126,17 @@ func checkContinuousSafety(s *ElectionSim) error {
 		s.recordSafetyErr(err)
 		return err
 	}
-	if s.cfg.SkipSplitBrainCheck {
-		return nil
+	if !s.cfg.SkipSplitBrainCheck {
+		if err := CheckNoSplitBrainLive(s); err != nil {
+			s.recordSafetyErr(err)
+			return err
+		}
 	}
-	if err := CheckNoSplitBrainLive(s); err != nil {
-		s.recordSafetyErr(err)
-		return err
+	if s.cfg.UseReplicationHost && !s.cfg.SkipReplicationSafety {
+		if err := checkReplicationCommitSafety(s); err != nil {
+			s.recordSafetyErr(err)
+			return err
+		}
 	}
 	return nil
 }

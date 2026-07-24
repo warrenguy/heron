@@ -125,7 +125,7 @@ func TestSafety_liveSplitBrain(t *testing.T) {
 }
 
 // SkipSplitBrainCheck turns off only the after-step dual-self-leader scan.
-// CheckNoSplitBrainLive still fails so a script can plant an illegal state and
+// CheckNoSplitBrainLive still fails so a script can force an illegal state and
 // assert it without the step loop stopping on the after-step safety path.
 func TestSafety_liveSplitBrainSkippedWhenDisarmed(t *testing.T) {
 	t.Parallel()

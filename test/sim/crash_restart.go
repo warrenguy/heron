@@ -8,8 +8,8 @@ import (
 	"github.com/warrenguy/heron/cluster/election"
 )
 
-// CrashNode marks id dead: snapshots log identity, nils election, keeps
-// nodeState open and Network registration.
+// CrashNode marks id dead: snapshots log identity, clears election host
+// wiring, keeps nodeState and Network registration.
 //
 // Already-crashed is a no-op.
 func (s *ElectionSim) CrashNode(id int32) error {
@@ -26,7 +26,11 @@ func (s *ElectionSim) CrashNode(id int32) error {
 		logLeadershipTerm: election.LogLeadershipTermIDForTest(node.election),
 	}
 	node.initLoaded = false
-	node.election = nil
+	clearLiveHost(node)
+
+	// Continuous commit high-water must not survive crash: restart rebuilds
+	// empty Sent and a fresh Agent at 0 under the restored term.
+	s.clearCommitSignalsForMember(id)
 	s.appendTimelineNow("crash", id, TimelineEntry{
 		Detail: fmt.Sprintf("node=%d", id),
 		Action: ActionCrash,
@@ -50,8 +54,8 @@ func (s *ElectionSim) RestartNode(id int32) error {
 		return fmt.Errorf("sim: restart node %d missing crash snapshot", id)
 	}
 
-	// Marker first: rebuild and leaving Init emit state (and later tick Seq)
-	// before this line would otherwise land; failure paths still show attempt.
+	// Timeline before rebuild so stuck-Init failures still record the attempt;
+	// rebuild and leave-Init emit later state/tick rows with higher Seq.
 	s.appendTimelineNow("restart", id, TimelineEntry{
 		Detail: fmt.Sprintf("node=%d log_term=%d", id, snap.logLeadershipTerm),
 		Action: ActionRestart,
@@ -60,15 +64,15 @@ func (s *ElectionSim) RestartNode(id int32) error {
 	if err := s.rebuildElection(node, snap); err != nil {
 		return err
 	}
-	election.SetLogLeadershipTermIDForTest(node.election, snap.logLeadershipTerm)
 
 	// Stuck Init rolls back to crashed (snap kept for retry).
 	now := s.Now()
 	s.driveRestartLeaveInit(node, now)
 	if node.election.State() == election.ElectionStateInit {
-		node.election = nil
+		clearLiveHost(node)
 		return fmt.Errorf("sim: restart node %d stuck in Init", id)
 	}
+
 	node.crashSnap = nil
 
 	// Focused sims only schedule DoWork ticks for the subject; peers stay inject-only.
@@ -90,15 +94,20 @@ func (s *ElectionSim) driveRestartLeaveInit(node *Node, nowNs int64) {
 	node.Tick(nowNs)
 }
 
+// rebuildElection attaches a live Election from crashSnap identity.
+//
+// Always non-startup recovery, even if PerNodeOverrides set IsNodeStartup.
+// AppendPosition is not restored: leave-Init prepareForNewLeadership overwrites
+// it with the handler return (logPosition under simAgentHandler).
 func (s *ElectionSim) rebuildElection(node *Node, snap *crashSnap) error {
 	cfg := perNodeElectionConfig(s.cfg.ElectionConfig, node.id, s.cfg.PerNodeOverrides)
-
-	// Restart always uses non-startup recovery regardless of override.
-	// AppendPosition is not restored: prepareForNewLeadership on leaving Init
-	// overwrites it with the handler return (logPosition under simAgentHandler).
 	cfg.IsNodeStartup = false
 	cfg.LeadershipTermID = snap.leadershipTerm
 	cfg.LogPosition = snap.logPosition
 
-	return attachLiveElection(s, node, cfg)
+	if err := attachLiveElection(s, node, cfg); err != nil {
+		return err
+	}
+	election.SetLogLeadershipTermIDForTest(node.election, snap.logLeadershipTerm)
+	return nil
 }

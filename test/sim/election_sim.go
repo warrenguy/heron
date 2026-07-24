@@ -55,11 +55,16 @@ type Config struct {
 	// sim behavior for canvass regression scenarios.
 	FocusNodeID *int32
 
-	// SkipSplitBrainCheck disables the after-step scan for two live members in
-	// self-leader states on the same term. Transition-time first-winner
-	// recording (leaderWins) and candidate-term monotonicity still run under
-	// testhooks. Set when a script intentionally forms illegal intermediate
-	// wire state and must not stop the step loop on the live scan alone.
+	// SkipSplitBrainCheck disables the election after-step scan for two live
+	// members in self-leader states on the same term. Transition-time
+	// first-winner recording (leaderWins) and candidate-term monotonicity
+	// still run under testhooks. Set when a script intentionally forms illegal
+	// intermediate wire state and must not stop the step loop on the election
+	// live scan alone.
+	//
+	// Continuous commit safety (UseReplicationHost && !SkipReplicationSafety)
+	// still fails dual self-leaders via CheckSingleCommitAuthority. To force
+	// dual leaders under replication host, set SkipReplicationSafety as well.
 	SkipSplitBrainCheck bool
 
 	// NominationRand seeds per-node nomination back-off. Nil leaves election
@@ -70,6 +75,16 @@ type Config struct {
 	// AttachRecordingLog opens a real recording.log under each node dir and
 	// wires it into election deps. Default false keeps soak seeds cheap.
 	AttachRecordingLog bool
+
+	// UseReplicationHost wires HostAdapter + consensus.Agent as the election
+	// host. Default false keeps election catalog on simElectionHost.
+	UseReplicationHost bool
+
+	// SkipReplicationSafety disables continuous commit safety when
+	// UseReplicationHost is true. Default false: commit checks run after each
+	// step whenever the replication host is on. Set true to keep HostAdapter
+	// wiring without those checks.
+	SkipReplicationSafety bool
 
 	// SeedAttribution is optional scenario run identity for failure dumps.
 	// Empty Scenario skips base/scenario/index dump lines.
@@ -95,6 +110,12 @@ func ConfigWithSimRand(cfg Config) Config {
 	return cfg
 }
 
+// commitSignalKey is (member, leadership term) for continuous commit high-water.
+type commitSignalKey struct {
+	memberID int32
+	term     int64
+}
+
 // ElectionSim orchestrates scheduler, network, and Node instances.
 type ElectionSim struct {
 	cfg         Config
@@ -108,6 +129,11 @@ type ElectionSim struct {
 	innerPolicy NetworkPolicy
 	safetyErr   error
 	leaderWins  map[int64]int32
+
+	// lastCommitSignals tracks high-water commit signal per (memberID, term)
+	// for continuous commit safety under UseReplicationHost. Lazy-init on
+	// first check.
+	lastCommitSignals map[commitSignalKey]int64
 
 	// restartLeaveInitHook replaces post-rebuild Init DoWork when non-nil
 	// (stuck-Init rollback tests under testhooks).
@@ -245,8 +271,9 @@ func (s *ElectionSim) recordSafetyErr(err error) {
 }
 
 // continuousSafetyAfterStep is set under testhooks to run after each step:
-// candidate-term monotonicity, and (unless SkipSplitBrainCheck) the live
-// two-self-leaders scan.
+// candidate-term monotonicity, (unless SkipSplitBrainCheck) the live
+// two-self-leaders scan, and when UseReplicationHost && !SkipReplicationSafety
+// continuous commit safety (monotonic, floor-on-advance, single authority).
 //
 // Untagged builds leave it nil.
 var continuousSafetyAfterStep func(*ElectionSim) error

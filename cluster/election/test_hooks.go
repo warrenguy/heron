@@ -20,6 +20,12 @@ var (
 // Use only to seed handler preconditions; observed transitions come from Election paths.
 func SetStateForTest(e *Election, s ElectionState) { e.electionState = s }
 
+// SetAppendPositionForTest writes the election append high-water without a
+// recording counter.
+//
+// Sim replication harness uses it for synthetic leader append.
+func SetAppendPositionForTest(e *Election, pos int64) { e.appendPosition = pos }
+
 func SetLogReplicationForTest(e *Election, lr LogReplication) { e.logReplication = lr }
 
 // SetLogSessionIDForTest seeds the log session id without running AddLogPublication.
@@ -29,7 +35,9 @@ func SetLogReplicationForTest(e *Election, lr LogReplication) { e.logReplication
 func SetLogSessionIDForTest(e *Election, id int32) { e.logSessionID = id }
 
 // IsLeaderStartupForTest exposes the leader startup flag for startup-flag
-// oracle parity tests. Test-only; production paths set this from NewLeadershipTerm.
+// oracle parity tests.
+//
+// Test-only; production paths set this from NewLeadershipTerm.
 func IsLeaderStartupForTest(e *Election) bool { return e.isLeaderStartup }
 
 func ElectionStateNameCount() int { return len(electionStateNames) }

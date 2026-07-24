@@ -44,7 +44,7 @@ func (h *simElectionHost) AddLogPublication(int64) int32 { return simLogSessionI
 
 func (h *simElectionHost) QuorumPositionBoundedByLeaderLog(int64, int64) int64 {
 	if len(h.quorumSequence) == 0 {
-		return h.NoopElectionHost.QuorumPositionBoundedByLeaderLog(0, 0)
+		return 0
 	}
 	idx := min(h.quorumCallCount, len(h.quorumSequence)-1)
 	h.quorumCallCount++
@@ -52,6 +52,10 @@ func (h *simElectionHost) QuorumPositionBoundedByLeaderLog(int64, int64) int64 {
 }
 
 func (h *simElectionHost) LocalLogRecordingID() int64 { return h.localLogRecordingID }
+
+func (h *simElectionHost) SetLogRecordingID(recordingID int64) {
+	h.localLogRecordingID = recordingID
+}
 
 func (h *simElectionHost) PublishCommitPosition(commitPosition, leadershipTermID int64) {
 	h.publishCommitPositionCalls = append(h.publishCommitPositionCalls, publishCommitPositionCall{
@@ -106,6 +110,9 @@ type joinLogCall struct {
 // simAgentHandler records follower log joins and returns joinReturns so
 // scenarios can exercise join success and stall paths. Other callbacks fall
 // through to the noop handler.
+//
+// When agentCM is set (replication host path), JoinLogAsLeader seeds the Agent
+// term/role. ElectionDeps.Handler stays this type, not *consensus.Agent.
 type simAgentHandler struct {
 	electiontest.NoopAgentHandler
 
@@ -115,6 +122,8 @@ type simAgentHandler struct {
 
 	joinLogCalls []joinLogCall
 	joinReturns  bool
+
+	agentCM *consensus.Agent
 }
 
 func (h *simAgentHandler) PrepareForNewLeadership(logPosition, nowNs int64) int64 {
@@ -122,6 +131,17 @@ func (h *simAgentHandler) PrepareForNewLeadership(logPosition, nowNs int64) int6
 	h.prepareLogPosition = logPosition
 	h.prepareNowNs = nowNs
 	return logPosition
+}
+
+func (h *simAgentHandler) JoinLogAsLeader(
+	leadershipTermID, logPosition int64,
+	logSessionID int32,
+	isStartup bool,
+) {
+	if h.agentCM == nil {
+		return
+	}
+	h.agentCM.JoinLogAsLeader(leadershipTermID, logPosition, logSessionID, isStartup)
 }
 
 func (h *simAgentHandler) JoinLogAsFollower(

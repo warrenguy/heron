@@ -11,8 +11,8 @@ import (
 )
 
 // lossyScenario builds a soft-liveness scenario with a lossy network nemesis.
-func lossyScenario(name string, weight int, policy sim.LossyPolicy) ScenarioSpec {
-	return ScenarioSpec{
+func lossyScenario(name string, weight int, policy sim.LossyPolicy) sim.ScenarioSpec {
+	return sim.ScenarioSpec{
 		Name:           name,
 		Weight:         weight,
 		ExpectLiveness: true,
@@ -20,14 +20,14 @@ func lossyScenario(name string, weight int, policy sim.LossyPolicy) ScenarioSpec
 			cfg := baseConfig(seed)
 			cfg.Nemesis = sim.NewLossyNetworkNemesis(policy)
 			return cfg, func(s *sim.ElectionSim) error {
-				return runUntilSoftLiveness(s, DefaultLivenessDeadlineSteps)
+				return runUntilSoftLiveness(s, sim.DefaultLivenessDeadlineSteps)
 			}
 		},
 	}
 }
 
 // scenarioLossyStable keeps a majority fully connected under mild loss.
-func scenarioLossyStable() ScenarioSpec {
+func scenarioLossyStable() sim.ScenarioSpec {
 	return lossyScenario("lossy_stable", 150, sim.LossyPolicy{
 		DropProb:   0.1,
 		LatencyMin: 0,
@@ -37,8 +37,8 @@ func scenarioLossyStable() ScenarioSpec {
 
 // electionSimCatalog is the weighted scenario list (weights sum to 1000).
 // restart_recordinglog is excluded.
-func electionSimCatalog() []ScenarioSpec {
-	return []ScenarioSpec{
+func electionSimCatalog() []sim.ScenarioSpec {
+	return []sim.ScenarioSpec{
 		scenarioSplitVote(),
 		scenarioPartitionMajority(),
 		scenarioPartitionAsymmetric(),
@@ -57,7 +57,7 @@ func TestElectionSimSoak(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping election sim soak under -short")
 	}
-	RunCatalog(t, SoakConfig{
+	RunCatalog(t, sim.SoakConfig{
 		BaseSeed:  1,
 		Scenarios: electionSimCatalog(),
 	})
@@ -93,12 +93,12 @@ func TestScaleWeights(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			in := make([]ScenarioSpec, len(weights))
+			in := make([]sim.ScenarioSpec, len(weights))
 			for i, w := range weights {
 				in[i].Weight = w
 			}
 
-			out := scaleWeights(in, tc.target)
+			out := sim.ScaleWeights(in, tc.target)
 			require.Len(t, out, len(weights))
 
 			if tc.target <= 0 || tc.target == total {

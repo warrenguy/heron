@@ -9,9 +9,9 @@ import (
 )
 
 // scenarioClockSkew advances epoch clocks mid-run then expects soft liveness.
-func scenarioClockSkew() ScenarioSpec {
-	const deadline = DefaultLivenessDeadlineSteps
-	return ScenarioSpec{
+func scenarioClockSkew() sim.ScenarioSpec {
+	const deadline = sim.DefaultLivenessDeadlineSteps
+	return sim.ScenarioSpec{
 		Name:           "clock_skew",
 		Weight:         150,
 		ExpectLiveness: true,
