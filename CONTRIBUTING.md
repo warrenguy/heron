@@ -46,6 +46,7 @@ make check        # lint, pins, SBE/catalog stale (opt), unit+stress, contract-o
 make test-all     # check + rapid + integration + java-interop + cluster-java + failover + archive-java smokes
 make test-rapid                  # property tests (pgregory.net/rapid)
 make test-election-sim           # election fault sim soak (CI; not part of make check)
+make test-replication-sim        # replication commit-safety sim soak (CI; not part of make check)
 make test-integration            # live C aeronmd (-tags=integration)
 make contract-oracles            # all four contract suites below (needs mvn + java)
 make test-java-interop-contract  # Go/Java smoke: streams, payloads, timeouts (no driver)
@@ -136,7 +137,7 @@ Java golden fixture layout:
 4. Commit spec XML and flyweight diffs if any.
 5. If port notes or subset changed, update the matching entries in
    [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
-6. `make check` (optional SBE stale gates when Java is installed) and `make test-rapid`.
+6. `make check` (optional SBE stale checks when Java is installed) and `make test-rapid`.
 7. `make test-cluster-sbe-contract` for cluster wire. Fix failures under:
    - `cluster/codecs/`
    - `test/integration/cluster_sbe/clustersbe/`
@@ -168,7 +169,7 @@ Optional env:
 | `BENCH_COUNT` | bench iterations | Makefile: 10 |
 | `BENCH_PAYLOAD_SIZES` | comma-separated payload filter | CI: `32,1400` |
 | `BENCH_THRESHOLD` | alloc regression threshold | script: 10; CI (`bench.yml`): 30 |
-| `SKIP_BENCH_REGRESSION` | skip regression gate | unset |
+| `SKIP_BENCH_REGRESSION` | skip alloc regression check | unset |
 
 ## Devcontainer
 
