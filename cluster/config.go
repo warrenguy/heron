@@ -1,6 +1,6 @@
 // Package cluster holds the consensus module member process assembly:
-// configuration, validation, and cluster channel topology derived from a cluster
-// members string.
+// configuration, validation, cluster channel topology derived from a cluster
+// members string, and per-peer consensus publication lifecycle.
 //
 // This package is not the consensus agent library. The agent, log publisher, and
 // log adapter live in cluster/consensus; the election state machine and member
@@ -10,7 +10,7 @@
 // Concurrency: Config is a value; Normalize returns a copy and mutates nothing.
 // A Topology's own fields are fixed after NewTopology, but the cluster members it
 // exposes are shared mutable state written by the election state machine; touch
-// them only from the invoker goroutine. See Topology.
+// them only from the invoker goroutine. See [Topology].
 package cluster
 
 import (
