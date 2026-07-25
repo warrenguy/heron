@@ -1032,7 +1032,7 @@ func AssertSubscribeMetadata(
 
 	require.Equal(t, streamID, sub.StreamID())
 
-	image := requireFirstImage(t, sub)
+	image := RequireFirstImage(t, sub)
 	require.Equal(t, streamID, image.StreamID())
 	require.Equal(t, sessionID, image.SessionID())
 	require.Equal(t, joinPosBefore+wantAdvance, image.Position())
@@ -1050,16 +1050,20 @@ func AssertPubSubPositionsAdvanced(
 
 	require.Equal(t, pubPosBefore+advance, pub.Position())
 
-	image := requireFirstImage(t, sub)
+	image := RequireFirstImage(t, sub)
 	require.Equal(t, image.JoinPosition()+advance, image.Position())
 	return image
 }
 
-func requireFirstImage(t testing.TB, sub *aeron.Subscription) *aeron.Image {
+// RequireFirstImage returns ImageAt(0) or fails.
+//
+// Use after ConnectExclusiveIPCPubSubClients or similar has already connected
+// the subscription; this helper does not wait for an image.
+func RequireFirstImage(t testing.TB, sub *aeron.Subscription) *aeron.Image {
 	t.Helper()
 
 	image, ok := sub.ImageAt(0)
-	require.True(t, ok)
+	require.True(t, ok, "subscription has no image at index 0")
 	return image
 }
 

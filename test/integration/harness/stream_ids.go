@@ -74,4 +74,11 @@ const (
 	OfferWithRetryClosedPublicationStreamID int32 = 8021
 
 	AssertSubscribeMetadataStreamID int32 = 8022
+
+	// Cluster log commit live tests. Isolated for SharedParallel.
+	LogCommitAppendNLTStreamID      int32 = 8301
+	LogCommitBoundIsolationStreamID int32 = 8302
+
+	// Single-peer AeronPublisher CommitPosition (control stream).
+	LogCommitAeronPublisherStreamID int32 = 8304
 )
