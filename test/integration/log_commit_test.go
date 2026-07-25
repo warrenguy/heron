@@ -106,7 +106,9 @@ func bindRecordingLogAdapter(
 	return adapter, spy
 }
 
-// waitLogAdapterPoll pumps DoWork and adapter.Poll until pred or timeout.
+// waitLogAdapterPoll pumps DoWork and adapter.Poll until spy has recorded
+// wantSessions session messages and wantNLTs new leadership term events, or
+// until timeout.
 func waitLogAdapterPoll(
 	t testing.TB,
 	client *aeron.Client,
@@ -114,7 +116,8 @@ func waitLogAdapterPoll(
 	adapter *consensus.LogAdapter,
 	bound int64,
 	spy *recordingLogHandler,
-	pred func() bool,
+	wantSessions int,
+	wantNLTs int,
 ) {
 	t.Helper()
 
@@ -126,7 +129,7 @@ func waitLogAdapterPoll(
 		"client transport error during log adapter poll",
 		func() bool {
 			adapter.Poll(bound)
-			return pred()
+			return len(spy.sessions) >= wantSessions && len(spy.nlts) >= wantNLTs
 		},
 		func() string {
 			return fmt.Sprintf(
@@ -191,9 +194,7 @@ func TestLogCommit_AppendMessageAndNLTRoundtrip(t *testing.T) {
 	endPos := lp.Position()
 	require.Greater(t, endPos, appendPos)
 
-	waitLogAdapterPoll(t, client, hadClientError, adapter, endPos, spy, func() bool {
-		return len(spy.sessions) >= 1 && len(spy.nlts) >= 1
-	})
+	waitLogAdapterPoll(t, client, hadClientError, adapter, endPos, spy, 1, 1)
 
 	require.Len(t, spy.sessions, 1)
 	requireSessionAt(t, spy, 0, clusterSessionID, sessionTimestamp)
@@ -238,17 +239,13 @@ func TestLogCommit_BoundIsolationLive(t *testing.T) {
 	adapter, spy := bindRecordingLogAdapter(t, sub)
 
 	// Bound at first-frame end: second frame starts at mid (start >= bound).
-	waitLogAdapterPoll(t, client, hadClientError, adapter, mid, spy, func() bool {
-		return len(spy.sessions) >= 1
-	})
+	waitLogAdapterPoll(t, client, hadClientError, adapter, mid, spy, 1, 0)
 	require.Len(t, spy.sessions, 1)
 	requireSessionAt(t, spy, 0, sessionID, timestamp1)
 	require.Equal(t, mid, adapter.Position())
 
 	// Second poll drains remaining frame.
-	waitLogAdapterPoll(t, client, hadClientError, adapter, end, spy, func() bool {
-		return len(spy.sessions) >= 2
-	})
+	waitLogAdapterPoll(t, client, hadClientError, adapter, end, spy, 2, 0)
 	require.Len(t, spy.sessions, 2)
 	requireSessionAt(t, spy, 1, sessionID, timestamp2)
 	require.Equal(t, end, adapter.Position())

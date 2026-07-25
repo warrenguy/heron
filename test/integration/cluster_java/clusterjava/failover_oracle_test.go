@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
 )
@@ -118,4 +119,41 @@ func TestFailoverBuildIngressChannel_memberEndpoint(t *testing.T) {
 		clusterjava.FailoverIngressChannel+"|endpoint="+member1Endpoint,
 		got,
 	)
+}
+
+func TestBuildClusterMembersString_javaOracleParity(t *testing.T) {
+	failoverHosts := []string{"cluster-0", "cluster-1", "cluster-2"}
+
+	tests := []struct {
+		name string
+		cfg  cluster.MembersStringConfig
+		want string
+	}{
+		{
+			name: "FailoverClusterMembersString",
+			cfg: cluster.MembersStringConfig{
+				IngressHostnames: failoverHosts,
+				ClusterHostnames: failoverHosts,
+				PortBase:         clusterjava.PortBase,
+			},
+			want: clusterjava.FailoverClusterMembersString,
+		},
+		{
+			name: "ClusterMembersString",
+			cfg: cluster.MembersStringConfig{
+				IngressHostnames: []string{"localhost"},
+				ClusterHostnames: []string{"localhost"},
+				PortBase:         clusterjava.PortBase,
+			},
+			want: clusterjava.ClusterMembersString,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := cluster.BuildClusterMembersString(tt.cfg)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
 }
