@@ -105,7 +105,7 @@ jobs:
         run: make test-election-sim
       - name: Upload election-sim failures
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: election-sim-failures
           path: test/sim/testdata/sim/failures/
@@ -127,7 +127,7 @@ jobs:
         run: make test-replication-sim
       - name: Upload replication-sim failures
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: replication-sim-failures
           path: test/sim/testdata/sim/failures/
