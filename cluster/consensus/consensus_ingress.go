@@ -6,8 +6,9 @@ const defaultConsensusIngressFragmentLimit = 10
 
 // ConsensusIngress polls one duty-cycle batch of consensus-channel fragments.
 //
-// Implementations: test harness (queue of buffers), later Aeron Subscription
-// adapter. Agent never holds election types.
+// Implementations: [QueueConsensusIngress] (unit inject) and
+// [SubscriptionConsensusIngress] (Aeron Subscription adapter). Agent never
+// holds election types.
 //
 // Poll returns work count (fragments handled). onFragment is called per message
 // frame payload (buffer + offset at MessageHeader).

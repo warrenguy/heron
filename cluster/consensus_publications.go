@@ -85,6 +85,25 @@ type ConsensusPublications struct {
 
 var errAdderReturnedNoPublication = errors.New("adder returned no publication")
 
+// addExclusivePublicationChecked adds one exclusive publication, normalizing
+// the nil-nil adder result into an error. what names the stream in the
+// wrapped error.
+func addExclusivePublicationChecked(
+	adder ExclusivePublicationAdder,
+	streamID int32,
+	channel string,
+	what string,
+) (*aeron.ExclusivePublication, error) {
+	pub, err := adder.AddExclusivePublication(streamID, channel)
+	if err == nil && pub == nil {
+		err = errAdderReturnedNoPublication
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cluster: add %s on %s: %w", what, channel, err)
+	}
+	return pub, nil
+}
+
 // OpenConsensusPublications registers one exclusive consensus publication per
 // peer and binds all of them into deps.Publisher.
 //
@@ -122,18 +141,15 @@ func OpenConsensusPublications(
 
 	for _, memberID := range peerIDs {
 		channel := channels[memberID]
-		pub, err := deps.Adder.AddExclusivePublication(streamID, channel)
-		if err == nil && pub == nil {
-			err = errAdderReturnedNoPublication
-		}
+		pub, err := addExclusivePublicationChecked(
+			deps.Adder,
+			streamID,
+			channel,
+			fmt.Sprintf("consensus publication for member %d", memberID),
+		)
 		if err != nil {
 			closeAdded(added)
-			return nil, fmt.Errorf(
-				"cluster: add consensus publication for member %d on %s: %w",
-				memberID,
-				channel,
-				err,
-			)
+			return nil, err
 		}
 		added = append(added, pub)
 		pubs[memberID] = pub

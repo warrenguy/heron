@@ -93,6 +93,10 @@ type Agent struct {
 	// handler calls).
 	ingress ConsensusIngress
 
+	// ingressHandler is onIngressFragment cached once at construction so
+	// pollConsensusIngress does not materialize a method value each duty cycle.
+	ingressHandler func(buf []byte, offset int)
+
 	// ingressPollNowNs is the duty-cycle clock for the current
 	// pollConsensusIngress batch. Set before Poll; read by onIngressFragment
 	// so the fragment handler is a method value (no per-poll closure).
@@ -225,7 +229,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 	if interval < 0 {
 		panic("consensus: negative LeaderHeartbeatIntervalNs")
 	}
-	return &Agent{
+	a := &Agent{
 		election:                  cfg.Election,
 		positions:                 cfg.Positions,
 		egress:                    cfg.Egress,
@@ -243,6 +247,8 @@ func NewAgent(cfg AgentConfig) *Agent {
 		termBaseLogPosition:       cfg.TermBaseLogPosition,
 		appVersion:                cfg.AppVersion,
 	}
+	a.ingressHandler = a.onIngressFragment
+	return a
 }
 
 // SetPositions sets the [PositionTable] used for ranking and member updates.
@@ -670,7 +676,7 @@ func (a *Agent) pollConsensusIngress(nowNs int64) int {
 		return 0
 	}
 	a.ingressPollNowNs = nowNs
-	return a.ingress.Poll(defaultConsensusIngressFragmentLimit, a.onIngressFragment)
+	return a.ingress.Poll(defaultConsensusIngressFragmentLimit, a.ingressHandler)
 }
 
 func (a *Agent) onIngressFragment(buf []byte, offset int) {

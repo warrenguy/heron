@@ -1,6 +1,8 @@
 // Package cluster holds the consensus module member process assembly:
 // configuration, validation, cluster channel topology derived from a cluster
-// members string, and per-peer consensus publication lifecycle.
+// members string, per-peer consensus publication lifecycle, the inbound
+// consensus subscription, and the cluster log publication and subscription
+// bound into the consensus agent before the first duty cycle.
 //
 // This package is not the consensus agent library. The agent, log publisher, and
 // log adapter live in cluster/consensus; the election state machine and member

@@ -730,3 +730,10 @@ func TestAtomicAppendPosition_nilSafe(t *testing.T) {
 	v.Store(9)
 	require.Equal(t, int64(9), (&AtomicAppendPosition{V: v}).AppendPosition())
 }
+
+func TestSetAppendSource_logPublisher(t *testing.T) {
+	a := NewAgent(AgentConfig{})
+	src := NewLogPublisher()
+	a.SetAppendSource(src)
+	require.Equal(t, AppendPositionSource(src), a.AppendSource())
+}

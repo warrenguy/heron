@@ -59,6 +59,16 @@ func (p *LogPublisher) Position() int64 {
 	return p.publication.Position()
 }
 
+// AppendPosition returns the publication position, or 0 when unbound.
+//
+// It satisfies [AppendPositionSource]: a bound publisher is the production
+// append high-water source a leader ranks quorum against and a follower
+// publishes as its append position. [AtomicAppendPosition] stays for unit and
+// simulation inject.
+func (p *LogPublisher) AppendPosition() int64 { return p.Position() }
+
+var _ AppendPositionSource = (*LogPublisher)(nil)
+
 // SessionID returns the publication session id, or 0 when unbound.
 func (p *LogPublisher) SessionID() int32 {
 	if p == nil || p.publication == nil {
