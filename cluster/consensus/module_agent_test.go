@@ -410,6 +410,7 @@ func TestHostDelegate_stubsSmoke(t *testing.T) {
 	a.SetLogRecordingID(99)
 	require.Equal(t, int64(99), a.LocalLogRecordingID())
 
+	// Bare Agent: nil LogJoinSource, so FollowerLogJoinReady reports not-ready.
 	params, ready := a.FollowerLogJoinReady(7)
 	require.False(t, ready)
 	require.Equal(t, FollowerLogJoinParams{}, params)
@@ -463,6 +464,7 @@ func TestAgentHandler_prepareJoinComplete(t *testing.T) {
 	require.Equal(t, int64(1), a.LeadershipTermID())
 	require.Equal(t, nullMemberID, a.LeaderMemberID())
 
+	// Bare Agent: nil LogJoinSource, so JoinLogAsFollower reports not joined.
 	require.False(t, a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 3}, 1))
 
 	a.ElectionComplete(1)

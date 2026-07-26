@@ -126,6 +126,10 @@ type Agent struct {
 	// CatchupPoll uses the same adapter when an Image is bound.
 	logAdapter *LogAdapter
 
+	// joinSource supplies the live cluster log image for the follower log join.
+	// Nil: FollowerLogJoinReady and JoinLogAsFollower both report not-ready.
+	joinSource LogJoinSource
+
 	// logReplicationFactory optional inject for [Agent.NewLogReplication].
 	//
 	// Nil: NewLogReplication returns nil.
@@ -202,6 +206,11 @@ type AgentConfig struct {
 	// config or [Agent.SetLogAdapter].
 	LogAdapter *LogAdapter
 
+	// LogJoinSource optional inject for the follower log join. Nil until the
+	// cluster log subscription is wired; both join methods report not-ready
+	// until then.
+	LogJoinSource LogJoinSource
+
 	// AppVersion seeds a.appVersion for NewLeadershipTermEvent (default 0 legal).
 	AppVersion int32
 
@@ -244,6 +253,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		appendSource:              cfg.AppendSource,
 		logPublisher:              cfg.LogPublisher,
 		logAdapter:                cfg.LogAdapter,
+		joinSource:                cfg.LogJoinSource,
 		termBaseLogPosition:       cfg.TermBaseLogPosition,
 		appVersion:                cfg.AppVersion,
 	}
@@ -599,9 +609,21 @@ func (a *Agent) TruncateLogEntry(leadershipTermID, logPosition int64) {}
 // AwaitLocalSocketsClosed is a no-op stub.
 func (a *Agent) AwaitLocalSocketsClosed(registrationID int64) {}
 
-// FollowerLogJoinReady is a stub; returns zero [FollowerLogJoinParams] and false.
-func (a *Agent) FollowerLogJoinReady(logSessionID int32) (FollowerLogJoinParams, bool) {
-	return FollowerLogJoinParams{}, false
+// FollowerLogJoinReady reports the follower log join parameters for the leader's
+// log session id.
+//
+// Returns false until a [LogJoinSource] is wired and reports an open cluster log
+// image for logSessionID. The election waits and retries while this is false,
+// and gives up on its leader heartbeat timeout.
+//
+// IsLeaderStartup is left false; the election sets it before joining.
+func (a *Agent) FollowerLogJoinReady(
+	logSessionID int32,
+) (FollowerLogJoinParams, bool) {
+	if a.joinSource == nil {
+		return FollowerLogJoinParams{}, false
+	}
+	return a.joinSource.Ready(logSessionID)
 }
 
 // PrepareForNewLeadership sets role [RoleFollower], clears the known leader,
@@ -636,9 +658,32 @@ func (a *Agent) JoinLogAsLeader(
 	_, _ = logSessionID, isStartup
 }
 
-// JoinLogAsFollower is a skeleton; reports not ready.
+// JoinLogAsFollower binds the live cluster log image for params.LogSessionID
+// into the wired [LogAdapter] and sets role [RoleFollower].
+//
+// Returns false when no [LogJoinSource] or no [LogAdapter] is wired, or when the
+// source no longer holds an open image for that session. The election retries
+// while this is false and gives up on its leader heartbeat timeout.
+//
+// The image is looked up again rather than carried on params, which hold no
+// image, so a session whose image closed between the readiness report and the
+// join fails closed.
+//
+// Does not touch the known leader id: the term install already set it, and
+// clearing it would stop follower commit notification and append reporting.
+// nowNs is accepted for handler-signature parity and is unused.
 func (a *Agent) JoinLogAsFollower(params FollowerLogJoinParams, nowNs int64) bool {
-	return false
+	_ = nowNs
+	if a.joinSource == nil || a.logAdapter == nil {
+		return false
+	}
+	image := a.joinSource.Image(params.LogSessionID)
+	if image == nil {
+		return false
+	}
+	a.logAdapter.SetImage(image)
+	a.RoleSet(RoleFollower)
+	return true
 }
 
 // ElectionComplete clears the [ElectionRunner]; [PositionTable] and
