@@ -9,6 +9,9 @@
 // parsing live in cluster/election. Package cluster is the only package that
 // imports both.
 //
+// It also opens the member recovery state, the recording log and the node state
+// file, and seeds the election configuration from the recovery plan.
+//
 // Concurrency: Config is a value; Normalize returns a copy and mutates nothing.
 // A Topology's own fields are fixed after NewTopology, but the cluster members it
 // exposes are shared mutable state written by the election state machine; touch

@@ -25,9 +25,9 @@ func TestApplyRecoveryPlan(t *testing.T) {
 		name string
 		plan recordinglog.RecoveryPlan
 	}{
-		{name: "zero value plan leaves cfg unchanged"},
+		{name: "zero value plan seeds cold-start values"},
 		{
-			name: "true empty plan leaves cfg unchanged",
+			name: "true empty plan seeds cold-start values",
 			plan: recordinglog.RecoveryPlan{LastLeadershipTermID: recordinglog.NullRecordingID},
 		},
 	} {
@@ -36,10 +36,10 @@ func TestApplyRecoveryPlan(t *testing.T) {
 
 			cfg := seededCfg()
 			election.ApplyRecoveryPlan(&cfg, tc.plan)
-			require.Equal(t, int64(9), cfg.LeadershipTermID)
-			require.Equal(t, int64(100), cfg.TermBaseLogPosition)
-			require.Equal(t, int64(200), cfg.LogPosition)
-			require.Equal(t, int64(300), cfg.AppendPosition)
+			require.Equal(t, election.NullValue, cfg.LeadershipTermID)
+			require.Equal(t, int64(0), cfg.TermBaseLogPosition)
+			require.Equal(t, int64(0), cfg.LogPosition)
+			require.Equal(t, int64(0), cfg.AppendPosition)
 		})
 	}
 
@@ -66,7 +66,7 @@ func TestApplyRecoveryPlan(t *testing.T) {
 			},
 		}
 		election.ApplyRecoveryPlan(&cfg, plan)
-		require.Equal(t, recordinglog.NullRecordingID, cfg.LeadershipTermID)
+		require.Equal(t, election.NullValue, cfg.LeadershipTermID)
 		require.Equal(t, int64(0), cfg.TermBaseLogPosition)
 		require.Equal(t, int64(0), cfg.LogPosition)
 		require.Equal(t, int64(50_000), cfg.AppendPosition)
