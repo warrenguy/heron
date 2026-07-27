@@ -158,19 +158,8 @@ func (ops archiveControlOps) listRecording(
 	)
 }
 
-// StopRecordingAwaitSignal offers a StopRecordingRequest and blocks until the archive
-// records a matching STOP RecordingSignalEvent on tracker. A latched STOP wins over a
-// matching ControlResponse in the same window: ERROR fails only when STOP is not yet
-// latched. A matching OK alone does not complete: control OK can race ahead of the STOP
-// signal, and callers need the latched stop position.
-//
-// ControlResponseTimeout bounds the whole wait after a successful offer. Timeout may
-// fire after a matching OK was consumed if STOP is not latched in time; treat that as
-// inconclusive for stop success. Use StopRecording when only an OK ControlResponse proof
-// is required.
-//
-// tracker matching follows NewStopSignalTracker: a negative recordingID latches the first
-// STOP for the session, including unrelated recordings.
+// stopRecordingAwaitSignal implements [Client.StopRecordingAwaitSignal]; see that
+// godoc for the STOP-vs-ControlResponse proof and timeout contract.
 func (ops archiveControlOps) stopRecordingAwaitSignal(
 	ctx context.Context,
 	streamID int32,

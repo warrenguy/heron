@@ -1,4 +1,4 @@
-// Hammer and close-during-await tests indirectly guard doWorkLocked vs DoWork:
+// Hammer and close-during-await tests assert doWorkLocked vs DoWork:
 // locked await/offer/drain paths must call doWorkLocked to avoid self-deadlock.
 package aeron
 

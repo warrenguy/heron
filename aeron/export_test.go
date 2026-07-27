@@ -847,7 +847,7 @@ func (client *Client) DoWorkLockedForTest() int {
 
 // AwaitPendingPollOneTickForTest runs one awaitPendingPollTickForTest tick under clientLock.
 //
-// skipDoWork omits doWorkLocked when poll completion is pre-latched; afterPollPending
+// skipDoWork omits doWorkLocked when poll completion is already marked; afterPollPending
 // runs after PollPending for closed-guard branch tests.
 func (client *Client) AwaitPendingPollOneTickForTest(
 	correlationID int64,

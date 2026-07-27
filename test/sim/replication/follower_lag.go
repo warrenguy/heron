@@ -23,7 +23,7 @@ func scenarioFollowerLagCommit() sim.ScenarioSpec {
 		Build: func(seed uint64, _ int) (sim.Config, func(*sim.ElectionSim) error) {
 			cfg := baseConfig(seed)
 
-			// Pin elect first at low append; raise only after LEADER_READY.
+			// Elect first at low append; raise only after LEADER_READY.
 			cfg.ElectionConfig.AppointedLeaderID = 0
 			return cfg, func(s *sim.ElectionSim) error {
 				leader, term, err := electLeaderReady(s, 0, deadline)

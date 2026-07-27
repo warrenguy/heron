@@ -28,7 +28,7 @@ func entry(
 	}
 }
 
-// TestLess pins entry comparator branch order used by Reload.
+// TestLess asserts entry comparator branch order used by Reload.
 func TestLess(t *testing.T) {
 	t.Parallel()
 

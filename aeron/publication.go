@@ -116,23 +116,23 @@ func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64
 //
 // Caller contract:
 //
-//  1. If err != nil, length is invalid (negative or exceeds maxPayloadLength);
-//     do not retry (Java IllegalArgumentException).
-//  2. If position > 0, claim succeeded; fill the reserved frame, then Commit or
-//     Abort using termIndex and frameOffset. termIndex pins the partition until
-//     BufferClaim consolidates the API; Commit/Abort must use the values returned
-//     here, not the currently active term.
-//  3. If position < 0, an operational status was returned (publication_codes.go):
-//     BackPressured and NotConnected - retry after an idle strategy;
-//     AdminAction - retry immediately in a tight loop;
-//     Closed and MaxPositionExceeded - stop publishing on this handle.
+//  1. err != nil: length is invalid (negative or exceeds maxPayloadLength).
+//     Must not retry (Java IllegalArgumentException).
+//  2. position > 0: claim succeeded. Fill the reserved frame, then Commit or
+//     Abort with the returned termIndex and frameOffset. Commit/Abort must use
+//     these values, not the currently active term. termIndex selects the claim
+//     partition until BufferClaim consolidates the API.
+//  3. position < 0: operational status (publication_codes.go):
+//     - BackPressured, NotConnected: retry after an idle strategy
+//     - AdminAction: retry immediately in a tight loop
+//     - Closed, MaxPositionExceeded: stop publishing on this handle
 //
 // See also PositionCodeName, IsOfferRetriable.
 //
-// A typical retry loop returns on err != nil, returns on success or a terminal
+// Typical retry loop: return on err != nil; return on success or a terminal
 // status. For transport-level retries use IsOfferRetriable with DoWork between
-// attempts; after BackPressured or NotConnected, pace with an idle strategy.
-// Only AdminAction warrants an inner tight spin before returning to the outer loop.
+// attempts. After BackPressured or NotConnected, pace with an idle strategy.
+// Only AdminAction may use an inner tight spin before the outer loop.
 func (pub *Publication) TryClaim(
 	length int,
 ) (termIndex, frameOffset int, position int64, err error) {
@@ -486,7 +486,7 @@ func (pub *Publication) reserveTailAfterPrelude(
 //
 // Volatile read order: limit, ActiveTermCount, partition raw tail (Java
 // ConcurrentPublication). No yield between tail read and GetAndAddInt64: rotation
-// between them pins the wrong partition.
+// between them reserves on the wrong partition.
 //
 // Reservation always completes as DATA or PAD on termBuf/termOffset; callers retry on AdminAction.
 //

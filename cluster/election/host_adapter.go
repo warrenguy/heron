@@ -46,7 +46,7 @@ type HostAdapter struct {
 	nanoClock func() int64
 }
 
-// HostAdapterConfig is the constructor bag.
+// HostAdapterConfig is the constructor config.
 type HostAdapterConfig struct {
 	// Agent is required. HostAdapter holds the concrete pointer.
 	Agent *consensus.Agent

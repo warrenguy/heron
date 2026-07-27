@@ -61,7 +61,7 @@ type Agent struct {
 	localLogRecordingID      int64
 
 	// leadershipTermID is the current term for publish and ingress term gates.
-	// Default 0 is a legal term id (first term) - not a sentinel.
+	// Default 0 is a valid term id (first term) - not a sentinel.
 	leadershipTermID int64
 
 	// thisMemberID is this node's cluster member id for steady leader stamp.
@@ -94,7 +94,7 @@ type Agent struct {
 	ingress ConsensusIngress
 
 	// ingressHandler is onIngressFragment cached once at construction so
-	// pollConsensusIngress does not materialize a method value each duty cycle.
+	// pollConsensusIngress does not allocate a method value each duty cycle.
 	ingressHandler func(buf []byte, offset int)
 
 	// ingressPollNowNs is the duty-cycle clock for the current
@@ -146,12 +146,12 @@ type Agent struct {
 	termBaseLogPosition int64
 
 	// appVersion is the application version for NewLeadershipTermEvent.
-	// Default 0 is legal on the wire.
+	// Default 0 is valid on the wire.
 	appVersion int32
 }
 
-// AgentConfig is the constructor bag. Nil interface fields are legal for unit
-// tests that exercise Agent host-delegate stubs only, and for production
+// AgentConfig is the constructor config. Nil interface fields are allowed for
+// unit tests that exercise Agent host-delegate stubs only, and for production
 // bootstrap before the host adapter exists (then call [Agent.SetPositions] /
 // [Agent.SetEgress] / [Agent.SetElection]).
 //
@@ -177,7 +177,7 @@ type AgentConfig struct {
 	// (200_000_000). Negative panics at NewAgent.
 	LeaderHeartbeatIntervalNs int64
 
-	// LeadershipTermID seeds a.leadershipTermID (default 0 is legal term).
+	// LeadershipTermID seeds a.leadershipTermID (default 0 is a valid term).
 	LeadershipTermID int64
 
 	// ThisMemberID seeds a.thisMemberID as given. Zero is valid.
@@ -211,7 +211,7 @@ type AgentConfig struct {
 	// until then.
 	LogJoinSource LogJoinSource
 
-	// AppVersion seeds a.appVersion for NewLeadershipTermEvent (default 0 legal).
+	// AppVersion seeds a.appVersion for NewLeadershipTermEvent (default 0 valid).
 	AppVersion int32
 
 	// TermBaseLogPosition seeds a.termBaseLogPosition (default 0). Also set by
@@ -266,7 +266,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 //
 // Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
 //
-// Production bootstrap passes non-nil. Nil is legal; ranking becomes a no-op
+// Production bootstrap passes non-nil. Nil is allowed; ranking becomes a no-op
 // until rewired.
 func (a *Agent) SetPositions(positions PositionTable) {
 	a.positions = positions
@@ -277,7 +277,7 @@ func (a *Agent) SetPositions(positions PositionTable) {
 //
 // Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
 //
-// Production bootstrap passes non-nil. Nil is legal; egress becomes a no-op
+// Production bootstrap passes non-nil. Nil is allowed; egress becomes a no-op
 // until rewired.
 func (a *Agent) SetEgress(egress ConsensusEgress) {
 	a.egress = egress
@@ -291,7 +291,7 @@ func (a *Agent) SetElection(runner ElectionRunner) { a.election = runner }
 //
 // Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
 //
-// Nil is legal; [Agent.pollConsensusIngress] returns 0 until rewired.
+// Nil is allowed; [Agent.pollConsensusIngress] returns 0 until rewired.
 func (a *Agent) SetIngress(ingress ConsensusIngress) { a.ingress = ingress }
 
 // Ingress returns the wired [ConsensusIngress], or nil if unset.

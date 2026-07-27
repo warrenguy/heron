@@ -160,9 +160,9 @@ func TestWriter_byteIdenticalToGolden(t *testing.T) {
 	require.Equal(t, golden, written)
 }
 
-// TestPlanRecovery_fixtureExpectations pins PlanRecovery output over committed
-// golden logs. Expectations live here, not in fixtures.json: the manifest is
-// generator output and regen would drop hand-authored values.
+// TestPlanRecovery_fixtureExpectations asserts PlanRecovery output over
+// committed golden logs. Expectations live here, not in fixtures.json: the
+// manifest is generator output and regen would drop hand-authored values.
 func TestPlanRecovery_fixtureExpectations(t *testing.T) {
 	t.Parallel()
 

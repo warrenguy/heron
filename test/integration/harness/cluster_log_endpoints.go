@@ -19,6 +19,6 @@ const (
 // ClusterLogChannelTemplate confines cluster-log multicast to loopback.
 //
 // Without interface=, the driver joins the group on the default route interface
-// and the frames leave the host. ttl=0 is a single-host pin: a multi-host
-// cluster needs the cluster interface and a positive ttl.
+// and the frames leave the host. ttl=0 confines traffic to a single host. A
+// multi-host cluster needs the cluster interface and a positive ttl.
 const ClusterLogChannelTemplate = "aeron:udp?term-length=64k|interface=127.0.0.1|ttl=0"

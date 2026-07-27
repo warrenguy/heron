@@ -194,7 +194,7 @@ func (conductor *Conductor) checkNotTerminating() error {
 
 // RegisterPending runs on the caller goroutine.
 //
-// Adapter handlers latch completion during DoWork when the client polls via
+// Adapter handlers mark completion during DoWork when the client polls via
 // doWorkLocked.
 //
 // PollPending runs on the same caller in awaitPendingPollTick after
@@ -285,7 +285,7 @@ func (conductor *Conductor) RegisterPendingAddWithDeadline(
 // PollPending returns a completed pending registration for correlationID.
 //
 // Primary path: receivedCorrelationID matches correlationID after adapter
-// handlers latch completion during DoWork.
+// handlers mark completion during DoWork.
 //
 // Multi-pending path: when receivedCorrelationID does not match
 // because another async add completed in the same DoWork tick, PollPending still
@@ -294,8 +294,8 @@ func (conductor *Conductor) RegisterPendingAddWithDeadline(
 // Publication, or Subscription), or (b) Err is non-nil, PollPending returns
 // done=true with the registration (including Err when set), removes the entry,
 // and applies RollbackAddPendingResources when Err is non-nil. receivedCorrelationID
-// is left unchanged when completion is observed via the map so other latched adds
-// remain pollable on subsequent ticks.
+// is left unchanged when completion is observed via the map so other completed
+// adds remain pollable on subsequent ticks.
 //
 // Called from the client on the same goroutine as RegisterPending, after
 // doWorkLocked; not invoked from inside DoWork.
@@ -305,7 +305,7 @@ func (conductor *Conductor) PollPending(
 	if conductor.receivedCorrelationID != correlationID {
 		return conductor.pollPendingFromMap(correlationID)
 	}
-	return conductor.pollPendingLatched(correlationID)
+	return conductor.pollPendingMarked(correlationID)
 }
 
 func (conductor *Conductor) pollPendingFromMap(
@@ -318,7 +318,7 @@ func (conductor *Conductor) pollPendingFromMap(
 	return conductor.completePendingPoll(*registrationPtr, false)
 }
 
-func (conductor *Conductor) pollPendingLatched(
+func (conductor *Conductor) pollPendingMarked(
 	correlationID int64,
 ) (done bool, registration PendingRegistration, err error) {
 	registrationPtr, ok := conductor.pending.Get(correlationID)
@@ -331,13 +331,13 @@ func (conductor *Conductor) pollPendingLatched(
 
 func (conductor *Conductor) completePendingPoll(
 	registration PendingRegistration,
-	clearLatch bool,
+	clearMark bool,
 ) (bool, PendingRegistration, error) {
 	conductor.pending.Remove(registration.CorrelationID)
 	if registration.Err != nil {
 		conductor.RollbackAddPendingResources(registration)
 	}
-	if clearLatch {
+	if clearMark {
 		conductor.receivedCorrelationID = NullCorrelationID
 	}
 	return true, registration, registration.Err
@@ -359,9 +359,9 @@ func pendingAddResolved(registration *PendingRegistration) bool {
 func (conductor *Conductor) CancelPending(correlationID int64) {
 	registration, ok := conductor.pending.Get(correlationID)
 	if ok {
-		readyLatched := conductor.receivedCorrelationID == correlationID &&
+		readyMarked := conductor.receivedCorrelationID == correlationID &&
 			registration.Err == nil
-		if !readyLatched {
+		if !readyMarked {
 			conductor.RollbackAddPendingResources(*registration)
 		}
 	}

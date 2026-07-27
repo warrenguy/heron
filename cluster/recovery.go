@@ -20,62 +20,59 @@ const clusterLockFileName = "cluster.lock"
 // injected collaborators the same way.
 type RecoveryDeps struct {
 	// Config is the normalized member config. [OpenRecovery] calls Validate and
-	// returns its error unchanged, then reads ClusterDir,
+	// returns its error unchanged. OpenRecovery then reads ClusterDir,
 	// NodeStateFileSyncLevel, ServiceCount, ArchiveClientEnabled, and Election.
 	// Validate still enforces the full config contract.
 	//
-	// Five fields of Config.Election are recovery output, not caller input, and
-	// [OpenRecovery] overwrites whatever is in them: IsNodeStartup, which is
-	// always set, and LeadershipTermID, TermBaseLogPosition, LogPosition, and
-	// AppendPosition, which come from the recovery plan. Setting any of the five
-	// has no effect and produces no error. Every other Election field is carried
-	// through unchanged, including the five timeouts, MemberID,
-	// AppointedLeaderID, GracefulClosedLeaderID, and AppVersion.
+	// Recovery writes five Config.Election fields. OpenRecovery overwrites any
+	// caller values present; setting them has no effect and produces no error:
+	//   - Always written: IsNodeStartup
+	//   - From the recovery plan: LeadershipTermID, TermBaseLogPosition,
+	//     LogPosition, AppendPosition
+	// All other Election fields pass through unchanged (timeouts, MemberID,
+	// AppointedLeaderID, GracefulClosedLeaderID, AppVersion).
 	//
 	// [OpenRecovery] does not retain Config.
 	Config Config
 
 	// ArchiveLister resolves recording extents for a recording log that carries
 	// term entries. Production passes archive.NewLister over a connected control
-	// client; unit tests pass a map-backed fake.
+	// client. Unit tests pass a map-backed fake.
 	//
-	// Nil is legal only when Config.ArchiveClientEnabled is false and the
-	// recording log is empty: no lookup is needed. ArchiveClientEnabled true
-	// always requires a non-nil lister, including cold-start empty dirs.
-	// Nil with a non-empty recording log is refused, because
-	// recordinglog.PlanRecovery has no nil check and panics if a lookup is
-	// required.
+	// Required when Config.ArchiveClientEnabled is true, including cold start.
+	// Optional when ArchiveClientEnabled is false and the recording log is empty.
+	// Nil with a non-empty recording log is refused: recordinglog.PlanRecovery
+	// panics if a lookup is required and the lister is nil.
 	//
-	// Non-nil with Config.ArchiveClientEnabled false is also legal: the switch
-	// governs whether the assembly connects an archive client, and this field is
-	// what recovery actually consumes.
+	// Non-nil with ArchiveClientEnabled false is allowed. ArchiveClientEnabled
+	// controls whether assembly connects an archive client; recovery consumes
+	// this field only.
 	ArchiveLister recordinglog.ArchiveLister
 }
 
-// Recovery is the member's start-of-life durable state: the recording log, the
-// node state file, the recovery plan computed from the recording log, and the
-// election configuration seeded from that plan.
+// Recovery is the member's start-of-life durable state: recording log, node
+// state file, recovery plan from the recording log, and election configuration
+// seeded from that plan.
 //
 // Open with [OpenRecovery]. Recovery owns the directory lock and both file
-// handles and closes all three; the election holds the files behind interfaces
+// handles and closes all three. The election holds the files behind interfaces
 // and closes neither.
 //
-// Concurrency: invoker-only. [*recordinglog.Log] is single-writer with no
-// internal locking and [*election.NodeStateFile] is single-writer per process,
-// so every method must run on the same goroutine as [election.Election.DoWork]
-// and consensus.Agent.DoWork, matching [ConsensusPublications]. Across processes
-// and across members in one process, that single-writer contract is enforced by
-// an exclusive advisory lock [OpenRecovery] holds on cluster.lock in the cluster
-// directory for the lifetime of this value.
+// Concurrency: invoker-only. [*recordinglog.Log] and [*election.NodeStateFile]
+// are single-writer with no internal locking. Every method must run on the same
+// goroutine as [election.Election.DoWork] and consensus.Agent.DoWork, matching
+// [ConsensusPublications]. Across processes and members, an exclusive advisory
+// lock on cluster.lock in the cluster directory enforces that contract for the
+// lifetime of this value.
 //
 // Lifetime: outlives the election. The election writes candidate terms through
-// NodeState and term coherency through RecordingLog for the whole life of the
-// process, so Close belongs in the module teardown, after the election is done
-// and after the transport handles are closed.
+// NodeState and term coherency through RecordingLog for the process life. Close
+// belongs in module teardown after the election finishes and transport handles
+// close.
 //
-// Do not copy. All three handles are pointers, so a value copy is a silent
-// alias: two values that each look like an owner and each look responsible for
-// Close. Every accessor takes a pointer receiver. Pass the [*Recovery].
+// Do not copy. All three handles are pointers. A value copy shares the same
+// handles; both values look like owners responsible for Close. Every accessor
+// takes a pointer receiver. Pass the [*Recovery].
 type Recovery struct {
 	lockFile       *os.File
 	recordingLog   *recordinglog.Log
@@ -88,32 +85,37 @@ type Recovery struct {
 // opens the recording log and the node state file, plans recovery, and seeds the
 // election configuration.
 //
-// The directory is created at mode 0700 when absent. An existing directory keeps
-// its mode; OpenRecovery does not chmod one it did not create. The lock file and
-// both data files are created at mode 0600.
+// Directory mode is 0700 when created. An existing directory keeps its mode;
+// OpenRecovery does not chmod a directory it did not create. The lock file and
+// both data files use mode 0600.
 //
-// The lock is an advisory flock on cluster.lock, taken before either file is
-// opened and released when Close closes the descriptor, which the kernel also
-// does on process exit. A second OpenRecovery against the same directory fails
-// with a wrapped EWOULDBLOCK, whether it is in another process or in this one.
+// The lock is an advisory flock on cluster.lock. OpenRecovery takes the lock
+// before either data file opens. Close releases the lock when it closes the
+// descriptor; the kernel also releases on process exit. A second OpenRecovery
+// on the same directory fails with wrapped EWOULDBLOCK in this process or
+// another.
 //
-// The node state file sync level comes from deps.Config and is
-// recordinglog.FileSyncData or recordinglog.FileSyncFull, which [Config.Validate]
-// guarantees. The recovery plan uses
-// recordinglog.NewRecoveryPlanConfig(deps.Config.ServiceCount), so the
+// Node state sync level comes from deps.Config and is [recordinglog.FileSyncData]
+// or [recordinglog.FileSyncFull] ([Config.Validate] guarantees). The recovery
+// plan uses [recordinglog.NewRecoveryPlanConfig] with ServiceCount; the
 // replicated recording id is always null.
 //
-// The seeded election configuration is deps.Config.Election with IsNodeStartup
-// set and the four recovery fields written from the plan. Every other field is
-// carried through unchanged, including the five timeouts and the three member
-// id fields Config.Normalize materialized.
+// Seeded election config is deps.Config.Election with IsNodeStartup set and the
+// four recovery fields written from the plan. All other fields pass through,
+// including timeouts and member-id fields Config.Normalize builds.
 //
-// Errors when deps.Config fails Validate, when deps.Config.ArchiveClientEnabled
-// is set without a lister, when the directory cannot be created, when the lock
-// cannot be taken, when either file cannot be opened, when the recording log
-// holds entries and no lister was supplied, when planning fails, and when the
-// plan carries a snapshot. On error nothing stays open, the lock is released,
-// and the returned value is nil.
+// Errors:
+//   - Config fails Validate
+//   - ArchiveClientEnabled set without a lister
+//   - directory cannot be created
+//   - lock cannot be taken
+//   - either data file cannot be opened
+//   - non-empty recording log without a lister
+//   - planning fails
+//   - plan carries a snapshot
+//
+// On error nothing stays open, the lock is released, and the returned value is
+// nil.
 func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
 	if err := deps.Config.Validate(); err != nil {
 		return nil, err
@@ -128,11 +130,9 @@ func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
 		return nil, fmt.Errorf("cluster: create cluster dir %s: %w", dir, err)
 	}
 
-	// Hold an exclusive advisory lock for the whole life of the Recovery. The
-	// kernel releases it when the descriptor closes, including on process death,
-	// so there is no stale-lock state to clean up. O_CLOEXEC closes the
-	// descriptor on exec so a child that execs cannot keep the lock after the
-	// parent exits.
+	// Exclusive advisory lock for the life of Recovery. Kernel releases on
+	// descriptor close, including process death; no stale-lock cleanup. O_CLOEXEC
+	// so an exec'd child cannot keep the lock after the parent exits.
 	path := filepath.Join(dir, clusterLockFileName)
 	fd, err := unix.Open(
 		path,
@@ -144,8 +144,8 @@ func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
 	}
 	lockFile := os.NewFile(uintptr(fd), path)
 
-	// Ownership moves to the returned Recovery on success; until then every
-	// error return unwinds the handles opened so far, in reverse open order.
+	// On success Recovery owns the handles. Until then error paths unwind
+	// opened handles in reverse open order.
 	succeeded := false
 	defer func() {
 		if !succeeded {

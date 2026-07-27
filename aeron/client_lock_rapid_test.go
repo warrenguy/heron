@@ -27,7 +27,7 @@ func drawClosedGuardAfterPollPendingKind(rt *rapid.T) conductor.PendingKind {
 	return closedGuardAfterPollPendingKinds[kindIdx]
 }
 
-func setupPreLatchedClosedGuardPending(
+func setupPreMarkedClosedGuardPending(
 	t *testing.T,
 	rt *rapid.T,
 	kind conductor.PendingKind,
@@ -148,7 +148,7 @@ func TestClient_awaitPendingPoll_closedGuardAfterPollPending_rapid(t *testing.T)
 		rt.Helper()
 
 		kind := drawClosedGuardAfterPollPendingKind(rt)
-		client, correlationID, countFn := setupPreLatchedClosedGuardPending(t, rt, kind)
+		client, correlationID, countFn := setupPreMarkedClosedGuardPending(t, rt, kind)
 
 		_, completed, err := client.AwaitPendingPollOneTickForTest(correlationID, true, func() {
 			client.PublishClosedForTest()

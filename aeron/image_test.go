@@ -1237,8 +1237,8 @@ func TestImage_ReceivedPosition(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Join at 0 and move the subscriber, so the scan is pinned to the
-			// live subscriber position rather than the join position.
+			// Join at 0 and move the subscriber so the scan uses the live
+			// subscriber position rather than the join position.
 			image, _ := newPollImage(t, 0)
 			aeron.ImageSetSubscriberPositionForTest(image, tc.start)
 			tc.setup(t, image, tc.start)
@@ -1259,9 +1259,9 @@ func TestImage_ReceivedPosition(t *testing.T) {
 	}
 }
 
-// TestImage_ReceivedPosition_boundsAtTermRing pins the one state where the scan
-// deliberately stops short of what Poll would consume. Poll has no ring bound,
-// so a term ring committed end to end loops it; the scan reports the ring.
+// TestImage_ReceivedPosition_boundsAtTermRing covers the one state where the
+// scan deliberately stops short of what Poll would consume. Poll has no ring
+// bound, so a term ring committed end to end loops it; the scan reports the ring.
 func TestImage_ReceivedPosition_boundsAtTermRing(t *testing.T) {
 	const termLength = aeron.TestPublicationTermLength
 	const frame = receivedPositionFrameLength
@@ -1325,7 +1325,7 @@ func TestImage_ReceivedPosition_doesNotReportCorruptFrame(t *testing.T) {
 	require.Equal(t, wantErr, handled.Error())
 }
 
-// TestImage_ReceivedPosition_runsNoPollHook pins that the scan calls no user or
+// TestImage_ReceivedPosition_runsNoPollHook asserts the scan calls no user or
 // hook code. Nothing inside the loop can close the image or panic, which is why
 // the scan carries neither an in-loop close check nor a recover.
 func TestImage_ReceivedPosition_runsNoPollHook(t *testing.T) {

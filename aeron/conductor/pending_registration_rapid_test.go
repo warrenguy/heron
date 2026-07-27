@@ -264,12 +264,12 @@ func registerPendingRapidMapEntry(
 	}
 }
 
-func rapidPendingPollLatched(receivedCorrelationID, correlationID int64) bool {
+func rapidPendingPollMarked(receivedCorrelationID, correlationID int64) bool {
 	return receivedCorrelationID == correlationID
 }
 
 func rapidPendingPollCompletes(receivedCorrelationID, correlationID int64, mapResolved bool) bool {
-	return rapidPendingPollLatched(receivedCorrelationID, correlationID) || mapResolved
+	return rapidPendingPollMarked(receivedCorrelationID, correlationID) || mapResolved
 }
 
 func clearReceivedCorrelationIDIf(receivedCorrelationID *int64, correlationID int64) {
@@ -302,13 +302,13 @@ func applyPendingRapidPoll(model *pendingRapidMapModel, correlationID int64) {
 	if !ok {
 		return
 	}
-	latched := rapidPendingPollLatched(model.receivedCorrelationID, correlationID)
+	marked := rapidPendingPollMarked(model.receivedCorrelationID, correlationID)
 	mapResolved := pendingRapidMapEntryResolved(entry)
 	if !rapidPendingPollCompletes(model.receivedCorrelationID, correlationID, mapResolved) {
 		return
 	}
 	delete(model.entries, correlationID)
-	if latched {
+	if marked {
 		clearReceivedCorrelationIDIf(&model.receivedCorrelationID, correlationID)
 	}
 }
@@ -686,7 +686,7 @@ func TestDriverEventsAdapter_correlated_gate_rapid(t *testing.T) {
 type addPendingRapidEntry struct {
 	kind           conductor.PendingKind
 	present        bool
-	readyLatched   bool
+	readyMarked    bool
 	driverErrored  bool
 	applyFailed    bool
 	timedOut       bool
@@ -720,7 +720,7 @@ const (
 
 func addPendingRapidEntryCompletable(entry addPendingRapidEntry) bool {
 	return entry.present &&
-		!entry.readyLatched &&
+		!entry.readyMarked &&
 		!entry.driverErrored &&
 		!entry.timedOut
 }
@@ -755,7 +755,7 @@ func addPendingRapidEntryResolved(entry addPendingRapidEntry) bool {
 	if entry.timedOut || entry.driverErrored || entry.applyFailed {
 		return true
 	}
-	return entry.readyLatched && entry.registrationID != 0
+	return entry.readyMarked && entry.registrationID != 0
 }
 
 func addPendingRapidEntryPollable(
@@ -977,17 +977,17 @@ func completeAddPendingRapidPublicationReady(
 	if !receivedCorrelationMatches(conductorInstance, correlationID) {
 		return
 	}
-	applyAddPendingRapidReadyLatch(model, correlationID, event.RegistrationID, nil)
+	applyAddPendingRapidReadyMark(model, correlationID, event.RegistrationID, nil)
 }
 
-func applyAddPendingRapidReadyLatch(
+func applyAddPendingRapidReadyMark(
 	model *addPendingRapidModel,
 	correlationID int64,
 	registrationID int64,
 	mutate func(*addPendingRapidEntry),
 ) {
 	entry := model.entries[correlationID]
-	entry.readyLatched = true
+	entry.readyMarked = true
 	entry.registrationID = registrationID
 	if mutate != nil {
 		mutate(&entry)
@@ -1017,7 +1017,7 @@ func completeAddPendingBindRetirePublicationReady(
 		return
 	}
 	entry := model.entries[correlationID]
-	entry.readyLatched = true
+	entry.readyMarked = true
 	entry.registrationID = event.RegistrationID
 	if pub, pubOK := conductorInstance.PublicationByRegID(event.RegistrationID); pubOK {
 		if spec.isRealHandle(pub) {
@@ -1053,7 +1053,7 @@ func applyAddPendingRapidClear(model *addPendingRapidModel) {
 
 func applyAddPendingRapidDriverError(model *addPendingRapidModel, correlationID int64) {
 	entry, ok := model.entries[correlationID]
-	if !ok || !entry.present || entry.readyLatched {
+	if !ok || !entry.present || entry.readyMarked {
 		return
 	}
 	entry.driverErrored = true
@@ -1091,10 +1091,10 @@ func applyAddPendingRapidPoll(model *addPendingRapidModel, correlationID int64) 
 	if !ok || !entry.present {
 		return
 	}
-	latched := rapidPendingPollLatched(model.receivedCorrelationID, correlationID)
+	marked := rapidPendingPollMarked(model.receivedCorrelationID, correlationID)
 	entry.present = false
 	model.entries[correlationID] = entry
-	if latched {
+	if marked {
 		clearReceivedCorrelationIDIf(&model.receivedCorrelationID, correlationID)
 	}
 }
@@ -1300,7 +1300,7 @@ func runAddPendingRapidStep(
 		if !receivedCorrelationMatches(conductorInstance, correlationID) {
 			return
 		}
-		applyAddPendingRapidReadyLatch(
+		applyAddPendingRapidReadyMark(
 			model,
 			correlationID,
 			correlationID,
@@ -1364,7 +1364,7 @@ func runAddPendingRapidStep(
 			return
 		}
 		entry := model.entries[correlationID]
-		if entry.readyLatched || entry.driverErrored {
+		if entry.readyMarked || entry.driverErrored {
 			return
 		}
 		ok = conductorInstance.DriverError(rapidDriverRejectedResponse(correlationID))
@@ -1407,7 +1407,7 @@ func runAddPendingRapidStep(
 		case entry.timedOut:
 			require.ErrorIs(rt, err, conductor.ErrAwaitTimeout)
 			require.EqualError(rt, err, "conductor: await response timeout")
-		case entry.readyLatched:
+		case entry.readyMarked:
 			require.NoError(rt, err)
 		default:
 			require.ErrorIs(rt, err, conductor.ErrAwaitTimeout)
@@ -1686,10 +1686,10 @@ func applyAddPendingBindRetirePoll(
 	if !ok || !entry.present {
 		return
 	}
-	latched := rapidPendingPollLatched(model.receivedCorrelationID, correlationID)
+	marked := rapidPendingPollMarked(model.receivedCorrelationID, correlationID)
 	entry.present = false
 	model.entries[correlationID] = entry
-	if latched {
+	if marked {
 		clearReceivedCorrelationIDIf(&model.receivedCorrelationID, correlationID)
 	}
 }
@@ -1950,7 +1950,7 @@ func runAddPendingBindRetireFailureRapidStep(
 			return
 		}
 		entry := model.entries[correlationID]
-		entry.readyLatched = true
+		entry.readyMarked = true
 		entry.registrationID = correlationID
 		if sub, subOK := conductorInstance.SubscriptionByRegID(correlationID); subOK {
 			if _, isRealSub := sub.(*aeron.Subscription); isRealSub {
@@ -1967,11 +1967,11 @@ func runAddPendingBindRetireFailureRapidStep(
 			return
 		}
 		entry := model.entries[correlationID]
-		readyLatched := model.receivedCorrelationID == correlationID && entry.readyLatched
+		readyMarked := model.receivedCorrelationID == correlationID && entry.readyMarked
 		errorsBefore := len(*gotErrors)
 		conductorInstance.CancelPending(correlationID)
 		applyAddPendingBindRetireCancel(model, correlationID)
-		if !readyLatched {
+		if !readyMarked {
 			assertAddPendingBindRetireRollback(
 				rt,
 				conductorInstance,
@@ -2007,7 +2007,7 @@ func runAddPendingBindRetireFailureRapidStep(
 		rollbackTargets := snapshotBindRetireRollbackTargets(
 			*model,
 			func(entry addPendingBindRetireRapidEntry) bool {
-				return entry.present && !entry.readyLatched && !entry.driverErrored
+				return entry.present && !entry.readyMarked && !entry.driverErrored
 			},
 		)
 		errorsBefore := len(*gotErrors)
@@ -2067,7 +2067,7 @@ func runAddPendingBindRetireFailureRapidStep(
 		case entry.timedOut:
 			require.ErrorIs(rt, err, conductor.ErrAwaitTimeout)
 			require.EqualError(rt, err, "conductor: await response timeout")
-		case entry.readyLatched:
+		case entry.readyMarked:
 			require.NoError(rt, err)
 		default:
 			require.ErrorIs(rt, err, conductor.ErrAwaitTimeout)

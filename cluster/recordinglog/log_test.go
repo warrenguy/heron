@@ -313,7 +313,7 @@ func TestAppend_writeErrorAfterClose(t *testing.T) {
 		require.NoError(t, log.Close())
 		require.ErrorIs(t, log.AppendTerm(9, 5, 100, 1000), os.ErrClosed)
 	})
-	t.Run("failed append does not latch recordingId", func(t *testing.T) {
+	t.Run("failed append does not store recordingId", func(t *testing.T) {
 		t.Parallel()
 		log, _ := newLog(t)
 		require.NoError(t, log.Close())

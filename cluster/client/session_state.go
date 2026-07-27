@@ -100,7 +100,7 @@ func (ac *AeronCluster) enterConnected() {
 
 // pollStateChanges applies timeout and pending-close transitions. stateDeadlineNs==0
 // skips AWAIT_* timeout (PENDING_CLOSE uses zero deadline intentionally); production
-// paths arm deadlines via enterAwaitNewLeader and applyLeaderIngressRebuild.
+// paths set deadlines via enterAwaitNewLeader and applyLeaderIngressRebuild.
 // PENDING_CLOSE and expired AWAIT_* deadlines call Close(); mirrors Java pollStateChanges.
 func (ac *AeronCluster) pollStateChanges() int {
 	if ac.closed {

@@ -62,7 +62,7 @@ type ConsensusSubscriptionDeps struct {
 // Do not copy. Both fields are reference types, so a value copy is a silent
 // alias: two values that each look like an owner and each look responsible for
 // Close. Every method also takes a pointer receiver, so a copy taken to "avoid
-// the pointer" bypasses the nil-receiver guards a [*ConsensusSubscription]
+// the pointer" bypasses the nil-receiver checks a [*ConsensusSubscription]
 // caller relies on. Pass the [*ConsensusSubscription].
 type ConsensusSubscription struct {
 	agent        *consensus.Agent

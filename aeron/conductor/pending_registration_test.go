@@ -486,7 +486,7 @@ func TestConductor_ClearPending(t *testing.T) {
 	}
 }
 
-func TestConductor_PollPending_mapCompletionWhenLatchMismatch(t *testing.T) {
+func TestConductor_PollPending_mapCompletionWhenMarkMismatch(t *testing.T) {
 	const (
 		correlationID0       int64 = 101
 		correlationID1       int64 = 102
@@ -999,7 +999,7 @@ func TestConductor_expirePending_activeAwaitTimeout(t *testing.T) {
 	require.EqualError(t, err, "conductor: await response timeout")
 }
 
-func TestConductor_expirePending_lateSuccessClearsLatchedTimeout(t *testing.T) {
+func TestConductor_expirePending_lateSuccessClearsMarkedTimeout(t *testing.T) {
 	const (
 		startNs             = int64(1_000)
 		nextSessionID int32 = 42
@@ -1496,12 +1496,12 @@ func TestConductor_addPending_ackThenReady(t *testing.T) {
 }
 
 const (
-	nonAddWrongKindLatchPollDoneReason = "handleCorrelatedEvent sets receivedCorrelationID for " +
-		"non-add pendings before the ready handler runs; PollPending observes the latch " +
+	nonAddWrongKindPollDoneReason = "handleCorrelatedEvent sets receivedCorrelationID for " +
+		"non-add pendings before the ready handler runs; PollPending observes the match " +
 		"even though completePendingIfKind rejected the wrong kind"
 )
 
-func TestConductor_correlatedReady_latchPolicy(t *testing.T) {
+func TestConductor_correlatedReady_markPolicy(t *testing.T) {
 	publicationReadyForPending := goldenPublicationBuffersReadyWithCorrelation(
 		pendingTestCorrelationID,
 	)
@@ -1520,7 +1520,7 @@ func TestConductor_correlatedReady_latchPolicy(t *testing.T) {
 		wantPollKind              conductor.PendingKind
 	}{
 		{
-			name: "nonAddOperationSuccess_latchesOnCorrelatedReady",
+			name: "nonAddOperationSuccess_marksOnCorrelatedReady",
 			register: func(conductorInstance *conductor.Conductor) error {
 				return registerPendingForTest(conductorInstance, conductor.PendingKindOperationSuccess)
 			},
@@ -1530,11 +1530,11 @@ func TestConductor_correlatedReady_latchPolicy(t *testing.T) {
 			eventBytes:                publicationReadyBytes,
 			wantReceivedCorrelationID: pendingTestCorrelationID,
 			wantPollDone:              true,
-			wantPollDoneReason:        nonAddWrongKindLatchPollDoneReason,
+			wantPollDoneReason:        nonAddWrongKindPollDoneReason,
 			wantPollKind:              conductor.PendingKindOperationSuccess,
 		},
 		{
-			name: "nonAddRemovePublication_latchesOnCorrelatedReady",
+			name: "nonAddRemovePublication_marksOnCorrelatedReady",
 			register: func(conductorInstance *conductor.Conductor) error {
 				return registerPendingForTest(conductorInstance, conductor.PendingKindRemovePublication)
 			},
@@ -1544,11 +1544,11 @@ func TestConductor_correlatedReady_latchPolicy(t *testing.T) {
 			eventBytes:                publicationReadyBytes,
 			wantReceivedCorrelationID: pendingTestCorrelationID,
 			wantPollDone:              true,
-			wantPollDoneReason:        nonAddWrongKindLatchPollDoneReason,
+			wantPollDoneReason:        nonAddWrongKindPollDoneReason,
 			wantPollKind:              conductor.PendingKindRemovePublication,
 		},
 		{
-			name: "addPublication_doesNotLatchOnWrongKindReady",
+			name: "addPublication_doesNotMarkOnWrongKindReady",
 			register: func(conductorInstance *conductor.Conductor) error {
 				return registerPendingKindForTest(
 					conductorInstance,
@@ -1564,7 +1564,7 @@ func TestConductor_correlatedReady_latchPolicy(t *testing.T) {
 			wantPollDone:              false,
 		},
 		{
-			name: "addSubscription_doesNotLatchOnWrongKindReady",
+			name: "addSubscription_doesNotMarkOnWrongKindReady",
 			register: func(conductorInstance *conductor.Conductor) error {
 				return registerPendingKindForTest(
 					conductorInstance,
@@ -1582,7 +1582,7 @@ func TestConductor_correlatedReady_latchPolicy(t *testing.T) {
 			wantPollDone:              false,
 		},
 		{
-			name: "addExclusivePublication_doesNotLatchOnWrongKindReady",
+			name: "addExclusivePublication_doesNotMarkOnWrongKindReady",
 			register: func(conductorInstance *conductor.Conductor) error {
 				return registerPendingKindForTest(
 					conductorInstance,
@@ -1600,7 +1600,7 @@ func TestConductor_correlatedReady_latchPolicy(t *testing.T) {
 			wantPollDone:              false,
 		},
 		{
-			name: "addPublication_doesNotLatchOnExclusiveReady",
+			name: "addPublication_doesNotMarkOnExclusiveReady",
 			register: func(conductorInstance *conductor.Conductor) error {
 				return registerPendingKindForTest(
 					conductorInstance,
@@ -1618,7 +1618,7 @@ func TestConductor_correlatedReady_latchPolicy(t *testing.T) {
 			wantPollDone:              false,
 		},
 		{
-			name: "addExclusivePublication_doesNotLatchOnSubscriptionReady",
+			name: "addExclusivePublication_doesNotMarkOnSubscriptionReady",
 			register: func(conductorInstance *conductor.Conductor) error {
 				return registerPendingKindForTest(
 					conductorInstance,
@@ -1672,7 +1672,7 @@ func TestConductor_correlatedReady_latchPolicy(t *testing.T) {
 			} else {
 				require.Zero(t, registration)
 				_, ok = conductorInstance.PendingResult(testCase.correlationID)
-				require.True(t, ok, "add pending must stay registered when wrong-kind ready does not latch")
+				require.True(t, ok, "add pending stays registered when wrong-kind ready does not complete it")
 			}
 		})
 	}

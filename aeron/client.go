@@ -33,7 +33,7 @@ const (
 // Concurrent Close during blocking Add* or NextAvailableSessionID is
 // unsupported. Close sets closed before waiting on clientLock; the blocking
 // call returns ErrClientClosed when closed is observed (offer and poll loops).
-// If a driver response latches on the same poll tick as Close, the await returns
+// If a driver response completes on the same poll tick as Close, the await returns
 // ErrClientClosed on a best-effort basis rather than success. Incomplete add
 // pendings are cancelled; partial add resources are rolled back. Close teardown
 // then proceeds once clientLock is released. Callers should still serialize Close

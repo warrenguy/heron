@@ -25,7 +25,7 @@ func (client *Client) awaitPendingPollTickForTest(
 	}
 	done, registration, err := conductorInstance.PollPending(correlationID)
 	// afterPollPending runs before the !done return; only safe when PollPending
-	// completion is pre-latched under clientLock.
+	// completion is already marked under clientLock.
 	if afterPollPending != nil {
 		afterPollPending()
 	}

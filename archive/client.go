@@ -257,11 +257,13 @@ func (client *Client) StopRecording(
 	return client.sessionControlOps(client.Poll).stopRecording(ctx, streamID, channel)
 }
 
-// StopRecordingAwaitSignal offers a StopRecordingRequest and blocks until the archive
-// records a matching STOP signal on tracker. A latched STOP wins over a matching
-// ControlResponse in the same window: ERROR fails only when STOP is not yet latched. A
-// matching OK alone does not complete: control OK can race ahead of the STOP signal, and
-// callers need the latched stop position.
+// StopRecordingAwaitSignal offers a StopRecordingRequest and blocks until tracker
+// latches a matching STOP RecordingSignalEvent.
+//
+// The proof check reads tracker before the control response, so a latched STOP
+// wins when both are captured: ERROR fails the wait only when STOP is not yet
+// latched. A matching OK alone does not complete: control OK can race ahead of
+// the STOP signal, and callers need the latched stop position.
 //
 // ControlResponseTimeout bounds the whole wait after a successful offer. Timeout may
 // fire after a matching OK was consumed if STOP is not latched in time; treat that as

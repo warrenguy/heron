@@ -9,12 +9,15 @@ import (
 )
 
 // TryMatchControlResponse reports whether poller already holds a ControlResponse
-// matching controlSessionID and correlationID from its most recent poll. It does not
-// poll and does not call DoWork.
+// matching controlSessionID and correlationID from its most recent poll.
+// Reads the last latched response only. Does not poll. Does not call DoWork.
 //
-// Returns (fields, nil, true) on an OK match, (zero, err, true) when the matched
-// response carries a non-OK code, and (zero, nil, false) when no matching response is
-// captured. Error codes map through MapControlResponse.
+// Returns:
+//   - (fields, nil, true) on an OK match
+//   - (zero, err, true) when the matched response has a non-OK code
+//   - (zero, nil, false) when no matching response is captured
+//
+// Error codes map through MapControlResponse.
 func TryMatchControlResponse(
 	poller *ControlResponsePoller,
 	controlSessionID int64,
@@ -30,13 +33,17 @@ func TryMatchControlResponse(
 	return matchControlResponseFields(fields, controlSessionID, correlationID)
 }
 
-// tryMatchControlResponseDiscardStale matches like TryMatchControlResponse and clears a
-// latched terminal that is not the awaited ControlResponse (wrong kind or wrong IDs).
-// The session runs one outstanding request at a time, so a non-matching terminal is
-// stale; left latched it holds the demux ready gate and the awaited response would be
-// dropped (PollControlEvents never resets the poller). Prefer ResetAwait so non-matching
-// fragments never latch during offer retries or the response await; this clear remains as
-// a belt for unarmed demux, Challenge, and wrong control session.
+// tryMatchControlResponseDiscardStale matches like TryMatchControlResponse and
+// clears a latched terminal that is not the awaited ControlResponse (wrong kind
+// or wrong IDs).
+//
+// The session runs one outstanding request at a time, so a non-matching terminal
+// is stale. Left latched, that terminal holds the demux ready gate and the
+// awaited response is dropped (PollControlEvents never resets the poller).
+//
+// Prefer ResetAwait before offer so offer-retry polls drop non-matching
+// terminals. This clear is a fallback when demux is unarmed, the terminal is
+// Challenge, or the control session id does not match.
 func tryMatchControlResponseDiscardStale(
 	poller *ControlResponsePoller,
 	controlSessionID int64,
@@ -50,22 +57,26 @@ func tryMatchControlResponseDiscardStale(
 }
 
 // AwaitControlResponse loops DoWork then pollFn until a ControlResponse matching
-// controlSessionID and correlationID is captured, or responseTimeout elapses.
-// Arms poller for correlationID so demux drops non-matching terminals without latching.
-// Session offer paths should call ResetAwait before offer so offer-retry polls share that
-// filter; this re-arm is safe when already armed. A latched terminal that is not the
-// awaited ControlResponse is cleared so it does not hold the demux ready gate and drop
-// the awaited response.
+// controlSessionID and correlationID is captured, or the response timeout elapses.
 //
-// It drives DoWork on aeronClient for the duration of the await window only. The idle
-// strategy paces empty polls and is reset on every exit path; a nil cfg.IdleStrategy
-// uses NewDefaultIdleStrategy.
+// Arms the poller for correlationID so demux drops non-matching terminals without
+// latching. Session offer paths should call ResetAwait before offer so offer-retry
+// polls share that filter. Re-arm is safe when already armed. A latched terminal
+// that is not the awaited ControlResponse is cleared so it does not hold the demux
+// ready gate and drop the awaited response.
+//
+// Drives DoWork on aeronClient only for the await duration. Idle strategy paces
+// empty polls and resets on every exit path. Nil cfg.IdleStrategy uses
+// NewDefaultIdleStrategy.
 //
 // Uses Config.ControlResponseTimeout. When ctx carries a deadline, the effective
 // bound is the earlier of ControlResponseTimeout and ctx.Deadline().
 //
-// Returns the matched fields with a nil error, the mapped error for a non-OK response,
-// ControlResponseTimeoutError on timeout, or ctx.Err() when the context is done.
+// Returns:
+//   - matched fields with a nil error
+//   - mapped error for a non-OK response
+//   - ControlResponseTimeoutError on timeout
+//   - ctx.Err() when the context is done
 func AwaitControlResponse(
 	ctx context.Context,
 	aeronClient *aeron.Client,

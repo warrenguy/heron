@@ -115,7 +115,7 @@ type Config struct {
 	// A non-nil value must name a member present in ClusterMembers. Every member
 	// whose id differs then stops before the nominate transition, so a cluster
 	// configured this way cannot elect a new leader if the appointed member is
-	// down. Set it only for a deliberately pinned leader.
+	// down. Set it only for a deliberately fixed appointed leader.
 	AppointedLeaderID *int32
 
 	// GracefulClosedLeaderID names a leader that shut down cleanly, whose vote is

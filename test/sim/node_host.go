@@ -83,8 +83,8 @@ func (h *simElectionHost) CatchupPoll(int64, int64) int {
 func (h *simElectionHost) IsCatchupNearLive(int64) bool { return h.catchupNearLive }
 
 // FollowerLogJoinReady reports the live log image immediately joinable: sim
-// nodes carry no replicated log, so the join position pins to the harness
-// start position zero.
+// nodes carry no replicated log, so the join position is the harness start
+// position zero.
 func (h *simElectionHost) FollowerLogJoinReady(
 	logSessionID int32,
 ) (consensus.FollowerLogJoinParams, bool) {

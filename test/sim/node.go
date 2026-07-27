@@ -51,7 +51,7 @@ type Node struct {
 	crashSnap *crashSnap
 
 	// Candidate-term tracking for testhooks safety (maxCandidateSeen only
-	// checked after leave Init; initLoaded arms that check).
+	// checked after leave Init; initLoaded enables that check).
 	initLoaded       bool
 	maxCandidateSeen int64
 

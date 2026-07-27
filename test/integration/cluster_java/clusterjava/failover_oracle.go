@@ -25,7 +25,7 @@ const (
 	// UDPChannel matches ClusterConstants.UDP_CHANNEL.
 	UDPChannel = "aeron:udp"
 
-	// FailoverIngressChannel and FailoverEgressChannel pin 64KiB term length for Java
+	// FailoverIngressChannel and FailoverEgressChannel fix 64KiB term length for Java
 	// cluster UDP parity.
 	//
 	// FailoverEgressChannel binds endpoint=aeronmd:0 so the resolved ephemeral port

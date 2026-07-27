@@ -45,28 +45,28 @@ type LogStreamsDeps struct {
 // LogStreams owns the member's cluster log transport resources.
 //
 // Open with [OpenLogStreams], which registers the log subscription and the log
-// exclusive publication and binds the publication, the adapter, the append
-// source, and the log join source into the agent before returning.
+// exclusive publication and binds publisher, adapter, append source, and log
+// join source into the agent before return.
 //
 // Behaviour: the publication must be bound before any election work runs.
-// [consensus.Agent.AddLogPublication] reports the null session id until it is, and the
-// transition that reads that id is the same one that publishes the new
-// leadership term.
+// [consensus.Agent.AddLogPublication] reports the null session id until the
+// publication is bound. The transition that reads that session id also publishes
+// the new leadership term.
 //
-// The subscription opens before the publication. On a shared multicast group a
-// member's own subscription is a receiver for its own publication, so opening it
-// first removes the window where the publication has no receiver at all. Open
-// still does not wait for connect.
+// The subscription opens before the publication. On a shared multicast group the
+// member's own subscription receives its own publication. Opening the
+// subscription first avoids a period with no receiver. Open does not wait for
+// connect.
 //
 // Concurrency: invoker-only. Every method must run on the same goroutine as
 // [consensus.Agent.DoWork] and the transport client duty cycle.
 //
-// Lifetime: this value owns the two transport handles and closes them. It does
-// not own the publisher or the adapter and never closes them. Close before
-// closing the transport client when the process owns the client.
+// Lifetime: owns the two transport handles and closes them. Does not own the
+// publisher or the adapter; never closes them. Close before closing the
+// transport client when the process owns the client.
 //
-// Do not copy. Every field is a reference type; a value copy is a silent alias
-// with two apparent owners.
+// Do not copy. Every field is a reference type. A value copy shares the same
+// handles; both values look like owners.
 type LogStreams struct {
 	agent        *consensus.Agent
 	logPublisher *consensus.LogPublisher
@@ -77,19 +77,23 @@ type LogStreams struct {
 // OpenLogStreams registers the cluster log subscription and publication and
 // binds the log path into deps.Agent.
 //
-// Both use [Topology.LogChannel] and [Topology.LogStreamID]. The subscription is
-// added first, then the publication; both adds complete before anything is
-// bound, so a failed add leaves the agent untouched.
+// Both use [Topology.LogChannel] and [Topology.LogStreamID].
 //
-// Binding is [consensus.Agent.SetLogPublisher], [consensus.Agent.SetLogAdapter],
-// [consensus.Agent.SetAppendSource] with a [consensus.LogAppendPosition] over
-// the agent's wired publisher and adapter, and [consensus.Agent.SetLogJoinSource]
-// with a [consensus.SubscriptionLogJoinSource] over the log subscription. No
-// Image is bound.
+// Open order for adds: subscription, then publication. Both adds complete
+// before any bind. A failed add leaves the agent untouched.
 //
-// Errors when any dependency is nil and when either add fails. On error every
-// handle added so far is closed, the agent is untouched, and the returned value
-// is nil.
+// Bind steps:
+//   - [consensus.Agent.SetLogPublisher]
+//   - [consensus.Agent.SetLogAdapter]
+//   - [consensus.Agent.SetAppendSource] with [consensus.LogAppendPosition]
+//     over the wired publisher and adapter
+//   - [consensus.Agent.SetLogJoinSource] with [consensus.SubscriptionLogJoinSource]
+//     over the log subscription
+//
+// No Image is bound at open.
+//
+// Errors: any dependency is nil, or either add fails. On error every handle
+// added so far is closed, the agent is untouched, and the returned value is nil.
 func OpenLogStreams(
 	deps LogStreamsDeps,
 ) (*LogStreams, error) {
@@ -164,8 +168,8 @@ func (l *LogStreams) Publication() *aeron.ExclusivePublication {
 // Nil after Close and on a nil receiver.
 //
 // The subscription carries one image per member that has published on the shared
-// log channel, in no defined order, and that includes this member's own
-// publication. Select by log session id; never index.
+// log channel, including this member's own publication. Order is undefined.
+// Select by log session id. Must not index.
 //
 // Concurrency: invoker-only. See [LogStreams].
 func (l *LogStreams) Subscription() *aeron.Subscription {
@@ -175,14 +179,13 @@ func (l *LogStreams) Subscription() *aeron.Subscription {
 	return l.subscription
 }
 
-// Close clears the agent log join source, append source, log adapter, and log
-// publisher, clears the publisher publication, then closes the publication and
-// the subscription. The join source is cleared before the subscription it holds
-// closes.
+// Close clears agent log join source, append source, log adapter, and log
+// publisher, clears the publisher publication, then closes publication and
+// subscription. Join source clears before the subscription it holds closes.
 //
 // Idempotent. When both transport handles are already nil, Close returns without
-// touching the agent or the log publisher. The agent and log publisher fields are
-// retained for the life of the value so the first Close can clear them safely.
+// touching the agent or the log publisher. Agent and log publisher fields stay
+// for the life of the value so the first Close can clear them safely.
 //
 // After Close the value is inert: both accessors return nil. Safe on a nil
 // receiver, a zero value, and after the transport client has already closed.

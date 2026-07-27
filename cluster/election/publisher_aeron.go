@@ -16,7 +16,7 @@ const aeronPublisherSendAttempts = 3
 //
 // Lifetime: caller owns ExclusivePublication (add, close, reconnect).
 // SetPublication does not Close the previous handle. Missing publication for a
-// MemberID is a silent no-op (void methods) or false (bool methods).
+// MemberID is a silent no-op (no return) or false (bool methods).
 type AeronPublisher struct {
 	// ActingVersion gates optional SBE fields (ProtocolVersion etc.).
 	// Zero means use schema default via actingVersion() -- same as SbePublisher.

@@ -8,7 +8,7 @@ import (
 // simReplicationHost embeds HostAdapter for production ranking and commit
 // fan-out. Override methods keep multi-node elect live under raised append
 // without archive or log publisher: session id, refuse election close, near-live
-// catchup, and follower log join pin.
+// catchup, and follower log join at harness start.
 type simReplicationHost struct {
 	*election.HostAdapter
 
@@ -29,7 +29,7 @@ func (h *simReplicationHost) AppendNewLeadershipTermEvent(int64) bool { return f
 func (h *simReplicationHost) IsCatchupNearLive(int64) bool { return true }
 
 // FollowerLogJoinReady reports the live log image immediately joinable: sim
-// nodes carry no replicated log, so the join position pins to harness start
+// nodes carry no replicated log, so the join position is harness start
 // position zero.
 func (h *simReplicationHost) FollowerLogJoinReady(
 	logSessionID int32,

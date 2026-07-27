@@ -163,7 +163,7 @@ func TestSubscriptionLogJoinSource_notReadyImageStates(t *testing.T) {
 			addLogJoinImage(t, sub, 10, 600, 0)
 			return NewSubscriptionLogJoinSource(sub)
 		}},
-		// Proves the outcome, not the walk's !IsClosed guard: Subscription.ImageAt
+		// Asserts the outcome, not the walk's !IsClosed guard: Subscription.ImageAt
 		// already filters a closed image to ok false.
 		{"closed image real subscription", 10, func(t *testing.T) *SubscriptionLogJoinSource {
 			t.Helper()
@@ -218,7 +218,7 @@ func TestSubscriptionLogJoinSource_notReadyImageStates(t *testing.T) {
 func TestSubscriptionLogJoinSource_nilSlotRealSubscription(t *testing.T) {
 	t.Parallel()
 
-	// Proves tolerance of a nil slot, not the walk's image != nil guard:
+	// Asserts tolerance of a nil slot, not the walk's image != nil guard:
 	// Subscription.ImageAt already filters a nil slot to ok false.
 	sub := aeron.NewTestSubscriptionForHooks(t)
 	aeron.SubscriptionInjectNilImageAtIndexForHooks(sub, 0)

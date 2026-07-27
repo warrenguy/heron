@@ -11,7 +11,7 @@ import (
 
 var ringWireRegionIDs = [2]int{cncRegionToDriver, cncRegionToClients}
 
-// Rings pins the CNC mmap region and wires to-driver / to-clients buffers.
+// Rings holds the CNC mmap region and wires to-driver / to-clients buffers.
 //
 // Do not call MappedCncFile.Close or Rings.Mapping.Close while using ToDriver
 // or ToClients.

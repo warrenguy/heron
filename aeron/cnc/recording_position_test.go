@@ -28,9 +28,9 @@ func seedRecordingPositionCounter(
 }
 
 func TestArchiveRecordingPositionCounterTypeID(t *testing.T) {
-	// Pinned against the Aeron archive recording-position counter type id. The literal
-	// guards against silent drift; the synthetic tests seed with the named constant and
-	// would pass regardless of its value.
+	// Fixed against the Aeron archive recording-position counter type id. The
+	// literal detects silent drift; synthetic tests seed counters with the
+	// named constant and would pass regardless of its value.
 	require.Equal(t, int32(100), cnc.ArchiveRecordingPositionCounterTypeID)
 }
 

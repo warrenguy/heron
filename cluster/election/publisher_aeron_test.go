@@ -76,7 +76,7 @@ func TestAeronPublisher_missingPub(t *testing.T) {
 	require.False(t, p.RequestVote(dst, sampleRequestVoteFields()))
 	require.False(t, p.AppendPosition(dst, sampleAppendPositionFields()))
 
-	// Void methods: missing pub is silent no-op.
+	// No-return methods: missing pub is silent no-op.
 	p.CanvassPosition(dst, sampleCanvassPositionFields())
 	p.PlaceVote(
 		dst,

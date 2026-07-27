@@ -39,19 +39,8 @@ func (client *Client) OfferAddPublication(streamID int32, channel string) (int64
 // until offer succeeds or deadline). Returns correlationID for
 // PollAddExclusivePublication.
 //
-// Does not wait for driver registration to complete; loop
-// PollAddExclusivePublication until done or terminal error. Pending remains until
-// PollAdd completes, CancelPending, Config.DriverTimeout elapses, or Client.Close.
-// To abandon without Close, call CancelPending or continue polling until done or a
-// terminal err.
-//
-// DriverTimeout covers both to-driver ring offer retries and the wait for the
-// driver response; sustained ring backpressure can shorten the response poll
-// window. Conductor expire during doWorkLocked and the client deadline fallback in
-// pollAddWith both yield *RegistrationTimeoutError.
-//
-// Concurrent OfferAdd* from multiple goroutines is unsupported.
-// See Client godoc for DoWork, Close, and handle-level concurrency.
+// Pending lifetime, DriverTimeout, and concurrency contract match
+// [Client.OfferAddPublication]; poll with PollAddExclusivePublication.
 func (client *Client) OfferAddExclusivePublication(
 	streamID int32,
 	channel string,
@@ -73,21 +62,11 @@ func (client *Client) OfferAddExclusivePublication(
 // call (retries ring backpressure internally until offer succeeds or deadline).
 // Returns correlationID for PollAddSubscription.
 //
-// Does not wait for driver registration to complete; loop PollAddSubscription
-// until done or terminal error. Pending remains until PollAdd completes,
-// CancelPending, Config.DriverTimeout elapses, or Client.Close. To abandon
-// without Close, call CancelPending or continue polling until done or a terminal err.
-//
-// DriverTimeout covers both to-driver ring offer retries and the wait for the
-// driver response; sustained ring backpressure can shorten the response poll
-// window. Conductor expire during doWorkLocked and the client deadline fallback in
-// pollAddWith both yield *RegistrationTimeoutError.
+// Pending lifetime, DriverTimeout, and concurrency contract match
+// [Client.OfferAddPublication]; poll with PollAddSubscription.
 //
 // ON_AVAILABLE_IMAGE may arrive during or after polling; images attach via
 // conductor dispatch, not as a precondition for PollAddSubscription to return.
-//
-// Concurrent OfferAdd* from multiple goroutines is unsupported.
-// See Client godoc for DoWork, Close, and handle-level concurrency.
 func (client *Client) OfferAddSubscription(streamID int32, channel string) (int64, error) {
 	if err := prepareAdd(client, channel); err != nil {
 		return 0, err

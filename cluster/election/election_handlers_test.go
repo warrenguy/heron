@@ -1223,10 +1223,10 @@ func TestHandleFollowerLogReplication_branches(t *testing.T) {
 		require.Equal(t, cfg.LeadershipTermID, election.LogLeadershipTermIDForTest(e))
 	})
 
-	t.Run("waits on install-armed deadline then times out", func(t *testing.T) {
+	t.Run("waits on install deadline then times out", func(t *testing.T) {
 		t.Parallel()
 
-		// The installing NewLeadershipTerm arms the replication deadline one
+		// The installing NewLeadershipTerm sets the replication deadline one
 		// heartbeat timeout out.
 		cfg, deps, clock, _, _ := testElectionDeps(t)
 		e := election.NewElection(cfg, deps)

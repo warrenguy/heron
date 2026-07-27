@@ -21,18 +21,18 @@ import (
 // which carry injected collaborators the same way.
 type ConsensusModuleDeps struct {
 	// Config is the member configuration. OpenConsensusModule normalizes and
-	// validates it, and does not retain it.
+	// validates it. OpenConsensusModule does not retain Config.
 	Config Config
 
 	// ArchiveLister resolves recording extents for a recording log that carries
 	// term entries. Production passes archive.NewLister over a connected
-	// control client; unit tests pass a map-backed fake.
+	// control client. Unit tests pass a map-backed fake.
 	//
-	// Nil is legal on the cold-start path: an empty recording log needs no
-	// lookup. Nil with Config.ArchiveClientEnabled set is refused.
+	// Nil is allowed on cold start when the recording log is empty.
+	// Nil with Config.ArchiveClientEnabled set is refused.
 	//
 	// OpenConsensusModule connects no archive client. The caller owns the
-	// client, its context, and its close.
+	// client, its context, and Close.
 	ArchiveLister recordinglog.ArchiveLister
 }
 
@@ -41,19 +41,19 @@ type ConsensusModuleDeps struct {
 // streams, agent, host adapter, and election.
 //
 // Open with [OpenConsensusModule]. The module owns every handle it opened and
-// closes all of them; a transport client supplied through Config.Aeron stays the
+// closes all of them. A transport client supplied through Config.Aeron stays the
 // caller's.
 //
-// Concurrency: invoker-only. Every method must run on the goroutine that runs
-// the duty cycle, which is aeron.Client.DoWork followed by
-// consensus.Agent.DoWork. The one exception is [ConsensusModule.CommitPosition],
-// which reads the mode-1 *atomic.Int64 and is safe from any goroutine.
+// Concurrency: invoker-only. Every method must run on the duty-cycle goroutine
+// (aeron.Client.DoWork then consensus.Agent.DoWork). Exception:
+// [ConsensusModule.CommitPosition] reads the mode-1 *atomic.Int64 and is safe
+// from any goroutine.
 //
-// Lifetime: outlives the election. Close belongs in the caller's teardown, after
-// the duty cycle has stopped.
+// Lifetime: outlives the election. Close belongs in caller teardown after the
+// duty cycle has stopped.
 //
-// Do not copy. Most fields are pointers; a value copy is a silent alias: two
-// values that each look like an owner and each look responsible for Close.
+// Do not copy. Most fields are pointers. A value copy shares the same handles;
+// both values look like owners responsible for Close.
 type ConsensusModule struct {
 	topology   *Topology
 	client     *aeron.Client
@@ -75,25 +75,35 @@ type ConsensusModule struct {
 }
 
 // OpenConsensusModule assembles one consensus member and returns it with every
-// transport handle and agent dependency bound, before the caller can run a
-// duty tick.
+// transport handle and agent dependency bound before the first duty tick.
 //
-// ctx bounds the transport connect only. It is not retained: nothing the module
-// does after Open observes it, and cancelling it after Open returns has no
-// effect. When Config.Aeron is set, ctx is unused.
+// ctx bounds the transport connect only. Open does not retain ctx. Cancel after
+// Open returns has no effect. When Config.Aeron is set, ctx is unused.
 //
-// The open order is topology, recovery, transport client, agent, consensus
-// publications, consensus subscription, cluster log streams, host adapter,
-// election. Recovery precedes the transport connect so a pure-local failure
-// never pays for a connect. The cluster log publication and subscription are
-// open before the call returns, so the first duty tick can win leadership and
-// append a leadership-term event.
+// Open order:
+//  1. topology
+//  2. recovery
+//  3. transport client
+//  4. agent
+//  5. consensus publications
+//  6. consensus subscription
+//  7. cluster log streams
+//  8. host adapter
+//  9. election
 //
-// Errors when the config fails Validate, when recovery fails, when the
-// transport client cannot connect, and when opening consensus publications, the
-// consensus subscription, or the cluster log streams fails. On error every
-// handle opened so far is closed, the cluster directory lock is released, and
-// the returned value is nil.
+// Recovery runs before connect so failures that need no media driver skip
+// connect cost. The cluster log publication and subscription are open before
+// return so the first duty tick can win leadership and append a leadership-term
+// event.
+//
+// Errors:
+//   - Config fails Validate
+//   - recovery fails
+//   - transport client cannot connect
+//   - consensus publications, consensus subscription, or log streams fail to open
+//
+// On error every handle opened so far is closed, the cluster directory lock is
+// released, and the returned value is nil.
 func OpenConsensusModule(
 	ctx context.Context,
 	deps ConsensusModuleDeps,

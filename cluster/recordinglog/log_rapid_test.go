@@ -63,7 +63,7 @@ const (
 // non-null, and standby endpoints are non-empty. usedTerms tracks claimed TERM
 // ids; termRecordingID is the shared TERM recordingID (-1 until the first TERM).
 //
-// stableRestoreAppendDraw pins termBase and standby endpoint length per snapshot
+// stableRestoreAppendDraw fixes termBase and standby endpoint length per snapshot
 // identity so a later restoreInvalidSnapshot stays byte-for-byte and order-stable.
 func drawAppend(
 	rt *rapid.T,

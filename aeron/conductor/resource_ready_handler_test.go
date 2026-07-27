@@ -1899,7 +1899,7 @@ func TestConductor_adapterWrongKindRemoveReadyViaDoWork(t *testing.T) {
 
 			require.Equal(t, pendingTestCorrelationID, conductorInstance.ReceivedCorrelationID())
 			done, registration, err := conductorInstance.PollPending(pendingTestCorrelationID)
-			require.True(t, done, nonAddWrongKindLatchPollDoneReason)
+			require.True(t, done, nonAddWrongKindPollDoneReason)
 			require.NoError(t, err)
 			require.Equal(t, testCase.kind, registration.Kind)
 			require.Zero(t, registration.RegistrationID)

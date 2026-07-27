@@ -264,8 +264,8 @@ func launchMediaDriver(
 //
 // ipcTermDataLength on external attach is a client-side assumption from defaultDriverEnv
 // (AERON_IPC_TERM_BUFFER_LENGTH), not read from the live driver CNC. External compose
-// stacks should pin matching term buffer env on every service; callers must keep client
-// and driver term lengths aligned.
+// stacks should set matching term buffer env on every service. Callers must keep
+// client and driver term lengths aligned.
 func JoinExternal(t testing.TB, dir string) *MediaDriver {
 	t.Helper()
 	return JoinExternalTimeout(t, dir, joinExternalCncReadyTimeout)

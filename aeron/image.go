@@ -315,8 +315,8 @@ func dataFrameNextOffset(
 }
 
 // receivedFrameAdvance returns the byte advance across the committed frame at
-// offset. Poll's loop is the authority on these rules; the property comparing
-// ReceivedPosition against repeated unbounded Poll pins the two together.
+// offset. Poll's loop is the authority on these rules. The property that compares
+// ReceivedPosition to repeated unbounded Poll asserts they agree.
 func receivedFrameAdvance(
 	termBuffer atomicbuffer.AtomicBuffer,
 	offset int,

@@ -53,15 +53,15 @@ type AeronCluster struct {
 	egressHooks egressDispatchHooks
 }
 
-// IngressClaim pins an in-flight TryClaim until CommitClaim or AbortClaim.
+// IngressClaim holds an in-flight TryClaim until CommitClaim or AbortClaim.
 //
-// The caller owns the claim between TryClaim success and commit/abort; Close does
+// The caller owns the claim between TryClaim success and commit/abort. Close does
 // not finalize pending claims. Position is the stream position returned by the
-// underlying TryClaim. publication stamps the ingress publication used to claim;
-// leadershipTermID stamps the session term encoded into the claim header.
-// CommitClaim and AbortClaim use the stamped publication and term, not the
-// session's current leader ingress, so stale claims abort instead of committing
-// with a wrong publication or leadership term.
+// underlying TryClaim. publication stores the ingress publication used to claim.
+// leadershipTermID stores the session term encoded into the claim header.
+// CommitClaim and AbortClaim use that publication and term, not the session's
+// current leader ingress, so stale claims abort instead of committing on a wrong
+// publication or leadership term.
 type IngressClaim struct {
 	TermIndex        int
 	FrameOffset      int

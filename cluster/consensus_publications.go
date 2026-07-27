@@ -59,7 +59,7 @@ type ConsensusPublicationsDeps struct {
 //
 // Open with [OpenConsensusPublications], which registers every peer publication
 // and binds it into the publisher before returning. There is no unbound state and
-// no lazy add: the election send path is void on most messages and has nowhere to
+// no lazy add: most election send paths return no value and have nowhere to
 // report a late registration failure.
 //
 // Concurrency: invoker-only. Every method must run on the same goroutine as
@@ -76,7 +76,7 @@ type ConsensusPublicationsDeps struct {
 // alias of the same publications and the same publisher: two values that each
 // look like an owner and each look responsible for Close. Every method also takes
 // a pointer receiver, so a copy taken to "avoid the pointer" bypasses the
-// nil-receiver guards a [*ConsensusPublications] caller relies on. Pass the
+// nil-receiver checks a [*ConsensusPublications] caller relies on. Pass the
 // [*ConsensusPublications].
 type ConsensusPublications struct {
 	publisher *election.AeronPublisher

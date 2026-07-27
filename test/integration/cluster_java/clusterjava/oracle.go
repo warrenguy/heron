@@ -25,7 +25,7 @@ const (
 )
 
 const (
-	// IngressChannel and EgressChannel pin 64KiB term length for Java cluster IPC parity.
+	// IngressChannel and EgressChannel fix 64KiB term length for Java cluster IPC parity.
 	IngressChannel = harness.IPCChannel + "?" + termLength64kParam
 	EgressChannel  = harness.IPCChannel + "?" + termLength64kParam
 

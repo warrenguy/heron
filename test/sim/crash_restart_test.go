@@ -159,7 +159,7 @@ func TestRestart_postCrashInjectDeliversAgain(t *testing.T) {
 		require.NotContains(t, s.Node(to).ReceivedFromOrderForTest(), from)
 
 		// Inject drains the scheduler; source canvass ticks can fan out extra Sent.
-		// Pin progress on inbound + peer bookkeeping, not absolute Sent length.
+		// Assert progress on inbound + peer bookkeeping, not absolute Sent length.
 		beforeInbound := s.Node(to).Snapshot().InboundCount
 		beforeSent := len(s.Node(from).Publisher().Sent)
 		require.NoError(t, sim.InjectCanvassPosition(s, from, to, election.NullValue, 0))

@@ -52,7 +52,7 @@ func TestNode_replicationHost_roleViaAgent(t *testing.T) {
 	})
 }
 
-// Sim host overrides: session id, refuse close, near-live catchup, join pin.
+// Sim host overrides: session id, refuse close, near-live catchup, join at start.
 func TestNode_replicationHost_simOverrides(t *testing.T) {
 	t.Parallel()
 
@@ -80,7 +80,7 @@ func TestNode_replicationHost_simOverrides(t *testing.T) {
 		require.True(t, h.IsCatchupNearLive(0))
 		require.True(t, h.IsCatchupNearLive(10_000))
 
-		// Follower join pin matches scripted election host.
+		// Follower join position matches scripted election host.
 		params, ok := h.FollowerLogJoinReady(logSessionID)
 		require.True(t, ok)
 		require.Equal(t, consensus.FollowerLogJoinParams{

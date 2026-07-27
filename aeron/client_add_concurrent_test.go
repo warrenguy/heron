@@ -3,7 +3,7 @@
 // 2. External DoWork hammer during blocking await (concurrentDoWorkDuringBlockingAwait).
 // 3. Close during offer-phase ring backpressure (concurrentCloseDuringOfferBackpressure).
 //
-// Hammer and close-during-await paths indirectly guard doWorkLocked vs DoWork:
+// Hammer and close-during-await paths assert doWorkLocked vs DoWork:
 // locked await/offer/drain paths must call doWorkLocked to avoid self-deadlock.
 package aeron
 

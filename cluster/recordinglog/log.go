@@ -139,7 +139,7 @@ func (l *Log) NextEntryIndex() int32 {
 // (leadershipTermID-1) is committed to termBaseLogPosition and the new
 // term's logPosition is seeded from the next term's base when one exists.
 //
-// recordingID must be consistent across all terms; the first latches the shared
+// recordingID must be consistent across all terms; the first stores the shared
 // value. Returns ErrTermRecordingIDInvalid on NULL_VALUE,
 // ErrTermRecordingIDMismatch on a differing recordingID, ErrShortWrite on a
 // truncated write, or the underlying WriteAt error.

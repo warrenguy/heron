@@ -98,7 +98,7 @@ func TestSafety_secondSelfLeaderForSameTerm(t *testing.T) {
 	})
 }
 
-// After each step (when armed), the sim fails if two live elections share a
+// After each step (when enabled), the sim fails if two live elections share a
 // leadership term and both are in a self-leader state. Direct
 // CheckNoSplitBrainLive and checkContinuousSafety both report that fault.
 func TestSafety_liveSplitBrain(t *testing.T) {

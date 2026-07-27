@@ -87,10 +87,10 @@ func TestInject_publishFailure(t *testing.T) {
 			publish: func(election.PublicationTarget) bool { return false },
 		},
 		{
-			// Void publishers (canvass, vote) discard publish's bool, so the
+			// No-return publishers (canvass, vote) discard publish's bool, so the
 			// callback returns true even when nothing was appended. inject must
 			// still surface encode failure from the unchanged Sent log.
-			name:    "void publisher leaves Sent unchanged",
+			name:    "no-return publisher leaves Sent unchanged",
 			publish: func(election.PublicationTarget) bool { return true },
 		},
 	} {

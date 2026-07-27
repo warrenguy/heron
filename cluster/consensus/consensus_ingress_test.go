@@ -360,7 +360,7 @@ func TestSteadyLeaderCommit_notifiesFollower(t *testing.T) {
 }
 
 func TestSteadyLeaderCommit_nullLeader_skipsNotify(t *testing.T) {
-	// Fail-closed has two arms: Agent leader unset, and wire leader mismatch.
+	// Fail-closed has two cases: Agent leader unset, and wire leader mismatch.
 	// Cover both; wire shape (CommitPosition vs NLT) is shared notify path.
 	tests := []struct {
 		name        string
@@ -368,7 +368,7 @@ func TestSteadyLeaderCommit_nullLeader_skipsNotify(t *testing.T) {
 		agentLeader int32
 		wireLeader  int32
 	}{
-		// Arm 1: both unset (-1). Without Agent-null arm, both-null would
+		// Case 1: both unset (-1). Without Agent-null case, both-null would
 		// fall through mismatch check (-1 != -1) and wrongly notify.
 		{
 			name: "agentNull_wireNull_Commit", wire: "commit",
@@ -378,7 +378,7 @@ func TestSteadyLeaderCommit_nullLeader_skipsNotify(t *testing.T) {
 			name: "agentNull_wireNull_NLT", wire: "nlt",
 			agentLeader: nullMemberID, wireLeader: nullMemberID,
 		},
-		// Arm 2: known Agent leader, wire null sentinel.
+		// Case 2: known Agent leader, wire null sentinel.
 		{
 			name: "agentKnown_wireNull_Commit", wire: "commit",
 			agentLeader: 1, wireLeader: nullMemberID,

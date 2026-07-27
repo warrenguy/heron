@@ -7,7 +7,7 @@ import (
 
 var _ consensus.AgentHandler = (*electiontest.NoopAgentHandler)(nil)
 
-// Discarded literal pins FollowerLogJoinParams field names at compile time.
+// Discarded literal asserts FollowerLogJoinParams field names at compile time.
 var _ = consensus.FollowerLogJoinParams{
 	LogChannel:      "aeron:udp?endpoint=localhost:0",
 	LogStreamID:     101,
