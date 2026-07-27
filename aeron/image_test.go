@@ -2,6 +2,7 @@ package aeron_test
 
 import (
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -1061,4 +1062,293 @@ func TestImage_Poll_headerFields(t *testing.T) {
 		int64(frameOffset+logbuffer.AlignFragmentChunkLength(len(payload))),
 		header.Position(),
 	)
+}
+
+func TestImage_ReceivedPosition(t *testing.T) {
+	const termLength = aeron.TestPublicationTermLength
+	const frame = receivedPositionFrameLength
+
+	tests := []struct {
+		name  string
+		start int64
+		setup func(t *testing.T, image *aeron.Image, start int64)
+		want  int64
+	}{
+		{
+			name:  "empty term reports the subscriber position",
+			start: 0,
+			setup: func(*testing.T, *aeron.Image, int64) {},
+			want:  0,
+		},
+		{
+			name:  "single term reaches the last committed frame",
+			start: 0,
+			setup: func(t *testing.T, image *aeron.Image, start int64) {
+				writeReceivedPositionFrames(t, image, int(start)/termLength, int(start)%termLength, 5)
+			},
+			want: 5 * frame,
+		},
+		{
+			name:  "scan starts at the subscriber position not the join position",
+			start: termLength + 2*frame,
+			setup: func(t *testing.T, image *aeron.Image, start int64) {
+				writeReceivedPositionFrames(t, image, int(start)/termLength, int(start)%termLength, 4)
+			},
+			want: termLength + 6*frame,
+		},
+		{
+			name:  "term rollover with an exact fill",
+			start: termLength - 4*frame,
+			setup: func(t *testing.T, image *aeron.Image, start int64) {
+				termIndex := int(start) / termLength
+				writeReceivedPositionFrames(t, image, termIndex, int(start)%termLength, 4)
+				writeReceivedPositionFrames(t, image, termIndex+1, 0, 3)
+			},
+			want: termLength + 3*frame,
+		},
+		{
+			name:  "term rollover across a term-end padding frame",
+			start: termLength - 2*frame - logbuffer.FrameAlignment*2,
+			setup: func(t *testing.T, image *aeron.Image, start int64) {
+				termIndex := int(start) / termLength
+				padOffset := writeReceivedPositionFrames(
+					t,
+					image,
+					termIndex,
+					int(start)%termLength,
+					2,
+				)
+				aeron.WriteCommittedPaddingFrameForTest(
+					aeron.ImageTermBufferForTest(image, termIndex),
+					padOffset,
+					aeron.TestPublicationInitialTermID,
+					int32(padOffset),
+					int32(termLength-padOffset),
+				)
+				writeReceivedPositionFrames(t, image, termIndex+1, 0, 2)
+			},
+			want: termLength + 2*frame,
+		},
+		{
+			name:  "term rollover across a sub-header term-end gap",
+			start: termLength - 7,
+			setup: func(t *testing.T, image *aeron.Image, start int64) {
+				termIndex := int(start) / termLength
+				termOffset := int(start) % termLength
+				aeron.WriteMinimalTermEndPaddingForTest(
+					aeron.ImageTermBufferForTest(image, termIndex),
+					termOffset,
+					int32(termLength-termOffset),
+				)
+				writeReceivedPositionFrames(t, image, termIndex+1, 0, 1)
+			},
+			want: termLength + frame,
+		},
+		{
+			name:  "stops at a term-end gap whose committed length is not the gap",
+			start: termLength - 5,
+			setup: func(t *testing.T, image *aeron.Image, start int64) {
+				termIndex := int(start) / termLength
+				termOffset := int(start) % termLength
+				aeron.WriteMinimalTermEndPaddingForTest(
+					aeron.ImageTermBufferForTest(image, termIndex),
+					termOffset,
+					4,
+				)
+				writeReceivedPositionFrames(t, image, termIndex+1, 0, 1)
+			},
+			want: termLength - 5,
+		},
+		{
+			name:  "two term crossings in one call",
+			start: termLength - frame,
+			setup: func(t *testing.T, image *aeron.Image, start int64) {
+				termIndex := int(start) / termLength
+				writeReceivedPositionFrames(t, image, termIndex, int(start)%termLength, 1)
+				writeReceivedPositionFrames(t, image, termIndex+1, 0, termLength/frame)
+				writeReceivedPositionFrames(t, image, termIndex+2, 0, 2)
+			},
+			want: 2*termLength + 2*frame,
+		},
+		{
+			name:  "stops at an uncommitted frame",
+			start: 0,
+			setup: func(t *testing.T, image *aeron.Image, start int64) {
+				writeReceivedPositionFrames(t, image, int(start)/termLength, int(start)%termLength, 2)
+				writeReceivedPositionFrames(t, image, int(start)/termLength, 3*frame, 2)
+			},
+			want: 2 * frame,
+		},
+		{
+			name:  "stops at an in-flight frame",
+			start: 0,
+			setup: func(t *testing.T, image *aeron.Image, start int64) {
+				termBuffer := aeron.ImageTermBufferForTest(image, int(start)/termLength)
+				writeReceivedPositionFrames(t, image, int(start)/termLength, int(start)%termLength, 2)
+				logbuffer.PutFrameLengthRelease(termBuffer, 2*frame, -frame)
+			},
+			want: 2 * frame,
+		},
+		{
+			name:  "stops at a frame shorter than a header",
+			start: 0,
+			setup: func(t *testing.T, image *aeron.Image, start int64) {
+				termIndex := int(start) / termLength
+				writeReceivedPositionFrames(t, image, termIndex, int(start)%termLength, 2)
+				writePollTestCorruptFrame(
+					aeron.ImageTermBufferForTest(image, termIndex),
+					int(start)%termLength+2*frame,
+				)
+			},
+			want: 2 * frame,
+		},
+		{
+			name:  "stops at a frame that overruns the term",
+			start: 0,
+			setup: func(t *testing.T, image *aeron.Image, start int64) {
+				termIndex := int(start) / termLength
+				termOffset := int(start) % termLength
+				termBuffer := aeron.ImageTermBufferForTest(image, termIndex)
+				writeReceivedPositionFrames(t, image, termIndex, termOffset, 2)
+				logbuffer.PutFrameType(termBuffer, termOffset+2*frame, logbuffer.HdrTypeData)
+				logbuffer.PutFrameLengthOrdered(termBuffer, termOffset+2*frame, int32(termLength))
+			},
+			want: 2 * frame,
+		},
+		{
+			name:  "stops at a padding frame that overruns the term",
+			start: 0,
+			setup: func(t *testing.T, image *aeron.Image, start int64) {
+				termIndex := int(start) / termLength
+				termOffset := int(start) % termLength
+				termBuffer := aeron.ImageTermBufferForTest(image, termIndex)
+				writeReceivedPositionFrames(t, image, termIndex, termOffset, 2)
+				aeron.WriteCommittedPaddingFrameForTest(
+					termBuffer,
+					termOffset+2*frame,
+					aeron.TestPublicationInitialTermID,
+					int32(termOffset+2*frame),
+					int32(termLength),
+				)
+			},
+			want: 2 * frame,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Join at 0 and move the subscriber, so the scan is pinned to the
+			// live subscriber position rather than the join position.
+			image, _ := newPollImage(t, 0)
+			aeron.ImageSetSubscriberPositionForTest(image, tc.start)
+			tc.setup(t, image, tc.start)
+
+			received := image.ReceivedPosition()
+
+			require.Equal(t, tc.want, received)
+			require.Equal(t, tc.start, image.Position(), "the scan leaves the subscriber alone")
+			require.Equal(t, received, image.ReceivedPosition(), "the scan is idempotent")
+			require.Equal(
+				t,
+				tc.want,
+				pollImageToExhaustion(t, image),
+				"repeated unbounded poll settles at the received position",
+			)
+			require.Equal(t, tc.want, image.ReceivedPosition())
+		})
+	}
+}
+
+// TestImage_ReceivedPosition_boundsAtTermRing pins the one state where the scan
+// deliberately stops short of what Poll would consume. Poll has no ring bound,
+// so a term ring committed end to end loops it; the scan reports the ring.
+func TestImage_ReceivedPosition_boundsAtTermRing(t *testing.T) {
+	const termLength = aeron.TestPublicationTermLength
+	const frame = receivedPositionFrameLength
+
+	image, _ := newPollImage(t, 0)
+	for index := range logbuffer.PartitionCount {
+		writeReceivedPositionFrames(t, image, index, 0, termLength/frame)
+	}
+
+	require.Equal(t, int64(logbuffer.PartitionCount*termLength), image.ReceivedPosition())
+	require.Zero(t, image.Position(), "the scan leaves the subscriber alone")
+
+	pollCalls := 0
+	for range logbuffer.PartitionCount + 1 {
+		before := image.Position()
+		image.Poll(receivedPositionNoopHandler, math.MaxInt)
+		if image.Position() == before {
+			break
+		}
+		pollCalls++
+	}
+	require.Equal(t, logbuffer.PartitionCount+1, pollCalls, "poll does not bound at the ring")
+}
+
+func TestImage_ReceivedPosition_closedImageReportsFinalPosition(t *testing.T) {
+	const frame = receivedPositionFrameLength
+
+	image, _ := newPollImage(t, 0)
+	writeReceivedPositionFrames(t, image, 0, 0, 3)
+	aeron.ImageSetSubscriberPositionForTest(image, frame)
+	require.Equal(t, int64(3*frame), image.ReceivedPosition())
+
+	aeron.ImageInternalCloseForTest(image)
+
+	require.Equal(t, int64(frame), image.ReceivedPosition())
+	require.Equal(t, image.Position(), image.ReceivedPosition())
+
+	// The driver reclaims and reuses the subscriber counter slot after the
+	// conductor releases the image, so a closed image must not read it.
+	aeron.ImageSetSubscriberPositionForTest(image, 99*frame)
+
+	require.Equal(t, int64(frame), image.ReceivedPosition())
+	require.Equal(t, image.Position(), image.ReceivedPosition())
+}
+
+// TestImage_ReceivedPosition_doesNotReportCorruptFrame keeps the corrupt-frame
+// report on the consuming path. Reporting from a query would allocate, and its
+// debounce would silence the next Poll over the same offset.
+func TestImage_ReceivedPosition_doesNotReportCorruptFrame(t *testing.T) {
+	const wantErr = "aeron: corrupt committed frame at term offset 0 length 31"
+
+	image, capture, handledErr := newPollImageWithErrorHandler(t, 0)
+	writePollTestCorruptFrame(aeron.ImageTermBuffer0ForTest(image), 0)
+
+	require.Zero(t, image.ReceivedPosition())
+	require.NoError(t, handledErr(), "the scan does not invoke the subscriber error handler")
+
+	require.Zero(t, image.Poll(capture.handler, 1))
+	handled := handledErr()
+	require.Error(t, handled)
+	require.Equal(t, wantErr, handled.Error())
+}
+
+// TestImage_ReceivedPosition_runsNoPollHook pins that the scan calls no user or
+// hook code. Nothing inside the loop can close the image or panic, which is why
+// the scan carries neither an in-loop close check nor a recover.
+func TestImage_ReceivedPosition_runsNoPollHook(t *testing.T) {
+	const frame = receivedPositionFrameLength
+
+	image, capture := newPollImage(t, 0)
+	termBuffer := aeron.ImageTermBuffer0ForTest(image)
+	aeron.WriteCommittedPaddingFrameForTest(
+		termBuffer,
+		0,
+		aeron.TestPublicationInitialTermID,
+		0,
+		frame,
+	)
+	writeReceivedPositionFrames(t, image, 0, frame, 1)
+
+	hookCalls := 0
+	aeron.SetPollAfterPaddingAdvanceForTest(func() { hookCalls++ })
+	t.Cleanup(func() { aeron.SetPollAfterPaddingAdvanceForTest(nil) })
+
+	require.Equal(t, int64(2*frame), image.ReceivedPosition())
+	require.Zero(t, hookCalls, "the scan crossed the padding frame without the poll hook")
+
+	require.Equal(t, 1, image.Poll(capture.handler, 1))
+	require.Equal(t, 1, hookCalls, "poll still fires the hook over the same padding frame")
 }

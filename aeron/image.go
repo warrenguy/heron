@@ -196,6 +196,47 @@ func (image *Image) Position() int64 {
 	return image.subscriberPos.Get()
 }
 
+// ReceivedPosition returns the stream position of the end of the contiguous
+// committed data the media driver has placed in this image's term buffers.
+//
+// The scan starts at the subscriber position and stops at the first uncommitted
+// frame. It reports the position that repeated unbounded [Image.Poll] calls
+// settle at, without consuming a fragment and without advancing the subscriber
+// position. A single Poll never crosses a term boundary; one ReceivedPosition
+// call scans up to [logbuffer.PartitionCount] terms and stops there, so a term
+// ring committed end to end reports the ring rather than looping.
+//
+// A corrupt or truncated committed frame stops the scan at that frame and is
+// not reported. The next Poll over the same offset reports it through the
+// subscriber error handler.
+//
+// A closed image reports its final position, the value [Image.Position] reports.
+//
+// ReceivedPosition is not thread-safe. Same concurrency contract as
+// [Image.Poll]; see the [Image] type godoc.
+func (image *Image) ReceivedPosition() int64 {
+	if image.isClosed.Load() {
+		return image.finalPosition
+	}
+
+	position := image.subscriberPos.Get()
+	for range logbuffer.PartitionCount {
+		termBuffer := image.activeTermBuffer(position)
+		capacity := termBuffer.Capacity()
+		offset := int(position) & int(image.termLengthMask)
+
+		for offset < capacity {
+			advance, ok := receivedFrameAdvance(termBuffer, offset, capacity)
+			if !ok {
+				return position
+			}
+			offset += advance
+			position += int64(advance)
+		}
+	}
+	return position
+}
+
 func (image *Image) SubscriberPositionID() int32 {
 	return image.subscriberPos.CounterID()
 }
@@ -271,6 +312,31 @@ func dataFrameNextOffset(
 		return 0, false
 	}
 	return nextOffset, true
+}
+
+// receivedFrameAdvance returns the byte advance across the committed frame at
+// offset. Poll's loop is the authority on these rules; the property comparing
+// ReceivedPosition against repeated unbounded Poll pins the two together.
+func receivedFrameAdvance(
+	termBuffer atomicbuffer.AtomicBuffer,
+	offset int,
+	capacity int,
+) (advance int, ok bool) {
+	frameLength := logbuffer.CommittedFrameLengthVolatile(termBuffer, offset)
+	if slack, slackOK := termEndSlackAdvance(offset, capacity, frameLength); slackOK {
+		return slack, true
+	}
+	if frameLength <= 0 {
+		return 0, false
+	}
+	if logbuffer.IsPaddingFrameInTerm(termBuffer, offset) {
+		return paddingAdvance(offset, frameLength, capacity)
+	}
+	nextOffset, dataOK := dataFrameNextOffset(offset, frameLength, capacity)
+	if !dataOK {
+		return 0, false
+	}
+	return nextOffset - offset, true
 }
 
 func (image *Image) reportCorruptCommittedFrame(

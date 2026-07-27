@@ -191,3 +191,198 @@ func TestImage_Poll_alignRoundtrip_rapid(t *testing.T) {
 		require.Equal(rt, int64(offset), image.Position())
 	})
 }
+
+var receivedPositionShift = logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
+
+// receivedPositionRingLimit is the highest position a scan can reach from
+// start: the base of start's own term plus the whole term ring.
+func receivedPositionRingLimit(start int64) int64 {
+	return start - int64(logbuffer.ComputeTermOffsetFromPosition(start, receivedPositionShift)) +
+		int64(logbuffer.PartitionCount*aeron.TestPublicationTermLength)
+}
+
+func drawReceivedPositionStart(rt *rapid.T) int64 {
+	rt.Helper()
+
+	startTerm := rapid.IntRange(0, 5).Draw(rt, "startTerm")
+	var offset int
+	if rapid.Bool().Draw(rt, "startInTailGap") {
+		offset = aeron.TestPublicationTermLength -
+			rapid.IntRange(1, logbuffer.DataHeaderLength-1).Draw(rt, "tailGap")
+	} else {
+		offset = logbuffer.FrameAlignment * rapid.IntRange(0, 16).Draw(rt, "startFrames")
+	}
+	return int64(startTerm)*aeron.TestPublicationTermLength + int64(offset)
+}
+
+type receivedPositionLayoutKind int
+
+const (
+	receivedPositionLayoutData receivedPositionLayoutKind = iota
+	receivedPositionLayoutPad
+	receivedPositionLayoutTermEndPad
+	receivedPositionLayoutStop
+)
+
+// writeReceivedPositionLayout writes a drawn frame layout from start and
+// returns the position it ends at. It never writes to or past limit, so the
+// layout stays inside the scan's contract and the unbounded-poll oracle stays
+// well defined. The expectation is what the writer laid down, not a second copy
+// of the scan.
+func writeReceivedPositionLayout(
+	rt *rapid.T,
+	image *aeron.Image,
+	start int64,
+	limit int64,
+) int64 {
+	rt.Helper()
+
+	const termLength = aeron.TestPublicationTermLength
+
+	position := start
+	steps := rapid.IntRange(1, 40).Draw(rt, "steps")
+	for range steps {
+		if limit-position <= int64(logbuffer.DataHeaderLength) {
+			return position
+		}
+		termIndex := logbuffer.IndexByPosition(position, receivedPositionShift)
+		termBuffer := aeron.ImageTermBufferForTest(image, termIndex)
+		offset := int(logbuffer.ComputeTermOffsetFromPosition(position, receivedPositionShift))
+		remaining := termLength - offset
+
+		if remaining < logbuffer.DataHeaderLength {
+			// A term-end gap shorter than a header carries at most a length
+			// field. Draw it across the whole legal span, not only at the gap
+			// width: a committed length that is not the remaining byte count
+			// fails the slack guard, and both the scan and Poll stop there.
+			gapLength := rapid.IntRange(0, remaining).Draw(rt, "tailGapCommittedLength")
+			if gapLength > 0 {
+				aeron.WriteMinimalTermEndPaddingForTest(termBuffer, offset, int32(gapLength))
+			}
+			if gapLength >= atomicbuffer.SizeInt32 && gapLength != remaining {
+				return position
+			}
+			position += int64(remaining)
+			continue
+		}
+
+		advance := 0
+		payloadLength := 0
+		isData := false
+		kind := rapid.SampledFrom([]receivedPositionLayoutKind{
+			receivedPositionLayoutData,
+			receivedPositionLayoutPad,
+			receivedPositionLayoutTermEndPad,
+			receivedPositionLayoutStop,
+		}).Draw(rt, "kind")
+		switch kind {
+		case receivedPositionLayoutStop:
+			return position
+		case receivedPositionLayoutPad:
+			advance = min(
+				logbuffer.FrameAlignment*rapid.IntRange(1, 4).Draw(rt, "padUnits"),
+				remaining,
+			)
+		case receivedPositionLayoutTermEndPad:
+			advance = remaining
+		case receivedPositionLayoutData:
+			payloadLength = rapid.IntRange(0, 256).Draw(rt, "payloadLength")
+			advance = logbuffer.AlignFragmentChunkLength(payloadLength)
+			isData = advance < remaining
+
+			// A data frame never crosses the term boundary; a chunk that would
+			// cross becomes term-end padding, as a publication claims it.
+			if !isData {
+				advance = remaining
+			}
+		}
+
+		if position+int64(advance) >= limit {
+			return position
+		}
+		if isData {
+			writePollTestDataFrame(
+				termBuffer,
+				offset,
+				int32(offset),
+				logbuffer.Unfragmented,
+				make([]byte, payloadLength),
+			)
+		} else {
+			aeron.WriteCommittedPaddingFrameForTest(
+				termBuffer,
+				offset,
+				aeron.TestPublicationInitialTermID,
+				int32(offset),
+				int32(advance),
+			)
+		}
+		position += int64(advance)
+	}
+	return position
+}
+
+func TestImage_ReceivedPosition_matchesWrittenLayout_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		start := drawReceivedPositionStart(rt)
+		limit := receivedPositionRingLimit(start)
+		image, _ := newPollImage(t, 0)
+		aeron.ImageSetSubscriberPositionForTest(image, start)
+		want := writeReceivedPositionLayout(rt, image, start, limit)
+
+		received := image.ReceivedPosition()
+
+		require.Equal(rt, want, received)
+		require.GreaterOrEqual(rt, received, image.Position())
+		require.LessOrEqual(rt, received, limit, "the scan never runs past the term ring")
+		require.Equal(rt, received, image.ReceivedPosition(), "the scan is idempotent")
+		require.Equal(rt, start, image.Position(), "the scan leaves the subscriber alone")
+	})
+}
+
+func TestImage_ReceivedPosition_matchesUnboundedPoll_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		start := drawReceivedPositionStart(rt)
+		image, _ := newPollImage(t, 0)
+		aeron.ImageSetSubscriberPositionForTest(image, start)
+		want := writeReceivedPositionLayout(rt, image, start, receivedPositionRingLimit(start))
+
+		received := image.ReceivedPosition()
+		settled := pollImageToExhaustion(rt, image)
+
+		require.Equal(rt, want, settled)
+		require.Equal(rt, received, settled, "the scan predicts where poll settles")
+		require.Equal(rt, settled, image.ReceivedPosition())
+	})
+}
+
+func TestImage_ReceivedPosition_monotonicUnderWrites_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		start := drawReceivedPositionStart(rt)
+		limit := receivedPositionRingLimit(start)
+		image, _ := newPollImage(t, 0)
+		aeron.ImageSetSubscriberPositionForTest(image, start)
+
+		// An empty layout reports the subscriber position, except from a
+		// sub-header term-end gap, where the scan advances to the next term
+		// base exactly as Poll does.
+		previous := image.ReceivedPosition()
+		require.GreaterOrEqual(rt, previous, start)
+		require.Less(rt, previous-start, int64(logbuffer.DataHeaderLength))
+
+		for range rapid.IntRange(1, 6).Draw(rt, "rounds") {
+			written := writeReceivedPositionLayout(rt, image, previous, limit)
+			current := image.ReceivedPosition()
+
+			require.GreaterOrEqual(rt, current, previous, "the reported position never retreats")
+			require.Equal(rt, written, current)
+			if written == previous {
+				break
+			}
+			previous = current
+		}
+	})
+}

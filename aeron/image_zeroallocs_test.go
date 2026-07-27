@@ -91,3 +91,10 @@ func TestSubscription_Poll_ZeroAllocs(t *testing.T) {
 	subscriptionPollZeroAllocSub = setupZeroAllocPollSubscription(t)
 	testutil.AssertZeroAllocs(t, "Subscription.Poll", 1000, subscriptionPollZeroAllocIteration)
 }
+
+func TestImage_ReceivedPosition_ZeroAllocs(t *testing.T) {
+	image := setupZeroAllocReceivedPositionImage(t)
+	testutil.AssertZeroAllocs(t, "Image.ReceivedPosition", 1000, func() {
+		imageReceivedPositionSink = image.ReceivedPosition()
+	})
+}

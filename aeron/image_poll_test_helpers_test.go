@@ -1,6 +1,7 @@
 package aeron_test
 
 import (
+	"math"
 	"slices"
 	"testing"
 
@@ -20,6 +21,11 @@ const (
 	pollTestTailFrameLength      = 2 * logbuffer.FrameAlignment
 	pollTestMinimalPadLength     = int32(8)
 	pollTestTermEndFullPadLength = int32(40)
+
+	// The payload is a FrameAlignment multiple, so header plus payload is the
+	// aligned chunk advance writeDataFrameChain takes per frame.
+	receivedPositionPayloadLength = 96
+	receivedPositionFrameLength   = logbuffer.DataHeaderLength + receivedPositionPayloadLength
 )
 
 type pollCapture struct {
@@ -181,18 +187,24 @@ func writePollTestPaddingThenData(
 	)
 }
 
+// writePollTestCorruptFrame commits a data frame one byte shorter than a
+// header, the smallest corrupt committed frame.
+func writePollTestCorruptFrame(termBuffer atomicbuffer.AtomicBuffer, offset int) {
+	logbuffer.PutFrameType(termBuffer, offset, logbuffer.HdrTypeData)
+	logbuffer.PutFrameLengthOrdered(
+		termBuffer,
+		offset,
+		int32(logbuffer.DataHeaderLength-1),
+	)
+}
+
 func writePollTestCommittedThenCorrupt(
 	termBuffer atomicbuffer.AtomicBuffer,
 	payload []byte,
 	corruptOffset int,
 ) {
 	writePollTestDataFrame(termBuffer, 0, 0, logbuffer.Unfragmented, payload)
-	logbuffer.PutFrameType(termBuffer, corruptOffset, logbuffer.HdrTypeData)
-	logbuffer.PutFrameLengthOrdered(
-		termBuffer,
-		corruptOffset,
-		int32(logbuffer.DataHeaderLength-1),
-	)
+	writePollTestCorruptFrame(termBuffer, corruptOffset)
 }
 
 func writeDataFrameChain(
@@ -335,5 +347,73 @@ func setupZeroAllocPollImage(tb testing.TB) *aeron.Image {
 		aeron.PollTestZeroAllocPayloadBytes(),
 	)
 	imagePollSink = image.Poll(imagePollZeroAllocHandler, 1)
+	return image
+}
+
+func receivedPositionNoopHandler(
+	_ atomicbuffer.AtomicBuffer,
+	_ int,
+	_ int,
+	_ *aeron.Header,
+) {
+}
+
+// pollImageToExhaustion is the ReceivedPosition oracle: repeated unbounded Poll
+// until no call makes progress. A single Poll never crosses a term boundary, so
+// a term crossing needs the loop.
+//
+// Valid only for layouts that stop inside the mapped term ring (or that do not
+// fully commit every partition from the subscriber position). Poll has no ring
+// bound: a term ring committed end to end never stalls, so a fixed call cap would
+// return a mid-wrap position. Callers that fill the whole ring assert that case
+// separately.
+func pollImageToExhaustion(t require.TestingT, image *aeron.Image) int64 {
+	if h, ok := t.(interface{ Helper() }); ok {
+		h.Helper()
+	}
+
+	const maxCalls = 2 * logbuffer.PartitionCount
+	for range maxCalls {
+		before := image.Position()
+		image.Poll(receivedPositionNoopHandler, math.MaxInt)
+		if image.Position() == before {
+			return image.Position()
+		}
+	}
+	require.Fail(t, "poll did not settle: layout must stop inside the term ring")
+	return image.Position()
+}
+
+func writeReceivedPositionFrames(
+	tb testing.TB,
+	image *aeron.Image,
+	termIndex int,
+	startOffset int,
+	frameCount int,
+) int {
+	tb.Helper()
+
+	return writeDataFrameChain(
+		tb,
+		aeron.ImageTermBufferForTest(image, termIndex),
+		startOffset,
+		frameCount,
+		make([]byte, receivedPositionPayloadLength),
+	)
+}
+
+var imageReceivedPositionSink int64
+
+// setupZeroAllocReceivedPositionImage lays out a scan that crosses a term
+// boundary, so the allocation check covers the multi-term path.
+func setupZeroAllocReceivedPositionImage(tb testing.TB) *aeron.Image {
+	tb.Helper()
+
+	start := aeron.TestPublicationTermLength - 2*receivedPositionFrameLength
+	image, _ := newPollImage(tb, 0)
+	aeron.ImageSetSubscriberPositionForTest(image, int64(start))
+	writeReceivedPositionFrames(tb, image, 0, start, 2)
+	writeReceivedPositionFrames(tb, image, 1, 0, 4)
+	imageReceivedPositionSink = image.ReceivedPosition()
 	return image
 }
