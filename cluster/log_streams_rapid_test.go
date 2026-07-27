@@ -64,7 +64,8 @@ func TestLogStreams_openAndTeardown_rapid(t *testing.T) {
 		require.Equal(t, topology.LogChannel(), adder.calls[1].channel)
 
 		require.Equal(t, adder.lastPub.SessionID(), agent.AddLogPublication(0))
-		require.Same(t, logPublisher, agent.AppendSource())
+		require.IsType(t, (*consensus.LogAppendPosition)(nil), agent.AppendSource())
+		require.IsType(t, (*consensus.SubscriptionLogJoinSource)(nil), agent.LogJoinSource())
 		require.Nil(t, logAdapter.Image())
 		require.Same(t, adder.lastPub, logPublisher.Publication())
 		require.Same(t, adder.lastPub, ls.Publication())
@@ -75,6 +76,7 @@ func TestLogStreams_openAndTeardown_rapid(t *testing.T) {
 		require.NoError(t, ls.Close())
 		require.Equal(t, int32(-1), agent.AddLogPublication(0))
 		require.Nil(t, agent.AppendSource())
+		require.Nil(t, agent.LogJoinSource())
 		require.Nil(t, logPublisher.Publication())
 		require.True(t, pub.IsClosed())
 		require.True(t, sub.IsClosed())

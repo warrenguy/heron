@@ -703,14 +703,52 @@ func TestFollowerConsensusWork_nilAdapter_appendOnly(t *testing.T) {
 	require.Equal(t, int64(10), a.CommitPosition())
 }
 
+// steppingAppendSource counts reads and advances after each one, so a second
+// read within one tick returns a different value and shows up in the publish.
+type steppingAppendSource struct {
+	value int64
+	step  int64
+	reads int
+}
+
+func (s *steppingAppendSource) AppendPosition() int64 {
+	v := s.value
+	s.reads++
+	s.value += s.step
+	return v
+}
+
+func TestFollowerConsensusWork_readsAppendSourceOncePerTick(t *testing.T) {
+	eg := &recordingEgress{}
+	src := &steppingAppendSource{value: 40, step: 7}
+	a := NewAgent(AgentConfig{
+		Role:             RoleFollower,
+		Egress:           eg,
+		AppendSource:     src,
+		LeadershipTermID: 3,
+	})
+	a.SetLogAdapter(NewLogAdapter(0))
+
+	// One read serves both the poll bound and the publish; the publish carries
+	// that snapshot even though the source advanced after the read.
+	require.Equal(t, 1, a.consensusWork(0))
+	require.Equal(t, 1, src.reads)
+	require.Equal(t, []appendPublishCall{{term: 3, pos: 40, flags: 0}}, eg.appends)
+
+	// Next tick reads once more and publishes the next snapshot.
+	require.Equal(t, 1, a.consensusWork(1))
+	require.Equal(t, 2, src.reads)
+	require.Equal(t, appendPublishCall{term: 3, pos: 47, flags: 0}, eg.appends[1])
+}
+
 func TestFollowerLogPollBound_nilAppendSource(t *testing.T) {
 	a := NewAgent(AgentConfig{})
 	require.Nil(t, a.AppendSource())
 
 	const notify int64 = 4242
 	a.notifiedCommitPosition = notify
-	// Nil append: bound is notified only.
-	require.Equal(t, notify, a.followerLogPollBound())
+	// Nil append source: bound is notified only, appendPos ignored.
+	require.Equal(t, notify, a.followerLogPollBound(0))
 }
 
 func TestSetAppendSource_wireAndClear(t *testing.T) {
@@ -731,11 +769,4 @@ func TestAtomicAppendPosition_nilSafe(t *testing.T) {
 	v := new(atomic.Int64)
 	v.Store(9)
 	require.Equal(t, int64(9), (&AtomicAppendPosition{V: v}).AppendPosition())
-}
-
-func TestSetAppendSource_logPublisher(t *testing.T) {
-	a := NewAgent(AgentConfig{})
-	src := NewLogPublisher()
-	a.SetAppendSource(src)
-	require.Equal(t, AppendPositionSource(src), a.AppendSource())
 }

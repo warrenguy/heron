@@ -923,12 +923,20 @@ func (a *Agent) leaderConsensusWork(nowNs int64) int {
 
 // followerConsensusWork polls the log under the commit/append bound, advances
 // local commit from adapter position, then publishes AppendPosition on interval.
+//
+// The append high-water is read once per tick and shared by the poll bound and
+// the publish: the source may scan the log image's received frames, so one
+// read per tick is the budget.
 func (a *Agent) followerConsensusWork(nowNs int64) int {
+	appendPos := int64(0)
+	if a.appendSource != nil {
+		appendPos = a.appendSource.AppendPosition()
+	}
 	work := 0
 	if a.logAdapter != nil {
-		work += a.pollLogAndProposeMax(a.logAdapter, a.followerLogPollBound())
+		work += a.pollLogAndProposeMax(a.logAdapter, a.followerLogPollBound(appendPos))
 	}
-	work += a.updateFollowerPosition(nowNs)
+	work += a.updateFollowerPosition(nowNs, appendPos)
 	return work
 }
 
@@ -941,25 +949,22 @@ func (a *Agent) pollLogAndProposeMax(adapter *LogAdapter, boundPosition int64) i
 	return work
 }
 
-// followerLogPollBound is min(notifiedCommit, appendLimit).
+// followerLogPollBound is min(notifiedCommit, appendPos).
 //
-// Nil AppendPositionSource: bound is notifiedCommit only.
-func (a *Agent) followerLogPollBound() int64 {
+// Nil AppendPositionSource: bound is notifiedCommit only, whatever appendPos
+// the caller read.
+func (a *Agent) followerLogPollBound(appendPos int64) int64 {
 	if a.appendSource == nil {
 		return a.notifiedCommitPosition
 	}
-	return min(a.notifiedCommitPosition, a.appendSource.AppendPosition())
+	return min(a.notifiedCommitPosition, appendPos)
 }
 
-func (a *Agent) updateFollowerPosition(nowNs int64) int {
+func (a *Agent) updateFollowerPosition(nowNs, appendPos int64) int {
 	if a.egress == nil {
 		return 0
 	}
-	recorded := int64(0)
-	if a.appendSource != nil {
-		recorded = a.appendSource.AppendPosition()
-	}
-	position := max(recorded, a.lastPublishedAppendPosition)
+	position := max(appendPos, a.lastPublishedAppendPosition)
 	advanced := position > a.lastPublishedAppendPosition
 	intervalDue := nowNs >= a.timeOfLastAppendPositionSendNs+a.leaderHeartbeatIntervalNs
 	if !advanced && !intervalDue {

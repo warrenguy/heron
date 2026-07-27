@@ -56,12 +56,10 @@ func TestLogPublisher_unbound(t *testing.T) {
 	require.NotNil(t, p)
 	require.Nil(t, p.Publication())
 	require.Equal(t, int64(0), p.Position())
-	require.Equal(t, int64(0), p.AppendPosition())
 	require.Equal(t, int32(0), p.SessionID())
 	require.Empty(t, p.scratch)
 
 	require.Equal(t, int64(0), (*LogPublisher)(nil).Position())
-	require.Equal(t, int64(0), (*LogPublisher)(nil).AppendPosition())
 	require.Equal(t, int32(0), (*LogPublisher)(nil).SessionID())
 }
 
@@ -343,16 +341,4 @@ func TestAgent_AddLogPublication_inject(t *testing.T) {
 	// Unbind returns to -1.
 	lp.SetPublication(nil)
 	require.Equal(t, int32(-1), a.AddLogPublication(0))
-}
-
-func TestLogPublisher_AppendPosition_tracksPublication(t *testing.T) {
-	p, _ := boundLogPublisher(t)
-
-	before := p.Position()
-	require.Equal(t, before, p.AppendPosition())
-
-	pos := p.AppendMessage(1, 2, 3, []byte("hi"))
-	require.Positive(t, pos)
-	require.Equal(t, p.Position(), p.AppendPosition())
-	require.Greater(t, p.AppendPosition(), before)
 }

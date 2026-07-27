@@ -600,7 +600,7 @@ func TestFollowerConsensusWork_boundUsesMinNotifyAndAppend(t *testing.T) {
 	a.notifiedCommitPosition = notifyHigh
 
 	// Bound = min(notifyHigh, appendBound) = appendBound: only first frame.
-	require.Equal(t, appendBound, a.followerLogPollBound())
+	require.Equal(t, appendBound, a.followerLogPollBound(appendBound))
 	require.Positive(t, a.followerConsensusWork(0))
 	require.Equal(t, appendBound, adapter.Position())
 	// Second frame start == appendBound: never delivered.

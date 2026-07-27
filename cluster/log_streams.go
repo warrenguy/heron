@@ -28,7 +28,8 @@ type LogStreamsDeps struct {
 	// [OpenLogStreams] does not retain it.
 	Topology *Topology
 
-	// Agent receives the log publisher, the log adapter, and the append source.
+	// Agent receives the log publisher, the log adapter, the append source, and
+	// the log join source.
 	Agent *consensus.Agent
 
 	// LogPublisher receives the exclusive log publication. Construct with
@@ -44,8 +45,8 @@ type LogStreamsDeps struct {
 // LogStreams owns the member's cluster log transport resources.
 //
 // Open with [OpenLogStreams], which registers the log subscription and the log
-// exclusive publication and binds the publication, the adapter, and the append
-// source into the agent before returning.
+// exclusive publication and binds the publication, the adapter, the append
+// source, and the log join source into the agent before returning.
 //
 // Behaviour: the publication must be bound before any election work runs.
 // [consensus.Agent.AddLogPublication] reports the null session id until it is, and the
@@ -80,9 +81,11 @@ type LogStreams struct {
 // added first, then the publication; both adds complete before anything is
 // bound, so a failed add leaves the agent untouched.
 //
-// Binding is [consensus.Agent.SetLogPublisher], [consensus.Agent.SetLogAdapter], and
-// [consensus.Agent.SetAppendSource] with deps.LogPublisher as the append
-// high-water source. No Image is bound.
+// Binding is [consensus.Agent.SetLogPublisher], [consensus.Agent.SetLogAdapter],
+// [consensus.Agent.SetAppendSource] with a [consensus.LogAppendPosition] over
+// the agent's wired publisher and adapter, and [consensus.Agent.SetLogJoinSource]
+// with a [consensus.SubscriptionLogJoinSource] over the log subscription. No
+// Image is bound.
 //
 // Errors when any dependency is nil and when either add fails. On error every
 // handle added so far is closed, the agent is untouched, and the returned value
@@ -133,7 +136,8 @@ func OpenLogStreams(
 	deps.LogPublisher.SetPublication(pub)
 	deps.Agent.SetLogPublisher(deps.LogPublisher)
 	deps.Agent.SetLogAdapter(deps.LogAdapter)
-	deps.Agent.SetAppendSource(deps.LogPublisher)
+	deps.Agent.SetAppendSource(consensus.NewLogAppendPosition(deps.Agent))
+	deps.Agent.SetLogJoinSource(consensus.NewSubscriptionLogJoinSource(sub))
 
 	return &LogStreams{
 		agent:        deps.Agent,
@@ -171,8 +175,10 @@ func (l *LogStreams) Subscription() *aeron.Subscription {
 	return l.subscription
 }
 
-// Close clears the agent append source, log adapter, and log publisher, clears
-// the publisher publication, then closes the publication and the subscription.
+// Close clears the agent log join source, append source, log adapter, and log
+// publisher, clears the publisher publication, then closes the publication and
+// the subscription. The join source is cleared before the subscription it holds
+// closes.
 //
 // Idempotent. When both transport handles are already nil, Close returns without
 // touching the agent or the log publisher. The agent and log publisher fields are
@@ -187,6 +193,7 @@ func (l *LogStreams) Close() error {
 		return nil
 	}
 
+	l.agent.SetLogJoinSource(nil)
 	l.agent.SetAppendSource(nil)
 	l.agent.SetLogAdapter(nil)
 	l.agent.SetLogPublisher(nil)

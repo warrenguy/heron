@@ -216,7 +216,8 @@ func TestOpenLogStreams_openOrderAndBind(t *testing.T) {
 
 	// Bind set complete.
 	require.Equal(t, adder.lastPub.SessionID(), agent.AddLogPublication(0))
-	require.Same(t, logPublisher, agent.AppendSource())
+	require.IsType(t, (*consensus.LogAppendPosition)(nil), agent.AppendSource())
+	require.IsType(t, (*consensus.SubscriptionLogJoinSource)(nil), agent.LogJoinSource())
 	require.Same(t, adder.lastPub, logPublisher.Publication())
 
 	// Adapter bound with no image.
@@ -274,6 +275,7 @@ func TestOpenLogStreams_subscriptionAddFailure(t *testing.T) {
 	// Agent and publisher untouched; no publication add attempted.
 	require.Equal(t, int32(-1), agent.AddLogPublication(0))
 	require.Nil(t, agent.AppendSource())
+	require.Nil(t, agent.LogJoinSource())
 	require.Nil(t, logPublisher.Publication())
 	require.Len(t, adder.calls, 1)
 	require.Equal(t, "subscription", adder.calls[0].kind)
@@ -303,6 +305,7 @@ func TestOpenLogStreams_publicationAddFailureRollsBack(t *testing.T) {
 	require.True(t, adder.lastSub.IsClosed())
 	require.Equal(t, int32(-1), agent.AddLogPublication(0))
 	require.Nil(t, agent.AppendSource())
+	require.Nil(t, agent.LogJoinSource())
 	require.Nil(t, logPublisher.Publication())
 	require.Len(t, adder.calls, 2)
 }
@@ -327,6 +330,7 @@ func TestOpenLogStreams_adderReturnsNilNil(t *testing.T) {
 		require.EqualError(t, err, want)
 		require.Equal(t, int32(-1), agent.AddLogPublication(0))
 		require.Nil(t, agent.AppendSource())
+		require.Nil(t, agent.LogJoinSource())
 		require.Nil(t, logPublisher.Publication())
 		require.Len(t, adder.calls, 1)
 	})
@@ -347,6 +351,7 @@ func TestOpenLogStreams_adderReturnsNilNil(t *testing.T) {
 		require.True(t, adder.lastSub.IsClosed())
 		require.Equal(t, int32(-1), agent.AddLogPublication(0))
 		require.Nil(t, agent.AppendSource())
+		require.Nil(t, agent.LogJoinSource())
 		require.Nil(t, logPublisher.Publication())
 	})
 }
@@ -374,6 +379,7 @@ func TestLogStreams_close(t *testing.T) {
 	// Clear then close: binds cleared; both handles closed; accessors nil.
 	require.Equal(t, int32(-1), agent.AddLogPublication(0))
 	require.Nil(t, agent.AppendSource())
+	require.Nil(t, agent.LogJoinSource())
 	require.Nil(t, logPublisher.Publication())
 	require.True(t, pub.IsClosed())
 	require.True(t, sub.IsClosed())
@@ -412,6 +418,7 @@ func TestLogStreams_closeStaleAfterRebind(t *testing.T) {
 
 	require.NotEqual(t, int32(-1), agent.AddLogPublication(0))
 	require.NotNil(t, agent.AppendSource())
+	require.NotNil(t, agent.LogJoinSource())
 	require.Same(t, adder.lastPub, logPublisher2.Publication())
 	pub2 := ls2.Publication()
 	sub2 := ls2.Subscription()
@@ -422,6 +429,7 @@ func TestLogStreams_closeStaleAfterRebind(t *testing.T) {
 	require.NoError(t, ls1.Close())
 	require.NotEqual(t, int32(-1), agent.AddLogPublication(0))
 	require.NotNil(t, agent.AppendSource())
+	require.NotNil(t, agent.LogJoinSource())
 	require.Same(t, pub2, ls2.Publication())
 	require.Same(t, sub2, ls2.Subscription())
 	require.False(t, pub2.IsClosed())

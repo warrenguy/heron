@@ -114,12 +114,12 @@ func runMultiMemberElectionCompletion(t *testing.T, n int, seedJoinImages bool) 
 			LeaderHeartbeatIntervalNs: cfg.LeaderHeartbeatIntervalNs,
 			LogPublisher:              logPublisher,
 			LogAdapter:                logAdapter,
-			AppendSource:              logPublisher,
 			LogJoinSource:             joinSource,
 			ThisMemberID:              id,
 			LeaderMemberID:            election.NullMemberID,
 			Role:                      consensus.RoleFollower,
 		})
+		agent.SetAppendSource(consensus.NewLogAppendPosition(agent))
 		agent.SetIngress(ingresses[i])
 
 		pub := &election.SbePublisher{}
