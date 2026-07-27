@@ -1,0 +1,221 @@
+package cluster
+
+import (
+	"context"
+	"errors"
+
+	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/idlestrategy"
+)
+
+// ErrTransportTerminating reports that [Runner.Run] stopped because the
+// transport client entered termination.
+//
+// Causes:
+//   - media-driver shutdown
+//   - stale keepalive
+//   - client or service timeout
+//
+// [Runner.Run] returns this sentinel, not a context error. A caller can
+// distinguish a requested stop from a lost transport.
+//
+// A closed client does not produce this sentinel. A closed client reports no
+// termination.
+var ErrTransportTerminating = errors.New("cluster: transport client is terminating")
+
+// transportInvoker is the transport half of one duty tick.
+//
+// [aeron.Client] implements transportInvoker.
+//
+// The type stays unexported so RunnerDeps.Client stays a concrete type.
+// A nil *aeron.Client stored in an interface field is not a nil interface.
+// NewRunner's nil check would miss that case.
+type transportInvoker interface {
+	DoWork() int
+	IsTerminating() bool
+}
+
+// agentInvoker is the consensus half of one duty tick.
+//
+// [consensus.Agent] implements agentInvoker.
+//
+// Unexported for the same reason as [transportInvoker].
+type agentInvoker interface {
+	DoWork(nowNs int64) int
+}
+
+// RunnerDeps are the collaborators [NewRunner] needs.
+//
+// Named for [ConsensusModuleDeps] and [RecoveryDeps], which carry injected
+// collaborators the same way.
+//
+// Ownership: every field is borrowed. [Runner] does not own them. [Runner]
+// closes none of them. [Runner] outlives none of them.
+type RunnerDeps struct {
+	// Client is the transport client whose conductor the duty cycle services.
+	// Required. Pass ConsensusModule.Client.
+	Client *aeron.Client
+
+	// Agent is the consensus agent the duty cycle ticks after the transport.
+	// Required. Pass ConsensusModule.Agent.
+	Agent *consensus.Agent
+
+	// Idle paces [Runner.Run]. Nil takes idlestrategy.NewDefaultBackoff.
+	//
+	// A strategy carries per-loop state. Strategies are not safe to share.
+	// Every Runner must use its own strategy.
+	//
+	// Pass ConsensusModule.IdleStrategy when that value is per-module.
+	// IdleStrategy is per-module when each member's Config supplies its own
+	// value, or when Idle stays nil and Config.Normalize fills it.
+	Idle idlestrategy.IdleStrategy
+
+	// Clock reads nanoseconds for Agent.DoWork. Required. Not defaulted.
+	// Agent deadlines and election deadlines must share one function. Pass
+	// ConsensusModule.NanoClock.
+	Clock func() int64
+}
+
+// Runner drives one consensus member's duty cycle on the calling goroutine.
+// Order is transport client, then agent.
+//
+// Build with [NewRunner]. Drive with [Runner.DoWork] for one tick, or with
+// [Runner.Run] until the context is done or the transport client enters
+// termination.
+//
+//	module, err := cluster.OpenConsensusModule(ctx, deps)
+//	if err != nil {
+//		return err
+//	}
+//	defer module.Close()
+//	runner, err := cluster.NewRunner(cluster.RunnerDeps{
+//		Client: module.Client(),
+//		Agent:  module.Agent(),
+//		Idle:   module.IdleStrategy(),
+//		Clock:  module.NanoClock(),
+//	})
+//	if err != nil {
+//		return err
+//	}
+//	return runner.Run(ctx)
+//
+// Concurrency: invoker-only. One Runner per goroutine. Every Runner method must
+// run on that member's duty-cycle goroutine. Other goroutines must not call
+// Runner methods or non-atomic agent accessors.
+//
+// [ConsensusModule.CommitPosition] remains safe to read via the module from any
+// goroutine.
+//
+// Ownership: Runner does not own its collaborators. Runner closes none of them.
+//
+// Lifetime: Runner remains a usable Go value after [ConsensusModule.Close].
+// Close closes the client and agent Runner holds. DoWork after Close reports
+// zero work on a closed client. DoWork after Close polls nothing on a closed
+// consensus subscription.
+//
+// Behaviour: [Runner.Run] does not return because of Close. A closed client
+// reports no termination. Run calls Idle(0) until the context is done.
+//
+// Only a done context or [ErrTransportTerminating] stops the loop. Stop the
+// duty cycle before closing the module. Build a new Runner rather than reusing
+// one across a close.
+//
+// Do not copy. A copy shares the same collaborators and the same idle strategy.
+// The strategy contract forbids sharing.
+type Runner struct {
+	client transportInvoker
+	agent  agentInvoker
+	idle   idlestrategy.IdleStrategy
+	clock  func() int64
+}
+
+// NewRunner binds one duty cycle over a transport client and a consensus agent.
+//
+// Client, Agent, and Clock have no safe default. A nil transport client
+// services nothing and reports no error. A nil agent panics on the first tick.
+// A defaulted clock would be a second clock the election does not share.
+//
+// A nil Idle is filled with idlestrategy.NewDefaultBackoff, matching
+// [Config.Normalize].
+//
+// Rebuilding after [ConsensusModule.Close] fails here rather than later.
+// ConsensusModule.Client is nil once closed.
+//
+// Returns an error when:
+//   - Client is nil
+//   - Agent is nil
+//   - Clock is nil
+func NewRunner(deps RunnerDeps) (*Runner, error) {
+	if deps.Client == nil {
+		return nil, errors.New("cluster: Runner requires a Client")
+	}
+	if deps.Agent == nil {
+		return nil, errors.New("cluster: Runner requires an Agent")
+	}
+	if deps.Clock == nil {
+		return nil, errors.New("cluster: Runner requires a Clock")
+	}
+	idle := deps.Idle
+	if idle == nil {
+		idle = idlestrategy.NewDefaultBackoff()
+	}
+	return &Runner{
+		client: deps.Client,
+		agent:  deps.Agent,
+		idle:   idle,
+		clock:  deps.Clock,
+	}, nil
+}
+
+// DoWork runs one duty tick and returns the total work count.
+// Order is transport client, then the agent at the clock's current value.
+//
+// The transport runs first. The agent reads what the client's conductor
+// delivered. Reversing the two costs one tick of latency per hop.
+//
+// DoWork never idles. DoWork never sleeps. The caller paces repeated calls.
+//
+// Each call performs bounded work. One call is one conductor service tick plus
+// one bounded ingress poll. Progress needs repeated calls.
+//
+// DoWork drives one member. Both halves run in one call.
+//
+// A multi-member duty cycle that must service every transport before any agent
+// must drive the module accessors directly. Do not call DoWork or Run on each
+// Runner for that shape.
+func (r *Runner) DoWork() int {
+	return r.client.DoWork() + r.agent.DoWork(r.clock())
+}
+
+// Run pumps [Runner.DoWork] and idles on each tick's work count until stop.
+//
+// Returns:
+//   - ctx.Err when ctx is done
+//   - [ErrTransportTerminating] when the transport client enters termination
+//
+// Run checks ctx before the first tick. An already-done context runs none.
+//
+// Run installs no signal handler. A caller that wants one builds ctx with
+// signal.NotifyContext.
+//
+// Run closes nothing when it returns. Run drains nothing when it returns.
+// The transport client's Close drains its conductor and its linger log buffers.
+// Close the module after Run returns.
+//
+// Run resets the idle strategy when it returns. A strategy that stopped after
+// Idle does not start the next loop still stopped.
+func (r *Runner) Run(ctx context.Context) error {
+	defer r.idle.Reset()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		work := r.DoWork()
+		if r.client.IsTerminating() {
+			return ErrTransportTerminating
+		}
+		r.idle.Idle(work)
+	}
+}
