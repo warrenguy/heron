@@ -1,0 +1,51 @@
+# Overlay: Java appointed leader (member 0). Go member opens first.
+# Use with: docker compose -f compose.yaml -f compose.java-leader.yaml
+#
+# Start order:
+# 1. aeronmd healthy
+# 2. go-java-leader opens module and writes readiness file
+# 3. Java peers start
+# Two Java members must not canvass while the Go member is absent.
+
+services:
+  # Share aeronmd network namespace. Member-2 endpoints (172.30.0.12:920x) must
+  # listen in the C driver process. A separate container IP cannot hold them.
+  # Volumes stay independent. Readiness file is on shared /dev/shm.
+  go-java-leader:
+    image: cluster-mixed-go-java-leader
+    build:
+      context: ../..
+      dockerfile: docker/cluster_mixed/go/Dockerfile
+      target: java-leader-runtime
+      args:
+        GO_VERSION: ${GO_VERSION:-1.26.4}
+    user: "${HERON_COMPOSE_UID:-1000}:${HERON_COMPOSE_GID:-1000}"
+    network_mode: "service:aeronmd"
+    depends_on:
+      aeronmd:
+        condition: service_healthy
+    environment:
+      AERON_TERM_BUFFER_LENGTH: "65536"
+      AERON_IPC_TERM_BUFFER_LENGTH: "65536"
+      AERON_DIR: /dev/shm/aeron-go
+      HERON_CLUSTER_MIXED_COMPOSE: "1"
+    volumes:
+      - aeron-media:/dev/shm
+      - cluster-data-2:/tmp/heron-cluster-2
+    healthcheck:
+      interval: 1s
+      timeout: 5s
+      retries: 60
+      start_period: 5s
+      test: ["CMD-SHELL", "test -f /dev/shm/heron-mixed/member-ready"]
+
+  # Start Java only after Go readiness. Base file has no depends_on for these.
+  cluster-0:
+    depends_on:
+      go-java-leader:
+        condition: service_healthy
+
+  cluster-1:
+    depends_on:
+      go-java-leader:
+        condition: service_healthy

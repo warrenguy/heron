@@ -43,7 +43,7 @@ SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/ve
 
 ```bash
 make check        # lint, pins, SBE/catalog stale (opt), unit+stress, contract-oracles (opt)
-make test-all     # check + rapid + integration + java-interop + cluster-java + failover + archive-java smokes
+make test-all     # check + rapid + integration + compose smokes
 make test-rapid                  # property tests (pgregory.net/rapid)
 make test-election-sim           # election fault sim soak (CI; not part of make check)
 make test-replication-sim        # replication commit-safety sim soak (CI; not part of make check)
@@ -57,6 +57,7 @@ make test-java-interop           # Docker Compose smoke (bidirectional IPC pub/s
 make test-cluster-java           # Docker Compose smoke (AsyncConnect + echo roundtrip)
 make test-cluster-java-failover  # Docker Compose 3-node leader failover
 make test-archive-java           # Docker Compose smoke (record, recording.log, PlanRecovery, replay)
+make test-cluster-mixed          # Docker Compose mixed Go/Java (java-leader)
 ```
 
 **Contract suites** (`make contract-oracles` and the four `*-contract` targets): run `mvn test`
@@ -65,7 +66,7 @@ make test-archive-java           # Docker Compose smoke (record, recording.log, 
 | Target | Live smoke | What it checks (examples) |
 |--------|------------|---------------------------|
 | `test-java-interop-contract` | `test-java-interop` | streams 1100/1101; 32x32-byte `java-N` / `go-N` payloads |
-| `test-cluster-java-contract` | `test-cluster-java` | IPC channels; streams 101/102; ports 9000/9002; failover topology goldens |
+| `test-cluster-java-contract` | `test-cluster-java` / `test-cluster-mixed` | IPC channels; streams 101/102; ports 9000/9002; failover and mixed topology goldens |
 | `test-archive-java-contract` | `test-archive-java` | record/replay streams 1200/1201; IPC channels; archive dir layout |
 | `test-cluster-sbe-contract` | (none; wire oracle only) | cluster SBE bytes vs `catalog.json` |
 
@@ -76,6 +77,7 @@ make test-archive-java           # Docker Compose smoke (record, recording.log, 
 | `test-java-interop` | `scripts/java-interop-smoke.sh` | Compose image (built by make target) |
 | `test-cluster-java-failover` | `scripts/cluster-java-failover-smoke.sh` | Compose image (built by make target) |
 | `test-archive-java` | `scripts/archive-java-smoke.sh` | Compose image (built by make target) |
+| `test-cluster-mixed` | `scripts/cluster-mixed-smoke.sh java-leader` | Compose image (built by make target) |
 | `test-cluster-java` | (none) | Embedded (no image step) |
 
 Scripts do not build the image. Run `make aeronmd-compose-image` first, or any of the
@@ -90,7 +92,7 @@ Compose-image rows above.
 |------|-----------------|
 | Unit | `bench`, `testhooks` |
 | Property | `rapid` (`*_rapid_test.go`) |
-| IDE / gopls (`go.buildTags`) | `testhooks rapid stress integration example java_interop cluster_sbe cluster_java archive_java bench` |
+| IDE / gopls (`go.buildTags`) | `testhooks rapid stress integration example java_interop cluster_sbe cluster_java archive_java cluster_mixed bench` |
 
 ```bash
 make test                                             # unit only

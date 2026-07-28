@@ -203,7 +203,7 @@ func (s *ClusterMemberSet) Tick() {
 //
 // Invoker must not call PumpTransportUntil after Close.
 func (s *ClusterMemberSet) PumpTransportUntil(bound time.Duration, ok func() bool) bool {
-	return pollUntilBool(bound, time.Millisecond, func() bool {
+	return PollUntilBool(bound, time.Millisecond, func() bool {
 		for _, m := range s.modules {
 			m.Client().DoWork()
 		}
@@ -222,7 +222,7 @@ func (s *ClusterMemberSet) PumpTransportUntil(bound time.Duration, ok func() boo
 //
 // Invoker must not call TickUntil after Close.
 func (s *ClusterMemberSet) TickUntil(bound time.Duration, ok func() bool) bool {
-	return pollUntilBool(bound, time.Millisecond, func() bool {
+	return PollUntilBool(bound, time.Millisecond, func() bool {
 		s.Tick()
 		return ok()
 	})
@@ -280,60 +280,82 @@ func (s *ClusterMemberSet) AwaitElection(bound time.Duration) bool {
 func (s *ClusterMemberSet) State() string {
 	var b strings.Builder
 	for _, m := range s.modules {
-		images := -1
-		logPubPos := int64(-1)
-		if streams := m.LogStreams(); streams != nil {
-			if sub := streams.Subscription(); sub != nil {
-				images = sub.ImageCount()
-			}
-			if pub := streams.Publication(); pub != nil {
-				logPubPos = pub.Position()
-			}
-		}
-
-		adapterPos := int64(-1)
-		imagePos := int64(-1)
-		if adapter := m.LogAdapter(); adapter != nil {
-			adapterPos = adapter.Position()
-			if img := adapter.Image(); img != nil {
-				imagePos = img.Position()
-			}
-		}
-
-		appendSrc := int64(-1)
-		if agent := m.Agent(); agent != nil {
-			if src := agent.AppendSource(); src != nil {
-				appendSrc = src.AppendPosition()
-			}
-		}
-
-		recEntries := 0
-		if rec := m.RecordingLog(); rec != nil {
-			recEntries = len(rec.Entries())
-		}
-
-		fmt.Fprintf(
-			&b,
-			"member=%d state=%v complete=%v role=%v term=%d leaderID=%d "+
-				"images=%d logPubPos=%d adapterPos=%d imagePos=%d appendSrc=%d "+
-				"commit=%d notified=%d recLogEntries=%d\n",
-			m.ThisMemberID(),
-			m.ElectionState(),
-			m.ElectionComplete(),
-			m.Role(),
-			m.LeadershipTermID(),
-			m.LeaderMemberID(),
-			images,
-			logPubPos,
-			adapterPos,
-			imagePos,
-			appendSrc,
-			m.CommitPosition(),
-			m.NotifiedCommitPosition(),
-			recEntries,
-		)
+		b.WriteString(ClusterMemberState(m))
 	}
 	return b.String()
+}
+
+// ClusterMemberState returns a one-line dump of one consensus module for failure
+// messages.
+//
+// Behaviour: safe after Close. Nil handles and a nil module report as sentinel
+// values.
+func ClusterMemberState(m *cluster.ConsensusModule) string {
+	if m == nil {
+		return "member=<nil>\n"
+	}
+
+	images := -1
+	logPubPos := int64(-1)
+	logPubSession := int32(-1)
+	if streams := m.LogStreams(); streams != nil {
+		if sub := streams.Subscription(); sub != nil {
+			images = sub.ImageCount()
+		}
+		if pub := streams.Publication(); pub != nil {
+			logPubPos = pub.Position()
+			logPubSession = pub.SessionID()
+		}
+	}
+
+	adapterPos := int64(-1)
+	imagePos := int64(-1)
+	joinPos := int64(-1)
+	imageSession := int32(-1)
+	if adapter := m.LogAdapter(); adapter != nil {
+		adapterPos = adapter.Position()
+		if img := adapter.Image(); img != nil {
+			imagePos = img.Position()
+			joinPos = img.JoinPosition()
+			imageSession = img.SessionID()
+		}
+	}
+
+	appendSrc := int64(-1)
+	if agent := m.Agent(); agent != nil {
+		if src := agent.AppendSource(); src != nil {
+			appendSrc = src.AppendPosition()
+		}
+	}
+
+	recEntries := 0
+	if rec := m.RecordingLog(); rec != nil {
+		recEntries = len(rec.Entries())
+	}
+
+	return fmt.Sprintf(
+		"member=%d state=%v complete=%v role=%v term=%d leaderID=%d "+
+			"images=%d logPubSession=%d logPubPos=%d adapterPos=%d imagePos=%d "+
+			"joinPos=%d imageSession=%d appendSrc=%d commit=%d notified=%d "+
+			"recLogEntries=%d\n",
+		m.ThisMemberID(),
+		m.ElectionState(),
+		m.ElectionComplete(),
+		m.Role(),
+		m.LeadershipTermID(),
+		m.LeaderMemberID(),
+		images,
+		logPubSession,
+		logPubPos,
+		adapterPos,
+		imagePos,
+		joinPos,
+		imageSession,
+		appendSrc,
+		m.CommitPosition(),
+		m.NotifiedCommitPosition(),
+		recEntries,
+	)
 }
 
 // Close closes every module in reverse open order. Idempotent via each

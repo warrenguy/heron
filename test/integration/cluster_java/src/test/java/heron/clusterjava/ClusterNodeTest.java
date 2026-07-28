@@ -1,5 +1,6 @@
 package heron.clusterjava;
 
+import io.aeron.Aeron;
 import io.aeron.cluster.ConsensusModule;
 import io.aeron.exceptions.AeronException;
 import org.junit.jupiter.api.AfterEach;
@@ -17,6 +18,7 @@ import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -200,9 +202,11 @@ class ClusterNodeTest {
         assertEquals(ClusterConstants.MEMBER_ID, settings.memberId);
         assertEquals(ClusterConstants.MEMBER_COUNT, settings.memberCount);
         assertEquals(List.of(ClusterConstants.INGRESS_ENDPOINT_HOST), settings.hostnames);
+        assertFalse(settings.mixed);
         assertEquals(new File(ClusterConstants.BASE_DIR), ClusterNode.baseDirForMember(
             settings.memberId,
-            settings.memberCount));
+            settings.memberCount,
+            settings.mixed));
     }
 
     @Test
@@ -212,6 +216,7 @@ class ClusterNodeTest {
         assertEquals(ClusterConstants.MEMBER_ID, settings.memberId);
         assertEquals(ClusterConstants.MEMBER_COUNT, settings.memberCount);
         assertEquals(List.of(ClusterConstants.INGRESS_ENDPOINT_HOST), settings.hostnames);
+        assertFalse(settings.mixed);
     }
 
     @Test
@@ -273,9 +278,13 @@ class ClusterNodeTest {
         final ClusterNode.LauncherSettings settings = ClusterNode.launcherSettingsFromEnv(
             "1",
             String.valueOf(ClusterConstants.FAILOVER_MEMBER_COUNT),
-            failoverHostnamesEnv());
+            failoverHostnamesEnv(),
+            null);
         final ClusterConfig multiNodeConfig = createClusterConfig(settings.memberId, settings.hostnames);
-        multiNodeConfig.baseDir(ClusterNode.baseDirForMember(settings.memberId, settings.memberCount));
+        multiNodeConfig.baseDir(ClusterNode.baseDirForMember(
+            settings.memberId,
+            settings.memberCount,
+            settings.mixed));
         ClusterNode.configureConsensus(multiNodeConfig, settings.memberCount);
 
         final ClusterConfig singleNodeConfig = createClusterConfig(
@@ -284,7 +293,52 @@ class ClusterNodeTest {
         ClusterNode.configureConsensus(singleNodeConfig, 1);
 
         assertConsensusUsesUdpChannels(multiNodeConfig.consensusModuleContext());
+        assertConsensusLeavesMixedFieldsAtAeronDefaults(multiNodeConfig.consensusModuleContext());
         assertConsensusUsesIpcChannels(singleNodeConfig.consensusModuleContext());
+        assertFalse(settings.mixed);
+    }
+
+    @Test
+    void launcherSettingsFromEnv_mixedUsesEnvTopology() {
+        final ClusterNode.LauncherSettings settings = ClusterNode.launcherSettingsFromEnv(
+            "0",
+            String.valueOf(ClusterConstants.MIXED_MEMBER_COUNT),
+            ClusterConstants.MIXED_HOSTNAMES,
+            "1");
+
+        assertTrue(settings.mixed);
+        assertEquals(0, settings.memberId);
+        assertEquals(ClusterConstants.MIXED_MEMBER_COUNT, settings.memberCount);
+        assertEquals(MIXED_HOSTS, settings.hostnames);
+        assertEquals(
+            new File(ClusterConstants.MIXED_BASE_DIR_PREFIX + "0"),
+            ClusterNode.baseDirForMember(settings.memberId, settings.memberCount, settings.mixed));
+    }
+
+    @Test
+    void mixedClusterConfig_javaLeader_appliesUnicastOnTopOfUdp() {
+        final ConsensusModule.Context consensus = configureMixedConsensus();
+
+        assertConsensusUsesFailoverUdpTransport(consensus);
+        assertEquals(ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA, consensus.appointedLeaderId());
+        assertEquals(ClusterConstants.MIXED_LOG_CHANNEL_UNICAST, consensus.logChannel());
+        assertEquals(ClusterConstants.MIXED_CLUSTER_MEMBERS_JAVA_LEADER, consensus.clusterMembers());
+    }
+
+    @Test
+    void baseDirForMember_usesMixedPrefixWhenMixed() {
+        final int memberCount = ClusterConstants.MIXED_MEMBER_COUNT;
+        assertEquals(
+            new File(ClusterConstants.MIXED_BASE_DIR_PREFIX + "1"),
+            ClusterNode.baseDirForMember(1, memberCount, true));
+        // Failover path unchanged when mixed is false.
+        assertEquals(
+            new File(ClusterConstants.FAILOVER_BASE_DIR_PREFIX + "1"),
+            ClusterNode.baseDirForMember(1, memberCount, false));
+        // Two-arg form is the non-mixed path only.
+        assertEquals(
+            new File(ClusterConstants.FAILOVER_BASE_DIR_PREFIX + "1"),
+            ClusterNode.baseDirForMember(1, memberCount));
     }
 
     @Test
@@ -304,6 +358,8 @@ class ClusterNodeTest {
         .mapToObj(i -> "cluster-" + i)
         .toList();
 
+    static final List<String> MIXED_HOSTS = List.of(ClusterConstants.MIXED_HOSTNAMES.split(","));
+
     static List<String> failoverHosts() {
         return FAILOVER_HOSTS;
     }
@@ -316,13 +372,38 @@ class ClusterNodeTest {
         return ClusterConfig.create(memberId, hostnames, ClusterConstants.PORT_BASE, new EchoService());
     }
 
-    static void assertConsensusUsesUdpChannels(final ConsensusModule.Context consensus) {
+    // Builds consensus after multi-node UDP then mixed overlay for member 0.
+    static ConsensusModule.Context configureMixedConsensus() {
+        final ClusterNode.LauncherSettings settings = ClusterNode.launcherSettingsFromEnv(
+            "0",
+            String.valueOf(ClusterConstants.MIXED_MEMBER_COUNT),
+            ClusterConstants.MIXED_HOSTNAMES,
+            "1");
+        final ClusterConfig config = createClusterConfig(settings.memberId, settings.hostnames);
+        ClusterNode.configureConsensus(config, settings);
+        return config.consensusModuleContext();
+    }
+
+    // Failover and mixed UDP transport fields shared by multi-node consensus setup.
+    static void assertConsensusUsesFailoverUdpTransport(final ConsensusModule.Context consensus) {
         assertFalse(consensus.isIpcIngressAllowed());
         assertEquals(ClusterConstants.FAILOVER_INGRESS_CHANNEL, consensus.ingressChannel());
         assertEquals(ClusterConstants.FAILOVER_CONSENSUS_EGRESS_CHANNEL, consensus.egressChannel());
-        assertEquals(ClusterConstants.INGRESS_STREAM_ID, consensus.ingressStreamId());
         assertEquals(ClusterConstants.FAILOVER_SESSION_TIMEOUT_NS, consensus.sessionTimeoutNs());
+        assertEquals(ClusterConstants.INGRESS_STREAM_ID, consensus.ingressStreamId());
+    }
+
+    static void assertConsensusUsesUdpChannels(final ConsensusModule.Context consensus) {
+        assertConsensusUsesFailoverUdpTransport(consensus);
         assertEquals(ClusterConstants.FAILOVER_CLUSTER_MEMBERS_STRING, consensus.clusterMembers());
+    }
+
+    // Non-mixed configureConsensus must not touch appointed leader, log channel, or clock.
+    // Defaults match Aeron ConsensusModule.Context before conclude().
+    static void assertConsensusLeavesMixedFieldsAtAeronDefaults(final ConsensusModule.Context consensus) {
+        assertEquals(Aeron.NULL_VALUE, consensus.appointedLeaderId());
+        assertEquals("aeron:udp?term-length=64m", consensus.logChannel());
+        assertNull(consensus.clusterClock());
     }
 
     static void assertConsensusUsesIpcChannels(final ConsensusModule.Context consensus) {

@@ -53,7 +53,9 @@ public final class ClusterConstants {
 
     public static final String UDP_CHANNEL = "aeron:udp";
 
-    public static final String FAILOVER_INGRESS_CHANNEL = UDP_CHANNEL + "?" + TERM_LENGTH_64K_PARAM;
+    private static final String UDP_CHANNEL_64K = UDP_CHANNEL + "?" + TERM_LENGTH_64K_PARAM;
+
+    public static final String FAILOVER_INGRESS_CHANNEL = UDP_CHANNEL_64K;
 
     // Client egress subscription channel. endpoint=aeronmd:0 binds the shared aeronmd
     // driver container so the resolved ephemeral endpoint is routable from cluster nodes.
@@ -63,8 +65,7 @@ public final class ClusterConstants {
     // Consensus module egress template. Must omit endpoint: the module merges these
     // params onto every client responseChannel, so an endpoint here would overwrite the
     // client's resolved ephemeral endpoint and fail publication with port=0.
-    public static final String FAILOVER_CONSENSUS_EGRESS_CHANNEL =
-        UDP_CHANNEL + "?" + TERM_LENGTH_64K_PARAM;
+    public static final String FAILOVER_CONSENSUS_EGRESS_CHANNEL = UDP_CHANNEL_64K;
 
     // Session must outlive the leader-election gap when the client cannot send ingress
     // keepalives. The 10s Aeron default expires the session mid-failover.
@@ -79,6 +80,34 @@ public final class ClusterConstants {
         "0,cluster-0:9002,cluster-0:9003,cluster-0:9004,cluster-0:9005,cluster-0:9001|"
         + "1,cluster-1:9102,cluster-1:9103,cluster-1:9104,cluster-1:9105,cluster-1:9101|"
         + "2,cluster-2:9202,cluster-2:9203,cluster-2:9204,cluster-2:9205,cluster-2:9201|";
+
+
+    // Mixed Go/Java multi-node defaults (clusterjava/mixed_oracle.go).
+    // Appointed leader is member 0 (Java). Go member is id 2.
+
+    public static final int MIXED_MEMBER_COUNT = 3;
+
+    // Appointed leader member id (Java member 0).
+    public static final int MIXED_APPOINTED_LEADER_ID_JAVA = 0;
+
+    // Cluster data parent for mixed compose volumes: /tmp/heron-cluster-{memberId}.
+    public static final String MIXED_BASE_DIR_PREFIX = "/tmp/heron-cluster-";
+
+    // Log channel when a Java member is appointed. Unicast only. No interface, ttl,
+    // or endpoint. Topology derives per-member log endpoints. Same as Go
+    // MixedLogChannelUnicast / DefaultLogChannel.
+    public static final String MIXED_LOG_CHANNEL_UNICAST = UDP_CHANNEL_64K;
+
+    // Address literals for members 0-2. Comma-separated for ENV_HOSTNAMES parse.
+    public static final String MIXED_HOSTNAMES = "172.30.0.10,172.30.0.11,172.30.0.12";
+
+    // Three-node members golden with per-member unicast log endpoints.
+    // Hand-sync with clusterjava.MixedClusterMembersJavaLeader.
+    public static final String MIXED_CLUSTER_MEMBERS_JAVA_LEADER =
+        "0,172.30.0.10:9002,172.30.0.10:9003,172.30.0.10:9004,"
+            + "172.30.0.10:9005,172.30.0.10:9001|1,172.30.0.11:9102,172.30.0.11:9103,"
+            + "172.30.0.11:9104,172.30.0.11:9105,172.30.0.11:9101|2,172.30.0.12:9202,"
+            + "172.30.0.12:9203,172.30.0.12:9204,172.30.0.12:9205,172.30.0.12:9201|";
 
     private ClusterConstants() {
     }

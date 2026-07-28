@@ -240,6 +240,51 @@ func TestCountersReaderFindHeartbeat(t *testing.T) {
 	}
 }
 
+// TestCountersReaderFindCounterOfType asserts type-only match.
+// Scan policy (unused stops, reclaimed skipped, first match wins) is shared with
+// FindHeartbeatCounter and covered by TestCountersReaderFindHeartbeat.
+func TestCountersReaderFindCounterOfType(t *testing.T) {
+	tests := []struct {
+		name         string
+		counterCount int
+		records      []counterRecord
+		lookupTypeID int32
+		wantID       int32
+		wantOK       bool
+	}{
+		{
+			name:         "allocated type match",
+			counterCount: 3,
+			records: []counterRecord{
+				{0, cnc.CounterRecordAllocated, cnc.ClientHeartbeatTypeID, 42, 7},
+			},
+			lookupTypeID: cnc.ClientHeartbeatTypeID,
+			wantID:       0,
+			wantOK:       true,
+		},
+		{
+			name:         "no allocated record of type",
+			counterCount: 2,
+			records: []counterRecord{
+				{0, cnc.CounterRecordAllocated, cnc.SystemCounterTypeID, 42, 7},
+			},
+			lookupTypeID: cnc.ClientHeartbeatTypeID,
+			wantID:       cnc.NullCounterID,
+			wantOK:       false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reader := newCountersReaderFromRecords(t, test.counterCount, 0, test.records)
+
+			gotID, ok := reader.FindCounterOfType(test.lookupTypeID)
+			require.Equal(t, test.wantOK, ok)
+			require.Equal(t, test.wantID, gotID)
+		})
+	}
+}
+
 func TestCountersReaderCounterValueOutOfRange(t *testing.T) {
 	meta, values := syntheticCountersBuffers(t, 1)
 	reader, err := cnc.NewCountersReader(meta, values)
@@ -543,6 +588,9 @@ func newCountersReaderFromRecords(
 	return reader
 }
 
+// counterRecord mirrors cnctest.CounterRecord.
+// Defined in-package so table rows may use unkeyed literals.
+// Vet rejects unkeyed literals of another package's type.
 type counterRecord struct {
 	counterID      int32
 	state          int32

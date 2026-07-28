@@ -11,24 +11,32 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 public final class ClusterNode
 {
     static final String ENV_MEMBER_ID = "HERON_CLUSTER_MEMBER_ID";
     static final String ENV_MEMBER_COUNT = "HERON_CLUSTER_MEMBER_COUNT";
     static final String ENV_HOSTNAMES = "HERON_CLUSTER_HOSTNAMES";
+    static final String ENV_MIXED = "HERON_CLUSTER_MIXED";
 
     static final class LauncherSettings
     {
         final int memberId;
         final int memberCount;
         final List<String> hostnames;
+        final boolean mixed;
 
-        LauncherSettings(final int memberId, final int memberCount, final List<String> hostnames)
+        LauncherSettings(
+            final int memberId,
+            final int memberCount,
+            final List<String> hostnames,
+            final boolean mixed)
         {
             this.memberId = memberId;
             this.memberCount = memberCount;
             this.hostnames = hostnames;
+            this.mixed = mixed;
         }
     }
 
@@ -88,6 +96,38 @@ public final class ClusterNode
     }
 
     /**
+     * Apply mixed Go/Java consensus settings after multi-node UDP transport setup.
+     *
+     * <p>Sets appointedLeaderId to {@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_JAVA}
+     * and unicast logChannel only.
+     * Cluster members and per-member log endpoints stay with {@link ClusterConfig#create}.
+     * Does not set clusterClock. Context.conclude resolves the default later.
+     *
+     * @param clusterConfig config whose consensus module context is mutated
+     */
+    static void configureConsensusMixed(final ClusterConfig clusterConfig)
+    {
+        clusterConfig.consensusModuleContext()
+            .appointedLeaderId(ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA)
+            .logChannel(ClusterConstants.MIXED_LOG_CHANNEL_UNICAST);
+    }
+
+    /**
+     * Apply transport and mixed consensus settings from {@code settings}.
+     * Selects IPC or UDP from member count.
+     * Applies the mixed overlay when mixed mode is on.
+     * Callers must use this seam so transport and mixed settings stay paired.
+     */
+    static void configureConsensus(final ClusterConfig clusterConfig, final LauncherSettings settings)
+    {
+        configureConsensus(clusterConfig, settings.memberCount);
+        if (settings.mixed)
+        {
+            configureConsensusMixed(clusterConfig);
+        }
+    }
+
+    /**
      * Heron cluster launcher for compose harness (single-node IPC or multi-node UDP).
      */
     public static void main(final String[] args)
@@ -102,11 +142,7 @@ public final class ClusterNode
 
     static int startupExitCode(final String aeronDir)
     {
-        return startupExitCode(
-            aeronDir,
-            System.getenv(ENV_MEMBER_ID),
-            System.getenv(ENV_MEMBER_COUNT),
-            System.getenv(ENV_HOSTNAMES));
+        return startupExitCode(aeronDir, ClusterNode::launcherSettingsFromProcessEnv);
     }
 
     static int startupExitCode(
@@ -115,11 +151,19 @@ public final class ClusterNode
         final String memberCountEnv,
         final String hostnamesEnv)
     {
+        return startupExitCode(
+            aeronDir,
+            () -> launcherSettingsFromEnv(memberIdEnv, memberCountEnv, hostnamesEnv));
+    }
+
+    // Settings resolve inside the try so an env parse failure reports and exits 1.
+    private static int startupExitCode(
+        final String aeronDir,
+        final Supplier<LauncherSettings> settings)
+    {
         try
         {
-            runCluster(
-                aeronDir,
-                launcherSettingsFromEnv(memberIdEnv, memberCountEnv, hostnamesEnv));
+            runCluster(aeronDir, settings.get());
             return 0;
         }
         catch (final Exception e)
@@ -185,12 +229,35 @@ public final class ClusterNode
         }
     }
 
+    /** Load launcher settings from process environment (member, hostnames, mixed). */
+    static LauncherSettings launcherSettingsFromProcessEnv()
+    {
+        return launcherSettingsFromEnv(
+            System.getenv(ENV_MEMBER_ID),
+            System.getenv(ENV_MEMBER_COUNT),
+            System.getenv(ENV_HOSTNAMES),
+            System.getenv(ENV_MIXED));
+    }
+
     static LauncherSettings launcherSettingsFromEnv(
         final String memberIdEnv,
         final String memberCountEnv,
         final String hostnamesEnv)
     {
-        final int memberCount = parseIntEnv(ENV_MEMBER_COUNT, memberCountEnv, ClusterConstants.MEMBER_COUNT);
+        // Three-arg form keeps mixed off. Production paths pass mixed env explicitly
+        // via the four-arg overload or runCluster(aeronDir).
+        return launcherSettingsFromEnv(memberIdEnv, memberCountEnv, hostnamesEnv, null);
+    }
+
+    static LauncherSettings launcherSettingsFromEnv(
+        final String memberIdEnv,
+        final String memberCountEnv,
+        final String hostnamesEnv,
+        final String mixedEnv)
+    {
+        final boolean mixed = "1".equals(mixedEnv);
+        final int memberCount = parseIntEnv(
+            ENV_MEMBER_COUNT, memberCountEnv, ClusterConstants.MEMBER_COUNT);
         validateMemberCount(memberCount);
         final int memberId = parseIntEnv(ENV_MEMBER_ID, memberIdEnv, ClusterConstants.MEMBER_ID);
         validateMemberId(memberId, memberCount);
@@ -198,7 +265,7 @@ public final class ClusterNode
             hostnamesEnv,
             ClusterConstants.INGRESS_ENDPOINT_HOST,
             memberCount);
-        return new LauncherSettings(memberId, memberCount, hostnames);
+        return new LauncherSettings(memberId, memberCount, hostnames, mixed);
     }
 
     /**
@@ -255,7 +322,10 @@ public final class ClusterNode
     }
 
     /**
-     * Resolve cluster persistence base directory for this member.
+     * Resolve cluster persistence base directory for a non-mixed member.
+     *
+     * <p>Delegates with {@code mixed=false}. Mixed multi-node paths need the
+     * three-arg form so the base uses {@link ClusterConstants#MIXED_BASE_DIR_PREFIX}.
      *
      * @param memberId    cluster member id (ignored for path when {@code memberCount == 1})
      * @param memberCount total members; single-node uses {@link ClusterConstants#BASE_DIR},
@@ -263,32 +333,32 @@ public final class ClusterNode
      */
     static File baseDirForMember(final int memberId, final int memberCount)
     {
+        return baseDirForMember(memberId, memberCount, false);
+    }
+
+    /**
+     * Resolve cluster persistence base directory for this member.
+     *
+     * @param memberId    cluster member id (ignored for path when {@code memberCount == 1})
+     * @param memberCount total members; single-node uses {@link ClusterConstants#BASE_DIR}
+     * @param mixed       when true and multi-node, uses {@link ClusterConstants#MIXED_BASE_DIR_PREFIX}
+     */
+    static File baseDirForMember(final int memberId, final int memberCount, final boolean mixed)
+    {
         if (memberCount == 1)
         {
             return new File(ClusterConstants.BASE_DIR);
         }
-        return new File(ClusterConstants.FAILOVER_BASE_DIR_PREFIX + memberId);
+        final String prefix = mixed
+            ? ClusterConstants.MIXED_BASE_DIR_PREFIX
+            : ClusterConstants.FAILOVER_BASE_DIR_PREFIX;
+        return new File(prefix + memberId);
     }
 
     @SuppressWarnings("try")
     static void runCluster(final String aeronDir)
     {
-        runCluster(
-            aeronDir,
-            launcherSettingsFromEnv(
-                System.getenv(ENV_MEMBER_ID),
-                System.getenv(ENV_MEMBER_COUNT),
-                System.getenv(ENV_HOSTNAMES)));
-    }
-
-    @SuppressWarnings("try")
-    static void runCluster(
-        final String aeronDir,
-        final String memberIdEnv,
-        final String memberCountEnv,
-        final String hostnamesEnv)
-    {
-        runCluster(aeronDir, launcherSettingsFromEnv(memberIdEnv, memberCountEnv, hostnamesEnv));
+        runCluster(aeronDir, launcherSettingsFromProcessEnv());
     }
 
     @SuppressWarnings("try")
@@ -302,8 +372,8 @@ public final class ClusterNode
             new EchoService());
 
         clusterConfig.aeronDirectoryName(aeronDir);
-        clusterConfig.baseDir(baseDirForMember(settings.memberId, settings.memberCount));
-        configureConsensus(clusterConfig, settings.memberCount);
+        clusterConfig.baseDir(baseDirForMember(settings.memberId, settings.memberCount, settings.mixed));
+        configureConsensus(clusterConfig, settings);
         // WARN-category agent errors are transient during failover (e.g. re-resolve of a
         // downed member endpoint); log and survive so quorum holds. Non-WARN errors exit;
         // SIGTERM still uses barrier teardown below.

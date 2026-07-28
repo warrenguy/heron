@@ -373,7 +373,7 @@ func pollCloseDrainRegistrationsReleased(
 		return false
 	}
 
-	return pollUntilBool(
+	return PollUntilBool(
 		pollTimeout,
 		pollInterval,
 		func() bool {

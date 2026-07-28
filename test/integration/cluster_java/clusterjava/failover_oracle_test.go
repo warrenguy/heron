@@ -147,6 +147,15 @@ func TestBuildClusterMembersString_javaOracleParity(t *testing.T) {
 			},
 			want: clusterjava.ClusterMembersString,
 		},
+		{
+			name: "MixedClusterMembersJavaLeader",
+			cfg: cluster.MembersStringConfig{
+				IngressHostnames: clusterjava.MixedMemberHostnames(),
+				ClusterHostnames: clusterjava.MixedMemberHostnames(),
+				PortBase:         clusterjava.PortBase,
+			},
+			want: clusterjava.MixedClusterMembersJavaLeader,
+		},
 	}
 
 	for _, tt := range tests {

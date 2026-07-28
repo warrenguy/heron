@@ -1,0 +1,129 @@
+# Base mixed cluster layout. No cross-language depends_on.
+# Overlay supplies start order (java-leader).
+#
+# Project name comes from HERON_COMPOSE_PROJECT (per-run from the smoke script).
+
+name: ${HERON_COMPOSE_PROJECT:-heron-cluster-mixed}
+
+x-app-user: &app-user "${HERON_COMPOSE_UID:-1000}:${HERON_COMPOSE_GID:-1000}"
+
+x-aeron-term-env: &aeron-term-env
+  AERON_TERM_BUFFER_LENGTH: "65536"
+  AERON_IPC_TERM_BUFFER_LENGTH: "65536"
+
+x-mixed-cluster-env: &mixed-cluster-env
+  HERON_CLUSTER_MIXED: "1"
+  HERON_CLUSTER_MEMBER_COUNT: "3"
+  HERON_CLUSTER_HOSTNAMES: "172.30.0.10,172.30.0.11,172.30.0.12"
+  <<: *aeron-term-env
+
+x-java-healthcheck: &java-healthcheck
+  interval: 1s
+  timeout: 5s
+  retries: 15
+  start_period: 30s
+
+# One shared /dev/shm parent for three drivers and the readiness file.
+# size=1536m = 3 x 512m failover per-member shm. Holds three concurrent AERON_DIR trees.
+x-shm-tmpfs-opts: &shm-tmpfs-opts
+  type: tmpfs
+  device: tmpfs
+  o: "size=1536m,mode=1777"
+
+# Java baseDir holds embedded Archive segments under archive/. Archive low
+# storage threshold is 128MiB, so 64m fails startLogRecording. 256m matches
+# archive_java archive-data and single-node cluster shm.
+x-cluster-data-tmpfs-opts: &cluster-data-tmpfs-opts
+  type: tmpfs
+  device: tmpfs
+  o: "size=256m,mode=1777"
+
+networks:
+  cluster-mixed:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+services:
+  # Holds member-2 address 172.30.0.12. Go joins this driver and shares its
+  # network namespace so the C driver can listen on the member-2 consensus and
+  # log endpoints named in the members string.
+  aeronmd:
+    image: java-interop-aeronmd
+    user: *app-user
+    hostname: aeronmd
+    networks:
+      cluster-mixed:
+        ipv4_address: 172.30.0.12
+    environment:
+      <<: *aeron-term-env
+      AERON_DIR: /dev/shm/aeron-go
+      # Disable endpoint name re-resolution. Address literals stay static. Keep the
+      # long check interval used on the failover path for publication-add stability.
+      AERON_DRIVER_RERESOLUTION_CHECK_INTERVAL: "3600000000000"
+    volumes:
+      - aeron-media:/dev/shm
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /dev/shm/aeron-go/cnc.dat"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  cluster-0:
+    image: cluster-java-cluster
+    build:
+      context: ../..
+      dockerfile: docker/cluster_java/java/Dockerfile
+    user: *app-user
+    hostname: cluster-0
+    networks:
+      cluster-mixed:
+        ipv4_address: 172.30.0.10
+    environment:
+      <<: *mixed-cluster-env
+      HERON_CLUSTER_MEMBER_ID: "0"
+      AERON_DIR: /dev/shm/aeron-j0
+    volumes:
+      - aeron-media:/dev/shm
+      - cluster-data-0:/tmp/heron-cluster-0
+    healthcheck:
+      <<: *java-healthcheck
+      test: ["CMD-SHELL", "test -f /dev/shm/aeron-j0/cnc.dat"]
+
+  # cluster-java-cluster image is built by cluster-0; cluster-1 reuses that tag.
+  cluster-1:
+    image: cluster-java-cluster
+    user: *app-user
+    hostname: cluster-1
+    networks:
+      cluster-mixed:
+        ipv4_address: 172.30.0.11
+    environment:
+      <<: *mixed-cluster-env
+      HERON_CLUSTER_MEMBER_ID: "1"
+      AERON_DIR: /dev/shm/aeron-j1
+    volumes:
+      - aeron-media:/dev/shm
+      - cluster-data-1:/tmp/heron-cluster-1
+    healthcheck:
+      <<: *java-healthcheck
+      test: ["CMD-SHELL", "test -f /dev/shm/aeron-j1/cnc.dat"]
+
+volumes:
+  aeron-media:
+    driver: local
+    driver_opts: *shm-tmpfs-opts
+
+  cluster-data-0:
+    driver: local
+    driver_opts: *cluster-data-tmpfs-opts
+
+  cluster-data-1:
+    driver: local
+    driver_opts: *cluster-data-tmpfs-opts
+
+  cluster-data-2:
+    driver: local
+    driver_opts: *cluster-data-tmpfs-opts

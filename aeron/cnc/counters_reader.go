@@ -146,6 +146,33 @@ func (reader *CountersReader) FindHeartbeatCounter(
 	counterID int32,
 	ok bool,
 ) {
+	return reader.findCounter(func(id int32, metadataOffset int, state int32) bool {
+		return reader.counterRecordMatchesAt(id, metadataOffset, state, registrationID, typeID)
+	})
+}
+
+// FindCounterOfType returns the first allocated counter id carrying typeID,
+// without matching a registration id.
+//
+// Returns: NullCounterID and false when no allocated record carries typeID.
+func (reader *CountersReader) FindCounterOfType(typeID int32) (counterID int32, ok bool) {
+	return reader.findCounter(func(_ int32, metadataOffset int, state int32) bool {
+		return reader.counterAllocatedOfTypeAt(metadataOffset, state, typeID)
+	})
+}
+
+// findCounter returns the first counter id where match reports true.
+//
+// Behaviour: scans from id 0 and stops at the first unused record. The driver
+// allocates records densely from id 0, so the scan covers the allocated prefix.
+//
+// Returns: NullCounterID and false when no record matches.
+func (reader *CountersReader) findCounter(
+	match func(counterID int32, metadataOffset int, state int32) bool,
+) (
+	counterID int32,
+	ok bool,
+) {
 	if reader == nil {
 		return NullCounterID, false
 	}
@@ -156,10 +183,9 @@ func (reader *CountersReader) FindHeartbeatCounter(
 		if state == CounterRecordUnused {
 			break
 		}
-		if !reader.counterRecordMatchesAt(id, metadataOffset, state, registrationID, typeID) {
-			continue
+		if match(id, metadataOffset, state) {
+			return id, true
 		}
-		return id, true
 	}
 
 	return NullCounterID, false

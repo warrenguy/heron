@@ -387,7 +387,7 @@ func pollRingObservation[T any](
 	timeout, interval time.Duration,
 	observe func() (T, bool, error),
 ) (decoded T, found bool, pollErr error) {
-	found = pollUntilBool(timeout, interval, func() bool {
+	found = PollUntilBool(timeout, interval, func() bool {
 		var ok bool
 		decoded, ok, pollErr = observe()
 		if pollErr != nil {
@@ -416,7 +416,13 @@ func requireObservedRingMessage[T comparable](
 	require.Equal(t, want, decoded)
 }
 
-func pollUntilBool(
+// PollUntilBool calls ok until it reports true or timeout elapses.
+//
+// Behaviour: calls ok at least once. Sleeps interval between calls. Re-checks
+// ok once after the deadline so a slow final call still counts.
+//
+// Returns: true when ok reported true. False on timeout.
+func PollUntilBool(
 	timeout, interval time.Duration,
 	ok func() bool,
 ) bool {
@@ -438,7 +444,7 @@ func pollUntil(
 ) {
 	t.Helper()
 
-	if pollUntilBool(timeout, interval, ok) {
+	if PollUntilBool(timeout, interval, ok) {
 		return
 	}
 	require.FailNow(t, fmt.Sprintf("%s within %s", failMsg, timeout))
@@ -451,7 +457,7 @@ func PollUntilFileWhen(
 	ready func([]byte) bool,
 ) ([]byte, error) {
 	var data []byte
-	ok := pollUntilBool(timeout, defaultPollInterval, func() bool {
+	ok := PollUntilBool(timeout, defaultPollInterval, func() bool {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return false

@@ -81,17 +81,43 @@ func AssertWiredRingsReady(t Reporter, mapped *cnc.MappedCncFile, rings *cnc.Rin
 	require.Zero(t, rings.ToClients.LappedCount())
 }
 
-func accessorTestMetadata() cnc.Metadata {
+// CounterRecord is one counters-buffer record for a test CnC file.
+type CounterRecord struct {
+	CounterID      int32
+	State          int32
+	TypeID         int32
+	RegistrationID int64
+	Value          int64
+}
+
+func accessorTestMetadata(counterCount int) cnc.Metadata {
 	return cnc.Metadata{
 		ToDriverBufferLength:         testToDriverBufferLength,
 		ToClientsBufferLength:        testToClientsBufferLength,
-		CountersMetaDataBufferLength: cnc.CounterMetadataLength,
-		CountersValuesBufferLength:   cnc.CounterValueLength,
+		CountersMetaDataBufferLength: int32(cnc.CounterMetadataLength * counterCount),
+		CountersValuesBufferLength:   int32(cnc.CounterValueLength * counterCount),
 		ErrorLogBufferLength:         testErrorLogBufferLength,
 	}
 }
 
-func writeMetadataFieldsToBuffer(buf []byte, meta cnc.Metadata) {
+// counterSlotCount returns buffer slots for records. Empty fixtures use one slot
+// so a reader still has a scan range.
+func counterSlotCount(records []CounterRecord) int {
+	slots := 1
+	for _, record := range records {
+		slots = max(slots, int(record.CounterID)+1)
+	}
+	return slots
+}
+
+// writeMetadataFields writes the CnC header fields for meta into buf.
+//
+// Behaviour: writes the buffer lengths from meta and fixed test values for
+// liveness timeout, start timestamp, PID, and page size. Releases the version
+// field last so a reader sees a complete header.
+//
+// Ownership: the caller owns buf and sizes it to meta.ComputedLength.
+func writeMetadataFields(buf []byte, meta cnc.Metadata) {
 	atomicBuffer := atomicbuffer.Wrap(buf)
 	atomicBuffer.PutInt32(cnc.OffsetToDriverBufferLength, meta.ToDriverBufferLength)
 	atomicBuffer.PutInt32(cnc.OffsetToClientsBufferLength, meta.ToClientsBufferLength)
@@ -108,15 +134,42 @@ func writeMetadataFieldsToBuffer(buf []byte, meta cnc.Metadata) {
 	atomicBuffer.PutInt32Release(cnc.OffsetCncVersion, cnc.Version)
 }
 
+// WriteCncDir writes a CnC file holding records into a new temp directory and
+// returns that directory.
+//
+// Behaviour: sizes the counters buffers to the highest record id.
+//
+// Ownership: tb.TempDir owns the returned directory.
+func WriteCncDir(tb testing.TB, records []CounterRecord) string {
+	tb.Helper()
+
+	meta := accessorTestMetadata(counterSlotCount(records))
+	buf := make([]byte, meta.ComputedLength())
+	writeMetadataFields(buf, meta)
+
+	countersMeta := buf[cnc.CountersMetaDataOffset(meta):cnc.CountersValuesOffset(meta)]
+	countersValues := buf[cnc.CountersValuesOffset(meta):cnc.ErrorLogOffset(meta)]
+	for _, record := range records {
+		cnc.WriteCounterRecord(
+			countersMeta,
+			countersValues,
+			record.CounterID,
+			record.State,
+			record.TypeID,
+			record.RegistrationID,
+			record.Value,
+		)
+	}
+
+	dir := tb.TempDir()
+	require.NoError(tb, os.WriteFile(filepath.Join(dir, cnc.FileName), buf, 0o644))
+	return dir
+}
+
 func OpenAccessorTestMappedCncFile(tb testing.TB) *cnc.MappedCncFile {
 	tb.Helper()
 
-	meta := accessorTestMetadata()
-	path := filepath.Join(tb.TempDir(), cnc.FileName)
-	buf := make([]byte, meta.ComputedLength())
-	writeMetadataFieldsToBuffer(buf, meta)
-	require.NoError(tb, os.WriteFile(path, buf, 0o644))
-
+	path := filepath.Join(WriteCncDir(tb, nil), cnc.FileName)
 	mapped, err := cnc.MapCncFile(path)
 	require.NoError(tb, err)
 	tb.Cleanup(func() { _ = mapped.Close() })

@@ -116,7 +116,8 @@ check-inner: check-static check-test
 .PHONY: test-all
 test-all: ## Full gate: check rapid integration Docker smokes
 	+@$(MAKE) --no-print-directory check test-rapid test-integration aeronmd-compose-image \
-		test-java-interop test-cluster-java test-cluster-java-failover test-archive-java
+		test-java-interop test-cluster-java test-cluster-java-failover test-archive-java \
+		test-cluster-mixed
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
@@ -182,7 +183,7 @@ $(eval $(call sbe-stale-check,,cluster/codecs,clusterwire))
 $(eval $(call sbe-stale-check,-archive,archive/codecs,archivewire))
 $(eval $(call sbe-stale-check,-nodestate,cluster/election,nodewire))
 
-INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe,cluster_java,archive_java
+INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe,cluster_java,archive_java,cluster_mixed
 
 .PHONY: lint lint-golangci lint-shell goimports gofumpt
 lint: ## golangci-lint and shellcheck
@@ -384,6 +385,7 @@ $(eval $(call integration-contract,$(1)))
 endef
 
 .PHONY: test-java-interop test-cluster-java test-cluster-java-failover test-archive-java \
+	test-cluster-mixed \
 	$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-unit test-$(s)-oracle test-$(s)-contract) \
 	contract-oracles contract-oracles-optional \
 	test-golden-fixtures-unit test-golden-fixtures-unit-optional
@@ -399,6 +401,9 @@ test-cluster-java: ## Docker smoke: AsyncConnect + echo roundtrip smoke
 
 test-cluster-java-failover: aeronmd-compose-image ## Docker smoke: 3-node leader failover
 	./scripts/cluster-java-failover-smoke.sh
+
+test-cluster-mixed: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Java appointed leader
+	./scripts/cluster-mixed-smoke.sh java-leader
 
 $(eval $(call contract-oracle-module,java-interop,$(JAVA_INTEROP_POM),JAVA_INTEROP_ORACLE_TIMEOUT,JAVA_INTEROP_ORACLE_TAGS,./test/integration/java_interop/javainterop/))
 $(eval $(call contract-oracle-module,cluster-sbe,$(CLUSTER_SBE_POM),CLUSTER_SBE_ORACLE_TIMEOUT,CLUSTER_SBE_ORACLE_TAGS,./test/integration/cluster_sbe/clustersbe/))

@@ -19,7 +19,7 @@ import (
 func TestPollUntilBool_earlyExit(t *testing.T) {
 	t.Parallel()
 	calls := 0
-	ok := pollUntilBool(
+	ok := PollUntilBool(
 		100*time.Millisecond,
 		time.Millisecond,
 		func() bool {
@@ -34,7 +34,7 @@ func TestPollUntilBool_earlyExit(t *testing.T) {
 func TestPollUntilBool_timesOut(t *testing.T) {
 	t.Parallel()
 	calls := 0
-	ok := pollUntilBool(
+	ok := PollUntilBool(
 		50*time.Millisecond,
 		10*time.Millisecond,
 		func() bool {

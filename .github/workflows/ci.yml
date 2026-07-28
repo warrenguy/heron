@@ -177,6 +177,7 @@ jobs:
           make test-cluster-java
           make test-cluster-java-failover
           make test-archive-java
+          make test-cluster-mixed
 
   ci-ok:
     if: |

@@ -25,6 +25,10 @@ const (
 	// UDPChannel matches ClusterConstants.UDP_CHANNEL.
 	UDPChannel = "aeron:udp"
 
+	// udpChannel64k matches ClusterConstants.UDP_CHANNEL_64K.
+	// Every plain UDP cluster channel with no endpoint query resolves to this URI.
+	udpChannel64k = UDPChannel + "?" + termLength64kParam
+
 	// FailoverIngressChannel and FailoverEgressChannel fix 64KiB term length for Java
 	// cluster UDP parity.
 	//
@@ -32,7 +36,7 @@ const (
 	// advertises the shared aeronmd driver container address. Cluster nodes publish
 	// egress to that responseChannel from separate containers; a loopback or wildcard
 	// bind would not be routable across the compose network.
-	FailoverIngressChannel   = UDPChannel + "?" + termLength64kParam
+	FailoverIngressChannel   = udpChannel64k
 	FailoverEgressChannel    = UDPChannel + "?endpoint=aeronmd:0|" + termLength64kParam
 	FailoverIngressEndpoints = "0=cluster-0:9002,1=cluster-1:9102,2=cluster-2:9202"
 )
