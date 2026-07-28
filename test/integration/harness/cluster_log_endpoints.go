@@ -16,6 +16,21 @@ const (
 	ClusterLogNLTMulticastPort = 24404
 )
 
+// Three-node module-test endpoints. Reserves the consensus port block
+// ClusterModulePortBase+1 .. ClusterModulePortBase+(memberCount-1)*100+5.
+// At three members that range is 25001-25205. The shared cluster log rides
+// the multicast endpoint below.
+//
+// Cluster-log tests use 24501-24605 at two members and 239.255.12.1:24404.
+// Module and cluster-log blocks are disjoint on every axis.
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterModulePortBase    = 25000
+	ClusterModuleLogEndpoint = "239.255.12.7:25004"
+)
+
 // ClusterLogChannelTemplate confines cluster-log multicast to loopback.
 //
 // Without interface=, the driver joins the group on the default route interface

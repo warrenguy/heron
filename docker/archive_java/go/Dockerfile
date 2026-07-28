@@ -15,7 +15,8 @@ COPY record ./record
 COPY ringbuffer ./ringbuffer
 COPY broadcast ./broadcast
 COPY archive ./archive
-COPY cluster/recordinglog ./cluster/recordinglog
+# harness ClusterMemberSet imports package cluster (not only recordinglog).
+COPY cluster ./cluster
 COPY test/integration/harness ./test/integration/harness
 COPY test/integration/archive_java ./test/integration/archive_java
 

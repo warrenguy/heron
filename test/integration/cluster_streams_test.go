@@ -19,21 +19,6 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// imageBySessionID walks sub for an image whose SessionID matches sessionID.
-func imageBySessionID(sub *aeron.Subscription, sessionID int32) (*aeron.Image, bool) {
-	n := sub.ImageCount()
-	for i := 0; i < n; i++ {
-		img, ok := sub.ImageAt(i)
-		if !ok {
-			continue
-		}
-		if img.SessionID() == sessionID {
-			return img, true
-		}
-	}
-	return nil, false
-}
-
 // twoMemberMembersString builds a 2-member cluster members string at portBase.
 func twoMemberMembersString(
 	t *testing.T,
@@ -267,7 +252,7 @@ func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
 			if streams1.Subscription().ImageCount() < 2 {
 				return false
 			}
-			img, found := imageBySessionID(streams1.Subscription(), sessionID)
+			img, found := harness.ImageBySessionID(streams1.Subscription(), sessionID)
 			if !found {
 				return false
 			}

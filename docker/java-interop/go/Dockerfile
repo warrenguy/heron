@@ -14,6 +14,9 @@ COPY mmap ./mmap
 COPY record ./record
 COPY ringbuffer ./ringbuffer
 COPY broadcast ./broadcast
+# harness ClusterMemberSet pulls cluster; election/consensus need archivewire.
+COPY archive/codecs/archivewire ./archive/codecs/archivewire
+COPY cluster ./cluster
 COPY test/integration/harness ./test/integration/harness
 COPY test/integration/java_interop ./test/integration/java_interop
 

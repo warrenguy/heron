@@ -72,7 +72,7 @@ func TestConsensusModuleRunnerDrivesOneMember(t *testing.T) {
 	session := module.LogStreams().Publication().SessionID()
 	require.True(t, pollUntil(60*time.Second, func() bool {
 		runner.DoWork()
-		_, ok := imageBySessionID(module.LogStreams().Subscription(), session)
+		_, ok := harness.ImageBySessionID(module.LogStreams().Subscription(), session)
 		return ok
 	}), "log image did not arrive")
 
