@@ -515,6 +515,50 @@ public final class ClusterConfig
         return portBase + (nodeId * PORTS_PER_NODE) + offset;
     }
 
+    /**
+     * Rewrite every member's log endpoint (4th field) to {@code endpoint}.
+     *
+     * <p>Ingress, member-facing, transfer and archive slots are unchanged.
+     * Empty member segments (trailing pipe) are preserved.
+     *
+     * @param clusterMembers members string from {@link #clusterMembers}
+     * @param endpoint       shared log endpoint, e.g. {@code 239.255.12.15:9004}
+     * @return members string with every log slot set to {@code endpoint}
+     * @throws IllegalArgumentException when a non-empty member row does not have six fields
+     *         or when {@code endpoint} is null or blank
+     */
+    public static String sharedLogEndpoint(final String clusterMembers, final String endpoint)
+    {
+        if (endpoint == null || endpoint.isBlank())
+        {
+            throw new IllegalArgumentException("endpoint must not be blank");
+        }
+        if (clusterMembers == null || clusterMembers.isEmpty())
+        {
+            throw new IllegalArgumentException("clusterMembers must not be empty");
+        }
+
+        // split limit -1 keeps a trailing empty row. The trailing pipe survives String.join.
+        final String[] rows = clusterMembers.split("\\|", -1);
+        for (int i = 0; i < rows.length; i++)
+        {
+            if (rows[i].isEmpty())
+            {
+                continue;
+            }
+            final String[] fields = rows[i].split(",", -1);
+            if (fields.length != 6)
+            {
+                throw new IllegalArgumentException(
+                    "member row must have 6 fields (got " + fields.length + "): " + rows[i]);
+            }
+            fields[3] = endpoint;
+            rows[i] = String.join(",", fields);
+        }
+
+        return String.join("|", rows);
+    }
+
     private static String udpChannel(final int nodeId, final String hostname, final int portBase, final int portOffset)
     {
         final int port = calculatePort(nodeId, portBase, portOffset);

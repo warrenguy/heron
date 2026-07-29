@@ -26,6 +26,10 @@ import (
 // Nothing polls after the duty cycle stops.
 const mixedMemberCloseLinger = 250 * time.Millisecond
 
+// mixedIdlePollInterval paces polls that run no Go duty cycle.
+// Nothing local advances between reads. A tighter interval only burns wakeups.
+const mixedIdlePollInterval = 50 * time.Millisecond
+
 // mixedMemberFixture holds one Go consensus member on the external aeronmd.
 //
 // Concurrency: invoker-only. Every method runs on the test goroutine.
@@ -38,32 +42,41 @@ type mixedMemberFixture struct {
 	driver *harness.MediaDriver
 }
 
-// requireMixedComposeGate skips when HERON_CLUSTER_MIXED_COMPOSE is unset.
-// When that gate env is set, AERON_DIR must equal MixedAeronDirGo or the test fatals.
+// requireMixedCompose skips with skipHint when envKey is unset.
+// envKey is the per-overlay gate (java-leader or go-leader compose env).
+// skipHint names the make target that runs the caller's smoke.
+//
+// When the gate is set, AERON_DIR must equal MixedAeronDirGo or the test fatals.
 // JoinExternal polls AERON_DIR for a ready CnC file at open.
-func requireMixedComposeGate(t *testing.T) {
+func requireMixedCompose(t *testing.T, envKey, skipHint string) {
 	t.Helper()
 
-	if os.Getenv(clusterjava.MixedComposeGateEnvKey) != "1" {
-		t.Skip(clusterjava.MixedComposeSkipHint)
+	if os.Getenv(envKey) != "1" {
+		t.Skip(skipHint)
 	}
 	if got := os.Getenv("AERON_DIR"); got != clusterjava.MixedAeronDirGo {
 		t.Fatalf(
-			"AERON_DIR must equal %s when HERON_CLUSTER_MIXED_COMPOSE is set (got %q)",
+			"AERON_DIR must equal %s when %s is set (got %q)",
 			clusterjava.MixedAeronDirGo,
+			envKey,
 			got,
 		)
 	}
 }
 
 // buildMixedJavaLeaderConfig builds the Go member config for a Java-led term.
-// AppointedLeaderID is 0. Members string is the golden.
+// AppointedLeaderID is 0. ClusterMembers uses the compose host list.
 // LogChannel stays empty so Normalize takes DefaultLogChannel (unicast template).
-func buildMixedJavaLeaderConfig() cluster.Config {
+func buildMixedJavaLeaderConfig(t *testing.T) cluster.Config {
+	t.Helper()
+
+	members, err := clusterjava.MixedComposeClusterMembers("")
+	require.NoError(t, err)
+
 	appointed := clusterjava.MixedAppointedLeaderIDJavaLeader
 	return cluster.Config{
 		MemberID:          clusterjava.MixedGoMemberID,
-		ClusterMembers:    clusterjava.MixedClusterMembersJavaLeader,
+		ClusterMembers:    members,
 		ClusterDir:        clusterjava.MixedClusterDirGo,
 		AeronDir:          clusterjava.MixedAeronDirGo,
 		AppointedLeaderID: &appointed,
@@ -71,6 +84,49 @@ func buildMixedJavaLeaderConfig() cluster.Config {
 			InterServiceTimeout: harness.ConnectedPollTimeout,
 			CloseLingerDuration: mixedMemberCloseLinger,
 		},
+	}
+}
+
+// buildMixedGoLeaderConfig builds the Go member config for a Go-led term.
+// AppointedLeaderID is 2. ClusterMembers uses the shared multicast log endpoint
+// on the compose host list. LogChannel is the multicast template
+// (interface + ttl only; no endpoint=).
+func buildMixedGoLeaderConfig(t *testing.T) cluster.Config {
+	t.Helper()
+
+	members, err := clusterjava.MixedComposeClusterMembers(clusterjava.MixedLogEndpoint)
+	require.NoError(t, err)
+
+	appointed := clusterjava.MixedAppointedLeaderIDGoLeader
+	return cluster.Config{
+		MemberID:          clusterjava.MixedGoMemberID,
+		ClusterMembers:    members,
+		ClusterDir:        clusterjava.MixedClusterDirGo,
+		AeronDir:          clusterjava.MixedAeronDirGo,
+		LogChannel:        clusterjava.MixedLogChannelMulticast,
+		AppointedLeaderID: &appointed,
+		AeronConfig: aeron.Config{
+			InterServiceTimeout: harness.ConnectedPollTimeout,
+			CloseLingerDuration: mixedMemberCloseLinger,
+		},
+	}
+}
+
+// requireMixedAeronDirsPresent fatals when any of the three mixed Aeron
+// directories is missing. go-leader requires Java peers up before Go opens, so
+// all three CnC trees exist when the smoke starts.
+func requireMixedAeronDirsPresent(t *testing.T) {
+	t.Helper()
+
+	dirs := []string{
+		clusterjava.MixedAeronDirMember0,
+		clusterjava.MixedAeronDirMember1,
+		clusterjava.MixedAeronDirGo,
+	}
+	for _, dir := range dirs {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("mixed aeron dir missing: %s: %v", dir, err)
+		}
 	}
 }
 
@@ -133,8 +189,12 @@ func (f *mixedMemberFixture) tickUntil(budget time.Duration, ok func() bool) boo
 }
 
 // awaitJavaModuleState waits until each Java member's CnC is readable and its
-// module state counter (type 200) is allocated. Opens counters lazily as each
-// CnC appears. Ticks the Go member so canvass continues while Java starts.
+// module state counter (type 200) is allocated.
+// Opens counters lazily as each CnC appears.
+//
+// Pass nil f when Java peers start before the Go member opens.
+// A non-nil f runs the Go duty cycle on every poll.
+// Canvass continues while Java starts.
 func awaitJavaModuleState(
 	t *testing.T,
 	f *mixedMemberFixture,
@@ -146,7 +206,15 @@ func awaitJavaModuleState(
 	out := make([]*harness.DriverCounters, len(dirs))
 	start := time.Now()
 
-	ok := f.tickUntil(budget, func() bool {
+	interval := mixedIdlePollInterval
+	if f != nil {
+		interval = time.Millisecond
+	}
+
+	ok := harness.PollUntilBool(budget, interval, func() bool {
+		if f != nil {
+			f.tick()
+		}
 		all := true
 		for i, dir := range dirs {
 			if out[i] == nil {
@@ -172,16 +240,83 @@ func awaitJavaModuleState(
 		for i, dir := range dirs {
 			fmt.Fprintf(&b, "javaMember=%d aeronDir=%s cncOpen=%v\n", i, dir, out[i] != nil)
 		}
+		var module *cluster.ConsensusModule
+		if f != nil {
+			module = f.module
+		}
 		t.Fatalf(
 			"java module state counter not allocated after %s (budget %s):\n%s%s",
 			time.Since(start),
 			budget,
 			b.String(),
-			dumpMixedState(f.module, out),
+			dumpMixedState(module, out),
 		)
 	}
 
 	t.Logf("java module state allocated elapsed=%s budget=%s", time.Since(start), budget)
+	return out
+}
+
+// javaMemberRole reads one Java member's role counter.
+// Reports false when the counter is unallocated or holds an unknown code.
+func javaMemberRole(c *harness.DriverCounters) (consensus.Role, bool) {
+	val, ok := c.Value(consensus.ClusterNodeRoleCounterTypeID)
+	if !ok {
+		return 0, false
+	}
+	role, err := consensus.RoleFromCode(val)
+	if err != nil {
+		return 0, false
+	}
+	return role, true
+}
+
+// javaMembersAtTerm reports whether every Java member's leadership term counter
+// equals term.
+func javaMembersAtTerm(java []*harness.DriverCounters, term int64) bool {
+	for _, c := range java {
+		val, ok := c.Value(consensus.ClusterLeadershipTermIDCounterTypeID)
+		if !ok || val != term {
+			return false
+		}
+	}
+	return true
+}
+
+// javaCommitPositions reads each Java member's commit counter (type 203) in id
+// order. Reports false when any counter is unallocated. Values may be zero.
+func javaCommitPositions(java []*harness.DriverCounters) ([]int64, bool) {
+	out := make([]int64, len(java))
+	allocated := true
+	for i, c := range java {
+		val, ok := c.Value(consensus.ClusterCommitPositionCounterTypeID)
+		if !ok {
+			allocated = false
+			continue
+		}
+		out[i] = val
+	}
+	return out, allocated
+}
+
+// recordJavaCommitPositions requires each Java member's commit counter (type
+// 203) to be allocated and returns the current values. Values may be zero.
+// Call after module state is allocated and before the Go member opens as leader.
+func recordJavaCommitPositions(
+	t *testing.T,
+	java []*harness.DriverCounters,
+) []int64 {
+	t.Helper()
+
+	out, ok := javaCommitPositions(java)
+	if !ok {
+		t.Fatalf(
+			"java commit counter (type 203) not allocated: current=%v\n%s",
+			out,
+			dumpMixedState(nil, java),
+		)
+	}
+	t.Logf("java commit positions recorded=%v", out)
 	return out
 }
 
@@ -213,23 +348,17 @@ func awaitJavaLeaderElection(
 		leaders := 0
 		var leaderID int32 = -1
 		for i, c := range java {
-			roleVal, roleOK := c.Value(consensus.ClusterNodeRoleCounterTypeID)
+			role, roleOK := javaMemberRole(c)
 			if !roleOK {
-				return false
-			}
-			role, err := consensus.RoleFromCode(roleVal)
-			if err != nil {
 				return false
 			}
 			if role == consensus.RoleLeader {
 				leaders++
 				leaderID = int32(i)
 			}
-
-			termVal, termOK := c.Value(consensus.ClusterLeadershipTermIDCounterTypeID)
-			if !termOK || termVal != f.module.LeadershipTermID() {
-				return false
-			}
+		}
+		if !javaMembersAtTerm(java, f.module.LeadershipTermID()) {
+			return false
 		}
 
 		// Exactly one of the three reports leader: Go is not leader; one Java is.
@@ -316,10 +445,15 @@ func induceSessionMessage(t *testing.T, f *mixedMemberFixture) {
 		},
 	})
 
+	egress, err := clusterjava.MixedComposeEgressChannel()
+	require.NoError(t, err)
+	ingress, err := clusterjava.MixedComposeIngressEndpoints()
+	require.NoError(t, err)
+
 	cfg := client.Config{
 		IngressChannel:   clusterjava.MixedIngressChannel,
-		EgressChannel:    clusterjava.MixedEgressChannel,
-		IngressEndpoints: clusterjava.MixedIngressEndpoints,
+		EgressChannel:    egress,
+		IngressEndpoints: ingress,
 		AeronDir:         f.driver.Dir,
 		Aeron:            aeronClient,
 		MessageTimeout:   clusterjava.MixedConnectBudget,
@@ -440,7 +574,202 @@ func awaitNotifiedCommitAdvance(
 	)
 }
 
+// awaitJavaServiceSawTermStart asserts both Java members write a service-probe
+// file for the current Go LeadershipTermID.
+//
+// Required fields per member:
+// - term equals Go LeadershipTermID
+// - logPosition >= 0
+// - role is FOLLOWER
+// - memberId matches the member path
+//
+// Asserts Java ClusteredService decoded the term-start log event.
+// Does not treat the consensus commit counter alone as enough.
+//
+// Ticks the Go duty cycle while polling.
+// Re-reads both probes each poll.
+// Both members must report the same term to pass.
+//
+// On failure: dumps probe paths, file content, and dumpMixedState.
+func awaitJavaServiceSawTermStart(
+	t *testing.T,
+	f *mixedMemberFixture,
+	java []*harness.DriverCounters,
+	budget time.Duration,
+) {
+	t.Helper()
+
+	paths := [2]string{
+		clusterjava.ServiceProbePath(0),
+		clusterjava.ServiceProbePath(1),
+	}
+	start := time.Now()
+
+	var probes [2]clusterjava.ServiceProbe
+
+	ok := f.tickUntil(budget, func() bool {
+		wantTerm := f.module.LeadershipTermID()
+		for i := range paths {
+			data, err := os.ReadFile(paths[i])
+			if err != nil {
+				return false
+			}
+			probe, err := clusterjava.ParseServiceProbe(data)
+			if err != nil {
+				return false
+			}
+			if probe.Term != wantTerm ||
+				probe.LogPosition < 0 ||
+				probe.Role != "FOLLOWER" ||
+				probe.MemberID != int32(i) {
+				return false
+			}
+			probes[i] = probe
+		}
+		return true
+	})
+
+	elapsed := time.Since(start)
+	if !ok {
+		var b strings.Builder
+		for i := range paths {
+			fmt.Fprintf(&b, "javaMember=%d path=%s", i, paths[i])
+			if data, err := os.ReadFile(paths[i]); err != nil {
+				fmt.Fprintf(&b, " err=%v\n", err)
+			} else {
+				fmt.Fprintf(&b, " content=%q\n", string(data))
+			}
+		}
+		t.Fatalf(
+			"java service-probe did not report term start after %s (budget %s): "+
+				"wantTerm=%d\n%s%s",
+			elapsed,
+			budget,
+			f.module.LeadershipTermID(),
+			b.String(),
+			dumpMixedState(f.module, java),
+		)
+	}
+
+	for i := range paths {
+		t.Logf(
+			"java service-probe member=%d term=%d logPosition=%d role=%s elapsed=%s",
+			i,
+			probes[i].Term,
+			probes[i].LogPosition,
+			probes[i].Role,
+			elapsed,
+		)
+	}
+}
+
+// awaitGoLeaderElection ticks until the Go member leads and both Java members
+// report follower with a matching leadership term.
+//
+// LeaderMemberID is -1 on the leader (no append target). Assert -1, never self.
+func awaitGoLeaderElection(
+	t *testing.T,
+	f *mixedMemberFixture,
+	java []*harness.DriverCounters,
+	budget time.Duration,
+) {
+	t.Helper()
+
+	start := time.Now()
+	ok := f.tickUntil(budget, func() bool {
+		if !f.module.ElectionComplete() {
+			return false
+		}
+		if !f.module.IsLeader() {
+			return false
+		}
+		if f.module.LeaderMemberID() != -1 {
+			return false
+		}
+		if f.module.LeadershipTermID() < 0 {
+			return false
+		}
+
+		for _, c := range java {
+			role, roleOK := javaMemberRole(c)
+			if !roleOK || role != consensus.RoleFollower {
+				return false
+			}
+		}
+		return javaMembersAtTerm(java, f.module.LeadershipTermID())
+	})
+
+	elapsed := time.Since(start)
+	if !ok {
+		t.Fatalf(
+			"election did not agree on Go member as leader after %s (budget %s):\n%s",
+			elapsed,
+			budget,
+			dumpMixedState(f.module, java),
+		)
+	}
+	t.Logf(
+		"go leader election elapsed=%s budget=%s\n%s",
+		elapsed,
+		budget,
+		dumpMixedState(f.module, java),
+	)
+}
+
+// awaitJavaCommitAdvance waits for both Java commit counters to rise strictly
+// above recorded and for the Go leader CommitPosition to rise above 0.
+// Does not assert NotifiedCommitPosition (leader path does not advance it).
+func awaitJavaCommitAdvance(
+	t *testing.T,
+	f *mixedMemberFixture,
+	java []*harness.DriverCounters,
+	recorded []int64,
+	budget time.Duration,
+) {
+	t.Helper()
+
+	require.Len(t, recorded, len(java))
+
+	start := time.Now()
+	ok := f.tickUntil(budget, func() bool {
+		if f.module.CommitPosition() <= 0 {
+			return false
+		}
+		for i, c := range java {
+			val, valOK := c.Value(consensus.ClusterCommitPositionCounterTypeID)
+			if !valOK || val <= recorded[i] {
+				return false
+			}
+		}
+		return true
+	})
+
+	elapsed := time.Since(start)
+	current, _ := javaCommitPositions(java)
+	if !ok {
+		t.Fatalf(
+			"commit did not advance under Go leader after %s (budget %s): "+
+				"recorded=%v current=%v goCommit=%d:\n%s",
+			elapsed,
+			budget,
+			recorded,
+			current,
+			f.module.CommitPosition(),
+			dumpMixedState(f.module, java),
+		)
+	}
+	t.Logf(
+		"java commit advance elapsed=%s budget=%s recorded=%v current=%v goCommit=%d",
+		elapsed,
+		budget,
+		recorded,
+		current,
+		f.module.CommitPosition(),
+	)
+}
+
 // dumpMixedState dumps the Go member and each Java counter set.
+// module may be nil when Go has not opened yet.
 func dumpMixedState(
 	m *cluster.ConsensusModule,
 	java []*harness.DriverCounters,
@@ -448,6 +777,10 @@ func dumpMixedState(
 	var b strings.Builder
 	b.WriteString(harness.ClusterMemberState(m))
 	for i, c := range java {
+		if c == nil {
+			fmt.Fprintf(&b, "javaMember=%d counters=<nil>\n", i)
+			continue
+		}
 		role, roleOK := c.Value(consensus.ClusterNodeRoleCounterTypeID)
 		term, termOK := c.Value(consensus.ClusterLeadershipTermIDCounterTypeID)
 		state, stateOK := c.Value(consensus.ClusterConsensusModuleStateCounterTypeID)

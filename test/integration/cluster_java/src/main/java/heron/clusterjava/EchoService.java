@@ -13,9 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-// Modified from io.aeron.samples.cluster.EchoService:
-// package renamed to heron.clusterjava; echoes inbound session messages via session.offer
-// with cluster idle-strategy retries (integration smoke).
+// Modified from io.aeron.samples.cluster.EchoService.
+// Package renamed to heron.clusterjava.
+// Echoes inbound session messages via session.offer with idle-strategy retries.
+//
+// On term start, writes a service-probe file under the member baseDir.
+// Mixed go-leader smokes assert that file for Java service term-event decode.
 package heron.clusterjava;
 
 import io.aeron.ExclusivePublication;
@@ -24,19 +27,32 @@ import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
+import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.util.concurrent.TimeUnit;
 
 class EchoService implements ClusteredService
 {
     static final int SEND_ATTEMPTS = 3;
     static final String OFFER_EXHAUSTED_MESSAGE =
         "heron: EchoService offer exhausted after " + SEND_ATTEMPTS + " attempts";
+    static final String SERVICE_PROBE_WRITE_FAILED_PREFIX =
+        "heron: EchoService service-probe write failed: ";
+
     private IdleStrategy idleStrategy;
+    private Cluster cluster;
 
     public void onStart(final Cluster cluster, final Image snapshotImage)
     {
+        this.cluster = cluster;
         this.idleStrategy = cluster.idleStrategy();
     }
 
@@ -85,5 +101,105 @@ class EchoService implements ClusteredService
 
     public void onTerminate(final Cluster cluster)
     {
+    }
+
+    /**
+     * Writes term-start state under the member baseDir for mixed-smoke asserts.
+     *
+     * <p>File is {@link ClusterConstants#SERVICE_PROBE_FILENAME} in the parent of
+     * {@code cluster.context().clusterDir()}. Write order: temp file, then rename.
+     *
+     * <p>Failure logs to stderr. Does not throw.
+     */
+    public void onNewLeadershipTermEvent(
+        final long leadershipTermId,
+        final long logPosition,
+        final long timestamp,
+        final long termBaseLogPosition,
+        final int leaderMemberId,
+        final int logSessionId,
+        final TimeUnit timeUnit,
+        final int appVersion)
+    {
+        writeServiceProbe(leadershipTermId, logPosition);
+    }
+
+    // package-private for unit tests
+    void writeServiceProbe(final long term, final long logPosition)
+    {
+        final File baseDir = probeBaseDir();
+        if (baseDir == null)
+        {
+            return;
+        }
+
+        final String roleName = cluster.role() == null ? "null" : cluster.role().name();
+        final String content = formatServiceProbe(term, logPosition, roleName, cluster.memberId());
+        final File dest = new File(baseDir, ClusterConstants.SERVICE_PROBE_FILENAME);
+        final File tmp = new File(baseDir, ClusterConstants.SERVICE_PROBE_FILENAME + ".tmp");
+
+        try
+        {
+            if (!baseDir.exists() && !baseDir.mkdirs())
+            {
+                System.err.println(SERVICE_PROBE_WRITE_FAILED_PREFIX + "mkdirs " + baseDir);
+                return;
+            }
+            Files.writeString(tmp.toPath(), content, StandardCharsets.US_ASCII);
+
+            // tmp and dest share baseDir. ATOMIC_MOVE renames on one filesystem.
+            Files.move(
+                tmp.toPath(),
+                dest.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE);
+        }
+        catch (final IOException ex)
+        {
+            try
+            {
+                Files.deleteIfExists(tmp.toPath());
+            }
+            catch (final IOException ignored)
+            {
+            }
+            System.err.println(SERVICE_PROBE_WRITE_FAILED_PREFIX + ex.getMessage());
+        }
+    }
+
+    /**
+     * Member baseDir that holds the service-probe file.
+     *
+     * <p>Returns null when cluster is unset, context is null, or clusterDir is null.
+     * clusterDir is null before {@link #onStart} when the context omits it.
+     */
+    private File probeBaseDir()
+    {
+        if (cluster == null)
+        {
+            return null;
+        }
+
+        final ClusteredServiceContainer.Context context = cluster.context();
+        if (context == null)
+        {
+            return null;
+        }
+
+        final File clusterDir = context.clusterDir();
+        return clusterDir == null ? null : clusterDir.getParentFile();
+    }
+
+    // package-private for unit tests
+    static String formatServiceProbe(
+        final long term,
+        final long logPosition,
+        final String role,
+        final int memberId)
+    {
+        return ClusterConstants.SERVICE_PROBE_KEY_TERM + "=" + term + "\n"
+            + ClusterConstants.SERVICE_PROBE_KEY_LOG_POSITION + "=" + logPosition + "\n"
+            + ClusterConstants.SERVICE_PROBE_KEY_ROLE + "=" + role + "\n"
+            + ClusterConstants.SERVICE_PROBE_KEY_MEMBER_ID + "=" + memberId + "\n";
     }
 }

@@ -28,14 +28,29 @@ func TestMixedHarnessConstants(t *testing.T) {
 		want any
 	}{
 		{
-			name: "MixedComposeGateEnvKey",
-			got:  clusterjava.MixedComposeGateEnvKey,
-			want: "HERON_CLUSTER_MIXED_COMPOSE",
+			name: "MixedComposeJavaLeaderEnvKey",
+			got:  clusterjava.MixedComposeJavaLeaderEnvKey,
+			want: "HERON_CLUSTER_MIXED_JAVA_LEADER_COMPOSE",
 		},
 		{
-			name: "MixedComposeSkipHint",
-			got:  clusterjava.MixedComposeSkipHint,
-			want: "cluster mixed requires docker compose; run make test-cluster-mixed",
+			name: "MixedComposeGoLeaderEnvKey",
+			got:  clusterjava.MixedComposeGoLeaderEnvKey,
+			want: "HERON_CLUSTER_MIXED_GO_LEADER_COMPOSE",
+		},
+		{
+			name: "MixedHostnamesEnvKey",
+			got:  clusterjava.MixedHostnamesEnvKey,
+			want: "HERON_CLUSTER_HOSTNAMES",
+		},
+		{
+			name: "MixedComposeSkipHintJavaLeader",
+			got:  clusterjava.MixedComposeSkipHintJavaLeader,
+			want: "cluster mixed requires docker compose; run make test-cluster-mixed-java-leader",
+		},
+		{
+			name: "MixedComposeSkipHintGoLeader",
+			got:  clusterjava.MixedComposeSkipHintGoLeader,
+			want: "cluster mixed requires docker compose; run make test-cluster-mixed-go-leader",
 		},
 		{name: "PortBase", got: clusterjava.PortBase, want: 9000},
 		{name: "MixedMemberCount", got: clusterjava.MixedMemberCount, want: 3},
@@ -44,6 +59,11 @@ func TestMixedHarnessConstants(t *testing.T) {
 			name: "MixedAppointedLeaderIDJavaLeader",
 			got:  clusterjava.MixedAppointedLeaderIDJavaLeader,
 			want: int32(0),
+		},
+		{
+			name: "MixedAppointedLeaderIDGoLeader",
+			got:  clusterjava.MixedAppointedLeaderIDGoLeader,
+			want: int32(2),
 		},
 		{
 			name: "MixedReadyPath",
@@ -93,9 +113,46 @@ func TestMixedHarnessConstants(t *testing.T) {
 			want: "/tmp/heron-cluster-2",
 		},
 		{
+			name: "ServiceProbeFilename",
+			got:  clusterjava.ServiceProbeFilename,
+			want: "service-probe",
+		},
+		{
+			name: "ServiceProbeKeyTerm",
+			got:  clusterjava.ServiceProbeKeyTerm,
+			want: "term",
+		},
+		{
+			name: "ServiceProbeKeyLogPosition",
+			got:  clusterjava.ServiceProbeKeyLogPosition,
+			want: "logPosition",
+		},
+		{
+			name: "ServiceProbeKeyRole",
+			got:  clusterjava.ServiceProbeKeyRole,
+			want: "role",
+		},
+		{
+			name: "ServiceProbeKeyMemberID",
+			got:  clusterjava.ServiceProbeKeyMemberID,
+			want: "memberId",
+		},
+
+		{
 			name: "MixedLogChannelUnicast",
 			got:  clusterjava.MixedLogChannelUnicast,
 			want: "aeron:udp?term-length=64k",
+		},
+		{
+			name: "MixedLogEndpoint",
+			got:  clusterjava.MixedLogEndpoint,
+			want: "239.255.12.15:9004",
+		},
+		{
+			name: "MixedLogChannelMulticast",
+			got:  clusterjava.MixedLogChannelMulticast,
+			// Template only: no endpoint=. Topology merges MixedLogEndpoint.
+			want: "aeron:udp?term-length=64k|interface=172.30.0.0/16|ttl=1",
 		},
 		{
 			name: "MixedClusterMembersJavaLeader",
@@ -105,6 +162,14 @@ func TestMixedHarnessConstants(t *testing.T) {
 				"172.30.0.11:9104,172.30.0.11:9105,172.30.0.11:9101|2,172.30.0.12:9202," +
 				"172.30.0.12:9203,172.30.0.12:9204,172.30.0.12:9205,172.30.0.12:9201|",
 		},
+		{
+			name: "MixedClusterMembersGoLeader",
+			got:  clusterjava.MixedClusterMembersGoLeader,
+			want: "0,172.30.0.10:9002,172.30.0.10:9003,239.255.12.15:9004," +
+				"172.30.0.10:9005,172.30.0.10:9001|1,172.30.0.11:9102,172.30.0.11:9103," +
+				"239.255.12.15:9004,172.30.0.11:9105,172.30.0.11:9101|2,172.30.0.12:9202," +
+				"172.30.0.12:9203,239.255.12.15:9004,172.30.0.12:9205,172.30.0.12:9201|",
+		},
 		{name: "MixedStartupBudget", got: clusterjava.MixedStartupBudget, want: 30 * time.Second},
 		{name: "MixedElectionBudget", got: clusterjava.MixedElectionBudget, want: 20 * time.Second},
 		{name: "MixedConnectBudget", got: clusterjava.MixedConnectBudget, want: 20 * time.Second},
@@ -112,6 +177,11 @@ func TestMixedHarnessConstants(t *testing.T) {
 		{
 			name: "MixedTestTimeoutJavaLeader",
 			got:  clusterjava.MixedTestTimeoutJavaLeader,
+			want: 120 * time.Second,
+		},
+		{
+			name: "MixedTestTimeoutGoLeader",
+			got:  clusterjava.MixedTestTimeoutGoLeader,
 			want: 120 * time.Second,
 		},
 	}
@@ -129,11 +199,17 @@ func TestMixedTopologyInvariants(t *testing.T) {
 	require.GreaterOrEqual(t, clusterjava.MixedAppointedLeaderIDJavaLeader, int32(0))
 	require.Less(t, clusterjava.MixedAppointedLeaderIDJavaLeader, int32(clusterjava.MixedMemberCount))
 
+	require.GreaterOrEqual(t, clusterjava.MixedAppointedLeaderIDGoLeader, int32(0))
+	require.Less(t, clusterjava.MixedAppointedLeaderIDGoLeader, int32(clusterjava.MixedMemberCount))
+
 	require.GreaterOrEqual(t, clusterjava.MixedGoMemberID, int32(0))
 	require.Less(t, clusterjava.MixedGoMemberID, int32(clusterjava.MixedMemberCount))
 
-	// Appointed leader must be a Java member. Must not equal the Go member id.
+	// java-leader appoints a Java member. Must not equal the Go member id.
 	require.NotEqual(t, clusterjava.MixedGoMemberID, clusterjava.MixedAppointedLeaderIDJavaLeader)
+
+	// go-leader appoints the Go member.
+	require.Equal(t, clusterjava.MixedGoMemberID, clusterjava.MixedAppointedLeaderIDGoLeader)
 }
 
 func TestMixedIngressEndpoints_omitsGoMember(t *testing.T) {
@@ -179,6 +255,27 @@ func TestMixedLogChannelUnicast_noMulticastParams(t *testing.T) {
 	require.NotContains(t, clusterjava.MixedLogChannelUnicast, "endpoint=")
 }
 
+func TestMixedLogChannelMulticast_templateHasInterfaceAndTtlNoEndpoint(t *testing.T) {
+	ch := clusterjava.MixedLogChannelMulticast
+	require.True(t, strings.HasPrefix(ch, "aeron:udp?term-length=64k"))
+	require.Contains(t, ch, "interface=172.30.0.0/16")
+	require.Contains(t, ch, "ttl=1")
+
+	// endpoint= is forbidden on cluster.Config.LogChannel; members string carries it.
+	require.NotContains(t, ch, "endpoint=")
+}
+
+func TestMixedClusterMembersGoLeader_sharesLogEndpoint(t *testing.T) {
+	got, err := cluster.BuildClusterMembersString(cluster.MembersStringConfig{
+		IngressHostnames:  clusterjava.MixedMemberHostnames(),
+		ClusterHostnames:  clusterjava.MixedMemberHostnames(),
+		PortBase:          clusterjava.PortBase,
+		SharedLogEndpoint: clusterjava.MixedLogEndpoint,
+	})
+	require.NoError(t, err)
+	require.Equal(t, clusterjava.MixedClusterMembersGoLeader, got)
+}
+
 func TestMixedReadyPath_outsideAeronDirs(t *testing.T) {
 	require.False(t, strings.HasPrefix(clusterjava.MixedReadyPath, clusterjava.MixedAeronDirMember0))
 	require.False(t, strings.HasPrefix(clusterjava.MixedReadyPath, clusterjava.MixedAeronDirMember1))
@@ -202,12 +299,211 @@ func TestMixedMemberHostnames_returnsFreshSlice(t *testing.T) {
 	require.Equal(t, want, clusterjava.MixedMemberHostnames())
 }
 
+func TestMixedComposeHostnames_defaultsWithoutEnv(t *testing.T) {
+	t.Setenv(clusterjava.MixedHostnamesEnvKey, "")
+	got, err := clusterjava.MixedComposeHostnames()
+	require.NoError(t, err)
+	require.Equal(t, clusterjava.MixedMemberHostnames(), got)
+}
+
+func TestMixedComposeHostnames_readsEnv(t *testing.T) {
+	t.Setenv(clusterjava.MixedHostnamesEnvKey, "172.30.42.10,172.30.42.11,172.30.42.12")
+	got, err := clusterjava.MixedComposeHostnames()
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"172.30.42.10",
+		"172.30.42.11",
+		"172.30.42.12",
+	}, got)
+}
+
+func TestMixedComposeHostnames_rejectsBadEnv(t *testing.T) {
+	t.Setenv(clusterjava.MixedHostnamesEnvKey, "only-one-host")
+	_, err := clusterjava.MixedComposeHostnames()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exactly 3 hostnames")
+
+	t.Setenv(clusterjava.MixedHostnamesEnvKey, "a,,c")
+	_, err = clusterjava.MixedComposeHostnames()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "empty hostname")
+
+	t.Setenv(clusterjava.MixedHostnamesEnvKey, "a,b,c,d")
+	_, err = clusterjava.MixedComposeHostnames()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exactly 3 hostnames")
+}
+
+func TestMixedComposeClusterMembers_matchesDefaultGoldens(t *testing.T) {
+	t.Setenv(clusterjava.MixedHostnamesEnvKey, "")
+
+	javaLeader, err := clusterjava.MixedComposeClusterMembers("")
+	require.NoError(t, err)
+	require.Equal(t, clusterjava.MixedClusterMembersJavaLeader, javaLeader)
+
+	goLeader, err := clusterjava.MixedComposeClusterMembers(clusterjava.MixedLogEndpoint)
+	require.NoError(t, err)
+	require.Equal(t, clusterjava.MixedClusterMembersGoLeader, goLeader)
+}
+
+func TestMixedComposeClusterMembers_usesEnvHosts(t *testing.T) {
+	t.Setenv(clusterjava.MixedHostnamesEnvKey, "172.30.7.10,172.30.7.11,172.30.7.12")
+
+	got, err := clusterjava.MixedComposeClusterMembers("")
+	require.NoError(t, err)
+	want, err := cluster.BuildClusterMembersString(cluster.MembersStringConfig{
+		IngressHostnames: []string{"172.30.7.10", "172.30.7.11", "172.30.7.12"},
+		ClusterHostnames: []string{"172.30.7.10", "172.30.7.11", "172.30.7.12"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	require.Contains(t, got, "172.30.7.10")
+	require.NotContains(t, got, "172.30.0.10")
+}
+
+func TestMixedComposeIngressAndEgress_useEnvHosts(t *testing.T) {
+	t.Setenv(clusterjava.MixedHostnamesEnvKey, "172.30.9.10,172.30.9.11,172.30.9.12")
+
+	ingress, err := clusterjava.MixedComposeIngressEndpoints()
+	require.NoError(t, err)
+	require.Equal(t, "0=172.30.9.10:9002,1=172.30.9.11:9102", ingress)
+
+	egress, err := clusterjava.MixedComposeEgressChannel()
+	require.NoError(t, err)
+	require.Equal(t, "aeron:udp?endpoint=172.30.9.12:0|term-length=64k", egress)
+}
+
+func TestMixedComposeIngressAndEgress_rejectBadEnv(t *testing.T) {
+	t.Setenv(clusterjava.MixedHostnamesEnvKey, "only-one-host")
+
+	_, err := clusterjava.MixedComposeIngressEndpoints()
+	require.Error(t, err)
+	_, err = clusterjava.MixedComposeEgressChannel()
+	require.Error(t, err)
+	_, err = clusterjava.MixedComposeClusterMembers("")
+	require.Error(t, err)
+}
+
 func TestMixedStackedBudgets_fitInsideTestTimeout(t *testing.T) {
-	stacked := clusterjava.MixedStartupBudget +
+	stackedJavaLeader := clusterjava.MixedStartupBudget +
 		clusterjava.MixedElectionBudget +
 		clusterjava.MixedConnectBudget +
 		clusterjava.MixedCommitBudget
-	require.Less(t, stacked, clusterjava.MixedTestTimeoutJavaLeader)
+	require.Less(t, stackedJavaLeader, clusterjava.MixedTestTimeoutJavaLeader)
+
+	// go-leader has no client connect wait. Service probe reuses MixedElectionBudget.
+	stackedGoLeader := clusterjava.MixedStartupBudget +
+		clusterjava.MixedElectionBudget +
+		clusterjava.MixedElectionBudget +
+		clusterjava.MixedCommitBudget
+	require.Less(t, stackedGoLeader, clusterjava.MixedTestTimeoutGoLeader)
+}
+
+func TestServiceProbePath_underMemberBaseDir(t *testing.T) {
+	require.Equal(t, "/tmp/heron-cluster-0/service-probe", clusterjava.ServiceProbePath(0))
+	require.Equal(t, "/tmp/heron-cluster-1/service-probe", clusterjava.ServiceProbePath(1))
+}
+
+func TestParseServiceProbe_valid(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want clusterjava.ServiceProbe
+	}{
+		{
+			name: "followerFields",
+			data: "term=3\nlogPosition=64\nrole=FOLLOWER\nmemberId=1\n",
+			want: clusterjava.ServiceProbe{
+				Term: 3, LogPosition: 64, Role: "FOLLOWER", MemberID: 1,
+			},
+		},
+		{
+			name: "zeroLogPosition",
+			data: "term=0\nlogPosition=0\nrole=FOLLOWER\nmemberId=0\n",
+			want: clusterjava.ServiceProbe{
+				Term: 0, LogPosition: 0, Role: "FOLLOWER", MemberID: 0,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			probe, err := clusterjava.ParseServiceProbe([]byte(tt.data))
+			require.NoError(t, err)
+			require.Equal(t, tt.want, probe)
+		})
+	}
+}
+
+func TestParseServiceProbe_rejectMatrix(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    string
+		wantSub string
+	}{
+		{
+			name:    "missingMemberId",
+			data:    "term=1\nlogPosition=0\nrole=FOLLOWER\n",
+			wantSub: "memberId",
+		},
+		{
+			name:    "unknownKey",
+			data:    "term=1\nlogPosition=0\nrole=FOLLOWER\nmemberId=0\nextra=1\n",
+			wantSub: "unknown key",
+		},
+		{
+			name:    "emptyRole",
+			data:    "term=1\nlogPosition=0\nrole=\nmemberId=0\n",
+			wantSub: "role",
+		},
+		{
+			name:    "malformedLine",
+			data:    "not-a-pair\nterm=1\nlogPosition=0\nrole=FOLLOWER\nmemberId=0\n",
+			wantSub: "key=value",
+		},
+		{
+			name:    "badTerm",
+			data:    "term=x\nlogPosition=0\nrole=FOLLOWER\nmemberId=0\n",
+			wantSub: "term",
+		},
+		{
+			name:    "badLogPosition",
+			data:    "term=1\nlogPosition=nope\nrole=FOLLOWER\nmemberId=0\n",
+			wantSub: "logPosition",
+		},
+		{
+			name:    "badMemberId",
+			data:    "term=1\nlogPosition=0\nrole=FOLLOWER\nmemberId=z\n",
+			wantSub: "memberId",
+		},
+		{
+			name:    "emptyBody",
+			data:    "",
+			wantSub: "missing key",
+		},
+		{
+			name:    "emptyKey",
+			data:    "=1\nterm=1\nlogPosition=0\nrole=FOLLOWER\nmemberId=0\n",
+			wantSub: "key=value",
+		},
+		{
+			name:    "duplicateTerm",
+			data:    "term=1\nterm=2\nlogPosition=0\nrole=FOLLOWER\nmemberId=0\n",
+			wantSub: "duplicate key",
+		},
+		{
+			name:    "duplicateRole",
+			data:    "term=1\nlogPosition=0\nrole=FOLLOWER\nrole=LEADER\nmemberId=0\n",
+			wantSub: "duplicate key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := clusterjava.ParseServiceProbe([]byte(tt.data))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tt.wantSub)
+		})
+	}
 }
 
 // TestMixedAppVersion_matchesJavaMajor asserts Go DefaultElectionConfig AppVersion

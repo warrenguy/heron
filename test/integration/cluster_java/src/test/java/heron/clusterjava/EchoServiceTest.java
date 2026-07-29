@@ -12,7 +12,12 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpIdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
@@ -20,6 +25,7 @@ import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -70,99 +76,294 @@ class EchoServiceTest {
         assertEquals(EchoService.OFFER_EXHAUSTED_MESSAGE + System.lineSeparator(), stderr);
     }
 
+    @Test
+    void formatServiceProbe_keyValueLines() {
+        final String content = EchoService.formatServiceProbe(7L, 128L, "FOLLOWER", 1);
+        assertEquals(
+            "term=7\nlogPosition=128\nrole=FOLLOWER\nmemberId=1\n",
+            content);
+    }
+
+    @Test
+    void onNewLeadershipTermEvent_writesProbeUnderBaseDir(@TempDir final Path tempDir)
+        throws IOException
+    {
+        final EchoService service = startedWithClusterDir(tempDir, 1, Cluster.Role.FOLLOWER);
+
+        service.onNewLeadershipTermEvent(
+            3L,
+            64L,
+            0L,
+            0L,
+            2,
+            99,
+            TimeUnit.NANOSECONDS,
+            1);
+
+        final Path probe = tempDir.resolve(ClusterConstants.SERVICE_PROBE_FILENAME);
+        assertTrue(Files.isRegularFile(probe), "probe file missing: " + probe);
+        assertFalse(Files.exists(tempDir.resolve(ClusterConstants.SERVICE_PROBE_FILENAME + ".tmp")));
+        assertEquals(
+            EchoService.formatServiceProbe(3L, 64L, "FOLLOWER", 1),
+            Files.readString(probe, StandardCharsets.US_ASCII));
+    }
+
+    @Test
+    void onNewLeadershipTermEvent_overwritesProbeOnSecondTerm(@TempDir final Path tempDir)
+        throws IOException
+    {
+        final EchoService service = startedWithClusterDir(tempDir, 0, Cluster.Role.FOLLOWER);
+
+        service.onNewLeadershipTermEvent(0L, 0L, 0L, 0L, 2, 1, TimeUnit.NANOSECONDS, 1);
+        service.onNewLeadershipTermEvent(1L, 256L, 0L, 0L, 2, 1, TimeUnit.NANOSECONDS, 1);
+
+        assertEquals(
+            EchoService.formatServiceProbe(1L, 256L, "FOLLOWER", 0),
+            Files.readString(
+                tempDir.resolve(ClusterConstants.SERVICE_PROBE_FILENAME),
+                StandardCharsets.US_ASCII));
+    }
+
+    @Test
+    void writeServiceProbe_skipsWhenClusterMissing() {
+        // Cluster is null (no onStart). writeServiceProbe must not throw.
+        final EchoService service = new EchoService();
+        service.writeServiceProbe(0L, 0L);
+    }
+
+    @Test
+    void writeServiceProbe_skipsWhenContextMissing() {
+        // Context is null. writeServiceProbe must not throw.
+        final EchoService service = new EchoService();
+        service.onStart(
+            ProbeCluster.withoutContext(NoOpIdleStrategy.INSTANCE, 0, Cluster.Role.LEADER),
+            null);
+
+        service.writeServiceProbe(0L, 0L);
+    }
+
+    @Test
+    void writeServiceProbe_skipsWhenClusterDirMissing() {
+        // Context is non-null. clusterDir is null. writeServiceProbe must not throw.
+        final EchoService service = new EchoService();
+        service.onStart(
+            ProbeCluster.withContext(
+                NoOpIdleStrategy.INSTANCE,
+                0,
+                Cluster.Role.LEADER,
+                new ClusteredServiceContainer.Context()),
+            null);
+
+        service.writeServiceProbe(0L, 0L);
+    }
+
+    @Test
+    void writeServiceProbe_logsWhenWriteFails(@TempDir final Path tempDir) throws IOException {
+        // baseDir is a regular file. Probe tmp write must fail.
+        final Path baseFile = tempDir.resolve("blocked-base");
+        Files.writeString(baseFile, "not-a-directory", StandardCharsets.US_ASCII);
+        final Path clusterDir = baseFile.resolve(ClusterConfig.CLUSTER_SUB_DIR);
+
+        final EchoService service = new EchoService();
+        service.onStart(
+            ProbeCluster.withClusterDir(
+                NoOpIdleStrategy.INSTANCE,
+                0,
+                Cluster.Role.FOLLOWER,
+                clusterDir.toFile()),
+            null);
+
+        final String stderr = ClusterNodeTest.captureStderr(
+            () -> service.writeServiceProbe(1L, 0L));
+
+        assertTrue(
+            stderr.startsWith(EchoService.SERVICE_PROBE_WRITE_FAILED_PREFIX),
+            "stderr=" + stderr);
+        assertFalse(Files.exists(baseFile.resolve(ClusterConstants.SERVICE_PROBE_FILENAME)));
+        assertFalse(Files.exists(
+            baseFile.resolve(ClusterConstants.SERVICE_PROBE_FILENAME + ".tmp")));
+    }
+
+    @Test
+    void writeServiceProbe_usesRoleAndMemberIdFromCluster(@TempDir final Path tempDir)
+        throws IOException
+    {
+        final EchoService service = startedWithClusterDir(tempDir, 2, Cluster.Role.LEADER);
+
+        service.writeServiceProbe(9L, 512L);
+
+        assertEquals(
+            EchoService.formatServiceProbe(9L, 512L, "LEADER", 2),
+            Files.readString(
+                tempDir.resolve(ClusterConstants.SERVICE_PROBE_FILENAME),
+                StandardCharsets.US_ASCII));
+    }
+
     private static EchoService newStartedEchoService() {
         final EchoService service = new EchoService();
         service.onStart(clusterWithIdleStrategy(NoOpIdleStrategy.INSTANCE), null);
         return service;
     }
 
+    private static EchoService startedWithClusterDir(
+        final Path tempDir,
+        final int memberId,
+        final Cluster.Role role) throws IOException
+    {
+        final Path clusterDir = tempDir.resolve(ClusterConfig.CLUSTER_SUB_DIR);
+        Files.createDirectories(clusterDir);
+        final EchoService service = new EchoService();
+        service.onStart(
+            ProbeCluster.withClusterDir(
+                NoOpIdleStrategy.INSTANCE,
+                memberId,
+                role,
+                clusterDir.toFile()),
+            null);
+        return service;
+    }
+
     private static Cluster clusterWithIdleStrategy(final IdleStrategy idleStrategy) {
-        return new Cluster() {
-            @Override
-            public IdleStrategy idleStrategy() {
-                return idleStrategy;
-            }
+        return ProbeCluster.withoutContext(idleStrategy, 0, Cluster.Role.FOLLOWER);
+    }
 
-            @Override
-            public int memberId() {
-                throw new UnsupportedOperationException();
-            }
+    /**
+     * Minimal {@link Cluster} for EchoService unit tests.
+     *
+     * <p>Holds idle strategy, member id, role, and optional service context.
+     */
+    private static final class ProbeCluster implements Cluster {
+        private final IdleStrategy idleStrategy;
+        private final int memberId;
+        private final Role role;
+        private final ClusteredServiceContainer.Context context;
 
-            @Override
-            public Role role() {
-                throw new UnsupportedOperationException();
-            }
+        private static ProbeCluster withClusterDir(
+            final IdleStrategy idleStrategy,
+            final int memberId,
+            final Role role,
+            final java.io.File clusterDir)
+        {
+            return new ProbeCluster(
+                idleStrategy,
+                memberId,
+                role,
+                new ClusteredServiceContainer.Context().clusterDir(clusterDir));
+        }
 
-            @Override
-            public long logPosition() {
-                throw new UnsupportedOperationException();
-            }
+        private static ProbeCluster withContext(
+            final IdleStrategy idleStrategy,
+            final int memberId,
+            final Role role,
+            final ClusteredServiceContainer.Context context)
+        {
+            return new ProbeCluster(idleStrategy, memberId, role, context);
+        }
 
-            @Override
-            public Aeron aeron() {
-                throw new UnsupportedOperationException();
-            }
+        private static ProbeCluster withoutContext(
+            final IdleStrategy idleStrategy,
+            final int memberId,
+            final Role role)
+        {
+            return new ProbeCluster(idleStrategy, memberId, role, null);
+        }
 
-            @Override
-            public ClusteredServiceContainer.Context context() {
-                throw new UnsupportedOperationException();
-            }
+        private ProbeCluster(
+            final IdleStrategy idleStrategy,
+            final int memberId,
+            final Role role,
+            final ClusteredServiceContainer.Context context)
+        {
+            this.idleStrategy = idleStrategy;
+            this.memberId = memberId;
+            this.role = role;
+            this.context = context;
+        }
 
-            @Override
-            public ClientSession getClientSession(final long sessionId) {
-                throw new UnsupportedOperationException();
-            }
+        @Override
+        public IdleStrategy idleStrategy() {
+            return idleStrategy;
+        }
 
-            @Override
-            public Collection<ClientSession> clientSessions() {
-                throw new UnsupportedOperationException();
-            }
+        @Override
+        public int memberId() {
+            return memberId;
+        }
 
-            @Override
-            public void forEachClientSession(final Consumer<? super ClientSession> action) {
-                throw new UnsupportedOperationException();
-            }
+        @Override
+        public Role role() {
+            return role;
+        }
 
-            @Override
-            public boolean closeClientSession(final long sessionId) {
-                throw new UnsupportedOperationException();
-            }
+        @Override
+        public long logPosition() {
+            return 0L;
+        }
 
-            @Override
-            public long time() {
-                throw new UnsupportedOperationException();
-            }
+        @Override
+        public Aeron aeron() {
+            throw new UnsupportedOperationException();
+        }
 
-            @Override
-            public TimeUnit timeUnit() {
-                throw new UnsupportedOperationException();
-            }
+        @Override
+        public ClusteredServiceContainer.Context context() {
+            return context;
+        }
 
-            @Override
-            public boolean scheduleTimer(final long correlationId, final long deadline) {
-                throw new UnsupportedOperationException();
-            }
+        @Override
+        public ClientSession getClientSession(final long sessionId) {
+            throw new UnsupportedOperationException();
+        }
 
-            @Override
-            public boolean cancelTimer(final long correlationId) {
-                throw new UnsupportedOperationException();
-            }
+        @Override
+        public Collection<ClientSession> clientSessions() {
+            throw new UnsupportedOperationException();
+        }
 
-            @Override
-            public long offer(final DirectBuffer buffer, final int offset, final int length) {
-                throw new UnsupportedOperationException();
-            }
+        @Override
+        public void forEachClientSession(final Consumer<? super ClientSession> action) {
+            throw new UnsupportedOperationException();
+        }
 
-            @Override
-            public long offer(final DirectBufferVector[] vectors) {
-                throw new UnsupportedOperationException();
-            }
+        @Override
+        public boolean closeClientSession(final long sessionId) {
+            throw new UnsupportedOperationException();
+        }
 
-            @Override
-            public long tryClaim(final int length, final BufferClaim bufferClaim) {
-                throw new UnsupportedOperationException();
-            }
-        };
+        @Override
+        public long time() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public TimeUnit timeUnit() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean scheduleTimer(final long correlationId, final long deadline) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean cancelTimer(final long correlationId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public long offer(final DirectBuffer buffer, final int offset, final int length) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public long offer(final DirectBufferVector[] vectors) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public long tryClaim(final int length, final BufferClaim bufferClaim) {
+            throw new UnsupportedOperationException();
+        }
     }
 
     private static final class RecordingClientSession implements ClientSession {

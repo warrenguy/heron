@@ -2,6 +2,7 @@ package heron.clusterjava;
 
 import io.aeron.cluster.ClusteredMediaDriver;
 import io.aeron.cluster.ConsensusModule;
+import io.aeron.cluster.NanosecondClusterClock;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.exceptions.AeronException;
 import org.agrona.concurrent.ShutdownSignalBarrier;
@@ -19,6 +20,7 @@ public final class ClusterNode
     static final String ENV_MEMBER_COUNT = "HERON_CLUSTER_MEMBER_COUNT";
     static final String ENV_HOSTNAMES = "HERON_CLUSTER_HOSTNAMES";
     static final String ENV_MIXED = "HERON_CLUSTER_MIXED";
+    static final String ENV_APPOINTED_LEADER_ID = "HERON_CLUSTER_APPOINTED_LEADER_ID";
 
     static final class LauncherSettings
     {
@@ -26,17 +28,20 @@ public final class ClusterNode
         final int memberCount;
         final List<String> hostnames;
         final boolean mixed;
+        final int appointedLeaderId;
 
         LauncherSettings(
             final int memberId,
             final int memberCount,
             final List<String> hostnames,
-            final boolean mixed)
+            final boolean mixed,
+            final int appointedLeaderId)
         {
             this.memberId = memberId;
             this.memberCount = memberCount;
             this.hostnames = hostnames;
             this.mixed = mixed;
+            this.appointedLeaderId = appointedLeaderId;
         }
     }
 
@@ -98,18 +103,43 @@ public final class ClusterNode
     /**
      * Apply mixed Go/Java consensus settings after multi-node UDP transport setup.
      *
-     * <p>Sets appointedLeaderId to {@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_JAVA}
-     * and unicast logChannel only.
-     * Cluster members and per-member log endpoints stay with {@link ClusterConfig#create}.
-     * Does not set clusterClock. Context.conclude resolves the default later.
+     * <p>Appointed leader {@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_JAVA}: unicast
+     * logChannel, members string unchanged, clusterClock left unset.
+     * Appointed leader {@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_GO}: multicast
+     * logChannel, shared log endpoint on every members row, {@link NanosecondClusterClock}.
+     * Other appointed ids throw.
      *
-     * @param clusterConfig config whose consensus module context is mutated
+     * @param clusterConfig      config whose consensus module context is mutated
+     * @param appointedLeaderId  mixed appointed leader member id (0 or 2)
      */
-    static void configureConsensusMixed(final ClusterConfig clusterConfig)
+    static void configureConsensusMixed(
+        final ClusterConfig clusterConfig,
+        final int appointedLeaderId)
     {
-        clusterConfig.consensusModuleContext()
-            .appointedLeaderId(ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA)
-            .logChannel(ClusterConstants.MIXED_LOG_CHANNEL_UNICAST);
+        if (appointedLeaderId == ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA)
+        {
+            clusterConfig.consensusModuleContext()
+                .appointedLeaderId(ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA)
+                .logChannel(ClusterConstants.MIXED_LOG_CHANNEL_UNICAST);
+            return;
+        }
+        if (appointedLeaderId == ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO)
+        {
+            final ConsensusModule.Context consensus = clusterConfig.consensusModuleContext();
+            consensus
+                .clusterMembers(ClusterConfig.sharedLogEndpoint(
+                    consensus.clusterMembers(), ClusterConstants.MIXED_LOG_ENDPOINT))
+                .appointedLeaderId(ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO)
+                .logChannel(ClusterConstants.MIXED_LOG_CHANNEL_MULTICAST)
+                .clusterClock(new NanosecondClusterClock());
+            return;
+        }
+        throw new IllegalArgumentException(
+            ENV_APPOINTED_LEADER_ID + " in mixed mode must be "
+                + ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA
+                + " (java leader) or "
+                + ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO
+                + " (go leader); got " + appointedLeaderId);
     }
 
     /**
@@ -123,7 +153,7 @@ public final class ClusterNode
         configureConsensus(clusterConfig, settings.memberCount);
         if (settings.mixed)
         {
-            configureConsensusMixed(clusterConfig);
+            configureConsensusMixed(clusterConfig, settings.appointedLeaderId);
         }
     }
 
@@ -229,14 +259,15 @@ public final class ClusterNode
         }
     }
 
-    /** Load launcher settings from process environment (member, hostnames, mixed). */
+    /** Load launcher settings from process environment (member, hostnames, mixed, appointed). */
     static LauncherSettings launcherSettingsFromProcessEnv()
     {
         return launcherSettingsFromEnv(
             System.getenv(ENV_MEMBER_ID),
             System.getenv(ENV_MEMBER_COUNT),
             System.getenv(ENV_HOSTNAMES),
-            System.getenv(ENV_MIXED));
+            System.getenv(ENV_MIXED),
+            System.getenv(ENV_APPOINTED_LEADER_ID));
     }
 
     static LauncherSettings launcherSettingsFromEnv(
@@ -244,9 +275,9 @@ public final class ClusterNode
         final String memberCountEnv,
         final String hostnamesEnv)
     {
-        // Three-arg form keeps mixed off. Production paths pass mixed env explicitly
-        // via the four-arg overload or runCluster(aeronDir).
-        return launcherSettingsFromEnv(memberIdEnv, memberCountEnv, hostnamesEnv, null);
+        // Three-arg form leaves mixed unset. Production paths pass mixed env explicitly
+        // via the five-arg overload or runCluster(aeronDir).
+        return launcherSettingsFromEnv(memberIdEnv, memberCountEnv, hostnamesEnv, null, null);
     }
 
     static LauncherSettings launcherSettingsFromEnv(
@@ -254,6 +285,16 @@ public final class ClusterNode
         final String memberCountEnv,
         final String hostnamesEnv,
         final String mixedEnv)
+    {
+        return launcherSettingsFromEnv(memberIdEnv, memberCountEnv, hostnamesEnv, mixedEnv, null);
+    }
+
+    static LauncherSettings launcherSettingsFromEnv(
+        final String memberIdEnv,
+        final String memberCountEnv,
+        final String hostnamesEnv,
+        final String mixedEnv,
+        final String appointedLeaderIdEnv)
     {
         final boolean mixed = "1".equals(mixedEnv);
         final int memberCount = parseIntEnv(
@@ -265,7 +306,11 @@ public final class ClusterNode
             hostnamesEnv,
             ClusterConstants.INGRESS_ENDPOINT_HOST,
             memberCount);
-        return new LauncherSettings(memberId, memberCount, hostnames, mixed);
+        final int appointedLeaderId = parseIntEnv(
+            ENV_APPOINTED_LEADER_ID,
+            appointedLeaderIdEnv,
+            ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA);
+        return new LauncherSettings(memberId, memberCount, hostnames, mixed, appointedLeaderId);
     }
 
     /**

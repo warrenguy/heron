@@ -2,6 +2,7 @@ package heron.clusterjava;
 
 import io.aeron.Aeron;
 import io.aeron.cluster.ConsensusModule;
+import io.aeron.cluster.NanosecondClusterClock;
 import io.aeron.exceptions.AeronException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -18,6 +19,7 @@ import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -203,6 +205,7 @@ class ClusterNodeTest {
         assertEquals(ClusterConstants.MEMBER_COUNT, settings.memberCount);
         assertEquals(List.of(ClusterConstants.INGRESS_ENDPOINT_HOST), settings.hostnames);
         assertFalse(settings.mixed);
+        assertEquals(ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA, settings.appointedLeaderId);
         assertEquals(new File(ClusterConstants.BASE_DIR), ClusterNode.baseDirForMember(
             settings.memberId,
             settings.memberCount,
@@ -217,6 +220,7 @@ class ClusterNodeTest {
         assertEquals(ClusterConstants.MEMBER_COUNT, settings.memberCount);
         assertEquals(List.of(ClusterConstants.INGRESS_ENDPOINT_HOST), settings.hostnames);
         assertFalse(settings.mixed);
+        assertEquals(ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA, settings.appointedLeaderId);
     }
 
     @Test
@@ -310,9 +314,52 @@ class ClusterNodeTest {
         assertEquals(0, settings.memberId);
         assertEquals(ClusterConstants.MIXED_MEMBER_COUNT, settings.memberCount);
         assertEquals(MIXED_HOSTS, settings.hostnames);
+        assertEquals(ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA, settings.appointedLeaderId);
         assertEquals(
             new File(ClusterConstants.MIXED_BASE_DIR_PREFIX + "0"),
             ClusterNode.baseDirForMember(settings.memberId, settings.memberCount, settings.mixed));
+    }
+
+    @Test
+    void launcherSettingsFromEnv_mixedParsesAppointedLeaderId() {
+        final ClusterNode.LauncherSettings goLeader = ClusterNode.launcherSettingsFromEnv(
+            "0",
+            String.valueOf(ClusterConstants.MIXED_MEMBER_COUNT),
+            ClusterConstants.MIXED_HOSTNAMES,
+            "1",
+            String.valueOf(ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO));
+        assertTrue(goLeader.mixed);
+        assertEquals(ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO, goLeader.appointedLeaderId);
+
+        final ClusterNode.LauncherSettings javaLeader = ClusterNode.launcherSettingsFromEnv(
+            "0",
+            String.valueOf(ClusterConstants.MIXED_MEMBER_COUNT),
+            ClusterConstants.MIXED_HOSTNAMES,
+            "1",
+            String.valueOf(ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA));
+        assertEquals(ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA, javaLeader.appointedLeaderId);
+
+        final ClusterNode.LauncherSettings blankAppointed = ClusterNode.launcherSettingsFromEnv(
+            "0",
+            String.valueOf(ClusterConstants.MIXED_MEMBER_COUNT),
+            ClusterConstants.MIXED_HOSTNAMES,
+            "1",
+            "  ");
+        assertEquals(
+            ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA,
+            blankAppointed.appointedLeaderId);
+    }
+
+    @Test
+    void launcherSettingsFromEnv_rejectsNonIntegerAppointedLeaderId() {
+        assertIllegalArgument(
+            () -> ClusterNode.launcherSettingsFromEnv(
+                "0",
+                String.valueOf(ClusterConstants.MIXED_MEMBER_COUNT),
+                ClusterConstants.MIXED_HOSTNAMES,
+                "1",
+                "not-an-int"),
+            "HERON_CLUSTER_APPOINTED_LEADER_ID must be an integer (got \"not-an-int\")");
     }
 
     @Test
@@ -323,6 +370,32 @@ class ClusterNodeTest {
         assertEquals(ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA, consensus.appointedLeaderId());
         assertEquals(ClusterConstants.MIXED_LOG_CHANNEL_UNICAST, consensus.logChannel());
         assertEquals(ClusterConstants.MIXED_CLUSTER_MEMBERS_JAVA_LEADER, consensus.clusterMembers());
+        assertNull(consensus.clusterClock());
+    }
+
+    @Test
+    void mixedClusterConfig_goLeader_appliesMulticastClockAndSharedLog() {
+        final ConsensusModule.Context consensus = configureMixedConsensusGoLeader();
+
+        assertConsensusUsesFailoverUdpTransport(consensus);
+        assertEquals(ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO, consensus.appointedLeaderId());
+        assertEquals(ClusterConstants.MIXED_LOG_CHANNEL_MULTICAST, consensus.logChannel());
+        assertEquals(ClusterConstants.MIXED_CLUSTER_MEMBERS_GO_LEADER, consensus.clusterMembers());
+        assertInstanceOf(NanosecondClusterClock.class, consensus.clusterClock());
+    }
+
+    @Test
+    void configureConsensusMixed_rejectsUnsupportedAppointedLeaderId() {
+        final ClusterConfig config = createClusterConfig(0, MIXED_HOSTS);
+        ClusterNode.configureConsensus(config, ClusterConstants.MIXED_MEMBER_COUNT);
+
+        final IllegalArgumentException ex = assertThrows(
+            IllegalArgumentException.class,
+            () -> ClusterNode.configureConsensusMixed(config, 1));
+        assertEquals(
+            "HERON_CLUSTER_APPOINTED_LEADER_ID in mixed mode must be 0 (java leader) or "
+                + "2 (go leader); got 1",
+            ex.getMessage());
     }
 
     @Test
@@ -372,13 +445,25 @@ class ClusterNodeTest {
         return ClusterConfig.create(memberId, hostnames, ClusterConstants.PORT_BASE, new EchoService());
     }
 
-    // Builds consensus after multi-node UDP then mixed overlay for member 0.
+    // Builds consensus after multi-node UDP then mixed overlay for member 0 (java leader).
     static ConsensusModule.Context configureMixedConsensus() {
+        return configureMixedConsensusWithAppointed(
+            ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA);
+    }
+
+    // Builds consensus after multi-node UDP then mixed overlay for go leader (appointed 2).
+    static ConsensusModule.Context configureMixedConsensusGoLeader() {
+        return configureMixedConsensusWithAppointed(
+            ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO);
+    }
+
+    static ConsensusModule.Context configureMixedConsensusWithAppointed(final int appointedLeaderId) {
         final ClusterNode.LauncherSettings settings = ClusterNode.launcherSettingsFromEnv(
             "0",
             String.valueOf(ClusterConstants.MIXED_MEMBER_COUNT),
             ClusterConstants.MIXED_HOSTNAMES,
-            "1");
+            "1",
+            String.valueOf(appointedLeaderId));
         final ClusterConfig config = createClusterConfig(settings.memberId, settings.hostnames);
         ClusterNode.configureConsensus(config, settings);
         return config.consensusModuleContext();

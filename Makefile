@@ -6,6 +6,8 @@ SHELL := /bin/bash
 # Submake -j: use jobserver from +$(MAKE) when present; else fixed local -jN.
 SUBMAKE_J2 = $(if $(filter --jobserver%,$(MAKEFLAGS)),,-j2)
 SUBMAKE_J3 = $(if $(filter --jobserver%,$(MAKEFLAGS)),,-j3)
+# Six compose smokes. Local -j6 when no jobserver so all run concurrent.
+SUBMAKE_J6 = $(if $(filter --jobserver%,$(MAKEFLAGS)),,-j6)
 
 # Little-endian 64-bit targets only (matches Aeron wire layout on host).
 SUPPORTED_GOARCHES := amd64 arm64
@@ -114,10 +116,8 @@ check-test:
 check-inner: check-static check-test
 
 .PHONY: test-all
-test-all: ## Full gate: check rapid integration Docker smokes
-	+@$(MAKE) --no-print-directory check test-rapid test-integration aeronmd-compose-image \
-		test-java-interop test-cluster-java test-cluster-java-failover test-archive-java \
-		test-cluster-mixed
+test-all: ## Full suite: check rapid integration Docker smokes
+	+@$(MAKE) --no-print-directory check test-rapid test-integration test-docker-smokes
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
@@ -384,8 +384,21 @@ $(eval $(call integration-oracle,$(1),$($(3)),$(4),$(5)))
 $(eval $(call integration-contract,$(1)))
 endef
 
+# Compose smokes use one compose project name per process.
+# Mixed smokes assign a /24 from a disjoint third-octet range per overlay.
+# When Docker IPAM already holds that subnet, the smoke retries another /24.
+#
+# Run these targets concurrent only after aeronmd-compose-image has built once.
+DOCKER_SMOKE_TARGETS := \
+	test-java-interop \
+	test-cluster-java \
+	test-cluster-java-failover \
+	test-archive-java \
+	test-cluster-mixed-java-leader \
+	test-cluster-mixed-go-leader
+
 .PHONY: test-java-interop test-cluster-java test-cluster-java-failover test-archive-java \
-	test-cluster-mixed \
+	test-cluster-mixed-java-leader test-cluster-mixed-go-leader test-docker-smokes \
 	$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-unit test-$(s)-oracle test-$(s)-contract) \
 	contract-oracles contract-oracles-optional \
 	test-golden-fixtures-unit test-golden-fixtures-unit-optional
@@ -402,8 +415,14 @@ test-cluster-java: ## Docker smoke: AsyncConnect + echo roundtrip smoke
 test-cluster-java-failover: aeronmd-compose-image ## Docker smoke: 3-node leader failover
 	./scripts/cluster-java-failover-smoke.sh
 
-test-cluster-mixed: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Java appointed leader
+test-cluster-mixed-java-leader: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Java appointed leader
 	./scripts/cluster-mixed-smoke.sh java-leader
+
+test-cluster-mixed-go-leader: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Go appointed leader
+	./scripts/cluster-mixed-smoke.sh go-leader
+
+test-docker-smokes: ## All Docker compose smokes (parallel)
+	+@$(MAKE) --no-print-directory $(SUBMAKE_J6) $(DOCKER_SMOKE_TARGETS)
 
 $(eval $(call contract-oracle-module,java-interop,$(JAVA_INTEROP_POM),JAVA_INTEROP_ORACLE_TIMEOUT,JAVA_INTEROP_ORACLE_TAGS,./test/integration/java_interop/javainterop/))
 $(eval $(call contract-oracle-module,cluster-sbe,$(CLUSTER_SBE_POM),CLUSTER_SBE_ORACLE_TIMEOUT,CLUSTER_SBE_ORACLE_TAGS,./test/integration/cluster_sbe/clustersbe/))

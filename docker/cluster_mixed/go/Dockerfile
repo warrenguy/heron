@@ -28,10 +28,16 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 	go test -c -race -tags=integration,cluster_mixed,cluster_java \
 	-o /out/cluster-mixed.test ./test/integration/cluster_mixed/
 
-FROM ubuntu:24.04 AS java-leader-runtime
+FROM ubuntu:24.04 AS runtime
 
 WORKDIR /app
 
 COPY --from=builder /out/cluster-mixed.test /app/cluster-mixed.test
 
+FROM runtime AS java-leader-runtime
+
 CMD ["./cluster-mixed.test", "-test.v", "-test.count=1", "-test.timeout=120s", "-test.run", "^TestClusterMixedJavaLeader$"]
+
+FROM runtime AS go-leader-runtime
+
+CMD ["./cluster-mixed.test", "-test.v", "-test.count=1", "-test.timeout=120s", "-test.run", "^TestClusterMixedGoLeader$"]

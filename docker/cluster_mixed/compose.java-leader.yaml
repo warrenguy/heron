@@ -8,9 +8,9 @@
 # Two Java members must not canvass while the Go member is absent.
 
 services:
-  # Share aeronmd network namespace. Member-2 endpoints (172.30.0.12:920x) must
-  # listen in the C driver process. A separate container IP cannot hold them.
-  # Volumes stay independent. Readiness file is on shared /dev/shm.
+  # Share the aeronmd network namespace. Member-2 endpoints (IP2:920x) must listen
+  # in the C driver process. A separate container IP cannot hold those endpoints.
+  # Volumes stay independent. The readiness file is on shared /dev/shm.
   go-java-leader:
     image: cluster-mixed-go-java-leader
     build:
@@ -28,7 +28,11 @@ services:
       AERON_TERM_BUFFER_LENGTH: "65536"
       AERON_IPC_TERM_BUFFER_LENGTH: "65536"
       AERON_DIR: /dev/shm/aeron-go
-      HERON_CLUSTER_MIXED_COMPOSE: "1"
+      HERON_CLUSTER_MIXED_JAVA_LEADER_COMPOSE: "1"
+
+      # Member list matches the Java peers. Defaults follow HERON_CLUSTER_MIXED_IP{0,1,2}.
+      HERON_CLUSTER_HOSTNAMES: ${HERON_CLUSTER_HOSTNAMES:-${HERON_CLUSTER_MIXED_IP0:-172.30.0.10},${HERON_CLUSTER_MIXED_IP1:-172.30.0.11},${HERON_CLUSTER_MIXED_IP2:-172.30.0.12}}
+
     volumes:
       - aeron-media:/dev/shm
       - cluster-data-2:/tmp/heron-cluster-2

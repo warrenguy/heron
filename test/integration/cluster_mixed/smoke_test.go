@@ -11,7 +11,8 @@ import (
 )
 
 // TestClusterMixedJavaLeader elects a Java appointed leader and advances commit
-// across the language boundary. Runs only under HERON_CLUSTER_MIXED_COMPOSE.
+// across the language boundary. Runs only under
+// HERON_CLUSTER_MIXED_JAVA_LEADER_COMPOSE.
 //
 // Commit advance asserts mesh liveness after a client offer. Commit advance is
 // not a durability claim for the Go member. Java peers record the log. The Go
@@ -19,10 +20,14 @@ import (
 //
 // No t.Parallel: owns fixed ports and one cluster.
 func TestClusterMixedJavaLeader(t *testing.T) {
-	requireMixedComposeGate(t)
+	requireMixedCompose(
+		t,
+		clusterjava.MixedComposeJavaLeaderEnvKey,
+		clusterjava.MixedComposeSkipHintJavaLeader,
+	)
 
 	// Open the Go module before Java starts. Compose enforces that order.
-	f := openMixedGoMember(t, buildMixedJavaLeaderConfig())
+	f := openMixedGoMember(t, buildMixedJavaLeaderConfig(t))
 
 	// Readiness releases Java depends_on. Write before any later assertion.
 	writeReady(t)
@@ -48,6 +53,58 @@ func TestClusterMixedJavaLeader(t *testing.T) {
 
 	// Hold log handles before Close for clean-teardown asserts.
 	// Module Close is also registered on Cleanup (idempotent).
+	streams := f.module.LogStreams()
+	require.NotNil(t, streams)
+	pub := streams.Publication()
+	sub := streams.Subscription()
+	require.NotNil(t, pub)
+	require.NotNil(t, sub)
+
+	require.NoError(t, f.module.Close())
+	require.True(t, pub.IsClosed(), "log publication must report closed after Close")
+	require.True(t, sub.IsClosed(), "log subscription must report closed after Close")
+}
+
+// TestClusterMixedGoLeader elects the Go appointed leader and advances Java
+// commit counters from term-start log frames. Runs only under
+// HERON_CLUSTER_MIXED_GO_LEADER_COMPOSE.
+//
+// No client session offer: Go ServiceCount is 0.
+//
+// No t.Parallel: owns fixed ports and one cluster.
+func TestClusterMixedGoLeader(t *testing.T) {
+	requireMixedCompose(
+		t,
+		clusterjava.MixedComposeGoLeaderEnvKey,
+		clusterjava.MixedComposeSkipHintGoLeader,
+	)
+
+	// Java peers start first under the go-leader overlay. All three Aeron
+	// directories must already exist when the smoke starts.
+	requireMixedAeronDirsPresent(t)
+
+	// Java up before the Go member opens. Compose starts Java first.
+	// Nil fixture: no Go duty cycle until openMixedGoMember below.
+	java := awaitJavaModuleState(t, nil, clusterjava.MixedStartupBudget)
+
+	// Record commit counters while allocated and before Go opens as leader.
+	recorded := recordJavaCommitPositions(t, java)
+
+	// Open the Go module as appointed leader 2. Multicast log channel.
+	f := openMixedGoMember(t, buildMixedGoLeaderConfig(t))
+	writeReady(t)
+
+	// Elect: Go leads; both Java members follow; terms agree.
+	awaitGoLeaderElection(t, f, java, clusterjava.MixedElectionBudget)
+
+	// Service: asserts each Java ClusteredService decoded term start.
+	// Commit counter alone is not enough for service log consumption.
+	awaitJavaServiceSawTermStart(t, f, java, clusterjava.MixedElectionBudget)
+
+	// Advance: both Java commit counters rise; Go CommitPosition > 0.
+	// NotifiedCommitPosition is not asserted on the leader.
+	awaitJavaCommitAdvance(t, f, java, recorded, clusterjava.MixedCommitBudget)
+
 	streams := f.module.LogStreams()
 	require.NotNil(t, streams)
 	pub := streams.Publication()

@@ -83,20 +83,53 @@ public final class ClusterConstants {
 
 
     // Mixed Go/Java multi-node defaults (clusterjava/mixed_oracle.go).
-    // Appointed leader is member 0 (Java). Go member is id 2.
+    // Appointed leader is member 0 (Java) or member 2 (Go). Go member is id 2.
 
     public static final int MIXED_MEMBER_COUNT = 3;
 
-    // Appointed leader member id (Java member 0).
+    // Appointed leader member id when a Java peer leads.
     public static final int MIXED_APPOINTED_LEADER_ID_JAVA = 0;
+
+    // Appointed leader member id when the Go peer leads.
+    public static final int MIXED_APPOINTED_LEADER_ID_GO = 2;
 
     // Cluster data parent for mixed compose volumes: /tmp/heron-cluster-{memberId}.
     public static final String MIXED_BASE_DIR_PREFIX = "/tmp/heron-cluster-";
+
+    // Status file name under each member baseDir.
+    // EchoService writes the file on term start.
+    //
+    // Hand-sync with clusterjava.ServiceProbeFilename.
+    public static final String SERVICE_PROBE_FILENAME = "service-probe";
+
+    // Key names in the service-probe file.
+    //
+    // Hand-sync with clusterjava.ServiceProbeKey*.
+    public static final String SERVICE_PROBE_KEY_TERM = "term";
+    public static final String SERVICE_PROBE_KEY_LOG_POSITION = "logPosition";
+    public static final String SERVICE_PROBE_KEY_ROLE = "role";
+    public static final String SERVICE_PROBE_KEY_MEMBER_ID = "memberId";
 
     // Log channel when a Java member is appointed. Unicast only. No interface, ttl,
     // or endpoint. Topology derives per-member log endpoints. Same as Go
     // MixedLogChannelUnicast / DefaultLogChannel.
     public static final String MIXED_LOG_CHANNEL_UNICAST = UDP_CHANNEL_64K;
+
+    // Shared multicast log endpoint for go-leader. Final octet is odd (Aeron control
+    // address is the next even octet; even groups are rejected at publication add).
+    // Hand-sync with clusterjava.MixedLogEndpoint.
+    public static final String MIXED_LOG_ENDPOINT = "239.255.12.15:9004";
+
+    // Log channel when the Go member is appointed. Final URI includes endpoint=
+    // so the consensus module clears isLogMdc and disables multi-destination
+    // fan-out. interface= pins the compose bridge subnet; ttl=1 keeps frames on
+    // that network. Go MixedLogChannelMulticast is a template only (no endpoint=);
+    // cluster.Config forbids endpoint on LogChannel and Topology merges the
+    // members-string log endpoint. Intentional asymmetry, not byte parity.
+    public static final String MIXED_LOG_CHANNEL_MULTICAST =
+        UDP_CHANNEL_64K
+            + "|endpoint=" + MIXED_LOG_ENDPOINT
+            + "|interface=172.30.0.0/16|ttl=1";
 
     // Address literals for members 0-2. Comma-separated for ENV_HOSTNAMES parse.
     public static final String MIXED_HOSTNAMES = "172.30.0.10,172.30.0.11,172.30.0.12";
@@ -108,6 +141,14 @@ public final class ClusterConstants {
             + "172.30.0.10:9005,172.30.0.10:9001|1,172.30.0.11:9102,172.30.0.11:9103,"
             + "172.30.0.11:9104,172.30.0.11:9105,172.30.0.11:9101|2,172.30.0.12:9202,"
             + "172.30.0.12:9203,172.30.0.12:9204,172.30.0.12:9205,172.30.0.12:9201|";
+
+    // Three-node members golden with every log slot set to MIXED_LOG_ENDPOINT.
+    // Hand-sync with clusterjava.MixedClusterMembersGoLeader.
+    public static final String MIXED_CLUSTER_MEMBERS_GO_LEADER =
+        "0,172.30.0.10:9002,172.30.0.10:9003," + MIXED_LOG_ENDPOINT + ","
+            + "172.30.0.10:9005,172.30.0.10:9001|1,172.30.0.11:9102,172.30.0.11:9103,"
+            + MIXED_LOG_ENDPOINT + ",172.30.0.11:9105,172.30.0.11:9101|2,172.30.0.12:9202,"
+            + "172.30.0.12:9203," + MIXED_LOG_ENDPOINT + ",172.30.0.12:9205,172.30.0.12:9201|";
 
     private ClusterConstants() {
     }

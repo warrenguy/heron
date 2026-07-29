@@ -1,7 +1,24 @@
 # Base mixed cluster layout. No cross-language depends_on.
-# Overlay supplies start order (java-leader).
+# Overlay supplies start order (java-leader or go-leader).
 #
-# Project name comes from HERON_COMPOSE_PROJECT (per-run from the smoke script).
+# Per-run env from the smoke script:
+# - HERON_COMPOSE_PROJECT
+# - HERON_CLUSTER_MIXED_SUBNET
+# - HERON_CLUSTER_MIXED_IP{0,1,2}
+# - HERON_CLUSTER_HOSTNAMES (optional; defaults to the three IP vars)
+#
+# Unset env keeps the 172.30.0.0/24 manual topology.
+#
+# HERON_CLUSTER_HOSTNAMES must match the bridge ipv4_address values.
+# When only the IP vars are set, the member list defaults from those IPs.
+# Compose does not cross-check an explicit HOSTNAMES override against the IPs.
+#
+# Each smoke picks a per-run /24 under 172.30.0.0/16.
+#
+# Docker IPAM is daemon-global. An overlapping pool fails compose up.
+# The smoke then retries with another /24.
+#
+# Multicast log interface=172.30.0.0/16 covers every subnet.
 
 name: ${HERON_COMPOSE_PROJECT:-heron-cluster-mixed}
 
@@ -14,7 +31,7 @@ x-aeron-term-env: &aeron-term-env
 x-mixed-cluster-env: &mixed-cluster-env
   HERON_CLUSTER_MIXED: "1"
   HERON_CLUSTER_MEMBER_COUNT: "3"
-  HERON_CLUSTER_HOSTNAMES: "172.30.0.10,172.30.0.11,172.30.0.12"
+  HERON_CLUSTER_HOSTNAMES: ${HERON_CLUSTER_HOSTNAMES:-${HERON_CLUSTER_MIXED_IP0:-172.30.0.10},${HERON_CLUSTER_MIXED_IP1:-172.30.0.11},${HERON_CLUSTER_MIXED_IP2:-172.30.0.12}}
   <<: *aeron-term-env
 
 x-java-healthcheck: &java-healthcheck
@@ -43,19 +60,19 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.30.0.0/24
+        - subnet: ${HERON_CLUSTER_MIXED_SUBNET:-172.30.0.0/24}
 
 services:
-  # Holds member-2 address 172.30.0.12. Go joins this driver and shares its
-  # network namespace so the C driver can listen on the member-2 consensus and
-  # log endpoints named in the members string.
+  # Holds the member-2 address (HERON_CLUSTER_MIXED_IP2). The Go test joins this
+  # driver and shares its network namespace. The C driver listens on the member-2
+  # consensus and log endpoints named in the members string.
   aeronmd:
     image: java-interop-aeronmd
     user: *app-user
     hostname: aeronmd
     networks:
       cluster-mixed:
-        ipv4_address: 172.30.0.12
+        ipv4_address: ${HERON_CLUSTER_MIXED_IP2:-172.30.0.12}
     environment:
       <<: *aeron-term-env
       AERON_DIR: /dev/shm/aeron-go
@@ -80,7 +97,7 @@ services:
     hostname: cluster-0
     networks:
       cluster-mixed:
-        ipv4_address: 172.30.0.10
+        ipv4_address: ${HERON_CLUSTER_MIXED_IP0:-172.30.0.10}
     environment:
       <<: *mixed-cluster-env
       HERON_CLUSTER_MEMBER_ID: "0"
@@ -99,7 +116,7 @@ services:
     hostname: cluster-1
     networks:
       cluster-mixed:
-        ipv4_address: 172.30.0.11
+        ipv4_address: ${HERON_CLUSTER_MIXED_IP1:-172.30.0.11}
     environment:
       <<: *mixed-cluster-env
       HERON_CLUSTER_MEMBER_ID: "1"
