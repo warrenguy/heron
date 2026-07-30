@@ -28,6 +28,10 @@ const defaultClusterMemberCloseLinger = 250 * time.Millisecond
 // and one ConsensusModule per member. All members share one cluster members
 // string.
 //
+// This set starts no Archive server. Product topology co-locates one Archive
+// server per member. No member shares an Archive with another member. The
+// caller starts the Archive server.
+//
 // Concurrency: invoker-only. Every method runs on the test goroutine.
 //
 // Lifetime:

@@ -24,21 +24,35 @@ const (
 	shapeTermsAndSnapshot
 )
 
-// drawLogShape draws a shape, writes the fixture into dir through the exported
-// append API, and registers any recording ids it used with lister. It never
-// computes a plan; rapid's log_shape draw label names the shape on failure.
-func drawLogShape(rt *rapid.T, dir string, lister *fakeLister) {
+// drawLogShape draws a log shape over all fixture shapes. drawLogShape writes
+// the fixture into dir through the exported append API. drawLogShape registers
+// any recording ids used with lister. drawLogShape never computes a plan.
+// rapid's log_shape draw label names the shape on failure.
+//
+// Returns the drawn shape so a caller can assert the nil-lister refusal.
+func drawLogShape(rt *rapid.T, dir string, lister *fakeLister) logShape {
 	rt.Helper()
-
-	shape := rapid.SampledFrom([]logShape{
+	return drawLogShapeFrom(rt, dir, lister, []logShape{
 		shapeEmpty,
 		shapeTerms,
 		shapeSnapshot,
 		shapeTermsAndSnapshot,
-	}).Draw(rt, "log_shape")
+	})
+}
+
+// drawLogShapeFrom draws one shape from shapes and writes that fixture.
+func drawLogShapeFrom(
+	rt *rapid.T,
+	dir string,
+	lister *fakeLister,
+	shapes []logShape,
+) logShape {
+	rt.Helper()
+
+	shape := rapid.SampledFrom(shapes).Draw(rt, "log_shape")
 
 	if shape == shapeEmpty {
-		return
+		return shape
 	}
 
 	log, err := recordinglog.Open(dir, true)
@@ -61,6 +75,7 @@ func drawLogShape(rt *rapid.T, dir string, lister *fakeLister) {
 	}
 
 	require.NoError(rt, log.Close())
+	return shape
 }
 
 // requireOpenFailed asserts the failed-open contract: nil value, cluster-scoped
@@ -85,7 +100,6 @@ func TestOpenRecovery_guardMatrix_rapid(t *testing.T) {
 		dir := t.TempDir()
 
 		haveLister := rapid.Bool().Draw(rt, "have_lister")
-		archiveEnabled := rapid.Bool().Draw(rt, "archive_enabled")
 		serviceCount := rapid.IntRange(0, 3).Draw(rt, "service_count")
 		memberID := rapid.IntRange(0, 2).Draw(rt, "member_id")
 
@@ -96,7 +110,7 @@ func TestOpenRecovery_guardMatrix_rapid(t *testing.T) {
 			}
 		}
 
-		drawLogShape(rt, dir, lister)
+		shape := drawLogShape(rt, dir, lister)
 
 		cfg := cluster.Config{
 			MemberID:       int32(memberID),
@@ -105,11 +119,6 @@ func TestOpenRecovery_guardMatrix_rapid(t *testing.T) {
 			AeronDir:       "/tmp/aeron",
 			ServiceCount:   serviceCount,
 		}.Normalize()
-		if archiveEnabled {
-			cfg.ArchiveClientEnabled = true
-			cfg.ArchiveControlRequestChannel = "aeron:udp?endpoint=localhost:8010"
-			cfg.ArchiveControlResponseChannel = "aeron:udp?endpoint=localhost:8011"
-		}
 
 		// True nil interface: a nil *fakeLister would make ArchiveLister != nil.
 		deps := cluster.RecoveryDeps{Config: cfg}
@@ -119,18 +128,27 @@ func TestOpenRecovery_guardMatrix_rapid(t *testing.T) {
 
 		recovery, err := cluster.OpenRecovery(deps)
 
-		if archiveEnabled && !haveLister {
-			require.EqualError(rt, err,
-				"cluster: ArchiveLister is required when ArchiveClientEnabled")
+		// Branch by expected OpenRecovery outcome.
+		// An unexpected open failure on the success path must fail the property.
+		if !haveLister && shape != shapeEmpty {
+			require.ErrorContains(rt, err, "needs an ArchiveLister")
 			requireOpenFailed(t, rt, recovery, err, dir)
 			return
 		}
 
-		if err != nil {
+		if shape == shapeSnapshot || shape == shapeTermsAndSnapshot {
+			// Snapshot fixture with a lister. OpenRecovery must refuse.
+			// Nil-lister non-empty already returned above.
+			// PlanRecovery may fail when ServiceCount is greater than zero and
+			// service snapshot extents are incomplete.
+			// A plan that holds snapshots is refused with "snapshot load is not implemented".
+			require.Error(rt, err)
 			requireOpenFailed(t, rt, recovery, err, dir)
 			return
 		}
 
+		// Success path: empty log (any lister), or terms with a lister.
+		require.NoError(rt, err)
 		require.NotNil(rt, recovery)
 		require.NotNil(rt, recovery.RecordingLog())
 		require.NotNil(rt, recovery.NodeState())
@@ -169,15 +187,18 @@ func drawElectionInput(rt *rapid.T) (
 	return timeouts, appointed, graceful, memberID
 }
 
-// drawSeededConfig draws a log shape into dir and a normalized config whose
-// election fields carry the noise the recovery seed must overwrite.
+// drawSeededConfig draws an open-success log shape into dir and a normalized
+// config whose election fields carry the noise the recovery seed must overwrite.
+//
+// Only empty and terms fixtures. Snapshot shapes refuse OpenRecovery; seed and
+// reopen properties require a successful open.
 func drawSeededConfig(rt *rapid.T, dir string) (cluster.Config, *fakeLister) {
 	rt.Helper()
 
 	lister := &fakeLister{
 		extents: make(map[int64]recordinglog.LogRecordingExtents),
 	}
-	drawLogShape(rt, dir, lister)
+	drawLogShapeFrom(rt, dir, lister, []logShape{shapeEmpty, shapeTerms})
 
 	electionIn, appointed, graceful, memberID := drawElectionInput(rt)
 	cfg := cluster.Config{
@@ -204,11 +225,7 @@ func TestRecoveryElectionConfig_seedOracle_rapid(t *testing.T) {
 			Config:        cfg,
 			ArchiveLister: lister,
 		})
-		if err != nil {
-			requireOpenFailed(t, rt, recovery, err, dir)
-			return
-		}
-
+		require.NoError(rt, err)
 		require.NotNil(rt, recovery)
 
 		// election.ApplyRecoveryPlan has its own transform tests; this
@@ -243,13 +260,9 @@ func TestOpenRecovery_reopenStable_rapid(t *testing.T) {
 				Config:        cfg,
 				ArchiveLister: lister,
 			})
-			if err != nil {
-				// Snapshot shapes refuse open; every cycle must fail the same way.
-				requireOpenFailed(t, rt, recovery, err, dir)
-				return
-			}
-
+			require.NoError(rt, err, "open cycle %d", i)
 			require.NotNil(rt, recovery)
+
 			if i == 0 {
 				firstPlan = recovery.Plan()
 				firstElection = recovery.ElectionConfig()

@@ -502,22 +502,12 @@ func TestValidate_errors(t *testing.T) {
 			want: "cluster: IdleStrategy is required",
 		},
 		{
-			name: "archive request channel required",
+			name: "archive channel set without the other",
 			mutate: func(cfg *cluster.Config) {
-				cfg.ArchiveClientEnabled = true
-				cfg.ArchiveControlRequestChannel = ""
 				cfg.ArchiveControlResponseChannel = "aeron:udp?endpoint=localhost:8011"
 			},
-			want: "cluster: ArchiveControlRequestChannel is required when ArchiveClientEnabled",
-		},
-		{
-			name: "archive response channel required",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ArchiveClientEnabled = true
-				cfg.ArchiveControlRequestChannel = "aeron:udp?endpoint=localhost:8010"
-				cfg.ArchiveControlResponseChannel = ""
-			},
-			want: "cluster: ArchiveControlResponseChannel is required when ArchiveClientEnabled",
+			want: "cluster: ArchiveControlRequestChannel and " +
+				"ArchiveControlResponseChannel must be set together",
 		},
 		{
 			name: "RecordingLogFileSyncLevel invalid",
@@ -546,11 +536,10 @@ func TestValidate_errors(t *testing.T) {
 	}
 }
 
-func TestValidate_archiveEnabledHappyPath(t *testing.T) {
+func TestValidate_bothArchiveChannelsSet(t *testing.T) {
 	t.Parallel()
 
 	cfg := topologyConfig(0)
-	cfg.ArchiveClientEnabled = true
 	cfg.ArchiveControlRequestChannel = "aeron:udp?endpoint=localhost:8010"
 	cfg.ArchiveControlResponseChannel = "aeron:udp?endpoint=localhost:8011"
 	require.NoError(t, cfg.Validate())

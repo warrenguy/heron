@@ -113,8 +113,7 @@ func drawValidPartialConfig(t *rapid.T) cluster.Config {
 		MemberID:               rapid.Int32Range(-1, 10).Draw(t, "hand_member_id"),
 	}
 
-	if rapid.Bool().Draw(t, "archive_enabled") {
-		cfg.ArchiveClientEnabled = true
+	if rapid.Bool().Draw(t, "archive_channels") {
 		cfg.ArchiveControlRequestChannel = "aeron:udp?endpoint=localhost:8010"
 		cfg.ArchiveControlResponseChannel = "aeron:udp?endpoint=localhost:8011"
 	}

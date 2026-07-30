@@ -28,8 +28,8 @@ type ConsensusModuleDeps struct {
 	// term entries. Production passes archive.NewLister over a connected
 	// control client. Unit tests pass a map-backed fake.
 	//
-	// Nil is allowed on cold start when the recording log is empty.
-	// Nil with Config.ArchiveClientEnabled set is refused.
+	// Nil is allowed when the recording log is empty. Nil with a non-empty
+	// recording log is refused.
 	//
 	// OpenConsensusModule connects no archive client. The caller owns the
 	// client, its context, and Close.

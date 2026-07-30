@@ -371,43 +371,6 @@ func TestOpenRecovery_nodeStateSurvivesReopen(t *testing.T) {
 	require.Equal(t, int64(5), term.CandidateTermID())
 }
 
-func TestOpenRecovery_archiveEnabledNilLister(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	clusterDir := filepath.Join(dir, "member")
-	cfg := recoveryConfig(t, clusterDir)
-	cfg.ArchiveClientEnabled = true
-	cfg.ArchiveControlRequestChannel = "aeron:udp?endpoint=localhost:8010"
-	cfg.ArchiveControlResponseChannel = "aeron:udp?endpoint=localhost:8011"
-
-	recovery, err := cluster.OpenRecovery(cluster.RecoveryDeps{
-		Config: cfg,
-	})
-	require.Nil(t, recovery)
-	require.EqualError(t, err, "cluster: ArchiveLister is required when ArchiveClientEnabled")
-	_, statErr := os.Stat(clusterDir)
-	require.True(t, os.IsNotExist(statErr))
-}
-
-func TestOpenRecovery_listerWithoutArchiveSwitch(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	writeTermLog(t, dir, 1)
-	cfg := recoveryConfig(t, dir)
-	require.False(t, cfg.ArchiveClientEnabled)
-
-	recovery, err := cluster.OpenRecovery(cluster.RecoveryDeps{
-		Config:        cfg,
-		ArchiveLister: listerWith(42, extent(0, 4096)),
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, recovery.Close()) })
-	require.False(t, recovery.IsColdStart())
-	require.Equal(t, int64(42), recovery.Plan().TermRecordingID())
-}
-
 func TestOpenRecovery_nilListerWithEntries(t *testing.T) {
 	t.Parallel()
 
@@ -674,7 +637,8 @@ func TestOpenRecovery_negativeServiceCountValidateFirst(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	cfg := recoveryConfig(t, dir)
+	clusterDir := filepath.Join(dir, "member")
+	cfg := recoveryConfig(t, clusterDir)
 	cfg.ServiceCount = -1
 
 	recovery, err := cluster.OpenRecovery(cluster.RecoveryDeps{
@@ -683,6 +647,8 @@ func TestOpenRecovery_negativeServiceCountValidateFirst(t *testing.T) {
 	})
 	require.Nil(t, recovery)
 	require.EqualError(t, err, "cluster: ServiceCount must not be negative")
+	_, statErr := os.Stat(clusterDir)
+	require.True(t, os.IsNotExist(statErr))
 }
 
 func TestOpenRecovery_nonNilListerEmptyLog(t *testing.T) {

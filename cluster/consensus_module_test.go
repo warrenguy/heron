@@ -41,16 +41,6 @@ func TestOpenConsensusModule_configErrors(t *testing.T) {
 			wantErr: "cluster: ConsensusChannel must be a udp channel",
 		},
 		{
-			// Recovery refuses the nil lister before any transport connect.
-			name: "archive enabled nil lister",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ArchiveClientEnabled = true
-				cfg.ArchiveControlRequestChannel = "aeron:udp?endpoint=localhost:8010"
-				cfg.ArchiveControlResponseChannel = "aeron:udp?endpoint=localhost:8011"
-			},
-			wantErr: "cluster: ArchiveLister is required when ArchiveClientEnabled",
-		},
-		{
 			name:    "negative service count",
 			mutate:  func(cfg *cluster.Config) { cfg.ServiceCount = -1 },
 			wantErr: "cluster: ServiceCount must not be negative",
@@ -71,6 +61,21 @@ func TestOpenConsensusModule_configErrors(t *testing.T) {
 			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}
+}
+
+// TestOpenConsensusModule_recoveryRefusesNilLister asserts recovery refuses a
+// non-empty recording log without a lister before any transport connect.
+func TestOpenConsensusModule_recoveryRefusesNilLister(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeTermLog(t, dir, 1)
+
+	module, err := cluster.OpenConsensusModule(context.Background(), cluster.ConsensusModuleDeps{
+		Config: recoveryConfig(t, dir),
+	})
+	require.Nil(t, module)
+	require.ErrorContains(t, err, "needs an ArchiveLister")
 }
 
 func TestConsensusModule_CloseNilReceiver(t *testing.T) {

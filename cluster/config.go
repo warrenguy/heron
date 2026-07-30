@@ -82,12 +82,13 @@ type Config struct {
 	// LogStreamID zero takes DefaultLogStreamID.
 	LogStreamID int32
 
-	// ArchiveClientEnabled opens an archive control client during open. False
-	// skips archive entirely and restricts recovery to an empty recording log.
-	ArchiveClientEnabled bool
-
-	// ArchiveControlRequestChannel and ArchiveControlResponseChannel are required
-	// when ArchiveClientEnabled.
+	// ArchiveControlRequestChannel and ArchiveControlResponseChannel address one
+	// member's Archive control session. Every member addresses its own Archive.
+	// Members must not share one Archive.
+	//
+	// Set both channels or neither. Validate refuses one without the other.
+	//
+	// OpenConsensusModule connects no archive client.
 	ArchiveControlRequestChannel  string
 	ArchiveControlResponseChannel string
 
@@ -292,17 +293,12 @@ func (cfg Config) validateMembers() ([]election.Member, int, error) {
 	if cfg.Idle == nil {
 		return nil, 0, errors.New("cluster: IdleStrategy is required")
 	}
-	if cfg.ArchiveClientEnabled {
-		if cfg.ArchiveControlRequestChannel == "" {
-			return nil, 0, errors.New(
-				"cluster: ArchiveControlRequestChannel is required when ArchiveClientEnabled",
-			)
-		}
-		if cfg.ArchiveControlResponseChannel == "" {
-			return nil, 0, errors.New(
-				"cluster: ArchiveControlResponseChannel is required when ArchiveClientEnabled",
-			)
-		}
+	requestSet := cfg.ArchiveControlRequestChannel != ""
+	responseSet := cfg.ArchiveControlResponseChannel != ""
+	if requestSet != responseSet {
+		return nil, 0, errors.New(
+			"cluster: ArchiveControlRequestChannel and ArchiveControlResponseChannel must be set together",
+		)
 	}
 	if err := validateFileSyncLevel(
 		cfg.RecordingLogFileSyncLevel,

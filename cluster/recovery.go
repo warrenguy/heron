@@ -19,13 +19,14 @@ const clusterLockFileName = "cluster.lock"
 // Named for [election.ElectionDeps] and [ConsensusPublicationsDeps], which carry
 // injected collaborators the same way.
 type RecoveryDeps struct {
-	// Config is the normalized member config. [OpenRecovery] calls Validate and
-	// returns its error unchanged. OpenRecovery then reads ClusterDir,
-	// NodeStateFileSyncLevel, ServiceCount, ArchiveClientEnabled, and Election.
+	// Config is the normalized member config. [OpenRecovery] calls Validate.
+	// [OpenRecovery] returns the Validate error unchanged. [OpenRecovery] then
+	// reads ClusterDir, NodeStateFileSyncLevel, ServiceCount, and Election.
 	// Validate still enforces the full config contract.
 	//
-	// Recovery writes five Config.Election fields. OpenRecovery overwrites any
-	// caller values present; setting them has no effect and produces no error:
+	// Recovery writes five Config.Election fields. [OpenRecovery] overwrites any
+	// caller values present. Setting those fields has no effect. Setting those
+	// fields produces no error:
 	//   - Always written: IsNodeStartup
 	//   - From the recovery plan: LeadershipTermID, TermBaseLogPosition,
 	//     LogPosition, AppendPosition
@@ -39,14 +40,12 @@ type RecoveryDeps struct {
 	// term entries. Production passes archive.NewLister over a connected control
 	// client. Unit tests pass a map-backed fake.
 	//
-	// Required when Config.ArchiveClientEnabled is true, including cold start.
-	// Optional when ArchiveClientEnabled is false and the recording log is empty.
-	// Nil with a non-empty recording log is refused: recordinglog.PlanRecovery
-	// panics if a lookup is required and the lister is nil.
+	// Nil is allowed when the recording log is empty. Nil with a non-empty
+	// recording log is refused. recordinglog.PlanRecovery panics if a lookup is
+	// required and the lister is nil.
 	//
-	// Non-nil with ArchiveClientEnabled false is allowed. ArchiveClientEnabled
-	// controls whether assembly connects an archive client; recovery consumes
-	// this field only.
+	// Non-nil with an empty recording log is allowed. Recovery reads this field
+	// only. Recovery connects no archive client.
 	ArchiveLister recordinglog.ArchiveLister
 }
 
@@ -81,32 +80,41 @@ type Recovery struct {
 	electionConfig election.ElectionConfig
 }
 
-// OpenRecovery creates the cluster directory, takes an exclusive lock on it,
-// opens the recording log and the node state file, plans recovery, and seeds the
-// election configuration.
+// OpenRecovery opens durable member state for one cluster directory.
 //
-// Directory mode is 0700 when created. An existing directory keeps its mode;
+// Open order:
+//  1. Validate Config
+//  2. create the cluster directory
+//  3. take an exclusive lock on cluster.lock
+//  4. open the recording log
+//  5. refuse a non-empty log without a lister
+//  6. plan recovery
+//  7. refuse a plan that carries a snapshot
+//  8. seed the election configuration
+//  9. open the node state file
+//
+// Directory mode is 0700 when created. An existing directory keeps its mode.
 // OpenRecovery does not chmod a directory it did not create. The lock file and
 // both data files use mode 0600.
 //
 // The lock is an advisory flock on cluster.lock. OpenRecovery takes the lock
-// before either data file opens. Close releases the lock when it closes the
-// descriptor; the kernel also releases on process exit. A second OpenRecovery
-// on the same directory fails with wrapped EWOULDBLOCK in this process or
-// another.
+// before the recording log opens. Close releases the lock when Close closes the
+// descriptor. The kernel also releases the lock on process exit. A second
+// OpenRecovery on the same directory fails with wrapped EWOULDBLOCK in this
+// process or another.
 //
-// Node state sync level comes from deps.Config and is [recordinglog.FileSyncData]
-// or [recordinglog.FileSyncFull] ([Config.Validate] guarantees). The recovery
-// plan uses [recordinglog.NewRecoveryPlanConfig] with ServiceCount; the
-// replicated recording id is always null.
+// Node state sync level comes from deps.Config. Allowed values are
+// [recordinglog.FileSyncData] and [recordinglog.FileSyncFull]
+// ([Config.Validate] guarantees). The recovery plan uses
+// [recordinglog.NewRecoveryPlanConfig] with ServiceCount. The replicated
+// recording id is always null.
 //
 // Seeded election config is deps.Config.Election with IsNodeStartup set and the
 // four recovery fields written from the plan. All other fields pass through,
 // including timeouts and member-id fields Config.Normalize builds.
 //
-// Errors:
+// Returns an error when:
 //   - Config fails Validate
-//   - ArchiveClientEnabled set without a lister
 //   - directory cannot be created
 //   - lock cannot be taken
 //   - either data file cannot be opened
@@ -114,15 +122,10 @@ type Recovery struct {
 //   - planning fails
 //   - plan carries a snapshot
 //
-// On error nothing stays open, the lock is released, and the returned value is
-// nil.
+// On error nothing stays open. The lock is released. The returned value is nil.
 func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
 	if err := deps.Config.Validate(); err != nil {
 		return nil, err
-	}
-
-	if deps.Config.ArchiveClientEnabled && deps.ArchiveLister == nil {
-		return nil, errors.New("cluster: ArchiveLister is required when ArchiveClientEnabled")
 	}
 
 	dir := deps.Config.ClusterDir
