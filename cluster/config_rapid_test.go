@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
@@ -113,9 +114,12 @@ func drawValidPartialConfig(t *rapid.T) cluster.Config {
 		MemberID:               rapid.Int32Range(-1, 10).Draw(t, "hand_member_id"),
 	}
 
-	if rapid.Bool().Draw(t, "archive_channels") {
-		cfg.ArchiveControlRequestChannel = "aeron:udp?endpoint=localhost:8010"
-		cfg.ArchiveControlResponseChannel = "aeron:udp?endpoint=localhost:8011"
+	if rapid.Bool().Draw(t, "archive_udp_control") {
+		cfg.ArchiveControlRequestChannel = archive.DefaultControlRequestChannel
+		cfg.ArchiveControlResponseChannel = archive.DefaultControlResponseChannel
+	} else {
+		cfg.ArchiveControlRequestChannel = archive.DefaultLocalControlChannel
+		cfg.ArchiveControlResponseChannel = archive.DefaultLocalControlChannel
 	}
 
 	return cfg

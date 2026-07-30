@@ -6,15 +6,25 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
+)
+
+// testArchiveControl channels satisfy Validate for fixtures that never connect
+// an archive client. Same co-located IPC shape as product open.
+const (
+	testArchiveControlRequestChannel  = archive.DefaultLocalControlChannel
+	testArchiveControlResponseChannel = archive.DefaultLocalControlChannel
 )
 
 func topologyConfigMembers(memberID int32, members string) cluster.Config {
 	return cluster.Config{
-		MemberID:       memberID,
-		ClusterMembers: members,
-		ClusterDir:     "/tmp/cluster",
-		AeronDir:       "/tmp/aeron",
+		MemberID:                      memberID,
+		ClusterMembers:                members,
+		ClusterDir:                    "/tmp/cluster",
+		AeronDir:                      "/tmp/aeron",
+		ArchiveControlRequestChannel:  testArchiveControlRequestChannel,
+		ArchiveControlResponseChannel: testArchiveControlResponseChannel,
 	}.Normalize()
 }
 

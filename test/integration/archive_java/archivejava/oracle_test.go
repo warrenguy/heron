@@ -61,6 +61,21 @@ func TestHarnessConstants(t *testing.T) {
 			got:  archivejava.ComposeSkipHint,
 			want: "archive java requires docker compose; run make test-archive-java",
 		},
+		{
+			name: "ArchiveDirEnvKey",
+			got:  archivejava.ArchiveDirEnvKey,
+			want: "HERON_ARCHIVE_DIR",
+		},
+		{
+			name: "ControlChannelEnvKey",
+			got:  archivejava.ControlChannelEnvKey,
+			want: "HERON_ARCHIVE_CONTROL_CHANNEL",
+		},
+		{
+			name: "ReplicationChannelEnvKey",
+			got:  archivejava.ReplicationChannelEnvKey,
+			want: "HERON_ARCHIVE_REPLICATION_CHANNEL",
+		},
 	}
 
 	for _, tt := range tests {

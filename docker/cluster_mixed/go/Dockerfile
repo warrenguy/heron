@@ -15,8 +15,8 @@ COPY record ./record
 COPY ringbuffer ./ringbuffer
 COPY broadcast ./broadcast
 # cluster/client and cluster/codecs (incl. clusterwire) for induction client.
-# election/consensus import archivewire.
-COPY archive/codecs/archivewire ./archive/codecs/archivewire
+# cluster open connects archive.Client; election/consensus import archivewire.
+COPY archive ./archive
 COPY cluster ./cluster
 COPY test/integration/harness ./test/integration/harness
 # Mixed goldens live under clusterjava (same package as single-node and failover).

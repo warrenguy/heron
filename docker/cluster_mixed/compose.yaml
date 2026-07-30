@@ -128,6 +128,34 @@ services:
       <<: *java-healthcheck
       test: ["CMD-SHELL", "test -f /dev/shm/aeron-j1/cnc.dat"]
 
+  # Go member archive server. Shares the go AERON_DIR with aeronmd so the Go
+  # client reaches control over local IPC. Java members embed their own Archives.
+  archive-go:
+    image: archive-java-archive
+    build:
+      context: ../..
+      dockerfile: docker/archive_java/java/Dockerfile
+    user: *app-user
+    hostname: archive-go
+    environment:
+      <<: *aeron-term-env
+      AERON_DIR: /dev/shm/aeron-go
+      HERON_ARCHIVE_DIR: /tmp/heron-archive-go
+      # Distinct UDP bind. Go control client uses local IPC, not this channel.
+      HERON_ARCHIVE_CONTROL_CHANNEL: "aeron:udp?endpoint=127.0.0.1:9210"
+    volumes:
+      - aeron-media:/dev/shm
+      - archive-data-go:/tmp/heron-archive-go
+    depends_on:
+      aeronmd:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/heron-archive-go/.heron-archive-ready"]
+      interval: 1s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
 volumes:
   aeron-media:
     driver: local
@@ -142,5 +170,9 @@ volumes:
     driver_opts: *cluster-data-tmpfs-opts
 
   cluster-data-2:
+    driver: local
+    driver_opts: *cluster-data-tmpfs-opts
+
+  archive-data-go:
     driver: local
     driver_opts: *cluster-data-tmpfs-opts

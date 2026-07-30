@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
@@ -23,41 +24,35 @@ type ConsensusModuleDeps struct {
 	// Config is the member configuration. OpenConsensusModule normalizes and
 	// validates it. OpenConsensusModule does not retain Config.
 	Config Config
-
-	// ArchiveLister resolves recording extents for a recording log that carries
-	// term entries. Production passes archive.NewLister over a connected
-	// control client. Unit tests pass a map-backed fake.
-	//
-	// Nil is allowed when the recording log is empty. Nil with a non-empty
-	// recording log is refused.
-	//
-	// OpenConsensusModule connects no archive client. The caller owns the
-	// client, its context, and Close.
-	ArchiveLister recordinglog.ArchiveLister
 }
 
-// ConsensusModule is one assembled consensus member: transport client, durable
-// recovery state, consensus publication map, consensus subscription, cluster log
-// streams, agent, host adapter, and election.
+// ConsensusModule is one assembled consensus member: transport client, archive
+// control client, durable recovery state, consensus publication map, consensus
+// subscription, cluster log streams, agent, host adapter, and election.
 //
-// Open with [OpenConsensusModule]. The module owns every handle it opened and
-// closes all of them. A transport client supplied through Config.Aeron stays the
-// caller's.
+// Open with [OpenConsensusModule]. The module owns every handle it opened.
+// The module closes every handle it owns. A transport client supplied through
+// Config.Aeron stays the caller's. The module does not own that client.
 //
-// Concurrency: invoker-only. Every method must run on the duty-cycle goroutine
-// (aeron.Client.DoWork then consensus.Agent.DoWork). Exception:
-// [ConsensusModule.CommitPosition] reads the mode-1 *atomic.Int64 and is safe
-// from any goroutine.
+// Concurrency: invoker-only. Every method must run on the duty cycle goroutine
+// in this order: aeron.Client.DoWork, then archive.Client.Poll, then
+// consensus.Agent.DoWork. Exception: [ConsensusModule.CommitPosition] reads the
+// mode-1 *atomic.Int64 and is safe from any goroutine.
 //
-// Lifetime: outlives the election. Close belongs in caller teardown after the
-// duty cycle has stopped.
+// Lifetime: the module outlives the election. Call Close in caller teardown
+// after the duty cycle has stopped.
 //
-// Do not copy. Most fields are pointers. A value copy shares the same handles;
-// both values look like owners responsible for Close.
+// Do not copy. Most fields are pointers. A value copy shares the same handles.
+// Both values look like owners responsible for Close.
 type ConsensusModule struct {
 	topology   *Topology
 	client     *aeron.Client
 	ownsClient bool
+
+	// archiveClient is the module-owned archive control client.
+	// Close closes the archive client before the transport client.
+	// The archive control publication and subscription belong to that transport client.
+	archiveClient *archive.Client
 
 	recovery  *Recovery
 	coldStart bool
@@ -77,30 +72,42 @@ type ConsensusModule struct {
 // OpenConsensusModule assembles one consensus member and returns it with every
 // transport handle and agent dependency bound before the first duty tick.
 //
-// ctx bounds the transport connect only. Open does not retain ctx. Cancel after
-// Open returns has no effect. When Config.Aeron is set, ctx is unused.
+// ctx bounds the transport connect, the archive control connect, and the
+// recording-extent lookups the recovery plan makes. Open does not retain ctx.
+// Cancel after Open returns has no effect. When Config.Aeron is set, ctx still
+// bounds the archive control connect.
 //
 // Open order:
 //  1. topology
-//  2. recovery
-//  3. transport client
-//  4. agent
-//  5. consensus publications
-//  6. consensus subscription
-//  7. cluster log streams
-//  8. host adapter
-//  9. election
+//  2. transport client
+//  3. archive control client
+//  4. recording-log archive lister
+//  5. recovery
+//  6. agent
+//  7. consensus publications
+//  8. consensus subscription
+//  9. cluster log streams
+//  10. host adapter
+//  11. election
 //
-// Recovery runs before connect so failures that need no media driver skip
-// connect cost. The cluster log publication and subscription are open before
-// return so the first duty tick can win leadership and append a leadership-term
-// event.
+// Recovery plans from the recording log. A recording log that carries term
+// entries needs a connected archive lister to resolve extents. Transport and
+// archive control therefore connect before recovery. The cluster log publication
+// and subscription open before return so the first duty tick can win leadership
+// and append a leadership-term event.
 //
-// Errors:
+// Returns an error when:
 //   - Config fails Validate
+//   - the transport client cannot connect
+//   - the archive control client cannot connect
 //   - recovery fails
-//   - transport client cannot connect
 //   - consensus publications, consensus subscription, or log streams fail to open
+//
+// Open blocks on the archive control connect, bounded by
+// archive.DefaultConnectTimeout and by ctx. A process that opens several members
+// in sequence services no earlier member's transport client during that block.
+// Open every member's Archive before opening any member. Keep
+// Config.AeronConfig.InterServiceTimeout above the total connect cost.
 //
 // On error every handle opened so far is closed, the cluster directory lock is
 // released, and the returned value is nil.
@@ -130,17 +137,6 @@ func OpenConsensusModule(
 		}
 	}()
 
-	recovery, err := OpenRecovery(RecoveryDeps{
-		Config:        cfg,
-		ArchiveLister: deps.ArchiveLister,
-	})
-	if err != nil {
-		return nil, err
-	}
-	module.recovery = recovery
-	module.coldStart = recovery.IsColdStart()
-	electionCfg := recovery.ElectionConfig()
-
 	if cfg.Aeron != nil {
 		module.client = cfg.Aeron
 	} else {
@@ -151,6 +147,25 @@ func OpenConsensusModule(
 		module.client = client
 		module.ownsClient = true
 	}
+
+	archiveClient, err := archive.Connect(ctx, archiveConnectConfig(cfg, module.client))
+	if err != nil {
+		return nil, fmt.Errorf("cluster: connect archive client: %w", err)
+	}
+	module.archiveClient = archiveClient
+
+	lister := archive.NewLister(ctx, module.archiveClient)
+
+	recovery, err := OpenRecovery(RecoveryDeps{
+		Config:        cfg,
+		ArchiveLister: lister,
+	})
+	if err != nil {
+		return nil, err
+	}
+	module.recovery = recovery
+	module.coldStart = recovery.IsColdStart()
+	electionCfg := recovery.ElectionConfig()
 
 	nanoClock, epochClock := moduleClocks(cfg)
 	module.nanoClock = nanoClock
@@ -262,14 +277,17 @@ func moduleClocks(cfg Config) (nanoClock, epochClock func() int64) {
 	return nanoClock, epochClock
 }
 
-// Close tears the member down in exact reverse open order: agent bindings,
-// cluster log streams, consensus subscription, consensus publications, the
-// transport client when the module connected it, then recovery.
+// Close tears the member down in reverse open order:
+// agent bindings, cluster log streams, consensus subscription, consensus
+// publications, archive control client, owned transport client, then recovery.
 //
-// Idempotent, and safe on a nil receiver, so it is usable in a defer taken
-// before the error check.
+// The archive control client closes before the transport client. The archive
+// control publication and subscription belong to that transport client.
 //
-// A transport client supplied through Config.Aeron is left open.
+// Idempotent. Safe on a nil receiver. Usable in a defer taken before the error
+// check.
+//
+// A transport client supplied through Config.Aeron stays open.
 //
 // Returns the joined close errors, or nil.
 func (m *ConsensusModule) Close() error {
@@ -300,6 +318,10 @@ func (m *ConsensusModule) Close() error {
 		err = errors.Join(err, m.pubs.Close())
 		m.pubs = nil
 	}
+	if m.archiveClient != nil {
+		err = errors.Join(err, m.archiveClient.Close())
+		m.archiveClient = nil
+	}
 	if m.client != nil && m.ownsClient {
 		err = errors.Join(err, m.client.Close())
 	}
@@ -313,9 +335,22 @@ func (m *ConsensusModule) Close() error {
 
 // Client returns the transport client, or nil after Close.
 //
-// Pair it with [ConsensusModule.Agent] to drive one duty cycle: the transport
-// client first, then the agent.
+// Pair the client with [ConsensusModule.ArchiveClient] and
+// [ConsensusModule.Agent] to drive one duty cycle: transport DoWork, then
+// archive Poll, then agent DoWork.
 func (m *ConsensusModule) Client() *aeron.Client { return m.client }
+
+// ArchiveClient returns the archive control client, or nil after Close.
+//
+// Pass the client to RunnerDeps.Archive so the duty cycle demuxes control
+// responses and recording signals. A multi-member duty cycle must call Poll on
+// the client after that member's transport DoWork and before that member's
+// agent DoWork.
+//
+// Concurrency: invoker-only.
+//
+// Ownership: the module owns the client. Callers must not close the client.
+func (m *ConsensusModule) ArchiveClient() *archive.Client { return m.archiveClient }
 
 // Agent returns the consensus agent. It stays non-nil after Close, with every
 // binding cleared, so a caller can assert teardown.

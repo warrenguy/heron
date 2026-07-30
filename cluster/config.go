@@ -82,14 +82,23 @@ type Config struct {
 	// LogStreamID zero takes DefaultLogStreamID.
 	LogStreamID int32
 
-	// ArchiveControlRequestChannel and ArchiveControlResponseChannel address one
-	// member's Archive control session. Every member addresses its own Archive.
-	// Members must not share one Archive.
+	// ArchiveControlRequestChannel is the control request URI for this member.
+	// Required.
 	//
-	// Set both channels or neither. Validate refuses one without the other.
+	// The URI reaches archive.Config.ControlRequestChannel with no rewrite.
+	// Co-located Archive: IPC URI, typically archive.DefaultLocalControlChannel.
+	// Remote Archive: udp URI with endpoint=.
 	//
-	// OpenConsensusModule connects no archive client.
-	ArchiveControlRequestChannel  string
+	// Normalize applies no default. Validate refuses an empty value.
+	ArchiveControlRequestChannel string
+
+	// ArchiveControlResponseChannel is the subscription URI for archive control
+	// responses on this member. Required.
+	//
+	// Co-located Archive over IPC: same URI as ArchiveControlRequestChannel.
+	// Remote Archive: udp URI; endpoint=host:0 lets the driver assign the port.
+	//
+	// Normalize applies no default. Validate refuses an empty value.
 	ArchiveControlResponseChannel string
 
 	// ServiceCount feeds recordinglog.NewRecoveryPlanConfig. Zero for a member
@@ -293,12 +302,11 @@ func (cfg Config) validateMembers() ([]election.Member, int, error) {
 	if cfg.Idle == nil {
 		return nil, 0, errors.New("cluster: IdleStrategy is required")
 	}
-	requestSet := cfg.ArchiveControlRequestChannel != ""
-	responseSet := cfg.ArchiveControlResponseChannel != ""
-	if requestSet != responseSet {
-		return nil, 0, errors.New(
-			"cluster: ArchiveControlRequestChannel and ArchiveControlResponseChannel must be set together",
-		)
+	if cfg.ArchiveControlRequestChannel == "" {
+		return nil, 0, errors.New("cluster: ArchiveControlRequestChannel is required")
+	}
+	if cfg.ArchiveControlResponseChannel == "" {
+		return nil, 0, errors.New("cluster: ArchiveControlResponseChannel is required")
 	}
 	if err := validateFileSyncLevel(
 		cfg.RecordingLogFileSyncLevel,

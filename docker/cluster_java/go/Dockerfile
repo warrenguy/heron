@@ -15,8 +15,8 @@ COPY record ./record
 COPY ringbuffer ./ringbuffer
 COPY broadcast ./broadcast
 # cluster/client + cluster/codecs (incl. clusterwire) for AsyncConnect + echo compose smokes.
-# election/consensus import archivewire.
-COPY archive/codecs/archivewire ./archive/codecs/archivewire
+# cluster open connects archive.Client; election/consensus import archivewire.
+COPY archive ./archive
 COPY cluster ./cluster
 COPY test/integration/harness ./test/integration/harness
 COPY test/integration/cluster_java ./test/integration/cluster_java

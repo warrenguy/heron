@@ -33,6 +33,25 @@ func (f *fakeTransport) DoWork() int {
 
 func (f *fakeTransport) IsTerminating() bool { return f.terminating }
 
+// fakeArchive records Poll ticks and work counts.
+type fakeArchive struct {
+	work  []int
+	ticks int
+	steps *[]string
+}
+
+func (f *fakeArchive) Poll() int {
+	if f.steps != nil {
+		*f.steps = append(*f.steps, "archive")
+	}
+	value := 0
+	if f.ticks < len(f.work) {
+		value = f.work[f.ticks]
+	}
+	f.ticks++
+	return value
+}
+
 // fakeAgent records the clock values each DoWork saw.
 type fakeAgent struct {
 	work  []int
@@ -72,22 +91,33 @@ func (r *recordingIdle) Reset() { r.resets++ }
 
 func newTestRunner(
 	transport *fakeTransport,
+	archive archiveInvoker,
 	agent *fakeAgent,
 	idle idlestrategy.IdleStrategy,
 	clock func() int64,
 ) *Runner {
-	return &Runner{client: transport, agent: agent, idle: idle, clock: clock}
+	if archive == nil {
+		archive = noArchiveInvoker{}
+	}
+	return &Runner{
+		client:  transport,
+		archive: archive,
+		agent:   agent,
+		idle:    idle,
+		clock:   clock,
+	}
 }
 
 func TestRunnerDoWorkOrderAndSum(t *testing.T) {
 	var steps []string
 	transport := &fakeTransport{work: []int{3}, steps: &steps}
+	arch := &fakeArchive{work: []int{2}, steps: &steps}
 	agent := &fakeAgent{work: []int{5}, steps: &steps}
 	idle := &recordingIdle{steps: &steps}
-	runner := newTestRunner(transport, agent, idle, func() int64 { return 42 })
+	runner := newTestRunner(transport, arch, agent, idle, func() int64 { return 42 })
 
-	require.Equal(t, 8, runner.DoWork())
-	require.Equal(t, []string{"transport", "agent"}, steps)
+	require.Equal(t, 10, runner.DoWork())
+	require.Equal(t, []string{"transport", "archive", "agent"}, steps)
 	require.Equal(t, []int64{42}, agent.times)
 	require.Empty(t, idle.counts, "DoWork never idles")
 	require.Zero(t, idle.resets, "DoWork never resets")
@@ -108,7 +138,7 @@ func TestRunnerRunIdlesOncePerTick(t *testing.T) {
 		}
 		return tick
 	}
-	runner := newTestRunner(transport, agent, idle, clock)
+	runner := newTestRunner(transport, nil, agent, idle, clock)
 
 	require.ErrorIs(t, runner.Run(ctx), context.Canceled)
 	require.Equal(t, 3, transport.ticks)
@@ -159,7 +189,7 @@ func TestRunnerRunExitPaths(t *testing.T) {
 			idle := &recordingIdle{}
 			ctx, cancel := tc.ctx()
 			defer cancel()
-			runner := newTestRunner(transport, agent, idle, func() int64 { return 0 })
+			runner := newTestRunner(transport, nil, agent, idle, func() int64 { return 0 })
 
 			require.ErrorIs(t, runner.Run(ctx), tc.wantErr)
 			require.Equal(t, tc.wantTicks, transport.ticks)
@@ -207,5 +237,22 @@ func TestNewRunnerValidatesDeps(t *testing.T) {
 		runner, err := NewRunner(complete)
 		require.NoError(t, err)
 		require.Same(t, complete.Idle, runner.idle)
+	})
+
+	t.Run("nilArchiveAccepted", func(t *testing.T) {
+		deps := complete
+		deps.Archive = nil
+		runner, err := NewRunner(deps)
+		require.NoError(t, err)
+		require.NotNil(t, runner)
+		require.Equal(t, noArchiveInvoker{}, runner.archive)
+	})
+
+	t.Run("nilArchiveZeroWork", func(t *testing.T) {
+		transport := &fakeTransport{work: []int{1}}
+		agent := &fakeAgent{work: []int{2}}
+		runner := newTestRunner(transport, nil, agent, &recordingIdle{}, func() int64 { return 0 })
+		require.Equal(t, 3, runner.DoWork())
+		require.Equal(t, noArchiveInvoker{}, runner.archive)
 	})
 }

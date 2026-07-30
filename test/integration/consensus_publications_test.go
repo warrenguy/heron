@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/test/integration/harness"
@@ -27,10 +28,12 @@ func TestConsensusPublications_openCloseOnLiveDriver(t *testing.T) {
 	require.NoError(t, err)
 
 	topology, err := cluster.NewTopology(cluster.Config{
-		MemberID:       0,
-		ClusterMembers: members,
-		ClusterDir:     t.TempDir(),
-		AeronDir:       t.TempDir(),
+		MemberID:                      0,
+		ClusterMembers:                members,
+		ClusterDir:                    t.TempDir(),
+		AeronDir:                      t.TempDir(),
+		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
+		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
 	}.Normalize())
 	require.NoError(t, err)
 

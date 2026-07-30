@@ -65,6 +65,15 @@ public final class ArchiveConstants {
     // archivejava.ComposeGateEnvKey
     public static final String COMPOSE_GATE_ENV_KEY = "HERON_ARCHIVE_JAVA_COMPOSE";
 
+    // archivejava.ArchiveDirEnvKey
+    public static final String ARCHIVE_DIR_ENV_KEY = "HERON_ARCHIVE_DIR";
+
+    // archivejava.ControlChannelEnvKey
+    public static final String CONTROL_CHANNEL_ENV_KEY = "HERON_ARCHIVE_CONTROL_CHANNEL";
+
+    // archivejava.ReplicationChannelEnvKey
+    public static final String REPLICATION_CHANNEL_ENV_KEY = "HERON_ARCHIVE_REPLICATION_CHANNEL";
+
     private ArchiveConstants() {
     }
 }

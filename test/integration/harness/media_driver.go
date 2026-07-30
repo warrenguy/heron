@@ -135,11 +135,19 @@ func TermDataLengthFromCmdEnv(md *MediaDriver) (int, error) {
 }
 
 func buildDriverCmdEnv(merged DriverEnv) []string {
-	strip := make(map[string]struct{}, len(merged)+1)
+	return mergeCmdEnv(merged)
+}
+
+// mergeCmdEnv clones the process environment, drops every key in merged and
+// every extraStrip key, then appends the merged pairs.
+func mergeCmdEnv(merged map[string]string, extraStrip ...string) []string {
+	strip := make(map[string]struct{}, len(merged)+len(extraStrip))
 	for key := range merged {
 		strip[key] = struct{}{}
 	}
-	strip[envDir] = struct{}{}
+	for _, key := range extraStrip {
+		strip[key] = struct{}{}
+	}
 
 	base := os.Environ()
 	out := make([]string, 0, len(base)+len(merged))
@@ -157,6 +165,25 @@ func buildDriverCmdEnv(merged DriverEnv) []string {
 		out = append(out, key+"="+value)
 	}
 	return out
+}
+
+// repoBinFile returns repo-root/bin/<name> when that path exists. Empty when
+// go env GOMOD fails, the module root is empty or os.DevNull, or bin/<name>
+// is missing.
+func repoBinFile(name string) string {
+	out, err := exec.Command("go", "env", "GOMOD").Output()
+	if err != nil {
+		return ""
+	}
+	modRoot := strings.TrimSpace(string(out))
+	if modRoot == "" || modRoot == os.DevNull {
+		return ""
+	}
+	path := filepath.Join(filepath.Dir(modRoot), "bin", name)
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	return path
 }
 
 var (
@@ -436,7 +463,7 @@ func resolveAeronmd() (string, error) {
 }
 
 var defaultAeronmd = sync.OnceValues(func() (string, error) {
-	if path := repoBinAeronmd(); path != "" {
+	if path := repoBinFile("aeronmd"); path != "" {
 		return path, nil
 	}
 	path, err := exec.LookPath("aeronmd")
@@ -445,19 +472,3 @@ var defaultAeronmd = sync.OnceValues(func() (string, error) {
 	}
 	return path, nil
 })
-
-func repoBinAeronmd() string {
-	out, err := exec.Command("go", "env", "GOMOD").Output()
-	if err != nil {
-		return ""
-	}
-	modRoot := strings.TrimSpace(string(out))
-	if modRoot == "" || modRoot == os.DevNull {
-		return ""
-	}
-	path := filepath.Join(filepath.Dir(modRoot), "bin", "aeronmd")
-	if _, err := os.Stat(path); err != nil {
-		return ""
-	}
-	return path
-}

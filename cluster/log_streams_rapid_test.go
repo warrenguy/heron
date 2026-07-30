@@ -32,12 +32,7 @@ func TestLogStreams_openAndTeardown_rapid(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		topology, err := cluster.NewTopology(cluster.Config{
-			MemberID:       memberID,
-			ClusterMembers: members,
-			ClusterDir:     "/tmp/cluster",
-			AeronDir:       "/tmp/aeron",
-		}.Normalize())
+		topology, err := cluster.NewTopology(topologyConfigMembers(memberID, members))
 		require.NoError(t, err)
 
 		adder := &fakeLogStreamAdder{}

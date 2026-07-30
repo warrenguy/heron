@@ -57,10 +57,12 @@ func threeMemberTopology(t *testing.T, thisID int32) *cluster.Topology {
 	require.NoError(t, err)
 
 	topology, err := cluster.NewTopology(cluster.Config{
-		MemberID:       thisID,
-		ClusterMembers: members,
-		ClusterDir:     t.TempDir(),
-		AeronDir:       t.TempDir(),
+		MemberID:                      thisID,
+		ClusterMembers:                members,
+		ClusterDir:                    t.TempDir(),
+		AeronDir:                      t.TempDir(),
+		ArchiveControlRequestChannel:  testArchiveControlRequestChannel,
+		ArchiveControlResponseChannel: testArchiveControlResponseChannel,
 	}.Normalize())
 	require.NoError(t, err)
 	return topology
@@ -77,10 +79,12 @@ func singleMemberTopology(t *testing.T) *cluster.Topology {
 	require.NoError(t, err)
 
 	topology, err := cluster.NewTopology(cluster.Config{
-		MemberID:       0,
-		ClusterMembers: members,
-		ClusterDir:     t.TempDir(),
-		AeronDir:       t.TempDir(),
+		MemberID:                      0,
+		ClusterMembers:                members,
+		ClusterDir:                    t.TempDir(),
+		AeronDir:                      t.TempDir(),
+		ArchiveControlRequestChannel:  testArchiveControlRequestChannel,
+		ArchiveControlResponseChannel: testArchiveControlResponseChannel,
 	}.Normalize())
 	require.NoError(t, err)
 	return topology

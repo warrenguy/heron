@@ -1,6 +1,6 @@
-//go:build integration
+//go:build integration && archive_live
 
-package integration_test
+package cluster_archive_test
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
@@ -22,6 +23,8 @@ import (
 const (
 	consensusModulePortBase          = 24700
 	consensusModuleSharedLogEndpoint = "239.255.12.3:24704"
+	// Archive UDP control endpoint. Server binds it; client uses local IPC.
+	consensusModuleArchiveControl = "aeron:udp?endpoint=127.0.0.1:24701"
 	// Short linger so owned-client Close does not wait the 3s default.
 	consensusModuleCloseLinger = 250 * time.Millisecond
 	consensusModuleElectBound  = 60 * time.Second
@@ -31,6 +34,10 @@ const (
 // member, elects it leader, and checks full teardown against a live driver.
 func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	md := harness.Start(t)
+	_ = harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
+		AeronDir:       md.Dir,
+		ControlChannel: consensusModuleArchiveControl,
+	})
 
 	hosts := []string{"127.0.0.1"}
 	members, err := cluster.BuildClusterMembersString(cluster.MembersStringConfig{
@@ -43,11 +50,13 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := cluster.Config{
-		MemberID:       0,
-		ClusterMembers: members,
-		ClusterDir:     t.TempDir(),
-		AeronDir:       md.Dir,
-		LogChannel:     harness.ClusterLogChannelTemplate,
+		MemberID:                      0,
+		ClusterMembers:                members,
+		ClusterDir:                    t.TempDir(),
+		AeronDir:                      md.Dir,
+		LogChannel:                    harness.ClusterLogChannelTemplate,
+		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
+		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
 		AeronConfig: aeron.Config{
 			InterServiceTimeout: harness.ConnectedPollTimeout,
 			CloseLingerDuration: consensusModuleCloseLinger,
@@ -71,6 +80,16 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	require.Empty(t, module.RecordingLog().Entries())
 	require.NotNil(t, module.IdleStrategy())
 
+	archiveClient := module.ArchiveClient()
+	require.NotNil(t, archiveClient)
+	require.False(t, archiveClient.IsClosed())
+	require.Equal(
+		t,
+		archive.DefaultLocalControlChannel,
+		archiveClient.Config().EffectiveControlRequestChannel(),
+	)
+	require.False(t, archiveClient.Config().OwnsAeronClient())
+
 	// Bind at open: log publication and join/append sources before first tick.
 	session := module.Agent().AddLogPublication(0)
 	require.NotEqual(t, int32(-1), session)
@@ -79,7 +98,7 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	require.NotNil(t, module.Agent().AppendSource())
 	require.NotNil(t, module.Agent().LogJoinSource())
 
-	// Elect: transport client then agent until the runner clears.
+	// Elect: transport DoWork, archive Poll, agent DoWork until ElectionComplete.
 	electStart := time.Now()
 	for !module.ElectionComplete() {
 		require.Less(
@@ -91,6 +110,7 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 			module.LeadershipTermID(),
 		)
 		module.Client().DoWork()
+		archiveClient.Poll()
 		module.Agent().DoWork(module.NanoClock()())
 		time.Sleep(time.Millisecond)
 	}
@@ -125,6 +145,8 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	require.Nil(t, module.LogStreams())
 	require.Nil(t, module.RecordingLog())
 	require.Nil(t, module.Client())
+	require.True(t, archiveClient.IsClosed())
+	require.Nil(t, module.ArchiveClient())
 
 	// Value getters keep reporting after Close.
 	require.Equal(t, consensus.RoleLeader, module.Role())

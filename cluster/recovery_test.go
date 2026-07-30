@@ -20,10 +20,12 @@ import (
 func recoveryConfig(t *testing.T, dir string) cluster.Config {
 	t.Helper()
 	return cluster.Config{
-		MemberID:       0,
-		ClusterMembers: goldenClusterMembersSharedLog,
-		ClusterDir:     dir,
-		AeronDir:       "/tmp/aeron",
+		MemberID:                      0,
+		ClusterMembers:                goldenClusterMembersSharedLog,
+		ClusterDir:                    dir,
+		AeronDir:                      "/tmp/aeron",
+		ArchiveControlRequestChannel:  testArchiveControlRequestChannel,
+		ArchiveControlResponseChannel: testArchiveControlResponseChannel,
 	}.Normalize()
 }
 
@@ -560,12 +562,14 @@ func TestOpenRecovery_coldStartCarriesConfigThrough(t *testing.T) {
 	appointed := int32(1)
 	graceful := int32(2)
 	cfg := cluster.Config{
-		MemberID:               0,
-		ClusterMembers:         goldenClusterMembersSharedLog,
-		ClusterDir:             dir,
-		AeronDir:               "/tmp/aeron",
-		AppointedLeaderID:      &appointed,
-		GracefulClosedLeaderID: &graceful,
+		MemberID:                      0,
+		ClusterMembers:                goldenClusterMembersSharedLog,
+		ClusterDir:                    dir,
+		AeronDir:                      "/tmp/aeron",
+		ArchiveControlRequestChannel:  testArchiveControlRequestChannel,
+		ArchiveControlResponseChannel: testArchiveControlResponseChannel,
+		AppointedLeaderID:             &appointed,
+		GracefulClosedLeaderID:        &graceful,
 		Election: election.ElectionConfig{
 			AppVersion:                7,
 			ElectionTimeoutNs:         11_000_000_000,

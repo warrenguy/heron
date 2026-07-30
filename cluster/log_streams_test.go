@@ -71,11 +71,13 @@ func (f *fakeLogStreamAdder) AddExclusivePublication(
 func sharedLogTopology(t *testing.T, memberID int32, logChannel string) *cluster.Topology {
 	t.Helper()
 	cfg := cluster.Config{
-		MemberID:       memberID,
-		ClusterMembers: goldenClusterMembersSharedLog,
-		ClusterDir:     t.TempDir(),
-		AeronDir:       t.TempDir(),
-		LogChannel:     logChannel,
+		MemberID:                      memberID,
+		ClusterMembers:                goldenClusterMembersSharedLog,
+		ClusterDir:                    t.TempDir(),
+		AeronDir:                      t.TempDir(),
+		LogChannel:                    logChannel,
+		ArchiveControlRequestChannel:  testArchiveControlRequestChannel,
+		ArchiveControlResponseChannel: testArchiveControlResponseChannel,
 	}.Normalize()
 	tp, err := cluster.NewTopology(cfg)
 	require.NoError(t, err)

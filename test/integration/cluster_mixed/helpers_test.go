@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/consensus"
@@ -75,11 +76,13 @@ func buildMixedJavaLeaderConfig(t *testing.T) cluster.Config {
 
 	appointed := clusterjava.MixedAppointedLeaderIDJavaLeader
 	return cluster.Config{
-		MemberID:          clusterjava.MixedGoMemberID,
-		ClusterMembers:    members,
-		ClusterDir:        clusterjava.MixedClusterDirGo,
-		AeronDir:          clusterjava.MixedAeronDirGo,
-		AppointedLeaderID: &appointed,
+		MemberID:                      clusterjava.MixedGoMemberID,
+		ClusterMembers:                members,
+		ClusterDir:                    clusterjava.MixedClusterDirGo,
+		AeronDir:                      clusterjava.MixedAeronDirGo,
+		AppointedLeaderID:             &appointed,
+		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
+		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
 		AeronConfig: aeron.Config{
 			InterServiceTimeout: harness.ConnectedPollTimeout,
 			CloseLingerDuration: mixedMemberCloseLinger,
@@ -99,12 +102,14 @@ func buildMixedGoLeaderConfig(t *testing.T) cluster.Config {
 
 	appointed := clusterjava.MixedAppointedLeaderIDGoLeader
 	return cluster.Config{
-		MemberID:          clusterjava.MixedGoMemberID,
-		ClusterMembers:    members,
-		ClusterDir:        clusterjava.MixedClusterDirGo,
-		AeronDir:          clusterjava.MixedAeronDirGo,
-		LogChannel:        clusterjava.MixedLogChannelMulticast,
-		AppointedLeaderID: &appointed,
+		MemberID:                      clusterjava.MixedGoMemberID,
+		ClusterMembers:                members,
+		ClusterDir:                    clusterjava.MixedClusterDirGo,
+		AeronDir:                      clusterjava.MixedAeronDirGo,
+		LogChannel:                    clusterjava.MixedLogChannelMulticast,
+		AppointedLeaderID:             &appointed,
+		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
+		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
 		AeronConfig: aeron.Config{
 			InterServiceTimeout: harness.ConnectedPollTimeout,
 			CloseLingerDuration: mixedMemberCloseLinger,
@@ -146,10 +151,11 @@ func openMixedGoMember(t *testing.T, cfg cluster.Config) *mixedMemberFixture {
 	harness.CleanupClose(t, "mixed go consensus module", module.Close)
 
 	runner, err := cluster.NewRunner(cluster.RunnerDeps{
-		Client: module.Client(),
-		Agent:  module.Agent(),
-		Idle:   module.IdleStrategy(),
-		Clock:  module.NanoClock(),
+		Client:  module.Client(),
+		Agent:   module.Agent(),
+		Archive: module.ArchiveClient(),
+		Idle:    module.IdleStrategy(),
+		Clock:   module.NanoClock(),
 	})
 	require.NoError(t, err)
 
@@ -169,7 +175,7 @@ func writeReady(t *testing.T) {
 	require.NoError(t, os.WriteFile(clusterjava.MixedReadyPath, []byte("ready\n"), 0o644))
 }
 
-// tick runs one duty cycle: transport client then agent.
+// tick runs one Runner.DoWork: transport client, archive Poll, then agent.
 func (f *mixedMemberFixture) tick() {
 	f.runner.DoWork()
 }

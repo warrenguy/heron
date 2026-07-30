@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -49,11 +50,13 @@ func topologyForMember(
 	t.Helper()
 
 	cfg := cluster.Config{
-		MemberID:       memberID,
-		ClusterMembers: members,
-		ClusterDir:     t.TempDir(),
-		AeronDir:       aeronDir,
-		LogChannel:     logChannel,
+		MemberID:                      memberID,
+		ClusterMembers:                members,
+		ClusterDir:                    t.TempDir(),
+		AeronDir:                      aeronDir,
+		LogChannel:                    logChannel,
+		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
+		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
 	}.Normalize()
 	topology, err := cluster.NewTopology(cfg)
 	require.NoError(t, err)

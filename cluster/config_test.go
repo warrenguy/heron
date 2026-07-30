@@ -54,6 +54,9 @@ func TestNormalize_defaults(t *testing.T) {
 	require.NotNil(t, cfg.Idle)
 	require.Equal(t, recordinglog.FileSyncData, cfg.RecordingLogFileSyncLevel)
 	require.Equal(t, recordinglog.FileSyncData, cfg.NodeStateFileSyncLevel)
+	// Archive channels stay empty: Normalize applies no default so Validate can refuse.
+	require.Empty(t, cfg.ArchiveControlRequestChannel)
+	require.Empty(t, cfg.ArchiveControlResponseChannel)
 }
 
 func TestNormalize_electionDefaultTripwire(t *testing.T) {
@@ -502,12 +505,18 @@ func TestValidate_errors(t *testing.T) {
 			want: "cluster: IdleStrategy is required",
 		},
 		{
-			name: "archive channel set without the other",
+			name: "archive request channel empty",
 			mutate: func(cfg *cluster.Config) {
-				cfg.ArchiveControlResponseChannel = "aeron:udp?endpoint=localhost:8011"
+				cfg.ArchiveControlRequestChannel = ""
 			},
-			want: "cluster: ArchiveControlRequestChannel and " +
-				"ArchiveControlResponseChannel must be set together",
+			want: "cluster: ArchiveControlRequestChannel is required",
+		},
+		{
+			name: "archive response channel empty",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ArchiveControlResponseChannel = ""
+			},
+			want: "cluster: ArchiveControlResponseChannel is required",
 		},
 		{
 			name: "RecordingLogFileSyncLevel invalid",
@@ -536,25 +545,12 @@ func TestValidate_errors(t *testing.T) {
 	}
 }
 
-func TestValidate_bothArchiveChannelsSet(t *testing.T) {
-	t.Parallel()
-
-	cfg := topologyConfig(0)
-	cfg.ArchiveControlRequestChannel = "aeron:udp?endpoint=localhost:8010"
-	cfg.ArchiveControlResponseChannel = "aeron:udp?endpoint=localhost:8011"
-	require.NoError(t, cfg.Validate())
-}
-
 func TestValidate_appointedLeaderPresent(t *testing.T) {
 	t.Parallel()
 
-	cfg := cluster.Config{
-		MemberID:               1,
-		ClusterMembers:         goldenClusterMembersSharedLog,
-		ClusterDir:             "/tmp/cluster",
-		AeronDir:               "/tmp/aeron",
-		AppointedLeaderID:      new(int32(0)),
-		GracefulClosedLeaderID: new(int32(2)),
-	}.Normalize()
+	cfg := topologyConfig(1)
+	cfg.AppointedLeaderID = new(int32(0))
+	cfg.GracefulClosedLeaderID = new(int32(2))
+	cfg = cfg.Normalize()
 	require.NoError(t, cfg.Validate())
 }

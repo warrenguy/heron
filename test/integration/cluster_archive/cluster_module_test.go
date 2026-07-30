@@ -1,6 +1,6 @@
-//go:build integration
+//go:build integration && archive_live
 
-package integration_test
+package cluster_archive_test
 
 import (
 	"testing"
@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
@@ -41,13 +42,24 @@ func TestClusterModule_electsOneLeaderOverLiveDrivers(t *testing.T) {
 		require.Empty(t, m.RecordingLog().Entries())
 	}
 
-	// Capture log handles before Close. LogStreams is nil after teardown.
+	// Capture archive clients and log handles before Close.
 	type logHandles struct {
 		pub *aeron.ExclusivePublication
 		sub *aeron.Subscription
 	}
 	handles := make([]logHandles, 0, len(set.Modules()))
+	archiveClients := make([]*archive.Client, 0, len(set.Modules()))
 	for _, m := range set.Modules() {
+		archiveClient := m.ArchiveClient()
+		require.NotNil(t, archiveClient)
+		require.False(t, archiveClient.IsClosed())
+		require.Equal(
+			t,
+			archive.DefaultLocalControlChannel,
+			archiveClient.Config().EffectiveControlRequestChannel(),
+		)
+		require.False(t, archiveClient.Config().OwnsAeronClient())
+		archiveClients = append(archiveClients, archiveClient)
 		handles = append(handles, logHandles{
 			pub: m.LogStreams().Publication(),
 			sub: m.LogStreams().Subscription(),
@@ -61,6 +73,8 @@ func TestClusterModule_electsOneLeaderOverLiveDrivers(t *testing.T) {
 		require.True(t, handles[i].sub.IsClosed())
 		require.Nil(t, m.Agent().AppendSource())
 		require.Equal(t, int32(-1), m.Agent().AddLogPublication(0))
+		require.True(t, archiveClients[i].IsClosed())
+		require.Nil(t, m.ArchiveClient())
 	}
 }
 

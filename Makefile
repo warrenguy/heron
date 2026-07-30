@@ -116,8 +116,8 @@ check-test:
 check-inner: check-static check-test
 
 .PHONY: test-all
-test-all: ## Full suite: check rapid integration Docker smokes
-	+@$(MAKE) --no-print-directory check test-rapid test-integration test-docker-smokes
+test-all: ## Full suite: check rapid integration cluster-archive docker-smokes
+	+@$(MAKE) --no-print-directory check test-rapid test-integration test-cluster-archive-optional test-docker-smokes
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
@@ -183,7 +183,7 @@ $(eval $(call sbe-stale-check,,cluster/codecs,clusterwire))
 $(eval $(call sbe-stale-check,-archive,archive/codecs,archivewire))
 $(eval $(call sbe-stale-check,-nodestate,cluster/election,nodewire))
 
-INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe,cluster_java,archive_java,cluster_mixed
+INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe,cluster_java,archive_java,cluster_mixed,archive_live
 
 .PHONY: lint lint-golangci lint-shell goimports gofumpt
 lint: ## golangci-lint and shellcheck
@@ -440,6 +440,20 @@ $(eval $(call optional-target,test-golden-fixtures-unit,command -v mvn >/dev/nul
 
 bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd.sh
 	./scripts/build-aeronmd.sh
+
+# Live Archive suite lives only under test/integration/cluster_archive
+# (//go:build integration && archive_live). No shared package with plain
+# integration tests, so -tags alone selects the suite.
+.PHONY: test-cluster-archive test-cluster-archive-optional
+test-cluster-archive: bin/aeronmd bin/heron-archive-java.jar ## Live: per-member Archive elect and commit
+	go test -timeout=$(TEST_TIMEOUT) -race -count=1 \
+		-tags=integration,archive_live \
+		./test/integration/cluster_archive/
+
+$(eval $(call optional-target,test-cluster-archive,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
+
+bin/heron-archive-java.jar: $(shell find test/integration/archive_java/src -type f) test/integration/archive_java/pom.xml scripts/build-archive-jar.sh
+	./scripts/build-archive-jar.sh
 
 .PHONY: aeronmd-compose-image
 aeronmd-compose-image: bin/aeronmd docker/aeronmd/Dockerfile ## Package bin/aeronmd for compose smokes

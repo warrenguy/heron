@@ -17,16 +17,22 @@ public final class ArchiveNode {
             throw new IllegalStateException("AERON_DIR required");
         }
 
-        final File archiveDir = new File(ArchiveConstants.ARCHIVE_DIR);
+        final File archiveDir = new File(envOrDefault(
+            ArchiveConstants.ARCHIVE_DIR_ENV_KEY, ArchiveConstants.ARCHIVE_DIR));
         if (!archiveDir.exists() && !archiveDir.mkdirs()) {
             throw new IllegalStateException("failed to create archive dir: " + archiveDir);
         }
 
+        final String controlChannel = envOrDefault(
+            ArchiveConstants.CONTROL_CHANNEL_ENV_KEY, ArchiveConstants.CONTROL_CHANNEL);
+        final String replicationChannel = envOrDefault(
+            ArchiveConstants.REPLICATION_CHANNEL_ENV_KEY, ArchiveConstants.REPLICATION_CHANNEL);
+
         final Archive.Context archiveCtx = new Archive.Context()
             .aeronDirectoryName(aeronDir)
             .archiveDir(archiveDir)
-            .controlChannel(ArchiveConstants.CONTROL_CHANNEL)
-            .replicationChannel(ArchiveConstants.REPLICATION_CHANNEL)
+            .controlChannel(controlChannel)
+            .replicationChannel(replicationChannel)
             .localControlChannel(ArchiveConstants.LOCAL_CONTROL_CHANNEL)
             .localControlStreamId(ArchiveConstants.LOCAL_CONTROL_STREAM_ID)
             .lowStorageSpaceThreshold(ArchiveConstants.LOW_STORAGE_SPACE_THRESHOLD_BYTES)
@@ -44,5 +50,10 @@ public final class ArchiveNode {
             System.out.println("heron: archive ready archiveId=" + archive.context().archiveId());
             barrier.await();
         }
+    }
+
+    private static String envOrDefault(final String key, final String fallback) {
+        final String value = System.getenv(key);
+        return value == null || value.isEmpty() ? fallback : value;
     }
 }

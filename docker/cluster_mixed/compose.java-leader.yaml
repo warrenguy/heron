@@ -3,8 +3,9 @@
 #
 # Start order:
 # 1. aeronmd healthy
-# 2. go-java-leader opens module and writes readiness file
-# 3. Java peers start
+# 2. archive-go healthy
+# 3. go-java-leader opens module and writes readiness file
+# 4. Java peers start
 # Two Java members must not canvass while the Go member is absent.
 
 services:
@@ -23,6 +24,8 @@ services:
     network_mode: "service:aeronmd"
     depends_on:
       aeronmd:
+        condition: service_healthy
+      archive-go:
         condition: service_healthy
     environment:
       AERON_TERM_BUFFER_LENGTH: "65536"

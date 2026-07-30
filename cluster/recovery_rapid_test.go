@@ -113,11 +113,13 @@ func TestOpenRecovery_guardMatrix_rapid(t *testing.T) {
 		shape := drawLogShape(rt, dir, lister)
 
 		cfg := cluster.Config{
-			MemberID:       int32(memberID),
-			ClusterMembers: goldenClusterMembersSharedLog,
-			ClusterDir:     dir,
-			AeronDir:       "/tmp/aeron",
-			ServiceCount:   serviceCount,
+			MemberID:                      int32(memberID),
+			ClusterMembers:                goldenClusterMembersSharedLog,
+			ClusterDir:                    dir,
+			AeronDir:                      "/tmp/aeron",
+			ServiceCount:                  serviceCount,
+			ArchiveControlRequestChannel:  testArchiveControlRequestChannel,
+			ArchiveControlResponseChannel: testArchiveControlResponseChannel,
 		}.Normalize()
 
 		// True nil interface: a nil *fakeLister would make ArchiveLister != nil.
@@ -202,14 +204,16 @@ func drawSeededConfig(rt *rapid.T, dir string) (cluster.Config, *fakeLister) {
 
 	electionIn, appointed, graceful, memberID := drawElectionInput(rt)
 	cfg := cluster.Config{
-		MemberID:               memberID,
-		ClusterMembers:         goldenClusterMembersSharedLog,
-		ClusterDir:             dir,
-		AeronDir:               "/tmp/aeron",
-		AppointedLeaderID:      appointed,
-		GracefulClosedLeaderID: graceful,
-		Election:               electionIn,
-		ServiceCount:           rapid.IntRange(0, 3).Draw(rt, "service_count"),
+		MemberID:                      memberID,
+		ClusterMembers:                goldenClusterMembersSharedLog,
+		ClusterDir:                    dir,
+		AeronDir:                      "/tmp/aeron",
+		AppointedLeaderID:             appointed,
+		GracefulClosedLeaderID:        graceful,
+		Election:                      electionIn,
+		ServiceCount:                  rapid.IntRange(0, 3).Draw(rt, "service_count"),
+		ArchiveControlRequestChannel:  testArchiveControlRequestChannel,
+		ArchiveControlResponseChannel: testArchiveControlResponseChannel,
 	}.Normalize()
 	return cfg, lister
 }
@@ -240,9 +244,10 @@ func TestRecoveryElectionConfig_seedOracle_rapid(t *testing.T) {
 	})
 }
 
+// Serial: OpenRecovery holds process FDs and an advisory flock. Parallel
+// neighbours can make a failed open look like a property bug (rapid "flaky").
+// Each cycle closes and waits for zero FDs under dir before the next open.
 func TestOpenRecovery_reopenStable_rapid(t *testing.T) {
-	t.Parallel()
-
 	rapid.Check(t, func(rt *rapid.T) {
 		dir := t.TempDir()
 		cfg, lister := drawSeededConfig(rt, dir)
@@ -263,20 +268,26 @@ func TestOpenRecovery_reopenStable_rapid(t *testing.T) {
 			require.NoError(rt, err, "open cycle %d", i)
 			require.NotNil(rt, recovery)
 
-			if i == 0 {
-				firstPlan = recovery.Plan()
-				firstElection = recovery.ElectionConfig()
-				firstCold = recovery.IsColdStart()
-				firstEntries = len(recovery.RecordingLog().Entries())
-			} else {
+			// Close even when a later assert fails so a held flock cannot
+			// poison a later open on the same dir within this check.
+			func() {
+				defer func() {
+					require.NoError(rt, recovery.Close(), "close cycle %d", i)
+					require.Empty(rt, fdsUnder(t, dir), "fds after close cycle %d", i)
+				}()
+
+				if i == 0 {
+					firstPlan = recovery.Plan()
+					firstElection = recovery.ElectionConfig()
+					firstCold = recovery.IsColdStart()
+					firstEntries = len(recovery.RecordingLog().Entries())
+					return
+				}
 				require.Equal(rt, firstPlan, recovery.Plan())
 				require.Equal(rt, firstElection, recovery.ElectionConfig())
 				require.Equal(rt, firstCold, recovery.IsColdStart())
 				require.Len(rt, recovery.RecordingLog().Entries(), firstEntries)
-			}
-			require.NoError(rt, recovery.Close())
+			}()
 		}
-
-		require.Empty(rt, fdsUnder(t, dir))
 	})
 }

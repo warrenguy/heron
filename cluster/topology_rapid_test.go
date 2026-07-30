@@ -32,12 +32,7 @@ func TestTopology_memberPointerIdentity_rapid(t *testing.T) {
 		thisIdx := rapid.IntRange(0, memberCount-1).Draw(t, "thisIdx")
 		memberID := startID + int32(thisIdx)
 
-		tp, err := cluster.NewTopology(cluster.Config{
-			MemberID:       memberID,
-			ClusterMembers: value,
-			ClusterDir:     "/tmp/cluster",
-			AeronDir:       "/tmp/aeron",
-		}.Normalize())
+		tp, err := cluster.NewTopology(topologyConfigMembers(memberID, value))
 		require.NoError(t, err)
 
 		members := tp.Members()

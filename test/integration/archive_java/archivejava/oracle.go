@@ -48,6 +48,15 @@ const (
 	ComposeGateEnvKey  = "HERON_ARCHIVE_JAVA_COMPOSE"
 	composeSkipRunMake = "requires docker compose; run make "
 	ComposeSkipHint    = "archive java " + composeSkipRunMake + "test-archive-java"
+
+	// ArchiveDirEnvKey is the ArchiveNode env key for the archive data directory.
+	ArchiveDirEnvKey = "HERON_ARCHIVE_DIR"
+
+	// ControlChannelEnvKey is the ArchiveNode env key for the UDP control channel.
+	ControlChannelEnvKey = "HERON_ARCHIVE_CONTROL_CHANNEL"
+
+	// ReplicationChannelEnvKey is the ArchiveNode env key for the replication channel.
+	ReplicationChannelEnvKey = "HERON_ARCHIVE_REPLICATION_CHANNEL"
 )
 
 const TermMinLength = logbuffer.TermMinLength

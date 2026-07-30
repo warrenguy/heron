@@ -125,14 +125,14 @@ trap compose_cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Build the Java image via cluster-0 and the Go service. cluster-1 reuses the
-# cluster-0 image. aeronmd uses the pre-tagged image.
+# Build the Java image via cluster-0, the Go member Archive, and the Go service.
+# cluster-1 reuses the cluster-0 image. aeronmd uses the pre-tagged image.
 #
 # Build stays outside the outer timeout. Image build wall clock varies.
-compose build cluster-0 "${GO_SERVICE}"
+compose build cluster-0 archive-go "${GO_SERVICE}"
 
 smoke_logs() {
-	compose logs --no-color aeronmd cluster-0 cluster-1 "${GO_SERVICE}"
+	compose logs --no-color aeronmd archive-go cluster-0 cluster-1 "${GO_SERVICE}"
 }
 
 # True when Docker IPAM refused the subnet because another network holds it.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 )
 
@@ -24,29 +26,33 @@ import (
 // so the fixture must not wait that long per member.
 const defaultClusterMemberCloseLinger = 250 * time.Millisecond
 
-// ClusterMemberSet is a set of in-process consensus members. One media driver
-// and one ConsensusModule per member. All members share one cluster members
-// string.
+// ClusterMemberSet is a set of in-process consensus members. One media driver,
+// one Archive server, and one ConsensusModule per member. All members share
+// one cluster members string.
 //
-// This set starts no Archive server. Product topology co-locates one Archive
-// server per member. No member shares an Archive with another member. The
-// caller starts the Archive server.
+// The fixture co-locates one Archive server per member. Product topology does
+// the same. No member shares an Archive with another member.
 //
 // Concurrency: invoker-only. Every method runs on the test goroutine.
 //
 // Lifetime:
-//   - After each successful open, t.Cleanup registers that module's Close.
-//   - Registration runs after harness.Start for the same member.
-//   - LIFO teardown closes the module before that driver's Stop.
-//   - LIFO teardown closes later members before earlier members.
+//   - Per member, registration order is driver Stop (inside Start), Archive
+//     Stop (inside StartArchiveNode), then module Close.
+//   - LIFO teardown per member is module Close, then Archive Stop, then
+//     driver Stop.
+//   - Across the set, later modules close before earlier modules. After every
+//     module Close, Cleanup LIFO stops later Archives and drivers before
+//     earlier ones.
 //   - Close is public and idempotent. Callers may call Close early.
 //   - Invoker must not call Tick, PumpTransportUntil, TickUntil,
 //     AwaitLogImages, AwaitElection, or LogSessionIDs after Close.
-//     Close clears the transport client and LogStreams.
+//     Close clears the transport client, archive control client, and
+//     LogStreams.
 //   - State stays readable after Close for failure dumps.
 //     Nil handles report as sentinel values.
 type ClusterMemberSet struct {
 	modules       []*cluster.ConsensusModule
+	nodes         []*ArchiveNode
 	membersString string
 }
 
@@ -68,27 +74,36 @@ type ClusterMemberSetConfig struct {
 	LogMulticastEndpoint string
 }
 
-// StartClusterMemberSet starts MemberCount media drivers and opens one
-// ConsensusModule per driver against a shared multicast cluster log.
+// StartClusterMemberSet starts MemberCount media drivers, one Archive server
+// per driver, and one ConsensusModule per driver against a shared multicast
+// cluster log.
 //
-// Open order per member:
-//  1. harness.Start registers driver Stop on t.Cleanup
-//  2. successful OpenConsensusModule registers module Close on t.Cleanup
+// Open order uses two loops so every Archive is ready before any member opens:
+//  1. Per member: harness.Start registers driver Stop; StartArchiveNode
+//     registers Archive Stop.
+//  2. Per member: successful OpenConsensusModule registers module Close.
 //
-// LIFO for that member is Close then Stop. Across the set, later members
-// close before earlier members.
+// Per member LIFO is module Close, then Archive Stop, then driver Stop.
+// Across a three-member set, Cleanup LIFO is:
 //
-// A mid-loop open failure keeps Cleanup for every module already opened.
+//	module 2, module 1, module 0, archive 2, driver 2, archive 1, driver 1,
+//	archive 0, driver 0
+//
+// Every module closes before any Archive stops.
+//
+// A mid-loop open failure keeps Cleanup for every resource already started.
 func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMemberSet {
 	t.Helper()
 
-	require.GreaterOrEqual(t, cfg.MemberCount, 1, "ClusterMemberSet: MemberCount must be >= 1")
-	require.Positive(t, cfg.PortBase, "ClusterMemberSet: PortBase must be positive")
-	require.NotEmpty(
-		t,
-		cfg.LogMulticastEndpoint,
-		"ClusterMemberSet: LogMulticastEndpoint must be non-empty",
-	)
+	if cfg.MemberCount < 1 {
+		require.FailNow(t, "ClusterMemberSet: MemberCount must be >= 1")
+	}
+	if cfg.PortBase <= 0 {
+		require.FailNow(t, "ClusterMemberSet: PortBase must be positive")
+	}
+	if cfg.LogMulticastEndpoint == "" {
+		require.FailNow(t, "ClusterMemberSet: LogMulticastEndpoint must be non-empty")
+	}
 
 	// CaptureFailTB does not stop the goroutine. Return before any driver starts.
 	if failedCaptureTB(t) {
@@ -115,15 +130,37 @@ func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMem
 	set := &ClusterMemberSet{
 		membersString: membersString,
 	}
+
+	// Loop 1: every driver and Archive before any transport client exists.
+	aeronDirs := make([]string, cfg.MemberCount)
 	for i := range cfg.MemberCount {
 		md := Start(t)
+		aeronDirs[i] = md.Dir
+
+		controlPort := cluster.CalculatePort(
+			int32(i),
+			cfg.PortBase,
+			cluster.ArchiveControlPortOffset,
+		)
+		controlChannel := "aeron:udp?endpoint=127.0.0.1:" + strconv.Itoa(controlPort)
+		node := StartArchiveNode(t, ArchiveNodeConfig{
+			AeronDir:       md.Dir,
+			ControlChannel: controlChannel,
+		})
+		set.nodes = append(set.nodes, node)
+	}
+
+	// Loop 2: open members after every Archive is ready.
+	for i := range cfg.MemberCount {
 		module, openErr := cluster.OpenConsensusModule(context.Background(), cluster.ConsensusModuleDeps{
 			Config: cluster.Config{
-				MemberID:       int32(i),
-				ClusterMembers: membersString,
-				ClusterDir:     t.TempDir(),
-				AeronDir:       md.Dir,
-				LogChannel:     ClusterLogChannelTemplate,
+				MemberID:                      int32(i),
+				ClusterMembers:                membersString,
+				ClusterDir:                    t.TempDir(),
+				AeronDir:                      aeronDirs[i],
+				LogChannel:                    ClusterLogChannelTemplate,
+				ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
+				ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
 				AeronConfig: aeron.Config{
 					InterServiceTimeout: ConnectedPollTimeout,
 					CloseLingerDuration: defaultClusterMemberCloseLinger,
@@ -134,8 +171,8 @@ func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMem
 		require.NotNil(t, module)
 		set.modules = append(set.modules, module)
 
-		// Register Close after Start's Stop Cleanup so LIFO closes the module before
-		// the driver.
+		// Register Close after Start and StartArchiveNode so LIFO closes the
+		// module before Archive Stop and driver Stop.
 		CleanupClose(t, fmt.Sprintf("cluster member %d", i), module.Close)
 	}
 	return set
@@ -147,6 +184,15 @@ func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMem
 // (append, reorder, or replace elements).
 func (s *ClusterMemberSet) Modules() []*cluster.ConsensusModule {
 	return s.modules
+}
+
+// ArchiveNodes returns every Archive server in member-id order.
+//
+// Ownership: the set owns the slice. Caller must not mutate the returned slice
+// or stop the nodes. Process lifetime is StartArchiveNode via t.Cleanup. Close
+// does not stop Archives.
+func (s *ClusterMemberSet) ArchiveNodes() []*ArchiveNode {
+	return s.nodes
 }
 
 // MembersString returns the shared cluster members string.
@@ -179,17 +225,22 @@ func (s *ClusterMemberSet) Leaders() []*cluster.ConsensusModule {
 	return leaders
 }
 
-// Tick runs one duty cycle over every member. First every transport client.
-// Then every agent.
+// Tick runs one duty cycle over every member. First every transport client and
+// that member's archive control poll. Then every agent.
 //
 // Two loops, not one interleaved loop. A member's consensus publication and a
 // peer's consensus subscription live on different drivers. A frame written by
 // one agent is visible only after the peer's client has pumped.
 //
+// The archive poll sits in the transport loop. Archive input is that member's
+// own conductor output over local IPC. The archive poll has no cross-member
+// dependency.
+//
 // Invoker must not call Tick after Close.
 func (s *ClusterMemberSet) Tick() {
 	for _, m := range s.modules {
 		m.Client().DoWork()
+		m.ArchiveClient().Poll()
 	}
 	for _, m := range s.modules {
 		m.Agent().DoWork(m.NanoClock()())
@@ -197,7 +248,8 @@ func (s *ClusterMemberSet) Tick() {
 }
 
 // PumpTransportUntil pumps every transport client until ok reports true or the
-// deadline bound elapses. Does not call any agent.
+// deadline bound elapses. Does not call any agent. Does not poll archive
+// control. Use Tick or TickUntil when control demux is required.
 //
 // Returns:
 //   - true when ok reports true before the bound
@@ -337,11 +389,18 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 		recEntries = len(rec.Entries())
 	}
 
+	archiveSession := int64(-1)
+	archiveConnected := false
+	if archiveClient := m.ArchiveClient(); archiveClient != nil && !archiveClient.IsClosed() {
+		archiveSession = archiveClient.ControlSessionID()
+		archiveConnected = true
+	}
+
 	return fmt.Sprintf(
 		"member=%d state=%v complete=%v role=%v term=%d leaderID=%d "+
 			"images=%d logPubSession=%d logPubPos=%d adapterPos=%d imagePos=%d "+
 			"joinPos=%d imageSession=%d appendSrc=%d commit=%d notified=%d "+
-			"recLogEntries=%d\n",
+			"recLogEntries=%d archiveConnected=%v archiveSession=%d\n",
 		m.ThisMemberID(),
 		m.ElectionState(),
 		m.ElectionComplete(),
@@ -359,13 +418,17 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 		m.CommitPosition(),
 		m.NotifiedCommitPosition(),
 		recEntries,
+		archiveConnected,
+		archiveSession,
 	)
 }
 
 // Close closes every module in reverse open order. Idempotent via each
-// module's idempotent Close.
+// module's idempotent Close. Module Close clears each transport client,
+// archive control client, and LogStreams.
 //
-// Does not stop media drivers. harness.Start owns those via t.Cleanup.
+// Does not stop Archives or media drivers. StartArchiveNode and harness.Start
+// own those via t.Cleanup.
 func (s *ClusterMemberSet) Close() error {
 	if s == nil {
 		return nil

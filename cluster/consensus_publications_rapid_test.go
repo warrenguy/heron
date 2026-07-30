@@ -32,12 +32,7 @@ func TestConsensusPublications_peerSetLifecycle_rapid(t *testing.T) {
 		thisIdx := rapid.IntRange(0, memberCount-1).Draw(t, "thisIdx")
 		memberID := startID + int32(thisIdx)
 
-		topology, err := cluster.NewTopology(cluster.Config{
-			MemberID:       memberID,
-			ClusterMembers: members,
-			ClusterDir:     "/tmp/cluster",
-			AeronDir:       "/tmp/aeron",
-		}.Normalize())
+		topology, err := cluster.NewTopology(topologyConfigMembers(memberID, members))
 		require.NoError(t, err)
 
 		// Model: all ids except self.
@@ -128,12 +123,7 @@ func TestConsensusPublications_addFailureRollsBack_rapid(t *testing.T) {
 		thisIdx := rapid.IntRange(0, memberCount-1).Draw(t, "thisIdx")
 		memberID := startID + int32(thisIdx)
 
-		topology, err := cluster.NewTopology(cluster.Config{
-			MemberID:       memberID,
-			ClusterMembers: members,
-			ClusterDir:     "/tmp/cluster",
-			AeronDir:       "/tmp/aeron",
-		}.Normalize())
+		topology, err := cluster.NewTopology(topologyConfigMembers(memberID, members))
 		require.NoError(t, err)
 
 		peerIDs := make([]int32, 0, memberCount-1)

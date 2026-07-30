@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/idlestrategy"
 )
@@ -25,22 +26,25 @@ import (
 var ErrTransportTerminating = errors.New("cluster: transport client is terminating")
 
 // transportInvoker is the transport half of one duty tick.
-//
-// [aeron.Client] implements transportInvoker.
-//
-// The type stays unexported so RunnerDeps.Client stays a concrete type.
-// A nil *aeron.Client stored in an interface field is not a nil interface.
-// NewRunner's nil check would miss that case.
 type transportInvoker interface {
 	DoWork() int
 	IsTerminating() bool
 }
 
+// archiveInvoker is the archive-control half of one duty tick.
+type archiveInvoker interface {
+	Poll() int
+}
+
+// noArchiveInvoker reports zero work when RunnerDeps.Archive is nil.
+//
+// [NewRunner] installs noArchiveInvoker so [Runner.DoWork] has no nil branch
+// and no Runner holds a typed-nil archive.Client.
+type noArchiveInvoker struct{}
+
+func (noArchiveInvoker) Poll() int { return 0 }
+
 // agentInvoker is the consensus half of one duty tick.
-//
-// [consensus.Agent] implements agentInvoker.
-//
-// Unexported for the same reason as [transportInvoker].
 type agentInvoker interface {
 	DoWork(nowNs int64) int
 }
@@ -57,9 +61,17 @@ type RunnerDeps struct {
 	// Required. Pass ConsensusModule.Client.
 	Client *aeron.Client
 
-	// Agent is the consensus agent the duty cycle ticks after the transport.
-	// Required. Pass ConsensusModule.Agent.
+	// Agent is the consensus agent the duty cycle ticks after the transport client
+	// and the archive control poll. Required. Pass ConsensusModule.Agent.
 	Agent *consensus.Agent
+
+	// Archive is the archive control client the duty cycle demuxes. Pass
+	// ConsensusModule.ArchiveClient on the product path.
+	//
+	// Nil is allowed. A nil Archive reports zero archive work every tick. Product
+	// open supplies a non-nil client. Nil is for tests that drive the agent without
+	// an Archive.
+	Archive *archive.Client
 
 	// Idle paces [Runner.Run]. Nil takes idlestrategy.NewDefaultBackoff.
 	//
@@ -78,7 +90,8 @@ type RunnerDeps struct {
 }
 
 // Runner drives one consensus member's duty cycle on the calling goroutine.
-// Order is transport client, then agent.
+// Tick order is transport client DoWork, then archive control Poll, then agent
+// DoWork.
 //
 // Build with [NewRunner]. Drive with [Runner.DoWork] for one tick, or with
 // [Runner.Run] until the context is done or the transport client enters
@@ -90,29 +103,16 @@ type RunnerDeps struct {
 //	}
 //	defer module.Close()
 //	runner, err := cluster.NewRunner(cluster.RunnerDeps{
-//		Client: module.Client(),
-//		Agent:  module.Agent(),
-//		Idle:   module.IdleStrategy(),
-//		Clock:  module.NanoClock(),
+//		Client:  module.Client(),
+//		Agent:   module.Agent(),
+//		Archive: module.ArchiveClient(),
+//		Idle:    module.IdleStrategy(),
+//		Clock:   module.NanoClock(),
 //	})
 //	if err != nil {
 //		return err
 //	}
 //	return runner.Run(ctx)
-//
-// Concurrency: invoker-only. One Runner per goroutine. Every Runner method must
-// run on that member's duty-cycle goroutine. Other goroutines must not call
-// Runner methods or non-atomic agent accessors.
-//
-// [ConsensusModule.CommitPosition] remains safe to read via the module from any
-// goroutine.
-//
-// Ownership: Runner does not own its collaborators. Runner closes none of them.
-//
-// Lifetime: Runner remains a usable Go value after [ConsensusModule.Close].
-// Close closes the client and agent Runner holds. DoWork after Close reports
-// zero work on a closed client. DoWork after Close polls nothing on a closed
-// consensus subscription.
 //
 // Behaviour: [Runner.Run] does not return because of Close. A closed client
 // reports no termination. Run calls Idle(0) until the context is done.
@@ -121,20 +121,42 @@ type RunnerDeps struct {
 // duty cycle before closing the module. Build a new Runner rather than reusing
 // one across a close.
 //
+// Concurrency: invoker-only. One Runner per goroutine. Every Runner method must
+// run on that member's duty cycle goroutine. Other goroutines must not call
+// Runner methods or non-atomic agent accessors.
+// [ConsensusModule.CommitPosition] remains safe to read via the module from any
+// goroutine.
+//
+// Lifetime: Runner remains a usable Go value after [ConsensusModule.Close].
+// [ConsensusModule.Close] closes the transport client when the module owns it.
+// A client supplied via Config.Aeron stays open. [ConsensusModule.Close] always
+// closes the archive control client the Runner borrows. [ConsensusModule.Close]
+// clears agent bindings. DoWork after Close reports zero work on a closed client.
+// DoWork after Close polls nothing on a closed consensus subscription. DoWork
+// after Close reports zero archive work on a closed archive control client.
+//
+// Ownership: Runner does not own its collaborators. Runner closes none of them.
+//
 // Do not copy. A copy shares the same collaborators and the same idle strategy.
 // The strategy contract forbids sharing.
 type Runner struct {
-	client transportInvoker
-	agent  agentInvoker
-	idle   idlestrategy.IdleStrategy
-	clock  func() int64
+	client  transportInvoker
+	archive archiveInvoker
+	agent   agentInvoker
+	idle    idlestrategy.IdleStrategy
+	clock   func() int64
 }
 
-// NewRunner binds one duty cycle over a transport client and a consensus agent.
+// NewRunner binds one duty cycle over a transport client, an optional archive
+// control client, and a consensus agent.
 //
 // Client, Agent, and Clock have no safe default. A nil transport client
 // services nothing and reports no error. A nil agent panics on the first tick.
 // A defaulted clock would be a second clock the election does not share.
+//
+// Archive takes a default. A nil Archive installs a no-op invoker that reports
+// zero work. Product open supplies a non-nil client. Nil is for tests that drive
+// the agent without an Archive.
 //
 // A nil Idle is filled with idlestrategy.NewDefaultBackoff, matching
 // [Config.Normalize].
@@ -160,32 +182,40 @@ func NewRunner(deps RunnerDeps) (*Runner, error) {
 	if idle == nil {
 		idle = idlestrategy.NewDefaultBackoff()
 	}
+	var archivePoll archiveInvoker = noArchiveInvoker{}
+	if deps.Archive != nil {
+		archivePoll = deps.Archive
+	}
 	return &Runner{
-		client: deps.Client,
-		agent:  deps.Agent,
-		idle:   idle,
-		clock:  deps.Clock,
+		client:  deps.Client,
+		archive: archivePoll,
+		agent:   deps.Agent,
+		idle:    idle,
+		clock:   deps.Clock,
 	}, nil
 }
 
 // DoWork runs one duty tick and returns the total work count.
-// Order is transport client, then the agent at the clock's current value.
+// Order is transport client, then archive control poll, then the agent at the
+// clock's current value.
 //
-// The transport runs first. The agent reads what the client's conductor
-// delivered. Reversing the two costs one tick of latency per hop.
+// The transport runs first. Archive control responses arrive on a subscription
+// the transport conductor services. The agent acts on those demux effects.
+// Reversing the order costs one tick of latency per hop.
 //
 // DoWork never idles. DoWork never sleeps. The caller paces repeated calls.
 //
-// Each call performs bounded work. One call is one conductor service tick plus
+// Each call performs bounded work: one conductor service tick, one bounded
+// archive demux poll (DefaultControlResponseFragmentLimit, ten fragments), and
 // one bounded ingress poll. Progress needs repeated calls.
 //
-// DoWork drives one member. Both halves run in one call.
+// DoWork drives one member. All three parts run in one call.
 //
 // A multi-member duty cycle that must service every transport before any agent
 // must drive the module accessors directly. Do not call DoWork or Run on each
 // Runner for that shape.
 func (r *Runner) DoWork() int {
-	return r.client.DoWork() + r.agent.DoWork(r.clock())
+	return r.client.DoWork() + r.archive.Poll() + r.agent.DoWork(r.clock())
 }
 
 // Run pumps [Runner.DoWork] and idles on each tick's work count until stop.

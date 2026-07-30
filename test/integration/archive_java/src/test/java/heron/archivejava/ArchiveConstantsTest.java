@@ -90,4 +90,19 @@ class ArchiveConstantsTest {
     void composeGateEnvKey_matchesOracle() {
         assertEquals("HERON_ARCHIVE_JAVA_COMPOSE", ArchiveConstants.COMPOSE_GATE_ENV_KEY);
     }
+
+    @Test
+    void archiveDirEnvKey_matchesOracle() {
+        assertEquals("HERON_ARCHIVE_DIR", ArchiveConstants.ARCHIVE_DIR_ENV_KEY);
+    }
+
+    @Test
+    void controlChannelEnvKey_matchesOracle() {
+        assertEquals("HERON_ARCHIVE_CONTROL_CHANNEL", ArchiveConstants.CONTROL_CHANNEL_ENV_KEY);
+    }
+
+    @Test
+    void replicationChannelEnvKey_matchesOracle() {
+        assertEquals("HERON_ARCHIVE_REPLICATION_CHANNEL", ArchiveConstants.REPLICATION_CHANNEL_ENV_KEY);
+    }
 }
