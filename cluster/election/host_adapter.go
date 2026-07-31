@@ -55,12 +55,14 @@ type HostAdapterConfig struct {
 	//
 	// Same instance should be passed to ElectionDeps.Publisher for ballot and
 	// NewLeadershipTerm paths. HostAdapter uses it for Commit/Append egress only.
+	//
 	// Agent never holds Publisher.
 	Publisher Publisher
 
 	// Members is required and non-empty.
 	//
 	// Shared with ElectionDeps.Members (same slice, same *Member pointers).
+	//
 	// HostAdapter does not copy members.
 	//
 	// Length and IDs are fixed after construct (see HostAdapter invariant).
@@ -74,6 +76,7 @@ type HostAdapterConfig struct {
 	// same *Member.
 	//
 	// Pass the same thisMember pointer into HostAdapter and ElectionDeps.
+	//
 	// Construct seeds Agent.ThisMemberID from ThisMember.ID (steady leader
 	// stamp store).
 	ThisMember *Member
@@ -324,6 +327,9 @@ func (h *HostAdapter) LocalLogRecordingID() int64 {
 	return h.agent.LocalLogRecordingID()
 }
 
+// SetLogRecordingID stores the local log recording id.
+//
+// Production hosts do not overwrite while a cluster log recording is running.
 func (h *HostAdapter) SetLogRecordingID(recordingID int64) {
 	h.agent.SetLogRecordingID(recordingID)
 }

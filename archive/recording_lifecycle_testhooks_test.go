@@ -558,6 +558,127 @@ func TestStartRecording_errorResponseReturnsError(t *testing.T) {
 	require.Zero(t, got)
 }
 
+func TestStartRecordingAwaitSignal_nilTrackerReturnsError(t *testing.T) {
+	h := newLifecycleHarness(t)
+	targets := h.responseTargets()
+
+	err := h.controlOps(func() int { return h.demuxPoll(targets) }).startRecordingAwaitSignal(
+		t.Context(),
+		archiveProxyTestRecordingStreamID,
+		archivewire.SourceLocation_LOCAL,
+		[]byte(lifecycleRecordingChannel),
+		targets,
+		nil,
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "non-nil")
+}
+
+func TestStartRecordingAwaitSignal_errorResponseReturnsError(t *testing.T) {
+	h := newLifecycleHarness(t)
+	tracker := NewStartSignalTracker(controlResponseTestControlSessionID)
+	targets := h.signalTargets(tracker)
+	written := false
+	pollFn := h.respondControlResponseOnce(
+		t,
+		0,
+		archivewire.ControlResponseCode_ERROR,
+		&written,
+		targets,
+	)
+
+	err := h.controlOps(pollFn).startRecordingAwaitSignal(
+		t.Context(),
+		archiveProxyTestRecordingStreamID,
+		archivewire.SourceLocation_LOCAL,
+		[]byte(lifecycleRecordingChannel),
+		targets,
+		tracker,
+	)
+	require.Error(t, err)
+	require.False(t, tracker.Started())
+}
+
+func TestStartRecordingAwaitSignal_OKAloneDoesNotComplete(t *testing.T) {
+	h := newLifecycleHarness(t)
+	tracker := NewStartSignalTracker(controlResponseTestControlSessionID)
+	targets := h.signalTargets(tracker)
+	written := false
+	pollFn := h.respondControlResponseOnce(
+		t,
+		0,
+		archivewire.ControlResponseCode_OK,
+		&written,
+		targets,
+	)
+
+	err := h.controlOps(pollFn).startRecordingAwaitSignal(
+		t.Context(),
+		archiveProxyTestRecordingStreamID,
+		archivewire.SourceLocation_LOCAL,
+		[]byte(lifecycleRecordingChannel),
+		targets,
+		tracker,
+	)
+	require.Error(t, err)
+	var timeoutErr *ControlResponseTimeoutError
+	require.ErrorAs(t, err, &timeoutErr)
+	require.Equal(t, StartRecordingAwaitOperation, timeoutErr.Operation)
+	require.True(t, written)
+	require.False(t, tracker.Started())
+}
+
+func TestStartRecordingAwaitSignal_OKThenSTART(t *testing.T) {
+	h := newLifecycleHarness(t)
+	tracker := NewStartSignalTracker(controlResponseTestControlSessionID)
+	targets := h.signalTargets(tracker)
+	okWritten := false
+	startWritten := false
+	pollFn := func() int {
+		if offered := h.pub.lastOffer(); offered != nil {
+			correlationID := offeredArchiveCorrelationID(t, offered)
+			if !okWritten {
+				responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+					ControlSessionID: controlResponseTestControlSessionID,
+					CorrelationID:    correlationID,
+					Code:             archivewire.ControlResponseCode_OK,
+					Version:          520,
+				})
+				writeUnfragmentedWireToTerm(t, h.termBuffer, responseWire)
+				okWritten = true
+			} else if !startWritten {
+				signalWire := encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
+					ControlSessionID: controlResponseTestControlSessionID,
+					CorrelationID:    correlationID,
+					RecordingID:      lifecycleRecordingID,
+					SubscriptionID:   2002,
+					Position:         3003,
+					Signal:           archivewire.RecordingSignal_START,
+				})
+				appendUnfragmentedWireToTerm(t, h.termBuffer, signalWire)
+				startWritten = true
+			}
+		}
+		h.advanceClock()
+		return h.demuxPoll(targets)
+	}
+
+	err := h.controlOps(pollFn).startRecordingAwaitSignal(
+		t.Context(),
+		archiveProxyTestRecordingStreamID,
+		archivewire.SourceLocation_LOCAL,
+		[]byte(lifecycleRecordingChannel),
+		targets,
+		tracker,
+	)
+	require.NoError(t, err)
+	require.True(t, okWritten)
+	require.True(t, startWritten)
+	require.True(t, tracker.Started())
+	require.Equal(t, lifecycleRecordingID, tracker.StartedRecordingID())
+	require.False(t, h.poller.IsPollComplete())
+}
+
 func TestStopRecording_awaitOK(t *testing.T) {
 	h := newLifecycleHarness(t)
 	written := false

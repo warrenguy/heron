@@ -279,7 +279,7 @@ func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
 
 	const termID int64 = 3
 	nowNs := time.Now().UnixNano()
-	agent0.JoinLogAsLeader(termID, 0, sessionID, false)
+	require.NoError(t, agent0.JoinLogAsLeader(termID, 0, sessionID, false))
 	require.True(t, agent0.AppendNewLeadershipTermEvent(nowNs))
 
 	harness.PollSplitClientsUntil(

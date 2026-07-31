@@ -1,13 +1,17 @@
 package consensus
 
 import (
+	"errors"
 	"sync/atomic"
 
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
 // nullValue mirrors aeron cnc NullValue (-1) for recording IDs and null session.
+//
 // Local unexported const - do not import election.
 const nullValue = -1
 
@@ -60,11 +64,23 @@ type Agent struct {
 	catchupLogDestination    string
 	localLogRecordingID      int64
 
+	// recordingControl starts and stops the cluster log recording. Nil skips
+	// recording in both joins and in PrepareForNewLeadership.
+	//
+	// [LogRecordingControl.IsActive] owns live-vs-inactive. The agent does not
+	// keep a second active flag.
+	//
+	// localLogRecordingID is kept after a stop so a term entry still names the
+	// recording that carried the term.
+	recordingControl LogRecordingControl
+
 	// leadershipTermID is the current term for publish and ingress term gates.
+	//
 	// Default 0 is a valid term id (first term) - not a sentinel.
 	leadershipTermID int64
 
 	// thisMemberID is this node's cluster member id for steady leader stamp.
+	//
 	// Default 0 is a valid member id; tests that need "unset" pass
 	// nullMemberID (-1). HostAdapter construct seeds from ThisMember.ID.
 	thisMemberID int32
@@ -84,6 +100,7 @@ type Agent struct {
 	leaderHeartbeatIntervalNs int64
 
 	// notifiedCommitPosition is the follower-visible commit high-water.
+	//
 	// Written by steady ingress CommitPosition and NewLeadershipTerm
 	// handlers; [Agent.NotifiedCommitPosition] exposes it.
 	notifiedCommitPosition int64
@@ -127,6 +144,7 @@ type Agent struct {
 	logAdapter *LogAdapter
 
 	// joinSource supplies the live cluster log image for the follower log join.
+	//
 	// Nil: FollowerLogJoinReady and JoinLogAsFollower both report not-ready.
 	joinSource LogJoinSource
 
@@ -141,11 +159,13 @@ type Agent struct {
 	logReplayFactory LogReplayFactory
 
 	// termBaseLogPosition is the term base written into NewLeadershipTermEvent.
+	//
 	// Seeded by [Agent.SetTermBaseLogPosition] or [Agent.JoinLogAsLeader]
 	// logPosition.
 	termBaseLogPosition int64
 
 	// appVersion is the application version for NewLeadershipTermEvent.
+	//
 	// Default 0 is valid on the wire.
 	appVersion int32
 }
@@ -167,6 +187,7 @@ type AgentConfig struct {
 
 	// Commit is mode-1 injected *atomic.Int64. Nil commit:
 	// [Agent.ProposeMaxCommit] and [Agent.CommitPosition] return 0 (no store).
+	//
 	// Production bootstrap passes non-nil.
 	Commit *atomic.Int64
 
@@ -181,6 +202,7 @@ type AgentConfig struct {
 	LeadershipTermID int64
 
 	// ThisMemberID seeds a.thisMemberID as given. Zero is valid.
+	//
 	// HostAdapter construct overwrites via [Agent.SetThisMemberID] from
 	// ThisMember.ID when the host is wired.
 	ThisMemberID int32
@@ -199,6 +221,7 @@ type AgentConfig struct {
 	AppendSource AppendPositionSource
 
 	// LogPublisher optional inject for log append and NewLeadershipTermEvent.
+	//
 	// Nil until wired via config or [Agent.SetLogPublisher].
 	LogPublisher *LogPublisher
 
@@ -262,6 +285,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 }
 
 // SetPositions sets the [PositionTable] used for ranking and member updates.
+//
 // Idempotent replace.
 //
 // Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
@@ -273,6 +297,7 @@ func (a *Agent) SetPositions(positions PositionTable) {
 }
 
 // SetEgress sets the [ConsensusEgress] used for commit/append publish.
+//
 // Idempotent replace.
 //
 // Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
@@ -345,6 +370,7 @@ func (a *Agent) ProposeMaxCommit(pos int64) int64 {
 // three-arg form (stamps append, then forwards quorum here).
 //
 // Gate: quorumPosition > commit OR nowNs >= timeOfLastLogUpdateNs + interval.
+//
 // On pass: PublishCommitPosition(quorum, leadershipTermID), ProposeMaxCommit,
 // set timeOfLastLogUpdateNs, sweepUncommitted (no-op stub), return 1.
 //
@@ -374,6 +400,7 @@ func (a *Agent) sweepUncommittedEntriesTo(quorumPosition int64) {
 }
 
 // TimeOfLastLeaderUpdateNs returns the last inbound leader-update clock.
+//
 // Written only on inbound NewLeadershipTerm / CommitPosition (ingress path).
 func (a *Agent) TimeOfLastLeaderUpdateNs() int64 {
 	return a.timeOfLastLeaderUpdateNs
@@ -405,11 +432,13 @@ func (a *Agent) LeaderMemberID() int32 { return a.leaderMemberID }
 func (a *Agent) SetLeaderMemberID(id int32) { a.leaderMemberID = id }
 
 // NotifiedCommitPosition returns the follower-visible commit high-water.
+//
 // Steady-state CommitPosition / NewLeadershipTerm handlers advance this via
 // max with the inbound position when term and leader gates pass.
 func (a *Agent) NotifiedCommitPosition() int64 { return a.notifiedCommitPosition }
 
 // doneLogReplay is an immediately-complete [LogReplay] at a fixed position.
+//
 // Avoids livelock on leader-replay gap when archive helpers are not yet wired.
 type doneLogReplay struct{ position int64 }
 
@@ -422,6 +451,7 @@ var _ LogReplay = (*doneLogReplay)(nil)
 // LogReplayFactory builds a [LogReplay] helper for [Agent.NewLogReplay].
 //
 // Nil factory field: NewLogReplay returns a done-stub at appendPosition.
+//
 // A non-nil factory that returns nil also falls through to the done-stub
 // (avoids soft livelock on leader-replay construction).
 type LogReplayFactory func(logPosition, appendPosition int64) LogReplay
@@ -452,6 +482,7 @@ func (a *Agent) SetLogReplicationFactory(f LogReplicationFactory) { a.logReplica
 // NewLogReplay returns a [LogReplay] for the logPosition/appendPosition gap.
 //
 // When a [LogReplayFactory] is set and returns non-nil, returns that result.
+//
 // Nil factory field or factory result falls through to a done-stub at
 // appendPosition ([LogReplay.IsDone] true, [LogReplay.DoWork] 0).
 func (a *Agent) NewLogReplay(logPosition, appendPosition int64) LogReplay {
@@ -551,6 +582,7 @@ func (a *Agent) SetLogPublisher(p *LogPublisher) { a.logPublisher = p }
 func (a *Agent) SetLogAdapter(adapter *LogAdapter) { a.logAdapter = adapter }
 
 // SetTermBaseLogPosition sets the term base written into NewLeadershipTermEvent.
+//
 // Prefer [Agent.JoinLogAsLeader] on the leader-join path; use this setter for
 // tests or bootstrap that skip join.
 func (a *Agent) SetTermBaseLogPosition(pos int64) { a.termBaseLogPosition = pos }
@@ -598,8 +630,44 @@ func (a *Agent) PollArchiveEvents() int { return 0 }
 // LocalLogRecordingID returns the local log recording id (default nullValue).
 func (a *Agent) LocalLogRecordingID() int64 { return a.localLogRecordingID }
 
+// IsRecordingActive reports whether this member's cluster log recording is
+// running now.
+//
+// Behaviour:
+//   - false when no [LogRecordingControl] is wired
+//   - otherwise the value of [LogRecordingControl.IsActive]
+//
+// [LogRecordingControl.IsActive] is false before the first successful start
+// and after a clean stop. The control reports true after a successful start
+// until the next clean stop.
+//
+// [Agent.LocalLogRecordingID] keeps the last non-null recording id across a
+// stop. A non-null id with IsRecordingActive false is expected and is not a
+// fault.
+//
+// Callers that rank on a recording-position counter must read
+// IsRecordingActive, not [Agent.LocalLogRecordingID]. A retained id with no
+// live recording has no counter. That state must not read as a missing
+// counter under live recording.
+//
+// Concurrency: invoker-only.
+func (a *Agent) IsRecordingActive() bool {
+	return a.recordingControl != nil && a.recordingControl.IsActive()
+}
+
 // SetLogRecordingID sets the local log recording id.
+//
+// Behaviour:
+//   - stores recordingID when no cluster log recording is running
+//   - does not overwrite while [Agent.IsRecordingActive] is true
+//   - a recording id this agent established from an awaited START signal cannot
+//     be renamed by a caller that learned a different id elsewhere
+//
+// Concurrency: invoker-only.
 func (a *Agent) SetLogRecordingID(recordingID int64) {
+	if a.IsRecordingActive() {
+		return
+	}
 	a.localLogRecordingID = recordingID
 }
 
@@ -627,63 +695,196 @@ func (a *Agent) FollowerLogJoinReady(
 }
 
 // PrepareForNewLeadership sets role [RoleFollower], clears the known leader,
-// resets follower append cadence state, and returns logPosition as the
-// last-append placeholder. Commit value is kept. Log/ingress tear-down lands
-// with full agent wiring.
-func (a *Agent) PrepareForNewLeadership(logPosition, nowNs int64) int64 {
+// resets follower append cadence state, stops the cluster log recording when a
+// control is wired, and returns the last-append position.
+//
+// Commit is kept.
+//
+// Log and ingress tear-down land with full agent wiring.
+//
+// Role, known leader, and cadence fields always reset before any stop attempt,
+// including when the stop later fails.
+//
+// Stop runs whenever a control is wired, not only when
+// [LogRecordingControl.IsActive] is true. Stop is idempotent when nothing
+// needs draining. That path drains a dirty start that never became active.
+//
+// Returns:
+//   - archive stop position, nil: a live recording was stopped
+//     ([LogRecordingControl.IsActive] was true before the stop)
+//   - logPosition, nil: no live recording, control is nil, or stop was a clean
+//     no-op
+//   - [recordinglog.NullPosition], err: stop failed; when the recording was
+//     active the control stays active so a later prepare retries the stop
+func (a *Agent) PrepareForNewLeadership(
+	logPosition int64,
+	nowNs int64,
+) (
+	lastAppendPosition int64,
+	err error,
+) {
 	a.RoleSet(RoleFollower)
 	a.SetLeaderMemberID(nullMemberID)
 	a.lastPublishedAppendPosition = 0
 	a.timeOfLastAppendPositionSendNs = 0
 	_ = nowNs
-	return logPosition
+
+	if a.recordingControl == nil {
+		return logPosition, nil
+	}
+
+	wasActive := a.recordingControl.IsActive()
+	stopPosition, err := a.recordingControl.StopLogRecording()
+	if err != nil {
+		return recordinglog.NullPosition, err
+	}
+	if wasActive {
+		return stopPosition, nil
+	}
+	return logPosition, nil
 }
 
 // JoinLogAsLeader sets role [RoleLeader], records the leadership term, stores
-// logPosition as the NewLeadershipTermEvent term base, and clears the follower
-// append target (leaderMemberID -> nullMemberID).
+// logPosition as the NewLeadershipTermEvent term base, clears the follower
+// append target (leaderMemberID -> nullMemberID), and starts the LOCAL cluster
+// log recording when a control is wired.
 //
-// logSessionID and isStartup are accepted for host-signature parity; full
-// session create and startup branch land later.
+// Role and term fields write before the recording start.
+//
+// A failed start still leaves the agent in the leader role for the term install path.
+//
+// Returns an error when:
+//   - a control is wired, the recording is not already active, and the log
+//     publisher or its publication is unbound
+//   - the start fails
+//
+// Nil control skips recording and returns nil.
+//
+// isStartup is accepted for host-signature parity; the startup branch lands
+// later.
 func (a *Agent) JoinLogAsLeader(
 	leadershipTermID int64,
 	logPosition int64,
 	logSessionID int32,
 	isStartup bool,
-) {
+) error {
 	a.RoleSet(RoleLeader)
 	a.leadershipTermID = leadershipTermID
 	a.SetLeaderMemberID(nullMemberID)
 	a.termBaseLogPosition = logPosition
-	_, _ = logSessionID, isStartup
+	_ = isStartup
+
+	if a.IsRecordingActive() || a.recordingControl == nil {
+		return nil
+	}
+	if a.logPublisher == nil || a.logPublisher.Publication() == nil {
+		return errors.New("consensus: join log as leader: log publication is not bound")
+	}
+	return a.adoptLogRecording(archivewire.SourceLocation_LOCAL, logSessionID)
 }
 
 // JoinLogAsFollower binds the live cluster log image for params.LogSessionID
-// into the wired [LogAdapter] and sets role [RoleFollower].
+// into the wired [LogAdapter], starts the REMOTE cluster log recording when a
+// control is wired, and sets role [RoleFollower].
 //
-// Returns false when no [LogJoinSource] or no [LogAdapter] is wired, or when the
-// source no longer holds an open image for that session. The election retries
-// while this is false and gives up on its leader heartbeat timeout.
+// Returns:
+//   - joined false, nil: no [LogJoinSource] or no [LogAdapter] is wired, or the
+//     source no longer holds an open image for that session (election retries
+//     until leader heartbeat timeout)
+//   - joined false, err: the recording cannot be started, or a live recording
+//     cannot be stopped after the image is gone post-start
+//   - joined true, nil: the image is bound
 //
-// The image is looked up again rather than carried on params, which hold no
-// image, so a session whose image closed between the readiness report and the
-// join fails closed.
+// The image is looked up before start and again after. The second check is
+// required: the start await drives transport DoWork and can close the
+// pre-start image. A live recording is stopped when that re-fetch is nil.
+// Clean stop leaves the join free to retry; stop error fails closed for
+// prepare drain.
 //
-// Does not touch the known leader id: the term install already set it, and
-// clearing it would stop follower commit notification and append reporting.
+// Does not touch the known leader id: the term install already set it.
+//
+// Clearing the known leader id would stop follower commit notification and
+// append reporting.
 // nowNs is accepted for handler-signature parity and is unused.
-func (a *Agent) JoinLogAsFollower(params FollowerLogJoinParams, nowNs int64) bool {
+func (a *Agent) JoinLogAsFollower(
+	params FollowerLogJoinParams,
+	nowNs int64,
+) (
+	joined bool,
+	err error,
+) {
 	_ = nowNs
 	if a.joinSource == nil || a.logAdapter == nil {
-		return false
+		return false, nil
 	}
+	if a.joinSource.Image(params.LogSessionID) == nil {
+		return false, nil
+	}
+
+	// Skip start while a recording is already active (idempotent re-join).
+	//
+	// Prepare stops between terms before the next join starts a new one.
+	if !a.IsRecordingActive() && a.recordingControl != nil {
+		if startErr := a.adoptLogRecording(
+			archivewire.SourceLocation_REMOTE,
+			params.LogSessionID,
+		); startErr != nil {
+			return false, startErr
+		}
+	}
+
 	image := a.joinSource.Image(params.LogSessionID)
 	if image == nil {
-		return false
+		if stopErr := a.stopLogRecordingAfterVanishedImage(); stopErr != nil {
+			return false, stopErr
+		}
+		return false, nil
 	}
+
 	a.logAdapter.SetImage(image)
 	a.RoleSet(RoleFollower)
-	return true
+	return true, nil
+}
+
+// stopLogRecordingAfterVanishedImage stops a live recording after the join
+// image is gone post-start.
+//
+// No-op when nothing is live.
+//
+// On stop failure the control stays active so prepare can retry drain.
+//
+// Returns the stop error, or nil on success or no-op.
+func (a *Agent) stopLogRecordingAfterVanishedImage() error {
+	if !a.IsRecordingActive() {
+		return nil
+	}
+	_, err := a.recordingControl.StopLogRecording()
+	return err
+}
+
+// adoptLogRecording starts the cluster log recording and stores the catalog id.
+//
+// Caller must ensure:
+//   - recordingControl is non-nil
+//   - the recording is not already active
+//
+// After a successful start the control reports [LogRecordingControl.IsActive]
+// true.
+//
+// Returns an error when StartLogRecording fails. The control stays inactive.
+func (a *Agent) adoptLogRecording(
+	sourceLocation archivewire.SourceLocation,
+	logSessionID int32,
+) error {
+	recordingID, err := a.recordingControl.StartLogRecording(
+		sourceLocation,
+		logSessionID,
+	)
+	if err != nil {
+		return err
+	}
+	a.localLogRecordingID = recordingID
+	return nil
 }
 
 // ElectionComplete clears the [ElectionRunner]; [PositionTable] and
@@ -806,6 +1007,7 @@ func (a *Agent) handleSteadyConsensusFragment(buf []byte, offset int, nowNs int6
 }
 
 // onSteadyAppendPosition applies a follower AppendPosition on the leader only.
+//
 // Higher-term appends are ignored (no member update).
 func (a *Agent) onSteadyAppendPosition(fields codecs.AppendPositionFields, nowNs int64) {
 	_ = nowNs
@@ -838,6 +1040,7 @@ func (a *Agent) onSteadyCommitPosition(fields codecs.CommitPositionFields, nowNs
 }
 
 // onSteadyNewLeadershipTerm stamps the leader-update clock on term >= current.
+//
 // Same-term follower notify from a known leader advances notified commit from
 // the NewLeadershipTerm commit field; higher term invokes
 // [Agent.onUnexpectedHigherTerm].

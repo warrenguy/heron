@@ -256,7 +256,7 @@ func TestAgent_AppendNewLeadershipTermEvent_viaJoinLogAsLeader(t *testing.T) {
 		AppVersion:       appVersion,
 	})
 	a.SetLogPublisher(lp)
-	a.JoinLogAsLeader(leadershipTermID, joinLogPos, pub.SessionID(), false)
+	require.NoError(t, a.JoinLogAsLeader(leadershipTermID, joinLogPos, pub.SessionID(), false))
 
 	require.True(t, a.AppendNewLeadershipTermEvent(nowNs))
 

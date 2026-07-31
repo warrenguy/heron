@@ -158,6 +158,127 @@ func (ops archiveControlOps) listRecording(
 	)
 }
 
+// startRecordingAwaitSignal implements [Client.StartRecordingAwaitSignal]; see that
+// godoc for the START-vs-ControlResponse proof and timeout contract.
+func (ops archiveControlOps) startRecordingAwaitSignal(
+	ctx context.Context,
+	streamID int32,
+	sourceLocation archivewire.SourceLocation,
+	channel []byte,
+	targets ControlPollTargets,
+	tracker *StartSignalTracker,
+) error {
+	if tracker == nil {
+		return errors.New("archive: start recording await signal: tracker must be non-nil")
+	}
+	tracker.Reset()
+	correlationID := ops.aeronClient.NextCorrelationID()
+	tracker.arm(correlationID)
+	if targets.ResponsePoller != nil {
+		targets.ResponsePoller.ResetAwait(correlationID)
+		defer targets.ResponsePoller.ArmAwait(0)
+	}
+	if err := offerControlRequest(
+		ctx, ops.aeronClient, ops.cfg, ops.poll, func() (int64, bool) {
+			return ops.proxy.TryStartRecording(
+				ops.controlSessionID,
+				correlationID,
+				streamID,
+				sourceLocation,
+				channel,
+			)
+		},
+	); err != nil {
+		return err
+	}
+
+	// controlOfferUntilPositive drives poll during the offer retry.
+	//
+	// A proof may already be captured before the await loop begins.
+	return runControlAwaitLoop(
+		ctx,
+		ops.aeronClient,
+		ops.cfg,
+		ops.poll,
+		ops.cfg.ControlResponseTimeout,
+		correlationID,
+		StartRecordingAwaitOperation,
+		func() (bool, error) {
+			// Latched START completes the await. Matching ControlResponse does not.
+			return recordingSignalProof(
+				targets.ResponsePoller,
+				tracker.Started(),
+				ops.controlSessionID,
+				correlationID,
+			)
+		},
+	)
+}
+
+// consumeAwaitingControlResponse matches a latched ControlResponse for the
+// armed await.
+//
+// Outcome:
+//   - done true, err: matching error ControlResponse
+//   - done false, nil + capture cleared: matching OK consumed; keep polling
+//   - done false, nil: no match yet
+func consumeAwaitingControlResponse(
+	poller *ControlResponsePoller,
+	controlSessionID int64,
+	correlationID int64,
+) (done bool, err error) {
+	_, mapped, ok := tryMatchControlResponseDiscardStale(
+		poller,
+		controlSessionID,
+		correlationID,
+	)
+	if !ok {
+		return false, nil
+	}
+	if mapped != nil {
+		return true, mapped
+	}
+	poller.ResetCapture()
+	return false, nil
+}
+
+// clearMatchingControlResponse drops a latched matching terminal so demux can
+// accept later responses.
+func clearMatchingControlResponse(
+	poller *ControlResponsePoller,
+	controlSessionID int64,
+	correlationID int64,
+) {
+	if _, _, ok := TryMatchControlResponse(poller, controlSessionID, correlationID); ok {
+		poller.ResetCapture()
+	}
+}
+
+// recordingSignalProof reports whether the recording signal is latched, or fails
+// on a matching error ControlResponse.
+//
+// A matching OK is consumed without completing. The await must keep polling for
+// the recording signal.
+//
+// Returns:
+//   - done true, nil: latched (matching ControlResponse cleared)
+//   - done true, err: matching error ControlResponse and signal not latched
+//   - done false, nil: keep polling
+//
+// When latched, clears a matching terminal so demux can accept later responses.
+func recordingSignalProof(
+	poller *ControlResponsePoller,
+	latched bool,
+	controlSessionID int64,
+	correlationID int64,
+) (done bool, err error) {
+	if latched {
+		clearMatchingControlResponse(poller, controlSessionID, correlationID)
+		return true, nil
+	}
+	return consumeAwaitingControlResponse(poller, controlSessionID, correlationID)
+}
+
 // stopRecordingAwaitSignal implements [Client.StopRecordingAwaitSignal]; see that
 // godoc for the STOP-vs-ControlResponse proof and timeout contract.
 func (ops archiveControlOps) stopRecordingAwaitSignal(
@@ -189,8 +310,9 @@ func (ops archiveControlOps) stopRecordingAwaitSignal(
 		return err
 	}
 
-	// controlOfferUntilPositive drives poll during the offer retry, so a proof may
-	// already be captured before the await loop begins.
+	// controlOfferUntilPositive drives poll during the offer retry.
+	//
+	// A proof may already be captured before the await loop begins.
 	return runControlAwaitLoop(
 		ctx,
 		ops.aeronClient,
@@ -200,9 +322,10 @@ func (ops archiveControlOps) stopRecordingAwaitSignal(
 		correlationID,
 		StopRecordingAwaitOperation,
 		func() (bool, error) {
-			return stopRecordingProof(
+			// STOP carries the stop position. Keep polling until the tracker latches STOP.
+			return recordingSignalProof(
 				targets.ResponsePoller,
-				tracker,
+				tracker.Stopped(),
 				ops.controlSessionID,
 				correlationID,
 			)
@@ -210,35 +333,88 @@ func (ops archiveControlOps) stopRecordingAwaitSignal(
 	)
 }
 
-// stopRecordingProof reports whether stop completed via a latched STOP signal, or fails
-// on a matching error ControlResponse. A matching OK is consumed without completing:
-// keep polling for STOP so the tracker carries the authoritative stop position.
-func stopRecordingProof(
-	poller *ControlResponsePoller,
-	tracker *StopSignalTracker,
-	controlSessionID int64,
-	correlationID int64,
-) (done bool, err error) {
-	if tracker.Stopped() {
-		return true, nil
+// StartSignalTracker records the START RecordingSignalEvent for one start request.
+//
+// The tracker implements RecordingSignalHandler for Client.StartRecordingAwaitSignal.
+//
+// Behaviour:
+//   - records the first START whose correlation id matches the armed request
+//   - ignores every other signal kind and every other correlation id
+//   - an unarmed tracker matches nothing
+//   - arm accepts any correlation id, including 0
+//
+// Concurrency: invoker-only with the poll that drives PollControlEvents.
+//
+// RecordingSignal runs on that polling goroutine and must not block.
+type StartSignalTracker struct {
+	controlSessionID   int64
+	correlationID      int64
+	armed              bool
+	started            bool
+	startedRecordingID int64
+}
+
+var _ RecordingSignalHandler = (*StartSignalTracker)(nil)
+
+// NewStartSignalTracker returns a tracker matching START signals for controlSessionID.
+//
+// Zero matches all sessions, mirroring NewStopSignalTracker.
+func NewStartSignalTracker(controlSessionID int64) *StartSignalTracker {
+	return &StartSignalTracker{
+		controlSessionID: controlSessionID,
 	}
-	_, mapped, ok := tryMatchControlResponseDiscardStale(
-		poller,
-		controlSessionID,
-		correlationID,
-	)
-	if !ok {
-		return false, nil
+}
+
+// Reset clears prior START capture and disarms the tracker.
+//
+// After Reset the tracker can capture a new start await.
+func (t *StartSignalTracker) Reset() {
+	t.correlationID = 0
+	t.armed = false
+	t.started = false
+	t.startedRecordingID = 0
+}
+
+// arm sets the correlation id that RecordingSignal must match and marks the tracker
+// armed. Correlation id 0 is a valid armed value.
+func (t *StartSignalTracker) arm(correlationID int64) {
+	t.correlationID = correlationID
+	t.armed = true
+}
+
+// RecordingSignal records the first matching START signal.
+func (t *StartSignalTracker) RecordingSignal(event codecs.RecordingSignalEventFields) {
+	if event.Signal != archivewire.RecordingSignal_START {
+		return
 	}
-	if mapped != nil {
-		return true, mapped
+	if !t.armed || event.CorrelationID != t.correlationID {
+		return
 	}
-	poller.ResetCapture()
-	return false, nil
+	if t.controlSessionID != 0 && event.ControlSessionID != t.controlSessionID {
+		return
+	}
+	if t.started {
+		return
+	}
+	t.started = true
+	t.startedRecordingID = event.RecordingID
+}
+
+// Started reports whether a matching START signal was recorded.
+func (t *StartSignalTracker) Started() bool {
+	return t.started
+}
+
+// StartedRecordingID returns the catalog recording id from the recorded START signal,
+// or 0 when none was recorded.
+func (t *StartSignalTracker) StartedRecordingID() int64 {
+	return t.startedRecordingID
 }
 
 // StopSignalTracker records the STOP RecordingSignalEvent for a target control session
-// and recording. It implements RecordingSignalHandler for StopRecordingAwaitSignal.
+// and recording.
+//
+// The tracker implements RecordingSignalHandler for Client.StopRecordingAwaitSignal.
 type StopSignalTracker struct {
 	controlSessionID   int64
 	recordingID        int64

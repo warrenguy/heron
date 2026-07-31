@@ -115,6 +115,9 @@ type recordingAgentHandler struct {
 
 	appendPositionReturn int64
 	joinFollowerReturn   bool
+	prepareErr           error
+	joinLeaderErr        error
+	joinFollowerErr      error
 
 	prepareCalls       int
 	prepareLogPosition int64
@@ -126,34 +129,37 @@ type recordingAgentHandler struct {
 	electionCompleteNs []int64
 }
 
-func (h *recordingAgentHandler) PrepareForNewLeadership(logPosition, nowNs int64) int64 {
+func (h *recordingAgentHandler) PrepareForNewLeadership(
+	logPosition, nowNs int64,
+) (int64, error) {
 	h.prepareCalls++
 	h.prepareLogPosition = logPosition
 	h.prepareNowNs = nowNs
-	return h.appendPositionReturn
+	return h.appendPositionReturn, h.prepareErr
 }
 
 func (h *recordingAgentHandler) JoinLogAsLeader(
 	leadershipTermID, logPosition int64,
 	logSessionID int32,
 	isStartup bool,
-) {
+) error {
 	h.joinLeaderCalls = append(h.joinLeaderCalls, joinLogAsLeaderCall{
 		leadershipTermID: leadershipTermID,
 		logPosition:      logPosition,
 		logSessionID:     logSessionID,
 		isStartup:        isStartup,
 	})
+	return h.joinLeaderErr
 }
 
 func (h *recordingAgentHandler) JoinLogAsFollower(
 	params consensus.FollowerLogJoinParams,
 	nowNs int64,
-) bool {
+) (bool, error) {
 	h.joinFollowerCalls++
 	h.joinFollowerParams = append(h.joinFollowerParams, params)
 	h.joinFollowerNowNs = append(h.joinFollowerNowNs, nowNs)
-	return h.joinFollowerReturn
+	return h.joinFollowerReturn, h.joinFollowerErr
 }
 
 func (h *recordingAgentHandler) ElectionComplete(nowNs int64) {

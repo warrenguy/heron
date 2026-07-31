@@ -50,9 +50,13 @@ type ElectionHost interface {
 
 	PollArchiveEvents() int
 	LocalLogRecordingID() int64
+	// SetLogRecordingID stores the local log recording id.
+	//
+	// Production hosts do not overwrite while a cluster log recording is running.
 	SetLogRecordingID(recordingID int64)
 
 	// TruncateLogEntry records an explicit cluster-log truncation request.
+	//
 	// Production hosts log and schedule archive truncate; test hosts record
 	// the call only. Does not mutate recording.log TERM rows.
 	TruncateLogEntry(leadershipTermID, logPosition int64)

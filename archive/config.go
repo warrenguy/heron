@@ -11,22 +11,28 @@ import (
 )
 
 // Config holds invoker-only Aeron Archive control client configuration.
+//
 // Normalize before ValidateForConnect and before connect.
 //
 // During AsyncConnect.Poll and the post-connect session duty cycle, the caller
 // must invoke DoWork on the transport aeron.Client between idle or backoff steps.
+//
 // There is no AgentInvoker field.
 type Config struct {
 	// ControlRequestChannel is the archive control request URI.
+	//
 	// When LocalControlChannel is set, AsyncConnect prefers local IPC first (Java parity).
 	ControlRequestChannel string
 
 	// ControlResponseChannel is the subscription channel for control responses.
+	//
 	// Empty defaults to DefaultControlResponseChannel after Normalize.
 	ControlResponseChannel string
 
 	// LocalControlChannel is the co-located archive IPC control URI.
+	//
 	// Non-empty causes connect to use this as the request channel (IPC-first).
+	//
 	// Normalize defaults this to DefaultLocalControlChannel unless WithRemoteControl()
 	// was called first.
 	LocalControlChannel string
@@ -52,10 +58,19 @@ type Config struct {
 	CredentialsSupplier CredentialsSupplier
 
 	// RecordingSignalHandler receives recording signals on Poll and during blocking
-	// control awaits that use this handler (StartRecording, StopRecording, StartReplay,
-	// StopReplay, ListRecording). StopRecordingAwaitSignal polls internally and routes
-	// STOP proofs to the per-call StopSignalTracker, not this handler. Nil drops signals
-	// until Client.SetRecordingSignalHandler installs a handler.
+	// control awaits that use this handler:
+	//   - StartRecording
+	//   - StopRecording
+	//   - StartReplay
+	//   - StopReplay
+	//   - ListRecording
+	//
+	// StartRecordingAwaitSignal and StopRecordingAwaitSignal poll internally.
+	//
+	// Those methods route START and STOP proofs to the per-call tracker, not this
+	// handler.
+	//
+	// Nil drops signals until Client.SetRecordingSignalHandler installs a handler.
 	RecordingSignalHandler RecordingSignalHandler
 
 	// ClientName is sent in AuthConnectRequest.clientInfo; empty defaults to

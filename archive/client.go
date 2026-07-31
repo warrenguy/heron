@@ -12,12 +12,28 @@ import (
 // subscription.
 //
 // Poll demuxes control responses and recording descriptors on the shared subscription
-// through PollControlEvents; it never polls the underlying pollers directly and
-// never calls DoWork. Recording signals are dropped until Config.RecordingSignalHandler
-// or SetRecordingSignalHandler configures a handler; configured handlers also run during
-// blocking StartRecording, StopRecording, StartReplay, StopReplay, and ListRecording awaits.
-// ListRecording uses a descriptor-mode poll so its OK response routes to the descriptor
-// poller rather than the session control-response poller.
+// through PollControlEvents.
+//
+// Poll never polls the underlying pollers directly and never calls DoWork.
+//
+// Recording signals are dropped until Config.RecordingSignalHandler or
+// SetRecordingSignalHandler configures a handler.
+//
+// Configured handlers also run during blocking control awaits that use this
+// handler:
+//   - StartRecording
+//   - StopRecording
+//   - StartReplay
+//   - StopReplay
+//   - ListRecording
+//
+// StartRecordingAwaitSignal and StopRecordingAwaitSignal poll internally.
+//
+// Those methods route START and STOP proofs to the per-call tracker, not the
+// configured handler.
+//
+// ListRecording uses a descriptor-mode poll so its OK response routes to the
+// descriptor poller rather than the session control-response poller.
 //
 // One FragmentAssembler is session-owned and reused across polls.
 //
@@ -134,6 +150,7 @@ func (client *Client) ArchiveID() int64 {
 }
 
 // Config returns the normalized archive config stored at connect.
+//
 // Nil receiver returns a zero Config.
 func (client *Client) Config() Config {
 	if client == nil {
@@ -204,10 +221,9 @@ func (client *Client) pollListRecording() int {
 	)
 }
 
-func (client *Client) pollStopRecordingAwaitSignal(
-	tracker *StopSignalTracker,
-) func() int {
-	targets := client.sessionPollTargets(tracker)
+// pollRecordingSignalAwait routes control-event polls through targets for the whole
+// await (offer retry and response loop).
+func (client *Client) pollRecordingSignalAwait(targets ControlPollTargets) func() int {
 	return func() int {
 		return PollControlEvents(
 			client.controlSubscription,
@@ -219,8 +235,15 @@ func (client *Client) pollStopRecordingAwaitSignal(
 }
 
 // SetRecordingSignalHandler overrides Config.RecordingSignalHandler for recording
-// signals on Poll and during blocking control awaits that use this handler
-// (StartRecording, StopRecording, StartReplay, StopReplay, ListRecording).
+// signals on Poll and during blocking control awaits that use this handler:
+//   - StartRecording
+//   - StopRecording
+//   - StartReplay
+//   - StopReplay
+//   - ListRecording
+//
+// StartRecordingAwaitSignal and StopRecordingAwaitSignal route proofs to the per-call
+// tracker instead of this handler.
 func (client *Client) SetRecordingSignalHandler(handler RecordingSignalHandler) {
 	client.signalHandler = handler
 }
@@ -243,6 +266,58 @@ func (client *Client) StartRecording(
 		sourceLocation,
 		channel,
 	)
+}
+
+// StartRecordingAwaitSignal offers a StartRecordingRequest and blocks until tracker
+// latches the correlated START RecordingSignalEvent.
+//
+// Returns the catalog recording id from that signal.
+//
+// Behaviour:
+//   - the proof check reads tracker before the control response
+//   - a latched START wins when both are present
+//   - ERROR fails the wait only when START is not yet latched
+//   - a matching OK alone does not complete the wait
+//   - the control response carries the subscription registration id, not the
+//     catalog recording id
+//   - the archive sends the START signal only after an image appears on the
+//     recording subscription
+//
+// ControlResponseTimeout bounds the whole wait after a successful offer.
+//
+// On timeout:
+//   - the recording may still be started
+//   - the caller owns the cleanup
+//
+// Use StartRecording when only an OK ControlResponse proof is required.
+//
+// tracker must be non-nil.
+//
+// The tracker carries the START signal proof and is dereferenced on every proof check.
+//
+// Returns ctx.Err() when the context is done before proof is received.
+func (client *Client) StartRecordingAwaitSignal(
+	ctx context.Context,
+	streamID int32,
+	sourceLocation archivewire.SourceLocation,
+	channel []byte,
+	tracker *StartSignalTracker,
+) (recordingID int64, err error) {
+	targets := client.sessionPollTargets(tracker)
+	err = client.sessionControlOps(
+		client.pollRecordingSignalAwait(targets),
+	).startRecordingAwaitSignal(
+		ctx,
+		streamID,
+		sourceLocation,
+		channel,
+		targets,
+		tracker,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return tracker.StartedRecordingID(), nil
 }
 
 // StopRecording offers a StopRecordingRequest and blocks until the archive replies with
@@ -281,13 +356,14 @@ func (client *Client) StopRecordingAwaitSignal(
 	channel []byte,
 	tracker *StopSignalTracker,
 ) error {
+	targets := client.sessionPollTargets(tracker)
 	return client.sessionControlOps(
-		client.pollStopRecordingAwaitSignal(tracker),
+		client.pollRecordingSignalAwait(targets),
 	).stopRecordingAwaitSignal(
 		ctx,
 		streamID,
 		channel,
-		client.sessionPollTargets(tracker),
+		targets,
 		tracker,
 	)
 }

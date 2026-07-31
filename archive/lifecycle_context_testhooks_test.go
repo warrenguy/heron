@@ -34,6 +34,20 @@ func TestClientLifecycle_contextDone(t *testing.T) {
 			},
 		},
 		{
+			name: "startRecordingAwaitSignal",
+			run: func(client *Client, ctx context.Context) error {
+				tracker := NewStartSignalTracker(controlResponseTestControlSessionID)
+				_, err := client.StartRecordingAwaitSignal(
+					ctx,
+					archiveProxyTestRecordingStreamID,
+					archivewire.SourceLocation_LOCAL,
+					[]byte(lifecycleRecordingChannel),
+					tracker,
+				)
+				return err
+			},
+		},
+		{
 			name: "listRecording",
 			run: func(client *Client, ctx context.Context) error {
 				_, err := client.ListRecording(ctx, lifecycleRecordingID)

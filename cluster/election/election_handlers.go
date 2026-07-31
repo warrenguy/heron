@@ -16,7 +16,10 @@ func (e *Election) handleInit(nowNs int64) int {
 		e.logSessionID = NullMemberID
 	}
 	if !firstInit || !e.isNodeStartup {
-		e.prepareForNewLeadership(nowNs)
+		if err := e.prepareForNewLeadership(nowNs); err != nil {
+			e.HandleError(nowNs, err)
+			return 1
+		}
 	}
 
 	e.notifiedCommitPosition = 0
@@ -187,12 +190,15 @@ func (e *Election) handleLeaderReplay(nowNs int64) int {
 }
 
 func (e *Election) handleLeaderInit(nowNs int64) int {
-	e.deps.Handler.JoinLogAsLeader(
+	if err := e.deps.Handler.JoinLogAsLeader(
 		e.leadershipTermID,
 		e.logPosition,
 		e.logSessionID,
 		e.isLeaderStartup,
-	)
+	); err != nil {
+		e.HandleError(nowNs, err)
+		return 1
+	}
 	if err := e.commitRecordingLogTerm(e.leadershipTermID, e.logPosition, NullValue); err != nil {
 		e.HandleError(nowNs, err)
 		return 1
@@ -386,7 +392,12 @@ func (e *Election) handleFollowerLogAwait(nowNs int64) int {
 	}
 
 	params.IsLeaderStartup = e.isLeaderStartup
-	if e.deps.Handler.JoinLogAsFollower(params, nowNs) {
+	joined, err := e.deps.Handler.JoinLogAsFollower(params, nowNs)
+	if err != nil {
+		e.HandleError(nowNs, err)
+		return 1
+	}
+	if joined {
 		if err := e.commitRecordingLogTerm(e.leadershipTermID, e.logPosition, NullValue); err != nil {
 			e.HandleError(nowNs, err)
 			return 1

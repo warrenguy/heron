@@ -31,6 +31,7 @@ type ConsensusModuleDeps struct {
 // subscription, cluster log streams, agent, host adapter, and election.
 //
 // Open with [OpenConsensusModule]. The module owns every handle it opened.
+//
 // The module closes every handle it owns. A transport client supplied through
 // Config.Aeron stays the caller's. The module does not own that client.
 //
@@ -43,6 +44,7 @@ type ConsensusModuleDeps struct {
 // after the duty cycle has stopped.
 //
 // Do not copy. Most fields are pointers. A value copy shares the same handles.
+//
 // Both values look like owners responsible for Close.
 type ConsensusModule struct {
 	topology   *Topology
@@ -50,7 +52,9 @@ type ConsensusModule struct {
 	ownsClient bool
 
 	// archiveClient is the module-owned archive control client.
+	//
 	// Close closes the archive client before the transport client.
+	//
 	// The archive control publication and subscription belong to that transport client.
 	archiveClient *archive.Client
 
@@ -67,15 +71,20 @@ type ConsensusModule struct {
 
 	logPublisher *consensus.LogPublisher
 	logAdapter   *consensus.LogAdapter
+	logRecording *logRecording
 }
 
 // OpenConsensusModule assembles one consensus member and returns it with every
 // transport handle and agent dependency bound before the first duty tick.
 //
 // ctx bounds the transport connect, the archive control connect, and the
-// recording-extent lookups the recovery plan makes. Open does not retain ctx.
-// Cancel after Open returns has no effect. When Config.Aeron is set, ctx still
-// bounds the archive control connect.
+// recording-extent lookups the recovery plan makes.
+//
+// The log recording control keeps Open's context values and detaches cancel
+// (context.WithoutCancel). Cancel after Open returns does not fail later
+// start or stop awaits. ControlResponseTimeout bounds those awaits.
+//
+// When Config.Aeron is set, ctx still bounds the archive control connect.
 //
 // Open order:
 //  1. topology
@@ -84,17 +93,24 @@ type ConsensusModule struct {
 //  4. recording-log archive lister
 //  5. recovery
 //  6. agent
-//  7. consensus publications
-//  8. consensus subscription
-//  9. cluster log streams
-//  10. host adapter
-//  11. election
+//  7. log recording control
+//  8. consensus publications
+//  9. consensus subscription
+//  10. cluster log streams
+//  11. host adapter
+//  12. election
 //
-// Recovery plans from the recording log. A recording log that carries term
-// entries needs a connected archive lister to resolve extents. Transport and
-// archive control therefore connect before recovery. The cluster log publication
-// and subscription open before return so the first duty tick can win leadership
-// and append a leadership-term event.
+// Recovery plans from the recording log.
+//
+// A recording log that carries term entries needs a connected archive lister
+// to resolve extents.
+//
+// Assembly notes:
+//   - transport and archive control connect before recovery
+//   - log recording control is wired after the agent and before the log streams
+//     so no recording starts at Open
+//   - cluster log publication and subscription open before return so the first
+//     duty tick can win leadership and append a leadership-term event
 //
 // Returns an error when:
 //   - Config fails Validate
@@ -106,6 +122,7 @@ type ConsensusModule struct {
 // Open blocks on the archive control connect, bounded by
 // archive.DefaultConnectTimeout and by ctx. A process that opens several members
 // in sequence services no earlier member's transport client during that block.
+//
 // Open every member's Archive before opening any member. Keep
 // Config.AeronConfig.InterServiceTimeout above the total connect cost.
 //
@@ -194,6 +211,19 @@ func OpenConsensusModule(
 		module.agent.SetLogRecordingID(id)
 	}
 
+	// Wire archive log recording control before log streams open.
+	//
+	// Nothing starts a recording at Open.
+	//
+	// Election join paths call StartLogRecording.
+	module.logRecording = newLogRecording(
+		ctx,
+		module.archiveClient,
+		topology.LogChannel(),
+		topology.LogStreamID(),
+	)
+	module.agent.SetLogRecordingControl(module.logRecording)
+
 	publisher := election.NewAeronPublisher()
 
 	pubs, err := OpenConsensusPublications(ConsensusPublicationsDeps{
@@ -278,8 +308,14 @@ func moduleClocks(cfg Config) (nanoClock, epochClock func() int64) {
 }
 
 // Close tears the member down in reverse open order:
-// agent bindings, cluster log streams, consensus subscription, consensus
-// publications, archive control client, owned transport client, then recovery.
+//  1. agent bindings
+//  2. best-effort log recording stop
+//  3. cluster log streams
+//  4. consensus subscription
+//  5. consensus publications
+//  6. archive control client
+//  7. owned transport client
+//  8. recovery
 //
 // The archive control client closes before the transport client. The archive
 // control publication and subscription belong to that transport client.
@@ -305,6 +341,20 @@ func (m *ConsensusModule) Close() error {
 		m.agent.SetElection(nil)
 		m.agent.SetPositions(nil)
 		m.agent.SetEgress(nil)
+	}
+	// Best-effort stop before streams and archive client close.
+	//
+	// Fail-closed election paths own stop errors.
+	//
+	// Close still releases transport handles.
+	if m.logRecording != nil {
+		if _, stopErr := m.logRecording.StopLogRecording(); stopErr != nil {
+			err = errors.Join(err, stopErr)
+		}
+		m.logRecording = nil
+	}
+	if m.agent != nil {
+		m.agent.SetLogRecordingControl(nil)
 	}
 	if m.streams != nil {
 		err = errors.Join(err, m.streams.Close())

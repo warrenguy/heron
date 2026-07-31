@@ -41,8 +41,15 @@ func (e *Election) completeElection(nowNs int64) bool {
 	return true
 }
 
-func (e *Election) prepareForNewLeadership(nowNs int64) {
-	e.appendPosition = e.deps.Handler.PrepareForNewLeadership(e.logPosition, nowNs)
+func (e *Election) prepareForNewLeadership(nowNs int64) error {
+	lastAppendPosition, err := e.deps.Handler.PrepareForNewLeadership(e.logPosition, nowNs)
+	if err != nil {
+		return err
+	}
+	if lastAppendPosition != NullPosition {
+		e.appendPosition = lastAppendPosition
+	}
+	return nil
 }
 
 func (e *Election) durableCandidateTermID() int64 {

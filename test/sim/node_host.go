@@ -126,30 +126,32 @@ type simAgentHandler struct {
 	agentCM *consensus.Agent
 }
 
-func (h *simAgentHandler) PrepareForNewLeadership(logPosition, nowNs int64) int64 {
+func (h *simAgentHandler) PrepareForNewLeadership(
+	logPosition, nowNs int64,
+) (int64, error) {
 	h.prepareCalls++
 	h.prepareLogPosition = logPosition
 	h.prepareNowNs = nowNs
-	return logPosition
+	return logPosition, nil
 }
 
 func (h *simAgentHandler) JoinLogAsLeader(
 	leadershipTermID, logPosition int64,
 	logSessionID int32,
 	isStartup bool,
-) {
+) error {
 	if h.agentCM == nil {
-		return
+		return nil
 	}
-	h.agentCM.JoinLogAsLeader(leadershipTermID, logPosition, logSessionID, isStartup)
+	return h.agentCM.JoinLogAsLeader(leadershipTermID, logPosition, logSessionID, isStartup)
 }
 
 func (h *simAgentHandler) JoinLogAsFollower(
 	params consensus.FollowerLogJoinParams,
 	nowNs int64,
-) bool {
+) (bool, error) {
 	h.joinLogCalls = append(h.joinLogCalls, joinLogCall{params: params, nowNs: nowNs})
-	return h.joinReturns
+	return h.joinReturns, nil
 }
 
 var _ consensus.AgentHandler = (*simAgentHandler)(nil)

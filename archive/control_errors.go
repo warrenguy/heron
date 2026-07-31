@@ -53,5 +53,6 @@ func (err *ControlResponseTimeoutError) Error() string {
 const (
 	ControlResponseAwaitOperation         = "control response"
 	ListRecordingDescriptorAwaitOperation = "list recording descriptor"
+	StartRecordingAwaitOperation          = "start recording"
 	StopRecordingAwaitOperation           = "stop recording"
 )

@@ -178,10 +178,11 @@ func TestAgentFollowerLogJoin_sequence_rapid(t *testing.T) {
 				open := isOpenLogJoinImage(images, session)
 				require.Equal(rt, sourceWired && open, got)
 			case "join":
-				got := a.JoinLogAsFollower(
+				got, err := a.JoinLogAsFollower(
 					FollowerLogJoinParams{LogSessionID: session},
 					rapid.Int64Range(0, 1<<40).Draw(rt, "nowNs"),
 				)
+				require.NoError(rt, err)
 				open := isOpenLogJoinImage(images, session)
 				want := sourceWired && currentAdapter != nil && open
 				require.Equal(rt, want, got)

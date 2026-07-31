@@ -1,10 +1,14 @@
 package consensus
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
 type orderRunner struct {
@@ -197,6 +201,7 @@ func TestUpdateLeaderPosition_nilCommit_gateWork(t *testing.T) {
 	require.Equal(t, []commitPublishCall{{pos: 50, term: 2}}, eg.commits)
 
 	// Nil commit reads as 0, so any positive quorum keeps the gate open.
+	//
 	// Work 0 only when quorum <= 0 and interval is not due.
 	require.Equal(t, 0, a.UpdateLeaderPosition(5, 0))
 	require.Equal(t, []commitPublishCall{{pos: 50, term: 2}}, eg.commits)
@@ -338,7 +343,7 @@ func TestJoinLogAsLeader_setsTermAndClearsLeaderTarget(t *testing.T) {
 		LeadershipTermID: 1,
 	})
 
-	a.JoinLogAsLeader(9, 100, 4, true)
+	require.NoError(t, a.JoinLogAsLeader(9, 100, 4, true))
 	require.Equal(t, RoleLeader, a.Role())
 	require.Equal(t, int64(9), a.LeadershipTermID())
 	require.Equal(t, nullMemberID, a.LeaderMemberID())
@@ -409,6 +414,8 @@ func TestHostDelegate_stubsSmoke(t *testing.T) {
 	require.Equal(t, int64(-1), a.LocalLogRecordingID())
 	a.SetLogRecordingID(99)
 	require.Equal(t, int64(99), a.LocalLogRecordingID())
+	// A START-signal id write is not a recording start.
+	require.False(t, a.IsRecordingActive())
 
 	// Bare Agent: nil LogJoinSource, so FollowerLogJoinReady reports not-ready.
 	params, ready := a.FollowerLogJoinReady(7)
@@ -450,7 +457,8 @@ func TestAgentHandler_prepareJoinComplete(t *testing.T) {
 	a.lastPublishedAppendPosition = 50
 	a.timeOfLastAppendPositionSendNs = 100
 
-	got := a.PrepareForNewLeadership(1234, 99)
+	got, err := a.PrepareForNewLeadership(1234, 99)
+	require.NoError(t, err)
 	require.Equal(t, int64(1234), got)
 	require.Equal(t, RoleFollower, a.Role())
 	require.Equal(t, nullMemberID, a.LeaderMemberID())
@@ -459,13 +467,15 @@ func TestAgentHandler_prepareJoinComplete(t *testing.T) {
 	// Commit is kept across prepare.
 	require.Equal(t, int64(77), a.CommitPosition())
 
-	a.JoinLogAsLeader(1, 10, 2, true)
+	require.NoError(t, a.JoinLogAsLeader(1, 10, 2, true))
 	require.Equal(t, RoleLeader, a.Role())
 	require.Equal(t, int64(1), a.LeadershipTermID())
 	require.Equal(t, nullMemberID, a.LeaderMemberID())
 
 	// Bare Agent: nil LogJoinSource, so JoinLogAsFollower reports not joined.
-	require.False(t, a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 3}, 1))
+	joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 3}, 1)
+	require.NoError(t, err)
+	require.False(t, joined)
 
 	a.ElectionComplete(1)
 	require.Nil(t, a.Election())
@@ -477,6 +487,8 @@ func TestNewAgent_defaults(t *testing.T) {
 	a := NewAgent(AgentConfig{})
 	require.Equal(t, RoleFollower, a.Role())
 	require.Equal(t, int64(-1), a.LocalLogRecordingID())
+	require.False(t, a.IsRecordingActive())
+	require.Nil(t, a.LogRecordingControl())
 	require.Equal(t, int64(0), a.TimeOfLastLeaderUpdateNs())
 	require.Equal(t, DefaultLeaderHeartbeatIntervalNs, a.leaderHeartbeatIntervalNs)
 	require.Equal(t, int64(0), a.LeadershipTermID())
@@ -769,4 +781,203 @@ func TestAtomicAppendPosition_nilSafe(t *testing.T) {
 	v := new(atomic.Int64)
 	v.Store(9)
 	require.Equal(t, int64(9), (&AtomicAppendPosition{V: v}).AppendPosition())
+}
+
+// fakeLogRecordingControl is a scripted LogRecordingControl for agent tests.
+//
+// The fake records every call and returns the next scripted outcome.
+//
+// onStart runs after the start call is recorded and before the scripted
+// outcome returns. Tests may close the join image mid-start from onStart.
+//
+// active is true after a successful start until a clean stop. That matches
+// production [LogRecordingControl.IsActive].
+type fakeLogRecordingControl struct {
+	startCalls       []fakeStartCall
+	stopCalls        int
+	nextRecordingID  int64
+	nextStopPosition int64
+	startErr         error
+	stopErr          error
+	onStart          func()
+	active           bool
+}
+
+type fakeStartCall struct {
+	sourceLocation archivewire.SourceLocation
+	logSessionID   int32
+}
+
+var _ LogRecordingControl = (*fakeLogRecordingControl)(nil)
+
+func (f *fakeLogRecordingControl) StartLogRecording(
+	sourceLocation archivewire.SourceLocation,
+	logSessionID int32,
+) (int64, error) {
+	f.startCalls = append(f.startCalls, fakeStartCall{
+		sourceLocation: sourceLocation,
+		logSessionID:   logSessionID,
+	})
+	if f.onStart != nil {
+		f.onStart()
+	}
+	if f.startErr != nil {
+		return 0, f.startErr
+	}
+	f.active = true
+	return f.nextRecordingID, nil
+}
+
+func (f *fakeLogRecordingControl) StopLogRecording() (int64, error) {
+	f.stopCalls++
+	if f.stopErr != nil {
+		return 0, f.stopErr
+	}
+	f.active = false
+	return f.nextStopPosition, nil
+}
+
+func (f *fakeLogRecordingControl) IsActive() bool {
+	return f.active
+}
+
+func TestAgent_logRecording_nilControlLeaderJoin(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(AgentConfig{})
+	require.NoError(t, a.JoinLogAsLeader(1, 10, 2, true))
+	require.False(t, a.IsRecordingActive())
+	require.Equal(t, int64(nullValue), a.LocalLogRecordingID())
+}
+
+func TestAgent_logRecording_followerJoinNoImage(t *testing.T) {
+	t.Parallel()
+
+	// Image check precedes the start, so a session that vanished never starts.
+	control := &fakeLogRecordingControl{nextRecordingID: 11}
+	src := &stubLogJoinSource{}
+	adapter := NewLogAdapter(0)
+	a := NewAgent(AgentConfig{
+		LogJoinSource: src,
+		LogAdapter:    adapter,
+	})
+	a.SetLogRecordingControl(control)
+
+	joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 7}, 1)
+	require.NoError(t, err)
+	require.False(t, joined)
+	require.Empty(t, control.startCalls)
+	require.False(t, a.IsRecordingActive())
+}
+
+func TestAgent_logRecording_transitionNoRecording(t *testing.T) {
+	t.Parallel()
+
+	// Wired control always receives stop so a dirty start still drains.
+	//
+	// When recording was never active, prepare returns logPosition, not the
+	// stop position the control reports.
+	control := &fakeLogRecordingControl{nextStopPosition: 999}
+	a := NewAgent(AgentConfig{})
+	a.SetLogRecordingControl(control)
+
+	got, err := a.PrepareForNewLeadership(1234, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(1234), got)
+	require.Equal(t, 1, control.stopCalls)
+}
+
+func TestAgent_logRecording_prepareStopErrorWhileInactive(t *testing.T) {
+	t.Parallel()
+
+	// Asserts prepare still stops when inactive (dirty-start drain path).
+	//
+	// Stop error surfaces so election re-init retries the drain.
+	stopErr := errors.New("dirty stop failed")
+	control := &fakeLogRecordingControl{stopErr: stopErr}
+	a := NewAgent(AgentConfig{})
+	a.SetLogRecordingControl(control)
+
+	got, err := a.PrepareForNewLeadership(1234, 1)
+	require.ErrorIs(t, err, stopErr)
+	require.Equal(t, recordinglog.NullPosition, got)
+	require.False(t, a.IsRecordingActive())
+	require.Equal(t, 1, control.stopCalls)
+}
+
+func TestAgent_logRecording_prepareNilControlKeepsRecordingID(t *testing.T) {
+	t.Parallel()
+
+	// Asserts prepare with nil control skips stop, stays inactive, and keeps the
+	// seeded recording id.
+	a := NewAgent(AgentConfig{})
+	a.localLogRecordingID = 77
+	require.Nil(t, a.LogRecordingControl())
+
+	got, err := a.PrepareForNewLeadership(1234, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(1234), got)
+	require.False(t, a.IsRecordingActive())
+	require.Equal(t, int64(77), a.LocalLogRecordingID())
+}
+
+func TestAgent_logRecording_setControlNilReportsInactive(t *testing.T) {
+	t.Parallel()
+
+	// Asserts SetLogRecordingControl(nil) makes IsRecordingActive false.
+	//
+	// The detached control may still report IsActive true. The agent has no
+	// control to query.
+	lp, _ := boundLogPublisher(t)
+	control := &fakeLogRecordingControl{nextRecordingID: 1}
+	a := NewAgent(AgentConfig{LogPublisher: lp})
+	a.SetLogRecordingControl(control)
+	require.NoError(t, a.JoinLogAsLeader(1, 10, 2, false))
+	require.True(t, a.IsRecordingActive())
+	require.True(t, control.IsActive())
+
+	a.SetLogRecordingControl(nil)
+	require.Nil(t, a.LogRecordingControl())
+	require.False(t, a.IsRecordingActive())
+	require.True(t, control.IsActive())
+}
+
+func TestAgent_logRecording_sentinelLogPositionNoRecording(t *testing.T) {
+	t.Parallel()
+
+	// Sentinel travels through the no-recording branch unchanged.
+	a := NewAgent(AgentConfig{})
+	got, err := a.PrepareForNewLeadership(recordinglog.NullPosition, 1)
+	require.NoError(t, err)
+	require.Equal(t, recordinglog.NullPosition, got)
+}
+
+func TestAgent_logRecording_leaderJoinUnboundPublication(t *testing.T) {
+	t.Parallel()
+
+	control := &fakeLogRecordingControl{nextRecordingID: 77}
+	a := NewAgent(AgentConfig{})
+	a.SetLogRecordingControl(control)
+
+	err := a.JoinLogAsLeader(1, 10, 2, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "consensus: join log as leader: log publication is not bound")
+	require.Empty(t, control.startCalls)
+	require.False(t, a.IsRecordingActive())
+
+	// Unbound LogPublisher (no publication) is the same structural refusal.
+	a2 := NewAgent(AgentConfig{LogPublisher: NewLogPublisher()})
+	a2.SetLogRecordingControl(control)
+	err = a2.JoinLogAsLeader(1, 10, 2, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "consensus: join log as leader: log publication is not bound")
+}
+
+func TestAgent_SetLogRecordingID_whileInactive(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(AgentConfig{})
+	a.SetLogRecordingID(4242)
+	require.Equal(t, int64(4242), a.LocalLogRecordingID())
+	require.False(t, a.IsRecordingActive())
 }

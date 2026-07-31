@@ -2151,3 +2151,185 @@ func (c *countingLogReplicationForTest) RecordingID() int64 { return c.recording
 func (c *countingLogReplicationForTest) IsDone() bool { return c.done }
 
 func (c *countingLogReplicationForTest) OnSignal(int64, int64, int64, election.RecordingSignal) {}
+
+func TestHandleInit_prepareErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	prepareErr := errors.New("prepare stop failed")
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	cfg.IsNodeStartup = false
+	handler := &recordingAgentHandler{
+		appendPositionReturn: cfg.AppendPosition + 1,
+		prepareErr:           prepareErr,
+	}
+	deps.Handler = handler
+	e := election.NewElection(cfg, deps)
+
+	seedAppend := e.AppendPosition()
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateInit, e.State())
+	require.Equal(t, seedAppend, e.AppendPosition())
+	require.Equal(t, 1, handler.prepareCalls)
+
+	// Bounded attempt is retried rather than abandoned.
+	require.Equal(t, 1, e.DoWork(clock.nowNs+1))
+	require.Equal(t, election.ElectionStateInit, e.State())
+	require.Equal(t, 2, handler.prepareCalls)
+	require.Equal(t, seedAppend, e.AppendPosition())
+}
+
+func TestHandleInit_prepareSuccessAssignsAppend(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	cfg.IsNodeStartup = false
+	preparedAppend := cfg.AppendPosition + 50
+	handler := &recordingAgentHandler{appendPositionReturn: preparedAppend}
+	deps.Handler = handler
+	e := election.NewElection(cfg, deps)
+
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+	require.Equal(t, preparedAppend, e.AppendPosition())
+	require.Equal(t, 1, handler.prepareCalls)
+}
+
+func TestHandleInit_prepareNullPositionLeavesAppendUnchanged(t *testing.T) {
+	t.Parallel()
+
+	// Sentinel guard: NullPosition from prepare must not overwrite appendPosition.
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	cfg.IsNodeStartup = false
+	handler := &recordingAgentHandler{appendPositionReturn: election.NullPosition}
+	deps.Handler = handler
+	e := election.NewElection(cfg, deps)
+
+	seedAppend := e.AppendPosition()
+	require.NotEqual(t, election.NullPosition, seedAppend)
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+	require.Equal(t, seedAppend, e.AppendPosition())
+	require.Equal(t, 1, handler.prepareCalls)
+}
+
+func TestHandleLeaderInit_joinLeaderErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	joinErr := errors.New("join leader recording failed")
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	host := &recordingElectionHost{clock: clock, localLogRecordingID: 42}
+	deps.Host = host
+	spy := &recordingLogCoherencySpy{}
+	deps.RecordingLog = spy
+	handler := &recordingAgentHandler{joinLeaderErr: joinErr}
+	deps.Handler = handler
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateLeaderInit)
+
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateInit, e.State())
+	require.Len(t, handler.joinLeaderCalls, 1)
+	require.Empty(t, spy.calls)
+}
+
+func TestHandleLeaderInit_joinLeaderSuccessWritesTerm(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, epochClock, _ := testElectionDeps(t)
+	host := &recordingElectionHost{clock: clock, localLogRecordingID: 42}
+	deps.Host = host
+	spy := &recordingLogCoherencySpy{}
+	deps.RecordingLog = spy
+	handler := &recordingAgentHandler{}
+	deps.Handler = handler
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateLeaderInit)
+
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateLeaderReady, e.State())
+	require.Len(t, handler.joinLeaderCalls, 1)
+	require.Equal(t, []recordinglog.EnsureCoherentParams{{
+		RecordingID:                42,
+		InitialLogLeadershipTermID: cfg.LeadershipTermID,
+		InitialTermBaseLogPosition: cfg.TermBaseLogPosition,
+		LeadershipTermID:           cfg.LeadershipTermID,
+		TermBaseLogPosition:        cfg.LogPosition,
+		LogPosition:                election.NullValue,
+		Timestamp:                  epochClock.nowMs,
+	}}, spy.calls)
+}
+
+func TestHandleFollowerLogAwait_joinFollowerErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	joinErr := errors.New("join follower recording failed")
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	host := &recordingElectionHost{
+		clock:                   clock,
+		localLogRecordingID:     int64(election.NullValue),
+		followerLogJoinOK:       true,
+		followerLogJoinPosition: cfg.LogPosition,
+	}
+	deps.Host = host
+	spy := &recordingLogCoherencySpy{}
+	deps.RecordingLog = spy
+	handler := &recordingAgentHandler{
+		joinFollowerReturn: true,
+		joinFollowerErr:    joinErr,
+	}
+	deps.Handler = handler
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateFollowerLogAwait)
+
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateInit, e.State())
+	require.Equal(t, 1, handler.joinFollowerCalls)
+	require.Empty(t, spy.calls)
+}
+
+func TestHandleFollowerLogAwait_notReadyRetriesUntilTimeout(t *testing.T) {
+	t.Parallel()
+
+	// (false, nil) keeps the retry-until-heartbeat-timeout path.
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	timeoutNs := cfg.LeaderHeartbeatTimeoutNs
+	host := &recordingElectionHost{
+		clock:                   clock,
+		followerLogJoinOK:       true,
+		followerLogJoinPosition: cfg.LogPosition,
+	}
+	deps.Host = host
+	handler := &recordingAgentHandler{joinFollowerReturn: false}
+	deps.Handler = handler
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateFollowerLogAwait)
+
+	require.Equal(t, 0, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateFollowerLogAwait, e.State())
+	require.Equal(t, 1, handler.joinFollowerCalls)
+
+	require.Equal(t, 1, e.DoWork(clock.nowNs+timeoutNs))
+	require.Equal(t, election.ElectionStateInit, e.State())
+}
+
+func TestOnNewLeadershipTerm_initInstallsNothing(t *testing.T) {
+	t.Parallel()
+
+	// While stuck in Init, acceptsConsensusInbound is false, so a divergent
+	// NextTermBaseLogPosition installs nothing and never truncates.
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	host := &recordingElectionHost{clock: clock}
+	deps.Host = host
+	e := election.NewElection(cfg, deps)
+	require.Equal(t, election.ElectionStateInit, e.State())
+
+	fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
+	fields.NextLeadershipTermID = cfg.LeadershipTermID + 1
+	fields.NextTermBaseLogPosition = cfg.AppendPosition - 50
+	e.OnNewLeadershipTerm(fields)
+
+	require.Empty(t, host.truncateCalls)
+	require.Equal(t, election.ElectionStateInit, e.State())
+	require.Equal(t, cfg.AppendPosition, e.AppendPosition())
+	require.Nil(t, e.Leader())
+}

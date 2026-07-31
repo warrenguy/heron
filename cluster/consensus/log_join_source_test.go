@@ -124,7 +124,9 @@ func TestAgentFollowerLogJoin_sourceWiredNotReady(t *testing.T) {
 	// Ready path calls source.Ready only; Image is not called.
 	require.Equal(t, 0, src.imageCalls)
 
-	require.False(t, a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 7}, 1))
+	joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 7}, 1)
+	require.NoError(t, err)
+	require.False(t, joined)
 }
 
 func TestAgentJoinLogAsFollower_noAdapter(t *testing.T) {
@@ -135,7 +137,9 @@ func TestAgentJoinLogAsFollower_noAdapter(t *testing.T) {
 	a := NewAgent(AgentConfig{LogJoinSource: src})
 	require.Nil(t, a.logAdapter)
 
-	require.False(t, a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 7}, 1))
+	joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 7}, 1)
+	require.NoError(t, err)
+	require.False(t, joined)
 	require.Equal(t, 0, src.imageCalls)
 }
 
@@ -150,7 +154,9 @@ func TestAgentJoinLogAsFollower_adapterImageNil(t *testing.T) {
 		LogAdapter:    adapter,
 	})
 
-	require.False(t, a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 7}, 1))
+	joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 7}, 1)
+	require.NoError(t, err)
+	require.False(t, joined)
 	require.Equal(t, 1, src.imageCalls)
 	require.Nil(t, adapter.Image())
 	require.True(t, adapter.IsImageClosed())

@@ -8,6 +8,9 @@ import "strings"
 
 const ChannelEndpointParam = "endpoint="
 
+// ChannelSessionIDParam is the session-id= URI param prefix.
+const ChannelSessionIDParam = "session-id="
+
 func ChannelParamIndex(channel, param string, acceptPipeBoundary bool) int {
 	searchStart := 0
 	for searchStart < len(channel) {

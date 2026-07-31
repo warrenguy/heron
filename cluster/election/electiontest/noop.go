@@ -8,15 +8,19 @@ import (
 // NoopAgentHandler is a zero-value AgentHandler stub for election wiring tests.
 type NoopAgentHandler struct{}
 
-func (NoopAgentHandler) PrepareForNewLeadership(int64, int64) int64 { return 0 }
+func (NoopAgentHandler) PrepareForNewLeadership(int64, int64) (int64, error) {
+	return 0, nil
+}
 
-func (NoopAgentHandler) JoinLogAsLeader(int64, int64, int32, bool) {}
+func (NoopAgentHandler) JoinLogAsLeader(int64, int64, int32, bool) error {
+	return nil
+}
 
 func (NoopAgentHandler) JoinLogAsFollower(
 	consensus.FollowerLogJoinParams,
 	int64,
-) bool {
-	return false
+) (bool, error) {
+	return false, nil
 }
 
 func (NoopAgentHandler) ElectionComplete(int64) {}

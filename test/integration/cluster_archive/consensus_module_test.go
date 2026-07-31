@@ -121,8 +121,18 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	require.Equal(t, int64(0), module.LeadershipTermID())
 	require.Nil(t, module.LogAdapter().Image())
 
-	// Recording log stays empty with a null log recording id.
-	require.Empty(t, module.RecordingLog().Entries())
+	// LOCAL log recording active after leader join; TERM entry names it.
+	recordingID := module.Agent().LocalLogRecordingID()
+	require.NotEqual(t, int64(-1), recordingID)
+	require.True(t, module.Agent().IsRecordingActive())
+	entries := module.RecordingLog().Entries()
+	require.NotEmpty(t, entries)
+	require.Equal(t, recordingID, entries[len(entries)-1].RecordingID)
+
+	desc, err := archiveClient.ListRecording(context.Background(), recordingID)
+	require.NoError(t, err)
+	require.Equal(t, module.Topology().LogStreamID(), desc.StreamID)
+	require.Equal(t, session, desc.SessionID)
 
 	// Capture handles before Close so IsClosed can be checked after teardown.
 	pub := module.LogStreams().Publication()

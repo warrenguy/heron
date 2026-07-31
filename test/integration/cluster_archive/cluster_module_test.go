@@ -3,6 +3,7 @@
 package cluster_archive_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -38,8 +39,41 @@ func TestClusterModule_electsOneLeaderOverLiveDrivers(t *testing.T) {
 		require.NotNil(t, m.LogAdapter().Image())
 	}
 
+	// Durable log recording after elect: each member records into its own
+	// Archive. TERM names that member's local id. Catalog descriptors are
+	// session-scoped to the leader log publication.
+	//
+	// Recording ids are not compared across members: each Archive catalog
+	// allocates ids independently, so the first recording is often id 0 on
+	// every node.
+	leaderLogSessionID := leader.LogPublisher().SessionID()
+	require.NotEqual(t, int32(-1), leaderLogSessionID)
+	leaderLogStreamID := leader.Topology().LogStreamID()
 	for _, m := range set.Modules() {
-		require.Empty(t, m.RecordingLog().Entries())
+		recordingID := m.Agent().LocalLogRecordingID()
+		require.NotEqual(t, int64(-1), recordingID, "member %d", m.ThisMemberID())
+		require.True(t, m.Agent().IsRecordingActive(), "member %d", m.ThisMemberID())
+		entries := m.RecordingLog().Entries()
+		require.NotEmpty(t, entries, "member %d", m.ThisMemberID())
+		require.Equal(
+			t,
+			recordingID,
+			entries[len(entries)-1].RecordingID,
+			"member %d",
+			m.ThisMemberID(),
+		)
+		archiveClient := m.ArchiveClient()
+		require.NotNil(t, archiveClient, "member %d", m.ThisMemberID())
+		desc, err := archiveClient.ListRecording(context.Background(), recordingID)
+		require.NoError(t, err, "member %d ListRecording", m.ThisMemberID())
+		require.Equal(t, leaderLogStreamID, desc.StreamID, "member %d", m.ThisMemberID())
+		require.Equal(
+			t,
+			leaderLogSessionID,
+			desc.SessionID,
+			"member %d recording session must match leader log publication",
+			m.ThisMemberID(),
+		)
 	}
 
 	// Capture archive clients and log handles before Close.

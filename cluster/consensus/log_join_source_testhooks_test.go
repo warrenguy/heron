@@ -3,11 +3,14 @@
 package consensus
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
 func addLogJoinImage(
@@ -314,7 +317,9 @@ func TestAgentJoinLogAsFollower_bindsImage(t *testing.T) {
 	require.Equal(t, session, params.LogSessionID)
 	require.Equal(t, joinPos, params.LogJoinPosition)
 
-	require.True(t, a.JoinLogAsFollower(params, 1))
+	joined, err := a.JoinLogAsFollower(params, 1)
+	require.NoError(t, err)
+	require.True(t, joined)
 	require.Same(t, image, adapter.Image())
 	require.False(t, adapter.IsImageClosed())
 	require.Equal(t, joinPos, adapter.Position())
@@ -334,7 +339,9 @@ func TestAgentJoinLogAsFollower_setsFollowerKeepsLeaderAndTerm(t *testing.T) {
 	})
 	require.Equal(t, RoleCandidate, a.Role())
 
-	require.True(t, a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 10}, 1))
+	joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 10}, 1)
+	require.NoError(t, err)
+	require.True(t, joined)
 	require.Equal(t, RoleFollower, a.Role())
 	require.Equal(t, leaderID, a.LeaderMemberID())
 	require.Equal(t, termID, a.LeadershipTermID())
@@ -346,8 +353,12 @@ func TestAgentJoinLogAsFollower_idempotent(t *testing.T) {
 	a, image, adapter := agentWithLogJoin(t, 10, 0, AgentConfig{Role: RoleCandidate})
 	params := FollowerLogJoinParams{LogSessionID: 10}
 
-	require.True(t, a.JoinLogAsFollower(params, 1))
-	require.True(t, a.JoinLogAsFollower(params, 1))
+	joined, err := a.JoinLogAsFollower(params, 1)
+	require.NoError(t, err)
+	require.True(t, joined)
+	joined, err = a.JoinLogAsFollower(params, 1)
+	require.NoError(t, err)
+	require.True(t, joined)
 	require.Same(t, image, adapter.Image())
 	require.Equal(t, RoleFollower, a.Role())
 }
@@ -365,10 +376,14 @@ func TestAgentJoinLogAsFollower_rejoinReplaces(t *testing.T) {
 		LogAdapter:    adapter,
 	})
 
-	require.True(t, a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 10}, 1))
+	joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 10}, 1)
+	require.NoError(t, err)
+	require.True(t, joined)
 	require.Same(t, imgA, adapter.Image())
 
-	require.True(t, a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 20}, 1))
+	joined, err = a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 20}, 1)
+	require.NoError(t, err)
+	require.True(t, joined)
 	require.Same(t, imgB, adapter.Image())
 }
 
@@ -390,6 +405,264 @@ func TestAgentJoinLogAsFollower_afterImageClosed(t *testing.T) {
 
 	// Image closed between readiness and join: re-read fails closed.
 	aeron.ImageInternalCloseForHooks(image)
-	require.False(t, a.JoinLogAsFollower(params, 1))
+	joined, err := a.JoinLogAsFollower(params, 1)
+	require.NoError(t, err)
+	require.False(t, joined)
 	require.Nil(t, adapter.Image())
+}
+
+func TestAgentJoinLogAsFollower_wiredControlStartsRemote(t *testing.T) {
+	t.Parallel()
+
+	const (
+		session int32 = 10
+		joinPos int64 = 96
+	)
+	control := &fakeLogRecordingControl{nextRecordingID: 88}
+	a, image, adapter := agentWithLogJoin(t, session, joinPos, AgentConfig{})
+	a.SetLogRecordingControl(control)
+
+	joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: session}, 1)
+	require.NoError(t, err)
+	require.True(t, joined)
+	require.Same(t, image, adapter.Image())
+	require.True(t, a.IsRecordingActive())
+	require.Equal(t, int64(88), a.LocalLogRecordingID())
+	require.Len(t, control.startCalls, 1)
+	require.Equal(t, archivewire.SourceLocation_REMOTE, control.startCalls[0].sourceLocation)
+	require.Equal(t, session, control.startCalls[0].logSessionID)
+}
+
+func TestAgentJoinLogAsFollower_wiredControlStartError(t *testing.T) {
+	t.Parallel()
+
+	const session int32 = 10
+	startErr := errors.New("remote start failed")
+	control := &fakeLogRecordingControl{startErr: startErr}
+	a, _, adapter := agentWithLogJoin(t, session, 0, AgentConfig{})
+	a.SetLogRecordingControl(control)
+
+	joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: session}, 1)
+	require.ErrorIs(t, err, startErr)
+	require.False(t, joined)
+	require.Nil(t, adapter.Image())
+	require.False(t, a.IsRecordingActive())
+}
+
+func TestAgentJoinLogAsFollower_imageVanishesAfterStart(t *testing.T) {
+	t.Parallel()
+
+	// Image closed during start: no bind, stop recording, not-joined.
+	const session int32 = 10
+	sub := aeron.NewTestSubscriptionForHooks(t)
+	image := addLogJoinImage(t, sub, session, 2300, 0)
+	src := NewSubscriptionLogJoinSource(sub)
+	adapter := NewLogAdapter(0)
+	a := NewAgent(AgentConfig{
+		Role:          RoleCandidate,
+		LogJoinSource: src,
+		LogAdapter:    adapter,
+	})
+	control := &fakeLogRecordingControl{
+		nextRecordingID:  88,
+		nextStopPosition: 50,
+		onStart: func() {
+			aeron.ImageInternalCloseForHooks(image)
+		},
+	}
+	a.SetLogRecordingControl(control)
+
+	joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: session}, 1)
+	require.NoError(t, err)
+	require.False(t, joined)
+	require.Nil(t, adapter.Image())
+	require.False(t, a.IsRecordingActive())
+	require.Len(t, control.startCalls, 1)
+	require.Equal(t, 1, control.stopCalls)
+	require.Equal(t, RoleCandidate, a.Role())
+}
+
+func TestAgentJoinLogAsFollower_imageVanishesAfterStartStopError(t *testing.T) {
+	t.Parallel()
+
+	// Asserts stop failure after a vanished image keeps the control active for
+	// prepare drain.
+	const session int32 = 10
+	sub := aeron.NewTestSubscriptionForHooks(t)
+	image := addLogJoinImage(t, sub, session, 2301, 0)
+	src := NewSubscriptionLogJoinSource(sub)
+	adapter := NewLogAdapter(0)
+	a := NewAgent(AgentConfig{
+		LogJoinSource: src,
+		LogAdapter:    adapter,
+	})
+	stopErr := errors.New("stop after vanish failed")
+	control := &fakeLogRecordingControl{
+		nextRecordingID: 88,
+		stopErr:         stopErr,
+		onStart: func() {
+			aeron.ImageInternalCloseForHooks(image)
+		},
+	}
+	a.SetLogRecordingControl(control)
+
+	joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: session}, 1)
+	require.ErrorIs(t, err, stopErr)
+	require.False(t, joined)
+	require.Nil(t, adapter.Image())
+	require.True(t, a.IsRecordingActive())
+	require.Len(t, control.startCalls, 1)
+	require.Equal(t, 1, control.stopCalls)
+}
+
+func TestAgent_logRecording_wiredControlLeaderJoin(t *testing.T) {
+	t.Parallel()
+
+	lp, pub := boundLogPublisher(t)
+	control := &fakeLogRecordingControl{nextRecordingID: 77}
+	a := NewAgent(AgentConfig{LogPublisher: lp})
+	a.SetLogRecordingControl(control)
+
+	require.NoError(t, a.JoinLogAsLeader(1, 10, pub.SessionID(), false))
+	require.True(t, a.IsRecordingActive())
+	require.Equal(t, int64(77), a.LocalLogRecordingID())
+	require.Len(t, control.startCalls, 1)
+	require.Equal(t, archivewire.SourceLocation_LOCAL, control.startCalls[0].sourceLocation)
+	require.Equal(t, pub.SessionID(), control.startCalls[0].logSessionID)
+}
+
+func TestAgent_logRecording_wiredControlLeaderJoinError(t *testing.T) {
+	t.Parallel()
+
+	lp, pub := boundLogPublisher(t)
+	startErr := errors.New("start refused")
+	control := &fakeLogRecordingControl{startErr: startErr}
+	a := NewAgent(AgentConfig{LogPublisher: lp})
+	a.SetLogRecordingControl(control)
+
+	err := a.JoinLogAsLeader(1, 10, pub.SessionID(), false)
+	require.ErrorIs(t, err, startErr)
+	require.False(t, a.IsRecordingActive())
+	require.Equal(t, int64(nullValue), a.LocalLogRecordingID())
+	// Role write precedes the start.
+	require.Equal(t, RoleLeader, a.Role())
+}
+
+func TestAgent_logRecording_secondJoinWhileActive(t *testing.T) {
+	t.Parallel()
+
+	lp, pub := boundLogPublisher(t)
+	control := &fakeLogRecordingControl{nextRecordingID: 77}
+	a := NewAgent(AgentConfig{LogPublisher: lp})
+	a.SetLogRecordingControl(control)
+
+	require.NoError(t, a.JoinLogAsLeader(1, 10, pub.SessionID(), false))
+	require.NoError(t, a.JoinLogAsLeader(2, 20, pub.SessionID(), false))
+	require.Len(t, control.startCalls, 1)
+	require.True(t, a.IsRecordingActive())
+}
+
+func TestAgent_logRecording_transitionWithRecording(t *testing.T) {
+	t.Parallel()
+
+	lp, pub := boundLogPublisher(t)
+	control := &fakeLogRecordingControl{
+		nextRecordingID:  77,
+		nextStopPosition: 5000,
+	}
+	a := NewAgent(AgentConfig{LogPublisher: lp})
+	a.SetLogRecordingControl(control)
+
+	require.NoError(t, a.JoinLogAsLeader(1, 10, pub.SessionID(), false))
+	got, err := a.PrepareForNewLeadership(1234, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(5000), got)
+	require.False(t, a.IsRecordingActive())
+	require.Equal(t, int64(77), a.LocalLogRecordingID())
+	require.Equal(t, 1, control.stopCalls)
+}
+
+func TestAgent_logRecording_transitionStopError(t *testing.T) {
+	t.Parallel()
+
+	lp, pub := boundLogPublisher(t)
+	stopErr := errors.New("stop failed")
+	control := &fakeLogRecordingControl{
+		nextRecordingID: 77,
+		stopErr:         stopErr,
+	}
+	a := NewAgent(AgentConfig{LogPublisher: lp})
+	a.SetLogRecordingControl(control)
+
+	require.NoError(t, a.JoinLogAsLeader(1, 10, pub.SessionID(), false))
+	got, err := a.PrepareForNewLeadership(1234, 1)
+	require.ErrorIs(t, err, stopErr)
+	require.Equal(t, recordinglog.NullPosition, got)
+	require.True(t, a.IsRecordingActive())
+}
+
+func TestAgent_logRecording_repeatedTransition(t *testing.T) {
+	t.Parallel()
+
+	lp, pub := boundLogPublisher(t)
+	control := &fakeLogRecordingControl{
+		nextRecordingID:  77,
+		nextStopPosition: 5000,
+	}
+	a := NewAgent(AgentConfig{LogPublisher: lp})
+	a.SetLogRecordingControl(control)
+
+	require.NoError(t, a.JoinLogAsLeader(1, 10, pub.SessionID(), false))
+	_, err := a.PrepareForNewLeadership(1234, 1)
+	require.NoError(t, err)
+	_, err = a.PrepareForNewLeadership(1234, 2)
+	require.NoError(t, err)
+	// Second prepare still offers stop (idempotent on the real control).
+	require.Equal(t, 2, control.stopCalls)
+}
+
+func TestAgent_logRecording_stopKeepsRecordingID(t *testing.T) {
+	t.Parallel()
+
+	lp, pub := boundLogPublisher(t)
+	control := &fakeLogRecordingControl{
+		nextRecordingID:  77,
+		nextStopPosition: 5000,
+	}
+	a := NewAgent(AgentConfig{LogPublisher: lp})
+	a.SetLogRecordingControl(control)
+
+	require.NoError(t, a.JoinLogAsLeader(1, 10, pub.SessionID(), false))
+	_, err := a.PrepareForNewLeadership(1234, 1)
+	require.NoError(t, err)
+	require.NotEqual(t, int64(-1), a.LocalLogRecordingID())
+}
+
+func TestAgent_logRecording_leaderJoinNegativeSessionID(t *testing.T) {
+	t.Parallel()
+
+	// Negative session ids are legitimate; refusal is structural, not a sign test.
+	lp, _ := boundLogPublisher(t)
+	control := &fakeLogRecordingControl{nextRecordingID: 77}
+	a := NewAgent(AgentConfig{LogPublisher: lp})
+	a.SetLogRecordingControl(control)
+
+	require.NoError(t, a.JoinLogAsLeader(1, 10, -7, false))
+	require.Len(t, control.startCalls, 1)
+	require.Equal(t, int32(-7), control.startCalls[0].logSessionID)
+	require.True(t, a.IsRecordingActive())
+}
+
+func TestAgent_SetLogRecordingID_whileActive(t *testing.T) {
+	t.Parallel()
+
+	lp, pub := boundLogPublisher(t)
+	control := &fakeLogRecordingControl{nextRecordingID: 77}
+	a := NewAgent(AgentConfig{LogPublisher: lp})
+	a.SetLogRecordingControl(control)
+
+	require.NoError(t, a.JoinLogAsLeader(1, 10, pub.SessionID(), false))
+	a.SetLogRecordingID(4242)
+	require.Equal(t, int64(77), a.LocalLogRecordingID())
+	require.True(t, a.IsRecordingActive())
 }
