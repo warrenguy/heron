@@ -102,6 +102,8 @@ func offeredArchiveCorrelationID(t *testing.T, wire []byte) int64 {
 	switch fields := decoded.Fields.(type) {
 	case codecs.StartRecordingRequestFields:
 		return fields.CorrelationID
+	case codecs.ExtendRecordingRequest2Fields:
+		return fields.CorrelationID
 	case codecs.StopRecordingRequestFields:
 		return fields.CorrelationID
 	case codecs.ListRecordingRequestFields:
@@ -323,6 +325,9 @@ func TestListRecording_errorResponseReturnsError(t *testing.T) {
 	_, err := h.listRecordingOps(pollFn, descriptorPoller).
 		listRecording(t.Context(), lifecycleRecordingID)
 	require.Error(t, err)
+	require.True(t, written)
+	var archiveErr *Exception
+	require.ErrorAs(t, err, &archiveErr)
 }
 
 func TestListRecording_descriptorTimeoutReturnsError(t *testing.T) {
@@ -556,6 +561,9 @@ func TestStartRecording_errorResponseReturnsError(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.Zero(t, got)
+	require.True(t, written)
+	var archiveErr *Exception
+	require.ErrorAs(t, err, &archiveErr)
 }
 
 func TestStartRecordingAwaitSignal_nilTrackerReturnsError(t *testing.T) {
@@ -597,6 +605,9 @@ func TestStartRecordingAwaitSignal_errorResponseReturnsError(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.False(t, tracker.Started())
+	require.True(t, written)
+	var archiveErr *Exception
+	require.ErrorAs(t, err, &archiveErr)
 }
 
 func TestStartRecordingAwaitSignal_OKAloneDoesNotComplete(t *testing.T) {
@@ -626,6 +637,138 @@ func TestStartRecordingAwaitSignal_OKAloneDoesNotComplete(t *testing.T) {
 	require.Equal(t, StartRecordingAwaitOperation, timeoutErr.Operation)
 	require.True(t, written)
 	require.False(t, tracker.Started())
+}
+
+func TestExtendRecordingAwaitSignal_nilTrackerReturnsError(t *testing.T) {
+	h := newLifecycleHarness(t)
+	targets := h.responseTargets()
+
+	err := h.controlOps(func() int { return h.demuxPoll(targets) }).extendRecordingAwaitSignal(
+		t.Context(),
+		lifecycleRecordingID,
+		archiveProxyTestRecordingStreamID,
+		archivewire.SourceLocation_LOCAL,
+		archivewire.BooleanType_TRUE,
+		[]byte(lifecycleRecordingChannel),
+		targets,
+		nil,
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "non-nil")
+}
+
+func TestExtendRecordingAwaitSignal_errorResponseReturnsError(t *testing.T) {
+	h := newLifecycleHarness(t)
+	tracker := NewExtendSignalTracker(controlResponseTestControlSessionID, lifecycleRecordingID)
+	targets := h.signalTargets(tracker)
+	written := false
+	pollFn := h.respondControlResponseOnce(
+		t,
+		0,
+		archivewire.ControlResponseCode_ERROR,
+		&written,
+		targets,
+	)
+
+	err := h.controlOps(pollFn).extendRecordingAwaitSignal(
+		t.Context(),
+		lifecycleRecordingID,
+		archiveProxyTestRecordingStreamID,
+		archivewire.SourceLocation_LOCAL,
+		archivewire.BooleanType_TRUE,
+		[]byte(lifecycleRecordingChannel),
+		targets,
+		tracker,
+	)
+	require.Error(t, err)
+	require.False(t, tracker.Extended())
+	require.True(t, written)
+	var archiveErr *Exception
+	require.ErrorAs(t, err, &archiveErr)
+}
+
+func TestExtendRecordingAwaitSignal_OKAloneDoesNotComplete(t *testing.T) {
+	h := newLifecycleHarness(t)
+	tracker := NewExtendSignalTracker(controlResponseTestControlSessionID, lifecycleRecordingID)
+	targets := h.signalTargets(tracker)
+	written := false
+	pollFn := h.respondControlResponseOnce(
+		t,
+		0,
+		archivewire.ControlResponseCode_OK,
+		&written,
+		targets,
+	)
+
+	err := h.controlOps(pollFn).extendRecordingAwaitSignal(
+		t.Context(),
+		lifecycleRecordingID,
+		archiveProxyTestRecordingStreamID,
+		archivewire.SourceLocation_LOCAL,
+		archivewire.BooleanType_TRUE,
+		[]byte(lifecycleRecordingChannel),
+		targets,
+		tracker,
+	)
+	require.Error(t, err)
+	var timeoutErr *ControlResponseTimeoutError
+	require.ErrorAs(t, err, &timeoutErr)
+	require.Equal(t, ExtendRecordingAwaitOperation, timeoutErr.Operation)
+	require.True(t, written)
+	require.False(t, tracker.Extended())
+}
+
+func TestExtendRecordingAwaitSignal_OKThenEXTEND(t *testing.T) {
+	h := newLifecycleHarness(t)
+	tracker := NewExtendSignalTracker(controlResponseTestControlSessionID, lifecycleRecordingID)
+	targets := h.signalTargets(tracker)
+	okWritten := false
+	extendWritten := false
+	pollFn := func() int {
+		if offered := h.pub.lastOffer(); offered != nil {
+			correlationID := offeredArchiveCorrelationID(t, offered)
+			if !okWritten {
+				responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+					ControlSessionID: controlResponseTestControlSessionID,
+					CorrelationID:    correlationID,
+					Code:             archivewire.ControlResponseCode_OK,
+					Version:          520,
+				})
+				writeUnfragmentedWireToTerm(t, h.termBuffer, responseWire)
+				okWritten = true
+			} else if !extendWritten {
+				signalWire := encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
+					ControlSessionID: controlResponseTestControlSessionID,
+					CorrelationID:    correlationID,
+					RecordingID:      lifecycleRecordingID,
+					SubscriptionID:   2002,
+					Position:         3003,
+					Signal:           archivewire.RecordingSignal_EXTEND,
+				})
+				appendUnfragmentedWireToTerm(t, h.termBuffer, signalWire)
+				extendWritten = true
+			}
+		}
+		h.advanceClock()
+		return h.demuxPoll(targets)
+	}
+
+	err := h.controlOps(pollFn).extendRecordingAwaitSignal(
+		t.Context(),
+		lifecycleRecordingID,
+		archiveProxyTestRecordingStreamID,
+		archivewire.SourceLocation_LOCAL,
+		archivewire.BooleanType_TRUE,
+		[]byte(lifecycleRecordingChannel),
+		targets,
+		tracker,
+	)
+	require.NoError(t, err)
+	require.True(t, okWritten)
+	require.True(t, extendWritten)
+	require.True(t, tracker.Extended())
+	require.Equal(t, lifecycleRecordingID, tracker.ExtendedRecordingID())
+	require.False(t, h.poller.IsPollComplete())
 }
 
 func TestStartRecordingAwaitSignal_OKThenSTART(t *testing.T) {
@@ -911,6 +1054,9 @@ func TestStopRecordingAwaitSignal_errorResponseReturnsError(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.False(t, tracker.Stopped())
+	require.True(t, written)
+	var archiveErr *Exception
+	require.ErrorAs(t, err, &archiveErr)
 }
 
 func TestStopRecordingAwaitSignal_reusedTrackerWaitsForNewProof(t *testing.T) {

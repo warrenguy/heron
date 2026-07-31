@@ -156,6 +156,68 @@ func TestAppendInsertionOrder_rapid(t *testing.T) {
 	})
 }
 
+func TestTermRecordingID_matchesEveryTermEntry_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		rt.Helper()
+		log, _ := newLog(t)
+		defer func() { require.NoError(rt, log.Close()) }()
+
+		usedTerms := make(map[int64]bool)
+		termRecordingID := int64(-1)
+		n := rapid.IntRange(0, 12).Draw(rt, "n")
+		for i := range n {
+			termRecordingID = drawAppend(
+				rt, strconv.Itoa(i), log, usedTerms, termRecordingID, randomAppendDraw,
+			)
+			shared := log.TermRecordingID()
+			if termRecordingID == -1 {
+				require.Equal(rt, recordinglog.NullRecordingID, shared)
+			} else {
+				require.Equal(rt, termRecordingID, shared)
+			}
+			for _, e := range log.Entries() {
+				if e.Type != recordinglog.EntryTypeTerm || !e.Valid {
+					continue
+				}
+				require.Equal(rt, shared, e.RecordingID)
+			}
+		}
+	})
+}
+
+func TestTermRecordingID_survivesCloseReopen_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		rt.Helper()
+		dir := t.TempDir()
+		log, err := recordinglog.Open(dir, true)
+		require.NoError(rt, err)
+		defer func() { require.NoError(rt, log.Close()) }()
+
+		usedTerms := make(map[int64]bool)
+		termRecordingID := int64(-1)
+		n := rapid.IntRange(0, 10).Draw(rt, "n")
+		for i := range n {
+			termRecordingID = drawAppend(
+				rt, strconv.Itoa(i), log, usedTerms, termRecordingID, randomAppendDraw,
+			)
+		}
+		before := log.TermRecordingID()
+		require.NoError(rt, log.Close())
+
+		reopened, err := recordinglog.Open(dir, false)
+		require.NoError(rt, err)
+		defer func() { require.NoError(rt, reopened.Close()) }()
+		require.Equal(rt, before, reopened.TermRecordingID())
+		if termRecordingID == -1 {
+			require.Equal(rt, recordinglog.NullRecordingID, reopened.TermRecordingID())
+		} else {
+			require.Equal(rt, termRecordingID, reopened.TermRecordingID())
+		}
+	})
+}
+
 func TestMutateThenReload_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -187,6 +249,11 @@ func TestMutateThenReload_rapid(t *testing.T) {
 				)
 			}
 
+			if termRecordingID == -1 {
+				require.Equal(rt, recordinglog.NullRecordingID, log.TermRecordingID())
+			} else {
+				require.Equal(rt, termRecordingID, log.TermRecordingID())
+			}
 			requireReloadMatchesLogRapid(rt, path, log)
 		}
 	})

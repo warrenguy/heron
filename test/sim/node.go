@@ -421,7 +421,10 @@ func attachReplicationHost(
 		ThisMember:               thisMember,
 		LeaderHeartbeatTimeoutNs: cfg.LeaderHeartbeatTimeoutNs,
 		NanoClock:                node.clock.TimeNs,
+		EpochClock:               node.clock.TimeMs,
 		LeaderMemberID:           election.NullMemberID,
+		RecordingLogLookup:       node.recordingLog,
+		AppVersion:               cfg.AppVersion,
 	})
 	agentCM.SetPositions(hostAdapter)
 	agentCM.SetEgress(hostAdapter)

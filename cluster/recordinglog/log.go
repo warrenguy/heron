@@ -107,10 +107,13 @@ func (l *Log) reload() error {
 	return nil
 }
 
-// Close releases the file handle. Subsequent operations on the Log fail.
+// Close releases the file handle.
 //
-// Close is idempotent: a second call returns nil without touching the file.
-// A failed Close still marks the handle closed; do not retry Close to recover.
+// Close is idempotent. A second call returns nil without touching the file.
+// A failed Close still marks the handle closed. Do not retry Close to recover.
+//
+// After Close, file-backed ops fail. Memory reads of the entry cache and
+// TermRecordingID stay valid.
 func (l *Log) Close() error {
 	if l.closed {
 		return nil
@@ -129,6 +132,24 @@ func (l *Log) Entries() []Entry {
 // NextEntryIndex returns the file-order ordinal the next appended entry takes.
 func (l *Log) NextEntryIndex() int32 {
 	return l.nextEntryIndex
+}
+
+// TermRecordingID returns the recording id every TERM entry in this log shares,
+// or NullRecordingID when the log holds no TERM entry.
+//
+// Behaviour: mirrors the value AppendTerm validates against.
+//
+//   - a caller that starts a recording under the returned id can append a term
+//     for it
+//   - a caller that starts a recording under any other id is refused with
+//     ErrTermRecordingIDMismatch
+//
+// Concurrency: single-writer; see [Log].
+//
+// Returns NullRecordingID before the first TERM entry, and on a log reloaded
+// from a file with no TERM entries.
+func (l *Log) TermRecordingID() int64 {
+	return l.termRecordingID
 }
 
 // AppendTerm records a leadership term and persists it.

@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
@@ -103,7 +104,11 @@ type appendPublishCall struct {
 type recordingEgress struct {
 	commits      []commitPublishCall
 	appends      []appendPublishCall
+	answers      []CanvassAnswer
 	refuseAppend bool // when true, PublishAppendPosition returns false
+	// refuseTerm, when true, PublishNewLeadershipTerm returns false.
+	// Default false so acceptance tests see true without configuring.
+	refuseTerm bool
 }
 
 func (e *recordingEgress) PublishCommitPosition(commitPosition, leadershipTermID int64) {
@@ -124,6 +129,11 @@ func (e *recordingEgress) PublishAppendPosition(
 		flags: flags,
 	})
 	return true
+}
+
+func (e *recordingEgress) PublishNewLeadershipTerm(answer CanvassAnswer) bool {
+	e.answers = append(e.answers, answer)
+	return !e.refuseTerm
 }
 
 func TestProposeMaxCommit_monotonic(t *testing.T) {
@@ -980,4 +990,234 @@ func TestAgent_SetLogRecordingID_whileInactive(t *testing.T) {
 	a.SetLogRecordingID(4242)
 	require.Equal(t, int64(4242), a.LocalLogRecordingID())
 	require.False(t, a.IsRecordingActive())
+}
+
+// TestOnSteadyCanvassPosition_agentMatrix asserts agent settled-canvass rows:
+// role and term checks, echo, session sentinel, and adapter-refusal shape.
+func TestOnSteadyCanvassPosition_agentMatrix(t *testing.T) {
+	t.Parallel()
+
+	const (
+		leaderTerm   int64 = 5
+		canvassPos   int64 = 100
+		followerID   int32 = 1
+		thisMemberID int32 = 0
+		commitPos    int64 = 50
+		recordingID  int64 = 77
+		nowNs        int64 = 1_000
+	)
+
+	baseCanvass := codecs.CanvassPositionFields{
+		LogLeadershipTermID: leaderTerm,
+		LogPosition:         canvassPos,
+		LeadershipTermID:    leaderTerm,
+		FollowerMemberID:    followerID,
+	}
+
+	newLeaderFixture := func(
+		role Role,
+		term int64,
+		lp *LogPublisher,
+	) (*Agent, *spyPositionTable, *recordingEgress) {
+		commit := new(atomic.Int64)
+		commit.Store(commitPos)
+		pt := &spyPositionTable{}
+		eg := &recordingEgress{}
+		a := NewAgent(AgentConfig{
+			Role:             role,
+			Commit:           commit,
+			Positions:        pt,
+			Egress:           eg,
+			ThisMemberID:     thisMemberID,
+			LeadershipTermID: term,
+			LogPublisher:     lp,
+		})
+		a.localLogRecordingID = recordingID
+		return a, pt, eg
+	}
+
+	drive := func(a *Agent, fields codecs.CanvassPositionFields) {
+		wire := encodeCanvassPositionWire(t, fields)
+		a.handleConsensusFragment(wire, 0, nowNs)
+	}
+
+	t.Run("election live routes to runner", func(t *testing.T) {
+		t.Parallel()
+		a, pt, eg := newLeaderFixture(RoleLeader, leaderTerm, nil)
+		runner := &recordingRunner{}
+		a.SetElection(runner)
+		drive(a, baseCanvass)
+		require.Empty(t, eg.answers)
+		require.Empty(t, pt.updates)
+		require.Len(t, runner.handles, 1)
+	})
+
+	t.Run("role follower refuses", func(t *testing.T) {
+		t.Parallel()
+		a, pt, eg := newLeaderFixture(RoleFollower, leaderTerm, nil)
+		drive(a, baseCanvass)
+		require.Empty(t, eg.answers)
+		require.Empty(t, pt.updates)
+	})
+
+	t.Run("role candidate refuses", func(t *testing.T) {
+		t.Parallel()
+		a, pt, eg := newLeaderFixture(RoleCandidate, leaderTerm, nil)
+		drive(a, baseCanvass)
+		require.Empty(t, eg.answers)
+		require.Empty(t, pt.updates)
+	})
+
+	t.Run("canvasser term above refuses without update", func(t *testing.T) {
+		t.Parallel()
+		a, pt, eg := newLeaderFixture(RoleLeader, leaderTerm, nil)
+		fields := baseCanvass
+		fields.LogLeadershipTermID = leaderTerm + 1
+		drive(a, fields)
+		require.Empty(t, eg.answers)
+		require.Empty(t, pt.updates)
+	})
+
+	t.Run("canvasser term equal publishes", func(t *testing.T) {
+		t.Parallel()
+		a, pt, eg := newLeaderFixture(RoleLeader, leaderTerm, nil)
+		drive(a, baseCanvass)
+		require.Len(t, eg.answers, 1)
+		require.Len(t, pt.updates, 1)
+	})
+
+	t.Run("unknown canvasser id still updates position table", func(t *testing.T) {
+		t.Parallel()
+		a, pt, eg := newLeaderFixture(RoleLeader, leaderTerm, nil)
+		fields := baseCanvass
+		fields.FollowerMemberID = 99
+		drive(a, fields)
+		require.Len(t, pt.updates, 1)
+		require.Equal(t, memberPositionUpdate{
+			memberID:         99,
+			leadershipTermID: leaderTerm,
+			logPosition:      canvassPos,
+		}, pt.updates[0])
+		require.Len(t, eg.answers, 1)
+		require.Equal(t, int32(99), eg.answers[0].FollowerMemberID)
+	})
+
+	t.Run("echoes canvasser log leadership term", func(t *testing.T) {
+		t.Parallel()
+		const canvasserTerm int64 = 3
+		a, pt, eg := newLeaderFixture(RoleLeader, leaderTerm, nil)
+		fields := baseCanvass
+		fields.LogLeadershipTermID = canvasserTerm
+		drive(a, fields)
+		require.Len(t, eg.answers, 1)
+		require.Equal(t, canvasserTerm, eg.answers[0].LogLeadershipTermID)
+		require.Equal(t, leaderTerm, eg.answers[0].LeadershipTermID)
+		require.Len(t, pt.updates, 1)
+		require.Equal(t, memberPositionUpdate{
+			memberID:         followerID,
+			leadershipTermID: canvasserTerm,
+			logPosition:      canvassPos,
+		}, pt.updates[0])
+	})
+
+	t.Run("bound publication fills position and session", func(t *testing.T) {
+		t.Parallel()
+		lp, _ := boundLogPublisher(t)
+		a, _, eg := newLeaderFixture(RoleLeader, leaderTerm, lp)
+		drive(a, baseCanvass)
+		require.Len(t, eg.answers, 1)
+		ans := eg.answers[0]
+		require.Equal(t, lp.Position(), ans.LogPosition)
+		require.Equal(t, lp.SessionID(), ans.LogSessionID)
+		require.NotEqual(t, nullMemberID, ans.LogSessionID)
+		require.Equal(t, commitPos, ans.CommitPosition)
+		require.Equal(t, recordingID, ans.LeaderRecordingID)
+	})
+
+	t.Run("default local recording id is null", func(t *testing.T) {
+		t.Parallel()
+		commit := new(atomic.Int64)
+		commit.Store(commitPos)
+		eg := &recordingEgress{}
+		a := NewAgent(AgentConfig{
+			Role:             RoleLeader,
+			Commit:           commit,
+			Positions:        &spyPositionTable{},
+			Egress:           eg,
+			ThisMemberID:     thisMemberID,
+			LeadershipTermID: leaderTerm,
+		})
+		// NewAgent leaves localLogRecordingID at nullValue. Do not seed.
+		drive(a, baseCanvass)
+		require.Len(t, eg.answers, 1)
+		require.Equal(t, int64(nullValue), eg.answers[0].LeaderRecordingID)
+	})
+
+	t.Run("nil log publisher fills null session id", func(t *testing.T) {
+		t.Parallel()
+		a, _, eg := newLeaderFixture(RoleLeader, leaderTerm, nil)
+		drive(a, baseCanvass)
+		require.Len(t, eg.answers, 1)
+		require.Equal(t, nullMemberID, eg.answers[0].LogSessionID)
+		require.NotEqual(t, int32(0), eg.answers[0].LogSessionID)
+		require.Equal(t, int64(0), eg.answers[0].LogPosition)
+	})
+
+	t.Run("unbound log publisher fills null session id", func(t *testing.T) {
+		t.Parallel()
+		a, _, eg := newLeaderFixture(RoleLeader, leaderTerm, NewLogPublisher())
+		drive(a, baseCanvass)
+		require.Len(t, eg.answers, 1)
+		require.Equal(t, nullMemberID, eg.answers[0].LogSessionID)
+		require.NotEqual(t, int32(0), eg.answers[0].LogSessionID)
+	})
+
+	t.Run("nil positions or egress does not panic", func(t *testing.T) {
+		t.Parallel()
+		// Both nil: refuse before either call; no spy to observe.
+		require.NotPanics(t, func() {
+			a := NewAgent(AgentConfig{
+				Role:             RoleLeader,
+				LeadershipTermID: leaderTerm,
+			})
+			drive(a, baseCanvass)
+		})
+		// Positions wired, egress nil: no panic; no publish surface.
+		pt := &spyPositionTable{}
+		require.NotPanics(t, func() {
+			a := NewAgent(AgentConfig{
+				Role:             RoleLeader,
+				LeadershipTermID: leaderTerm,
+				Positions:        pt,
+			})
+			drive(a, baseCanvass)
+		})
+		require.Empty(t, pt.updates)
+		// Positions nil, egress wired: no panic and no PublishNewLeadershipTerm.
+		eg := &recordingEgress{}
+		require.NotPanics(t, func() {
+			a := NewAgent(AgentConfig{
+				Role:             RoleLeader,
+				LeadershipTermID: leaderTerm,
+				Egress:           eg,
+			})
+			drive(a, baseCanvass)
+		})
+		require.Empty(t, eg.answers)
+	})
+
+	t.Run("egress false leaves position and reports no error", func(t *testing.T) {
+		t.Parallel()
+		a, pt, eg := newLeaderFixture(RoleLeader, leaderTerm, nil)
+		eg.refuseTerm = true
+		drive(a, baseCanvass)
+		require.Len(t, pt.updates, 1)
+		require.Len(t, eg.answers, 1)
+		// Agent tolerates false: no second publish, no panic, no rollback.
+		require.Equal(t, memberPositionUpdate{
+			memberID:         followerID,
+			leadershipTermID: leaderTerm,
+			logPosition:      canvassPos,
+		}, pt.updates[0])
+	})
 }

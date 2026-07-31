@@ -139,3 +139,13 @@ type StartRecordingRequest2Fields struct {
 	AutoStop         archivewire.BooleanType
 	Channel          []byte
 }
+
+type ExtendRecordingRequest2Fields struct {
+	ControlSessionID int64
+	CorrelationID    int64
+	RecordingID      int64
+	StreamID         int32
+	SourceLocation   archivewire.SourceLocation
+	AutoStop         archivewire.BooleanType
+	Channel          []byte
+}

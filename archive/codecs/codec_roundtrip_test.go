@@ -280,6 +280,11 @@ func requireDecodedArchiveFields(tb require.TestingT, want, got any) {
 		requireBytesEqual(tb, w.Channel, g.Channel)
 		w.Channel, g.Channel = nil, nil
 		require.Equal(tb, w, g)
+	case codecs.ExtendRecordingRequest2Fields:
+		g := got.(codecs.ExtendRecordingRequest2Fields)
+		requireBytesEqual(tb, w.Channel, g.Channel)
+		w.Channel, g.Channel = nil, nil
+		require.Equal(tb, w, g)
 	case codecs.StopRecordingRequestFields:
 		g := got.(codecs.StopRecordingRequestFields)
 		requireBytesEqual(tb, w.Channel, g.Channel)
@@ -846,6 +851,25 @@ func TestStartRecordingRequest2_roundtrip(t *testing.T) {
 		archivewire.StartRecordingRequest2SbeTemplateID,
 		archiveSchemaVersion,
 		encodeAt(archiveSchemaVersion, fields, codecs.EncodeStartRecordingRequest2),
+		fields,
+	)
+}
+
+func TestExtendRecordingRequest2_roundtrip(t *testing.T) {
+	fields := codecs.ExtendRecordingRequest2Fields{
+		ControlSessionID: 1,
+		CorrelationID:    2,
+		RecordingID:      3,
+		StreamID:         4,
+		SourceLocation:   archivewire.SourceLocation_REMOTE,
+		AutoStop:         archivewire.BooleanType_TRUE,
+		Channel:          []byte("aeron:ipc"),
+	}
+	runArchiveCodecRoundtrip(
+		t,
+		archivewire.ExtendRecordingRequest2SbeTemplateID,
+		archiveSchemaVersion,
+		encodeAt(archiveSchemaVersion, fields, codecs.EncodeExtendRecordingRequest2),
 		fields,
 	)
 }

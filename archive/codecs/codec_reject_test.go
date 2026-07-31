@@ -295,6 +295,24 @@ func TestTryDecodeByTemplate_truncated_request_var_field(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestTryDecodeByTemplate_truncated_extend_request_var_field(t *testing.T) {
+	fields := codecs.ExtendRecordingRequest2Fields{
+		ControlSessionID: 1,
+		CorrelationID:    2,
+		RecordingID:      3,
+		StreamID:         4,
+		SourceLocation:   archivewire.SourceLocation_REMOTE,
+		AutoStop:         archivewire.BooleanType_TRUE,
+		Channel:          bytes.Repeat([]byte{0x41}, 16),
+	}
+	buf := make([]byte, fuzzArchiveCodecMaxLen)
+	wireEnd, ok := codecs.EncodeExtendRecordingRequest2(buf, 0, archiveSchemaVersion, fields)
+	require.True(t, ok)
+
+	_, ok = codecs.TryDecodeByTemplate(buf[:wireEnd-1], 0, codecTestMaxVarLen)
+	require.False(t, ok)
+}
+
 func TestEncodeArchiveWire_bufferBounds(t *testing.T) {
 	fields := testStartRecordingRequestIPC
 	wireLen, ok := codecs.ArchiveWireMessageLen(

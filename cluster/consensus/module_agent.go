@@ -934,7 +934,8 @@ func (a *Agent) onIngressFragment(buf []byte, offset int) {
 // When election is live: stamp leader-update clock for NewLeadershipTerm /
 // CommitPosition (term >= current), then
 // [ElectionRunner.HandleConsensusMessage]. When election is nil: steady-state
-// AppendPosition / CommitPosition / NewLeadershipTerm dispatch.
+// AppendPosition / CommitPosition / NewLeadershipTerm / CanvassPosition
+// dispatch.
 func (a *Agent) handleConsensusFragment(buf []byte, offset int, nowNs int64) {
 	if a.election != nil {
 		a.noteLeaderUpdateClockFromFragment(buf, offset, nowNs)
@@ -1003,7 +1004,56 @@ func (a *Agent) handleSteadyConsensusFragment(buf []byte, offset int, nowNs int6
 		if fields, ok := codecs.TryDecodeNewLeadershipTermAt(buf, offset); ok {
 			a.onSteadyNewLeadershipTerm(fields, nowNs)
 		}
+	case clusterwire.CanvassPositionSbeTemplateID:
+		if fields, ok := codecs.TryDecodeCanvassPositionAt(buf, offset); ok {
+			a.onSteadyCanvassPosition(fields, nowNs)
+		}
 	}
+}
+
+// onSteadyCanvassPosition answers a canvass from a settled leader.
+//
+// Behaviour:
+//   - refuses unless this member is the leader
+//   - refuses when the canvasser's log leadership term is above this member's
+//     leadership term
+//   - on acceptance, updates the canvasser's log position
+//   - on acceptance, publishes this leader's current leadership term to the
+//     canvasser
+//
+// Echo and refuse:
+//   - the published term echoes the canvasser's own log leadership term
+//   - a canvasser installs a term only when that echo matches the value it
+//     published
+//   - a refused canvasser gets no position update and no publish
+//
+// Concurrency: invoker-only; see [Agent].
+func (a *Agent) onSteadyCanvassPosition(fields codecs.CanvassPositionFields, nowNs int64) {
+	_ = nowNs
+	if a.role != RoleLeader {
+		return
+	}
+	if fields.LogLeadershipTermID > a.leadershipTermID {
+		return
+	}
+	if a.positions == nil || a.egress == nil {
+		return
+	}
+	a.positions.UpdateMemberPosition(
+		fields.FollowerMemberID,
+		fields.LogLeadershipTermID,
+		fields.LogPosition,
+	)
+
+	_ = a.egress.PublishNewLeadershipTerm(CanvassAnswer{
+		FollowerMemberID:    fields.FollowerMemberID,
+		LogLeadershipTermID: fields.LogLeadershipTermID,
+		LeadershipTermID:    a.leadershipTermID,
+		LogPosition:         a.logPublisher.Position(),
+		CommitPosition:      a.CommitPosition(),
+		LeaderRecordingID:   a.localLogRecordingID,
+		LogSessionID:        a.AddLogPublication(0),
+	})
 }
 
 // onSteadyAppendPosition applies a follower AppendPosition on the leader only.

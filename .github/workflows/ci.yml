@@ -10,7 +10,7 @@ on:
 # GOARCH must match runner arch (see Makefile SUPPORTED_GOARCHES).
 jobs:
   lint:
-    runs-on: self-hosted
+    runs-on: heron-linux-k8s
     env: &amd64-env
       GOARCH: amd64
     steps:
@@ -42,7 +42,7 @@ jobs:
 
   oracles:
     if: &skip-drafts github.event_name == 'push' || github.event.pull_request.draft == false
-    runs-on: self-hosted
+    runs-on: heron-linux-k8s
     env: *amd64-env
     steps:
       - *checkout-step
@@ -64,7 +64,7 @@ jobs:
       matrix:
         include:
           - goarch: amd64
-            runner: self-hosted
+            runner: heron-linux-k8s
           # - goarch: arm64
           #   runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
@@ -79,7 +79,7 @@ jobs:
         run: make check-test
 
   property:
-    runs-on: self-hosted
+    runs-on: heron-linux-k8s
     env: *amd64-env
     steps:
       - *checkout-step
@@ -91,7 +91,7 @@ jobs:
 
   election-sim:
     if: *skip-drafts
-    runs-on: self-hosted
+    runs-on: heron-linux-k8s
     timeout-minutes: 5
     env: *amd64-env
     steps:
@@ -113,7 +113,7 @@ jobs:
 
   replication-sim:
     if: *skip-drafts
-    runs-on: self-hosted
+    runs-on: heron-linux-k8s
     timeout-minutes: 5
     env: *amd64-env
     steps:
@@ -160,7 +160,7 @@ jobs:
 
   docker-smokes:
     if: *skip-drafts
-    runs-on: self-hosted
+    runs-on: heron-linux-k8s
     timeout-minutes: 15
     env: *amd64-env
     steps:
@@ -182,7 +182,7 @@ jobs:
         github.event.pull_request.draft == false
       )
     needs: [lint, oracles, unit, property, election-sim, replication-sim, integration, docker-smokes]
-    runs-on: self-hosted
+    runs-on: heron-linux-k8s
     steps:
       - *checkout-step
       - name: All required jobs passed

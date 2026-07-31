@@ -393,6 +393,9 @@ func ArchiveRootBlockLengthBounds(
 	case archivewire.StartRecordingRequest2SbeTemplateID:
 		bl := archivewire.StartRecordingRequest2SbeBlockLength
 		return bl, bl, true
+	case archivewire.ExtendRecordingRequest2SbeTemplateID:
+		bl := archivewire.ExtendRecordingRequest2SbeBlockLength
+		return bl, bl, true
 	default:
 		return 0, 0, false
 	}
@@ -415,7 +418,8 @@ func ArchiveVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		archivewire.ReplayRequestSbeTemplateID,
 		archivewire.ChallengeSbeTemplateID,
 		archivewire.ChallengeResponseSbeTemplateID,
-		archivewire.StartRecordingRequest2SbeTemplateID:
+		archivewire.StartRecordingRequest2SbeTemplateID,
+		archivewire.ExtendRecordingRequest2SbeTemplateID:
 		return 1, true
 	case archivewire.RecordingDescriptorSbeTemplateID:
 		return 3, true
@@ -535,7 +539,8 @@ func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields
 		return templateVarFields{responseChannel: raw[0]}, true
 	case archivewire.StartRecordingRequestSbeTemplateID,
 		archivewire.StopRecordingRequestSbeTemplateID,
-		archivewire.StartRecordingRequest2SbeTemplateID:
+		archivewire.StartRecordingRequest2SbeTemplateID,
+		archivewire.ExtendRecordingRequest2SbeTemplateID:
 		return templateVarFields{channel: raw[0]}, true
 	case archivewire.ReplayRequestSbeTemplateID:
 		return templateVarFields{replayChannel: raw[0]}, true
@@ -695,6 +700,18 @@ func decodeTemplateFields(
 		return StartRecordingRequest2Fields{
 			ControlSessionID: msg.ControlSessionId(),
 			CorrelationID:    msg.CorrelationId(),
+			StreamID:         msg.StreamId(),
+			SourceLocation:   msg.SourceLocation(),
+			AutoStop:         msg.AutoStop(),
+			Channel:          vars.channel,
+		}, true
+	case archivewire.ExtendRecordingRequest2SbeTemplateID:
+		var msg archivewire.ExtendRecordingRequest2
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return ExtendRecordingRequest2Fields{
+			ControlSessionID: msg.ControlSessionId(),
+			CorrelationID:    msg.CorrelationId(),
+			RecordingID:      msg.RecordingId(),
 			StreamID:         msg.StreamId(),
 			SourceLocation:   msg.SourceLocation(),
 			AutoStop:         msg.AutoStop(),

@@ -66,6 +66,25 @@ func TestClientLifecycle_contextDone(t *testing.T) {
 				)
 			},
 		},
+		{
+			name: "extendRecordingAwaitSignal",
+			run: func(client *Client, ctx context.Context) error {
+				tracker := NewExtendSignalTracker(
+					controlResponseTestControlSessionID,
+					lifecycleRecordingID,
+				)
+				_, err := client.ExtendRecordingAwaitSignal(
+					ctx,
+					lifecycleRecordingID,
+					archiveProxyTestRecordingStreamID,
+					archivewire.SourceLocation_LOCAL,
+					true,
+					[]byte(lifecycleRecordingChannel),
+					tracker,
+				)
+				return err
+			},
+		},
 	}
 	ctxModes := []struct {
 		name     string
@@ -145,7 +164,7 @@ func TestClientStartRecording_contextCanceledMidLoop(t *testing.T) {
 		[]byte(lifecycleRecordingChannel),
 	)
 	require.ErrorIs(t, err, context.Canceled)
-	require.GreaterOrEqual(t, pub.calls, 2)
+	require.Equal(t, 2, pub.calls)
 }
 
 func TestNewLister_contextCanceled(t *testing.T) {

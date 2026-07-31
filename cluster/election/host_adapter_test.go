@@ -10,6 +10,7 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
 func hostAdapterMembers(n int) []*election.Member {
@@ -47,6 +48,7 @@ func newTestHostAdapter(
 		ThisMember:               members[thisIdx],
 		LeaderHeartbeatTimeoutNs: 10_000_000_000,
 		NanoClock:                clock.TimeNs,
+		EpochClock:               func() int64 { return 42_000 },
 		LeaderMemberID:           election.NullMemberID,
 	}
 	for _, opt := range opts {
@@ -119,6 +121,7 @@ func TestNewHostAdapter_panics(t *testing.T) {
 			ThisMember:               members[0],
 			LeaderHeartbeatTimeoutNs: 10,
 			NanoClock:                clock.TimeNs,
+			EpochClock:               func() int64 { return 1 },
 			LeaderMemberID:           election.NullMemberID,
 		}
 	}
@@ -161,6 +164,15 @@ func TestNewHostAdapter_panics(t *testing.T) {
 			cfg: func() election.HostAdapterConfig {
 				c := valid()
 				c.NanoClock = nil
+				return c
+			},
+		},
+		{
+			name: "nil EpochClock",
+			want: "election: nil EpochClock",
+			cfg: func() election.HostAdapterConfig {
+				c := valid()
+				c.EpochClock = nil
 				return c
 			},
 		},
@@ -266,6 +278,7 @@ func TestNewHostAdapter_seedsThisMemberID(t *testing.T) {
 		ThisMember:               members[thisIdx],
 		LeaderHeartbeatTimeoutNs: 10_000_000_000,
 		NanoClock:                clock.TimeNs,
+		EpochClock:               func() int64 { return 42_000 },
 		LeaderMemberID:           election.NullMemberID,
 	})
 	agent.SetPositions(host)
@@ -863,4 +876,217 @@ func TestHostAdapter_leaderLogReplicationCommitFanOut(t *testing.T) {
 		t, pub.Sent, e.LeadershipTermID(), followerLogPos, 0,
 		map[int32]struct{}{1: {}, 2: {}},
 	)
+}
+
+// mapTermLookup is a RecordingLogLookup for PublishNewLeadershipTerm tests.
+type mapTermLookup map[int64]*recordinglog.Entry
+
+func (m mapTermLookup) FindTermEntry(logLeadershipTermID int64) *recordinglog.Entry {
+	return m[logLeadershipTermID]
+}
+
+// TestHostAdapter_PublishNewLeadershipTerm_answerConstruction asserts the ten
+// settled-answer construction rows against the real adapter method.
+func TestHostAdapter_PublishNewLeadershipTerm_answerConstruction(t *testing.T) {
+	t.Parallel()
+
+	const (
+		thisIdx     = 0
+		followerID  = int32(1)
+		leaderTerm  = int64(5)
+		termBase    = int64(200)
+		logPos      = int64(400)
+		commitPos   = int64(350)
+		recordingID = int64(88)
+		sessionID   = int32(42)
+		appVersion  = int32(-7)
+		epochStamp  = int64(99_000)
+	)
+
+	baseAnswer := consensus.CanvassAnswer{
+		FollowerMemberID:    followerID,
+		LogLeadershipTermID: leaderTerm,
+		LeadershipTermID:    leaderTerm,
+		LogPosition:         logPos,
+		CommitPosition:      commitPos,
+		LeaderRecordingID:   recordingID,
+		LogSessionID:        sessionID,
+	}
+
+	currentEntry := &recordinglog.Entry{
+		LeadershipTermID:    leaderTerm,
+		TermBaseLogPosition: termBase,
+		LogPosition:         logPos,
+	}
+
+	newAdapter := func(
+		t *testing.T,
+		lookup election.RecordingLogLookup,
+	) (*election.HostAdapter, *election.SbePublisher) {
+		t.Helper()
+		members := hostAdapterMembers(3)
+		host, _, pub, _ := newTestHostAdapter(t, members, thisIdx, func(c *election.HostAdapterConfig) {
+			c.EpochClock = func() int64 { return epochStamp }
+			c.RecordingLogLookup = lookup
+			c.AppVersion = appVersion
+		})
+		return host, pub
+	}
+
+	t.Run("current term canvasser null next fields", func(t *testing.T) {
+		t.Parallel()
+		host, pub := newAdapter(t, mapTermLookup{leaderTerm: currentEntry})
+		ok := host.PublishNewLeadershipTerm(baseAnswer)
+		require.True(t, ok)
+		require.Len(t, pub.Sent, 1)
+		require.Equal(t, followerID, pub.Sent[0].Dst.MemberID)
+		fields := pub.Sent[0].Fields.(codecs.NewLeadershipTermFields)
+		require.Equal(t, election.NullValue, fields.NextLeadershipTermID)
+		require.Equal(t, election.NullPosition, fields.NextTermBaseLogPosition)
+		require.Equal(t, election.NullPosition, fields.NextLogPosition)
+		require.Equal(t, termBase, fields.TermBaseLogPosition)
+		require.Equal(t, leaderTerm, fields.LogLeadershipTermID)
+		require.Equal(t, leaderTerm, fields.LeadershipTermID)
+	})
+
+	t.Run("lagging canvasser next term indexed", func(t *testing.T) {
+		t.Parallel()
+		// One term behind: FindTermEntry(canvass+1) is the current term entry.
+		lookup := mapTermLookup{leaderTerm: currentEntry}
+		answer := baseAnswer
+		answer.LogLeadershipTermID = leaderTerm - 1
+		host, pub := newAdapter(t, lookup)
+		ok := host.PublishNewLeadershipTerm(answer)
+		require.True(t, ok)
+		require.Len(t, pub.Sent, 1)
+		fields := pub.Sent[0].Fields.(codecs.NewLeadershipTermFields)
+		require.Equal(t, answer.LogLeadershipTermID, fields.LogLeadershipTermID)
+		require.Equal(t, answer.LeadershipTermID, fields.LeadershipTermID)
+		require.Equal(t, termBase, fields.TermBaseLogPosition)
+		require.Equal(t, currentEntry.LeadershipTermID, fields.NextLeadershipTermID)
+		require.Equal(t, currentEntry.TermBaseLogPosition, fields.NextTermBaseLogPosition)
+		require.Equal(t, currentEntry.LogPosition, fields.NextLogPosition)
+	})
+
+	t.Run("lagging canvasser next term not indexed", func(t *testing.T) {
+		t.Parallel()
+		// Canvasser at 3, next key 4 missing: fallback to leader term and base.
+		lookup := mapTermLookup{leaderTerm: currentEntry}
+		answer := baseAnswer
+		answer.LogLeadershipTermID = 3
+		host, pub := newAdapter(t, lookup)
+		ok := host.PublishNewLeadershipTerm(answer)
+		require.True(t, ok)
+		require.Len(t, pub.Sent, 1)
+		fields := pub.Sent[0].Fields.(codecs.NewLeadershipTermFields)
+		require.Equal(t, answer.LogLeadershipTermID, fields.LogLeadershipTermID)
+		require.Equal(t, answer.LeadershipTermID, fields.LeadershipTermID)
+		require.Equal(t, termBase, fields.TermBaseLogPosition)
+		require.Equal(t, leaderTerm, fields.NextLeadershipTermID)
+		require.Equal(t, termBase, fields.NextTermBaseLogPosition)
+		require.Equal(t, election.NullPosition, fields.NextLogPosition)
+	})
+
+	t.Run("lagging next term uncommitted keeps null log position", func(t *testing.T) {
+		t.Parallel()
+		// Distinct next entry with null log position; no append sub.
+		// Leader term 10, canvasser at 5, next at 6 uncommitted; current at 10.
+		const (
+			highTerm       int64 = 10
+			canvassTerm    int64 = 5
+			nextKey        int64 = 6
+			highBase       int64 = 1000
+			nextBase       int64 = 700
+			nextLeadership int64 = 6
+		)
+		lookup := mapTermLookup{
+			highTerm: {
+				LeadershipTermID:    highTerm,
+				TermBaseLogPosition: highBase,
+				LogPosition:         logPos,
+			},
+			nextKey: {
+				LeadershipTermID:    nextLeadership,
+				TermBaseLogPosition: nextBase,
+				LogPosition:         recordinglog.NullPosition,
+			},
+		}
+		answer := baseAnswer
+		answer.LeadershipTermID = highTerm
+		answer.LogLeadershipTermID = canvassTerm
+		host, pub := newAdapter(t, lookup)
+		ok := host.PublishNewLeadershipTerm(answer)
+		require.True(t, ok)
+		require.Len(t, pub.Sent, 1)
+		fields := pub.Sent[0].Fields.(codecs.NewLeadershipTermFields)
+		require.Equal(t, answer.LogLeadershipTermID, fields.LogLeadershipTermID)
+		require.Equal(t, answer.LeadershipTermID, fields.LeadershipTermID)
+		require.Equal(t, highBase, fields.TermBaseLogPosition)
+		require.Equal(t, nextLeadership, fields.NextLeadershipTermID)
+		require.Equal(t, nextBase, fields.NextTermBaseLogPosition)
+		require.Equal(t, election.NullPosition, fields.NextLogPosition)
+	})
+
+	t.Run("current term not indexed refuses", func(t *testing.T) {
+		t.Parallel()
+		host, pub := newAdapter(t, mapTermLookup{})
+		ok := host.PublishNewLeadershipTerm(baseAnswer)
+		require.False(t, ok)
+		require.Empty(t, pub.Sent)
+	})
+
+	t.Run("nil recording log lookup refuses", func(t *testing.T) {
+		t.Parallel()
+		host, pub := newAdapter(t, nil)
+		ok := host.PublishNewLeadershipTerm(baseAnswer)
+		require.False(t, ok)
+		require.Empty(t, pub.Sent)
+	})
+
+	t.Run("unknown member refuses", func(t *testing.T) {
+		t.Parallel()
+		host, pub := newAdapter(t, mapTermLookup{leaderTerm: currentEntry})
+		answer := baseAnswer
+		answer.FollowerMemberID = 99
+		ok := host.PublishNewLeadershipTerm(answer)
+		require.False(t, ok)
+		require.Empty(t, pub.Sent)
+	})
+
+	t.Run("self member refuses", func(t *testing.T) {
+		t.Parallel()
+		host, pub := newAdapter(t, mapTermLookup{leaderTerm: currentEntry})
+		answer := baseAnswer
+		answer.FollowerMemberID = int32(thisIdx)
+		ok := host.PublishNewLeadershipTerm(answer)
+		require.False(t, ok)
+		require.Empty(t, pub.Sent)
+	})
+
+	t.Run("null log session refuses", func(t *testing.T) {
+		t.Parallel()
+		host, pub := newAdapter(t, mapTermLookup{leaderTerm: currentEntry})
+		answer := baseAnswer
+		answer.LogSessionID = election.NullMemberID
+		ok := host.PublishNewLeadershipTerm(answer)
+		require.False(t, ok)
+		require.Empty(t, pub.Sent)
+	})
+
+	t.Run("published answer stamps identity clock and version", func(t *testing.T) {
+		t.Parallel()
+		host, pub := newAdapter(t, mapTermLookup{leaderTerm: currentEntry})
+		ok := host.PublishNewLeadershipTerm(baseAnswer)
+		require.True(t, ok)
+		require.Len(t, pub.Sent, 1)
+		fields := pub.Sent[0].Fields.(codecs.NewLeadershipTermFields)
+		require.Equal(t, int32(thisIdx), fields.LeaderMemberID)
+		require.Equal(t, clusterwire.BooleanType_FALSE, fields.IsStartup)
+		require.Equal(t, epochStamp, fields.Timestamp)
+		require.Equal(t, appVersion, fields.AppVersion)
+		require.Equal(t, logPos, fields.LogPosition)
+		require.Equal(t, commitPos, fields.CommitPosition)
+		require.Equal(t, recordingID, fields.LeaderRecordingID)
+		require.Equal(t, sessionID, fields.LogSessionID)
+	})
 }

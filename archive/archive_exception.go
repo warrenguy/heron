@@ -11,11 +11,20 @@ const (
 	// ErrorGeneric is the default archive error code.
 	ErrorGeneric = 0
 
+	// ErrorActiveRecording matches Java ACTIVE_RECORDING (code 2).
+	ErrorActiveRecording = 2
+
+	// ErrorActiveSubscription matches Java ACTIVE_SUBSCRIPTION (code 3).
+	ErrorActiveSubscription = 3
+
 	// ErrorUnknownSubscription matches Java UNKNOWN_SUBSCRIPTION (code 4).
 	ErrorUnknownSubscription = 4
 
 	// ErrorUnknownRecording matches Java UNKNOWN_RECORDING (code 5).
 	ErrorUnknownRecording = 5
+
+	// ErrorInvalidExtension matches Java INVALID_EXTENSION (code 9).
+	ErrorInvalidExtension = 9
 
 	// ErrorAuthenticationRejected matches Java AUTHENTICATION_REJECTED (code 10).
 	ErrorAuthenticationRejected = 10

@@ -9,6 +9,8 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/warrenguy/heron/cluster/codecs"
 )
 
 func TestProposeMaxCommit_monotonic_rapid(t *testing.T) {
@@ -93,6 +95,57 @@ func TestUpdateLeaderPosition_timeOfLastLogUpdate_monotonicOnPublish_rapid(t *te
 			} else {
 				require.Equal(rt, prevLogUpdate, a.timeOfLastLogUpdateNs)
 			}
+		}
+	})
+}
+
+// TestOnSteadyCanvassPosition_guard_rapid asserts settled canvass publish and
+// position-update gates over random role, term, and collaborator wiring.
+func TestOnSteadyCanvassPosition_guard_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		roles := []Role{RoleFollower, RoleCandidate, RoleLeader}
+		role := roles[rapid.IntRange(0, len(roles)-1).Draw(rt, "role")]
+		leaderTerm := rapid.Int64Range(0, 20).Draw(rt, "leaderTerm")
+		canvassTerm := rapid.Int64Range(0, 25).Draw(rt, "canvassTerm")
+		followerID := rapid.Int32Range(0, 10).Draw(rt, "followerID")
+		wirePositions := rapid.Bool().Draw(rt, "wirePositions")
+		wireEgress := rapid.Bool().Draw(rt, "wireEgress")
+
+		pt := &spyPositionTable{}
+		eg := &recordingEgress{}
+		cfg := AgentConfig{
+			Role:             role,
+			Commit:           new(atomic.Int64),
+			ThisMemberID:     0,
+			LeadershipTermID: leaderTerm,
+		}
+		if wirePositions {
+			cfg.Positions = pt
+		}
+		if wireEgress {
+			cfg.Egress = eg
+		}
+		a := NewAgent(cfg)
+
+		fields := codecs.CanvassPositionFields{
+			LogLeadershipTermID: canvassTerm,
+			LogPosition:         rapid.Int64Range(0, 1000).Draw(rt, "logPos"),
+			LeadershipTermID:    canvassTerm,
+			FollowerMemberID:    followerID,
+		}
+		a.onSteadyCanvassPosition(fields, 1)
+
+		expectSideEffects := role == RoleLeader &&
+			canvassTerm <= leaderTerm &&
+			wirePositions &&
+			wireEgress
+		if expectSideEffects {
+			require.Len(rt, eg.answers, 1)
+			require.Len(rt, pt.updates, 1)
+		} else {
+			require.Empty(rt, eg.answers)
+			require.Empty(rt, pt.updates)
 		}
 	})
 }

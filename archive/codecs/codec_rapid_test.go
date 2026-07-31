@@ -270,6 +270,31 @@ func TestStartRecordingRequest2_codec_rapid(t *testing.T) {
 	})
 }
 
+func TestExtendRecordingRequest2_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.ExtendRecordingRequest2Fields{
+			ControlSessionID: rapid.Int64().Draw(rt, "controlSessionID"),
+			CorrelationID:    rapid.Int64().Draw(rt, "correlationID"),
+			RecordingID:      rapid.Int64().Draw(rt, "recordingID"),
+			StreamID:         rapid.Int32().Draw(rt, "streamID"),
+			SourceLocation:   rapidSourceLocation(rt),
+			AutoStop:         rapidBooleanType(rt),
+			Channel:          rapidVarBytes(rt, "channel"),
+		}
+
+		runArchiveCodecRoundtripAtOffset(
+			rt,
+			archivewire.ExtendRecordingRequest2SbeTemplateID,
+			actingVersion,
+			offset,
+			encodeAt(actingVersion, fields, codecs.EncodeExtendRecordingRequest2),
+			fields,
+		)
+	})
+}
+
 func TestStopRecordingRequest_codec_rapid(t *testing.T) {
 	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {

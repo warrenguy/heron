@@ -191,6 +191,34 @@ func EncodeStartRecordingRequest2(
 	)
 }
 
+// EncodeExtendRecordingRequest2 writes an archive ExtendRecordingRequest2 at offset.
+func EncodeExtendRecordingRequest2(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields ExtendRecordingRequest2Fields,
+) (wireEnd int, ok bool) {
+	return encodeWithArchiveWireHeader(
+		buf,
+		offset,
+		archivewire.ExtendRecordingRequest2SbeBlockLength,
+		archivewire.ExtendRecordingRequest2SbeTemplateID,
+		actingVersion,
+		[]int{len(fields.Channel)},
+		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+			var msg archivewire.ExtendRecordingRequest2
+			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+				SetControlSessionId(fields.ControlSessionID).
+				SetCorrelationId(fields.CorrelationID).
+				SetRecordingId(fields.RecordingID).
+				SetStreamId(fields.StreamID).
+				SetSourceLocation(fields.SourceLocation).
+				SetAutoStop(fields.AutoStop)
+			msg.PutChannel(archiveVarString(fields.Channel))
+		},
+	)
+}
+
 // EncodeStopRecordingRequest writes an archive StopRecordingRequest at offset.
 func EncodeStopRecordingRequest(
 	buf []byte,

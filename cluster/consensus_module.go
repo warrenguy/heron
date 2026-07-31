@@ -221,6 +221,7 @@ func OpenConsensusModule(
 		module.archiveClient,
 		topology.LogChannel(),
 		topology.LogStreamID(),
+		recovery.RecordingLog(),
 	)
 	module.agent.SetLogRecordingControl(module.logRecording)
 
@@ -266,6 +267,9 @@ func OpenConsensusModule(
 		LeaderHeartbeatTimeoutNs: electionCfg.LeaderHeartbeatTimeoutNs,
 		NanoClock:                nanoClock,
 		LeaderMemberID:           election.NullMemberID,
+		EpochClock:               epochClock,
+		RecordingLogLookup:       recovery.RecordingLog(),
+		AppVersion:               electionCfg.AppVersion,
 	})
 	module.agent.SetPositions(module.host)
 	module.agent.SetEgress(module.host)

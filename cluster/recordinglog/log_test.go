@@ -175,6 +175,104 @@ func TestClose_idempotent(t *testing.T) {
 	require.NoError(t, log.Close())
 }
 
+func TestTermRecordingID_noTermEntryReportsNull(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty log", func(t *testing.T) {
+		t.Parallel()
+		log, _ := newLog(t)
+		require.Equal(t, recordinglog.NullRecordingID, log.TermRecordingID())
+	})
+
+	t.Run("snapshot only", func(t *testing.T) {
+		t.Parallel()
+		log, _ := newLog(t)
+		require.NoError(t, log.AppendSnapshot(6, 1, 100, 200, 1000, 0))
+		require.Equal(t, recordinglog.NullRecordingID, log.TermRecordingID())
+	})
+}
+
+func TestTermRecordingID_closedLogKeepsValue(t *testing.T) {
+	t.Parallel()
+
+	log, _ := newLog(t)
+	require.NoError(t, log.AppendTerm(42, 1, 0, 1000))
+	require.Equal(t, int64(42), log.TermRecordingID())
+	require.NoError(t, log.Close())
+	require.Equal(t, int64(42), log.TermRecordingID())
+}
+
+func TestEnsureCoherent_recordingIDRegimes(t *testing.T) {
+	t.Parallel()
+
+	const (
+		established int64 = 100
+		fresh       int64 = 200
+		termID      int64 = 1
+		termBase    int64 = 0
+		timestamp   int64 = 1000
+	)
+
+	t.Run("new term under established id appends", func(t *testing.T) {
+		t.Parallel()
+		log, path := newLog(t)
+		require.NoError(t, log.AppendTerm(established, termID, termBase, timestamp))
+		require.NoError(t, log.CommitLogPosition(termID, termBase))
+
+		require.NoError(t, log.EnsureCoherent(recordinglog.EnsureCoherentParams{
+			RecordingID:         established,
+			LeadershipTermID:    termID + 1,
+			TermBaseLogPosition: termBase,
+			LogPosition:         recordinglog.NullPosition,
+			Timestamp:           timestamp,
+			FileSyncLevel:       recordinglog.FileSyncNone,
+		}))
+		require.Len(t, log.Entries(), 2)
+		require.Equal(t, established, findTerm(t, log.Entries(), termID+1).RecordingID)
+		require.Equal(t, established, log.TermRecordingID())
+		requireReloadMatchesLog(t, path, log)
+	})
+
+	t.Run("new term under fresh id mismatches", func(t *testing.T) {
+		t.Parallel()
+		log, _ := newLog(t)
+		require.NoError(t, log.AppendTerm(established, termID, termBase, timestamp))
+		require.NoError(t, log.CommitLogPosition(termID, termBase))
+
+		err := log.EnsureCoherent(recordinglog.EnsureCoherentParams{
+			RecordingID:         fresh,
+			LeadershipTermID:    termID + 1,
+			TermBaseLogPosition: termBase,
+			LogPosition:         recordinglog.NullPosition,
+			Timestamp:           timestamp,
+			FileSyncLevel:       recordinglog.FileSyncNone,
+		})
+		require.ErrorIs(t, err, recordinglog.ErrTermRecordingIDMismatch)
+		require.Len(t, log.Entries(), 1)
+		require.Equal(t, established, log.TermRecordingID())
+	})
+
+	t.Run("existing term under fresh id defers mismatch", func(t *testing.T) {
+		t.Parallel()
+		log, _ := newLog(t)
+		require.NoError(t, log.AppendTerm(established, termID, termBase, timestamp))
+
+		// Target already indexed: EnsureCoherent skips append, so a fresh
+		// recording id is never compared.
+		require.NoError(t, log.EnsureCoherent(recordinglog.EnsureCoherentParams{
+			RecordingID:         fresh,
+			LeadershipTermID:    termID,
+			TermBaseLogPosition: termBase,
+			LogPosition:         recordinglog.NullPosition,
+			Timestamp:           timestamp,
+			FileSyncLevel:       recordinglog.FileSyncNone,
+		}))
+		require.Len(t, log.Entries(), 1)
+		require.Equal(t, established, findTerm(t, log.Entries(), termID).RecordingID)
+		require.Equal(t, established, log.TermRecordingID())
+	})
+}
+
 func newLog(t *testing.T) (*recordinglog.Log, string) {
 	t.Helper()
 	return openInDir(t, nil, true)

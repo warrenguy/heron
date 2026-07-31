@@ -158,6 +158,62 @@ func (ops archiveControlOps) listRecording(
 	)
 }
 
+// offerAwaitRecordingSignal offers one control request and blocks until a
+// latched recording signal completes the correlated wait.
+//
+// Behaviour:
+//   - draws the correlation id and passes it to arm and every offer retry
+//   - arms the response poller await; re-arms the await to 0 on return
+//   - a matching OK ControlResponse alone does not complete the wait
+//   - a latched signal completes the wait
+//   - a matching ERROR fails the wait only before the signal latches
+//
+// arm may be nil when the tracker matches without correlation arming.
+// Callers must Reset the tracker before calling.
+func (ops archiveControlOps) offerAwaitRecordingSignal(
+	ctx context.Context,
+	targets ControlPollTargets,
+	operation string,
+	arm func(correlationID int64),
+	offer func(correlationID int64) (int64, bool),
+	latched func() bool,
+) error {
+	correlationID := ops.aeronClient.NextCorrelationID()
+	if arm != nil {
+		arm(correlationID)
+	}
+	if targets.ResponsePoller != nil {
+		targets.ResponsePoller.ResetAwait(correlationID)
+		defer targets.ResponsePoller.ArmAwait(0)
+	}
+	if err := offerControlRequest(
+		ctx, ops.aeronClient, ops.cfg, ops.poll, func() (int64, bool) {
+			return offer(correlationID)
+		},
+	); err != nil {
+		return err
+	}
+
+	// Signal proof may already be latched before the await loop begins.
+	return runControlAwaitLoop(
+		ctx,
+		ops.aeronClient,
+		ops.cfg,
+		ops.poll,
+		ops.cfg.ControlResponseTimeout,
+		correlationID,
+		operation,
+		func() (bool, error) {
+			return recordingSignalProof(
+				targets.ResponsePoller,
+				latched(),
+				ops.controlSessionID,
+				correlationID,
+			)
+		},
+	)
+}
+
 // startRecordingAwaitSignal implements [Client.StartRecordingAwaitSignal]; see that
 // godoc for the START-vs-ControlResponse proof and timeout contract.
 func (ops archiveControlOps) startRecordingAwaitSignal(
@@ -172,14 +228,12 @@ func (ops archiveControlOps) startRecordingAwaitSignal(
 		return errors.New("archive: start recording await signal: tracker must be non-nil")
 	}
 	tracker.Reset()
-	correlationID := ops.aeronClient.NextCorrelationID()
-	tracker.arm(correlationID)
-	if targets.ResponsePoller != nil {
-		targets.ResponsePoller.ResetAwait(correlationID)
-		defer targets.ResponsePoller.ArmAwait(0)
-	}
-	if err := offerControlRequest(
-		ctx, ops.aeronClient, ops.cfg, ops.poll, func() (int64, bool) {
+	return ops.offerAwaitRecordingSignal(
+		ctx,
+		targets,
+		StartRecordingAwaitOperation,
+		tracker.arm,
+		func(correlationID int64) (int64, bool) {
 			return ops.proxy.TryStartRecording(
 				ops.controlSessionID,
 				correlationID,
@@ -188,30 +242,43 @@ func (ops archiveControlOps) startRecordingAwaitSignal(
 				channel,
 			)
 		},
-	); err != nil {
-		return err
-	}
+		tracker.Started,
+	)
+}
 
-	// controlOfferUntilPositive drives poll during the offer retry.
-	//
-	// A proof may already be captured before the await loop begins.
-	return runControlAwaitLoop(
+// extendRecordingAwaitSignal implements [Client.ExtendRecordingAwaitSignal]; see that
+// godoc for the EXTEND-vs-ControlResponse proof and timeout contract.
+func (ops archiveControlOps) extendRecordingAwaitSignal(
+	ctx context.Context,
+	recordingID int64,
+	streamID int32,
+	sourceLocation archivewire.SourceLocation,
+	autoStop archivewire.BooleanType,
+	channel []byte,
+	targets ControlPollTargets,
+	tracker *ExtendSignalTracker,
+) error {
+	if tracker == nil {
+		return errors.New("archive: extend recording await signal: tracker must be non-nil")
+	}
+	tracker.Reset()
+	return ops.offerAwaitRecordingSignal(
 		ctx,
-		ops.aeronClient,
-		ops.cfg,
-		ops.poll,
-		ops.cfg.ControlResponseTimeout,
-		correlationID,
-		StartRecordingAwaitOperation,
-		func() (bool, error) {
-			// Latched START completes the await. Matching ControlResponse does not.
-			return recordingSignalProof(
-				targets.ResponsePoller,
-				tracker.Started(),
+		targets,
+		ExtendRecordingAwaitOperation,
+		tracker.arm,
+		func(correlationID int64) (int64, bool) {
+			return ops.proxy.TryExtendRecording(
 				ops.controlSessionID,
 				correlationID,
+				recordingID,
+				streamID,
+				sourceLocation,
+				autoStop,
+				channel,
 			)
 		},
+		tracker.Extended,
 	)
 }
 
@@ -292,13 +359,14 @@ func (ops archiveControlOps) stopRecordingAwaitSignal(
 		return errors.New("archive: stop recording await signal: tracker must be non-nil")
 	}
 	tracker.Reset()
-	correlationID := ops.aeronClient.NextCorrelationID()
-	if targets.ResponsePoller != nil {
-		targets.ResponsePoller.ResetAwait(correlationID)
-		defer targets.ResponsePoller.ArmAwait(0)
-	}
-	if err := offerControlRequest(
-		ctx, ops.aeronClient, ops.cfg, ops.poll, func() (int64, bool) {
+
+	// StopSignalTracker matches by recording id, not by correlation id. No arm.
+	return ops.offerAwaitRecordingSignal(
+		ctx,
+		targets,
+		StopRecordingAwaitOperation,
+		nil,
+		func(correlationID int64) (int64, bool) {
 			return ops.proxy.TryStopRecording(
 				ops.controlSessionID,
 				correlationID,
@@ -306,30 +374,7 @@ func (ops archiveControlOps) stopRecordingAwaitSignal(
 				channel,
 			)
 		},
-	); err != nil {
-		return err
-	}
-
-	// controlOfferUntilPositive drives poll during the offer retry.
-	//
-	// A proof may already be captured before the await loop begins.
-	return runControlAwaitLoop(
-		ctx,
-		ops.aeronClient,
-		ops.cfg,
-		ops.poll,
-		ops.cfg.ControlResponseTimeout,
-		correlationID,
-		StopRecordingAwaitOperation,
-		func() (bool, error) {
-			// STOP carries the stop position. Keep polling until the tracker latches STOP.
-			return recordingSignalProof(
-				targets.ResponsePoller,
-				tracker.Stopped(),
-				ops.controlSessionID,
-				correlationID,
-			)
-		},
+		tracker.Stopped,
 	)
 }
 
@@ -409,6 +454,95 @@ func (t *StartSignalTracker) Started() bool {
 // or 0 when none was recorded.
 func (t *StartSignalTracker) StartedRecordingID() int64 {
 	return t.startedRecordingID
+}
+
+// ExtendSignalTracker latches the EXTEND RecordingSignalEvent for one extend
+// request.
+//
+// The tracker implements RecordingSignalHandler for
+// Client.ExtendRecordingAwaitSignal.
+//
+// Behaviour:
+//   - latches the first EXTEND whose correlation id and recording id both match
+//     the armed request
+//   - ignores every other signal kind, every other correlation id, and every
+//     other recording
+//   - an unarmed tracker matches nothing
+//   - arm accepts any correlation id, including 0
+//
+// Concurrency: invoker-only with the poll that drives PollControlEvents.
+//
+// RecordingSignal:
+//   - runs on that polling goroutine
+//   - must not block
+type ExtendSignalTracker struct {
+	controlSessionID int64
+	correlationID    int64
+	armed            bool
+	recordingID      int64
+	extended         bool
+}
+
+var _ RecordingSignalHandler = (*ExtendSignalTracker)(nil)
+
+// NewExtendSignalTracker returns a tracker matching EXTEND signals for
+// controlSessionID and recordingID. A zero controlSessionID matches all
+// sessions, mirroring NewStopSignalTracker. The returned tracker is unarmed.
+func NewExtendSignalTracker(controlSessionID, recordingID int64) *ExtendSignalTracker {
+	return &ExtendSignalTracker{
+		controlSessionID: controlSessionID,
+		recordingID:      recordingID,
+	}
+}
+
+// Reset clears prior EXTEND capture and disarms the tracker.
+//
+// After Reset the tracker can capture a new extend await.
+func (t *ExtendSignalTracker) Reset() {
+	t.correlationID = 0
+	t.armed = false
+	t.extended = false
+}
+
+// arm sets the correlation id that RecordingSignal must match and marks the
+// tracker armed. Correlation id 0 is a valid armed value.
+func (t *ExtendSignalTracker) arm(correlationID int64) {
+	t.correlationID = correlationID
+	t.armed = true
+}
+
+// RecordingSignal latches the first matching EXTEND signal.
+func (t *ExtendSignalTracker) RecordingSignal(event codecs.RecordingSignalEventFields) {
+	if event.Signal != archivewire.RecordingSignal_EXTEND {
+		return
+	}
+	if !t.armed || event.CorrelationID != t.correlationID {
+		return
+	}
+	if t.controlSessionID != 0 && event.ControlSessionID != t.controlSessionID {
+		return
+	}
+	if event.RecordingID != t.recordingID {
+		return
+	}
+	t.extended = true
+}
+
+// Extended reports whether a matching EXTEND signal was recorded.
+func (t *ExtendSignalTracker) Extended() bool {
+	return t.extended
+}
+
+// ExtendedRecordingID returns the tracker's recording id after a matching
+// EXTEND latches, or 0 when no EXTEND was recorded.
+//
+// RecordingSignal rejects every other recording id, so the returned id is
+// always the id passed to NewExtendSignalTracker.
+func (t *ExtendSignalTracker) ExtendedRecordingID() int64 {
+	if t.extended {
+		return t.recordingID
+	}
+	return 0
 }
 
 // StopSignalTracker records the STOP RecordingSignalEvent for a target control session

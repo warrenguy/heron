@@ -14,6 +14,8 @@ func (*mockConsensusEgress) PublishCommitPosition(int64, int64) {}
 
 func (*mockConsensusEgress) PublishAppendPosition(int64, int64, uint8) bool { return false }
 
+func (*mockConsensusEgress) PublishNewLeadershipTerm(consensus.CanvassAnswer) bool { return false }
+
 var (
 	_ consensus.PositionTable   = (*mockPositionTable)(nil)
 	_ consensus.ConsensusEgress = (*mockConsensusEgress)(nil)

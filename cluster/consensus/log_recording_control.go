@@ -2,25 +2,30 @@ package consensus
 
 import "github.com/warrenguy/heron/archive/codecs/archivewire"
 
-// LogRecordingControl starts and stops this member's cluster log recording.
+// LogRecordingControl starts, extends, or stops this member's cluster log
+// recording.
 //
 // Behaviour:
 //   - retains the recording channel and the recording stream id
 //   - uses the archive control client
 //   - builds the channel from the member's log channel and the supplied log
 //     session id
-//   - StopLogRecording stops the recording StartLogRecording started, on the
-//     same channel and stream
+//   - StopLogRecording stops the recording last started or extended by
+//     StartLogRecording, on the same channel and stream
 //
 // Concurrency: invoker-only.
 //
-// Both methods run on the same goroutine as [Agent.DoWork].
+// StartLogRecording and StopLogRecording run on the same goroutine as
+// [Agent.DoWork].
 //
-// Both methods block that goroutine until the archive replies or the bound expires.
+// StartLogRecording and StopLogRecording block that goroutine until the archive
+// replies or the deadline expires.
+//
+// IsActive is invoker-only and non-blocking.
 //
 // An implementation must:
-//   - bound every wait
-//   - drive the transport client while it waits
+//   - cap every wait on StartLogRecording and StopLogRecording
+//   - drive the transport client while those methods wait
 //
 // Lifetime: an implementation outlives the [Agent] method calls that use it.
 //
@@ -32,37 +37,40 @@ import "github.com/warrenguy/heron/archive/codecs/archivewire"
 //   - implementation owns no transport handle
 //   - module owns the archive control client and closes it
 type LogRecordingControl interface {
-	// StartLogRecording starts recording this member's cluster log and returns
-	// the catalog recording id.
+	// StartLogRecording starts or extends recording this member's cluster log
+	// and returns the catalog recording id.
 	//
 	// Behaviour:
 	//   - builds a session-scoped recording channel from logSessionID
-	//   - offers a start request and waits for the correlated START recording
+	//   - when no established TERM recording id exists, offers a start request
+	//     and waits for the correlated START recording signal
+	//   - when an established TERM recording id exists, offers an extend
+	//     request for that id and waits for the correlated EXTEND recording
 	//     signal
-	//   - returns the catalog recording id from that signal, not the
+	//   - returns the catalog recording id from that proof signal, not the
 	//     subscription registration id the control response carries
 	//
-	// sourceLocation must be archivewire.SourceLocation_LOCAL for a leader
-	// recording its own log publication, and
-	// archivewire.SourceLocation_REMOTE for a follower recording the leader's
-	// log publication.
+	// sourceLocation must be:
+	//   - archivewire.SourceLocation_LOCAL for a leader recording its own log
+	//     publication
+	//   - archivewire.SourceLocation_REMOTE for a follower recording the
+	//     leader's log publication
 	//
 	// logSessionID must be the cluster log publication session id the recording
-	// filters on.
-	//
-	// A leader passes its own log publication session id.
-	//
-	// A follower passes the leader's.
+	// filters on:
+	//   - leader: own log publication session id
+	//   - follower: leader's session id
 	//
 	// Concurrency: invoker-only.
 	//
-	// Blocks the invoker until the START signal arrives or the bound expires.
+	// Blocks the invoker until the START or EXTEND signal arrives or the bound
+	// expires.
 	//
 	// Returns an error when:
 	//   - a prior unstopped recording cannot be drained
-	//   - the start request cannot be offered within the offer bound
-	//   - the archive refuses the start
-	//   - no correlated START signal arrives within the response bound
+	//   - the start or extend request cannot be offered within the offer bound
+	//   - the archive refuses the start or extend
+	//   - no correlated START or EXTEND signal arrives within the response bound
 	//
 	// On error:
 	//   - the implementation has already attempted a bounded stop for the
@@ -110,14 +118,16 @@ type LogRecordingControl interface {
 		err error,
 	)
 
-	// IsActive reports whether a successful start has not yet cleanly stopped.
+	// IsActive reports whether a successful start or extend has not yet cleanly
+	// stopped.
 	//
 	// Behaviour:
-	//   - false before any successful start
-	//   - false after a dirty start (needs stop, catalog id still unknown)
+	//   - false before any successful start or extend
+	//   - false after a dirty attempt (needs stop, catalog id still unknown)
 	//   - true after StartLogRecording returns success until a clean stop
 	//   - false after a clean stop
-	//   - true when stop failed after a live start so a later stop can retry
+	//   - true when stop failed after a live start or extend so a later stop
+	//     can retry
 	//
 	// Concurrency: invoker-only.
 	IsActive() bool
@@ -138,7 +148,7 @@ type LogRecordingControl interface {
 //     unchanged
 //
 // A non-nil control makes [Agent.PrepareForNewLeadership] call
-// StopLogRecording on every prepare so a dirty start still drains.
+// StopLogRecording on every prepare so a dirty start or extend still drains.
 //
 // Clearing with nil makes [Agent.IsRecordingActive] false. The agent has no
 // control to query.

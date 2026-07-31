@@ -21,7 +21,8 @@ import (
 //
 // Ownership:
 //   - shares the same []*Member slice pointers Election uses
-//   - owns ranked scratch buffer and the Publisher used for Commit/Append egress
+//   - owns ranked scratch buffer and the Publisher used for Commit/Append
+//     egress and settled canvass NewLeadershipTerm answers
 //
 // Invariant: after NewHostAdapter:
 //   - Members length and member IDs are fixed (do not append, remove, or replace)
@@ -44,6 +45,16 @@ type HostAdapter struct {
 
 	// nanoClock stamps TimeOfLastAppendPositionNs on member position updates.
 	nanoClock func() int64
+
+	// epochClock stamps Timestamp on a settled canvass answer.
+	epochClock func() int64
+
+	// recordingLogLookup resolves term base and successor fields on a settled
+	// canvass answer. Nil makes PublishNewLeadershipTerm report false.
+	recordingLogLookup RecordingLogLookup
+
+	// appVersion is written into a settled canvass answer.
+	appVersion int32
 }
 
 // HostAdapterConfig is the constructor config.
@@ -54,7 +65,8 @@ type HostAdapterConfig struct {
 	// Publisher is required.
 	//
 	// Same instance should be passed to ElectionDeps.Publisher for ballot and
-	// NewLeadershipTerm paths. HostAdapter uses it for Commit/Append egress only.
+	// election NewLeadershipTerm paths. HostAdapter uses it for Commit/Append
+	// egress and settled canvass NewLeadershipTerm answers.
 	//
 	// Agent never holds Publisher.
 	Publisher Publisher
@@ -96,16 +108,40 @@ type HostAdapterConfig struct {
 	// a valid leader). Constructor seeds Agent via SetLeaderMemberID (single
 	// store; HostAdapter has no separate leader field).
 	LeaderMemberID int32
+
+	// EpochClock is required. Stamps the timestamp on a settled canvass answer.
+	//
+	// Share ElectionDeps.EpochClock.
+	// A second clock would put a different timestamp on an answer than on the
+	// election's own publishes.
+	EpochClock func() int64
+
+	// RecordingLogLookup resolves term base and successor-term fields on a settled
+	// canvass answer.
+	//
+	// Optional. A nil lookup makes PublishNewLeadershipTerm return false.
+	//
+	// Share ElectionDeps.RecordingLogLookup.
+	RecordingLogLookup RecordingLogLookup
+
+	// AppVersion is the application version written into a settled canvass
+	// answer. Zero is valid on the wire.
+	//
+	// Share ElectionConfig.AppVersion.
+	AppVersion int32
 }
 
 // NewHostAdapter validates cfg and builds lookup map + ranked scratch.
 //
 // Panics on:
-//   - nil Agent, nil Publisher, nil ThisMember, nil NanoClock
+//   - nil Agent, nil Publisher, nil ThisMember, nil NanoClock, nil EpochClock
 //   - empty Members
 //   - non-positive LeaderHeartbeatTimeoutNs
 //   - duplicate member IDs in Members
 //   - ThisMember not pointer-identical to any Members element
+//
+// Does not panic on a nil RecordingLogLookup: PublishNewLeadershipTerm reports
+// false when the lookup is nil.
 //
 // Panic style matches NewElection / validateElectionDeps (construction-time
 // programmer errors).
@@ -126,6 +162,9 @@ func NewHostAdapter(cfg HostAdapterConfig) *HostAdapter {
 	}
 	if cfg.NanoClock == nil {
 		panic("election: nil NanoClock")
+	}
+	if cfg.EpochClock == nil {
+		panic("election: nil EpochClock")
 	}
 	if len(cfg.Members) == 0 {
 		panic("election: empty Members")
@@ -158,6 +197,9 @@ func NewHostAdapter(cfg HostAdapterConfig) *HostAdapter {
 		ranked:                   make([]int64, QuorumThreshold(len(cfg.Members))),
 		leaderHeartbeatTimeoutNs: cfg.LeaderHeartbeatTimeoutNs,
 		nanoClock:                cfg.NanoClock,
+		epochClock:               cfg.EpochClock,
+		recordingLogLookup:       cfg.RecordingLogLookup,
+		appVersion:               cfg.AppVersion,
 	}
 	// Agent stores for self id (steady stamp) and leader id (append target).
 	h.agent.SetThisMemberID(cfg.ThisMember.ID)
@@ -249,6 +291,86 @@ func (h *HostAdapter) PublishAppendPosition(
 			Flags:            flags,
 		},
 	)
+}
+
+// PublishNewLeadershipTerm answers one member's canvass with this leader's
+// current leadership term.
+//
+// Behaviour:
+//   - resolves term base from the recording log entry for
+//     answer.LeadershipTermID
+//   - when the canvasser is already at answer.LeadershipTermID, sets all three
+//     successor-term fields to null
+//   - when the canvasser lags, resolves successor fields from the entry one
+//     term above the canvasser's log leadership term
+//   - when that next entry is absent, uses this leader's term, the resolved
+//     term base, and a null log position
+//   - stamps the epoch timestamp and this member's id
+//   - publishes to the canvasser
+//
+// This path owns successor resolution for a settled canvass answer.
+// Election NewLeadershipTerm field assembly uses different rules and stays
+// separate.
+//
+// Concurrency: invoker-only; see [HostAdapter].
+//
+// Returns false without publishing when:
+//   - the recording-log lookup is nil
+//   - the canvasser is unknown
+//   - the canvasser is this member
+//   - answer.LogSessionID is NullMemberID
+//   - this leader's current term has no recording-log entry
+func (h *HostAdapter) PublishNewLeadershipTerm(answer consensus.CanvassAnswer) bool {
+	if h.recordingLogLookup == nil {
+		return false
+	}
+	member := h.memberByID[answer.FollowerMemberID]
+	if member == nil || member.ID == h.thisMember.ID {
+		return false
+	}
+	if answer.LogSessionID == NullMemberID {
+		return false
+	}
+	current := h.recordingLogLookup.FindTermEntry(answer.LeadershipTermID)
+	if current == nil {
+		return false
+	}
+	termBaseLogPosition := current.TermBaseLogPosition
+	nextLeadershipTermID := int64(NullValue)
+	nextTermBaseLogPosition := int64(NullPosition)
+	nextLogPosition := int64(NullPosition)
+	if answer.LogLeadershipTermID < answer.LeadershipTermID {
+		next := h.recordingLogLookup.FindTermEntry(answer.LogLeadershipTermID + 1)
+		if next != nil {
+			nextLeadershipTermID = next.LeadershipTermID
+			nextTermBaseLogPosition = next.TermBaseLogPosition
+			nextLogPosition = next.LogPosition
+		} else {
+			nextLeadershipTermID = answer.LeadershipTermID
+			nextTermBaseLogPosition = termBaseLogPosition
+		}
+	}
+	fields := codecs.NewLeadershipTermFields{
+		LogLeadershipTermID:     answer.LogLeadershipTermID,
+		NextLeadershipTermID:    nextLeadershipTermID,
+		NextTermBaseLogPosition: nextTermBaseLogPosition,
+		NextLogPosition:         nextLogPosition,
+		LeadershipTermID:        answer.LeadershipTermID,
+		TermBaseLogPosition:     termBaseLogPosition,
+		LogPosition:             answer.LogPosition,
+		CommitPosition:          answer.CommitPosition,
+		LeaderRecordingID:       answer.LeaderRecordingID,
+		Timestamp:               h.epochClock(),
+		LeaderMemberID:          h.thisMember.ID,
+		LogSessionID:            answer.LogSessionID,
+		AppVersion:              h.appVersion,
+		IsStartup:               boolToClusterwire(false),
+	}
+	h.pub.NewLeadershipTerm(
+		PublicationTarget{MemberID: answer.FollowerMemberID},
+		fields,
+	)
+	return true
 }
 
 // TrackCatchupCompletion is a no-op until archive stop/catchup is wired.

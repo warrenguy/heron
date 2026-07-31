@@ -290,6 +290,46 @@ func TestProxy_TryStartRecording_fieldValuesOnWire(t *testing.T) {
 	require.Len(t, wire, expectedLen)
 }
 
+func TestProxy_TryExtendRecording_fieldValuesOnWire(t *testing.T) {
+	pub, proxy := newTestProxy(Config{})
+
+	channel := []byte("aeron:udp?endpoint=localhost:9999")
+	pos, ok := proxy.TryExtendRecording(
+		controlResponseTestControlSessionID,
+		archiveProxyTestCorrelationID,
+		archiveProxyTestRecordingID,
+		archiveProxyTestRecordingStreamID,
+		archivewire.SourceLocation_REMOTE,
+		archivewire.BooleanType_TRUE,
+		channel,
+	)
+	require.True(t, ok)
+
+	wire := pub.lastOffer()
+	require.Equal(t, archiveProxyTestOfferPosition+int64(len(wire)), pos)
+
+	fields := requireProxyWireFields[codecs.ExtendRecordingRequest2Fields](
+		t,
+		wire,
+		archivewire.ExtendRecordingRequest2SbeTemplateID,
+	)
+	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
+	require.Equal(t, archiveProxyTestRecordingID, fields.RecordingID)
+	require.Equal(t, archiveProxyTestRecordingStreamID, fields.StreamID)
+	require.Equal(t, archivewire.SourceLocation_REMOTE, fields.SourceLocation)
+	require.Equal(t, archivewire.BooleanType_TRUE, fields.AutoStop)
+	require.Equal(t, channel, fields.Channel)
+
+	expectedLen, lenOK := codecs.ArchiveWireMessageLen(
+		archivewire.ExtendRecordingRequest2SbeBlockLength,
+		len(channel),
+	)
+	require.True(t, lenOK)
+	require.NotZero(t, expectedLen)
+	require.Len(t, wire, expectedLen)
+}
+
 func TestProxy_TryStopRecording_fieldValuesOnWire(t *testing.T) {
 	pub, proxy := newTestProxy(Config{})
 
@@ -547,6 +587,20 @@ func TestProxy_encodePreflightFailure(t *testing.T) {
 					controlResponseTestControlSessionID,
 					archiveProxyTestCorrelationID,
 					archiveProxyTestRecordingStreamID,
+					oversized,
+				)
+			},
+		},
+		{
+			name: "try_extend_recording_channel",
+			offer: func(proxy *Proxy) (int64, bool) {
+				return proxy.TryExtendRecording(
+					controlResponseTestControlSessionID,
+					archiveProxyTestCorrelationID,
+					archiveProxyTestRecordingID,
+					archiveProxyTestRecordingStreamID,
+					archivewire.SourceLocation_LOCAL,
+					archivewire.BooleanType_FALSE,
 					oversized,
 				)
 			},

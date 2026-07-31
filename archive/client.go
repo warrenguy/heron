@@ -27,10 +27,11 @@ import (
 //   - StopReplay
 //   - ListRecording
 //
-// StartRecordingAwaitSignal and StopRecordingAwaitSignal poll internally.
+// StartRecordingAwaitSignal, StopRecordingAwaitSignal, and
+// ExtendRecordingAwaitSignal poll internally.
 //
-// Those methods route START and STOP proofs to the per-call tracker, not the
-// configured handler.
+// Those methods route START, STOP, and EXTEND proofs to the per-call tracker,
+// not the configured handler.
 //
 // ListRecording uses a descriptor-mode poll so its OK response routes to the
 // descriptor poller rather than the session control-response poller.
@@ -242,8 +243,9 @@ func (client *Client) pollRecordingSignalAwait(targets ControlPollTargets) func(
 //   - StopReplay
 //   - ListRecording
 //
-// StartRecordingAwaitSignal and StopRecordingAwaitSignal route proofs to the per-call
-// tracker instead of this handler.
+// StartRecordingAwaitSignal, StopRecordingAwaitSignal, and
+// ExtendRecordingAwaitSignal route proofs to the per-call tracker instead of
+// this handler.
 func (client *Client) SetRecordingSignalHandler(handler RecordingSignalHandler) {
 	client.signalHandler = handler
 }
@@ -318,6 +320,91 @@ func (client *Client) StartRecordingAwaitSignal(
 		return 0, err
 	}
 	return tracker.StartedRecordingID(), nil
+}
+
+// ExtendRecordingAwaitSignal offers an ExtendRecordingRequest2 and blocks until
+// tracker latches the correlated EXTEND RecordingSignalEvent.
+//
+// Returns the recording id the caller asked to extend. No new recording id is
+// assigned.
+//
+// Behaviour:
+//   - the proof check reads tracker before the control response
+//   - a latched EXTEND wins when both are present
+//   - ERROR fails the wait only when EXTEND is not yet latched
+//   - a matching OK alone does not complete the wait
+//   - the archive replies OK once the recording subscription is added
+//   - OK arrives before any image exists and before catalog image validation
+//   - the archive sends EXTEND only after that validation passes
+//   - latched EXTEND is the proof the extend took effect
+//
+// tracker must be non-nil and built with the same recordingID passed to this
+// method:
+//   - NewExtendSignalTracker filters EXTEND by that id
+//   - a mismatch ignores a real EXTEND and the wait times out
+//   - the tracker carries the EXTEND signal proof and is dereferenced on every
+//     proof check
+//
+// autoStop true:
+//   - releases the recording subscription when the recording session ends
+//   - makes the archive release the subscription when validation refuses the
+//     extend after OK
+//
+// autoStop false:
+//   - the caller must release the subscription by stopping the recording on
+//     the same channel and stream
+//
+// Pass true unless the caller owns a release path it drives itself.
+//
+// ControlResponseTimeout bounds the whole wait after a successful offer.
+//
+// On timeout:
+//   - the extend may still have taken effect
+//   - the caller owns the cleanup
+//
+// Concurrency: invoker-only.
+//
+// Blocks the invoker. Drives the transport client while it waits.
+//
+// Returns an error when:
+//   - the extend request cannot be offered within the offer bound
+//   - the archive refuses the extend, including ErrorUnknownRecording,
+//     ErrorActiveRecording, ErrorActiveSubscription, and ErrorInvalidExtension
+//   - no correlated EXTEND signal arrives within the response bound
+//   - ctx is done before proof is received
+func (client *Client) ExtendRecordingAwaitSignal(
+	ctx context.Context,
+	recordingID int64,
+	streamID int32,
+	sourceLocation archivewire.SourceLocation,
+	autoStop bool,
+	channel []byte,
+	tracker *ExtendSignalTracker,
+) (
+	extendedRecordingID int64,
+	err error,
+) {
+	wireAutoStop := archivewire.BooleanType_FALSE
+	if autoStop {
+		wireAutoStop = archivewire.BooleanType_TRUE
+	}
+	targets := client.sessionPollTargets(tracker)
+	err = client.sessionControlOps(
+		client.pollRecordingSignalAwait(targets),
+	).extendRecordingAwaitSignal(
+		ctx,
+		recordingID,
+		streamID,
+		sourceLocation,
+		wireAutoStop,
+		channel,
+		targets,
+		tracker,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return tracker.ExtendedRecordingID(), nil
 }
 
 // StopRecording offers a StopRecordingRequest and blocks until the archive replies with

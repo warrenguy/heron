@@ -134,6 +134,34 @@ func (p *Proxy) TryStartRecording(
 	)
 }
 
+// TryExtendRecording encodes ExtendRecordingRequest2 (template 64) and offers it once.
+func (p *Proxy) TryExtendRecording(
+	controlSessionID int64,
+	correlationID int64,
+	recordingID int64,
+	streamID int32,
+	sourceLocation archivewire.SourceLocation,
+	autoStop archivewire.BooleanType,
+	channel []byte,
+) (int64, bool) {
+	fields := codecs.ExtendRecordingRequest2Fields{
+		ControlSessionID: controlSessionID,
+		CorrelationID:    correlationID,
+		RecordingID:      recordingID,
+		StreamID:         streamID,
+		SourceLocation:   sourceLocation,
+		AutoStop:         autoStop,
+		Channel:          channel,
+	}
+	return p.tryArchiveWireOffer(
+		archivewire.ExtendRecordingRequest2SbeBlockLength,
+		func(dst []byte, actingVersion uint16) (int, bool) {
+			return codecs.EncodeExtendRecordingRequest2(dst, 0, actingVersion, fields)
+		},
+		len(channel),
+	)
+}
+
 // TryStopRecording encodes StopRecordingRequest (template 5) and offers it once.
 func (p *Proxy) TryStopRecording(
 	controlSessionID int64,

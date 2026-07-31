@@ -139,6 +139,7 @@ func runMultiMemberElectionCompletion(t *testing.T, n int, seedJoinImages bool) 
 			ThisMember:               thisMember,
 			LeaderHeartbeatTimeoutNs: cfg.LeaderHeartbeatTimeoutNs,
 			NanoClock:                clock.TimeNs,
+			EpochClock:               epochClock.TimeMs,
 			LeaderMemberID:           election.NullMemberID,
 		})
 		agent.SetPositions(host)

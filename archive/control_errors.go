@@ -55,4 +55,5 @@ const (
 	ListRecordingDescriptorAwaitOperation = "list recording descriptor"
 	StartRecordingAwaitOperation          = "start recording"
 	StopRecordingAwaitOperation           = "stop recording"
+	ExtendRecordingAwaitOperation         = "extend recording"
 )

@@ -9,8 +9,6 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-const testClusterActingVersion = clusterwire.AppendPositionSbeSchemaVersion
-
 type recordingRunner struct {
 	handles [][]byte
 }
@@ -54,33 +52,48 @@ func (p *recordingPositionTable) QuorumPositionBoundedByLeaderLog(
 
 func encodeAppendPositionWire(t *testing.T, fields codecs.AppendPositionFields) []byte {
 	t.Helper()
-	blockLen := codecs.AppendPositionBlockLength(testClusterActingVersion)
+	actingVersion := uint16(clusterwire.AppendPositionSbeSchemaVersion)
+	blockLen := codecs.AppendPositionBlockLength(actingVersion)
 	wireLen, ok := codecs.ClusterWireMessageLen(blockLen)
 	require.True(t, ok)
 	buf := make([]byte, wireLen)
-	end, ok := codecs.EncodeAppendPosition(buf, 0, testClusterActingVersion, fields)
+	end, ok := codecs.EncodeAppendPosition(buf, 0, actingVersion, fields)
 	require.True(t, ok)
 	return buf[:end]
 }
 
 func encodeCommitPositionWire(t *testing.T, fields codecs.CommitPositionFields) []byte {
 	t.Helper()
+	actingVersion := uint16(clusterwire.CommitPositionSbeSchemaVersion)
 	wireLen, ok := codecs.ClusterWireMessageLen(clusterwire.CommitPositionSbeBlockLength)
 	require.True(t, ok)
 	buf := make([]byte, wireLen)
-	end, ok := codecs.EncodeCommitPosition(buf, 0, testClusterActingVersion, fields)
+	end, ok := codecs.EncodeCommitPosition(buf, 0, actingVersion, fields)
 	require.True(t, ok)
 	return buf[:end]
 }
 
 func encodeNewLeadershipTermWire(t *testing.T, fields codecs.NewLeadershipTermFields) []byte {
 	t.Helper()
+	actingVersion := uint16(clusterwire.NewLeadershipTermSbeSchemaVersion)
 	wireLen, ok := codecs.ClusterWireMessageLen(
-		codecs.NewLeadershipTermBlockLength(testClusterActingVersion),
+		codecs.NewLeadershipTermBlockLength(actingVersion),
 	)
 	require.True(t, ok)
 	buf := make([]byte, wireLen)
-	end, ok := codecs.EncodeNewLeadershipTerm(buf, 0, testClusterActingVersion, fields)
+	end, ok := codecs.EncodeNewLeadershipTerm(buf, 0, actingVersion, fields)
+	require.True(t, ok)
+	return buf[:end]
+}
+
+func encodeCanvassPositionWire(t *testing.T, fields codecs.CanvassPositionFields) []byte {
+	t.Helper()
+	actingVersion := uint16(clusterwire.CanvassPositionSbeSchemaVersion)
+	blockLen := codecs.CanvassPositionBlockLength(actingVersion)
+	wireLen, ok := codecs.ClusterWireMessageLen(blockLen)
+	require.True(t, ok)
+	buf := make([]byte, wireLen)
+	end, ok := codecs.EncodeCanvassPosition(buf, 0, actingVersion, fields)
 	require.True(t, ok)
 	return buf[:end]
 }
@@ -472,6 +485,42 @@ func TestQueueConsensusIngress_fragmentLimit(t *testing.T) {
 	require.Equal(t, 0, q.Poll(1, func([]byte, int) {
 		t.Fatal("empty queue must not invoke onFragment")
 	}))
+}
+
+func TestQueueConsensusIngress_nilAndNonPositiveGuards(t *testing.T) {
+	var nilQ *QueueConsensusIngress
+	require.NotPanics(t, func() {
+		nilQ.Enqueue([]byte{1})
+		require.Equal(t, 0, nilQ.Poll(1, func([]byte, int) {
+			t.Fatal("nil queue must not invoke onFragment")
+		}))
+	})
+
+	q := &QueueConsensusIngress{}
+	for i := range 3 {
+		q.Enqueue([]byte{byte(i)})
+	}
+	// Seeded msgs stay queued when handler is nil or fragmentLimit is non-positive.
+	require.Equal(t, 0, q.Poll(1, nil))
+	require.Equal(t, 0, q.Poll(0, func([]byte, int) {
+		t.Fatal("zero limit must not invoke onFragment")
+	}))
+	require.Equal(t, 0, q.Poll(-1, func([]byte, int) {
+		t.Fatal("negative limit must not invoke onFragment")
+	}))
+	require.Equal(t, 3, q.Poll(10, func([]byte, int) {}))
+}
+
+func TestPollConsensusIngress_agentFragmentLimit(t *testing.T) {
+	q := &QueueConsensusIngress{}
+	a := NewAgent(AgentConfig{Ingress: q})
+	const total = defaultConsensusIngressFragmentLimit + 3
+	for range total {
+		q.Enqueue([]byte{1, 2, 3}) // Short frame: bad header; still one Poll fragment.
+	}
+	require.Equal(t, defaultConsensusIngressFragmentLimit, a.pollConsensusIngress(1))
+	require.Equal(t, 3, a.pollConsensusIngress(1))
+	require.Equal(t, 0, a.pollConsensusIngress(1))
 }
 
 func TestSetIngress_wireAndClear(t *testing.T) {

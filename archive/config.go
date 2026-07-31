@@ -65,10 +65,11 @@ type Config struct {
 	//   - StopReplay
 	//   - ListRecording
 	//
-	// StartRecordingAwaitSignal and StopRecordingAwaitSignal poll internally.
+	// StartRecordingAwaitSignal, StopRecordingAwaitSignal, and
+	// ExtendRecordingAwaitSignal poll internally.
 	//
-	// Those methods route START and STOP proofs to the per-call tracker, not this
-	// handler.
+	// Those methods route START, STOP, and EXTEND proofs to the per-call tracker,
+	// not this handler.
 	//
 	// Nil drops signals until Client.SetRecordingSignalHandler installs a handler.
 	RecordingSignalHandler RecordingSignalHandler

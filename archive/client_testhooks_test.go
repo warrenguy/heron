@@ -247,6 +247,84 @@ func TestClientStopRecordingAwaitSignal_routesSTOPToTracker(t *testing.T) {
 	require.Equal(t, int64(3003), tracker.StoppedPosition())
 }
 
+// TestClientExtendRecordingAwaitSignal_OKThenEXTEND asserts the public Client
+// method maps bool autoStop to BooleanType, completes on EXTEND, and returns
+// the requested id.
+func TestClientExtendRecordingAwaitSignal_OKThenEXTEND(t *testing.T) {
+	cases := []struct {
+		name         string
+		autoStop     bool
+		wantAutoStop archivewire.BooleanType
+	}{
+		{
+			name:         "autoStop_true",
+			autoStop:     true,
+			wantAutoStop: archivewire.BooleanType_TRUE,
+		},
+		{
+			name:         "autoStop_false",
+			autoStop:     false,
+			wantAutoStop: archivewire.BooleanType_FALSE,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLifecycleHarness(t)
+			client := h.newClient()
+			tracker := NewExtendSignalTracker(
+				controlResponseTestControlSessionID,
+				lifecycleRecordingID,
+			)
+
+			correlationID := h.client.NextCorrelationID() + 1
+			responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+				ControlSessionID: controlResponseTestControlSessionID,
+				CorrelationID:    correlationID,
+				Code:             archivewire.ControlResponseCode_OK,
+				Version:          520,
+			})
+			signalWire := encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
+				ControlSessionID: controlResponseTestControlSessionID,
+				CorrelationID:    correlationID,
+				RecordingID:      lifecycleRecordingID,
+				SubscriptionID:   2002,
+				Position:         3003,
+				Signal:           archivewire.RecordingSignal_EXTEND,
+			})
+			writeUnfragmentedWireToTerm(t, h.termBuffer, responseWire)
+			appendUnfragmentedWireToTerm(t, h.termBuffer, signalWire)
+
+			got, err := client.ExtendRecordingAwaitSignal(
+				t.Context(),
+				lifecycleRecordingID,
+				archiveProxyTestRecordingStreamID,
+				archivewire.SourceLocation_LOCAL,
+				tc.autoStop,
+				[]byte(lifecycleRecordingChannel),
+				tracker,
+			)
+			require.NoError(t, err)
+			require.Equal(t, lifecycleRecordingID, got)
+			require.True(t, tracker.Extended())
+			require.Equal(t, lifecycleRecordingID, tracker.ExtendedRecordingID())
+
+			fields := requireProxyWireFields[codecs.ExtendRecordingRequest2Fields](
+				t,
+				h.pub.lastOffer(),
+				archivewire.ExtendRecordingRequest2SbeTemplateID,
+			)
+			require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+			require.Equal(t, correlationID, fields.CorrelationID)
+			require.Equal(t, lifecycleRecordingID, fields.RecordingID)
+			require.Equal(t, archiveProxyTestRecordingStreamID, fields.StreamID)
+			require.Equal(t, archivewire.SourceLocation_LOCAL, fields.SourceLocation)
+			require.Equal(t, tc.wantAutoStop, fields.AutoStop)
+			require.Equal(t, []byte(lifecycleRecordingChannel), fields.Channel)
+		})
+	}
+}
+
 // TestClientClose_releasesResourcesAndIsIdempotent proves Close offers one
 // best-effort CloseSessionRequest, closes the control publication and subscription,
 // closes the Connect-owned client, and no-ops on a second call.
