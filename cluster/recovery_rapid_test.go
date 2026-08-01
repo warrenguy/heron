@@ -78,6 +78,56 @@ func drawLogShapeFrom(
 	return shape
 }
 
+// restartHistory holds durable state a previous boot left under the cluster directory.
+//
+// Fields:
+//   - terms adopted on that boot
+//   - whether the last term was committed
+//   - Archive extent for the recording those terms name
+type restartHistory struct {
+	recordingID   int64
+	terms         int
+	lastCommitted bool
+	stopPosition  int64
+}
+
+// drawRestartHistory writes a previous boot's recording.log into dir through
+// writeTermHistory. Registers the Archive extent with lister when lister is
+// non-nil.
+//
+// stopPosition draws from a fixed end position and from
+// recordinglog.NullPosition. That draw hits the still-active-recording path in
+// election.ApplyRecoveryPlan.
+func drawRestartHistory(
+	t *testing.T,
+	rt *rapid.T,
+	dir string,
+	lister *fakeLister,
+) restartHistory {
+	rt.Helper()
+
+	recordingID := rapid.Int64Range(1, 1000).Draw(rt, "recording_id")
+	terms := rapid.IntRange(1, 5).Draw(rt, "term_count")
+	lastCommitted := rapid.Bool().Draw(rt, "last_committed")
+	stopPosition := rapid.SampledFrom([]int64{
+		termBaseStride * int64(terms),
+		recordinglog.NullPosition,
+	}).Draw(rt, "stop_position")
+
+	writeTermHistory(t, dir, recordingID, terms, lastCommitted)
+
+	if lister != nil {
+		lister.extents[recordingID] = extent(0, stopPosition)
+	}
+
+	return restartHistory{
+		recordingID:   recordingID,
+		terms:         terms,
+		lastCommitted: lastCommitted,
+		stopPosition:  stopPosition,
+	}
+}
+
 // requireOpenFailed asserts the failed-open contract: nil value, cluster-scoped
 // error, nothing left open under dir.
 func requireOpenFailed(
@@ -189,21 +239,13 @@ func drawElectionInput(rt *rapid.T) (
 	return timeouts, appointed, graceful, memberID
 }
 
-// drawSeededConfig draws an open-success log shape into dir and a normalized
-// config whose election fields carry the noise the recovery seed must overwrite.
-//
-// Only empty and terms fixtures. Snapshot shapes refuse OpenRecovery; seed and
-// reopen properties require a successful open.
-func drawSeededConfig(rt *rapid.T, dir string) (cluster.Config, *fakeLister) {
+// drawRecoveryConfig draws a normalized config over dir. Election fields carry
+// noise the recovery seed must overwrite.
+func drawRecoveryConfig(rt *rapid.T, dir string) cluster.Config {
 	rt.Helper()
 
-	lister := &fakeLister{
-		extents: make(map[int64]recordinglog.LogRecordingExtents),
-	}
-	drawLogShapeFrom(rt, dir, lister, []logShape{shapeEmpty, shapeTerms})
-
 	electionIn, appointed, graceful, memberID := drawElectionInput(rt)
-	cfg := cluster.Config{
+	return cluster.Config{
 		MemberID:                      memberID,
 		ClusterMembers:                goldenClusterMembersSharedLog,
 		ClusterDir:                    dir,
@@ -215,7 +257,23 @@ func drawSeededConfig(rt *rapid.T, dir string) (cluster.Config, *fakeLister) {
 		ArchiveControlRequestChannel:  testArchiveControlRequestChannel,
 		ArchiveControlResponseChannel: testArchiveControlResponseChannel,
 	}.Normalize()
-	return cfg, lister
+}
+
+// drawSeededConfig draws an open-success log shape into dir. Returns a
+// drawRecoveryConfig config with that shape.
+//
+// Constraints:
+//   - only empty and terms fixtures
+//   - snapshot shapes refuse OpenRecovery
+//   - seed and reopen properties require a successful open
+func drawSeededConfig(rt *rapid.T, dir string) (cluster.Config, *fakeLister, logShape) {
+	rt.Helper()
+
+	lister := &fakeLister{
+		extents: make(map[int64]recordinglog.LogRecordingExtents),
+	}
+	shape := drawLogShapeFrom(rt, dir, lister, []logShape{shapeEmpty, shapeTerms})
+	return drawRecoveryConfig(rt, dir), lister, shape
 }
 
 func TestRecoveryElectionConfig_seedOracle_rapid(t *testing.T) {
@@ -223,7 +281,7 @@ func TestRecoveryElectionConfig_seedOracle_rapid(t *testing.T) {
 
 	rapid.Check(t, func(rt *rapid.T) {
 		dir := t.TempDir()
-		cfg, lister := drawSeededConfig(rt, dir)
+		cfg, lister, _ := drawSeededConfig(rt, dir)
 
 		recovery, err := cluster.OpenRecovery(cluster.RecoveryDeps{
 			Config:        cfg,
@@ -238,7 +296,6 @@ func TestRecoveryElectionConfig_seedOracle_rapid(t *testing.T) {
 		want.IsNodeStartup = true
 		election.ApplyRecoveryPlan(&want, recovery.Plan())
 		require.Equal(rt, want, recovery.ElectionConfig())
-		require.Equal(rt, recovery.Plan().IsEmpty(), recovery.IsColdStart())
 		require.NoError(rt, recovery.Close())
 		require.Empty(rt, fdsUnder(t, dir))
 	})
@@ -250,7 +307,8 @@ func TestRecoveryElectionConfig_seedOracle_rapid(t *testing.T) {
 func TestOpenRecovery_reopenStable_rapid(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		dir := t.TempDir()
-		cfg, lister := drawSeededConfig(rt, dir)
+		cfg, lister, shape := drawSeededConfig(rt, dir)
+		wroteTerms := shape == shapeTerms
 
 		cycles := rapid.IntRange(2, 4).Draw(rt, "cycles")
 		var (
@@ -281,6 +339,10 @@ func TestOpenRecovery_reopenStable_rapid(t *testing.T) {
 					firstElection = recovery.ElectionConfig()
 					firstCold = recovery.IsColdStart()
 					firstEntries = len(recovery.RecordingLog().Entries())
+					// A drawn shape that wrote terms must not report a cold start.
+					if wroteTerms {
+						require.False(rt, firstCold)
+					}
 					return
 				}
 				require.Equal(rt, firstPlan, recovery.Plan())
@@ -289,5 +351,60 @@ func TestOpenRecovery_reopenStable_rapid(t *testing.T) {
 				require.Len(rt, recovery.RecordingLog().Entries(), firstEntries)
 			}()
 		}
+	})
+}
+
+func TestOpenRecovery_restartSeed_rapid(t *testing.T) {
+	t.Parallel()
+
+	rapid.Check(t, func(rt *rapid.T) {
+		dir := t.TempDir()
+		lister := &fakeLister{
+			extents: make(map[int64]recordinglog.LogRecordingExtents),
+		}
+		history := drawRestartHistory(t, rt, dir, lister)
+		cfg := drawRecoveryConfig(rt, dir)
+
+		recovery, err := cluster.OpenRecovery(cluster.RecoveryDeps{
+			Config:        cfg,
+			ArchiveLister: lister,
+		})
+		require.NoError(rt, err)
+		require.NotNil(rt, recovery)
+		// Hold the open handle so a failed assert still releases the flock.
+		// restartCycle closes the first handle and returns the reopened one.
+		toClose := recovery
+		defer func() {
+			require.NoError(rt, toClose.Close())
+			require.Empty(rt, fdsUnder(t, dir))
+		}()
+
+		require.False(rt, recovery.IsColdStart())
+		require.False(rt, recovery.Plan().IsEmpty())
+
+		// History → plan geometry from the fixture writer, not an election oracle.
+		plan := recovery.Plan()
+		require.Equal(rt, int64(history.terms-1), plan.LastLeadershipTermID)
+		require.Equal(rt, termBaseStride*int64(history.terms-1), plan.LastTermBaseLogPosition)
+		if history.lastCommitted {
+			require.Equal(rt, termBaseStride*int64(history.terms), plan.CommittedLogPosition)
+		} else {
+			require.Equal(rt, int64(0), plan.CommittedLogPosition)
+		}
+		require.Equal(rt, history.stopPosition, plan.AppendedLogPosition)
+		require.Equal(rt, history.recordingID, plan.TermRecordingID())
+		require.Empty(rt, plan.Snapshots)
+
+		// Election seed: production transform only (same shape as seedOracle_rapid).
+		want := cfg.Election
+		want.IsNodeStartup = true
+		election.ApplyRecoveryPlan(&want, plan)
+		require.Equal(rt, want, recovery.ElectionConfig())
+
+		reopened := restartCycle(rt, recovery, cfg, lister)
+		toClose = reopened
+		require.Equal(rt, plan, reopened.Plan())
+		require.Equal(rt, want, reopened.ElectionConfig())
+		require.False(rt, reopened.IsColdStart())
 	})
 }

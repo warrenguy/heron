@@ -11,6 +11,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
@@ -150,6 +151,258 @@ func TestClusterModule_advancesCommitAcrossFollowers(t *testing.T) {
 			return true
 		})
 	})
+}
+
+// TestClusterModule_rejoinsCommitAfterMemberRestart asserts commit participation
+// after a follower stop and restart against the same cluster directory and Archive.
+//
+// Asserts:
+//   - non-empty recovery plan
+//   - term install
+//   - commit advance with the cluster
+//
+// No t.Parallel: the set owns fixed UDP ports.
+func TestClusterModule_rejoinsCommitAfterMemberRestart(t *testing.T) {
+	set := openThreeNodeCluster(t)
+
+	leaders := set.Leaders()
+	require.Len(t, leaders, 1, "expected exactly one leader:\n%s", set.State())
+	leader := leaders[0]
+	leaderMemberID := leader.ThisMemberID()
+
+	// Drive a non-zero commit floor on every member before the stop.
+	appendPos := leader.LogPublisher().AppendMessage(
+		leader.LeadershipTermID(),
+		1,
+		time.Now().UnixNano(),
+		[]byte("pre-restart-commit"),
+	)
+	require.Positive(t, appendPos, "AppendMessage failed code=%d:\n%s", appendPos, set.State())
+
+	const commitBound = 60 * time.Second
+	requireAwait(t, set, "pre-restart commit floor", commitBound, func(bound time.Duration) bool {
+		return set.TickUntil(bound, func() bool {
+			for _, m := range set.Modules() {
+				if m == nil || m.CommitPosition() == 0 {
+					return false
+				}
+			}
+			return true
+		})
+	})
+
+	// Choose a non-leader follower by slot index.
+	followerIndex := -1
+	for i, m := range set.Modules() {
+		if m != nil && m.ThisMemberID() != leaderMemberID {
+			followerIndex = i
+			break
+		}
+	}
+	require.GreaterOrEqual(t, followerIndex, 0, "no follower slot:\n%s", set.State())
+	follower := set.Module(followerIndex)
+	require.NotNil(t, follower)
+
+	// Preconditions:
+	//   - follower
+	//   - non-empty recording log
+	//   - connected recording id
+	require.False(t, follower.IsLeader(), "chosen member must not be leader:\n%s", set.State())
+	preEntries := follower.RecordingLog().Entries()
+	require.NotEmpty(t, preEntries, "follower recording log empty:\n%s", set.State())
+	preRecordingID := follower.Agent().LocalLogRecordingID()
+	require.NotEqual(t, int64(-1), preRecordingID, "follower LocalLogRecordingID:\n%s", set.State())
+	require.Equal(
+		t,
+		preRecordingID,
+		preEntries[len(preEntries)-1].RecordingID,
+		"last TERM recording id must match LocalLogRecordingID:\n%s",
+		set.State(),
+	)
+
+	// Retain pre-stop state for post-restart assertions.
+	preEntryCounts := make([]int, len(set.Modules()))
+	preSurvivorLeaderIDs := make([]int32, len(set.Modules()))
+	for i, m := range set.Modules() {
+		if m == nil {
+			continue
+		}
+		preEntryCounts[i] = len(m.RecordingLog().Entries())
+		if i != followerIndex {
+			preSurvivorLeaderIDs[i] = m.LeaderMemberID()
+		}
+	}
+
+	// Stop and restart:
+	//  1. graceful stop
+	//  2. tick survivors
+	//  3. restart against the same cluster dir and Archive
+	require.NoError(t, set.StopMember(followerIndex))
+	require.Nil(t, set.Module(followerIndex))
+	for range 10 {
+		set.Tick()
+	}
+	require.NoError(t, set.RestartMember(followerIndex))
+	returning := set.Module(followerIndex)
+	require.NotNil(t, returning, "RestartMember left slot empty:\n%s", set.State())
+
+	// Non-empty recovery plan branch.
+	require.False(
+		t,
+		returning.IsColdStart(),
+		"returning member cold start:\n%s",
+		set.State(),
+	)
+
+	// Previous boot's index was read, not recreated empty.
+	openEntries := returning.RecordingLog().Entries()
+	require.NotEmpty(
+		t,
+		openEntries,
+		"returning member recording log empty at open:\n%s",
+		set.State(),
+	)
+
+	// Plan-seeded LocalLogRecordingID at open equals pre-stop id.
+	require.Equal(
+		t,
+		preRecordingID,
+		returning.Agent().LocalLogRecordingID(),
+		"LocalLogRecordingID at open:\n%s",
+		set.State(),
+	)
+
+	// Commit seed at open is at least the plan committed floor. Floor is the last
+	// TERM entry's LogPosition when committed. NullPosition leaves the plan
+	// floor at 0.
+	planFloor := int64(0)
+	if lp := openEntries[len(openEntries)-1].LogPosition; lp != recordinglog.NullPosition {
+		planFloor = lp
+	}
+	openCommit := returning.CommitPosition()
+	require.GreaterOrEqual(
+		t,
+		openCommit,
+		planFloor,
+		"CommitPosition at open below plan floor %d:\n%s",
+		planFloor,
+		set.State(),
+	)
+
+	// Returning member must re-image peer log publications and finish election.
+	const imageBound = 30 * time.Second
+	const electBound = 60 * time.Second
+	requireAwait(t, set, "post-restart log images", imageBound, set.AwaitLogImages)
+
+	// Election completes within the election bound.
+	requireAwait(t, set, "post-restart election", electBound, func(bound time.Duration) bool {
+		return set.TickUntil(bound, returning.ElectionComplete)
+	})
+
+	// Leader after rejoin: still the settled leader.
+	leaders = set.Leaders()
+	require.Len(t, leaders, 1, "expected exactly one leader after rejoin:\n%s", set.State())
+	leader = leaders[0]
+	leaderMemberID = leader.ThisMemberID()
+
+	// Installed term matches the leader.
+	require.Equal(
+		t,
+		leader.LeadershipTermID(),
+		returning.LeadershipTermID(),
+		"LeadershipTermID after rejoin:\n%s",
+		set.State(),
+	)
+
+	// Returning follower knows the leader.
+	require.Equal(
+		t,
+		leaderMemberID,
+		returning.LeaderMemberID(),
+		"LeaderMemberID after rejoin:\n%s",
+		set.State(),
+	)
+
+	// Drive commit past the open floor. Separates recovered position from
+	// connected participation:
+	//   - returner must replicate and commit the post-restart entry
+	//   - leader must commit past its pre-restart position
+	postAppendPos := leader.LogPublisher().AppendMessage(
+		leader.LeadershipTermID(),
+		1,
+		time.Now().UnixNano(),
+		[]byte("post-restart-commit"),
+	)
+	require.Positive(
+		t,
+		postAppendPos,
+		"post-restart AppendMessage failed code=%d:\n%s",
+		postAppendPos,
+		set.State(),
+	)
+
+	// Leader and returner both commit the post-restart entry.
+	requireAwait(t, set, "post-restart commit advance", commitBound, func(bound time.Duration) bool {
+		return set.TickUntil(bound, func() bool {
+			return returning.CommitPosition() >= postAppendPos &&
+				leader.CommitPosition() >= postAppendPos
+		})
+	})
+
+	// No member lost durable term state.
+	for i, m := range set.Modules() {
+		if m == nil {
+			continue
+		}
+		require.GreaterOrEqual(
+			t,
+			len(m.RecordingLog().Entries()),
+			preEntryCounts[i],
+			"member %d recording log shrank:\n%s",
+			m.ThisMemberID(),
+			set.State(),
+		)
+	}
+
+	// Survivors stayed settled with the same leader view.
+	for i, m := range set.Modules() {
+		if m == nil || i == followerIndex {
+			continue
+		}
+		require.True(
+			t,
+			m.ElectionComplete(),
+			"survivor %d election incomplete:\n%s",
+			m.ThisMemberID(),
+			set.State(),
+		)
+		require.Equal(
+			t,
+			preSurvivorLeaderIDs[i],
+			m.LeaderMemberID(),
+			"survivor %d LeaderMemberID changed:\n%s",
+			m.ThisMemberID(),
+			set.State(),
+		)
+	}
+
+	// After join, LocalLogRecordingID still equals pre-stop id (extend path, not
+	// a fresh catalog id).
+	require.Equal(
+		t,
+		preRecordingID,
+		returning.Agent().LocalLogRecordingID(),
+		"LocalLogRecordingID after join (extend arm):\n%s",
+		set.State(),
+	)
+
+	// Extend path is active, not a stored idle id.
+	require.True(
+		t,
+		returning.Agent().IsRecordingActive(),
+		"IsRecordingActive after join:\n%s",
+		set.State(),
+	)
 }
 
 // openThreeNodeCluster starts three members on the module multicast block.

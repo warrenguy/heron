@@ -4,6 +4,7 @@ package recordinglog_test
 
 import (
 	"errors"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -59,7 +60,13 @@ func TestPlanRecovery_invariants_rapid(t *testing.T) {
 		entries := recordinglog.DrawIndexedEntries(rt, n, "")
 		slices.SortStableFunc(entries, recordinglog.CompareEntries)
 		archive := fakeArchiveForEntries(entries)
-		log, _ := openWithEntries(t, entries...)
+		if rapid.Bool().Draw(rt, "active_extent") && len(archive) > 0 {
+			for id, ext := range archive {
+				ext.StopPosition = recordinglog.NullPosition
+				archive[id] = ext
+			}
+		}
+		log, path := openWithEntries(t, entries...)
 		defer func() { require.NoError(rt, log.Close()) }()
 		cfg := recoveryPlanConfig(serviceCount)
 
@@ -80,6 +87,10 @@ func TestPlanRecovery_invariants_rapid(t *testing.T) {
 		}
 
 		if plan.Log != nil {
+			require.NotEqual(rt, recordinglog.NullRecordingID, plan.Log.Term.RecordingID)
+			require.Equal(rt, plan.Log.Term.LeadershipTermID, plan.LastLeadershipTermID)
+			require.Equal(rt, plan.Log.Extent.StopPosition, plan.AppendedLogPosition)
+
 			ext := plan.Log.Extent
 			if ext.StopPosition != recordinglog.NullPosition {
 				require.GreaterOrEqual(rt, ext.StopPosition, ext.StartPosition)
@@ -87,8 +98,15 @@ func TestPlanRecovery_invariants_rapid(t *testing.T) {
 			uncommitted := plan.Log.Term.LogPosition == recordinglog.NullPosition
 			if uncommitted && len(plan.Snapshots) > 0 {
 				require.Equal(rt, plan.Snapshots[0].LogPosition, plan.CommittedLogPosition)
-				require.Equal(rt, plan.Log.Extent.StopPosition, plan.AppendedLogPosition)
 			}
 		}
+
+		require.NoError(rt, log.Close())
+		reopened, err := recordinglog.Open(filepath.Dir(path), false)
+		require.NoError(rt, err)
+		defer func() { require.NoError(rt, reopened.Close()) }()
+		planReopen, err := reopened.PlanRecovery(archive, cfg)
+		require.NoError(rt, err)
+		require.Equal(rt, plan, planReopen)
 	})
 }

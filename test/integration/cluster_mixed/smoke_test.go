@@ -15,8 +15,7 @@ import (
 // HERON_CLUSTER_MIXED_JAVA_LEADER_COMPOSE.
 //
 // Commit advance asserts mesh liveness after a client offer. Commit advance is
-// not a durability claim for the Go member. Java peers record the log. The Go
-// member does not.
+// not a durability claim for the Go member.
 //
 // No t.Parallel: owns fixed ports and one cluster.
 func TestClusterMixedJavaLeader(t *testing.T) {

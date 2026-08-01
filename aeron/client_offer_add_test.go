@@ -747,7 +747,7 @@ func TestClient_OfferAdd_terminationDuringOfferRetry(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			clock := newClientAddTestClock(0, time.Second)
 			dir := t.TempDir()
-			client, fixture := newClientAddFixture(
+			client, fixture := newClientAddOfferRetryTerminationFixture(
 				t,
 				clock.NanoClock(),
 				time.Second,

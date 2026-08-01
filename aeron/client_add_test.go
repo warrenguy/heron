@@ -46,6 +46,22 @@ func clientAddSubscriptionReadyEvent(correlationID int64) conductor.Subscription
 	}
 }
 
+func newClientAddConfig(
+	nanoClock func() int64,
+	driverTimeout time.Duration,
+	idleSleepDuration time.Duration,
+	mediaDriverDir string,
+) testutil.ConductorConfig {
+	config := testutil.DefaultConductorConfig(nil)
+	config.NanoClock = nanoClock
+	config.DriverTimeout = driverTimeout
+	config.IdleSleepDuration = idleSleepDuration
+	config.ImageLifecycle = ConductorImageLifecycle
+	config.ResourceLifecycle = ConductorResourceLifecycle
+	config.MediaDriverDir = mediaDriverDir
+	return config
+}
+
 func newClientAddFixture(
 	tb testutil.TB,
 	nanoClock func() int64,
@@ -55,13 +71,40 @@ func newClientAddFixture(
 ) (*Client, *testutil.ConductorFixture) {
 	tb.Helper()
 
-	config := testutil.DefaultConductorConfig(nil)
-	config.NanoClock = nanoClock
-	config.DriverTimeout = driverTimeout
-	config.IdleSleepDuration = idleSleepDuration
-	config.ImageLifecycle = ConductorImageLifecycle
-	config.ResourceLifecycle = ConductorResourceLifecycle
-	config.MediaDriverDir = mediaDriverDir
+	config := newClientAddConfig(nanoClock, driverTimeout, idleSleepDuration, mediaDriverDir)
+	return newClientAddFixtureFromConfig(tb, config)
+}
+
+// newClientAddOfferRetryTerminationFixture builds a client fixture for offer-retry
+// driver-shutdown tests.
+//
+// Sets KeepAliveInterval to 1ns. checkLiveness must run on the first service tick
+// after the test advances the frozen nano clock.
+//
+// Default 500ms keep-alive under a frozen clock:
+//   - may skip liveness until the clock advances again
+//   - a frozen clock never advances
+//   - the offer loop spins until the wall receive timeout
+func newClientAddOfferRetryTerminationFixture(
+	tb testutil.TB,
+	nanoClock func() int64,
+	driverTimeout time.Duration,
+	idleSleepDuration time.Duration,
+	mediaDriverDir string,
+) (*Client, *testutil.ConductorFixture) {
+	tb.Helper()
+
+	config := newClientAddConfig(nanoClock, driverTimeout, idleSleepDuration, mediaDriverDir)
+	config.KeepAliveInterval = time.Nanosecond
+	return newClientAddFixtureFromConfig(tb, config)
+}
+
+func newClientAddFixtureFromConfig(
+	tb testutil.TB,
+	config testutil.ConductorConfig,
+) (*Client, *testutil.ConductorFixture) {
+	tb.Helper()
+
 	fixture := testutil.NewConductorFixture(tb, config)
 	client := NewClientForTestWithDriverProxy(
 		fixture.Conductor,
@@ -1331,7 +1374,7 @@ func TestClient_AddPublicationKind_terminationDuringOfferRetry(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			clock := newClientAddTestClock(0, time.Second)
 			dir := t.TempDir()
-			client, fixture := newClientAddFixture(
+			client, fixture := newClientAddOfferRetryTerminationFixture(
 				t,
 				clock.NanoClock(),
 				time.Second,
@@ -1372,7 +1415,7 @@ func TestClient_AddPublicationKind_terminationDuringOfferRetry(t *testing.T) {
 func TestClient_AddSubscription_terminationDuringOfferRetry(t *testing.T) {
 	clock := newClientAddTestClock(0, time.Second)
 	dir := t.TempDir()
-	client, fixture := newClientAddFixture(
+	client, fixture := newClientAddOfferRetryTerminationFixture(
 		t,
 		clock.NanoClock(),
 		time.Second,
