@@ -502,7 +502,9 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 	if agent := m.Agent(); agent != nil {
 		localLogRecordingID = agent.LocalLogRecordingID()
 		if src := agent.AppendSource(); src != nil {
-			appendSrc = src.AppendPosition()
+			if pos, ready := src.AppendPosition(); ready {
+				appendSrc = pos
+			}
 		}
 	}
 

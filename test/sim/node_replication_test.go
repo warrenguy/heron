@@ -128,7 +128,9 @@ func TestNode_replicationHost_restartKeepsAdapter(t *testing.T) {
 		// Append source tracks election high-water after leave Init.
 		src := agent.AppendSource()
 		require.NotNil(t, src)
-		require.Equal(t, restored.Election().AppendPosition(), src.AppendPosition())
+		got, ready := src.AppendPosition()
+		require.True(t, ready)
+		require.Equal(t, restored.Election().AppendPosition(), got)
 	})
 }
 
@@ -167,7 +169,9 @@ func TestReplicationHost_acceptanceSmoke(t *testing.T) {
 		require.Equal(t, leaderAppend, leaderEl.AppendPosition())
 		src := agent.AppendSource()
 		require.NotNil(t, src)
-		require.Equal(t, leaderAppend, src.AppendPosition())
+		got, ready := src.AppendPosition()
+		require.True(t, ready)
+		require.Equal(t, leaderAppend, got)
 
 		// Drive NLT with high LogPosition; followers must not hang in CatchupInit.
 		interval := cfg.ElectionConfig.LeaderHeartbeatIntervalNs

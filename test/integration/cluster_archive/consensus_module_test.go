@@ -96,6 +96,8 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	require.Equal(t, module.LogPublisher().SessionID(), session)
 	require.Equal(t, module.LogStreams().Publication().SessionID(), session)
 	require.NotNil(t, module.Agent().AppendSource())
+	_, ok := module.Agent().AppendSource().(*consensus.RecordingPosAppendPosition)
+	require.True(t, ok, "open must install recording-derived append high-water")
 	require.NotNil(t, module.Agent().LogJoinSource())
 
 	// Elect: transport DoWork, archive Poll, agent DoWork until ElectionComplete.

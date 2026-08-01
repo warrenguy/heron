@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"errors"
+	"fmt"
 	"sync/atomic"
 
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
@@ -23,6 +24,35 @@ const nullMemberID int32 = int32(nullValue)
 // DefaultLeaderHeartbeatIntervalNs is the default commit re-publish and
 // follower append cadence (200ms).
 const DefaultLeaderHeartbeatIntervalNs int64 = 200_000_000
+
+// DefaultAppendPositionNotReadyTimeoutNs bounds a not-ready append high-water
+// run (5s).
+//
+// The run may span inactive periods. Fail-closed marks only while a recording
+// is active at the crossing tick. Same order of magnitude as the archive
+// control response timeout that bounds the start which allocates the counter.
+const DefaultAppendPositionNotReadyTimeoutNs int64 = 5_000_000_000
+
+// ErrAppendPositionUnavailable reports that a cluster log recording is active and
+// its recording-position counter has been absent longer than
+// [AgentConfig.AppendPositionNotReadyTimeoutNs].
+//
+// Causes:
+//   - the archive stopped the recording without the member observing the stop
+//   - the archive never allocated the counter for a start it acknowledged
+//   - the counters reader is reading a different media driver than the archive
+//
+// [Agent.AppendRankFailure] returns this sentinel wrapped with the recording id
+// and the run length.
+//
+// A member that reports this error:
+//   - has stopped ranking
+//   - has stopped publishing its append position
+//
+// Callers must not treat that member as a live peer.
+var ErrAppendPositionUnavailable = errors.New(
+	"consensus: log recording is active and its recording position counter is absent",
+)
 
 // Agent is the consensus module duty-cycle owner.
 //
@@ -123,6 +153,20 @@ type Agent struct {
 	// follower AppendPosition publish. Nil: leader consensusWork returns 0.
 	appendSource AppendPositionSource
 
+	// appendNotReadySinceNs is the first tick of the open not-ready run from
+	// appendSource, or nullValue when the last read was ready. A ready read
+	// clears the field. A run that spans a recording stop and a new start ends
+	// when the new counter appears.
+	appendNotReadySinceNs int64
+
+	// appendNotReadyTimeoutNs bounds a not-ready run while a cluster log
+	// recording is active. Past the bound the agent marks appendRankFailure.
+	appendNotReadyTimeoutNs int64
+
+	// appendRankFailure is the first marked append-rank failure, or nil until
+	// marked. Marked once. Later ticks do not replace the cause.
+	appendRankFailure error
+
 	// lastPublishedAppendPosition is the last successfully published follower
 	// append high-water (advanced path only).
 	lastPublishedAppendPosition int64
@@ -198,6 +242,11 @@ type AgentConfig struct {
 	// (200_000_000). Negative panics at NewAgent.
 	LeaderHeartbeatIntervalNs int64
 
+	// AppendPositionNotReadyTimeoutNs: zero ->
+	// DefaultAppendPositionNotReadyTimeoutNs (5_000_000_000). Negative panics at
+	// NewAgent.
+	AppendPositionNotReadyTimeoutNs int64
+
 	// LeadershipTermID seeds a.leadershipTermID (default 0 is a valid term).
 	LeadershipTermID int64
 
@@ -245,6 +294,8 @@ type AgentConfig struct {
 // NewAgent constructs an [Agent] from cfg. localLogRecordingID defaults to
 // nullValue. LeaderHeartbeatIntervalNs zero becomes
 // DefaultLeaderHeartbeatIntervalNs; negative panics.
+// AppendPositionNotReadyTimeoutNs zero becomes
+// DefaultAppendPositionNotReadyTimeoutNs; negative panics.
 //
 // Member ids are stored as given (0 is valid; -1 is unset).
 //
@@ -261,6 +312,13 @@ func NewAgent(cfg AgentConfig) *Agent {
 	if interval < 0 {
 		panic("consensus: negative LeaderHeartbeatIntervalNs")
 	}
+	appendTimeout := cfg.AppendPositionNotReadyTimeoutNs
+	if appendTimeout == 0 {
+		appendTimeout = DefaultAppendPositionNotReadyTimeoutNs
+	}
+	if appendTimeout < 0 {
+		panic("consensus: negative AppendPositionNotReadyTimeoutNs")
+	}
 	a := &Agent{
 		election:                  cfg.Election,
 		positions:                 cfg.Positions,
@@ -274,6 +332,8 @@ func NewAgent(cfg AgentConfig) *Agent {
 		leaderHeartbeatIntervalNs: interval,
 		ingress:                   cfg.Ingress,
 		appendSource:              cfg.AppendSource,
+		appendNotReadySinceNs:     nullValue,
+		appendNotReadyTimeoutNs:   appendTimeout,
 		logPublisher:              cfg.LogPublisher,
 		logAdapter:                cfg.LogAdapter,
 		joinSource:                cfg.LogJoinSource,
@@ -282,6 +342,62 @@ func NewAgent(cfg AgentConfig) *Agent {
 	}
 	a.ingressHandler = a.onIngressFragment
 	return a
+}
+
+// AppendRankFailure returns the marked append-rank failure, or nil.
+//
+// Behaviour:
+//   - non-nil once a cluster log recording has been active with no
+//     recording-position counter longer than the configured bound
+//   - marked once: first cause kept; later ticks do not replace it
+//   - a later ready source report does not clear the marked failure
+//   - ranking and publish stay stopped after mark
+//
+// Callers must poll this value. Nothing in [cluster.Runner] reads it. The duty
+// cycle keeps running after the failure is set: transport is still serviced and
+// consensus ingress is still polled.
+//
+// A member with a non-nil failure contributes nothing to rank or append
+// publish. Callers must not treat that member as a live peer.
+//
+// Concurrency: invoker-only.
+func (a *Agent) AppendRankFailure() error { return a.appendRankFailure }
+
+// resolveAppendPosition reads the wired append high-water once and applies the
+// not-ready policy.
+//
+// Returns the position and whether the caller may use that position.
+//
+// When [Agent.AppendRankFailure] is marked, freezes the member for the process
+// life:
+//   - always not-ready
+//   - does not read the source
+func (a *Agent) resolveAppendPosition(nowNs int64) (int64, bool) {
+	if a.appendRankFailure != nil {
+		return 0, false
+	}
+	if a.appendSource == nil {
+		a.appendNotReadySinceNs = nullValue
+		return 0, true
+	}
+	position, ready := a.appendSource.AppendPosition()
+	if ready {
+		a.appendNotReadySinceNs = nullValue
+		return position, true
+	}
+	if a.appendNotReadySinceNs == nullValue {
+		a.appendNotReadySinceNs = nowNs
+	}
+	timedOut := nowNs-a.appendNotReadySinceNs >= a.appendNotReadyTimeoutNs
+	if a.IsRecordingActive() && timedOut {
+		a.appendRankFailure = fmt.Errorf(
+			"%w: recording_id=%d not_ready_ns=%d",
+			ErrAppendPositionUnavailable,
+			a.LocalLogRecordingID(),
+			nowNs-a.appendNotReadySinceNs,
+		)
+	}
+	return 0, false
 }
 
 // SetPositions sets the [PositionTable] used for ranking and member updates.
@@ -1163,7 +1279,10 @@ func (a *Agent) leaderConsensusWork(nowNs int64) int {
 	if a.appendSource == nil || a.positions == nil {
 		return 0
 	}
-	appendPos := a.appendSource.AppendPosition()
+	appendPos, ready := a.resolveAppendPosition(nowNs)
+	if !ready {
+		return 0
+	}
 
 	// Steady stamp via PositionTable only. Skip when thisMemberID is unset;
 	// rank and gate still run.
@@ -1177,19 +1296,28 @@ func (a *Agent) leaderConsensusWork(nowNs int64) int {
 // followerConsensusWork polls the log under the commit/append bound, advances
 // local commit from adapter position, then publishes AppendPosition on interval.
 //
-// The append high-water is read once per tick and shared by the poll bound and
-// the publish: the source may scan the log image's received frames, so one
-// read per tick is the budget.
+// The append high-water is read once per tick. That value is shared by the poll
+// bound and the publish. The source may scan the log image's received frames, so
+// one read per tick is the budget.
+//
+// Not-ready read:
+//   - freezes the poll bound at the adapter position
+//   - publishes nothing
 func (a *Agent) followerConsensusWork(nowNs int64) int {
-	appendPos := int64(0)
-	if a.appendSource != nil {
-		appendPos = a.appendSource.AppendPosition()
-	}
+	appendPos, ready := a.resolveAppendPosition(nowNs)
 	work := 0
 	if a.logAdapter != nil {
-		work += a.pollLogAndProposeMax(a.logAdapter, a.followerLogPollBound(appendPos))
+		var bound int64
+		if ready {
+			bound = a.followerLogPollBound(appendPos)
+		} else {
+			bound = a.logAdapter.Position()
+		}
+		work += a.pollLogAndProposeMax(a.logAdapter, bound)
 	}
-	work += a.updateFollowerPosition(nowNs, appendPos)
+	if ready {
+		work += a.updateFollowerPosition(nowNs, appendPos)
+	}
 	return work
 }
 

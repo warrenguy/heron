@@ -375,12 +375,12 @@ func attachLiveElection(sim *ElectionSim, node *Node, cfg election.ElectionConfi
 // node is crashed.
 type nodeAppendSource struct{ node *Node }
 
-func (a nodeAppendSource) AppendPosition() int64 {
+func (a nodeAppendSource) AppendPosition() (int64, bool) {
 	el := a.node.election
 	if el == nil {
-		return 0
+		return 0, true
 	}
-	return el.AppendPosition()
+	return el.AppendPosition(), true
 }
 
 // clearLiveHost drops election-host wiring so a crashed node does not expose

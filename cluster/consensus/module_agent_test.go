@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/recordinglog"
@@ -511,6 +512,182 @@ func TestNewAgent_defaults(t *testing.T) {
 	require.Equal(t, RoleLeader, NewAgent(AgentConfig{Role: RoleLeader}).Role())
 }
 
+func TestNewAgent_appendNotReadyDefaults(t *testing.T) {
+	a := NewAgent(AgentConfig{})
+	require.Equal(t, DefaultAppendPositionNotReadyTimeoutNs, a.appendNotReadyTimeoutNs)
+	require.Equal(t, int64(nullValue), a.appendNotReadySinceNs)
+	require.NoError(t, a.AppendRankFailure())
+
+	const custom int64 = 123
+	a = NewAgent(AgentConfig{AppendPositionNotReadyTimeoutNs: custom})
+	require.Equal(t, custom, a.appendNotReadyTimeoutNs)
+
+	require.Panics(t, func() {
+		_ = NewAgent(AgentConfig{AppendPositionNotReadyTimeoutNs: -1})
+	})
+}
+
+// scriptedAppendResult is one queued (position, ready) report.
+type scriptedAppendResult struct {
+	position int64
+	ready    bool
+}
+
+// scriptedAppendSource reports a queued sequence of (position, ready) results.
+// A policy test can drive a not-ready run without a counters reader. A read past
+// the queue panics: the script and the read count must match.
+type scriptedAppendSource struct {
+	results []scriptedAppendResult
+	reads   int
+}
+
+func (s *scriptedAppendSource) AppendPosition() (int64, bool) {
+	r := s.results[s.reads]
+	s.reads++
+	return r.position, r.ready
+}
+
+func TestResolveAppendPosition_runClearsOnReady(t *testing.T) {
+	const timeoutNs int64 = 1_000
+	src := &scriptedAppendSource{
+		results: []scriptedAppendResult{
+			{0, false}, // open run
+			{50, true}, // clear run
+			{0, false}, // fresh run
+			{0, false}, // still under bound from second start
+		},
+	}
+	control := &fakeLogRecordingControl{active: true}
+	a := NewAgent(AgentConfig{
+		Role:                            RoleFollower,
+		AppendSource:                    src,
+		AppendPositionNotReadyTimeoutNs: timeoutNs,
+	})
+	a.SetLogRecordingID(77)
+	a.SetLogRecordingControl(control)
+
+	pos, ready := a.resolveAppendPosition(100)
+	require.False(t, ready)
+	require.Equal(t, int64(0), pos)
+	require.Equal(t, int64(100), a.appendNotReadySinceNs)
+	require.NoError(t, a.AppendRankFailure())
+
+	pos, ready = a.resolveAppendPosition(200)
+	require.True(t, ready)
+	require.Equal(t, int64(50), pos)
+	require.Equal(t, int64(nullValue), a.appendNotReadySinceNs)
+
+	// Fresh not-ready run starts at this tick, not the earlier 100.
+	pos, ready = a.resolveAppendPosition(300)
+	require.False(t, ready)
+	require.Equal(t, int64(0), pos)
+	require.Equal(t, int64(300), a.appendNotReadySinceNs)
+
+	// Bound measured from 300: 300+999 still under timeoutNs=1000.
+	_, ready = a.resolveAppendPosition(300 + timeoutNs - 1)
+	require.False(t, ready)
+	require.NoError(t, a.AppendRankFailure())
+	require.Equal(t, int64(300), a.appendNotReadySinceNs)
+}
+
+func TestResolveAppendPosition_failsOnlyWhileRecordingActive(t *testing.T) {
+	const timeoutNs int64 = 100
+	// Identical timing: active marks; inactive never does.
+	for _, tc := range []struct {
+		name   string
+		active bool
+		want   bool
+	}{
+		{name: "active", active: true, want: true},
+		{name: "inactive", active: false, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &scriptedAppendSource{
+				results: []scriptedAppendResult{{0, false}, {0, false}},
+			}
+			a := NewAgent(AgentConfig{
+				Role:                            RoleFollower,
+				AppendSource:                    src,
+				AppendPositionNotReadyTimeoutNs: timeoutNs,
+			})
+			a.SetLogRecordingID(77)
+			a.SetLogRecordingControl(&fakeLogRecordingControl{active: tc.active})
+
+			_, ready := a.resolveAppendPosition(0)
+			require.False(t, ready)
+			require.NoError(t, a.AppendRankFailure())
+
+			_, ready = a.resolveAppendPosition(timeoutNs)
+			require.False(t, ready)
+			if tc.want {
+				require.Error(t, a.AppendRankFailure())
+				require.ErrorIs(t, a.AppendRankFailure(), ErrAppendPositionUnavailable)
+			} else {
+				require.NoError(t, a.AppendRankFailure())
+			}
+		})
+	}
+}
+
+// Asserts a marked append-rank failure freezes rank and publish even after the
+// source reports ready.
+func TestResolveAppendPosition_markedFreezesReady(t *testing.T) {
+	const timeoutNs int64 = 100
+	src := &scriptedAppendSource{
+		results: []scriptedAppendResult{
+			{0, false},   // open run
+			{0, false},   // past bound: mark failure
+			{9600, true}, // source recovers; must stay frozen
+		},
+	}
+	pt := &spyPositionTable{}
+	eg := &recordingEgress{}
+	a := NewAgent(AgentConfig{
+		Role:                            RoleLeader,
+		Commit:                          new(atomic.Int64),
+		Positions:                       pt,
+		Egress:                          eg,
+		AppendSource:                    src,
+		AppendPositionNotReadyTimeoutNs: timeoutNs,
+		ThisMemberID:                    1,
+		LeadershipTermID:                3,
+	})
+	a.SetLogRecordingID(77)
+	a.SetLogRecordingControl(&fakeLogRecordingControl{active: true})
+
+	_, ready := a.resolveAppendPosition(0)
+	require.False(t, ready)
+	require.NoError(t, a.AppendRankFailure())
+
+	_, ready = a.resolveAppendPosition(timeoutNs)
+	require.False(t, ready)
+	marked := a.AppendRankFailure()
+	require.Error(t, marked)
+	require.ErrorIs(t, marked, ErrAppendPositionUnavailable)
+
+	// Source would report ready; marked failure must freeze.
+	pos, ready := a.resolveAppendPosition(timeoutNs * 2)
+	require.False(t, ready)
+	require.Equal(t, int64(0), pos)
+	require.Equal(t, marked, a.AppendRankFailure())
+	// Marked path skips the source: queue must not advance.
+	require.Equal(t, 2, src.reads)
+
+	// Leader: no stamp, no rank work after mark.
+	require.Equal(t, 0, a.consensusWork(timeoutNs*3))
+	require.Empty(t, pt.updates)
+	require.Empty(t, pt.callOrder)
+	require.Equal(t, int64(0), a.CommitPosition())
+	require.Equal(t, marked, a.AppendRankFailure())
+
+	// Follower: no publish after mark.
+	a.RoleSet(RoleFollower)
+	appendsBefore := len(eg.appends)
+	require.Equal(t, 0, a.consensusWork(timeoutNs*4))
+	require.Len(t, eg.appends, appendsBefore)
+	require.Equal(t, marked, a.AppendRankFailure())
+}
+
 func TestLeaderConsensusWork_rankAndPublish(t *testing.T) {
 	a, pt, eg, _ := newLeaderConsensusAgent(100, 80, 1, 5, 100)
 
@@ -725,6 +902,62 @@ func TestFollowerConsensusWork_nilAdapter_appendOnly(t *testing.T) {
 	require.Equal(t, int64(10), a.CommitPosition())
 }
 
+// requireAppendPosition asserts a source reports ready with want.
+func requireAppendPosition(t *testing.T, want int64, src AppendPositionSource) {
+	t.Helper()
+	got, ready := src.AppendPosition()
+	require.True(t, ready)
+	require.Equal(t, want, got)
+}
+
+// requireAppendNotReady asserts a source reports not-ready with position 0.
+func requireAppendNotReady(t *testing.T, src AppendPositionSource) {
+	t.Helper()
+	got, ready := src.AppendPosition()
+	require.False(t, ready)
+	require.Equal(t, int64(0), got)
+}
+
+// countersWithRecordingPosition builds a counters reader holding at most one
+// type-100 record. A caller may seed the counter, omit it, or leave a record for
+// another recording id. Serves both *testing.T and *rapid.T callers.
+func countersWithRecordingPosition(
+	t interface {
+		require.TestingT
+		Helper()
+	},
+	recordingID int64,
+	value int64,
+	present bool,
+) *cnc.CountersReader {
+	t.Helper()
+	// One slot when absent (unused scan stop). Two when present: allocated then
+	// unused stop.
+	counterCount := 1
+	if present {
+		counterCount = 2
+	}
+	meta := make([]byte, counterCount*cnc.CounterMetadataLength)
+	values := make([]byte, counterCount*cnc.CounterValueLength)
+	if present {
+		require.NoError(t, cnc.WriteRecordingPositionCounterRecord(
+			meta,
+			values,
+			0,
+			cnc.CounterRecordAllocated,
+			cnc.ArchiveRecordingPositionCounterTypeID,
+			recordingID,
+			1, // session
+			"aeron:ipc",
+			cnc.NullValue,
+			value,
+		))
+	}
+	reader, err := cnc.NewCountersReader(meta, values)
+	require.NoError(t, err)
+	return reader
+}
+
 // steppingAppendSource counts reads and advances after each one, so a second
 // read within one tick returns a different value and shows up in the publish.
 type steppingAppendSource struct {
@@ -733,11 +966,11 @@ type steppingAppendSource struct {
 	reads int
 }
 
-func (s *steppingAppendSource) AppendPosition() int64 {
+func (s *steppingAppendSource) AppendPosition() (int64, bool) {
 	v := s.value
 	s.reads++
 	s.value += s.step
-	return v
+	return v, true
 }
 
 func TestFollowerConsensusWork_readsAppendSourceOncePerTick(t *testing.T) {
@@ -786,11 +1019,11 @@ func TestSetAppendSource_wireAndClear(t *testing.T) {
 }
 
 func TestAtomicAppendPosition_nilSafe(t *testing.T) {
-	require.Equal(t, int64(0), (*AtomicAppendPosition)(nil).AppendPosition())
-	require.Equal(t, int64(0), (&AtomicAppendPosition{}).AppendPosition())
+	requireAppendPosition(t, 0, (*AtomicAppendPosition)(nil))
+	requireAppendPosition(t, 0, &AtomicAppendPosition{})
 	v := new(atomic.Int64)
 	v.Store(9)
-	require.Equal(t, int64(9), (&AtomicAppendPosition{V: v}).AppendPosition())
+	requireAppendPosition(t, 9, &AtomicAppendPosition{V: v})
 }
 
 // fakeLogRecordingControl is a scripted LogRecordingControl for agent tests.

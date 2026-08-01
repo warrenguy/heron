@@ -17,8 +17,8 @@ type LogStreamAdder interface {
 
 var _ LogStreamAdder = (*aeron.Client)(nil)
 
-// LogStreamsDeps are the collaborators [OpenLogStreams] needs. All five are
-// required.
+// LogStreamsDeps are the collaborators [OpenLogStreams] needs. Adder, Topology,
+// Agent, LogPublisher, and LogAdapter are required. AppendSource is optional.
 type LogStreamsDeps struct {
 	// Adder registers the cluster log subscription and publication.
 	Adder LogStreamAdder
@@ -40,6 +40,12 @@ type LogStreamsDeps struct {
 	// [consensus.NewLogAdapter]. The Image arrives with the follower log join,
 	// which selects it by log session id. Caller-owned.
 	LogAdapter *consensus.LogAdapter
+
+	// AppendSource is the append high-water source wired into the agent. Nil
+	// binds [consensus.LogAppendPosition] over the wired publisher and adapter.
+	// [OpenConsensusModule] supplies [consensus.RecordingPosAppendPosition] so
+	// the agent ranks on durable recording state.
+	AppendSource consensus.AppendPositionSource
 }
 
 // LogStreams owns the member's cluster log transport resources.
@@ -85,15 +91,20 @@ type LogStreams struct {
 // Bind steps:
 //   - [consensus.Agent.SetLogPublisher]
 //   - [consensus.Agent.SetLogAdapter]
-//   - [consensus.Agent.SetAppendSource] with [consensus.LogAppendPosition]
-//     over the wired publisher and adapter
+//   - [consensus.Agent.SetAppendSource] with deps.AppendSource, or
+//     [consensus.LogAppendPosition] over the wired publisher and adapter when
+//     deps.AppendSource is nil
 //   - [consensus.Agent.SetLogJoinSource] with [consensus.SubscriptionLogJoinSource]
 //     over the log subscription
 //
 // No Image is bound at open.
 //
-// Errors: any dependency is nil, or either add fails. On error every handle
-// added so far is closed, the agent is untouched, and the returned value is nil.
+// Returns an error when:
+//   - any required dependency is nil
+//   - either add fails
+//
+// On error: every handle added so far is closed. The agent is untouched. The
+// returned value is nil.
 func OpenLogStreams(
 	deps LogStreamsDeps,
 ) (*LogStreams, error) {
@@ -137,10 +148,15 @@ func OpenLogStreams(
 		return nil, err
 	}
 
+	appendSource := deps.AppendSource
+	if appendSource == nil {
+		appendSource = consensus.NewLogAppendPosition(deps.Agent)
+	}
+
 	deps.LogPublisher.SetPublication(pub)
 	deps.Agent.SetLogPublisher(deps.LogPublisher)
 	deps.Agent.SetLogAdapter(deps.LogAdapter)
-	deps.Agent.SetAppendSource(consensus.NewLogAppendPosition(deps.Agent))
+	deps.Agent.SetAppendSource(appendSource)
 	deps.Agent.SetLogJoinSource(consensus.NewSubscriptionLogJoinSource(sub))
 
 	return &LogStreams{

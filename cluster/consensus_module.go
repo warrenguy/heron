@@ -118,6 +118,7 @@ type ConsensusModule struct {
 //   - the archive control client cannot connect
 //   - recovery fails
 //   - consensus publications, consensus subscription, or log streams fail to open
+//   - the transport client has no counters reader
 //
 // Open blocks on the archive control connect, bounded by
 // archive.DefaultConnectTimeout and by ctx. A process that opens several members
@@ -247,12 +248,18 @@ func OpenConsensusModule(
 	}
 	module.sub = sub
 
+	counters, err := module.client.CountersReader()
+	if err != nil {
+		return nil, fmt.Errorf("cluster: counters reader for append rank: %w", err)
+	}
+
 	streams, err := OpenLogStreams(LogStreamsDeps{
 		Adder:        module.client,
 		Topology:     topology,
 		Agent:        module.agent,
 		LogPublisher: module.logPublisher,
 		LogAdapter:   module.logAdapter,
+		AppendSource: consensus.NewRecordingPosAppendPosition(module.agent, counters),
 	})
 	if err != nil {
 		return nil, err
