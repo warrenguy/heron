@@ -119,6 +119,19 @@ func TestNewLogReplay_defaultDoneStub(t *testing.T) {
 	require.Equal(t, 0, replay.DoWork(1))
 }
 
+func TestNewLogReplay_doneLogReplayCloseIsIdempotent(t *testing.T) {
+	replay := &doneLogReplay{position: 55}
+	require.True(t, replay.IsDone())
+	require.Equal(t, int64(55), replay.Position())
+
+	replay.Close()
+	replay.Close()
+
+	require.True(t, replay.IsDone())
+	require.Equal(t, int64(55), replay.Position())
+	require.Equal(t, 0, replay.DoWork(1))
+}
+
 func TestNewLogReplay_factoryOverride(t *testing.T) {
 	a := NewAgent(AgentConfig{})
 	stub := &doneLogReplay{position: 42}
@@ -132,7 +145,9 @@ func TestNewLogReplay_factoryOverride(t *testing.T) {
 	require.Same(t, stub, replay)
 	require.Equal(t, int64(42), replay.Position())
 
-	// Factory returning nil falls through to done-stub at appendPosition.
+	// Factory returning nil falls through to a done-stub at appendPosition.
+	// Production factories must not use this fallthrough for a real catchup. The
+	// done stub only prevents a soft livelock.
 	a.SetLogReplayFactory(func(_, _ int64) LogReplay {
 		return nil
 	})
@@ -140,6 +155,7 @@ func TestNewLogReplay_factoryOverride(t *testing.T) {
 	require.NotNil(t, nilFallback)
 	require.True(t, nilFallback.IsDone())
 	require.Equal(t, int64(88), nilFallback.Position())
+	require.Equal(t, 0, nilFallback.DoWork(1))
 
 	a.SetLogReplayFactory(nil)
 	fallback := a.NewLogReplay(1, 77)

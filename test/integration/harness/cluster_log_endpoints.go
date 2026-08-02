@@ -31,6 +31,22 @@ const (
 	ClusterModuleLogEndpoint = "239.255.12.7:25004"
 )
 
+// One-member cluster-log replay restart endpoints. Reserves the consensus port
+// block ClusterReplayPortBase+1 .. ClusterReplayPortBase+(memberCount-1)*100+5.
+// At one member that range is 25701-25705. The shared cluster log uses the
+// multicast endpoint below.
+//
+// Member-restart affordance tests use 25500-25605 at two members and
+// 239.255.12.11:25504. Replay and restart-affordance blocks are disjoint on
+// every axis.
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterReplayPortBase    = 25700
+	ClusterReplayLogEndpoint = "239.255.12.17:25704"
+)
+
 // ClusterLogChannelTemplate confines cluster-log multicast to loopback.
 //
 // Without interface=, the driver joins the group on the default route interface

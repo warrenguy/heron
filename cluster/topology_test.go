@@ -171,6 +171,8 @@ func TestNewTopology_accessors(t *testing.T) {
 	// Stream getters match normalized config.
 	require.Equal(t, cfg.ConsensusStreamID, tp.ConsensusStreamID())
 	require.Equal(t, cfg.LogStreamID, tp.LogStreamID())
+	require.Equal(t, cfg.ReplayStreamID, tp.ReplayStreamID())
+	require.Equal(t, cfg.ReplayChannel, tp.ReplayChannel())
 
 	// Peer map is a copy.
 	peers[99] = "x"
@@ -192,6 +194,25 @@ func TestNewTopology_logChannelIdentical(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, wantLog, tp.LogChannel())
 	}
+}
+
+func TestNewTopology_replayAccessorsVerbatim(t *testing.T) {
+	t.Parallel()
+
+	const (
+		replayChannel  = "aeron:ipc?alias=local-replay"
+		replayStreamID = int32(777)
+	)
+	cfg := topologyConfig(0)
+	cfg.ReplayChannel = replayChannel
+	cfg.ReplayStreamID = replayStreamID
+
+	tp, err := cluster.NewTopology(cfg)
+	require.NoError(t, err)
+
+	// No endpoint substitution. Stored and returned verbatim.
+	require.Equal(t, replayChannel, tp.ReplayChannel())
+	require.Equal(t, replayStreamID, tp.ReplayStreamID())
 }
 
 func TestNewTopology_rejectsUnnormalizedAndInvalid(t *testing.T) {

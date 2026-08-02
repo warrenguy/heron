@@ -652,6 +652,184 @@ func TestHandleLeaderReplay_firstTickUpdatesThisMember(t *testing.T) {
 	require.True(t, handler.joinLeaderCalls[0].isStartup)
 }
 
+func TestHandleLeaderReplay_doneAtBound(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	spy := &spyLogReplay{position: testAppendPosition, done: true}
+	host := &recordingElectionHost{
+		clock: clock,
+		newLogReplay: func(_, _ int64) election.LogReplay {
+			return spy
+		},
+	}
+	deps.Host = host
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateLeaderReplay)
+
+	// Install tick.
+	require.Positive(t, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateLeaderReplay, e.State())
+	require.Equal(t, 0, spy.closeCalls)
+
+	// Done at the append bound enters LeaderInit. logPosition equals the append
+	// bound. The exit closes the helper. DoWork may be 0 with a done spy. State
+	// and closeCalls are the contract.
+	_ = e.DoWork(clock.nowNs + 1)
+	require.Equal(t, election.ElectionStateLeaderInit, e.State())
+	require.Equal(t, e.AppendPosition(), e.LogPosition())
+	require.Equal(t, int64(testAppendPosition), e.LogPosition())
+	require.Equal(t, 1, spy.closeCalls)
+
+	// Second Close is a no-op after the pointer is cleared.
+	e.Close()
+	require.Equal(t, 1, spy.closeCalls)
+}
+
+func TestHandleLeaderReplay_doneShort(t *testing.T) {
+	t.Parallel()
+
+	replayed := int64(testAppendPosition - 50)
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	spy := &spyLogReplay{position: replayed, done: true}
+	host := &recordingElectionHost{
+		clock: clock,
+		newLogReplay: func(_, _ int64) election.LogReplay {
+			return spy
+		},
+	}
+	deps.Host = host
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateLeaderReplay)
+
+	// Seed a live log session so a fall-through publish path would fan out.
+	election.SetLogSessionIDForTest(e, fixtureLogSessionID)
+
+	// Install tick.
+	require.Positive(t, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateLeaderReplay, e.State())
+	appendBefore := e.AppendPosition()
+	require.Equal(t, 0, spy.closeCalls)
+
+	// Clear install-tick host side effects before the done tick.
+	host.publishCommitPositionCalls = nil
+
+	// Done short of the append bound enters Canvass. logPosition is the replayed
+	// position. Append position is unchanged. The exit closes the helper and must
+	// not publish leadership as a Follower.
+	_ = e.DoWork(clock.nowNs + 1)
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+	require.Equal(t, consensus.RoleFollower, host.Role())
+	require.Equal(t, int64(replayed), e.LogPosition())
+	require.Equal(t, appendBefore, e.AppendPosition())
+	require.Equal(t, int64(testAppendPosition), e.AppendPosition())
+	require.NotEqual(t, e.AppendPosition(), e.LogPosition())
+	require.Equal(t, 1, spy.closeCalls)
+	require.Empty(t, host.publishCommitPositionCalls)
+
+	// Second Close is a no-op after the pointer is cleared.
+	e.Close()
+	require.Equal(t, 1, spy.closeCalls)
+}
+
+func TestHandleFollowerReplay_closesOnExit(t *testing.T) {
+	t.Parallel()
+
+	fx := newElectionFixture(t)
+	spy := &spyLogReplay{position: testAppendPosition, done: true}
+	fx.host.newLogReplay = func(_, _ int64) election.LogReplay {
+		return spy
+	}
+
+	fx.doWork()
+	require.Equal(t, election.ElectionStateCanvass, fx.election.State())
+
+	fields := installNewLeadershipTermFields(fx.cfg, 1, fx.cfg.LeadershipTermID)
+	fields.CommitPosition = 250
+	fx.election.OnNewLeadershipTerm(fields)
+	require.Equal(t, election.ElectionStateFollowerReplay, fx.election.State())
+
+	// Install tick.
+	fx.doWork()
+	require.Equal(t, election.ElectionStateFollowerReplay, fx.election.State())
+	require.Equal(t, 0, spy.closeCalls)
+
+	// Done tick closes and routes to FollowerLogInit. DoWork may return 0 when
+	// the spy reports no work. The exit path still runs.
+	fx.doWork()
+	require.Equal(t, election.ElectionStateFollowerLogInit, fx.election.State())
+	require.Equal(t, 1, spy.closeCalls)
+
+	fx.election.Close()
+	require.Equal(t, 1, spy.closeCalls)
+}
+
+func TestHandleInit_resetsReplay(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+
+	// Keep prepare from collapsing the log-to-append gap on first init.
+	cfg.IsNodeStartup = true
+	spy := &spyLogReplay{position: testLogPosition, done: false}
+	host := &recordingElectionHost{
+		clock: clock,
+		newLogReplay: func(_, _ int64) election.LogReplay {
+			return spy
+		},
+	}
+	deps.Host = host
+	deps.Handler = &recordingAgentHandler{
+		appendPositionReturn: election.NullPosition,
+	}
+	e := election.NewElection(cfg, deps)
+
+	// First init sets isFirstInit false.
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+
+	// Install a live helper without finishing it.
+	election.SetStateForTest(e, election.ElectionStateLeaderReplay)
+	require.Positive(t, e.DoWork(clock.nowNs+1))
+	require.Equal(t, election.ElectionStateLeaderReplay, e.State())
+	require.Equal(t, 0, spy.closeCalls)
+
+	// Force Init. Non-first branch must Close the helper.
+	election.SetStateForTest(e, election.ElectionStateInit)
+	require.Equal(t, 1, e.DoWork(clock.nowNs+2))
+	require.Equal(t, 1, spy.closeCalls)
+
+	// Pointer cleared: a second Close is a no-op.
+	e.Close()
+	require.Equal(t, 1, spy.closeCalls)
+}
+
+func TestHandleInit_resetsReplication(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	e := election.NewElection(cfg, deps)
+
+	// First init sets isFirstInit false.
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+
+	lr := &noopLogReplicationForTest{}
+	election.SetLogReplicationForTest(e, lr)
+
+	// Installed helper still receives signals before the non-first init.
+	e.OnRecordingSignal(1, 2, 3, election.RecordingSignal(4))
+	require.True(t, lr.called)
+	lr.called = false
+
+	election.SetStateForTest(e, election.ElectionStateInit)
+	require.Equal(t, 1, e.DoWork(clock.nowNs+1))
+
+	// Cleared helper receives no further signals.
+	e.OnRecordingSignal(1, 2, 3, election.RecordingSignal(4))
+	require.False(t, lr.called)
+}
+
 func TestHandleFollowerReplay_logPositionGteAppendToLogInit(t *testing.T) {
 	t.Parallel()
 

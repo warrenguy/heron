@@ -76,11 +76,23 @@ type Config struct {
 	// value takes DefaultLogChannel.
 	LogChannel string
 
+	// ReplayChannel is the local channel the Archive uses to replay this member's
+	// own cluster log recording. Zero value takes DefaultReplayChannel.
+	//
+	// The replay is local. Archive delivers this member's recorded history to this
+	// member's consensus module. Must not use the shared cluster log channel.
+	// Must not set session-id=. The replay path appends session-id= per session.
+	ReplayChannel string
+
 	// ConsensusStreamID zero takes DefaultConsensusStreamID.
 	ConsensusStreamID int32
 
 	// LogStreamID zero takes DefaultLogStreamID.
 	LogStreamID int32
+
+	// ReplayStreamID zero takes DefaultReplayStreamID. Must differ from
+	// ConsensusStreamID and LogStreamID.
+	ReplayStreamID int32
 
 	// ArchiveControlRequestChannel is the control request URI for this member.
 	// Required.
@@ -154,11 +166,17 @@ func (cfg Config) Normalize() Config {
 	if cfg.LogChannel == "" {
 		cfg.LogChannel = DefaultLogChannel
 	}
+	if cfg.ReplayChannel == "" {
+		cfg.ReplayChannel = DefaultReplayChannel
+	}
 	if cfg.ConsensusStreamID == 0 {
 		cfg.ConsensusStreamID = DefaultConsensusStreamID
 	}
 	if cfg.LogStreamID == 0 {
 		cfg.LogStreamID = DefaultLogStreamID
+	}
+	if cfg.ReplayStreamID == 0 {
+		cfg.ReplayStreamID = DefaultReplayStreamID
 	}
 	if cfg.Idle == nil {
 		cfg.Idle = idlestrategy.NewDefaultBackoff()
@@ -257,6 +275,15 @@ func (cfg Config) validateMembers() ([]election.Member, int, error) {
 	}
 	if cfg.ConsensusStreamID == cfg.LogStreamID {
 		return nil, 0, errors.New("cluster: ConsensusStreamID and LogStreamID must differ")
+	}
+	if cfg.ReplayStreamID == cfg.ConsensusStreamID {
+		return nil, 0, errors.New("cluster: ReplayStreamID and ConsensusStreamID must differ")
+	}
+	if cfg.ReplayStreamID == cfg.LogStreamID {
+		return nil, 0, errors.New("cluster: ReplayStreamID and LogStreamID must differ")
+	}
+	if aeron.ChannelParamIndex(cfg.ReplayChannel, aeron.ChannelSessionIDParam, true) >= 0 {
+		return nil, 0, errors.New("cluster: ReplayChannel must not set session-id=")
 	}
 	if cfg.ServiceCount < 0 {
 		return nil, 0, errors.New("cluster: ServiceCount must not be negative")

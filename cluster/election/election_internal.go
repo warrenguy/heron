@@ -74,7 +74,10 @@ func (e *Election) isBallotState() bool {
 }
 
 func (e *Election) stopReplay() {
-	e.logReplay = nil
+	if replay := e.logReplay; replay != nil {
+		replay.Close()
+		e.logReplay = nil
+	}
 	e.lastPublishedAppendPosition = 0
 }
 

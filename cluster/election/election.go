@@ -248,6 +248,23 @@ func (e *Election) state(next ElectionState, nowNs int64, reason string) {
 
 func (e *Election) State() ElectionState { return e.electionState }
 
+// Close releases the replay helper the election still holds and clears the
+// replication helper reference.
+//
+// Behaviour: releases the archive replay session and any replay subscription
+// opened by a live helper. The state machine stays readable. [Election.State]
+// still answers after Close. Close is idempotent.
+//
+// Concurrency: invoker-only. Call after the duty cycle has stopped. May block
+// for the archive control response timeout while the replay session stops.
+//
+// Ownership: owns the replay helper. Does not own the node state file, the
+// recording log, or any transport handle.
+func (e *Election) Close() {
+	e.clearLogReplication()
+	e.stopReplay()
+}
+
 func (e *Election) LeadershipTermID() int64 { return e.leadershipTermID }
 
 func (e *Election) LogPosition() int64 { return e.logPosition }

@@ -59,16 +59,22 @@ func TestRecordingLifecycle_startStopTransition_rapid(t *testing.T) {
 			op := rapid.SampledFrom(ops).Draw(rt, "op")
 			wantStartErr := rapid.Bool().Draw(rt, "startErr")
 			wantStopErr := rapid.Bool().Draw(rt, "stopErr")
+			wantDeriveErr := rapid.Bool().Draw(rt, "deriveErr")
 			scriptedStartErr := error(nil)
 			scriptedStopErr := error(nil)
+			scriptedDeriveErr := error(nil)
 			if wantStartErr {
 				scriptedStartErr = errors.New("scripted start error")
 			}
 			if wantStopErr {
 				scriptedStopErr = errors.New("scripted stop error")
 			}
+			if wantDeriveErr {
+				scriptedDeriveErr = errors.New("scripted derive error")
+			}
 			control.startErr = scriptedStartErr
 			control.stopErr = scriptedStopErr
+			control.stopPositionForErr = scriptedDeriveErr
 
 			drawnID := rapid.Int64Range(1, 1<<20).Draw(rt, "recordingID")
 			control.nextRecordingID = drawnID
@@ -122,18 +128,42 @@ func TestRecordingLifecycle_startStopTransition_rapid(t *testing.T) {
 
 			case "transition":
 				logPosition := model.termBase + rapid.Int64Range(0, 1<<20).Draw(rt, "logPositionDelta")
-				stopPosition := model.termBase + rapid.Int64Range(0, 1<<20).Draw(rt, "stopDelta")
-				control.nextStopPosition = stopPosition
+
+				// derived is above logPosition so adopting the caller position instead of
+				// the derivation fails the model.
+				derived := logPosition + 1 + rapid.Int64Range(0, 1<<20).Draw(rt, "derivedDelta")
+				control.nextStopPositionFor = derived
+				stopPositionForBefore := len(control.stopPositionForCalls)
 				got, err := a.PrepareForNewLeadership(logPosition, int64(i+1))
+
 				// Wired control always receives stop so dirty starts drain.
 				model.stopAttempts++
 				if !model.active {
 					if scriptedStopErr != nil {
 						require.ErrorIs(rt, err, scriptedStopErr)
 						require.Equal(rt, recordinglog.NullPosition, got)
-					} else {
+						require.Len(rt, control.stopPositionForCalls, stopPositionForBefore)
+					} else if model.recordingID == nullValue {
 						require.NoError(rt, err)
 						model.lastPrepared = logPosition
+						require.Equal(rt, model.lastPrepared, got)
+						require.GreaterOrEqual(rt, got, model.termBase)
+						require.NotEqual(rt, int64(nullValue), got)
+						require.Len(rt, control.stopPositionForCalls, stopPositionForBefore)
+					} else if scriptedDeriveErr != nil {
+						// Clean stop then derive fail: control inactive. Recording id
+						// stays retained.
+						require.ErrorIs(rt, err, scriptedDeriveErr)
+						require.Equal(rt, recordinglog.NullPosition, got)
+						require.False(rt, a.IsRecordingActive())
+						require.Equal(rt, model.recordingID, a.LocalLogRecordingID())
+						require.Len(rt, control.stopPositionForCalls, stopPositionForBefore+1)
+						require.Equal(rt, model.recordingID, control.stopPositionForCalls[stopPositionForBefore])
+					} else {
+						require.NoError(rt, err)
+						model.lastPrepared = derived
+						require.Len(rt, control.stopPositionForCalls, stopPositionForBefore+1)
+						require.Equal(rt, model.recordingID, control.stopPositionForCalls[stopPositionForBefore])
 						require.Equal(rt, model.lastPrepared, got)
 						require.GreaterOrEqual(rt, got, model.termBase)
 						require.NotEqual(rt, int64(nullValue), got)
@@ -141,16 +171,30 @@ func TestRecordingLifecycle_startStopTransition_rapid(t *testing.T) {
 				} else if scriptedStopErr != nil {
 					require.ErrorIs(rt, err, scriptedStopErr)
 					require.Equal(rt, recordinglog.NullPosition, got)
+					require.Len(rt, control.stopPositionForCalls, stopPositionForBefore)
+				} else if scriptedDeriveErr != nil {
+					// Active clean stop then derive fail: control inactive. Recording
+					// id stays retained.
+					require.ErrorIs(rt, err, scriptedDeriveErr)
+					require.Equal(rt, recordinglog.NullPosition, got)
+					model.active = false
+					model.stops++
+					require.False(rt, a.IsRecordingActive())
+					require.Equal(rt, model.recordingID, a.LocalLogRecordingID())
+					require.Len(rt, control.stopPositionForCalls, stopPositionForBefore+1)
+					require.Equal(rt, model.recordingID, control.stopPositionForCalls[stopPositionForBefore])
 				} else {
 					require.NoError(rt, err)
 					model.active = false
-					model.lastPrepared = stopPosition
+					model.lastPrepared = derived
 					model.stops++
 					require.False(rt, a.IsRecordingActive())
 					require.Equal(rt, model.recordingID, a.LocalLogRecordingID())
 					require.Equal(rt, model.lastPrepared, got)
 					require.GreaterOrEqual(rt, got, model.termBase)
 					require.NotEqual(rt, int64(nullValue), got)
+					require.Len(rt, control.stopPositionForCalls, stopPositionForBefore+1)
+					require.Equal(rt, model.recordingID, control.stopPositionForCalls[stopPositionForBefore])
 				}
 
 			case "setTermBase":

@@ -37,6 +37,7 @@ type recordingArchiveStub struct {
 	lastStopChannel          []byte
 	lastStopStreamID         int32
 	lastStopAwaitChannel     []byte
+	lastListRecordingID      int64
 	lastExtendID             int64
 	lastExtendChannel        []byte
 	lastExtendAutoStop       bool
@@ -112,9 +113,10 @@ func (s *recordingArchiveStub) StopRecordingAwaitSignal(
 
 func (s *recordingArchiveStub) ListRecording(
 	_ context.Context,
-	_ int64,
+	recordingID int64,
 ) (codecs.RecordingDescriptorFields, error) {
 	s.listCalls++
+	s.lastListRecordingID = recordingID
 	if s.listErr != nil {
 		return codecs.RecordingDescriptorFields{}, s.listErr
 	}
@@ -206,29 +208,26 @@ func TestLogRecording_StopLogRecording_noPriorStart(t *testing.T) {
 	t.Parallel()
 
 	r := &logRecording{}
-	stopPosition, err := r.StopLogRecording()
-	require.NoError(t, err)
-	require.Equal(t, int64(0), stopPosition)
+	require.NoError(t, r.StopLogRecording())
+	require.Equal(t, int64(0), r.stopPosition)
 }
 
 func TestLogRecording_StopLogRecording_secondStopIdempotent(t *testing.T) {
 	t.Parallel()
 
 	// A completed stop clears startChannel and retains stopPosition. A second
-	// call must return the retained position and offer nothing (nil client is
+	// call must keep the latched position and offer nothing (nil client is
 	// safe on that path).
 	r := &logRecording{
 		recordingID:  42,
 		stopPosition: 1001,
 	}
 
-	stopPosition, err := r.StopLogRecording()
-	require.NoError(t, err)
-	require.Equal(t, int64(1001), stopPosition)
+	require.NoError(t, r.StopLogRecording())
+	require.Equal(t, int64(1001), r.stopPosition)
 
-	stopPosition, err = r.StopLogRecording()
-	require.NoError(t, err)
-	require.Equal(t, int64(1001), stopPosition)
+	require.NoError(t, r.StopLogRecording())
+	require.Equal(t, int64(1001), r.stopPosition)
 }
 
 func TestLogRecording_dirtyStopUsesOKBoundPath(t *testing.T) {
@@ -250,9 +249,8 @@ func TestLogRecording_dirtyStopUsesOKBoundPath(t *testing.T) {
 		stopPosition: stopPosition,
 	}
 
-	got, err := r.StopLogRecording()
-	require.NoError(t, err)
-	require.Equal(t, stopPosition, got)
+	require.NoError(t, r.StopLogRecording())
+	require.Equal(t, stopPosition, r.stopPosition)
 	require.Equal(t, 1, stub.stopCalls)
 	require.Equal(t, 0, stub.stopAwaitCalls)
 	require.Equal(t, 0, stub.listCalls)
@@ -277,9 +275,8 @@ func TestLogRecording_dirtyStopUnknownSubscriptionIsClean(t *testing.T) {
 		stopPosition: 11,
 	}
 
-	got, err := r.StopLogRecording()
-	require.NoError(t, err)
-	require.Equal(t, int64(11), got)
+	require.NoError(t, r.StopLogRecording())
+	require.Equal(t, int64(11), r.stopPosition)
 	require.Equal(t, 1, stub.stopCalls)
 	require.Equal(t, 0, stub.stopAwaitCalls)
 	require.False(t, r.needsStop())
@@ -298,8 +295,7 @@ func TestLogRecording_dirtyStopRealErrorRetainsChannel(t *testing.T) {
 		recordingID:  recordingIDUnknown,
 	}
 
-	_, err := r.StopLogRecording()
-	require.ErrorIs(t, err, stopErr)
+	require.ErrorIs(t, r.StopLogRecording(), stopErr)
 	require.Equal(t, 1, stub.stopCalls)
 	require.Equal(t, 0, stub.stopAwaitCalls)
 	require.True(t, r.needsStop())
@@ -323,9 +319,8 @@ func TestLogRecording_knownStopUsesAwaitSignal(t *testing.T) {
 	}
 
 	// Stub does not latch STOP; position is zero. Method choice is the assert.
-	got, err := r.StopLogRecording()
-	require.NoError(t, err)
-	require.Equal(t, int64(0), got)
+	require.NoError(t, r.StopLogRecording())
+	require.Equal(t, int64(0), r.stopPosition)
 	require.Equal(t, 0, stub.stopCalls)
 	require.Equal(t, 1, stub.stopAwaitCalls)
 	require.Equal(t, 0, stub.listCalls)
@@ -352,9 +347,8 @@ func TestLogRecording_knownStopUnknownSubscriptionListsCatalog(t *testing.T) {
 		recordingID:  recordingID,
 	}
 
-	got, err := r.StopLogRecording()
-	require.NoError(t, err)
-	require.Equal(t, listStopPos, got)
+	require.NoError(t, r.StopLogRecording())
+	require.Equal(t, listStopPos, r.stopPosition)
 	require.Equal(t, 0, stub.stopCalls)
 	require.Equal(t, 1, stub.stopAwaitCalls)
 	require.Equal(t, 1, stub.listCalls)
@@ -481,6 +475,159 @@ func TestNewLogRecording_detachesCancel(t *testing.T) {
 
 	require.NoError(t, r.ctx.Err())
 	require.NotNil(t, r.ctx)
+}
+
+func TestNewLogRecording_seedsUnknownRecordingID(t *testing.T) {
+	t.Parallel()
+
+	// Zero is a valid catalog id. Constructor must seed unknown. StopPositionFor(0)
+	// must not treat a never-started control as retained.
+	r := newLogRecording(context.Background(), nil, "aeron:udp", 1, nil)
+	require.Equal(t, recordingIDUnknown, r.recordingID)
+	require.Equal(t, recordingIDUnknown, r.latchedRecordingID)
+}
+
+func TestLogRecording_StopPositionFor(t *testing.T) {
+	t.Parallel()
+
+	t.Run("retained id answers with no catalog read", func(t *testing.T) {
+		t.Parallel()
+
+		stub := &recordingArchiveStub{}
+		r := &logRecording{
+			client:             stub,
+			recordingID:        42,
+			latchedRecordingID: 42,
+			stopPosition:       1001,
+		}
+
+		got, err := r.StopPositionFor(42)
+		require.NoError(t, err)
+		require.Equal(t, int64(1001), got)
+		require.Equal(t, 0, stub.listCalls)
+	})
+
+	t.Run("retained id with pending stop reads catalog", func(t *testing.T) {
+		t.Parallel()
+
+		stub := &recordingArchiveStub{listStopPos: 7000}
+		r := &logRecording{
+			client:             stub,
+			recordingID:        42,
+			latchedRecordingID: 42,
+			stopPosition:       1001,
+			startChannel:       []byte("aeron:udp?endpoint=239.255.12.1:9004"),
+		}
+
+		got, err := r.StopPositionFor(42)
+		require.NoError(t, err)
+		require.Equal(t, int64(7000), got)
+		require.Equal(t, 1, stub.listCalls)
+		require.Equal(t, int64(42), stub.lastListRecordingID)
+
+		// The catalog read does not store. The pending stop still stores later.
+		require.Equal(t, int64(1001), r.stopPosition)
+		require.True(t, r.needsStop())
+	})
+
+	t.Run("foreign id reads catalog and does not latch", func(t *testing.T) {
+		t.Parallel()
+
+		stub := &recordingArchiveStub{listStopPos: 7000}
+		startChannel := []byte("aeron:udp?endpoint=239.255.12.1:9004")
+		r := &logRecording{
+			client:             stub,
+			recordingID:        recordingIDUnknown,
+			latchedRecordingID: recordingIDUnknown,
+			stopPosition:       11,
+			startChannel:       startChannel,
+		}
+
+		got, err := r.StopPositionFor(99)
+		require.NoError(t, err)
+		require.Equal(t, int64(7000), got)
+		require.Equal(t, 1, stub.listCalls)
+		require.Equal(t, int64(99), stub.lastListRecordingID)
+		require.Equal(t, int64(11), r.stopPosition)
+		require.Equal(t, startChannel, r.startChannel)
+	})
+
+	t.Run("catalog no stop position refuses", func(t *testing.T) {
+		t.Parallel()
+
+		stub := &recordingArchiveStub{listStopPos: recordinglog.NullPosition}
+		r := &logRecording{
+			client:             stub,
+			recordingID:        recordingIDUnknown,
+			latchedRecordingID: recordingIDUnknown,
+		}
+
+		got, err := r.StopPositionFor(42)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "reports no stop position")
+		require.Equal(t, recordinglog.NullPosition, got)
+		require.Equal(t, int64(42), stub.lastListRecordingID)
+	})
+
+	t.Run("catalog error propagates", func(t *testing.T) {
+		t.Parallel()
+
+		listErr := errors.New("catalog refused")
+		stub := &recordingArchiveStub{listErr: listErr}
+		r := &logRecording{
+			client:             stub,
+			recordingID:        recordingIDUnknown,
+			latchedRecordingID: recordingIDUnknown,
+		}
+
+		got, err := r.StopPositionFor(42)
+		require.ErrorIs(t, err, listErr)
+		require.Equal(t, recordinglog.NullPosition, got)
+		require.Equal(t, int64(42), stub.lastListRecordingID)
+	})
+
+	t.Run("latched id survives failed re-start dirty drain", func(t *testing.T) {
+		t.Parallel()
+
+		stub := &recordingArchiveStub{}
+		r := &logRecording{
+			client:             stub,
+			recordingID:        42,
+			latchedRecordingID: recordingIDUnknown,
+			stopPosition:       0,
+		}
+		// Clean stop stores id and position.
+		r.markStopped(1001)
+		require.Equal(t, int64(42), r.latchedRecordingID)
+		require.Equal(t, int64(1001), r.stopPosition)
+
+		// Arm for re-start, then dirty drain: live id unknown. Stored id and
+		// position stay.
+		r.startChannel = []byte("aeron:udp?endpoint=239.255.12.1:9004")
+		r.recordingID = recordingIDUnknown
+		r.markStopped(r.stopPosition)
+
+		got, err := r.StopPositionFor(42)
+		require.NoError(t, err)
+		require.Equal(t, int64(1001), got)
+		require.Equal(t, 0, stub.listCalls)
+	})
+
+	t.Run("negative id refuses without catalog read", func(t *testing.T) {
+		t.Parallel()
+
+		stub := &recordingArchiveStub{}
+		r := &logRecording{
+			client:             stub,
+			recordingID:        42,
+			latchedRecordingID: 42,
+		}
+
+		got, err := r.StopPositionFor(-1)
+		require.Error(t, err)
+		require.Equal(t, recordinglog.NullPosition, got)
+		require.Equal(t, 0, stub.listCalls)
+	})
 }
 
 func TestLogRecording_startVsExtend_branchSourceIsRecordingLog(t *testing.T) {

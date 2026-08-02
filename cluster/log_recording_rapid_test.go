@@ -63,8 +63,7 @@ func TestLogRecording_startVsExtendBranch_rapid(t *testing.T) {
 				if model.startSucceeded {
 					// Idempotent re-start first drains; keep model in step by
 					// stopping through the control first.
-					_, stopErr := r.StopLogRecording()
-					require.NoError(rt, stopErr)
+					require.NoError(rt, r.StopLogRecording())
 					model.startSucceeded = false
 					require.False(rt, r.IsActive())
 				}
@@ -125,8 +124,7 @@ func TestLogRecording_startVsExtendBranch_rapid(t *testing.T) {
 				if !model.startSucceeded {
 					continue
 				}
-				_, stopErr := r.StopLogRecording()
-				require.NoError(rt, stopErr)
+				require.NoError(rt, r.StopLogRecording())
 				model.startSucceeded = false
 				// Inactive after stop.
 				require.False(rt, r.IsActive())

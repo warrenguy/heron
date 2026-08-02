@@ -13,7 +13,9 @@ func (e *Election) handleInit(nowNs int64) int {
 	if firstInit {
 		e.isFirstInit = false
 	} else {
+		e.clearLogReplication()
 		e.logSessionID = NullMemberID
+		e.stopReplay()
 	}
 	if !firstInit || !e.isNodeStartup {
 		if err := e.prepareForNewLeadership(nowNs); err != nil {
@@ -177,9 +179,19 @@ func (e *Election) handleLeaderReplay(nowNs int64) int {
 	} else {
 		workCount += e.logReplay.DoWork(nowNs)
 		if e.logReplay.IsDone() {
-			e.logPosition = e.appendPosition
+			replayed := e.logReplay.Position()
 			e.stopReplay()
-			e.state(ElectionStateLeaderInit, nowNs, "")
+			e.logPosition = replayed
+			if replayed == e.appendPosition {
+				e.state(ElectionStateLeaderInit, nowNs, "")
+			} else {
+				// Incomplete replay exits LeaderReplay without publishing
+				// leadership. Canvass entry resets interval stamps. Fall-through
+				// would fan out NewLeadershipTerm and CommitPosition while Role
+				// is Follower.
+				e.state(ElectionStateCanvass, nowNs, "incomplete log replay")
+				return workCount
+			}
 		}
 	}
 

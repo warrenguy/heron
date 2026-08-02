@@ -3,34 +3,32 @@ package consensus
 import "github.com/warrenguy/heron/archive/codecs/archivewire"
 
 // LogRecordingControl starts, extends, or stops this member's cluster log
-// recording.
+// recording. The control also resolves stop positions for prepare.
 //
 // Behaviour:
-//   - retains the recording channel and the recording stream id
+//   - keeps the recording channel and recording stream id
+//   - keeps the catalog recording id after a successful start or extend
+//   - on a clean stop, stores the stop position and catalog id for
+//     StopPositionFor
 //   - uses the archive control client
 //   - builds the channel from the member's log channel and the supplied log
 //     session id
 //   - StopLogRecording stops the recording last started or extended by
-//     StartLogRecording, on the same channel and stream
+//     StartLogRecording on the same channel and stream
 //
-// Concurrency: invoker-only.
-//
-// StartLogRecording and StopLogRecording run on the same goroutine as
-// [Agent.DoWork].
-//
-// StartLogRecording and StopLogRecording block that goroutine until the archive
-// replies or the deadline expires.
-//
-// IsActive is invoker-only and non-blocking.
+// Concurrency: invoker-only. StartLogRecording, StopLogRecording, and
+// StopPositionFor run on the [Agent.DoWork] goroutine. Those three methods
+// block until the archive replies or the deadline expires. IsActive is
+// invoker-only and non-blocking.
 //
 // An implementation must:
-//   - cap every wait on StartLogRecording and StopLogRecording
+//   - cap every wait on StartLogRecording, StopLogRecording, and
+//     StopPositionFor
 //   - drive the transport client while those methods wait
 //
-// Lifetime: an implementation outlives the [Agent] method calls that use it.
-//
-// The module wires the control after the agent is built and clears the control
-// before the archive client closes.
+// Lifetime: the implementation outlives the [Agent] method calls that use
+// it. The module wires the control after the agent is built and clears the
+// control before the archive client closes.
 //
 // Ownership:
 //   - implementation does not own the [Agent]
@@ -87,36 +85,28 @@ type LogRecordingControl interface {
 		err error,
 	)
 
-	// StopLogRecording stops the recording StartLogRecording started and
-	// returns its stop position.
+	// StopLogRecording stops the recording StartLogRecording started. A known
+	// catalog id stores the stop position for StopPositionFor.
 	//
 	// Behaviour:
 	//   - offers stop on the channel and stream the last armed start used
-	//   - known catalog id: returns the archive stop position from STOP
-	//   - unknown catalog id (dirty): OK-bound drain only; keeps prior
-	//     stopPosition
+	//   - known catalog id: stores the archive stop position from STOP
+	//   - unknown catalog id (dirty): OK-bound drain only; keeps the prior stored
+	//     position
+	//   - second call with nothing started: offers nothing
 	//
 	// Idempotent.
 	//
-	// A second call with nothing started returns the position the previous stop
-	// reported, and offers nothing.
-	//
-	// Concurrency: invoker-only.
-	//
-	// Blocks the invoker until the stop proof arrives or the bound expires.
+	// Concurrency: invoker-only. Blocks the invoker until the stop proof arrives
+	// or the bound expires.
 	//
 	// Returns an error when:
 	//   - the stop request cannot be offered within the offer bound
 	//   - known catalog id and no STOP signal within the response bound
 	//   - known catalog id and catalog read cannot resolve a stop position
 	//
-	// On error:
-	//   - the recording may still be running
-	//   - the caller must not treat the returned position as valid
-	StopLogRecording() (
-		stopPosition int64,
-		err error,
-	)
+	// On error the recording may still be running.
+	StopLogRecording() error
 
 	// IsActive reports whether a successful start or extend has not yet cleanly
 	// stopped.
@@ -131,6 +121,33 @@ type LogRecordingControl interface {
 	//
 	// Concurrency: invoker-only.
 	IsActive() bool
+
+	// StopPositionFor returns the archive stop position recorded for
+	// recordingID.
+	//
+	// Behaviour:
+	//   - same id as the control after a clean stop and nothing pending: returns
+	//     the stored stop position. No catalog read.
+	//   - any other case: reads the archive catalog once. Does not store that
+	//     read.
+	//   - same id while stop still pending: takes the catalog path. Errors only
+	//     when the catalog read fails or reports no stop position.
+	//
+	// recordingID must be a non-negative catalog recording id.
+	//
+	// Concurrency: invoker-only. Blocks the invoker for at most one bounded
+	// catalog read.
+	//
+	// Returns an error when:
+	//   - recordingID is negative
+	//   - the catalog read fails
+	//   - the catalog reports no stop position for recordingID
+	//
+	// On error the caller must not substitute another position.
+	StopPositionFor(recordingID int64) (
+		stopPosition int64,
+		err error,
+	)
 }
 
 // SetLogRecordingControl wires or clears the cluster log recording control used

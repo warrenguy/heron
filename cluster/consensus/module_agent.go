@@ -618,15 +618,19 @@ type doneLogReplay struct{ position int64 }
 func (r *doneLogReplay) DoWork(int64) int { return 0 }
 func (r *doneLogReplay) Position() int64  { return r.position }
 func (r *doneLogReplay) IsDone() bool     { return true }
+func (r *doneLogReplay) Close()           {}
 
 var _ LogReplay = (*doneLogReplay)(nil)
 
 // LogReplayFactory builds a [LogReplay] helper for [Agent.NewLogReplay].
 //
-// Nil factory field: NewLogReplay returns a done-stub at appendPosition.
+// Nil factory field: NewLogReplay returns a done-stub at appendPosition. A
+// non-nil factory that returns nil also falls through to the done-stub (avoids
+// soft livelock on leader-replay construction).
 //
-// A non-nil factory that returns nil also falls through to the done-stub
-// (avoids soft livelock on leader-replay construction).
+// A factory that cannot build a helper must return a helper that is done at the
+// start position. The factory must not return nil: the nil fallthrough reports
+// appendPosition.
 type LogReplayFactory func(logPosition, appendPosition int64) LogReplay
 
 // LogReplicationFactory builds a follower [LogReplication] helper for
@@ -769,7 +773,10 @@ func (a *Agent) SetTermBaseLogPosition(pos int64) { a.termBaseLogPosition = pos 
 // leader-log replication). Bind after this call leaves the caller with -1 while
 // later NewLeadershipTermEvent would write a real session id.
 //
-// appendPosition is reserved for initialPosition wiring and ignored here.
+// appendPosition is unused. Session id comes from the already-bound
+// LogPublisher publication. Callers that need recovery initial-position
+// geometry must bind a publication that already carries those channel params.
+// This method does not rebuild the publication.
 func (a *Agent) AddLogPublication(appendPosition int64) int32 {
 	_ = appendPosition
 	if a.logPublisher != nil && a.logPublisher.Publication() != nil {
@@ -868,27 +875,26 @@ func (a *Agent) FollowerLogJoinReady(
 }
 
 // PrepareForNewLeadership sets role [RoleFollower], clears the known leader,
-// resets follower append cadence state, stops the cluster log recording when a
-// control is wired, and returns the last-append position.
-//
-// Commit is kept.
-//
-// Log and ingress tear-down land with full agent wiring.
+// and resets follower append cadence state. Stops the cluster log recording when
+// a control is wired. Returns the last-append position. Commit is kept. Log and
+// ingress tear-down land with full agent wiring.
 //
 // Role, known leader, and cadence fields always reset before any stop attempt,
-// including when the stop later fails.
-//
-// Stop runs whenever a control is wired, not only when
-// [LogRecordingControl.IsActive] is true. Stop is idempotent when nothing
-// needs draining. That path drains a dirty start that never became active.
+// including when the stop later fails. Stop runs whenever a control is wired,
+// not only when [LogRecordingControl.IsActive] is true. Stop is idempotent when
+// nothing needs draining. That path drains a dirty start that never became
+// active.
 //
 // Returns:
-//   - archive stop position, nil: a live recording was stopped
-//     ([LogRecordingControl.IsActive] was true before the stop)
-//   - logPosition, nil: no live recording, control is nil, or stop was a clean
-//     no-op
-//   - [recordinglog.NullPosition], err: stop failed; when the recording was
-//     active the control stays active so a later prepare retries the stop
+//   - derived archive stop position, nil: retained recording id is
+//     non-negative and [LogRecordingControl.StopPositionFor] succeeds
+//   - logPosition, nil: control is nil, or localLogRecordingID is negative
+//   - [recordinglog.NullPosition], err: stop fails. When the recording was
+//     active the control stays active so a later prepare retries the stop.
+//     Caller must not adopt lastAppendPosition.
+//   - [recordinglog.NullPosition], err: StopPositionFor fails after a clean
+//     stop. The control is inactive. A later prepare retries derivation.
+//     Caller must not adopt lastAppendPosition.
 func (a *Agent) PrepareForNewLeadership(
 	logPosition int64,
 	nowNs int64,
@@ -905,16 +911,18 @@ func (a *Agent) PrepareForNewLeadership(
 	if a.recordingControl == nil {
 		return logPosition, nil
 	}
+	if stopErr := a.recordingControl.StopLogRecording(); stopErr != nil {
+		return recordinglog.NullPosition, stopErr
+	}
+	if a.localLogRecordingID < 0 {
+		return logPosition, nil
+	}
 
-	wasActive := a.recordingControl.IsActive()
-	stopPosition, err := a.recordingControl.StopLogRecording()
+	stopPosition, err := a.recordingControl.StopPositionFor(a.localLogRecordingID)
 	if err != nil {
 		return recordinglog.NullPosition, err
 	}
-	if wasActive {
-		return stopPosition, nil
-	}
-	return logPosition, nil
+	return stopPosition, nil
 }
 
 // JoinLogAsLeader sets role [RoleLeader], records the leadership term, stores
@@ -1031,8 +1039,7 @@ func (a *Agent) stopLogRecordingAfterVanishedImage() error {
 	if !a.IsRecordingActive() {
 		return nil
 	}
-	_, err := a.recordingControl.StopLogRecording()
-	return err
+	return a.recordingControl.StopLogRecording()
 }
 
 // adoptLogRecording starts the cluster log recording and stores the catalog id.

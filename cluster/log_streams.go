@@ -2,9 +2,23 @@ package cluster
 
 import (
 	"errors"
+	"fmt"
+	"strconv"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/cluster/recordinglog"
+)
+
+// Exclusive log publication URI param prefixes. Names match Aeron CommonContext:
+// init-term-id, term-id, term-offset, term-length, mtu.
+const (
+	channelInitTermIDParam = "init-term-id="
+	channelTermIDParam     = "term-id="
+	channelTermOffsetParam = "term-offset="
+	channelTermLengthParam = "term-length="
+	channelMTUParam        = "mtu="
 )
 
 // LogStreamAdder registers both cluster log stream resources.
@@ -17,8 +31,27 @@ type LogStreamAdder interface {
 
 var _ LogStreamAdder = (*aeron.Client)(nil)
 
+// LogPublicationInitialPosition holds recovery geometry for the exclusive log
+// publication channel.
+//
+// When non-nil on [LogStreamsDeps], [OpenLogStreams] writes init-term-id,
+// term-id, term-offset, term-length, and mtu so the exclusive publication
+// resumes at Position. Position zero is a valid seed for an empty recoverable
+// log. A nil seed is cold start: the publication uses Topology.LogChannel
+// unchanged.
+//
+// Applied at open only. Later election append advances do not rebuild the
+// publication channel.
+type LogPublicationInitialPosition struct {
+	Position         int64
+	InitialTermID    int32
+	TermBufferLength int32
+	MtuLength        int32
+}
+
 // LogStreamsDeps are the collaborators [OpenLogStreams] needs. Adder, Topology,
-// Agent, LogPublisher, and LogAdapter are required. AppendSource is optional.
+// Agent, LogPublisher, and LogAdapter are required. AppendSource and
+// PublicationInitialPosition are optional.
 type LogStreamsDeps struct {
 	// Adder registers the cluster log subscription and publication.
 	Adder LogStreamAdder
@@ -46,6 +79,11 @@ type LogStreamsDeps struct {
 	// [OpenConsensusModule] supplies [consensus.RecordingPosAppendPosition] so
 	// the agent ranks on durable recording state.
 	AppendSource consensus.AppendPositionSource
+
+	// PublicationInitialPosition seeds the exclusive log publication channel at
+	// open when non-nil. Nil is cold start. The subscription always uses
+	// Topology.LogChannel without seed. See [LogPublicationInitialPosition].
+	PublicationInitialPosition *LogPublicationInitialPosition
 }
 
 // LogStreams owns the member's cluster log transport resources.
@@ -83,10 +121,17 @@ type LogStreams struct {
 // OpenLogStreams registers the cluster log subscription and publication and
 // binds the log path into deps.Agent.
 //
-// Both use [Topology.LogChannel] and [Topology.LogStreamID].
+// Both use [Topology.LogStreamID]. The subscription uses [Topology.LogChannel].
+// The publication uses that channel, or a channel seeded from
+// [LogStreamsDeps.PublicationInitialPosition] when the seed is non-nil. Seed
+// lifetime is open-only; see [LogPublicationInitialPosition].
 //
-// Open order for adds: subscription, then publication. Both adds complete
-// before any bind. A failed add leaves the agent untouched.
+// Open order:
+//  1. validate the publication channel seed
+//  2. add the subscription
+//  3. add the publication
+//
+// Both adds complete before any bind. A failed add leaves the agent untouched.
 //
 // Bind steps:
 //   - [consensus.Agent.SetLogPublisher]
@@ -101,6 +146,7 @@ type LogStreams struct {
 //
 // Returns an error when:
 //   - any required dependency is nil
+//   - the initial-position seed is invalid
 //   - either add fails
 //
 // On error: every handle added so far is closed. The agent is untouched. The
@@ -127,6 +173,13 @@ func OpenLogStreams(
 	channel := deps.Topology.LogChannel()
 	streamID := deps.Topology.LogStreamID()
 
+	// Validate seed before any driver add. Pure geometry errors must not open a
+	// subscription only to roll it back.
+	pubChannel, err := logChannelWithInitialPosition(channel, deps.PublicationInitialPosition)
+	if err != nil {
+		return nil, err
+	}
+
 	sub, err := addSubscriptionChecked(
 		deps.Adder,
 		streamID,
@@ -140,7 +193,7 @@ func OpenLogStreams(
 	pub, err := addExclusivePublicationChecked(
 		deps.Adder,
 		streamID,
-		channel,
+		pubChannel,
 		"cluster log publication",
 	)
 	if err != nil {
@@ -193,6 +246,106 @@ func (l *LogStreams) Subscription() *aeron.Subscription {
 		return nil
 	}
 	return l.subscription
+}
+
+// logPublicationSeedFromPlan maps a recovery plan to exclusive log publication
+// seed geometry for open.
+//
+// Behaviour:
+//   - plan.Log == nil: returns nil (cold start)
+//   - plan.Log != nil: returns a seed from the extent geometry at
+//     [recordinglog.RecoveryPlan.AppendedOrCommittedPosition], including
+//     position zero and active-extent restarts where AppendedLogPosition is
+//     NullPosition
+//
+// Does not validate frame alignment or term length.
+// [logChannelWithInitialPosition] validates those at open.
+func logPublicationSeedFromPlan(
+	plan recordinglog.RecoveryPlan,
+) *LogPublicationInitialPosition {
+	if plan.Log == nil {
+		return nil
+	}
+	return &LogPublicationInitialPosition{
+		Position:         plan.AppendedOrCommittedPosition(),
+		InitialTermID:    plan.Log.Extent.InitialTermID,
+		TermBufferLength: plan.Log.Extent.TermBufferLength,
+		MtuLength:        plan.Log.Extent.MtuLength,
+	}
+}
+
+// logChannelWithInitialPosition returns channel with exclusive-publication
+// initial-position params from seed.
+//
+// Behaviour:
+//   - seed == nil: returns channel unchanged (cold start)
+//   - seed != nil: sets init-term-id, term-id, term-offset, term-length, and mtu
+//     for seed.Position, including position zero
+//
+// Replaces an existing value when the channel already carries that param.
+//
+// Returns an error when:
+//   - seed.Position is negative
+//   - seed.Position is not frame-aligned
+//   - seed.TermBufferLength fails [logbuffer.CheckTermLength]
+//   - seed.MtuLength is non-positive, not frame-aligned, or above
+//     MaxUDPPayloadLength
+func logChannelWithInitialPosition(
+	channel string,
+	seed *LogPublicationInitialPosition,
+) (string, error) {
+	if seed == nil {
+		return channel, nil
+	}
+	position := seed.Position
+	if position < 0 {
+		return "", fmt.Errorf("cluster: log initial position %d is invalid", position)
+	}
+	if position&(logbuffer.FrameAlignment-1) != 0 {
+		return "", fmt.Errorf(
+			"cluster: log initial position %d is not frame-aligned",
+			position,
+		)
+	}
+	if err := logbuffer.CheckTermLength(int(seed.TermBufferLength)); err != nil {
+		return "", fmt.Errorf("cluster: log initial position term length: %w", err)
+	}
+	mtu := seed.MtuLength
+	if mtu <= 0 || mtu > logbuffer.MaxUDPPayloadLength || mtu&(logbuffer.FrameAlignment-1) != 0 {
+		return "", fmt.Errorf("cluster: log initial position mtu %d is invalid", mtu)
+	}
+
+	bitsToShift := logbuffer.PositionBitsToShift(int(seed.TermBufferLength))
+	termID := logbuffer.ComputeTermIDFromPosition(position, bitsToShift, seed.InitialTermID)
+	termOffset := logbuffer.ComputeTermOffsetFromPosition(position, bitsToShift)
+
+	out := channel
+	out = putOrReplaceChannelParam(
+		out, channelInitTermIDParam, strconv.FormatInt(int64(seed.InitialTermID), 10),
+	)
+	out = putOrReplaceChannelParam(
+		out, channelTermIDParam, strconv.FormatInt(int64(termID), 10),
+	)
+	out = putOrReplaceChannelParam(
+		out, channelTermOffsetParam, strconv.FormatInt(int64(termOffset), 10),
+	)
+	out = putOrReplaceChannelParam(
+		out, channelTermLengthParam, strconv.FormatInt(int64(seed.TermBufferLength), 10),
+	)
+	out = putOrReplaceChannelParam(
+		out, channelMTUParam, strconv.FormatInt(int64(mtu), 10),
+	)
+	return out, nil
+}
+
+// putOrReplaceChannelParam sets param=value on channel. Appends when the param
+// is absent. Replaces the value when present.
+func putOrReplaceChannelParam(channel, param, value string) string {
+	idx := aeron.ChannelParamIndex(channel, param, true)
+	if idx < 0 {
+		return aeron.AppendChannelParam(channel, param, value)
+	}
+	return aeron.ReplaceChannelParamValue(channel, idx, param, value)
 }
 
 // Close clears agent log join source, append source, log adapter, and log

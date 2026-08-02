@@ -72,9 +72,11 @@ type Topology struct {
 	peerConsensusChannels     map[int32]string
 	consensusSubscriptionChan string
 	logChannel                string
+	replayChannel             string
 
 	consensusStreamID int32
 	logStreamID       int32
+	replayStreamID    int32
 }
 
 // NewTopology resolves cfg into a Topology.
@@ -121,8 +123,10 @@ func NewTopology(cfg Config) (*Topology, error) {
 		peerConsensusChannels:     peerChannels,
 		consensusSubscriptionChan: consensusSub,
 		logChannel:                logCh,
+		replayChannel:             cfg.ReplayChannel,
 		consensusStreamID:         cfg.ConsensusStreamID,
 		logStreamID:               cfg.LogStreamID,
+		replayStreamID:            cfg.ReplayStreamID,
 	}, nil
 }
 
@@ -188,4 +192,18 @@ func (t *Topology) ConsensusStreamID() int32 {
 // LogStreamID returns the cluster log stream id.
 func (t *Topology) LogStreamID() int32 {
 	return t.logStreamID
+}
+
+// ReplayChannel returns the local channel the Archive uses to replay this
+// member's own cluster log recording.
+//
+// No endpoint substitution. The replay is local. The members string carries no
+// replay endpoint.
+func (t *Topology) ReplayChannel() string {
+	return t.replayChannel
+}
+
+// ReplayStreamID returns the cluster log replay stream id.
+func (t *Topology) ReplayStreamID() int32 {
+	return t.replayStreamID
 }

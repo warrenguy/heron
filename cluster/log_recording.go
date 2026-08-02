@@ -129,8 +129,15 @@ type logRecording struct {
 	logChannel   string
 	logStreamID  int32
 	startChannel []byte
-	recordingID  int64
-	stopPosition int64
+	// recordingID is the live catalog id for the armed start, or
+	// recordingIDUnknown while the start is unproven or after a dirty arm.
+	recordingID int64
+
+	// latchedRecordingID is the catalog id of the last clean stop. StopPositionFor
+	// matches this id when nothing is pending. The id survives a failed re-start
+	// that sets recordingID to unknown then drains dirty.
+	latchedRecordingID int64
+	stopPosition       int64
 }
 
 var _ consensus.LogRecordingControl = (*logRecording)(nil)
@@ -148,11 +155,13 @@ func newLogRecording(
 		ctx = context.WithoutCancel(ctx)
 	}
 	return &logRecording{
-		ctx:         ctx,
-		client:      client,
-		terms:       terms,
-		logChannel:  logChannel,
-		logStreamID: logStreamID,
+		ctx:                ctx,
+		client:             client,
+		terms:              terms,
+		logChannel:         logChannel,
+		logStreamID:        logStreamID,
+		recordingID:        recordingIDUnknown,
+		latchedRecordingID: recordingIDUnknown,
 	}
 }
 
@@ -232,7 +241,7 @@ func (r *logRecording) StartLogRecording(
 	err error,
 ) {
 	if r.needsStop() {
-		if _, drainErr := r.StopLogRecording(); drainErr != nil {
+		if drainErr := r.StopLogRecording(); drainErr != nil {
 			return 0, fmt.Errorf(
 				"cluster: drain prior log recording before start: %w",
 				drainErr,
@@ -279,7 +288,7 @@ func (r *logRecording) StartLogRecording(
 	if err != nil {
 		// Armed state is the dirty stop path. Start and extend rollback share
 		// StopLogRecording with the prepare/Close drain.
-		if _, stopErr := r.StopLogRecording(); stopErr != nil {
+		if stopErr := r.StopLogRecording(); stopErr != nil {
 			err = errors.Join(err, stopErr)
 		}
 		return 0, fmt.Errorf(
@@ -295,22 +304,23 @@ func (r *logRecording) StartLogRecording(
 	return recordingID, nil
 }
 
-// StopLogRecording stops the recording StartLogRecording started and returns
-// its stop position.
+// StopLogRecording stops the recording StartLogRecording started. A known
+// catalog id stores the stop position for [logRecording.StopPositionFor].
 //
 // Behaviour:
 //   - offers stop on the channel and stream the last armed start used
-//   - known catalog id: awaits STOP and adopts the latched stop position. On
-//     ErrorUnknownSubscription, one ListRecording resolves the stop position
+//   - known catalog id: awaits STOP and stores the stop position and catalog
+//     id. On ErrorUnknownSubscription, one ListRecording resolves the stop
+//     position
 //   - unknown catalog id (dirty): StopRecording (OK-bound). Keeps the prior
-//     stopPosition. ErrorUnknownSubscription is clean. Must not use a
-//     match-any STOP tracker (negative recording id)
+//     stored position and stored catalog id. ErrorUnknownSubscription is
+//     clean. Must not use a match-any STOP tracker (negative recording id)
 //   - clean stop clears startChannel so a later call is a no-op
+//   - second call with nothing started: offers nothing
 //
 // Idempotent.
 //
-// A second call with nothing started returns the position the previous stop
-// reported, and offers nothing.
+// Concurrency: invoker-only.
 //
 // Returns an error when:
 //   - the stop request cannot be offered within the offer bound
@@ -320,31 +330,27 @@ func (r *logRecording) StartLogRecording(
 //
 // On error:
 //   - the recording may still be running
-//   - the caller must not treat the returned position as valid
 //   - startChannel stays so a later stop can retry
-func (r *logRecording) StopLogRecording() (
-	stopPosition int64,
-	err error,
-) {
+func (r *logRecording) StopLogRecording() error {
 	if !r.needsStop() {
-		return r.stopPosition, nil
+		return nil
 	}
 
 	// Dirty: OK-bound stop. No stop position to adopt.
 	if r.recordingID < 0 {
-		err = r.client.StopRecording(r.ctx, r.logStreamID, r.startChannel)
+		err := r.client.StopRecording(r.ctx, r.logStreamID, r.startChannel)
 		if err != nil && !isUnknownSubscription(err) {
-			return 0, err
+			return err
 		}
 		r.markStopped(r.stopPosition)
-		return r.stopPosition, nil
+		return nil
 	}
 
 	tracker := archive.NewStopSignalTracker(
 		r.client.ControlSessionID(),
 		r.recordingID,
 	)
-	err = r.client.StopRecordingAwaitSignal(
+	err := r.client.StopRecordingAwaitSignal(
 		r.ctx,
 		r.logStreamID,
 		r.startChannel,
@@ -354,37 +360,100 @@ func (r *logRecording) StopLogRecording() (
 		if isUnknownSubscription(err) {
 			return r.resolveStopPositionFromCatalog()
 		}
-		return 0, err
+		return err
 	}
 
 	r.markStopped(tracker.StoppedPosition())
-	return r.stopPosition, nil
+	return nil
 }
 
-// markStopped records a clean stop: retains position, clears the channel so a
-// later StopLogRecording is a no-op.
+// markStopped records a clean stop. The method stores stopPosition and clears
+// the channel so a later StopLogRecording is a no-op.
+//
+// When the live catalog id is known, markStopped also stores that id for
+// StopPositionFor. Dirty drains leave the prior stored id unchanged.
 func (r *logRecording) markStopped(stopPosition int64) {
+	if r.recordingID >= 0 {
+		r.latchedRecordingID = r.recordingID
+	}
 	r.stopPosition = stopPosition
 	r.startChannel = nil
 }
 
-// resolveStopPositionFromCatalog reads the catalog stop position for the
-// retained recording id after ErrorUnknownSubscription on stop.
-func (r *logRecording) resolveStopPositionFromCatalog() (int64, error) {
-	desc, err := r.client.ListRecording(r.ctx, r.recordingID)
+// catalogStopPosition reads the archive catalog stop position for recordingID.
+//
+// Behaviour:
+//   - performs one bounded ListRecording
+//   - does not latch
+//
+// The caller decides whether the value belongs to the recording this control
+// stopped. A read for a foreign id cannot overwrite the retained position.
+//
+// Returns an error when:
+//   - the catalog read fails
+//   - the descriptor carries no stop position
+func (r *logRecording) catalogStopPosition(recordingID int64) (int64, error) {
+	desc, err := r.client.ListRecording(r.ctx, recordingID)
 	if err != nil {
 		return 0, fmt.Errorf(
 			"cluster: resolve log recording stop position for recording %d: %w",
-			r.recordingID,
+			recordingID,
 			err,
 		)
 	}
 	if desc.StopPosition == recordinglog.NullPosition {
 		return 0, fmt.Errorf(
 			"cluster: log recording %d reports no stop position",
-			r.recordingID,
+			recordingID,
 		)
 	}
-	r.markStopped(desc.StopPosition)
-	return r.stopPosition, nil
+	return desc.StopPosition, nil
+}
+
+// resolveStopPositionFromCatalog reads the catalog stop position for the
+// retained recording id after ErrorUnknownSubscription on stop. The method
+// latches the position through markStopped.
+func (r *logRecording) resolveStopPositionFromCatalog() error {
+	stopPosition, err := r.catalogStopPosition(r.recordingID)
+	if err != nil {
+		return err
+	}
+	r.markStopped(stopPosition)
+	return nil
+}
+
+// StopPositionFor returns the archive stop position recorded for recordingID.
+//
+// Behaviour:
+//   - same id as the last clean stop (stored catalog id) and nothing pending:
+//     returns the stored stop position. No catalog read.
+//   - any other case: reads the catalog once. Does not store that read.
+//   - same id while stop still pending: takes the catalog path. Errors only
+//     when the catalog read fails or reports no stop position
+//
+// StopPositionFor has no caller-supplied position to fall back to.
+//
+// Concurrency: invoker-only.
+//
+// Returns an error when:
+//   - recordingID is negative
+//   - the catalog read fails
+//   - the catalog reports no stop position for recordingID
+//
+// On error the caller must not substitute another position.
+func (r *logRecording) StopPositionFor(recordingID int64) (int64, error) {
+	if recordingID < 0 {
+		return recordinglog.NullPosition, fmt.Errorf(
+			"cluster: resolve log recording stop position for recording %d: negative recording id",
+			recordingID,
+		)
+	}
+	if recordingID == r.latchedRecordingID && r.latchedRecordingID >= 0 && !r.needsStop() {
+		return r.stopPosition, nil
+	}
+	stopPosition, err := r.catalogStopPosition(recordingID)
+	if err != nil {
+		return recordinglog.NullPosition, err
+	}
+	return stopPosition, nil
 }

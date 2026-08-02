@@ -322,6 +322,9 @@ type recordingElectionHost struct {
 		leaderRecordingID, stopPosition, nowNs int64,
 	) election.LogReplication
 
+	// newLogReplay overrides the done stub for Close and routing tests.
+	newLogReplay func(logPosition, appendPosition int64) election.LogReplay
+
 	catchupPollResult int
 
 	addLogPublicationCalls            []int64
@@ -470,19 +473,27 @@ func (h *recordingElectionHost) SetLogRecordingID(recordingID int64) {
 
 // NewLogReplay returns an immediately done replay so leader and follower
 // replay paths advance to the target position on the next tick.
-func (h *recordingElectionHost) NewLogReplay(_, appendPosition int64) election.LogReplay {
-	return &stubLogReplay{position: appendPosition}
+func (h *recordingElectionHost) NewLogReplay(logPosition, appendPosition int64) election.LogReplay {
+	if h.newLogReplay != nil {
+		return h.newLogReplay(logPosition, appendPosition)
+	}
+	return &spyLogReplay{position: appendPosition, done: true}
 }
 
-type stubLogReplay struct {
-	position int64
+// spyLogReplay counts Close calls and sets Position and IsDone for teardown tests.
+type spyLogReplay struct {
+	position   int64
+	done       bool
+	closeCalls int
 }
 
-func (r *stubLogReplay) DoWork(int64) int { return 0 }
+func (r *spyLogReplay) DoWork(int64) int { return 0 }
 
-func (r *stubLogReplay) Position() int64 { return r.position }
+func (r *spyLogReplay) Position() int64 { return r.position }
 
-func (r *stubLogReplay) IsDone() bool { return true }
+func (r *spyLogReplay) IsDone() bool { return r.done }
+
+func (r *spyLogReplay) Close() { r.closeCalls++ }
 
 func (h *recordingElectionHost) UpdateMemberLogPosition(
 	member *election.Member,

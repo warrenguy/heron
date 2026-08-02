@@ -255,6 +255,76 @@ func TestOpenLogStreams_channelIdenticalAcrossMembers(t *testing.T) {
 	require.Equal(t, tp0.LogChannel(), tp1.LogChannel())
 }
 
+// TestOpenLogStreams_publicationInitialPosition asserts OpenLogStreams seeds
+// the exclusive publication channel only. The subscription keeps
+// Topology.LogChannel.
+func TestOpenLogStreams_publicationInitialPosition(t *testing.T) {
+	t.Parallel()
+
+	const logTemplate = "aeron:udp?term-length=64k|interface=127.0.0.1|ttl=0"
+	topology := sharedLogTopology(t, 0, logTemplate)
+	adder := &fakeLogStreamAdder{}
+	_, _, _, deps := openLogStreamsDeps(t, topology, adder)
+
+	// Term length differs from topology default (64k) so replace is exercised.
+	seed := &cluster.LogPublicationInitialPosition{
+		Position:         128,
+		InitialTermID:    7,
+		TermBufferLength: 128 * 1024,
+		MtuLength:        1408,
+	}
+	deps.PublicationInitialPosition = seed
+
+	ls, err := cluster.OpenLogStreams(deps)
+	require.NoError(t, err)
+	require.NotNil(t, ls)
+	t.Cleanup(func() { _ = ls.Close() })
+
+	require.Len(t, adder.calls, 2)
+	require.Equal(t, "subscription", adder.calls[0].kind)
+	require.Equal(t, "publication", adder.calls[1].kind)
+	require.Equal(t, topology.LogStreamID(), adder.calls[0].streamID)
+	require.Equal(t, topology.LogStreamID(), adder.calls[1].streamID)
+	require.Equal(t, topology.LogChannel(), adder.calls[0].channel)
+
+	// Seed geometry lands on the publication channel only. Param values are
+	// covered in-package. Presence asserts the seed reached the add. Delimit
+	// term-id so the assert cannot match inside init-term-id.
+	pubChannel := adder.calls[1].channel
+	require.Contains(t, pubChannel, "init-term-id=7")
+	require.Contains(t, pubChannel, "|term-id=7")
+	require.Contains(t, pubChannel, "term-offset=128")
+	require.Contains(t, pubChannel, "term-length=131072")
+	require.Contains(t, pubChannel, "mtu=1408")
+	require.NotEqual(t, topology.LogChannel(), pubChannel)
+	require.NotContains(t, adder.calls[0].channel, "init-term-id=")
+}
+
+func TestOpenLogStreams_publicationInitialPositionInvalid(t *testing.T) {
+	t.Parallel()
+
+	topology := sharedLogTopology(t, 0, "")
+	adder := &fakeLogStreamAdder{}
+	agent, logPublisher, _, deps := openLogStreamsDeps(t, topology, adder)
+	deps.PublicationInitialPosition = &cluster.LogPublicationInitialPosition{
+		Position:         17,
+		InitialTermID:    0,
+		TermBufferLength: 64 * 1024,
+		MtuLength:        1408,
+	}
+
+	ls, err := cluster.OpenLogStreams(deps)
+	require.Nil(t, ls)
+	require.ErrorContains(t, err, "not frame-aligned")
+
+	// Seed validated before any add; agent and publisher untouched.
+	require.Empty(t, adder.calls)
+	require.Equal(t, int32(-1), agent.AddLogPublication(0))
+	require.Nil(t, agent.AppendSource())
+	require.Nil(t, agent.LogJoinSource())
+	require.Nil(t, logPublisher.Publication())
+}
+
 func TestOpenLogStreams_subscriptionAddFailure(t *testing.T) {
 	t.Parallel()
 

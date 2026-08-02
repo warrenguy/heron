@@ -16,6 +16,14 @@ const (
 	// io.aeron.cluster.service.ClusteredServiceContainer.Configuration and
 	// carries service-to-module traffic, which this package does not open.
 	DefaultConsensusStreamID int32 = 108
+
+	// DefaultReplayStreamID is REPLAY_STREAM_ID_DEFAULT on
+	// io.aeron.cluster.service.ClusteredServiceContainer.Configuration
+	// (aeron.cluster.replay.stream.id). ConsensusModule seeds its context from
+	// that container default. Distinct from DefaultLogStreamID and
+	// DefaultConsensusStreamID. The replay is a separate stream on a separate
+	// channel.
+	DefaultReplayStreamID int32 = 103
 )
 
 // Port block layout. Values track io.aeron.samples.cluster.ClusterConfig:
@@ -57,6 +65,13 @@ const (
 	// is "aeron:udp?term-length=64m"; 64 MiB per log publication is not viable
 	// for several members on one host. Raise for production throughput.
 	DefaultLogChannel = "aeron:udp?term-length=64k"
+
+	// DefaultReplayChannel is REPLAY_CHANNEL_DEFAULT. Local IPC channel the
+	// Archive uses to replay this member's own cluster log recording.
+	//
+	// Omits term-length. ArchiveConductor builds the replay publication with the
+	// recording's own term length and MTU. A term-length param here is discarded.
+	DefaultReplayChannel = "aeron:ipc"
 )
 
 // MinValidPort and MaxValidPort bound every port derived from CalculatePort.

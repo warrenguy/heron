@@ -49,8 +49,10 @@ func TestNormalize_defaults(t *testing.T) {
 
 	require.Equal(t, cluster.DefaultConsensusChannel, cfg.ConsensusChannel)
 	require.Equal(t, cluster.DefaultLogChannel, cfg.LogChannel)
+	require.Equal(t, cluster.DefaultReplayChannel, cfg.ReplayChannel)
 	require.Equal(t, cluster.DefaultConsensusStreamID, cfg.ConsensusStreamID)
 	require.Equal(t, cluster.DefaultLogStreamID, cfg.LogStreamID)
+	require.Equal(t, cluster.DefaultReplayStreamID, cfg.ReplayStreamID)
 	require.NotNil(t, cfg.Idle)
 	require.Equal(t, recordinglog.FileSyncData, cfg.RecordingLogFileSyncLevel)
 	require.Equal(t, recordinglog.FileSyncData, cfg.NodeStateFileSyncLevel)
@@ -83,11 +85,14 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 		StartupCanvassTimeoutNs:   120_000_000_000,
 	}
 
+	const replayChannel = "aeron:ipc?alias=replay"
 	cfg := cluster.Config{
 		ConsensusChannel:          channel,
 		LogChannel:                channel,
+		ReplayChannel:             replayChannel,
 		ConsensusStreamID:         200,
 		LogStreamID:               201,
+		ReplayStreamID:            202,
 		RecordingLogFileSyncLevel: recordinglog.FileSyncFull,
 		NodeStateFileSyncLevel:    recordinglog.FileSyncFull,
 		Election:                  explicitElection,
@@ -95,8 +100,10 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 
 	require.Equal(t, channel, cfg.ConsensusChannel)
 	require.Equal(t, channel, cfg.LogChannel)
+	require.Equal(t, replayChannel, cfg.ReplayChannel)
 	require.Equal(t, int32(200), cfg.ConsensusStreamID)
 	require.Equal(t, int32(201), cfg.LogStreamID)
+	require.Equal(t, int32(202), cfg.ReplayStreamID)
 	require.Equal(t, recordinglog.FileSyncFull, cfg.RecordingLogFileSyncLevel)
 	require.Equal(t, recordinglog.FileSyncFull, cfg.NodeStateFileSyncLevel)
 
@@ -443,6 +450,27 @@ func TestValidate_errors(t *testing.T) {
 				cfg.LogStreamID = 100
 			},
 			want: "cluster: ConsensusStreamID and LogStreamID must differ",
+		},
+		{
+			name: "ReplayStreamID equals ConsensusStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ReplayStreamID = cfg.ConsensusStreamID
+			},
+			want: "cluster: ReplayStreamID and ConsensusStreamID must differ",
+		},
+		{
+			name: "ReplayStreamID equals LogStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ReplayStreamID = cfg.LogStreamID
+			},
+			want: "cluster: ReplayStreamID and LogStreamID must differ",
+		},
+		{
+			name: "ReplayChannel has session-id",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ReplayChannel = "aeron:ipc?session-id=1"
+			},
+			want: "cluster: ReplayChannel must not set session-id=",
 		},
 		{
 			name: "negative ServiceCount",

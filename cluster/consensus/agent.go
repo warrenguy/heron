@@ -12,19 +12,13 @@ type FollowerLogJoinParams struct {
 }
 
 // AgentHandler is the election-to-agent boundary for term transitions.
-//
 // Implemented by the consensus module agent; mocked in election tests.
 //
 // Three methods reach the archive control client through
-// [LogRecordingControl] and can fail.
-//
-// A non-nil error from any of those methods means the caller must not proceed
-// with the transition the caller asked for.
-//
-// The election routes every failure to its own error handler.
-//
-// The error handler returns the state machine to init and re-attempts on the
-// next duty cycle.
+// [LogRecordingControl] and can fail. A non-nil error from any of those methods
+// means the caller must not proceed with the transition the caller asked for.
+// The election routes every failure to its own error handler. The error handler
+// returns the state machine to init and re-attempts on the next duty cycle.
 //
 // Method semantics follow aeron ConsensusModuleAgent.
 //
@@ -34,7 +28,9 @@ type FollowerLogJoinParams struct {
 //   - resets follower AppendPosition cadence fields
 //   - keeps commit
 //   - stops the cluster log recording when a control is wired
-//   - returns the last-append position
+//   - when a control is wired and a retained recording id is non-negative,
+//     returns the archive-derived stop position from StopPositionFor
+//   - otherwise returns logPosition on success
 //
 // Log and ingress tear-down is deferred until full agent wiring.
 //
@@ -53,24 +49,24 @@ type FollowerLogJoinParams struct {
 //     quiet-tick timeout window
 type AgentHandler interface {
 	// PrepareForNewLeadership stops the cluster log recording when a control
-	// is wired and returns the last appended log position.
-	//
-	// Role, known leader, and follower append cadence fields always reset
-	// before any stop attempt.
-	//
-	// Commit is kept.
-	//
-	// Stop runs for any wired control so a dirty start that never became
-	// active still drains.
+	// is wired. Returns the last appended log position. Role, known leader, and
+	// follower append cadence fields always reset before any stop attempt.
+	// Commit is kept. Stop runs for any wired control so a dirty start that
+	// never became active still drains. After a clean stop, a non-negative
+	// retained recording id is resolved through
+	// [LogRecordingControl.StopPositionFor].
 	//
 	// Returns:
-	//   - lastAppendPosition, nil: a live recording stopped (archive stop
-	//     position)
-	//   - logPosition, nil: no live recording, control is nil, or stop was a
-	//     clean no-op (logPosition may be the null-position sentinel)
-	//   - null-position sentinel, err: stop failed; when the recording was
-	//     active the control stays active so a later prepare retries;
-	//     lastAppendPosition must not be adopted
+	//   - derived archive stop position, nil: retained recording id is
+	//     non-negative and StopPositionFor succeeds
+	//   - logPosition, nil: control is nil, or retained recording id is negative
+	//     (logPosition may be the null-position sentinel)
+	//   - null-position sentinel, err: stop fails. When the recording was
+	//     active the control stays active so a later prepare retries the stop.
+	//     Caller must not adopt lastAppendPosition.
+	//   - null-position sentinel, err: StopPositionFor fails after a clean
+	//     stop. The control is inactive. A later prepare retries derivation.
+	//     Caller must not adopt lastAppendPosition.
 	PrepareForNewLeadership(
 		logPosition int64,
 		nowNs int64,

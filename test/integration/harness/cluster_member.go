@@ -525,7 +525,7 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 			"images=%d logPubSession=%d logPubPos=%d adapterPos=%d imagePos=%d "+
 			"joinPos=%d imageSession=%d appendSrc=%d commit=%d notified=%d "+
 			"recLogEntries=%d coldStart=%v localLogRecordingID=%d "+
-			"archiveConnected=%v archiveSession=%d\n",
+			"archiveConnected=%v archiveSession=%d replayReason=%q\n",
 		m.ThisMemberID(),
 		m.ElectionState(),
 		m.ElectionComplete(),
@@ -547,6 +547,7 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 		localLogRecordingID,
 		archiveConnected,
 		archiveSession,
+		m.LogReplayReason(),
 	)
 }
 

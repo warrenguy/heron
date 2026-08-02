@@ -75,17 +75,28 @@ type ConsensusModule struct {
 	logPublisher *consensus.LogPublisher
 	logAdapter   *consensus.LogAdapter
 	logRecording *logRecording
+
+	// logReplay is the most recently built cluster log replay helper.
+	//
+	// Retained after the election releases the helper so:
+	//   - Close can join the recorded close error
+	//   - [ConsensusModule.LogReplayReason] can read the stop reason
+	//
+	// The module never drops the pointer while a replay is active. Every route
+	// that exits a replay state closes the helper first.
+	logReplay *logReplay
 }
 
-// OpenConsensusModule assembles one consensus member and returns it with every
-// transport handle and agent dependency bound before the first duty tick.
+// OpenConsensusModule assembles one consensus member and returns the member with
+// every transport handle and agent dependency bound before the first duty tick.
 //
 // ctx bounds the transport connect, the archive control connect, and the
 // recording-extent lookups the recovery plan makes.
 //
-// The log recording control keeps Open's context values and detaches cancel
-// (context.WithoutCancel). Cancel after Open returns does not fail later
-// start or stop awaits. ControlResponseTimeout bounds those awaits.
+// The log recording control and the log replay helpers keep Open's context
+// values and detach cancel (context.WithoutCancel). Cancel after Open returns
+// does not fail later start or stop awaits. ControlResponseTimeout bounds
+// those awaits.
 //
 // When Config.Aeron is set, ctx still bounds the archive control connect.
 //
@@ -103,18 +114,19 @@ type ConsensusModule struct {
 //  11. host adapter
 //  12. election
 //  13. election factory
+//  14. log replay factory
 //
 // Recovery plans from the recording log.
 //
-// A recording log that carries term entries needs a connected archive lister
-// to resolve extents.
+// A recording log that carries term entries needs a connected archive lister to
+// resolve extents.
 //
 // Assembly notes:
 //   - transport and archive control connect before recovery
-//   - log recording control is wired after the agent and before the log streams
-//     so no recording starts at Open
-//   - cluster log publication and subscription open before return so the first
-//     duty tick can win leadership and append a leadership-term event
+//   - log recording control is wired after the agent and before the log streams.
+//     No recording starts at Open
+//   - cluster log publication and subscription open before return. The first
+//     duty tick can then win leadership and append a leadership-term event
 //
 // Returns an error when:
 //   - Config fails Validate
@@ -258,13 +270,18 @@ func OpenConsensusModule(
 		return nil, fmt.Errorf("cluster: counters reader for append rank: %w", err)
 	}
 
+	// Seed the exclusive log publication at the recovered append stop so a
+	// restart join can extend the established recording. Nil seed means cold
+	// start (no log term). Active-extent NullPosition floors to the committed
+	// position and still seeds extent geometry.
 	streams, err := OpenLogStreams(LogStreamsDeps{
-		Adder:        module.client,
-		Topology:     topology,
-		Agent:        module.agent,
-		LogPublisher: module.logPublisher,
-		LogAdapter:   module.logAdapter,
-		AppendSource: consensus.NewRecordingPosAppendPosition(module.agent, counters),
+		Adder:                      module.client,
+		Topology:                   topology,
+		Agent:                      module.agent,
+		LogPublisher:               module.logPublisher,
+		LogAdapter:                 module.logAdapter,
+		AppendSource:               consensus.NewRecordingPosAppendPosition(module.agent, counters),
+		PublicationInitialPosition: logPublicationSeedFromPlan(recovery.Plan()),
 	})
 	if err != nil {
 		return nil, err
@@ -314,6 +331,24 @@ func OpenConsensusModule(
 		),
 	))
 
+	// Install after the election factory. Every election builds an archive-backed
+	// helper from the same deps, whether open-time or re-entered. The factory is
+	// a closure only. No replay starts at Open.
+	replayDeps := logReplayDeps{
+		Ctx:            ctx,
+		Control:        module.archiveClient,
+		Adder:          module.client,
+		Agent:          module.agent,
+		ReplayChannel:  topology.ReplayChannel(),
+		ReplayStreamID: topology.ReplayStreamID(),
+		ImageAwaitNs:   electionCfg.LeaderHeartbeatTimeoutNs,
+	}
+	module.agent.SetLogReplayFactory(func(logPosition, appendPosition int64) consensus.LogReplay {
+		r := newLogReplay(replayDeps, logPosition, appendPosition)
+		module.logReplay = r
+		return r
+	})
+
 	succeeded = true
 	return module, nil
 }
@@ -333,15 +368,19 @@ func moduleClocks(cfg Config) (nanoClock, epochClock func() int64) {
 // Close tears the member down in reverse open order:
 //  1. agent bindings
 //  2. best-effort log recording stop
-//  3. cluster log streams
-//  4. consensus subscription
-//  5. consensus publications
-//  6. archive control client
-//  7. owned transport client
-//  8. recovery
+//  3. election close and retained replay helper close error
+//  4. cluster log streams
+//  5. consensus subscription
+//  6. consensus publications
+//  7. archive control client
+//  8. owned transport client
+//  9. recovery
 //
 // The archive control client closes before the transport client. The archive
 // control publication and subscription belong to that transport client.
+// StopReplay must reach the archive while the archive client is still
+// connected. Election and helper teardown therefore run before the archive
+// close.
 //
 // Idempotent. Safe on a nil receiver. Usable in a defer taken before the error
 // check.
@@ -367,6 +406,7 @@ func (m *ConsensusModule) Close() error {
 		m.agent.SetElection(nil)
 		m.agent.SetPositions(nil)
 		m.agent.SetEgress(nil)
+		m.agent.SetLogReplayFactory(nil)
 	}
 	// Best-effort stop before streams and archive client close.
 	//
@@ -374,13 +414,23 @@ func (m *ConsensusModule) Close() error {
 	//
 	// Close still releases transport handles.
 	if m.logRecording != nil {
-		if _, stopErr := m.logRecording.StopLogRecording(); stopErr != nil {
+		if stopErr := m.logRecording.StopLogRecording(); stopErr != nil {
 			err = errors.Join(err, stopErr)
 		}
 		m.logRecording = nil
 	}
 	if m.agent != nil {
 		m.agent.SetLogRecordingControl(nil)
+	}
+	if m.election != nil {
+		m.election.Close()
+	}
+	if m.logReplay != nil {
+		// Join the residual close error once, then clear it. Keep the residual
+		// pointer for LogReplayReason. A second Close must not re-surface the
+		// same error.
+		err = errors.Join(err, m.logReplay.closeError())
+		m.logReplay.closeErr = nil
 	}
 	if m.streams != nil {
 		err = errors.Join(err, m.streams.Close())
@@ -543,12 +593,12 @@ func (m *ConsensusModule) ElectionComplete() bool {
 //
 // Behaviour:
 //   - same handle as [ConsensusModule.ElectionComplete]
-//   - each settled re-install of *election.Election replaces m.election; this
+//   - each settled re-install of *election.Election replaces m.election and
 //     tracks the live *election.Election after re-entry
 //   - after Close, reports the state the latest machine last reached
-//   - Close does not release m.election; the election holds no OS resource
-//   - retaining m.election is what makes this accessor answer after transport
-//     handles are gone
+//   - Close does not clear m.election. [election.Election.Close] releases
+//     helpers the election holds. Retaining m.election is what makes this
+//     accessor answer after transport handles are gone
 func (m *ConsensusModule) ElectionState() election.ElectionState {
 	if m.election == nil {
 		return election.ElectionStateInit
@@ -560,3 +610,19 @@ func (m *ConsensusModule) ElectionState() election.ElectionState {
 //
 // Snapshotted at open, so it keeps its meaning after Close.
 func (m *ConsensusModule) IsColdStart() bool { return m.coldStart }
+
+// LogReplayReason returns why the most recent cluster log replay stopped.
+//
+// Behaviour:
+//   - empty string when no replay was built, a replay is still running, or a
+//     replay reached its bound
+//   - non-empty reason when a replay ended before its bound or could not start
+//
+// Lifetime: keeps its value after Close. A failure dump may still read the
+// reason.
+func (m *ConsensusModule) LogReplayReason() string {
+	if m == nil || m.logReplay == nil {
+		return ""
+	}
+	return m.logReplay.reason()
+}

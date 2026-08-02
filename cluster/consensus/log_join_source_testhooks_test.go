@@ -464,8 +464,7 @@ func TestAgentJoinLogAsFollower_imageVanishesAfterStart(t *testing.T) {
 		LogAdapter:    adapter,
 	})
 	control := &fakeLogRecordingControl{
-		nextRecordingID:  88,
-		nextStopPosition: 50,
+		nextRecordingID: 88,
 		onStart: func() {
 			aeron.ImageInternalCloseForHooks(image)
 		},
@@ -567,8 +566,8 @@ func TestAgent_logRecording_transitionWithRecording(t *testing.T) {
 
 	lp, pub := boundLogPublisher(t)
 	control := &fakeLogRecordingControl{
-		nextRecordingID:  77,
-		nextStopPosition: 5000,
+		nextRecordingID:     77,
+		nextStopPositionFor: 5000,
 	}
 	a := NewAgent(AgentConfig{LogPublisher: lp})
 	a.SetLogRecordingControl(control)
@@ -605,10 +604,7 @@ func TestAgent_logRecording_repeatedTransition(t *testing.T) {
 	t.Parallel()
 
 	lp, pub := boundLogPublisher(t)
-	control := &fakeLogRecordingControl{
-		nextRecordingID:  77,
-		nextStopPosition: 5000,
-	}
+	control := &fakeLogRecordingControl{nextRecordingID: 77}
 	a := NewAgent(AgentConfig{LogPublisher: lp})
 	a.SetLogRecordingControl(control)
 
@@ -625,10 +621,7 @@ func TestAgent_logRecording_stopKeepsRecordingID(t *testing.T) {
 	t.Parallel()
 
 	lp, pub := boundLogPublisher(t)
-	control := &fakeLogRecordingControl{
-		nextRecordingID:  77,
-		nextStopPosition: 5000,
-	}
+	control := &fakeLogRecordingControl{nextRecordingID: 77}
 	a := NewAgent(AgentConfig{LogPublisher: lp})
 	a.SetLogRecordingControl(control)
 

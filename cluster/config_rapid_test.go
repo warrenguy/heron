@@ -90,9 +90,13 @@ func drawValidPartialConfig(t *rapid.T) cluster.Config {
 	cfg.LogChannel = drawOptionalChannel(t, "log_channel_mode", cluster.DefaultLogChannel)
 
 	if rapid.Bool().Draw(t, "custom_streams") {
-		// Distinct non-zero pair so ConsensusStreamID and LogStreamID still
-		// differ after Normalize.
-		cfg.LogStreamID = rapid.Int32Range(1, 500).Draw(t, "log_stream_id")
+		// Distinct non-zero pair so ConsensusStreamID and LogStreamID still differ
+		// after Normalize. Log range excludes DefaultReplayStreamID. ReplayStreamID
+		// stays 0 here and Normalize fills it to that default. Consensus range
+		// 501..1000 cannot hit DefaultReplayStreamID.
+		cfg.LogStreamID = rapid.Int32Range(1, 500).
+			Filter(func(id int32) bool { return id != cluster.DefaultReplayStreamID }).
+			Draw(t, "log_stream_id")
 		cfg.ConsensusStreamID = rapid.Int32Range(501, 1000).Draw(t, "consensus_stream_id")
 	}
 
@@ -138,7 +142,10 @@ func TestConfigNormalize_idempotent_rapid(t *testing.T) {
 
 		require.NotZero(t, once.ConsensusStreamID)
 		require.NotZero(t, once.LogStreamID)
+		require.NotZero(t, once.ReplayStreamID)
 		require.NotEqual(t, once.ConsensusStreamID, once.LogStreamID)
+		require.NotEqual(t, once.ReplayStreamID, once.ConsensusStreamID)
+		require.NotEqual(t, once.ReplayStreamID, once.LogStreamID)
 
 		validSync := []recordinglog.FileSyncLevel{
 			recordinglog.FileSyncData,

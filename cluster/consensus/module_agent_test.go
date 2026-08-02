@@ -1090,15 +1090,21 @@ func TestAtomicAppendPosition_nilSafe(t *testing.T) {
 //
 // active is true after a successful start until a clean stop. That matches
 // production [LogRecordingControl.IsActive].
+//
+// nextStopPositionFor scripts StopPositionFor on success. Zero is a valid
+// scripted position. Set nextStopPositionFor explicitly when prepare reaches
+// derivation.
 type fakeLogRecordingControl struct {
-	startCalls       []fakeStartCall
-	stopCalls        int
-	nextRecordingID  int64
-	nextStopPosition int64
-	startErr         error
-	stopErr          error
-	onStart          func()
-	active           bool
+	startCalls           []fakeStartCall
+	stopCalls            int
+	nextRecordingID      int64
+	nextStopPositionFor  int64
+	stopPositionForCalls []int64
+	startErr             error
+	stopErr              error
+	stopPositionForErr   error
+	onStart              func()
+	active               bool
 }
 
 type fakeStartCall struct {
@@ -1126,17 +1132,25 @@ func (f *fakeLogRecordingControl) StartLogRecording(
 	return f.nextRecordingID, nil
 }
 
-func (f *fakeLogRecordingControl) StopLogRecording() (int64, error) {
+func (f *fakeLogRecordingControl) StopLogRecording() error {
 	f.stopCalls++
 	if f.stopErr != nil {
-		return 0, f.stopErr
+		return f.stopErr
 	}
 	f.active = false
-	return f.nextStopPosition, nil
+	return nil
 }
 
 func (f *fakeLogRecordingControl) IsActive() bool {
 	return f.active
+}
+
+func (f *fakeLogRecordingControl) StopPositionFor(recordingID int64) (int64, error) {
+	f.stopPositionForCalls = append(f.stopPositionForCalls, recordingID)
+	if f.stopPositionForErr != nil {
+		return recordinglog.NullPosition, f.stopPositionForErr
+	}
+	return f.nextStopPositionFor, nil
 }
 
 func TestAgent_logRecording_nilControlLeaderJoin(t *testing.T) {
@@ -1171,11 +1185,10 @@ func TestAgent_logRecording_followerJoinNoImage(t *testing.T) {
 func TestAgent_logRecording_transitionNoRecording(t *testing.T) {
 	t.Parallel()
 
-	// Wired control always receives stop so a dirty start still drains.
-	//
-	// When recording was never active, prepare returns logPosition, not the
-	// stop position the control reports.
-	control := &fakeLogRecordingControl{nextStopPosition: 999}
+	// Wired control always receives stop so a dirty start still drains. Absent
+	// retained recording id: prepare returns logPosition. Does not return a
+	// derived stop position.
+	control := &fakeLogRecordingControl{nextStopPositionFor: 999}
 	a := NewAgent(AgentConfig{})
 	a.SetLogRecordingControl(control)
 
@@ -1183,6 +1196,43 @@ func TestAgent_logRecording_transitionNoRecording(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1234), got)
 	require.Equal(t, 1, control.stopCalls)
+	require.Empty(t, control.stopPositionForCalls)
+}
+
+func TestAgent_logRecording_prepareDerivesFromRetainedID(t *testing.T) {
+	t.Parallel()
+
+	// Successful StopPositionFor for a retained id returns the derived
+	// position. Does not return the caller logPosition.
+	control := &fakeLogRecordingControl{nextStopPositionFor: 5000}
+	a := NewAgent(AgentConfig{})
+	a.SetLogRecordingControl(control)
+	a.localLogRecordingID = 77
+
+	got, err := a.PrepareForNewLeadership(4096, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(5000), got)
+	require.NotEqual(t, int64(4096), got)
+	require.Equal(t, 1, control.stopCalls)
+	require.Equal(t, []int64{77}, control.stopPositionForCalls)
+}
+
+func TestAgent_logRecording_prepareDerivationFailureDoesNotFallBack(t *testing.T) {
+	t.Parallel()
+
+	// Derivation error returns NullPosition. Does not fall back to logPosition.
+	errBoom := errors.New("derive failed")
+	control := &fakeLogRecordingControl{stopPositionForErr: errBoom}
+	a := NewAgent(AgentConfig{})
+	a.SetLogRecordingControl(control)
+	a.localLogRecordingID = 77
+
+	got, err := a.PrepareForNewLeadership(4096, 1)
+	require.ErrorIs(t, err, errBoom)
+	require.Equal(t, recordinglog.NullPosition, got)
+	require.NotEqual(t, int64(4096), got)
+	require.Equal(t, 1, control.stopCalls)
+	require.Equal(t, []int64{77}, control.stopPositionForCalls)
 }
 
 func TestAgent_logRecording_prepareStopErrorWhileInactive(t *testing.T) {
