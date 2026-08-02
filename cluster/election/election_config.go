@@ -1,6 +1,10 @@
 package election
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/warrenguy/heron/cluster/consensus"
+)
 
 type ElectionConfig struct {
 	IsNodeStartup          bool
@@ -28,13 +32,16 @@ type ElectionConfig struct {
 // member id (0 included) is mistaken for an appointed or gracefully-closed leader.
 func DefaultElectionConfig() ElectionConfig {
 	return ElectionConfig{
-		AppointedLeaderID:         NullMemberID,
-		GracefulClosedLeaderID:    NullMemberID,
-		ElectionTimeoutNs:         1_000_000_000,
-		ElectionStatusIntervalNs:  100_000_000,
-		StartupCanvassTimeoutNs:   60_000_000_000,
-		LeaderHeartbeatTimeoutNs:  10_000_000_000,
-		LeaderHeartbeatIntervalNs: 200_000_000,
+		AppointedLeaderID:        NullMemberID,
+		GracefulClosedLeaderID:   NullMemberID,
+		ElectionTimeoutNs:        1_000_000_000,
+		ElectionStatusIntervalNs: 100_000_000,
+		StartupCanvassTimeoutNs:  60_000_000_000,
+
+		// Heartbeat defaults live in consensus so settled agent and election
+		// share one timeout and one interval.
+		LeaderHeartbeatTimeoutNs:  consensus.DefaultLeaderHeartbeatTimeoutNs,
+		LeaderHeartbeatIntervalNs: consensus.DefaultLeaderHeartbeatIntervalNs,
 	}
 }
 

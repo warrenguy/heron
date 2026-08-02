@@ -11,6 +11,13 @@ package consensus
 type PositionTable interface {
 	UpdateMemberPosition(memberID int32, leadershipTermID, logPosition int64)
 	QuorumPositionBoundedByLeaderLog(appendPosition, nowNs int64) int64
+
+	// HasActiveQuorum reports whether a quorum of members reported an append
+	// position within timeoutNs of nowNs. This member counts toward the
+	// quorum. A settled leader keeps its own entry fresh every tick. A
+	// single-member cluster always returns true, so a lone member never
+	// reports a lost quorum.
+	HasActiveQuorum(nowNs, timeoutNs int64) bool
 }
 
 // CanvassAnswer carries the leader-side values for a settled canvass answer.

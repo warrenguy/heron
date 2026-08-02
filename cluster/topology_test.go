@@ -11,7 +11,7 @@ import (
 )
 
 // testArchiveControl channels satisfy Validate for fixtures that never connect
-// an archive client. Same co-located IPC shape as product open.
+// an archive client. Same co-located IPC shape as OpenConsensusModule.
 const (
 	testArchiveControlRequestChannel  = archive.DefaultLocalControlChannel
 	testArchiveControlResponseChannel = archive.DefaultLocalControlChannel

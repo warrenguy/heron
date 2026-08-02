@@ -40,6 +40,7 @@ func TestSteadyLeaderCommit_higherTerm_invokesHook(t *testing.T) {
 		higherPos    int64
 		nowNs        int64
 		checkLower   bool
+		wireFactory  bool
 	}{
 		{
 			name: "CommitPosition_follower", wire: "commit", role: RoleFollower,
@@ -62,6 +63,12 @@ func TestSteadyLeaderCommit_higherTerm_invokesHook(t *testing.T) {
 			term: 1, leader: nullMemberID, seedNotify: 7,
 			higherTerm: 8, higherLeader: 3, higherPos: 400, nowNs: 3500,
 		},
+		{
+			name: "CommitPosition_follower_withFactory", wire: "commit", role: RoleFollower,
+			term: 2, leader: 1, seedNotify: 0,
+			higherTerm: 3, higherLeader: 1, higherPos: 999, nowNs: 700,
+			wireFactory: true,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -74,6 +81,11 @@ func TestSteadyLeaderCommit_higherTerm_invokesHook(t *testing.T) {
 				LeaderMemberID:   tc.leader,
 			})
 			a.notifiedCommitPosition = tc.seedNotify
+			if tc.wireFactory {
+				a.SetElectionFactory(func(ElectionSeed) ElectionRunner {
+					return &orderRunner{n: 1}
+				})
+			}
 
 			enqueueSteadyLeaderCommit(t, q, tc.wire, tc.higherTerm, tc.higherLeader, tc.higherPos)
 			require.Equal(t, 1, a.pollConsensusIngress(tc.nowNs))
@@ -81,6 +93,12 @@ func TestSteadyLeaderCommit_higherTerm_invokesHook(t *testing.T) {
 			require.Equal(t, tc.nowNs, higher.nowNs)
 			require.Equal(t, tc.higherTerm, higher.term)
 			require.Equal(t, tc.seedNotify, a.NotifiedCommitPosition())
+			if tc.wireFactory {
+				require.NotNil(t, a.Election())
+				require.Equal(t, ElectionTriggerHigherTerm, a.LastElectionTrigger())
+			} else {
+				require.Nil(t, a.Election())
+			}
 
 			if !tc.checkLower {
 				return
@@ -104,6 +122,9 @@ func TestSteadyAppendPosition_higherTerm_noHook(t *testing.T) {
 		Ingress:          q,
 		LeadershipTermID: 2,
 	})
+	a.SetElectionFactory(func(ElectionSeed) ElectionRunner {
+		return &orderRunner{n: 1}
+	})
 
 	q.Enqueue(encodeAppendPositionWire(t, codecs.AppendPositionFields{
 		LeadershipTermID: 5,
@@ -114,4 +135,6 @@ func TestSteadyAppendPosition_higherTerm_noHook(t *testing.T) {
 	require.Zero(t, higher.count)
 	require.Empty(t, pt.updates)
 	require.Equal(t, int64(0), a.TimeOfLastLeaderUpdateNs())
+	require.Nil(t, a.Election())
+	require.Equal(t, int64(0), a.ElectionCount())
 }

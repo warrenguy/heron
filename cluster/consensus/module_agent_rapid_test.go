@@ -99,6 +99,235 @@ func TestUpdateLeaderPosition_timeOfLastLogUpdate_monotonicOnPublish_rapid(t *te
 	})
 }
 
+// TestElectionInstall_countMonotonicAndSingleRunner_rapid asserts install
+// count, single runner, and seed term invariants over mixed duty steps.
+func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		const timeoutNs = DefaultLeaderHeartbeatTimeoutNs
+		pt := &scriptedActiveQuorumTable{active: true}
+		a := NewAgent(AgentConfig{
+			Role:                     RoleFollower,
+			Positions:                pt,
+			Commit:                   new(atomic.Int64),
+			LeadershipTermID:         rapid.Int64Range(0, 20).Draw(rt, "term"),
+			LeaderMemberID:           1,
+			LeaderHeartbeatTimeoutNs: timeoutNs,
+		})
+		var seeds []ElectionSeed
+		var setElectionSteps int64
+		var lastRunner ElectionRunner
+		oracleTrigger := ElectionTriggerNone
+		a.SetElectionFactory(func(seed ElectionSeed) ElectionRunner {
+			seeds = append(seeds, seed)
+			r := &orderRunner{n: 1}
+			lastRunner = r
+			return r
+		})
+
+		nowNs := int64(0)
+		prevCount := a.ElectionCount()
+		require.Equal(rt, ElectionTriggerNone, a.LastElectionTrigger())
+
+		n := rapid.IntRange(1, 40).Draw(rt, "n")
+		steps := []string{
+			"tick", "completeElection", "higherTerm",
+			"quorumLost", "quorumHeld", "setElection", "clearElection",
+		}
+		for range n {
+			step := rapid.SampledFrom(steps).Draw(rt, "step")
+			delta := rapid.Int64Range(1, timeoutNs).Draw(rt, "delta")
+			nowNs += delta
+			countBefore := a.ElectionCount()
+			seedsBefore := len(seeds)
+			liveBefore := a.Election() != nil
+
+			switch step {
+			case "tick":
+				_ = a.DoWork(nowNs)
+				if a.ElectionCount() > countBefore {
+					// Settled tick with active quorum table: only heartbeat.
+					oracleTrigger = ElectionTriggerLeaderHeartbeatTimeout
+				}
+			case "completeElection":
+				if a.Election() != nil {
+					a.ElectionComplete(nowNs)
+				}
+			case "higherTerm":
+				if a.Election() == nil {
+					a.onSteadyCommitPosition(codecs.CommitPositionFields{
+						LeadershipTermID: a.LeadershipTermID() + 1 + rapid.Int64Range(0, 5).Draw(rt, "termBump"),
+						LogPosition:      1,
+						LeaderMemberID:   2,
+					}, nowNs)
+					if a.ElectionCount() > countBefore {
+						oracleTrigger = ElectionTriggerHigherTerm
+					}
+				}
+			case "quorumLost":
+				if a.Election() == nil {
+					a.RoleSet(RoleLeader)
+					pt.active = false
+					_ = a.DoWork(nowNs)
+					pt.active = true
+					if a.ElectionCount() > countBefore {
+						oracleTrigger = ElectionTriggerInactiveFollowerQuorum
+					}
+				}
+			case "quorumHeld":
+				if a.Election() == nil {
+					a.RoleSet(RoleLeader)
+					pt.active = true
+					_ = a.DoWork(nowNs)
+				}
+			case "setElection":
+				r := &orderRunner{n: 1}
+				lastRunner = r
+				a.SetElection(r)
+				setElectionSteps++
+				oracleTrigger = ElectionTriggerBootstrap
+			case "clearElection":
+				a.SetElection(nil)
+			}
+
+			// At most one runner; it is the newest install when non-nil.
+			if a.Election() != nil {
+				require.Equal(rt, lastRunner, a.Election())
+			}
+
+			// Count never decreases.
+			require.GreaterOrEqual(rt, a.ElectionCount(), prevCount)
+			// Live runner refuses re-install: factory not called.
+			if liveBefore && step != "setElection" && step != "clearElection" && step != "completeElection" {
+				require.Len(rt, seeds, seedsBefore)
+				require.Equal(rt, countBefore, a.ElectionCount())
+			}
+
+			// LastElectionTrigger equals the most recent install trigger.
+			require.Equal(rt, oracleTrigger, a.LastElectionTrigger())
+
+			// Seed term equals agent term at install time.
+			for _, seed := range seeds {
+				require.Equal(rt, a.LeadershipTermID(), seed.LeadershipTermID)
+			}
+
+			// Recorded factory seeds equal count minus SetElection installs.
+			require.Equal(rt, a.ElectionCount()-setElectionSteps, int64(len(seeds)))
+
+			prevCount = a.ElectionCount()
+		}
+	})
+}
+
+// TestSettledHeartbeat_neverFiresBeforeTimeout_rapid asserts the settled
+// heartbeat trigger respects stamp + timeout and slow-tick pacing.
+func TestSettledHeartbeat_neverFiresBeforeTimeout_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		// Absolute base: zero clocks hide a missing ElectionComplete stamp.
+		baseNs := rapid.Int64Range(1_000_000_000_000, 2_000_000_000_000).Draw(rt, "baseNs")
+		timeoutNs := rapid.Int64Range(1_000_000, 50_000_000).Draw(rt, "timeoutNs")
+		roles := []Role{RoleFollower, RoleCandidate, RoleLeader}
+		role := roles[rapid.IntRange(0, len(roles)-1).Draw(rt, "role")]
+
+		pt := &scriptedActiveQuorumTable{active: true}
+		a := NewAgent(AgentConfig{
+			Role:                     role,
+			Positions:                pt,
+			LeadershipTermID:         1,
+			LeaderMemberID:           1,
+			LeaderHeartbeatTimeoutNs: timeoutNs,
+		})
+		a.SetElectionFactory(func(ElectionSeed) ElectionRunner {
+			return &orderRunner{n: 1}
+		})
+
+		// Open bootstrap, then complete so the stamp is set.
+		a.SetElection(&orderRunner{n: 1})
+		a.ElectionComplete(baseNs)
+		// Force follower path for heartbeat checks when role is not leader.
+		if role != RoleLeader {
+			a.RoleSet(RoleFollower)
+		}
+
+		nowNs := baseNs
+		n := rapid.IntRange(1, 30).Draw(rt, "n")
+		for range n {
+			// Interleave clock advance, same-term notify, and complete.
+			op := rapid.IntRange(0, 2).Draw(rt, "op")
+			switch op {
+			case 0:
+				// Same-term commit from known leader pushes the stamp.
+				if a.Election() == nil && a.Role() == RoleFollower {
+					a.onSteadyCommitPosition(codecs.CommitPositionFields{
+						LeadershipTermID: 1,
+						LogPosition:      10,
+						LeaderMemberID:   1,
+					}, nowNs)
+				}
+			case 1:
+				if a.Election() != nil {
+					a.ElectionComplete(nowNs)
+				}
+			}
+
+			// Stamp after ops is the bound for this tick.
+			stampBeforeTick := a.timeOfLastLogUpdateNs
+			delta := rapid.Int64Range(1, timeoutNs).Draw(rt, "tickDelta")
+			nowNs += delta
+			countBefore := a.ElectionCount()
+			_ = a.DoWork(nowNs)
+			if a.ElectionCount() > countBefore {
+				trigger := a.LastElectionTrigger()
+				// Leader with active quorum never installs on heartbeat.
+				if role == RoleLeader {
+					require.NotEqual(rt, ElectionTriggerLeaderHeartbeatTimeout, trigger)
+				}
+				if trigger == ElectionTriggerLeaderHeartbeatTimeout {
+					// Install only at or after stamp + timeout.
+					require.GreaterOrEqual(rt, nowNs, stampBeforeTick+timeoutNs)
+					// Detection lands on a slow tick. This test does not bound
+					// how far past the timeout the clock draw may land.
+				}
+			}
+
+			// A same-term notify keeps a settled follower from installing while
+			// heartbeats continue. After a notify, the next tick inside the
+			// timeout window must not install.
+			if a.Election() == nil && a.Role() == RoleFollower {
+				a.onSteadyCommitPosition(codecs.CommitPositionFields{
+					LeadershipTermID: 1,
+					LogPosition:      10,
+					LeaderMemberID:   1,
+				}, nowNs)
+				mid := nowNs + timeoutNs/2
+				if mid > nowNs {
+					nowNs = mid
+					countMid := a.ElectionCount()
+					_ = a.DoWork(nowNs)
+					// A settled follower has no install path before stamp + timeout.
+					require.Equal(rt, countMid, a.ElectionCount())
+				}
+			}
+		}
+
+		// When still settled as non-leader, a tick past stamp + timeout and
+		// the slow-tick deadline installs.
+		if a.Election() == nil && a.Role() != RoleLeader {
+			a.timeOfLastLogUpdateNs = baseNs
+			fireAt := max(baseNs+timeoutNs, a.slowTickDeadlineNs)
+			countBefore := a.ElectionCount()
+			_ = a.DoWork(fireAt)
+			// Detection may land on this tick or need one more interval.
+			if a.ElectionCount() == countBefore {
+				_ = a.DoWork(fireAt + slowTickIntervalNs)
+			}
+			require.Greater(rt, a.ElectionCount(), countBefore)
+			require.Equal(rt, ElectionTriggerLeaderHeartbeatTimeout, a.LastElectionTrigger())
+		}
+	})
+}
+
 // TestOnSteadyCanvassPosition_guard_rapid asserts settled canvass publish and
 // position-update gates over random role, term, and collaborator wiring.
 func TestOnSteadyCanvassPosition_guard_rapid(t *testing.T) {

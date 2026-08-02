@@ -539,6 +539,96 @@ func TestHostAdapter_QuorumPositionBoundedByLeaderLog_inactiveMembers(t *testing
 	require.Equal(t, int64(200), host.QuorumPositionBoundedByLeaderLog(200, nowNs))
 }
 
+// TestHostAdapter_HasActiveQuorum_singleMember asserts true regardless of
+// timestamps. The adapter folds the lone-member rule into the predicate.
+func TestHostAdapter_HasActiveQuorum_singleMember(t *testing.T) {
+	t.Parallel()
+
+	const (
+		nowNs     int64 = 100
+		timeoutNs int64 = 10
+	)
+	members := hostAdapterMembers(1)
+	members[0].TimeOfLastAppendPositionNs = 0 // stale under any positive timeout
+
+	host, _, _, _ := newTestHostAdapter(t, members, 0)
+	require.True(t, host.HasActiveQuorum(nowNs, timeoutNs))
+	require.True(t, host.HasActiveQuorum(nowNs, 0))
+}
+
+// TestHostAdapter_HasActiveQuorum_multiMember asserts free-function delegate.
+//
+// Moving one TimeOfLastAppendPositionNs across the IsActive boundary flips
+// bare quorum (2 of 3) to below quorum (1 of 3). Non-zero term and position
+// keep the path on liveness-only quorum.
+func TestHostAdapter_HasActiveQuorum_multiMember(t *testing.T) {
+	t.Parallel()
+
+	const (
+		nowNs     int64 = 100
+		timeoutNs int64 = 10
+		// Non-zero LeadershipTermID and LogPosition. A wrong rewrite to
+		// HasQuorumAtPosition(0, 0) drops every vote (term mismatch or position
+		// floor).
+		termID int64 = 5
+		logPos int64 = 100
+	)
+	members := hostAdapterMembers(3)
+	for _, m := range members {
+		m.LeadershipTermID = termID
+		m.LogPosition = logPos
+	}
+	members[0].TimeOfLastAppendPositionNs = 95 // active: 95+10 > 100
+	members[1].TimeOfLastAppendPositionNs = 95
+	members[2].TimeOfLastAppendPositionNs = 0 // inactive
+
+	host, _, _, _ := newTestHostAdapter(t, members, 0)
+	require.True(t, host.HasActiveQuorum(nowNs, timeoutNs))
+	// Asserts liveness-only. Non-zero term and position make
+	// HasQuorumAtPosition(0, 0) false.
+	require.False(t, election.HasQuorumAtPosition(members, 0, 0, nowNs, timeoutNs))
+
+	// Drop member 1 to the boundary. ts + timeoutNs == nowNs is inactive.
+	members[1].TimeOfLastAppendPositionNs = nowNs - timeoutNs
+	require.False(t, host.HasActiveQuorum(nowNs, timeoutNs))
+}
+
+// TestHostAdapter_HasActiveQuorum_timeoutFromArgument asserts the caller's
+// timeoutNs, not h.leaderHeartbeatTimeoutNs.
+func TestHostAdapter_HasActiveQuorum_timeoutFromArgument(t *testing.T) {
+	t.Parallel()
+
+	const (
+		nowNs          int64 = 100
+		fieldTimeoutNs int64 = 50 // adapter field; would keep all active
+		argTimeoutNs   int64 = 5  // argument; only stamps > 95 are active
+		// Non-zero LeadershipTermID and LogPosition. A wrong rewrite to
+		// HasQuorumAtPosition(0, 0) drops every vote (term mismatch or position
+		// floor).
+		termID int64 = 5
+		logPos int64 = 100
+	)
+	members := hostAdapterMembers(3)
+	for _, m := range members {
+		m.LeadershipTermID = termID
+		m.LogPosition = logPos
+	}
+	// ts=90: active under fieldTimeout (90+50 > 100). Inactive under arg (90+5 <= 100).
+	members[0].TimeOfLastAppendPositionNs = 90
+	members[1].TimeOfLastAppendPositionNs = 90
+	members[2].TimeOfLastAppendPositionNs = 90
+
+	host, _, _, _ := newTestHostAdapter(t, members, 0, func(c *election.HostAdapterConfig) {
+		c.LeaderHeartbeatTimeoutNs = fieldTimeoutNs
+	})
+	// Field-sized arg keeps quorum. Short arg loses it. Adapter field unused either way.
+	require.True(t, host.HasActiveQuorum(nowNs, fieldTimeoutNs))
+	// Asserts liveness-only. Non-zero term and position make
+	// HasQuorumAtPosition(0, 0) false.
+	require.False(t, election.HasQuorumAtPosition(members, 0, 0, nowNs, fieldTimeoutNs))
+	require.False(t, host.HasActiveQuorum(nowNs, argTimeoutNs))
+}
+
 func TestHostAdapter_UpdateMemberLogPosition_stamps(t *testing.T) {
 	t.Parallel()
 

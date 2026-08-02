@@ -69,12 +69,15 @@ var ErrAppendPositionUnavailable = errors.New(
 // own a Client field.
 //
 // Lifetime: the host adapter outlives the election as implementer of positions
-// and egress. [Agent.ElectionComplete] clears the election runner field only.
+// and egress. [Agent.ElectionComplete] clears the election runner and stamps
+// timeOfLastLogUpdateNs (settled log-update clock). With an [ElectionFactory]
+// wired, a settled member may install a further election after that clear.
+// [Agent.SetElectionFactory] wires or clears the factory.
 //
-// Positions and egress may be set at construct or later via [Agent.SetPositions]
-// / [Agent.SetEgress] (Agent must exist before the host adapter can take
-// *Agent). Constructor may also set them for unit tests that skip the host
-// adapter.
+// Positions and egress may be set at construct or later via
+// [Agent.SetPositions] and [Agent.SetEgress]. Agent must exist before the host
+// adapter can take *Agent. Constructor may also set them for unit tests that
+// skip the host adapter.
 type Agent struct {
 	// election is nil in steady-state after [Agent.ElectionComplete].
 	election ElectionRunner
@@ -120,9 +123,16 @@ type Agent struct {
 	// is a valid member id; use nullMemberID (-1) for unset.
 	leaderMemberID int32
 
-	// timeOfLastLogUpdateNs gates commit heartbeat re-publish inside
-	// [Agent.UpdateLeaderPosition]. Distinct from timeOfLastLeaderUpdateNs
-	// (canvass base; ingress NewLeadershipTerm / CommitPosition only).
+	// timeOfLastLogUpdateNs is the settled log-update clock.
+	//
+	// Writers: [Agent.UpdateLeaderPosition], same-term follower notify, and
+	// [Agent.ElectionComplete].
+	//
+	// Readers: the commit re-publish gate and the settled quiet-tick timeout
+	// (leaderWentQuietTick).
+	//
+	// Distinct from timeOfLastLeaderUpdateNs. That field is the ingress
+	// leader-update clock and the canvass base via Host.TimeOfLastLeaderUpdateNs.
 	timeOfLastLogUpdateNs int64
 
 	// leaderHeartbeatIntervalNs is the commit re-publish and follower
@@ -212,6 +222,29 @@ type Agent struct {
 	//
 	// Default 0 is valid on the wire.
 	appVersion int32
+
+	// leaderHeartbeatTimeoutNs bounds the settled quiet wait on
+	// timeOfLastLogUpdateNs before a non-leader re-enters an election
+	// (leaderWentQuietTick).
+	//
+	// A settled leader passes the same value to PositionTable.HasActiveQuorum
+	// as the active-quorum timeout window (activeQuorumTick).
+	leaderHeartbeatTimeoutNs int64
+
+	// slowTickDeadlineNs is the next nowNs at which slowTickIfDue evaluates.
+	// Zero means the first tick always evaluates.
+	slowTickDeadlineNs int64
+
+	// electionFactory builds a replacement ElectionRunner for a settled
+	// member. Nil: no settled-state re-install happens.
+	electionFactory ElectionFactory
+
+	// electionCount counts installed elections, open-time install included.
+	electionCount int64
+
+	// lastElectionTrigger names the condition that installed the newest
+	// election.
+	lastElectionTrigger ElectionTrigger
 }
 
 // AgentConfig is the constructor config. Nil interface fields are allowed for
@@ -241,6 +274,10 @@ type AgentConfig struct {
 	// LeaderHeartbeatIntervalNs: zero -> DefaultLeaderHeartbeatIntervalNs
 	// (200_000_000). Negative panics at NewAgent.
 	LeaderHeartbeatIntervalNs int64
+
+	// LeaderHeartbeatTimeoutNs: zero -> DefaultLeaderHeartbeatTimeoutNs
+	// (10_000_000_000). Negative panics at NewAgent.
+	LeaderHeartbeatTimeoutNs int64
 
 	// AppendPositionNotReadyTimeoutNs: zero ->
 	// DefaultAppendPositionNotReadyTimeoutNs (5_000_000_000). Negative panics at
@@ -294,16 +331,19 @@ type AgentConfig struct {
 // NewAgent constructs an [Agent] from cfg. localLogRecordingID defaults to
 // nullValue. LeaderHeartbeatIntervalNs zero becomes
 // DefaultLeaderHeartbeatIntervalNs; negative panics.
-// AppendPositionNotReadyTimeoutNs zero becomes
+// LeaderHeartbeatTimeoutNs zero becomes DefaultLeaderHeartbeatTimeoutNs;
+// negative panics. AppendPositionNotReadyTimeoutNs zero becomes
 // DefaultAppendPositionNotReadyTimeoutNs; negative panics.
 //
 // Member ids are stored as given (0 is valid; -1 is unset).
 //
 // Concurrency: invoker-only after construction; see [Agent].
 //
-// Lifetime: caller owns the returned Agent; positions, egress, and election
-// may be wired later via [Agent.SetPositions] / [Agent.SetEgress] /
-// [Agent.SetElection].
+// Lifetime: caller owns the returned Agent. Positions, egress, election, and
+// election factory may be wired later via [Agent.SetPositions],
+// [Agent.SetEgress], [Agent.SetElection], and [Agent.SetElectionFactory]. With
+// a factory wired, a settled member may install further elections after
+// [Agent.ElectionComplete].
 func NewAgent(cfg AgentConfig) *Agent {
 	interval := cfg.LeaderHeartbeatIntervalNs
 	if interval == 0 {
@@ -311,6 +351,13 @@ func NewAgent(cfg AgentConfig) *Agent {
 	}
 	if interval < 0 {
 		panic("consensus: negative LeaderHeartbeatIntervalNs")
+	}
+	timeout := cfg.LeaderHeartbeatTimeoutNs
+	if timeout == 0 {
+		timeout = DefaultLeaderHeartbeatTimeoutNs
+	}
+	if timeout < 0 {
+		panic("consensus: negative LeaderHeartbeatTimeoutNs")
 	}
 	appendTimeout := cfg.AppendPositionNotReadyTimeoutNs
 	if appendTimeout == 0 {
@@ -330,6 +377,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		thisMemberID:              cfg.ThisMemberID,
 		leaderMemberID:            cfg.LeaderMemberID,
 		leaderHeartbeatIntervalNs: interval,
+		leaderHeartbeatTimeoutNs:  timeout,
 		ingress:                   cfg.Ingress,
 		appendSource:              cfg.AppendSource,
 		appendNotReadySinceNs:     nullValue,
@@ -424,9 +472,18 @@ func (a *Agent) SetEgress(egress ConsensusEgress) {
 	a.egress = egress
 }
 
-// SetElection wires or clears the [ElectionRunner] (bootstrap /
-// [Agent.ElectionComplete]).
-func (a *Agent) SetElection(runner ElectionRunner) { a.election = runner }
+// SetElection wires or clears the [ElectionRunner] for open bootstrap and
+// assembly clear.
+//
+// Behaviour: a non-nil runner installs as [ElectionTriggerBootstrap] and
+// increments [Agent.ElectionCount]. A nil runner clears the field only and does
+// not change count or trigger. [Agent.ElectionComplete] clears the runner
+// directly and does not call SetElection.
+//
+// Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
+func (a *Agent) SetElection(runner ElectionRunner) {
+	a.installElection(runner, ElectionTriggerBootstrap)
+}
 
 // SetIngress replaces the consensus ingress poller.
 //
@@ -1003,10 +1060,28 @@ func (a *Agent) adoptLogRecording(
 	return nil
 }
 
-// ElectionComplete clears the [ElectionRunner]; [PositionTable] and
+// ElectionComplete clears the [ElectionRunner] and stamps
+// timeOfLastLogUpdateNs (settled log-update clock). [PositionTable] and
 // [ConsensusEgress] stay wired.
+//
+// Behaviour:
+//   - leader: stamps nowNs minus one heartbeat interval so the first steady
+//     tick publishes a commit heartbeat
+//   - any other role: stamps nowNs so the quiet-tick trigger waits one full
+//     leader heartbeat timeout
+//   - without a stamp the field stays 0; a duty cycle on an absolute clock
+//     re-enters election on the next tick
+//   - does not write timeOfLastLeaderUpdateNs
+//   - does not call [Agent.SetElection]
+//
+// Concurrency: invoker-only.
 func (a *Agent) ElectionComplete(nowNs int64) {
 	a.election = nil
+	if a.role == RoleLeader {
+		a.timeOfLastLogUpdateNs = nowNs - a.leaderHeartbeatIntervalNs
+		return
+	}
+	a.timeOfLastLogUpdateNs = nowNs
 }
 
 // DoWork runs one duty-cycle tick:
@@ -1030,8 +1105,6 @@ func (a *Agent) DoWork(nowNs int64) int {
 	}
 	return work
 }
-
-func (a *Agent) slowTickIfDue(nowNs int64) int { return 0 }
 
 func (a *Agent) pollConsensusIngress(nowNs int64) int {
 	if a.ingress == nil {
@@ -1259,11 +1332,17 @@ func (a *Agent) applySteadyLeaderCommitNotify(
 	a.timeOfLastLogUpdateNs = nowNs
 }
 
-// onUnexpectedHigherTerm is the residual hook for inbound leadership terms
-// above Agent's current term. Does not construct an election; bootstrap or a
-// later path installs election when ready.
+// onUnexpectedHigherTerm re-enters election when a settled member sees a
+// leadership term above its own.
+//
+// Behaviour: records the observation, then installs via
+// [ElectionTriggerHigherTerm] when no election is live and a factory is wired.
+// The install return is discarded: fragment poll already counts the work.
+//
+// Concurrency: invoker-only.
 func (a *Agent) onUnexpectedHigherTerm(nowNs, term int64) {
 	noteUnexpectedHigherTerm(nowNs, term)
+	a.enterElection(ElectionTriggerHigherTerm)
 }
 
 func (a *Agent) consensusWork(nowNs int64) int {

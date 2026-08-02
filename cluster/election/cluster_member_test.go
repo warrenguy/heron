@@ -798,6 +798,94 @@ func TestHasQuorumAtPosition(t *testing.T) {
 	})
 }
 
+// TestHasActiveQuorum asserts free-function liveness quorum over IsActive.
+//
+// Window: nowNs = 100, timeoutNs = 10. Active when
+// TimeOfLastAppendPositionNs+timeoutNs > nowNs. Active stamp 100. Stale stamp
+// 0. Boundary stamp is nowNs-timeoutNs (90).
+//
+// Members pin non-zero LeadershipTermID and LogPosition. A rewrite that calls
+// HasQuorumAtPosition(members, 0, 0, ...) fails term and position match.
+//
+// Single-member inactive stays false here. The always-true single-member rule
+// lives on HostAdapter.HasActiveQuorum, not the free function.
+func TestHasActiveQuorum(t *testing.T) {
+	t.Parallel()
+
+	const (
+		nowNs     int64 = 100
+		timeoutNs int64 = 10
+		activeTS  int64 = 100
+		staleTS   int64 = 0
+		// Non-zero term and position. Wrong rewrite to HasQuorumAtPosition(0, 0)
+		// drops every vote (term mismatch or position floor).
+		termID int64 = 5
+		logPos int64 = 100
+	)
+
+	tests := []struct {
+		name string
+		ts   []int64
+		want bool
+	}{
+		{
+			name: "all active",
+			ts:   []int64{activeTS, activeTS, activeTS},
+			want: true,
+		},
+		{
+			name: "bare quorum",
+			ts:   []int64{activeTS, activeTS, staleTS},
+			want: true,
+		},
+		{
+			name: "below quorum",
+			ts:   []int64{activeTS, staleTS, staleTS},
+			want: false,
+		},
+		{
+			name: "none active",
+			ts:   []int64{staleTS, staleTS, staleTS},
+			want: false,
+		},
+		{
+			name: "single member active",
+			ts:   []int64{activeTS},
+			want: true,
+		},
+		{
+			name: "single member inactive",
+			ts:   []int64{staleTS},
+			want: false,
+		},
+		{
+			name: "boundary",
+			ts:   []int64{nowNs - timeoutNs, nowNs - timeoutNs, nowNs - timeoutNs},
+			want: false,
+		},
+		{
+			name: "even member count",
+			ts:   []int64{activeTS, activeTS, staleTS, staleTS},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			members := make([]*election.Member, len(tt.ts))
+			for i, stamp := range tt.ts {
+				members[i] = newTestMemberWithLog(int32(i), termID, logPos, stamp)
+			}
+			require.Equal(t, tt.want, election.HasActiveQuorum(members, nowNs, timeoutNs))
+			// Pin liveness-only. Non-zero term and position fail HasQuorumAtPosition(0, 0).
+			if tt.want {
+				require.False(t, election.HasQuorumAtPosition(members, 0, 0, nowNs, timeoutNs))
+			}
+		})
+	}
+}
+
 func TestBecomeCandidate(t *testing.T) {
 	t.Parallel()
 

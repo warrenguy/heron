@@ -8,6 +8,8 @@ func (*mockPositionTable) UpdateMemberPosition(int32, int64, int64) {}
 
 func (*mockPositionTable) QuorumPositionBoundedByLeaderLog(int64, int64) int64 { return 0 }
 
+func (*mockPositionTable) HasActiveQuorum(int64, int64) bool { return true }
+
 type mockConsensusEgress struct{}
 
 func (*mockConsensusEgress) PublishCommitPosition(int64, int64) {}

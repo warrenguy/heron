@@ -48,9 +48,9 @@ type FollowerLogJoinParams struct {
 //   - returns true when the image is bound
 //
 // ElectionComplete:
-//   - finalises term
-//   - activates toggles
-//   - clears the election field
+//   - clears the election runner
+//   - stamps timeOfLastLogUpdateNs (settled log-update clock) for the next
+//     quiet-tick timeout window
 type AgentHandler interface {
 	// PrepareForNewLeadership stops the cluster log recording when a control
 	// is wired and returns the last appended log position.

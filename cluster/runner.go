@@ -66,11 +66,11 @@ type RunnerDeps struct {
 	Agent *consensus.Agent
 
 	// Archive is the archive control client the duty cycle demuxes. Pass
-	// ConsensusModule.ArchiveClient on the product path.
+	// ConsensusModule.ArchiveClient when wiring a ConsensusModule.
 	//
-	// Nil is allowed. A nil Archive reports zero archive work every tick. Product
-	// open supplies a non-nil client. Nil is for tests that drive the agent without
-	// an Archive.
+	// Nil is allowed. A nil Archive reports zero archive work every tick.
+	// OpenConsensusModule supplies a non-nil client. Nil is for tests that
+	// drive the agent without an Archive.
 	Archive *archive.Client
 
 	// Idle paces [Runner.Run]. Nil takes idlestrategy.NewDefaultBackoff.
@@ -155,8 +155,8 @@ type Runner struct {
 // A defaulted clock would be a second clock the election does not share.
 //
 // Archive takes a default. A nil Archive installs a no-op invoker that reports
-// zero work. Product open supplies a non-nil client. Nil is for tests that drive
-// the agent without an Archive.
+// zero work. OpenConsensusModule supplies a non-nil client. Nil is for tests
+// that drive the agent without an Archive.
 //
 // A nil Idle is filled with idlestrategy.NewDefaultBackoff, matching
 // [Config.Normalize].

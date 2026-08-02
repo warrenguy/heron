@@ -232,6 +232,26 @@ func (h *HostAdapter) QuorumPositionBoundedByLeaderLog(appendPosition, nowNs int
 	)
 }
 
+// HasActiveQuorum reports whether a quorum of members reported an append
+// position within timeoutNs of nowNs.
+//
+// Behaviour:
+//   - a single-member cluster always returns true
+//   - a multi-member cluster delegates to free HasActiveQuorum over h.members
+//   - timeoutNs comes from the caller; does not read leaderHeartbeatTimeoutNs
+//
+// A settled leader stamps this member every tick. The stamp keeps the leader
+// active while the stamp falls inside timeoutNs.
+//
+// Aeron checks member count at the call site. This method folds the
+// single-member case so the agent always makes one call.
+func (h *HostAdapter) HasActiveQuorum(nowNs, timeoutNs int64) bool {
+	if len(h.members) <= 1 {
+		return true
+	}
+	return HasActiveQuorum(h.members, nowNs, timeoutNs)
+}
+
 func (h *HostAdapter) UpdateMemberLogPosition(
 	member *Member,
 	leadershipTermID, logPosition int64,

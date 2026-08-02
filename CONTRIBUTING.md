@@ -42,8 +42,8 @@ SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/ve
 ## Tests
 
 ```bash
-make check        # lint, pins, SBE/catalog stale (opt), unit+stress, contract-oracles (opt)
-make test-all     # check + rapid + integration + compose smokes
+make check        # lint, pins, SBE stale, unit+stress, contract-oracles (needs java + mvn)
+make test-all     # check + rapid + integration + cluster-archive + compose smokes
 make test-rapid                  # property tests (pgregory.net/rapid)
 make test-election-sim           # election fault sim soak (CI; not part of make check)
 make test-replication-sim        # replication commit-safety sim soak (CI; not part of make check)
@@ -141,7 +141,7 @@ Java golden fixture layout:
 4. Commit spec XML and flyweight diffs if any.
 5. If port notes or subset changed, update the matching entries in
    [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
-6. `make check` (optional SBE stale checks when Java is installed) and `make test-rapid`.
+6. `make check` (needs java + mvn for SBE stale and contract-oracles) and `make test-rapid`.
 7. `make test-cluster-sbe-contract` for cluster wire. Fix failures under:
    - `cluster/codecs/`
    - `test/integration/cluster_sbe/clustersbe/`

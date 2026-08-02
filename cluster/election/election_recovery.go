@@ -18,10 +18,5 @@ func ApplyRecoveryPlan(cfg *ElectionConfig, plan recordinglog.RecoveryPlan) {
 	cfg.LeadershipTermID = plan.LastLeadershipTermID
 	cfg.TermBaseLogPosition = plan.LastTermBaseLogPosition
 	cfg.LogPosition = plan.CommittedLogPosition
-	if plan.AppendedLogPosition != recordinglog.NullPosition {
-		cfg.AppendPosition = plan.AppendedLogPosition
-	} else {
-		// Active recording: stop unknown; use committed as append floor.
-		cfg.AppendPosition = plan.CommittedLogPosition
-	}
+	cfg.AppendPosition = plan.AppendedOrCommittedPosition()
 }

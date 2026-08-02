@@ -83,15 +83,13 @@ help: ## List Makefile targets
 
 # Without GNU timeout/gtimeout on PATH, CHECK_TIMEOUT is not enforced; TEST_TIMEOUT still applies.
 .PHONY: check check-inner check-static check-static-extra check-test check-aeron-versions \
-	check-sbe-stale check-sbe-stale-optional \
-	check-sbe-stale-archive check-sbe-stale-archive-optional \
-	check-sbe-stale-nodestate check-sbe-stale-nodestate-optional \
+	check-sbe-stale \
+	check-sbe-stale-archive \
+	check-sbe-stale-nodestate \
 	cluster-sbe-catalog-regen recordinglog-fixtures-regen \
-	recordinglog-fixtures-regen-optional \
-	node-state-fixtures-regen node-state-fixtures-regen-optional \
-	contract-oracles-optional
+	node-state-fixtures-regen
 
-check: ## Lint pins unit stress examples (contract-oracles opt)
+check: ## Lint pins unit stress examples contract-oracles (needs java + mvn)
 	@T=$$(command -v timeout 2>/dev/null \
 		|| command -v gtimeout 2>/dev/null); \
 	if [ -n "$$T" ]; then \
@@ -104,11 +102,11 @@ check-static: lint check-static-extra
 
 check-static-extra:
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) \
-		check-sbe-stale-optional \
-		check-sbe-stale-archive-optional \
-		check-sbe-stale-nodestate-optional
+		check-sbe-stale \
+		check-sbe-stale-archive \
+		check-sbe-stale-nodestate
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) check-aeron-versions \
-		contract-oracles-optional test-golden-fixtures-unit-optional
+		contract-oracles test-golden-fixtures-unit
 
 check-test:
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) test test-stress check-examples
@@ -117,21 +115,10 @@ check-inner: check-static check-test
 
 .PHONY: test-all
 test-all: ## Full suite: check rapid integration cluster-archive docker-smokes
-	+@$(MAKE) --no-print-directory check test-rapid test-integration test-cluster-archive-optional test-docker-smokes
+	+@$(MAKE) --no-print-directory check test-rapid test-integration test-cluster-archive test-docker-smokes
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
-
-# Run $(1) when $(2) succeeds; otherwise print skip message $(3).
-# Leading + forwards the jobserver to the recursive $(MAKE) under a parallel build.
-define optional-target
-$(1)-optional:
-	+@if $(2); then \
-		$(MAKE) --no-print-directory $(1); \
-	else \
-		echo "heron: skipping $(1) ($(3))"; \
-	fi
-endef
 
 # $(1)=target suffix (empty, -archive, or -nodestate), $(2)=help label, $(3)=generate-sbe.sh arg
 define sbe-generate-target
@@ -145,7 +132,6 @@ define sbe-stale-check
 $(if $(3),,$(error sbe-stale-check: missing generated subdir arg for $(2)))
 check-sbe-stale$(1): sbe-generate$(1)
 	@git diff --exit-code $(2)/$(3)/
-$(eval $(call optional-target,check-sbe-stale$(1),command -v java >/dev/null,java not installed))
 endef
 
 # Cluster SBE catalog regen; stale hex/fields parity is enforced by
@@ -174,9 +160,6 @@ node-state-fixtures-regen: ## Regenerate cluster/election/testdata/node-state fr
 	}
 	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
 		mvn -q -f $(GOLDEN_FIXTURES_POM) compile exec:java@node-state
-
-$(eval $(call optional-target,recordinglog-fixtures-regen,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
-$(eval $(call optional-target,node-state-fixtures-regen,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
 
 # Regenerate SBE flyweights and fail on diff vs committed output.
 $(eval $(call sbe-stale-check,,cluster/codecs,clusterwire))
@@ -400,8 +383,8 @@ DOCKER_SMOKE_TARGETS := \
 .PHONY: test-java-interop test-cluster-java test-cluster-java-failover test-archive-java \
 	test-cluster-mixed-java-leader test-cluster-mixed-go-leader test-docker-smokes \
 	$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-unit test-$(s)-oracle test-$(s)-contract) \
-	contract-oracles contract-oracles-optional \
-	test-golden-fixtures-unit test-golden-fixtures-unit-optional
+	contract-oracles \
+	test-golden-fixtures-unit
 
 test-java-interop: aeronmd-compose-image ## Docker smoke: Java/Go IPC duplex
 	./scripts/java-interop-smoke.sh
@@ -433,10 +416,7 @@ contract-oracles: ## All four contract oracle suites (mvn + go)
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) \
 		$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-contract)
 
-$(eval $(call optional-target,contract-oracles,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
-
 $(eval $(call mvn-integration-unit,golden-fixtures,$(GOLDEN_FIXTURES_POM)))
-$(eval $(call optional-target,test-golden-fixtures-unit,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
 
 bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd.sh
 	./scripts/build-aeronmd.sh
@@ -444,13 +424,11 @@ bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd
 # Live Archive suite lives only under test/integration/cluster_archive
 # (//go:build integration && archive_live). No shared package with plain
 # integration tests, so -tags alone selects the suite.
-.PHONY: test-cluster-archive test-cluster-archive-optional
+.PHONY: test-cluster-archive
 test-cluster-archive: bin/aeronmd bin/heron-archive-java.jar ## Live: per-member Archive elect and commit
 	go test -timeout=$(TEST_TIMEOUT) -race -count=1 \
 		-tags=integration,archive_live \
 		./test/integration/cluster_archive/
-
-$(eval $(call optional-target,test-cluster-archive,command -v mvn >/dev/null && command -v java >/dev/null,mvn/java not installed))
 
 bin/heron-archive-java.jar: $(shell find test/integration/archive_java/src -type f) test/integration/archive_java/pom.xml scripts/build-archive-jar.sh
 	./scripts/build-archive-jar.sh

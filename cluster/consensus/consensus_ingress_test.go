@@ -50,6 +50,10 @@ func (p *recordingPositionTable) QuorumPositionBoundedByLeaderLog(
 	return appendPosition
 }
 
+func (p *recordingPositionTable) HasActiveQuorum(nowNs, timeoutNs int64) bool {
+	return true
+}
+
 func encodeAppendPositionWire(t *testing.T, fields codecs.AppendPositionFields) []byte {
 	t.Helper()
 	actingVersion := uint16(clusterwire.AppendPositionSbeSchemaVersion)

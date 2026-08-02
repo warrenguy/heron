@@ -115,6 +115,18 @@ func (p RecoveryPlan) TermRecordingID() int64 {
 	return p.Log.Term.RecordingID
 }
 
+// AppendedOrCommittedPosition returns the appended log position, or the
+// committed log position when the appended position is NullPosition.
+//
+// NullPosition means the term recording is still active: the append stop is
+// unknown, so the committed position is the append floor.
+func (p RecoveryPlan) AppendedOrCommittedPosition() int64 {
+	if p.AppendedLogPosition != NullPosition {
+		return p.AppendedLogPosition
+	}
+	return p.CommittedLogPosition
+}
+
 // RecoveryPlanConfig holds inputs for PlanRecovery.
 type RecoveryPlanConfig struct {
 	// ServiceCount is the number of clustered services (excluding the consensus module).

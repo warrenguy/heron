@@ -133,8 +133,8 @@ func restartCycle(
 }
 
 // openFromHistory writes a committed term log under recording id 42, then opens
-// Recovery once. That open is the product restart path: durable history already
-// on disk, one OpenRecovery.
+// Recovery once. That open is the restart path: durable history already on
+// disk, one OpenRecovery.
 //
 // stop is the Archive extent stop position for recording 42. Registers cleanup
 // for the open handle.

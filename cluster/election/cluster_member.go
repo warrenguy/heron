@@ -144,6 +144,13 @@ func IsQuorumCandidate(members []*Member, candidate *Member) bool {
 }
 
 // HasQuorumAtPosition reports whether a quorum of active members reached position.
+//
+// Only members for which HasReachedPosition is true contribute. The threshold
+// is QuorumThreshold(len(members)), so the denominator stays the full member
+// count.
+//
+// Pair with HasActiveQuorum. That helper tests liveness alone. This helper also
+// requires matching term and position.
 func HasQuorumAtPosition(
 	members []*Member,
 	leadershipTermID, position, nowNs, timeoutNs int64,
@@ -151,6 +158,25 @@ func HasQuorumAtPosition(
 	votes := 0
 	for _, member := range members {
 		if member.HasReachedPosition(leadershipTermID, position, nowNs, timeoutNs) {
+			votes++
+		}
+	}
+	return votes >= QuorumThreshold(len(members))
+}
+
+// HasActiveQuorum reports whether a quorum of members reported an append
+// position within timeoutNs of nowNs.
+//
+// Only members for which IsActive(nowNs, timeoutNs) is true contribute. The
+// threshold is QuorumThreshold(len(members)), so the denominator stays the full
+// member count.
+//
+// Pair with HasQuorumAtPosition. That helper also requires matching term and
+// position. This helper tests liveness alone.
+func HasActiveQuorum(members []*Member, nowNs, timeoutNs int64) bool {
+	votes := 0
+	for _, member := range members {
+		if member.IsActive(nowNs, timeoutNs) {
 			votes++
 		}
 	}

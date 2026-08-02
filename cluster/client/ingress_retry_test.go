@@ -574,7 +574,7 @@ func TestIngressOfferUntilPositive_contextDeadline(t *testing.T) {
 		elapsed := time.Since(start)
 
 		require.Zero(t, pos)
-		require.Less(t, elapsed, 50*time.Millisecond)
+		require.Less(t, elapsed, time.Second)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 

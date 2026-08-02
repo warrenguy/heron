@@ -187,3 +187,50 @@ func TestQuorumPosition_rapid(t *testing.T) {
 		}
 	})
 }
+
+// TestHasActiveQuorum_rapid asserts HasActiveQuorum against an IsActive count
+// oracle for random clusters and activity windows.
+//
+// Drawn inputs:
+//   - n: member count 1..9
+//   - nowNs, timeoutNs: IsActive window (active when ts+timeoutNs > nowNs)
+//   - ts: TimeOfLastAppendPositionNs per member
+//   - term: LeadershipTermID over full int64 (must not affect result)
+//   - pos: LogPosition via drawQuorumLogPosition (must not affect result)
+//
+// Oracle: count members with IsActive. True when count >= QuorumThreshold(n).
+// After the oracle check, scramble term and position on every member. The
+// result must not move. A rewrite that reads either field fails the scramble.
+func TestHasActiveQuorum_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		n := rapid.IntRange(1, 9).Draw(rt, "n")
+		nowNs := rapid.Int64Range(0, 100).Draw(rt, "nowNs")
+		timeoutNs := rapid.Int64Range(0, 50).Draw(rt, "timeoutNs")
+
+		members := make([]*election.Member, n)
+		active := 0
+		for i := range n {
+			members[i] = newTestMemberWithLog(
+				int32(i),
+				rapid.Int64().Draw(rt, "term"),
+				drawQuorumLogPosition(rt, "pos"),
+				rapid.Int64Range(-10, 100).Draw(rt, "ts"),
+			)
+			if members[i].IsActive(nowNs, timeoutNs) {
+				active++
+			}
+		}
+
+		want := active >= election.QuorumThreshold(n)
+		got := election.HasActiveQuorum(members, nowNs, timeoutNs)
+		require.Equal(rt, want, got)
+
+		// Scramble term and position. Liveness quorum must not move.
+		for _, m := range members {
+			m.LeadershipTermID = rapid.Int64().Draw(rt, "scrambleTerm")
+			m.LogPosition = drawQuorumLogPosition(rt, "scramblePos")
+		}
+		require.Equal(rt, got, election.HasActiveQuorum(members, nowNs, timeoutNs))
+	})
+}

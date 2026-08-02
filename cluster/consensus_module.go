@@ -40,8 +40,11 @@ type ConsensusModuleDeps struct {
 // consensus.Agent.DoWork. Exception: [ConsensusModule.CommitPosition] reads the
 // mode-1 *atomic.Int64 and is safe from any goroutine.
 //
-// Lifetime: the module outlives the election. Call Close in caller teardown
-// after the duty cycle has stopped.
+// Lifetime: the module outlives the latest election handle. A settled member
+// may install a further election from the open-time election factory; each
+// re-install of *election.Election updates m.election. Close clears that
+// factory before it clears the runner. Call Close in caller teardown after the
+// duty cycle has stopped.
 //
 // Do not copy. Most fields are pointers. A value copy shares the same handles.
 //
@@ -99,6 +102,7 @@ type ConsensusModule struct {
 //  10. cluster log streams
 //  11. host adapter
 //  12. election
+//  13. election factory
 //
 // Recovery plans from the recording log.
 //
@@ -203,6 +207,7 @@ func OpenConsensusModule(
 		ThisMemberID:              cfg.MemberID,
 		LeaderMemberID:            election.NullMemberID,
 		LeaderHeartbeatIntervalNs: electionCfg.LeaderHeartbeatIntervalNs,
+		LeaderHeartbeatTimeoutNs:  electionCfg.LeaderHeartbeatTimeoutNs,
 		AppVersion:                electionCfg.AppVersion,
 	})
 
@@ -281,26 +286,33 @@ func OpenConsensusModule(
 	module.agent.SetPositions(module.host)
 	module.agent.SetEgress(module.host)
 
-	module.election = election.NewElection(electionCfg, election.ElectionDeps{
-		Handler:    module.agent,
-		Host:       module.host,
-		Publisher:  publisher,
-		NanoClock:  nanoClock,
-		EpochClock: epochClock,
-
-		// Never nil: a nil randomiser gives every member a zero nomination
-		// back-off, and members that all nominate on the same tick split the
-		// ballot and never elect.
-		NominationRand: rand.Float64,
-
+	// Never nil: a nil randomiser gives every member a zero nomination
+	// back-off, and members that all nominate on the same tick split the
+	// ballot and never elect.
+	electionDeps := election.ElectionDeps{
+		Handler:                   module.agent,
+		Host:                      module.host,
+		Publisher:                 publisher,
+		NanoClock:                 nanoClock,
+		EpochClock:                epochClock,
+		NominationRand:            rand.Float64,
 		NodeState:                 recovery.NodeState(),
 		Members:                   topology.Members(),
 		ThisMember:                topology.ThisMember(),
 		RecordingLog:              recovery.RecordingLog(),
 		RecordingLogLookup:        recovery.RecordingLog(),
 		RecordingLogFileSyncLevel: cfg.RecordingLogFileSyncLevel,
-	})
+	}
+	module.election = election.NewElection(electionCfg, electionDeps)
 	module.agent.SetElection(module.election)
+	module.agent.SetElectionFactory(trackModuleElection(
+		module,
+		newElectionFactory(
+			electionCfg,
+			electionDeps,
+			recovery.Plan(),
+		),
+	))
 
 	succeeded = true
 	return module, nil
@@ -347,8 +359,11 @@ func (m *ConsensusModule) Close() error {
 	// Clear agent bindings before closing the handles they reference: positions
 	// and egress hold the host adapter and its shared publisher, which
 	// publications close next. Log publisher, adapter, append source, and join
-	// source are cleared by the streams Close.
+	// source are cleared by the streams Close. Clear the election factory
+	// before the runner so a post-Close duty tick cannot re-install against a
+	// torn-down recovery.
 	if m.agent != nil {
+		m.agent.SetElectionFactory(nil)
 		m.agent.SetElection(nil)
 		m.agent.SetPositions(nil)
 		m.agent.SetEgress(nil)
@@ -502,21 +517,38 @@ func (m *ConsensusModule) NotifiedCommitPosition() int64 {
 	return m.agent.NotifiedCommitPosition()
 }
 
-// ElectionComplete reports whether the election completed.
+// ElectionComplete reports whether the latest installed election completed.
 //
-// Derived from the retained election state machine: completion sets
-// ElectionStateClosed in the same step that clears the agent's runner, and
-// Close does not disturb the state, so a member closed mid-election keeps
-// reporting false, which is the case a failure dump exists to catch.
+// Behaviour:
+//   - reads m.election (*election.Election most recently installed at open or
+//     settled re-install)
+//   - true when that machine is Closed
+//   - false when m.election is nil, or the latest machine has not closed
+//   - each settled re-install of *election.Election replaces m.election, so
+//     this tracks the live machine again after re-entry
+//   - Close does not clear m.election; a member closed mid election keeps
+//     reporting false until that machine reaches Closed
+//   - after Close on a settled member, reports whether the last installed
+//     machine is Closed (post-Close dumps)
+//
+// Same handle as [ConsensusModule.ElectionState]. For install count and
+// trigger, use [consensus.Agent.ElectionCount] and
+// [consensus.Agent.LastElectionTrigger]. [consensus.Agent.Election] is non-nil
+// only while a runner is live on the duty path.
 func (m *ConsensusModule) ElectionComplete() bool {
 	return m.election != nil && m.election.State() == election.ElectionStateClosed
 }
 
-// ElectionState returns the election state machine's current state.
+// ElectionState returns the latest installed election state machine's state.
 //
-// After Close it reports the state the machine last reached. Close does not
-// release the election: it holds no OS resource, and retaining it is what makes
-// this accessor answer truthfully once the transport handles are gone.
+// Behaviour:
+//   - same handle as [ConsensusModule.ElectionComplete]
+//   - each settled re-install of *election.Election replaces m.election; this
+//     tracks the live *election.Election after re-entry
+//   - after Close, reports the state the latest machine last reached
+//   - Close does not release m.election; the election holds no OS resource
+//   - retaining m.election is what makes this accessor answer after transport
+//     handles are gone
 func (m *ConsensusModule) ElectionState() election.ElectionState {
 	if m.election == nil {
 		return election.ElectionStateInit

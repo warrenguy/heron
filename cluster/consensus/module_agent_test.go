@@ -13,11 +13,16 @@ import (
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
+// orderRunner returns a fixed work count and counts DoWork calls.
 type orderRunner struct {
-	n int
+	n     int
+	calls int
 }
 
-func (r *orderRunner) DoWork(int64) int { return r.n }
+func (r *orderRunner) DoWork(int64) int {
+	r.calls++
+	return r.n
+}
 
 func (r *orderRunner) HandleConsensusMessage([]byte, int) bool { return false }
 
@@ -33,6 +38,8 @@ func (s *stubPositionTable) UpdateMemberPosition(
 func (s *stubPositionTable) QuorumPositionBoundedByLeaderLog(appendPosition, nowNs int64) int64 {
 	return appendPosition
 }
+
+func (s *stubPositionTable) HasActiveQuorum(nowNs, timeoutNs int64) bool { return true }
 
 // spyPositionTable records stamp/rank call order for leader consensusWork tests.
 // fixedQuorum, when set, is host-minned: min(*fixedQuorum, appendPosition).
@@ -64,6 +71,8 @@ func (s *spyPositionTable) QuorumPositionBoundedByLeaderLog(appendPosition, nowN
 	}
 	return appendPosition
 }
+
+func (s *spyPositionTable) HasActiveQuorum(nowNs, timeoutNs int64) bool { return true }
 
 // newLeaderConsensusAgent builds a leader Agent with mode-1 append inject and
 // spy positions for consensusWork unit tests.
@@ -381,6 +390,12 @@ func TestNewAgent_negativeHeartbeatIntervalPanics(t *testing.T) {
 	})
 }
 
+func TestNewAgent_negativeHeartbeatTimeoutPanics(t *testing.T) {
+	require.Panics(t, func() {
+		_ = NewAgent(AgentConfig{LeaderHeartbeatTimeoutNs: -1})
+	})
+}
+
 func TestSetPositions_andSetEgress_wireAndClear(t *testing.T) {
 	a := NewAgent(AgentConfig{})
 	require.Nil(t, a.Positions())
@@ -400,13 +415,50 @@ func TestSetPositions_andSetEgress_wireAndClear(t *testing.T) {
 }
 
 func TestSetElection_andGetter(t *testing.T) {
+	// Construct inject skips installElection. ElectionCount stays 0 and
+	// LastElectionTrigger stays ElectionTriggerNone.
+	injected := NewAgent(AgentConfig{Election: &orderRunner{n: 1}})
+	require.NotNil(t, injected.Election())
+	require.Equal(t, int64(0), injected.ElectionCount())
+	require.Equal(t, ElectionTriggerNone, injected.LastElectionTrigger())
+
 	a := NewAgent(AgentConfig{})
 	require.Nil(t, a.Election())
+	require.Equal(t, int64(0), a.ElectionCount())
+	require.Equal(t, ElectionTriggerNone, a.LastElectionTrigger())
+
 	r := &orderRunner{n: 1}
 	a.SetElection(r)
 	require.Equal(t, ElectionRunner(r), a.Election())
+	require.Equal(t, int64(1), a.ElectionCount())
+	require.Equal(t, ElectionTriggerBootstrap, a.LastElectionTrigger())
+
 	a.SetElection(nil)
 	require.Nil(t, a.Election())
+	require.Equal(t, int64(1), a.ElectionCount())
+	require.Equal(t, ElectionTriggerBootstrap, a.LastElectionTrigger())
+}
+
+func TestSetElectionFactory_wireAndClear(t *testing.T) {
+	const timeoutNs = DefaultLeaderHeartbeatTimeoutNs
+	a := NewAgent(AgentConfig{
+		Role:                     RoleFollower,
+		LeaderHeartbeatTimeoutNs: timeoutNs,
+	})
+	a.timeOfLastLogUpdateNs = 0
+	a.SetElectionFactory(func(ElectionSeed) ElectionRunner {
+		return &orderRunner{n: 1}
+	})
+	require.Positive(t, a.DoWork(timeoutNs))
+	require.NotNil(t, a.Election())
+	require.Equal(t, ElectionTriggerLeaderHeartbeatTimeout, a.LastElectionTrigger())
+	count := a.ElectionCount()
+
+	a.ElectionComplete(timeoutNs)
+	a.SetElectionFactory(nil)
+	require.Equal(t, 0, a.DoWork(timeoutNs*2+slowTickIntervalNs))
+	require.Nil(t, a.Election())
+	require.Equal(t, count, a.ElectionCount())
 }
 
 func TestHostDelegate_stubsSmoke(t *testing.T) {
@@ -502,12 +554,15 @@ func TestNewAgent_defaults(t *testing.T) {
 	require.Nil(t, a.LogRecordingControl())
 	require.Equal(t, int64(0), a.TimeOfLastLeaderUpdateNs())
 	require.Equal(t, DefaultLeaderHeartbeatIntervalNs, a.leaderHeartbeatIntervalNs)
+	require.Equal(t, DefaultLeaderHeartbeatTimeoutNs, a.leaderHeartbeatTimeoutNs)
 	require.Equal(t, int64(0), a.LeadershipTermID())
 	require.Equal(t, int64(0), a.NotifiedCommitPosition())
 	require.Nil(t, a.Election())
 	require.Nil(t, a.Positions())
 	require.Nil(t, a.Egress())
 	require.Nil(t, a.AppendSource())
+	require.Equal(t, int64(0), a.ElectionCount())
+	require.Equal(t, ElectionTriggerNone, a.LastElectionTrigger())
 
 	require.Equal(t, RoleLeader, NewAgent(AgentConfig{Role: RoleLeader}).Role())
 }
