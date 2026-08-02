@@ -56,14 +56,33 @@ func TestClusterModule_electsOneLeaderOverLiveDrivers(t *testing.T) {
 		require.NotEqual(t, int64(-1), recordingID, "member %d", m.ThisMemberID())
 		require.True(t, m.Agent().IsRecordingActive(), "member %d", m.ThisMemberID())
 		entries := m.RecordingLog().Entries()
-		require.NotEmpty(t, entries, "member %d", m.ThisMemberID())
-		require.Equal(
-			t,
-			recordingID,
-			entries[len(entries)-1].RecordingID,
-			"member %d",
-			m.ThisMemberID(),
-		)
+		// Cold elect: contiguous TERM entries [0, term]. Target term stays open.
+		require.Len(t, entries, int(term+1), "member %d", m.ThisMemberID())
+		for k, e := range entries {
+			require.Equal(t, recordinglog.EntryTypeTerm, e.Type, "member %d entry %d", m.ThisMemberID(), k)
+			require.True(t, e.Valid, "member %d entry %d", m.ThisMemberID(), k)
+			require.Equal(t, recordingID, e.RecordingID, "member %d entry %d", m.ThisMemberID(), k)
+			require.Equal(t, int64(k), e.LeadershipTermID, "member %d entry %d", m.ThisMemberID(), k)
+			if int64(k) < term {
+				require.NotEqual(
+					t,
+					recordinglog.NullPosition,
+					e.LogPosition,
+					"member %d entry %d",
+					m.ThisMemberID(),
+					k,
+				)
+			} else {
+				require.Equal(
+					t,
+					recordinglog.NullPosition,
+					e.LogPosition,
+					"member %d entry %d",
+					m.ThisMemberID(),
+					k,
+				)
+			}
+		}
 		archiveClient := m.ArchiveClient()
 		require.NotNil(t, archiveClient, "member %d", m.ThisMemberID())
 		desc, err := archiveClient.ListRecording(context.Background(), recordingID)
