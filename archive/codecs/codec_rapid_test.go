@@ -359,6 +359,28 @@ func TestStopReplayRequest_codec_rapid(t *testing.T) {
 	})
 }
 
+func TestTruncateRecordingRequest_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.TruncateRecordingRequestFields{
+			ControlSessionID: rapid.Int64().Draw(rt, "controlSessionID"),
+			CorrelationID:    rapid.Int64().Draw(rt, "correlationID"),
+			RecordingID:      rapid.Int64().Draw(rt, "recordingID"),
+			Position:         rapid.Int64().Draw(rt, "position"),
+		}
+
+		runArchiveCodecRoundtripAtOffset(
+			rt,
+			archivewire.TruncateRecordingRequestSbeTemplateID,
+			actingVersion,
+			offset,
+			encodeAt(actingVersion, fields, codecs.EncodeTruncateRecordingRequest),
+			fields,
+		)
+	})
+}
+
 func TestCloseSessionRequest_codec_rapid(t *testing.T) {
 	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {

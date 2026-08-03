@@ -1543,13 +1543,98 @@ func TestHandleFollowerLogReplication_caughtUpClearsHelperForReinstall(t *testin
 	require.Equal(t, election.ElectionStateFollowerLogReplication, e.State())
 }
 
+// truncateInstallErrs holds the inject errors for one truncate install round.
+type truncateInstallErrs struct {
+	truncate error
+	commit   error
+	force    error
+}
+
+// truncateInstallResult holds the election, spies, and pre-install tracked
+// positions after one OnNewLeadershipTerm that took the truncate path.
+type truncateInstallResult struct {
+	e            *election.Election
+	host         *recordingElectionHost
+	spy          *recordingLogCoherencySpy
+	termID       int64
+	appendBefore int64
+	logBefore    int64
+	termBefore   int64
+	fields       codecs.NewLeadershipTermFields
+}
+
+const truncateInstallBase int64 = 128
+
+// runTruncateInstall calls OnNewLeadershipTerm with next-term base below the
+// append position so the install takes the truncate path.
+func runTruncateInstall(t *testing.T, errs truncateInstallErrs) truncateInstallResult {
+	t.Helper()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	cfg.LogPosition = cfg.AppendPosition
+	host := &recordingElectionHost{
+		clock:               clock,
+		localLogRecordingID: 42,
+		truncateErr:         errs.truncate,
+	}
+	deps.Host = host
+	spy := &recordingLogCoherencySpy{commitErr: errs.commit, forceErr: errs.force}
+	deps.RecordingLog = spy
+
+	// Init reruns prepare on a retry drive; a zero return would clobber the
+	// append position and skip the truncate branch on the second install.
+	deps.Handler = &recordingAgentHandler{appendPositionReturn: election.NullPosition}
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateCanvass)
+
+	result := truncateInstallResult{
+		e:            e,
+		host:         host,
+		spy:          spy,
+		termID:       cfg.LeadershipTermID,
+		appendBefore: e.AppendPosition(),
+		logBefore:    e.LogPosition(),
+		termBefore:   election.LogLeadershipTermIDForTest(e),
+	}
+	require.Less(t, truncateInstallBase, result.appendBefore)
+
+	fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
+	fields.NextLeadershipTermID = cfg.LeadershipTermID + 1
+	fields.NextTermBaseLogPosition = truncateInstallBase
+	result.fields = fields
+	e.OnNewLeadershipTerm(fields)
+	return result
+}
+
 func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {
 	t.Parallel()
 
 	t.Run("next term base below append truncates and resets", func(t *testing.T) {
 		t.Parallel()
 
+		r := runTruncateInstall(t, truncateInstallErrs{})
+
+		require.Equal(t, []truncateCall{{
+			leadershipTermID: r.termID,
+			logPosition:      truncateInstallBase,
+		}}, r.host.truncateCalls)
+		require.Equal(t, []commitLogPositionCall{{
+			leadershipTermID: r.termID,
+			logPosition:      truncateInstallBase,
+		}}, r.spy.commitCalls)
+		require.Equal(t, 1, r.spy.forceCalls)
+		require.Empty(t, r.spy.calls)
+		require.Equal(t, truncateInstallBase, r.e.AppendPosition())
+		require.Equal(t, truncateInstallBase, r.e.LogPosition())
+		require.Equal(t, r.termBefore, election.LogLeadershipTermIDForTest(r.e))
+		require.Equal(t, election.ElectionStateInit, r.e.State())
+	})
+
+	t.Run("announced term above log term truncates on log term", func(t *testing.T) {
+		t.Parallel()
+
 		cfg, deps, clock, _, _ := testElectionDeps(t)
+		cfg.LogPosition = cfg.AppendPosition
 		host := &recordingElectionHost{clock: clock, localLogRecordingID: 42}
 		deps.Host = host
 		spy := &recordingLogCoherencySpy{}
@@ -1557,17 +1642,120 @@ func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {
 		e := election.NewElection(cfg, deps)
 		election.SetStateForTest(e, election.ElectionStateCanvass)
 
-		fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
+		// Rollback shape: the leader announces a higher term while the log
+		// still ends in the anchored log term. Commit and truncate must use
+		// the log term, not the announced one.
+		fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID+1)
 		fields.NextLeadershipTermID = cfg.LeadershipTermID + 1
-		fields.NextTermBaseLogPosition = cfg.AppendPosition - 50
+		fields.NextTermBaseLogPosition = truncateInstallBase
 		e.OnNewLeadershipTerm(fields)
 
 		require.Equal(t, []truncateCall{{
 			leadershipTermID: cfg.LeadershipTermID,
-			logPosition:      cfg.AppendPosition - 50,
+			logPosition:      truncateInstallBase,
 		}}, host.truncateCalls)
-		require.Empty(t, spy.calls)
-		require.Equal(t, cfg.AppendPosition-50, e.AppendPosition())
+		require.Equal(t, []commitLogPositionCall{{
+			leadershipTermID: cfg.LeadershipTermID,
+			logPosition:      truncateInstallBase,
+		}}, spy.commitCalls)
+		require.Equal(t, truncateInstallBase, e.AppendPosition())
+		require.Equal(t, election.ElectionStateInit, e.State())
+	})
+
+	t.Run("truncate failure lowers nothing", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name              string
+			errs              truncateInstallErrs
+			wantForceCalls    int
+			wantTruncateCalls int
+			retryConverges    bool
+		}{
+			{
+				// Recording-log commit runs before archive truncate. Host refuse
+				// still applies commit and force. The next round re-runs commit,
+				// force, and truncate.
+				name:              "host refuses",
+				errs:              truncateInstallErrs{truncate: errors.New("host refuse")},
+				wantForceCalls:    1,
+				wantTruncateCalls: 1,
+				retryConverges:    true,
+			},
+			{
+				name: "term commit fails",
+				errs: truncateInstallErrs{commit: recordinglog.ErrUnknownLeadershipTermID},
+			},
+			{
+				name:           "force fails",
+				errs:           truncateInstallErrs{force: errors.New("force failed")},
+				wantForceCalls: 1,
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				r := runTruncateInstall(t, tc.errs)
+
+				require.Len(t, r.spy.commitCalls, 1)
+				require.Equal(t, tc.wantForceCalls, r.spy.forceCalls)
+				require.Len(t, r.host.truncateCalls, tc.wantTruncateCalls)
+				require.Equal(t, r.appendBefore, r.e.AppendPosition())
+				require.Equal(t, r.logBefore, r.e.LogPosition())
+				require.Equal(t, election.ElectionStateInit, r.e.State())
+
+				if !tc.retryConverges {
+					return
+				}
+
+				// Cleared refusal: Init drives back to Canvass, the same install
+				// re-runs commit, force, and truncate, then lowers positions.
+				r.host.truncateErr = nil
+				r.e.DoWork(1_000_000_000)
+				require.Equal(t, election.ElectionStateCanvass, r.e.State())
+				r.e.OnNewLeadershipTerm(r.fields)
+
+				require.Equal(t, []truncateCall{
+					{leadershipTermID: r.termID, logPosition: truncateInstallBase},
+					{leadershipTermID: r.termID, logPosition: truncateInstallBase},
+				}, r.host.truncateCalls)
+				require.Len(t, r.spy.commitCalls, 2)
+				require.Equal(t, 2, r.spy.forceCalls)
+				require.Equal(t, truncateInstallBase, r.e.AppendPosition())
+				require.Equal(t, truncateInstallBase, r.e.LogPosition())
+				require.Equal(t, election.ElectionStateInit, r.e.State())
+			})
+		}
+	})
+
+	t.Run("truncate with a null log term id skips the commit", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, deps, clock, _, _ := testElectionDeps(t)
+		cfg.LogPosition = cfg.AppendPosition
+		cfg.LeadershipTermID = election.NullValue
+		host := &recordingElectionHost{clock: clock, localLogRecordingID: 42}
+		deps.Host = host
+		spy := &recordingLogCoherencySpy{}
+		deps.RecordingLog = spy
+		e := election.NewElection(cfg, deps)
+		election.SetLogLeadershipTermIDForTest(e, election.NullValue)
+		election.SetStateForTest(e, election.ElectionStateCanvass)
+
+		const newBase int64 = 128
+		fields := installNewLeadershipTermFields(cfg, 1, election.NullValue)
+		fields.LogLeadershipTermID = election.NullValue
+		fields.NextLeadershipTermID = 1
+		fields.NextTermBaseLogPosition = newBase
+		e.OnNewLeadershipTerm(fields)
+
+		require.Len(t, host.truncateCalls, 1)
+		require.Empty(t, spy.commitCalls)
+		require.Equal(t, 0, spy.forceCalls)
+		require.Equal(t, newBase, e.AppendPosition())
+		require.Equal(t, newBase, e.LogPosition())
 		require.Equal(t, election.ElectionStateInit, e.State())
 	})
 

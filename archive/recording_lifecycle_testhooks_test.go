@@ -112,6 +112,8 @@ func offeredArchiveCorrelationID(t *testing.T, wire []byte) int64 {
 		return fields.CorrelationID
 	case codecs.StopReplayRequestFields:
 		return fields.CorrelationID
+	case codecs.TruncateRecordingRequestFields:
+		return fields.CorrelationID
 	default:
 		require.Failf(t, "unexpected offered template", "template=%d", decoded.TemplateID)
 		return 0

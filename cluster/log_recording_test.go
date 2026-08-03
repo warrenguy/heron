@@ -28,16 +28,22 @@ type recordingArchiveStub struct {
 	listErr      error
 	listStopPos  int64
 
+	truncateErr   error
+	truncateCount int64
+
 	stopCalls      int
 	stopAwaitCalls int
 	listCalls      int
 	startCalls     int
 	extendCalls    int
+	truncateCalls  int
 
 	lastStopChannel          []byte
 	lastStopStreamID         int32
 	lastStopAwaitChannel     []byte
 	lastListRecordingID      int64
+	lastTruncateRecordingID  int64
+	lastTruncatePosition     int64
 	lastExtendID             int64
 	lastExtendChannel        []byte
 	lastExtendAutoStop       bool
@@ -121,6 +127,20 @@ func (s *recordingArchiveStub) ListRecording(
 		return codecs.RecordingDescriptorFields{}, s.listErr
 	}
 	return codecs.RecordingDescriptorFields{StopPosition: s.listStopPos}, nil
+}
+
+func (s *recordingArchiveStub) TruncateRecording(
+	_ context.Context,
+	recordingID int64,
+	position int64,
+) (int64, error) {
+	s.truncateCalls++
+	s.lastTruncateRecordingID = recordingID
+	s.lastTruncatePosition = position
+	if s.truncateErr != nil {
+		return 0, s.truncateErr
+	}
+	return s.truncateCount, nil
 }
 
 // fixedTermLookup is a TermRecordingLookup with a fixed shared id.
@@ -627,6 +647,81 @@ func TestLogRecording_StopPositionFor(t *testing.T) {
 		require.Error(t, err)
 		require.Equal(t, recordinglog.NullPosition, got)
 		require.Equal(t, 0, stub.listCalls)
+	})
+}
+
+func TestLogRecording_TruncateLogRecording(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success stores the truncate stop for StopPositionFor", func(t *testing.T) {
+		t.Parallel()
+
+		stub := &recordingArchiveStub{truncateCount: 7, listStopPos: 9999}
+		r := &logRecording{
+			client:             stub,
+			recordingID:        recordingIDUnknown,
+			latchedRecordingID: recordingIDUnknown,
+		}
+
+		count, err := r.TruncateLogRecording(42, 128)
+		require.NoError(t, err)
+		require.Equal(t, int64(7), count)
+		require.Equal(t, 1, stub.truncateCalls)
+		require.Equal(t, int64(42), stub.lastTruncateRecordingID)
+		require.Equal(t, int64(128), stub.lastTruncatePosition)
+
+		// StopPositionFor returns the truncate position with no catalog read.
+		got, err := r.StopPositionFor(42)
+		require.NoError(t, err)
+		require.Equal(t, int64(128), got)
+		require.Equal(t, 0, stub.listCalls)
+	})
+
+	t.Run("archive error wraps and stores nothing", func(t *testing.T) {
+		t.Parallel()
+
+		cause := &archive.Exception{ErrorCode: archive.ErrorInvalidPosition}
+		stub := &recordingArchiveStub{truncateErr: cause}
+		r := &logRecording{
+			client:             stub,
+			recordingID:        recordingIDUnknown,
+			latchedRecordingID: recordingIDUnknown,
+		}
+
+		count, err := r.TruncateLogRecording(42, 128)
+		require.Error(t, err)
+		require.Equal(t, int64(0), count)
+		require.ErrorContains(t, err, "cluster: truncate log recording 42 to 128")
+		got, ok := archive.AsException(err)
+		require.True(t, ok)
+		require.Equal(t, cause, got)
+		require.ErrorIs(t, err, cause)
+		require.Equal(t, recordingIDUnknown, r.latchedRecordingID)
+		require.Equal(t, int64(0), r.stopPosition)
+	})
+
+	t.Run("dirty pending keeps the channel and reads catalog", func(t *testing.T) {
+		t.Parallel()
+
+		startChannel := []byte("aeron:udp?endpoint=239.255.12.1:9004")
+		stub := &recordingArchiveStub{truncateCount: 1, listStopPos: 128}
+		r := &logRecording{
+			client:             stub,
+			recordingID:        recordingIDUnknown,
+			latchedRecordingID: recordingIDUnknown,
+			startChannel:       startChannel,
+		}
+
+		_, err := r.TruncateLogRecording(42, 128)
+		require.NoError(t, err)
+		require.Equal(t, startChannel, r.startChannel)
+
+		// A pending channel keeps StopPositionFor on the catalog path. The catalog
+		// reports the same lowered stop.
+		got, err := r.StopPositionFor(42)
+		require.NoError(t, err)
+		require.Equal(t, int64(128), got)
+		require.Equal(t, 1, stub.listCalls)
 	})
 }
 

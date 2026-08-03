@@ -13,6 +13,34 @@ import (
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
+// fakeLogTruncateControl records TruncateLogRecording calls for agent tests.
+type fakeLogTruncateControl struct {
+	calls                   []fakeTruncateCall
+	err                     error
+	nextDeletedSegmentCount int64
+}
+
+type fakeTruncateCall struct {
+	recordingID int64
+	position    int64
+}
+
+var _ LogTruncateControl = (*fakeLogTruncateControl)(nil)
+
+func (f *fakeLogTruncateControl) TruncateLogRecording(
+	recordingID int64,
+	position int64,
+) (int64, error) {
+	f.calls = append(f.calls, fakeTruncateCall{
+		recordingID: recordingID,
+		position:    position,
+	})
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.nextDeletedSegmentCount, nil
+}
+
 // orderRunner returns a fixed work count and counts DoWork calls.
 type orderRunner struct {
 	n     int
@@ -498,7 +526,7 @@ func TestHostDelegate_stubsSmoke(t *testing.T) {
 	require.False(t, a.IsCatchupNearLive(0))
 	require.False(t, a.AppendNewLeadershipTermEvent(0))
 	require.Equal(t, 0, a.PollArchiveEvents())
-	a.TruncateLogEntry(0, 0)
+	require.Error(t, a.TruncateLogEntry(0, 0))
 	a.AwaitLocalSocketsClosed(0)
 }
 
@@ -1558,4 +1586,122 @@ func TestOnSteadyCanvassPosition_agentMatrix(t *testing.T) {
 			logPosition:      canvassPos,
 		}, pt.updates[0])
 	})
+}
+
+func TestAgent_TruncateLogEntry_refusals(t *testing.T) {
+	t.Parallel()
+
+	const recordingID int64 = 77
+	const alignedPosition int64 = 128
+
+	tests := []struct {
+		name     string
+		setup    func(a *Agent, control *fakeLogTruncateControl)
+		position int64
+		wantErr  error
+	}{
+		{
+			name: "no truncate control",
+			setup: func(a *Agent, _ *fakeLogTruncateControl) {
+				a.SetLogRecordingID(recordingID)
+			},
+			position: alignedPosition,
+			wantErr:  errNoLogTruncateControl,
+		},
+		{
+			name: "recording active",
+			setup: func(a *Agent, control *fakeLogTruncateControl) {
+				a.SetLogTruncateControl(control)
+				a.SetLogRecordingID(recordingID)
+				a.SetLogRecordingControl(&fakeLogRecordingControl{active: true})
+			},
+			position: alignedPosition,
+			wantErr:  errTruncateWhileRecording,
+		},
+		{
+			name: "null recording id",
+			setup: func(a *Agent, control *fakeLogTruncateControl) {
+				a.SetLogTruncateControl(control)
+			},
+			position: alignedPosition,
+			wantErr:  errTruncateUnknownRecording,
+		},
+		{
+			name: "negative position",
+			setup: func(a *Agent, control *fakeLogTruncateControl) {
+				a.SetLogTruncateControl(control)
+				a.SetLogRecordingID(recordingID)
+			},
+			position: -32,
+			wantErr:  errTruncatePositionMisaligned,
+		},
+		{
+			name: "misaligned position",
+			setup: func(a *Agent, control *fakeLogTruncateControl) {
+				a.SetLogTruncateControl(control)
+				a.SetLogRecordingID(recordingID)
+			},
+			position: 150,
+			wantErr:  errTruncatePositionMisaligned,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			control := &fakeLogTruncateControl{}
+			a := NewAgent(AgentConfig{})
+			tc.setup(a, control)
+
+			require.ErrorIs(t, a.TruncateLogEntry(0, tc.position), tc.wantErr)
+			require.Empty(t, control.calls)
+		})
+	}
+}
+
+// TestAgent_TruncateLogEntry_successWithoutAdapter asserts a nil log adapter
+// truncate calls the control and keeps the recording id. Archive-refuse cases
+// live in log_truncate_testhooks_test.go beside the image-bound tests.
+func TestAgent_TruncateLogEntry_successWithoutAdapter(t *testing.T) {
+	t.Parallel()
+
+	const recordingID int64 = 77
+	const position int64 = 128
+
+	control := &fakeLogTruncateControl{}
+	a := NewAgent(AgentConfig{})
+	a.SetLogTruncateControl(control)
+	a.SetLogRecordingID(recordingID)
+
+	require.NoError(t, a.TruncateLogEntry(0, position))
+	require.Equal(t, []fakeTruncateCall{{
+		recordingID: recordingID,
+		position:    position,
+	}}, control.calls)
+	require.Equal(t, recordingID, a.LocalLogRecordingID())
+}
+
+// TestAgent_PrepareForNewLeadership_derivesStopPosition asserts prepare stops
+// the recording and adopts [LogRecordingControl.StopPositionFor] for the
+// retained id. After a truncate the control reports the truncate position. The
+// agent holds no stop position of its own.
+func TestAgent_PrepareForNewLeadership_derivesStopPosition(t *testing.T) {
+	t.Parallel()
+
+	const (
+		recordingID     int64 = 77
+		derivedPosition int64 = 5000
+	)
+
+	control := &fakeLogRecordingControl{nextStopPositionFor: derivedPosition}
+	a := NewAgent(AgentConfig{})
+	a.SetLogRecordingControl(control)
+	a.SetLogRecordingID(recordingID)
+
+	got, err := a.PrepareForNewLeadership(4096, 1)
+	require.NoError(t, err)
+	require.Equal(t, derivedPosition, got)
+	require.Equal(t, []int64{recordingID}, control.stopPositionForCalls)
+	require.Equal(t, 1, control.stopCalls)
 }

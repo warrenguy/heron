@@ -389,7 +389,7 @@ DOCKER_SMOKE_TARGETS := \
 test-java-interop: aeronmd-compose-image ## Docker smoke: Java/Go IPC duplex
 	./scripts/java-interop-smoke.sh
 
-test-archive-java: aeronmd-compose-image ## Docker smoke: record, recording.log, PlanRecovery, replay (TestArchiveRecordingLog)
+test-archive-java: aeronmd-compose-image ## Docker smoke: record, recording.log, PlanRecovery, replay, truncate
 	./scripts/archive-java-smoke.sh
 
 test-cluster-java: ## Docker smoke: AsyncConnect + echo roundtrip smoke

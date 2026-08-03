@@ -8,8 +8,8 @@ import "github.com/warrenguy/heron/archive/codecs/archivewire"
 // Behaviour:
 //   - keeps the recording channel and recording stream id
 //   - keeps the catalog recording id after a successful start or extend
-//   - on a clean stop, stores the stop position and catalog id for
-//     StopPositionFor
+//   - on a clean stop or a successful truncate, stores the stop position and
+//     catalog id for StopPositionFor when nothing is pending
 //   - uses the archive control client
 //   - builds the channel from the member's log channel and the supplied log
 //     session id
@@ -126,8 +126,9 @@ type LogRecordingControl interface {
 	// recordingID.
 	//
 	// Behaviour:
-	//   - same id as the control after a clean stop and nothing pending: returns
-	//     the stored stop position. No catalog read.
+	//   - same id as the control after a clean stop or a successful truncate,
+	//     and nothing pending: returns the stored stop position. No catalog
+	//     read. A later clean stop overwrites a truncate store.
 	//   - any other case: reads the archive catalog once. Does not store that
 	//     read.
 	//   - same id while stop still pending: takes the catalog path. Errors only

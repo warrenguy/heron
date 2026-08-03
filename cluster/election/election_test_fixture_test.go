@@ -337,6 +337,7 @@ type recordingElectionHost struct {
 	newLogReplicationCalls            []newLogReplicationCall
 	setLogRecordingIDCalls            []int64
 	truncateCalls                     []truncateCall
+	truncateErr                       error
 
 	trackCatchupCalls []trackCatchupCall
 }
@@ -419,11 +420,12 @@ func (h *recordingElectionHost) FollowerLogJoinReady(
 	}, true
 }
 
-func (h *recordingElectionHost) TruncateLogEntry(leadershipTermID, logPosition int64) {
+func (h *recordingElectionHost) TruncateLogEntry(leadershipTermID, logPosition int64) error {
 	h.truncateCalls = append(h.truncateCalls, truncateCall{
 		leadershipTermID: leadershipTermID,
 		logPosition:      logPosition,
 	})
+	return h.truncateErr
 }
 
 func (h *recordingElectionHost) IsCatchupNearLive(position int64) bool {

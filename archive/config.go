@@ -57,21 +57,10 @@ type Config struct {
 
 	CredentialsSupplier CredentialsSupplier
 
-	// RecordingSignalHandler receives recording signals on Poll and during blocking
-	// control awaits that use this handler:
-	//   - StartRecording
-	//   - StopRecording
-	//   - StartReplay
-	//   - StopReplay
-	//   - ListRecording
-	//
-	// StartRecordingAwaitSignal, StopRecordingAwaitSignal, and
-	// ExtendRecordingAwaitSignal poll internally.
-	//
-	// Those methods route START, STOP, and EXTEND proofs to the per-call tracker,
-	// not this handler.
-	//
-	// Nil drops signals until Client.SetRecordingSignalHandler installs a handler.
+	// RecordingSignalHandler receives recording signals on Poll and on blocking
+	// control awaits that poll through Client.Poll. *AwaitSignal routes proof
+	// signals to the per-call tracker, not this handler. Nil drops signals until
+	// Client.SetRecordingSignalHandler installs a handler.
 	RecordingSignalHandler RecordingSignalHandler
 
 	// ClientName is sent in AuthConnectRequest.clientInfo; empty defaults to

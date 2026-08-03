@@ -297,11 +297,34 @@ func requireNodeStatePrefixEqual(t *testing.T, got, want []byte, n int) {
 type recordingLogCoherencySpy struct {
 	calls []recordinglog.EnsureCoherentParams
 	err   error
+
+	commitCalls []commitLogPositionCall
+	commitErr   error
+	forceCalls  int
+	forceErr    error
+}
+
+type commitLogPositionCall struct {
+	leadershipTermID int64
+	logPosition      int64
 }
 
 func (s *recordingLogCoherencySpy) EnsureCoherent(p recordinglog.EnsureCoherentParams) error {
 	s.calls = append(s.calls, p)
 	return s.err
+}
+
+func (s *recordingLogCoherencySpy) CommitLogPosition(leadershipTermID, logPosition int64) error {
+	s.commitCalls = append(s.commitCalls, commitLogPositionCall{
+		leadershipTermID: leadershipTermID,
+		logPosition:      logPosition,
+	})
+	return s.commitErr
+}
+
+func (s *recordingLogCoherencySpy) Force(recordinglog.FileSyncLevel) error {
+	s.forceCalls++
+	return s.forceErr
 }
 
 // publisherRoundtripCase drives one message through any Publisher and checks

@@ -5,10 +5,27 @@ import (
 	"fmt"
 	"sync/atomic"
 
+	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/recordinglog"
+)
+
+// Package-level truncate refusals. Identity-comparable with errors.Is.
+var (
+	errNoLogTruncateControl = errors.New(
+		"consensus: truncate log entry: no log truncate control",
+	)
+	errTruncateWhileRecording = errors.New(
+		"consensus: truncate log entry: cluster log recording is active",
+	)
+	errTruncateUnknownRecording = errors.New(
+		"consensus: truncate log entry: no cluster log recording id",
+	)
+	errTruncatePositionMisaligned = errors.New(
+		"consensus: truncate log entry: position not frame aligned",
+	)
 )
 
 // nullValue mirrors aeron cnc NullValue (-1) for recording IDs and null session.
@@ -106,6 +123,10 @@ type Agent struct {
 	// localLogRecordingID is kept after a stop so a term entry still names the
 	// recording that carried the term.
 	recordingControl LogRecordingControl
+
+	// truncateControl truncates the cluster log recording. Nil refuses every
+	// truncate.
+	truncateControl LogTruncateControl
 
 	// leadershipTermID is the current term for publish and ingress term gates.
 	//
@@ -851,8 +872,56 @@ func (a *Agent) SetLogRecordingID(recordingID int64) {
 	a.localLogRecordingID = recordingID
 }
 
-// TruncateLogEntry is a no-op stub.
-func (a *Agent) TruncateLogEntry(leadershipTermID, logPosition int64) {}
+// TruncateLogEntry removes every recorded byte at or above logPosition and
+// unbinds the log adapter so no position above logPosition remains.
+//
+// Behaviour:
+//   - refuses first when the control is missing, the recording is active, the
+//     recording id is null, or logPosition is misaligned
+//   - truncates the cluster log recording through [LogTruncateControl]
+//   - unbinds the log adapter at logPosition
+//   - does not write recording.log; the election lowers the term entry
+//   - does not stop a recording
+//
+// The truncate control stores logPosition as the recording stop position. A
+// later [Agent.PrepareForNewLeadership] derives that position, not the
+// pre-truncate extent. leadershipTermID is accepted for host-signature parity
+// and is unused.
+//
+// Concurrency: invoker-only. Blocks the invoker for the archive reply.
+//
+// Returns an error when:
+//   - no [LogTruncateControl] is wired
+//   - [Agent.IsRecordingActive] reports true
+//   - [Agent.LocalLogRecordingID] is the null sentinel
+//   - logPosition is negative or is not aligned to [logbuffer.FrameAlignment]
+//   - the archive refuses the truncate or the wait times out
+//
+// On error the log adapter is untouched, the truncate control leaves the
+// recording stop position unchanged, and the caller must not lower any
+// position. Archive refuse detail, including the data-header partial-update
+// case, lives on archive.Client.TruncateRecording.
+func (a *Agent) TruncateLogEntry(leadershipTermID, logPosition int64) error {
+	_ = leadershipTermID
+	if a.truncateControl == nil {
+		return errNoLogTruncateControl
+	}
+	if a.IsRecordingActive() {
+		return errTruncateWhileRecording
+	}
+	recordingID := a.localLogRecordingID
+	if recordingID == nullValue {
+		return errTruncateUnknownRecording
+	}
+	if logPosition < 0 || logPosition&(logbuffer.FrameAlignment-1) != 0 {
+		return fmt.Errorf("%w: %d", errTruncatePositionMisaligned, logPosition)
+	}
+	if _, err := a.truncateControl.TruncateLogRecording(recordingID, logPosition); err != nil {
+		return err
+	}
+	a.logAdapter.DisconnectAt(logPosition)
+	return nil
+}
 
 // AwaitLocalSocketsClosed is a no-op stub.
 func (a *Agent) AwaitLocalSocketsClosed(registrationID int64) {}
@@ -885,16 +954,18 @@ func (a *Agent) FollowerLogJoinReady(
 // nothing needs draining. That path drains a dirty start that never became
 // active.
 //
-// Returns:
-//   - derived archive stop position, nil: retained recording id is
-//     non-negative and [LogRecordingControl.StopPositionFor] succeeds
+// Returns (first matching branch):
 //   - logPosition, nil: control is nil, or localLogRecordingID is negative
+//   - derived archive stop position, nil: retained recording id is
+//     non-negative and [LogRecordingControl.StopPositionFor] succeeds. After a
+//     truncate the control reports the truncate position, so prepare does not
+//     re-raise above that bound
 //   - [recordinglog.NullPosition], err: stop fails. When the recording was
 //     active the control stays active so a later prepare retries the stop.
-//     Caller must not adopt lastAppendPosition.
+//     Caller must not adopt lastAppendPosition
 //   - [recordinglog.NullPosition], err: StopPositionFor fails after a clean
 //     stop. The control is inactive. A later prepare retries derivation.
-//     Caller must not adopt lastAppendPosition.
+//     Caller must not adopt lastAppendPosition
 func (a *Agent) PrepareForNewLeadership(
 	logPosition int64,
 	nowNs int64,

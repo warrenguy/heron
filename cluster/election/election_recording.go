@@ -2,10 +2,12 @@ package election
 
 import "github.com/warrenguy/heron/cluster/recordinglog"
 
-// RecordingLogCoherency is the recording-log interface for term-adoption
-// coherency. Nil skips coherency writes when the agent omits a recording log.
+// RecordingLogCoherency is the recording-log write surface the election owns.
+// Nil skips every write when the agent omits a recording log.
 type RecordingLogCoherency interface {
 	EnsureCoherent(recordinglog.EnsureCoherentParams) error
+	CommitLogPosition(leadershipTermID, logPosition int64) error
+	Force(recordinglog.FileSyncLevel) error
 }
 
 // RecordingLogLookup resolves the successor term entry for NewLeadershipTerm
@@ -61,4 +63,26 @@ func (e *Election) commitRecordingLogTerm(
 	}
 	e.logLeadershipTermID = leadershipTermID
 	return nil
+}
+
+// truncateRecordingLogTerm lowers the stored logPosition of leadershipTermID to
+// logPosition and forces the write.
+//
+// Behaviour: writes through CommitLogPosition, which updates one field in place
+// and skips the write when the stored position already equals logPosition.
+// Appends no term. Does not advance the tracked log leadership term.
+//
+// A nil recording log is a no-op, matching EnsureRecordingLogCoherent. A
+// NullValue leadershipTermID is a no-op, matching the upstream guard.
+//
+// Returns an error when the term is unknown (ErrUnknownLeadershipTermID), when
+// the field write is short, or when the force fails.
+func (e *Election) truncateRecordingLogTerm(leadershipTermID, logPosition int64) error {
+	if leadershipTermID == NullValue || e.deps.RecordingLog == nil {
+		return nil
+	}
+	if err := e.deps.RecordingLog.CommitLogPosition(leadershipTermID, logPosition); err != nil {
+		return err
+	}
+	return e.deps.RecordingLog.Force(e.deps.RecordingLogFileSyncLevel)
 }

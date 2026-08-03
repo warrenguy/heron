@@ -55,6 +55,13 @@ func TestClientLifecycle_contextDone(t *testing.T) {
 			},
 		},
 		{
+			name: "truncateRecording",
+			run: func(client *Client, ctx context.Context) error {
+				_, err := client.TruncateRecording(ctx, lifecycleRecordingID, 0)
+				return err
+			},
+		},
+		{
 			name: "stopRecordingAwaitSignal",
 			run: func(client *Client, ctx context.Context) error {
 				tracker := NewStopSignalTracker(controlResponseTestControlSessionID, -1)

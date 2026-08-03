@@ -30,4 +30,4 @@ FROM ubuntu:24.04 AS runtime
 WORKDIR /app
 COPY --from=builder /out/archive-java.test /app/archive-java.test
 
-CMD ["./archive-java.test", "-test.v", "-test.count=1", "-test.timeout=120s", "-test.run", "TestArchiveRecordingLog"]
+CMD ["./archive-java.test", "-test.v", "-test.count=1", "-test.timeout=120s", "-test.run", "TestArchiveRecordingLog|TestArchiveTruncatePath"]

@@ -121,11 +121,7 @@ func newLogReplay(
 	startPosition int64,
 	stopPosition int64,
 ) *logReplay {
-	if deps.Ctx == nil {
-		deps.Ctx = context.Background()
-	} else {
-		deps.Ctx = context.WithoutCancel(deps.Ctx)
-	}
+	deps.Ctx = moduleControlContext(deps.Ctx)
 	if deps.FragmentLimit <= 0 {
 		deps.FragmentLimit = consensus.DefaultLogFragmentLimit
 	}

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Archive Java/Go IPC smoke: compose up -d (aeronmd + archive + go), then wait for go
 # exit 0. Go runs TestArchiveRecordingLog (record, recording.log, PlanRecovery,
-# replay); archive runs standalone Archive.launch.
+# replay) and TestArchiveTruncatePath (truncate, live refusals, catalog stop);
+# archive runs standalone Archive.launch.
 #
 # Go test invocation: docker/archive_java/go/Dockerfile CMD (-test.run
-# TestArchiveRecordingLog, -test.timeout=120s).
+# TestArchiveRecordingLog|TestArchiveTruncatePath, -test.timeout=120s).
 #
 # Per-run compose project (-p heron-archive-java-$$) so concurrent smokes do not
 # share stacks. force-recreate avoids reusing a leftover one-shot go under the
@@ -66,7 +67,7 @@ trap 'exit 143' TERM
 
 # up -d + wait go only: archive is a long-running daemon (ShutdownSignalBarrier);
 # compose wait archive would block forever. Go one-shot test exits when
-# TestArchiveRecordingLog passes.
+# TestArchiveRecordingLog and TestArchiveTruncatePath pass.
 compose build archive go
 compose up -d --force-recreate --no-build
 

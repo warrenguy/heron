@@ -326,6 +326,32 @@ func EncodeStopReplayRequest(
 	)
 }
 
+// EncodeTruncateRecordingRequest writes an archive TruncateRecordingRequest at
+// offset.
+func EncodeTruncateRecordingRequest(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields TruncateRecordingRequestFields,
+) (wireEnd int, ok bool) {
+	return encodeWithArchiveWireHeader(
+		buf,
+		offset,
+		archivewire.TruncateRecordingRequestSbeBlockLength,
+		archivewire.TruncateRecordingRequestSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+			var msg archivewire.TruncateRecordingRequest
+			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+				SetControlSessionId(fields.ControlSessionID).
+				SetCorrelationId(fields.CorrelationID).
+				SetRecordingId(fields.RecordingID).
+				SetPosition(fields.Position)
+		},
+	)
+}
+
 // EncodeChallengeResponse writes an archive ChallengeResponse at offset.
 func EncodeChallengeResponse(
 	buf []byte,

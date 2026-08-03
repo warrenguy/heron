@@ -466,6 +466,41 @@ func TestProxy_TryStopReplay_fieldValuesOnWire(t *testing.T) {
 	require.Len(t, wire, expectedLen)
 }
 
+func TestProxy_TryTruncateRecording_fieldValuesOnWire(t *testing.T) {
+	pub, proxy := newTestProxy(Config{})
+
+	const (
+		recordingID int64 = 9900
+		position    int64 = 4096
+	)
+	pos, ok := proxy.TryTruncateRecording(
+		controlResponseTestControlSessionID,
+		archiveProxyTestCorrelationID,
+		recordingID,
+		position,
+	)
+	require.True(t, ok)
+
+	wire := pub.lastOffer()
+	require.Equal(t, archiveProxyTestOfferPosition+int64(len(wire)), pos)
+
+	fields := requireProxyWireFields[codecs.TruncateRecordingRequestFields](
+		t,
+		wire,
+		archivewire.TruncateRecordingRequestSbeTemplateID,
+	)
+	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
+	require.Equal(t, recordingID, fields.RecordingID)
+	require.Equal(t, position, fields.Position)
+
+	blockLen := archivewire.TruncateRecordingRequestSbeBlockLength
+	expectedLen, lenOK := codecs.ArchiveWireMessageLen(blockLen)
+	require.True(t, lenOK)
+	require.NotZero(t, expectedLen)
+	require.Len(t, wire, expectedLen)
+}
+
 func TestProxy_TryChallengeResponse_clearsWireBufferSlackBetweenEncodes(t *testing.T) {
 	pub, proxy := newTestProxy(Config{})
 

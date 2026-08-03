@@ -231,9 +231,10 @@ func OpenConsensusModule(
 
 	// Wire archive log recording control before log streams open.
 	//
-	// Nothing starts a recording at Open.
-	//
-	// Election join paths call StartLogRecording.
+	// Nothing starts a recording at Open. Election join paths call
+	// StartLogRecording. The same object is the truncate control. A successful
+	// truncate stores the stop position [LogRecordingControl.StopPositionFor]
+	// reports, so prepare cannot re-raise above the truncate.
 	module.logRecording = newLogRecording(
 		ctx,
 		module.archiveClient,
@@ -242,6 +243,7 @@ func OpenConsensusModule(
 		recovery.RecordingLog(),
 	)
 	module.agent.SetLogRecordingControl(module.logRecording)
+	module.agent.SetLogTruncateControl(module.logRecording)
 
 	publisher := election.NewAeronPublisher()
 
@@ -421,6 +423,7 @@ func (m *ConsensusModule) Close() error {
 	}
 	if m.agent != nil {
 		m.agent.SetLogRecordingControl(nil)
+		m.agent.SetLogTruncateControl(nil)
 	}
 	if m.election != nil {
 		m.election.Close()

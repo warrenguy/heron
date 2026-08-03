@@ -201,3 +201,103 @@ func TestClientStopReplay_errorResponse(t *testing.T) {
 	err := archive.StopReplay(t.Context(), lifecycleReplaySessionID)
 	require.Error(t, err)
 }
+
+func TestTruncateRecording_awaitOK(t *testing.T) {
+	h := newLifecycleHarness(t)
+	written := false
+	targets := h.responseTargets()
+	const deletedSegmentCount int64 = 3
+	pollFn := h.respondControlResponseOnce(
+		t,
+		deletedSegmentCount,
+		archivewire.ControlResponseCode_OK,
+		&written,
+		targets,
+	)
+
+	got, err := h.controlOps(pollFn).truncateRecording(
+		t.Context(),
+		lifecycleRecordingID,
+		4096,
+	)
+	require.NoError(t, err)
+	require.Equal(t, deletedSegmentCount, got)
+}
+
+func TestTruncateRecording_errorResponseReturnsError(t *testing.T) {
+	h := newLifecycleHarness(t)
+	written := false
+	targets := h.responseTargets()
+	pollFn := h.respondControlResponseOnce(
+		t,
+		int64(ErrorInvalidPosition),
+		archivewire.ControlResponseCode_ERROR,
+		&written,
+		targets,
+	)
+
+	_, err := h.controlOps(pollFn).truncateRecording(
+		t.Context(),
+		lifecycleRecordingID,
+		150,
+	)
+	require.Error(t, err)
+	code, ok := ExceptionCode(err)
+	require.True(t, ok)
+	require.Equal(t, int32(ErrorInvalidPosition), code)
+}
+
+func TestTruncateRecording_timeout(t *testing.T) {
+	h := newLifecycleHarness(t)
+	targets := h.responseTargets()
+	pollFn := func() int {
+		h.nowNs.Add(int64(h.cfg.ControlResponseTimeout))
+		return h.demuxPoll(targets)
+	}
+
+	_, err := h.controlOps(pollFn).truncateRecording(
+		t.Context(),
+		lifecycleRecordingID,
+		4096,
+	)
+	require.Error(t, err)
+	var timeoutErr *ControlResponseTimeoutError
+	require.ErrorAs(t, err, &timeoutErr)
+	require.Equal(t, ControlResponseAwaitOperation, timeoutErr.Operation)
+}
+
+func TestClientTruncateRecording_methodReturnsDeletedSegmentCount(t *testing.T) {
+	h := newLifecycleHarness(t)
+	archive := h.newClient()
+	const deletedSegmentCount int64 = 2
+	h.writeNextControlResponse(t, deletedSegmentCount, archivewire.ControlResponseCode_OK)
+
+	got, err := archive.TruncateRecording(t.Context(), lifecycleRecordingID, 4096)
+	require.NoError(t, err)
+	require.Equal(t, deletedSegmentCount, got)
+}
+
+func TestClientTruncateRecording_errorResponse(t *testing.T) {
+	tests := []struct {
+		name string
+		code int
+	}{
+		{name: "active recording", code: ErrorActiveRecording},
+		{name: "invalid position", code: ErrorInvalidPosition},
+		{name: "unknown recording", code: ErrorUnknownRecording},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLifecycleHarness(t)
+			archive := h.newClient()
+			h.writeNextControlResponse(t, int64(tc.code), archivewire.ControlResponseCode_ERROR)
+
+			_, err := archive.TruncateRecording(t.Context(), lifecycleRecordingID, 0)
+			require.Error(t, err)
+			code, ok := ExceptionCode(err)
+			require.True(t, ok)
+			require.Equal(t, int32(tc.code), code)
+		})
+	}
+}

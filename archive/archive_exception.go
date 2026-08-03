@@ -28,6 +28,9 @@ const (
 
 	// ErrorAuthenticationRejected matches Java AUTHENTICATION_REJECTED (code 10).
 	ErrorAuthenticationRejected = 10
+
+	// ErrorInvalidPosition matches Java INVALID_POSITION (code 16).
+	ErrorInvalidPosition = 16
 )
 
 // NotConnectedMsg is the ErrNotConnected message string for wire/API parity.

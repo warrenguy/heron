@@ -60,6 +60,27 @@ func (a *LogAdapter) SetImage(image *aeron.Image) {
 	a.image = image
 }
 
+// DisconnectAt unbinds the cluster log Image and lowers the reported position
+// to maxLogPosition.
+//
+// Behaviour: latches the bound Image position, clears the Image reference, then
+// reports the lower of the latched position and maxLogPosition. A later Poll
+// returns 0 because no Image is bound. Idempotent: a second call with no Image
+// bound only re-applies the clamp.
+//
+// Concurrency: invoker-only; same goroutine as Poll.
+//
+// Ownership: does not own the Image and does not own its Subscription. Neither
+// is closed. The caller that bound the Image keeps the close duty, matching
+// [LogAdapter.SetImage].
+func (a *LogAdapter) DisconnectAt(maxLogPosition int64) {
+	if a == nil {
+		return
+	}
+	a.SetImage(nil)
+	a.logPosition = min(a.logPosition, maxLogPosition)
+}
+
 // Image returns the bound Image, or nil.
 func (a *LogAdapter) Image() *aeron.Image {
 	return a.image

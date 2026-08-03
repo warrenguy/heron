@@ -80,12 +80,17 @@ type logArchiveControl interface {
 		ctx context.Context,
 		recordingID int64,
 	) (codecs.RecordingDescriptorFields, error)
+	TruncateRecording(
+		ctx context.Context,
+		recordingID int64,
+		position int64,
+	) (deletedSegmentCount int64, err error)
 }
 
 var _ logArchiveControl = (*archive.Client)(nil)
 
-// logRecording starts and stops this member's cluster log recording through the
-// module's archive control client.
+// logRecording starts, stops, and truncates this member's cluster log
+// recording through the module's archive control client.
 //
 // Behaviour:
 //   - builds a session-scoped recording channel from the topology log channel
@@ -96,6 +101,9 @@ var _ logArchiveControl = (*archive.Client)(nil)
 //     that recording and awaits the correlated EXTEND signal
 //   - keeps the channel bytes and stream id the start or extend used so the
 //     stop names the same recording
+//   - offers truncate through the archive and stores the truncate position for
+//     StopPositionFor; the caller must not call truncate while the recording is
+//     active
 //   - owns needs-stop state via startChannel: a dirty start keeps the channel
 //     until a later stop drains and clears it, and a re-start drains any prior
 //     unstopped channel first
@@ -114,7 +122,7 @@ var _ logArchiveControl = (*archive.Client)(nil)
 //   - no TermRecordingID read happens after that close
 //   - retained context is Open's context with cancel detached
 //     (context.WithoutCancel)
-//   - Open cancel does not fail later start or stop
+//   - Open cancel does not fail later start, stop, or truncate
 //
 // ControlResponseTimeout still bounds every await.
 //
@@ -133,14 +141,31 @@ type logRecording struct {
 	// recordingIDUnknown while the start is unproven or after a dirty arm.
 	recordingID int64
 
-	// latchedRecordingID is the catalog id of the last clean stop. StopPositionFor
-	// matches this id when nothing is pending. The id survives a failed re-start
-	// that sets recordingID to unknown then drains dirty.
+	// latchedRecordingID is the catalog id after the last clean stop or successful
+	// truncate. StopPositionFor matches this id when nothing is pending. The id
+	// survives a failed re-start that sets recordingID to unknown then drains
+	// dirty.
 	latchedRecordingID int64
 	stopPosition       int64
 }
 
-var _ consensus.LogRecordingControl = (*logRecording)(nil)
+var (
+	_ consensus.LogRecordingControl = (*logRecording)(nil)
+	_ consensus.LogTruncateControl  = (*logRecording)(nil)
+)
+
+// moduleControlContext returns the context module archive controls use for
+// control calls.
+//
+// The returned context keeps Open values and detaches cancel with
+// context.WithoutCancel so Open cancel does not fail later control calls. A
+// nil input returns context.Background().
+func moduleControlContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(ctx)
+}
 
 func newLogRecording(
 	ctx context.Context,
@@ -149,11 +174,7 @@ func newLogRecording(
 	logStreamID int32,
 	terms TermRecordingLookup,
 ) *logRecording {
-	if ctx == nil {
-		ctx = context.Background()
-	} else {
-		ctx = context.WithoutCancel(ctx)
-	}
+	ctx = moduleControlContext(ctx)
 	return &logRecording{
 		ctx:                ctx,
 		client:             client,
@@ -425,8 +446,9 @@ func (r *logRecording) resolveStopPositionFromCatalog() error {
 // StopPositionFor returns the archive stop position recorded for recordingID.
 //
 // Behaviour:
-//   - same id as the last clean stop (stored catalog id) and nothing pending:
-//     returns the stored stop position. No catalog read.
+//   - same id as the last clean stop or successful truncate (stored catalog
+//     id) and nothing pending: returns the stored stop position. No catalog
+//     read. A later clean stop overwrites a truncate store.
 //   - any other case: reads the catalog once. Does not store that read.
 //   - same id while stop still pending: takes the catalog path. Errors only
 //     when the catalog read fails or reports no stop position
@@ -456,4 +478,46 @@ func (r *logRecording) StopPositionFor(recordingID int64) (int64, error) {
 		return recordinglog.NullPosition, err
 	}
 	return stopPosition, nil
+}
+
+// TruncateLogRecording removes every recorded byte at or above position.
+//
+// Behaviour: offers one bounded archive truncate for recordingID. On success
+// markTruncated stores recordingID and position, so
+// [logRecording.StopPositionFor] reports the truncate position until a later
+// clean stop overwrites it. On error nothing is stored.
+//
+// Concurrency: invoker-only. Blocks the invoker until the archive replies or
+// ControlResponseTimeout expires.
+//
+// Returns deletedSegmentCount from the archive reply with a nil error on
+// success. The error wraps the archive cause. deletedSegmentCount is
+// meaningless on error.
+func (r *logRecording) TruncateLogRecording(
+	recordingID int64,
+	position int64,
+) (
+	deletedSegmentCount int64,
+	err error,
+) {
+	count, err := r.client.TruncateRecording(r.ctx, recordingID, position)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"cluster: truncate log recording %d to %d: %w",
+			recordingID, position, err,
+		)
+	}
+	r.markTruncated(recordingID, position)
+	return count, nil
+}
+
+// markTruncated stores recordingID and the truncate position for
+// StopPositionFor after a successful archive truncate.
+//
+// startChannel is kept. A truncate may run while a dirty drain is pending, and
+// that drain still needs the channel. While the channel is pending,
+// StopPositionFor takes the catalog path, which reports the same lowered stop.
+func (r *logRecording) markTruncated(recordingID, position int64) {
+	r.latchedRecordingID = recordingID
+	r.stopPosition = position
 }

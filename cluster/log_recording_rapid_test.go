@@ -4,6 +4,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"testing"
 
@@ -163,5 +164,75 @@ func TestLogRecording_startVsExtendBranch_rapid(t *testing.T) {
 		}
 
 		require.NoError(rt, termLog.Close())
+	})
+}
+
+// truncateStoreModel is the reference model for the truncate stop position
+// store.
+type truncateStoreModel struct {
+	latchedID int64
+	stopPos   int64
+}
+
+// TestLogRecording_truncateStopPosition_rapid asserts StopPositionFor reports
+// the last successful truncate position across failed truncates and dirty
+// drains, with no catalog read once nothing is pending.
+func TestLogRecording_truncateStopPosition_rapid(t *testing.T) {
+	t.Parallel()
+
+	rapid.Check(t, func(rt *rapid.T) {
+		rt.Helper()
+
+		fake := &recordingArchiveStub{}
+		r := &logRecording{
+			ctx:                context.Background(),
+			client:             fake,
+			logChannel:         "aeron:udp?endpoint=239.255.12.1:9004",
+			logStreamID:        100,
+			recordingID:        recordingIDUnknown,
+			latchedRecordingID: recordingIDUnknown,
+		}
+
+		model := truncateStoreModel{latchedID: recordingIDUnknown}
+		recordingID := rapid.Int64Range(0, 1<<20).Draw(rt, "recordingID")
+
+		n := rapid.IntRange(1, 30).Draw(rt, "n")
+		ops := []string{"truncateOK", "truncateFail", "armDirtyThenDrain"}
+
+		for i := range n {
+			op := rapid.SampledFrom(ops).Draw(rt, "op"+strconv.Itoa(i))
+
+			switch op {
+			case "truncateOK":
+				pos := rapid.Int64Range(0, 1<<20).Draw(rt, "pos"+strconv.Itoa(i))
+				fake.truncateErr = nil
+				_, err := r.TruncateLogRecording(recordingID, pos)
+				require.NoError(rt, err)
+				model.latchedID = recordingID
+				model.stopPos = pos
+
+			case "truncateFail":
+				fake.truncateErr = errors.New("archive refused")
+				_, err := r.TruncateLogRecording(recordingID, 64)
+				require.Error(rt, err)
+
+			case "armDirtyThenDrain":
+				// A dirty start keeps the channel. The drain keeps the stored stop.
+				// markStopped with an unknown catalog id changes nothing.
+				r.startChannel = []byte("aeron:udp?endpoint=239.255.12.1:9004")
+				r.recordingID = recordingIDUnknown
+				require.NoError(rt, r.StopLogRecording())
+			}
+
+			require.Equal(rt, model.latchedID, r.latchedRecordingID)
+			require.Equal(rt, model.stopPos, r.stopPosition)
+			if model.latchedID >= 0 {
+				listBefore := fake.listCalls
+				got, err := r.StopPositionFor(model.latchedID)
+				require.NoError(rt, err)
+				require.Equal(rt, model.stopPos, got)
+				require.Equal(rt, listBefore, fake.listCalls)
+			}
+		}
 	})
 }

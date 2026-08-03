@@ -476,8 +476,8 @@ func (h *HostAdapter) SetLogRecordingID(recordingID int64) {
 	h.agent.SetLogRecordingID(recordingID)
 }
 
-func (h *HostAdapter) TruncateLogEntry(leadershipTermID, logPosition int64) {
-	h.agent.TruncateLogEntry(leadershipTermID, logPosition)
+func (h *HostAdapter) TruncateLogEntry(leadershipTermID, logPosition int64) error {
+	return h.agent.TruncateLogEntry(leadershipTermID, logPosition)
 }
 
 func (h *HostAdapter) AwaitLocalSocketsClosed(registrationID int64) {

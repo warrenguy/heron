@@ -16,22 +16,10 @@ import (
 //
 // Poll never polls the underlying pollers directly and never calls DoWork.
 //
-// Recording signals are dropped until Config.RecordingSignalHandler or
-// SetRecordingSignalHandler configures a handler.
-//
-// Configured handlers also run during blocking control awaits that use this
-// handler:
-//   - StartRecording
-//   - StopRecording
-//   - StartReplay
-//   - StopReplay
-//   - ListRecording
-//
-// StartRecordingAwaitSignal, StopRecordingAwaitSignal, and
-// ExtendRecordingAwaitSignal poll internally.
-//
-// Those methods route START, STOP, and EXTEND proofs to the per-call tracker,
-// not the configured handler.
+// Recording signals drop until Config.RecordingSignalHandler or
+// SetRecordingSignalHandler sets a handler. That handler receives signals on
+// Poll and on every blocking control await that polls through it.
+// *AwaitSignal methods install a per-call tracker for the proof signal instead.
 //
 // ListRecording uses a descriptor-mode poll so its OK response routes to the
 // descriptor poller rather than the session control-response poller.
@@ -235,17 +223,9 @@ func (client *Client) pollRecordingSignalAwait(targets ControlPollTargets) func(
 	}
 }
 
-// SetRecordingSignalHandler overrides Config.RecordingSignalHandler for recording
-// signals on Poll and during blocking control awaits that use this handler:
-//   - StartRecording
-//   - StopRecording
-//   - StartReplay
-//   - StopReplay
-//   - ListRecording
-//
-// StartRecordingAwaitSignal, StopRecordingAwaitSignal, and
-// ExtendRecordingAwaitSignal route proofs to the per-call tracker instead of
-// this handler.
+// SetRecordingSignalHandler overrides Config.RecordingSignalHandler for Poll and
+// for blocking control awaits that poll through it. *AwaitSignal routes proof
+// signals to the per-call tracker, not this handler.
 func (client *Client) SetRecordingSignalHandler(handler RecordingSignalHandler) {
 	client.signalHandler = handler
 }
@@ -483,6 +463,42 @@ func (client *Client) StartReplay(
 // Returns ctx.Err() when the context is done before a response is received.
 func (client *Client) StopReplay(ctx context.Context, replaySessionID int64) error {
 	return client.sessionControlOps(client.Poll).stopReplay(ctx, replaySessionID)
+}
+
+// TruncateRecording offers a TruncateRecordingRequest and blocks until the
+// archive replies with a matching OK ControlResponse.
+//
+// Behaviour: truncates a stopped recording to position. The archive lowers the
+// catalog stop position to position, stops every replay of that recording, and
+// queues segment files at or above position for deletion. Truncating to the
+// recording start position removes every segment and leaves the catalog entry
+// in place. It does not invalidate the recording.
+//
+// Concurrency: invoker-only. Blocks the invoker until the reply arrives or the
+// bound expires.
+//
+// Returns the deleted segment count from the reply RelevantID on OK. Returns
+// ctx.Err() when the context is done before a response is received. Returns an
+// *Exception when the archive refuses:
+//   - ErrorActiveRecording: recording still running
+//   - ErrorInvalidPosition: position below start, above stop, or not aligned
+//     to logbuffer.FrameAlignment
+//   - ErrorUnknownRecording: recordingID names no recording
+//   - ErrorGeneric: another delete is in progress for recordingID, or position
+//     is frame-aligned but not a data-header boundary
+//
+// The recording is unchanged on every error except the data-header one:
+// the archive lowers the catalog stop position before that check, so the
+// extent is truncated while segment bytes above it remain.
+func (client *Client) TruncateRecording(
+	ctx context.Context,
+	recordingID int64,
+	position int64,
+) (
+	deletedSegmentCount int64,
+	err error,
+) {
+	return client.sessionControlOps(client.Poll).truncateRecording(ctx, recordingID, position)
 }
 
 // ListRecording lists a single recording by id, returning its descriptor extent fields

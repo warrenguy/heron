@@ -82,7 +82,7 @@ func (NoopElectionHost) LocalLogRecordingID() int64 { return election.NullValue 
 
 func (NoopElectionHost) SetLogRecordingID(int64) {}
 
-func (NoopElectionHost) TruncateLogEntry(int64, int64) {}
+func (NoopElectionHost) TruncateLogEntry(int64, int64) error { return nil }
 
 func (NoopElectionHost) AwaitLocalSocketsClosed(int64) {}
 

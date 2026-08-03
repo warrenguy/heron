@@ -247,6 +247,28 @@ func (p *Proxy) TryListRecording(
 	)
 }
 
+// TryTruncateRecording encodes TruncateRecordingRequest (template 13) and offers
+// it once.
+func (p *Proxy) TryTruncateRecording(
+	controlSessionID int64,
+	correlationID int64,
+	recordingID int64,
+	position int64,
+) (int64, bool) {
+	fields := codecs.TruncateRecordingRequestFields{
+		ControlSessionID: controlSessionID,
+		CorrelationID:    correlationID,
+		RecordingID:      recordingID,
+		Position:         position,
+	}
+	return p.tryArchiveWireOffer(
+		archivewire.TruncateRecordingRequestSbeBlockLength,
+		func(dst []byte, actingVersion uint16) (int, bool) {
+			return codecs.EncodeTruncateRecordingRequest(dst, 0, actingVersion, fields)
+		},
+	)
+}
+
 func (p *Proxy) tryArchiveWireOffer(
 	blockLength uint16,
 	encode func([]byte, uint16) (int, bool),

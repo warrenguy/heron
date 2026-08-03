@@ -55,11 +55,13 @@ type ElectionHost interface {
 	// Production hosts do not overwrite while a cluster log recording is running.
 	SetLogRecordingID(recordingID int64)
 
-	// TruncateLogEntry records an explicit cluster-log truncation request.
+	// TruncateLogEntry removes every recorded byte at or above logPosition and
+	// lowers the log adapter's reported position to it. Does not write
+	// recording.log; the election lowers the term entry.
 	//
-	// Production hosts log and schedule archive truncate; test hosts record
-	// the call only. Does not mutate recording.log TERM rows.
-	TruncateLogEntry(leadershipTermID, logPosition int64)
+	// Returns an error when the truncate did not run. The caller must not lower
+	// any tracked position on an error.
+	TruncateLogEntry(leadershipTermID, logPosition int64) error
 	AwaitLocalSocketsClosed(registrationID int64)
 
 	// FollowerLogJoinReady reports whether the live log image for logSessionID

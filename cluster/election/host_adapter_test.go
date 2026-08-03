@@ -21,6 +21,29 @@ func hostAdapterMembers(n int) []*election.Member {
 	return members
 }
 
+// hostAdapterTruncateControl records TruncateLogRecording calls for adapter tests.
+type hostAdapterTruncateControl struct {
+	calls []hostAdapterTruncateCall
+}
+
+type hostAdapterTruncateCall struct {
+	recordingID int64
+	position    int64
+}
+
+func (c *hostAdapterTruncateControl) TruncateLogRecording(
+	recordingID int64,
+	position int64,
+) (int64, error) {
+	c.calls = append(c.calls, hostAdapterTruncateCall{
+		recordingID: recordingID,
+		position:    position,
+	})
+	return 0, nil
+}
+
+var _ consensus.LogTruncateControl = (*hostAdapterTruncateControl)(nil)
+
 func newTestHostAdapter(
 	t *testing.T,
 	members []*election.Member,
@@ -420,6 +443,9 @@ func TestInstallLeadershipTerm_handoffAgentLeaderAndTerm(t *testing.T) {
 		t.Parallel()
 
 		cfg, host, agent, e := newHostAdapterWithElection(t)
+		control := &hostAdapterTruncateControl{}
+		agent.SetLogTruncateControl(control)
+		agent.SetLogRecordingID(42)
 
 		// Pre-seed a non-null leader/term so a mistaken handoff is visible.
 		const seedLeader int32 = 2
@@ -433,13 +459,44 @@ func TestInstallLeadershipTerm_handoffAgentLeaderAndTerm(t *testing.T) {
 
 		fields := installNewLeadershipTermFields(cfg, leaderID, cfg.LeadershipTermID)
 		fields.NextLeadershipTermID = cfg.LeadershipTermID + 1
-		fields.NextTermBaseLogPosition = cfg.AppendPosition - 50
+		fields.NextTermBaseLogPosition = truncateInstallBase
 		e.OnNewLeadershipTerm(fields)
 
 		require.Equal(t, election.ElectionStateInit, e.State())
-		require.Equal(t, cfg.AppendPosition-50, e.AppendPosition())
+		require.Equal(t, truncateInstallBase, e.AppendPosition())
 		require.Equal(t, seedLeader, host.LeaderMemberID())
 		require.Equal(t, seedLeader, agent.LeaderMemberID())
+		require.Equal(t, seedTerm, agent.LeadershipTermID())
+		require.Equal(t, []hostAdapterTruncateCall{{
+			recordingID: 42,
+			position:    truncateInstallBase,
+		}}, control.calls)
+	})
+
+	// No truncate control: Agent refuses; election must not rewind.
+	t.Run("truncate without control lowers nothing", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, host, agent, e := newHostAdapterWithElection(t)
+		agent.SetLogRecordingID(42)
+
+		const seedLeader int32 = 2
+		const seedTerm int64 = 3
+		host.SetLeaderMemberID(seedLeader)
+		host.ApplyLeadershipTerm(seedTerm)
+
+		election.SetStateForTest(e, election.ElectionStateCanvass)
+		appendBefore := e.AppendPosition()
+		require.Less(t, truncateInstallBase, appendBefore)
+
+		fields := installNewLeadershipTermFields(cfg, leaderID, cfg.LeadershipTermID)
+		fields.NextLeadershipTermID = cfg.LeadershipTermID + 1
+		fields.NextTermBaseLogPosition = truncateInstallBase
+		e.OnNewLeadershipTerm(fields)
+
+		require.Equal(t, election.ElectionStateInit, e.State())
+		require.Equal(t, appendBefore, e.AppendPosition())
+		require.Equal(t, seedLeader, host.LeaderMemberID())
 		require.Equal(t, seedTerm, agent.LeadershipTermID())
 	})
 
@@ -829,10 +886,10 @@ func TestHostAdapter_forwardSmoke(t *testing.T) {
 	require.Equal(t, int32(election.NullMemberID), host.AddLogPublication(100))
 	require.False(t, host.AppendNewLeadershipTermEvent(1))
 	require.Equal(t, 0, host.PollArchiveEvents())
+	require.Error(t, host.TruncateLogEntry(1, 2))
 	require.NotPanics(t, func() {
 		host.CatchupInitiated(1)
 		host.StopAllCatchups()
-		host.TruncateLogEntry(1, 2)
 		host.AwaitLocalSocketsClosed(3)
 		host.TrackCatchupCompletion(members[1], 1, 0)
 	})

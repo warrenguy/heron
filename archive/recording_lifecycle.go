@@ -130,6 +130,28 @@ func (ops archiveControlOps) stopReplay(ctx context.Context, replaySessionID int
 	return err
 }
 
+// truncateRecording offers a TruncateRecordingRequest and blocks until the
+// archive replies with a matching ControlResponse. Returns RelevantID as the
+// deleted segment count.
+func (ops archiveControlOps) truncateRecording(
+	ctx context.Context,
+	recordingID int64,
+	position int64,
+) (int64, error) {
+	fields, err := ops.offerAndAwait(ctx, func(correlationID int64) (int64, bool) {
+		return ops.proxy.TryTruncateRecording(
+			ops.controlSessionID,
+			correlationID,
+			recordingID,
+			position,
+		)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return fields.RelevantID, nil
+}
+
 // ListRecording offers a ListRecordingRequest and blocks until the archive replies with
 // the matching RecordingDescriptor (or a non-OK ControlResponse), returning its fields
 // with var-ascii bytes cloned at latch time for retention.

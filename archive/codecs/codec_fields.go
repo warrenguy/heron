@@ -65,6 +65,13 @@ type ListRecordingRequestFields struct {
 	RecordingID      int64
 }
 
+type TruncateRecordingRequestFields struct {
+	ControlSessionID int64
+	CorrelationID    int64
+	RecordingID      int64
+	Position         int64
+}
+
 type RecordingDescriptorFields struct {
 	ControlSessionID  int64
 	CorrelationID     int64

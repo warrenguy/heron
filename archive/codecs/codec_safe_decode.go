@@ -372,6 +372,9 @@ func ArchiveRootBlockLengthBounds(
 	case archivewire.ListRecordingRequestSbeTemplateID:
 		bl := archivewire.ListRecordingRequestSbeBlockLength
 		return bl, bl, true
+	case archivewire.TruncateRecordingRequestSbeTemplateID:
+		bl := archivewire.TruncateRecordingRequestSbeBlockLength
+		return bl, bl, true
 	case archivewire.RecordingDescriptorSbeTemplateID:
 		bl := archivewire.RecordingDescriptorSbeBlockLength
 		return bl, bl, true
@@ -408,6 +411,7 @@ func ArchiveVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 	case archivewire.CloseSessionRequestSbeTemplateID,
 		archivewire.StopReplayRequestSbeTemplateID,
 		archivewire.ListRecordingRequestSbeTemplateID,
+		archivewire.TruncateRecordingRequestSbeTemplateID,
 		archivewire.RecordingSignalEventSbeTemplateID,
 		archivewire.KeepAliveRequestSbeTemplateID:
 		return 0, true
@@ -652,6 +656,15 @@ func decodeTemplateFields(
 			ControlSessionID: msg.ControlSessionId(),
 			CorrelationID:    msg.CorrelationId(),
 			RecordingID:      msg.RecordingId(),
+		}, true
+	case archivewire.TruncateRecordingRequestSbeTemplateID:
+		var msg archivewire.TruncateRecordingRequest
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return TruncateRecordingRequestFields{
+			ControlSessionID: msg.ControlSessionId(),
+			CorrelationID:    msg.CorrelationId(),
+			RecordingID:      msg.RecordingId(),
+			Position:         msg.Position(),
 		}, true
 	case archivewire.RecordingDescriptorSbeTemplateID:
 		return decodeRecordingDescriptorFields(

@@ -641,9 +641,7 @@ func (e *Election) installLeadershipTerm(
 	truncating := fields.NextTermBaseLogPosition != NullPosition &&
 		fields.NextTermBaseLogPosition < e.appendPosition
 	if truncating {
-		e.deps.Host.TruncateLogEntry(fields.LogLeadershipTermID, fields.NextTermBaseLogPosition)
-		e.appendPosition = fields.NextTermBaseLogPosition
-		e.HandleError(nowNs, errors.New("election: truncating cluster log"))
+		e.truncateLog(fields.LogLeadershipTermID, fields.NextTermBaseLogPosition, nowNs)
 		return
 	}
 
@@ -689,6 +687,35 @@ func (e *Election) installLeadershipTerm(
 		e.replicationTermBaseLogPosition = fields.NextTermBaseLogPosition
 		e.state(ElectionStateFollowerLogReplication, nowNs, "")
 	}
+}
+
+// truncateLog lowers the recording log term, drops the divergent recorded tail,
+// lowers the tracked positions, and returns the election to init.
+//
+// The recording log write runs first on purpose. The install path re-enters this
+// branch only while NextTermBaseLogPosition is below the tracked append
+// position. Tracked positions lower only after both halves succeed. After both
+// halves succeed, truncateLog lowers append and log position so the branch stops
+// re-entering. A later prepare adopts the control stop from
+// [LogRecordingControl.StopPositionFor]. Archive first would make a failed
+// recording-log write permanent: prepare would adopt the control stop, close the
+// install path, and leave the term entry at the divergent position.
+//
+// Nothing is lowered when either half fails, so the next round re-enters this
+// branch with the same values. Both halves are idempotent, so the retry
+// converges.
+func (e *Election) truncateLog(logLeadershipTermID, newPosition, nowNs int64) {
+	if err := e.truncateRecordingLogTerm(logLeadershipTermID, newPosition); err != nil {
+		e.HandleError(nowNs, err)
+		return
+	}
+	if err := e.deps.Host.TruncateLogEntry(logLeadershipTermID, newPosition); err != nil {
+		e.HandleError(nowNs, err)
+		return
+	}
+	e.appendPosition = newPosition
+	e.logPosition = min(e.logPosition, newPosition)
+	e.HandleError(nowNs, errors.New("election: truncating cluster log"))
 }
 
 func (e *Election) OnAppendPosition(fields codecs.AppendPositionFields) {
