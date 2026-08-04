@@ -15,17 +15,6 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// openDurableDivergenceCluster starts three members on the durable-divergence
-// port block.
-func openDurableDivergenceCluster(t *testing.T) *harness.ClusterMemberSet {
-	t.Helper()
-	return openDurableCluster(
-		t,
-		harness.DurableDivergencePortBase,
-		harness.DurableDivergenceLogEndpoint,
-	)
-}
-
 // termBaseLogPosition returns the term-base log position for leadershipTermID
 // from m's recording.log, or recordinglog.NullPosition when no entry matches.
 func termBaseLogPosition(m *cluster.ConsensusModule, leadershipTermID int64) int64 {
@@ -87,6 +76,18 @@ func tickMemberStreams(m *cluster.ConsensusModule) {
 	m.ArchiveClient().Poll()
 }
 
+// pumpLiveTransport runs Client.DoWork on every live member. Omits Agent.DoWork
+// and archive Poll. Drains log images so the leader publication does not
+// return BackPressured while peers omit agent duty.
+func pumpLiveTransport(set *harness.ClusterMemberSet) {
+	for _, m := range set.Modules() {
+		if m == nil {
+			continue
+		}
+		m.Client().DoWork()
+	}
+}
+
 // TestDurableCluster_truncatesADivergentMemberAndCommits asserts a member that
 // recorded past the survivors' new term base truncates on rejoin.
 //
@@ -96,12 +97,16 @@ func tickMemberStreams(m *cluster.ConsensusModule) {
 //   - post-truncate append reaches every member
 //
 // Does not assert snapshot refuse. No fixture plants a snapshot entry.
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestDurableCluster_truncatesADivergentMemberAndCommits(t *testing.T) {
+	t.Parallel()
+
 	harness.RequireArchiveRuntime(t)
 
-	set := openDurableDivergenceCluster(t)
+	set := openDurableCluster(
+		t,
+		harness.DurableDivergencePortBase,
+		harness.DurableDivergenceLogEndpoint,
+	)
 
 	leader := requireSingleLeader(t, set, "")
 	leaderIndex := int(leader.ThisMemberID())
@@ -164,6 +169,11 @@ func TestDurableCluster_truncatesADivergentMemberAndCommits(t *testing.T) {
 		}
 
 		mustAppend(t, set, leader, "divergent-tail")
+
+		// Drain peer log images without agent duty. Leader-only Client.DoWork leaves
+		// follower subscriptions idle and the leader publication returns
+		// BackPressured on the 64k log term.
+		pumpLiveTransport(set)
 		tickMemberStreams(leader)
 
 		// Follower catalogs must stay at the floor. Remote recording is
@@ -304,7 +314,9 @@ func TestDurableCluster_truncatesADivergentMemberAndCommits(t *testing.T) {
 		return lastTermLogPosition(m) == newTermBase
 	})
 
-	// Index survives a reopen at the truncated term position.
+	// Reopen at the truncated term position before election completes. The
+	// recording log must still hold only the truncated term entry. Short
+	// harness heartbeats may re-elect survivors while the slot is empty.
 	require.NoError(t, set.StopMember(leaderIndex))
 	require.Nil(t, set.Module(leaderIndex))
 	require.NoError(t, set.RestartMember(leaderIndex))
@@ -319,8 +331,11 @@ func TestDurableCluster_truncatesADivergentMemberAndCommits(t *testing.T) {
 		set.State(),
 	)
 
-	// Member installs the new leader's term and finishes election.
-	requireAwaitTick(t, set, "divergent member installs new term", durableWorkBound, func() bool {
+	// Fan in peer log images with transport only, then tick until election
+	// completes. Agent DoWork before fan-in can enter FOLLOWER_LOG_REPLICATION
+	// without peer log images. Leader heartbeats refresh the replication
+	// deadline and the wait does not complete.
+	awaitPostRestartReady(t, set, func() bool {
 		m := set.Module(leaderIndex)
 		if m == nil {
 			return false

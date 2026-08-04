@@ -326,8 +326,14 @@ func TestFollowerCatchup_completesToReady(t *testing.T) {
 		catchupPollResult: 3,
 		commitPosition:    joinPos,
 		logJoined:         true,
+
+		// Zero followerLogJoinPosition. Bound-session re-join does not compare
+		// the join position against the election position.
+		followerLogJoinOK: true,
 	}
 	deps.Host = host
+	handler := &recordingAgentHandler{joinFollowerReturn: true}
+	deps.Handler = handler
 	e := election.NewElection(cfg, deps)
 
 	election.SetStateForTest(e, election.ElectionStateCanvass)
@@ -346,7 +352,9 @@ func TestFollowerCatchup_completesToReady(t *testing.T) {
 	// Completion leaves the catchup receive path open. The adapter still reads
 	// the catchup image, and prepare on the next Init closes the path.
 
-	// Already joined: LOG_INIT to READY.
+	// Already joined: LOG_INIT re-joins the bound session, then READY.
 	require.Equal(t, 1, e.DoWork(clock.nowNs+1))
 	require.Equal(t, election.ElectionStateFollowerReady, e.State())
+	require.Equal(t, 1, handler.joinFollowerCalls)
+	require.True(t, handler.joinFollowerParams[0].IsBoundRejoin)
 }

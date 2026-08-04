@@ -11,25 +11,19 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// File-local port block: disjoint from harness defaults and sibling live tests.
-const (
-	clusterTruncatePortBase    = 27500
-	clusterTruncateLogEndpoint = "239.255.12.29:27504"
-)
-
 // TestClusterModule_wiresLogTruncateControl asserts a durable member set opens
 // with truncate control wired. An active-recording truncate refuses through the
 // wired control, not the no-control path.
 //
 // Full divergence re-elect coverage lives in unit and election package tests.
 // Withhold/re-elect live shapes remain harness-sensitive.
-//
-// No t.Parallel: fixed UDP ports.
 func TestClusterModule_wiresLogTruncateControl(t *testing.T) {
+	t.Parallel()
+
 	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
 		MemberCount:          3,
-		PortBase:             clusterTruncatePortBase,
-		LogMulticastEndpoint: clusterTruncateLogEndpoint,
+		PortBase:             harness.ClusterTruncatePortBase,
+		LogMulticastEndpoint: harness.ClusterTruncateLogEndpoint,
 	})
 	require.Len(t, set.Modules(), 3)
 

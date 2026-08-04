@@ -10,17 +10,6 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// openDurableReElectionCluster starts three members on the durable-reelection
-// port block.
-func openDurableReElectionCluster(t *testing.T) *harness.ClusterMemberSet {
-	t.Helper()
-	return openDurableCluster(
-		t,
-		harness.DurableReElectionPortBase,
-		harness.DurableReElectionLogEndpoint,
-	)
-}
-
 // TestDurableCluster_reElectsAndRestartsRecording asserts a leader that loses
 // follower quorum stops its recording and re-enters election. After one
 // follower restarts, the survivor records again under the same recording id.
@@ -28,12 +17,16 @@ func openDurableReElectionCluster(t *testing.T) *harness.ClusterMemberSet {
 // ElectionCount and LastElectionTrigger detect the re-election. ElectionState
 // and ElectionComplete report a transient a poll can miss. ElectionCount is
 // monotonic. LastElectionTrigger is latched.
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestDurableCluster_reElectsAndRestartsRecording(t *testing.T) {
+	t.Parallel()
+
 	harness.RequireArchiveRuntime(t)
 
-	set := openDurableReElectionCluster(t)
+	set := openDurableCluster(
+		t,
+		harness.DurableReElectionPortBase,
+		harness.DurableReElectionLogEndpoint,
+	)
 
 	leader := requireSingleLeader(t, set, "")
 	leaderIndex := int(leader.ThisMemberID())
@@ -81,6 +74,26 @@ func TestDurableCluster_reElectsAndRestartsRecording(t *testing.T) {
 		preRecordingID,
 		set.State(),
 	)
+
+	// Wait until every live type-100 counter reaches the leader publication
+	// sample so recovery high-water is shared before stop.
+	//
+	// RecordingCounterPosition returns -1 for a missing counter, below the
+	// positive sample.
+	leaderPub := leader.LogPublisher().Position()
+	require.Positive(t, leaderPub, "leader log publication position:\n%s", set.State())
+	requireAwaitTick(t, set, "all recordings at leader log", durableWorkBound, func() bool {
+		for _, m := range set.Modules() {
+			if m == nil {
+				return false
+			}
+			id := m.Agent().LocalLogRecordingID()
+			if harness.RecordingCounterPosition(m, id) < leaderPub {
+				return false
+			}
+		}
+		return true
+	})
 
 	// Role has not flipped yet after the second follower stop.
 	stopFollowers(t, set, leaderIndex)
@@ -147,6 +160,11 @@ func TestDurableCluster_reElectsAndRestartsRecording(t *testing.T) {
 		"RestartMember left slot empty:\n%s",
 		set.State(),
 	)
+
+	// Await peer log images with transport only before the first agent duty.
+	// Short harness heartbeats leave FOLLOWER_LOG_REPLICATION without sessions
+	// when agent duty runs first.
+	requireAwait(t, set, "post-restart log images", durableImageBound, set.AwaitLogImages)
 
 	requireAwaitTick(
 		t, set, "recording restarts after quorum returns", durableWorkBound,

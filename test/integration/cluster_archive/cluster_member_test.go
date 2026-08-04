@@ -11,29 +11,16 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// Fixture smoke endpoints. Disjoint from three-node module tests that use
-// ClusterModulePortBase 25000 and ClusterModuleLogEndpoint.
-const (
-	clusterMemberSetSmokePortBase    = 25300
-	clusterMemberSetSmokeLogEndpoint = "239.255.12.9:25304"
-
-	// Affordance tests own a second port block disjoint from smoke.
-	// Smoke PortBase 25300 with two members reserves unicast through 25405.
-	// This block starts at 25500 so the ranges never share a port.
-	clusterMemberRestartPortBase    = 25500
-	clusterMemberRestartLogEndpoint = "239.255.12.11:25504"
-)
-
 // TestClusterMemberSet_opensAndClosesCleanly asserts a two-member set opens,
 // every member holds every peer log image by session id, one Archive runs per
 // member on distinct directories, and Close is idempotent.
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestClusterMemberSet_opensAndClosesCleanly(t *testing.T) {
+	t.Parallel()
+
 	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
 		MemberCount:          2,
-		PortBase:             clusterMemberSetSmokePortBase,
-		LogMulticastEndpoint: clusterMemberSetSmokeLogEndpoint,
+		PortBase:             harness.ClusterMemberSmokePortBase,
+		LogMulticastEndpoint: harness.ClusterMemberSmokeLogEndpoint,
 	})
 	require.Len(t, set.Modules(), 2)
 	require.Len(t, set.ArchiveNodes(), 2)
@@ -74,13 +61,13 @@ func TestClusterMemberSet_opensAndClosesCleanly(t *testing.T) {
 //
 // One boot runs every step in order. A set per step would repeat the two-driver,
 // two-Archive boot for read-only asserts.
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestClusterMemberSet_stopAndRestartAffordance(t *testing.T) {
+	t.Parallel()
+
 	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
 		MemberCount:          2,
-		PortBase:             clusterMemberRestartPortBase,
-		LogMulticastEndpoint: clusterMemberRestartLogEndpoint,
+		PortBase:             harness.ClusterMemberRestartPortBase,
+		LogMulticastEndpoint: harness.ClusterMemberRestartLogEndpoint,
 	})
 
 	// Bounds:

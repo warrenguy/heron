@@ -15,9 +15,9 @@ import (
 // TestClusterModule_replaysOwnRecordingAfterRestart asserts a single member
 // replays its local recording after stop and restart to the pre-stop
 // publication position.
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestClusterModule_replaysOwnRecordingAfterRestart(t *testing.T) {
+	t.Parallel()
+
 	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
 		MemberCount:          1,
 		PortBase:             harness.ClusterReplayPortBase,

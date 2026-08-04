@@ -102,19 +102,11 @@ func buildDriverEnv(dir string, overrides DriverEnv) (DriverEnv, int, error) {
 	return env, ipcTermDataLength, nil
 }
 
-func buildStartedDriverEnv(
-	t testing.TB,
-	dir string,
-	overrides DriverEnv,
-	onFail func(),
-) (DriverEnv, int) {
+func buildStartedDriverEnv(t testing.TB, dir string) (DriverEnv, int) {
 	t.Helper()
 
-	env, ipcTermDataLength, err := buildDriverEnv(dir, overrides)
+	env, ipcTermDataLength, err := buildDriverEnv(dir, nil)
 	if err != nil {
-		if onFail != nil {
-			onFail()
-		}
 		t.Fatalf("harness: %v", err)
 	}
 	return env, ipcTermDataLength
@@ -225,26 +217,62 @@ func StartParallel(t *testing.T) *MediaDriver {
 // child aeronmd process only; do not use os.Setenv here.
 func StartWithConfig(t testing.TB, cfg Config) *MediaDriver {
 	t.Helper()
-	aeronmd, err := resolveAeronmd()
+	aeronmd := resolveAeronmdOrSkip(t)
+	md, err := startEphemeralMediaDriver(aeronmd, cfg.Env)
 	if err != nil {
-		if errors.Is(err, errAeronmdNotFound) {
-			t.Skip("aeronmd not found; run make test-integration (requires Docker)")
-		}
-		t.Fatalf("harness: resolve aeronmd: %v", err)
-	}
-	dir, err := os.MkdirTemp("", "heron-aeron-*")
-	if err != nil {
-		t.Fatalf("harness: mkdir temp: %v", err)
-	}
-	env, ipcTermDataLength := buildStartedDriverEnv(t, dir, cfg.Env, func() { _ = os.RemoveAll(dir) })
-
-	md, err := launchMediaDriver(aeronmd, dir, env, ipcTermDataLength)
-	if err != nil {
-		_ = os.RemoveAll(dir)
 		t.Fatalf("harness: %v", err)
 	}
 	t.Cleanup(func() { md.Stop() })
 	return md
+}
+
+// resolveAeronmdOrSkip resolves the aeronmd binary. Skips the test when the
+// binary is absent. Fails the test on any other resolve error.
+func resolveAeronmdOrSkip(t testing.TB) string {
+	t.Helper()
+	path, err := resolveAeronmd()
+	if err != nil {
+		if errors.Is(err, errAeronmdNotFound) {
+			t.Skip("aeronmd not found; run make test-integration (requires Docker)")
+			return ""
+		}
+		t.Fatalf("harness: resolve aeronmd: %v", err)
+		return ""
+	}
+	return path
+}
+
+// startEphemeralMediaDriver launches aeronmd in a fresh temp directory.
+//
+// Concurrency: safe from a worker goroutine.
+//
+// Ownership: caller owns Stop.
+func startEphemeralMediaDriver(aeronmdPath string, overrides DriverEnv) (*MediaDriver, error) {
+	return startDriverInTempDir(aeronmdPath, "heron-aeron-*", overrides)
+}
+
+// startDriverInTempDir launches aeronmd in a fresh MkdirTemp(pattern)
+// directory. The failed-start unwind removes the directory.
+func startDriverInTempDir(
+	aeronmdPath string,
+	pattern string,
+	overrides DriverEnv,
+) (*MediaDriver, error) {
+	dir, err := os.MkdirTemp("", pattern)
+	if err != nil {
+		return nil, fmt.Errorf("mkdir temp: %w", err)
+	}
+	env, ipcTermDataLength, err := buildDriverEnv(dir, overrides)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	md, err := launchMediaDriver(aeronmdPath, dir, env, ipcTermDataLength)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	return md, nil
 }
 
 func launchMediaDriver(
@@ -303,7 +331,7 @@ func JoinExternalTimeout(t testing.TB, dir string, readyTimeout time.Duration) *
 	t.Helper()
 	require.NotEmpty(t, dir)
 
-	_, ipcTermDataLength := buildStartedDriverEnv(t, dir, nil, nil)
+	_, ipcTermDataLength := buildStartedDriverEnv(t, dir)
 
 	if err := cnc.WaitCncReady(t.Context(), driverCncPath(dir), readyTimeout); err != nil {
 		t.Fatalf("harness: %s not ready: %v", cnc.FileName, err)

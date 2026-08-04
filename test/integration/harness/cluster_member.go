@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"iter"
 	"slices"
-	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +19,7 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
@@ -28,6 +29,34 @@ import (
 // The aeron default is three seconds. Nothing polls after the duty cycle stops,
 // so the fixture must not wait that long per member.
 const defaultClusterMemberCloseLinger = 250 * time.Millisecond
+
+// Integration election heartbeats for live harness opens. Production defaults
+// are a 10s leader heartbeat timeout and a 200ms interval. Re-elect waits use
+// LeaderHeartbeatTimeoutNs as a lower bound, so the production timeout
+// dominates suite wall time. These shorter values are for harness opens only.
+// They are not production defaults.
+//
+// The timeout carries margin over duty-cycle stalls under race-detector load.
+// A 1s timeout fired on such stalls and re-entered elections mid-test.
+// Re-entry across a term boundary cannot recover while the log replication
+// factory defaults to nil, so spurious re-entries must stay rare. 5s at the
+// 100ms interval matches the production 50-interval miss tolerance.
+const (
+	IntegrationLeaderHeartbeatTimeoutNs  int64 = 5_000_000_000 // 5s
+	IntegrationLeaderHeartbeatIntervalNs int64 = 100_000_000   // 100ms
+)
+
+// IntegrationElectionConfig returns election timeouts for harness member opens.
+//
+// Behaviour: sets only LeaderHeartbeatTimeoutNs and LeaderHeartbeatIntervalNs.
+// Zero timeout fields still take election.DefaultElectionConfig via
+// cluster.Config.Normalize.
+func IntegrationElectionConfig() election.ElectionConfig {
+	return election.ElectionConfig{
+		LeaderHeartbeatTimeoutNs:  IntegrationLeaderHeartbeatTimeoutNs,
+		LeaderHeartbeatIntervalNs: IntegrationLeaderHeartbeatIntervalNs,
+	}
+}
 
 // ClusterMemberSet is a set of in-process consensus members. One media driver,
 // one Archive server, and one ConsensusModule per member. All members share
@@ -39,9 +68,10 @@ const defaultClusterMemberCloseLinger = 250 * time.Millisecond
 // Concurrency: invoker-only. Every method runs on the test goroutine.
 //
 // Lifetime:
-//   - Per member, registration order is driver Stop (inside Start), Archive
-//     Stop (inside StartArchiveNode), then the slot close, which closes
-//     whatever module occupies the slot.
+//   - StartClusterMemberSet registers driver Stop and Archive Stop on the
+//     test goroutine after parallel bootstrap. It registers each slot close
+//     after OpenConsensusModule. One-off harness.Start and StartArchiveNode
+//     paths still register Cleanup inside those helpers.
 //   - LIFO teardown per member is the slot close, then Archive Stop, then
 //     driver Stop.
 //   - Across the set, later slots close before earlier slots. After every
@@ -49,11 +79,10 @@ const defaultClusterMemberCloseLinger = 250 * time.Millisecond
 //     earlier ones.
 //   - Close is public and idempotent. Callers may call Close early.
 //   - Invoker must not call Tick, PumpTransportUntil, TickUntil,
-//     AwaitLogImages, AwaitElection, or LogSessionIDs after Close.
-//     Close clears the transport client, archive control client, and
-//     LogStreams.
-//   - State stays readable after Close for failure dumps.
-//     Nil handles report as sentinel values.
+//     AwaitLogImages, AwaitElection, or LogSessionIDs after Close. Close
+//     clears the transport client, archive control client, and LogStreams.
+//   - State stays readable after Close for failure dumps. Nil handles
+//     report as sentinel values.
 //   - modules, nodes, and configs share length MemberCount. The index is the
 //     member id. StopMember and RestartMember preserve those lengths.
 type ClusterMemberSet struct {
@@ -79,17 +108,39 @@ type ClusterMemberSetConfig struct {
 	// LogMulticastEndpoint is the shared cluster log group and port, host:port,
 	// with an odd final octet in the group address. Must be non-empty.
 	LogMulticastEndpoint string
+
+	// StartMediaDriver overrides ephemeral media driver start. Nil means
+	// startEphemeralMediaDriver.
+	//
+	// When non-nil, StartClusterMemberSet skips resolveAeronmdOrSkip and passes a
+	// placeholder aeronmd path into the starter.
+	StartMediaDriver func(aeronmdPath string, overrides DriverEnv) (*MediaDriver, error)
+
+	// StartArchiveNode overrides Archive process start. Nil means
+	// startArchiveNodeProcess.
+	//
+	// When non-nil, StartClusterMemberSet skips resolveArchiveRuntimeOrSkip and
+	// passes placeholder java and jar paths into the starter.
+	StartArchiveNode func(
+		aeronDir string,
+		archiveDir string,
+		controlChannel string,
+		javaPath string,
+		jarPath string,
+	) (*ArchiveNode, error)
 }
 
 // StartClusterMemberSet starts MemberCount media drivers, one Archive server
 // per driver, and one ConsensusModule per driver against a shared multicast
 // cluster log.
 //
-// Open order uses two loops so every Archive is ready before any member opens:
-//  1. Per member: harness.Start registers driver Stop; StartArchiveNode
-//     registers Archive Stop; the set stores the member's cluster.Config.
-//  2. Per member: successful OpenConsensusModule registers the slot close,
-//     which closes whatever module occupies the slot.
+// Open order uses two steps so every Archive is ready before any member opens:
+//  1. Per member in parallel: start media driver and Archive server; store
+//     cluster.Config. After the wait, StartClusterMemberSet registers driver
+//     and Archive Cleanup on the test goroutine (driver then Archive per
+//     member index, low to high) so LIFO matches sequential registration.
+//  2. Per member sequential: successful OpenConsensusModule registers the
+//     slot close, which closes whatever module occupies the slot.
 //
 // Per member LIFO is the slot close, then Archive Stop, then driver Stop.
 // Across a three-member set, Cleanup LIFO is:
@@ -99,7 +150,10 @@ type ClusterMemberSetConfig struct {
 //
 // Every slot closes before any Archive stops.
 //
-// A mid-loop open failure keeps Cleanup for every resource already started.
+// A mid-bootstrap failure keeps Cleanup for every resource already started.
+//
+// Worker goroutines must not call require or FailNow on t. Errors collect.
+// The test goroutine fails after cleanups register.
 func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMemberSet {
 	t.Helper()
 
@@ -135,41 +189,89 @@ func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMem
 		return nil
 	}
 
+	// Resolve real aeronmd and Archive runtimes only when the matching starter is
+	// nil. A non-nil starter replaces process start. Unit tests then need no host
+	// Archive runtime or aeronmd.
+	aeronmdPath := "aeronmd"
+	if cfg.StartMediaDriver == nil {
+		aeronmdPath = resolveAeronmdOrSkip(t)
+	}
+	javaPath, jarPath := "java", "jar"
+	if cfg.StartArchiveNode == nil {
+		javaPath, jarPath = resolveArchiveRuntimeOrSkip(t)
+	}
+	if failedCaptureTB(t) || skippedCaptureTB(t) {
+		return nil
+	}
+
+	// Temp dirs on the test goroutine. Workers never call t.TempDir.
+	clusterDirs := make([]string, cfg.MemberCount)
+	archiveDirs := make([]string, cfg.MemberCount)
+	for i := range cfg.MemberCount {
+		clusterDirs[i] = t.TempDir()
+		archiveDirs[i] = t.TempDir()
+	}
+
+	type memberInfra struct {
+		md   *MediaDriver
+		node *ArchiveNode
+		cfg  cluster.Config
+		err  error
+	}
+	results := make([]memberInfra, cfg.MemberCount)
+
+	var wg sync.WaitGroup
+	for i := range cfg.MemberCount {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			md, node, memberCfg, bootErr := bootstrapMemberInfra(memberBootstrap{
+				memberID:         i,
+				portBase:         cfg.PortBase,
+				membersString:    membersString,
+				clusterDir:       clusterDirs[i],
+				archiveDir:       archiveDirs[i],
+				aeronmdPath:      aeronmdPath,
+				javaPath:         javaPath,
+				jarPath:          jarPath,
+				startMediaDriver: cfg.StartMediaDriver,
+				startArchiveNode: cfg.StartArchiveNode,
+			})
+			results[i] = memberInfra{md: md, node: node, cfg: memberCfg, err: bootErr}
+		}(i)
+	}
+	wg.Wait()
+
+	// Register cleanups for every started resource before failing. Order matches
+	// sequential loop 1: driver then Archive per member index, low to high.
 	set := &ClusterMemberSet{
 		membersString: membersString,
+		nodes:         make([]*ArchiveNode, cfg.MemberCount),
+		configs:       make([]cluster.Config, cfg.MemberCount),
+		modules:       make([]*cluster.ConsensusModule, 0, cfg.MemberCount),
+	}
+	var bootErrs []error
+	for i, r := range results {
+		if r.md != nil {
+			t.Cleanup(func() { r.md.Stop() })
+		}
+		if r.node != nil {
+			t.Cleanup(func() { r.node.Stop() })
+		}
+		if r.err != nil {
+			bootErrs = append(bootErrs, fmt.Errorf("member %d: %w", i, r.err))
+			continue
+		}
+		set.nodes[i] = r.node
+		set.configs[i] = r.cfg
+	}
+	require.NoError(t, errors.Join(bootErrs...))
+	if failedCaptureTB(t) {
+		return nil
 	}
 
-	// Loop 1: every driver, Archive, and stored config before any open.
-	for i := range cfg.MemberCount {
-		md := Start(t)
-
-		controlPort := cluster.CalculatePort(
-			int32(i),
-			cfg.PortBase,
-			cluster.ArchiveControlPortOffset,
-		)
-		controlChannel := "aeron:udp?endpoint=127.0.0.1:" + strconv.Itoa(controlPort)
-		node := StartArchiveNode(t, ArchiveNodeConfig{
-			AeronDir:       md.Dir,
-			ControlChannel: controlChannel,
-		})
-		set.nodes = append(set.nodes, node)
-		set.configs = append(set.configs, cluster.Config{
-			MemberID:                      int32(i),
-			ClusterMembers:                membersString,
-			ClusterDir:                    t.TempDir(),
-			AeronDir:                      md.Dir,
-			LogChannel:                    ClusterLogChannelTemplate,
-			ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
-			ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
-			AeronConfig: aeron.Config{
-				InterServiceTimeout: ConnectedPollTimeout,
-				CloseLingerDuration: defaultClusterMemberCloseLinger,
-			},
-		})
-	}
-
-	// Loop 2: open members after every Archive is ready.
+	// Loop 2: open members after every Archive is ready. Sequential so open
+	// order and slot Cleanup registration stay deterministic.
 	for i := range cfg.MemberCount {
 		module, openErr := cluster.OpenConsensusModule(context.Background(), cluster.ConsensusModuleDeps{
 			Config: set.configs[i],
@@ -178,7 +280,7 @@ func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMem
 		require.NotNil(t, module)
 		set.modules = append(set.modules, module)
 
-		// Register the slot close after Start and StartArchiveNode so LIFO
+		// Register the slot close after driver and Archive cleanups so LIFO
 		// closes the module before Archive Stop and driver Stop. StopMember
 		// is idempotent on an empty slot, so a test that already stopped or
 		// restarted a member closes only the module that occupies the slot.
@@ -187,6 +289,106 @@ func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMem
 		})
 	}
 	return set
+}
+
+// memberBootstrap carries one member's bootstrap inputs across the worker
+// goroutine boundary. Every field is a value copy the worker owns.
+type memberBootstrap struct {
+	memberID      int
+	portBase      int
+	membersString string
+	clusterDir    string
+	archiveDir    string
+	aeronmdPath   string
+	javaPath      string
+	jarPath       string
+
+	// Non-nil startMediaDriver and startArchiveNode replace the real process
+	// start helpers. Nil means the real helpers. Same contract as
+	// ClusterMemberSetConfig.StartMediaDriver and StartArchiveNode.
+	startMediaDriver func(aeronmdPath string, overrides DriverEnv) (*MediaDriver, error)
+	startArchiveNode func(
+		aeronDir string,
+		archiveDir string,
+		controlChannel string,
+		javaPath string,
+		jarPath string,
+	) (*ArchiveNode, error)
+}
+
+// bootstrapMemberInfra starts one media driver and one Archive for the member.
+//
+// Concurrency: safe from a worker goroutine. Does not call testing.TB.
+//
+// Returns: on error both handles are nil. A failed Archive start stops the
+// driver before return.
+func bootstrapMemberInfra(
+	spec memberBootstrap,
+) (*MediaDriver, *ArchiveNode, cluster.Config, error) {
+	startMD := startEphemeralMediaDriver
+	if spec.startMediaDriver != nil {
+		startMD = spec.startMediaDriver
+	}
+	md, err := startMD(spec.aeronmdPath, nil)
+	if err != nil {
+		return nil, nil, cluster.Config{}, err
+	}
+
+	controlPort := cluster.CalculatePort(
+		int32(spec.memberID),
+		spec.portBase,
+		cluster.ArchiveControlPortOffset,
+	)
+	startArchive := startArchiveNodeProcess
+	if spec.startArchiveNode != nil {
+		startArchive = spec.startArchiveNode
+	}
+	node, err := startArchive(
+		md.Dir,
+		spec.archiveDir,
+		ArchiveControlChannel(controlPort),
+		spec.javaPath,
+		spec.jarPath,
+	)
+	if err != nil {
+		md.Stop()
+		return nil, nil, cluster.Config{}, err
+	}
+
+	cfg := MemberClusterConfig(
+		int32(spec.memberID),
+		spec.membersString,
+		spec.clusterDir,
+		md.Dir,
+	)
+	return md, node, cfg, nil
+}
+
+// MemberClusterConfig builds the cluster.Config for one harness member open.
+//
+// Behaviour: sets Election to IntegrationElectionConfig and caps close linger
+// below the 3s client default. Other zero fields take cluster.Config.Normalize
+// defaults at open.
+func MemberClusterConfig(
+	memberID int32,
+	membersString string,
+	clusterDir string,
+	aeronDir string,
+) cluster.Config {
+	return cluster.Config{
+		MemberID:                      memberID,
+		ClusterMembers:                membersString,
+		ClusterDir:                    clusterDir,
+		AeronDir:                      aeronDir,
+		LogChannel:                    ClusterLogChannelTemplate,
+		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
+		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
+		Election:                      IntegrationElectionConfig(),
+		AeronConfig: aeron.Config{
+			InterServiceTimeout: ConnectedPollTimeout,
+			CloseLingerDuration: defaultClusterMemberCloseLinger,
+		},
+	}
 }
 
 // Modules returns every consensus module in member-id order.
@@ -219,8 +421,9 @@ func (s *ClusterMemberSet) ClusterDir(index int) string {
 // ArchiveNodes returns every Archive server in member-id order.
 //
 // Ownership: the set owns the slice. Caller must not mutate the returned slice
-// or stop the nodes. Process lifetime is StartArchiveNode via t.Cleanup. Close
-// does not stop Archives. A member restart leaves the Archive node in place.
+// or stop the nodes. Process lifetime is StartClusterMemberSet Cleanup for
+// Archive Stop. Close does not stop Archives. A member restart leaves the
+// Archive node in place.
 func (s *ClusterMemberSet) ArchiveNodes() []*ArchiveNode {
 	return s.nodes
 }
@@ -599,8 +802,9 @@ func RecordingCounterPosition(m *cluster.ConsensusModule, recordingID int64) int
 // module's idempotent Close. Module Close clears each transport client,
 // archive control client, and LogStreams.
 //
-// Does not stop Archives or media drivers. StartArchiveNode and harness.Start
-// own those via t.Cleanup.
+// Ownership: does not stop Archives or media drivers. StartClusterMemberSet
+// owns those via t.Cleanup (driver Stop and Archive Stop). One-off
+// harness.Start and StartArchiveNode paths register their own Cleanup.
 func (s *ClusterMemberSet) Close() error {
 	if s == nil {
 		return nil

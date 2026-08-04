@@ -1309,6 +1309,9 @@ func (a *Agent) JoinLogAsLeader(
 // into the wired [LogAdapter], starts the REMOTE cluster log recording when a
 // control is wired, and sets role [RoleFollower].
 //
+// params.IsBoundRejoin true routes to [Agent.rejoinBoundLog]: no image
+// selection, no rebind, recording restart only.
+//
 // Returns:
 //   - joined false, nil: no [LogJoinSource] or no [LogAdapter] is wired, or the
 //     source no longer holds an open image for that session (election retries
@@ -1320,13 +1323,13 @@ func (a *Agent) JoinLogAsLeader(
 // The image is looked up before start and again after. The second check is
 // required: the start await drives transport DoWork and can close the
 // pre-start image. A live recording is stopped when that re-fetch is nil.
-// Clean stop leaves the join free to retry; stop error fails closed for
+// Clean stop leaves the join free to retry. Stop error fails closed for
 // prepare drain.
 //
 // Does not touch the known leader id: the term install already set it.
-//
 // Clearing the known leader id would stop follower commit notification and
 // append reporting.
+//
 // nowNs is accepted for handler-signature parity and is unused.
 func (a *Agent) JoinLogAsFollower(
 	params FollowerLogJoinParams,
@@ -1339,25 +1342,15 @@ func (a *Agent) JoinLogAsFollower(
 	if a.joinSource == nil || a.logAdapter == nil {
 		return false, nil
 	}
+	if params.IsBoundRejoin {
+		return a.rejoinBoundLog(params)
+	}
 	if a.joinSource.Image(params.LogSessionID) == nil {
 		return false, nil
 	}
 
-	// Skip start while a recording is already active (idempotent re-join).
-	//
-	// Prepare stops between terms before the next join starts a new one.
-	//
-	// Pass params.LogChannel so catchup joins record the catchup destination
-	// (image join at the follower log position), not the live multicast
-	// late-join image.
-	if !a.IsRecordingActive() && a.recordingControl != nil {
-		if startErr := a.adoptLogRecording(
-			archivewire.SourceLocation_REMOTE,
-			params.LogSessionID,
-			params.LogChannel,
-		); startErr != nil {
-			return false, startErr
-		}
+	if startErr := a.startFollowerLogRecording(params); startErr != nil {
+		return false, startErr
 	}
 
 	image := a.joinSource.Image(params.LogSessionID)
@@ -1371,6 +1364,65 @@ func (a *Agent) JoinLogAsFollower(
 	a.logAdapter.SetImage(image)
 	a.RoleSet(RoleFollower)
 	return true, nil
+}
+
+// startFollowerLogRecording starts the REMOTE cluster log recording for
+// params. Skips the start while a recording is already active (idempotent
+// re-join) or no control is wired. Prepare stops between terms before the
+// next join starts a new one.
+//
+// Passes params.LogChannel so catchup joins record the catchup destination
+// (image join at the follower log position), not the live multicast late-join
+// image.
+func (a *Agent) startFollowerLogRecording(params FollowerLogJoinParams) error {
+	if a.IsRecordingActive() || a.recordingControl == nil {
+		return nil
+	}
+	return a.adoptLogRecording(
+		archivewire.SourceLocation_REMOTE,
+		params.LogSessionID,
+		params.LogChannel,
+	)
+}
+
+// rejoinBoundLog restarts the REMOTE recording for the image the adapter
+// already holds. Runs no image selection. Never rebinds the adapter.
+//
+// The bound image is checked before the start and again after. The start
+// await drives transport DoWork and can close the bound image. A recording
+// started for an image that closed during the await is stopped again.
+//
+// Returns:
+//   - joined false, nil: the bound image is not open on params.LogSessionID.
+//     The election routes to the position-checked await.
+//   - joined false, err: the start or the post-close stop failed
+//   - joined true, nil: the bound image remains. The recording is active when a
+//     control is wired.
+func (a *Agent) rejoinBoundLog(params FollowerLogJoinParams) (
+	joined bool,
+	err error,
+) {
+	if !a.isBoundLogImageOpen(params.LogSessionID) {
+		return false, nil
+	}
+	if startErr := a.startFollowerLogRecording(params); startErr != nil {
+		return false, startErr
+	}
+	if !a.isBoundLogImageOpen(params.LogSessionID) {
+		if stopErr := a.stopLogRecordingAfterVanishedImage(); stopErr != nil {
+			return false, stopErr
+		}
+		return false, nil
+	}
+	a.RoleSet(RoleFollower)
+	return true, nil
+}
+
+// isBoundLogImageOpen reports whether the adapter's bound image is open and
+// carries logSessionID.
+func (a *Agent) isBoundLogImageOpen(logSessionID int32) bool {
+	image := a.logAdapter.Image()
+	return image != nil && !image.IsClosed() && image.SessionID() == logSessionID
 }
 
 // stopLogRecordingAfterVanishedImage stops a live recording after the join

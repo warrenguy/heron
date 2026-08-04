@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/consensus"
@@ -17,26 +16,21 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// File-local consensus ports and multicast log endpoint for this smoke only.
-// Distinct from other live cluster-log tests so concurrent suites do not share
-// images.
-const (
-	consensusModulePortBase          = 24700
-	consensusModuleSharedLogEndpoint = "239.255.12.3:24704"
-	// Archive UDP control endpoint. Server binds it; client uses local IPC.
-	consensusModuleArchiveControl = "aeron:udp?endpoint=127.0.0.1:24701"
-	// Short linger so owned-client Close does not wait the 3s default.
-	consensusModuleCloseLinger = 250 * time.Millisecond
-	consensusModuleElectBound  = 60 * time.Second
-)
+const consensusModuleElectBound = 60 * time.Second
 
 // TestConsensusModule_electsAndClosesAgainstALiveDriver opens one cold-start
 // member, elects it leader, and checks full teardown against a live driver.
 func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
+	t.Parallel()
+
 	md := harness.Start(t)
+	// Archive binds UDP control at PortBase+ArchiveControlPortOffset. The Go
+	// client connects over local IPC.
 	_ = harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
-		AeronDir:       md.Dir,
-		ControlChannel: consensusModuleArchiveControl,
+		AeronDir: md.Dir,
+		ControlChannel: harness.ArchiveControlChannel(
+			cluster.CalculatePort(0, harness.ConsensusModulePortBase, cluster.ArchiveControlPortOffset),
+		),
 	})
 
 	hosts := []string{"127.0.0.1"}
@@ -44,24 +38,13 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 		StartingMemberID:  0,
 		IngressHostnames:  hosts,
 		ClusterHostnames:  hosts,
-		PortBase:          consensusModulePortBase,
-		SharedLogEndpoint: consensusModuleSharedLogEndpoint,
+		PortBase:          harness.ConsensusModulePortBase,
+		SharedLogEndpoint: harness.ConsensusModuleLogEndpoint,
 	})
 	require.NoError(t, err)
 
-	cfg := cluster.Config{
-		MemberID:                      0,
-		ClusterMembers:                members,
-		ClusterDir:                    t.TempDir(),
-		AeronDir:                      md.Dir,
-		LogChannel:                    harness.ClusterLogChannelTemplate,
-		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
-		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
-		AeronConfig: aeron.Config{
-			InterServiceTimeout: harness.ConnectedPollTimeout,
-			CloseLingerDuration: consensusModuleCloseLinger,
-		},
-	}
+	// Short harness heartbeats and close linger come with the config builder.
+	cfg := harness.MemberClusterConfig(0, members, t.TempDir(), md.Dir)
 
 	module, err := cluster.OpenConsensusModule(context.Background(), cluster.ConsensusModuleDeps{
 		Config: cfg,

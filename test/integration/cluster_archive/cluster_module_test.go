@@ -19,10 +19,14 @@ import (
 
 // TestClusterModule_electsOneLeaderOverLiveDrivers asserts one leader across
 // three connected media drivers on a shared multicast cluster log.
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestClusterModule_electsOneLeaderOverLiveDrivers(t *testing.T) {
-	set := openThreeNodeCluster(t)
+	t.Parallel()
+
+	set := openThreeNodeCluster(
+		t,
+		harness.ClusterModuleElectPortBase,
+		harness.ClusterModuleElectLogEndpoint,
+	)
 
 	leader := requireSingleLeader(t, set, "")
 	leaderMemberID := leader.ThisMemberID()
@@ -115,10 +119,14 @@ func TestClusterModule_electsOneLeaderOverLiveDrivers(t *testing.T) {
 
 // TestClusterModule_advancesCommitAcrossFollowers asserts follower notified
 // commit advances past a second log induction after election.
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestClusterModule_advancesCommitAcrossFollowers(t *testing.T) {
-	set := openThreeNodeCluster(t)
+	t.Parallel()
+
+	set := openThreeNodeCluster(
+		t,
+		harness.ClusterModuleCommitPortBase,
+		harness.ClusterModuleCommitLogEndpoint,
+	)
 
 	leaders := set.Leaders()
 	require.Len(t, leaders, 1, "expected exactly one leader:\n%s", set.State())
@@ -160,10 +168,14 @@ func TestClusterModule_advancesCommitAcrossFollowers(t *testing.T) {
 //   - non-empty recovery plan
 //   - term install
 //   - commit advance with the cluster
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestClusterModule_rejoinsCommitAfterMemberRestart(t *testing.T) {
-	set := openThreeNodeCluster(t)
+	t.Parallel()
+
+	set := openThreeNodeCluster(
+		t,
+		harness.ClusterModuleRejoinPortBase,
+		harness.ClusterModuleRejoinLogEndpoint,
+	)
 
 	leaders := set.Leaders()
 	require.Len(t, leaders, 1, "expected exactly one leader:\n%s", set.State())
@@ -232,6 +244,22 @@ func TestClusterModule_rejoinsCommitAfterMemberRestart(t *testing.T) {
 			preSurvivorLeaderIDs[i] = m.LeaderMemberID()
 		}
 	}
+
+	// Await the follower type-100 counter at the leader publication position
+	// before StopMember. Recovery seeds the append position from that high-water.
+	leaderPub := leader.LogPublisher().Position()
+	require.Positive(t, leaderPub, "leader publication position:\n%s", set.State())
+	requireAwaitTick(
+		t, set, "follower recording current", durableWorkBound,
+		func() bool {
+			m := set.Module(followerIndex)
+			if m == nil {
+				return false
+			}
+			pos := harness.RecordingCounterPosition(m, m.Agent().LocalLogRecordingID())
+			return pos >= leaderPub
+		},
+	)
 
 	// Stop and restart:
 	//  1. graceful stop
@@ -341,11 +369,21 @@ func TestClusterModule_rejoinsCommitAfterMemberRestart(t *testing.T) {
 		set.State(),
 	)
 
-	// Leader and returner both commit the post-restart entry.
+	// Await every live member at the post-restart commit. Followers must also
+	// advance NotifiedCommitPosition so a recovered CommitPosition alone does not
+	// pass. The returner must stay ElectionComplete with an active recording.
+	// Commit alone can pass during LEADER_HEARTBEAT_TIMEOUT re-entry under short
+	// harness heartbeats.
 	requireAwait(t, set, "post-restart commit advance", commitBound, func(bound time.Duration) bool {
 		return set.TickUntil(bound, func() bool {
-			return returning.CommitPosition() >= postAppendPos &&
-				leader.CommitPosition() >= postAppendPos
+			ret := set.Module(followerIndex)
+			if ret == nil {
+				return false
+			}
+			if !ret.ElectionComplete() || !ret.Agent().IsRecordingActive() {
+				return false
+			}
+			return membersReachCommit(set, postAppendPos)
 		})
 	})
 
@@ -408,10 +446,14 @@ func TestClusterModule_rejoinsCommitAfterMemberRestart(t *testing.T) {
 // TestClusterModule_reElectsAfterTheLeaderStops asserts a settled cluster
 // installs a new leadership term when its leader stops publishing. Asserts the
 // surviving members commit under the new term.
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestClusterModule_reElectsAfterTheLeaderStops(t *testing.T) {
-	set := openThreeNodeCluster(t)
+	t.Parallel()
+
+	set := openThreeNodeCluster(
+		t,
+		harness.ClusterModuleReElectPortBase,
+		harness.ClusterModuleReElectLogEndpoint,
+	)
 
 	leader := requireSingleLeader(t, set, "")
 	leaderIndex := int(leader.ThisMemberID())
@@ -476,10 +518,14 @@ func TestClusterModule_reElectsAfterTheLeaderStops(t *testing.T) {
 // TestClusterModule_leaderReElectsWhenItsFollowersStop asserts a leader that
 // loses its active follower quorum re-enters an election. Asserts that member
 // stops being the leader.
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestClusterModule_leaderReElectsWhenItsFollowersStop(t *testing.T) {
-	set := openThreeNodeCluster(t)
+	t.Parallel()
+
+	set := openThreeNodeCluster(
+		t,
+		harness.ClusterModuleFollowerStopPortBase,
+		harness.ClusterModuleFollowerStopLogEndpoint,
+	)
 
 	leader := requireSingleLeader(t, set, "")
 	leaderIndex := int(leader.ThisMemberID())
@@ -516,16 +562,20 @@ func TestClusterModule_leaderReElectsWhenItsFollowersStop(t *testing.T) {
 	)
 }
 
-// openThreeNodeCluster starts three members on the module multicast block.
-// Waits for session-keyed log images. Ticks until every member reports
-// ElectionComplete.
-func openThreeNodeCluster(t *testing.T) *harness.ClusterMemberSet {
+// openThreeNodeCluster starts three members on the given port block and log
+// endpoint. Waits for session-keyed log images. Ticks until every member
+// reports ElectionComplete. Caller must pass a unique PortBase per Test*.
+func openThreeNodeCluster(
+	t *testing.T,
+	portBase int,
+	logEndpoint string,
+) *harness.ClusterMemberSet {
 	t.Helper()
 
 	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
 		MemberCount:          3,
-		PortBase:             harness.ClusterModulePortBase,
-		LogMulticastEndpoint: harness.ClusterModuleLogEndpoint,
+		PortBase:             portBase,
+		LogMulticastEndpoint: logEndpoint,
 	})
 	require.Len(t, set.Modules(), 3)
 
@@ -593,7 +643,7 @@ func requireAwaitTick(
 }
 
 // requireSingleLeader returns the one leader. Fails with the set state when the
-// set does not report exactly one leader. context labels the election phase
+// set does not report exactly one leader. context labels the scenario
 // (for example "after re-elect"); empty is fine.
 func requireSingleLeader(
 	t *testing.T,

@@ -9,6 +9,11 @@ type FollowerLogJoinParams struct {
 	LogSessionID    int32
 	LogJoinPosition int64
 	IsLeaderStartup bool
+
+	// IsBoundRejoin marks a re-join for the image the adapter already holds. The
+	// join restarts the recording only. No image selection runs. The election
+	// bound path sets the flag. Every other join leaves it false.
+	IsBoundRejoin bool
 }
 
 // AgentHandler is the election-to-agent boundary for term transitions.
@@ -102,15 +107,19 @@ type AgentHandler interface {
 	// JoinLogAsFollower binds the live cluster log image for
 	// params.LogSessionID and may start the REMOTE cluster log recording.
 	//
+	// params.IsBoundRejoin true skips image selection. The join restarts the
+	// recording for the image the adapter already holds. Joined false then means
+	// the bound image is not open on params.LogSessionID.
+	//
 	// Returns:
-	//   - joined true, nil error: the image is bound.
-	//     Recording starts only when a control is wired and no recording is
-	//     already active; otherwise the join still succeeds without a new start.
-	//   - joined false, nil error: the image is not available yet.
-	//     The caller retries that case.
+	//   - joined true, nil error: the image is bound. Recording starts only when a
+	//     control is wired and no recording is already active; otherwise the join
+	//     still succeeds without a new start.
+	//   - joined false, nil error: the image is not available yet. The caller
+	//     retries that case.
 	//   - joined false, non-nil error: the recording cannot be started or a live
-	//     recording cannot be stopped after a failed bind.
-	//     The caller must not retry that case within this election attempt.
+	//     recording cannot be stopped after a failed bind. The caller must not
+	//     retry that case within this election attempt.
 	JoinLogAsFollower(
 		params FollowerLogJoinParams,
 		nowNs int64,

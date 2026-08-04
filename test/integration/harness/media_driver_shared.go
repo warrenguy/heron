@@ -38,24 +38,7 @@ func startSharedDriver() (*MediaDriver, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	dir, err := os.MkdirTemp("", "heron-aeron-shared-*")
-	if err != nil {
-		return nil, fmt.Errorf("mkdir temp: %w", err)
-	}
-
-	env, ipcTermDataLength, err := buildDriverEnv(dir, nil)
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		return nil, err
-	}
-
-	md, err := launchMediaDriver(aeronmdPath, dir, env, ipcTermDataLength)
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		return nil, err
-	}
-	return md, nil
+	return startDriverInTempDir(aeronmdPath, "heron-aeron-shared-*", nil)
 }
 
 func stopSharedDriver(md *MediaDriver) {

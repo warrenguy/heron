@@ -387,6 +387,53 @@ func TestAgentJoinLogAsFollower_rejoinReplaces(t *testing.T) {
 	require.Same(t, imgB, adapter.Image())
 }
 
+// TestAgentJoinLogAsFollower_boundRejoin asserts bound re-join behaviour.
+//
+// Open bind keeps the adapter image and starts REMOTE recording with no walk
+// selection. Closed bind refuses without rebind or walk. Plain join after
+// refusal walks and reuses the active recording without a second start.
+func TestAgentJoinLogAsFollower_boundRejoin(t *testing.T) {
+	t.Parallel()
+
+	sub := aeron.NewTestSubscriptionForHooks(t)
+	walkFirst := addLogJoinImage(t, sub, 10, 2300, 0)
+	bound := addLogJoinImage(t, sub, 10, 2301, 96)
+	src := NewSubscriptionLogJoinSource(sub)
+	adapter := NewLogAdapter(0)
+	adapter.SetImage(bound)
+	control := &fakeLogRecordingControl{nextRecordingID: 91}
+	a := NewAgent(AgentConfig{
+		LogJoinSource: src,
+		LogAdapter:    adapter,
+	})
+	a.SetLogRecordingControl(control)
+	rejoin := FollowerLogJoinParams{LogSessionID: 10, IsBoundRejoin: true}
+
+	// Open bind: restarts REMOTE recording and keeps the bind.
+	joined, err := a.JoinLogAsFollower(rejoin, 1)
+	require.NoError(t, err)
+	require.True(t, joined)
+	require.Same(t, bound, adapter.Image())
+	require.True(t, a.IsRecordingActive())
+	require.Len(t, control.startCalls, 1)
+	require.Equal(t, archivewire.SourceLocation_REMOTE, control.startCalls[0].sourceLocation)
+
+	// Closed bind: refuses without rebind or walk.
+	aeron.ImageInternalCloseForHooks(bound)
+	joined, err = a.JoinLogAsFollower(rejoin, 1)
+	require.NoError(t, err)
+	require.False(t, joined)
+	require.Same(t, bound, adapter.Image())
+
+	// Plain join after refusal: walks and reuses the active recording without a
+	// second start.
+	joined, err = a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: 10}, 1)
+	require.NoError(t, err)
+	require.True(t, joined)
+	require.Same(t, walkFirst, adapter.Image())
+	require.Len(t, control.startCalls, 1)
+}
+
 func TestAgentJoinLogAsFollower_afterImageClosed(t *testing.T) {
 	t.Parallel()
 

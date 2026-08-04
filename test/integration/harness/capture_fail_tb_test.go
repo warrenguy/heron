@@ -39,4 +39,18 @@ func TestCaptureFailTB_recordsFailAndSkipWithoutStoppingParent(t *testing.T) {
 		require.False(t, capture.Failed())
 		require.True(t, capture.Skipped())
 	})
+
+	t.Run("multi-line Error body stays searchable", func(t *testing.T) {
+		capture := NewCaptureFailTB(t)
+		// Shape matches testify Fail: Error Trace header, multi-line Error block.
+		capture.Errorf("%s", ""+
+			"\nError Trace:\t/tmp/x.go:1"+
+			"\nError:      \tReceived unexpected error:"+
+			"\n            \tmember 0: inject member 0"+
+			"\n            \tmember 1: inject member 1"+
+			"\nTest:       \tTestFoo\n")
+		require.Contains(t, capture.lastMsg, "member 0: inject member 0")
+		require.Contains(t, capture.lastMsg, "member 1: inject member 1")
+		require.Contains(t, capture.lastMsg, "Received unexpected error:")
+	})
 }

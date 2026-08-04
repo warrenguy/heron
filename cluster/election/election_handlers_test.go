@@ -1042,6 +1042,7 @@ func TestHandleFollowerLogAwait_branches(t *testing.T) {
 				return
 			}
 			require.Equal(t, cfg.LogPosition, handler.joinFollowerParams[0].LogJoinPosition)
+			require.False(t, handler.joinFollowerParams[0].IsBoundRejoin)
 
 			// The host stub reports IsLeaderStartup true; the election must
 			// overwrite it with its own false before the join.
@@ -1060,6 +1061,85 @@ func TestHandleFollowerLogInit_waitsForLogSession(t *testing.T) {
 	// No log session id has been installed, so the state holds.
 	require.Equal(t, 1, e.DoWork(clock.nowNs))
 	require.Equal(t, election.ElectionStateFollowerLogInit, e.State())
+}
+
+// TestHandleFollowerLogInit_rejoinsBoundSession asserts LOG_INIT re-joins a
+// bound leader session after prepare stopped the recording. Cases cover ready,
+// await on missing image, await on refuse, and init on join error.
+func TestHandleFollowerLogInit_rejoinsBoundSession(t *testing.T) {
+	t.Parallel()
+
+	const sessionID int32 = 7
+
+	for _, tc := range []struct {
+		name          string
+		joinReadyOK   bool
+		joinAccepted  bool
+		joinErr       error
+		wantState     election.ElectionState
+		wantJoinCalls int
+	}{
+		{
+			name:          "bound session re-joins and enters ready",
+			joinReadyOK:   true,
+			joinAccepted:  true,
+			wantState:     election.ElectionStateFollowerReady,
+			wantJoinCalls: 1,
+		},
+		{
+			name:      "bound session without open image awaits fresh image",
+			wantState: election.ElectionStateFollowerLogAwait,
+		},
+		{
+			name:          "refused join awaits fresh image",
+			joinReadyOK:   true,
+			wantState:     election.ElectionStateFollowerLogAwait,
+			wantJoinCalls: 1,
+		},
+		{
+			name:          "join error resets to init",
+			joinReadyOK:   true,
+			joinErr:       errors.New("join failed"),
+			wantState:     election.ElectionStateInit,
+			wantJoinCalls: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, deps, clock, _, _ := testElectionDeps(t)
+			host := &recordingElectionHost{
+				clock:             clock,
+				logJoined:         true,
+				followerLogJoinOK: tc.joinReadyOK,
+
+				// Offset from the election log position on purpose. Bound-session
+				// join must not compare join positions.
+				followerLogJoinPosition: cfg.LogPosition + 50,
+			}
+			deps.Host = host
+			handler := &recordingAgentHandler{
+				joinFollowerReturn: tc.joinAccepted,
+				joinFollowerErr:    tc.joinErr,
+			}
+			deps.Handler = handler
+			e := election.NewElection(cfg, deps)
+			election.SetStateForTest(e, election.ElectionStateFollowerLogInit)
+			election.SetLogSessionIDForTest(e, sessionID)
+
+			require.Equal(t, 1, e.DoWork(clock.nowNs))
+			require.Equal(t, tc.wantState, e.State())
+
+			require.Len(t, host.followerLogJoinReadyCalls, 1)
+			require.Len(t, handler.joinFollowerParams, tc.wantJoinCalls)
+			if tc.wantJoinCalls == 0 {
+				return
+			}
+			require.Equal(t, sessionID, handler.joinFollowerParams[0].LogSessionID)
+			require.False(t, handler.joinFollowerParams[0].IsLeaderStartup)
+			require.True(t, handler.joinFollowerParams[0].IsBoundRejoin)
+		})
+	}
 }
 
 func TestHandleFollowerCatchupInit_nearLiveSkipsToLogInit(t *testing.T) {
@@ -1369,6 +1449,21 @@ func driveToFollowerCatchupInit(fx *electionFixture, catchupEndpoint string) int
 	return catchupJoinPosition
 }
 
+// followerLogReplicationFields builds an installing NewLeadershipTerm whose
+// successor term base sits past this node's append position.
+func followerLogReplicationFields(
+	cfg election.ElectionConfig,
+	nextTermBase int64,
+	nextLogPosition int64,
+) codecs.NewLeadershipTermFields {
+	fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
+	fields.TermBaseLogPosition = cfg.AppendPosition + 100
+	fields.NextLeadershipTermID = cfg.LeadershipTermID + 1
+	fields.NextTermBaseLogPosition = nextTermBase
+	fields.NextLogPosition = nextLogPosition
+	return fields
+}
+
 // driveToFollowerLogReplication installs a successor term whose base position
 // this node has not reached, routing the follower into
 // FOLLOWER_LOG_REPLICATION.
@@ -1381,13 +1476,22 @@ func driveToFollowerLogReplication(
 	t.Helper()
 
 	election.SetStateForTest(e, election.ElectionStateCanvass)
-	fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
-	fields.TermBaseLogPosition = cfg.AppendPosition + 100
-	fields.NextLeadershipTermID = cfg.LeadershipTermID + 1
-	fields.NextTermBaseLogPosition = nextTermBase
-	fields.NextLogPosition = nextLogPosition
-	e.OnNewLeadershipTerm(fields)
+	e.OnNewLeadershipTerm(followerLogReplicationFields(cfg, nextTermBase, nextLogPosition))
 	require.Equal(t, election.ElectionStateFollowerLogReplication, e.State())
+}
+
+// hostWithLogReplication wires a recordingElectionHost whose replication
+// factory returns the given helper.
+func hostWithLogReplication(
+	clock *FakeClock,
+	lr election.LogReplication,
+) *recordingElectionHost {
+	return &recordingElectionHost{
+		clock: clock,
+		newLogReplication: func(_, _ string, _, _, _ int64) election.LogReplication {
+			return lr
+		},
+	}
 }
 
 func TestHandleFollowerLogReplication_branches(t *testing.T) {
@@ -1471,18 +1575,10 @@ func TestHandleFollowerLogReplication_branches(t *testing.T) {
 		require.Equal(t, election.ElectionStateInit, e.State())
 	})
 
-	t.Run("leader commit position extends deadline", func(t *testing.T) {
-		t.Parallel()
-
-		cfg, deps, clock, _, _ := testElectionDeps(t)
-		e := election.NewElection(cfg, deps)
-		driveToFollowerLogReplication(t, e, cfg, cfg.AppendPosition+50, election.NullPosition)
-
-		t0 := clock.nowNs
-		require.Equal(t, 0, e.DoWork(t0))
-
-		extendNs := t0 + cfg.LeaderHeartbeatTimeoutNs - 1
-		clock.nowNs = extendNs
+	// Matching leader traffic refreshes the replication deadline only while a
+	// helper is installed. With a nil factory the install-time deadline fires
+	// unchanged, so lag still returns to Init under leader heartbeats.
+	commitRefresh := func(e *election.Election, cfg election.ElectionConfig) {
 		e.OnCommitPosition(
 			codecs.CommitPositionFields{
 				LeadershipTermID: cfg.LeadershipTermID,
@@ -1490,13 +1586,73 @@ func TestHandleFollowerLogReplication_branches(t *testing.T) {
 				LeaderMemberID:   1,
 			},
 		)
+	}
+	lateTermRefresh := func(e *election.Election, cfg election.ElectionConfig) {
+		e.OnNewLeadershipTerm(
+			followerLogReplicationFields(cfg, cfg.AppendPosition+50, election.NullPosition),
+		)
+	}
+	deadlineCases := []struct {
+		name       string
+		withHelper bool
+		refresh    func(e *election.Election, cfg election.ElectionConfig)
+	}{
+		{
+			name:    "leader commit position does not extend deadline without helper",
+			refresh: commitRefresh,
+		},
+		{
+			name:       "leader commit position extends deadline with helper",
+			withHelper: true,
+			refresh:    commitRefresh,
+		},
+		{
+			name:    "late leadership term does not extend deadline without helper",
+			refresh: lateTermRefresh,
+		},
+		{
+			name:       "late leadership term extends deadline with helper",
+			withHelper: true,
+			refresh:    lateTermRefresh,
+		},
+	}
+	for _, tc := range deadlineCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-		require.Equal(t, 0, e.DoWork(t0+cfg.LeaderHeartbeatTimeoutNs))
-		require.Equal(t, election.ElectionStateFollowerLogReplication, e.State())
+			cfg, deps, clock, _, _ := testElectionDeps(t)
+			if tc.withHelper {
+				deps.Host = hostWithLogReplication(clock, &countingLogReplicationForTest{})
+			}
+			e := election.NewElection(cfg, deps)
+			driveToFollowerLogReplication(t, e, cfg, cfg.AppendPosition+50, election.NullPosition)
 
-		require.Equal(t, 1, e.DoWork(extendNs+cfg.LeaderHeartbeatTimeoutNs))
-		require.Equal(t, election.ElectionStateInit, e.State())
-	})
+			// Install tick: one unit of work builds the helper when the factory is wired.
+			t0 := clock.nowNs
+			installWork := 0
+			if tc.withHelper {
+				installWork = 1
+			}
+			require.Equal(t, installWork, e.DoWork(t0))
+			require.Equal(t, election.ElectionStateFollowerLogReplication, e.State())
+
+			refreshNs := t0 + cfg.LeaderHeartbeatTimeoutNs - 1
+			clock.nowNs = refreshNs
+			tc.refresh(e, cfg)
+
+			if !tc.withHelper {
+				require.Equal(t, 1, e.DoWork(t0+cfg.LeaderHeartbeatTimeoutNs))
+				require.Equal(t, election.ElectionStateInit, e.State())
+				return
+			}
+
+			// Refresh moved the deadline one heartbeat past refreshNs.
+			require.Equal(t, 0, e.DoWork(t0+cfg.LeaderHeartbeatTimeoutNs))
+			require.Equal(t, election.ElectionStateFollowerLogReplication, e.State())
+			require.Equal(t, 1, e.DoWork(refreshNs+cfg.LeaderHeartbeatTimeoutNs))
+			require.Equal(t, election.ElectionStateInit, e.State())
+		})
+	}
 }
 
 func TestHandleFollowerLogReplication_timeoutClearsHelperForReinstall(t *testing.T) {

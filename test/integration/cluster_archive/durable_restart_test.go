@@ -44,17 +44,6 @@ func openDurableCluster(
 	return set
 }
 
-// openDurableRestartCluster starts three members on the durable-restart port
-// block.
-func openDurableRestartCluster(t *testing.T) *harness.ClusterMemberSet {
-	t.Helper()
-	return openDurableCluster(
-		t,
-		harness.DurableRestartPortBase,
-		harness.DurableRestartLogEndpoint,
-	)
-}
-
 // firstNonLeaderIndex returns the first live module slot whose ThisMemberID is
 // not leaderMemberID. Returns -1 when no such slot exists.
 func firstNonLeaderIndex(set *harness.ClusterMemberSet, leaderMemberID int32) int {
@@ -183,12 +172,16 @@ func awaitPostRestartReady(
 //   - commit advances while the follower slot is empty
 //   - every member reaches the post-restart append position
 //   - recording id continuity and active recording after rejoin
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestDurableCluster_restartsAFollowerAndRejoins(t *testing.T) {
+	t.Parallel()
+
 	harness.RequireArchiveRuntime(t)
 
-	set := openDurableRestartCluster(t)
+	set := openDurableCluster(
+		t,
+		harness.DurableRestartPortBase,
+		harness.DurableRestartLogEndpoint,
+	)
 
 	leader := requireSingleLeader(t, set, "")
 	leaderMemberID := leader.ThisMemberID()
@@ -215,6 +208,22 @@ func TestDurableCluster_restartsAFollowerAndRejoins(t *testing.T) {
 		follower.Agent().LocalLogRecordingID(),
 		"follower LocalLogRecordingID vs TermRecordingID:\n%s",
 		set.State(),
+	)
+
+	// Await the follower type-100 counter at the leader publication position
+	// before StopMember. Recovery seeds the append position from that high-water.
+	leaderPub := leader.LogPublisher().Position()
+	require.Positive(t, leaderPub, "leader publication position:\n%s", set.State())
+	requireAwaitTick(
+		t, set, "follower recording current", durableWorkBound,
+		func() bool {
+			m := set.Module(followerIndex)
+			if m == nil {
+				return false
+			}
+			pos := harness.RecordingCounterPosition(m, m.Agent().LocalLogRecordingID())
+			return pos >= leaderPub
+		},
 	)
 
 	preStopLeaderCommit := leader.CommitPosition()
@@ -301,12 +310,16 @@ func TestDurableCluster_restartsAFollowerAndRejoins(t *testing.T) {
 // TestDurableCluster_restartsTheOutgoingLeader asserts a stopped leader's
 // survivors elect a new term, record under that term, and the returning
 // member rejoins as a follower and commits under the new term.
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestDurableCluster_restartsTheOutgoingLeader(t *testing.T) {
+	t.Parallel()
+
 	harness.RequireArchiveRuntime(t)
 
-	set := openDurableRestartCluster(t)
+	set := openDurableCluster(
+		t,
+		harness.DurableRestartLeaderPortBase,
+		harness.DurableRestartLeaderLogEndpoint,
+	)
 
 	leader := requireSingleLeader(t, set, "")
 	leaderIndex := int(leader.ThisMemberID())

@@ -248,10 +248,15 @@ func (e *Election) handleLeaderReady(nowNs int64) int {
 // still requires appendPosition at the stop position.
 //
 // A nil host factory re-calls each tick (cheap no-op). A finished helper stays
-// installed so it is not rebuilt while still lagging; idle ticks skip its
-// duty cycle and leave paths clear the pointer. The done check runs on the
-// install tick regardless, so a helper that is done at construction still
-// publishes its recording id exactly once.
+// installed so it is not rebuilt while still lagging. Idle ticks skip its duty
+// cycle. Exit paths clear the pointer. The done check runs on the install tick
+// regardless, so a helper that is done at construction still publishes its
+// recording id exactly once.
+//
+// The install that enters this state sets replicationDeadlineNs. Later leader
+// NewLeadershipTerm and CommitPosition traffic refresh that deadline only while
+// a helper is installed. Lag with a nil factory still hits the leader heartbeat
+// timeout.
 func (e *Election) handleFollowerLogReplication(nowNs int64) int {
 	workCount := 0
 
@@ -317,6 +322,16 @@ func (e *Election) newFollowerLogReplication(nowNs int64) LogReplication {
 
 func (e *Election) clearLogReplication() {
 	e.logReplication = nil
+}
+
+// refreshReplicationDeadline extends the log-replication timeout on matching
+// leader traffic. Extends only while a LogReplication helper is installed. Lag
+// under a nil factory still times out at the deadline set on install.
+func (e *Election) refreshReplicationDeadline() {
+	if e.electionState != ElectionStateFollowerLogReplication || e.logReplication == nil {
+		return
+	}
+	e.replicationDeadlineNs = e.deps.NanoClock() + e.cfg.LeaderHeartbeatTimeoutNs
 }
 
 func (e *Election) handleFollowerReplay(nowNs int64) int {
@@ -437,10 +452,8 @@ func (e *Election) handleFollowerCatchupAwait(nowNs int64) int {
 		return 0
 	}
 
-	params.IsLeaderStartup = e.isLeaderStartup
-	joined, err := e.deps.Handler.JoinLogAsFollower(params, nowNs)
-	if err != nil {
-		e.HandleError(nowNs, err)
+	joined, failed := e.joinLogAsFollower(params, nowNs)
+	if failed {
 		return 1
 	}
 	if joined {
@@ -490,17 +503,43 @@ func (e *Election) handleFollowerCatchup(nowNs int64) int {
 	return workCount
 }
 
+// handleFollowerLogInit routes the follower to the live log.
+//
+// Two paths reach LOG_INIT with the adapter already on the advertised session.
+// The catchup path joined earlier in this election. A settled re-entry kept
+// the previous bind while prepare stopped the log recording. The bound re-join
+// restarts a stopped recording for the bound image. The bound re-join selects
+// no image and never rebinds the adapter.
+//
+// The join position is not compared on the bound path. The bound image fixed
+// its join position in an earlier election, and the adapter has consumed past
+// that position. A refused re-join routes to LOG_AWAIT. LOG_AWAIT position
+// check guards any fresh bind.
 func (e *Election) handleFollowerLogInit(nowNs int64) int {
-	// Catchup path joins before LOG_INIT. Skip LOG_AWAIT only when the adapter
-	// is already on the leader-advertised session, not a prior term's image.
 	if e.logSessionID == NullMemberID {
 		return 1
 	}
-	if e.deps.Host.IsLogJoinedForSession(e.logSessionID) {
-		e.state(ElectionStateFollowerReady, nowNs, "")
+	if !e.deps.Host.IsLogJoinedForSession(e.logSessionID) {
+		e.state(ElectionStateFollowerLogAwait, nowNs, "")
 		return 1
 	}
-	e.state(ElectionStateFollowerLogAwait, nowNs, "")
+
+	params, ok := e.deps.Host.FollowerLogJoinReady(e.logSessionID)
+	if !ok {
+		e.state(ElectionStateFollowerLogAwait, nowNs, "")
+		return 1
+	}
+
+	params.IsBoundRejoin = true
+	joined, failed := e.joinLogAsFollower(params, nowNs)
+	if failed {
+		return 1
+	}
+	if !joined {
+		e.state(ElectionStateFollowerLogAwait, nowNs, "")
+		return 1
+	}
+	e.state(ElectionStateFollowerReady, nowNs, "")
 	return 1
 }
 
@@ -518,10 +557,8 @@ func (e *Election) handleFollowerLogAwait(nowNs int64) int {
 		return 1
 	}
 
-	params.IsLeaderStartup = e.isLeaderStartup
-	joined, err := e.deps.Handler.JoinLogAsFollower(params, nowNs)
-	if err != nil {
-		e.HandleError(nowNs, err)
+	joined, failed := e.joinLogAsFollower(params, nowNs)
+	if failed {
 		return 1
 	}
 	if joined {
@@ -730,10 +767,9 @@ func (e *Election) OnNewLeadershipTerm(fields codecs.NewLeadershipTermFields) {
 		}
 	}
 
-	if e.electionState == ElectionStateFollowerLogReplication &&
-		fields.LogLeadershipTermID == e.logLeadershipTermID &&
+	if fields.LogLeadershipTermID == e.logLeadershipTermID &&
 		e.leaderMember != nil && e.leaderMember.ID == fields.LeaderMemberID {
-		e.replicationDeadlineNs = nowNs + e.cfg.LeaderHeartbeatTimeoutNs
+		e.refreshReplicationDeadline()
 	}
 }
 
@@ -794,6 +830,7 @@ func (e *Election) installLeadershipTerm(
 		// there is no need to look it up from the recording log.
 		e.replicationTermBaseLogPosition = NullValue
 		e.replicationStopPosition = fields.NextTermBaseLogPosition
+		e.replicationDeadlineNs = nowNs + e.cfg.LeaderHeartbeatTimeoutNs
 		e.state(ElectionStateFollowerLogReplication, nowNs, "")
 		return
 	}
@@ -802,6 +839,7 @@ func (e *Election) installLeadershipTerm(
 		e.replicationLeadershipTermID = fields.NextLeadershipTermID
 		e.replicationStopPosition = fields.NextLogPosition
 		e.replicationTermBaseLogPosition = fields.NextTermBaseLogPosition
+		e.replicationDeadlineNs = nowNs + e.cfg.LeaderHeartbeatTimeoutNs
 		e.state(ElectionStateFollowerLogReplication, nowNs, "")
 	}
 }
@@ -875,9 +913,7 @@ func (e *Election) OnCommitPosition(fields codecs.CommitPositionFields) {
 	leader := e.leaderMember
 	if leader != nil && leader.ID == fields.LeaderMemberID {
 		e.notifiedCommitPosition = max(e.notifiedCommitPosition, fields.LogPosition)
-		if e.electionState == ElectionStateFollowerLogReplication {
-			e.replicationDeadlineNs = e.deps.NanoClock() + e.cfg.LeaderHeartbeatTimeoutNs
-		}
+		e.refreshReplicationDeadline()
 		return
 	}
 

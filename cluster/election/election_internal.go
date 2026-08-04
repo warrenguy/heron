@@ -1,6 +1,9 @@
 package election
 
-import "github.com/warrenguy/heron/cluster/codecs"
+import (
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/consensus"
+)
 
 func hasUpdateIntervalExpired(nowNs, lastUpdateNs, intervalNs int64) bool {
 	return nowNs >= lastUpdateNs+intervalNs
@@ -50,6 +53,30 @@ func (e *Election) prepareForNewLeadership(nowNs int64) error {
 		e.appendPosition = lastAppendPosition
 	}
 	return nil
+}
+
+// joinLogAsFollower stamps the election's isLeaderStartup into params and runs
+// the follower log join. A join error resets the election.
+//
+// Returns:
+//   - joined true, failed false: the log is bound
+//   - joined false, failed true: the join errored and the election reset
+//   - joined false, failed false: the join was refused; the caller routes the
+//     next state
+func (e *Election) joinLogAsFollower(
+	params consensus.FollowerLogJoinParams,
+	nowNs int64,
+) (
+	joined bool,
+	failed bool,
+) {
+	params.IsLeaderStartup = e.isLeaderStartup
+	joined, err := e.deps.Handler.JoinLogAsFollower(params, nowNs)
+	if err != nil {
+		e.HandleError(nowNs, err)
+		return false, true
+	}
+	return joined, false
 }
 
 func (e *Election) durableCandidateTermID() int64 {

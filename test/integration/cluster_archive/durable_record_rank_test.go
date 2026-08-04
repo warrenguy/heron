@@ -11,17 +11,6 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// openDurableRecordCluster starts three members on the durable-record port
-// block.
-func openDurableRecordCluster(t *testing.T) *harness.ClusterMemberSet {
-	t.Helper()
-	return openDurableCluster(
-		t,
-		harness.DurableRecordPortBase,
-		harness.DurableRecordLogEndpoint,
-	)
-}
-
 // snapshotRecordingCounters returns each member's type-100 counter value.
 // Fails when any counter is missing.
 func snapshotRecordingCounters(t *testing.T, set *harness.ClusterMemberSet) []int64 {
@@ -48,12 +37,16 @@ func snapshotRecordingCounters(t *testing.T, set *harness.ClusterMemberSet) []in
 
 // TestDurableCluster_recordsOnEveryMember asserts every durable member records
 // the leader log and advances its recording-position counter after an append.
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestDurableCluster_recordsOnEveryMember(t *testing.T) {
+	t.Parallel()
+
 	harness.RequireArchiveRuntime(t)
 
-	set := openDurableRecordCluster(t)
+	set := openDurableCluster(
+		t,
+		harness.DurableRecordPortBase,
+		harness.DurableRecordLogEndpoint,
+	)
 
 	leader := requireSingleLeader(t, set, "")
 
@@ -86,12 +79,16 @@ func TestDurableCluster_recordsOnEveryMember(t *testing.T) {
 
 // TestDurableCluster_ranksOnTheRecordingPositionCounter asserts every durable
 // member ranks append position from its type-100 recording-position counter.
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestDurableCluster_ranksOnTheRecordingPositionCounter(t *testing.T) {
+	t.Parallel()
+
 	harness.RequireArchiveRuntime(t)
 
-	set := openDurableRecordCluster(t)
+	set := openDurableCluster(
+		t,
+		harness.DurableRankPortBase,
+		harness.DurableRankLogEndpoint,
+	)
 
 	for _, m := range set.Modules() {
 		_, ok := m.Agent().AppendSource().(*consensus.RecordingPosAppendPosition)

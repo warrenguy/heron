@@ -33,6 +33,7 @@ coverage.out
 coverage.html
 *.prof
 *.pprof
+*.log
 
 # Aeron runtime / IPC
 cnc.dat

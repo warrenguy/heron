@@ -14,5 +14,6 @@ import (
 func TestCncRingsLive(t *testing.T) {
 	_, attach := harness.SharedAttachedCnc(t)
 	require.Positive(t, attach.Rings.Meta.PID)
-	cnctest.AssertWiredRingsReady(t, attach.Mapped, attach.Rings)
+	// Construct only: shared driver may publish to ToClients after drain.
+	cnctest.AssertWiredRingsConstruct(t, attach.Mapped, attach.Rings)
 }

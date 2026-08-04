@@ -105,19 +105,57 @@ func StartArchiveNode(t testing.TB, cfg ArchiveNodeConfig) *ArchiveNode {
 	require.NotEmpty(t, cfg.AeronDir, "ArchiveNodeConfig.AeronDir")
 	require.NotEmpty(t, cfg.ControlChannel, "ArchiveNodeConfig.ControlChannel")
 
+	javaPath, jarPath := resolveArchiveRuntimeOrSkip(t)
+
+	node, err := startArchiveNodeProcess(
+		cfg.AeronDir,
+		t.TempDir(),
+		cfg.ControlChannel,
+		javaPath,
+		jarPath,
+	)
+	if err != nil {
+		t.Fatalf("harness: %v", err)
+	}
+	t.Cleanup(func() { node.Stop() })
+	return node
+}
+
+// resolveArchiveRuntimeOrSkip resolves the Java runtime and Archive jar for a
+// live Archive start. Skips the test when either is absent. Fails the test on
+// any other jar resolve error.
+func resolveArchiveRuntimeOrSkip(t testing.TB) (javaPath, jarPath string) {
+	t.Helper()
 	jarPath, err := resolveArchiveJar()
 	if err != nil {
 		if errors.Is(err, errArchiveJarNotFound) {
 			t.Skip(archiveRuntimeMissing)
+			return "", ""
 		}
 		t.Fatalf("harness: resolve archive jar: %v", err)
+		return "", ""
 	}
-	javaPath, err := exec.LookPath("java")
+	javaPath, err = exec.LookPath("java")
 	if err != nil {
 		t.Skip(archiveRuntimeMissing)
+		return "", ""
 	}
+	return javaPath, jarPath
+}
 
-	archiveDir := t.TempDir()
+// startArchiveNodeProcess launches one Archive server and waits for the ready
+// marker.
+//
+// Concurrency: safe from a worker goroutine. Does not use testing.TB.
+//
+// Ownership: caller owns Stop.
+func startArchiveNodeProcess(
+	aeronDir string,
+	archiveDir string,
+	controlChannel string,
+	javaPath string,
+	jarPath string,
+) (*ArchiveNode, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(
 		ctx,
@@ -128,11 +166,11 @@ func StartArchiveNode(t testing.TB, cfg ArchiveNodeConfig) *ArchiveNode {
 		jarPath,
 		archiveNodeMainClass,
 	)
-	cmd.Env = buildArchiveCmdEnv(cfg.AeronDir, archiveDir, cfg.ControlChannel)
+	cmd.Env = buildArchiveCmdEnv(aeronDir, archiveDir, controlChannel)
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		t.Fatalf("harness: start archive node: %v", err)
+		return nil, fmt.Errorf("start archive node: %w", err)
 	}
 
 	node := &ArchiveNode{
@@ -144,16 +182,15 @@ func StartArchiveNode(t testing.TB, cfg ArchiveNodeConfig) *ArchiveNode {
 		_ = cmd.Wait()
 		close(node.exited)
 	}()
-	t.Cleanup(func() { node.Stop() })
 
 	readyPath := filepath.Join(archiveDir, ArchiveReadyMarker)
 	data, err := waitArchiveReady(node, readyPath, archiveReadyTimeout)
 	if err != nil {
 		node.Stop()
-		t.Fatalf("harness: archive ready marker: %v", err)
+		return nil, fmt.Errorf("archive ready marker: %w", err)
 	}
 	node.ArchiveID = string(data)
-	return node
+	return node, nil
 }
 
 // Stop cancels the Archive child process and waits for exit.

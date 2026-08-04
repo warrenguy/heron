@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1
 ARG GO_VERSION=1.26.4
+# Image pin for failover-runtime: Docker client and compose plugin only.
+# Paths match docker:27-cli. Talks to host docker.sock.
+ARG DOCKER_CLI_IMAGE=docker:27-cli
 FROM golang:${GO_VERSION} AS builder
 
 WORKDIR /src
@@ -39,13 +42,16 @@ COPY --from=builder /out/cluster-java.test /app/cluster-java.test
 
 CMD ["./cluster-java.test", "-test.v", "-test.count=1", "-test.timeout=300s", "-test.run", "^TestCluster(Connect|Echo)Smoke$"]
 
+# Failover smoke kills a cluster member via host docker.sock. This stage
+# supplies the Docker client and compose plugin only.
+FROM ${DOCKER_CLI_IMAGE} AS docker-cli
+
 FROM runtime AS failover-runtime
 
-RUN apt-get update \
-	&& apt-get install -y --no-install-recommends \
-		docker.io \
-		docker-compose-v2 \
-	&& rm -rf /var/lib/apt/lists/*
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli \
+	/usr/local/libexec/docker/cli-plugins/docker-compose \
+	/usr/local/libexec/docker/cli-plugins/docker-compose
 
 COPY docker/cluster_java/compose.yaml docker/cluster_java/compose.failover.yaml /app/compose/
 

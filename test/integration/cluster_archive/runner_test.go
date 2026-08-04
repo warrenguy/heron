@@ -9,61 +9,39 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/test/integration/harness"
-)
-
-const (
-	// runnerPortBase reserves a block distinct from every other integration
-	// test that binds cluster endpoints.
-	runnerPortBase = 24800
-
-	// runnerLogMulticast is this test's own group and port. Two tests sharing a
-	// group and port see each other's images.
-	runnerLogMulticast = "239.255.12.13:24804"
-
-	// Archive UDP control endpoint. Server binds it; client uses local IPC.
-	runnerArchiveControl = "aeron:udp?endpoint=127.0.0.1:24801"
-
-	// runnerCloseLinger bounds teardown. The default is 3 s per client.
-	// Nothing polls once the duty cycle has stopped.
-	runnerCloseLinger = 250 * time.Millisecond
 )
 
 // TestConsensusModuleRunnerDrivesOneMember elects one member through
 // Runner.DoWork. Then stops an active Runner.Run with a cancel.
 func TestConsensusModuleRunnerDrivesOneMember(t *testing.T) {
+	t.Parallel()
+
 	md := harness.Start(t)
+	// Archive binds UDP control at PortBase+ArchiveControlPortOffset. The Go
+	// client connects over local IPC.
 	_ = harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
-		AeronDir:       md.Dir,
-		ControlChannel: runnerArchiveControl,
+		AeronDir: md.Dir,
+		ControlChannel: harness.ArchiveControlChannel(
+			cluster.CalculatePort(0, harness.RunnerPortBase, cluster.ArchiveControlPortOffset),
+		),
 	})
 
 	members, err := cluster.BuildClusterMembersString(cluster.MembersStringConfig{
 		StartingMemberID:  0,
 		IngressHostnames:  []string{"127.0.0.1"},
 		ClusterHostnames:  []string{"127.0.0.1"},
-		PortBase:          runnerPortBase,
-		SharedLogEndpoint: runnerLogMulticast,
+		PortBase:          harness.RunnerPortBase,
+		SharedLogEndpoint: harness.RunnerLogEndpoint,
 	})
 	require.NoError(t, err)
 
+	// Short harness heartbeats and close linger come with the config builder.
+	cfg := harness.MemberClusterConfig(0, members, t.TempDir(), md.Dir)
+
 	module, err := cluster.OpenConsensusModule(context.Background(), cluster.ConsensusModuleDeps{
-		Config: cluster.Config{
-			MemberID:                      0,
-			ClusterMembers:                members,
-			ClusterDir:                    t.TempDir(),
-			AeronDir:                      md.Dir,
-			LogChannel:                    harness.ClusterLogChannelTemplate,
-			ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
-			ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
-			AeronConfig: aeron.Config{
-				InterServiceTimeout: harness.ConnectedPollTimeout,
-				CloseLingerDuration: runnerCloseLinger,
-			},
-		},
+		Config: cfg,
 	})
 	require.NoError(t, err)
 

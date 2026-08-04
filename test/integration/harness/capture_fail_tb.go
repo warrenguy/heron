@@ -65,20 +65,38 @@ func (capture *CaptureFailTB) markSkipped(msg string) {
 	capture.skipped = true
 }
 
-//nolint:unused // referenced from integration-only pubsub.go.
-func failedCaptureTB(t testing.TB) bool {
-	capture, ok := t.(*CaptureFailTB)
-	return ok && capture.failed
-}
-
 func lastCapturedErrorMessage(msg string) string {
 	if !strings.Contains(msg, "Error Trace:") {
 		return msg
 	}
+	var b strings.Builder
+	inError := false
 	for line := range strings.SplitSeq(msg, "\n") {
-		if after, ok := strings.CutPrefix(strings.TrimSpace(line), "Error:"); ok {
-			return strings.TrimSpace(after)
+		trimmed := strings.TrimSpace(line)
+		if after, ok := strings.CutPrefix(trimmed, "Error:"); ok {
+			inError = true
+			b.WriteString(strings.TrimSpace(after))
+			continue
 		}
+		if !inError {
+			continue
+		}
+		// Next testify field ends the Error block.
+		if strings.HasPrefix(trimmed, "Test:") ||
+			strings.HasPrefix(trimmed, "Messages:") ||
+			strings.HasPrefix(trimmed, "Error Trace:") {
+			break
+		}
+		if trimmed == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(trimmed)
+	}
+	if b.Len() > 0 {
+		return b.String()
 	}
 	return msg
 }

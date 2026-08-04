@@ -56,7 +56,11 @@ func AssertMappedBufferLengths(t Reporter, mapped *cnc.MappedCncFile, meta cnc.M
 	}
 }
 
-func AssertWiredRingsReady(t Reporter, mapped *cnc.MappedCncFile, rings *cnc.Rings) {
+// AssertWiredRingsConstruct asserts non-nil ring receivers, ring capacities,
+// and mapped region lengths. Does not require empty ToDriver or ToClients.
+//
+// A connected shared driver may publish between drain and this assert.
+func AssertWiredRingsConstruct(t Reporter, mapped *cnc.MappedCncFile, rings *cnc.Rings) {
 	t.Helper()
 
 	meta := rings.Meta
@@ -75,6 +79,18 @@ func AssertWiredRingsReady(t Reporter, mapped *cnc.MappedCncFile, rings *cnc.Rin
 	require.Equal(t, wantClientsCapacity, rings.ToClients.Capacity())
 
 	AssertMappedBufferLengths(t, mapped, meta)
+}
+
+// AssertWiredRingsReady asserts the same wiring as AssertWiredRingsConstruct,
+// then asserts empty ToDriver and ToClients.
+//
+// Requires a quiescent ToDriver and ToClients for this receiver. Call only with
+// synthetic CnC fixtures or an exclusive driver that has no concurrent traffic.
+// Live shared-driver tests must use AssertWiredRingsConstruct instead.
+func AssertWiredRingsReady(t Reporter, mapped *cnc.MappedCncFile, rings *cnc.Rings) {
+	t.Helper()
+
+	AssertWiredRingsConstruct(t, mapped, rings)
 
 	require.Equal(t, rings.ToDriver.ProducerPosition(), rings.ToDriver.ConsumerPosition())
 	require.False(t, rings.ToClients.ReceiveNext())

@@ -1,9 +1,7 @@
 # syntax=docker/dockerfile:1
-FROM eclipse-temurin:26-jdk AS builder
-
-RUN apt-get update \
-	&& apt-get install -y --no-install-recommends maven \
-	&& rm -rf /var/lib/apt/lists/*
+# Builder image ships Maven and JDK 26. Matches pom maven.compiler.release.
+ARG MAVEN_IMAGE=maven:3.9-eclipse-temurin-26
+FROM ${MAVEN_IMAGE} AS builder
 
 WORKDIR /src
 COPY test/integration/cluster_java/pom.xml test/integration/cluster_java/pom.xml

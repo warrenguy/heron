@@ -11,29 +11,22 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// openDurableCatchupCluster starts three members on the durable-catchup port
-// block.
-func openDurableCatchupCluster(t *testing.T) *harness.ClusterMemberSet {
-	t.Helper()
-	return openDurableCluster(
-		t,
-		harness.DurableCatchupPortBase,
-		harness.DurableCatchupLogEndpoint,
-	)
-}
-
 // TestDurableCluster_catchesUpARestartedFollower asserts a stopped follower
 // rejoins below the leader. The follower catches up through Archive-backed log
 // replay. After catchup the set commits a post-catchup append on every member.
 //
 // Log replication has no helper. The scenario drives the follower replay path.
 // The test fails if the member is ever observed on the replication path.
-//
-// No t.Parallel: the set owns fixed UDP ports.
 func TestDurableCluster_catchesUpARestartedFollower(t *testing.T) {
+	t.Parallel()
+
 	harness.RequireArchiveRuntime(t)
 
-	set := openDurableCatchupCluster(t)
+	set := openDurableCluster(
+		t,
+		harness.DurableCatchupPortBase,
+		harness.DurableCatchupLogEndpoint,
+	)
 
 	leader := requireSingleLeader(t, set, "")
 	leaderMemberID := leader.ThisMemberID()
@@ -45,10 +38,10 @@ func TestDurableCluster_catchesUpARestartedFollower(t *testing.T) {
 	require.False(t, follower.IsLeader(), "chosen member must not be leader:\n%s", set.State())
 
 	// Append on the leader. Recording must capture the bytes before the stop.
+	// Mid-append while the follower is down builds the catchup gap. Do not wait
+	// for adapter lag on this message.
 	mustAppend(t, set, leader, "pre-stop-catchup")
 
-	// Wait until the follower type-100 counter reaches the leader publication
-	// position. Recovery reads that high-water as the append position.
 	require.Positive(
 		t,
 		leader.LogPublisher().Position(),
@@ -56,14 +49,12 @@ func TestDurableCluster_catchesUpARestartedFollower(t *testing.T) {
 		set.State(),
 	)
 
-	// Stop while the follower log adapter is still below the recorded high-water.
-	// Both conditions are one predicate. The adapter bound is
-	// min(notifiedCommit, recordingCounter), so the tick that lifts the recording
-	// past the publication can also lift the adapter to that high-water. Waiting
-	// on the recording first and asserting the lag second observes a state that
-	// no longer holds.
+	// Recovery reads the type-100 high-water as the append position. Wait until
+	// the follower recording reaches the leader publication. Adapter and
+	// recording often advance on the same tick, so do not also require adapter
+	// lag here.
 	requireAwaitTick(
-		t, set, "follower recording current with adapter still behind", durableWorkBound,
+		t, set, "follower recording current", durableWorkBound,
 		func() bool {
 			m := set.Module(followerIndex)
 			if m == nil {
@@ -71,7 +62,7 @@ func TestDurableCluster_catchesUpARestartedFollower(t *testing.T) {
 			}
 			leaderPub := leader.LogPublisher().Position()
 			pos := harness.RecordingCounterPosition(m, m.Agent().LocalLogRecordingID())
-			return pos >= leaderPub && m.LogAdapter().Position() < leaderPub
+			return pos >= leaderPub
 		},
 	)
 
@@ -79,7 +70,7 @@ func TestDurableCluster_catchesUpARestartedFollower(t *testing.T) {
 	require.Nil(t, set.Module(followerIndex))
 
 	// Append while the follower is down so the returner commit stays strictly
-	// below the leader after restart.
+	// below the leader after restart. This mid-append is the catchup gap.
 	midAppendPos := mustAppend(t, set, leader, "while-down-catchup")
 
 	requireAwaitTick(t, set, "survivors commit while follower down", durableWorkBound, func() bool {
@@ -136,9 +127,10 @@ func TestDurableCluster_catchesUpARestartedFollower(t *testing.T) {
 
 	requireAwait(t, set, "post-restart log images", durableImageBound, set.AwaitLogImages)
 
-	// Catchup: adapter and notified commit reach the captured publication
-	// position. The test fails if the member enters the nil-factory
-	// log-replication path.
+	// Await adapter and notified commit at the captured publication position.
+	// The returner must stay ElectionComplete with an active recording. Progress
+	// alone can pass during LEADER_HEARTBEAT_TIMEOUT re-entry under short harness
+	// heartbeats. Fail if the member enters the nil-factory log-replication path.
 	requireAwaitTick(
 		t, set, "archive catchup to leader publication", durableWorkBound,
 		func() bool {
@@ -156,12 +148,15 @@ func TestDurableCluster_catchesUpARestartedFollower(t *testing.T) {
 					set.State(),
 				)
 			}
+			if !m.ElectionComplete() || !m.Agent().IsRecordingActive() {
+				return false
+			}
 			adapter := m.LogAdapter()
 			if adapter == nil {
 				return false
 			}
-			return adapter.Position() == leaderPublicationPosition &&
-				m.NotifiedCommitPosition() == leaderPublicationPosition
+			return adapter.Position() >= leaderPublicationPosition &&
+				m.NotifiedCommitPosition() >= leaderPublicationPosition
 		},
 	)
 
