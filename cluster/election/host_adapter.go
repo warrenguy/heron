@@ -393,9 +393,13 @@ func (h *HostAdapter) PublishNewLeadershipTerm(answer consensus.CanvassAnswer) b
 	return true
 }
 
-// TrackCatchupCompletion is a no-op until archive stop/catchup is wired.
+// TrackCatchupCompletion is a no-op.
 //
-// Kept so [ElectionHost] is fully implemented.
+// A leader-side catchup replay follows the active recording, so it is the
+// returning follower's live log feed until the next prepare. Stopping it at the
+// caught-up position strands that follower: its log adapter is bound to the
+// catchup image, and no live image replaces it. Stopping on completion needs a
+// follower-side handover to the live log first.
 func (h *HostAdapter) TrackCatchupCompletion(*Member, int64, uint8) {}
 
 func (h *HostAdapter) Role() consensus.Role { return h.agent.Role() }
@@ -431,26 +435,30 @@ func (h *HostAdapter) CatchupInitiated(nowNs int64) {
 	h.agent.CatchupInitiated(nowNs)
 }
 
-func (h *HostAdapter) StopAllCatchups() { h.agent.StopAllCatchups() }
-
 func (h *HostAdapter) IsCatchupNearLive(position int64) bool {
 	return h.agent.IsCatchupNearLive(position)
 }
 
-func (h *HostAdapter) LiveLogDestination() string {
-	return h.agent.LiveLogDestination()
+func (h *HostAdapter) EnsureCatchupLogDestination(catchupEndpoint string) string {
+	return h.agent.EnsureCatchupLogDestination(catchupEndpoint)
 }
 
-func (h *HostAdapter) LiveLogDestinationSet(destination string) {
-	h.agent.LiveLogDestinationSet(destination)
+func (h *HostAdapter) CommitPosition() int64 {
+	return h.agent.CommitPosition()
 }
 
-func (h *HostAdapter) CatchupLogDestination() string {
-	return h.agent.CatchupLogDestination()
+func (h *HostAdapter) IsLogJoinedForSession(logSessionID int32) bool {
+	return h.agent.IsLogJoinedForSession(logSessionID)
 }
 
-func (h *HostAdapter) CatchupLogDestinationSet(destination string) {
-	h.agent.CatchupLogDestinationSet(destination)
+// OnCatchupPosition starts a leader-side archive catchup replay for the
+// follower named in fields. Refuses an unknown follower member id. The agent
+// refuses a second start while a replay is active.
+func (h *HostAdapter) OnCatchupPosition(fields codecs.CatchupPositionFields) {
+	if h.memberByID[fields.FollowerMemberID] == nil {
+		return
+	}
+	h.agent.OnCatchupPosition(fields)
 }
 
 func (h *HostAdapter) AddLogPublication(appendPosition int64) int32 {

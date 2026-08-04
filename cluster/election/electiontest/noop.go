@@ -1,6 +1,7 @@
 package electiontest
 
 import (
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 )
@@ -58,17 +59,15 @@ func (NoopElectionHost) CatchupPoll(int64, int64) int { return 0 }
 
 func (NoopElectionHost) CatchupInitiated(int64) {}
 
-func (NoopElectionHost) StopAllCatchups() {}
-
 func (NoopElectionHost) IsCatchupNearLive(int64) bool { return false }
 
-func (NoopElectionHost) LiveLogDestination() string { return "" }
+func (NoopElectionHost) EnsureCatchupLogDestination(string) string { return "" }
 
-func (NoopElectionHost) LiveLogDestinationSet(string) {}
+func (NoopElectionHost) CommitPosition() int64 { return 0 }
 
-func (NoopElectionHost) CatchupLogDestination() string { return "" }
+func (NoopElectionHost) IsLogJoinedForSession(int32) bool { return false }
 
-func (NoopElectionHost) CatchupLogDestinationSet(string) {}
+func (NoopElectionHost) OnCatchupPosition(codecs.CatchupPositionFields) {}
 
 func (NoopElectionHost) PublishCommitPosition(int64, int64) {}
 

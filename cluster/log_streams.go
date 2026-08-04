@@ -232,6 +232,58 @@ func (l *LogStreams) Publication() *aeron.ExclusivePublication {
 	return l.publication
 }
 
+// ReseedPublicationAt closes the exclusive log publication and opens a new one
+// at seed.Position. Rebinds the log publisher.
+//
+// Used when a follower becomes leader and the exclusive publication sits below
+// the durable append high-water. LOCAL recording extend requires the
+// publication join position to match the recording stop.
+//
+// Concurrency: invoker-only.
+//
+// Returns an error when:
+//   - the receiver is nil or already closed
+//   - seed is invalid
+//   - the new exclusive publication cannot be added
+//
+// On add failure the previous publication is already closed and the publisher
+// is unbound. Caller must treat the log publication as unavailable.
+func (l *LogStreams) ReseedPublicationAt(
+	adder ExclusivePublicationAdder,
+	channel string,
+	streamID int32,
+	seed *LogPublicationInitialPosition,
+) error {
+	if l == nil || l.publication == nil {
+		return errors.New("cluster: log streams closed")
+	}
+	if adder == nil {
+		return errors.New("cluster: log stream adder is required")
+	}
+	pubChannel, err := logChannelWithInitialPosition(channel, seed)
+	if err != nil {
+		return err
+	}
+
+	// Unbind before close so offers cannot target a closed handle.
+	l.logPublisher.SetPublication(nil)
+	_ = l.publication.Close()
+	l.publication = nil
+
+	pub, err := addExclusivePublicationChecked(
+		adder,
+		streamID,
+		pubChannel,
+		"cluster log publication reseed",
+	)
+	if err != nil {
+		return err
+	}
+	l.publication = pub
+	l.logPublisher.SetPublication(pub)
+	return nil
+}
+
 // Subscription returns the cluster log subscription.
 //
 // Nil after Close and on a nil receiver.

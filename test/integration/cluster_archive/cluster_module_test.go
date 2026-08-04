@@ -11,6 +11,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
+	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/test/integration/harness"
@@ -23,9 +24,7 @@ import (
 func TestClusterModule_electsOneLeaderOverLiveDrivers(t *testing.T) {
 	set := openThreeNodeCluster(t)
 
-	leaders := set.Leaders()
-	require.Len(t, leaders, 1, "expected exactly one leader:\n%s", set.State())
-	leader := leaders[0]
+	leader := requireSingleLeader(t, set, "")
 	leaderMemberID := leader.ThisMemberID()
 	require.Equal(t, int32(-1), leader.LeaderMemberID())
 	require.Nil(t, leader.LogAdapter().Image())
@@ -44,19 +43,12 @@ func TestClusterModule_electsOneLeaderOverLiveDrivers(t *testing.T) {
 	// Durable log recording after elect: each member records into its own
 	// Archive. TERM names that member's local id. Catalog descriptors are
 	// session-scoped to the leader log publication.
-	//
-	// Recording ids are not compared across members: each Archive catalog
-	// allocates ids independently, so the first recording is often id 0 on
-	// every node.
-	leaderLogSessionID := leader.LogPublisher().SessionID()
-	require.NotEqual(t, int32(-1), leaderLogSessionID)
-	leaderLogStreamID := leader.Topology().LogStreamID()
+	requireMembersRecordLeaderLog(t, set, leader)
+
+	// Cold elect: contiguous TERM entries [0, term]. Target term stays open.
 	for _, m := range set.Modules() {
 		recordingID := m.Agent().LocalLogRecordingID()
-		require.NotEqual(t, int64(-1), recordingID, "member %d", m.ThisMemberID())
-		require.True(t, m.Agent().IsRecordingActive(), "member %d", m.ThisMemberID())
 		entries := m.RecordingLog().Entries()
-		// Cold elect: contiguous TERM entries [0, term]. Target term stays open.
 		require.Len(t, entries, int(term+1), "member %d", m.ThisMemberID())
 		for k, e := range entries {
 			require.Equal(t, recordinglog.EntryTypeTerm, e.Type, "member %d entry %d", m.ThisMemberID(), k)
@@ -83,18 +75,6 @@ func TestClusterModule_electsOneLeaderOverLiveDrivers(t *testing.T) {
 				)
 			}
 		}
-		archiveClient := m.ArchiveClient()
-		require.NotNil(t, archiveClient, "member %d", m.ThisMemberID())
-		desc, err := archiveClient.ListRecording(context.Background(), recordingID)
-		require.NoError(t, err, "member %d ListRecording", m.ThisMemberID())
-		require.Equal(t, leaderLogStreamID, desc.StreamID, "member %d", m.ThisMemberID())
-		require.Equal(
-			t,
-			leaderLogSessionID,
-			desc.SessionID,
-			"member %d recording session must match leader log publication",
-			m.ThisMemberID(),
-		)
 	}
 
 	// Capture archive clients and log handles before Close.
@@ -433,9 +413,7 @@ func TestClusterModule_rejoinsCommitAfterMemberRestart(t *testing.T) {
 func TestClusterModule_reElectsAfterTheLeaderStops(t *testing.T) {
 	set := openThreeNodeCluster(t)
 
-	leaders := set.Leaders()
-	require.Len(t, leaders, 1, "expected exactly one leader:\n%s", set.State())
-	leader := leaders[0]
+	leader := requireSingleLeader(t, set, "")
 	leaderIndex := int(leader.ThisMemberID())
 	preTerm := leader.LeadershipTermID()
 
@@ -454,124 +432,44 @@ func TestClusterModule_reElectsAfterTheLeaderStops(t *testing.T) {
 	}
 
 	// Drive a non-zero commit floor so the cluster is live before the fault.
-	appendPos := leader.LogPublisher().AppendMessage(
-		leader.LeadershipTermID(),
-		1,
-		time.Now().UnixNano(),
-		[]byte("pre-leader-stop-commit"),
-	)
-	require.Positive(t, appendPos, "AppendMessage failed code=%d:\n%s", appendPos, set.State())
+	mustAppend(t, set, leader, "pre-leader-stop-commit")
 
-	const commitBound = 60 * time.Second
-	requireAwait(t, set, "pre-stop commit floor", commitBound, func(bound time.Duration) bool {
-		return set.TickUntil(bound, func() bool {
-			for _, m := range set.Modules() {
-				if m == nil || m.CommitPosition() == 0 {
-					return false
-				}
+	requireAwaitTick(t, set, "pre-stop commit floor", durableWorkBound, func() bool {
+		for _, m := range set.Modules() {
+			if m == nil || m.CommitPosition() == 0 {
+				return false
 			}
-			return true
-		})
+		}
+		return true
 	})
 
 	require.NoError(t, set.StopMember(leaderIndex))
 	require.Nil(t, set.Module(leaderIndex))
 
-	// Survivors install a second election after the leader heartbeat timeout.
-	const reElectBound = 45 * time.Second
-	requireAwait(t, set, "re-elect after leader stop", reElectBound, func(bound time.Duration) bool {
-		return set.TickUntil(bound, func() bool {
-			countTwo := false
-			for i, m := range set.Modules() {
-				if m == nil || i == leaderIndex {
-					continue
-				}
-				if m.Agent().ElectionCount() == 2 {
-					countTwo = true
-					break
-				}
-			}
-			if !countTwo {
-				return false
-			}
-			if len(set.Leaders()) != 1 {
-				return false
-			}
-			newLeader := set.Leaders()[0]
-			return newLeader.LeadershipTermID() > preTerm
-		})
-	})
-
-	newLeaders := set.Leaders()
-	require.Len(t, newLeaders, 1, "expected exactly one leader after re-elect:\n%s", set.State())
-	newLeader := newLeaders[0]
+	newLeader := awaitReElectionAfterStop(t, set, leaderIndex, preTerm)
 	newLeaderID := newLeader.ThisMemberID()
-	require.NotEqual(
-		t,
-		int32(leaderIndex),
-		newLeaderID,
-		"new leader must be a survivor:\n%s",
-		set.State(),
-	)
-	require.Greater(
-		t,
-		newLeader.LeadershipTermID(),
-		preTerm,
-		"LeadershipTermID after re-elect:\n%s",
-		set.State(),
-	)
 
-	// At least one survivor re-entered on leader heartbeat timeout.
-	triggerSeen := false
-	for i, m := range set.Modules() {
-		if m == nil || i == leaderIndex {
-			continue
-		}
-		if m.Agent().LastElectionTrigger() == consensus.ElectionTriggerLeaderHeartbeatTimeout {
-			triggerSeen = true
-			break
-		}
-	}
-	require.True(
-		t,
-		triggerSeen,
-		"no survivor reported ElectionTriggerLeaderHeartbeatTimeout:\n%s",
-		set.State(),
-	)
+	requireHeartbeatTimeoutTriggerSeen(t, set, leaderIndex)
 
 	// Append under the new term; both survivors commit.
-	postAppendPos := newLeader.LogPublisher().AppendMessage(
-		newLeader.LeadershipTermID(),
-		1,
-		time.Now().UnixNano(),
-		[]byte("post-leader-stop-commit"),
-	)
-	require.Positive(
-		t,
-		postAppendPos,
-		"post-re-elect AppendMessage failed code=%d:\n%s",
-		postAppendPos,
-		set.State(),
-	)
+	postAppendPos := mustAppend(t, set, newLeader, "post-leader-stop-commit")
 
-	requireAwait(t, set, "post-re-elect commit advance", commitBound, func(bound time.Duration) bool {
-		return set.TickUntil(bound, func() bool {
-			if newLeader.CommitPosition() < postAppendPos {
+	requireAwaitTick(t, set, "post-re-elect commit advance", durableWorkBound, func() bool {
+		if newLeader.CommitPosition() < postAppendPos {
+			return false
+		}
+		for i, m := range set.Modules() {
+			if m == nil || i == leaderIndex {
+				continue
+			}
+			if m.ThisMemberID() == newLeaderID {
+				continue
+			}
+			if m.NotifiedCommitPosition() < postAppendPos {
 				return false
 			}
-			for i, m := range set.Modules() {
-				if m == nil || i == leaderIndex {
-					continue
-				}
-				if m.ThisMemberID() == newLeaderID {
-					continue
-				}
-				if m.NotifiedCommitPosition() < postAppendPos {
-					return false
-				}
-			}
-			return true
-		})
+		}
+		return true
 	})
 }
 
@@ -583,49 +481,21 @@ func TestClusterModule_reElectsAfterTheLeaderStops(t *testing.T) {
 func TestClusterModule_leaderReElectsWhenItsFollowersStop(t *testing.T) {
 	set := openThreeNodeCluster(t)
 
-	leaders := set.Leaders()
-	require.Len(t, leaders, 1, "expected exactly one leader:\n%s", set.State())
-	leader := leaders[0]
+	leader := requireSingleLeader(t, set, "")
 	leaderIndex := int(leader.ThisMemberID())
 
-	// Stop both followers. Leader alone is below the quorum threshold for three
-	// members (need 2).
-	for i, m := range set.Modules() {
-		if m == nil || i == leaderIndex {
-			continue
-		}
-		require.NoError(t, set.StopMember(i))
-		require.Nil(t, set.Module(i))
-	}
+	stopFollowers(t, set, leaderIndex)
 
-	const reElectBound = 45 * time.Second
-	requireAwait(t, set, "leader re-elect after followers stop", reElectBound,
-		func(bound time.Duration) bool {
-			return set.TickUntil(bound, func() bool {
-				m := set.Module(leaderIndex)
-				if m == nil {
-					return false
-				}
-				return m.Agent().ElectionCount() == 2
-			})
+	requireAwaitTick(t, set, "leader re-elect after followers stop", durableReElectBound,
+		func() bool {
+			m := set.Module(leaderIndex)
+			if m == nil {
+				return false
+			}
+			return m.Agent().ElectionCount() == 2
 		})
 
-	survivor := set.Module(leaderIndex)
-	require.NotNil(t, survivor, "leader slot empty after followers stop:\n%s", set.State())
-	require.Equal(
-		t,
-		consensus.ElectionTriggerInactiveFollowerQuorum,
-		survivor.Agent().LastElectionTrigger(),
-		"LastElectionTrigger after lost quorum:\n%s",
-		set.State(),
-	)
-	require.Equal(
-		t,
-		consensus.RoleFollower,
-		survivor.Agent().Role(),
-		"Role after lost quorum:\n%s",
-		set.State(),
-	)
+	survivor := requireQuorumLossFollower(t, set, leaderIndex)
 
 	// Lone member of three cannot complete an election. Pump stays bounded.
 	const pumpBound = 2 * time.Second
@@ -705,4 +575,231 @@ func requireAwait(
 		set.State(),
 	)
 	t.Logf("%s elapsed=%s\n%s", label, time.Since(start), set.State())
+}
+
+// requireAwaitTick runs requireAwait over set.TickUntil with pred.
+func requireAwaitTick(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	label string,
+	bound time.Duration,
+	pred func() bool,
+) {
+	t.Helper()
+
+	requireAwait(t, set, label, bound, func(bound time.Duration) bool {
+		return set.TickUntil(bound, pred)
+	})
+}
+
+// requireSingleLeader returns the one leader. Fails with the set state when the
+// set does not report exactly one leader. context labels the election phase
+// (for example "after re-elect"); empty is fine.
+func requireSingleLeader(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	context string,
+) *cluster.ConsensusModule {
+	t.Helper()
+
+	label := "expected exactly one leader"
+	if context != "" {
+		label += " " + context
+	}
+	leaders := set.Leaders()
+	require.Len(t, leaders, 1, "%s:\n%s", label, set.State())
+	return leaders[0]
+}
+
+// mustAppend appends payload on the leader log publication and requires a
+// positive position. The set state is built only on failure so mustAppend is
+// safe inside polling loops.
+func mustAppend(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	leader *cluster.ConsensusModule,
+	payload string,
+) int64 {
+	t.Helper()
+
+	pos := leader.LogPublisher().AppendMessage(
+		leader.LeadershipTermID(),
+		1,
+		time.Now().UnixNano(),
+		[]byte(payload),
+	)
+	if pos <= 0 {
+		require.FailNow(
+			t,
+			"AppendMessage failed",
+			"payload=%q code=%d:\n%s",
+			payload,
+			pos,
+			set.State(),
+		)
+	}
+	return pos
+}
+
+// awaitReElectionAfterStop waits for a survivor ElectionCount of 2 and one new
+// leader above preTerm after the member at stoppedIndex stopped. Returns the
+// new leader.
+func awaitReElectionAfterStop(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	stoppedIndex int,
+	preTerm int64,
+) *cluster.ConsensusModule {
+	t.Helper()
+
+	requireAwaitTick(t, set, "re-elect after leader stop", durableReElectBound, func() bool {
+		countTwo := false
+		for i, m := range set.Modules() {
+			if m == nil || i == stoppedIndex {
+				continue
+			}
+			if m.Agent().ElectionCount() == 2 {
+				countTwo = true
+				break
+			}
+		}
+		if !countTwo {
+			return false
+		}
+		ls := set.Leaders()
+		return len(ls) == 1 && ls[0].LeadershipTermID() > preTerm
+	})
+
+	newLeader := requireSingleLeader(t, set, "after re-elect")
+	require.NotEqual(
+		t,
+		int32(stoppedIndex),
+		newLeader.ThisMemberID(),
+		"new leader must be a survivor:\n%s",
+		set.State(),
+	)
+	require.Greater(
+		t,
+		newLeader.LeadershipTermID(),
+		preTerm,
+		"LeadershipTermID after re-elect:\n%s",
+		set.State(),
+	)
+	return newLeader
+}
+
+// requireHeartbeatTimeoutTriggerSeen requires at least one member other than
+// stoppedIndex re-entered election on leader heartbeat timeout.
+func requireHeartbeatTimeoutTriggerSeen(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	stoppedIndex int,
+) {
+	t.Helper()
+
+	for i, m := range set.Modules() {
+		if m == nil || i == stoppedIndex {
+			continue
+		}
+		if m.Agent().LastElectionTrigger() == consensus.ElectionTriggerLeaderHeartbeatTimeout {
+			return
+		}
+	}
+	require.FailNow(
+		t,
+		"no survivor reported ElectionTriggerLeaderHeartbeatTimeout",
+		"%s",
+		set.State(),
+	)
+}
+
+// stopFollowers stops every live member except leaderIndex. Leader alone is
+// below the quorum threshold for three members (need 2).
+func stopFollowers(t *testing.T, set *harness.ClusterMemberSet, leaderIndex int) {
+	t.Helper()
+
+	for i, m := range set.Modules() {
+		if m == nil || i == leaderIndex {
+			continue
+		}
+		require.NoError(t, set.StopMember(i))
+		require.Nil(t, set.Module(i))
+	}
+}
+
+// requireQuorumLossFollower requires the member at leaderIndex latched the
+// inactive-follower-quorum trigger and dropped to the follower role. Returns
+// that member.
+func requireQuorumLossFollower(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	leaderIndex int,
+) *cluster.ConsensusModule {
+	t.Helper()
+
+	survivor := set.Module(leaderIndex)
+	require.NotNil(t, survivor, "leader slot empty after followers stop:\n%s", set.State())
+	require.Equal(
+		t,
+		consensus.ElectionTriggerInactiveFollowerQuorum,
+		survivor.Agent().LastElectionTrigger(),
+		"LastElectionTrigger after lost quorum:\n%s",
+		set.State(),
+	)
+	require.Equal(
+		t,
+		consensus.RoleFollower,
+		survivor.Agent().Role(),
+		"Role after lost quorum:\n%s",
+		set.State(),
+	)
+	return survivor
+}
+
+// requireMembersRecordLeaderLog requires every member holds an active local
+// recording whose last recording-log entry and catalog descriptor are
+// session-scoped to the leader log publication.
+//
+// Recording ids are not compared across members: each Archive catalog
+// allocates ids independently, so the first recording is often id 0 on every
+// node.
+func requireMembersRecordLeaderLog(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	leader *cluster.ConsensusModule,
+) {
+	t.Helper()
+
+	leaderLogSessionID := leader.LogPublisher().SessionID()
+	require.NotEqual(t, int32(-1), leaderLogSessionID)
+	leaderLogStreamID := leader.Topology().LogStreamID()
+	for _, m := range set.Modules() {
+		recordingID := m.Agent().LocalLogRecordingID()
+		require.NotEqual(t, int64(-1), recordingID, "member %d:\n%s", m.ThisMemberID(), set.State())
+		require.True(t, m.Agent().IsRecordingActive(), "member %d:\n%s", m.ThisMemberID(), set.State())
+		entries := m.RecordingLog().Entries()
+		require.NotEmpty(t, entries, "member %d recording log empty:\n%s", m.ThisMemberID(), set.State())
+		require.Equal(
+			t,
+			recordingID,
+			entries[len(entries)-1].RecordingID,
+			"member %d last entry RecordingID:\n%s",
+			m.ThisMemberID(),
+			set.State(),
+		)
+
+		archiveClient := m.ArchiveClient()
+		require.NotNil(t, archiveClient, "member %d", m.ThisMemberID())
+		desc, err := archiveClient.ListRecording(context.Background(), recordingID)
+		require.NoError(t, err, "member %d ListRecording:\n%s", m.ThisMemberID(), set.State())
+		require.Equal(t, leaderLogStreamID, desc.StreamID, "member %d", m.ThisMemberID())
+		require.Equal(
+			t,
+			leaderLogSessionID,
+			desc.SessionID,
+			"member %d recording session must match leader log publication:\n%s",
+			m.ThisMemberID(),
+			set.State(),
+		)
+	}
 }

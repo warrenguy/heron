@@ -396,7 +396,7 @@ func TestLogRecording_startFailureDrainsViaStopLogRecording(t *testing.T) {
 			logStreamID: streamID,
 		}
 
-		_, err := r.StartLogRecording(archivewire.SourceLocation_LOCAL, logSessionID)
+		_, err := r.StartLogRecording(archivewire.SourceLocation_LOCAL, logSessionID, "")
 		require.Error(t, err)
 		require.ErrorIs(t, err, startErr)
 		require.Equal(t, 1, stub.startCalls)
@@ -424,7 +424,7 @@ func TestLogRecording_startFailureDrainsViaStopLogRecording(t *testing.T) {
 			logStreamID: streamID,
 		}
 
-		_, err := r.StartLogRecording(archivewire.SourceLocation_LOCAL, logSessionID)
+		_, err := r.StartLogRecording(archivewire.SourceLocation_LOCAL, logSessionID, "")
 		require.Error(t, err)
 		require.ErrorIs(t, err, startErr)
 		require.ErrorIs(t, err, stopErr)
@@ -745,7 +745,7 @@ func TestLogRecording_startVsExtend_branchSourceIsRecordingLog(t *testing.T) {
 		logStreamID: streamID,
 	}
 
-	got, err := r.StartLogRecording(archivewire.SourceLocation_REMOTE, logSessionID)
+	got, err := r.StartLogRecording(archivewire.SourceLocation_REMOTE, logSessionID, "")
 	require.NoError(t, err)
 	require.Equal(t, S, got)
 	require.Equal(t, 0, stub.startCalls)
@@ -777,7 +777,7 @@ func TestLogRecording_refusedExtendFailsClosedNoStartFallback(t *testing.T) {
 		logStreamID: streamID,
 	}
 
-	_, err := r.StartLogRecording(archivewire.SourceLocation_REMOTE, logSessionID)
+	_, err := r.StartLogRecording(archivewire.SourceLocation_REMOTE, logSessionID, "")
 	require.Error(t, err)
 	require.ErrorIs(t, err, extendErr)
 	require.Contains(t, err.Error(), "extend log recording 55")

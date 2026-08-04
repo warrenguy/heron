@@ -53,9 +53,13 @@ func (p *AeronPublisher) Publication(memberID int32) *aeron.ExclusivePublication
 
 // publishClaim encodes fields into a TryClaim reservation and commits.
 //
+// varLens are optional variable-field payload lengths for
+// [codecs.ClusterWireMessageLen] (for example CatchupEndpoint).
+//
 // Returns false when the member publication is missing, wire length cannot be
-// computed, wire length exceeds MaxPayloadLength, or encode fails. Claim retry,
-// abort, and commit policy is [aeron.ExclusivePublication.ClaimFillCommit].
+// computed, wire length exceeds MaxPayloadLength, or encode fails. Claim
+// retry, abort, and commit policy is
+// [aeron.ExclusivePublication.ClaimFillCommit].
 func publishClaim[F any](
 	p *AeronPublisher,
 	dst PublicationTarget,
@@ -63,12 +67,13 @@ func publishClaim[F any](
 	ver uint16,
 	fields F,
 	encode func([]byte, int, uint16, F) (int, bool),
+	varLens ...int,
 ) bool {
 	pub := p.pubs[dst.MemberID]
 	if pub == nil {
 		return false
 	}
-	wireLen, ok := codecs.ClusterWireMessageLen(blockLength)
+	wireLen, ok := codecs.ClusterWireMessageLen(blockLength, varLens...)
 	if !ok || wireLen > pub.MaxPayloadLength() {
 		return false
 	}
@@ -169,5 +174,21 @@ func (p *AeronPublisher) CommitPosition(
 		ver,
 		fields,
 		codecs.EncodeCommitPosition,
+	)
+}
+
+func (p *AeronPublisher) CatchupPosition(
+	dst PublicationTarget,
+	fields codecs.CatchupPositionFields,
+) bool {
+	ver := actingVersion(p.ActingVersion)
+	return publishClaim(
+		p,
+		dst,
+		clusterwire.CatchupPositionSbeBlockLength,
+		ver,
+		fields,
+		codecs.EncodeCatchupPosition,
+		len(fields.CatchupEndpoint),
 	)
 }

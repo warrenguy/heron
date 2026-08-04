@@ -804,6 +804,35 @@ func TestHandleInit_resetsReplay(t *testing.T) {
 	require.Equal(t, 1, spy.closeCalls)
 }
 
+// Asserts re-entering Init clears the catchup join bound so the next install
+// derives the bound from its own leadership term. Agent-side catchup teardown
+// runs inside PrepareForNewLeadership and is covered by consensus tests.
+func TestHandleInit_resetsCatchupJoinPosition(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	e := election.NewElection(cfg, deps)
+
+	// First init sets isFirstInit false.
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+
+	// Install with the leader log ahead so the join bound is recorded.
+	fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
+	fields.LogPosition = cfg.AppendPosition + 100
+	e.OnNewLeadershipTerm(fields)
+	require.Equal(
+		t,
+		cfg.AppendPosition+100,
+		election.CatchupJoinPositionForTest(e),
+	)
+
+	// Force Init. Non-first branch must clear the bound.
+	election.SetStateForTest(e, election.ElectionStateInit)
+	require.Equal(t, 1, e.DoWork(clock.nowNs+1))
+	require.Equal(t, election.NullPosition, election.CatchupJoinPositionForTest(e))
+}
+
 func TestHandleInit_resetsReplication(t *testing.T) {
 	t.Parallel()
 
@@ -1049,32 +1078,23 @@ func TestHandleFollowerCatchupInit_nearLiveSkipsToLogInit(t *testing.T) {
 			t.Parallel()
 
 			// Log equals append so the install routes through the no-replay
-			// branch; the leader's live log position ahead of the append
-			// position becomes the catchup join position.
+			// branch.
 			fx := newElectionFixture(
 				t,
 				withPositions(testLeadershipTermID, testAppendPosition, testAppendPosition),
 			)
 			fx.host.catchupNearLive = tc.nearLive
-			catchupJoinPosition := fx.cfg.AppendPosition + 100
 
-			fx.doWork()
-			require.Equal(t, election.ElectionStateCanvass, fx.election.State())
-
-			fields := installNewLeadershipTermFields(fx.cfg, 1, fx.cfg.LeadershipTermID)
-			fields.LogPosition = catchupJoinPosition
-			fx.election.OnNewLeadershipTerm(fields)
-			require.Equal(t, election.ElectionStateFollowerReplay, fx.election.State())
-
-			fx.doWork()
-			require.Equal(t, election.ElectionStateFollowerCatchupInit, fx.election.State())
+			// Empty catchup endpoint keeps the not-near-live case on the stall
+			// branch.
+			catchupJoinPosition := driveToFollowerCatchupInit(fx, "")
 
 			require.Equal(t, tc.wantWork, fx.doWork())
 			require.Equal(t, tc.wantState, fx.election.State())
 			require.Equal(t, []int64{catchupJoinPosition}, fx.host.catchupNearLiveCalls)
 
-			// Neither branch calls catchup start on the host: near-live is
-			// skip-to-log-init only, and stall ticks idle.
+			// Near-live skips to log-init without catchup start. Not near-live
+			// stalls when CatchupEndpoint is empty (no send until timeout).
 			require.Empty(t, fx.host.catchupInitiatedCalls)
 		})
 	}
@@ -1317,6 +1337,36 @@ func driveFollowerLogJoinToReady(
 	require.Equal(t, election.ElectionStateFollowerReady, e.State())
 	require.Equal(t, adoptedTerm, election.LogLeadershipTermIDForTest(e))
 	return adoptedTerm
+}
+
+// driveToFollowerCatchupInit installs a leader term whose live log position is
+// ahead of this member, routing the follower through the no-replay branch into
+// FOLLOWER_CATCHUP_INIT. Returns the catchup join position.
+//
+// Sets catchupEndpoint on this member and clears recorded publisher traffic, so
+// the caller sees catchup sends only.
+func driveToFollowerCatchupInit(fx *electionFixture, catchupEndpoint string) int64 {
+	fx.t.Helper()
+
+	e := fx.election
+	fx.doWork()
+	require.Equal(fx.t, election.ElectionStateCanvass, e.State())
+
+	catchupJoinPosition := fx.cfg.AppendPosition + 100
+	fields := installNewLeadershipTermFields(fx.cfg, 1, fx.cfg.LeadershipTermID)
+	fields.LogPosition = catchupJoinPosition
+	e.OnNewLeadershipTerm(fields)
+	require.Equal(fx.t, election.ElectionStateFollowerReplay, e.State())
+
+	fx.doWork()
+	require.Equal(fx.t, election.ElectionStateFollowerCatchupInit, e.State())
+
+	thisMember := fx.member(fx.cfg.MemberID)
+	require.NotNil(fx.t, thisMember)
+	thisMember.CatchupEndpoint = catchupEndpoint
+
+	fx.publisher.Reset()
+	return catchupJoinPosition
 }
 
 // driveToFollowerLogReplication installs a successor term whose base position

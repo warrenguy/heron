@@ -3,6 +3,7 @@
 package consensus
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -341,4 +342,44 @@ func TestAgent_AddLogPublication_inject(t *testing.T) {
 	// Unbind returns to -1.
 	lp.SetPublication(nil)
 	require.Equal(t, int32(-1), a.AddLogPublication(0))
+}
+
+// Asserts reseed failure reports the session the publisher still holds.
+// Reseed closes the old publication before opening the new one. A failure
+// after that close must not report the pre-reseed session id. Election
+// publishes the returned id in NewLeadershipTerm.
+func TestAddLogPublication_reseedFailureReportsBoundSession(t *testing.T) {
+	t.Run("failure after unbind returns null session", func(t *testing.T) {
+		publisher, _ := boundLogPublisher(t)
+		a := NewAgent(AgentConfig{})
+		a.SetLogPublisher(publisher)
+		a.SetLogPublicationReseed(func(int64) (int32, error) {
+			publisher.SetPublication(nil)
+			return 0, errors.New("add exclusive publication failed")
+		})
+
+		require.Equal(t, int32(nullValue), a.AddLogPublication(100))
+	})
+
+	t.Run("failure before unbind returns the live session", func(t *testing.T) {
+		publisher, _ := boundLogPublisher(t)
+		a := NewAgent(AgentConfig{})
+		a.SetLogPublisher(publisher)
+		a.SetLogPublicationReseed(func(int64) (int32, error) {
+			return 0, errors.New("list recording failed")
+		})
+
+		require.Equal(t, publisher.SessionID(), a.AddLogPublication(100))
+	})
+
+	t.Run("success returns the reseeded session", func(t *testing.T) {
+		const reseeded int32 = 4242
+
+		publisher, _ := boundLogPublisher(t)
+		a := NewAgent(AgentConfig{})
+		a.SetLogPublisher(publisher)
+		a.SetLogPublicationReseed(func(int64) (int32, error) { return reseeded, nil })
+
+		require.Equal(t, reseeded, a.AddLogPublication(100))
+	})
 }

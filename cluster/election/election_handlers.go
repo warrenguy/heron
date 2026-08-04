@@ -16,6 +16,10 @@ func (e *Election) handleInit(nowNs int64) int {
 		e.clearLogReplication()
 		e.logSessionID = NullMemberID
 		e.stopReplay()
+
+		// Prepare below tears down the catchup path itself. The next install derives
+		// the join bound from its own leadership term.
+		e.catchupJoinPosition = NullPosition
 	}
 	if !firstInit || !e.isNodeStartup {
 		if err := e.prepareForNewLeadership(nowNs); err != nil {
@@ -364,28 +368,139 @@ func (e *Election) handleFollowerCatchupInit(nowNs int64) int {
 		e.state(ElectionStateFollowerLogInit, nowNs, "catchup near live")
 		return 1
 	}
-	return 0
+
+	leader := e.leaderMember
+	endpoint := e.thisMember.CatchupEndpoint
+	if leader == nil || endpoint == "" {
+		if e.failPastHeartbeatDeadline(
+			nowNs,
+			"election: no leader or catchup endpoint for catchup position",
+		) {
+			return 1
+		}
+		return 0
+	}
+
+	// Open the catchup receive path before the leader starts archive replay.
+	// Ensure is idempotent when the destination is already open.
+	if e.deps.Host.EnsureCatchupLogDestination(endpoint) == "" {
+		if e.failPastHeartbeatDeadline(nowNs, "election: failed to open catchup log destination") {
+			return 1
+		}
+		return 0
+	}
+
+	sent := e.deps.Publisher.CatchupPosition(
+		PublicationTarget{MemberID: leader.ID},
+		codecs.CatchupPositionFields{
+			LeadershipTermID: e.leadershipTermID,
+			LogPosition:      e.logPosition,
+			FollowerMemberID: e.thisMember.ID,
+			CatchupEndpoint:  endpoint,
+		},
+	)
+	if sent {
+		e.timeOfLastUpdateNs = nowNs
+		e.deps.Host.CatchupInitiated(nowNs)
+		e.state(ElectionStateFollowerCatchupAwait, nowNs, "")
+		return 1
+	}
+	// Work 1 re-offers the send on the next tick. Back-pressure clears as the
+	// publication drains, unlike a failed destination open.
+	e.failPastHeartbeatDeadline(nowNs, "election: failed to send catchup position")
+	return 1
 }
 
-func (e *Election) handleFollowerCatchupAwait(int64) int { return 0 }
+// failPastHeartbeatDeadline reports whether the leader heartbeat deadline has
+// passed since the last state change. Fires HandleError with msg when it has.
+func (e *Election) failPastHeartbeatDeadline(nowNs int64, msg string) bool {
+	if nowNs < e.timeOfLastStateChangeNs+e.cfg.LeaderHeartbeatTimeoutNs {
+		return false
+	}
+	e.HandleError(nowNs, errors.New(msg))
+	return true
+}
+
+func (e *Election) handleFollowerCatchupAwait(nowNs int64) int {
+	params, ok := e.deps.Host.FollowerLogJoinReady(e.logSessionID)
+	if !ok {
+		if e.failPastHeartbeatDeadline(nowNs, "election: failed to join catchup log") {
+			return 1
+		}
+		return 0
+	}
+	if params.LogJoinPosition != e.logPosition {
+		// Live late-join image may appear first. Wait for the catchup image.
+		if e.failPastHeartbeatDeadline(nowNs, "election: log join position mismatch") {
+			return 1
+		}
+		return 0
+	}
+
+	params.IsLeaderStartup = e.isLeaderStartup
+	joined, err := e.deps.Handler.JoinLogAsFollower(params, nowNs)
+	if err != nil {
+		e.HandleError(nowNs, err)
+		return 1
+	}
+	if joined {
+		e.state(ElectionStateFollowerCatchup, nowNs, "")
+		return 1
+	}
+	if e.failPastHeartbeatDeadline(nowNs, "election: failed to join catchup log as follower") {
+		return 1
+	}
+	return 0
+}
 
 // handleFollowerCatchup polls the host for catchup progress up to the notified
 // commit bound.
 //
-// Unset notified commit is 0 (field init), not NullPosition; a zero limit falls
+// Unset notified commit is 0 (field init), not NullPosition. A zero limit falls
 // back to catchupJoinPosition.
+//
+// The multicast log already feeds the live subscription. No live destination
+// is added during catchup.
+//
+// When commit reaches the catchup join and notified commit bounds, advances
+// append and log position, then moves to LOG_INIT.
 func (e *Election) handleFollowerCatchup(nowNs int64) int {
 	limit := e.notifiedCommitPosition
 	if limit == 0 {
 		limit = e.catchupJoinPosition
 	}
-	return e.deps.Host.CatchupPoll(limit, nowNs)
+	workCount := e.deps.Host.CatchupPoll(limit, nowNs)
+
+	// Complete only when install set a join bound. Injected CATCHUP without a
+	// join position polls forever (tests and sim).
+	join := e.catchupJoinPosition
+	if join != NullPosition {
+		position := e.deps.Host.CommitPosition()
+		if position >= join && position >= e.notifiedCommitPosition {
+			e.appendPosition = position
+			e.logPosition = position
+
+			// Completion leaves the catchup receive path open. The log adapter is
+			// bound to the catchup image and no live image replaces it. Prepare on
+			// the next Init closes the path.
+			e.state(ElectionStateFollowerLogInit, nowNs, "")
+			workCount++
+		}
+	}
+	return workCount
 }
 
 func (e *Election) handleFollowerLogInit(nowNs int64) int {
-	if e.logSessionID != NullMemberID {
-		e.state(ElectionStateFollowerLogAwait, nowNs, "")
+	// Catchup path joins before LOG_INIT. Skip LOG_AWAIT only when the adapter
+	// is already on the leader-advertised session, not a prior term's image.
+	if e.logSessionID == NullMemberID {
+		return 1
 	}
+	if e.deps.Host.IsLogJoinedForSession(e.logSessionID) {
+		e.state(ElectionStateFollowerReady, nowNs, "")
+		return 1
+	}
+	e.state(ElectionStateFollowerLogAwait, nowNs, "")
 	return 1
 }
 
@@ -476,6 +591,8 @@ func (e *Election) HandleConsensusMessage(buf []byte, offset int) bool {
 		return dispatchWire(buf, offset, accept, codecs.TryDecodeAppendPositionAt, e.OnAppendPosition)
 	case clusterwire.CommitPositionSbeTemplateID:
 		return dispatchWire(buf, offset, accept, codecs.TryDecodeCommitPositionAt, e.OnCommitPosition)
+	case clusterwire.CatchupPositionSbeTemplateID:
+		return dispatchWire(buf, offset, accept, codecs.TryDecodeCatchupPositionAt, e.OnCatchupPosition)
 	default:
 		return false
 	}
@@ -771,6 +888,15 @@ func (e *Election) OnCommitPosition(fields codecs.CommitPositionFields) {
 			errors.New("election: new leader detected from commit position"),
 		)
 	}
+}
+
+// OnCatchupPosition forwards a follower catchup request to the host. The
+// leader starts an archive replay toward the follower catchup endpoint.
+func (e *Election) OnCatchupPosition(fields codecs.CatchupPositionFields) {
+	if !e.acceptsConsensusInbound() {
+		return
+	}
+	e.deps.Host.OnCatchupPosition(fields)
 }
 
 // OnRecordingSignal forwards archive recording signals to the installed

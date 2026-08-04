@@ -182,6 +182,17 @@ func (image *Image) LogFileName() string {
 	return image.logFileName
 }
 
+// TermBufferLength returns the term buffer length of the image log.
+//
+// Reads the length from the term length mask (termLength - 1). Returns zero on
+// a nil receiver.
+func (image *Image) TermBufferLength() int32 {
+	if image == nil {
+		return 0
+	}
+	return image.termLengthMask + 1
+}
+
 // JoinPosition returns the subscriber counter value captured at image construction.
 //
 // The value does not change when the live counter advances during Poll.

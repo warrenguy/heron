@@ -2,6 +2,7 @@ package election
 
 import (
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/consensus"
 )
 
@@ -36,13 +37,22 @@ type ElectionHost interface {
 
 	CatchupPoll(limitPosition, nowNs int64) int
 	CatchupInitiated(nowNs int64)
-	StopAllCatchups()
 	IsCatchupNearLive(position int64) bool
 
-	LiveLogDestination() string
-	LiveLogDestinationSet(destination string)
-	CatchupLogDestination() string
-	CatchupLogDestinationSet(destination string)
+	// EnsureCatchupLogDestination opens the follower catchup receive path for
+	// catchupEndpoint. Returns the destination channel URI, or empty when not
+	// ready. Idempotent once open.
+	EnsureCatchupLogDestination(catchupEndpoint string) string
+
+	// CommitPosition returns the local commit value (0 when unset).
+	CommitPosition() int64
+
+	// IsLogJoinedForSession reports whether the bound log image carries
+	// logSessionID.
+	IsLogJoinedForSession(logSessionID int32) bool
+
+	// OnCatchupPosition starts leader-side catchup for the follower in fields.
+	OnCatchupPosition(fields codecs.CatchupPositionFields)
 
 	PublishCommitPosition(commitPosition, leadershipTermID int64)
 	AddLogPublication(appendPosition int64) int32

@@ -22,6 +22,8 @@ var _ Publisher = (*SbePublisher)(nil)
 
 func (p *SbePublisher) Reset() { p.Sent = p.Sent[:0] }
 
+// publish encodes fields and records the send. varLens are optional
+// variable-field payload lengths for [codecs.ClusterWireMessageLen].
 func publish[F any](
 	p *SbePublisher,
 	dst PublicationTarget,
@@ -30,8 +32,9 @@ func publish[F any](
 	ver uint16,
 	fields F,
 	encode func([]byte, int, uint16, F) (int, bool),
+	varLens ...int,
 ) bool {
-	wireLen, ok := codecs.ClusterWireMessageLen(blockLength)
+	wireLen, ok := codecs.ClusterWireMessageLen(blockLength, varLens...)
 	if !ok {
 		return false
 	}
@@ -146,5 +149,22 @@ func (p *SbePublisher) CommitPosition(
 		ver,
 		fields,
 		codecs.EncodeCommitPosition,
+	)
+}
+
+func (p *SbePublisher) CatchupPosition(
+	dst PublicationTarget,
+	fields codecs.CatchupPositionFields,
+) bool {
+	ver := actingVersion(p.ActingVersion)
+	return publish(
+		p,
+		dst,
+		clusterwire.CatchupPositionSbeTemplateID,
+		clusterwire.CatchupPositionSbeBlockLength,
+		ver,
+		fields,
+		codecs.EncodeCatchupPosition,
+		len(fields.CatchupEndpoint),
 	)
 }

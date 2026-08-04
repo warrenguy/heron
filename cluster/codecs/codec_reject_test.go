@@ -223,63 +223,43 @@ func TestTryDecodeByTemplate_rejects_consensus(t *testing.T) {
 	runTryDecodeRejectCases(t, cases)
 }
 
-func encodeCatchupPositionWire(t *testing.T) []byte {
-	t.Helper()
-	buf := make([]byte, fuzzClusterCodecMaxLen)
-	var msg clusterwire.CatchupPosition
-	wireEnd := int(msg.WrapAndApplyHeader(buf, 0, uint64(len(buf))).
-		SetLeadershipTermId(1).
-		SetLogPosition(2).
-		SetFollowerMemberId(3).
-		PutCatchupEndpoint("localhost:0").
-		SbePosition())
-	return buf[:wireEnd]
-}
-
-func encodeStopCatchupWire(t *testing.T) []byte {
-	t.Helper()
-	buf := make([]byte, fuzzClusterCodecMaxLen)
-	var msg clusterwire.StopCatchup
-	wireEnd := int(msg.WrapAndApplyHeader(buf, 0, uint64(len(buf))).
-		SetLeadershipTermId(1).
-		SetFollowerMemberId(2).
-		SbePosition())
-	return buf[:wireEnd]
-}
-
-func TestTryDecodeByTemplate_rejects_upstreamOnlyTemplates(t *testing.T) {
-	cases := []struct {
-		name       string
-		templateID uint16
-		wire       func() []byte
-	}{
-		{
-			name:       "catchup_position",
-			templateID: clusterwire.CatchupPositionSbeTemplateID,
-			wire:       func() []byte { return encodeCatchupPositionWire(t) },
-		},
-		{
-			name:       "stop_catchup",
-			templateID: clusterwire.StopCatchupSbeTemplateID,
-			wire:       func() []byte { return encodeStopCatchupWire(t) },
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			wire := tc.wire()
-			require.Equal(t, tc.templateID, uint16(wire[2])|uint16(wire[3])<<8)
-
-			_, ok := codecs.TryDecodeByTemplate(wire, 0, codecTestMaxVarLen)
-			require.False(t, ok)
-
-			_, ok = codecs.ClusterMessageLayoutAt(wire, 0, codecTestMaxVarLen)
-			require.False(t, ok)
-
-			_, ok = codecs.ClusterMessageWireEnd(wire, 0, codecTestMaxVarLen)
-			require.False(t, ok)
+func TestTryDecodeByTemplate_catchupTemplates(t *testing.T) {
+	t.Run("catchup_position", func(t *testing.T) {
+		want := codecs.CatchupPositionFields{
+			LeadershipTermID: 1,
+			LogPosition:      2,
+			FollowerMemberID: 3,
+			CatchupEndpoint:  "localhost:0",
+		}
+		wire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+			return codecs.EncodeCatchupPosition(
+				buf, 0, clusterwire.CatchupPositionSbeSchemaVersion, want,
+			)
 		})
-	}
+		decoded, ok := codecs.TryDecodeByTemplate(wire, 0, codecTestMaxVarLen)
+		require.True(t, ok)
+		require.Equal(t, clusterwire.CatchupPositionSbeTemplateID, decoded.TemplateID)
+		fields, ok := decoded.Fields.(codecs.CatchupPositionFields)
+		require.True(t, ok)
+		require.Equal(t, want, fields)
+	})
+	t.Run("stop_catchup", func(t *testing.T) {
+		want := codecs.StopCatchupFields{
+			LeadershipTermID: 1,
+			FollowerMemberID: 2,
+		}
+		wire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+			return codecs.EncodeStopCatchup(
+				buf, 0, clusterwire.StopCatchupSbeSchemaVersion, want,
+			)
+		})
+		decoded, ok := codecs.TryDecodeByTemplate(wire, 0, codecTestMaxVarLen)
+		require.True(t, ok)
+		require.Equal(t, clusterwire.StopCatchupSbeTemplateID, decoded.TemplateID)
+		fields, ok := decoded.Fields.(codecs.StopCatchupFields)
+		require.True(t, ok)
+		require.Equal(t, want, fields)
+	})
 }
 
 func TestClusterMessageWireEnd_rejects_negative_max_var_len(t *testing.T) {

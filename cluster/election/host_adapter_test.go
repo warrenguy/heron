@@ -875,11 +875,6 @@ func TestHostAdapter_forwardSmoke(t *testing.T) {
 	require.Equal(t, int64(42), host.LocalLogRecordingID())
 	require.Equal(t, int64(42), agent.LocalLogRecordingID())
 
-	host.LiveLogDestinationSet("aeron:udp?endpoint=live")
-	require.Equal(t, "aeron:udp?endpoint=live", host.LiveLogDestination())
-	host.CatchupLogDestinationSet("aeron:udp?endpoint=catchup")
-	require.Equal(t, "aeron:udp?endpoint=catchup", host.CatchupLogDestination())
-
 	require.Equal(t, int64(0), host.TimeOfLastLeaderUpdateNs())
 	require.Equal(t, 0, host.CatchupPoll(0, 0))
 	require.False(t, host.IsCatchupNearLive(0))
@@ -889,7 +884,6 @@ func TestHostAdapter_forwardSmoke(t *testing.T) {
 	require.Error(t, host.TruncateLogEntry(1, 2))
 	require.NotPanics(t, func() {
 		host.CatchupInitiated(1)
-		host.StopAllCatchups()
 		host.AwaitLocalSocketsClosed(3)
 		host.TrackCatchupCompletion(members[1], 1, 0)
 	})

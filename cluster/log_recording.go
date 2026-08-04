@@ -257,6 +257,7 @@ func (r *logRecording) establishedTermRecordingID() int64 {
 func (r *logRecording) StartLogRecording(
 	sourceLocation archivewire.SourceLocation,
 	logSessionID int32,
+	recordingChannel string,
 ) (
 	recordingID int64,
 	err error,
@@ -270,7 +271,10 @@ func (r *logRecording) StartLogRecording(
 		}
 	}
 
-	channelBytes := []byte(sessionScopedLogChannel(r.logChannel, logSessionID))
+	if recordingChannel == "" {
+		recordingChannel = r.logChannel
+	}
+	channelBytes := []byte(sessionScopedLogChannel(recordingChannel, logSessionID))
 	// Arm channel state for this attempt.
 	//
 	// Catalog id stays unknown until START or EXTEND proves so a dirty rollback

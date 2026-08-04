@@ -85,6 +85,14 @@ type ConsensusModule struct {
 	// The module never drops the pointer while a replay is active. Every route
 	// that exits a replay state closes the helper first.
 	logReplay *logReplay
+
+	// catchup is the follower catchup receive and leader catchup replay
+	// control. Nil until wired after log streams open.
+	catchup *catchupControl
+
+	// reseedCtx bounds the reseed recording lookup. Open detaches cancel so a
+	// canceled open context does not fail a later reseed.
+	reseedCtx context.Context
 }
 
 // OpenConsensusModule assembles one consensus member and returns the member with
@@ -115,6 +123,8 @@ type ConsensusModule struct {
 //  12. election
 //  13. election factory
 //  14. log replay factory
+//  15. catchup control
+//  16. log publication reseed
 //
 // Recovery plans from the recording log.
 //
@@ -351,8 +361,62 @@ func OpenConsensusModule(
 		return r
 	})
 
+	// Catchup control: follower unicast receive and leader archive replay of
+	// the local log recording. Live join source is the log subscription from
+	// OpenLogStreams. Catchup prefers its own sub when open.
+	module.catchup = newCatchupControl(
+		ctx,
+		module.archiveClient,
+		module.client,
+		module.agent,
+		module.agent.LogJoinSource(),
+		topology.LogStreamID(),
+		topology.LogChannel(),
+	)
+	module.agent.SetCatchupControl(module.catchup)
+
+	// When a follower becomes leader, reseed the exclusive log publication at
+	// the durable append high-water so LOCAL recording can extend the same
+	// catalog id. TERM entries share one recording id.
+	module.reseedCtx = moduleControlContext(ctx)
+	module.agent.SetLogPublicationReseed(module.reseedLogPublication)
+
 	succeeded = true
 	return module, nil
+}
+
+// reseedLogPublication rebuilds the exclusive log publication at position so a
+// former follower's LOCAL recording extend can match the recording stop. Seeds
+// term geometry from the local log recording descriptor. Returns the new
+// publication session id.
+func (m *ConsensusModule) reseedLogPublication(position int64) (int32, error) {
+	recordingID := m.agent.LocalLogRecordingID()
+	if recordingID < 0 {
+		return 0, errors.New("cluster: reseed log publication: no local log recording")
+	}
+	desc, err := m.archiveClient.ListRecording(m.reseedCtx, recordingID)
+	if err != nil {
+		return 0, fmt.Errorf("cluster: reseed log publication: list recording: %w", err)
+	}
+	seed := &LogPublicationInitialPosition{
+		Position:         position,
+		InitialTermID:    desc.InitialTermID,
+		TermBufferLength: desc.TermBufferLength,
+		MtuLength:        desc.MtuLength,
+	}
+	if err := m.streams.ReseedPublicationAt(
+		m.client,
+		m.topology.LogChannel(),
+		m.topology.LogStreamID(),
+		seed,
+	); err != nil {
+		return 0, err
+	}
+	pub := m.streams.Publication()
+	if pub == nil {
+		return 0, errors.New("cluster: reseed log publication: publication unbound")
+	}
+	return pub.SessionID(), nil
 }
 
 func moduleClocks(cfg Config) (nanoClock, epochClock func() int64) {
@@ -369,14 +433,15 @@ func moduleClocks(cfg Config) (nanoClock, epochClock func() int64) {
 
 // Close tears the member down in reverse open order:
 //  1. agent bindings
-//  2. best-effort log recording stop
-//  3. election close and retained replay helper close error
-//  4. cluster log streams
-//  5. consensus subscription
-//  6. consensus publications
-//  7. archive control client
-//  8. owned transport client
-//  9. recovery
+//  2. catchup control
+//  3. best-effort log recording stop
+//  4. election close and retained replay helper close error
+//  5. cluster log streams
+//  6. consensus subscription
+//  7. consensus publications
+//  8. archive control client
+//  9. owned transport client
+//  10. recovery
 //
 // The archive control client closes before the transport client. The archive
 // control publication and subscription belong to that transport client.
@@ -399,16 +464,23 @@ func (m *ConsensusModule) Close() error {
 
 	// Clear agent bindings before closing the handles they reference: positions
 	// and egress hold the host adapter and its shared publisher, which
-	// publications close next. Log publisher, adapter, append source, and join
-	// source are cleared by the streams Close. Clear the election factory
-	// before the runner so a post-Close duty tick cannot re-install against a
-	// torn-down recovery.
+	// publications close next. Catchup control and log publication reseed clear
+	// here before their module-owned handles tear down. Log publisher, adapter,
+	// append source, and join source are cleared by the streams Close. Clear
+	// the election factory before the runner so a post-Close duty tick cannot
+	// re-install against a torn-down recovery.
 	if m.agent != nil {
 		m.agent.SetElectionFactory(nil)
 		m.agent.SetElection(nil)
 		m.agent.SetPositions(nil)
 		m.agent.SetEgress(nil)
 		m.agent.SetLogReplayFactory(nil)
+		m.agent.SetCatchupControl(nil)
+		m.agent.SetLogPublicationReseed(nil)
+	}
+	if m.catchup != nil {
+		err = errors.Join(err, m.catchup.close())
+		m.catchup = nil
 	}
 	// Best-effort stop before streams and archive client close.
 	//
@@ -628,4 +700,29 @@ func (m *ConsensusModule) LogReplayReason() string {
 		return ""
 	}
 	return m.logReplay.reason()
+}
+
+// LogRecordingStopPosition returns the archive stop position for the retained
+// log recording id.
+//
+// Behaviour:
+//   - recordinglog.NullPosition when the module is nil, no recording control is
+//     wired, the local recording id is unknown, or the control cannot resolve a
+//     stop
+//   - after a truncate, the truncate position while the control holds the stop
+//   - after a clean stop, the clean stop position for the retained id
+//
+// Does not report an active recording high-water. Active recordings report no
+// stop until the control stops or truncates them.
+//
+// Concurrency: invoker-only.
+func (m *ConsensusModule) LogRecordingStopPosition() int64 {
+	if m == nil || m.logRecording == nil || m.agent == nil {
+		return recordinglog.NullPosition
+	}
+	stopPosition, err := m.logRecording.StopPositionFor(m.agent.LocalLogRecordingID())
+	if err != nil {
+		return recordinglog.NullPosition
+	}
+	return stopPosition
 }

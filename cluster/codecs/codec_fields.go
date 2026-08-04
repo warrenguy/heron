@@ -150,3 +150,20 @@ type CommitPositionFields struct {
 	LogPosition      int64
 	LeaderMemberID   int32
 }
+
+// CatchupPositionFields holds CatchupPosition body fields (template 56).
+//
+// CatchupEndpoint names the follower unicast endpoint the leader archive
+// replays to.
+type CatchupPositionFields struct {
+	LeadershipTermID int64
+	LogPosition      int64
+	FollowerMemberID int32
+	CatchupEndpoint  string
+}
+
+// StopCatchupFields holds StopCatchup body fields (template 57).
+type StopCatchupFields struct {
+	LeadershipTermID int64
+	FollowerMemberID int32
+}

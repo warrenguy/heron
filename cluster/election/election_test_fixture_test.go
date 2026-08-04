@@ -316,6 +316,14 @@ type recordingElectionHost struct {
 	followerLogJoinPosition int64
 	catchupNearLive         bool
 
+	// ensureCatchupLogDestination is returned from EnsureCatchupLogDestination
+	// when non-empty. Empty keeps the default no-op.
+	ensureCatchupLogDestination string
+
+	commitPosition        int64
+	logJoined             bool
+	catchupLogDestination string
+
 	// newLogReplication overrides Noop nil factory for duty-cycle tests.
 	newLogReplication func(
 		leaderArchiveEndpoint, responseArchiveEndpoint string,
@@ -467,6 +475,21 @@ func (h *recordingElectionHost) CatchupPoll(limitPosition, nowNs int64) int {
 	})
 	return h.catchupPollResult
 }
+
+func (h *recordingElectionHost) EnsureCatchupLogDestination(string) string {
+	if h.ensureCatchupLogDestination != "" {
+		h.catchupLogDestination = h.ensureCatchupLogDestination
+	}
+	return h.ensureCatchupLogDestination
+}
+
+func (h *recordingElectionHost) CommitPosition() int64 { return h.commitPosition }
+
+func (h *recordingElectionHost) IsLogJoinedForSession(int32) bool { return h.logJoined }
+
+// CatchupLogDestination reports the destination the fake opened. Not on
+// [election.ElectionHost]; tests read it to assert the open ran.
+func (h *recordingElectionHost) CatchupLogDestination() string { return h.catchupLogDestination }
 
 func (h *recordingElectionHost) SetLogRecordingID(recordingID int64) {
 	h.setLogRecordingIDCalls = append(h.setLogRecordingIDCalls, recordingID)

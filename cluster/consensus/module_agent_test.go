@@ -496,11 +496,6 @@ func TestHostDelegate_stubsSmoke(t *testing.T) {
 	a.RoleSet(RoleCandidate)
 	require.Equal(t, RoleCandidate, a.Role())
 
-	a.LiveLogDestinationSet("live")
-	require.Equal(t, "live", a.LiveLogDestination())
-	a.CatchupLogDestinationSet("catchup")
-	require.Equal(t, "catchup", a.CatchupLogDestination())
-
 	require.Equal(t, int32(-1), a.AddLogPublication(100))
 	require.Equal(t, int64(-1), a.LocalLogRecordingID())
 	a.SetLogRecordingID(99)
@@ -524,6 +519,7 @@ func TestHostDelegate_stubsSmoke(t *testing.T) {
 	a.CatchupInitiated(0)
 	a.StopAllCatchups()
 	require.False(t, a.IsCatchupNearLive(0))
+	require.False(t, a.IsLogJoinedForSession(0))
 	require.False(t, a.AppendNewLeadershipTermEvent(0))
 	require.Equal(t, 0, a.PollArchiveEvents())
 	require.Error(t, a.TruncateLogEntry(0, 0))
@@ -1136,8 +1132,9 @@ type fakeLogRecordingControl struct {
 }
 
 type fakeStartCall struct {
-	sourceLocation archivewire.SourceLocation
-	logSessionID   int32
+	sourceLocation   archivewire.SourceLocation
+	logSessionID     int32
+	recordingChannel string
 }
 
 var _ LogRecordingControl = (*fakeLogRecordingControl)(nil)
@@ -1145,10 +1142,12 @@ var _ LogRecordingControl = (*fakeLogRecordingControl)(nil)
 func (f *fakeLogRecordingControl) StartLogRecording(
 	sourceLocation archivewire.SourceLocation,
 	logSessionID int32,
+	recordingChannel string,
 ) (int64, error) {
 	f.startCalls = append(f.startCalls, fakeStartCall{
-		sourceLocation: sourceLocation,
-		logSessionID:   logSessionID,
+		sourceLocation:   sourceLocation,
+		logSessionID:     logSessionID,
+		recordingChannel: recordingChannel,
 	})
 	if f.onStart != nil {
 		f.onStart()
@@ -1680,6 +1679,41 @@ func TestAgent_TruncateLogEntry_successWithoutAdapter(t *testing.T) {
 		position:    position,
 	}}, control.calls)
 	require.Equal(t, recordingID, a.LocalLogRecordingID())
+}
+
+// TestAgent_PrepareForNewLeadership_clearsAppendRankFailure asserts prepare
+// always clears a marked append-rank failure and the not-ready run time so a
+// leadership transition does not freeze ranking.
+func TestAgent_PrepareForNewLeadership_clearsAppendRankFailure(t *testing.T) {
+	t.Parallel()
+
+	const timeoutNs int64 = 100
+	src := &scriptedAppendSource{
+		results: []scriptedAppendResult{
+			{0, false}, // open not-ready run
+			{0, false}, // past bound: mark failure
+		},
+	}
+	a := NewAgent(AgentConfig{
+		Role:                            RoleFollower,
+		AppendSource:                    src,
+		AppendPositionNotReadyTimeoutNs: timeoutNs,
+	})
+	a.SetLogRecordingID(77)
+	a.SetLogRecordingControl(&fakeLogRecordingControl{active: true})
+
+	// Same mark setup as TestResolveAppendPosition_failsOnlyWhileRecordingActive.
+	_, ready := a.resolveAppendPosition(0)
+	require.False(t, ready)
+	_, ready = a.resolveAppendPosition(timeoutNs)
+	require.False(t, ready)
+	require.ErrorIs(t, a.AppendRankFailure(), ErrAppendPositionUnavailable)
+	require.Equal(t, int64(0), a.appendNotReadySinceNs)
+
+	_, err := a.PrepareForNewLeadership(1234, 1)
+	require.NoError(t, err)
+	require.NoError(t, a.AppendRankFailure())
+	require.Equal(t, int64(nullValue), a.appendNotReadySinceNs)
 }
 
 // TestAgent_PrepareForNewLeadership_derivesStopPosition asserts prepare stops

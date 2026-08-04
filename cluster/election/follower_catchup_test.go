@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
@@ -163,9 +165,8 @@ func TestFollowerLogReplication_nilFactoryTimeoutCaughtUpOnly(t *testing.T) {
 	})
 }
 
-// Not near-live: sticky INIT, near-live re-checked each tick, work 0.
-//
-// Stall ticks never call catchup start on the host.
+// Not near-live without a leader: sticky INIT, near-live re-checked each tick,
+// work 0. Stall ticks never call catchup start on the host.
 func TestFollowerCatchupInit_notNearLiveSticky(t *testing.T) {
 	t.Parallel()
 
@@ -184,8 +185,118 @@ func TestFollowerCatchupInit_notNearLiveSticky(t *testing.T) {
 	require.Equal(t, []int64{0, 0, 0}, host.catchupNearLiveCalls)
 }
 
-// CatchupAwait stub: multi-tick work 0, sticky state, no poll/initiated calls.
-func TestFollowerCatchupAwait_stubReturnsZero(t *testing.T) {
+// Catchup INIT with leader and catchup endpoint: send CatchupPosition, open
+// destination, initiate, advance to AWAIT.
+func TestFollowerCatchupInit_sendsCatchupPosition(t *testing.T) {
+	t.Parallel()
+
+	const (
+		catchupEndpoint = "127.0.0.1:9005"
+		catchupDest     = "aeron:udp?endpoint=" + catchupEndpoint
+	)
+
+	// Log equals append so install routes through no-replay to catchup init.
+	fx := newElectionFixture(
+		t,
+		withPositions(testLeadershipTermID, testAppendPosition, testAppendPosition),
+	)
+	fx.host.ensureCatchupLogDestination = catchupDest
+	e := fx.election
+
+	driveToFollowerCatchupInit(fx, catchupEndpoint)
+
+	t0 := fx.clock.nowNs + 1
+	require.Equal(t, 1, e.DoWork(t0))
+	require.Equal(t, election.ElectionStateFollowerCatchupAwait, e.State())
+	require.Equal(t, []int64{t0}, fx.host.catchupInitiatedCalls)
+	require.Equal(t, catchupDest, fx.host.CatchupLogDestination())
+
+	require.Len(t, fx.publisher.Sent, 1)
+	msg := fx.publisher.Sent[0]
+	require.Equal(t, uint16(clusterwire.CatchupPositionSbeTemplateID), msg.TemplateID)
+	cp := msg.Fields.(codecs.CatchupPositionFields)
+	require.Equal(t, e.LeadershipTermID(), cp.LeadershipTermID)
+	require.Equal(t, e.LogPosition(), cp.LogPosition)
+	require.Equal(t, fx.cfg.MemberID, cp.FollowerMemberID)
+	require.Equal(t, catchupEndpoint, cp.CatchupEndpoint)
+	require.Equal(t, int32(1), msg.Dst.MemberID)
+}
+
+// Catchup destination open failure: sticky INIT, work 0 per tick, no
+// CatchupPosition send. Past the leader heartbeat deadline the election
+// restarts at INIT.
+func TestFollowerCatchupInit_destinationOpenFailureIdles(t *testing.T) {
+	t.Parallel()
+
+	const catchupEndpoint = "127.0.0.1:9006"
+
+	// Empty ensureCatchupLogDestination fails every open attempt.
+	fx := newElectionFixture(
+		t,
+		withPositions(testLeadershipTermID, testAppendPosition, testAppendPosition),
+	)
+	driveToFollowerCatchupInit(fx, catchupEndpoint)
+	e := fx.election
+
+	t0 := fx.clock.nowNs + 1
+	for i := range 3 {
+		require.Equal(t, 0, e.DoWork(t0+int64(i)))
+		require.Equal(t, election.ElectionStateFollowerCatchupInit, e.State())
+	}
+	require.Empty(t, fx.host.catchupInitiatedCalls)
+
+	require.Equal(t, 1, e.DoWork(t0+fx.cfg.LeaderHeartbeatTimeoutNs))
+	require.Equal(t, election.ElectionStateInit, e.State())
+	require.Empty(t, fx.publisher.Sent)
+}
+
+// CatchupAwait joins when host reports ready at log position, then CATCHUP.
+func TestFollowerCatchupAwait_joinsThenCatchup(t *testing.T) {
+	t.Parallel()
+
+	const logSessionID int32 = 7
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	host := &recordingElectionHost{
+		clock:                   clock,
+		followerLogJoinOK:       true,
+		followerLogJoinPosition: cfg.LogPosition,
+	}
+	deps.Host = host
+	handler := &recordingAgentHandler{joinFollowerReturn: true}
+	deps.Handler = handler
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateFollowerCatchupAwait)
+	// logSessionID must be set for join ready to be meaningful.
+	election.SetLogSessionIDForTest(e, logSessionID)
+
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateFollowerCatchup, e.State())
+	require.Equal(t, []int32{logSessionID}, host.followerLogJoinReadyCalls)
+	require.Equal(t, 1, handler.joinFollowerCalls)
+}
+
+// CatchupAwait waits while join position mismatches (live late-join image).
+func TestFollowerCatchupAwait_joinPositionMismatchWaits(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	host := &recordingElectionHost{
+		clock:                   clock,
+		followerLogJoinOK:       true,
+		followerLogJoinPosition: cfg.LogPosition + 50,
+	}
+	deps.Host = host
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateFollowerCatchupAwait)
+	election.SetLogSessionIDForTest(e, 7)
+
+	require.Equal(t, 0, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateFollowerCatchupAwait, e.State())
+}
+
+// CatchupAwait with no image: multi-tick work 0, sticky state.
+func TestFollowerCatchupAwait_noImageReturnsZero(t *testing.T) {
 	t.Parallel()
 
 	cfg, deps, clock, _, _ := testElectionDeps(t)
@@ -201,4 +312,41 @@ func TestFollowerCatchupAwait_stubReturnsZero(t *testing.T) {
 	}
 	require.Empty(t, host.catchupPollCalls)
 	require.Empty(t, host.catchupInitiatedCalls)
+}
+
+// Catchup poll reaches join bound: advances to LOG_INIT then READY when
+// joined.
+func TestFollowerCatchup_completesToReady(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	joinPos := cfg.AppendPosition + 100
+	host := &recordingElectionHost{
+		clock:             clock,
+		catchupPollResult: 3,
+		commitPosition:    joinPos,
+		logJoined:         true,
+	}
+	deps.Host = host
+	e := election.NewElection(cfg, deps)
+
+	election.SetStateForTest(e, election.ElectionStateCanvass)
+	fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
+	fields.LogPosition = joinPos
+	fields.CommitPosition = joinPos
+	e.OnNewLeadershipTerm(fields)
+	election.SetStateForTest(e, election.ElectionStateFollowerCatchup)
+
+	// Poll work plus complete transition.
+	require.Equal(t, 4, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateFollowerLogInit, e.State())
+	require.Equal(t, joinPos, e.LogPosition())
+	require.Equal(t, joinPos, e.AppendPosition())
+
+	// Completion leaves the catchup receive path open. The adapter still reads
+	// the catchup image, and prepare on the next Init closes the path.
+
+	// Already joined: LOG_INIT to READY.
+	require.Equal(t, 1, e.DoWork(clock.nowNs+1))
+	require.Equal(t, election.ElectionStateFollowerReady, e.State())
 }

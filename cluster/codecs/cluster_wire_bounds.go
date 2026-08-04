@@ -97,6 +97,12 @@ func ClusterRootBlockLengthBounds(
 	case clusterwire.CommitPositionSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.CommitPositionSbeBlockLength)
 
+	case clusterwire.CatchupPositionSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.CatchupPositionSbeBlockLength)
+
+	case clusterwire.StopCatchupSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.StopCatchupSbeBlockLength)
+
 	default:
 		return 0, 0, false
 	}
@@ -116,7 +122,8 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		clusterwire.NewLeaderEventSbeTemplateID,
 		clusterwire.ChallengeSbeTemplateID,
 		clusterwire.ChallengeResponseSbeTemplateID,
-		clusterwire.AdminRequestSbeTemplateID:
+		clusterwire.AdminRequestSbeTemplateID,
+		clusterwire.CatchupPositionSbeTemplateID:
 		return 1, true
 
 	case clusterwire.SessionConnectRequestSbeTemplateID:
@@ -133,7 +140,8 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		clusterwire.VoteSbeTemplateID,
 		clusterwire.NewLeadershipTermSbeTemplateID,
 		clusterwire.AppendPositionSbeTemplateID,
-		clusterwire.CommitPositionSbeTemplateID:
+		clusterwire.CommitPositionSbeTemplateID,
+		clusterwire.StopCatchupSbeTemplateID:
 		return 0, true
 
 	default:

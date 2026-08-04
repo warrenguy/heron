@@ -147,6 +147,7 @@ func TryDecodeNewLeadershipTermEventAt(
 		buf,
 		offset,
 		clusterwire.NewLeadershipTermEventSbeTemplateID,
+		0,
 		decodeNewLeadershipTermEventFields,
 	)
 }
@@ -209,6 +210,7 @@ type templateVarFields struct {
 	encodedChallenge   []byte
 	message            []byte
 	payload            []byte
+	catchupEndpoint    []byte
 }
 
 func clusterMessageAt(buf []byte, offset, maxVarLen int) (ClusterMessageLayout, bool) {
@@ -325,6 +327,8 @@ func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields
 		return templateVarFields{payload: raw[0]}, true
 	case clusterwire.AdminResponseSbeTemplateID:
 		return templateVarFields{message: raw[0], payload: raw[1]}, true
+	case clusterwire.CatchupPositionSbeTemplateID:
+		return templateVarFields{catchupEndpoint: raw[0]}, true
 	default:
 		return templateVarFields{}, false
 	}
@@ -449,6 +453,17 @@ func decodeTemplateFields(
 		return decodeAppendPositionFields(buf, body, block, version, bufLen), true
 	case clusterwire.CommitPositionSbeTemplateID:
 		return decodeCommitPositionFields(buf, body, block, version, bufLen), true
+	case clusterwire.CatchupPositionSbeTemplateID:
+		var msg clusterwire.CatchupPosition
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return CatchupPositionFields{
+			LeadershipTermID: msg.LeadershipTermId(),
+			LogPosition:      msg.LogPosition(),
+			FollowerMemberID: msg.FollowerMemberId(),
+			CatchupEndpoint:  string(vars.catchupEndpoint),
+		}, true
+	case clusterwire.StopCatchupSbeTemplateID:
+		return decodeStopCatchupFields(buf, body, block, version, bufLen), true
 	default:
 		return nil, false
 	}

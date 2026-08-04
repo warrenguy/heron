@@ -424,9 +424,12 @@ bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd
 # Live Archive suite lives only under test/integration/cluster_archive
 # (//go:build integration && archive_live). No shared package with plain
 # integration tests, so -tags alone selects the suite.
+# Multiple JVMs per scenario; longer than TEST_TIMEOUT.
+CLUSTER_ARCHIVE_TEST_TIMEOUT ?= 15m
+
 .PHONY: test-cluster-archive
 test-cluster-archive: bin/aeronmd bin/heron-archive-java.jar ## Live: per-member Archive elect and commit
-	go test -timeout=$(TEST_TIMEOUT) -race -count=1 \
+	go test -timeout=$(CLUSTER_ARCHIVE_TEST_TIMEOUT) -race -count=1 \
 		-tags=integration,archive_live \
 		./test/integration/cluster_archive/
 

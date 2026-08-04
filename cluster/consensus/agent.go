@@ -27,6 +27,8 @@ type FollowerLogJoinParams struct {
 //   - clears the known leader
 //   - resets follower AppendPosition cadence fields
 //   - keeps commit
+//   - stops leader-side catchup replays
+//   - closes the follower catchup receive path
 //   - stops the cluster log recording when a control is wired
 //   - when a control is wired and a retained recording id is non-negative,
 //     returns the archive-derived stop position from StopPositionFor

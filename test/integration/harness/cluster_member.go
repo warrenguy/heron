@@ -16,8 +16,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
 // defaultClusterMemberCloseLinger is the Client.Close linger cap per member at
@@ -499,12 +501,22 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 
 	appendSrc := int64(-1)
 	localLogRecordingID := int64(-1)
+	recordingActive := false
+	appendRankFailure := ""
+	electionCount := int64(0)
+	lastElectionTrigger := ""
 	if agent := m.Agent(); agent != nil {
 		localLogRecordingID = agent.LocalLogRecordingID()
+		recordingActive = agent.IsRecordingActive()
+		electionCount = agent.ElectionCount()
+		lastElectionTrigger = agent.LastElectionTrigger().String()
 		if src := agent.AppendSource(); src != nil {
 			if pos, ready := src.AppendPosition(); ready {
 				appendSrc = pos
 			}
+		}
+		if rankErr := agent.AppendRankFailure(); rankErr != nil {
+			appendRankFailure = rankErr.Error()
 		}
 	}
 
@@ -520,12 +532,21 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 		archiveConnected = true
 	}
 
+	// An active recording reports no stop position. Skip the lookup so a State
+	// dump does not issue an archive control round trip per member.
+	stopPosition := int64(recordinglog.NullPosition)
+	if !recordingActive {
+		stopPosition = m.LogRecordingStopPosition()
+	}
+
 	return fmt.Sprintf(
 		"member=%d state=%v complete=%v role=%v term=%d leaderID=%d "+
 			"images=%d logPubSession=%d logPubPos=%d adapterPos=%d imagePos=%d "+
 			"joinPos=%d imageSession=%d appendSrc=%d commit=%d notified=%d "+
 			"recLogEntries=%d coldStart=%v localLogRecordingID=%d "+
-			"archiveConnected=%v archiveSession=%d replayReason=%q\n",
+			"archiveConnected=%v archiveSession=%d replayReason=%q "+
+			"recordingActive=%v appendRankFailure=%q electionCount=%d "+
+			"lastElectionTrigger=%s logRecordingStopPosition=%d\n",
 		m.ThisMemberID(),
 		m.ElectionState(),
 		m.ElectionComplete(),
@@ -548,7 +569,30 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 		archiveConnected,
 		archiveSession,
 		m.LogReplayReason(),
+		recordingActive,
+		appendRankFailure,
+		electionCount,
+		lastElectionTrigger,
+		stopPosition,
 	)
+}
+
+// RecordingCounterPosition returns the recording-position counter value for
+// recordingID on m. Returns -1 when the module, counters reader, or counter is
+// missing.
+func RecordingCounterPosition(m *cluster.ConsensusModule, recordingID int64) int64 {
+	if m == nil {
+		return -1
+	}
+	reader, err := m.Client().CountersReader()
+	if err != nil {
+		return -1
+	}
+	slot, ok := reader.FindRecordingPositionCounter(recordingID, cnc.NullValue)
+	if !ok {
+		return -1
+	}
+	return slot.Get()
 }
 
 // Close closes every module in reverse open order. Idempotent via each

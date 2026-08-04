@@ -58,6 +58,8 @@ func SetNominationDeadlineNsForTest(e *Election, ns int64) { e.nominationDeadlin
 
 func CandidateTermIDForTest(e *Election) int64 { return e.candidateTermID }
 
+func CatchupJoinPositionForTest(e *Election) int64 { return e.catchupJoinPosition }
+
 func IsExtendedCanvassForTest(e *Election) bool { return e.isExtendedCanvass }
 
 func LogLeadershipTermIDForTest(e *Election) int64 { return e.logLeadershipTermID }

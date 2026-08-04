@@ -3,6 +3,7 @@
 package consensus
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -227,3 +228,180 @@ func (r *syntheticLogReplication) OnSignal(int64, int64, int64, archivewire.Reco
 }
 
 var _ LogReplication = (*syntheticLogReplication)(nil)
+
+// catchupReplayStart records one StartCatchupReplay argument set.
+type catchupReplayStart struct {
+	logPosition     int64
+	catchupEndpoint string
+	logSessionID    int32
+}
+
+// fakeCatchupControl is a [CatchupControl] double that records the calls the
+// Agent makes. Replay session ids are derived from the start count; the Agent
+// discards them.
+type fakeCatchupControl struct {
+	destination string
+
+	ensureCalls int
+	removeCalls int
+	stopCalls   int
+
+	starts   []catchupReplayStart
+	startErr error
+}
+
+var _ CatchupControl = (*fakeCatchupControl)(nil)
+
+func (c *fakeCatchupControl) EnsureCatchupLogDestination(string) string {
+	c.ensureCalls++
+	return c.destination
+}
+
+func (c *fakeCatchupControl) RemoveCatchupLogDestination() error {
+	c.removeCalls++
+	return nil
+}
+
+func (c *fakeCatchupControl) StartCatchupReplay(
+	logPosition int64,
+	catchupEndpoint string,
+	logSessionID int32,
+) (int64, error) {
+	c.starts = append(c.starts, catchupReplayStart{
+		logPosition:     logPosition,
+		catchupEndpoint: catchupEndpoint,
+		logSessionID:    logSessionID,
+	})
+	if c.startErr != nil {
+		return 0, c.startErr
+	}
+	return int64(len(c.starts)), nil
+}
+
+func (c *fakeCatchupControl) StopCatchupReplays() error {
+	c.stopCalls++
+	return nil
+}
+
+// Asserts a leader serves one follower catchup at a time.
+//
+// Phases: start; refuse another follower; the served follower retries by
+// replacing its own replay; stop reopens the gate.
+func TestOnCatchupPosition_oneFollowerAtATime(t *testing.T) {
+	const catchupEndpoint = "127.0.0.1:9100"
+
+	publisher, _ := boundLogPublisher(t)
+	require.NotEqual(t, int32(nullValue), publisher.SessionID())
+
+	control := &fakeCatchupControl{destination: "aeron:udp?endpoint=" + catchupEndpoint}
+	a := NewAgent(AgentConfig{Role: RoleLeader})
+	a.SetLogPublisher(publisher)
+	a.SetLogRecordingID(42)
+	a.SetCatchupControl(control)
+
+	served := codecs.CatchupPositionFields{
+		LogPosition:      100,
+		FollowerMemberID: 1,
+		CatchupEndpoint:  catchupEndpoint,
+	}
+	other := served
+	other.FollowerMemberID = 2
+
+	a.OnCatchupPosition(served)
+	require.Len(t, control.starts, 1)
+	require.Equal(t, int64(100), control.starts[0].logPosition)
+	require.Equal(t, catchupEndpoint, control.starts[0].catchupEndpoint)
+	require.Equal(t, publisher.SessionID(), control.starts[0].logSessionID)
+
+	// Another follower is refused while the first replay runs.
+	a.OnCatchupPosition(other)
+	require.Len(t, control.starts, 1)
+	require.Equal(t, 0, control.stopCalls)
+
+	// The served follower asks again: drop the stale replay, start a fresh one.
+	a.OnCatchupPosition(served)
+	require.Len(t, control.starts, 2)
+	require.Equal(t, 1, control.stopCalls)
+
+	a.StopAllCatchups()
+	require.Equal(t, 2, control.stopCalls)
+
+	a.OnCatchupPosition(other)
+	require.Len(t, control.starts, 3)
+}
+
+// Asserts a failed start leaves the gate open. Nothing is replaying.
+func TestOnCatchupPosition_startFailureLeavesGateOpen(t *testing.T) {
+	publisher, _ := boundLogPublisher(t)
+	control := &fakeCatchupControl{startErr: errors.New("archive refused")}
+	a := NewAgent(AgentConfig{Role: RoleLeader})
+	a.SetLogPublisher(publisher)
+	a.SetLogRecordingID(42)
+	a.SetCatchupControl(control)
+
+	fields := codecs.CatchupPositionFields{
+		LogPosition:     100,
+		CatchupEndpoint: "127.0.0.1:9100",
+	}
+
+	a.OnCatchupPosition(fields)
+	a.OnCatchupPosition(fields)
+	require.Len(t, control.starts, 2)
+}
+
+// Asserts Ensure delegates every call and Remove reaches the control. The
+// control owns the open state; the agent keeps no destination of its own.
+func TestEnsureCatchupLogDestination_delegatesToControl(t *testing.T) {
+	const (
+		catchupEndpoint = "127.0.0.1:9101"
+		destination     = "aeron:udp?endpoint=" + catchupEndpoint
+	)
+
+	control := &fakeCatchupControl{destination: destination}
+	a := NewAgent(AgentConfig{})
+	a.SetCatchupControl(control)
+
+	require.Equal(t, destination, a.EnsureCatchupLogDestination(catchupEndpoint))
+	require.Equal(t, destination, a.EnsureCatchupLogDestination(catchupEndpoint))
+	require.Equal(t, 2, control.ensureCalls)
+
+	a.RemoveCatchupLogDestination()
+	require.Equal(t, 1, control.removeCalls)
+
+	require.Equal(t, destination, a.EnsureCatchupLogDestination(catchupEndpoint))
+	require.Equal(t, 3, control.ensureCalls)
+}
+
+// Asserts PrepareForNewLeadership tears down both catchup halves.
+// Leader-side replays stop and the gate reopens. The follower receive path
+// closes. Both destinations clear.
+func TestPrepareForNewLeadership_tearsDownCatchup(t *testing.T) {
+	const catchupEndpoint = "127.0.0.1:9102"
+
+	publisher, _ := boundLogPublisher(t)
+	control := &fakeCatchupControl{destination: "aeron:udp?endpoint=" + catchupEndpoint}
+	a := NewAgent(AgentConfig{Role: RoleLeader})
+	a.SetLogPublisher(publisher)
+	a.SetLogRecordingID(42)
+	a.SetCatchupControl(control)
+
+	fields := codecs.CatchupPositionFields{
+		LogPosition:      100,
+		FollowerMemberID: 1,
+		CatchupEndpoint:  catchupEndpoint,
+	}
+	a.OnCatchupPosition(fields)
+	require.Len(t, control.starts, 1)
+
+	require.NotEmpty(t, a.EnsureCatchupLogDestination(catchupEndpoint))
+
+	_, err := a.PrepareForNewLeadership(100, 0)
+	require.NoError(t, err)
+	require.Equal(t, 1, control.stopCalls)
+	require.Equal(t, 1, control.removeCalls)
+
+	// Gate reopened: the next leadership term may serve a new catchup.
+	a.RoleSet(RoleLeader)
+	a.OnCatchupPosition(fields)
+	require.Len(t, control.starts, 2)
+}

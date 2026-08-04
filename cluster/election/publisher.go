@@ -21,6 +21,9 @@ type Publisher interface {
 	NewLeadershipTerm(dst PublicationTarget, fields codecs.NewLeadershipTermFields)
 	AppendPosition(dst PublicationTarget, fields codecs.AppendPositionFields) bool
 	CommitPosition(dst PublicationTarget, fields codecs.CommitPositionFields)
+	// CatchupPosition asks the leader to archive-replay from LogPosition to
+	// CatchupEndpoint. Returns false when the send does not complete.
+	CatchupPosition(dst PublicationTarget, fields codecs.CatchupPositionFields) bool
 }
 
 type SentMessage struct {

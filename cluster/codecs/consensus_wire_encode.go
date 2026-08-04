@@ -215,3 +215,54 @@ func EncodeCommitPosition(
 		},
 	)
 }
+
+// EncodeCatchupPosition writes a cluster CatchupPosition at offset.
+//
+// CatchupEndpoint is the var-ascii follower endpoint the leader archive
+// replays to. Wire length includes the endpoint payload.
+func EncodeCatchupPosition(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields CatchupPositionFields,
+) (wireEnd int, ok bool) {
+	return encodeWithClusterWireHeader(
+		buf,
+		offset,
+		clusterwire.CatchupPositionSbeBlockLength,
+		clusterwire.CatchupPositionSbeTemplateID,
+		actingVersion,
+		[]int{len(fields.CatchupEndpoint)},
+		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+			var msg clusterwire.CatchupPosition
+			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.SetLeadershipTermId(fields.LeadershipTermID).
+				SetLogPosition(fields.LogPosition).
+				SetFollowerMemberId(fields.FollowerMemberID).
+				PutCatchupEndpoint(fields.CatchupEndpoint)
+		},
+	)
+}
+
+// EncodeStopCatchup writes a cluster StopCatchup at offset.
+func EncodeStopCatchup(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields StopCatchupFields,
+) (wireEnd int, ok bool) {
+	return encodeWithClusterWireHeader(
+		buf,
+		offset,
+		clusterwire.StopCatchupSbeBlockLength,
+		clusterwire.StopCatchupSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+			var msg clusterwire.StopCatchup
+			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.SetLeadershipTermId(fields.LeadershipTermID).
+				SetFollowerMemberId(fields.FollowerMemberID)
+		},
+	)
+}

@@ -29,6 +29,11 @@ const (
 
 	archiveNodeMainClass = "heron.archivejava.ArchiveNode"
 	archiveAddOpens      = "java.base/jdk.internal.misc=ALL-UNNAMED"
+
+	// archiveRuntimeMissing is the host-fix phrase for a missing Archive jar or
+	// Java runtime. StartArchiveNode skips with it. RequireArchiveRuntime fails
+	// with it.
+	archiveRuntimeMissing = "archive jar not found; run make test-cluster-archive"
 )
 
 var (
@@ -100,20 +105,16 @@ func StartArchiveNode(t testing.TB, cfg ArchiveNodeConfig) *ArchiveNode {
 	require.NotEmpty(t, cfg.AeronDir, "ArchiveNodeConfig.AeronDir")
 	require.NotEmpty(t, cfg.ControlChannel, "ArchiveNodeConfig.ControlChannel")
 
-	// Jar miss and java miss share one skip string so the make target is the
-	// single host fix named to developers.
-	const archiveSkip = "archive jar not found; run make test-cluster-archive"
-
 	jarPath, err := resolveArchiveJar()
 	if err != nil {
 		if errors.Is(err, errArchiveJarNotFound) {
-			t.Skip(archiveSkip)
+			t.Skip(archiveRuntimeMissing)
 		}
 		t.Fatalf("harness: resolve archive jar: %v", err)
 	}
 	javaPath, err := exec.LookPath("java")
 	if err != nil {
-		t.Skip(archiveSkip)
+		t.Skip(archiveRuntimeMissing)
 	}
 
 	archiveDir := t.TempDir()

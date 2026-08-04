@@ -80,6 +80,7 @@ func TestLogRecording_startVsExtendBranch_rapid(t *testing.T) {
 				got, startErr := r.StartLogRecording(
 					archivewire.SourceLocation_REMOTE,
 					sessionID,
+					"",
 				)
 				require.NoError(rt, startErr)
 

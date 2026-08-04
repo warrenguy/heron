@@ -11,8 +11,8 @@ import "github.com/warrenguy/heron/archive/codecs/archivewire"
 //   - on a clean stop or a successful truncate, stores the stop position and
 //     catalog id for StopPositionFor when nothing is pending
 //   - uses the archive control client
-//   - builds the channel from the member's log channel and the supplied log
-//     session id
+//   - builds the channel from the recording base channel and the supplied log
+//     session id; empty base uses the member's live log channel
 //   - StopLogRecording stops the recording last started or extended by
 //     StartLogRecording on the same channel and stream
 //
@@ -39,7 +39,8 @@ type LogRecordingControl interface {
 	// and returns the catalog recording id.
 	//
 	// Behaviour:
-	//   - builds a session-scoped recording channel from logSessionID
+	//   - builds a session-scoped recording channel from recordingChannel and
+	//     logSessionID
 	//   - when no established TERM recording id exists, offers a start request
 	//     and waits for the correlated START recording signal
 	//   - when an established TERM recording id exists, offers an extend
@@ -58,6 +59,11 @@ type LogRecordingControl interface {
 	// filters on:
 	//   - leader: own log publication session id
 	//   - follower: leader's session id
+	//
+	// recordingChannel is the base channel URI for the recording, without a
+	// session-id param. Empty uses the control's configured live log channel.
+	// Catchup joins pass the catchup destination channel. Extend then sees the
+	// catchup image join position, not a late-join live image.
 	//
 	// Concurrency: invoker-only.
 	//
@@ -80,6 +86,7 @@ type LogRecordingControl interface {
 	StartLogRecording(
 		sourceLocation archivewire.SourceLocation,
 		logSessionID int32,
+		recordingChannel string,
 	) (
 		recordingID int64,
 		err error,

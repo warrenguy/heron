@@ -47,6 +47,30 @@ const (
 	ClusterReplayLogEndpoint = "239.255.12.17:25704"
 )
 
+// Durable live-Archive scenario endpoints. Each pair owns one three-member
+// consensus port block base+1 .. base+(memberCount-1)*100+5 (at three members
+// base+1 .. base+205) and one shared cluster-log multicast endpoint.
+//
+// Taken port bases under test/ before these constants: 9000, 24000, 24500,
+// 24700, 24800, 25000, 25300, 25500, 25700, 27500. Taken group final octets: 1,
+// 3, 7, 9, 11, 13, 15, 17, 29. Each new base sits 300 above the previous so
+// adjacent three-member blocks do not overlap.
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	DurableRecordPortBase        = 26000
+	DurableRecordLogEndpoint     = "239.255.12.19:26004"
+	DurableRestartPortBase       = 26300
+	DurableRestartLogEndpoint    = "239.255.12.21:26304"
+	DurableReElectionPortBase    = 26600
+	DurableReElectionLogEndpoint = "239.255.12.23:26604"
+	DurableCatchupPortBase       = 26900
+	DurableCatchupLogEndpoint    = "239.255.12.25:26904"
+	DurableDivergencePortBase    = 27200
+	DurableDivergenceLogEndpoint = "239.255.12.27:27204"
+)
+
 // ClusterLogChannelTemplate confines cluster-log multicast to loopback.
 //
 // Without interface=, the driver joins the group on the default route interface

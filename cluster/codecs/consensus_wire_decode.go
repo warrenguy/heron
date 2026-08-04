@@ -113,19 +113,38 @@ func decodeCommitPositionFields(
 }
 
 // tryDecodeClusterAt parses the cluster header at offset, checks the template
-// ID, and decodes the fixed block via decode. It stays allocation-free: T is a
-// concrete field struct (no interface boxing) and decode is a package-level
-// function reference, so each instantiation is monomorphized.
+// ID, and decodes the fixed block via decode. The path stays allocation-free:
+// T is a concrete field struct (no interface boxing) and decode is a
+// package-level function reference, so each instantiation is monomorphized.
+//
+// A positive maxVarLen scans the var fields without cloning and rejects the
+// message when a var length exceeds the bound or overruns the buffer. Fixed
+// templates pass 0 and skip the scan.
 func tryDecodeClusterAt[T any](
 	buf []byte,
 	offset int,
 	templateID uint16,
+	maxVarLen int,
 	decode func(buf []byte, body, block, version, bufLen uint64) T,
 ) (T, bool) {
-	layout, ok := ClusterMessageLayoutAt(buf, offset, 0)
+	layout, ok := ClusterMessageLayoutAt(buf, offset, maxVarLen)
 	if !ok || layout.TemplateID != templateID {
 		var zero T
 		return zero, false
+	}
+	if maxVarLen > 0 {
+		varOffset := layout.BodyOffset + int(layout.BlockLength)
+		if _, _, scanOK := scanTemplateVarFields(
+			buf,
+			varOffset,
+			layout.TemplateID,
+			layout.ActingVersion,
+			maxVarLen,
+			false,
+		); !scanOK {
+			var zero T
+			return zero, false
+		}
 	}
 	return decode(
 		buf,
@@ -138,34 +157,73 @@ func tryDecodeClusterAt[T any](
 
 func TryDecodeCanvassPositionAt(buf []byte, offset int) (CanvassPositionFields, bool) {
 	return tryDecodeClusterAt(
-		buf, offset, clusterwire.CanvassPositionSbeTemplateID, decodeCanvassPositionFields,
+		buf, offset, clusterwire.CanvassPositionSbeTemplateID, 0, decodeCanvassPositionFields,
 	)
 }
 
 func TryDecodeRequestVoteAt(buf []byte, offset int) (RequestVoteFields, bool) {
 	return tryDecodeClusterAt(
-		buf, offset, clusterwire.RequestVoteSbeTemplateID, decodeRequestVoteFields,
+		buf, offset, clusterwire.RequestVoteSbeTemplateID, 0, decodeRequestVoteFields,
 	)
 }
 
 func TryDecodeVoteAt(buf []byte, offset int) (VoteFields, bool) {
-	return tryDecodeClusterAt(buf, offset, clusterwire.VoteSbeTemplateID, decodeVoteFields)
+	return tryDecodeClusterAt(buf, offset, clusterwire.VoteSbeTemplateID, 0, decodeVoteFields)
 }
 
 func TryDecodeNewLeadershipTermAt(buf []byte, offset int) (NewLeadershipTermFields, bool) {
 	return tryDecodeClusterAt(
-		buf, offset, clusterwire.NewLeadershipTermSbeTemplateID, decodeNewLeadershipTermFields,
+		buf, offset, clusterwire.NewLeadershipTermSbeTemplateID, 0, decodeNewLeadershipTermFields,
 	)
 }
 
 func TryDecodeAppendPositionAt(buf []byte, offset int) (AppendPositionFields, bool) {
 	return tryDecodeClusterAt(
-		buf, offset, clusterwire.AppendPositionSbeTemplateID, decodeAppendPositionFields,
+		buf, offset, clusterwire.AppendPositionSbeTemplateID, 0, decodeAppendPositionFields,
 	)
 }
 
 func TryDecodeCommitPositionAt(buf []byte, offset int) (CommitPositionFields, bool) {
 	return tryDecodeClusterAt(
-		buf, offset, clusterwire.CommitPositionSbeTemplateID, decodeCommitPositionFields,
+		buf, offset, clusterwire.CommitPositionSbeTemplateID, 0, decodeCommitPositionFields,
+	)
+}
+
+func decodeCatchupPositionFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) CatchupPositionFields {
+	var msg clusterwire.CatchupPosition
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return CatchupPositionFields{
+		LeadershipTermID: msg.LeadershipTermId(),
+		LogPosition:      msg.LogPosition(),
+		FollowerMemberID: msg.FollowerMemberId(),
+		CatchupEndpoint:  msg.GetCatchupEndpointAsString(),
+	}
+}
+
+func decodeStopCatchupFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) StopCatchupFields {
+	var msg clusterwire.StopCatchup
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return StopCatchupFields{
+		LeadershipTermID: msg.LeadershipTermId(),
+		FollowerMemberID: msg.FollowerMemberId(),
+	}
+}
+
+// TryDecodeCatchupPositionAt decodes CatchupPosition including the var-ascii
+// catchup endpoint. Passes ClusterDecodeMaxVarLen so the endpoint length is
+// validated before decode.
+func TryDecodeCatchupPositionAt(buf []byte, offset int) (CatchupPositionFields, bool) {
+	return tryDecodeClusterAt(
+		buf,
+		offset,
+		clusterwire.CatchupPositionSbeTemplateID,
+		ClusterDecodeMaxVarLen,
+		decodeCatchupPositionFields,
 	)
 }

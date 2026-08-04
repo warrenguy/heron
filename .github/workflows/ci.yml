@@ -49,14 +49,16 @@ jobs:
       - *go-arch-cache-marker-step
       - *setup-go-step
 
-      - uses: actions/setup-java@v5
+      - &setup-java-step
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 26
           cache: maven
 
       # setup-java does not install mvn. Pin 3.9.x (Makefile needs 3.8.2+).
-      - name: Install Maven
+      - &install-maven-step
+        name: Install Maven
         env:
           MAVEN_VERSION: "3.9.16"
           MAVEN_SHA512: "831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6"
@@ -189,13 +191,30 @@ jobs:
           make aeronmd-compose-image
           make test-docker-smokes
 
+  cluster-archive:
+    if: *skip-drafts
+    runs-on: heron-linux-k8s
+    timeout-minutes: 30
+    env: *amd64-env
+    steps:
+      - *checkout-step
+      - *go-arch-cache-marker-step
+      - *setup-go-step
+      - *setup-java-step
+      - *install-maven-step
+      - *aeronmd-cache-step
+      - *aeronmd-cache-touch-step
+
+      - name: Live Archive cluster tests
+        run: make test-cluster-archive
+
   ci-ok:
     if: |
       always() && (
         github.event_name != 'pull_request' ||
         github.event.pull_request.draft == false
       )
-    needs: [lint, oracles, unit, property, election-sim, replication-sim, integration, docker-smokes]
+    needs: [lint, oracles, unit, property, election-sim, replication-sim, integration, docker-smokes, cluster-archive]
     runs-on: heron-linux-k8s
     steps:
       - *checkout-step
@@ -209,6 +228,7 @@ jobs:
           REPLICATION_SIM: ${{ needs.replication-sim.result }}
           INTEGRATION: ${{ needs.integration.result }}
           DOCKER_SMOKES: ${{ needs.docker-smokes.result }}
+          CLUSTER_ARCHIVE: ${{ needs.cluster-archive.result }}
         run: |
           source .github/scripts/require-job-result.sh
           require_job lint "${LINT}"
@@ -219,4 +239,5 @@ jobs:
           require_job replication-sim "${REPLICATION_SIM}"
           require_job integration "${INTEGRATION}"
           require_job docker-smokes "${DOCKER_SMOKES}"
+          require_job cluster-archive "${CLUSTER_ARCHIVE}"
           require_jobs_exit "all required jobs passed"
