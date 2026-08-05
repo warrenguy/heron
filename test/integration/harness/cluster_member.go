@@ -742,11 +742,18 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 		stopPosition = m.LogRecordingStopPosition()
 	}
 
+	// A null recording id reports -1 without scanning counters. A missing type-100
+	// counter also reports -1.
+	recordingPos := int64(-1)
+	if localLogRecordingID != recordinglog.NullRecordingID {
+		recordingPos = RecordingCounterPosition(m, localLogRecordingID)
+	}
+
 	return fmt.Sprintf(
 		"member=%d state=%v complete=%v role=%v term=%d leaderID=%d "+
 			"images=%d logPubSession=%d logPubPos=%d adapterPos=%d imagePos=%d "+
 			"joinPos=%d imageSession=%d appendSrc=%d commit=%d notified=%d "+
-			"recLogEntries=%d coldStart=%v localLogRecordingID=%d "+
+			"recLogEntries=%d coldStart=%v localLogRecordingID=%d recordingPos=%d "+
 			"archiveConnected=%v archiveSession=%d replayReason=%q "+
 			"recordingActive=%v appendRankFailure=%q electionCount=%d "+
 			"lastElectionTrigger=%s logRecordingStopPosition=%d\n",
@@ -769,6 +776,7 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 		recEntries,
 		m.IsColdStart(),
 		localLogRecordingID,
+		recordingPos,
 		archiveConnected,
 		archiveSession,
 		m.LogReplayReason(),

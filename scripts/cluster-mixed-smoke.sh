@@ -46,12 +46,14 @@ case "${OVERLAY_ARG}" in
 java-leader)
 	OVERLAY_FILE="${COMPOSE_DIR}/compose.java-leader.yaml"
 	GO_SERVICE="go-java-leader"
+	SMOKE_NAME="TestClusterMixedJavaLeader"
 	OCTET_BASE=1
 	OCTET_SPAN=125
 	;;
 go-leader)
 	OVERLAY_FILE="${COMPOSE_DIR}/compose.go-leader.yaml"
 	GO_SERVICE="go-go-leader"
+	SMOKE_NAME="TestClusterMixedGoLeader"
 	OCTET_BASE=126
 	OCTET_SPAN=125
 	;;
@@ -180,5 +182,28 @@ run_smoke || {
 	exit "${status}"
 }
 
+# One log fetch feeds require_smoke_ran and the final dump.
+SMOKE_LOGS="$(smoke_logs)" || {
+	echo "heron: could not read compose logs for smoke check" >&2
+	exit 1
+}
+
+# Fail closed when compose exits zero without --- PASS for SMOKE_NAME. Compose
+# wait alone accepts a skip or an empty -test.run match. Only the Go test
+# binary emits go test markers, so the all-service log capture cannot match a
+# foreign PASS. Named PASS already rejects top-level skip. TestMain rejects a
+# green exit when the overlay gate was never met.
+require_smoke_ran() {
+	if ! grep -qF -- "--- PASS: ${SMOKE_NAME}" <<<"${SMOKE_LOGS}"; then
+		echo "heron: mixed smoke missing --- PASS: ${SMOKE_NAME}" >&2
+		return 1
+	fi
+}
+
+require_smoke_ran || {
+	echo "${SMOKE_LOGS}" >&2
+	exit 1
+}
+
 echo "heron: cluster mixed smoke passed (overlay=${OVERLAY_ARG})"
-smoke_logs || echo "heron: warning: could not fetch logs (smoke passed)" >&2
+echo "${SMOKE_LOGS}"

@@ -18,6 +18,7 @@ import (
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/idlestrategy"
 	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
 	"github.com/warrenguy/heron/test/integration/harness"
@@ -435,6 +436,149 @@ func requireLiveLogImage(t *testing.T, f *mixedMemberFixture) {
 	)
 }
 
+// requireGoLogRecording asserts the Go member holds an active recording of the
+// cluster log. Returns the recording id and the current recorded position.
+//
+// wantLogSessionID is the session the recording must name: the leader log
+// image session on a follower, or the member's own log publication session on
+// a leader.
+//
+// Behaviour: asserts all of:
+//   - non-null recording id
+//   - active recording
+//   - catalog descriptor stream and session match
+//   - TermRecordingID matches LocalLogRecordingID
+//   - type-100 counter present for that id
+//
+// Concurrency: invoker-only. Runs no duty cycle.
+func requireGoLogRecording(
+	t *testing.T,
+	f *mixedMemberFixture,
+	wantLogSessionID int32,
+) (
+	recordingID int64,
+	recordedPosition int64,
+) {
+	t.Helper()
+
+	state := dumpMixedState(f.module, nil)
+	agent := f.module.Agent()
+	require.NotNil(t, agent, "agent missing:\n%s", state)
+
+	recordingID = agent.LocalLogRecordingID()
+	require.NotEqual(
+		t,
+		recordinglog.NullRecordingID,
+		recordingID,
+		"LocalLogRecordingID is null:\n%s",
+		state,
+	)
+	require.True(
+		t,
+		agent.IsRecordingActive(),
+		"recording not active (recordingID=%d):\n%s",
+		recordingID,
+		state,
+	)
+
+	topology := f.module.Topology()
+	require.NotNil(t, topology, "topology missing:\n%s", state)
+	wantStreamID := topology.LogStreamID()
+
+	archiveClient := f.module.ArchiveClient()
+	require.NotNil(t, archiveClient, "archive client missing:\n%s", state)
+	desc, err := archiveClient.ListRecording(t.Context(), recordingID)
+	require.NoError(t, err, "ListRecording(%d):\n%s", recordingID, state)
+	require.Equal(
+		t,
+		wantStreamID,
+		desc.StreamID,
+		"recording stream id (recordingID=%d):\n%s",
+		recordingID,
+		state,
+	)
+	// Session must name the cluster log under test, not another publication on
+	// the same channel.
+	require.Equal(
+		t,
+		wantLogSessionID,
+		desc.SessionID,
+		"recording session id (recordingID=%d wantSession=%d):\n%s",
+		recordingID,
+		wantLogSessionID,
+		state,
+	)
+
+	require.Equal(
+		t,
+		recordingID,
+		f.module.RecordingLog().TermRecordingID(),
+		"recording-log TermRecordingID (recordingID=%d):\n%s",
+		recordingID,
+		state,
+	)
+
+	recordedPosition = harness.RecordingCounterPosition(f.module, recordingID)
+	require.GreaterOrEqual(
+		t,
+		recordedPosition,
+		int64(0),
+		"type-100 recording position counter missing (recordingID=%d):\n%s",
+		recordingID,
+		state,
+	)
+
+	return recordingID, recordedPosition
+}
+
+// awaitGoRecordingReaches ticks the duty cycle until the recorded position
+// reaches wantPosition.
+//
+// Behaviour: fatals with the mixed state dump when the budget elapses. The
+// caller captures wantPosition before the wait, so the wait reads only the
+// type-100 counter. current of -1 in the failure output means that counter
+// was missing.
+//
+// Concurrency: invoker-only.
+func awaitGoRecordingReaches(
+	t *testing.T,
+	f *mixedMemberFixture,
+	java []*harness.DriverCounters,
+	recordingID int64,
+	wantPosition int64,
+	budget time.Duration,
+) {
+	t.Helper()
+
+	start := time.Now()
+	current := int64(-1)
+	ok := f.tickUntil(budget, func() bool {
+		current = harness.RecordingCounterPosition(f.module, recordingID)
+		return current >= wantPosition
+	})
+	elapsed := time.Since(start)
+	if !ok {
+		t.Fatalf(
+			"recording position did not reach commit after %s (budget %s): "+
+				"recordingID=%d want=%d current=%d:\n%s",
+			elapsed,
+			budget,
+			recordingID,
+			wantPosition,
+			current,
+			dumpMixedState(f.module, java),
+		)
+	}
+	t.Logf(
+		"recording position reached elapsed=%s budget=%s recordingID=%d want=%d current=%d",
+		elapsed,
+		budget,
+		recordingID,
+		wantPosition,
+		current,
+	)
+}
+
 // induceSessionMessage opens a cluster client against the two Java ingress
 // endpoints, offers one message, and closes the session. Payload is unasserted.
 func induceSessionMessage(t *testing.T, f *mixedMemberFixture) {
@@ -672,18 +816,46 @@ func awaitJavaServiceSawTermStart(
 // awaitGoLeaderElection ticks until the Go member leads and both Java members
 // report follower with a matching leadership term.
 //
-// LeaderMemberID is -1 on the leader (no append target). Assert -1, never self.
+// LeaderMemberID is -1 on the leader (no append target). Asserts -1, never
+// self.
+//
+// Returns the first type-100 recording-position sample seen during the wait.
+// LOCAL recording starts on the leader-init tick. The term-start append runs
+// on the election-completion tick in this same duty-cycle loop. Sampling
+// between those ticks keeps the value below the commit that follows. A
+// post-election sample can already equal that commit once the archive
+// records the term-start publication. Fatals when no sample appears before
+// the election completes.
 func awaitGoLeaderElection(
 	t *testing.T,
 	f *mixedMemberFixture,
 	java []*harness.DriverCounters,
 	budget time.Duration,
-) {
+) int64 {
 	t.Helper()
+
+	recordingBefore := int64(-1)
+	sampleRecording := func() {
+		if recordingBefore >= 0 {
+			return
+		}
+		agent := f.module.Agent()
+		if agent == nil {
+			return
+		}
+		pos := harness.RecordingCounterPosition(f.module, agent.LocalLogRecordingID())
+		if pos >= 0 {
+			recordingBefore = pos
+		}
+	}
 
 	start := time.Now()
 	ok := f.tickUntil(budget, func() bool {
+		// Sample only while the election is incomplete. tickUntil duty-cycles
+		// first, so a sample on the completion poll is already after the
+		// term-start append.
 		if !f.module.ElectionComplete() {
+			sampleRecording()
 			return false
 		}
 		if !f.module.IsLeader() {
@@ -714,12 +886,20 @@ func awaitGoLeaderElection(
 			dumpMixedState(f.module, java),
 		)
 	}
+	require.GreaterOrEqual(
+		t,
+		recordingBefore,
+		int64(0),
+		"no recording position sample observed during election:\n%s",
+		dumpMixedState(f.module, java),
+	)
 	t.Logf(
 		"go leader election elapsed=%s budget=%s\n%s",
 		elapsed,
 		budget,
 		dumpMixedState(f.module, java),
 	)
+	return recordingBefore
 }
 
 // awaitJavaCommitAdvance waits for both Java commit counters to rise strictly

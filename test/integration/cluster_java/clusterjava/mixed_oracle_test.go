@@ -38,6 +38,16 @@ func TestMixedHarnessConstants(t *testing.T) {
 			want: "HERON_CLUSTER_MIXED_GO_LEADER_COMPOSE",
 		},
 		{
+			name: "MixedSmokeNameJavaLeader",
+			got:  clusterjava.MixedSmokeNameJavaLeader,
+			want: "TestClusterMixedJavaLeader",
+		},
+		{
+			name: "MixedSmokeNameGoLeader",
+			got:  clusterjava.MixedSmokeNameGoLeader,
+			want: "TestClusterMixedGoLeader",
+		},
+		{
 			name: "MixedHostnamesEnvKey",
 			got:  clusterjava.MixedHostnamesEnvKey,
 			want: "HERON_CLUSTER_HOSTNAMES",
@@ -189,6 +199,68 @@ func TestMixedHarnessConstants(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, tt.got)
+		})
+	}
+}
+
+func TestMixedRequiredSmoke(t *testing.T) {
+	// required is always name != "". Table checks only the name.
+	tests := []struct {
+		name     string
+		env      map[string]string
+		wantName string
+	}{
+		{
+			name:     "neither",
+			env:      nil,
+			wantName: "",
+		},
+		{
+			name: "javaGateOne",
+			env: map[string]string{
+				clusterjava.MixedComposeJavaLeaderEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameJavaLeader,
+		},
+		{
+			name: "goGateOne",
+			env: map[string]string{
+				clusterjava.MixedComposeGoLeaderEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameGoLeader,
+		},
+		{
+			name: "javaGateZero",
+			env: map[string]string{
+				clusterjava.MixedComposeJavaLeaderEnvKey: "0",
+			},
+			wantName: "",
+		},
+		{
+			name: "goGateZero",
+			env: map[string]string{
+				clusterjava.MixedComposeGoLeaderEnvKey: "0",
+			},
+			wantName: "",
+		},
+		{
+			name: "bothGatesOne",
+			env: map[string]string{
+				clusterjava.MixedComposeJavaLeaderEnvKey: "1",
+				clusterjava.MixedComposeGoLeaderEnvKey:   "1",
+			},
+			wantName: clusterjava.MixedSmokeNameJavaLeader,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			getEnv := func(key string) string {
+				return tt.env[key]
+			}
+			gotName, gotRequired := clusterjava.MixedRequiredSmoke(getEnv)
+			require.Equal(t, tt.wantName, gotName)
+			require.Equal(t, tt.wantName != "", gotRequired)
 		})
 	}
 }
@@ -385,17 +457,18 @@ func TestMixedComposeIngressAndEgress_rejectBadEnv(t *testing.T) {
 }
 
 func TestMixedStackedBudgets_fitInsideTestTimeout(t *testing.T) {
+	// 2x MixedCommitBudget: commit advance, then recorded-position reach.
 	stackedJavaLeader := clusterjava.MixedStartupBudget +
 		clusterjava.MixedElectionBudget +
 		clusterjava.MixedConnectBudget +
-		clusterjava.MixedCommitBudget
+		2*clusterjava.MixedCommitBudget
 	require.Less(t, stackedJavaLeader, clusterjava.MixedTestTimeoutJavaLeader)
 
 	// go-leader has no client connect wait. Service probe reuses MixedElectionBudget.
 	stackedGoLeader := clusterjava.MixedStartupBudget +
 		clusterjava.MixedElectionBudget +
 		clusterjava.MixedElectionBudget +
-		clusterjava.MixedCommitBudget
+		2*clusterjava.MixedCommitBudget
 	require.Less(t, stackedGoLeader, clusterjava.MixedTestTimeoutGoLeader)
 }
 

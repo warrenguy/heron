@@ -24,6 +24,18 @@ const (
 	// MixedComposeGoLeaderEnvKey is set to "1" by the go-leader overlay.
 	MixedComposeGoLeaderEnvKey = "HERON_CLUSTER_MIXED_GO_LEADER_COMPOSE"
 
+	// MixedSmokeNameJavaLeader is the TestClusterMixedJavaLeader function name.
+	//
+	// Dockerfile -test.run, scripts/cluster-mixed-smoke.sh SMOKE_NAME, and
+	// MixedRequiredSmoke must use this same literal. A rename that misses a site
+	// must fail the run rather than pass with no proof completed.
+	MixedSmokeNameJavaLeader = "TestClusterMixedJavaLeader"
+
+	// MixedSmokeNameGoLeader is the TestClusterMixedGoLeader function name.
+	//
+	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
+	MixedSmokeNameGoLeader = "TestClusterMixedGoLeader"
+
 	// Skip-hint strings name the make target for each mixed compose overlay.
 	MixedComposeSkipHintJavaLeader = "cluster mixed " + composeSkipRunMake +
 		"test-cluster-mixed-java-leader"
@@ -172,6 +184,30 @@ const (
 	// No client connect wait.
 	MixedTestTimeoutGoLeader = 120 * time.Second
 )
+
+// MixedRequiredSmoke reports which mixed proof the current overlay requires.
+//
+// Behaviour: reads the two overlay gate keys through getEnv. A key set to
+// "1" names that overlay's proof. Any other value, including unset, sets no
+// gate. No gate set means no proof is required (developer run outside
+// compose). Both gates set to "1" is a fixture error; the function still
+// returns the java-leader name so the failure path stays diagnostic and does
+// not panic.
+//
+// Concurrency: pure. Reads only through getEnv.
+//
+// Returns:
+//   - name, true: the named proof must run to completion
+//   - "", false: no proof is required
+func MixedRequiredSmoke(getEnv func(string) string) (string, bool) {
+	if getEnv(MixedComposeJavaLeaderEnvKey) == "1" {
+		return MixedSmokeNameJavaLeader, true
+	}
+	if getEnv(MixedComposeGoLeaderEnvKey) == "1" {
+		return MixedSmokeNameGoLeader, true
+	}
+	return "", false
+}
 
 // MixedMemberHostnames returns the default three member address literals in id
 // order. Unit goldens and the manual 172.30.0.0/24 topology use this list.
