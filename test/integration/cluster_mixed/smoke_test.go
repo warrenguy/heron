@@ -46,8 +46,8 @@ func TestClusterMixedJavaLeader(t *testing.T) {
 	// Cold start keeps a zero position base for later recording comparisons.
 	require.True(t, f.module.IsColdStart())
 
-	// Record: active catalog recording of the leader log session. Returned
-	// position is the pre-induction baseline for the gap check below.
+	// Record: active catalog recording of the leader log session. The returned
+	// position is the pre-induction baseline for the commit-wait floor.
 	recordingID, recordingBefore := requireGoLogRecording(
 		t,
 		f,
@@ -60,20 +60,18 @@ func TestClusterMixedJavaLeader(t *testing.T) {
 	// Induce: one session message to the Java leader.
 	induceSessionMessage(t, f)
 
-	// Advance: NotifiedCommitPosition strictly increases.
-	awaitNotifiedCommitAdvance(t, f, recorded, clusterjava.MixedCommitBudget)
-
-	// Gap: pre-induction recorded position must sit below the new commit. Captured
-	// earlier. A re-read would let a caught-up recorder skip real work.
-	commitAfter := f.module.NotifiedCommitPosition()
-	require.Less(
+	// Advance: NotifiedCommitPosition must rise past the pre-induction commit and
+	// the pre-induction recorded position. Term-start high-water alone can equal a
+	// caught-up recorder sample. Session induction must advance commit past both.
+	awaitNotifiedCommitAdvance(
 		t,
-		recordingBefore,
-		commitAfter,
-		"recorded position already at or past commit before advance",
+		f,
+		max(recorded, recordingBefore),
+		clusterjava.MixedCommitBudget,
 	)
 
 	// Durable: recorded position reaches the observed commit.
+	commitAfter := f.module.NotifiedCommitPosition()
 	awaitGoRecordingReaches(
 		t,
 		f,
