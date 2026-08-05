@@ -15,6 +15,9 @@ type LogReplay = consensus.LogReplay
 // LogReplication is [consensus.LogReplication].
 type LogReplication = consensus.LogReplication
 
+// CatchupPositionFields is [codecs.CatchupPositionFields].
+type CatchupPositionFields = codecs.CatchupPositionFields
+
 // ElectionHost is the election-to-agent duty-cycle boundary.
 //
 // Implemented by [HostAdapter]; mocked in election tests.
@@ -27,7 +30,15 @@ type ElectionHost interface {
 	TimeOfLastLeaderUpdateNs() int64
 
 	UpdateMemberLogPosition(member *Member, leadershipTermID, logPosition int64)
-	TrackCatchupCompletion(member *Member, leadershipTermID int64, flags uint8)
+
+	// TrackCatchupCompletion drives leader-side catchup stop when logPosition
+	// reaches the leader log. logPosition is the AppendPosition value, not
+	// member.LogPosition. Flagged messages keep member.LogPosition stale.
+	TrackCatchupCompletion(
+		member *Member,
+		logPosition int64,
+		flags uint8,
+	)
 
 	NewLogReplay(logPosition, appendPosition int64) LogReplay
 	NewLogReplication(
@@ -39,10 +50,28 @@ type ElectionHost interface {
 	CatchupInitiated(nowNs int64)
 	IsCatchupNearLive(position int64) bool
 
+	// LiveLogDestination returns the live log receive-destination URI.
+	// Empty when the live feed is not attached.
+	LiveLogDestination() string
+
+	// AddLiveLogDestination adds the live log channel as a receive destination.
+	// No-op when the live feed is already attached. Idempotent.
+	//
+	// On failure LiveLogDestination stays empty. The next tick retries.
+	AddLiveLogDestination()
+
 	// EnsureCatchupLogDestination opens the follower catchup receive path for
 	// catchupEndpoint. Returns the destination channel URI, or empty when not
 	// ready. Idempotent once open.
 	EnsureCatchupLogDestination(catchupEndpoint string) string
+
+	// CatchupLogDestination returns the catchup receive-destination URI.
+	// Empty when catchup is not active.
+	CatchupLogDestination() string
+
+	// RemoveCatchupLogDestination removes the catchup receive destination and
+	// restores the live destination when the live feed is absent. Idempotent.
+	RemoveCatchupLogDestination()
 
 	// CommitPosition returns the local commit value (0 when unset).
 	CommitPosition() int64
@@ -52,7 +81,8 @@ type ElectionHost interface {
 	IsLogJoinedForSession(logSessionID int32) bool
 
 	// OnCatchupPosition starts leader-side catchup for the follower in fields.
-	OnCatchupPosition(fields codecs.CatchupPositionFields)
+	// May no-op when the host refuses the request. Does not return an error.
+	OnCatchupPosition(fields CatchupPositionFields)
 
 	PublishCommitPosition(commitPosition, leadershipTermID int64)
 	AddLogPublication(appendPosition int64) int32

@@ -116,6 +116,17 @@ const (
 	SubscriptionMessageMinimumBodyLength = subscriptionMessageMinimumBodyLength
 )
 
+// DestinationMessage layout is CorrelatedMessage, then registrationCorrelationId,
+// then channel. No stream id on the wire (unlike SubscriptionMessage).
+const (
+	destinationMessageRegCorrOffset = CorrelatedMessageLength
+	destinationMessageChannelOffset = destinationMessageRegCorrOffset + sizeOfInt64
+
+	DestinationMessageRegistrationCorrelationIDOffset = destinationMessageRegCorrOffset
+	DestinationMessageChannelOffset                   = destinationMessageChannelOffset
+	DestinationMessageMinimumBodyLength               = destinationMessageChannelOffset + sizeOfInt32
+)
+
 const (
 	removeMessageRegistrationIDOffset = CorrelatedMessageLength
 	RemoveMessageRegistrationIDOffset = removeMessageRegistrationIDOffset

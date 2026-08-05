@@ -19,6 +19,7 @@ var sharedDriverStreamIDs = map[string]int32{
 	"LogCommitBoundIsolationStreamID":                        LogCommitBoundIsolationStreamID,
 	"MPSCMatrixPubSubStreamID":                               MPSCMatrixPubSubStreamID,
 	"MPSCMatrixSessionIDStreamID":                            MPSCMatrixSessionIDStreamID,
+	"MultiDestinationSubscriptionStreamID":                   MultiDestinationSubscriptionStreamID,
 	"OfferWithRetryClosedPublicationStreamID":                OfferWithRetryClosedPublicationStreamID,
 	"OfferWithRetryNotConnectedThenConnectStreamID":          OfferWithRetryNotConnectedThenConnectStreamID,
 	"OfferWithRetryNotConnectedTimeoutStreamID":              OfferWithRetryNotConnectedTimeoutStreamID,

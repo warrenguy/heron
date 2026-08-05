@@ -271,6 +271,18 @@ func (h *HostAdapter) UpdateMemberPosition(
 	h.UpdateMemberLogPosition(h.memberByID[memberID], leadershipTermID, logPosition)
 }
 
+// RefreshMemberLiveness stamps the append-position clock for memberID without
+// changing log position or leadership term.
+//
+// Unknown member ids are a no-op.
+func (h *HostAdapter) RefreshMemberLiveness(memberID int32) {
+	member := h.memberByID[memberID]
+	if member == nil {
+		return
+	}
+	member.TimeOfLastAppendPositionNs = h.nanoClock()
+}
+
 func (h *HostAdapter) UpdateLeaderPosition(nowNs, appendPosition, quorumPosition int64) int {
 	h.thisMember.LogPosition = appendPosition
 	h.thisMember.TimeOfLastAppendPositionNs = nowNs
@@ -393,14 +405,22 @@ func (h *HostAdapter) PublishNewLeadershipTerm(answer consensus.CanvassAnswer) b
 	return true
 }
 
-// TrackCatchupCompletion is a no-op.
+// TrackCatchupCompletion forwards catchup completion to Agent.
 //
-// A leader-side catchup replay follows the active recording, so it is the
-// returning follower's live log feed until the next prepare. Stopping it at the
-// caught-up position strands that follower: its log adapter is bound to the
-// catchup image, and no live image replaces it. Stopping on completion needs a
-// follower-side handover to the live log first.
-func (h *HostAdapter) TrackCatchupCompletion(*Member, int64, uint8) {}
+// logPosition is the AppendPosition wire value. Flagged messages keep
+// member.LogPosition stale. Callers must pass the wire position.
+//
+// Nil member is a silent no-op.
+func (h *HostAdapter) TrackCatchupCompletion(
+	member *Member,
+	logPosition int64,
+	flags uint8,
+) {
+	if member == nil {
+		return
+	}
+	h.agent.TrackCatchupCompletion(member.ID, logPosition, flags)
+}
 
 func (h *HostAdapter) Role() consensus.Role { return h.agent.Role() }
 
@@ -439,8 +459,37 @@ func (h *HostAdapter) IsCatchupNearLive(position int64) bool {
 	return h.agent.IsCatchupNearLive(position)
 }
 
+func (h *HostAdapter) LiveLogDestination() string {
+	return h.agent.LiveLogDestination()
+}
+
+func (h *HostAdapter) AddLiveLogDestination() {
+	h.agent.AddLiveLogDestination()
+}
+
 func (h *HostAdapter) EnsureCatchupLogDestination(catchupEndpoint string) string {
 	return h.agent.EnsureCatchupLogDestination(catchupEndpoint)
+}
+
+func (h *HostAdapter) CatchupLogDestination() string {
+	return h.agent.CatchupLogDestination()
+}
+
+func (h *HostAdapter) RemoveCatchupLogDestination() {
+	h.agent.RemoveCatchupLogDestination()
+}
+
+// PublishStopCatchup publishes StopCatchup to followerMemberID.
+//
+// Returns false when the send does not complete.
+func (h *HostAdapter) PublishStopCatchup(leadershipTermID int64, followerMemberID int32) bool {
+	return h.pub.StopCatchup(
+		PublicationTarget{MemberID: followerMemberID},
+		codecs.StopCatchupFields{
+			LeadershipTermID: leadershipTermID,
+			FollowerMemberID: followerMemberID,
+		},
+	)
 }
 
 func (h *HostAdapter) CommitPosition() int64 {
@@ -452,8 +501,9 @@ func (h *HostAdapter) IsLogJoinedForSession(logSessionID int32) bool {
 }
 
 // OnCatchupPosition starts a leader-side archive catchup replay for the
-// follower named in fields. Refuses an unknown follower member id. The agent
-// refuses a second start while a replay is active.
+// follower named in fields. Refuses an unknown follower member id. Distinct
+// followers may catch up concurrently. A same-member request restarts that
+// follower's replay.
 func (h *HostAdapter) OnCatchupPosition(fields codecs.CatchupPositionFields) {
 	if h.memberByID[fields.FollowerMemberID] == nil {
 		return

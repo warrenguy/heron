@@ -324,6 +324,14 @@ type recordingElectionHost struct {
 	logJoined             bool
 	catchupLogDestination string
 
+	// liveLogDestination is the fake live URI. Empty until AddLiveLogDestination
+	// succeeds or a test sets it.
+	liveLogDestination string
+
+	// addLiveLogDestinationFailLeft counts AddLiveLogDestination calls that
+	// leave LiveLogDestination empty (driver refuse or back-pressure).
+	addLiveLogDestinationFailLeft int
+
 	// newLogReplication overrides Noop nil factory for duty-cycle tests.
 	newLogReplication func(
 		leaderArchiveEndpoint, responseArchiveEndpoint string,
@@ -342,12 +350,14 @@ type recordingElectionHost struct {
 	catchupNearLiveCalls              []int64
 	catchupInitiatedCalls             []int64
 	catchupPollCalls                  []catchupPollCall
+	addLiveLogDestinationCalls        int
 	newLogReplicationCalls            []newLogReplicationCall
 	setLogRecordingIDCalls            []int64
 	truncateCalls                     []truncateCall
 	truncateErr                       error
 
-	trackCatchupCalls []trackCatchupCall
+	trackCatchupCalls                []trackCatchupCall
+	removeCatchupLogDestinationCalls int
 }
 
 type catchupPollCall struct {
@@ -369,9 +379,9 @@ type truncateCall struct {
 }
 
 type trackCatchupCall struct {
-	memberID         int32
-	leadershipTermID int64
-	flags            uint8
+	memberID    int32
+	logPosition int64
+	flags       uint8
 }
 
 type publishCommitPositionCall struct {
@@ -441,6 +451,21 @@ func (h *recordingElectionHost) IsCatchupNearLive(position int64) bool {
 	return h.catchupNearLive
 }
 
+func (h *recordingElectionHost) LiveLogDestination() string { return h.liveLogDestination }
+
+// AddLiveLogDestination records a call. Fails addLiveLogDestinationFailLeft
+// times without setting LiveLogDestination, then stores a non-empty live URI.
+func (h *recordingElectionHost) AddLiveLogDestination() {
+	h.addLiveLogDestinationCalls++
+	if h.addLiveLogDestinationFailLeft > 0 {
+		h.addLiveLogDestinationFailLeft--
+		return
+	}
+	if h.liveLogDestination == "" {
+		h.liveLogDestination = "aeron:udp?endpoint=live-log"
+	}
+}
+
 func (h *recordingElectionHost) NewLogReplication(
 	leaderArchiveEndpoint, responseArchiveEndpoint string,
 	leaderRecordingID, stopPosition, nowNs int64,
@@ -487,9 +512,12 @@ func (h *recordingElectionHost) CommitPosition() int64 { return h.commitPosition
 
 func (h *recordingElectionHost) IsLogJoinedForSession(int32) bool { return h.logJoined }
 
-// CatchupLogDestination reports the destination the fake opened. Not on
-// [election.ElectionHost]; tests read it to assert the open ran.
 func (h *recordingElectionHost) CatchupLogDestination() string { return h.catchupLogDestination }
+
+func (h *recordingElectionHost) RemoveCatchupLogDestination() {
+	h.removeCatchupLogDestinationCalls++
+	h.catchupLogDestination = ""
+}
 
 func (h *recordingElectionHost) SetLogRecordingID(recordingID int64) {
 	h.setLogRecordingIDCalls = append(h.setLogRecordingIDCalls, recordingID)
@@ -536,13 +564,13 @@ func (h *recordingElectionHost) AppendNewLeadershipTermEvent(nowNs int64) bool {
 
 func (h *recordingElectionHost) TrackCatchupCompletion(
 	member *election.Member,
-	leadershipTermID int64,
+	logPosition int64,
 	flags uint8,
 ) {
 	h.trackCatchupCalls = append(h.trackCatchupCalls, trackCatchupCall{
-		memberID:         member.ID,
-		leadershipTermID: leadershipTermID,
-		flags:            flags,
+		memberID:    member.ID,
+		logPosition: logPosition,
+		flags:       flags,
 	})
 }
 

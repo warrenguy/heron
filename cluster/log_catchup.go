@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"slices"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/consensus"
@@ -11,52 +12,49 @@ import (
 
 // catchupControl is the production [consensus.CatchupControl].
 //
-// Behaviour: on the follower, opens a unicast subscription on the member
-// catchup endpoint so the leader archive can replay the log gap. Join
-// selection prefers that subscription over the live multicast log subscription
-// when matching by session. On the leader, starts an archive replay of the
-// local cluster log recording toward the follower catchup endpoint with the
-// log publication session id. Length is math.MaxInt64 so an active recording
-// is followed.
+// Behaviour:
+//   - Follower: reseeds the log subscription and adds a unicast catchup
+//     destination for the leader archive replay. Ensure clears the live
+//     destination while catchup is active. Only the catchup feed is attached
+//     until live is restored on teardown, or added when catchup is near live.
+//   - Leader: starts an archive replay of the local cluster log recording
+//     toward the follower catchup endpoint with the log publication session id.
+//     Length is math.MaxInt64 so an active recording is followed.
 //
 // Concurrency: invoker-only.
 //
-// Ownership: owns the catchup subscription and every catchup replay this
-// control started. Close with the module, before the archive client closes.
-// Does not own the archive client, transport client, or agent.
+// Ownership: owns every catchup replay this control started and the catchup
+// destination URI recorded on the agent. Close with the module, before the
+// archive client closes. Does not own the log subscription, archive client,
+// transport client, or agent.
 type catchupControl struct {
 	ctx context.Context
 
 	// control issues StartReplay / StopReplay.
 	control replayControl
 
-	// adder registers the catchup subscription.
+	// adder reseeds the log subscription.
 	adder SubscriptionAdder
 
-	// agent supplies the local log recording id and takes the catchup join
-	// source. Not closed by this type.
+	// agent supplies the local log recording id and holds destination URIs.
+	// Not closed by this type.
 	agent *consensus.Agent
 
-	// liveJoin is the live cluster log join source. Prefer catchup images over
-	// liveJoin while a catchup subscription is open.
-	liveJoin consensus.LogJoinSource
+	// streams owns the log subscription this control reseeds and attaches
+	// destinations to. Not closed by this type.
+	streams *LogStreams
 
 	// logStreamID is the cluster log stream id (same as the live log).
 	logStreamID int32
 
 	// logChannel is the cluster log channel template the live log and its
 	// recording use. Catchup builds on the template so term geometry matches.
+	// Also the live URI restored after catchup teardown when live is absent.
 	logChannel string
 
-	// catchupSub is the follower catchup receive subscription. Nil until open.
-	catchupSub *aeron.Subscription
-
-	// catchupChannel is the destination URI catchupSub was opened on. Empty
-	// while catchupSub is nil.
-	catchupChannel string
-
 	// replaySessionIDs are the leader-side catchup replays started and not yet
-	// stopped. StopCatchupReplays drains this slice.
+	// stopped. StopCatchupReplay removes one id. StopCatchupReplays drains this
+	// slice.
 	replaySessionIDs []int64
 }
 
@@ -68,7 +66,7 @@ func newCatchupControl(
 	control replayControl,
 	adder SubscriptionAdder,
 	agent *consensus.Agent,
-	liveJoin consensus.LogJoinSource,
+	streams *LogStreams,
 	logStreamID int32,
 	logChannel string,
 ) *catchupControl {
@@ -77,70 +75,147 @@ func newCatchupControl(
 		control:     control,
 		adder:       adder,
 		agent:       agent,
-		liveJoin:    liveJoin,
+		streams:     streams,
 		logStreamID: logStreamID,
 		logChannel:  logChannel,
 	}
 }
 
-// EnsureCatchupLogDestination opens the catchup receive subscription when
-// needed and installs a join source that prefers catchup images.
+// EnsureCatchupLogDestination reseeds the log subscription and adds the
+// catchup receive destination when needed.
 //
 // Destination is the configured cluster log channel with
 // endpoint=<catchupEndpoint>.
 //
-// The subscription is not session-filtered. The leader replay channel carries
-// session-id. Join selection keys on the log session id through the join
-// source.
+// The log subscription is not session-filtered. The leader replay channel
+// carries session-id. Join selection keys on the log session id through the
+// single log join source.
 //
-// Returns the destination URI, or empty on open failure.
+// Idempotent once open: a non-empty agent catchup destination returns that URI
+// and touches nothing.
+//
+// On failure after reseed: restores the live destination when the live feed is
+// absent so the member is not left with zero destinations. Reseed itself is
+// fail-closed (see [LogStreams.ReseedSubscription]).
+//
+// Returns the destination URI, or empty on failure.
 func (c *catchupControl) EnsureCatchupLogDestination(catchupEndpoint string) string {
-	if c == nil || catchupEndpoint == "" {
+	if c == nil || catchupEndpoint == "" || c.agent == nil || c.streams == nil {
 		return ""
 	}
-	if c.catchupSub != nil {
-		return c.catchupChannel
+	if dest := c.agent.CatchupLogDestination(); dest != "" {
+		return dest
 	}
-	channel := catchupDestinationURI(c.logChannel, catchupEndpoint)
 
-	sub, err := addSubscriptionChecked(
-		c.adder,
-		c.logStreamID,
-		channel,
-		"catchup log subscription",
-	)
-	if err != nil {
+	// Clear live before reseed so restore is never skipped for a stale real URI
+	// that no longer has a destination on the reseeded subscription.
+	c.agent.LiveLogDestinationSet("")
+
+	if err := c.streams.ReseedSubscription(c.adder); err != nil {
+		// Reseed fail-closed restores live when recovery succeeds. Cover the
+		// path where recovery opened a subscription but could not add live.
+		_ = c.restoreLiveLogDestination()
 		return ""
 	}
-	c.catchupSub = sub
-	c.catchupChannel = channel
-	// Agent holds the join source until RemoveCatchupLogDestination restores
-	// liveJoin.
-	c.agent.SetLogJoinSource(&preferCatchupJoinSource{
-		catchup: consensus.NewSubscriptionLogJoinSource(sub),
-		live:    c.liveJoin,
-	})
+
+	channel := catchupDestinationURI(c.logChannel, catchupEndpoint)
+	if channel == "" {
+		_ = c.restoreLiveLogDestination()
+		return ""
+	}
+	sub := c.logSubscription()
+	if sub == nil {
+		return ""
+	}
+	if err := sub.AddDestination(channel); err != nil {
+		_ = c.restoreLiveLogDestination()
+		return ""
+	}
+	c.agent.CatchupLogDestinationSet(channel)
 	return channel
 }
 
-// RemoveCatchupLogDestination closes the catchup receive subscription and
-// restores the live log join source. Idempotent.
+// RemoveCatchupLogDestination removes the catchup receive destination and
+// restores the live destination when the live feed is absent. Idempotent.
 func (c *catchupControl) RemoveCatchupLogDestination() error {
-	if c == nil || c.catchupSub == nil {
+	return c.removeCatchupDestination(true)
+}
+
+// removeCatchupDestination removes the catchup destination URI.
+//
+// When restoreLive is true and LiveLogDestination is empty, re-adds the live log
+// channel. The agent records the URI. Module close passes restoreLive false.
+//
+// CatchupLogDestination clears only after a successful RemoveDestination, or
+// when no subscription is present to remove. A remove error leaves
+// CatchupLogDestination set. A later call retries the same URI.
+func (c *catchupControl) removeCatchupDestination(restoreLive bool) error {
+	if c == nil || c.agent == nil {
 		return nil
 	}
-	// Restore the live join source before closing the catchup sub.
-	if c.liveJoin != nil {
-		c.agent.SetLogJoinSource(c.liveJoin)
+	dest := c.agent.CatchupLogDestination()
+	if dest != "" {
+		if sub := c.logSubscription(); sub != nil {
+			if err := sub.RemoveDestination(dest); err != nil {
+				return err
+			}
+		}
+		c.agent.CatchupLogDestinationSet("")
 	}
-	err := c.catchupSub.Close()
-	c.catchupSub = nil
-	c.catchupChannel = ""
-	return err
+	if restoreLive {
+		return c.restoreLiveLogDestination()
+	}
+	return nil
+}
+
+// logSubscription returns the log subscription owned by streams, or nil.
+func (c *catchupControl) logSubscription() *aeron.Subscription {
+	if c == nil || c.streams == nil {
+		return nil
+	}
+	return c.streams.Subscription()
+}
+
+// AddLiveLogDestination adds the live log channel as a receive destination.
+// No-op when the live feed is already attached. Idempotent.
+//
+// On AddDestination failure LiveLogDestination stays empty. The next tick
+// retries. The catchup feed keeps running.
+//
+// Concurrency: invoker-only.
+func (c *catchupControl) AddLiveLogDestination() error {
+	return c.restoreLiveLogDestination()
+}
+
+// restoreLiveLogDestination re-adds the live log channel.
+// No-op when the live feed is already attached.
+func (c *catchupControl) restoreLiveLogDestination() error {
+	if c == nil || c.agent == nil {
+		return nil
+	}
+	if c.agent.LiveLogDestination() != "" {
+		return nil
+	}
+	liveURI := c.logChannel
+	if liveURI == "" && c.streams != nil {
+		liveURI = c.streams.LiveURI()
+	}
+	if liveURI == "" {
+		return nil
+	}
+	sub := c.logSubscription()
+	if sub == nil {
+		return nil
+	}
+	if err := sub.AddDestination(liveURI); err != nil {
+		return err
+	}
+	c.agent.LiveLogDestinationSet(liveURI)
+	return nil
 }
 
 // StartCatchupReplay starts an archive replay of the local log recording and
-// retains the replay session id for StopCatchupReplays.
+// retains the replay session id for StopCatchupReplay / StopCatchupReplays.
 func (c *catchupControl) StartCatchupReplay(
 	logPosition int64,
 	catchupEndpoint string,
@@ -166,6 +241,27 @@ func (c *catchupControl) StartCatchupReplay(
 	return replaySessionID, nil
 }
 
+// StopCatchupReplay stops one retained catchup replay by session id.
+//
+// Idempotent when the session is not retained. Removes the session from the
+// ledger only after StopReplay succeeds. A failed stop can be retried.
+//
+// Concurrency: invoker-only.
+func (c *catchupControl) StopCatchupReplay(replaySessionID int64) error {
+	if c == nil {
+		return nil
+	}
+	i := slices.Index(c.replaySessionIDs, replaySessionID)
+	if i < 0 {
+		return nil
+	}
+	if err := c.control.StopReplay(c.ctx, replaySessionID); err != nil {
+		return err
+	}
+	c.replaySessionIDs = slices.Delete(c.replaySessionIDs, i, i+1)
+	return nil
+}
+
 // StopCatchupReplays stops every retained catchup replay. Idempotent.
 //
 // Drops a session id once stop has been attempted. A stop that fails is not
@@ -185,14 +281,15 @@ func (c *catchupControl) StopCatchupReplays() error {
 	return err
 }
 
-// close stops leader-side replays and releases the catchup subscription. Idempotent.
-// Call before the archive client closes. StopReplay needs the archive control
-// session.
+// close stops leader-side replays and removes the catchup destination without
+// restoring the live feed. Idempotent. Call before the archive client closes.
+// StopReplay needs the archive control session. Live restore is wasted work
+// during module shutdown and may block on a closing client.
 func (c *catchupControl) close() error {
 	if c == nil {
 		return nil
 	}
-	return errors.Join(c.StopCatchupReplays(), c.RemoveCatchupLogDestination())
+	return errors.Join(c.StopCatchupReplays(), c.removeCatchupDestination(false))
 }
 
 // errNoLocalLogRecording reports no local log recording for catchup replay.
@@ -212,7 +309,8 @@ func catchupDestinationURI(logChannel, catchupEndpoint string) string {
 }
 
 // catchupReplayChannel is the leader archive replay channel toward a follower
-// catchup endpoint, with the log publication session id and no linger.
+// catchup endpoint. Carries the log publication session id, linger=0, eos=false,
+// and alias=log-catchup for driver-tool observability.
 //
 // Length on StartCatchupReplay is math.MaxInt64 so an active recording is
 // followed (AeronArchive REPLAY_ALL_AND_FOLLOW / Long.MAX_VALUE).
@@ -227,54 +325,6 @@ func catchupReplayChannel(
 	}
 	ch = aeron.AppendChannelParam(ch, "linger=", "0")
 	ch = aeron.AppendChannelParam(ch, "eos=", "false")
+	ch = aeron.AppendChannelParam(ch, channelAliasParam, "log-catchup")
 	return ch
-}
-
-// preferCatchupJoinSource prefers an open catchup image over the live log
-// image for the same log session id.
-//
-// Behaviour: when the catchup source has an open image for the session, Ready
-// and Image return that image. Otherwise the live source is used. A late-join
-// live image with a join position above the follower log position is still
-// reported by the live source. The election await path rejects a join position
-// mismatch and waits for the catchup image.
-//
-// Concurrency: invoker-only.
-type preferCatchupJoinSource struct {
-	catchup consensus.LogJoinSource
-	live    consensus.LogJoinSource
-}
-
-var _ consensus.LogJoinSource = (*preferCatchupJoinSource)(nil)
-
-func (s *preferCatchupJoinSource) Image(logSessionID int32) *aeron.Image {
-	if s == nil {
-		return nil
-	}
-	if s.catchup != nil {
-		if img := s.catchup.Image(logSessionID); img != nil {
-			return img
-		}
-	}
-	if s.live != nil {
-		return s.live.Image(logSessionID)
-	}
-	return nil
-}
-
-func (s *preferCatchupJoinSource) Ready(
-	logSessionID int32,
-) (consensus.FollowerLogJoinParams, bool) {
-	if s == nil {
-		return consensus.FollowerLogJoinParams{}, false
-	}
-	if s.catchup != nil {
-		if params, ok := s.catchup.Ready(logSessionID); ok {
-			return params, true
-		}
-	}
-	if s.live != nil {
-		return s.live.Ready(logSessionID)
-	}
-	return consensus.FollowerLogJoinParams{}, false
 }

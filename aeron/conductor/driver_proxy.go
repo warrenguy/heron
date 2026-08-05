@@ -162,6 +162,62 @@ func (proxy *DriverProxy) RemoveSubscription(
 	)
 }
 
+// AddReceiveDestination offers ADD_RCV_DESTINATION on the to-driver ring.
+//
+// registrationID is the subscription registration id. Channel must be ASCII.
+// Other bytes return atomicbuffer.ErrStringASCIINonASCII.
+func (proxy *DriverProxy) AddReceiveDestination(
+	correlationID, registrationID int64,
+	channel string,
+) error {
+	return proxy.offerDestinationMessage(
+		AddReceiveDestination,
+		correlationID,
+		registrationID,
+		channel,
+	)
+}
+
+// RemoveReceiveDestination offers REMOVE_RCV_DESTINATION on the to-driver ring.
+//
+// See AddReceiveDestination for channel encoding constraints.
+func (proxy *DriverProxy) RemoveReceiveDestination(
+	correlationID, registrationID int64,
+	channel string,
+) error {
+	return proxy.offerDestinationMessage(
+		RemoveReceiveDestination,
+		correlationID,
+		registrationID,
+		channel,
+	)
+}
+
+// offerDestinationMessage offers ADD_RCV_DESTINATION or
+// REMOVE_RCV_DESTINATION under msgTypeID. Both use the DestinationMessage
+// wire layout.
+func (proxy *DriverProxy) offerDestinationMessage(
+	msgTypeID int,
+	correlationID, registrationID int64,
+	channel string,
+) error {
+	return proxy.offerBody(
+		msgTypeID,
+		DestinationMessageBodyLength(channel),
+		false,
+		func(encodedOffset int) error {
+			return EncodeDestinationMessage(
+				proxy.ring.Buffer(),
+				encodedOffset,
+				proxy.clientID,
+				correlationID,
+				registrationID,
+				channel,
+			)
+		},
+	)
+}
+
 // offerPublicationMessage offers a PublicationMessage-bodied command (ADD_PUBLICATION
 // or ADD_EXCLUSIVE_PUBLICATION, which share wire layout) under the given message type.
 func (proxy *DriverProxy) offerPublicationMessage(

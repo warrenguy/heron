@@ -61,7 +61,15 @@ func (NoopElectionHost) CatchupInitiated(int64) {}
 
 func (NoopElectionHost) IsCatchupNearLive(int64) bool { return false }
 
+func (NoopElectionHost) LiveLogDestination() string { return "" }
+
+func (NoopElectionHost) AddLiveLogDestination() {}
+
 func (NoopElectionHost) EnsureCatchupLogDestination(string) string { return "" }
+
+func (NoopElectionHost) CatchupLogDestination() string { return "" }
+
+func (NoopElectionHost) RemoveCatchupLogDestination() {}
 
 func (NoopElectionHost) CommitPosition() int64 { return 0 }
 

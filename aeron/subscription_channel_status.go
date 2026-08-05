@@ -27,10 +27,14 @@ func (subscription *Subscription) ChannelStatus() (int64, error) {
 // TryResolveChannelEndpointPort returns the wire channel URI with an ephemeral
 // endpoint=:0 port resolved from the local socket address counter.
 //
-// Channels without endpoint=:0 return the original URI. Returns ("", false) when
-// wildcard resolution is required but the receive endpoint is not yet active.
-// MDC control-mode=manual is not checked here (deferred; cluster egress does not
-// use manual MDC).
+// Behaviour: channels without endpoint=:0 return the original URI unchanged.
+// control-mode=manual subscription channels carry no endpoint= param, so
+// ChannelEndpointNeedsWildcardPortResolution returns false and this method
+// returns that URI as-is. Wildcard ports inside destination URIs are not
+// resolved here.
+//
+// Returns ("", false) when wildcard resolution is required but the receive
+// endpoint is not yet active.
 func (subscription *Subscription) TryResolveChannelEndpointPort() (string, bool) {
 	if subscription == nil || subscription.IsClosed() {
 		return "", false
@@ -41,17 +45,18 @@ func (subscription *Subscription) TryResolveChannelEndpointPort() (string, bool)
 		return channel, true
 	}
 
-	if status, err := subscription.ChannelStatus(); err != nil ||
-		status != cnc.ChannelEndpointStatusActive {
+	// ChannelStatus treats NullCounterID as Active. Bind resolution needs a real
+	// counter.
+	if subscription.channelStatusCounterID == cnc.NullCounterID {
 		return "", false
 	}
-	if subscription.counters == nil ||
-		subscription.channelStatusCounterID == cnc.NullCounterID {
+	if status, err := subscription.ChannelStatus(); err != nil ||
+		status != ChannelEndpointStatusActive {
 		return "", false
 	}
 
 	endpoint, ok := subscription.counters.FindLocalSocketAddress(
-		cnc.ChannelEndpointStatusActive,
+		ChannelEndpointStatusActive,
 		subscription.channelStatusCounterID,
 	)
 	if !ok {

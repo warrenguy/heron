@@ -96,11 +96,7 @@ func testStreamChannelMessageBodyLength(
 	t.Helper()
 
 	const channel = "aeron:ipc"
-	require.Equal(
-		t,
-		harness.minimumBodyLength+atomicbuffer.StringASCIIEncodedLength(len(channel))-4,
-		harness.bodyLength(channel),
-	)
+	require.Equal(t, harness.minimumBodyLength+len(channel), harness.bodyLength(channel))
 }
 
 func testDecodeStreamChannelMessageBodyTooShort(
@@ -210,12 +206,18 @@ func testStreamChannelMessageRejectsNonASCII(
 }
 
 func TestStreamChannelMessage_rejectsNonASCII(t *testing.T) {
-	t.Run("publication", func(t *testing.T) {
-		testStreamChannelMessageRejectsNonASCII(t, publicationMessageHarness())
-	})
-	t.Run("subscription", func(t *testing.T) {
-		testStreamChannelMessageRejectsNonASCII(t, subscriptionMessageHarness())
-	})
+	for _, test := range []struct {
+		name    string
+		harness streamChannelMessageHarness
+	}{
+		{name: "publication", harness: publicationMessageHarness()},
+		{name: "subscription", harness: subscriptionMessageHarness()},
+		{name: "destination", harness: destinationMessageHarness()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testStreamChannelMessageRejectsNonASCII(t, test.harness)
+		})
+	}
 }
 
 func TestStreamChannelMessageBytes_panicsOnNonASCII(t *testing.T) {
@@ -224,27 +226,42 @@ func TestStreamChannelMessageBytes_panicsOnNonASCII(t *testing.T) {
 		correlationID int64 = 42
 		streamID      int32 = 1001
 	)
-	for _, channelTest := range streamChannelNonASCIICases() {
-		t.Run("publication/"+channelTest.name, func(t *testing.T) {
-			require.Panics(t, func() {
-				conductor.PublicationMessageBytes(
-					clientID,
-					correlationID,
-					streamID,
-					channelTest.channel,
-				)
-			})
-		})
-		t.Run("subscription/"+channelTest.name, func(t *testing.T) {
-			require.Panics(t, func() {
+	bytesFuncs := []struct {
+		name string
+		call func(channel string)
+	}{
+		{
+			name: "publication",
+			call: func(channel string) {
+				conductor.PublicationMessageBytes(clientID, correlationID, streamID, channel)
+			},
+		},
+		{
+			name: "subscription",
+			call: func(channel string) {
 				conductor.SubscriptionMessageBytes(
 					clientID,
 					correlationID,
 					conductor.NullRegistrationCorrelationID,
 					streamID,
-					channelTest.channel,
+					channel,
 				)
+			},
+		},
+		{
+			name: "destination",
+			call: func(channel string) {
+				conductor.DestinationMessageBytes(clientID, correlationID, 9001, channel)
+			},
+		},
+	}
+	for _, channelTest := range streamChannelNonASCIICases() {
+		for _, bytesFunc := range bytesFuncs {
+			t.Run(bytesFunc.name+"/"+channelTest.name, func(t *testing.T) {
+				require.Panics(t, func() {
+					bytesFunc.call(channelTest.channel)
+				})
 			})
-		})
+		}
 	}
 }

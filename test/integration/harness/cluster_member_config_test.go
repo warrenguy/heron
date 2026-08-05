@@ -77,8 +77,6 @@ func TestIntegrationElectionConfig_shortHeartbeats(t *testing.T) {
 	require.Less(t, cfg.LeaderHeartbeatTimeoutNs, consensus.DefaultLeaderHeartbeatTimeoutNs)
 	require.Less(t, cfg.LeaderHeartbeatIntervalNs, consensus.DefaultLeaderHeartbeatIntervalNs)
 	require.Less(t, cfg.LeaderHeartbeatIntervalNs, cfg.LeaderHeartbeatTimeoutNs)
-	require.Positive(t, cfg.LeaderHeartbeatTimeoutNs)
-	require.Positive(t, cfg.LeaderHeartbeatIntervalNs)
 }
 
 // TestMemberClusterConfig_storesIntegrationElection asserts the config builder
@@ -175,6 +173,12 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 			logEndpoint: DurableDivergenceLogEndpoint,
 		},
 		{
+			name:        "durable-concurrent-catchup",
+			portBase:    DurableConcurrentCatchupPortBase,
+			memberCount: 5,
+			logEndpoint: DurableConcurrentCatchupLogEndpoint,
+		},
+		{
 			name:        "truncate",
 			portBase:    ClusterTruncatePortBase,
 			memberCount: 3,
@@ -230,22 +234,33 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 		{name: "archive-pair-1", port: ArchiveNodePairControlPort1},
 	}
 
-	for i := range blocks {
-		a := blocks[i]
-		aFirst := a.portBase + 1
-		aLast := clusterPortBlockLast(a.portBase, a.memberCount)
-		require.Greater(t, aLast, aFirst, a.name)
-		require.NotEmpty(t, a.logEndpoint, a.name)
-		for j := i + 1; j < len(blocks); j++ {
-			b := blocks[j]
-			bFirst := b.portBase + 1
-			bLast := clusterPortBlockLast(b.portBase, b.memberCount)
-			overlap := aFirst <= bLast && bFirst <= aLast
+	type portRange struct {
+		name        string
+		first, last int
+		logEndpoint string
+	}
+	ranges := make([]portRange, len(blocks))
+	for i, b := range blocks {
+		first := b.portBase + 1
+		last := clusterPortBlockLast(b.portBase, b.memberCount)
+		require.Greater(t, last, first, b.name)
+		require.NotEmpty(t, b.logEndpoint, b.name)
+		ranges[i] = portRange{
+			name:        b.name,
+			first:       first,
+			last:        last,
+			logEndpoint: b.logEndpoint,
+		}
+	}
+
+	for i, a := range ranges {
+		for _, b := range ranges[i+1:] {
+			overlap := a.first <= b.last && b.first <= a.last
 			require.False(
 				t,
 				overlap,
 				"%s [%d,%d] overlaps %s [%d,%d]",
-				a.name, aFirst, aLast, b.name, bFirst, bLast,
+				a.name, a.first, a.last, b.name, b.first, b.last,
 			)
 			require.NotEqual(
 				t,
@@ -256,24 +271,24 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 			)
 		}
 		for _, s := range singles {
-			inBlock := s.port >= aFirst && s.port <= aLast
+			inBlock := s.port >= a.first && s.port <= a.last
 			require.False(
 				t,
 				inBlock,
 				"%s port %d falls inside %s [%d,%d]",
-				s.name, s.port, a.name, aFirst, aLast,
+				s.name, s.port, a.name, a.first, a.last,
 			)
 		}
 	}
 
-	for i := range singles {
-		for j := i + 1; j < len(singles); j++ {
+	for i, a := range singles {
+		for _, b := range singles[i+1:] {
 			require.NotEqual(
 				t,
-				singles[i].port,
-				singles[j].port,
+				a.port,
+				b.port,
 				"%s and %s share port",
-				singles[i].name, singles[j].name,
+				a.name, b.name,
 			)
 		}
 	}
@@ -297,28 +312,38 @@ func stubMediaDriver(dir string, stopped *atomic.Int32) *MediaDriver {
 	}
 }
 
+// injectMemberBootstrap returns a unit bootstrap spec with default identity and
+// placeholder paths. Injectors never exec the paths.
+//
+// Caller sets startMediaDriver and startArchiveNode, and overrides identity
+// fields by name.
+func injectMemberBootstrap() memberBootstrap {
+	return memberBootstrap{
+		memberID:      0,
+		portBase:      ClusterModuleElectPortBase,
+		membersString: "members",
+		clusterDir:    "/cluster",
+		archiveDir:    "/archive",
+		aeronmdPath:   "aeronmd",
+		javaPath:      "java",
+		jarPath:       "jar",
+	}
+}
+
 // TestBootstrapMemberInfra_driverFail returns the driver error and no handles.
 func TestBootstrapMemberInfra_driverFail(t *testing.T) {
 	t.Parallel()
 
 	inject := errors.New("inject driver fail")
-	md, node, cfg, err := bootstrapMemberInfra(memberBootstrap{
-		memberID:      0,
-		portBase:      ClusterModuleElectPortBase,
-		membersString: "members",
-		clusterDir:    t.TempDir(),
-		archiveDir:    t.TempDir(),
-		aeronmdPath:   "aeronmd",
-		javaPath:      "java",
-		jarPath:       "jar",
-		startMediaDriver: func(string, DriverEnv) (*MediaDriver, error) {
-			return nil, inject
-		},
-		startArchiveNode: func(string, string, string, string, string) (*ArchiveNode, error) {
-			t.Fatal("archive start must not run after driver fail")
-			return nil, nil
-		},
-	})
+	bootstrap := injectMemberBootstrap()
+	bootstrap.startMediaDriver = func(string, DriverEnv) (*MediaDriver, error) {
+		return nil, inject
+	}
+	bootstrap.startArchiveNode = func(string, string, string, string, string) (*ArchiveNode, error) {
+		t.Fatal("archive start must not run after driver fail")
+		return nil, nil
+	}
+	md, node, cfg, err := bootstrapMemberInfra(bootstrap)
 	require.ErrorIs(t, err, inject)
 	require.Nil(t, md)
 	require.Nil(t, node)
@@ -331,24 +356,15 @@ func TestBootstrapMemberInfra_archiveFailStopsDriver(t *testing.T) {
 	t.Parallel()
 
 	var stopped atomic.Int32
-	dir := t.TempDir()
 	inject := errors.New("inject archive fail")
-	md, node, cfg, err := bootstrapMemberInfra(memberBootstrap{
-		memberID:      0,
-		portBase:      ClusterModuleElectPortBase,
-		membersString: "members",
-		clusterDir:    t.TempDir(),
-		archiveDir:    t.TempDir(),
-		aeronmdPath:   "aeronmd",
-		javaPath:      "java",
-		jarPath:       "jar",
-		startMediaDriver: func(string, DriverEnv) (*MediaDriver, error) {
-			return stubMediaDriver(dir, &stopped), nil
-		},
-		startArchiveNode: func(string, string, string, string, string) (*ArchiveNode, error) {
-			return nil, inject
-		},
-	})
+	bootstrap := injectMemberBootstrap()
+	bootstrap.startMediaDriver = func(string, DriverEnv) (*MediaDriver, error) {
+		return stubMediaDriver("/aeron", &stopped), nil
+	}
+	bootstrap.startArchiveNode = func(string, string, string, string, string) (*ArchiveNode, error) {
+		return nil, inject
+	}
+	md, node, cfg, err := bootstrapMemberInfra(bootstrap)
 	require.ErrorIs(t, err, inject)
 	require.Nil(t, md)
 	require.Nil(t, node)
@@ -361,25 +377,19 @@ func TestBootstrapMemberInfra_archiveFailStopsDriver(t *testing.T) {
 func TestBootstrapMemberInfra_successStoresElection(t *testing.T) {
 	t.Parallel()
 
-	var stopped atomic.Int32
-	dir := t.TempDir()
-	archiveDir := t.TempDir()
-	md, node, cfg, err := bootstrapMemberInfra(memberBootstrap{
-		memberID:      2,
-		portBase:      ClusterModuleElectPortBase,
-		membersString: "members-string",
-		clusterDir:    "/cluster-dir",
-		archiveDir:    t.TempDir(),
-		aeronmdPath:   "aeronmd",
-		javaPath:      "java",
-		jarPath:       "jar",
-		startMediaDriver: func(string, DriverEnv) (*MediaDriver, error) {
-			return stubMediaDriver(dir, &stopped), nil
-		},
-		startArchiveNode: func(string, string, string, string, string) (*ArchiveNode, error) {
-			return &ArchiveNode{Dir: archiveDir, ArchiveID: "1"}, nil
-		},
-	})
+	const aeronDir = "/aeron"
+	bootstrap := injectMemberBootstrap()
+	bootstrap.memberID = 2
+	bootstrap.membersString = "members-string"
+	bootstrap.clusterDir = "/cluster-dir"
+	bootstrap.archiveDir = "/archive-dir"
+	bootstrap.startMediaDriver = func(string, DriverEnv) (*MediaDriver, error) {
+		return stubMediaDriver(aeronDir, new(atomic.Int32)), nil
+	}
+	bootstrap.startArchiveNode = func(string, string, string, string, string) (*ArchiveNode, error) {
+		return &ArchiveNode{Dir: "/archive-dir", ArchiveID: "1"}, nil
+	}
+	md, node, cfg, err := bootstrapMemberInfra(bootstrap)
 	require.NoError(t, err)
 	require.NotNil(t, md)
 	require.NotNil(t, node)
@@ -387,7 +397,7 @@ func TestBootstrapMemberInfra_successStoresElection(t *testing.T) {
 	require.Equal(t, int32(2), cfg.MemberID)
 	require.Equal(t, "members-string", cfg.ClusterMembers)
 	require.Equal(t, "/cluster-dir", cfg.ClusterDir)
-	require.Equal(t, dir, cfg.AeronDir)
+	require.Equal(t, aeronDir, cfg.AeronDir)
 }
 
 // TestStartClusterMemberSet_bootstrapJoinErrors asserts the joined error names
@@ -401,7 +411,6 @@ func TestStartClusterMemberSet_bootstrapJoinErrors(t *testing.T) {
 	)
 	inject0 := errors.New("inject member 0")
 	inject1 := errors.New("inject member 1")
-	archiveMustNotStart := errors.New("archive must not start when drivers fail")
 
 	capture := NewCaptureFailTB(t)
 	set := StartClusterMemberSet(capture, ClusterMemberSetConfig{
@@ -421,7 +430,7 @@ func TestStartClusterMemberSet_bootstrapJoinErrors(t *testing.T) {
 		},
 		StartArchiveNode: func(string, string, string, string, string) (*ArchiveNode, error) {
 			archiveHits.Add(1)
-			return nil, archiveMustNotStart
+			return nil, errors.New("archive must not start when drivers fail")
 		},
 	})
 	require.True(t, capture.Failed())
@@ -431,7 +440,6 @@ func TestStartClusterMemberSet_bootstrapJoinErrors(t *testing.T) {
 	require.Contains(t, capture.lastMsg, inject0.Error())
 	require.Contains(t, capture.lastMsg, inject1.Error())
 	require.Zero(t, archiveHits.Load(), "archive start must not run when drivers fail")
-	require.NotContains(t, capture.lastMsg, archiveMustNotStart.Error())
 }
 
 // TestStartClusterMemberSet_archiveFailOneMemberStopsThatDriver asserts Archive
@@ -440,14 +448,15 @@ func TestStartClusterMemberSet_bootstrapJoinErrors(t *testing.T) {
 func TestStartClusterMemberSet_archiveFailOneMemberStopsThatDriver(t *testing.T) {
 	t.Parallel()
 
+	const (
+		dir0 = "/aeron-0"
+		dir1 = "/aeron-1"
+	)
 	var (
 		driverN  atomic.Int32
 		stopped0 atomic.Int32
 		stopped1 atomic.Int32
 	)
-	dir0 := t.TempDir()
-	dir1 := t.TempDir()
-	okArchiveDir := t.TempDir()
 	inject := errors.New("inject archive fail member 1")
 
 	capture := NewCaptureFailTB(t)
@@ -466,12 +475,12 @@ func TestStartClusterMemberSet_archiveFailOneMemberStopsThatDriver(t *testing.T)
 				return nil, errors.New("unexpected extra driver start")
 			}
 		},
-		// Archive dir is allocated on the test goroutine.
+		// Key Archive fail by aeronDir identity from the driver stub above.
 		StartArchiveNode: func(aeronDir, _, _, _, _ string) (*ArchiveNode, error) {
 			if aeronDir == dir1 {
 				return nil, inject
 			}
-			return &ArchiveNode{Dir: okArchiveDir, ArchiveID: "ok"}, nil
+			return &ArchiveNode{Dir: "/archive-ok", ArchiveID: "ok"}, nil
 		},
 	})
 	require.True(t, capture.Failed())

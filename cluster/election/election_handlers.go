@@ -387,22 +387,16 @@ func (e *Election) handleFollowerCatchupInit(nowNs int64) int {
 	leader := e.leaderMember
 	endpoint := e.thisMember.CatchupEndpoint
 	if leader == nil || endpoint == "" {
-		if e.failPastHeartbeatDeadline(
+		return e.heartbeatTimeoutWork(
 			nowNs,
 			"election: no leader or catchup endpoint for catchup position",
-		) {
-			return 1
-		}
-		return 0
+		)
 	}
 
 	// Open the catchup receive path before the leader starts archive replay.
 	// Ensure is idempotent when the destination is already open.
 	if e.deps.Host.EnsureCatchupLogDestination(endpoint) == "" {
-		if e.failPastHeartbeatDeadline(nowNs, "election: failed to open catchup log destination") {
-			return 1
-		}
-		return 0
+		return e.heartbeatTimeoutWork(nowNs, "election: failed to open catchup log destination")
 	}
 
 	sent := e.deps.Publisher.CatchupPosition(
@@ -422,34 +416,33 @@ func (e *Election) handleFollowerCatchupInit(nowNs int64) int {
 	}
 	// Work 1 re-offers the send on the next tick. Back-pressure clears as the
 	// publication drains, unlike a failed destination open.
-	e.failPastHeartbeatDeadline(nowNs, "election: failed to send catchup position")
+	e.heartbeatTimeoutWork(nowNs, "election: failed to send catchup position")
 	return 1
 }
 
-// failPastHeartbeatDeadline reports whether the leader heartbeat deadline has
-// passed since the last state change. Fires HandleError with msg when it has.
-func (e *Election) failPastHeartbeatDeadline(nowNs int64, msg string) bool {
+// heartbeatTimeoutWork fires HandleError with msg once the leader heartbeat
+// deadline has passed since the last state change.
+//
+// Returns: 1 when HandleError fires, 0 while still waiting. Callers that already
+// count the tick may discard the result.
+func (e *Election) heartbeatTimeoutWork(nowNs int64, msg string) int {
 	if nowNs < e.timeOfLastStateChangeNs+e.cfg.LeaderHeartbeatTimeoutNs {
-		return false
+		return 0
 	}
 	e.HandleError(nowNs, errors.New(msg))
-	return true
+	return 1
 }
 
 func (e *Election) handleFollowerCatchupAwait(nowNs int64) int {
 	params, ok := e.deps.Host.FollowerLogJoinReady(e.logSessionID)
 	if !ok {
-		if e.failPastHeartbeatDeadline(nowNs, "election: failed to join catchup log") {
-			return 1
-		}
-		return 0
+		return e.heartbeatTimeoutWork(nowNs, "election: failed to join catchup log")
 	}
 	if params.LogJoinPosition != e.logPosition {
-		// Live late-join image may appear first. Wait for the catchup image.
-		if e.failPastHeartbeatDeadline(nowNs, "election: log join position mismatch") {
-			return 1
-		}
-		return 0
+		// Wait for an image at the follower log position. After reseed only the
+		// catchup destination feeds the subscription. A mismatch means the
+		// catchup image is not ready yet.
+		return e.heartbeatTimeoutWork(nowNs, "election: log join position mismatch")
 	}
 
 	joined, failed := e.joinLogAsFollower(params, nowNs)
@@ -460,10 +453,7 @@ func (e *Election) handleFollowerCatchupAwait(nowNs int64) int {
 		e.state(ElectionStateFollowerCatchup, nowNs, "")
 		return 1
 	}
-	if e.failPastHeartbeatDeadline(nowNs, "election: failed to join catchup log as follower") {
-		return 1
-	}
-	return 0
+	return e.heartbeatTimeoutWork(nowNs, "election: failed to join catchup log as follower")
 }
 
 // handleFollowerCatchup polls the host for catchup progress up to the notified
@@ -472,35 +462,51 @@ func (e *Election) handleFollowerCatchupAwait(nowNs int64) int {
 // Unset notified commit is 0 (field init), not NullPosition. A zero limit falls
 // back to catchupJoinPosition.
 //
-// The multicast log already feeds the live subscription. No live destination
-// is added during catchup.
+// During catchup the log subscription carries only the catchup destination until
+// the image is near live. Near live attaches the live destination so multicast
+// and replay frames merge into one image. StopCatchup removes the catchup
+// destination. RemoveCatchupLogDestination re-attaches live when the near-live
+// attach has not run.
 //
-// When commit reaches the catchup join and notified commit bounds, advances
-// append and log position, then moves to LOG_INIT.
+// Completion requires all of:
+//   - commit at the join and notified bounds
+//   - catchup destination removed
+//   - live destination attached
+//
+// Then advances append and log position and moves to LOG_INIT.
 func (e *Election) handleFollowerCatchup(nowNs int64) int {
+	host := e.deps.Host
 	limit := e.notifiedCommitPosition
 	if limit == 0 {
 		limit = e.catchupJoinPosition
 	}
-	workCount := e.deps.Host.CatchupPoll(limit, nowNs)
+	workCount := host.CatchupPoll(limit, nowNs)
+
+	// Near live: attach the live destination. Frames merge with the catchup image.
+	// Failure leaves LiveLogDestination empty. The next tick retries.
+	nearLivePos := max(e.notifiedCommitPosition, e.catchupJoinPosition)
+	if host.LiveLogDestination() == "" && host.IsCatchupNearLive(nearLivePos) {
+		host.AddLiveLogDestination()
+		workCount++
+	}
 
 	// Complete only when install set a join bound. Injected CATCHUP without a
 	// join position polls forever (tests and sim).
 	join := e.catchupJoinPosition
-	if join != NullPosition {
-		position := e.deps.Host.CommitPosition()
-		if position >= join && position >= e.notifiedCommitPosition {
-			e.appendPosition = position
-			e.logPosition = position
-
-			// Completion leaves the catchup receive path open. The log adapter is
-			// bound to the catchup image and no live image replaces it. Prepare on
-			// the next Init closes the path.
-			e.state(ElectionStateFollowerLogInit, nowNs, "")
-			workCount++
-		}
+	if join == NullPosition {
+		return workCount
 	}
-	return workCount
+	position := host.CommitPosition()
+	if position < join || position < e.notifiedCommitPosition {
+		return workCount
+	}
+	if host.CatchupLogDestination() != "" || host.LiveLogDestination() == "" {
+		return workCount
+	}
+	e.appendPosition = position
+	e.logPosition = position
+	e.state(ElectionStateFollowerLogInit, nowNs, "")
+	return workCount + 1
 }
 
 // handleFollowerLogInit routes the follower to the live log.
@@ -546,11 +552,7 @@ func (e *Election) handleFollowerLogInit(nowNs int64) int {
 func (e *Election) handleFollowerLogAwait(nowNs int64) int {
 	params, ok := e.deps.Host.FollowerLogJoinReady(e.logSessionID)
 	if !ok {
-		if nowNs >= e.timeOfLastStateChangeNs+e.cfg.LeaderHeartbeatTimeoutNs {
-			e.HandleError(nowNs, errors.New("election: failed to join live log"))
-			return 1
-		}
-		return 0
+		return e.heartbeatTimeoutWork(nowNs, "election: failed to join live log")
 	}
 	if params.LogJoinPosition != e.logPosition {
 		e.HandleError(nowNs, errors.New("election: log join position mismatch"))
@@ -569,11 +571,7 @@ func (e *Election) handleFollowerLogAwait(nowNs int64) int {
 		e.state(ElectionStateFollowerReady, nowNs, "")
 		return 1
 	}
-	if nowNs >= e.timeOfLastStateChangeNs+e.cfg.LeaderHeartbeatTimeoutNs {
-		e.HandleError(nowNs, errors.New("election: failed to join live log as follower"))
-		return 1
-	}
-	return 0
+	return e.heartbeatTimeoutWork(nowNs, "election: failed to join live log as follower")
 }
 
 func (e *Election) handleFollowerReady(nowNs int64) int {
@@ -589,8 +587,8 @@ func (e *Election) handleFollowerReady(nowNs int64) int {
 	if published {
 		e.deps.Handler.ElectionComplete(nowNs)
 		e.state(ElectionStateClosed, nowNs, "")
-	} else if nowNs >= e.timeOfLastStateChangeNs+e.cfg.LeaderHeartbeatTimeoutNs {
-		e.HandleError(nowNs, errors.New("election: ready follower failed to notify leader"))
+	} else {
+		e.heartbeatTimeoutWork(nowNs, "election: ready follower failed to notify leader")
 	}
 	return 1
 }
@@ -630,6 +628,8 @@ func (e *Election) HandleConsensusMessage(buf []byte, offset int) bool {
 		return dispatchWire(buf, offset, accept, codecs.TryDecodeCommitPositionAt, e.OnCommitPosition)
 	case clusterwire.CatchupPositionSbeTemplateID:
 		return dispatchWire(buf, offset, accept, codecs.TryDecodeCatchupPositionAt, e.OnCatchupPosition)
+	case clusterwire.StopCatchupSbeTemplateID:
+		return dispatchWire(buf, offset, accept, codecs.TryDecodeStopCatchupAt, e.OnStopCatchup)
 	default:
 		return false
 	}
@@ -884,8 +884,17 @@ func (e *Election) OnAppendPosition(fields codecs.AppendPositionFields) {
 	if follower == nil {
 		return
 	}
-	e.deps.Host.UpdateMemberLogPosition(follower, fields.LeadershipTermID, fields.LogPosition)
-	e.deps.Host.TrackCatchupCompletion(follower, fields.LeadershipTermID, fields.Flags)
+
+	// Catchup-flagged positions are progress, not durability. Skip the position
+	// table update so they never enter the commit quorum. Refresh liveness so
+	// the member stays active. Pass the wire log position: member.LogPosition
+	// stays stale under the exclusion rule.
+	if fields.Flags&consensus.AppendPositionFlagCatchup != 0 {
+		follower.TimeOfLastAppendPositionNs = e.deps.NanoClock()
+	} else {
+		e.deps.Host.UpdateMemberLogPosition(follower, fields.LeadershipTermID, fields.LogPosition)
+	}
+	e.deps.Host.TrackCatchupCompletion(follower, fields.LogPosition, fields.Flags)
 
 	// A follower still on an older term learns the current one from a leader
 	// republish; election closure stays with the LEADER_READY duty cycle.
@@ -900,6 +909,25 @@ func (e *Election) OnAppendPosition(fields codecs.AppendPositionFields) {
 			e.deps.EpochClock(),
 		)
 	}
+}
+
+// OnStopCatchup detaches the catchup receive destination when the leader
+// confirms this follower has caught up.
+//
+// Behaviour:
+//   - refuses on term or follower-member mismatch
+//   - remove is idempotent when the catchup destination is already absent
+//
+// Concurrency: invoker-only.
+func (e *Election) OnStopCatchup(fields codecs.StopCatchupFields) {
+	if !e.acceptsConsensusInbound() {
+		return
+	}
+	if fields.LeadershipTermID != e.leadershipTermID ||
+		fields.FollowerMemberID != e.thisMember.ID {
+		return
+	}
+	e.deps.Host.RemoveCatchupLogDestination()
 }
 
 // OnCommitPosition intentionally skips a leadershipTermID equality check:

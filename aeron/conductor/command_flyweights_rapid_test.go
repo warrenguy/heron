@@ -3,7 +3,6 @@
 package conductor_test
 
 import (
-	"bytes"
 	"fmt"
 	"testing"
 
@@ -20,11 +19,58 @@ type channelFlyweightKind int
 const (
 	channelFlyweightPublication channelFlyweightKind = iota
 	channelFlyweightSubscription
+	channelFlyweightDestination
 )
 
 func drawChannelFlyweightKind(rt *rapid.T, name string) channelFlyweightKind {
 	return channelFlyweightKind(
-		rapid.IntRange(0, int(channelFlyweightSubscription)).Draw(rt, name),
+		rapid.IntRange(0, int(channelFlyweightDestination)).Draw(rt, name),
+	)
+}
+
+func encodePublicationMessage(
+	buffer atomicbuffer.AtomicBuffer,
+	offset int,
+	msg conductor.PublicationMessage,
+) error {
+	return conductor.EncodePublicationMessage(
+		buffer,
+		offset,
+		msg.ClientID,
+		msg.CorrelationID,
+		msg.StreamID,
+		msg.Channel,
+	)
+}
+
+func encodeSubscriptionMessage(
+	buffer atomicbuffer.AtomicBuffer,
+	offset int,
+	msg conductor.SubscriptionMessage,
+) error {
+	return conductor.EncodeSubscriptionMessage(
+		buffer,
+		offset,
+		msg.ClientID,
+		msg.CorrelationID,
+		msg.RegistrationCorrelationID,
+		msg.StreamID,
+		msg.Channel,
+	)
+}
+
+func encodeDestinationMessage(
+	buffer atomicbuffer.AtomicBuffer,
+	offset int,
+	msg conductor.DestinationMessage,
+) error {
+	return conductor.EncodeDestinationMessage(
+		buffer,
+		offset,
+		msg.ClientID,
+		msg.CorrelationID,
+		msg.RegistrationCorrelationID,
+		msg.Channel,
 	)
 }
 
@@ -40,54 +86,53 @@ func TestChannelFlyweight_roundtrip_rapid(t *testing.T) {
 
 		switch kind {
 		case channelFlyweightPublication:
-			bodyLength := conductor.PublicationMessageBodyLength(channel)
-			buffer := atomicbuffer.Wrap(make([]byte, offset+bodyLength))
-			prefix := testutil.SnapshotBufferPrefix(buffer, offset)
-			err := conductor.EncodePublicationMessage(
-				buffer,
-				offset,
-				clientID,
-				correlationID,
-				streamID,
-				channel,
-			)
-			require.NoError(rt, err)
-			require.True(rt, bytes.Equal(prefix, buffer.Bytes()[:offset]))
-
-			got, err := conductor.DecodePublicationMessage(buffer, offset, bodyLength)
-			require.NoError(rt, err)
-			require.Equal(rt, conductor.PublicationMessage{
+			want := conductor.PublicationMessage{
 				ClientID:      clientID,
 				CorrelationID: correlationID,
 				StreamID:      streamID,
 				Channel:       channel,
-			}, got)
+			}
+			requireFlyweightEncodeDecodeRoundtrip(
+				rt,
+				offset,
+				conductor.PublicationMessageBodyLength(channel),
+				want,
+				encodePublicationMessage,
+				conductor.DecodePublicationMessage,
+			)
 		case channelFlyweightSubscription:
 			registrationCorrelationID := rapid.Int64().Draw(rt, "registrationCorrelationID")
-			bodyLength := conductor.SubscriptionMessageBodyLength(channel)
-			buffer := atomicbuffer.Wrap(make([]byte, offset+bodyLength))
-			prefix := testutil.SnapshotBufferPrefix(buffer, offset)
-			err := conductor.EncodeSubscriptionMessage(
-				buffer,
-				offset,
-				clientID,
-				correlationID,
-				registrationCorrelationID,
-				streamID,
-				channel,
-			)
-			require.NoError(rt, err)
-			require.True(rt, bytes.Equal(prefix, buffer.Bytes()[:offset]))
-
-			got, err := conductor.DecodeSubscriptionMessage(buffer, offset, bodyLength)
-			require.NoError(rt, err)
-			require.Equal(rt, conductor.SubscriptionMessage{
+			want := conductor.SubscriptionMessage{
 				ClientID:                  clientID,
 				CorrelationID:             correlationID,
 				RegistrationCorrelationID: registrationCorrelationID,
 				StreamID:                  streamID,
 				Channel:                   channel,
-			}, got)
+			}
+			requireFlyweightEncodeDecodeRoundtrip(
+				rt,
+				offset,
+				conductor.SubscriptionMessageBodyLength(channel),
+				want,
+				encodeSubscriptionMessage,
+				conductor.DecodeSubscriptionMessage,
+			)
+		case channelFlyweightDestination:
+			registrationCorrelationID := rapid.Int64().Draw(rt, "registrationCorrelationID")
+			want := conductor.DestinationMessage{
+				ClientID:                  clientID,
+				CorrelationID:             correlationID,
+				RegistrationCorrelationID: registrationCorrelationID,
+				Channel:                   channel,
+			}
+			requireFlyweightEncodeDecodeRoundtrip(
+				rt,
+				offset,
+				conductor.DestinationMessageBodyLength(channel),
+				want,
+				encodeDestinationMessage,
+				conductor.DecodeDestinationMessage,
+			)
 		}
 	})
 }
@@ -192,22 +237,21 @@ func TestDecodeTrailingStringASCII_exactFit_rapid(t *testing.T) {
 			stringOffset = conductor.PublicationMessageChannelOffset
 			wrappedErr = conductor.ErrPublicationMessageOutOfBounds
 			buffer = atomicbuffer.Wrap(make([]byte, offset+bodyLength+1))
-			err := conductor.EncodePublicationMessage(
+			require.NoError(rt, conductor.EncodePublicationMessage(
 				buffer,
 				offset,
 				clientID,
 				correlationID,
 				streamID,
 				channel,
-			)
-			require.NoError(rt, err)
+			))
 		case channelFlyweightSubscription:
 			registrationCorrelationID := rapid.Int64().Draw(rt, "registrationCorrelationID")
 			bodyLength = conductor.SubscriptionMessageBodyLength(channel)
 			stringOffset = conductor.SubscriptionMessageChannelOffset
 			wrappedErr = conductor.ErrSubscriptionMessageOutOfBounds
 			buffer = atomicbuffer.Wrap(make([]byte, offset+bodyLength+1))
-			err := conductor.EncodeSubscriptionMessage(
+			require.NoError(rt, conductor.EncodeSubscriptionMessage(
 				buffer,
 				offset,
 				clientID,
@@ -215,28 +259,39 @@ func TestDecodeTrailingStringASCII_exactFit_rapid(t *testing.T) {
 				registrationCorrelationID,
 				streamID,
 				channel,
-			)
-			require.NoError(rt, err)
+			))
+		case channelFlyweightDestination:
+			registrationCorrelationID := rapid.Int64().Draw(rt, "registrationCorrelationID")
+			bodyLength = conductor.DestinationMessageBodyLength(channel)
+			stringOffset = conductor.DestinationMessageChannelOffset
+			wrappedErr = conductor.ErrDestinationMessageOutOfBounds
+			buffer = atomicbuffer.Wrap(make([]byte, offset+bodyLength+1))
+			require.NoError(rt, conductor.EncodeDestinationMessage(
+				buffer,
+				offset,
+				clientID,
+				correlationID,
+				registrationCorrelationID,
+				channel,
+			))
 		}
 
-		got, err := conductor.DecodeTrailingStringASCIIForTest(
-			buffer,
-			offset,
-			bodyLength,
-			stringOffset,
-			wrappedErr,
-		)
+		decodeTrailing := func(bodyLen int) (string, error) {
+			return conductor.DecodeTrailingStringASCIIForTest(
+				buffer,
+				offset,
+				bodyLen,
+				stringOffset,
+				wrappedErr,
+			)
+		}
+
+		got, err := decodeTrailing(bodyLength)
 		require.NoError(rt, err)
 		require.Equal(rt, channel, got)
 
 		shortBodyLength := bodyLength - 1
-		_, err = conductor.DecodeTrailingStringASCIIForTest(
-			buffer,
-			offset,
-			shortBodyLength,
-			stringOffset,
-			wrappedErr,
-		)
+		_, err = decodeTrailing(shortBodyLength)
 		require.ErrorIs(rt, err, atomicbuffer.ErrStringASCIIOutOfBounds)
 		require.EqualError(
 			rt,
@@ -248,13 +303,7 @@ func TestDecodeTrailingStringASCII_exactFit_rapid(t *testing.T) {
 			),
 		)
 
-		_, err = conductor.DecodeTrailingStringASCIIForTest(
-			buffer,
-			offset,
-			bodyLength+1,
-			stringOffset,
-			wrappedErr,
-		)
+		_, err = decodeTrailing(bodyLength + 1)
 		require.ErrorIs(rt, err, wrappedErr)
 		require.EqualError(
 			rt,
@@ -275,6 +324,8 @@ func channelFlyweightMessageName(kind channelFlyweightKind) string {
 		return "publication"
 	case channelFlyweightSubscription:
 		return "subscription"
+	case channelFlyweightDestination:
+		return "destination"
 	default:
 		return "unknown"
 	}

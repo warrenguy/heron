@@ -192,3 +192,18 @@ func (p *AeronPublisher) CatchupPosition(
 		len(fields.CatchupEndpoint),
 	)
 }
+
+func (p *AeronPublisher) StopCatchup(
+	dst PublicationTarget,
+	fields codecs.StopCatchupFields,
+) bool {
+	ver := actingVersion(p.ActingVersion)
+	return publishClaim(
+		p,
+		dst,
+		clusterwire.StopCatchupSbeBlockLength,
+		ver,
+		fields,
+		codecs.EncodeStopCatchup,
+	)
+}

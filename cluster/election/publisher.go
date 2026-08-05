@@ -24,6 +24,10 @@ type Publisher interface {
 	// CatchupPosition asks the leader to archive-replay from LogPosition to
 	// CatchupEndpoint. Returns false when the send does not complete.
 	CatchupPosition(dst PublicationTarget, fields codecs.CatchupPositionFields) bool
+
+	// StopCatchup asks the follower to detach the catchup receive destination.
+	// Returns false when the send does not complete.
+	StopCatchup(dst PublicationTarget, fields codecs.StopCatchupFields) bool
 }
 
 type SentMessage struct {

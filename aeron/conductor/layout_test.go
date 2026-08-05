@@ -131,6 +131,12 @@ func TestLayout_goldenOffsets(t *testing.T) {
 		{"SubscriptionMessageStreamIDOffset", conductor.SubscriptionMessageStreamIDOffset, 24},
 		{"SubscriptionMessageChannelOffset", conductor.SubscriptionMessageChannelOffset, 28},
 		{
+			"DestinationMessageRegistrationCorrelationIDOffset",
+			conductor.DestinationMessageRegistrationCorrelationIDOffset,
+			16,
+		},
+		{"DestinationMessageChannelOffset", conductor.DestinationMessageChannelOffset, 24},
+		{
 			"RemoveMessageRegistrationIDOffset",
 			conductor.RemoveMessageRegistrationIDOffset,
 			16,
@@ -144,19 +150,7 @@ func TestLayout_goldenOffsets(t *testing.T) {
 			0,
 		},
 		{"OperationSuccessBodyLength", conductor.OperationSuccessBodyLength, 8},
-	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			require.Equal(t, test.want, test.got)
-		})
-	}
-
-	bodyLengthTests := []struct {
-		name string
-		got  int
-		want int
-	}{
 		{"SubscriptionReadyBodyLength", conductor.SubscriptionReadyBodyLength, 12},
 		{"UnavailableImageFixedLength", conductor.UnavailableImageFixedLength, 20},
 		{"AvailableImageFixedLength", conductor.AvailableImageFixedLength, 28},
@@ -165,59 +159,20 @@ func TestLayout_goldenOffsets(t *testing.T) {
 		{"ErrorResponseFixedBodyLength", conductor.ErrorResponseFixedBodyLength, 16},
 		{"PublicationMessageMinimumBodyLength", conductor.PublicationMessageMinimumBodyLength, 24},
 		{"SubscriptionMessageMinimumBodyLength", conductor.SubscriptionMessageMinimumBodyLength, 32},
+		{"DestinationMessageMinimumBodyLength", conductor.DestinationMessageMinimumBodyLength, 28},
 		{"CorrelationAndInt32BodyLength", conductor.CorrelationAndInt32BodyLength, 12},
+
+		{"CorrelatedMessageLength", conductor.CorrelatedMessageLength, 2 * atomicbuffer.SizeInt64},
+		{
+			"PublicationErrorAddressLength",
+			conductor.PublicationErrorErrorCodeOffset - conductor.PublicationErrorAddressOffset,
+			net.IPv6len,
+		},
 	}
 
-	for _, test := range bodyLengthTests {
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			require.Equal(t, test.want, test.got)
 		})
 	}
-	require.Equal(t, 2*atomicbuffer.SizeInt64, conductor.CorrelatedMessageLength)
-	require.Equal(
-		t,
-		net.IPv6len,
-		conductor.PublicationErrorErrorCodeOffset-conductor.PublicationErrorAddressOffset,
-	)
-
-	require.Equal(
-		t,
-		conductor.SubscriptionReadyBodyLength,
-		conductor.SubscriptionReadyChannelStatusCounterIDOffset+atomicbuffer.SizeInt32,
-	)
-	require.Equal(
-		t,
-		conductor.UnavailableImageFixedLength,
-		conductor.UnavailableImageStreamIDOffset+atomicbuffer.SizeInt32,
-	)
-	require.Equal(
-		t,
-		conductor.AvailableImageFixedLength,
-		conductor.AvailableImageSubscriberPositionIDOffset+atomicbuffer.SizeInt32,
-	)
-	require.Equal(
-		t,
-		conductor.PublicationBuffersReadyFixedLength,
-		conductor.PublicationBuffersReadyChannelStatusCounterIDOffset+atomicbuffer.SizeInt32,
-	)
-	require.Equal(
-		t,
-		conductor.PublicationErrorFixedLength,
-		conductor.PublicationErrorErrorCodeOffset+atomicbuffer.SizeInt32,
-	)
-	require.Equal(
-		t,
-		conductor.ErrorResponseFixedBodyLength,
-		conductor.ErrorResponseErrorMessageLengthOffset+atomicbuffer.SizeInt32,
-	)
-	require.Equal(
-		t,
-		conductor.PublicationMessageMinimumBodyLength,
-		conductor.PublicationMessageChannelOffset+atomicbuffer.SizeInt32,
-	)
-	require.Equal(
-		t,
-		conductor.SubscriptionMessageMinimumBodyLength,
-		conductor.SubscriptionMessageChannelOffset+atomicbuffer.SizeInt32,
-	)
 }

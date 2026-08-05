@@ -23,7 +23,8 @@ func (r *recordingRunner) HandleConsensusMessage(buf []byte, offset int) bool {
 }
 
 type recordingPositionTable struct {
-	updates []memberPositionUpdate
+	updates  []memberPositionUpdate
+	liveness []int32
 }
 
 type memberPositionUpdate struct {
@@ -42,6 +43,10 @@ func (p *recordingPositionTable) UpdateMemberPosition(
 		leadershipTermID: leadershipTermID,
 		logPosition:      logPosition,
 	})
+}
+
+func (p *recordingPositionTable) RefreshMemberLiveness(memberID int32) {
+	p.liveness = append(p.liveness, memberID)
 }
 
 func (p *recordingPositionTable) QuorumPositionBoundedByLeaderLog(

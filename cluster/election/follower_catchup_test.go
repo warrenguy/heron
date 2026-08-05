@@ -7,6 +7,7 @@ import (
 
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
@@ -314,8 +315,8 @@ func TestFollowerCatchupAwait_noImageReturnsZero(t *testing.T) {
 	require.Empty(t, host.catchupInitiatedCalls)
 }
 
-// Catchup poll reaches join bound: advances to LOG_INIT then READY when
-// joined.
+// Asserts catchup poll reaches join bound with catchup detached and live
+// attached. Advances to LOG_INIT then READY when joined.
 func TestFollowerCatchup_completesToReady(t *testing.T) {
 	t.Parallel()
 
@@ -326,6 +327,9 @@ func TestFollowerCatchup_completesToReady(t *testing.T) {
 		catchupPollResult: 3,
 		commitPosition:    joinPos,
 		logJoined:         true,
+		// Gate: catchup detached, live attached.
+		catchupLogDestination: "",
+		liveLogDestination:    "aeron:udp?endpoint=live-log",
 
 		// Zero followerLogJoinPosition. Bound-session re-join does not compare
 		// the join position against the election position.
@@ -334,14 +338,7 @@ func TestFollowerCatchup_completesToReady(t *testing.T) {
 	deps.Host = host
 	handler := &recordingAgentHandler{joinFollowerReturn: true}
 	deps.Handler = handler
-	e := election.NewElection(cfg, deps)
-
-	election.SetStateForTest(e, election.ElectionStateCanvass)
-	fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
-	fields.LogPosition = joinPos
-	fields.CommitPosition = joinPos
-	e.OnNewLeadershipTerm(fields)
-	election.SetStateForTest(e, election.ElectionStateFollowerCatchup)
+	e, _ := forceFollowerCatchup(t, cfg, deps, joinPos, 100)
 
 	// Poll work plus complete transition.
 	require.Equal(t, 4, e.DoWork(clock.nowNs))
@@ -349,12 +346,153 @@ func TestFollowerCatchup_completesToReady(t *testing.T) {
 	require.Equal(t, joinPos, e.LogPosition())
 	require.Equal(t, joinPos, e.AppendPosition())
 
-	// Completion leaves the catchup receive path open. The adapter still reads
-	// the catchup image, and prepare on the next Init closes the path.
-
 	// Already joined: LOG_INIT re-joins the bound session, then READY.
 	require.Equal(t, 1, e.DoWork(clock.nowNs+1))
 	require.Equal(t, election.ElectionStateFollowerReady, e.State())
 	require.Equal(t, 1, handler.joinFollowerCalls)
 	require.True(t, handler.joinFollowerParams[0].IsBoundRejoin)
+}
+
+// Asserts OnStopCatchup with matching term and member removes the catchup
+// destination.
+func TestOnStopCatchup_removesCatchupDestination(t *testing.T) {
+	t.Parallel()
+
+	const catchupDest = "aeron:udp?endpoint=catchup"
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	host := &recordingElectionHost{
+		clock:                       clock,
+		ensureCatchupLogDestination: catchupDest,
+		catchupLogDestination:       catchupDest,
+	}
+	deps.Host = host
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateFollowerCatchup)
+
+	match := stopCatchupFields(e.LeadershipTermID(), cfg.MemberID)
+	e.OnStopCatchup(match)
+	require.Equal(t, 1, host.removeCatchupLogDestinationCalls)
+	require.Empty(t, host.CatchupLogDestination())
+
+	// Idempotent second call.
+	e.OnStopCatchup(match)
+	require.Equal(t, 2, host.removeCatchupLogDestinationCalls)
+
+	// Wrong member: no remove.
+	e.OnStopCatchup(stopCatchupFields(e.LeadershipTermID(), cfg.MemberID+1))
+	require.Equal(t, 2, host.removeCatchupLogDestinationCalls)
+
+	// Wrong term: no remove.
+	e.OnStopCatchup(stopCatchupFields(e.LeadershipTermID()+1, cfg.MemberID))
+	require.Equal(t, 2, host.removeCatchupLogDestinationCalls)
+}
+
+// Asserts HandleConsensusMessage dispatches StopCatchup to OnStopCatchup.
+func TestHandleConsensusMessage_stopCatchup(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	host := &recordingElectionHost{
+		clock:                 clock,
+		catchupLogDestination: "aeron:udp?endpoint=catchup",
+	}
+	deps.Host = host
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateFollowerCatchup)
+
+	fields := stopCatchupFields(e.LeadershipTermID(), cfg.MemberID)
+	wireLen, ok := codecs.ClusterWireMessageLen(clusterwire.StopCatchupSbeBlockLength)
+	require.True(t, ok)
+	buf := make([]byte, wireLen)
+	end, ok := codecs.EncodeStopCatchup(
+		buf, 0, clusterwire.StopCatchupSbeSchemaVersion, fields,
+	)
+	require.True(t, ok)
+
+	require.True(t, e.HandleConsensusMessage(buf[:end], 0))
+	require.Equal(t, 1, host.removeCatchupLogDestinationCalls)
+	require.Empty(t, host.CatchupLogDestination())
+}
+
+// Asserts catchup-flagged OnAppendPosition skips position update, stamps
+// liveness, and passes the wire log position to TrackCatchupCompletion.
+func TestOnAppendPosition_catchupFlag_skipsPositionUpdate(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	host := &recordingElectionHost{clock: clock, role: consensus.RoleLeader}
+	deps.Host = host
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateCanvass)
+
+	follower := election.MemberForTest(e, 1)
+	beforeLog := follower.LogPosition
+	beforeTerm := follower.LeadershipTermID
+	beforeStamp := follower.TimeOfLastAppendPositionNs
+
+	const logPos int64 = 999
+	e.OnAppendPosition(codecs.AppendPositionFields{
+		LeadershipTermID: testLeadershipTermID,
+		LogPosition:      logPos,
+		FollowerMemberID: 1,
+		Flags:            consensus.AppendPositionFlagCatchup,
+	})
+
+	// Position table fields stay; only the liveness stamp moves.
+	require.Equal(t, beforeLog, follower.LogPosition)
+	require.Equal(t, beforeTerm, follower.LeadershipTermID)
+	require.Equal(t, clock.nowNs, follower.TimeOfLastAppendPositionNs)
+	require.NotEqual(t, beforeStamp, follower.TimeOfLastAppendPositionNs)
+	require.Len(t, host.trackCatchupCalls, 1)
+	require.Equal(t, logPos, host.trackCatchupCalls[0].logPosition)
+	require.Equal(t, consensus.AppendPositionFlagCatchup, host.trackCatchupCalls[0].flags)
+}
+
+// Asserts position at join without destination gate stays in CATCHUP.
+//
+// Phases:
+//   - live empty, catchup set: blocked
+//   - live attached, catchup still set: blocked
+//   - OnStopCatchup clears catchup: gate passes
+func TestFollowerCatchup_destinationGateBlocksComplete(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	joinPos := cfg.AppendPosition + 100
+	host := &recordingElectionHost{
+		clock:                 clock,
+		catchupPollResult:     1,
+		commitPosition:        joinPos,
+		catchupLogDestination: "aeron:udp?endpoint=catchup",
+		liveLogDestination:    "",
+	}
+	deps.Host = host
+	e, _ := forceFollowerCatchup(t, cfg, deps, joinPos, 100)
+
+	// Live empty, catchup set: blocked.
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateFollowerCatchup, e.State())
+
+	// Live attached, catchup still set: still blocked.
+	host.liveLogDestination = "aeron:udp?endpoint=live-log"
+	require.Equal(t, 1, e.DoWork(clock.nowNs+1))
+	require.Equal(t, election.ElectionStateFollowerCatchup, e.State())
+	require.NotEmpty(t, host.CatchupLogDestination())
+	require.NotEmpty(t, host.LiveLogDestination())
+
+	// Leader StopCatchup detaches catchup. Gate passes on the next tick.
+	e.OnStopCatchup(stopCatchupFields(e.LeadershipTermID(), cfg.MemberID))
+	require.Equal(t, 1, host.removeCatchupLogDestinationCalls)
+	require.Empty(t, host.CatchupLogDestination())
+
+	require.Equal(t, 2, e.DoWork(clock.nowNs+2))
+	require.Equal(t, election.ElectionStateFollowerLogInit, e.State())
+}
+
+func stopCatchupFields(leadershipTermID int64, followerMemberID int32) codecs.StopCatchupFields {
+	return codecs.StopCatchupFields{
+		LeadershipTermID: leadershipTermID,
+		FollowerMemberID: followerMemberID,
+	}
 }

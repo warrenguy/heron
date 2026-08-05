@@ -104,7 +104,7 @@ func drawPublicationError(rt *rapid.T) conductor.PublicationError {
 	}
 }
 
-func requireEventEncodeDecodeRoundtrip[T any](
+func requireFlyweightEncodeDecodeRoundtrip[T any](
 	rt *rapid.T,
 	offset int,
 	bodyLength int,
@@ -158,7 +158,7 @@ func TestEventFlyweight_roundtrip_rapid(t *testing.T) {
 			want := drawPublicationBuffersReady(rt)
 			bodyLength := conductor.PublicationBuffersReadyBodyLength(want.LogFileName)
 			require.Len(rt, conductor.PublicationBuffersReadyBytes(want), bodyLength)
-			requireEventEncodeDecodeRoundtrip(
+			requireFlyweightEncodeDecodeRoundtrip(
 				rt,
 				offset,
 				bodyLength,
@@ -171,7 +171,7 @@ func TestEventFlyweight_roundtrip_rapid(t *testing.T) {
 			want := drawSubscriptionReady(rt)
 			bodyLength := conductor.SubscriptionReadyBodyLength
 			require.Len(rt, conductor.SubscriptionReadyBytes(want), bodyLength)
-			requireEventEncodeDecodeRoundtrip(
+			requireFlyweightEncodeDecodeRoundtrip(
 				rt,
 				offset,
 				bodyLength,
@@ -199,7 +199,7 @@ func TestEventFlyweight_roundtrip_rapid(t *testing.T) {
 			want := drawUnavailableImage(rt)
 			bodyLength := conductor.UnavailableImageBodyLength(want.Channel)
 			require.Len(rt, conductor.UnavailableImageBytes(want), bodyLength)
-			requireEventEncodeDecodeRoundtrip(
+			requireFlyweightEncodeDecodeRoundtrip(
 				rt,
 				offset,
 				bodyLength,
@@ -212,7 +212,7 @@ func TestEventFlyweight_roundtrip_rapid(t *testing.T) {
 			want := drawPublicationError(rt)
 			bodyLength := conductor.PublicationErrorBodyLength(want.ErrorMessage)
 			require.Len(rt, conductor.PublicationErrorBytes(want), bodyLength)
-			requireEventEncodeDecodeRoundtrip(
+			requireFlyweightEncodeDecodeRoundtrip(
 				rt,
 				offset,
 				bodyLength,

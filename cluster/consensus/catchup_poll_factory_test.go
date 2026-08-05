@@ -11,32 +11,111 @@ import (
 
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
+
+// catchupPollSessionFields is a fixed SessionMessageHeader payload for
+// CatchupPoll frame fixtures.
+var catchupPollSessionFields = codecs.SessionMessageHeaderFields{
+	LeadershipTermID: 1,
+	ClusterSessionID: 2,
+	Timestamp:        3,
+}
 
 func TestCatchupPoll_pollsWhenLogAdapterImagePresent(t *testing.T) {
 	adapter, image := boundLogAdapter(t)
-	span := writeSessionMessageAtJoin(t, image, codecs.SessionMessageHeaderFields{
-		LeadershipTermID: 1,
-		ClusterSessionID: 2,
-		Timestamp:        3,
-	})
+	span := writeSessionMessageAtJoin(t, image, catchupPollSessionFields)
 
 	commit := new(atomic.Int64)
+	eg := &recordingEgress{}
 	a := NewAgent(AgentConfig{
-		Commit:     commit,
-		LogAdapter: adapter,
+		Commit:                    commit,
+		LogAdapter:                adapter,
+		Egress:                    eg,
+		LeadershipTermID:          5,
+		LeaderHeartbeatIntervalNs: 1000,
+		LeaderMemberID:            1,
 	})
+
+	// Seed cadence so the first publish is not delayed by interval.
+	a.CatchupInitiated(0)
 
 	work := a.CatchupPoll(span+32, 100)
 	require.Positive(t, work)
 	require.Equal(t, span, adapter.Position())
 	require.Equal(t, adapter.Position(), a.CommitPosition())
 
+	// Publishes adapter position under the catchup flag.
+	require.Equal(t, []appendPublishCall{{
+		term:  5,
+		pos:   adapter.Position(),
+		flags: AppendPositionFlagCatchup,
+	}}, eg.appends)
+
+	// Catchup must not raise the steady unflagged floor.
+	require.Equal(t, int64(0), a.lastPublishedAppendPosition)
+
 	// work == 0 still ProposeMaxCommit from adapter position (prior consume).
+	// Interval not due and position flat: no second publish.
 	commit.Store(0)
 	require.Equal(t, int64(0), a.CommitPosition())
+	nBefore := len(eg.appends)
 	require.Equal(t, 0, a.CatchupPoll(span+32, 101))
 	require.Equal(t, adapter.Position(), a.CommitPosition())
+	require.Len(t, eg.appends, nBefore)
+	require.Equal(t, int64(0), a.lastPublishedAppendPosition)
+}
+
+// Asserts CatchupPoll does not raise lastPublishedAppendPosition. After
+// catchup, steady unflagged publish floors on the recorded high-water only,
+// not the consumed adapter position.
+func TestCatchupPoll_doesNotRaiseLastPublishedForSteady(t *testing.T) {
+	adapter, image := boundLogAdapter(t)
+	span := writeSessionMessageAtJoin(t, image, catchupPollSessionFields)
+	require.Positive(t, span)
+
+	const recorded int64 = 40
+	appendV := new(atomic.Int64)
+	appendV.Store(recorded)
+	eg := &recordingEgress{}
+	a := NewAgent(AgentConfig{
+		Role:                      RoleFollower,
+		Commit:                    new(atomic.Int64),
+		LogAdapter:                adapter,
+		Egress:                    eg,
+		AppendSource:              &AtomicAppendPosition{V: appendV},
+		LeadershipTermID:          3,
+		LeaderHeartbeatIntervalNs: 1000,
+		LeaderMemberID:            1,
+	})
+
+	// Seed a prior steady floor below the adapter high-water.
+	a.lastPublishedAppendPosition = recorded
+	a.CatchupInitiated(0)
+
+	require.Positive(t, a.CatchupPoll(span+32, 10))
+	require.Equal(t, span, adapter.Position())
+	require.Greater(t, adapter.Position(), recorded)
+	require.Equal(t, []appendPublishCall{{
+		term:  3,
+		pos:   adapter.Position(),
+		flags: AppendPositionFlagCatchup,
+	}}, eg.appends)
+
+	// Steady floor stays at the recorded high-water.
+	require.Equal(t, recorded, a.lastPublishedAppendPosition)
+
+	// Steady path after catchup: unflagged publish must not leak adapter pos.
+	eg.appends = nil
+
+	// Interval due so a flat recorded position still publishes.
+	require.Equal(t, 1, a.updateFollowerPosition(10+1000, recorded, AppendPositionFlagNone))
+	require.Equal(t, []appendPublishCall{{
+		term:  3,
+		pos:   recorded,
+		flags: AppendPositionFlagNone,
+	}}, eg.appends)
+	require.Equal(t, recorded, a.lastPublishedAppendPosition)
 }
 
 func TestCatchupPoll_stubWhenNoImage(t *testing.T) {
@@ -59,11 +138,7 @@ func TestCatchupPoll_stubWhenNoImage(t *testing.T) {
 // Bound 0: frame start is not strictly before bound; no work, commit stays.
 func TestCatchupPoll_boundZeroYieldsNoWork(t *testing.T) {
 	adapter, image := boundLogAdapter(t)
-	_ = writeSessionMessageAtJoin(t, image, codecs.SessionMessageHeaderFields{
-		LeadershipTermID: 1,
-		ClusterSessionID: 2,
-		Timestamp:        3,
-	})
+	_ = writeSessionMessageAtJoin(t, image, catchupPollSessionFields)
 	a := NewAgent(AgentConfig{
 		Commit:     new(atomic.Int64),
 		LogAdapter: adapter,
@@ -237,8 +312,8 @@ type catchupReplayStart struct {
 }
 
 // fakeCatchupControl is a [CatchupControl] double that records the calls the
-// Agent makes. Replay session ids are derived from the start count; the Agent
-// discards them.
+// Agent makes. Replay session ids are derived from the start count. Retained
+// sessions mirror the production ledger until single-session or bulk stop.
 type fakeCatchupControl struct {
 	destination string
 
@@ -246,8 +321,11 @@ type fakeCatchupControl struct {
 	removeCalls int
 	stopCalls   int
 
-	starts   []catchupReplayStart
-	startErr error
+	starts      []catchupReplayStart
+	singleStops []int64
+	retained    []int64
+	startErr    error
+	stopOneErr  error
 }
 
 var _ CatchupControl = (*fakeCatchupControl)(nil)
@@ -259,6 +337,10 @@ func (c *fakeCatchupControl) EnsureCatchupLogDestination(string) string {
 
 func (c *fakeCatchupControl) RemoveCatchupLogDestination() error {
 	c.removeCalls++
+	return nil
+}
+
+func (c *fakeCatchupControl) AddLiveLogDestination() error {
 	return nil
 }
 
@@ -275,29 +357,359 @@ func (c *fakeCatchupControl) StartCatchupReplay(
 	if c.startErr != nil {
 		return 0, c.startErr
 	}
-	return int64(len(c.starts)), nil
+	id := int64(len(c.starts))
+	c.retained = append(c.retained, id)
+	return id, nil
+}
+
+func (c *fakeCatchupControl) StopCatchupReplay(replaySessionID int64) error {
+	c.singleStops = append(c.singleStops, replaySessionID)
+	for i, id := range c.retained {
+		if id != replaySessionID {
+			continue
+		}
+		if c.stopOneErr != nil {
+			return c.stopOneErr
+		}
+		c.retained = append(c.retained[:i], c.retained[i+1:]...)
+		return nil
+	}
+	return nil
 }
 
 func (c *fakeCatchupControl) StopCatchupReplays() error {
 	c.stopCalls++
+	c.retained = nil
 	return nil
 }
 
-// Asserts a leader serves one follower catchup at a time.
-//
-// Phases: start; refuse another follower; the served follower retries by
-// replacing its own replay; stop reopens the gate.
-func TestOnCatchupPosition_oneFollowerAtATime(t *testing.T) {
-	const catchupEndpoint = "127.0.0.1:9100"
+var errTestCatchupStopRefused = errors.New("test: catchup stop refused")
 
+// catchupUDPDestination builds a control destination URI for endpoint.
+func catchupUDPDestination(endpoint string) string {
+	return "aeron:udp?endpoint=" + endpoint
+}
+
+// newLeaderCatchupAgent builds a RoleLeader agent with a bound log publisher,
+// recording id 42, and catchup control. Destination seeds the control double.
+func newLeaderCatchupAgent(
+	t testing.TB,
+	cfg AgentConfig,
+	destination string,
+) (*Agent, *fakeCatchupControl, *LogPublisher) {
+	t.Helper()
+	cfg.Role = RoleLeader
 	publisher, _ := boundLogPublisher(t)
-	require.NotEqual(t, int32(nullValue), publisher.SessionID())
-
-	control := &fakeCatchupControl{destination: "aeron:udp?endpoint=" + catchupEndpoint}
-	a := NewAgent(AgentConfig{Role: RoleLeader})
+	control := &fakeCatchupControl{destination: destination}
+	a := NewAgent(cfg)
 	a.SetLogPublisher(publisher)
 	a.SetLogRecordingID(42)
 	a.SetCatchupControl(control)
+	return a, control, publisher
+}
+
+// startFollowerCatchup requests a catchup replay at log position 0.
+func startFollowerCatchup(a *Agent, memberID int32, endpoint string) {
+	a.OnCatchupPosition(codecs.CatchupPositionFields{
+		LogPosition:      0,
+		FollowerMemberID: memberID,
+		CatchupEndpoint:  endpoint,
+	})
+}
+
+// Asserts TrackCatchupCompletion stops the archive session, publishes
+// StopCatchup, and deletes the map entry only after both halves succeed.
+//
+// Phases:
+//   - below leader position: no-op
+//   - stop failure: entry stays, stopped false, no publish
+//   - stop success and publish refuse: stopped true, entry stays
+//   - leader advances past follower logPosition: publish still retries
+//   - publish success: entry deleted
+//   - unflagged AppendPosition with a live entry still drives cleanup
+func TestTrackCatchupCompletion_stopThenPublish(t *testing.T) {
+	const catchupEndpoint = "127.0.0.1:9101"
+	const memberID int32 = 3
+
+	eg := &recordingEgress{}
+	a, control, publisher := newLeaderCatchupAgent(t, AgentConfig{
+		Egress:           eg,
+		LeadershipTermID: 7,
+	}, catchupUDPDestination(catchupEndpoint))
+
+	startFollowerCatchup(a, memberID, catchupEndpoint)
+	require.Len(t, a.catchupReplays, 1)
+	sessionID := a.catchupReplays[memberID].replaySessionID
+	leaderPos := publisher.Position()
+
+	// Below leader position: no stop, no publish.
+	a.TrackCatchupCompletion(memberID, leaderPos-1, AppendPositionFlagCatchup)
+	require.Empty(t, control.singleStops)
+	require.Empty(t, eg.stopCatchups)
+	require.Len(t, a.catchupReplays, 1)
+
+	// Stop refuses: entry stays active and unstopped.
+	control.stopOneErr = errTestCatchupStopRefused
+	a.TrackCatchupCompletion(memberID, leaderPos, AppendPositionFlagCatchup)
+	require.Equal(t, []int64{sessionID}, control.singleStops)
+	require.Empty(t, eg.stopCatchups)
+	require.False(t, a.catchupReplays[memberID].stopped)
+
+	// Stop succeeds; publish refuses: stopped stays, entry remains for retry.
+	control.stopOneErr = nil
+	control.singleStops = nil
+	eg.refuseStopCatchup = true
+	a.TrackCatchupCompletion(memberID, leaderPos, AppendPositionFlagCatchup)
+	require.Equal(t, []int64{sessionID}, control.singleStops)
+	require.True(t, a.catchupReplays[memberID].stopped)
+	require.Empty(t, eg.stopCatchups)
+
+	// Leader advances past the follower-reported position. Stop is already
+	// latched. Publish retry must not re-check the position gate.
+	advanced := publisher.AppendMessage(7, 0, 0, []byte("advance"))
+	require.Greater(t, advanced, leaderPos)
+	eg.refuseStopCatchup = false
+	a.TrackCatchupCompletion(memberID, leaderPos, AppendPositionFlagNone)
+	require.Equal(t, []int64{sessionID}, control.singleStops) // no second stop
+	require.Equal(t, []stopCatchupPublishCall{{
+		term: 7, followerID: memberID,
+	}}, eg.stopCatchups)
+	require.Empty(t, a.catchupReplays)
+}
+
+// Asserts same-member OnCatchupPosition keeps the map entry when archive stop
+// fails. The ledger session id stays tracked. No second start runs.
+func TestOnCatchupPosition_restartStopFailureKeepsMember(t *testing.T) {
+	a, control, _ := newLeaderCatchupAgent(t, AgentConfig{}, "")
+
+	fields := codecs.CatchupPositionFields{
+		LogPosition:      100,
+		FollowerMemberID: 1,
+		CatchupEndpoint:  "127.0.0.1:9100",
+	}
+
+	a.OnCatchupPosition(fields)
+	require.Len(t, a.catchupReplays, 1)
+	sessionID := a.catchupReplays[1].replaySessionID
+	require.Equal(t, []int64{sessionID}, control.retained)
+
+	control.stopOneErr = errTestCatchupStopRefused
+	a.OnCatchupPosition(fields)
+	require.Len(t, control.starts, 1)
+	require.Equal(t, []int64{sessionID}, control.singleStops)
+	require.Len(t, a.catchupReplays, 1)
+	require.Equal(t, sessionID, a.catchupReplays[1].replaySessionID)
+	require.Equal(t, []int64{sessionID}, control.retained)
+
+	control.stopOneErr = nil
+	control.singleStops = nil
+	a.OnCatchupPosition(fields)
+	require.Len(t, control.starts, 2)
+	require.Equal(t, []int64{sessionID}, control.singleStops)
+	require.Len(t, a.catchupReplays, 1)
+	require.NotEqual(t, sessionID, a.catchupReplays[1].replaySessionID)
+	require.Equal(t, []int64{a.catchupReplays[1].replaySessionID}, control.retained)
+}
+
+// Asserts TrackCatchupCompletion is a no-op with no map entry and no catchup
+// flag.
+func TestTrackCatchupCompletion_idleWithoutEntryOrFlag(t *testing.T) {
+	publisher, _ := boundLogPublisher(t)
+	eg := &recordingEgress{}
+	a := NewAgent(AgentConfig{Role: RoleLeader, Egress: eg})
+	a.SetLogPublisher(publisher)
+
+	a.TrackCatchupCompletion(9, publisher.Position(), AppendPositionFlagNone)
+	require.Empty(t, eg.stopCatchups)
+	require.Empty(t, a.catchupReplays)
+}
+
+// Asserts catchup-flagged steady AppendPosition refreshes liveness only and
+// drives completion. Does not update the position table.
+func TestSteadyAppendPosition_catchupFlag_skipsPositionUpdate(t *testing.T) {
+	const memberID int32 = 4
+	const catchupEndpoint = "127.0.0.1:9102"
+
+	pt := &spyPositionTable{}
+	eg := &recordingEgress{}
+	a, _, publisher := newLeaderCatchupAgent(t, AgentConfig{
+		Positions:        pt,
+		Egress:           eg,
+		LeadershipTermID: 3,
+	}, catchupUDPDestination(catchupEndpoint))
+
+	startFollowerCatchup(a, memberID, catchupEndpoint)
+
+	leaderPos := publisher.Position()
+	a.onSteadyAppendPosition(codecs.AppendPositionFields{
+		LeadershipTermID: 3,
+		LogPosition:      leaderPos,
+		FollowerMemberID: memberID,
+		Flags:            AppendPositionFlagCatchup,
+	}, 1)
+
+	require.Empty(t, pt.updates)
+	require.Equal(t, []int32{memberID}, pt.liveness)
+	require.Equal(t, []stopCatchupPublishCall{{
+		term: 3, followerID: memberID,
+	}}, eg.stopCatchups)
+	require.Empty(t, a.catchupReplays)
+}
+
+// Asserts unflagged steady AppendPosition updates the position table and still
+// drives completion when a map entry is live.
+func TestSteadyAppendPosition_unflagged_updatesAndCompletes(t *testing.T) {
+	const memberID int32 = 5
+	const catchupEndpoint = "127.0.0.1:9103"
+
+	pt := &spyPositionTable{}
+	eg := &recordingEgress{}
+	a, _, publisher := newLeaderCatchupAgent(t, AgentConfig{
+		Positions:        pt,
+		Egress:           eg,
+		LeadershipTermID: 2,
+	}, catchupUDPDestination(catchupEndpoint))
+
+	startFollowerCatchup(a, memberID, catchupEndpoint)
+
+	leaderPos := publisher.Position()
+	a.onSteadyAppendPosition(codecs.AppendPositionFields{
+		LeadershipTermID: 2,
+		LogPosition:      leaderPos,
+		FollowerMemberID: memberID,
+		Flags:            AppendPositionFlagNone,
+	}, 1)
+
+	require.Equal(t, []memberPositionUpdate{{
+		memberID:         memberID,
+		leadershipTermID: 2,
+		logPosition:      leaderPos,
+	}}, pt.updates)
+	require.Empty(t, pt.liveness)
+	require.Equal(t, []stopCatchupPublishCall{{
+		term: 2, followerID: memberID,
+	}}, eg.stopCatchups)
+	require.Empty(t, a.catchupReplays)
+}
+
+// Asserts steady StopCatchup with matching term and member removes the catchup
+// destination.
+func TestSteadyStopCatchup_removesDestination(t *testing.T) {
+	control := &fakeCatchupControl{destination: catchupUDPDestination("catchup")}
+	a := NewAgent(AgentConfig{
+		Role:             RoleFollower,
+		ThisMemberID:     1,
+		LeadershipTermID: 4,
+	})
+	a.SetCatchupControl(control)
+	a.CatchupLogDestinationSet(control.destination)
+
+	a.onSteadyStopCatchup(codecs.StopCatchupFields{
+		LeadershipTermID: 4,
+		FollowerMemberID: 1,
+	})
+	require.Equal(t, 1, control.removeCalls)
+
+	// Mismatched member: no second remove.
+	a.onSteadyStopCatchup(codecs.StopCatchupFields{
+		LeadershipTermID: 4,
+		FollowerMemberID: 9,
+	})
+	require.Equal(t, 1, control.removeCalls)
+
+	// Mismatched term: no remove.
+	a.onSteadyStopCatchup(codecs.StopCatchupFields{
+		LeadershipTermID: 5,
+		FollowerMemberID: 1,
+	})
+	require.Equal(t, 1, control.removeCalls)
+}
+
+// Asserts steady ingress dispatches StopCatchup wire to onSteadyStopCatchup.
+func TestSteadyStopCatchup_wireDispatch(t *testing.T) {
+	control := &fakeCatchupControl{destination: catchupUDPDestination("catchup")}
+	q := &QueueConsensusIngress{}
+	a := NewAgent(AgentConfig{
+		Role:             RoleFollower,
+		ThisMemberID:     1,
+		LeadershipTermID: 4,
+		Ingress:          q,
+	})
+	a.SetCatchupControl(control)
+	a.CatchupLogDestinationSet(control.destination)
+
+	wireLen, ok := codecs.ClusterWireMessageLen(clusterwire.StopCatchupSbeBlockLength)
+	require.True(t, ok)
+	buf := make([]byte, wireLen)
+	end, ok := codecs.EncodeStopCatchup(
+		buf, 0, clusterwire.StopCatchupSbeSchemaVersion, codecs.StopCatchupFields{
+			LeadershipTermID: 4,
+			FollowerMemberID: 1,
+		},
+	)
+	require.True(t, ok)
+	q.Enqueue(buf[:end])
+
+	// No election runner: steady fragment path handles StopCatchup.
+	require.Nil(t, a.Election())
+	require.Equal(t, 1, a.pollConsensusIngress(1))
+	require.Equal(t, 1, control.removeCalls)
+
+	// Mismatched member on wire: no remove.
+	end, ok = codecs.EncodeStopCatchup(
+		buf, 0, clusterwire.StopCatchupSbeSchemaVersion, codecs.StopCatchupFields{
+			LeadershipTermID: 4,
+			FollowerMemberID: 9,
+		},
+	)
+	require.True(t, ok)
+	q.Enqueue(buf[:end])
+	require.Equal(t, 1, a.pollConsensusIngress(2))
+	require.Equal(t, 1, control.removeCalls)
+}
+
+// Asserts nil positions still drives TrackCatchupCompletion for unflagged
+// AppendPosition.
+func TestSteadyAppendPosition_nilPositions_stillCompletes(t *testing.T) {
+	const memberID int32 = 6
+	const catchupEndpoint = "127.0.0.1:9104"
+
+	eg := &recordingEgress{}
+	a, _, publisher := newLeaderCatchupAgent(t, AgentConfig{
+		Egress:           eg,
+		LeadershipTermID: 2,
+		// Positions intentionally nil.
+	}, catchupUDPDestination(catchupEndpoint))
+
+	startFollowerCatchup(a, memberID, catchupEndpoint)
+	require.Len(t, a.catchupReplays, 1)
+
+	leaderPos := publisher.Position()
+	a.onSteadyAppendPosition(codecs.AppendPositionFields{
+		LeadershipTermID: 2,
+		LogPosition:      leaderPos,
+		FollowerMemberID: memberID,
+		Flags:            AppendPositionFlagNone,
+	}, 1)
+
+	require.Equal(t, []stopCatchupPublishCall{{
+		term: 2, followerID: memberID,
+	}}, eg.stopCatchups)
+	require.Empty(t, a.catchupReplays)
+}
+
+// Asserts a leader tracks one catchup replay per follower.
+//
+// Phases:
+//   - start for one follower
+//   - second follower gets its own replay
+//   - same-member restart stops only that session
+//   - StopAllCatchups drains the map
+func TestOnCatchupPosition_oneReplayPerFollower(t *testing.T) {
+	const catchupEndpoint = "127.0.0.1:9100"
+
+	a, control, publisher := newLeaderCatchupAgent(t, AgentConfig{}, "")
+	require.NotEqual(t, int32(nullValue), publisher.SessionID())
 
 	served := codecs.CatchupPositionFields{
 		LogPosition:      100,
@@ -312,50 +724,86 @@ func TestOnCatchupPosition_oneFollowerAtATime(t *testing.T) {
 	require.Equal(t, int64(100), control.starts[0].logPosition)
 	require.Equal(t, catchupEndpoint, control.starts[0].catchupEndpoint)
 	require.Equal(t, publisher.SessionID(), control.starts[0].logSessionID)
+	require.Len(t, a.catchupReplays, 1)
+	require.Equal(t, int64(1), a.catchupReplays[1].replaySessionID)
+	require.False(t, a.catchupReplays[1].stopped)
 
-	// Another follower is refused while the first replay runs.
+	// Distinct followers get concurrent replays.
 	a.OnCatchupPosition(other)
-	require.Len(t, control.starts, 1)
-	require.Equal(t, 0, control.stopCalls)
-
-	// The served follower asks again: drop the stale replay, start a fresh one.
-	a.OnCatchupPosition(served)
 	require.Len(t, control.starts, 2)
-	require.Equal(t, 1, control.stopCalls)
+	require.Empty(t, control.singleStops)
+	require.Equal(t, 0, control.stopCalls)
+	require.Len(t, a.catchupReplays, 2)
+	require.Equal(t, int64(2), a.catchupReplays[2].replaySessionID)
+	require.Equal(t, []int64{1, 2}, control.retained)
+
+	// The first follower asks again: stop only its session, start a fresh one.
+	a.OnCatchupPosition(served)
+	require.Len(t, control.starts, 3)
+	require.Equal(t, []int64{1}, control.singleStops)
+	require.Equal(t, 0, control.stopCalls)
+	require.Len(t, a.catchupReplays, 2)
+	require.Equal(t, int64(3), a.catchupReplays[1].replaySessionID)
+	require.Equal(t, int64(2), a.catchupReplays[2].replaySessionID)
+	require.Equal(t, []int64{2, 3}, control.retained)
 
 	a.StopAllCatchups()
-	require.Equal(t, 2, control.stopCalls)
+	require.Equal(t, 1, control.stopCalls)
+	require.Empty(t, a.catchupReplays)
+	require.Empty(t, control.retained)
 
 	a.OnCatchupPosition(other)
-	require.Len(t, control.starts, 3)
+	require.Len(t, control.starts, 4)
+	require.Len(t, a.catchupReplays, 1)
+	require.Equal(t, int64(4), a.catchupReplays[2].replaySessionID)
 }
 
-// Asserts a failed start leaves the gate open. Nothing is replaying.
-func TestOnCatchupPosition_startFailureLeavesGateOpen(t *testing.T) {
-	publisher, _ := boundLogPublisher(t)
-	control := &fakeCatchupControl{startErr: errors.New("archive refused")}
-	a := NewAgent(AgentConfig{Role: RoleLeader})
-	a.SetLogPublisher(publisher)
-	a.SetLogRecordingID(42)
-	a.SetCatchupControl(control)
+// Asserts a failed start leaves no map entry. Nothing is replaying.
+func TestOnCatchupPosition_startFailureLeavesMapEmpty(t *testing.T) {
+	a, control, _ := newLeaderCatchupAgent(t, AgentConfig{}, "")
+	control.startErr = errors.New("archive refused")
 
 	fields := codecs.CatchupPositionFields{
-		LogPosition:     100,
-		CatchupEndpoint: "127.0.0.1:9100",
+		LogPosition:      100,
+		FollowerMemberID: 1,
+		CatchupEndpoint:  "127.0.0.1:9100",
 	}
 
 	a.OnCatchupPosition(fields)
 	a.OnCatchupPosition(fields)
 	require.Len(t, control.starts, 2)
+	require.Empty(t, a.catchupReplays)
+	require.Empty(t, control.retained)
+}
+
+// Asserts a same-member restart that fails on the new start leaves no map
+// entry for that member. The prior session is stopped first.
+func TestOnCatchupPosition_restartStartFailureClearsMember(t *testing.T) {
+	a, control, _ := newLeaderCatchupAgent(t, AgentConfig{}, "")
+
+	fields := codecs.CatchupPositionFields{
+		LogPosition:      100,
+		FollowerMemberID: 1,
+		CatchupEndpoint:  "127.0.0.1:9100",
+	}
+
+	a.OnCatchupPosition(fields)
+	require.Len(t, a.catchupReplays, 1)
+	require.Equal(t, []int64{1}, control.retained)
+
+	control.startErr = errors.New("archive refused")
+	a.OnCatchupPosition(fields)
+	require.Len(t, control.starts, 2)
+	require.Equal(t, []int64{1}, control.singleStops)
+	require.Empty(t, a.catchupReplays)
+	require.Empty(t, control.retained)
 }
 
 // Asserts Ensure delegates every call and Remove reaches the control. The
 // control owns the open state; the agent keeps no destination of its own.
 func TestEnsureCatchupLogDestination_delegatesToControl(t *testing.T) {
-	const (
-		catchupEndpoint = "127.0.0.1:9101"
-		destination     = "aeron:udp?endpoint=" + catchupEndpoint
-	)
+	const catchupEndpoint = "127.0.0.1:9101"
+	destination := catchupUDPDestination(catchupEndpoint)
 
 	control := &fakeCatchupControl{destination: destination}
 	a := NewAgent(AgentConfig{})
@@ -373,17 +821,12 @@ func TestEnsureCatchupLogDestination_delegatesToControl(t *testing.T) {
 }
 
 // Asserts PrepareForNewLeadership tears down both catchup halves.
-// Leader-side replays stop and the gate reopens. The follower receive path
+// Leader-side replays stop and the map drains. The follower receive path
 // closes. Both destinations clear.
 func TestPrepareForNewLeadership_tearsDownCatchup(t *testing.T) {
 	const catchupEndpoint = "127.0.0.1:9102"
 
-	publisher, _ := boundLogPublisher(t)
-	control := &fakeCatchupControl{destination: "aeron:udp?endpoint=" + catchupEndpoint}
-	a := NewAgent(AgentConfig{Role: RoleLeader})
-	a.SetLogPublisher(publisher)
-	a.SetLogRecordingID(42)
-	a.SetCatchupControl(control)
+	a, control, _ := newLeaderCatchupAgent(t, AgentConfig{}, catchupUDPDestination(catchupEndpoint))
 
 	fields := codecs.CatchupPositionFields{
 		LogPosition:      100,
@@ -392,6 +835,7 @@ func TestPrepareForNewLeadership_tearsDownCatchup(t *testing.T) {
 	}
 	a.OnCatchupPosition(fields)
 	require.Len(t, control.starts, 1)
+	require.Len(t, a.catchupReplays, 1)
 
 	require.NotEmpty(t, a.EnsureCatchupLogDestination(catchupEndpoint))
 
@@ -399,9 +843,11 @@ func TestPrepareForNewLeadership_tearsDownCatchup(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, control.stopCalls)
 	require.Equal(t, 1, control.removeCalls)
+	require.Empty(t, a.catchupReplays)
 
-	// Gate reopened: the next leadership term may serve a new catchup.
+	// Map drained: the next leadership term may serve a new catchup.
 	a.RoleSet(RoleLeader)
 	a.OnCatchupPosition(fields)
 	require.Len(t, control.starts, 2)
+	require.Len(t, a.catchupReplays, 1)
 }

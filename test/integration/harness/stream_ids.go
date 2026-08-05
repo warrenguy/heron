@@ -81,4 +81,7 @@ const (
 
 	// Single-peer AeronPublisher CommitPosition (control stream).
 	LogCommitAeronPublisherStreamID int32 = 8304
+
+	// Multi-destination receive merge on live aeronmd (control-mode=manual).
+	MultiDestinationSubscriptionStreamID int32 = 8401
 )

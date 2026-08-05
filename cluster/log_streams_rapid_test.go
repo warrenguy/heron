@@ -18,11 +18,11 @@ import (
 // Fixed-input failure and rollback cases live in the table tests.
 func TestLogStreams_openAndTeardown_rapid(t *testing.T) {
 	t.Parallel()
-	rapid.Check(t, func(t *rapid.T) {
-		memberCount, startID, portBase := drawValidMembersPorts(t)
-		thisIdx := rapid.IntRange(0, memberCount-1).Draw(t, "thisIdx")
+	rapid.Check(t, func(rt *rapid.T) {
+		memberCount, startID, portBase := drawValidMembersPorts(rt)
+		thisIdx := rapid.IntRange(0, memberCount-1).Draw(rt, "thisIdx")
 		memberID := startID + int32(thisIdx)
-		hosts := drawHostnames(t, memberCount)
+		hosts := drawHostnames(rt, memberCount)
 
 		members, err := cluster.BuildClusterMembersString(cluster.MembersStringConfig{
 			StartingMemberID: startID,
@@ -30,52 +30,40 @@ func TestLogStreams_openAndTeardown_rapid(t *testing.T) {
 			ClusterHostnames: hosts,
 			PortBase:         portBase,
 		})
-		require.NoError(t, err)
+		require.NoError(rt, err)
 
 		topology, err := cluster.NewTopology(topologyConfigMembers(memberID, members))
-		require.NoError(t, err)
+		require.NoError(rt, err)
 
 		adder := &fakeLogStreamAdder{}
-		agent := consensus.NewAgent(consensus.AgentConfig{})
-		logPublisher := consensus.NewLogPublisher()
-		logAdapter := consensus.NewLogAdapter(0)
+		agent, logPublisher, logAdapter, deps := openLogStreamsDeps(t, topology, adder)
 
-		ls, err := cluster.OpenLogStreams(cluster.LogStreamsDeps{
-			Adder:        adder,
-			Topology:     topology,
-			Agent:        agent,
-			LogPublisher: logPublisher,
-			LogAdapter:   logAdapter,
-		})
-		require.NoError(t, err)
-		require.NotNil(t, ls)
+		ls, err := cluster.OpenLogStreams(deps)
+		require.NoError(rt, err)
+		require.NotNil(rt, ls)
 
-		require.Len(t, adder.calls, 2)
-		require.Equal(t, "subscription", adder.calls[0].kind)
-		require.Equal(t, "publication", adder.calls[1].kind)
-		require.Equal(t, topology.LogStreamID(), adder.calls[0].streamID)
-		require.Equal(t, topology.LogStreamID(), adder.calls[1].streamID)
-		require.Equal(t, topology.LogChannel(), adder.calls[0].channel)
-		require.Equal(t, topology.LogChannel(), adder.calls[1].channel)
+		logChannel := topology.LogChannel()
+		streamID := topology.LogStreamID()
+		requireLogStreamOpenOrder(rt, adder, streamID)
+		require.Equal(rt, logChannel, adder.calls[1].channel)
+		require.Equal(rt, []string{logChannel}, adder.lastDestHook.Adds)
+		require.Equal(rt, logChannel, agent.LiveLogDestination())
 
-		require.Equal(t, adder.lastPub.SessionID(), agent.AddLogPublication(0))
-		require.IsType(t, (*consensus.LogAppendPosition)(nil), agent.AppendSource())
-		require.IsType(t, (*consensus.SubscriptionLogJoinSource)(nil), agent.LogJoinSource())
-		require.Nil(t, logAdapter.Image())
-		require.Same(t, adder.lastPub, logPublisher.Publication())
-		require.Same(t, adder.lastPub, ls.Publication())
-		require.Same(t, adder.lastSub, ls.Subscription())
+		require.Equal(rt, adder.lastPub.SessionID(), agent.AddLogPublication(0))
+		require.IsType(rt, (*consensus.LogAppendPosition)(nil), agent.AppendSource())
+		require.IsType(rt, (*consensus.SubscriptionLogJoinSource)(nil), agent.LogJoinSource())
+		require.Nil(rt, logAdapter.Image())
+		require.Same(rt, adder.lastPub, logPublisher.Publication())
+		require.Same(rt, adder.lastPub, ls.Publication())
+		require.Same(rt, adder.lastSub, ls.Subscription())
 
 		pub := adder.lastPub
 		sub := adder.lastSub
-		require.NoError(t, ls.Close())
-		require.Equal(t, int32(-1), agent.AddLogPublication(0))
-		require.Nil(t, agent.AppendSource())
-		require.Nil(t, agent.LogJoinSource())
-		require.Nil(t, logPublisher.Publication())
-		require.True(t, pub.IsClosed())
-		require.True(t, sub.IsClosed())
-		require.Nil(t, ls.Publication())
-		require.Nil(t, ls.Subscription())
+		require.NoError(rt, ls.Close())
+		requireAgentLogUnbound(rt, agent, logPublisher)
+		require.True(rt, pub.IsClosed())
+		require.True(rt, sub.IsClosed())
+		require.Nil(rt, ls.Publication())
+		require.Nil(rt, ls.Subscription())
 	})
 }

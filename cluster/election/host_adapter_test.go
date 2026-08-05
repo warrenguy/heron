@@ -84,7 +84,8 @@ func newTestHostAdapter(
 }
 
 // newHostAdapterWithElection wires a real HostAdapter as ElectionHost over
-// baseline testElectionDeps members (thisIdx 0).
+// baseline testElectionDeps members (thisIdx 0). Shares the adapter publisher
+// with ElectionDeps so ballot and host egress use one SbePublisher.
 func newHostAdapterWithElection(t *testing.T) (
 	cfg election.ElectionConfig,
 	host *election.HostAdapter,
@@ -93,9 +94,9 @@ func newHostAdapterWithElection(t *testing.T) (
 ) {
 	t.Helper()
 	cfg, deps, _, _, _ := testElectionDeps(t)
-	host, agent, _, _ = newTestHostAdapter(t, deps.Members, 0)
+	host, agent, pub, _ := newTestHostAdapter(t, deps.Members, 0)
 	deps.Host = host
-	deps.Publisher = &election.SbePublisher{}
+	deps.Publisher = pub
 	e = election.NewElection(cfg, deps)
 	return cfg, host, agent, e
 }
@@ -308,7 +309,6 @@ func TestNewHostAdapter_seedsThisMemberID(t *testing.T) {
 	agent.SetEgress(host)
 
 	require.Equal(t, members[thisIdx].ID, agent.ThisMemberID())
-	require.Equal(t, int32(2), agent.ThisMemberID())
 
 	// Steady leader stamp uses the seeded id, not default 0.
 	appendV := new(atomic.Int64)
@@ -376,7 +376,23 @@ func TestHostAdapter_ApplyLeadershipTerm(t *testing.T) {
 func TestInstallLeadershipTerm_handoffAgentLeaderAndTerm(t *testing.T) {
 	t.Parallel()
 
-	const leaderID int32 = 1
+	const (
+		leaderID   int32 = 1
+		seedLeader int32 = 2
+		seedTerm   int64 = 3
+	)
+	// Pre-seed leader/term so a mistaken handoff is visible.
+	seedLeaderAndTerm := func(host *election.HostAdapter) {
+		host.SetLeaderMemberID(seedLeader)
+		host.ApplyLeadershipTerm(seedTerm)
+	}
+	// Truncating NewLeadershipTerm: successor base below append.
+	truncateInstallFields := func(cfg election.ElectionConfig) codecs.NewLeadershipTermFields {
+		fields := installNewLeadershipTermFields(cfg, leaderID, cfg.LeadershipTermID)
+		fields.NextLeadershipTermID = cfg.LeadershipTermID + 1
+		fields.NextTermBaseLogPosition = truncateInstallBase
+		return fields
+	}
 
 	t.Run("adopt sets leader and term on Agent", func(t *testing.T) {
 		t.Parallel()
@@ -447,20 +463,12 @@ func TestInstallLeadershipTerm_handoffAgentLeaderAndTerm(t *testing.T) {
 		agent.SetLogTruncateControl(control)
 		agent.SetLogRecordingID(42)
 
-		// Pre-seed a non-null leader/term so a mistaken handoff is visible.
-		const seedLeader int32 = 2
-		const seedTerm int64 = 3
-		host.SetLeaderMemberID(seedLeader)
-		host.ApplyLeadershipTerm(seedTerm)
+		seedLeaderAndTerm(host)
 		require.Equal(t, seedLeader, agent.LeaderMemberID())
 		require.Equal(t, seedTerm, agent.LeadershipTermID())
 
 		election.SetStateForTest(e, election.ElectionStateCanvass)
-
-		fields := installNewLeadershipTermFields(cfg, leaderID, cfg.LeadershipTermID)
-		fields.NextLeadershipTermID = cfg.LeadershipTermID + 1
-		fields.NextTermBaseLogPosition = truncateInstallBase
-		e.OnNewLeadershipTerm(fields)
+		e.OnNewLeadershipTerm(truncateInstallFields(cfg))
 
 		require.Equal(t, election.ElectionStateInit, e.State())
 		require.Equal(t, truncateInstallBase, e.AppendPosition())
@@ -480,19 +488,13 @@ func TestInstallLeadershipTerm_handoffAgentLeaderAndTerm(t *testing.T) {
 		cfg, host, agent, e := newHostAdapterWithElection(t)
 		agent.SetLogRecordingID(42)
 
-		const seedLeader int32 = 2
-		const seedTerm int64 = 3
-		host.SetLeaderMemberID(seedLeader)
-		host.ApplyLeadershipTerm(seedTerm)
+		seedLeaderAndTerm(host)
 
 		election.SetStateForTest(e, election.ElectionStateCanvass)
 		appendBefore := e.AppendPosition()
 		require.Less(t, truncateInstallBase, appendBefore)
 
-		fields := installNewLeadershipTermFields(cfg, leaderID, cfg.LeadershipTermID)
-		fields.NextLeadershipTermID = cfg.LeadershipTermID + 1
-		fields.NextTermBaseLogPosition = truncateInstallBase
-		e.OnNewLeadershipTerm(fields)
+		e.OnNewLeadershipTerm(truncateInstallFields(cfg))
 
 		require.Equal(t, election.ElectionStateInit, e.State())
 		require.Equal(t, appendBefore, e.AppendPosition())
@@ -613,6 +615,20 @@ func TestHostAdapter_HasActiveQuorum_singleMember(t *testing.T) {
 	require.True(t, host.HasActiveQuorum(nowNs, 0))
 }
 
+// pinNonZeroTermAndPosition keeps HasActiveQuorum on liveness-only. A wrong
+// rewrite to HasQuorumAtPosition(0, 0) drops every vote (term mismatch or
+// position floor).
+func pinNonZeroTermAndPosition(members []*election.Member) {
+	const (
+		termID int64 = 5
+		logPos int64 = 100
+	)
+	for _, m := range members {
+		m.LeadershipTermID = termID
+		m.LogPosition = logPos
+	}
+}
+
 // TestHostAdapter_HasActiveQuorum_multiMember asserts free-function delegate.
 //
 // Moving one TimeOfLastAppendPositionNs across the IsActive boundary flips
@@ -624,17 +640,9 @@ func TestHostAdapter_HasActiveQuorum_multiMember(t *testing.T) {
 	const (
 		nowNs     int64 = 100
 		timeoutNs int64 = 10
-		// Non-zero LeadershipTermID and LogPosition. A wrong rewrite to
-		// HasQuorumAtPosition(0, 0) drops every vote (term mismatch or position
-		// floor).
-		termID int64 = 5
-		logPos int64 = 100
 	)
 	members := hostAdapterMembers(3)
-	for _, m := range members {
-		m.LeadershipTermID = termID
-		m.LogPosition = logPos
-	}
+	pinNonZeroTermAndPosition(members)
 	members[0].TimeOfLastAppendPositionNs = 95 // active: 95+10 > 100
 	members[1].TimeOfLastAppendPositionNs = 95
 	members[2].TimeOfLastAppendPositionNs = 0 // inactive
@@ -659,17 +667,9 @@ func TestHostAdapter_HasActiveQuorum_timeoutFromArgument(t *testing.T) {
 		nowNs          int64 = 100
 		fieldTimeoutNs int64 = 50 // adapter field; would keep all active
 		argTimeoutNs   int64 = 5  // argument; only stamps > 95 are active
-		// Non-zero LeadershipTermID and LogPosition. A wrong rewrite to
-		// HasQuorumAtPosition(0, 0) drops every vote (term mismatch or position
-		// floor).
-		termID int64 = 5
-		logPos int64 = 100
 	)
 	members := hostAdapterMembers(3)
-	for _, m := range members {
-		m.LeadershipTermID = termID
-		m.LogPosition = logPos
-	}
+	pinNonZeroTermAndPosition(members)
 	// ts=90: active under fieldTimeout (90+50 > 100). Inactive under arg (90+5 <= 100).
 	members[0].TimeOfLastAppendPositionNs = 90
 	members[1].TimeOfLastAppendPositionNs = 90
@@ -725,6 +725,45 @@ func TestHostAdapter_UpdateMemberPosition_miss(t *testing.T) {
 	require.Equal(t, before, *members[0])
 	require.Equal(t, int64(0), members[1].LogPosition)
 	require.Equal(t, int64(0), members[2].LogPosition)
+}
+
+// Asserts RefreshMemberLiveness stamps the clock without changing log position
+// or term.
+func TestHostAdapter_RefreshMemberLiveness(t *testing.T) {
+	t.Parallel()
+
+	members := hostAdapterMembers(3)
+	host, _, _, clock := newTestHostAdapter(t, members, 0)
+	members[1].LeadershipTermID = 5
+	members[1].LogPosition = 200
+	members[1].TimeOfLastAppendPositionNs = 1
+	clock.nowNs = 9_000
+
+	host.RefreshMemberLiveness(1)
+	require.Equal(t, int64(5), members[1].LeadershipTermID)
+	require.Equal(t, int64(200), members[1].LogPosition)
+	require.Equal(t, int64(9_000), members[1].TimeOfLastAppendPositionNs)
+
+	// Unknown member: no panic.
+	require.NotPanics(t, func() {
+		host.RefreshMemberLiveness(99)
+	})
+}
+
+// Asserts PublishStopCatchup encodes StopCatchup to the named follower.
+func TestHostAdapter_PublishStopCatchup(t *testing.T) {
+	t.Parallel()
+
+	members := hostAdapterMembers(3)
+	host, _, pub, _ := newTestHostAdapter(t, members, 0)
+
+	require.True(t, host.PublishStopCatchup(11, 2))
+	require.Len(t, pub.Sent, 1)
+	require.Equal(t, uint16(clusterwire.StopCatchupSbeTemplateID), pub.Sent[0].TemplateID)
+	require.Equal(t, int32(2), pub.Sent[0].Dst.MemberID)
+	fields := pub.Sent[0].Fields.(codecs.StopCatchupFields)
+	require.Equal(t, int64(11), fields.LeadershipTermID)
+	require.Equal(t, int32(2), fields.FollowerMemberID)
 }
 
 func TestHostAdapter_UpdateMemberLogPosition_nilMember(t *testing.T) {
@@ -878,6 +917,8 @@ func TestHostAdapter_forwardSmoke(t *testing.T) {
 	require.Equal(t, int64(0), host.TimeOfLastLeaderUpdateNs())
 	require.Equal(t, 0, host.CatchupPoll(0, 0))
 	require.False(t, host.IsCatchupNearLive(0))
+	require.Empty(t, host.LiveLogDestination())
+	require.NotPanics(t, host.AddLiveLogDestination)
 	require.Equal(t, int32(election.NullMemberID), host.AddLogPublication(100))
 	require.False(t, host.AppendNewLeadershipTermEvent(1))
 	require.Equal(t, 0, host.PollArchiveEvents())
@@ -885,7 +926,7 @@ func TestHostAdapter_forwardSmoke(t *testing.T) {
 	require.NotPanics(t, func() {
 		host.CatchupInitiated(1)
 		host.AwaitLocalSocketsClosed(3)
-		host.TrackCatchupCompletion(members[1], 1, 0)
+		host.TrackCatchupCompletion(members[1], 0, 0)
 	})
 	params, ok := host.FollowerLogJoinReady(1)
 	require.False(t, ok)
@@ -899,17 +940,16 @@ func TestHostAdapter_forwardSmoke(t *testing.T) {
 	require.Equal(t, 0, replay.DoWork(0))
 }
 
-// HostAdapter TrackCatchupCompletion is a no-op (does not panic).
-//
-// OnAppendPosition still invokes TrackCatchup on the election host.
-func TestTrackCatchupCompletion_hostAdapterNoOp(t *testing.T) {
+// Asserts HostAdapter TrackCatchupCompletion delegates to the agent without
+// panic. OnAppendPosition still invokes TrackCatchup on the election host.
+func TestTrackCatchupCompletion_hostAdapterDelegates(t *testing.T) {
 	t.Parallel()
 
 	members := hostAdapterMembers(3)
 	host, _, _, _ := newTestHostAdapter(t, members, 0)
 
 	require.NotPanics(t, func() {
-		host.TrackCatchupCompletion(members[1], 1, 0x03)
+		host.TrackCatchupCompletion(members[1], 50, 0x03)
 		host.TrackCatchupCompletion(nil, 0, 0)
 	})
 
@@ -921,15 +961,16 @@ func TestTrackCatchupCompletion_hostAdapterNoOp(t *testing.T) {
 	election.SetStateForTest(e, election.ElectionStateCanvass)
 
 	const flags uint8 = 0x04
+	const logPos int64 = 100
 	e.OnAppendPosition(codecs.AppendPositionFields{
 		LeadershipTermID: testLeadershipTermID,
-		LogPosition:      100,
+		LogPosition:      logPos,
 		FollowerMemberID: 1,
 		Flags:            flags,
 	})
 	require.Len(t, recording.trackCatchupCalls, 1)
 	require.Equal(t, int32(1), recording.trackCatchupCalls[0].memberID)
-	require.Equal(t, int64(testLeadershipTermID), recording.trackCatchupCalls[0].leadershipTermID)
+	require.Equal(t, logPos, recording.trackCatchupCalls[0].logPosition)
 	require.Equal(t, flags, recording.trackCatchupCalls[0].flags)
 }
 
@@ -1026,6 +1067,19 @@ func (m mapTermLookup) FindTermEntry(logLeadershipTermID int64) *recordinglog.En
 	return m[logLeadershipTermID]
 }
 
+// requirePublishedNewLeadershipTerm publishes answer and returns the sent fields.
+func requirePublishedNewLeadershipTerm(
+	t *testing.T,
+	host *election.HostAdapter,
+	pub *election.SbePublisher,
+	answer consensus.CanvassAnswer,
+) codecs.NewLeadershipTermFields {
+	t.Helper()
+	require.True(t, host.PublishNewLeadershipTerm(answer))
+	require.Len(t, pub.Sent, 1)
+	return pub.Sent[0].Fields.(codecs.NewLeadershipTermFields)
+}
+
 // TestHostAdapter_PublishNewLeadershipTerm_answerConstruction asserts the ten
 // settled-answer construction rows against the real adapter method.
 func TestHostAdapter_PublishNewLeadershipTerm_answerConstruction(t *testing.T) {
@@ -1059,6 +1113,7 @@ func TestHostAdapter_PublishNewLeadershipTerm_answerConstruction(t *testing.T) {
 		TermBaseLogPosition: termBase,
 		LogPosition:         logPos,
 	}
+	indexedLookup := mapTermLookup{leaderTerm: currentEntry}
 
 	newAdapter := func(
 		t *testing.T,
@@ -1076,12 +1131,9 @@ func TestHostAdapter_PublishNewLeadershipTerm_answerConstruction(t *testing.T) {
 
 	t.Run("current term canvasser null next fields", func(t *testing.T) {
 		t.Parallel()
-		host, pub := newAdapter(t, mapTermLookup{leaderTerm: currentEntry})
-		ok := host.PublishNewLeadershipTerm(baseAnswer)
-		require.True(t, ok)
-		require.Len(t, pub.Sent, 1)
+		host, pub := newAdapter(t, indexedLookup)
+		fields := requirePublishedNewLeadershipTerm(t, host, pub, baseAnswer)
 		require.Equal(t, followerID, pub.Sent[0].Dst.MemberID)
-		fields := pub.Sent[0].Fields.(codecs.NewLeadershipTermFields)
 		require.Equal(t, election.NullValue, fields.NextLeadershipTermID)
 		require.Equal(t, election.NullPosition, fields.NextTermBaseLogPosition)
 		require.Equal(t, election.NullPosition, fields.NextLogPosition)
@@ -1093,14 +1145,10 @@ func TestHostAdapter_PublishNewLeadershipTerm_answerConstruction(t *testing.T) {
 	t.Run("lagging canvasser next term indexed", func(t *testing.T) {
 		t.Parallel()
 		// One term behind: FindTermEntry(canvass+1) is the current term entry.
-		lookup := mapTermLookup{leaderTerm: currentEntry}
 		answer := baseAnswer
 		answer.LogLeadershipTermID = leaderTerm - 1
-		host, pub := newAdapter(t, lookup)
-		ok := host.PublishNewLeadershipTerm(answer)
-		require.True(t, ok)
-		require.Len(t, pub.Sent, 1)
-		fields := pub.Sent[0].Fields.(codecs.NewLeadershipTermFields)
+		host, pub := newAdapter(t, indexedLookup)
+		fields := requirePublishedNewLeadershipTerm(t, host, pub, answer)
 		require.Equal(t, answer.LogLeadershipTermID, fields.LogLeadershipTermID)
 		require.Equal(t, answer.LeadershipTermID, fields.LeadershipTermID)
 		require.Equal(t, termBase, fields.TermBaseLogPosition)
@@ -1112,14 +1160,10 @@ func TestHostAdapter_PublishNewLeadershipTerm_answerConstruction(t *testing.T) {
 	t.Run("lagging canvasser next term not indexed", func(t *testing.T) {
 		t.Parallel()
 		// Canvasser at 3, next key 4 missing: fallback to leader term and base.
-		lookup := mapTermLookup{leaderTerm: currentEntry}
 		answer := baseAnswer
 		answer.LogLeadershipTermID = 3
-		host, pub := newAdapter(t, lookup)
-		ok := host.PublishNewLeadershipTerm(answer)
-		require.True(t, ok)
-		require.Len(t, pub.Sent, 1)
-		fields := pub.Sent[0].Fields.(codecs.NewLeadershipTermFields)
+		host, pub := newAdapter(t, indexedLookup)
+		fields := requirePublishedNewLeadershipTerm(t, host, pub, answer)
 		require.Equal(t, answer.LogLeadershipTermID, fields.LogLeadershipTermID)
 		require.Equal(t, answer.LeadershipTermID, fields.LeadershipTermID)
 		require.Equal(t, termBase, fields.TermBaseLogPosition)
@@ -1156,10 +1200,7 @@ func TestHostAdapter_PublishNewLeadershipTerm_answerConstruction(t *testing.T) {
 		answer.LeadershipTermID = highTerm
 		answer.LogLeadershipTermID = canvassTerm
 		host, pub := newAdapter(t, lookup)
-		ok := host.PublishNewLeadershipTerm(answer)
-		require.True(t, ok)
-		require.Len(t, pub.Sent, 1)
-		fields := pub.Sent[0].Fields.(codecs.NewLeadershipTermFields)
+		fields := requirePublishedNewLeadershipTerm(t, host, pub, answer)
 		require.Equal(t, answer.LogLeadershipTermID, fields.LogLeadershipTermID)
 		require.Equal(t, answer.LeadershipTermID, fields.LeadershipTermID)
 		require.Equal(t, highBase, fields.TermBaseLogPosition)
@@ -1168,59 +1209,37 @@ func TestHostAdapter_PublishNewLeadershipTerm_answerConstruction(t *testing.T) {
 		require.Equal(t, election.NullPosition, fields.NextLogPosition)
 	})
 
-	t.Run("current term not indexed refuses", func(t *testing.T) {
-		t.Parallel()
-		host, pub := newAdapter(t, mapTermLookup{})
-		ok := host.PublishNewLeadershipTerm(baseAnswer)
-		require.False(t, ok)
-		require.Empty(t, pub.Sent)
-	})
+	unknownMember := baseAnswer
+	unknownMember.FollowerMemberID = 99
+	selfMember := baseAnswer
+	selfMember.FollowerMemberID = int32(thisIdx)
+	nullSession := baseAnswer
+	nullSession.LogSessionID = election.NullMemberID
 
-	t.Run("nil recording log lookup refuses", func(t *testing.T) {
-		t.Parallel()
-		host, pub := newAdapter(t, nil)
-		ok := host.PublishNewLeadershipTerm(baseAnswer)
-		require.False(t, ok)
-		require.Empty(t, pub.Sent)
-	})
-
-	t.Run("unknown member refuses", func(t *testing.T) {
-		t.Parallel()
-		host, pub := newAdapter(t, mapTermLookup{leaderTerm: currentEntry})
-		answer := baseAnswer
-		answer.FollowerMemberID = 99
-		ok := host.PublishNewLeadershipTerm(answer)
-		require.False(t, ok)
-		require.Empty(t, pub.Sent)
-	})
-
-	t.Run("self member refuses", func(t *testing.T) {
-		t.Parallel()
-		host, pub := newAdapter(t, mapTermLookup{leaderTerm: currentEntry})
-		answer := baseAnswer
-		answer.FollowerMemberID = int32(thisIdx)
-		ok := host.PublishNewLeadershipTerm(answer)
-		require.False(t, ok)
-		require.Empty(t, pub.Sent)
-	})
-
-	t.Run("null log session refuses", func(t *testing.T) {
-		t.Parallel()
-		host, pub := newAdapter(t, mapTermLookup{leaderTerm: currentEntry})
-		answer := baseAnswer
-		answer.LogSessionID = election.NullMemberID
-		ok := host.PublishNewLeadershipTerm(answer)
-		require.False(t, ok)
-		require.Empty(t, pub.Sent)
-	})
+	refuseTests := []struct {
+		name   string
+		lookup election.RecordingLogLookup
+		answer consensus.CanvassAnswer
+	}{
+		{name: "current term not indexed refuses", lookup: mapTermLookup{}, answer: baseAnswer},
+		{name: "nil recording log lookup refuses", lookup: nil, answer: baseAnswer},
+		{name: "unknown member refuses", lookup: indexedLookup, answer: unknownMember},
+		{name: "self member refuses", lookup: indexedLookup, answer: selfMember},
+		{name: "null log session refuses", lookup: indexedLookup, answer: nullSession},
+	}
+	for _, tt := range refuseTests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			host, pub := newAdapter(t, tt.lookup)
+			require.False(t, host.PublishNewLeadershipTerm(tt.answer))
+			require.Empty(t, pub.Sent)
+		})
+	}
 
 	t.Run("published answer stamps identity clock and version", func(t *testing.T) {
 		t.Parallel()
-		host, pub := newAdapter(t, mapTermLookup{leaderTerm: currentEntry})
-		ok := host.PublishNewLeadershipTerm(baseAnswer)
-		require.True(t, ok)
-		require.Len(t, pub.Sent, 1)
-		fields := pub.Sent[0].Fields.(codecs.NewLeadershipTermFields)
+		host, pub := newAdapter(t, indexedLookup)
+		fields := requirePublishedNewLeadershipTerm(t, host, pub, baseAnswer)
 		require.Equal(t, int32(thisIdx), fields.LeaderMemberID)
 		require.Equal(t, clusterwire.BooleanType_FALSE, fields.IsStartup)
 		require.Equal(t, epochStamp, fields.Timestamp)

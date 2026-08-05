@@ -3,6 +3,7 @@
 package cluster_archive_test
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -30,13 +31,26 @@ func openDurableCluster(
 	logEndpoint string,
 ) *harness.ClusterMemberSet {
 	t.Helper()
+	return openDurableClusterN(t, 3, portBase, logEndpoint)
+}
+
+// openDurableClusterN starts a durable set of memberCount members on the given
+// port block. Waits for session-keyed log images, then ticks until every member
+// reports ElectionComplete.
+func openDurableClusterN(
+	t *testing.T,
+	memberCount int,
+	portBase int,
+	logEndpoint string,
+) *harness.ClusterMemberSet {
+	t.Helper()
 
 	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
-		MemberCount:          3,
+		MemberCount:          memberCount,
 		PortBase:             portBase,
 		LogMulticastEndpoint: logEndpoint,
 	})
-	require.Len(t, set.Modules(), 3)
+	require.Len(t, set.Modules(), memberCount)
 
 	requireAwait(t, set, "log image fan-in", durableImageBound, set.AwaitLogImages)
 	requireAwait(t, set, "election", durableElectBound, set.AwaitElection)
@@ -44,26 +58,37 @@ func openDurableCluster(
 	return set
 }
 
+// nonLeaderIndices returns live module slots whose ThisMemberID is not
+// leaderMemberID, in ascending index order.
+func nonLeaderIndices(set *harness.ClusterMemberSet, leaderMemberID int32) []int {
+	var out []int
+	for i, m := range set.Modules() {
+		if m != nil && m.ThisMemberID() != leaderMemberID {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
 // firstNonLeaderIndex returns the first live module slot whose ThisMemberID is
 // not leaderMemberID. Returns -1 when no such slot exists.
 func firstNonLeaderIndex(set *harness.ClusterMemberSet, leaderMemberID int32) int {
-	for i, m := range set.Modules() {
-		if m != nil && m.ThisMemberID() != leaderMemberID {
-			return i
-		}
+	idxs := nonLeaderIndices(set, leaderMemberID)
+	if len(idxs) == 0 {
+		return -1
 	}
-	return -1
+	return idxs[0]
 }
 
-// survivorsAppendAtLeast reports whether every live member except excludeIndex
-// has an AppendSource ready at or above target.
+// survivorsAppendAtLeast reports whether every live member except those in
+// exclude has an AppendSource ready at or above target.
 func survivorsAppendAtLeast(
 	set *harness.ClusterMemberSet,
-	excludeIndex int,
+	exclude []int,
 	target int64,
 ) bool {
 	for i, m := range set.Modules() {
-		if m == nil || i == excludeIndex {
+		if m == nil || slices.Contains(exclude, i) {
 			continue
 		}
 		src := m.Agent().AppendSource()
@@ -103,12 +128,12 @@ func membersReachCommit(set *harness.ClusterMemberSet, target int64) bool {
 }
 
 // survivorsReachCommit reports leader commit and follower notified positions
-// among live members, skipping excludeIndex (a stopped slot).
+// among live members, skipping slots in exclude (stopped slots).
 //
 // leaderCommit must be sampled each tick from the current leader module.
 func survivorsReachCommit(
 	set *harness.ClusterMemberSet,
-	excludeIndex int,
+	exclude []int,
 	leaderMemberID int32,
 	leaderCommit int64,
 	target int64,
@@ -117,7 +142,7 @@ func survivorsReachCommit(
 		return false
 	}
 	for i, m := range set.Modules() {
-		if m == nil || i == excludeIndex {
+		if m == nil || slices.Contains(exclude, i) {
 			continue
 		}
 		if m.ThisMemberID() == leaderMemberID {
@@ -198,6 +223,7 @@ func TestDurableCluster_restartsAFollowerAndRejoins(t *testing.T) {
 	follower := set.Module(followerIndex)
 	require.NotNil(t, follower)
 	require.False(t, follower.IsLeader(), "chosen member must not be leader:\n%s", set.State())
+	down := []int{followerIndex}
 
 	// Capture the pre-stop recording id.
 	preRecordingID := follower.RecordingLog().TermRecordingID()
@@ -217,12 +243,7 @@ func TestDurableCluster_restartsAFollowerAndRejoins(t *testing.T) {
 	requireAwaitTick(
 		t, set, "follower recording current", durableWorkBound,
 		func() bool {
-			m := set.Module(followerIndex)
-			if m == nil {
-				return false
-			}
-			pos := harness.RecordingCounterPosition(m, m.Agent().LocalLogRecordingID())
-			return pos >= leaderPub
+			return localRecordingAtLeast(set.Module(followerIndex), leaderPub)
 		},
 	)
 
@@ -237,7 +258,7 @@ func TestDurableCluster_restartsAFollowerAndRejoins(t *testing.T) {
 
 	requireAwaitTick(t, set, "commit advances while follower down", durableWorkBound, func() bool {
 		return survivorsReachCommit(
-			set, followerIndex, leaderMemberID, leader.CommitPosition(), midAppendPos,
+			set, down, leaderMemberID, leader.CommitPosition(), midAppendPos,
 		)
 	})
 	require.Greater(
@@ -253,7 +274,7 @@ func TestDurableCluster_restartsAFollowerAndRejoins(t *testing.T) {
 	// bytes exist only on survivor Archives. After open the returner must rejoin
 	// the live log for post-restart bytes.
 	requireAwaitTick(t, set, "survivor recording catch-up", durableWorkBound, func() bool {
-		return survivorsAppendAtLeast(set, followerIndex, midAppendPos)
+		return survivorsAppendAtLeast(set, down, midAppendPos)
 	})
 
 	// Restart against the same cluster directory and Archive.
@@ -342,17 +363,13 @@ func TestDurableCluster_restartsTheOutgoingLeader(t *testing.T) {
 	}
 
 	// Drive a non-zero commit floor so the cluster is active before the fault.
-	mustAppend(t, set, leader, "pre-leader-stop-commit")
+	floorPos := mustAppend(t, set, leader, "pre-leader-stop-commit")
 
 	requireAwaitTick(t, set, "pre-stop commit floor", durableWorkBound, func() bool {
-		for _, m := range set.Modules() {
-			if m == nil || m.CommitPosition() == 0 {
-				return false
-			}
-		}
-		return true
+		return membersReachCommit(set, floorPos)
 	})
 
+	down := []int{leaderIndex}
 	require.NoError(t, set.StopMember(leaderIndex))
 	require.Nil(t, set.Module(leaderIndex))
 
@@ -396,7 +413,7 @@ func TestDurableCluster_restartsTheOutgoingLeader(t *testing.T) {
 
 	requireAwaitTick(t, set, "post-re-elect commit advance", durableWorkBound, func() bool {
 		return survivorsReachCommit(
-			set, leaderIndex, newLeaderID, newLeader.CommitPosition(), midAppendPos,
+			set, down, newLeaderID, newLeader.CommitPosition(), midAppendPos,
 		)
 	})
 

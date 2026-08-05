@@ -21,15 +21,32 @@ const (
 	channelMTUParam        = "mtu="
 )
 
-// LogStreamAdder registers both cluster log stream resources.
+// LogStreamAdder registers both cluster log stream resources and allocates
+// correlation ids for manual-mode subscription tags.
 //
 // [*aeron.Client] satisfies this interface as-built.
 type LogStreamAdder interface {
 	SubscriptionAdder
 	ExclusivePublicationAdder
+	NextCorrelationID() int64
 }
 
 var _ LogStreamAdder = (*aeron.Client)(nil)
+
+// Manual log subscription URI params. Names match Aeron ChannelUri and
+// CommonContext.
+const (
+	channelControlModeParam = "control-mode="
+	channelTagsParam        = "tags="
+	channelRejoinParam      = "rejoin="
+	channelAliasParam       = "alias="
+	channelSoRcvbufParam    = "so-rcvbuf="
+	channelRcvWndParam      = "rcv-wnd="
+
+	logSubscriptionControlMode = "manual"
+	logSubscriptionRejoin      = "false"
+	logSubscriptionAlias       = "log-cm"
+)
 
 // LogPublicationInitialPosition holds recovery geometry for the exclusive log
 // publication channel.
@@ -81,8 +98,9 @@ type LogStreamsDeps struct {
 	AppendSource consensus.AppendPositionSource
 
 	// PublicationInitialPosition seeds the exclusive log publication channel at
-	// open when non-nil. Nil is cold start. The subscription always uses
-	// Topology.LogChannel without seed. See [LogPublicationInitialPosition].
+	// open when non-nil. Nil is cold start. The subscription opens as
+	// control-mode=manual with live Topology.LogChannel as the first receive
+	// destination. See [LogPublicationInitialPosition].
 	PublicationInitialPosition *LogPublicationInitialPosition
 }
 
@@ -94,13 +112,14 @@ type LogStreamsDeps struct {
 //
 // Behaviour: the publication must be bound before any election work runs.
 // [consensus.Agent.AddLogPublication] reports the null session id until the
-// publication is bound. The transition that reads that session id also publishes
-// the new leadership term.
+// publication is bound. The transition that reads that session id also
+// publishes the new leadership term.
 //
-// The subscription opens before the publication. On a shared multicast group the
-// member's own subscription receives its own publication. Opening the
-// subscription first avoids a period with no receiver. Open does not wait for
-// connect.
+// The subscription opens as control-mode=manual before the publication. Open
+// adds Topology.LogChannel as the first receive destination so the shared
+// multicast group feeds the subscription. On that group the member's own
+// subscription receives its own publication. Opening the subscription first
+// avoids a period with no receiver. Open does not wait for connect.
 //
 // Concurrency: invoker-only. Every method must run on the same goroutine as
 // [consensus.Agent.DoWork] and the transport client duty cycle.
@@ -112,26 +131,33 @@ type LogStreamsDeps struct {
 // Do not copy. Every field is a reference type. A value copy shares the same
 // handles; both values look like owners.
 type LogStreams struct {
-	agent        *consensus.Agent
-	logPublisher *consensus.LogPublisher
-	publication  *aeron.ExclusivePublication
-	subscription *aeron.Subscription
+	agent             *consensus.Agent
+	logPublisher      *consensus.LogPublisher
+	publication       *aeron.ExclusivePublication
+	subscription      *aeron.Subscription
+	streamID          int32
+	liveURI           string
+	nextCorrelationID func() int64
 }
 
 // OpenLogStreams registers the cluster log subscription and publication and
 // binds the log path into deps.Agent.
 //
-// Both use [Topology.LogStreamID]. The subscription uses [Topology.LogChannel].
-// The publication uses that channel, or a channel seeded from
+// Both use [Topology.LogStreamID]. The subscription opens as control-mode=manual
+// with unique tags, rejoin=false, and alias=log-cm. so-rcvbuf and rcv-wnd copy
+// from [Topology.LogChannel] when that template carries them. The live multicast
+// URI ([Topology.LogChannel]) is added as the first receive destination. The
+// publication uses that channel, or a channel seeded from
 // [LogStreamsDeps.PublicationInitialPosition] when the seed is non-nil. Seed
 // lifetime is open-only; see [LogPublicationInitialPosition].
 //
 // Open order:
 //  1. validate the publication channel seed
-//  2. add the subscription
-//  3. add the publication
+//  2. add the manual-mode subscription
+//  3. add the live log channel as a receive destination
+//  4. add the publication
 //
-// Both adds complete before any bind. A failed add leaves the agent untouched.
+// All adds complete before any bind. A failed add leaves the agent untouched.
 //
 // Bind steps:
 //   - [consensus.Agent.SetLogPublisher]
@@ -139,15 +165,16 @@ type LogStreams struct {
 //   - [consensus.Agent.SetAppendSource] with deps.AppendSource, or
 //     [consensus.LogAppendPosition] over the wired publisher and adapter when
 //     deps.AppendSource is nil
-//   - [consensus.Agent.SetLogJoinSource] with [consensus.SubscriptionLogJoinSource]
-//     over the log subscription
+//   - [consensus.Agent.SetLogJoinSource] with
+//     [consensus.SubscriptionLogJoinSource] over the log subscription
+//   - [consensus.Agent.LiveLogDestinationSet] with the live log channel URI
 //
 // No Image is bound at open.
 //
 // Returns an error when:
 //   - any required dependency is nil
 //   - the initial-position seed is invalid
-//   - either add fails
+//   - the subscription add, live destination add, or publication add fails
 //
 // On error: every handle added so far is closed. The agent is untouched. The
 // returned value is nil.
@@ -170,24 +197,37 @@ func OpenLogStreams(
 		return nil, errors.New("cluster: log adapter is required")
 	}
 
-	channel := deps.Topology.LogChannel()
+	liveURI := deps.Topology.LogChannel()
 	streamID := deps.Topology.LogStreamID()
+	nextCorrelationID := deps.Adder.NextCorrelationID
 
 	// Validate seed before any driver add. Pure geometry errors must not open a
 	// subscription only to roll it back.
-	pubChannel, err := logChannelWithInitialPosition(channel, deps.PublicationInitialPosition)
+	pubChannel, err := logChannelWithInitialPosition(liveURI, deps.PublicationInitialPosition)
 	if err != nil {
 		return nil, err
 	}
 
-	sub, err := addSubscriptionChecked(
-		deps.Adder,
-		streamID,
-		channel,
-		"cluster log subscription",
-	)
+	ls := &LogStreams{
+		agent:             deps.Agent,
+		logPublisher:      deps.LogPublisher,
+		streamID:          streamID,
+		liveURI:           liveURI,
+		nextCorrelationID: nextCorrelationID,
+	}
+
+	sub, err := ls.addManualLogSubscription(deps.Adder, "cluster log subscription")
 	if err != nil {
 		return nil, err
+	}
+
+	if err := sub.AddDestination(liveURI); err != nil {
+		_ = sub.Close()
+		return nil, fmt.Errorf(
+			"cluster: add live log destination on %s: %w",
+			liveURI,
+			err,
+		)
 	}
 
 	pub, err := addExclusivePublicationChecked(
@@ -206,18 +246,13 @@ func OpenLogStreams(
 		appendSource = consensus.NewLogAppendPosition(deps.Agent)
 	}
 
-	deps.LogPublisher.SetPublication(pub)
+	ls.bindLogPublication(pub)
 	deps.Agent.SetLogPublisher(deps.LogPublisher)
 	deps.Agent.SetLogAdapter(deps.LogAdapter)
 	deps.Agent.SetAppendSource(appendSource)
-	deps.Agent.SetLogJoinSource(consensus.NewSubscriptionLogJoinSource(sub))
-
-	return &LogStreams{
-		agent:        deps.Agent,
-		logPublisher: deps.LogPublisher,
-		publication:  pub,
-		subscription: sub,
-	}, nil
+	ls.bindLogSubscription(sub)
+	deps.Agent.LiveLogDestinationSet(liveURI)
+	return ls, nil
 }
 
 // Publication returns the cluster log exclusive publication.
@@ -279,8 +314,7 @@ func (l *LogStreams) ReseedPublicationAt(
 	if err != nil {
 		return err
 	}
-	l.publication = pub
-	l.logPublisher.SetPublication(pub)
+	l.bindLogPublication(pub)
 	return nil
 }
 
@@ -288,9 +322,9 @@ func (l *LogStreams) ReseedPublicationAt(
 //
 // Nil after Close and on a nil receiver.
 //
-// The subscription carries one image per member that has published on the shared
-// log channel, including this member's own publication. Order is undefined.
-// Select by log session id. Must not index.
+// The subscription is control-mode=manual. Receive destinations (live multicast
+// and catchup unicast) feed it. Images arrive per destination and session.
+// Order is undefined. Select by log session id. Must not index.
 //
 // Concurrency: invoker-only. See [LogStreams].
 func (l *LogStreams) Subscription() *aeron.Subscription {
@@ -298,6 +332,152 @@ func (l *LogStreams) Subscription() *aeron.Subscription {
 		return nil
 	}
 	return l.subscription
+}
+
+// LiveURI returns the live log channel URI added as the initial receive
+// destination at open.
+//
+// Empty after Close and on a nil receiver.
+//
+// Concurrency: invoker-only. See [LogStreams].
+func (l *LogStreams) LiveURI() string {
+	if l == nil {
+		return ""
+	}
+	return l.liveURI
+}
+
+// ReseedSubscription closes the log subscription and opens a fresh
+// control-mode=manual subscription with new tags. Rebinds the agent log join
+// source. The fresh subscription has no destinations.
+//
+// Used at catchup entry so late-join images from the prior endpoint cannot
+// absorb same-session replay frames below their join position.
+//
+// Concurrency: invoker-only.
+//
+// Returns an error when:
+//   - the receiver is nil or already closed
+//   - adder is nil
+//   - the new subscription cannot be added
+//
+// Fail-closed: the previous subscription is closed before the new add. When
+// that add fails, ReseedSubscription opens a recovery subscription with fresh
+// tags, rebinds the join source, and re-adds the live destination when liveURI
+// is set. The original add error is still returned. When recovery also fails
+// the subscription stays nil and the join source stays unbound.
+func (l *LogStreams) ReseedSubscription(adder SubscriptionAdder) error {
+	if l == nil || l.subscription == nil {
+		return errors.New("cluster: log streams closed")
+	}
+	if adder == nil {
+		return errors.New("cluster: subscription adder is required")
+	}
+	if l.nextCorrelationID == nil {
+		return errors.New("cluster: correlation id allocator is required")
+	}
+
+	// Unbind before close so join selection cannot target a closed handle.
+	l.agent.SetLogJoinSource(nil)
+	_ = l.subscription.Close()
+	l.subscription = nil
+
+	sub, err := l.addManualLogSubscription(adder, "cluster log subscription reseed")
+	if err != nil {
+		return l.recoverSubscriptionAfterReseedFailure(adder, err)
+	}
+	l.bindLogSubscription(sub)
+	return nil
+}
+
+// addManualLogSubscription opens one control-mode=manual log subscription.
+func (l *LogStreams) addManualLogSubscription(
+	adder SubscriptionAdder,
+	what string,
+) (*aeron.Subscription, error) {
+	return addSubscriptionChecked(
+		adder,
+		l.streamID,
+		manualLogSubscriptionChannel(l.nextCorrelationID, l.liveURI),
+		what,
+	)
+}
+
+// bindLogPublication stores pub and rebinds the log publisher.
+func (l *LogStreams) bindLogPublication(pub *aeron.ExclusivePublication) {
+	l.publication = pub
+	l.logPublisher.SetPublication(pub)
+}
+
+// bindLogSubscription stores sub and rebinds the agent log join source.
+func (l *LogStreams) bindLogSubscription(sub *aeron.Subscription) {
+	l.subscription = sub
+	l.agent.SetLogJoinSource(consensus.NewSubscriptionLogJoinSource(sub))
+}
+
+// recoverSubscriptionAfterReseedFailure re-opens a manual subscription and
+// re-attaches the live destination after a failed reseed open. Returns
+// reseedErr joined with any recovery error.
+//
+// When recovery cannot open a subscription, or cannot re-add the live
+// destination, clears the live destination field so a later restore is not
+// skipped for a stale real URI.
+func (l *LogStreams) recoverSubscriptionAfterReseedFailure(
+	adder SubscriptionAdder,
+	reseedErr error,
+) error {
+	sub, err := l.addManualLogSubscription(adder, "cluster log subscription reseed recovery")
+	if err != nil {
+		l.agent.LiveLogDestinationSet("")
+		return errors.Join(reseedErr, err)
+	}
+	l.bindLogSubscription(sub)
+
+	live := l.liveURI
+	if live != "" {
+		if destErr := sub.AddDestination(live); destErr != nil {
+			// AddDestination failed. Clear the live URI so restore re-adds.
+			live = ""
+			reseedErr = errors.Join(reseedErr, destErr)
+		}
+	}
+	l.agent.LiveLogDestinationSet(live)
+	return reseedErr
+}
+
+// manualLogSubscriptionChannel builds the control-mode=manual receive channel
+// for the cluster log subscription.
+//
+// Shape: aeron:udp?control-mode=manual|tags=<t1>,<t2>|rejoin=false|alias=log-cm
+// plus so-rcvbuf and rcv-wnd copied from liveURI when present. Tags come from
+// two nextCorrelationID allocations so each open gets a fresh receive endpoint.
+func manualLogSubscriptionChannel(
+	nextCorrelationID func() int64,
+	liveURI string,
+) string {
+	t1 := nextCorrelationID()
+	t2 := nextCorrelationID()
+	ch := "aeron:udp"
+	ch = aeron.AppendChannelParam(ch, channelControlModeParam, logSubscriptionControlMode)
+	ch = aeron.AppendChannelParam(
+		ch,
+		channelTagsParam,
+		strconv.FormatInt(t1, 10)+","+strconv.FormatInt(t2, 10),
+	)
+	ch = aeron.AppendChannelParam(ch, channelRejoinParam, logSubscriptionRejoin)
+	ch = aeron.AppendChannelParam(ch, channelAliasParam, logSubscriptionAlias)
+	ch = copyChannelParamIfPresent(ch, liveURI, channelSoRcvbufParam)
+	ch = copyChannelParamIfPresent(ch, liveURI, channelRcvWndParam)
+	return ch
+}
+
+// copyChannelParamIfPresent appends param from src onto dst when src carries it.
+func copyChannelParamIfPresent(dst, src, param string) string {
+	idx := aeron.ChannelParamIndex(src, param, true)
+	if idx < 0 {
+		return dst
+	}
+	return aeron.AppendChannelParam(dst, param, aeron.ChannelParamValue(src, idx, param))
 }
 
 // logPublicationSeedFromPlan maps a recovery plan to exclusive log publication
@@ -400,9 +580,10 @@ func putOrReplaceChannelParam(channel, param, value string) string {
 	return aeron.ReplaceChannelParamValue(channel, idx, param, value)
 }
 
-// Close clears agent log join source, append source, log adapter, and log
-// publisher, clears the publisher publication, then closes publication and
-// subscription. Join source clears before the subscription it holds closes.
+// Close clears agent log join source, live and catchup destination fields,
+// append source, log adapter, and log publisher, clears the publisher
+// publication, then closes publication and subscription. Join source clears
+// before the subscription it holds closes.
 //
 // Idempotent. When both transport handles are already nil, Close returns without
 // touching the agent or the log publisher. Agent and log publisher fields stay
@@ -418,6 +599,8 @@ func (l *LogStreams) Close() error {
 	}
 
 	l.agent.SetLogJoinSource(nil)
+	l.agent.LiveLogDestinationSet("")
+	l.agent.CatchupLogDestinationSet("")
 	l.agent.SetAppendSource(nil)
 	l.agent.SetLogAdapter(nil)
 	l.agent.SetLogPublisher(nil)
@@ -432,5 +615,7 @@ func (l *LogStreams) Close() error {
 		err = errors.Join(err, l.subscription.Close())
 		l.subscription = nil
 	}
+	l.liveURI = ""
+	l.nextCorrelationID = nil
 	return err
 }

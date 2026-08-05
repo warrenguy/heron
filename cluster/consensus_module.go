@@ -86,8 +86,8 @@ type ConsensusModule struct {
 	// that exits a replay state closes the helper first.
 	logReplay *logReplay
 
-	// catchup is the follower catchup receive and leader catchup replay
-	// control. Nil until wired after log streams open.
+	// catchup is the follower catchup destination on the log subscription and
+	// leader catchup replay control. Nil until wired after log streams open.
 	catchup *catchupControl
 
 	// reseedCtx bounds the reseed recording lookup. Open detaches cancel so a
@@ -361,15 +361,14 @@ func OpenConsensusModule(
 		return r
 	})
 
-	// Catchup control: follower unicast receive and leader archive replay of
-	// the local log recording. Live join source is the log subscription from
-	// OpenLogStreams. Catchup prefers its own sub when open.
+	// Catchup control: follower catchup destination on the log subscription,
+	// and leader archive replay of the local log recording.
 	module.catchup = newCatchupControl(
 		ctx,
 		module.archiveClient,
 		module.client,
 		module.agent,
-		module.agent.LogJoinSource(),
+		module.streams,
 		topology.LogStreamID(),
 		topology.LogChannel(),
 	)

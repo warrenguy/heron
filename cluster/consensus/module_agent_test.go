@@ -54,6 +54,8 @@ func (r *orderRunner) DoWork(int64) int {
 
 func (r *orderRunner) HandleConsensusMessage([]byte, int) bool { return false }
 
+var _ PositionTable = (*stubPositionTable)(nil)
+
 type stubPositionTable struct{}
 
 func (s *stubPositionTable) UpdateMemberPosition(
@@ -69,10 +71,13 @@ func (s *stubPositionTable) QuorumPositionBoundedByLeaderLog(appendPosition, now
 
 func (s *stubPositionTable) HasActiveQuorum(nowNs, timeoutNs int64) bool { return true }
 
+func (s *stubPositionTable) RefreshMemberLiveness(memberID int32) {}
+
 // spyPositionTable records stamp/rank call order for leader consensusWork tests.
 // fixedQuorum, when set, is host-minned: min(*fixedQuorum, appendPosition).
 type spyPositionTable struct {
 	updates     []memberPositionUpdate
+	liveness    []int32
 	callOrder   []string
 	lastNowNs   int64
 	fixedQuorum *int64
@@ -89,6 +94,11 @@ func (s *spyPositionTable) UpdateMemberPosition(
 		leadershipTermID: leadershipTermID,
 		logPosition:      logPosition,
 	})
+}
+
+func (s *spyPositionTable) RefreshMemberLiveness(memberID int32) {
+	s.callOrder = append(s.callOrder, "liveness")
+	s.liveness = append(s.liveness, memberID)
 }
 
 func (s *spyPositionTable) QuorumPositionBoundedByLeaderLog(appendPosition, nowNs int64) int64 {
@@ -139,11 +149,21 @@ type appendPublishCall struct {
 	flags uint8
 }
 
+type stopCatchupPublishCall struct {
+	term       int64
+	followerID int32
+}
+
+var _ ConsensusEgress = (*recordingEgress)(nil)
+
 type recordingEgress struct {
 	commits      []commitPublishCall
 	appends      []appendPublishCall
+	stopCatchups []stopCatchupPublishCall
 	answers      []CanvassAnswer
 	refuseAppend bool // when true, PublishAppendPosition returns false
+	// refuseStopCatchup, when true, PublishStopCatchup returns false.
+	refuseStopCatchup bool
 	// refuseTerm, when true, PublishNewLeadershipTerm returns false.
 	// Default false so acceptance tests see true without configuring.
 	refuseTerm bool
@@ -165,6 +185,17 @@ func (e *recordingEgress) PublishAppendPosition(
 		term:  leadershipTermID,
 		pos:   logPosition,
 		flags: flags,
+	})
+	return true
+}
+
+func (e *recordingEgress) PublishStopCatchup(leadershipTermID int64, followerMemberID int32) bool {
+	if e.refuseStopCatchup {
+		return false
+	}
+	e.stopCatchups = append(e.stopCatchups, stopCatchupPublishCall{
+		term:       leadershipTermID,
+		followerID: followerMemberID,
 	})
 	return true
 }
@@ -1687,28 +1718,10 @@ func TestAgent_TruncateLogEntry_successWithoutAdapter(t *testing.T) {
 func TestAgent_PrepareForNewLeadership_clearsAppendRankFailure(t *testing.T) {
 	t.Parallel()
 
-	const timeoutNs int64 = 100
-	src := &scriptedAppendSource{
-		results: []scriptedAppendResult{
-			{0, false}, // open not-ready run
-			{0, false}, // past bound: mark failure
-		},
-	}
-	a := NewAgent(AgentConfig{
-		Role:                            RoleFollower,
-		AppendSource:                    src,
-		AppendPositionNotReadyTimeoutNs: timeoutNs,
-	})
-	a.SetLogRecordingID(77)
-	a.SetLogRecordingControl(&fakeLogRecordingControl{active: true})
-
-	// Same mark setup as TestResolveAppendPosition_failsOnlyWhileRecordingActive.
-	_, ready := a.resolveAppendPosition(0)
-	require.False(t, ready)
-	_, ready = a.resolveAppendPosition(timeoutNs)
-	require.False(t, ready)
-	require.ErrorIs(t, a.AppendRankFailure(), ErrAppendPositionUnavailable)
-	require.Equal(t, int64(0), a.appendNotReadySinceNs)
+	// Seed marked state. Mark path lives in resolveAppendPosition tests.
+	a := NewAgent(AgentConfig{})
+	a.appendRankFailure = ErrAppendPositionUnavailable
+	a.appendNotReadySinceNs = 0
 
 	_, err := a.PrepareForNewLeadership(1234, 1)
 	require.NoError(t, err)

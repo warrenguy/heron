@@ -88,7 +88,8 @@ func TestOpenConsensusSubscription_addFailure(t *testing.T) {
 	topology := singleMemberTopology(t)
 	agent := consensus.NewAgent(consensus.AgentConfig{})
 	cause := errors.New("driver timeout")
-	adder := &fakeLogStreamAdder{failSubErr: cause}
+	adder := &fakeLogStreamAdder{}
+	adder.failAllSubscriptionAdds(cause)
 
 	cs, err := cluster.OpenConsensusSubscription(cluster.ConsensusSubscriptionDeps{
 		Adder:    adder,

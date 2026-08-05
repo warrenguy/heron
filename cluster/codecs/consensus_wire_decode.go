@@ -112,6 +112,32 @@ func decodeCommitPositionFields(
 	}
 }
 
+func decodeCatchupPositionFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) CatchupPositionFields {
+	var msg clusterwire.CatchupPosition
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return CatchupPositionFields{
+		LeadershipTermID: msg.LeadershipTermId(),
+		LogPosition:      msg.LogPosition(),
+		FollowerMemberID: msg.FollowerMemberId(),
+		CatchupEndpoint:  msg.GetCatchupEndpointAsString(),
+	}
+}
+
+func decodeStopCatchupFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) StopCatchupFields {
+	var msg clusterwire.StopCatchup
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return StopCatchupFields{
+		LeadershipTermID: msg.LeadershipTermId(),
+		FollowerMemberID: msg.FollowerMemberId(),
+	}
+}
+
 // tryDecodeClusterAt parses the cluster header at offset, checks the template
 // ID, and decodes the fixed block via decode. The path stays allocation-free:
 // T is a concrete field struct (no interface boxing) and decode is a
@@ -126,11 +152,10 @@ func tryDecodeClusterAt[T any](
 	templateID uint16,
 	maxVarLen int,
 	decode func(buf []byte, body, block, version, bufLen uint64) T,
-) (T, bool) {
+) (fields T, ok bool) {
 	layout, ok := ClusterMessageLayoutAt(buf, offset, maxVarLen)
 	if !ok || layout.TemplateID != templateID {
-		var zero T
-		return zero, false
+		return fields, false
 	}
 	if maxVarLen > 0 {
 		varOffset := layout.BodyOffset + int(layout.BlockLength)
@@ -142,8 +167,7 @@ func tryDecodeClusterAt[T any](
 			maxVarLen,
 			false,
 		); !scanOK {
-			var zero T
-			return zero, false
+			return fields, false
 		}
 	}
 	return decode(
@@ -189,32 +213,6 @@ func TryDecodeCommitPositionAt(buf []byte, offset int) (CommitPositionFields, bo
 	)
 }
 
-func decodeCatchupPositionFields(
-	buf []byte,
-	body, block, version, bufLen uint64,
-) CatchupPositionFields {
-	var msg clusterwire.CatchupPosition
-	msg.WrapForDecode(buf, body, block, version, bufLen)
-	return CatchupPositionFields{
-		LeadershipTermID: msg.LeadershipTermId(),
-		LogPosition:      msg.LogPosition(),
-		FollowerMemberID: msg.FollowerMemberId(),
-		CatchupEndpoint:  msg.GetCatchupEndpointAsString(),
-	}
-}
-
-func decodeStopCatchupFields(
-	buf []byte,
-	body, block, version, bufLen uint64,
-) StopCatchupFields {
-	var msg clusterwire.StopCatchup
-	msg.WrapForDecode(buf, body, block, version, bufLen)
-	return StopCatchupFields{
-		LeadershipTermID: msg.LeadershipTermId(),
-		FollowerMemberID: msg.FollowerMemberId(),
-	}
-}
-
 // TryDecodeCatchupPositionAt decodes CatchupPosition including the var-ascii
 // catchup endpoint. Passes ClusterDecodeMaxVarLen so the endpoint length is
 // validated before decode.
@@ -225,5 +223,12 @@ func TryDecodeCatchupPositionAt(buf []byte, offset int) (CatchupPositionFields, 
 		clusterwire.CatchupPositionSbeTemplateID,
 		ClusterDecodeMaxVarLen,
 		decodeCatchupPositionFields,
+	)
+}
+
+// TryDecodeStopCatchupAt decodes a fixed-length StopCatchup message.
+func TryDecodeStopCatchupAt(buf []byte, offset int) (StopCatchupFields, bool) {
+	return tryDecodeClusterAt(
+		buf, offset, clusterwire.StopCatchupSbeTemplateID, 0, decodeStopCatchupFields,
 	)
 }

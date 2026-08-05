@@ -354,8 +354,8 @@ func TestDriverProxy_encodeFailureAborts_rapid(t *testing.T) {
 				encodeCase.MsgTypeID,
 				encodeCase.BodyLength,
 				false,
-				func(encodedOffset int) error {
-					return encodeCase.Encode(proxy.Ring().Buffer(), encodedOffset)
+				func(_ int) error {
+					return encodeCase.Encode(proxy.Ring().Buffer())
 				},
 			)
 			require.ErrorIs(rt, err, encodeCase.WantErr)

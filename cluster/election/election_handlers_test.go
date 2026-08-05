@@ -1207,22 +1207,17 @@ func TestHandleFollowerCatchup_pollLimit(t *testing.T) {
 		// LogPosition on install is AppendPosition + joinAhead.
 		joinAhead  int64
 		pollResult int
-		// When true, want limit is AppendPosition+joinAhead; else wantLimit.
-		wantJoinLimit bool
-		wantLimit     int64
 	}{
 		{
 			name:           "notified commit",
 			commitPosition: 500,
 			pollResult:     5,
-			wantLimit:      500,
 		},
 		{
 			name:           "zero commit falls back to join position",
 			commitPosition: 0,
 			joinAhead:      100,
 			pollResult:     2,
-			wantJoinLimit:  true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1231,24 +1226,17 @@ func TestHandleFollowerCatchup_pollLimit(t *testing.T) {
 			cfg, deps, clock, _, _ := testElectionDeps(t)
 			host := &recordingElectionHost{clock: clock, catchupPollResult: tc.pollResult}
 			deps.Host = host
-			e := election.NewElection(cfg, deps)
-
-			// Install so leader identity and commit bound are set, then inject catchup.
-			election.SetStateForTest(e, election.ElectionStateCanvass)
-			fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
-			fields.CommitPosition = tc.commitPosition
-			fields.LogPosition = cfg.AppendPosition + tc.joinAhead
-			e.OnNewLeadershipTerm(fields)
+			e, joinPos := forceFollowerCatchup(t, cfg, deps, tc.commitPosition, tc.joinAhead)
 			require.Equal(t, tc.commitPosition, e.NotifiedCommitPosition())
 
-			election.SetStateForTest(e, election.ElectionStateFollowerCatchup)
 			t0 := clock.nowNs
 			require.Equal(t, tc.pollResult, e.DoWork(t0))
 			require.Equal(t, election.ElectionStateFollowerCatchup, e.State())
 
-			wantLimit := tc.wantLimit
-			if tc.wantJoinLimit {
-				wantLimit = cfg.AppendPosition + tc.joinAhead
+			// Zero notified commit falls back to the catchup join bound.
+			wantLimit := tc.commitPosition
+			if wantLimit == 0 {
+				wantLimit = joinPos
 			}
 			require.Equal(t, []catchupPollCall{{
 				limitPosition: wantLimit,
@@ -1274,6 +1262,72 @@ func TestHandleFollowerCatchup_noImageReturnsZero(t *testing.T) {
 
 	// Both bounds unset: notified 0 falls back to NullPosition join.
 	require.Equal(t, int64(election.NullPosition), host.catchupPollCalls[0].limitPosition)
+}
+
+// Near-live catchup adds the live destination once and counts the attempt as work.
+// A second tick with live already set does not re-add.
+func TestHandleFollowerCatchup_addsLiveWhenNearLive(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	const joinAhead int64 = 200
+	const notifiedCommit int64 = 150
+	host := &recordingElectionHost{
+		clock:             clock,
+		catchupPollResult: 2,
+		catchupNearLive:   true,
+		// Commit below join: stay in CATCHUP. Observe the live add alone.
+		commitPosition: cfg.AppendPosition,
+	}
+	deps.Host = host
+	e, joinPos := forceFollowerCatchup(t, cfg, deps, notifiedCommit, joinAhead)
+
+	t0 := clock.nowNs
+	// Poll (2) + live add (1).
+	require.Equal(t, 3, e.DoWork(t0))
+	require.Equal(t, election.ElectionStateFollowerCatchup, e.State())
+	require.Equal(t, 1, host.addLiveLogDestinationCalls)
+	require.NotEmpty(t, host.LiveLogDestination())
+	require.Equal(t, []int64{max(notifiedCommit, joinPos)}, host.catchupNearLiveCalls)
+
+	// Live already set: no second add.
+	require.Equal(t, 2, e.DoWork(t0+1))
+	require.Equal(t, 1, host.addLiveLogDestinationCalls)
+	require.Len(t, host.catchupNearLiveCalls, 1)
+}
+
+// Failed live add leaves LiveLogDestination empty. The next tick retries.
+func TestHandleFollowerCatchup_liveAddFailureRetries(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	const joinAhead int64 = 200
+	host := &recordingElectionHost{
+		clock:                         clock,
+		catchupPollResult:             1,
+		catchupNearLive:               true,
+		addLiveLogDestinationFailLeft: 1,
+		commitPosition:                cfg.AppendPosition,
+	}
+	deps.Host = host
+	e, _ := forceFollowerCatchup(t, cfg, deps, 0, joinAhead)
+
+	t0 := clock.nowNs
+	// First tick: poll + failed add. LiveLogDestination stays empty.
+	require.Equal(t, 2, e.DoWork(t0))
+	require.Equal(t, 1, host.addLiveLogDestinationCalls)
+	require.Empty(t, host.LiveLogDestination())
+	require.Equal(t, election.ElectionStateFollowerCatchup, e.State())
+
+	// Second tick: near-live re-check. Add succeeds.
+	require.Equal(t, 2, e.DoWork(t0+1))
+	require.Equal(t, 2, host.addLiveLogDestinationCalls)
+	require.NotEmpty(t, host.LiveLogDestination())
+	require.Len(t, host.catchupNearLiveCalls, 2)
+
+	// Third tick: live set. No further add.
+	require.Equal(t, 1, e.DoWork(t0+2))
+	require.Equal(t, 2, host.addLiveLogDestinationCalls)
 }
 
 func TestEnsureRecordingLogCoherent_nullRecordingIDSkips(t *testing.T) {
@@ -1417,6 +1471,32 @@ func driveFollowerLogJoinToReady(
 	require.Equal(t, election.ElectionStateFollowerReady, e.State())
 	require.Equal(t, adoptedTerm, election.LogLeadershipTermIDForTest(e))
 	return adoptedTerm
+}
+
+// forceFollowerCatchup installs a NewLeadershipTerm that records the notified
+// commit and catchup join bounds, then injects FOLLOWER_CATCHUP.
+//
+// joinAhead is added to cfg.AppendPosition for fields.LogPosition. Caller must
+// wire deps.Host before the call.
+//
+// Returns: the election and the recorded join position.
+func forceFollowerCatchup(
+	t *testing.T,
+	cfg election.ElectionConfig,
+	deps election.ElectionDeps,
+	commitPosition, joinAhead int64,
+) (*election.Election, int64) {
+	t.Helper()
+
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateCanvass)
+	joinPos := cfg.AppendPosition + joinAhead
+	fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
+	fields.CommitPosition = commitPosition
+	fields.LogPosition = joinPos
+	e.OnNewLeadershipTerm(fields)
+	election.SetStateForTest(e, election.ElectionStateFollowerCatchup)
+	return e, joinPos
 }
 
 // driveToFollowerCatchupInit installs a leader term whose live log position is
@@ -2491,10 +2571,11 @@ func TestOnAppendPosition_updatesMemberLogPositionDuringCanvass(t *testing.T) {
 			require.Equal(t, election.NullPosition, follower.LogPosition)
 
 			const flags uint8 = 0x02
+			logPos := cfg.AppendPosition + 50
 			e.OnAppendPosition(
 				codecs.AppendPositionFields{
 					LeadershipTermID: tc.leadershipTerm,
-					LogPosition:      cfg.AppendPosition + 50,
+					LogPosition:      logPos,
 					FollowerMemberID: 1,
 					Flags:            flags,
 				},
@@ -2506,11 +2587,11 @@ func TestOnAppendPosition_updatesMemberLogPositionDuringCanvass(t *testing.T) {
 				return
 			}
 			require.Equal(t, tc.leadershipTerm, follower.LeadershipTermID)
-			require.Equal(t, cfg.AppendPosition+50, follower.LogPosition)
+			require.Equal(t, logPos, follower.LogPosition)
 			require.Equal(t, clock.nowNs, follower.TimeOfLastAppendPositionNs)
 			require.Len(t, host.trackCatchupCalls, 1)
 			require.Equal(t, int32(1), host.trackCatchupCalls[0].memberID)
-			require.Equal(t, tc.leadershipTerm, host.trackCatchupCalls[0].leadershipTermID)
+			require.Equal(t, logPos, host.trackCatchupCalls[0].logPosition)
 			require.Equal(t, flags, host.trackCatchupCalls[0].flags)
 		})
 	}

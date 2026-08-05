@@ -57,31 +57,36 @@ const (
 	ClusterReplayLogEndpoint = "239.255.12.17:25704"
 )
 
-// Durable live-Archive scenario endpoints. Each pair owns one three-member
-// consensus port block base+1 .. base+(memberCount-1)*100+5 (at three members
-// base+1 .. base+205) and one shared cluster-log multicast endpoint.
+// Durable live-Archive scenario endpoints. Each pair owns one consensus port
+// block base+1 .. base+(memberCount-1)*100+5 and one shared cluster-log
+// multicast endpoint. Default durable sets use three members
+// (base+1 .. base+205). DurableConcurrentCatchup uses five
+// (base+1 .. base+405).
 //
 // DurableRecord and DurableRank are separate so the two record/rank tests may
 // run in parallel. DurableRestart and DurableRestartLeader are separate for the
-// two restart tests.
+// two restart tests. DurableCatchup and DurableConcurrentCatchup are separate
+// for the single-follower and concurrent-follower catchup tests.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
 const (
-	DurableRecordPortBase           = 26000
-	DurableRecordLogEndpoint        = "239.255.12.19:26004"
-	DurableRankPortBase             = 29400
-	DurableRankLogEndpoint          = "239.255.12.39:29404"
-	DurableRestartPortBase          = 26300
-	DurableRestartLogEndpoint       = "239.255.12.21:26304"
-	DurableRestartLeaderPortBase    = 29700
-	DurableRestartLeaderLogEndpoint = "239.255.12.41:29704"
-	DurableReElectionPortBase       = 26600
-	DurableReElectionLogEndpoint    = "239.255.12.23:26604"
-	DurableCatchupPortBase          = 26900
-	DurableCatchupLogEndpoint       = "239.255.12.25:26904"
-	DurableDivergencePortBase       = 27200
-	DurableDivergenceLogEndpoint    = "239.255.12.27:27204"
+	DurableRecordPortBase               = 26000
+	DurableRecordLogEndpoint            = "239.255.12.19:26004"
+	DurableRankPortBase                 = 29400
+	DurableRankLogEndpoint              = "239.255.12.39:29404"
+	DurableRestartPortBase              = 26300
+	DurableRestartLogEndpoint           = "239.255.12.21:26304"
+	DurableRestartLeaderPortBase        = 29700
+	DurableRestartLeaderLogEndpoint     = "239.255.12.41:29704"
+	DurableReElectionPortBase           = 26600
+	DurableReElectionLogEndpoint        = "239.255.12.23:26604"
+	DurableCatchupPortBase              = 26900
+	DurableCatchupLogEndpoint           = "239.255.12.25:26904"
+	DurableDivergencePortBase           = 27200
+	DurableDivergenceLogEndpoint        = "239.255.12.27:27204"
+	DurableConcurrentCatchupPortBase    = 30400
+	DurableConcurrentCatchupLogEndpoint = "239.255.12.43:30404"
 )
 
 // cluster_archive one-off and smoke endpoints. Kept in harness so one matrix

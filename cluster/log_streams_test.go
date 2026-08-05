@@ -12,6 +12,10 @@ import (
 	"github.com/warrenguy/heron/cluster/consensus"
 )
 
+// testLogChannelTemplate is a loopback UDP log channel without endpoint.
+// Topology fills the endpoint from shared-log members.
+const testLogChannelTemplate = "aeron:udp?term-length=64k|interface=127.0.0.1|ttl=0"
+
 type logStreamAddCall struct {
 	kind     string
 	streamID int32
@@ -22,10 +26,35 @@ type fakeLogStreamAdder struct {
 	calls        []logStreamAddCall
 	lastSub      *aeron.Subscription
 	lastPub      *aeron.ExclusivePublication
-	failSubErr   error
-	failPubErr   error
-	returnNilSub bool
-	returnNilPub bool
+	lastDestHook *aeron.RecordingReceiveDestinationHook
+	// failSubLeft is remaining subscription adds that return failSubErr. Negative
+	// means permanent (every subscription add fails). Zero means no scripted
+	// failure (unset or countdown exhausted).
+	failSubLeft    int
+	failSubErr     error
+	failPubErr     error
+	failDestErr    error
+	returnNilSub   bool
+	returnNilPub   bool
+	correlationSeq int64
+}
+
+func (f *fakeLogStreamAdder) NextCorrelationID() int64 {
+	f.correlationSeq++
+	return f.correlationSeq
+}
+
+// failNextSubscriptionAdds scripts the next n subscription adds to fail with
+// err. After n failures, later adds succeed.
+func (f *fakeLogStreamAdder) failNextSubscriptionAdds(n int, err error) {
+	f.failSubErr = err
+	f.failSubLeft = n
+}
+
+// failAllSubscriptionAdds scripts every subscription add to fail with err.
+func (f *fakeLogStreamAdder) failAllSubscriptionAdds(err error) {
+	f.failSubErr = err
+	f.failSubLeft = -1
 }
 
 func (f *fakeLogStreamAdder) AddSubscription(
@@ -40,11 +69,17 @@ func (f *fakeLogStreamAdder) AddSubscription(
 	if f.returnNilSub {
 		return nil, nil
 	}
-	if f.failSubErr != nil {
+	if f.failSubErr != nil && f.failSubLeft != 0 {
+		if f.failSubLeft > 0 {
+			f.failSubLeft--
+		}
 		return nil, f.failSubErr
 	}
 	sub := new(aeron.Subscription)
+	hook := &aeron.RecordingReceiveDestinationHook{AddErr: f.failDestErr}
+	aeron.SubscriptionSetReceiveDestinationHookForHooks(sub, hook)
 	f.lastSub = sub
+	f.lastDestHook = hook
 	return sub, nil
 }
 
@@ -66,6 +101,60 @@ func (f *fakeLogStreamAdder) AddExclusivePublication(
 	pub := new(aeron.ExclusivePublication)
 	f.lastPub = pub
 	return pub, nil
+}
+
+// requireManualLogSubscriptionChannel asserts the control-mode=manual channel
+// shape that OpenLogStreams and ReseedSubscription build.
+//
+// Accepts require.TestingT so unit (*testing.T) and property (*rapid.T) callers
+// share one helper.
+func requireManualLogSubscriptionChannel(t require.TestingT, channel string) {
+	if h, ok := t.(interface{ Helper() }); ok {
+		h.Helper()
+	}
+	require.Contains(t, channel, "control-mode=manual")
+	require.Contains(t, channel, "tags=")
+	require.Contains(t, channel, "rejoin=false")
+	require.Contains(t, channel, "alias=log-cm")
+	require.NotContains(t, channel, "session-id=")
+	require.NotContains(t, channel, "group=true")
+	require.NotContains(t, channel, "endpoint=")
+}
+
+// requireLogStreamOpenOrder asserts subscription-then-publication open order
+// and stream ids. Callers assert publication channel content separately.
+//
+// Accepts require.TestingT so unit (*testing.T) and property (*rapid.T) callers
+// share one helper.
+func requireLogStreamOpenOrder(t require.TestingT, adder *fakeLogStreamAdder, streamID int32) {
+	if h, ok := t.(interface{ Helper() }); ok {
+		h.Helper()
+	}
+	require.Len(t, adder.calls, 2)
+	require.Equal(t, "subscription", adder.calls[0].kind)
+	require.Equal(t, "publication", adder.calls[1].kind)
+	require.Equal(t, streamID, adder.calls[0].streamID)
+	require.Equal(t, streamID, adder.calls[1].streamID)
+	requireManualLogSubscriptionChannel(t, adder.calls[0].channel)
+}
+
+// requireAgentLogUnbound asserts the agent and log publisher hold no log binds.
+//
+// Accepts require.TestingT so unit (*testing.T) and property (*rapid.T) callers
+// share one helper.
+func requireAgentLogUnbound(
+	t require.TestingT,
+	agent *consensus.Agent,
+	logPublisher *consensus.LogPublisher,
+) {
+	if h, ok := t.(interface{ Helper() }); ok {
+		h.Helper()
+	}
+	require.Equal(t, int32(-1), agent.AddLogPublication(0))
+	require.Nil(t, agent.AppendSource())
+	require.Nil(t, agent.LogJoinSource())
+	require.Empty(t, agent.LiveLogDestination())
+	require.Nil(t, logPublisher.Publication())
 }
 
 func sharedLogTopology(t *testing.T, memberID int32, logChannel string) *cluster.Topology {
@@ -107,14 +196,33 @@ func openLogStreamsDeps(
 	}
 }
 
+// openLogStreamsOK opens log streams and registers Close cleanup. For happy-path
+// tests that keep a live LogStreams.
+func openLogStreamsOK(
+	t *testing.T,
+	topology *cluster.Topology,
+	adder cluster.LogStreamAdder,
+) (
+	*cluster.LogStreams,
+	*consensus.Agent,
+	*consensus.LogPublisher,
+	*consensus.LogAdapter,
+) {
+	t.Helper()
+	agent, logPublisher, logAdapter, deps := openLogStreamsDeps(t, topology, adder)
+	ls, err := cluster.OpenLogStreams(deps)
+	require.NoError(t, err)
+	require.NotNil(t, ls)
+	t.Cleanup(func() { _ = ls.Close() })
+	return ls, agent, logPublisher, logAdapter
+}
+
 func TestOpenLogStreams_nilDeps(t *testing.T) {
 	t.Parallel()
 
 	topology := sharedLogTopology(t, 0, "")
-	agent := consensus.NewAgent(consensus.AgentConfig{})
-	logPublisher := consensus.NewLogPublisher()
-	logAdapter := consensus.NewLogAdapter(0)
 	adder := &fakeLogStreamAdder{}
+	agent, logPublisher, logAdapter, _ := openLogStreamsDeps(t, topology, adder)
 
 	tests := []struct {
 		name string
@@ -191,30 +299,23 @@ func TestOpenLogStreams_nilDeps(t *testing.T) {
 func TestOpenLogStreams_openOrderAndBind(t *testing.T) {
 	t.Parallel()
 
-	const logTemplate = "aeron:udp?term-length=64k|interface=127.0.0.1|ttl=0"
-	topology := sharedLogTopology(t, 0, logTemplate)
+	topology := sharedLogTopology(t, 0, testLogChannelTemplate)
 	adder := &fakeLogStreamAdder{}
-	agent, logPublisher, logAdapter, deps := openLogStreamsDeps(t, topology, adder)
+	ls, agent, logPublisher, logAdapter := openLogStreamsOK(t, topology, adder)
 
-	ls, err := cluster.OpenLogStreams(deps)
-	require.NoError(t, err)
-	require.NotNil(t, ls)
-	t.Cleanup(func() { _ = ls.Close() })
-
-	// Open order: subscription then publication; both on log stream and channel.
-	require.Len(t, adder.calls, 2)
-	require.Equal(t, "subscription", adder.calls[0].kind)
-	require.Equal(t, "publication", adder.calls[1].kind)
-	require.Equal(t, topology.LogStreamID(), adder.calls[0].streamID)
-	require.Equal(t, topology.LogStreamID(), adder.calls[1].streamID)
-	require.Equal(t, topology.LogChannel(), adder.calls[0].channel)
+	// Open order: subscription then publication. Sub is manual-mode; pub is live.
+	requireLogStreamOpenOrder(t, adder, topology.LogStreamID())
 	require.Equal(t, topology.LogChannel(), adder.calls[1].channel)
 
-	// Multicast channel form from shared-log members + loopback template.
-	const wantChannel = "aeron:udp?term-length=64k" +
+	// Multicast live URI from shared-log members plus loopback template.
+	const wantLive = "aeron:udp?term-length=64k" +
 		"|interface=127.0.0.1|ttl=0|endpoint=239.255.12.1:9004"
-	require.Equal(t, wantChannel, adder.calls[0].channel)
-	require.Equal(t, wantChannel, topology.LogChannel())
+	require.Equal(t, wantLive, topology.LogChannel())
+	require.Equal(t, wantLive, agent.LiveLogDestination())
+	require.Equal(t, []string{wantLive}, adder.lastDestHook.Adds)
+
+	// Two correlation ids for tags.
+	require.Equal(t, int64(2), adder.correlationSeq)
 
 	// Bind set complete.
 	require.Equal(t, adder.lastPub.SessionID(), agent.AddLogPublication(0))
@@ -229,40 +330,36 @@ func TestOpenLogStreams_openOrderAndBind(t *testing.T) {
 	// Handles exposed.
 	require.Same(t, adder.lastPub, ls.Publication())
 	require.Same(t, adder.lastSub, ls.Subscription())
+	require.Equal(t, wantLive, ls.LiveURI())
 }
 
 func TestOpenLogStreams_channelIdenticalAcrossMembers(t *testing.T) {
 	t.Parallel()
 
-	const logTemplate = "aeron:udp?term-length=64k|interface=127.0.0.1|ttl=0"
 	adder0 := &fakeLogStreamAdder{}
 	adder1 := &fakeLogStreamAdder{}
-	tp0 := sharedLogTopology(t, 0, logTemplate)
-	tp1 := sharedLogTopology(t, 1, logTemplate)
+	tp0 := sharedLogTopology(t, 0, testLogChannelTemplate)
+	tp1 := sharedLogTopology(t, 1, testLogChannelTemplate)
 
-	_, _, _, deps0 := openLogStreamsDeps(t, tp0, adder0)
-	_, _, _, deps1 := openLogStreamsDeps(t, tp1, adder1)
+	openLogStreamsOK(t, tp0, adder0)
+	openLogStreamsOK(t, tp1, adder1)
 
-	ls0, err := cluster.OpenLogStreams(deps0)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ls0.Close() })
-	ls1, err := cluster.OpenLogStreams(deps1)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ls1.Close() })
-
-	require.Equal(t, adder0.calls[0].channel, adder1.calls[0].channel)
+	// Live publication channel and live destination match across members.
+	// Manual subscription shape matches. Tags come from each member's client.
+	requireManualLogSubscriptionChannel(t, adder0.calls[0].channel)
+	requireManualLogSubscriptionChannel(t, adder1.calls[0].channel)
 	require.Equal(t, adder0.calls[1].channel, adder1.calls[1].channel)
 	require.Equal(t, tp0.LogChannel(), tp1.LogChannel())
+	require.Equal(t, tp0.LogChannel(), adder0.lastDestHook.Adds[0])
+	require.Equal(t, tp1.LogChannel(), adder1.lastDestHook.Adds[0])
 }
 
 // TestOpenLogStreams_publicationInitialPosition asserts OpenLogStreams seeds
-// the exclusive publication channel only. The subscription keeps
-// Topology.LogChannel.
+// the exclusive publication channel only. The subscription is manual-mode.
 func TestOpenLogStreams_publicationInitialPosition(t *testing.T) {
 	t.Parallel()
 
-	const logTemplate = "aeron:udp?term-length=64k|interface=127.0.0.1|ttl=0"
-	topology := sharedLogTopology(t, 0, logTemplate)
+	topology := sharedLogTopology(t, 0, testLogChannelTemplate)
 	adder := &fakeLogStreamAdder{}
 	_, _, _, deps := openLogStreamsDeps(t, topology, adder)
 
@@ -280,12 +377,7 @@ func TestOpenLogStreams_publicationInitialPosition(t *testing.T) {
 	require.NotNil(t, ls)
 	t.Cleanup(func() { _ = ls.Close() })
 
-	require.Len(t, adder.calls, 2)
-	require.Equal(t, "subscription", adder.calls[0].kind)
-	require.Equal(t, "publication", adder.calls[1].kind)
-	require.Equal(t, topology.LogStreamID(), adder.calls[0].streamID)
-	require.Equal(t, topology.LogStreamID(), adder.calls[1].streamID)
-	require.Equal(t, topology.LogChannel(), adder.calls[0].channel)
+	requireLogStreamOpenOrder(t, adder, topology.LogStreamID())
 
 	// Seed geometry lands on the publication channel only. Param values are
 	// covered in-package. Presence asserts the seed reached the add. Delimit
@@ -298,6 +390,7 @@ func TestOpenLogStreams_publicationInitialPosition(t *testing.T) {
 	require.Contains(t, pubChannel, "mtu=1408")
 	require.NotEqual(t, topology.LogChannel(), pubChannel)
 	require.NotContains(t, adder.calls[0].channel, "init-term-id=")
+	require.Equal(t, []string{topology.LogChannel()}, adder.lastDestHook.Adds)
 }
 
 func TestOpenLogStreams_publicationInitialPositionInvalid(t *testing.T) {
@@ -319,10 +412,7 @@ func TestOpenLogStreams_publicationInitialPositionInvalid(t *testing.T) {
 
 	// Seed validated before any add; agent and publisher untouched.
 	require.Empty(t, adder.calls)
-	require.Equal(t, int32(-1), agent.AddLogPublication(0))
-	require.Nil(t, agent.AppendSource())
-	require.Nil(t, agent.LogJoinSource())
-	require.Nil(t, logPublisher.Publication())
+	requireAgentLogUnbound(t, agent, logPublisher)
 }
 
 func TestOpenLogStreams_subscriptionAddFailure(t *testing.T) {
@@ -330,27 +420,46 @@ func TestOpenLogStreams_subscriptionAddFailure(t *testing.T) {
 
 	topology := sharedLogTopology(t, 0, "")
 	cause := errors.New("driver timeout")
-	adder := &fakeLogStreamAdder{failSubErr: cause}
+	adder := &fakeLogStreamAdder{}
+	adder.failAllSubscriptionAdds(cause)
 	agent, logPublisher, _, deps := openLogStreamsDeps(t, topology, adder)
 
 	ls, err := cluster.OpenLogStreams(deps)
 	require.Nil(t, ls)
-	channel := topology.LogChannel()
+	require.ErrorIs(t, err, cause)
+	require.ErrorContains(t, err, "cluster: add cluster log subscription on ")
+	require.ErrorContains(t, err, "control-mode=manual")
+
+	// Agent and publisher untouched. No publication add attempted.
+	requireAgentLogUnbound(t, agent, logPublisher)
+	require.Len(t, adder.calls, 1)
+	require.Equal(t, "subscription", adder.calls[0].kind)
+}
+
+func TestOpenLogStreams_liveDestinationAddFailureRollsBack(t *testing.T) {
+	t.Parallel()
+
+	topology := sharedLogTopology(t, 0, "")
+	cause := errors.New("destination refused")
+	adder := &fakeLogStreamAdder{failDestErr: cause}
+	agent, logPublisher, _, deps := openLogStreamsDeps(t, topology, adder)
+
+	ls, err := cluster.OpenLogStreams(deps)
+	require.Nil(t, ls)
+	liveURI := topology.LogChannel()
 	want := fmt.Sprintf(
-		"cluster: add cluster log subscription on %s: %s",
-		channel,
+		"cluster: add live log destination on %s: %s",
+		liveURI,
 		cause.Error(),
 	)
 	require.EqualError(t, err, want)
 	require.ErrorIs(t, err, cause)
 
-	// Agent and publisher untouched; no publication add attempted.
-	require.Equal(t, int32(-1), agent.AddLogPublication(0))
-	require.Nil(t, agent.AppendSource())
-	require.Nil(t, agent.LogJoinSource())
-	require.Nil(t, logPublisher.Publication())
+	// Subscription closed. Agent and publication untouched.
+	require.NotNil(t, adder.lastSub)
+	require.True(t, adder.lastSub.IsClosed())
+	requireAgentLogUnbound(t, agent, logPublisher)
 	require.Len(t, adder.calls, 1)
-	require.Equal(t, "subscription", adder.calls[0].kind)
 }
 
 func TestOpenLogStreams_publicationAddFailureRollsBack(t *testing.T) {
@@ -375,10 +484,7 @@ func TestOpenLogStreams_publicationAddFailureRollsBack(t *testing.T) {
 	// Subscription already added is closed; agent untouched.
 	require.NotNil(t, adder.lastSub)
 	require.True(t, adder.lastSub.IsClosed())
-	require.Equal(t, int32(-1), agent.AddLogPublication(0))
-	require.Nil(t, agent.AppendSource())
-	require.Nil(t, agent.LogJoinSource())
-	require.Nil(t, logPublisher.Publication())
+	requireAgentLogUnbound(t, agent, logPublisher)
 	require.Len(t, adder.calls, 2)
 }
 
@@ -395,15 +501,9 @@ func TestOpenLogStreams_adderReturnsNilNil(t *testing.T) {
 
 		ls, err := cluster.OpenLogStreams(deps)
 		require.Nil(t, ls)
-		want := fmt.Sprintf(
-			"cluster: add cluster log subscription on %s: adder returned no subscription",
-			channel,
-		)
-		require.EqualError(t, err, want)
-		require.Equal(t, int32(-1), agent.AddLogPublication(0))
-		require.Nil(t, agent.AppendSource())
-		require.Nil(t, agent.LogJoinSource())
-		require.Nil(t, logPublisher.Publication())
+		require.ErrorContains(t, err, "adder returned no subscription")
+		require.ErrorContains(t, err, "control-mode=manual")
+		requireAgentLogUnbound(t, agent, logPublisher)
 		require.Len(t, adder.calls, 1)
 	})
 
@@ -421,11 +521,193 @@ func TestOpenLogStreams_adderReturnsNilNil(t *testing.T) {
 		require.EqualError(t, err, want)
 		require.NotNil(t, adder.lastSub)
 		require.True(t, adder.lastSub.IsClosed())
-		require.Equal(t, int32(-1), agent.AddLogPublication(0))
-		require.Nil(t, agent.AppendSource())
-		require.Nil(t, agent.LogJoinSource())
-		require.Nil(t, logPublisher.Publication())
+		requireAgentLogUnbound(t, agent, logPublisher)
 	})
+}
+
+func TestOpenLogStreams_copiesRcvbufParams(t *testing.T) {
+	t.Parallel()
+
+	const logTemplate = "aeron:udp?term-length=64k|so-rcvbuf=2m|rcv-wnd=1m" +
+		"|interface=127.0.0.1|ttl=0"
+	topology := sharedLogTopology(t, 0, logTemplate)
+	adder := &fakeLogStreamAdder{}
+	openLogStreamsOK(t, topology, adder)
+
+	subChannel := adder.calls[0].channel
+	requireManualLogSubscriptionChannel(t, subChannel)
+	require.Contains(t, subChannel, "so-rcvbuf=2m")
+	require.Contains(t, subChannel, "rcv-wnd=1m")
+}
+
+func TestLogStreams_reseedSubscription(t *testing.T) {
+	t.Parallel()
+
+	topology := sharedLogTopology(t, 0, "")
+	adder := &fakeLogStreamAdder{}
+	ls, agent, _, _ := openLogStreamsOK(t, topology, adder)
+
+	oldSub := ls.Subscription()
+	oldJoin := agent.LogJoinSource()
+	require.NotNil(t, oldSub)
+	require.NotNil(t, oldJoin)
+	require.Len(t, adder.calls, 2)
+	firstSubChannel := adder.calls[0].channel
+	require.Equal(t, int64(2), adder.correlationSeq)
+
+	require.NoError(t, ls.ReseedSubscription(adder))
+
+	newSub := ls.Subscription()
+	require.NotNil(t, newSub)
+	require.NotSame(t, oldSub, newSub)
+	require.True(t, oldSub.IsClosed())
+	require.False(t, newSub.IsClosed())
+	require.IsType(t, (*consensus.SubscriptionLogJoinSource)(nil), agent.LogJoinSource())
+	require.NotSame(t, oldJoin, agent.LogJoinSource())
+
+	// Fresh tags and no destinations on the reseeded subscription.
+	require.Len(t, adder.calls, 3)
+	require.Equal(t, "subscription", adder.calls[2].kind)
+	requireManualLogSubscriptionChannel(t, adder.calls[2].channel)
+	require.NotEqual(t, firstSubChannel, adder.calls[2].channel)
+	require.Equal(t, int64(4), adder.correlationSeq)
+	require.Empty(t, adder.lastDestHook.Adds)
+}
+
+func TestLogStreams_reseedSubscription_closed(t *testing.T) {
+	t.Parallel()
+
+	require.EqualError(
+		t,
+		(*cluster.LogStreams)(nil).ReseedSubscription(&fakeLogStreamAdder{}),
+		"cluster: log streams closed",
+	)
+	require.EqualError(
+		t,
+		(&cluster.LogStreams{}).ReseedSubscription(&fakeLogStreamAdder{}),
+		"cluster: log streams closed",
+	)
+}
+
+func TestLogStreams_reseedSubscription_nilAdder(t *testing.T) {
+	t.Parallel()
+
+	topology := sharedLogTopology(t, 0, "")
+	adder := &fakeLogStreamAdder{}
+	ls, _, _, _ := openLogStreamsOK(t, topology, adder)
+
+	subBefore := ls.Subscription()
+	require.EqualError(
+		t,
+		ls.ReseedSubscription(nil),
+		"cluster: subscription adder is required",
+	)
+	// Nil-adder check fails before close. Subscription stays intact.
+	require.Same(t, subBefore, ls.Subscription())
+	require.False(t, subBefore.IsClosed())
+}
+
+// Asserts a failed reseed open recovers a live-fed subscription instead of
+// leaving the member with no receive destinations.
+func TestLogStreams_reseedSubscription_openFailureRestoresLive(t *testing.T) {
+	t.Parallel()
+
+	topology := sharedLogTopology(t, 0, "")
+	adder := &fakeLogStreamAdder{}
+	ls, agent, _, _ := openLogStreamsOK(t, topology, adder)
+
+	oldSub := ls.Subscription()
+	liveURI := topology.LogChannel()
+	require.Equal(t, liveURI, agent.LiveLogDestination())
+
+	// Clear live as Ensure does before reseed. Recovery must re-set it.
+	agent.LiveLogDestinationSet("")
+	cause := errors.New("driver refused reseed")
+	adder.failNextSubscriptionAdds(1, cause)
+
+	err := ls.ReseedSubscription(adder)
+	require.ErrorIs(t, err, cause)
+	require.True(t, oldSub.IsClosed())
+
+	// Recovery opened a second subscription, re-added live, and set the agent
+	// field.
+	newSub := ls.Subscription()
+	require.NotNil(t, newSub)
+	require.NotSame(t, oldSub, newSub)
+	require.False(t, newSub.IsClosed())
+	require.IsType(t, (*consensus.SubscriptionLogJoinSource)(nil), agent.LogJoinSource())
+	require.Equal(t, liveURI, agent.LiveLogDestination())
+	require.Equal(t, []string{liveURI}, adder.lastDestHook.Adds)
+
+	// Open plus failed reseed plus recovery: three subscription adds.
+	subCalls := 0
+	for _, c := range adder.calls {
+		if c.kind == "subscription" {
+			subCalls++
+		}
+	}
+	require.Equal(t, 3, subCalls)
+}
+
+// Asserts total reseed and recovery failure leaves no subscription.
+func TestLogStreams_reseedSubscription_recoveryFailureLeavesNil(t *testing.T) {
+	t.Parallel()
+
+	topology := sharedLogTopology(t, 0, "")
+	adder := &fakeLogStreamAdder{}
+	agent, _, _, deps := openLogStreamsDeps(t, topology, adder)
+
+	ls, err := cluster.OpenLogStreams(deps)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ls.Close() })
+
+	oldSub := ls.Subscription()
+	cause := errors.New("driver down")
+	adder.failNextSubscriptionAdds(2, cause)
+
+	err = ls.ReseedSubscription(adder)
+	require.ErrorIs(t, err, cause)
+	require.True(t, oldSub.IsClosed())
+	require.Nil(t, ls.Subscription())
+	require.Nil(t, agent.LogJoinSource())
+	require.Empty(t, agent.LiveLogDestination())
+}
+
+// Asserts recovery open success with live AddDestination failure. Binds the
+// subscription. Clears LiveLogDestination. Joins both error causes.
+func TestLogStreams_reseedSubscription_recoveryAddDestinationFailure(t *testing.T) {
+	t.Parallel()
+
+	topology := sharedLogTopology(t, 0, "")
+	adder := &fakeLogStreamAdder{}
+	ls, agent, _, _ := openLogStreamsOK(t, topology, adder)
+
+	oldSub := ls.Subscription()
+	liveURI := topology.LogChannel()
+	require.Equal(t, liveURI, agent.LiveLogDestination())
+
+	// Clear live as Ensure does before reseed. Recovery open succeeds. Live re-add
+	// fails and must keep the field empty for a later restore.
+	agent.LiveLogDestinationSet("")
+	reseedCause := errors.New("driver refused reseed")
+	destCause := errors.New("driver refused live destination")
+	adder.failNextSubscriptionAdds(1, reseedCause)
+	adder.failDestErr = destCause
+
+	err := ls.ReseedSubscription(adder)
+	require.ErrorIs(t, err, reseedCause)
+	require.ErrorIs(t, err, destCause)
+	require.True(t, oldSub.IsClosed())
+
+	newSub := ls.Subscription()
+	require.NotNil(t, newSub)
+	require.NotSame(t, oldSub, newSub)
+	require.False(t, newSub.IsClosed())
+	require.IsType(t, (*consensus.SubscriptionLogJoinSource)(nil), agent.LogJoinSource())
+	// Add failed after the hook recorded the attempt. Agent field must stay empty
+	// so restoreLiveLogDestination can re-add on a later tick.
+	require.Empty(t, agent.LiveLogDestination())
+	require.Equal(t, []string{liveURI}, adder.lastDestHook.Adds)
 }
 
 func TestLogStreams_close(t *testing.T) {
@@ -449,14 +731,13 @@ func TestLogStreams_close(t *testing.T) {
 	require.NoError(t, ls.Close())
 
 	// Clear then close: binds cleared; both handles closed; accessors nil.
-	require.Equal(t, int32(-1), agent.AddLogPublication(0))
-	require.Nil(t, agent.AppendSource())
-	require.Nil(t, agent.LogJoinSource())
-	require.Nil(t, logPublisher.Publication())
+	requireAgentLogUnbound(t, agent, logPublisher)
+	require.Empty(t, agent.CatchupLogDestination())
 	require.True(t, pub.IsClosed())
 	require.True(t, sub.IsClosed())
 	require.Nil(t, ls.Publication())
 	require.Nil(t, ls.Subscription())
+	require.Empty(t, ls.LiveURI())
 
 	// Idempotent: second Close does not re-clear agent.
 	require.NoError(t, ls.Close())

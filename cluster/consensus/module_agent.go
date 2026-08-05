@@ -197,8 +197,14 @@ type Agent struct {
 	appendRankFailure error
 
 	// lastPublishedAppendPosition is the last successfully published follower
-	// append high-water (advanced path only).
+	// unflagged append high-water (advanced path only). Catchup-flagged
+	// publishes must not raise this floor. After election close the steady path
+	// re-publishes max(recorded, lastPublished) unflagged into the quorum.
 	lastPublishedAppendPosition int64
+
+	// lastCatchupPublishedPosition is the last catchup-flagged position
+	// published. Used for CatchupPoll cadence only and never as a steady floor.
+	lastCatchupPublishedPosition int64
 
 	// timeOfLastAppendPositionSendNs gates follower AppendPosition re-publish
 	// on the heartbeat interval.
@@ -236,14 +242,20 @@ type Agent struct {
 	// OnCatchupPosition are silent no-ops.
 	catchupControl CatchupControl
 
-	// catchupReplayActive is true after a successful OnCatchupPosition start
-	// until the replay is stopped. Blocks a start for another follower while a
-	// replay publication is active.
-	catchupReplayActive bool
+	// liveLogDestination is the live multicast URI added as a receive
+	// destination on the log subscription. Empty when the live feed is not
+	// attached.
+	liveLogDestination string
 
-	// catchupReplayMemberID is the follower the active replay serves. Valid
-	// only while catchupReplayActive.
-	catchupReplayMemberID int32
+	// catchupLogDestination is the catchup unicast URI currently added as a
+	// receive destination on the log subscription. Empty when catchup is not
+	// active.
+	catchupLogDestination string
+
+	// catchupReplays maps follower member id to that follower's replay state
+	// (replay session id and stopped flag). Empty when no catchup is active. One
+	// entry per follower. Distinct followers may catch up concurrently.
+	catchupReplays map[int32]catchupReplay
 
 	// logPublicationReseed rebuilds the exclusive log publication at a position
 	// when a follower becomes leader. Nil: JoinLogAsLeader does not reseed.
@@ -424,6 +436,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		joinSource:                cfg.LogJoinSource,
 		termBaseLogPosition:       cfg.TermBaseLogPosition,
 		appVersion:                cfg.AppVersion,
+		catchupReplays:            make(map[int32]catchupReplay),
 	}
 	a.ingressHandler = a.onIngressFragment
 	return a
@@ -732,24 +745,46 @@ func (a *Agent) NewLogReplication(
 	)
 }
 
+// AppendPosition flag bits on the consensus AppendPosition wire field.
+const (
+	// AppendPositionFlagNone marks a steady (non-catchup) AppendPosition.
+	AppendPositionFlagNone uint8 = 0
+
+	// AppendPositionFlagCatchup marks progress during catchup. Leaders exclude
+	// these positions from the commit quorum. Use is limited to catchup
+	// completion tracking and liveness.
+	AppendPositionFlagCatchup uint8 = 1
+)
+
+// isCatchupAppendPosition reports whether flags mark a catchup AppendPosition.
+func isCatchupAppendPosition(flags uint8) bool {
+	return flags&AppendPositionFlagCatchup != 0
+}
+
 // CatchupPoll polls catchup/live log progress under limitPosition.
 //
 // When a [LogAdapter] Image is bound, polls with bound = limitPosition (same
 // BoundedControlledPoll substrate as followerConsensusWork) and advances
-// commit via [Agent.ProposeMaxCommit] from adapter position. Returns 0 when
-// adapter or image is nil, or when the bound yields no work.
+// commit via [Agent.ProposeMaxCommit] from adapter position. Then publishes
+// the adapter position under [AppendPositionFlagCatchup] so the leader can
+// observe catchup progress.
+//
+// The published position is the consumed merged-image position, not a recorded
+// append position. Heron follower recording is channel-based and does not see
+// unicast catchup frames, so the recorded high-water stalls during catchup.
+//
+// Returns 0 when adapter or image is nil.
 //
 // Concurrency: invoker-only. Election-live catchup is the sole consumer while
-// an election runner is set; steady followerConsensusWork does not run then.
-//
-// nowNs is reserved for future pacing and ignored here.
+// an election runner is set. Steady followerConsensusWork does not run then.
 func (a *Agent) CatchupPoll(limitPosition, nowNs int64) int {
-	_ = nowNs
 	adapter := a.logAdapter
 	if adapter == nil || adapter.Image() == nil {
 		return 0
 	}
-	return a.pollLogAndProposeMax(adapter, limitPosition)
+	work := a.pollLogAndProposeMax(adapter, limitPosition)
+	work += a.updateFollowerPosition(nowNs, adapter.Position(), AppendPositionFlagCatchup)
+	return work
 }
 
 // liveAddMaxWindow is ReplayMerge.LIVE_ADD_MAX_WINDOW (32 MiB). Caps the
@@ -757,34 +792,47 @@ func (a *Agent) CatchupPoll(limitPosition, nowNs int64) int {
 const liveAddMaxWindow int64 = 32 * 1024 * 1024
 
 // CatchupInitiated notes the follower append-position cadence time so catchup
-// progress publish does not wait a full heartbeat interval.
+// progress publish does not wait a full heartbeat interval. Clears the catchup
+// publish high-water so the first CatchupPoll is treated as advanced.
 //
 // Concurrency: invoker-only.
 func (a *Agent) CatchupInitiated(nowNs int64) {
 	a.timeOfLastAppendPositionSendNs = nowNs
+	a.lastCatchupPublishedPosition = 0
 }
 
-// StopAllCatchups stops every leader-side catchup replay and clears
-// catchupReplayActive so a later OnCatchupPosition may start a new replay.
+// StopAllCatchups stops every leader-side catchup replay and drains
+// catchupReplays so a later OnCatchupPosition may start new replays.
 //
-// Behaviour: clears the active gate whether or not the archive stop succeeds. A
-// stop failure must not strand the gate for the life of the Agent.
+// Behaviour: clears the map whether or not the archive stop succeeds. A stop
+// failure must not leave stale map entries for the life of the Agent.
 //
 // Concurrency: invoker-only. Blocks for the archive control response.
 func (a *Agent) StopAllCatchups() {
-	a.catchupReplayActive = false
-	a.catchupReplayMemberID = nullMemberID
+	clear(a.catchupReplays)
 	if a.catchupControl == nil {
 		return
 	}
 	_ = a.catchupControl.StopCatchupReplays()
 }
 
-// RemoveCatchupLogDestination closes the follower catchup receive path.
+// CatchupReplayCount returns how many leader-side catchup replays the per-member
+// map currently tracks.
 //
-// Catchup completion does not call this. The receive path stays open for the
-// bound log adapter, which still reads the catchup image. Prepare on the next
-// Init closes it.
+// Idle is zero. Concurrent catchup of two followers reports two while both
+// replays are live. TrackCatchupCompletion deletes an entry only after
+// StopCatchup publishes successfully.
+//
+// Concurrency: invoker-only.
+func (a *Agent) CatchupReplayCount() int {
+	return len(a.catchupReplays)
+}
+
+// RemoveCatchupLogDestination removes the catchup receive destination and
+// restores the live destination when the live feed is absent.
+//
+// Behaviour: StopCatchup dispatch and [Agent.PrepareForNewLeadership] call
+// this. Idempotent when the catchup destination is already absent.
 //
 // Concurrency: invoker-only.
 func (a *Agent) RemoveCatchupLogDestination() {
@@ -792,6 +840,55 @@ func (a *Agent) RemoveCatchupLogDestination() {
 		return
 	}
 	_ = a.catchupControl.RemoveCatchupLogDestination()
+}
+
+// LiveLogDestination returns the live log receive-destination URI, or empty
+// when the live feed is not attached.
+//
+// Concurrency: invoker-only.
+func (a *Agent) LiveLogDestination() string {
+	return a.liveLogDestination
+}
+
+// LiveLogDestinationSet records or clears the live log receive-destination URI.
+//
+// Empty clears. Does not add or remove the destination on the subscription.
+//
+// Concurrency: invoker-only.
+func (a *Agent) LiveLogDestinationSet(uri string) {
+	a.liveLogDestination = uri
+}
+
+// AddLiveLogDestination adds the live log channel as a receive destination.
+// No-op when the live feed is already attached. Idempotent.
+//
+// On failure LiveLogDestination stays empty. The next tick retries.
+// The catchup feed keeps running.
+//
+// Concurrency: invoker-only.
+func (a *Agent) AddLiveLogDestination() {
+	if a.catchupControl == nil {
+		return
+	}
+	_ = a.catchupControl.AddLiveLogDestination()
+}
+
+// CatchupLogDestination returns the catchup receive-destination URI, or empty
+// when catchup is not active.
+//
+// Concurrency: invoker-only.
+func (a *Agent) CatchupLogDestination() string {
+	return a.catchupLogDestination
+}
+
+// CatchupLogDestinationSet records or clears the catchup receive-destination
+// URI.
+//
+// Empty clears. Does not add or remove the destination on the subscription.
+//
+// Concurrency: invoker-only.
+func (a *Agent) CatchupLogDestinationSet(uri string) {
+	a.catchupLogDestination = uri
 }
 
 // IsCatchupNearLive reports whether the bound log image is within one quarter
@@ -828,22 +925,30 @@ func (a *Agent) IsLogJoinedForSession(logSessionID int32) bool {
 	return image != nil && image.SessionID() == logSessionID
 }
 
-// CatchupControl opens the follower catchup receive path and starts
-// leader-side archive replay for a catchup request.
+// CatchupControl attaches the follower catchup feed as a receive destination
+// on the log subscription and starts leader-side archive replay for a catchup
+// request.
 //
-// Concurrency: invoker-only. Blocks for archive control and subscription add.
+// Concurrency: invoker-only. Blocks for archive control, subscription reseed,
+// and destination commands.
 //
-// Ownership: implementations own any subscription they open and must close
-// that subscription with the module.
+// Ownership: implementations own destination state they attach and must clear
+// that state with the module. They do not own the log subscription.
 type CatchupControl interface {
-	// EnsureCatchupLogDestination opens a catchup receive subscription for
-	// catchupEndpoint. Returns the destination channel URI, or empty when not
-	// ready. Idempotent once open.
+	// EnsureCatchupLogDestination reseeds the log subscription and adds a
+	// catchup receive destination for catchupEndpoint. Returns the destination
+	// channel URI, or empty when not ready. Idempotent once open.
 	EnsureCatchupLogDestination(catchupEndpoint string) string
 
-	// RemoveCatchupLogDestination closes the catchup receive subscription and
-	// restores the live log join source. Idempotent.
+	// RemoveCatchupLogDestination removes the catchup receive destination and
+	// restores the live destination when the live feed is absent. Idempotent.
 	RemoveCatchupLogDestination() error
+
+	// AddLiveLogDestination adds the live log channel as a receive destination.
+	// No-op when the live feed is already attached. Idempotent.
+	//
+	// On failure LiveLogDestination stays empty. The next tick retries.
+	AddLiveLogDestination() error
 
 	// StartCatchupReplay starts an archive replay of the local log recording
 	// from logPosition toward catchupEndpoint with logSessionID. Returns the
@@ -854,6 +959,11 @@ type CatchupControl interface {
 		logSessionID int32,
 	) (replaySessionID int64, err error)
 
+	// StopCatchupReplay stops one archive replay by session id. Idempotent when
+	// the session is not retained. Removes the session from the control ledger
+	// only after a successful stop. A failed stop can be retried.
+	StopCatchupReplay(replaySessionID int64) error
+
 	// StopCatchupReplays stops every archive replay this control started. Idempotent.
 	StopCatchupReplays() error
 }
@@ -863,9 +973,9 @@ type CatchupControl interface {
 // Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
 func (a *Agent) SetCatchupControl(c CatchupControl) { a.catchupControl = c }
 
-// EnsureCatchupLogDestination opens the follower catchup receive path.
+// EnsureCatchupLogDestination attaches the follower catchup receive destination.
 //
-// The control owns the open state and is idempotent once open, so this
+// The control owns the open state and is idempotent once open, so this method
 // delegates on every call rather than caching the URI.
 //
 // Returns empty when no control is wired or the open is not ready.
@@ -876,6 +986,65 @@ func (a *Agent) EnsureCatchupLogDestination(catchupEndpoint string) string {
 	return a.catchupControl.EnsureCatchupLogDestination(catchupEndpoint)
 }
 
+// catchupReplay is the leader's per-follower replay state.
+//
+// stopped records that the archive stop succeeded. A failed publish after stop
+// retries the publish alone and must not re-stop the archive session.
+type catchupReplay struct {
+	replaySessionID int64
+	stopped         bool
+}
+
+// TrackCatchupCompletion stops a leader-side catchup replay when logPosition
+// reaches the leader log publication position, then publishes StopCatchup.
+//
+// Behaviour:
+//   - returns when no map entry exists and flags are not catchup
+//   - when stop is still needed, or there is no map entry, returns if
+//     logPublisher is nil or logPosition is below the leader publication
+//     position
+//   - when a map entry is active and not yet stopped, stops that archive
+//     session
+//   - a stop failure keeps the entry so the next AppendPosition retries the
+//     stop
+//   - after stop succeeds or was already stopped, publishes StopCatchup
+//     without re-checking logPosition against the leader publication
+//   - deletes the map entry only on publish success; a failed publish retries
+//     the publish alone even if the leader log has advanced
+//
+// An active map entry qualifies even without the catchup flag. A follower that
+// already detached still drives cleanup to completion.
+//
+// Concurrency: invoker-only. May block for the archive control response.
+func (a *Agent) TrackCatchupCompletion(memberID int32, logPosition int64, flags uint8) {
+	replay, active := a.catchupReplays[memberID]
+	if !active && !isCatchupAppendPosition(flags) {
+		return
+	}
+	needStop := active && !replay.stopped
+	// Position gate covers the archive-stop half and the no-entry flagged publish
+	// path. Once stop has latched, publish retry must not re-check position.
+	if a.logPublisher == nil {
+		return
+	}
+	if (needStop || !active) && logPosition < a.logPublisher.Position() {
+		return
+	}
+	if needStop {
+		if a.catchupControl == nil ||
+			a.catchupControl.StopCatchupReplay(replay.replaySessionID) != nil {
+			// Entry stays active. The next AppendPosition from this member
+			// retries the stop, flagged or not.
+			return
+		}
+		replay.stopped = true
+		a.catchupReplays[memberID] = replay
+	}
+	if a.egress != nil && a.egress.PublishStopCatchup(a.leadershipTermID, memberID) {
+		delete(a.catchupReplays, memberID)
+	}
+}
+
 // OnCatchupPosition starts a leader-side archive catchup replay for a
 // follower.
 //
@@ -884,17 +1053,18 @@ func (a *Agent) EnsureCatchupLogDestination(catchupEndpoint string) string {
 //   - refuses when fields.LeadershipTermID is above this member's leadership
 //     term
 //   - refuses when CatchupEndpoint is empty
-//   - refuses while a replay for another follower is active
-//   - stops the active replay first when the same follower asks again, so a
-//     follower that abandoned a catchup can retry within the term
+//   - on a same-member request, stops that follower's active replay first so a
+//     retry can replace an abandoned catchup within the term
+//   - a same-member stop failure keeps the map entry and returns without a
+//     new start; the ledger session id stays tracked for retry
 //   - refuses when no [CatchupControl] is wired, no log publisher is bound, or
 //     the local log recording id is null
-//   - starts one replay per call
+//   - starts one replay per call and stores it under the follower member id
+//   - allows concurrent catchups: each follower gets its own map entry
 //
-// One follower at a time. A second follower is refused until the active replay
-// stops through [Agent.PrepareForNewLeadership] or [Agent.StopAllCatchups]. The
-// replay follows the active recording, so it stays the served follower's log
-// feed for the rest of the term.
+// The replay follows the active recording. Each map entry remains that
+// follower's log feed until single-session stop, [Agent.StopAllCatchups], or
+// [Agent.PrepareForNewLeadership].
 //
 // Concurrency: invoker-only. Blocks for the archive control response.
 func (a *Agent) OnCatchupPosition(fields codecs.CatchupPositionFields) {
@@ -907,14 +1077,18 @@ func (a *Agent) OnCatchupPosition(fields codecs.CatchupPositionFields) {
 	if fields.CatchupEndpoint == "" {
 		return
 	}
-	if a.catchupReplayActive {
-		if a.catchupReplayMemberID != fields.FollowerMemberID {
+	if a.catchupControl == nil {
+		// Deletes the stale map entry so a later control wire does not inherit it.
+		delete(a.catchupReplays, fields.FollowerMemberID)
+		return
+	}
+	if existing, ok := a.catchupReplays[fields.FollowerMemberID]; ok {
+		// Same-member restart: stop the stale replay before starting a new one. Keep
+		// the map entry on stop failure so the ledger session stays tracked.
+		if err := a.catchupControl.StopCatchupReplay(existing.replaySessionID); err != nil {
 			return
 		}
-		a.StopAllCatchups()
-	}
-	if a.catchupControl == nil {
-		return
+		delete(a.catchupReplays, fields.FollowerMemberID)
 	}
 	if a.localLogRecordingID < 0 {
 		return
@@ -925,7 +1099,7 @@ func (a *Agent) OnCatchupPosition(fields codecs.CatchupPositionFields) {
 	if !bound || logSessionID == int32(nullValue) {
 		return
 	}
-	_, err := a.catchupControl.StartCatchupReplay(
+	replaySessionID, err := a.catchupControl.StartCatchupReplay(
 		fields.LogPosition,
 		fields.CatchupEndpoint,
 		logSessionID,
@@ -933,8 +1107,9 @@ func (a *Agent) OnCatchupPosition(fields codecs.CatchupPositionFields) {
 	if err != nil {
 		return
 	}
-	a.catchupReplayActive = true
-	a.catchupReplayMemberID = fields.FollowerMemberID
+	a.catchupReplays[fields.FollowerMemberID] = catchupReplay{
+		replaySessionID: replaySessionID,
+	}
 }
 
 // SetLogPublisher wires or clears the [LogPublisher] used for log append and
@@ -1167,8 +1342,8 @@ func (a *Agent) FollowerLogJoinReady(
 //   - sets role [RoleFollower]
 //   - clears the known leader
 //   - resets follower append cadence fields
-//   - stops leader-side catchup replays and clears catchupReplayActive
-//   - closes the follower catchup receive path
+//   - stops leader-side catchup replays and drains catchupReplays
+//   - removes the follower catchup destination and restores live when absent
 //   - keeps commit
 //   - stops the cluster log recording when a control is wired
 //   - returns the last-append position on success
@@ -1182,9 +1357,9 @@ func (a *Agent) FollowerLogJoinReady(
 // dirty start that never became active.
 //
 // Catchup teardown runs here, not on the CATCHUP exit. At that exit the log
-// adapter still reads the catchup image. No live image replaces the catchup
-// image yet. Reaching prepare through the catchup timeout path leaves both
-// catchup halves installed otherwise.
+// adapter still reads the catchup image and the catchup destination may still
+// be attached. Prepare removes the catchup destination and restores the live
+// destination when it is absent.
 //
 // Append-rank failure state always clears on prepare. A not-ready run that
 // marked while a prior leadership term's recording was active must not freeze
@@ -1213,6 +1388,7 @@ func (a *Agent) PrepareForNewLeadership(
 	a.RoleSet(RoleFollower)
 	a.SetLeaderMemberID(nullMemberID)
 	a.lastPublishedAppendPosition = 0
+	a.lastCatchupPublishedPosition = 0
 	a.timeOfLastAppendPositionSendNs = 0
 	a.appendRankFailure = nil
 	a.appendNotReadySinceNs = nullValue
@@ -1613,7 +1789,24 @@ func (a *Agent) handleSteadyConsensusFragment(buf []byte, offset int, nowNs int6
 			// Settled leader: start catchup replay.
 			a.OnCatchupPosition(fields)
 		}
+	case clusterwire.StopCatchupSbeTemplateID:
+		if fields, ok := codecs.TryDecodeStopCatchupAt(buf, offset); ok {
+			a.onSteadyStopCatchup(fields)
+		}
 	}
+}
+
+// onSteadyStopCatchup detaches the catchup receive destination after election
+// close when a leader StopCatchup arrives late.
+//
+// Same term and follower-member guard as [election.Election.OnStopCatchup].
+// Removing an already-removed destination is a no-op.
+func (a *Agent) onSteadyStopCatchup(fields codecs.StopCatchupFields) {
+	if fields.LeadershipTermID != a.leadershipTermID ||
+		fields.FollowerMemberID != a.thisMemberID {
+		return
+	}
+	a.RemoveCatchupLogDestination()
 }
 
 // onSteadyCanvassPosition answers a canvass from a settled leader.
@@ -1663,7 +1856,13 @@ func (a *Agent) onSteadyCanvassPosition(fields codecs.CanvassPositionFields, now
 
 // onSteadyAppendPosition applies a follower AppendPosition on the leader only.
 //
-// Higher-term appends are ignored (no member update).
+// Behaviour:
+//   - higher-term appends are ignored (no member update)
+//   - catchup-flagged positions skip the position-table update, refresh
+//     liveness only, and drive [Agent.TrackCatchupCompletion]
+//   - unflagged positions update the table when set
+//   - TrackCatchupCompletion always runs so a live map entry finishes cleanup
+//     even when positions is nil
 func (a *Agent) onSteadyAppendPosition(fields codecs.AppendPositionFields, nowNs int64) {
 	_ = nowNs
 	if a.role != RoleLeader {
@@ -1672,14 +1871,18 @@ func (a *Agent) onSteadyAppendPosition(fields codecs.AppendPositionFields, nowNs
 	if fields.LeadershipTermID > a.leadershipTermID {
 		return
 	}
-	if a.positions == nil {
-		return
+	if a.positions != nil {
+		if isCatchupAppendPosition(fields.Flags) {
+			a.positions.RefreshMemberLiveness(fields.FollowerMemberID)
+		} else {
+			a.positions.UpdateMemberPosition(
+				fields.FollowerMemberID,
+				fields.LeadershipTermID,
+				fields.LogPosition,
+			)
+		}
 	}
-	a.positions.UpdateMemberPosition(
-		fields.FollowerMemberID,
-		fields.LeadershipTermID,
-		fields.LogPosition,
-	)
+	a.TrackCatchupCompletion(fields.FollowerMemberID, fields.LogPosition, fields.Flags)
 }
 
 // onSteadyCommitPosition stamps the leader-update clock on term >= current,
@@ -1811,7 +2014,7 @@ func (a *Agent) followerConsensusWork(nowNs int64) int {
 		work += a.pollLogAndProposeMax(a.logAdapter, bound)
 	}
 	if ready {
-		work += a.updateFollowerPosition(nowNs, appendPos)
+		work += a.updateFollowerPosition(nowNs, appendPos, AppendPositionFlagNone)
 	}
 	return work
 }
@@ -1836,22 +2039,34 @@ func (a *Agent) followerLogPollBound(appendPos int64) int64 {
 	return min(a.notifiedCommitPosition, appendPos)
 }
 
-func (a *Agent) updateFollowerPosition(nowNs, appendPos int64) int {
+func (a *Agent) updateFollowerPosition(nowNs, appendPos int64, flags uint8) int {
 	if a.egress == nil {
 		return 0
 	}
-	position := max(appendPos, a.lastPublishedAppendPosition)
-	advanced := position > a.lastPublishedAppendPosition
+	// Steady floors on lastPublished so interval re-publish keeps the unflagged
+	// high-water. Catchup publishes the adapter position alone and cadences on
+	// lastCatchupPublishedPosition so progress does not raise the steady floor.
+	catchup := isCatchupAppendPosition(flags)
+	position := appendPos
+	lastPublished := a.lastCatchupPublishedPosition
+	if !catchup {
+		position = max(appendPos, a.lastPublishedAppendPosition)
+		lastPublished = a.lastPublishedAppendPosition
+	}
+	advanced := position > lastPublished
 	intervalDue := nowNs >= a.timeOfLastAppendPositionSendNs+a.leaderHeartbeatIntervalNs
 	if !advanced && !intervalDue {
 		return 0
 	}
-	ok := a.egress.PublishAppendPosition(a.leadershipTermID, position, 0 /* flags none */)
-	if !ok {
+	if !a.egress.PublishAppendPosition(a.leadershipTermID, position, flags) {
 		return 0
 	}
 	if advanced {
-		a.lastPublishedAppendPosition = position
+		if catchup {
+			a.lastCatchupPublishedPosition = position
+		} else {
+			a.lastPublishedAppendPosition = position
+		}
 	}
 	a.timeOfLastAppendPositionSendNs = nowNs
 	return 1

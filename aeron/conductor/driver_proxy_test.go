@@ -137,24 +137,6 @@ func TestDriverProxy_NextAvailableSessionID_encodeGolden(t *testing.T) {
 	require.Equal(t, conductor.GetNextAvailableSessionID, gotTypeID)
 }
 
-func TestDriverProxy_NextAvailableSessionID_insufficientCapacity(t *testing.T) {
-	ring, buffer := newDriverProxyTestRing(t)
-	seedFullDriverProxyRing(t, buffer)
-
-	proxy := conductor.NewDriverProxy(ring, 1)
-	err := proxy.NextAvailableSessionID(42, 100)
-	require.ErrorIs(t, err, conductor.ErrRingInsufficientCapacity)
-}
-
-func TestDriverProxy_ClientKeepalive_insufficientCapacity(t *testing.T) {
-	ring, buffer := newDriverProxyTestRing(t)
-	seedFullDriverProxyRing(t, buffer)
-
-	proxy := conductor.NewDriverProxy(ring, 1)
-	err := proxy.ClientKeepalive()
-	require.ErrorIs(t, err, conductor.ErrRingInsufficientCapacity)
-}
-
 func TestDriverProxy_offerCorrelatedBody_bodyTooShort(t *testing.T) {
 	ring, _ := newDriverProxyTestRing(t)
 	proxy := conductor.NewDriverProxy(ring, 1)
@@ -167,9 +149,7 @@ func TestDriverProxy_offerCorrelatedBody_bodyTooShort(t *testing.T) {
 		nil,
 	)
 	require.ErrorIs(t, err, conductor.ErrCorrelatedBodyTooShort)
-	require.Zero(t, ring.Read(func(int, atomicbuffer.AtomicBuffer, int, int) {
-		t.Fatal("short body should not claim")
-	}))
+	requireZeroDriverProxyCommittedRecords(t, ring)
 }
 
 func TestDriverProxy_offerCorrelated_invalidTypeID(t *testing.T) {
@@ -197,9 +177,7 @@ func TestDriverProxy_offerCorrelated_invalidTypeID(t *testing.T) {
 
 			err := test.offer(proxy)
 			require.ErrorIs(t, err, record.ErrInvalidMessageTypeID)
-			require.Zero(t, ring.Read(func(int, atomicbuffer.AtomicBuffer, int, int) {
-				t.Fatal("invalid type should not write")
-			}))
+			requireZeroDriverProxyCommittedRecords(t, ring)
 		})
 	}
 }
@@ -253,6 +231,56 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 	publicationBodyLength := conductor.PublicationMessageBodyLength(driverProxyTestChannel)
 	requirePublication := func(t *testing.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
 		requireDriverProxyPublicationMessage(t, buffer, index, length, publicationWant)
+	}
+
+	destinationWant := conductor.DestinationMessage{
+		ClientID:                  clientID,
+		CorrelationID:             correlationID,
+		RegistrationCorrelationID: registrationID,
+		Channel:                   driverProxyTestChannel,
+	}
+	destinationWantBody := conductor.DestinationMessageBytes(
+		clientID,
+		correlationID,
+		registrationID,
+		driverProxyTestChannel,
+	)
+	destinationBodyLength := conductor.DestinationMessageBodyLength(driverProxyTestChannel)
+	requireDestination := func(t *testing.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
+		got, err := conductor.DecodeDestinationMessage(buffer, index, length)
+		require.NoError(t, err)
+		require.Equal(t, destinationWant, got)
+	}
+
+	removePublicationWantBody := func(revoke bool) []byte {
+		return conductor.RemovePublicationMessageBytes(
+			clientID,
+			correlationID,
+			registrationID,
+			revoke,
+		)
+	}
+	requireRemovePublication := func(revoke bool) func(
+		t *testing.T,
+		buffer atomicbuffer.AtomicBuffer,
+		index, length int,
+	) {
+		return func(t *testing.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
+			got, err := conductor.DecodeRemovePublicationMessage(
+				buffer,
+				index,
+				conductor.RemovePublicationBodyLength,
+			)
+			require.NoError(t, err)
+			require.Equal(t, conductor.RemovePublicationMessage{
+				RemoveMessage: conductor.RemoveMessage{
+					ClientID:       clientID,
+					CorrelationID:  correlationID,
+					RegistrationID: registrationID,
+				},
+				Revoke: revoke,
+			}, got)
+		}
 	}
 
 	tests := []struct {
@@ -315,29 +343,9 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 			offer: func(proxy *conductor.DriverProxy) error {
 				return proxy.RemovePublication(correlationID, registrationID, true)
 			},
-			wantBody: conductor.RemovePublicationMessageBytes(
-				clientID,
-				correlationID,
-				registrationID,
-				true,
-			),
+			wantBody:   removePublicationWantBody(true),
 			bodyLength: conductor.RemovePublicationBodyLength,
-			read: func(t *testing.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
-				got, err := conductor.DecodeRemovePublicationMessage(
-					buffer,
-					index,
-					conductor.RemovePublicationBodyLength,
-				)
-				require.NoError(t, err)
-				require.Equal(t, conductor.RemovePublicationMessage{
-					RemoveMessage: conductor.RemoveMessage{
-						ClientID:       clientID,
-						CorrelationID:  correlationID,
-						RegistrationID: registrationID,
-					},
-					Revoke: true,
-				}, got)
-			},
+			read:       requireRemovePublication(true),
 		},
 		{
 			name:       "remove publication without revoke",
@@ -345,29 +353,9 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 			offer: func(proxy *conductor.DriverProxy) error {
 				return proxy.RemovePublication(correlationID, registrationID, false)
 			},
-			wantBody: conductor.RemovePublicationMessageBytes(
-				clientID,
-				correlationID,
-				registrationID,
-				false,
-			),
+			wantBody:   removePublicationWantBody(false),
 			bodyLength: conductor.RemovePublicationBodyLength,
-			read: func(t *testing.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
-				got, err := conductor.DecodeRemovePublicationMessage(
-					buffer,
-					index,
-					conductor.RemovePublicationBodyLength,
-				)
-				require.NoError(t, err)
-				require.Equal(t, conductor.RemovePublicationMessage{
-					RemoveMessage: conductor.RemoveMessage{
-						ClientID:       clientID,
-						CorrelationID:  correlationID,
-						RegistrationID: registrationID,
-					},
-					Revoke: false,
-				}, got)
-			},
+			read:       requireRemovePublication(false),
 		},
 		{
 			name:       "remove subscription",
@@ -390,6 +378,34 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 					RegistrationID: registrationID,
 				}, got)
 			},
+		},
+		{
+			name:       "add receive destination",
+			wantTypeID: conductor.AddReceiveDestination,
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.AddReceiveDestination(
+					correlationID,
+					registrationID,
+					driverProxyTestChannel,
+				)
+			},
+			wantBody:   destinationWantBody,
+			bodyLength: destinationBodyLength,
+			read:       requireDestination,
+		},
+		{
+			name:       "remove receive destination",
+			wantTypeID: conductor.RemoveReceiveDestination,
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.RemoveReceiveDestination(
+					correlationID,
+					registrationID,
+					driverProxyTestChannel,
+				)
+			},
+			wantBody:   destinationWantBody,
+			bodyLength: destinationBodyLength,
+			read:       requireDestination,
 		},
 	}
 	for _, test := range tests {
@@ -420,11 +436,23 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 	}
 }
 
-func TestDriverProxy_offerBody_insufficientCapacity(t *testing.T) {
+func TestDriverProxy_offer_insufficientCapacity(t *testing.T) {
 	tests := []struct {
 		name  string
 		offer func(*conductor.DriverProxy) error
 	}{
+		{
+			name: "client keepalive",
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.ClientKeepalive()
+			},
+		},
+		{
+			name: "next available session id",
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.NextAvailableSessionID(42, 100)
+			},
+		},
 		{
 			name: "add publication",
 			offer: func(proxy *conductor.DriverProxy) error {
@@ -453,6 +481,18 @@ func TestDriverProxy_offerBody_insufficientCapacity(t *testing.T) {
 			name: "remove subscription",
 			offer: func(proxy *conductor.DriverProxy) error {
 				return proxy.RemoveSubscription(42, 9001)
+			},
+		},
+		{
+			name: "add receive destination",
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.AddReceiveDestination(42, 9001, driverProxyTestChannel)
+			},
+		},
+		{
+			name: "remove receive destination",
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.RemoveReceiveDestination(42, 9001, driverProxyTestChannel)
 			},
 		},
 	}
@@ -502,6 +542,18 @@ func TestDriverProxy_addChannelCommands_rejectNonASCII(t *testing.T) {
 				return proxy.AddSubscription(correlationID, streamID, channel)
 			},
 		},
+		{
+			name: "add receive destination",
+			offer: func(proxy *conductor.DriverProxy, channel string) error {
+				return proxy.AddReceiveDestination(correlationID, 9001, channel)
+			},
+		},
+		{
+			name: "remove receive destination",
+			offer: func(proxy *conductor.DriverProxy, channel string) error {
+				return proxy.RemoveReceiveDestination(correlationID, 9001, channel)
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -547,36 +599,6 @@ func TestDriverProxy_offerBody_encodeFailureAborts(t *testing.T) {
 			runDriverProxyEncodeFailureAbort(t, test.kind, input)
 		})
 	}
-	t.Run("add publication separate buffer wrong offset", func(t *testing.T) {
-		runDriverProxyOfferBodyEncodeFailureAbortSeparateBuffer(
-			t,
-			driverProxyEncodeFailurePublication,
-			input,
-		)
-	})
-}
-
-func runDriverProxyOfferBodyEncodeFailureAbortSeparateBuffer(
-	tb testing.TB,
-	kind driverProxyEncodeFailureKind,
-	input driverProxyEncodeFailureInput,
-) {
-	tb.Helper()
-
-	encodeCase := driverProxyEncodeFailureCaseForKind(kind, input)
-	ring, buffer := newDriverProxyTestRing(tb)
-	proxy := conductor.NewDriverProxy(ring, input.ClientID)
-
-	err := proxy.OfferBodyForTest(
-		encodeCase.MsgTypeID,
-		encodeCase.BodyLength,
-		false,
-		func(_ int) error {
-			return encodeCase.Encode(buffer, driverProxyEncodeAtWrongOffset(buffer))
-		},
-	)
-	require.ErrorIs(tb, err, encodeCase.WantErr)
-	requireZeroDriverProxyCommittedRecords(tb, ring)
 }
 
 func TestDriverProxy_offerBody_invalidTypeID(t *testing.T) {
@@ -590,9 +612,7 @@ func TestDriverProxy_offerBody_invalidTypeID(t *testing.T) {
 		func(_ int) error { return nil },
 	)
 	require.ErrorIs(t, err, record.ErrInvalidMessageTypeID)
-	require.Zero(t, ring.Read(func(int, atomicbuffer.AtomicBuffer, int, int) {
-		t.Fatal("invalid type should not write")
-	}))
+	requireZeroDriverProxyCommittedRecords(t, ring)
 }
 
 func TestDriverProxy_ClientClose_insufficientCapacity(t *testing.T) {
@@ -602,9 +622,7 @@ func TestDriverProxy_ClientClose_insufficientCapacity(t *testing.T) {
 	proxy := conductor.NewDriverProxy(ring, 1)
 	proxy.ClientClose()
 
-	require.Zero(t, ring.Read(func(int, atomicbuffer.AtomicBuffer, int, int) {
-		t.Fatal("close should not write when ring is full")
-	}))
+	requireZeroDriverProxyCommittedRecords(t, ring)
 }
 
 type driverProxyEncodeFailureKind int
@@ -630,28 +648,13 @@ type driverProxyEncodeFailureInput struct {
 type driverProxyEncodeFailureCase struct {
 	MsgTypeID       int
 	BodyLength      int
-	Encode          func(buf atomicbuffer.AtomicBuffer, encodedOffset int) error
+	Encode          func(buf atomicbuffer.AtomicBuffer) error
 	WantErr         error
 	OutOfBoundsKind string
 }
 
-func driverProxyEncodeAtClaimedOffset(_ atomicbuffer.AtomicBuffer, encodedOffset int) int {
-	return encodedOffset
-}
-
 func driverProxyEncodeAtWrongOffset(buf atomicbuffer.AtomicBuffer) int {
 	return buf.Capacity()
-}
-
-func driverProxyEncodeFailureWriteOffset(
-	buf atomicbuffer.AtomicBuffer,
-	encodedOffset int,
-	wrongOffset bool,
-) int {
-	if wrongOffset {
-		return driverProxyEncodeAtWrongOffset(buf)
-	}
-	return driverProxyEncodeAtClaimedOffset(buf, encodedOffset)
 }
 
 func drawDriverProxyEncodeFailureKind(rt *rapid.T, name string) driverProxyEncodeFailureKind {
@@ -694,10 +697,10 @@ func driverProxyEncodeFailureCaseForKind(
 		return driverProxyEncodeFailureCase{
 			MsgTypeID:  conductor.ClientKeepalive,
 			BodyLength: conductor.CorrelatedMessageLength,
-			Encode: func(buf atomicbuffer.AtomicBuffer, encodedOffset int) error {
+			Encode: func(buf atomicbuffer.AtomicBuffer) error {
 				return conductor.EncodeCorrelated(
 					buf,
-					driverProxyEncodeFailureWriteOffset(buf, encodedOffset, true),
+					driverProxyEncodeAtWrongOffset(buf),
 					input.ClientID,
 					input.CorrelationID,
 				)
@@ -709,10 +712,10 @@ func driverProxyEncodeFailureCaseForKind(
 		return driverProxyEncodeFailureCase{
 			MsgTypeID:  conductor.AddPublication,
 			BodyLength: conductor.PublicationMessageBodyLength(input.Channel),
-			Encode: func(buf atomicbuffer.AtomicBuffer, encodedOffset int) error {
+			Encode: func(buf atomicbuffer.AtomicBuffer) error {
 				return conductor.EncodePublicationMessage(
 					buf,
-					driverProxyEncodeFailureWriteOffset(buf, encodedOffset, true),
+					driverProxyEncodeAtWrongOffset(buf),
 					input.ClientID,
 					input.CorrelationID,
 					input.StreamID,
@@ -726,10 +729,10 @@ func driverProxyEncodeFailureCaseForKind(
 		return driverProxyEncodeFailureCase{
 			MsgTypeID:  conductor.AddSubscription,
 			BodyLength: conductor.SubscriptionMessageBodyLength(input.Channel),
-			Encode: func(buf atomicbuffer.AtomicBuffer, encodedOffset int) error {
+			Encode: func(buf atomicbuffer.AtomicBuffer) error {
 				return conductor.EncodeSubscriptionMessage(
 					buf,
-					driverProxyEncodeFailureWriteOffset(buf, encodedOffset, true),
+					driverProxyEncodeAtWrongOffset(buf),
 					input.ClientID,
 					input.CorrelationID,
 					input.RegistrationCorrelationID,
@@ -744,10 +747,10 @@ func driverProxyEncodeFailureCaseForKind(
 		return driverProxyEncodeFailureCase{
 			MsgTypeID:  conductor.RemovePublication,
 			BodyLength: conductor.RemovePublicationBodyLength,
-			Encode: func(buf atomicbuffer.AtomicBuffer, encodedOffset int) error {
+			Encode: func(buf atomicbuffer.AtomicBuffer) error {
 				return conductor.EncodeRemovePublicationMessage(
 					buf,
-					driverProxyEncodeFailureWriteOffset(buf, encodedOffset, true),
+					driverProxyEncodeAtWrongOffset(buf),
 					input.ClientID,
 					input.CorrelationID,
 					input.RegistrationID,
@@ -761,10 +764,10 @@ func driverProxyEncodeFailureCaseForKind(
 		return driverProxyEncodeFailureCase{
 			MsgTypeID:  conductor.RemoveSubscription,
 			BodyLength: conductor.RemoveMessageBodyLength,
-			Encode: func(buf atomicbuffer.AtomicBuffer, encodedOffset int) error {
+			Encode: func(buf atomicbuffer.AtomicBuffer) error {
 				return conductor.EncodeRemoveMessage(
 					buf,
-					driverProxyEncodeFailureWriteOffset(buf, encodedOffset, true),
+					driverProxyEncodeAtWrongOffset(buf),
 					input.ClientID,
 					input.CorrelationID,
 					input.RegistrationID,
@@ -806,8 +809,8 @@ func runDriverProxyOfferBodyEncodeFailureAbort(
 		encodeCase.MsgTypeID,
 		encodeCase.BodyLength,
 		false,
-		func(encodedOffset int) error {
-			return encodeCase.Encode(proxy.Ring().Buffer(), encodedOffset)
+		func(_ int) error {
+			return encodeCase.Encode(proxy.Ring().Buffer())
 		},
 	)
 	require.ErrorIs(tb, err, encodeCase.WantErr)
@@ -832,17 +835,8 @@ func runDriverProxyOfferCorrelatedEncodeFailureAbort(
 		encodeCase.BodyLength,
 		input.CorrelationID,
 		false,
-		func(encodedOffset int) error {
-			return conductor.EncodeCorrelated(
-				proxy.Ring().Buffer(),
-				driverProxyEncodeFailureWriteOffset(
-					proxy.Ring().Buffer(),
-					encodedOffset,
-					true,
-				),
-				input.ClientID,
-				input.CorrelationID,
-			)
+		func(_ int) error {
+			return encodeCase.Encode(proxy.Ring().Buffer())
 		},
 	)
 	require.ErrorIs(tb, err, encodeCase.WantErr)
@@ -855,7 +849,7 @@ func requireZeroDriverProxyCommittedRecords(
 ) {
 	tb.Helper()
 
-	require.Zero(tb, testutil.CommittedNonPaddingRecordCount(ring), "aborted claim should not commit")
+	require.Zero(tb, testutil.CommittedNonPaddingRecordCount(ring), "no committed non-padding record")
 }
 
 func newDriverProxyTestRing(

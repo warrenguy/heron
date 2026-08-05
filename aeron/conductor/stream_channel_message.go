@@ -2,6 +2,7 @@ package conductor
 
 import "github.com/warrenguy/heron/atomicbuffer"
 
+// Optional wire fields use offset -1 when absent from the body.
 type correlatedStreamChannelLayout struct {
 	middleInt64Offset int
 	streamIDOffset    int
@@ -31,6 +32,13 @@ var (
 		channelOffset:     SubscriptionMessageChannelOffset,
 		minimumBodyLength: SubscriptionMessageMinimumBodyLength,
 		errOutOfBounds:    ErrSubscriptionMessageOutOfBounds,
+	}
+	destinationStreamChannelLayout = correlatedStreamChannelLayout{
+		middleInt64Offset: DestinationMessageRegistrationCorrelationIDOffset,
+		streamIDOffset:    -1,
+		channelOffset:     DestinationMessageChannelOffset,
+		minimumBodyLength: DestinationMessageMinimumBodyLength,
+		errOutOfBounds:    ErrDestinationMessageOutOfBounds,
 	}
 )
 
@@ -72,7 +80,9 @@ func encodeCorrelatedStreamChannelMessage(
 		}
 		buf.PutInt64(offset+layout.middleInt64Offset, *middleInt64)
 	}
-	buf.PutInt32(offset+layout.streamIDOffset, streamID)
+	if layout.streamIDOffset >= 0 {
+		buf.PutInt32(offset+layout.streamIDOffset, streamID)
+	}
 	_, err := atomicbuffer.PutStringASCII(buf, offset+layout.channelOffset, channel)
 	return err
 }
@@ -116,11 +126,13 @@ func decodeCorrelatedStreamChannelMessage(
 
 	decoded := correlatedStreamChannelDecoded{
 		Correlated: correlated,
-		StreamID:   buf.GetInt32(offset + layout.streamIDOffset),
 		Channel:    channel,
 	}
 	if layout.middleInt64Offset >= 0 {
 		decoded.MiddleInt64 = buf.GetInt64(offset + layout.middleInt64Offset)
+	}
+	if layout.streamIDOffset >= 0 {
+		decoded.StreamID = buf.GetInt32(offset + layout.streamIDOffset)
 	}
 
 	return decoded, nil

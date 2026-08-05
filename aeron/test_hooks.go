@@ -79,6 +79,57 @@ func NewSubscriptionForHooks(
 	return newSubscription(registrationID, streamID, channel, nil, nil)
 }
 
+// RecordingReceiveDestinationHook records AddDestination and RemoveDestination
+// calls for unit tests that do not drive a media driver.
+type RecordingReceiveDestinationHook struct {
+	Adds      []string
+	Removes   []string
+	AddErr    error
+	RemoveErr error
+
+	// FailNextAddErr fails the next AddDestination only. Does not record that
+	// attempt: the destination was not attached. Cleared after the fail.
+	FailNextAddErr error
+}
+
+// AddDestination records channel and returns AddErr.
+//
+// FailNextAddErr, when set, fails once without recording, then clears.
+func (h *RecordingReceiveDestinationHook) AddDestination(channel string) error {
+	if h == nil {
+		return nil
+	}
+	if h.FailNextAddErr != nil {
+		err := h.FailNextAddErr
+		h.FailNextAddErr = nil
+		return err
+	}
+	h.Adds = append(h.Adds, channel)
+	return h.AddErr
+}
+
+// RemoveDestination records channel and returns RemoveErr.
+func (h *RecordingReceiveDestinationHook) RemoveDestination(channel string) error {
+	if h == nil {
+		return nil
+	}
+	h.Removes = append(h.Removes, channel)
+	return h.RemoveErr
+}
+
+// SubscriptionSetReceiveDestinationHookForHooks installs a destination-command
+// override on sub. Nil clears the override. The production path is used when
+// the override is unset.
+func SubscriptionSetReceiveDestinationHookForHooks(
+	sub *Subscription,
+	hook receiveDestinationHook,
+) {
+	if sub == nil {
+		return
+	}
+	sub.receiveDestinationHook = hook
+}
+
 // SubscriptionApplyReadyForHooks applies SubscriptionReady channel-status counter wiring.
 func SubscriptionApplyReadyForHooks(sub *Subscription, channelStatusCounterID int32) {
 	sub.applySubscriptionReady(channelStatusCounterID)

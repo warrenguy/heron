@@ -252,12 +252,7 @@ func TestClusterModule_rejoinsCommitAfterMemberRestart(t *testing.T) {
 	requireAwaitTick(
 		t, set, "follower recording current", durableWorkBound,
 		func() bool {
-			m := set.Module(followerIndex)
-			if m == nil {
-				return false
-			}
-			pos := harness.RecordingCounterPosition(m, m.Agent().LocalLogRecordingID())
-			return pos >= leaderPub
+			return localRecordingAtLeast(set.Module(followerIndex), leaderPub)
 		},
 	)
 

@@ -168,3 +168,19 @@ func (p *SbePublisher) CatchupPosition(
 		len(fields.CatchupEndpoint),
 	)
 }
+
+func (p *SbePublisher) StopCatchup(
+	dst PublicationTarget,
+	fields codecs.StopCatchupFields,
+) bool {
+	ver := actingVersion(p.ActingVersion)
+	return publish(
+		p,
+		dst,
+		clusterwire.StopCatchupSbeTemplateID,
+		clusterwire.StopCatchupSbeBlockLength,
+		ver,
+		fields,
+		codecs.EncodeStopCatchup,
+	)
+}

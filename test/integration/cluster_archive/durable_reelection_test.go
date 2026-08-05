@@ -84,11 +84,7 @@ func TestDurableCluster_reElectsAndRestartsRecording(t *testing.T) {
 	require.Positive(t, leaderPub, "leader log publication position:\n%s", set.State())
 	requireAwaitTick(t, set, "all recordings at leader log", durableWorkBound, func() bool {
 		for _, m := range set.Modules() {
-			if m == nil {
-				return false
-			}
-			id := m.Agent().LocalLogRecordingID()
-			if harness.RecordingCounterPosition(m, id) < leaderPub {
+			if !localRecordingAtLeast(m, leaderPub) {
 				return false
 			}
 		}

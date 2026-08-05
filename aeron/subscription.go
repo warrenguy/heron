@@ -38,6 +38,18 @@ type Subscription struct {
 	unavailableImageHandler UnavailableImageHandler
 	conductor               *conductor.Conductor
 	client                  *Client
+
+	// receiveDestinationHook, when non-nil, handles AddDestination and
+	// RemoveDestination in place of the client/driver path. Tests only.
+	receiveDestinationHook receiveDestinationHook
+}
+
+// receiveDestinationHook overrides driver destination commands.
+//
+// Nil in production. Tests set this interface via the test-hook helper only.
+type receiveDestinationHook interface {
+	AddDestination(channel string) error
+	RemoveDestination(channel string) error
 }
 
 func newSubscription(
