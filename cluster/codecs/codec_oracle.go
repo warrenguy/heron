@@ -62,3 +62,22 @@ func NewLeadershipTermEventOracleFields(
 	}
 	return fields
 }
+
+// JoinLogIsStandbyMinVersion is the actingVersion that admits IsStandby on
+// JoinLog (sinceVersion 16). Derived from the generated flyweight
+// IsStandbySinceVersion.
+var JoinLogIsStandbyMinVersion = uint16(
+	(&clusterwire.JoinLog{}).IsStandbySinceVersion(),
+)
+
+// JoinLogOracleFields applies IsStandby oracle rules for JoinLog (template 40).
+//
+// Below JoinLogIsStandbyMinVersion the field is absent on the wire and decodes
+// as BooleanType_NULL_VALUE. At and above that version encode always writes
+// the field, including FALSE, so fields roundtrip as-is.
+func JoinLogOracleFields(fields JoinLogFields, actingVersion uint16) JoinLogFields {
+	if actingVersion < JoinLogIsStandbyMinVersion {
+		fields.IsStandby = clusterwire.BooleanType_NULL_VALUE
+	}
+	return fields
+}

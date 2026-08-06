@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/heron/cluster/client"
 )
 
 func TestConstants(t *testing.T) {
@@ -14,6 +15,15 @@ func TestConstants(t *testing.T) {
 	// Stream IDs.
 	require.Equal(t, int32(100), cluster.DefaultLogStreamID)
 	require.Equal(t, int32(108), cluster.DefaultConsensusStreamID)
+	require.Equal(t, int32(101), cluster.DefaultIngressStreamID)
+	require.Equal(t, int32(102), cluster.DefaultEgressStreamID)
+	require.Equal(t, int32(104), cluster.DefaultServiceStreamID)
+	require.Equal(t, int32(105), cluster.DefaultConsensusModuleStreamID)
+	require.Equal(t, int32(103), cluster.DefaultReplayStreamID)
+
+	// Parity with client package defaults (test-only import).
+	require.Equal(t, client.DefaultIngressStreamID, cluster.DefaultIngressStreamID)
+	require.Equal(t, client.DefaultEgressStreamID, cluster.DefaultEgressStreamID)
 
 	// Port block layout.
 	require.Equal(t, 9000, cluster.DefaultPortBase)

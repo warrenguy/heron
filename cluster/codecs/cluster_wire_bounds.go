@@ -103,6 +103,26 @@ func ClusterRootBlockLengthBounds(
 	case clusterwire.StopCatchupSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.StopCatchupSbeBlockLength)
 
+	case clusterwire.TimerEventSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.TimerEventSbeBlockLength)
+	case clusterwire.SessionOpenEventSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.SessionOpenEventSbeBlockLength)
+	case clusterwire.SessionCloseEventSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.SessionCloseEventSbeBlockLength)
+	case clusterwire.ServiceAckSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.ServiceAckSbeBlockLength)
+
+	case clusterwire.JoinLogSbeTemplateID:
+		maxBlock = clusterwire.JoinLogSbeBlockLength
+		if actingVersion < JoinLogIsStandbyMinVersion {
+			// ids 1-7 only (IsStandby sinceVersion 16).
+			return 36, maxBlock, true
+		}
+		return clusterFixedBlockLength(maxBlock)
+
+	case clusterwire.RequestServiceAckSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.RequestServiceAckSbeBlockLength)
+
 	default:
 		return 0, 0, false
 	}
@@ -123,7 +143,8 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		clusterwire.ChallengeSbeTemplateID,
 		clusterwire.ChallengeResponseSbeTemplateID,
 		clusterwire.AdminRequestSbeTemplateID,
-		clusterwire.CatchupPositionSbeTemplateID:
+		clusterwire.CatchupPositionSbeTemplateID,
+		clusterwire.JoinLogSbeTemplateID:
 		return 1, true
 
 	case clusterwire.SessionConnectRequestSbeTemplateID:
@@ -132,7 +153,8 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		}
 		return 2, true
 
-	case clusterwire.AdminResponseSbeTemplateID:
+	case clusterwire.AdminResponseSbeTemplateID,
+		clusterwire.SessionOpenEventSbeTemplateID:
 		return 2, true
 
 	case clusterwire.CanvassPositionSbeTemplateID,
@@ -141,7 +163,11 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		clusterwire.NewLeadershipTermSbeTemplateID,
 		clusterwire.AppendPositionSbeTemplateID,
 		clusterwire.CommitPositionSbeTemplateID,
-		clusterwire.StopCatchupSbeTemplateID:
+		clusterwire.StopCatchupSbeTemplateID,
+		clusterwire.TimerEventSbeTemplateID,
+		clusterwire.SessionCloseEventSbeTemplateID,
+		clusterwire.ServiceAckSbeTemplateID,
+		clusterwire.RequestServiceAckSbeTemplateID:
 		return 0, true
 
 	default:

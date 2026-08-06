@@ -1,20 +1,27 @@
 package cluster
 
-// Cluster stream ID defaults. Values and names track
-// io.aeron.cluster.ConsensusModule.Configuration.
+// Cluster stream ID defaults. Values and names track the Aeron cluster
+// configuration classes named per constant.
 const (
-	// DefaultLogStreamID is LOG_STREAM_ID_DEFAULT (aeron.cluster.log.stream.id).
-	// Cluster log stream shared by the leader log publication and every member
-	// log subscription.
+	// DefaultLogStreamID is LOG_STREAM_ID_DEFAULT (aeron.cluster.log.stream.id)
+	// on io.aeron.cluster.ConsensusModule.Configuration. Names the cluster log
+	// stream shared by the leader log publication and every member log
+	// subscription.
 	DefaultLogStreamID int32 = 100
 
 	// DefaultConsensusStreamID is CONSENSUS_STREAM_ID_DEFAULT
-	// (aeron.cluster.consensus.stream.id). Member-to-member consensus control
-	// stream carrying canvass, vote, new leadership term, append, and commit.
+	// (aeron.cluster.consensus.stream.id) on
+	// io.aeron.cluster.ConsensusModule.Configuration. This is the member-to-member
+	// consensus control stream. It carries canvass, vote, new leadership term,
+	// append, and commit.
 	//
-	// Not 105. That value is CONSENSUS_MODULE_STREAM_ID_DEFAULT on
-	// io.aeron.cluster.service.ClusteredServiceContainer.Configuration and
-	// carries service-to-module traffic, which this package does not open.
+	// Not 105. That value is DefaultConsensusModuleStreamID
+	// (CONSENSUS_MODULE_STREAM_ID_DEFAULT on
+	// io.aeron.cluster.service.ClusteredServiceContainer.Configuration) and
+	// carries service-to-module traffic.
+	//
+	// Stream id 108 is also not SBE template id 108 (RequestServiceAck). That
+	// message travels on the service control stream (DefaultServiceStreamID).
 	DefaultConsensusStreamID int32 = 108
 
 	// DefaultReplayStreamID is REPLAY_STREAM_ID_DEFAULT on
@@ -24,6 +31,30 @@ const (
 	// DefaultConsensusStreamID. The replay is a separate stream on a separate
 	// channel.
 	DefaultReplayStreamID int32 = 103
+
+	// DefaultIngressStreamID is INGRESS_STREAM_ID_DEFAULT (101) on
+	// io.aeron.cluster.client.AeronCluster.Configuration. Client-to-leader session
+	// traffic. Same value as cluster/client DefaultIngressStreamID. Kept separate
+	// so the server side does not import the client package.
+	DefaultIngressStreamID int32 = 101
+
+	// DefaultEgressStreamID is EGRESS_STREAM_ID_DEFAULT (102) on
+	// io.aeron.cluster.client.AeronCluster.Configuration. Same value as
+	// cluster/client DefaultEgressStreamID.
+	DefaultEgressStreamID int32 = 102
+
+	// DefaultServiceStreamID is SERVICE_STREAM_ID_DEFAULT (104) on
+	// io.aeron.cluster.service.ClusteredServiceContainer.Configuration. Carries
+	// module-to-service control: JoinLog and RequestServiceAck.
+	DefaultServiceStreamID int32 = 104
+
+	// DefaultConsensusModuleStreamID is CONSENSUS_MODULE_STREAM_ID_DEFAULT
+	// (105) on io.aeron.cluster.service.ClusteredServiceContainer.Configuration.
+	// Carries service-to-module control: ServiceAck.
+	//
+	// Distinct from DefaultConsensusStreamID (108), the member-to-member consensus
+	// control stream.
+	DefaultConsensusModuleStreamID int32 = 105
 )
 
 // Port block layout. Values track io.aeron.samples.cluster.ClusterConfig:

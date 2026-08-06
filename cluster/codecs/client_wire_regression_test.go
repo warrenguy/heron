@@ -2,10 +2,7 @@ package codecs_test
 
 import (
 	"bytes"
-	"encoding/hex"
 	"testing"
-
-	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -38,14 +35,7 @@ const (
 
 func TestClientWireBytes_unchangedFromBaseline(t *testing.T) {
 	actingVersion := uint16(clusterwire.SessionMessageHeaderSbeSchemaVersion)
-	buf := make([]byte, fuzzClusterCodecMaxLen)
-
-	cases := []struct {
-		name       string
-		wantHex    string
-		encode     func([]byte) (int, bool)
-		templateID uint16
-	}{
+	runGoldenHexCases(t, actingVersion, []goldenHexCase{
 		{
 			name:    "SessionMessageHeader",
 			wantHex: goldenSessionMessageHeaderHex,
@@ -157,15 +147,5 @@ func TestClientWireBytes_unchangedFromBaseline(t *testing.T) {
 			},
 			templateID: clusterwire.AdminResponseSbeTemplateID,
 		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			end, ok := tc.encode(buf)
-			require.True(t, ok)
-			gotHex := hex.EncodeToString(buf[:end])
-			require.Equal(t, tc.wantHex, gotHex)
-			requireEncodedLengthMatchesWire(t, buf, 0, end, tc.templateID, actingVersion)
-		})
-	}
+	})
 }

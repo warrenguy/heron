@@ -54,7 +54,8 @@ type ClusterMessageLayout struct {
 	ActingVersion uint16
 }
 
-// ClusterMessageLayoutAt parses the cluster message header and fixed block at offset.
+// ClusterMessageLayoutAt parses the cluster message header and fixed block at
+// offset. Does not validate var fields.
 func ClusterMessageLayoutAt(buf []byte, offset, maxVarLen int) (ClusterMessageLayout, bool) {
 	return clusterMessageAt(buf, offset, maxVarLen)
 }
@@ -211,6 +212,8 @@ type templateVarFields struct {
 	message            []byte
 	payload            []byte
 	catchupEndpoint    []byte
+	encodedPrincipal   []byte
+	logChannel         []byte
 }
 
 func clusterMessageAt(buf []byte, offset, maxVarLen int) (ClusterMessageLayout, bool) {
@@ -304,6 +307,40 @@ func cloneVarBytes(b []byte) []byte {
 	return bytes.Clone(b)
 }
 
+// varFieldBytes clones the var field at offset. Returns the clone and the
+// offset of the next var field. The clone never aliases buf.
+//
+// Behaviour: fail-closed. ReadVarSlice bounds-checks the length prefix and the
+// payload. A corrupt length returns nil, not a panic. ClusterMessageLayoutAt
+// validates the header and fixed block only. A layout passed to a
+// *FieldsFromLayout decoder may therefore carry unvalidated var fields. The
+// generated GetXAsString getters index the buffer unchecked and panic on that
+// input.
+//
+// Prefer varFieldBytes over GetXAsString for []byte fields. GetXAsString
+// allocates a string that a second copy then discards.
+//
+// A bufLen below len(buf) bounds the readable prefix. A bufLen above len(buf)
+// has no effect.
+//
+// Returns:
+//   - empty field: nil, offset after the field.
+//   - rejected field: nil, offset unchanged.
+//
+// nil does not distinguish an empty field from a rejected field. A caller that
+// needs the distinction must validate var lengths first. tryDecodeClusterAt
+// does so with a positive maxVarLen.
+func varFieldBytes(buf []byte, bufLen uint64, offset int) (field []byte, next int) {
+	if bufLen < uint64(len(buf)) {
+		buf = buf[:bufLen]
+	}
+	slice, next, err := ReadVarSlice(buf, offset, -1)
+	if err != nil {
+		return nil, offset
+	}
+	return cloneVarBytes(slice.Data), next
+}
+
 func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields, bool) {
 	switch templateID {
 	case clusterwire.SessionEventSbeTemplateID:
@@ -329,6 +366,13 @@ func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields
 		return templateVarFields{message: raw[0], payload: raw[1]}, true
 	case clusterwire.CatchupPositionSbeTemplateID:
 		return templateVarFields{catchupEndpoint: raw[0]}, true
+	case clusterwire.SessionOpenEventSbeTemplateID:
+		return templateVarFields{
+			responseChannel:  raw[0],
+			encodedPrincipal: raw[1],
+		}, true
+	case clusterwire.JoinLogSbeTemplateID:
+		return templateVarFields{logChannel: raw[0]}, true
 	default:
 		return templateVarFields{}, false
 	}
@@ -464,6 +508,40 @@ func decodeTemplateFields(
 		}, true
 	case clusterwire.StopCatchupSbeTemplateID:
 		return decodeStopCatchupFields(buf, body, block, version, bufLen), true
+	case clusterwire.TimerEventSbeTemplateID:
+		return decodeTimerEventFields(buf, body, block, version, bufLen), true
+	case clusterwire.SessionOpenEventSbeTemplateID:
+		var msg clusterwire.SessionOpenEvent
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return SessionOpenEventFields{
+			LeadershipTermID: msg.LeadershipTermId(),
+			CorrelationID:    msg.CorrelationId(),
+			ClusterSessionID: msg.ClusterSessionId(),
+			Timestamp:        msg.Timestamp(),
+			ResponseStreamID: msg.ResponseStreamId(),
+			ResponseChannel:  vars.responseChannel,
+			EncodedPrincipal: vars.encodedPrincipal,
+		}, true
+	case clusterwire.SessionCloseEventSbeTemplateID:
+		return decodeSessionCloseEventFields(buf, body, block, version, bufLen), true
+	case clusterwire.ServiceAckSbeTemplateID:
+		return decodeServiceAckFields(buf, body, block, version, bufLen), true
+	case clusterwire.JoinLogSbeTemplateID:
+		var msg clusterwire.JoinLog
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return JoinLogFields{
+			LogPosition:    msg.LogPosition(),
+			MaxLogPosition: msg.MaxLogPosition(),
+			MemberID:       msg.MemberId(),
+			LogSessionID:   msg.LogSessionId(),
+			LogStreamID:    msg.LogStreamId(),
+			IsStartup:      msg.IsStartup(),
+			Role:           msg.Role(),
+			IsStandby:      msg.IsStandby(),
+			LogChannel:     vars.logChannel,
+		}, true
+	case clusterwire.RequestServiceAckSbeTemplateID:
+		return decodeRequestServiceAckFields(buf, body, block, version, bufLen), true
 	default:
 		return nil, false
 	}

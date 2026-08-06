@@ -167,3 +167,59 @@ type StopCatchupFields struct {
 	LeadershipTermID int64
 	FollowerMemberID int32
 }
+
+// TimerEventFields holds TimerEvent body fields (SBE template id 20).
+type TimerEventFields struct {
+	LeadershipTermID int64
+	CorrelationID    int64
+	Timestamp        int64
+}
+
+// SessionOpenEventFields holds SessionOpenEvent body fields (SBE template id 21).
+type SessionOpenEventFields struct {
+	LeadershipTermID int64
+	CorrelationID    int64
+	ClusterSessionID int64
+	Timestamp        int64
+	ResponseStreamID int32
+	ResponseChannel  []byte
+	EncodedPrincipal []byte
+}
+
+// SessionCloseEventFields holds SessionCloseEvent body fields (SBE template id 22).
+type SessionCloseEventFields struct {
+	LeadershipTermID int64
+	ClusterSessionID int64
+	Timestamp        int64
+	CloseReason      clusterwire.CloseReason
+}
+
+// ServiceAckFields holds ServiceAck body fields (SBE template id 33).
+type ServiceAckFields struct {
+	LogPosition int64
+	Timestamp   int64
+	AckID       int64
+	RelevantID  int64
+	ServiceID   int32
+}
+
+// JoinLogFields holds JoinLog body fields (SBE template id 40).
+type JoinLogFields struct {
+	LogPosition    int64
+	MaxLogPosition int64
+	MemberID       int32
+	LogSessionID   int32
+	LogStreamID    int32
+	IsStartup      clusterwire.BooleanType
+	Role           int32
+	// IsStandby is BooleanType_NULL_VALUE when actingVersion is below
+	// JoinLogIsStandbyMinVersion. The field is absent on the wire at those
+	// versions.
+	IsStandby  clusterwire.BooleanType
+	LogChannel []byte
+}
+
+// RequestServiceAckFields holds RequestServiceAck body fields (SBE template id 108).
+type RequestServiceAckFields struct {
+	LogPosition int64
+}

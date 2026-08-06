@@ -69,10 +69,7 @@ func TestVote_codec_rapid(t *testing.T) {
 			LogPosition:         rapid.Int64().Draw(rt, "logPosition"),
 			CandidateMemberID:   rapid.Int32().Draw(rt, "candidateMemberID"),
 			FollowerMemberID:    rapid.Int32().Draw(rt, "followerMemberID"),
-			Vote: rapid.SampledFrom([]clusterwire.BooleanType{
-				clusterwire.BooleanType_FALSE,
-				clusterwire.BooleanType_TRUE,
-			}).Draw(rt, "vote"),
+			Vote:                rapidBooleanType(rt, "vote"),
 		}
 		runCodecRoundtripAtOffset(
 			rt,
@@ -102,11 +99,8 @@ func TestNewLeadershipTerm_codec_rapid(t *testing.T) {
 			LeaderMemberID:          rapid.Int32().Draw(rt, "leaderMemberID"),
 			LogSessionID:            rapid.Int32().Draw(rt, "logSessionID"),
 			AppVersion:              rapidVersionIf(rt, actingVersion, 1),
-			IsStartup: rapid.SampledFrom([]clusterwire.BooleanType{
-				clusterwire.BooleanType_FALSE,
-				clusterwire.BooleanType_TRUE,
-			}).Draw(rt, "isStartup"),
-			CommitPosition: rapid.Int64().Draw(rt, "commitPosition"),
+			IsStartup:               rapidBooleanType(rt, "isStartup"),
+			CommitPosition:          rapid.Int64().Draw(rt, "commitPosition"),
 		}
 		wantFields := codecs.NewLeadershipTermOracleFields(fields, actingVersion)
 		runCodecRoundtripAtOffset(

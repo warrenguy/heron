@@ -11,6 +11,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 const (
@@ -83,4 +84,12 @@ func rapidEncodeCommitPosition(
 	fields codecs.CommitPositionFields,
 ) func([]byte, int) (int, bool) {
 	return rapidEncodeAt(actingVersion, fields, codecs.EncodeCommitPosition)
+}
+
+func rapidBooleanType(rt *rapid.T, name string) clusterwire.BooleanType {
+	rt.Helper()
+	return rapid.SampledFrom([]clusterwire.BooleanType{
+		clusterwire.BooleanType_FALSE,
+		clusterwire.BooleanType_TRUE,
+	}).Draw(rt, name)
 }

@@ -2,6 +2,7 @@ package codecs_test
 
 import (
 	"bytes"
+	"encoding/hex"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -214,6 +215,36 @@ func requireDecodedClusterFields(tb require.TestingT, want, got any) {
 		requireDecodedFieldsEqual[codecs.AppendPositionFields](tb, wantFields, got)
 	case codecs.CommitPositionFields:
 		requireDecodedFieldsEqual[codecs.CommitPositionFields](tb, wantFields, got)
+	case codecs.TimerEventFields:
+		requireDecodedFieldsEqual[codecs.TimerEventFields](tb, wantFields, got)
+	case codecs.SessionOpenEventFields:
+		gotFields, ok := got.(codecs.SessionOpenEventFields)
+		require.True(tb, ok)
+		require.Equal(tb, wantFields.LeadershipTermID, gotFields.LeadershipTermID)
+		require.Equal(tb, wantFields.CorrelationID, gotFields.CorrelationID)
+		require.Equal(tb, wantFields.ClusterSessionID, gotFields.ClusterSessionID)
+		require.Equal(tb, wantFields.Timestamp, gotFields.Timestamp)
+		require.Equal(tb, wantFields.ResponseStreamID, gotFields.ResponseStreamID)
+		requireBytesEqual(tb, wantFields.ResponseChannel, gotFields.ResponseChannel)
+		requireBytesEqual(tb, wantFields.EncodedPrincipal, gotFields.EncodedPrincipal)
+	case codecs.SessionCloseEventFields:
+		requireDecodedFieldsEqual[codecs.SessionCloseEventFields](tb, wantFields, got)
+	case codecs.ServiceAckFields:
+		requireDecodedFieldsEqual[codecs.ServiceAckFields](tb, wantFields, got)
+	case codecs.JoinLogFields:
+		gotFields, ok := got.(codecs.JoinLogFields)
+		require.True(tb, ok)
+		require.Equal(tb, wantFields.LogPosition, gotFields.LogPosition)
+		require.Equal(tb, wantFields.MaxLogPosition, gotFields.MaxLogPosition)
+		require.Equal(tb, wantFields.MemberID, gotFields.MemberID)
+		require.Equal(tb, wantFields.LogSessionID, gotFields.LogSessionID)
+		require.Equal(tb, wantFields.LogStreamID, gotFields.LogStreamID)
+		require.Equal(tb, wantFields.IsStartup, gotFields.IsStartup)
+		require.Equal(tb, wantFields.Role, gotFields.Role)
+		require.Equal(tb, wantFields.IsStandby, gotFields.IsStandby)
+		requireBytesEqual(tb, wantFields.LogChannel, gotFields.LogChannel)
+	case codecs.RequestServiceAckFields:
+		requireDecodedFieldsEqual[codecs.RequestServiceAckFields](tb, wantFields, got)
 	default:
 		require.Fail(tb, "unsupported fields type")
 	}
@@ -258,6 +289,29 @@ type codecRoundtripCase struct {
 	wantFields any
 }
 
+// goldenHexCase holds one encoder's committed hex wire bytes. runGoldenHexCases
+// asserts the encode output matches the hex and catches silent layout drift
+// after a schema regenerate.
+type goldenHexCase struct {
+	name       string
+	wantHex    string
+	encode     func([]byte) (int, bool)
+	templateID uint16
+}
+
+func runGoldenHexCases(t *testing.T, actingVersion uint16, cases []goldenHexCase) {
+	t.Helper()
+	buf := make([]byte, fuzzClusterCodecMaxLen)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			end, ok := tc.encode(buf)
+			require.True(t, ok)
+			require.Equal(t, tc.wantHex, hex.EncodeToString(buf[:end]))
+			requireEncodedLengthMatchesWire(t, buf, 0, end, tc.templateID, actingVersion)
+		})
+	}
+}
+
 func runCodecRoundtripCases(
 	t *testing.T,
 	templateID uint16,
@@ -276,10 +330,28 @@ func runCodecRoundtripCases(
 	}
 }
 
+// requireTryDecodeAt encodes fields through encode, then decodes through
+// tryDecode. Asserts both succeed and the decoded fields equal the input.
+func requireTryDecodeAt[T any](
+	t *testing.T,
+	buf []byte,
+	actingVersion uint16,
+	fields T,
+	encode func(buf []byte, offset int, actingVersion uint16, fields T) (int, bool),
+	tryDecode func(buf []byte, offset int) (T, bool),
+) {
+	t.Helper()
+	end, ok := encode(buf, 0, actingVersion, fields)
+	require.True(t, ok)
+	got, ok := tryDecode(buf[:end], 0)
+	require.True(t, ok)
+	require.Equal(t, fields, got)
+}
+
 func codecFuzzSeedBuffers() [][]byte {
 	const (
 		actingVersion   = clusterwire.SessionMessageHeaderSbeSchemaVersion
-		seedEncodeCount = 20
+		seedEncodeCount = 26
 	)
 	buf := make([]byte, fuzzClusterCodecMaxLen)
 	seeds := make([][]byte, 0, seedEncodeCount*(1+codecFuzzMaxOffset))
@@ -508,6 +580,65 @@ func codecFuzzSeedBuffers() [][]byte {
 			LeadershipTermID: 1,
 			LogPosition:      2,
 			LeaderMemberID:   3,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeTimerEvent(b, 0, actingVersion, codecs.TimerEventFields{
+			LeadershipTermID: 1,
+			CorrelationID:    2,
+			Timestamp:        3,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeSessionOpenEvent(b, 0, actingVersion, codecs.SessionOpenEventFields{
+			LeadershipTermID: 1,
+			CorrelationID:    2,
+			ClusterSessionID: 3,
+			Timestamp:        4,
+			ResponseStreamID: 102,
+			ResponseChannel:  []byte("aeron:ipc"),
+			EncodedPrincipal: []byte{0xAB, 0xCD},
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeSessionCloseEvent(b, 0, actingVersion, codecs.SessionCloseEventFields{
+			LeadershipTermID: 5,
+			ClusterSessionID: 6,
+			Timestamp:        7,
+			CloseReason:      clusterwire.CloseReason_CLIENT_ACTION,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeServiceAck(b, 0, actingVersion, codecs.ServiceAckFields{
+			LogPosition: 10,
+			Timestamp:   11,
+			AckID:       12,
+			RelevantID:  13,
+			ServiceID:   1,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeJoinLog(b, 0, actingVersion, codecs.JoinLogFields{
+			LogPosition:    100,
+			MaxLogPosition: 200,
+			MemberID:       1,
+			LogSessionID:   2,
+			LogStreamID:    100,
+			IsStartup:      clusterwire.BooleanType_TRUE,
+			Role:           1,
+			IsStandby:      clusterwire.BooleanType_FALSE,
+			LogChannel:     []byte("aeron:udp?endpoint=localhost:9004"),
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeRequestServiceAck(b, 0, actingVersion, codecs.RequestServiceAckFields{
+			LogPosition: 42,
 		})
 	})
 
