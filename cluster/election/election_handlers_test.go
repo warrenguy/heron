@@ -1,6 +1,7 @@
 package election_test
 
 import (
+	"cmp"
 	"errors"
 	"testing"
 
@@ -204,31 +205,243 @@ func TestHandleConsensusMessage_gatedInInit(t *testing.T) {
 func TestElection_HandleError_resetsToInit(t *testing.T) {
 	t.Parallel()
 
+	t.Run("non-nil error", func(t *testing.T) {
+		t.Parallel()
+
+		const hostCommit int64 = 80
+		cfg, deps, _, _, _ := testElectionDeps(t)
+		require.Greater(t, cfg.LogPosition, hostCommit)
+		host := &recordingElectionHost{commitPosition: hostCommit}
+		deps.Host = host
+		observer := &recordingStateObserver{}
+		deps.StateObserver = observer
+		err := errors.New("test error")
+		e := election.NewElection(cfg, deps)
+		election.SetStateForTest(e, election.ElectionStateCanvass)
+		appendBefore := e.AppendPosition()
+
+		e.HandleError(5_000, err)
+
+		require.Equal(t, election.ElectionStateInit, e.State())
+		require.Equal(t, err, e.LastError())
+		require.Equal(t, hostCommit, e.LogPosition())
+		require.Equal(t, appendBefore, e.AppendPosition())
+		require.Equal(t, []election.ElectionState{
+			election.ElectionStateInit,
+			election.ElectionStateInit,
+		}, observer.states)
+	})
+
+	t.Run("nil error", func(t *testing.T) {
+		t.Parallel()
+
+		const hostCommit int64 = 40
+		cfg, deps, _, _, _ := testElectionDeps(t)
+		host := &recordingElectionHost{commitPosition: hostCommit}
+		deps.Host = host
+		observer := &recordingStateObserver{}
+		deps.StateObserver = observer
+		e := election.NewElection(cfg, deps)
+		election.SetStateForTest(e, election.ElectionStateCanvass)
+		e.HandleError(1_000, errors.New("prior"))
+		require.Error(t, e.LastError())
+
+		e.HandleError(5_000, nil)
+
+		require.Equal(t, election.ElectionStateInit, e.State())
+		require.NoError(t, e.LastError())
+		require.Equal(t, hostCommit, e.LogPosition())
+		// Same-state Init is a no-op for entry side effects and the observer.
+		require.Equal(t, []election.ElectionState{
+			election.ElectionStateInit,
+			election.ElectionStateInit,
+		}, observer.states)
+	})
+
+	t.Run("ErrorHandler set", func(t *testing.T) {
+		t.Parallel()
+
+		const hostCommit int64 = 40
+		cfg, deps, _, _, _ := testElectionDeps(t)
+		require.Greater(t, cfg.LogPosition, hostCommit)
+		deps.Host = &recordingElectionHost{commitPosition: hostCommit}
+
+		// Capture pre-transition fields inside the handler. LastError is set first.
+		// State and logPosition stay pre-HandleError until the handler returns.
+		type handlerSnapshot struct {
+			err         error
+			lastError   error
+			state       election.ElectionState
+			logPosition int64
+		}
+		var e *election.Election
+		var snaps []handlerSnapshot
+		deps.ErrorHandler = func(err error) {
+			snaps = append(snaps, handlerSnapshot{
+				err:         err,
+				lastError:   e.LastError(),
+				state:       e.State(),
+				logPosition: e.LogPosition(),
+			})
+		}
+		e = election.NewElection(cfg, deps)
+		election.SetStateForTest(e, election.ElectionStateCanvass)
+		appendBefore := e.AppendPosition()
+		err := errors.New("handler sees this")
+
+		e.HandleError(5_000, err)
+
+		require.Equal(t, []handlerSnapshot{{
+			err:         err,
+			lastError:   err,
+			state:       election.ElectionStateCanvass,
+			logPosition: cfg.LogPosition,
+		}}, snaps)
+		require.Equal(t, election.ElectionStateInit, e.State())
+		require.Equal(t, hostCommit, e.LogPosition())
+		require.Equal(t, appendBefore, e.AppendPosition())
+
+		// Nil error skips the handler and clears LastError.
+		e.HandleError(6_000, nil)
+
+		require.Len(t, snaps, 1)
+		require.NoError(t, e.LastError())
+	})
+
+	t.Run("ErrorHandler nil", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, deps, _, _, _ := testElectionDeps(t)
+		deps.Host = &recordingElectionHost{}
+		e := election.NewElection(cfg, deps)
+
+		require.NotPanics(t, func() {
+			e.HandleError(5_000, errors.New("no handler"))
+		})
+		require.Equal(t, election.ElectionStateInit, e.State())
+		require.EqualError(t, e.LastError(), "no handler")
+	})
+
+	t.Run("host commit not notified commit", func(t *testing.T) {
+		t.Parallel()
+
+		const hostCommit int64 = 77
+		const notifiedCommit int64 = 999
+		cfg, deps, _, _, _ := testElectionDeps(t)
+		host := &recordingElectionHost{commitPosition: hostCommit}
+		deps.Host = host
+		e := election.NewElection(cfg, deps)
+		election.SetStateForTest(e, election.ElectionStateCanvass)
+
+		// Install sets NotifiedCommitPosition from the wire CommitPosition field.
+		fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
+		fields.CommitPosition = notifiedCommit
+		e.OnNewLeadershipTerm(fields)
+		require.Equal(t, notifiedCommit, e.NotifiedCommitPosition())
+		require.NotEqual(t, hostCommit, e.NotifiedCommitPosition())
+		appendBefore := e.AppendPosition()
+
+		e.HandleError(5_000, errors.New("commit source"))
+
+		require.Equal(t, hostCommit, e.LogPosition())
+		require.NotEqual(t, e.NotifiedCommitPosition(), e.LogPosition())
+		require.Equal(t, appendBefore, e.AppendPosition())
+	})
+
+	t.Run("sticky role after HandleError", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, deps, _, _, _ := testElectionDeps(t)
+		host := &recordingElectionHost{role: consensus.RoleLeader}
+		deps.Host = host
+		e := election.NewElection(cfg, deps)
+		election.SetStateForTest(e, election.ElectionStateLeaderReady)
+
+		e.HandleError(5_000, errors.New("keep role"))
+
+		require.Equal(t, election.ElectionStateInit, e.State())
+		require.Equal(t, consensus.RoleLeader, host.Role())
+	})
+}
+
+func TestElection_HandleError_truncateAndPrepare(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
-		name string
-		err  error
+		name       string
+		hostCommit int64
+		wantLog    int64
 	}{
-		{"non-nil error", errors.New("test error")},
-		{"nil error", nil},
+		{
+			name:       "truncate success commit at or below newPosition",
+			hostCommit: truncateInstallBase - 8,
+			wantLog:    truncateInstallBase - 8,
+		},
+		{
+			name:       "truncate success commit above newPosition",
+			hostCommit: truncateInstallBase + 64,
+			wantLog:    truncateInstallBase,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, deps, _, _, _ := testElectionDeps(t)
-			observer := &recordingStateObserver{}
-			deps.StateObserver = observer
-			e := election.NewElection(cfg, deps)
-			election.SetStateForTest(e, election.ElectionStateCanvass)
+			r := runTruncateInstall(t, truncateInstallErrs{}, tc.hostCommit)
 
-			e.HandleError(5_000, tc.err)
-
-			require.Equal(t, election.ElectionStateInit, e.State())
-			require.Equal(t, []election.ElectionState{
-				election.ElectionStateInit,
-				election.ElectionStateInit,
-			}, observer.states)
+			require.Equal(t, truncateInstallBase, r.e.AppendPosition())
+			require.Equal(t, tc.wantLog, r.e.LogPosition())
+			require.EqualError(t, r.e.LastError(), "election: truncating cluster log")
+			require.Equal(t, election.ElectionStateInit, r.e.State())
 		})
 	}
+
+	t.Run("truncate success zero commit prepare collapses append", func(t *testing.T) {
+		t.Parallel()
+
+		// Host commit 0 and prepare return of logPosition document the collapse path.
+		r := runTruncateInstall(t, truncateInstallErrs{}, 0)
+		require.Equal(t, truncateInstallBase, r.e.AppendPosition())
+		require.Equal(t, int64(0), r.e.LogPosition())
+
+		cfg, deps, clock, _, _ := testElectionDeps(t)
+		cfg.IsNodeStartup = false
+		cfg.LogPosition = r.e.LogPosition()
+		cfg.AppendPosition = r.e.AppendPosition()
+		deps.Host = &recordingElectionHost{commitPosition: 0}
+		deps.Handler = &recordingAgentHandler{appendPositionReturn: r.e.LogPosition()}
+		e := election.NewElection(cfg, deps)
+		require.Equal(t, truncateInstallBase, e.AppendPosition())
+		require.Equal(t, int64(0), e.LogPosition())
+
+		require.Equal(t, 1, e.DoWork(clock.nowNs))
+		require.Equal(t, election.ElectionStateCanvass, e.State())
+		require.Equal(t, int64(0), e.AppendPosition())
+		require.Equal(t, int64(0), e.LogPosition())
+	})
+
+	t.Run("truncate success stop-derived prepare", func(t *testing.T) {
+		t.Parallel()
+
+		const hostCommit = truncateInstallBase - 16
+		const stopPos int64 = 180
+		r := runTruncateInstall(t, truncateInstallErrs{}, hostCommit)
+		require.Equal(t, hostCommit, r.e.LogPosition())
+		require.Equal(t, truncateInstallBase, r.e.AppendPosition())
+
+		cfg, deps, clock, _, _ := testElectionDeps(t)
+		cfg.IsNodeStartup = false
+		cfg.LogPosition = r.e.LogPosition()
+		cfg.AppendPosition = r.e.AppendPosition()
+		host := &recordingElectionHost{commitPosition: hostCommit}
+		deps.Host = host
+		deps.Handler = &recordingAgentHandler{appendPositionReturn: stopPos}
+		e := election.NewElection(cfg, deps)
+
+		require.Equal(t, 1, e.DoWork(clock.nowNs))
+		require.Equal(t, election.ElectionStateCanvass, e.State())
+		require.Equal(t, stopPos, e.AppendPosition())
+		require.Equal(t, hostCommit, e.LogPosition())
+	})
 }
 
 func TestOnRequestVote_branches(t *testing.T) {
@@ -716,7 +929,8 @@ func TestHandleLeaderReplay_doneShort(t *testing.T) {
 
 	// Done short of the append bound enters Canvass. logPosition is the replayed
 	// position. Append position is unchanged. The exit closes the helper and must
-	// not publish leadership as a Follower.
+	// not publish leadership as a Follower. Incomplete replay must not call
+	// HandleError.
 	_ = e.DoWork(clock.nowNs + 1)
 	require.Equal(t, election.ElectionStateCanvass, e.State())
 	require.Equal(t, consensus.RoleFollower, host.Role())
@@ -724,6 +938,7 @@ func TestHandleLeaderReplay_doneShort(t *testing.T) {
 	require.Equal(t, appendBefore, e.AppendPosition())
 	require.Equal(t, int64(testAppendPosition), e.AppendPosition())
 	require.NotEqual(t, e.AppendPosition(), e.LogPosition())
+	require.NoError(t, e.LastError())
 	require.Equal(t, 1, spy.closeCalls)
 	require.Empty(t, host.publishCommitPositionCalls)
 
@@ -972,6 +1187,7 @@ func TestHandleFollowerLogAwait_branches(t *testing.T) {
 		wantWork      int
 		wantState     election.ElectionState
 		wantJoinCalls int
+		wantLastError string
 	}{
 		{
 			name:         "image not ready before timeout waits",
@@ -979,18 +1195,20 @@ func TestHandleFollowerLogAwait_branches(t *testing.T) {
 			wantState:    election.ElectionStateFollowerLogAwait,
 		},
 		{
-			name:         "image not ready at timeout resets to init",
-			joinPosition: testLogPosition,
-			deltaNs:      timeoutNs,
-			wantWork:     1,
-			wantState:    election.ElectionStateInit,
+			name:          "image not ready at timeout resets to init",
+			joinPosition:  testLogPosition,
+			deltaNs:       timeoutNs,
+			wantWork:      1,
+			wantState:     election.ElectionStateInit,
+			wantLastError: "election: failed to join live log",
 		},
 		{
-			name:         "join position mismatch resets to init",
-			joinOK:       true,
-			joinPosition: testLogPosition + 1,
-			wantWork:     1,
-			wantState:    election.ElectionStateInit,
+			name:          "join position mismatch resets to init",
+			joinOK:        true,
+			joinPosition:  testLogPosition + 1,
+			wantWork:      1,
+			wantState:     election.ElectionStateInit,
+			wantLastError: "election: log join position mismatch",
 		},
 		{
 			name:          "join rejected before timeout waits",
@@ -1007,6 +1225,7 @@ func TestHandleFollowerLogAwait_branches(t *testing.T) {
 			wantWork:      1,
 			wantState:     election.ElectionStateInit,
 			wantJoinCalls: 1,
+			wantLastError: "election: failed to join live log as follower",
 		},
 		{
 			name:          "join accepted enters follower ready",
@@ -1036,6 +1255,11 @@ func TestHandleFollowerLogAwait_branches(t *testing.T) {
 
 			require.Equal(t, tc.wantWork, e.DoWork(clock.nowNs+tc.deltaNs))
 			require.Equal(t, tc.wantState, e.State())
+			if tc.wantLastError == "" {
+				require.NoError(t, e.LastError())
+			} else {
+				require.EqualError(t, e.LastError(), tc.wantLastError)
+			}
 
 			require.Len(t, handler.joinFollowerParams, tc.wantJoinCalls)
 			if tc.wantJoinCalls == 0 {
@@ -1653,6 +1877,7 @@ func TestHandleFollowerLogReplication_branches(t *testing.T) {
 
 		require.Equal(t, 1, e.DoWork(t0+cfg.LeaderHeartbeatTimeoutNs))
 		require.Equal(t, election.ElectionStateInit, e.State())
+		require.EqualError(t, e.LastError(), "election: timeout awaiting commit position")
 	})
 
 	// Matching leader traffic refreshes the replication deadline only while a
@@ -1844,7 +2069,6 @@ type truncateInstallResult struct {
 	spy          *recordingLogCoherencySpy
 	termID       int64
 	appendBefore int64
-	logBefore    int64
 	termBefore   int64
 	fields       codecs.NewLeadershipTermFields
 }
@@ -1853,7 +2077,15 @@ const truncateInstallBase int64 = 128
 
 // runTruncateInstall calls OnNewLeadershipTerm with next-term base below the
 // append position so the install takes the truncate path.
-func runTruncateInstall(t *testing.T, errs truncateInstallErrs) truncateInstallResult {
+//
+// hostCommit seeds Host.CommitPosition. HandleError syncs logPosition from that
+// value. On truncate success, logPosition ends capped at the truncate end when
+// host commit is higher.
+func runTruncateInstall(
+	t *testing.T,
+	errs truncateInstallErrs,
+	hostCommit int64,
+) truncateInstallResult {
 	t.Helper()
 
 	cfg, deps, clock, _, _ := testElectionDeps(t)
@@ -1862,6 +2094,7 @@ func runTruncateInstall(t *testing.T, errs truncateInstallErrs) truncateInstallR
 		clock:               clock,
 		localLogRecordingID: 42,
 		truncateErr:         errs.truncate,
+		commitPosition:      hostCommit,
 	}
 	deps.Host = host
 	spy := &recordingLogCoherencySpy{commitErr: errs.commit, forceErr: errs.force}
@@ -1879,7 +2112,6 @@ func runTruncateInstall(t *testing.T, errs truncateInstallErrs) truncateInstallR
 		spy:          spy,
 		termID:       cfg.LeadershipTermID,
 		appendBefore: e.AppendPosition(),
-		logBefore:    e.LogPosition(),
 		termBefore:   election.LogLeadershipTermIDForTest(e),
 	}
 	require.Less(t, truncateInstallBase, result.appendBefore)
@@ -1898,7 +2130,9 @@ func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {
 	t.Run("next term base below append truncates and resets", func(t *testing.T) {
 		t.Parallel()
 
-		r := runTruncateInstall(t, truncateInstallErrs{})
+		// Seed Host.CommitPosition at the truncate end so post-HandleError logPosition
+		// stays at the truncated bound (not the zero default commit).
+		r := runTruncateInstall(t, truncateInstallErrs{}, truncateInstallBase)
 
 		require.Equal(t, []truncateCall{{
 			leadershipTermID: r.termID,
@@ -1912,6 +2146,7 @@ func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {
 		require.Empty(t, r.spy.calls)
 		require.Equal(t, truncateInstallBase, r.e.AppendPosition())
 		require.Equal(t, truncateInstallBase, r.e.LogPosition())
+		require.EqualError(t, r.e.LastError(), "election: truncating cluster log")
 		require.Equal(t, r.termBefore, election.LogLeadershipTermIDForTest(r.e))
 		require.Equal(t, election.ElectionStateInit, r.e.State())
 	})
@@ -1921,7 +2156,11 @@ func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {
 
 		cfg, deps, clock, _, _ := testElectionDeps(t)
 		cfg.LogPosition = cfg.AppendPosition
-		host := &recordingElectionHost{clock: clock, localLogRecordingID: 42}
+		host := &recordingElectionHost{
+			clock:               clock,
+			localLogRecordingID: 42,
+			commitPosition:      truncateInstallBase,
+		}
 		deps.Host = host
 		spy := &recordingLogCoherencySpy{}
 		deps.RecordingLog = spy
@@ -1945,12 +2184,15 @@ func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {
 			logPosition:      truncateInstallBase,
 		}}, spy.commitCalls)
 		require.Equal(t, truncateInstallBase, e.AppendPosition())
+		require.Equal(t, truncateInstallBase, e.LogPosition())
+		require.EqualError(t, e.LastError(), "election: truncating cluster log")
 		require.Equal(t, election.ElectionStateInit, e.State())
 	})
 
-	t.Run("truncate failure lowers nothing", func(t *testing.T) {
+	t.Run("truncate failure keeps append high", func(t *testing.T) {
 		t.Parallel()
 
+		const hostCommit = truncateInstallBase
 		tests := []struct {
 			name              string
 			errs              truncateInstallErrs
@@ -1983,13 +2225,18 @@ func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 
-				r := runTruncateInstall(t, tc.errs)
+				r := runTruncateInstall(t, tc.errs, hostCommit)
 
 				require.Len(t, r.spy.commitCalls, 1)
 				require.Equal(t, tc.wantForceCalls, r.spy.forceCalls)
 				require.Len(t, r.host.truncateCalls, tc.wantTruncateCalls)
 				require.Equal(t, r.appendBefore, r.e.AppendPosition())
-				require.Equal(t, r.logBefore, r.e.LogPosition())
+
+				// Half-fail still syncs logPosition from host commit. The inject error reaches
+				// HandleError unwrapped. Each row sets exactly one inject.
+				require.Equal(t, hostCommit, r.e.LogPosition())
+				wantErr := cmp.Or(tc.errs.truncate, tc.errs.commit, tc.errs.force)
+				require.ErrorIs(t, r.e.LastError(), wantErr)
 				require.Equal(t, election.ElectionStateInit, r.e.State())
 
 				if !tc.retryConverges {
@@ -2022,7 +2269,11 @@ func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {
 		cfg, deps, clock, _, _ := testElectionDeps(t)
 		cfg.LogPosition = cfg.AppendPosition
 		cfg.LeadershipTermID = election.NullValue
-		host := &recordingElectionHost{clock: clock, localLogRecordingID: 42}
+		host := &recordingElectionHost{
+			clock:               clock,
+			localLogRecordingID: 42,
+			commitPosition:      128,
+		}
 		deps.Host = host
 		spy := &recordingLogCoherencySpy{}
 		deps.RecordingLog = spy
@@ -2048,8 +2299,9 @@ func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {
 	t.Run("lagging append without successor term resets", func(t *testing.T) {
 		t.Parallel()
 
+		const hostCommit int64 = 88
 		cfg, deps, clock, _, _ := testElectionDeps(t)
-		host := &recordingElectionHost{clock: clock}
+		host := &recordingElectionHost{clock: clock, commitPosition: hostCommit}
 		deps.Host = host
 		e := election.NewElection(cfg, deps)
 		election.SetStateForTest(e, election.ElectionStateCanvass)
@@ -2060,6 +2312,8 @@ func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {
 
 		require.Empty(t, host.truncateCalls)
 		require.Equal(t, cfg.AppendPosition, e.AppendPosition())
+		require.Equal(t, hostCommit, e.LogPosition())
+		require.EqualError(t, e.LastError(), "election: invalid newLeadershipTerm")
 		require.Equal(t, election.ElectionStateInit, e.State())
 	})
 
@@ -2808,9 +3062,12 @@ func (c *countingLogReplicationForTest) OnSignal(int64, int64, int64, election.R
 func TestHandleInit_prepareErrorFailsClosed(t *testing.T) {
 	t.Parallel()
 
+	const hostCommit int64 = 90
 	prepareErr := errors.New("prepare stop failed")
 	cfg, deps, clock, _, _ := testElectionDeps(t)
 	cfg.IsNodeStartup = false
+	host := &recordingElectionHost{commitPosition: hostCommit}
+	deps.Host = host
 	handler := &recordingAgentHandler{
 		appendPositionReturn: cfg.AppendPosition + 1,
 		prepareErr:           prepareErr,
@@ -2822,6 +3079,8 @@ func TestHandleInit_prepareErrorFailsClosed(t *testing.T) {
 	require.Equal(t, 1, e.DoWork(clock.nowNs))
 	require.Equal(t, election.ElectionStateInit, e.State())
 	require.Equal(t, seedAppend, e.AppendPosition())
+	require.Equal(t, prepareErr, e.LastError())
+	require.Equal(t, hostCommit, e.LogPosition())
 	require.Equal(t, 1, handler.prepareCalls)
 
 	// Bounded attempt is retried rather than abandoned.
@@ -2829,6 +3088,8 @@ func TestHandleInit_prepareErrorFailsClosed(t *testing.T) {
 	require.Equal(t, election.ElectionStateInit, e.State())
 	require.Equal(t, 2, handler.prepareCalls)
 	require.Equal(t, seedAppend, e.AppendPosition())
+	require.Equal(t, prepareErr, e.LastError())
+	require.Equal(t, hostCommit, e.LogPosition())
 }
 
 func TestHandleInit_prepareSuccessAssignsAppend(t *testing.T) {

@@ -217,9 +217,20 @@ func TestElectionRapidCluster_handleErrorReopensCandidateTermWindow(t *testing.T
 	// maxCandidateSeen. Observer must clear initLoaded on Init.
 	raised := before + 100
 	n.maxCandidateSeen = raised
-	n.election.HandleError(n.clock.nowNs, errors.New("force re-init"))
+	forceErr := errors.New("force re-init")
+
+	// Fixture seeds commit equal to logPosition. Assert log sync with a
+	// distinct host commit.
+	syncCommit := n.election.LogPosition() - 20
+	n.host.commitPosition = syncCommit
+	appendBefore := n.election.AppendPosition()
+
+	n.election.HandleError(n.clock.nowNs, forceErr)
 	require.Equal(t, election.ElectionStateInit, n.election.State())
 	require.False(t, n.initLoaded, "re-entry to Init must reopen candidate-term window")
+	require.Equal(t, forceErr, n.election.LastError())
+	require.Equal(t, syncCommit, n.election.LogPosition())
+	require.Equal(t, appendBefore, n.election.AppendPosition())
 
 	n.election.DoWork(n.clock.nowNs)
 	require.NotEqual(t, election.ElectionStateInit, n.election.State())
@@ -228,4 +239,34 @@ func TestElectionRapidCluster_handleErrorReopensCandidateTermWindow(t *testing.T
 	// Re-baseline is durable-backed, not the inflated high water mark.
 	require.Equal(t, election.CandidateTermIDForTest(n.election), n.maxCandidateSeen)
 	require.Less(t, n.maxCandidateSeen, raised)
+}
+
+func TestElectionRapid_handleErrorSyncsLogPosition(t *testing.T) {
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		cfg, deps, _, _, nodeState := testElectionDeps(t)
+
+		// Close the per-iteration store so open files do not accumulate across rapid
+		// checks. The outer t.Cleanup close is then an idempotent no-op.
+		defer func() { require.NoError(rt, nodeState.store.Close()) }()
+
+		// Draw commit past append and the initial log position. HandleError assigns
+		// Host.CommitPosition raw. The truncate path owns any clamp against append.
+		commit := rapid.Int64Range(0, 2*cfg.AppendPosition).Draw(rt, "commit")
+		host := &recordingElectionHost{commitPosition: commit}
+		deps.Host = host
+		e := election.NewElection(cfg, deps)
+		election.SetStateForTest(e, election.ElectionStateCanvass)
+		appendBefore := e.AppendPosition()
+
+		var err error
+		if rapid.Bool().Draw(rt, "nonNilErr") {
+			err = errors.New("rapid force")
+		}
+		e.HandleError(5_000, err)
+
+		require.Equal(rt, election.ElectionStateInit, e.State())
+		require.Equal(rt, commit, e.LogPosition())
+		require.Equal(rt, appendBefore, e.AppendPosition())
+		require.Equal(rt, err, e.LastError())
+	})
 }

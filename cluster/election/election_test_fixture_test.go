@@ -77,6 +77,11 @@ func newRecordingHostAndAgent(
 		quorumPosition:      appendPosition,
 		localLogRecordingID: int64(election.NullValue),
 
+		// HandleError syncs logPosition from CommitPosition. Seed the commit at the
+		// consumed log position so error paths do not collapse logPosition to zero.
+		// Tests that probe the sync seed a distinct commit.
+		commitPosition: logPosition,
+
 		// Join succeeds immediately by default; override followerLogJoinOK or
 		// agent.joinFollowerReturn for stall/timeout paths.
 		followerLogJoinOK:       true,

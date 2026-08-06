@@ -40,6 +40,7 @@ type Election struct {
 	nominationDeadlineNs             int64
 	lastPublishedCommitPosition      int64
 	lastPublishedAppendPosition      int64
+	lastError                        error
 
 	clusterMembers []*Member
 	memberByID     map[int32]*Member
@@ -278,3 +279,14 @@ func (e *Election) Leader() *Member { return e.leaderMember }
 func (e *Election) LogSessionID() int32 { return e.logSessionID }
 
 func (e *Election) NotifiedCommitPosition() int64 { return e.notifiedCommitPosition }
+
+// LastError returns the error last passed to HandleError.
+//
+// Behaviour: returns nil when HandleError has not run, or the last call passed
+// nil. Error strings may include archive remote text and channel URIs. Callers
+// must not put raw Error() into untrusted sinks without sanitization.
+//
+// Concurrency: invoker-only.
+//
+// Lifetime: overwritten on each HandleError. Survives Close.
+func (e *Election) LastError() error { return e.lastError }

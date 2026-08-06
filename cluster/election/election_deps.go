@@ -43,4 +43,22 @@ type ElectionDeps struct {
 	RecordingLogFileSyncLevel recordinglog.FileSyncLevel
 
 	StateObserver StateObserver
+
+	// ErrorHandler receives each non-nil error passed to HandleError.
+	//
+	// Behaviour: nil skips the call. When the handler runs, LastError is already
+	// set. State and logPosition stay pre-HandleError until the handler returns.
+	// The error may include archive remote text and channel URIs. Handlers must not
+	// put raw err.Error() into untrusted sinks without sanitization.
+	//
+	// Concurrency: invoker-only. The handler must not:
+	//   - panic
+	//   - block the duty cycle
+	//   - re-enter Election methods, Host or Handler mutators, or duty-cycle entry
+	//
+	// A panic skips log sync and Init after the callback (process-fatal).
+	//
+	// Lifetime: copied into Election at NewElection. Mutating the caller's deps
+	// copy afterwards does not change the election.
+	ErrorHandler func(error)
 }

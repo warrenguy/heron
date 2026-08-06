@@ -845,20 +845,22 @@ func (e *Election) installLeadershipTerm(
 }
 
 // truncateLog lowers the recording log term, drops the divergent recorded tail,
-// lowers the tracked positions, and returns the election to init.
+// and returns the election to Init.
 //
-// The recording log write runs first on purpose. The install path re-enters this
-// branch only while NextTermBaseLogPosition is below the tracked append
-// position. Tracked positions lower only after both halves succeed. After both
-// halves succeed, truncateLog lowers append and log position so the branch stops
-// re-entering. A later prepare adopts the control stop from
-// [LogRecordingControl.StopPositionFor]. Archive first would make a failed
-// recording-log write permanent: prepare would adopt the control stop, close the
-// install path, and leave the term entry at the divergent position.
+// Behaviour:
+//   - success: lowers append to newPosition; ends logPosition at
+//     min(Host.CommitPosition(), newPosition)
+//   - half-fail: keeps append high; syncs logPosition only via HandleError
 //
-// Nothing is lowered when either half fails, so the next round re-enters this
-// branch with the same values. Both halves are idempotent, so the retry
-// converges.
+// The recording log write runs first. The install path re-enters this branch
+// only while NextTermBaseLogPosition is below the tracked append position.
+// The success append lowering stops the re-entry. A later prepare adopts the
+// control stop from [LogRecordingControl.StopPositionFor]. Archive first would
+// make a failed recording-log write permanent: prepare would adopt the control
+// stop, close the install path, and leave the term entry at the divergent
+// position.
+//
+// Both halves are idempotent. The half-fail retry converges.
 func (e *Election) truncateLog(logLeadershipTermID, newPosition, nowNs int64) {
 	if err := e.truncateRecordingLogTerm(logLeadershipTermID, newPosition); err != nil {
 		e.HandleError(nowNs, err)
@@ -869,8 +871,11 @@ func (e *Election) truncateLog(logLeadershipTermID, newPosition, nowNs int64) {
 		return
 	}
 	e.appendPosition = newPosition
-	e.logPosition = min(e.logPosition, newPosition)
 	e.HandleError(nowNs, errors.New("election: truncating cluster log"))
+
+	// HandleError sets logPosition from host commit. Cap logPosition at newPosition
+	// when host commit sits above the truncate end.
+	e.logPosition = min(e.logPosition, newPosition)
 }
 
 func (e *Election) OnAppendPosition(fields codecs.AppendPositionFields) {
@@ -980,12 +985,36 @@ func (e *Election) OnRecordingSignal(
 	e.deps.Host.SetLogRecordingID(rep.RecordingID())
 }
 
-// HandleError resets the election to Init regardless of err. Mirrors
-// Election.handleError. Stub until error reporting and commit-position
-// sync are wired.
+// HandleError records err, syncs log position from Host.CommitPosition, and
+// enters Init.
 //
-// A failed candidate-term write lands here with the in-memory term
-// untouched; the Init pass re-reads the durable value.
+// Behaviour:
+//   - stores err as LastError (nil clears)
+//   - calls ErrorHandler when set and err is non-nil
+//   - sets logPosition to Host.CommitPosition
+//   - transitions to Init with err.Error() as reason when err is non-nil
+//
+// Does not change role. Does not rewrite appendPosition. Does not read
+// NotifiedCommitPosition. The next non-first Init pass runs
+// prepareForNewLeadership.
+//
+// The reason string is reserved. When later consumed, treat the reason as
+// untrusted (same remote text and channel URIs as LastError). The ErrorHandler
+// contract is documented on [ElectionDeps.ErrorHandler].
+//
+// A failed candidate-term write lands here with the in-memory term untouched.
+// The Init pass re-reads the durable value.
+//
+// Concurrency: invoker-only.
 func (e *Election) HandleError(nowNs int64, err error) {
-	e.state(ElectionStateInit, nowNs, "")
+	e.lastError = err
+	if err != nil && e.deps.ErrorHandler != nil {
+		e.deps.ErrorHandler(err)
+	}
+	e.logPosition = e.deps.Host.CommitPosition()
+	reason := ""
+	if err != nil {
+		reason = err.Error()
+	}
+	e.state(ElectionStateInit, nowNs, reason)
 }
