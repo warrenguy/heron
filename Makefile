@@ -60,9 +60,9 @@ SHELL_SCRIPTS := $$(find . -name '*.sh' -type f ! -path './.git/*' ! -path './ve
 
 # Per-package go test deadline (replaces go default 10m on hung tests).
 TEST_TIMEOUT ?= 2m
-# Per-package fuzz budget; 45s avoids deadline flake on heavy packages at 30s.
+# Per-target fuzz budget (FUZZ_TIME). Default 45s. 30s timed out on heavy targets.
 FUZZ_TIME ?= 45s
-# Per-package go test deadline for make fuzz (baseline + FUZZ_TIME + minimization).
+# Per-target go test -timeout for make fuzz. Covers baseline, FUZZ_TIME, and minimization.
 FUZZ_TIMEOUT ?= 5m
 # Wall-clock cap for full check (check-static + unit + stress).
 CHECK_TIMEOUT ?= 5m
@@ -196,16 +196,24 @@ gofumpt: goimports ## gofumpt after goimports
 	go tool gofumpt -extra -w $(GO_SOURCES)
 
 .PHONY: fuzz
-# -fuzz=Fuzz requires at most one matching Fuzz* per package (Go errors otherwise).
+# go test -fuzz must match exactly one Fuzz* per invocation.
+#
+# Discover packages from *_fuzz_test.go files. List Fuzz* names from the
+# compiled test binary. Run each name. A package may host many targets.
 fuzz: ## Run all Fuzz* tests
 	@set -euo pipefail; \
-	fuzz_pkgs=$$(grep -rl '^func Fuzz' --include='*_fuzz_test.go' \
+	fuzz_dirs=$$(grep -rl '^func Fuzz' --include='*_fuzz_test.go' \
 		--exclude-dir=vendor . 2>/dev/null \
 		| sed 's|/[^/]*$$||' | sort -u || true); \
-	[ -n "$$fuzz_pkgs" ] || { echo "no fuzz tests"; exit 1; }; \
-	for pkg in $$fuzz_pkgs; do \
-		go test -timeout=$(FUZZ_TIMEOUT) -tags=$(UNIT_TEST_TAGS) -run '^$$' \
-			-fuzz=Fuzz -fuzztime=$(FUZZ_TIME) $$pkg; \
+	[ -n "$$fuzz_dirs" ] || { echo "no fuzz tests"; exit 1; }; \
+	for dir in $$fuzz_dirs; do \
+		pkg=./$${dir#./}; \
+		for name in $$(go test -timeout=$(TEST_TIMEOUT) -tags=$(UNIT_TEST_TAGS) \
+			-run '^$$' -list '^Fuzz' $$pkg | grep '^Fuzz'); do \
+			echo "fuzz $$pkg $$name"; \
+			go test -timeout=$(FUZZ_TIMEOUT) -tags=$(UNIT_TEST_TAGS) -run '^$$' \
+				-fuzz=^$$name$$ -fuzztime=$(FUZZ_TIME) $$pkg; \
+		done; \
 	done
 
 # Unit tests need -tags=testhooks,bench; use make test.
