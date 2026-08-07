@@ -118,42 +118,55 @@ func TestHandleSessionConnect_branchTable(t *testing.T) {
 	const nowNs int64 = 1_000_000
 
 	cases := []struct {
-		name      string
-		role      Role
-		election  ElectionRunner
-		handler   *recordingSessionConnectHandler
-		wantCalls int
+		name        string
+		role        Role
+		election    ElectionRunner
+		handler     *recordingSessionConnectHandler
+		wantCalls   int
+		wantPending int
 	}{
 		{
-			name:      "steady_leader_forwards",
-			role:      RoleLeader,
-			handler:   &recordingSessionConnectHandler{},
-			wantCalls: 1,
+			name:        "steady_leader_forwards",
+			role:        RoleLeader,
+			handler:     &recordingSessionConnectHandler{},
+			wantCalls:   1,
+			wantPending: 0,
 		},
 		{
-			name:      "follower_drops",
-			role:      RoleFollower,
-			handler:   &recordingSessionConnectHandler{},
-			wantCalls: 0,
+			name:        "follower_drops",
+			role:        RoleFollower,
+			handler:     &recordingSessionConnectHandler{},
+			wantCalls:   0,
+			wantPending: 0,
 		},
 		{
-			name:      "candidate_drops",
-			role:      RoleCandidate,
-			handler:   &recordingSessionConnectHandler{},
-			wantCalls: 0,
+			name:        "candidate_drops",
+			role:        RoleCandidate,
+			handler:     &recordingSessionConnectHandler{},
+			wantCalls:   0,
+			wantPending: 0,
 		},
 		{
-			name:      "election_live_leader_drops",
-			role:      RoleLeader,
-			election:  &recordingRunner{},
-			handler:   &recordingSessionConnectHandler{},
-			wantCalls: 0,
+			name:        "election_live_leader_drops",
+			role:        RoleLeader,
+			election:    &recordingRunner{},
+			handler:     &recordingSessionConnectHandler{},
+			wantCalls:   0,
+			wantPending: 0,
 		},
 		{
-			name:      "nil_handler_no_panic",
-			role:      RoleLeader,
-			handler:   nil,
-			wantCalls: 0,
+			name:        "nil_handler_product_accept",
+			role:        RoleLeader,
+			handler:     nil,
+			wantCalls:   0,
+			wantPending: 1,
+		},
+		{
+			name:        "nil_handler_follower_no_accept",
+			role:        RoleFollower,
+			handler:     nil,
+			wantCalls:   0,
+			wantPending: 0,
 		},
 	}
 
@@ -163,8 +176,15 @@ func TestHandleSessionConnect_branchTable(t *testing.T) {
 
 			q.Enqueue(bytes.Clone(wire))
 			require.Equal(t, 1, a.pollClientIngress(nowNs))
+			require.Equal(t, tc.wantPending, a.PendingSessionCount())
+			require.Equal(t, 0, a.OpenSessionCount())
 
 			if tc.handler == nil {
+				if tc.wantPending == 1 {
+					s, ok := a.sessions.sessionByID(1)
+					require.True(t, ok)
+					requireClientSessionFields(t, s, fields, sessionPending, nowNs)
+				}
 				return
 			}
 			require.Len(t, tc.handler.calls, tc.wantCalls)

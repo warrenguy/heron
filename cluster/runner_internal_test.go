@@ -202,7 +202,7 @@ func TestRunnerRunExitPaths(t *testing.T) {
 func TestNewRunnerValidatesDeps(t *testing.T) {
 	complete := RunnerDeps{
 		Client: &aeron.Client{},
-		Agent:  &consensus.Agent{},
+		Agent:  consensus.NewAgent(consensus.AgentConfig{}),
 		Idle:   &recordingIdle{},
 		Clock:  func() int64 { return 0 },
 	}

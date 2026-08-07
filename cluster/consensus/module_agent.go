@@ -191,8 +191,13 @@ type Agent struct {
 	// (no per-poll closure).
 	clientIngressPollNowNs int64
 
-	// sessionConnectHandler receives leader-accepted connects. Nil drops them.
+	// sessionConnectHandler receives leader-accepted connects. Nil runs the
+	// product session accept. A non-nil handler replaces the product accept.
 	sessionConnectHandler SessionConnectHandler
+
+	// sessions is the client session registry. The Agent constructs it. Pure
+	// state with no transport resources.
+	sessions *sessionManager
 
 	// appendSource supplies local log append high-water for leader rank and
 	// follower AppendPosition publish. Nil: leader consensusWork returns 0.
@@ -453,6 +458,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		termBaseLogPosition:       cfg.TermBaseLogPosition,
 		appVersion:                cfg.AppVersion,
 		catchupReplays:            make(map[int32]catchupReplay),
+		sessions:                  newSessionManager(),
 	}
 	a.ingressHandler = a.onIngressFragment
 	a.clientIngressHandler = a.handleClientIngressFragment
@@ -1691,7 +1697,8 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 //   - slow tick
 //   - consensus ingress poll (always, even when election non-nil)
 //   - client ingress poll (always; leader-only accept lives in dispatch)
-//   - [ElectionRunner.DoWork] when an election is live, else consensusWork
+//   - [ElectionRunner.DoWork] when an election is live, else sessionWork then
+//     consensusWork
 //
 // Concurrency: invoker-only. See [Agent].
 func (a *Agent) DoWork(nowNs int64) int {
@@ -1706,6 +1713,8 @@ func (a *Agent) DoWork(nowNs int64) int {
 		noteDoWorkStep("election.DoWork")
 		work += a.election.DoWork(nowNs)
 	} else {
+		noteDoWorkStep("sessionWork")
+		work += a.sessionWork(nowNs)
 		noteDoWorkStep("consensusWork")
 		work += a.consensusWork(nowNs)
 	}

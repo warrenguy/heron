@@ -34,12 +34,25 @@ func boundLogPublisherWithLimit(
 	return p
 }
 
-func termStartWire(t *testing.T, pub *aeron.ExclusivePublication) []byte {
+// termWireAt returns the DATA frame payload at termOffset in term 0 and the
+// next aligned term offset.
+func termWireAt(
+	t *testing.T,
+	pub *aeron.ExclusivePublication,
+	termOffset int,
+) ([]byte, int) {
 	t.Helper()
 	termBuf := pub.TermBuffer(0)
-	frameLength := int(logbuffer.FrameLengthVolatile(termBuf, 0))
+	frameLength := int(logbuffer.FrameLengthVolatile(termBuf, termOffset))
 	require.Positive(t, frameLength)
-	return termBuf.Bytes()[logbuffer.OffsetFramePayload:frameLength]
+	wire := termBuf.Bytes()[termOffset+logbuffer.OffsetFramePayload : termOffset+frameLength]
+	return wire, termOffset + logbuffer.AlignFrameLength(frameLength)
+}
+
+func termStartWire(t *testing.T, pub *aeron.ExclusivePublication) []byte {
+	t.Helper()
+	wire, _ := termWireAt(t, pub, 0)
+	return wire
 }
 
 func decodeNLTAtTermStart(

@@ -27,5 +27,11 @@ func TestDoWork_stepOrder_electionNil(t *testing.T) {
 	})
 	a := NewAgent(AgentConfig{Commit: new(atomic.Int64)})
 	require.Equal(t, 0, a.DoWork(1))
-	require.Equal(t, []string{"slowTick", "pollIngress", "pollClientIngress", "consensusWork"}, log)
+	require.Equal(t, []string{
+		"slowTick",
+		"pollIngress",
+		"pollClientIngress",
+		"sessionWork",
+		"consensusWork",
+	}, log)
 }
