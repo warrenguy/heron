@@ -53,6 +53,31 @@ func (err *ControlProtocolVersionError) Error() string {
 	)
 }
 
+// Driver ON_ERROR error codes. Values match Java io.aeron.ErrorCode.
+const (
+	// ErrorCodeResourceTemporarilyUnavailable matches Java
+	// ErrorCode.RESOURCE_TEMPORARILY_UNAVAILABLE (value 10).
+	//
+	// The media driver returns this code when a registration resource is still
+	// closing, such as a send_channel_endpoint in CLOSING state. Callers may
+	// retry the registration with a fresh correlation after a short pause.
+	ErrorCodeResourceTemporarilyUnavailable int32 = 10
+)
+
+// IsRetriableRegistration reports whether err is a driver registration failure
+// that should be retried after a short pause.
+//
+// Returns true only for a [*RegistrationError] with
+// [ErrorCodeResourceTemporarilyUnavailable], including when that error is
+// wrapped. Returns false for every other error.
+func IsRetriableRegistration(err error) bool {
+	var reg *RegistrationError
+	if !errors.As(err, &reg) {
+		return false
+	}
+	return reg.ErrorCode == ErrorCodeResourceTemporarilyUnavailable
+}
+
 // RegistrationError reports add/register failures.
 //
 // Driver ON_ERROR uses ErrorCode and Message (stable awaitResponse string).

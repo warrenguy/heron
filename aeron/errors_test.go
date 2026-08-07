@@ -2,6 +2,7 @@ package aeron_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -46,6 +47,65 @@ func TestControlProtocolVersionError(t *testing.T) {
 		err,
 		"aeron: control protocol version mismatch: got 2 want 1",
 	)
+}
+
+func TestIsRetriableRegistration(t *testing.T) {
+	t.Parallel()
+
+	retriable := &aeron.RegistrationError{
+		CorrelationID: 76,
+		ErrorCode:     aeron.ErrorCodeResourceTemporarilyUnavailable,
+		Message:       "(-10) resource temporarily unavailable",
+	}
+	permanent := &aeron.RegistrationError{
+		CorrelationID: 1,
+		ErrorCode:     11,
+		Message:       "invalid channel",
+	}
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "plain error", err: errors.New("boom"), want: false},
+		{name: "retriable code 10", err: retriable, want: true},
+		{
+			name: "retriable wrapped",
+			err:  fmt.Errorf("cluster: add log: %w", retriable),
+			want: true,
+		},
+		{name: "other registration code", err: permanent, want: false},
+		{
+			name: "other code wrapped",
+			err:  fmt.Errorf("cluster: add log: %w", permanent),
+			want: false,
+		},
+		{
+			name: "registration without retriable code",
+			err: &aeron.RegistrationError{
+				Kind:          "publication",
+				CorrelationID: 9,
+				Cause:         errors.New("ring full"),
+			},
+			want: false,
+		},
+	}
+
+	require.Equal(
+		t,
+		int32(10),
+		aeron.ErrorCodeResourceTemporarilyUnavailable,
+		"Java ErrorCode.RESOURCE_TEMPORARILY_UNAVAILABLE wire value",
+	)
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, testCase.want, aeron.IsRetriableRegistration(testCase.err))
+		})
+	}
 }
 
 func TestRegistrationError(t *testing.T) {

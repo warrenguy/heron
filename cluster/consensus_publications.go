@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/election"
@@ -85,23 +86,47 @@ type ConsensusPublications struct {
 
 var errAdderReturnedNoPublication = errors.New("adder returned no publication")
 
-// addExclusivePublicationChecked adds one exclusive publication, normalizing
-// the nil-nil adder result into an error. what names the stream in the
-// wrapped error.
+// Retry pacing for [addExclusivePublicationChecked] on
+// [aeron.ErrorCodeResourceTemporarilyUnavailable].
+//
+// exclusivePubAddRetryBudget caps total retry time. exclusivePubAddRetryPause
+// is the sleep between attempts. Tests may shrink both.
+var (
+	exclusivePubAddRetryBudget = 5 * time.Second
+	exclusivePubAddRetryPause  = 10 * time.Millisecond
+)
+
+// addExclusivePublicationChecked adds one exclusive publication. A nil-nil
+// adder result becomes [errAdderReturnedNoPublication]. what names the stream
+// in the wrapped error.
+//
+// Retries only when [aeron.IsRetriableRegistration] is true (code 10,
+// including wrapped errors). Each attempt is a fresh AddExclusivePublication.
+// Typical driver case: send_channel_endpoint still in CLOSING. Other errors
+// return immediately.
+//
+// On failure returns the last error wrapped as `cluster: add %s on %s: %w`
+// with what and channel.
 func addExclusivePublicationChecked(
 	adder ExclusivePublicationAdder,
 	streamID int32,
 	channel string,
 	what string,
 ) (*aeron.ExclusivePublication, error) {
-	pub, err := adder.AddExclusivePublication(streamID, channel)
-	if err == nil && pub == nil {
-		err = errAdderReturnedNoPublication
+	deadline := time.Now().Add(exclusivePubAddRetryBudget)
+	for {
+		pub, err := adder.AddExclusivePublication(streamID, channel)
+		if err == nil && pub == nil {
+			err = errAdderReturnedNoPublication
+		}
+		if err == nil {
+			return pub, nil
+		}
+		if !aeron.IsRetriableRegistration(err) || !time.Now().Before(deadline) {
+			return nil, fmt.Errorf("cluster: add %s on %s: %w", what, channel, err)
+		}
+		time.Sleep(exclusivePubAddRetryPause)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("cluster: add %s on %s: %w", what, channel, err)
-	}
-	return pub, nil
 }
 
 // OpenConsensusPublications registers one exclusive consensus publication per
