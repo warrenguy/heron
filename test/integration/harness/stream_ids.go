@@ -64,7 +64,6 @@ const (
 	PollReassembledLiveIPCStreamID         int32 = 8003
 	PollReassembledNoImageStreamID         int32 = 8006
 
-	OfferWithRetryWitnessCleanStreamID         int32 = 8010
 	OfferWithRetryWitnessBackPressuredStreamID int32 = 8011
 	// Isolated from WaitUntilConnectedTimeoutStreamID for shared-driver cross-test safety.
 	OfferWithRetryNotConnectedTimeoutStreamID int32 = 8019

@@ -24,7 +24,6 @@ var sharedDriverStreamIDs = map[string]int32{
 	"OfferWithRetryNotConnectedThenConnectStreamID":          OfferWithRetryNotConnectedThenConnectStreamID,
 	"OfferWithRetryNotConnectedTimeoutStreamID":              OfferWithRetryNotConnectedTimeoutStreamID,
 	"OfferWithRetryWitnessBackPressuredStreamID":             OfferWithRetryWitnessBackPressuredStreamID,
-	"OfferWithRetryWitnessCleanStreamID":                     OfferWithRetryWitnessCleanStreamID,
 	"PollDeliveredInvalidWantStreamID":                       PollDeliveredInvalidWantStreamID,
 	"PollDeliveredLiveIPCStreamID":                           PollDeliveredLiveIPCStreamID,
 	"PollDeliveredPartialDeliveryStreamID":                   PollDeliveredPartialDeliveryStreamID,

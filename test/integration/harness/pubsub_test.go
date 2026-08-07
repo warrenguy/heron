@@ -112,6 +112,39 @@ func (pub offerRetryFailStubPub) Position() int64 { return pub.position }
 
 func (offerRetryFailStubPub) Offer([]byte) int64 { return aeron.NotConnected }
 
+// offerRetryWitnessStubPub implements boundPublication for OfferWithRetryWitness
+// unit tests. OfferWithRetryObserved returns successPos. The method may call
+// onRetriable once per retriable status before that return.
+type offerRetryWitnessStubPub struct {
+	successPos int64
+	retriable  []int64
+}
+
+func (pub offerRetryWitnessStubPub) IsConnected() bool { return true }
+
+func (pub offerRetryWitnessStubPub) RegistrationID() int64 { return 1 }
+
+func (pub offerRetryWitnessStubPub) StreamID() int32 { return 1 }
+
+func (pub offerRetryWitnessStubPub) SessionID() int32 { return 1 }
+
+func (offerRetryWitnessStubPub) Position() int64 { return 0 }
+
+func (offerRetryWitnessStubPub) Offer([]byte) int64 { return 0 }
+
+func (offerRetryWitnessStubPub) WaitUntilConnected(context.Context) error { return nil }
+
+func (pub offerRetryWitnessStubPub) OfferWithRetryObserved(
+	_ context.Context,
+	_ []byte,
+	onRetriable aeron.OfferRetriableObserver,
+) (int64, error) {
+	for _, status := range pub.retriable {
+		onRetriable(status)
+	}
+	return pub.successPos, nil
+}
+
 func TestWaitUntilConnected_timeoutMessage(t *testing.T) {
 	md := SharedParallel(t)
 	client := ConnectClient(t, md, shortPollAeronConfig())
@@ -962,18 +995,28 @@ func TestComputeRolloverMessageCount_table(t *testing.T) {
 	}
 }
 
-func TestOfferWithRetryWitness_cleanSuccess_returnsFalse(t *testing.T) {
-	md := SharedParallel(t)
-	client := ConnectClient(t, md, aeron.Config{})
+func TestOfferWithRetryWitness_unit(t *testing.T) {
+	const successPos int64 = 64
 
-	pub, _ := connectIPCPubSub(t, client, OfferWithRetryWitnessCleanStreamID)
-
-	pubPosBefore := pub.Position()
-	payload := []byte{0x01}
-	pos, witness := OfferWithRetryWitness(t, pub, payload)
-	require.False(t, witness)
-	require.Positive(t, pos)
-	require.Greater(t, pos, pubPosBefore)
+	for _, tt := range []struct {
+		name        string
+		retriable   []int64
+		wantWitness bool
+	}{
+		{name: "cleanSuccess", wantWitness: false},
+		{name: "backPressured", retriable: []int64{aeron.BackPressured}, wantWitness: true},
+		{name: "adminAction", retriable: []int64{aeron.AdminAction}, wantWitness: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pub := offerRetryWitnessStubPub{
+				successPos: successPos,
+				retriable:  tt.retriable,
+			}
+			pos, witness := OfferWithRetryWitness(t, pub, []byte{0x01})
+			require.Equal(t, tt.wantWitness, witness)
+			require.Equal(t, successPos, pos)
+		})
+	}
 }
 
 func TestOfferWithRetryWitness_backPressured_returnsTrue(t *testing.T) {
