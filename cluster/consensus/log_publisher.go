@@ -168,3 +168,142 @@ func (p *LogPublisher) AppendNewLeadershipTermEvent(
 		},
 	)
 }
+
+// AppendSessionOpen encodes SessionOpenEvent (template 21) into scratch and
+// offers a single unfragmented frame.
+//
+// Behaviour: copies responseChannel and encodedPrincipal into scratch. Does not
+// retain either slice. Does not validate field semantics.
+//
+// Returns stream position (>0) on success, or an aeron publication code:
+//   - Closed when the receiver or publication is nil
+//   - Closed when total exceeds len(scratch) after bind
+//   - UnsupportedMessageLength when ClusterWireMessageLen fails or total
+//     exceeds MaxPayloadLength (does not call Offer)
+//   - NotConnected when encode fails after the length checks
+//   - Offer codes from OfferWithOffset after up to logPublisherSendAttempts on
+//     retriable codes (BackPressured, AdminAction, NotConnected). Closed and
+//     MaxPositionExceeded stop immediately
+func (p *LogPublisher) AppendSessionOpen(
+	leadershipTermID int64,
+	correlationID int64,
+	clusterSessionID int64,
+	timestamp int64,
+	responseStreamID int32,
+	responseChannel []byte,
+	encodedPrincipal []byte,
+) int64 {
+	if p == nil || p.publication == nil {
+		return aeron.Closed
+	}
+	pub := p.publication
+	total, ok := codecs.ClusterWireMessageLen(
+		clusterwire.SessionOpenEventSbeBlockLength,
+		len(responseChannel),
+		len(encodedPrincipal),
+	)
+	if !ok || total > pub.MaxPayloadLength() {
+		return aeron.UnsupportedMessageLength
+	}
+	if total > len(p.scratch) {
+		// SetPublication skipped after bind. Treat as closed publisher state.
+		return aeron.Closed
+	}
+
+	fields := codecs.SessionOpenEventFields{
+		LeadershipTermID: leadershipTermID,
+		CorrelationID:    correlationID,
+		ClusterSessionID: clusterSessionID,
+		Timestamp:        timestamp,
+		ResponseStreamID: responseStreamID,
+		ResponseChannel:  responseChannel,
+		EncodedPrincipal: encodedPrincipal,
+	}
+	actingVersion := uint16(clusterwire.SessionOpenEventSbeSchemaVersion)
+	if _, encOK := codecs.EncodeSessionOpenEvent(p.scratch, 0, actingVersion, fields); !encOK {
+		// Length checks already passed. Encode failure maps to NotConnected, same
+		// as AppendMessage.
+		return aeron.NotConnected
+	}
+
+	var position int64
+	for range logPublisherSendAttempts {
+		position = pub.OfferWithOffset(p.scratch, 0, total)
+		if position > 0 || !aeron.IsOfferRetriable(position) {
+			return position
+		}
+	}
+	return position
+}
+
+// appendClaim encodes fields into a fixed-length claim and commits.
+//
+// Returns false when the receiver or publication is nil, or when encode fails.
+// Claim retry, abort, and commit policy is [aeron.ExclusivePublication.ClaimFillCommit].
+func appendClaim[F any](
+	p *LogPublisher,
+	length int,
+	actingVersion uint16,
+	fields F,
+	encode func([]byte, int, uint16, F) (int, bool),
+) bool {
+	if p == nil {
+		return false
+	}
+	return p.publication.ClaimFillCommit(
+		length,
+		logPublisherSendAttempts,
+		func(term []byte, payloadOff int, _ int64) bool {
+			wireEnd, ok := encode(term, payloadOff, actingVersion, fields)
+			return ok && wireEnd-payloadOff == length
+		},
+	)
+}
+
+// AppendSessionClose reserves a fixed 36-byte unfragmented claim, encodes
+// SessionCloseEvent (template 22) into the term buffer, and commits.
+//
+// Returns false when the receiver or publication is nil, or when encode fails.
+// Claim retry, abort, and commit policy is [aeron.ExclusivePublication.ClaimFillCommit].
+func (p *LogPublisher) AppendSessionClose(
+	leadershipTermID int64,
+	clusterSessionID int64,
+	timestamp int64,
+	closeReason clusterwire.CloseReason,
+) bool {
+	return appendClaim(
+		p,
+		codecs.SessionCloseEventEncodedLen(),
+		uint16(clusterwire.SessionCloseEventSbeSchemaVersion),
+		codecs.SessionCloseEventFields{
+			LeadershipTermID: leadershipTermID,
+			ClusterSessionID: clusterSessionID,
+			Timestamp:        timestamp,
+			CloseReason:      closeReason,
+		},
+		codecs.EncodeSessionCloseEvent,
+	)
+}
+
+// AppendTimer reserves a fixed 32-byte unfragmented claim, encodes TimerEvent
+// (template 20) into the term buffer, and commits.
+//
+// Returns false when the receiver or publication is nil, or when encode fails.
+// Claim retry, abort, and commit policy is [aeron.ExclusivePublication.ClaimFillCommit].
+func (p *LogPublisher) AppendTimer(
+	leadershipTermID int64,
+	correlationID int64,
+	timestamp int64,
+) bool {
+	return appendClaim(
+		p,
+		codecs.TimerEventEncodedLen(),
+		uint16(clusterwire.TimerEventSbeSchemaVersion),
+		codecs.TimerEventFields{
+			LeadershipTermID: leadershipTermID,
+			CorrelationID:    correlationID,
+			Timestamp:        timestamp,
+		},
+		codecs.EncodeTimerEvent,
+	)
+}

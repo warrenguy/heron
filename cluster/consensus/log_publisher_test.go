@@ -136,10 +136,21 @@ func TestLogPublisher_AppendMessage_happy(t *testing.T) {
 	require.Equal(t, payload, wire[headerLen:])
 }
 
-// TestLogPublisher_appendFailurePaths drives AppendMessage and
-// AppendNewLeadershipTermEvent through the shared failure matrix: nil receiver,
-// unbound publisher, retriable exhaustion, and terminal close. Failed appends
-// do not mutate publication state, so one setup serves both calls.
+// Asserts AppendMessage returns Closed when scratch is empty after the
+// publication is bound. The total fits MaxPayloadLength and exceeds
+// len(scratch). Same fail-closed policy as AppendSessionOpen.
+func TestLogPublisher_AppendMessage_staleScratch(t *testing.T) {
+	p, _ := boundLogPublisher(t)
+	p.scratch = p.scratch[:0]
+
+	require.Equal(t, aeron.Closed, p.AppendMessage(1, 2, 3, []byte("payload")))
+	require.Equal(t, int64(0), p.Position())
+}
+
+// TestLogPublisher_appendFailurePaths asserts every append method against the
+// shared failure matrix: nil receiver, unbound publisher, retriable exhaustion,
+// and terminal close. Failed appends do not mutate publication state, so one
+// setup serves all five calls.
 func TestLogPublisher_appendFailurePaths(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -187,8 +198,168 @@ func TestLogPublisher_appendFailurePaths(t *testing.T) {
 			require.False(t, p.AppendNewLeadershipTermEvent(
 				1, 2, 3, 4, 5, clusterwire.ClusterTimeUnit_NANOS, 6,
 			))
+			require.Equal(t, tt.wantCode, p.AppendSessionOpen(
+				1, 2, 3, 4, 5, []byte("ch"), []byte("pr"),
+			))
+			require.False(t, p.AppendSessionClose(
+				1, 2, 3, clusterwire.CloseReason_CLIENT_ACTION,
+			))
+			require.False(t, p.AppendTimer(1, 2, 3))
 		})
 	}
+}
+
+func TestLogPublisher_AppendSessionOpen_happy(t *testing.T) {
+	p, pub := boundLogPublisher(t)
+
+	const (
+		leadershipTermID int64 = 11
+		correlationID    int64 = 22
+		clusterSessionID int64 = 33
+		timestamp        int64 = 44
+		responseStreamID int32 = 55
+	)
+	responseChannel := []byte("aeron:udp?endpoint=localhost:0")
+	encodedPrincipal := []byte{0x01, 0x02, 0x03}
+
+	position := p.AppendSessionOpen(
+		leadershipTermID,
+		correlationID,
+		clusterSessionID,
+		timestamp,
+		responseStreamID,
+		responseChannel,
+		encodedPrincipal,
+	)
+	require.Positive(t, position)
+
+	wire := termStartWire(t, pub)
+	fields, ok := codecs.TryDecodeSessionOpenEventAt(wire, 0)
+	require.True(t, ok)
+	require.Equal(t, leadershipTermID, fields.LeadershipTermID)
+	require.Equal(t, correlationID, fields.CorrelationID)
+	require.Equal(t, clusterSessionID, fields.ClusterSessionID)
+	require.Equal(t, timestamp, fields.Timestamp)
+	require.Equal(t, responseStreamID, fields.ResponseStreamID)
+	require.Equal(t, responseChannel, fields.ResponseChannel)
+	require.Equal(t, encodedPrincipal, fields.EncodedPrincipal)
+}
+
+func TestLogPublisher_AppendSessionOpen_emptyPrincipal(t *testing.T) {
+	p, pub := boundLogPublisher(t)
+
+	const (
+		leadershipTermID int64 = 1
+		correlationID    int64 = 2
+		clusterSessionID int64 = 3
+		timestamp        int64 = 4
+		responseStreamID int32 = 5
+	)
+	responseChannel := []byte("ch")
+
+	position := p.AppendSessionOpen(
+		leadershipTermID,
+		correlationID,
+		clusterSessionID,
+		timestamp,
+		responseStreamID,
+		responseChannel,
+		nil,
+	)
+	require.Positive(t, position)
+
+	fields, ok := codecs.TryDecodeSessionOpenEventAt(termStartWire(t, pub), 0)
+	require.True(t, ok)
+	require.Equal(t, leadershipTermID, fields.LeadershipTermID)
+	require.Equal(t, correlationID, fields.CorrelationID)
+	require.Equal(t, clusterSessionID, fields.ClusterSessionID)
+	require.Equal(t, timestamp, fields.Timestamp)
+	require.Equal(t, responseStreamID, fields.ResponseStreamID)
+	require.Equal(t, responseChannel, fields.ResponseChannel)
+	require.Empty(t, fields.EncodedPrincipal)
+}
+
+func TestLogPublisher_AppendSessionOpen_oversize(t *testing.T) {
+	p, pub := boundLogPublisher(t)
+
+	emptyFixed, ok := codecs.ClusterWireMessageLen(
+		clusterwire.SessionOpenEventSbeBlockLength, 0, 0,
+	)
+	require.True(t, ok)
+	oversize := make([]byte, pub.MaxPayloadLength()-emptyFixed+1)
+	require.Equal(t, aeron.UnsupportedMessageLength, p.AppendSessionOpen(
+		1, 2, 3, 4, 5, oversize, nil,
+	))
+	require.Equal(t, int64(0), p.Position())
+
+	overVar := make([]byte, codecs.ClusterEncodeMaxVarLen+1)
+	require.Equal(t, aeron.UnsupportedMessageLength, p.AppendSessionOpen(
+		1, 2, 3, 4, 5, overVar, nil,
+	))
+	require.Equal(t, int64(0), p.Position())
+}
+
+// Asserts AppendSessionOpen returns Closed when scratch is empty after the
+// publication is bound. The total fits MaxPayloadLength and exceeds
+// len(scratch). Same fail-closed policy as AppendMessage.
+func TestLogPublisher_AppendSessionOpen_staleScratch(t *testing.T) {
+	p, _ := boundLogPublisher(t)
+	p.scratch = p.scratch[:0]
+
+	require.Equal(t, aeron.Closed, p.AppendSessionOpen(
+		1, 2, 3, 4, 5, []byte("ch"), []byte("pr"),
+	))
+	require.Equal(t, int64(0), p.Position())
+}
+
+func TestLogPublisher_AppendSessionClose_happy(t *testing.T) {
+	p, pub := boundLogPublisher(t)
+
+	const (
+		leadershipTermID int64 = 7
+		clusterSessionID int64 = 8
+		timestamp        int64 = 9
+	)
+	closeReason := clusterwire.CloseReason_SERVICE_ACTION
+	pre := p.Position()
+	claimLen := codecs.SessionCloseEventEncodedLen()
+	aligned := int64(logbuffer.AlignFragmentChunkLength(claimLen))
+
+	ok := p.AppendSessionClose(leadershipTermID, clusterSessionID, timestamp, closeReason)
+	require.True(t, ok)
+
+	wire := termStartWire(t, pub)
+	fields, decoded := codecs.TryDecodeSessionCloseEventAt(wire, 0)
+	require.True(t, decoded)
+	require.Equal(t, leadershipTermID, fields.LeadershipTermID)
+	require.Equal(t, clusterSessionID, fields.ClusterSessionID)
+	require.Equal(t, timestamp, fields.Timestamp)
+	require.Equal(t, closeReason, fields.CloseReason)
+	require.Equal(t, pre+aligned, p.Position())
+}
+
+func TestLogPublisher_AppendTimer_happy(t *testing.T) {
+	p, pub := boundLogPublisher(t)
+
+	const (
+		leadershipTermID int64 = 10
+		correlationID    int64 = 20
+		timestamp        int64 = 30
+	)
+	pre := p.Position()
+	claimLen := codecs.TimerEventEncodedLen()
+	aligned := int64(logbuffer.AlignFragmentChunkLength(claimLen))
+
+	ok := p.AppendTimer(leadershipTermID, correlationID, timestamp)
+	require.True(t, ok)
+
+	wire := termStartWire(t, pub)
+	fields, decoded := codecs.TryDecodeTimerEventAt(wire, 0)
+	require.True(t, decoded)
+	require.Equal(t, leadershipTermID, fields.LeadershipTermID)
+	require.Equal(t, correlationID, fields.CorrelationID)
+	require.Equal(t, timestamp, fields.Timestamp)
+	require.Equal(t, pre+aligned, p.Position())
 }
 
 func TestLogPublisher_AppendNLT_success(t *testing.T) {
