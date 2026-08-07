@@ -79,19 +79,18 @@ func SessionMessageHeaderFieldsFromLayout(
 
 // TryDecodeSessionMessageHeaderAt decodes SessionMessageHeader without interface boxing.
 func TryDecodeSessionMessageHeaderAt(buf []byte, offset int) (SessionMessageHeaderFields, bool) {
-	layout, ok := ClusterMessageLayoutAt(buf, offset, 0)
-	if !ok || layout.TemplateID != clusterwire.SessionMessageHeaderSbeTemplateID {
-		return SessionMessageHeaderFields{}, false
-	}
-	return SessionMessageHeaderFieldsFromLayout(buf, layout)
+	return tryDecodeClusterAt(
+		buf,
+		offset,
+		clusterwire.SessionMessageHeaderSbeTemplateID,
+		0,
+		decodeSessionMessageHeaderFields,
+	)
 }
 
 func decodeSessionMessageHeaderFields(
 	buf []byte,
-	body uint64,
-	block uint64,
-	version uint64,
-	bufLen uint64,
+	body, block, version, bufLen uint64,
 ) SessionMessageHeaderFields {
 	var msg clusterwire.SessionMessageHeader
 	msg.WrapForDecode(buf, body, block, version, bufLen)
@@ -150,6 +149,57 @@ func TryDecodeNewLeadershipTermEventAt(
 		clusterwire.NewLeadershipTermEventSbeTemplateID,
 		0,
 		decodeNewLeadershipTermEventFields,
+	)
+}
+
+// sessionConnectRequestFields builds fixed fields with WrapForDecode and
+// attaches caller-supplied var slots. Fast and boxed paths share this helper
+// so both report the same field mapping.
+func sessionConnectRequestFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+	vars templateVarFields,
+) SessionConnectRequestFields {
+	var msg clusterwire.SessionConnectRequest
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return SessionConnectRequestFields{
+		CorrelationID:      msg.CorrelationId(),
+		ResponseStreamID:   msg.ResponseStreamId(),
+		Version:            msg.Version(),
+		ResponseChannel:    vars.responseChannel,
+		EncodedCredentials: vars.encodedCredentials,
+		ClientInfo:         vars.clientInfo,
+	}
+}
+
+func decodeSessionConnectRequestFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) SessionConnectRequestFields {
+	var vars templateVarFields
+	next := int(body + block)
+	vars.responseChannel, next = varFieldBytes(buf, bufLen, next)
+	vars.encodedCredentials, next = varFieldBytes(buf, bufLen, next)
+	if version >= uint64(SessionConnectClientInfoMinVersion) {
+		vars.clientInfo, _ = varFieldBytes(buf, bufLen, next)
+	}
+	return sessionConnectRequestFields(buf, body, block, version, bufLen, vars)
+}
+
+// TryDecodeSessionConnectRequestAt decodes SessionConnectRequest (template 3)
+// without interface boxing.
+//
+// Var fields are copied out of buf. Callers may retain them after buf is reused.
+func TryDecodeSessionConnectRequestAt(
+	buf []byte,
+	offset int,
+) (SessionConnectRequestFields, bool) {
+	return tryDecodeClusterAt(
+		buf,
+		offset,
+		clusterwire.SessionConnectRequestSbeTemplateID,
+		ClusterDecodeMaxVarLen,
+		decodeSessionConnectRequestFields,
 	)
 }
 
@@ -413,16 +463,7 @@ func decodeTemplateFields(
 			Detail:                   vars.detail,
 		}, true
 	case clusterwire.SessionConnectRequestSbeTemplateID:
-		var msg clusterwire.SessionConnectRequest
-		msg.WrapForDecode(buf, body, block, version, bufLen)
-		return SessionConnectRequestFields{
-			CorrelationID:      msg.CorrelationId(),
-			ResponseStreamID:   msg.ResponseStreamId(),
-			Version:            msg.Version(),
-			ResponseChannel:    vars.responseChannel,
-			EncodedCredentials: vars.encodedCredentials,
-			ClientInfo:         vars.clientInfo,
-		}, true
+		return sessionConnectRequestFields(buf, body, block, version, bufLen, vars), true
 	case clusterwire.SessionCloseRequestSbeTemplateID:
 		var msg clusterwire.SessionCloseRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)

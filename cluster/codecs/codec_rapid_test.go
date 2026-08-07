@@ -62,24 +62,35 @@ func TestSessionEvent_codec_rapid(t *testing.T) {
 	})
 }
 
+// rapidSessionConnectRequestFields draws one SessionConnectRequest at
+// actingVersion. Version and ClientInfo stay zero below their min versions, so
+// the drawn fields match what Encode writes. The roundtrip and the fast-slow
+// parity property share this draw so draw labels stay in one place.
+func rapidSessionConnectRequestFields(
+	rt *rapid.T,
+	actingVersion uint16,
+) codecs.SessionConnectRequestFields {
+	rt.Helper()
+	return codecs.SessionConnectRequestFields{
+		CorrelationID:      rapid.Int64().Draw(rt, "correlationID"),
+		ResponseStreamID:   rapid.Int32().Draw(rt, "responseStreamID"),
+		Version:            rapidVersionIf(rt, actingVersion, 2),
+		ResponseChannel:    rapidASCIIBytes(rt, "responseChannel"),
+		EncodedCredentials: rapidVarDataBytes(rt, "encodedCredentials"),
+		ClientInfo: rapidASCIIBytesIf(
+			rt,
+			actingVersion,
+			sessionConnectClientInfoMinVersion,
+			"clientInfo",
+		),
+	}
+}
+
 func TestSessionConnectRequest_codec_rapid(t *testing.T) {
 	t.Parallel()
 	rapidCheck(t, rapidChecksSessionConnectReq, func(rt *rapid.T) {
 		actingVersion, offset := rapidCodecContext(rt)
-
-		fields := codecs.SessionConnectRequestFields{
-			CorrelationID:      rapid.Int64().Draw(rt, "correlationID"),
-			ResponseStreamID:   rapid.Int32().Draw(rt, "responseStreamID"),
-			Version:            rapidVersionIf(rt, actingVersion, 2),
-			ResponseChannel:    rapidASCIIBytes(rt, "responseChannel"),
-			EncodedCredentials: rapidVarDataBytes(rt, "encodedCredentials"),
-			ClientInfo: rapidASCIIBytesIf(
-				rt,
-				actingVersion,
-				sessionConnectClientInfoMinVersion,
-				"clientInfo",
-			),
-		}
+		fields := rapidSessionConnectRequestFields(rt, actingVersion)
 
 		runCodecRoundtripAtOffset(
 			rt,

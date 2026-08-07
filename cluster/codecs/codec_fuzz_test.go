@@ -2,10 +2,6 @@ package codecs_test
 
 import (
 	"testing"
-
-	"github.com/stretchr/testify/require"
-
-	"github.com/warrenguy/heron/cluster/codecs"
 )
 
 func FuzzClusterCodecDecode(f *testing.F) {
@@ -21,12 +17,12 @@ func FuzzClusterCodecDecode(f *testing.F) {
 		if len(data) == 0 || len(data) > fuzzClusterCodecMaxLen {
 			return
 		}
-		require.NotPanics(t, func() {
-			_, _ = codecs.TryDecodeByTemplate(
-				data,
-				int(offset%codecFuzzOffsetSpan),
-				codecs.ClusterDecodeMaxVarLen,
-			)
-		})
+		off := int(offset % codecFuzzOffsetSpan)
+		// Registered typed TryDecode*At helpers must match boxed
+		// TryDecodeByTemplate on the same bytes. Each parity helper drives both
+		// decoders, so the fuzz covers the boxed path on every input.
+		for _, requireParity := range fastSlowDecodeParities {
+			requireParity(t, data, off)
+		}
 	})
 }

@@ -36,27 +36,15 @@ func drawOptionalPositiveInt64(t *rapid.T, label string) int64 {
 // drawOptionalChannel: empty, package default, or a custom UDP channel.
 func drawOptionalChannel(t *rapid.T, label, defaultChannel string) string {
 	t.Helper()
-	switch rapid.IntRange(0, 2).Draw(t, label) {
-	case 1:
-		return defaultChannel
-	case 2:
-		return "aeron:udp?term-length=128k"
-	default:
-		return ""
-	}
+	options := []string{"", defaultChannel, "aeron:udp?term-length=128k"}
+	return options[rapid.IntRange(0, 2).Draw(t, label)]
 }
 
 // drawOptionalFileSyncLevel: zero (Normalize fills), Data, or Full.
 func drawOptionalFileSyncLevel(t *rapid.T, label string) recordinglog.FileSyncLevel {
 	t.Helper()
-	switch rapid.IntRange(0, 2).Draw(t, label) {
-	case 1:
-		return recordinglog.FileSyncData
-	case 2:
-		return recordinglog.FileSyncFull
-	default:
-		return 0
-	}
+	options := []recordinglog.FileSyncLevel{0, recordinglog.FileSyncData, recordinglog.FileSyncFull}
+	return options[rapid.IntRange(0, 2).Draw(t, label)]
 }
 
 func requireMappedLeaderID(t *rapid.T, ptr *int32, got int32) {
@@ -88,16 +76,28 @@ func drawValidPartialConfig(t *rapid.T) cluster.Config {
 		cluster.DefaultConsensusChannel,
 	)
 	cfg.LogChannel = drawOptionalChannel(t, "log_channel_mode", cluster.DefaultLogChannel)
+	cfg.IngressChannel = drawOptionalChannel(
+		t,
+		"ingress_channel_mode",
+		cluster.DefaultIngressChannel,
+	)
 
 	if rapid.Bool().Draw(t, "custom_streams") {
-		// Distinct non-zero pair so ConsensusStreamID and LogStreamID still differ
-		// after Normalize. Log range excludes DefaultReplayStreamID. ReplayStreamID
-		// stays 0 here and Normalize fills it to that default. Consensus range
-		// 501..1000 cannot hit DefaultReplayStreamID.
+		// Distinct non-zero streams so Consensus, Log, and Ingress still differ
+		// after Normalize. Log range excludes DefaultReplayStreamID and
+		// DefaultIngressStreamID when those stay 0 and Normalize fills them.
+		// Consensus range 501..1000 cannot hit either default. Ingress custom
+		// range 1001..1500 cannot hit consensus, log, or defaults 101/103.
 		cfg.LogStreamID = rapid.Int32Range(1, 500).
-			Filter(func(id int32) bool { return id != cluster.DefaultReplayStreamID }).
+			Filter(func(id int32) bool {
+				return id != cluster.DefaultReplayStreamID &&
+					id != cluster.DefaultIngressStreamID
+			}).
 			Draw(t, "log_stream_id")
 		cfg.ConsensusStreamID = rapid.Int32Range(501, 1000).Draw(t, "consensus_stream_id")
+		if rapid.Bool().Draw(t, "custom_ingress_stream") {
+			cfg.IngressStreamID = rapid.Int32Range(1001, 1500).Draw(t, "ingress_stream_id")
+		}
 	}
 
 	cfg.RecordingLogFileSyncLevel = drawOptionalFileSyncLevel(t, "recording_sync")
@@ -106,16 +106,17 @@ func drawValidPartialConfig(t *rapid.T) cluster.Config {
 	cfg.AppointedLeaderID = drawLeaderPointer(t, "appointed")
 	cfg.GracefulClosedLeaderID = drawLeaderPointer(t, "graceful")
 
+	// Hand-set sentinels are overwritten by Normalize from the pointer fields.
+	handNoise := rapid.Int32Range(-1, 10)
 	cfg.Election = election.ElectionConfig{
 		ElectionTimeoutNs:         drawOptionalPositiveInt64(t, "election_timeout"),
 		ElectionStatusIntervalNs:  drawOptionalPositiveInt64(t, "election_status"),
 		LeaderHeartbeatTimeoutNs:  drawOptionalPositiveInt64(t, "leader_hb_timeout"),
 		LeaderHeartbeatIntervalNs: drawOptionalPositiveInt64(t, "leader_hb_interval"),
 		StartupCanvassTimeoutNs:   drawOptionalPositiveInt64(t, "startup_canvass"),
-		// Hand-set sentinels are overwritten by Normalize from the pointer fields.
-		AppointedLeaderID:      rapid.Int32Range(-1, 10).Draw(t, "hand_appointed"),
-		GracefulClosedLeaderID: rapid.Int32Range(-1, 10).Draw(t, "hand_graceful"),
-		MemberID:               rapid.Int32Range(-1, 10).Draw(t, "hand_member_id"),
+		AppointedLeaderID:         handNoise.Draw(t, "hand_appointed"),
+		GracefulClosedLeaderID:    handNoise.Draw(t, "hand_graceful"),
+		MemberID:                  handNoise.Draw(t, "hand_member_id"),
 	}
 
 	if rapid.Bool().Draw(t, "archive_udp_control") {
@@ -143,9 +144,14 @@ func TestConfigNormalize_idempotent_rapid(t *testing.T) {
 		require.NotZero(t, once.ConsensusStreamID)
 		require.NotZero(t, once.LogStreamID)
 		require.NotZero(t, once.ReplayStreamID)
+		require.NotZero(t, once.IngressStreamID)
 		require.NotEqual(t, once.ConsensusStreamID, once.LogStreamID)
 		require.NotEqual(t, once.ReplayStreamID, once.ConsensusStreamID)
 		require.NotEqual(t, once.ReplayStreamID, once.LogStreamID)
+		require.NotEqual(t, once.IngressStreamID, once.ConsensusStreamID)
+		require.NotEqual(t, once.IngressStreamID, once.LogStreamID)
+		require.NotEqual(t, once.IngressStreamID, once.ReplayStreamID)
+		require.NotEmpty(t, once.IngressChannel)
 
 		validSync := []recordinglog.FileSyncLevel{
 			recordinglog.FileSyncData,

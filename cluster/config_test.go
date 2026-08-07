@@ -49,10 +49,12 @@ func TestNormalize_defaults(t *testing.T) {
 
 	require.Equal(t, cluster.DefaultConsensusChannel, cfg.ConsensusChannel)
 	require.Equal(t, cluster.DefaultLogChannel, cfg.LogChannel)
+	require.Equal(t, cluster.DefaultIngressChannel, cfg.IngressChannel)
 	require.Equal(t, cluster.DefaultReplayChannel, cfg.ReplayChannel)
 	require.Equal(t, cluster.DefaultConsensusStreamID, cfg.ConsensusStreamID)
 	require.Equal(t, cluster.DefaultLogStreamID, cfg.LogStreamID)
 	require.Equal(t, cluster.DefaultReplayStreamID, cfg.ReplayStreamID)
+	require.Equal(t, cluster.DefaultIngressStreamID, cfg.IngressStreamID)
 	require.NotNil(t, cfg.Idle)
 	require.Equal(t, recordinglog.FileSyncData, cfg.RecordingLogFileSyncLevel)
 	require.Equal(t, recordinglog.FileSyncData, cfg.NodeStateFileSyncLevel)
@@ -76,7 +78,10 @@ func TestNormalize_electionDefaultTripwire(t *testing.T) {
 func TestNormalize_preservesExplicitValues(t *testing.T) {
 	t.Parallel()
 
-	const channel = "aeron:udp?term-length=128k"
+	const (
+		channel       = "aeron:udp?term-length=128k"
+		replayChannel = "aeron:ipc?alias=replay"
+	)
 	explicitElection := election.ElectionConfig{
 		ElectionTimeoutNs:         2_000_000_000,
 		ElectionStatusIntervalNs:  200_000_000,
@@ -84,15 +89,15 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 		LeaderHeartbeatIntervalNs: 400_000_000,
 		StartupCanvassTimeoutNs:   120_000_000_000,
 	}
-
-	const replayChannel = "aeron:ipc?alias=replay"
 	cfg := cluster.Config{
 		ConsensusChannel:          channel,
 		LogChannel:                channel,
+		IngressChannel:            channel,
 		ReplayChannel:             replayChannel,
 		ConsensusStreamID:         200,
 		LogStreamID:               201,
 		ReplayStreamID:            202,
+		IngressStreamID:           203,
 		RecordingLogFileSyncLevel: recordinglog.FileSyncFull,
 		NodeStateFileSyncLevel:    recordinglog.FileSyncFull,
 		Election:                  explicitElection,
@@ -100,10 +105,12 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 
 	require.Equal(t, channel, cfg.ConsensusChannel)
 	require.Equal(t, channel, cfg.LogChannel)
+	require.Equal(t, channel, cfg.IngressChannel)
 	require.Equal(t, replayChannel, cfg.ReplayChannel)
 	require.Equal(t, int32(200), cfg.ConsensusStreamID)
 	require.Equal(t, int32(201), cfg.LogStreamID)
 	require.Equal(t, int32(202), cfg.ReplayStreamID)
+	require.Equal(t, int32(203), cfg.IngressStreamID)
 	require.Equal(t, recordinglog.FileSyncFull, cfg.RecordingLogFileSyncLevel)
 	require.Equal(t, recordinglog.FileSyncFull, cfg.NodeStateFileSyncLevel)
 
@@ -361,8 +368,8 @@ func TestValidate_errors(t *testing.T) {
 			mutate: func(cfg *cluster.Config) {
 				// Trailing empty archive is trimmed by ParseMembers; keep a 7th
 				// optional field so the empty archive slot survives the parse.
-				cfg.ClusterMembers = "0," + testIngressEndpoint + "," + testConsensusEndpoint + "," +
-					testLogEndpoint + "," + testCatchupEndpoint + ",,archive-response|"
+				cfg.ClusterMembers = strings.TrimSuffix(memberSpecWith(archiveSlot, ""), "|") +
+					",archive-response|"
 			},
 			want: "cluster: member 0 has an empty archive endpoint",
 		},
@@ -395,11 +402,25 @@ func TestValidate_errors(t *testing.T) {
 			want: "cluster: member 0 has a log endpoint without a port: 127.0.0.1",
 		},
 		{
+			name: "ingress endpoint without port",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ClusterMembers = memberSpecWith(ingressSlot, "127.0.0.1")
+			},
+			want: "cluster: member 0 has a ingress endpoint without a port: 127.0.0.1",
+		},
+		{
 			name: "out-of-range consensus port",
 			mutate: func(cfg *cluster.Config) {
 				cfg.ClusterMembers = memberSpecWith(consensusSlot, "127.0.0.1:99999")
 			},
 			want: "cluster: member 0 has an out-of-range consensus endpoint port: 127.0.0.1:99999",
+		},
+		{
+			name: "out-of-range ingress port",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ClusterMembers = memberSpecWith(ingressSlot, "127.0.0.1:99999")
+			},
+			want: "cluster: member 0 has an out-of-range ingress endpoint port: 127.0.0.1:99999",
 		},
 		{
 			name: "non-numeric consensus port",
@@ -444,6 +465,20 @@ func TestValidate_errors(t *testing.T) {
 			want: "cluster: LogChannel must not set endpoint=",
 		},
 		{
+			name: "IngressChannel not udp",
+			mutate: func(cfg *cluster.Config) {
+				cfg.IngressChannel = "aeron:ipc"
+			},
+			want: "cluster: IngressChannel must be a udp channel",
+		},
+		{
+			name: "IngressChannel has endpoint",
+			mutate: func(cfg *cluster.Config) {
+				cfg.IngressChannel = "aeron:udp?endpoint=127.0.0.1:9002"
+			},
+			want: "cluster: IngressChannel must not set endpoint=",
+		},
+		{
 			name: "stream ids equal",
 			mutate: func(cfg *cluster.Config) {
 				cfg.ConsensusStreamID = 100
@@ -464,6 +499,27 @@ func TestValidate_errors(t *testing.T) {
 				cfg.ReplayStreamID = cfg.LogStreamID
 			},
 			want: "cluster: ReplayStreamID and LogStreamID must differ",
+		},
+		{
+			name: "IngressStreamID equals ConsensusStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.IngressStreamID = cfg.ConsensusStreamID
+			},
+			want: "cluster: IngressStreamID and ConsensusStreamID must differ",
+		},
+		{
+			name: "IngressStreamID equals LogStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.IngressStreamID = cfg.LogStreamID
+			},
+			want: "cluster: IngressStreamID and LogStreamID must differ",
+		},
+		{
+			name: "IngressStreamID equals ReplayStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.IngressStreamID = cfg.ReplayStreamID
+			},
+			want: "cluster: IngressStreamID and ReplayStreamID must differ",
 		},
 		{
 			name: "ReplayChannel has session-id",

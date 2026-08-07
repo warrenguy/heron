@@ -6,6 +6,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/cluster/codecs"
@@ -16,6 +17,18 @@ func TestSessionMessageHeader_fastSlowDecodeParity(t *testing.T) {
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
 		buf, offset := rapidSessionMessageHeaderParityWire(rt)
 		requireSessionMessageHeaderFastSlowParity(rt, buf, offset)
+	})
+}
+
+func TestSessionConnectRequest_fastSlowDecodeParity(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSessionConnectReq, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := rapidSessionConnectRequestFields(rt, actingVersion)
+		buf := make([]byte, offset+fuzzClusterCodecMaxLen)
+		wireEnd, ok := codecs.EncodeSessionConnectRequest(buf, offset, actingVersion, fields)
+		require.True(rt, ok)
+		requireSessionConnectRequestFastSlowParity(rt, buf[:wireEnd], offset)
 	})
 }
 

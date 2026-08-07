@@ -71,6 +71,26 @@ type ConsensusSubscription struct {
 
 var errAdderReturnedNoSubscription = errors.New("adder returned no subscription")
 
+// requireSubscriptionDeps checks the collaborators every agent-bound
+// subscription owner needs. [OpenConsensusSubscription] and
+// [OpenClientIngressSubscription] share this check so both report the same
+// errors.
+func requireSubscriptionDeps(
+	adder SubscriptionAdder,
+	topology *Topology,
+	agent *consensus.Agent,
+) error {
+	switch {
+	case adder == nil:
+		return errors.New("cluster: subscription adder is required")
+	case topology == nil:
+		return errors.New("cluster: topology is required")
+	case agent == nil:
+		return errors.New("cluster: consensus agent is required")
+	}
+	return nil
+}
+
 // addSubscriptionChecked adds one subscription, normalizing the nil-nil adder
 // result into an error. what names the stream in the wrapped error.
 func addSubscriptionChecked(
@@ -103,30 +123,21 @@ func addSubscriptionChecked(
 func OpenConsensusSubscription(
 	deps ConsensusSubscriptionDeps,
 ) (*ConsensusSubscription, error) {
-	if deps.Adder == nil {
-		return nil, errors.New("cluster: subscription adder is required")
-	}
-	if deps.Topology == nil {
-		return nil, errors.New("cluster: topology is required")
-	}
-	if deps.Agent == nil {
-		return nil, errors.New("cluster: consensus agent is required")
+	if err := requireSubscriptionDeps(deps.Adder, deps.Topology, deps.Agent); err != nil {
+		return nil, err
 	}
 
-	channel := deps.Topology.ConsensusSubscriptionChannel()
-	streamID := deps.Topology.ConsensusStreamID()
 	sub, err := addSubscriptionChecked(
 		deps.Adder,
-		streamID,
-		channel,
+		deps.Topology.ConsensusStreamID(),
+		deps.Topology.ConsensusSubscriptionChannel(),
 		"consensus subscription",
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	ingress := consensus.NewSubscriptionConsensusIngress(sub)
-	deps.Agent.SetIngress(ingress)
+	deps.Agent.SetIngress(consensus.NewSubscriptionConsensusIngress(sub))
 
 	return &ConsensusSubscription{
 		agent:        deps.Agent,

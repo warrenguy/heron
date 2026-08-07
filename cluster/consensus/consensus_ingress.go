@@ -4,16 +4,18 @@ package consensus
 // [Agent.pollConsensusIngress] poll (matches typical Aeron adapter limits).
 const defaultConsensusIngressFragmentLimit = 10
 
-// ConsensusIngress polls one duty-cycle batch of consensus-channel fragments.
+// ConsensusIngress polls one duty-cycle batch of unfragmented SBE frames.
 //
-// Implementations: [QueueConsensusIngress] (unit inject) and
-// [SubscriptionConsensusIngress] (Aeron Subscription adapter). Agent never
-// holds election types.
+// Used for the consensus control stream and the client ingress stream. Both
+// streams share this Poll shape.
 //
-// Poll returns work count (fragments handled). onFragment is called per message
-// frame payload (buffer + offset at MessageHeader).
+// Implementations: [QueueConsensusIngress], [SubscriptionConsensusIngress].
+// The agent must not hold election types on this interface.
 //
-// Concurrency: invoker-only from [Agent.DoWork].
+// Poll returns the work count (fragments handled). onFragment runs once per
+// message frame payload (buffer and offset at MessageHeader).
+//
+// Concurrency: invoker-only. Called from [Agent.DoWork].
 type ConsensusIngress interface {
 	Poll(fragmentLimit int, onFragment func(buf []byte, offset int)) int
 }

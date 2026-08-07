@@ -17,7 +17,7 @@ func TestDoWork_stepOrder_electionSet(t *testing.T) {
 	r := &orderRunner{n: 2}
 	a := NewAgent(AgentConfig{Election: r, Commit: new(atomic.Int64)})
 	require.Equal(t, 2, a.DoWork(1))
-	require.Equal(t, []string{"slowTick", "pollIngress", "election.DoWork"}, log)
+	require.Equal(t, []string{"slowTick", "pollIngress", "pollClientIngress", "election.DoWork"}, log)
 }
 
 func TestDoWork_stepOrder_electionNil(t *testing.T) {
@@ -27,5 +27,5 @@ func TestDoWork_stepOrder_electionNil(t *testing.T) {
 	})
 	a := NewAgent(AgentConfig{Commit: new(atomic.Int64)})
 	require.Equal(t, 0, a.DoWork(1))
-	require.Equal(t, []string{"slowTick", "pollIngress", "consensusWork"}, log)
+	require.Equal(t, []string{"slowTick", "pollIngress", "pollClientIngress", "consensusWork"}, log)
 }

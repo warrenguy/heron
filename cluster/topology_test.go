@@ -32,6 +32,13 @@ func topologyConfig(memberID int32) cluster.Config {
 	return topologyConfigMembers(memberID, goldenClusterMembersSharedLog)
 }
 
+func requireChannelEndpoint(t *testing.T, channel, wantEndpoint string) {
+	t.Helper()
+	idx := aeron.ChannelEndpointParamIndex(channel)
+	require.GreaterOrEqual(t, idx, 0)
+	require.Equal(t, wantEndpoint, aeron.ChannelParamValue(channel, idx, aeron.ChannelEndpointParam))
+}
+
 func TestBuildChannelWithEndpoint(t *testing.T) {
 	t.Parallel()
 
@@ -160,16 +167,17 @@ func TestNewTopology_accessors(t *testing.T) {
 	const wantSub = "aeron:udp?term-length=64k|endpoint=127.0.0.1:9103"
 	subCh := tp.ConsensusSubscriptionChannel()
 	require.Equal(t, wantSub, subCh)
-	idx := aeron.ChannelEndpointParamIndex(subCh)
-	require.GreaterOrEqual(t, idx, 0)
-	require.Equal(
-		t,
-		this.ConsensusEndpoint,
-		aeron.ChannelParamValue(subCh, idx, aeron.ChannelEndpointParam),
-	)
+	requireChannelEndpoint(t, subCh, this.ConsensusEndpoint)
+
+	// Ingress bind channel uses this member's ingress endpoint (port offset 2).
+	const wantIngress = "aeron:udp?term-length=64k|endpoint=127.0.0.1:9102"
+	ingressCh := tp.IngressSubscriptionChannel()
+	require.Equal(t, wantIngress, ingressCh)
+	requireChannelEndpoint(t, ingressCh, this.IngressEndpoint)
 
 	// Stream getters match normalized config.
 	require.Equal(t, cfg.ConsensusStreamID, tp.ConsensusStreamID())
+	require.Equal(t, cfg.IngressStreamID, tp.IngressStreamID())
 	require.Equal(t, cfg.LogStreamID, tp.LogStreamID())
 	require.Equal(t, cfg.ReplayStreamID, tp.ReplayStreamID())
 	require.Equal(t, cfg.ReplayChannel, tp.ReplayChannel())
@@ -194,6 +202,39 @@ func TestNewTopology_logChannelIdentical(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, wantLog, tp.LogChannel())
 	}
+}
+
+func TestNewTopology_ingressChannelPerMember(t *testing.T) {
+	t.Parallel()
+
+	wantIngress := [3]string{
+		"aeron:udp?term-length=64k|endpoint=127.0.0.1:9002",
+		"aeron:udp?term-length=64k|endpoint=127.0.0.1:9102",
+		"aeron:udp?term-length=64k|endpoint=127.0.0.1:9202",
+	}
+
+	for memberID := range int32(3) {
+		tp, err := cluster.NewTopology(topologyConfig(memberID))
+		require.NoError(t, err)
+		require.Equal(t, wantIngress[memberID], tp.IngressSubscriptionChannel())
+		require.Equal(t, cluster.DefaultIngressStreamID, tp.IngressStreamID())
+	}
+}
+
+func TestNewTopology_ingressTemplateParamsPreserved(t *testing.T) {
+	t.Parallel()
+
+	const template = "aeron:udp?term-length=128k|ttl=16"
+	cfg := topologyConfig(0)
+	cfg.IngressChannel = template
+	cfg.IngressStreamID = 777
+
+	tp, err := cluster.NewTopology(cfg)
+	require.NoError(t, err)
+
+	want := "aeron:udp?term-length=128k|ttl=16|endpoint=127.0.0.1:9002"
+	require.Equal(t, want, tp.IngressSubscriptionChannel())
+	require.Equal(t, int32(777), tp.IngressStreamID())
 }
 
 func TestNewTopology_replayAccessorsVerbatim(t *testing.T) {
@@ -259,8 +300,9 @@ func TestNewTopology_singleMember(t *testing.T) {
 
 	tp, err := cluster.NewTopology(topologyConfigMembers(0, goldenClusterMembersSingle))
 	require.NoError(t, err)
-	require.Len(t, tp.Members(), 1)
-	require.Same(t, tp.Members()[0], tp.ThisMember())
+	members := tp.Members()
+	require.Len(t, members, 1)
+	require.Same(t, members[0], tp.ThisMember())
 	require.Empty(t, tp.PeerConsensusChannels())
 	_, ok := tp.ConsensusChannelFor(0)
 	require.False(t, ok)

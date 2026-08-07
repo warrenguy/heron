@@ -97,6 +97,16 @@ const (
 	// for several members on one host. Raise for production throughput.
 	DefaultLogChannel = "aeron:udp?term-length=64k"
 
+	// DefaultIngressChannel is the client ingress channel template. Endpoints
+	// are not fixed in the template. Each member substitutes its own
+	// members-string ingress endpoint (port offset 2). The 64 KiB term matches
+	// the DefaultConsensusChannel URI shape for co-hosted members.
+	//
+	// Upstream AeronCluster.Configuration.INGRESS_CHANNEL_DEFAULT is null and
+	// must be set by the caller. Heron supplies a 64 KiB term template so
+	// Normalize has a usable default that matches DefaultConsensusChannel shape.
+	DefaultIngressChannel = "aeron:udp?term-length=64k"
+
 	// DefaultReplayChannel is REPLAY_CHANNEL_DEFAULT. Local IPC channel the
 	// Archive uses to replay this member's own cluster log recording.
 	//

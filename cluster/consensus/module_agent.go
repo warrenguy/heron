@@ -76,12 +76,10 @@ var ErrAppendPositionUnavailable = errors.New(
 //   - Implements [AgentHandler]
 //   - Exposes host-delegate methods the election host adapter forwards
 //     (member-free host duties)
-//   - Holds consensus-facing interfaces for election, positions, egress,
-//     ingress, and append high-water ([ElectionRunner], [PositionTable],
-//     [ConsensusEgress], [ConsensusIngress], [AppendPositionSource]); never
-//     election concrete types
+//   - Holds consensus-facing interfaces only. Must not hold election concrete
+//     types.
 //
-// Concurrency: invoker-only. Caller runs media-driver/client duty cycle and
+// Concurrency: invoker-only. Caller runs the media-driver/client duty cycle and
 // [Agent.DoWork] on one goroutine. Agent does not spawn threads and does not
 // own a Client field.
 //
@@ -177,6 +175,24 @@ type Agent struct {
 	// pollConsensusIngress batch. Set before Poll; read by onIngressFragment
 	// so the fragment handler is a method value (no per-poll closure).
 	ingressPollNowNs int64
+
+	// clientIngress polls client ingress fragments. Nil: pollClientIngress
+	// returns 0.
+	clientIngress ConsensusIngress
+
+	// clientIngressHandler is handleClientIngressFragment cached once at
+	// construction so pollClientIngress does not allocate a method value each
+	// duty cycle.
+	clientIngressHandler func(buf []byte, offset int)
+
+	// clientIngressPollNowNs is the duty-cycle clock for the current
+	// pollClientIngress batch. Set before Poll. Read by
+	// handleClientIngressFragment so the fragment handler is a method value
+	// (no per-poll closure).
+	clientIngressPollNowNs int64
+
+	// sessionConnectHandler receives leader-accepted connects. Nil drops them.
+	sessionConnectHandler SessionConnectHandler
 
 	// appendSource supplies local log append high-water for leader rank and
 	// follower AppendPosition publish. Nil: leader consensusWork returns 0.
@@ -439,6 +455,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		catchupReplays:            make(map[int32]catchupReplay),
 	}
 	a.ingressHandler = a.onIngressFragment
+	a.clientIngressHandler = a.handleClientIngressFragment
 	return a
 }
 
@@ -632,26 +649,25 @@ func (a *Agent) TimeOfLastLeaderUpdateNs() int64 {
 // LeadershipTermID returns the current leadership term.
 func (a *Agent) LeadershipTermID() int64 { return a.leadershipTermID }
 
-// SetLeadershipTermID is the Agent-local term setter (bootstrap, host install
-// handoff, tests). No egress.
+// SetLeadershipTermID sets the Agent-local leadership term. Does not send
+// egress.
 func (a *Agent) SetLeadershipTermID(id int64) { a.leadershipTermID = id }
 
 // ThisMemberID returns this node's cluster member id. Zero is a valid member
 // id; -1 means unset only when bootstrap or a caller stored -1.
 func (a *Agent) ThisMemberID() int32 { return a.thisMemberID }
 
-// SetThisMemberID sets this node's cluster member id (steady leader stamp via
-// [PositionTable.UpdateMemberPosition]). Used by HostAdapter construct and
-// tests. Member id 0 is valid; use -1 for unset.
+// SetThisMemberID sets this node's cluster member id. Steady leader stamp uses
+// [PositionTable.UpdateMemberPosition]. Member id 0 is valid. Use -1 for
+// unset.
 func (a *Agent) SetThisMemberID(id int32) { a.thisMemberID = id }
 
 // LeaderMemberID returns the stored leader member id. Zero is a valid member
 // id; -1 means unset only when bootstrap or a caller stored -1.
 func (a *Agent) LeaderMemberID() int32 { return a.leaderMemberID }
 
-// SetLeaderMemberID sets the known leader id (steady notify gates and
-// AppendPosition target). Used by JoinLogAsLeader, HostAdapter install
-// handoff, and tests. Member id 0 is valid; use -1 for unset.
+// SetLeaderMemberID sets the known leader id for steady notify gates and the
+// AppendPosition target. Member id 0 is valid. Use -1 for unset.
 func (a *Agent) SetLeaderMemberID(id int32) { a.leaderMemberID = id }
 
 // NotifiedCommitPosition returns the follower-visible commit high-water.
@@ -1674,15 +1690,18 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 // DoWork runs one duty-cycle tick:
 //   - slow tick
 //   - consensus ingress poll (always, even when election non-nil)
+//   - client ingress poll (always; leader-only accept lives in dispatch)
 //   - [ElectionRunner.DoWork] when an election is live, else consensusWork
 //
-// Concurrency: invoker-only; see [Agent].
+// Concurrency: invoker-only. See [Agent].
 func (a *Agent) DoWork(nowNs int64) int {
 	work := 0
 	noteDoWorkStep("slowTick")
 	work += a.slowTickIfDue(nowNs)
 	noteDoWorkStep("pollIngress")
 	work += a.pollConsensusIngress(nowNs)
+	noteDoWorkStep("pollClientIngress")
+	work += a.pollClientIngress(nowNs)
 	if a.election != nil {
 		noteDoWorkStep("election.DoWork")
 		work += a.election.DoWork(nowNs)

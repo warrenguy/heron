@@ -23,9 +23,10 @@ var (
 		int(clusterWireMaxRootBlockLength) +
 		clusterWireMaxVarFieldCount*VarLengthPrefixSize
 
-	// ClusterDecodeMaxVarLen bounds each varAscii/varData field during egress
-	// TryDecodeByTemplate. Per-field cap is logbuffer.MaxMessageLength minus
-	// clusterVarLenFixedOverhead (~16 MiB - 116).
+	// ClusterDecodeMaxVarLen caps each varAscii/varData field on
+	// TryDecodeByTemplate and typed TryDecode*At paths that pass this value.
+	// Cap is logbuffer.MaxMessageLength minus clusterVarLenFixedOverhead
+	// (~16 MiB - 116).
 	ClusterDecodeMaxVarLen = logbuffer.MaxMessageLength - clusterVarLenFixedOverhead
 	// ClusterEncodeMaxVarLen bounds each var field during Encode* preflight
 	// (clusterWireBodyLen). Same per-field cap; total wire is also capped at

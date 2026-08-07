@@ -1,8 +1,9 @@
 // Package cluster holds the consensus module member process assembly:
 // configuration, validation, cluster channel topology derived from a cluster
 // members string, per-peer consensus publication lifecycle, the inbound
-// consensus subscription, and the cluster log publication and subscription
-// bound into the consensus agent before the first duty cycle.
+// consensus subscription, the client ingress subscription, and the cluster log
+// publication and subscription bound into the consensus agent before the first
+// duty cycle.
 //
 // This package is not the consensus agent library. The agent, log publisher, and
 // log adapter live in cluster/consensus; the election state machine and member
@@ -76,6 +77,12 @@ type Config struct {
 	// value takes DefaultLogChannel.
 	LogChannel string
 
+	// IngressChannel is the client ingress channel template. Must be a udp
+	// channel and must not carry endpoint=. The ingress endpoint comes from
+	// ClusterMembers (per-member, port offset 2). Zero value takes
+	// DefaultIngressChannel.
+	IngressChannel string
+
 	// ReplayChannel is the local channel the Archive uses to replay this member's
 	// own cluster log recording. Zero value takes DefaultReplayChannel.
 	//
@@ -91,8 +98,12 @@ type Config struct {
 	LogStreamID int32
 
 	// ReplayStreamID zero takes DefaultReplayStreamID. Must differ from
-	// ConsensusStreamID and LogStreamID.
+	// ConsensusStreamID, LogStreamID, and IngressStreamID.
 	ReplayStreamID int32
+
+	// IngressStreamID zero takes DefaultIngressStreamID. Must differ from
+	// ConsensusStreamID, LogStreamID, and ReplayStreamID.
+	IngressStreamID int32
 
 	// ArchiveControlRequestChannel is the control request URI for this member.
 	// Required.
@@ -166,6 +177,9 @@ func (cfg Config) Normalize() Config {
 	if cfg.LogChannel == "" {
 		cfg.LogChannel = DefaultLogChannel
 	}
+	if cfg.IngressChannel == "" {
+		cfg.IngressChannel = DefaultIngressChannel
+	}
 	if cfg.ReplayChannel == "" {
 		cfg.ReplayChannel = DefaultReplayChannel
 	}
@@ -177,6 +191,9 @@ func (cfg Config) Normalize() Config {
 	}
 	if cfg.ReplayStreamID == 0 {
 		cfg.ReplayStreamID = DefaultReplayStreamID
+	}
+	if cfg.IngressStreamID == 0 {
+		cfg.IngressStreamID = DefaultIngressStreamID
 	}
 	if cfg.Idle == nil {
 		cfg.Idle = idlestrategy.NewDefaultBackoff()
@@ -273,14 +290,11 @@ func (cfg Config) validateMembers() ([]election.Member, int, error) {
 	if err := validateChannelTemplate(cfg.LogChannel, "LogChannel"); err != nil {
 		return nil, 0, err
 	}
-	if cfg.ConsensusStreamID == cfg.LogStreamID {
-		return nil, 0, errors.New("cluster: ConsensusStreamID and LogStreamID must differ")
+	if err := validateChannelTemplate(cfg.IngressChannel, "IngressChannel"); err != nil {
+		return nil, 0, err
 	}
-	if cfg.ReplayStreamID == cfg.ConsensusStreamID {
-		return nil, 0, errors.New("cluster: ReplayStreamID and ConsensusStreamID must differ")
-	}
-	if cfg.ReplayStreamID == cfg.LogStreamID {
-		return nil, 0, errors.New("cluster: ReplayStreamID and LogStreamID must differ")
+	if err := validateStreamIDsDistinct(cfg); err != nil {
+		return nil, 0, err
 	}
 	if aeron.ChannelParamIndex(cfg.ReplayChannel, aeron.ChannelSessionIDParam, true) >= 0 {
 		return nil, 0, errors.New("cluster: ReplayChannel must not set session-id=")
@@ -401,6 +415,35 @@ func validateChannelTemplate(channel, field string) error {
 	return nil
 }
 
+// validateStreamIDsDistinct rejects any two cluster stream ids that collide.
+//
+// Every pair must differ. One stream id carrying two message kinds delivers
+// each subscriber the other stream's frames. Walk order is fixed so the error
+// string names the later id first.
+func validateStreamIDsDistinct(cfg Config) error {
+	// Four named stream ids. Fixed array. No heap alloc on the validate path.
+	streams := [...]struct {
+		name string
+		id   int32
+	}{
+		{name: "LogStreamID", id: cfg.LogStreamID},
+		{name: "ConsensusStreamID", id: cfg.ConsensusStreamID},
+		{name: "ReplayStreamID", id: cfg.ReplayStreamID},
+		{name: "IngressStreamID", id: cfg.IngressStreamID},
+	}
+
+	for i, earlier := range streams {
+		for _, later := range streams[i+1:] {
+			if earlier.id == later.id {
+				return errors.New(
+					"cluster: " + later.name + " and " + earlier.name + " must differ",
+				)
+			}
+		}
+	}
+	return nil
+}
+
 // validateFileSyncLevel rejects FileSyncNone and unknown levels. Only
 // FileSyncData and FileSyncFull are allowed on this Config.
 func validateFileSyncLevel(level recordinglog.FileSyncLevel, field string) error {
@@ -421,7 +464,7 @@ type memberEndpoint struct {
 func validateMemberEndpoints(m election.Member) error {
 	// Fixed array: five required endpoints, no heap alloc on the validate path.
 	endpoints := [...]memberEndpoint{
-		{name: "ingress", value: m.IngressEndpoint},
+		{name: "ingress", value: m.IngressEndpoint, checkPort: true},
 		{name: "consensus", value: m.ConsensusEndpoint, checkPort: true},
 		{name: "log", value: m.LogEndpoint, checkPort: true},
 		{name: "catchup", value: m.CatchupEndpoint},
@@ -452,8 +495,9 @@ func validateMemberEndpoints(m election.Member) error {
 	return nil
 }
 
-// validateEndpointPort checks consensus and log endpoints carry a numeric port
-// in MinValidPort..MaxValidPort. Split on the last colon so bracketed IPv6 works.
+// validateEndpointPort checks that ingress, consensus, and log endpoints carry
+// a numeric port in MinValidPort..MaxValidPort. Split on the last colon so
+// bracketed IPv6 works.
 func validateEndpointPort(memberID int32, name, endpoint string) error {
 	colon := strings.LastIndex(endpoint, ":")
 	if colon < 0 {

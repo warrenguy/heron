@@ -26,9 +26,7 @@ type ConsensusModuleDeps struct {
 	Config Config
 }
 
-// ConsensusModule is one assembled consensus member: transport client, archive
-// control client, durable recovery state, consensus publication map, consensus
-// subscription, cluster log streams, agent, host adapter, and election.
+// ConsensusModule is one assembled consensus member.
 //
 // Open with [OpenConsensusModule]. The module owns every handle it opened.
 //
@@ -41,7 +39,7 @@ type ConsensusModuleDeps struct {
 // mode-1 *atomic.Int64 and is safe from any goroutine.
 //
 // Lifetime: the module outlives the latest election handle. A settled member
-// may install a further election from the open-time election factory; each
+// may install a further election from the open-time election factory. Each
 // re-install of *election.Election updates m.election. Close clears that
 // factory before it clears the runner. Call Close in caller teardown after the
 // duty cycle has stopped.
@@ -66,6 +64,13 @@ type ConsensusModule struct {
 	agent     *consensus.Agent
 	pubs      *ConsensusPublications
 	sub       *ConsensusSubscription
+
+	// clientIngress is the local client ingress subscription.
+	//
+	// Every member opens the subscription. Only a steady-state leader accepts
+	// connects.
+	clientIngress *ClientIngressSubscription
+
 	streams   *LogStreams
 	host      *election.HostAdapter
 	election  *election.Election
@@ -125,6 +130,7 @@ type ConsensusModule struct {
 //  14. log replay factory
 //  15. catchup control
 //  16. log publication reseed
+//  17. client ingress subscription (all members; leader-only accept in dispatch)
 //
 // Recovery plans from the recording log.
 //
@@ -137,13 +143,16 @@ type ConsensusModule struct {
 //     No recording starts at Open
 //   - cluster log publication and subscription open before return. The first
 //     duty tick can then win leadership and append a leadership-term event
+//   - every member opens the client ingress subscription. Only a settled leader
+//     accepts connects
 //
 // Returns an error when:
 //   - Config fails Validate
 //   - the transport client cannot connect
 //   - the archive control client cannot connect
 //   - recovery fails
-//   - consensus publications, consensus subscription, or log streams fail to open
+//   - consensus publications, consensus subscription, log streams, or client
+//     ingress subscription fail to open
 //   - the transport client has no counters reader
 //
 // Open blocks on the archive control connect, bounded by
@@ -380,6 +389,16 @@ func OpenConsensusModule(
 	module.reseedCtx = moduleControlContext(ctx)
 	module.agent.SetLogPublicationReseed(module.reseedLogPublication)
 
+	clientIngress, err := OpenClientIngressSubscription(ClientIngressSubscriptionDeps{
+		Adder:    module.client,
+		Topology: topology,
+		Agent:    module.agent,
+	})
+	if err != nil {
+		return nil, err
+	}
+	module.clientIngress = clientIngress
+
 	succeeded = true
 	return module, nil
 }
@@ -435,12 +454,13 @@ func moduleClocks(cfg Config) (nanoClock, epochClock func() int64) {
 //  2. catchup control
 //  3. best-effort log recording stop
 //  4. election close and retained replay helper close error
-//  5. cluster log streams
-//  6. consensus subscription
-//  7. consensus publications
-//  8. archive control client
-//  9. owned transport client
-//  10. recovery
+//  5. client ingress subscription
+//  6. cluster log streams
+//  7. consensus subscription
+//  8. consensus publications
+//  9. archive control client
+//  10. owned transport client
+//  11. recovery
 //
 // The archive control client closes before the transport client. The archive
 // control publication and subscription belong to that transport client.
@@ -461,14 +481,19 @@ func (m *ConsensusModule) Close() error {
 
 	var err error
 
-	// Clear agent bindings before closing the handles they reference: positions
-	// and egress hold the host adapter and its shared publisher, which
-	// publications close next. Catchup control and log publication reseed clear
-	// here before their module-owned handles tear down. Log publisher, adapter,
-	// append source, and join source are cleared by the streams Close. Clear
-	// the election factory before the runner so a post-Close duty tick cannot
-	// re-install against a torn-down recovery.
+	// Clear agent bindings before closing the handles they reference. Positions
+	// and egress hold the host adapter and its shared publisher. Publications
+	// close next. Catchup control and log publication reseed clear here before
+	// their module-owned handles tear down. Streams Close clears the log
+	// publisher, adapter, append source, and join source. Clear the election
+	// factory before the runner so a post-Close duty tick cannot re-install
+	// against a torn-down recovery.
+	//
+	// Unbind client ingress before clearing the election so a late DoWork
+	// cannot accept connects when election is nil and role is still leader.
 	if m.agent != nil {
+		m.agent.SetClientIngress(nil)
+		m.agent.SetSessionConnectHandler(nil)
 		m.agent.SetElectionFactory(nil)
 		m.agent.SetElection(nil)
 		m.agent.SetPositions(nil)
@@ -505,6 +530,10 @@ func (m *ConsensusModule) Close() error {
 		// same error.
 		err = errors.Join(err, m.logReplay.closeError())
 		m.logReplay.closeErr = nil
+	}
+	if m.clientIngress != nil {
+		err = errors.Join(err, m.clientIngress.Close())
+		m.clientIngress = nil
 	}
 	if m.streams != nil {
 		err = errors.Join(err, m.streams.Close())
@@ -558,6 +587,22 @@ func (m *ConsensusModule) Agent() *consensus.Agent { return m.agent }
 
 // Topology returns the resolved channel and stream map.
 func (m *ConsensusModule) Topology() *Topology { return m.topology }
+
+// ClientIngress returns the client ingress subscription, or nil after Close.
+//
+// For harness diagnostics. Do not Poll the subscription directly. The agent
+// owns polling.
+//
+// Concurrency: invoker-only.
+//
+// Ownership: the module owns the subscription. Callers must not close the
+// subscription.
+func (m *ConsensusModule) ClientIngress() *ClientIngressSubscription {
+	if m == nil {
+		return nil
+	}
+	return m.clientIngress
+}
 
 // LogStreams returns the cluster log publication and subscription pair, or nil
 // after Close.

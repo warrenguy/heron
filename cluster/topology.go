@@ -71,10 +71,12 @@ type Topology struct {
 
 	peerConsensusChannels     map[int32]string
 	consensusSubscriptionChan string
+	ingressSubscriptionChan   string
 	logChannel                string
 	replayChannel             string
 
 	consensusStreamID int32
+	ingressStreamID   int32
 	logStreamID       int32
 	replayStreamID    int32
 }
@@ -112,6 +114,10 @@ func NewTopology(cfg Config) (*Topology, error) {
 	if err != nil {
 		return nil, err
 	}
+	ingressSub, err := BuildChannelWithEndpoint(cfg.IngressChannel, thisMember.IngressEndpoint)
+	if err != nil {
+		return nil, err
+	}
 	logCh, err := BuildChannelWithEndpoint(cfg.LogChannel, thisMember.LogEndpoint)
 	if err != nil {
 		return nil, err
@@ -122,9 +128,11 @@ func NewTopology(cfg Config) (*Topology, error) {
 		thisMember:                thisMember,
 		peerConsensusChannels:     peerChannels,
 		consensusSubscriptionChan: consensusSub,
+		ingressSubscriptionChan:   ingressSub,
 		logChannel:                logCh,
 		replayChannel:             cfg.ReplayChannel,
 		consensusStreamID:         cfg.ConsensusStreamID,
+		ingressStreamID:           cfg.IngressStreamID,
 		logStreamID:               cfg.LogStreamID,
 		replayStreamID:            cfg.ReplayStreamID,
 	}, nil
@@ -175,6 +183,12 @@ func (t *Topology) ConsensusSubscriptionChannel() string {
 	return t.consensusSubscriptionChan
 }
 
+// IngressSubscriptionChannel returns the local client ingress channel, with
+// endpoint set to this member's members-string ingress endpoint (port offset 2).
+func (t *Topology) IngressSubscriptionChannel() string {
+	return t.ingressSubscriptionChan
+}
+
 // LogChannel returns the local cluster log channel URI, with endpoint set to
 // this member's log endpoint.
 //
@@ -187,6 +201,11 @@ func (t *Topology) LogChannel() string {
 // ConsensusStreamID returns the member-to-member consensus stream id.
 func (t *Topology) ConsensusStreamID() int32 {
 	return t.consensusStreamID
+}
+
+// IngressStreamID returns the client ingress stream id.
+func (t *Topology) IngressStreamID() int32 {
+	return t.ingressStreamID
 }
 
 // LogStreamID returns the cluster log stream id.
