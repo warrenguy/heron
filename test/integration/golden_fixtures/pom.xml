@@ -41,6 +41,7 @@
                 <version>3.5.2</version>
                 <configuration>
                     <argLine>${argLine}</argLine>
+                    <failIfNoTests>true</failIfNoTests>
                 </configuration>
             </plugin>
             <plugin>

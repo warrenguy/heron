@@ -351,7 +351,7 @@ test-$(1)-unit:
 		echo "heron: Maven 3.8.2+ required for parallel contract-oracles" >&2; \
 		exit 1; \
 	fi
-	mvn -q -f $(2) test
+	mvn -f $(2) test
 endef
 
 # Run go oracle test; $(1)=suite, $(2)=timeout, $(3)=tags var (by name; value has commas), $(4)=package.
