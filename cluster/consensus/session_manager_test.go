@@ -141,8 +141,10 @@ func TestSessionManager_addPendingConnect_cap(t *testing.T) {
 	require.Equal(t, beforeNext+1, m.nextSessionID)
 	require.Equal(t, 0, m.openCount())
 
-	// Cap is open plus pending, not pending alone. markOpen all; refuse still holds.
+	// Cap is open plus pending, not pending alone. Authenticate then markOpen
+	// all. Refuse still holds.
 	for id := int64(1); id <= int64(maxConcurrentSessions); id++ {
+		require.True(t, m.markAuthenticated(id, nil))
 		require.True(t, m.markOpen(id, id*100))
 	}
 	require.Equal(t, 0, m.pendingCount())
@@ -178,10 +180,17 @@ func TestSessionManager_markOpen(t *testing.T) {
 	s := addPending(m, validConnectFields(7), 50)
 	require.NotNil(t, s)
 
+	// Pending (unauthenticated) markOpen fails.
+	require.False(t, m.markOpen(s.id, 1))
+	require.Equal(t, sessionPending, s.state)
+	require.Equal(t, 1, m.pendingCount())
+
+	require.True(t, m.markAuthenticated(s.id, []byte("prin")))
 	const logPos int64 = 4096
 	require.True(t, m.markOpen(s.id, logPos))
 	require.Equal(t, sessionOpen, s.state)
 	require.Equal(t, logPos, s.openedLogPosition)
+	require.Equal(t, []byte("prin"), s.encodedPrincipal)
 	require.Len(t, m.okPending, 1)
 	require.Same(t, s, m.okPending[0])
 	require.Equal(t, 0, m.pendingCount())
@@ -192,7 +201,7 @@ func TestSessionManager_markOpen(t *testing.T) {
 	require.Equal(t, 1, m.openCount())
 	require.Len(t, m.okPending, 1)
 
-	// Second markOpen: not pending, false. Position stays untouched.
+	// Second markOpen: not authenticated, false. Position stays untouched.
 	require.False(t, m.markOpen(s.id, 9999))
 	require.Equal(t, logPos, s.openedLogPosition)
 	require.Equal(t, sessionOpen, s.state)
@@ -206,10 +215,236 @@ func TestSessionManager_markOpen(t *testing.T) {
 	require.Empty(t, m.okPending)
 }
 
+func TestSessionManager_authMutators(t *testing.T) {
+	m := newSessionManager()
+	s := addPending(m, validConnectFields(1), 10)
+	require.NotNil(t, s)
+
+	// Allowed edges from pending.
+	require.True(t, m.markChallenged(s.id))
+	require.Equal(t, sessionChallenged, s.state)
+	// Re-challenge stays challenged.
+	require.True(t, m.markChallenged(s.id))
+	require.Equal(t, sessionChallenged, s.state)
+
+	require.True(t, m.refreshChallenged(s.id, 55, 20))
+	require.Equal(t, int64(55), s.correlationID)
+	require.Equal(t, int64(20), s.lastActivityNs)
+	require.Equal(t, sessionChallenged, s.state)
+
+	require.True(t, m.markAuthenticated(s.id, []byte("p")))
+	require.Equal(t, sessionAuthenticated, s.state)
+	require.Equal(t, []byte("p"), s.encodedPrincipal)
+	// Authenticated stays on the walk list until markOpen.
+	require.Equal(t, 1, m.pendingCount())
+
+	// Unknown id. Wrong-state edges live in TestSessionManager_illegalEdges.
+	require.False(t, m.markChallenged(99))
+	require.False(t, m.markAuthenticated(99, nil))
+	require.False(t, m.markRejected(99))
+	require.False(t, m.refreshChallenged(99, 1, 1))
+	require.False(t, m.markOpen(99, 1))
+
+	// pending to authenticated. pending to rejected.
+	s2 := addPending(m, validConnectFields(2), 30)
+	require.True(t, m.markAuthenticated(s2.id, nil))
+	require.Equal(t, sessionAuthenticated, s2.state)
+	require.Nil(t, s2.encodedPrincipal)
+
+	s3 := addPending(m, validConnectFields(3), 40)
+	require.True(t, m.markRejected(s3.id))
+	require.Equal(t, sessionRejected, s3.state)
+
+	// challenged to rejected.
+	s4 := addPending(m, validConnectFields(4), 50)
+	require.True(t, m.markChallenged(s4.id))
+	require.True(t, m.markRejected(s4.id))
+	require.Equal(t, sessionRejected, s4.state)
+}
+
+// TestSessionManager_illegalEdges asserts every wrong-state mutator returns
+// false with the registry untouched.
+func TestSessionManager_illegalEdges(t *testing.T) {
+	type edge struct {
+		name string
+		// setup places one session in the named start state under id 1.
+		setup func(t *testing.T, m *sessionManager) *clientSession
+		// call runs the wrong-state mutator against the setup session.
+		call func(m *sessionManager, s *clientSession) bool
+	}
+
+	seedPending := func(t *testing.T, m *sessionManager) *clientSession {
+		t.Helper()
+		return addPending(m, validConnectFields(1), 100)
+	}
+	seedChallenged := func(t *testing.T, m *sessionManager) *clientSession {
+		t.Helper()
+		s := seedPending(t, m)
+		require.True(t, m.markChallenged(s.id))
+		return s
+	}
+	seedAuthenticated := func(t *testing.T, m *sessionManager) *clientSession {
+		t.Helper()
+		s := seedPending(t, m)
+		require.True(t, m.markAuthenticated(s.id, []byte("prin")))
+		return s
+	}
+	seedRejected := func(t *testing.T, m *sessionManager) *clientSession {
+		t.Helper()
+		s := seedPending(t, m)
+		require.True(t, m.markRejected(s.id))
+		return s
+	}
+	seedOpen := func(t *testing.T, m *sessionManager) *clientSession {
+		t.Helper()
+		s := seedAuthenticated(t, m)
+		require.True(t, m.markOpen(s.id, 4096))
+		return s
+	}
+
+	callChallenged := func(m *sessionManager, s *clientSession) bool {
+		return m.markChallenged(s.id)
+	}
+	callRejected := func(m *sessionManager, s *clientSession) bool {
+		return m.markRejected(s.id)
+	}
+	// Every row asserts false with the registry untouched. Mutator arguments
+	// never reach stored state.
+	callAuthenticate := func(m *sessionManager, s *clientSession) bool {
+		return m.markAuthenticated(s.id, []byte("x"))
+	}
+	callRefresh := func(m *sessionManager, s *clientSession) bool {
+		return m.refreshChallenged(s.id, 9, 200)
+	}
+	callOpen := func(m *sessionManager, s *clientSession) bool {
+		return m.markOpen(s.id, 4096)
+	}
+
+	cases := []edge{
+		// pending
+		{
+			name:  "pending_refreshChallenged",
+			setup: seedPending,
+			call:  callRefresh,
+		},
+		{
+			name:  "pending_markOpen",
+			setup: seedPending,
+			call:  callOpen,
+		},
+		// challenged
+		{
+			name:  "challenged_markOpen",
+			setup: seedChallenged,
+			call:  callOpen,
+		},
+		// authenticated
+		{
+			name:  "authenticated_markChallenged",
+			setup: seedAuthenticated,
+			call:  callChallenged,
+		},
+		{
+			name:  "authenticated_markRejected",
+			setup: seedAuthenticated,
+			call:  callRejected,
+		},
+		{
+			name:  "authenticated_refreshChallenged",
+			setup: seedAuthenticated,
+			call:  callRefresh,
+		},
+		{
+			name:  "authenticated_markAuthenticated",
+			setup: seedAuthenticated,
+			call:  callAuthenticate,
+		},
+		// rejected
+		{
+			name:  "rejected_markChallenged",
+			setup: seedRejected,
+			call:  callChallenged,
+		},
+		{
+			name:  "rejected_markAuthenticated",
+			setup: seedRejected,
+			call:  callAuthenticate,
+		},
+		{
+			name:  "rejected_markRejected",
+			setup: seedRejected,
+			call:  callRejected,
+		},
+		{
+			name:  "rejected_refreshChallenged",
+			setup: seedRejected,
+			call:  callRefresh,
+		},
+		{
+			name:  "rejected_markOpen",
+			setup: seedRejected,
+			call:  callOpen,
+		},
+		// open
+		{
+			name:  "open_markChallenged",
+			setup: seedOpen,
+			call:  callChallenged,
+		},
+		{
+			name:  "open_markAuthenticated",
+			setup: seedOpen,
+			call:  callAuthenticate,
+		},
+		{
+			name:  "open_markRejected",
+			setup: seedOpen,
+			call:  callRejected,
+		},
+		{
+			name:  "open_refreshChallenged",
+			setup: seedOpen,
+			call:  callRefresh,
+		},
+		{
+			name:  "open_markOpen",
+			setup: seedOpen,
+			call:  callOpen,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newSessionManager()
+			s := tc.setup(t, m)
+			require.NotNil(t, s)
+			stateBefore := s.state
+			corrBefore := s.correlationID
+			activityBefore := s.lastActivityNs
+			prinBefore := append([]byte(nil), s.encodedPrincipal...)
+			posBefore := s.openedLogPosition
+			pendingBefore := m.pendingCount()
+			openBefore := m.openCount()
+			okBefore := len(m.okPending)
+
+			require.False(t, tc.call(m, s))
+			require.Equal(t, stateBefore, s.state)
+			require.Equal(t, corrBefore, s.correlationID)
+			require.Equal(t, activityBefore, s.lastActivityNs)
+			require.Equal(t, prinBefore, s.encodedPrincipal)
+			require.Equal(t, posBefore, s.openedLogPosition)
+			require.Equal(t, pendingBefore, m.pendingCount())
+			require.Equal(t, openBefore, m.openCount())
+			require.Len(t, m.okPending, okBefore)
+		})
+	}
+}
+
 func TestSessionManager_remove(t *testing.T) {
 	m := newSessionManager()
 	pending := addPending(m, validConnectFields(1), 1)
 	open := addPending(m, validConnectFields(2), 2)
+	require.True(t, m.markAuthenticated(open.id, nil))
 	require.True(t, m.markOpen(open.id, 100))
 	require.Len(t, m.okPending, 1)
 	require.Same(t, open, m.okPending[0])
@@ -228,6 +463,26 @@ func TestSessionManager_remove(t *testing.T) {
 	require.Empty(t, m.okPending)
 
 	require.False(t, m.remove(999))
+
+	// remove drops walk-list for challenged, authenticated, and rejected.
+	for _, tc := range []struct {
+		name string
+		mark func(int64) bool
+	}{
+		{"challenged", func(id int64) bool { return m.markChallenged(id) }},
+		{"authenticated", func(id int64) bool { return m.markAuthenticated(id, nil) }},
+		{"rejected", func(id int64) bool { return m.markRejected(id) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := addPending(m, validConnectFields(10), 1)
+			require.True(t, tc.mark(s.id))
+			require.Equal(t, 1, m.pendingCount())
+			require.True(t, m.remove(s.id))
+			require.Equal(t, 0, m.pendingCount())
+			_, ok := m.sessionByID(s.id)
+			require.False(t, ok)
+		})
+	}
 }
 
 func TestSessionManager_sessionByID(t *testing.T) {
@@ -338,13 +593,19 @@ func TestSessionWork_closedPublicationHoldsQueue(t *testing.T) {
 }
 
 // TestSessionWork_headMissingFromRegistry asserts the markOpen-false path. The
-// head is deleted from byID while it stays on the pending list. Registry
-// methods never produce that desync on their own.
+// head is authenticated then deleted from byID while the head stays on the
+// pending list. Registry methods never produce that desync on their own.
 func TestSessionWork_headMissingFromRegistry(t *testing.T) {
 	p, _ := boundLogPublisher(t)
 	a := leaderWithLogPublisher(t, p, 0)
 	a.acceptSessionConnect(validConnectFields(1), 1)
 	a.acceptSessionConnect(validConnectFields(2), 2)
+
+	head, ok := a.sessions.sessionByID(1)
+	require.True(t, ok)
+	ready, _, _ := a.pollSessionEgress(head)
+	require.True(t, ready)
+	require.True(t, a.sessions.markAuthenticated(1, nil))
 
 	// Force registry desync for the fail-closed path.
 	delete(a.sessions.byID, 1)
@@ -381,6 +642,8 @@ func TestSessionWork_terminalHeadMissingFromRegistry(t *testing.T) {
 	require.True(t, ready)
 	require.NotNil(t, head.egressPublication)
 	egressPub := head.egressPublication
+	// Authenticate so the walk reaches append. Does not stop on unresolved auth.
+	require.True(t, a.sessions.markAuthenticated(1, nil))
 
 	// Force registry desync for the fail-closed path.
 	delete(a.sessions.byID, 1)

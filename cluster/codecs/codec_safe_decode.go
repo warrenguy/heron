@@ -203,6 +203,50 @@ func TryDecodeSessionConnectRequestAt(
 	)
 }
 
+// challengeResponseFields builds fixed fields with WrapForDecode and
+// attaches the caller-supplied var slot. Fast and boxed paths share this
+// helper so both report the same field mapping.
+func challengeResponseFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+	vars templateVarFields,
+) ChallengeResponseFields {
+	var msg clusterwire.ChallengeResponse
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return ChallengeResponseFields{
+		CorrelationID:      msg.CorrelationId(),
+		ClusterSessionID:   msg.ClusterSessionId(),
+		EncodedCredentials: vars.encodedCredentials,
+	}
+}
+
+func decodeChallengeResponseFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) ChallengeResponseFields {
+	var vars templateVarFields
+	vars.encodedCredentials, _ = varFieldBytes(buf, bufLen, int(body+block))
+	return challengeResponseFields(buf, body, block, version, bufLen, vars)
+}
+
+// TryDecodeChallengeResponseAt decodes ChallengeResponse (template 8)
+// without interface boxing.
+//
+// Var fields are copied out of buf. Callers may retain them after buf is
+// reused.
+func TryDecodeChallengeResponseAt(
+	buf []byte,
+	offset int,
+) (ChallengeResponseFields, bool) {
+	return tryDecodeClusterAt(
+		buf,
+		offset,
+		clusterwire.ChallengeResponseSbeTemplateID,
+		ClusterDecodeMaxVarLen,
+		decodeChallengeResponseFields,
+	)
+}
+
 // TryDecodeByTemplate decodes a cluster SBE message into plain field structs.
 // maxVarLen bounds each varAscii/varData field; use ClusterDecodeMaxVarLen for egress.
 // Rejects maxVarLen < 0. Trailing bytes after the last var field are ignored so
@@ -498,13 +542,7 @@ func decodeTemplateFields(
 			EncodedChallenge: vars.encodedChallenge,
 		}, true
 	case clusterwire.ChallengeResponseSbeTemplateID:
-		var msg clusterwire.ChallengeResponse
-		msg.WrapForDecode(buf, body, block, version, bufLen)
-		return ChallengeResponseFields{
-			CorrelationID:      msg.CorrelationId(),
-			ClusterSessionID:   msg.ClusterSessionId(),
-			EncodedCredentials: vars.encodedCredentials,
-		}, true
+		return challengeResponseFields(buf, body, block, version, bufLen, vars), true
 	case clusterwire.AdminRequestSbeTemplateID:
 		var msg clusterwire.AdminRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)

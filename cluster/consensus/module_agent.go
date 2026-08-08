@@ -199,6 +199,14 @@ type Agent struct {
 	// state with no transport resources.
 	sessions *sessionManager
 
+	// authenticator decides whether client sessions open. Never nil after
+	// NewAgent. A nil AgentConfig.Authenticator installs acceptAllAuthenticator.
+	authenticator Authenticator
+
+	// sessionAuthProxy is the reused SessionProxy handed to authenticator
+	// handlers. proxyFor rebinds the proxy for each call.
+	sessionAuthProxy sessionAuthProxy
+
 	// egressAdder registers concurrent per-session egress publications. Nil
 	// leaves accepted sessions pending with no add. Redirect and reject entries
 	// drop at queue time when the adder is nil.
@@ -208,7 +216,8 @@ type Agent struct {
 	// SessionEvent REDIRECT detail ("0=host:port,1=host:port").
 	ingressEndpoints string
 
-	// egressScratch holds one SessionEvent encode for sendSessionEvent.
+	// egressScratch holds one SessionEvent or Challenge encode for the egress
+	// offer helpers.
 	egressScratch []byte
 
 	// egressEvents is the capped REDIRECT/ERROR queue. Each entry owns a
@@ -412,6 +421,12 @@ type AgentConfig struct {
 	// TermBaseLogPosition seeds a.termBaseLogPosition (default 0). Also set by
 	// [Agent.JoinLogAsLeader] logPosition or [Agent.SetTermBaseLogPosition].
 	TermBaseLogPosition int64
+
+	// Authenticator decides whether client sessions open. Nil runs the
+	// accept-all default: empty principal, never challenges, never rejects.
+	//
+	// Ownership: the agent does not own the authenticator. No Close duty.
+	Authenticator Authenticator
 }
 
 // NewAgent constructs an [Agent] from cfg. localLogRecordingID defaults to
@@ -452,6 +467,10 @@ func NewAgent(cfg AgentConfig) *Agent {
 	if appendTimeout < 0 {
 		panic("consensus: negative AppendPositionNotReadyTimeoutNs")
 	}
+	auth := cfg.Authenticator
+	if auth == nil {
+		auth = acceptAllAuthenticator{}
+	}
 	a := &Agent{
 		election:                  cfg.Election,
 		positions:                 cfg.Positions,
@@ -475,7 +494,9 @@ func NewAgent(cfg AgentConfig) *Agent {
 		appVersion:                cfg.AppVersion,
 		catchupReplays:            make(map[int32]catchupReplay),
 		sessions:                  newSessionManager(),
+		authenticator:             auth,
 	}
+	a.sessionAuthProxy.agent = a
 	a.ingressHandler = a.onIngressFragment
 	a.clientIngressHandler = a.handleClientIngressFragment
 	return a

@@ -228,19 +228,37 @@ func requireElectionHoldPastDeadline(
 	afterReclaim()
 }
 
+// decodeClusterFieldsAtTermOffset decodes one cluster SBE DATA frame at
+// termOffset. Asserts the template id. Returns the typed fields and the next
+// aligned term offset.
+func decodeClusterFieldsAtTermOffset[T any](
+	t *testing.T,
+	pub *aeron.Publication,
+	termOffset int,
+	templateID uint16,
+) (T, int) {
+	t.Helper()
+	wire, next := termWireAt(t, pub, termOffset)
+	decoded, ok := codecs.TryDecodeByTemplate(wire, 0, codecs.ClusterDecodeMaxVarLen)
+	require.True(t, ok)
+	require.Equal(t, templateID, decoded.TemplateID)
+	fields, ok := decoded.Fields.(T)
+	require.True(t, ok)
+	return fields, next
+}
+
 func decodeSessionEventAtTermOffset(
 	t *testing.T,
 	pub *aeron.Publication,
 	termOffset int,
 ) (codecs.SessionEventFields, int) {
 	t.Helper()
-	wire, next := termWireAt(t, pub, termOffset)
-	decoded, ok := codecs.TryDecodeByTemplate(wire, 0, codecs.ClusterDecodeMaxVarLen)
-	require.True(t, ok)
-	require.Equal(t, clusterwire.SessionEventSbeTemplateID, decoded.TemplateID)
-	fields, ok := decoded.Fields.(codecs.SessionEventFields)
-	require.True(t, ok)
-	return fields, next
+	return decodeClusterFieldsAtTermOffset[codecs.SessionEventFields](
+		t,
+		pub,
+		termOffset,
+		clusterwire.SessionEventSbeTemplateID,
+	)
 }
 
 func requireSessionEventOK(
@@ -768,7 +786,9 @@ func TestCloseSessionEgress(t *testing.T) {
 	require.Equal(t, 0, pollWork)
 	require.Same(t, openPub, s2.egressPublication)
 
-	// markOpen session 2. Leave the session on okPending; skip okPendingWork.
+	// Authenticate then markOpen session 2. Leave the session on okPending;
+	// skip okPendingWork.
+	require.True(t, a.sessions.markAuthenticated(s2.id, nil))
 	require.True(t, a.sessions.markOpen(s2.id, 4096))
 	require.Len(t, a.sessions.okPending, 1)
 	require.Same(t, s2, a.sessions.okPending[0])

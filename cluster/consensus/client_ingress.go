@@ -66,24 +66,33 @@ func (a *Agent) handleClientIngressFragment(buf []byte, offset int) {
 	if a.election != nil {
 		return
 	}
-	// Settled non-leader: drop before header peek when a redirect cannot be
-	// queued. Connect floods stay cheap. A non-leader's only outcome is a
-	// REDIRECT enqueue. A full queue or nil adder would drop the event after
-	// decode anyway.
-	if a.role != RoleLeader {
-		if a.leaderMemberID == nullMemberID || !a.canEnqueueEgressEvent() {
-			return
-		}
-	}
 	templateID, ok := consensusMessageTemplateID(buf, offset)
-	if !ok || templateID != clusterwire.SessionConnectRequestSbeTemplateID {
-		return
-	}
-	fields, ok := codecs.TryDecodeSessionConnectRequestAt(buf, offset)
 	if !ok {
 		return
 	}
-	a.handleSessionConnect(fields, a.clientIngressPollNowNs)
+	switch templateID {
+	case clusterwire.SessionConnectRequestSbeTemplateID:
+		// Settled non-leader: drop before decode when REDIRECT cannot queue.
+		// REDIRECT enqueue is the only non-leader outcome. Nil leader hint, nil
+		// adder, or a full queue drops the event after decode. Connect flood cost
+		// stays low.
+		redirectOnly := a.role != RoleLeader
+		if redirectOnly && (a.leaderMemberID == nullMemberID || !a.canEnqueueEgressEvent()) {
+			return
+		}
+		if fields, ok := codecs.TryDecodeSessionConnectRequestAt(buf, offset); ok {
+			a.handleSessionConnect(fields, a.clientIngressPollNowNs)
+		}
+	case clusterwire.ChallengeResponseSbeTemplateID:
+		// Only the leader holds pending sessions. No ClusterBackup forward of
+		// ChallengeResponse.
+		if a.role != RoleLeader {
+			return
+		}
+		if fields, ok := codecs.TryDecodeChallengeResponseAt(buf, offset); ok {
+			a.handleChallengeResponse(fields, a.clientIngressPollNowNs)
+		}
+	}
 }
 
 // handleSessionConnect dispatches a decoded connect. The caller checks the

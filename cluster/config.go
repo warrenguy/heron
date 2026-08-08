@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/idlestrategy"
@@ -167,6 +168,13 @@ type Config struct {
 	// FileSyncNone is not reachable through this type.
 	RecordingLogFileSyncLevel recordinglog.FileSyncLevel
 	NodeStateFileSyncLevel    recordinglog.FileSyncLevel
+
+	// Authenticator decides whether client sessions open. Nil runs the
+	// consensus accept-all default: empty principal, never challenges, never
+	// rejects.
+	//
+	// Ownership: the module does not own the authenticator. No Close duty.
+	Authenticator consensus.Authenticator
 }
 
 // Normalize applies defaults and returns a copy. Idempotent.

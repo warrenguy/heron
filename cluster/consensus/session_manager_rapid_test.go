@@ -13,40 +13,45 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
-type sessionModelState int
-
-const (
-	modelPending sessionModelState = iota
-	modelOpen
-)
-
 type sessionRegistryOpKind int
 
 const (
 	sessionOpAdd sessionRegistryOpKind = iota
+	sessionOpMarkChallenged
+	sessionOpMarkAuthenticated
+	sessionOpMarkRejected
+	sessionOpRefreshChallenged
 	sessionOpMarkOpen
 	sessionOpRemove
 	sessionOpLookup
 	sessionOpClearOKPending
 )
 
-// TestSessionManager_lifecycle_rapid asserts registry allocate, add, markOpen,
-// remove, setOKPending(false), and lookup against a reference model. Each step
-// checks counts, id monotonicity, pending order, okPending FIFO order, and the
-// pending-in-byID invariant.
+type sessionModelEntry struct {
+	state          sessionState
+	principal      []byte
+	correlationID  int64
+	lastActivityNs int64
+}
+
+// TestSessionManager_lifecycle_rapid asserts registry allocate, add, auth
+// mutators, markOpen, remove, setOKPending(false), and lookup against a
+// reference model. Each step checks counts, id monotonicity, pending order,
+// okPending FIFO order, principal bytes, and the walk-list non-open invariant.
 //
-// PBT skips the egress walk and event queue. The outcome split is a fixed
-// matrix of publication and adder behaviours. Unit rows document each path.
+// PBT skips the egress walk and event queue. Publication and adder outcomes
+// are a fixed matrix. Unit rows document each path. PBT also skips
+// authenticator consultation. Unit rows document the fixed state x proxy
+// action matrix.
 func TestSessionManager_lifecycle_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		rt.Helper()
 
 		m := newSessionManager()
-		model := make(map[int64]sessionModelState)
+		model := make(map[int64]sessionModelEntry)
 		pendingOrder := make([]int64, 0)
-		// okPendingOrder tracks markOpen order for sessions awaiting SessionEvent
-		// OK.
+		// okPendingOrder tracks markOpen order for sessions awaiting SessionEvent OK.
 		okPendingOrder := make([]int64, 0)
 		var lastIssued int64
 		issued := make(map[int64]struct{})
@@ -56,7 +61,7 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 			require.Equal(rt, len(pendingOrder), m.pendingCount())
 			openN := 0
 			for _, e := range model {
-				if e == modelOpen {
+				if e.state == sessionOpen {
 					openN++
 				}
 			}
@@ -64,20 +69,24 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 			require.Len(rt, m.byID, len(model))
 			require.Len(rt, m.okPending, len(okPendingOrder))
 
-			// Pending order equals accept order of remaining pending ids.
+			// Walk-list entries are exactly the non-open sessions.
 			require.Len(rt, m.pending, len(pendingOrder))
 			for i, id := range pendingOrder {
 				require.Equal(rt, id, m.pending[i].id)
 				s, ok := m.sessionByID(id)
 				require.True(rt, ok)
-				require.Equal(rt, sessionPending, s.state)
-				require.Equal(rt, modelPending, model[id])
+				e := model[id]
+				require.NotEqual(rt, sessionOpen, e.state)
+				require.Equal(rt, e.state, s.state)
+				require.Equal(rt, e.principal, s.encodedPrincipal)
+				require.Equal(rt, e.correlationID, s.correlationID)
+				require.Equal(rt, e.lastActivityNs, s.lastActivityNs)
 			}
 
 			// okPending is markOpen FIFO. Every entry is open in the model.
 			for i, id := range okPendingOrder {
 				require.Equal(rt, id, m.okPending[i].id)
-				require.Equal(rt, modelOpen, model[id])
+				require.Equal(rt, sessionOpen, model[id].state)
 				s, ok := m.sessionByID(id)
 				require.True(rt, ok)
 				require.Equal(rt, sessionOpen, s.state)
@@ -88,15 +97,13 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 			for id, e := range model {
 				s, ok := m.sessionByID(id)
 				require.True(rt, ok)
-				switch e {
-				case modelPending:
-					require.Equal(rt, sessionPending, s.state)
-					require.Equal(rt, -1, m.okPendingIndex(s))
-				case modelOpen:
-					require.Equal(rt, sessionOpen, s.state)
-					wantOnOK := slices.Contains(okPendingOrder, id)
-					require.Equal(rt, wantOnOK, m.okPendingIndex(s) >= 0)
-				}
+				require.Equal(rt, e.state, s.state)
+				require.Equal(rt, e.principal, s.encodedPrincipal)
+				require.Equal(rt, e.correlationID, s.correlationID)
+				wantOnOK := slices.Contains(okPendingOrder, id)
+				require.Equal(rt, wantOnOK, m.okPendingIndex(s) >= 0)
+				wantOnWalk := e.state != sessionOpen
+				require.Equal(rt, wantOnWalk, slices.Contains(pendingOrder, id))
 			}
 		}
 
@@ -130,7 +137,11 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 			}
 			require.NotNil(rt, s)
 			require.Equal(rt, id, s.id)
-			model[s.id] = modelPending
+			model[s.id] = sessionModelEntry{
+				state:          sessionPending,
+				correlationID:  fields.CorrelationID,
+				lastActivityNs: nowNs,
+			}
 			pendingOrder = append(pendingOrder, s.id)
 			require.Equal(rt, fields.CorrelationID, s.correlationID)
 			require.Equal(rt, fields.ResponseStreamID, s.responseStreamID)
@@ -138,6 +149,7 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 			require.Equal(rt, nowNs, s.lastActivityNs)
 			require.Equal(rt, sessionPending, s.state)
 			require.Equal(rt, int64(nullValue), s.egressAddCorrelationID)
+			require.Nil(rt, s.encodedPrincipal)
 		}
 
 		// Sometimes fill to capacity so the refuse path is reachable.
@@ -163,6 +175,10 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 			ops := []sessionRegistryOpKind{
 				sessionOpAdd,
 				sessionOpAdd,
+				sessionOpMarkChallenged,
+				sessionOpMarkAuthenticated,
+				sessionOpMarkRejected,
+				sessionOpRefreshChallenged,
 				sessionOpMarkOpen,
 				sessionOpRemove,
 				sessionOpLookup,
@@ -177,23 +193,71 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 			case sessionOpAdd:
 				addOne(rapid.Int64().Draw(rt, "nowNs"))
 
+			case sessionOpMarkChallenged:
+				id := drawSessionID(rt, model, "challengeID")
+				e, ok := model[id]
+				wantOK := modelAuthPhaseOK(e, ok)
+				got := m.markChallenged(id)
+				require.Equal(rt, wantOK, got)
+				if wantOK {
+					e.state = sessionChallenged
+					model[id] = e
+				}
+
+			case sessionOpMarkAuthenticated:
+				id := drawSessionID(rt, model, "authID")
+				// Registry stores the principal given, including over-cap lengths.
+				// The proxy length check is outside the registry.
+				prinLen := rapid.IntRange(0, maxEncodedPrincipalLength+8).Draw(rt, "prinLen")
+				var principal []byte
+				if prinLen > 0 {
+					principal = rapid.SliceOfN(rapid.Byte(), prinLen, prinLen).Draw(rt, "principal")
+				}
+				e, ok := model[id]
+				wantOK := modelAuthPhaseOK(e, ok)
+				got := m.markAuthenticated(id, principal)
+				require.Equal(rt, wantOK, got)
+				if wantOK {
+					e.state = sessionAuthenticated
+					e.principal = principal
+					model[id] = e
+				}
+
+			case sessionOpMarkRejected:
+				id := drawSessionID(rt, model, "rejectID")
+				e, ok := model[id]
+				wantOK := modelAuthPhaseOK(e, ok)
+				got := m.markRejected(id)
+				require.Equal(rt, wantOK, got)
+				if wantOK {
+					e.state = sessionRejected
+					model[id] = e
+				}
+
+			case sessionOpRefreshChallenged:
+				id := drawSessionID(rt, model, "refreshID")
+				corr := rapid.Int64().Draw(rt, "refreshCorr")
+				nowNs := rapid.Int64().Draw(rt, "refreshNow")
+				e, ok := model[id]
+				wantOK := ok && e.state == sessionChallenged
+				got := m.refreshChallenged(id, corr, nowNs)
+				require.Equal(rt, wantOK, got)
+				if wantOK {
+					e.correlationID = corr
+					e.lastActivityNs = nowNs
+					model[id] = e
+				}
+
 			case sessionOpMarkOpen:
-				var id int64
-				useExisting := len(model) > 0 && rapid.Bool().Draw(rt, "markExisting")
-				if useExisting {
-					id = pickSessionID(rt, model, "existingID")
-				} else {
-					id = rapid.Int64().Draw(rt, "markUnknownID")
-				}
+				id := drawSessionID(rt, model, "markOpenID")
 				logPos := rapid.Int64().Draw(rt, "logPos")
-				wantOK := false
-				if e, ok := model[id]; ok && e == modelPending {
-					wantOK = true
-				}
+				e, ok := model[id]
+				wantOK := ok && e.state == sessionAuthenticated
 				got := m.markOpen(id, logPos)
 				require.Equal(rt, wantOK, got)
 				if wantOK {
-					model[id] = modelOpen
+					e.state = sessionOpen
+					model[id] = e
 					pendingOrder = removeIDFromOrder(pendingOrder, id)
 					okPendingOrder = append(okPendingOrder, id)
 					s, ok := m.sessionByID(id)
@@ -225,13 +289,7 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				}
 
 			case sessionOpRemove:
-				var id int64
-				useExisting := len(model) > 0 && rapid.Bool().Draw(rt, "removeExisting")
-				if useExisting {
-					id = pickSessionID(rt, model, "existingID")
-				} else {
-					id = rapid.Int64().Draw(rt, "removeUnknownID")
-				}
+				id := drawSessionID(rt, model, "removeID")
 				_, exists := model[id]
 				got := m.remove(id)
 				require.Equal(rt, exists, got)
@@ -242,30 +300,34 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				}
 
 			case sessionOpLookup:
-				var id int64
-				useExisting := len(model) > 0 && rapid.Bool().Draw(rt, "lookupExisting")
-				if useExisting {
-					id = pickSessionID(rt, model, "existingID")
-				} else {
-					id = rapid.Int64().Draw(rt, "lookupUnknownID")
-				}
+				id := drawSessionID(rt, model, "lookupID")
 				s, ok := m.sessionByID(id)
 				e, exists := model[id]
 				require.Equal(rt, exists, ok)
 				if exists {
 					require.NotNil(rt, s)
-					switch e {
-					case modelPending:
-						require.Equal(rt, sessionPending, s.state)
-					case modelOpen:
-						require.Equal(rt, sessionOpen, s.state)
-					}
+					require.Equal(rt, e.state, s.state)
+					require.Equal(rt, e.principal, s.encodedPrincipal)
 				}
 			}
 
 			assertInvariants()
 		}
 	})
+}
+
+// modelAuthPhaseOK is true when the model entry is pending or challenged.
+func modelAuthPhaseOK(e sessionModelEntry, ok bool) bool {
+	return ok && (e.state == sessionPending || e.state == sessionChallenged)
+}
+
+func drawSessionID(rt *rapid.T, m map[int64]sessionModelEntry, label string) int64 {
+	rt.Helper()
+	useExisting := len(m) > 0 && rapid.Bool().Draw(rt, label+"Existing")
+	if useExisting {
+		return pickSessionID(rt, m, label)
+	}
+	return rapid.Int64().Draw(rt, label+"Unknown")
 }
 
 func pickSessionID[V any](rt *rapid.T, m map[int64]V, label string) int64 {

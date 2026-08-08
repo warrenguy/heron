@@ -32,6 +32,22 @@ func TestSessionConnectRequest_fastSlowDecodeParity(t *testing.T) {
 	})
 }
 
+func TestChallengeResponse_fastSlowDecodeParity(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.ChallengeResponseFields{
+			CorrelationID:      rapid.Int64().Draw(rt, "correlationID"),
+			ClusterSessionID:   rapid.Int64().Draw(rt, "clusterSessionID"),
+			EncodedCredentials: rapidVarDataBytes(rt, "encodedCredentials"),
+		}
+		buf := make([]byte, offset+fuzzClusterCodecMaxLen)
+		wireEnd, ok := codecs.EncodeChallengeResponse(buf, offset, actingVersion, fields)
+		require.True(rt, ok)
+		requireChallengeResponseFastSlowParity(rt, buf[:wireEnd], offset)
+	})
+}
+
 func rapidSessionMessageHeaderParityWire(rt *rapid.T) (buf []byte, offset int) {
 	rt.Helper()
 	if rapid.Bool().Draw(rt, "useValidWire") {

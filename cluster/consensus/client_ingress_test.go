@@ -62,6 +62,20 @@ func encodeSessionKeepAliveWire(t *testing.T) []byte {
 	return buf[:end]
 }
 
+func encodeChallengeResponseWire(t *testing.T, fields codecs.ChallengeResponseFields) []byte {
+	t.Helper()
+	actingVersion := uint16(clusterwire.ChallengeResponseSbeSchemaVersion)
+	wireLen, ok := codecs.ClusterWireMessageLen(
+		clusterwire.ChallengeResponseSbeBlockLength,
+		len(fields.EncodedCredentials),
+	)
+	require.True(t, ok)
+	buf := make([]byte, wireLen)
+	end, ok := codecs.EncodeChallengeResponse(buf, 0, actingVersion, fields)
+	require.True(t, ok)
+	return buf[:end]
+}
+
 func sampleConnectFields() codecs.SessionConnectRequestFields {
 	return codecs.SessionConnectRequestFields{
 		CorrelationID:      99,
@@ -266,6 +280,80 @@ func TestHandleClientIngressFragment_dropsWrongFrames(t *testing.T) {
 
 	require.Equal(t, 4, a.pollClientIngress(50))
 	require.Empty(t, handler.calls)
+}
+
+func TestHandleClientIngressFragment_challengeResponse(t *testing.T) {
+	const nowNs int64 = 500
+
+	t.Run("leader_challenged_forwards", func(t *testing.T) {
+		auth := newScriptedAuthenticator()
+		auth.enqueue(1, authAction{kind: authActionChallenge, challenge: []byte("c")})
+		p, _ := boundLogPublisher(t)
+		a := leaderWithAuth(t, auth, p, 0)
+		q := &QueueConsensusIngress{}
+		a.SetClientIngress(q)
+		a.acceptSessionConnect(validConnectFields(1), 1)
+		require.Equal(t, 0, a.sessionWork(1))
+		require.Equal(t, sessionChallenged, a.sessions.pending[0].state)
+
+		q.Enqueue(encodeChallengeResponseWire(t, codecs.ChallengeResponseFields{
+			CorrelationID:      77,
+			ClusterSessionID:   1,
+			EncodedCredentials: []byte("resp"),
+		}))
+		require.Equal(t, 1, a.pollClientIngress(nowNs))
+		require.Len(t, auth.challengeResp, 1)
+		require.Equal(t, int64(1), auth.challengeResp[0].sessionID)
+		require.Equal(t, []byte("resp"), auth.challengeResp[0].credentials)
+		require.Equal(t, nowNs, auth.challengeResp[0].nowNs)
+		require.Equal(t, int64(77), a.sessions.pending[0].correlationID)
+	})
+
+	// Drop paths share setup. Non-leader known-leader is a named deviation: no
+	// consensus-channel forward of ChallengeResponse and no REDIRECT.
+	dropCases := []struct {
+		name       string
+		cfg        AgentConfig
+		wireEgress bool
+		sessionID  int64
+	}{
+		{
+			name:      "leader_unknown_session_drops",
+			cfg:       AgentConfig{Role: RoleLeader},
+			sessionID: 99,
+		},
+		{
+			name:       "non_leader_known_leader_drops",
+			cfg:        AgentConfig{Role: RoleFollower, LeaderMemberID: 3},
+			wireEgress: true,
+			sessionID:  1,
+		},
+		{
+			name:      "election_live_drops",
+			cfg:       AgentConfig{Role: RoleLeader, Election: &recordingRunner{}},
+			sessionID: 1,
+		},
+	}
+	for _, tc := range dropCases {
+		t.Run(tc.name, func(t *testing.T) {
+			auth := newScriptedAuthenticator()
+			tc.cfg.Authenticator = auth
+			a := NewAgent(tc.cfg)
+			if tc.wireEgress {
+				wireImmediateEgress(t, a)
+			}
+			q := &QueueConsensusIngress{}
+			a.SetClientIngress(q)
+			q.Enqueue(encodeChallengeResponseWire(t, codecs.ChallengeResponseFields{
+				CorrelationID:    1,
+				ClusterSessionID: tc.sessionID,
+			}))
+			require.Equal(t, 1, a.pollClientIngress(nowNs))
+			require.Empty(t, auth.challengeResp)
+			// Asserts no REDIRECT or other egress event for ChallengeResponse.
+			require.Empty(t, a.egressEvents)
+		})
+	}
 }
 
 func TestSetClientIngress_wireAndClear(t *testing.T) {

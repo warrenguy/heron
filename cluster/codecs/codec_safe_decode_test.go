@@ -35,6 +35,7 @@ func requireFastSlowDecodeParity[T any](
 var fastSlowDecodeParities = []func(tb require.TestingT, buf []byte, offset int){
 	requireSessionMessageHeaderFastSlowParity,
 	requireSessionConnectRequestFastSlowParity,
+	requireChallengeResponseFastSlowParity,
 }
 
 func requireSessionMessageHeaderFastSlowParity(tb require.TestingT, buf []byte, offset int) {
@@ -307,4 +308,108 @@ func TestTryDecodeSessionConnectRequestAt_varOverCap(t *testing.T) {
 	_, ok := codecs.TryDecodeSessionConnectRequestAt(buf, 0)
 	require.False(t, ok)
 	requireSessionConnectRequestFastSlowParity(t, buf, 0)
+}
+
+func requireChallengeResponseFastSlowParity(tb require.TestingT, buf []byte, offset int) {
+	requireFastSlowDecodeParity(
+		tb,
+		buf,
+		offset,
+		codecs.ClusterDecodeMaxVarLen,
+		clusterwire.ChallengeResponseSbeTemplateID,
+		codecs.TryDecodeChallengeResponseAt,
+	)
+}
+
+func TestTryDecodeChallengeResponseAt_roundtrip(t *testing.T) {
+	t.Parallel()
+
+	actingVersion := uint16(clusterwire.ChallengeResponseSbeSchemaVersion)
+	fields := codecs.ChallengeResponseFields{
+		CorrelationID:      42,
+		ClusterSessionID:   7,
+		EncodedCredentials: []byte{1, 2, 3, 4},
+	}
+	wire := encodeChallengeResponseWire(t, actingVersion, fields)
+
+	got, ok := codecs.TryDecodeChallengeResponseAt(wire, 0)
+	require.True(t, ok)
+	require.Equal(t, fields, got)
+
+	// Var slices must be retainable copies, not views into wire. Mutate every
+	// wire byte after decode. Independent expected clones stay equal.
+	wantCreds := bytes.Clone(fields.EncodedCredentials)
+	for i := range wire {
+		wire[i] ^= 0xFF
+	}
+	require.Equal(t, wantCreds, got.EncodedCredentials)
+}
+
+func TestTryDecodeChallengeResponseAt_reject(t *testing.T) {
+	t.Parallel()
+
+	actingVersion := uint16(clusterwire.ChallengeResponseSbeSchemaVersion)
+	valid := encodeChallengeResponseWire(t, actingVersion, codecs.ChallengeResponseFields{
+		CorrelationID:      1,
+		ClusterSessionID:   2,
+		EncodedCredentials: []byte{0xAA},
+	})
+
+	cases := []struct {
+		name   string
+		buf    []byte
+		offset int
+	}{
+		{name: "truncated_header", buf: valid[:messageHeaderLen-1]},
+		{name: "one_byte_short", buf: valid[:len(valid)-1]},
+		{
+			name: "wrong_template",
+			buf: cloneMutatedWire(valid, func(w []byte) {
+				binary.LittleEndian.PutUint16(
+					w[2:],
+					clusterwire.SessionKeepAliveSbeTemplateID,
+				)
+			}),
+		},
+		{
+			name: "wrong_schema",
+			buf: cloneMutatedWire(valid, func(w []byte) {
+				w[4], w[5] = 0, 0
+			}),
+		},
+		{name: "negative_offset", buf: valid, offset: -1},
+		{name: "offset_out_of_bounds", buf: valid, offset: 10_000},
+		{name: "offset_near_maxint", buf: valid, offset: math.MaxInt},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, ok := codecs.TryDecodeChallengeResponseAt(tc.buf, tc.offset)
+			require.False(t, ok)
+			requireChallengeResponseFastSlowParity(t, tc.buf, tc.offset)
+		})
+	}
+}
+
+func TestTryDecodeChallengeResponseAt_varOverCap(t *testing.T) {
+	t.Parallel()
+
+	// Header and root block, then a var length over ClusterDecodeMaxVarLen.
+	// The buffer holds the claimed payload so ReadVarSlice hits the maxLen path,
+	// not the length-vs-remaining bounds path.
+	actingVersion := uint16(clusterwire.ChallengeResponseSbeSchemaVersion)
+	blockLen := clusterwire.ChallengeResponseSbeBlockLength
+	headerAndBlock := messageHeaderLen + int(blockLen)
+	overLen := codecs.ClusterDecodeMaxVarLen + 1
+	buf := make([]byte, headerAndBlock+codecs.VarLengthPrefixSize+overLen)
+	binary.LittleEndian.PutUint16(buf[0:], blockLen)
+	binary.LittleEndian.PutUint16(buf[2:], clusterwire.ChallengeResponseSbeTemplateID)
+	binary.LittleEndian.PutUint16(buf[4:], clusterwire.ChallengeResponseSbeSchemaID)
+	binary.LittleEndian.PutUint16(buf[6:], actingVersion)
+	binary.LittleEndian.PutUint32(buf[headerAndBlock:], uint32(overLen))
+
+	_, ok := codecs.TryDecodeChallengeResponseAt(buf, 0)
+	require.False(t, ok)
+	requireChallengeResponseFastSlowParity(t, buf, 0)
 }

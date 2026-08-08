@@ -10,16 +10,17 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-// egressSendAttempts is the SessionEvent offer retry budget per call.
+// egressSendAttempts caps SessionEvent and Challenge offer retries per call.
 const egressSendAttempts = 3
 
 // defaultSessionTimeoutNs bounds pre-open session egress and queued egress
 // events.
 //
 // A pending session whose egress never connects drops at the deadline. A
-// REDIRECT or ERROR entry that cannot send also drops at the deadline.
-// Reclaim frees the publications. Reclaim runs in the any-role settled seat.
-// Leadership loss does not strand pending-session publications.
+// REDIRECT, ERROR, or AUTHENTICATION_REJECTED entry that cannot send also
+// drops at the deadline. Reclaim frees the publications. Reclaim runs in the
+// any-role settled seat. Leadership loss does not leave pending-session
+// publications unreclaimed.
 const defaultSessionTimeoutNs int64 = 10_000_000_000
 
 // maxPendingEgressEvents caps the REDIRECT and ERROR queue. Over-cap connects
@@ -38,6 +39,9 @@ const sessionEventActingVersion = uint16(clusterwire.SessionEventSbeSchemaVersio
 // version. The acting version is constant, so the length is fixed at package
 // init.
 var sessionEventBlockLength = codecs.SessionEventBlockLength(sessionEventActingVersion)
+
+// challengeActingVersion is the Challenge acting version for product egress.
+const challengeActingVersion = uint16(clusterwire.ChallengeSbeSchemaVersion)
 
 // EgressPublicationAdder registers concurrent egress publications for session
 // connect and redirect paths.
@@ -134,6 +138,21 @@ func (a *Agent) canEnqueueEgressEvent() bool {
 	return a.egressAdder != nil && len(a.egressEvents) < maxPendingEgressEvents
 }
 
+// appendEgressEvent admits one built entry to the egress event queue. Sole
+// admission path for the queue. Every producer shares the cap rule.
+//
+// Returns: false at maxPendingEgressEvents. On false the entry is not queued.
+//
+// Ownership: on true the queue owns the entry publication and in-flight add. On
+// false the caller must release the entry.
+func (a *Agent) appendEgressEvent(e *egressEvent) bool {
+	if len(a.egressEvents) >= maxPendingEgressEvents {
+		return false
+	}
+	a.egressEvents = append(a.egressEvents, e)
+	return true
+}
+
 // enqueueEgressEvent queues one REDIRECT or ERROR SessionEvent send. Copies
 // detail to bytes only after the cap, adder, and offer checks pass. A dropped
 // event allocates nothing.
@@ -154,14 +173,17 @@ func (a *Agent) enqueueEgressEvent(
 	if err != nil {
 		return
 	}
-	a.egressEvents = append(a.egressEvents, &egressEvent{
+	e := &egressEvent{
 		clusterSessionID: clusterSessionID,
 		correlationID:    fields.CorrelationID,
 		code:             code,
 		detail:           []byte(detail),
 		addCorrelationID: addCorr,
 		deadlineNs:       nowNs + defaultSessionTimeoutNs,
-	})
+	}
+	if !a.appendEgressEvent(e) {
+		a.releaseEgressEvent(e)
+	}
 }
 
 // egressEventWork reclaims expired pending-session egress and drains the
@@ -406,6 +428,35 @@ const (
 	sendOutcomeTerminal
 )
 
+// ensureEgressScratch grows a.egressScratch to at least wireLen and sets the
+// length to wireLen.
+func (a *Agent) ensureEgressScratch(wireLen int) {
+	if cap(a.egressScratch) < wireLen {
+		a.egressScratch = make([]byte, wireLen)
+	}
+	a.egressScratch = a.egressScratch[:wireLen]
+}
+
+// offerEgressScratch offers a.egressScratch[0:end] with the
+// egressSendAttempts budget.
+//
+// Returns:
+//   - sendOutcomeSent on a positive stream position
+//   - sendOutcomeRetriable when every attempt returned a retriable code
+//   - sendOutcomeTerminal on a non-retriable offer code
+func (a *Agent) offerEgressScratch(pub *aeron.Publication, end int) sendOutcome {
+	for range egressSendAttempts {
+		position := pub.OfferWithOffset(a.egressScratch, 0, end)
+		if position > 0 {
+			return sendOutcomeSent
+		}
+		if !aeron.IsOfferRetriable(position) {
+			return sendOutcomeTerminal
+		}
+	}
+	return sendOutcomeRetriable
+}
+
 // sendSessionEvent encodes one SessionEvent and offers it with the
 // egressSendAttempts budget. pub must be non-nil.
 //
@@ -430,10 +481,7 @@ func (a *Agent) sendSessionEvent(
 	if !ok || wireLen > pub.MaxPayloadLength() {
 		return sendOutcomeTerminal
 	}
-	if cap(a.egressScratch) < wireLen {
-		a.egressScratch = make([]byte, wireLen)
-	}
-	a.egressScratch = a.egressScratch[:wireLen]
+	a.ensureEgressScratch(wireLen)
 	fields := codecs.SessionEventFields{
 		ClusterSessionID:         clusterSessionID,
 		CorrelationID:            correlationID,
@@ -454,16 +502,48 @@ func (a *Agent) sendSessionEvent(
 	if !ok {
 		return sendOutcomeTerminal
 	}
-	for range egressSendAttempts {
-		position := pub.OfferWithOffset(a.egressScratch, 0, end)
-		if position > 0 {
-			return sendOutcomeSent
-		}
-		if !aeron.IsOfferRetriable(position) {
-			return sendOutcomeTerminal
-		}
+	return a.offerEgressScratch(pub, end)
+}
+
+// sendSessionChallenge encodes one Challenge frame. Offers the frame under the
+// egressSendAttempts budget.
+//
+// Returns:
+//   - sendOutcomeSent on a positive stream position
+//   - sendOutcomeRetriable when every attempt returned a retriable code
+//   - sendOutcomeTerminal on nil publication, oversize challenge, encode
+//     failure, or a terminal offer code
+func (a *Agent) sendSessionChallenge(
+	session *clientSession,
+	encodedChallenge []byte,
+) sendOutcome {
+	pub := session.egressPublication
+	if pub == nil {
+		return sendOutcomeTerminal
 	}
-	return sendOutcomeRetriable
+	wireLen, ok := codecs.ClusterWireMessageLen(
+		clusterwire.ChallengeSbeBlockLength,
+		len(encodedChallenge),
+	)
+	if !ok || wireLen > pub.MaxPayloadLength() {
+		return sendOutcomeTerminal
+	}
+	a.ensureEgressScratch(wireLen)
+	fields := codecs.ChallengeFields{
+		CorrelationID:    session.correlationID,
+		ClusterSessionID: session.id,
+		EncodedChallenge: encodedChallenge,
+	}
+	end, ok := codecs.EncodeChallenge(
+		a.egressScratch,
+		0,
+		challengeActingVersion,
+		fields,
+	)
+	if !ok {
+		return sendOutcomeTerminal
+	}
+	return a.offerEgressScratch(pub, end)
 }
 
 // removeSessionWithResources cancels an in-flight egress add, closes the

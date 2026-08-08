@@ -18,8 +18,22 @@ const maxConcurrentSessions = 100
 type sessionState int
 
 const (
-	// sessionPending is an accepted connect awaiting SessionOpenEvent append.
+	// sessionPending is an accepted connect. Egress connect or the
+	// authenticator grant is outstanding.
 	sessionPending sessionState = iota
+
+	// sessionChallenged means the Challenge frame was sent. ChallengeResponse
+	// and the authenticator grant are outstanding.
+	sessionChallenged
+
+	// sessionAuthenticated means the authenticator granted the session.
+	// encodedPrincipal holds the granted principal. SessionOpenEvent append is
+	// outstanding.
+	sessionAuthenticated
+
+	// sessionRejected means the authenticator rejected the session. The walk
+	// moves the session to the egress-event queue.
+	sessionRejected
 
 	// sessionOpen means SessionOpenEvent is on the log. openedLogPosition holds
 	// the append position.
@@ -33,6 +47,7 @@ const (
 //   - per-session terminal append failure
 //   - egress poll terminal
 //   - pending deadline reclaim
+//   - authentication reject handoff
 type clientSession struct {
 	id                int64
 	correlationID     int64
@@ -41,9 +56,13 @@ type clientSession struct {
 	state             sessionState
 	openedLogPosition int64
 
-	// lastActivityNs is set at accept. No keepalive or timeout path refreshes
-	// lastActivityNs. Pending deadline reclaim reads this field.
+	// lastActivityNs is set at accept. ChallengeResponse refresh updates the
+	// field. Pending deadline reclaim reads the field.
 	lastActivityNs int64
+
+	// encodedPrincipal is the authenticator-granted principal, cloned at
+	// Authenticate. Empty until granted. Appended on SessionOpenEvent.
+	encodedPrincipal []byte
 
 	// egressAddCorrelationID is the in-flight async publication add, or
 	// nullValue when none is in flight.
@@ -132,15 +151,90 @@ func (m *sessionManager) setOKPending(s *clientSession, pending bool) {
 	m.okPending = slices.Delete(m.okPending, i, i+1)
 }
 
-// markOpen moves a pending session to open. Stores logPosition as
-// openedLogPosition. Appends the session to okPending in markOpen order so
-// okPendingWork can send SessionEvent OK. Removes the pending entry.
+// authPhaseSession returns the session when id is pending or challenged.
 //
-// Returns: false when the id is unknown or the session is not pending. On
+// Returns: nil, false when the id is unknown or the state is not pending or
+// challenged. On false the registry is untouched.
+func (m *sessionManager) authPhaseSession(sessionID int64) (*clientSession, bool) {
+	s, ok := m.byID[sessionID]
+	if !ok || (s.state != sessionPending && s.state != sessionChallenged) {
+		return nil, false
+	}
+	return s, true
+}
+
+// markChallenged moves a pending or challenged session to challenged.
+//
+// Behaviour: sets state to challenged. Challenged-to-challenged is the allowed
+// re-challenge edge.
+//
+// Returns: false when the id is unknown or the state is not pending or
+// challenged. On false the registry is untouched.
+func (m *sessionManager) markChallenged(sessionID int64) bool {
+	s, ok := m.authPhaseSession(sessionID)
+	if !ok {
+		return false
+	}
+	s.state = sessionChallenged
+	return true
+}
+
+// markAuthenticated moves a pending or challenged session to authenticated.
+// Stores encodedPrincipal on the session.
+//
+// Returns: false when the id is unknown or the state is not pending or
+// challenged. On false the registry is untouched.
+func (m *sessionManager) markAuthenticated(sessionID int64, encodedPrincipal []byte) bool {
+	s, ok := m.authPhaseSession(sessionID)
+	if !ok {
+		return false
+	}
+	s.state = sessionAuthenticated
+	s.encodedPrincipal = encodedPrincipal
+	return true
+}
+
+// markRejected moves a pending or challenged session to rejected.
+//
+// Returns: false when the id is unknown or the state is not pending or
+// challenged. On false the registry is untouched.
+func (m *sessionManager) markRejected(sessionID int64) bool {
+	s, ok := m.authPhaseSession(sessionID)
+	if !ok {
+		return false
+	}
+	s.state = sessionRejected
+	return true
+}
+
+// refreshChallenged stores correlationID and lastActivityNs for a challenged
+// session. State stays challenged. Later SessionEvent OK carries the adopted
+// correlation id.
+//
+// Returns: false when the id is unknown or the session is not challenged. On
+// false the registry is untouched.
+func (m *sessionManager) refreshChallenged(sessionID, correlationID, nowNs int64) bool {
+	s, ok := m.byID[sessionID]
+	if !ok || s.state != sessionChallenged {
+		return false
+	}
+	s.correlationID = correlationID
+	s.lastActivityNs = nowNs
+	return true
+}
+
+// markOpen moves an authenticated session to open.
+//
+// Behaviour:
+//   - stores logPosition as openedLogPosition
+//   - appends the session to okPending in markOpen order for SessionEvent OK
+//   - removes the walk-list entry
+//
+// Returns: false when the id is unknown or the session is not authenticated. On
 // false the registry is untouched.
 func (m *sessionManager) markOpen(sessionID, logPosition int64) bool {
 	s, ok := m.byID[sessionID]
-	if !ok || s.state != sessionPending {
+	if !ok || s.state != sessionAuthenticated {
 		return false
 	}
 	s.state = sessionOpen
@@ -150,8 +244,8 @@ func (m *sessionManager) markOpen(sessionID, logPosition int64) bool {
 	return true
 }
 
-// remove deletes the session in any state. Removes the pending entry when
-// present. Removes the session from okPending when present.
+// remove deletes the session in any state. Drops the walk-list entry for every
+// non-open state. Removes the session from okPending when present.
 //
 // Returns: false when the id is unknown.
 func (m *sessionManager) remove(sessionID int64) bool {
@@ -160,7 +254,7 @@ func (m *sessionManager) remove(sessionID int64) bool {
 		return false
 	}
 	m.setOKPending(s, false)
-	if s.state == sessionPending {
+	if s.state != sessionOpen {
 		m.removePending(sessionID)
 	}
 	delete(m.byID, sessionID)
@@ -177,7 +271,7 @@ func (m *sessionManager) pendingCount() int {
 }
 
 func (m *sessionManager) openCount() int {
-	// Every pending entry is in byID with state pending.
+	// Walk-list holds every non-open session. Open sessions leave the list.
 	return len(m.byID) - len(m.pending)
 }
 
@@ -193,9 +287,13 @@ func (m *sessionManager) removePending(sessionID int64) {
 
 // acceptSessionConnect runs the product leader accept path.
 //
-// Behaviour: allocates a session id for every connect. Protocol-major mismatch
-// and over-cap connects queue SessionEvent ERROR. A valid accept stores a
-// pending session and starts the async egress publication add.
+// Behaviour:
+//   - allocates a session id for every connect
+//   - protocol-major mismatch and over-cap queue SessionEvent ERROR; those
+//     connects never reach the authenticator
+//   - valid accept stores a pending session
+//   - delivers connect credentials to the authenticator
+//   - starts the async egress publication add
 func (a *Agent) acceptSessionConnect(
 	fields codecs.SessionConnectRequestFields,
 	nowNs int64,
@@ -223,20 +321,23 @@ func (a *Agent) acceptSessionConnect(
 		)
 		return
 	}
+	a.authenticator.HandleConnectRequest(session.id, fields.EncodedCredentials, nowNs)
 	a.startSessionEgress(session)
 }
 
 // sessionWork runs on a settled member:
-//  1. egressEventWork - any-role deadline reclaim and REDIRECT/ERROR drain
-//  2. sessionPendingWork - leader pending walk (egress gate, append, markOpen)
+//  1. egressEventWork - any-role deadline reclaim and REDIRECT/ERROR/reject
+//     drain
+//  2. sessionPendingWork - leader pre-open walk (egress, auth, append,
+//     markOpen)
 //  3. okPendingWork - leader SessionEvent OK backlog drain
 //
 // Concurrency: invoker-only. Callers must invoke sessionWork from the
 // [Agent.DoWork] election-nil branch. sessionPendingWork re-checks election
 // and role. sessionPendingWork and okPendingWork run only for the leader.
 //
-// Returns: the sum of work units from each phase. Returns 0 when an election
-// is live.
+// Returns: the sum of work units from each step. Returns 0 when an election is
+// live.
 func (a *Agent) sessionWork(nowNs int64) int {
 	if a.election != nil {
 		return 0
@@ -250,28 +351,33 @@ func (a *Agent) sessionWork(nowNs int64) int {
 	return work
 }
 
-// sessionPendingWork appends SessionOpenEvent for ready pending sessions on a
-// leader.
+// sessionPendingWork advances pre-open sessions on a leader.
 //
-// Behaviour: walks every pending session each tick.
-//   - Polls egress until the publication is connected with AvailableWindow > 0.
-//     A not-done poll that contacts the adder counts as work.
-//   - A returned position marks the session open at that position and appends
-//     the session to okPending for the SessionEvent OK backlog.
-//   - A retriable log code stops the walk. The session stays pending.
+// Behaviour: walks every walk-list session each tick.
+//   - Polls egress until the publication is connected. A not-done poll that
+//     contacts the adder counts as work.
+//   - Once connected, consults the authenticator for pending and challenged
+//     sessions.
+//   - Rejected sessions move to the egress-event queue.
+//   - Sessions not yet authenticated wait for the next tick.
+//   - Authenticated sessions with AvailableWindow > 0 append SessionOpenEvent
+//     with the granted principal.
+//   - A returned position marks the session open and appends the session to
+//     okPending for the SessionEvent OK backlog.
+//   - A retriable log code stops the walk. The session stays on the walk list.
 //   - A publication-wide terminal code (Closed, MaxPositionExceeded) stops the
-//     walk. The session stays pending for a rebound publication.
+//     walk. The session stays for a rebound publication.
 //   - A per-session terminal code removes the session with resources. The walk
 //     continues.
-//   - markOpen false releases egress and removes the pending entry so the duty
-//     cycle cannot hang.
+//   - markOpen false releases egress and removes the walk-list entry so the
+//     duty cycle cannot hang.
 //
-// Returns: work units for not-done egress polls, sessions opened, and sessions
-// removed this call. Stops early on a retriable or publication-wide terminal
-// code and returns the work so far.
+// Returns: work units for not-done egress polls, reject handoffs, sessions
+// opened, and sessions removed this call. Stops early on a retriable or
+// publication-wide terminal code and returns the work so far.
 //
-// Returns 0 when no session is pending, an election is live, the role is not
-// leader, or the log publisher is nil or unbound.
+// Returns 0 when no session is on the walk list, an election is live, the role
+// is not leader, or the log publisher is nil or unbound.
 func (a *Agent) sessionPendingWork(nowNs int64) int {
 	if len(a.sessions.pending) == 0 {
 		return 0
@@ -290,7 +396,7 @@ func (a *Agent) sessionPendingWork(nowNs int64) int {
 			ready, removed, pollWork := a.pollSessionEgress(session)
 			work += pollWork
 			if removed {
-				// Terminal remove already dropped the pending entry. Stay at i.
+				// Terminal remove already dropped the walk-list entry. Stay at i.
 				work++
 				continue
 			}
@@ -302,7 +408,22 @@ func (a *Agent) sessionPendingWork(nowNs int64) int {
 		}
 		// ready or already stored: egressPublication is non-nil.
 		pub := session.egressPublication
-		if !pub.IsConnected() || pub.AvailableWindow() <= 0 {
+		if !pub.IsConnected() {
+			i++
+			continue
+		}
+		switch a.advanceSessionAuth(session, nowNs) {
+		case authAdvanceDropped:
+			// Reject handoff left the walk list. Stay at i.
+			work++
+			continue
+		case authAdvanceWait:
+			// Authenticator has not resolved. Handler repeats next tick.
+			i++
+			continue
+		case authAdvanceAppend:
+		}
+		if pub.AvailableWindow() <= 0 {
 			i++
 			continue
 		}
@@ -313,16 +434,16 @@ func (a *Agent) sessionPendingWork(nowNs int64) int {
 			nowNs,
 			session.responseStreamID,
 			session.responseChannel,
-			nil,
+			session.encodedPrincipal,
 		)
 		if position > 0 {
 			if !a.sessions.markOpen(session.id, position) {
-				// Not pending in byID. Drop resources and pending entry so the
-				// duty cycle cannot hang on the same entry.
+				// Not authenticated in byID. Drop resources and the walk-list
+				// entry so the duty cycle cannot hang on the same entry.
 				a.releaseSessionEgress(session)
 				a.sessions.removePending(session.id)
 			}
-			// Entry left the pending slice; stay at i.
+			// Entry left the walk list; stay at i.
 			work++
 			continue
 		}
@@ -335,15 +456,16 @@ func (a *Agent) sessionPendingWork(nowNs int64) int {
 			// publication.
 			return work
 		}
-		// Per-session terminal. Remove with resources; entry left pending.
+		// Per-session terminal. Remove with resources; entry left the walk list.
 		a.removeSessionWithResources(session)
 		work++
 	}
 	return work
 }
 
-// PendingSessionCount returns the number of accepted sessions awaiting
-// SessionOpenEvent append.
+// PendingSessionCount returns the number of accepted sessions still on the
+// pre-open walk list.
+// States on the list: pending, challenged, authenticated, or rejected.
 func (a *Agent) PendingSessionCount() int {
 	return a.sessions.pendingCount()
 }

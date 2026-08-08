@@ -103,6 +103,16 @@ func encodeSessionConnectRequestWire(
 	return encodeClusterWire(t, sessionConnectRequestEncodeFunc(actingVersion, fields))
 }
 
+func encodeChallengeResponseWire(
+	t *testing.T,
+	actingVersion uint16,
+	fields codecs.ChallengeResponseFields,
+) []byte {
+	return encodeClusterWire(t, func(buf []byte) (wireEnd int, ok bool) {
+		return codecs.EncodeChallengeResponse(buf, 0, actingVersion, fields)
+	})
+}
+
 func requireBytesEqual(tb require.TestingT, want, got []byte) {
 	require.True(tb, bytes.Equal(want, got))
 }

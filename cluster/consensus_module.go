@@ -244,6 +244,7 @@ func OpenConsensusModule(
 		LeaderHeartbeatIntervalNs: electionCfg.LeaderHeartbeatIntervalNs,
 		LeaderHeartbeatTimeoutNs:  electionCfg.LeaderHeartbeatTimeoutNs,
 		AppVersion:                electionCfg.AppVersion,
+		Authenticator:             cfg.Authenticator,
 	})
 
 	// Wire the recovered log recording id so term coherency can append. Skip
