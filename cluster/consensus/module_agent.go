@@ -199,6 +199,22 @@ type Agent struct {
 	// state with no transport resources.
 	sessions *sessionManager
 
+	// egressAdder registers concurrent per-session egress publications. Nil
+	// leaves accepted sessions pending with no add. Redirect and reject entries
+	// drop at queue time when the adder is nil.
+	egressAdder EgressPublicationAdder
+
+	// ingressEndpoints is the cluster ingress-endpoints string stored as
+	// SessionEvent REDIRECT detail ("0=host:port,1=host:port").
+	ingressEndpoints string
+
+	// egressScratch holds one SessionEvent encode for sendSessionEvent.
+	egressScratch []byte
+
+	// egressEvents is the capped REDIRECT/ERROR queue. Each entry owns a
+	// short-lived egress publication.
+	egressEvents []*egressEvent
+
 	// appendSource supplies local log append high-water for leader rank and
 	// follower AppendPosition publish. Nil: leader consensusWork returns 0.
 	appendSource AppendPositionSource
@@ -1696,7 +1712,7 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 // DoWork runs one duty-cycle tick:
 //   - slow tick
 //   - consensus ingress poll (always, even when election non-nil)
-//   - client ingress poll (always; leader-only accept lives in dispatch)
+//   - client ingress poll (always; accept and redirect live in dispatch)
 //   - [ElectionRunner.DoWork] when an election is live, else sessionWork then
 //     consensusWork
 //

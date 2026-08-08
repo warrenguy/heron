@@ -1,6 +1,18 @@
 package codecs
 
-import "github.com/warrenguy/heron/cluster/codecs/clusterwire"
+import (
+	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+)
+
+// ClusterProtocolSemanticVersion returns the packed wire value for
+// SessionConnectRequest.version and SessionEvent.version (0.3.0).
+//
+// Packing is (major << 16) | (minor << 8) | patch (Agrona
+// SemanticVersion.compose).
+func ClusterProtocolSemanticVersion() int32 {
+	return cnc.ComposeSemanticVersion(0, 3, 0)
+}
 
 type SessionMessageHeaderFields = IngressHeaderFields
 

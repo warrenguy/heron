@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/heron/cluster/election"
 )
 
 // CalculatePort returns the UDP port for a member's port block slot:
@@ -130,4 +133,23 @@ func formatEndpoint(memberID int32, hostname string, portBase, offset int) (stri
 		return "", fmt.Errorf("cluster: derived port %d is out of range", port)
 	}
 	return hostname + ":" + strconv.Itoa(port), nil
+}
+
+// buildIngressEndpointsString formats members as "id=endpoint" pairs via
+// client.FormatIngressEndpoints. Pairs are comma-joined and sorted by member id
+// ascending. Cluster and client share one encoder for Config.IngressEndpoints
+// (for example "0=host:port,1=host:port").
+//
+// Skips nil members. Empty or all-nil input returns "".
+func buildIngressEndpointsString(members []*election.Member) string {
+	ingress := make(client.MemberIngressMap, len(members))
+	for _, m := range members {
+		if m != nil {
+			ingress[m.ID] = &client.MemberIngress{
+				MemberID: m.ID,
+				Endpoint: m.IngressEndpoint,
+			}
+		}
+	}
+	return client.FormatIngressEndpoints(ingress)
 }

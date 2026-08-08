@@ -106,23 +106,39 @@ func TestWriteCommittedDataFrameForHooks_fragmentedBeginFlag(t *testing.T) {
 	require.NotEqual(t, byte(logbuffer.Unfragmented), logbuffer.FrameFlags(termBuffer, 0))
 }
 
+// testHookOfferClaim is the Offer+TryClaim surface shared by hook publication builders.
+type testHookOfferClaim interface {
+	Offer(buffer []byte) int64
+	TryClaim(length int) (termIndex, frameOffset int, position int64, err error)
+}
+
+var testHookLimitZeroRetriableCases = []struct {
+	name      string
+	connected bool
+	want      int64
+}{
+	{name: "limit 0 disconnected yields NotConnected", connected: false, want: NotConnected},
+	{name: "limit 0 connected yields BackPressured", connected: true, want: BackPressured},
+}
+
+func requireTestHookLimitZeroRetriable(
+	t *testing.T,
+	offerer testHookOfferClaim,
+	want int64,
+) {
+	t.Helper()
+
+	require.Equal(t, want, offerer.Offer([]byte{1}))
+	_, _, position, err := offerer.TryClaim(1)
+	require.NoError(t, err)
+	require.Equal(t, want, position)
+}
+
 func TestNewTestExclusivePublicationForHooksWithLimit_retriableCodes(t *testing.T) {
-	tests := []struct {
-		name      string
-		connected bool
-		want      int64
-	}{
-		{name: "limit 0 disconnected yields NotConnected", connected: false, want: NotConnected},
-		{name: "limit 0 connected yields BackPressured", connected: true, want: BackPressured},
-	}
-	for _, tt := range tests {
+	for _, tt := range testHookLimitZeroRetriableCases {
 		t.Run(tt.name, func(t *testing.T) {
 			ep := NewTestExclusivePublicationForHooksWithLimit(t, 0, tt.connected)
-
-			require.Equal(t, tt.want, ep.Offer([]byte{1}))
-			_, _, position, err := ep.TryClaim(1)
-			require.NoError(t, err)
-			require.Equal(t, tt.want, position)
+			requireTestHookLimitZeroRetriable(t, ep, tt.want)
 		})
 	}
 }
@@ -135,4 +151,30 @@ func TestNewTestExclusivePublicationForHooksWithConnected_highLimitSucceedsWhenD
 
 	got := ep.Offer([]byte{1})
 	require.Positive(t, got)
+}
+
+func TestNewTestPublicationForHooksWithLimit_retriableCodes(t *testing.T) {
+	for _, tt := range testHookLimitZeroRetriableCases {
+		t.Run(tt.name, func(t *testing.T) {
+			pub := NewTestPublicationForHooksWithLimit(t, 0, tt.connected)
+			requireTestHookLimitZeroRetriable(t, pub, tt.want)
+		})
+	}
+}
+
+func TestNewTestPublicationForHooksWithConnected_highLimitSucceeds(t *testing.T) {
+	// High default limit: disconnected alone is not a NotConnected recipe.
+	tests := []struct {
+		name      string
+		connected bool
+	}{
+		{name: "disconnected", connected: false},
+		{name: "connected", connected: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pub := NewTestPublicationForHooksWithConnected(t, tt.connected)
+			require.Positive(t, pub.Offer([]byte{1}))
+		})
+	}
 }

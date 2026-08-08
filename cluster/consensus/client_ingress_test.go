@@ -66,7 +66,7 @@ func sampleConnectFields() codecs.SessionConnectRequestFields {
 	return codecs.SessionConnectRequestFields{
 		CorrelationID:      99,
 		ResponseStreamID:   102,
-		Version:            5,
+		Version:            codecs.ClusterProtocolSemanticVersion(),
 		ResponseChannel:    []byte("aeron:udp?endpoint=127.0.0.1:40123"),
 		EncodedCredentials: []byte{0xDE, 0xAD},
 		ClientInfo:         []byte("client-a"),
@@ -77,15 +77,20 @@ func sampleConnectFields() codecs.SessionConnectRequestFields {
 // in role. election may be nil for a settled member. A nil handler stays
 // unwired. A typed nil *recordingSessionConnectHandler is non-nil as the
 // SessionConnectHandler interface.
+//
+// leaderMemberID is the agent leader hint. Pass nullMemberID so non-leader
+// drop rows stay pre-decode. Redirect tests pass a known leader id.
 func agentWithClientIngress(
 	role Role,
 	election ElectionRunner,
 	handler *recordingSessionConnectHandler,
+	leaderMemberID int32,
 ) (*Agent, *QueueConsensusIngress) {
 	q := &QueueConsensusIngress{}
 	a := NewAgent(AgentConfig{
-		Role:     role,
-		Election: election,
+		Role:           role,
+		Election:       election,
+		LeaderMemberID: leaderMemberID,
 	})
 	a.SetClientIngress(q)
 	if handler != nil {
@@ -100,7 +105,7 @@ func leaderWithClientIngress(
 	election ElectionRunner,
 ) (*Agent, *QueueConsensusIngress, *recordingSessionConnectHandler) {
 	handler := &recordingSessionConnectHandler{}
-	a, q := agentWithClientIngress(RoleLeader, election, handler)
+	a, q := agentWithClientIngress(RoleLeader, election, handler, nullMemberID)
 	return a, q, handler
 }
 
@@ -118,66 +123,107 @@ func TestHandleSessionConnect_branchTable(t *testing.T) {
 	const nowNs int64 = 1_000_000
 
 	cases := []struct {
-		name        string
-		role        Role
-		election    ElectionRunner
-		handler     *recordingSessionConnectHandler
-		wantCalls   int
-		wantPending int
+		name           string
+		role           Role
+		election       ElectionRunner
+		leaderMemberID int32
+		handler        *recordingSessionConnectHandler
+		wantCalls      int
+		wantPending    int
+		wantRedirects  int
 	}{
 		{
-			name:        "steady_leader_forwards",
-			role:        RoleLeader,
-			handler:     &recordingSessionConnectHandler{},
-			wantCalls:   1,
-			wantPending: 0,
+			name:           "steady_leader_forwards",
+			role:           RoleLeader,
+			leaderMemberID: nullMemberID,
+			handler:        &recordingSessionConnectHandler{},
+			wantCalls:      1,
+			wantPending:    0,
 		},
 		{
-			name:        "follower_drops",
-			role:        RoleFollower,
-			handler:     &recordingSessionConnectHandler{},
-			wantCalls:   0,
-			wantPending: 0,
+			name:           "follower_unknown_leader_drops",
+			role:           RoleFollower,
+			leaderMemberID: nullMemberID,
+			handler:        &recordingSessionConnectHandler{},
+			wantCalls:      0,
+			wantPending:    0,
 		},
 		{
-			name:        "candidate_drops",
-			role:        RoleCandidate,
-			handler:     &recordingSessionConnectHandler{},
-			wantCalls:   0,
-			wantPending: 0,
+			name:           "candidate_unknown_leader_drops",
+			role:           RoleCandidate,
+			leaderMemberID: nullMemberID,
+			handler:        &recordingSessionConnectHandler{},
+			wantCalls:      0,
+			wantPending:    0,
 		},
 		{
-			name:        "election_live_leader_drops",
-			role:        RoleLeader,
-			election:    &recordingRunner{},
-			handler:     &recordingSessionConnectHandler{},
-			wantCalls:   0,
-			wantPending: 0,
+			name:           "follower_known_leader_redirects",
+			role:           RoleFollower,
+			leaderMemberID: 3,
+			handler:        &recordingSessionConnectHandler{},
+			wantCalls:      0,
+			wantPending:    0,
+			wantRedirects:  1,
 		},
 		{
-			name:        "nil_handler_product_accept",
-			role:        RoleLeader,
-			handler:     nil,
-			wantCalls:   0,
-			wantPending: 1,
+			name:           "election_live_leader_drops",
+			role:           RoleLeader,
+			election:       &recordingRunner{},
+			leaderMemberID: nullMemberID,
+			handler:        &recordingSessionConnectHandler{},
+			wantCalls:      0,
+			wantPending:    0,
 		},
 		{
-			name:        "nil_handler_follower_no_accept",
-			role:        RoleFollower,
-			handler:     nil,
-			wantCalls:   0,
-			wantPending: 0,
+			// Election live drops before decode even with a known leader.
+			name:           "election_live_follower_known_leader_drops",
+			role:           RoleFollower,
+			election:       &recordingRunner{},
+			leaderMemberID: 1,
+			handler:        nil,
+			wantCalls:      0,
+			wantPending:    0,
+		},
+		{
+			name:           "nil_handler_product_accept",
+			role:           RoleLeader,
+			leaderMemberID: nullMemberID,
+			handler:        nil,
+			wantCalls:      0,
+			wantPending:    1,
+		},
+		{
+			name:           "nil_handler_follower_unknown_no_accept",
+			role:           RoleFollower,
+			leaderMemberID: nullMemberID,
+			handler:        nil,
+			wantCalls:      0,
+			wantPending:    0,
+		},
+		{
+			name:           "nil_handler_follower_known_redirects",
+			role:           RoleFollower,
+			leaderMemberID: 2,
+			handler:        nil,
+			wantCalls:      0,
+			wantPending:    0,
+			wantRedirects:  1,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			a, q := agentWithClientIngress(tc.role, tc.election, tc.handler)
+			a, q := agentWithClientIngress(
+				tc.role, tc.election, tc.handler, tc.leaderMemberID,
+			)
+			wireImmediateEgress(t, a)
+			a.SetIngressEndpoints("0=host:1")
 
 			q.Enqueue(bytes.Clone(wire))
 			require.Equal(t, 1, a.pollClientIngress(nowNs))
 			require.Equal(t, tc.wantPending, a.PendingSessionCount())
 			require.Equal(t, 0, a.OpenSessionCount())
+			require.Len(t, a.egressEvents, tc.wantRedirects)
 
 			if tc.handler == nil {
 				if tc.wantPending == 1 {
@@ -258,6 +304,8 @@ func TestClientIngress_earlyUnbindBlocksAccept(t *testing.T) {
 	// Module Close early binding clear order.
 	a.SetClientIngress(nil)
 	a.SetSessionConnectHandler(nil)
+	a.CloseSessionEgress()
+	a.SetEgressPublicationAdder(nil)
 	a.SetElection(nil)
 	// Role may still read leader during teardown.
 	require.Equal(t, RoleLeader, a.Role())

@@ -105,8 +105,8 @@ func ParseIngressEndpointsBytes(endpoints []byte) (MemberIngressMap, error) {
 // FormatIngressEndpoints serializes map entries as "id=endpoint,..." sorted by
 // memberId ascending.
 //
-// For tests and debug only; not used on hot paths. Nil or empty map returns "".
-// Nil map entries are omitted, consistent with Lookup.
+// Construction, tests, and debug may call this. Hot paths must not. Nil or
+// empty map returns "". Nil map entries are omitted, consistent with Lookup.
 func FormatIngressEndpoints(m MemberIngressMap) string {
 	ids := sortedMemberIDs(m)
 	if len(ids) == 0 {

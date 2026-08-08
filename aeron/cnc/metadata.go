@@ -57,6 +57,24 @@ func MajorVersion(version int32) int {
 	return int(version >> 16)
 }
 
+func MinorVersion(version int32) int {
+	return int(version>>8) & 0xff
+}
+
+func PatchVersion(version int32) int {
+	return int(version) & 0xff
+}
+
+// FormatSemanticVersion formats a packed semantic version as major.minor.patch.
+func FormatSemanticVersion(version int32) string {
+	return fmt.Sprintf(
+		"%d.%d.%d",
+		MajorVersion(version),
+		MinorVersion(version),
+		PatchVersion(version),
+	)
+}
+
 // ParseMetadata reads CNC metadata after the driver has published CncVersion (volatile,
 // non-zero) with major version compatible with Version.
 func ParseMetadata(buf []byte) (Metadata, error) {

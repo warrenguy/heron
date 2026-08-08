@@ -300,9 +300,31 @@ func NewTestPublicationForHooks(tb testing.TB) *Publication {
 	return NewTestPublicationForHooksWithConnected(tb, false)
 }
 
-// NewTestPublicationForHooksWithConnected builds a concurrent publication with the
-// log metadata is-connected flag set for connect-path tests.
+// NewTestPublicationForHooksWithConnected builds a concurrent publication with
+// the log metadata is-connected flag set for connect-path tests.
+//
+// Uses the default high publication-limit counter so Offer succeeds at
+// position 0.
 func NewTestPublicationForHooksWithConnected(tb testing.TB, connected bool) *Publication {
+	tb.Helper()
+
+	return NewTestPublicationForHooksWithLimit(
+		tb,
+		testHookPublicationLimitPosition,
+		connected,
+	)
+}
+
+// NewTestPublicationForHooksWithLimit builds a concurrent publication with a
+// caller-chosen publication-limit counter value and is-connected flag.
+//
+// Cross-package tests use limit 0 at position 0 so runOfferPrelude and
+// backPressureStatus return retriable NotConnected or BackPressured.
+func NewTestPublicationForHooksWithLimit(
+	tb testing.TB,
+	limitPosition int64,
+	connected bool,
+) *Publication {
 	tb.Helper()
 
 	log := newTestHookMappedLogWithConnected(
@@ -313,7 +335,7 @@ func NewTestPublicationForHooksWithConnected(tb testing.TB, connected bool) *Pub
 	pub, err := newPublicationFromReady(
 		testHookPublicationBuffersReady(testHookMappedLogFileName),
 		log,
-		newTestHookCountersReader(tb),
+		newTestHookCountersReaderWithLimit(tb, limitPosition),
 		testHookIPCChannel,
 	)
 	require.NoError(tb, err)

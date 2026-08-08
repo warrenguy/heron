@@ -13,6 +13,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/heron/cluster/client"
 )
 
 func TestTopology_memberPointerIdentity_rapid(t *testing.T) {
@@ -70,6 +71,13 @@ func TestTopology_memberPointerIdentity_rapid(t *testing.T) {
 				aeron.ChannelParamValue(ch, idx, aeron.ChannelEndpointParam),
 			)
 		}
+
+		// IngressEndpoints matches client wire format, sorted by member id.
+		wantIngress := make(client.MemberIngressMap, len(members))
+		for _, m := range members {
+			wantIngress[m.ID] = &client.MemberIngress{Endpoint: m.IngressEndpoint}
+		}
+		require.Equal(t, client.FormatIngressEndpoints(wantIngress), tp.IngressEndpoints())
 	})
 }
 

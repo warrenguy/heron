@@ -1,6 +1,7 @@
 package cluster_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -8,6 +9,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/heron/cluster/client"
 )
 
 // testArchiveControl channels satisfy Validate for fixtures that never connect
@@ -15,6 +17,13 @@ import (
 const (
 	testArchiveControlRequestChannel  = archive.DefaultLocalControlChannel
 	testArchiveControlResponseChannel = archive.DefaultLocalControlChannel
+)
+
+// IngressEndpoints output for the three members-string goldens.
+const (
+	wantIngressEndpointsSharedLog = "0=127.0.0.1:9002,1=127.0.0.1:9102,2=127.0.0.1:9202"
+	wantIngressEndpointsFailover  = "0=cluster-0:9002,1=cluster-1:9102,2=cluster-2:9202"
+	wantIngressEndpointsSingle    = "0=localhost:9002"
 )
 
 func topologyConfigMembers(memberID int32, members string) cluster.Config {
@@ -175,6 +184,9 @@ func TestNewTopology_accessors(t *testing.T) {
 	require.Equal(t, wantIngress, ingressCh)
 	requireChannelEndpoint(t, ingressCh, this.IngressEndpoint)
 
+	// Ingress endpoints string is fixed at construction in member-id order.
+	require.Equal(t, wantIngressEndpointsSharedLog, tp.IngressEndpoints())
+
 	// Stream getters match normalized config.
 	require.Equal(t, cfg.ConsensusStreamID, tp.ConsensusStreamID())
 	require.Equal(t, cfg.IngressStreamID, tp.IngressStreamID())
@@ -218,6 +230,50 @@ func TestNewTopology_ingressChannelPerMember(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, wantIngress[memberID], tp.IngressSubscriptionChannel())
 		require.Equal(t, cluster.DefaultIngressStreamID, tp.IngressStreamID())
+	}
+}
+
+func TestNewTopology_ingressEndpoints(t *testing.T) {
+	t.Parallel()
+
+	for memberID := range int32(3) {
+		tp, err := cluster.NewTopology(topologyConfig(memberID))
+		require.NoError(t, err)
+		require.Equal(t, wantIngressEndpointsSharedLog, tp.IngressEndpoints())
+	}
+
+	// Failover hostnames still member-id order, same port layout.
+	tp, err := cluster.NewTopology(
+		topologyConfigMembers(0, goldenClusterMembersFailover),
+	)
+	require.NoError(t, err)
+	require.Equal(t, wantIngressEndpointsFailover, tp.IngressEndpoints())
+
+	// Single member.
+	tp, err = cluster.NewTopology(
+		topologyConfigMembers(0, goldenClusterMembersSingle),
+	)
+	require.NoError(t, err)
+	require.Equal(t, wantIngressEndpointsSingle, tp.IngressEndpoints())
+
+	// Members-string order non-ascending: output sorted by member id.
+	// Reorder golden shared-log segments to 2|0|1.
+	segments := strings.Split(strings.TrimSuffix(goldenClusterMembersSharedLog, "|"), "|")
+	require.Len(t, segments, 3)
+	reverseMembers := segments[2] + "|" + segments[0] + "|" + segments[1] + "|"
+	tp, err = cluster.NewTopology(topologyConfigMembers(0, reverseMembers))
+	require.NoError(t, err)
+	require.Equal(t, wantIngressEndpointsSharedLog, tp.IngressEndpoints())
+
+	// Client parse roundtrip on Topology multi-member output.
+	tp, err = cluster.NewTopology(topologyConfig(0))
+	require.NoError(t, err)
+	parsed, err := client.ParseIngressEndpoints(tp.IngressEndpoints())
+	require.NoError(t, err)
+	require.Len(t, parsed, 3)
+	for _, m := range tp.Members() {
+		require.Contains(t, parsed, m.ID)
+		require.Equal(t, m.IngressEndpoint, parsed[m.ID].Endpoint)
 	}
 }
 
@@ -316,4 +372,5 @@ func TestNewTopology_singleMember(t *testing.T) {
 		"aeron:udp?term-length=64k|endpoint=localhost:9004",
 		tp.LogChannel(),
 	)
+	require.Equal(t, wantIngressEndpointsSingle, tp.IngressEndpoints())
 }

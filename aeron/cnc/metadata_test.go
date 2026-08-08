@@ -58,6 +58,11 @@ func TestParseMetadataSmoke(t *testing.T) {
 	}
 }
 
+func TestFormatSemanticVersion(t *testing.T) {
+	require.Equal(t, "0.3.0", cnc.FormatSemanticVersion(cnc.ComposeSemanticVersion(0, 3, 0)))
+	require.Equal(t, "1.2.3", cnc.FormatSemanticVersion(cnc.ComposeSemanticVersion(1, 2, 3)))
+}
+
 func TestParseMetadataBufferTooShort(t *testing.T) {
 	buf := make([]byte, cnc.MetaDataLength-1)
 	_, err := cnc.ParseMetadata(buf)

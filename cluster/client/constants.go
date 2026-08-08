@@ -3,7 +3,6 @@ package client
 import (
 	"time"
 
-	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
@@ -31,7 +30,7 @@ const (
 // ProtocolSemanticVersion returns the int32 wire value for SessionConnectRequest.version (0.3.0).
 // Packing: (major << 16) | (minor << 8) | patch; Agrona SemanticVersion.compose.
 func ProtocolSemanticVersion() int32 {
-	return cnc.ComposeSemanticVersion(0, 3, 0)
+	return codecs.ClusterProtocolSemanticVersion()
 }
 
 // SessionHeaderLength equals Java AeronCluster.SESSION_HEADER_LENGTH.

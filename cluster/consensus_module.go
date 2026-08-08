@@ -130,7 +130,9 @@ type ConsensusModule struct {
 //  14. log replay factory
 //  15. catchup control
 //  16. log publication reseed
-//  17. client ingress subscription (all members; leader-only accept in dispatch)
+//  17. client ingress subscription (all members; accept and redirect in
+//     dispatch)
+//  18. session egress adder and ingress-endpoints string (no new resource open)
 //
 // Recovery plans from the recording log.
 //
@@ -143,8 +145,10 @@ type ConsensusModule struct {
 //     No recording starts at Open
 //   - cluster log publication and subscription open before return. The first
 //     duty tick can then win leadership and append a leadership-term event
-//   - every member opens the client ingress subscription. Only a settled leader
-//     accepts connects
+//   - every member opens the client ingress subscription. A settled leader
+//     accepts connects. A settled non-leader with a known leader sends REDIRECT
+//   - session egress uses the transport client as the publication adder and
+//     Topology.IngressEndpoints as REDIRECT detail
 //
 // Returns an error when:
 //   - Config fails Validate
@@ -399,6 +403,11 @@ func OpenConsensusModule(
 	}
 	module.clientIngress = clientIngress
 
+	// Session egress: transport client as publication adder.
+	// Topology.IngressEndpoints is REDIRECT detail.
+	module.agent.SetEgressPublicationAdder(module.client)
+	module.agent.SetIngressEndpoints(topology.IngressEndpoints())
+
 	succeeded = true
 	return module, nil
 }
@@ -450,7 +459,7 @@ func moduleClocks(cfg Config) (nanoClock, epochClock func() int64) {
 }
 
 // Close tears the member down in reverse open order:
-//  1. agent bindings
+//  1. agent bindings (ingress unbind, session egress teardown, adder clear)
 //  2. catchup control
 //  3. best-effort log recording stop
 //  4. election close and retained replay helper close error
@@ -489,11 +498,15 @@ func (m *ConsensusModule) Close() error {
 	// factory before the runner so a post-Close duty tick cannot re-install
 	// against a torn-down recovery.
 	//
-	// Unbind client ingress before clearing the election so a late DoWork
-	// cannot accept connects when election is nil and role is still leader.
+	// Unbind client ingress before clearing the election so a late DoWork cannot
+	// accept connects when election is nil and role is still leader. Tear session
+	// egress publications after no new accepts can queue. Clear the adder before
+	// the transport client closes.
 	if m.agent != nil {
 		m.agent.SetClientIngress(nil)
 		m.agent.SetSessionConnectHandler(nil)
+		m.agent.CloseSessionEgress()
+		m.agent.SetEgressPublicationAdder(nil)
 		m.agent.SetElectionFactory(nil)
 		m.agent.SetElection(nil)
 		m.agent.SetPositions(nil)

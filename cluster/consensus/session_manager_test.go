@@ -13,19 +13,37 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-func sampleConnectFieldsForSession(correlationID int64) codecs.SessionConnectRequestFields {
+// validConnectFields returns connect fields with the product protocol version.
+// sampleConnectFields already sets that version. The name documents intent for
+// session open and accept tests across this package.
+func validConnectFields(correlationID int64) codecs.SessionConnectRequestFields {
 	fields := sampleConnectFields()
 	fields.CorrelationID = correlationID
 	return fields
 }
 
 // leaderWithLogPublisher returns a settled leader with p and leadershipTermID.
-func leaderWithLogPublisher(p *LogPublisher, leadershipTermID int64) *Agent {
-	return NewAgent(AgentConfig{
+// Wires an immediate connected egress adder so pending sessions can open.
+func leaderWithLogPublisher(
+	t testing.TB,
+	p *LogPublisher,
+	leadershipTermID int64,
+) *Agent {
+	t.Helper()
+	a := NewAgent(AgentConfig{
 		Role:             RoleLeader,
 		LeadershipTermID: leadershipTermID,
 		LogPublisher:     p,
 	})
+	wireImmediateEgress(t, a)
+	return a
+}
+
+// wireImmediateEgress installs an adder that resolves to a connected unlimited
+// concurrent publication on the first poll.
+func wireImmediateEgress(t testing.TB, a *Agent) {
+	t.Helper()
+	a.SetEgressPublicationAdder(withImmediateConnected(t))
 }
 
 // decodeSessionOpenAtTermOffset decodes one SessionOpenEvent DATA frame at
@@ -76,40 +94,51 @@ func requireSessionOpenFields(
 	require.Empty(t, got.EncodedPrincipal)
 }
 
+func addPending(
+	m *sessionManager,
+	fields codecs.SessionConnectRequestFields,
+	nowNs int64,
+) *clientSession {
+	return m.addPendingConnect(m.allocateSessionID(), fields, nowNs)
+}
+
 func TestSessionManager_addPendingConnect_idsAndFields(t *testing.T) {
 	m := newSessionManager()
 	const nowNs int64 = 1_000
 
 	for i, corr := range []int64{10, 20, 30} {
-		fields := sampleConnectFieldsForSession(corr)
-		s := m.addPendingConnect(fields, nowNs+int64(i))
+		fields := validConnectFields(corr)
+		s := addPending(m, fields, nowNs+int64(i))
 		require.NotNil(t, s)
 		require.Equal(t, int64(i+1), s.id)
 		requireClientSessionFields(t, s, fields, sessionPending, nowNs+int64(i))
 		require.Zero(t, s.openedLogPosition)
+		require.Equal(t, int64(nullValue), s.egressAddCorrelationID)
 	}
 	require.Equal(t, 3, m.pendingCount())
 	require.Equal(t, 0, m.openCount())
 	require.Len(t, m.byID, 3)
+	require.Empty(t, m.okPending)
 }
 
 func TestSessionManager_addPendingConnect_cap(t *testing.T) {
 	m := newSessionManager()
-	fields := sampleConnectFieldsForSession(1)
+	fields := validConnectFields(1)
 	for range maxConcurrentSessions {
-		s := m.addPendingConnect(fields, 1)
+		s := addPending(m, fields, 1)
 		require.NotNil(t, s)
 	}
 	require.Equal(t, maxConcurrentSessions, m.pendingCount())
 	require.Len(t, m.byID, maxConcurrentSessions)
 
-	// Cap: next add returns nil. Registry stays untouched.
+	// Cap: next add returns nil. Registry stays untouched. allocate still advances.
 	beforeNext := m.nextSessionID
-	s := m.addPendingConnect(fields, 2)
+	id := m.allocateSessionID()
+	s := m.addPendingConnect(id, fields, 2)
 	require.Nil(t, s)
 	require.Equal(t, maxConcurrentSessions, m.pendingCount())
 	require.Len(t, m.byID, maxConcurrentSessions)
-	require.Equal(t, beforeNext, m.nextSessionID)
+	require.Equal(t, beforeNext+1, m.nextSessionID)
 	require.Equal(t, 0, m.openCount())
 
 	// Cap is open plus pending, not pending alone. markOpen all; refuse still holds.
@@ -119,9 +148,10 @@ func TestSessionManager_addPendingConnect_cap(t *testing.T) {
 	require.Equal(t, 0, m.pendingCount())
 	require.Equal(t, maxConcurrentSessions, m.openCount())
 	require.Len(t, m.byID, maxConcurrentSessions)
+	require.Len(t, m.okPending, maxConcurrentSessions)
 	beforeNext = m.nextSessionID
-	require.Nil(t, m.addPendingConnect(fields, 3))
-	require.Equal(t, beforeNext, m.nextSessionID)
+	require.Nil(t, m.addPendingConnect(m.allocateSessionID(), fields, 3))
+	require.Equal(t, beforeNext+1, m.nextSessionID)
 	require.Equal(t, maxConcurrentSessions, m.openCount())
 	require.Len(t, m.byID, maxConcurrentSessions)
 
@@ -130,63 +160,79 @@ func TestSessionManager_addPendingConnect_cap(t *testing.T) {
 		require.True(t, m.remove(id))
 	}
 	require.Equal(t, maxConcurrentSessions/2, m.openCount())
+	require.Len(t, m.okPending, maxConcurrentSessions/2)
 	for range maxConcurrentSessions / 2 {
-		require.NotNil(t, m.addPendingConnect(fields, 4))
+		require.NotNil(t, addPending(m, fields, 4))
 	}
 	require.Equal(t, maxConcurrentSessions/2, m.pendingCount())
 	require.Len(t, m.byID, maxConcurrentSessions)
 	beforeNext = m.nextSessionID
-	require.Nil(t, m.addPendingConnect(fields, 5))
-	require.Equal(t, beforeNext, m.nextSessionID)
+	require.Nil(t, m.addPendingConnect(m.allocateSessionID(), fields, 5))
+	require.Equal(t, beforeNext+1, m.nextSessionID)
 	require.Equal(t, maxConcurrentSessions/2, m.pendingCount())
 	require.Equal(t, maxConcurrentSessions/2, m.openCount())
 }
 
 func TestSessionManager_markOpen(t *testing.T) {
 	m := newSessionManager()
-	s := m.addPendingConnect(sampleConnectFieldsForSession(7), 50)
+	s := addPending(m, validConnectFields(7), 50)
 	require.NotNil(t, s)
 
 	const logPos int64 = 4096
 	require.True(t, m.markOpen(s.id, logPos))
 	require.Equal(t, sessionOpen, s.state)
 	require.Equal(t, logPos, s.openedLogPosition)
+	require.Len(t, m.okPending, 1)
+	require.Same(t, s, m.okPending[0])
 	require.Equal(t, 0, m.pendingCount())
 	require.Equal(t, 1, m.openCount())
 
 	// Unknown id: false. Registry untouched.
 	require.False(t, m.markOpen(99, 1))
 	require.Equal(t, 1, m.openCount())
+	require.Len(t, m.okPending, 1)
 
 	// Second markOpen: not pending, false. Position stays untouched.
 	require.False(t, m.markOpen(s.id, 9999))
 	require.Equal(t, logPos, s.openedLogPosition)
 	require.Equal(t, sessionOpen, s.state)
+	require.Len(t, m.okPending, 1)
+	require.Same(t, s, m.okPending[0])
+
+	m.setOKPending(s, false)
+	require.Empty(t, m.okPending)
+	// Second clear is a no-op when s is already off okPending.
+	m.setOKPending(s, false)
+	require.Empty(t, m.okPending)
 }
 
 func TestSessionManager_remove(t *testing.T) {
 	m := newSessionManager()
-	pending := m.addPendingConnect(sampleConnectFieldsForSession(1), 1)
-	open := m.addPendingConnect(sampleConnectFieldsForSession(2), 2)
+	pending := addPending(m, validConnectFields(1), 1)
+	open := addPending(m, validConnectFields(2), 2)
 	require.True(t, m.markOpen(open.id, 100))
+	require.Len(t, m.okPending, 1)
+	require.Same(t, open, m.okPending[0])
 
 	require.True(t, m.remove(pending.id))
 	_, ok := m.sessionByID(pending.id)
 	require.False(t, ok)
 	require.Equal(t, 0, m.pendingCount())
 	require.Equal(t, 1, m.openCount())
+	require.Len(t, m.okPending, 1)
 
 	require.True(t, m.remove(open.id))
 	_, ok = m.sessionByID(open.id)
 	require.False(t, ok)
 	require.Equal(t, 0, m.openCount())
+	require.Empty(t, m.okPending)
 
 	require.False(t, m.remove(999))
 }
 
 func TestSessionManager_sessionByID(t *testing.T) {
 	m := newSessionManager()
-	s := m.addPendingConnect(sampleConnectFieldsForSession(1), 1)
+	s := addPending(m, validConnectFields(1), 1)
 	got, ok := m.sessionByID(s.id)
 	require.True(t, ok)
 	require.Same(t, s, got)
@@ -197,22 +243,25 @@ func TestSessionManager_sessionByID(t *testing.T) {
 
 func TestAcceptSessionConnect_steadyLeader(t *testing.T) {
 	a := NewAgent(AgentConfig{Role: RoleLeader})
-	fields := sampleConnectFieldsForSession(99)
+	wireImmediateEgress(t, a)
+	fields := validConnectFields(99)
 	a.acceptSessionConnect(fields, 1_000)
 	require.Equal(t, 1, a.PendingSessionCount())
 	require.Equal(t, 0, a.OpenSessionCount())
 	s, ok := a.sessions.sessionByID(1)
 	require.True(t, ok)
 	requireClientSessionFields(t, s, fields, sessionPending, 1_000)
+	require.NotEqual(t, int64(nullValue), s.egressAddCorrelationID)
 }
 
 func TestSessionWork_happy(t *testing.T) {
 	p, pub := boundLogPublisher(t)
-	a := leaderWithLogPublisher(p, 11)
-	fields := sampleConnectFieldsForSession(22)
+	a := leaderWithLogPublisher(t, p, 11)
+	fields := validConnectFields(22)
 	a.acceptSessionConnect(fields, 1)
 	const nowNs int64 = 44
-	require.Equal(t, 1, a.sessionWork(nowNs))
+	// open + OK
+	require.Equal(t, 2, a.sessionWork(nowNs))
 	require.Equal(t, 0, a.PendingSessionCount())
 	require.Equal(t, 1, a.OpenSessionCount())
 
@@ -220,6 +269,7 @@ func TestSessionWork_happy(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, sessionOpen, s.state)
 	require.Positive(t, s.openedLogPosition)
+	require.Empty(t, a.sessions.okPending)
 
 	decoded, _ := decodeSessionOpenAtTermOffset(t, pub, 0)
 	requireSessionOpenFields(
@@ -230,8 +280,8 @@ func TestSessionWork_happy(t *testing.T) {
 
 func TestSessionWork_backPressureHold(t *testing.T) {
 	p := boundLogPublisherWithLimit(t, 0, true)
-	a := leaderWithLogPublisher(p, 0)
-	a.acceptSessionConnect(sampleConnectFieldsForSession(1), 1)
+	a := leaderWithLogPublisher(t, p, 0)
+	a.acceptSessionConnect(validConnectFields(1), 1)
 
 	for range 5 {
 		require.Equal(t, 0, a.sessionWork(10))
@@ -242,17 +292,17 @@ func TestSessionWork_backPressureHold(t *testing.T) {
 
 func TestSessionWork_retryClears(t *testing.T) {
 	p := boundLogPublisherWithLimit(t, 0, true)
-	a := leaderWithLogPublisher(p, 3)
-	fields := sampleConnectFieldsForSession(9)
+	a := leaderWithLogPublisher(t, p, 3)
+	fields := validConnectFields(9)
 	a.acceptSessionConnect(fields, 1)
 	require.Equal(t, 0, a.sessionWork(10))
 	require.Equal(t, 1, a.PendingSessionCount())
 
-	// Rebind an unlimited connected publication. Next tick opens.
+	// Rebind an unlimited connected publication. Next tick opens + OK.
 	p2, pub := boundLogPublisher(t)
 	a.SetLogPublisher(p2)
 	const nowNs int64 = 77
-	require.Equal(t, 1, a.sessionWork(nowNs))
+	require.Equal(t, 2, a.sessionWork(nowNs))
 	require.Equal(t, 0, a.PendingSessionCount())
 	require.Equal(t, 1, a.OpenSessionCount())
 
@@ -263,14 +313,14 @@ func TestSessionWork_retryClears(t *testing.T) {
 }
 
 // TestSessionWork_closedPublicationHoldsQueue asserts a closed publication is
-// publication-wide, not per-session. The walk stops at the head. The whole
-// pending queue stays in accept order for a rebound publication.
+// publication-wide, not per-session. The walk stops. The whole pending queue
+// stays for a rebound publication.
 func TestSessionWork_closedPublicationHoldsQueue(t *testing.T) {
 	p, pub := boundLogPublisher(t)
 	require.NoError(t, pub.Close())
-	a := leaderWithLogPublisher(p, 0)
-	a.acceptSessionConnect(sampleConnectFieldsForSession(1), 1)
-	a.acceptSessionConnect(sampleConnectFieldsForSession(2), 2)
+	a := leaderWithLogPublisher(t, p, 0)
+	a.acceptSessionConnect(validConnectFields(1), 1)
+	a.acceptSessionConnect(validConnectFields(2), 2)
 
 	require.Equal(t, 0, a.sessionWork(10))
 	require.Equal(t, 2, a.PendingSessionCount())
@@ -278,10 +328,11 @@ func TestSessionWork_closedPublicationHoldsQueue(t *testing.T) {
 	require.Equal(t, int64(1), a.sessions.pending[0].id)
 	require.Equal(t, int64(2), a.sessions.pending[1].id)
 
-	// Rebind a live publication. Both sessions open in accept order.
+	// Rebind a live publication. Both sessions open.
 	p2, _ := boundLogPublisher(t)
 	a.SetLogPublisher(p2)
-	require.Equal(t, 2, a.sessionWork(20))
+	// 2 opens + 2 OKs
+	require.Equal(t, 4, a.sessionWork(20))
 	require.Equal(t, 0, a.PendingSessionCount())
 	require.Equal(t, 2, a.OpenSessionCount())
 }
@@ -291,14 +342,15 @@ func TestSessionWork_closedPublicationHoldsQueue(t *testing.T) {
 // methods never produce that desync on their own.
 func TestSessionWork_headMissingFromRegistry(t *testing.T) {
 	p, _ := boundLogPublisher(t)
-	a := leaderWithLogPublisher(p, 0)
-	a.acceptSessionConnect(sampleConnectFieldsForSession(1), 1)
-	a.acceptSessionConnect(sampleConnectFieldsForSession(2), 2)
+	a := leaderWithLogPublisher(t, p, 0)
+	a.acceptSessionConnect(validConnectFields(1), 1)
+	a.acceptSessionConnect(validConnectFields(2), 2)
 
 	// Force registry desync for the fail-closed path.
 	delete(a.sessions.byID, 1)
 
-	require.Equal(t, 2, a.sessionWork(10))
+	// Session 1 fail-closed drop (1) + session 2 open+OK (2).
+	require.Equal(t, 3, a.sessionWork(10))
 	require.Equal(t, 0, a.PendingSessionCount())
 	require.Equal(t, 1, a.OpenSessionCount())
 	s2, ok := a.sessions.sessionByID(2)
@@ -306,11 +358,12 @@ func TestSessionWork_headMissingFromRegistry(t *testing.T) {
 	require.Equal(t, sessionOpen, s2.state)
 }
 
-// TestSessionWork_terminalHeadMissingFromRegistry asserts the remove-false
-// path on a per-session terminal append.
+// TestSessionWork_terminalHeadMissingFromRegistry asserts the byID-desync path
+// on a per-session terminal append. releaseSessionEgress runs from the session
+// pointer even when byID remove is false.
 func TestSessionWork_terminalHeadMissingFromRegistry(t *testing.T) {
 	p, pub := boundLogPublisher(t)
-	a := leaderWithLogPublisher(p, 0)
+	a := leaderWithLogPublisher(t, p, 0)
 
 	// Head response channel exceeds MaxPayloadLength. Append returns terminal
 	// UnsupportedMessageLength.
@@ -318,9 +371,16 @@ func TestSessionWork_terminalHeadMissingFromRegistry(t *testing.T) {
 		clusterwire.SessionOpenEventSbeBlockLength, 0, 0,
 	)
 	require.True(t, ok)
-	headFields := sampleConnectFieldsForSession(1)
+	headFields := validConnectFields(1)
 	headFields.ResponseChannel = make([]byte, pub.MaxPayloadLength()-emptyFixed+1)
 	a.acceptSessionConnect(headFields, 1)
+	head, ok := a.sessions.sessionByID(1)
+	require.True(t, ok)
+	// Resolve egress so the desync path has a publication to close.
+	ready, _, _ := a.pollSessionEgress(head)
+	require.True(t, ready)
+	require.NotNil(t, head.egressPublication)
+	egressPub := head.egressPublication
 
 	// Force registry desync for the fail-closed path.
 	delete(a.sessions.byID, 1)
@@ -328,17 +388,19 @@ func TestSessionWork_terminalHeadMissingFromRegistry(t *testing.T) {
 	require.Equal(t, 1, a.sessionWork(10))
 	require.Equal(t, 0, a.PendingSessionCount())
 	require.Empty(t, a.sessions.byID)
+	require.Nil(t, head.egressPublication)
+	require.True(t, egressPub.IsClosed())
 }
 
 func TestSessionWork_fifoStopOnRetriable(t *testing.T) {
 	p := boundLogPublisherWithLimit(t, 0, true)
-	a := leaderWithLogPublisher(p, 0)
-	a.acceptSessionConnect(sampleConnectFieldsForSession(1), 1)
-	a.acceptSessionConnect(sampleConnectFieldsForSession(2), 2)
+	a := leaderWithLogPublisher(t, p, 0)
+	a.acceptSessionConnect(validConnectFields(1), 1)
+	a.acceptSessionConnect(validConnectFields(2), 2)
 	require.Equal(t, 2, a.PendingSessionCount())
 
 	require.Equal(t, 0, a.sessionWork(10))
-	// Head stays at the front. Second never opens before first.
+	// Both stay pending under log back-pressure.
 	require.Equal(t, 2, a.PendingSessionCount())
 	require.Equal(t, 0, a.OpenSessionCount())
 	require.Equal(t, int64(1), a.sessions.pending[0].id)
@@ -347,17 +409,18 @@ func TestSessionWork_fifoStopOnRetriable(t *testing.T) {
 
 func TestSessionWork_fifoTwoOpenSameTick(t *testing.T) {
 	p, pub := boundLogPublisher(t)
-	a := leaderWithLogPublisher(p, 7)
-	f1 := sampleConnectFieldsForSession(1)
-	f2 := sampleConnectFieldsForSession(2)
+	a := leaderWithLogPublisher(t, p, 7)
+	f1 := validConnectFields(1)
+	f2 := validConnectFields(2)
 	a.acceptSessionConnect(f1, 1)
 	a.acceptSessionConnect(f2, 2)
 	const nowNs int64 = 50
-	require.Equal(t, 2, a.sessionWork(nowNs))
+	// 2 opens + 2 OKs
+	require.Equal(t, 4, a.sessionWork(nowNs))
 	require.Equal(t, 0, a.PendingSessionCount())
 	require.Equal(t, 2, a.OpenSessionCount())
 
-	// Frames land on the term buffer in accept order.
+	// Frames land on the term buffer in accept order when both are ready.
 	d1, next := decodeSessionOpenAtTermOffset(t, pub, 0)
 	requireSessionOpenFields(t, d1, 7, 1, 1, nowNs, f1.ResponseStreamID, f1.ResponseChannel)
 	d2, _ := decodeSessionOpenAtTermOffset(t, pub, next)
@@ -374,7 +437,7 @@ func TestSessionWork_fifoTwoOpenSameTick(t *testing.T) {
 
 func TestSessionWork_terminalHeadContinuesToTail(t *testing.T) {
 	p, pub := boundLogPublisher(t)
-	a := leaderWithLogPublisher(p, 4)
+	a := leaderWithLogPublisher(t, p, 4)
 
 	// Head response channel exceeds MaxPayloadLength. Append returns terminal
 	// UnsupportedMessageLength.
@@ -383,15 +446,15 @@ func TestSessionWork_terminalHeadContinuesToTail(t *testing.T) {
 	)
 	require.True(t, ok)
 	oversize := make([]byte, pub.MaxPayloadLength()-emptyFixed+1)
-	headFields := sampleConnectFieldsForSession(1)
+	headFields := validConnectFields(1)
 	headFields.ResponseChannel = oversize
-	tailFields := sampleConnectFieldsForSession(2)
+	tailFields := validConnectFields(2)
 	a.acceptSessionConnect(headFields, 1)
 	a.acceptSessionConnect(tailFields, 2)
 
 	const nowNs int64 = 60
-	// Terminal remove of head, then open of tail.
-	require.Equal(t, 2, a.sessionWork(nowNs))
+	// Terminal remove of head, then open + OK of tail.
+	require.Equal(t, 3, a.sessionWork(nowNs))
 	require.Equal(t, 0, a.PendingSessionCount())
 	require.Equal(t, 1, a.OpenSessionCount())
 	_, headOK := a.sessions.sessionByID(1)
@@ -417,17 +480,17 @@ func TestSessionWork_openThenRetriableMidWalk(t *testing.T) {
 	aligned := logbuffer.AlignFrameLength(logbuffer.DataHeaderLength + wireLen)
 	p := boundLogPublisherWithLimit(t, int64(aligned), true)
 
-	a := leaderWithLogPublisher(p, 2)
-	f1 := sampleConnectFieldsForSession(1)
+	a := leaderWithLogPublisher(t, p, 2)
+	f1 := validConnectFields(1)
 	f1.ResponseChannel = channel
-	f2 := sampleConnectFieldsForSession(2)
+	f2 := validConnectFields(2)
 	f2.ResponseChannel = channel
 	a.acceptSessionConnect(f1, 1)
 	a.acceptSessionConnect(f2, 2)
 
 	const nowNs int64 = 70
-	// One open (work 1). Second stays pending under retriable stop.
-	require.Equal(t, 1, a.sessionWork(nowNs))
+	// One open + OK (work 2). Second stays pending under retriable stop.
+	require.Equal(t, 2, a.sessionWork(nowNs))
 	require.Equal(t, 1, a.PendingSessionCount())
 	require.Equal(t, 1, a.OpenSessionCount())
 	require.Equal(t, int64(2), a.sessions.pending[0].id)
@@ -437,7 +500,7 @@ func TestSessionWork_openThenRetriableMidWalk(t *testing.T) {
 }
 
 // TestSessionWork_guardTable asserts every sessionWork early return leaves the
-// pending session untouched.
+// pending session untouched when the deadline has not expired.
 func TestSessionWork_guardTable(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -474,7 +537,7 @@ func TestSessionWork_guardTable(t *testing.T) {
 			agent: func(t *testing.T) *Agent {
 				p := NewLogPublisher()
 				require.Nil(t, p.Publication())
-				return leaderWithLogPublisher(p, 0)
+				return NewAgent(AgentConfig{Role: RoleLeader, LogPublisher: p})
 			},
 		},
 		{
@@ -482,13 +545,23 @@ func TestSessionWork_guardTable(t *testing.T) {
 			agent: func(t *testing.T) *Agent {
 				p, _ := boundLogPublisher(t)
 				p.SetPublication(nil)
-				return leaderWithLogPublisher(p, 0)
+				return NewAgent(AgentConfig{Role: RoleLeader, LogPublisher: p})
 			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := tc.agent(t)
-			a.acceptSessionConnect(sampleConnectFieldsForSession(1), 1)
+			wireImmediateEgress(t, a)
+			// Product accept requires leader role. Seed the registry directly for
+			// off-leader and election-live rows.
+			fields := validConnectFields(1)
+			if a.role == RoleLeader && a.election == nil {
+				a.acceptSessionConnect(fields, 1)
+			} else {
+				s := addPending(a.sessions, fields, 1)
+				require.NotNil(t, s)
+				a.startSessionEgress(s)
+			}
 			require.Equal(t, 0, a.sessionWork(10))
 			require.Equal(t, 1, a.PendingSessionCount())
 			require.Equal(t, 0, a.OpenSessionCount())
@@ -496,10 +569,11 @@ func TestSessionWork_guardTable(t *testing.T) {
 	}
 }
 
-// TestSessionWork_noPending asserts the empty-pending early return.
+// TestSessionWork_noPending asserts the empty-pending path returns 0 with no
+// open work.
 func TestSessionWork_noPending(t *testing.T) {
 	p, _ := boundLogPublisher(t)
-	a := leaderWithLogPublisher(p, 0)
+	a := leaderWithLogPublisher(t, p, 0)
 	require.Equal(t, 0, a.sessionWork(10))
 	require.Equal(t, 0, a.PendingSessionCount())
 	require.Equal(t, 0, a.OpenSessionCount())
@@ -507,11 +581,13 @@ func TestSessionWork_noPending(t *testing.T) {
 
 func TestAcceptSessionConnect_handlerOverrides(t *testing.T) {
 	a, q, handler := leaderWithClientIngress(nil)
-	q.Enqueue(encodeSessionConnectWire(t, sampleConnectFields()))
+	wireImmediateEgress(t, a)
+	q.Enqueue(encodeSessionConnectWire(t, validConnectFields(1)))
 	require.Equal(t, 1, a.pollClientIngress(1_000))
 	require.Len(t, handler.calls, 1)
 	require.Equal(t, 0, a.PendingSessionCount())
 	require.Equal(t, 0, a.OpenSessionCount())
+	require.Empty(t, a.egressEvents)
 }
 
 // TestDoWork_connectAppendsSameTick asserts a connect polled this tick appends
@@ -519,11 +595,12 @@ func TestAcceptSessionConnect_handlerOverrides(t *testing.T) {
 // SessionConnectHandler runs pollClientIngress then sessionWork.
 func TestDoWork_connectAppendsSameTick(t *testing.T) {
 	p, pub := boundLogPublisher(t)
-	a := leaderWithLogPublisher(p, 9)
+	a := leaderWithLogPublisher(t, p, 9)
 	q := &QueueConsensusIngress{}
 	a.SetClientIngress(q)
 	// Nil SessionConnectHandler runs the product accept.
-	fields := sampleConnectFields()
+	// CorrelationID 99 matches the sampleConnectFields default used before.
+	fields := validConnectFields(99)
 	q.Enqueue(encodeSessionConnectWire(t, fields))
 
 	const nowNs int64 = 12345
@@ -534,6 +611,7 @@ func TestDoWork_connectAppendsSameTick(t *testing.T) {
 	s, ok := a.sessions.sessionByID(1)
 	require.True(t, ok)
 	requireClientSessionFields(t, s, fields, sessionOpen, nowNs)
+	require.Empty(t, a.sessions.okPending)
 
 	decoded, _ := decodeSessionOpenAtTermOffset(t, pub, 0)
 	requireSessionOpenFields(

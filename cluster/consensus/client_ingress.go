@@ -12,13 +12,17 @@ const defaultClientIngressFragmentLimit = defaultConsensusIngressFragmentLimit
 // SessionConnectHandler receives one decoded SessionConnectRequest from the
 // leader client ingress dispatch.
 //
-// Behaviour: the agent calls the handler only on a steady-state leader
-// (election settled, role leader). Nil runs the product session accept. A
-// non-nil handler replaces the product accept. Var field slices in fields are
-// copies. The handler may retain them. nowNs is the duty-cycle clock of the
-// poll that delivered the frame. Fragmented ingress frames never reach this
-// handler. The subscription adapter skips them without reassembly. Handlers
-// must not log EncodedCredentials raw.
+// Behaviour:
+//   - The agent calls the handler only on a settled leader (election settled,
+//     role leader).
+//   - Nil runs the product session accept. A non-nil handler replaces the
+//     product accept.
+//   - Redirect on a settled non-leader is not behind this seam.
+//   - Var field slices in fields are copies. The handler may retain them.
+//   - nowNs is the duty-cycle clock of the poll that delivered the frame.
+//   - Fragmented ingress frames never reach this handler. The subscription
+//     adapter skips them without reassembly.
+//   - Handlers must not log EncodedCredentials raw.
 //
 // Concurrency: invoker-only. Called from [Agent.DoWork].
 type SessionConnectHandler interface {
@@ -38,7 +42,7 @@ func (a *Agent) ClientIngress() ConsensusIngress { return a.clientIngress }
 // SetSessionConnectHandler wires or clears the [SessionConnectHandler].
 //
 // Behaviour: nil runs the product session accept. A non-nil handler replaces
-// the product accept.
+// the product accept on the leader only. Redirect is not behind this seam.
 //
 // Concurrency: invoker-only. Do not call while [Agent.DoWork] runs.
 func (a *Agent) SetSessionConnectHandler(handler SessionConnectHandler) {
@@ -58,11 +62,18 @@ func (a *Agent) pollClientIngress(nowNs int64) int {
 }
 
 func (a *Agent) handleClientIngressFragment(buf []byte, offset int) {
-	// Only a settled leader decodes then calls handleSessionConnect. Followers
-	// learn sessions from the log. Non-leaders return before header peek or
-	// var-field clone so connect floods stay cheap. There is no redirect path.
-	if a.election != nil || a.role != RoleLeader {
+	// Election live: no settled leader to accept or redirect toward.
+	if a.election != nil {
 		return
+	}
+	// Settled non-leader: drop before header peek when a redirect cannot be
+	// queued. Connect floods stay cheap. A non-leader's only outcome is a
+	// REDIRECT enqueue. A full queue or nil adder would drop the event after
+	// decode anyway.
+	if a.role != RoleLeader {
+		if a.leaderMemberID == nullMemberID || !a.canEnqueueEgressEvent() {
+			return
+		}
 	}
 	templateID, ok := consensusMessageTemplateID(buf, offset)
 	if !ok || templateID != clusterwire.SessionConnectRequestSbeTemplateID {
@@ -76,14 +87,20 @@ func (a *Agent) handleClientIngressFragment(buf []byte, offset int) {
 }
 
 // handleSessionConnect dispatches a decoded connect. The caller checks the
-// settled-leader state before this call.
+// settled state and leader-hint gate before this call.
 //
-// Behaviour: nil sessionConnectHandler runs acceptSessionConnect. A non-nil
-// handler replaces the product accept.
+// Behaviour:
+//   - A non-leader queues SessionEvent REDIRECT.
+//   - On the leader, nil sessionConnectHandler runs acceptSessionConnect.
+//   - A non-nil handler replaces the product accept.
 func (a *Agent) handleSessionConnect(
 	fields codecs.SessionConnectRequestFields,
 	nowNs int64,
 ) {
+	if a.role != RoleLeader {
+		a.queueSessionRedirect(fields, nowNs)
+		return
+	}
 	if a.sessionConnectHandler != nil {
 		a.sessionConnectHandler.HandleSessionConnect(fields, nowNs)
 		return

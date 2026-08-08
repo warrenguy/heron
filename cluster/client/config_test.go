@@ -515,6 +515,7 @@ func TestProtocolSemanticVersion(t *testing.T) {
 	version := client.ProtocolSemanticVersion()
 	require.Equal(t, int32(768), version)
 	require.Equal(t, cnc.ComposeSemanticVersion(0, 3, 0), version)
+	require.Equal(t, codecs.ClusterProtocolSemanticVersion(), version)
 
 	actingVersion := uint16(clusterwire.SessionConnectRequestSbeSchemaVersion)
 	require.GreaterOrEqual(t, actingVersion, uint16(2))

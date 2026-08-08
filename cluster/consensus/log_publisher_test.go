@@ -10,6 +10,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
@@ -34,11 +35,16 @@ func boundLogPublisherWithLimit(
 	return p
 }
 
+// termBufferSource is any publication exposing term buffers for test decode.
+type termBufferSource interface {
+	TermBuffer(termIndex int) atomicbuffer.AtomicBuffer
+}
+
 // termWireAt returns the DATA frame payload at termOffset in term 0 and the
 // next aligned term offset.
 func termWireAt(
 	t *testing.T,
-	pub *aeron.ExclusivePublication,
+	pub termBufferSource,
 	termOffset int,
 ) ([]byte, int) {
 	t.Helper()

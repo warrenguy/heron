@@ -40,21 +40,21 @@ func BuildChannelWithEndpoint(channel, endpoint string) (string, error) {
 
 // Topology is the resolved channel map for one member.
 //
-// Construct with NewTopology. Topology's own fields are fixed after construction:
-// the channel strings, the stream ids, and the member backing array are never
-// reassigned.
+// Construct with NewTopology. Topology's own fields are fixed after
+// construction: the channel strings, the ingress-endpoints string, the stream
+// ids, and the member backing array are never reassigned.
 //
 // The election.Member values reachable through Members and ThisMember are NOT
-// fixed. They are shared mutable state owned by the election state machine, which
-// rewrites Vote, IsLeader, HasTerminated, LeadershipTermID, CandidateTermID,
-// LogPosition, and TimeOfLastAppendPositionNs on the invoker goroutine every duty
-// cycle. Handing those pointers to the election machinery is the whole point of
-// the type.
+// fixed. They are shared mutable state owned by the election state machine,
+// which rewrites Vote, IsLeader, HasTerminated, LeadershipTermID,
+// CandidateTermID, LogPosition, and TimeOfLastAppendPositionNs on the invoker
+// goroutine every duty cycle. Handing those pointers to the election machinery
+// is the whole point of the type.
 //
 // Concurrency: read and write member state only from the invoker goroutine that
-// runs the duty cycle. The channel strings and stream ids are safe to read from
-// any goroutine because nothing writes them after construction; nothing reachable
-// from Members or ThisMember is.
+// runs the duty cycle. Channel strings, the ingress-endpoints string, and stream
+// ids are safe to read from any goroutine: nothing writes those fields after
+// construction. Nothing reachable from Members or ThisMember is safe that way.
 //
 // Topology owns the member backing array. Members returns pointers that alias
 // that array, as election.MembersPtrs documents; the array is never appended to
@@ -63,8 +63,8 @@ func BuildChannelWithEndpoint(channel, endpoint string) (string, error) {
 //
 // Do not copy a Topology. Every accessor takes a pointer receiver; copying the
 // struct by value produces a second Topology whose memberPtrs and thisMember
-// alias the original's backing array, so a later change to either copy breaks the
-// pointer-identity invariant. Pass the *Topology.
+// alias the original's backing array, so a later change to either copy breaks
+// the pointer-identity invariant. Pass the *Topology.
 type Topology struct {
 	memberPtrs []*election.Member
 	thisMember *election.Member
@@ -74,6 +74,7 @@ type Topology struct {
 	ingressSubscriptionChan   string
 	logChannel                string
 	replayChannel             string
+	ingressEndpoints          string
 
 	consensusStreamID int32
 	ingressStreamID   int32
@@ -131,6 +132,7 @@ func NewTopology(cfg Config) (*Topology, error) {
 		ingressSubscriptionChan:   ingressSub,
 		logChannel:                logCh,
 		replayChannel:             cfg.ReplayChannel,
+		ingressEndpoints:          buildIngressEndpointsString(memberPtrs),
 		consensusStreamID:         cfg.ConsensusStreamID,
 		ingressStreamID:           cfg.IngressStreamID,
 		logStreamID:               cfg.LogStreamID,
@@ -187,6 +189,15 @@ func (t *Topology) ConsensusSubscriptionChannel() string {
 // endpoint set to this member's members-string ingress endpoint (port offset 2).
 func (t *Topology) IngressSubscriptionChannel() string {
 	return t.ingressSubscriptionChan
+}
+
+// IngressEndpoints returns the cluster ingress-endpoints string resolved at
+// construction, sorted by member id ascending.
+//
+// Format is "id=endpoint" pairs comma-joined (for example
+// "0=host:port,1=host:port"). Matches cluster/client Config.IngressEndpoints.
+func (t *Topology) IngressEndpoints() string {
+	return t.ingressEndpoints
 }
 
 // LogChannel returns the local cluster log channel URI, with endpoint set to
