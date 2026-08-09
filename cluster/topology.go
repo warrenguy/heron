@@ -74,12 +74,14 @@ type Topology struct {
 	ingressSubscriptionChan   string
 	logChannel                string
 	replayChannel             string
+	serviceControlChannel     string
 	ingressEndpoints          string
 
-	consensusStreamID int32
-	ingressStreamID   int32
-	logStreamID       int32
-	replayStreamID    int32
+	consensusStreamID       int32
+	ingressStreamID         int32
+	logStreamID             int32
+	replayStreamID          int32
+	consensusModuleStreamID int32
 }
 
 // NewTopology resolves cfg into a Topology.
@@ -132,11 +134,13 @@ func NewTopology(cfg Config) (*Topology, error) {
 		ingressSubscriptionChan:   ingressSub,
 		logChannel:                logCh,
 		replayChannel:             cfg.ReplayChannel,
+		serviceControlChannel:     cfg.ServiceControlChannel,
 		ingressEndpoints:          buildIngressEndpointsString(memberPtrs),
 		consensusStreamID:         cfg.ConsensusStreamID,
 		ingressStreamID:           cfg.IngressStreamID,
 		logStreamID:               cfg.LogStreamID,
 		replayStreamID:            cfg.ReplayStreamID,
+		consensusModuleStreamID:   cfg.ConsensusModuleStreamID,
 	}, nil
 }
 
@@ -236,4 +240,18 @@ func (t *Topology) ReplayChannel() string {
 // ReplayStreamID returns the cluster log replay stream id.
 func (t *Topology) ReplayStreamID() int32 {
 	return t.replayStreamID
+}
+
+// ServiceControlChannel returns the module-service control channel.
+//
+// No endpoint substitution. Shared by stream 104 and stream 105. Stored and
+// returned verbatim from Config.
+func (t *Topology) ServiceControlChannel() string {
+	return t.serviceControlChannel
+}
+
+// ConsensusModuleStreamID returns the service-to-module control stream id
+// (default 105). Carries ServiceAck frames.
+func (t *Topology) ConsensusModuleStreamID() int32 {
+	return t.consensusModuleStreamID
 }

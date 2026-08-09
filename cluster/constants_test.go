@@ -38,6 +38,8 @@ func TestConstants(t *testing.T) {
 	require.Equal(t, "aeron:udp?term-length=64k", cluster.DefaultConsensusChannel)
 	require.Equal(t, "aeron:udp?term-length=64k", cluster.DefaultLogChannel)
 	require.Equal(t, "aeron:udp?term-length=64k", cluster.DefaultIngressChannel)
+	require.Equal(t, "aeron:ipc", cluster.DefaultReplayChannel)
+	require.Equal(t, "aeron:ipc?term-length=128k", cluster.DefaultServiceControlChannel)
 
 	// Port bounds.
 	require.Equal(t, 1, cluster.MinValidPort)

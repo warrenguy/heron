@@ -193,6 +193,8 @@ func TestNewTopology_accessors(t *testing.T) {
 	require.Equal(t, cfg.LogStreamID, tp.LogStreamID())
 	require.Equal(t, cfg.ReplayStreamID, tp.ReplayStreamID())
 	require.Equal(t, cfg.ReplayChannel, tp.ReplayChannel())
+	require.Equal(t, cfg.ServiceControlChannel, tp.ServiceControlChannel())
+	require.Equal(t, cfg.ConsensusModuleStreamID, tp.ConsensusModuleStreamID())
 
 	// Peer map is a copy.
 	peers[99] = "x"
@@ -310,6 +312,25 @@ func TestNewTopology_replayAccessorsVerbatim(t *testing.T) {
 	// No endpoint substitution. Stored and returned verbatim.
 	require.Equal(t, replayChannel, tp.ReplayChannel())
 	require.Equal(t, replayStreamID, tp.ReplayStreamID())
+}
+
+func TestNewTopology_serviceControlAccessorsVerbatim(t *testing.T) {
+	t.Parallel()
+
+	const (
+		serviceControlChannel = "aeron:ipc?alias=service-control"
+		moduleStreamID        = int32(777)
+	)
+	cfg := topologyConfig(0)
+	cfg.ServiceControlChannel = serviceControlChannel
+	cfg.ConsensusModuleStreamID = moduleStreamID
+
+	tp, err := cluster.NewTopology(cfg)
+	require.NoError(t, err)
+
+	// No endpoint substitution. Stored and returned verbatim.
+	require.Equal(t, serviceControlChannel, tp.ServiceControlChannel())
+	require.Equal(t, moduleStreamID, tp.ConsensusModuleStreamID())
 }
 
 func TestNewTopology_rejectsUnnormalizedAndInvalid(t *testing.T) {

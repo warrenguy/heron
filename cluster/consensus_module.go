@@ -71,6 +71,10 @@ type ConsensusModule struct {
 	// connects.
 	clientIngress *ClientIngressSubscription
 
+	// serviceControl is the service-to-module control subscription (stream 105).
+	// Opened only when Config.ServiceCount > 0.
+	serviceControl *ServiceControlSubscription
+
 	streams   *LogStreams
 	host      *election.HostAdapter
 	election  *election.Election
@@ -133,6 +137,7 @@ type ConsensusModule struct {
 //  17. client ingress subscription (all members; accept and redirect in
 //     dispatch)
 //  18. session egress adder and ingress-endpoints string (no new resource open)
+//  19. service control subscription when ServiceCount > 0
 //
 // Recovery plans from the recording log.
 //
@@ -149,14 +154,17 @@ type ConsensusModule struct {
 //     accepts connects. A settled non-leader with a known leader sends REDIRECT
 //   - session egress uses the transport client as the publication adder and
 //     Topology.IngressEndpoints as REDIRECT detail
+//   - service control opens only when ServiceCount > 0. No wait at Open. No
+//     publish on this path yet
 //
 // Returns an error when:
 //   - Config fails Validate
 //   - the transport client cannot connect
 //   - the archive control client cannot connect
 //   - recovery fails
-//   - consensus publications, consensus subscription, log streams, or client
-//     ingress subscription fail to open
+//   - consensus publications, consensus subscription, log streams, client
+//     ingress subscription, or service control subscription (when ServiceCount
+//     > 0) fail to open
 //   - the transport client has no counters reader
 //
 // Open blocks on the archive control connect, bounded by
@@ -246,6 +254,7 @@ func OpenConsensusModule(
 		SessionTimeoutNs:          cfg.SessionTimeoutNs,
 		AppVersion:                electionCfg.AppVersion,
 		Authenticator:             cfg.Authenticator,
+		ServiceCount:              cfg.ServiceCount,
 	})
 
 	// Wire the recovered log recording id so term coherency can append. Skip
@@ -410,6 +419,20 @@ func OpenConsensusModule(
 	module.agent.SetEgressPublicationAdder(module.client)
 	module.agent.SetIngressEndpoints(topology.IngressEndpoints())
 
+	// Service control (stream 105): only when clustered services are configured.
+	// No wait at Open. Nothing publishes on this path yet.
+	if cfg.ServiceCount > 0 {
+		serviceControl, err := OpenServiceControlSubscription(ServiceControlSubscriptionDeps{
+			Adder:    module.client,
+			Topology: topology,
+			Agent:    module.agent,
+		})
+		if err != nil {
+			return nil, err
+		}
+		module.serviceControl = serviceControl
+	}
+
 	succeeded = true
 	return module, nil
 }
@@ -465,13 +488,14 @@ func moduleClocks(cfg Config) (nanoClock, epochClock func() int64) {
 //  2. catchup control
 //  3. best-effort log recording stop
 //  4. election close and retained replay helper close error
-//  5. client ingress subscription
-//  6. cluster log streams
-//  7. consensus subscription
-//  8. consensus publications
-//  9. archive control client
-//  10. owned transport client
-//  11. recovery
+//  5. service control subscription
+//  6. client ingress subscription
+//  7. cluster log streams
+//  8. consensus subscription
+//  9. consensus publications
+//  10. archive control client
+//  11. owned transport client
+//  12. recovery
 //
 // The archive control client closes before the transport client. The archive
 // control publication and subscription belong to that transport client.
@@ -506,6 +530,7 @@ func (m *ConsensusModule) Close() error {
 	// the transport client closes.
 	if m.agent != nil {
 		m.agent.SetClientIngress(nil)
+		m.agent.SetServiceIngress(nil)
 		m.agent.SetSessionConnectHandler(nil)
 		m.agent.CloseSessionEgress()
 		m.agent.SetEgressPublicationAdder(nil)
@@ -545,6 +570,10 @@ func (m *ConsensusModule) Close() error {
 		// same error.
 		err = errors.Join(err, m.logReplay.closeError())
 		m.logReplay.closeErr = nil
+	}
+	if m.serviceControl != nil {
+		err = errors.Join(err, m.serviceControl.Close())
+		m.serviceControl = nil
 	}
 	if m.clientIngress != nil {
 		err = errors.Join(err, m.clientIngress.Close())

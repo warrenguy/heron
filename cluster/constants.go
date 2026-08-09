@@ -113,6 +113,10 @@ const (
 	// Omits term-length. ArchiveConductor builds the replay publication with the
 	// recording's own term length and MTU. A term-length param here is discarded.
 	DefaultReplayChannel = "aeron:ipc"
+
+	// DefaultServiceControlChannel is CONTROL_CHANNEL_DEFAULT on
+	// io.aeron.cluster.service.ClusteredServiceContainer.Configuration.
+	DefaultServiceControlChannel = "aeron:ipc?term-length=128k"
 )
 
 // MinValidPort and MaxValidPort bound every port derived from CalculatePort.

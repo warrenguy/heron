@@ -9,29 +9,47 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDoWork_stepOrder_electionSet(t *testing.T) {
-	var log []string
-	SetDoWorkStepRecorderForTest(t, func(step string) {
-		log = append(log, step)
-	})
-	r := &orderRunner{n: 2}
-	a := NewAgent(AgentConfig{Election: r, Commit: new(atomic.Int64)})
-	require.Equal(t, 2, a.DoWork(1))
-	require.Equal(t, []string{"slowTick", "pollIngress", "pollClientIngress", "election.DoWork"}, log)
-}
-
-func TestDoWork_stepOrder_electionNil(t *testing.T) {
-	var log []string
-	SetDoWorkStepRecorderForTest(t, func(step string) {
-		log = append(log, step)
-	})
-	a := NewAgent(AgentConfig{Commit: new(atomic.Int64)})
-	require.Equal(t, 0, a.DoWork(1))
-	require.Equal(t, []string{
-		"slowTick",
-		"pollIngress",
-		"pollClientIngress",
-		"sessionWork",
-		"consensusWork",
-	}, log)
+func TestDoWork_stepOrder(t *testing.T) {
+	tests := []struct {
+		name     string
+		election ElectionRunner
+		wantWork int
+		wantLog  []string
+	}{
+		{
+			name:     "electionSet",
+			election: &orderRunner{n: 2},
+			wantWork: 2,
+			wantLog: []string{
+				"slowTick",
+				"pollIngress",
+				"pollClientIngress",
+				"pollServiceControl",
+				"election.DoWork",
+			},
+		},
+		{
+			name:     "electionNil",
+			wantWork: 0,
+			wantLog: []string{
+				"slowTick",
+				"pollIngress",
+				"pollClientIngress",
+				"pollServiceControl",
+				"sessionWork",
+				"consensusWork",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var log []string
+			SetDoWorkStepRecorderForTest(t, func(step string) {
+				log = append(log, step)
+			})
+			a := NewAgent(AgentConfig{Election: tt.election, Commit: new(atomic.Int64)})
+			require.Equal(t, tt.wantWork, a.DoWork(1))
+			require.Equal(t, tt.wantLog, log)
+		})
+	}
 }

@@ -92,19 +92,34 @@ type Config struct {
 	// Must not set session-id=. The replay path appends session-id= per session.
 	ReplayChannel string
 
-	// ConsensusStreamID zero takes DefaultConsensusStreamID.
+	// ServiceControlChannel is the module-service control channel shared by the
+	// service stream (104) and the consensus module stream (105). Zero value
+	// takes DefaultServiceControlChannel.
+	//
+	// Keep IPC unless every service process is remote and the transport is
+	// trusted.
+	ServiceControlChannel string
+
+	// ConsensusStreamID zero takes DefaultConsensusStreamID. Config stream ids
+	// must be distinct.
 	ConsensusStreamID int32
 
-	// LogStreamID zero takes DefaultLogStreamID.
+	// LogStreamID zero takes DefaultLogStreamID. Config stream ids must be
+	// distinct.
 	LogStreamID int32
 
-	// ReplayStreamID zero takes DefaultReplayStreamID. Must differ from
-	// ConsensusStreamID, LogStreamID, and IngressStreamID.
+	// ReplayStreamID zero takes DefaultReplayStreamID. Config stream ids must
+	// be distinct.
 	ReplayStreamID int32
 
-	// IngressStreamID zero takes DefaultIngressStreamID. Must differ from
-	// ConsensusStreamID, LogStreamID, and ReplayStreamID.
+	// IngressStreamID zero takes DefaultIngressStreamID. Config stream ids must
+	// be distinct.
 	IngressStreamID int32
+
+	// ConsensusModuleStreamID zero takes DefaultConsensusModuleStreamID.
+	// Service-to-module control (ServiceAck). Not consensus stream 108. Config
+	// stream ids must be distinct.
+	ConsensusModuleStreamID int32
 
 	// ArchiveControlRequestChannel is the control request URI for this member.
 	// Required.
@@ -197,6 +212,9 @@ func (cfg Config) Normalize() Config {
 	if cfg.ReplayChannel == "" {
 		cfg.ReplayChannel = DefaultReplayChannel
 	}
+	if cfg.ServiceControlChannel == "" {
+		cfg.ServiceControlChannel = DefaultServiceControlChannel
+	}
 	if cfg.ConsensusStreamID == 0 {
 		cfg.ConsensusStreamID = DefaultConsensusStreamID
 	}
@@ -208,6 +226,9 @@ func (cfg Config) Normalize() Config {
 	}
 	if cfg.IngressStreamID == 0 {
 		cfg.IngressStreamID = DefaultIngressStreamID
+	}
+	if cfg.ConsensusModuleStreamID == 0 {
+		cfg.ConsensusModuleStreamID = DefaultConsensusModuleStreamID
 	}
 	if cfg.Idle == nil {
 		cfg.Idle = idlestrategy.NewDefaultBackoff()
@@ -250,8 +271,9 @@ func (cfg Config) Normalize() Config {
 
 // Validate checks a normalized Config. All errors carry the cluster: prefix.
 //
-// Call Normalize first; Validate is safe on an unnormalized value but returns
-// the first failed rule rather than applying defaults.
+// Call Normalize first. Validate is safe on an unnormalized value but returns
+// the first failed rule rather than applying defaults. Equal stream id pairs
+// fail.
 func (cfg Config) Validate() error {
 	_, _, err := cfg.validateMembers()
 	return err
@@ -438,7 +460,7 @@ func validateChannelTemplate(channel, field string) error {
 // each subscriber the other stream's frames. Walk order is fixed so the error
 // string names the later id first.
 func validateStreamIDsDistinct(cfg Config) error {
-	// Four named stream ids. Fixed array. No heap alloc on the validate path.
+	// Fixed array. No heap alloc on the Validate path.
 	streams := [...]struct {
 		name string
 		id   int32
@@ -447,6 +469,7 @@ func validateStreamIDsDistinct(cfg Config) error {
 		{name: "ConsensusStreamID", id: cfg.ConsensusStreamID},
 		{name: "ReplayStreamID", id: cfg.ReplayStreamID},
 		{name: "IngressStreamID", id: cfg.IngressStreamID},
+		{name: "ConsensusModuleStreamID", id: cfg.ConsensusModuleStreamID},
 	}
 
 	for i, earlier := range streams {

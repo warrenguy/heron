@@ -51,10 +51,12 @@ func TestNormalize_defaults(t *testing.T) {
 	require.Equal(t, cluster.DefaultLogChannel, cfg.LogChannel)
 	require.Equal(t, cluster.DefaultIngressChannel, cfg.IngressChannel)
 	require.Equal(t, cluster.DefaultReplayChannel, cfg.ReplayChannel)
+	require.Equal(t, cluster.DefaultServiceControlChannel, cfg.ServiceControlChannel)
 	require.Equal(t, cluster.DefaultConsensusStreamID, cfg.ConsensusStreamID)
 	require.Equal(t, cluster.DefaultLogStreamID, cfg.LogStreamID)
 	require.Equal(t, cluster.DefaultReplayStreamID, cfg.ReplayStreamID)
 	require.Equal(t, cluster.DefaultIngressStreamID, cfg.IngressStreamID)
+	require.Equal(t, cluster.DefaultConsensusModuleStreamID, cfg.ConsensusModuleStreamID)
 	require.NotNil(t, cfg.Idle)
 	require.Equal(t, recordinglog.FileSyncData, cfg.RecordingLogFileSyncLevel)
 	require.Equal(t, recordinglog.FileSyncData, cfg.NodeStateFileSyncLevel)
@@ -92,8 +94,9 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 	t.Parallel()
 
 	const (
-		channel       = "aeron:udp?term-length=128k"
-		replayChannel = "aeron:ipc?alias=replay"
+		channel               = "aeron:udp?term-length=128k"
+		replayChannel         = "aeron:ipc?alias=replay"
+		serviceControlChannel = "aeron:ipc?term-length=64k"
 	)
 	explicitElection := election.ElectionConfig{
 		ElectionTimeoutNs:         2_000_000_000,
@@ -107,10 +110,12 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 		LogChannel:                channel,
 		IngressChannel:            channel,
 		ReplayChannel:             replayChannel,
+		ServiceControlChannel:     serviceControlChannel,
 		ConsensusStreamID:         200,
 		LogStreamID:               201,
 		ReplayStreamID:            202,
 		IngressStreamID:           203,
+		ConsensusModuleStreamID:   204,
 		RecordingLogFileSyncLevel: recordinglog.FileSyncFull,
 		NodeStateFileSyncLevel:    recordinglog.FileSyncFull,
 		Election:                  explicitElection,
@@ -120,10 +125,12 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 	require.Equal(t, channel, cfg.LogChannel)
 	require.Equal(t, channel, cfg.IngressChannel)
 	require.Equal(t, replayChannel, cfg.ReplayChannel)
+	require.Equal(t, serviceControlChannel, cfg.ServiceControlChannel)
 	require.Equal(t, int32(200), cfg.ConsensusStreamID)
 	require.Equal(t, int32(201), cfg.LogStreamID)
 	require.Equal(t, int32(202), cfg.ReplayStreamID)
 	require.Equal(t, int32(203), cfg.IngressStreamID)
+	require.Equal(t, int32(204), cfg.ConsensusModuleStreamID)
 	require.Equal(t, recordinglog.FileSyncFull, cfg.RecordingLogFileSyncLevel)
 	require.Equal(t, recordinglog.FileSyncFull, cfg.NodeStateFileSyncLevel)
 
@@ -232,8 +239,7 @@ func TestNormalize_idempotent(t *testing.T) {
 
 // memberSpec builds a single-member ClusterMembers string.
 func memberSpec(id int32, endpoints [endpointSlotCount]string) string {
-	fields := append([]string{strconv.FormatInt(int64(id), 10)}, endpoints[:]...)
-	return strings.Join(fields, ",") + "|"
+	return strconv.FormatInt(int64(id), 10) + "," + strings.Join(endpoints[:], ",") + "|"
 }
 
 // memberSpecWith builds the member-0 ClusterMembers string with one endpoint
@@ -242,6 +248,14 @@ func memberSpecWith(slot int, endpoint string) string {
 	endpoints := testMemberEndpoints
 	endpoints[slot] = endpoint
 	return memberSpec(0, endpoints)
+}
+
+// withMemberEndpoint returns a Validate-error mutate that rewrites member 0
+// ClusterMembers with one endpoint slot replaced.
+func withMemberEndpoint(slot int, endpoint string) func(*cluster.Config) {
+	return func(cfg *cluster.Config) {
+		cfg.ClusterMembers = memberSpecWith(slot, endpoint)
+	}
 }
 
 func TestValidate_happyPath(t *testing.T) {
@@ -278,13 +292,12 @@ func TestValidate_ipv6ConsensusEndpoint(t *testing.T) {
 func TestValidate_errors(t *testing.T) {
 	t.Parallel()
 
-	dupEndpoints := [endpointSlotCount]string{
-		ingressSlot:   "127.0.0.1:9102",
-		consensusSlot: "127.0.0.1:9103",
-		logSlot:       testLogEndpoint,
-		catchupSlot:   "127.0.0.1:9105",
-		archiveSlot:   "127.0.0.1:9101",
-	}
+	// Same log multicast as member 0. Other endpoints use member-1 ports.
+	dupEndpoints := testMemberEndpoints
+	dupEndpoints[ingressSlot] = "127.0.0.1:9102"
+	dupEndpoints[consensusSlot] = "127.0.0.1:9103"
+	dupEndpoints[catchupSlot] = "127.0.0.1:9105"
+	dupEndpoints[archiveSlot] = "127.0.0.1:9101"
 	dupMembers := memberSpec(0, testMemberEndpoints) + memberSpec(0, dupEndpoints)
 
 	parseErrInput := "bad"
@@ -349,32 +362,24 @@ func TestValidate_errors(t *testing.T) {
 			want: "cluster: MemberID 99 is not present in ClusterMembers",
 		},
 		{
-			name: "empty ingress endpoint",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ClusterMembers = memberSpecWith(ingressSlot, "")
-			},
-			want: "cluster: member 0 has an empty ingress endpoint",
+			name:   "empty ingress endpoint",
+			mutate: withMemberEndpoint(ingressSlot, ""),
+			want:   "cluster: member 0 has an empty ingress endpoint",
 		},
 		{
-			name: "empty consensus endpoint",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ClusterMembers = memberSpecWith(consensusSlot, "")
-			},
-			want: "cluster: member 0 has an empty consensus endpoint",
+			name:   "empty consensus endpoint",
+			mutate: withMemberEndpoint(consensusSlot, ""),
+			want:   "cluster: member 0 has an empty consensus endpoint",
 		},
 		{
-			name: "empty log endpoint",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ClusterMembers = memberSpecWith(logSlot, "")
-			},
-			want: "cluster: member 0 has an empty log endpoint",
+			name:   "empty log endpoint",
+			mutate: withMemberEndpoint(logSlot, ""),
+			want:   "cluster: member 0 has an empty log endpoint",
 		},
 		{
-			name: "empty catchup endpoint",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ClusterMembers = memberSpecWith(catchupSlot, "")
-			},
-			want: "cluster: member 0 has an empty catchup endpoint",
+			name:   "empty catchup endpoint",
+			mutate: withMemberEndpoint(catchupSlot, ""),
+			want:   "cluster: member 0 has an empty catchup endpoint",
 		},
 		{
 			name: "empty archive endpoint",
@@ -387,67 +392,49 @@ func TestValidate_errors(t *testing.T) {
 			want: "cluster: member 0 has an empty archive endpoint",
 		},
 		{
-			name: "endpoint contains question mark",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ClusterMembers = memberSpecWith(consensusSlot, "127.0.0.1:9003?x")
-			},
-			want: "cluster: member 0 has an invalid consensus endpoint: 127.0.0.1:9003?x",
+			name:   "endpoint contains question mark",
+			mutate: withMemberEndpoint(consensusSlot, testConsensusEndpoint+"?x"),
+			want:   "cluster: member 0 has an invalid consensus endpoint: " + testConsensusEndpoint + "?x",
 		},
 		{
-			name: "endpoint contains equals",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ClusterMembers = memberSpecWith(ingressSlot, "host=port")
-			},
-			want: "cluster: member 0 has an invalid ingress endpoint: host=port",
+			name:   "endpoint contains equals",
+			mutate: withMemberEndpoint(ingressSlot, "host=port"),
+			want:   "cluster: member 0 has an invalid ingress endpoint: host=port",
 		},
 		{
-			name: "consensus endpoint without port",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ClusterMembers = memberSpecWith(consensusSlot, "127.0.0.1")
-			},
-			want: "cluster: member 0 has a consensus endpoint without a port: 127.0.0.1",
+			name:   "consensus endpoint without port",
+			mutate: withMemberEndpoint(consensusSlot, "127.0.0.1"),
+			want:   "cluster: member 0 has a consensus endpoint without a port: 127.0.0.1",
 		},
 		{
-			name: "log endpoint without port",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ClusterMembers = memberSpecWith(logSlot, "127.0.0.1")
-			},
-			want: "cluster: member 0 has a log endpoint without a port: 127.0.0.1",
+			name:   "log endpoint without port",
+			mutate: withMemberEndpoint(logSlot, "127.0.0.1"),
+			want:   "cluster: member 0 has a log endpoint without a port: 127.0.0.1",
 		},
 		{
-			name: "ingress endpoint without port",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ClusterMembers = memberSpecWith(ingressSlot, "127.0.0.1")
-			},
-			want: "cluster: member 0 has a ingress endpoint without a port: 127.0.0.1",
+			name:   "ingress endpoint without port",
+			mutate: withMemberEndpoint(ingressSlot, "127.0.0.1"),
+			want:   "cluster: member 0 has a ingress endpoint without a port: 127.0.0.1",
 		},
 		{
-			name: "out-of-range consensus port",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ClusterMembers = memberSpecWith(consensusSlot, "127.0.0.1:99999")
-			},
-			want: "cluster: member 0 has an out-of-range consensus endpoint port: 127.0.0.1:99999",
+			name:   "out-of-range consensus port",
+			mutate: withMemberEndpoint(consensusSlot, "127.0.0.1:99999"),
+			want:   "cluster: member 0 has an out-of-range consensus endpoint port: 127.0.0.1:99999",
 		},
 		{
-			name: "out-of-range ingress port",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ClusterMembers = memberSpecWith(ingressSlot, "127.0.0.1:99999")
-			},
-			want: "cluster: member 0 has an out-of-range ingress endpoint port: 127.0.0.1:99999",
+			name:   "out-of-range ingress port",
+			mutate: withMemberEndpoint(ingressSlot, "127.0.0.1:99999"),
+			want:   "cluster: member 0 has an out-of-range ingress endpoint port: 127.0.0.1:99999",
 		},
 		{
-			name: "non-numeric consensus port",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ClusterMembers = memberSpecWith(consensusSlot, "127.0.0.1:abc")
-			},
-			want: "cluster: member 0 has an out-of-range consensus endpoint port: 127.0.0.1:abc",
+			name:   "non-numeric consensus port",
+			mutate: withMemberEndpoint(consensusSlot, "127.0.0.1:abc"),
+			want:   "cluster: member 0 has an out-of-range consensus endpoint port: 127.0.0.1:abc",
 		},
 		{
-			name: "out-of-range log port",
-			mutate: func(cfg *cluster.Config) {
-				cfg.ClusterMembers = memberSpecWith(logSlot, "127.0.0.1:0")
-			},
-			want: "cluster: member 0 has an out-of-range log endpoint port: 127.0.0.1:0",
+			name:   "out-of-range log port",
+			mutate: withMemberEndpoint(logSlot, "127.0.0.1:0"),
+			want:   "cluster: member 0 has an out-of-range log endpoint port: 127.0.0.1:0",
 		},
 		{
 			name: "ConsensusChannel not udp",
@@ -459,7 +446,7 @@ func TestValidate_errors(t *testing.T) {
 		{
 			name: "ConsensusChannel has endpoint",
 			mutate: func(cfg *cluster.Config) {
-				cfg.ConsensusChannel = "aeron:udp?endpoint=127.0.0.1:9003"
+				cfg.ConsensusChannel = "aeron:udp?endpoint=" + testConsensusEndpoint
 			},
 			want: "cluster: ConsensusChannel must not set endpoint=",
 		},
@@ -473,7 +460,7 @@ func TestValidate_errors(t *testing.T) {
 		{
 			name: "LogChannel has endpoint",
 			mutate: func(cfg *cluster.Config) {
-				cfg.LogChannel = "aeron:udp?term-length=64k|endpoint=239.255.12.1:9004"
+				cfg.LogChannel = "aeron:udp?term-length=64k|endpoint=" + testLogEndpoint
 			},
 			want: "cluster: LogChannel must not set endpoint=",
 		},
@@ -487,15 +474,14 @@ func TestValidate_errors(t *testing.T) {
 		{
 			name: "IngressChannel has endpoint",
 			mutate: func(cfg *cluster.Config) {
-				cfg.IngressChannel = "aeron:udp?endpoint=127.0.0.1:9002"
+				cfg.IngressChannel = "aeron:udp?endpoint=" + testIngressEndpoint
 			},
 			want: "cluster: IngressChannel must not set endpoint=",
 		},
 		{
 			name: "stream ids equal",
 			mutate: func(cfg *cluster.Config) {
-				cfg.ConsensusStreamID = 100
-				cfg.LogStreamID = 100
+				cfg.LogStreamID = cfg.ConsensusStreamID
 			},
 			want: "cluster: ConsensusStreamID and LogStreamID must differ",
 		},
@@ -533,6 +519,34 @@ func TestValidate_errors(t *testing.T) {
 				cfg.IngressStreamID = cfg.ReplayStreamID
 			},
 			want: "cluster: IngressStreamID and ReplayStreamID must differ",
+		},
+		{
+			name: "ConsensusModuleStreamID equals ConsensusStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ConsensusModuleStreamID = cfg.ConsensusStreamID
+			},
+			want: "cluster: ConsensusModuleStreamID and ConsensusStreamID must differ",
+		},
+		{
+			name: "ConsensusModuleStreamID equals LogStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ConsensusModuleStreamID = cfg.LogStreamID
+			},
+			want: "cluster: ConsensusModuleStreamID and LogStreamID must differ",
+		},
+		{
+			name: "ConsensusModuleStreamID equals ReplayStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ConsensusModuleStreamID = cfg.ReplayStreamID
+			},
+			want: "cluster: ConsensusModuleStreamID and ReplayStreamID must differ",
+		},
+		{
+			name: "ConsensusModuleStreamID equals IngressStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ConsensusModuleStreamID = cfg.IngressStreamID
+			},
+			want: "cluster: ConsensusModuleStreamID and IngressStreamID must differ",
 		},
 		{
 			name: "ReplayChannel has session-id",

@@ -14,6 +14,12 @@ import (
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
+// normalizedFileSyncLevels are the levels Normalize keeps after filling zero.
+var normalizedFileSyncLevels = []recordinglog.FileSyncLevel{
+	recordinglog.FileSyncData,
+	recordinglog.FileSyncFull,
+}
+
 func drawLeaderPointer(t *rapid.T, label string) *int32 {
 	t.Helper()
 	if rapid.Bool().Draw(t, label+"_nil") {
@@ -36,15 +42,21 @@ func drawOptionalPositiveInt64(t *rapid.T, label string) int64 {
 // drawOptionalChannel: empty, package default, or a custom UDP channel.
 func drawOptionalChannel(t *rapid.T, label, defaultChannel string) string {
 	t.Helper()
-	options := []string{"", defaultChannel, "aeron:udp?term-length=128k"}
-	return options[rapid.IntRange(0, 2).Draw(t, label)]
+	return rapid.SampledFrom([]string{
+		"",
+		defaultChannel,
+		"aeron:udp?term-length=128k",
+	}).Draw(t, label)
 }
 
 // drawOptionalFileSyncLevel: zero (Normalize fills), Data, or Full.
 func drawOptionalFileSyncLevel(t *rapid.T, label string) recordinglog.FileSyncLevel {
 	t.Helper()
-	options := []recordinglog.FileSyncLevel{0, recordinglog.FileSyncData, recordinglog.FileSyncFull}
-	return options[rapid.IntRange(0, 2).Draw(t, label)]
+	return rapid.SampledFrom([]recordinglog.FileSyncLevel{
+		0,
+		recordinglog.FileSyncData,
+		recordinglog.FileSyncFull,
+	}).Draw(t, label)
 }
 
 func requireMappedLeaderID(t *rapid.T, ptr *int32, got int32) {
@@ -70,28 +82,22 @@ func drawValidPartialConfig(t *rapid.T) cluster.Config {
 		ServiceCount:   rapid.IntRange(0, 16).Draw(t, "service_count"),
 	}
 
-	cfg.ConsensusChannel = drawOptionalChannel(
-		t,
-		"consensus_channel_mode",
-		cluster.DefaultConsensusChannel,
-	)
-	cfg.LogChannel = drawOptionalChannel(t, "log_channel_mode", cluster.DefaultLogChannel)
-	cfg.IngressChannel = drawOptionalChannel(
-		t,
-		"ingress_channel_mode",
-		cluster.DefaultIngressChannel,
-	)
+	cfg.ConsensusChannel = drawOptionalChannel(t, "consensus_channel", cluster.DefaultConsensusChannel)
+	cfg.LogChannel = drawOptionalChannel(t, "log_channel", cluster.DefaultLogChannel)
+	cfg.IngressChannel = drawOptionalChannel(t, "ingress_channel", cluster.DefaultIngressChannel)
 
 	if rapid.Bool().Draw(t, "custom_streams") {
 		// Distinct non-zero streams so Consensus, Log, and Ingress still differ
-		// after Normalize. Log range excludes DefaultReplayStreamID and
-		// DefaultIngressStreamID when those stay 0 and Normalize fills them.
-		// Consensus range 501..1000 cannot hit either default. Ingress custom
-		// range 1001..1500 cannot hit consensus, log, or defaults 101/103.
+		// after Normalize. Log range excludes DefaultReplayStreamID,
+		// DefaultIngressStreamID, and DefaultConsensusModuleStreamID when those
+		// stay 0 and Normalize fills them. Consensus range 501..1000 cannot hit
+		// those defaults. Ingress custom range 1001..1500 cannot hit consensus,
+		// log, or defaults 101/103/105.
 		cfg.LogStreamID = rapid.Int32Range(1, 500).
 			Filter(func(id int32) bool {
 				return id != cluster.DefaultReplayStreamID &&
-					id != cluster.DefaultIngressStreamID
+					id != cluster.DefaultIngressStreamID &&
+					id != cluster.DefaultConsensusModuleStreamID
 			}).
 			Draw(t, "log_stream_id")
 		cfg.ConsensusStreamID = rapid.Int32Range(501, 1000).Draw(t, "consensus_stream_id")
@@ -141,24 +147,25 @@ func TestConfigNormalize_idempotent_rapid(t *testing.T) {
 		require.NotNil(t, once.Idle)
 		require.Same(t, once.Idle, twice.Idle)
 
-		require.NotZero(t, once.ConsensusStreamID)
-		require.NotZero(t, once.LogStreamID)
-		require.NotZero(t, once.ReplayStreamID)
-		require.NotZero(t, once.IngressStreamID)
-		require.NotEqual(t, once.ConsensusStreamID, once.LogStreamID)
-		require.NotEqual(t, once.ReplayStreamID, once.ConsensusStreamID)
-		require.NotEqual(t, once.ReplayStreamID, once.LogStreamID)
-		require.NotEqual(t, once.IngressStreamID, once.ConsensusStreamID)
-		require.NotEqual(t, once.IngressStreamID, once.LogStreamID)
-		require.NotEqual(t, once.IngressStreamID, once.ReplayStreamID)
-		require.NotEmpty(t, once.IngressChannel)
-
-		validSync := []recordinglog.FileSyncLevel{
-			recordinglog.FileSyncData,
-			recordinglog.FileSyncFull,
+		// Normalize fills every stream id and keeps the five roles distinct.
+		streamIDs := []int32{
+			once.ConsensusStreamID,
+			once.LogStreamID,
+			once.ReplayStreamID,
+			once.IngressStreamID,
+			once.ConsensusModuleStreamID,
 		}
-		require.Contains(t, validSync, once.RecordingLogFileSyncLevel)
-		require.Contains(t, validSync, once.NodeStateFileSyncLevel)
+		for i, id := range streamIDs {
+			require.NotZero(t, id)
+			for _, other := range streamIDs[i+1:] {
+				require.NotEqual(t, id, other)
+			}
+		}
+		require.NotEmpty(t, once.IngressChannel)
+		require.NotEmpty(t, once.ServiceControlChannel)
+
+		require.Contains(t, normalizedFileSyncLevels, once.RecordingLogFileSyncLevel)
+		require.Contains(t, normalizedFileSyncLevels, once.NodeStateFileSyncLevel)
 
 		require.Equal(t, cfg.MemberID, once.Election.MemberID)
 		requireMappedLeaderID(t, cfg.AppointedLeaderID, once.Election.AppointedLeaderID)

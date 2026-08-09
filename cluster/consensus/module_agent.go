@@ -345,6 +345,28 @@ type Agent struct {
 	// lastElectionTrigger names the condition that installed the newest
 	// election.
 	lastElectionTrigger ElectionTrigger
+
+	// serviceAcks holds per-service ServiceAck queues. Always non-nil after
+	// NewAgent. With zero services the tracker has zero queues and hasReached
+	// returns true.
+	serviceAcks *serviceAckTracker
+
+	// serviceAckID is the expected next ack id. Starts at 0. Advances only in
+	// removeServiceAckHead.
+	serviceAckID int64
+
+	// serviceAckFailure is the first marked receive-time out-of-sequence
+	// failure, or nil until marked. Full contract on [Agent.ServiceAckFailure].
+	serviceAckFailure error
+
+	// serviceIngress polls service control fragments (stream 105). Nil means
+	// pollServiceControl returns 0.
+	serviceIngress ConsensusIngress
+
+	// serviceIngressHandler is handleServiceControlFragment cached once at
+	// construction so pollServiceControl does not allocate a method value each
+	// duty cycle.
+	serviceIngressHandler func(buf []byte, offset int)
 }
 
 // AgentConfig is the constructor config. Nil interface fields are allowed for
@@ -439,15 +461,25 @@ type AgentConfig struct {
 	// One value bounds pre-open egress, queued egress events, challenge waits,
 	// open-session idle close, and non-leader closing reclaim.
 	SessionTimeoutNs int64
+
+	// ServiceCount sizes the ServiceAck tracker. Zero for a member without
+	// clustered services. A negative value panics at NewAgent.
+	ServiceCount int
 }
 
-// NewAgent constructs an [Agent] from cfg. localLogRecordingID defaults to
-// nullValue. LeaderHeartbeatIntervalNs zero becomes
-// DefaultLeaderHeartbeatIntervalNs; negative panics.
-// LeaderHeartbeatTimeoutNs zero becomes DefaultLeaderHeartbeatTimeoutNs;
-// negative panics. AppendPositionNotReadyTimeoutNs zero becomes
-// DefaultAppendPositionNotReadyTimeoutNs; negative panics.
-// SessionTimeoutNs zero becomes DefaultSessionTimeoutNs; negative panics.
+// NewAgent constructs an [Agent] from cfg.
+//
+// Defaults and panics:
+//   - localLogRecordingID zero becomes nullValue
+//   - LeaderHeartbeatIntervalNs zero becomes
+//     DefaultLeaderHeartbeatIntervalNs; negative panics
+//   - LeaderHeartbeatTimeoutNs zero becomes
+//     DefaultLeaderHeartbeatTimeoutNs; negative panics
+//   - AppendPositionNotReadyTimeoutNs zero becomes
+//     DefaultAppendPositionNotReadyTimeoutNs; negative panics
+//   - SessionTimeoutNs zero becomes DefaultSessionTimeoutNs; negative panics
+//   - ServiceCount negative panics; zero builds a ServiceAck tracker with zero
+//     queues (hasReached returns true)
 //
 // Member ids are stored as given (0 is valid; -1 is unset).
 //
@@ -487,6 +519,9 @@ func NewAgent(cfg AgentConfig) *Agent {
 	if sessionTimeout < 0 {
 		panic("consensus: negative SessionTimeoutNs")
 	}
+	if cfg.ServiceCount < 0 {
+		panic("consensus: negative ServiceCount")
+	}
 	auth := cfg.Authenticator
 	if auth == nil {
 		auth = acceptAllAuthenticator{}
@@ -516,10 +551,12 @@ func NewAgent(cfg AgentConfig) *Agent {
 		catchupReplays:            make(map[int32]catchupReplay),
 		sessions:                  newSessionManager(),
 		authenticator:             auth,
+		serviceAcks:               newServiceAckTracker(cfg.ServiceCount),
 	}
 	a.sessionAuthProxy.agent = a
 	a.ingressHandler = a.onIngressFragment
 	a.clientIngressHandler = a.handleClientIngressFragment
+	a.serviceIngressHandler = a.handleServiceControlFragment
 	return a
 }
 
@@ -1756,6 +1793,8 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 //   - consensus ingress poll (always, even when election non-nil)
 //   - client ingress poll (always; message, keepalive, close, connect, and
 //     challenge-response live in dispatch)
+//   - service control poll (always; ServiceAck dispatch; every role; while
+//     election is live)
 //   - [ElectionRunner.DoWork] when an election is live, else sessionWork then
 //     consensusWork
 //
@@ -1771,6 +1810,8 @@ func (a *Agent) DoWork(nowNs int64) int {
 	work += a.pollConsensusIngress(nowNs)
 	noteDoWorkStep("pollClientIngress")
 	work += a.pollClientIngress(nowNs)
+	noteDoWorkStep("pollServiceControl")
+	work += a.pollServiceControl()
 	if a.election != nil {
 		noteDoWorkStep("election.DoWork")
 		work += a.election.DoWork(nowNs)
