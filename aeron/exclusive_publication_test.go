@@ -315,28 +315,6 @@ func TestExclusivePublication_MaxPositionExceeded_preReserve_highLimitExactTermF
 	})
 }
 
-func TestExclusivePublication_OversizedOfferDeferred(t *testing.T) {
-	ep := aeron.NewTestExclusivePublication(
-		t,
-		aeron.DefaultTestExclusivePublicationLogConfig(),
-		int64(1)<<40,
-	)
-	maxPayload := ep.MaxPayloadLengthForTest()
-	maxMessage := ep.MaxMessageLengthForTest()
-
-	t.Run("middle band unsupported", func(t *testing.T) {
-		payload := make([]byte, maxPayload+1)
-		got := ep.Offer(payload)
-		require.Equal(t, aeron.UnsupportedMessageLength, got)
-	})
-
-	t.Run("over maxMessageLength", func(t *testing.T) {
-		payload := make([]byte, maxMessage+1)
-		got := ep.Offer(payload)
-		require.Equal(t, aeron.MaxPositionExceeded, got)
-	})
-}
-
 func TestNewExclusivePublicationFromReady_validation(t *testing.T) {
 	log := aeron.NewTestMappedLogForTest(t, aeron.DefaultTestExclusivePublicationLogConfig())
 	t.Cleanup(func() { _ = log.Close() })
@@ -785,7 +763,7 @@ func TestExclusivePublication_limitCounterValueFailure_hotPathUsesBoundSlot(t *t
 	require.Positive(t, position)
 
 	maxPayload := ep.MaxPayloadLengthForTest()
-	require.Equal(t, aeron.UnsupportedMessageLength, ep.Offer(make([]byte, maxPayload+1)))
+	require.Positive(t, ep.Offer(make([]byte, maxPayload+1)))
 }
 
 func TestExclusivePublication_publicationLimitSlot_matchesCounterValueAfterBind(t *testing.T) {

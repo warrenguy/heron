@@ -196,11 +196,11 @@ func requireDeadlineReclaim(
 ) {
 	t.Helper()
 	// Before deadline: not-done poll counts as work; no reclaim.
-	require.Equal(t, 1, a.sessionWork(startNs+defaultSessionTimeoutNs-1))
+	require.Equal(t, 1, a.sessionWork(startNs+DefaultSessionTimeoutNs-1))
 	beforeHeld()
 
 	// At deadline: reclaim.
-	require.Equal(t, 1, a.sessionWork(startNs+defaultSessionTimeoutNs))
+	require.Equal(t, 1, a.sessionWork(startNs+DefaultSessionTimeoutNs))
 	afterReclaim()
 	if cancelCorr != nil {
 		require.Contains(t, adder.cancels, *cancelCorr)
@@ -219,7 +219,7 @@ func requireElectionHoldPastDeadline(
 ) {
 	t.Helper()
 	a.election = &recordingRunner{}
-	pastDeadline := startNs + defaultSessionTimeoutNs + 1
+	pastDeadline := startNs + DefaultSessionTimeoutNs + 1
 	require.Equal(t, 0, a.sessionWork(pastDeadline))
 	held()
 
@@ -443,7 +443,7 @@ func TestSessionEgress_perSessionTerminalContinues(t *testing.T) {
 		clusterwire.SessionOpenEventSbeBlockLength, 0, 0,
 	)
 	require.True(t, ok)
-	oversize := make([]byte, logPub.MaxPayloadLength()-emptyFixed+1)
+	oversize := make([]byte, logPub.MaxMessageLength()-emptyFixed+1)
 	head := validConnectFields(1)
 	head.ResponseChannel = oversize
 	tail := validConnectFields(2)
@@ -504,7 +504,7 @@ func TestSessionEgress_leadershipLoss_deadlineReclaim(t *testing.T) {
 	require.Equal(t, 0, a.sessionWork(acceptNs+1))
 	require.Equal(t, 2, a.PendingSessionCount())
 
-	require.Equal(t, 2, a.sessionWork(acceptNs+defaultSessionTimeoutNs))
+	require.Equal(t, 2, a.sessionWork(acceptNs+DefaultSessionTimeoutNs))
 	require.Equal(t, 0, a.PendingSessionCount())
 	require.Empty(t, a.sessions.byID)
 	require.Len(t, adder.cancels, 2)
@@ -935,7 +935,7 @@ func TestAcceptSessionConnect_nilAdder_staysPending(t *testing.T) {
 	require.Nil(t, s.egressPublication)
 
 	// Deadline reclaims.
-	require.Equal(t, 1, a.sessionWork(1+defaultSessionTimeoutNs))
+	require.Equal(t, 1, a.sessionWork(1+DefaultSessionTimeoutNs))
 	require.Equal(t, 0, a.PendingSessionCount())
 }
 

@@ -5,10 +5,20 @@ import (
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
-type fragmentTestHelper interface {
-	Helper()
-	Errorf(format string, args ...any)
-	FailNow()
+// fragmentDeliveryArgs returns the handler arguments for the committed frame at
+// frameOffset, as a poll would present them.
+func fragmentDeliveryArgs(
+	termBuffer atomicbuffer.AtomicBuffer,
+	frameOffset int,
+) (payloadOffset, payloadLength int, header *Header) {
+	frameLength := logbuffer.FrameLengthVolatile(termBuffer, frameOffset)
+	header = &Header{}
+	header.SetBuffer(termBuffer)
+	header.SetOffset(frameOffset)
+	header.ResetPollFragmentState()
+	return frameOffset + logbuffer.OffsetFramePayload,
+		int(frameLength) - logbuffer.DataHeaderLength,
+		header
 }
 
 func deliverFragment(
@@ -19,12 +29,6 @@ func deliverFragment(
 ) {
 	t.Helper()
 
-	frameLength := logbuffer.FrameLengthVolatile(termBuffer, frameOffset)
-	payloadOffset := frameOffset + logbuffer.OffsetFramePayload
-	payloadLength := int(frameLength) - logbuffer.DataHeaderLength
-	header := &Header{}
-	header.SetBuffer(termBuffer)
-	header.SetOffset(frameOffset)
-	header.ResetPollFragmentState()
+	payloadOffset, payloadLength, header := fragmentDeliveryArgs(termBuffer, frameOffset)
 	assembler.Handler()(termBuffer, payloadOffset, payloadLength, header)
 }

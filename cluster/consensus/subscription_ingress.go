@@ -25,14 +25,14 @@ var _ FragmentPoller = (*aeron.Subscription)(nil)
 // SubscriptionConsensusIngress polls unfragmented SBE frames off a subscription
 // and delivers each one to the agent duty cycle.
 //
-// Used for the consensus control stream and the client ingress stream.
+// Used for the consensus control stream. Client ingress uses
+// [SubscriptionClientIngress] with controlled reassembly.
 //
 // Behaviour: one Poll is one poller Poll. Each unfragmented DATA frame reaches
 // onFragment as a view of that frame's payload span, at offset 0. Fragmented
 // frames are skipped without reassembly. Every consensus message is sent
 // through a claim that refuses to exceed the publication payload length, so no
-// in-tree publisher can produce a fragmented frame. Client ingress uses the
-// same unfragmented-only rule.
+// in-tree publisher can produce a fragmented frame.
 //
 // Buffer ownership: the slice passed to onFragment is a zero-copy view of the
 // driver's term buffer. It is valid only for the duration of the callback.

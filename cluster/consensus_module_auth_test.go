@@ -44,11 +44,12 @@ var _ consensus.Authenticator = (*recordingConnectAuthenticator)(nil)
 // runs without an active election.
 func openWireStyleAgent(cfg Config) *consensus.Agent {
 	return consensus.NewAgent(consensus.AgentConfig{
-		Commit:         new(atomic.Int64),
-		ThisMemberID:   cfg.MemberID,
-		LeaderMemberID: election.NullMemberID,
-		Role:           consensus.RoleLeader,
-		Authenticator:  cfg.Authenticator,
+		Commit:           new(atomic.Int64),
+		ThisMemberID:     cfg.MemberID,
+		LeaderMemberID:   election.NullMemberID,
+		Role:             consensus.RoleLeader,
+		Authenticator:    cfg.Authenticator,
+		SessionTimeoutNs: cfg.SessionTimeoutNs,
 	})
 }
 
@@ -61,24 +62,18 @@ func TestConfigAuthenticator_openWireStyle(t *testing.T) {
 	t.Parallel()
 
 	auth := &recordingConnectAuthenticator{}
-	cfg := Config{
+	agent := openWireStyleAgent(Config{
 		MemberID:      0,
 		Authenticator: auth,
-	}
-	agent := openWireStyleAgent(cfg)
-
-	q := &consensus.QueueConsensusIngress{}
-	agent.SetClientIngress(q)
-
-	fields := codecs.SessionConnectRequestFields{
+	})
+	enqueueSessionConnect(t, agent, codecs.SessionConnectRequestFields{
 		CorrelationID:      42,
 		ResponseStreamID:   100,
 		Version:            codecs.ClusterProtocolSemanticVersion(),
 		ResponseChannel:    []byte("aeron:udp?endpoint=127.0.0.1:40123"),
 		EncodedCredentials: []byte{0xCA, 0xFE},
 		ClientInfo:         []byte("wire"),
-	}
-	q.Enqueue(encodeSessionConnectForAuthTest(t, fields))
+	})
 
 	const nowNs int64 = 9_000
 	require.Positive(t, agent.DoWork(nowNs))
@@ -96,23 +91,61 @@ func TestConfigAuthenticator_openWireStyle(t *testing.T) {
 func TestConfigAuthenticator_nilDefaultOpenWireStyle(t *testing.T) {
 	t.Parallel()
 
-	cfg := Config{
+	agent := openWireStyleAgent(Config{
 		MemberID:      0,
 		Authenticator: nil,
-	}
-	agent := openWireStyleAgent(cfg)
+	})
+	enqueueSessionConnect(t, agent, minimalConnectFields())
+	require.Positive(t, agent.DoWork(1))
+	require.Equal(t, 1, agent.PendingSessionCount())
+}
 
-	q := &consensus.QueueConsensusIngress{}
+// TestConfigSessionTimeoutNs_openWireStyle asserts Config.SessionTimeoutNs
+// reaches the agent the same way OpenConsensusModule wires AgentConfig.
+//
+// Custom timeout bounds pre-open reclaim: a pending session drops only after
+// the configured window.
+func TestConfigSessionTimeoutNs_openWireStyle(t *testing.T) {
+	t.Parallel()
+
+	const timeoutNs int64 = 1_000
+	agent := openWireStyleAgent(Config{
+		MemberID:         0,
+		SessionTimeoutNs: timeoutNs,
+	})
+	// No egress adder: accept stays pending for deadline reclaim.
+	enqueueSessionConnect(t, agent, minimalConnectFields())
+	require.Positive(t, agent.DoWork(0))
+	require.Equal(t, 1, agent.PendingSessionCount())
+	// Just before timeout: still pending.
+	require.Equal(t, 0, agent.DoWork(timeoutNs-1))
+	require.Equal(t, 1, agent.PendingSessionCount())
+	// At deadline: reclaim.
+	require.Equal(t, 1, agent.DoWork(timeoutNs))
+	require.Equal(t, 0, agent.PendingSessionCount())
+}
+
+// enqueueSessionConnect wires QueueClientIngress and enqueues one connect.
+func enqueueSessionConnect(
+	t *testing.T,
+	agent *consensus.Agent,
+	fields codecs.SessionConnectRequestFields,
+) {
+	t.Helper()
+	q := &consensus.QueueClientIngress{}
 	agent.SetClientIngress(q)
-	fields := codecs.SessionConnectRequestFields{
+	q.Enqueue(encodeSessionConnectForAuthTest(t, fields))
+}
+
+// minimalConnectFields is a valid connect used when credentials and channel
+// shape are not under test.
+func minimalConnectFields() codecs.SessionConnectRequestFields {
+	return codecs.SessionConnectRequestFields{
 		CorrelationID:    1,
 		ResponseStreamID: 1,
 		Version:          codecs.ClusterProtocolSemanticVersion(),
 		ResponseChannel:  []byte("ch"),
 	}
-	q.Enqueue(encodeSessionConnectForAuthTest(t, fields))
-	require.Positive(t, agent.DoWork(1))
-	require.Equal(t, 1, agent.PendingSessionCount())
 }
 
 func encodeSessionConnectForAuthTest(

@@ -473,8 +473,8 @@ func TestSessionAuth_challengeTimeoutReclaim(t *testing.T) {
 	require.Equal(t, sessionChallenged, s.state)
 	require.False(t, egressPub.IsClosed())
 
-	// Past defaultSessionTimeoutNs from lastActivityNs (accept time, no refresh).
-	require.Equal(t, 1, a.sessionWork(startNs+defaultSessionTimeoutNs))
+	// Past DefaultSessionTimeoutNs from lastActivityNs (accept time, no refresh).
+	require.Equal(t, 1, a.sessionWork(startNs+DefaultSessionTimeoutNs))
 	require.Equal(t, 0, a.PendingSessionCount())
 	require.Empty(t, a.sessions.byID)
 	require.True(t, egressPub.IsClosed())
@@ -496,7 +496,7 @@ func TestSessionAuth_challengeResponseRefreshRestartsTimeout(t *testing.T) {
 	require.Equal(t, sessionChallenged, s.state)
 
 	// Refresh activity midway to the original accept deadline.
-	const refreshNs int64 = acceptNs + defaultSessionTimeoutNs/2
+	const refreshNs int64 = acceptNs + DefaultSessionTimeoutNs/2
 	a.handleChallengeResponse(codecs.ChallengeResponseFields{
 		CorrelationID:      77,
 		ClusterSessionID:   1,
@@ -506,7 +506,7 @@ func TestSessionAuth_challengeResponseRefreshRestartsTimeout(t *testing.T) {
 	require.Equal(t, int64(77), s.correlationID)
 
 	// Original accept deadline has passed. Refresh restarted the timeout.
-	pastAcceptDeadline := acceptNs + defaultSessionTimeoutNs
+	pastAcceptDeadline := acceptNs + DefaultSessionTimeoutNs
 	require.Greater(t, pastAcceptDeadline, refreshNs)
 	// sessionWork still consults the challenged handler (no action). Does not
 	// reclaim before refresh+timeout.
@@ -517,12 +517,12 @@ func TestSessionAuth_challengeResponseRefreshRestartsTimeout(t *testing.T) {
 	require.False(t, egressPub.IsClosed())
 
 	// One tick before refresh deadline: still present.
-	justBefore := refreshNs + defaultSessionTimeoutNs - 1
+	justBefore := refreshNs + DefaultSessionTimeoutNs - 1
 	_ = a.sessionWork(justBefore)
 	require.Equal(t, 1, a.PendingSessionCount())
 
 	// At refresh+timeout: reclaim.
-	require.Equal(t, 1, a.sessionWork(refreshNs+defaultSessionTimeoutNs))
+	require.Equal(t, 1, a.sessionWork(refreshNs+DefaultSessionTimeoutNs))
 	require.Equal(t, 0, a.PendingSessionCount())
 	require.Empty(t, a.sessions.byID)
 	require.True(t, egressPub.IsClosed())

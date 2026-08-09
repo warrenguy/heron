@@ -36,6 +36,8 @@ var fastSlowDecodeParities = []func(tb require.TestingT, buf []byte, offset int)
 	requireSessionMessageHeaderFastSlowParity,
 	requireSessionConnectRequestFastSlowParity,
 	requireChallengeResponseFastSlowParity,
+	requireSessionCloseRequestFastSlowParity,
+	requireSessionKeepAliveFastSlowParity,
 }
 
 func requireSessionMessageHeaderFastSlowParity(tb require.TestingT, buf []byte, offset int) {
@@ -412,4 +414,168 @@ func TestTryDecodeChallengeResponseAt_varOverCap(t *testing.T) {
 	_, ok := codecs.TryDecodeChallengeResponseAt(buf, 0)
 	require.False(t, ok)
 	requireChallengeResponseFastSlowParity(t, buf, 0)
+}
+
+func requireSessionCloseRequestFastSlowParity(tb require.TestingT, buf []byte, offset int) {
+	requireFastSlowDecodeParity(
+		tb,
+		buf,
+		offset,
+		0,
+		clusterwire.SessionCloseRequestSbeTemplateID,
+		codecs.TryDecodeSessionCloseRequestAt,
+	)
+}
+
+func encodeSessionCloseRequestWire(
+	t *testing.T,
+	actingVersion uint16,
+	fields codecs.SessionCloseRequestFields,
+) []byte {
+	return encodeClusterWire(t, func(buf []byte) (wireEnd int, ok bool) {
+		return codecs.EncodeSessionCloseRequest(buf, 0, actingVersion, fields)
+	})
+}
+
+func TestTryDecodeSessionCloseRequestAt_roundtrip(t *testing.T) {
+	t.Parallel()
+
+	actingVersion := uint16(clusterwire.SessionCloseRequestSbeSchemaVersion)
+	fields := codecs.SessionCloseRequestFields{
+		LeadershipTermID: 11,
+		ClusterSessionID: 22,
+	}
+	wire := encodeSessionCloseRequestWire(t, actingVersion, fields)
+	got, ok := codecs.TryDecodeSessionCloseRequestAt(wire, 0)
+	require.True(t, ok)
+	require.Equal(t, fields, got)
+	requireSessionCloseRequestFastSlowParity(t, wire, 0)
+}
+
+func TestTryDecodeSessionCloseRequestAt_reject(t *testing.T) {
+	t.Parallel()
+
+	actingVersion := uint16(clusterwire.SessionCloseRequestSbeSchemaVersion)
+	valid := encodeSessionCloseRequestWire(t, actingVersion, codecs.SessionCloseRequestFields{
+		LeadershipTermID: 1,
+		ClusterSessionID: 2,
+	})
+
+	cases := []struct {
+		name   string
+		buf    []byte
+		offset int
+	}{
+		{name: "truncated_header", buf: valid[:messageHeaderLen-1]},
+		{name: "one_byte_short", buf: valid[:len(valid)-1]},
+		{
+			name: "wrong_template",
+			buf: cloneMutatedWire(valid, func(w []byte) {
+				binary.LittleEndian.PutUint16(
+					w[2:],
+					clusterwire.SessionKeepAliveSbeTemplateID,
+				)
+			}),
+		},
+		{
+			name: "wrong_schema",
+			buf: cloneMutatedWire(valid, func(w []byte) {
+				w[4], w[5] = 0, 0
+			}),
+		},
+		{name: "negative_offset", buf: valid, offset: -1},
+		{name: "offset_out_of_bounds", buf: valid, offset: 10_000},
+		{name: "offset_near_maxint", buf: valid, offset: math.MaxInt},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, ok := codecs.TryDecodeSessionCloseRequestAt(tc.buf, tc.offset)
+			require.False(t, ok)
+			requireSessionCloseRequestFastSlowParity(t, tc.buf, tc.offset)
+		})
+	}
+}
+
+func requireSessionKeepAliveFastSlowParity(tb require.TestingT, buf []byte, offset int) {
+	requireFastSlowDecodeParity(
+		tb,
+		buf,
+		offset,
+		0,
+		clusterwire.SessionKeepAliveSbeTemplateID,
+		codecs.TryDecodeSessionKeepAliveAt,
+	)
+}
+
+func encodeSessionKeepAliveWire(
+	t *testing.T,
+	actingVersion uint16,
+	fields codecs.SessionKeepAliveFields,
+) []byte {
+	return encodeClusterWire(t, func(buf []byte) (wireEnd int, ok bool) {
+		return codecs.EncodeSessionKeepAlive(buf, 0, actingVersion, fields)
+	})
+}
+
+func TestTryDecodeSessionKeepAliveAt_roundtrip(t *testing.T) {
+	t.Parallel()
+
+	actingVersion := uint16(clusterwire.SessionKeepAliveSbeSchemaVersion)
+	fields := codecs.SessionKeepAliveFields{
+		LeadershipTermID: 33,
+		ClusterSessionID: 44,
+	}
+	wire := encodeSessionKeepAliveWire(t, actingVersion, fields)
+	got, ok := codecs.TryDecodeSessionKeepAliveAt(wire, 0)
+	require.True(t, ok)
+	require.Equal(t, fields, got)
+	requireSessionKeepAliveFastSlowParity(t, wire, 0)
+}
+
+func TestTryDecodeSessionKeepAliveAt_reject(t *testing.T) {
+	t.Parallel()
+
+	actingVersion := uint16(clusterwire.SessionKeepAliveSbeSchemaVersion)
+	valid := encodeSessionKeepAliveWire(t, actingVersion, codecs.SessionKeepAliveFields{
+		LeadershipTermID: 1,
+		ClusterSessionID: 2,
+	})
+
+	cases := []struct {
+		name   string
+		buf    []byte
+		offset int
+	}{
+		{name: "truncated_header", buf: valid[:messageHeaderLen-1]},
+		{name: "one_byte_short", buf: valid[:len(valid)-1]},
+		{
+			name: "wrong_template",
+			buf: cloneMutatedWire(valid, func(w []byte) {
+				binary.LittleEndian.PutUint16(
+					w[2:],
+					clusterwire.SessionCloseRequestSbeTemplateID,
+				)
+			}),
+		},
+		{
+			name: "wrong_schema",
+			buf: cloneMutatedWire(valid, func(w []byte) {
+				w[4], w[5] = 0, 0
+			}),
+		},
+		{name: "negative_offset", buf: valid, offset: -1},
+		{name: "offset_out_of_bounds", buf: valid, offset: 10_000},
+		{name: "offset_near_maxint", buf: valid, offset: math.MaxInt},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, ok := codecs.TryDecodeSessionKeepAliveAt(tc.buf, tc.offset)
+			require.False(t, ok)
+			requireSessionKeepAliveFastSlowParity(t, tc.buf, tc.offset)
+		})
+	}
 }

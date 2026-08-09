@@ -510,3 +510,112 @@ func TestSubscription_Poll_skipsNilImage(t *testing.T) {
 	capture := &pollCapture{}
 	requireSubscriptionPoll(t, sub, capture, 2, 2, [][]byte{[]byte("img0"), []byte("img2")})
 }
+
+func TestSubscription_ControlledPoll_closedLeavesRoundRobin(t *testing.T) {
+	sub := testSubscription(t)
+	addTestImage(t, sub)
+
+	const wantIndex uint32 = 3
+	aeron.SubscriptionSetRoundRobinIndexForTest(sub, wantIndex)
+
+	require.NoError(t, sub.Close())
+	require.Equal(t, 0, sub.ControlledPoll(nil, 1))
+	require.Equal(t, wantIndex, aeron.SubscriptionRoundRobinIndexForTest(sub))
+}
+
+func TestSubscription_ControlledPoll_emptyImagesReturnsZero(t *testing.T) {
+	sub := testSubscription(t)
+
+	require.Equal(t, 0, sub.ControlledPoll(nil, 1))
+}
+
+func TestSubscription_ControlledPoll_roundRobin(t *testing.T) {
+	sub := testSubscription(t)
+	addTwoStandardPollImages(t, sub)
+
+	capture := &controlledPollCapture{}
+	requireSubscriptionControlledPollSteps(
+		t, sub, capture, 1,
+		subscriptionPollStep{want: 1, payloads: [][]byte{[]byte("img0-a")}},
+		subscriptionPollStep{want: 1, payloads: [][]byte{[]byte("img1-a")}},
+		subscriptionPollStep{want: 1, payloads: [][]byte{[]byte("img0-b")}},
+		subscriptionPollStep{want: 1, payloads: [][]byte{[]byte("img1-b")}},
+	)
+}
+
+func TestSubscription_ControlledPoll_multiImageLimit(t *testing.T) {
+	sub := testSubscription(t)
+	addTwoStandardPollImages(t, sub)
+
+	capture := &controlledPollCapture{}
+	requireSubscriptionControlledPoll(
+		t, sub, capture, 3, 3,
+		[][]byte{[]byte("img0-a"), []byte("img0-b"), []byte("img1-a")},
+	)
+}
+
+func TestSubscription_ControlledPoll_abortStopsOneImageBudgetContinues(t *testing.T) {
+	sub := testSubscription(t)
+	addTwoStandardPollImages(t, sub)
+
+	// First image first fragment aborts (not counted). Remaining budget visits
+	// image1 and can consume both of its frames.
+	capture := &controlledPollCapture{
+		actions: []aeron.ControlledAction{aeron.ControlledAbort},
+	}
+	requireSubscriptionControlledPoll(
+		t, sub, capture, 2, 2,
+		[][]byte{[]byte("img0-a"), []byte("img1-a"), []byte("img1-b")},
+	)
+
+	// Aborted image0 frame redelivers. Round-robin starts at image1 (empty).
+	capture.reset()
+	requireSubscriptionControlledPoll(
+		t, sub, capture, 2, 2,
+		[][]byte{[]byte("img0-a"), []byte("img0-b")},
+	)
+}
+
+func TestSubscription_ControlledPoll_nilHandlerAndZeroLimit(t *testing.T) {
+	capture := &controlledPollCapture{}
+	for _, tc := range []struct {
+		name    string
+		handler aeron.ControlledFragmentHandler
+		limit   int
+	}{
+		{name: "nilHandler", handler: nil, limit: 1},
+		{name: "zeroLimit", handler: capture.handler, limit: 0},
+		{name: "negativeLimit", handler: capture.handler, limit: -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sub := testSubscription(t)
+			image0 := addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID, []byte("img0"))
+			image1 := addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID+1, []byte("img1"))
+
+			capture.reset()
+			require.Equal(t, 0, sub.ControlledPoll(tc.handler, tc.limit), tc.name)
+			require.Zero(t, image0.Position(), tc.name)
+			require.Zero(t, image1.Position(), tc.name)
+			if tc.limit <= 0 {
+				require.Empty(t, capture.payloads, tc.name)
+			}
+
+			capture.reset()
+			require.Equal(t, 1, sub.ControlledPoll(capture.handler, 1))
+			require.Equal(t, [][]byte{[]byte("img1")}, capture.payloads)
+		})
+	}
+}
+
+func TestSubscription_ControlledPoll_skipsNilImage(t *testing.T) {
+	sub := testSubscription(t)
+	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID, []byte("img0"))
+	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID+2, []byte("img2"))
+	aeron.SubscriptionInjectNilImageAtIndexForTest(sub, 1)
+
+	capture := &controlledPollCapture{}
+	requireSubscriptionControlledPoll(
+		t, sub, capture, 2, 2,
+		[][]byte{[]byte("img0"), []byte("img2")},
+	)
+}

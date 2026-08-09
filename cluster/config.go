@@ -175,6 +175,12 @@ type Config struct {
 	//
 	// Ownership: the module does not own the authenticator. No Close duty.
 	Authenticator consensus.Authenticator
+
+	// SessionTimeoutNs bounds pre-open session egress, queued egress events,
+	// open-session idle close, and non-leader closing reclaim. Zero takes the
+	// 10s upstream default (consensus.DefaultSessionTimeoutNs). Negative fails
+	// Validate.
+	SessionTimeoutNs int64
 }
 
 // Normalize applies defaults and returns a copy. Idempotent.
@@ -309,6 +315,9 @@ func (cfg Config) validateMembers() ([]election.Member, int, error) {
 	}
 	if cfg.ServiceCount < 0 {
 		return nil, 0, errors.New("cluster: ServiceCount must not be negative")
+	}
+	if cfg.SessionTimeoutNs < 0 {
+		return nil, 0, errors.New("cluster: SessionTimeoutNs must not be negative")
 	}
 
 	if err := election.ValidateElectionConfig(cfg.Election); err != nil {

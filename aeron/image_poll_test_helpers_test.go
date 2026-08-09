@@ -313,6 +313,35 @@ func requireSubscriptionPollSteps(
 	}
 }
 
+func requireSubscriptionControlledPoll(
+	tb testing.TB,
+	sub *aeron.Subscription,
+	capture *controlledPollCapture,
+	limit int,
+	want int,
+	wantPayloads [][]byte,
+) {
+	tb.Helper()
+
+	require.Equal(tb, want, sub.ControlledPoll(capture.handler, limit))
+	require.Equal(tb, wantPayloads, capture.payloads)
+}
+
+func requireSubscriptionControlledPollSteps(
+	tb testing.TB,
+	sub *aeron.Subscription,
+	capture *controlledPollCapture,
+	limit int,
+	steps ...subscriptionPollStep,
+) {
+	tb.Helper()
+
+	for _, step := range steps {
+		capture.reset()
+		requireSubscriptionControlledPoll(tb, sub, capture, limit, step.want, step.payloads)
+	}
+}
+
 func subscriptionPollOnFirstFragment(
 	tb testing.TB,
 	capture *pollCapture,

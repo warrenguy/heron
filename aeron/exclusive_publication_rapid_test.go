@@ -87,3 +87,28 @@ func TestExclusivePublication_TermRotation_TryClaim_rapid(t *testing.T) {
 		require.NoError(t, ep.Commit(termIndex, frameOffset))
 	})
 }
+
+func TestExclusivePublication_Offer_rapid_fragmented(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(t *rapid.T) {
+		ep := aeron.NewTestExclusivePublicationWithoutTBForRapid(
+			aeron.DefaultTestExclusivePublicationLogConfig(),
+			int64(1)<<40,
+		)
+		maxPayload := ep.MaxPayloadLengthForTest()
+		maxMessage := ep.MaxMessageLengthForTest()
+		messageCount := rapid.IntRange(1, 8).Draw(t, "messageCount")
+
+		var lastPosition int64
+		for i := range messageCount {
+			length := rapid.IntRange(maxPayload+1, maxMessage).Draw(t, fmt.Sprintf("length%d", i))
+			payload := rapid.SliceOfN(rapid.Byte(), length, length).Draw(t, fmt.Sprintf("payload%d", i))
+
+			position, _ := requireExclusiveFragmentedOffer(t, ep, payload)
+			if i > 0 {
+				require.Greater(t, position, lastPosition)
+			}
+			lastPosition = position
+		}
+	})
+}

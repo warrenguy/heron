@@ -73,8 +73,8 @@ func TestOpenClientIngressSubscription_openAndBind(t *testing.T) {
 	require.Equal(t, topology.IngressStreamID(), adder.calls[0].streamID)
 	require.Equal(t, topology.IngressSubscriptionChannel(), adder.calls[0].channel)
 
-	// Agent holds SubscriptionConsensusIngress.
-	require.IsType(t, (*consensus.SubscriptionConsensusIngress)(nil), agent.ClientIngress())
+	// Agent holds SubscriptionClientIngress.
+	require.IsType(t, (*consensus.SubscriptionClientIngress)(nil), agent.ClientIngress())
 
 	// Subscription accessor is the added handle.
 	require.Same(t, adder.lastSub, cs.Subscription())

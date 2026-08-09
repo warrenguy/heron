@@ -373,8 +373,16 @@ func ReadFragmentedMessageFramesForTest(
 	return nil, false
 }
 
+// fragmentTestHelper is the testing surface used by fragmented-message helpers.
+// Satisfies require via Helper, Errorf, and FailNow. Not full testing.TB.
+type fragmentTestHelper interface {
+	Helper()
+	Errorf(format string, args ...any)
+	FailNow()
+}
+
 func ReadFragmentedMessageForTest(
-	tb testing.TB,
+	tb fragmentTestHelper,
 	termBuf atomicbuffer.AtomicBuffer,
 	startOffset int,
 ) []FragmentedFrameForTest {
@@ -1357,7 +1365,7 @@ func SubscriptionSetUnavailableImageHandlerForTest(
 	sub *Subscription,
 	handler UnavailableImageHandler,
 ) {
-	sub.unavailableImageHandler = handler
+	sub.SetUnavailableImageHandler(handler)
 }
 
 func SubscriptionRoundRobinIndexForTest(sub *Subscription) uint32 {

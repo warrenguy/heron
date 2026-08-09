@@ -106,6 +106,66 @@ func newPublicationFromReady(
 	return pub, nil
 }
 
+// fragmentChunk is the frame shape of one BEGIN, middle, or END fragment.
+type fragmentChunk struct {
+	bytesToWrite  int
+	frameLength   int32
+	alignedLength int
+	flags         uint8
+}
+
+// nextFragmentChunk builds the next fragment shape for a message of total
+// length with remaining bytes still unwritten.
+//
+// fullChunkAligned is AlignFragmentChunkLength(maxPayloadLength). The caller
+// hoists that value so the loop does not recompute it per fragment.
+func nextFragmentChunk(
+	remaining int,
+	length int,
+	maxPayloadLength int,
+	fullChunkAligned int,
+) fragmentChunk {
+	chunk := fragmentChunk{
+		bytesToWrite:  min(remaining, maxPayloadLength),
+		alignedLength: fullChunkAligned,
+	}
+	chunk.frameLength = int32(chunk.bytesToWrite + logbuffer.DataHeaderLength)
+	if chunk.bytesToWrite != maxPayloadLength {
+		chunk.alignedLength = logbuffer.AlignFragmentChunkLength(chunk.bytesToWrite)
+	}
+	if remaining == length {
+		chunk.flags = logbuffer.BeginFlag
+	}
+	if chunk.bytesToWrite == remaining {
+		chunk.flags |= logbuffer.EndFlag
+	}
+	return chunk
+}
+
+// writeFragmentChunk writes one fragment header, payload, and ordered frame
+// length at frameOffset. payload must be exactly chunk.bytesToWrite long.
+//
+// The caller owns the term reservation and advances frameOffset by
+// chunk.alignedLength.
+func writeFragmentChunk(
+	headerWriter logbuffer.HeaderWriter,
+	termBuf atomicbuffer.AtomicBuffer,
+	termID int32,
+	frameOffset int,
+	chunk fragmentChunk,
+	payload []byte,
+) {
+	headerWriter.WriteWithFlags(
+		termBuf,
+		frameOffset,
+		chunk.frameLength,
+		termID,
+		chunk.flags,
+	)
+	termBuf.PutBytes(frameOffset+logbuffer.OffsetFramePayload, payload)
+	logbuffer.PutFrameLengthOrdered(termBuf, frameOffset, chunk.frameLength)
+}
+
 func commitPublicationTermPadding(
 	headerWriter logbuffer.HeaderWriter,
 	termBuf atomicbuffer.AtomicBuffer,

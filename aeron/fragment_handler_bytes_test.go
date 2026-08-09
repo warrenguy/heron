@@ -191,3 +191,87 @@ func TestAdaptFragmentHandlerBytes_headerFieldsCopyable(t *testing.T) {
 		})
 	}
 }
+
+func TestAdaptControlledFragmentHandlerBytes_nilReturnsNil(t *testing.T) {
+	require.Nil(t, aeron.AdaptControlledFragmentHandlerBytes(nil))
+	image, _ := newControlledPollImage(t, 0)
+	require.Equal(t, 0, image.ControlledPoll(nil, 1))
+}
+
+func TestAdaptControlledFragmentHandlerBytes_actionPassthrough(t *testing.T) {
+	actions := []struct {
+		name   string
+		action aeron.ControlledAction
+	}{
+		{name: "abort", action: aeron.ControlledAbort},
+		{name: "break", action: aeron.ControlledBreak},
+		{name: "commit", action: aeron.ControlledCommit},
+		{name: "continue", action: aeron.ControlledContinue},
+	}
+	buf := atomicbuffer.Wrap([]byte("payload"))
+	for _, tc := range actions {
+		t.Run(tc.name, func(t *testing.T) {
+			var called bool
+			handler := aeron.AdaptControlledFragmentHandlerBytes(
+				func(payload []byte, _ *aeron.Header) aeron.ControlledAction {
+					called = true
+					require.Equal(t, []byte("payload"), payload)
+					return tc.action
+				},
+			)
+			require.NotNil(t, handler)
+			got := handler(buf, 0, len("payload"), nil)
+			require.True(t, called)
+			require.Equal(t, tc.action, got)
+		})
+	}
+}
+
+func TestAdaptControlledFragmentHandlerBytes_nilPayloadStillInvokes(t *testing.T) {
+	tests := []struct {
+		name   string
+		offset int
+		length int
+	}{
+		{name: "zero length", offset: 0, length: 0},
+		{name: "length past buffer end", offset: 0, length: 99},
+		{name: "negative offset", offset: -1, length: 4},
+		{name: "negative length", offset: 0, length: -1},
+	}
+	buf := atomicbuffer.Wrap([]byte("payload"))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var called bool
+			var gotPayload []byte
+			handler := aeron.AdaptControlledFragmentHandlerBytes(
+				func(payload []byte, _ *aeron.Header) aeron.ControlledAction {
+					called = true
+					gotPayload = payload
+					return aeron.ControlledContinue
+				},
+			)
+			got := handler(buf, tt.offset, tt.length, nil)
+			require.True(t, called)
+			require.Nil(t, gotPayload)
+			require.Equal(t, aeron.ControlledContinue, got)
+		})
+	}
+}
+
+func TestAdaptControlledFragmentHandlerBytes_roundtripControlledPoll(t *testing.T) {
+	image, _ := newControlledPollImage(t, 0)
+	termBuffer := aeron.ImageTermBuffer0ForTest(image)
+	wantPayload := []byte("ctrl-poll")
+	writePollTestDataFrame(termBuffer, 0, 0, logbuffer.Unfragmented, wantPayload)
+
+	var gotPayload []byte
+	handler := aeron.AdaptControlledFragmentHandlerBytes(
+		func(payload []byte, _ *aeron.Header) aeron.ControlledAction {
+			gotPayload = slices.Clone(payload)
+			return aeron.ControlledContinue
+		},
+	)
+
+	require.Equal(t, 1, image.ControlledPoll(handler, 1))
+	require.Equal(t, wantPayload, gotPayload)
+}

@@ -60,21 +60,86 @@ func ClusterMessageLayoutAt(buf []byte, offset, maxVarLen int) (ClusterMessageLa
 	return clusterMessageAt(buf, offset, maxVarLen)
 }
 
-// SessionMessageHeaderFieldsFromLayout decodes SessionMessageHeader from a parsed layout.
-func SessionMessageHeaderFieldsFromLayout(
+// clusterFieldsFromLayout decodes fixed-block fields from an already parsed
+// layout. Returns false on template mismatch. Does not rescan var fields; use
+// tryDecodeClusterAt when var bounds still need checking.
+func clusterFieldsFromLayout[T any](
 	buf []byte,
 	layout ClusterMessageLayout,
-) (SessionMessageHeaderFields, bool) {
-	if layout.TemplateID != clusterwire.SessionMessageHeaderSbeTemplateID {
-		return SessionMessageHeaderFields{}, false
+	templateID uint16,
+	decode func(buf []byte, body, block, version, bufLen uint64) T,
+) (fields T, ok bool) {
+	if layout.TemplateID != templateID {
+		return fields, false
 	}
-	return decodeSessionMessageHeaderFields(
+	return decode(
 		buf,
 		uint64(layout.BodyOffset),
 		uint64(layout.BlockLength),
 		uint64(layout.ActingVersion),
 		uint64(len(buf)),
 	), true
+}
+
+// SessionMessageHeaderFieldsFromLayout decodes SessionMessageHeader from a parsed layout.
+func SessionMessageHeaderFieldsFromLayout(
+	buf []byte,
+	layout ClusterMessageLayout,
+) (SessionMessageHeaderFields, bool) {
+	return clusterFieldsFromLayout(
+		buf,
+		layout,
+		clusterwire.SessionMessageHeaderSbeTemplateID,
+		decodeSessionMessageHeaderFields,
+	)
+}
+
+// SessionMessagePayloadFromLayout returns the app payload span past the
+// SessionMessageHeader fixed block.
+//
+// The payload is the remainder of buf after the fixed block. The span is not an
+// SBE var field with a length prefix. Callers must pass a message-exact buf so
+// len(buf) is the frame end. A larger buf includes trailing bytes as payload.
+//
+// Bounds-checked. Zero-length payloads are allowed and return an empty non-nil
+// span. Returns nil on template mismatch or when the block end is past buf.
+//
+// The returned slice aliases buf. Valid only while buf remains live.
+func SessionMessagePayloadFromLayout(buf []byte, layout ClusterMessageLayout) []byte {
+	if layout.TemplateID != clusterwire.SessionMessageHeaderSbeTemplateID {
+		return nil
+	}
+	start := layout.BodyOffset + int(layout.BlockLength)
+	if start < 0 || start > len(buf) {
+		return nil
+	}
+	return buf[start:]
+}
+
+// SessionKeepAliveFieldsFromLayout decodes SessionKeepAlive from a parsed layout.
+func SessionKeepAliveFieldsFromLayout(
+	buf []byte,
+	layout ClusterMessageLayout,
+) (SessionKeepAliveFields, bool) {
+	return clusterFieldsFromLayout(
+		buf,
+		layout,
+		clusterwire.SessionKeepAliveSbeTemplateID,
+		decodeSessionKeepAliveFields,
+	)
+}
+
+// SessionCloseRequestFieldsFromLayout decodes SessionCloseRequest from a parsed layout.
+func SessionCloseRequestFieldsFromLayout(
+	buf []byte,
+	layout ClusterMessageLayout,
+) (SessionCloseRequestFields, bool) {
+	return clusterFieldsFromLayout(
+		buf,
+		layout,
+		clusterwire.SessionCloseRequestSbeTemplateID,
+		decodeSessionCloseRequestFields,
+	)
 }
 
 // TryDecodeSessionMessageHeaderAt decodes SessionMessageHeader without interface boxing.
@@ -244,6 +309,60 @@ func TryDecodeChallengeResponseAt(
 		clusterwire.ChallengeResponseSbeTemplateID,
 		ClusterDecodeMaxVarLen,
 		decodeChallengeResponseFields,
+	)
+}
+
+func decodeSessionCloseRequestFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) SessionCloseRequestFields {
+	var msg clusterwire.SessionCloseRequest
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return SessionCloseRequestFields{
+		LeadershipTermID: msg.LeadershipTermId(),
+		ClusterSessionID: msg.ClusterSessionId(),
+	}
+}
+
+// TryDecodeSessionCloseRequestAt decodes SessionCloseRequest (template 4)
+// without interface boxing.
+func TryDecodeSessionCloseRequestAt(
+	buf []byte,
+	offset int,
+) (SessionCloseRequestFields, bool) {
+	return tryDecodeClusterAt(
+		buf,
+		offset,
+		clusterwire.SessionCloseRequestSbeTemplateID,
+		0,
+		decodeSessionCloseRequestFields,
+	)
+}
+
+func decodeSessionKeepAliveFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) SessionKeepAliveFields {
+	var msg clusterwire.SessionKeepAlive
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return SessionKeepAliveFields{
+		LeadershipTermID: msg.LeadershipTermId(),
+		ClusterSessionID: msg.ClusterSessionId(),
+	}
+}
+
+// TryDecodeSessionKeepAliveAt decodes SessionKeepAlive (template 5) without
+// interface boxing.
+func TryDecodeSessionKeepAliveAt(
+	buf []byte,
+	offset int,
+) (SessionKeepAliveFields, bool) {
+	return tryDecodeClusterAt(
+		buf,
+		offset,
+		clusterwire.SessionKeepAliveSbeTemplateID,
+		0,
+		decodeSessionKeepAliveFields,
 	)
 }
 
@@ -509,19 +628,9 @@ func decodeTemplateFields(
 	case clusterwire.SessionConnectRequestSbeTemplateID:
 		return sessionConnectRequestFields(buf, body, block, version, bufLen, vars), true
 	case clusterwire.SessionCloseRequestSbeTemplateID:
-		var msg clusterwire.SessionCloseRequest
-		msg.WrapForDecode(buf, body, block, version, bufLen)
-		return SessionCloseRequestFields{
-			LeadershipTermID: msg.LeadershipTermId(),
-			ClusterSessionID: msg.ClusterSessionId(),
-		}, true
+		return decodeSessionCloseRequestFields(buf, body, block, version, bufLen), true
 	case clusterwire.SessionKeepAliveSbeTemplateID:
-		var msg clusterwire.SessionKeepAlive
-		msg.WrapForDecode(buf, body, block, version, bufLen)
-		return SessionKeepAliveFields{
-			LeadershipTermID: msg.LeadershipTermId(),
-			ClusterSessionID: msg.ClusterSessionId(),
-		}, true
+		return decodeSessionKeepAliveFields(buf, body, block, version, bufLen), true
 	case clusterwire.NewLeadershipTermEventSbeTemplateID:
 		return decodeNewLeadershipTermEventFields(buf, body, block, version, bufLen), true
 	case clusterwire.NewLeaderEventSbeTemplateID:

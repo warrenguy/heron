@@ -61,6 +61,19 @@ func TestNormalize_defaults(t *testing.T) {
 	// Archive channels stay empty: Normalize applies no default so Validate can refuse.
 	require.Empty(t, cfg.ArchiveControlRequestChannel)
 	require.Empty(t, cfg.ArchiveControlResponseChannel)
+	// SessionTimeoutNs stays zero: Normalize applies no default; NewAgent maps
+	// zero to DefaultSessionTimeoutNs. Negative fails Validate.
+	require.Zero(t, cfg.SessionTimeoutNs)
+}
+
+func TestValidate_sessionTimeoutNsZeroOK(t *testing.T) {
+	t.Parallel()
+
+	// topologyConfig leaves SessionTimeoutNs at zero; positive also passes.
+	cfg := topologyConfig(0)
+	require.NoError(t, cfg.Validate())
+	cfg.SessionTimeoutNs = 1
+	require.NoError(t, cfg.Validate())
 }
 
 func TestNormalize_electionDefaultTripwire(t *testing.T) {
@@ -534,6 +547,13 @@ func TestValidate_errors(t *testing.T) {
 				cfg.ServiceCount = -1
 			},
 			want: "cluster: ServiceCount must not be negative",
+		},
+		{
+			name: "negative SessionTimeoutNs",
+			mutate: func(cfg *cluster.Config) {
+				cfg.SessionTimeoutNs = -1
+			},
+			want: "cluster: SessionTimeoutNs must not be negative",
 		},
 		{
 			name: "invalid Election config",

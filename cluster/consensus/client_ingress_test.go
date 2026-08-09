@@ -48,16 +48,23 @@ func encodeSessionConnectWire(t *testing.T, fields codecs.SessionConnectRequestF
 	return buf[:end]
 }
 
-func encodeSessionKeepAliveWire(t *testing.T) []byte {
+// encodeUnhandledClientIngressWire encodes a NewLeaderEvent frame. NewLeaderEvent
+// is egress-only. The client-ingress switch does not handle that template.
+func encodeUnhandledClientIngressWire(t *testing.T) []byte {
 	t.Helper()
-	actingVersion := uint16(clusterwire.SessionKeepAliveSbeSchemaVersion)
-	wireLen, ok := codecs.ClusterWireMessageLen(clusterwire.SessionKeepAliveSbeBlockLength)
-	require.True(t, ok)
-	buf := make([]byte, wireLen)
-	end, ok := codecs.EncodeSessionKeepAlive(buf, 0, actingVersion, codecs.SessionKeepAliveFields{
+	actingVersion := uint16(clusterwire.NewLeaderEventSbeSchemaVersion)
+	fields := codecs.NewLeaderEventFields{
 		LeadershipTermID: 1,
 		ClusterSessionID: 2,
-	})
+		LeaderMemberID:   3,
+	}
+	wireLen, ok := codecs.ClusterWireMessageLen(
+		clusterwire.NewLeaderEventSbeBlockLength,
+		len(fields.IngressEndpoints),
+	)
+	require.True(t, ok)
+	buf := make([]byte, wireLen)
+	end, ok := codecs.EncodeNewLeaderEvent(buf, 0, actingVersion, fields)
 	require.True(t, ok)
 	return buf[:end]
 }
@@ -99,8 +106,8 @@ func agentWithClientIngress(
 	election ElectionRunner,
 	handler *recordingSessionConnectHandler,
 	leaderMemberID int32,
-) (*Agent, *QueueConsensusIngress) {
-	q := &QueueConsensusIngress{}
+) (*Agent, *QueueClientIngress) {
+	q := &QueueClientIngress{}
 	a := NewAgent(AgentConfig{
 		Role:           role,
 		Election:       election,
@@ -117,7 +124,7 @@ func agentWithClientIngress(
 // session-connect handler. election may be nil for a settled leader.
 func leaderWithClientIngress(
 	election ElectionRunner,
-) (*Agent, *QueueConsensusIngress, *recordingSessionConnectHandler) {
+) (*Agent, *QueueClientIngress, *recordingSessionConnectHandler) {
 	handler := &recordingSessionConnectHandler{}
 	a, q := agentWithClientIngress(RoleLeader, election, handler, nullMemberID)
 	return a, q, handler
@@ -262,8 +269,8 @@ func TestHandleClientIngressFragment_dropsWrongFrames(t *testing.T) {
 	a, q, handler := leaderWithClientIngress(nil)
 	fields := sampleConnectFields()
 
-	// Wrong template.
-	q.Enqueue(encodeSessionKeepAliveWire(t))
+	// Unhandled template. Outside the client-ingress switch.
+	q.Enqueue(encodeUnhandledClientIngressWire(t))
 	// Wrong schema id.
 	badSchema := encodeSessionConnectWire(t, fields)
 	badSchema[4], badSchema[5] = 0, 0
@@ -290,7 +297,7 @@ func TestHandleClientIngressFragment_challengeResponse(t *testing.T) {
 		auth.enqueue(1, authAction{kind: authActionChallenge, challenge: []byte("c")})
 		p, _ := boundLogPublisher(t)
 		a := leaderWithAuth(t, auth, p, 0)
-		q := &QueueConsensusIngress{}
+		q := &QueueClientIngress{}
 		a.SetClientIngress(q)
 		a.acceptSessionConnect(validConnectFields(1), 1)
 		require.Equal(t, 0, a.sessionWork(1))
@@ -342,7 +349,7 @@ func TestHandleClientIngressFragment_challengeResponse(t *testing.T) {
 			if tc.wireEgress {
 				wireImmediateEgress(t, a)
 			}
-			q := &QueueConsensusIngress{}
+			q := &QueueClientIngress{}
 			a.SetClientIngress(q)
 			q.Enqueue(encodeChallengeResponseWire(t, codecs.ChallengeResponseFields{
 				CorrelationID:    1,
@@ -358,7 +365,7 @@ func TestHandleClientIngressFragment_challengeResponse(t *testing.T) {
 
 func TestSetClientIngress_wireAndClear(t *testing.T) {
 	handler := &recordingSessionConnectHandler{}
-	q := &QueueConsensusIngress{}
+	q := &QueueClientIngress{}
 	a := NewAgent(AgentConfig{Role: RoleLeader})
 	a.SetSessionConnectHandler(handler)
 

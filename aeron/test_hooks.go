@@ -568,6 +568,15 @@ func SubscriptionAddImageForHooks(sub *Subscription, image *Image) bool {
 	return sub.addImage(image)
 }
 
+// SubscriptionUnavailableImageHandlerForHooks returns the unavailable-image
+// handler set on sub. Returns nil when sub is nil or no handler is set.
+func SubscriptionUnavailableImageHandlerForHooks(sub *Subscription) UnavailableImageHandler {
+	if sub == nil {
+		return nil
+	}
+	return sub.unavailableImageHandler
+}
+
 // ImageTermBufferForHooks returns partition 0 term buffer for frame writes.
 func ImageTermBufferForHooks(image *Image) atomicbuffer.AtomicBuffer {
 	return image.termBuffers[0]
@@ -575,7 +584,7 @@ func ImageTermBufferForHooks(image *Image) atomicbuffer.AtomicBuffer {
 
 // FragmentAssemblerHasBuilderForTest reports whether assembler has a builder for sessionID.
 func FragmentAssemblerHasBuilderForTest(assembler *FragmentAssembler, sessionID int32) bool {
-	return assembler != nil && assembler.builders[sessionID] != nil
+	return assembler != nil && assembler.core.builders[sessionID] != nil
 }
 
 // ImageInternalCloseForHooks closes the image handle for cross-package tests.

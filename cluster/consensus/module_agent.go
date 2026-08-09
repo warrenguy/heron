@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/cluster/codecs"
@@ -176,20 +177,24 @@ type Agent struct {
 	// so the fragment handler is a method value (no per-poll closure).
 	ingressPollNowNs int64
 
-	// clientIngress polls client ingress fragments. Nil: pollClientIngress
+	// clientIngress polls client ingress messages. Nil: pollClientIngress
 	// returns 0.
-	clientIngress ConsensusIngress
+	clientIngress ClientIngress
 
 	// clientIngressHandler is handleClientIngressFragment cached once at
 	// construction so pollClientIngress does not allocate a method value each
 	// duty cycle.
-	clientIngressHandler func(buf []byte, offset int)
+	clientIngressHandler func(buf []byte, offset int) aeron.ControlledAction
 
 	// clientIngressPollNowNs is the duty-cycle clock for the current
 	// pollClientIngress batch. Set before Poll. Read by
 	// handleClientIngressFragment so the fragment handler is a method value
 	// (no per-poll closure).
 	clientIngressPollNowNs int64
+
+	// sessionTimeoutNs bounds pre-open deadlines, egress-event deadlines,
+	// open-session idle close, and non-leader closing reclaim.
+	sessionTimeoutNs int64
 
 	// sessionConnectHandler receives leader-accepted connects. Nil runs the
 	// product session accept. A non-nil handler replaces the product accept.
@@ -427,6 +432,13 @@ type AgentConfig struct {
 	//
 	// Ownership: the agent does not own the authenticator. No Close duty.
 	Authenticator Authenticator
+
+	// SessionTimeoutNs: zero -> DefaultSessionTimeoutNs (10s). Negative panics
+	// at NewAgent.
+	//
+	// One value bounds pre-open egress, queued egress events, challenge waits,
+	// open-session idle close, and non-leader closing reclaim.
+	SessionTimeoutNs int64
 }
 
 // NewAgent constructs an [Agent] from cfg. localLogRecordingID defaults to
@@ -435,6 +447,7 @@ type AgentConfig struct {
 // LeaderHeartbeatTimeoutNs zero becomes DefaultLeaderHeartbeatTimeoutNs;
 // negative panics. AppendPositionNotReadyTimeoutNs zero becomes
 // DefaultAppendPositionNotReadyTimeoutNs; negative panics.
+// SessionTimeoutNs zero becomes DefaultSessionTimeoutNs; negative panics.
 //
 // Member ids are stored as given (0 is valid; -1 is unset).
 //
@@ -467,6 +480,13 @@ func NewAgent(cfg AgentConfig) *Agent {
 	if appendTimeout < 0 {
 		panic("consensus: negative AppendPositionNotReadyTimeoutNs")
 	}
+	sessionTimeout := cfg.SessionTimeoutNs
+	if sessionTimeout == 0 {
+		sessionTimeout = DefaultSessionTimeoutNs
+	}
+	if sessionTimeout < 0 {
+		panic("consensus: negative SessionTimeoutNs")
+	}
 	auth := cfg.Authenticator
 	if auth == nil {
 		auth = acceptAllAuthenticator{}
@@ -483,6 +503,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		leaderMemberID:            cfg.LeaderMemberID,
 		leaderHeartbeatIntervalNs: interval,
 		leaderHeartbeatTimeoutNs:  timeout,
+		sessionTimeoutNs:          sessionTimeout,
 		ingress:                   cfg.Ingress,
 		appendSource:              cfg.AppendSource,
 		appendNotReadySinceNs:     nullValue,
@@ -1733,9 +1754,13 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 // DoWork runs one duty-cycle tick:
 //   - slow tick
 //   - consensus ingress poll (always, even when election non-nil)
-//   - client ingress poll (always; accept and redirect live in dispatch)
+//   - client ingress poll (always; message, keepalive, close, connect, and
+//     challenge-response live in dispatch)
 //   - [ElectionRunner.DoWork] when an election is live, else sessionWork then
 //     consensusWork
+//
+// Settled sessionWork order: egressEventWork, sessionPendingWork,
+// sessionCloseWork, okPendingWork. See [Agent.sessionWork].
 //
 // Concurrency: invoker-only. See [Agent].
 func (a *Agent) DoWork(nowNs int64) int {

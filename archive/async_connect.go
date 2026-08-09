@@ -360,9 +360,10 @@ func (ac *AsyncConnect) pollSendMessage() (*ConnectResult, error) {
 	case aeron.BackPressured, aeron.AdminAction:
 		return nil, nil
 	case aeron.UnsupportedMessageLength:
+		// Reserved status; ExclusivePublication.Offer no longer returns it for
+		// mid-band lengths (those fragment). Still mapped for injected stubs.
 		return nil, fmt.Errorf(
-			"archive: connect wire length %d exceeds control publication max payload length %d; "+
-				"exclusive connect does not fragment",
+			"archive: connect wire length %d rejected by control publication (max payload length %d)",
 			ac.wire.length,
 			pub.MaxPayloadLength(),
 		)

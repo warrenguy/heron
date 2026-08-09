@@ -422,7 +422,7 @@ func TestAsyncConnect_pollSendMessage_terminalErrors(t *testing.T) {
 	}
 }
 
-func TestAsyncConnect_pollSendMessage_fragmentRequiredWireFailsFast(t *testing.T) {
+func TestAsyncConnect_pollSendMessage_fragmentRequiredWireOffers(t *testing.T) {
 	t.Parallel()
 
 	pub := aeron.NewTestExclusivePublicationForHooksWithConnected(t, true)
@@ -461,9 +461,8 @@ func TestAsyncConnect_pollSendMessage_fragmentRequiredWireFailsFast(t *testing.T
 
 	start := time.Now()
 	_, err := ac.PollSendMessageForTest()
-	require.Error(t, err)
-	require.ErrorContains(t, err, "max payload length")
-	require.ErrorContains(t, err, "does not fragment")
+	require.NoError(t, err)
+	require.Equal(t, ConnectStatePollResponse, ac.State())
 	require.Less(t, time.Since(start), time.Second)
 }
 

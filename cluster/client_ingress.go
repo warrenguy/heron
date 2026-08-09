@@ -27,7 +27,9 @@ type ClientIngressSubscriptionDeps struct {
 // subscription and wires the ingress into the agent before returning.
 //
 // Behaviour: every member opens the subscription. Only a steady-state leader
-// accepts connects. The agent dispatch owns that branch.
+// accepts connects, messages, keepalives, and closes. The agent dispatch owns
+// that branch. The adapter reassembles fragmented ingress frames before
+// dispatch.
 //
 // Concurrency: invoker-only. Every method must run on the same goroutine as
 // [consensus.Agent.DoWork] and the transport client duty cycle.
@@ -37,29 +39,30 @@ type ClientIngressSubscriptionDeps struct {
 // client first is safe but leaves the agent briefly polling a closed
 // subscription, which reports zero.
 //
-// Do not copy. Both fields are reference types, so a value copy is a silent
-// alias: two values that each look like an owner and each look responsible for
-// Close. Every method also takes a pointer receiver, so a copy taken to "avoid
-// the pointer" bypasses the nil-receiver checks a
-// [*ClientIngressSubscription] caller relies on. Pass the
-// [*ClientIngressSubscription].
+// Do not copy. Fields are reference types, so a value copy is a silent alias:
+// two values each look like an owner and each look responsible for Close.
+// Every method also takes a pointer receiver, so a copy taken to avoid the
+// pointer bypasses the nil-receiver checks a [*ClientIngressSubscription]
+// caller relies on. Pass the [*ClientIngressSubscription].
 type ClientIngressSubscription struct {
 	agent        *consensus.Agent
 	subscription *aeron.Subscription
+	// ingress is the concrete reassembling adapter wired into the agent. Close
+	// uses this field to Clear assembler builders before unbind.
+	ingress *consensus.SubscriptionClientIngress
 }
 
 // OpenClientIngressSubscription registers the local client ingress subscription
 // on [Topology.IngressStreamID] and wires a
-// [consensus.SubscriptionConsensusIngress] into deps.Agent as the client
-// ingress.
+// [consensus.SubscriptionClientIngress] into deps.Agent as the client ingress.
 //
 // The channel is [Topology.IngressSubscriptionChannel]. That channel already
 // carries this member's ingress endpoint.
 //
 // Behaviour: every member opens the subscription. Only a steady-state leader
-// accepts connects. The agent dispatch owns that branch. The adapter delivers
-// unfragmented frames only. Fragmented ingress frames are skipped without
-// reassembly.
+// accepts connects, messages, keepalives, and closes. The agent dispatch owns
+// that branch. The adapter reassembles fragmented ingress frames before
+// dispatch. An unavailable image frees that session's reassembly builder.
 //
 // Returns an error when:
 //   - any dependency is nil
@@ -84,11 +87,18 @@ func OpenClientIngressSubscription(
 		return nil, err
 	}
 
-	deps.Agent.SetClientIngress(consensus.NewSubscriptionConsensusIngress(sub))
+	ingress := consensus.NewSubscriptionClientIngress(sub)
+	sub.SetUnavailableImageHandler(func(image *aeron.Image) {
+		if image != nil {
+			ingress.FreeSessionBuffer(image.SessionID())
+		}
+	})
+	deps.Agent.SetClientIngress(ingress)
 
 	return &ClientIngressSubscription{
 		agent:        deps.Agent,
 		subscription: sub,
+		ingress:      ingress,
 	}, nil
 }
 
@@ -105,18 +115,23 @@ func (c *ClientIngressSubscription) Subscription() *aeron.Subscription {
 	return c.subscription
 }
 
-// Close clears the agent client ingress, then closes the subscription.
+// Close drops assembler builders, clears the agent client ingress, then closes
+// the subscription.
 //
-// Idempotent. After Close the value is inert:
-// [ClientIngressSubscription.Subscription] returns nil and further Close calls
+// Idempotent. After Close the value is inert.
+// [ClientIngressSubscription.Subscription] returns nil. Further Close calls
 // touch neither the agent nor any later rebound ingress. Safe on a nil
-// receiver, a zero value, and after the transport client has already closed,
-// which closes subscriptions itself.
+// receiver, a zero value, and after the transport client has already closed
+// the subscription.
 //
 // Returns the subscription close error, or nil.
 func (c *ClientIngressSubscription) Close() error {
 	if c == nil || c.subscription == nil {
 		return nil
+	}
+	if c.ingress != nil {
+		c.ingress.Clear()
+		c.ingress = nil
 	}
 	c.agent.SetClientIngress(nil)
 	err := c.subscription.Close()

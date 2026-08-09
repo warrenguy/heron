@@ -440,6 +440,71 @@ func TestSessionManager_illegalEdges(t *testing.T) {
 	}
 }
 
+func TestSessionManager_markClosing(t *testing.T) {
+	m := newSessionManager()
+	pending := addPending(m, validConnectFields(1), 1)
+	open := addPending(m, validConnectFields(2), 2)
+	require.True(t, m.markAuthenticated(open.id, nil))
+	require.True(t, m.markOpen(open.id, 100))
+	require.Len(t, m.all, 2)
+	require.Equal(t, 1, m.openCount())
+	require.Equal(t, 0, m.closingSessionCount())
+
+	// Pending refuses.
+	require.False(t, m.markClosing(pending.id, clusterwire.CloseReason_CLIENT_ACTION))
+	require.Equal(t, sessionPending, pending.state)
+	require.Equal(t, 0, m.closingSessionCount())
+
+	// Unknown refuses.
+	require.False(t, m.markClosing(99, clusterwire.CloseReason_TIMEOUT))
+
+	// Open succeeds.
+	require.True(t, m.markClosing(open.id, clusterwire.CloseReason_TIMEOUT))
+	require.Equal(t, sessionClosing, open.state)
+	require.Equal(t, clusterwire.CloseReason_TIMEOUT, open.closeReason)
+	require.Equal(t, 0, m.openCount())
+	require.Equal(t, 1, m.closingSessionCount())
+	require.Empty(t, m.okPending)
+	require.Len(t, m.all, 2)
+
+	// Closing refuses second mark.
+	require.False(t, m.markClosing(open.id, clusterwire.CloseReason_CLIENT_ACTION))
+	require.Equal(t, clusterwire.CloseReason_TIMEOUT, open.closeReason)
+	require.Equal(t, 1, m.closingSessionCount())
+
+	// remove maintains all and closingCount.
+	require.True(t, m.remove(open.id))
+	require.Equal(t, 0, m.closingSessionCount())
+	require.Len(t, m.all, 1)
+	require.Equal(t, pending.id, m.all[0].id)
+}
+
+func TestSessionManager_removeOrphan(t *testing.T) {
+	m := newSessionManager()
+	open := addPending(m, validConnectFields(1), 1)
+	require.True(t, m.markAuthenticated(open.id, nil))
+	require.True(t, m.markOpen(open.id, 100))
+	require.True(t, m.markClosing(open.id, clusterwire.CloseReason_TIMEOUT))
+	require.Equal(t, 1, m.closingSessionCount())
+	require.Len(t, m.all, 1)
+
+	// Force byID miss for the Agent fail-closed path.
+	delete(m.byID, open.id)
+	require.Equal(t, -1, m.openCount())
+
+	m.removeOrphan(open)
+	require.Equal(t, 0, m.closingSessionCount())
+	require.Equal(t, 0, m.openCount())
+	require.Empty(t, m.all)
+
+	// Second call clamps closingCount. Counters stay zero.
+	m.removeOrphan(open)
+	require.Equal(t, 0, m.closingSessionCount())
+	require.Equal(t, 0, m.openCount())
+
+	m.removeOrphan(nil)
+}
+
 func TestSessionManager_remove(t *testing.T) {
 	m := newSessionManager()
 	pending := addPending(m, validConnectFields(1), 1)
@@ -448,6 +513,7 @@ func TestSessionManager_remove(t *testing.T) {
 	require.True(t, m.markOpen(open.id, 100))
 	require.Len(t, m.okPending, 1)
 	require.Same(t, open, m.okPending[0])
+	require.Len(t, m.all, 2)
 
 	require.True(t, m.remove(pending.id))
 	_, ok := m.sessionByID(pending.id)
@@ -455,12 +521,14 @@ func TestSessionManager_remove(t *testing.T) {
 	require.Equal(t, 0, m.pendingCount())
 	require.Equal(t, 1, m.openCount())
 	require.Len(t, m.okPending, 1)
+	require.Len(t, m.all, 1)
 
 	require.True(t, m.remove(open.id))
 	_, ok = m.sessionByID(open.id)
 	require.False(t, ok)
 	require.Equal(t, 0, m.openCount())
 	require.Empty(t, m.okPending)
+	require.Empty(t, m.all)
 
 	require.False(t, m.remove(999))
 
@@ -592,9 +660,11 @@ func TestSessionWork_closedPublicationHoldsQueue(t *testing.T) {
 	require.Equal(t, 2, a.OpenSessionCount())
 }
 
-// TestSessionWork_headMissingFromRegistry asserts the markOpen-false path. The
-// head is authenticated then deleted from byID while the head stays on the
-// pending list. Registry methods never produce that desync on their own.
+// TestSessionWork_headMissingFromRegistry asserts the markOpen-false path
+// under byID desync. The head is authenticated then deleted from byID while
+// the head stays on pending. Registry methods never produce that desync
+// alone. Asserts fail-closed remove drops secondary indexes so the head
+// leaves all.
 func TestSessionWork_headMissingFromRegistry(t *testing.T) {
 	p, _ := boundLogPublisher(t)
 	a := leaderWithLogPublisher(t, p, 0)
@@ -613,10 +683,14 @@ func TestSessionWork_headMissingFromRegistry(t *testing.T) {
 	// Session 1 fail-closed drop (1) + session 2 open+OK (2).
 	require.Equal(t, 3, a.sessionWork(10))
 	require.Equal(t, 0, a.PendingSessionCount())
+	require.Equal(t, 0, a.ClosingSessionCount())
 	require.Equal(t, 1, a.OpenSessionCount())
 	s2, ok := a.sessions.sessionByID(2)
 	require.True(t, ok)
 	require.Equal(t, sessionOpen, s2.state)
+	require.Len(t, a.sessions.all, 1)
+	require.Same(t, s2, a.sessions.all[0])
+	require.Nil(t, head.egressPublication)
 }
 
 // TestSessionWork_terminalHeadMissingFromRegistry asserts the byID-desync path
@@ -626,14 +700,14 @@ func TestSessionWork_terminalHeadMissingFromRegistry(t *testing.T) {
 	p, pub := boundLogPublisher(t)
 	a := leaderWithLogPublisher(t, p, 0)
 
-	// Head response channel exceeds MaxPayloadLength. Append returns terminal
+	// Head response channel exceeds MaxMessageLength. Append returns terminal
 	// UnsupportedMessageLength.
 	emptyFixed, ok := codecs.ClusterWireMessageLen(
 		clusterwire.SessionOpenEventSbeBlockLength, 0, 0,
 	)
 	require.True(t, ok)
 	headFields := validConnectFields(1)
-	headFields.ResponseChannel = make([]byte, pub.MaxPayloadLength()-emptyFixed+1)
+	headFields.ResponseChannel = make([]byte, pub.MaxMessageLength()-emptyFixed+1)
 	a.acceptSessionConnect(headFields, 1)
 	head, ok := a.sessions.sessionByID(1)
 	require.True(t, ok)
@@ -702,13 +776,13 @@ func TestSessionWork_terminalHeadContinuesToTail(t *testing.T) {
 	p, pub := boundLogPublisher(t)
 	a := leaderWithLogPublisher(t, p, 4)
 
-	// Head response channel exceeds MaxPayloadLength. Append returns terminal
+	// Head response channel exceeds MaxMessageLength. Append returns terminal
 	// UnsupportedMessageLength.
 	emptyFixed, ok := codecs.ClusterWireMessageLen(
 		clusterwire.SessionOpenEventSbeBlockLength, 0, 0,
 	)
 	require.True(t, ok)
-	oversize := make([]byte, pub.MaxPayloadLength()-emptyFixed+1)
+	oversize := make([]byte, pub.MaxMessageLength()-emptyFixed+1)
 	headFields := validConnectFields(1)
 	headFields.ResponseChannel = oversize
 	tailFields := validConnectFields(2)
@@ -859,7 +933,7 @@ func TestAcceptSessionConnect_handlerOverrides(t *testing.T) {
 func TestDoWork_connectAppendsSameTick(t *testing.T) {
 	p, pub := boundLogPublisher(t)
 	a := leaderWithLogPublisher(t, p, 9)
-	q := &QueueConsensusIngress{}
+	q := &QueueClientIngress{}
 	a.SetClientIngress(q)
 	// Nil SessionConnectHandler runs the product accept.
 	// CorrelationID 99 matches the sampleConnectFields default used before.

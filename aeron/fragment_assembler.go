@@ -9,23 +9,31 @@ const fragmentBuilderIdleNextTermOffset int32 = -1
 
 const fragmentBuilderInitMinCapacity = 4096
 
-// FragmentAssembler reassembles BEGIN/middle/END fragmented DATA frames and forwards whole
-// payloads to the delegate FragmentHandler. Unfragmented frames delegate without
-// copy. Reassembled delegates receive an assembler-owned buffer slice and
-// &builder.completedHeader; both are valid only for the delegate callback and
-// must not be retained past return. Not safe for concurrent use or reentrant
-// delegate callbacks that poll the same assembler.
+// FragmentAssembler reassembles BEGIN/middle/END fragmented DATA frames and
+// forwards whole payloads to the delegate FragmentHandler. Unfragmented frames
+// reach the delegate without a copy. Reassembled deliveries use an
+// assembler-owned buffer slice and &builder.completedHeader; both are valid
+// only for the delegate callback and must not be retained past return.
+//
+// Reassembly runs on a ControlledFragmentAssembler core. Every delivery returns
+// ControlledContinue because FragmentHandler has no poll action.
+//
+// Concurrency: not safe for concurrent use. Delegate callbacks must not poll
+// the same assembler reentrantly.
 type FragmentAssembler struct {
-	delegate            FragmentHandler
-	directAssemblers    bool
-	initialBufferLength int
-	builders            map[int32]*fragmentBufferBuilder
+	core     *ControlledFragmentAssembler
+	delegate FragmentHandler
 }
 
 type fragmentBufferBuilder struct {
-	payload             []byte
-	limit               int
-	nextTermOffset      int32
+	payload        []byte
+	limit          int
+	nextTermOffset int32
+	// firstFrameLength is the committed BEGIN frame length at capture time.
+	// ConfigureCompletedFragment patches frame length in place on
+	// capturedFrameHeader; ControlledFragmentAssembler Abort redelivery
+	// restores this value so span and Position recompute correctly.
+	firstFrameLength    int32
 	capturedFrameHeader [logbuffer.DataHeaderLength]byte
 	completedHeader     Header
 }
@@ -45,13 +53,13 @@ func NewFragmentAssemblerWithOptions(
 	initialBufferLength int,
 	directAssemblers bool,
 ) *FragmentAssembler {
-	initialBufferLength = max(0, min(initialBufferLength, logbuffer.MaxMessageLength))
-	return &FragmentAssembler{
-		delegate:            delegate,
-		directAssemblers:    directAssemblers,
-		initialBufferLength: initialBufferLength,
-		builders:            make(map[int32]*fragmentBufferBuilder),
-	}
+	assembler := &FragmentAssembler{delegate: delegate}
+	assembler.core = NewControlledFragmentAssemblerWithOptions(
+		assembler.handleControlledFragment,
+		initialBufferLength,
+		directAssemblers,
+	)
+	return assembler
 }
 
 // Handler returns the FragmentHandler passed to Subscription.Poll.
@@ -62,19 +70,17 @@ func (assembler *FragmentAssembler) Handler() FragmentHandler {
 // DirectAssemblers reports the isDirectAssemblers policy. Heap buffers only until
 // a future direct-backing optimization lands.
 func (assembler *FragmentAssembler) DirectAssemblers() bool {
-	return assembler.directAssemblers
+	return assembler.core.DirectAssemblers()
 }
 
 // Clear drops all in-progress reassembly state.
 func (assembler *FragmentAssembler) Clear() {
-	clear(assembler.builders)
+	assembler.core.Clear()
 }
 
 // FreeSessionBuffer evicts the reassembly builder for sessionID.
 func (assembler *FragmentAssembler) FreeSessionBuffer(sessionID int32) bool {
-	_, ok := assembler.builders[sessionID]
-	delete(assembler.builders, sessionID)
-	return ok
+	return assembler.core.FreeSessionBuffer(sessionID)
 }
 
 func (assembler *FragmentAssembler) handleFragment(
@@ -83,67 +89,25 @@ func (assembler *FragmentAssembler) handleFragment(
 	length int,
 	header *Header,
 ) {
-	flags := header.Flags()
-	if flags&logbuffer.Unfragmented == logbuffer.Unfragmented {
-		assembler.delegate(buffer, offset, length, header)
-		return
-	}
+	assembler.core.handleFragment(buffer, offset, length, header)
+}
 
-	sessionID := header.SessionID()
-	builder := assembler.builders[sessionID]
-
-	if flags&logbuffer.BeginFlag != 0 {
-		if builder == nil {
-			builder = &fragmentBufferBuilder{}
-			assembler.builders[sessionID] = builder
-		}
-		builder.reset()
-		builder.captureHeader(header, buffer)
-		if !builder.append(buffer, offset, length, assembler.initialBufferLength) {
-			return
-		}
-	} else {
-		if builder == nil {
-			return
-		}
-		if !builder.appendAtExpectedOffset(
-			buffer,
-			offset,
-			length,
-			header.TermOffset(),
-			assembler.initialBufferLength,
-		) {
-			return
-		}
-		if flags&logbuffer.EndFlag != 0 {
-			firstLen := logbuffer.FrameLength(atomicbuffer.Wrap(builder.capturedFrameHeader[:]), 0)
-			delete(assembler.builders, sessionID)
-			if builder.limit <= 0 || firstLen <= int32(logbuffer.DataHeaderLength) {
-				// Malformed END is terminal: no valid payload can be delivered.
-				// Evict the idle map entry. Transient failures (offset gap, append
-				// bounds) only reset the builder so a later BEGIN can reuse the slot.
-				return
-			}
-			builder.completedHeader.ConfigureCompletedFragment(
-				builder.capturedFrameHeader[:],
-				builder.limit,
-				header,
-			)
-			assembler.delegate(
-				atomicbuffer.Wrap(builder.payload),
-				0,
-				builder.limit,
-				&builder.completedHeader,
-			)
-			return
-		}
-	}
-	builder.nextTermOffset = header.NextTermOffset()
+// handleControlledFragment is the ControlledFragmentAssembler delegate. Invokes
+// the plain FragmentHandler and returns ControlledContinue.
+func (assembler *FragmentAssembler) handleControlledFragment(
+	buffer atomicbuffer.AtomicBuffer,
+	offset int,
+	length int,
+	header *Header,
+) ControlledAction {
+	assembler.delegate(buffer, offset, length, header)
+	return ControlledContinue
 }
 
 func (builder *fragmentBufferBuilder) reset() {
 	builder.limit = 0
 	builder.nextTermOffset = fragmentBuilderIdleNextTermOffset
+	builder.firstFrameLength = 0
 }
 
 func (builder *fragmentBufferBuilder) captureHeader(
@@ -154,6 +118,25 @@ func (builder *fragmentBufferBuilder) captureHeader(
 	copy(
 		builder.capturedFrameHeader[:],
 		buffer.Bytes()[frameOffset:frameOffset+logbuffer.DataHeaderLength],
+	)
+	builder.firstFrameLength = logbuffer.FrameLength(
+		atomicbuffer.Wrap(builder.capturedFrameHeader[:]),
+		0,
+	)
+}
+
+// restoreFirstFrameLength writes the BEGIN frame length back into
+// capturedFrameHeader. Call before ConfigureCompletedFragment when the
+// builder may have been used for a prior completed-header patch (Abort
+// redelivery).
+func (builder *fragmentBufferBuilder) restoreFirstFrameLength() {
+	if builder.firstFrameLength <= 0 {
+		return
+	}
+	logbuffer.PutFrameLengthOrdered(
+		atomicbuffer.Wrap(builder.capturedFrameHeader[:]),
+		0,
+		builder.firstFrameLength,
 	)
 }
 

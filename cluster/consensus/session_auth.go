@@ -185,7 +185,7 @@ func (a *Agent) advanceSessionAuth(session *clientSession, nowNs int64) authAdva
 		a.authenticator.HandleConnectedSession(a.proxyFor(session), nowNs)
 	case sessionChallenged:
 		a.authenticator.HandleChallengedSession(a.proxyFor(session), nowNs)
-	case sessionAuthenticated, sessionRejected, sessionOpen:
+	case sessionAuthenticated, sessionRejected, sessionOpen, sessionClosing:
 	}
 	a.sessionAuthProxy.session = nil
 	if session.state == sessionRejected {
@@ -247,7 +247,7 @@ func (a *Agent) queueRejectedSession(session *clientSession) {
 		detail:           sessionRejectedDetailBytes,
 		addCorrelationID: nullValue,
 		publication:      session.egressPublication,
-		deadlineNs:       session.lastActivityNs + defaultSessionTimeoutNs,
+		deadlineNs:       session.lastActivityNs + a.sessionTimeoutNs,
 	}
 	session.egressPublication = nil
 	if !a.appendEgressEvent(e) {

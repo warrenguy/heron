@@ -551,17 +551,32 @@ func TestPublication_MaxPositionExceeded_fragmented(t *testing.T) {
 	})
 }
 
-func TestPublication_FragmentedOffer_backPressuredNearMaxPosition(t *testing.T) {
-	// Remaining term space must exceed single-frame alignment for maxPayload+1
-	// but not the full fragmented reservation; framed-length prelude max check
-	// alone would return MaxPositionExceeded while backPressureStatus returns BackPressured.
+// Asserts fragmented Offer returns BackPressured when remaining term space
+// exceeds single-frame alignment for maxPayload+1 but not the full framed
+// reservation. A max-position check on framed length alone would return
+// MaxPositionExceeded. Covers concurrent and exclusive publications.
+func TestFragmentedOffer_backPressuredNearMaxPosition(t *testing.T) {
 	const remaining int32 = 1450
 	position := publicationPositionWithTermRemaining(remaining)
-	pub := aeron.NewTestPublication(t, publicationLogConfigWithTermRemaining(remaining), position)
-	maxPayload := pub.MaxPayloadLengthForTest()
 
-	got := pub.Offer(make([]byte, maxPayload+1))
-	require.Equal(t, aeron.BackPressured, got)
+	t.Run("concurrent", func(t *testing.T) {
+		pub := aeron.NewTestPublication(t, publicationLogConfigWithTermRemaining(remaining), position)
+		got := pub.Offer(make([]byte, pub.MaxPayloadLengthForTest()+1))
+		require.Equal(t, aeron.BackPressured, got)
+	})
+
+	t.Run("exclusive", func(t *testing.T) {
+		ep := aeron.NewTestExclusivePublication(
+			t,
+			aeron.LogConfigWithTermRemainingForTest(
+				aeron.DefaultTestExclusivePublicationLogConfig,
+				remaining,
+			),
+			position,
+		)
+		got := ep.Offer(make([]byte, ep.MaxPayloadLengthForTest()+1))
+		require.Equal(t, aeron.BackPressured, got)
+	})
 }
 
 func TestPublication_AdminAction_termCountMismatch(t *testing.T) {

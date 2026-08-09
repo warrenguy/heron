@@ -243,6 +243,7 @@ func OpenConsensusModule(
 		LeaderMemberID:            election.NullMemberID,
 		LeaderHeartbeatIntervalNs: electionCfg.LeaderHeartbeatIntervalNs,
 		LeaderHeartbeatTimeoutNs:  electionCfg.LeaderHeartbeatTimeoutNs,
+		SessionTimeoutNs:          cfg.SessionTimeoutNs,
 		AppVersion:                electionCfg.AppVersion,
 		Authenticator:             cfg.Authenticator,
 	})

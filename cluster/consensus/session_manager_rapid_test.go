@@ -11,6 +11,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 type sessionRegistryOpKind int
@@ -22,6 +23,7 @@ const (
 	sessionOpMarkRejected
 	sessionOpRefreshChallenged
 	sessionOpMarkOpen
+	sessionOpMarkClosing
 	sessionOpRemove
 	sessionOpLookup
 	sessionOpClearOKPending
@@ -32,17 +34,18 @@ type sessionModelEntry struct {
 	principal      []byte
 	correlationID  int64
 	lastActivityNs int64
+	closeReason    clusterwire.CloseReason
 }
 
-// TestSessionManager_lifecycle_rapid asserts registry allocate, add, auth
-// mutators, markOpen, remove, setOKPending(false), and lookup against a
-// reference model. Each step checks counts, id monotonicity, pending order,
-// okPending FIFO order, principal bytes, and the walk-list non-open invariant.
+// Asserts registry allocate, add, auth mutators, markOpen, markClosing, remove,
+// setOKPending(false), and lookup against a reference model. Each step checks
+// counts, id monotonicity, pending order, okPending FIFO order, accept-order
+// all, closeReason, closingSessionCount, principal bytes, and the walk-list
+// pre-open invariant (excludes open and closing).
 //
-// PBT skips the egress walk and event queue. Publication and adder outcomes
-// are a fixed matrix. Unit rows document each path. PBT also skips
-// authenticator consultation. Unit rows document the fixed state x proxy
-// action matrix.
+// PBT skips the egress walk and event queue. Publication and adder outcomes are
+// a fixed matrix. Unit rows document each path. PBT also skips authenticator
+// consultation. Unit rows document the fixed state x proxy action matrix.
 func TestSessionManager_lifecycle_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -53,6 +56,8 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 		pendingOrder := make([]int64, 0)
 		// okPendingOrder tracks markOpen order for sessions awaiting SessionEvent OK.
 		okPendingOrder := make([]int64, 0)
+		// acceptOrder tracks every live session in accept order (all list).
+		acceptOrder := make([]int64, 0)
 		var lastIssued int64
 		issued := make(map[int64]struct{})
 
@@ -60,16 +65,28 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 			rt.Helper()
 			require.Equal(rt, len(pendingOrder), m.pendingCount())
 			openN := 0
+			closingN := 0
 			for _, e := range model {
-				if e.state == sessionOpen {
+				switch e.state {
+				case sessionOpen:
 					openN++
+				case sessionClosing:
+					closingN++
 				}
 			}
 			require.Equal(rt, openN, m.openCount())
+			require.Equal(rt, closingN, m.closingSessionCount())
+			require.Len(rt, model, openN+closingN+len(pendingOrder))
 			require.Len(rt, m.byID, len(model))
 			require.Len(rt, m.okPending, len(okPendingOrder))
+			require.Len(rt, m.all, len(acceptOrder))
 
-			// Walk-list entries are exactly the non-open sessions.
+			// all equals accept-ordered live sessions.
+			for i, id := range acceptOrder {
+				require.Equal(rt, id, m.all[i].id)
+			}
+
+			// Walk-list entries are exactly the pre-open sessions.
 			require.Len(rt, m.pending, len(pendingOrder))
 			for i, id := range pendingOrder {
 				require.Equal(rt, id, m.pending[i].id)
@@ -77,6 +94,7 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				require.True(rt, ok)
 				e := model[id]
 				require.NotEqual(rt, sessionOpen, e.state)
+				require.NotEqual(rt, sessionClosing, e.state)
 				require.Equal(rt, e.state, s.state)
 				require.Equal(rt, e.principal, s.encodedPrincipal)
 				require.Equal(rt, e.correlationID, s.correlationID)
@@ -100,9 +118,12 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				require.Equal(rt, e.state, s.state)
 				require.Equal(rt, e.principal, s.encodedPrincipal)
 				require.Equal(rt, e.correlationID, s.correlationID)
+				if e.state == sessionClosing {
+					require.Equal(rt, e.closeReason, s.closeReason)
+				}
 				wantOnOK := slices.Contains(okPendingOrder, id)
 				require.Equal(rt, wantOnOK, m.okPendingIndex(s) >= 0)
-				wantOnWalk := e.state != sessionOpen
+				wantOnWalk := e.state != sessionOpen && e.state != sessionClosing
 				require.Equal(rt, wantOnWalk, slices.Contains(pendingOrder, id))
 			}
 		}
@@ -143,6 +164,7 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				lastActivityNs: nowNs,
 			}
 			pendingOrder = append(pendingOrder, s.id)
+			acceptOrder = append(acceptOrder, s.id)
 			require.Equal(rt, fields.CorrelationID, s.correlationID)
 			require.Equal(rt, fields.ResponseStreamID, s.responseStreamID)
 			require.Equal(rt, fields.ResponseChannel, s.responseChannel)
@@ -180,6 +202,7 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				sessionOpMarkRejected,
 				sessionOpRefreshChallenged,
 				sessionOpMarkOpen,
+				sessionOpMarkClosing,
 				sessionOpRemove,
 				sessionOpLookup,
 				sessionOpClearOKPending,
@@ -266,6 +289,24 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 					require.Same(rt, s, m.okPending[len(m.okPending)-1])
 				}
 
+			case sessionOpMarkClosing:
+				id := drawSessionID(rt, model, "markClosingID")
+				reason := rapid.SampledFrom([]clusterwire.CloseReason{
+					clusterwire.CloseReason_CLIENT_ACTION,
+					clusterwire.CloseReason_TIMEOUT,
+					clusterwire.CloseReason_SERVICE_ACTION,
+				}).Draw(rt, "closeReason")
+				e, ok := model[id]
+				wantOK := ok && e.state == sessionOpen
+				got := m.markClosing(id, reason)
+				require.Equal(rt, wantOK, got)
+				if wantOK {
+					e.state = sessionClosing
+					e.closeReason = reason
+					model[id] = e
+					okPendingOrder = removeIDFromOrder(okPendingOrder, id)
+				}
+
 			case sessionOpClearOKPending:
 				var id int64
 				useExisting := len(okPendingOrder) > 0 && rapid.Bool().Draw(rt, "clearExisting")
@@ -297,6 +338,7 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 					delete(model, id)
 					okPendingOrder = removeIDFromOrder(okPendingOrder, id)
 					pendingOrder = removeIDFromOrder(pendingOrder, id)
+					acceptOrder = removeIDFromOrder(acceptOrder, id)
 				}
 
 			case sessionOpLookup:

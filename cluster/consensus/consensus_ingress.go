@@ -1,13 +1,14 @@
 package consensus
 
+import "github.com/warrenguy/heron/aeron"
+
 // defaultConsensusIngressFragmentLimit is the max fragments drained per
 // [Agent.pollConsensusIngress] poll (matches typical Aeron adapter limits).
 const defaultConsensusIngressFragmentLimit = 10
 
 // ConsensusIngress polls one duty-cycle batch of unfragmented SBE frames.
 //
-// Used for the consensus control stream and the client ingress stream. Both
-// streams share this Poll shape.
+// Used for the consensus control stream. Client ingress uses [ClientIngress].
 //
 // Implementations: [QueueConsensusIngress], [SubscriptionConsensusIngress].
 // The agent must not hold election types on this interface.
@@ -23,9 +24,12 @@ type ConsensusIngress interface {
 // QueueConsensusIngress is an in-memory [ConsensusIngress] for unit inject.
 // Each element is a full SBE message including the MessageHeader.
 //
-// Concurrency: invoker-only; not safe for concurrent Poll/Enqueue.
+// Drains through a [QueueClientIngress]. Each delivery returns
+// ControlledContinue because ConsensusIngress has no poll action.
+//
+// Concurrency: invoker-only. Not safe for concurrent Poll or Enqueue.
 type QueueConsensusIngress struct {
-	msgs [][]byte
+	queue QueueClientIngress
 }
 
 // Enqueue appends one full message buffer for a later [QueueConsensusIngress.Poll].
@@ -33,23 +37,19 @@ func (q *QueueConsensusIngress) Enqueue(msg []byte) {
 	if q == nil {
 		return
 	}
-	q.msgs = append(q.msgs, msg)
+	q.queue.Enqueue(msg)
 }
 
 // Poll drains up to fragmentLimit queued messages, calling onFragment for each
 // at offset 0. Returns the number of fragments delivered.
 func (q *QueueConsensusIngress) Poll(fragmentLimit int, onFragment func([]byte, int)) int {
-	if q == nil || onFragment == nil || fragmentLimit <= 0 {
+	if q == nil || onFragment == nil {
 		return 0
 	}
-	n := 0
-	for n < fragmentLimit && len(q.msgs) > 0 {
-		m := q.msgs[0]
-		q.msgs = q.msgs[1:]
-		onFragment(m, 0)
-		n++
-	}
-	return n
+	return q.queue.Poll(fragmentLimit, func(buf []byte, offset int) aeron.ControlledAction {
+		onFragment(buf, offset)
+		return aeron.ControlledContinue
+	})
 }
 
 var _ ConsensusIngress = (*QueueConsensusIngress)(nil)

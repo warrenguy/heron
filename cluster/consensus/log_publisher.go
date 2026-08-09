@@ -18,7 +18,10 @@ const logPublisherSendAttempts = 3
 // publication on replace.
 type LogPublisher struct {
 	publication *aeron.ExclusivePublication
-	scratch     []byte
+	// scratch is the encode buffer. SetPublication sizes it to MaxPayloadLength
+	// for the single-frame hot path. Larger totals grow it up to
+	// MaxMessageLength. Retained across appends.
+	scratch []byte
 }
 
 // NewLogPublisher returns a publisher with no publication bound.
@@ -29,21 +32,17 @@ func NewLogPublisher() *LogPublisher {
 
 // SetPublication binds or replaces the exclusive log publication.
 //
-// Resizes scratch to MaxPayloadLength when pub is non-nil so later appends fit
-// under a valid payload length check without growing on the hot path.
+// When pub is non-nil, grows scratch to at least MaxPayloadLength so later
+// single-frame appends pass the payload length check without growing on the
+// hot path.
 //
-// Does not close the previous publication; the caller owns lifecycle.
+// Does not close the previous publication. The caller owns lifecycle.
 func (p *LogPublisher) SetPublication(pub *aeron.ExclusivePublication) {
 	p.publication = pub
 	if pub == nil {
 		return
 	}
-	need := pub.MaxPayloadLength()
-	if cap(p.scratch) < need {
-		p.scratch = make([]byte, need)
-	} else {
-		p.scratch = p.scratch[:need]
-	}
+	p.scratch = p.scratchFor(pub.MaxPayloadLength())
 }
 
 // Publication returns the bound exclusive publication, or nil.
@@ -67,18 +66,45 @@ func (p *LogPublisher) SessionID() int32 {
 	return p.publication.SessionID()
 }
 
+// scratchFor returns a buffer of length total for encoding. Totals above the
+// current capacity grow scratch geometrically. The grown buffer is retained.
+func (p *LogPublisher) scratchFor(total int) []byte {
+	if cap(p.scratch) < total {
+		p.scratch = make([]byte, total, max(total, cap(p.scratch)*2))
+	}
+	return p.scratch[:total]
+}
+
+// offerEncoded offers the encoded bytes in buf with the log publisher retry
+// budget.
+//
+// The caller must bind the publication and encode into buf before calling.
+// Retries up to logPublisherSendAttempts on retriable codes (BackPressured,
+// AdminAction, NotConnected). Closed and MaxPositionExceeded stop immediately.
+func (p *LogPublisher) offerEncoded(buf []byte) int64 {
+	var position int64
+	for range logPublisherSendAttempts {
+		position = p.publication.OfferWithOffset(buf, 0, len(buf))
+		if position > 0 || !aeron.IsOfferRetriable(position) {
+			return position
+		}
+	}
+	return position
+}
+
 // AppendMessage encodes SessionMessageHeader + payload into scratch and offers
-// a single unfragmented frame.
+// the frame. Payloads above MaxPayloadLength fragment on the exclusive
+// publication when the total fits MaxMessageLength.
 //
 // Returns stream position (>0) or aeron publication codes (NotConnected,
 // BackPressured, AdminAction, Closed, MaxPositionExceeded,
 // UnsupportedMessageLength). Nil publication -> Closed.
 //
-// headerLen+len(payload) > MaxPayloadLength -> UnsupportedMessageLength without
-// calling Offer (same code Offer would return for oversize exclusive payload).
+// headerLen+len(payload) > MaxMessageLength -> UnsupportedMessageLength without
+// calling Offer. Keeps MaxPositionExceeded reserved for publication-position
+// exhaustion.
 //
-// Retries up to logPublisherSendAttempts on retriable codes (BackPressured,
-// AdminAction, NotConnected). Closed and MaxPositionExceeded stop immediately.
+// Offer retry policy is [LogPublisher.offerEncoded].
 func (p *LogPublisher) AppendMessage(
 	leadershipTermID int64,
 	clusterSessionID int64,
@@ -88,37 +114,25 @@ func (p *LogPublisher) AppendMessage(
 	if p == nil || p.publication == nil {
 		return aeron.Closed
 	}
-	pub := p.publication
 	headerLen := codecs.SessionMessageHeaderEncodedLen()
 	total := headerLen + len(payload)
-	if total > pub.MaxPayloadLength() {
+	if total > p.publication.MaxMessageLength() {
 		return aeron.UnsupportedMessageLength
 	}
-	if total > len(p.scratch) {
-		// SetPublication skipped after bind - treat as closed publisher state.
-		return aeron.Closed
-	}
+	scratch := p.scratchFor(total)
 
 	fields := codecs.SessionMessageHeaderFields{
 		LeadershipTermID: leadershipTermID,
 		ClusterSessionID: clusterSessionID,
 		Timestamp:        timestamp,
 	}
-	if _, err := codecs.EncodeIngressHeaderScratch(p.scratch, fields); err != nil {
-		// Sized scratch after MaxPayloadLength check should not fail; map like
+	if _, err := codecs.EncodeIngressHeaderScratch(scratch, fields); err != nil {
+		// Sized scratch after MaxMessageLength check should not fail; map like
 		// client Offer encode path.
 		return aeron.NotConnected
 	}
-	copy(p.scratch[headerLen:total], payload)
-
-	var position int64
-	for range logPublisherSendAttempts {
-		position = pub.OfferWithOffset(p.scratch, 0, total)
-		if position > 0 || !aeron.IsOfferRetriable(position) {
-			return position
-		}
-	}
-	return position
+	copy(scratch[headerLen:total], payload)
+	return p.offerEncoded(scratch)
 }
 
 // AppendNewLeadershipTermEvent reserves a fixed 56-byte unfragmented claim,
@@ -170,20 +184,19 @@ func (p *LogPublisher) AppendNewLeadershipTermEvent(
 }
 
 // AppendSessionOpen encodes SessionOpenEvent (template 21) into scratch and
-// offers a single unfragmented frame.
+// offers the frame. Totals above MaxPayloadLength fragment when they fit
+// MaxMessageLength.
 //
 // Behaviour: copies responseChannel and encodedPrincipal into scratch. Does not
 // retain either slice. Does not validate field semantics.
 //
 // Returns stream position (>0) on success, or an aeron publication code:
 //   - Closed when the receiver or publication is nil
-//   - Closed when total exceeds len(scratch) after bind
 //   - UnsupportedMessageLength when ClusterWireMessageLen fails or total
-//     exceeds MaxPayloadLength (does not call Offer)
+//     exceeds MaxMessageLength (does not call Offer)
 //   - NotConnected when encode fails after the length checks
-//   - Offer codes from OfferWithOffset after up to logPublisherSendAttempts on
-//     retriable codes (BackPressured, AdminAction, NotConnected). Closed and
-//     MaxPositionExceeded stop immediately
+//   - Offer codes from [LogPublisher.offerEncoded] (same retry budget and
+//     terminal-stop policy as AppendMessage)
 func (p *LogPublisher) AppendSessionOpen(
 	leadershipTermID int64,
 	correlationID int64,
@@ -196,19 +209,15 @@ func (p *LogPublisher) AppendSessionOpen(
 	if p == nil || p.publication == nil {
 		return aeron.Closed
 	}
-	pub := p.publication
 	total, ok := codecs.ClusterWireMessageLen(
 		clusterwire.SessionOpenEventSbeBlockLength,
 		len(responseChannel),
 		len(encodedPrincipal),
 	)
-	if !ok || total > pub.MaxPayloadLength() {
+	if !ok || total > p.publication.MaxMessageLength() {
 		return aeron.UnsupportedMessageLength
 	}
-	if total > len(p.scratch) {
-		// SetPublication skipped after bind. Treat as closed publisher state.
-		return aeron.Closed
-	}
+	scratch := p.scratchFor(total)
 
 	fields := codecs.SessionOpenEventFields{
 		LeadershipTermID: leadershipTermID,
@@ -220,20 +229,12 @@ func (p *LogPublisher) AppendSessionOpen(
 		EncodedPrincipal: encodedPrincipal,
 	}
 	actingVersion := uint16(clusterwire.SessionOpenEventSbeSchemaVersion)
-	if _, encOK := codecs.EncodeSessionOpenEvent(p.scratch, 0, actingVersion, fields); !encOK {
+	if _, encOK := codecs.EncodeSessionOpenEvent(scratch, 0, actingVersion, fields); !encOK {
 		// Length checks already passed. Encode failure maps to NotConnected, same
 		// as AppendMessage.
 		return aeron.NotConnected
 	}
-
-	var position int64
-	for range logPublisherSendAttempts {
-		position = pub.OfferWithOffset(p.scratch, 0, total)
-		if position > 0 || !aeron.IsOfferRetriable(position) {
-			return position
-		}
-	}
-	return position
+	return p.offerEncoded(scratch)
 }
 
 // appendClaim encodes fields into a fixed-length claim and commits.

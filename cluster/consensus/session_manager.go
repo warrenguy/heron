@@ -9,9 +9,9 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-// maxConcurrentSessions caps open plus pending sessions. Connects over the
-// cap receive SessionEvent ERROR until a session is removed. Bounds registry
-// memory under a connect flood.
+// maxConcurrentSessions caps live registry entries (pending, open, closing, and
+// other pre-open states). Connects over the cap receive SessionEvent ERROR
+// until a session is removed. Bounds registry memory under a connect flood.
 const maxConcurrentSessions = 100
 
 // sessionState is the client session lifecycle state.
@@ -38,6 +38,12 @@ const (
 	// sessionOpen means SessionOpenEvent is on the log. openedLogPosition holds
 	// the append position.
 	sessionOpen
+
+	// sessionClosing means the close reason is decided and the
+	// SessionCloseEvent append is outstanding. closeReason holds the reason.
+	// The egress publication is already closed for CLIENT_ACTION. It stays up
+	// for TIMEOUT until the CLOSED event sends.
+	sessionClosing
 )
 
 // clientSession is one client session on the leader.
@@ -48,6 +54,7 @@ const (
 //   - egress poll terminal
 //   - pending deadline reclaim
 //   - authentication reject handoff
+//   - client close or idle timeout after SessionCloseEvent append
 type clientSession struct {
 	id                int64
 	correlationID     int64
@@ -56,9 +63,13 @@ type clientSession struct {
 	state             sessionState
 	openedLogPosition int64
 
-	// lastActivityNs is set at accept. ChallengeResponse refresh updates the
-	// field. Pending deadline reclaim reads the field.
+	// lastActivityNs is set at accept. ChallengeResponse, keepalive, and
+	// session message success refresh the field. Pending deadline reclaim and
+	// the open-session idle sweep read the field.
 	lastActivityNs int64
+
+	// closeReason is the decided close reason, valid in sessionClosing.
+	closeReason clusterwire.CloseReason
 
 	// encodedPrincipal is the authenticator-granted principal, cloned at
 	// Authenticate. Empty until granted. Appended on SessionOpenEvent.
@@ -83,7 +94,12 @@ type sessionManager struct {
 	byID    map[int64]*clientSession
 	pending []*clientSession
 	// okPending holds open sessions awaiting SessionEvent OK, in markOpen order.
-	okPending     []*clientSession
+	okPending []*clientSession
+	// all holds every live session in accept order. The close sweep walks all
+	// front to back.
+	all []*clientSession
+	// closingCount is the number of sessions in sessionClosing.
+	closingCount  int
 	nextSessionID int64
 }
 
@@ -126,14 +142,13 @@ func (m *sessionManager) addPendingConnect(
 	}
 	m.byID[id] = s
 	m.pending = append(m.pending, s)
+	m.all = append(m.all, s)
 	return s
 }
 
 // okPendingIndex returns the index of s in okPending, or -1 when absent.
 func (m *sessionManager) okPendingIndex(s *clientSession) int {
-	return slices.IndexFunc(m.okPending, func(x *clientSession) bool {
-		return x == s
-	})
+	return slices.Index(m.okPending, s)
 }
 
 // setOKPending adds or drops s on okPending. No-op when membership already
@@ -244,8 +259,31 @@ func (m *sessionManager) markOpen(sessionID, logPosition int64) bool {
 	return true
 }
 
+// markClosing moves an open session to closing and stores the reason.
+//
+// Behaviour: clears okPending for the session when present. Maintains
+// closingCount.
+//
+// Returns: false when the id is unknown or the session is not open. On false
+// the registry is untouched.
+func (m *sessionManager) markClosing(
+	sessionID int64,
+	reason clusterwire.CloseReason,
+) bool {
+	s, ok := m.byID[sessionID]
+	if !ok || s.state != sessionOpen {
+		return false
+	}
+	s.state = sessionClosing
+	s.closeReason = reason
+	m.closingCount++
+	m.setOKPending(s, false)
+	return true
+}
+
 // remove deletes the session in any state. Drops the walk-list entry for every
-// non-open state. Removes the session from okPending when present.
+// non-open state. Removes the session from okPending and all when present.
+// Decrements closingCount when the session was closing.
 //
 // Returns: false when the id is unknown.
 func (m *sessionManager) remove(sessionID int64) bool {
@@ -253,12 +291,35 @@ func (m *sessionManager) remove(sessionID int64) bool {
 	if !ok {
 		return false
 	}
-	m.setOKPending(s, false)
-	if s.state != sessionOpen {
-		m.removePending(sessionID)
-	}
+	m.dropSessionIndexes(s)
 	delete(m.byID, sessionID)
 	return true
+}
+
+// removeOrphan drops okPending, pending, and all for a session pointer when
+// byID already lacks the id. Decrements closingCount when the session is
+// closing.
+//
+// Callers must use this only on fail-closed paths that hold a session pointer
+// outside byID. Does not delete byID.
+func (m *sessionManager) removeOrphan(s *clientSession) {
+	if s == nil {
+		return
+	}
+	m.dropSessionIndexes(s)
+}
+
+// dropSessionIndexes clears okPending, pending, and all for s. When s is
+// closing, decrements closingCount and clamps at zero. Does not delete byID.
+func (m *sessionManager) dropSessionIndexes(s *clientSession) {
+	m.setOKPending(s, false)
+	if s.state != sessionOpen {
+		m.removePending(s.id)
+	}
+	if s.state == sessionClosing && m.closingCount > 0 {
+		m.closingCount--
+	}
+	m.removeFromAll(s.id)
 }
 
 func (m *sessionManager) sessionByID(sessionID int64) (*clientSession, bool) {
@@ -271,18 +332,34 @@ func (m *sessionManager) pendingCount() int {
 }
 
 func (m *sessionManager) openCount() int {
-	// Walk-list holds every non-open session. Open sessions leave the list.
-	return len(m.byID) - len(m.pending)
+	// Walk-list holds every pre-open session. Closing sessions leave both the
+	// walk list and the open count.
+	return len(m.byID) - len(m.pending) - m.closingCount
+}
+
+func (m *sessionManager) closingSessionCount() int {
+	return m.closingCount
+}
+
+// deleteSessionByID drops the entry with sessionID from sessions when present.
+func deleteSessionByID(sessions []*clientSession, sessionID int64) []*clientSession {
+	i := slices.IndexFunc(sessions, func(s *clientSession) bool {
+		return s.id == sessionID
+	})
+	if i < 0 {
+		return sessions
+	}
+	return slices.Delete(sessions, i, i+1)
+}
+
+// removeFromAll drops the all-list entry for sessionID when present.
+func (m *sessionManager) removeFromAll(sessionID int64) {
+	m.all = deleteSessionByID(m.all, sessionID)
 }
 
 // removePending drops the pending entry for sessionID when present.
 func (m *sessionManager) removePending(sessionID int64) {
-	i := slices.IndexFunc(m.pending, func(s *clientSession) bool {
-		return s.id == sessionID
-	})
-	if i >= 0 {
-		m.pending = slices.Delete(m.pending, i, i+1)
-	}
+	m.pending = deleteSessionByID(m.pending, sessionID)
 }
 
 // acceptSessionConnect runs the product leader accept path.
@@ -325,16 +402,17 @@ func (a *Agent) acceptSessionConnect(
 	a.startSessionEgress(session)
 }
 
-// sessionWork runs on a settled member:
-//  1. egressEventWork - any-role deadline reclaim and REDIRECT/ERROR/reject
-//     drain
-//  2. sessionPendingWork - leader pre-open walk (egress, auth, append,
-//     markOpen)
-//  3. okPendingWork - leader SessionEvent OK backlog drain
+// sessionWork runs on a settled member, in order:
+//   - egressEventWork: any-role deadline reclaim and REDIRECT/ERROR/reject
+//     drain; non-leader closing reclaim
+//   - sessionPendingWork: leader pre-open walk (egress, auth, append, markOpen)
+//   - sessionCloseWork: leader idle-timeout sweep and closing-append retry
+//   - okPendingWork: leader SessionEvent OK backlog drain
 //
 // Concurrency: invoker-only. Callers must invoke sessionWork from the
 // [Agent.DoWork] election-nil branch. sessionPendingWork re-checks election
-// and role. sessionPendingWork and okPendingWork run only for the leader.
+// and role. sessionPendingWork, sessionCloseWork, and okPendingWork run only
+// for the leader.
 //
 // Returns: the sum of work units from each step. Returns 0 when an election is
 // live.
@@ -347,8 +425,118 @@ func (a *Agent) sessionWork(nowNs int64) int {
 		return work
 	}
 	work += a.sessionPendingWork(nowNs)
+	work += a.sessionCloseWork(nowNs)
 	work += a.okPendingWork()
 	return work
+}
+
+// canAppendLog reports whether a bound open log publication backs the session
+// append paths.
+//
+// Behaviour: returns false when the log publisher is nil, holds no publication,
+// or holds a closed publication. A bound open publication that back-pressures
+// still returns true. Close paths must call canAppendLog before marking a
+// session closing. A mark without an appendable log strands the session in
+// closing on a leader.
+func (a *Agent) canAppendLog() bool {
+	publisher := a.logPublisher
+	if publisher == nil {
+		return false
+	}
+	publication := publisher.Publication()
+	return publication != nil && !publication.IsClosed()
+}
+
+// sessionCloseWork marks idle open sessions closing with TIMEOUT, retries
+// SessionCloseEvent appends for every closing session, and removes on success.
+//
+// Behaviour: walks a.sessions.all front to back. Pre-open states are skipped.
+// An open session past lastActivityNs plus sessionTimeoutNs marks closing
+// TIMEOUT then appends when the log publisher is bound. When the publisher is
+// nil or unbound, the open session is left untouched so it cannot enter a
+// stuck closing state. A closing session retries the append. Append success
+// sends SessionEvent CLOSED when egress still holds (TIMEOUT path), then
+// removes the session.
+//
+// Returns: work units for timeout marks and successful close removes.
+//
+// Concurrency: invoker-only. Leader only. Callers must invoke from sessionWork.
+func (a *Agent) sessionCloseWork(nowNs int64) int {
+	// Skip TIMEOUT mark when SessionCloseEvent cannot append: avoid stuck
+	// closing without a log publication. Back-pressure still marks and retries.
+	canMarkTimeout := a.canAppendLog()
+	timeoutNs := a.sessionTimeoutNs
+	work := 0
+	for i := 0; i < len(a.sessions.all); {
+		session := a.sessions.all[i]
+		switch session.state {
+		case sessionOpen:
+			if !canMarkTimeout || nowNs <= session.lastActivityNs+timeoutNs {
+				i++
+				continue
+			}
+			if !a.sessions.markClosing(session.id, clusterwire.CloseReason_TIMEOUT) {
+				i++
+				continue
+			}
+			work++
+		case sessionClosing:
+			// Retry failed client-action and timeout appends.
+		case sessionPending, sessionChallenged, sessionAuthenticated, sessionRejected:
+			// Pre-open lifetimes belong to any-role deadline reclaim.
+			i++
+			continue
+		}
+		if a.appendSessionCloseAndRemove(session, nowNs) {
+			// Entry left all; stay at i.
+			work++
+			continue
+		}
+		i++
+	}
+	return work
+}
+
+// appendSessionCloseAndRemove appends SessionCloseEvent and tears down the
+// session on success.
+//
+// Behaviour:
+//   - AppendSessionClose false leaves the session closing for the next tick.
+//   - Append true: when the session still holds an egress publication (TIMEOUT
+//     path), sends SessionEvent CLOSED once with detail closeReason.String()
+//     best effort. Then removeSessionWithResources.
+//
+// Returns: true when the session was removed.
+func (a *Agent) appendSessionCloseAndRemove(session *clientSession, nowNs int64) bool {
+	if session == nil {
+		return false
+	}
+	publisher := a.logPublisher
+	if publisher == nil {
+		return false
+	}
+	ok := publisher.AppendSessionClose(
+		a.leadershipTermID,
+		session.id,
+		nowNs,
+		session.closeReason,
+	)
+	if !ok {
+		return false
+	}
+	if session.egressPublication != nil {
+		// TIMEOUT path: CLOSED best effort. Client-action already released egress.
+		_ = a.sendSessionEvent(
+			session.egressPublication,
+			session.id,
+			session.correlationID,
+			a.announcedLeaderMemberID(),
+			clusterwire.EventCode_CLOSED,
+			[]byte(session.closeReason.String()),
+		)
+	}
+	a.removeSessionWithResources(session)
+	return true
 }
 
 // sessionPendingWork advances pre-open sessions on a leader.
@@ -438,10 +626,11 @@ func (a *Agent) sessionPendingWork(nowNs int64) int {
 		)
 		if position > 0 {
 			if !a.sessions.markOpen(session.id, position) {
-				// Not authenticated in byID. Drop resources and the walk-list
-				// entry so the duty cycle cannot hang on the same entry.
-				a.releaseSessionEgress(session)
-				a.sessions.removePending(session.id)
+				// byID lacks an authenticated session. removeSessionWithResources
+				// drops egress and secondary indexes so all and closingCount stay
+				// consistent under byID desync. Matches the per-session terminal
+				// append path.
+				a.removeSessionWithResources(session)
 			}
 			// Entry left the walk list; stay at i.
 			work++
@@ -471,6 +660,12 @@ func (a *Agent) PendingSessionCount() int {
 }
 
 // OpenSessionCount returns the number of sessions marked open.
+// Closing sessions are excluded.
 func (a *Agent) OpenSessionCount() int {
 	return a.sessions.openCount()
+}
+
+// ClosingSessionCount returns the number of sessions marked closing.
+func (a *Agent) ClosingSessionCount() int {
+	return a.sessions.closingSessionCount()
 }

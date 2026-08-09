@@ -5,20 +5,21 @@ import (
 	"github.com/warrenguy/heron/aeron/conductor"
 )
 
-// Subscription manages registration and a set of images for one stream.
+// Subscription manages registration and the image set for one stream.
 //
-// Subscription is not thread-safe. Do not call Poll concurrently with
-// Client.DoWork on the same client, nor from multiple goroutines. Only one
-// goroutine calls Client.DoWork and Subscription.Poll for a given client.
-// Image isClosed uses atomic.Bool for visibility within Poll; subscription
-// closed is a plain bool; cross-goroutine close visibility for Image only
-// is guaranteed under the single-thread contract above.
+// Not thread-safe. Must not call Poll or ControlledPoll concurrently with
+// Client.DoWork on the same client, and must not call those methods from
+// multiple goroutines. One goroutine runs Client.DoWork and the poll methods
+// for a given client. Image isClosed uses atomic.Bool for visibility inside
+// poll loops. Subscription closed is a plain bool. Cross-goroutine close
+// visibility for Image alone holds under that single-writer contract.
 //
-// The images slice is mutated only by the conductor via addImage and
-// removeImage; application code must not modify it.
+// The conductor alone mutates the images slice via addImage and removeImage.
+// Application code must not modify the slice.
 //
-// Image lifecycle callbacks are configured on Config at Connect, not on
-// Subscription directly.
+// Connect copies image lifecycle callbacks from Config.
+// [Subscription.SetUnavailableImageHandler] may replace the unavailable
+// callback after the subscription is created.
 type Subscription struct {
 	registrationID int64
 	streamID       int32
@@ -28,8 +29,9 @@ type Subscription struct {
 	counters               *cnc.CountersReader
 
 	images []*Image
-	// roundRobinIndex advances each Poll for fairness. Java Subscription stores
-	// this as int; stored as uint32 here and normalized against len(images) every Poll.
+	// roundRobinIndex advances each Poll/ControlledPoll for fairness. Java
+	// Subscription stores this as int; stored as uint32 here and normalized
+	// against len(images) every poll.
 	roundRobinIndex uint32
 
 	closed bool
@@ -71,6 +73,24 @@ func newSubscription(
 
 func (subscription *Subscription) applySubscriptionReady(channelStatusCounterID int32) {
 	subscription.channelStatusCounterID = channelStatusCounterID
+}
+
+// SetUnavailableImageHandler replaces the unavailable-image callback for this
+// subscription.
+//
+// Behaviour: the next driver OnUnavailableImage for this subscription invokes
+// handler. Nil clears the callback. A later call may replace a prior handler.
+// A nil receiver is a silent no-op.
+//
+// Concurrency: invoker-only. Same Client.DoWork restrictions as
+// [UnavailableImageHandler].
+func (subscription *Subscription) SetUnavailableImageHandler(
+	handler UnavailableImageHandler,
+) {
+	if subscription == nil {
+		return
+	}
+	subscription.unavailableImageHandler = handler
 }
 
 func (subscription *Subscription) RegistrationID() int64 {
@@ -140,8 +160,41 @@ func (subscription *Subscription) IsClosed() bool {
 //
 // Subscription is not thread-safe; see type documentation.
 func (subscription *Subscription) Poll(handler FragmentHandler, fragmentLimit int) int {
+	return subscription.pollImages(fragmentLimit, func(image *Image, limit int) int {
+		return image.Poll(handler, limit)
+	})
+}
+
+// ControlledPoll delivers fragments from attached images using round-robin
+// fairness, with per-fragment position control via [ControlledFragmentHandler].
+//
+// Mirrors [Poll] image snapshot and budget rules. Each image runs
+// [Image.ControlledPoll] with the remaining fragment budget.
+// [ControlledAbort] and [ControlledBreak] stop only the current image's
+// batch; remaining budget still visits later images in the rotation.
+//
+// Returns 0 when the subscription is closed, without advancing roundRobinIndex.
+//
+// Subscription is not thread-safe; see type documentation.
+func (subscription *Subscription) ControlledPoll(
+	handler ControlledFragmentHandler,
+	fragmentLimit int,
+) int {
+	return subscription.pollImages(fragmentLimit, func(image *Image, limit int) int {
+		return image.ControlledPoll(handler, limit)
+	})
+}
+
+// pollImages walks a snapshot of images in round-robin order.
+//
+// Closed: returns 0 without advancing roundRobinIndex.
+// Empty: advances roundRobinIndex and returns 0.
+// Nil snapshot entries are skipped.
+func (subscription *Subscription) pollImages(
+	fragmentLimit int,
+	pollImage func(image *Image, limit int) int,
+) int {
 	if subscription.closed {
-		// Closed: no fragments and no round-robin advance.
 		return 0
 	}
 
@@ -163,7 +216,7 @@ func (subscription *Subscription) Poll(handler FragmentHandler, fragmentLimit in
 		if image == nil {
 			continue
 		}
-		fragmentsRead += image.Poll(handler, fragmentLimit-fragmentsRead)
+		fragmentsRead += pollImage(image, fragmentLimit-fragmentsRead)
 	}
 
 	return fragmentsRead
@@ -213,7 +266,7 @@ func (subscription *Subscription) removeImage(correlationID int64) *Image {
 // Close tears down this registration via the bound conductor.
 //
 // Idempotent: repeated calls return nil. Concurrent Close from multiple
-// goroutines is unsupported. After close, Poll returns zero.
+// goroutines is unsupported. After close, Poll and ControlledPoll return zero.
 func (subscription *Subscription) Close() error {
 	if subscription.closed {
 		return nil

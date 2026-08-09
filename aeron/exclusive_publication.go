@@ -40,8 +40,10 @@ type ExclusivePublication struct {
 	termBufferLength    int
 	positionBitsToShift int
 
-	initialTermID       int32
-	maxPayloadLength    int
+	initialTermID    int32
+	maxPayloadLength int
+	// Upper bound for Offer payload length; payloads above maxPayloadLength
+	// fragment until this limit, then return MaxPositionExceeded.
 	maxMessageLength    int
 	maxPossiblePosition int64
 	headerWriter        logbuffer.HeaderWriter
@@ -81,17 +83,18 @@ func (ep *ExclusivePublication) MaxPayloadLength() int {
 	return ep.maxPayloadLength
 }
 
-// MaxMessageLength returns the largest total message length Offer will accept
-// before returning MaxPositionExceeded.
+// MaxMessageLength returns the largest total message length Offer accepts.
+// Longer lengths return MaxPositionExceeded. Fragmented payloads may span
+// multiple frames up to this bound.
 func (ep *ExclusivePublication) MaxMessageLength() int {
 	return ep.maxMessageLength
 }
 
-// Offer publishes a message from buffer. Fragmented Offer (> maxPayloadLength) is
-// unsupported; payloads in (maxPayloadLength, maxMessageLength] return
-// UnsupportedMessageLength (-6).
+// Offer publishes a message from buffer. Unfragmented payloads fit one DATA
+// frame. Larger payloads up to maxMessageLength split into fragments.
 //
-// Returns a new stream position (>0) or a negative status code (see publication_codes.go).
+// Returns a new stream position (>0) or a negative status code (see
+// publication_codes.go).
 //
 // See also PositionCodeName, IsOfferRetriable.
 func (ep *ExclusivePublication) Offer(buffer []byte) int64 {
@@ -100,11 +103,13 @@ func (ep *ExclusivePublication) Offer(buffer []byte) int64 {
 
 // OfferWithOffset publishes length bytes from buffer[offset:offset+length].
 //
-// Negative length or invalid offset/length bounds panic (Java IllegalArgumentException).
+// Negative length or invalid offset/length bounds panic (Java
+// IllegalArgumentException).
 //
-// length <= maxPayloadLength uses a single DATA frame. Payloads above maxPayloadLength
-// up to maxMessageLength return UnsupportedMessageLength (-6) until fragmented exclusive
-// Offer is implemented. length > maxMessageLength returns MaxPositionExceeded (-5).
+// length <= maxPayloadLength uses a single DATA frame. Larger payloads up to
+// maxMessageLength split across BEGIN, middle, and END fragments.
+//
+// length > maxMessageLength returns MaxPositionExceeded (-5).
 //
 // See also PositionCodeName, IsOfferRetriable.
 func (ep *ExclusivePublication) OfferWithOffset(buffer []byte, offset, length int) int64 {
@@ -117,11 +122,11 @@ func (ep *ExclusivePublication) OfferWithOffset(buffer []byte, offset, length in
 		return MaxPositionExceeded
 	}
 	if length > ep.maxPayloadLength {
-		return UnsupportedMessageLength
+		return ep.appendFragmentedMessage(buffer, offset, length)
 	}
 
 	alignedLength := logbuffer.AlignFragmentChunkLength(length)
-	if status := ep.checkPublicationLimit(alignedLength); status != 0 {
+	if status := ep.checkPublicationLimit(alignedLength, length); status != 0 {
 		return status
 	}
 	return ep.appendUnfragmentedMessage(buffer, offset, length, alignedLength)
@@ -168,7 +173,7 @@ func (ep *ExclusivePublication) TryClaim(
 	}
 
 	alignedLength := logbuffer.AlignFragmentChunkLength(length)
-	if status := ep.checkPublicationLimit(alignedLength); status != 0 {
+	if status := ep.checkPublicationLimit(alignedLength, length); status != 0 {
 		return 0, 0, status, nil
 	}
 
@@ -303,16 +308,20 @@ func (ep *ExclusivePublication) markClosed() error {
 	return nil
 }
 
-func (ep *ExclusivePublication) checkPublicationLimit(alignedLength int) int64 {
+// checkPublicationLimit gates position against the publication limit and max
+// position. The back-pressure span is AlignFragmentChunkLength(messageLength).
+// The max-position check uses reservationSpan only (aligned frame or full
+// framed length). Matches concurrent runOfferPrelude dual-span shape.
+func (ep *ExclusivePublication) checkPublicationLimit(reservationSpan, messageLength int) int64 {
 	limit := ep.publicationLimit.Get()
 	position := ep.termBeginPosition + int64(ep.termOffset)
-	span := int64(alignedLength)
 
 	if position >= limit {
+		span := int64(logbuffer.AlignFragmentChunkLength(messageLength))
 		return backPressureStatusForLog(ep.meta, ep.maxPossiblePosition, position, span)
 	}
 
-	if position+span >= ep.maxPossiblePosition {
+	if position+int64(reservationSpan) >= ep.maxPossiblePosition {
 		return MaxPositionExceeded
 	}
 
@@ -376,6 +385,52 @@ func (ep *ExclusivePublication) appendUnfragmentedMessage(
 		buffer[srcOffset:srcOffset+length],
 	)
 	logbuffer.PutFrameLengthOrdered(res.termBuf, res.startOffset, frameLength)
+
+	ep.termOffset = res.resultingOffset
+	return res.reservedPosition
+}
+
+// appendFragmentedMessage reserves the full framed span once, then writes
+// BEGIN, middle, and END DATA frames in that block.
+//
+// Single-writer exclusive path. One release pack-tail covers the full framed
+// span. Does not use FAA. Does not recheck term ID mid-loop. The exclusive
+// writer owns the term.
+func (ep *ExclusivePublication) appendFragmentedMessage(
+	buffer []byte,
+	srcOffset int,
+	length int,
+) int64 {
+	framedLength := logbuffer.ComputeFragmentedFrameLength(length, ep.maxPayloadLength)
+	if status := ep.checkPublicationLimit(framedLength, length); status != 0 {
+		return status
+	}
+
+	res := ep.reserveExclusiveSpace(framedLength)
+	if res.status != 0 {
+		return res.status
+	}
+
+	frameOffset := res.startOffset
+	remaining := length
+	fullChunkAligned := logbuffer.AlignFragmentChunkLength(ep.maxPayloadLength)
+
+	for remaining > 0 {
+		chunk := nextFragmentChunk(remaining, length, ep.maxPayloadLength, fullChunkAligned)
+		payloadOffset := srcOffset + (length - remaining)
+
+		writeFragmentChunk(
+			ep.headerWriter,
+			res.termBuf,
+			res.termID,
+			frameOffset,
+			chunk,
+			buffer[payloadOffset:payloadOffset+chunk.bytesToWrite],
+		)
+
+		frameOffset += chunk.alignedLength
+		remaining -= chunk.bytesToWrite
+	}
 
 	ep.termOffset = res.resultingOffset
 	return res.reservedPosition

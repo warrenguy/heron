@@ -125,11 +125,47 @@ func TestLogPublisher_AppendMessage_oversize(t *testing.T) {
 	p, pub := boundLogPublisher(t)
 
 	headerLen := codecs.SessionMessageHeaderEncodedLen()
-	oversize := make([]byte, pub.MaxPayloadLength()-headerLen+1)
+	// Above MaxMessageLength: fail-closed UnsupportedMessageLength.
+	oversize := make([]byte, pub.MaxMessageLength()-headerLen+1)
 	require.Equal(t, aeron.UnsupportedMessageLength, p.AppendMessage(1, 2, 3, oversize))
 
 	// Position stays 0: oversize rejected before Offer.
 	require.Equal(t, int64(0), p.Position())
+}
+
+func TestLogPublisher_AppendMessage_abovePayloadCap(t *testing.T) {
+	p, pub := boundLogPublisher(t)
+
+	headerLen := codecs.SessionMessageHeaderEncodedLen()
+	// One byte past MaxPayloadLength total: fragmented offer when MaxMessageLength allows.
+	total := pub.MaxPayloadLength() + 1
+	if total > pub.MaxMessageLength() {
+		t.Skip("test publication MaxMessageLength too small for mid-band payload")
+	}
+	position := p.AppendMessage(1, 2, 3, make([]byte, total-headerLen))
+	require.Positive(t, position)
+
+	// Multi-frame train: first frame BEGIN-only; walk to END frame.
+	termBuf := pub.TermBuffer(0)
+	frameLength := int(logbuffer.FrameLengthVolatile(termBuf, 0))
+	require.Positive(t, frameLength)
+	first := logbuffer.FrameFlags(termBuf, 0)
+	require.Equal(t, uint8(logbuffer.BeginFlag), first&logbuffer.BeginFlag)
+	require.Equal(t, uint8(0), first&logbuffer.EndFlag)
+
+	off := logbuffer.AlignFrameLength(frameLength)
+	var last uint8
+	for range 15 {
+		frameLength = int(logbuffer.FrameLengthVolatile(termBuf, off))
+		require.Positive(t, frameLength)
+		last = logbuffer.FrameFlags(termBuf, off)
+		if last&logbuffer.EndFlag != 0 {
+			break
+		}
+		off += logbuffer.AlignFrameLength(frameLength)
+	}
+	require.Equal(t, uint8(logbuffer.EndFlag), last&logbuffer.EndFlag)
+	require.Equal(t, uint8(0), last&logbuffer.BeginFlag)
 }
 
 func TestLogPublisher_AppendMessage_happy(t *testing.T) {
@@ -155,15 +191,18 @@ func TestLogPublisher_AppendMessage_happy(t *testing.T) {
 	require.Equal(t, payload, wire[headerLen:])
 }
 
-// Asserts AppendMessage returns Closed when scratch is empty after the
-// publication is bound. The total fits MaxPayloadLength and exceeds
-// len(scratch). Same fail-closed policy as AppendSessionOpen.
-func TestLogPublisher_AppendMessage_staleScratch(t *testing.T) {
+// Asserts AppendMessage grows scratch when the bound buffer cannot hold the
+// total. Asserts the position advances on success.
+func TestLogPublisher_AppendMessage_staleScratchGrows(t *testing.T) {
 	p, _ := boundLogPublisher(t)
-	p.scratch = p.scratch[:0]
+	p.scratch = nil
 
-	require.Equal(t, aeron.Closed, p.AppendMessage(1, 2, 3, []byte("payload")))
-	require.Equal(t, int64(0), p.Position())
+	require.Positive(t, p.AppendMessage(1, 2, 3, []byte("payload")))
+	require.GreaterOrEqual(
+		t,
+		cap(p.scratch),
+		len("payload")+codecs.SessionMessageHeaderEncodedLen(),
+	)
 }
 
 // TestLogPublisher_appendFailurePaths asserts every append method against the
@@ -305,7 +344,8 @@ func TestLogPublisher_AppendSessionOpen_oversize(t *testing.T) {
 		clusterwire.SessionOpenEventSbeBlockLength, 0, 0,
 	)
 	require.True(t, ok)
-	oversize := make([]byte, pub.MaxPayloadLength()-emptyFixed+1)
+	// Above MaxMessageLength: fail-closed UnsupportedMessageLength.
+	oversize := make([]byte, pub.MaxMessageLength()-emptyFixed+1)
 	require.Equal(t, aeron.UnsupportedMessageLength, p.AppendSessionOpen(
 		1, 2, 3, 4, 5, oversize, nil,
 	))
@@ -318,17 +358,16 @@ func TestLogPublisher_AppendSessionOpen_oversize(t *testing.T) {
 	require.Equal(t, int64(0), p.Position())
 }
 
-// Asserts AppendSessionOpen returns Closed when scratch is empty after the
-// publication is bound. The total fits MaxPayloadLength and exceeds
-// len(scratch). Same fail-closed policy as AppendMessage.
-func TestLogPublisher_AppendSessionOpen_staleScratch(t *testing.T) {
+// Asserts AppendSessionOpen grows scratch when the bound buffer cannot hold
+// the encoded total.
+func TestLogPublisher_AppendSessionOpen_staleScratchGrows(t *testing.T) {
 	p, _ := boundLogPublisher(t)
-	p.scratch = p.scratch[:0]
+	p.scratch = nil
 
-	require.Equal(t, aeron.Closed, p.AppendSessionOpen(
+	require.Positive(t, p.AppendSessionOpen(
 		1, 2, 3, 4, 5, []byte("ch"), []byte("pr"),
 	))
-	require.Equal(t, int64(0), p.Position())
+	require.Positive(t, cap(p.scratch))
 }
 
 func TestLogPublisher_AppendSessionClose_happy(t *testing.T) {

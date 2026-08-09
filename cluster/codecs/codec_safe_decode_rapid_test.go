@@ -48,6 +48,36 @@ func TestChallengeResponse_fastSlowDecodeParity(t *testing.T) {
 	})
 }
 
+func TestSessionCloseRequest_fastSlowDecodeParity(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.SessionCloseRequestFields{
+			LeadershipTermID: rapid.Int64().Draw(rt, "leadershipTermID"),
+			ClusterSessionID: rapid.Int64().Draw(rt, "clusterSessionID"),
+		}
+		buf := make([]byte, offset+fuzzClusterCodecMaxLen)
+		wireEnd, ok := codecs.EncodeSessionCloseRequest(buf, offset, actingVersion, fields)
+		require.True(rt, ok)
+		requireSessionCloseRequestFastSlowParity(rt, buf[:wireEnd], offset)
+	})
+}
+
+func TestSessionKeepAlive_fastSlowDecodeParity(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.SessionKeepAliveFields{
+			LeadershipTermID: rapid.Int64().Draw(rt, "leadershipTermID"),
+			ClusterSessionID: rapid.Int64().Draw(rt, "clusterSessionID"),
+		}
+		buf := make([]byte, offset+fuzzClusterCodecMaxLen)
+		wireEnd, ok := codecs.EncodeSessionKeepAlive(buf, offset, actingVersion, fields)
+		require.True(rt, ok)
+		requireSessionKeepAliveFastSlowParity(rt, buf[:wireEnd], offset)
+	})
+}
+
 func rapidSessionMessageHeaderParityWire(rt *rapid.T) (buf []byte, offset int) {
 	rt.Helper()
 	if rapid.Bool().Draw(rt, "useValidWire") {

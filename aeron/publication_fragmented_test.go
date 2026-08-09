@@ -9,24 +9,41 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
+// fragmentTB is the testing surface used by fragmented-message helpers. Embeds
+// require.TestingT plus Helper. Not full testing.TB.
+type fragmentTB interface {
+	Helper()
+	require.TestingT
+}
+
+// fragmentedMessageFrameLocation returns the term partition index and start
+// offset of a fragmented or single-frame message that ended at position.
+// Callers select the term buffer for their publication type.
+func fragmentedMessageFrameLocation(
+	position int64,
+	length, maxPayload int,
+) (termIndex, frameStart int) {
+	shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
+	totalAligned := logbuffer.ComputeFragmentedFrameLength(length, maxPayload)
+	return logbuffer.IndexByPosition(position, shift),
+		aeron.FragmentedMessageStartOffsetForTest(position, shift, totalAligned)
+}
+
 func readFragmentedFramesAtPosition(
-	tb testing.TB,
+	tb fragmentTB,
 	pub *aeron.Publication,
 	position int64,
 	length, maxPayload int,
 ) []aeron.FragmentedFrameForTest {
 	tb.Helper()
 
-	shift := logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
-	totalAligned := logbuffer.ComputeFragmentedFrameLength(length, maxPayload)
-	frameStart := aeron.FragmentedMessageStartOffsetForTest(position, shift, totalAligned)
-	termIndex := logbuffer.IndexByPosition(position, shift)
+	termIndex, frameStart := fragmentedMessageFrameLocation(position, length, maxPayload)
 	termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
 	return aeron.ReadFragmentedMessageForTest(tb, termBuf, frameStart)
 }
 
 func requireReassembledPayload(
-	tb testing.TB,
+	tb fragmentTB,
 	frames []aeron.FragmentedFrameForTest,
 	want []byte,
 ) {
@@ -118,19 +135,49 @@ func requireCommittedFragmentedPayloads(
 	}
 }
 
-func requireFragmentFlags(tb require.TestingT, frames []aeron.FragmentedFrameForTest) {
-	if helper, ok := tb.(interface{ Helper() }); ok {
-		helper.Helper()
-	}
+func requireFragmentFlags(tb fragmentTB, frames []aeron.FragmentedFrameForTest) {
+	tb.Helper()
 
+	last := len(frames) - 1
 	for i, frame := range frames {
 		switch i {
 		case 0:
 			require.Equal(tb, uint8(logbuffer.BeginFlag), frame.Flags&logbuffer.BeginFlag)
-		case len(frames) - 1:
+			if last > 0 {
+				require.Equal(tb, uint8(0), frame.Flags&logbuffer.EndFlag)
+			}
+		case last:
 			require.Equal(tb, uint8(logbuffer.EndFlag), frame.Flags&logbuffer.EndFlag)
+			if last > 0 {
+				require.Equal(tb, uint8(0), frame.Flags&logbuffer.BeginFlag)
+			}
 		default:
 			require.Equal(tb, uint8(0), frame.Flags&(logbuffer.BeginFlag|logbuffer.EndFlag))
+		}
+	}
+}
+
+// requireFragmentedMessageShape asserts fragment count, per-chunk payload
+// bounds, the multi-frame flag train, and that no frame is Unfragmented when
+// length exceeds maxPayload.
+func requireFragmentedMessageShape(
+	tb fragmentTB,
+	frames []aeron.FragmentedFrameForTest,
+	length, maxPayload int,
+) {
+	tb.Helper()
+
+	wantCount := (length + maxPayload - 1) / maxPayload
+	require.Len(tb, frames, wantCount)
+	requireFragmentFlags(tb, frames)
+	for _, frame := range frames {
+		require.LessOrEqual(tb, len(frame.Payload), maxPayload)
+		if length > maxPayload {
+			require.NotEqual(
+				tb,
+				uint8(logbuffer.Unfragmented),
+				frame.Flags&logbuffer.Unfragmented,
+			)
 		}
 	}
 }
@@ -149,10 +196,7 @@ func TestPublication_FragmentedOffer_twoFrames(t *testing.T) {
 	require.Positive(t, position)
 
 	frames := readFragmentedFramesAtPosition(t, pub, position, length, maxPayload)
-
-	require.Len(t, frames, 2)
-	require.Equal(t, uint8(0), frames[0].Flags&logbuffer.EndFlag)
-	require.Equal(t, uint8(0), frames[1].Flags&logbuffer.BeginFlag)
+	requireFragmentedMessageShape(t, frames, length, maxPayload)
 	require.Len(t, frames[0].Payload, maxPayload)
 	require.Len(t, frames[1].Payload, 1)
 	requireReassembledPayload(t, frames, payload)
@@ -172,9 +216,7 @@ func TestPublication_FragmentedOffer_threeFrames(t *testing.T) {
 	require.Positive(t, position)
 
 	frames := readFragmentedFramesAtPosition(t, pub, position, length, maxPayload)
-
-	require.Len(t, frames, 3)
-	requireFragmentFlags(t, frames)
+	requireFragmentedMessageShape(t, frames, length, maxPayload)
 
 	for i, frame := range frames {
 		require.Len(t, frame.Payload, maxPayload)
@@ -219,8 +261,7 @@ func TestPublication_FragmentedOffer_termRolloverRetry(t *testing.T) {
 	)
 
 	frames := readFragmentedFramesAtPosition(t, pub, position, length, maxPayload)
-	require.Len(t, frames, 2)
-	requireFragmentFlags(t, frames)
+	requireFragmentedMessageShape(t, frames, length, maxPayload)
 	requireReassembledPayload(t, frames, payload)
 }
 
@@ -306,23 +347,26 @@ func TestPublication_FragmentedOffer_midFragmentTermIDChangeAdminAction(t *testi
 	require.Positive(t, position)
 
 	frames := readFragmentedFramesAtPosition(t, pub, position, length, maxPayload)
-	require.Len(t, frames, 3)
-	requireFragmentFlags(t, frames)
+	requireFragmentedMessageShape(t, frames, length, maxPayload)
 	requireReassembledPayload(t, frames, payload)
 }
 
 func TestPublication_FragmentedOffer_withOffset(t *testing.T) {
 	pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), int64(1)<<40)
 	maxPayload := pub.MaxPayloadLengthForTest()
+	length := maxPayload + 1
 
-	buffer := append([]byte("xx"), make([]byte, maxPayload+1)...)
+	buffer := append([]byte("xx"), make([]byte, length)...)
 	for i := 2; i < len(buffer); i++ {
 		buffer[i] = byte(i)
 	}
 
-	position := aeron.OfferWithOffsetRetryForTest(pub, buffer, 2, maxPayload+1)
+	position := aeron.OfferWithOffsetRetryForTest(pub, buffer, 2, length)
 	require.Positive(t, position)
 
-	frames := readFragmentedFramesAtPosition(t, pub, position, maxPayload+1, maxPayload)
+	frames := readFragmentedFramesAtPosition(t, pub, position, length, maxPayload)
+	requireFragmentedMessageShape(t, frames, length, maxPayload)
+	require.Len(t, frames[0].Payload, maxPayload)
+	require.Len(t, frames[1].Payload, 1)
 	requireReassembledPayload(t, frames, buffer[2:])
 }

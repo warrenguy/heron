@@ -228,7 +228,7 @@ func TestFragmentAssembler_malformedAssemblyDropped(t *testing.T) {
 			deliverFragments(t, assembler, termBuffer, offsets)
 
 			require.Empty(t, capture.payloads)
-			require.NotContains(t, assembler.builders, TestPublicationSessionID)
+			require.NotContains(t, assembler.core.builders, TestPublicationSessionID)
 		})
 	}
 }
@@ -278,7 +278,7 @@ func TestFragmentAssembler_termOffsetGapResets(t *testing.T) {
 
 	require.Empty(t, capture.payloads)
 	// Offset gap resets builder but retains map slot for a later BEGIN.
-	require.Contains(t, assembler.builders, TestPublicationSessionID)
+	require.Contains(t, assembler.core.builders, TestPublicationSessionID)
 }
 
 func TestFragmentAssembler_newBeginResetsInProgress(t *testing.T) {
@@ -380,7 +380,7 @@ func TestFragmentAssembler_multiFragmentCapacityGrowth(t *testing.T) {
 	require.Len(t, capture.payloads, 1)
 	require.Equal(t, payload, capture.payloads[0])
 
-	require.NotContains(t, assembler.builders, TestPublicationSessionID)
+	require.NotContains(t, assembler.core.builders, TestPublicationSessionID)
 }
 
 func TestFragmentAssembler_oversizePayloadResets(t *testing.T) {
@@ -397,7 +397,7 @@ func TestFragmentAssembler_oversizePayloadResets(t *testing.T) {
 	assembler := NewFragmentAssembler(capture.handler())
 	deliverFragment(t, assembler, termBuffer, offsets[0])
 
-	primed := assembler.builders[TestPublicationSessionID]
+	primed := assembler.core.builders[TestPublicationSessionID]
 	require.NotNil(t, primed)
 	primed.limit = logbuffer.MaxMessageLength
 
@@ -528,7 +528,7 @@ func TestFragmentAssembler_initialBufferLength_clamped(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assembler := NewFragmentAssemblerWithOptions(nil, tc.input, false)
-			require.Equal(t, tc.want, assembler.initialBufferLength)
+			require.Equal(t, tc.want, assembler.core.initialBufferLength)
 		})
 	}
 }

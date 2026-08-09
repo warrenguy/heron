@@ -57,6 +57,41 @@ func AdaptFragmentHandlerBytesRetain(h FragmentHandlerBytes) FragmentHandler {
 	return adaptFragmentHandlerBytes(h, fragmentPayloadClone)
 }
 
+// ControlledFragmentHandlerBytes receives one committed fragment payload during
+// ControlledPoll and returns the action for the poll loop.
+//
+// payload follows the FragmentHandlerBytes span rules. The span is a zero-copy
+// view valid only for the callback duration. payload is nil when length <= 0 or
+// the span is out of bounds. The adapter still invokes the handler when payload
+// is nil.
+//
+// Handlers must not retain payload or the Header pointer beyond the callback.
+// See ControlledFragmentHandler for the full poll contract.
+type ControlledFragmentHandlerBytes func(payload []byte, header *Header) ControlledAction
+
+// AdaptControlledFragmentHandlerBytes wraps h as a ControlledFragmentHandler for
+// Subscription.ControlledPoll, Image.ControlledPoll, or
+// ControlledFragmentAssembler delegate wiring.
+//
+// Returns nil when h is nil. ControlledPoll treats a nil handler as a no-op.
+//
+// May allocate the adapted closure once on the cold path. Per-fragment delivery
+// is zero-alloc (slice view only).
+func AdaptControlledFragmentHandlerBytes(
+	h ControlledFragmentHandlerBytes,
+) ControlledFragmentHandler {
+	if h == nil {
+		return nil
+	}
+	return func(
+		buffer atomicbuffer.AtomicBuffer,
+		offset, length int,
+		header *Header,
+	) ControlledAction {
+		return h(fragmentPayloadView(buffer, offset, length), header)
+	}
+}
+
 func adaptFragmentHandlerBytes(
 	h FragmentHandlerBytes,
 	payload func(atomicbuffer.AtomicBuffer, int, int) []byte,

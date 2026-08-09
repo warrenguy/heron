@@ -610,41 +610,24 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 			return AdminAction
 		}
 
-		bytesToWrite := min(remaining, pub.maxPayloadLength)
-		frameLength := int32(bytesToWrite + logbuffer.DataHeaderLength)
-		alignedLength := fullChunkAligned
-		if bytesToWrite != pub.maxPayloadLength {
-			alignedLength = logbuffer.AlignFragmentChunkLength(bytesToWrite)
-		}
-
-		var fragFlags uint8
-		if remaining == length {
-			fragFlags = logbuffer.BeginFlag
-		}
-		if bytesToWrite == remaining {
-			fragFlags |= logbuffer.EndFlag
-		}
+		chunk := nextFragmentChunk(remaining, length, pub.maxPayloadLength, fullChunkAligned)
+		payloadOffset := srcOffset + (length - remaining)
 
 		trackFragmentedWrite(outcome.termIndex, frameOffset, true)
 
-		pub.headerWriter.WriteWithFlags(
+		writeFragmentChunk(
+			pub.headerWriter,
 			outcome.termBuf,
-			frameOffset,
-			frameLength,
 			outcome.termID,
-			fragFlags,
+			frameOffset,
+			chunk,
+			buffer[payloadOffset:payloadOffset+chunk.bytesToWrite],
 		)
-		payloadOffset := srcOffset + (length - remaining)
-		outcome.termBuf.PutBytes(
-			frameOffset+logbuffer.OffsetFramePayload,
-			buffer[payloadOffset:payloadOffset+bytesToWrite],
-		)
-		logbuffer.PutFrameLengthOrdered(outcome.termBuf, frameOffset, frameLength)
 
 		trackFragmentedWrite(outcome.termIndex, frameOffset, false)
 
-		frameOffset += alignedLength
-		remaining -= bytesToWrite
+		frameOffset += chunk.alignedLength
+		remaining -= chunk.bytesToWrite
 	}
 
 	return outcome.position
