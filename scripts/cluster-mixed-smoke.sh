@@ -23,7 +23,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_DIR="${ROOT}/docker/cluster_mixed"
 COMPOSE_BASE="${COMPOSE_DIR}/compose.yaml"
-GO_MOD="${ROOT}/go.mod"
 
 usage() {
 	echo "usage: $0 java-leader|go-leader" >&2
@@ -99,17 +98,7 @@ if ! command -v docker >/dev/null 2>&1; then
 	exit 1
 fi
 
-if [[ ! -f "${GO_MOD}" ]]; then
-	echo "heron: ${GO_MOD} not found" >&2
-	exit 1
-fi
-
-GO_VERSION="$(awk '/^go / {print $2; exit}' "${GO_MOD}")"
-if [[ -z "${GO_VERSION}" ]]; then
-	echo "heron: go version required in ${GO_MOD}" >&2
-	exit 1
-fi
-
+GO_VERSION="$(awk '/^go / {print $2; exit}' "${ROOT}/go.mod")"
 export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 GO_VERSION
 HERON_COMPOSE_UID="$(id -u)"
 export HERON_COMPOSE_UID

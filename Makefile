@@ -344,13 +344,7 @@ test-$(1)-unit:
 	@command -v mvn >/dev/null || { \
 		echo "heron: mvn required (JDK 26 per $(2))" >&2; \
 		exit 1; \
-	}; \
-	mvn_ver=`mvn -v 2>/dev/null | awk '/^Apache Maven / {print $$$$3; exit}'`; \
-	vsort=$$$$(command -v gsort 2>/dev/null || command -v sort 2>/dev/null); \
-	if [ -z "$$$$mvn_ver" ] || [ -z "$$$$vsort" ] || ! printf '%s\n%s\n' "3.8.2" "$$$$mvn_ver" | $$$$vsort -V -C 2>/dev/null; then \
-		echo "heron: Maven 3.8.2+ required for parallel contract-oracles" >&2; \
-		exit 1; \
-	fi
+	}
 	mvn -f $(2) test
 endef
 

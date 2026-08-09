@@ -17,7 +17,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_BASE="${ROOT}/docker/cluster_java/compose.yaml"
 COMPOSE_FAILOVER="${ROOT}/docker/cluster_java/compose.failover.yaml"
-GO_MOD="${ROOT}/go.mod"
 # Unique project per process; go kill path must match -p and compose name.
 export HERON_COMPOSE_PROJECT="heron-cluster-java-failover-$$"
 COMPOSE_CMD=(
@@ -41,16 +40,7 @@ if ! command -v docker >/dev/null 2>&1; then
 	exit 1
 fi
 
-if [[ ! -f "${GO_MOD}" ]]; then
-	echo "heron: ${GO_MOD} not found" >&2
-	exit 1
-fi
-
-GO_VERSION="$(awk '/^go / {print $2; exit}' "${GO_MOD}")"
-if [[ -z "${GO_VERSION}" ]]; then
-	echo "heron: go version required in ${GO_MOD}" >&2
-	exit 1
-fi
+GO_VERSION="$(awk '/^go / {print $2; exit}' "${ROOT}/go.mod")"
 
 if [[ -z "${DOCKER_GID:-}" ]]; then
 	if command -v getent >/dev/null 2>&1 && getent group docker >/dev/null 2>&1; then
