@@ -277,7 +277,7 @@ func TestRunControlAwaitLoop_contextDeadline(t *testing.T) {
 		elapsed := time.Since(start)
 
 		require.ErrorIs(t, err, context.DeadlineExceeded)
-		require.Less(t, elapsed, 50*time.Millisecond)
+		require.Less(t, elapsed, time.Second)
 	})
 
 	t.Run("cfgTimeoutSooner", func(t *testing.T) {

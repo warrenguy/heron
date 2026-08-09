@@ -560,18 +560,26 @@ func TestClusterModule_leaderReElectsWhenItsFollowersStop(t *testing.T) {
 // openThreeNodeCluster starts three members on the given port block and log
 // endpoint. Waits for session-keyed log images. Ticks until every member
 // reports ElectionComplete. Caller must pass a unique PortBase per Test*.
+//
+// Optional amend becomes ClusterMemberSetConfig.AmendMemberConfig. Call sites
+// that need no amend omit the argument.
 func openThreeNodeCluster(
 	t *testing.T,
 	portBase int,
 	logEndpoint string,
+	amend ...func(cluster.Config) cluster.Config,
 ) *harness.ClusterMemberSet {
 	t.Helper()
 
-	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
+	cfg := harness.ClusterMemberSetConfig{
 		MemberCount:          3,
 		PortBase:             portBase,
 		LogMulticastEndpoint: logEndpoint,
-	})
+	}
+	if len(amend) > 0 {
+		cfg.AmendMemberConfig = amend[0]
+	}
+	set := harness.StartClusterMemberSet(t, cfg)
 	require.Len(t, set.Modules(), 3)
 
 	// Quiet localhost: image fan-in often ~4ms for three members.

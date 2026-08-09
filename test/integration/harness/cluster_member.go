@@ -19,6 +19,7 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
@@ -128,6 +129,14 @@ type ClusterMemberSetConfig struct {
 		javaPath string,
 		jarPath string,
 	) (*ArchiveNode, error)
+
+	// AmendMemberConfig adjusts one member's cluster.Config before open. Nil
+	// means no amendment.
+	//
+	// Runs once per member on the test goroutine after bootstrap and before
+	// open. The amended config is stored per slot. RestartMember reuses it.
+	// The hook must not clear fields MemberClusterConfig owns.
+	AmendMemberConfig func(cfg cluster.Config) cluster.Config
 }
 
 // StartClusterMemberSet starts MemberCount media drivers, one Archive server
@@ -262,8 +271,12 @@ func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMem
 			bootErrs = append(bootErrs, fmt.Errorf("member %d: %w", i, r.err))
 			continue
 		}
+		memberCfg := r.cfg
+		if cfg.AmendMemberConfig != nil {
+			memberCfg = cfg.AmendMemberConfig(memberCfg)
+		}
 		set.nodes[i] = r.node
-		set.configs[i] = r.cfg
+		set.configs[i] = memberCfg
 	}
 	require.NoError(t, errors.Join(bootErrs...))
 	if failedCaptureTB(t) {
@@ -666,11 +679,12 @@ func (s *ClusterMemberSet) State() string {
 	return b.String()
 }
 
-// ClusterMemberState returns a one-line dump of one consensus module for failure
-// messages.
+// ClusterMemberState returns a one-line dump of one consensus module for
+// failure messages.
 //
-// Behaviour: safe after Close. Nil handles and a nil module report as sentinel
-// values.
+// Behaviour: safe after Close. A nil module reports a sentinel line. A missing
+// agent leaves agent-sourced fields at dump sentinels (-1, false, or empty
+// string).
 func ClusterMemberState(m *cluster.ConsensusModule) string {
 	if m == nil {
 		return "member=<nil>\n"
@@ -702,25 +716,43 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 		}
 	}
 
+	memberID := int32(-1)
+	role := consensus.Role(-1)
+	term := int64(-1)
+	leaderID := int32(-1)
 	appendSrc := int64(-1)
+	commit := int64(-1)
+	notified := int64(-1)
 	localLogRecordingID := int64(-1)
 	recordingActive := false
 	appendRankFailure := ""
-	electionCount := int64(0)
+	electionCount := int64(-1)
 	lastElectionTrigger := ""
+	openSessions := -1
+	pendingSessions := -1
+	closingSessions := -1
 	if agent := m.Agent(); agent != nil {
-		localLogRecordingID = agent.LocalLogRecordingID()
-		recordingActive = agent.IsRecordingActive()
-		electionCount = agent.ElectionCount()
-		lastElectionTrigger = agent.LastElectionTrigger().String()
+		memberID = agent.ThisMemberID()
+		role = agent.Role()
+		term = agent.LeadershipTermID()
+		leaderID = agent.LeaderMemberID()
 		if src := agent.AppendSource(); src != nil {
 			if pos, ready := src.AppendPosition(); ready {
 				appendSrc = pos
 			}
 		}
+		commit = agent.CommitPosition()
+		notified = agent.NotifiedCommitPosition()
+		localLogRecordingID = agent.LocalLogRecordingID()
+		recordingActive = agent.IsRecordingActive()
 		if rankErr := agent.AppendRankFailure(); rankErr != nil {
 			appendRankFailure = rankErr.Error()
 		}
+		electionCount = agent.ElectionCount()
+		lastElectionTrigger = agent.LastElectionTrigger().String()
+		openSessions = agent.OpenSessionCount()
+		pendingSessions = agent.PendingSessionCount()
+		closingSessions = agent.ClosingSessionCount()
 	}
 
 	recEntries := 0
@@ -756,13 +788,14 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 			"recLogEntries=%d coldStart=%v localLogRecordingID=%d recordingPos=%d "+
 			"archiveConnected=%v archiveSession=%d replayReason=%q "+
 			"recordingActive=%v appendRankFailure=%q electionCount=%d "+
-			"lastElectionTrigger=%s logRecordingStopPosition=%d\n",
-		m.ThisMemberID(),
+			"lastElectionTrigger=%s logRecordingStopPosition=%d "+
+			"openSessions=%d pendingSessions=%d closingSessions=%d\n",
+		memberID,
 		m.ElectionState(),
 		m.ElectionComplete(),
-		m.Role(),
-		m.LeadershipTermID(),
-		m.LeaderMemberID(),
+		role,
+		term,
+		leaderID,
 		images,
 		logPubSession,
 		logPubPos,
@@ -771,8 +804,8 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 		joinPos,
 		imageSession,
 		appendSrc,
-		m.CommitPosition(),
-		m.NotifiedCommitPosition(),
+		commit,
+		notified,
 		recEntries,
 		m.IsColdStart(),
 		localLogRecordingID,
@@ -785,6 +818,9 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 		electionCount,
 		lastElectionTrigger,
 		stopPosition,
+		openSessions,
+		pendingSessions,
+		closingSessions,
 	)
 }
 

@@ -89,6 +89,20 @@ const (
 	DurableConcurrentCatchupLogEndpoint = "239.255.12.43:30404"
 )
 
+// Session-client endpoints. Each pair owns one three-member consensus port
+// block base+1 .. base+205 and one shared cluster-log multicast endpoint.
+// Smoke and reject are separate so the two session tests may run in
+// parallel. Bases sit above DurableConcurrentCatchup (30400 + 405).
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterSessionSmokePortBase     = 30900
+	ClusterSessionSmokeLogEndpoint  = "239.255.12.45:30904"
+	ClusterSessionRejectPortBase    = 31200
+	ClusterSessionRejectLogEndpoint = "239.255.12.47:31204"
+)
+
 // cluster_archive one-off and smoke endpoints. Kept in harness so one matrix
 // owns every PortBase and log multicast the cluster_archive package binds
 // under t.Parallel.

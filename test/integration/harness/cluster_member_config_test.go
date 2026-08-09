@@ -220,6 +220,18 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 			memberCount: 3,
 			logEndpoint: DurableRestartLeaderLogEndpoint,
 		},
+		{
+			name:        "session-smoke",
+			portBase:    ClusterSessionSmokePortBase,
+			memberCount: 3,
+			logEndpoint: ClusterSessionSmokeLogEndpoint,
+		},
+		{
+			name:        "session-reject",
+			portBase:    ClusterSessionRejectPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterSessionRejectLogEndpoint,
+		},
 	}
 
 	// Archive-node single control binds. Treat as one-port blocks for overlap.
@@ -330,6 +342,14 @@ func injectMemberBootstrap() memberBootstrap {
 	}
 }
 
+// injectSimpleAuth returns a fixed SimpleAuthenticator for amend-hook tests.
+func injectSimpleAuth() consensus.Authenticator {
+	return consensus.NewSimpleAuthenticator([]consensus.SimplePrincipal{{
+		EncodedPrincipal:   []byte("principal"),
+		EncodedCredentials: []byte("credentials"),
+	}})
+}
+
 // TestBootstrapMemberInfra_driverFail returns the driver error and no handles.
 func TestBootstrapMemberInfra_driverFail(t *testing.T) {
 	t.Parallel()
@@ -398,6 +418,58 @@ func TestBootstrapMemberInfra_successStoresElection(t *testing.T) {
 	require.Equal(t, "members-string", cfg.ClusterMembers)
 	require.Equal(t, "/cluster-dir", cfg.ClusterDir)
 	require.Equal(t, aeronDir, cfg.AeronDir)
+}
+
+// TestStartClusterMemberSet_appliesAmendMemberConfig asserts the set runs
+// AmendMemberConfig once per member in member-id order over the config
+// bootstrap built.
+func TestStartClusterMemberSet_appliesAmendMemberConfig(t *testing.T) {
+	t.Parallel()
+
+	const memberCount = 2
+	var amendedMemberIDs []int32
+	auth := injectSimpleAuth()
+
+	capture := NewCaptureFailTB(t)
+	set := StartClusterMemberSet(capture, ClusterMemberSetConfig{
+		MemberCount:          memberCount,
+		PortBase:             ClusterModuleElectPortBase,
+		LogMulticastEndpoint: ClusterModuleElectLogEndpoint,
+		StartMediaDriver: func(string, DriverEnv) (*MediaDriver, error) {
+			return stubMediaDriver("/aeron-amend", new(atomic.Int32)), nil
+		},
+		StartArchiveNode: func(string, string, string, string, string) (*ArchiveNode, error) {
+			return &ArchiveNode{Dir: "/archive-amend", ArchiveID: "ok"}, nil
+		},
+		AmendMemberConfig: func(cfg cluster.Config) cluster.Config {
+			amendedMemberIDs = append(amendedMemberIDs, cfg.MemberID)
+			cfg.Authenticator = auth
+			return cfg
+		},
+	})
+	// Stub aeron directories cannot open live modules. AmendMemberConfig still
+	// runs for each member. The set stores each amended per-slot config before
+	// open fails.
+	require.Equal(t, []int32{0, 1}, amendedMemberIDs)
+	require.True(t, capture.Failed())
+	require.NotNil(t, set)
+	for i := range memberCount {
+		require.Same(t, auth, set.configs[i].Authenticator)
+	}
+}
+
+// TestClusterMemberState_sessionCountsNilSafe asserts the dump renders session
+// count fields. Nil module and nil agent stay panic-free and use sentinels.
+func TestClusterMemberState_sessionCountsNilSafe(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "member=<nil>\n", ClusterMemberState(nil))
+
+	dump := ClusterMemberState(&cluster.ConsensusModule{})
+	require.Contains(t, dump, "openSessions=-1")
+	require.Contains(t, dump, "pendingSessions=-1")
+	require.Contains(t, dump, "closingSessions=-1")
+	require.Contains(t, dump, "electionCount=-1")
 }
 
 // TestStartClusterMemberSet_bootstrapJoinErrors asserts the joined error names

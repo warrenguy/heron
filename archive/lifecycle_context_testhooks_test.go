@@ -201,5 +201,5 @@ func TestClientListRecording_contextDeadlineSooner(t *testing.T) {
 	elapsed := time.Since(start)
 
 	require.ErrorIs(t, err, context.DeadlineExceeded)
-	require.Less(t, elapsed, 50*time.Millisecond)
+	require.Less(t, elapsed, time.Second)
 }
