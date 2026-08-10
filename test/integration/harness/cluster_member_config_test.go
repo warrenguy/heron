@@ -232,6 +232,12 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 			memberCount: 3,
 			logEndpoint: ClusterSessionRejectLogEndpoint,
 		},
+		{
+			name:        "member-amplifier",
+			portBase:    ClusterMemberAmplifierPortBase,
+			memberCount: 2,
+			logEndpoint: ClusterMemberAmplifierLogEndpoint,
+		},
 	}
 
 	// Archive-node single control binds. Treat as one-port blocks for overlap.

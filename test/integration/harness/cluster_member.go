@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
@@ -467,16 +468,25 @@ func (s *ClusterMemberSet) live() iter.Seq[*cluster.ConsensusModule] {
 
 // StopMember closes the module in slot index and leaves the slot empty.
 //
-// Behaviour: closes the module, which releases the cluster directory lock last.
-// Leaves the media driver and the Archive node running, so RestartMember can
-// reuse both. Does not call ArchiveNode.Stop and does not call MediaDriver.Stop.
+// Behaviour:
+//   - Nils the slot then closes the module. Module Close releases the cluster
+//     directory lock last.
+//   - Leaves the media driver and the Archive node running so RestartMember can
+//     reuse both. Does not call ArchiveNode.Stop. Does not call MediaDriver.Stop.
+//   - Does not wait for cluster.lock. A release can trail Close.
+//     [cluster.OpenRecovery] waits [cluster.DirectoryLockWait] on RestartMember.
+//   - A durable hold fails at RestartMember with the StopMember release note on
+//     EWOULDBLOCK.
 //
 // Concurrency: invoker-only. Must not run concurrently with Tick.
 //
 // Lifetime: the cluster directory and the Archive data directory survive.
 //
-// Returns an error when the module's Close reports one, or when index is out of
-// range. Idempotent: a second call on an empty slot returns nil.
+// Idempotent: a second call on an empty slot returns nil.
+//
+// Returns an error when:
+//   - index is out of range
+//   - the module's Close reports one
 func (s *ClusterMemberSet) StopMember(index int) error {
 	if index < 0 || index >= len(s.modules) {
 		return fmt.Errorf("cluster member set: index %d out of range [0, %d)", index, len(s.modules))
@@ -492,26 +502,30 @@ func (s *ClusterMemberSet) StopMember(index int) error {
 // RestartMember opens a replacement module in slot index against the
 // cluster.Config the first open used.
 //
-// Behaviour: opens one cluster.ConsensusModule against the retained config. The
-// cluster directory, media-driver directory, and Archive control channels are
-// the previous boot's. The recovery plan is non-empty when the previous boot
-// wrote term entries.
+// Behaviour:
+//   - Opens one cluster.ConsensusModule against the retained config. The cluster
+//     directory, media-driver directory, and Archive control channels are the
+//     previous boot's. The recovery plan is non-empty when the previous boot
+//     wrote term entries.
+//   - Invoker must call StopMember for the same index first.
+//   - On an occupied slot returns an error without opening a second module. No
+//     transport connect or archive session runs for that refused open.
 //
 // Concurrency: invoker-only. Must not run concurrently with Tick.
 //
-// Invoker must call StopMember for the same index first. RestartMember on an
-// occupied slot:
-//   - returns an error without opening a second module
-//   - no transport connect or archive session runs for that refused open
+// Every open failure is wrapped with slot and ClusterDir. When errno is
+// EWOULDBLOCK the wrap notes that StopMember must have released cluster.lock.
+//
+// Must not retry the open. Must not sleep. OpenRecovery already waits
+// cluster.DirectoryLockWait for a release that trails Close. An EWOULDBLOCK
+// that reaches here outlived that wait.
+//
+// On error the empty slot stays empty and an occupied slot is left unchanged.
 //
 // Returns an error when:
 //   - index is out of range
 //   - the slot is occupied
 //   - the open fails
-//
-// On error:
-//   - empty slot stays empty
-//   - occupied slot is left unchanged
 func (s *ClusterMemberSet) RestartMember(index int) error {
 	if index < 0 || index >= len(s.modules) {
 		return fmt.Errorf("cluster member set: index %d out of range [0, %d)", index, len(s.modules))
@@ -522,14 +536,35 @@ func (s *ClusterMemberSet) RestartMember(index int) error {
 			index,
 		)
 	}
+	cfg := s.configs[index]
 	module, err := cluster.OpenConsensusModule(context.Background(), cluster.ConsensusModuleDeps{
-		Config: s.configs[index],
+		Config: cfg,
 	})
 	if err != nil {
-		return err
+		return wrapRestartOpenError(index, cfg.ClusterDir, err)
 	}
 	s.modules[index] = module
 	return nil
+}
+
+// wrapRestartOpenError phrases a RestartMember open failure with slot and
+// ClusterDir. Appends the StopMember release note only when errno is
+// EWOULDBLOCK. Preserves errors.Is via %w.
+func wrapRestartOpenError(index int, dir string, err error) error {
+	if err == nil {
+		return nil
+	}
+	hint := ""
+	if errors.Is(err, unix.EWOULDBLOCK) {
+		hint = " (StopMember must have released cluster.lock)"
+	}
+	return fmt.Errorf(
+		"cluster member set: restart slot %d ClusterDir %s: %w%s",
+		index,
+		dir,
+		err,
+		hint,
+	)
 }
 
 // LogSessionIDs returns each non-empty member's log publication session id in

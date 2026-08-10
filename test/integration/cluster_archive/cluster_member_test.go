@@ -136,3 +136,49 @@ func TestClusterMemberSet_stopAndRestartAffordance(t *testing.T) {
 	// Replacement stays open. The slot Cleanup registered at boot closes it at
 	// teardown and fails the test when that close errors.
 }
+
+// TestClusterMemberSet_stopRestartAmplifier asserts stop, Tick, then restart
+// cycles on slot 1 under light duty-cycle load. Asserts reopen after Close
+// succeeds. OpenRecovery waits [cluster.DirectoryLockWait] for a trailing
+// cluster.lock release on restart.
+//
+// Asserts log-image fan-in after the last cycle. A slot that reopens without
+// rejoining fails. Does not assert election completeness.
+//
+// Slot 0 stays live so survivor Tick still runs. Expected wall clock is tens of
+// seconds on typical CI hardware. Keep under two minutes.
+func TestClusterMemberSet_stopRestartAmplifier(t *testing.T) {
+	t.Parallel()
+
+	const (
+		cycles          = 10
+		ticksWhileEmpty = 3
+		slot            = 1
+	)
+
+	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
+		MemberCount:          2,
+		PortBase:             harness.ClusterMemberAmplifierPortBase,
+		LogMulticastEndpoint: harness.ClusterMemberAmplifierLogEndpoint,
+	})
+
+	require.True(t, set.AwaitLogImages(30*time.Second), "log images not ready:\n%s", set.State())
+
+	for i := range cycles {
+		require.NoError(t, set.StopMember(slot), "cycle %d StopMember", i)
+		for range ticksWhileEmpty {
+			set.Tick()
+		}
+		require.NoError(t, set.RestartMember(slot), "cycle %d RestartMember", i)
+	}
+
+	// Reopen is not rejoin. Without this check the loop only asserts the calls
+	// returned nil. A slot that never came back would still pass.
+	require.True(
+		t,
+		set.AwaitLogImages(30*time.Second),
+		"log images not ready after %d cycles:\n%s",
+		cycles,
+		set.State(),
+	)
+}

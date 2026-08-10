@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
@@ -349,6 +350,40 @@ func TestOpenRecovery_lockExcludesSecondOpen(t *testing.T) {
 	require.True(t, strings.HasPrefix(err.Error(), "cluster: lock cluster dir"),
 		"got %v", err)
 	require.ElementsMatch(t, before, fdsUnder(t, dir))
+}
+
+// TestOpenRecovery_lockWaitsForTrailingRelease asserts a second open succeeds
+// when the holder releases inside DirectoryLockWait.
+//
+// The kernel may drop an advisory lock after the close that triggered the drop
+// returns. A restart on the same directory must wait that trail. The open must
+// not refuse on the first EWOULDBLOCK.
+func TestOpenRecovery_lockWaitsForTrailingRelease(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cluster.lock")
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	require.NoError(t, err)
+	require.NoError(t, unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB))
+
+	// Release inside DirectoryLockWait. OpenRecovery must retry until the close.
+	const holdFor = 20 * time.Millisecond
+	released := make(chan error, 1)
+	go func() {
+		time.Sleep(holdFor)
+		released <- unix.Close(fd)
+	}()
+
+	start := time.Now()
+	recovery, err := cluster.OpenRecovery(cluster.RecoveryDeps{
+		Config: recoveryConfig(t, dir),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, recovery.Close()) })
+
+	require.NoError(t, <-released)
+	require.GreaterOrEqual(t, time.Since(start), holdFor, "open must have waited for the release")
 }
 
 func TestOpenRecovery_lockSymlinkRefused(t *testing.T) {

@@ -103,6 +103,17 @@ const (
 	ClusterSessionRejectLogEndpoint = "239.255.12.47:31204"
 )
 
+// Stop/restart amplifier endpoints. Two members reserve base+1 .. base+105 and
+// one shared cluster-log multicast endpoint. Bases sit above
+// ClusterSessionRejectPortBase (31200 + 205).
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterMemberAmplifierPortBase    = 31500
+	ClusterMemberAmplifierLogEndpoint = "239.255.12.49:31504"
+)
+
 // cluster_archive one-off and smoke endpoints. Kept in harness so one matrix
 // owns every PortBase and log multicast the cluster_archive package binds
 // under t.Parallel.
