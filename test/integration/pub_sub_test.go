@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -58,11 +57,8 @@ func TestPubSubIPCRoundtrip(t *testing.T) {
 func TestPubSubIPCTwoClientsRoundtrip(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	splitClientCfg := aeron.Config{
-		InterServiceTimeout: harness.ConnectedPollTimeout,
-	}
-	pubClient, hadPubClientError := harness.ConnectIPCClientConfig(t, md, splitClientCfg)
-	subClient, hadSubClientError := harness.ConnectIPCClientConfig(t, md, splitClientCfg)
+	pubClient, hadPubClientError := harness.ConnectIPCClient(t, md)
+	subClient, hadSubClientError := harness.ConnectIPCClient(t, md)
 
 	const (
 		streamID     = harness.PubSubTwoClientsRoundtripStreamID

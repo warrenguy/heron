@@ -75,12 +75,8 @@ func TestConsensusIngress_commitPositionOverLiveDriver(t *testing.T) {
 	topology0 := topologyForMember(t, 0, members, md0.Dir, "")
 	topology1 := topologyForMember(t, 1, members, md1.Dir, "")
 
-	// Split clients idle while the peer Add* awaits; match two-client IPC tests.
-	splitCfg := aeron.Config{
-		InterServiceTimeout: harness.ConnectedPollTimeout,
-	}
-	client0, _ := harness.ConnectIPCClientConfig(t, md0, splitCfg)
-	client1, _ := harness.ConnectIPCClientConfig(t, md1, splitCfg)
+	client0, _ := harness.ConnectIPCClient(t, md0)
+	client1, _ := harness.ConnectIPCClient(t, md1)
 
 	agent := consensus.NewAgent(consensus.AgentConfig{
 		Role:             consensus.RoleFollower,
@@ -177,12 +173,8 @@ func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
 	require.Equal(t, topology0.LogChannel(), topology1.LogChannel())
 	require.Equal(t, topology0.LogStreamID(), topology1.LogStreamID())
 
-	// Split clients idle while the peer Add* awaits; match two-client IPC tests.
-	splitCfg := aeron.Config{
-		InterServiceTimeout: harness.ConnectedPollTimeout,
-	}
-	client0, _ := harness.ConnectIPCClientConfig(t, md0, splitCfg)
-	client1, _ := harness.ConnectIPCClientConfig(t, md1, splitCfg)
+	client0, _ := harness.ConnectIPCClient(t, md0)
+	client1, _ := harness.ConnectIPCClient(t, md1)
 
 	agent0 := consensus.NewAgent(consensus.AgentConfig{
 		ThisMemberID: 0,

@@ -23,11 +23,7 @@ func TestChannelStatusCounterIsCounterActive(t *testing.T) {
 	toDriver := attach.Rings.ToDriver
 	toClients := attach.Rings.ToClients
 
-	client, err := aeron.Connect(t.Context(), aeron.Config{AeronDir: md.Dir})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, client.Close())
-	})
+	client := harness.ConnectClient(t, md, aeron.Config{})
 
 	countersReader, err := client.CountersReader()
 	require.NoError(t, err)

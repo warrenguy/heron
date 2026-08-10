@@ -295,9 +295,7 @@ func joinComposeIPCClient(
 
 	md := harness.JoinExternal(t, dir)
 
-	aeronClient, hadClientError := harness.ConnectIPCClientConfig(t, md, aeron.Config{
-		InterServiceTimeout: harness.ConnectedPollTimeout,
-	})
+	aeronClient, hadClientError := harness.ConnectIPCClient(t, md)
 	require.False(t, hadClientError.Load(), "transport errors before connect")
 	return hadClientError, aeronClient, md
 }

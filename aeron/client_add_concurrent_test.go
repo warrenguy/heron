@@ -274,7 +274,7 @@ func TestClient_Add_concurrentCloseDuringPoll(t *testing.T) {
 				closeDone <- client.Close()
 			}()
 
-			requireCloseBlockedDuringAwait(t, client, closeDone)
+			requireCloseBlockedDuringAwait(t, client)
 
 			got := receiveAddResult(
 				t,
@@ -288,8 +288,9 @@ func TestClient_Add_concurrentCloseDuringPoll(t *testing.T) {
 			require.Equal(t, 0, testCase.conductorCountFn(fixture))
 			requireActiveCorrelationCleared(t, fixture)
 
-			closeErr := receiveAddResult(
+			closeErr := receiveCloseResult(
 				t,
+				client,
 				closeDone,
 				clientConcurrentResultTimeout,
 				"timed out waiting for Close after poll-phase await",
@@ -457,8 +458,9 @@ func TestClient_Add_concurrentCloseDuringOfferBackpressure(t *testing.T) {
 			require.Equal(t, 0, testCase.conductorCountFn(fixture))
 			requireActiveCorrelationCleared(t, fixture)
 
-			closeErr := receiveAddResult(
+			closeErr := receiveCloseResult(
 				t,
+				client,
 				closeDone,
 				clientConcurrentResultTimeout,
 				"timed out waiting for Close after offer backpressure await",

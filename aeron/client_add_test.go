@@ -600,35 +600,79 @@ func receiveAddResult[T any](
 	}
 }
 
-func requireCloseBlockedDuringAwait(
+// clientLockFree reports whether clientLock is free. Tries TryLockClientForTest
+// and unlocks immediately when the lock is free. Never blocks.
+//
+// Returns false when another holder owns the lock.
+func clientLockFree(client *Client) bool {
+	if !client.TryLockClientForTest() {
+		return false
+	}
+	client.UnlockClientForTest()
+	return true
+}
+
+// receiveCloseResult waits for a Close goroutine result on closeDone.
+//
+// On timeout, fails with closed, lockFree, and closeDone length diagnostics.
+func receiveCloseResult(
 	t *testing.T,
 	client *Client,
 	closeDone <-chan error,
-) {
+	timeout time.Duration,
+	timeoutMsg string,
+) error {
 	t.Helper()
 
-	require.Eventually(
-		t,
-		func() bool {
-			if !errors.Is(client.errIfClosed(), ErrClientClosed) {
-				return false
-			}
-			select {
-			case <-closeDone:
-				return false
-			default:
-				return true
-			}
-		},
-		clientConcurrentResultTimeout,
-		time.Microsecond,
-		"closed state not observable before await released lock",
-	)
 	select {
 	case err := <-closeDone:
-		t.Fatal("Close returned before await released lock:", err)
-	default:
+		return err
+	case <-time.After(timeout):
+		lockFree := clientLockFree(client)
+		require.FailNow(
+			t,
+			timeoutMsg,
+			"closed=%v lockFree=%v closeDoneLen=%d",
+			errors.Is(client.errIfClosed(), ErrClientClosed),
+			lockFree,
+			len(closeDone),
+		)
+		return nil
 	}
+}
+
+// requireCloseBlockedDuringAwait waits until closed is published while
+// clientLock is held. Does not receive from any Close result channel. The
+// final wait owns that consume.
+//
+// Behaviour: passes when closed is set and TryLock fails. The lock holder may
+// be the await poll loop or Close teardown. Both hold clientLock after closed
+// is published.
+//
+// Concurrency: polls on the test goroutine only. Does not use an Eventually
+// worker. Fail-path probes run on the same goroutine after the deadline.
+func requireCloseBlockedDuringAwait(t *testing.T, client *Client) {
+	t.Helper()
+
+	deadline := time.Now().Add(clientConcurrentResultTimeout)
+	for time.Now().Before(deadline) {
+		closed := errors.Is(client.errIfClosed(), ErrClientClosed)
+		lockFree := clientLockFree(client)
+		if closed && !lockFree {
+			return
+		}
+		time.Sleep(time.Microsecond)
+	}
+
+	closed := errors.Is(client.errIfClosed(), ErrClientClosed)
+	lockFree := clientLockFree(client)
+	require.FailNow(
+		t,
+		"closed state not observable while clientLock held",
+		"closed=%v lockFree=%v",
+		closed,
+		lockFree,
+	)
 }
 
 func requireAddCommandNotOnRing(

@@ -10,7 +10,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -76,15 +79,86 @@ func tickMemberStreams(m *cluster.ConsensusModule) {
 	m.ArchiveClient().Poll()
 }
 
-// pumpLiveTransport runs Client.DoWork on every live member. Omits Agent.DoWork
-// and archive Poll. Drains log images so the leader publication does not
-// return BackPressured while peers omit agent duty.
+// pumpLiveTransport runs Client.DoWork on every live member (conductor
+// service). Omits Agent.DoWork, archive Poll, and log-adapter Poll.
+//
+// Does not advance peer image positions. Call drainPeerLogImages to reopen
+// the leader publication limit without Agent.DoWork on peers.
 func pumpLiveTransport(set *harness.ClusterMemberSet) {
 	for _, m := range set.Modules() {
 		if m == nil {
 			continue
 		}
 		m.Client().DoWork()
+	}
+}
+
+// peerLogDrainBound is the stream-position upper bound for gap-build peer image
+// BoundedControlledPoll. Each call also stops at
+// consensus.DefaultLogFragmentLimit. The large bound is not an unlimited single
+// poll.
+const peerLogDrainBound int64 = 1 << 30
+
+// discardLogFragment is a ControlledFragmentHandler that returns
+// ControlledContinue with no decode. Subscriber position still advances.
+//
+// Matches nil LogAdapterHandler on LogAdapter.Poll: position advances without
+// decode.
+func discardLogFragment(
+	_ atomicbuffer.AtomicBuffer,
+	_ int,
+	_ int,
+	_ *aeron.Header,
+) aeron.ControlledAction {
+	return aeron.ControlledContinue
+}
+
+// unbindPeerLogImages clamps each non-skipIndex log adapter at floor and
+// returns the Images those adapters held.
+//
+// DisconnectAt clears the adapter binding and lowers the reported position.
+// DisconnectAt does not own the Image or its Subscription. Both stay open so
+// drainPeerLogImages can advance the driver subscriber position and reopen the
+// leader publication limit.
+//
+// Call before the gap-build loop. Adapter position then stays at floor.
+// ProposeMaxCommit on a later survivor Agent.DoWork must not raise commit into
+// the election seed from a drained consumer position.
+func unbindPeerLogImages(
+	set *harness.ClusterMemberSet,
+	skipIndex int,
+	floor int64,
+) []*aeron.Image {
+	var images []*aeron.Image
+	for i, m := range set.Modules() {
+		if m == nil || i == skipIndex {
+			continue
+		}
+		adapter := m.LogAdapter()
+		if adapter == nil {
+			continue
+		}
+		if image := adapter.Image(); image != nil {
+			images = append(images, image)
+		}
+		adapter.DisconnectAt(floor)
+	}
+	return images
+}
+
+// drainPeerLogImages polls each unbound peer Image. Image positions advance so
+// the leader publication limit can reopen.
+//
+// Omits Agent.DoWork. Does not re-elect, emit heartbeats, or run consensus duty.
+// Follower archive recordings stay stopped. Only image consume moves. Adapter
+// positions stay at floor because no adapter holds these Images.
+func drainPeerLogImages(images []*aeron.Image) {
+	for _, image := range images {
+		image.BoundedControlledPoll(
+			discardLogFragment,
+			peerLogDrainBound,
+			consensus.DefaultLogFragmentLimit,
+		)
 	}
 }
 
@@ -157,10 +231,29 @@ func TestDurableCluster_truncatesADivergentMemberAndCommits(t *testing.T) {
 		followerFloor = max(followerFloor, stopPos)
 	}
 
-	// Set state is built only on the failing branch: the loop runs per tick and
-	// an eager dump per iteration would dominate the wait.
+	// Unbind peer log adapters at floor before the drain loop. Adapter position
+	// cannot rise from a drained consumer position. No survivor Agent.DoWork can
+	// raise commit into the election seed. Images stay open for drain. Truncate
+	// premise stays newTermBase < divergentHighWater.
+	peerImages := unbindPeerLogImages(set, leaderIndex, followerFloor)
+
+	// Gap-build waits for the leader type-100 recording past the follower
+	// floor. Builds set state only on the failing branch. An eager dump each
+	// tick would dominate the wait.
+	//
+	// Peers omit Agent.DoWork so they do not trip leader heartbeat loss. Term
+	// length is 64k. The publication limit is half that (32768), so the leader
+	// hits back-pressure well before the deadline. Drain peer log images each
+	// tick so the limit can reopen without peer Agent.DoWork.
+	//
+	// Offer sets pacing and terminal status. Retriable codes sleep and retry.
+	// tryAppend fails the test on Closed and MaxPositionExceeded.
 	deadline := time.Now().Add(durableWorkBound)
-	var divergentHighWater int64
+	var (
+		divergentHighWater int64
+		lastLeaderRec      int64
+		maxLeaderRec       int64
+	)
 	for time.Now().Before(deadline) {
 		leader = set.Module(leaderIndex)
 		require.NotNil(t, leader)
@@ -168,32 +261,84 @@ func TestDurableCluster_truncatesADivergentMemberAndCommits(t *testing.T) {
 			require.FailNow(t, "leader lost role while building gap", "%s", set.State())
 		}
 
-		mustAppend(t, set, leader, "divergent-tail")
-
-		// Drain peer log images without agent duty. Leader-only Client.DoWork leaves
-		// follower subscriptions idle and the leader publication returns
-		// BackPressured on the 64k log term.
 		pumpLiveTransport(set)
 		tickMemberStreams(leader)
+		// Drain peer images so the leader publication limit can reopen.
+		// Recording stays stopped; catalogs stay at the floor.
+		drainPeerLogImages(peerImages)
 
 		// Follower catalogs must stay at the floor. Remote recording is
 		// stopped. Counters must not advance with the leader.
-		leaderRec := harness.RecordingCounterPosition(leader, leader.Agent().LocalLogRecordingID())
+		leaderRec := harness.RecordingCounterPosition(
+			leader, leader.Agent().LocalLogRecordingID(),
+		)
+		lastLeaderRec = leaderRec
+		if leaderRec > maxLeaderRec {
+			maxLeaderRec = leaderRec
+		}
 		if leaderRec > followerFloor &&
 			followersRecordingAtMost(set, leaderIndex, followerFloor) {
 			divergentHighWater = leaderRec
 			break
 		}
+
+		if leader.LogPublisher().Publication() == nil {
+			require.FailNow(t, "leader log publication unbound", "%s", set.State())
+		}
+
+		// Pace on retriable offer codes. tryAppend fails the test on terminal
+		// codes before return. Bytes already offered may still raise type-100.
+		if tryAppend(t, set, leader, "divergent-tail") <= 0 {
+			time.Sleep(time.Millisecond)
+		}
 	}
-	require.Greater(
-		t,
-		divergentHighWater,
-		followerFloor,
-		"leader recording high-water=%d followerFloor=%d:\n%s",
-		divergentHighWater,
-		followerFloor,
-		set.State(),
-	)
+	if divergentHighWater <= followerFloor {
+		// Sample final positions for triage: lag when leaderRec moved past the
+		// floor, stall when leaderRec stayed at the floor while logPubPos
+		// advanced.
+		leaderRec := harness.RecordingCounterPosition(
+			leader, leader.Agent().LocalLogRecordingID(),
+		)
+		logPubPos := leader.LogPublisher().Position()
+
+		// Nil publication: report Closed for the AvailableWindow sample.
+		// AppendMessage maps a nil publication to the same code.
+		window := aeron.Closed
+		if pub := leader.LogPublisher().Publication(); pub != nil {
+			window = pub.AvailableWindow()
+			logPubPos = pub.Position()
+		}
+		// Settled leader path holds no bound log-adapter Image. Still sample
+		// adapter and image positions for flow-control triage if a local image
+		// appears.
+		leaderAdapterPos := int64(-1)
+		leaderImagePos := int64(-1)
+		if adapter := leader.LogAdapter(); adapter != nil {
+			leaderAdapterPos = adapter.Position()
+			if img := adapter.Image(); img != nil {
+				leaderImagePos = img.Position()
+			}
+		}
+		require.FailNow(
+			t,
+			"leader recording high-water never passed follower floor",
+			"highWater=%d lastLeaderRec=%d maxLeaderRec=%d leaderRec=%d "+
+				"logPubPos=%d window=%d followerFloor=%d leaderRecPastFloor=%v "+
+				"leaderAdapterPos=%d leaderImagePos=%d bound=%s:\n%s",
+			divergentHighWater,
+			lastLeaderRec,
+			maxLeaderRec,
+			leaderRec,
+			logPubPos,
+			window,
+			followerFloor,
+			maxLeaderRec > followerFloor,
+			leaderAdapterPos,
+			leaderImagePos,
+			durableWorkBound,
+			set.State(),
+		)
+	}
 	t.Logf(
 		"divergent high-water=%d followerFloor=%d preTerm=%d",
 		divergentHighWater,

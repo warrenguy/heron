@@ -200,11 +200,8 @@ func TestExclusivePublicationIPCRoundtrip(t *testing.T) {
 func TestExclusivePublicationIPCTwoClientsRoundtrip(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	splitClientCfg := aeron.Config{
-		InterServiceTimeout: harness.ConnectedPollTimeout,
-	}
-	pubClient, hadPubClientError := harness.ConnectIPCClientConfig(t, md, splitClientCfg)
-	subClient, hadSubClientError := harness.ConnectIPCClientConfig(t, md, splitClientCfg)
+	pubClient, hadPubClientError := harness.ConnectIPCClient(t, md)
+	subClient, hadSubClientError := harness.ConnectIPCClient(t, md)
 
 	const (
 		streamID     = harness.ExclusivePublicationTwoClientsRoundtripStreamID
@@ -353,17 +350,12 @@ func TestClientSubscriptionLookupByRegID(t *testing.T) {
 func TestClientStayAlive(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client, err := aeron.Connect(t.Context(), aeron.Config{
-		AeronDir: md.Dir,
+	client := harness.ConnectClient(t, md, aeron.Config{
 		ErrorHandler: func(err error) {
 			require.FailNow(t, "unexpected client error during stay-alive", "%v", err)
 		},
 	})
-	require.NoError(t, err)
 	require.GreaterOrEqual(t, client.ClientId(), int64(0))
-	t.Cleanup(func() {
-		require.NoError(t, client.Close())
-	})
 
 	deadline := time.Now().Add(clientStayAliveDuration)
 	sawProgress := false
@@ -382,16 +374,11 @@ func TestClientDetectsDriverDeath(t *testing.T) {
 
 	driverTimeout := 2 * time.Second
 	var gotErr error
-	client, err := aeron.Connect(t.Context(), aeron.Config{
-		AeronDir:      md.Dir,
+	client := harness.ConnectClient(t, md, aeron.Config{
 		DriverTimeout: driverTimeout,
 		ErrorHandler: func(err error) {
 			gotErr = err
 		},
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, client.Close())
 	})
 
 	for range 20 {
@@ -422,13 +409,7 @@ func TestClientDetectsDriverDeath(t *testing.T) {
 func TestClientReadsSystemCounters(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client, err := aeron.Connect(t.Context(), aeron.Config{
-		AeronDir: md.Dir,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, client.Close())
-	})
+	client := harness.ConnectClient(t, md, aeron.Config{})
 
 	countersReader, err := client.CountersReader()
 	require.NoError(t, err)
@@ -441,13 +422,7 @@ func TestClientReadsSystemCounters(t *testing.T) {
 func TestClientErrorLogReadable(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	client, err := aeron.Connect(t.Context(), aeron.Config{
-		AeronDir: md.Dir,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, client.Close())
-	})
+	client := harness.ConnectClient(t, md, aeron.Config{})
 
 	meta, err := client.CncMetadata()
 	require.NoError(t, err)
@@ -460,10 +435,8 @@ func TestClientErrorLogReadable(t *testing.T) {
 func TestClientTwoClientsSameDriver(t *testing.T) {
 	md := harness.SharedParallel(t)
 
-	clientA, err := aeron.Connect(t.Context(), aeron.Config{AeronDir: md.Dir})
-	require.NoError(t, err)
-	clientB, err := aeron.Connect(t.Context(), aeron.Config{AeronDir: md.Dir})
-	require.NoError(t, err)
+	clientA := harness.ConnectClient(t, md, aeron.Config{})
+	clientB := harness.ConnectClient(t, md, aeron.Config{})
 
 	clientIDA := clientA.ClientId()
 	clientIDB := clientB.ClientId()
@@ -492,8 +465,9 @@ func TestTwoClientsConcurrentRingOffers(t *testing.T) {
 	// DriverTimeout and explicit DoWork pump before Close; ring drain shares that budget.
 	var hadClientError atomic.Bool
 	connectCfg := aeron.Config{
-		AeronDir:      md.Dir,
-		DriverTimeout: harness.CommandPollDeadline,
+		AeronDir:            md.Dir,
+		DriverTimeout:       harness.CommandPollDeadline,
+		InterServiceTimeout: harness.ConnectedPollTimeout,
 		ErrorHandler: func(err error) {
 			hadClientError.Store(true)
 		},

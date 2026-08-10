@@ -588,7 +588,6 @@ func induceSessionMessage(t *testing.T, f *mixedMemberFixture) {
 	// The module client is invoker-only on the test goroutine.
 	// Payload is unasserted. Empty handlers silent no-op all egress events.
 	aeronClient, hadClientError := harness.ConnectIPCClientConfig(t, f.driver, aeron.Config{
-		InterServiceTimeout: harness.ConnectedPollTimeout,
 		CloseLingerDuration: mixedMemberCloseLinger,
 		ErrorHandler: func(err error) {
 			t.Errorf("induction client error: %v", err)

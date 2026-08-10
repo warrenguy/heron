@@ -665,9 +665,38 @@ func requireSingleLeader(
 }
 
 // mustAppend appends payload on the leader log publication and requires a
-// positive position. The set state is built only on failure so mustAppend is
-// safe inside polling loops.
+// positive position. Builds set state only on failure so mustAppend is safe
+// inside polling loops.
+//
+// Retriable offer codes FailNow here. Soft-retry paths must call tryAppend.
 func mustAppend(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	leader *cluster.ConsensusModule,
+	payload string,
+) int64 {
+	t.Helper()
+
+	pos := tryAppend(t, set, leader, payload)
+	if pos <= 0 {
+		require.FailNow(
+			t,
+			"AppendMessage did not clear back-pressure",
+			"payload=%q code=%d (%s):\n%s",
+			payload,
+			pos,
+			aeron.PositionCodeName(pos),
+			set.State(),
+		)
+	}
+	return pos
+}
+
+// tryAppend appends payload on the leader log and returns the offer result.
+//
+// Returns a positive position on success. Returns a retriable offer code when
+// the caller must pace and retry. Fails the test on terminal offer codes.
+func tryAppend(
 	t *testing.T,
 	set *harness.ClusterMemberSet,
 	leader *cluster.ConsensusModule,
@@ -681,13 +710,14 @@ func mustAppend(
 		time.Now().UnixNano(),
 		[]byte(payload),
 	)
-	if pos <= 0 {
+	if pos <= 0 && !aeron.IsOfferRetriable(pos) {
 		require.FailNow(
 			t,
 			"AppendMessage failed",
-			"payload=%q code=%d:\n%s",
+			"payload=%q code=%d (%s):\n%s",
 			payload,
 			pos,
+			aeron.PositionCodeName(pos),
 			set.State(),
 		)
 	}

@@ -216,7 +216,7 @@ func TestClient_Close_twoPhasePublishedBeforeTeardown(t *testing.T) {
 		closeDone <- client.Close()
 	}()
 
-	requireCloseBlockedDuringAwait(t, client, closeDone)
+	requireCloseBlockedDuringAwait(t, client)
 
 	addGot := receiveAddResult(
 		t,
@@ -227,8 +227,9 @@ func TestClient_Close_twoPhasePublishedBeforeTeardown(t *testing.T) {
 	require.Nil(t, addGot.pub)
 	requireErrClientClosed(t, addGot.err)
 
-	closeErr := receiveAddResult(
+	closeErr := receiveCloseResult(
 		t,
+		client,
 		closeDone,
 		clientConcurrentResultTimeout,
 		"timed out waiting for Close after await released lock",
@@ -278,7 +279,7 @@ func TestClient_IsTerminating_concurrentCloseDuringAwait(t *testing.T) {
 		closeDone <- client.Close()
 	}()
 
-	requireCloseBlockedDuringAwait(t, client, closeDone)
+	requireCloseBlockedDuringAwait(t, client)
 
 	addGot := receiveAddResult(
 		t,
@@ -289,8 +290,9 @@ func TestClient_IsTerminating_concurrentCloseDuringAwait(t *testing.T) {
 	require.Nil(t, addGot.pub)
 	requireErrClientClosed(t, addGot.err)
 
-	closeErr := receiveAddResult(
+	closeErr := receiveCloseResult(
 		t,
+		client,
 		closeDone,
 		clientConcurrentResultTimeout,
 		"timed out waiting for Close after await released lock",
