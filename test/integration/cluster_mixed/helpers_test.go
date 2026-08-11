@@ -17,6 +17,7 @@ import (
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/idlestrategy"
@@ -271,7 +272,7 @@ func javaMemberRole(c *harness.DriverCounters) (consensus.Role, bool) {
 	if !ok {
 		return 0, false
 	}
-	role, err := consensus.RoleFromCode(val)
+	role, err := codecs.RoleFromCode(val)
 	if err != nil {
 		return 0, false
 	}
