@@ -1,0 +1,175 @@
+package service
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+)
+
+// nullValue is the ServiceAck RelevantID sentinel for join and request acks.
+// Matches upstream NULL_VALUE (-1).
+const nullValue int64 = -1
+
+// Failure causes for the control and ack path. Marked once on the service path.
+// Unexported: tests match with errors.Is against the package-level values.
+var (
+	errAckRequestPassed = errors.New("service: ack request position passed")
+	errAckPublish       = errors.New("service: ack publish failed")
+)
+
+// controlWork runs one control duty step:
+//  1. Poll Control when non-nil (defaultControlFragmentLimit); dispatch each
+//     whole message
+//  2. Sweep unready request entries for readiness or passed-position failure
+//  3. Drain at most one ready first queued ack when ModuleProxy has a bound
+//     publication
+//
+// Returns the work count: control messages delivered plus one on a successful
+// send.
+//
+// Concurrency: invoker-only. Called from Agent.DoWork.
+func (a *Agent) controlWork() int {
+	work := 0
+	if a.control != nil {
+		work += a.control.Poll(defaultControlFragmentLimit, a.controlOnFragment)
+	}
+	a.sweepRequestAckReadiness()
+	work += a.drainReadyCoordinationAck()
+	return work
+}
+
+// handleControlFragment routes one whole control message at MessageHeader
+// offset.
+//
+// Behaviour:
+//   - Not ok or wrong schema: skip silently
+//   - JoinLog (40): decode, map to logJoinEvent, call handleJoinLog
+//   - RequestServiceAck (108): decode, append one request-kind entry
+//   - Other templates and undecodable known templates: skip silently
+func (a *Agent) handleControlFragment(buf []byte, offset int) {
+	_, templateID, schemaID, _, ok := codecs.DecodeMessageHeader(buf, offset)
+	if !ok || schemaID != clusterwire.MessageHeaderSbeSchemaID {
+		return
+	}
+
+	switch templateID {
+	case clusterwire.JoinLogSbeTemplateID:
+		fields, decOK := codecs.TryDecodeJoinLogAt(buf, offset)
+		if !decOK {
+			return
+		}
+		a.handleJoinLog(logJoinEvent{
+			logPosition:    fields.LogPosition,
+			maxLogPosition: fields.MaxLogPosition,
+			memberID:       fields.MemberID,
+			logSessionID:   fields.LogSessionID,
+			logStreamID:    fields.LogStreamID,
+			isStartup:      fields.IsStartup == clusterwire.BooleanType_TRUE,
+			role:           codecs.Role(fields.Role),
+			logChannel:     string(fields.LogChannel),
+		})
+
+	case clusterwire.RequestServiceAckSbeTemplateID:
+		fields, decOK := codecs.TryDecodeRequestServiceAckAt(buf, offset)
+		if !decOK {
+			return
+		}
+		a.handleRequestServiceAck(fields.LogPosition)
+	}
+}
+
+// handleRequestServiceAck appends one request-kind coordinationAck with ready
+// false. Every delivered request gets its own entry.
+func (a *Agent) handleRequestServiceAck(logPosition int64) {
+	if a.closed {
+		return
+	}
+	a.coordinationAcks = append(a.coordinationAcks, coordinationAck{
+		logPosition: logPosition,
+		kind:        ackKindRequest,
+		ready:       false,
+	})
+}
+
+// sweepRequestAckReadiness marks request entries ready when the agent log
+// position equals the requested position. Marks failure once when the log has
+// passed a requested position. Leaves entries unready when the log is still
+// below the request.
+//
+// Also refreshes unreadyRequestBound and hasUnreadyRequestBound for the log poll
+// bound. One walk covers readiness and the lowest unready request position.
+//
+// A passed entry stays unready so the prefix gate blocks drain of later
+// entries. markFailure runs once; later ticks freeze on serviceFailure.
+func (a *Agent) sweepRequestAckReadiness() {
+	pos := a.logPosition
+	lowest := int64(0)
+	found := false
+	for i := range a.coordinationAcks {
+		e := &a.coordinationAcks[i]
+		if e.kind != ackKindRequest {
+			continue
+		}
+		if !e.ready {
+			switch {
+			case pos == e.logPosition:
+				e.ready = true
+			case pos > e.logPosition:
+				a.markFailure(errAckRequestPassed)
+			}
+		}
+		if !e.ready {
+			if !found || e.logPosition < lowest {
+				lowest = e.logPosition
+				found = true
+			}
+		}
+	}
+	a.unreadyRequestBound = lowest
+	a.hasUnreadyRequestBound = found
+}
+
+// drainReadyCoordinationAck publishes one ServiceAck for the ready first
+// queued entry.
+//
+// Behaviour:
+//   - No proxy, unbound publication, empty queue, or unready first entry: no
+//     send
+//   - result > 0: pop the first entry, advance ackID, return 1
+//   - retriable offer code: keep the first entry and ackID, return 0
+//   - terminal offer code: mark errAckPublish once, return 0
+//
+// Send fields: LogPosition from the entry, Timestamp from clusterTime, AckID
+// from ackID, RelevantID nullValue (-1), ServiceID from config.
+func (a *Agent) drainReadyCoordinationAck() int {
+	if a.moduleProxy == nil || a.moduleProxy.Publication() == nil {
+		return 0
+	}
+	if len(a.coordinationAcks) == 0 {
+		return 0
+	}
+	entry := a.coordinationAcks[0]
+	if !entry.ready {
+		return 0
+	}
+
+	result := a.moduleProxy.PublishServiceAck(codecs.ServiceAckFields{
+		LogPosition: entry.logPosition,
+		Timestamp:   a.clusterTime,
+		AckID:       a.ackID,
+		RelevantID:  nullValue,
+		ServiceID:   a.serviceID,
+	})
+	if result > 0 {
+		a.coordinationAcks = a.coordinationAcks[1:]
+		a.ackID++
+		return 1
+	}
+	if !aeron.IsOfferRetriable(result) {
+		a.markFailure(fmt.Errorf("%w: %d", errAckPublish, result))
+	}
+	return 0
+}

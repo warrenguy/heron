@@ -127,6 +127,12 @@ func requireSinkIdle(tb testing.TB, s *recordingSink) {
 	require.Equal(tb, 0, s.dispatchFails)
 }
 
+func requireOneDispatchFail(tb testing.TB, s *recordingSink, cause error) {
+	tb.Helper()
+	require.Equal(tb, 1, s.dispatchFails)
+	require.ErrorIs(tb, s.lastFailure, cause)
+}
+
 func boundAdapter(tb testing.TB) (*BoundedLogAdapter, *aeron.Image, *recordingSink) {
 	tb.Helper()
 	return boundAdapterWithLimit(tb, 0)
@@ -146,7 +152,7 @@ func boundAdapterWithLimit(
 }
 
 func writeUnfragmentedFrame(
-	tb testing.TB,
+	tb assertTB,
 	image *aeron.Image,
 	frameOffset int,
 	payload []byte,
@@ -224,7 +230,7 @@ func encodeSessionMessage(
 	return buf
 }
 
-func encodeTimerEvent(tb testing.TB, fields codecs.TimerEventFields) []byte {
+func encodeTimerEvent(tb assertTB, fields codecs.TimerEventFields) []byte {
 	tb.Helper()
 	buf := make([]byte, codecs.TimerEventEncodedLen())
 	wireEnd, ok := codecs.EncodeTimerEvent(
@@ -375,6 +381,32 @@ func encodeTrivialSessionMessage(tb testing.TB) []byte {
 	}, nil)
 }
 
+// writeTrivialSessionFrames writes frameCount identical trivial SessionMessage
+// frames from offset 0. Returns one-frame aligned span.
+func writeTrivialSessionFrames(
+	tb testing.TB,
+	image *aeron.Image,
+	frameCount int,
+) int64 {
+	tb.Helper()
+	payload := encodeTrivialSessionMessage(tb)
+	span := int64(logbuffer.AlignFragmentChunkLength(len(payload)))
+	writeFrameChain(tb, image, 0, frameCount, payload)
+	return span
+}
+
+func sampleSessionOpenFields() codecs.SessionOpenEventFields {
+	return codecs.SessionOpenEventFields{
+		LeadershipTermID: 1,
+		CorrelationID:    2,
+		ClusterSessionID: 3,
+		Timestamp:        4,
+		ResponseStreamID: 102,
+		ResponseChannel:  []byte("aeron:ipc"),
+		EncodedPrincipal: []byte{0xAB, 0xCD},
+	}
+}
+
 func TestNewBoundedLogAdapter_defaults(t *testing.T) {
 	sink := &recordingSink{}
 	a := NewBoundedLogAdapter(sink, 0)
@@ -493,15 +525,7 @@ func TestBoundedLogAdapter_dispatch_TimerEvent(t *testing.T) {
 
 func TestBoundedLogAdapter_dispatch_SessionOpenEvent(t *testing.T) {
 	a, image, sink := boundAdapter(t)
-	fields := codecs.SessionOpenEventFields{
-		LeadershipTermID: 1,
-		CorrelationID:    2,
-		ClusterSessionID: 3,
-		Timestamp:        4,
-		ResponseStreamID: 102,
-		ResponseChannel:  []byte("aeron:ipc"),
-		EncodedPrincipal: []byte{0xAB, 0xCD},
-	}
+	fields := sampleSessionOpenFields()
 	span := writeAndPollOne(t, a, image, encodeSessionOpen(t, fields))
 
 	require.Equal(t, 1, sink.sessionOpens)
@@ -578,16 +602,7 @@ func TestBoundedLogAdapter_SessionOpen_varOverCap_aborts(t *testing.T) {
 	// An over-cap prefix still fails TryDecode on bounds, so dispatch aborts
 	// and never calls handleSessionOpen. FieldsFromLayout alone would not fail
 	// closed.
-	fields := codecs.SessionOpenEventFields{
-		LeadershipTermID: 1,
-		CorrelationID:    2,
-		ClusterSessionID: 3,
-		Timestamp:        4,
-		ResponseStreamID: 102,
-		ResponseChannel:  []byte("aeron:ipc"),
-		EncodedPrincipal: []byte{0xAB, 0xCD},
-	}
-	buf := encodeSessionOpen(t, fields)
+	buf := encodeSessionOpen(t, sampleSessionOpenFields())
 	headerAndBlock := codecs.MessageHeaderEncodedLen() +
 		int(clusterwire.SessionOpenEventSbeBlockLength)
 	require.GreaterOrEqual(t, len(buf), headerAndBlock+codecs.VarLengthPrefixSize)
@@ -597,8 +612,7 @@ func TestBoundedLogAdapter_SessionOpen_varOverCap_aborts(t *testing.T) {
 	)
 
 	writeAndPollAbort(t, a, image, buf)
-	require.Equal(t, 1, sink.dispatchFails)
-	require.ErrorIs(t, sink.lastFailure, errLogDispatchDecode)
+	requireOneDispatchFail(t, sink, errLogDispatchDecode)
 	require.Equal(t, 0, sink.sessionOpens)
 }
 
@@ -607,8 +621,7 @@ func TestBoundedLogAdapter_wrongSchema_aborts(t *testing.T) {
 	// Schema 112 is not cluster schema 111.
 	payload := encodeMessageHeader(t, 0, 1, 112, 0)
 	join, span := writeAndPollAbort(t, a, image, payload)
-	require.Equal(t, 1, sink.dispatchFails)
-	require.ErrorIs(t, sink.lastFailure, errLogDispatchSchema)
+	requireOneDispatchFail(t, sink, errLogDispatchSchema)
 
 	// Repeat poll redelivers the same frame.
 	require.Equal(t, 0, a.Poll(span+32))
@@ -628,8 +641,7 @@ func TestBoundedLogAdapter_undecodable_aborts(t *testing.T) {
 		clusterwire.SessionMessageHeaderSbeSchemaVersion,
 	)
 	writeAndPollAbort(t, a, image, payload)
-	require.Equal(t, 1, sink.dispatchFails)
-	require.ErrorIs(t, sink.lastFailure, errLogDispatchDecode)
+	requireOneDispatchFail(t, sink, errLogDispatchDecode)
 }
 
 func TestBoundedLogAdapter_shortHeader_aborts(t *testing.T) {
@@ -637,8 +649,7 @@ func TestBoundedLogAdapter_shortHeader_aborts(t *testing.T) {
 	payload := []byte{0x01, 0x02, 0x03, 0x04}
 	require.Less(t, len(payload), codecs.MessageHeaderEncodedLen())
 	writeAndPollAbort(t, a, image, payload)
-	require.Equal(t, 1, sink.dispatchFails)
-	require.ErrorIs(t, sink.lastFailure, errLogDispatchHeader)
+	requireOneDispatchFail(t, sink, errLogDispatchHeader)
 }
 
 func TestBoundedLogAdapter_Poll_boundBeforeFirstFrame(t *testing.T) {
@@ -654,9 +665,7 @@ func TestBoundedLogAdapter_Poll_boundBeforeFirstFrame(t *testing.T) {
 
 func TestBoundedLogAdapter_Poll_twoFrames_midBound(t *testing.T) {
 	a, image, sink := boundAdapter(t)
-	payload := encodeTrivialSessionMessage(t)
-	span := int64(logbuffer.AlignFragmentChunkLength(len(payload)))
-	writeFrameChain(t, image, 0, 2, payload)
+	span := writeTrivialSessionFrames(t, image, 2)
 
 	// Bound at start of B: only A delivered; Position stops at B start.
 	require.Equal(t, 1, a.Poll(span))
@@ -671,9 +680,7 @@ func TestBoundedLogAdapter_Poll_twoFrames_midBound(t *testing.T) {
 
 func TestBoundedLogAdapter_Poll_maxLogPositionCap(t *testing.T) {
 	a, image, sink := boundAdapter(t)
-	payload := encodeTrivialSessionMessage(t)
-	span := int64(logbuffer.AlignFragmentChunkLength(len(payload)))
-	writeFrameChain(t, image, 0, 2, payload)
+	span := writeTrivialSessionFrames(t, image, 2)
 
 	// Cap between frames; bound generous. Only first delivers.
 	a.SetMaxLogPosition(span)
@@ -688,10 +695,8 @@ func TestBoundedLogAdapter_Poll_maxLogPositionCap(t *testing.T) {
 
 func TestBoundedLogAdapter_Poll_fragmentLimit(t *testing.T) {
 	a, image, sink := boundAdapterWithLimit(t, 1)
-	payload := encodeTrivialSessionMessage(t)
-	span := int64(logbuffer.AlignFragmentChunkLength(len(payload)))
 	const totalFrames = 5
-	writeFrameChain(t, image, 0, totalFrames, payload)
+	span := writeTrivialSessionFrames(t, image, totalFrames)
 
 	bound := span * totalFrames
 	require.Equal(t, 1, a.Poll(bound))

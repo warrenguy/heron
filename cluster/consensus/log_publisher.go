@@ -4,39 +4,8 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/buffer"
 )
-
-// logPublisherSendAttempts is the Offer/TryClaim retry budget (SEND_ATTEMPTS).
-const logPublisherSendAttempts = 3
-
-// growEncodeScratch returns a buffer of length total. Grows geometrically when
-// cap(scratch) is short. The caller retains the returned slice as scratch.
-func growEncodeScratch(scratch []byte, total int) []byte {
-	if cap(scratch) < total {
-		return make([]byte, total, max(total, cap(scratch)*2))
-	}
-	return scratch[:total]
-}
-
-// offerWithOffset is the OfferWithOffset surface shared by Publication and
-// ExclusivePublication.
-type offerWithOffset interface {
-	OfferWithOffset(buffer []byte, offset, length int) int64
-}
-
-// offerEncodedWithAttempts offers buf with logPublisherSendAttempts retries on
-// retriable codes (BackPressured, AdminAction, NotConnected). Closed and
-// MaxPositionExceeded stop immediately.
-func offerEncodedWithAttempts(pub offerWithOffset, buf []byte) int64 {
-	var position int64
-	for range logPublisherSendAttempts {
-		position = pub.OfferWithOffset(buf, 0, len(buf))
-		if position > 0 || !aeron.IsOfferRetriable(position) {
-			return position
-		}
-	}
-	return position
-}
 
 // LogPublisher appends cluster log frames on a single-writer exclusive publication.
 //
@@ -71,7 +40,7 @@ func (p *LogPublisher) SetPublication(pub *aeron.ExclusivePublication) {
 	if pub == nil {
 		return
 	}
-	p.scratch = growEncodeScratch(p.scratch, pub.MaxPayloadLength())
+	p.scratch = buffer.GrowScratch(p.scratch, pub.MaxPayloadLength())
 }
 
 // Publication returns the bound exclusive publication, or nil.
@@ -98,18 +67,16 @@ func (p *LogPublisher) SessionID() int32 {
 // scratchFor returns a buffer of length total for encoding. Totals above the
 // current capacity grow scratch geometrically. The grown buffer is retained.
 func (p *LogPublisher) scratchFor(total int) []byte {
-	p.scratch = growEncodeScratch(p.scratch, total)
+	p.scratch = buffer.GrowScratch(p.scratch, total)
 	return p.scratch
 }
 
-// offerEncoded offers the encoded bytes in buf with the log publisher retry
-// budget.
+// offerEncoded offers the encoded bytes in buf under [aeron.SendAttempts].
 //
 // The caller must bind the publication and encode into buf before calling.
-// Retries up to logPublisherSendAttempts on retriable codes (BackPressured,
-// AdminAction, NotConnected). Closed and MaxPositionExceeded stop immediately.
+// Retry policy is [aeron.OfferAttempts].
 func (p *LogPublisher) offerEncoded(buf []byte) int64 {
-	return offerEncodedWithAttempts(p.publication, buf)
+	return aeron.OfferAttempts(p.publication, buf, aeron.SendAttempts)
 }
 
 // AppendMessage encodes SessionMessageHeader + payload into scratch and offers
@@ -180,7 +147,7 @@ func (p *LogPublisher) AppendNewLeadershipTermEvent(
 
 	return p.publication.ClaimFillCommit(
 		length,
-		logPublisherSendAttempts,
+		aeron.SendAttempts,
 		func(term []byte, payloadOff int, claimPos int64) bool {
 			fields := codecs.NewLeadershipTermEventFields{
 				LeadershipTermID:    leadershipTermID,
@@ -273,7 +240,7 @@ func appendClaim[F any](
 	}
 	return p.publication.ClaimFillCommit(
 		length,
-		logPublisherSendAttempts,
+		aeron.SendAttempts,
 		func(term []byte, payloadOff int, _ int64) bool {
 			wireEnd, ok := encode(term, payloadOff, actingVersion, fields)
 			return ok && wireEnd-payloadOff == length

@@ -10,9 +10,6 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-// egressSendAttempts caps SessionEvent and Challenge offer retries per call.
-const egressSendAttempts = 3
-
 // DefaultSessionTimeoutNs is the default session timeout (10s).
 //
 // Bounds pre-open session egress, queued egress events, challenge waits,
@@ -463,28 +460,25 @@ func (a *Agent) ensureEgressScratch(wireLen int) {
 	a.egressScratch = a.egressScratch[:wireLen]
 }
 
-// offerEgressScratch offers a.egressScratch[0:end] with the
-// egressSendAttempts budget.
+// offerEgressScratch offers a.egressScratch[:end] under [aeron.SendAttempts].
 //
 // Returns:
 //   - sendOutcomeSent on a positive stream position
 //   - sendOutcomeRetriable when every attempt returned a retriable code
 //   - sendOutcomeTerminal on a non-retriable offer code
 func (a *Agent) offerEgressScratch(pub *aeron.Publication, end int) sendOutcome {
-	for range egressSendAttempts {
-		position := pub.OfferWithOffset(a.egressScratch, 0, end)
-		if position > 0 {
-			return sendOutcomeSent
-		}
-		if !aeron.IsOfferRetriable(position) {
-			return sendOutcomeTerminal
-		}
+	position := aeron.OfferAttempts(pub, a.egressScratch[:end], aeron.SendAttempts)
+	if position > 0 {
+		return sendOutcomeSent
 	}
-	return sendOutcomeRetriable
+	if aeron.IsOfferRetriable(position) {
+		return sendOutcomeRetriable
+	}
+	return sendOutcomeTerminal
 }
 
-// sendSessionEvent encodes one SessionEvent and offers it with the
-// egressSendAttempts budget. pub must be non-nil.
+// sendSessionEvent encodes one SessionEvent and offers it under
+// [aeron.SendAttempts]. pub must be non-nil.
 //
 // Returns:
 //   - sendOutcomeSent on a positive stream position
@@ -531,8 +525,8 @@ func (a *Agent) sendSessionEvent(
 	return a.offerEgressScratch(pub, end)
 }
 
-// sendSessionChallenge encodes one Challenge frame. Offers the frame under the
-// egressSendAttempts budget.
+// sendSessionChallenge encodes one Challenge frame and offers it under
+// [aeron.SendAttempts].
 //
 // Returns:
 //   - sendOutcomeSent on a positive stream position

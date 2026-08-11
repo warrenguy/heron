@@ -14,6 +14,7 @@ COPY mmap ./mmap
 COPY record ./record
 COPY ringbuffer ./ringbuffer
 COPY broadcast ./broadcast
+COPY internal ./internal
 COPY archive ./archive
 # harness ClusterMemberSet imports package cluster (not only recordinglog).
 COPY cluster ./cluster

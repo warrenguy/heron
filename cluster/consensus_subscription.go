@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/consensus"
@@ -91,22 +90,23 @@ func requireSubscriptionDeps(
 	return nil
 }
 
-// addSubscriptionChecked adds one subscription, normalizing the nil-nil adder
-// result into an error. what names the stream in the wrapped error.
+// addSubscriptionChecked adds one subscription.
+//
+// what names the stream in the wrapped error. Retry budget and nil-nil handling
+// live in [addWithRetry].
 func addSubscriptionChecked(
 	adder SubscriptionAdder,
 	streamID int32,
 	channel string,
 	what string,
 ) (*aeron.Subscription, error) {
-	sub, err := adder.AddSubscription(streamID, channel)
-	if err == nil && sub == nil {
-		err = errAdderReturnedNoSubscription
-	}
-	if err != nil {
-		return nil, fmt.Errorf("cluster: add %s on %s: %w", what, channel, err)
-	}
-	return sub, nil
+	return addWithRetry(
+		adder.AddSubscription,
+		streamID,
+		channel,
+		what,
+		errAdderReturnedNoSubscription,
+	)
 }
 
 // OpenConsensusSubscription registers the local consensus subscription and wires

@@ -6,9 +6,6 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-// aeronPublisherSendAttempts is the TryClaim retry budget (SEND_ATTEMPTS).
-const aeronPublisherSendAttempts = 3
-
 // AeronPublisher implements Publisher over per-member exclusive publications.
 //
 // Concurrency: invoker-only. Same goroutine as Election.DoWork / Agent.DoWork
@@ -79,7 +76,7 @@ func publishClaim[F any](
 	}
 	return pub.ClaimFillCommit(
 		wireLen,
-		aeronPublisherSendAttempts,
+		aeron.SendAttempts,
 		func(term []byte, payloadOff int, _ int64) bool {
 			wireEnd, ok := encode(term, payloadOff, ver, fields)
 			return ok && wireEnd-payloadOff == wireLen

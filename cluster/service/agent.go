@@ -41,6 +41,15 @@ type AgentConfig struct {
 	// FragmentLimit caps fragments per log poll.
 	// Zero or negative takes DefaultLogFragmentLimit.
 	FragmentLimit int
+
+	// Control polls module-to-service control frames (stream 104). Nil is
+	// allowed: control work polls nothing and delivers no frame.
+	Control ControlIngress
+
+	// ModuleProxy sends ServiceAck frames (stream 105). Nil is allowed: ready
+	// acks stay queued. A proxy with no bound publication drains nothing, same
+	// as nil.
+	ModuleProxy *ConsensusModuleProxy
 }
 
 // Agent owns the service duty cycle: log join, bounded log consumption,
@@ -60,6 +69,8 @@ type Agent struct {
 	service           ClusteredService
 	committedPosition func() int64
 	subscriptions     SubscriptionAdder
+	control           ControlIngress
+	moduleProxy       *ConsensusModuleProxy
 
 	adapter *BoundedLogAdapter
 
@@ -68,13 +79,14 @@ type Agent struct {
 	serviceFailure error
 
 	// pendingJoin is the last JoinLog not yet bound, or nil. One slot. A newer
-	// join supersedes an unbound older join. Only the current pendingJoin ack
-	// entry is unready. That entry is always the last coordinationAcks entry.
+	// join supersedes an unbound older join and marks the prior join entry
+	// ready.
 	pendingJoin *logJoinEvent
 
 	// coordinationAcks is the FIFO of delivered coordination frames not yet
-	// acked. Ready entries form a queue prefix: every entry when pendingJoin is
-	// nil; every entry but the last when pendingJoin is non-nil.
+	// acked. Drain is prefix-gated: only a ready first queued entry may send.
+	// Join entries become ready at bind or supersession. Request entries become
+	// ready when logPosition equals the requested position.
 	coordinationAcks []coordinationAck
 
 	// sessions is the log-derived registry keyed by cluster session id.
@@ -83,6 +95,20 @@ type Agent struct {
 	logSubscription *aeron.Subscription
 
 	leadershipHandler NewLeadershipTermEventHandler
+
+	// ackID is the next ServiceAck id to send. Starts 0. Advances only on a
+	// successful drain send.
+	ackID int64
+
+	// controlOnFragment is the cached Poll handler. NewAgent builds the handler
+	// once so each controlWork tick does not allocate a method value.
+	controlOnFragment func([]byte, int)
+
+	// unreadyRequestBound is the minimum logPosition among unready request-kind
+	// entries after the last sweep. hasUnreadyRequestBound is false when no such
+	// entry exists. DoWork uses the pair as the log poll upper bound.
+	unreadyRequestBound    int64
+	hasUnreadyRequestBound bool
 
 	started bool
 	closed  bool
@@ -106,13 +132,27 @@ type logJoinEvent struct {
 	logChannel     string
 }
 
+// coordinationAckKind discriminates the readiness rule of one entry.
+type coordinationAckKind uint8
+
+const (
+	// ackKindJoin: ready at join completion or supersession.
+	ackKindJoin coordinationAckKind = iota
+
+	// ackKindRequest: ready when the agent log position equals the requested
+	// position.
+	ackKindRequest
+)
+
 // coordinationAck is one delivered coordination frame awaiting its ack.
 //
-// Ready state is derived. Only the current pendingJoin entry is unready. That
-// entry is always the last queue entry. Bind or supersession clears the pending
-// slot and makes the entry ready.
+// Join entries set ready at bind or supersession. Request entries set ready
+// when the agent log position equals the entry logPosition. Drain is
+// prefix-gated: only a ready first queued entry may send.
 type coordinationAck struct {
 	logPosition int64
+	kind        coordinationAckKind
+	ready       bool
 }
 
 // clientSessionRecord holds open-event fields for one log-derived session. The
@@ -140,27 +180,34 @@ func NewAgent(cfg AgentConfig) *Agent {
 		service:           cfg.Service,
 		committedPosition: cfg.CommittedPosition,
 		subscriptions:     cfg.Subscriptions,
+		control:           cfg.Control,
+		moduleProxy:       cfg.ModuleProxy,
 		memberID:          -1,
 		sessions:          make(map[int64]*clientSessionRecord),
 	}
 	if nlt, ok := cfg.Service.(NewLeadershipTermEventHandler); ok {
 		a.leadershipHandler = nlt
 	}
+	a.controlOnFragment = a.handleControlFragment
 	a.adapter = NewBoundedLogAdapter(a, cfg.FragmentLimit)
 	return a
 }
 
 // DoWork runs one duty tick. nowNs is reserved for later depth; no step reads
-// it yet.
+// nowNs yet.
 //
 // Order:
 //  1. serviceFailure or closed: return 0
-//  2. start work once: Service.Start(agent); error marks sticky failure
-//  3. join work while pendingJoin is non-nil and no image is bound
-//  4. log poll when image bound and CommittedPosition non-nil
-//  5. unbind when zero polled and (image closed or position at maxLogPosition)
+//  2. start work once: Service.Start(agent); error marks failure once
+//  3. control work: poll control, request readiness sweep, drain at most one
+//     ready first queued ack
+//  4. join work while pendingJoin is non-nil and no image is bound
+//  5. log poll when image bound and CommittedPosition non-nil; bound is
+//     min(committed, lowest unready request entry position)
+//  6. unbind when zero polled and (image closed or position at maxLogPosition)
 //
-// Returns the work count: Start, each join bind, and each polled fragment.
+// Returns the work count: Start, control fragments, each sent ack, each join
+// bind, and each polled fragment.
 //
 // Concurrency: invoker-only.
 func (a *Agent) DoWork(nowNs int64) int {
@@ -182,6 +229,11 @@ func (a *Agent) DoWork(nowNs int64) int {
 		}
 	}
 
+	work += a.controlWork()
+	if a.serviceFailure != nil {
+		return work
+	}
+
 	if a.pendingJoin != nil && a.adapter.Image() == nil {
 		work += a.joinWork()
 		if a.serviceFailure != nil {
@@ -191,7 +243,11 @@ func (a *Agent) DoWork(nowNs int64) int {
 
 	polled := 0
 	if a.adapter.Image() != nil && a.committedPosition != nil {
-		polled = a.adapter.Poll(a.committedPosition())
+		bound := a.committedPosition()
+		if a.hasUnreadyRequestBound {
+			bound = min(bound, a.unreadyRequestBound)
+		}
+		polled = a.adapter.Poll(bound)
 		work += polled
 		if a.serviceFailure != nil {
 			return work
@@ -269,16 +325,24 @@ func (a *Agent) PendingCoordinationAcks() int {
 	return len(a.coordinationAcks)
 }
 
-// ReadyCoordinationAcks returns how many ack queue entries are ready to send.
-// Ready entries form a queue prefix. The count is len(coordinationAcks) when no
-// join is pending, and len-1 when a join is still unbound. That unbound join is
-// always the last entry.
+// ReadyCoordinationAcks returns how many leading ack queue entries are ready to
+// send. Counts the ready prefix only. The scan stops at the first unready
+// entry. Drain is prefix-gated on the same rule.
 func (a *Agent) ReadyCoordinationAcks() int {
-	n := len(a.coordinationAcks)
-	if a.pendingJoin != nil {
-		return n - 1
+	n := 0
+	for i := range a.coordinationAcks {
+		if !a.coordinationAcks[i].ready {
+			break
+		}
+		n++
 	}
 	return n
+}
+
+// NextAckID returns the next ServiceAck id this service will send. Starts at 0.
+// Advances only on a successful send, so the value equals the sent-ack count.
+func (a *Agent) NextAckID() int64 {
+	return a.ackID
 }
 
 // ServiceFailure returns the first marked service-path failure, or nil.
@@ -290,17 +354,23 @@ func (a *Agent) ServiceFailure() error {
 // call it in-package.
 //
 // Order:
-//  1. Append one coordinationAck for event.logPosition.
-//  2. Cap a bound image at event.logPosition (handoff).
-//  3. Store event as pendingJoin. Supersedes any unbound join. The prior entry
-//     becomes ready by queue position.
+//  1. When a join is already pending, mark its coordinationAck ready
+//     (supersession).
+//  2. Append one join-kind coordinationAck for event.logPosition, ready false.
+//  3. Cap a bound image at event.logPosition (handoff).
+//  4. Store event as pendingJoin.
 func (a *Agent) handleJoinLog(event logJoinEvent) {
 	if a.closed {
 		return
 	}
 
+	if a.pendingJoin != nil {
+		a.markJoinAckReady()
+	}
+
 	a.coordinationAcks = append(a.coordinationAcks, coordinationAck{
 		logPosition: event.logPosition,
+		kind:        ackKindJoin,
 	})
 
 	if a.adapter.Image() != nil {
@@ -308,6 +378,18 @@ func (a *Agent) handleJoinLog(event logJoinEvent) {
 	}
 
 	a.pendingJoin = &event
+}
+
+// markJoinAckReady sets ready on the first unready join-kind entry. At most
+// one join entry is unready (the current pending join).
+func (a *Agent) markJoinAckReady() {
+	for i := range a.coordinationAcks {
+		e := &a.coordinationAcks[i]
+		if e.kind == ackKindJoin && !e.ready {
+			e.ready = true
+			return
+		}
+	}
 }
 
 // joinWork progresses a pending join when no image is bound.
@@ -321,13 +403,11 @@ func (a *Agent) joinWork() int {
 	}
 
 	// Reuse the subscription when channel and stream match. Otherwise close and re-add.
-	if a.logSubscription != nil {
-		same := a.logSubscription.Channel() == event.logChannel &&
-			a.logSubscription.StreamID() == event.logStreamID
-		if !same {
-			_ = a.logSubscription.Close()
-			a.logSubscription = nil
-		}
+	if a.logSubscription != nil &&
+		(a.logSubscription.Channel() != event.logChannel ||
+			a.logSubscription.StreamID() != event.logStreamID) {
+		_ = a.logSubscription.Close()
+		a.logSubscription = nil
 	}
 	if a.logSubscription == nil {
 		if a.subscriptions == nil {
@@ -357,6 +437,7 @@ func (a *Agent) joinWork() int {
 	a.adapter.SetMaxLogPosition(event.maxLogPosition)
 	a.memberID = event.memberID
 	a.role = event.role
+	a.markJoinAckReady()
 	a.pendingJoin = nil
 	return 1
 }

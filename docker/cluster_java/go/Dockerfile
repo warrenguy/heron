@@ -17,6 +17,7 @@ COPY mmap ./mmap
 COPY record ./record
 COPY ringbuffer ./ringbuffer
 COPY broadcast ./broadcast
+COPY internal ./internal
 # cluster/client + cluster/codecs (incl. clusterwire) for AsyncConnect + echo compose smokes.
 # cluster open connects archive.Client; election/consensus import archivewire.
 COPY archive ./archive

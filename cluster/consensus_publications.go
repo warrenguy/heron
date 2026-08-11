@@ -100,45 +100,51 @@ type ConsensusPublications struct {
 
 var errAdderReturnedNoPublication = errors.New("adder returned no publication")
 
-// Retry pacing for [addExclusivePublicationChecked] and [addPublicationChecked]
-// on [aeron.ErrorCodeResourceTemporarilyUnavailable].
+// Retry pacing for [addWithRetry] when the driver returns
+// [aeron.ErrorCodeResourceTemporarilyUnavailable].
 //
-// exclusivePubAddRetryBudget caps total retry time. exclusivePubAddRetryPause
-// is the sleep between attempts. Tests may shrink both.
+// driverAddRetryBudget caps total retry time. driverAddRetryPause is the sleep
+// between attempts. Tests may shrink both.
 var (
-	exclusivePubAddRetryBudget = 5 * time.Second
-	exclusivePubAddRetryPause  = 10 * time.Millisecond
+	driverAddRetryBudget = 5 * time.Second
+	driverAddRetryPause  = 10 * time.Millisecond
 )
 
-// addWithRetry runs one publication registration with the shared code-10 retry
-// budget. add is one fresh driver call per attempt.
+// addWithRetry runs one driver registration under the shared code-10 retry
+// budget. Each attempt is one fresh call to add.
 //
-// A nil-nil add result becomes [errAdderReturnedNoPublication]. Retries only
-// when [aeron.IsRetriableRegistration] is true (code 10, including wrapped
-// errors). Typical driver case: send_channel_endpoint still in CLOSING. Other
-// errors return immediately.
+// Outcome per attempt:
+//   - non-nil resource: return success
+//   - nil-nil: return nilResult (not retried)
+//   - [aeron.IsRetriableRegistration] (code 10, including wrapped): sleep
+//     [driverAddRetryPause] and retry until [driverAddRetryBudget] expires
+//   - any other error: return immediately
+//
+// Typical code-10 cases are send_channel_endpoint or receive_channel_endpoint
+// still in CLOSING after a peer or local close.
 //
 // On failure returns the last error wrapped as `cluster: add %s on %s: %w`
 // with what and channel.
-func addWithRetry[P any](
-	add func(streamID int32, channel string) (*P, error),
+func addWithRetry[R any](
+	add func(streamID int32, channel string) (*R, error),
 	streamID int32,
 	channel string,
 	what string,
-) (*P, error) {
-	deadline := time.Now().Add(exclusivePubAddRetryBudget)
+	nilResult error,
+) (*R, error) {
+	deadline := time.Now().Add(driverAddRetryBudget)
 	for {
-		pub, err := add(streamID, channel)
-		if err == nil && pub == nil {
-			err = errAdderReturnedNoPublication
+		resource, err := add(streamID, channel)
+		if err == nil && resource == nil {
+			err = nilResult
 		}
 		if err == nil {
-			return pub, nil
+			return resource, nil
 		}
 		if !aeron.IsRetriableRegistration(err) || !time.Now().Before(deadline) {
 			return nil, fmt.Errorf("cluster: add %s on %s: %w", what, channel, err)
 		}
-		time.Sleep(exclusivePubAddRetryPause)
+		time.Sleep(driverAddRetryPause)
 	}
 }
 
@@ -152,7 +158,13 @@ func addExclusivePublicationChecked(
 	channel string,
 	what string,
 ) (*aeron.ExclusivePublication, error) {
-	return addWithRetry(adder.AddExclusivePublication, streamID, channel, what)
+	return addWithRetry(
+		adder.AddExclusivePublication,
+		streamID,
+		channel,
+		what,
+		errAdderReturnedNoPublication,
+	)
 }
 
 // addPublicationChecked adds one concurrent publication.
@@ -165,7 +177,13 @@ func addPublicationChecked(
 	channel string,
 	what string,
 ) (*aeron.Publication, error) {
-	return addWithRetry(adder.AddPublication, streamID, channel, what)
+	return addWithRetry(
+		adder.AddPublication,
+		streamID,
+		channel,
+		what,
+		errAdderReturnedNoPublication,
+	)
 }
 
 // OpenConsensusPublications registers one exclusive consensus publication per

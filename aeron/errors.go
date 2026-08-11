@@ -59,8 +59,9 @@ const (
 	// ErrorCode.RESOURCE_TEMPORARILY_UNAVAILABLE (value 10).
 	//
 	// The media driver returns this code when a registration resource is still
-	// closing, such as a send_channel_endpoint in CLOSING state. Callers may
-	// retry the registration with a fresh correlation after a short pause.
+	// closing. Common cases are send_channel_endpoint and
+	// receive_channel_endpoint in CLOSING state. Callers may retry the
+	// registration with a fresh correlation after a short pause.
 	ErrorCodeResourceTemporarilyUnavailable int32 = 10
 )
 

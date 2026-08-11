@@ -49,9 +49,8 @@ type timerRec struct {
 	timestamp     int64
 }
 
-func (s *recordingService) Start(cluster Cluster) error {
+func (s *recordingService) Start(Cluster) error {
 	s.startCount++
-	_ = cluster
 	return s.startErr
 }
 
@@ -135,12 +134,7 @@ type stubAdder struct {
 	err error
 }
 
-func (s *stubAdder) AddSubscription(
-	streamID int32,
-	channel string,
-) (*aeron.Subscription, error) {
-	_ = streamID
-	_ = channel
+func (s *stubAdder) AddSubscription(int32, string) (*aeron.Subscription, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -231,7 +225,7 @@ func bindAgent(
 }
 
 func writeAgentFrame(
-	tb testing.TB,
+	tb assertTB,
 	image *aeron.Image,
 	frameOffset int,
 	payload []byte,
@@ -242,7 +236,7 @@ func writeAgentFrame(
 }
 
 func writeAgentPadding(
-	tb testing.TB,
+	tb assertTB,
 	image *aeron.Image,
 	frameOffset int,
 	paddingLength int32,
@@ -256,6 +250,18 @@ func writeAgentPadding(
 		int32(frameOffset),
 	))
 	logbuffer.PutFrameLengthOrdered(term, frameOffset, paddingLength)
+}
+
+// replaceLogSubscription swaps the stub adder for a new image at joinPosition.
+func replaceLogSubscription(
+	tb testing.TB,
+	agent *Agent,
+	sessionID, streamID int32,
+	joinPosition int64,
+) {
+	tb.Helper()
+	sub, _ := newLogImage(tb, sessionID, streamID, joinPosition)
+	agent.subscriptions = &stubAdder{sub: sub}
 }
 
 func TestAgent_Start_once(t *testing.T) {
@@ -275,11 +281,9 @@ func TestAgent_Start_errorMarksSticky(t *testing.T) {
 	startErr := errors.New("start boom")
 	svc := &recordingService{startErr: startErr}
 	sub, _ := newLogImage(t, testLogSessionID, testLogStreamID, 0)
-	committed := int64(0)
 	agent := NewAgent(AgentConfig{
-		Service:           svc,
-		CommittedPosition: func() int64 { return committed },
-		Subscriptions:     &stubAdder{sub: sub},
+		Service:       svc,
+		Subscriptions: &stubAdder{sub: sub},
 	})
 	// Join is ready to bind. Start failure must return before joinWork.
 	agent.handleJoinLog(defaultJoinEvent(0))
@@ -301,10 +305,9 @@ func TestAgent_Start_errorMarksSticky(t *testing.T) {
 func TestAgent_JoinLifecycle(t *testing.T) {
 	svc := &recordingService{}
 	agent, _, _ := bindAgent(t, svc, 0)
+	// Start ran. Join ack remains queued after bind (ready, not drained).
 	require.Equal(t, 1, svc.startCount)
-	require.Equal(t, int64(0), agent.LogPosition())
 	require.Equal(t, 1, agent.PendingCoordinationAcks())
-	require.Equal(t, 1, agent.ReadyCoordinationAcks())
 }
 
 // TestAgent_Join_doesNotBind asserts every path that leaves a delivered join
@@ -411,8 +414,8 @@ func TestAgent_Join_supersession(t *testing.T) {
 	require.Equal(t, 1, agent.PendingCoordinationAcks())
 	require.Equal(t, 0, agent.ReadyCoordinationAcks())
 
-	// Second join supersedes. First ack becomes ready without bind. Ready
-	// count is all but the current pending entry (always the last entry).
+	// Second join supersedes. First ack becomes ready without bind.
+	// ReadyCoordinationAcks counts the ready prefix (one superseded join).
 	second := defaultJoinEvent(0)
 	second.memberID = 9
 	second.role = codecs.RoleFollower
@@ -451,9 +454,7 @@ func TestAgent_Join_handoff(t *testing.T) {
 	// New join at handoff position span. Changed stream forces close and re-add.
 	const newSessionID int32 = 99
 	const newStream int32 = 101
-	sub2, _ := newLogImage(t, newSessionID, newStream, int64(span))
-	// Replace the adder so re-add returns the new subscription.
-	agent.subscriptions = &stubAdder{sub: sub2}
+	replaceLogSubscription(t, agent, newSessionID, newStream, int64(span))
 
 	next := defaultJoinEvent(int64(span))
 	next.logSessionID = newSessionID
@@ -510,8 +511,7 @@ func TestAgent_Join_paddingHandoff(t *testing.T) {
 
 	const newSessionID int32 = 55
 	const newStream int32 = 102
-	sub2, _ := newLogImage(t, newSessionID, newStream, handoff)
-	agent.subscriptions = &stubAdder{sub: sub2}
+	replaceLogSubscription(t, agent, newSessionID, newStream, handoff)
 
 	next := defaultJoinEvent(handoff)
 	next.logSessionID = newSessionID
@@ -600,8 +600,7 @@ func TestAgent_SessionClose_knownAndUnknown(t *testing.T) {
 	unkSpan := writeAgentFrame(t, image, openSpan+closeSpan, closeUnknown)
 
 	*committed = int64(openSpan + closeSpan + unkSpan)
-	work := agent.DoWork(0)
-	require.Equal(t, 3, work)
+	require.Equal(t, 3, agent.DoWork(0))
 	require.NoError(t, agent.ServiceFailure())
 	require.Equal(t, 0, agent.SessionCount())
 	require.False(t, agent.HasSession(7))

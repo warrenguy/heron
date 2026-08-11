@@ -4,6 +4,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/buffer"
 )
 
 // ServiceProxy publishes module-to-service control frames on the service
@@ -42,7 +43,7 @@ func (p *ServiceProxy) SetPublication(pub *aeron.Publication) {
 	if pub == nil {
 		return
 	}
-	p.scratch = growEncodeScratch(p.scratch, pub.MaxPayloadLength())
+	p.scratch = buffer.GrowScratch(p.scratch, pub.MaxPayloadLength())
 }
 
 // Publication returns the bound publication, or nil.
@@ -53,18 +54,20 @@ func (p *ServiceProxy) Publication() *aeron.Publication {
 // scratchFor returns a buffer of length total for encoding. Totals above the
 // current capacity grow scratch geometrically. The grown buffer is retained.
 func (p *ServiceProxy) scratchFor(total int) []byte {
-	p.scratch = growEncodeScratch(p.scratch, total)
+	p.scratch = buffer.GrowScratch(p.scratch, total)
 	return p.scratch
 }
 
-// offerEncoded offers the encoded bytes in buf with the log publisher retry
-// budget.
+// serviceProxySendAttempts is the module-to-service control offer budget.
+// Matches Java io.aeron.cluster.ServiceProxy SEND_ATTEMPTS (5).
+const serviceProxySendAttempts = 5
+
+// offerEncoded offers the encoded bytes in buf under serviceProxySendAttempts.
 //
 // The caller must bind the publication and encode into buf before calling.
-// Retries up to logPublisherSendAttempts on retriable codes (BackPressured,
-// AdminAction, NotConnected). Closed and MaxPositionExceeded stop immediately.
+// Retry policy is [aeron.OfferAttempts].
 func (p *ServiceProxy) offerEncoded(buf []byte) int64 {
-	return offerEncodedWithAttempts(p.publication, buf)
+	return aeron.OfferAttempts(p.publication, buf, serviceProxySendAttempts)
 }
 
 // publishEncoded checks MaxMessageLength, encodes into scratch, and offers.

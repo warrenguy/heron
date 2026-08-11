@@ -11,109 +11,107 @@ import (
 	"github.com/warrenguy/heron/aeron"
 )
 
-// retryScriptAdder scripts exclusive publication add outcomes for policy tests.
+// retryScriptAdder scripts add outcomes for the retry policy tests. One value
+// implements all three adder interfaces. Each add kind records returned handles
+// in its own slice.
 //
-//   - permanent: every call returns failErr
-//   - failLeft: remaining transient failures before success (ignored when permanent)
+//   - failLeft: remaining transient failures before success. Negative never
+//     succeeds.
 //   - nilNil: every call returns (nil, nil)
 type retryScriptAdder struct {
-	calls     int
-	failLeft  int
-	permanent bool
-	nilNil    bool
-	failErr   error
-	pubs      []*aeron.ExclusivePublication
-}
-
-func (f *retryScriptAdder) AddExclusivePublication(
-	streamID int32,
-	channel string,
-) (*aeron.ExclusivePublication, error) {
-	_ = streamID
-	_ = channel
-	f.calls++
-	if f.nilNil {
-		return nil, nil
-	}
-	if f.permanent {
-		return nil, f.failErr
-	}
-	if f.failLeft > 0 {
-		f.failLeft--
-		return nil, f.failErr
-	}
-	pub := new(aeron.ExclusivePublication)
-	f.pubs = append(f.pubs, pub)
-	return pub, nil
-}
-
-// retryScriptConcurrentAdder scripts concurrent publication add outcomes.
-//
-//   - failLeft: remaining transient failures before success
-//   - nilNil: every call returns (nil, nil)
-type retryScriptConcurrentAdder struct {
 	calls    int
 	failLeft int
 	nilNil   bool
 	failErr  error
-	pubs     []*aeron.Publication
+	pubs     []*aeron.ExclusivePublication
+	concPubs []*aeron.Publication
+	subs     []*aeron.Subscription
 }
 
-func (f *retryScriptConcurrentAdder) AddPublication(
-	streamID int32,
-	channel string,
+func (f *retryScriptAdder) AddExclusivePublication(
+	_ int32,
+	_ string,
+) (*aeron.ExclusivePublication, error) {
+	return scriptNextAdd(f, &f.pubs)
+}
+
+func (f *retryScriptAdder) AddPublication(
+	_ int32,
+	_ string,
 ) (*aeron.Publication, error) {
-	_ = streamID
-	_ = channel
+	return scriptNextAdd(f, &f.concPubs)
+}
+
+func (f *retryScriptAdder) AddSubscription(
+	_ int32,
+	_ string,
+) (*aeron.Subscription, error) {
+	return scriptNextAdd(f, &f.subs)
+}
+
+// scriptNextAdd advances the script by one add call. On success the helper
+// appends the fresh handle to added. Tests assert the checked helper returns
+// that same handle.
+func scriptNextAdd[R any](
+	f *retryScriptAdder,
+	added *[]*R,
+) (*R, error) {
 	f.calls++
 	if f.nilNil {
 		return nil, nil
 	}
-	if f.failLeft > 0 {
-		f.failLeft--
+	if f.failLeft != 0 {
+		if f.failLeft > 0 {
+			f.failLeft--
+		}
 		return nil, f.failErr
 	}
-	pub := new(aeron.Publication)
-	f.pubs = append(f.pubs, pub)
-	return pub, nil
+	resource := new(R)
+	*added = append(*added, resource)
+	return resource, nil
 }
 
-// withPubAddRetryWindow sets exclusivePubAddRetryBudget and
-// exclusivePubAddRetryPause for the test body. Shared by exclusive and
-// concurrent add-checked helpers. Mutates package-level pacing.
-// Callers must not use t.Parallel.
-func withPubAddRetryWindow(
+// withDriverAddRetryWindow sets driverAddRetryBudget and driverAddRetryPause for
+// the test body. The helper mutates package-level pacing. Callers must not use
+// t.Parallel.
+func withDriverAddRetryWindow(
 	t *testing.T,
 	budget time.Duration,
 	pause time.Duration,
 ) {
 	t.Helper()
-	origBudget := exclusivePubAddRetryBudget
-	origPause := exclusivePubAddRetryPause
-	exclusivePubAddRetryBudget = budget
-	exclusivePubAddRetryPause = pause
+	origBudget := driverAddRetryBudget
+	origPause := driverAddRetryPause
+	driverAddRetryBudget = budget
+	driverAddRetryPause = pause
 	t.Cleanup(func() {
-		exclusivePubAddRetryBudget = origBudget
-		exclusivePubAddRetryPause = origPause
+		driverAddRetryBudget = origBudget
+		driverAddRetryPause = origPause
 	})
 }
 
-func retriableRegistrationErr(correlationID int64) *aeron.RegistrationError {
+// retriableRegistrationErr builds one code-10 driver error. endpoint names the
+// driver resource still in CLOSING state. Use send_channel_endpoint for a
+// publication add. Use receive_channel_endpoint for a subscription add.
+func retriableRegistrationErr(
+	correlationID int64,
+	endpoint string,
+) *aeron.RegistrationError {
 	return &aeron.RegistrationError{
 		CorrelationID: correlationID,
 		ErrorCode:     aeron.ErrorCodeResourceTemporarilyUnavailable,
 		Message: "(-10) resource temporarily unavailable: " +
-			"send_channel_endpoint found in CLOSING state, please retry",
+			endpoint + " found in CLOSING state, please retry",
 	}
 }
 
 func TestAddExclusivePublicationChecked_retriesResourceTemporarilyUnavailable(
 	t *testing.T,
 ) {
-	// Short pause. Two retries fit the default budget.
-	withPubAddRetryWindow(t, time.Second, time.Millisecond)
+	// Shrink budget so two retries complete quickly.
+	withDriverAddRetryWindow(t, time.Second, time.Millisecond)
 
-	cause := retriableRegistrationErr(76)
+	cause := retriableRegistrationErr(76, "send_channel_endpoint")
 	adder := &retryScriptAdder{failLeft: 2, failErr: cause}
 
 	pub, err := addExclusivePublicationChecked(
@@ -165,7 +163,7 @@ func TestAddExclusivePublicationChecked_nonRetriableFailsOnce(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			adder := &retryScriptAdder{permanent: true, failErr: tc.cause}
+			adder := &retryScriptAdder{failLeft: -1, failErr: tc.cause}
 			pub, err := addExclusivePublicationChecked(adder, 100, tc.channel, tc.what)
 			require.Nil(t, pub)
 			require.Equal(t, 1, adder.calls)
@@ -179,10 +177,10 @@ func TestAddExclusivePublicationChecked_nonRetriableFailsOnce(t *testing.T) {
 
 func TestAddExclusivePublicationChecked_budgetExhaustedReturnsLastError(t *testing.T) {
 	// Zero budget. First retriable failure returns without sleep.
-	withPubAddRetryWindow(t, 0, time.Millisecond)
+	withDriverAddRetryWindow(t, 0, time.Millisecond)
 
-	cause := retriableRegistrationErr(99)
-	adder := &retryScriptAdder{permanent: true, failErr: cause}
+	cause := retriableRegistrationErr(99, "send_channel_endpoint")
+	adder := &retryScriptAdder{failLeft: -1, failErr: cause}
 
 	pub, err := addExclusivePublicationChecked(
 		adder,
@@ -215,11 +213,11 @@ func TestAddExclusivePublicationChecked_nilNilNotRetried(t *testing.T) {
 }
 
 func TestAddPublicationChecked_retriesResourceTemporarilyUnavailable(t *testing.T) {
-	// Short pause. Two retries fit the default budget.
-	withPubAddRetryWindow(t, time.Second, time.Millisecond)
+	// Shrink budget so two retries complete quickly.
+	withDriverAddRetryWindow(t, time.Second, time.Millisecond)
 
-	cause := retriableRegistrationErr(76)
-	adder := &retryScriptConcurrentAdder{failLeft: 2, failErr: cause}
+	cause := retriableRegistrationErr(76, "send_channel_endpoint")
+	adder := &retryScriptAdder{failLeft: 2, failErr: cause}
 
 	pub, err := addPublicationChecked(
 		adder,
@@ -230,12 +228,12 @@ func TestAddPublicationChecked_retriesResourceTemporarilyUnavailable(t *testing.
 	require.NoError(t, err)
 	require.NotNil(t, pub)
 	require.Equal(t, 3, adder.calls)
-	require.Len(t, adder.pubs, 1)
-	require.Same(t, pub, adder.pubs[0])
+	require.Len(t, adder.concPubs, 1)
+	require.Same(t, pub, adder.concPubs[0])
 }
 
 func TestAddPublicationChecked_nilNilNotRetried(t *testing.T) {
-	adder := &retryScriptConcurrentAdder{nilNil: true}
+	adder := &retryScriptAdder{nilNil: true}
 
 	pub, err := addPublicationChecked(
 		adder,
@@ -246,4 +244,40 @@ func TestAddPublicationChecked_nilNilNotRetried(t *testing.T) {
 	require.Nil(t, pub)
 	require.Equal(t, 1, adder.calls)
 	require.ErrorIs(t, err, errAdderReturnedNoPublication)
+}
+
+func TestAddSubscriptionChecked_retriesResourceTemporarilyUnavailable(
+	t *testing.T,
+) {
+	// Shrink budget so two retries complete quickly.
+	withDriverAddRetryWindow(t, time.Second, time.Millisecond)
+
+	cause := retriableRegistrationErr(68, "receive_channel_endpoint")
+	adder := &retryScriptAdder{failLeft: 2, failErr: cause}
+
+	sub, err := addSubscriptionChecked(
+		adder,
+		100,
+		"aeron:udp?term-length=64k|endpoint=127.0.0.1:26303",
+		"consensus subscription",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, sub)
+	require.Equal(t, 3, adder.calls)
+	require.Len(t, adder.subs, 1)
+	require.Same(t, sub, adder.subs[0])
+}
+
+func TestAddSubscriptionChecked_nilNilNotRetried(t *testing.T) {
+	adder := &retryScriptAdder{nilNil: true}
+
+	sub, err := addSubscriptionChecked(
+		adder,
+		100,
+		"aeron:udp?endpoint=127.0.0.1:26303",
+		"consensus subscription",
+	)
+	require.Nil(t, sub)
+	require.Equal(t, 1, adder.calls)
+	require.ErrorIs(t, err, errAdderReturnedNoSubscription)
 }
