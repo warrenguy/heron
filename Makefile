@@ -254,7 +254,7 @@ BENCH_BASELINE := $(BENCH_DIR)/baseline.txt
 BENCH_COUNT ?= 10
 BENCH_PKGS ?= ./test/bench/...
 BENCH_MICRO_PKGS ?= ./atomicbuffer/... ./mmap/... ./record/... ./ringbuffer/... \
-	./idlestrategy/... ./broadcast/... ./aeron/...
+	./idlestrategy/... ./broadcast/... ./aeron/... ./cluster/codecs
 BENCH_TAGS := bench
 # Env fallbacks read by scripts/bench-regression.sh.
 export BENCH_PKGS
@@ -265,7 +265,7 @@ bench: ## Quick benchmarks (test/bench)
 	go test -tags=$(BENCH_TAGS) -run '^$$' -bench=. -benchmem \
 		-benchtime=1s $(BENCH_PKGS)
 
-bench-micro: ## Micro-benchmarks (hoisted layout primitives + aeron)
+bench-micro: ## Micro-benchmarks (BENCH_MICRO_PKGS)
 	go test -run '^$$' -tags=testhooks -bench=. -benchmem \
 		$(BENCH_MICRO_PKGS)
 

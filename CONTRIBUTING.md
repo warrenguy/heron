@@ -155,7 +155,7 @@ Java golden fixture layout:
 | Target | Tags | Packages |
 |--------|------|----------|
 | `make bench` (+ baseline, regression) | `bench` | `./test/bench/...` |
-| `make bench-micro` | `testhooks` | `BENCH_MICRO_PKGS` in Makefile (layout primitives + `./aeron/...`) |
+| `make bench-micro` | `testhooks` | `BENCH_MICRO_PKGS` in Makefile |
 
 ```bash
 make bench             # contract suite (quick)
