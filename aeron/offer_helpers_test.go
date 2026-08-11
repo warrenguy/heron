@@ -122,7 +122,8 @@ func TestOfferWithRetry_table(t *testing.T) {
 			pub: offerRetryTestPub(func(pub *fakePublicationOfferer) {
 				pub.results = []int64{aeron.BackPressured, 128}
 			}),
-			timeout:   50 * time.Millisecond,
+			// Timeout covers one DefaultIdleSleepDuration after BackPressured.
+			timeout:   time.Second,
 			wantPos:   128,
 			wantCalls: &twoCalls,
 		},
@@ -131,7 +132,7 @@ func TestOfferWithRetry_table(t *testing.T) {
 			pub: offerRetryTestPub(func(pub *fakePublicationOfferer) {
 				pub.results = []int64{aeron.AdminAction, 256}
 			}),
-			timeout:   50 * time.Millisecond,
+			timeout:   time.Second,
 			wantPos:   256,
 			wantCalls: &twoCalls,
 		},
