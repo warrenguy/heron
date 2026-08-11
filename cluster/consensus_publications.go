@@ -28,6 +28,20 @@ type ExclusivePublicationAdder interface {
 
 var _ ExclusivePublicationAdder = (*aeron.Client)(nil)
 
+// PublicationAdder registers concurrent publications on a media driver.
+//
+// [*aeron.Client] satisfies this interface as-built. The argument order is
+// stream id first, matching [aeron.Client.AddPublication]. The compile-time
+// assertion below fails the build if either side moves.
+//
+// Concurrency: implementations are not required to be safe for concurrent use.
+// Callers use it only from the goroutine that opens the module.
+type PublicationAdder interface {
+	AddPublication(streamID int32, channel string) (*aeron.Publication, error)
+}
+
+var _ PublicationAdder = (*aeron.Client)(nil)
+
 // ConsensusPublicationsDeps are the collaborators [OpenConsensusPublications]
 // needs. All three are required.
 //
@@ -86,8 +100,8 @@ type ConsensusPublications struct {
 
 var errAdderReturnedNoPublication = errors.New("adder returned no publication")
 
-// Retry pacing for [addExclusivePublicationChecked] on
-// [aeron.ErrorCodeResourceTemporarilyUnavailable].
+// Retry pacing for [addExclusivePublicationChecked] and [addPublicationChecked]
+// on [aeron.ErrorCodeResourceTemporarilyUnavailable].
 //
 // exclusivePubAddRetryBudget caps total retry time. exclusivePubAddRetryPause
 // is the sleep between attempts. Tests may shrink both.
@@ -96,26 +110,25 @@ var (
 	exclusivePubAddRetryPause  = 10 * time.Millisecond
 )
 
-// addExclusivePublicationChecked adds one exclusive publication. A nil-nil
-// adder result becomes [errAdderReturnedNoPublication]. what names the stream
-// in the wrapped error.
+// addWithRetry runs one publication registration with the shared code-10 retry
+// budget. add is one fresh driver call per attempt.
 //
-// Retries only when [aeron.IsRetriableRegistration] is true (code 10,
-// including wrapped errors). Each attempt is a fresh AddExclusivePublication.
-// Typical driver case: send_channel_endpoint still in CLOSING. Other errors
-// return immediately.
+// A nil-nil add result becomes [errAdderReturnedNoPublication]. Retries only
+// when [aeron.IsRetriableRegistration] is true (code 10, including wrapped
+// errors). Typical driver case: send_channel_endpoint still in CLOSING. Other
+// errors return immediately.
 //
 // On failure returns the last error wrapped as `cluster: add %s on %s: %w`
 // with what and channel.
-func addExclusivePublicationChecked(
-	adder ExclusivePublicationAdder,
+func addWithRetry[P any](
+	add func(streamID int32, channel string) (*P, error),
 	streamID int32,
 	channel string,
 	what string,
-) (*aeron.ExclusivePublication, error) {
+) (*P, error) {
 	deadline := time.Now().Add(exclusivePubAddRetryBudget)
 	for {
-		pub, err := adder.AddExclusivePublication(streamID, channel)
+		pub, err := add(streamID, channel)
 		if err == nil && pub == nil {
 			err = errAdderReturnedNoPublication
 		}
@@ -127,6 +140,32 @@ func addExclusivePublicationChecked(
 		}
 		time.Sleep(exclusivePubAddRetryPause)
 	}
+}
+
+// addExclusivePublicationChecked adds one exclusive publication.
+//
+// what names the stream in the wrapped error. Retry budget and nil-nil
+// handling live in [addWithRetry].
+func addExclusivePublicationChecked(
+	adder ExclusivePublicationAdder,
+	streamID int32,
+	channel string,
+	what string,
+) (*aeron.ExclusivePublication, error) {
+	return addWithRetry(adder.AddExclusivePublication, streamID, channel, what)
+}
+
+// addPublicationChecked adds one concurrent publication.
+//
+// what names the stream in the wrapped error. Retry budget and nil-nil
+// handling live in [addWithRetry].
+func addPublicationChecked(
+	adder PublicationAdder,
+	streamID int32,
+	channel string,
+	what string,
+) (*aeron.Publication, error) {
+	return addWithRetry(adder.AddPublication, streamID, channel, what)
 }
 
 // OpenConsensusPublications registers one exclusive consensus publication per

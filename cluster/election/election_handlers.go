@@ -511,16 +511,24 @@ func (e *Election) handleFollowerCatchup(nowNs int64) int {
 
 // handleFollowerLogInit routes the follower to the live log.
 //
-// Two paths reach LOG_INIT with the adapter already on the advertised session.
-// The catchup path joined earlier in this election. A settled re-entry kept
-// the previous bind while prepare stopped the log recording. The bound re-join
-// restarts a stopped recording for the bound image. The bound re-join selects
-// no image and never rebinds the adapter.
+// LOG_INIT is reached with the adapter already on the advertised session in
+// two cases:
+//   - catchup joined the session earlier in this election
+//   - a settled re-entry kept the previous bind while prepare stopped the log
+//     recording
 //
-// The join position is not compared on the bound path. The bound image fixed
-// its join position in an earlier election, and the adapter has consumed past
-// that position. A refused re-join routes to LOG_AWAIT. LOG_AWAIT position
-// check guards any fresh bind.
+// Bound re-join restarts a stopped recording for the bound image. The re-join
+// selects no image and never rebinds the adapter. The bound path does not
+// compare join position. The bound image fixed that position in an earlier
+// election, and the adapter has consumed past it.
+//
+// A refused re-join routes to LOG_AWAIT. LOG_AWAIT position checks guard any
+// fresh bind.
+//
+// A successful bound re-join commits the leadership term into the recording
+// log before READY. Catchup join starts the REMOTE recording but does not call
+// commitRecordingLogTerm. Without that commit the election can close with an
+// active recording and an empty term index.
 func (e *Election) handleFollowerLogInit(nowNs int64) int {
 	if e.logSessionID == NullMemberID {
 		return 1
@@ -543,6 +551,10 @@ func (e *Election) handleFollowerLogInit(nowNs int64) int {
 	}
 	if !joined {
 		e.state(ElectionStateFollowerLogAwait, nowNs, "")
+		return 1
+	}
+	if err := e.commitRecordingLogTerm(e.leadershipTermID, e.logPosition, NullValue); err != nil {
+		e.HandleError(nowNs, err)
 		return 1
 	}
 	e.state(ElectionStateFollowerReady, nowNs, "")

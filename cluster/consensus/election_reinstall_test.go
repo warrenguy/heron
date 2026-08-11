@@ -317,6 +317,58 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 		require.Len(t, fac.seeds, 1)
 	})
 
+	t.Run("clears_pending_join_log", func(t *testing.T) {
+		fac := &recordingElectionFactory{}
+		a := NewAgent(AgentConfig{
+			Role:                     RoleLeader,
+			Positions:                &scriptedActiveQuorumTable{active: false},
+			LeaderHeartbeatTimeoutNs: timeoutNs,
+		})
+		a.SetElectionFactory(fac.factory())
+		a.pendingJoinLog = &codecs.JoinLogFields{LogPosition: 99}
+		require.True(t, a.HasPendingJoinLog())
+
+		require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout))
+		require.False(t, a.HasPendingJoinLog())
+		require.Equal(t, RoleFollower, a.Role())
+		require.NotNil(t, a.Election())
+		require.Len(t, fac.seeds, 1)
+	})
+
+	t.Run("refuse_nil_factory_keeps_pending_join_log", func(t *testing.T) {
+		fac := &recordingElectionFactory{returnNil: true}
+		a := NewAgent(AgentConfig{
+			Role:                     RoleLeader,
+			Positions:                &scriptedActiveQuorumTable{active: false},
+			LeaderHeartbeatTimeoutNs: timeoutNs,
+		})
+		a.SetElectionFactory(fac.factory())
+		a.pendingJoinLog = &codecs.JoinLogFields{LogPosition: 99}
+		require.True(t, a.HasPendingJoinLog())
+
+		require.Zero(t, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout))
+		require.True(t, a.HasPendingJoinLog())
+		require.Equal(t, RoleLeader, a.Role())
+		require.Nil(t, a.Election())
+	})
+
+	t.Run("refuse_live_election_keeps_pending_join_log", func(t *testing.T) {
+		fac := &recordingElectionFactory{}
+		a := NewAgent(AgentConfig{
+			Role:                     RoleFollower,
+			LeaderHeartbeatTimeoutNs: timeoutNs,
+		})
+		a.SetElectionFactory(fac.factory())
+		require.Equal(t, 1, a.enterElection(ElectionTriggerBootstrap))
+		require.NotNil(t, a.Election())
+		a.pendingJoinLog = &codecs.JoinLogFields{LogPosition: 99}
+
+		require.Zero(t, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout))
+		require.True(t, a.HasPendingJoinLog())
+		require.Equal(t, int64(1), a.ElectionCount())
+		require.Len(t, fac.seeds, 1)
+	})
+
 	t.Run("slow_tick_not_due", func(t *testing.T) {
 		// Small timeout so a later tick past the slow-tick interval is overdue.
 		const shortTimeoutNs int64 = 100

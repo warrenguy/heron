@@ -57,6 +57,7 @@ func TestNormalize_defaults(t *testing.T) {
 	require.Equal(t, cluster.DefaultReplayStreamID, cfg.ReplayStreamID)
 	require.Equal(t, cluster.DefaultIngressStreamID, cfg.IngressStreamID)
 	require.Equal(t, cluster.DefaultConsensusModuleStreamID, cfg.ConsensusModuleStreamID)
+	require.Equal(t, cluster.DefaultServiceStreamID, cfg.ServiceStreamID)
 	require.NotNil(t, cfg.Idle)
 	require.Equal(t, recordinglog.FileSyncData, cfg.RecordingLogFileSyncLevel)
 	require.Equal(t, recordinglog.FileSyncData, cfg.NodeStateFileSyncLevel)
@@ -116,6 +117,7 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 		ReplayStreamID:            202,
 		IngressStreamID:           203,
 		ConsensusModuleStreamID:   204,
+		ServiceStreamID:           205,
 		RecordingLogFileSyncLevel: recordinglog.FileSyncFull,
 		NodeStateFileSyncLevel:    recordinglog.FileSyncFull,
 		Election:                  explicitElection,
@@ -131,6 +133,7 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 	require.Equal(t, int32(202), cfg.ReplayStreamID)
 	require.Equal(t, int32(203), cfg.IngressStreamID)
 	require.Equal(t, int32(204), cfg.ConsensusModuleStreamID)
+	require.Equal(t, int32(205), cfg.ServiceStreamID)
 	require.Equal(t, recordinglog.FileSyncFull, cfg.RecordingLogFileSyncLevel)
 	require.Equal(t, recordinglog.FileSyncFull, cfg.NodeStateFileSyncLevel)
 
@@ -547,6 +550,41 @@ func TestValidate_errors(t *testing.T) {
 				cfg.ConsensusModuleStreamID = cfg.IngressStreamID
 			},
 			want: "cluster: ConsensusModuleStreamID and IngressStreamID must differ",
+		},
+		{
+			name: "ServiceStreamID equals ConsensusStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ServiceStreamID = cfg.ConsensusStreamID
+			},
+			want: "cluster: ServiceStreamID and ConsensusStreamID must differ",
+		},
+		{
+			name: "ServiceStreamID equals LogStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ServiceStreamID = cfg.LogStreamID
+			},
+			want: "cluster: ServiceStreamID and LogStreamID must differ",
+		},
+		{
+			name: "ServiceStreamID equals ReplayStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ServiceStreamID = cfg.ReplayStreamID
+			},
+			want: "cluster: ServiceStreamID and ReplayStreamID must differ",
+		},
+		{
+			name: "ServiceStreamID equals IngressStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ServiceStreamID = cfg.IngressStreamID
+			},
+			want: "cluster: ServiceStreamID and IngressStreamID must differ",
+		},
+		{
+			name: "ServiceStreamID equals ConsensusModuleStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ServiceStreamID = cfg.ConsensusModuleStreamID
+			},
+			want: "cluster: ServiceStreamID and ConsensusModuleStreamID must differ",
 		},
 		{
 			name: "ReplayChannel has session-id",

@@ -47,10 +47,42 @@ func (f *retryScriptAdder) AddExclusivePublication(
 	return pub, nil
 }
 
-// withExclusivePubAddRetryWindow sets exclusivePubAddRetryBudget and
-// exclusivePubAddRetryPause for the test body. Mutates package-level pacing.
+// retryScriptConcurrentAdder scripts concurrent publication add outcomes.
+//
+//   - failLeft: remaining transient failures before success
+//   - nilNil: every call returns (nil, nil)
+type retryScriptConcurrentAdder struct {
+	calls    int
+	failLeft int
+	nilNil   bool
+	failErr  error
+	pubs     []*aeron.Publication
+}
+
+func (f *retryScriptConcurrentAdder) AddPublication(
+	streamID int32,
+	channel string,
+) (*aeron.Publication, error) {
+	_ = streamID
+	_ = channel
+	f.calls++
+	if f.nilNil {
+		return nil, nil
+	}
+	if f.failLeft > 0 {
+		f.failLeft--
+		return nil, f.failErr
+	}
+	pub := new(aeron.Publication)
+	f.pubs = append(f.pubs, pub)
+	return pub, nil
+}
+
+// withPubAddRetryWindow sets exclusivePubAddRetryBudget and
+// exclusivePubAddRetryPause for the test body. Shared by exclusive and
+// concurrent add-checked helpers. Mutates package-level pacing.
 // Callers must not use t.Parallel.
-func withExclusivePubAddRetryWindow(
+func withPubAddRetryWindow(
 	t *testing.T,
 	budget time.Duration,
 	pause time.Duration,
@@ -79,7 +111,7 @@ func TestAddExclusivePublicationChecked_retriesResourceTemporarilyUnavailable(
 	t *testing.T,
 ) {
 	// Short pause. Two retries fit the default budget.
-	withExclusivePubAddRetryWindow(t, time.Second, time.Millisecond)
+	withPubAddRetryWindow(t, time.Second, time.Millisecond)
 
 	cause := retriableRegistrationErr(76)
 	adder := &retryScriptAdder{failLeft: 2, failErr: cause}
@@ -147,7 +179,7 @@ func TestAddExclusivePublicationChecked_nonRetriableFailsOnce(t *testing.T) {
 
 func TestAddExclusivePublicationChecked_budgetExhaustedReturnsLastError(t *testing.T) {
 	// Zero budget. First retriable failure returns without sleep.
-	withExclusivePubAddRetryWindow(t, 0, time.Millisecond)
+	withPubAddRetryWindow(t, 0, time.Millisecond)
 
 	cause := retriableRegistrationErr(99)
 	adder := &retryScriptAdder{permanent: true, failErr: cause}
@@ -176,6 +208,40 @@ func TestAddExclusivePublicationChecked_nilNilNotRetried(t *testing.T) {
 		100,
 		"aeron:ipc",
 		"cluster log publication",
+	)
+	require.Nil(t, pub)
+	require.Equal(t, 1, adder.calls)
+	require.ErrorIs(t, err, errAdderReturnedNoPublication)
+}
+
+func TestAddPublicationChecked_retriesResourceTemporarilyUnavailable(t *testing.T) {
+	// Short pause. Two retries fit the default budget.
+	withPubAddRetryWindow(t, time.Second, time.Millisecond)
+
+	cause := retriableRegistrationErr(76)
+	adder := &retryScriptConcurrentAdder{failLeft: 2, failErr: cause}
+
+	pub, err := addPublicationChecked(
+		adder,
+		104,
+		"aeron:ipc?term-length=128k",
+		"service control publication",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, pub)
+	require.Equal(t, 3, adder.calls)
+	require.Len(t, adder.pubs, 1)
+	require.Same(t, pub, adder.pubs[0])
+}
+
+func TestAddPublicationChecked_nilNilNotRetried(t *testing.T) {
+	adder := &retryScriptConcurrentAdder{nilNil: true}
+
+	pub, err := addPublicationChecked(
+		adder,
+		104,
+		"aeron:ipc",
+		"service control publication",
 	)
 	require.Nil(t, pub)
 	require.Equal(t, 1, adder.calls)

@@ -82,6 +82,7 @@ type Topology struct {
 	logStreamID             int32
 	replayStreamID          int32
 	consensusModuleStreamID int32
+	serviceStreamID         int32
 }
 
 // NewTopology resolves cfg into a Topology.
@@ -141,6 +142,7 @@ func NewTopology(cfg Config) (*Topology, error) {
 		logStreamID:               cfg.LogStreamID,
 		replayStreamID:            cfg.ReplayStreamID,
 		consensusModuleStreamID:   cfg.ConsensusModuleStreamID,
+		serviceStreamID:           cfg.ServiceStreamID,
 	}, nil
 }
 
@@ -254,4 +256,10 @@ func (t *Topology) ServiceControlChannel() string {
 // (default 105). Carries ServiceAck frames.
 func (t *Topology) ConsensusModuleStreamID() int32 {
 	return t.consensusModuleStreamID
+}
+
+// ServiceStreamID returns the module-to-service control stream id (default
+// 104). Carries JoinLog and RequestServiceAck frames.
+func (t *Topology) ServiceStreamID() int32 {
+	return t.serviceStreamID
 }

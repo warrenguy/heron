@@ -179,8 +179,10 @@ func (a *Agent) appendPositionForSeed() (int64, bool) {
 // Behaviour:
 //   - refuses when an election is already live or no factory is wired
 //   - reads the append seed while the current role still applies
-//   - refuses when the factory returns nil and leaves role unchanged
-//   - after a non-nil runner returns, sets role to follower, then installs
+//   - refuses when the factory returns nil; leaves role and pendingJoinLog
+//     unchanged
+//   - after a non-nil runner returns: clears pendingJoinLog, sets role to
+//     follower, then installs
 //
 // Role flip order: append read first, then RoleFollower. Cluster append
 // sources are role-sensitive. A leader must report the publication position.
@@ -203,6 +205,11 @@ func (a *Agent) enterElection(trigger ElectionTrigger) int {
 	if runner == nil {
 		return 0
 	}
+	// Clear a superseded unpublished JoinLog at settled re-entry before the new
+	// election runs. Clear at install. Does not wait for election Init.
+	// PrepareForNewLeadership still clears on mid-election re-Init and when a
+	// runner never reaches Prepare.
+	a.pendingJoinLog = nil
 	a.RoleSet(RoleFollower)
 	a.installElection(runner, trigger)
 	return 1

@@ -26,17 +26,20 @@ type fakeLogStreamAdder struct {
 	calls        []logStreamAddCall
 	lastSub      *aeron.Subscription
 	lastPub      *aeron.ExclusivePublication
+	lastConcPub  *aeron.Publication
 	lastDestHook *aeron.RecordingReceiveDestinationHook
 	// failSubLeft is remaining subscription adds that return failSubErr. Negative
 	// means permanent (every subscription add fails). Zero means no scripted
 	// failure (unset or countdown exhausted).
-	failSubLeft    int
-	failSubErr     error
-	failPubErr     error
-	failDestErr    error
-	returnNilSub   bool
-	returnNilPub   bool
-	correlationSeq int64
+	failSubLeft      int
+	failSubErr       error
+	failPubErr       error
+	failConcPubErr   error
+	failDestErr      error
+	returnNilSub     bool
+	returnNilPub     bool
+	returnNilConcPub bool
+	correlationSeq   int64
 }
 
 func (f *fakeLogStreamAdder) NextCorrelationID() int64 {
@@ -81,6 +84,26 @@ func (f *fakeLogStreamAdder) AddSubscription(
 	f.lastSub = sub
 	f.lastDestHook = hook
 	return sub, nil
+}
+
+func (f *fakeLogStreamAdder) AddPublication(
+	streamID int32,
+	channel string,
+) (*aeron.Publication, error) {
+	f.calls = append(f.calls, logStreamAddCall{
+		kind:     "concurrent-publication",
+		streamID: streamID,
+		channel:  channel,
+	})
+	if f.returnNilConcPub {
+		return nil, nil
+	}
+	if f.failConcPubErr != nil {
+		return nil, f.failConcPubErr
+	}
+	pub := new(aeron.Publication)
+	f.lastConcPub = pub
+	return pub, nil
 }
 
 func (f *fakeLogStreamAdder) AddExclusivePublication(

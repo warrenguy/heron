@@ -168,6 +168,8 @@ type LogStreams struct {
 //   - [consensus.Agent.SetLogJoinSource] with
 //     [consensus.SubscriptionLogJoinSource] over the log subscription
 //   - [consensus.Agent.LiveLogDestinationSet] with the live log channel URI
+//   - [consensus.Agent.SetLocalLogStream] with the resolved publication channel
+//     and [Topology.LogStreamID] so the leader JoinLog can name the log
 //
 // No Image is bound at open.
 //
@@ -252,6 +254,7 @@ func OpenLogStreams(
 	deps.Agent.SetAppendSource(appendSource)
 	ls.bindLogSubscription(sub)
 	deps.Agent.LiveLogDestinationSet(liveURI)
+	deps.Agent.SetLocalLogStream(pubChannel, streamID)
 	return ls, nil
 }
 
@@ -580,14 +583,22 @@ func putOrReplaceChannelParam(channel, param, value string) string {
 	return aeron.ReplaceChannelParamValue(channel, idx, param, value)
 }
 
-// Close clears agent log join source, live and catchup destination fields,
-// append source, log adapter, and log publisher, clears the publisher
-// publication, then closes publication and subscription. Join source clears
-// before the subscription it holds closes.
+// Close clears agent binds, clears the publisher publication, then closes the
+// publication and subscription.
 //
-// Idempotent. When both transport handles are already nil, Close returns without
-// touching the agent or the log publisher. Agent and log publisher fields stay
-// for the life of the value so the first Close can clear them safely.
+// Behaviour: agent clear order is:
+//   - log join source (before the subscription it holds closes)
+//   - live destination
+//   - catchup destination
+//   - local log stream (JoinLog naming)
+//   - append source
+//   - log adapter
+//   - log publisher
+//
+// Idempotent. When both transport handles are already nil, Close returns
+// without touching the agent or the log publisher. Agent and log publisher
+// fields stay for the life of the value so the first Close can clear them
+// safely.
 //
 // After Close the value is inert: both accessors return nil. Safe on a nil
 // receiver, a zero value, and after the transport client has already closed.
@@ -601,6 +612,7 @@ func (l *LogStreams) Close() error {
 	l.agent.SetLogJoinSource(nil)
 	l.agent.LiveLogDestinationSet("")
 	l.agent.CatchupLogDestinationSet("")
+	l.agent.SetLocalLogStream("", 0)
 	l.agent.SetAppendSource(nil)
 	l.agent.SetLogAdapter(nil)
 	l.agent.SetLogPublisher(nil)

@@ -25,7 +25,9 @@ func TestDoWork_stepOrder(t *testing.T) {
 				"pollIngress",
 				"pollClientIngress",
 				"pollServiceControl",
+				"serviceControlWork",
 				"election.DoWork",
+				"retryPendingJoinLog",
 			},
 		},
 		{
@@ -36,8 +38,10 @@ func TestDoWork_stepOrder(t *testing.T) {
 				"pollIngress",
 				"pollClientIngress",
 				"pollServiceControl",
+				"serviceControlWork",
 				"sessionWork",
 				"consensusWork",
+				"retryPendingJoinLog",
 			},
 		},
 	}

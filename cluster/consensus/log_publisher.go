@@ -9,6 +9,35 @@ import (
 // logPublisherSendAttempts is the Offer/TryClaim retry budget (SEND_ATTEMPTS).
 const logPublisherSendAttempts = 3
 
+// growEncodeScratch returns a buffer of length total. Grows geometrically when
+// cap(scratch) is short. The caller retains the returned slice as scratch.
+func growEncodeScratch(scratch []byte, total int) []byte {
+	if cap(scratch) < total {
+		return make([]byte, total, max(total, cap(scratch)*2))
+	}
+	return scratch[:total]
+}
+
+// offerWithOffset is the OfferWithOffset surface shared by Publication and
+// ExclusivePublication.
+type offerWithOffset interface {
+	OfferWithOffset(buffer []byte, offset, length int) int64
+}
+
+// offerEncodedWithAttempts offers buf with logPublisherSendAttempts retries on
+// retriable codes (BackPressured, AdminAction, NotConnected). Closed and
+// MaxPositionExceeded stop immediately.
+func offerEncodedWithAttempts(pub offerWithOffset, buf []byte) int64 {
+	var position int64
+	for range logPublisherSendAttempts {
+		position = pub.OfferWithOffset(buf, 0, len(buf))
+		if position > 0 || !aeron.IsOfferRetriable(position) {
+			return position
+		}
+	}
+	return position
+}
+
 // LogPublisher appends cluster log frames on a single-writer exclusive publication.
 //
 // Concurrency: invoker-only. One goroutine owns Offer / TryClaim / Commit / Abort
@@ -42,7 +71,7 @@ func (p *LogPublisher) SetPublication(pub *aeron.ExclusivePublication) {
 	if pub == nil {
 		return
 	}
-	p.scratch = p.scratchFor(pub.MaxPayloadLength())
+	p.scratch = growEncodeScratch(p.scratch, pub.MaxPayloadLength())
 }
 
 // Publication returns the bound exclusive publication, or nil.
@@ -69,10 +98,8 @@ func (p *LogPublisher) SessionID() int32 {
 // scratchFor returns a buffer of length total for encoding. Totals above the
 // current capacity grow scratch geometrically. The grown buffer is retained.
 func (p *LogPublisher) scratchFor(total int) []byte {
-	if cap(p.scratch) < total {
-		p.scratch = make([]byte, total, max(total, cap(p.scratch)*2))
-	}
-	return p.scratch[:total]
+	p.scratch = growEncodeScratch(p.scratch, total)
+	return p.scratch
 }
 
 // offerEncoded offers the encoded bytes in buf with the log publisher retry
@@ -82,14 +109,7 @@ func (p *LogPublisher) scratchFor(total int) []byte {
 // Retries up to logPublisherSendAttempts on retriable codes (BackPressured,
 // AdminAction, NotConnected). Closed and MaxPositionExceeded stop immediately.
 func (p *LogPublisher) offerEncoded(buf []byte) int64 {
-	var position int64
-	for range logPublisherSendAttempts {
-		position = p.publication.OfferWithOffset(buf, 0, len(buf))
-		if position > 0 || !aeron.IsOfferRetriable(position) {
-			return position
-		}
-	}
-	return position
+	return offerEncodedWithAttempts(p.publication, buf)
 }
 
 // AppendMessage encodes SessionMessageHeader + payload into scratch and offers

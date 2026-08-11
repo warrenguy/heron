@@ -56,7 +56,7 @@ func TestReplayProgress_progression_rapid(t *testing.T) {
 
 		// Draw deltas, not absolute positions. A monotonic absolute draw shrinks
 		// into cases production cannot produce (same reason as
-		// module_agent_rapid_test commit-position draws).
+		// agent_rapid_test commit-position draws).
 		nSteps := rapid.IntRange(1, 32).Draw(rt, "nSteps")
 		steps := make([]progressStep, nSteps)
 		cursor := startPosition

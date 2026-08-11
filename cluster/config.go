@@ -121,6 +121,10 @@ type Config struct {
 	// stream ids must be distinct.
 	ConsensusModuleStreamID int32
 
+	// ServiceStreamID zero takes DefaultServiceStreamID. Module-to-service
+	// control (JoinLog, RequestServiceAck). Config stream ids must be distinct.
+	ServiceStreamID int32
+
 	// ArchiveControlRequestChannel is the control request URI for this member.
 	// Required.
 	//
@@ -229,6 +233,9 @@ func (cfg Config) Normalize() Config {
 	}
 	if cfg.ConsensusModuleStreamID == 0 {
 		cfg.ConsensusModuleStreamID = DefaultConsensusModuleStreamID
+	}
+	if cfg.ServiceStreamID == 0 {
+		cfg.ServiceStreamID = DefaultServiceStreamID
 	}
 	if cfg.Idle == nil {
 		cfg.Idle = idlestrategy.NewDefaultBackoff()
@@ -470,6 +477,7 @@ func validateStreamIDsDistinct(cfg Config) error {
 		{name: "ReplayStreamID", id: cfg.ReplayStreamID},
 		{name: "IngressStreamID", id: cfg.IngressStreamID},
 		{name: "ConsensusModuleStreamID", id: cfg.ConsensusModuleStreamID},
+		{name: "ServiceStreamID", id: cfg.ServiceStreamID},
 	}
 
 	for i, earlier := range streams {

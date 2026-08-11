@@ -1289,7 +1289,11 @@ func TestHandleFollowerLogInit_waitsForLogSession(t *testing.T) {
 
 // TestHandleFollowerLogInit_rejoinsBoundSession asserts LOG_INIT re-joins a
 // bound leader session after prepare stopped the recording. Cases cover ready,
-// await on missing image, await on refuse, and init on join error.
+// await on missing image, await on refuse, coherency error, and init on join
+// error.
+//
+// The ready path asserts commitRecordingLogTerm runs. Catchup join starts the
+// recording without that commit. Bound LOG_INIT must write the term index.
 func TestHandleFollowerLogInit_rejoinsBoundSession(t *testing.T) {
 	t.Parallel()
 
@@ -1300,8 +1304,11 @@ func TestHandleFollowerLogInit_rejoinsBoundSession(t *testing.T) {
 		joinReadyOK   bool
 		joinAccepted  bool
 		joinErr       error
+		coherencyErr  error
 		wantState     election.ElectionState
 		wantJoinCalls int
+		wantCoherent  bool
+		wantLastError string
 	}{
 		{
 			name:          "bound session re-joins and enters ready",
@@ -1309,6 +1316,17 @@ func TestHandleFollowerLogInit_rejoinsBoundSession(t *testing.T) {
 			joinAccepted:  true,
 			wantState:     election.ElectionStateFollowerReady,
 			wantJoinCalls: 1,
+			wantCoherent:  true,
+		},
+		{
+			name:          "bound session coherency error resets to init",
+			joinReadyOK:   true,
+			joinAccepted:  true,
+			coherencyErr:  errors.New("write failed"),
+			wantState:     election.ElectionStateInit,
+			wantJoinCalls: 1,
+			wantCoherent:  true,
+			wantLastError: "write failed",
 		},
 		{
 			name:      "bound session without open image awaits fresh image",
@@ -1326,16 +1344,18 @@ func TestHandleFollowerLogInit_rejoinsBoundSession(t *testing.T) {
 			joinErr:       errors.New("join failed"),
 			wantState:     election.ElectionStateInit,
 			wantJoinCalls: 1,
+			wantLastError: "join failed",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, deps, clock, _, _ := testElectionDeps(t)
+			cfg, deps, clock, epochClock, _ := testElectionDeps(t)
 			host := &recordingElectionHost{
-				clock:             clock,
-				logJoined:         true,
-				followerLogJoinOK: tc.joinReadyOK,
+				clock:               clock,
+				logJoined:           true,
+				localLogRecordingID: testRecordingID,
+				followerLogJoinOK:   tc.joinReadyOK,
 
 				// Offset from the election log position on purpose. Bound-session
 				// join must not compare join positions.
@@ -1347,15 +1367,35 @@ func TestHandleFollowerLogInit_rejoinsBoundSession(t *testing.T) {
 				joinFollowerErr:    tc.joinErr,
 			}
 			deps.Handler = handler
+			spy := &recordingLogCoherencySpy{err: tc.coherencyErr}
+			deps.RecordingLog = spy
 			e := election.NewElection(cfg, deps)
 			election.SetStateForTest(e, election.ElectionStateFollowerLogInit)
 			election.SetLogSessionIDForTest(e, sessionID)
 
 			require.Equal(t, 1, e.DoWork(clock.nowNs))
 			require.Equal(t, tc.wantState, e.State())
+			if tc.wantLastError == "" {
+				require.NoError(t, e.LastError())
+			} else {
+				require.EqualError(t, e.LastError(), tc.wantLastError)
+			}
 
 			require.Len(t, host.followerLogJoinReadyCalls, 1)
 			require.Len(t, handler.joinFollowerParams, tc.wantJoinCalls)
+			if tc.wantCoherent {
+				require.Equal(t, []recordinglog.EnsureCoherentParams{{
+					RecordingID:                testRecordingID,
+					InitialLogLeadershipTermID: cfg.LeadershipTermID,
+					InitialTermBaseLogPosition: cfg.TermBaseLogPosition,
+					LeadershipTermID:           cfg.LeadershipTermID,
+					TermBaseLogPosition:        cfg.LogPosition,
+					LogPosition:                election.NullValue,
+					Timestamp:                  epochClock.nowMs,
+				}}, spy.calls)
+			} else {
+				require.Empty(t, spy.calls)
+			}
 			if tc.wantJoinCalls == 0 {
 				return
 			}
