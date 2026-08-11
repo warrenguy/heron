@@ -198,6 +198,7 @@ func TestClient_Close_twoPhasePublishedBeforeTeardown(t *testing.T) {
 		time.Millisecond,
 		t.TempDir(),
 	)
+	waiter := newAwaitPollSleepingWaiter(t, client)
 
 	type result struct {
 		pub *Publication
@@ -211,12 +212,15 @@ func TestClient_Close_twoPhasePublishedBeforeTeardown(t *testing.T) {
 
 	waitForAddPublicationCommand(t, fixture)
 
+	waiter.pinUnderClientLock(t)
+
 	closeDone := make(chan error, 1)
 	go func() {
 		closeDone <- client.Close()
 	}()
 
-	requireCloseBlockedDuringAwait(t, client)
+	requireClosedWhileAwaitPinned(t, client)
+	waiter.releaseHook()
 
 	addGot := receiveAddResult(
 		t,
@@ -248,6 +252,7 @@ func TestClient_IsTerminating_concurrentCloseDuringAwait(t *testing.T) {
 		time.Millisecond,
 		t.TempDir(),
 	)
+	waiter := newAwaitPollSleepingWaiter(t, client)
 
 	type result struct {
 		pub *Publication
@@ -260,6 +265,8 @@ func TestClient_IsTerminating_concurrentCloseDuringAwait(t *testing.T) {
 	}()
 
 	waitForAddPublicationCommand(t, fixture)
+
+	waiter.pinUnderClientLock(t)
 
 	stop := make(chan struct{})
 	var hammerWG sync.WaitGroup
@@ -279,7 +286,8 @@ func TestClient_IsTerminating_concurrentCloseDuringAwait(t *testing.T) {
 		closeDone <- client.Close()
 	}()
 
-	requireCloseBlockedDuringAwait(t, client)
+	requireClosedWhileAwaitPinned(t, client)
+	waiter.releaseHook()
 
 	addGot := receiveAddResult(
 		t,

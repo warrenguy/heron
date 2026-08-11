@@ -641,37 +641,34 @@ func receiveCloseResult(
 	}
 }
 
-// requireCloseBlockedDuringAwait waits until closed is published while
-// clientLock is held. Does not receive from any Close result channel. The
-// final wait owns that consume.
+// requireClosedWhileAwaitPinned asserts closed is set while pinUnderClientLock
+// still holds clientLock. Does not receive from Close's result channel.
 //
-// Behaviour: passes when closed is set and TryLock fails. The lock holder may
-// be the await poll loop or Close teardown. Both hold clientLock after closed
-// is published.
-//
-// Concurrency: polls on the test goroutine only. Does not use an Eventually
-// worker. Fail-path probes run on the same goroutine after the deadline.
-func requireCloseBlockedDuringAwait(t *testing.T, client *Client) {
+// Concurrency: polls on the test goroutine only. Fails if clientLock becomes free
+// before closed is observed.
+func requireClosedWhileAwaitPinned(t *testing.T, client *Client) {
 	t.Helper()
+
+	require.False(t, clientLockFree(client), "await pin should hold clientLock")
 
 	deadline := time.Now().Add(clientConcurrentResultTimeout)
 	for time.Now().Before(deadline) {
 		closed := errors.Is(client.errIfClosed(), ErrClientClosed)
-		lockFree := clientLockFree(client)
-		if closed && !lockFree {
+		if clientLockFree(client) {
+			require.FailNow(t, "await pin lost clientLock", "closed=%v", closed)
+		}
+		if closed {
 			return
 		}
 		time.Sleep(time.Microsecond)
 	}
 
-	closed := errors.Is(client.errIfClosed(), ErrClientClosed)
-	lockFree := clientLockFree(client)
 	require.FailNow(
 		t,
-		"closed state not observable while clientLock held",
+		"closed state not observable while await pinned",
 		"closed=%v lockFree=%v",
-		closed,
-		lockFree,
+		errors.Is(client.errIfClosed(), ErrClientClosed),
+		clientLockFree(client),
 	)
 }
 

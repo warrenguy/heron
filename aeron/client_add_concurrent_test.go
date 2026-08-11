@@ -128,6 +128,19 @@ func (waiter *awaitPollSleepingWaiter) waitForBlocked(t *testing.T) {
 	}
 }
 
+// pinUnderClientLock holds the await poll loop in sleep under clientLock until
+// releaseHook. Call after the add command is on the ring so the poll loop is
+// active. The caller starts Close or other probes while the await holds the
+// lock, then calls releaseHook.
+func (waiter *awaitPollSleepingWaiter) pinUnderClientLock(t *testing.T) {
+	t.Helper()
+
+	waiter.drainNotifications()
+	waiter.waitForSleeping(t)
+	waiter.armBlock()
+	waiter.waitForBlocked(t)
+}
+
 type doWorkHammer struct {
 	ticks                atomic.Int32
 	pauseTicksAtRegister int32
@@ -264,17 +277,21 @@ func TestClient_Add_concurrentCloseDuringPoll(t *testing.T) {
 				time.Millisecond,
 				t.TempDir(),
 			)
+			waiter := newAwaitPollSleepingWaiter(t, client)
 
 			resultCh := startConcurrentAddCall(client, testCase.addCall)
 
 			correlationID := testCase.waitCmd(t, fixture)
+
+			waiter.pinUnderClientLock(t)
 
 			closeDone := make(chan error, 1)
 			go func() {
 				closeDone <- client.Close()
 			}()
 
-			requireCloseBlockedDuringAwait(t, client)
+			requireClosedWhileAwaitPinned(t, client)
+			waiter.releaseHook()
 
 			got := receiveAddResult(
 				t,
