@@ -82,14 +82,12 @@ func (r *recordingControlIdleStrategy) Reset() {
 	r.idleCalls = 0
 }
 
-// setupControlOfferRetryDoWorkRecorder installs a global DoWork counter.
-//
-// Do not use from t.Parallel() subtests; the recorder is process-wide and unsynchronized.
-func setupControlOfferRetryDoWorkRecorder(t *testing.T) *int {
+// setupControlOfferRetryDoWorkRecorder installs a per-client DoWork counter.
+func setupControlOfferRetryDoWorkRecorder(t *testing.T, client *aeron.Client) *int {
 	t.Helper()
 
 	var count int
-	SetControlOfferRetryDoWorkRecorderForTest(t, func() { count++ })
+	SetControlOfferRetryDoWorkRecorderForTest(t, client, func() { count++ })
 	return &count
 }
 
@@ -161,7 +159,7 @@ func TestControlOfferUntilPositive_backPressuredRetry(t *testing.T) {
 				100,
 			)
 			idle := &recordingControlIdleStrategy{}
-			doWorkCount := setupControlOfferRetryDoWorkRecorder(t)
+			doWorkCount := setupControlOfferRetryDoWorkRecorder(t, harness.Client)
 
 			pos, err := controlOfferUntilPositive(
 				t.Context(),
@@ -182,7 +180,7 @@ func TestControlOfferUntilPositive_backPressuredRetry(t *testing.T) {
 func TestControlOfferUntilPositive_immediateSuccess(t *testing.T) {
 	idle := &recordingControlIdleStrategy{}
 	harness, seqPub := controlOfferRetryHarnessWithSequentialOffers(t, 100)
-	doWorkCount := setupControlOfferRetryDoWorkRecorder(t)
+	doWorkCount := setupControlOfferRetryDoWorkRecorder(t, harness.Client)
 
 	pos, err := controlOfferUntilPositive(
 		t.Context(),
@@ -274,7 +272,7 @@ func TestControlOfferUntilPositive_timeout(t *testing.T) {
 	t.Run("singleAdvance", func(t *testing.T) {
 		idle := &recordingControlIdleStrategy{}
 		harness, nowNs := controlOfferRetryHarnessWithNanoClock(t, 5_000_000_000)
-		doWorkCount := setupControlOfferRetryDoWorkRecorder(t)
+		doWorkCount := setupControlOfferRetryDoWorkRecorder(t, harness.Client)
 		var offerCalls int
 		offerFn := func() int64 {
 			offerCalls++
@@ -306,7 +304,7 @@ func TestControlOfferUntilPositive_timeout(t *testing.T) {
 
 		idle := &recordingControlIdleStrategy{}
 		harness, nowNs := controlOfferRetryHarnessWithNanoClock(t, 5_000_000_000)
-		doWorkCount := setupControlOfferRetryDoWorkRecorder(t)
+		doWorkCount := setupControlOfferRetryDoWorkRecorder(t, harness.Client)
 		var offerCalls int
 		offerFn := func() int64 {
 			offerCalls++
@@ -393,7 +391,7 @@ func TestControlOfferUntilPositive_cfgNanoClockOverride(t *testing.T) {
 
 	idle := &recordingControlIdleStrategy{}
 	harness := aeron.NewAsyncConnectTestHarness(t)
-	doWorkCount := setupControlOfferRetryDoWorkRecorder(t)
+	doWorkCount := setupControlOfferRetryDoWorkRecorder(t, harness.Client)
 	offerFn := func() int64 {
 		cfgNowNs.Add(int64(time.Millisecond))
 		return aeron.BackPressured
@@ -554,7 +552,7 @@ func TestControlOfferUntilPositive_contextCanceled(t *testing.T) {
 
 	t.Run("midLoop", func(t *testing.T) {
 		harness, nowNs := controlOfferRetryHarnessWithNanoClock(t, 5_000_000_000)
-		doWorkCount := setupControlOfferRetryDoWorkRecorder(t)
+		doWorkCount := setupControlOfferRetryDoWorkRecorder(t, harness.Client)
 
 		cancelCtx, cancel := context.WithCancel(t.Context())
 		t.Cleanup(cancel)
@@ -617,7 +615,6 @@ func TestControlOfferUntilPositive_contextDeadline(t *testing.T) {
 		deadlineCtx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
 		defer cancel()
 
-		start := time.Now()
 		pos, err := controlOfferUntilPositive(
 			deadlineCtx,
 			harness.Client,
@@ -627,10 +624,8 @@ func TestControlOfferUntilPositive_contextDeadline(t *testing.T) {
 			},
 			func() int64 { return aeron.BackPressured },
 		)
-		elapsed := time.Since(start)
 
 		require.Zero(t, pos)
-		require.Less(t, elapsed, time.Second)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 

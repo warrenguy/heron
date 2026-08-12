@@ -10,16 +10,18 @@ import (
 	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
 )
 
-// TestClusterMixedJavaLeader elects a Java appointed leader and advances commit
-// across the language boundary. Runs only under
+// TestClusterMixedJavaLeader elects a Java appointed leader and advances
+// commit across the language boundary. Runs only under
 // HERON_CLUSTER_MIXED_JAVA_LEADER_COMPOSE.
 //
-// Asserts durable log recording after elect: the Go follower records the
-// received leader log into its own Archive, and the recorded position reaches
-// a commit position the member observed. Makes no claim about Java members'
+// Asserts durable log recording after elect. The Go follower records the
+// received leader log into its own Archive. The recorded position reaches a
+// commit position the member observed. Makes no claim about Java members'
 // recordings.
 //
-// No t.Parallel: owns fixed ports and one cluster.
+// No t.Parallel. This test is the single owner of compose-fixed
+// MixedAeronDir*, MixedClusterDirGo, and the PortBase 9000 unicast block.
+// Callers must not Parallelize.
 func TestClusterMixedJavaLeader(t *testing.T) {
 	requireMixedCompose(
 		t,
@@ -108,7 +110,8 @@ func TestClusterMixedJavaLeader(t *testing.T) {
 //
 // No client session offer: Go ServiceCount is 0.
 //
-// No t.Parallel: owns fixed ports and one cluster.
+// No t.Parallel: single owner of compose-fixed MixedAeronDir*, MixedClusterDir*,
+// PortBase 9000, and MixedLogEndpoint. Do not Parallelize.
 func TestClusterMixedGoLeader(t *testing.T) {
 	requireMixedCompose(
 		t,

@@ -142,7 +142,7 @@ func (image *Image) controlledPollBounded(
 				break
 			}
 			offset += advance
-			trackPollAfterPaddingAdvance()
+			trackPollAfterPaddingAdvance(image)
 			continue
 		}
 

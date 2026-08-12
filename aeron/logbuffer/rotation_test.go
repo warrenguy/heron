@@ -3,6 +3,7 @@ package logbuffer_test
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -136,9 +137,33 @@ func TestRotateLog_casRawTailRetry(t *testing.T) {
 		}
 	})
 
-	ok := logbuffer.RotateLog(meta, 0, 7)
-	close(stop)
-	wg.Wait()
+	// RotateLog CAS loop is unbounded under a concurrent CasRawTail adversary.
+	// Bound the wait with a timeout that stops the adversary so CAS can win.
+	const casRetryTimeout = 2 * time.Second
+	resultCh := make(chan bool, 1)
+	go func() {
+		resultCh <- logbuffer.RotateLog(meta, 0, 7)
+	}()
+
+	stopAdversary := sync.OnceFunc(func() {
+		close(stop)
+		wg.Wait()
+	})
+	defer stopAdversary()
+
+	var ok bool
+	select {
+	case ok = <-resultCh:
+	case <-time.After(casRetryTimeout):
+		stopAdversary()
+		select {
+		case ok = <-resultCh:
+		case <-time.After(casRetryTimeout):
+			t.Fatal("RotateLog did not complete under concurrent CasRawTail")
+		}
+	}
+	stopAdversary()
+
 	require.True(t, ok)
 	require.Equal(t, int32(1), logbuffer.ActiveTermCount(meta))
 	rawTail, err := logbuffer.GetRawTail(meta, 1)

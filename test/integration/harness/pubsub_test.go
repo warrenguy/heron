@@ -223,8 +223,15 @@ func TestPollUntilNoActiveImagesCtx_contextDeadline(t *testing.T) {
 	require.True(t, capture.failed)
 	wantPrefix := subscriptionImageCountFailMsg(sub, 0)
 	require.True(t, strings.HasPrefix(capture.lastMsg, wantPrefix))
-	require.Contains(t, capture.lastMsg, "within")
 	require.NotContains(t, capture.lastMsg, "poll: context deadline exceeded")
+
+	// Fail text carries the effective bound after " within ". The parent context
+	// must clamp that bound to at most pollHarnessShortTimeout.
+	_, within, ok := strings.Cut(capture.lastMsg, " within ")
+	require.True(t, ok)
+	effective, err := time.ParseDuration(within)
+	require.NoError(t, err)
+	require.LessOrEqual(t, effective, pollHarnessShortTimeout)
 }
 
 func TestPollUntilNoActiveImages_timeoutMessage(t *testing.T) {
@@ -1047,14 +1054,19 @@ func TestOfferWithRetryWitness_backPressured_returnsTrue(t *testing.T) {
 	transientSeen := make(chan struct{}, 1)
 	drainCtx, stopDrain := context.WithCancel(context.Background())
 	drainDone := make(chan struct{})
-	t.Cleanup(func() {
+
+	// stopDrain cancels drainCtx. The drain goroutine closes drainDone after at
+	// most one poll loop. report is Errorf from cleanup and Fatalf from the
+	// test body.
+	stopAndAwaitDrain := func(report func(format string, args ...any)) {
 		stopDrain()
 		select {
 		case <-drainDone:
 		case <-time.After(time.Second):
-			t.Errorf("witness backpressure drain goroutine did not exit within 1s")
+			report("witness backpressure drain goroutine did not exit within 1s")
 		}
-	})
+	}
+	t.Cleanup(func() { stopAndAwaitDrain(t.Errorf) })
 	go func() {
 		defer close(drainDone)
 		select {
@@ -1070,9 +1082,7 @@ func TestOfferWithRetryWitness_backPressured_returnsTrue(t *testing.T) {
 	}()
 
 	pos, witness := OfferWithRetryWitnessAfterNotify(t, pub, payload, transientSeen)
-	stopDrain()
-	// stopDrain cancels drainCtx; goroutine closes drainDone after at most one poll loop.
-	<-drainDone
+	stopAndAwaitDrain(t.Fatalf)
 	require.True(t, witness)
 	require.Positive(t, pos)
 	require.Greater(t, pos, pubPosBefore)

@@ -575,7 +575,7 @@ func pollAddUntilReady[T any](
 			return value
 		}
 		require.NoError(t, err)
-		time.Sleep(time.Millisecond)
+		runtime.Gosched()
 	}
 	require.FailNow(t, failMsg)
 	var zero T
@@ -660,7 +660,7 @@ func requireClosedWhileAwaitPinned(t *testing.T, client *Client) {
 		if closed {
 			return
 		}
-		time.Sleep(time.Microsecond)
+		runtime.Gosched()
 	}
 
 	require.FailNow(
@@ -854,8 +854,18 @@ func (clock *clientAddTestClock) SetNanoNs(ns int64) {
 	clock.nanoNs.Store(ns)
 }
 
-func waitForClientAddClockReads(clock *clientAddTestClock, minReads int64) {
+func waitForClientAddClockReads(tb testing.TB, clock *clientAddTestClock, minReads int64) {
+	tb.Helper()
+
+	deadline := time.Now().Add(clientConcurrentResultTimeout)
 	for clock.ClockReads() < minReads {
+		if time.Now().After(deadline) {
+			tb.Fatalf(
+				"timed out waiting for clock reads: got %d, want >= %d",
+				clock.ClockReads(),
+				minReads,
+			)
+		}
 		runtime.Gosched()
 	}
 }
@@ -914,7 +924,7 @@ func pollAndRespondToAddCommand(
 		if responded {
 			return true, correlationID
 		}
-		time.Sleep(time.Millisecond)
+		runtime.Gosched()
 	}
 	return false, 0
 }
@@ -1043,7 +1053,7 @@ func waitForAddCommand(
 		if sawCommand {
 			return correlationID
 		}
-		time.Sleep(time.Millisecond)
+		runtime.Gosched()
 	}
 	require.FailNow(t, "timed out waiting for "+commandName+" command on ring")
 	return 0
@@ -1354,7 +1364,7 @@ func TestClient_AddPublicationKind_ringBackpressureRetryThenSuccess(t *testing.T
 
 			resultCh := startClientAddAsync(client, testCase.add)
 
-			waitForClientAddClockReads(clock, 4)
+			waitForClientAddClockReads(t, clock, 4)
 			resetClientAddRingEmpty(fixture.Ring)
 
 			pollDeadline := time.Now().Add(time.Second)
@@ -1391,7 +1401,7 @@ func TestClient_AddSubscription_ringBackpressureRetryThenSuccess(t *testing.T) {
 		return client.AddSubscription(clientAddStreamID, clientAddChannel)
 	})
 
-	waitForClientAddClockReads(clock, 4)
+	waitForClientAddClockReads(t, clock, 4)
 	resetClientAddRingEmpty(fixture.Ring)
 
 	pollDeadline := time.Now().Add(time.Second)
@@ -1426,7 +1436,7 @@ func TestClient_AddPublicationKind_terminationDuringOfferRetry(t *testing.T) {
 
 			resultCh := startClientAddAsync(client, testCase.add)
 
-			waitForClientAddClockReads(clock, 4)
+			waitForClientAddClockReads(t, clock, 4)
 			requireAddCommandNotOnRing(t, fixture, testCase.addMsgType)
 
 			correlationID := fixture.Conductor.ActiveCorrelationID()
@@ -1469,7 +1479,7 @@ func TestClient_AddSubscription_terminationDuringOfferRetry(t *testing.T) {
 		return client.AddSubscription(clientAddStreamID, clientAddChannel)
 	})
 
-	waitForClientAddClockReads(clock, 4)
+	waitForClientAddClockReads(t, clock, 4)
 	requireAddCommandNotOnRing(t, fixture, conductor.AddSubscription)
 
 	correlationID := fixture.Conductor.ActiveCorrelationID()

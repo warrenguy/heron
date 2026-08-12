@@ -134,10 +134,15 @@ func spinTryClaimCommit(
 		case <-stop:
 			return
 		default:
-			termIndex, frameOffset, position, err := aeron.TryClaimRetryForTest(pub, len(payload))
+			// Call TryClaim directly so AdminAction rechecks stop. TryClaimRetryForTest
+			// may spin on AdminAction without rechecking stop.
+			termIndex, frameOffset, position, err := pub.TryClaim(len(payload))
 			if err != nil {
 				errs <- err
 				return
+			}
+			if position == aeron.AdminAction {
+				continue
 			}
 			if position < 0 {
 				errs <- fmt.Errorf("try claim failed: %d", position)
@@ -187,8 +192,8 @@ func TestPublication_Offer_concurrentWithRotation(t *testing.T) {
 
 func TestPublication_Offer_concurrentFragmented(t *testing.T) {
 	pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), int64(1)<<62)
-	aeron.EnableFragmentedWriteTrackingForTest()
-	t.Cleanup(aeron.DisableFragmentedWriteTrackingForTest)
+	aeron.EnableFragmentedWriteTrackingForTest(pub)
+	t.Cleanup(func() { aeron.DisableFragmentedWriteTrackingForTest(pub) })
 
 	var successCount atomic.Int64
 	errs := make(chan error, 4)
@@ -199,7 +204,7 @@ func TestPublication_Offer_concurrentFragmented(t *testing.T) {
 			spinOffer(
 				pub, stop, errs, &successCount,
 				"fragmented offer",
-				func() int64 { return aeron.OfferRetryForTest(pub, payload) },
+				func() int64 { return pub.Offer(payload) },
 			)
 		}
 	}
@@ -214,8 +219,8 @@ func TestPublication_Offer_concurrentFragmented(t *testing.T) {
 
 func TestPublication_Offer_concurrentFragmentedWithRotation(t *testing.T) {
 	pub := aeron.NewTestPublication(t, publicationLogConfigNearTermEnd(256), int64(1)<<62)
-	aeron.EnableFragmentedWriteTrackingForTest()
-	t.Cleanup(aeron.DisableFragmentedWriteTrackingForTest)
+	aeron.EnableFragmentedWriteTrackingForTest(pub)
+	t.Cleanup(func() { aeron.DisableFragmentedWriteTrackingForTest(pub) })
 
 	var successCount atomic.Int64
 	errs := make(chan error, 3)
@@ -226,7 +231,7 @@ func TestPublication_Offer_concurrentFragmentedWithRotation(t *testing.T) {
 			spinOffer(
 				pub, stop, errs, &successCount,
 				"fragmented offer",
-				func() int64 { return aeron.OfferRetryForTest(pub, payload) },
+				func() int64 { return pub.Offer(payload) },
 			)
 		}
 	}

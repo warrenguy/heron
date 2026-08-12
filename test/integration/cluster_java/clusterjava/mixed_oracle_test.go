@@ -16,6 +16,7 @@ import (
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
+	"github.com/warrenguy/heron/test/integration/harness"
 )
 
 // javaDefaultAppVersion matches Java ConsensusModule.Context default appVersion.
@@ -201,6 +202,25 @@ func TestMixedHarnessConstants(t *testing.T) {
 			require.Equal(t, tt.want, tt.got)
 		})
 	}
+}
+
+// TestClusterJavaPorts_matchHarnessReservation asserts the harness port matrix
+// reserves the block this package binds.
+//
+// Harness restates the port base, member count, and mixed log endpoint. The
+// matrix must build under the integration tag alone, where this package does
+// not compile. harness.TestClusterPortBlocks_doNotOverlap keeps that block
+// disjoint from every other live reservation.
+//
+// Endpoint placement inside the block needs no separate check because
+// TestMixedComposeClusterMembers_matchesDefaultGoldens asserts both goldens
+// against BuildClusterMembersString over the same base, so every port is
+// derived.
+func TestClusterJavaPorts_matchHarnessReservation(t *testing.T) {
+	require.Equal(t, clusterjava.PortBase, harness.ClusterJavaPortBase)
+	require.Equal(t, clusterjava.MixedLogEndpoint, harness.ClusterJavaMixedLogEndpoint)
+	require.Equal(t, clusterjava.MixedMemberCount, harness.ClusterJavaMemberCount)
+	require.Equal(t, clusterjava.FailoverMemberCount, harness.ClusterJavaMemberCount)
 }
 
 func TestMixedRequiredSmoke(t *testing.T) {

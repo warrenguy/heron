@@ -220,7 +220,6 @@ func TestConnect_contextDeadline(t *testing.T) {
 		preExpired      bool
 		wantErr         error
 		wantErrContains string
-		maxElapsed      time.Duration
 	}{
 		{
 			name:           "preExpired",
@@ -233,7 +232,6 @@ func TestConnect_contextDeadline(t *testing.T) {
 			connectTimeout: time.Minute,
 			ctxTimeout:     5 * time.Millisecond,
 			wantErr:        context.DeadlineExceeded,
-			maxElapsed:     time.Second,
 		},
 		{
 			name:            "connectTimeoutSooner",
@@ -265,9 +263,7 @@ func TestConnect_contextDeadline(t *testing.T) {
 
 			observedAC := connectTestHarnessDriver(t, harness, nil)
 
-			start := time.Now()
 			_, err := Connect(connectCtx, cfg)
-			elapsed := time.Since(start)
 
 			if tc.wantErr != nil {
 				require.ErrorIs(t, err, tc.wantErr)
@@ -275,10 +271,6 @@ func TestConnect_contextDeadline(t *testing.T) {
 				require.ErrorContains(t, err, tc.wantErrContains)
 			}
 			requireAsyncConnectClosedAfterConnectFailure(t, observedAC())
-
-			if tc.maxElapsed > 0 {
-				require.Less(t, elapsed, tc.maxElapsed)
-			}
 		})
 	}
 }

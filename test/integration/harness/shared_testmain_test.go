@@ -23,5 +23,8 @@ func TestAcceptSharedDriver_testMainGlobals(t *testing.T) {
 	if !sharedTestMainSeen.Load() {
 		t.Skip("aeronmd not found; run make test-integration (requires Docker)")
 	}
-	require.NotNil(t, sharedDriver, "TestMain must leave sharedDriver set")
+	sharedDriverStateMu.RLock()
+	md := sharedDriver
+	sharedDriverStateMu.RUnlock()
+	require.NotNil(t, md, "TestMain must leave sharedDriver set")
 }

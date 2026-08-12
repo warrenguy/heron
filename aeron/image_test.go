@@ -731,11 +731,11 @@ func TestImage_Poll_closeSkipsCounterStore(t *testing.T) {
 					0,
 					pollTestPaddingLength,
 				)
-				aeron.SetPollAfterPaddingAdvanceForTest(func() {
+				aeron.SetPollAfterPaddingAdvanceForTest(image, func() {
 					aeron.ImageInternalCloseForTest(image)
 				})
 				t.Cleanup(func() {
-					aeron.SetPollAfterPaddingAdvanceForTest(nil)
+					aeron.SetPollAfterPaddingAdvanceForTest(image, nil)
 				})
 				capture := &pollCapture{}
 				return capture.handler
@@ -1343,8 +1343,8 @@ func TestImage_ReceivedPosition_runsNoPollHook(t *testing.T) {
 	writeReceivedPositionFrames(t, image, 0, frame, 1)
 
 	hookCalls := 0
-	aeron.SetPollAfterPaddingAdvanceForTest(func() { hookCalls++ })
-	t.Cleanup(func() { aeron.SetPollAfterPaddingAdvanceForTest(nil) })
+	aeron.SetPollAfterPaddingAdvanceForTest(image, func() { hookCalls++ })
+	t.Cleanup(func() { aeron.SetPollAfterPaddingAdvanceForTest(image, nil) })
 
 	require.Equal(t, int64(2*frame), image.ReceivedPosition())
 	require.Zero(t, hookCalls, "the scan crossed the padding frame without the poll hook")

@@ -69,7 +69,7 @@ func controlOfferUntilPositive(
 	defer idle.Reset()
 	doTransportWork := func() {
 		aeronClient.DoWork()
-		recordControlOfferRetryDoWork()
+		recordControlOfferRetryDoWork(aeronClient)
 	}
 	var pos int64
 	for {

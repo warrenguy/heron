@@ -52,16 +52,23 @@ func captureStderr(t *testing.T, fn func()) string {
 func resetSharedDriverGlobals(t *testing.T) {
 	t.Helper()
 
+	// Self-tests must stay serial: write lock around each rewrite so
+	// SharedParallel peers sample a consistent snapshot under RLock.
+	sharedDriverStateMu.Lock()
 	sharedDriver = nil
 	sharedTestMainSeen.Store(false)
 	startSharedDriverHook = nil
+	sharedDriverStateMu.Unlock()
 	t.Cleanup(restoreTestMainSharedDriverGlobals)
 }
 
 func assertSharedDriverGlobalsUnset(t *testing.T) {
 	t.Helper()
 
-	require.Nil(t, sharedDriver)
+	sharedDriverStateMu.RLock()
+	md := sharedDriver
+	sharedDriverStateMu.RUnlock()
+	require.Nil(t, md)
 }
 
 func requireSharedDriverOrSkip(t *testing.T) *MediaDriver {
@@ -75,15 +82,28 @@ func requireSharedDriverOrSkip(t *testing.T) *MediaDriver {
 	return md
 }
 
+// setSharedDriverHookForTest installs hook and clears hook when t finishes.
+//
+// Lifetime: the hook stays set for the remainder of t, including subtests.
+func setSharedDriverHookForTest(t *testing.T, hook func() (*MediaDriver, error)) {
+	t.Helper()
+
+	sharedDriverStateMu.Lock()
+	startSharedDriverHook = hook
+	sharedDriverStateMu.Unlock()
+	t.Cleanup(func() {
+		sharedDriverStateMu.Lock()
+		startSharedDriverHook = nil
+		sharedDriverStateMu.Unlock()
+	})
+}
+
 func installSharedDriverStubHook(t *testing.T) *MediaDriver {
 	t.Helper()
 
 	md := requireSharedDriverOrSkip(t)
-	startSharedDriverHook = func() (*MediaDriver, error) {
+	setSharedDriverHookForTest(t, func() (*MediaDriver, error) {
 		return md, nil
-	}
-	t.Cleanup(func() {
-		startSharedDriverHook = nil
 	})
 	return md
 }
@@ -93,8 +113,10 @@ func primeSharedDriverForTest(t *testing.T) *MediaDriver {
 
 	md := requireSharedDriverOrSkip(t)
 
+	sharedDriverStateMu.Lock()
 	sharedDriver = md
 	sharedTestMainSeen.Store(true)
+	sharedDriverStateMu.Unlock()
 	t.Cleanup(func() {
 		stopSharedDriver(md)
 		resetSharedDriverGlobals(t)
@@ -125,7 +147,7 @@ func TestShared_fallback_disabled(t *testing.T) {
 	resetSharedDriverGlobals(t)
 
 	sharedMD := primeSharedDriverForTest(t)
-	t.Setenv("HERON_SHARED_MEDIA_DRIVER", "0")
+	forceSharedDriverDisabledForTest(t)
 
 	ephemeral := Shared(t)
 	require.NotSame(t, sharedMD, ephemeral)
@@ -157,11 +179,8 @@ func TestStopSharedDriver_keep(t *testing.T) {
 	resetSharedDriverGlobals(t)
 
 	md := requireSharedDriverOrSkip(t)
-	t.Setenv("HERON_SHARED_MEDIA_DRIVER_KEEP", "1")
-	t.Cleanup(func() {
-		_ = os.Unsetenv("HERON_SHARED_MEDIA_DRIVER_KEEP")
-		md.Stop()
-	})
+	forceSharedDriverKeepForTest(t)
+	t.Cleanup(md.Stop)
 
 	stderr := captureStderr(t, func() {
 		stopSharedDriver(md)
@@ -185,7 +204,7 @@ func TestRunTestMainWithSharedDriver(t *testing.T) {
 		{
 			name: "disabled",
 			setup: func(t *testing.T) *stubTestMain {
-				t.Setenv("HERON_SHARED_MEDIA_DRIVER", "0")
+				forceSharedDriverDisabledForTest(t)
 				return &stubTestMain{runCode: 7}
 			},
 			wantCode: 7,
@@ -194,9 +213,9 @@ func TestRunTestMainWithSharedDriver(t *testing.T) {
 		{
 			name: "aeronmd_not_found",
 			setup: func(t *testing.T) *stubTestMain {
-				startSharedDriverHook = func() (*MediaDriver, error) {
+				setSharedDriverHookForTest(t, func() (*MediaDriver, error) {
 					return nil, errAeronmdNotFound
-				}
+				})
 				return &stubTestMain{runCode: 3}
 			},
 			wantCode:       3,
@@ -206,9 +225,9 @@ func TestRunTestMainWithSharedDriver(t *testing.T) {
 		{
 			name: "start_failure",
 			setup: func(t *testing.T) *stubTestMain {
-				startSharedDriverHook = func() (*MediaDriver, error) {
-					return nil, fmt.Errorf("start aeronmd: permission denied")
-				}
+				setSharedDriverHookForTest(t, func() (*MediaDriver, error) {
+					return nil, errors.New("start aeronmd: permission denied")
+				})
 				return &stubTestMain{runCode: 0}
 			},
 			wantCode:       1,
@@ -256,9 +275,8 @@ func TestRunTestMainWithSharedDriver_keep_logsAccurateLifecycle(t *testing.T) {
 	resetSharedDriverGlobals(t)
 
 	md := installSharedDriverStubHook(t)
-	t.Setenv("HERON_SHARED_MEDIA_DRIVER_KEEP", "1")
+	forceSharedDriverKeepForTest(t)
 	t.Cleanup(func() {
-		_ = os.Unsetenv("HERON_SHARED_MEDIA_DRIVER_KEEP")
 		md.Stop()
 		restoreTestMainSharedDriverGlobals()
 	})

@@ -218,6 +218,14 @@ func (tracker *inflightSlotTracker) report() []fragmentedWriteSlot {
 	return result
 }
 
+// fragmentedWriteTracker and fragmentedReservationTracker aggregate slots
+// across every enabled session. SetFragmentedWriteTrackForTest keys hooks by
+// *Publication. These trackers do not.
+//
+// Concurrency: one enabled session at a time. Tests that call
+// EnableFragmentedWriteTrackingForTest must not call t.Parallel. Enable resets
+// both trackers. Report takes no publication key. Process-wide maps are not
+// keyed for parallel tracked publications.
 var (
 	fragmentedWriteTracker       inflightSlotTracker
 	fragmentedReservationTracker inflightSlotTracker
@@ -235,26 +243,29 @@ func trackFragmentedSlot(
 	)
 }
 
-func EnableFragmentedWriteTrackingForTest() {
+func EnableFragmentedWriteTrackingForTest(pub *Publication) {
 	fragmentedWriteTracker.reset()
 	fragmentedReservationTracker.reset()
-	setFragmentedReservationTrackHook(func(termIndex, termOffset int, begin bool) {
+	setFragmentedReservationTrackHook(pub, func(termIndex, termOffset int, begin bool) {
 		trackFragmentedSlot(&fragmentedReservationTracker, termIndex, termOffset, begin)
 	})
-	setFragmentedWriteTrackHook(func(termIndex, frameOffset int, begin bool) {
+	setFragmentedWriteTrackHook(pub, func(termIndex, frameOffset int, begin bool) {
 		trackFragmentedSlot(&fragmentedWriteTracker, termIndex, frameOffset, begin)
 	})
 }
 
-func DisableFragmentedWriteTrackingForTest() {
-	setFragmentedWriteTrackHook(nil)
-	setFragmentedReservationTrackHook(nil)
+func DisableFragmentedWriteTrackingForTest(pub *Publication) {
+	setFragmentedWriteTrackHook(pub, nil)
+	setFragmentedReservationTrackHook(pub, nil)
 	fragmentedWriteTracker.reset()
 	fragmentedReservationTracker.reset()
 }
 
-func SetFragmentedWriteTrackForTest(fn func(termIndex, frameOffset int, begin bool)) {
-	setFragmentedWriteTrackHook(fn)
+func SetFragmentedWriteTrackForTest(
+	pub *Publication,
+	fn func(termIndex, frameOffset int, begin bool),
+) {
+	setFragmentedWriteTrackHook(pub, fn)
 }
 
 func ReportFragmentedWriteTrackerForTest() []fragmentedWriteSlot {
@@ -1272,8 +1283,8 @@ func ImageInvokeSubscriberErrorHandlerForTest(image *Image, err error) {
 	image.invokeSubscriberErrorHandler(err)
 }
 
-func SetPollAfterPaddingAdvanceForTest(hook func()) {
-	setPollAfterPaddingAdvanceHook(hook)
+func SetPollAfterPaddingAdvanceForTest(image *Image, hook func()) {
+	setPollAfterPaddingAdvanceHook(image, hook)
 }
 
 func ImageTermBuffer0ForTest(image *Image) atomicbuffer.AtomicBuffer {

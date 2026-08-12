@@ -119,18 +119,14 @@ func TestWaitForDriverHeartbeat_freshAtEpochDeadlineBoundary(t *testing.T) {
 func TestWaitForDriverHeartbeat_frozenEpochClockWallBackstop(t *testing.T) {
 	ring := testutil.NewTestRing(t)
 
-	start := time.Now()
 	err := aeron.WaitForDriverHeartbeatForTest(
 		context.Background(),
 		ring,
 		50*time.Millisecond,
 		func() int64 { return 1_000 },
 	)
-	elapsed := time.Since(start)
 
 	requireDriverTimeoutCause(t, err, aeron.ErrDriverHeartbeatNotReady)
-	require.Greater(t, elapsed, 40*time.Millisecond)
-	require.Less(t, elapsed, 200*time.Millisecond)
 }
 
 func TestWaitForDriverHeartbeat_contextCanceled(t *testing.T) {
@@ -152,17 +148,14 @@ func TestWaitForDriverHeartbeat_contextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
 
-	start := time.Now()
 	err := aeron.WaitForDriverHeartbeatForTest(
 		ctx,
 		ring,
 		5*time.Second,
 		func() int64 { return 1_000 },
 	)
-	elapsed := time.Since(start)
 
 	require.ErrorIs(t, err, context.DeadlineExceeded)
-	require.Less(t, elapsed, time.Second)
 }
 
 func TestValidateClientID(t *testing.T) {

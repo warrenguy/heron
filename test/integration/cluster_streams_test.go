@@ -4,7 +4,6 @@ package integration_test
 
 import (
 	"fmt"
-	"strconv"
 	"testing"
 	"time"
 
@@ -69,8 +68,8 @@ func TestConsensusIngress_commitPositionOverLiveDriver(t *testing.T) {
 	md0 := harness.StartParallel(t)
 	md1 := harness.Start(t)
 
-	const portBase = 24500
-	members := twoMemberMembersString(t, portBase, "")
+	// Distinct PortBase under StartParallel. The multicast test uses another block.
+	members := twoMemberMembersString(t, harness.ClusterStreamsCommitPortBase, "")
 
 	topology0 := topologyForMember(t, 0, members, md0.Dir, "")
 	topology1 := topologyForMember(t, 1, members, md1.Dir, "")
@@ -158,10 +157,13 @@ func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
 	md0 := harness.StartParallel(t)
 	md1 := harness.Start(t)
 
-	const portBase = 24500
-	sharedLog := harness.ClusterLogMulticastGroup + ":" +
-		strconv.Itoa(harness.ClusterLogNLTMulticastPort)
-	members := twoMemberMembersString(t, portBase, sharedLog)
+	// Distinct from ClusterStreamsCommitPortBase so both StartParallel tests may
+	// bind unicast without collision.
+	members := twoMemberMembersString(
+		t,
+		harness.ClusterStreamsMulticastPortBase,
+		harness.ClusterStreamsMulticastLogEndpoint,
+	)
 
 	topology0 := topologyForMember(
 		t, 0, members, md0.Dir, harness.ClusterLogChannelTemplate,

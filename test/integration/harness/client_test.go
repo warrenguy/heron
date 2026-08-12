@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -161,9 +162,23 @@ func TestRequirePublicationLookupMiss_earlyExit(t *testing.T) {
 	regID := pub.RegistrationID()
 	require.NoError(t, pub.Close())
 
-	start := time.Now()
 	RequirePublicationLookupMiss(t, client, regID)
-	require.Less(t, time.Since(start), CommandPollDeadline)
+
+	// Bound zero allows one poll. A miss here asserts first-iteration exit.
+	lookups := 0
+	requireLookupMissCtx(
+		t,
+		t.Context(),
+		client,
+		0,
+		regID,
+		"publication",
+		func(id int64) (*aeron.Publication, bool) {
+			lookups++
+			return client.Publication(id)
+		},
+	)
+	require.Equal(t, 1, lookups)
 }
 
 func TestRequirePublicationLookupMiss_timeoutMessage(t *testing.T) {
@@ -229,16 +244,21 @@ func TestWaitForIPCLinkConnected_subscriptionTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), linkWaitTestTimeout)
 	defer cancel()
 
-	start := time.Now()
 	capture := &CaptureFailTB{TB: t}
 	waitForIPCLinkConnectedCtx(capture, ctx, client, pub, sub)
 	require.True(t, capture.failed)
-	require.Less(t, time.Since(start), ConnectedPollTimeout)
 	wantSubMsg := fmt.Sprintf("subscription %d never connected", sub.RegistrationID())
 	require.Contains(t, capture.lastMsg, wantSubMsg)
-	require.Contains(t, capture.lastMsg, "within")
 	require.NotContains(t, capture.lastMsg, "publication")
 	require.NotContains(t, capture.lastMsg, "poll: context deadline exceeded")
+
+	// Fail text carries the effective bound after " within ". The parent context
+	// must clamp that bound to at most linkWaitTestTimeout.
+	_, within, ok := strings.Cut(capture.lastMsg, " within ")
+	require.True(t, ok)
+	effective, err := time.ParseDuration(within)
+	require.NoError(t, err)
+	require.LessOrEqual(t, effective, linkWaitTestTimeout)
 }
 
 func TestPollClientDuring_happyPath(t *testing.T) {

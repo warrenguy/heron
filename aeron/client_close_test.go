@@ -2,6 +2,7 @@ package aeron_test
 
 import (
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -126,7 +127,7 @@ advanceLoop:
 			t.Fatal("client close did not finish during linger drain")
 		default:
 			nanoNs.Add(lingerNs / 5)
-			time.Sleep(time.Microsecond)
+			runtime.Gosched()
 		}
 	}
 	require.NoError(t, closeErr)
@@ -427,7 +428,7 @@ advanceLoop:
 				lingerScheduled = true
 				nanoNs.Add(clientCloseLingerNs / 5)
 			}
-			time.Sleep(time.Microsecond)
+			runtime.Gosched()
 		}
 	}
 }

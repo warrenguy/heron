@@ -6,73 +6,74 @@ import (
 	"os"
 	"testing"
 
+	"github.com/warrenguy/heron/internal/testhook"
 	"github.com/warrenguy/heron/mmap"
 )
 
+// initialiseOnCreateHooks is keyed by node-state file path. Concurrent
+// OpenNodeStateFile create peers must not observe another test's hook.
 var (
-	initialiseOnCreateHook func([]byte, int32) (int, int, error)
-	truncateNodeStateHook  func(*os.File, int64) error
-	mapNodeStateHook       func(*os.File, int) (*mmap.Mapping, error)
+	initialiseOnCreateHooks = testhook.NewRegistry[string, func([]byte, int32) (int, int, error)]()
+	truncateNodeStateHooks  = testhook.NewRegistry[string, func(*os.File, int64) error]()
+	mapNodeStateHooks       = testhook.NewRegistry[
+		string,
+		func(*os.File, int) (*mmap.Mapping, error),
+	]()
 )
 
-func callInitialiseOnCreate(buf []byte, version int32) (int, int, error) {
-	if initialiseOnCreateHook != nil {
-		return initialiseOnCreateHook(buf, version)
+func callInitialiseOnCreate(path string, buf []byte, version int32) (int, int, error) {
+	if hook := initialiseOnCreateHooks.Load(path); hook != nil {
+		return hook(buf, version)
 	}
 	return initialiseOnCreate(buf, version)
 }
 
 func truncateNodeStateFile(file *os.File, size int64) error {
-	if truncateNodeStateHook != nil {
-		return truncateNodeStateHook(file, size)
+	if hook := truncateNodeStateHooks.Load(file.Name()); hook != nil {
+		return hook(file, size)
 	}
 	return file.Truncate(size)
 }
 
 func mapNodeStateFile(file *os.File, length int) (*mmap.Mapping, error) {
-	if mapNodeStateHook != nil {
-		return mapNodeStateHook(file, length)
+	if hook := mapNodeStateHooks.Load(file.Name()); hook != nil {
+		return hook(file, length)
 	}
 	return mmap.MapOpenedFile(file, length)
 }
 
-func SetInitialiseOnCreateHook(
-	hook func([]byte, int32) (int, int, error),
-) func() {
-	previous := initialiseOnCreateHook
-	initialiseOnCreateHook = hook
-	return func() { initialiseOnCreateHook = previous }
-}
-
-func SetTruncateNodeStateHook(hook func(*os.File, int64) error) func() {
-	previous := truncateNodeStateHook
-	truncateNodeStateHook = hook
-	return func() { truncateNodeStateHook = previous }
-}
-
-func SetMapNodeStateHook(hook func(*os.File, int) (*mmap.Mapping, error)) func() {
-	previous := mapNodeStateHook
-	mapNodeStateHook = hook
-	return func() { mapNodeStateHook = previous }
-}
-
+// SetInitialiseOnCreateHookForTest installs a create-initialise hook for path.
+//
+// path must be the node-state path OpenNodeStateFile will create.
 func SetInitialiseOnCreateHookForTest(
 	tb testing.TB,
+	path string,
 	hook func([]byte, int32) (int, int, error),
 ) {
 	tb.Helper()
-	restore := SetInitialiseOnCreateHook(hook)
-	tb.Cleanup(restore)
+	testhook.SetForTest(tb, initialiseOnCreateHooks, path, hook)
 }
 
-func SetTruncateNodeStateHookForTest(tb testing.TB, hook func(*os.File, int64) error) {
+// SetTruncateNodeStateHookForTest installs a truncate hook for path.
+//
+// path must be the node-state path OpenNodeStateFile will create.
+func SetTruncateNodeStateHookForTest(
+	tb testing.TB,
+	path string,
+	hook func(*os.File, int64) error,
+) {
 	tb.Helper()
-	restore := SetTruncateNodeStateHook(hook)
-	tb.Cleanup(restore)
+	testhook.SetForTest(tb, truncateNodeStateHooks, path, hook)
 }
 
-func SetMapNodeStateHookForTest(tb testing.TB, hook func(*os.File, int) (*mmap.Mapping, error)) {
+// SetMapNodeStateHookForTest installs a map hook for path.
+//
+// path must be the node-state path OpenNodeStateFile will create.
+func SetMapNodeStateHookForTest(
+	tb testing.TB,
+	path string,
+	hook func(*os.File, int) (*mmap.Mapping, error),
+) {
 	tb.Helper()
-	restore := SetMapNodeStateHook(hook)
-	tb.Cleanup(restore)
+	testhook.SetForTest(tb, mapNodeStateHooks, path, hook)
 }

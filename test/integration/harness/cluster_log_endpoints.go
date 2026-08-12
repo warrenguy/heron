@@ -2,7 +2,15 @@
 
 package harness
 
-import "strconv"
+import (
+	"net"
+	"strconv"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/warrenguy/heron/cluster"
+)
 
 // Multicast endpoints for live cluster-log tests.
 //
@@ -21,6 +29,47 @@ import "strconv"
 const (
 	ClusterLogMulticastGroup   = "239.255.12.1"
 	ClusterLogNLTMulticastPort = 24404
+)
+
+// Unicast PortBase values for test/integration below the cluster_archive floor.
+// Each live Test* that binds unicast owns one block. Two tests must not share a
+// PortBase under t.Parallel.
+//
+// Member counts:
+//   - ConsensusPublications: three members (base+1 .. base+205)
+//   - ClusterStreams*: two members (base+1 .. base+105)
+//
+// Single-endpoint UDP pubs and subs (channel status, multi-destination) call
+// FreeUDPPort instead of fixed ports so parallel hosts do not collide.
+const (
+	ConsensusPublicationsPortBase   = 24000
+	ClusterStreamsMulticastPortBase = 23700
+	ClusterStreamsCommitPortBase    = 24500
+)
+
+// ClusterStreamsMulticastLogEndpoint is derived from the cluster-log multicast
+// constants so the port ledger and the live bind cannot drift.
+var ClusterStreamsMulticastLogEndpoint = ClusterLogMulticastGroup + ":" +
+	strconv.Itoa(ClusterLogNLTMulticastPort)
+
+// ClusterJavaPortBase is the default port base every cluster_java fixture
+// binds (single node, failover, mixed). Restated in harness so the port matrix
+// builds under the integration tag alone, where the clusterjava package does
+// not compile. The clusterjava package asserts these against its own topology
+// constants.
+const (
+	ClusterJavaPortBase = cluster.DefaultPortBase
+
+	// ClusterJavaMemberCount is the widest cluster_java fixture. Failover and
+	// mixed both run three members. The single-node fixture runs one.
+	ClusterJavaMemberCount = 3
+)
+
+// ClusterJavaMixedLogEndpoint is derived from ClusterJavaPortBase so the
+// ledger and the live bind cannot drift. Only the group address is
+// cluster_java's own. Only the mixed go-leader fixture binds this endpoint.
+var ClusterJavaMixedLogEndpoint = "239.255.12.15:" + strconv.Itoa(
+	cluster.CalculatePort(0, ClusterJavaPortBase, cluster.LogPortOffset),
 )
 
 // Three-node module-test endpoints. Each Test* owns one block so the suite may
@@ -114,17 +163,22 @@ const (
 	ClusterMemberAmplifierLogEndpoint = "239.255.12.49:31504"
 )
 
-// cluster_archive one-off and smoke endpoints. Kept in harness so one matrix
-// owns every PortBase and log multicast the cluster_archive package binds
-// under t.Parallel.
+// cluster_archive one-off and smoke endpoints. Harness holds one matrix for
+// every PortBase and log multicast the cluster_archive package binds under
+// t.Parallel.
 //
-// Sibling packages bind below the matrix floor of 24700 and can run in
+// Sibling packages bind below the matrix floor of 24700 and may run in
 // parallel go test processes:
-//   - cluster_java: 9000 with 239.255.12.15:9004
-//   - test/integration: 24000 (consensus publications), 24325 (channel
-//     status), 24500 (cluster streams), and ClusterLogNLTMulticastPort
+//   - cluster_java: ClusterJavaPortBase (9000) with
+//     ClusterJavaMixedLogEndpoint (9004)
+//   - test/integration: ConsensusPublicationsPortBase (24000),
+//     ClusterStreamsMulticastPortBase (23700), ClusterStreamsCommitPortBase
+//     (24500), and ClusterStreamsMulticastLogEndpoint (24404). Channel-status
+//     and multi-destination endpoints use FreeUDPPort.
 //
-// Keep new matrix bases at 24700 or higher.
+// TestClusterPortBlocks_doNotOverlap registers every reservation above. The
+// floor therefore applies only to new cluster_archive bases. Keep those at
+// 24700 or higher.
 //
 // Member counts for reserved unicast ranges:
 //   - consensus and runner: one member (base+1..+5)
@@ -164,7 +218,53 @@ var (
 
 // ArchiveControlChannel returns the loopback UDP Archive control URI for port.
 func ArchiveControlChannel(port int) string {
-	return "aeron:udp?endpoint=127.0.0.1:" + strconv.Itoa(port)
+	return "aeron:udp?endpoint=" + LoopbackUDPEndpoint(port)
+}
+
+// LoopbackUDPEndpoint returns host:port for a loopback UDP endpoint.
+func LoopbackUDPEndpoint(port int) string {
+	return "127.0.0.1:" + strconv.Itoa(port)
+}
+
+// FreeUDPPort returns one unused loopback UDP port.
+//
+// Closes the probe socket before return so the caller can bind. Prefer this
+// over a fixed port when the test runs under SharedParallel or parallel hosts.
+// Does not retry on later bind failure.
+func FreeUDPPort(t testing.TB) int {
+	t.Helper()
+	return FreeUDPPorts(t, 1)[0]
+}
+
+// FreeUDPPorts returns n distinct unused loopback UDP ports.
+//
+// Opens all probe sockets first so the kernel cannot hand back the same port
+// twice, then closes them so the caller can bind.
+func FreeUDPPorts(t testing.TB, n int) []int {
+	t.Helper()
+	require.Positive(t, n)
+
+	conns := make([]net.PacketConn, 0, n)
+	ports := make([]int, 0, n)
+
+	// Close every probe socket before return so each port is free to bind.
+	defer func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
+
+	for range n {
+		c, err := net.ListenPacket("udp", "127.0.0.1:0")
+		require.NoError(t, err)
+		conns = append(conns, c)
+		addr, ok := c.LocalAddr().(*net.UDPAddr)
+		require.True(t, ok, "ListenPacket LocalAddr must be *net.UDPAddr")
+		require.Positive(t, addr.Port)
+		ports = append(ports, addr.Port)
+	}
+
+	return ports
 }
 
 // ClusterLogChannelTemplate confines cluster-log multicast to loopback.

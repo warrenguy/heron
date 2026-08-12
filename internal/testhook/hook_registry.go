@@ -1,14 +1,22 @@
 //go:build testhooks
 
-// Package testhook provides a mutex-protected keyed registry for test-only hook
-// storage. It is compiled only with the testhooks build tag. Store assigns the
-// value without removing the key (nil/zero values are stored). Call Delete to
-// remove an entry when nil should mean "unset".
+// Package testhook holds a mutex-protected keyed registry for test-only hooks.
+//
+// Builds only with the testhooks tag. Store keeps the key when the value is
+// nil or zero. Call Delete when nil must mean "unset".
 package testhook
 
-import "sync"
+import (
+	"sync"
+	"testing"
+)
 
-// Registry is a mutex-protected map for test hook storage keyed by K.
+// Registry is a mutex-protected map of test hooks keyed by K.
+//
+// Concurrency: the mutex serializes every map access. Load concurrent with an
+// unfinished Store may still return the zero value for that key. Callers must
+// establish happens-before from a completed Store or SetForTest to the Load.
+// Load then reads the stored value until Delete removes the key.
 type Registry[K comparable, V any] struct {
 	mu sync.Mutex
 	m  map[K]V
@@ -41,4 +49,18 @@ func (r *Registry[K, V]) Delete(key K) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.m, key)
+}
+
+// SetForTest stores hook under key and deletes the entry when tb finishes.
+//
+// Lifetime: the entry stays for the rest of tb, including subtests.
+func SetForTest[K comparable, V any](
+	tb testing.TB,
+	registry *Registry[K, V],
+	key K,
+	hook V,
+) {
+	tb.Helper()
+	registry.Store(key, hook)
+	tb.Cleanup(func() { registry.Delete(key) })
 }

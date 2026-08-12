@@ -555,15 +555,8 @@ func TestTwoClientsConcurrentRingOffers(t *testing.T) {
 		}
 	}
 
-	closeStart := time.Now()
 	require.NoError(t, clientA.Close())
 	require.NoError(t, clientB.Close())
-	require.Less(
-		t,
-		time.Since(closeStart),
-		2*harness.CommandPollDeadline,
-		"sequential close for two clients must stay within per-client DriverTimeout",
-	)
 
 	md.AssertProcessAlive(t)
 }

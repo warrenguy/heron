@@ -3,6 +3,7 @@
 package archive
 
 import (
+	"runtime"
 	"testing"
 	"time"
 
@@ -80,7 +81,7 @@ func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 		if ok && resp.CorrelationID == keepAliveCorrelation {
 			break
 		}
-		time.Sleep(time.Millisecond)
+		runtime.Gosched()
 	}
 	require.True(t, result.Poller.IsPollComplete())
 	resp, ok := result.Poller.Response()

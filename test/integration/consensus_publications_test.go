@@ -20,10 +20,11 @@ func TestConsensusPublications_openCloseOnLiveDriver(t *testing.T) {
 	client, _ := harness.ConnectIPCClient(t, md)
 
 	hosts := []string{"127.0.0.1", "127.0.0.1", "127.0.0.1"}
+	// Named PortBase for this three-member block under SharedParallel.
 	members, err := cluster.BuildClusterMembersString(cluster.MembersStringConfig{
 		IngressHostnames: hosts,
 		ClusterHostnames: hosts,
-		PortBase:         24000,
+		PortBase:         harness.ConsensusPublicationsPortBase,
 	})
 	require.NoError(t, err)
 

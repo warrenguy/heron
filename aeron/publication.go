@@ -583,8 +583,8 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 	if outcome.status != 0 {
 		return outcome.status
 	}
-	if trackFragmentedReservationBegin(outcome.termIndex, outcome.termOffset) {
-		defer trackFragmentedReservationEnd(outcome.termIndex, outcome.termOffset)
+	if trackFragmentedReservationBegin(pub, outcome.termIndex, outcome.termOffset) {
+		defer trackFragmentedReservationEnd(pub, outcome.termIndex, outcome.termOffset)
 	}
 
 	frameOffset := outcome.termOffset
@@ -613,7 +613,7 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 		chunk := nextFragmentChunk(remaining, length, pub.maxPayloadLength, fullChunkAligned)
 		payloadOffset := srcOffset + (length - remaining)
 
-		trackFragmentedWrite(outcome.termIndex, frameOffset, true)
+		trackFragmentedWrite(pub, outcome.termIndex, frameOffset, true)
 
 		writeFragmentChunk(
 			pub.headerWriter,
@@ -624,7 +624,7 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 			buffer[payloadOffset:payloadOffset+chunk.bytesToWrite],
 		)
 
-		trackFragmentedWrite(outcome.termIndex, frameOffset, false)
+		trackFragmentedWrite(pub, outcome.termIndex, frameOffset, false)
 
 		frameOffset += chunk.alignedLength
 		remaining -= chunk.bytesToWrite

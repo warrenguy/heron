@@ -889,11 +889,11 @@ func TestImage_ControlledPoll_closeSkipsCounterStore(t *testing.T) {
 					0,
 					pollTestPaddingLength,
 				)
-				aeron.SetPollAfterPaddingAdvanceForTest(func() {
+				aeron.SetPollAfterPaddingAdvanceForTest(image, func() {
 					aeron.ImageInternalCloseForTest(image)
 				})
 				t.Cleanup(func() {
-					aeron.SetPollAfterPaddingAdvanceForTest(nil)
+					aeron.SetPollAfterPaddingAdvanceForTest(image, nil)
 				})
 				capture := &controlledPollCapture{}
 				return capture.handler

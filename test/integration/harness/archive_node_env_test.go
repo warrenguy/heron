@@ -157,11 +157,9 @@ func TestResolveArchiveJar(t *testing.T) {
 	})
 
 	t.Run("default miss returns errArchiveJarNotFound", func(t *testing.T) {
-		prev := defaultArchiveJar
-		t.Cleanup(func() { defaultArchiveJar = prev })
-		defaultArchiveJar = func() (string, error) {
-			return "", errArchiveJarNotFound
-		}
+		// Force flag rather than a rewritten defaultArchiveJar. Parallel resolve peers
+		// must not sample a half-installed override.
+		forceDefaultArchiveJarMissForTest(t)
 		t.Setenv(envArchiveJar, "")
 
 		path, err := resolveArchiveJar()

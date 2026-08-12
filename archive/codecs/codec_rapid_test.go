@@ -20,6 +20,9 @@ const (
 	rapidChecksVarHeavy   = 200
 )
 
+// rapidChecksFlagMu serializes flag.Set("rapid.checks") for the full Check call.
+// -rapid.checks is process-global; no local budget API yet. Parallel rapid
+// tests take this mutex only for the Set+Check span.
 var rapidChecksFlagMu sync.Mutex
 
 func rapidCheck(tb testing.TB, checks int, prop func(*rapid.T)) {

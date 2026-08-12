@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -263,12 +264,29 @@ func resolveArchiveJar() (string, error) {
 		}
 		return path, nil
 	}
+	if forceDefaultArchiveJarMiss.Load() {
+		return "", errArchiveJarNotFound
+	}
 	return defaultArchiveJar()
 }
 
-var defaultArchiveJar = sync.OnceValues(func() (string, error) {
-	if path := repoBinFile("heron-archive-java.jar"); path != "" {
-		return path, nil
-	}
-	return "", errArchiveJarNotFound
-})
+// defaultArchiveJar is immutable OnceValues. Tests set forceDefaultArchiveJarMiss
+// for the miss path. Parallel resolve peers must not observe a rewritten package
+// function pointer.
+var (
+	defaultArchiveJar = sync.OnceValues(func() (string, error) {
+		if path := repoBinFile("heron-archive-java.jar"); path != "" {
+			return path, nil
+		}
+		return "", errArchiveJarNotFound
+	})
+	forceDefaultArchiveJarMiss atomic.Bool
+)
+
+// forceDefaultArchiveJarMissForTest makes resolveArchiveJar report
+// errArchiveJarNotFound for the default jar until tb finishes.
+func forceDefaultArchiveJarMissForTest(tb testing.TB) {
+	tb.Helper()
+	forceDefaultArchiveJarMiss.Store(true)
+	tb.Cleanup(func() { forceDefaultArchiveJarMiss.Store(false) })
+}

@@ -40,17 +40,20 @@ const (
 )
 
 // lockClusterDirectory takes the exclusive advisory lock on an open
-// cluster.lock descriptor.
+// cluster.lock descriptor. path is the cluster.lock path for testhooks
+// lock-blocked hooks. Production builds ignore path.
 //
 // Behaviour:
 //   - Takes LOCK_EX|LOCK_NB. Returns nil on the first success.
 //   - Retries on EWOULDBLOCK only. Every other errno returns at once.
+//   - Calls trackDirectoryLockBlocked(path) on each EWOULDBLOCK before the
+//     next attempt.
 //   - Spins for directoryLockSpin, then sleeps directoryLockPoll between
 //     attempts.
 //   - Returns the last EWOULDBLOCK once DirectoryLockWait elapses.
 //
 // Never blocks without a bound. The caller owns the descriptor either way.
-func lockClusterDirectory(fd int) error {
+func lockClusterDirectory(fd int, path string) error {
 	start := time.Now()
 	for {
 		err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
@@ -60,6 +63,7 @@ func lockClusterDirectory(fd int) error {
 		if !errors.Is(err, unix.EWOULDBLOCK) {
 			return err
 		}
+		trackDirectoryLockBlocked(path)
 
 		elapsed := time.Since(start)
 		if elapsed >= DirectoryLockWait {
@@ -222,7 +226,7 @@ func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
 	// this process or another one. A predecessor release can trail Close.
 	// lockClusterDirectory retries within DirectoryLockWait before the open is
 	// refused.
-	if err := lockClusterDirectory(fd); err != nil {
+	if err := lockClusterDirectory(fd, path); err != nil {
 		return nil, fmt.Errorf("cluster: lock cluster dir %s: %w", dir, err)
 	}
 

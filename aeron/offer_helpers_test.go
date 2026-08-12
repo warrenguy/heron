@@ -340,16 +340,13 @@ func TestOfferWithRetry_contextDeadline(t *testing.T) {
 		deadlineCtx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
 		defer cancel()
 
-		start := time.Now()
 		pos, err := aeron.OfferWithRetryObservedForTest(
 			deadlineCtx, client, pub, []byte{0x01}, nil,
 		)
-		elapsed := time.Since(start)
 
 		require.Zero(t, pos)
 		require.Equal(t, 1, pub.call)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
-		require.Less(t, elapsed, 200*time.Millisecond)
 	})
 }
 

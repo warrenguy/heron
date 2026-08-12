@@ -2,35 +2,51 @@
 
 package aeron
 
+import "github.com/warrenguy/heron/internal/testhook"
+
+type fragmentedWriteTrackFn func(termIndex, frameOffset int, begin bool)
+
+type fragmentedReservationTrackFn func(termIndex, termOffset int, begin bool)
+
+// fragmentedWriteTracks and fragmentedReservationTracks are keyed by
+// *Publication. Concurrent Offer peers must not observe another test's hook.
 var (
-	fragmentedWriteTrack       func(termIndex, frameOffset int, begin bool)
-	fragmentedReservationTrack func(termIndex, termOffset int, begin bool)
+	fragmentedWriteTracks       = testhook.NewRegistry[*Publication, fragmentedWriteTrackFn]()
+	fragmentedReservationTracks = testhook.NewRegistry[*Publication, fragmentedReservationTrackFn]()
 )
 
-func trackFragmentedReservationBegin(termIndex, termOffset int) bool {
-	if fragmentedReservationTrack != nil {
-		fragmentedReservationTrack(termIndex, termOffset, true)
+func trackFragmentedReservationBegin(pub *Publication, termIndex, termOffset int) bool {
+	if fn := fragmentedReservationTracks.Load(pub); fn != nil {
+		fn(termIndex, termOffset, true)
 		return true
 	}
 	return false
 }
 
-func trackFragmentedReservationEnd(termIndex, termOffset int) {
-	if fragmentedReservationTrack != nil {
-		fragmentedReservationTrack(termIndex, termOffset, false)
+func trackFragmentedReservationEnd(pub *Publication, termIndex, termOffset int) {
+	if fn := fragmentedReservationTracks.Load(pub); fn != nil {
+		fn(termIndex, termOffset, false)
 	}
 }
 
-func trackFragmentedWrite(termIndex, frameOffset int, begin bool) {
-	if fragmentedWriteTrack != nil {
-		fragmentedWriteTrack(termIndex, frameOffset, begin)
+func trackFragmentedWrite(pub *Publication, termIndex, frameOffset int, begin bool) {
+	if fn := fragmentedWriteTracks.Load(pub); fn != nil {
+		fn(termIndex, frameOffset, begin)
 	}
 }
 
-func setFragmentedWriteTrackHook(fn func(termIndex, frameOffset int, begin bool)) {
-	fragmentedWriteTrack = fn
+func setFragmentedWriteTrackHook(pub *Publication, fn fragmentedWriteTrackFn) {
+	if fn == nil {
+		fragmentedWriteTracks.Delete(pub)
+		return
+	}
+	fragmentedWriteTracks.Store(pub, fn)
 }
 
-func setFragmentedReservationTrackHook(fn func(termIndex, termOffset int, begin bool)) {
-	fragmentedReservationTrack = fn
+func setFragmentedReservationTrackHook(pub *Publication, fn fragmentedReservationTrackFn) {
+	if fn == nil {
+		fragmentedReservationTracks.Delete(pub)
+		return
+	}
+	fragmentedReservationTracks.Store(pub, fn)
 }

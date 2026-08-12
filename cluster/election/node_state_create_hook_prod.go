@@ -8,7 +8,7 @@ import (
 	"github.com/warrenguy/heron/mmap"
 )
 
-func callInitialiseOnCreate(buf []byte, version int32) (int, int, error) {
+func callInitialiseOnCreate(_ string, buf []byte, version int32) (int, int, error) {
 	return initialiseOnCreate(buf, version)
 }
 

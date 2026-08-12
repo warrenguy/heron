@@ -476,7 +476,7 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 				break
 			}
 			offset += advance
-			trackPollAfterPaddingAdvance()
+			trackPollAfterPaddingAdvance(image)
 			continue
 		}
 

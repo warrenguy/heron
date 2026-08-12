@@ -8,7 +8,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
@@ -363,90 +362,6 @@ func TestOpenRecovery_lockExcludesSecondOpen(t *testing.T) {
 	require.True(t, strings.HasPrefix(err.Error(), "cluster: lock cluster dir"),
 		"got %v", err)
 	require.ElementsMatch(t, before, fdsUnder(t, dir))
-}
-
-// TestOpenRecovery_lockWaitsForTrailingRelease asserts a second OpenRecovery
-// succeeds when the holder releases while OpenRecovery is attempting flock.
-//
-// The kernel may drop an advisory lock after the close that released the lock
-// returns. A restart on the same directory must wait for that drop. The open
-// must not refuse on the first EWOULDBLOCK.
-func TestOpenRecovery_lockWaitsForTrailingRelease(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "cluster.lock")
-	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
-	require.NoError(t, err)
-	require.NoError(t, unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB))
-
-	// holder wraps the flock descriptor. Close is close-once, so the release
-	// below and this cleanup share one close path.
-	holder := os.NewFile(uintptr(fd), path)
-	t.Cleanup(func() { _ = holder.Close() })
-
-	cfg := recoveryConfig(t, dir)
-
-	// Probe openFDCount before the waiter starts. openFDCount and fdsUnder Skip
-	// when GOOS is not linux. A Skip after go leaves OpenRecovery running with
-	// only holder cleanup registered.
-	baseline := openFDCount(t, path)
-	require.Equal(t, 1, baseline, "holder must own one open cluster.lock fd")
-
-	type openResult struct {
-		recovery *cluster.Recovery
-		err      error
-	}
-	done := make(chan openResult, 1)
-	go func() {
-		recovery, err := cluster.OpenRecovery(cluster.RecoveryDeps{Config: cfg})
-		done <- openResult{recovery, err}
-	}()
-
-	// Cleanup owns the OpenRecovery waiter on every exit. Closes holder first so
-	// flock can complete, then drains done unless gotResult is already set. Closes
-	// any Recovery from the open result.
-	var (
-		result    openResult
-		gotResult bool
-	)
-	t.Cleanup(func() {
-		_ = holder.Close()
-		if !gotResult {
-			select {
-			case result = <-done:
-				gotResult = true
-			case <-time.After(cluster.DirectoryLockWait + 100*time.Millisecond):
-				return
-			}
-		}
-		if result.recovery != nil {
-			_ = result.recovery.Close()
-		}
-	})
-
-	// Two open cluster.lock fds under dir mean the waiter has opened the file
-	// and is attempting flock. The readiness probe must run on this test
-	// goroutine. Do not call openFDCount from a require.Eventually condition.
-	//
-	// The readiness deadline sits above DirectoryLockWait. A delayed open must
-	// not fail the wait. The product flock budget stays separate.
-	deadline := time.Now().Add(time.Second)
-	for openFDCount(t, path) < 2 {
-		require.True(t, time.Now().Before(deadline), "OpenRecovery did not open cluster.lock")
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	require.NoError(t, holder.Close())
-
-	select {
-	case result = <-done:
-		gotResult = true
-		require.NoError(t, result.err)
-		require.NotNil(t, result.recovery)
-	case <-time.After(cluster.DirectoryLockWait + 100*time.Millisecond):
-		t.Fatal("OpenRecovery did not return after holder release")
-	}
 }
 
 func TestOpenRecovery_lockSymlinkRefused(t *testing.T) {

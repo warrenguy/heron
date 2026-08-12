@@ -457,11 +457,11 @@ func TestSubscription_Poll_closeSkipsCounterStore(t *testing.T) {
 	aeron.SubscriptionAddImageForTest(sub, image0)
 	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID+1, []byte("img1"))
 
-	aeron.SetPollAfterPaddingAdvanceForTest(func() {
+	aeron.SetPollAfterPaddingAdvanceForTest(image0, func() {
 		aeron.ImageInternalCloseForTest(image0)
 	})
 	t.Cleanup(func() {
-		aeron.SetPollAfterPaddingAdvanceForTest(nil)
+		aeron.SetPollAfterPaddingAdvanceForTest(image0, nil)
 	})
 
 	positionBefore := image0.Position()

@@ -2,16 +2,22 @@
 
 package aeron
 
-// pollAfterPaddingAdvanceHook is unsynchronized; tests must not mutate it
-// concurrently without serializing set/clear with poll execution.
-var pollAfterPaddingAdvanceHook func()
+import "github.com/warrenguy/heron/internal/testhook"
 
-func trackPollAfterPaddingAdvance() {
-	if pollAfterPaddingAdvanceHook != nil {
-		pollAfterPaddingAdvanceHook()
+// pollAfterPaddingAdvanceHooks is keyed by *Image. Concurrent Poll peers must
+// not observe another test's hook.
+var pollAfterPaddingAdvanceHooks = testhook.NewRegistry[*Image, func()]()
+
+func trackPollAfterPaddingAdvance(image *Image) {
+	if hook := pollAfterPaddingAdvanceHooks.Load(image); hook != nil {
+		hook()
 	}
 }
 
-func setPollAfterPaddingAdvanceHook(hook func()) {
-	pollAfterPaddingAdvanceHook = hook
+func setPollAfterPaddingAdvanceHook(image *Image, hook func()) {
+	if hook == nil {
+		pollAfterPaddingAdvanceHooks.Delete(image)
+		return
+	}
+	pollAfterPaddingAdvanceHooks.Store(image, hook)
 }

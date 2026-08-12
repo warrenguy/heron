@@ -449,7 +449,7 @@ func TestClient_Add_concurrentCloseDuringOfferBackpressure(t *testing.T) {
 
 			resultCh := startConcurrentAddCall(client, testCase.addCall)
 
-			waitForClientAddClockReads(clock, 4)
+			waitForClientAddClockReads(t, clock, 4)
 			requireAddCommandNotOnRing(t, fixture, testCase.addCommandTypeID)
 
 			correlationID := fixture.Conductor.ActiveCorrelationID()

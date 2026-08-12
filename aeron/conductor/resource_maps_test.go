@@ -129,6 +129,30 @@ func setupImageHandlerLingerFixtures(
 	}
 }
 
+// startDoWorkUntilHandlerEntered starts DoWork on a goroutine and returns the
+// result channel after the suspended image handler has entered.
+//
+// Handler entry is the wait condition. The helper does not Sleep for readiness.
+func startDoWorkUntilHandlerEntered(
+	t *testing.T,
+	conductorInstance *conductor.Conductor,
+	handlerEntered <-chan struct{},
+) chan int {
+	t.Helper()
+
+	doWorkDone := make(chan int, 1)
+	go func() {
+		doWorkDone <- conductorInstance.DoWork()
+	}()
+
+	select {
+	case <-handlerEntered:
+	case workCount := <-doWorkDone:
+		t.Fatalf("DoWork finished before suspended handler entered: workCount=%d", workCount)
+	}
+	return doWorkDone
+}
+
 func TestConductor_publicationMap_overwriteDuplicateRegistrationID(t *testing.T) {
 	t.Parallel()
 
@@ -336,12 +360,16 @@ func TestConductor_DoWork_lingerScheduledConcurrentLookup_blocksDuringSweep(t *t
 	})
 	t.Cleanup(func() { conductorInstance.SetLingerSweepBlockerForTest(nil) })
 
-	doWorkDone := make(chan int)
+	doWorkDone := make(chan int, 1)
 	go func() {
 		doWorkDone <- conductorInstance.DoWork()
 	}()
 
 	<-sweepEntered
+	// Write lock is held under the linger-sweep blocker. Assert via non-blocking
+	// RLock. Do not use wall-clock waits.
+	require.False(t, conductorInstance.TryResourceRLockForTest(),
+		"resource write lock must be held during linger sweep")
 
 	lookupDone := make(chan bool, 1)
 	go func() {
@@ -349,13 +377,12 @@ func TestConductor_DoWork_lingerScheduledConcurrentLookup_blocksDuringSweep(t *t
 		lookupDone <- ok
 	}()
 
+	// Neither channel may be ready while the sweep holds the write lock. The
+	// select is non-blocking and adds no wall wait. It fails only if lookup
+	// stopped taking resourceMu or DoWork stopped waiting on releaseSweep.
 	select {
 	case ok := <-lookupDone:
 		t.Fatalf("lookup completed during linger sweep write lock: ok=%v", ok)
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	select {
 	case workCount := <-doWorkDone:
 		t.Fatalf("DoWork finished before sweep released: workCount=%d", workCount)
 	default:
@@ -418,7 +445,6 @@ func runConcurrentLookupDuringImageHandlerTest(
 
 	handlerEntered := make(chan struct{})
 	releaseHandler := make(chan struct{})
-	lookupDone := make(chan error, 1)
 
 	lifecycle := &recordingImageLifecycle{addImageOK: true}
 	if !testCase.available {
@@ -428,24 +454,22 @@ func runConcurrentLookupDuringImageHandlerTest(
 	testCase.setup(conductorInstance, lifecycle)
 	testCase.setBlock(lifecycle, handlerEntered, releaseHandler)
 
+	testCase.trigger(t, conductorInstance)
+
+	doWorkDone := startDoWorkUntilHandlerEntered(t, conductorInstance, handlerEntered)
+
+	// Suspended handler has dropped resourceMu. Lookup must finish while DoWork
+	// still waits on releaseHandler.
+	lookupDone := make(chan error, 1)
 	go func() {
-		<-handlerEntered
 		lookupDone <- lookup(conductorInstance)
 	}()
 
-	testCase.trigger(t, conductorInstance)
-
-	doWorkDone := make(chan int)
-	go func() {
-		doWorkDone <- conductorInstance.DoWork()
-	}()
-
-	<-handlerEntered
 	select {
 	case err := <-lookupDone:
 		require.NoError(t, err)
-	case <-time.After(time.Second):
-		t.Fatal("lookup did not complete during suspended handler")
+	case workCount := <-doWorkDone:
+		t.Fatalf("DoWork finished before lookup during suspended handler: workCount=%d", workCount)
 	}
 
 	select {
@@ -592,7 +616,6 @@ func runForeignWriteLockDuringSuspendedImageHandlerTest(t *testing.T, available 
 
 	handlerEntered := make(chan struct{})
 	releaseHandler := make(chan struct{})
-	insertDone := make(chan error, 1)
 
 	lifecycle := &recordingImageLifecycle{addImageOK: true}
 	if !available {
@@ -621,22 +644,23 @@ func runForeignWriteLockDuringSuspendedImageHandlerTest(t *testing.T, available 
 		triggerGoldenUnavailableImage(t, conductorInstance)
 	}
 
+	doWorkDone := startDoWorkUntilHandlerEntered(t, conductorInstance, handlerEntered)
+
+	// Suspended handler has dropped resourceMu. Foreign write lock must finish
+	// before releaseHandler closes.
+	insertDone := make(chan error, 1)
 	go func() {
-		<-handlerEntered
 		insertDone <- insertAndLookupPublication(77)(conductorInstance)
 	}()
 
-	doWorkDone := make(chan int)
-	go func() {
-		doWorkDone <- conductorInstance.DoWork()
-	}()
-
-	<-handlerEntered
 	select {
 	case err := <-insertDone:
 		require.NoError(t, err)
-	case <-time.After(time.Second):
-		t.Fatal("foreign write lock did not complete during suspended handler")
+	case workCount := <-doWorkDone:
+		t.Fatalf(
+			"DoWork finished before foreign write lock during suspended handler: workCount=%d",
+			workCount,
+		)
 	}
 
 	select {
@@ -677,7 +701,6 @@ func TestConductor_foreignDrainLingeringDuringSuspendedImageHandler(t *testing.T
 
 	handlerEntered := make(chan struct{})
 	releaseHandler := make(chan struct{})
-	drainDone := make(chan int, 1)
 
 	lifecycle.unavailableImageHandler = func(conductor.ImageHandle) {
 		close(handlerEntered)
@@ -687,22 +710,21 @@ func TestConductor_foreignDrainLingeringDuringSuspendedImageHandler(t *testing.T
 	*nanoNs = startNs + lingerNs - 1
 	triggerGoldenUnavailableImage(t, conductorInstance)
 
+	doWorkDone := startDoWorkUntilHandlerEntered(t, conductorInstance, handlerEntered)
+
+	// Suspended handler has dropped resourceMu. Foreign drain must finish before
+	// releaseHandler closes. The linger deadline is still in the future, so the
+	// drain work count stays zero.
+	drainDone := make(chan int, 1)
 	go func() {
-		<-handlerEntered
 		drainDone <- conductorInstance.DrainLingeringLogBuffers()
 	}()
 
-	doWorkDone := make(chan int)
-	go func() {
-		doWorkDone <- conductorInstance.DoWork()
-	}()
-
-	<-handlerEntered
 	select {
 	case drainWork := <-drainDone:
 		require.Zero(t, drainWork)
-	case <-time.After(time.Second):
-		t.Fatal("foreign DrainLingeringLogBuffers did not complete during suspended handler")
+	case workCount := <-doWorkDone:
+		t.Fatalf("DoWork finished before foreign drain during suspended handler: workCount=%d", workCount)
 	}
 	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, lingerLogPath))
 

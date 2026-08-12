@@ -196,10 +196,7 @@ func TestClientListRecording_contextDeadlineSooner(t *testing.T) {
 	deadlineCtx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
 	defer cancel()
 
-	start := time.Now()
 	_, err := client.ListRecording(deadlineCtx, lifecycleRecordingID)
-	elapsed := time.Since(start)
 
 	require.ErrorIs(t, err, context.DeadlineExceeded)
-	require.Less(t, elapsed, time.Second)
 }

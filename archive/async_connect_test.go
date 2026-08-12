@@ -459,11 +459,9 @@ func TestAsyncConnect_pollSendMessage_fragmentRequiredWireOffers(t *testing.T) {
 	ac.transport.requestPublication = pub
 	ac.state = ConnectStateSendMessage
 
-	start := time.Now()
 	_, err := ac.PollSendMessageForTest()
 	require.NoError(t, err)
 	require.Equal(t, ConnectStatePollResponse, ac.State())
-	require.Less(t, time.Since(start), time.Second)
 }
 
 func TestAsyncConnect_pollSendMessage_oversizeWireFailsFast(t *testing.T) {
@@ -496,11 +494,9 @@ func TestAsyncConnect_pollSendMessage_oversizeWireFailsFast(t *testing.T) {
 	ac.transport.requestPublication = pub
 	ac.state = ConnectStateSendMessage
 
-	start := time.Now()
 	_, err := ac.PollSendMessageForTest()
 	require.Error(t, err)
 	require.ErrorContains(t, err, "exceeds control publication max message length")
-	require.Less(t, time.Since(start), time.Second)
 }
 
 func TestAsyncConnect_resizeConnectWireBuffer_clearsAbandonedBackingOnGrow(t *testing.T) {

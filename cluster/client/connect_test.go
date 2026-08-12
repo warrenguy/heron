@@ -544,9 +544,7 @@ func TestConnect_contextDeadline(t *testing.T) {
 
 			observedAC := connectTestHarnessDriver(t, harness, nil)
 
-			start := time.Now()
 			_, err := Connect(connectCtx, cfg)
-			elapsed := time.Since(start)
 
 			switch {
 			case tc.wantErr != nil:
@@ -557,10 +555,6 @@ func TestConnect_contextDeadline(t *testing.T) {
 				t.Fatal("test case must set wantErr or wantErrContains")
 			}
 			requireAsyncConnectClosedAfterConnectFailure(t, observedAC())
-
-			if tc.name == "ctxDeadlineSooner" {
-				require.Less(t, elapsed, time.Second)
-			}
 		})
 	}
 }

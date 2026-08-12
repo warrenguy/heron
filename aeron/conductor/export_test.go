@@ -255,6 +255,19 @@ func (conductor *Conductor) ResourceWriteLockDepthForTest() int32 {
 	return conductor.resourceWriteLockDepth
 }
 
+// TryResourceRLockForTest reports whether resourceMu can be read-locked without
+// blocking. True means no write holder. Unlocks immediately on success.
+//
+// Concurrent unit tests call this instead of wall-clock waits. A false result
+// asserts a write lock during linger sweep or other mutation scopes.
+func (conductor *Conductor) TryResourceRLockForTest() bool {
+	if !conductor.resourceMu.TryRLock() {
+		return false
+	}
+	conductor.resourceMu.RUnlock()
+	return true
+}
+
 func (conductor *Conductor) InsertNilPublicationForTest(registrationID int64) {
 	conductor.InsertPublicationForTest(registrationID, nil)
 }

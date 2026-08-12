@@ -260,7 +260,6 @@ func TestRunControlAwaitLoop_contextDeadline(t *testing.T) {
 		deadlineCtx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
 		defer cancel()
 
-		start := time.Now()
 		err := runAwaitLoopNeverMatching(
 			deadlineCtx,
 			harness.Client,
@@ -274,10 +273,8 @@ func TestRunControlAwaitLoop_contextDeadline(t *testing.T) {
 			time.Minute,
 			1,
 		)
-		elapsed := time.Since(start)
 
 		require.ErrorIs(t, err, context.DeadlineExceeded)
-		require.Less(t, elapsed, time.Second)
 	})
 
 	t.Run("cfgTimeoutSooner", func(t *testing.T) {

@@ -2,24 +2,30 @@
 
 package archive
 
-import "testing"
+import (
+	"testing"
 
-// controlOfferRetryDoWorkRecorder is unsynchronized.
-//
-// Tests must not set the recorder from t.Parallel() subtests or mutate it
-// concurrently with controlOfferUntilPositive.
-var controlOfferRetryDoWorkRecorder func()
+	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/internal/testhook"
+)
 
-// SetControlOfferRetryDoWorkRecorderForTest installs a callback invoked after each
-// aeronClient.DoWork() inside controlOfferUntilPositive.
-func SetControlOfferRetryDoWorkRecorderForTest(tb testing.TB, recorder func()) {
+// controlOfferRetryDoWorkRecorders is keyed by *aeron.Client. Concurrent
+// controlOfferUntilPositive peers must not observe another test's recorder.
+var controlOfferRetryDoWorkRecorders = testhook.NewRegistry[*aeron.Client, func()]()
+
+// SetControlOfferRetryDoWorkRecorderForTest installs a callback after each
+// aeronClient.DoWork inside controlOfferUntilPositive for client.
+func SetControlOfferRetryDoWorkRecorderForTest(
+	tb testing.TB,
+	client *aeron.Client,
+	recorder func(),
+) {
 	tb.Helper()
-	controlOfferRetryDoWorkRecorder = recorder
-	tb.Cleanup(func() { controlOfferRetryDoWorkRecorder = nil })
+	testhook.SetForTest(tb, controlOfferRetryDoWorkRecorders, client, recorder)
 }
 
-func recordControlOfferRetryDoWork() {
-	if controlOfferRetryDoWorkRecorder != nil {
-		controlOfferRetryDoWorkRecorder()
+func recordControlOfferRetryDoWork(client *aeron.Client) {
+	if recorder := controlOfferRetryDoWorkRecorders.Load(client); recorder != nil {
+		recorder()
 	}
 }

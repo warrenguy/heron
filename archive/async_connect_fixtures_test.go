@@ -3,6 +3,7 @@
 package archive
 
 import (
+	"runtime"
 	"testing"
 	"time"
 
@@ -144,7 +145,7 @@ func pollAsyncConnectLoop(
 		if done(ac, result, err) {
 			return result, err
 		}
-		time.Sleep(time.Millisecond)
+		runtime.Gosched()
 	}
 	failAsyncConnectPollTimeout(t, ac)
 	return nil, nil
@@ -317,7 +318,7 @@ func setupAsyncConnectControlReady(
 		if ac.ControlResponseSubscriptionForTest() != nil {
 			break
 		}
-		time.Sleep(time.Millisecond)
+		runtime.Gosched()
 	}
 	sub := ac.ControlResponseSubscriptionForTest()
 	require.NotNil(t, sub)

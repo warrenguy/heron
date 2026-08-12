@@ -94,8 +94,9 @@ func TestMemberClusterConfig_storesIntegrationElection(t *testing.T) {
 }
 
 // TestClusterPortBlocks_doNotOverlap asserts every reserved PortBase the live
-// suite binds stays disjoint on the unicast range. Correct memberCount per
-// block. Also asserts log multicast endpoints are pairwise unique.
+// suite binds stays disjoint on the unicast range. Each block uses the correct
+// memberCount. Log multicast endpoints must be pairwise unique. Unicast-only
+// reservations carry no shared endpoint and skip that compare.
 func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 	t.Parallel()
 
@@ -238,6 +239,33 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 			memberCount: 2,
 			logEndpoint: ClusterMemberAmplifierLogEndpoint,
 		},
+		{
+			name:        "cluster-streams-multicast",
+			portBase:    ClusterStreamsMulticastPortBase,
+			memberCount: 2,
+			logEndpoint: ClusterStreamsMulticastLogEndpoint,
+		},
+		{
+			name:        "cluster-java",
+			portBase:    ClusterJavaPortBase,
+			memberCount: ClusterJavaMemberCount,
+			logEndpoint: ClusterJavaMixedLogEndpoint,
+		},
+	}
+
+	// Unicast-only reservations. Members derive log endpoints inside their own
+	// port block. There is no shared multicast endpoint to compare.
+	unicastBlocks := []block{
+		{
+			name:        "consensus-publications",
+			portBase:    ConsensusPublicationsPortBase,
+			memberCount: 3,
+		},
+		{
+			name:        "cluster-streams-commit",
+			portBase:    ClusterStreamsCommitPortBase,
+			memberCount: 2,
+		},
 	}
 
 	// Archive-node single control binds. Treat as one-port blocks for overlap.
@@ -257,18 +285,29 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 		first, last int
 		logEndpoint string
 	}
-	ranges := make([]portRange, len(blocks))
-	for i, b := range blocks {
+	ranges := make([]portRange, 0, len(blocks)+len(unicastBlocks))
+	for _, b := range blocks {
 		first := b.portBase + 1
 		last := clusterPortBlockLast(b.portBase, b.memberCount)
 		require.Greater(t, last, first, b.name)
 		require.NotEmpty(t, b.logEndpoint, b.name)
-		ranges[i] = portRange{
+		ranges = append(ranges, portRange{
 			name:        b.name,
 			first:       first,
 			last:        last,
 			logEndpoint: b.logEndpoint,
-		}
+		})
+	}
+	for _, b := range unicastBlocks {
+		first := b.portBase + 1
+		last := clusterPortBlockLast(b.portBase, b.memberCount)
+		require.Greater(t, last, first, b.name)
+		require.Empty(t, b.logEndpoint, b.name)
+		ranges = append(ranges, portRange{
+			name:  b.name,
+			first: first,
+			last:  last,
+		})
 	}
 
 	for i, a := range ranges {
@@ -280,13 +319,15 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 				"%s [%d,%d] overlaps %s [%d,%d]",
 				a.name, a.first, a.last, b.name, b.first, b.last,
 			)
-			require.NotEqual(
-				t,
-				a.logEndpoint,
-				b.logEndpoint,
-				"%s and %s share log endpoint %q",
-				a.name, b.name, a.logEndpoint,
-			)
+			if a.logEndpoint != "" && b.logEndpoint != "" {
+				require.NotEqual(
+					t,
+					a.logEndpoint,
+					b.logEndpoint,
+					"%s and %s share log endpoint %q",
+					a.name, b.name, a.logEndpoint,
+				)
+			}
 		}
 		for _, s := range singles {
 			inBlock := s.port >= a.first && s.port <= a.last

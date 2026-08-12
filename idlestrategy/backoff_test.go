@@ -55,10 +55,17 @@ func TestBackoff_resetOnWork(t *testing.T) {
 	require.Equal(t, idlestrategy.BackoffNotIdle, idlestrategy.BackoffState(t, strategy))
 }
 
-func TestBackoff_firstSleepAfterEnteringParking(t *testing.T) {
-	park := 20 * time.Millisecond
+// TestBackoff_parkingIdleSleeps asserts the parking branch waits instead of
+// spinning. No other test in the package fails when the park is dropped.
+//
+// time.Sleep waits at least its argument, so a lower bound cannot fail on a
+// slow machine. No upper bound: that limit is schedule-dependent.
+func TestBackoff_parkingIdleSleeps(t *testing.T) {
+	park := time.Millisecond
 	strategy := idlestrategy.NewBackoff(1, 10, park, park)
 
+	// The thirteenth Idle enters parking without sleeping. Only the next Idle
+	// reaches the park.
 	callIdleZero(strategy, 13)
 	require.Equal(t, idlestrategy.BackoffParking, idlestrategy.BackoffState(t, strategy))
 

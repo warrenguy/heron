@@ -2,4 +2,4 @@
 
 package aeron
 
-func trackPollAfterPaddingAdvance() {}
+func trackPollAfterPaddingAdvance(*Image) {}

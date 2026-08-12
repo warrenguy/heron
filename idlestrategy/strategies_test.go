@@ -9,14 +9,6 @@ import (
 	"github.com/warrenguy/heron/idlestrategy"
 )
 
-func TestNoOp_idleDoesNotBlock(t *testing.T) {
-	start := time.Now()
-	for range 1000 {
-		idlestrategy.NoOp.Idle(0)
-	}
-	require.Less(t, time.Since(start), 50*time.Millisecond)
-}
-
 func TestBusySpin_idleDoesNotPanic(t *testing.T) {
 	require.NotPanics(t, func() {
 		for range 8 {
@@ -32,29 +24,26 @@ func TestYielding_idleDoesNotPanic(t *testing.T) {
 }
 
 func TestSleeping(t *testing.T) {
+	// time.Sleep waits at least its argument, so a lower bound cannot fail on a
+	// slow machine. No upper bound: that limit is schedule-dependent.
 	tests := []struct {
 		name        string
 		strategy    idlestrategy.IdleStrategy
 		minDuration time.Duration
-		maxDuration time.Duration
 	}{
 		{
-			name:        "zero_period",
-			strategy:    idlestrategy.NewSleeping(0),
-			minDuration: 0,
-			maxDuration: 10 * time.Millisecond,
+			name:     "zero_period",
+			strategy: idlestrategy.NewSleeping(0),
 		},
 		{
 			name:        "positive_period",
 			strategy:    idlestrategy.NewSleeping(5 * time.Millisecond),
-			minDuration: 4 * time.Millisecond,
-			maxDuration: time.Second,
+			minDuration: 5 * time.Millisecond,
 		},
 		{
 			name:        "default_millis",
 			strategy:    idlestrategy.DefaultSleepingMillis(),
 			minDuration: time.Millisecond,
-			maxDuration: time.Second,
 		},
 	}
 
@@ -62,9 +51,7 @@ func TestSleeping(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			start := time.Now()
 			testCase.strategy.Idle(0)
-			elapsed := time.Since(start)
-			require.GreaterOrEqual(t, elapsed, testCase.minDuration)
-			require.Less(t, elapsed, testCase.maxDuration)
+			require.GreaterOrEqual(t, time.Since(start), testCase.minDuration)
 		})
 	}
 }

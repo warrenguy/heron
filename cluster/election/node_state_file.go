@@ -108,6 +108,7 @@ func openNewNodeStateFile(
 	}
 
 	candidateTermOffset, candidateTermBodyOff, err := callInitialiseOnCreate(
+		path,
 		mapping.Data,
 		NodeStateSemanticVersion,
 	)

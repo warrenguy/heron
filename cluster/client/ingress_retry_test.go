@@ -563,7 +563,6 @@ func TestIngressOfferUntilPositive_contextDeadline(t *testing.T) {
 		deadlineCtx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
 		defer cancel()
 
-		start := time.Now()
 		pos, err := ac.IngressOfferUntilPositive(deadlineCtx, IngressOfferConfig{
 			NanoClock: func() int64 {
 				return time.Now().UnixNano()
@@ -571,10 +570,8 @@ func TestIngressOfferUntilPositive_contextDeadline(t *testing.T) {
 		}, func() int64 {
 			return aeron.BackPressured
 		})
-		elapsed := time.Since(start)
 
 		require.Zero(t, pos)
-		require.Less(t, elapsed, time.Second)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 

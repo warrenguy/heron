@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,11 +15,22 @@ import (
 )
 
 var (
+	// sharedDriverStateMu guards sharedDriver, testMainSharedDriver, and
+	// startSharedDriverHook. Self-tests take the write lock for each rewrite.
+	// Shared samples under the read lock so SharedParallel peers never race a
+	// mid-suite rewrite.
+	sharedDriverStateMu  sync.RWMutex
 	sharedDriver         *MediaDriver
 	sharedTestMainSeen   atomic.Bool
 	testMainSharedDriver *MediaDriver
 
 	startSharedDriverHook func() (*MediaDriver, error)
+
+	// forceSharedMediaDriverDisabled and forceSharedMediaDriverKeep inject
+	// disable and keep without os.Setenv. SharedParallel peers that getenv the
+	// process env must not race self-test Setenv spans.
+	forceSharedMediaDriverDisabled atomic.Bool
+	forceSharedMediaDriverKeep     atomic.Bool
 )
 
 type testMainRunner interface {
@@ -26,12 +38,37 @@ type testMainRunner interface {
 }
 
 func sharedMediaDriverDisabled() bool {
-	return os.Getenv("HERON_SHARED_MEDIA_DRIVER") == "0"
+	return forceSharedMediaDriverDisabled.Load() ||
+		os.Getenv("HERON_SHARED_MEDIA_DRIVER") == "0"
+}
+
+func sharedMediaDriverKeep() bool {
+	return forceSharedMediaDriverKeep.Load() ||
+		os.Getenv("HERON_SHARED_MEDIA_DRIVER_KEEP") == "1"
+}
+
+// forceSharedDriverDisabledForTest makes sharedMediaDriverDisabled report true
+// until tb finishes.
+func forceSharedDriverDisabledForTest(tb testing.TB) {
+	tb.Helper()
+	forceSharedMediaDriverDisabled.Store(true)
+	tb.Cleanup(func() { forceSharedMediaDriverDisabled.Store(false) })
+}
+
+// forceSharedDriverKeepForTest makes sharedMediaDriverKeep report true until tb
+// finishes.
+func forceSharedDriverKeepForTest(tb testing.TB) {
+	tb.Helper()
+	forceSharedMediaDriverKeep.Store(true)
+	tb.Cleanup(func() { forceSharedMediaDriverKeep.Store(false) })
 }
 
 func startSharedDriver() (*MediaDriver, error) {
-	if startSharedDriverHook != nil {
-		return startSharedDriverHook()
+	sharedDriverStateMu.RLock()
+	hook := startSharedDriverHook
+	sharedDriverStateMu.RUnlock()
+	if hook != nil {
+		return hook()
 	}
 
 	aeronmdPath, err := resolveAeronmd()
@@ -45,7 +82,7 @@ func stopSharedDriver(md *MediaDriver) {
 	if md == nil {
 		return
 	}
-	if os.Getenv("HERON_SHARED_MEDIA_DRIVER_KEEP") == "1" {
+	if sharedMediaDriverKeep() {
 		fmt.Fprintf(
 			os.Stderr,
 			"harness: keeping shared media driver dir=%s (HERON_SHARED_MEDIA_DRIVER_KEEP=1)\n",
@@ -87,12 +124,14 @@ func runTestMainWithSharedDriver(m testMainRunner) int {
 		return 1
 	}
 
+	sharedDriverStateMu.Lock()
 	snapshottedForTestMain := testMainSharedDriver == nil
 	sharedTestMainSeen.Store(true)
 	sharedDriver = md
 	if snapshottedForTestMain {
 		testMainSharedDriver = md
 	}
+	sharedDriverStateMu.Unlock()
 	fmt.Fprintf(os.Stderr, "harness: shared media driver started dir=%s pid=%d\n", md.Dir, md.pid)
 
 	start := time.Now()
@@ -100,7 +139,7 @@ func runTestMainWithSharedDriver(m testMainRunner) int {
 	dir := md.Dir
 	elapsed := time.Since(start).Round(time.Millisecond)
 	stopSharedDriver(md)
-	if os.Getenv("HERON_SHARED_MEDIA_DRIVER_KEEP") == "1" {
+	if sharedMediaDriverKeep() {
 		fmt.Fprintf(
 			os.Stderr,
 			"harness: shared media driver test run finished dir=%s elapsed=%s exit=%d\n",
@@ -117,15 +156,19 @@ func runTestMainWithSharedDriver(m testMainRunner) int {
 			code,
 		)
 	}
+	sharedDriverStateMu.Lock()
 	sharedDriver = nil
 	if snapshottedForTestMain {
 		testMainSharedDriver = nil
 		sharedTestMainSeen.Store(false)
 	}
+	sharedDriverStateMu.Unlock()
 	return code
 }
 
 func restoreTestMainSharedDriverGlobals() {
+	sharedDriverStateMu.Lock()
+	defer sharedDriverStateMu.Unlock()
 	if testMainSharedDriver == nil {
 		return
 	}
@@ -140,11 +183,17 @@ func Shared(t testing.TB) *MediaDriver {
 	if sharedMediaDriverDisabled() || !sharedTestMainSeen.Load() {
 		return Start(t)
 	}
-	if sharedDriver == nil {
+
+	// sharedDriverStateMu guards sharedDriver only. The checks above read
+	// atomics and the process env.
+	sharedDriverStateMu.RLock()
+	md := sharedDriver
+	sharedDriverStateMu.RUnlock()
+	if md == nil {
 		t.Fatal("harness: shared media driver not started")
 	}
-	sharedDriver.AssertAlive(t)
-	return sharedDriver
+	md.AssertAlive(t)
+	return md
 }
 
 // SharedParallel calls t.Parallel then returns the package-scoped shared driver.
@@ -189,7 +238,10 @@ func AssertSharedDriverWiring(t *testing.T) {
 }
 
 // AssertSharedDriverFallback proves Shared(t) falls back to ephemeral Start(t) when
-// HERON_SHARED_MEDIA_DRIVER=0, so migrated call sites still work with shared mode disabled.
+// Shared mode is disabled so migrated call sites still work with shared off.
+//
+// Uses a process-local force flag rather than os.Setenv. SharedParallel peers
+// that read HERON_SHARED_MEDIA_DRIVER must not race this test.
 func AssertSharedDriverFallback(t *testing.T) {
 	t.Helper()
 	if sharedMediaDriverDisabled() {
@@ -199,7 +251,7 @@ func AssertSharedDriverFallback(t *testing.T) {
 	shared := Shared(t)
 	shared.AssertAlive(t)
 
-	t.Setenv("HERON_SHARED_MEDIA_DRIVER", "0")
+	forceSharedDriverDisabledForTest(t)
 
 	ephemeral := Shared(t)
 	require.NotSame(t, shared, ephemeral)

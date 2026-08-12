@@ -28,11 +28,11 @@ func TestChannelStatusCounterIsCounterActive(t *testing.T) {
 	countersReader, err := client.CountersReader()
 	require.NoError(t, err)
 
-	const (
-		streamID = harness.ChannelStatusCounterStreamID
-		// UDP publications receive a send channel-status counter from the driver (IPC may omit it).
-		channel = "aeron:udp?endpoint=127.0.0.1:24325"
-	)
+	const streamID = harness.ChannelStatusCounterStreamID
+	// UDP publications receive a send channel-status counter from the driver. IPC
+	// may omit the counter. Use a free port so shared-driver hosts do not share a
+	// fixed bind.
+	channel := "aeron:udp?endpoint=" + harness.LoopbackUDPEndpoint(harness.FreeUDPPort(t))
 
 	harness.WaitForToDriverRingDrained(t, toDriver, 0)
 

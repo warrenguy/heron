@@ -15,13 +15,6 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// Unicast endpoints for multi receive-destination merge. Isolated from
-// ChannelStatusCounter (24325) and cluster PortBase blocks.
-const (
-	multiDestinationEndpointA = "127.0.0.1:24610"
-	multiDestinationEndpointB = "127.0.0.1:24611"
-)
-
 // TestMultiDestinationSubscriptionMerge asserts two unicast receive destinations
 // with the same exclusive session merge into one image on a control-mode=manual
 // subscription. After RemoveDestination of the first feed, offers on that feed
@@ -41,9 +34,14 @@ func TestMultiDestinationSubscriptionMerge(t *testing.T) {
 		payloadSize      = 64
 	)
 
+	// Free ports under SharedParallel. Fixed 24610/24611 collide across hosts.
+	ports := harness.FreeUDPPorts(t, 2)
+	endpointA := harness.LoopbackUDPEndpoint(ports[0])
+	endpointB := harness.LoopbackUDPEndpoint(ports[1])
+
 	subChannel := "aeron:udp?control-mode=manual"
-	destA := "aeron:udp?endpoint=" + multiDestinationEndpointA
-	destB := "aeron:udp?endpoint=" + multiDestinationEndpointB
+	destA := "aeron:udp?endpoint=" + endpointA
+	destB := "aeron:udp?endpoint=" + endpointB
 
 	sub, err := client.AddSubscription(streamID, subChannel)
 	require.NoError(t, err)
@@ -52,7 +50,7 @@ func TestMultiDestinationSubscriptionMerge(t *testing.T) {
 	require.NoError(t, sub.AddDestination(destA))
 
 	pubAChannel := exclusiveUDPChannel(
-		multiDestinationEndpointA,
+		endpointA,
 		sessionID,
 		initialTermID,
 		initialTermID,
@@ -85,7 +83,7 @@ func TestMultiDestinationSubscriptionMerge(t *testing.T) {
 	require.NoError(t, sub.AddDestination(destB))
 
 	pubBChannel := exclusiveUDPChannel(
-		multiDestinationEndpointB,
+		endpointB,
 		sessionID,
 		initialTermID,
 		termID,

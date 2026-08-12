@@ -285,7 +285,7 @@ func TestPublication_FragmentedOffer_midFragmentTermIDChangeAdminAction(t *testi
 		bumpedTermID       bool
 		firstFragmentEnded bool
 	)
-	aeron.SetFragmentedWriteTrackForTest(func(ti, frameOffset int, begin bool) {
+	aeron.SetFragmentedWriteTrackForTest(pub, func(ti, frameOffset int, begin bool) {
 		if begin {
 			if !gotReservation {
 				gotReservation = true
@@ -312,7 +312,7 @@ func TestPublication_FragmentedOffer_midFragmentTermIDChangeAdminAction(t *testi
 		)
 		bumpedTermID = true
 	})
-	t.Cleanup(func() { aeron.SetFragmentedWriteTrackForTest(nil) })
+	t.Cleanup(func() { aeron.SetFragmentedWriteTrackForTest(pub, nil) })
 
 	first := pub.Offer(payload)
 	require.Equal(t, aeron.AdminAction, first)

@@ -18,7 +18,7 @@ func TestOpenNodeStateFile_createInitialiseFailureRemovesPartialFile(t *testing.
 	dir := t.TempDir()
 	path := nodeStatePath(dir)
 
-	election.SetInitialiseOnCreateHookForTest(t, func(
+	election.SetInitialiseOnCreateHookForTest(t, path, func(
 		_ []byte,
 		_ int32,
 	) (int, int, error) {
@@ -35,7 +35,7 @@ func TestOpenNodeStateFile_truncateFailureRemovesPartialFile(t *testing.T) {
 	dir := t.TempDir()
 	path := nodeStatePath(dir)
 
-	election.SetTruncateNodeStateHookForTest(t, func(*os.File, int64) error {
+	election.SetTruncateNodeStateHookForTest(t, path, func(*os.File, int64) error {
 		return errors.New("truncate failed")
 	})
 
@@ -49,7 +49,7 @@ func TestOpenNodeStateFile_mapFailureRemovesPartialFile(t *testing.T) {
 	dir := t.TempDir()
 	path := nodeStatePath(dir)
 
-	election.SetMapNodeStateHookForTest(t, func(*os.File, int) (*mmap.Mapping, error) {
+	election.SetMapNodeStateHookForTest(t, path, func(*os.File, int) (*mmap.Mapping, error) {
 		return nil, errors.New("mmap failed")
 	})
 

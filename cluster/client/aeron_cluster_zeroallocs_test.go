@@ -4,11 +4,14 @@ package client_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/internal/testutil"
 )
+
+const ingressAdminActionSpinTimeout = 2 * time.Second
 
 var (
 	aeronClusterZeroAllocSink int64
@@ -16,7 +19,14 @@ var (
 	tryClaimZeroAllocPayload  = []byte("try-claim-payload")
 )
 
-func spinIngressAdminActionUntilSuccess(step func() (position, sink int64)) {
+func spinIngressAdminActionUntilSuccess(
+	tb testing.TB,
+	step func() (position, sink int64),
+) {
+	tb.Helper()
+
+	// Check the deadline after the attempt so the first step always runs.
+	deadline := time.Now().Add(ingressAdminActionSpinTimeout)
 	for {
 		position, sink := step()
 		if position != aeron.AdminAction {
@@ -25,16 +35,20 @@ func spinIngressAdminActionUntilSuccess(step func() (position, sink int64)) {
 				record = position
 			}
 			if record <= 0 {
-				panic("ingress step failed")
+				tb.Fatal("ingress step failed")
 			}
 			aeronClusterZeroAllocSink = record
 			return
 		}
+		if time.Now().After(deadline) {
+			tb.Fatal("ingress step did not leave AdminAction before deadline")
+		}
 	}
 }
 
-func spinIngressPositionUntilSuccess(step func() int64) {
-	spinIngressAdminActionUntilSuccess(func() (int64, int64) {
+func spinIngressPositionUntilSuccess(tb testing.TB, step func() int64) {
+	tb.Helper()
+	spinIngressAdminActionUntilSuccess(tb, func() (int64, int64) {
 		return step(), 0
 	})
 }
@@ -62,7 +76,7 @@ func testAeronClusterIngressPositionZeroAllocs(
 	t.Helper()
 	ac := newTestAeronCluster(t, nil)
 	testutil.AssertZeroAllocs(t, label, 1000, func() {
-		spinIngressPositionUntilSuccess(func() int64 { return step(ac) })
+		spinIngressPositionUntilSuccess(t, func() int64 { return step(ac) })
 	})
 }
 
@@ -100,7 +114,7 @@ func TestAeronCluster_TryClaimCommit_ZeroAllocs(t *testing.T) {
 	ac := newTestAeronCluster(t, nil)
 
 	testutil.AssertZeroAllocs(t, "AeronCluster_TryClaimCommit", 1000, func() {
-		spinIngressAdminActionUntilSuccess(func() (int64, int64) {
+		spinIngressAdminActionUntilSuccess(t, func() (int64, int64) {
 			return tryClaimCommitIngressStep(ac, tryClaimZeroAllocPayload)
 		})
 	})
