@@ -137,6 +137,20 @@ func TestOfferWithRetry_table(t *testing.T) {
 			wantCalls: &twoCalls,
 		},
 		{
+			// Asserts OfferWithRetry returns a positive position after one
+			// NotConnected Offer. The stub sequences NotConnected then 128
+			// (two Offer calls). The live harness does not force NotConnected
+			// inside the retry loop.
+			name: "successAfterNotConnected",
+			pub: offerRetryTestPub(func(pub *fakePublicationOfferer) {
+				pub.results = []int64{aeron.NotConnected, 128}
+			}),
+			// Timeout must exceed one DefaultIdleSleepDuration after NotConnected.
+			timeout:   time.Second,
+			wantPos:   128,
+			wantCalls: &twoCalls,
+		},
+		{
 			name: "terminalClosed",
 			pub: offerRetryTestPub(func(pub *fakePublicationOfferer) {
 				pub.results = []int64{aeron.Closed}

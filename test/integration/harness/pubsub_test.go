@@ -674,6 +674,9 @@ func TestOfferWithRetry_notConnected_timesOut(t *testing.T) {
 	require.Equal(t, wantMsg, capture.lastMsg)
 }
 
+// TestOfferWithRetry_notConnected_thenConnect_succeeds asserts OfferWithRetry
+// succeeds once a subscription appears. A bare Offer must return NotConnected
+// first.
 func TestOfferWithRetry_notConnected_thenConnect_succeeds(t *testing.T) {
 	md := SharedParallel(t)
 	client := ConnectClient(t, md, aeron.Config{})
@@ -682,25 +685,14 @@ func TestOfferWithRetry_notConnected_thenConnect_succeeds(t *testing.T) {
 	require.NoError(t, err)
 	CleanupClose(t, "close publication", pub.Close)
 
-	subReady := make(chan struct {
-		sub *aeron.Subscription
-		err error
-	}, 1)
-	go func() {
-		time.Sleep(25 * time.Millisecond)
-		sub, err := client.AddSubscription(OfferWithRetryNotConnectedThenConnectStreamID, IPCChannel)
-		subReady <- struct {
-			sub *aeron.Subscription
-			err error
-		}{sub: sub, err: err}
-	}()
-
 	payload := []byte{0xAB}
-	result := OfferWithRetry(t, pub, payload)
+	require.Equal(t, aeron.NotConnected, pub.Offer(payload))
 
-	res := <-subReady
-	require.NoError(t, res.err)
-	CleanupClose(t, "close subscription", res.sub.Close)
+	sub, err := client.AddSubscription(OfferWithRetryNotConnectedThenConnectStreamID, IPCChannel)
+	require.NoError(t, err)
+	CleanupClose(t, "close subscription", sub.Close)
+
+	result := OfferWithRetry(t, pub, payload)
 	require.Positive(t, result)
 }
 

@@ -203,6 +203,32 @@ func DrainToClients(
 	return drained
 }
 
+// settleToClientsQuiet drains ToClients until two consecutive empty drain
+// passes complete.
+//
+// Behaviour: each poll drains all available records. A non-empty drain resets
+// the empty streak. Quiet means two empty drains one defaultPollInterval
+// apart. Bounds with CommandPollDeadline.
+func settleToClientsQuiet(t testing.TB, ring *broadcast.BroadcastReceiver) {
+	t.Helper()
+
+	emptyStreak := 0
+	pollUntil(
+		t,
+		CommandPollDeadline,
+		defaultPollInterval,
+		func() bool {
+			if DrainToClients(t, ring, 0) > 0 {
+				emptyStreak = 0
+				return false
+			}
+			emptyStreak++
+			return emptyStreak >= 2
+		},
+		"to-clients did not settle quiet",
+	)
+}
+
 // QuiescentToDriverSnapshot drains ToDriver, pumping each client's DoWork when given.
 func QuiescentToDriverSnapshot(
 	t testing.TB,

@@ -10,8 +10,29 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/heron/idlestrategy"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
+
+// firstIdleSignal closes ch on the first Idle call, then paces via the embedded
+// strategy. Run always calls Idle after DoWork. DoWork never idles. The close
+// marks entry into the duty loop.
+//
+// Concurrency: invoker-only. Idle runs on the Run goroutine alone, so closed
+// needs no concurrent protection. The close signals the waiting test goroutine.
+type firstIdleSignal struct {
+	idlestrategy.IdleStrategy
+	ch     chan struct{}
+	closed bool
+}
+
+func (s *firstIdleSignal) Idle(workCount int) {
+	if !s.closed {
+		s.closed = true
+		close(s.ch)
+	}
+	s.IdleStrategy.Idle(workCount)
+}
 
 // TestConsensusModuleRunnerDrivesOneMember elects one member through
 // Runner.DoWork. Then stops an active Runner.Run with a cancel.
@@ -50,12 +71,16 @@ func TestConsensusModuleRunnerDrivesOneMember(t *testing.T) {
 
 	require.NotNil(t, module.ArchiveClient())
 
+	entered := make(chan struct{})
 	runner, err := cluster.NewRunner(cluster.RunnerDeps{
 		Client:  module.Client(),
 		Agent:   module.Agent(),
 		Archive: module.ArchiveClient(),
-		Idle:    module.IdleStrategy(),
-		Clock:   module.NanoClock(),
+		Idle: &firstIdleSignal{
+			IdleStrategy: module.IdleStrategy(),
+			ch:           entered,
+		},
+		Clock: module.NanoClock(),
 	})
 	require.NoError(t, err)
 
@@ -74,12 +99,19 @@ func TestConsensusModuleRunnerDrivesOneMember(t *testing.T) {
 	}), "election did not complete: state=%v role=%v", module.ElectionState(), module.Role())
 	require.True(t, module.IsLeader())
 
-	// Brief pause so cancel hits an active Run loop more often than the
-	// already-done context path.
+	// Cancel must hit an active Run loop. The context must not be done before
+	// the first tick.
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- runner.Run(ctx) }()
-	time.Sleep(10 * time.Millisecond)
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("Run returned before first Idle: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not idle")
+	}
 	cancel()
 	select {
 	case err := <-done:

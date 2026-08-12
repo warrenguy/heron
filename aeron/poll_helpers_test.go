@@ -473,12 +473,10 @@ func TestRunDuringClientWork_canceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	client := pollTestClient(t)
 
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		cancel()
-	}()
-
+	// RunDuringClientWork runs fn on its own goroutine. fn cancels the context
+	// the poll loop watches.
 	err := client.RunDuringClientWork(ctx, func() error {
+		cancel()
 		<-ctx.Done()
 		return ctx.Err()
 	})
@@ -488,9 +486,13 @@ func TestRunDuringClientWork_canceledContext(t *testing.T) {
 func TestRunDuringClientWork_timeoutError(t *testing.T) {
 	ctx := context.Background()
 	client := pollTestClientShort(t)
+	// Blocks fn on hold so client PollTimeout fires. Unblocks fn after the
+	// assert.
+	hold := make(chan struct{})
+	defer close(hold)
 
 	err := client.RunDuringClientWork(ctx, func() error {
-		time.Sleep(time.Second)
+		<-hold
 		return nil
 	})
 	var pollErr *aeron.RunDuringClientWorkTimeoutError
@@ -501,19 +503,24 @@ func TestRunDuringClientWork_timeoutError(t *testing.T) {
 func TestRunDuringClientWork_fnContinuesAfterTimeout(t *testing.T) {
 	ctx := context.Background()
 	client := pollTestClientShort(t)
+	// Blocks fn on proceed so client PollTimeout fires. Asserts
+	// RunDuringClientWork returns without waiting for fn. Asserts fn completes
+	// after the test closes proceed.
+	proceed := make(chan struct{})
 	fnDone := make(chan struct{})
 
 	err := client.RunDuringClientWork(ctx, func() error {
-		time.Sleep(50 * time.Millisecond)
+		<-proceed
 		close(fnDone)
 		return nil
 	})
 	var pollErr *aeron.RunDuringClientWorkTimeoutError
 	require.ErrorAs(t, err, &pollErr)
 
+	close(proceed)
 	select {
 	case <-fnDone:
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(time.Second):
 		t.Fatal("fn did not complete after helper returned timeout")
 	}
 }

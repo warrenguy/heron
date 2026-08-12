@@ -785,10 +785,11 @@ func setupAsyncConnectUDPEgressAwait(
 	fixture := newAsyncConnectUDPEgressCounters(t, "")
 	installAsyncConnectUDPEgressCounters(t, harness, fixture)
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(asyncConnectPollTimeout)
 	for time.Now().Before(deadline) {
-		harness.DoWork()
-		harness.RespondPendingAdds()
+		asyncConnectHarnessStep(t, harness, ac, func(h *aeron.AsyncConnectTestHarness) {
+			h.RespondPendingAdds()
+		})
 		_, err := ac.Poll()
 		require.NoError(t, err)
 		if ac.State() == ConnectStateAwaitPublicationConnected {
@@ -801,7 +802,7 @@ func setupAsyncConnectUDPEgressAwait(
 		}
 		time.Sleep(time.Millisecond)
 	}
-	require.FailNow(t, "timed out waiting for AWAIT_PUBLICATION_CONNECTED")
+	failAsyncConnectPollTimeout(t, ac)
 	return nil, nil, nil
 }
 
@@ -992,26 +993,23 @@ func TestAsyncConnect_pollResponse_ignoresMismatchedCorrelation(t *testing.T) {
 	harness, ac := setupAsyncConnect(t, "")
 	t.Cleanup(func() { _ = ac.Close() })
 
-	stalled := false
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		harness.DoWork()
-		harness.RespondPendingAdds()
-		attachEgressImageIfNeeded(t, ac.EgressSubscriptionForTest())
-		if ac.State() == ConnectStatePollResponse && !stalled {
-			termBuffer := egressTermBufferForAsyncConnect(t, ac)
-			writeSessionEventForConnect(t, termBuffer, ac.CorrelationIDForTest()+999)
-			stalled = true
-		}
-		result, err := ac.Poll()
-		require.NoError(t, err)
-		require.Nil(t, result, "unexpected connect completion on mismatched correlation")
-		if stalled && ac.State() == ConnectStatePollResponse {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	require.FailNow(t, "expected to remain in poll response after mismatched correlation")
+	// Reach ConnectStatePollResponse with the shared harness budget. Write one
+	// SessionEvent with a mismatched correlation, then Poll once. Asserts the
+	// connect stays in PollResponse and does not complete.
+	pollUntilConnectPollResponse(t, harness, ac, func(h *aeron.AsyncConnectTestHarness) {
+		h.RespondPendingAdds()
+	})
+	require.Equal(t, ConnectStatePollResponse, ac.State())
+
+	writeSessionEventForConnect(
+		t,
+		egressTermBufferForAsyncConnect(t, ac),
+		ac.CorrelationIDForTest()+999,
+	)
+	result, err := ac.Poll()
+	require.NoError(t, err)
+	require.Nil(t, result, "unexpected connect completion on mismatched correlation")
+	require.Equal(t, ConnectStatePollResponse, ac.State())
 }
 
 func TestAsyncConnect_concludeConnect_setsNewLeaderTimeout(t *testing.T) {
@@ -1201,26 +1199,34 @@ func TestAsyncConnect_channelOnlyIngressPublicationError(t *testing.T) {
 	harness, ac := setupAsyncConnect(t, "")
 	t.Cleanup(func() { _ = ac.Close() })
 
-	deadline := time.Now().Add(2 * time.Second)
-	var pollErr error
-	for time.Now().Before(deadline) && pollErr == nil {
-		harness.DoWork()
-		harness.RespondSubscriptionAdd()
-		if ac.MemberIngressRegIDForTest(0) != conductor.NullCorrelationID {
+	// Drive connect with RespondSubscriptionAdd until member 0 has an ingress
+	// registration id. Transmit one OnError for that id once on the step before
+	// Poll. Asserts Poll returns the publication rejected error.
+	var transmitted bool
+	_, pollErr := pollAsyncConnectWithResponder(
+		t,
+		ac,
+		harness,
+		func(h *aeron.AsyncConnectTestHarness) { h.RespondSubscriptionAdd() },
+		func(ac *AsyncConnect) {
+			if transmitted {
+				return
+			}
+			regID := ac.MemberIngressRegIDForTest(0)
+			if regID == conductor.NullCorrelationID {
+				return
+			}
 			require.NoError(
 				t,
 				harness.Fixture().Transmit(
 					conductor.OnError,
-					conductor.ErrorResponseBytes(
-						ac.MemberIngressRegIDForTest(0),
-						11,
-						"ingress publication rejected",
-					),
+					conductor.ErrorResponseBytes(regID, 11, "ingress publication rejected"),
 				),
 			)
-		}
-		_, pollErr = ac.Poll()
-	}
+			transmitted = true
+		},
+	)
+	require.True(t, transmitted, "ingress registration not offered")
 	require.Error(t, pollErr)
 	require.ErrorContains(t, pollErr, "ingress publication rejected")
 }
@@ -1408,19 +1414,20 @@ func setupAsyncConnectEgressReady(
 ) {
 	t.Helper()
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(asyncConnectPollTimeout)
 	for time.Now().Before(deadline) {
-		harness.DoWork()
-		harness.RespondSubscriptionAdd()
+		asyncConnectHarnessStep(t, harness, ac, func(h *aeron.AsyncConnectTestHarness) {
+			h.RespondSubscriptionAdd()
+		})
 		_, err := ac.Poll()
 		require.NoError(t, err)
 		if ac.EgressSubscriptionForTest() != nil {
-			break
+			attachEgressImageIfNeeded(t, ac.EgressSubscriptionForTest())
+			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	require.NotNil(t, ac.EgressSubscriptionForTest())
-	attachEgressImageIfNeeded(t, ac.EgressSubscriptionForTest())
+	failAsyncConnectPollTimeout(t, ac)
 }
 
 func TestAsyncConnect_prepareConnectRequest_credentialsSizing(t *testing.T) {

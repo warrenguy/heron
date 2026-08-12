@@ -4,15 +4,12 @@ package harness
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
 )
-
-const driverConsumeWindow = 200 * time.Millisecond
 
 func TestCncWiring(t *testing.T) {
 	md, attach := SharedAttachedCnc(t)
@@ -41,7 +38,7 @@ func TestCncWiring(t *testing.T) {
 		err := conductor.NewDriverProxy(toDriver, 1).ClientKeepalive()
 		require.NoError(t, err)
 
-		time.Sleep(driverConsumeWindow)
+		WaitForToDriverRingDrained(t, toDriver, 0)
 
 		DrainToClients(t, toClients, 0)
 
@@ -55,8 +52,7 @@ func TestCncWiring(t *testing.T) {
 
 		// Shared driver may still deliver straggler broadcast from earlier package tests.
 		// Settle and drain before soak; assert quiescence once at soak entry.
-		time.Sleep(driverConsumeWindow)
-		DrainToClients(t, toClients, 0)
+		settleToClientsQuiet(t, toClients)
 		require.False(t, toClients.ReceiveNext(), "to-clients must be quiescent at soak entry")
 
 		// Soak ticks tolerate bounded stragglers only; continuous broadcast fails the test.
