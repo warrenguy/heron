@@ -615,17 +615,30 @@ func TestControlOfferUntilPositive_contextDeadline(t *testing.T) {
 		deadlineCtx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
 		defer cancel()
 
+		var offerCalls int
 		pos, err := controlOfferUntilPositive(
 			deadlineCtx,
 			harness.Client,
 			Config{}.Normalize(),
-			ControlOfferConfig{
-				NanoClock: func() int64 { return time.Now().UnixNano() },
+			ControlOfferConfig{},
+			func() int64 {
+				offerCalls++
+
+				// The offer must wait for ctx.Done so ctx.Err() is set before the retry loop
+				// expiry check.
+				//
+				// The loop deadline uses a NanoClock sample taken before ctx.Deadline() is read.
+				// The loop deadline is earlier than the ctx deadline. A BackPressured return
+				// without this wait can reach the expiry check while ctx is still active.
+				// PreferContextError then returns ControlOfferTimeoutError instead of
+				// DeadlineExceeded.
+				<-deadlineCtx.Done()
+				return aeron.BackPressured
 			},
-			func() int64 { return aeron.BackPressured },
 		)
 
 		require.Zero(t, pos)
+		require.Equal(t, 1, offerCalls)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 
