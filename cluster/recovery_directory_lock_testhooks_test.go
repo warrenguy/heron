@@ -16,11 +16,16 @@ import (
 )
 
 // TestOpenRecovery_lockWaitsForTrailingRelease asserts a second OpenRecovery
-// succeeds when the holder releases while OpenRecovery is attempting flock.
+// succeeds when a foreign holder releases cluster.lock during the open wait.
 //
-// The kernel may drop an advisory lock after the close that released the lock
-// returns. A restart on the same directory must wait for that drop. The open
-// must not refuse on the first EWOULDBLOCK.
+// The fixture holds LOCK_EX and releases with Close only. The fixture does not
+// call LOCK_UN. The exclusive hold ends when the last open-file-description
+// reference goes away. That path is not [Recovery.Close]. [Recovery.Close]
+// unlocks with LOCK_UN through [releaseClusterLock] before Close.
+//
+// OpenRecovery must not refuse on the first EWOULDBLOCK. On the first blocked
+// attempt the directory-lock blocked hook closes the holder so the open can
+// finish inside [DirectoryLockWait].
 func TestOpenRecovery_lockWaitsForTrailingRelease(t *testing.T) {
 	t.Parallel()
 

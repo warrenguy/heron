@@ -17,21 +17,20 @@ const clusterLockFileName = "cluster.lock"
 
 // DirectoryLockWait caps how long [OpenRecovery] retries for cluster.lock.
 //
-// A predecessor may still hold the lock for a short time after Close returns.
-// The kernel drops an advisory flock when the last open-file-description
-// reference goes away. The drop can trail the close that triggered it.
-// [OpenRecovery] retries within this cap so a restart does not refuse on the
-// first EWOULDBLOCK after a completed Close.
+// Own release uses [releaseClusterLock]: unlock then close. That path does not
+// need this wait. The cap bounds a hold this process cannot free:
+//   - a live Recovery in this process or another
+//   - a residual open-file description after a dead holder (forked child before
+//     exec, or unfinished close)
 //
-// A live Recovery still owns its directory for the life of that value. A second
-// OpenRecovery on the same directory fails with wrapped EWOULDBLOCK within this
-// bound. The wait does not block forever.
+// A second OpenRecovery against a live holder fails with wrapped EWOULDBLOCK
+// once DirectoryLockWait elapses.
 const DirectoryLockWait = 250 * time.Millisecond
 
 const (
 	// directoryLockSpin is the busy-wait duration before poll sleeps begin. A
-	// release that trails Close usually finishes inside this span, so the common
-	// path does not sleep.
+	// forked child holds the description until the child execs. The fork window
+	// usually closes inside directoryLockSpin, so the common path does not sleep.
 	directoryLockSpin = 2 * time.Millisecond
 
 	// directoryLockPoll is the sleep between attempts after directoryLockSpin. A
@@ -73,6 +72,31 @@ func lockClusterDirectory(fd int, path string) error {
 			time.Sleep(directoryLockPoll)
 		}
 	}
+}
+
+// releaseClusterLock unlocks cluster.lock with LOCK_UN, then closes the file.
+//
+// [Recovery.Close] and the [OpenRecovery] fail path call this after the
+// descriptor is open. LOCK_UN on a descriptor that never took the lock is a
+// no-op success.
+//
+// When unlock succeeds, the exclusive hold is gone before this function returns.
+// flock is open-file-description scoped. Close alone leaves the hold until the
+// last description reference goes away. LOCK_UN frees the hold while a forked
+// child or a dup still references the description. O_CLOEXEC drops the
+// descriptor at execve only and does not unlock.
+//
+// Discards unlock errors. The kernel still drops the lock when the last
+// description reference goes away. A failed LOCK_UN on NFS or FUSE must not
+// surface as a close error.
+//
+// Returns only the Close error.
+func releaseClusterLock(lockFile *os.File) error {
+	if lockFile == nil {
+		return nil
+	}
+	_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+	return lockFile.Close()
 }
 
 // RecoveryDeps are the inputs [OpenRecovery] needs.
@@ -159,13 +183,12 @@ type Recovery struct {
 // both data files use mode 0600.
 //
 // The lock is an advisory flock on cluster.lock. OpenRecovery takes the lock
-// before the recording log opens. Close releases the lock when Close closes the
-// descriptor. The kernel also releases the lock on process exit.
+// before the recording log opens. [releaseClusterLock] releases the lock on
+// Close and on open-fail unwind.
 //
-// OpenRecovery retries a held lock for up to [DirectoryLockWait]. A predecessor
-// release can trail that predecessor's Close. A second OpenRecovery on a
-// directory a live Recovery still owns fails with wrapped EWOULDBLOCK after the
-// wait, in this process or another.
+// OpenRecovery retries a held lock for up to [DirectoryLockWait]. A second
+// OpenRecovery against a live holder fails with wrapped EWOULDBLOCK after the
+// wait.
 //
 // Node state sync level comes from deps.Config. Allowed values are
 // [recordinglog.FileSyncData] and [recordinglog.FileSyncFull]
@@ -197,11 +220,9 @@ func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
 		return nil, fmt.Errorf("cluster: create cluster dir %s: %w", dir, err)
 	}
 
-	// Exclusive advisory lock for the life of Recovery. The kernel drops the lock
-	// when the last open-file-description reference goes away, including on process
-	// death. There is no stale-lock cleanup. The drop can trail the close that
-	// triggered it. lockClusterDirectory waits out that trail. O_CLOEXEC so an
-	// exec'd child cannot keep the lock after the parent exits.
+	// Exclusive advisory lock for the life of Recovery. See [releaseClusterLock]
+	// and [DirectoryLockWait]. O_CLOEXEC so an exec'd child cannot keep the
+	// descriptor.
 	path := filepath.Join(dir, clusterLockFileName)
 	fd, err := unix.Open(
 		path,
@@ -213,19 +234,15 @@ func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
 	}
 	lockFile := os.NewFile(uintptr(fd), path)
 
-	// On success Recovery owns the handles. Until then error paths unwind
-	// opened handles in reverse open order.
+	// On success Recovery owns the handles. Until then error paths unwind opened
+	// handles in reverse open order.
 	succeeded := false
 	defer func() {
 		if !succeeded {
-			_ = lockFile.Close()
+			_ = releaseClusterLock(lockFile)
 		}
 	}()
 
-	// EWOULDBLOCK after the wait means another descriptor holds the directory, in
-	// this process or another one. A predecessor release can trail Close.
-	// lockClusterDirectory retries within DirectoryLockWait before the open is
-	// refused.
 	if err := lockClusterDirectory(fd, path); err != nil {
 		return nil, fmt.Errorf("cluster: lock cluster dir %s: %w", dir, err)
 	}
@@ -359,24 +376,22 @@ func (r *Recovery) IsColdStart() bool {
 }
 
 // Close closes the node state file, then the recording log, then releases the
-// directory lock.
+// directory lock through [releaseClusterLock].
 //
-// Idempotent. Safe on a nil receiver. Each handle is nil-checked before Close,
-// because the library Close methods panic on a nil receiver. Each field is set
-// to nil after the first close so accessors return nil. A second Close is a
-// no-op without re-entering library Close.
+// Idempotent. Safe on a nil receiver. Each handle is nil-checked before Close.
+// Library Close methods panic on a nil receiver. Each field is set to nil after
+// the first close so accessors return nil. A second Close is a no-op. The second
+// call does not re-enter library Close.
 //
-// After Close the value is inert: RecordingLog and NodeState return nil. Plan
-// and ElectionConfig keep reporting what recovery computed. Those fields are
-// values, and a caller may still want them while tearing down.
+// After Close the value is inert. RecordingLog and NodeState return nil. Plan
+// and ElectionConfig still report what recovery computed. Those fields are
+// values. A caller may read them while tearing down.
 //
-// Close does not guarantee the directory is immediately re-lockable. The kernel
-// drops the advisory lock when the last open-file-description reference goes
-// away. The drop can trail this Close. [OpenRecovery] waits
-// [DirectoryLockWait] for the trail. A reopen must rely on that wait, not on an
-// immediately free lock after Close.
+// Unlock-before-close is [releaseClusterLock]. [DirectoryLockWait] bounds holds
+// this Close cannot free.
 //
-// Returns the joined close errors, or nil.
+// Returns the joined close errors from the node state file, recording log, and
+// lock file Close, or nil. Unlock errors are discarded.
 func (r *Recovery) Close() error {
 	if r == nil {
 		return nil
@@ -392,7 +407,7 @@ func (r *Recovery) Close() error {
 		r.recordingLog = nil
 	}
 	if r.lockFile != nil {
-		err = errors.Join(err, r.lockFile.Close())
+		err = errors.Join(err, releaseClusterLock(r.lockFile))
 		r.lockFile = nil
 	}
 	return err

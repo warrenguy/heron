@@ -364,6 +364,39 @@ func TestOpenRecovery_lockExcludesSecondOpen(t *testing.T) {
 	require.ElementsMatch(t, before, fdsUnder(t, dir))
 }
 
+// TestRecovery_closeUnlocksWhileDupHoldsOFD asserts Recovery.Close releases the
+// exclusive hold with LOCK_UN before the lock file closes.
+//
+// flock is scoped to the open-file description. A dup of the lock descriptor
+// keeps that description alive after Close returns the original handle. Close
+// alone would leave the exclusive hold until the last description reference goes
+// away. LOCK_UN must free the lock while the dup still holds the description so
+// a fresh descriptor takes LOCK_EX|LOCK_NB on the first try.
+func TestRecovery_closeUnlocksWhileDupHoldsOFD(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	recovery, err := cluster.OpenRecovery(cluster.RecoveryDeps{
+		Config: recoveryConfig(t, dir),
+	})
+	require.NoError(t, err)
+
+	fd := cluster.LockFileFd(recovery)
+	require.GreaterOrEqual(t, fd, 0)
+	dup, err := unix.Dup(fd)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = unix.Close(dup) })
+
+	require.NoError(t, recovery.Close())
+
+	path := filepath.Join(dir, "cluster.lock")
+	probe, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = unix.Close(probe) })
+	require.NoError(t, unix.Flock(probe, unix.LOCK_EX|unix.LOCK_NB),
+		"LOCK_UN on Close must free the lock while a dup still holds the OFD")
+}
+
 func TestOpenRecovery_lockSymlinkRefused(t *testing.T) {
 	t.Parallel()
 

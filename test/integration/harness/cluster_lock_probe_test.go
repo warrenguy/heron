@@ -46,13 +46,13 @@ func TestClusterLockFileName_matchesRecoveryOpen(t *testing.T) {
 	require.FileExists(t, filepath.Join(dir, clusterLockFileName))
 }
 
-// TestWrapRestartOpenError asserts the release note appears only for
-// EWOULDBLOCK. Every other open failure carries slot and ClusterDir without the
-// note.
+// TestWrapRestartOpenError asserts the DirectoryLockWait hold note appears only
+// for EWOULDBLOCK. Every other open failure carries slot and ClusterDir without
+// that note.
 func TestWrapRestartOpenError(t *testing.T) {
 	t.Parallel()
 
-	const releaseNote = "StopMember must have released cluster.lock"
+	const releaseNote = "cluster.lock hold outlived DirectoryLockWait"
 
 	cases := []struct {
 		name     string

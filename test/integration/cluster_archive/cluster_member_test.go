@@ -139,8 +139,8 @@ func TestClusterMemberSet_stopAndRestartAffordance(t *testing.T) {
 
 // TestClusterMemberSet_stopRestartAmplifier asserts stop, Tick, then restart
 // cycles on slot 1 under light duty-cycle load. Asserts reopen after Close
-// succeeds. OpenRecovery waits [cluster.DirectoryLockWait] for a trailing
-// cluster.lock release on restart.
+// succeeds. Close unlocks cluster.lock with LOCK_UN, so the restart open takes
+// the lock without waiting [cluster.DirectoryLockWait].
 //
 // Asserts log-image fan-in after the last cycle. A slot that reopens without
 // rejoining fails. Does not assert election completeness.

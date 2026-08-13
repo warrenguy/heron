@@ -470,13 +470,12 @@ func (s *ClusterMemberSet) live() iter.Seq[*cluster.ConsensusModule] {
 //
 // Behaviour:
 //   - Nils the slot then closes the module. Module Close releases the cluster
-//     directory lock last.
+//     directory lock last: unlock then close. The hold is gone when StopMember
+//     returns.
 //   - Leaves the media driver and the Archive node running so RestartMember can
 //     reuse both. Does not call ArchiveNode.Stop. Does not call MediaDriver.Stop.
-//   - Does not wait for cluster.lock. A release can trail Close.
-//     [cluster.OpenRecovery] waits [cluster.DirectoryLockWait] on RestartMember.
-//   - A durable hold fails at RestartMember with the StopMember release note on
-//     EWOULDBLOCK.
+//   - Does not wait for cluster.lock. RestartMember open waits only inside
+//     [cluster.OpenRecovery] ([cluster.DirectoryLockWait]).
 //
 // Concurrency: invoker-only. Must not run concurrently with Tick.
 //
@@ -513,12 +512,11 @@ func (s *ClusterMemberSet) StopMember(index int) error {
 //
 // Concurrency: invoker-only. Must not run concurrently with Tick.
 //
-// Every open failure is wrapped with slot and ClusterDir. When errno is
-// EWOULDBLOCK the wrap notes that StopMember must have released cluster.lock.
+// Every open failure is wrapped with slot and ClusterDir. On EWOULDBLOCK the
+// wrap notes that the hold outlived [cluster.DirectoryLockWait].
 //
-// Must not retry the open. Must not sleep. OpenRecovery already waits
-// cluster.DirectoryLockWait for a release that trails Close. An EWOULDBLOCK
-// that reaches here outlived that wait.
+// Must not retry the open. Must not sleep. An EWOULDBLOCK that reaches
+// RestartMember already outlived [cluster.DirectoryLockWait].
 //
 // On error the empty slot stays empty and an occupied slot is left unchanged.
 //
@@ -548,15 +546,15 @@ func (s *ClusterMemberSet) RestartMember(index int) error {
 }
 
 // wrapRestartOpenError phrases a RestartMember open failure with slot and
-// ClusterDir. Appends the StopMember release note only when errno is
-// EWOULDBLOCK. Preserves errors.Is via %w.
+// ClusterDir. On EWOULDBLOCK the wrap appends a note that the hold outlived
+// DirectoryLockWait. Preserves errors.Is via %w.
 func wrapRestartOpenError(index int, dir string, err error) error {
 	if err == nil {
 		return nil
 	}
 	hint := ""
 	if errors.Is(err, unix.EWOULDBLOCK) {
-		hint = " (StopMember must have released cluster.lock)"
+		hint = " (cluster.lock hold outlived DirectoryLockWait)"
 	}
 	return fmt.Errorf(
 		"cluster member set: restart slot %d ClusterDir %s: %w%s",

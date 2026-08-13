@@ -301,10 +301,9 @@ func TestRecoveryElectionConfig_seedOracle_rapid(t *testing.T) {
 	})
 }
 
-// Serial: OpenRecovery holds process FDs and an advisory flock. Parallel
-// neighbours can make a failed open look like a property bug (rapid "flaky").
-// Each cycle closes and waits for zero FDs under dir before the next open.
 func TestOpenRecovery_reopenStable_rapid(t *testing.T) {
+	t.Parallel()
+
 	rapid.Check(t, func(rt *rapid.T) {
 		dir := t.TempDir()
 		cfg, lister, shape := drawSeededConfig(rt, dir)
