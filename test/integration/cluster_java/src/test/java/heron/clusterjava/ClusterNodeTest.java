@@ -3,6 +3,7 @@ package heron.clusterjava;
 import io.aeron.Aeron;
 import io.aeron.cluster.ConsensusModule;
 import io.aeron.cluster.NanosecondClusterClock;
+import io.aeron.driver.exceptions.InvalidChannelException;
 import io.aeron.exceptions.AeronException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.function.Executable;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.PrintStream;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
@@ -87,9 +89,16 @@ class ClusterNodeTest {
     }
 
     @Test
-    void isFatalClusterError_survivesWarnCategoryOnly() {
+    void isFatalClusterError_survivesWarnAndUnresolvedHost() {
         assertFalse(ClusterNode.isFatalClusterError(
             new AeronException("could not re-resolve: endpoint=cluster-0:9003", AeronException.Category.WARN)));
+        assertFalse(ClusterNode.isFatalClusterError(
+            new InvalidChannelException(new UnknownHostException(
+                "unresolved - endpoint=cluster-1:9103, "
+                    + "name-resolver=TimeTracking(io.aeron.driver.DefaultNameResolver)"))));
+        assertFalse(ClusterNode.isFatalClusterError(
+            new UnknownHostException("unresolved - endpoint=cluster-1:9103")));
+        assertTrue(ClusterNode.isFatalClusterError(new InvalidChannelException("malformed channel")));
         assertTrue(ClusterNode.isFatalClusterError(
             new AeronException("boom", AeronException.Category.ERROR)));
         assertTrue(ClusterNode.isFatalClusterError(

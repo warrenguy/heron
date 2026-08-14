@@ -8,6 +8,7 @@ import io.aeron.exceptions.AeronException;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 
 import java.io.File;
+import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -212,14 +213,33 @@ public final class ClusterNode
         }
     }
 
-    // WARN-category AeronExceptions are recoverable; everything else exits the node.
+    // Returns false when:
+    //   - the throwable is an AeronException with category WARN
+    //   - any cause is UnknownHostException
+    // Returns true for every other throwable.
     static boolean isFatalClusterError(final Throwable throwable)
     {
+        if (isUnresolvedHost(throwable))
+        {
+            return false;
+        }
         if (throwable instanceof AeronException aeronException)
         {
             return aeronException.category() != AeronException.Category.WARN;
         }
         return true;
+    }
+
+    static boolean isUnresolvedHost(final Throwable throwable)
+    {
+        for (Throwable t = throwable; t != null; t = t.getCause())
+        {
+            if (t instanceof UnknownHostException)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     static int parseIntEnv(final String envName, final String envValue, final int defaultValue)
@@ -419,8 +439,10 @@ public final class ClusterNode
         clusterConfig.aeronDirectoryName(aeronDir);
         clusterConfig.baseDir(baseDirForMember(settings.memberId, settings.memberCount, settings.mixed));
         configureConsensus(clusterConfig, settings);
-        // WARN-category agent errors are transient during failover (e.g. re-resolve of a
-        // downed member endpoint); log and survive so quorum holds. Non-WARN errors exit;
+        // The error handler must not call System.exit on WARN re-resolve or on
+        // UnknownHostException from channel parse. Remaining non-WARN errors
+        // must call System.exit(1).
+        //
         // SIGTERM still uses barrier teardown below.
         final AtomicBoolean fatalExited = new AtomicBoolean(false);
         clusterConfig.errorHandler((Throwable throwable) -> {
