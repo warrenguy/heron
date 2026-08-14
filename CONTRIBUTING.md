@@ -15,6 +15,7 @@ Importable packages under `github.com/warrenguy/heron/...`.
 | `mmap` | Unix mmap for driver/CnC shared-memory files |
 | `record` | Shared record header constants for ring and broadcast buffers |
 | `ringbuffer` | `ManyToOneRingBuffer`: fixed Agrona wire layout for CnC/driver rings |
+| `timerwheel` | Agrona `DeadlineTimerWheel`: hashed deadline wheel (`Wheel`, O(1) cancel) |
 | `wire` | Wire primitives: `CheckLength`, fixed-width int64 and bool-byte put/get |
 | `cluster/client` | `Config`, `AsyncConnect`, `AeronCluster`, egress handlers |
 | `cluster/codecs` | SBE flyweights in `clusterwire/`; see **SBE codecs** below |

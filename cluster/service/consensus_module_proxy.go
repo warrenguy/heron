@@ -8,11 +8,12 @@ import (
 )
 
 // ConsensusModuleProxy publishes service-to-module control frames on the
-// consensus module stream (default 105). Frames are ServiceAck (template 33).
+// consensus module stream (default 105). Frames are ServiceAck (template 33),
+// ScheduleTimer (template 31), and CancelTimer (template 32).
 //
-// Publish path: encode into scratch then Offer. Fixed-length ServiceAck stays
+// Publish path: encode into scratch then Offer. Fixed-length frames stay
 // within MaxPayloadLength under normal publication sizes, so the offer path
-// replaces upstream tryClaim for this frame.
+// replaces upstream tryClaim for these frames.
 //
 // Concurrency: invoker-only.
 //
@@ -34,7 +35,7 @@ func NewConsensusModuleProxy() *ConsensusModuleProxy {
 }
 
 // SetPublication binds or replaces the consensus module control publication
-// (ServiceAck on stream 105).
+// (stream 105).
 //
 // Behaviour: when pub is non-nil, grows scratch to at least MaxPayloadLength so
 // later single-frame encodes avoid growing on the hot path. Totals above
@@ -96,6 +97,21 @@ func (p *ConsensusModuleProxy) publishEncoded(
 	return p.offerEncoded(scratch)
 }
 
+// publishFixed encodes a typed fixed-length frame into scratch and offers the
+// frame. Returns the result of [ConsensusModuleProxy.publishEncoded].
+func publishFixed[F any](
+	p *ConsensusModuleProxy,
+	total int,
+	actingVersion uint16,
+	fields F,
+	encode func([]byte, int, uint16, F) (int, bool),
+) int64 {
+	return p.publishEncoded(total, func(scratch []byte) bool {
+		_, encOK := encode(scratch, 0, actingVersion, fields)
+		return encOK
+	})
+}
+
 // PublishServiceAck encodes ServiceAck (template 33) into scratch and offers.
 // Fixed length. Stays within MaxPayloadLength under normal publication sizes.
 //
@@ -109,16 +125,45 @@ func (p *ConsensusModuleProxy) publishEncoded(
 //   - NotConnected when encode fails after the length check
 //   - Offer codes from [ConsensusModuleProxy.offerEncoded]
 func (p *ConsensusModuleProxy) PublishServiceAck(fields codecs.ServiceAckFields) int64 {
-	return p.publishEncoded(
+	return publishFixed(
+		p,
 		codecs.ServiceAckEncodedLen(),
-		func(scratch []byte) bool {
-			_, encOK := codecs.EncodeServiceAck(
-				scratch,
-				0,
-				uint16(clusterwire.ServiceAckSbeSchemaVersion),
-				fields,
-			)
-			return encOK
-		},
+		uint16(clusterwire.ServiceAckSbeSchemaVersion),
+		fields,
+		codecs.EncodeServiceAck,
+	)
+}
+
+// PublishScheduleTimer encodes ScheduleTimer (template 31) into scratch and
+// offers one fixed-length frame.
+//
+// Behaviour: encodes all ScheduleTimerFields. Does not validate field
+// semantics. Scratch-then-offer. Does not use tryClaim.
+//
+// Returns the same codes as [ConsensusModuleProxy.PublishServiceAck].
+func (p *ConsensusModuleProxy) PublishScheduleTimer(fields codecs.ScheduleTimerFields) int64 {
+	return publishFixed(
+		p,
+		codecs.ScheduleTimerEncodedLen(),
+		uint16(clusterwire.ScheduleTimerSbeSchemaVersion),
+		fields,
+		codecs.EncodeScheduleTimer,
+	)
+}
+
+// PublishCancelTimer encodes CancelTimer (template 32) into scratch and offers
+// one fixed-length frame.
+//
+// Behaviour: encodes all CancelTimerFields. Does not validate field semantics.
+// Scratch-then-offer. Does not use tryClaim.
+//
+// Returns the same codes as [ConsensusModuleProxy.PublishServiceAck].
+func (p *ConsensusModuleProxy) PublishCancelTimer(fields codecs.CancelTimerFields) int64 {
+	return publishFixed(
+		p,
+		codecs.CancelTimerEncodedLen(),
+		uint16(clusterwire.CancelTimerSbeSchemaVersion),
+		fields,
+		codecs.EncodeCancelTimer,
 	)
 }

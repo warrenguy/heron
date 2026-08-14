@@ -11,6 +11,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
@@ -61,12 +62,13 @@ func (s *wireRecordingService) SessionMessage(_, _ int64, _ []byte) {
 
 func (s *wireRecordingService) TimerEvent(_, _ int64) {}
 
-// wireHarness holds a consensus agent and a service agent bridged in memory.
-type wireHarness struct {
-	cm     *consensus.Agent
-	pub104 *aeron.Publication
-	off104 int
-
+// wireServiceSide is the service half shared by the wire harnesses.
+//
+//   - log subscription with one image
+//   - control ingress
+//   - module proxy on a connected 105 test publication
+//   - consensus module service ingress that bridge105 feeds
+type wireServiceSide struct {
 	serviceIngress *consensus.QueueConsensusIngress
 
 	svc     *service.Agent
@@ -76,18 +78,105 @@ type wireHarness struct {
 
 	image       *aeron.Image
 	frameOffset int
-	svcApp      *wireRecordingService
+}
+
+// newWireServiceSide builds the shared service-side fields. The helper wires
+// the consensus module service ingress. The image joins at position 0.
+func newWireServiceSide(
+	t testing.TB,
+	cm *consensus.Agent,
+	app service.ClusteredService,
+) wireServiceSide {
+	t.Helper()
+
+	serviceIngress := &consensus.QueueConsensusIngress{}
+	cm.SetServiceIngress(serviceIngress)
+
+	sub := aeron.NewSubscriptionForHooks(9001, wireLogStreamID, wireLogChannel)
+	image := aeron.NewTestImageForSubscriptionHooksWithSessionID(
+		t,
+		sub,
+		wireLogSessionID,
+		9101,
+		0,
+	)
+	require.True(t, aeron.SubscriptionAddImageForHooks(sub, image))
+
+	control := &service.QueueControlIngress{}
+	pub105 := aeron.NewTestPublicationForHooksWithConnected(t, true)
+	moduleProxy := service.NewConsensusModuleProxy()
+	moduleProxy.SetPublication(pub105)
+
+	svc := service.NewAgent(service.AgentConfig{
+		// ServiceID 0 matches ServiceCount:1 tracker queue index 0.
+		ServiceID:         0,
+		Service:           app,
+		CommittedPosition: cm.CommitPosition,
+		Subscriptions:     &wireSubAdder{sub: sub},
+		Control:           control,
+		ModuleProxy:       moduleProxy,
+	})
+
+	return wireServiceSide{
+		serviceIngress: serviceIngress,
+		svc:            svc,
+		control:        control,
+		pub105:         pub105,
+		image:          image,
+	}
+}
+
+// bridge105 walks new DATA frames on the service module proxy publication into
+// the consensus module service ingress queue.
+func (s *wireServiceSide) bridge105(t testing.TB) {
+	t.Helper()
+	bridgePub(t, s.pub105, &s.off105, func(msg []byte) {
+		s.serviceIngress.Enqueue(msg)
+	})
+}
+
+// writeFrame commits one DATA frame at frameOffset and advances the offset.
+func (s *wireServiceSide) writeFrame(t testing.TB, payload []byte) {
+	t.Helper()
+	aeron.WriteCommittedDataFrameForHooks(
+		aeron.ImageTermBufferForHooks(s.image),
+		s.frameOffset,
+		s.image.SessionID(),
+		s.image.StreamID(),
+		wireHookTermID,
+		int32(s.frameOffset),
+		logbuffer.Unfragmented,
+		payload,
+	)
+	s.frameOffset += logbuffer.AlignFragmentChunkLength(len(payload))
+}
+
+// deliverJoinLog enqueues a crafted JoinLog on the service control path. The
+// helper does not publish through the consensus module ServiceProxy. That
+// path would add an extra consensus module wait.
+func (s *wireServiceSide) deliverJoinLog(t testing.TB, joinPos int64) {
+	t.Helper()
+	s.control.Enqueue(encodeWireJoinLog(t, wireJoinLogFields(joinPos)))
+}
+
+// wireHarness holds a consensus agent and a service agent bridged in memory.
+type wireHarness struct {
+	wireServiceSide
+
+	cm     *consensus.Agent
+	pub104 *aeron.Publication
+	off104 int
+
+	svcApp *wireRecordingService
 
 	// dropRequest skips RequestServiceAck frames on the 104 bridge. Join
-	// pairing uses this so the consensus module wait pairs with the service
-	// join ack.
+	// pairing sets dropRequest so the consensus module wait pairs with the
+	// service join ack.
 	dropRequest bool
 }
 
 func newWireHarness(t testing.TB) *wireHarness {
 	t.Helper()
-
-	const joinPosition int64 = 0
 
 	commit := &atomic.Int64{}
 	cm := consensus.NewAgent(consensus.AgentConfig{
@@ -100,45 +189,14 @@ func newWireHarness(t testing.TB) *wireHarness {
 	proxy104.SetPublication(pub104)
 	cm.SetServiceProxy(proxy104)
 
-	serviceIngress := &consensus.QueueConsensusIngress{}
-	cm.SetServiceIngress(serviceIngress)
-
-	sub := aeron.NewSubscriptionForHooks(9001, wireLogStreamID, wireLogChannel)
-	image := aeron.NewTestImageForSubscriptionHooksWithSessionID(
-		t,
-		sub,
-		wireLogSessionID,
-		9101,
-		joinPosition,
-	)
-	require.True(t, aeron.SubscriptionAddImageForHooks(sub, image))
-
-	control := &service.QueueControlIngress{}
-	pub105 := aeron.NewTestPublicationForHooksWithConnected(t, true)
-	moduleProxy := service.NewConsensusModuleProxy()
-	moduleProxy.SetPublication(pub105)
-
 	svcApp := &wireRecordingService{}
-	svc := service.NewAgent(service.AgentConfig{
-		// ServiceID 0 matches ServiceCount:1 tracker queue index 0.
-		ServiceID:         0,
-		Service:           svcApp,
-		CommittedPosition: cm.CommitPosition,
-		Subscriptions:     &wireSubAdder{sub: sub},
-		Control:           control,
-		ModuleProxy:       moduleProxy,
-	})
 
 	return &wireHarness{
-		cm:             cm,
-		pub104:         pub104,
-		serviceIngress: serviceIngress,
-		svc:            svc,
-		control:        control,
-		pub105:         pub105,
-		image:          image,
-		svcApp:         svcApp,
-		dropRequest:    true,
+		wireServiceSide: newWireServiceSide(t, cm, svcApp),
+		cm:              cm,
+		pub104:          pub104,
+		svcApp:          svcApp,
+		dropRequest:     true,
 	}
 }
 
@@ -177,15 +235,14 @@ func (h *wireHarness) tickUntil(t testing.TB, baseNs int64, maxTicks int, done f
 	return false
 }
 
-// bridgePub walks new DATA frames on pub into onData, advancing *off.
-func bridgePub(
+// bridgeTerm walks new DATA frames on termBuf into onData, advancing *off.
+func bridgeTerm(
 	t testing.TB,
-	pub *aeron.Publication,
+	termBuf atomicbuffer.AtomicBuffer,
 	off *int,
 	onData func(msg []byte),
 ) {
 	t.Helper()
-	termBuf := pub.TermBuffer(0)
 	for {
 		frameLength := int(logbuffer.FrameLengthVolatile(termBuf, *off))
 		if frameLength <= 0 {
@@ -202,6 +259,17 @@ func bridgePub(
 	}
 }
 
+// bridgePub walks new DATA frames on pub into onData, advancing *off.
+func bridgePub(
+	t testing.TB,
+	pub *aeron.Publication,
+	off *int,
+	onData func(msg []byte),
+) {
+	t.Helper()
+	bridgeTerm(t, pub.TermBuffer(0), off, onData)
+}
+
 // bridge104 walks new DATA frames on the consensus module service proxy
 // publication into the service control queue. When dropRequest is set,
 // RequestServiceAck frames are skipped (join-pairing harness arrangement).
@@ -215,15 +283,6 @@ func (h *wireHarness) bridge104(t testing.TB) {
 			}
 		}
 		h.control.Enqueue(msg)
-	})
-}
-
-// bridge105 walks new DATA frames on the service module proxy publication into
-// the consensus module service ingress queue.
-func (h *wireHarness) bridge105(t testing.TB) {
-	t.Helper()
-	bridgePub(t, h.pub105, &h.off105, func(msg []byte) {
-		h.serviceIngress.Enqueue(msg)
 	})
 }
 
@@ -287,22 +346,6 @@ func encodeWireTimerEvent(t testing.TB, fields codecs.TimerEventFields) []byte {
 	return buf[:wireEnd]
 }
 
-// writeFrame commits one DATA frame at h.frameOffset and advances the offset.
-func (h *wireHarness) writeFrame(t testing.TB, payload []byte) {
-	t.Helper()
-	aeron.WriteCommittedDataFrameForHooks(
-		aeron.ImageTermBufferForHooks(h.image),
-		h.frameOffset,
-		h.image.SessionID(),
-		h.image.StreamID(),
-		wireHookTermID,
-		int32(h.frameOffset),
-		logbuffer.Unfragmented,
-		payload,
-	)
-	h.frameOffset += logbuffer.AlignFragmentChunkLength(len(payload))
-}
-
 // commitTimer writes a timer frame, proposes commit at the new end, returns that position.
 func (h *wireHarness) commitTimer(t testing.TB, fields codecs.TimerEventFields) int64 {
 	t.Helper()
@@ -310,14 +353,6 @@ func (h *wireHarness) commitTimer(t testing.TB, fields codecs.TimerEventFields) 
 	pos := int64(h.frameOffset)
 	h.cm.ProposeMaxCommit(pos)
 	return pos
-}
-
-// deliverJoinLog enqueues a crafted JoinLog on the service control path.
-// Does not publish through the consensus module ServiceProxy (avoids an extra
-// consensus module wait).
-func (h *wireHarness) deliverJoinLog(t testing.TB, joinPos int64) {
-	t.Helper()
-	h.control.Enqueue(encodeWireJoinLog(t, wireJoinLogFields(joinPos)))
 }
 
 // pairJoinWait queues a consensus module RequestServiceAck wait at joinPos for
@@ -427,11 +462,15 @@ func TestServiceAckWire_NoPerMessageAck(t *testing.T) {
 	posBefore105 := h.pub105.Position()
 	depthBefore := h.cm.ServiceAckQueueDepth(0)
 
-	payload := encodeWireSessionMessage(t, codecs.SessionMessageHeaderFields{
-		LeadershipTermID: 1,
-		ClusterSessionID: 1,
-		Timestamp:        9,
-	}, []byte("body"))
+	payload := encodeWireSessionMessage(
+		t,
+		codecs.SessionMessageHeaderFields{
+			LeadershipTermID: 1,
+			ClusterSessionID: 1,
+			Timestamp:        9,
+		},
+		[]byte("body"),
+	)
 	h.writeFrame(t, payload)
 	h.cm.ProposeMaxCommit(int64(h.frameOffset))
 

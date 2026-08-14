@@ -40,6 +40,7 @@ func TestDoWork_stepOrder(t *testing.T) {
 				"pollServiceControl",
 				"serviceControlWork",
 				"sessionWork",
+				"timerWork",
 				"consensusWork",
 				"retryPendingJoinLog",
 			},

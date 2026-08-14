@@ -80,6 +80,43 @@ func TestSessionCloseEvent_codec_rapid(t *testing.T) {
 	})
 }
 
+func TestScheduleTimer_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.ScheduleTimerFields{
+			CorrelationID: rapid.Int64().Draw(rt, "correlationID"),
+			Deadline:      rapid.Int64().Draw(rt, "deadline"),
+		}
+		runCodecRoundtripAtOffset(
+			rt,
+			clusterwire.ScheduleTimerSbeTemplateID,
+			actingVersion,
+			offset,
+			rapidEncodeAt(actingVersion, fields, codecs.EncodeScheduleTimer),
+			fields,
+		)
+	})
+}
+
+func TestCancelTimer_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.CancelTimerFields{
+			CorrelationID: rapid.Int64().Draw(rt, "correlationID"),
+		}
+		runCodecRoundtripAtOffset(
+			rt,
+			clusterwire.CancelTimerSbeTemplateID,
+			actingVersion,
+			offset,
+			rapidEncodeAt(actingVersion, fields, codecs.EncodeCancelTimer),
+			fields,
+		)
+	})
+}
+
 func TestServiceAck_codec_rapid(t *testing.T) {
 	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {

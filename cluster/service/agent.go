@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
@@ -12,6 +13,7 @@ import (
 var (
 	errLogNotContiguous = errors.New("service: log not contiguous")
 	errSessionClash     = errors.New("service: session id clash")
+	errTimerPublish     = errors.New("service: timer publish failed")
 )
 
 // AgentConfig configures NewAgent. Zero-value fields have the defaults stated
@@ -46,9 +48,9 @@ type AgentConfig struct {
 	// allowed: control work polls nothing and delivers no frame.
 	Control ControlIngress
 
-	// ModuleProxy sends ServiceAck frames (stream 105). Nil is allowed: ready
-	// acks stay queued. A proxy with no bound publication drains nothing, same
-	// as nil.
+	// ModuleProxy sends ServiceAck and timer-request frames (stream 105). Nil
+	// is allowed: ready acks stay queued. A proxy with no bound publication
+	// drains nothing, same as nil.
 	ModuleProxy *ConsensusModuleProxy
 }
 
@@ -296,6 +298,45 @@ func (a *Agent) LogPosition() int64 {
 // ClusterTime returns the timestamp of the last dispatched log event.
 func (a *Agent) ClusterTime() int64 {
 	return a.clusterTime
+}
+
+// ScheduleTimer implements [Cluster.ScheduleTimer].
+func (a *Agent) ScheduleTimer(correlationID, deadline int64) bool {
+	if a.moduleProxy == nil || a.moduleProxy.Publication() == nil {
+		return false
+	}
+	result := a.moduleProxy.PublishScheduleTimer(codecs.ScheduleTimerFields{
+		CorrelationID: correlationID,
+		Deadline:      deadline,
+	})
+	return a.acceptOffer(result, errTimerPublish)
+}
+
+// CancelTimer implements [Cluster.CancelTimer].
+func (a *Agent) CancelTimer(correlationID int64) bool {
+	if a.moduleProxy == nil || a.moduleProxy.Publication() == nil {
+		return false
+	}
+	result := a.moduleProxy.PublishCancelTimer(codecs.CancelTimerFields{
+		CorrelationID: correlationID,
+	})
+	return a.acceptOffer(result, errTimerPublish)
+}
+
+// acceptOffer maps a module-proxy offer result to a sent bool.
+//
+//   - Positive result: returns true.
+//   - Terminal publication code: marks cause once, wrapped with the offer
+//     code, and returns false.
+//   - Retriable code: returns false without marking.
+func (a *Agent) acceptOffer(result int64, cause error) bool {
+	if result > 0 {
+		return true
+	}
+	if !aeron.IsOfferRetriable(result) {
+		a.markFailure(fmt.Errorf("%w: %d", cause, result))
+	}
+	return false
 }
 
 // SessionCount returns the number of open sessions in the log-derived registry.

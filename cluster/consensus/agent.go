@@ -395,6 +395,18 @@ type Agent struct {
 	// log stream id.
 	localLogChannel  string
 	localLogStreamID int32
+
+	// timers is the member-local wheel plus correlation maps. Always non-nil
+	// after NewAgent.
+	timers *timerService
+
+	// timerExpiryHandler is handleTimerExpiry cached once at construction so
+	// timerWork does not allocate a method value each duty cycle.
+	timerExpiryHandler func(correlationID, now int64) bool
+
+	// timerFailure is the first timer registry failure, or nil until marked.
+	// Marked once. Later refusals do not replace the cause.
+	timerFailure error
 }
 
 // AgentConfig is the constructor config. Nil interface fields are allowed for
@@ -580,11 +592,13 @@ func NewAgent(cfg AgentConfig) *Agent {
 		sessions:                  newSessionManager(),
 		authenticator:             auth,
 		serviceAcks:               newServiceAckTracker(cfg.ServiceCount),
+		timers:                    newTimerService(),
 	}
 	a.sessionAuthProxy.agent = a
 	a.ingressHandler = a.onIngressFragment
 	a.clientIngressHandler = a.handleClientIngressFragment
 	a.serviceIngressHandler = a.handleServiceControlFragment
+	a.timerExpiryHandler = a.handleTimerExpiry
 	return a
 }
 
@@ -1841,7 +1855,8 @@ func (a *Agent) adoptLogRecording(
 //
 // Behaviour:
 //   - leader: stamps nowNs minus one heartbeat interval so the first steady
-//     tick publishes a commit heartbeat
+//     tick publishes a commit heartbeat. Also stamps the timer wheel current
+//     time to nowNs. Winding expires nothing
 //   - any other role: stamps nowNs so the quiet-tick trigger waits one full
 //     leader heartbeat timeout
 //   - without a stamp the field stays 0; a duty cycle on an absolute clock
@@ -1854,6 +1869,7 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 	a.election = nil
 	if a.role == RoleLeader {
 		a.timeOfLastLogUpdateNs = nowNs - a.leaderHeartbeatIntervalNs
+		a.timers.currentTime(nowNs)
 		return
 	}
 	a.timeOfLastLogUpdateNs = nowNs
@@ -1864,12 +1880,12 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 //   - consensus ingress poll (always, even when election non-nil)
 //   - client ingress poll (always; message, keepalive, close, connect, and
 //     challenge-response live in dispatch)
-//   - service control poll (always; ServiceAck dispatch; every role; while
-//     election is live)
+//   - service control poll (always; ServiceAck, ScheduleTimer, and CancelTimer
+//     dispatch; every role; while election is live)
 //   - service control work (always; consume first wait after poll; every role;
 //     while election is live)
 //   - [ElectionRunner.DoWork] when an election is live, else sessionWork then
-//     consensusWork
+//     timerWork then consensusWork
 //   - pending JoinLog retry after that branch so PrepareForNewLeadership can
 //     drop a superseded pending before any offer
 //
@@ -1895,6 +1911,8 @@ func (a *Agent) DoWork(nowNs int64) int {
 	} else {
 		noteDoWorkStep("sessionWork")
 		work += a.sessionWork(nowNs)
+		noteDoWorkStep("timerWork")
+		work += a.timerWork(nowNs)
 		noteDoWorkStep("consensusWork")
 		work += a.consensusWork(nowNs)
 	}

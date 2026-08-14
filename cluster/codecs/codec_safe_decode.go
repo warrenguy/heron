@@ -712,6 +712,10 @@ func decodeTemplateFields(
 		}, true
 	case clusterwire.SessionCloseEventSbeTemplateID:
 		return decodeSessionCloseEventFields(buf, body, block, version, bufLen), true
+	case clusterwire.ScheduleTimerSbeTemplateID:
+		return decodeScheduleTimerFields(buf, body, block, version, bufLen), true
+	case clusterwire.CancelTimerSbeTemplateID:
+		return decodeCancelTimerFields(buf, body, block, version, bufLen), true
 	case clusterwire.ServiceAckSbeTemplateID:
 		return decodeServiceAckFields(buf, body, block, version, bufLen), true
 	case clusterwire.JoinLogSbeTemplateID:

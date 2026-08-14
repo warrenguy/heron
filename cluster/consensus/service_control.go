@@ -337,8 +337,9 @@ func (a *Agent) pollServiceControl() int {
 
 // handleServiceControlFragment routes one service control frame.
 //
-// ServiceAck offers onto the tracker. Unknown templates and undecodable bytes
-// skip without error.
+// ServiceAck offers onto the tracker. ScheduleTimer and CancelTimer update the
+// local timer wheel. Unknown templates and undecodable bytes skip without
+// error.
 func (a *Agent) handleServiceControlFragment(buf []byte, offset int) {
 	templateID, ok := consensusMessageTemplateID(buf, offset)
 	if !ok {
@@ -348,6 +349,14 @@ func (a *Agent) handleServiceControlFragment(buf []byte, offset int) {
 	case clusterwire.ServiceAckSbeTemplateID:
 		if fields, ok := codecs.TryDecodeServiceAckAt(buf, offset); ok {
 			a.handleServiceAck(fields)
+		}
+	case clusterwire.ScheduleTimerSbeTemplateID:
+		if fields, ok := codecs.TryDecodeScheduleTimerAt(buf, offset); ok {
+			a.handleScheduleTimer(fields)
+		}
+	case clusterwire.CancelTimerSbeTemplateID:
+		if fields, ok := codecs.TryDecodeCancelTimerAt(buf, offset); ok {
+			a.handleCancelTimer(fields)
 		}
 	}
 }

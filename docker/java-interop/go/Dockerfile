@@ -14,6 +14,7 @@ COPY mmap ./mmap
 COPY record ./record
 COPY ringbuffer ./ringbuffer
 COPY broadcast ./broadcast
+COPY timerwheel ./timerwheel
 COPY internal ./internal
 # harness ClusterMemberSet pulls cluster; cluster open connects archive.Client.
 COPY archive ./archive

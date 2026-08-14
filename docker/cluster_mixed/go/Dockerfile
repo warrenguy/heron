@@ -14,6 +14,7 @@ COPY mmap ./mmap
 COPY record ./record
 COPY ringbuffer ./ringbuffer
 COPY broadcast ./broadcast
+COPY timerwheel ./timerwheel
 COPY internal ./internal
 # cluster/client and cluster/codecs (incl. clusterwire) for induction client.
 # cluster open connects archive.Client; election/consensus import archivewire.

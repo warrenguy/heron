@@ -2,9 +2,7 @@ package service
 
 import (
 	"errors"
-	"fmt"
 
-	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
@@ -163,13 +161,10 @@ func (a *Agent) drainReadyCoordinationAck() int {
 		RelevantID:  nullValue,
 		ServiceID:   a.serviceID,
 	})
-	if result > 0 {
-		a.coordinationAcks = a.coordinationAcks[1:]
-		a.ackID++
-		return 1
+	if !a.acceptOffer(result, errAckPublish) {
+		return 0
 	}
-	if !aeron.IsOfferRetriable(result) {
-		a.markFailure(fmt.Errorf("%w: %d", errAckPublish, result))
-	}
-	return 0
+	a.coordinationAcks = a.coordinationAcks[1:]
+	a.ackID++
+	return 1
 }

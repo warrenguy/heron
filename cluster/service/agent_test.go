@@ -439,11 +439,15 @@ func TestAgent_Join_handoff(t *testing.T) {
 	agent, image, committed := bindAgent(t, svc, 0)
 
 	// One frame under the first image.
-	payload := encodeSessionMessage(t, codecs.SessionMessageHeaderFields{
-		LeadershipTermID: 1,
-		ClusterSessionID: 1,
-		Timestamp:        10,
-	}, []byte("a"))
+	payload := encodeSessionMessage(
+		t,
+		codecs.SessionMessageHeaderFields{
+			LeadershipTermID: 1,
+			ClusterSessionID: 1,
+			Timestamp:        10,
+		},
+		[]byte("a"),
+	)
 	span := writeAgentFrame(t, image, 0, payload)
 	*committed = int64(span)
 
@@ -488,11 +492,15 @@ func TestAgent_Join_paddingHandoff(t *testing.T) {
 	agent, image, committed := bindAgent(t, svc, 0)
 
 	// Message then padding at the handoff cap.
-	payload := encodeSessionMessage(t, codecs.SessionMessageHeaderFields{
-		LeadershipTermID: 1,
-		ClusterSessionID: 1,
-		Timestamp:        5,
-	}, []byte("p"))
+	payload := encodeSessionMessage(
+		t,
+		codecs.SessionMessageHeaderFields{
+			LeadershipTermID: 1,
+			ClusterSessionID: 1,
+			Timestamp:        5,
+		},
+		[]byte("p"),
+	)
 	msgSpan := writeAgentFrame(t, image, 0, payload)
 	const padLen int32 = 64
 	writeAgentPadding(t, image, msgSpan, padLen)
@@ -614,11 +622,15 @@ func TestAgent_SessionMessage_unknownSession(t *testing.T) {
 	svc := &recordingService{}
 	agent, image, committed := bindAgent(t, svc, 0)
 
-	payload := encodeSessionMessage(t, codecs.SessionMessageHeaderFields{
-		LeadershipTermID: 1,
-		ClusterSessionID: 404,
-		Timestamp:        9,
-	}, []byte("body"))
+	payload := encodeSessionMessage(
+		t,
+		codecs.SessionMessageHeaderFields{
+			LeadershipTermID: 1,
+			ClusterSessionID: 404,
+			Timestamp:        9,
+		},
+		[]byte("body"),
+	)
 	span := writeAgentFrame(t, image, 0, payload)
 	*committed = int64(span)
 
@@ -640,16 +652,24 @@ func TestAgent_CallbackOrderGolden(t *testing.T) {
 			Timestamp:        1,
 			ResponseChannel:  []byte("c"),
 		}),
-		encodeSessionMessage(t, codecs.SessionMessageHeaderFields{
-			LeadershipTermID: 1,
-			ClusterSessionID: 1,
-			Timestamp:        2,
-		}, []byte("m1")),
-		encodeSessionMessage(t, codecs.SessionMessageHeaderFields{
-			LeadershipTermID: 1,
-			ClusterSessionID: 1,
-			Timestamp:        3,
-		}, []byte("m2")),
+		encodeSessionMessage(
+			t,
+			codecs.SessionMessageHeaderFields{
+				LeadershipTermID: 1,
+				ClusterSessionID: 1,
+				Timestamp:        2,
+			},
+			[]byte("m1"),
+		),
+		encodeSessionMessage(
+			t,
+			codecs.SessionMessageHeaderFields{
+				LeadershipTermID: 1,
+				ClusterSessionID: 1,
+				Timestamp:        3,
+			},
+			[]byte("m2"),
+		),
 		encodeTimerEvent(t, codecs.TimerEventFields{
 			LeadershipTermID: 1,
 			CorrelationID:    99,
@@ -730,16 +750,20 @@ func TestAgent_NLT_optionalHandler(t *testing.T) {
 		*committed = int64(span)
 		require.Equal(t, 1, agent.DoWork(0))
 		require.Len(t, svc.nlt, 1)
-		require.Equal(t, nltRec{
-			leadershipTermID:    fields.LeadershipTermID,
-			logPosition:         fields.LogPosition,
-			timestamp:           fields.Timestamp,
-			termBaseLogPosition: fields.TermBaseLogPosition,
-			leaderMemberID:      fields.LeaderMemberID,
-			logSessionID:        fields.LogSessionID,
-			timeUnit:            fields.TimeUnit,
-			appVersion:          fields.AppVersion,
-		}, svc.nlt[0])
+		require.Equal(
+			t,
+			nltRec{
+				leadershipTermID:    fields.LeadershipTermID,
+				logPosition:         fields.LogPosition,
+				timestamp:           fields.Timestamp,
+				termBaseLogPosition: fields.TermBaseLogPosition,
+				leaderMemberID:      fields.LeaderMemberID,
+				logSessionID:        fields.LogSessionID,
+				timeUnit:            fields.TimeUnit,
+				appVersion:          fields.AppVersion,
+			},
+			svc.nlt[0],
+		)
 		require.Equal(t, int64(span), agent.LogPosition())
 		require.Equal(t, int64(999), agent.ClusterTime())
 	})
@@ -778,6 +802,108 @@ func TestAgent_NilService(t *testing.T) {
 	})
 	require.True(t, agent.HasSession(3))
 	require.Equal(t, int64(span), agent.LogPosition())
+}
+
+func TestAgent_ScheduleTimer(t *testing.T) {
+	fields := sampleScheduleTimerFields()
+	proxy, pub := boundModuleProxy(t)
+	agent := NewAgent(AgentConfig{ModuleProxy: proxy})
+	require.True(t, agent.ScheduleTimer(fields.CorrelationID, fields.Deadline))
+	require.NoError(t, agent.ServiceFailure())
+	requireDecodedFrame(
+		t,
+		pub,
+		codecs.ScheduleTimerEncodedLen(),
+		codecs.TryDecodeScheduleTimerAt,
+		fields,
+	)
+}
+
+func TestAgent_CancelTimer(t *testing.T) {
+	fields := sampleCancelTimerFields()
+	proxy, pub := boundModuleProxy(t)
+	agent := NewAgent(AgentConfig{ModuleProxy: proxy})
+	require.True(t, agent.CancelTimer(fields.CorrelationID))
+	require.NoError(t, agent.ServiceFailure())
+	requireDecodedFrame(t, pub, codecs.CancelTimerEncodedLen(), codecs.TryDecodeCancelTimerAt, fields)
+}
+
+// Asserts ScheduleTimer and CancelTimer failure mapping. Unbound and retriable
+// paths leave ServiceFailure nil. Terminal close marks errTimerPublish once. A
+// second call keeps that failure.
+func TestAgent_TimerPublish_failurePaths(t *testing.T) {
+	schedule := sampleScheduleTimerFields()
+	cancel := sampleCancelTimerFields()
+	ops := []struct {
+		name    string
+		publish func(*Agent) bool
+	}{
+		{
+			name: "schedule",
+			publish: func(a *Agent) bool {
+				return a.ScheduleTimer(schedule.CorrelationID, schedule.Deadline)
+			},
+		},
+		{
+			name: "cancel",
+			publish: func(a *Agent) bool {
+				return a.CancelTimer(cancel.CorrelationID)
+			},
+		},
+	}
+	tests := []struct {
+		name        string
+		setup       func(*testing.T) *ConsensusModuleProxy
+		wantFailure error
+	}{
+		{
+			name:  "nilProxy",
+			setup: func(*testing.T) *ConsensusModuleProxy { return nil },
+		},
+		{
+			name:  "unboundProxy",
+			setup: func(*testing.T) *ConsensusModuleProxy { return NewConsensusModuleProxy() },
+		},
+		{
+			name: "retriableNotConnected",
+			setup: func(t *testing.T) *ConsensusModuleProxy {
+				return boundModuleProxyWithLimit(t, 0, false)
+			},
+		},
+		{
+			name: "retriableBackPressured",
+			setup: func(t *testing.T) *ConsensusModuleProxy {
+				return boundModuleProxyWithLimit(t, 0, true)
+			},
+		},
+		{
+			name: "terminalClosed",
+			setup: func(t *testing.T) *ConsensusModuleProxy {
+				proxy, pub := boundModuleProxy(t)
+				require.NoError(t, pub.Close())
+				return proxy
+			},
+			wantFailure: errTimerPublish,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, op := range ops {
+				t.Run(op.name, func(t *testing.T) {
+					agent := NewAgent(AgentConfig{ModuleProxy: tc.setup(t)})
+					require.False(t, op.publish(agent))
+					if tc.wantFailure != nil {
+						require.ErrorIs(t, agent.ServiceFailure(), tc.wantFailure)
+						require.False(t, op.publish(agent))
+						require.ErrorIs(t, agent.ServiceFailure(), tc.wantFailure)
+					} else {
+						require.NoError(t, agent.ServiceFailure())
+					}
+				})
+			}
+		})
+	}
 }
 
 func TestAgent_NilCommittedPosition_skipsPoll(t *testing.T) {

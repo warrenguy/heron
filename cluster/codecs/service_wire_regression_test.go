@@ -18,7 +18,10 @@ const (
 		"66000000090000006165726f6e3a69706302000000abcd"
 	goldenSessionCloseEventHex = "1c0016006f001000" +
 		"05000000000000000600000000000000070000000000000000000000"
-	goldenServiceAckHex = "240021006f001000" +
+	goldenScheduleTimerHex = "10001f006f001000" +
+		"01000000000000000200000000000000"
+	goldenCancelTimerHex = "080020006f0010000100000000000000"
+	goldenServiceAckHex  = "240021006f001000" +
 		"0a000000000000000b000000000000000c000000000000000d0000000000000001000000"
 	goldenJoinLogHex = "280028006f001000" +
 		"6400000000000000c80000000000000001000000020000006400000001000000" +
@@ -61,6 +64,26 @@ func TestServiceWireBytes_goldenHex(t *testing.T) {
 				})
 			},
 			templateID: clusterwire.SessionCloseEventSbeTemplateID,
+		},
+		{
+			name:    "ScheduleTimer",
+			wantHex: goldenScheduleTimerHex,
+			encode: func(b []byte) (int, bool) {
+				return codecs.EncodeScheduleTimer(b, 0, actingVersion, codecs.ScheduleTimerFields{
+					CorrelationID: 1, Deadline: 2,
+				})
+			},
+			templateID: clusterwire.ScheduleTimerSbeTemplateID,
+		},
+		{
+			name:    "CancelTimer",
+			wantHex: goldenCancelTimerHex,
+			encode: func(b []byte) (int, bool) {
+				return codecs.EncodeCancelTimer(b, 0, actingVersion, codecs.CancelTimerFields{
+					CorrelationID: 1,
+				})
+			},
+			templateID: clusterwire.CancelTimerSbeTemplateID,
 		},
 		{
 			name:    "ServiceAck",
@@ -110,6 +133,14 @@ func TestServiceFlyweightConstants(t *testing.T) {
 	require.Equal(t, uint16(22), clusterwire.SessionCloseEventSbeTemplateID)
 	require.Equal(t, 36, codecs.SessionCloseEventEncodedLen())
 
+	require.Equal(t, uint16(16), clusterwire.ScheduleTimerSbeBlockLength)
+	require.Equal(t, uint16(31), clusterwire.ScheduleTimerSbeTemplateID)
+	require.Equal(t, 24, codecs.ScheduleTimerEncodedLen())
+
+	require.Equal(t, uint16(8), clusterwire.CancelTimerSbeBlockLength)
+	require.Equal(t, uint16(32), clusterwire.CancelTimerSbeTemplateID)
+	require.Equal(t, 16, codecs.CancelTimerEncodedLen())
+
 	require.Equal(t, uint16(36), clusterwire.ServiceAckSbeBlockLength)
 	require.Equal(t, uint16(33), clusterwire.ServiceAckSbeTemplateID)
 	require.Equal(t, 44, codecs.ServiceAckEncodedLen())
@@ -127,6 +158,8 @@ func TestServiceFlyweightConstants(t *testing.T) {
 		clusterwire.TimerEventSbeSchemaID,
 		clusterwire.SessionOpenEventSbeSchemaID,
 		clusterwire.SessionCloseEventSbeSchemaID,
+		clusterwire.ScheduleTimerSbeSchemaID,
+		clusterwire.CancelTimerSbeSchemaID,
 		clusterwire.ServiceAckSbeSchemaID,
 		clusterwire.JoinLogSbeSchemaID,
 		clusterwire.RequestServiceAckSbeSchemaID,
@@ -137,6 +170,8 @@ func TestServiceFlyweightConstants(t *testing.T) {
 		clusterwire.TimerEventSbeSchemaVersion,
 		clusterwire.SessionOpenEventSbeSchemaVersion,
 		clusterwire.SessionCloseEventSbeSchemaVersion,
+		clusterwire.ScheduleTimerSbeSchemaVersion,
+		clusterwire.CancelTimerSbeSchemaVersion,
 		clusterwire.ServiceAckSbeSchemaVersion,
 		clusterwire.JoinLogSbeSchemaVersion,
 		clusterwire.RequestServiceAckSbeSchemaVersion,
@@ -152,6 +187,17 @@ func TestServiceAck_fieldOffsets(t *testing.T) {
 	require.Equal(t, uint(16), msg.AckIdEncodingOffset())
 	require.Equal(t, uint(24), msg.RelevantIdEncodingOffset())
 	require.Equal(t, uint(32), msg.ServiceIdEncodingOffset())
+}
+
+func TestScheduleTimer_fieldOffsets(t *testing.T) {
+	var msg clusterwire.ScheduleTimer
+	require.Equal(t, uint(0), msg.CorrelationIdEncodingOffset())
+	require.Equal(t, uint(8), msg.DeadlineEncodingOffset())
+}
+
+func TestCancelTimer_fieldOffsets(t *testing.T) {
+	var msg clusterwire.CancelTimer
+	require.Equal(t, uint(0), msg.CorrelationIdEncodingOffset())
 }
 
 func TestJoinLog_isStandbySinceVersion(t *testing.T) {

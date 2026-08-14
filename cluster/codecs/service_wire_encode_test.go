@@ -121,6 +121,43 @@ func TestSessionCloseEvent_roundtrip(t *testing.T) {
 	)
 }
 
+func TestScheduleTimer_roundtrip(t *testing.T) {
+	v := clusterwire.ScheduleTimerSbeSchemaVersion
+	runCodecFieldsActingRoundtrips(
+		t,
+		clusterwire.ScheduleTimerSbeTemplateID,
+		v,
+		[]codecFieldsActingCase[codecs.ScheduleTimerFields]{
+			{name: "sample", fields: scheduleTimerSampleFields()},
+			{
+				name: "max_int",
+				fields: codecs.ScheduleTimerFields{
+					CorrelationID: math.MaxInt64,
+					Deadline:      math.MaxInt64,
+				},
+			},
+		},
+		codecs.EncodeScheduleTimer,
+	)
+}
+
+func TestCancelTimer_roundtrip(t *testing.T) {
+	v := clusterwire.CancelTimerSbeSchemaVersion
+	runCodecFieldsActingRoundtrips(
+		t,
+		clusterwire.CancelTimerSbeTemplateID,
+		v,
+		[]codecFieldsActingCase[codecs.CancelTimerFields]{
+			{name: "sample", fields: cancelTimerSampleFields()},
+			{
+				name:   "max_int",
+				fields: codecs.CancelTimerFields{CorrelationID: math.MaxInt64},
+			},
+		},
+		codecs.EncodeCancelTimer,
+	)
+}
+
 func TestServiceAck_roundtrip(t *testing.T) {
 	v := clusterwire.ServiceAckSbeSchemaVersion
 	fields := codecs.ServiceAckFields{
@@ -225,23 +262,25 @@ func TestRequestServiceAck_roundtrip(t *testing.T) {
 
 func TestServiceEncode_rejects(t *testing.T) {
 	v := clusterwire.TimerEventSbeSchemaVersion
-	fields := codecs.TimerEventFields{LeadershipTermID: 1, CorrelationID: 2, Timestamp: 3}
 	buf := make([]byte, 8)
-
-	end, ok := codecs.EncodeTimerEvent(buf, 0, v, fields)
-	require.False(t, ok)
-	require.Equal(t, 0, end)
-
-	end, ok = codecs.EncodeTimerEvent(buf, -1, v, fields)
-	require.False(t, ok)
-	require.Equal(t, 0, end)
+	requireEncodeRejects(
+		t,
+		buf,
+		v,
+		codecs.TimerEventFields{
+			LeadershipTermID: 1, CorrelationID: 2, Timestamp: 3,
+		},
+		codecs.EncodeTimerEvent,
+	)
+	requireEncodeRejects(t, buf, v, scheduleTimerSampleFields(), codecs.EncodeScheduleTimer)
+	requireEncodeRejects(t, buf, v, cancelTimerSampleFields(), codecs.EncodeCancelTimer)
 
 	openFields := codecs.SessionOpenEventFields{
 		ResponseChannel:  make([]byte, codecs.ClusterEncodeMaxVarLen+1),
 		EncodedPrincipal: nil,
 	}
 	big := make([]byte, 1024+codecs.ClusterEncodeMaxVarLen)
-	end, ok = codecs.EncodeSessionOpenEvent(big, 0, v, openFields)
+	end, ok := codecs.EncodeSessionOpenEvent(big, 0, v, openFields)
 	require.False(t, ok)
 	require.Equal(t, 0, end)
 }
@@ -271,6 +310,16 @@ func TestServiceTryDecode_rejects(t *testing.T) {
 	cases = append(cases, wireHeaderRejectCases(validTimer)...)
 	cases = append(cases, fixedBlockRejectCases(
 		"timer", validTimer, clusterwire.TimerEventSbeBlockLength, 23, 8,
+	)...)
+	cases = append(cases, fixedBlockRejectCases(
+		"schedule_timer",
+		encodeScheduleTimerWire(t, v, scheduleTimerSampleFields()),
+		clusterwire.ScheduleTimerSbeBlockLength, 15, 8,
+	)...)
+	cases = append(cases, fixedBlockRejectCases(
+		"cancel_timer",
+		encodeCancelTimerWire(t, v, cancelTimerSampleFields()),
+		clusterwire.CancelTimerSbeBlockLength, 7, 4,
 	)...)
 	cases = append(cases, fixedBlockRejectCases(
 		"service_ack",
@@ -314,46 +363,156 @@ func TestSessionOpenEventFieldsFromLayout_wrongKind(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestScheduleTimerFieldsFromLayout(t *testing.T) {
+	v := clusterwire.ScheduleTimerSbeSchemaVersion
+	want := scheduleTimerSampleFields()
+	requireFieldsFromLayout(
+		t,
+		want,
+		encodeScheduleTimerWire(t, v, want),
+		codecs.ScheduleTimerFieldsFromLayout,
+		encodeCancelTimerWire(t, v, cancelTimerSampleFields()),
+	)
+}
+
+func TestCancelTimerFieldsFromLayout(t *testing.T) {
+	v := clusterwire.CancelTimerSbeSchemaVersion
+	want := cancelTimerSampleFields()
+	requireFieldsFromLayout(
+		t,
+		want,
+		encodeCancelTimerWire(t, v, want),
+		codecs.CancelTimerFieldsFromLayout,
+		encodeScheduleTimerWire(t, v, scheduleTimerSampleFields()),
+	)
+}
+
 func TestTryDecodeAt_serviceCatalogue(t *testing.T) {
 	v := clusterwire.TimerEventSbeSchemaVersion
 	buf := make([]byte, 512)
 
 	t.Run("timer_event", func(t *testing.T) {
-		requireTryDecodeAt(t, buf, v, codecs.TimerEventFields{
-			LeadershipTermID: 9, CorrelationID: 8, Timestamp: 7,
-		}, codecs.EncodeTimerEvent, codecs.TryDecodeTimerEventAt)
+		requireTryDecodeAt(
+			t,
+			buf,
+			v,
+			codecs.TimerEventFields{
+				LeadershipTermID: 9, CorrelationID: 8, Timestamp: 7,
+			},
+			codecs.EncodeTimerEvent,
+			codecs.TryDecodeTimerEventAt,
+		)
 	})
 	t.Run("session_open_event", func(t *testing.T) {
-		requireTryDecodeAt(t, buf, v, codecs.SessionOpenEventFields{
-			LeadershipTermID: 1, CorrelationID: 2, ClusterSessionID: 3, Timestamp: 4,
-			ResponseStreamID: 102, ResponseChannel: []byte("aeron:ipc"),
-			EncodedPrincipal: []byte{0xAB, 0xCD},
-		}, codecs.EncodeSessionOpenEvent, codecs.TryDecodeSessionOpenEventAt)
+		requireTryDecodeAt(
+			t,
+			buf,
+			v,
+			codecs.SessionOpenEventFields{
+				LeadershipTermID: 1, CorrelationID: 2, ClusterSessionID: 3, Timestamp: 4,
+				ResponseStreamID: 102, ResponseChannel: []byte("aeron:ipc"),
+				EncodedPrincipal: []byte{0xAB, 0xCD},
+			},
+			codecs.EncodeSessionOpenEvent,
+			codecs.TryDecodeSessionOpenEventAt,
+		)
 	})
 	t.Run("session_close_event", func(t *testing.T) {
-		requireTryDecodeAt(t, buf, v, codecs.SessionCloseEventFields{
-			LeadershipTermID: 5, ClusterSessionID: 6, Timestamp: 7,
-			CloseReason: clusterwire.CloseReason_TIMEOUT,
-		}, codecs.EncodeSessionCloseEvent, codecs.TryDecodeSessionCloseEventAt)
+		requireTryDecodeAt(
+			t,
+			buf,
+			v,
+			codecs.SessionCloseEventFields{
+				LeadershipTermID: 5, ClusterSessionID: 6, Timestamp: 7,
+				CloseReason: clusterwire.CloseReason_TIMEOUT,
+			},
+			codecs.EncodeSessionCloseEvent,
+			codecs.TryDecodeSessionCloseEventAt,
+		)
+	})
+	t.Run("schedule_timer", func(t *testing.T) {
+		requireTryDecodeAt(
+			t,
+			buf,
+			v,
+			codecs.ScheduleTimerFields{
+				CorrelationID: 1, Deadline: 2,
+			},
+			codecs.EncodeScheduleTimer,
+			codecs.TryDecodeScheduleTimerAt,
+		)
+	})
+	t.Run("cancel_timer", func(t *testing.T) {
+		requireTryDecodeAt(
+			t,
+			buf,
+			v,
+			codecs.CancelTimerFields{
+				CorrelationID: 1,
+			},
+			codecs.EncodeCancelTimer,
+			codecs.TryDecodeCancelTimerAt,
+		)
 	})
 	t.Run("service_ack", func(t *testing.T) {
-		requireTryDecodeAt(t, buf, v, codecs.ServiceAckFields{
-			LogPosition: 1, Timestamp: 2, AckID: 3, RelevantID: 4, ServiceID: 5,
-		}, codecs.EncodeServiceAck, codecs.TryDecodeServiceAckAt)
+		requireTryDecodeAt(
+			t,
+			buf,
+			v,
+			codecs.ServiceAckFields{
+				LogPosition: 1, Timestamp: 2, AckID: 3, RelevantID: 4, ServiceID: 5,
+			},
+			codecs.EncodeServiceAck,
+			codecs.TryDecodeServiceAckAt,
+		)
 	})
 	t.Run("join_log", func(t *testing.T) {
-		requireTryDecodeAt(t, buf, v, codecs.JoinLogFields{
-			LogPosition: 100, MaxLogPosition: 200, MemberID: 1, LogSessionID: 2,
-			LogStreamID: 100, IsStartup: clusterwire.BooleanType_TRUE, Role: 1,
-			IsStandby:  clusterwire.BooleanType_FALSE,
-			LogChannel: []byte("aeron:udp?endpoint=localhost:9004"),
-		}, codecs.EncodeJoinLog, codecs.TryDecodeJoinLogAt)
+		requireTryDecodeAt(
+			t,
+			buf,
+			v,
+			codecs.JoinLogFields{
+				LogPosition: 100, MaxLogPosition: 200, MemberID: 1, LogSessionID: 2,
+				LogStreamID: 100, IsStartup: clusterwire.BooleanType_TRUE, Role: 1,
+				IsStandby:  clusterwire.BooleanType_FALSE,
+				LogChannel: []byte("aeron:udp?endpoint=localhost:9004"),
+			},
+			codecs.EncodeJoinLog,
+			codecs.TryDecodeJoinLogAt,
+		)
 	})
 	t.Run("request_service_ack", func(t *testing.T) {
-		requireTryDecodeAt(t, buf, v, codecs.RequestServiceAckFields{
-			LogPosition: 99,
-		}, codecs.EncodeRequestServiceAck, codecs.TryDecodeRequestServiceAckAt)
+		requireTryDecodeAt(
+			t,
+			buf,
+			v,
+			codecs.RequestServiceAckFields{
+				LogPosition: 99,
+			},
+			codecs.EncodeRequestServiceAck,
+			codecs.TryDecodeRequestServiceAckAt,
+		)
 	})
+}
+
+func TestTryDecodeScheduleTimerAt_rejects(t *testing.T) {
+	v := clusterwire.ScheduleTimerSbeSchemaVersion
+	requireTryDecodeAtRejects(
+		t,
+		encodeScheduleTimerWire(t, v, scheduleTimerSampleFields()),
+		encodeCancelTimerWire(t, v, cancelTimerSampleFields()),
+		codecs.TryDecodeScheduleTimerAt,
+	)
+}
+
+func TestTryDecodeCancelTimerAt_rejects(t *testing.T) {
+	v := clusterwire.CancelTimerSbeSchemaVersion
+	requireTryDecodeAtRejects(
+		t,
+		encodeCancelTimerWire(t, v, cancelTimerSampleFields()),
+		encodeScheduleTimerWire(t, v, scheduleTimerSampleFields()),
+		codecs.TryDecodeCancelTimerAt,
+	)
 }
 
 func TestEncodeServiceTemplates_ZeroAllocs(t *testing.T) {
@@ -412,6 +571,30 @@ func TestEncodeServiceTemplates_ZeroAllocs(t *testing.T) {
 			},
 		},
 		{
+			name:   "EncodeScheduleTimer",
+			bufLen: codecs.ScheduleTimerEncodedLen(),
+			encode: func(buf []byte) {
+				_, ok := codecs.EncodeScheduleTimer(buf, 0, actingVersion, codecs.ScheduleTimerFields{
+					CorrelationID: 1, Deadline: 2,
+				})
+				if !ok {
+					panic("encode failed")
+				}
+			},
+		},
+		{
+			name:   "EncodeCancelTimer",
+			bufLen: codecs.CancelTimerEncodedLen(),
+			encode: func(buf []byte) {
+				_, ok := codecs.EncodeCancelTimer(buf, 0, actingVersion, codecs.CancelTimerFields{
+					CorrelationID: 1,
+				})
+				if !ok {
+					panic("encode failed")
+				}
+			},
+		},
+		{
 			name:   "EncodeServiceAck",
 			bufLen: codecs.ServiceAckEncodedLen(),
 			encode: func(buf []byte) {
@@ -459,4 +642,86 @@ func TestEncodeServiceTemplates_ZeroAllocs(t *testing.T) {
 			})
 		})
 	}
+}
+
+func scheduleTimerSampleFields() codecs.ScheduleTimerFields {
+	return codecs.ScheduleTimerFields{CorrelationID: 1, Deadline: 2}
+}
+
+func cancelTimerSampleFields() codecs.CancelTimerFields {
+	return codecs.CancelTimerFields{CorrelationID: 1}
+}
+
+func encodeScheduleTimerWire(
+	t *testing.T,
+	actingVersion uint16,
+	fields codecs.ScheduleTimerFields,
+) []byte {
+	t.Helper()
+	return encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeScheduleTimer(buf, 0, actingVersion, fields)
+	})
+}
+
+func encodeCancelTimerWire(
+	t *testing.T,
+	actingVersion uint16,
+	fields codecs.CancelTimerFields,
+) []byte {
+	t.Helper()
+	return encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeCancelTimer(buf, 0, actingVersion, fields)
+	})
+}
+
+func requireEncodeRejects[T any](
+	t *testing.T,
+	buf []byte,
+	actingVersion uint16,
+	fields T,
+	encode func(buf []byte, offset int, actingVersion uint16, fields T) (int, bool),
+) {
+	t.Helper()
+	end, ok := encode(buf, 0, actingVersion, fields)
+	require.False(t, ok)
+	require.Equal(t, 0, end)
+	end, ok = encode(buf, -1, actingVersion, fields)
+	require.False(t, ok)
+	require.Equal(t, 0, end)
+}
+
+func requireFieldsFromLayout[T any](
+	t *testing.T,
+	want T,
+	wire []byte,
+	fromLayout func([]byte, codecs.ClusterMessageLayout) (T, bool),
+	wrongWire []byte,
+) {
+	t.Helper()
+	layout, ok := codecs.ClusterMessageLayoutAt(wire, 0, 0)
+	require.True(t, ok)
+	got, ok := fromLayout(wire, layout)
+	require.True(t, ok)
+	require.Equal(t, want, got)
+
+	wrongLayout, ok := codecs.ClusterMessageLayoutAt(wrongWire, 0, 0)
+	require.True(t, ok)
+	_, ok = fromLayout(wrongWire, wrongLayout)
+	require.False(t, ok)
+}
+
+func requireTryDecodeAtRejects[T any](
+	t *testing.T,
+	validWire, wrongKindWire []byte,
+	tryDecode func([]byte, int) (T, bool),
+) {
+	t.Helper()
+	_, ok := tryDecode(nil, 0)
+	require.False(t, ok)
+	_, ok = tryDecode(validWire, -1)
+	require.False(t, ok)
+	_, ok = tryDecode(validWire[:4], 0)
+	require.False(t, ok)
+	_, ok = tryDecode(wrongKindWire, 0)
+	require.False(t, ok)
 }

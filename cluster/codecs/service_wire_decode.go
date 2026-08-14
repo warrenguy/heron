@@ -125,6 +125,67 @@ func TryDecodeSessionCloseEventAt(buf []byte, offset int) (SessionCloseEventFiel
 	)
 }
 
+func decodeScheduleTimerFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) ScheduleTimerFields {
+	var msg clusterwire.ScheduleTimer
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return ScheduleTimerFields{
+		CorrelationID: msg.CorrelationId(),
+		Deadline:      msg.Deadline(),
+	}
+}
+
+func ScheduleTimerFieldsFromLayout(
+	buf []byte,
+	layout ClusterMessageLayout,
+) (ScheduleTimerFields, bool) {
+	return clusterFieldsFromLayout(
+		buf,
+		layout,
+		clusterwire.ScheduleTimerSbeTemplateID,
+		decodeScheduleTimerFields,
+	)
+}
+
+// TryDecodeScheduleTimerAt decodes ScheduleTimer without interface boxing.
+func TryDecodeScheduleTimerAt(buf []byte, offset int) (ScheduleTimerFields, bool) {
+	return tryDecodeClusterAt(
+		buf, offset, clusterwire.ScheduleTimerSbeTemplateID, 0, decodeScheduleTimerFields,
+	)
+}
+
+func decodeCancelTimerFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) CancelTimerFields {
+	var msg clusterwire.CancelTimer
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return CancelTimerFields{
+		CorrelationID: msg.CorrelationId(),
+	}
+}
+
+func CancelTimerFieldsFromLayout(
+	buf []byte,
+	layout ClusterMessageLayout,
+) (CancelTimerFields, bool) {
+	return clusterFieldsFromLayout(
+		buf,
+		layout,
+		clusterwire.CancelTimerSbeTemplateID,
+		decodeCancelTimerFields,
+	)
+}
+
+// TryDecodeCancelTimerAt decodes CancelTimer without interface boxing.
+func TryDecodeCancelTimerAt(buf []byte, offset int) (CancelTimerFields, bool) {
+	return tryDecodeClusterAt(
+		buf, offset, clusterwire.CancelTimerSbeTemplateID, 0, decodeCancelTimerFields,
+	)
+}
+
 func decodeServiceAckFields(
 	buf []byte,
 	body, block, version, bufLen uint64,

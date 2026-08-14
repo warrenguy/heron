@@ -239,6 +239,10 @@ func requireDecodedClusterFields(tb require.TestingT, want, got any) {
 		requireBytesEqual(tb, wantFields.EncodedPrincipal, gotFields.EncodedPrincipal)
 	case codecs.SessionCloseEventFields:
 		requireDecodedFieldsEqual[codecs.SessionCloseEventFields](tb, wantFields, got)
+	case codecs.ScheduleTimerFields:
+		requireDecodedFieldsEqual[codecs.ScheduleTimerFields](tb, wantFields, got)
+	case codecs.CancelTimerFields:
+		requireDecodedFieldsEqual[codecs.CancelTimerFields](tb, wantFields, got)
 	case codecs.ServiceAckFields:
 		requireDecodedFieldsEqual[codecs.ServiceAckFields](tb, wantFields, got)
 	case codecs.JoinLogFields:
@@ -361,7 +365,7 @@ func requireTryDecodeAt[T any](
 func codecFuzzSeedBuffers() [][]byte {
 	const (
 		actingVersion   = clusterwire.SessionMessageHeaderSbeSchemaVersion
-		seedEncodeCount = 26
+		seedEncodeCount = 28
 	)
 	buf := make([]byte, fuzzClusterCodecMaxLen)
 	seeds := make([][]byte, 0, seedEncodeCount*(1+codecFuzzMaxOffset))
@@ -619,6 +623,19 @@ func codecFuzzSeedBuffers() [][]byte {
 			ClusterSessionID: 6,
 			Timestamp:        7,
 			CloseReason:      clusterwire.CloseReason_CLIENT_ACTION,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeScheduleTimer(b, 0, actingVersion, codecs.ScheduleTimerFields{
+			CorrelationID: 1,
+			Deadline:      2,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeCancelTimer(b, 0, actingVersion, codecs.CancelTimerFields{
+			CorrelationID: 1,
 		})
 	})
 

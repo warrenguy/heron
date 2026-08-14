@@ -187,6 +187,17 @@ type TimerEventFields struct {
 	Timestamp        int64
 }
 
+// ScheduleTimerFields holds ScheduleTimer body fields (SBE template id 31).
+type ScheduleTimerFields struct {
+	CorrelationID int64
+	Deadline      int64
+}
+
+// CancelTimerFields holds CancelTimer body fields (SBE template id 32).
+type CancelTimerFields struct {
+	CorrelationID int64
+}
+
 // SessionOpenEventFields holds SessionOpenEvent body fields (SBE template id 21).
 type SessionOpenEventFields struct {
 	LeadershipTermID int64

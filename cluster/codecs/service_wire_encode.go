@@ -21,6 +21,12 @@ var (
 	sessionCloseEventEncodedLen = int(
 		(&clusterwire.SessionCloseEvent{}).SbeBlockAndHeaderLength(),
 	)
+	scheduleTimerEncodedLen = int(
+		(&clusterwire.ScheduleTimer{}).SbeBlockAndHeaderLength(),
+	)
+	cancelTimerEncodedLen = int(
+		(&clusterwire.CancelTimer{}).SbeBlockAndHeaderLength(),
+	)
 	serviceAckEncodedLen = int(
 		(&clusterwire.ServiceAck{}).SbeBlockAndHeaderLength(),
 	)
@@ -37,6 +43,16 @@ func TimerEventEncodedLen() int {
 // SessionCloseEventEncodedLen is MessageHeader plus full schema block (8+28=36).
 func SessionCloseEventEncodedLen() int {
 	return sessionCloseEventEncodedLen
+}
+
+// ScheduleTimerEncodedLen is MessageHeader plus full schema block (8+16=24).
+func ScheduleTimerEncodedLen() int {
+	return scheduleTimerEncodedLen
+}
+
+// CancelTimerEncodedLen is MessageHeader plus full schema block (8+8=16).
+func CancelTimerEncodedLen() int {
+	return cancelTimerEncodedLen
 }
 
 // ServiceAckEncodedLen is MessageHeader plus full schema block (8+36=44).
@@ -126,6 +142,53 @@ func EncodeSessionCloseEvent(
 				SetClusterSessionId(fields.ClusterSessionID).
 				SetTimestamp(fields.Timestamp).
 				SetCloseReason(fields.CloseReason)
+		},
+	)
+}
+
+// EncodeScheduleTimer writes a cluster ScheduleTimer (SBE template id 31) at
+// offset. Short or mis-offset buffers return wireEnd=0, ok=false without panic.
+func EncodeScheduleTimer(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields ScheduleTimerFields,
+) (wireEnd int, ok bool) {
+	return encodeWithClusterWireHeader(
+		buf,
+		offset,
+		clusterwire.ScheduleTimerSbeBlockLength,
+		clusterwire.ScheduleTimerSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+			var msg clusterwire.ScheduleTimer
+			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+				SetCorrelationId(fields.CorrelationID).
+				SetDeadline(fields.Deadline)
+		},
+	)
+}
+
+// EncodeCancelTimer writes a cluster CancelTimer (SBE template id 32) at
+// offset. Short or mis-offset buffers return wireEnd=0, ok=false without panic.
+func EncodeCancelTimer(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields CancelTimerFields,
+) (wireEnd int, ok bool) {
+	return encodeWithClusterWireHeader(
+		buf,
+		offset,
+		clusterwire.CancelTimerSbeBlockLength,
+		clusterwire.CancelTimerSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+			var msg clusterwire.CancelTimer
+			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+				SetCorrelationId(fields.CorrelationID)
 		},
 	)
 }

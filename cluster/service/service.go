@@ -53,10 +53,42 @@ type NewLeadershipTermEventHandler interface {
 
 // Cluster is the service-facing proxy into member state.
 //
-// Concurrency: invoker-only; read from callbacks and DoWork only.
+// Concurrency: invoker-only. Call from log-event callbacks and DoWork only.
 type Cluster interface {
 	LogPosition() int64
 	ClusterTime() int64
 	MemberID() int32
 	Role() codecs.Role
+
+	// ScheduleTimer requests one cluster timer for correlationID at deadline
+	// (cluster time, nanoseconds). An existing timer for the same correlationID
+	// is rescheduled. Reschedule and cancel race with expiry. A TimerEvent
+	// already appended still arrives. Expiry is leader-only.
+	//
+	// Call from log-event callbacks.
+	//
+	// Returns:
+	//   - true when the request frame was sent
+	//   - false when the proxy is absent or the publication is unbound.
+	//     Retry from a later callback.
+	//   - false when the offer returned a retriable code. Retry from a
+	//     later callback.
+	//   - false when a terminal publication code marks the service failure
+	//     and stops the duty cycle. Must not retry.
+	ScheduleTimer(correlationID, deadline int64) bool
+
+	// CancelTimer requests cancellation of the timer for correlationID.
+	// Cancel races with expiry. A TimerEvent already appended still arrives.
+	//
+	// Call from log-event callbacks.
+	//
+	// Returns:
+	//   - true when the request frame was sent
+	//   - false when the proxy is absent or the publication is unbound.
+	//     Retry from a later callback.
+	//   - false when the offer returned a retriable code. Retry from a
+	//     later callback.
+	//   - false when a terminal publication code marks the service failure
+	//     and stops the duty cycle. Must not retry.
+	CancelTimer(correlationID int64) bool
 }

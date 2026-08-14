@@ -42,6 +42,17 @@ func sampleServiceAckFields() codecs.ServiceAckFields {
 	}
 }
 
+func sampleScheduleTimerFields() codecs.ScheduleTimerFields {
+	return codecs.ScheduleTimerFields{
+		CorrelationID: 11,
+		Deadline:      22,
+	}
+}
+
+func sampleCancelTimerFields() codecs.CancelTimerFields {
+	return codecs.CancelTimerFields{CorrelationID: 11}
+}
+
 // termWireAt returns the DATA frame payload at termOffset in term 0.
 func termWireAt(t *testing.T, pub *aeron.Publication, termOffset int) []byte {
 	t.Helper()
@@ -49,6 +60,24 @@ func termWireAt(t *testing.T, pub *aeron.Publication, termOffset int) []byte {
 	frameLength := int(logbuffer.FrameLengthVolatile(termBuf, termOffset))
 	require.Positive(t, frameLength)
 	return termBuf.Bytes()[termOffset+logbuffer.OffsetFramePayload : termOffset+frameLength]
+}
+
+// requireDecodedFrame asserts the first offered frame on pub has encodedLen
+// and decodes to want.
+func requireDecodedFrame[F any](
+	t *testing.T,
+	pub *aeron.Publication,
+	encodedLen int,
+	tryDecodeAt func([]byte, int) (F, bool),
+	want F,
+) {
+	t.Helper()
+	wire := termWireAt(t, pub, 0)
+	require.Len(t, wire, encodedLen)
+
+	got, ok := tryDecodeAt(wire, 0)
+	require.True(t, ok)
+	require.Equal(t, want, got)
 }
 
 func TestConsensusModuleProxy_unbound(t *testing.T) {
@@ -62,22 +91,46 @@ func TestConsensusModuleProxy_PublishServiceAck_happy(t *testing.T) {
 	p, pub := boundModuleProxy(t)
 	fields := sampleServiceAckFields()
 
-	pos := p.PublishServiceAck(fields)
-	require.Positive(t, pos)
-
-	wire := termWireAt(t, pub, 0)
-	require.Len(t, wire, codecs.ServiceAckEncodedLen())
-
-	got, ok := codecs.TryDecodeServiceAckAt(wire, 0)
-	require.True(t, ok)
-	require.Equal(t, fields, got)
+	require.Positive(t, p.PublishServiceAck(fields))
+	requireDecodedFrame(t, pub, codecs.ServiceAckEncodedLen(), codecs.TryDecodeServiceAckAt, fields)
 }
 
-// Asserts PublishServiceAck failure codes: nil or unbound Closed, retriable
-// exhaustion, and terminal close. Test pubs lack an offer count hook. Retry
-// budget is [aeron.SendAttempts].
-func TestConsensusModuleProxy_PublishServiceAck_failurePaths(t *testing.T) {
-	fields := sampleServiceAckFields()
+func TestConsensusModuleProxy_PublishScheduleTimer_happy(t *testing.T) {
+	p, pub := boundModuleProxy(t)
+	fields := sampleScheduleTimerFields()
+
+	require.Positive(t, p.PublishScheduleTimer(fields))
+	requireDecodedFrame(
+		t,
+		pub,
+		codecs.ScheduleTimerEncodedLen(),
+		codecs.TryDecodeScheduleTimerAt,
+		fields,
+	)
+}
+
+func TestConsensusModuleProxy_PublishCancelTimer_happy(t *testing.T) {
+	p, pub := boundModuleProxy(t)
+	fields := sampleCancelTimerFields()
+
+	require.Positive(t, p.PublishCancelTimer(fields))
+	requireDecodedFrame(t, pub, codecs.CancelTimerEncodedLen(), codecs.TryDecodeCancelTimerAt, fields)
+}
+
+// Asserts PublishServiceAck, PublishScheduleTimer, and PublishCancelTimer
+// against the shared failure matrix:
+//   - nil receiver
+//   - unbound publisher
+//   - retriable exhaustion
+//   - terminal close
+//
+// A failed publish does not mutate publication state. One setup serves all
+// three calls. Test pubs lack an offer count hook. Retry budget is
+// [aeron.SendAttempts].
+func TestConsensusModuleProxy_publishFailurePaths(t *testing.T) {
+	ack := sampleServiceAckFields()
+	schedule := sampleScheduleTimerFields()
+	cancel := sampleCancelTimerFields()
 	tests := []struct {
 		name     string
 		setup    func(t *testing.T) *ConsensusModuleProxy
@@ -120,7 +173,9 @@ func TestConsensusModuleProxy_PublishServiceAck_failurePaths(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := tt.setup(t)
-			require.Equal(t, tt.wantCode, p.PublishServiceAck(fields))
+			require.Equal(t, tt.wantCode, p.PublishServiceAck(ack))
+			require.Equal(t, tt.wantCode, p.PublishScheduleTimer(schedule))
+			require.Equal(t, tt.wantCode, p.PublishCancelTimer(cancel))
 		})
 	}
 }
