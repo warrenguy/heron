@@ -163,6 +163,17 @@ const (
 	ClusterMemberAmplifierLogEndpoint = "239.255.12.49:31504"
 )
 
+// Live service-ack endpoints. Three members reserve base+1 .. base+205 and
+// one shared cluster-log multicast endpoint. Bases sit above
+// ClusterMemberAmplifierPortBase (31500 + 105).
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterServiceAckPortBase    = 31800
+	ClusterServiceAckLogEndpoint = "239.255.12.51:31804"
+)
+
 // cluster_archive one-off and smoke endpoints. Harness holds one matrix for
 // every PortBase and log multicast the cluster_archive package binds under
 // t.Parallel.

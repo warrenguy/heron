@@ -240,6 +240,12 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 			logEndpoint: ClusterMemberAmplifierLogEndpoint,
 		},
 		{
+			name:        "service-ack",
+			portBase:    ClusterServiceAckPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterServiceAckLogEndpoint,
+		},
+		{
 			name:        "cluster-streams-multicast",
 			portBase:    ClusterStreamsMulticastPortBase,
 			memberCount: 2,
@@ -610,4 +616,77 @@ func TestStartClusterMemberSet_archiveFailOneMemberStopsThatDriver(t *testing.T)
 	require.Equal(t, int32(1), stopped1.Load(), "failed member driver must Stop")
 	// Succeeding member's driver is registered on Cleanup; not stopped yet.
 	require.Equal(t, int32(0), stopped0.Load(), "success member driver stops only at Cleanup")
+}
+
+// countingServiceInvoker is a ServiceInvoker stub. DoWork increments calls.
+type countingServiceInvoker struct {
+	calls int
+}
+
+func (inv *countingServiceInvoker) DoWork(int64) int {
+	inv.calls++
+	return 1
+}
+
+// TestClusterMemberSet_attachServiceRejects asserts AttachService fails the
+// test when:
+//   - index is outside [0, MemberCount)
+//   - the invoker is nil
+//   - the slot is empty
+func TestClusterMemberSet_attachServiceRejects(t *testing.T) {
+	t.Parallel()
+
+	dummy := &countingServiceInvoker{}
+	tests := []struct {
+		name    string
+		index   int
+		svc     ServiceInvoker
+		wantMsg string
+	}{
+		{name: "negative", index: -1, svc: dummy, wantMsg: "out of range"},
+		{name: "equal to length", index: 2, svc: dummy, wantMsg: "out of range"},
+		{name: "above length", index: 3, svc: dummy, wantMsg: "out of range"},
+		{name: "nil invoker", index: 0, svc: nil, wantMsg: "must not be nil"},
+		{name: "empty slot", index: 0, svc: dummy, wantMsg: "is empty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			set := &ClusterMemberSet{
+				modules:         make([]*cluster.ConsensusModule, 2),
+				serviceInvokers: make([][]ServiceInvoker, 2),
+			}
+			capture := NewCaptureFailTB(t)
+			set.AttachService(capture, tt.index, tt.svc)
+			require.True(t, capture.Failed())
+			require.Contains(t, capture.lastMsg, tt.wantMsg)
+			require.Equal(t, [][]ServiceInvoker{nil, nil}, set.serviceInvokers)
+		})
+	}
+}
+
+// TestClusterMemberSet_attachServiceKeepsListsByMemberIndex asserts attach
+// order keyed by member id. Occupied StopMember clears invokers at that
+// index.
+func TestClusterMemberSet_attachServiceKeepsListsByMemberIndex(t *testing.T) {
+	t.Parallel()
+
+	inv0a := &countingServiceInvoker{}
+	inv0b := &countingServiceInvoker{}
+	inv1 := &countingServiceInvoker{}
+	placeholder0 := &cluster.ConsensusModule{}
+	placeholder1 := &cluster.ConsensusModule{}
+	set := &ClusterMemberSet{
+		modules:         []*cluster.ConsensusModule{placeholder0, placeholder1},
+		serviceInvokers: make([][]ServiceInvoker, 2),
+	}
+	set.AttachService(t, 0, inv0a)
+	set.AttachService(t, 0, inv0b)
+	set.AttachService(t, 1, inv1)
+	require.Equal(t, [][]ServiceInvoker{{inv0a, inv0b}, {inv1}}, set.serviceInvokers)
+
+	require.NoError(t, set.StopMember(0))
+	require.Nil(t, set.modules[0])
+	require.Equal(t, [][]ServiceInvoker{nil, {inv1}}, set.serviceInvokers)
 }

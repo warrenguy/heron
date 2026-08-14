@@ -7,6 +7,7 @@ import (
 
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/heron/cluster/service"
 )
 
 func TestConstants(t *testing.T) {
@@ -40,6 +41,11 @@ func TestConstants(t *testing.T) {
 	require.Equal(t, "aeron:udp?term-length=64k", cluster.DefaultIngressChannel)
 	require.Equal(t, "aeron:ipc", cluster.DefaultReplayChannel)
 	require.Equal(t, "aeron:ipc?term-length=128k", cluster.DefaultServiceControlChannel)
+
+	// Parity with service package defaults (test-only import).
+	require.Equal(t, service.DefaultControlChannel, cluster.DefaultServiceControlChannel)
+	require.Equal(t, service.DefaultServiceStreamID, cluster.DefaultServiceStreamID)
+	require.Equal(t, service.DefaultConsensusModuleStreamID, cluster.DefaultConsensusModuleStreamID)
 
 	// Port bounds.
 	require.Equal(t, 1, cluster.MinValidPort)

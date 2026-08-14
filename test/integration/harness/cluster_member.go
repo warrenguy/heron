@@ -60,22 +60,24 @@ func IntegrationElectionConfig() election.ElectionConfig {
 	}
 }
 
-// ClusterMemberSet is a set of in-process consensus members. One media driver,
-// one Archive server, and one ConsensusModule per member. All members share
-// one cluster members string.
+// ClusterMemberSet is a set of in-process consensus members. Each member holds
+// one media driver, one Archive server, and one ConsensusModule. All members
+// share one cluster members string.
 //
-// The fixture co-locates one Archive server per member. Cluster topology does
-// the same. No member shares an Archive with another member.
+// The fixture places one Archive server in each member. Cluster topology
+// places one Archive per member. No member shares an Archive with another
+// member.
 //
 // Concurrency: invoker-only. Every method runs on the test goroutine.
 //
 // Lifetime:
 //   - StartClusterMemberSet registers driver Stop and Archive Stop on the
-//     test goroutine after parallel bootstrap. It registers each slot close
-//     after OpenConsensusModule. One-off harness.Start and StartArchiveNode
-//     paths still register Cleanup inside those helpers.
-//   - LIFO teardown per member is the slot close, then Archive Stop, then
-//     driver Stop.
+//     test goroutine after parallel bootstrap. StartClusterMemberSet
+//     registers each slot close after OpenConsensusModule. One-off
+//     harness.Start and StartArchiveNode paths still register Cleanup inside
+//     those helpers.
+//   - Per-member LIFO teardown is slot close, then Archive Stop, then driver
+//     Stop.
 //   - Across the set, later slots close before earlier slots. After every
 //     slot close, Cleanup LIFO stops later Archives and drivers before
 //     earlier ones.
@@ -83,15 +85,23 @@ func IntegrationElectionConfig() election.ElectionConfig {
 //   - Invoker must not call Tick, PumpTransportUntil, TickUntil,
 //     AwaitLogImages, AwaitElection, or LogSessionIDs after Close. Close
 //     clears the transport client, archive control client, and LogStreams.
-//   - State stays readable after Close for failure dumps. Nil handles
-//     report as sentinel values.
-//   - modules, nodes, and configs share length MemberCount. The index is the
-//     member id. StopMember and RestartMember preserve those lengths.
+//   - State stays readable after Close for failure dumps. Nil handles report
+//     as sentinel values.
+//   - modules, nodes, configs, and serviceInvokers share length MemberCount.
+//     The index is the member id.
+//   - StopMember and RestartMember preserve those lengths.
+//   - Occupied StopMember clears attached invokers at that index.
+//   - AttachService requires an occupied slot.
+//   - AttachService appends at that index.
+//
+// Ownership: the set does not own attached service invokers. Close does not
+// close attached invokers.
 type ClusterMemberSet struct {
-	modules       []*cluster.ConsensusModule
-	nodes         []*ArchiveNode
-	configs       []cluster.Config
-	membersString string
+	modules         []*cluster.ConsensusModule
+	serviceInvokers [][]ServiceInvoker
+	nodes           []*ArchiveNode
+	configs         []cluster.Config
+	membersString   string
 }
 
 // ClusterMemberSetConfig holds the port block and multicast log endpoint the
@@ -255,10 +265,11 @@ func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMem
 	// Register cleanups for every started resource before failing. Order matches
 	// sequential loop 1: driver then Archive per member index, low to high.
 	set := &ClusterMemberSet{
-		membersString: membersString,
-		nodes:         make([]*ArchiveNode, cfg.MemberCount),
-		configs:       make([]cluster.Config, cfg.MemberCount),
-		modules:       make([]*cluster.ConsensusModule, 0, cfg.MemberCount),
+		membersString:   membersString,
+		nodes:           make([]*ArchiveNode, cfg.MemberCount),
+		configs:         make([]cluster.Config, cfg.MemberCount),
+		modules:         make([]*cluster.ConsensusModule, 0, cfg.MemberCount),
+		serviceInvokers: make([][]ServiceInvoker, cfg.MemberCount),
 	}
 	var bootErrs []error
 	for i, r := range results {
@@ -469,19 +480,21 @@ func (s *ClusterMemberSet) live() iter.Seq[*cluster.ConsensusModule] {
 // StopMember closes the module in slot index and leaves the slot empty.
 //
 // Behaviour:
-//   - Nils the slot then closes the module. Module Close releases the cluster
-//     directory lock last: unlock then close. The hold is gone when StopMember
-//     returns.
-//   - Leaves the media driver and the Archive node running so RestartMember can
-//     reuse both. Does not call ArchiveNode.Stop. Does not call MediaDriver.Stop.
-//   - Does not wait for cluster.lock. RestartMember open waits only inside
-//     [cluster.OpenRecovery] ([cluster.DirectoryLockWait]).
+//   - Occupied-slot teardown order: clear attached invokers at that index,
+//     nil the slot, then close the module.
+//   - Module Close releases the cluster directory lock last: unlock then
+//     close. The cluster directory lock is released when StopMember returns.
+//   - StopMember does not close the attached invokers.
+//   - The media driver and the Archive node stay running so RestartMember
+//     can reuse both. StopMember does not call ArchiveNode.Stop. StopMember
+//     does not call MediaDriver.Stop.
+//   - StopMember does not wait for cluster.lock. RestartMember open waits
+//     only inside [cluster.OpenRecovery] ([cluster.DirectoryLockWait]).
 //
 // Concurrency: invoker-only. Must not run concurrently with Tick.
 //
-// Lifetime: the cluster directory and the Archive data directory survive.
-//
-// Idempotent: a second call on an empty slot returns nil.
+// Lifetime: the cluster directory and the Archive data directory survive. A
+// second call on an empty slot is idempotent and returns nil.
 //
 // Returns an error when:
 //   - index is out of range
@@ -494,6 +507,7 @@ func (s *ClusterMemberSet) StopMember(index int) error {
 	if m == nil {
 		return nil
 	}
+	s.serviceInvokers[index] = nil
 	s.modules[index] = nil
 	return m.Close()
 }
@@ -591,10 +605,66 @@ func (s *ClusterMemberSet) Leaders() []*cluster.ConsensusModule {
 	return leaders
 }
 
-// Tick runs one duty cycle over every non-empty member. First every transport
-// client and that member's archive control poll. Then every agent.
+// ServiceInvoker is one attached service duty cycle. *service.Agent and
+// test wrappers satisfy it.
+type ServiceInvoker interface {
+	DoWork(nowNs int64) int
+}
+
+// AttachService registers one service invoker for the member at index.
 //
-// Two loops, not one interleaved loop. A member's consensus publication and a
+// Behaviour:
+//   - Tick runs attached invokers after every agent, in attach order per
+//     member.
+//   - Multiple invokers per member are allowed.
+//   - Index must be in [0, MemberCount).
+//   - An out-of-range index fails the test.
+//   - A nil invoker fails the test.
+//   - An empty slot fails the test.
+//   - Callers should attach services before the first Tick.
+//
+// Concurrency: invoker-only. Must not run concurrently with Tick.
+//
+// Lifetime:
+//   - Occupied StopMember clears attached invokers at that index.
+//   - After RestartMember the caller attaches a new invoker.
+//   - AttachService appends at that index.
+//
+// Ownership: the set does not own the invoker. AttachService does not close
+// the invoker.
+func (s *ClusterMemberSet) AttachService(t testing.TB, index int, svc ServiceInvoker) {
+	t.Helper()
+	if index < 0 || index >= len(s.modules) {
+		require.FailNow(t, fmt.Sprintf(
+			"cluster member set: AttachService index %d out of range [0, %d)",
+			index,
+			len(s.modules),
+		))
+		return
+	}
+	if svc == nil {
+		require.FailNow(t, "cluster member set: AttachService invoker must not be nil")
+		return
+	}
+	if s.modules[index] == nil {
+		require.FailNow(t, fmt.Sprintf(
+			"cluster member set: AttachService slot %d is empty",
+			index,
+		))
+		return
+	}
+
+	s.serviceInvokers[index] = append(s.serviceInvokers[index], svc)
+}
+
+// Tick runs one duty cycle over every non-empty member. Three loops:
+//
+//  1. Every transport client and that member's archive control poll.
+//  2. Every agent at that member's NanoClock.
+//  3. Every attached service invoker at that member's NanoClock, in attach
+//     order.
+//
+// Three loops, not one interleaved loop. A member's consensus publication and a
 // peer's consensus subscription live on different drivers. A frame written by
 // one agent is visible only after the peer's client has pumped.
 //
@@ -603,6 +673,7 @@ func (s *ClusterMemberSet) Leaders() []*cluster.ConsensusModule {
 // dependency.
 //
 // Empty slots are skipped so a stopped member does not panic the duty cycle.
+// Tick skips invokers attached to an empty slot.
 //
 // Invoker must not call Tick after Close.
 func (s *ClusterMemberSet) Tick() {
@@ -613,11 +684,23 @@ func (s *ClusterMemberSet) Tick() {
 	for m := range s.live() {
 		m.Agent().DoWork(m.NanoClock()())
 	}
+
+	// Index walk, not live(): invoker lists stay keyed by member id.
+	for i, m := range s.modules {
+		if m == nil {
+			continue
+		}
+		nowNs := m.NanoClock()()
+		for _, inv := range s.serviceInvokers[i] {
+			inv.DoWork(nowNs)
+		}
+	}
 }
 
 // PumpTransportUntil pumps every non-empty transport client until ok reports
 // true or the deadline bound elapses. Does not call any agent. Does not poll
-// archive control. Use Tick or TickUntil when control demux is required.
+// archive control. Does not call attached service invokers. Use Tick or
+// TickUntil when control demux is required.
 //
 // Empty slots are skipped.
 //
@@ -881,7 +964,8 @@ func RecordingCounterPosition(m *cluster.ConsensusModule, recordingID int64) int
 //
 // Ownership: does not stop Archives or media drivers. StartClusterMemberSet
 // owns those via t.Cleanup (driver Stop and Archive Stop). One-off
-// harness.Start and StartArchiveNode paths register their own Cleanup.
+// harness.Start and StartArchiveNode paths register their own Cleanup. Does
+// not close attached service invokers.
 func (s *ClusterMemberSet) Close() error {
 	if s == nil {
 		return nil
