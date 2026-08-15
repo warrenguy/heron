@@ -724,34 +724,53 @@ func tryAppend(
 	return pos
 }
 
-// awaitReElectionAfterStop waits for a survivor ElectionCount of 2 and one new
-// leader above preTerm after the member at stoppedIndex stopped. Returns the
-// new leader.
-func awaitReElectionAfterStop(
+// currentLeader returns the sole leader, or nil when the set does not report
+// exactly one leader.
+func currentLeader(set *harness.ClusterMemberSet) *cluster.ConsensusModule {
+	ls := set.Leaders()
+	if len(ls) != 1 {
+		return nil
+	}
+	return ls[0]
+}
+
+// reElectionReady reports whether the set is ready after the member at
+// stoppedIndex stopped.
+//
+// Ready when:
+//   - a survivor reports ElectionCount 2
+//   - the set reports one leader with LeadershipTermID above preTerm
+func reElectionReady(set *harness.ClusterMemberSet, stoppedIndex int, preTerm int64) bool {
+	countTwo := false
+	for i, m := range set.Modules() {
+		if m == nil || i == stoppedIndex {
+			continue
+		}
+		if m.Agent().ElectionCount() == 2 {
+			countTwo = true
+			break
+		}
+	}
+	if !countTwo {
+		return false
+	}
+	ls := set.Leaders()
+	return len(ls) == 1 && ls[0].LeadershipTermID() > preTerm
+}
+
+// requireReElectedLeader asserts:
+//   - the set reports one leader
+//   - the leader is not the stopped member
+//   - the leader's LeadershipTermID is above preTerm
+//
+// Returns the new leader.
+func requireReElectedLeader(
 	t *testing.T,
 	set *harness.ClusterMemberSet,
 	stoppedIndex int,
 	preTerm int64,
 ) *cluster.ConsensusModule {
 	t.Helper()
-
-	requireAwaitTick(t, set, "re-elect after leader stop", durableReElectBound, func() bool {
-		countTwo := false
-		for i, m := range set.Modules() {
-			if m == nil || i == stoppedIndex {
-				continue
-			}
-			if m.Agent().ElectionCount() == 2 {
-				countTwo = true
-				break
-			}
-		}
-		if !countTwo {
-			return false
-		}
-		ls := set.Leaders()
-		return len(ls) == 1 && ls[0].LeadershipTermID() > preTerm
-	})
 
 	newLeader := requireSingleLeader(t, set, "after re-elect")
 	require.NotEqual(
@@ -769,6 +788,65 @@ func awaitReElectionAfterStop(
 		set.State(),
 	)
 	return newLeader
+}
+
+// leaderRecordsNewTerm reports whether nl records under a term above preTerm
+// after the member at stoppedIndex stopped.
+//
+// True when:
+//   - nl is not nil
+//   - nl is not the stopped member
+//   - nl.LeadershipTermID is above preTerm
+//   - LocalLogRecordingID is not the unset sentinel
+//   - IsRecordingActive is true
+//   - the recording log holds a term entry for that term
+func leaderRecordsNewTerm(
+	nl *cluster.ConsensusModule,
+	stoppedIndex int,
+	preTerm int64,
+) bool {
+	if nl == nil {
+		return false
+	}
+	if nl.ThisMemberID() == int32(stoppedIndex) {
+		return false
+	}
+	term := nl.LeadershipTermID()
+	if term <= preTerm {
+		return false
+	}
+	agent := nl.Agent()
+	if agent.LocalLogRecordingID() == int64(-1) || !agent.IsRecordingActive() {
+		return false
+	}
+	for _, e := range nl.RecordingLog().Entries() {
+		if e.LeadershipTermID == term {
+			return true
+		}
+	}
+	return false
+}
+
+// awaitReElectionAfterStop waits until the set is ready after the member at
+// stoppedIndex stopped.
+//
+// Ready when:
+//   - a survivor reports ElectionCount of 2
+//   - the set reports one leader with LeadershipTermID above preTerm
+//
+// Returns the new leader.
+func awaitReElectionAfterStop(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	stoppedIndex int,
+	preTerm int64,
+) *cluster.ConsensusModule {
+	t.Helper()
+
+	requireAwaitTick(t, set, "re-elect after leader stop", durableReElectBound, func() bool {
+		return reElectionReady(set, stoppedIndex, preTerm)
+	})
+	return requireReElectedLeader(t, set, stoppedIndex, preTerm)
 }
 
 // requireHeartbeatTimeoutTriggerSeen requires at least one member other than

@@ -53,8 +53,9 @@ func TestPollDeadline_contextDeadlineSooner_effectiveBound(t *testing.T) {
 	client := pollTestClient(t)
 	_, effective, err := aeron.PollDeadlineForTest(ctx, client)
 	require.NoError(t, err)
+	require.Positive(t, effective)
 	require.Less(t, effective, aeron.DefaultPollTimeout)
-	require.InDelta(t, float64(50*time.Millisecond), float64(effective), float64(20*time.Millisecond))
+	require.LessOrEqual(t, effective, 50*time.Millisecond)
 }
 
 func TestRetryDeadlineNs(t *testing.T) {
@@ -64,15 +65,14 @@ func TestRetryDeadlineNs(t *testing.T) {
 		startNs    int64
 		timeout    time.Duration
 		wantBound  time.Duration
-		boundDelta time.Duration
+		ctxSooner  bool
 	}{
 		{
 			name:       "contextDeadlineSooner",
 			ctxTimeout: 50 * time.Millisecond,
 			startNs:    time.Now().UnixNano(),
 			timeout:    time.Minute,
-			wantBound:  50 * time.Millisecond,
-			boundDelta: 20 * time.Millisecond,
+			ctxSooner:  true,
 		},
 		{
 			name:       "cfgTimeoutSooner",
@@ -89,10 +89,9 @@ func TestRetryDeadlineNs(t *testing.T) {
 			// not skew the ctx-deadline clamp: bound derives from time.Now(), and startNs
 			// feeds only the returned deadlineNs. Interpreting startNs as epoch nanoseconds
 			// would place cfgDeadline in 1970 and leave bound unclamped at the full timeout.
-			startNs:    5_000_000_000,
-			timeout:    time.Minute,
-			wantBound:  50 * time.Millisecond,
-			boundDelta: 20 * time.Millisecond,
+			startNs:   5_000_000_000,
+			timeout:   time.Minute,
+			ctxSooner: true,
 		},
 		{
 			name:      "noContextDeadlineUsesCfgTimeout",
@@ -113,14 +112,46 @@ func TestRetryDeadlineNs(t *testing.T) {
 
 			deadlineNs, bound := aeron.RetryDeadlineNs(ctx, tc.startNs, tc.timeout)
 
-			if tc.boundDelta > 0 {
-				require.InDelta(t, float64(tc.wantBound), float64(bound), float64(tc.boundDelta))
+			if tc.ctxSooner {
+				require.Positive(t, bound)
+				require.Less(t, bound, tc.timeout)
+				require.LessOrEqual(t, bound, tc.ctxTimeout)
 			} else {
 				require.Equal(t, tc.wantBound, bound)
 			}
 			require.Equal(t, tc.startNs+bound.Nanoseconds(), deadlineNs)
 		})
 	}
+}
+
+func TestEffectiveRetryBound(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+
+	t.Run("noContextDeadlineUsesEffective", func(t *testing.T) {
+		got := aeron.EffectiveRetryBound(context.Background(), 25*time.Millisecond, now)
+		require.Equal(t, 25*time.Millisecond, got)
+	})
+
+	t.Run("cfgTimeoutSooner", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), now.Add(time.Minute))
+		defer cancel()
+		got := aeron.EffectiveRetryBound(ctx, 25*time.Millisecond, now)
+		require.Equal(t, 25*time.Millisecond, got)
+	})
+
+	t.Run("contextDeadlineSooner", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), now.Add(50*time.Millisecond))
+		defer cancel()
+		got := aeron.EffectiveRetryBound(ctx, time.Minute, now)
+		require.Equal(t, 50*time.Millisecond, got)
+	})
+
+	t.Run("expiredContextReturnsZero", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), now.Add(-time.Second))
+		defer cancel()
+		got := aeron.EffectiveRetryBound(ctx, time.Minute, now)
+		require.Equal(t, time.Duration(0), got)
+	})
 }
 
 func TestPreferContextError(t *testing.T) {

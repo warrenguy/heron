@@ -155,6 +155,28 @@ func survivorsReachCommit(
 	return true
 }
 
+// survivorsRecordingAtLeast reports whether every live member except exclude
+// has a type-100 counter for recIDs[i] at least target.
+func survivorsRecordingAtLeast(
+	set *harness.ClusterMemberSet,
+	exclude []int,
+	recIDs []int64,
+	target int64,
+) bool {
+	for i, m := range set.Modules() {
+		if m == nil || slices.Contains(exclude, i) {
+			continue
+		}
+		if i >= len(recIDs) {
+			return false
+		}
+		if !recordingAtLeast(m, recIDs[i], target) {
+			return false
+		}
+	}
+	return true
+}
+
 // requireWarmRestartOpen asserts RestartMember refilled the slot without cold
 // start and with a non-empty recording log.
 func requireWarmRestartOpen(
@@ -381,28 +403,7 @@ func TestDurableCluster_restartsTheOutgoingLeader(t *testing.T) {
 	// New leader records under the new term. Read id, active, and term entry
 	// in one predicate so the term is not sampled from a later state.
 	requireAwaitTick(t, set, "new leader records under new term", durableWorkBound, func() bool {
-		ls := set.Leaders()
-		if len(ls) != 1 {
-			return false
-		}
-		nl := ls[0]
-		if nl.ThisMemberID() == int32(leaderIndex) {
-			return false
-		}
-		term := nl.LeadershipTermID()
-		if term <= preTerm {
-			return false
-		}
-		agent := nl.Agent()
-		if agent.LocalLogRecordingID() == int64(-1) || !agent.IsRecordingActive() {
-			return false
-		}
-		for _, e := range nl.RecordingLog().Entries() {
-			if e.LeadershipTermID == term {
-				return true
-			}
-		}
-		return false
+		return leaderRecordsNewTerm(currentLeader(set), leaderIndex, preTerm)
 	})
 	newLeader := set.Leaders()[0]
 	newTerm := newLeader.LeadershipTermID()

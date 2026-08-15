@@ -203,6 +203,27 @@ func TestTimerService_catchUp(t *testing.T) {
 		require.Equal(t, timerPollLimit, n)
 		requireTimerCount(t, svc, 2*perSpoke-timerPollLimit)
 	})
+
+	t.Run("deadline equal to now on a tick boundary needs three polls", func(t *testing.T) {
+		t.Parallel()
+		svc := newTimerServiceForWheel(timerwheel.New(0, 1, 4, 1, 4))
+		const corr int64 = 1
+		const now int64 = 2
+		require.True(t, svc.schedule(corr, now))
+		requireTimerCount(t, svc, 1)
+
+		requireNoExpiry(t, svc, now, "first catch-up poll fired")
+		requireTimerCount(t, svc, 1)
+
+		requireNoExpiry(t, svc, now, "landing poll fired")
+		requireTimerCount(t, svc, 1)
+
+		var got []int64
+		n := svc.poll(now, collectCorrelationIDs(&got))
+		require.Equal(t, 1, n)
+		require.Equal(t, []int64{corr}, got)
+		requireTimerCount(t, svc, 0)
+	})
 }
 
 func TestTimerService_clampDeadline(t *testing.T) {

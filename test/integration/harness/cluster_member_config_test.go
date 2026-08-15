@@ -246,6 +246,18 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 			logEndpoint: ClusterServiceAckLogEndpoint,
 		},
 		{
+			name:        "session-extend-restart",
+			portBase:    ClusterSessionExtendRestartPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterSessionExtendRestartLogEndpoint,
+		},
+		{
+			name:        "session-extend-reelect",
+			portBase:    ClusterSessionExtendReElectPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterSessionExtendReElectLogEndpoint,
+		},
+		{
 			name:        "cluster-streams-multicast",
 			portBase:    ClusterStreamsMulticastPortBase,
 			memberCount: 2,

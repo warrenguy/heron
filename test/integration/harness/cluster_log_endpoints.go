@@ -174,6 +174,21 @@ const (
 	ClusterServiceAckLogEndpoint = "239.255.12.51:31804"
 )
 
+// Session-extend live-scenario endpoints. Each pair reserves one three-member
+// consensus port block (base+1 .. base+205) and one shared cluster-log
+// multicast endpoint. Restart and re-elect are separate so the two scenarios
+// may run in parallel. Bases sit above ClusterServiceAckPortBase
+// (31800 + 205).
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterSessionExtendRestartPortBase    = 32100
+	ClusterSessionExtendRestartLogEndpoint = "239.255.12.53:32104"
+	ClusterSessionExtendReElectPortBase    = 32400
+	ClusterSessionExtendReElectLogEndpoint = "239.255.12.55:32404"
+)
+
 // cluster_archive one-off and smoke endpoints. Harness holds one matrix for
 // every PortBase and log multicast the cluster_archive package binds under
 // t.Parallel.

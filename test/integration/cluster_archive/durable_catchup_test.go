@@ -374,14 +374,22 @@ func TestDurableCluster_catchesUpConcurrentFollowers(t *testing.T) {
 	})
 }
 
+// recordingAtLeast reports whether m's type-100 counter for recordingID is
+// at least target. Nil m is false.
+func recordingAtLeast(m *cluster.ConsensusModule, recordingID, target int64) bool {
+	if m == nil {
+		return false
+	}
+	return harness.RecordingCounterPosition(m, recordingID) >= target
+}
+
 // localRecordingAtLeast reports whether m's local log recording counter is at
 // least target. Nil m is false.
 func localRecordingAtLeast(m *cluster.ConsensusModule, target int64) bool {
 	if m == nil {
 		return false
 	}
-	pos := harness.RecordingCounterPosition(m, m.Agent().LocalLogRecordingID())
-	return pos >= target
+	return recordingAtLeast(m, m.Agent().LocalLogRecordingID(), target)
 }
 
 // failIfFollowerLogReplication fails the test when m is on the nil-factory

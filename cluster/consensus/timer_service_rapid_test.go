@@ -77,9 +77,15 @@ func TestTimerService_lifecycle_rapid(t *testing.T) {
 
 		assertQuiescence := func() {
 			rt.Helper()
-			// Two consecutive zeros: a catch-up that lands on the now wheel
-			// tick returns 0 without scanning that spoke. The next poll scans
-			// it. timerPollLimit also stops a single call early.
+			// Three consecutive zero returns drain due timers.
+			//
+			//   - First poll stops when CurrentTickTime is at now. That poll does not
+			//     scan the now spoke.
+			//   - When now is a wheel-tick boundary the next poll lands on the deadline
+			//     spoke and does not scan that spoke.
+			//   - The third poll scans the deadline spoke.
+			//
+			// timerPollLimit also stops a single call early.
 			idle := 0
 			for range 1 << 16 {
 				if pollModel(false) != 0 {
@@ -87,11 +93,11 @@ func TestTimerService_lifecycle_rapid(t *testing.T) {
 					continue
 				}
 				idle++
-				if idle >= 2 {
+				if idle >= 3 {
 					break
 				}
 			}
-			require.GreaterOrEqual(rt, idle, 2, "poll did not go idle")
+			require.GreaterOrEqual(rt, idle, 3, "poll did not go idle")
 			assertCount()
 			for id, deadline := range model {
 				require.Greater(rt, deadline, now,
