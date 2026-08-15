@@ -51,6 +51,18 @@ type NewLeadershipTermEventHandler interface {
 	)
 }
 
+// TakeSnapshotHandler is the optional extension a service implements to
+// write snapshot state when the cluster requests a snapshot action.
+// NewAgent detects the handler once with a type assertion.
+//
+// Behaviour: publication is the snapshot write target and may be nil.
+// Implementations must nil-check before offering. A non-nil error marks
+// the service failure once and stops the duty cycle. No ServiceAck is
+// sent for that action.
+type TakeSnapshotHandler interface {
+	TakeSnapshot(publication *aeron.ExclusivePublication) error
+}
+
 // Cluster is the service-facing proxy into member state.
 //
 // Concurrency: invoker-only. Call from log-event callbacks and DoWork only.

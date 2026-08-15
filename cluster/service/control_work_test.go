@@ -673,6 +673,104 @@ func TestControlWork_TimestampAndRelevantID(t *testing.T) {
 	require.Equal(t, int64(-1), reqAck.RelevantID)
 }
 
+func TestControlWork_JoinThenSnapshotDrainOrder(t *testing.T) {
+	h := newControlAgentHarness(t, 0)
+	h.bindJoin(t, 0)
+
+	const timestamp int64 = 321
+	span := clusterActionFrameSpan()
+	writeClusterAction(t, h.image, h.committed, snapshotActionFields(int64(span), timestamp))
+
+	h.agent.DoWork(0)
+	require.NoError(t, h.agent.ServiceFailure())
+	require.Equal(t, int64(span), h.agent.LogPosition())
+	require.Equal(t, timestamp, h.agent.ClusterTime())
+	require.Equal(t, 1, h.agent.PendingCoordinationAcks())
+	require.Equal(t, ackKindSnapshot, h.agent.coordinationAcks[0].kind)
+	require.True(t, h.agent.coordinationAcks[0].ready)
+
+	acks := decodeServiceAcksFromPub(t, h.pub)
+	require.Len(t, acks, 1)
+	require.Equal(t, codecs.ServiceAckFields{
+		LogPosition: 0,
+		Timestamp:   0,
+		AckID:       0,
+		RelevantID:  nullValue,
+		ServiceID:   1,
+	}, acks[0])
+
+	h.agent.DoWork(0)
+	acks = decodeServiceAcksFromPub(t, h.pub)
+	require.Len(t, acks, 2)
+	require.Equal(t, codecs.ServiceAckFields{
+		LogPosition: int64(span),
+		Timestamp:   timestamp,
+		AckID:       1,
+		RelevantID:  nullValue,
+		ServiceID:   1,
+	}, acks[1])
+	require.Equal(t, 0, h.agent.PendingCoordinationAcks())
+}
+
+func TestControlWork_RelevantIDRemainsNull(t *testing.T) {
+	h := newControlAgentHarness(t, 0)
+	h.bindJoin(t, 0)
+	h.drainJoin(t)
+	acks := decodeServiceAcksFromPub(t, h.pub)
+	require.Len(t, acks, 1)
+	require.Equal(t, codecs.ServiceAckFields{
+		LogPosition: 0,
+		Timestamp:   0,
+		AckID:       0,
+		RelevantID:  nullValue,
+		ServiceID:   1,
+	}, acks[0])
+
+	h.control.Enqueue(encodeRequestServiceAckControl(t, 0))
+	h.agent.DoWork(0)
+	acks = decodeServiceAcksFromPub(t, h.pub)
+	require.Len(t, acks, 2)
+	require.Equal(t, codecs.ServiceAckFields{
+		LogPosition: 0,
+		Timestamp:   0,
+		AckID:       1,
+		RelevantID:  nullValue,
+		ServiceID:   1,
+	}, acks[1])
+}
+
+func TestControlWork_DrainReadsRelevantID(t *testing.T) {
+	proxy, pub := boundModuleProxy(t)
+	agent := NewAgent(AgentConfig{
+		ServiceID:   1,
+		ModuleProxy: proxy,
+	})
+	const (
+		logPosition int64 = 100
+		timestamp   int64 = 777
+		relevantID  int64 = 42
+	)
+	agent.clusterTime = timestamp
+	agent.coordinationAcks = []coordinationAck{{
+		logPosition: logPosition,
+		kind:        ackKindSnapshot,
+		ready:       true,
+		relevantID:  relevantID,
+	}}
+
+	require.Equal(t, 1, agent.drainReadyCoordinationAck())
+	require.Equal(t, 0, agent.PendingCoordinationAcks())
+	acks := decodeServiceAcksFromPub(t, pub)
+	require.Len(t, acks, 1)
+	require.Equal(t, codecs.ServiceAckFields{
+		LogPosition: logPosition,
+		Timestamp:   timestamp,
+		AckID:       0,
+		RelevantID:  relevantID,
+		ServiceID:   1,
+	}, acks[0])
+}
+
 func TestControlWork_NoSpontaneousStartAck(t *testing.T) {
 	h := newControlAgentHarness(t, 0)
 	// Start only: no control frames, no acks.

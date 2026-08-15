@@ -6,14 +6,18 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 // Sticky failure causes marked once on the service path. Unexported: tests
 // match with errors.Is against the package-level values.
 var (
-	errLogNotContiguous = errors.New("service: log not contiguous")
-	errSessionClash     = errors.New("service: session id clash")
-	errTimerPublish     = errors.New("service: timer publish failed")
+	errLogNotContiguous       = errors.New("service: log not contiguous")
+	errSessionClash           = errors.New("service: session id clash")
+	errTimerPublish           = errors.New("service: timer publish failed")
+	errTakeSnapshot           = errors.New("service: take snapshot failed")
+	errActionPositionMismatch = errors.New("service: cluster action log position mismatch")
+	errUnknownClusterAction   = errors.New("service: unknown cluster action")
 )
 
 // AgentConfig configures NewAgent. Zero-value fields have the defaults stated
@@ -52,6 +56,10 @@ type AgentConfig struct {
 	// is allowed: ready acks stay queued. A proxy with no bound publication
 	// drains nothing, same as nil.
 	ModuleProxy *ConsensusModuleProxy
+
+	// SnapshotPublication is handed to TakeSnapshot on a snapshot action.
+	// Nil is allowed. Nothing else reads the field.
+	SnapshotPublication *aeron.ExclusivePublication
 }
 
 // Agent owns the service duty cycle: log join, bounded log consumption,
@@ -88,7 +96,8 @@ type Agent struct {
 	// coordinationAcks is the FIFO of delivered coordination frames not yet
 	// acked. Drain is prefix-gated: only a ready first queued entry may send.
 	// Join entries become ready at bind or supersession. Request entries become
-	// ready when logPosition equals the requested position.
+	// ready when logPosition equals the requested position. Snapshot entries
+	// are ready on append.
 	coordinationAcks []coordinationAck
 
 	// sessions is the log-derived registry keyed by cluster session id.
@@ -96,7 +105,9 @@ type Agent struct {
 
 	logSubscription *aeron.Subscription
 
-	leadershipHandler NewLeadershipTermEventHandler
+	leadershipHandler   NewLeadershipTermEventHandler
+	snapshotHandler     TakeSnapshotHandler
+	snapshotPublication *aeron.ExclusivePublication
 
 	// ackID is the next ServiceAck id to send. Starts 0. Advances only on a
 	// successful drain send.
@@ -144,17 +155,22 @@ const (
 	// ackKindRequest: ready when the agent log position equals the requested
 	// position.
 	ackKindRequest
+
+	// ackKindSnapshot: ready on append. No sweep rule.
+	ackKindSnapshot
 )
 
 // coordinationAck is one delivered coordination frame awaiting its ack.
 //
 // Join entries set ready at bind or supersession. Request entries set ready
-// when the agent log position equals the entry logPosition. Drain is
-// prefix-gated: only a ready first queued entry may send.
+// when the agent log position equals the entry logPosition. Snapshot entries
+// are ready on append. Drain is prefix-gated: only a ready first queued entry
+// may send.
 type coordinationAck struct {
 	logPosition int64
 	kind        coordinationAckKind
 	ready       bool
+	relevantID  int64
 }
 
 // clientSessionRecord holds open-event fields for one log-derived session. The
@@ -174,21 +190,25 @@ var _ Cluster = (*Agent)(nil)
 // NewAgent builds an Agent from cfg. The adapter is created with no Image.
 // memberID starts at -1 and logPosition at 0 (cold-start service).
 //
-// NewLeadershipTermEventHandler is detected once via type assertion on
-// cfg.Service.
+// NewLeadershipTermEventHandler and TakeSnapshotHandler are detected once
+// via type assertion on cfg.Service.
 func NewAgent(cfg AgentConfig) *Agent {
 	a := &Agent{
-		serviceID:         cfg.ServiceID,
-		service:           cfg.Service,
-		committedPosition: cfg.CommittedPosition,
-		subscriptions:     cfg.Subscriptions,
-		control:           cfg.Control,
-		moduleProxy:       cfg.ModuleProxy,
-		memberID:          -1,
-		sessions:          make(map[int64]*clientSessionRecord),
+		serviceID:           cfg.ServiceID,
+		service:             cfg.Service,
+		committedPosition:   cfg.CommittedPosition,
+		subscriptions:       cfg.Subscriptions,
+		control:             cfg.Control,
+		moduleProxy:         cfg.ModuleProxy,
+		snapshotPublication: cfg.SnapshotPublication,
+		memberID:            -1,
+		sessions:            make(map[int64]*clientSessionRecord),
 	}
 	if nlt, ok := cfg.Service.(NewLeadershipTermEventHandler); ok {
 		a.leadershipHandler = nlt
+	}
+	if snap, ok := cfg.Service.(TakeSnapshotHandler); ok {
+		a.snapshotHandler = snap
 	}
 	a.controlOnFragment = a.handleControlFragment
 	a.adapter = NewBoundedLogAdapter(a, cfg.FragmentLimit)
@@ -412,6 +432,7 @@ func (a *Agent) handleJoinLog(event logJoinEvent) {
 	a.coordinationAcks = append(a.coordinationAcks, coordinationAck{
 		logPosition: event.logPosition,
 		kind:        ackKindJoin,
+		relevantID:  nullValue,
 	})
 
 	if a.adapter.Image() != nil {
@@ -618,6 +639,57 @@ func (a *Agent) handleNewLeadershipTermEvent(
 		)
 	}
 	return aeron.ControlledContinue
+}
+
+// handleClusterAction delivers one ClusterActionRequest from the log adapter.
+//
+// Order:
+//  1. Note time and position from the frame. Runs for every action kind.
+//  2. Decoded LogPosition must equal the frame-end position. Mismatch
+//     marks failure and returns ControlledAbort. Noted values stay.
+//  3. SUSPEND and RESUME return ControlledContinue. No hook. No entry.
+//  4. Unknown Action, including NULL_VALUE, marks failure and returns
+//     ControlledAbort.
+//  5. SNAPSHOT with Flags != 0 returns ControlledContinue. No hook. No
+//     entry.
+//  6. SNAPSHOT with Flags == 0 runs TakeSnapshot when a handler is cached.
+//     Hook error marks failure and returns ControlledAbort. No entry.
+//     Success or no handler appends one ready snapshot entry and returns
+//     ControlledContinue.
+func (a *Agent) handleClusterAction(
+	logPosition int64,
+	fields codecs.ClusterActionRequestFields,
+) aeron.ControlledAction {
+	a.adoptConsumed(logPosition, fields.Timestamp)
+
+	if fields.LogPosition != logPosition {
+		return a.handleDispatchFailure(errActionPositionMismatch)
+	}
+
+	switch fields.Action {
+	case clusterwire.ClusterAction_SUSPEND, clusterwire.ClusterAction_RESUME:
+		return aeron.ControlledContinue
+	case clusterwire.ClusterAction_SNAPSHOT:
+		if fields.Flags != 0 {
+			return aeron.ControlledContinue
+		}
+		if a.snapshotHandler != nil {
+			if err := a.snapshotHandler.TakeSnapshot(a.snapshotPublication); err != nil {
+				return a.handleDispatchFailure(fmt.Errorf("%w: %w", errTakeSnapshot, err))
+			}
+		}
+		a.coordinationAcks = append(a.coordinationAcks, coordinationAck{
+			logPosition: logPosition,
+			kind:        ackKindSnapshot,
+			ready:       true,
+			relevantID:  nullValue,
+		})
+		return aeron.ControlledContinue
+	case clusterwire.ClusterAction_NULL_VALUE:
+		fallthrough
+	default:
+		return a.handleDispatchFailure(errUnknownClusterAction)
+	}
 }
 
 func (a *Agent) handleDispatchFailure(err error) aeron.ControlledAction {

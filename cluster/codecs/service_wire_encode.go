@@ -21,6 +21,9 @@ var (
 	sessionCloseEventEncodedLen = int(
 		(&clusterwire.SessionCloseEvent{}).SbeBlockAndHeaderLength(),
 	)
+	clusterActionRequestEncodedLen = int(
+		(&clusterwire.ClusterActionRequest{}).SbeBlockAndHeaderLength(),
+	)
 	scheduleTimerEncodedLen = int(
 		(&clusterwire.ScheduleTimer{}).SbeBlockAndHeaderLength(),
 	)
@@ -43,6 +46,11 @@ func TimerEventEncodedLen() int {
 // SessionCloseEventEncodedLen is MessageHeader plus full schema block (8+28=36).
 func SessionCloseEventEncodedLen() int {
 	return sessionCloseEventEncodedLen
+}
+
+// ClusterActionRequestEncodedLen is MessageHeader plus full schema block (8+32=40).
+func ClusterActionRequestEncodedLen() int {
+	return clusterActionRequestEncodedLen
 }
 
 // ScheduleTimerEncodedLen is MessageHeader plus full schema block (8+16=24).
@@ -142,6 +150,36 @@ func EncodeSessionCloseEvent(
 				SetClusterSessionId(fields.ClusterSessionID).
 				SetTimestamp(fields.Timestamp).
 				SetCloseReason(fields.CloseReason)
+		},
+	)
+}
+
+// EncodeClusterActionRequest writes a cluster ClusterActionRequest (SBE
+// template id 23) at offset. Encode always writes Flags, including 0, at
+// every actingVersion. The root block is 32. Exclusive TryClaim buffers
+// are not zeroed. Short or mis-offset buffers return wireEnd=0, ok=false
+// without panic.
+func EncodeClusterActionRequest(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields ClusterActionRequestFields,
+) (wireEnd int, ok bool) {
+	return encodeWithClusterWireHeader(
+		buf,
+		offset,
+		clusterwire.ClusterActionRequestSbeBlockLength,
+		clusterwire.ClusterActionRequestSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+			var msg clusterwire.ClusterActionRequest
+			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+				SetLeadershipTermId(fields.LeadershipTermID).
+				SetLogPosition(fields.LogPosition).
+				SetTimestamp(fields.Timestamp).
+				SetAction(fields.Action).
+				SetFlags(fields.Flags)
 		},
 	)
 }

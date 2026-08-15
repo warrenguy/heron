@@ -115,21 +115,25 @@ func (a *Agent) ServicePublishFailure() error {
 //
 // Callers should pass a committed position the services will observe exactly.
 //
+// Concurrency: invoker-only.
+//
 // Returns an error when:
 //   - no service proxy is bound ([ErrServiceControlUnbound])
 //   - serviceAckFailure is marked (returns that failure)
+//   - a snapshot action wait is pending ([errSnapshotActionPending])
 //   - the publish returns a non-positive code after the attempt budget
 //
 // On error no wait is queued. RequestServiceAck does not store a pending
 // retry.
-//
-// Concurrency: invoker-only.
 func (a *Agent) RequestServiceAck(logPosition int64) error {
 	if a.serviceProxy == nil {
 		return ErrServiceControlUnbound
 	}
 	if a.serviceAckFailure != nil {
 		return a.serviceAckFailure
+	}
+	if a.snapshotWaitPosition != 0 {
+		return errSnapshotActionPending
 	}
 	pos := a.serviceProxy.PublishRequestServiceAck(logPosition)
 	if pos <= 0 {
@@ -142,26 +146,31 @@ func (a *Agent) RequestServiceAck(logPosition int64) error {
 	return nil
 }
 
-// serviceControlWork consumes the first coordination wait when every service
-// first queued entry has reached that wait position.
+// serviceControlWork consumes the first coordination wait when every service's
+// first queued entry has reached the wait position.
 //
 // Behaviour:
-//  1. serviceAckFailure non-nil: skip. Wait stays queued.
+//  1. serviceAckFailure non-nil: skip. The wait stays queued.
 //  2. Empty waits: return.
-//  3. First-wait check via hasReachedServiceAcks:
-//     - (true, nil): removeServiceAckHead, pop first wait, count work
+//  3. First queued entry check via hasReachedServiceAcks:
+//     - (true, nil): removeServiceAckHead, pop the first wait, count work
 //     - (false, nil): not every first queued entry has reached; return
 //     - (false, ErrServiceAckOutOfSequence): mark serviceAckFailure once
 //
 // At most one wait completes per DoWork call.
 //
-// Pending JoinLog retry is [Agent.retryPendingJoinLog]. DoWork runs that after
-// the election or steady branch so PrepareForNewLeadership can drop a
+// A consumed wait that matches snapshotWaitPosition clears
+// snapshotWaitPosition to 0. A consumed wait at a retired snapshot position
+// drops leftover tracker entries at the consumed position. A remaining wait at
+// the consumed position keeps the entries.
+//
+// Pending JoinLog retry is [Agent.retryPendingJoinLog]. DoWork runs the retry
+// after the election or steady branch. PrepareForNewLeadership can then drop a
 // superseded pending before any offer.
 //
-// Returns 1 when a wait is consumed, else 0.
-//
 // Concurrency: invoker-only.
+//
+// Returns 1 when a wait is consumed, else 0.
 func (a *Agent) serviceControlWork() int {
 	if a.serviceAckFailure != nil || len(a.serviceAckWaits) == 0 {
 		return 0
@@ -177,6 +186,10 @@ func (a *Agent) serviceControlWork() int {
 	}
 	a.removeServiceAckHead()
 	a.serviceAckWaits = a.serviceAckWaits[1:]
+	if head == a.snapshotWaitPosition {
+		a.snapshotWaitPosition = 0
+	}
+	a.dropAbandonedSnapshotLeftovers(head)
 	return 1
 }
 
@@ -362,9 +375,14 @@ func (a *Agent) handleServiceControlFragment(buf []byte, offset int) {
 }
 
 // handleServiceAck offers one decoded ServiceAck, then runs the receive-time
-// sequence check.
+// sequence check. A ServiceAck at a retired snapshot position is dropped before
+// the offer.
 //
 // Behaviour:
+//   - A ServiceAck at a snapshot position retired by PrepareForNewLeadership
+//     is dropped. The frame is not offered. The dropped AckID is noted so
+//     serviceAckID can skip that step. A new wait at the same position still
+//     accepts the frame.
 //   - A refused offer (service id out of range) drops the frame and runs no
 //     check.
 //   - A successful offer calls afterOfferSequenceError for the expected
@@ -379,6 +397,11 @@ func (a *Agent) handleServiceControlFragment(buf []byte, offset int) {
 // Timestamp is decoded and not stored. Wait paths keep exact (ackID,
 // logPosition) match via hasReachedServiceAcks at the wait position.
 func (a *Agent) handleServiceAck(fields codecs.ServiceAckFields) {
+	if a.isAbandonedSnapshotAck(fields.LogPosition) {
+		a.noteAbandonedSnapshotAckID(fields.ServiceID, fields.AckID)
+		a.advancePastAbandonedSnapshotAcks()
+		return
+	}
 	if !a.serviceAcks.offer(fields.ServiceID, serviceAck{
 		ackID:       fields.AckID,
 		logPosition: fields.LogPosition,

@@ -125,6 +125,50 @@ func TryDecodeSessionCloseEventAt(buf []byte, offset int) (SessionCloseEventFiel
 	)
 }
 
+func decodeClusterActionRequestFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) ClusterActionRequestFields {
+	var msg clusterwire.ClusterActionRequest
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	flags := msg.Flags()
+	if flags == msg.FlagsNullValue() {
+		flags = 0
+	}
+	return ClusterActionRequestFields{
+		LeadershipTermID: msg.LeadershipTermId(),
+		LogPosition:      msg.LogPosition(),
+		Timestamp:        msg.Timestamp(),
+		Action:           msg.Action(),
+		Flags:            flags,
+	}
+}
+
+// ClusterActionRequestFieldsFromLayout decodes ClusterActionRequest from a
+// parsed layout. ok is template-ID match only.
+func ClusterActionRequestFieldsFromLayout(
+	buf []byte,
+	layout ClusterMessageLayout,
+) (ClusterActionRequestFields, bool) {
+	return clusterFieldsFromLayout(
+		buf,
+		layout,
+		clusterwire.ClusterActionRequestSbeTemplateID,
+		decodeClusterActionRequestFields,
+	)
+}
+
+// TryDecodeClusterActionRequestAt decodes ClusterActionRequest without interface boxing.
+func TryDecodeClusterActionRequestAt(buf []byte, offset int) (ClusterActionRequestFields, bool) {
+	return tryDecodeClusterAt(
+		buf,
+		offset,
+		clusterwire.ClusterActionRequestSbeTemplateID,
+		0,
+		decodeClusterActionRequestFields,
+	)
+}
+
 func decodeScheduleTimerFields(
 	buf []byte,
 	body, block, version, bufLen uint64,

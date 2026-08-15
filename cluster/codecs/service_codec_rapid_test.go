@@ -80,6 +80,34 @@ func TestSessionCloseEvent_codec_rapid(t *testing.T) {
 	})
 }
 
+func TestClusterActionRequest_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.ClusterActionRequestFields{
+			LeadershipTermID: rapid.Int64().Draw(rt, "leadershipTermID"),
+			LogPosition:      rapid.Int64().Draw(rt, "logPosition"),
+			Timestamp:        rapid.Int64().Draw(rt, "timestamp"),
+			Action: rapid.SampledFrom([]clusterwire.ClusterAction{
+				clusterwire.ClusterAction_SUSPEND,
+				clusterwire.ClusterAction_RESUME,
+				clusterwire.ClusterAction_SNAPSHOT,
+				clusterwire.ClusterAction_NULL_VALUE,
+			}).Draw(rt, "action"),
+			Flags: rapid.Int32().Draw(rt, "flags"),
+		}
+		wantFields := clusterActionRequestWantFields(fields, actingVersion)
+		runCodecRoundtripAtOffset(
+			rt,
+			clusterwire.ClusterActionRequestSbeTemplateID,
+			actingVersion,
+			offset,
+			rapidEncodeAt(actingVersion, fields, codecs.EncodeClusterActionRequest),
+			wantFields,
+		)
+	})
+}
+
 func TestScheduleTimer_codec_rapid(t *testing.T) {
 	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {

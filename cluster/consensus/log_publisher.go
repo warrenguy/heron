@@ -139,17 +139,12 @@ func (p *LogPublisher) AppendNewLeadershipTermEvent(
 	timeUnit clusterwire.ClusterTimeUnit,
 	appVersion int32,
 ) bool {
-	if p == nil {
-		return false
-	}
-	length := codecs.NewLeadershipTermEventEncodedLen()
-	actingVersion := uint16(clusterwire.NewLeadershipTermEventSbeSchemaVersion)
-
-	return p.publication.ClaimFillCommit(
-		length,
-		aeron.SendAttempts,
-		func(term []byte, payloadOff int, claimPos int64) bool {
-			fields := codecs.NewLeadershipTermEventFields{
+	_, ok := appendClaimPos(
+		p,
+		codecs.NewLeadershipTermEventEncodedLen(),
+		uint16(clusterwire.NewLeadershipTermEventSbeSchemaVersion),
+		func(claimPos int64) codecs.NewLeadershipTermEventFields {
+			return codecs.NewLeadershipTermEventFields{
 				LeadershipTermID:    leadershipTermID,
 				LogPosition:         claimPos,
 				Timestamp:           timestamp,
@@ -159,14 +154,42 @@ func (p *LogPublisher) AppendNewLeadershipTermEvent(
 				TimeUnit:            timeUnit,
 				AppVersion:          appVersion,
 			}
-			wireEnd, ok := codecs.EncodeNewLeadershipTermEvent(
-				term,
-				payloadOff,
-				actingVersion,
-				fields,
-			)
-			return ok && wireEnd-payloadOff == length
 		},
+		codecs.EncodeNewLeadershipTermEvent,
+	)
+	return ok
+}
+
+// AppendClusterAction reserves a fixed 40-byte unfragmented claim, encodes
+// ClusterActionRequest (template 23) into the term buffer, and commits.
+//
+// LogPosition on the wire is the successful claim end position (pre-claim
+// Position plus aligned fragment length).
+//
+// Returns the encoded logPosition and true on commit. Returns 0 and false
+// when the receiver or publication is nil, encode fails, or the claim
+// budget exhausts. Claim retry, abort, and commit policy is
+// [aeron.ExclusivePublication.ClaimFillCommit].
+func (p *LogPublisher) AppendClusterAction(
+	leadershipTermID int64,
+	timestamp int64,
+	action clusterwire.ClusterAction,
+	flags int32,
+) (int64, bool) {
+	return appendClaimPos(
+		p,
+		codecs.ClusterActionRequestEncodedLen(),
+		uint16(clusterwire.ClusterActionRequestSbeSchemaVersion),
+		func(claimPos int64) codecs.ClusterActionRequestFields {
+			return codecs.ClusterActionRequestFields{
+				LeadershipTermID: leadershipTermID,
+				LogPosition:      claimPos,
+				Timestamp:        timestamp,
+				Action:           action,
+				Flags:            flags,
+			}
+		},
+		codecs.EncodeClusterActionRequest,
 	)
 }
 
@@ -246,6 +269,44 @@ func appendClaim[F any](
 			return ok && wireEnd-payloadOff == length
 		},
 	)
+}
+
+// appendClaimPos encodes fields into a fixed-length claim and commits. The
+// fields callback receives the successful claim end position so LogPosition
+// can be written on the wire.
+//
+// Returns the claim end position and true on commit. Returns 0 and false
+// when:
+//   - the receiver or publication is nil
+//   - encode fails
+//   - the claim budget exhausts
+//
+// Claim retry, abort, and commit policy is
+// [aeron.ExclusivePublication.ClaimFillCommit].
+func appendClaimPos[F any](
+	p *LogPublisher,
+	length int,
+	actingVersion uint16,
+	fields func(claimPos int64) F,
+	encode func([]byte, int, uint16, F) (int, bool),
+) (int64, bool) {
+	if p == nil {
+		return 0, false
+	}
+	var claimPos int64
+	ok := p.publication.ClaimFillCommit(
+		length,
+		aeron.SendAttempts,
+		func(term []byte, payloadOff int, pos int64) bool {
+			claimPos = pos
+			wireEnd, encOK := encode(term, payloadOff, actingVersion, fields(pos))
+			return encOK && wireEnd-payloadOff == length
+		},
+	)
+	if !ok {
+		return 0, false
+	}
+	return claimPos, true
 }
 
 // AppendSessionClose reserves a fixed 36-byte unfragmented claim, encodes

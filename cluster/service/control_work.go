@@ -7,8 +7,8 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-// nullValue is the ServiceAck RelevantID sentinel for join and request acks.
-// Matches upstream NULL_VALUE (-1).
+// nullValue is the ServiceAck RelevantID sentinel. Matches upstream
+// NULL_VALUE (-1). Producers with no RelevantID set nullValue on the entry.
 const nullValue int64 = -1
 
 // Failure causes for the control and ack path. Marked once on the service path.
@@ -80,7 +80,7 @@ func (a *Agent) handleControlFragment(buf []byte, offset int) {
 }
 
 // handleRequestServiceAck appends one request-kind coordinationAck with ready
-// false. Every delivered request gets its own entry.
+// false. Sets relevantID to nullValue. Every delivered request gets its own entry.
 func (a *Agent) handleRequestServiceAck(logPosition int64) {
 	if a.closed {
 		return
@@ -89,6 +89,7 @@ func (a *Agent) handleRequestServiceAck(logPosition int64) {
 		logPosition: logPosition,
 		kind:        ackKindRequest,
 		ready:       false,
+		relevantID:  nullValue,
 	})
 }
 
@@ -134,14 +135,18 @@ func (a *Agent) sweepRequestAckReadiness() {
 // queued entry.
 //
 // Behaviour:
-//   - No proxy, unbound publication, empty queue, or unready first entry: no
-//     send
-//   - result > 0: pop the first entry, advance ackID, return 1
+//   - No proxy, unbound publication, empty queue, or unready first entry:
+//     no send
+//   - offer result > 0: pop the first entry, advance ackID, return 1
 //   - retriable offer code: keep the first entry and ackID, return 0
 //   - terminal offer code: mark errAckPublish once, return 0
 //
-// Send fields: LogPosition from the entry, Timestamp from clusterTime, AckID
-// from ackID, RelevantID nullValue (-1), ServiceID from config.
+// Send fields:
+//   - LogPosition from the entry
+//   - Timestamp from clusterTime
+//   - AckID from ackID
+//   - RelevantID from the entry
+//   - ServiceID from config
 func (a *Agent) drainReadyCoordinationAck() int {
 	if a.moduleProxy == nil || a.moduleProxy.Publication() == nil {
 		return 0
@@ -158,7 +163,7 @@ func (a *Agent) drainReadyCoordinationAck() int {
 		LogPosition: entry.logPosition,
 		Timestamp:   a.clusterTime,
 		AckID:       a.ackID,
-		RelevantID:  nullValue,
+		RelevantID:  entry.relevantID,
 		ServiceID:   a.serviceID,
 	})
 	if !a.acceptOffer(result, errAckPublish) {

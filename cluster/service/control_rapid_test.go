@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
@@ -23,6 +22,7 @@ type modelAckEntry struct {
 
 type modelFrame struct {
 	start, end int64
+	snapshot   bool
 }
 
 // pending control kinds for fragment-limit / handoff avoidance.
@@ -43,8 +43,9 @@ type pendingControlOp struct {
 // request position marks ServiceFailure and freezes.
 //
 // Ops: deliver RequestServiceAck; deliver JoinLog (including superseding an
-// unbound pending join); append a committed timer frame; run one DoWork tick.
-// Handoff (JoinLog while bound) stays in unit tables.
+// unbound pending join); append a committed timer frame; append a committed
+// ClusterActionRequest SNAPSHOT; run one DoWork tick. Handoff (JoinLog while
+// bound) stays in unit tables.
 func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -162,6 +163,13 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 					break
 				}
 				modelLogPos = f.end
+				if f.snapshot {
+					model = append(model, modelAckEntry{
+						logPosition: f.end,
+						kind:        ackKindSnapshot,
+						ready:       true,
+					})
+				}
 				nextFrame++
 				frags++
 			}
@@ -244,6 +252,15 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			require.Equal(rt, wantReady, agent.ReadyCoordinationAcks())
 		}
 
+		appendFrame := func(payload []byte, snapshot bool) {
+			span := writeAgentFrame(rt, image, frameOffset, payload)
+			start := int64(frameOffset)
+			end := start + int64(span)
+			frames = append(frames, modelFrame{start: start, end: end, snapshot: snapshot})
+			frameOffset += span
+			committed = end
+		}
+
 		// Start only. Joins are drawn ops (including supersession).
 		agent.DoWork(0)
 		modelDoWork()
@@ -254,7 +271,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			if modelFailed || agent.ServiceFailure() != nil {
 				break
 			}
-			op := rapid.IntRange(0, 3).Draw(rt, "op")
+			op := rapid.IntRange(0, 4).Draw(rt, "op")
 			switch op {
 			case 0: // RequestServiceAck
 				var pos int64
@@ -283,13 +300,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 					CorrelationID:    int64(len(frames) + 1),
 					Timestamp:        int64(len(frames) + 1),
 				})
-				span := logbuffer.AlignFragmentChunkLength(len(payload))
-				writeAgentFrame(rt, image, frameOffset, payload)
-				start := int64(frameOffset)
-				end := start + int64(span)
-				frames = append(frames, modelFrame{start: start, end: end})
-				frameOffset += span
-				committed = end
+				appendFrame(payload, false)
 
 			case 2: // DoWork
 				agent.DoWork(0)
@@ -307,6 +318,14 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 					apply: func() { applyJoin(pos) },
 				})
 				control.Enqueue(encodeJoinLogControl(rt, defaultJoinLogFields(pos)))
+
+			case 4: // ClusterActionRequest SNAPSHOT flags 0
+				if !agent.IsLogBound() {
+					continue
+				}
+				end := int64(frameOffset) + int64(clusterActionFrameSpan())
+				payload := encodeClusterAction(rt, snapshotActionFields(end, int64(len(frames)+1)))
+				appendFrame(payload, true)
 			}
 		}
 

@@ -385,6 +385,22 @@ type Agent struct {
 	// serviceAckID.
 	serviceAckWaits []int64
 
+	// snapshotWaitPosition is the log position of a pending snapshot action wait
+	// in the current leadership term, or 0 when none. PrepareForNewLeadership
+	// retires the wait and clears this field.
+	snapshotWaitPosition int64
+
+	// abandonedSnapshotPositions holds snapshot wait log positions retired by
+	// PrepareForNewLeadership. The slice grows one entry per retired wait. The
+	// slice is never cleared. handleServiceAck drops a ServiceAck at a retired
+	// position unless the first queued coordination wait uses the same position.
+	abandonedSnapshotPositions []int64
+
+	// abandonedSnapshotAckIDs stores dropped ServiceAck ids at retired snapshot
+	// positions, one slice per service. serviceAckID advances when every service
+	// has dropped the current expected id.
+	abandonedSnapshotAckIDs [][]int64
+
 	// servicePublishFailure is the first terminal publish failure on the stream
 	// 104 publish path, or nil. Marked once. Distinct from serviceAckFailure on
 	// the stream 105 receive path.
@@ -1512,29 +1528,32 @@ func (a *Agent) FollowerLogJoinReady(
 // Role, known leader, cadence fields, and catchup teardown always run before
 // any recording stop attempt, including when the stop later fails. Stop runs
 // whenever a control is wired, not only when [LogRecordingControl.IsActive] is
-// true. Stop is idempotent when nothing needs draining. That path drains a
+// true. Stop is idempotent when nothing needs draining. The idle stop drains a
 // dirty start that never became active.
 //
-// Catchup teardown runs here, not on the CATCHUP exit. At that exit the log
-// adapter still reads the catchup image and the catchup destination may still
-// be attached. Prepare removes the catchup destination and restores the live
-// destination when it is absent.
+// Catchup teardown runs here, not on the CATCHUP exit. At the CATCHUP exit the
+// log adapter still reads the catchup image and the catchup destination may
+// still be attached. Prepare removes the catchup destination and restores the
+// live destination when it is absent.
 //
 // Append-rank failure state always clears on prepare. A not-ready run that
 // marked while a prior leadership term's recording was active must not freeze
-// ranking across a leadership transition. The next duty cycle may open a fresh
-// not-ready run against the recording that prepare starts later.
+// ranking across a leadership transition. The next duty cycle may open a
+// fresh not-ready run against the recording that prepare starts later.
 //
-// Pending JoinLog also clears on prepare. A stale unpublished JoinLog from a
-// superseded term must not reach services after a new election starts. Queued
-// coordination waits remain.
+// Pending JoinLog clears on prepare. A stale unpublished JoinLog from a
+// superseded term must not reach services after a new election starts.
+//
+// Prepare retires a leftover snapshot wait from the FIFO. Other queued
+// coordination waits remain. A later ServiceAck at the retired snapshot
+// position is dropped unless a new wait uses the retired position.
 //
 // Returns (first matching branch):
 //   - logPosition, nil: control is nil, or localLogRecordingID is negative
 //   - derived archive stop position, nil: retained recording id is
-//     non-negative and [LogRecordingControl.StopPositionFor] succeeds. After a
-//     truncate the control reports the truncate position, so prepare does not
-//     re-raise above that bound
+//     non-negative and [LogRecordingControl.StopPositionFor] succeeds. After
+//     a truncate the control reports the truncate position, so prepare does
+//     not re-raise above that bound
 //   - [recordinglog.NullPosition], err: stop fails. When the recording was
 //     active the control stays active so a later prepare retries the stop.
 //     Caller must not adopt lastAppendPosition
@@ -1556,6 +1575,7 @@ func (a *Agent) PrepareForNewLeadership(
 	a.appendRankFailure = nil
 	a.appendNotReadySinceNs = nullValue
 	a.pendingJoinLog = nil
+	a.retireSnapshotWait()
 	a.StopAllCatchups()
 	a.RemoveCatchupLogDestination()
 	_ = nowNs

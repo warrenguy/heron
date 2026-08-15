@@ -121,6 +121,123 @@ func TestSessionCloseEvent_roundtrip(t *testing.T) {
 	)
 }
 
+func TestClusterActionRequest_roundtrip(t *testing.T) {
+	v := clusterwire.ClusterActionRequestSbeSchemaVersion
+	fieldCases := []codecFieldsActingCase[codecs.ClusterActionRequestFields]{
+		{name: "sample", fields: clusterActionRequestSampleFields()},
+		{
+			name: "nonzero_flags",
+			fields: codecs.ClusterActionRequestFields{
+				LeadershipTermID: 1, LogPosition: 2, Timestamp: 3,
+				Action: clusterwire.ClusterAction_SNAPSHOT, Flags: 4,
+			},
+		},
+		{
+			name: "max_int",
+			fields: codecs.ClusterActionRequestFields{
+				LeadershipTermID: math.MaxInt64,
+				LogPosition:      math.MaxInt64,
+				Timestamp:        math.MaxInt64,
+				Action:           clusterwire.ClusterAction_RESUME,
+				Flags:            math.MaxInt32,
+			},
+		},
+		{
+			name: "raw_action",
+			fields: codecs.ClusterActionRequestFields{
+				LeadershipTermID: 5, LogPosition: 6, Timestamp: 7,
+				Action: clusterwire.ClusterAction(99), Flags: 1,
+			},
+		},
+		{
+			name: "null_flags_v16",
+			fields: codecs.ClusterActionRequestFields{
+				LeadershipTermID: 1, LogPosition: 2, Timestamp: 3,
+				Action: clusterwire.ClusterAction_SUSPEND, Flags: math.MinInt32,
+			},
+		},
+		{
+			name:      "acting_version_10",
+			actingVer: 10,
+			fields: codecs.ClusterActionRequestFields{
+				LeadershipTermID: 7, LogPosition: 8, Timestamp: 9,
+				Action: clusterwire.ClusterAction_SNAPSHOT, Flags: 5,
+			},
+		},
+	}
+	runCodecRoundtripCases(
+		t,
+		clusterwire.ClusterActionRequestSbeTemplateID,
+		v,
+		buildActingFieldRoundtripCases(
+			v,
+			fieldCases,
+			codecs.EncodeClusterActionRequest,
+			clusterActionRequestWantFields,
+		),
+	)
+}
+
+func TestEncodeClusterActionRequest_dirtyBufferFlagsZero(t *testing.T) {
+	actingVersion := uint16(clusterwire.ClusterActionRequestSbeSchemaVersion)
+	fields := clusterActionRequestSampleFields()
+
+	buf := make([]byte, codecs.ClusterActionRequestEncodedLen())
+	const residual byte = 0xFF
+	for i := range buf {
+		buf[i] = residual
+	}
+
+	wireEnd, ok := codecs.EncodeClusterActionRequest(buf, 0, actingVersion, fields)
+	require.True(t, ok)
+	require.Equal(t, codecs.ClusterActionRequestEncodedLen(), wireEnd)
+
+	var msg clusterwire.ClusterActionRequest
+	flagsOff := messageHeaderLen + int(msg.FlagsEncodingOffset())
+	require.Equal(t, []byte{0, 0, 0, 0}, buf[flagsOff:flagsOff+4])
+
+	got, ok := codecs.TryDecodeClusterActionRequestAt(buf, 0)
+	require.True(t, ok)
+	require.Equal(t, int32(0), got.Flags)
+}
+
+func TestClusterActionRequest_blockLength28Version10_flagsZero(t *testing.T) {
+	// Asserts a 28-byte root at actingVersion 10 decodes. Flags is absent
+	// below sinceVersion 11. Decode sets Flags to 0.
+	v := clusterwire.ClusterActionRequestSbeSchemaVersion
+	fields := clusterActionRequestSampleFields()
+	wire := encodeClusterActionRequestWire(t, v, fields)
+	wire = cloneMutatedWire(wire, func(w []byte) {
+		w[0], w[1] = 28, 0
+		w[6], w[7] = 10, 0
+	})
+	want := clusterActionRequestWantFields(fields, 10)
+	got, ok := codecs.TryDecodeClusterActionRequestAt(wire, 0)
+	require.True(t, ok)
+	require.Equal(t, want, got)
+
+	decoded, ok := codecs.TryDecodeByTemplate(wire, 0, codecTestMaxVarLen)
+	require.True(t, ok)
+	require.Equal(t, clusterwire.ClusterActionRequestSbeTemplateID, decoded.TemplateID)
+	require.Equal(t, want, decoded.Fields)
+}
+
+func TestClusterActionRequest_blockLength28Version11_rejects(t *testing.T) {
+	// Asserts a 28-byte root at actingVersion 11 fails decode. The Flags
+	// field requires a 32-byte root at sinceVersion 11.
+	v := clusterwire.ClusterActionRequestSbeSchemaVersion
+	wire := encodeClusterActionRequestWire(t, v, clusterActionRequestSampleFields())
+	wire = cloneMutatedWire(wire, func(w []byte) {
+		w[0], w[1] = 28, 0
+		w[6], w[7] = 11, 0
+	})
+	_, ok := codecs.TryDecodeClusterActionRequestAt(wire, 0)
+	require.False(t, ok)
+
+	_, ok = codecs.TryDecodeByTemplate(wire, 0, codecTestMaxVarLen)
+	require.False(t, ok)
+}
+
 func TestScheduleTimer_roundtrip(t *testing.T) {
 	v := clusterwire.ScheduleTimerSbeSchemaVersion
 	runCodecFieldsActingRoundtrips(
@@ -274,6 +391,9 @@ func TestServiceEncode_rejects(t *testing.T) {
 	)
 	requireEncodeRejects(t, buf, v, scheduleTimerSampleFields(), codecs.EncodeScheduleTimer)
 	requireEncodeRejects(t, buf, v, cancelTimerSampleFields(), codecs.EncodeCancelTimer)
+	requireEncodeRejects(
+		t, buf, v, clusterActionRequestSampleFields(), codecs.EncodeClusterActionRequest,
+	)
 
 	openFields := codecs.SessionOpenEventFields{
 		ResponseChannel:  make([]byte, codecs.ClusterEncodeMaxVarLen+1),
@@ -310,6 +430,11 @@ func TestServiceTryDecode_rejects(t *testing.T) {
 	cases = append(cases, wireHeaderRejectCases(validTimer)...)
 	cases = append(cases, fixedBlockRejectCases(
 		"timer", validTimer, clusterwire.TimerEventSbeBlockLength, 23, 8,
+	)...)
+	cases = append(cases, fixedBlockRejectCases(
+		"cluster_action_request",
+		encodeClusterActionRequestWire(t, v, clusterActionRequestSampleFields()),
+		clusterwire.ClusterActionRequestSbeBlockLength, 31, 8,
 	)...)
 	cases = append(cases, fixedBlockRejectCases(
 		"schedule_timer",
@@ -361,6 +486,18 @@ func TestSessionOpenEventFieldsFromLayout_wrongKind(t *testing.T) {
 	require.True(t, ok)
 	_, ok = codecs.SessionOpenEventFieldsFromLayout(wire, layout)
 	require.False(t, ok)
+}
+
+func TestClusterActionRequestFieldsFromLayout(t *testing.T) {
+	v := clusterwire.ClusterActionRequestSbeSchemaVersion
+	want := clusterActionRequestSampleFields()
+	requireFieldsFromLayout(
+		t,
+		clusterActionRequestWantFields(want, v),
+		encodeClusterActionRequestWire(t, v, want),
+		codecs.ClusterActionRequestFieldsFromLayout,
+		encodeScheduleTimerWire(t, v, scheduleTimerSampleFields()),
+	)
 }
 
 func TestScheduleTimerFieldsFromLayout(t *testing.T) {
@@ -430,6 +567,16 @@ func TestTryDecodeAt_serviceCatalogue(t *testing.T) {
 			codecs.TryDecodeSessionCloseEventAt,
 		)
 	})
+	t.Run("cluster_action_request", func(t *testing.T) {
+		requireTryDecodeAt(
+			t,
+			buf,
+			v,
+			clusterActionRequestSampleFields(),
+			codecs.EncodeClusterActionRequest,
+			codecs.TryDecodeClusterActionRequestAt,
+		)
+	})
 	t.Run("schedule_timer", func(t *testing.T) {
 		requireTryDecodeAt(
 			t,
@@ -493,6 +640,16 @@ func TestTryDecodeAt_serviceCatalogue(t *testing.T) {
 			codecs.TryDecodeRequestServiceAckAt,
 		)
 	})
+}
+
+func TestTryDecodeClusterActionRequestAt_rejects(t *testing.T) {
+	v := clusterwire.ClusterActionRequestSbeSchemaVersion
+	requireTryDecodeAtRejects(
+		t,
+		encodeClusterActionRequestWire(t, v, clusterActionRequestSampleFields()),
+		encodeScheduleTimerWire(t, v, scheduleTimerSampleFields()),
+		codecs.TryDecodeClusterActionRequestAt,
+	)
 }
 
 func TestTryDecodeScheduleTimerAt_rejects(t *testing.T) {
@@ -571,6 +728,18 @@ func TestEncodeServiceTemplates_ZeroAllocs(t *testing.T) {
 			},
 		},
 		{
+			name:   "EncodeClusterActionRequest",
+			bufLen: codecs.ClusterActionRequestEncodedLen(),
+			encode: func(buf []byte) {
+				_, ok := codecs.EncodeClusterActionRequest(
+					buf, 0, actingVersion, clusterActionRequestSampleFields(),
+				)
+				if !ok {
+					panic("encode failed")
+				}
+			},
+		},
+		{
 			name:   "EncodeScheduleTimer",
 			bufLen: codecs.ScheduleTimerEncodedLen(),
 			encode: func(buf []byte) {
@@ -642,6 +811,27 @@ func TestEncodeServiceTemplates_ZeroAllocs(t *testing.T) {
 			})
 		})
 	}
+}
+
+func clusterActionRequestSampleFields() codecs.ClusterActionRequestFields {
+	return codecs.ClusterActionRequestFields{
+		LeadershipTermID: 1,
+		LogPosition:      2,
+		Timestamp:        3,
+		Action:           clusterwire.ClusterAction_SNAPSHOT,
+		Flags:            0,
+	}
+}
+
+func encodeClusterActionRequestWire(
+	t *testing.T,
+	actingVersion uint16,
+	fields codecs.ClusterActionRequestFields,
+) []byte {
+	t.Helper()
+	return encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeClusterActionRequest(buf, 0, actingVersion, fields)
+	})
 }
 
 func scheduleTimerSampleFields() codecs.ScheduleTimerFields {

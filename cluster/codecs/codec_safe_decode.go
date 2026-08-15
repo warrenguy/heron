@@ -712,6 +712,8 @@ func decodeTemplateFields(
 		}, true
 	case clusterwire.SessionCloseEventSbeTemplateID:
 		return decodeSessionCloseEventFields(buf, body, block, version, bufLen), true
+	case clusterwire.ClusterActionRequestSbeTemplateID:
+		return decodeClusterActionRequestFields(buf, body, block, version, bufLen), true
 	case clusterwire.ScheduleTimerSbeTemplateID:
 		return decodeScheduleTimerFields(buf, body, block, version, bufLen), true
 	case clusterwire.CancelTimerSbeTemplateID:

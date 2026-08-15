@@ -217,6 +217,21 @@ type SessionCloseEventFields struct {
 	CloseReason      clusterwire.CloseReason
 }
 
+// ClusterActionRequestFields holds ClusterActionRequest body fields (SBE
+// template id 23).
+type ClusterActionRequestFields struct {
+	LeadershipTermID int64
+	LogPosition      int64
+	Timestamp        int64
+	Action           clusterwire.ClusterAction
+	// Flags is 0 after decode when:
+	//   - actingVersion < 11 (field absent)
+	//   - the wire value is FlagsNullValue (math.MinInt32)
+	//
+	// Encode writes Flags as given.
+	Flags int32
+}
+
 // ServiceAckFields holds ServiceAck body fields (SBE template id 33).
 type ServiceAckFields struct {
 	LogPosition int64

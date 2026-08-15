@@ -81,3 +81,10 @@ func JoinLogOracleFields(fields JoinLogFields, actingVersion uint16) JoinLogFiel
 	}
 	return fields
 }
+
+// ClusterActionRequestFlagsMinVersion is the actingVersion that admits Flags
+// on ClusterActionRequest (sinceVersion 11). Derived from the generated
+// flyweight FlagsSinceVersion.
+var ClusterActionRequestFlagsMinVersion = uint16(
+	(&clusterwire.ClusterActionRequest{}).FlagsSinceVersion(),
+)

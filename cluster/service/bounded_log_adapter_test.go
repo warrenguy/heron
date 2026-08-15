@@ -25,6 +25,7 @@ type recordingSink struct {
 	sessionCloses   int
 	timerEvents     int
 	nltEvents       int
+	clusterActions  int
 	dispatchFails   int
 
 	lastLogPosition int64
@@ -35,6 +36,7 @@ type recordingSink struct {
 	lastClose       codecs.SessionCloseEventFields
 	lastTimer       codecs.TimerEventFields
 	lastNLT         codecs.NewLeadershipTermEventFields
+	lastAction      codecs.ClusterActionRequestFields
 	lastFailure     error
 
 	// action is returned from every seat when actionSet is true.
@@ -95,6 +97,16 @@ func (s *recordingSink) handleNewLeadershipTermEvent(
 	return s.seatAction()
 }
 
+func (s *recordingSink) handleClusterAction(
+	logPosition int64,
+	fields codecs.ClusterActionRequestFields,
+) aeron.ControlledAction {
+	s.clusterActions++
+	s.lastLogPosition = logPosition
+	s.lastAction = fields
+	return s.seatAction()
+}
+
 func (s *recordingSink) handleDispatchFailure(err error) aeron.ControlledAction {
 	s.dispatchFails++
 	s.lastFailure = err
@@ -124,6 +136,7 @@ func requireSinkIdle(tb testing.TB, s *recordingSink) {
 	require.Equal(tb, 0, s.sessionCloses)
 	require.Equal(tb, 0, s.timerEvents)
 	require.Equal(tb, 0, s.nltEvents)
+	require.Equal(tb, 0, s.clusterActions)
 	require.Equal(tb, 0, s.dispatchFails)
 }
 
@@ -273,6 +286,33 @@ func encodeSessionClose(tb testing.TB, fields codecs.SessionCloseEventFields) []
 	)
 	require.True(tb, ok)
 	return buf[:wireEnd]
+}
+
+func encodeClusterAction(tb assertTB, fields codecs.ClusterActionRequestFields) []byte {
+	tb.Helper()
+	buf := make([]byte, codecs.ClusterActionRequestEncodedLen())
+	wireEnd, ok := codecs.EncodeClusterActionRequest(
+		buf,
+		0,
+		clusterwire.ClusterActionRequestSbeSchemaVersion,
+		fields,
+	)
+	require.True(tb, ok)
+	return buf[:wireEnd]
+}
+
+func clusterActionFrameSpan() int {
+	return logbuffer.AlignFragmentChunkLength(codecs.ClusterActionRequestEncodedLen())
+}
+
+func snapshotActionFields(logPosition, timestamp int64) codecs.ClusterActionRequestFields {
+	return codecs.ClusterActionRequestFields{
+		LeadershipTermID: 1,
+		LogPosition:      logPosition,
+		Timestamp:        timestamp,
+		Action:           clusterwire.ClusterAction_SNAPSHOT,
+		Flags:            0,
+	}
 }
 
 func encodeNLT(tb testing.TB, fields codecs.NewLeadershipTermEventFields) []byte {
@@ -565,6 +605,49 @@ func TestBoundedLogAdapter_dispatch_NewLeadershipTermEvent(t *testing.T) {
 	require.Equal(t, 1, sink.nltEvents)
 	require.Equal(t, fields, sink.lastNLT)
 	require.Equal(t, span, sink.lastLogPosition)
+}
+
+func TestBoundedLogAdapter_dispatch_ClusterActionRequest(t *testing.T) {
+	a, image, sink := boundAdapter(t)
+	fields := snapshotActionFields(int64(clusterActionFrameSpan()), 42)
+	span := writeAndPollOne(t, a, image, encodeClusterAction(t, fields))
+
+	require.Equal(t, 1, sink.clusterActions)
+	require.Equal(t, 0, sink.dispatchFails)
+	require.Equal(t, fields, sink.lastAction)
+	require.Equal(t, span, sink.lastLogPosition)
+}
+
+func TestBoundedLogAdapter_undecodableClusterAction_aborts(t *testing.T) {
+	a, image, sink := boundAdapter(t)
+	payload := encodeMessageHeader(
+		t,
+		clusterwire.ClusterActionRequestSbeBlockLength,
+		clusterwire.ClusterActionRequestSbeTemplateID,
+		clusterwire.MessageHeaderSbeSchemaID,
+		clusterwire.ClusterActionRequestSbeSchemaVersion,
+	)
+	writeAndPollAbort(t, a, image, payload)
+	requireOneDispatchFail(t, sink, errLogDispatchDecode)
+	require.Equal(t, 0, sink.clusterActions)
+}
+
+func TestBoundedLogAdapter_membershipChangeEvent_skips(t *testing.T) {
+	a, image, sink := boundAdapter(t)
+
+	// MembershipChangeEvent (template 25) is absent from
+	// ClusterRootBlockLengthBounds. Layout parse fails. classifyLayoutFailure
+	// returns Continue when the template is unknown. Same branch as template
+	// id 99.
+	payload := encodeMessageHeader(
+		t,
+		clusterwire.MembershipChangeEventSbeBlockLength,
+		clusterwire.MembershipChangeEventSbeTemplateID,
+		clusterwire.MessageHeaderSbeSchemaID,
+		clusterwire.MembershipChangeEventSbeSchemaVersion,
+	)
+	writeAndPollOne(t, a, image, payload)
+	requireSinkIdle(t, sink)
 }
 
 func TestBoundedLogAdapter_unknownTemplate_skips(t *testing.T) {

@@ -208,7 +208,7 @@ func TestLogPublisher_AppendMessage_staleScratchGrows(t *testing.T) {
 // TestLogPublisher_appendFailurePaths asserts every append method against the
 // shared failure matrix: nil receiver, unbound publisher, retriable exhaustion,
 // and terminal close. Failed appends do not mutate publication state, so one
-// setup serves all five calls.
+// setup serves every append method.
 func TestLogPublisher_appendFailurePaths(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -263,6 +263,11 @@ func TestLogPublisher_appendFailurePaths(t *testing.T) {
 				1, 2, 3, clusterwire.CloseReason_CLIENT_ACTION,
 			))
 			require.False(t, p.AppendTimer(1, 2, 3))
+			actionPos, actionOK := p.AppendClusterAction(
+				1, 2, clusterwire.ClusterAction_SNAPSHOT, 0,
+			)
+			require.False(t, actionOK)
+			require.Equal(t, int64(0), actionPos)
 		})
 	}
 }
@@ -456,8 +461,36 @@ func TestLogPublisher_AppendNLT_success(t *testing.T) {
 	require.Equal(t, timeUnit, fields.TimeUnit)
 	require.Equal(t, appVersion, fields.AppVersion)
 
-	// LogPosition on wire is successful claim end position (pre + aligned).
+	// LogPosition on the wire is the successful claim end position (pre + aligned).
 	require.Equal(t, pre+aligned, fields.LogPosition)
+	require.Equal(t, pre+aligned, p.Position())
+}
+
+func TestLogPublisher_AppendClusterAction_success(t *testing.T) {
+	p, pub := boundLogPublisher(t)
+
+	const (
+		leadershipTermID int64 = 7
+		timestamp        int64 = 1001
+		flags            int32 = 4
+	)
+	action := clusterwire.ClusterAction_SNAPSHOT
+	pre := p.Position()
+	claimLen := codecs.ClusterActionRequestEncodedLen()
+	aligned := int64(logbuffer.AlignFragmentChunkLength(claimLen))
+
+	pos, ok := p.AppendClusterAction(leadershipTermID, timestamp, action, flags)
+	require.True(t, ok)
+
+	fields := decodeClusterActionAtTermStart(t, pub)
+	require.Equal(t, leadershipTermID, fields.LeadershipTermID)
+	require.Equal(t, timestamp, fields.Timestamp)
+	require.Equal(t, action, fields.Action)
+	require.Equal(t, flags, fields.Flags)
+
+	// LogPosition on the wire is the successful claim end position (pre + aligned).
+	require.Equal(t, pre+aligned, fields.LogPosition)
+	require.Equal(t, pre+aligned, pos)
 	require.Equal(t, pre+aligned, p.Position())
 }
 

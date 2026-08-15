@@ -221,6 +221,26 @@ func TestServiceAckTracker_removeHeadFIFO(t *testing.T) {
 	require.ErrorIs(t, err, ErrServiceAckOutOfSequence)
 }
 
+func TestServiceAckTracker_dropAt(t *testing.T) {
+	t.Parallel()
+
+	tr := newServiceAckTracker(2)
+	require.True(t, tr.offer(0, serviceAck{ackID: 0, logPosition: 10}))
+	require.True(t, tr.offer(0, serviceAck{ackID: 1, logPosition: 20}))
+	require.True(t, tr.offer(1, serviceAck{ackID: 0, logPosition: 10}))
+
+	var seen []int64
+	tr.dropAt(10, func(_ int32, ack serviceAck) {
+		seen = append(seen, ack.ackID)
+	})
+	require.Equal(t, []int64{0, 0}, seen)
+	require.Equal(t, 1, tr.queueDepth(0))
+	require.Equal(t, 0, tr.queueDepth(1))
+	ok, err := tr.hasReached(20, 1)
+	require.False(t, ok)
+	require.NoError(t, err)
+}
+
 func TestServiceAckTracker_removeHeadEmptyTolerance(t *testing.T) {
 	t.Parallel()
 

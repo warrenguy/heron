@@ -44,6 +44,10 @@ type logEventSink interface {
 		logPosition int64,
 		fields codecs.NewLeadershipTermEventFields,
 	) aeron.ControlledAction
+	handleClusterAction(
+		logPosition int64,
+		fields codecs.ClusterActionRequestFields,
+	) aeron.ControlledAction
 	handleDispatchFailure(err error) aeron.ControlledAction
 }
 
@@ -228,6 +232,13 @@ func (b *BoundedLogAdapter) dispatch(
 			return b.sink.handleDispatchFailure(errLogDispatchDecode)
 		}
 		return b.sink.handleNewLeadershipTermEvent(logPosition, fields)
+
+	case clusterwire.ClusterActionRequestSbeTemplateID:
+		fields, decoded := codecs.ClusterActionRequestFieldsFromLayout(frag, layout)
+		if !decoded {
+			return b.sink.handleDispatchFailure(errLogDispatchDecode)
+		}
+		return b.sink.handleClusterAction(logPosition, fields)
 
 	default:
 		// Layout succeeded for a template this adapter does not dispatch.

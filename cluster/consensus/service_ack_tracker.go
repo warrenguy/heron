@@ -119,6 +119,25 @@ func (t *serviceAckTracker) queueDepth(serviceID int32) int {
 	return len(t.queues[serviceID])
 }
 
+// dropAt removes every queued entry whose logPosition equals pos. onDrop runs
+// once per removed entry. onDrop may be nil.
+func (t *serviceAckTracker) dropAt(pos int64, onDrop func(serviceID int32, ack serviceAck)) {
+	for i, q := range t.queues {
+		n := 0
+		for _, ack := range q {
+			if ack.logPosition == pos {
+				if onDrop != nil {
+					onDrop(int32(i), ack)
+				}
+				continue
+			}
+			q[n] = ack
+			n++
+		}
+		t.queues[i] = q[:n]
+	}
+}
+
 // hasReachedServiceAcks walks first queued entries against logPosition and the
 // expected serviceAckID. Check-only. See [serviceAckTracker.hasReached].
 func (a *Agent) hasReachedServiceAcks(logPosition int64) (bool, error) {
@@ -126,12 +145,14 @@ func (a *Agent) hasReachedServiceAcks(logPosition int64) (bool, error) {
 }
 
 // removeServiceAckHead pops one matched first entry from every queue and
-// advances serviceAckID by one.
+// advances serviceAckID by one. serviceAckID then skips any id that every
+// service has already dropped.
 //
 // Call only after hasReachedServiceAcks returned true.
 func (a *Agent) removeServiceAckHead() {
 	a.serviceAcks.removeHead()
 	a.serviceAckID++
+	a.advancePastAbandonedSnapshotAcks()
 }
 
 // ServiceAckQueueDepth returns the queued ack count for serviceID, or 0 when

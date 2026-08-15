@@ -748,17 +748,27 @@ func (m *ConsensusModule) CommitPosition() int64 {
 // RequestServiceAck publishes RequestServiceAck (template 108) at logPosition
 // and queues a coordination wait for the matching acks.
 //
+// Concurrency: invoker-only.
+//
 // Returns [consensus.ErrServiceControlUnbound] when the receiver is nil, the
 // module opened with ServiceCount 0, or the proxy is not bound. Other errors
-// come from a marked service-ack failure or a failed publish after the attempt
-// budget.
-//
-// Concurrency: invoker-only.
+// come from [consensus.Agent.RequestServiceAck].
 func (m *ConsensusModule) RequestServiceAck(logPosition int64) error {
 	if m == nil || m.agent == nil {
 		return consensus.ErrServiceControlUnbound
 	}
 	return m.agent.RequestServiceAck(logPosition)
+}
+
+// RequestSnapshot appends one ClusterActionRequest (action SNAPSHOT, flags 0)
+// to the cluster log. nowNs is the wire Timestamp. The log publisher assigns
+// LogPosition. The method queues one coordination wait at LogPosition.
+//
+// Concurrency: invoker-only.
+//
+// Returns errors from [consensus.Agent.RequestSnapshot].
+func (m *ConsensusModule) RequestSnapshot(nowNs int64) error {
+	return m.agent.RequestSnapshot(nowNs)
 }
 
 // NotifiedCommitPosition returns the follower-visible commit high-water.
