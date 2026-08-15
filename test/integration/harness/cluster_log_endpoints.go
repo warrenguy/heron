@@ -189,6 +189,17 @@ const (
 	ClusterSessionExtendReElectLogEndpoint = "239.255.12.55:32404"
 )
 
+// Multi-service live-scenario endpoints. Three members reserve base+1 ..
+// base+205 and one shared cluster-log multicast endpoint. Bases sit above
+// ClusterSessionExtendReElectPortBase (32400 + 205).
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterMultiServicePortBase    = 32700
+	ClusterMultiServiceLogEndpoint = "239.255.12.57:32704"
+)
+
 // cluster_archive one-off and smoke endpoints. Harness holds one matrix for
 // every PortBase and log multicast the cluster_archive package binds under
 // t.Parallel.
