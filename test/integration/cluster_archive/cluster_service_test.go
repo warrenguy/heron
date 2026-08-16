@@ -128,11 +128,14 @@ func (s *sessionRecorder) holdsOneMessageAfterOpen(
 	return openIdx >= 0 && msgIdx > openIdx
 }
 
-// serviceMember is one member's recorder, agent, and bound-check wrapper.
+// serviceMember is one member's recorder, agent, bound-check wrapper, and
+// optional service container. A stop path may Close the container before test
+// cleanup.
 type serviceMember struct {
-	rec     *sessionRecorder
-	agent   *service.Agent
-	checked *boundCheckedService
+	rec       *sessionRecorder
+	agent     *service.Agent
+	checked   *boundCheckedService
+	container *service.Container
 }
 
 // serviceCluster holds one started member set and one serviceMember per slot.
@@ -211,27 +214,33 @@ func (sc serviceCluster) dump() string {
 	return string(b)
 }
 
-// requireServiceAwaitTick runs TickUntil. Dumps set plus service state on
-// timeout. Logs elapsed on success.
+// requireServiceAwaitTick runs TickUntil and dumps set plus service state on
+// timeout. The helper logs elapsed time on success. detail, when present,
+// prefixes the timeout dump.
 func requireServiceAwaitTick(
 	t *testing.T,
 	sc serviceCluster,
 	label string,
 	bound time.Duration,
 	pred func() bool,
+	detail ...func() string,
 ) {
 	t.Helper()
 
 	start := time.Now()
 	done := sc.set.TickUntil(bound, pred)
 	if !done {
+		msg := sc.dump()
+		if len(detail) > 0 && detail[0] != nil {
+			msg = detail[0]() + "\n" + msg
+		}
 		require.FailNow(
 			t,
 			label+" did not complete",
 			"after %s (bound %s):\n%s",
 			time.Since(start),
 			bound,
-			sc.dump(),
+			msg,
 		)
 	}
 	t.Logf("%s elapsed=%s", label, time.Since(start))
@@ -273,12 +282,30 @@ func requireNoServiceFailures(t *testing.T, sc serviceCluster, detail string) {
 // Containers open and attach before the first tick.
 func openServiceCluster(t *testing.T) serviceCluster {
 	t.Helper()
+	return startServiceCluster(
+		t,
+		harness.ClusterServiceAckPortBase,
+		harness.ClusterServiceAckLogEndpoint,
+		amendServiceMember,
+	)
+}
+
+// startServiceCluster starts three members with one session recorder
+// container per member. Containers open and attach before the first tick. The
+// helper then awaits log images and election.
+func startServiceCluster(
+	t *testing.T,
+	portBase int,
+	logEndpoint string,
+	amend func(cluster.Config) cluster.Config,
+) serviceCluster {
+	t.Helper()
 
 	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
 		MemberCount:          3,
-		PortBase:             harness.ClusterServiceAckPortBase,
-		LogMulticastEndpoint: harness.ClusterServiceAckLogEndpoint,
-		AmendMemberConfig:    amendServiceMember,
+		PortBase:             portBase,
+		LogMulticastEndpoint: logEndpoint,
+		AmendMemberConfig:    amend,
 	})
 	require.Len(t, set.Modules(), 3)
 
@@ -296,7 +323,12 @@ func openServiceCluster(t *testing.T) serviceCluster {
 
 		agent := container.Agent()
 		checked := &boundCheckedService{agent: agent, module: module}
-		members[i] = serviceMember{rec: rec, agent: agent, checked: checked}
+		members[i] = serviceMember{
+			rec:       rec,
+			agent:     agent,
+			checked:   checked,
+			container: container,
+		}
 		set.AttachService(t, i, checked)
 	}
 

@@ -27,25 +27,31 @@ const (
 	sessionOpRemove
 	sessionOpLookup
 	sessionOpClearOKPending
+	sessionOpLearnOpen
+	sessionOpLearnClose
+	sessionOpMarkOpenSessionsNewLeader
+	sessionOpClearTermMarks
 )
 
 type sessionModelEntry struct {
-	state          sessionState
-	principal      []byte
-	correlationID  int64
-	lastActivityNs int64
-	closeReason    clusterwire.CloseReason
+	state            sessionState
+	principal        []byte
+	correlationID    int64
+	lastActivityNs   int64
+	closeReason      clusterwire.CloseReason
+	newLeaderPending bool
 }
 
-// Asserts registry allocate, add, auth mutators, markOpen, markClosing, remove,
-// setOKPending(false), and lookup against a reference model. Each step checks
-// counts, id monotonicity, pending order, okPending FIFO order, accept-order
-// all, closeReason, closingSessionCount, principal bytes, and the walk-list
-// pre-open invariant (excludes open and closing).
+// TestSessionManager_lifecycle_rapid asserts the session registry against a
+// reference model.
 //
-// PBT skips the egress walk and event queue. Publication and adder outcomes are
-// a fixed matrix. Unit rows document each path. PBT also skips authenticator
-// consultation. Unit rows document the fixed state x proxy action matrix.
+// A learn-open of an unknown id inserts an open session. nextSessionID must
+// stay strictly above every observed id. Count identities must hold. A
+// term-mark clear drops every new-leader flag and every okPending entry.
+//
+// PBT skips the egress walk, the event queue, and authenticator consultation.
+// Publication and adder outcomes are a fixed matrix. Unit rows document those
+// paths.
 func TestSessionManager_lifecycle_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -80,6 +86,13 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 			require.Len(rt, m.byID, len(model))
 			require.Len(rt, m.okPending, len(okPendingOrder))
 			require.Len(rt, m.all, len(acceptOrder))
+
+			for id := range model {
+				require.Greater(rt, m.nextSessionID, id)
+			}
+			for id := range issued {
+				require.Greater(rt, m.nextSessionID, id)
+			}
 
 			// all equals accept-ordered live sessions.
 			for i, id := range acceptOrder {
@@ -118,6 +131,7 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				require.Equal(rt, e.state, s.state)
 				require.Equal(rt, e.principal, s.encodedPrincipal)
 				require.Equal(rt, e.correlationID, s.correlationID)
+				require.Equal(rt, e.lastActivityNs, s.lastActivityNs)
 				if e.state == sessionClosing {
 					require.Equal(rt, e.closeReason, s.closeReason)
 				}
@@ -125,6 +139,10 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				require.Equal(rt, wantOnOK, m.okPendingIndex(s) >= 0)
 				wantOnWalk := e.state != sessionOpen && e.state != sessionClosing
 				require.Equal(rt, wantOnWalk, slices.Contains(pendingOrder, id))
+				require.Equal(rt, e.newLeaderPending, s.newLeaderEventPending)
+				if s.newLeaderEventPending {
+					require.Equal(rt, sessionOpen, s.state)
+				}
 			}
 		}
 
@@ -174,6 +192,13 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 			require.Nil(rt, s.encodedPrincipal)
 		}
 
+		dropLive := func(id int64) {
+			delete(model, id)
+			okPendingOrder = removeIDFromOrder(okPendingOrder, id)
+			pendingOrder = removeIDFromOrder(pendingOrder, id)
+			acceptOrder = removeIDFromOrder(acceptOrder, id)
+		}
+
 		// Sometimes fill to capacity so the refuse path is reachable.
 		if rapid.Bool().Draw(rt, "seedAtCap") {
 			for len(model) < maxConcurrentSessions {
@@ -206,6 +231,11 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				sessionOpRemove,
 				sessionOpLookup,
 				sessionOpClearOKPending,
+				sessionOpLearnOpen,
+				sessionOpLearnOpen,
+				sessionOpLearnClose,
+				sessionOpMarkOpenSessionsNewLeader,
+				sessionOpClearTermMarks,
 			}
 			if n := len(model); n > 0 && n < maxConcurrentSessions {
 				ops = append(ops, sessionOpAdd)
@@ -303,6 +333,7 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				if wantOK {
 					e.state = sessionClosing
 					e.closeReason = reason
+					e.newLeaderPending = false
 					model[id] = e
 					okPendingOrder = removeIDFromOrder(okPendingOrder, id)
 				}
@@ -335,10 +366,7 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				got := m.remove(id)
 				require.Equal(rt, exists, got)
 				if exists {
-					delete(model, id)
-					okPendingOrder = removeIDFromOrder(okPendingOrder, id)
-					pendingOrder = removeIDFromOrder(pendingOrder, id)
-					acceptOrder = removeIDFromOrder(acceptOrder, id)
+					dropLive(id)
 				}
 
 			case sessionOpLookup:
@@ -350,6 +378,92 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 					require.NotNil(rt, s)
 					require.Equal(rt, e.state, s.state)
 					require.Equal(rt, e.principal, s.encodedPrincipal)
+				}
+
+			case sessionOpLearnOpen:
+				colliding := len(model) > 0 && rapid.Bool().Draw(rt, "learnOpenCollide")
+				var id int64
+				if colliding {
+					id = pickSessionID(rt, model, "learnOpenID")
+				} else {
+					id = rapid.Int64Range(1, 10_000).Draw(rt, "learnOpenFreshID")
+				}
+				fields := codecs.SessionOpenEventFields{
+					CorrelationID:    rapid.Int64().Draw(rt, "learnCorr"),
+					ClusterSessionID: id,
+					ResponseStreamID: rapid.Int32().Draw(rt, "learnStream"),
+					ResponseChannel:  []byte("learned"),
+				}
+				logPos := rapid.Int64().Draw(rt, "learnPos")
+				nowNs := rapid.Int64().Draw(rt, "learnNow")
+				prior, existed := model[id]
+				m.learnSessionOpen(fields, logPos, nowNs)
+
+				s, ok := m.sessionByID(id)
+				require.True(rt, ok)
+				require.Equal(rt, sessionOpen, s.state)
+				require.Equal(rt, fields.ResponseChannel, s.responseChannel)
+				require.Equal(rt, fields.ResponseStreamID, s.responseStreamID)
+				require.Equal(rt, logPos, s.openedLogPosition)
+				require.Equal(rt, nowNs, s.lastActivityNs)
+				require.Equal(rt, fields.CorrelationID, s.correlationID)
+				if existed {
+					require.Equal(rt, prior.principal, s.encodedPrincipal)
+					if prior.state != sessionOpen && prior.state != sessionClosing {
+						pendingOrder = removeIDFromOrder(pendingOrder, id)
+					}
+					prior.state = sessionOpen
+					prior.correlationID = fields.CorrelationID
+					prior.lastActivityNs = nowNs
+					model[id] = prior
+				} else {
+					require.Nil(rt, s.encodedPrincipal)
+					model[id] = sessionModelEntry{
+						state:          sessionOpen,
+						correlationID:  fields.CorrelationID,
+						lastActivityNs: nowNs,
+					}
+					acceptOrder = append(acceptOrder, id)
+				}
+				issued[id] = struct{}{}
+
+			case sessionOpLearnClose:
+				id := drawSessionID(rt, model, "learnCloseID")
+				_, exists := model[id]
+				m.remove(id)
+				if exists {
+					dropLive(id)
+				}
+
+			case sessionOpMarkOpenSessionsNewLeader:
+				nowNs := rapid.Int64().Draw(rt, "markNewLeaderNow")
+				for _, s := range m.all {
+					if s.state != sessionOpen {
+						continue
+					}
+					m.markNewLeaderPending(s)
+					s.lastActivityNs = nowNs
+				}
+				for id, e := range model {
+					if e.state != sessionOpen {
+						continue
+					}
+					e.newLeaderPending = true
+					e.lastActivityNs = nowNs
+					model[id] = e
+				}
+
+			case sessionOpClearTermMarks:
+				for _, s := range slices.Clone(m.okPending) {
+					m.setOKPending(s, false)
+				}
+				for _, s := range m.all {
+					s.newLeaderEventPending = false
+				}
+				okPendingOrder = okPendingOrder[:0]
+				for id, e := range model {
+					e.newLeaderPending = false
+					model[id] = e
 				}
 			}
 

@@ -200,6 +200,21 @@ const (
 	ClusterMultiServiceLogEndpoint = "239.255.12.57:32704"
 )
 
+// Session-transfer live-scenario endpoints. Each pair reserves one three-member
+// consensus port block (base+1 .. base+205) and one shared cluster-log
+// multicast endpoint. Session-transfer and service-transfer are separate so
+// the two scenarios may run in parallel. Bases sit above
+// ClusterMultiServicePortBase (32700 + 205).
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterSessionTransferPortBase    = 33000
+	ClusterSessionTransferLogEndpoint = "239.255.12.59:33004"
+	ClusterServiceTransferPortBase    = 33300
+	ClusterServiceTransferLogEndpoint = "239.255.12.61:33304"
+)
+
 // cluster_archive one-off and smoke endpoints. Harness holds one matrix for
 // every PortBase and log multicast the cluster_archive package binds under
 // t.Parallel.

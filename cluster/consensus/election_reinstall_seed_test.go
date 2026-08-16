@@ -151,7 +151,7 @@ func TestElectionReinstall_seedMapping(t *testing.T) {
 		// Second seed via enterElection after complete still leaves
 		// appendNotReadySinceNs at nullValue and AppendRankFailure unset.
 		a.ElectionComplete(timeoutNs)
-		require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout))
+		require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, timeoutNs))
 		require.NoError(t, a.AppendRankFailure())
 		require.Equal(t, int64(nullValue), a.appendNotReadySinceNs)
 		require.Len(t, fac.seeds, 2)

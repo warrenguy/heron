@@ -264,6 +264,18 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 			logEndpoint: ClusterMultiServiceLogEndpoint,
 		},
 		{
+			name:        "session-transfer",
+			portBase:    ClusterSessionTransferPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterSessionTransferLogEndpoint,
+		},
+		{
+			name:        "service-transfer",
+			portBase:    ClusterServiceTransferPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterServiceTransferLogEndpoint,
+		},
+		{
 			name:        "cluster-streams-multicast",
 			portBase:    ClusterStreamsMulticastPortBase,
 			memberCount: 2,

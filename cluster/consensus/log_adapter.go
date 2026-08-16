@@ -2,7 +2,6 @@ package consensus
 
 import (
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -12,9 +11,11 @@ import (
 const DefaultLogFragmentLimit = 50
 
 // LogAdapterHandler receives decoded cluster log events the adapter understands.
-// Nil handler is legal: Poll still advances Image position under the bound.
+// A nil handler is allowed. Poll still advances Image position under the bound.
 //
-// Concurrency: invoker-only; same goroutine as Poll.
+// SessionOpenEvent and SessionCloseEvent do not reach this handler.
+//
+// Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
 type LogAdapterHandler interface {
 	SessionMessage(clusterSessionID, timestamp int64)
 	NewLeadershipTermEvent(
@@ -25,6 +26,18 @@ type LogAdapterHandler interface {
 		timeUnit clusterwire.ClusterTimeUnit,
 		appVersion int32,
 	)
+}
+
+// sessionEventSink receives committed session lifecycle frames.
+//
+// Behaviour: the agent sets itself as the sink in [Agent.SetLogAdapter]. A nil
+// sink skips dispatch. The adapter must not forward SessionOpenEvent or
+// SessionCloseEvent to [LogAdapterHandler].
+//
+// Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
+type sessionEventSink interface {
+	handleSessionOpenEvent(fields codecs.SessionOpenEventFields, logPosition int64)
+	handleSessionCloseEvent(fields codecs.SessionCloseEventFields)
 }
 
 // LogAdapter polls a cluster log Image under a stream-position commit bound.
@@ -38,6 +51,12 @@ type LogAdapter struct {
 	fragmentLimit int
 	logPosition   int64 // cached when image nil
 	handler       LogAdapterHandler
+	sessionSink   sessionEventSink
+	// assembler reassembles BEGIN, middle, and END trains before handleFragment.
+	assembler *aeron.ControlledFragmentAssembler
+	// assemblerHandler is the Handler() method value cached at construction.
+	// Handler() allocates. Poll must not call Handler each duty cycle.
+	assemblerHandler aeron.ControlledFragmentHandler
 }
 
 // NewLogAdapter returns an adapter with no Image bound.
@@ -46,18 +65,25 @@ func NewLogAdapter(fragmentLimit int) *LogAdapter {
 	if fragmentLimit <= 0 {
 		fragmentLimit = DefaultLogFragmentLimit
 	}
-	return &LogAdapter{fragmentLimit: fragmentLimit}
+	a := &LogAdapter{fragmentLimit: fragmentLimit}
+	a.assembler = aeron.NewControlledFragmentAssembler(a.handleFragment)
+	a.assemblerHandler = a.assembler.Handler()
+	return a
 }
 
 // SetImage binds or replaces the log Image. When replacing a non-nil image,
-// caches previous image.Position into logPosition.
+// caches the previous image.Position into logPosition. Clears in-progress
+// reassembly so a later image cannot complete a prior train.
 //
-// Does not close the previous Image; the caller owns lifecycle.
+// Does not close the previous Image. The caller owns the Image lifecycle.
 func (a *LogAdapter) SetImage(image *aeron.Image) {
 	if a.image != nil {
 		a.logPosition = a.image.Position()
 	}
 	a.image = image
+	if a.assembler != nil {
+		a.assembler.Clear()
+	}
 }
 
 // DisconnectAt unbinds the cluster log Image and lowers the reported position
@@ -91,6 +117,16 @@ func (a *LogAdapter) SetHandler(handler LogAdapterHandler) {
 	a.handler = handler
 }
 
+// SetSessionEventSink wires or clears the session lifecycle sink.
+//
+// Behaviour: a nil sink skips SessionOpenEvent and SessionCloseEvent dispatch.
+// The setter does not change [LogAdapterHandler].
+//
+// Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
+func (a *LogAdapter) SetSessionEventSink(sink sessionEventSink) {
+	a.sessionSink = sink
+}
+
 // Position returns image.Position when bound, else cached logPosition.
 //
 // Nil receiver returns 0.
@@ -114,45 +150,39 @@ func (a *LogAdapter) IsImageClosed() bool {
 	return a.image.IsClosed()
 }
 
-// Poll delivers up to fragmentLimit DATA fragments with start position strictly
-// before boundPosition via Image.BoundedControlledPoll.
+// Poll delivers up to fragmentLimit DATA fragments whose start position is
+// strictly before boundPosition. Delivery uses Image.BoundedControlledPoll.
+// Fragmented trains reassemble through a ControlledFragmentAssembler bound at
+// construction.
 //
-// Nil adapter or nil image returns 0. One duty cycle is one BoundedControlledPoll
-// call.
+// A nil adapter or a nil image returns 0. One duty cycle is one
+// BoundedControlledPoll call.
 //
-// Returns fragment count only; no error path.
+// Returns: fragment count only. No error path.
 func (a *LogAdapter) Poll(boundPosition int64) int {
 	if a == nil || a.image == nil {
 		return 0
 	}
-	return a.image.BoundedControlledPoll(a.handleFragment, boundPosition, a.fragmentLimit)
+	return a.image.BoundedControlledPoll(a.assemblerHandler, boundPosition, a.fragmentLimit)
 }
 
-// handleFragment is the ControlledFragmentHandler for BoundedControlledPoll.
+// handleFragment is the assembler delegate for BoundedControlledPoll.
 //
-// Unfragmented only. Fragmented frames (missing UNFRAGMENTED) return CONTINUE
-// without reassembly. Position still advances under ControlledContinue.
+// Behaviour: receives whole messages only. Decode is bound to the fragment
+// span. Unknown templates and decode failure return CONTINUE so the poll
+// position still advances. A corrupt optional field must not stall the
+// follower. The transport already committed the frame.
 //
-// Decode is bound to the fragment span (offset, length), not the whole term
-// buffer, so body layout checks cannot read past the frame.
-//
-// Schema must be cluster schema (111). Unknown template IDs: CONTINUE no-op.
-// Decode failure: CONTINUE (fail-open on position advance; do not stall the
-// follower forever on corrupt optional fields - transport already committed
-// the frame).
+// Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
 func (a *LogAdapter) handleFragment(
 	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *aeron.Header,
 ) aeron.ControlledAction {
-	if header.Flags()&logbuffer.Unfragmented != logbuffer.Unfragmented {
-		return aeron.ControlledContinue
-	}
-
-	// Nil handler: advance position only; skip decode.
+	sink := a.sessionSink
 	handler := a.handler
-	if handler == nil {
+	if header == nil || (sink == nil && handler == nil) {
 		return aeron.ControlledContinue
 	}
 
@@ -170,11 +200,31 @@ func (a *LogAdapter) handleFragment(
 	}
 
 	switch layout.TemplateID {
+	case clusterwire.SessionOpenEventSbeTemplateID:
+		if sink == nil {
+			return aeron.ControlledContinue
+		}
+		if fields, decoded := codecs.TryDecodeSessionOpenEventAt(frag, 0); decoded {
+			sink.handleSessionOpenEvent(fields, header.Position())
+		}
+	case clusterwire.SessionCloseEventSbeTemplateID:
+		if sink == nil {
+			return aeron.ControlledContinue
+		}
+		if fields, decoded := codecs.SessionCloseEventFieldsFromLayout(frag, layout); decoded {
+			sink.handleSessionCloseEvent(fields)
+		}
 	case clusterwire.SessionMessageHeaderSbeTemplateID:
+		if handler == nil {
+			return aeron.ControlledContinue
+		}
 		if fields, decoded := codecs.SessionMessageHeaderFieldsFromLayout(frag, layout); decoded {
 			handler.SessionMessage(fields.ClusterSessionID, fields.Timestamp)
 		}
 	case clusterwire.NewLeadershipTermEventSbeTemplateID:
+		if handler == nil {
+			return aeron.ControlledContinue
+		}
 		if fields, decoded := codecs.NewLeadershipTermEventFieldsFromLayout(frag, layout); decoded {
 			handler.NewLeadershipTermEvent(
 				fields.LeadershipTermID,

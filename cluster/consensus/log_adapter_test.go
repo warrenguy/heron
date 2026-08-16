@@ -309,6 +309,19 @@ func TestLogAdapter_SetHandler(t *testing.T) {
 	require.Nil(t, a.handler)
 }
 
+func TestLogAdapter_SetSessionEventSink(t *testing.T) {
+	a := NewLogAdapter(0)
+	a.SetSessionEventSink(nil)
+	require.Nil(t, a.sessionSink)
+
+	spy := &logAdapterSessionSinkSpy{}
+	a.SetSessionEventSink(spy)
+	require.Same(t, spy, a.sessionSink)
+
+	a.SetSessionEventSink(nil)
+	require.Nil(t, a.sessionSink)
+}
+
 func TestLogAdapter_Poll_boundBeforeFirstFrame(t *testing.T) {
 	a, image := boundLogAdapter(t)
 	join := image.Position()
@@ -502,7 +515,8 @@ func TestLogAdapter_nilHandler_stillAdvances(t *testing.T) {
 func TestLogAdapter_fragmented_noHandler(t *testing.T) {
 	a, image, spy := boundLogAdapterWithHandler(t)
 
-	// Valid SessionMessage body, but Begin-only flags: no reassembly, no handler.
+	// Valid SessionMessage body. Begin-only flags. The assembler holds the
+	// fragment and does not call the handler until END.
 	payload := encodeLogAdapterSessionMessagePayload(t, codecs.SessionMessageHeaderFields{
 		LeadershipTermID: 1,
 		ClusterSessionID: 2,
@@ -607,4 +621,391 @@ func TestFollowerConsensusWork_boundUsesMinNotifyAndAppend(t *testing.T) {
 	requireHandlerIdle(t, spy)
 	// Unknown raw payload: position advanced for frame A only.
 	require.Equal(t, appendBound, a.CommitPosition())
+}
+
+// logAdapterSessionSinkSpy records SessionOpenEvent and SessionCloseEvent
+// deliveries from the adapter sink.
+type logAdapterSessionSinkSpy struct {
+	opens  int
+	closes int
+
+	lastOpen    codecs.SessionOpenEventFields
+	lastOpenPos int64
+	lastClose   codecs.SessionCloseEventFields
+}
+
+func (s *logAdapterSessionSinkSpy) handleSessionOpenEvent(
+	fields codecs.SessionOpenEventFields,
+	logPosition int64,
+) {
+	s.opens++
+	s.lastOpen = fields
+	s.lastOpenPos = logPosition
+}
+
+func (s *logAdapterSessionSinkSpy) handleSessionCloseEvent(
+	fields codecs.SessionCloseEventFields,
+) {
+	s.closes++
+	s.lastClose = fields
+}
+
+func requireSessionSinkIdle(tb testing.TB, spy *logAdapterSessionSinkSpy) {
+	tb.Helper()
+	require.Equal(tb, 0, spy.opens)
+	require.Equal(tb, 0, spy.closes)
+}
+
+func sampleLogAdapterSessionOpenFields() codecs.SessionOpenEventFields {
+	return codecs.SessionOpenEventFields{
+		LeadershipTermID: 11,
+		CorrelationID:    22,
+		ClusterSessionID: 33,
+		Timestamp:        44,
+		ResponseStreamID: 55,
+		ResponseChannel:  []byte("aeron:udp?endpoint=127.0.0.1:40123"),
+		EncodedPrincipal: []byte("alice"),
+	}
+}
+
+func sampleLogAdapterSessionCloseFields() codecs.SessionCloseEventFields {
+	return codecs.SessionCloseEventFields{
+		LeadershipTermID: 11,
+		ClusterSessionID: 33,
+		Timestamp:        44,
+		CloseReason:      clusterwire.CloseReason_CLIENT_ACTION,
+	}
+}
+
+func encodeLogAdapterSessionOpenPayload(
+	tb testing.TB,
+	fields codecs.SessionOpenEventFields,
+) []byte {
+	tb.Helper()
+	total, ok := codecs.ClusterWireMessageLen(
+		clusterwire.SessionOpenEventSbeBlockLength,
+		len(fields.ResponseChannel),
+		len(fields.EncodedPrincipal),
+	)
+	require.True(tb, ok)
+	buf := make([]byte, total)
+	wireEnd, encOK := codecs.EncodeSessionOpenEvent(
+		buf,
+		0,
+		clusterwire.SessionOpenEventSbeSchemaVersion,
+		fields,
+	)
+	require.True(tb, encOK)
+	return buf[:wireEnd]
+}
+
+func encodeLogAdapterSessionClosePayload(
+	tb testing.TB,
+	fields codecs.SessionCloseEventFields,
+) []byte {
+	tb.Helper()
+	buf := make([]byte, codecs.SessionCloseEventEncodedLen())
+	wireEnd, ok := codecs.EncodeSessionCloseEvent(
+		buf,
+		0,
+		clusterwire.SessionCloseEventSbeSchemaVersion,
+		fields,
+	)
+	require.True(tb, ok)
+	return buf[:wireEnd]
+}
+
+func boundLogAdapterWithSink(
+	tb testing.TB,
+) (*LogAdapter, *aeron.Image, *logAdapterSessionSinkSpy) {
+	tb.Helper()
+	a, image := boundLogAdapter(tb)
+	spy := &logAdapterSessionSinkSpy{}
+	a.SetSessionEventSink(spy)
+	return a, image, spy
+}
+
+func boundLogAdapterWithSinkAndHandler(
+	tb testing.TB,
+) (*LogAdapter, *aeron.Image, *logAdapterSessionSinkSpy, *logAdapterHandlerSpy) {
+	tb.Helper()
+	a, image, sink := boundLogAdapterWithSink(tb)
+	handler := &logAdapterHandlerSpy{}
+	a.SetHandler(handler)
+	return a, image, sink, handler
+}
+
+func writeLogAdapterFragmentTrain(
+	tb testing.TB,
+	image *aeron.Image,
+	startOffset int,
+	payload []byte,
+	chunk int,
+) (offsets []int, endPos int64) {
+	tb.Helper()
+	require.Positive(tb, chunk)
+	require.Greater(tb, len(payload), chunk)
+
+	frames := make([]aeron.FragmentedFrameForTest, 0, (len(payload)+chunk-1)/chunk)
+	for off := 0; off < len(payload); {
+		n := min(chunk, len(payload)-off)
+		frames = append(frames, aeron.FragmentedFrameForTest{
+			Payload: append([]byte(nil), payload[off:off+n]...),
+		})
+		off += n
+	}
+	require.Greater(tb, len(frames), 1)
+	frames[0].Flags = logbuffer.BeginFlag
+	frames[len(frames)-1].Flags = logbuffer.EndFlag
+
+	offsets = aeron.WriteCommittedDataFramesForStreamForTest(
+		aeron.ImageTermBufferForHooks(image),
+		startOffset,
+		image.SessionID(),
+		image.StreamID(),
+		logAdapterHookTermID,
+		frames,
+	)
+	last := frames[len(frames)-1]
+	lastOff := offsets[len(offsets)-1]
+	endPos = int64(lastOff + logbuffer.AlignFragmentChunkLength(len(last.Payload)))
+	return offsets, endPos
+}
+
+func TestLogAdapter_SessionOpen_reachesSink(t *testing.T) {
+	a, image, sink, handler := boundLogAdapterWithSinkAndHandler(t)
+
+	fields := sampleLogAdapterSessionOpenFields()
+	payload := encodeLogAdapterSessionOpenPayload(t, fields)
+	span := writeAndPollOne(t, a, image, payload)
+
+	require.Equal(t, 1, sink.opens)
+	require.Equal(t, 0, sink.closes)
+	require.Equal(t, fields, sink.lastOpen)
+	require.Equal(t, span, sink.lastOpenPos)
+	requireHandlerIdle(t, handler)
+}
+
+func TestLogAdapter_SessionClose_reachesSink(t *testing.T) {
+	a, image, sink, handler := boundLogAdapterWithSinkAndHandler(t)
+
+	fields := sampleLogAdapterSessionCloseFields()
+	payload := encodeLogAdapterSessionClosePayload(t, fields)
+	writeAndPollOne(t, a, image, payload)
+
+	require.Equal(t, 0, sink.opens)
+	require.Equal(t, 1, sink.closes)
+	require.Equal(t, fields, sink.lastClose)
+	requireHandlerIdle(t, handler)
+}
+
+func TestLogAdapter_nilSinkAndHandler_sessionEventsSafe(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload func(testing.TB) []byte
+	}{
+		{
+			name: "open",
+			payload: func(tb testing.TB) []byte {
+				return encodeLogAdapterSessionOpenPayload(tb, sampleLogAdapterSessionOpenFields())
+			},
+		},
+		{
+			name: "close",
+			payload: func(tb testing.TB) []byte {
+				return encodeLogAdapterSessionClosePayload(tb, sampleLogAdapterSessionCloseFields())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, image := boundLogAdapter(t)
+			require.NotPanics(t, func() {
+				writeAndPollOne(t, a, image, tt.payload(t))
+			})
+		})
+	}
+}
+
+func TestLogAdapter_sessionEvents_skipped(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload func(testing.TB) []byte
+	}{
+		{
+			name: "open_wrong_schema",
+			payload: func(tb testing.TB) []byte {
+				return encodeLogAdapterMessageHeader(
+					tb,
+					clusterwire.SessionOpenEventSbeBlockLength,
+					clusterwire.SessionOpenEventSbeTemplateID,
+					112,
+					clusterwire.SessionOpenEventSbeSchemaVersion,
+				)
+			},
+		},
+		{
+			name: "close_wrong_schema",
+			payload: func(tb testing.TB) []byte {
+				return encodeLogAdapterMessageHeader(
+					tb,
+					clusterwire.SessionCloseEventSbeBlockLength,
+					clusterwire.SessionCloseEventSbeTemplateID,
+					112,
+					clusterwire.SessionCloseEventSbeSchemaVersion,
+				)
+			},
+		},
+		{
+			name: "open_header_only",
+			payload: func(tb testing.TB) []byte {
+				return encodeLogAdapterMessageHeader(
+					tb,
+					clusterwire.SessionOpenEventSbeBlockLength,
+					clusterwire.SessionOpenEventSbeTemplateID,
+					clusterwire.MessageHeaderSbeSchemaID,
+					clusterwire.SessionOpenEventSbeSchemaVersion,
+				)
+			},
+		},
+		{
+			name: "close_header_only",
+			payload: func(tb testing.TB) []byte {
+				return encodeLogAdapterMessageHeader(
+					tb,
+					clusterwire.SessionCloseEventSbeBlockLength,
+					clusterwire.SessionCloseEventSbeTemplateID,
+					clusterwire.MessageHeaderSbeSchemaID,
+					clusterwire.SessionCloseEventSbeSchemaVersion,
+				)
+			},
+		},
+		{
+			name: "short_length",
+			payload: func(tb testing.TB) []byte {
+				p := []byte{0x01, 0x02, 0x03, 0x04}
+				require.Less(tb, len(p), codecs.MessageHeaderEncodedLen())
+				return p
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, image, sink, handler := boundLogAdapterWithSinkAndHandler(t)
+			writeAndPollOne(t, a, image, tt.payload(t))
+			requireSessionSinkIdle(t, sink)
+			requireHandlerIdle(t, handler)
+		})
+	}
+}
+
+func TestLogAdapter_templates1And24_stillReachHandler(t *testing.T) {
+	t.Run("session_message", func(t *testing.T) {
+		a, image, sink, handler := boundLogAdapterWithSinkAndHandler(t)
+		msg := codecs.SessionMessageHeaderFields{
+			LeadershipTermID: 11,
+			ClusterSessionID: 22,
+			Timestamp:        33,
+		}
+		writeAndPollOne(t, a, image, encodeLogAdapterSessionMessagePayload(t, msg))
+		require.Equal(t, 1, handler.sessionMessages)
+		require.Equal(t, msg.ClusterSessionID, handler.lastClusterSessionID)
+		require.Equal(t, msg.Timestamp, handler.lastTimestamp)
+		requireSessionSinkIdle(t, sink)
+	})
+
+	t.Run("nlt", func(t *testing.T) {
+		a, image, sink, handler := boundLogAdapterWithSinkAndHandler(t)
+		nlt := codecs.NewLeadershipTermEventFields{
+			LeadershipTermID:    7,
+			LogPosition:         128,
+			Timestamp:           999,
+			TermBaseLogPosition: 64,
+			LeaderMemberID:      1,
+			LogSessionID:        3,
+			TimeUnit:            clusterwire.ClusterTimeUnit_NANOS,
+			AppVersion:          42,
+		}
+		writeAndPollOne(t, a, image, encodeLogAdapterNLTPayload(t, nlt))
+		require.Equal(t, 1, handler.nltEvents)
+		require.Equal(t, nlt.LeadershipTermID, handler.lastLeadershipTermID)
+		require.Equal(t, nlt.LogPosition, handler.lastLogPosition)
+		require.Equal(t, nlt.Timestamp, handler.lastNLTTimestamp)
+		require.Equal(t, nlt.TermBaseLogPosition, handler.lastTermBaseLogPosition)
+		require.Equal(t, nlt.TimeUnit, handler.lastTimeUnit)
+		require.Equal(t, nlt.AppVersion, handler.lastAppVersion)
+		requireSessionSinkIdle(t, sink)
+	})
+}
+
+func TestLogAdapter_fragmentedSessionOpen_oneSinkDelivery(t *testing.T) {
+	a, image, sink := boundLogAdapterWithSink(t)
+	fields := sampleLogAdapterSessionOpenFields()
+	payload := encodeLogAdapterSessionOpenPayload(t, fields)
+	offsets, endPos := writeLogAdapterFragmentTrain(t, image, 0, payload, 16)
+
+	require.Equal(t, len(offsets), a.Poll(endPos+32))
+	require.Equal(t, endPos, a.Position())
+	require.Equal(t, 1, sink.opens)
+	require.Equal(t, 0, sink.closes)
+	require.Equal(t, fields, sink.lastOpen)
+	require.Equal(t, endPos, sink.lastOpenPos)
+}
+
+func TestLogAdapter_fragmentedSessionOpen_pausedMidTrain(t *testing.T) {
+	a, image, sink := boundLogAdapterWithSink(t)
+	fields := sampleLogAdapterSessionOpenFields()
+	payload := encodeLogAdapterSessionOpenPayload(t, fields)
+	offsets, endPos := writeLogAdapterFragmentTrain(t, image, 0, payload, 16)
+	require.Greater(t, len(offsets), 1)
+
+	endStart := int64(offsets[len(offsets)-1])
+	require.Equal(t, len(offsets)-1, a.Poll(endStart))
+	require.Equal(t, endStart, a.Position())
+	requireSessionSinkIdle(t, sink)
+
+	require.Equal(t, 1, a.Poll(endPos+32))
+	require.Equal(t, endPos, a.Position())
+	require.Equal(t, 1, sink.opens)
+	require.Equal(t, fields, sink.lastOpen)
+	require.Equal(t, endPos, sink.lastOpenPos)
+}
+
+func TestLogAdapter_fragmentedSessionMessage_reachesHandler(t *testing.T) {
+	a, image, handler := boundLogAdapterWithHandler(t)
+	fields := codecs.SessionMessageHeaderFields{
+		LeadershipTermID: 11,
+		ClusterSessionID: 22,
+		Timestamp:        33,
+	}
+	payload := encodeLogAdapterSessionMessagePayload(t, fields)
+	offsets, endPos := writeLogAdapterFragmentTrain(t, image, 0, payload, 8)
+
+	require.Equal(t, len(offsets), a.Poll(endPos+32))
+	require.Equal(t, endPos, a.Position())
+	require.Equal(t, 1, handler.sessionMessages)
+	require.Equal(t, 0, handler.nltEvents)
+	require.Equal(t, fields.ClusterSessionID, handler.lastClusterSessionID)
+	require.Equal(t, fields.Timestamp, handler.lastTimestamp)
+}
+
+func TestLogAdapter_SetImage_clearsAssembler(t *testing.T) {
+	a, image, sink := boundLogAdapterWithSink(t)
+	fields := sampleLogAdapterSessionOpenFields()
+	payload := encodeLogAdapterSessionOpenPayload(t, fields)
+	offsets, endPos := writeLogAdapterFragmentTrain(t, image, 0, payload, 16)
+	endStart := int64(offsets[len(offsets)-1])
+
+	require.Equal(t, len(offsets)-1, a.Poll(endStart))
+	requireSessionSinkIdle(t, sink)
+
+	a.SetImage(image)
+	require.Equal(t, 1, a.Poll(endPos+32))
+	requireSessionSinkIdle(t, sink)
+
+	fullSpan := int64(logbuffer.AlignFragmentChunkLength(len(payload)))
+	writeLogAdapterUnfragmentedFrame(t, image, int(endPos), payload)
+	require.Equal(t, 1, a.Poll(endPos+fullSpan+32))
+	require.Equal(t, 1, sink.opens)
+	require.Equal(t, fields, sink.lastOpen)
 }

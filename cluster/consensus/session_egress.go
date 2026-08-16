@@ -94,15 +94,13 @@ func (a *Agent) SetIngressEndpoints(endpoints string) {
 // and queued-event publication.
 //
 // Behaviour: sessions stay in the registry. Transport handles are closed and
-// cleared. Clears okPending so a post-close DoWork does not retry OK sends
-// without publications. Idempotent.
+// cleared. Clears okPending and new-leader-pending so a post-close DoWork
+// does not retry those sends without publications. Drops the REDIRECT/ERROR
+// queue. Idempotent.
 //
 // Concurrency: invoker-only. Do not call while [Agent.DoWork] runs.
 func (a *Agent) CloseSessionEgress() {
-	for _, s := range a.sessions.byID {
-		a.releaseSessionEgress(s)
-		a.sessions.setOKPending(s, false)
-	}
+	a.releaseSessionsForNewTerm()
 	for _, e := range a.egressEvents {
 		a.releaseEgressEvent(e)
 	}
@@ -162,7 +160,7 @@ func (a *Agent) enqueueEgressEvent(
 	}
 	addCorr, err := a.egressAdder.OfferAddPublication(
 		fields.ResponseStreamID,
-		string(fields.ResponseChannel),
+		eventEgressPublicationChannel(fields.ResponseChannel),
 	)
 	if err != nil {
 		return
@@ -234,17 +232,19 @@ func (a *Agent) reclaimTimedOutSessions(nowNs int64) int {
 	return work
 }
 
-// drainEgressEvents polls and sends queued REDIRECT/ERROR events.
+// drainEgressEvents polls and sends queued REDIRECT and ERROR events.
 //
 // Behaviour:
-//   - Drops an entry at the deadline when the publication never connects or the
-//     send stays retriable.
-//   - Drops immediately on a terminal poll-add error or a terminal offer
-//     (Closed, MaxPositionExceeded, oversize detail, encode failure).
-//   - Holds the entry for the next tick on a retriable offer.
+//   - Drops the entry at the deadline when the publication never connects or
+//     the send stays retriable.
+//   - Drops the entry immediately on a terminal poll-add error or a terminal
+//     offer (Closed, MaxPositionExceeded, oversize detail, encode failure).
+//   - Holds a vanished not-done poll-add until the deadline. A vanished
+//     poll-add is not terminal.
+//   - Holds the entry for the next duty cycle on a retriable offer.
 //
-// Returns: work units for deadline drops, terminal poll drops, terminal sends,
-// not-done polls that contact the adder, and successful sends.
+// Returns: work units for deadline drops, terminal poll drops, terminal
+// sends, not-done polls that contact the adder, and successful sends.
 func (a *Agent) drainEgressEvents(nowNs int64) int {
 	work := 0
 	leaderMemberID := a.announcedLeaderMemberID()
@@ -294,47 +294,104 @@ func (a *Agent) dropEgressEventAt(i int) {
 	a.egressEvents = slices.Delete(a.egressEvents, i, i+1)
 }
 
+// egressAddPoll is the result of one PollAddPublication tick.
+type egressAddPoll int
+
+const (
+	// egressAddNone means no adder or no in-flight correlation id.
+	egressAddNone egressAddPoll = iota
+
+	// egressAddInFlight means the adder was contacted and the add is still
+	// pending.
+	egressAddInFlight
+
+	// egressAddReady means the add completed with a publication.
+	egressAddReady
+
+	// egressAddTerminal means the add completed with an error or a nil
+	// publication.
+	egressAddTerminal
+
+	// egressAddVanished means a not-done PollAddPublication returned a
+	// non-nil err. The pending add is gone or the client is not ready. The
+	// poll clears *addCorr.
+	egressAddVanished
+)
+
 // pollEgressAdd runs one PollAddPublication tick for *addCorr.
 //
-// Clears *addCorr when the poll completes (success or terminal).
+// Behaviour: the poll clears *addCorr on ready, terminal, or vanished. A
+// vanished add is a not-done poll with a non-nil err. The next caller must
+// not poll that correlation id.
 //
 // Returns:
-//   - pub when the add succeeded
-//   - terminal when the poll completed with an error or a nil publication
-//   - pollWork is 1 when the adder was contacted and the add is still in flight
+//   - pub and egressAddReady when the add succeeded
+//   - egressAddTerminal when the poll completed with an error or a nil
+//     publication
+//   - egressAddVanished when a not-done poll returns a non-nil err
+//   - egressAddInFlight and pollWork 1 when the add is still pending
+//   - egressAddNone when the adder is nil or *addCorr is nullValue
 func (a *Agent) pollEgressAdd(
 	addCorr *int64,
-) (pub *aeron.Publication, terminal bool, pollWork int) {
+) (pub *aeron.Publication, state egressAddPoll, pollWork int) {
 	if a.egressAdder == nil || *addCorr == nullValue {
-		return nil, false, 0
+		return nil, egressAddNone, 0
 	}
 	pub, done, err := a.egressAdder.PollAddPublication(*addCorr)
 	if !done {
-		return nil, false, 1
+		if err != nil {
+			*addCorr = nullValue
+			return nil, egressAddVanished, 0
+		}
+		return nil, egressAddInFlight, 1
 	}
 	*addCorr = nullValue
 	if err != nil || pub == nil {
-		return nil, true, 0
+		return nil, egressAddTerminal, 0
 	}
-	return pub, false, 0
+	return pub, egressAddReady, 0
+}
+
+// resolveSessionEgress returns the session egress publication when one is
+// stored or when the in-flight add becomes ready.
+//
+// Behaviour: a stored publication returns egressAddReady with no poll. A
+// ready poll stores the publication on the session. The call does not
+// remove the session. The call does not start a new add.
+func (a *Agent) resolveSessionEgress(
+	session *clientSession,
+) (pub *aeron.Publication, state egressAddPoll, pollWork int) {
+	if session.egressPublication != nil {
+		return session.egressPublication, egressAddReady, 0
+	}
+	pub, state, pollWork = a.pollEgressAdd(&session.egressAddCorrelationID)
+	if state == egressAddReady {
+		session.egressPublication = pub
+	}
+	return pub, state, pollWork
 }
 
 // pollEgressEventPublication polls one async add for a queued event.
 //
+// Behaviour: a vanished add is not terminal. The caller holds the entry
+// until the deadline.
+//
 // Returns:
 //   - ready when the publication is stored
 //   - terminal when the poll completed with an error or a nil publication
-//   - pollWork is 1 when the adder was contacted and the add is still in flight
+//   - pollWork 1 when the adder was contacted and the add is still in flight
 func (a *Agent) pollEgressEventPublication(e *egressEvent) (ready, terminal bool, pollWork int) {
-	pub, terminal, pollWork := a.pollEgressAdd(&e.addCorrelationID)
-	if terminal {
+	pub, state, pollWork := a.pollEgressAdd(&e.addCorrelationID)
+	switch state {
+	case egressAddTerminal:
 		return false, true, 0
-	}
-	if pub == nil {
+	case egressAddReady:
+		e.publication = pub
+		return true, false, 0
+	case egressAddNone, egressAddInFlight, egressAddVanished:
 		return false, false, pollWork
 	}
-	e.publication = pub
-	return true, false, 0
+	return false, false, pollWork
 }
 
 // okPendingWork sends SessionEvent OK for each session on okPending. Walks
@@ -390,46 +447,67 @@ func (a *Agent) okPendingWork() int {
 	return work
 }
 
-// startSessionEgress offers an async publication add for a pending session.
+const sessionEgressLingerParam = "linger="
+
+// eventEgressLingerNs is 0. REDIRECT and ERROR publications must not linger
+// on a follower that later becomes leader.
+const eventEgressLingerNs = "0"
+
+// eventEgressPublicationChannel builds the REDIRECT or ERROR publication URI.
+// Appends linger=0 when linger is absent.
+func eventEgressPublicationChannel(responseChannel []byte) string {
+	channel := string(responseChannel)
+	if aeron.ChannelParamIndex(channel, sessionEgressLingerParam, true) >= 0 {
+		return channel
+	}
+	return aeron.AppendChannelParam(channel, sessionEgressLingerParam, eventEgressLingerNs)
+}
+
+// startSessionEgress offers an async publication add for a session.
 //
-// Behaviour: offer error removes the session fail-closed. Nil adder leaves the
-// session pending for deadline reclaim.
-func (a *Agent) startSessionEgress(session *clientSession) {
+// Behaviour: a nil adder stores no add. The nil-adder path returns nil.
+// Offer success stores the correlation id. Offer error returns the error.
+// The session stays untouched.
+//
+// Returns an error when: OfferAddPublication fails.
+func (a *Agent) startSessionEgress(session *clientSession) error {
 	if a.egressAdder == nil {
-		return
+		return nil
 	}
 	addCorr, err := a.egressAdder.OfferAddPublication(
 		session.responseStreamID,
 		string(session.responseChannel),
 	)
 	if err != nil {
-		a.removeSessionWithResources(session)
-		return
+		return err
 	}
 	session.egressAddCorrelationID = addCorr
+	return nil
 }
 
 // pollSessionEgress polls the in-flight async add for a pending session.
 //
+// Behaviour: a vanished or terminal add is fail-closed. The call removes
+// the session so first-connect cannot hold a dead id.
+//
 // Returns:
 //   - ready when egressPublication is non-nil and ready to gate
-//   - removed when a terminal poll called removeSessionWithResources
-//   - pollWork 1 when the adder was contacted and the add is still in flight
-//     (DoWork stays active while adds resolve)
+//   - removed when a terminal or vanished add runs
+//     removeSessionWithResources
+//   - pollWork 1 when the adder was contacted and the add is still in
+//     flight (DoWork stays active while adds resolve)
 func (a *Agent) pollSessionEgress(session *clientSession) (ready, removed bool, pollWork int) {
-	if session.egressPublication != nil {
-		return true, false, 0
-	}
-	pub, terminal, pollWork := a.pollEgressAdd(&session.egressAddCorrelationID)
-	if terminal {
+	_, state, pollWork := a.resolveSessionEgress(session)
+	switch state {
+	case egressAddTerminal, egressAddVanished:
 		a.removeSessionWithResources(session)
 		return false, true, 0
-	}
-	if pub == nil {
+	case egressAddReady:
+		return true, false, 0
+	case egressAddNone, egressAddInFlight:
 		return false, false, pollWork
 	}
-	session.egressPublication = pub
-	return true, false, 0
+	return false, false, pollWork
 }
 
 // sendOutcome is the result of one SessionEvent encode and offer attempt.

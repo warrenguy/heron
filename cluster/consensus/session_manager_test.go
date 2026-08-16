@@ -102,6 +102,25 @@ func addPending(
 	return m.addPendingConnect(m.allocateSessionID(), fields, nowNs)
 }
 
+func TestSessionState_String(t *testing.T) {
+	tests := []struct {
+		state sessionState
+		want  string
+	}{
+		{sessionPending, "pending"},
+		{sessionChallenged, "challenged"},
+		{sessionAuthenticated, "authenticated"},
+		{sessionRejected, "rejected"},
+		{sessionOpen, "open"},
+		{sessionClosing, "closing"},
+		{sessionState(-1), "unknown"},
+		{sessionState(len(sessionStateNames)), "unknown"},
+	}
+	for _, tt := range tests {
+		require.Equal(t, tt.want, tt.state.String())
+	}
+}
+
 func TestSessionManager_addPendingConnect_idsAndFields(t *testing.T) {
 	m := newSessionManager()
 	const nowNs int64 = 1_000
@@ -897,7 +916,7 @@ func TestSessionWork_guardTable(t *testing.T) {
 			} else {
 				s := addPending(a.sessions, fields, 1)
 				require.NotNil(t, s)
-				a.startSessionEgress(s)
+				require.NoError(t, a.startSessionEgress(s))
 			}
 			require.Equal(t, 0, a.sessionWork(10))
 			require.Equal(t, 1, a.PendingSessionCount())
@@ -955,4 +974,58 @@ func TestDoWork_connectAppendsSameTick(t *testing.T) {
 		t, decoded, 9, fields.CorrelationID, 1, nowNs,
 		fields.ResponseStreamID, fields.ResponseChannel,
 	)
+}
+
+func TestSessionManager_learnSessionOpen_insertAndCount(t *testing.T) {
+	m := newSessionManager()
+	fields := sampleLearnOpenFields(5)
+	m.learnSessionOpen(fields, 128, 50)
+
+	require.Equal(t, 1, m.openCount())
+	require.Equal(t, 0, m.pendingCount())
+	s, ok := m.sessionByID(5)
+	require.True(t, ok)
+	require.Equal(t, sessionOpen, s.state)
+	require.Equal(t, fields.ResponseChannel, s.responseChannel)
+	require.Equal(t, fields.ResponseStreamID, s.responseStreamID)
+	require.Equal(t, int64(128), s.openedLogPosition)
+	require.Equal(t, int64(50), s.lastActivityNs)
+	require.Nil(t, s.encodedPrincipal)
+	require.Equal(t, int64(6), m.nextSessionID)
+	require.Len(t, m.all, 1)
+	require.Empty(t, m.okPending)
+}
+
+func TestSessionManager_learnSessionOpen_closingBecomesOpen(t *testing.T) {
+	m := newSessionManager()
+	s := addPending(m, validConnectFields(1), 1)
+	require.True(t, m.markAuthenticated(s.id, []byte("prin")))
+	require.True(t, m.markOpen(s.id, 10))
+	require.True(t, m.markClosing(s.id, clusterwire.CloseReason_TIMEOUT))
+	require.Equal(t, 1, m.closingSessionCount())
+	require.Equal(t, 0, m.openCount())
+
+	m.learnSessionOpen(sampleLearnOpenFields(s.id), 20, 3)
+	require.Equal(t, 0, m.closingSessionCount())
+	require.Equal(t, 1, m.openCount())
+	require.Equal(t, sessionOpen, s.state)
+	require.Equal(t, []byte("prin"), s.encodedPrincipal)
+	require.Equal(t, int64(20), s.openedLogPosition)
+}
+
+func TestSessionManager_learnSessionOpen_ignoresAcceptCap(t *testing.T) {
+	m := newSessionManager()
+	fields := validConnectFields(1)
+	for range maxConcurrentSessions {
+		require.NotNil(t, addPending(m, fields, 1))
+	}
+	require.Nil(t, m.addPendingConnect(m.allocateSessionID(), fields, 2))
+
+	learned := sampleLearnOpenFields(500)
+	m.learnSessionOpen(learned, 9, 3)
+	require.Len(t, m.byID, maxConcurrentSessions+1)
+	s, ok := m.sessionByID(500)
+	require.True(t, ok)
+	require.Equal(t, sessionOpen, s.state)
+	require.Equal(t, int64(501), m.nextSessionID)
 }

@@ -282,7 +282,7 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 		require.Empty(t, fac.seeds)
 
 		// enterElection re-check: refuse while live, same runner, no seed.
-		require.Zero(t, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout))
+		require.Zero(t, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, timeoutNs))
 		require.Equal(t, ElectionRunner(live), a.Election())
 		require.Equal(t, int64(1), a.ElectionCount())
 		require.Equal(t, ElectionTriggerBootstrap, a.LastElectionTrigger())
@@ -328,7 +328,7 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 		a.pendingJoinLog = &codecs.JoinLogFields{LogPosition: 99}
 		require.True(t, a.HasPendingJoinLog())
 
-		require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout))
+		require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, 0))
 		require.False(t, a.HasPendingJoinLog())
 		require.Equal(t, RoleFollower, a.Role())
 		require.NotNil(t, a.Election())
@@ -346,7 +346,7 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 		a.pendingJoinLog = &codecs.JoinLogFields{LogPosition: 99}
 		require.True(t, a.HasPendingJoinLog())
 
-		require.Zero(t, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout))
+		require.Zero(t, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, 0))
 		require.True(t, a.HasPendingJoinLog())
 		require.Equal(t, RoleLeader, a.Role())
 		require.Nil(t, a.Election())
@@ -359,11 +359,11 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 			LeaderHeartbeatTimeoutNs: timeoutNs,
 		})
 		a.SetElectionFactory(fac.factory())
-		require.Equal(t, 1, a.enterElection(ElectionTriggerBootstrap))
+		require.Equal(t, 1, a.enterElection(ElectionTriggerBootstrap, 0))
 		require.NotNil(t, a.Election())
 		a.pendingJoinLog = &codecs.JoinLogFields{LogPosition: 99}
 
-		require.Zero(t, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout))
+		require.Zero(t, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, 0))
 		require.True(t, a.HasPendingJoinLog())
 		require.Equal(t, int64(1), a.ElectionCount())
 		require.Len(t, fac.seeds, 1)

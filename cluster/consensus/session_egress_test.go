@@ -16,8 +16,10 @@ import (
 
 // scriptedEgressAdder drives async publication adds without a media driver.
 //
-// Per-correlation outcomes: pending for N polls, then ready with a publication,
-// or ready with an error.
+// Per-correlation outcomes, in poll order:
+//   - N not-done polls
+//   - one optional not-done error
+//   - ready with a publication, or a terminal error
 type scriptedEgressAdder struct {
 	nextCorr int64
 	// pendingPolls maps correlation id to remaining not-done polls.
@@ -26,6 +28,9 @@ type scriptedEgressAdder struct {
 	pubs map[int64]*aeron.Publication
 	// pollErrs maps correlation id to a terminal poll error.
 	pollErrs map[int64]error
+	// pollNotDoneErrs maps correlation id to a not-done poll error.
+	// Models PollAddPublication (nil, false, err) when the pending is gone.
+	pollNotDoneErrs map[int64]error
 	// defaultPub is used when no per-corr pub is set. Nil means ready with a
 	// nil publication (treated as terminal by pollSessionEgress).
 	defaultPub func() *aeron.Publication
@@ -44,9 +49,10 @@ type egressOfferRecord struct {
 
 func newScriptedEgressAdder() *scriptedEgressAdder {
 	return &scriptedEgressAdder{
-		pendingPolls: make(map[int64]int),
-		pubs:         make(map[int64]*aeron.Publication),
-		pollErrs:     make(map[int64]error),
+		pendingPolls:    make(map[int64]int),
+		pubs:            make(map[int64]*aeron.Publication),
+		pollErrs:        make(map[int64]error),
+		pollNotDoneErrs: make(map[int64]error),
 	}
 }
 
@@ -97,6 +103,10 @@ func (s *scriptedEgressAdder) PollAddPublication(
 		return nil, false, nil
 	}
 	delete(s.pendingPolls, correlationID)
+	if err, ok := s.pollNotDoneErrs[correlationID]; ok {
+		delete(s.pollNotDoneErrs, correlationID)
+		return nil, false, err
+	}
 	if err, ok := s.pollErrs[correlationID]; ok {
 		return nil, true, err
 	}
@@ -114,6 +124,7 @@ func (s *scriptedEgressAdder) CancelPending(correlationID int64) {
 	delete(s.pendingPolls, correlationID)
 	delete(s.pubs, correlationID)
 	delete(s.pollErrs, correlationID)
+	delete(s.pollNotDoneErrs, correlationID)
 }
 
 // setNextPub queues the next offer to resolve to pub after pending polls.
@@ -142,6 +153,14 @@ func scriptedConnectedPub(
 func terminalFirstOfferAdder() *scriptedEgressAdder {
 	a := newScriptedEgressAdder()
 	a.pollErrs[1] = errors.New("registration failed")
+	return a
+}
+
+// interruptedFirstOfferAdder returns an adder whose first poll of
+// correlation id 1 is not-done with ErrAwaitInterrupted.
+func interruptedFirstOfferAdder() *scriptedEgressAdder {
+	a := newScriptedEgressAdder()
+	a.pollNotDoneErrs[1] = aeron.ErrAwaitInterrupted
 	return a
 }
 
@@ -472,6 +491,19 @@ func TestSessionEgress_pollAddTerminalRemoves(t *testing.T) {
 	require.Empty(t, a.sessions.byID)
 }
 
+func TestSessionEgress_pollAddInterruptedRemoves(t *testing.T) {
+	p, _ := boundLogPublisher(t)
+	adder := interruptedFirstOfferAdder()
+	a := leaderWithEgress(t, p, 0, 0, adder)
+	a.acceptSessionConnect(validConnectFields(1), 1)
+	require.Equal(t, 1, a.PendingSessionCount())
+
+	// Not-done err clears the correlation id. First-connect is fail-closed.
+	require.Equal(t, 1, a.sessionWork(10))
+	require.Equal(t, 0, a.PendingSessionCount())
+	require.Empty(t, a.sessions.byID)
+}
+
 func TestSessionEgress_pendingDeadlineReclaim(t *testing.T) {
 	a, adder := leaderNeverReady(t)
 	const acceptNs int64 = 100
@@ -644,6 +676,8 @@ func TestSessionEgress_redirect(t *testing.T) {
 	a.queueSessionRedirect(fields, 100)
 	require.Len(t, a.egressEvents, 1)
 	require.Equal(t, int64(nullValue), a.egressEvents[0].clusterSessionID)
+	require.Len(t, adder.offers, 1)
+	require.Equal(t, "aeron:udp?endpoint=127.0.0.1:40123|linger=0", adder.offers[0].channel)
 
 	require.Equal(t, 1, a.sessionWork(100))
 	require.Empty(t, a.egressEvents)
@@ -718,6 +752,51 @@ func TestSessionEgress_eventPollTerminalDrops(t *testing.T) {
 	// Terminal poll drops immediately; no wait for deadline.
 	require.Equal(t, 1, a.sessionWork(1))
 	require.Empty(t, a.egressEvents)
+}
+
+func TestSessionEgress_eventPollInterruptedHolds(t *testing.T) {
+	adder := interruptedFirstOfferAdder()
+	a := followerWithEgress(t, adder, 1)
+	const startNs int64 = 5
+	a.queueSessionRedirect(validConnectFields(1), startNs)
+	require.Len(t, a.egressEvents, 1)
+
+	require.Equal(t, 0, a.sessionWork(startNs+DefaultSessionTimeoutNs-1))
+	require.Len(t, a.egressEvents, 1)
+	require.Equal(t, int64(nullValue), a.egressEvents[0].addCorrelationID)
+	require.Len(t, adder.offers, 1)
+	require.Empty(t, adder.cancels)
+
+	require.Equal(t, 1, a.sessionWork(startNs+DefaultSessionTimeoutNs))
+	require.Empty(t, a.egressEvents)
+	require.Empty(t, adder.cancels)
+}
+
+func TestEventEgressPublicationChannel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "linger absent appends linger=0",
+			in:   "aeron:udp?endpoint=127.0.0.1:40123",
+			want: "aeron:udp?endpoint=127.0.0.1:40123|linger=0",
+		},
+		{
+			name: "linger present unchanged",
+			in:   "aeron:udp?endpoint=127.0.0.1:40123|linger=5",
+			want: "aeron:udp?endpoint=127.0.0.1:40123|linger=5",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, eventEgressPublicationChannel([]byte(tc.in)))
+		})
+	}
 }
 
 func TestSessionEgress_eventSendRetry(t *testing.T) {

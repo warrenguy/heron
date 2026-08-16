@@ -179,17 +179,18 @@ func (a *Agent) appendPositionForSeed() (int64, bool) {
 // Behaviour:
 //   - refuses when an election is already live or no factory is wired
 //   - reads the append seed while the current role still applies
-//   - refuses when the factory returns nil; leaves role and pendingJoinLog
+//   - refuses when the factory returns nil. Role and pendingJoinLog stay
 //     unchanged
-//   - after a non-nil runner returns: clears pendingJoinLog, sets role to
-//     follower, then installs
+//   - after a non-nil runner returns: drains the log adapter under
+//     followerLogPollBound, clears pendingJoinLog, sets role to follower,
+//     then installs
 //
 // Role flip order: append read first, then RoleFollower. Cluster append
-// sources are role-sensitive. A leader must report the publication position.
-// After RoleFollower, the follower image path returns 0.
+// sources are role-sensitive. A leader must report the publication
+// position. After RoleFollower, the follower image path returns 0.
 //
-// Returns 1 when a runner was installed, else 0.
-func (a *Agent) enterElection(trigger ElectionTrigger) int {
+// Returns: 1 when a runner was installed, else 0.
+func (a *Agent) enterElection(trigger ElectionTrigger, nowNs int64) int {
 	if a.election != nil || a.electionFactory == nil {
 		return 0
 	}
@@ -205,6 +206,9 @@ func (a *Agent) enterElection(trigger ElectionTrigger) int {
 	if runner == nil {
 		return 0
 	}
+	// Drain committed session frames before the runner can unbind the image.
+	a.logPollNowNs = nowNs
+	a.drainLogBacklog(a.followerLogPollBound(position))
 	// Clear a superseded unpublished JoinLog at settled re-entry before the new
 	// election runs. Clear at install. Does not wait for election Init.
 	// PrepareForNewLeadership still clears on mid-election re-Init and when a
@@ -266,7 +270,7 @@ func (a *Agent) activeQuorumTick(nowNs int64) int {
 	if a.positions.HasActiveQuorum(nowNs, a.leaderHeartbeatTimeoutNs) {
 		return 0
 	}
-	return a.enterElection(ElectionTriggerInactiveFollowerQuorum)
+	return a.enterElection(ElectionTriggerInactiveFollowerQuorum, nowNs)
 }
 
 // leaderWentQuietTick re-enters election when a non-leader's settled
@@ -281,5 +285,5 @@ func (a *Agent) leaderWentQuietTick(nowNs int64) int {
 	if nowNs < a.timeOfLastLogUpdateNs+a.leaderHeartbeatTimeoutNs {
 		return 0
 	}
-	return a.enterElection(ElectionTriggerLeaderHeartbeatTimeout)
+	return a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, nowNs)
 }

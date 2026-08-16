@@ -1,6 +1,8 @@
 package consensus
 
 import (
+	"bytes"
+	"math"
 	"slices"
 
 	"github.com/warrenguy/heron/aeron"
@@ -46,6 +48,24 @@ const (
 	sessionClosing
 )
 
+var sessionStateNames = [...]string{
+	"pending",
+	"challenged",
+	"authenticated",
+	"rejected",
+	"open",
+	"closing",
+}
+
+// String returns the diagnostic name for this session state. The method
+// returns unknown when the value is out of range.
+func (s sessionState) String() string {
+	if s < 0 || int(s) >= len(sessionStateNames) {
+		return "unknown"
+	}
+	return sessionStateNames[s]
+}
+
 // clientSession is one client session on the leader.
 //
 // Lifetime: created at accept. Removed on any of:
@@ -82,6 +102,12 @@ type clientSession struct {
 	// egressPublication is the per-session egress, nil until the async add
 	// resolves. The Agent owns Close.
 	egressPublication *aeron.Publication
+
+	// newLeaderEventPending marks a session that must receive NewLeaderEvent
+	// from this member as the new leader. Set at ElectionComplete on the
+	// leader. Cleared on send, on terminal egress, on close or remove, and
+	// at PrepareForNewLeadership.
+	newLeaderEventPending bool
 }
 
 // sessionManager is the client session registry.
@@ -116,6 +142,56 @@ func (m *sessionManager) allocateSessionID() int64 {
 	id := m.nextSessionID
 	m.nextSessionID++
 	return id
+}
+
+// reseedSessionIDFloor raises nextSessionID so the next allocate sits strictly
+// above id. A call with id below the current floor is a silent no-op. id equal
+// to math.MaxInt64 is a silent no-op so id+1 cannot wrap.
+func (m *sessionManager) reseedSessionIDFloor(id int64) {
+	if id == math.MaxInt64 {
+		return
+	}
+	m.nextSessionID = max(m.nextSessionID, id+1)
+}
+
+// learnSessionOpen inserts or updates an open session from a committed
+// SessionOpenEvent.
+//
+// Behaviour: stores cloned response params, the frame position, and nowNs.
+// Always reseeds the session id allocator above the learned id. Egress
+// fields stay untouched. The call is idempotent under redelivery. Does not
+// create egress or queue events.
+//
+// Concurrency: invoker-only.
+func (m *sessionManager) learnSessionOpen(
+	fields codecs.SessionOpenEventFields,
+	logPosition, nowNs int64,
+) {
+	id := fields.ClusterSessionID
+	m.reseedSessionIDFloor(id)
+
+	channel := bytes.Clone(fields.ResponseChannel)
+	s, ok := m.byID[id]
+	if !ok {
+		s = &clientSession{
+			id:                     id,
+			egressAddCorrelationID: nullValue,
+		}
+		m.byID[id] = s
+		m.all = append(m.all, s)
+	} else if s.state != sessionOpen {
+		if s.state == sessionClosing && m.closingCount > 0 {
+			m.closingCount--
+		}
+		m.removePending(id)
+	}
+
+	s.state = sessionOpen
+	s.correlationID = fields.CorrelationID
+	s.responseStreamID = fields.ResponseStreamID
+	s.responseChannel = channel
+	s.openedLogPosition = logPosition
+	s.lastActivityNs = nowNs
 }
 
 // addPendingConnect stores a pending session under id built from the decoded
@@ -240,13 +316,11 @@ func (m *sessionManager) refreshChallenged(sessionID, correlationID, nowNs int64
 
 // markOpen moves an authenticated session to open.
 //
-// Behaviour:
-//   - stores logPosition as openedLogPosition
-//   - appends the session to okPending in markOpen order for SessionEvent OK
-//   - removes the walk-list entry
+// Behaviour: stores logPosition as openedLogPosition. Queues SessionEvent OK
+// in markOpen order. Drops the walk-list entry.
 //
-// Returns: false when the id is unknown or the session is not authenticated. On
-// false the registry is untouched.
+// Returns: false when the id is unknown or the session is not authenticated.
+// On false the registry is untouched.
 func (m *sessionManager) markOpen(sessionID, logPosition int64) bool {
 	s, ok := m.byID[sessionID]
 	if !ok || s.state != sessionAuthenticated {
@@ -259,10 +333,23 @@ func (m *sessionManager) markOpen(sessionID, logPosition int64) bool {
 	return true
 }
 
+// markNewLeaderPending sets newLeaderEventPending on session.
+//
+// Behaviour: no-op when session is nil or not open. The mark implies state
+// open.
+//
+// Concurrency: invoker-only.
+func (m *sessionManager) markNewLeaderPending(session *clientSession) {
+	if session == nil || session.state != sessionOpen {
+		return
+	}
+	session.newLeaderEventPending = true
+}
+
 // markClosing moves an open session to closing and stores the reason.
 //
-// Behaviour: clears okPending for the session when present. Maintains
-// closingCount.
+// Behaviour: clears okPending and newLeaderEventPending for the session when
+// present. Maintains closingCount.
 //
 // Returns: false when the id is unknown or the session is not open. On false
 // the registry is untouched.
@@ -276,6 +363,7 @@ func (m *sessionManager) markClosing(
 	}
 	s.state = sessionClosing
 	s.closeReason = reason
+	s.newLeaderEventPending = false
 	m.closingCount++
 	m.setOKPending(s, false)
 	return true
@@ -309,9 +397,11 @@ func (m *sessionManager) removeOrphan(s *clientSession) {
 	m.dropSessionIndexes(s)
 }
 
-// dropSessionIndexes clears okPending, pending, and all for s. When s is
-// closing, decrements closingCount and clamps at zero. Does not delete byID.
+// dropSessionIndexes clears okPending, newLeaderEventPending, pending, and
+// all for s. When s is closing, decrements closingCount and clamps at zero.
+// Does not delete byID.
 func (m *sessionManager) dropSessionIndexes(s *clientSession) {
+	s.newLeaderEventPending = false
 	m.setOKPending(s, false)
 	if s.state != sessionOpen {
 		m.removePending(s.id)
@@ -364,13 +454,8 @@ func (m *sessionManager) removePending(sessionID int64) {
 
 // acceptSessionConnect runs the product leader accept path.
 //
-// Behaviour:
-//   - allocates a session id for every connect
-//   - protocol-major mismatch and over-cap queue SessionEvent ERROR; those
-//     connects never reach the authenticator
-//   - valid accept stores a pending session
-//   - delivers connect credentials to the authenticator
-//   - starts the async egress publication add
+// Behaviour: protocol-major mismatch and over-cap queue SessionEvent ERROR.
+// Those connects never reach the authenticator.
 func (a *Agent) acceptSessionConnect(
 	fields codecs.SessionConnectRequestFields,
 	nowNs int64,
@@ -399,20 +484,17 @@ func (a *Agent) acceptSessionConnect(
 		return
 	}
 	a.authenticator.HandleConnectRequest(session.id, fields.EncodedCredentials, nowNs)
-	a.startSessionEgress(session)
+	if err := a.startSessionEgress(session); err != nil {
+		a.removeSessionWithResources(session)
+	}
 }
 
-// sessionWork runs on a settled member, in order:
-//   - egressEventWork: any-role deadline reclaim and REDIRECT/ERROR/reject
-//     drain; non-leader closing reclaim
-//   - sessionPendingWork: leader pre-open walk (egress, auth, append, markOpen)
-//   - sessionCloseWork: leader idle-timeout sweep and closing-append retry
-//   - okPendingWork: leader SessionEvent OK backlog drain
+// sessionWork runs settled session duty. Event drain runs first. Queued
+// REDIRECT and ERROR events send before NewLeaderEvent.
 //
 // Concurrency: invoker-only. Callers must invoke sessionWork from the
 // [Agent.DoWork] election-nil branch. sessionPendingWork re-checks election
-// and role. sessionPendingWork, sessionCloseWork, and okPendingWork run only
-// for the leader.
+// and role. Leader-only steps run only for the leader.
 //
 // Returns: the sum of work units from each step. Returns 0 when an election is
 // live.
@@ -424,6 +506,7 @@ func (a *Agent) sessionWork(nowNs int64) int {
 	if a.role != RoleLeader {
 		return work
 	}
+	work += a.newLeaderEventWork()
 	work += a.sessionPendingWork(nowNs)
 	work += a.sessionCloseWork(nowNs)
 	work += a.okPendingWork()

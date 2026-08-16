@@ -221,8 +221,8 @@ type Agent struct {
 	// SessionEvent REDIRECT detail ("0=host:port,1=host:port").
 	ingressEndpoints string
 
-	// egressScratch holds one SessionEvent or Challenge encode for the egress
-	// offer helpers.
+	// egressScratch holds one SessionEvent, Challenge, or NewLeaderEvent
+	// encode for the egress offer helpers.
 	egressScratch []byte
 
 	// egressEvents is the capped REDIRECT/ERROR queue. Each entry owns a
@@ -272,6 +272,11 @@ type Agent struct {
 	//
 	// CatchupPoll uses the same adapter when an Image is bound.
 	logAdapter *LogAdapter
+
+	// logPollNowNs is the duty-cycle clock for the current log adapter poll.
+	// Set before Poll. handleSessionOpenEvent reads the field so learn stores
+	// the current activity time.
+	logPollNowNs int64
 
 	// joinSource supplies the live cluster log image for the follower log join.
 	//
@@ -600,7 +605,6 @@ func NewAgent(cfg AgentConfig) *Agent {
 		appendNotReadySinceNs:     nullValue,
 		appendNotReadyTimeoutNs:   appendTimeout,
 		logPublisher:              cfg.LogPublisher,
-		logAdapter:                cfg.LogAdapter,
 		joinSource:                cfg.LogJoinSource,
 		termBaseLogPosition:       cfg.TermBaseLogPosition,
 		appVersion:                cfg.AppVersion,
@@ -615,6 +619,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 	a.clientIngressHandler = a.handleClientIngressFragment
 	a.serviceIngressHandler = a.handleServiceControlFragment
 	a.timerExpiryHandler = a.handleTimerExpiry
+	a.SetLogAdapter(cfg.LogAdapter)
 	return a
 }
 
@@ -957,6 +962,7 @@ func (a *Agent) CatchupPoll(limitPosition, nowNs int64) int {
 	if adapter == nil || adapter.Image() == nil {
 		return 0
 	}
+	a.logPollNowNs = nowNs
 	work := a.pollLogAndProposeMax(adapter, limitPosition)
 	work += a.updateFollowerPosition(nowNs, adapter.Position(), AppendPositionFlagCatchup)
 	return work
@@ -1295,8 +1301,18 @@ func (a *Agent) SetLogPublisher(p *LogPublisher) { a.logPublisher = p }
 
 // SetLogAdapter wires or clears the [LogAdapter] used for follower log poll.
 //
-// Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
-func (a *Agent) SetLogAdapter(adapter *LogAdapter) { a.logAdapter = adapter }
+// Behaviour: a non-nil adapter receives this agent as the session event sink.
+// Committed SessionOpenEvent and SessionCloseEvent frames then update the
+// registry. A nil adapter clears the field only. The previous adapter keeps
+// its sink.
+//
+// Concurrency: invoker-only. Must not race with [Agent.DoWork].
+func (a *Agent) SetLogAdapter(adapter *LogAdapter) {
+	a.logAdapter = adapter
+	if adapter != nil {
+		adapter.SetSessionEventSink(a)
+	}
+}
 
 // SetTermBaseLogPosition sets the term base written into NewLeadershipTermEvent.
 //
@@ -1518,28 +1534,31 @@ func (a *Agent) FollowerLogJoinReady(
 //   - clears the known leader
 //   - resets follower append cadence fields
 //   - stops leader-side catchup replays and drains catchupReplays
-//   - removes the follower catchup destination and restores live when absent
+//   - removes the follower catchup destination and restores the live
+//     destination when that destination is absent
 //   - keeps commit
+//   - releases per-session egress. Registry entries stay
 //   - stops the cluster log recording when a control is wired
-//   - returns the last-append position on success
 //
-// Log and ingress tear-down stay for full agent wiring.
+// Log and ingress teardown stay for full agent wiring.
 //
-// Role, known leader, cadence fields, and catchup teardown always run before
-// any recording stop attempt, including when the stop later fails. Stop runs
-// whenever a control is wired, not only when [LogRecordingControl.IsActive] is
-// true. Stop is idempotent when nothing needs draining. The idle stop drains a
-// dirty start that never became active.
+// Role, known leader, cadence fields, catchup teardown, and session-egress
+// release always run before any recording stop attempt, including when the
+// stop later fails. Stop runs whenever a control is wired, not only when
+// [LogRecordingControl.IsActive] is true. Stop is idempotent when nothing
+// needs draining. The idle stop drains a dirty start that never became
+// active.
 //
-// Catchup teardown runs here, not on the CATCHUP exit. At the CATCHUP exit the
-// log adapter still reads the catchup image and the catchup destination may
-// still be attached. Prepare removes the catchup destination and restores the
-// live destination when it is absent.
+// Catchup teardown runs here, not on the CATCHUP exit. At the CATCHUP exit
+// the log adapter still reads the catchup image and the catchup destination
+// may still be attached. Prepare removes the catchup destination and
+// restores the live destination when that destination is absent.
 //
 // Append-rank failure state always clears on prepare. A not-ready run that
-// marked while a prior leadership term's recording was active must not freeze
-// ranking across a leadership transition. The next duty cycle may open a
-// fresh not-ready run against the recording that prepare starts later.
+// marked while a prior leadership term's recording was active must not
+// freeze ranking across a leadership transition. The next duty cycle may
+// open a fresh not-ready run against the recording that prepare starts
+// later.
 //
 // Pending JoinLog clears on prepare. A stale unpublished JoinLog from a
 // superseded term must not reach services after a new election starts.
@@ -1551,15 +1570,15 @@ func (a *Agent) FollowerLogJoinReady(
 // Returns (first matching branch):
 //   - logPosition, nil: control is nil, or localLogRecordingID is negative
 //   - derived archive stop position, nil: retained recording id is
-//     non-negative and [LogRecordingControl.StopPositionFor] succeeds. After
-//     a truncate the control reports the truncate position, so prepare does
-//     not re-raise above that bound
+//     non-negative and [LogRecordingControl.StopPositionFor] succeeds.
+//     After a truncate the control reports the truncate position, so
+//     prepare does not re-raise above that bound
 //   - [recordinglog.NullPosition], err: stop fails. When the recording was
 //     active the control stays active so a later prepare retries the stop.
 //     Caller must not adopt lastAppendPosition
-//   - [recordinglog.NullPosition], err: StopPositionFor fails after a clean
-//     stop. The control is inactive. A later prepare retries derivation.
-//     Caller must not adopt lastAppendPosition
+//   - [recordinglog.NullPosition], err: StopPositionFor fails after a
+//     clean stop. The control is inactive. A later prepare retries
+//     derivation. Caller must not adopt lastAppendPosition
 func (a *Agent) PrepareForNewLeadership(
 	logPosition int64,
 	nowNs int64,
@@ -1578,6 +1597,7 @@ func (a *Agent) PrepareForNewLeadership(
 	a.retireSnapshotWait()
 	a.StopAllCatchups()
 	a.RemoveCatchupLogDestination()
+	a.releaseSessionsForNewTerm()
 	_ = nowNs
 
 	if a.recordingControl == nil {
@@ -1869,18 +1889,18 @@ func (a *Agent) adoptLogRecording(
 	return nil
 }
 
-// ElectionComplete clears the [ElectionRunner] and stamps
-// timeOfLastLogUpdateNs (settled log-update clock). [PositionTable] and
-// [ConsensusEgress] stay wired.
+// ElectionComplete clears the [ElectionRunner] and stamps timeOfLastLogUpdateNs
+// (settled log-update clock). [PositionTable] and [ConsensusEgress] stay wired.
 //
 // Behaviour:
 //   - leader: stamps nowNs minus one heartbeat interval so the first steady
-//     tick publishes a commit heartbeat. Also stamps the timer wheel current
-//     time to nowNs. Winding expires nothing
+//     tick publishes a commit heartbeat. Stamps the timer wheel current time
+//     to nowNs. Winding expires nothing. Drains the log and rebinds
+//     open-session egress
 //   - any other role: stamps nowNs so the quiet-tick trigger waits one full
-//     leader heartbeat timeout
-//   - without a stamp the field stays 0; a duty cycle on an absolute clock
-//     re-enters election on the next tick
+//     leader heartbeat timeout. Does not touch session state
+//   - without a write to timeOfLastLogUpdateNs the field stays 0. A duty
+//     cycle on an absolute clock re-enters election on the next tick
 //   - does not write timeOfLastLeaderUpdateNs
 //   - does not call [Agent.SetElection]
 //
@@ -1890,6 +1910,9 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 	if a.role == RoleLeader {
 		a.timeOfLastLogUpdateNs = nowNs - a.leaderHeartbeatIntervalNs
 		a.timers.currentTime(nowNs)
+		a.logPollNowNs = nowNs
+		a.drainLogBacklog(a.CommitPosition())
+		a.rebindOpenSessions(nowNs)
 		return
 	}
 	a.timeOfLastLogUpdateNs = nowNs
@@ -1909,8 +1932,8 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 //   - pending JoinLog retry after that branch so PrepareForNewLeadership can
 //     drop a superseded pending before any offer
 //
-// Settled sessionWork order: egressEventWork, sessionPendingWork,
-// sessionCloseWork, okPendingWork. See [Agent.sessionWork].
+// Settled sessionWork order: egressEventWork, newLeaderEventWork,
+// sessionPendingWork, sessionCloseWork, okPendingWork. See [Agent.sessionWork].
 //
 // Concurrency: invoker-only. See [Agent].
 func (a *Agent) DoWork(nowNs int64) int {
@@ -2209,7 +2232,7 @@ func (a *Agent) applySteadyLeaderCommitNotify(
 // Concurrency: invoker-only.
 func (a *Agent) onUnexpectedHigherTerm(nowNs, term int64) {
 	noteUnexpectedHigherTerm(nowNs, term)
-	a.enterElection(ElectionTriggerHigherTerm)
+	a.enterElection(ElectionTriggerHigherTerm, nowNs)
 }
 
 func (a *Agent) consensusWork(nowNs int64) int {
@@ -2253,6 +2276,7 @@ func (a *Agent) followerConsensusWork(nowNs int64) int {
 	appendPos, ready := a.resolveAppendPosition(nowNs)
 	work := 0
 	if a.logAdapter != nil {
+		a.logPollNowNs = nowNs
 		var bound int64
 		if ready {
 			bound = a.followerLogPollBound(appendPos)
