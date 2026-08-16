@@ -145,7 +145,8 @@ func (a *Agent) sweepRequestAckReadiness() {
 //   - LogPosition from the entry
 //   - Timestamp from clusterTime
 //   - AckID from ackID
-//   - RelevantID from the entry
+//   - RelevantID from the entry. Start entries carry the configured
+//     relevant id. Join, request, and snapshot entries carry nullValue
 //   - ServiceID from config
 func (a *Agent) drainReadyCoordinationAck() int {
 	if a.moduleProxy == nil || a.moduleProxy.Publication() == nil {

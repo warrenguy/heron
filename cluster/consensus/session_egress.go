@@ -25,8 +25,8 @@ const maxPendingEgressEvents = 100
 // sessionLimitDetail is the ERROR detail for an over-cap connect.
 const sessionLimitDetail = "concurrent session limit"
 
-// sessionEventActingVersion is the SessionEvent acting version for product
-// egress (full block including version and leaderHeartbeatTimeoutNs).
+// sessionEventActingVersion is the SessionEvent acting version (full block
+// including version and leaderHeartbeatTimeoutNs).
 const sessionEventActingVersion = uint16(clusterwire.SessionEventSbeSchemaVersion)
 
 // sessionEventBlockLength is the SessionEvent block length at the acting
@@ -34,7 +34,7 @@ const sessionEventActingVersion = uint16(clusterwire.SessionEventSbeSchemaVersio
 // init.
 var sessionEventBlockLength = codecs.SessionEventBlockLength(sessionEventActingVersion)
 
-// challengeActingVersion is the Challenge acting version for product egress.
+// challengeActingVersion is the Challenge acting version.
 const challengeActingVersion = uint16(clusterwire.ChallengeSbeSchemaVersion)
 
 // EgressPublicationAdder registers concurrent egress publications for session

@@ -1023,7 +1023,7 @@ func TestAcceptSessionConnect_handlerOverrides_noEvent(t *testing.T) {
 	a, q, handler := leaderWithClientIngress(nil)
 	a.SetEgressPublicationAdder(adder)
 	fields := validConnectFields(1)
-	// Encode with valid protocol version so a product accept would not ERROR.
+	// Encode with valid protocol version so acceptSessionConnect would not ERROR.
 	wire := encodeSessionConnectWire(t, fields)
 	q.Enqueue(wire)
 	require.Equal(t, 1, a.pollClientIngress(1_000))

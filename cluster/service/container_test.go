@@ -174,6 +174,15 @@ func TestOpen_refusesInvalidConfig(t *testing.T) {
 			wantErr: "service: service id must not be negative",
 		},
 		{
+			name: "negative start ack log position",
+			cfg: func(t *testing.T) Config {
+				cfg := openConfig(newFakeTransport(t))
+				cfg.StartAck = &StartAckConfig{LogPosition: -1, RelevantID: 1}
+				return cfg
+			},
+			wantErr: "service: start ack log position must not be negative",
+		},
+		{
 			name: "colliding stream ids after defaulting module stream",
 			cfg: func(t *testing.T) Config {
 				cfg := openConfig(newFakeTransport(t))
@@ -300,6 +309,53 @@ func TestOpen_wiresControlIngressAndProxy(t *testing.T) {
 		RelevantID:  -1,
 		ServiceID:   3,
 	}}, acks)
+}
+
+func TestOpen_StartAckPassthrough(t *testing.T) {
+	t.Parallel()
+
+	const (
+		relevantID int64 = 77
+		serviceID  int32 = 3
+	)
+	tests := []struct {
+		name     string
+		startPos int64
+	}{
+		{name: "nonzero position", startPos: 42},
+		{name: "position zero", startPos: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			client := newFakeTransport(t)
+			cfg := openConfig(client)
+			cfg.ServiceID = serviceID
+			cfg.StartAck = &StartAckConfig{
+				LogPosition: tt.startPos,
+				RelevantID:  relevantID,
+			}
+			c := openContainer(t, cfg)
+			agent := c.Agent()
+
+			require.Equal(t, 1, agent.PendingCoordinationAcks())
+			require.Equal(t, 0, agent.ReadyCoordinationAcks())
+			require.Equal(t, int64(0), agent.NextAckID())
+
+			work := agent.DoWork(0)
+			require.NoError(t, agent.ServiceFailure())
+			require.GreaterOrEqual(t, work, 2, "Start + drain")
+			require.Equal(t, int64(1), agent.NextAckID())
+			require.Equal(t, 0, agent.PendingCoordinationAcks())
+			require.Equal(t, []codecs.ServiceAckFields{{
+				LogPosition: tt.startPos,
+				Timestamp:   0,
+				AckID:       0,
+				RelevantID:  relevantID,
+				ServiceID:   serviceID,
+			}}, decodeServiceAcksFromPub(t, client.pub))
+		})
+	}
 }
 
 func TestOpen_addFailure(t *testing.T) {

@@ -52,11 +52,11 @@ type LogTruncateControl interface {
 // SetLogTruncateControl wires or clears the cluster log truncate control used by
 // [Agent.TruncateLogEntry].
 //
-// Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
+// Concurrency: invoker-only. Do not call while [Agent.DoWork] runs.
 //
-// Nil is not allowed on the product path. [Agent.TruncateLogEntry] returns an
-// error when no control is wired, because a silent skip would let the election
-// lower a position the archive still holds.
+// Nil is not allowed. [Agent.TruncateLogEntry] returns an error when no control
+// is wired. A silent skip would let the election lower a position the archive
+// still holds.
 func (a *Agent) SetLogTruncateControl(control LogTruncateControl) {
 	a.truncateControl = control
 }

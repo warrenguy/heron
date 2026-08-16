@@ -4,10 +4,10 @@ export PATH := $(ROOT)/bin:$(PATH)
 SHELL := /bin/bash
 
 # Submake -j: use jobserver from +$(MAKE) when present; else fixed local -jN.
+# Compose smokes cap at four concurrent when no jobserver. Extra targets wait.
 SUBMAKE_J2 = $(if $(filter --jobserver%,$(MAKEFLAGS)),,-j2)
 SUBMAKE_J3 = $(if $(filter --jobserver%,$(MAKEFLAGS)),,-j3)
-# Six compose smokes. Local -j6 when no jobserver so all run concurrent.
-SUBMAKE_J6 = $(if $(filter --jobserver%,$(MAKEFLAGS)),,-j6)
+SUBMAKE_J4 = $(if $(filter --jobserver%,$(MAKEFLAGS)),,-j4)
 
 # Little-endian 64-bit targets only (matches Aeron wire layout on host).
 SUPPORTED_GOARCHES := amd64 arm64
@@ -380,10 +380,10 @@ DOCKER_SMOKE_TARGETS := \
 	test-cluster-java-failover \
 	test-archive-java \
 	test-cluster-mixed-java-leader \
-	test-cluster-mixed-go-leader
+	test-cluster-mixed-go-leader \
+	test-cluster-mixed-service
 
-.PHONY: test-java-interop test-cluster-java test-cluster-java-failover test-archive-java \
-	test-cluster-mixed-java-leader test-cluster-mixed-go-leader test-docker-smokes \
+.PHONY: $(DOCKER_SMOKE_TARGETS) test-docker-smokes \
 	$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-unit test-$(s)-oracle test-$(s)-contract) \
 	contract-oracles \
 	test-golden-fixtures-unit
@@ -406,8 +406,11 @@ test-cluster-mixed-java-leader: aeronmd-compose-image ## Docker smoke: mixed Go/
 test-cluster-mixed-go-leader: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Go appointed leader
 	./scripts/cluster-mixed-smoke.sh go-leader
 
-test-docker-smokes: ## All Docker compose smokes (parallel)
-	+@$(MAKE) --no-print-directory $(SUBMAKE_J6) $(DOCKER_SMOKE_TARGETS)
+test-cluster-mixed-service: ## Docker smoke: mixed Java CM with Go service container
+	./scripts/cluster-mixed-service-smoke.sh
+
+test-docker-smokes: ## All Docker compose smokes (up to 4 concurrent)
+	+@$(MAKE) --no-print-directory $(SUBMAKE_J4) $(DOCKER_SMOKE_TARGETS)
 
 $(eval $(call contract-oracle-module,java-interop,$(JAVA_INTEROP_POM),JAVA_INTEROP_ORACLE_TIMEOUT,JAVA_INTEROP_ORACLE_TAGS,./test/integration/java_interop/javainterop/))
 $(eval $(call contract-oracle-module,cluster-sbe,$(CLUSTER_SBE_POM),CLUSTER_SBE_ORACLE_TIMEOUT,CLUSTER_SBE_ORACLE_TAGS,./test/integration/cluster_sbe/clustersbe/))

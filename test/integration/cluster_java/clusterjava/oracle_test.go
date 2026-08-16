@@ -4,6 +4,7 @@ package clusterjava_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -69,6 +70,36 @@ func TestHarnessConstants(t *testing.T) {
 			name: "IngressEndpointsString",
 			got:  clusterjava.IngressEndpointsString,
 			want: "0=localhost:9002",
+		},
+		{
+			name: "MixedServiceComposeGateEnvKey",
+			got:  clusterjava.MixedServiceComposeGateEnvKey,
+			want: "HERON_CLUSTER_MIXED_SERVICE_COMPOSE",
+		},
+		{
+			name: "MixedServiceComposeSkipHint",
+			got:  clusterjava.MixedServiceComposeSkipHint,
+			want: "cluster mixed service requires docker compose; run make test-cluster-mixed-service",
+		},
+		{
+			name: "MixedServiceCountersBudget",
+			got:  clusterjava.MixedServiceCountersBudget,
+			want: 30 * time.Second,
+		},
+		{
+			name: "MixedServiceJoinBudget",
+			got:  clusterjava.MixedServiceJoinBudget,
+			want: 30 * time.Second,
+		},
+		{
+			name: "MixedServiceConnectBudget",
+			got:  clusterjava.MixedServiceConnectBudget,
+			want: 20 * time.Second,
+		},
+		{
+			name: "MixedServiceDeliverBudget",
+			got:  clusterjava.MixedServiceDeliverBudget,
+			want: 20 * time.Second,
 		},
 	}
 

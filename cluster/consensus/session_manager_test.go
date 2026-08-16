@@ -13,7 +13,7 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-// validConnectFields returns connect fields with the product protocol version.
+// validConnectFields returns connect fields with the current protocol version.
 // sampleConnectFields already sets that version. The name documents intent for
 // session open and accept tests across this package.
 func validConnectFields(correlationID int64) codecs.SessionConnectRequestFields {
@@ -954,7 +954,7 @@ func TestDoWork_connectAppendsSameTick(t *testing.T) {
 	a := leaderWithLogPublisher(t, p, 9)
 	q := &QueueClientIngress{}
 	a.SetClientIngress(q)
-	// Nil SessionConnectHandler runs the product accept.
+	// Nil SessionConnectHandler runs acceptSessionConnect.
 	// CorrelationID 99 matches the sampleConnectFields default used before.
 	fields := validConnectFields(99)
 	q.Enqueue(encodeSessionConnectWire(t, fields))

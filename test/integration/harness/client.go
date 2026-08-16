@@ -27,7 +27,7 @@ const (
 //
 // Sets InterServiceTimeout to ConnectedPollTimeout when the field is zero.
 // Preserves an explicit non-zero value. Shared-driver integration under -race
-// needs a larger invoker budget than the product 1s default.
+// needs a larger invoker budget than the 1s default.
 //
 // Configs that reach the driver through cluster.Config.AeronConfig bypass this
 // helper and must set InterServiceTimeout themselves.

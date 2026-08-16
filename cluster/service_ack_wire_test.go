@@ -22,8 +22,8 @@ import (
 // 104 and 105 through test publications and queue ingresses on one goroutine.
 //
 // Tick order: consensus module DoWork, then service DoWork, then both bridges.
-// The product harness runs runner.DoWork then service.DoWork. This unit uses
-// the bare consensus agent for the runner half.
+// The container duty cycle runs runner.DoWork then service.DoWork. This unit
+// uses the bare consensus agent for the runner half.
 
 const (
 	wireLogChannel   = "aeron:ipc"
@@ -88,6 +88,18 @@ func newWireServiceSide(
 	app service.ClusteredService,
 ) wireServiceSide {
 	t.Helper()
+	return newWireServiceSideWithStartAck(t, cm, app, nil)
+}
+
+// newWireServiceSideWithStartAck builds the service side with StartAck set
+// on the service agent. A nil startAck disables the start ack.
+func newWireServiceSideWithStartAck(
+	t testing.TB,
+	cm *consensus.Agent,
+	app service.ClusteredService,
+	startAck *service.StartAckConfig,
+) wireServiceSide {
+	t.Helper()
 
 	serviceIngress := &consensus.QueueConsensusIngress{}
 	cm.SetServiceIngress(serviceIngress)
@@ -115,6 +127,7 @@ func newWireServiceSide(
 		Subscriptions:     &wireSubAdder{sub: sub},
 		Control:           control,
 		ModuleProxy:       moduleProxy,
+		StartAck:          startAck,
 	})
 
 	return wireServiceSide{
@@ -177,6 +190,13 @@ type wireHarness struct {
 
 func newWireHarness(t testing.TB) *wireHarness {
 	t.Helper()
+	return newWireHarnessWithStartAck(t, nil)
+}
+
+// newWireHarnessWithStartAck builds the wire harness with StartAck set on
+// the service agent. A nil startAck disables the start ack.
+func newWireHarnessWithStartAck(t testing.TB, startAck *service.StartAckConfig) *wireHarness {
+	t.Helper()
 
 	commit := &atomic.Int64{}
 	cm := consensus.NewAgent(consensus.AgentConfig{
@@ -192,7 +212,7 @@ func newWireHarness(t testing.TB) *wireHarness {
 	svcApp := &wireRecordingService{}
 
 	return &wireHarness{
-		wireServiceSide: newWireServiceSide(t, cm, svcApp),
+		wireServiceSide: newWireServiceSideWithStartAck(t, cm, svcApp, startAck),
 		cm:              cm,
 		pub104:          pub104,
 		svcApp:          svcApp,
@@ -204,7 +224,7 @@ func newWireHarness(t testing.TB) *wireHarness {
 // Asserts the log poll bound after.
 //
 // Order: h.cm.DoWork, h.svc.DoWork, bridge104, bridge105. The bare consensus
-// agent stands in for runner.DoWork on the product harness.
+// agent stands in for runner.DoWork.
 func (h *wireHarness) tick(t testing.TB, nowNs int64) {
 	t.Helper()
 	h.cm.DoWork(nowNs)
@@ -560,5 +580,58 @@ func TestServiceAckWire_PairingViolation(t *testing.T) {
 	require.Equal(t, 1, h.cm.PendingServiceAckWaits())
 	require.Equal(t, int64(1), h.cm.ExpectedServiceAckID())
 	// Residual first queued entry not consumed by the mismatched wait.
+	require.Equal(t, 1, h.cm.ServiceAckQueueDepth(0))
+}
+
+func TestServiceAckWire_StartAckMarksConsensusFailure(t *testing.T) {
+	// Asserts StartAck marks ServiceAckFailure when the consensus module
+	// pairs acks only with published frames. The start ack (id 0 at startPos)
+	// cannot pair with a wait at a different position. Later ticks keep the
+	// same failure.
+	const (
+		startPos   int64 = 0
+		waitPos    int64 = 128
+		relevantID int64 = 99
+	)
+	h := newWireHarnessWithStartAck(t, &service.StartAckConfig{
+		LogPosition: startPos,
+		RelevantID:  relevantID,
+	})
+
+	require.NoError(t, h.cm.RequestServiceAck(waitPos))
+	require.Equal(t, 1, h.cm.PendingServiceAckWaits())
+	require.Equal(t, waitPos, h.cm.ExpectedAckPosition())
+	require.Equal(t, int64(0), h.cm.ExpectedServiceAckID())
+	require.NoError(t, h.cm.ServiceAckFailure())
+
+	ok := h.tickUntil(t, 500, 8, func() bool {
+		return h.cm.ServiceAckFailure() != nil
+	})
+	if !ok {
+		t.Fatalf(
+			"start ack did not mark consensus failure: expectedAckID=%d waits=%d "+
+				"depth=%d nextAck=%d failure=%v svcFailure=%v",
+			h.cm.ExpectedServiceAckID(),
+			h.cm.PendingServiceAckWaits(),
+			h.cm.ServiceAckQueueDepth(0),
+			h.svc.NextAckID(),
+			h.cm.ServiceAckFailure(),
+			h.svc.ServiceFailure(),
+		)
+	}
+
+	first := h.cm.ServiceAckFailure()
+	require.ErrorIs(t, first, consensus.ErrServiceAckOutOfSequence)
+	require.Equal(t, int64(1), h.svc.NextAckID())
+	require.NoError(t, h.svc.ServiceFailure())
+	require.Equal(t, 1, h.cm.PendingServiceAckWaits())
+	require.Equal(t, waitPos, h.cm.ExpectedAckPosition())
+	require.Equal(t, int64(0), h.cm.ExpectedServiceAckID())
+	require.Equal(t, 1, h.cm.ServiceAckQueueDepth(0))
+
+	h.tickN(t, 520, 3)
+	require.Same(t, first, h.cm.ServiceAckFailure())
+	require.Equal(t, 1, h.cm.PendingServiceAckWaits())
+	require.Equal(t, int64(0), h.cm.ExpectedServiceAckID())
 	require.Equal(t, 1, h.cm.ServiceAckQueueDepth(0))
 }

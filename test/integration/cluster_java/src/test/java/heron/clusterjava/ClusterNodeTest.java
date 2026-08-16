@@ -214,6 +214,7 @@ class ClusterNodeTest {
         assertEquals(ClusterConstants.MEMBER_COUNT, settings.memberCount);
         assertEquals(List.of(ClusterConstants.INGRESS_ENDPOINT_HOST), settings.hostnames);
         assertFalse(settings.mixed);
+        assertFalse(settings.externalService);
         assertEquals(ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA, settings.appointedLeaderId);
         assertEquals(new File(ClusterConstants.BASE_DIR), ClusterNode.baseDirForMember(
             settings.memberId,
@@ -229,6 +230,7 @@ class ClusterNodeTest {
         assertEquals(ClusterConstants.MEMBER_COUNT, settings.memberCount);
         assertEquals(List.of(ClusterConstants.INGRESS_ENDPOINT_HOST), settings.hostnames);
         assertFalse(settings.mixed);
+        assertFalse(settings.externalService);
         assertEquals(ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA, settings.appointedLeaderId);
     }
 
@@ -309,6 +311,7 @@ class ClusterNodeTest {
         assertConsensusLeavesMixedFieldsAtAeronDefaults(multiNodeConfig.consensusModuleContext());
         assertConsensusUsesIpcChannels(singleNodeConfig.consensusModuleContext());
         assertFalse(settings.mixed);
+        assertFalse(settings.externalService);
     }
 
     @Test
@@ -320,6 +323,7 @@ class ClusterNodeTest {
             "1");
 
         assertTrue(settings.mixed);
+        assertFalse(settings.externalService);
         assertEquals(0, settings.memberId);
         assertEquals(ClusterConstants.MIXED_MEMBER_COUNT, settings.memberCount);
         assertEquals(MIXED_HOSTS, settings.hostnames);
@@ -357,6 +361,27 @@ class ClusterNodeTest {
         assertEquals(
             ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA,
             blankAppointed.appointedLeaderId);
+    }
+
+    @Test
+    void launcherSettingsFromEnv_externalServiceParsesFromEnv() {
+        final ClusterNode.LauncherSettings enabled = ClusterNode.launcherSettingsFromEnv(
+            null, null, null, null, null, "1");
+        assertTrue(enabled.externalService);
+
+        final ClusterNode.LauncherSettings omitted = ClusterNode.launcherSettingsFromEnv(
+            null, null, null, null, null);
+        assertFalse(omitted.externalService);
+
+        final ClusterNode.LauncherSettings unset = ClusterNode.launcherSettingsFromEnv(
+            null, null, null, null, null, null);
+        assertFalse(unset.externalService);
+
+        for (final String env : List.of("", "0", "true", "yes")) {
+            assertFalse(
+                ClusterNode.launcherSettingsFromEnv(null, null, null, null, null, env).externalService,
+                "env=" + env);
+        }
     }
 
     @Test

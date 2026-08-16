@@ -37,7 +37,8 @@ type TransportClient interface {
 var _ TransportClient = (*aeron.Client)(nil)
 
 // Config configures [Open]. Zero-value channel and stream id fields take the
-// defaults stated per field. Open passes FragmentLimit through to [NewAgent].
+// defaults stated per field. Open passes FragmentLimit and StartAck to
+// [NewAgent].
 type Config struct {
 	// Aeron is the borrowed transport client. Required. The container does not
 	// own Aeron and does not pump Aeron. Open uses Aeron for the control pair.
@@ -73,6 +74,42 @@ type Config struct {
 	// FragmentLimit caps fragments per log poll. Open passes FragmentLimit to
 	// [NewAgent]. Zero or negative takes DefaultLogFragmentLimit there.
 	FragmentLimit int
+
+	// StartAck enables the spontaneous start ack a Java consensus module
+	// consumes during recovery. Nil disables the start ack. Open passes
+	// StartAck to [NewAgent]. See [StartAckConfig].
+	StartAck *StartAckConfig
+}
+
+// StartAckConfig configures the spontaneous start ack a Java consensus module
+// consumes during recovery.
+//
+// Behaviour: the agent queues one start entry before any delivered control
+// frame.
+//
+// Readiness:
+//   - successful start work, or a nil Service: the start entry becomes ready
+//   - Start error: the start entry stays unready. Drain does not send it
+//
+// When the start entry is ready, drain sends it as ack id 0. Every later ack
+// id shifts up by one. That is the Java numbering.
+//
+// Nil disables the start ack. StartAck must not be set against a consensus
+// module that pairs acks only with published frames. An unpaired first queued
+// entry marks ServiceAckFailure.
+type StartAckConfig struct {
+	// LogPosition is the recovered log position the start ack carries. Must
+	// equal the consensus module's expected ack position. A cold-start Java
+	// consensus module expects 0. Must not be negative. Position 0 is a
+	// value, not a default.
+	LogPosition int64
+
+	// RelevantID carries the transport client id on the member's media driver
+	// ([aeron.Client.ClientId]). The Java consensus module stores RelevantID
+	// for service liveness tracking. The Java consensus module aborts recovery
+	// when any start ack carries the -1 sentinel. RelevantID is the caller-set
+	// value. Heron does not rewrite RelevantID to the sentinel.
+	RelevantID int64
 }
 
 // Open assembles one service container against a transport client.
@@ -95,6 +132,7 @@ type Config struct {
 // Returns an error when:
 //   - Aeron, Service, or CommittedPosition is nil
 //   - ServiceID is negative
+//   - StartAck is set and LogPosition is negative
 //   - the two stream ids collide after defaulting
 //   - either add fails or returns no handle
 //
@@ -137,6 +175,7 @@ func Open(cfg Config) (*Container, error) {
 			FragmentLimit:     cfg.FragmentLimit,
 			Control:           ingress,
 			ModuleProxy:       proxy,
+			StartAck:          cfg.StartAck,
 		}),
 		ingress:    ingress,
 		controlSub: sub,
@@ -177,6 +216,8 @@ func validateConfig(cfg Config) error {
 		return errors.New("service: committed position is required")
 	case cfg.ServiceID < 0:
 		return errors.New("service: service id must not be negative")
+	case cfg.StartAck != nil && cfg.StartAck.LogPosition < 0:
+		return errors.New("service: start ack log position must not be negative")
 	case cfg.ServiceStreamID == cfg.ConsensusModuleStreamID:
 		return errors.New("service: ServiceStreamID and ConsensusModuleStreamID must differ")
 	}

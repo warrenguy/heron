@@ -40,8 +40,8 @@ type ClientIngress interface {
 // Behaviour:
 //   - The agent calls the handler only on a settled leader (election settled,
 //     role leader).
-//   - Nil runs the product session accept. A non-nil handler replaces the
-//     product accept.
+//   - Nil runs acceptSessionConnect. A non-nil handler replaces
+//     acceptSessionConnect.
 //   - Redirect on a settled non-leader is not behind this seam.
 //   - Var field slices in fields are copies. The handler may retain them.
 //   - nowNs is the duty-cycle clock of the poll that delivered the frame.
@@ -64,8 +64,10 @@ func (a *Agent) ClientIngress() ClientIngress { return a.clientIngress }
 
 // SetSessionConnectHandler wires or clears the [SessionConnectHandler].
 //
-// Behaviour: nil runs the product session accept. A non-nil handler replaces
-// the product accept on the leader only. Redirect is not behind this seam.
+// Behaviour:
+//   - Nil runs acceptSessionConnect.
+//   - A non-nil handler replaces acceptSessionConnect on the leader only.
+//   - Redirect is not behind this seam.
 //
 // Concurrency: invoker-only. Do not call while [Agent.DoWork] runs.
 func (a *Agent) SetSessionConnectHandler(handler SessionConnectHandler) {
@@ -136,7 +138,7 @@ func (a *Agent) handleClientIngressFragment(
 // Behaviour:
 //   - A non-leader queues SessionEvent REDIRECT.
 //   - On the leader, nil sessionConnectHandler runs acceptSessionConnect.
-//   - A non-nil handler replaces the product accept.
+//   - A non-nil handler replaces acceptSessionConnect.
 func (a *Agent) handleSessionConnect(
 	fields codecs.SessionConnectRequestFields,
 	nowNs int64,

@@ -22,6 +22,7 @@ public final class ClusterNode
     static final String ENV_HOSTNAMES = "HERON_CLUSTER_HOSTNAMES";
     static final String ENV_MIXED = "HERON_CLUSTER_MIXED";
     static final String ENV_APPOINTED_LEADER_ID = "HERON_CLUSTER_APPOINTED_LEADER_ID";
+    static final String ENV_EXTERNAL_SERVICE = "HERON_CLUSTER_EXTERNAL_SERVICE";
 
     static final class LauncherSettings
     {
@@ -30,19 +31,22 @@ public final class ClusterNode
         final List<String> hostnames;
         final boolean mixed;
         final int appointedLeaderId;
+        final boolean externalService;
 
         LauncherSettings(
             final int memberId,
             final int memberCount,
             final List<String> hostnames,
             final boolean mixed,
-            final int appointedLeaderId)
+            final int appointedLeaderId,
+            final boolean externalService)
         {
             this.memberId = memberId;
             this.memberCount = memberCount;
             this.hostnames = hostnames;
             this.mixed = mixed;
             this.appointedLeaderId = appointedLeaderId;
+            this.externalService = externalService;
         }
     }
 
@@ -279,7 +283,7 @@ public final class ClusterNode
         }
     }
 
-    /** Load launcher settings from process environment (member, hostnames, mixed, appointed). */
+    /** Load launcher settings from process environment. */
     static LauncherSettings launcherSettingsFromProcessEnv()
     {
         return launcherSettingsFromEnv(
@@ -287,7 +291,8 @@ public final class ClusterNode
             System.getenv(ENV_MEMBER_COUNT),
             System.getenv(ENV_HOSTNAMES),
             System.getenv(ENV_MIXED),
-            System.getenv(ENV_APPOINTED_LEADER_ID));
+            System.getenv(ENV_APPOINTED_LEADER_ID),
+            System.getenv(ENV_EXTERNAL_SERVICE));
     }
 
     static LauncherSettings launcherSettingsFromEnv(
@@ -295,8 +300,7 @@ public final class ClusterNode
         final String memberCountEnv,
         final String hostnamesEnv)
     {
-        // Three-arg form leaves mixed unset. Production paths pass mixed env explicitly
-        // via the five-arg overload or runCluster(aeronDir).
+        // Three-arg form leaves mixed unset.
         return launcherSettingsFromEnv(memberIdEnv, memberCountEnv, hostnamesEnv, null, null);
     }
 
@@ -316,7 +320,20 @@ public final class ClusterNode
         final String mixedEnv,
         final String appointedLeaderIdEnv)
     {
+        return launcherSettingsFromEnv(
+            memberIdEnv, memberCountEnv, hostnamesEnv, mixedEnv, appointedLeaderIdEnv, null);
+    }
+
+    static LauncherSettings launcherSettingsFromEnv(
+        final String memberIdEnv,
+        final String memberCountEnv,
+        final String hostnamesEnv,
+        final String mixedEnv,
+        final String appointedLeaderIdEnv,
+        final String externalServiceEnv)
+    {
         final boolean mixed = "1".equals(mixedEnv);
+        final boolean externalService = "1".equals(externalServiceEnv);
         final int memberCount = parseIntEnv(
             ENV_MEMBER_COUNT, memberCountEnv, ClusterConstants.MEMBER_COUNT);
         validateMemberCount(memberCount);
@@ -330,7 +347,8 @@ public final class ClusterNode
             ENV_APPOINTED_LEADER_ID,
             appointedLeaderIdEnv,
             ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA);
-        return new LauncherSettings(memberId, memberCount, hostnames, mixed, appointedLeaderId);
+        return new LauncherSettings(
+            memberId, memberCount, hostnames, mixed, appointedLeaderId, externalService);
     }
 
     /**
@@ -467,8 +485,10 @@ public final class ClusterNode
                 clusterConfig.mediaDriverContext().terminationHook(barrier::signalAll),
                 clusterConfig.archiveContext(),
                 clusterConfig.consensusModuleContext().terminationHook(barrier::signalAll));
-            ClusteredServiceContainer _ = ClusteredServiceContainer.launch(
-                clusterConfig.clusteredServiceContext().terminationHook(barrier::signalAll)))
+            ClusteredServiceContainer _ = settings.externalService
+                ? null
+                : ClusteredServiceContainer.launch(
+                    clusterConfig.clusteredServiceContext().terminationHook(barrier::signalAll)))
         {
             System.out.println("heron: cluster node ready memberId=" + settings.memberId);
             barrier.await();

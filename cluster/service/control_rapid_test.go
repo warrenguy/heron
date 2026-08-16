@@ -12,12 +12,13 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
-// modelAckEntry is one delivered coordination frame in the reference model.
+// modelAckEntry is one pending ServiceAck in the reference model.
 type modelAckEntry struct {
 	logPosition int64
 	kind        coordinationAckKind
 	ready       bool
 	joinPending bool
+	relevantID  int64
 }
 
 type modelFrame struct {
@@ -37,10 +38,12 @@ type pendingControlOp struct {
 	apply func()
 }
 
-// Asserts delivery-order ack pairing. The agent acks each delivered
-// coordination frame exactly once, in delivery order, with ids 0..n-1. The
-// ready prefix gate never sends past the first unready entry. A passed
-// request position marks ServiceFailure and freezes.
+// Asserts delivery-order ack pairing. The agent acks each pending ServiceAck
+// exactly once, in queue order, with ids 0..n-1. A drawn start entry is
+// index 0 exactly once. Every later ack id shifts by one. The start ack
+// carries the configured relevant id. Later acks carry nullValue. The ready
+// prefix gate never sends past the first unready entry. A passed request
+// position marks ServiceFailure and freezes.
 //
 // Ops: deliver RequestServiceAck; deliver JoinLog (including superseding an
 // unbound pending join); append a committed timer frame; append a committed
@@ -58,6 +61,14 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 		control := &QueueControlIngress{}
 		proxy, pub := boundModuleProxy(t)
 
+		var startAck *StartAckConfig
+		if rapid.Bool().Draw(rt, "startAck") {
+			startAck = &StartAckConfig{
+				LogPosition: int64(rapid.IntRange(0, 1_000_000).Draw(rt, "startAckLogPosition")),
+				RelevantID:  rapid.Int64().Draw(rt, "startAckRelevantID"),
+			}
+		}
+
 		agent := NewAgent(AgentConfig{
 			ServiceID:         1,
 			Service:           svc,
@@ -66,9 +77,18 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			Control:           control,
 			ModuleProxy:       proxy,
 			FragmentLimit:     DefaultLogFragmentLimit,
+			StartAck:          startAck,
 		})
 
 		var model []modelAckEntry
+		if startAck != nil {
+			model = append(model, modelAckEntry{
+				logPosition: startAck.LogPosition,
+				kind:        ackKindStart,
+				ready:       false,
+				relevantID:  startAck.RelevantID,
+			})
+		}
 		modelLogPos := int64(0)
 		modelDrained := 0
 		modelFailed := false
@@ -103,6 +123,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				logPosition: pos,
 				kind:        ackKindRequest,
 				ready:       false,
+				relevantID:  nullValue,
 			})
 		}
 
@@ -119,6 +140,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				kind:        ackKindJoin,
 				ready:       false,
 				joinPending: true,
+				relevantID:  nullValue,
 			})
 		}
 
@@ -168,6 +190,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 						logPosition: f.end,
 						kind:        ackKindSnapshot,
 						ready:       true,
+						relevantID:  nullValue,
 					})
 				}
 				nextFrame++
@@ -195,11 +218,15 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			return false
 		}
 
-		// modelDoWork matches Agent: control poll, sweep, drain, join bind, poll.
-		// Drain still runs after sweep failure. Join and poll freeze after that.
+		// modelDoWork matches Agent: start-work then ready, control poll,
+		// sweep, drain, join bind, poll. Drain still runs after sweep
+		// failure. Join and poll freeze after that.
 		modelDoWork := func() {
 			if modelFailed {
 				return
+			}
+			if len(model) > 0 && model[0].kind == ackKindStart {
+				model[0].ready = true
 			}
 			n := min(len(pending), defaultControlFragmentLimit)
 			for _, op := range pending[:n] {
@@ -227,10 +254,20 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			acks := decodeServiceAcksFromPub(rt, pub)
 			require.Len(rt, acks, modelDrained)
 			require.Equal(rt, int64(modelDrained), agent.NextAckID())
+			if startAck != nil {
+				nStart := 0
+				for _, e := range model {
+					if e.kind == ackKindStart {
+						nStart++
+					}
+				}
+				require.Equal(rt, 1, nStart)
+				require.Equal(rt, ackKindStart, model[0].kind)
+			}
 			for i, ack := range acks {
 				require.Equal(rt, int64(i), ack.AckID)
 				require.Equal(rt, model[i].logPosition, ack.LogPosition)
-				require.Equal(rt, nullValue, ack.RelevantID)
+				require.Equal(rt, model[i].relevantID, ack.RelevantID)
 				require.Equal(rt, int32(1), ack.ServiceID)
 			}
 			if modelFailed {
@@ -261,7 +298,8 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			committed = end
 		}
 
-		// Start only. Joins are drawn ops (including supersession).
+		// Start work. A drawn StartAck becomes ready and drains on this
+		// tick. Joins are drawn ops, including supersession.
 		agent.DoWork(0)
 		modelDoWork()
 		checkInvariants()

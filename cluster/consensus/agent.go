@@ -196,8 +196,8 @@ type Agent struct {
 	// open-session idle close, and non-leader closing reclaim.
 	sessionTimeoutNs int64
 
-	// sessionConnectHandler receives leader-accepted connects. Nil runs the
-	// product session accept. A non-nil handler replaces the product accept.
+	// sessionConnectHandler receives leader-accepted connects. Nil runs
+	// acceptSessionConnect. A non-nil handler replaces acceptSessionConnect.
 	sessionConnectHandler SessionConnectHandler
 
 	// sessions is the client session registry. The Agent constructs it. Pure

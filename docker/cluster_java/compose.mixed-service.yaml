@@ -1,0 +1,15 @@
+# Overlay on the single-node base. Merge with compose.yaml.
+# Plain service merge. No profile.
+
+services:
+  cluster:
+    environment:
+      # Hand-sync with ClusterNode.ENV_EXTERNAL_SERVICE.
+      HERON_CLUSTER_EXTERNAL_SERVICE: "1"
+
+  go:
+    image: cluster-java-go-mixed-service
+    build:
+      target: mixed-service-runtime
+    environment:
+      HERON_CLUSTER_MIXED_SERVICE_COMPOSE: "1"

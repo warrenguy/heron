@@ -12,6 +12,8 @@
 package clusterjava
 
 import (
+	"time"
+
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/test/integration/harness"
@@ -59,6 +61,27 @@ const (
 	composeSkipRunMake         = "requires docker compose; run make "
 	ComposeSkipHint            = "cluster java " + composeSkipRunMake + "test-cluster-java"
 	FailoverComposeSkipHint    = "failover " + composeSkipRunMake + "test-cluster-java-failover"
+
+	// MixedServiceComposeGateEnvKey is set to "1" by the mixed-service overlay.
+	MixedServiceComposeGateEnvKey = "HERON_CLUSTER_MIXED_SERVICE_COMPOSE"
+
+	MixedServiceComposeSkipHint = "cluster mixed service " +
+		composeSkipRunMake + "test-cluster-mixed-service"
+)
+
+const (
+	// MixedServiceCountersBudget bounds CnC and commit-pos counter allocation.
+	MixedServiceCountersBudget = 30 * time.Second
+
+	// MixedServiceJoinBudget bounds start ack through join settle.
+	MixedServiceJoinBudget = 30 * time.Second
+
+	// MixedServiceConnectBudget bounds induction-client AsyncConnect settle.
+	MixedServiceConnectBudget = 20 * time.Second
+
+	// MixedServiceDeliverBudget bounds one delivery await (session open,
+	// payload, or close).
+	MixedServiceDeliverBudget = 20 * time.Second
 )
 
 const TermMinLength = logbuffer.TermMinLength

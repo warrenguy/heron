@@ -63,3 +63,11 @@ COPY docker/cluster_java/compose.yaml docker/cluster_java/compose.failover.yaml 
 # Outer cluster-java-failover-smoke.sh timeout 430s: 400s test budget plus teardown.
 
 CMD ["./cluster-java.test", "-test.v", "-test.count=1", "-test.timeout=400s", "-test.run", "^TestClusterFailoverSmoke$"]
+
+FROM runtime AS mixed-service-runtime
+
+# Inner -test.timeout=180s: counters 30s, join 30s, connect 20s,
+# offer 20s, deliver 20s x3 (open, payload, close). Stacked worst
+# case 160s plus slack.
+
+CMD ["./cluster-java.test", "-test.v", "-test.count=1", "-test.timeout=180s", "-test.run", "^TestClusterMixedServiceSmoke$"]

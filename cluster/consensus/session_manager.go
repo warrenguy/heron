@@ -452,10 +452,13 @@ func (m *sessionManager) removePending(sessionID int64) {
 	m.pending = deleteSessionByID(m.pending, sessionID)
 }
 
-// acceptSessionConnect runs the product leader accept path.
+// acceptSessionConnect accepts a connect on the leader when
+// sessionConnectHandler is nil.
 //
-// Behaviour: protocol-major mismatch and over-cap queue SessionEvent ERROR.
-// Those connects never reach the authenticator.
+// Behaviour:
+//   - Protocol-major mismatch queues SessionEvent ERROR.
+//   - Over-cap queues SessionEvent ERROR.
+//   - Those connects never reach the authenticator.
 func (a *Agent) acceptSessionConnect(
 	fields codecs.SessionConnectRequestFields,
 	nowNs int64,

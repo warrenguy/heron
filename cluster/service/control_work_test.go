@@ -3,6 +3,7 @@
 package service
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -100,6 +101,16 @@ func decodeServiceAcksFromPub(tb assertTB, pub *aeron.Publication) []codecs.Serv
 	return acks
 }
 
+func serviceAckFields(logPosition, ackID, relevantID int64) codecs.ServiceAckFields {
+	return codecs.ServiceAckFields{
+		LogPosition: logPosition,
+		Timestamp:   0,
+		AckID:       ackID,
+		RelevantID:  relevantID,
+		ServiceID:   1,
+	}
+}
+
 // controlAgentHarness holds an agent with control queue, log image, and module proxy.
 type controlAgentHarness struct {
 	agent     *Agent
@@ -111,6 +122,17 @@ type controlAgentHarness struct {
 }
 
 func newControlAgentHarness(tb testing.TB, joinPosition int64) *controlAgentHarness {
+	tb.Helper()
+	return newControlAgentHarnessWithStartAck(tb, joinPosition, nil)
+}
+
+// newControlAgentHarnessWithStartAck builds the control harness with StartAck
+// set on the agent. A nil startAck disables the start ack.
+func newControlAgentHarnessWithStartAck(
+	tb testing.TB,
+	joinPosition int64,
+	startAck *StartAckConfig,
+) *controlAgentHarness {
 	tb.Helper()
 	svc := &recordingService{}
 	sub, image := newLogImage(tb, testLogSessionID, testLogStreamID, joinPosition)
@@ -125,6 +147,7 @@ func newControlAgentHarness(tb testing.TB, joinPosition int64) *controlAgentHarn
 		Subscriptions:     &stubAdder{sub: sub},
 		Control:           control,
 		ModuleProxy:       proxy,
+		StartAck:          startAck,
 	})
 	return &controlAgentHarness{
 		agent:     agent,
@@ -778,4 +801,203 @@ func TestControlWork_NoSpontaneousStartAck(t *testing.T) {
 	require.Equal(t, int64(0), h.agent.NextAckID())
 	require.Empty(t, decodeServiceAcksFromPub(t, h.pub))
 	require.Equal(t, 0, h.agent.PendingCoordinationAcks())
+}
+
+func TestControlWork_StartAckSendsAfterStart(t *testing.T) {
+	const (
+		startPos   int64 = 0
+		relevantID int64 = 42
+	)
+	h := newControlAgentHarnessWithStartAck(t, 0, &StartAckConfig{
+		LogPosition: startPos,
+		RelevantID:  relevantID,
+	})
+
+	require.Equal(t, 0, h.svc.startCount)
+	require.Equal(t, int64(0), h.agent.NextAckID())
+	require.Equal(t, 1, h.agent.PendingCoordinationAcks())
+	require.Equal(t, 0, h.agent.ReadyCoordinationAcks())
+	require.Empty(t, decodeServiceAcksFromPub(t, h.pub))
+
+	work := h.agent.DoWork(0)
+	require.NoError(t, h.agent.ServiceFailure())
+	require.Equal(t, 1, h.svc.startCount)
+	require.GreaterOrEqual(t, work, 2, "Start + drain")
+	require.Equal(t, int64(1), h.agent.NextAckID())
+	require.Equal(t, 0, h.agent.PendingCoordinationAcks())
+	require.Equal(t, []codecs.ServiceAckFields{
+		serviceAckFields(startPos, 0, relevantID),
+	}, decodeServiceAcksFromPub(t, h.pub))
+}
+
+func TestControlWork_StartAckBeforeJoin(t *testing.T) {
+	const (
+		startPos   int64 = 0
+		relevantID int64 = 99
+	)
+	h := newControlAgentHarnessWithStartAck(t, 0, &StartAckConfig{
+		LogPosition: startPos,
+		RelevantID:  relevantID,
+	})
+	h.control.Enqueue(encodeJoinLogControl(t, defaultJoinLogFields(0)))
+
+	work := h.agent.DoWork(0)
+	require.NoError(t, h.agent.ServiceFailure())
+	require.True(t, h.agent.IsLogBound())
+	require.False(t, h.agent.HasPendingJoin())
+	require.GreaterOrEqual(t, work, 4, "Start + JoinLog + start drain + bind")
+	require.Equal(t, int64(1), h.agent.NextAckID())
+	require.Equal(t, 1, h.agent.PendingCoordinationAcks())
+	require.Equal(t, 1, h.agent.ReadyCoordinationAcks())
+	require.Equal(t, []codecs.ServiceAckFields{
+		serviceAckFields(startPos, 0, relevantID),
+	}, decodeServiceAcksFromPub(t, h.pub))
+
+	require.Equal(t, 1, h.agent.DoWork(0))
+	require.Equal(t, int64(2), h.agent.NextAckID())
+	require.Equal(t, 0, h.agent.PendingCoordinationAcks())
+	require.Equal(t, []codecs.ServiceAckFields{
+		serviceAckFields(startPos, 0, relevantID),
+		serviceAckFields(0, 1, nullValue),
+	}, decodeServiceAcksFromPub(t, h.pub))
+}
+
+func TestControlWork_StartAckRelevantIDThenJoinNull(t *testing.T) {
+	const relevantID int64 = 7
+	h := newControlAgentHarnessWithStartAck(t, 0, &StartAckConfig{
+		LogPosition: 0,
+		RelevantID:  relevantID,
+	})
+	h.control.Enqueue(encodeJoinLogControl(t, defaultJoinLogFields(0)))
+
+	h.agent.DoWork(0)
+	require.NoError(t, h.agent.ServiceFailure())
+	acks := decodeServiceAcksFromPub(t, h.pub)
+	require.Len(t, acks, 1)
+	require.Equal(t, serviceAckFields(0, 0, relevantID), acks[0])
+
+	h.agent.DoWork(0)
+	require.Equal(t, []codecs.ServiceAckFields{
+		serviceAckFields(0, 0, relevantID),
+		serviceAckFields(0, 1, nullValue),
+	}, decodeServiceAcksFromPub(t, h.pub))
+}
+
+func TestControlWork_StartAckRetriableNotConnected(t *testing.T) {
+	const (
+		startPos   int64 = 0
+		relevantID int64 = 42
+	)
+	svc := &recordingService{}
+	proxy := boundModuleProxyWithLimit(t, 0, false)
+	agent := NewAgent(AgentConfig{
+		ServiceID:   1,
+		Service:     svc,
+		ModuleProxy: proxy,
+		StartAck: &StartAckConfig{
+			LogPosition: startPos,
+			RelevantID:  relevantID,
+		},
+	})
+
+	require.Equal(t, 1, agent.PendingCoordinationAcks())
+	require.Equal(t, 0, agent.ReadyCoordinationAcks())
+
+	agent.DoWork(0)
+	require.NoError(t, agent.ServiceFailure())
+	require.Equal(t, 1, svc.startCount)
+	require.Equal(t, int64(0), agent.NextAckID())
+	require.Equal(t, 1, agent.PendingCoordinationAcks())
+	require.Equal(t, 1, agent.ReadyCoordinationAcks())
+
+	connected := aeron.NewTestPublicationForHooksWithConnected(t, true)
+	proxy.SetPublication(connected)
+	agent.DoWork(0)
+	require.NoError(t, agent.ServiceFailure())
+	require.Equal(t, int64(1), agent.NextAckID())
+	require.Equal(t, 0, agent.PendingCoordinationAcks())
+	require.Equal(t, []codecs.ServiceAckFields{
+		serviceAckFields(startPos, 0, relevantID),
+	}, decodeServiceAcksFromPub(t, connected))
+}
+
+func TestControlWork_StartAckStartErrorDoesNotSend(t *testing.T) {
+	startErr := errors.New("start boom")
+	svc := &recordingService{startErr: startErr}
+	proxy, pub := boundModuleProxy(t)
+	agent := NewAgent(AgentConfig{
+		ServiceID:   1,
+		Service:     svc,
+		ModuleProxy: proxy,
+		StartAck: &StartAckConfig{
+			LogPosition: 0,
+			RelevantID:  42,
+		},
+	})
+
+	require.Equal(t, 1, agent.PendingCoordinationAcks())
+	require.Equal(t, 0, agent.ReadyCoordinationAcks())
+
+	require.Equal(t, 1, agent.DoWork(0))
+	require.ErrorIs(t, agent.ServiceFailure(), startErr)
+	require.Equal(t, 1, svc.startCount)
+	require.Equal(t, int64(0), agent.NextAckID())
+	require.Equal(t, 1, agent.PendingCoordinationAcks())
+	require.Equal(t, 0, agent.ReadyCoordinationAcks())
+	require.Len(t, agent.coordinationAcks, 1)
+	require.Equal(t, ackKindStart, agent.coordinationAcks[0].kind)
+	require.False(t, agent.coordinationAcks[0].ready)
+	require.Equal(t, int64(0), agent.coordinationAcks[0].logPosition)
+	require.Equal(t, int64(42), agent.coordinationAcks[0].relevantID)
+	require.Empty(t, decodeServiceAcksFromPub(t, pub))
+
+	require.Equal(t, 0, agent.DoWork(0))
+	require.Equal(t, int64(0), agent.NextAckID())
+	require.False(t, agent.coordinationAcks[0].ready)
+	require.Empty(t, decodeServiceAcksFromPub(t, pub))
+}
+
+func TestControlWork_StartAckNegativeLogPositionQueuesNothing(t *testing.T) {
+	proxy, pub := boundModuleProxy(t)
+	agent := NewAgent(AgentConfig{
+		ServiceID:   1,
+		Service:     &recordingService{},
+		ModuleProxy: proxy,
+		StartAck:    &StartAckConfig{LogPosition: -1, RelevantID: 1},
+	})
+	require.Equal(t, 0, agent.PendingCoordinationAcks())
+	require.Equal(t, int64(0), agent.NextAckID())
+
+	agent.DoWork(0)
+	require.NoError(t, agent.ServiceFailure())
+	require.Equal(t, 0, agent.PendingCoordinationAcks())
+	require.Equal(t, int64(0), agent.NextAckID())
+	require.Empty(t, decodeServiceAcksFromPub(t, pub))
+}
+
+func TestControlWork_StartAckNilServiceSends(t *testing.T) {
+	const (
+		startPos   int64 = 0
+		relevantID int64 = 42
+	)
+	proxy, pub := boundModuleProxy(t)
+	agent := NewAgent(AgentConfig{
+		ServiceID:   1,
+		ModuleProxy: proxy,
+		StartAck: &StartAckConfig{
+			LogPosition: startPos,
+			RelevantID:  relevantID,
+		},
+	})
+	require.Equal(t, 1, agent.PendingCoordinationAcks())
+	require.Equal(t, 0, agent.ReadyCoordinationAcks())
+
+	work := agent.DoWork(0)
+	require.NoError(t, agent.ServiceFailure())
+	require.GreaterOrEqual(t, work, 2, "start skip + drain")
+	require.Equal(t, int64(1), agent.NextAckID())
+	require.Equal(t, 0, agent.PendingCoordinationAcks())
+	require.Equal(t, []codecs.ServiceAckFields{
+		serviceAckFields(startPos, 0, relevantID),
+	}, decodeServiceAcksFromPub(t, pub))
 }

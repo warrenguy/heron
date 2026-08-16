@@ -206,7 +206,7 @@ func TestHandleSessionConnect_branchTable(t *testing.T) {
 			wantPending:    0,
 		},
 		{
-			name:           "nil_handler_product_accept",
+			name:           "nil_handler_acceptSessionConnect",
 			role:           RoleLeader,
 			leaderMemberID: nullMemberID,
 			handler:        nil,

@@ -47,7 +47,7 @@ type timerService struct {
 	wheelExpiryHandler func(now, timerID int64) bool
 }
 
-// newTimerService returns a timerService with product wheel geometry and
+// newTimerService returns a timerService with the package wheel constants and
 // startTime 0.
 func newTimerService() *timerService {
 	return newTimerServiceForWheel(timerwheel.New(

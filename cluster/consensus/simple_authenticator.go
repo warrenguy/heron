@@ -28,9 +28,9 @@ type SimplePrincipal struct {
 //     Authenticate false ends the grant. The proxy already rejected the
 //     session. Missing map entry rejects.
 //   - HandleChallengeResponse is a silent no-op. This authenticator never
-//     challenges. The path is unreachable in product use.
+//     challenges.
 //   - HandleChallengedSession rejects the session fail-closed. Upstream
-//     throws. Heron must not panic the duty cycle.
+//     throws. The duty cycle must not panic.
 //   - Never challenges.
 //
 // Concurrency: invoker-only, from [Agent.DoWork].

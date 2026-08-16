@@ -60,6 +60,11 @@ type AgentConfig struct {
 	// SnapshotPublication is handed to TakeSnapshot on a snapshot action.
 	// Nil is allowed. Nothing else reads the field.
 	SnapshotPublication *aeron.ExclusivePublication
+
+	// StartAck enables the spontaneous start ack a Java consensus module
+	// consumes during recovery. Nil disables the start ack. See
+	// [StartAckConfig].
+	StartAck *StartAckConfig
 }
 
 // Agent owns the service duty cycle: log join, bounded log consumption,
@@ -93,11 +98,9 @@ type Agent struct {
 	// ready.
 	pendingJoin *logJoinEvent
 
-	// coordinationAcks is the FIFO of delivered coordination frames not yet
-	// acked. Drain is prefix-gated: only a ready first queued entry may send.
-	// Join entries become ready at bind or supersession. Request entries become
-	// ready when logPosition equals the requested position. Snapshot entries
-	// are ready on append.
+	// coordinationAcks is the FIFO of pending ServiceAck entries. Drain is
+	// prefix-gated: only a ready first queued entry may send. A start
+	// entry, when configured, is queued at NewAgent.
 	coordinationAcks []coordinationAck
 
 	// sessions is the log-derived registry keyed by cluster session id.
@@ -158,14 +161,22 @@ const (
 
 	// ackKindSnapshot: ready on append. No sweep rule.
 	ackKindSnapshot
+
+	// ackKindStart: queued at NewAgent. Ready after successful start work,
+	// or when Service is nil. A Start error leaves the entry unready.
+	ackKindStart
 )
 
-// coordinationAck is one delivered coordination frame awaiting its ack.
+// coordinationAck is one pending ServiceAck. Drain is prefix-gated: only a
+// ready first queued entry may send.
 //
-// Join entries set ready at bind or supersession. Request entries set ready
-// when the agent log position equals the entry logPosition. Snapshot entries
-// are ready on append. Drain is prefix-gated: only a ready first queued entry
-// may send.
+// Readiness:
+//   - start: queued at NewAgent. Ready after successful start work, or when
+//     Service is nil. A Start error leaves the start entry unready.
+//   - join: ready at bind or supersession
+//   - request: ready when the agent log position equals the entry
+//     logPosition
+//   - snapshot: ready on append
 type coordinationAck struct {
 	logPosition int64
 	kind        coordinationAckKind
@@ -190,6 +201,10 @@ var _ Cluster = (*Agent)(nil)
 // NewAgent builds an Agent from cfg. The adapter is created with no Image.
 // memberID starts at -1 and logPosition at 0 (cold-start service).
 //
+// When StartAck is set and LogPosition is non-negative, NewAgent queues one
+// unready start entry. A negative LogPosition queues nothing. [Open]
+// refuses a negative LogPosition.
+//
 // NewLeadershipTermEventHandler and TakeSnapshotHandler are detected once
 // via type assertion on cfg.Service.
 func NewAgent(cfg AgentConfig) *Agent {
@@ -212,20 +227,28 @@ func NewAgent(cfg AgentConfig) *Agent {
 	}
 	a.controlOnFragment = a.handleControlFragment
 	a.adapter = NewBoundedLogAdapter(a, cfg.FragmentLimit)
+	if sa := cfg.StartAck; sa != nil && sa.LogPosition >= 0 {
+		a.coordinationAcks = append(a.coordinationAcks, coordinationAck{
+			logPosition: sa.LogPosition,
+			kind:        ackKindStart,
+			relevantID:  sa.RelevantID,
+		})
+	}
 	return a
 }
 
-// DoWork runs one duty tick. nowNs is reserved for later depth; no step reads
-// nowNs yet.
+// DoWork runs one duty tick. nowNs is unused.
 //
 // Order:
 //  1. serviceFailure or closed: return 0
-//  2. start work once: Service.Start(agent); error marks failure once
+//  2. start work once: Service.Start(agent). A Start error marks failure
+//     once. The start entry stays unready. Success or a nil Service marks
+//     the start entry ready when one is queued.
 //  3. control work: poll control, request readiness sweep, drain at most one
 //     ready first queued ack
 //  4. join work while pendingJoin is non-nil and no image is bound
-//  5. log poll when image bound and CommittedPosition non-nil; bound is
-//     min(committed, lowest unready request entry position)
+//  5. log poll when the image is bound and CommittedPosition is non-nil. The
+//     poll bound is min(committed, lowest unready request entry position)
 //  6. unbind when zero polled and (image closed or position at maxLogPosition)
 //
 // Returns the work count: Start, control fragments, each sent ack, each join
@@ -249,6 +272,7 @@ func (a *Agent) DoWork(nowNs int64) int {
 				return work
 			}
 		}
+		a.markAckReady(ackKindStart)
 	}
 
 	work += a.controlWork()
@@ -426,7 +450,7 @@ func (a *Agent) handleJoinLog(event logJoinEvent) {
 	}
 
 	if a.pendingJoin != nil {
-		a.markJoinAckReady()
+		a.markAckReady(ackKindJoin)
 	}
 
 	a.coordinationAcks = append(a.coordinationAcks, coordinationAck{
@@ -442,12 +466,14 @@ func (a *Agent) handleJoinLog(event logJoinEvent) {
 	a.pendingJoin = &event
 }
 
-// markJoinAckReady sets ready on the first unready join-kind entry. At most
-// one join entry is unready (the current pending join).
-func (a *Agent) markJoinAckReady() {
+// markAckReady sets ready on the first unready entry of kind. No-op when
+// the queue has no matching unready entry. At most one start entry is
+// queued (NewAgent). At most one join entry is unready (the current
+// pending join).
+func (a *Agent) markAckReady(kind coordinationAckKind) {
 	for i := range a.coordinationAcks {
 		e := &a.coordinationAcks[i]
-		if e.kind == ackKindJoin && !e.ready {
+		if e.kind == kind && !e.ready {
 			e.ready = true
 			return
 		}
@@ -499,7 +525,7 @@ func (a *Agent) joinWork() int {
 	a.adapter.SetMaxLogPosition(event.maxLogPosition)
 	a.memberID = event.memberID
 	a.role = event.role
-	a.markJoinAckReady()
+	a.markAckReady(ackKindJoin)
 	a.pendingJoin = nil
 	return 1
 }
