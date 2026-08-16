@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
+	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
@@ -53,6 +54,7 @@ func TestLogRecording_startVsExtendBranch_rapid(t *testing.T) {
 			"startRecording",
 			"writeTerm",
 			"stopRecording",
+			"imageStop",
 			"reopenLog",
 		}
 
@@ -130,6 +132,26 @@ func TestLogRecording_startVsExtendBranch_rapid(t *testing.T) {
 				model.startSucceeded = false
 				// Inactive after stop.
 				require.False(rt, r.IsActive())
+
+			case "imageStop":
+				if !model.startSucceeded {
+					continue
+				}
+				pos := rapid.Int64Range(0, 1<<20).Draw(rt, "stopPos"+strconv.Itoa(i))
+				stopCalls := fake.stopCalls
+				stopAwaitCalls := fake.stopAwaitCalls
+				r.handleRecordingSignal(codecs.RecordingSignalEventFields{
+					RecordingID: r.recordingID,
+					Position:    pos,
+					Signal:      archivewire.RecordingSignal_STOP,
+				})
+				require.Equal(rt, stopCalls, fake.stopCalls)
+				require.Equal(rt, stopAwaitCalls, fake.stopAwaitCalls)
+				require.False(rt, r.IsActive())
+				got, posErr := r.StopPositionFor(r.latchedRecordingID)
+				require.NoError(rt, posErr)
+				require.Equal(rt, pos, got)
+				model.startSucceeded = false
 
 			case "reopenLog":
 				// Reopen preserves the branch decision.

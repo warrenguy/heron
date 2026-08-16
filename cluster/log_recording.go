@@ -102,29 +102,28 @@ var _ logArchiveControl = (*archive.Client)(nil)
 //   - keeps the channel bytes and stream id the start or extend used so the
 //     stop names the same recording
 //   - offers truncate through the archive and stores the truncate position for
-//     StopPositionFor; the caller must not call truncate while the recording is
-//     active
-//   - owns needs-stop state via startChannel: a dirty start keeps the channel
-//     until a later stop drains and clears it, and a re-start drains any prior
-//     unstopped channel first
+//     StopPositionFor
+//   - the caller must not call truncate while the recording is active
+//   - holds needs-stop state in startChannel: a dirty start keeps the channel
+//     until a later stop drains and clears the channel
+//   - a re-start drains any prior unstopped channel first
+//   - adopts an unsolicited STOP for the known catalog id as a clean stop
+//
+// Start, stop, and truncate block the invoker until the archive replies or
+// ControlResponseTimeout expires. handleRecordingSignal does not block.
 //
 // Concurrency: invoker-only.
-//
-// Every method blocks the invoker until the archive replies or
-// ControlResponseTimeout expires.
 //
 // Lifetime:
 //   - outlives the agent method calls that use the control
 //   - module clears the control from the agent before closing the archive
 //     client
-//   - module clears the recording control from the agent before it closes the
-//     recovery that owns the recording log
-//   - no TermRecordingID read happens after that close
+//   - module clears the recording control from the agent before the module
+//     closes the recovery that owns the recording log
+//   - no TermRecordingID read happens after the recording-log close
 //   - retained context is Open's context with cancel detached
 //     (context.WithoutCancel)
 //   - Open cancel does not fail later start, stop, or truncate
-//
-// ControlResponseTimeout still bounds every await.
 //
 // Ownership:
 //   - does not own the archive client
@@ -201,14 +200,40 @@ func (r *logRecording) needsStop() bool {
 	return len(r.startChannel) > 0
 }
 
-// IsActive reports whether a successful start or extend has not yet cleanly stopped.
+// IsActive reports whether a successful start or extend has not yet cleanly
+// stopped.
 //
 //   - true only when a start channel is kept and the catalog id is known from
 //     START or EXTEND
 //   - dirty starts keep the channel with an unknown catalog id and are not
 //     active
+//   - an adopted unsolicited STOP is a clean stop
 func (r *logRecording) IsActive() bool {
 	return r.needsStop() && r.recordingID >= 0
+}
+
+// handleRecordingSignal applies one archive recording signal from
+// archive.Client.Poll on the duty cycle.
+//
+// Behaviour:
+//   - STOP for the known catalog id: marks a clean stop and stores the signal
+//     position
+//   - any other signal: no-op
+//   - a foreign recording id: no-op
+//   - an inactive control: no-op
+//
+// Concurrency: invoker-only. Called from archive.Client.Poll.
+func (r *logRecording) handleRecordingSignal(event codecs.RecordingSignalEventFields) {
+	if event.Signal != archivewire.RecordingSignal_STOP {
+		return
+	}
+	if !r.IsActive() {
+		return
+	}
+	if event.RecordingID != r.recordingID {
+		return
+	}
+	r.markStopped(event.Position)
 }
 
 // isUnknownSubscription reports whether err is archive ErrorUnknownSubscription.

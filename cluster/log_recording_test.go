@@ -486,6 +486,124 @@ func TestLogRecording_IsActive(t *testing.T) {
 	}).IsActive())
 }
 
+// TestLogRecording_handleRecordingSignal_stopAdoptsCleanStop asserts an
+// unsolicited STOP for the known catalog id is a clean stop. A later
+// StopLogRecording offers nothing.
+func TestLogRecording_handleRecordingSignal_stopAdoptsCleanStop(t *testing.T) {
+	t.Parallel()
+
+	const (
+		recordingID = int64(42)
+		stopPos     = int64(1024)
+	)
+	channel := []byte("aeron:udp?endpoint=239.255.12.1:9004|session-id=9")
+
+	active := func() *logRecording {
+		return &logRecording{
+			client:       &recordingArchiveStub{},
+			startChannel: append([]byte(nil), channel...),
+			recordingID:  recordingID,
+		}
+	}
+
+	t.Run("matching stop", func(t *testing.T) {
+		t.Parallel()
+
+		r := active()
+		stub := r.client.(*recordingArchiveStub)
+		r.handleRecordingSignal(codecs.RecordingSignalEventFields{
+			RecordingID: recordingID,
+			Position:    stopPos,
+			Signal:      archivewire.RecordingSignal_STOP,
+		})
+
+		require.False(t, r.IsActive())
+		require.False(t, r.needsStop())
+		require.Empty(t, r.startChannel)
+		require.Equal(t, recordingID, r.latchedRecordingID)
+		require.Equal(t, stopPos, r.stopPosition)
+
+		got, err := r.StopPositionFor(recordingID)
+		require.NoError(t, err)
+		require.Equal(t, stopPos, got)
+		require.Equal(t, 0, stub.listCalls)
+
+		require.NoError(t, r.StopLogRecording())
+		require.Equal(t, 0, stub.stopCalls)
+		require.Equal(t, 0, stub.stopAwaitCalls)
+	})
+
+	tests := []struct {
+		name        string
+		r           *logRecording
+		event       codecs.RecordingSignalEventFields
+		wantActive  bool
+		wantChannel []byte
+		wantStopPos int64
+	}{
+		{
+			name: "foreign recording id",
+			r:    active(),
+			event: codecs.RecordingSignalEventFields{
+				RecordingID: recordingID + 1,
+				Position:    stopPos,
+				Signal:      archivewire.RecordingSignal_STOP,
+			},
+			wantActive:  true,
+			wantChannel: channel,
+		},
+		{
+			name: "start signal",
+			r:    active(),
+			event: codecs.RecordingSignalEventFields{
+				RecordingID: recordingID,
+				Position:    stopPos,
+				Signal:      archivewire.RecordingSignal_START,
+			},
+			wantActive:  true,
+			wantChannel: channel,
+		},
+		{
+			name: "inactive control",
+			r: &logRecording{
+				recordingID:        recordingID,
+				latchedRecordingID: recordingID,
+				stopPosition:       99,
+			},
+			event: codecs.RecordingSignalEventFields{
+				RecordingID: recordingID,
+				Position:    stopPos,
+				Signal:      archivewire.RecordingSignal_STOP,
+			},
+			wantStopPos: 99,
+		},
+		{
+			name: "dirty start",
+			r: &logRecording{
+				startChannel: append([]byte(nil), channel...),
+				recordingID:  recordingIDUnknown,
+			},
+			event: codecs.RecordingSignalEventFields{
+				RecordingID: 0,
+				Position:    stopPos,
+				Signal:      archivewire.RecordingSignal_STOP,
+			},
+			wantChannel: channel,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tt.r.handleRecordingSignal(tt.event)
+			require.Equal(t, tt.wantActive, tt.r.IsActive())
+			require.Equal(t, tt.wantChannel, tt.r.startChannel)
+			require.Equal(t, tt.wantStopPos, tt.r.stopPosition)
+		})
+	}
+}
+
 func TestNewLogRecording_detachesCancel(t *testing.T) {
 	t.Parallel()
 

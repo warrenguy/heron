@@ -286,6 +286,13 @@ func OpenConsensusModule(
 	module.agent.SetLogRecordingControl(module.logRecording)
 	module.agent.SetLogTruncateControl(module.logRecording)
 
+	// Duty-cycle Poll delivers an unsolicited STOP when the recorded image
+	// closes. The handler marks a clean stop so IsActive matches the
+	// archive session.
+	module.archiveClient.SetRecordingSignalHandler(
+		archive.RecordingSignalHandlerFunc(module.logRecording.handleRecordingSignal),
+	)
+
 	publisher := election.NewAeronPublisher()
 
 	pubs, err := OpenConsensusPublications(ConsensusPublicationsDeps{
