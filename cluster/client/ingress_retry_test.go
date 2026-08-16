@@ -563,15 +563,22 @@ func TestIngressOfferUntilPositive_contextDeadline(t *testing.T) {
 		deadlineCtx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
 		defer cancel()
 
+		var offerCalls int
 		pos, err := ac.IngressOfferUntilPositive(deadlineCtx, IngressOfferConfig{
 			NanoClock: func() int64 {
 				return time.Now().UnixNano()
 			},
 		}, func() int64 {
+			offerCalls++
+
+			// The offer must wait for ctx.Done. The wait returns after ctx.Err() is set,
+			// before the retry loop expiry check.
+			<-deadlineCtx.Done()
 			return aeron.BackPressured
 		})
 
 		require.Zero(t, pos)
+		require.Equal(t, 1, offerCalls)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 

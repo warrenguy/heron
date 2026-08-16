@@ -269,7 +269,12 @@ func TestRunControlAwaitLoop_contextDeadline(t *testing.T) {
 					NanoClock: func() int64 { return time.Now().UnixNano() },
 				},
 			},
-			func() int { return 0 },
+			func() int {
+				// Poll must wait for ctx.Done. The wait returns after ctx.Err() is set,
+				// before the loop expiry check.
+				<-deadlineCtx.Done()
+				return 0
+			},
 			time.Minute,
 			1,
 		)
