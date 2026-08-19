@@ -190,6 +190,15 @@ func (poller *ControlResponsePoller) ArmAwait(correlationID int64) {
 	poller.awaitCorrelationID = correlationID
 }
 
+// DisarmAwait clears the correlation filter when it is armed for correlationID.
+// A filter armed by a later request stays.
+func (poller *ControlResponsePoller) DisarmAwait(correlationID int64) {
+	if poller == nil || poller.awaitCorrelationID != correlationID {
+		return
+	}
+	poller.awaitCorrelationID = 0
+}
+
 func (poller *ControlResponsePoller) resetCapture() {
 	poller.ready = false
 	poller.capture = ControlResponseCapture{

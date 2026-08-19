@@ -116,12 +116,14 @@ type recordingAgentHandler struct {
 	appendPositionReturn int64
 	joinFollowerReturn   bool
 	prepareErr           error
+	scriptPreparePending bool
 	joinLeaderErr        error
 	joinFollowerErr      error
 
 	prepareCalls       int
 	prepareLogPosition int64
 	prepareNowNs       int64
+	prepareInProgress  bool
 	joinLeaderCalls    []joinLogAsLeaderCall
 	joinFollowerCalls  int
 	joinFollowerParams []consensus.FollowerLogJoinParams
@@ -130,13 +132,27 @@ type recordingAgentHandler struct {
 }
 
 func (h *recordingAgentHandler) PrepareForNewLeadership(
-	logPosition, nowNs int64,
-) (int64, error) {
+	logPosition int64,
+	nowNs int64,
+) (
+	int64,
+	bool,
+	error,
+) {
 	h.prepareCalls++
 	h.prepareLogPosition = logPosition
 	h.prepareNowNs = nowNs
-	return h.appendPositionReturn, h.prepareErr
+	if h.prepareErr != nil || h.scriptPreparePending {
+		// A pending return keeps the episode open. An error closes the episode,
+		// same as Agent.PrepareForNewLeadership.
+		h.prepareInProgress = h.prepareErr == nil
+		return recordinglog.NullPosition, false, h.prepareErr
+	}
+	h.prepareInProgress = false
+	return h.appendPositionReturn, true, nil
 }
+
+func (h *recordingAgentHandler) IsPrepareInProgress() bool { return h.prepareInProgress }
 
 func (h *recordingAgentHandler) JoinLogAsLeader(
 	leadershipTermID, logPosition int64,

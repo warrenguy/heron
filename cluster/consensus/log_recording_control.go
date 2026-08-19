@@ -5,21 +5,11 @@ import "github.com/warrenguy/heron/archive/codecs/archivewire"
 // LogRecordingControl starts, extends, or stops this member's cluster log
 // recording. The control also resolves stop positions for prepare.
 //
-// Behaviour:
-//   - keeps the recording channel and recording stream id
-//   - keeps the catalog recording id after a successful start or extend
-//   - on a clean stop or a successful truncate, stores the stop position and
-//     catalog id for StopPositionFor when nothing is pending
-//   - uses the archive control client
-//   - builds the channel from the recording base channel and the supplied log
-//     session id; empty base uses the member's live log channel
-//   - StopLogRecording stops the recording last started or extended by
-//     StartLogRecording on the same channel and stream
-//
-// Concurrency: invoker-only. StartLogRecording, StopLogRecording, and
-// StopPositionFor run on the [Agent.DoWork] goroutine. Those three methods
-// block until the archive replies or the deadline expires. IsActive is
-// invoker-only and non-blocking.
+// Concurrency: invoker-only. StartLogRecording, StopLogRecording,
+// PollStopLogRecording, and StopPositionFor run on the [Agent.DoWork]
+// goroutine. StartLogRecording, StopLogRecording, and StopPositionFor block
+// until the archive replies or the deadline expires. PollStopLogRecording
+// never blocks. IsActive never blocks.
 //
 // An implementation must:
 //   - cap every wait on StartLogRecording, StopLogRecording, and
@@ -27,27 +17,15 @@ import "github.com/warrenguy/heron/archive/codecs/archivewire"
 //   - drive the transport client while those methods wait
 //
 // Lifetime: the implementation outlives the [Agent] method calls that use
-// it. The module wires the control after the agent is built and clears the
-// control before the archive client closes.
+// the control. The module wires the control after the agent is built and
+// clears the control before the archive client closes.
 //
-// Ownership:
-//   - implementation does not own the [Agent]
-//   - implementation owns no transport handle
-//   - module owns the archive control client and closes it
+// Ownership: implementation does not own the [Agent] or a transport handle.
+// The module owns the archive control client and closes it.
 type LogRecordingControl interface {
 	// StartLogRecording starts or extends recording this member's cluster log
-	// and returns the catalog recording id.
-	//
-	// Behaviour:
-	//   - builds a session-scoped recording channel from recordingChannel and
-	//     logSessionID
-	//   - when no established TERM recording id exists, offers a start request
-	//     and waits for the correlated START recording signal
-	//   - when an established TERM recording id exists, offers an extend
-	//     request for that id and waits for the correlated EXTEND recording
-	//     signal
-	//   - returns the catalog recording id from that proof signal, not the
-	//     subscription registration id the control response carries
+	// and returns the catalog recording id from the proof signal, not the
+	// subscription registration id.
 	//
 	// sourceLocation must be:
 	//   - archivewire.SourceLocation_LOCAL for a leader recording its own log
@@ -65,10 +43,8 @@ type LogRecordingControl interface {
 	// Catchup joins pass the catchup destination channel. Extend then sees the
 	// catchup image join position, not a late-join live image.
 	//
-	// Concurrency: invoker-only.
-	//
-	// Blocks the invoker until the START or EXTEND signal arrives or the bound
-	// expires.
+	// Concurrency: invoker-only. Blocks the invoker until the START or EXTEND
+	// signal arrives or the bound expires.
 	//
 	// Returns an error when:
 	//   - a prior unstopped recording cannot be drained
@@ -95,14 +71,8 @@ type LogRecordingControl interface {
 	// StopLogRecording stops the recording StartLogRecording started. A known
 	// catalog id stores the stop position for StopPositionFor.
 	//
-	// Behaviour:
-	//   - offers stop on the channel and stream the last armed start used
-	//   - known catalog id: stores the archive stop position from STOP
-	//   - unknown catalog id (dirty): OK-bound drain only; keeps the prior stored
-	//     position
-	//   - second call with nothing started: offers nothing
-	//
-	// Idempotent.
+	// Abandons a pending PollStopLogRecording attempt before the blocking
+	// drain. Idempotent.
 	//
 	// Concurrency: invoker-only. Blocks the invoker until the stop proof arrives
 	// or the bound expires.
@@ -114,6 +84,27 @@ type LogRecordingControl interface {
 	//
 	// On error the recording may still be running.
 	StopLogRecording() error
+
+	// PollStopLogRecording advances one pending stop of the recording
+	// StartLogRecording started. nowNs is the duty-cycle deadline clock.
+	//
+	// Never blocks. Never calls DoWork. Never calls archive Poll.
+	//
+	// [Agent.PrepareForNewLeadership] uses this poll. StopLogRecording stays
+	// the blocking drain for module Close and start-time rollback.
+	//
+	// Concurrency: invoker-only.
+	//
+	// Returns:
+	//   - true, nil: stop proof is held, or nothing needed stop
+	//   - false, nil: poll again
+	//   - false, err: fail closed. A later poll starts a fresh attempt
+	//
+	// On error the recording may still be running.
+	PollStopLogRecording(nowNs int64) (
+		done bool,
+		err error,
+	)
 
 	// IsActive reports whether a successful start or extend has not yet cleanly
 	// stopped.
@@ -170,10 +161,10 @@ type LogRecordingControl interface {
 //   - [Agent.JoinLogAsLeader] and [Agent.JoinLogAsFollower] return no error
 //   - [Agent.IsRecordingActive] is false
 //   - [Agent.PrepareForNewLeadership] skips stop and returns logPosition
-//     unchanged
+//     unchanged with prepared true
 //
 // A non-nil control makes [Agent.PrepareForNewLeadership] call
-// StopLogRecording on every prepare so a dirty start or extend still drains.
+// PollStopLogRecording so a dirty start or extend still drains.
 //
 // Clearing with nil makes [Agent.IsRecordingActive] false. The agent has no
 // control to query.

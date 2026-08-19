@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/cluster/recordinglog"
@@ -256,6 +257,240 @@ func TestLogRecording_truncateStopPosition_rapid(t *testing.T) {
 				require.Equal(rt, model.stopPos, got)
 				require.Equal(rt, listBefore, fake.listCalls)
 			}
+		}
+	})
+}
+
+// pollStopModel is the reference model for PollStopLogRecording.
+type pollStopModel struct {
+	needsStop   bool
+	recordingID int64
+	latchedID   int64
+	stopPos     int64
+	pending     bool
+	offered     bool
+	deadline    int64
+	inFlight    int
+	nowNs       int64
+	proofHeld   bool
+}
+
+func (m *pollStopModel) isActive() bool {
+	return m.needsStop && m.recordingID >= 0
+}
+
+func (m *pollStopModel) clearPending() {
+	if m.pending {
+		m.inFlight--
+	}
+	m.pending = false
+	m.offered = false
+}
+
+func (m *pollStopModel) markStopped(pos int64) {
+	if m.recordingID >= 0 {
+		m.latchedID = m.recordingID
+	}
+	m.stopPos = pos
+	m.needsStop = false
+	m.proofHeld = true
+	m.clearPending()
+}
+
+func (m *pollStopModel) poll(
+	offerOK bool,
+	offerErr error,
+	responded bool,
+	responseErr error,
+) (done bool, err error) {
+	if !m.needsStop {
+		return true, nil
+	}
+	if !m.pending {
+		m.pending = true
+		m.offered = false
+		m.deadline = m.nowNs + pollStopOfferTimeoutNs
+		m.inFlight++
+	}
+	if !m.offered {
+		if offerErr != nil {
+			m.clearPending()
+			return false, offerErr
+		}
+		if !offerOK {
+			if m.nowNs >= m.deadline {
+				m.clearPending()
+				return false, errStopOfferTimeout
+			}
+			return false, nil
+		}
+		m.offered = true
+		m.deadline = m.nowNs + pollStopResponseTimeoutNs
+	}
+	dirty := m.recordingID < 0
+	switch {
+	case dirty && isUnknownSubscription(responseErr):
+		m.markStopped(m.stopPos)
+		return true, nil
+	case responseErr != nil:
+		m.clearPending()
+		return false, responseErr
+	case responded && dirty:
+		m.markStopped(m.stopPos)
+		return true, nil
+	}
+	if m.nowNs >= m.deadline {
+		m.clearPending()
+		return false, errStopResponseTimeout
+	}
+	return false, nil
+}
+
+func requirePollStopInvariants(
+	rt *rapid.T,
+	r *logRecording,
+	model *pollStopModel,
+	h *stopRequestHarness,
+	done bool,
+	pollErr error,
+) {
+	rt.Helper()
+
+	require.Equal(rt, model.needsStop, r.needsStop())
+	require.Equal(rt, model.isActive(), r.IsActive())
+	require.Equal(rt, model.stopPos, r.stopPosition)
+	require.Equal(rt, model.latchedID, r.latchedRecordingID)
+	inFlight := 0
+	if r.pendingStop != nil {
+		inFlight = 1
+	}
+	require.Equal(rt, inFlight, model.inFlight)
+	require.Equal(rt, inFlight, h.inFlight())
+	if done {
+		require.NoError(rt, pollErr)
+		require.False(rt, r.needsStop())
+	}
+	if pollErr != nil {
+		require.False(rt, done)
+		require.True(rt, r.needsStop())
+		require.NotEmpty(rt, r.startChannel)
+		require.Nil(rt, r.pendingStop)
+	}
+}
+
+// TestLogRecording_pollStop_rapid draws poll, offer, response, signal, clock,
+// and sync-stop ops against pollStopModel.
+func TestLogRecording_pollStop_rapid(t *testing.T) {
+	t.Parallel()
+
+	rapid.Check(t, func(rt *rapid.T) {
+		rt.Helper()
+
+		needsStop := rapid.Bool().Draw(rt, "needsStop")
+		dirty := rapid.Bool().Draw(rt, "dirty")
+		priorPos := rapid.Int64Range(0, 1<<20).Draw(rt, "priorPos")
+		recordingID := pollStopRecordingID
+		if dirty {
+			recordingID = recordingIDUnknown
+		}
+
+		h := &stopRequestHarness{}
+		r := newPollStopRecording(recordingID, priorPos, h)
+		if !needsStop {
+			r.startChannel = nil
+		}
+
+		model := pollStopModel{
+			needsStop:   needsStop,
+			recordingID: recordingID,
+			latchedID:   recordingIDUnknown,
+			stopPos:     priorPos,
+			proofHeld:   !needsStop,
+		}
+
+		n := rapid.IntRange(1, 40).Draw(rt, "n")
+		ops := []string{
+			"poll",
+			"offerAccepted",
+			"offerBackPressure",
+			"deliverOK",
+			"deliverUnknownSubscription",
+			"deliverError",
+			"deliverStopSignal",
+			"advanceClock",
+			"syncStop",
+		}
+
+		for i := range n {
+			op := rapid.SampledFrom(ops).Draw(rt, "op"+strconv.Itoa(i))
+			var (
+				done bool
+				err  error
+			)
+
+			switch op {
+			case "offerAccepted":
+				h.offerOK = true
+				h.offerErr = nil
+			case "offerBackPressure":
+				h.offerOK = false
+				h.offerErr = nil
+			case "deliverOK":
+				h.responded = true
+				h.responseErr = nil
+			case "deliverUnknownSubscription":
+				h.responded = false
+				h.responseErr = &archive.Exception{
+					ErrorCode: archive.ErrorUnknownSubscription,
+				}
+			case "deliverError":
+				h.responded = false
+				h.responseErr = &archive.Exception{ErrorCode: archive.ErrorGeneric}
+			case "deliverStopSignal":
+				pos := rapid.Int64Range(0, 1<<20).Draw(rt, "stopPos"+strconv.Itoa(i))
+				r.handleRecordingSignal(codecs.RecordingSignalEventFields{
+					RecordingID: r.recordingID,
+					Position:    pos,
+					Signal:      archivewire.RecordingSignal_STOP,
+				})
+				if model.isActive() {
+					model.markStopped(pos)
+				}
+			case "advanceClock":
+				delta := rapid.Int64Range(1, 1500).Draw(rt, "delta"+strconv.Itoa(i))
+				model.nowNs += delta
+			case "syncStop":
+				require.NoError(rt, r.StopLogRecording())
+				if model.needsStop {
+					pos := int64(0)
+					if model.recordingID < 0 {
+						pos = model.stopPos
+					}
+					model.markStopped(pos)
+				} else {
+					model.clearPending()
+				}
+			case "poll":
+				needsStopBefore := r.needsStop()
+				builtBefore := len(h.built)
+				wantDone, wantErr := model.poll(h.offerOK, h.offerErr, h.responded, h.responseErr)
+				done, err = r.PollStopLogRecording(model.nowNs)
+				if wantErr != nil {
+					require.ErrorIs(rt, err, wantErr)
+					require.False(rt, done)
+				} else {
+					require.NoError(rt, err)
+					require.Equal(rt, wantDone, done)
+				}
+				if !needsStopBefore {
+					require.Len(rt, h.built, builtBefore)
+				}
+				if done && needsStopBefore {
+					require.True(rt, model.proofHeld)
+				}
+			}
+
+			requirePollStopInvariants(rt, r, &model, h, done, err)
 		}
 	})
 }

@@ -304,6 +304,32 @@ func (ops archiveControlOps) extendRecordingAwaitSignal(
 	)
 }
 
+// consumeMatchedControlResponse matches a latched ControlResponse for
+// correlationID.
+//
+// Returns:
+//   - matched true, nil: matching OK consumed. Capture cleared
+//   - matched true, err: matching error ControlResponse. Capture stays latched
+//   - matched false, nil: no match yet
+func consumeMatchedControlResponse(
+	poller *ControlResponsePoller,
+	controlSessionID int64,
+	correlationID int64,
+) (matched bool, err error) {
+	_, mapped, ok := tryMatchControlResponseDiscardStale(
+		poller,
+		controlSessionID,
+		correlationID,
+	)
+	if !ok {
+		return false, nil
+	}
+	if mapped == nil {
+		poller.ResetCapture()
+	}
+	return true, mapped
+}
+
 // consumeAwaitingControlResponse matches a latched ControlResponse for the
 // armed await.
 //
@@ -316,18 +342,17 @@ func consumeAwaitingControlResponse(
 	controlSessionID int64,
 	correlationID int64,
 ) (done bool, err error) {
-	_, mapped, ok := tryMatchControlResponseDiscardStale(
+	matched, err := consumeMatchedControlResponse(
 		poller,
 		controlSessionID,
 		correlationID,
 	)
-	if !ok {
+	if !matched {
 		return false, nil
 	}
-	if mapped != nil {
-		return true, mapped
+	if err != nil {
+		return true, err
 	}
-	poller.ResetCapture()
 	return false, nil
 }
 

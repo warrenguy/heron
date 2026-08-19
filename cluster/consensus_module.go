@@ -273,9 +273,11 @@ func OpenConsensusModule(
 	// Wire archive log recording control before log streams open.
 	//
 	// Nothing starts a recording at Open. Election join paths call
-	// StartLogRecording. The same object is the truncate control. A successful
-	// truncate stores the stop position [LogRecordingControl.StopPositionFor]
-	// reports, so prepare cannot re-raise above the truncate.
+	// StartLogRecording. The same logRecording is the truncate control.
+	//
+	// Open seeds a concrete recovery-extent stop when the plan holds one. A later
+	// successful truncate stores that stop. Prepare cannot re-raise above the
+	// stop [LogRecordingControl.StopPositionFor] reports.
 	module.logRecording = newLogRecording(
 		ctx,
 		module.archiveClient,
@@ -283,6 +285,7 @@ func OpenConsensusModule(
 		topology.LogStreamID(),
 		recovery.RecordingLog(),
 	)
+	seedLogRecordingStopFromPlan(module.logRecording, recovery.Plan())
 	module.agent.SetLogRecordingControl(module.logRecording)
 	module.agent.SetLogTruncateControl(module.logRecording)
 
@@ -528,6 +531,9 @@ func moduleClocks(cfg Config) (nanoClock, epochClock func() int64) {
 // StopReplay must reach the archive while the archive client is still
 // connected. Election and helper teardown therefore run before the archive
 // close.
+//
+// The log recording stop abandons a pending async stop. The blocking drain
+// runs only when a start channel is still kept.
 //
 // Idempotent. Safe on a nil receiver. Usable in a defer taken before the error
 // check.

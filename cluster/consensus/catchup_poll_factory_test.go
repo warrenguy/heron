@@ -839,8 +839,9 @@ func TestPrepareForNewLeadership_tearsDownCatchup(t *testing.T) {
 
 	require.NotEmpty(t, a.EnsureCatchupLogDestination(catchupEndpoint))
 
-	_, err := a.PrepareForNewLeadership(100, 0)
+	_, prepared, err := a.PrepareForNewLeadership(100, 0)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.Equal(t, 1, control.stopCalls)
 	require.Equal(t, 1, control.removeCalls)
 	require.Empty(t, a.catchupReplays)

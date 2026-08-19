@@ -89,46 +89,57 @@ type logArchiveControl interface {
 
 var _ logArchiveControl = (*archive.Client)(nil)
 
+// logStopRequest is one in-flight non-blocking stop request.
+//
+// *archive.AsyncStopRecording implements it. Tests substitute a double.
+type logStopRequest interface {
+	TryOffer() (offered bool, err error)
+	PollResponse() (responded bool, err error)
+	Close()
+}
+
+var _ logStopRequest = (*archive.AsyncStopRecording)(nil)
+
+// pendingStop tracks one async stop attempt across duty ticks.
+type pendingStop struct {
+	request logStopRequest
+	// offered is true after TryOffer is accepted. Later polls skip TryOffer
+	// and consume PollResponse.
+	offered bool
+	// deadlineNs bounds the current phase. The field covers offer retries until
+	// TryOffer is accepted, then the OK response and STOP proof. Expiry fail-closes.
+	deadlineNs int64
+}
+
+var (
+	errStopOfferTimeout    = errors.New("offer timed out")
+	errStopResponseTimeout = errors.New("response timed out")
+)
+
 // logRecording starts, stops, and truncates this member's cluster log
 // recording through the module's archive control client.
 //
-// Behaviour:
-//   - builds a session-scoped recording channel from the topology log channel
-//     and the supplied log session id
-//   - when the recording log holds no TERM entry, starts a fresh recording and
-//     awaits the correlated START signal for the catalog recording id
-//   - when the recording log holds an established TERM recording id, extends
-//     that recording and awaits the correlated EXTEND signal
-//   - keeps the channel bytes and stream id the start or extend used so the
-//     stop names the same recording
-//   - offers truncate through the archive and stores the truncate position for
-//     StopPositionFor
-//   - the caller must not call truncate while the recording is active
-//   - holds needs-stop state in startChannel: a dirty start keeps the channel
-//     until a later stop drains and clears the channel
-//   - a re-start drains any prior unstopped channel first
-//   - adopts an unsolicited STOP for the known catalog id as a clean stop
+// Holds needs-stop state in startChannel. A dirty start keeps the channel
+// until a later stop drains the channel. A re-start drains any prior
+// unstopped channel first.
 //
 // Start, stop, and truncate block the invoker until the archive replies or
-// ControlResponseTimeout expires. handleRecordingSignal does not block.
+// ControlResponseTimeout expires. PollStopLogRecording never blocks.
+// handleRecordingSignal does not block.
 //
 // Concurrency: invoker-only.
 //
 // Lifetime:
 //   - outlives the agent method calls that use the control
-//   - module clears the control from the agent before closing the archive
-//     client
-//   - module clears the recording control from the agent before the module
-//     closes the recovery that owns the recording log
+//   - module clears the control before closing the archive client and before
+//     closing the recovery that owns the recording log
 //   - no TermRecordingID read happens after the recording-log close
 //   - retained context is Open's context with cancel detached
 //     (context.WithoutCancel)
 //   - Open cancel does not fail later start, stop, or truncate
 //
-// Ownership:
-//   - does not own the archive client
-//   - does not own the topology
-//   - does not own the term recording lookup
+// Ownership: does not own the archive client, the topology, or the term
+// recording lookup.
 type logRecording struct {
 	ctx          context.Context
 	client       logArchiveControl
@@ -146,6 +157,13 @@ type logRecording struct {
 	// dirty.
 	latchedRecordingID int64
 	stopPosition       int64
+
+	offerRetryTimeoutNs int64
+	responseTimeoutNs   int64
+	// newStopRequest builds one in-flight stop request. Closed over the
+	// archive client at newLogRecording. Tests substitute.
+	newStopRequest func(streamID int32, channel []byte) logStopRequest
+	pendingStop    *pendingStop
 }
 
 var (
@@ -174,15 +192,24 @@ func newLogRecording(
 	terms TermRecordingLookup,
 ) *logRecording {
 	ctx = moduleControlContext(ctx)
-	return &logRecording{
-		ctx:                ctx,
-		client:             client,
-		terms:              terms,
-		logChannel:         logChannel,
-		logStreamID:        logStreamID,
-		recordingID:        recordingIDUnknown,
-		latchedRecordingID: recordingIDUnknown,
+	cfg := client.Config()
+	r := &logRecording{
+		ctx:                 ctx,
+		client:              client,
+		terms:               terms,
+		logChannel:          logChannel,
+		logStreamID:         logStreamID,
+		recordingID:         recordingIDUnknown,
+		latchedRecordingID:  recordingIDUnknown,
+		offerRetryTimeoutNs: cfg.ControlOfferRetryTimeout.Nanoseconds(),
+		responseTimeoutNs:   cfg.ControlResponseTimeout.Nanoseconds(),
 	}
+	if client != nil {
+		r.newStopRequest = func(streamID int32, channel []byte) logStopRequest {
+			return client.NewAsyncStopRecording(streamID, channel)
+		}
+	}
+	return r
 }
 
 // sessionScopedLogChannel appends session-id=<logSessionID> to logChannel.
@@ -254,31 +281,22 @@ func (r *logRecording) establishedTermRecordingID() int64 {
 // StartLogRecording starts or extends recording this member's cluster log and
 // returns the catalog recording id.
 //
-// Behaviour:
-//   - drains any prior unstopped channel first (dirty start or missed prepare)
-//   - builds a session-scoped recording channel from logSessionID
-//   - invalidates the catalog id until START or EXTEND proves
-//   - when the recording log holds no TERM entry, offers a start request and
-//     waits for the correlated START recording signal
-//   - when the recording log holds an established TERM recording id, offers an
-//     extend request for that id with autoStop true and waits for the correlated
-//     EXTEND recording signal; the returned id is the established id
-//   - on failure after the offer may have started, drains via StopLogRecording
-//     (dirty: OK-bound StopRecording)
-//   - treats ErrorUnknownSubscription as a clean rollback and clears
-//     startChannel
-//   - a dirty rollback keeps startChannel and leaves the catalog id unknown for
-//     a later StopLogRecording or Close drain
+// Abandons a pending async stop first, then drains any prior unstopped
+// channel. No TERM recording id starts a fresh recording. An established
+// TERM id extends that recording with autoStop true.
 //
-// Does not refuse session ids, including -1.
-//
-// Structural refusal is Agent.JoinLogAsLeader only.
+// Does not refuse session ids, including -1. Structural refusal is
+// [consensus.Agent.JoinLogAsLeader] only.
 //
 // Returns an error when:
 //   - a prior unstopped recording cannot be drained
 //   - the start or extend request cannot be offered within the offer bound
 //   - the archive refuses the start or extend
 //   - no correlated START or EXTEND signal arrives within the response bound
+//
+// On error after the offer, StopLogRecording drains. ErrorUnknownSubscription
+// is a clean rollback and clears startChannel. A dirty rollback keeps
+// startChannel.
 func (r *logRecording) StartLogRecording(
 	sourceLocation archivewire.SourceLocation,
 	logSessionID int32,
@@ -287,13 +305,11 @@ func (r *logRecording) StartLogRecording(
 	recordingID int64,
 	err error,
 ) {
-	if r.needsStop() {
-		if drainErr := r.StopLogRecording(); drainErr != nil {
-			return 0, fmt.Errorf(
-				"cluster: drain prior log recording before start: %w",
-				drainErr,
-			)
-		}
+	if drainErr := r.StopLogRecording(); drainErr != nil {
+		return 0, fmt.Errorf(
+			"cluster: drain prior log recording before start: %w",
+			drainErr,
+		)
 	}
 
 	if recordingChannel == "" {
@@ -357,18 +373,13 @@ func (r *logRecording) StartLogRecording(
 // StopLogRecording stops the recording StartLogRecording started. A known
 // catalog id stores the stop position for [logRecording.StopPositionFor].
 //
-// Behaviour:
-//   - offers stop on the channel and stream the last armed start used
-//   - known catalog id: awaits STOP and stores the stop position and catalog
-//     id. On ErrorUnknownSubscription, one ListRecording resolves the stop
-//     position
-//   - unknown catalog id (dirty): StopRecording (OK-bound). Keeps the prior
-//     stored position and stored catalog id. ErrorUnknownSubscription is
-//     clean. Must not use a match-any STOP tracker (negative recording id)
-//   - clean stop clears startChannel so a later call is a no-op
-//   - second call with nothing started: offers nothing
+// Abandons a pending async stop first. Known catalog id awaits STOP and
+// stores the position. On ErrorUnknownSubscription, one ListRecording
+// resolves the stop. Dirty uses an OK-bound StopRecording.
+// ErrorUnknownSubscription is clean. Dirty must not use a match-any STOP
+// tracker.
 //
-// Idempotent.
+// Idempotent. Second call with nothing started offers nothing.
 //
 // Concurrency: invoker-only.
 //
@@ -378,10 +389,10 @@ func (r *logRecording) StartLogRecording(
 //   - known catalog id, ErrorUnknownSubscription, and ListRecording cannot
 //     resolve a stop position
 //
-// On error:
-//   - the recording may still be running
-//   - startChannel stays so a later stop can retry
+// On error the recording may still be running. startChannel stays so a later
+// stop can retry.
 func (r *logRecording) StopLogRecording() error {
+	r.clearPendingStop()
 	if !r.needsStop() {
 		return nil
 	}
@@ -417,8 +428,94 @@ func (r *logRecording) StopLogRecording() error {
 	return nil
 }
 
-// markStopped records a clean stop. The method stores stopPosition and clears
-// the channel so a later StopLogRecording is a no-op.
+// PollStopLogRecording advances the pending stop one step. Never blocks.
+// Never calls Agent.DoWork. Never calls archive.Client.Poll.
+//
+// Known catalog id waits for STOP. Dirty finishes on OK.
+// ErrorUnknownSubscription is clean only when dirty. Known id fail-closes
+// and does not list the catalog.
+//
+// Concurrency: invoker-only.
+//
+// Returns:
+//   - true, nil: stop proof is held, or nothing needed stop
+//   - false, nil: poll again
+//   - false, err: fail closed. Pending state is cleared. startChannel stays
+func (r *logRecording) PollStopLogRecording(nowNs int64) (bool, error) {
+	if !r.needsStop() {
+		return true, nil
+	}
+	p := r.pendingStop
+	if p == nil {
+		p = r.armPendingStop(nowNs)
+	}
+	if !p.offered {
+		offered, err := p.request.TryOffer()
+		if err != nil {
+			return false, r.failPendingStop(err)
+		}
+		if !offered {
+			if nowNs >= p.deadlineNs {
+				return false, r.failPendingStop(errStopOfferTimeout)
+			}
+			return false, nil
+		}
+		p.offered = true
+		p.deadlineNs = nowNs + r.responseTimeoutNs
+	}
+	responded, err := p.request.PollResponse()
+	dirty := r.recordingID < 0
+	switch {
+	case dirty && isUnknownSubscription(err):
+		r.markStopped(r.stopPosition)
+		return true, nil
+	case err != nil:
+		return false, r.failPendingStop(err)
+	case dirty && responded:
+		r.markStopped(r.stopPosition)
+		return true, nil
+	}
+	if nowNs >= p.deadlineNs {
+		return false, r.failPendingStop(errStopResponseTimeout)
+	}
+	return false, nil
+}
+
+// armPendingStop builds one async stop request and stores it as the in-flight
+// attempt.
+func (r *logRecording) armPendingStop(nowNs int64) *pendingStop {
+	p := &pendingStop{
+		request:    r.newStopRequest(r.logStreamID, r.startChannel),
+		deadlineNs: nowNs + r.offerRetryTimeoutNs,
+	}
+	r.pendingStop = p
+	return p
+}
+
+// failPendingStop closes the in-flight request, clears pendingStop, and keeps
+// startChannel. The wrapped error names the stop operation.
+func (r *logRecording) failPendingStop(cause error) error {
+	r.clearPendingStop()
+	return fmt.Errorf(
+		"cluster: stop log recording for stream %d on %s: %w",
+		r.logStreamID,
+		string(r.startChannel),
+		cause,
+	)
+}
+
+// clearPendingStop closes the in-flight request when one is armed.
+func (r *logRecording) clearPendingStop() {
+	p := r.pendingStop
+	if p == nil {
+		return
+	}
+	p.request.Close()
+	r.pendingStop = nil
+}
+
+// markStopped records a clean stop. The method stores stopPosition, clears
+// the channel, and closes any in-flight async stop request.
 //
 // When the live catalog id is known, markStopped also stores that id for
 // StopPositionFor. Dirty drains leave the prior stored id unchanged.
@@ -428,6 +525,7 @@ func (r *logRecording) markStopped(stopPosition int64) {
 	}
 	r.stopPosition = stopPosition
 	r.startChannel = nil
+	r.clearPendingStop()
 }
 
 // catalogStopPosition reads the archive catalog stop position for recordingID.
@@ -509,12 +607,39 @@ func (r *logRecording) StopPositionFor(recordingID int64) (int64, error) {
 	return stopPosition, nil
 }
 
-// TruncateLogRecording removes every recorded byte at or above position.
+// seedStopPosition stores recordingID and stopPosition for StopPositionFor.
+// No-op when either is Null. StopPositionFor for the seeded id takes the
+// stored path when nothing needs stop.
+func (r *logRecording) seedStopPosition(recordingID, stopPosition int64) {
+	if recordingID == recordinglog.NullRecordingID ||
+		stopPosition == recordinglog.NullPosition {
+		return
+	}
+	r.storeStopPosition(recordingID, stopPosition)
+}
+
+// seedLogRecordingStopFromPlan copies a concrete recovery-extent stop into the
+// recording control.
+//
+// No-op when the control is nil, the plan log is nil, the term recording id is
+// NullRecordingID, or the extent stop is NullPosition.
+func seedLogRecordingStopFromPlan(
+	r *logRecording,
+	plan recordinglog.RecoveryPlan,
+) {
+	if r == nil || plan.Log == nil {
+		return
+	}
+	r.seedStopPosition(plan.TermRecordingID(), plan.Log.Extent.StopPosition)
+}
+
+// TruncateLogRecording removes every recorded byte at or above position. The
+// caller must not call truncate while the recording is active.
 //
 // Behaviour: offers one bounded archive truncate for recordingID. On success
-// markTruncated stores recordingID and position, so
-// [logRecording.StopPositionFor] reports the truncate position until a later
-// clean stop overwrites it. On error nothing is stored.
+// the truncate position is stored so [logRecording.StopPositionFor] reports
+// that position until a later clean stop overwrites it. On error nothing is
+// stored.
 //
 // Concurrency: invoker-only. Blocks the invoker until the archive replies or
 // ControlResponseTimeout expires.
@@ -536,17 +661,17 @@ func (r *logRecording) TruncateLogRecording(
 			recordingID, position, err,
 		)
 	}
-	r.markTruncated(recordingID, position)
+	r.storeStopPosition(recordingID, position)
 	return count, nil
 }
 
-// markTruncated stores recordingID and the truncate position for
-// StopPositionFor after a successful archive truncate.
+// storeStopPosition stores recordingID and position for StopPositionFor.
+// Truncate and plan seeding both call this method.
 //
-// startChannel is kept. A truncate may run while a dirty drain is pending, and
-// that drain still needs the channel. While the channel is pending,
-// StopPositionFor takes the catalog path, which reports the same lowered stop.
-func (r *logRecording) markTruncated(recordingID, position int64) {
+// startChannel is kept. A truncate may run while a dirty drain is pending. That
+// drain still needs the channel. While the channel is pending, StopPositionFor
+// uses the catalog path and reports the same lowered stop.
+func (r *logRecording) storeStopPosition(recordingID, position int64) {
 	r.latchedRecordingID = recordingID
 	r.stopPosition = position
 }

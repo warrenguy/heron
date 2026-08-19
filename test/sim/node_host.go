@@ -127,12 +127,17 @@ type simAgentHandler struct {
 }
 
 func (h *simAgentHandler) PrepareForNewLeadership(
-	logPosition, nowNs int64,
-) (int64, error) {
+	logPosition int64,
+	nowNs int64,
+) (
+	int64,
+	bool,
+	error,
+) {
 	h.prepareCalls++
 	h.prepareLogPosition = logPosition
 	h.prepareNowNs = nowNs
-	return logPosition, nil
+	return logPosition, true, nil
 }
 
 func (h *simAgentHandler) JoinLogAsLeader(

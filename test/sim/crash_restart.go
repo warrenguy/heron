@@ -97,7 +97,7 @@ func (s *ElectionSim) driveRestartLeaveInit(node *Node, nowNs int64) {
 // rebuildElection attaches a live Election from crashSnap identity.
 //
 // Always non-startup recovery, even if PerNodeOverrides set IsNodeStartup.
-// AppendPosition is not restored: leave-Init prepareForNewLeadership overwrites
+// AppendPosition is not restored: leave-Init PrepareForNewLeadership overwrites
 // it with the handler return (logPosition under simAgentHandler).
 func (s *ElectionSim) rebuildElection(node *Node, snap *crashSnap) error {
 	cfg := perNodeElectionConfig(s.cfg.ElectionConfig, node.id, s.cfg.PerNodeOverrides)

@@ -6,8 +6,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -60,7 +58,7 @@ func startTransferSessionConnect(
 ) (*client.ConnectResult, int, error) {
 	t.Helper()
 
-	egressPort := transferEgressPort(t)
+	egressPort := transferEgressPort()
 	return connectTransferSession(t, set, leader, pump, credentials, egressPort)
 }
 
@@ -486,12 +484,8 @@ func TestClusterSessionTransfer_recoversOpenSessionAcrossLeaderStop(t *testing.T
 	})
 }
 
-// serviceTransferEgressPort returns a fixed loopback UDP port for this
-// scenario's client egress. SERVICE_TRANSFER_EGRESS_PORT overrides
-// FreeUDPPort when set.
-func serviceTransferEgressPort(t *testing.T) int {
-	t.Helper()
-	return transferEgressPortNamed(t, "SERVICE_TRANSFER_EGRESS_PORT")
+func serviceTransferEgressPort() int {
+	return harness.ClientEgressPort(harness.ClusterServiceTransferPortBase)
 }
 
 // openServiceTransferCluster starts the transfer port block with one session
@@ -812,7 +806,7 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 
 	result, _, connectErr := connectTransferSession(
 		t, set, leader, pump, []byte(sessionSmokeCredentials),
-		serviceTransferEgressPort(t),
+		serviceTransferEgressPort(),
 		sc.dump,
 	)
 	require.NoError(t, connectErr)
@@ -1004,20 +998,8 @@ func startTransferClientKeepAlive(t *testing.T, pump *transferPump) {
 	}()
 }
 
-func transferEgressPort(t *testing.T) int {
-	t.Helper()
-	return harness.FreeUDPPort(t)
-}
-
-func transferEgressPortNamed(t *testing.T, env string) int {
-	t.Helper()
-	if raw := os.Getenv(env); raw != "" {
-		port, err := strconv.Atoi(raw)
-		require.NoError(t, err, env)
-		require.Positive(t, port)
-		return port
-	}
-	return harness.FreeUDPPort(t)
+func transferEgressPort() int {
+	return harness.ClientEgressPort(harness.ClusterSessionTransferPortBase)
 }
 
 func transferTimeoutDump(set *harness.ClusterMemberSet, dump []func() string) string {

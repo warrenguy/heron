@@ -104,7 +104,7 @@ type prepareClearRunner struct {
 }
 
 func (r prepareClearRunner) DoWork(int64) int {
-	_, _ = r.agent.PrepareForNewLeadership(0, 1)
+	_, _, _ = r.agent.PrepareForNewLeadership(0, 1)
 	return 0
 }
 
@@ -569,8 +569,9 @@ func TestPrepareForNewLeadership_clearsPendingKeepsWaits(t *testing.T) {
 	// First wait still present; pending is separate.
 	require.Equal(t, 1, a.PendingServiceAckWaits())
 
-	_, err := a.PrepareForNewLeadership(0, 1)
+	_, prepared, err := a.PrepareForNewLeadership(0, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.False(t, a.HasPendingJoinLog())
 	require.Equal(t, 1, a.PendingServiceAckWaits())
 	require.Equal(t, int64(111), a.ExpectedAckPosition())

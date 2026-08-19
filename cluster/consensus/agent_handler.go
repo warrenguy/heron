@@ -19,68 +19,41 @@ type FollowerLogJoinParams struct {
 // AgentHandler is the election-to-agent boundary for term transitions.
 // Implemented by the consensus module agent; mocked in election tests.
 //
-// Three methods reach the archive control client through
-// [LogRecordingControl] and can fail. A non-nil error from any of those methods
-// means the caller must not proceed with the transition the caller asked for.
-// The election routes every failure to its own error handler. The error handler
-// returns the state machine to init and re-attempts on the next duty cycle.
+// Three methods reach the archive control client through [LogRecordingControl]
+// and can fail. A non-nil error from any of those methods means the caller
+// must not proceed with the transition the caller asked for. The election
+// routes every failure to its own error handler. The error handler returns
+// the state machine to init and re-attempts on the next duty cycle.
 //
 // Method semantics follow aeron ConsensusModuleAgent.
-//
-// PrepareForNewLeadership:
-//   - resets role to FOLLOWER
-//   - clears the known leader
-//   - resets follower AppendPosition cadence fields
-//   - keeps commit
-//   - stops leader-side catchup replays
-//   - closes the follower catchup receive path
-//   - stops the cluster log recording when a control is wired
-//   - when a control is wired and a retained recording id is non-negative,
-//     returns the archive-derived stop position from StopPositionFor
-//   - otherwise returns logPosition on success
-//
-// Log and ingress tear-down is deferred until full agent wiring.
-//
-// JoinLogAsLeader:
-//   - adopts the leadership term
-//   - starts the LOCAL cluster log recording when a control is wired
-//
-// JoinLogAsFollower (tryJoinLogAsFollower):
-//   - binds the live log image
-//   - may start the REMOTE cluster log recording
-//   - returns true when the image is bound
-//
-// ElectionComplete:
-//   - clears the election runner
-//   - stamps timeOfLastLogUpdateNs (settled log-update clock) for the next
-//     quiet-tick timeout window
 type AgentHandler interface {
-	// PrepareForNewLeadership stops the cluster log recording when a control
-	// is wired. Returns the last appended log position. Role, known leader, and
-	// follower append cadence fields always reset before any stop attempt.
-	// Commit is kept. Stop runs for any wired control so a dirty start that
-	// never became active still drains. After a clean stop, a non-negative
-	// retained recording id is resolved through
-	// [LogRecordingControl.StopPositionFor].
+	// PrepareForNewLeadership resets election leadership state, then polls the
+	// cluster log recording stop when a control is wired.
+	//
+	// First call of an episode runs teardown. Later calls poll only.
+	//
+	// nowNs is the deadline clock for [LogRecordingControl.PollStopLogRecording].
 	//
 	// Returns:
-	//   - derived archive stop position, nil: retained recording id is
-	//     non-negative and StopPositionFor succeeds
-	//   - logPosition, nil: control is nil, or retained recording id is negative
-	//     (logPosition may be the null-position sentinel)
-	//   - null-position sentinel, err: stop fails. When the recording was
-	//     active the control stays active so a later prepare retries the stop.
-	//     Caller must not adopt lastAppendPosition.
-	//   - null-position sentinel, err: StopPositionFor fails after a clean
-	//     stop. The control is inactive. A later prepare retries derivation.
-	//     Caller must not adopt lastAppendPosition.
+	//   - lastAppendPosition, prepared true, nil: stop proof is held
+	//   - NullPosition, prepared false, nil: poll again
+	//   - NullPosition, prepared false, err: fail closed
+	//
+	// Caller must not adopt lastAppendPosition unless prepared is true.
 	PrepareForNewLeadership(
 		logPosition int64,
 		nowNs int64,
 	) (
 		lastAppendPosition int64,
+		prepared bool,
 		err error,
 	)
+
+	// IsPrepareInProgress reports whether a PrepareForNewLeadership episode is
+	// open. Open means the last PrepareForNewLeadership returned prepared false
+	// with a nil error. The election reports zero work on a re-poll while the
+	// episode is open.
+	IsPrepareInProgress() bool
 
 	// JoinLogAsLeader adopts the leadership term and starts the LOCAL cluster
 	// log recording for logSessionID when a control is wired.

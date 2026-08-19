@@ -61,8 +61,8 @@ func startSessionClientTransport(t *testing.T) *aeron.Client {
 }
 
 // startSessionConnect opens one AsyncConnect with cleanup and polls the
-// connect to completion against the live member set. Ingress endpoints come
-// from the leader topology so the client uses the ports the harness allocated.
+// connect against the live member set. Ingress endpoints come from the
+// leader topology. Egress uses endpoint=:0.
 //
 // Returns the connect result or the connect error. Fails the test when the
 // bound expires and dumps the set state.

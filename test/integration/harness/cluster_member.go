@@ -102,6 +102,7 @@ type ClusterMemberSet struct {
 	nodes           []*ArchiveNode
 	configs         []cluster.Config
 	membersString   string
+	portBase        int
 }
 
 // ClusterMemberSetConfig holds the port block and multicast log endpoint the
@@ -112,9 +113,9 @@ type ClusterMemberSetConfig struct {
 
 	// PortBase is the first port of member zero's block. Must be positive.
 	//
-	// The set reserves PortBase+1 .. PortBase+(MemberCount-1)*100+5.
-	// Wire formula: portBase+memberID*100+offset for offsets 1 through 5 and
-	// member ids 0 .. MemberCount-1.
+	// The set reserves PortBase+1 .. PortBase+(MemberCount-1)*100+5. Wire
+	// formula: portBase+memberID*100+offset for offsets 1 through 5 and member
+	// ids 0 .. MemberCount-1.
 	PortBase int
 
 	// LogMulticastEndpoint is the shared cluster log group and port, host:port,
@@ -270,6 +271,7 @@ func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMem
 		configs:         make([]cluster.Config, cfg.MemberCount),
 		modules:         make([]*cluster.ConsensusModule, 0, cfg.MemberCount),
 		serviceInvokers: make([][]ServiceInvoker, cfg.MemberCount),
+		portBase:        cfg.PortBase,
 	}
 	var bootErrs []error
 	for i, r := range results {
@@ -414,6 +416,11 @@ func MemberClusterConfig(
 			CloseLingerDuration: defaultClusterMemberCloseLinger,
 		},
 	}
+}
+
+// PortBase returns the first port of member zero's reserved block.
+func (s *ClusterMemberSet) PortBase() int {
+	return s.portBase
 }
 
 // Modules returns every consensus module in member-id order.

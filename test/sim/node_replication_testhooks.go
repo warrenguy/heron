@@ -7,7 +7,7 @@ import "github.com/warrenguy/heron/cluster/election"
 // SetLeaderAppend raises the synthetic leader append high-water on election.
 // The Agent append source reads election live; no counter re-sync needed.
 //
-// Does not rewrite peer member LogPositions. prepareForNewLeadership on
+// Does not rewrite peer member LogPositions. PrepareForNewLeadership on
 // restart overwrites the raised append; re-call if still needed.
 func SetLeaderAppend(n *Node, pos int64) {
 	if n == nil || n.election == nil {

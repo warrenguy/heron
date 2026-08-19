@@ -149,7 +149,11 @@ func (a *Agent) LastElectionTrigger() ElectionTrigger {
 // installElection is the one place that writes a.election for an install.
 //
 // A nil runner clears the field and does not bump count or trigger.
+//
+// Clears prepareInProgress so a fresh or cleared runner starts a new prepare
+// episode with a full teardown. Consensus ingress poll resumes.
 func (a *Agent) installElection(runner ElectionRunner, trigger ElectionTrigger) {
+	a.prepareInProgress = false
 	a.election = runner
 	if runner == nil {
 		return

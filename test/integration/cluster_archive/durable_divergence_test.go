@@ -215,12 +215,35 @@ func TestDurableCluster_truncatesADivergentMemberAndCommits(t *testing.T) {
 		)
 		// PrepareForNewLeadership stops the recording and returns the catalog
 		// stop. Leaves settled election state alone. Survivors re-enter via
-		// heartbeat timeout after the leader stops.
-		stopPos, prepErr := m.Agent().PrepareForNewLeadership(
-			m.CommitPosition(),
-			m.NanoClock()(),
-		)
-		require.NoError(t, prepErr, "follower %d PrepareForNewLeadership:\n%s", i, set.State())
+		// heartbeat timeout after the leader stops. Pump through stream ticks
+		// until the stop proof is held.
+		deadline := time.Now().Add(durableWorkBound)
+		var stopPos int64
+		for {
+			pos, prepared, prepErr := m.Agent().PrepareForNewLeadership(
+				m.CommitPosition(),
+				m.NanoClock()(),
+			)
+			if prepErr != nil {
+				// The if keeps set.State() off the passing path.
+				require.NoError(t, prepErr, "follower %d PrepareForNewLeadership:\n%s", i, set.State())
+			}
+			if prepared {
+				stopPos = pos
+				break
+			}
+			if !time.Now().Before(deadline) {
+				require.FailNow(
+					t,
+					"follower prepare stop pending",
+					"follower %d after %s:\n%s",
+					i,
+					durableWorkBound,
+					set.State(),
+				)
+			}
+			tickMemberStreams(m)
+		}
 		require.False(
 			t,
 			m.Agent().IsRecordingActive(),

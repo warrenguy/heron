@@ -5,6 +5,7 @@ package harness
 import (
 	"net"
 	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -189,55 +190,38 @@ const (
 	ClusterSessionExtendReElectLogEndpoint = "239.255.12.55:32404"
 )
 
-// Multi-service live-scenario endpoints. Three members reserve base+1 ..
-// base+205 and one shared cluster-log multicast endpoint. Bases sit above
-// ClusterSessionExtendReElectPortBase (32400 + 205).
+// Multi-service, session-transfer, and service-transfer live-scenario
+// endpoints. Each pair reserves one three-member consensus port block
+// (base+1 .. base+205) and one shared cluster-log multicast endpoint. The
+// three scenarios are separate so they may run in parallel. Bases sit below
+// linuxEphemeralPortFloor and ClusterStreamsMulticastPortBase (23700).
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
 const (
-	ClusterMultiServicePortBase    = 32700
-	ClusterMultiServiceLogEndpoint = "239.255.12.57:32704"
-)
-
-// Session-transfer live-scenario endpoints. Each pair reserves one three-member
-// consensus port block (base+1 .. base+205) and one shared cluster-log
-// multicast endpoint. Session-transfer and service-transfer are separate so
-// the two scenarios may run in parallel. Bases sit above
-// ClusterMultiServicePortBase (32700 + 205).
-//
-// The final octet of the group address must be odd. The driver derives the
-// multicast control address by incrementing that octet.
-const (
-	ClusterSessionTransferPortBase    = 33000
-	ClusterSessionTransferLogEndpoint = "239.255.12.59:33004"
-	ClusterServiceTransferPortBase    = 33300
-	ClusterServiceTransferLogEndpoint = "239.255.12.61:33304"
+	ClusterMultiServicePortBase       = 22800
+	ClusterMultiServiceLogEndpoint    = "239.255.12.57:22804"
+	ClusterSessionTransferPortBase    = 23100
+	ClusterSessionTransferLogEndpoint = "239.255.12.59:23104"
+	ClusterServiceTransferPortBase    = 23400
+	ClusterServiceTransferLogEndpoint = "239.255.12.61:23404"
 )
 
 // cluster_archive one-off and smoke endpoints. Harness holds one matrix for
-// every PortBase and log multicast the cluster_archive package binds under
-// t.Parallel.
+// every PortBase and log multicast the cluster_archive package uses under
+// t.Parallel. Sibling packages use 9000-9205 and 23700-24605 and may run in
+// parallel go test processes.
 //
-// Sibling packages bind below the matrix floor of 24700 and may run in
-// parallel go test processes:
-//   - cluster_java: ClusterJavaPortBase (9000) with
-//     ClusterJavaMixedLogEndpoint (9004)
-//   - test/integration: ConsensusPublicationsPortBase (24000),
-//     ClusterStreamsMulticastPortBase (23700), ClusterStreamsCommitPortBase
-//     (24500), and ClusterStreamsMulticastLogEndpoint (24404). Channel-status
-//     and multi-destination endpoints use FreeUDPPort.
-//
-// TestClusterPortBlocks_doNotOverlap registers every reservation above. The
-// floor therefore applies only to new cluster_archive bases. Keep those at
-// 24700 or higher.
+// TestClusterPortBlocks_doNotOverlap registers every reservation. New
+// cluster_archive bases must end below linuxEphemeralPortFloor.
 //
 // Member counts for reserved unicast ranges:
 //   - consensus and runner: one member (base+1..+5)
 //   - member-set smoke and restart affordance: two members (base+1..+105)
 //   - truncate: three members (base+1..+205)
 //
-// Archive-node control URIs are single UDP binds, not consensus port blocks.
+// Archive-node control URIs are single UDP listens, not consensus port
+// blocks.
 const (
 	ConsensusModulePortBase    = 24700
 	ConsensusModuleLogEndpoint = "239.255.12.3:24704"
@@ -278,20 +262,37 @@ func LoopbackUDPEndpoint(port int) string {
 	return "127.0.0.1:" + strconv.Itoa(port)
 }
 
-// FreeUDPPort returns one unused loopback UDP port.
+const (
+	// linuxEphemeralPortFloor is the default first Linux ephemeral port
+	// (net.ipv4.ip_local_port_range 32768-60999). Reserved unicast blocks must
+	// end below this floor.
+	linuxEphemeralPortFloor = 32768
+
+	// freeUDPPortAttempts is the per-port ListenPacket budget when the kernel
+	// returns a reserved port.
+	freeUDPPortAttempts = 64
+)
+
+// ClientEgressOffset is the unused slot after the last topology offset.
+const ClientEgressOffset = cluster.TransferPortOffset + 1
+
+// ClientEgressPort returns portBase plus ClientEgressOffset.
 //
-// Closes the probe socket before return so the caller can bind. Prefer this
-// over a fixed port when the test runs under SharedParallel or parallel hosts.
-// Does not retry on later bind failure.
+// The reservation must cover at least two members. A one-member block ends at
+// portBase plus TransferPortOffset.
+func ClientEgressPort(portBase int) int {
+	return portBase + ClientEgressOffset
+}
+
+// FreeUDPPort returns one unused loopback UDP port outside reserved harness
+// blocks. A later listen may still fail.
 func FreeUDPPort(t testing.TB) int {
 	t.Helper()
 	return FreeUDPPorts(t, 1)[0]
 }
 
-// FreeUDPPorts returns n distinct unused loopback UDP ports.
-//
-// Opens all probe sockets first so the kernel cannot hand back the same port
-// twice, then closes them so the caller can bind.
+// FreeUDPPorts returns n distinct unused loopback UDP ports. Skips reserved
+// harness ports. Probe sockets close before return.
 func FreeUDPPorts(t testing.TB, n int) []int {
 	t.Helper()
 	require.Positive(t, n)
@@ -306,17 +307,295 @@ func FreeUDPPorts(t testing.TB, n int) []int {
 		}
 	}()
 
-	for range n {
+	limit := n * freeUDPPortAttempts
+	for len(ports) < n {
+		if len(conns) >= limit {
+			require.FailNow(t, "FreeUDPPorts: exhausted attempts without an unreserved port")
+		}
+
 		c, err := net.ListenPacket("udp", "127.0.0.1:0")
 		require.NoError(t, err)
 		conns = append(conns, c)
 		addr, ok := c.LocalAddr().(*net.UDPAddr)
 		require.True(t, ok, "ListenPacket LocalAddr must be *net.UDPAddr")
 		require.Positive(t, addr.Port)
+		if isReservedUDPPort(addr.Port) {
+			continue
+		}
 		ports = append(ports, addr.Port)
 	}
 
 	return ports
+}
+
+type portLedgerBlock struct {
+	name        string
+	portBase    int
+	memberCount int
+	logEndpoint string
+}
+
+type portLedgerSingle struct {
+	name string
+	port int
+}
+
+// multicastPortLedger returns every reserved consensus block that has a
+// shared cluster-log multicast endpoint.
+func multicastPortLedger() []portLedgerBlock {
+	return []portLedgerBlock{
+		{
+			name:        "consensus-module",
+			portBase:    ConsensusModulePortBase,
+			memberCount: 1,
+			logEndpoint: ConsensusModuleLogEndpoint,
+		},
+		{
+			name:        "runner",
+			portBase:    RunnerPortBase,
+			memberCount: 1,
+			logEndpoint: RunnerLogEndpoint,
+		},
+		{
+			name:        "module-elect",
+			portBase:    ClusterModuleElectPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterModuleElectLogEndpoint,
+		},
+		{
+			name:        "member-smoke",
+			portBase:    ClusterMemberSmokePortBase,
+			memberCount: 2,
+			logEndpoint: ClusterMemberSmokeLogEndpoint,
+		},
+		{
+			name:        "member-restart",
+			portBase:    ClusterMemberRestartPortBase,
+			memberCount: 2,
+			logEndpoint: ClusterMemberRestartLogEndpoint,
+		},
+		{
+			name:        "replay",
+			portBase:    ClusterReplayPortBase,
+			memberCount: 1,
+			logEndpoint: ClusterReplayLogEndpoint,
+		},
+		{
+			name:        "durable-record",
+			portBase:    DurableRecordPortBase,
+			memberCount: 3,
+			logEndpoint: DurableRecordLogEndpoint,
+		},
+		{
+			name:        "durable-restart",
+			portBase:    DurableRestartPortBase,
+			memberCount: 3,
+			logEndpoint: DurableRestartLogEndpoint,
+		},
+		{
+			name:        "durable-reelection",
+			portBase:    DurableReElectionPortBase,
+			memberCount: 3,
+			logEndpoint: DurableReElectionLogEndpoint,
+		},
+		{
+			name:        "durable-catchup",
+			portBase:    DurableCatchupPortBase,
+			memberCount: 3,
+			logEndpoint: DurableCatchupLogEndpoint,
+		},
+		{
+			name:        "durable-divergence",
+			portBase:    DurableDivergencePortBase,
+			memberCount: 3,
+			logEndpoint: DurableDivergenceLogEndpoint,
+		},
+		{
+			name:        "durable-concurrent-catchup",
+			portBase:    DurableConcurrentCatchupPortBase,
+			memberCount: 5,
+			logEndpoint: DurableConcurrentCatchupLogEndpoint,
+		},
+		{
+			name:        "truncate",
+			portBase:    ClusterTruncatePortBase,
+			memberCount: 3,
+			logEndpoint: ClusterTruncateLogEndpoint,
+		},
+		{
+			name:        "module-commit",
+			portBase:    ClusterModuleCommitPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterModuleCommitLogEndpoint,
+		},
+		{
+			name:        "module-rejoin",
+			portBase:    ClusterModuleRejoinPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterModuleRejoinLogEndpoint,
+		},
+		{
+			name:        "module-reelect",
+			portBase:    ClusterModuleReElectPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterModuleReElectLogEndpoint,
+		},
+		{
+			name:        "module-follower-stop",
+			portBase:    ClusterModuleFollowerStopPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterModuleFollowerStopLogEndpoint,
+		},
+		{
+			name:        "durable-rank",
+			portBase:    DurableRankPortBase,
+			memberCount: 3,
+			logEndpoint: DurableRankLogEndpoint,
+		},
+		{
+			name:        "durable-restart-leader",
+			portBase:    DurableRestartLeaderPortBase,
+			memberCount: 3,
+			logEndpoint: DurableRestartLeaderLogEndpoint,
+		},
+		{
+			name:        "session-smoke",
+			portBase:    ClusterSessionSmokePortBase,
+			memberCount: 3,
+			logEndpoint: ClusterSessionSmokeLogEndpoint,
+		},
+		{
+			name:        "session-reject",
+			portBase:    ClusterSessionRejectPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterSessionRejectLogEndpoint,
+		},
+		{
+			name:        "member-amplifier",
+			portBase:    ClusterMemberAmplifierPortBase,
+			memberCount: 2,
+			logEndpoint: ClusterMemberAmplifierLogEndpoint,
+		},
+		{
+			name:        "service-ack",
+			portBase:    ClusterServiceAckPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterServiceAckLogEndpoint,
+		},
+		{
+			name:        "session-extend-restart",
+			portBase:    ClusterSessionExtendRestartPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterSessionExtendRestartLogEndpoint,
+		},
+		{
+			name:        "session-extend-reelect",
+			portBase:    ClusterSessionExtendReElectPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterSessionExtendReElectLogEndpoint,
+		},
+		{
+			name:        "multi-service",
+			portBase:    ClusterMultiServicePortBase,
+			memberCount: 3,
+			logEndpoint: ClusterMultiServiceLogEndpoint,
+		},
+		{
+			name:        "session-transfer",
+			portBase:    ClusterSessionTransferPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterSessionTransferLogEndpoint,
+		},
+		{
+			name:        "service-transfer",
+			portBase:    ClusterServiceTransferPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterServiceTransferLogEndpoint,
+		},
+		{
+			name:        "cluster-streams-multicast",
+			portBase:    ClusterStreamsMulticastPortBase,
+			memberCount: 2,
+			logEndpoint: ClusterStreamsMulticastLogEndpoint,
+		},
+		{
+			name:        "cluster-java",
+			portBase:    ClusterJavaPortBase,
+			memberCount: ClusterJavaMemberCount,
+			logEndpoint: ClusterJavaMixedLogEndpoint,
+		},
+	}
+}
+
+// unicastPortLedger returns reserved consensus blocks with no shared
+// multicast endpoint.
+func unicastPortLedger() []portLedgerBlock {
+	return []portLedgerBlock{
+		{
+			name:        "consensus-publications",
+			portBase:    ConsensusPublicationsPortBase,
+			memberCount: 3,
+		},
+		{
+			name:        "cluster-streams-commit",
+			portBase:    ClusterStreamsCommitPortBase,
+			memberCount: 2,
+		},
+	}
+}
+
+// singlePortLedger returns reserved single UDP listen ports.
+func singlePortLedger() []portLedgerSingle {
+	return []portLedgerSingle{
+		{name: "archive-smoke-0", port: ArchiveNodeSmokeControlPort0},
+		{name: "archive-pair-0", port: ArchiveNodePairControlPort0},
+		{name: "archive-pair-1", port: ArchiveNodePairControlPort1},
+	}
+}
+
+// portBlockLast returns the transfer port of the highest member id.
+// memberCount must be >= 1.
+func portBlockLast(portBase, memberCount int) int {
+	return cluster.CalculatePort(int32(memberCount-1), portBase, cluster.TransferPortOffset)
+}
+
+// portRange is one inclusive reserved UDP port range.
+type portRange struct {
+	first int
+	last  int
+}
+
+// reservedUDPPortRanges holds every harness reservation as inclusive port
+// ranges. The ledgers build once. FreeUDPPorts calls isReservedUDPPort once
+// per probed candidate.
+var reservedUDPPortRanges = sync.OnceValue(func() []portRange {
+	var ranges []portRange
+	for _, b := range append(multicastPortLedger(), unicastPortLedger()...) {
+		ranges = append(ranges, portRange{
+			first: b.portBase + cluster.ArchiveControlPortOffset,
+			last:  portBlockLast(b.portBase, b.memberCount),
+		})
+	}
+	for _, s := range singlePortLedger() {
+		ranges = append(ranges, portRange{first: s.port, last: s.port})
+	}
+	return ranges
+})
+
+// isReservedUDPPort reports whether port sits in a harness reservation.
+func isReservedUDPPort(port int) bool {
+	for _, r := range reservedUDPPortRanges() {
+		if port >= r.first && port <= r.last {
+			return true
+		}
+	}
+	return false
+}
+
+func portInBlock(port, portBase, memberCount int) bool {
+	first := portBase + cluster.ArchiveControlPortOffset
+	last := portBlockLast(portBase, memberCount)
+	return port >= first && port <= last
 }
 
 // ClusterLogChannelTemplate confines cluster-log multicast to loopback.

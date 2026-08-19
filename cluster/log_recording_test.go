@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -951,4 +952,612 @@ func TestLogRecording_agentStoresReturnedRecordingID(t *testing.T) {
 	require.Equal(t, 0, stub.startCalls)
 	require.Equal(t, archivewire.SourceLocation_REMOTE, stub.lastExtendSourceLocation)
 	require.Same(t, image, adapter.Image())
+}
+
+const (
+	pollStopOfferTimeoutNs    = int64(1000)
+	pollStopResponseTimeoutNs = int64(500)
+	pollStopNowNs             = int64(10_000)
+	pollStopStreamID          = int32(100)
+	pollStopRecordingID       = int64(42)
+)
+
+var pollStopChannel = []byte("aeron:udp?endpoint=239.255.12.1:9004|session-id=9")
+
+// stopRequestHarness scripts TryOffer and PollResponse for one or more
+// scriptedStopRequest values built by newRequest.
+type stopRequestHarness struct {
+	built       []*scriptedStopRequest
+	offerOK     bool
+	offerErr    error
+	responded   bool
+	responseErr error
+	lastStream  int32
+	lastChannel []byte
+}
+
+func (h *stopRequestHarness) newRequest(
+	streamID int32,
+	channel []byte,
+) logStopRequest {
+	h.lastStream = streamID
+	h.lastChannel = append([]byte(nil), channel...)
+	req := &scriptedStopRequest{h: h}
+	h.built = append(h.built, req)
+	return req
+}
+
+func (h *stopRequestHarness) last() *scriptedStopRequest {
+	if len(h.built) == 0 {
+		return nil
+	}
+	return h.built[len(h.built)-1]
+}
+
+func (h *stopRequestHarness) inFlight() int {
+	n := 0
+	for _, req := range h.built {
+		if !req.closed {
+			n++
+		}
+	}
+	return n
+}
+
+// scriptedStopRequest is a logStopRequest double. Offer and response
+// outcomes are read from the harness on each call.
+type scriptedStopRequest struct {
+	h             *stopRequestHarness
+	tryOfferCalls int
+	pollCalls     int
+	closed        bool
+	latchedOK     bool
+}
+
+func (s *scriptedStopRequest) TryOffer() (bool, error) {
+	s.tryOfferCalls++
+	if s.closed {
+		return false, nil
+	}
+	return s.h.offerOK, s.h.offerErr
+}
+
+func (s *scriptedStopRequest) PollResponse() (bool, error) {
+	s.pollCalls++
+	if s.closed {
+		return false, nil
+	}
+	err := s.h.responseErr
+	responded := s.h.responded
+	s.h.responseErr = nil
+	s.h.responded = false
+	if err != nil {
+		return true, err
+	}
+	if responded {
+		s.latchedOK = true
+		return true, nil
+	}
+	return false, nil
+}
+
+func (s *scriptedStopRequest) Close() {
+	if s.closed {
+		return
+	}
+	s.closed = true
+	s.latchedOK = false
+}
+
+func requireFailClosedPoll(
+	t *testing.T,
+	r *logRecording,
+	req *scriptedStopRequest,
+	done bool,
+	err, cause error,
+) {
+	t.Helper()
+	require.ErrorIs(t, err, cause)
+	require.ErrorContains(t, err, "stream "+strconv.Itoa(int(pollStopStreamID)))
+	require.ErrorContains(t, err, string(pollStopChannel))
+	require.False(t, done)
+	require.True(t, r.needsStop())
+	require.Equal(t, pollStopChannel, r.startChannel)
+	require.Nil(t, r.pendingStop)
+	require.True(t, req.closed)
+}
+
+func requirePollStopPending(t *testing.T, r *logRecording, nowNs int64) {
+	t.Helper()
+	done, err := r.PollStopLogRecording(nowNs)
+	require.NoError(t, err)
+	require.False(t, done)
+}
+
+func adoptPollStop(r *logRecording, pos int64) {
+	r.handleRecordingSignal(codecs.RecordingSignalEventFields{
+		RecordingID: pollStopRecordingID,
+		Position:    pos,
+		Signal:      archivewire.RecordingSignal_STOP,
+	})
+}
+
+func newPollStopRecording(
+	recordingID int64,
+	stopPosition int64,
+	h *stopRequestHarness,
+) *logRecording {
+	return &logRecording{
+		client:              &recordingArchiveStub{},
+		logStreamID:         pollStopStreamID,
+		startChannel:        append([]byte(nil), pollStopChannel...),
+		recordingID:         recordingID,
+		stopPosition:        stopPosition,
+		latchedRecordingID:  recordingIDUnknown,
+		offerRetryTimeoutNs: pollStopOfferTimeoutNs,
+		responseTimeoutNs:   pollStopResponseTimeoutNs,
+		newStopRequest:      h.newRequest,
+	}
+}
+
+func newSeedStopControl() (*logRecording, *recordingArchiveStub) {
+	stub := &recordingArchiveStub{listStopPos: 9999}
+	r := &logRecording{
+		client:             stub,
+		recordingID:        recordingIDUnknown,
+		latchedRecordingID: recordingIDUnknown,
+	}
+	return r, stub
+}
+
+func TestLogRecording_PollStopLogRecording(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nothing to stop", func(t *testing.T) {
+		t.Parallel()
+
+		h := &stopRequestHarness{offerOK: true}
+		r := &logRecording{newStopRequest: h.newRequest}
+
+		done, err := r.PollStopLogRecording(pollStopNowNs)
+		require.NoError(t, err)
+		require.True(t, done)
+		require.Empty(t, h.built)
+		require.False(t, r.needsStop())
+	})
+
+	t.Run("known id ordered happy path", func(t *testing.T) {
+		t.Parallel()
+
+		const stopPos = int64(1024)
+		h := &stopRequestHarness{offerOK: true}
+		r := newPollStopRecording(pollStopRecordingID, 0, h)
+		stub := r.client.(*recordingArchiveStub)
+
+		requirePollStopPending(t, r, pollStopNowNs)
+		require.Len(t, h.built, 1)
+		req := h.last()
+		require.Equal(t, 1, req.tryOfferCalls)
+		require.Equal(t, 1, req.pollCalls)
+		require.True(t, r.needsStop())
+		require.Equal(t, pollStopStreamID, h.lastStream)
+		require.Equal(t, pollStopChannel, h.lastChannel)
+
+		h.responded = true
+		requirePollStopPending(t, r, pollStopNowNs)
+		require.True(t, r.needsStop())
+		require.Equal(t, 2, req.pollCalls)
+		require.True(t, req.latchedOK)
+		require.Equal(t, 1, req.tryOfferCalls)
+
+		adoptPollStop(r, stopPos)
+		done, err := r.PollStopLogRecording(pollStopNowNs)
+		require.NoError(t, err)
+		require.True(t, done)
+		require.False(t, r.needsStop())
+		require.False(t, r.IsActive())
+		require.Equal(t, stopPos, r.stopPosition)
+		require.Equal(t, pollStopRecordingID, r.latchedRecordingID)
+		require.True(t, req.closed)
+		require.Equal(t, 0, stub.stopCalls)
+		require.Equal(t, 0, stub.stopAwaitCalls)
+		require.Equal(t, 0, stub.listCalls)
+
+		got, posErr := r.StopPositionFor(pollStopRecordingID)
+		require.NoError(t, posErr)
+		require.Equal(t, stopPos, got)
+		require.Equal(t, 0, stub.listCalls)
+
+		done, err = r.PollStopLogRecording(pollStopNowNs)
+		require.NoError(t, err)
+		require.True(t, done)
+		require.Len(t, h.built, 1)
+	})
+
+	t.Run("stop before ok", func(t *testing.T) {
+		t.Parallel()
+
+		const stopPos = int64(2048)
+		h := &stopRequestHarness{offerOK: true}
+		r := newPollStopRecording(pollStopRecordingID, 0, h)
+
+		requirePollStopPending(t, r, pollStopNowNs)
+		req := h.last()
+		require.Equal(t, 1, req.tryOfferCalls)
+
+		adoptPollStop(r, stopPos)
+		require.True(t, req.closed)
+
+		done, err := r.PollStopLogRecording(pollStopNowNs)
+		require.NoError(t, err)
+		require.True(t, done)
+		require.Equal(t, 1, req.tryOfferCalls)
+		require.Len(t, h.built, 1)
+		require.Equal(t, stopPos, r.stopPosition)
+		require.False(t, r.needsStop())
+	})
+
+	t.Run("back pressured offer then accept", func(t *testing.T) {
+		t.Parallel()
+
+		h := &stopRequestHarness{}
+		r := newPollStopRecording(pollStopRecordingID, 0, h)
+
+		requirePollStopPending(t, r, pollStopNowNs)
+		req := h.last()
+		require.Equal(t, 1, req.tryOfferCalls)
+		require.Equal(t, 0, req.pollCalls)
+		require.False(t, r.pendingStop.offered)
+
+		requirePollStopPending(t, r, pollStopNowNs+1)
+		require.Equal(t, 2, req.tryOfferCalls)
+		require.Equal(t, 0, req.pollCalls)
+
+		h.offerOK = true
+		acceptAt := pollStopNowNs + 2
+		requirePollStopPending(t, r, acceptAt)
+		require.Equal(t, 3, req.tryOfferCalls)
+		require.Equal(t, 1, req.pollCalls)
+		require.True(t, r.pendingStop.offered)
+		require.Equal(t, acceptAt+pollStopResponseTimeoutNs, r.pendingStop.deadlineNs)
+	})
+
+	timeoutCases := []struct {
+		name      string
+		offerOK   bool
+		configure func(*logRecording)
+		cause     error
+	}{
+		{
+			name:      "offer bound expiry keeps channel",
+			configure: func(r *logRecording) { r.offerRetryTimeoutNs = 10 },
+			cause:     errStopOfferTimeout,
+		},
+		{
+			name:      "response bound expiry then fresh request",
+			offerOK:   true,
+			configure: func(r *logRecording) { r.responseTimeoutNs = 10 },
+			cause:     errStopResponseTimeout,
+		},
+	}
+	for _, tt := range timeoutCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &stopRequestHarness{offerOK: tt.offerOK}
+			r := newPollStopRecording(pollStopRecordingID, 0, h)
+			tt.configure(r)
+
+			requirePollStopPending(t, r, 0)
+			first := h.last()
+			require.Equal(t, 1, first.tryOfferCalls)
+
+			done, err := r.PollStopLogRecording(10)
+			requireFailClosedPoll(t, r, first, done, err, tt.cause)
+			require.Len(t, h.built, 1)
+
+			requirePollStopPending(t, r, 10)
+			require.Len(t, h.built, 2)
+			second := h.last()
+			require.NotSame(t, first, second)
+			require.False(t, second.closed)
+			require.Equal(t, 1, second.tryOfferCalls)
+		})
+	}
+
+	t.Run("dirty success", func(t *testing.T) {
+		t.Parallel()
+
+		cases := []struct {
+			name        string
+			priorPos    int64
+			latchID     int64
+			responded   bool
+			responseErr error
+		}{
+			{
+				name:      "ok keeps prior position",
+				priorPos:  77,
+				latchID:   9,
+				responded: true,
+			},
+			{
+				name:     "unknown subscription is clean",
+				priorPos: 11,
+				latchID:  9,
+				responseErr: &archive.Exception{
+					ErrorCode: archive.ErrorUnknownSubscription,
+				},
+			},
+		}
+		for _, tt := range cases {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				h := &stopRequestHarness{
+					offerOK:     true,
+					responded:   tt.responded,
+					responseErr: tt.responseErr,
+				}
+				r := newPollStopRecording(recordingIDUnknown, tt.priorPos, h)
+				r.latchedRecordingID = tt.latchID
+
+				done, err := r.PollStopLogRecording(pollStopNowNs)
+				require.NoError(t, err)
+				require.True(t, done)
+				require.Equal(t, tt.priorPos, r.stopPosition)
+				require.False(t, r.needsStop())
+				require.Equal(t, tt.latchID, r.latchedRecordingID)
+				require.True(t, h.last().closed)
+			})
+		}
+	})
+
+	t.Run("known id unknown subscription without adoption fails", func(t *testing.T) {
+		t.Parallel()
+
+		unk := &archive.Exception{ErrorCode: archive.ErrorUnknownSubscription}
+		h := &stopRequestHarness{offerOK: true, responseErr: unk}
+		r := newPollStopRecording(pollStopRecordingID, 0, h)
+
+		done, err := r.PollStopLogRecording(pollStopNowNs)
+		req := h.last()
+		requireFailClosedPoll(t, r, req, done, err, unk)
+		require.True(t, req.closed)
+	})
+
+	t.Run("known id adoption without ok reply is done", func(t *testing.T) {
+		t.Parallel()
+
+		const stopPos = int64(333)
+		h := &stopRequestHarness{offerOK: true}
+		r := newPollStopRecording(pollStopRecordingID, 0, h)
+
+		requirePollStopPending(t, r, pollStopNowNs)
+		adoptPollStop(r, stopPos)
+
+		done, err := r.PollStopLogRecording(pollStopNowNs)
+		require.NoError(t, err)
+		require.True(t, done)
+		require.Equal(t, stopPos, r.stopPosition)
+		require.False(t, r.needsStop())
+		require.True(t, h.last().closed)
+	})
+
+	t.Run("terminal offer fails closed", func(t *testing.T) {
+		t.Parallel()
+
+		offerErr := errors.New("publication closed")
+		h := &stopRequestHarness{offerErr: offerErr}
+		r := newPollStopRecording(pollStopRecordingID, 0, h)
+
+		done, err := r.PollStopLogRecording(pollStopNowNs)
+		requireFailClosedPoll(t, r, h.last(), done, err, offerErr)
+	})
+}
+
+func TestLogRecording_StopLogRecording_abandonsPending(t *testing.T) {
+	t.Parallel()
+
+	h := &stopRequestHarness{offerOK: true}
+	r := newPollStopRecording(pollStopRecordingID, 0, h)
+	stub := r.client.(*recordingArchiveStub)
+
+	requirePollStopPending(t, r, pollStopNowNs)
+	req := h.last()
+	require.False(t, req.closed)
+
+	require.NoError(t, r.StopLogRecording())
+	require.True(t, req.closed)
+	require.Equal(t, 1, stub.stopAwaitCalls)
+	require.Equal(t, 0, stub.stopCalls)
+	require.False(t, r.needsStop())
+	require.Nil(t, r.pendingStop)
+
+	require.NoError(t, r.StopLogRecording())
+	require.Equal(t, 1, stub.stopAwaitCalls)
+	require.True(t, req.closed)
+	require.False(t, r.needsStop())
+}
+
+func TestLogRecording_StartLogRecording_afterAdoptedStop(t *testing.T) {
+	t.Parallel()
+
+	const (
+		logChannel   = "aeron:udp?endpoint=239.255.12.1:9004"
+		logSessionID = int32(9)
+		newID        = int64(99)
+	)
+	h := &stopRequestHarness{offerOK: true}
+	r := newPollStopRecording(pollStopRecordingID, 0, h)
+	r.logChannel = logChannel
+	stub := r.client.(*recordingArchiveStub)
+	stub.startID = newID
+
+	requirePollStopPending(t, r, pollStopNowNs)
+	first := h.last()
+
+	adoptPollStop(r, 1024)
+	require.True(t, first.closed)
+	require.False(t, r.needsStop())
+	require.Nil(t, r.pendingStop)
+
+	got, err := r.StartLogRecording(archivewire.SourceLocation_LOCAL, logSessionID, "")
+	require.NoError(t, err)
+	require.Equal(t, newID, got)
+	wantChannel := []byte(sessionScopedLogChannel(logChannel, logSessionID))
+	require.Equal(t, wantChannel, r.startChannel)
+	require.True(t, r.needsStop())
+	require.Equal(t, 1, stub.startCalls)
+	require.Equal(t, 0, stub.stopCalls)
+	require.Equal(t, 0, stub.stopAwaitCalls)
+
+	requirePollStopPending(t, r, pollStopNowNs)
+	require.Len(t, h.built, 2)
+	second := h.last()
+	require.NotSame(t, first, second)
+	require.Equal(t, wantChannel, h.lastChannel)
+	require.Equal(t, 1, second.tryOfferCalls)
+	require.False(t, second.closed)
+}
+
+func TestLogRecording_StopLogRecording_afterAdoptedStop(t *testing.T) {
+	t.Parallel()
+
+	h := &stopRequestHarness{offerOK: true}
+	r := newPollStopRecording(pollStopRecordingID, 0, h)
+	stub := r.client.(*recordingArchiveStub)
+
+	requirePollStopPending(t, r, pollStopNowNs)
+	req := h.last()
+
+	adoptPollStop(r, 2048)
+	require.True(t, req.closed)
+	require.False(t, r.needsStop())
+	require.Nil(t, r.pendingStop)
+
+	require.NoError(t, r.StopLogRecording())
+	require.True(t, req.closed)
+	require.Equal(t, 0, stub.stopCalls)
+	require.Equal(t, 0, stub.stopAwaitCalls)
+	require.False(t, r.needsStop())
+
+	require.NoError(t, r.StopLogRecording())
+	require.True(t, req.closed)
+	require.Equal(t, 0, stub.stopCalls)
+	require.Equal(t, 0, stub.stopAwaitCalls)
+}
+
+func TestLogRecording_seedStopPosition(t *testing.T) {
+	t.Parallel()
+
+	storeCases := []struct {
+		name    string
+		id, pos int64
+	}{
+		{name: "seeded id takes stored path", id: 42, pos: 1001},
+		{name: "zero id and zero position seed stored path", id: 0, pos: 0},
+	}
+	for _, tt := range storeCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r, stub := newSeedStopControl()
+			r.seedStopPosition(tt.id, tt.pos)
+			got, err := r.StopPositionFor(tt.id)
+			require.NoError(t, err)
+			require.Equal(t, tt.pos, got)
+			require.Equal(t, 0, stub.listCalls)
+			require.Equal(t, tt.id, r.latchedRecordingID)
+			require.Equal(t, tt.pos, r.stopPosition)
+		})
+	}
+
+	skipCases := []struct {
+		name    string
+		id, pos int64
+	}{
+		{name: "null id does not seed", id: recordinglog.NullRecordingID, pos: 1001},
+		{name: "null position does not seed", id: 42, pos: recordinglog.NullPosition},
+	}
+	for _, tt := range skipCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := &logRecording{
+				latchedRecordingID: recordingIDUnknown,
+				stopPosition:       7,
+			}
+			r.seedStopPosition(tt.id, tt.pos)
+			require.Equal(t, recordingIDUnknown, r.latchedRecordingID)
+			require.Equal(t, int64(7), r.stopPosition)
+		})
+	}
+}
+
+func TestSeedLogRecordingStopFromPlan(t *testing.T) {
+	t.Parallel()
+
+	t.Run("concrete extent seeds stored path", func(t *testing.T) {
+		t.Parallel()
+
+		r, stub := newSeedStopControl()
+		plan := recordinglog.RecoveryPlan{
+			Log: &recordinglog.RecoveryPlanLog{
+				Term:   recordinglog.TermRef{RecordingID: 42},
+				Extent: recordinglog.LogRecordingExtents{StopPosition: 1001},
+			},
+		}
+		seedLogRecordingStopFromPlan(r, plan)
+		got, err := r.StopPositionFor(42)
+		require.NoError(t, err)
+		require.Equal(t, int64(1001), got)
+		require.Equal(t, 0, stub.listCalls)
+	})
+
+	skipCases := []struct {
+		name         string
+		plan         recordinglog.RecoveryPlan
+		checkCatalog bool
+	}{
+		{
+			name:         "nil recovery log skips seed",
+			plan:         recordinglog.RecoveryPlan{},
+			checkCatalog: true,
+		},
+		{
+			name: "null term id skips seed",
+			plan: recordinglog.RecoveryPlan{
+				Log: &recordinglog.RecoveryPlanLog{
+					Term:   recordinglog.TermRef{RecordingID: recordinglog.NullRecordingID},
+					Extent: recordinglog.LogRecordingExtents{StopPosition: 1001},
+				},
+			},
+		},
+		{
+			name: "null extent stop skips seed",
+			plan: recordinglog.RecoveryPlan{
+				Log: &recordinglog.RecoveryPlanLog{
+					Term:   recordinglog.TermRef{RecordingID: 42},
+					Extent: recordinglog.LogRecordingExtents{StopPosition: recordinglog.NullPosition},
+				},
+			},
+		},
+	}
+	for _, tt := range skipCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r, stub := newSeedStopControl()
+			seedLogRecordingStopFromPlan(r, tt.plan)
+			require.Equal(t, recordingIDUnknown, r.latchedRecordingID)
+			require.Equal(t, int64(0), r.stopPosition)
+			if tt.checkCatalog {
+				got, err := r.StopPositionFor(42)
+				require.NoError(t, err)
+				require.Equal(t, int64(9999), got)
+				require.Equal(t, 1, stub.listCalls)
+			}
+		})
+	}
 }

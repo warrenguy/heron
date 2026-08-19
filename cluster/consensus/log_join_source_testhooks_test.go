@@ -620,12 +620,14 @@ func TestAgent_logRecording_transitionWithRecording(t *testing.T) {
 	a.SetLogRecordingControl(control)
 
 	require.NoError(t, a.JoinLogAsLeader(1, 10, pub.SessionID(), false))
-	got, err := a.PrepareForNewLeadership(1234, 1)
+	got, prepared, err := a.PrepareForNewLeadership(1234, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.Equal(t, int64(5000), got)
 	require.False(t, a.IsRecordingActive())
 	require.Equal(t, int64(77), a.LocalLogRecordingID())
-	require.Equal(t, 1, control.stopCalls)
+	require.Equal(t, 1, control.pollStopCalls)
+	require.Equal(t, 0, control.stopCalls)
 }
 
 func TestAgent_logRecording_transitionStopError(t *testing.T) {
@@ -641,8 +643,9 @@ func TestAgent_logRecording_transitionStopError(t *testing.T) {
 	a.SetLogRecordingControl(control)
 
 	require.NoError(t, a.JoinLogAsLeader(1, 10, pub.SessionID(), false))
-	got, err := a.PrepareForNewLeadership(1234, 1)
+	got, prepared, err := a.PrepareForNewLeadership(1234, 1)
 	require.ErrorIs(t, err, stopErr)
+	require.False(t, prepared)
 	require.Equal(t, recordinglog.NullPosition, got)
 	require.True(t, a.IsRecordingActive())
 }
@@ -656,12 +659,15 @@ func TestAgent_logRecording_repeatedTransition(t *testing.T) {
 	a.SetLogRecordingControl(control)
 
 	require.NoError(t, a.JoinLogAsLeader(1, 10, pub.SessionID(), false))
-	_, err := a.PrepareForNewLeadership(1234, 1)
+	_, prepared, err := a.PrepareForNewLeadership(1234, 1)
 	require.NoError(t, err)
-	_, err = a.PrepareForNewLeadership(1234, 2)
+	require.True(t, prepared)
+	_, prepared, err = a.PrepareForNewLeadership(1234, 2)
 	require.NoError(t, err)
-	// Second prepare still offers stop (idempotent on the real control).
-	require.Equal(t, 2, control.stopCalls)
+	require.True(t, prepared)
+	// Second prepare still polls stop. The control poll is idempotent.
+	require.Equal(t, 2, control.pollStopCalls)
+	require.Equal(t, 0, control.stopCalls)
 }
 
 func TestAgent_logRecording_stopKeepsRecordingID(t *testing.T) {
@@ -673,8 +679,9 @@ func TestAgent_logRecording_stopKeepsRecordingID(t *testing.T) {
 	a.SetLogRecordingControl(control)
 
 	require.NoError(t, a.JoinLogAsLeader(1, 10, pub.SessionID(), false))
-	_, err := a.PrepareForNewLeadership(1234, 1)
+	_, prepared, err := a.PrepareForNewLeadership(1234, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.NotEqual(t, int64(-1), a.LocalLogRecordingID())
 }
 

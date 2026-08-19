@@ -121,6 +121,11 @@ type Agent struct {
 	// recording that carried the term.
 	recordingControl LogRecordingControl
 
+	// prepareInProgress is true while a PrepareForNewLeadership episode is open.
+	// Teardown runs on the first call of an episode. Consensus ingress poll skips
+	// while prepareInProgress is true.
+	prepareInProgress bool
+
 	// truncateControl truncates the cluster log recording. Nil refuses every
 	// truncate.
 	truncateControl LogTruncateControl
@@ -245,6 +250,8 @@ type Agent struct {
 
 	// appendRankFailure is the first marked append-rank failure, or nil until
 	// marked. Marked once. Later ticks do not replace the cause.
+	// [Agent.PrepareForNewLeadership] clears the field so ranking may start a
+	// fresh not-ready run in the next term.
 	appendRankFailure error
 
 	// lastPublishedAppendPosition is the last successfully published follower
@@ -630,6 +637,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 //     recording-position counter longer than the configured bound
 //   - marked once: first cause kept; later ticks do not replace it
 //   - a later ready source report does not clear the marked failure
+//   - [Agent.PrepareForNewLeadership] clears the marked failure
 //   - ranking and publish stay stopped after mark
 //
 // Callers must poll this value. Nothing in [cluster.Runner] reads it. The duty
@@ -706,10 +714,14 @@ func (a *Agent) SetEgress(egress ConsensusEgress) {
 // SetElection wires or clears the [ElectionRunner] for open bootstrap and
 // assembly clear.
 //
-// Behaviour: a non-nil runner installs as [ElectionTriggerBootstrap] and
-// increments [Agent.ElectionCount]. A nil runner clears the field only and does
-// not change count or trigger. [Agent.ElectionComplete] clears the runner
-// directly and does not call SetElection.
+// Behaviour:
+//   - non-nil runner: installs as [ElectionTriggerBootstrap] and increments
+//     [Agent.ElectionCount]
+//   - nil runner: clears the field only. Does not change count or trigger
+//   - always: clears prepareInProgress through [Agent.installElection]
+//
+// [Agent.ElectionComplete] clears the runner directly. ElectionComplete does
+// not call SetElection.
 //
 // Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
 func (a *Agent) SetElection(runner ElectionRunner) {
@@ -1526,66 +1538,49 @@ func (a *Agent) FollowerLogJoinReady(
 	return a.joinSource.Ready(logSessionID)
 }
 
-// PrepareForNewLeadership resets election leadership state and tears down
-// catchup on both halves before any recording stop.
+// PrepareForNewLeadership resets election leadership state, then polls the
+// cluster log recording stop. Does not reset commit.
 //
-// Behaviour:
-//   - sets role [RoleFollower]
-//   - clears the known leader
-//   - resets follower append cadence fields
-//   - stops leader-side catchup replays and drains catchupReplays
-//   - removes the follower catchup destination and restores the live
-//     destination when that destination is absent
-//   - keeps commit
-//   - releases per-session egress. Registry entries stay
-//   - stops the cluster log recording when a control is wired
+// First call of an episode runs teardown. Later calls poll only.
 //
-// Log and ingress teardown stay for full agent wiring.
+// nowNs is the deadline clock for [LogRecordingControl.PollStopLogRecording].
 //
-// Role, known leader, cadence fields, catchup teardown, and session-egress
-// release always run before any recording stop attempt, including when the
-// stop later fails. Stop runs whenever a control is wired, not only when
-// [LogRecordingControl.IsActive] is true. Stop is idempotent when nothing
-// needs draining. The idle stop drains a dirty start that never became
-// active.
+// Returns:
+//   - lastAppendPosition, prepared true, nil: stop proof is held
+//   - [recordinglog.NullPosition], prepared false, nil: poll again
+//   - [recordinglog.NullPosition], prepared false, err: fail closed
 //
-// Catchup teardown runs here, not on the CATCHUP exit. At the CATCHUP exit
-// the log adapter still reads the catchup image and the catchup destination
-// may still be attached. Prepare removes the catchup destination and
-// restores the live destination when that destination is absent.
-//
-// Append-rank failure state always clears on prepare. A not-ready run that
-// marked while a prior leadership term's recording was active must not
-// freeze ranking across a leadership transition. The next duty cycle may
-// open a fresh not-ready run against the recording that prepare starts
-// later.
-//
-// Pending JoinLog clears on prepare. A stale unpublished JoinLog from a
-// superseded term must not reach services after a new election starts.
-//
-// Prepare retires a leftover snapshot wait from the FIFO. Other queued
-// coordination waits remain. A later ServiceAck at the retired snapshot
-// position is dropped unless a new wait uses the retired position.
-//
-// Returns (first matching branch):
-//   - logPosition, nil: control is nil, or localLogRecordingID is negative
-//   - derived archive stop position, nil: retained recording id is
-//     non-negative and [LogRecordingControl.StopPositionFor] succeeds.
-//     After a truncate the control reports the truncate position, so
-//     prepare does not re-raise above that bound
-//   - [recordinglog.NullPosition], err: stop fails. When the recording was
-//     active the control stays active so a later prepare retries the stop.
-//     Caller must not adopt lastAppendPosition
-//   - [recordinglog.NullPosition], err: StopPositionFor fails after a
-//     clean stop. The control is inactive. A later prepare retries
-//     derivation. Caller must not adopt lastAppendPosition
+// Caller must not adopt lastAppendPosition unless prepared is true.
 func (a *Agent) PrepareForNewLeadership(
 	logPosition int64,
 	nowNs int64,
 ) (
 	lastAppendPosition int64,
+	prepared bool,
 	err error,
 ) {
+	if !a.prepareInProgress {
+		a.prepareInProgress = true
+		a.teardownForNewLeadership()
+	}
+	lastAppendPosition, prepared, err = a.pollPrepareStop(logPosition, nowNs)
+	if prepared || err != nil {
+		a.prepareInProgress = false
+	}
+	return lastAppendPosition, prepared, err
+}
+
+// IsPrepareInProgress reports whether a PrepareForNewLeadership episode is open.
+func (a *Agent) IsPrepareInProgress() bool {
+	return a.prepareInProgress
+}
+
+// teardownForNewLeadership runs first-call prepare teardown. Does not write
+// prepareInProgress. Does not poll the recording stop.
+//
+// Catchup teardown runs here, not on the CATCHUP election exit. At the CATCHUP
+// exit the log adapter still reads the catchup image.
+func (a *Agent) teardownForNewLeadership() {
 	a.RoleSet(RoleFollower)
 	a.SetLeaderMemberID(nullMemberID)
 	a.lastPublishedAppendPosition = 0
@@ -1598,23 +1593,30 @@ func (a *Agent) PrepareForNewLeadership(
 	a.StopAllCatchups()
 	a.RemoveCatchupLogDestination()
 	a.releaseSessionsForNewTerm()
-	_ = nowNs
+}
 
+// pollPrepareStop advances one recording stop poll for prepare. Does not write
+// prepareInProgress. Nil control returns logPosition prepared. A non-negative
+// retained recording id returns the archive stop when the poll is done.
+func (a *Agent) pollPrepareStop(logPosition, nowNs int64) (int64, bool, error) {
 	if a.recordingControl == nil {
-		return logPosition, nil
+		return logPosition, true, nil
 	}
-	if stopErr := a.recordingControl.StopLogRecording(); stopErr != nil {
-		return recordinglog.NullPosition, stopErr
+	stopDone, stopErr := a.recordingControl.PollStopLogRecording(nowNs)
+	if stopErr != nil {
+		return recordinglog.NullPosition, false, stopErr
+	}
+	if !stopDone {
+		return recordinglog.NullPosition, false, nil
 	}
 	if a.localLogRecordingID < 0 {
-		return logPosition, nil
+		return logPosition, true, nil
 	}
-
 	stopPosition, err := a.recordingControl.StopPositionFor(a.localLogRecordingID)
 	if err != nil {
-		return recordinglog.NullPosition, err
+		return recordinglog.NullPosition, false, err
 	}
-	return stopPosition, nil
+	return stopPosition, true, nil
 }
 
 // LogPublicationReseed rebuilds the exclusive log publication so its join
@@ -1920,7 +1922,7 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 
 // DoWork runs one duty-cycle tick:
 //   - slow tick
-//   - consensus ingress poll (always, even when election non-nil)
+//   - consensus ingress poll when no prepare episode is in progress
 //   - client ingress poll (always; message, keepalive, close, connect, and
 //     challenge-response live in dispatch)
 //   - service control poll (always; ServiceAck, ScheduleTimer, and CancelTimer
@@ -1932,6 +1934,11 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 //   - pending JoinLog retry after that branch so PrepareForNewLeadership can
 //     drop a superseded pending before any offer
 //
+// Prepare starts after the consensus ingress poll of the first episode tick.
+// That tick is the one INIT drop. Later pending ticks skip the poll. A stop
+// or derivation error ends the episode. The next tick polls once, then
+// election.DoWork starts a fresh episode.
+//
 // Settled sessionWork order: egressEventWork, newLeaderEventWork,
 // sessionPendingWork, sessionCloseWork, okPendingWork. See [Agent.sessionWork].
 //
@@ -1941,7 +1948,9 @@ func (a *Agent) DoWork(nowNs int64) int {
 	noteDoWorkStep("slowTick")
 	work += a.slowTickIfDue(nowNs)
 	noteDoWorkStep("pollIngress")
-	work += a.pollConsensusIngress(nowNs)
+	if !a.prepareInProgress {
+		work += a.pollConsensusIngress(nowNs)
+	}
 	noteDoWorkStep("pollClientIngress")
 	work += a.pollClientIngress(nowNs)
 	noteDoWorkStep("pollServiceControl")

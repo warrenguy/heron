@@ -713,8 +713,9 @@ func TestPrepareForNewLeadership_releasesSessionsBeforeStop(t *testing.T) {
 	a.sessions.setOKPending(s, true)
 	a.queueSessionRedirect(validConnectFields(1), 1)
 
-	got, err := a.PrepareForNewLeadership(1234, 99)
+	got, prepared, err := a.PrepareForNewLeadership(1234, 99)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.Equal(t, int64(1234), got)
 	require.Equal(t, RoleFollower, a.Role())
 	require.True(t, pub.IsClosed())

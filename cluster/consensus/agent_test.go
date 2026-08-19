@@ -575,8 +575,9 @@ func TestAgentHandler_prepareJoinComplete(t *testing.T) {
 	a.lastPublishedAppendPosition = 50
 	a.timeOfLastAppendPositionSendNs = 100
 
-	got, err := a.PrepareForNewLeadership(1234, 99)
+	got, prepared, err := a.PrepareForNewLeadership(1234, 99)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.Equal(t, int64(1234), got)
 	require.Equal(t, RoleFollower, a.Role())
 	require.Equal(t, nullMemberID, a.LeaderMemberID())
@@ -1137,21 +1138,27 @@ func TestAtomicAppendPosition_nilSafe(t *testing.T) {
 }
 
 // fakeLogRecordingControl is a scripted LogRecordingControl for agent tests.
-//
 // The fake records every call and returns the next scripted outcome.
 //
 // onStart runs after the start call is recorded and before the scripted
 // outcome returns. Tests may close the join image mid-start from onStart.
 //
 // active is true after a successful start until a clean stop. That matches
-// production [LogRecordingControl.IsActive].
+// [LogRecordingControl.IsActive].
 //
 // nextStopPositionFor scripts StopPositionFor on success. Zero is a valid
 // scripted position. Set nextStopPositionFor explicitly when prepare reaches
 // derivation.
+//
+// pollStopPending scripts [LogRecordingControl.PollStopLogRecording] as not
+// done. stopErr fails both StopLogRecording and the poll. pollStopCalls
+// counts PollStopLogRecording. stopCalls counts StopLogRecording only.
 type fakeLogRecordingControl struct {
 	startCalls           []fakeStartCall
 	stopCalls            int
+	pollStopCalls        int
+	pollStopNowNs        int64
+	pollStopPending      bool
 	nextRecordingID      int64
 	nextStopPositionFor  int64
 	stopPositionForCalls []int64
@@ -1197,6 +1204,19 @@ func (f *fakeLogRecordingControl) StopLogRecording() error {
 	}
 	f.active = false
 	return nil
+}
+
+func (f *fakeLogRecordingControl) PollStopLogRecording(nowNs int64) (bool, error) {
+	f.pollStopCalls++
+	f.pollStopNowNs = nowNs
+	if f.stopErr != nil {
+		return false, f.stopErr
+	}
+	if f.pollStopPending {
+		return false, nil
+	}
+	f.active = false
+	return true, nil
 }
 
 func (f *fakeLogRecordingControl) IsActive() bool {
@@ -1250,10 +1270,12 @@ func TestAgent_logRecording_transitionNoRecording(t *testing.T) {
 	a := NewAgent(AgentConfig{})
 	a.SetLogRecordingControl(control)
 
-	got, err := a.PrepareForNewLeadership(1234, 1)
+	got, prepared, err := a.PrepareForNewLeadership(1234, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.Equal(t, int64(1234), got)
-	require.Equal(t, 1, control.stopCalls)
+	require.Equal(t, 1, control.pollStopCalls)
+	require.Equal(t, 0, control.stopCalls)
 	require.Empty(t, control.stopPositionForCalls)
 }
 
@@ -1267,11 +1289,13 @@ func TestAgent_logRecording_prepareDerivesFromRetainedID(t *testing.T) {
 	a.SetLogRecordingControl(control)
 	a.localLogRecordingID = 77
 
-	got, err := a.PrepareForNewLeadership(4096, 1)
+	got, prepared, err := a.PrepareForNewLeadership(4096, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.Equal(t, int64(5000), got)
 	require.NotEqual(t, int64(4096), got)
-	require.Equal(t, 1, control.stopCalls)
+	require.Equal(t, 1, control.pollStopCalls)
+	require.Equal(t, 0, control.stopCalls)
 	require.Equal(t, []int64{77}, control.stopPositionForCalls)
 }
 
@@ -1285,11 +1309,14 @@ func TestAgent_logRecording_prepareDerivationFailureDoesNotFallBack(t *testing.T
 	a.SetLogRecordingControl(control)
 	a.localLogRecordingID = 77
 
-	got, err := a.PrepareForNewLeadership(4096, 1)
+	got, prepared, err := a.PrepareForNewLeadership(4096, 1)
 	require.ErrorIs(t, err, errBoom)
+	require.False(t, prepared)
+	require.False(t, a.prepareInProgress)
 	require.Equal(t, recordinglog.NullPosition, got)
 	require.NotEqual(t, int64(4096), got)
-	require.Equal(t, 1, control.stopCalls)
+	require.Equal(t, 1, control.pollStopCalls)
+	require.Equal(t, 0, control.stopCalls)
 	require.Equal(t, []int64{77}, control.stopPositionForCalls)
 }
 
@@ -1304,11 +1331,13 @@ func TestAgent_logRecording_prepareStopErrorWhileInactive(t *testing.T) {
 	a := NewAgent(AgentConfig{})
 	a.SetLogRecordingControl(control)
 
-	got, err := a.PrepareForNewLeadership(1234, 1)
+	got, prepared, err := a.PrepareForNewLeadership(1234, 1)
 	require.ErrorIs(t, err, stopErr)
+	require.False(t, prepared)
 	require.Equal(t, recordinglog.NullPosition, got)
 	require.False(t, a.IsRecordingActive())
-	require.Equal(t, 1, control.stopCalls)
+	require.Equal(t, 1, control.pollStopCalls)
+	require.Equal(t, 0, control.stopCalls)
 }
 
 func TestAgent_logRecording_prepareNilControlKeepsRecordingID(t *testing.T) {
@@ -1320,8 +1349,10 @@ func TestAgent_logRecording_prepareNilControlKeepsRecordingID(t *testing.T) {
 	a.localLogRecordingID = 77
 	require.Nil(t, a.LogRecordingControl())
 
-	got, err := a.PrepareForNewLeadership(1234, 1)
+	got, prepared, err := a.PrepareForNewLeadership(1234, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
+	require.False(t, a.prepareInProgress)
 	require.Equal(t, int64(1234), got)
 	require.False(t, a.IsRecordingActive())
 	require.Equal(t, int64(77), a.LocalLogRecordingID())
@@ -1353,8 +1384,9 @@ func TestAgent_logRecording_sentinelLogPositionNoRecording(t *testing.T) {
 
 	// Sentinel travels through the no-recording branch unchanged.
 	a := NewAgent(AgentConfig{})
-	got, err := a.PrepareForNewLeadership(recordinglog.NullPosition, 1)
+	got, prepared, err := a.PrepareForNewLeadership(recordinglog.NullPosition, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.Equal(t, recordinglog.NullPosition, got)
 }
 
@@ -1723,8 +1755,9 @@ func TestAgent_PrepareForNewLeadership_clearsAppendRankFailure(t *testing.T) {
 	a.appendRankFailure = ErrAppendPositionUnavailable
 	a.appendNotReadySinceNs = 0
 
-	_, err := a.PrepareForNewLeadership(1234, 1)
+	_, prepared, err := a.PrepareForNewLeadership(1234, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.NoError(t, a.AppendRankFailure())
 	require.Equal(t, int64(nullValue), a.appendNotReadySinceNs)
 }
@@ -1746,9 +1779,374 @@ func TestAgent_PrepareForNewLeadership_derivesStopPosition(t *testing.T) {
 	a.SetLogRecordingControl(control)
 	a.SetLogRecordingID(recordingID)
 
-	got, err := a.PrepareForNewLeadership(4096, 1)
+	got, prepared, err := a.PrepareForNewLeadership(4096, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
+	require.False(t, a.prepareInProgress)
 	require.Equal(t, derivedPosition, got)
 	require.Equal(t, []int64{recordingID}, control.stopPositionForCalls)
-	require.Equal(t, 1, control.stopCalls)
+	require.Equal(t, 1, control.pollStopCalls)
+	require.Equal(t, 0, control.stopCalls)
+}
+
+type countingConsensusIngress struct {
+	polls int
+}
+
+func (c *countingConsensusIngress) Poll(int, func([]byte, int)) int {
+	c.polls++
+	return 0
+}
+
+var _ ConsensusIngress = (*countingConsensusIngress)(nil)
+
+// TestPrepareForNewLeadership_errorStartsFreshEpisode asserts a poll error
+// ends the episode. The next call re-runs teardown.
+func TestPrepareForNewLeadership_errorStartsFreshEpisode(t *testing.T) {
+	t.Parallel()
+
+	stopErr := errors.New("poll stop failed")
+	control := &fakeLogRecordingControl{stopErr: stopErr}
+	catchup := &fakeCatchupControl{}
+	a := NewAgent(AgentConfig{})
+	a.SetLogRecordingControl(control)
+	a.SetCatchupControl(catchup)
+	a.lastPublishedAppendPosition = 50
+
+	got, prepared, err := a.PrepareForNewLeadership(1234, 1)
+	require.ErrorIs(t, err, stopErr)
+	require.False(t, prepared)
+	require.Equal(t, recordinglog.NullPosition, got)
+	require.False(t, a.prepareInProgress)
+	require.Equal(t, 1, catchup.stopCalls)
+
+	control.stopErr = nil
+	control.pollStopPending = true
+	a.lastPublishedAppendPosition = 75
+	got, prepared, err = a.PrepareForNewLeadership(1234, 2)
+	require.NoError(t, err)
+	require.False(t, prepared)
+	require.Equal(t, recordinglog.NullPosition, got)
+	require.Equal(t, int64(0), a.lastPublishedAppendPosition)
+	require.Equal(t, 2, catchup.stopCalls)
+	require.True(t, a.prepareInProgress)
+}
+
+// TestPrepareForNewLeadership_skipsConsensusIngressWhilePending asserts
+// DoWork skips the consensus ingress poll while an episode is open. The
+// poll resumes after prepared or after a poll error.
+func TestPrepareForNewLeadership_skipsConsensusIngressWhilePending(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		stopErr error
+	}{
+		{name: "resumes after prepared"},
+		{name: "resumes after error", stopErr: errors.New("poll stop failed")},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			control := &fakeLogRecordingControl{pollStopPending: true}
+			ingress := &countingConsensusIngress{}
+			a := NewAgent(AgentConfig{Ingress: ingress})
+			a.SetLogRecordingControl(control)
+
+			_, prepared, err := a.PrepareForNewLeadership(1234, 1)
+			require.NoError(t, err)
+			require.False(t, prepared)
+			require.True(t, a.prepareInProgress)
+			require.Equal(t, 0, ingress.polls)
+
+			a.DoWork(2)
+			require.Equal(t, 0, ingress.polls)
+			require.True(t, a.prepareInProgress)
+
+			control.pollStopPending = false
+			control.stopErr = tc.stopErr
+			_, prepared, err = a.PrepareForNewLeadership(1234, 3)
+			if tc.stopErr != nil {
+				require.ErrorIs(t, err, tc.stopErr)
+				require.False(t, prepared)
+			} else {
+				require.NoError(t, err)
+				require.True(t, prepared)
+			}
+			require.False(t, a.prepareInProgress)
+
+			a.DoWork(4)
+			require.Equal(t, 1, ingress.polls)
+		})
+	}
+}
+
+// TestPrepareForNewLeadership_reinstallClearsEpisode asserts SetElection and
+// installElection clear the episode flag. The next prepare re-runs teardown.
+func TestPrepareForNewLeadership_reinstallClearsEpisode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		reinstall func(*Agent)
+	}{
+		{
+			name:      "SetElection",
+			reinstall: func(a *Agent) { a.SetElection(&orderRunner{n: 1}) },
+		},
+		{
+			name: "installElection",
+			reinstall: func(a *Agent) {
+				a.installElection(&orderRunner{n: 1}, ElectionTriggerLeaderHeartbeatTimeout)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			control := &fakeLogRecordingControl{pollStopPending: true}
+			catchup := &fakeCatchupControl{}
+			a := NewAgent(AgentConfig{})
+			a.SetLogRecordingControl(control)
+			a.SetCatchupControl(catchup)
+
+			_, prepared, err := a.PrepareForNewLeadership(1234, 1)
+			require.NoError(t, err)
+			require.False(t, prepared)
+			require.True(t, a.prepareInProgress)
+			require.Equal(t, 1, catchup.stopCalls)
+
+			tc.reinstall(a)
+			require.False(t, a.prepareInProgress)
+
+			a.lastPublishedAppendPosition = 50
+			_, prepared, err = a.PrepareForNewLeadership(1234, 2)
+			require.NoError(t, err)
+			require.False(t, prepared)
+			require.Equal(t, int64(0), a.lastPublishedAppendPosition)
+			require.Equal(t, 2, catchup.stopCalls)
+		})
+	}
+}
+
+type prepareDutyRunner struct {
+	agent        *Agent
+	logPosition  int64
+	calls        int
+	handles      int
+	lastPrepared bool
+	lastErr      error
+}
+
+func (r *prepareDutyRunner) DoWork(nowNs int64) int {
+	r.calls++
+	_, prepared, err := r.agent.PrepareForNewLeadership(r.logPosition, nowNs)
+	r.lastPrepared = prepared
+	r.lastErr = err
+	return 1
+}
+
+func (r *prepareDutyRunner) HandleConsensusMessage([]byte, int) bool {
+	r.handles++
+	return true
+}
+
+// TestPrepareForNewLeadership_dutyCycleIngressAndElection asserts Agent.DoWork
+// with a live runner. Pending ticks skip consensus ingress and still run
+// election.DoWork. A stop error ends the episode. The next tick polls ingress
+// once (retry INIT drop) and re-calls prepare.
+func TestPrepareForNewLeadership_dutyCycleIngressAndElection(t *testing.T) {
+	t.Parallel()
+
+	frame := encodeAppendPositionWire(t, codecs.AppendPositionFields{
+		LeadershipTermID: 1,
+		LogPosition:      50,
+		FollowerMemberID: 2,
+	})
+
+	t.Run("pending then error polls ingress on retry tick", func(t *testing.T) {
+		t.Parallel()
+
+		control := &fakeLogRecordingControl{pollStopPending: true}
+		q := &QueueConsensusIngress{}
+		a := NewAgent(AgentConfig{Ingress: q})
+		a.SetLogRecordingControl(control)
+		runner := &prepareDutyRunner{agent: a, logPosition: 1234}
+		a.SetElection(runner)
+
+		// First tick starts the episode after the ingress poll.
+		q.Enqueue(frame)
+		require.Equal(t, 2, a.DoWork(1))
+		require.True(t, a.prepareInProgress)
+		require.False(t, runner.lastPrepared)
+		require.NoError(t, runner.lastErr)
+		require.Equal(t, 1, runner.calls)
+		require.Equal(t, 1, runner.handles)
+		require.Equal(t, 1, control.pollStopCalls)
+		require.Equal(t, 0, control.stopCalls)
+
+		q.Enqueue(frame)
+		require.Equal(t, 1, a.DoWork(2))
+		require.True(t, a.prepareInProgress)
+		require.Equal(t, 2, runner.calls)
+		require.Equal(t, 1, runner.handles)
+		require.Equal(t, 2, control.pollStopCalls)
+		require.Equal(t, 0, control.stopCalls)
+
+		stopErr := errors.New("poll stop failed")
+		control.pollStopPending = false
+		control.stopErr = stopErr
+		require.Equal(t, 1, a.DoWork(3))
+		require.ErrorIs(t, runner.lastErr, stopErr)
+		require.False(t, runner.lastPrepared)
+		require.False(t, a.prepareInProgress)
+		require.Equal(t, 3, runner.calls)
+		require.Equal(t, 1, runner.handles)
+
+		// Retry INIT tick polls once and starts a fresh episode.
+		control.stopErr = nil
+		control.pollStopPending = true
+		require.Equal(t, 2, a.DoWork(4))
+		require.True(t, a.prepareInProgress)
+		require.False(t, runner.lastPrepared)
+		require.NoError(t, runner.lastErr)
+		require.Equal(t, 4, runner.calls)
+		require.Equal(t, 2, runner.handles)
+		require.Equal(t, 4, control.pollStopCalls)
+		require.Equal(t, 0, control.stopCalls)
+	})
+
+	t.Run("pending then prepared resumes ingress next tick", func(t *testing.T) {
+		t.Parallel()
+
+		control := &fakeLogRecordingControl{pollStopPending: true}
+		q := &QueueConsensusIngress{}
+		a := NewAgent(AgentConfig{Ingress: q})
+		a.SetLogRecordingControl(control)
+		runner := &prepareDutyRunner{agent: a, logPosition: 1234}
+		a.SetElection(runner)
+
+		require.Equal(t, 1, a.DoWork(1))
+		require.True(t, a.prepareInProgress)
+		require.Equal(t, 1, runner.calls)
+		require.Equal(t, 0, runner.handles)
+
+		q.Enqueue(frame)
+		require.Equal(t, 1, a.DoWork(2))
+		require.True(t, a.prepareInProgress)
+		require.Equal(t, 0, runner.handles)
+
+		control.pollStopPending = false
+		require.Equal(t, 1, a.DoWork(3))
+		require.True(t, runner.lastPrepared)
+		require.NoError(t, runner.lastErr)
+		require.False(t, a.prepareInProgress)
+		require.Equal(t, 0, runner.handles)
+
+		require.Equal(t, 2, a.DoWork(4))
+		require.Equal(t, 1, runner.handles)
+	})
+}
+
+// TestPrepareForNewLeadership_derivationErrorStartsFreshEpisode asserts a
+// StopPositionFor failure ends the episode. The next prepare re-runs
+// teardown and hits StopPositionFor again.
+func TestPrepareForNewLeadership_derivationErrorStartsFreshEpisode(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("derive failed")
+	control := &fakeLogRecordingControl{stopPositionForErr: errBoom}
+	catchup := &fakeCatchupControl{}
+	a := NewAgent(AgentConfig{})
+	a.SetLogRecordingControl(control)
+	a.SetCatchupControl(catchup)
+	a.localLogRecordingID = 77
+	a.lastPublishedAppendPosition = 50
+
+	got, prepared, err := a.PrepareForNewLeadership(4096, 1)
+	require.ErrorIs(t, err, errBoom)
+	require.False(t, prepared)
+	require.False(t, a.prepareInProgress)
+	require.Equal(t, recordinglog.NullPosition, got)
+	require.Equal(t, 1, catchup.stopCalls)
+	require.Equal(t, []int64{77}, control.stopPositionForCalls)
+
+	a.lastPublishedAppendPosition = 75
+	got, prepared, err = a.PrepareForNewLeadership(4096, 2)
+	require.ErrorIs(t, err, errBoom)
+	require.False(t, prepared)
+	require.False(t, a.prepareInProgress)
+	require.Equal(t, recordinglog.NullPosition, got)
+	require.Equal(t, int64(0), a.lastPublishedAppendPosition)
+	require.Equal(t, 2, catchup.stopCalls)
+	require.Equal(t, []int64{77, 77}, control.stopPositionForCalls)
+}
+
+// TestPrepareForNewLeadership_pendingThenDoneDerivesStop asserts two pending
+// ticks run teardown once. Later pending calls poll only.
+// lastPublishedAppendPosition stays 0 after teardown. The done tick returns
+// the derived stop. The done tick does not re-run teardown.
+func TestPrepareForNewLeadership_pendingThenDoneDerivesStop(t *testing.T) {
+	t.Parallel()
+
+	const (
+		recordingID     int64 = 77
+		derivedPosition int64 = 5000
+	)
+
+	control := &fakeLogRecordingControl{
+		pollStopPending:     true,
+		nextStopPositionFor: derivedPosition,
+	}
+	catchup := &fakeCatchupControl{}
+	a := NewAgent(AgentConfig{})
+	a.SetLogRecordingControl(control)
+	a.SetCatchupControl(catchup)
+	a.SetLogRecordingID(recordingID)
+	a.lastPublishedAppendPosition = 50
+	a.timeOfLastAppendPositionSendNs = 100
+
+	got, prepared, err := a.PrepareForNewLeadership(4096, 10)
+	require.NoError(t, err)
+	require.False(t, prepared)
+	require.True(t, a.prepareInProgress)
+	require.Equal(t, recordinglog.NullPosition, got)
+	require.Equal(t, 1, catchup.stopCalls)
+	require.Equal(t, 1, catchup.removeCalls)
+	require.Equal(t, 1, control.pollStopCalls)
+	require.Equal(t, 0, control.stopCalls)
+	require.Equal(t, int64(10), control.pollStopNowNs)
+	require.Equal(t, int64(0), a.lastPublishedAppendPosition)
+	require.Equal(t, int64(0), a.timeOfLastAppendPositionSendNs)
+	require.Empty(t, control.stopPositionForCalls)
+
+	a.lastPublishedAppendPosition = 99
+	got, prepared, err = a.PrepareForNewLeadership(4096, 20)
+	require.NoError(t, err)
+	require.False(t, prepared)
+	require.True(t, a.prepareInProgress)
+	require.Equal(t, recordinglog.NullPosition, got)
+	require.Equal(t, 1, catchup.stopCalls)
+	require.Equal(t, 1, catchup.removeCalls)
+	require.Equal(t, 2, control.pollStopCalls)
+	require.Equal(t, 0, control.stopCalls)
+	require.Equal(t, int64(20), control.pollStopNowNs)
+	require.Equal(t, int64(99), a.lastPublishedAppendPosition)
+	require.Empty(t, control.stopPositionForCalls)
+
+	control.pollStopPending = false
+	got, prepared, err = a.PrepareForNewLeadership(4096, 30)
+	require.NoError(t, err)
+	require.True(t, prepared)
+	require.False(t, a.prepareInProgress)
+	require.Equal(t, derivedPosition, got)
+	require.Equal(t, 1, catchup.stopCalls)
+	require.Equal(t, 1, catchup.removeCalls)
+	require.Equal(t, 3, control.pollStopCalls)
+	require.Equal(t, 0, control.stopCalls)
+	require.Equal(t, []int64{recordingID}, control.stopPositionForCalls)
 }

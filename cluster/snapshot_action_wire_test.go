@@ -292,8 +292,9 @@ func TestSnapshotActionWire_prepareThenJoin(t *testing.T) {
 	require.Positive(t, actionPos)
 	require.NotEqual(t, int64(0), actionPos)
 
-	_, err := h.cm.PrepareForNewLeadership(0, 1)
+	_, prepared, err := h.cm.PrepareForNewLeadership(0, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.False(t, h.cm.HasPendingSnapshotAction())
 	require.Equal(t, 0, h.cm.PendingServiceAckWaits())
 

@@ -3166,6 +3166,169 @@ func TestHandleInit_prepareNullPositionLeavesAppendUnchanged(t *testing.T) {
 	require.Equal(t, 1, handler.prepareCalls)
 }
 
+func TestHandleInit_holdsWhilePreparePending(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	cfg.IsNodeStartup = true
+	spy := &spyLogReplay{position: testLogPosition, done: false}
+	host := &recordingElectionHost{
+		clock: clock,
+		newLogReplay: func(_, _ int64) election.LogReplay {
+			return spy
+		},
+	}
+	handler := &recordingAgentHandler{scriptPreparePending: true}
+	deps.Host = host
+	deps.Handler = handler
+	pub := deps.Publisher.(*election.SbePublisher)
+	e := election.NewElection(cfg, deps)
+
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+	require.Equal(t, 0, handler.prepareCalls)
+
+	election.SetStateForTest(e, election.ElectionStateLeaderReplay)
+	require.Positive(t, e.DoWork(clock.nowNs+1))
+	require.Equal(t, election.ElectionStateLeaderReplay, e.State())
+	require.Equal(t, 0, spy.closeCalls)
+
+	election.SetStateForTest(e, election.ElectionStateInit)
+	pub.Reset()
+	require.Equal(t, 1, e.DoWork(clock.nowNs+2))
+	require.Equal(t, election.ElectionStateInit, e.State())
+	require.True(t, handler.IsPrepareInProgress())
+	require.Equal(t, 1, handler.prepareCalls)
+	require.Equal(t, 1, spy.closeCalls)
+	require.Empty(t, pub.Sent)
+
+	// Re-poll of a pending stop reports zero work.
+	require.Equal(t, 0, e.DoWork(clock.nowNs+3))
+	require.Equal(t, election.ElectionStateInit, e.State())
+	require.True(t, handler.IsPrepareInProgress())
+	require.Equal(t, 2, handler.prepareCalls)
+	require.Equal(t, 1, spy.closeCalls)
+	require.Empty(t, pub.Sent)
+}
+
+// electionPendingPrepare starts e with a handler that scripts prepare as
+// pending. The first Init tick must stay in Init.
+func electionPendingPrepare(
+	t *testing.T,
+	cfg election.ElectionConfig,
+	deps election.ElectionDeps,
+	nowNs int64,
+) (*election.Election, *recordingAgentHandler) {
+	t.Helper()
+
+	handler := &recordingAgentHandler{scriptPreparePending: true}
+	deps.Handler = handler
+	e := election.NewElection(cfg, deps)
+
+	require.Equal(t, 1, e.DoWork(nowNs))
+	require.Equal(t, election.ElectionStateInit, e.State())
+	require.True(t, handler.IsPrepareInProgress())
+	return e, handler
+}
+
+func TestHandleInit_exitsAfterPrepared(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	cfg.IsNodeStartup = false
+	e, handler := electionPendingPrepare(t, cfg, deps, clock.nowNs)
+	preparedAppend := cfg.AppendPosition + 50
+	handler.appendPositionReturn = preparedAppend
+	require.Equal(t, cfg.AppendPosition, e.AppendPosition())
+
+	handler.scriptPreparePending = false
+	require.Equal(t, 1, e.DoWork(clock.nowNs+1))
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+	require.Equal(t, preparedAppend, e.AppendPosition())
+	require.False(t, handler.IsPrepareInProgress())
+	require.Equal(t, 2, handler.prepareCalls)
+}
+
+func TestHandleInit_singleNodeBecomesLeaderAfterPrepared(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps := singleNodeElectionDeps(t)
+	cfg.IsNodeStartup = false
+	e, handler := electionPendingPrepare(t, cfg, deps, 1_000_000_000)
+	require.Nil(t, e.Leader())
+
+	handler.scriptPreparePending = false
+	require.Equal(t, 1, e.DoWork(1_000_000_001))
+	require.Equal(t, election.ElectionStateLeaderLogReplication, e.State())
+	require.Equal(t, e.ThisMemberID(), e.Leader().ID)
+	require.False(t, handler.IsPrepareInProgress())
+}
+
+func TestHandleInit_pendingThenErrorRecallsPrepare(t *testing.T) {
+	t.Parallel()
+
+	prepareErr := errors.New("prepare stop failed")
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	cfg.IsNodeStartup = false
+	e, handler := electionPendingPrepare(t, cfg, deps, clock.nowNs)
+
+	handler.scriptPreparePending = false
+	handler.prepareErr = prepareErr
+	require.Equal(t, 1, e.DoWork(clock.nowNs+1))
+	require.Equal(t, election.ElectionStateInit, e.State())
+	require.False(t, handler.IsPrepareInProgress())
+	require.Equal(t, prepareErr, e.LastError())
+	require.Equal(t, 2, handler.prepareCalls)
+
+	handler.prepareErr = nil
+	handler.appendPositionReturn = cfg.AppendPosition + 1
+	require.Equal(t, 1, e.DoWork(clock.nowNs+2))
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+	require.Equal(t, 3, handler.prepareCalls)
+	require.False(t, handler.IsPrepareInProgress())
+}
+
+func TestHandleInit_startupSkipsPrepare(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	cfg.IsNodeStartup = true
+	handler := &recordingAgentHandler{}
+	deps.Handler = handler
+	e := election.NewElection(cfg, deps)
+
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+	require.Equal(t, 0, handler.prepareCalls)
+	require.False(t, handler.IsPrepareInProgress())
+}
+
+// TestHandleError_pendingPrepareResumes asserts a direct HandleError keeps the
+// prepare episode open on the handler. The next Init tick polls
+// PrepareForNewLeadership.
+func TestHandleError_pendingPrepareResumes(t *testing.T) {
+	t.Parallel()
+
+	prepareErr := errors.New("direct handle error")
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	cfg.IsNodeStartup = false
+	e, handler := electionPendingPrepare(t, cfg, deps, clock.nowNs)
+	require.Equal(t, 1, handler.prepareCalls)
+
+	e.HandleError(clock.nowNs+1, prepareErr)
+	require.True(t, handler.IsPrepareInProgress())
+	require.Equal(t, prepareErr, e.LastError())
+	require.Equal(t, election.ElectionStateInit, e.State())
+	require.Equal(t, 1, handler.prepareCalls)
+
+	handler.scriptPreparePending = false
+	handler.appendPositionReturn = cfg.AppendPosition + 1
+	require.Equal(t, 1, e.DoWork(clock.nowNs+2))
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+	require.Equal(t, 2, handler.prepareCalls)
+	require.False(t, handler.IsPrepareInProgress())
+}
+
 func TestHandleLeaderInit_joinLeaderErrorFailsClosed(t *testing.T) {
 	t.Parallel()
 

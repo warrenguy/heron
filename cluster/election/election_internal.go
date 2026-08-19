@@ -44,17 +44,6 @@ func (e *Election) completeElection(nowNs int64) bool {
 	return true
 }
 
-func (e *Election) prepareForNewLeadership(nowNs int64) error {
-	lastAppendPosition, err := e.deps.Handler.PrepareForNewLeadership(e.logPosition, nowNs)
-	if err != nil {
-		return err
-	}
-	if lastAppendPosition != NullPosition {
-		e.appendPosition = lastAppendPosition
-	}
-	return nil
-}
-
 // joinLogAsFollower stamps the election's isLeaderStartup into params and runs
 // the follower log join. A join error resets the election.
 //

@@ -236,8 +236,9 @@ func TestRequestSnapshot_prepareClearsMarker(t *testing.T) {
 	require.Equal(t, 1, a.PendingServiceAckWaits())
 	require.Positive(t, waitPos)
 
-	_, err := a.PrepareForNewLeadership(0, 1)
+	_, prepared, err := a.PrepareForNewLeadership(0, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.False(t, a.HasPendingSnapshotAction())
 	require.Equal(t, int64(0), a.snapshotWaitPosition)
 	require.Equal(t, 0, a.PendingServiceAckWaits())
@@ -256,8 +257,9 @@ func TestRequestSnapshot_completeAfterPrepare(t *testing.T) {
 	waitPos := a.ExpectedAckPosition()
 	require.Equal(t, int64(0), a.ExpectedServiceAckID())
 
-	_, err := a.PrepareForNewLeadership(0, 1)
+	_, prepared, err := a.PrepareForNewLeadership(0, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.False(t, a.HasPendingSnapshotAction())
 	require.Equal(t, int64(0), a.snapshotWaitPosition)
 	require.Equal(t, 0, a.PendingServiceAckWaits())
@@ -280,8 +282,9 @@ func TestRequestSnapshot_prepareThenControlWait(t *testing.T) {
 	require.NoError(t, a.RequestSnapshot(1000))
 	waitPos := a.ExpectedAckPosition()
 
-	_, err := a.PrepareForNewLeadership(0, 1)
+	_, prepared, err := a.PrepareForNewLeadership(0, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.Equal(t, 0, a.PendingServiceAckWaits())
 
 	const controlPos int64 = 99
@@ -306,8 +309,9 @@ func TestRequestSnapshot_prepareThenWaitAtSnapshotPosition(t *testing.T) {
 	require.NoError(t, a.RequestSnapshot(1000))
 	waitPos := a.ExpectedAckPosition()
 
-	_, err := a.PrepareForNewLeadership(0, 1)
+	_, prepared, err := a.PrepareForNewLeadership(0, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.Equal(t, 0, a.PendingServiceAckWaits())
 
 	require.NoError(t, a.RequestServiceAck(waitPos))
@@ -344,8 +348,9 @@ func TestRequestSnapshot_prepareDropsQueuedSnapshotAck(t *testing.T) {
 	require.Equal(t, 1, a.pollServiceControl())
 	require.Equal(t, 1, a.ServiceAckQueueDepth(0))
 
-	_, err := a.PrepareForNewLeadership(0, 1)
+	_, prepared, err := a.PrepareForNewLeadership(0, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.Equal(t, 0, a.PendingServiceAckWaits())
 	require.Equal(t, 0, a.ServiceAckQueueDepth(0))
 	require.Equal(t, int64(1), a.ExpectedServiceAckID())
@@ -367,16 +372,18 @@ func TestRequestSnapshot_secondPrepareKeepsFirstRetiredPosition(t *testing.T) {
 	require.NoError(t, a.RequestSnapshot(1000))
 	firstPos := a.ExpectedAckPosition()
 
-	_, err := a.PrepareForNewLeadership(0, 1)
+	_, prepared, err := a.PrepareForNewLeadership(0, 1)
 	require.NoError(t, err)
+	require.True(t, prepared)
 
 	a.RoleSet(RoleLeader)
 	require.NoError(t, a.RequestSnapshot(2000))
 	secondPos := a.ExpectedAckPosition()
 	require.NotEqual(t, firstPos, secondPos)
 
-	_, err = a.PrepareForNewLeadership(0, 2)
+	_, prepared, err = a.PrepareForNewLeadership(0, 2)
 	require.NoError(t, err)
+	require.True(t, prepared)
 	require.Equal(t, 0, a.PendingServiceAckWaits())
 
 	// Late ServiceAcks at both retired positions drop before the offer.

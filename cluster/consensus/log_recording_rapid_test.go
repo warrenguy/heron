@@ -27,7 +27,36 @@ type logRecordingModel struct {
 	starts        int   // successful starts
 	stops         int   // successful stops
 	startAttempts int   // steps that reached LogRecordingControl.StartLogRecording
-	stopAttempts  int   // steps that reached LogRecordingControl.StopLogRecording
+	stopAttempts  int   // steps that reached LogRecordingControl.PollStopLogRecording
+}
+
+func prepareUntilDone(
+	t *rapid.T,
+	a *Agent,
+	control *fakeLogRecordingControl,
+	logPosition int64,
+	nowNs int64,
+	pendingTicks int,
+	scriptedStopErr error,
+) (int64, error) {
+	t.Helper()
+	for i := range pendingTicks + 1 {
+		control.pollStopPending = i < pendingTicks
+		got, prepared, err := a.PrepareForNewLeadership(logPosition, nowNs)
+		if scriptedStopErr == nil && i < pendingTicks {
+			require.NoError(t, err)
+			require.False(t, prepared)
+			require.Equal(t, recordinglog.NullPosition, got)
+			require.True(t, a.prepareInProgress)
+			continue
+		}
+		if err != nil || prepared {
+			require.False(t, a.prepareInProgress)
+			return got, err
+		}
+	}
+	require.Fail(t, "prepare pump exhausted without prepared or error")
+	return 0, nil
 }
 
 func TestRecordingLifecycle_startStopTransition_rapid(t *testing.T) {
@@ -134,10 +163,25 @@ func TestRecordingLifecycle_startStopTransition_rapid(t *testing.T) {
 				derived := logPosition + 1 + rapid.Int64Range(0, 1<<20).Draw(rt, "derivedDelta")
 				control.nextStopPositionFor = derived
 				stopPositionForBefore := len(control.stopPositionForCalls)
-				got, err := a.PrepareForNewLeadership(logPosition, int64(i+1))
+				pendingTicks := rapid.IntRange(0, 3).Draw(rt, "pendingTicks")
+				pollsBefore := control.pollStopCalls
+				got, err := prepareUntilDone(
+					rt,
+					a,
+					control,
+					logPosition,
+					int64(i+1),
+					pendingTicks,
+					scriptedStopErr,
+				)
+				wantPolls := pendingTicks + 1
+				if scriptedStopErr != nil {
+					wantPolls = 1
+				}
+				model.stopAttempts += wantPolls
+				require.Equal(rt, wantPolls, control.pollStopCalls-pollsBefore)
 
-				// Wired control always receives stop so dirty starts drain.
-				model.stopAttempts++
+				// Wired control always receives a stop poll so dirty starts drain.
 				if !model.active {
 					if scriptedStopErr != nil {
 						require.ErrorIs(rt, err, scriptedStopErr)
@@ -208,7 +252,7 @@ func TestRecordingLifecycle_startStopTransition_rapid(t *testing.T) {
 				require.NotEqual(rt, int64(nullValue), a.LocalLogRecordingID())
 			}
 			require.Equal(rt, model.active, a.IsRecordingActive())
-			require.Equal(rt, model.stopAttempts, control.stopCalls)
+			require.Equal(rt, model.stopAttempts, control.pollStopCalls)
 			require.Len(rt, control.startCalls, model.startAttempts)
 
 			for _, call := range control.startCalls {

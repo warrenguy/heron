@@ -9,9 +9,11 @@ import (
 // NoopAgentHandler is a zero-value AgentHandler stub for election wiring tests.
 type NoopAgentHandler struct{}
 
-func (NoopAgentHandler) PrepareForNewLeadership(int64, int64) (int64, error) {
-	return 0, nil
+func (NoopAgentHandler) PrepareForNewLeadership(int64, int64) (int64, bool, error) {
+	return 0, true, nil
 }
+
+func (NoopAgentHandler) IsPrepareInProgress() bool { return false }
 
 func (NoopAgentHandler) JoinLogAsLeader(int64, int64, int32, bool) error {
 	return nil

@@ -8,23 +8,42 @@ import (
 	"github.com/warrenguy/heron/cluster/consensus"
 )
 
+// handleInit holds in INIT until PrepareForNewLeadership reports prepared.
+// The first node-startup init still skips prepare.
 func (e *Election) handleInit(nowNs int64) int {
-	firstInit := e.isFirstInit
-	if firstInit {
+	skipPrepare := false
+	if e.isFirstInit {
 		e.isFirstInit = false
+		skipPrepare = e.isNodeStartup
 	} else {
 		e.clearLogReplication()
 		e.logSessionID = NullMemberID
 		e.stopReplay()
 
-		// Prepare below tears down the catchup path itself. The next install derives
-		// the join bound from its own leadership term.
+		// PrepareForNewLeadership tears down the catchup receive path. The next
+		// leadership install derives catchupJoinPosition from its own term.
 		e.catchupJoinPosition = NullPosition
 	}
-	if !firstInit || !e.isNodeStartup {
-		if err := e.prepareForNewLeadership(nowNs); err != nil {
+	pending := e.deps.Handler.IsPrepareInProgress()
+	if !skipPrepare {
+		last, prepared, err := e.deps.Handler.PrepareForNewLeadership(
+			e.logPosition,
+			nowNs,
+		)
+		if err != nil {
 			e.HandleError(nowNs, err)
 			return 1
+		}
+		if !prepared {
+			// A re-poll of a pending stop reports zero work so the idle strategy
+			// can pace the wait.
+			if pending {
+				return 0
+			}
+			return 1
+		}
+		if last != NullPosition {
+			e.appendPosition = last
 		}
 	}
 
@@ -1007,8 +1026,9 @@ func (e *Election) OnRecordingSignal(
 //   - transitions to Init with err.Error() as reason when err is non-nil
 //
 // Does not change role. Does not rewrite appendPosition. Does not read
-// NotifiedCommitPosition. The next non-first Init pass runs
-// prepareForNewLeadership.
+// NotifiedCommitPosition. Does not close an open prepare episode. The agent
+// owns the episode. The next non-first Init pass runs
+// [consensus.AgentHandler.PrepareForNewLeadership].
 //
 // The reason string is reserved. When later consumed, treat the reason as
 // untrusted (same remote text and channel URIs as LastError). The ErrorHandler

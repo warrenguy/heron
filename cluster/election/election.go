@@ -253,8 +253,8 @@ func (e *Election) State() ElectionState { return e.electionState }
 // replication helper reference.
 //
 // Behaviour: releases the archive replay session and any replay subscription
-// opened by a live helper. The state machine stays readable. [Election.State]
-// still answers after Close. Close is idempotent.
+// the helper opened. [Election.State] still answers after Close. Close is
+// idempotent.
 //
 // Concurrency: invoker-only. Call after the duty cycle has stopped. May block
 // for the archive control response timeout while the replay session stops.

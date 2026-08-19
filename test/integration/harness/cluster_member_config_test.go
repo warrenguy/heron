@@ -100,249 +100,31 @@ func TestMemberClusterConfig_storesIntegrationElection(t *testing.T) {
 func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 	t.Parallel()
 
-	type block struct {
-		name        string
-		portBase    int
-		memberCount int
-		logEndpoint string
-	}
-	blocks := []block{
-		{
-			name:        "consensus-module",
-			portBase:    ConsensusModulePortBase,
-			memberCount: 1,
-			logEndpoint: ConsensusModuleLogEndpoint,
-		},
-		{
-			name:        "runner",
-			portBase:    RunnerPortBase,
-			memberCount: 1,
-			logEndpoint: RunnerLogEndpoint,
-		},
-		{
-			name:        "module-elect",
-			portBase:    ClusterModuleElectPortBase,
-			memberCount: 3,
-			logEndpoint: ClusterModuleElectLogEndpoint,
-		},
-		{
-			name:        "member-smoke",
-			portBase:    ClusterMemberSmokePortBase,
-			memberCount: 2,
-			logEndpoint: ClusterMemberSmokeLogEndpoint,
-		},
-		{
-			name:        "member-restart",
-			portBase:    ClusterMemberRestartPortBase,
-			memberCount: 2,
-			logEndpoint: ClusterMemberRestartLogEndpoint,
-		},
-		{
-			name:        "replay",
-			portBase:    ClusterReplayPortBase,
-			memberCount: 1,
-			logEndpoint: ClusterReplayLogEndpoint,
-		},
-		{
-			name:        "durable-record",
-			portBase:    DurableRecordPortBase,
-			memberCount: 3,
-			logEndpoint: DurableRecordLogEndpoint,
-		},
-		{
-			name:        "durable-restart",
-			portBase:    DurableRestartPortBase,
-			memberCount: 3,
-			logEndpoint: DurableRestartLogEndpoint,
-		},
-		{
-			name:        "durable-reelection",
-			portBase:    DurableReElectionPortBase,
-			memberCount: 3,
-			logEndpoint: DurableReElectionLogEndpoint,
-		},
-		{
-			name:        "durable-catchup",
-			portBase:    DurableCatchupPortBase,
-			memberCount: 3,
-			logEndpoint: DurableCatchupLogEndpoint,
-		},
-		{
-			name:        "durable-divergence",
-			portBase:    DurableDivergencePortBase,
-			memberCount: 3,
-			logEndpoint: DurableDivergenceLogEndpoint,
-		},
-		{
-			name:        "durable-concurrent-catchup",
-			portBase:    DurableConcurrentCatchupPortBase,
-			memberCount: 5,
-			logEndpoint: DurableConcurrentCatchupLogEndpoint,
-		},
-		{
-			name:        "truncate",
-			portBase:    ClusterTruncatePortBase,
-			memberCount: 3,
-			logEndpoint: ClusterTruncateLogEndpoint,
-		},
-		{
-			name:        "module-commit",
-			portBase:    ClusterModuleCommitPortBase,
-			memberCount: 3,
-			logEndpoint: ClusterModuleCommitLogEndpoint,
-		},
-		{
-			name:        "module-rejoin",
-			portBase:    ClusterModuleRejoinPortBase,
-			memberCount: 3,
-			logEndpoint: ClusterModuleRejoinLogEndpoint,
-		},
-		{
-			name:        "module-reelect",
-			portBase:    ClusterModuleReElectPortBase,
-			memberCount: 3,
-			logEndpoint: ClusterModuleReElectLogEndpoint,
-		},
-		{
-			name:        "module-follower-stop",
-			portBase:    ClusterModuleFollowerStopPortBase,
-			memberCount: 3,
-			logEndpoint: ClusterModuleFollowerStopLogEndpoint,
-		},
-		{
-			name:        "durable-rank",
-			portBase:    DurableRankPortBase,
-			memberCount: 3,
-			logEndpoint: DurableRankLogEndpoint,
-		},
-		{
-			name:        "durable-restart-leader",
-			portBase:    DurableRestartLeaderPortBase,
-			memberCount: 3,
-			logEndpoint: DurableRestartLeaderLogEndpoint,
-		},
-		{
-			name:        "session-smoke",
-			portBase:    ClusterSessionSmokePortBase,
-			memberCount: 3,
-			logEndpoint: ClusterSessionSmokeLogEndpoint,
-		},
-		{
-			name:        "session-reject",
-			portBase:    ClusterSessionRejectPortBase,
-			memberCount: 3,
-			logEndpoint: ClusterSessionRejectLogEndpoint,
-		},
-		{
-			name:        "member-amplifier",
-			portBase:    ClusterMemberAmplifierPortBase,
-			memberCount: 2,
-			logEndpoint: ClusterMemberAmplifierLogEndpoint,
-		},
-		{
-			name:        "service-ack",
-			portBase:    ClusterServiceAckPortBase,
-			memberCount: 3,
-			logEndpoint: ClusterServiceAckLogEndpoint,
-		},
-		{
-			name:        "session-extend-restart",
-			portBase:    ClusterSessionExtendRestartPortBase,
-			memberCount: 3,
-			logEndpoint: ClusterSessionExtendRestartLogEndpoint,
-		},
-		{
-			name:        "session-extend-reelect",
-			portBase:    ClusterSessionExtendReElectPortBase,
-			memberCount: 3,
-			logEndpoint: ClusterSessionExtendReElectLogEndpoint,
-		},
-		{
-			name:        "multi-service",
-			portBase:    ClusterMultiServicePortBase,
-			memberCount: 3,
-			logEndpoint: ClusterMultiServiceLogEndpoint,
-		},
-		{
-			name:        "session-transfer",
-			portBase:    ClusterSessionTransferPortBase,
-			memberCount: 3,
-			logEndpoint: ClusterSessionTransferLogEndpoint,
-		},
-		{
-			name:        "service-transfer",
-			portBase:    ClusterServiceTransferPortBase,
-			memberCount: 3,
-			logEndpoint: ClusterServiceTransferLogEndpoint,
-		},
-		{
-			name:        "cluster-streams-multicast",
-			portBase:    ClusterStreamsMulticastPortBase,
-			memberCount: 2,
-			logEndpoint: ClusterStreamsMulticastLogEndpoint,
-		},
-		{
-			name:        "cluster-java",
-			portBase:    ClusterJavaPortBase,
-			memberCount: ClusterJavaMemberCount,
-			logEndpoint: ClusterJavaMixedLogEndpoint,
-		},
-	}
-
-	// Unicast-only reservations. Members derive log endpoints inside their own
-	// port block. There is no shared multicast endpoint to compare.
-	unicastBlocks := []block{
-		{
-			name:        "consensus-publications",
-			portBase:    ConsensusPublicationsPortBase,
-			memberCount: 3,
-		},
-		{
-			name:        "cluster-streams-commit",
-			portBase:    ClusterStreamsCommitPortBase,
-			memberCount: 2,
-		},
-	}
-
-	// Archive-node single control binds. Treat as one-port blocks for overlap.
-	// The live URIs derive from the same port constants.
-	type singlePort struct {
-		name string
-		port int
-	}
-	singles := []singlePort{
-		{name: "archive-smoke-0", port: ArchiveNodeSmokeControlPort0},
-		{name: "archive-pair-0", port: ArchiveNodePairControlPort0},
-		{name: "archive-pair-1", port: ArchiveNodePairControlPort1},
-	}
-
 	type portRange struct {
 		name        string
 		first, last int
 		logEndpoint string
 	}
-	ranges := make([]portRange, 0, len(blocks)+len(unicastBlocks))
-	for _, b := range blocks {
-		first := b.portBase + 1
-		last := clusterPortBlockLast(b.portBase, b.memberCount)
-		require.Greater(t, last, first, b.name)
+	multicast := multicastPortLedger()
+	unicast := unicastPortLedger()
+	singles := singlePortLedger()
+	for _, b := range multicast {
 		require.NotEmpty(t, b.logEndpoint, b.name)
+	}
+	for _, b := range unicast {
+		require.Empty(t, b.logEndpoint, b.name)
+	}
+	ranges := make([]portRange, 0, len(multicast)+len(unicast))
+	for _, b := range append(multicast, unicast...) {
+		first := b.portBase + 1
+		last := portBlockLast(b.portBase, b.memberCount)
+		require.Greater(t, last, first, b.name)
+		require.Less(t, last, linuxEphemeralPortFloor, b.name)
 		ranges = append(ranges, portRange{
 			name:        b.name,
 			first:       first,
 			last:        last,
 			logEndpoint: b.logEndpoint,
-		})
-	}
-	for _, b := range unicastBlocks {
-		first := b.portBase + 1
-		last := clusterPortBlockLast(b.portBase, b.memberCount)
-		require.Greater(t, last, first, b.name)
-		require.Empty(t, b.logEndpoint, b.name)
-		ranges = append(ranges, portRange{
-			name:  b.name,
-			first: first,
-			last:  last,
 		})
 	}
 
@@ -377,6 +159,7 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 	}
 
 	for i, a := range singles {
+		require.Less(t, a.port, linuxEphemeralPortFloor, a.name)
 		for _, b := range singles[i+1:] {
 			require.NotEqual(
 				t,
@@ -389,10 +172,42 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 	}
 }
 
-// clusterPortBlockLast returns the last unicast port a member set reserves:
-// the transfer port of the highest member id. MemberCount must be >= 1.
-func clusterPortBlockLast(portBase, memberCount int) int {
-	return cluster.CalculatePort(int32(memberCount-1), portBase, cluster.TransferPortOffset)
+func TestClientEgressPort_sitsInsideWideMemberBlocks(t *testing.T) {
+	t.Parallel()
+
+	for _, b := range append(multicastPortLedger(), unicastPortLedger()...) {
+		if b.memberCount < 2 {
+			continue
+		}
+		egress := ClientEgressPort(b.portBase)
+		require.Equal(t, b.portBase+ClientEgressOffset, egress, b.name)
+		require.True(t, portInBlock(egress, b.portBase, b.memberCount), b.name)
+		require.True(t, isReservedUDPPort(egress), b.name)
+	}
+}
+
+func TestIsReservedUDPPort_matchesLedger(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, isReservedUDPPort(ClusterServiceTransferPortBase+cluster.ClientFacingPortOffset))
+	require.True(t, isReservedUDPPort(ClientEgressPort(ClusterSessionTransferPortBase)))
+	require.True(t, isReservedUDPPort(ArchiveNodeSmokeControlPort0))
+	require.False(t, isReservedUDPPort(linuxEphemeralPortFloor))
+	require.False(t, isReservedUDPPort(55080))
+}
+
+func TestFreeUDPPorts_skipReservedRanges(t *testing.T) {
+	t.Parallel()
+
+	const n = 8
+	ports := FreeUDPPorts(t, n)
+	require.Len(t, ports, n)
+	seen := make(map[int]struct{}, n)
+	for _, port := range ports {
+		require.False(t, isReservedUDPPort(port), port)
+		require.NotContains(t, seen, port)
+		seen[port] = struct{}{}
+	}
 }
 
 // stubMediaDriver returns a MediaDriver Stop can complete without a child process.
@@ -536,6 +351,7 @@ func TestStartClusterMemberSet_appliesAmendMemberConfig(t *testing.T) {
 	require.Equal(t, []int32{0, 1}, amendedMemberIDs)
 	require.True(t, capture.Failed())
 	require.NotNil(t, set)
+	require.Equal(t, ClusterModuleElectPortBase, set.PortBase())
 	for i := range memberCount {
 		require.Same(t, auth, set.configs[i].Authenticator)
 	}
