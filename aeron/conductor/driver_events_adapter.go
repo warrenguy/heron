@@ -21,24 +21,26 @@ type DriverEventsAdapterHandlers struct {
 	UnavailableImage          UnavailableImageHandler
 	PublicationError          PublicationErrorHandler
 	CorrelatedReady           CorrelatedReadyHandler
+	// UnknownRegistration runs for ErrorCodeUnknownSubscription and
+	// ErrorCodeUnknownPublication. Invoked before the correlation reject.
+	UnknownRegistration func()
 }
 
 type DriverEventsAdapter struct {
 	copyReceiver         *CopyBroadcastReceiver
 	clientID             int64
-	errorHandler         func(error)
 	clientTimeoutHandler func()
 	handlers             DriverEventsAdapterHandlers
 	pendingRegistry      *pendingRegistry
 	unhandledEventCount  int64
-	// Permanent after ErrBroadcastLapped; Receive returns 0 with no recovery.
-	invalid bool
+	// Copy-receiver error that invalidated the adapter. Receive returns 0 after
+	// it is set.
+	invalidCause error
 }
 
 func NewDriverEventsAdapter(
 	clientID int64,
 	copyReceiver *CopyBroadcastReceiver,
-	errorHandler func(error),
 	clientTimeoutHandler func(),
 	handlers DriverEventsAdapterHandlers,
 	pendingRegistry *pendingRegistry,
@@ -46,7 +48,6 @@ func NewDriverEventsAdapter(
 	return &DriverEventsAdapter{
 		copyReceiver:         copyReceiver,
 		clientID:             clientID,
-		errorHandler:         errorHandler,
 		clientTimeoutHandler: clientTimeoutHandler,
 		handlers:             handlers,
 		pendingRegistry:      pendingRegistry,
@@ -63,7 +64,7 @@ func (adapter *DriverEventsAdapter) Receive(
 	activeCorrelationID int64,
 	pending PendingEventHandler,
 ) int {
-	if adapter.invalid {
+	if adapter.invalidCause != nil {
 		return 0
 	}
 
@@ -76,15 +77,14 @@ func (adapter *DriverEventsAdapter) Receive(
 		adapter.handleMessage(msgTypeID, buffer, offset, length, activeCorrelationID, pending)
 	})
 	if err != nil {
-		adapter.invalid = true
-		invokeErrorHandler(adapter.errorHandler, err)
+		adapter.invalidCause = err
 		return 0
 	}
 	return count
 }
 
 func (adapter *DriverEventsAdapter) IsInvalid() bool {
-	return adapter.invalid
+	return adapter.invalidCause != nil
 }
 
 func (adapter *DriverEventsAdapter) UnhandledEventCount() int64 {
@@ -216,6 +216,12 @@ func (adapter *DriverEventsAdapter) handleOperationSuccess(
 	)
 }
 
+// isUnknownRegistrationCode reports the error codes that mean the driver no
+// longer knows the registration. The driver may have removed this client.
+func isUnknownRegistrationCode(code int32) bool {
+	return code == ErrorCodeUnknownSubscription || code == ErrorCodeUnknownPublication
+}
+
 // Variable-length flyweight: decode requires exact body consumption; trailing bytes are rejected.
 func (adapter *DriverEventsAdapter) handleError(
 	buffer atomicbuffer.AtomicBuffer,
@@ -232,6 +238,9 @@ func (adapter *DriverEventsAdapter) handleError(
 	if err != nil {
 		adapter.markUnhandled()
 		return
+	}
+	if adapter.handlers.UnknownRegistration != nil && isUnknownRegistrationCode(decoded.ErrorCode) {
+		adapter.handlers.UnknownRegistration()
 	}
 	if adapter.rejectUnlessCorrelated(
 		activeCorrelationID,

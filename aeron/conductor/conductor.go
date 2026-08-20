@@ -25,6 +25,10 @@ var (
 	)
 )
 
+// HeartbeatCounterClosedError reports a previously found client heartbeat
+// timestamp counter whose record is no longer active.
+//
+// Behaviour: Unwrap returns ErrClientTimeout.
 type HeartbeatCounterClosedError struct {
 	CounterID int32
 }
@@ -34,6 +38,10 @@ func (err *HeartbeatCounterClosedError) Error() string {
 		"conductor: unexpected close of heartbeat timestamp counter: %d",
 		err.CounterID,
 	)
+}
+
+func (err *HeartbeatCounterClosedError) Unwrap() error {
+	return ErrClientTimeout
 }
 
 type DriverKeepaliveStaleError struct {
@@ -90,21 +98,22 @@ func ValidateConfig(config Config) error {
 }
 
 type Conductor struct {
-	driverProxy           *DriverProxy
-	eventsAdapter         *DriverEventsAdapter
-	countersReader        *cnc.CountersReader
-	config                Config
-	driverTimeoutMs       int64
-	idleSleepNs           int64
-	interServiceTimeoutNs int64
-	keepAliveIntervalNs   int64
-	timeOfLastKeepAliveNs int64
-	timeOfLastServiceNs   int64
-	heartbeatCounterID    int32
-	pending               pendingRegistry
-	activeCorrelationID   int64
-	receivedCorrelationID int64
-	publicationErrors     []PublicationError
+	driverProxy            *DriverProxy
+	eventsAdapter          *DriverEventsAdapter
+	countersReader         *cnc.CountersReader
+	config                 Config
+	driverTimeoutMs        int64
+	idleSleepNs            int64
+	interServiceTimeoutNs  int64
+	keepAliveIntervalNs    int64
+	timeOfLastKeepAliveNs  int64
+	timeOfLastServiceNs    int64
+	heartbeatCounterID     int32
+	livenessProbeRequested bool
+	pending                pendingRegistry
+	activeCorrelationID    int64
+	receivedCorrelationID  int64
+	publicationErrors      []PublicationError
 	// Resource maps; populated by ready handlers and subscription pre-insert.
 	publications  map[int64]PublicationHandle
 	subscriptions map[int64]SubscriptionHandle
@@ -164,7 +173,6 @@ func newConductor(
 	conductor.eventsAdapter = NewDriverEventsAdapter(
 		config.ClientID,
 		copyReceiver,
-		config.ErrorHandler,
 		conductor.handleClientTimeout,
 		DriverEventsAdapterHandlers{
 			PublicationReady:          conductor.handlePublicationReady,
@@ -174,6 +182,7 @@ func newConductor(
 			UnavailableImage:          conductor.handleUnavailableImage,
 			PublicationError:          conductor.handlePublicationError,
 			CorrelatedReady:           conductor.handleCorrelatedEvent,
+			UnknownRegistration:       conductor.handleUnknownRegistrationError,
 		},
 		&conductor.pending,
 	)
@@ -216,6 +225,12 @@ func (conductor *Conductor) service() int {
 		conductor.activeCorrelationID,
 		conductor,
 	)
+
+	// The check keeps the common tick to two field loads. consumeLivenessProbe
+	// re-checks both conditions.
+	if conductor.livenessProbeRequested || conductor.eventsAdapter.invalidCause != nil {
+		conductor.consumeLivenessProbe()
+	}
 	expireWorkCount, timedOutActiveCorrelationID := conductor.pending.ExpireBefore(
 		nowNs,
 		conductor.receivedCorrelationID,
@@ -236,6 +251,31 @@ func (conductor *Conductor) service() int {
 	return workCount
 }
 
+// consumeLivenessProbe applies a heartbeat-counter probe after Receive returns.
+//
+// Behaviour:
+//   - No-ops when already terminating.
+//   - Clears livenessProbeRequested. Dispatch has already completed.
+//   - Terminates with HeartbeatCounterClosedError when a probe or an invalid
+//     adapter finds a reclaimed heartbeat counter.
+//   - Otherwise terminates with invalidCause when the adapter is invalid.
+//
+// Concurrency: invoker-only.
+func (conductor *Conductor) consumeLivenessProbe() {
+	if conductor.terminating {
+		return
+	}
+	probeRequested := conductor.livenessProbeRequested
+	conductor.livenessProbeRequested = false
+	if invalidCause := conductor.eventsAdapter.invalidCause; invalidCause != nil {
+		conductor.terminateWithProbedCause(invalidCause)
+		return
+	}
+	if probeRequested && conductor.hasReclaimedHeartbeatCounter() {
+		conductor.terminateHeartbeatCounterClosed()
+	}
+}
+
 func (conductor *Conductor) checkTimeouts(nowNs int64) int {
 	if (conductor.timeOfLastServiceNs+conductor.idleSleepNs)-nowNs >= 0 {
 		return 0
@@ -250,12 +290,52 @@ func (conductor *Conductor) checkTimeouts(nowNs int64) int {
 	return conductor.checkLiveness(nowNs)
 }
 
+// checkServiceInterval terminates when the service interval has expired.
+//
+// Behaviour:
+//   - A reclaimed heartbeat counter terminates with HeartbeatCounterClosedError.
+//   - Otherwise terminates with ErrConductorServiceTimeout.
 func (conductor *Conductor) checkServiceInterval(nowNs int64) {
 	if (conductor.timeOfLastServiceNs+conductor.interServiceTimeoutNs)-nowNs >= 0 {
 		return
 	}
 
-	conductor.terminateWithError(ErrConductorServiceTimeout)
+	conductor.terminateWithProbedCause(ErrConductorServiceTimeout)
+}
+
+// terminateWithProbedCause terminates with HeartbeatCounterClosedError when
+// the heartbeat counter is reclaimed. Otherwise terminates with cause.
+func (conductor *Conductor) terminateWithProbedCause(cause error) {
+	if conductor.hasReclaimedHeartbeatCounter() {
+		conductor.terminateHeartbeatCounterClosed()
+		return
+	}
+	conductor.terminateWithError(cause)
+}
+
+// hasReclaimedHeartbeatCounter reports a previously found client heartbeat
+// counter whose record is no longer active for this client.
+//
+// Behaviour: reports false while the counter was never found. A reclaimed
+// or reused record means the driver removed this client. Reads record
+// state through IsCounterActive. Does not read the counter value.
+//
+// Concurrency: invoker-only.
+func (conductor *Conductor) hasReclaimedHeartbeatCounter() bool {
+	if conductor.heartbeatCounterID == cnc.NullCounterID {
+		return false
+	}
+	return !conductor.countersReader.IsCounterActive(
+		conductor.heartbeatCounterID,
+		conductor.config.ClientID,
+		cnc.ClientHeartbeatTypeID,
+	)
+}
+
+func (conductor *Conductor) terminateHeartbeatCounterClosed() {
+	conductor.terminateWithError(&HeartbeatCounterClosedError{
+		CounterID: conductor.heartbeatCounterID,
+	})
 }
 
 func (conductor *Conductor) checkLiveness(nowNs int64) int {
@@ -293,14 +373,8 @@ func (conductor *Conductor) checkLiveness(nowNs int64) int {
 			return 1
 		}
 		conductor.heartbeatCounterID = counterID
-	} else if !conductor.countersReader.IsCounterActive(
-		conductor.heartbeatCounterID,
-		conductor.config.ClientID,
-		cnc.ClientHeartbeatTypeID,
-	) {
-		conductor.terminateWithError(&HeartbeatCounterClosedError{
-			CounterID: conductor.heartbeatCounterID,
-		})
+	} else if conductor.hasReclaimedHeartbeatCounter() {
+		conductor.terminateHeartbeatCounterClosed()
 		return 1
 	}
 
@@ -325,6 +399,17 @@ func (conductor *Conductor) handleClientTimeout() {
 		return
 	}
 	conductor.terminateWithError(ErrClientTimeout)
+}
+
+// handleUnknownRegistrationError requests a heartbeat-counter probe after
+// Receive returns.
+//
+// Behaviour: sets livenessProbeRequested. Does not terminate. Dispatch
+// continues so a correlated pending can fail with DriverRegistrationError.
+//
+// Concurrency: invoker-only.
+func (conductor *Conductor) handleUnknownRegistrationError() {
+	conductor.livenessProbeRequested = true
 }
 
 // Add kinds complete in handlePublicationReady, handleExclusivePublicationReady,
@@ -625,10 +710,23 @@ func (conductor *Conductor) handlePublicationError(event PublicationError) {
 	conductor.publicationErrors = append(conductor.publicationErrors, event)
 }
 
+// terminateWithError records err as the termination cause and force-closes
+// every publication and subscription. The conductor stays terminating after
+// this call.
+//
+// Behaviour:
+//   - Sets terminating and stores err as terminationCause.
+//   - Clears every pending registration.
+//   - Force-closes resources. Does not offer REMOVE commands to the driver.
+//   - Invokes ErrorHandler with err when the handler is set.
+//
+// Concurrency: invoker-only. Callers run inside service. Must not hold
+// resourceMu.
 func (conductor *Conductor) terminateWithError(err error) {
 	conductor.terminating = true
 	conductor.terminationCause = err
 	conductor.ClearPending()
+	conductor.forceCloseResources()
 	invokeErrorHandler(conductor.config.ErrorHandler, err)
 }
 

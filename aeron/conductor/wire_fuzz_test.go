@@ -185,7 +185,6 @@ func FuzzWireDecode(f *testing.F) {
 				1,
 				nil,
 				nil,
-				nil,
 				DriverEventsAdapterHandlers{},
 				nil,
 			)

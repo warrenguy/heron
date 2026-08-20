@@ -8,16 +8,13 @@ import (
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/broadcast"
 )
 
 func TestDriverEventsAdapter_clientTimeout_matchingClient(t *testing.T) {
-	errorHandler, gotErrors := collectConductorErrors()
 	var timeoutCalled bool
 	adapter := newDriverEventsAdapterForTest(
 		t,
 		42,
-		errorHandler,
 		func() { timeoutCalled = true },
 		conductor.DriverEventsAdapterHandlers{},
 	)
@@ -27,7 +24,6 @@ func TestDriverEventsAdapter_clientTimeout_matchingClient(t *testing.T) {
 	count := adapter.Receive(conductor.NullCorrelationID, nil)
 	require.Equal(t, 1, count)
 	require.True(t, timeoutCalled)
-	require.Empty(t, *gotErrors)
 }
 
 func TestDriverEventsAdapter_duplicateClientTimeoutIgnored_adapterLevel(t *testing.T) {
@@ -50,12 +46,10 @@ func TestDriverEventsAdapter_duplicateClientTimeoutIgnored_adapterLevel(t *testi
 }
 
 func TestDriverEventsAdapter_clientTimeout_otherClient(t *testing.T) {
-	errorHandler := fatalDriverEventsAdapterErrorHandler(t)
 	var timeoutCalled bool
 	adapter := newDriverEventsAdapterForTest(
 		t,
 		42,
-		errorHandler,
 		func() { timeoutCalled = true },
 		conductor.DriverEventsAdapterHandlers{},
 	)
@@ -226,12 +220,10 @@ func TestDriverEventsAdapter_nextAvailableSessionID(t *testing.T) {
 }
 
 func TestDriverEventsAdapter_clientTimeout_shortBody(t *testing.T) {
-	errorHandler := fatalDriverEventsAdapterErrorHandler(t)
 	timeoutHandler := fatalDriverEventsAdapterTimeoutHandler(t)
 	adapter := newDriverEventsAdapterForTest(
 		t,
 		42,
-		errorHandler,
 		timeoutHandler,
 		conductor.DriverEventsAdapterHandlers{},
 	)
@@ -816,7 +808,6 @@ func TestDriverEventsAdapter_publicationReady_unrelatedCorrelation(t *testing.T)
 	adapter := newDriverEventsAdapterForTest(
 		t,
 		1,
-		fatalDriverEventsAdapterErrorHandler(t),
 		fatalDriverEventsAdapterTimeoutHandler(t),
 		conductor.DriverEventsAdapterHandlers{
 			PublicationReady: func(conductor.PublicationBuffersReady) {
@@ -921,7 +912,6 @@ func TestDriverEventsAdapter_subscriptionReady_unrelatedCorrelation(t *testing.T
 	adapter := newDriverEventsAdapterForTest(
 		t,
 		1,
-		fatalDriverEventsAdapterErrorHandler(t),
 		fatalDriverEventsAdapterTimeoutHandler(t),
 		conductor.DriverEventsAdapterHandlers{
 			SubscriptionReady: func(conductor.SubscriptionReady) {
@@ -1184,12 +1174,10 @@ func TestDriverEventsAdapter_publicationError_decodeFailure(t *testing.T) {
 }
 
 func TestDriverEventsAdapter_unhandledEvent(t *testing.T) {
-	errorHandler := fatalDriverEventsAdapterErrorHandler(t)
 	timeoutHandler := fatalDriverEventsAdapterTimeoutHandler(t)
 	adapter := newDriverEventsAdapterForTest(
 		t,
 		1,
-		errorHandler,
 		timeoutHandler,
 		conductor.DriverEventsAdapterHandlers{},
 	)
@@ -1202,34 +1190,84 @@ func TestDriverEventsAdapter_unhandledEvent(t *testing.T) {
 }
 
 func TestDriverEventsAdapter_broadcastLapped(t *testing.T) {
-	var gotErrors []error
 	adapter := newDriverEventsAdapterForTest(
 		t,
 		1,
-		func(err error) { gotErrors = append(gotErrors, err) },
-		func() { t.Fatal("timeout handler should not run") },
+		fatalDriverEventsAdapterTimeoutHandler(t),
 		conductor.DriverEventsAdapterHandlers{},
 	)
 
-	copyReceiver := adapter.CopyReceiverForTest()
-	buf := copyReceiver.BroadcastReceiver().Buffer()
-	capacity := copyReceiver.BroadcastReceiver().Capacity()
-	tx, err := broadcast.NewBroadcastTransmitter(buf)
-	require.NoError(t, err)
-
-	payload := []byte{1, 2, 3, 4, 5, 6, 7, 8}
-	fillBroadcastUntilLap(t, tx, conductor.OnClientTimeout, payload, capacity)
-	rewindBroadcastTailForLap(t, buf, capacity)
+	scriptBroadcastLap(t, adapter)
 
 	count := adapter.Receive(conductor.NullCorrelationID, nil)
 	require.Zero(t, count)
 	require.True(t, adapter.IsInvalid())
-	require.Len(t, gotErrors, 1)
-	require.ErrorIs(t, gotErrors[0], conductor.ErrBroadcastLapped)
+	require.ErrorIs(t, adapter.InvalidCauseForTest(), conductor.ErrBroadcastLapped)
 
 	count = adapter.Receive(conductor.NullCorrelationID, nil)
 	require.Zero(t, count)
-	require.Len(t, gotErrors, 1)
+	require.True(t, adapter.IsInvalid())
+	require.ErrorIs(t, adapter.InvalidCauseForTest(), conductor.ErrBroadcastLapped)
+}
+
+func TestDriverEventsAdapter_unknownRegistrationHook(t *testing.T) {
+	tests := []struct {
+		name      string
+		errorCode int32
+		payload   []byte
+		wantHook  bool
+	}{
+		{
+			name:      "unknownSubscription",
+			errorCode: conductor.ErrorCodeUnknownSubscription,
+			wantHook:  true,
+		},
+		{
+			name:      "unknownPublication",
+			errorCode: conductor.ErrorCodeUnknownPublication,
+			wantHook:  true,
+		},
+		{
+			name:      "otherCode",
+			errorCode: 11,
+		},
+		{
+			name:    "shortBody",
+			payload: []byte{0x01},
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			var hookCalls int
+			adapter := newDriverEventsAdapterForTest(
+				t,
+				1,
+				fatalDriverEventsAdapterTimeoutHandler(t),
+				conductor.DriverEventsAdapterHandlers{
+					UnknownRegistration: func() { hookCalls++ },
+				},
+			)
+			payload := testCase.payload
+			if payload == nil {
+				payload = conductor.ErrorResponseBytes(
+					pendingTestCorrelationID,
+					testCase.errorCode,
+					"unknown registration",
+				)
+			}
+			transmitConductorEvent(t, adapter, conductor.OnError, payload)
+
+			count := adapter.Receive(conductor.NullCorrelationID, nil)
+			require.Equal(t, 1, count)
+			require.Equal(t, int64(1), adapter.UnhandledEventCount())
+			if testCase.wantHook {
+				require.Equal(t, 1, hookCalls)
+			} else {
+				require.Zero(t, hookCalls)
+			}
+		})
+	}
 }
 
 func newConductorForImageAdapterTest(
@@ -1247,11 +1285,6 @@ func newConductorForImageAdapterTest(
 	return conductorInstance
 }
 
-func fatalDriverEventsAdapterErrorHandler(t *testing.T) func(error) {
-	t.Helper()
-	return func(error) { t.Fatal("error handler should not run") }
-}
-
 func fatalDriverEventsAdapterTimeoutHandler(t *testing.T) func() {
 	t.Helper()
 	return func() { t.Fatal("timeout handler should not run") }
@@ -1260,7 +1293,6 @@ func fatalDriverEventsAdapterTimeoutHandler(t *testing.T) func() {
 func newDriverEventsAdapterForTest(
 	t *testing.T,
 	clientID int64,
-	errorHandler func(error),
 	clientTimeoutHandler func(),
 	handlers conductor.DriverEventsAdapterHandlers,
 ) *conductor.DriverEventsAdapter {
@@ -1271,7 +1303,6 @@ func newDriverEventsAdapterForTest(
 	return conductor.NewDriverEventsAdapter(
 		clientID,
 		copyReceiver,
-		errorHandler,
 		clientTimeoutHandler,
 		handlers,
 		nil,
@@ -1345,12 +1376,10 @@ func testDriverEventsAdapterEventDecodeFailure(
 ) {
 	t.Helper()
 
-	errorHandler := fatalDriverEventsAdapterErrorHandler(t)
 	timeoutHandler := fatalDriverEventsAdapterTimeoutHandler(t)
 	adapter := newDriverEventsAdapterForTest(
 		t,
 		1,
-		errorHandler,
 		timeoutHandler,
 		conductor.DriverEventsAdapterHandlers{},
 	)

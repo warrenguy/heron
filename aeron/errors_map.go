@@ -16,11 +16,12 @@ import (
 
 // mapConductorError maps driver liveness failures to DriverTimeoutError.
 //
-// DriverRegistrationError and other conductor faults pass through unchanged;
-// add await maps registration errors via mapAddPollPendingError / mapAddAwaitError.
+// DriverRegistrationError and other conductor faults pass through unchanged.
+// Add await maps registration errors via mapAddPollPendingError and
+// mapAddAwaitError.
 //
 // ErrConductorServiceTimeout, ErrClientTimeout, and HeartbeatCounterClosedError
-// also pass through so callers can distinguish them.
+// pass through so callers can distinguish them.
 func mapConductorError(err error) error {
 	if err == nil {
 		return nil

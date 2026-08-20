@@ -32,7 +32,9 @@ func drawCloseAllRapidUniqueRegID(
 ) int64 {
 	rt.Helper()
 
-	return drawPendingRapidUniqueCorrelationID(rt, rapidMapContains(used), label)
+	regID := drawPendingRapidUniqueCorrelationID(rt, rapidMapContains(used), label)
+	used[regID] = struct{}{}
+	return regID
 }
 
 func assertCloseOrderPublicationsBeforeSubscriptions(
@@ -73,7 +75,6 @@ func TestConductor_CloseAllResources_ordering_rapid(t *testing.T) {
 				usedRegIDs,
 				fmt.Sprintf("regID%d", step),
 			)
-			usedRegIDs[regID] = struct{}{}
 
 			switch rapid.SampledFrom(closeAllRapidOps).Draw(rt, fmt.Sprintf("op%d", step)) {
 			case closeAllRapidOpInsertPublication:
@@ -140,5 +141,163 @@ func TestConductor_CloseResource_idempotent_rapid(t *testing.T) {
 		}
 
 		require.Equal(rt, []int{removeTypeID}, testutil.CommittedRecordTypeIDs(ring))
+	})
+}
+
+type forceCloseRapidOpKind int
+
+const (
+	forceCloseRapidOpInsertPublication forceCloseRapidOpKind = iota
+	forceCloseRapidOpInsertSubscription
+	forceCloseRapidOpForceClose
+	forceCloseRapidOpCloseAll
+)
+
+var forceCloseRapidOps = []forceCloseRapidOpKind{
+	forceCloseRapidOpInsertPublication,
+	forceCloseRapidOpInsertSubscription,
+	forceCloseRapidOpForceClose,
+	forceCloseRapidOpCloseAll,
+}
+
+// appendRemoveOfferTypeIDs returns a non-nil slice. Ring assertions compare
+// against non-nil CommittedRecordTypeIDs results.
+func appendRemoveOfferTypeIDs(
+	before []int,
+	publicationCount, subscriptionCount int,
+) []int {
+	want := make([]int, 0, len(before)+publicationCount+subscriptionCount)
+	want = append(want, before...)
+	for range publicationCount {
+		want = append(want, conductor.RemovePublication)
+	}
+	for range subscriptionCount {
+		want = append(want, conductor.RemoveSubscription)
+	}
+	return want
+}
+
+func assertMapsEmptyRingAndRetires(
+	rt *rapid.T,
+	conductorInstance *conductor.Conductor,
+	lifecycle *recordingResourceLifecycle,
+	wantTypeIDs []int,
+	wantRetirePublications, wantRetireSubscriptions int,
+) {
+	rt.Helper()
+
+	assertMapsEmptyAndRing(
+		rt,
+		conductorInstance,
+		wantTypeIDs,
+		"ring must hold exactly the expected offers",
+	)
+	require.Equal(rt, wantRetirePublications, lifecycle.retirePublicationCalls)
+	require.Equal(rt, wantRetireSubscriptions, lifecycle.retireSubscriptionCalls)
+}
+
+func TestConductor_forceCloseResources_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		lifecycle := &recordingResourceLifecycle{}
+		conductorInstance, _ := newConductorWithCloseLingerForTest(t, 0, lifecycle)
+		ring := conductorInstance.DriverProxyForTest().Ring()
+
+		usedRegIDs := make(map[int64]struct{})
+		livePublications := 0
+		liveSubscriptions := 0
+		wantRetirePublications := 0
+		wantRetireSubscriptions := 0
+
+		accountLiveRetires := func() {
+			wantRetirePublications += livePublications
+			wantRetireSubscriptions += liveSubscriptions
+			livePublications = 0
+			liveSubscriptions = 0
+		}
+
+		applyForceClose := func() {
+			rt.Helper()
+
+			beforeTypeIDs := testutil.CommittedRecordTypeIDs(ring)
+			accountLiveRetires()
+
+			conductorInstance.ForceCloseResourcesForTest()
+			assertMapsEmptyRingAndRetires(
+				rt,
+				conductorInstance,
+				lifecycle,
+				beforeTypeIDs,
+				wantRetirePublications,
+				wantRetireSubscriptions,
+			)
+
+			conductorInstance.ForceCloseResourcesForTest()
+			assertMapsEmptyRingAndRetires(
+				rt,
+				conductorInstance,
+				lifecycle,
+				beforeTypeIDs,
+				wantRetirePublications,
+				wantRetireSubscriptions,
+			)
+		}
+
+		applyCloseAll := func() {
+			rt.Helper()
+
+			beforeTypeIDs := testutil.CommittedRecordTypeIDs(ring)
+			wantTypeIDs := appendRemoveOfferTypeIDs(
+				beforeTypeIDs,
+				livePublications,
+				liveSubscriptions,
+			)
+			accountLiveRetires()
+
+			conductorInstance.CloseAllResources()
+			assertMapsEmptyRingAndRetires(
+				rt,
+				conductorInstance,
+				lifecycle,
+				wantTypeIDs,
+				wantRetirePublications,
+				wantRetireSubscriptions,
+			)
+		}
+
+		stepCount := rapid.IntRange(1, 16).Draw(rt, "stepCount")
+		for step := range stepCount {
+			switch rapid.SampledFrom(forceCloseRapidOps).Draw(rt, fmt.Sprintf("op%d", step)) {
+			case forceCloseRapidOpInsertPublication:
+				regID := drawCloseAllRapidUniqueRegID(
+					rt,
+					usedRegIDs,
+					fmt.Sprintf("pubRegID%d", step),
+				)
+				conductorInstance.InsertPublicationForTest(
+					regID,
+					stubPublication{registrationID: regID},
+				)
+				livePublications++
+			case forceCloseRapidOpInsertSubscription:
+				regID := drawCloseAllRapidUniqueRegID(
+					rt,
+					usedRegIDs,
+					fmt.Sprintf("subRegID%d", step),
+				)
+				conductorInstance.InsertSubscriptionForTest(
+					regID,
+					&stubResourceSubscription{registrationID: regID},
+				)
+				liveSubscriptions++
+			case forceCloseRapidOpForceClose:
+				applyForceClose()
+			case forceCloseRapidOpCloseAll:
+				applyCloseAll()
+			}
+		}
+
+		applyForceClose()
+		applyCloseAll()
 	})
 }

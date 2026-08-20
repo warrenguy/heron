@@ -8,30 +8,31 @@ package conductor
 // When ResourceLifecycle is nil, only map entries are removed; handle retire and
 // mark-closed are skipped.
 func (conductor *Conductor) ClosePublication(publication PublicationHandle) error {
+	if conductor.retirePublication(publication) {
+		conductor.offerRemovePublication(publication.RegistrationID())
+	}
+	return nil
+}
+
+// retirePublication retires the publication under the resource write lock.
+// Does not offer REMOVE_PUBLICATION. A locked-lookup miss marks the handle
+// closed. Returns whether a map entry was retired.
+func (conductor *Conductor) retirePublication(publication PublicationHandle) bool {
 	if isAbsentMapValue(publication) {
-		return nil
+		return false
 	}
 
 	registrationID := publication.RegistrationID()
-	if _, ok := conductor.PublicationByRegID(registrationID); !ok {
-		if conductor.resourceLifecycle != nil {
-			conductor.resourceLifecycle.MarkPublicationClosed(publication)
-		}
-		return nil
-	}
-
-	var offerRemove bool
+	var retired bool
 	conductor.underResourceWriteLock(func() {
 		pub, ok := conductor.publicationByRegID(registrationID)
 		if !ok {
+			conductor.markPublicationClosed(publication)
 			return
 		}
-		offerRemove = conductor.retirePublicationLocked(pub, registrationID)
+		retired = conductor.retirePublicationLocked(pub, registrationID)
 	})
-	if offerRemove {
-		conductor.offerRemovePublication(registrationID)
-	}
-	return nil
+	return retired
 }
 
 func (conductor *Conductor) offerDriverCommand(offer func(correlationID int64) error) {
@@ -79,30 +80,31 @@ func (conductor *Conductor) retirePublicationLocked(
 // When ResourceLifecycle is nil, only map entries are removed; handle retire and
 // mark-closed are skipped.
 func (conductor *Conductor) CloseSubscription(subscription SubscriptionHandle) error {
+	if conductor.retireSubscription(subscription) {
+		conductor.offerRemoveSubscription(subscription.RegistrationID())
+	}
+	return nil
+}
+
+// retireSubscription retires the subscription under the resource write lock.
+// Does not offer REMOVE_SUBSCRIPTION. A locked-lookup miss marks the handle
+// closed. Returns whether a map entry was retired.
+func (conductor *Conductor) retireSubscription(subscription SubscriptionHandle) bool {
 	if isAbsentMapValue(subscription) {
-		return nil
+		return false
 	}
 
 	registrationID := subscription.RegistrationID()
-	if _, ok := conductor.SubscriptionByRegID(registrationID); !ok {
-		if conductor.resourceLifecycle != nil {
-			conductor.resourceLifecycle.MarkSubscriptionClosed(subscription)
-		}
-		return nil
-	}
-
-	var offerRemove bool
+	var retired bool
 	conductor.underResourceWriteLock(func() {
 		sub, ok := conductor.subscriptionByRegID(registrationID)
 		if !ok {
+			conductor.markSubscriptionClosed(subscription)
 			return
 		}
-		offerRemove = conductor.retireSubscriptionLocked(sub, registrationID)
+		retired = conductor.retireSubscriptionLocked(sub, registrationID)
 	})
-	if offerRemove {
-		conductor.offerRemoveSubscription(registrationID)
-	}
-	return nil
+	return retired
 }
 
 func (conductor *Conductor) offerRemoveSubscription(registrationID int64) {
@@ -137,6 +139,46 @@ func (conductor *Conductor) CloseAllResources() {
 	}
 	for _, subscription := range conductor.snapshotSubscriptions() {
 		_ = conductor.CloseSubscription(subscription)
+	}
+}
+
+// forceCloseResources retires every publication and subscription. Does not
+// offer REMOVE commands to the driver.
+//
+// Behaviour:
+//   - Snapshots publications, then retires each under the resource write lock.
+//   - Snapshots subscriptions, then retires each the same way.
+//   - Retire marks closed, closes images, removes map entries, and releases
+//     log buffers with CloseLingerNs.
+//   - Write-lock re-lookup miss marks the snapshotted handle closed when
+//     ResourceLifecycle is set. Does not retire or release on that miss.
+//   - When ResourceLifecycle is nil, only map entries are removed.
+//
+// A client-timeout terminate finds the driver already removed the resources.
+// Other terminate causes leave remains for driver liveness collection.
+//
+// Concurrency: invoker-only. Must not hold resourceMu. The retire path
+// acquires the resource write lock per handle.
+//
+// Lifetime: idempotent. A later CloseAllResources finds empty maps and no-ops.
+func (conductor *Conductor) forceCloseResources() {
+	for _, publication := range conductor.snapshotPublications() {
+		conductor.retirePublication(publication)
+	}
+	for _, subscription := range conductor.snapshotSubscriptions() {
+		conductor.retireSubscription(subscription)
+	}
+}
+
+func (conductor *Conductor) markPublicationClosed(publication PublicationHandle) {
+	if conductor.resourceLifecycle != nil {
+		conductor.resourceLifecycle.MarkPublicationClosed(publication)
+	}
+}
+
+func (conductor *Conductor) markSubscriptionClosed(subscription SubscriptionHandle) {
+	if conductor.resourceLifecycle != nil {
+		conductor.resourceLifecycle.MarkSubscriptionClosed(subscription)
 	}
 }
 

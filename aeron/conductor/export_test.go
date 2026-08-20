@@ -187,6 +187,24 @@ func SeedLogBuffersRegistryForTest(
 	return nil
 }
 
+// ForceCloseResourcesForTest retires every publication and subscription.
+// Does not offer REMOVE. Production terminate uses terminateWithError.
+func (conductor *Conductor) ForceCloseResourcesForTest() {
+	conductor.forceCloseResources()
+}
+
+// ForceClosePublicationForTest force-closes one publication. Does not offer
+// REMOVE.
+func (conductor *Conductor) ForceClosePublicationForTest(publication PublicationHandle) {
+	conductor.retirePublication(publication)
+}
+
+// ForceCloseSubscriptionForTest force-closes one subscription. Does not offer
+// REMOVE.
+func (conductor *Conductor) ForceCloseSubscriptionForTest(subscription SubscriptionHandle) {
+	conductor.retireSubscription(subscription)
+}
+
 // InsertPublicationForTest is for conductor_test.
 //
 // Cross-package callers use RegisterPublicationForTest behind the testhooks build tag.
@@ -305,6 +323,11 @@ func ValidateLogFileNameForTest(logFileName, mediaDriverDir string) error {
 
 func PublicationErrorsForTest(conductor *Conductor) []PublicationError {
 	return slices.Clone(conductor.publicationErrors)
+}
+
+// InvalidCauseForTest returns the stored adapter invalidation cause, or nil.
+func (adapter *DriverEventsAdapter) InvalidCauseForTest() error {
+	return adapter.invalidCause
 }
 
 // CorrelatedForTest reports whether correlationID passes the async ready peek gate.

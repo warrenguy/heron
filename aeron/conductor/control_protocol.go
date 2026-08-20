@@ -37,6 +37,9 @@ const (
 	OnNextAvailableSessionID    = 0x0F0D
 
 	SystemCounterControlProtocolVersion = cnc.SystemCounterControlProtocolVersionID
+
+	ErrorCodeUnknownSubscription int32 = 2
+	ErrorCodeUnknownPublication  int32 = 3
 )
 
 var ControlProtocolVersion = cnc.ComposeSemanticVersion(1, 0, 0)

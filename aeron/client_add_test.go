@@ -1583,6 +1583,91 @@ func TestClient_Add_clientTimeoutTerminationCause(t *testing.T) {
 	}
 }
 
+func addLiveClientSubscription(
+	t *testing.T,
+	client *Client,
+	fixture *testutil.ConductorFixture,
+) *Subscription {
+	t.Helper()
+
+	correlationID, err := client.OfferAddSubscription(clientAddStreamID, clientAddChannel)
+	require.NoError(t, err)
+	conductor.SubscriptionReadyForTest(
+		fixture.Conductor,
+		clientAddSubscriptionReadyEvent(correlationID),
+	)
+	sub, done, err := client.PollAddSubscription(correlationID)
+	require.NoError(t, err)
+	require.True(t, done)
+	require.NotNil(t, sub)
+	return sub
+}
+
+func addLiveClientPublication(
+	t *testing.T,
+	client *Client,
+	fixture *testutil.ConductorFixture,
+	logPath string,
+) *Publication {
+	t.Helper()
+
+	fixture.Conductor.SetCountersReaderForTest(countersReaderForClientAddTest(t))
+	correlationID, err := client.OfferAddPublication(clientAddStreamID, clientAddChannel)
+	require.NoError(t, err)
+	conductor.PublicationReadyForTest(
+		fixture.Conductor,
+		clientAddPublicationReadyEvent(correlationID, logPath),
+	)
+	pub, done, err := client.PollAddPublication(correlationID)
+	require.NoError(t, err)
+	require.True(t, done)
+	require.NotNil(t, pub)
+	return pub
+}
+
+func TestClient_terminateClosesResourceView(t *testing.T) {
+	var nanoNs int64
+	dir, logPath := setupClientAddPublicationLog(t)
+	client, fixture := newClientAddFixture(
+		t,
+		func() int64 { return nanoNs },
+		time.Second,
+		time.Millisecond,
+		dir,
+	)
+
+	sub := addLiveClientSubscription(t, client, fixture)
+	pub := addLiveClientPublication(t, client, fixture, logPath)
+
+	require.False(t, client.IsTerminating())
+	require.False(t, sub.IsClosed())
+	require.False(t, pub.IsClosed())
+
+	beforeTypeIDs := testutil.CommittedRecordTypeIDs(fixture.Ring)
+	require.NoError(
+		t,
+		fixture.Transmit(
+			conductor.OnClientTimeout,
+			testutil.ClientTimeoutPayload(testutil.TestClientID),
+		),
+	)
+	require.Equal(t, 1, client.DoWork())
+
+	require.True(t, client.IsTerminating())
+	require.ErrorIs(t, fixture.Conductor.TerminationCause(), conductor.ErrClientTimeout)
+	require.True(t, sub.IsClosed())
+	require.True(t, pub.IsClosed())
+	require.Equal(t, Closed, pub.Offer([]byte{1}))
+	require.Equal(t, 0, client.PublicationCountForTest())
+	require.Equal(t, 0, client.SubscriptionCountForTest())
+	require.Equal(
+		t,
+		beforeTypeIDs,
+		testutil.CommittedRecordTypeIDs(fixture.Ring),
+		"terminate must not offer REMOVE",
+	)
+}
+
 func TestClient_AddSubscription_insertsMapOnSyntheticReady(t *testing.T) {
 	var nanoNs int64
 	dir := t.TempDir()

@@ -251,6 +251,48 @@ func closePublicationForCloseTest(
 	return conductorInstance.ClosePublication(handle.(conductor.PublicationHandle))
 }
 
+func closeSubscriptionForCloseTest(
+	t *testing.T,
+	conductorInstance *conductor.Conductor,
+	handle any,
+) error {
+	t.Helper()
+
+	return conductorInstance.CloseSubscription(handle.(conductor.SubscriptionHandle))
+}
+
+func removePublicationForCloseTest(
+	conductorInstance *conductor.Conductor,
+	handle any,
+) {
+	conductorInstance.RemovePublicationForTest(
+		handle.(conductor.PublicationHandle).RegistrationID(),
+	)
+}
+
+func removeSubscriptionForCloseTest(
+	conductorInstance *conductor.Conductor,
+	handle any,
+) {
+	conductorInstance.RemoveSubscriptionForTest(
+		handle.(conductor.SubscriptionHandle).RegistrationID(),
+	)
+}
+
+func forceClosePublicationForCloseTest(
+	conductorInstance *conductor.Conductor,
+	handle any,
+) {
+	conductorInstance.ForceClosePublicationForTest(handle.(conductor.PublicationHandle))
+}
+
+func forceCloseSubscriptionForCloseTest(
+	conductorInstance *conductor.Conductor,
+	handle any,
+) {
+	conductorInstance.ForceCloseSubscriptionForTest(handle.(conductor.SubscriptionHandle))
+}
+
 func insertFileBackedRealPublicationForCloseTest(
 	tb testing.TB,
 	conductorInstance *conductor.Conductor,
@@ -276,6 +318,17 @@ func insertRealSubscriptionForCloseTest(
 	sub := aeron.NewTestSubscriptionForHooks(tb)
 	conductorInstance.InsertSubscriptionForTest(sub.RegistrationID(), sub)
 	return sub
+}
+
+func seedLivePublicationAndSubscription(
+	tb testing.TB,
+	conductorInstance *conductor.Conductor,
+) (*aeron.Publication, *aeron.Subscription) {
+	tb.Helper()
+
+	pub := insertRealPublicationForCloseTest(tb, conductorInstance)
+	sub := insertRealSubscriptionForCloseTest(tb, conductorInstance)
+	return pub, sub
 }
 
 func seedFullDriverRingForCloseTest(
@@ -311,6 +364,53 @@ func assertDrainLingerRetainedThenSwept(
 	*nanoNs = startNs + lingerNs
 	require.Equal(t, 1, conductorInstance.DrainLingeringLogBuffers())
 	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+}
+
+func assertMapsEmptyAndRing(
+	tb testutil.TB,
+	conductorInstance *conductor.Conductor,
+	wantTypeIDs []int,
+	msg string,
+) {
+	tb.Helper()
+
+	require.Equal(
+		tb,
+		0,
+		conductorInstance.PublicationCountForTest(),
+		"publication map must be empty",
+	)
+	require.Equal(
+		tb,
+		0,
+		conductorInstance.SubscriptionCountForTest(),
+		"subscription map must be empty",
+	)
+	require.Equal(
+		tb,
+		wantTypeIDs,
+		testutil.CommittedRecordTypeIDs(conductorInstance.DriverProxyForTest().Ring()),
+		msg,
+	)
+}
+
+func assertForceClosedResources(
+	tb testing.TB,
+	conductorInstance *conductor.Conductor,
+	pub *aeron.Publication,
+	sub *aeron.Subscription,
+	beforeTypeIDs []int,
+) {
+	tb.Helper()
+
+	assertMapsEmptyAndRing(
+		tb,
+		conductorInstance,
+		beforeTypeIDs,
+		"force close must not offer REMOVE",
+	)
+	require.True(tb, pub.IsClosed(), "publication must report closed")
+	require.True(tb, sub.IsClosed(), "subscription must report closed")
 }
 
 func TestConductor_CloseResource_retireBeforeRemoveOffer(t *testing.T) {
@@ -489,6 +589,170 @@ func TestConductor_CloseAllResources_removeOffersBeforeClientClose(t *testing.T)
 		[]int{conductor.RemovePublication, conductor.RemoveSubscription},
 		typeIDs,
 	)
+}
+
+func TestConductor_forceCloseResources_retiresWithoutRemoveOffer(t *testing.T) {
+	t.Parallel()
+
+	const startNs int64 = 23_000_000_000
+	const lingerNs int64 = int64(time.Second)
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "force-close.log")
+
+	conductorInstance, nanoNs := newConductorWithCloseLingerForTest(
+		t,
+		lingerNs,
+		aeron.ConductorResourceLifecycle,
+	)
+	*nanoNs = startNs
+
+	pub := insertFileBackedRealPublicationForCloseTest(t, conductorInstance, logPath)
+	sub := insertRealSubscriptionForCloseTest(t, conductorInstance)
+	ring := conductorInstance.DriverProxyForTest().Ring()
+	beforeTypeIDs := testutil.CommittedRecordTypeIDs(ring)
+
+	require.False(t, pub.IsClosed())
+	require.False(t, sub.IsClosed())
+	require.Equal(t, 1, conductorInstance.PublicationCountForTest())
+	require.Equal(t, 1, conductorInstance.SubscriptionCountForTest())
+
+	conductorInstance.ForceCloseResourcesForTest()
+	assertForceClosedResources(t, conductorInstance, pub, sub, beforeTypeIDs)
+
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+	assertRegistryLingerScheduled(t, registry, logPath, startNs, lingerNs)
+
+	conductorInstance.ForceCloseResourcesForTest()
+	assertForceClosedResources(t, conductorInstance, pub, sub, beforeTypeIDs)
+
+	conductorInstance.CloseAllResources()
+	assertForceClosedResources(t, conductorInstance, pub, sub, beforeTypeIDs)
+}
+
+func TestConductor_forceCloseResources_nilLifecycle_removesMapsWithoutRemoveOffer(t *testing.T) {
+	t.Parallel()
+
+	conductorInstance := newConductorForTest(t, conductorTestConfig(t, func(error) {}, fixedClocks{}))
+	conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+	conductorInstance.InsertSubscriptionForTest(22, &stubResourceSubscription{registrationID: 22})
+	beforeTypeIDs := testutil.CommittedRecordTypeIDs(conductorInstance.DriverProxyForTest().Ring())
+
+	require.Equal(t, 1, conductorInstance.PublicationCountForTest())
+	require.Equal(t, 1, conductorInstance.SubscriptionCountForTest())
+
+	conductorInstance.ForceCloseResourcesForTest()
+	assertMapsEmptyAndRing(
+		t,
+		conductorInstance,
+		beforeTypeIDs,
+		"force close must not offer REMOVE",
+	)
+
+	conductorInstance.ForceCloseResourcesForTest()
+	assertMapsEmptyAndRing(
+		t,
+		conductorInstance,
+		beforeTypeIDs,
+		"second force close must not offer REMOVE",
+	)
+
+	conductorInstance.CloseAllResources()
+	assertMapsEmptyAndRing(
+		t,
+		conductorInstance,
+		beforeTypeIDs,
+		"CloseAllResources after force close must not offer REMOVE",
+	)
+}
+
+// resourceMapMissCase drives the map-miss tests for both the public Close*
+// path and the force-close path.
+type resourceMapMissCase struct {
+	name       string
+	insert     func(t *testing.T, conductorInstance *conductor.Conductor) any
+	remove     func(conductorInstance *conductor.Conductor, handle any)
+	close      func(t *testing.T, conductorInstance *conductor.Conductor, handle any) error
+	forceClose func(conductorInstance *conductor.Conductor, handle any)
+	count      func(conductorInstance *conductor.Conductor) int
+	closed     func(handle any) bool
+}
+
+func resourceMapMissCases() []resourceMapMissCase {
+	return []resourceMapMissCase{
+		{
+			name: "publication",
+			insert: func(t *testing.T, conductorInstance *conductor.Conductor) any {
+				return insertRealPublicationForCloseTest(t, conductorInstance)
+			},
+			remove:     removePublicationForCloseTest,
+			close:      closePublicationForCloseTest,
+			forceClose: forceClosePublicationForCloseTest,
+			count:      (*conductor.Conductor).PublicationCountForTest,
+			closed: func(handle any) bool {
+				return handle.(*aeron.Publication).IsClosed()
+			},
+		},
+		{
+			name: "exclusivePublication",
+			insert: func(t *testing.T, conductorInstance *conductor.Conductor) any {
+				return insertRealExclusivePublicationForCloseTest(t, conductorInstance)
+			},
+			remove:     removePublicationForCloseTest,
+			close:      closePublicationForCloseTest,
+			forceClose: forceClosePublicationForCloseTest,
+			count:      (*conductor.Conductor).PublicationCountForTest,
+			closed: func(handle any) bool {
+				return handle.(*aeron.ExclusivePublication).IsClosed()
+			},
+		},
+		{
+			name: "subscription",
+			insert: func(t *testing.T, conductorInstance *conductor.Conductor) any {
+				return insertRealSubscriptionForCloseTest(t, conductorInstance)
+			},
+			remove:     removeSubscriptionForCloseTest,
+			close:      closeSubscriptionForCloseTest,
+			forceClose: forceCloseSubscriptionForCloseTest,
+			count:      (*conductor.Conductor).SubscriptionCountForTest,
+			closed: func(handle any) bool {
+				return handle.(*aeron.Subscription).IsClosed()
+			},
+		},
+	}
+}
+
+func TestConductor_forceCloseResources_mapMiss_marksClosed(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range resourceMapMissCases() {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			conductorInstance := newConductorWithResourceLifecycleForTest(
+				t,
+				aeron.ConductorResourceLifecycle,
+			)
+			beforeTypeIDs := testutil.CommittedRecordTypeIDs(
+				conductorInstance.DriverProxyForTest().Ring(),
+			)
+
+			handle := testCase.insert(t, conductorInstance)
+			testCase.remove(conductorInstance, handle)
+			require.False(t, testCase.closed(handle))
+			require.Equal(t, 0, testCase.count(conductorInstance))
+
+			testCase.forceClose(conductorInstance, handle)
+			require.True(t, testCase.closed(handle))
+			require.Equal(t, 0, testCase.count(conductorInstance))
+			require.Equal(
+				t,
+				beforeTypeIDs,
+				testutil.CommittedRecordTypeIDs(conductorInstance.DriverProxyForTest().Ring()),
+				"map-miss force close must not offer REMOVE",
+			)
+		})
+	}
 }
 
 func TestConductor_CloseResource_zeroLinger_immediateUnmap(t *testing.T) {
@@ -697,64 +961,7 @@ func TestConductor_CloseResource_idempotent(t *testing.T) {
 func TestConductor_CloseResource_mapMiss_marksClosed(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name   string
-		insert func(t *testing.T, conductorInstance *conductor.Conductor) any
-		remove func(conductorInstance *conductor.Conductor, handle any)
-		close  func(t *testing.T, conductorInstance *conductor.Conductor, handle any) error
-		closed func(handle any) bool
-	}{
-		{
-			name: "publication",
-			insert: func(t *testing.T, conductorInstance *conductor.Conductor) any {
-				return insertRealPublicationForCloseTest(t, conductorInstance)
-			},
-			remove: func(conductorInstance *conductor.Conductor, handle any) {
-				pub := handle.(*aeron.Publication)
-				conductorInstance.RemovePublicationForTest(pub.RegistrationID())
-			},
-			close: closePublicationForCloseTest,
-			closed: func(handle any) bool {
-				return handle.(*aeron.Publication).IsClosed()
-			},
-		},
-		{
-			name: "exclusivePublication",
-			insert: func(t *testing.T, conductorInstance *conductor.Conductor) any {
-				return insertRealExclusivePublicationForCloseTest(t, conductorInstance)
-			},
-			remove: func(conductorInstance *conductor.Conductor, handle any) {
-				pub := handle.(*aeron.ExclusivePublication)
-				conductorInstance.RemovePublicationForTest(pub.RegistrationID())
-			},
-			close: closePublicationForCloseTest,
-			closed: func(handle any) bool {
-				return handle.(*aeron.ExclusivePublication).IsClosed()
-			},
-		},
-		{
-			name: "subscription",
-			insert: func(t *testing.T, conductorInstance *conductor.Conductor) any {
-				return insertRealSubscriptionForCloseTest(t, conductorInstance)
-			},
-			remove: func(conductorInstance *conductor.Conductor, handle any) {
-				sub := handle.(*aeron.Subscription)
-				conductorInstance.RemoveSubscriptionForTest(sub.RegistrationID())
-			},
-			close: func(
-				t *testing.T,
-				conductorInstance *conductor.Conductor,
-				handle any,
-			) error {
-				return conductorInstance.CloseSubscription(handle.(conductor.SubscriptionHandle))
-			},
-			closed: func(handle any) bool {
-				return handle.(*aeron.Subscription).IsClosed()
-			},
-		},
-	}
-
-	for _, testCase := range tests {
+	for _, testCase := range resourceMapMissCases() {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
