@@ -69,18 +69,31 @@ jobs:
             bench-baseline-${{ matrix.goarch }}-main-
             bench-baseline-${{ matrix.goarch }}-
           path: .bench
-          fail-on-cache-miss: true
-
-      - name: Verify baseline cache
-        run: |
-          test -s .bench/baseline.txt
-          grep -q '^Benchmark' .bench/baseline.txt
-          echo "baseline cache key: ${{ steps.bench-cache.outputs.cache-matched-key }}"
+          fail-on-cache-miss: false
 
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+
+      # Cache is a fast path. On a miss, generate a baseline from the PR base.
+      - name: Ensure baseline
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if test -s .bench/baseline.txt && grep -q '^Benchmark' .bench/baseline.txt; then
+            echo "baseline cache key: ${{ steps.bench-cache.outputs.cache-matched-key }}"
+          else
+            echo "baseline cache missing or empty"
+            rm -rf .bench
+            git fetch --depth=1 origin "${BASE_SHA}"
+            git worktree add --detach "${RUNNER_TEMP}/bench-base" "${BASE_SHA}"
+            make -C "${RUNNER_TEMP}/bench-base" bench-baseline
+            mv "${RUNNER_TEMP}/bench-base/.bench" .bench
+            test -s .bench/baseline.txt
+            grep -q '^Benchmark' .bench/baseline.txt
+          fi
 
       - name: Benchmark regression
         run: make bench-regression
