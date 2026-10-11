@@ -1,12 +1,27 @@
 # Heron
 
-Pure-Go [Aeron](https://github.com/aeron-io/aeron) transport, cluster, and
-archive clients.
+Pure Go [Aeron](https://github.com/aeron-io/aeron) transport, archive, and
+cluster clients, plus an experimental cluster consensus module and service
+container.
 
-Heron implements Aeron's shared-memory and wire protocols directly against an
-Aeron media driver (C or Java), targeting behavioural parity with the Java
-client stack. It uses no cgo (`unsafe` only for zero-copy buffer access),
-supports little-endian `amd64` and `arm64`, and embeds no media driver.
+Heron implements Aeron's shared memory and wire protocols directly against an
+external Aeron media driver (C or Java), targeting behavioural parity with the
+Java stack.
+
+## Status
+
+Measured against the Java stack at the Aeron release pinned in
+[`specs/versions.yaml`](specs/versions.yaml).
+
+| Component | Package | Status | Main gaps |
+|-----------|---------|--------|-----------|
+| Transport client | `aeron` | Functional | Counters, publication MDC destinations, `Image.reject`, block and raw poll, `ChannelUri` builder |
+| Archive client | `archive` | Partial | Recording listing, position queries, replication, `ReplayMerge` |
+| Cluster client | `cluster/client` | Functional | Controlled egress dispatch, egress listener extensions |
+| Consensus module | `cluster` | Experimental | Snapshots, log replication between members, termination, cluster control, admin requests |
+| Service container | `cluster/service` | Experimental | Egress to clients, snapshots, recovery, termination |
+
+Detail per component: [STATUS.md](STATUS.md).
 
 ## Getting started
 
@@ -104,15 +119,6 @@ for {
 Blocking `Connect` and recording APIs drive `DoWork` during awaits; otherwise pump
 `transport.DoWork()` then `session.Poll()` (`Poll` never calls `DoWork`). Configure a
 recording signal handler or signals drop when control events are polled.
-
-## Status
-
-The transport client and the cluster and archive session clients are
-functional against the pinned Aeron release. All clients are invoker-driven
-today; background conductor and cluster session threads are planned, as are
-transport counter registration, dynamic MDC destinations,
-`Subscription.ControlledPoll`, `ControlledEgressHandler` dispatch, cluster
-admin requests beyond snapshot, and the cluster server (consensus service).
 
 ## Examples
 

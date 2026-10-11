@@ -15,15 +15,17 @@ Importable packages under `github.com/warrenguy/heron/...`.
 | `mmap` | Unix mmap for driver/CnC shared-memory files |
 | `record` | Shared record header constants for ring and broadcast buffers |
 | `ringbuffer` | `ManyToOneRingBuffer`: fixed Agrona wire layout for CnC/driver rings |
-| `timerwheel` | Agrona `DeadlineTimerWheel`: hashed deadline wheel (`Wheel`, O(1) cancel) |
-| `wire` | Wire primitives: `CheckLength`, fixed-width int64 and bool-byte put/get |
-| `cluster/client` | `Config`, `AsyncConnect`, `AeronCluster`, egress handlers |
+| `timerwheel` | Agrona `DeadlineTimerWheel`: hashed deadline wheel (O(1) cancel) |
+| `wire` | Wire primitives: length checks, fixed-width int64 and bool-byte put/get |
+| `cluster` | Consensus module member assembly: configuration, recovery, channel topology, log streams, duty cycle runner |
+| `cluster/client` | Cluster client: connect, ingress, egress polling, leader failover |
 | `cluster/codecs` | SBE flyweights in `clusterwire/`; see **SBE codecs** below |
-| `cluster/consensus` | `Role`, `ElectionRunner`, `AgentHandler`, cluster counter type IDs |
-| `cluster/election` | SBE flyweights in `nodewire/`; see **SBE codecs** below |
-| `cluster/recordinglog` | Recording log: `Open`, `Reload`, entry compare, recovery plan over `recording.log` |
-| `archive`, `archive/codecs` | Client + codecs: SBE flyweights in `archivewire/`; `Config`, `AsyncConnect`, `Proxy`, `Client` - see [archive client](README.md#archive-client) |
-| `aeron` | Transport client: `Connect`, `Client`, `Publication`, `Subscription`, `ExclusivePublication` |
+| `cluster/consensus` | Consensus agent: log publication and adaptation, client sessions, timers, service acks, catchup and truncation |
+| `cluster/election` | Election state machine, cluster members, `node-state.dat`; SBE flyweights in `nodewire/` |
+| `cluster/recordinglog` | Recording log (`recording.log`) access and recovery planning |
+| `cluster/service` | Clustered service container: service callbacks, log consumption, service agent |
+| `archive`, `archive/codecs` | Archive client: connect, recording and replay control, recording signals; SBE flyweights in `archivewire/` - see [archive client](README.md#archive-client) |
+| `aeron` | Transport client: driver connection, publications, subscriptions, images |
 | `aeron/{conductor,cnc,logbuffer}` | Transport internals: conductor, CnC, logbuffer |
 
 Low-level layout packages (`atomicbuffer`, `broadcast`, `record`, `ringbuffer`, `wire`)
@@ -42,25 +44,8 @@ SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/ve
 
 ## Tests
 
-```bash
-make check        # lint, pins, SBE stale, unit+stress, contract-oracles (needs java + mvn)
-make test-all     # check + rapid + integration + cluster-archive + compose smokes
-make test-rapid                  # property tests (pgregory.net/rapid)
-make test-election-sim           # election fault sim soak (CI; not part of make check)
-make test-replication-sim        # replication commit-safety sim soak (CI; not part of make check)
-make test-integration            # live C aeronmd (-tags=integration)
-make contract-oracles            # all four contract suites below (needs mvn + java)
-make test-java-interop-contract  # Go/Java smoke: streams, payloads, timeouts (no driver)
-make test-cluster-sbe-contract   # Go/Java cluster SBE wire bytes vs catalog.json (no driver)
-make test-cluster-java-contract  # Go/Java cluster harness constants (no driver)
-make test-archive-java-contract  # Go/Java archive harness constants (no driver)
-make test-java-interop           # Docker Compose smoke (bidirectional IPC pub/sub)
-make test-cluster-java           # Docker Compose smoke (AsyncConnect + echo roundtrip)
-make test-cluster-java-failover  # Docker Compose 3-node leader failover
-make test-archive-java           # Docker Compose smoke (record, recording.log, PlanRecovery, replay)
-make test-cluster-mixed-java-leader # Docker Compose mixed Go/Java (java-leader)
-make test-cluster-mixed-go-leader   # Docker Compose mixed Go/Java (go-leader)
-```
+`make help` lists every target with a one-line description, including the
+contract suites and Docker Compose smokes.
 
 **Contract suites** (`make contract-oracles` and the four `*-contract` targets): run `mvn test`
 (Java goldens) then matching Go oracle tests. No aeronmd or Docker.
@@ -81,7 +66,8 @@ make test-cluster-mixed-go-leader   # Docker Compose mixed Go/Java (go-leader)
 | `test-archive-java` | `scripts/archive-java-smoke.sh` | Compose image (built by make target) |
 | `test-cluster-mixed-java-leader` | `scripts/cluster-mixed-smoke.sh java-leader` | Compose image (built by make target) |
 | `test-cluster-mixed-go-leader` | `scripts/cluster-mixed-smoke.sh go-leader` | Compose image (built by make target) |
-| `test-cluster-java` | (none) | Embedded (no image step) |
+| `test-cluster-java` | `scripts/cluster-java-smoke.sh` | Embedded (no image step) |
+| `test-cluster-mixed-service` | `scripts/cluster-mixed-service-smoke.sh` | Embedded (no image step) |
 
 Scripts do not build the image. Run `make aeronmd-compose-image` first, or any of the
 Compose-image rows above.

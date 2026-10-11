@@ -1,0 +1,162 @@
+# Status
+
+Feature status per component, measured against the Java stack at the Aeron
+release pinned in [`specs/versions.yaml`](specs/versions.yaml).
+
+## Transport client (`aeron`)
+
+Works:
+
+- Connect to a C or Java media driver; driver keepalive, driver timeout and
+  client timeout detection.
+- Blocking and async add and remove of publications, exclusive publications and
+  subscriptions.
+- `Offer` (fragmented up to the maximum message length) and `TryClaim` on
+  concurrent and exclusive publications.
+- `Subscription` and `Image` `Poll`, `ControlledPoll` and `BoundedControlledPoll`;
+  fragment and controlled fragment assemblers.
+- Multi-destination subscriptions (`Subscription.AddDestination` /
+  `RemoveDestination`).
+- Available and unavailable image handlers.
+
+Partial:
+
+- `Subscription.Poll` runs on the goroutine that calls `Client.DoWork`; only
+  `Publication.Offer` may run from other goroutines.
+- Closing a subscription or the client does not call `UnavailableImageHandler`
+  for its images.
+- Publication error frames are received but not delivered to the application.
+
+Not implemented:
+
+- Counters: `addCounter`, static counters, available and unavailable counter
+  handlers.
+- Publication destinations (manual MDC `addDestination` / `removeDestination`).
+- `Image.reject`, `blockPoll` / `rawPoll`, `controlledPeek`,
+  `ExclusivePublication.appendPadding` / `offerBlock`, publication revoke.
+- `ChannelUri` and `ChannelUriStringBuilder`.
+- Background conductor thread, client name, close handlers, driver termination
+  request.
+
+## Archive client (`archive`)
+
+Covers the operations the cluster needs.
+
+Works:
+
+- Connect with challenge/response authentication; close.
+- Start and stop recording (optionally waiting for the recording signal), extend
+  recording, replay, stop replay, list a single recording, truncate.
+- Recording signal dispatch.
+
+Not implemented:
+
+- `listRecordings`, `listRecordingsForUri`, `listRecordingSubscriptions`,
+  `findLastMatchingRecording`.
+- Position queries: recording, start, stop and max recorded position.
+- Bounded replay, `ReplayParams`, `stopAllReplays`, `ReplayMerge`,
+  `PersistentSubscription`.
+- Replication, purge, segment operations, archive id request.
+- Automatic control session keepalive: the proxy has `TryKeepAlive`, but the
+  client never sends it.
+
+## Cluster client (`cluster/client`)
+
+Works:
+
+- `Connect` and `AsyncConnect` with authentication challenge and leader
+  redirect.
+- Ingress by per member endpoints or a single channel; `Offer`, `TryClaim`,
+  keepalive and the snapshot admin request.
+- Egress polling with fragment reassembly; leader failover on `NewLeaderEvent`;
+  close.
+
+Partial:
+
+- With the default exclusive ingress publication, `Offer` returns
+  `UnsupportedMessageLength` for messages larger than one frame instead of
+  fragmenting.
+- `TryClaim` copies the payload on commit rather than writing in place.
+- Errors are untyped; there is no error handler hook.
+
+Not implemented:
+
+- Controlled egress dispatch: `ControlledEgressHandler` and
+  `Config.ControlledEgressHandler` exist but are not used.
+- Egress listener extensions, vector ingress offer, `IngressSessionDecorator`.
+
+## Consensus module (`cluster`, `cluster/consensus`, `cluster/election`, `cluster/recordinglog`)
+
+Experimental. Runs a cluster of Go members over live media drivers, with an
+external Java Archive per member.
+
+Works:
+
+- Election (all upstream election states); `recording.log` and
+  `node-state.dat` byte-compatible with Java.
+- Leader commit and quorum; log publication; log recording on every member.
+- Follower catchup by archive replay within a term; divergent log truncation;
+  member restart and rejoin.
+- Client sessions: connect, authentication, messages, keepalive, timeout, close,
+  and transfer to a new leader.
+- Service ack coordination with Go service containers; cluster timers.
+
+Partial:
+
+- Restart replays the local log to recover position only; sessions and timers
+  are not rebuilt.
+- Followers do not track committed timer events, so a new leader may fire a
+  timer again.
+- Cluster time unit is always nanoseconds; Java members of a mixed cluster need
+  a nanosecond cluster clock.
+- Mixed Java/Go clusters: only a cold start with an appointed leader is
+  supported.
+- A Go leader needs a multicast log channel (no publication MDC destinations in
+  the transport).
+
+Not implemented:
+
+- Snapshots: taking and loading. Startup refuses a recovery plan that contains
+  snapshots.
+- Log replication between members: a member behind the new leader's term base
+  cannot rejoin.
+- Termination and shutdown, cluster control and node control toggles, the module
+  state machine.
+- Admin requests: the client snapshot request works only against a Java
+  cluster.
+- Cluster counters, mark file, backup and standby, `ClusterTool`, extensions,
+  authorisation service, service messages.
+
+## Service container (`cluster/service`)
+
+Experimental.
+
+Works:
+
+- Joins the cluster log and consumes it up to the commit position.
+- Session open, close and message, timer, and new leadership term callbacks;
+  schedule and cancel timers.
+- Service ack protocol; several services per member.
+
+Partial:
+
+- `TakeSnapshot` is called on a snapshot action, but `service.Open` passes a nil
+  publication and nothing is recorded.
+- The caller drives `Agent.DoWork` and the transport client, and supplies the
+  commit position as a function; there is no commit position counter lookup.
+
+Not implemented:
+
+- Egress to clients: there is no `ClientSession`, so a service cannot reply to
+  clients.
+- Recovery: snapshot loading; a service always starts from log position 0.
+- Termination, `onRoleChange`, `onTerminate`, background work.
+- Service messages to the log, closing client sessions, mark file, counters.
+
+## Out of scope
+
+- Media driver (an external C or Java driver is required).
+- Archive server and archive tooling.
+- Java launchers (`ClusteredMediaDriver`, `ClusteredArchive`,
+  `ClusterBackupMediaDriver`).
+- System property configuration.
