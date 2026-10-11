@@ -10,7 +10,7 @@ on:
 # GOARCH must match runner arch (see Makefile SUPPORTED_GOARCHES).
 jobs:
   lint:
-    runs-on: heron-linux-k8s
+    runs-on: ubuntu-24.04
     env: &amd64-env
       GOARCH: amd64
     steps:
@@ -42,7 +42,7 @@ jobs:
 
   oracles:
     if: &skip-drafts github.event_name == 'push' || github.event.pull_request.draft == false
-    runs-on: heron-linux-k8s
+    runs-on: ubuntu-24.04
     env: *amd64-env
     steps:
       - *checkout-step
@@ -80,9 +80,9 @@ jobs:
       matrix:
         include:
           - goarch: amd64
-            runner: heron-linux-k8s
-          # - goarch: arm64
-          #   runner: ubuntu-24.04-arm
+            runner: ubuntu-24.04
+          - goarch: arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     env: &go-arch-env
       GOARCH: ${{ matrix.goarch }}
@@ -95,7 +95,7 @@ jobs:
         run: make check-test
 
   property:
-    runs-on: heron-linux-k8s
+    runs-on: ubuntu-24.04
     env: *amd64-env
     steps:
       - *checkout-step
@@ -107,7 +107,7 @@ jobs:
 
   election-sim:
     if: *skip-drafts
-    runs-on: heron-linux-k8s
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     env: *amd64-env
     steps:
@@ -129,7 +129,7 @@ jobs:
 
   replication-sim:
     if: *skip-drafts
-    runs-on: heron-linux-k8s
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     env: *amd64-env
     steps:
@@ -176,7 +176,7 @@ jobs:
 
   docker-smokes:
     if: *skip-drafts
-    runs-on: heron-linux-k8s
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     env: *amd64-env
     steps:
@@ -193,9 +193,10 @@ jobs:
 
   cluster-archive:
     if: *skip-drafts
-    runs-on: heron-linux-k8s
+    strategy: *go-matrix
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
-    env: *amd64-env
+    env: *go-arch-env
     steps:
       - *checkout-step
       - *go-arch-cache-marker-step
@@ -215,7 +216,7 @@ jobs:
         github.event.pull_request.draft == false
       )
     needs: [lint, oracles, unit, property, election-sim, replication-sim, integration, docker-smokes, cluster-archive]
-    runs-on: heron-linux-k8s
+    runs-on: ubuntu-24.04
     steps:
       - *checkout-step
       - name: All required jobs passed
