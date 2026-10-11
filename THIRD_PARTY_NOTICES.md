@@ -1,8 +1,8 @@
 # Third-Party Notices
 
 Heron includes material derived from Aeron (Real Logic Limited), licensed under
-the Apache License, Version 2.0. The full license text is at
-<https://www.apache.org/licenses/LICENSE-2.0>.
+the Apache License, Version 2.0. The full license text is in
+[LICENSE-APACHE](LICENSE-APACHE).
 
 Upstream Aeron pin: see `specs/versions.yaml`.
 

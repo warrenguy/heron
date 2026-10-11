@@ -131,4 +131,12 @@ Build, test, SBE codec, and benchmark workflows: [CONTRIBUTING.md](CONTRIBUTING.
 
 ## License
 
-MIT - see [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
+
+Heron includes material derived from Aeron under the Apache License 2.0; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

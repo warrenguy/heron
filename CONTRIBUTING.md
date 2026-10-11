@@ -167,3 +167,10 @@ Optional env:
 VS Code / GitHub Codespaces configs live under `.devcontainer/`. Default (check) covers
 `make check`; docker adds Docker-outside-of-Docker for integration and compose smokes. See
 [.devcontainer/README.md](.devcontainer/README.md).
+
+## License
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in Heron, as defined in the Apache License 2.0, is dual licensed
+under the MIT license and the Apache License 2.0, as described in the
+[README](README.md#license), without any additional terms or conditions.
