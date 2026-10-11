@@ -4,8 +4,33 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      gomod:
+        patterns:
+          - "*"
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: maven
+    directories:
+      - /test/integration/archive_java
+      - /test/integration/cluster_java
+      - /test/integration/cluster_sbe
+      - /test/integration/golden_fixtures
+      - /test/integration/java_interop
+    schedule:
+      interval: weekly
+    # Aeron is pinned in specs/versions.yaml and bumped by hand.
+    ignore:
+      - dependency-name: "io.aeron:*"
+    groups:
+      maven:
+        patterns:
+          - "*"
