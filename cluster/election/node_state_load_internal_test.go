@@ -16,7 +16,7 @@ func TestValidateFramedRecord_rejectsTruncatedCandidateTermBody(t *testing.T) {
 		SetTemplateId(nodewire.CandidateTermSbeTemplateID).
 		SetSchemaId(nodewire.CandidateTermSbeSchemaID).
 		SetVersion(nodewire.CandidateTermSbeSchemaVersion).
-		SetFrameLength(candidateTermFramedLength())
+		SetFrameLength(candidateTermFramedLength)
 
 	err := validateFramedRecord(buf, 8, nodewire.CandidateTermSbeTemplateID)
 	require.ErrorIs(t, err, ErrCorruptNodeState)
