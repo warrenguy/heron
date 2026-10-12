@@ -28,6 +28,7 @@ linters:
   default: standard
   enable:
     - exhaustive
+    - gosec
     - lll
     - testifylint
   settings:
@@ -44,6 +45,21 @@ linters:
       - path: '_test\.go$'
         linters:
           - exhaustive
+      # Tests, test helpers and examples do not ship in the library.
+      - path: '(_test\.go$|^test/|^examples/|(^|/)internal/(testhook|testutil)/|/cnctest/|(^|/)test_hooks\.go$|_fixtures?(_bench)?\.go$)'
+        linters:
+          - gosec
+      # These packages open Aeron files at paths their callers supply.
+      - path: '^(mmap|aeron/cnc|aeron/logbuffer|cluster/recordinglog)/'
+        linters:
+          - gosec
+        text: 'G304:'
+      # atomicbuffer exists to wrap unsafe.
+      - path: '^atomicbuffer/'
+        linters:
+          - gosec
+        text: 'G103:'
 
 issues:
+  max-issues-per-linter: 0
   max-same-issues: 0

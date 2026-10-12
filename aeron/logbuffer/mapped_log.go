@@ -45,6 +45,7 @@ func MapLogBufferFromBytes(data []byte) (*MappedLogBuffer, error) {
 }
 
 func MapLogFile(path string) (*MappedLogBuffer, error) {
+	// The driver supplies the log file name over the CnC.
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return nil, fmt.Errorf("logbuffer: open %s: %w", path, err)

@@ -46,6 +46,7 @@ func encodeWithArchiveWireHeader(
 }
 
 func archiveVarString(data []byte) string {
+	//nolint:gosec // G103: converts data to a string without copying; the SBE setter copies it
 	return unsafe.String(unsafe.SliceData(data), len(data))
 }
 
