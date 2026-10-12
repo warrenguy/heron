@@ -360,6 +360,23 @@ func TestNewExclusivePublicationFromReadyForTest_wrongLogType(t *testing.T) {
 	)
 }
 
+func TestNewExclusivePublicationFromReadyForTest_invalidMTU(t *testing.T) {
+	log := aeron.NewTestMappedLogForTest(t, aeron.DefaultTestExclusivePublicationLogConfig())
+	t.Cleanup(func() { _ = log.Close() })
+	meta, err := log.MetaDataBuffer()
+	require.NoError(t, err)
+	meta.PutInt32(logbuffer.OffsetMTULength, 1400)
+
+	counters := aeron.NewTestCountersReaderForTest(t, 1_000_000)
+	_, err = aeron.NewExclusivePublicationFromReadyForTest(
+		aeron.PublicationBuffersReadyForTest(),
+		log,
+		counters,
+		"aeron:ipc",
+	)
+	require.EqualError(t, err, "logbuffer: mtu length not frame aligned: 1400")
+}
+
 func TestNewExclusivePublicationFromReadyForTest_inactiveChannelCounter(t *testing.T) {
 	log := aeron.NewTestMappedLogForTest(t, aeron.DefaultTestExclusivePublicationLogConfig())
 	t.Cleanup(func() { _ = log.Close() })

@@ -48,6 +48,17 @@ func CheckPageSize(pageSize int) error {
 	return checkPowerOfTwoRange("page size", pageSize, PageMinSize, PageMaxSize)
 }
 
+// CheckMTULength mirrors Java Configuration.validateMtuLength.
+func CheckMTULength(mtuLength int) error {
+	if mtuLength <= DataHeaderLength || mtuLength > MaxUDPPayloadLength {
+		return fmt.Errorf("logbuffer: mtu length out of range: %d", mtuLength)
+	}
+	if mtuLength%FrameAlignment != 0 {
+		return fmt.Errorf("logbuffer: mtu length not frame aligned: %d", mtuLength)
+	}
+	return nil
+}
+
 func rawLogLength(termLength int) (int64, error) {
 	maxTerm := int(math.MaxInt64 / int64(PartitionCount))
 	if termLength > maxTerm {
