@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Bidirectional Java/Go IPC smoke: compose up -d (aeronmd + go + java), then
 # wait for go and java exit 0. Go runs TestJavaInteropDuplex; Java runs JavaDuplex.
-# Requires java-interop-aeronmd image (make test-java-interop runs aeronmd-compose-image).
+# Requires java-interop-aeronmd image (make smoke-java-interop runs aeronmd-compose-image).
 #
 # Per-run compose project (-p heron-java-interop-$$) so concurrent smokes do not
 # share stacks. force-recreate avoids reusing leftover one-shot go/java under the

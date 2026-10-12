@@ -56,12 +56,12 @@ func TestMixedHarnessConstants(t *testing.T) {
 		{
 			name: "MixedComposeSkipHintJavaLeader",
 			got:  clusterjava.MixedComposeSkipHintJavaLeader,
-			want: "cluster mixed requires docker compose; run make test-cluster-mixed-java-leader",
+			want: "cluster mixed requires docker compose; run make smoke-cluster-mixed-java-leader",
 		},
 		{
 			name: "MixedComposeSkipHintGoLeader",
 			got:  clusterjava.MixedComposeSkipHintGoLeader,
-			want: "cluster mixed requires docker compose; run make test-cluster-mixed-go-leader",
+			want: "cluster mixed requires docker compose; run make smoke-cluster-mixed-go-leader",
 		},
 		{name: "PortBase", got: clusterjava.PortBase, want: 9000},
 		{name: "MixedMemberCount", got: clusterjava.MixedMemberCount, want: 3},

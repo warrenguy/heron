@@ -38,9 +38,9 @@ const (
 
 	// Skip-hint strings name the make target for each mixed compose overlay.
 	MixedComposeSkipHintJavaLeader = "cluster mixed " + composeSkipRunMake +
-		"test-cluster-mixed-java-leader"
+		"smoke-cluster-mixed-java-leader"
 	MixedComposeSkipHintGoLeader = "cluster mixed " + composeSkipRunMake +
-		"test-cluster-mixed-go-leader"
+		"smoke-cluster-mixed-go-leader"
 
 	MixedMemberCount = 3
 	MixedGoMemberID  = int32(2)

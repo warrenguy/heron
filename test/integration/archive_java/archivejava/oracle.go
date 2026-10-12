@@ -47,7 +47,7 @@ const (
 const (
 	ComposeGateEnvKey  = "HERON_ARCHIVE_JAVA_COMPOSE"
 	composeSkipRunMake = "requires docker compose; run make "
-	ComposeSkipHint    = "archive java " + composeSkipRunMake + "test-archive-java"
+	ComposeSkipHint    = "archive java " + composeSkipRunMake + "smoke-archive-java"
 
 	// ArchiveDirEnvKey is the ArchiveNode env key for the archive data directory.
 	ArchiveDirEnvKey = "HERON_ARCHIVE_DIR"

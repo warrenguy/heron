@@ -59,14 +59,14 @@ const (
 	ComposeDirEnvKey           = "HERON_CLUSTER_JAVA_COMPOSE_DIR"
 	FailoverComposeProfileName = "failover"
 	composeSkipRunMake         = "requires docker compose; run make "
-	ComposeSkipHint            = "cluster java " + composeSkipRunMake + "test-cluster-java"
-	FailoverComposeSkipHint    = "failover " + composeSkipRunMake + "test-cluster-java-failover"
+	ComposeSkipHint            = "cluster java " + composeSkipRunMake + "smoke-cluster-java"
+	FailoverComposeSkipHint    = "failover " + composeSkipRunMake + "smoke-cluster-java-failover"
 
 	// MixedServiceComposeGateEnvKey is set to "1" by the mixed-service overlay.
 	MixedServiceComposeGateEnvKey = "HERON_CLUSTER_MIXED_SERVICE_COMPOSE"
 
 	MixedServiceComposeSkipHint = "cluster mixed service " +
-		composeSkipRunMake + "test-cluster-mixed-service"
+		composeSkipRunMake + "smoke-cluster-mixed-service"
 )
 
 const (

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Mixed Go/Java cluster compose smoke. Exactly one overlay per run.
-# Requires the java-interop-aeronmd image. make test-cluster-mixed-java-leader
-# (or test-cluster-mixed-go-leader) runs aeronmd-compose-image first.
+# Requires the java-interop-aeronmd image. make smoke-cluster-mixed-java-leader
+# (or smoke-cluster-mixed-go-leader) runs aeronmd-compose-image first.
 #
 # Isolation per run:
 # - Compose project HERON_COMPOSE_PROJECT=heron-cluster-mixed-$$ with -p
 # - Per-run /24 under 172.30.0.0/16 (third octet from shell PID and attempt)
 #
 # Each overlay uses a disjoint third-octet range. Parallel mixed smokes under
-# test-docker-smokes therefore start on different /24 pools.
+# make smokes therefore start on different /24 pools.
 #
 # The PID walks the range. Docker IPAM is daemon-global, so another process or
 # a foreign 172.30.x.0/24 may still hold the pick. compose up then fails on pool

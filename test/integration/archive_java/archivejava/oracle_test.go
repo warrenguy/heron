@@ -59,7 +59,7 @@ func TestHarnessConstants(t *testing.T) {
 		{
 			name: "ComposeSkipHint",
 			got:  archivejava.ComposeSkipHint,
-			want: "archive java requires docker compose; run make test-archive-java",
+			want: "archive java requires docker compose; run make smoke-archive-java",
 		},
 		{
 			name: "ArchiveDirEnvKey",

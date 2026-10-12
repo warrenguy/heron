@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Failover compose smoke: 3 cluster nodes + aeronmd + go; wait for go exit 0.
-# Requires java-interop-aeronmd image (make test-cluster-java-failover runs
+# Requires java-interop-aeronmd image (make smoke-cluster-java-failover runs
 # aeronmd-compose-image). Go runs TestClusterFailoverSmoke (leader kill).
 # Needs docker.sock; DOCKER_GID from getent group docker when present (override if
 # socket GID differs).
