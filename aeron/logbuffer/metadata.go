@@ -67,13 +67,17 @@ func ParseMetadataView(meta atomicbuffer.AtomicBuffer) (MetadataView, error) {
 	if err != nil {
 		return MetadataView{}, err
 	}
+	mtuLength := MTULength(meta)
+	if err := CheckMTULength(int(mtuLength)); err != nil {
+		return MetadataView{}, err
+	}
 
 	defaultHeaderOffset := OffsetDefaultFrameHeader
 	return MetadataView{
 		InitialTermID: meta.GetInt32(OffsetInitialTermID),
 		TermLength:    termLength,
 		PageSize:      pageSize,
-		MTULength:     MTULength(meta),
+		MTULength:     mtuLength,
 		SessionID:     meta.GetInt32(defaultHeaderOffset + OffsetSessionID),
 		StreamID:      meta.GetInt32(defaultHeaderOffset + OffsetStreamID),
 		CorrelationID: meta.GetInt64(OffsetCorrelationID),

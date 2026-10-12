@@ -204,6 +204,27 @@ func TestCheckPageSize(t *testing.T) {
 	}
 }
 
+func TestCheckMTULength(t *testing.T) {
+	require.NoError(t, logbuffer.CheckMTULength(logbuffer.TestMTULength))
+	require.NoError(t, logbuffer.CheckMTULength(logbuffer.MaxUDPPayloadLength))
+
+	cases := []struct {
+		name      string
+		mtuLength int
+		wantErr   string
+	}{
+		{"header length", 32, "logbuffer: mtu length out of range: 32"},
+		{"above maximum", 65536, "logbuffer: mtu length out of range: 65536"},
+		{"not frame aligned", 1400, "logbuffer: mtu length not frame aligned: 1400"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := logbuffer.CheckMTULength(tc.mtuLength)
+			require.EqualError(t, err, tc.wantErr)
+		})
+	}
+}
+
 func TestTermAndMetaOffsets(t *testing.T) {
 	termLength := logbuffer.TestTermLength
 	cases := []struct {

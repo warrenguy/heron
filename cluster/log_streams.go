@@ -523,8 +523,7 @@ func logPublicationSeedFromPlan(
 //   - seed.Position is negative
 //   - seed.Position is not frame-aligned
 //   - seed.TermBufferLength fails [logbuffer.CheckTermLength]
-//   - seed.MtuLength is non-positive, not frame-aligned, or above
-//     MaxUDPPayloadLength
+//   - seed.MtuLength fails [logbuffer.CheckMTULength]
 func logChannelWithInitialPosition(
 	channel string,
 	seed *LogPublicationInitialPosition,
@@ -545,9 +544,8 @@ func logChannelWithInitialPosition(
 	if err := logbuffer.CheckTermLength(int(seed.TermBufferLength)); err != nil {
 		return "", fmt.Errorf("cluster: log initial position term length: %w", err)
 	}
-	mtu := seed.MtuLength
-	if mtu <= 0 || mtu > logbuffer.MaxUDPPayloadLength || mtu&(logbuffer.FrameAlignment-1) != 0 {
-		return "", fmt.Errorf("cluster: log initial position mtu %d is invalid", mtu)
+	if err := logbuffer.CheckMTULength(int(seed.MtuLength)); err != nil {
+		return "", fmt.Errorf("cluster: log initial position mtu length: %w", err)
 	}
 
 	bitsToShift := logbuffer.PositionBitsToShift(int(seed.TermBufferLength))
@@ -568,7 +566,7 @@ func logChannelWithInitialPosition(
 		out, channelTermLengthParam, strconv.FormatInt(int64(seed.TermBufferLength), 10),
 	)
 	out = putOrReplaceChannelParam(
-		out, channelMTUParam, strconv.FormatInt(int64(mtu), 10),
+		out, channelMTUParam, strconv.FormatInt(int64(seed.MtuLength), 10),
 	)
 	return out, nil
 }

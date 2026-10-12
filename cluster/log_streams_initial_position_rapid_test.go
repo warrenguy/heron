@@ -25,7 +25,7 @@ func TestLogChannelWithInitialPosition_geometry_rapid(t *testing.T) {
 
 		// MTU must be frame-aligned and within the UDP payload ceiling.
 		maxMtuFrames := logbuffer.MaxUDPPayloadLength / logbuffer.FrameAlignment
-		mtuFrames := rapid.IntRange(1, maxMtuFrames).Draw(rt, "mtuFrames")
+		mtuFrames := rapid.IntRange(2, maxMtuFrames).Draw(rt, "mtuFrames")
 		mtu := int32(mtuFrames * logbuffer.FrameAlignment)
 
 		// Non-zero stream position: at least one frame into some term.
@@ -95,7 +95,7 @@ func TestLogChannelWithInitialPosition_zeroPosition_rapid(t *testing.T) {
 		shift := rapid.IntRange(16, 20).Draw(rt, "shift")
 		termLength := 1 << shift
 		initialTermID := rapid.Int32().Draw(rt, "initTermID")
-		mtuFrames := rapid.IntRange(1, 64).Draw(rt, "mtuFrames")
+		mtuFrames := rapid.IntRange(2, 64).Draw(rt, "mtuFrames")
 		mtu := int32(mtuFrames * logbuffer.FrameAlignment)
 
 		const base = "aeron:udp?endpoint=239.255.12.1:9004"

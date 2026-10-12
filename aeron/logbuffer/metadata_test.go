@@ -170,3 +170,13 @@ func TestParseMetadataView_invalidPageSize(t *testing.T) {
 		),
 	)
 }
+
+func TestParseMetadataView_invalidMTU(t *testing.T) {
+	buf := make([]byte, logbuffer.MetaDataLength)
+	meta := atomicbuffer.Wrap(buf)
+	meta.PutInt32(logbuffer.OffsetTermLength, logbuffer.TestTermLength)
+	meta.PutInt32(logbuffer.OffsetPageSize, logbuffer.TestPageSize)
+
+	_, err := logbuffer.ParseMetadataView(meta)
+	require.EqualError(t, err, "logbuffer: mtu length out of range: 0")
+}

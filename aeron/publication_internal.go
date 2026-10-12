@@ -68,9 +68,6 @@ func newPublicationFromReady(
 	); err != nil {
 		return nil, err
 	}
-	if err := logbuffer.CheckMTULength(int(metadata.MTULength)); err != nil {
-		return nil, err
-	}
 
 	termBufferLength := log.TermLength()
 	positionBitsToShift := logbuffer.PositionBitsToShift(termBufferLength)
