@@ -464,6 +464,8 @@ func (ac *AsyncConnect) pollPollResponse() (*ConnectResult, error) {
 			return nil, ac.clusterExceptionFromDetail("authentication rejected")
 		case EventCodeError:
 			return nil, ac.clusterExceptionFromDetail("connect error")
+		case EventCodeClosed, EventCodeNullValue:
+			return nil, nil
 		default:
 			return nil, ac.clusterExceptionFromDetail(
 				fmt.Sprintf("unexpected session event code %d", ac.egressPoller.EventCode()),

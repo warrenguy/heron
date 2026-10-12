@@ -1332,6 +1332,55 @@ func TestAsyncConnect_pollResponse_sessionEventErrors(t *testing.T) {
 	}
 }
 
+func TestAsyncConnect_pollResponse_sessionEventIgnoredCodes(t *testing.T) {
+	t.Parallel()
+
+	for _, code := range []clusterwire.EventCode{
+		clusterwire.EventCode_CLOSED,
+		clusterwire.EventCode_NULL_VALUE,
+	} {
+		t.Run(code.String(), func(t *testing.T) {
+			t.Parallel()
+
+			harness, ac := setupAsyncConnect(t, "")
+			t.Cleanup(func() { _ = ac.Close() })
+
+			pollUntilConnectPollResponse(t, harness, ac, func(h *aeron.AsyncConnectTestHarness) {
+				h.RespondPendingAdds()
+			})
+			correlation := ac.CorrelationIDForTest()
+			termBuffer := egressTermBufferForAsyncConnect(t, ac)
+
+			fields := defaultSessionEventFields(nil)
+			fields.CorrelationID = correlation
+			fields.Code = code
+			writeUnfragmentedWireToTerm(
+				t,
+				termBuffer,
+				encodeSessionEventWireWithFields(
+					t,
+					egressTestClusterSessionID,
+					fields,
+					clusterwire.SessionEventSbeSchemaVersion,
+				),
+			)
+			result, err := ac.Poll()
+			require.NoError(t, err)
+			require.Nil(t, result)
+			require.Equal(t, ConnectStatePollResponse, ac.State())
+
+			appendUnfragmentedWireToTerm(
+				t,
+				termBuffer,
+				encodeOKSessionEventWireForConnect(t, correlation, 0, nil),
+			)
+			_, err = ac.Poll()
+			require.NoError(t, err)
+			require.NotEqual(t, ConnectStatePollResponse, ac.State())
+		})
+	}
+}
+
 func TestAsyncConnect_pollResponse_sessionEventRedirectCode(t *testing.T) {
 	t.Parallel()
 
