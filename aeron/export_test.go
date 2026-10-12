@@ -1361,7 +1361,7 @@ func SubscriptionInjectNilImageAtIndexForTest(sub *Subscription, index int) {
 	sub.images = slices.Insert(sub.images, index, nil)
 }
 
-func SubscriptionSetRoundRobinIndexForTest(sub *Subscription, index uint32) {
+func SubscriptionSetRoundRobinIndexForTest(sub *Subscription, index int) {
 	sub.roundRobinIndex = index
 }
 
@@ -1379,7 +1379,7 @@ func SubscriptionSetUnavailableImageHandlerForTest(
 	sub.SetUnavailableImageHandler(handler)
 }
 
-func SubscriptionRoundRobinIndexForTest(sub *Subscription) uint32 {
+func SubscriptionRoundRobinIndexForTest(sub *Subscription) int {
 	return sub.roundRobinIndex
 }
 

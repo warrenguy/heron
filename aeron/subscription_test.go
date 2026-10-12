@@ -149,7 +149,7 @@ func TestSubscription_Poll_closedReturnsZero(t *testing.T) {
 	sub := testSubscription(t)
 	addTestImage(t, sub)
 
-	const wantIndex uint32 = 3
+	const wantIndex = 3
 	aeron.SubscriptionSetRoundRobinIndexForTest(sub, wantIndex)
 
 	require.NoError(t, sub.Close())
@@ -515,7 +515,7 @@ func TestSubscription_ControlledPoll_closedLeavesRoundRobin(t *testing.T) {
 	sub := testSubscription(t)
 	addTestImage(t, sub)
 
-	const wantIndex uint32 = 3
+	const wantIndex = 3
 	aeron.SubscriptionSetRoundRobinIndexForTest(sub, wantIndex)
 
 	require.NoError(t, sub.Close())
