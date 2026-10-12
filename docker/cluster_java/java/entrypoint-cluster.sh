@@ -12,8 +12,9 @@ JAVA_OPTS=(
 	-Daeron.ipc.term.buffer.length="${AERON_IPC_TERM_BUFFER_LENGTH:-65536}"
 	-Dheron.debug=true
 	# Aeron's 10s defaults are too tight for CI.
-	-Daeron.driver.timeout="${AERON_DRIVER_TIMEOUT:-30s}"
+	-Daeron.driver.timeout="${AERON_DRIVER_TIMEOUT:-30000}"
 	-Daeron.client.liveness.timeout="${AERON_CLIENT_LIVENESS_TIMEOUT:-30s}"
+	-Daeron.publication.unblock.timeout="${AERON_PUBLICATION_UNBLOCK_TIMEOUT:-35s}"
 )
 
 # Optional: raise the Java startup canvass window (Agrona getDurationInNanos units).
