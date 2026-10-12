@@ -60,6 +60,21 @@ func ClusterMessageLayoutAt(buf []byte, offset, maxVarLen int) (ClusterMessageLa
 	return clusterMessageAt(buf, offset, maxVarLen)
 }
 
+// wrapArgs returns the WrapForDecode arguments for the fixed block. ok is
+// false when the block does not fit in buf.
+func (layout ClusterMessageLayout) wrapArgs(
+	buf []byte,
+) (body, block, version, bufLen uint64, ok bool) {
+	if layout.BodyOffset < 0 || layout.BodyOffset > len(buf)-int(layout.BlockLength) {
+		return 0, 0, 0, 0, false
+	}
+	return uint64(layout.BodyOffset),
+		uint64(layout.BlockLength),
+		uint64(layout.ActingVersion),
+		uint64(len(buf)),
+		true
+}
+
 // clusterFieldsFromLayout decodes fixed-block fields from an already parsed
 // layout. Returns false on template mismatch. Does not rescan var fields; use
 // tryDecodeClusterAt when var bounds still need checking.
@@ -72,13 +87,11 @@ func clusterFieldsFromLayout[T any](
 	if layout.TemplateID != templateID {
 		return fields, false
 	}
-	return decode(
-		buf,
-		uint64(layout.BodyOffset),
-		uint64(layout.BlockLength),
-		uint64(layout.ActingVersion),
-		uint64(len(buf)),
-	), true
+	body, block, version, bufLen, ok := layout.wrapArgs(buf)
+	if !ok {
+		return fields, false
+	}
+	return decode(buf, body, block, version, bufLen), true
 }
 
 // SessionMessageHeaderFieldsFromLayout decodes SessionMessageHeader from a parsed layout.
@@ -190,16 +203,12 @@ func NewLeadershipTermEventFieldsFromLayout(
 	buf []byte,
 	layout ClusterMessageLayout,
 ) (NewLeadershipTermEventFields, bool) {
-	if layout.TemplateID != clusterwire.NewLeadershipTermEventSbeTemplateID {
-		return NewLeadershipTermEventFields{}, false
-	}
-	return decodeNewLeadershipTermEventFields(
+	return clusterFieldsFromLayout(
 		buf,
-		uint64(layout.BodyOffset),
-		uint64(layout.BlockLength),
-		uint64(layout.ActingVersion),
-		uint64(len(buf)),
-	), true
+		layout,
+		clusterwire.NewLeadershipTermEventSbeTemplateID,
+		decodeNewLeadershipTermEventFields,
+	)
 }
 
 // TryDecodeNewLeadershipTermEventAt decodes NewLeadershipTermEvent (template 24)
@@ -242,7 +251,7 @@ func decodeSessionConnectRequestFields(
 	body, block, version, bufLen uint64,
 ) SessionConnectRequestFields {
 	var vars templateVarFields
-	next := int(body + block)
+	next := varFieldOffset(body, block)
 	vars.responseChannel, next = varFieldBytes(buf, bufLen, next)
 	vars.encodedCredentials, next = varFieldBytes(buf, bufLen, next)
 	if version >= uint64(SessionConnectClientInfoMinVersion) {
@@ -290,7 +299,7 @@ func decodeChallengeResponseFields(
 	body, block, version, bufLen uint64,
 ) ChallengeResponseFields {
 	var vars templateVarFields
-	vars.encodedCredentials, _ = varFieldBytes(buf, bufLen, int(body+block))
+	vars.encodedCredentials, _ = varFieldBytes(buf, bufLen, varFieldOffset(body, block))
 	return challengeResponseFields(buf, body, block, version, bufLen, vars)
 }
 
@@ -401,14 +410,7 @@ func TryDecodeFromClusterLayout(
 		return decoded, ok
 	}
 
-	fields, ok := decodeTemplateFields(
-		buf,
-		layout.BodyOffset,
-		layout.BlockLength,
-		layout.TemplateID,
-		layout.ActingVersion,
-		vars,
-	)
+	fields, ok := decodeTemplateFields(buf, layout, vars)
 	if !ok {
 		return decoded, ok
 	}
@@ -554,6 +556,12 @@ func varFieldBytes(buf []byte, bufLen uint64, offset int) (field []byte, next in
 	return cloneVarBytes(slice.Data), next
 }
 
+// varFieldOffset is the offset of the first var field after the fixed block.
+func varFieldOffset(body, block uint64) int {
+	//nolint:gosec // G115: wrapArgs keeps body+block within len(buf)
+	return int(body + block)
+}
+
 func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields, bool) {
 	switch templateID {
 	case clusterwire.SessionEventSbeTemplateID:
@@ -593,8 +601,7 @@ func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields
 
 func decodeTemplateFields(
 	buf []byte,
-	bodyOffset int,
-	blockLength, templateID, actingVersion uint16,
+	layout ClusterMessageLayout,
 	vars templateVarFields,
 ) (fields any, ok bool) {
 	defer func() {
@@ -604,12 +611,12 @@ func decodeTemplateFields(
 		}
 	}()
 
-	bufLen := uint64(len(buf))
-	body := uint64(bodyOffset)
-	block := uint64(blockLength)
-	version := uint64(actingVersion)
+	body, block, version, bufLen, ok := layout.wrapArgs(buf)
+	if !ok {
+		return nil, false
+	}
 
-	switch templateID {
+	switch layout.TemplateID {
 	case clusterwire.SessionMessageHeaderSbeTemplateID:
 		return decodeSessionMessageHeaderFields(buf, body, block, version, bufLen), true
 	case clusterwire.SessionEventSbeTemplateID:

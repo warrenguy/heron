@@ -19,16 +19,12 @@ func TimerEventFieldsFromLayout(
 	buf []byte,
 	layout ClusterMessageLayout,
 ) (TimerEventFields, bool) {
-	if layout.TemplateID != clusterwire.TimerEventSbeTemplateID {
-		return TimerEventFields{}, false
-	}
-	return decodeTimerEventFields(
+	return clusterFieldsFromLayout(
 		buf,
-		uint64(layout.BodyOffset),
-		uint64(layout.BlockLength),
-		uint64(layout.ActingVersion),
-		uint64(len(buf)),
-	), true
+		layout,
+		clusterwire.TimerEventSbeTemplateID,
+		decodeTimerEventFields,
+	)
 }
 
 // TryDecodeTimerEventAt decodes TimerEvent without interface boxing.
@@ -44,7 +40,7 @@ func decodeSessionOpenEventFields(
 ) SessionOpenEventFields {
 	var msg clusterwire.SessionOpenEvent
 	msg.WrapForDecode(buf, body, block, version, bufLen)
-	responseChannel, next := varFieldBytes(buf, bufLen, int(body+block))
+	responseChannel, next := varFieldBytes(buf, bufLen, varFieldOffset(body, block))
 	encodedPrincipal, _ := varFieldBytes(buf, bufLen, next)
 	return SessionOpenEventFields{
 		LeadershipTermID: msg.LeadershipTermId(),
@@ -64,16 +60,12 @@ func SessionOpenEventFieldsFromLayout(
 	buf []byte,
 	layout ClusterMessageLayout,
 ) (SessionOpenEventFields, bool) {
-	if layout.TemplateID != clusterwire.SessionOpenEventSbeTemplateID {
-		return SessionOpenEventFields{}, false
-	}
-	return decodeSessionOpenEventFields(
+	return clusterFieldsFromLayout(
 		buf,
-		uint64(layout.BodyOffset),
-		uint64(layout.BlockLength),
-		uint64(layout.ActingVersion),
-		uint64(len(buf)),
-	), true
+		layout,
+		clusterwire.SessionOpenEventSbeTemplateID,
+		decodeSessionOpenEventFields,
+	)
 }
 
 // TryDecodeSessionOpenEventAt decodes SessionOpenEvent without interface boxing.
@@ -106,16 +98,12 @@ func SessionCloseEventFieldsFromLayout(
 	buf []byte,
 	layout ClusterMessageLayout,
 ) (SessionCloseEventFields, bool) {
-	if layout.TemplateID != clusterwire.SessionCloseEventSbeTemplateID {
-		return SessionCloseEventFields{}, false
-	}
-	return decodeSessionCloseEventFields(
+	return clusterFieldsFromLayout(
 		buf,
-		uint64(layout.BodyOffset),
-		uint64(layout.BlockLength),
-		uint64(layout.ActingVersion),
-		uint64(len(buf)),
-	), true
+		layout,
+		clusterwire.SessionCloseEventSbeTemplateID,
+		decodeSessionCloseEventFields,
+	)
 }
 
 // TryDecodeSessionCloseEventAt decodes SessionCloseEvent without interface boxing.
@@ -258,7 +246,7 @@ func decodeJoinLogFields(
 ) JoinLogFields {
 	var msg clusterwire.JoinLog
 	msg.WrapForDecode(buf, body, block, version, bufLen)
-	logChannel, _ := varFieldBytes(buf, bufLen, int(body+block))
+	logChannel, _ := varFieldBytes(buf, bufLen, varFieldOffset(body, block))
 	return JoinLogFields{
 		LogPosition:    msg.LogPosition(),
 		MaxLogPosition: msg.MaxLogPosition(),

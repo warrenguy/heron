@@ -170,13 +170,11 @@ func tryDecodeClusterAt[T any](
 			return fields, false
 		}
 	}
-	return decode(
-		buf,
-		uint64(layout.BodyOffset),
-		uint64(layout.BlockLength),
-		uint64(layout.ActingVersion),
-		uint64(len(buf)),
-	), true
+	body, block, version, bufLen, ok := layout.wrapArgs(buf)
+	if !ok {
+		return fields, false
+	}
+	return decode(buf, body, block, version, bufLen), true
 }
 
 func TryDecodeCanvassPositionAt(buf []byte, offset int) (CanvassPositionFields, bool) {

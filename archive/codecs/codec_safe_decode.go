@@ -59,6 +59,21 @@ func ArchiveMessageLayoutAt(buf []byte, offset, maxVarLen int) (ArchiveMessageLa
 	return archiveMessageAt(buf, offset, maxVarLen)
 }
 
+// wrapArgs returns the WrapForDecode arguments for the fixed block. ok is
+// false when the block does not fit in buf.
+func (layout ArchiveMessageLayout) wrapArgs(
+	buf []byte,
+) (body, block, version, bufLen uint64, ok bool) {
+	if layout.BodyOffset < 0 || layout.BodyOffset > len(buf)-int(layout.BlockLength) {
+		return 0, 0, 0, 0, false
+	}
+	return uint64(layout.BodyOffset),
+		uint64(layout.BlockLength),
+		uint64(layout.ActingVersion),
+		uint64(len(buf)),
+		true
+}
+
 // TryDecodeControlResponseAt decodes ControlResponse without interface boxing. The
 // returned ErrorMessage is a sub-slice view into buf; consume before buf is reused.
 func TryDecodeControlResponseAt(buf []byte, offset, maxVarLen int) (ControlResponseFields, bool) {
@@ -70,14 +85,11 @@ func TryDecodeControlResponseAt(buf []byte, offset, maxVarLen int) (ControlRespo
 	if !tryDecodeVarViewsAt(buf, layout, maxVarLen, views[:]) {
 		return ControlResponseFields{}, false
 	}
-	return decodeControlResponseFields(
-		buf,
-		uint64(layout.BodyOffset),
-		uint64(layout.BlockLength),
-		uint64(layout.ActingVersion),
-		uint64(len(buf)),
-		views[0].Data,
-	), true
+	body, block, version, bufLen, ok := layout.wrapArgs(buf)
+	if !ok {
+		return ControlResponseFields{}, false
+	}
+	return decodeControlResponseFields(buf, body, block, version, bufLen, views[0].Data), true
 }
 
 // TryDecodeRecordingSignalEventAt decodes RecordingSignalEvent without interface boxing.
@@ -89,13 +101,11 @@ func TryDecodeRecordingSignalEventAt(
 	if !ok || layout.TemplateID != archivewire.RecordingSignalEventSbeTemplateID {
 		return RecordingSignalEventFields{}, false
 	}
-	return decodeRecordingSignalEventFields(
-		buf,
-		uint64(layout.BodyOffset),
-		uint64(layout.BlockLength),
-		uint64(layout.ActingVersion),
-		uint64(len(buf)),
-	), true
+	body, block, version, bufLen, ok := layout.wrapArgs(buf)
+	if !ok {
+		return RecordingSignalEventFields{}, false
+	}
+	return decodeRecordingSignalEventFields(buf, body, block, version, bufLen), true
 }
 
 // TryDecodeRecordingDescriptorAt decodes RecordingDescriptor without interface boxing.
@@ -113,15 +123,12 @@ func TryDecodeRecordingDescriptorAt(
 	if !tryDecodeVarViewsAt(buf, layout, maxVarLen, views[:]) {
 		return RecordingDescriptorFields{}, false
 	}
+	body, block, version, bufLen, ok := layout.wrapArgs(buf)
+	if !ok {
+		return RecordingDescriptorFields{}, false
+	}
 	return decodeRecordingDescriptorFields(
-		buf,
-		uint64(layout.BodyOffset),
-		uint64(layout.BlockLength),
-		uint64(layout.ActingVersion),
-		uint64(len(buf)),
-		views[0].Data,
-		views[1].Data,
-		views[2].Data,
+		buf, body, block, version, bufLen, views[0].Data, views[1].Data, views[2].Data,
 	), true
 }
 
@@ -136,14 +143,11 @@ func TryDecodeChallengeAt(buf []byte, offset, maxVarLen int) (ChallengeFields, b
 	if !tryDecodeVarViewsAt(buf, layout, maxVarLen, views[:]) {
 		return ChallengeFields{}, false
 	}
-	return decodeChallengeFields(
-		buf,
-		uint64(layout.BodyOffset),
-		uint64(layout.BlockLength),
-		uint64(layout.ActingVersion),
-		uint64(len(buf)),
-		views[0].Data,
-	), true
+	body, block, version, bufLen, ok := layout.wrapArgs(buf)
+	if !ok {
+		return ChallengeFields{}, false
+	}
+	return decodeChallengeFields(buf, body, block, version, bufLen, views[0].Data), true
 }
 
 func archiveVarFieldOffset(layout ArchiveMessageLayout) int {
@@ -302,14 +306,7 @@ func TryDecodeFromArchiveLayout(
 		return decoded, ok
 	}
 
-	fields, ok := decodeTemplateFields(
-		buf,
-		layout.BodyOffset,
-		layout.BlockLength,
-		layout.TemplateID,
-		layout.ActingVersion,
-		vars,
-	)
+	fields, ok := decodeTemplateFields(buf, layout, vars)
 	if !ok {
 		return decoded, ok
 	}
@@ -574,8 +571,7 @@ func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields
 
 func decodeTemplateFields(
 	buf []byte,
-	bodyOffset int,
-	blockLength, templateID, actingVersion uint16,
+	layout ArchiveMessageLayout,
 	vars templateVarFields,
 ) (fields any, ok bool) {
 	defer func() {
@@ -585,12 +581,12 @@ func decodeTemplateFields(
 		}
 	}()
 
-	bufLen := uint64(len(buf))
-	body := uint64(bodyOffset)
-	block := uint64(blockLength)
-	version := uint64(actingVersion)
+	body, block, version, bufLen, ok := layout.wrapArgs(buf)
+	if !ok {
+		return nil, false
+	}
 
-	switch templateID {
+	switch layout.TemplateID {
 	case archivewire.ControlResponseSbeTemplateID:
 		return decodeControlResponseFields(buf, body, block, version, bufLen, vars.errorMessage), true
 	case archivewire.ConnectRequestSbeTemplateID:
