@@ -230,7 +230,7 @@ func (ring *ManyToOneRingBuffer) finishClaim(index int, abort bool) error {
 	if abort {
 		buffer.PutInt32(record.TypeOffset(recordIndex), PaddingMsgTypeID)
 	}
-	buffer.PutInt32Release(record.LengthOffset(recordIndex), int32(-recordLength))
+	buffer.PutInt32Release(record.LengthOffset(recordIndex), -recordLength)
 	return nil
 }
 
@@ -347,10 +347,10 @@ func (ring *ManyToOneRingBuffer) Unblock() bool {
 	producerIndex := int(tailPosition) & mask
 
 	unblocked := false
-	length := int(buffer.GetInt32Volatile(consumerIndex))
+	length := buffer.GetInt32Volatile(consumerIndex)
 	if length < 0 {
 		buffer.PutInt32(record.TypeOffset(consumerIndex), PaddingMsgTypeID)
-		buffer.PutInt32Release(record.LengthOffset(consumerIndex), int32(-length))
+		buffer.PutInt32Release(record.LengthOffset(consumerIndex), -length)
 		unblocked = true
 	} else if length == 0 {
 		limit := producerIndex
@@ -359,7 +359,7 @@ func (ring *ManyToOneRingBuffer) Unblock() bool {
 		}
 
 		for i := consumerIndex + Alignment; i < limit; i += Alignment {
-			length = int(buffer.GetInt32Volatile(i))
+			length = buffer.GetInt32Volatile(i)
 			if length != 0 {
 				if scanBackToConfirmStillZeroed(buffer, i, consumerIndex) {
 					buffer.PutInt32(record.TypeOffset(consumerIndex), PaddingMsgTypeID)
@@ -477,8 +477,11 @@ func (ring *ManyToOneRingBuffer) checkMsgLength(length int) error {
 	return nil
 }
 
-func verifyClaimedSpaceNotReleased(buffer atomicbuffer.AtomicBuffer, recordIndex int) (int, error) {
-	recordLength := int(buffer.GetInt32Volatile(record.LengthOffset(recordIndex)))
+func verifyClaimedSpaceNotReleased(
+	buffer atomicbuffer.AtomicBuffer,
+	recordIndex int,
+) (int32, error) {
+	recordLength := buffer.GetInt32Volatile(record.LengthOffset(recordIndex))
 	if recordLength < 0 {
 		return recordLength, nil
 	}
