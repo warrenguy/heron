@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/broadcast"
 )
 
@@ -40,4 +41,7 @@ func TestBroadcastCheckCapacity(t *testing.T) {
 
 	_, err = broadcast.CheckCapacity(broadcast.TotalBufferLength(8))
 	require.Error(t, err)
+
+	_, err = broadcast.CheckCapacity(broadcast.TotalBufferLength(2 * atomicbuffer.MaxDataCapacity))
+	require.EqualError(t, err, "broadcast: data capacity above maximum")
 }

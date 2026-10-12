@@ -23,6 +23,7 @@ const (
 var (
 	errDataCapacityNotPowerOfTwo = errors.New("broadcast: data capacity must be power of two")
 	errDataCapacityTooSmall      = errors.New("broadcast: data capacity below minimum")
+	errDataCapacityAboveMaximum  = errors.New("broadcast: data capacity above maximum")
 )
 
 func TailIntentIndex(capacity int) int {
@@ -49,6 +50,9 @@ func CheckCapacity(bufferCapacity int) (int, error) {
 		}
 		if errors.Is(err, atomicbuffer.ErrDataCapacityBelowMinimum) {
 			return 0, errDataCapacityTooSmall
+		}
+		if errors.Is(err, atomicbuffer.ErrDataCapacityAboveMaximum) {
+			return 0, errDataCapacityAboveMaximum
 		}
 		return 0, err
 	}
