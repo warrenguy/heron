@@ -88,9 +88,9 @@ func EncodeTimerEvent(
 		clusterwire.TimerEventSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.TimerEvent
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetLeadershipTermId(fields.LeadershipTermID).
 				SetCorrelationId(fields.CorrelationID).
 				SetTimestamp(fields.Timestamp)
@@ -113,9 +113,9 @@ func EncodeSessionOpenEvent(
 		clusterwire.SessionOpenEventSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.ResponseChannel), len(fields.EncodedPrincipal)},
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.SessionOpenEvent
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetLeadershipTermId(fields.LeadershipTermID).
 				SetCorrelationId(fields.CorrelationID).
 				SetClusterSessionId(fields.ClusterSessionID).
@@ -143,9 +143,9 @@ func EncodeSessionCloseEvent(
 		clusterwire.SessionCloseEventSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.SessionCloseEvent
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetLeadershipTermId(fields.LeadershipTermID).
 				SetClusterSessionId(fields.ClusterSessionID).
 				SetTimestamp(fields.Timestamp).
@@ -172,9 +172,9 @@ func EncodeClusterActionRequest(
 		clusterwire.ClusterActionRequestSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.ClusterActionRequest
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetLeadershipTermId(fields.LeadershipTermID).
 				SetLogPosition(fields.LogPosition).
 				SetTimestamp(fields.Timestamp).
@@ -199,9 +199,9 @@ func EncodeScheduleTimer(
 		clusterwire.ScheduleTimerSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.ScheduleTimer
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetCorrelationId(fields.CorrelationID).
 				SetDeadline(fields.Deadline)
 		},
@@ -223,9 +223,9 @@ func EncodeCancelTimer(
 		clusterwire.CancelTimerSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.CancelTimer
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetCorrelationId(fields.CorrelationID)
 		},
 	)
@@ -246,9 +246,9 @@ func EncodeServiceAck(
 		clusterwire.ServiceAckSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.ServiceAck
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetLogPosition(fields.LogPosition).
 				SetTimestamp(fields.Timestamp).
 				SetAckId(fields.AckID).
@@ -276,9 +276,9 @@ func EncodeJoinLog(
 		clusterwire.JoinLogSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.LogChannel)},
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.JoinLog
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetLogPosition(fields.LogPosition).
 				SetMaxLogPosition(fields.MaxLogPosition).
 				SetMemberId(fields.MemberID).
@@ -311,9 +311,9 @@ func EncodeRequestServiceAck(
 		clusterwire.RequestServiceAckSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.RequestServiceAck
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetLogPosition(fields.LogPosition)
 		},
 	)

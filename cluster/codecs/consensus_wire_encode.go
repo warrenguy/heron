@@ -53,9 +53,9 @@ func EncodeCanvassPosition(
 		clusterwire.CanvassPositionSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.CanvassPosition
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
 			msg.SetLogLeadershipTermId(fields.LogLeadershipTermID).
 				SetLogPosition(fields.LogPosition).
 				SetLeadershipTermId(fields.LeadershipTermID).
@@ -82,9 +82,9 @@ func EncodeRequestVote(
 		clusterwire.RequestVoteSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.RequestVote
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
 			msg.SetLogLeadershipTermId(fields.LogLeadershipTermID).
 				SetLogPosition(fields.LogPosition).
 				SetCandidateTermId(fields.CandidateTermID).
@@ -110,9 +110,9 @@ func EncodeVote(
 		clusterwire.VoteSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.Vote
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
 			msg.SetCandidateTermId(fields.CandidateTermID).
 				SetLogLeadershipTermId(fields.LogLeadershipTermID).
 				SetLogPosition(fields.LogPosition).
@@ -138,9 +138,9 @@ func EncodeNewLeadershipTerm(
 		clusterwire.NewLeadershipTermSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.NewLeadershipTerm
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
 			msg.SetLogLeadershipTermId(fields.LogLeadershipTermID).
 				SetNextLeadershipTermId(fields.NextLeadershipTermID).
 				SetNextTermBaseLogPosition(fields.NextTermBaseLogPosition).
@@ -179,9 +179,9 @@ func EncodeAppendPosition(
 		clusterwire.AppendPositionSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.AppendPosition
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
 			msg.SetLeadershipTermId(fields.LeadershipTermID).
 				SetLogPosition(fields.LogPosition).
 				SetFollowerMemberId(fields.FollowerMemberID)
@@ -206,9 +206,9 @@ func EncodeCommitPosition(
 		clusterwire.CommitPositionSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.CommitPosition
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
 			msg.SetLeadershipTermId(fields.LeadershipTermID).
 				SetLogPosition(fields.LogPosition).
 				SetLeaderMemberId(fields.LeaderMemberID)
@@ -233,9 +233,9 @@ func EncodeCatchupPosition(
 		clusterwire.CatchupPositionSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.CatchupEndpoint)},
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.CatchupPosition
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
 			msg.SetLeadershipTermId(fields.LeadershipTermID).
 				SetLogPosition(fields.LogPosition).
 				SetFollowerMemberId(fields.FollowerMemberID).
@@ -258,9 +258,9 @@ func EncodeStopCatchup(
 		clusterwire.StopCatchupSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.StopCatchup
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
 			msg.SetLeadershipTermId(fields.LeadershipTermID).
 				SetFollowerMemberId(fields.FollowerMemberID)
 		},
