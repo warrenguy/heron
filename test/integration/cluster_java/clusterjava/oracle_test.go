@@ -43,12 +43,12 @@ func TestHarnessConstants(t *testing.T) {
 		{
 			name: "ComposeSkipHint",
 			got:  clusterjava.ComposeSkipHint,
-			want: "cluster java requires docker compose; run make test-cluster-java",
+			want: "cluster java requires docker compose; run make smoke-cluster-java",
 		},
 		{
 			name: "FailoverComposeSkipHint",
 			got:  clusterjava.FailoverComposeSkipHint,
-			want: "failover requires docker compose; run make test-cluster-java-failover",
+			want: "failover requires docker compose; run make smoke-cluster-java-failover",
 		},
 		{
 			name: "ComposeDirEnvKey",
@@ -79,7 +79,7 @@ func TestHarnessConstants(t *testing.T) {
 		{
 			name: "MixedServiceComposeSkipHint",
 			got:  clusterjava.MixedServiceComposeSkipHint,
-			want: "cluster mixed service requires docker compose; run make test-cluster-mixed-service",
+			want: "cluster mixed service requires docker compose; run make smoke-cluster-mixed-service",
 		},
 		{
 			name: "MixedServiceCountersBudget",

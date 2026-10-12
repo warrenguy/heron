@@ -174,8 +174,31 @@ jobs:
       - name: Integration tests
         run: make test-integration
 
-  docker-smokes:
+  docker-smokes-list:
     if: *skip-drafts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env: *amd64-env
+    outputs:
+      smokes: ${{ steps.list.outputs.smokes }}
+    steps:
+      - *checkout-step
+      - *go-arch-cache-marker-step
+      - *setup-go-step
+
+      - name: List smoke-* Makefile targets
+        id: list
+        run: |
+          set -o pipefail
+          smokes=$(make -s smokes-list | sed 's/^smoke-//' | jq -Rnc '[inputs]')
+          echo "smokes=${smokes}" >> "$GITHUB_OUTPUT"
+
+  docker-smokes:
+    needs: docker-smokes-list
+    strategy:
+      fail-fast: false
+      matrix:
+        smoke: ${{ fromJSON(needs.docker-smokes-list.outputs.smokes) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env: *amd64-env
@@ -186,10 +209,8 @@ jobs:
       - *aeronmd-cache-step
       - *aeronmd-cache-touch-step
 
-      - name: Docker smokes
-        run: |
-          make aeronmd-compose-image
-          make test-docker-smokes
+      - name: Docker smoke
+        run: make smoke-${{ matrix.smoke }}
 
   cluster-archive:
     if: *skip-drafts

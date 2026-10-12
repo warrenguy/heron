@@ -22,7 +22,7 @@ import (
 // one ConnectedPollTimeout budget that also covers Go round-1 duration.
 func TestJavaInteropDuplex(t *testing.T) {
 	if os.Getenv("HERON_JAVA_INTEROP_COMPOSE") != "1" {
-		t.Skip("java interop requires docker compose; run make test-java-interop")
+		t.Skip("java interop requires docker compose; run make smoke-java-interop")
 	}
 
 	dir := os.Getenv("AERON_DIR")

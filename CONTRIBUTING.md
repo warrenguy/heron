@@ -52,22 +52,22 @@ contract suites and Docker Compose smokes.
 
 | Target | Live smoke | What it checks (examples) |
 |--------|------------|---------------------------|
-| `test-java-interop-contract` | `test-java-interop` | streams 1100/1101; 32x32-byte `java-N` / `go-N` payloads |
-| `test-cluster-java-contract` | `test-cluster-java` / `test-cluster-mixed-java-leader` | IPC channels; streams 101/102; ports 9000/9002; failover and mixed topology goldens |
-| `test-archive-java-contract` | `test-archive-java` | record/replay streams 1200/1201; IPC channels; archive dir layout |
+| `test-java-interop-contract` | `smoke-java-interop` | streams 1100/1101; 32x32-byte `java-N` / `go-N` payloads |
+| `test-cluster-java-contract` | `smoke-cluster-java` / `smoke-cluster-mixed-java-leader` | IPC channels; streams 101/102; ports 9000/9002; failover and mixed topology goldens |
+| `test-archive-java-contract` | `smoke-archive-java` | record/replay streams 1200/1201; IPC channels; archive dir layout |
 | `test-cluster-sbe-contract` | (none; wire oracle only) | cluster SBE bytes vs `catalog.json` |
 
 **Compose smokes** (Docker Compose). Image tag: `java-interop-aeronmd`.
 
 | Make target | Script | Media driver |
 |-------------|--------|--------------|
-| `test-java-interop` | `scripts/java-interop-smoke.sh` | Compose image (built by make target) |
-| `test-cluster-java-failover` | `scripts/cluster-java-failover-smoke.sh` | Compose image (built by make target) |
-| `test-archive-java` | `scripts/archive-java-smoke.sh` | Compose image (built by make target) |
-| `test-cluster-mixed-java-leader` | `scripts/cluster-mixed-smoke.sh java-leader` | Compose image (built by make target) |
-| `test-cluster-mixed-go-leader` | `scripts/cluster-mixed-smoke.sh go-leader` | Compose image (built by make target) |
-| `test-cluster-java` | `scripts/cluster-java-smoke.sh` | Embedded (no image step) |
-| `test-cluster-mixed-service` | `scripts/cluster-mixed-service-smoke.sh` | Embedded (no image step) |
+| `smoke-java-interop` | `scripts/java-interop-smoke.sh` | Compose image (built by make target) |
+| `smoke-cluster-java-failover` | `scripts/cluster-java-failover-smoke.sh` | Compose image (built by make target) |
+| `smoke-archive-java` | `scripts/archive-java-smoke.sh` | Compose image (built by make target) |
+| `smoke-cluster-mixed-java-leader` | `scripts/cluster-mixed-smoke.sh java-leader` | Compose image (built by make target) |
+| `smoke-cluster-mixed-go-leader` | `scripts/cluster-mixed-smoke.sh go-leader` | Compose image (built by make target) |
+| `smoke-cluster-java` | `scripts/cluster-java-smoke.sh` | Embedded (no image step) |
+| `smoke-cluster-mixed-service` | `scripts/cluster-mixed-service-smoke.sh` | Embedded (no image step) |
 
 Scripts do not build the image. Run `make aeronmd-compose-image` first, or any of the
 Compose-image rows above.

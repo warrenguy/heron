@@ -114,8 +114,8 @@ check-test:
 check-inner: check-static check-test
 
 .PHONY: test-all
-test-all: ## Full suite: check rapid integration cluster-archive docker-smokes
-	+@$(MAKE) --no-print-directory check test-rapid test-integration test-cluster-archive test-docker-smokes
+test-all: ## Full suite: check rapid integration cluster-archive smokes
+	+@$(MAKE) --no-print-directory check test-rapid test-integration test-cluster-archive smokes
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
@@ -374,43 +374,41 @@ endef
 # When Docker IPAM already holds that subnet, the smoke retries another /24.
 #
 # Run these targets concurrent only after aeronmd-compose-image has built once.
-DOCKER_SMOKE_TARGETS := \
-	test-java-interop \
-	test-cluster-java \
-	test-cluster-java-failover \
-	test-archive-java \
-	test-cluster-mixed-java-leader \
-	test-cluster-mixed-go-leader \
-	test-cluster-mixed-service
+#
+# Every smoke-* rule in this file. CI builds its docker-smokes matrix from smokes-list.
+DOCKER_SMOKE_TARGETS := $(shell sed -nE 's/^(smoke-[^:[:space:]]+):.*/\1/p' $(lastword $(MAKEFILE_LIST)))
 
-.PHONY: $(DOCKER_SMOKE_TARGETS) test-docker-smokes \
+.PHONY: $(DOCKER_SMOKE_TARGETS) smokes smokes-list \
 	$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-unit test-$(s)-oracle test-$(s)-contract) \
 	contract-oracles \
 	test-golden-fixtures-unit
 
-test-java-interop: aeronmd-compose-image ## Docker smoke: Java/Go IPC duplex
+smoke-java-interop: aeronmd-compose-image ## Docker smoke: Java/Go IPC duplex
 	./scripts/java-interop-smoke.sh
 
-test-archive-java: aeronmd-compose-image ## Docker smoke: record, recording.log, PlanRecovery, replay, truncate
+smoke-archive-java: aeronmd-compose-image ## Docker smoke: record, recording.log, PlanRecovery, replay, truncate
 	./scripts/archive-java-smoke.sh
 
-test-cluster-java: ## Docker smoke: AsyncConnect + echo roundtrip smoke
+smoke-cluster-java: ## Docker smoke: AsyncConnect + echo roundtrip smoke
 	./scripts/cluster-java-smoke.sh
 
-test-cluster-java-failover: aeronmd-compose-image ## Docker smoke: 3-node leader failover
+smoke-cluster-java-failover: aeronmd-compose-image ## Docker smoke: 3-node leader failover
 	./scripts/cluster-java-failover-smoke.sh
 
-test-cluster-mixed-java-leader: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Java appointed leader
+smoke-cluster-mixed-java-leader: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Java appointed leader
 	./scripts/cluster-mixed-smoke.sh java-leader
 
-test-cluster-mixed-go-leader: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Go appointed leader
+smoke-cluster-mixed-go-leader: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Go appointed leader
 	./scripts/cluster-mixed-smoke.sh go-leader
 
-test-cluster-mixed-service: ## Docker smoke: mixed Java CM with Go service container
+smoke-cluster-mixed-service: ## Docker smoke: mixed Java CM with Go service container
 	./scripts/cluster-mixed-service-smoke.sh
 
-test-docker-smokes: ## All Docker compose smokes (up to 4 concurrent)
+smokes: ## All Docker compose smokes (up to 4 concurrent)
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J4) $(DOCKER_SMOKE_TARGETS)
+
+smokes-list: ## Print the smoke-* targets, one per line
+	@printf '%s\n' $(DOCKER_SMOKE_TARGETS)
 
 $(eval $(call contract-oracle-module,java-interop,$(JAVA_INTEROP_POM),JAVA_INTEROP_ORACLE_TIMEOUT,JAVA_INTEROP_ORACLE_TAGS,./test/integration/java_interop/javainterop/))
 $(eval $(call contract-oracle-module,cluster-sbe,$(CLUSTER_SBE_POM),CLUSTER_SBE_ORACLE_TIMEOUT,CLUSTER_SBE_ORACLE_TAGS,./test/integration/cluster_sbe/clustersbe/))
