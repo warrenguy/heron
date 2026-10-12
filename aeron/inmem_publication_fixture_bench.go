@@ -85,7 +85,7 @@ func exclusiveWriterCacheFromConfig(
 	activePartitionIndex = logbuffer.IndexByTermCount(cfg.ActiveTermCount)
 	rawTail := cfg.RawTails[activePartitionIndex]
 	termID = logbuffer.TermID(rawTail)
-	termOffset = int(logbuffer.TermOffset(rawTail, int32(termBufferLength)))
+	termOffset = int(logbuffer.TermOffset(rawTail, termBufferLength))
 	termBeginPosition = logbuffer.ComputeTermBeginPosition(
 		termID,
 		positionBitsToShift,

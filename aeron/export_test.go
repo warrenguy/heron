@@ -122,7 +122,7 @@ func PositionWithTermRemainingForTest(remaining int32) int64 {
 	shift := logbuffer.PositionBitsToShift(TestPublicationTermLength)
 	return logbuffer.ComputePosition(
 		termID,
-		termOffset,
+		int(termOffset),
 		shift,
 		TestPublicationInitialTermID,
 	)
@@ -628,7 +628,7 @@ func VerifyPublicationLogIntegrityForTest(tb testing.TB, pub *Publication) {
 		rawTail, err := logbuffer.GetRawTail(pub.meta, partition)
 		require.NoError(tb, err)
 
-		termEnd := int(logbuffer.TermOffset(rawTail, int32(termLength)))
+		termEnd := int(logbuffer.TermOffset(rawTail, termLength))
 		termBuf := pub.termBuffers[partition]
 		offset := 0
 		for offset < termEnd && termBuf.GetInt32Volatile(offset) == 0 {

@@ -221,7 +221,7 @@ func (ep *ExclusivePublication) Position() int64 {
 	}
 
 	termID := logbuffer.TermID(rawTail)
-	termOffset := logbuffer.TermOffset(rawTail, int32(ep.termBufferLength))
+	termOffset := int(logbuffer.TermOffset(rawTail, ep.termBufferLength))
 	return logbuffer.ComputePosition(
 		termID,
 		termOffset,

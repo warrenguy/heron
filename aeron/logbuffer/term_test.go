@@ -17,7 +17,7 @@ func TestComputePosition_table(t *testing.T) {
 	cases := []struct {
 		name         string
 		activeTermID int32
-		termOffset   int32
+		termOffset   int
 		wantPosition int64
 	}{
 		{"term7 offset0", 7, 0, 0},

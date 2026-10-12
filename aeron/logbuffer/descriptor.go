@@ -94,8 +94,8 @@ func ComputeMaxMessageLength(termLength int) int {
 	return MaxMessageLength
 }
 
-func AlignFrameLength(length int) int {
-	return atomicbuffer.Align(length, FrameAlignment)
+func AlignFrameLength[T ~int | ~int32 | ~int64](length T) T {
+	return (length + FrameAlignment - 1) &^ (FrameAlignment - 1)
 }
 
 // ComputeFragmentedFrameLength returns the aligned term space for a payload

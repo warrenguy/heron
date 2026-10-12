@@ -40,7 +40,7 @@ func TestLogChannelWithInitialPosition_geometry_rapid(t *testing.T) {
 		activeTermID := logbuffer.AddWrapI32(initialTermID, termCount)
 		position := logbuffer.ComputePosition(
 			activeTermID,
-			termOffset,
+			int(termOffset),
 			shift,
 			initialTermID,
 		)

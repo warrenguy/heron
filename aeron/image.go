@@ -154,7 +154,7 @@ func newImage(
 	}
 	image.header = Header{
 		initialTermID:       metadata.InitialTermID,
-		positionBitsToShift: int32(positionBitsToShift),
+		positionBitsToShift: positionBitsToShift,
 		context:             image,
 		fragmentedFrameLen:  headerFragmentedFrameNotSet,
 	}

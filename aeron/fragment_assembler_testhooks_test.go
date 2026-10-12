@@ -39,7 +39,7 @@ func TestFragmentAssembler_completedHeaderPosition(t *testing.T) {
 	// Synthetic term buffers omit Image flyweight metadata; END header ImageFields are zero.
 	expectedPosition := logbuffer.ComputePosition(
 		logbuffer.FrameTermID(termBuffer, beginOffset),
-		expectedNextTermOffset,
+		int(expectedNextTermOffset),
 		0,
 		0,
 	)

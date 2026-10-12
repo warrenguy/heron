@@ -10,13 +10,11 @@ func ValidateTermIndex(index int, label string) error {
 }
 
 func AddWrapI32(a, b int32) int32 {
-	sum := int64(a) + int64(b)
-	return int32(sum & 0xFFFFFFFF)
+	return a + b
 }
 
 func SubWrapI32(a, b int32) int32 {
-	difference := int64(a) - int64(b)
-	return int32(difference & 0xFFFFFFFF)
+	return a - b
 }
 
 func PackRawTail(termID, termOffset int32) int64 {
@@ -27,12 +25,9 @@ func TermID(rawTail int64) int32 {
 	return int32(rawTail >> 32)
 }
 
-func TermOffset(rawTail int64, termLength int32) int32 {
-	offset := rawTail & 0xFFFFFFFF
-	if offset < int64(termLength) {
-		return int32(offset)
-	}
-	return termLength
+func TermOffset(rawTail int64, termLength int) int32 {
+	//nolint:gosec // G115: the result is at most termLength, which CheckTermLength bounds
+	return int32(min(rawTail&0xFFFFFFFF, int64(termLength)))
 }
 
 func ComputeTermCount(termID, initialTermID int32) int32 {
@@ -58,7 +53,7 @@ func IndexByPosition(position int64, positionBitsToShift int) int {
 
 func ComputePosition(
 	activeTermID int32,
-	termOffset int32,
+	termOffset int,
 	positionBitsToShift int,
 	initialTermID int32,
 ) int64 {
