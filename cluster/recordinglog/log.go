@@ -2,6 +2,7 @@ package recordinglog
 
 import (
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -310,6 +311,9 @@ func (l *Log) appendOrRestore(entry Entry) error {
 // The write happens before any cache mutation so a failed WriteAt leaves the
 // cache untouched.
 func (l *Log) append(entry Entry) (int32, error) {
+	if l.nextEntryIndex == math.MaxInt32 {
+		return 0, ErrTooManyEntries
+	}
 	entry.Index = l.nextEntryIndex
 	writeOffset := l.writeOffset
 	entry.Position = writeOffset
