@@ -22,6 +22,7 @@ func IsPowerOfTwo(value int) bool {
 }
 
 func NumberOfTrailingZeroes(value int32) int {
+	//nolint:gosec // G115: counts trailing zeros of the bit pattern
 	return bits.TrailingZeros32(uint32(value))
 }
 

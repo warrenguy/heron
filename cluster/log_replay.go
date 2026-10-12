@@ -164,6 +164,7 @@ func newLogReplay(
 	// Archive returns a composite session id. The subscription image carries
 	// only the low 32 bits. Match archive.FindReplayImage and the production
 	// cluster log path.
+	//nolint:gosec // G115: the image carries the low 32 bits of the session id
 	channel := sessionScopedLogChannel(deps.ReplayChannel, int32(uint32(sessionID)))
 
 	sub, err := addSubscriptionChecked(

@@ -326,6 +326,7 @@ func (l *Log) append(entry Entry) (int32, error) {
 	l.writeOffset = writeOffset + int64(len(encoded))
 	l.nextEntryIndex++
 
+	//nolint:gosec // G115: append keeps the entry count below MaxInt32
 	originalLen := int32(len(l.entries))
 	insertionIndex := originalLen
 	for insertionIndex > 0 && compareEntries(entry, l.entries[insertionIndex-1]) < 0 {
@@ -416,6 +417,7 @@ func (l *Log) CommitLogPosition(leadershipTermID, logPosition int64) error {
 func (l *Log) InvalidateLatestSnapshot() (bool, error) {
 	var indices []int32
 	highLogPosition := NullPosition
+	//nolint:gosec // G115: append keeps the entry count below MaxInt32
 	for idx := int32(len(l.entries)) - 1; idx >= 0; idx-- {
 		entry := l.entries[idx]
 		if !isLiveSnapshot(entry, consensusModuleServiceID) {

@@ -127,6 +127,7 @@ func WriteLocalSocketAddressCounterRecord(
 			)
 			metaBuffer.PutInt32(
 				keyIndex+localSocketAddressLengthOffset,
+				//nolint:gosec // G115: checked against localSocketAddressMaxStringLength above
 				int32(len(bindAddress)),
 			)
 			stringOffset := keyIndex + localSocketAddressStringOffset

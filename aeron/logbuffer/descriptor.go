@@ -94,6 +94,7 @@ func MetaDataOffset(termLength int) int {
 }
 
 func PositionBitsToShift(termLength int) int {
+	//nolint:gosec // G115: CheckTermLength bounds the term length
 	return atomicbuffer.NumberOfTrailingZeroes(int32(termLength))
 }
 

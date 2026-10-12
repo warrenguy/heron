@@ -162,6 +162,7 @@ func (header *Header) ConfigureCompletedFragment(
 	)
 
 	maxPayloadLength := int(firstFrameLength - dataHeaderLength)
+	//nolint:gosec // G115: fits in int32 for any payload up to MaxMessageLength
 	header.fragmentedFrameLen = int32(logbuffer.ComputeFragmentedFrameLength(
 		assembledPayloadLength,
 		maxPayloadLength,

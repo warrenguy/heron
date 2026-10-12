@@ -105,10 +105,12 @@ func NewCountersReader(meta, values []byte) (*CountersReader, error) {
 		)
 	}
 
+	//nolint:gosec // G115: CnC buffer lengths are int32, so the count fits
+	maxCounterID := int32(counterCount - 1)
 	return &CountersReader{
 		metadata:     atomicbuffer.Wrap(meta[:requiredMetaLength]),
 		values:       atomicbuffer.Wrap(values),
-		maxCounterID: int32(counterCount - 1),
+		maxCounterID: maxCounterID,
 	}, nil
 }
 

@@ -56,11 +56,13 @@ func New(
 		panic("timerwheel: tick allocation must be a power of two")
 	}
 
+	//nolint:gosec // G115: tickResolution is a positive power of two
+	resolutionShift := bits.TrailingZeros64(uint64(tickResolution))
 	return &Wheel{
 		startTime:       startTime,
 		ticksPerWheel:   ticksPerWheel,
 		tickMask:        ticksPerWheel - 1,
-		resolutionShift: bits.TrailingZeros64(uint64(tickResolution)),
+		resolutionShift: resolutionShift,
 		tickAllocation:  initialTickAllocation,
 		allocationShift: bits.TrailingZeros(uint(initialTickAllocation)),
 		maxSlots:        maxSlots,
@@ -247,6 +249,7 @@ func (w *Wheel) indexForTimerID(timerID int64) (index int, ok bool) {
 }
 
 func timerIDForSlot(spoke, slot int) int64 {
+	//nolint:gosec // G115: packs the slot into the low 32 bits
 	return int64(spoke)<<32 | int64(uint32(slot))
 }
 
@@ -255,6 +258,7 @@ func spokeForTimerID(timerID int64) int {
 }
 
 func slotForTimerID(timerID int64) int {
+	//nolint:gosec // G115: the slot is the low 32 bits
 	return int(uint32(timerID))
 }
 

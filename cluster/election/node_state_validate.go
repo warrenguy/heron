@@ -35,6 +35,7 @@ func validateFramedRecord(buf []byte, headerPos int, templateID uint16) error {
 
 	bufLen := uint64(len(buf))
 	var hdr nodewire.MessageHeader
+	//nolint:gosec // G115: validateMessageHeaderBounds checks headerPos above
 	hdr.Wrap(buf, uint64(headerPos), uint64(nodewire.MessageHeaderSbeSchemaVersion), bufLen)
 
 	if hdr.TemplateId() != templateID {

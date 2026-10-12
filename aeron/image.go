@@ -120,6 +120,8 @@ func newImage(
 		)
 	}
 	positionBitsToShift := logbuffer.PositionBitsToShift(termLength)
+	//nolint:gosec // G115: CheckTermLength bounds the term length
+	termLengthMask := int32(termLength) - 1
 
 	termBuffers, err := logBuffers.TermBuffers()
 	if err != nil {
@@ -145,7 +147,7 @@ func newImage(
 		termBuffers:         termBuffers,
 		metaBuffer:          meta,
 		initialTermID:       metadata.InitialTermID,
-		termLengthMask:      int32(termLength) - 1,
+		termLengthMask:      termLengthMask,
 		positionBitsToShift: positionBitsToShift,
 		mtuLength:           metadata.MTULength,
 		errorHandler:        errorHandler,

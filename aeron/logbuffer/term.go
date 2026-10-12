@@ -18,10 +18,12 @@ func SubWrapI32(a, b int32) int32 {
 }
 
 func PackRawTail(termID, termOffset int32) int64 {
+	//nolint:gosec // G115: packs the offset into the low 32 bits
 	return (int64(termID) << 32) | int64(uint32(termOffset))
 }
 
 func TermID(rawTail int64) int32 {
+	//nolint:gosec // G115: the term id is the high 32 bits
 	return int32(rawTail >> 32)
 }
 
@@ -35,6 +37,7 @@ func ComputeTermCount(termID, initialTermID int32) int32 {
 }
 
 func IndexByTermCount(termCount int32) int {
+	//nolint:gosec // G115: the term count wraps like a Java int
 	return int(uint32(termCount) % uint32(PartitionCount))
 }
 
@@ -48,6 +51,7 @@ func IndexByTerm(initialTermID, activeTermID int32) int {
 // Partition index and in-term offset (ComputeTermOffsetFromPosition) are different fields.
 func IndexByPosition(position int64, positionBitsToShift int) int {
 	shifted := position >> positionBitsToShift
+	//nolint:gosec // G115: unsigned modulo matches Java >>>
 	return int(uint64(shifted) % uint64(PartitionCount))
 }
 
@@ -74,6 +78,7 @@ func ComputeTermIDFromPosition(
 	positionBitsToShift int,
 	initialTermID int32,
 ) int32 {
+	//nolint:gosec // G115: the term count wraps like a Java int
 	return AddWrapI32(int32(position>>positionBitsToShift), initialTermID)
 }
 
@@ -81,5 +86,6 @@ func ComputeTermIDFromPosition(
 // position). Not comparable to IndexByPosition, which returns partition index.
 func ComputeTermOffsetFromPosition(position int64, positionBitsToShift int) int32 {
 	mask := int64(1<<positionBitsToShift) - 1
+	//nolint:gosec // G115: the mask keeps the offset below the term length
 	return int32(position & mask)
 }

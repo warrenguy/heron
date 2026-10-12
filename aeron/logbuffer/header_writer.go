@@ -63,5 +63,6 @@ func (writer *HeaderWriter) writeHeader(
 	termBuf.PutBytes(termOffset+OffsetSessionID, writer.header[OffsetSessionID:OffsetTermID])
 	termBuf.PutBytes(termOffset+OffsetReservedValue, writer.header[OffsetReservedValue:])
 	PutFrameTermID(termBuf, termOffset, termID)
+	//nolint:gosec // G115: the term offset is below the term length
 	PutFrameTermOffset(termBuf, termOffset, int32(termOffset))
 }

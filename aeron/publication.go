@@ -496,6 +496,7 @@ func (pub *Publication) reserveTailAfterPrelude(
 func (pub *Publication) reserveMessageSpace(messageLength int) reserveOutcome {
 	limit := pub.publicationLimit.Get()
 
+	//nolint:gosec // G115: the length is at most the MTU
 	frameLength := int32(messageLength + logbuffer.DataHeaderLength)
 	alignedLength := logbuffer.AlignFragmentChunkLength(messageLength)
 	termLength := pub.termBufferLength
@@ -604,6 +605,7 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 					outcome.termBuf,
 					outcome.termID,
 					frameOffset,
+					//nolint:gosec // G115: at most the reserved length
 					int32(reservationEnd-frameOffset),
 				)
 			}
@@ -689,6 +691,7 @@ func (pub *Publication) handleEndOfLog(
 	if termOffset < termLength {
 		// Term-end padding seeds session/stream and default header fields before the
 		// PAD type commit; PAD-only writes (as in Abort) would omit them.
+		//nolint:gosec // G115: the padding is below the term length
 		pub.commitTermPadding(termBuf, termID, termOffset, int32(termLength-termOffset))
 	}
 

@@ -132,6 +132,7 @@ func nextFragmentChunk(
 		bytesToWrite:  min(remaining, maxPayloadLength),
 		alignedLength: fullChunkAligned,
 	}
+	//nolint:gosec // G115: the length is at most the MTU
 	chunk.frameLength = int32(chunk.bytesToWrite + logbuffer.DataHeaderLength)
 	if chunk.bytesToWrite != maxPayloadLength {
 		chunk.alignedLength = logbuffer.AlignFragmentChunkLength(chunk.bytesToWrite)

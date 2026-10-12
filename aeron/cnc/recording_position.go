@@ -118,6 +118,7 @@ func WriteRecordingPositionCounterRecord(
 			metaBuffer.PutInt32(keyOffset+recordingPositionSessionIDKeyOffset, sessionID)
 			metaBuffer.PutInt32(
 				keyOffset+recordingPositionSourceIdentityLengthKeyOffset,
+				//nolint:gosec // G115: checked against recordingPositionMaxSourceIdentityLength above
 				int32(len(sourceIdentity)),
 			)
 			metaBuffer.PutBytes(

@@ -345,6 +345,7 @@ func (ep *ExclusivePublication) reserveExclusiveSpace(alignedLength int) exclusi
 	startOffset := ep.termOffset
 
 	resultingOffset := startOffset + alignedLength
+	//nolint:gosec // G115: the term length plus one fragmented message fits in int32
 	ep.meta.PutInt64Release(tailOffset, logbuffer.PackRawTail(termID, int32(resultingOffset)))
 
 	reservedPosition := ep.termBeginPosition + int64(resultingOffset)
@@ -372,6 +373,7 @@ func (ep *ExclusivePublication) appendUnfragmentedMessage(
 	length int,
 	alignedLength int,
 ) int64 {
+	//nolint:gosec // G115: the length is at most the MTU
 	frameLength := int32(length + logbuffer.DataHeaderLength)
 
 	res := ep.reserveExclusiveSpace(alignedLength)
@@ -440,6 +442,7 @@ func (ep *ExclusivePublication) claim(
 	length int,
 	alignedLength int,
 ) (termIndex, frameOffset int, position, status int64) {
+	//nolint:gosec // G115: the length is at most the MTU
 	frameLength := int32(length + logbuffer.DataHeaderLength)
 
 	res := ep.reserveExclusiveSpace(alignedLength)
@@ -501,6 +504,7 @@ func (ep *ExclusivePublication) handleEndOfLog(
 	reservedPosition int64,
 ) int64 {
 	if termOffset < termLength {
+		//nolint:gosec // G115: the padding is below the term length
 		paddingLength := int32(termLength - termOffset)
 		commitPublicationTermPadding(ep.headerWriter, termBuf, termID, termOffset, paddingLength)
 	}

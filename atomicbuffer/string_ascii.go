@@ -61,6 +61,7 @@ func PutStringASCII(buf AtomicBuffer, offset int, value string) (int, error) {
 		return 0, err
 	}
 
+	//nolint:gosec // G115: validateStringASCIIValueByteLen bounds the length
 	buf.PutInt32(offset, int32(valueByteLen))
 	buf.PutStringBytes(offset+StringASCIIHeaderLength, value)
 	return encodedLength, nil

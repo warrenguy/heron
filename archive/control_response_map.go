@@ -70,9 +70,11 @@ func archiveExceptionFromErrorResponse(resp codecs.ControlResponseFields) error 
 			message = authenticationRejectedMessage + ": " + message
 		}
 	}
+	//nolint:gosec // G115: mirrors the Java (int) cast of relevantId
+	errorCode := int32(resp.RelevantID)
 	return &Exception{
 		msg:           message,
-		ErrorCode:     int32(resp.RelevantID),
+		ErrorCode:     errorCode,
 		CorrelationID: resp.CorrelationID,
 	}
 }
