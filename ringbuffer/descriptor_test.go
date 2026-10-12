@@ -65,6 +65,10 @@ func TestCheckCapacity(t *testing.T) {
 	tooSmall := ringbuffer.TotalBufferLength(minData - 1)
 	_, err = ringbuffer.CheckCapacity(tooSmall, minData)
 	require.Error(t, err)
+
+	tooLarge := ringbuffer.TotalBufferLength(2 * atomicbuffer.MaxDataCapacity)
+	_, err = ringbuffer.CheckCapacity(tooLarge, minData)
+	require.EqualError(t, err, "ringbuffer: data capacity above maximum")
 }
 
 func TestMinCapacityPowerOfTwo(t *testing.T) {
