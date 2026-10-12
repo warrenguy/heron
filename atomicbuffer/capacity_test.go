@@ -24,3 +24,12 @@ func TestDataCapacity_BelowMinimum(t *testing.T) {
 	_, err := atomicbuffer.DataCapacity(128+8, 128, 16)
 	require.ErrorIs(t, err, atomicbuffer.ErrDataCapacityBelowMinimum)
 }
+
+func TestDataCapacity_AboveMaximum(t *testing.T) {
+	got, err := atomicbuffer.DataCapacity(128+atomicbuffer.MaxDataCapacity, 128, 16)
+	require.NoError(t, err)
+	require.Equal(t, atomicbuffer.MaxDataCapacity, got)
+
+	_, err = atomicbuffer.DataCapacity(128+2*atomicbuffer.MaxDataCapacity, 128, 16)
+	require.ErrorIs(t, err, atomicbuffer.ErrDataCapacityAboveMaximum)
+}
