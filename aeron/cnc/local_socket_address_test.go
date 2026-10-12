@@ -1,6 +1,7 @@
 package cnc_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -121,4 +122,19 @@ func localSocketAddressTestReaderWithValue(
 	reader, err := cnc.NewCountersReader(meta, values)
 	require.NoError(t, err)
 	return reader
+}
+
+func TestWriteLocalSocketAddressCounterRecord_boundsAddress(t *testing.T) {
+	write := func(bindAddress string) error {
+		meta, values := syntheticCountersBuffers(t, 1)
+		return cnc.WriteLocalSocketAddressCounterRecord(
+			meta, values, 0, cnc.CounterRecordAllocated, 9001, 1, bindAddress, 0,
+		)
+	}
+	require.NoError(t, write(strings.Repeat("a", 104)))
+	require.EqualError(
+		t,
+		write(strings.Repeat("a", 105)),
+		"cnc: local socket address string exceeds the counter key",
+	)
 }

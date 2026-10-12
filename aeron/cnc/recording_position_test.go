@@ -1,6 +1,7 @@
 package cnc_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -117,4 +118,20 @@ func TestFindRecordingPositionCounter_nilReader(t *testing.T) {
 	var reader *cnc.CountersReader
 	_, ok := reader.FindRecordingPositionCounter(1, cnc.NullValue)
 	require.False(t, ok)
+}
+
+func TestWriteRecordingPositionCounterRecord_boundsSourceIdentity(t *testing.T) {
+	write := func(sourceIdentity string) error {
+		meta, values := syntheticCountersBuffers(t, 1)
+		return cnc.WriteRecordingPositionCounterRecord(
+			meta, values, 0, cnc.CounterRecordAllocated,
+			cnc.ArchiveRecordingPositionCounterTypeID, 1, 1, sourceIdentity, 1, 0,
+		)
+	}
+	require.NoError(t, write(strings.Repeat("a", 88)))
+	require.EqualError(
+		t,
+		write(strings.Repeat("a", 89)),
+		"cnc: recording position source identity exceeds the counter key",
+	)
 }

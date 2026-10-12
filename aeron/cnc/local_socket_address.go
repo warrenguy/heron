@@ -7,7 +7,7 @@ import (
 )
 
 var errLocalSocketAddressStringOutOfBounds = errors.New(
-	"cnc: local socket address string exceeds counter metadata bounds",
+	"cnc: local socket address string exceeds the counter key",
 )
 
 const (
@@ -21,6 +21,7 @@ const (
 	localSocketAddressChannelStatusIDOffset = 0
 	localSocketAddressLengthOffset          = atomicbuffer.SizeInt32
 	localSocketAddressStringOffset          = localSocketAddressLengthOffset + atomicbuffer.SizeInt32
+	localSocketAddressMaxStringLength       = counterMetaMaxKeyLength - localSocketAddressStringOffset
 )
 
 // FindLocalSocketAddress returns the bind address linked to channelStatusCounterID
@@ -116,6 +117,9 @@ func WriteLocalSocketAddressCounterRecord(
 		DriverLocalSocketAddressStatusTypeID,
 		value,
 		func(metaOffset, valuesOffset int) error {
+			if len(bindAddress) > localSocketAddressMaxStringLength {
+				return errLocalSocketAddressStringOutOfBounds
+			}
 			keyIndex := metaOffset + CounterMetadataKeyOffset
 			metaBuffer.PutInt32(
 				keyIndex+localSocketAddressChannelStatusIDOffset,
@@ -126,11 +130,7 @@ func WriteLocalSocketAddressCounterRecord(
 				int32(len(bindAddress)),
 			)
 			stringOffset := keyIndex + localSocketAddressStringOffset
-			end := stringOffset + len(bindAddress)
-			if end > metaBuffer.Capacity() {
-				return errLocalSocketAddressStringOutOfBounds
-			}
-			copy(metaBuffer.Bytes()[stringOffset:end], bindAddress)
+			copy(metaBuffer.Bytes()[stringOffset:stringOffset+len(bindAddress)], bindAddress)
 			valuesBuffer.PutInt64(
 				valuesOffset+CounterValueRegistrationIDOffset,
 				registrationID,
