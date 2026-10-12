@@ -1,6 +1,7 @@
 package record_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -49,7 +50,8 @@ func TestRecord(t *testing.T) {
 
 	t.Run("CheckTypeID", func(t *testing.T) {
 		require.NoError(t, record.CheckTypeID(1))
-		for _, id := range []int{0, -1} {
+		require.NoError(t, record.CheckTypeID(math.MaxInt32))
+		for _, id := range []int{0, -1, math.MaxInt32 + 1} {
 			err := record.CheckTypeID(id)
 			require.ErrorIs(t, err, record.ErrInvalidMessageTypeID)
 		}

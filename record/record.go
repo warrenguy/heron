@@ -2,6 +2,7 @@ package record
 
 import (
 	"errors"
+	"math"
 
 	"github.com/warrenguy/heron/atomicbuffer"
 )
@@ -38,7 +39,7 @@ func AlignRecordLength(recordLength int) int {
 }
 
 func CheckTypeID(msgTypeID int) error {
-	if msgTypeID < 1 {
+	if msgTypeID < 1 || msgTypeID > math.MaxInt32 {
 		return ErrInvalidMessageTypeID
 	}
 	return nil
