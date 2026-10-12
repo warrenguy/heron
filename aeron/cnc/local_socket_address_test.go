@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestFindLocalSocketAddress(t *testing.T) {
@@ -125,16 +126,17 @@ func localSocketAddressTestReaderWithValue(
 }
 
 func TestWriteLocalSocketAddressCounterRecord_boundsAddress(t *testing.T) {
-	write := func(bindAddress string) error {
+	write := func(bindAddress string) ([]byte, error) {
 		meta, values := syntheticCountersBuffers(t, 1)
-		return cnc.WriteLocalSocketAddressCounterRecord(
+		err := cnc.WriteLocalSocketAddressCounterRecord(
 			meta, values, 0, cnc.CounterRecordAllocated, 9001, 1, bindAddress, 0,
 		)
+		return meta, err
 	}
-	require.NoError(t, write(strings.Repeat("a", 104)))
-	require.EqualError(
-		t,
-		write(strings.Repeat("a", 105)),
-		"cnc: local socket address string exceeds the counter key",
-	)
+	_, err := write(strings.Repeat("a", 104))
+	require.NoError(t, err)
+
+	meta, err := write(strings.Repeat("a", 105))
+	require.EqualError(t, err, "cnc: local socket address string exceeds the counter key")
+	require.Zero(t, atomicbuffer.Wrap(meta).GetInt32(cnc.CounterMetadataTypeIDOffset))
 }

@@ -107,6 +107,10 @@ func WriteLocalSocketAddressCounterRecord(
 	bindAddress string,
 	value int64,
 ) error {
+	if len(bindAddress) > localSocketAddressMaxStringLength {
+		return errLocalSocketAddressStringOutOfBounds
+	}
+
 	metaBuffer := atomicbuffer.Wrap(meta)
 	valuesBuffer := atomicbuffer.Wrap(values)
 	return writeCounterRecord(
@@ -117,9 +121,6 @@ func WriteLocalSocketAddressCounterRecord(
 		DriverLocalSocketAddressStatusTypeID,
 		value,
 		func(metaOffset, valuesOffset int) error {
-			if len(bindAddress) > localSocketAddressMaxStringLength {
-				return errLocalSocketAddressStringOutOfBounds
-			}
 			keyIndex := metaOffset + CounterMetadataKeyOffset
 			metaBuffer.PutInt32(
 				keyIndex+localSocketAddressChannelStatusIDOffset,

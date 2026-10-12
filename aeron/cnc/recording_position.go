@@ -100,6 +100,10 @@ func WriteRecordingPositionCounterRecord(
 	archiveID int64,
 	value int64,
 ) error {
+	if len(sourceIdentity) > recordingPositionMaxSourceIdentityLength {
+		return errRecordingPositionSourceIdentityTooLong
+	}
+
 	metaBuffer := atomicbuffer.Wrap(meta)
 	valuesBuffer := atomicbuffer.Wrap(values)
 	return writeCounterRecord(
@@ -110,9 +114,6 @@ func WriteRecordingPositionCounterRecord(
 		typeID,
 		value,
 		func(metaOffset, _ int) error {
-			if len(sourceIdentity) > recordingPositionMaxSourceIdentityLength {
-				return errRecordingPositionSourceIdentityTooLong
-			}
 			keyOffset := metaOffset + CounterMetadataKeyOffset
 			metaBuffer.PutInt64(keyOffset+recordingPositionRecordingIDKeyOffset, recordingID)
 			metaBuffer.PutInt32(keyOffset+recordingPositionSessionIDKeyOffset, sessionID)
