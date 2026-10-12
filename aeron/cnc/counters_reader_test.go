@@ -1,6 +1,7 @@
 package cnc_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -56,6 +57,38 @@ func TestWriteChannelStatusCounterRecordRejectsNonChannelStatusTypeIDs(t *testin
 		"cnc: WriteChannelStatusCounterRecord requires channel status type ID (6 or 7), "+
 			"got 11; use WriteCounterRecord",
 	)
+}
+
+func TestWriteChannelStatusCounterRecord_boundsChannel(t *testing.T) {
+	meta, values := syntheticCountersBuffers(t, 2)
+
+	err := cnc.WriteChannelStatusCounterRecord(
+		meta,
+		values,
+		0,
+		cnc.CounterRecordAllocated,
+		cnc.DriverSendChannelStatusTypeID,
+		strings.Repeat("a", 108),
+		42,
+		1,
+	)
+	require.NoError(t, err)
+	require.Zero(
+		t,
+		atomicbuffer.Wrap(meta).GetInt32(cnc.CounterMetadataLength+cnc.CounterMetadataTypeIDOffset),
+	)
+
+	err = cnc.WriteChannelStatusCounterRecord(
+		meta,
+		values,
+		0,
+		cnc.CounterRecordAllocated,
+		cnc.DriverSendChannelStatusTypeID,
+		strings.Repeat("a", 109),
+		42,
+		1,
+	)
+	require.EqualError(t, err, "cnc: channel status channel exceeds the counter key")
 }
 
 func TestWriteCounterRecordRejectsChannelStatusTypeIDs(t *testing.T) {

@@ -7,6 +7,10 @@ import (
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
+var errChannelStatusChannelTooLong = errors.New(
+	"cnc: channel status channel exceeds the counter key",
+)
+
 const (
 	CounterValueLength    = 128
 	CounterMetadataLength = 512
@@ -34,6 +38,8 @@ const (
 	counterMetaKeyOffset      = counterMetaDeadlineOffset + atomicbuffer.SizeInt64
 	// Agrona MAX_KEY_LENGTH.
 	counterMetaMaxKeyLength = 112
+	// The key holds the channel as a length-prefixed ASCII string.
+	channelStatusMaxChannelLength = counterMetaMaxKeyLength - atomicbuffer.StringASCIIHeaderLength
 
 	CounterMetadataFreeForReuseDeadlineOffset = counterMetaDeadlineOffset
 	CounterMetadataKeyOffset                  = counterMetaKeyOffset
@@ -340,6 +346,9 @@ func WriteChannelStatusCounterRecord(
 				"got %d; use WriteCounterRecord",
 			typeID,
 		)
+	}
+	if len(channel) > channelStatusMaxChannelLength {
+		return errChannelStatusChannelTooLong
 	}
 
 	metaBuffer := atomicbuffer.Wrap(meta)
