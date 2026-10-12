@@ -18,7 +18,10 @@ formatters:
       local-prefixes:
         - github.com/warrenguy/heron
     gofumpt:
-      extra-rules: true
+      extra:
+        group-params: true
+        clothe-returns: true
+        balance-calls: true
       module-path: github.com/warrenguy/heron
 
 linters:
