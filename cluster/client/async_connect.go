@@ -16,7 +16,7 @@ import (
 )
 
 // ConnectState mirrors Java AsyncConnect.State step values.
-type ConnectState int
+type ConnectState int32
 
 const (
 	ConnectStateCreateEgressSubscription ConnectState = iota - 1
