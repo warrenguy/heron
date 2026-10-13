@@ -29,8 +29,8 @@ type Subscription struct {
 	counters               *cnc.CountersReader
 
 	images []*Image
-	// roundRobinIndex advances each Poll/ControlledPoll for fairness and is
-	// normalized against len(images) every poll.
+	// roundRobinIndex is the image slot the next pollImages call starts from.
+	// pollImages reduces it modulo len(images) before use.
 	roundRobinIndex int
 
 	closed bool
