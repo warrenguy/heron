@@ -66,7 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           tarball="${RUNNER_TEMP}/apache-maven-${MAVEN_VERSION}-bin.tar.gz"
-          curl -fsSL -o "${tarball}" "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 15 -o "${tarball}" "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/${MAVEN_VERSION}/apache-maven-${MAVEN_VERSION}-bin.tar.gz"
           echo "${MAVEN_SHA512}  ${tarball}" | sha512sum -c -
           sudo tar -xzC /opt -f "${tarball}"
           echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "$GITHUB_PATH"
