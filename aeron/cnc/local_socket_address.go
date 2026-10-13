@@ -6,7 +6,7 @@ import (
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
-var errLocalSocketAddressStringOutOfBounds = errors.New(
+var errLocalSocketAddressStringTooLong = errors.New(
 	"cnc: local socket address string exceeds the counter key",
 )
 
@@ -108,7 +108,7 @@ func WriteLocalSocketAddressCounterRecord(
 	value int64,
 ) error {
 	if len(bindAddress) > localSocketAddressMaxStringLength {
-		return errLocalSocketAddressStringOutOfBounds
+		return errLocalSocketAddressStringTooLong
 	}
 
 	metaBuffer := atomicbuffer.Wrap(meta)
