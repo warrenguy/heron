@@ -359,11 +359,14 @@ func registerSharedDriverPublicationReady(
 }
 
 // TestConductor_sharedDriverPublication_addClose_rapid adds publications that
-// share driver registration ids. It then closes them one at a time, cancels
-// them, or closes all of them, in random order. The conductor keeps each add
-// under its own correlation id until its own Close, a CancelPending rollback,
-// or CloseAllResources removes it. A repeat Close sends no REMOVE_PUBLICATION
-// and releases no log buffer reference.
+// share driver registration ids, then retires them in random order by Close,
+// CancelPending, or CloseAllResources.
+//
+// Invariants:
+//   - each add stays in the map under its own correlation id until its own
+//     Close, CancelPending rollback, or CloseAllResources
+//   - a repeat Close sends no REMOVE_PUBLICATION and releases no log buffer
+//     reference
 func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {

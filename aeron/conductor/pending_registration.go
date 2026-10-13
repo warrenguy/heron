@@ -104,18 +104,18 @@ type pendingExpireItem struct {
 	removed      bool
 }
 
-// ExpireBefore scans pending entries whose DeadlineNs has passed, excluding
-// receivedCorrelationID (the response just received on this conductor tick).
+// ExpireBefore handles pending entries whose DeadlineNs has passed. It skips
+// receivedCorrelationID, the response received on this tick.
 //
-// For activeCorrelationID or add-pending kinds (publication, exclusive
-// publication, subscription), expired entries stay in the registry.
-// ExpireBefore sets registration.Err to ErrAwaitTimeout only while the add
-// still waits on the driver (Ready is false and Err is nil). expireHandler
-// receives removed=false for those entries. The caller must then complete
-// or cancel the add via PollPending or CancelPending. An add that the driver
-// already completed, but the caller has not yet polled, keeps its result.
-// ExpireBefore deletes non-add pending kinds from the registry. expireHandler
-// receives removed=true for those.
+// Add kinds and the active correlation id stay in the registry:
+//   - still waiting on the driver: Err becomes ErrAwaitTimeout, expireHandler
+//     gets removed=false, caller finishes via PollPending or CancelPending
+//   - already resolved (Ready or Err set): untouched, no callback
+//
+// Every other kind is deleted. expireHandler gets removed=true.
+//
+// Returns the work count and the active correlation id when it expired, else
+// NullCorrelationID.
 func (registry *pendingRegistry) ExpireBefore(
 	nowNs int64,
 	receivedCorrelationID int64,

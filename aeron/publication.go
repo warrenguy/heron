@@ -54,9 +54,11 @@ type Publication struct {
 const ChannelEndpointStatusActive = cnc.ChannelEndpointStatusActive
 
 // RegistrationID returns the correlation id of the add command for this
-// publication. Client.Publication looks the publication up by this id. Close
-// sends this id to the driver. Each add gets its own id, even when several
-// adds share one driver publication. See OriginalRegistrationID.
+// publication. Each add gets its own id, even when several adds share one
+// driver publication. See OriginalRegistrationID.
+//
+// Client.Publication looks the publication up by this id. Close sends this
+// id to the driver.
 func (pub *Publication) RegistrationID() int64 {
 	return pub.registrationID
 }
