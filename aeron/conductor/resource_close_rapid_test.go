@@ -304,7 +304,13 @@ func TestConductor_forceCloseResources_rapid(t *testing.T) {
 	})
 }
 
-var sharedDriverPublicationRapidRegistrationIDs = []int64{2002, 2003, 2004}
+var (
+	sharedDriverPublicationRapidRegistrationIDs = []int64{2002, 2003, 2004}
+	sharedDriverPublicationRapidSpecs           = []rapidPublicationPendingSpec{
+		rapidAddPublicationSpec,
+		rapidAddExclusivePublicationSpec,
+	}
+)
 
 type sharedDriverPublicationRapidOp int
 
@@ -312,6 +318,8 @@ const (
 	sharedDriverPublicationRapidOpAdd sharedDriverPublicationRapidOp = iota
 	sharedDriverPublicationRapidOpClose
 	sharedDriverPublicationRapidOpCloseAgain
+	sharedDriverPublicationRapidOpAddCancel
+	sharedDriverPublicationRapidOpCloseAll
 )
 
 type sharedDriverPublicationRapidAdd struct {
@@ -319,21 +327,46 @@ type sharedDriverPublicationRapidAdd struct {
 	logFileName string
 }
 
+// registerSharedDriverPublicationReady draws an unused correlation id,
+// registers a pending add for it, and delivers its ready event with a driver
+// registration id drawn from sharedDriverPublicationRapidRegistrationIDs.
+func registerSharedDriverPublicationReady(
+	rt *rapid.T,
+	conductorInstance *conductor.Conductor,
+	isTaken func(int64) bool,
+	label string,
+) (int64, rapidPublicationPendingSpec) {
+	rt.Helper()
+
+	correlationID := drawPendingRapidUniqueCorrelationID(rt, isTaken, label+"CorrelationID")
+	spec := rapid.SampledFrom(sharedDriverPublicationRapidSpecs).Draw(rt, label+"Spec")
+	event := spec.eventFor(correlationID)
+	event.RegistrationID = rapid.SampledFrom(
+		sharedDriverPublicationRapidRegistrationIDs,
+	).Draw(rt, label+"RegistrationID")
+	require.NoError(rt, registerPendingAddWithCorrelationForTest(
+		conductorInstance,
+		spec.kind,
+		correlationID,
+		event.StreamID,
+	))
+	spec.deliverReady(conductorInstance, event)
+	return correlationID, spec
+}
+
 // TestConductor_sharedDriverPublication_addClose_rapid adds publications that
-// share driver registration ids and closes them in random order. Each add
-// stays keyed by its own correlation id until its own Close. A repeat Close
-// sends no REMOVE_PUBLICATION and releases no log buffer reference.
+// share driver registration ids, then closes, cancels, and close-alls them in
+// random order. Each add stays keyed by its own correlation id until its own
+// Close, CancelPending rollback, or CloseAllResources. A repeat Close sends no
+// REMOVE_PUBLICATION and releases no log buffer reference.
 func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 	t.Parallel()
-	specs := []rapidPublicationPendingSpec{
-		rapidAddPublicationSpec,
-		rapidAddExclusivePublicationSpec,
-	}
 	rapid.Check(t, func(rt *rapid.T) {
 		lifecycle := &recordingResourceLifecycle{}
 		conductorInstance, _ := newConductorWithCloseLingerForTest(t, 0, lifecycle)
 		registry := conductor.LogBuffersRegistryForTest(conductorInstance)
-		for _, spec := range specs {
+		ring := conductorInstance.DriverProxyForTest().Ring()
+		for _, spec := range sharedDriverPublicationRapidSpecs {
 			spec.seedLog(t, conductorInstance)
 		}
 
@@ -347,7 +380,11 @@ func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 
 		stepCount := rapid.IntRange(1, 32).Draw(rt, "stepCount")
 		for step := range stepCount {
-			ops := []sharedDriverPublicationRapidOp{sharedDriverPublicationRapidOpAdd}
+			ops := []sharedDriverPublicationRapidOp{
+				sharedDriverPublicationRapidOpAdd,
+				sharedDriverPublicationRapidOpAddCancel,
+				sharedDriverPublicationRapidOpCloseAll,
+			}
 			if len(open) > 0 {
 				ops = append(ops, sharedDriverPublicationRapidOpClose)
 			}
@@ -360,23 +397,12 @@ func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 
 			switch rapid.SampledFrom(ops).Draw(rt, fmt.Sprintf("op%d", step)) {
 			case sharedDriverPublicationRapidOpAdd:
-				spec := rapid.SampledFrom(specs).Draw(rt, fmt.Sprintf("spec%d", step))
-				correlationID := drawPendingRapidUniqueCorrelationID(
+				correlationID, spec := registerSharedDriverPublicationReady(
 					rt,
-					isTaken,
-					fmt.Sprintf("correlationID%d", step),
-				)
-				event := spec.eventFor(correlationID)
-				event.RegistrationID = rapid.SampledFrom(
-					sharedDriverPublicationRapidRegistrationIDs,
-				).Draw(rt, fmt.Sprintf("registrationID%d", step))
-				require.NoError(rt, registerPendingAddWithCorrelationForTest(
 					conductorInstance,
-					spec.kind,
-					correlationID,
-					event.StreamID,
-				))
-				spec.deliverReady(conductorInstance, event)
+					isTaken,
+					fmt.Sprintf("add%d", step),
+				)
 
 				done, registration, err := conductorInstance.PollPending(correlationID)
 				require.True(rt, done)
@@ -389,6 +415,7 @@ func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 					handle:      handle,
 					logFileName: spec.logFileName,
 				}
+
 			case sharedDriverPublicationRapidOpClose:
 				correlationID := drawRapidInt64Key(
 					rt,
@@ -401,6 +428,7 @@ func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 				closed[correlationID] = add
 				wantRetireCalls = 1
 				wantRemoveIDs = append(wantRemoveIDs, correlationID)
+
 			case sharedDriverPublicationRapidOpCloseAgain:
 				correlationID := drawRapidInt64Key(
 					rt,
@@ -408,13 +436,48 @@ func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 					fmt.Sprintf("closeAgainKey%d", step),
 				)
 				require.NoError(rt, conductorInstance.ClosePublication(closed[correlationID].handle))
+
+			case sharedDriverPublicationRapidOpAddCancel:
+				correlationID, spec := registerSharedDriverPublicationReady(
+					rt,
+					conductorInstance,
+					isTaken,
+					fmt.Sprintf("cancel%d", step),
+				)
+				handle, ok := conductorInstance.PublicationByRegID(correlationID)
+				require.True(rt, ok)
+				require.Equal(rt, correlationID, handle.RegistrationID())
+
+				// CancelPending skips rollback while the ready mark names this
+				// correlation id. One DoWork tick clears the mark.
+				_ = conductorInstance.DoWork()
+				conductorInstance.CancelPending(correlationID)
+
+				_, pendingPresent := conductorInstance.PendingResult(correlationID)
+				require.False(rt, pendingPresent)
+				closed[correlationID] = sharedDriverPublicationRapidAdd{
+					handle:      handle,
+					logFileName: spec.logFileName,
+				}
+				wantRetireCalls = 1
+
+			case sharedDriverPublicationRapidOpCloseAll:
+				conductorInstance.CloseAllResources()
+				wantRemoveIDs = append(wantRemoveIDs, slices.Sorted(maps.Keys(open))...)
+				wantRetireCalls = len(open)
+				maps.Copy(closed, open)
+				clear(open)
 			}
 
-			ring := conductorInstance.DriverProxyForTest().Ring()
 			for _, typeID := range testutil.CommittedRecordTypeIDs(ring) {
 				require.Equal(rt, conductor.RemovePublication, typeID)
 			}
-			require.Equal(rt, wantRemoveIDs, testutil.RemovePublicationRegistrationIDs(rt, ring))
+
+			// CloseAllResources offers REMOVE_PUBLICATION in map iteration
+			// order. Compare sorted.
+			gotRemoveIDs := testutil.RemovePublicationRegistrationIDs(rt, ring)
+			slices.Sort(gotRemoveIDs)
+			require.Equal(rt, wantRemoveIDs, gotRemoveIDs)
 			require.Equal(rt, retireCallsBefore+wantRetireCalls, lifecycle.retirePublicationCalls)
 			require.Equal(rt, len(open), conductorInstance.PublicationCountForTest())
 			for correlationID, add := range open {
@@ -428,7 +491,7 @@ func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 			}
 
 			// Each seeded registry entry holds one reference beside each open add.
-			for _, spec := range specs {
+			for _, spec := range sharedDriverPublicationRapidSpecs {
 				wantRefCount := int32(1)
 				for _, add := range open {
 					if add.logFileName == spec.logFileName {
