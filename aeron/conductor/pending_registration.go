@@ -22,11 +22,13 @@ type PendingRegistration struct {
 	Kind          PendingKind
 	DeadlineNs    int64
 
-	StreamID       int32
-	Channel        string
-	RegistrationID int64
-	Int32Value     int32
-	Err            error
+	StreamID   int32
+	Channel    string
+	Int32Value int32
+	// The conductor sets Ready when the driver ready event completes an add.
+	// Other kinds never set it.
+	Ready bool
+	Err   error
 	// Publication and Subscription are any to break the conductor/aeron import cycle.
 	Publication  any
 	Subscription any
@@ -102,16 +104,18 @@ type pendingExpireItem struct {
 	removed      bool
 }
 
-// ExpireBefore scans pending entries whose DeadlineNs has passed, excluding
-// receivedCorrelationID (the response just received on this conductor tick).
+// ExpireBefore handles pending entries whose DeadlineNs has passed. It skips
+// receivedCorrelationID, the response received on this tick.
 //
-// For activeCorrelationID or add-pending kinds (publication, exclusive
-// publication, subscription), expired entries are retained: registration.Err is
-// set to ErrAwaitTimeout only while the add is still in-flight (no handle yet
-// and no prior error), removed is false, and the caller must complete or cancel
-// via PollPending/CancelPending. Succeeded-but-unpolled adds are left intact.
-// Non-add pending kinds are deleted from the registry; expireHandler receives
-// removed=true for those.
+// Add kinds and the active correlation id stay in the registry:
+//   - still waiting on the driver: Err becomes ErrAwaitTimeout, expireHandler
+//     gets removed=false, caller finishes via PollPending or CancelPending
+//   - already resolved (Ready or Err set): untouched, no callback
+//
+// Every other kind is deleted. expireHandler gets removed=true.
+//
+// Returns the work count and the active correlation id when it expired, else
+// NullCorrelationID.
 func (registry *pendingRegistry) ExpireBefore(
 	nowNs int64,
 	receivedCorrelationID int64,
@@ -134,8 +138,7 @@ func (registry *pendingRegistry) ExpireBefore(
 		}
 		isAddPending := addPendingKind(registration.Kind)
 		if isActive || isAddPending {
-			inFlight := registration.Err == nil &&
-				(!isAddPending || !pendingAddResolved(registration))
+			inFlight := registration.Err == nil && !registration.Ready
 			if inFlight {
 				registration.Err = ErrAwaitTimeout
 				workCount++
@@ -287,15 +290,16 @@ func (conductor *Conductor) RegisterPendingAddWithDeadline(
 // Primary path: receivedCorrelationID matches correlationID after adapter
 // handlers mark completion during DoWork.
 //
-// Multi-pending path: when receivedCorrelationID does not match
-// because another async add completed in the same DoWork tick, PollPending still
-// checks the pending map. If the entry exists and either (a) Err is nil with the
-// kind-appropriate handle populated (Publication, ExclusivePublication via
-// Publication, or Subscription), or (b) Err is non-nil, PollPending returns
-// done=true with the registration (including Err when set), removes the entry,
-// and applies RollbackAddPendingResources when Err is non-nil. receivedCorrelationID
-// is left unchanged when completion is observed via the map so other completed
-// adds remain pollable on subsequent ticks.
+// Multi-pending path: receivedCorrelationID names a different add when
+// several adds complete in the same DoWork tick. PollPending then checks the
+// pending map instead. The entry is complete when Err is non-nil or when the
+// driver ready event has set Ready. On completion PollPending:
+//   - returns done=true with the registration and Err
+//   - removes the entry
+//   - applies RollbackAddPendingResources when Err is non-nil
+//
+// PollPending leaves receivedCorrelationID unchanged on this path. Other
+// completed adds stay available to poll on later ticks.
 //
 // Called from the client on the same goroutine as RegisterPending, after
 // doWorkLocked; not invoked from inside DoWork.
@@ -344,16 +348,7 @@ func (conductor *Conductor) completePendingPoll(
 }
 
 func pendingAddResolved(registration *PendingRegistration) bool {
-	if registration.Err != nil {
-		return true
-	}
-	if addPublicationPendingKind(registration.Kind) {
-		return registration.Publication != nil || registration.RegistrationID != 0
-	}
-	if registration.Kind == PendingKindAddSubscription {
-		return registration.Subscription != nil || registration.RegistrationID != 0
-	}
-	return false
+	return registration.Err != nil || registration.Ready
 }
 
 func (conductor *Conductor) CancelPending(correlationID int64) {

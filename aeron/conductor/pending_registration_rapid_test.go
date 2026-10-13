@@ -684,14 +684,13 @@ func TestDriverEventsAdapter_correlated_gate_rapid(t *testing.T) {
 }
 
 type addPendingRapidEntry struct {
-	kind           conductor.PendingKind
-	present        bool
-	readyMarked    bool
-	driverErrored  bool
-	applyFailed    bool
-	timedOut       bool
-	registrationID int64
-	deadlineNs     int64
+	kind          conductor.PendingKind
+	present       bool
+	readyMarked   bool
+	driverErrored bool
+	applyFailed   bool
+	timedOut      bool
+	deadlineNs    int64
 }
 
 type addPendingRapidModel struct {
@@ -755,7 +754,7 @@ func addPendingRapidEntryResolved(entry addPendingRapidEntry) bool {
 	if entry.timedOut || entry.driverErrored || entry.applyFailed {
 		return true
 	}
-	return entry.readyMarked && entry.registrationID != 0
+	return entry.readyMarked
 }
 
 func addPendingRapidEntryPollable(
@@ -977,18 +976,16 @@ func completeAddPendingRapidPublicationReady(
 	if !receivedCorrelationMatches(conductorInstance, correlationID) {
 		return
 	}
-	applyAddPendingRapidReadyMark(model, correlationID, event.RegistrationID, nil)
+	applyAddPendingRapidReadyMark(model, correlationID, nil)
 }
 
 func applyAddPendingRapidReadyMark(
 	model *addPendingRapidModel,
 	correlationID int64,
-	registrationID int64,
 	mutate func(*addPendingRapidEntry),
 ) {
 	entry := model.entries[correlationID]
 	entry.readyMarked = true
-	entry.registrationID = registrationID
 	if mutate != nil {
 		mutate(&entry)
 	}
@@ -1018,8 +1015,7 @@ func completeAddPendingBindRetirePublicationReady(
 	}
 	entry := model.entries[correlationID]
 	entry.readyMarked = true
-	entry.registrationID = event.RegistrationID
-	if pub, pubOK := conductorInstance.PublicationByRegID(event.RegistrationID); pubOK {
+	if pub, pubOK := conductorInstance.PublicationByRegID(correlationID); pubOK {
 		if spec.isRealHandle(pub) {
 			entry.realHandle = true
 			entry.handle = pub
@@ -1302,7 +1298,6 @@ func runAddPendingRapidStep(
 		}
 		applyAddPendingRapidReadyMark(
 			model,
-			correlationID,
 			correlationID,
 			func(entry *addPendingRapidEntry) {
 				entry.applyFailed = applyFails
@@ -1755,7 +1750,7 @@ func assertAddPendingBindRetireRollback(
 		require.Greater(rt, len(*gotErrors), errorsBefore)
 		require.ErrorIs(rt, (*gotErrors)[len(*gotErrors)-1], errRetirePublication)
 		assertAddPendingBindRetireHandleClosed(rt, entry)
-		_, pubOK := conductorInstance.PublicationByRegID(entry.registrationID)
+		_, pubOK := conductorInstance.PublicationByRegID(correlationID)
 		require.False(rt, pubOK)
 	case addPendingBindRetireFailureRetireSubscription:
 		if entry.kind != conductor.PendingKindAddSubscription {
@@ -1951,7 +1946,6 @@ func runAddPendingBindRetireFailureRapidStep(
 		}
 		entry := model.entries[correlationID]
 		entry.readyMarked = true
-		entry.registrationID = correlationID
 		if sub, subOK := conductorInstance.SubscriptionByRegID(correlationID); subOK {
 			if _, isRealSub := sub.(*aeron.Subscription); isRealSub {
 				entry.realHandle = true
@@ -2056,7 +2050,7 @@ func runAddPendingBindRetireFailureRapidStep(
 		switch {
 		case errors.Is(pendingErr, errStubBindPublication):
 			require.ErrorIs(rt, err, errStubBindPublication)
-			_, pubOK := conductorInstance.PublicationByRegID(entry.registrationID)
+			_, pubOK := conductorInstance.PublicationByRegID(correlationID)
 			require.False(rt, pubOK)
 		case entry.driverErrored:
 			var driverErr *conductor.DriverRegistrationError

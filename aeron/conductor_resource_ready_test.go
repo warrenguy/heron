@@ -257,7 +257,7 @@ func TestConductor_handleExclusivePublicationReady_refcountsLog(t *testing.T) {
 	require.NoError(t, err)
 	ep, ok := registration.Publication.(*ExclusivePublication)
 	require.True(t, ok)
-	gotEP, ok := conductorInstance.PublicationByRegID(resourceReadyPublicationRegistrationID)
+	gotEP, ok := conductorInstance.PublicationByRegID(resourceReadyPublicationCorrelationID)
 	require.True(t, ok)
 	require.Same(t, ep, gotEP)
 
@@ -281,7 +281,7 @@ func TestConductor_handlePublicationReady_refcountsLog(t *testing.T) {
 	require.NoError(t, err)
 	pub, ok := registration.Publication.(*Publication)
 	require.True(t, ok)
-	gotPub, ok := conductorInstance.PublicationByRegID(resourceReadyPublicationRegistrationID)
+	gotPub, ok := conductorInstance.PublicationByRegID(resourceReadyPublicationCorrelationID)
 	require.True(t, ok)
 	require.Same(t, pub, gotPub)
 

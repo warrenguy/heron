@@ -33,6 +33,9 @@ func newPublicationFromReady(
 		return nil, err
 	}
 
+	// The driver labels the publication limit counter with the driver
+	// publication id, not the add correlation id.
+	// See Publication.OriginalRegistrationID.
 	if err := requireActiveCounter(
 		counters,
 		ready.PublicationLimitCounterID,
@@ -73,7 +76,7 @@ func newPublicationFromReady(
 	positionBitsToShift := logbuffer.PositionBitsToShift(termBufferLength)
 
 	pub := &Publication{
-		registrationID:         ready.RegistrationID,
+		registrationID:         ready.CorrelationID,
 		originalRegistrationID: ready.RegistrationID,
 		sessionID:              ready.SessionID,
 		streamID:               ready.StreamID,

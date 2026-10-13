@@ -442,7 +442,10 @@ func (conductor *Conductor) addReadyRegistration(
 	wantKind PendingKind,
 ) (*PendingRegistration, bool) {
 	registration, ok := conductor.pendingForReady(correlationID)
-	if !ok || registration.Kind != wantKind || registration.Err != nil {
+	if !ok || registration.Kind != wantKind {
+		return nil, false
+	}
+	if registration.Err != nil || registration.Ready {
 		return nil, false
 	}
 	return registration, true
@@ -471,7 +474,6 @@ func (conductor *Conductor) completePublicationReady(
 	if !ok {
 		return false
 	}
-	registration.RegistrationID = event.RegistrationID
 
 	var publication PublicationHandle
 	if conductor.resourceLifecycle != nil {
@@ -484,6 +486,7 @@ func (conductor *Conductor) completePublicationReady(
 	}
 
 	return conductor.completePendingSuccess(registration, func(registration *PendingRegistration) {
+		registration.Ready = true
 		registration.StreamID = event.StreamID
 		registration.Publication = publication
 	})
@@ -509,7 +512,7 @@ func (conductor *Conductor) completeSubscriptionReady(event SubscriptionReady) b
 	}
 
 	return conductor.completePendingSuccess(registration, func(registration *PendingRegistration) {
-		registration.RegistrationID = event.CorrelationID
+		registration.Ready = true
 		registration.Subscription = subscription
 	})
 }
@@ -539,22 +542,38 @@ func (conductor *Conductor) buildAndInsertPublication(
 			conductor.countersReader,
 			registration.Channel,
 		)
-		if buildErr == nil && isAbsentMapValue(publication) {
-			buildErr = errors.New(
-				"conductor: resource lifecycle returned nil publication handle",
-			)
+		if buildErr == nil {
+			buildErr = checkPublicationHandle(publication, event.CorrelationID)
 		}
 		if buildErr != nil {
 			conductor.releaseLogBuffersByKey(resolvedLogFileKey, 0)
 			return
 		}
-		conductor.insertPublication(event.RegistrationID, publication)
+		conductor.insertPublication(event.CorrelationID, publication)
 		if bindErr := conductor.bindPublicationOnInsert(publication); bindErr != nil {
 			buildErr = bindErr
 			return
 		}
 	})
 	return publication, buildErr
+}
+
+// checkPublicationHandle rejects a nil handle. It also rejects a handle whose
+// RegistrationID differs from the ready correlation id. Insert, retire, and
+// rollback all look the publication up by that id, so the two must match.
+func checkPublicationHandle(publication PublicationHandle, correlationID int64) error {
+	if isAbsentMapValue(publication) {
+		return errors.New("conductor: resource lifecycle returned nil publication handle")
+	}
+	registrationID := publication.RegistrationID()
+	if registrationID != correlationID {
+		return fmt.Errorf(
+			"conductor: publication handle registration id %d, want %d",
+			registrationID,
+			correlationID,
+		)
+	}
+	return nil
 }
 
 func (conductor *Conductor) applySubscriptionReady(
@@ -631,6 +650,19 @@ func (conductor *Conductor) preInsertSubscription(
 	return preInsertErr
 }
 
+// RollbackAddPendingResources retires the resource that an add kind stored
+// under registration.CorrelationID.
+//
+// Behaviour:
+//   - A subscription enters the map when the client offers the add. A
+//     publication enters the map when its ready event arrives.
+//   - Releases log buffer references without linger.
+//   - Does not offer REMOVE commands to the driver.
+//
+// A publication is missing from the map when:
+//   - the ready event never arrived
+//   - a bind failure retired the handle
+//   - Close retired the handle
 func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegistration) {
 	if conductor.resourceLifecycle == nil {
 		return
@@ -651,11 +683,9 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 				conductor.releaseLogBuffersByKey(registryKey, 0)
 			}
 			conductor.removeSubscription(registration.CorrelationID)
+
 		case PendingKindAddPublication, PendingKindAddExclusivePublication:
-			if registration.RegistrationID == 0 {
-				return
-			}
-			pub, ok := conductor.publicationByRegID(registration.RegistrationID)
+			pub, ok := conductor.publicationByRegID(registration.CorrelationID)
 			if !ok {
 				return
 			}
@@ -667,7 +697,8 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 			if registryKey != "" {
 				conductor.releaseLogBuffersByKey(registryKey, 0)
 			}
-			conductor.removePublication(registration.RegistrationID)
+			conductor.removePublication(registration.CorrelationID)
+
 		case PendingKindOperationSuccess,
 			PendingKindNextSessionID,
 			PendingKindRemovePublication,

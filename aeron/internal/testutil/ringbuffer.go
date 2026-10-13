@@ -1,6 +1,10 @@
 package testutil
 
 import (
+	"github.com/stretchr/testify/require"
+
+	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/record"
 	"github.com/warrenguy/heron/ringbuffer"
 )
@@ -59,4 +63,67 @@ func CommittedRecordTypeIDs(ring *ringbuffer.ManyToOneRingBuffer) []int {
 		typeIDs = append(typeIDs, messageTypeID)
 	})
 	return typeIDs
+}
+
+// drainCommittedRecords reads until the consumer position stops advancing.
+// One Read stops at the buffer end, so records past a wrap need a second Read.
+// A padding-only block advances the consumer position but reads zero messages.
+func drainCommittedRecords(
+	ring *ringbuffer.ManyToOneRingBuffer,
+	handler ringbuffer.MessageHandler,
+) {
+	for {
+		before := ring.ConsumerPosition()
+		ring.Read(handler)
+		if ring.ConsumerPosition() == before {
+			return
+		}
+	}
+}
+
+// RemovePublicationRegistrationIDs consumes every committed ring record and
+// returns the registration ids of REMOVE_PUBLICATION commands in order. It
+// consumes and skips every other command type.
+func RemovePublicationRegistrationIDs(
+	t require.TestingT,
+	ring *ringbuffer.ManyToOneRingBuffer,
+) []int64 {
+	registrationIDs := make([]int64, 0, 1)
+	drainCommittedRecords(ring, func(
+		msgTypeID int,
+		buffer atomicbuffer.AtomicBuffer,
+		index, length int,
+	) {
+		if msgTypeID != conductor.RemovePublication {
+			return
+		}
+		message, err := conductor.DecodeRemovePublicationMessage(buffer, index, length)
+		require.NoError(t, err)
+		registrationIDs = append(registrationIDs, message.RegistrationID)
+	})
+	return registrationIDs
+}
+
+// AddPublicationCorrelationIDs consumes every committed ring record and
+// returns the correlation ids of ADD_PUBLICATION and
+// ADD_EXCLUSIVE_PUBLICATION commands in order. It consumes and skips every
+// other command type.
+func AddPublicationCorrelationIDs(
+	t require.TestingT,
+	ring *ringbuffer.ManyToOneRingBuffer,
+) []int64 {
+	correlationIDs := make([]int64, 0, 2)
+	drainCommittedRecords(ring, func(
+		msgTypeID int,
+		buffer atomicbuffer.AtomicBuffer,
+		index, length int,
+	) {
+		if msgTypeID != conductor.AddPublication && msgTypeID != conductor.AddExclusivePublication {
+			return
+		}
+		message, err := conductor.DecodePublicationMessage(buffer, index, length)
+		require.NoError(t, err)
+		correlationIDs = append(correlationIDs, message.CorrelationID)
+	})
+	return correlationIDs
 }

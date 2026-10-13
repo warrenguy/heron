@@ -92,8 +92,10 @@ func TestClient_OfferAddPublicationKind_pollUntilReady(t *testing.T) {
 				testCase.pollAdd,
 				testCase.pollTimeoutMsg,
 			)
-			require.Equal(t, clientAddPublicationRegistrationID, addPublicationHandleRegistrationID(pub))
-			lookup, ok := testCase.lookup(client, clientAddPublicationRegistrationID)
+			registrationID, originalRegistrationID := addPublicationIDs(pub)
+			require.Equal(t, correlationID, registrationID)
+			require.Equal(t, clientAddPublicationRegistrationID, originalRegistrationID)
+			lookup, ok := testCase.lookup(client, correlationID)
 			require.True(t, ok)
 			require.Same(t, pub, lookup)
 			require.Equal(t, 1, client.PublicationCountForTest())
@@ -190,21 +192,158 @@ func TestClient_PollAdd_multiPendingSameTick_publicationKind(t *testing.T) {
 			pub0, done0, err := testCase.pollAdd(client, correlationID0)
 			require.True(t, done0)
 			require.NoError(t, err)
-			require.Equal(
-				t,
-				clientAddPublicationRegistrationID,
-				addPublicationHandleRegistrationID(pub0),
-			)
+			registrationID0, originalRegistrationID0 := addPublicationIDs(pub0)
+			require.Equal(t, correlationID0, registrationID0)
+			require.Equal(t, clientAddPublicationRegistrationID, originalRegistrationID0)
 
 			pub1, done1, err := testCase.pollAdd(client, correlationID1)
 			require.True(t, done1)
 			require.NoError(t, err)
+			registrationID1, originalRegistrationID1 := addPublicationIDs(pub1)
+			require.Equal(t, correlationID1, registrationID1)
+			require.Equal(t, clientOfferAddMember1RegistrationID, originalRegistrationID1)
+			require.Equal(t, 2, client.PublicationCountForTest())
+		})
+	}
+}
+
+// TestClient_AddPublication_sharedDriverPublication_closeEachAdd adds two
+// publications that share one driver registration id. Each Close must act on
+// its own add only.
+func TestClient_AddPublication_sharedDriverPublication_closeEachAdd(t *testing.T) {
+	tests := []struct {
+		name       string
+		closeOrder [2]int
+	}{
+		{name: "closeFirstAddFirst", closeOrder: [2]int{0, 1}},
+		{name: "closeSecondAddFirst", closeOrder: [2]int{1, 0}},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir, logPath := setupClientAddPublicationLog(t)
+			client, fixture := newClientOfferAddTestFixture(t, dir)
+			registry := conductor.LogBuffersRegistryForTest(fixture.Conductor)
+
+			var publications [2]*Publication
+			for i := range publications {
+				pub := addLiveClientPublication(t, client, fixture, logPath)
+				require.NotEqual(t, clientAddPublicationRegistrationID, pub.RegistrationID())
+				publications[i] = pub
+			}
 			require.Equal(
 				t,
-				clientOfferAddMember1RegistrationID,
-				addPublicationHandleRegistrationID(pub1),
+				[]int{conductor.AddPublication, conductor.AddPublication},
+				testutil.CommittedRecordTypeIDs(fixture.Ring),
 			)
+			correlationIDs := testutil.AddPublicationCorrelationIDs(t, fixture.Ring)
+			require.Equal(
+				t,
+				[]int64{publications[0].RegistrationID(), publications[1].RegistrationID()},
+				correlationIDs,
+			)
+			require.NotEqual(t, correlationIDs[0], correlationIDs[1])
+
+			// Phase: each add is keyed by its own correlation id.
+			for i, pub := range publications {
+				require.Equal(t, clientAddPublicationRegistrationID, pub.OriginalRegistrationID())
+				require.NotEqual(t, pub.OriginalRegistrationID(), pub.RegistrationID())
+				lookup, ok := client.Publication(correlationIDs[i])
+				require.True(t, ok)
+				require.Same(t, pub, lookup)
+			}
+			_, ok := client.Publication(clientAddPublicationRegistrationID)
+			require.False(t, ok)
 			require.Equal(t, 2, client.PublicationCountForTest())
+			require.Equal(t, int32(2), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+
+			// Phase: each close retires its own add and releases one log reference.
+			for step, closeIndex := range testCase.closeOrder {
+				require.NoError(t, publications[closeIndex].Close())
+
+				require.True(t, publications[closeIndex].IsClosed())
+				require.Equal(
+					t,
+					[]int64{correlationIDs[closeIndex]},
+					testutil.RemovePublicationRegistrationIDs(t, fixture.Ring),
+				)
+				_, ok := client.Publication(correlationIDs[closeIndex])
+				require.False(t, ok)
+				require.Equal(t, 1-step, client.PublicationCountForTest())
+				require.Equal(
+					t,
+					int32(1-step),
+					conductor.LogBuffersRegistryRefCountForTest(registry, logPath),
+				)
+
+				// Phase: repeat Close sends nothing and releases nothing.
+				require.NoError(t, publications[closeIndex].Close())
+				requireClientAddRingNoCommittedCommands(t, fixture.Ring)
+				require.Equal(t, 1-step, client.PublicationCountForTest())
+				require.Equal(
+					t,
+					int32(1-step),
+					conductor.LogBuffersRegistryRefCountForTest(registry, logPath),
+				)
+
+				if step == 0 {
+					openIndex := testCase.closeOrder[1]
+					require.False(t, publications[openIndex].IsClosed())
+					lookup, ok := client.Publication(correlationIDs[openIndex])
+					require.True(t, ok)
+					require.Same(t, publications[openIndex], lookup)
+				}
+			}
+		})
+	}
+}
+
+// TestClient_AddPublicationKind_closeSendsCorrelationID closes one add whose
+// driver registration id differs from its correlation id.
+func TestClient_AddPublicationKind_closeSendsCorrelationID(t *testing.T) {
+	for _, testCase := range clientAddPublicationKindCases() {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir, logPath := testCase.setupLog(t)
+			client, fixture := newClientOfferAddTestFixture(t, dir)
+			fixture.Conductor.SetCountersReaderForTest(countersReaderForClientAddTest(t))
+			registry := conductor.LogBuffersRegistryForTest(fixture.Conductor)
+
+			correlationID, err := testCase.offerAdd(client)
+			require.NoError(t, err)
+			require.NotEqual(t, clientAddPublicationRegistrationID, correlationID)
+			testCase.signalReady(
+				fixture.Conductor,
+				clientAddPublicationReadyEvent(correlationID, logPath),
+			)
+			got, done, err := testCase.pollAdd(client, correlationID)
+			require.True(t, done)
+			require.NoError(t, err)
+			pub, ok := got.(interface {
+				Close() error
+				IsClosed() bool
+			})
+			require.True(t, ok)
+			require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+
+			require.Equal(t, []int{testCase.addMsgType}, testutil.CommittedRecordTypeIDs(fixture.Ring))
+			require.Equal(
+				t,
+				[]int64{correlationID},
+				testutil.AddPublicationCorrelationIDs(t, fixture.Ring),
+			)
+
+			require.NoError(t, pub.Close())
+
+			require.True(t, pub.IsClosed())
+			require.Equal(
+				t,
+				[]int64{correlationID},
+				testutil.RemovePublicationRegistrationIDs(t, fixture.Ring),
+			)
+			_, ok = testCase.lookup(client, correlationID)
+			require.False(t, ok)
+			require.Zero(t, client.PublicationCountForTest())
+			require.Zero(t, conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
 		})
 	}
 }

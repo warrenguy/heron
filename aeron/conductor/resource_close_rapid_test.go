@@ -4,6 +4,8 @@ package conductor_test
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -83,6 +85,7 @@ func TestConductor_CloseAllResources_ordering_rapid(t *testing.T) {
 					stubPublication{registrationID: regID},
 				)
 				publicationCount++
+
 			case closeAllRapidOpInsertSubscription:
 				conductorInstance.InsertSubscriptionForTest(
 					regID,
@@ -279,6 +282,7 @@ func TestConductor_forceCloseResources_rapid(t *testing.T) {
 					stubPublication{registrationID: regID},
 				)
 				livePublications++
+
 			case forceCloseRapidOpInsertSubscription:
 				regID := drawCloseAllRapidUniqueRegID(
 					rt,
@@ -290,8 +294,10 @@ func TestConductor_forceCloseResources_rapid(t *testing.T) {
 					&stubResourceSubscription{registrationID: regID},
 				)
 				liveSubscriptions++
+
 			case forceCloseRapidOpForceClose:
 				applyForceClose()
+
 			case forceCloseRapidOpCloseAll:
 				applyCloseAll()
 			}
@@ -299,5 +305,214 @@ func TestConductor_forceCloseResources_rapid(t *testing.T) {
 
 		applyForceClose()
 		applyCloseAll()
+	})
+}
+
+var (
+	sharedDriverPublicationRapidRegistrationIDs = []int64{2002, 2003, 2004}
+	sharedDriverPublicationRapidSpecs           = []rapidPublicationPendingSpec{
+		rapidAddPublicationSpec,
+		rapidAddExclusivePublicationSpec,
+	}
+)
+
+type sharedDriverPublicationRapidOp int
+
+const (
+	sharedDriverPublicationRapidOpAdd sharedDriverPublicationRapidOp = iota
+	sharedDriverPublicationRapidOpClose
+	sharedDriverPublicationRapidOpCloseAgain
+	sharedDriverPublicationRapidOpAddCancel
+	sharedDriverPublicationRapidOpCloseAll
+)
+
+type sharedDriverPublicationRapidAdd struct {
+	handle      conductor.PublicationHandle
+	logFileName string
+}
+
+// registerSharedDriverPublicationReady draws an unused correlation id,
+// registers a pending add for it, and delivers its ready event with a driver
+// registration id drawn from sharedDriverPublicationRapidRegistrationIDs.
+func registerSharedDriverPublicationReady(
+	rt *rapid.T,
+	conductorInstance *conductor.Conductor,
+	isTaken func(int64) bool,
+	label string,
+) (int64, rapidPublicationPendingSpec) {
+	rt.Helper()
+
+	correlationID := drawPendingRapidUniqueCorrelationID(rt, isTaken, label+"CorrelationID")
+	spec := rapid.SampledFrom(sharedDriverPublicationRapidSpecs).Draw(rt, label+"Spec")
+	event := spec.eventFor(correlationID)
+	event.RegistrationID = rapid.SampledFrom(
+		sharedDriverPublicationRapidRegistrationIDs,
+	).Draw(rt, label+"RegistrationID")
+	require.NoError(rt, registerPendingAddWithCorrelationForTest(
+		conductorInstance,
+		spec.kind,
+		correlationID,
+		event.StreamID,
+	))
+	spec.deliverReady(conductorInstance, event)
+	return correlationID, spec
+}
+
+// TestConductor_sharedDriverPublication_addClose_rapid adds publications that
+// share driver registration ids, then retires them in random order by Close,
+// CancelPending, or CloseAllResources.
+//
+// Invariants:
+//   - each add stays in the map under its own correlation id until its own
+//     Close, CancelPending rollback, or CloseAllResources
+//   - a repeat Close sends no REMOVE_PUBLICATION and releases no log buffer
+//     reference
+func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		lifecycle := &recordingResourceLifecycle{}
+		conductorInstance, _ := newConductorWithCloseLingerForTest(t, 0, lifecycle)
+		registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+		ring := conductorInstance.DriverProxyForTest().Ring()
+		for _, spec := range sharedDriverPublicationRapidSpecs {
+			spec.seedLog(t, conductorInstance)
+		}
+
+		open := make(map[int64]sharedDriverPublicationRapidAdd)
+		closed := make(map[int64]sharedDriverPublicationRapidAdd)
+		isTaken := func(correlationID int64) bool {
+			_, isOpen := open[correlationID]
+			_, isClosed := closed[correlationID]
+			return isOpen || isClosed
+		}
+
+		stepCount := rapid.IntRange(1, 32).Draw(rt, "stepCount")
+		for step := range stepCount {
+			ops := []sharedDriverPublicationRapidOp{
+				sharedDriverPublicationRapidOpAdd,
+				sharedDriverPublicationRapidOpAddCancel,
+				sharedDriverPublicationRapidOpCloseAll,
+			}
+			if len(open) > 0 {
+				ops = append(ops, sharedDriverPublicationRapidOpClose)
+			}
+			if len(closed) > 0 {
+				ops = append(ops, sharedDriverPublicationRapidOpCloseAgain)
+			}
+			retireCallsBefore := lifecycle.retirePublicationCalls
+			wantRetireCalls := 0
+			wantRemoveIDs := []int64{}
+
+			switch rapid.SampledFrom(ops).Draw(rt, fmt.Sprintf("op%d", step)) {
+			case sharedDriverPublicationRapidOpAdd:
+				correlationID, spec := registerSharedDriverPublicationReady(
+					rt,
+					conductorInstance,
+					isTaken,
+					fmt.Sprintf("add%d", step),
+				)
+
+				done, registration, err := conductorInstance.PollPending(correlationID)
+				require.True(rt, done)
+				require.NoError(rt, err)
+				require.True(rt, registration.Ready)
+				handle, ok := registration.Publication.(conductor.PublicationHandle)
+				require.True(rt, ok)
+				require.Equal(rt, correlationID, handle.RegistrationID())
+				open[correlationID] = sharedDriverPublicationRapidAdd{
+					handle:      handle,
+					logFileName: spec.logFileName,
+				}
+
+			case sharedDriverPublicationRapidOpClose:
+				correlationID := drawRapidInt64Key(
+					rt,
+					slices.Sorted(maps.Keys(open)),
+					fmt.Sprintf("closeKey%d", step),
+				)
+				add := open[correlationID]
+				require.NoError(rt, conductorInstance.ClosePublication(add.handle))
+				delete(open, correlationID)
+				closed[correlationID] = add
+				wantRetireCalls = 1
+				wantRemoveIDs = append(wantRemoveIDs, correlationID)
+
+			case sharedDriverPublicationRapidOpCloseAgain:
+				correlationID := drawRapidInt64Key(
+					rt,
+					slices.Sorted(maps.Keys(closed)),
+					fmt.Sprintf("closeAgainKey%d", step),
+				)
+				require.NoError(rt, conductorInstance.ClosePublication(closed[correlationID].handle))
+
+			case sharedDriverPublicationRapidOpAddCancel:
+				correlationID, spec := registerSharedDriverPublicationReady(
+					rt,
+					conductorInstance,
+					isTaken,
+					fmt.Sprintf("cancel%d", step),
+				)
+				handle, ok := conductorInstance.PublicationByRegID(correlationID)
+				require.True(rt, ok)
+				require.Equal(rt, correlationID, handle.RegistrationID())
+
+				// CancelPending skips rollback while receivedCorrelationID still
+				// names this add. One DoWork tick resets it.
+				_ = conductorInstance.DoWork()
+				conductorInstance.CancelPending(correlationID)
+
+				_, pendingPresent := conductorInstance.PendingResult(correlationID)
+				require.False(rt, pendingPresent)
+				closed[correlationID] = sharedDriverPublicationRapidAdd{
+					handle:      handle,
+					logFileName: spec.logFileName,
+				}
+				wantRetireCalls = 1
+
+			case sharedDriverPublicationRapidOpCloseAll:
+				conductorInstance.CloseAllResources()
+				wantRemoveIDs = append(wantRemoveIDs, slices.Sorted(maps.Keys(open))...)
+				wantRetireCalls = len(open)
+				maps.Copy(closed, open)
+				clear(open)
+			}
+
+			for _, typeID := range testutil.CommittedRecordTypeIDs(ring) {
+				require.Equal(rt, conductor.RemovePublication, typeID)
+			}
+
+			// CloseAllResources offers one REMOVE_PUBLICATION per publication in
+			// map iteration order. Sort before comparing.
+			gotRemoveIDs := testutil.RemovePublicationRegistrationIDs(rt, ring)
+			slices.Sort(gotRemoveIDs)
+			require.Equal(rt, wantRemoveIDs, gotRemoveIDs)
+			require.Equal(rt, retireCallsBefore+wantRetireCalls, lifecycle.retirePublicationCalls)
+			require.Equal(rt, len(open), conductorInstance.PublicationCountForTest())
+			for correlationID, add := range open {
+				got, ok := conductorInstance.PublicationByRegID(correlationID)
+				require.True(rt, ok)
+				require.Equal(rt, add.handle, got)
+			}
+			for correlationID := range closed {
+				_, ok := conductorInstance.PublicationByRegID(correlationID)
+				require.False(rt, ok)
+			}
+
+			// Each seeded registry entry holds one reference of its own plus one
+			// per open add on that log file.
+			for _, spec := range sharedDriverPublicationRapidSpecs {
+				wantRefCount := int32(1)
+				for _, add := range open {
+					if add.logFileName == spec.logFileName {
+						wantRefCount++
+					}
+				}
+				require.Equal(
+					rt,
+					wantRefCount,
+					conductor.LogBuffersRegistryRefCountForTest(registry, spec.logFileName),
+				)
+			}
+		}
 	})
 }

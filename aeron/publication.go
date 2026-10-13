@@ -53,8 +53,30 @@ type Publication struct {
 // ChannelEndpointStatusActive mirrors Java ChannelEndpointStatus.ACTIVE.
 const ChannelEndpointStatusActive = cnc.ChannelEndpointStatusActive
 
+// RegistrationID returns the correlation id of the add command for this
+// publication. Each add gets its own id, even when several adds share one
+// driver publication. See OriginalRegistrationID.
+//
+// Client.Publication looks the publication up by this id. Close sends this
+// id to the driver.
 func (pub *Publication) RegistrationID() int64 {
 	return pub.registrationID
+}
+
+// OriginalRegistrationID returns the registration id of the driver
+// publication. Matches Java Publication.originalRegistrationId.
+//
+// Behaviour:
+//   - The driver gives a new driver publication the correlation id of the
+//     add that created it. For that add, OriginalRegistrationID equals
+//     RegistrationID. Publication does not check this.
+//   - A later add that joins a live driver publication returns that
+//     publication's id. The creating add may belong to another client.
+//   - After every add closes, the next add creates a new driver publication
+//     with a new id.
+//   - The driver labels the publication limit counter with this id.
+func (pub *Publication) OriginalRegistrationID() int64 {
+	return pub.originalRegistrationID
 }
 
 func (pub *Publication) SessionID() int32 {

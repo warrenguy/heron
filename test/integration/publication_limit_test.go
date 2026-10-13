@@ -32,7 +32,7 @@ func TestPublicationLimitCounterAliasesDriver(t *testing.T) {
 	limitID, driverLimit := harness.PublicationLimitCounterValue(
 		t,
 		countersReader,
-		pub.RegistrationID(),
+		pub.OriginalRegistrationID(),
 	)
 
 	require.Equal(t, driverLimit, pub.PositionLimit())
@@ -40,7 +40,7 @@ func TestPublicationLimitCounterAliasesDriver(t *testing.T) {
 		t,
 		countersReader.IsCounterActive(
 			limitID,
-			pub.RegistrationID(),
+			pub.OriginalRegistrationID(),
 			cnc.DriverPublisherLimitTypeID,
 		),
 	)
@@ -134,7 +134,7 @@ func TestPublicationLimitAdvancesAfterSubscriberDrain(t *testing.T) {
 	_, driverLimit := harness.PublicationLimitCounterValue(
 		t,
 		countersReader,
-		pub.RegistrationID(),
+		pub.OriginalRegistrationID(),
 	)
 	require.Equal(t, driverLimit, finalLimit)
 

@@ -461,12 +461,12 @@ func TestConductor_ClearPending(t *testing.T) {
 		{
 			name:  "addPublicationAfterReady",
 			setup: completeGoldenPublicationReadyForTest,
-			regID: goldenPublicationBuffersReadyEvent.RegistrationID,
+			regID: goldenPublicationBuffersReadyEvent.CorrelationID,
 		},
 		{
 			name:  "addExclusivePublicationAfterReady",
 			setup: completeGoldenExclusivePublicationReadyForTest,
-			regID: goldenExclusivePublicationBuffersReadyEvent.RegistrationID,
+			regID: goldenExclusivePublicationBuffersReadyEvent.CorrelationID,
 		},
 	}
 	for _, testCase := range publicationClearPendingCases {
@@ -517,11 +517,11 @@ func TestConductor_PollPending_mapCompletionWhenMarkMismatch(t *testing.T) {
 				)
 			},
 			assertFirst: func(t *testing.T, registration conductor.PendingRegistration) {
-				require.Equal(t, correlationID0, registration.RegistrationID)
+				require.True(t, registration.Ready)
 			},
 			assertSecond: func(t *testing.T, registration conductor.PendingRegistration, err error) {
 				require.NoError(t, err)
-				require.Equal(t, correlationID1, registration.RegistrationID)
+				require.True(t, registration.Ready)
 			},
 		},
 		{
@@ -543,18 +543,36 @@ func TestConductor_PollPending_mapCompletionWhenMarkMismatch(t *testing.T) {
 				)
 			},
 			assertFirst: func(t *testing.T, registration conductor.PendingRegistration) {
-				require.Equal(
-					t,
-					goldenPublicationBuffersReadyEvent.RegistrationID,
-					registration.RegistrationID,
-				)
+				require.True(t, registration.Ready)
 			},
 			assertSecond: func(t *testing.T, registration conductor.PendingRegistration, err error) {
 				require.Error(t, err)
+				require.False(t, registration.Ready)
 				var driverErr *conductor.DriverRegistrationError
 				require.ErrorAs(t, registration.Err, &driverErr)
 				require.Equal(t, correlationIDFail, driverErr.CorrelationID)
 				require.Equal(t, int32(11), driverErr.ErrorCode)
+			},
+		},
+		{
+			name:         "publicationZeroCorrelationAndSuccess",
+			kind:         conductor.PendingKindAddPublication,
+			correlation0: 0,
+			correlation1: correlationID1,
+			complete: func(_ *testing.T, conductorInstance *conductor.Conductor) {
+				conductorInstance.PublicationReadyForTest(
+					goldenPublicationBuffersReadyWithCorrelation(0),
+				)
+				conductorInstance.PublicationReadyForTest(
+					goldenPublicationBuffersReadyWithCorrelation(correlationID1),
+				)
+			},
+			assertFirst: func(t *testing.T, registration conductor.PendingRegistration) {
+				require.True(t, registration.Ready)
+			},
+			assertSecond: func(t *testing.T, registration conductor.PendingRegistration, err error) {
+				require.NoError(t, err)
+				require.True(t, registration.Ready)
 			},
 		},
 	}
@@ -889,12 +907,12 @@ func TestConductor_expirePending_preservesSucceededUnpolledAdd_multiPending(t *t
 	registration, ok := conductorInstance.PendingResult(correlationID0)
 	require.True(t, ok)
 	require.NoError(t, registration.Err)
-	require.Equal(t, correlationID0, registration.RegistrationID)
+	require.True(t, registration.Ready)
 
 	done, polledRegistration, err := conductorInstance.PollPending(correlationID0)
 	require.True(t, done)
 	require.NoError(t, err)
-	require.Equal(t, correlationID0, polledRegistration.RegistrationID)
+	require.True(t, polledRegistration.Ready)
 	_, ok = conductorInstance.PendingResult(correlationID0)
 	require.False(t, ok)
 
@@ -1193,7 +1211,6 @@ func TestConductor_PollPending_addReady(t *testing.T) {
 		correlationID int64
 		streamID      int32
 		signalReady   func(*conductor.Conductor)
-		wantRegID     int64
 		wantStreamID  int32
 		wantHandleNil func(t *testing.T, registration conductor.PendingRegistration)
 	}{
@@ -1205,7 +1222,6 @@ func TestConductor_PollPending_addReady(t *testing.T) {
 			signalReady: func(conductorInstance *conductor.Conductor) {
 				conductorInstance.PublicationReadyForTest(goldenPublicationBuffersReadyEvent)
 			},
-			wantRegID:     goldenPublicationBuffersReadyEvent.RegistrationID,
 			wantStreamID:  goldenPublicationBuffersReadyEvent.StreamID,
 			wantHandleNil: requireNilPublicationHandle,
 		},
@@ -1219,7 +1235,6 @@ func TestConductor_PollPending_addReady(t *testing.T) {
 					goldenExclusivePublicationBuffersReadyEvent,
 				)
 			},
-			wantRegID:     goldenExclusivePublicationBuffersReadyEvent.RegistrationID,
 			wantStreamID:  goldenExclusivePublicationBuffersReadyEvent.StreamID,
 			wantHandleNil: requireNilPublicationHandle,
 		},
@@ -1231,7 +1246,6 @@ func TestConductor_PollPending_addReady(t *testing.T) {
 			signalReady: func(conductorInstance *conductor.Conductor) {
 				conductorInstance.SubscriptionReadyForTest(goldenSubscriptionReadyEvent)
 			},
-			wantRegID:    goldenSubscriptionReadyCorrelationID,
 			wantStreamID: pendingTestStreamID,
 			wantHandleNil: func(t *testing.T, registration conductor.PendingRegistration) {
 				require.Nil(t, registration.Subscription)
@@ -1262,7 +1276,7 @@ func TestConductor_PollPending_addReady(t *testing.T) {
 			require.True(t, done)
 			require.NoError(t, err)
 			require.Equal(t, testCase.kind, registration.Kind)
-			require.Equal(t, testCase.wantRegID, registration.RegistrationID)
+			require.True(t, registration.Ready)
 			require.Equal(t, testCase.wantStreamID, registration.StreamID)
 			require.Equal(t, pendingTestChannel, registration.Channel)
 			testCase.wantHandleNil(t, registration)
@@ -1428,14 +1442,12 @@ func TestConductor_addPending_ackThenReady(t *testing.T) {
 		name         string
 		kind         conductor.PendingKind
 		correlation  int64
-		wantRegID    int64
 		readyHandler func(*conductor.Conductor)
 	}{
 		{
 			name:        "addPublication",
 			kind:        conductor.PendingKindAddPublication,
 			correlation: goldenPublicationReadyCorrelationID,
-			wantRegID:   goldenPublicationBuffersReadyEvent.RegistrationID,
 			readyHandler: func(conductorInstance *conductor.Conductor) {
 				conductorInstance.PublicationReadyForTest(goldenPublicationBuffersReadyEvent)
 			},
@@ -1444,7 +1456,6 @@ func TestConductor_addPending_ackThenReady(t *testing.T) {
 			name:        "addSubscription",
 			kind:        conductor.PendingKindAddSubscription,
 			correlation: goldenSubscriptionReadyCorrelationID,
-			wantRegID:   goldenSubscriptionReadyCorrelationID,
 			readyHandler: func(conductorInstance *conductor.Conductor) {
 				conductorInstance.SubscriptionReadyForTest(goldenSubscriptionReadyEvent)
 			},
@@ -1453,7 +1464,6 @@ func TestConductor_addPending_ackThenReady(t *testing.T) {
 			name:        "addExclusivePublication",
 			kind:        conductor.PendingKindAddExclusivePublication,
 			correlation: goldenExclusivePublicationReadyCorrelationID,
-			wantRegID:   goldenExclusivePublicationBuffersReadyEvent.RegistrationID,
 			readyHandler: func(conductorInstance *conductor.Conductor) {
 				conductorInstance.ExclusivePublicationReadyForTest(
 					goldenExclusivePublicationBuffersReadyEvent,
@@ -1487,7 +1497,7 @@ func TestConductor_addPending_ackThenReady(t *testing.T) {
 			require.True(t, done)
 			require.NoError(t, err)
 			require.Equal(t, testCase.kind, registration.Kind)
-			require.Equal(t, testCase.wantRegID, registration.RegistrationID)
+			require.True(t, registration.Ready)
 			require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
 			_, ok = conductorInstance.PendingResult(testCase.correlation)
 			require.False(t, ok)
@@ -1668,7 +1678,7 @@ func TestConductor_correlatedReady_markPolicy(t *testing.T) {
 			if testCase.wantPollDone {
 				require.Equal(t, testCase.wantPollKind, registration.Kind)
 				require.Equal(t, testCase.correlationID, registration.CorrelationID)
-				require.Zero(t, registration.RegistrationID)
+				require.False(t, registration.Ready)
 			} else {
 				require.Zero(t, registration)
 				_, ok = conductorInstance.PendingResult(testCase.correlationID)
@@ -1762,7 +1772,6 @@ func TestConductor_addPending_ackThenReadyViaDoWork(t *testing.T) {
 		name          string
 		kind          conductor.PendingKind
 		correlationID int64
-		wantRegID     int64
 		transmitAck   func(t *testing.T, adapter *conductor.DriverEventsAdapter)
 		transmitReady func(t *testing.T, adapter *conductor.DriverEventsAdapter)
 	}{
@@ -1770,7 +1779,6 @@ func TestConductor_addPending_ackThenReadyViaDoWork(t *testing.T) {
 			name:          "addPublication",
 			kind:          conductor.PendingKindAddPublication,
 			correlationID: goldenPublicationReadyCorrelationID,
-			wantRegID:     goldenPublicationBuffersReadyEvent.RegistrationID,
 			transmitAck: func(t *testing.T, adapter *conductor.DriverEventsAdapter) {
 				t.Helper()
 				transmitConductorEvent(
@@ -1794,7 +1802,6 @@ func TestConductor_addPending_ackThenReadyViaDoWork(t *testing.T) {
 			name:          "addSubscription",
 			kind:          conductor.PendingKindAddSubscription,
 			correlationID: goldenSubscriptionReadyCorrelationID,
-			wantRegID:     goldenSubscriptionReadyCorrelationID,
 			transmitAck: func(t *testing.T, adapter *conductor.DriverEventsAdapter) {
 				t.Helper()
 				transmitConductorEvent(
@@ -1818,7 +1825,6 @@ func TestConductor_addPending_ackThenReadyViaDoWork(t *testing.T) {
 			name:          "addExclusivePublication",
 			kind:          conductor.PendingKindAddExclusivePublication,
 			correlationID: goldenExclusivePublicationReadyCorrelationID,
-			wantRegID:     goldenExclusivePublicationBuffersReadyEvent.RegistrationID,
 			transmitAck: func(t *testing.T, adapter *conductor.DriverEventsAdapter) {
 				t.Helper()
 				transmitConductorEvent(
@@ -1877,7 +1883,7 @@ func TestConductor_addPending_ackThenReadyViaDoWork(t *testing.T) {
 			require.True(t, done)
 			require.NoError(t, err)
 			require.Equal(t, testCase.kind, registration.Kind)
-			require.Equal(t, testCase.wantRegID, registration.RegistrationID)
+			require.True(t, registration.Ready)
 		})
 	}
 }
@@ -2020,7 +2026,7 @@ func TestConductor_expirePending_addSubscriptionSameTickReady(t *testing.T) {
 	require.True(t, done)
 	require.NoError(t, err)
 	require.Equal(t, conductor.PendingKindAddSubscription, registration.Kind)
-	require.Equal(t, goldenSubscriptionReadyCorrelationID, registration.RegistrationID)
+	require.True(t, registration.Ready)
 }
 
 func TestConductor_rollbackAddPendingResources_nonAddKind_silent(t *testing.T) {
@@ -2074,12 +2080,91 @@ func TestConductor_rollbackAddPendingResources_nonAddKind_silent(t *testing.T) {
 	require.Equal(t, 0, lifecycle.retirePublicationCalls)
 	require.Equal(t, 0, lifecycle.retireSubscriptionCalls)
 	_, ok := conductorInstance.PublicationByRegID(
-		goldenPublicationBuffersReadyEvent.RegistrationID,
+		goldenPublicationBuffersReadyEvent.CorrelationID,
 	)
 	require.True(t, ok)
 	_, ok = conductorInstance.SubscriptionByRegID(goldenSubscriptionReadyCorrelationID)
 	require.True(t, ok)
 	require.Empty(t, *gotErrors)
+}
+
+// TestConductor_rollbackAddPendingResources_publicationKeyedByCorrelation rolls
+// back one add while the golden add holds the same driver registration id.
+func TestConductor_rollbackAddPendingResources_publicationKeyedByCorrelation(t *testing.T) {
+	tests := []struct {
+		name            string
+		correlationID   int64
+		ready           bool
+		wantRetireCalls int
+	}{
+		{
+			name:            "sharedDriverIDReadyRemoved",
+			correlationID:   pendingTestOtherCorrelationID,
+			ready:           true,
+			wantRetireCalls: 1,
+		},
+		{
+			name:            "sharedDriverIDReadyAtZeroCorrelationRemoved",
+			correlationID:   0,
+			ready:           true,
+			wantRetireCalls: 1,
+		},
+		{
+			name:            "notReadyLeavesOtherPublication",
+			correlationID:   0,
+			ready:           false,
+			wantRetireCalls: 0,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			lifecycle := &recordingResourceLifecycle{}
+			conductorInstance := newConductorWithResourceLifecycleForTest(t, lifecycle)
+			registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+			completeGoldenPublicationReadyForTest(t, conductorInstance)
+
+			registration := conductor.PendingRegistration{
+				CorrelationID: testCase.correlationID,
+				Kind:          conductor.PendingKindAddPublication,
+			}
+			if testCase.ready {
+				event := goldenPublicationBuffersReadyWithCorrelation(testCase.correlationID)
+				require.NoError(t, registerPendingAddWithCorrelationForTest(
+					conductorInstance,
+					conductor.PendingKindAddPublication,
+					testCase.correlationID,
+					event.StreamID,
+				))
+				conductorInstance.PublicationReadyForTest(event)
+				require.Equal(t, 2, conductorInstance.PublicationCountForTest())
+				done, polled, err := conductorInstance.PollPending(testCase.correlationID)
+				require.True(t, done)
+				require.NoError(t, err)
+				require.True(t, polled.Ready)
+				registration = polled
+			}
+			refCountBefore := conductor.LogBuffersRegistryRefCountForTest(
+				registry,
+				goldenPublicationReadyLogFileName,
+			)
+
+			conductorInstance.RollbackAddPendingResourcesForTest(registration)
+
+			require.Equal(t, 1, conductorInstance.PublicationCountForTest())
+			require.Equal(t, testCase.wantRetireCalls, lifecycle.retirePublicationCalls)
+			requireGoldenLogRefCountForTest(
+				t,
+				registry,
+				goldenPublicationReadyLogFileName,
+				refCountBefore-int32(testCase.wantRetireCalls),
+			)
+			_, ok := conductorInstance.PublicationByRegID(testCase.correlationID)
+			require.False(t, ok)
+			_, ok = conductorInstance.PublicationByRegID(goldenPublicationReadyCorrelationID)
+			require.True(t, ok)
+		})
+	}
 }
 
 func TestConductor_DriverError_negative(t *testing.T) {

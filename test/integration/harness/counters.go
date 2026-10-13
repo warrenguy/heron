@@ -14,6 +14,7 @@ import (
 
 // PublicationLimitCounterValue resolves the driver publisher-limit counter for
 // registrationID via FindHeartbeatCounter and DriverPublisherLimitTypeID.
+// registrationID must be the publication OriginalRegistrationID.
 func PublicationLimitCounterValue(
 	t testing.TB,
 	reader *cnc.CountersReader,

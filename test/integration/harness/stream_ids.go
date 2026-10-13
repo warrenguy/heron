@@ -21,6 +21,7 @@ const (
 	PublicationLimitStreamID          int32 = 1014
 	// Isolated from PublicationLimitStreamID for shared-driver cross-test safety.
 	PublicationLimitAfterDrainStreamID              int32 = 1015
+	SharedPublicationCloseStreamID                  int32 = 1016
 	ExclusivePublicationTwoClientsRoundtripStreamID int32 = 7206
 	AeronHelpersSmokeStreamID                       int32 = 8024
 	// Isolated from AeronHelpersSmokeStreamID for shared-driver cross-test safety.

@@ -62,9 +62,24 @@ type ExclusivePublication struct {
 	client    *Client
 }
 
-// RegistrationID returns the driver registration id for this publication.
+// RegistrationID returns the correlation id of the add command for this
+// publication. Client.ExclusivePublication looks the publication up by this
+// id. Close sends this id to the driver.
 func (ep *ExclusivePublication) RegistrationID() int64 {
 	return ep.registrationID
+}
+
+// OriginalRegistrationID returns the registration id of the driver
+// publication. Matches Java Publication.originalRegistrationId.
+//
+// Behaviour:
+//   - Each exclusive add creates its own driver publication.
+//   - The driver gives that driver publication the add correlation id, so
+//     OriginalRegistrationID equals RegistrationID. ExclusivePublication does
+//     not check this.
+//   - The driver labels the publication limit counter with this id.
+func (ep *ExclusivePublication) OriginalRegistrationID() int64 {
+	return ep.originalRegistrationID
 }
 
 // SessionID returns the session id assigned by the driver.
