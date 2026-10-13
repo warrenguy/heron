@@ -89,7 +89,7 @@ func newExclusivePublicationFromReady(
 	}
 
 	return &ExclusivePublication{
-		registrationID:         ready.RegistrationID,
+		registrationID:         ready.CorrelationID,
 		originalRegistrationID: ready.RegistrationID,
 		sessionID:              ready.SessionID,
 		streamID:               ready.StreamID,

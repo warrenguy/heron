@@ -471,7 +471,6 @@ func (conductor *Conductor) completePublicationReady(
 	if !ok {
 		return false
 	}
-	registration.RegistrationID = event.RegistrationID
 
 	var publication PublicationHandle
 	if conductor.resourceLifecycle != nil {
@@ -484,6 +483,7 @@ func (conductor *Conductor) completePublicationReady(
 	}
 
 	return conductor.completePendingSuccess(registration, func(registration *PendingRegistration) {
+		registration.Ready = true
 		registration.StreamID = event.StreamID
 		registration.Publication = publication
 	})
@@ -509,7 +509,7 @@ func (conductor *Conductor) completeSubscriptionReady(event SubscriptionReady) b
 	}
 
 	return conductor.completePendingSuccess(registration, func(registration *PendingRegistration) {
-		registration.RegistrationID = event.CorrelationID
+		registration.Ready = true
 		registration.Subscription = subscription
 	})
 }
@@ -548,7 +548,7 @@ func (conductor *Conductor) buildAndInsertPublication(
 			conductor.releaseLogBuffersByKey(resolvedLogFileKey, 0)
 			return
 		}
-		conductor.insertPublication(event.RegistrationID, publication)
+		conductor.insertPublication(event.CorrelationID, publication)
 		if bindErr := conductor.bindPublicationOnInsert(publication); bindErr != nil {
 			buildErr = bindErr
 			return
@@ -631,6 +631,14 @@ func (conductor *Conductor) preInsertSubscription(
 	return preInsertErr
 }
 
+// RollbackAddPendingResources retires the resource keyed by
+// registration.CorrelationID for an add kind.
+//
+// Behaviour:
+//   - The add pre-inserts a subscription. The ready event inserts a
+//     publication, so a publication map miss means no ready event applied.
+//   - Releases log buffer references without linger.
+//   - Does not offer REMOVE commands to the driver.
 func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegistration) {
 	if conductor.resourceLifecycle == nil {
 		return
@@ -652,10 +660,7 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 			}
 			conductor.removeSubscription(registration.CorrelationID)
 		case PendingKindAddPublication, PendingKindAddExclusivePublication:
-			if registration.RegistrationID == 0 {
-				return
-			}
-			pub, ok := conductor.publicationByRegID(registration.RegistrationID)
+			pub, ok := conductor.publicationByRegID(registration.CorrelationID)
 			if !ok {
 				return
 			}
@@ -667,7 +672,7 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 			if registryKey != "" {
 				conductor.releaseLogBuffersByKey(registryKey, 0)
 			}
-			conductor.removePublication(registration.RegistrationID)
+			conductor.removePublication(registration.CorrelationID)
 		case PendingKindOperationSuccess,
 			PendingKindNextSessionID,
 			PendingKindRemovePublication,

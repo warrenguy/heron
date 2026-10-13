@@ -22,11 +22,13 @@ type PendingRegistration struct {
 	Kind          PendingKind
 	DeadlineNs    int64
 
-	StreamID       int32
-	Channel        string
-	RegistrationID int64
-	Int32Value     int32
-	Err            error
+	StreamID   int32
+	Channel    string
+	Int32Value int32
+	// Ready is set when the driver ready event completes an add kind. Other
+	// kinds never set it.
+	Ready bool
+	Err   error
 	// Publication and Subscription are any to break the conductor/aeron import cycle.
 	Publication  any
 	Subscription any
@@ -134,8 +136,7 @@ func (registry *pendingRegistry) ExpireBefore(
 		}
 		isAddPending := addPendingKind(registration.Kind)
 		if isActive || isAddPending {
-			inFlight := registration.Err == nil &&
-				(!isAddPending || !pendingAddResolved(registration))
+			inFlight := registration.Err == nil && !registration.Ready
 			if inFlight {
 				registration.Err = ErrAwaitTimeout
 				workCount++
@@ -344,16 +345,7 @@ func (conductor *Conductor) completePendingPoll(
 }
 
 func pendingAddResolved(registration *PendingRegistration) bool {
-	if registration.Err != nil {
-		return true
-	}
-	if addPublicationPendingKind(registration.Kind) {
-		return registration.Publication != nil || registration.RegistrationID != 0
-	}
-	if registration.Kind == PendingKindAddSubscription {
-		return registration.Subscription != nil || registration.RegistrationID != 0
-	}
-	return false
+	return registration.Err != nil || registration.Ready
 }
 
 func (conductor *Conductor) CancelPending(correlationID int64) {

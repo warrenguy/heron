@@ -1,6 +1,10 @@
 package testutil
 
 import (
+	"github.com/stretchr/testify/require"
+
+	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/record"
 	"github.com/warrenguy/heron/ringbuffer"
 )
@@ -59,4 +63,23 @@ func CommittedRecordTypeIDs(ring *ringbuffer.ManyToOneRingBuffer) []int {
 		typeIDs = append(typeIDs, messageTypeID)
 	})
 	return typeIDs
+}
+
+// RemovePublicationRegistrationIDs consumes every committed ring record and
+// returns the registration ids of REMOVE_PUBLICATION commands in order. Other
+// command types are consumed and skipped.
+func RemovePublicationRegistrationIDs(
+	t require.TestingT,
+	ring *ringbuffer.ManyToOneRingBuffer,
+) []int64 {
+	registrationIDs := make([]int64, 0, 1)
+	ring.Read(func(msgTypeID int, buffer atomicbuffer.AtomicBuffer, index, length int) {
+		if msgTypeID != conductor.RemovePublication {
+			return
+		}
+		message, err := conductor.DecodeRemovePublicationMessage(buffer, index, length)
+		require.NoError(t, err)
+		registrationIDs = append(registrationIDs, message.RegistrationID)
+	})
+	return registrationIDs
 }

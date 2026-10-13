@@ -56,7 +56,7 @@ func stubResourcePublicationFromEvent(
 	event conductor.PublicationBuffersReady,
 ) stubResourcePublication {
 	return stubResourcePublication{
-		registrationID: event.RegistrationID,
+		registrationID: event.CorrelationID,
 		registryKey:    event.LogFileName,
 	}
 }
@@ -568,9 +568,9 @@ func TestConductor_handlePublicationReady_insertsPublicationWithLifecycle(t *tes
 	require.Equal(t, 1, conductorInstance.PublicationCountForTest())
 	require.Equal(t, 1, lifecycle.newPublicationCalls)
 
-	got, ok := conductorInstance.PublicationByRegID(goldenPublicationBuffersReadyEvent.RegistrationID)
+	got, ok := conductorInstance.PublicationByRegID(goldenPublicationBuffersReadyEvent.CorrelationID)
 	require.True(t, ok)
-	require.Equal(t, goldenPublicationBuffersReadyEvent.RegistrationID, got.RegistrationID())
+	require.Equal(t, goldenPublicationBuffersReadyEvent.CorrelationID, got.RegistrationID())
 }
 
 func TestConductor_handleExclusivePublicationReady_insertsExclusivePublication(t *testing.T) {
@@ -605,7 +605,7 @@ func TestConductor_handleExclusivePublicationReady_insertsExclusivePublication(t
 	require.Equal(t, 1, conductorInstance.PublicationCountForTest())
 
 	got, ok := conductorInstance.PublicationByRegID(
-		goldenExclusivePublicationBuffersReadyEvent.RegistrationID,
+		goldenExclusivePublicationBuffersReadyEvent.CorrelationID,
 	)
 	require.True(t, ok)
 	gotEP, ok := got.(*aeron.ExclusivePublication)
@@ -787,7 +787,7 @@ func (lifecycle *bindFailureContractLifecycle) trackablePublicationFromEvent(
 	event conductor.PublicationBuffersReady,
 ) *trackableStubPublication {
 	lifecycle.lastPublication = &trackableStubPublication{
-		registrationID: event.RegistrationID,
+		registrationID: event.CorrelationID,
 		registryKey:    event.LogFileName,
 	}
 	return lifecycle.lastPublication
@@ -1210,9 +1210,10 @@ func TestConductor_bindFailure_teardownContract(t *testing.T) {
 				registerGoldenAddPendingForTest(t, conductorInstance, pubCase.pendingKind)
 				pubCase.signalReady(conductorInstance)
 
-				done, _, err := conductorInstance.PollPending(pubCase.correlationID)
+				done, registration, err := conductorInstance.PollPending(pubCase.correlationID)
 				require.True(t, done)
 				require.ErrorIs(t, err, errStubBindPublication)
+				require.False(t, registration.Ready)
 				require.Equal(t, 0, conductorInstance.PublicationCountForTest())
 
 				if testCase.useProduction {
@@ -1265,11 +1266,12 @@ func TestConductor_bindFailure_teardownContract(t *testing.T) {
 				registerSubscriptionAddPendingEntryForTest(t, conductorInstance)
 				conductorInstance.SubscriptionReadyForTest(goldenSubscriptionReadyEvent)
 
-				done, _, err := conductorInstance.PollPending(
+				done, registration, err := conductorInstance.PollPending(
 					goldenSubscriptionReadyCorrelationID,
 				)
 				require.True(t, done)
 				require.ErrorIs(t, err, errStubBindSubscription)
+				require.False(t, registration.Ready)
 				require.Equal(t, 0, conductorInstance.SubscriptionCountForTest())
 
 				if testCase.useProduction {
@@ -1409,7 +1411,7 @@ func TestConductor_handlePublicationReady_failurePaths(t *testing.T) {
 			conductorInstance.SetActiveCorrelationID(testCase.correlationID)
 			testCase.signalReady(conductorInstance)
 
-			done, _, err := conductorInstance.PollPending(testCase.correlationID)
+			done, registration, err := conductorInstance.PollPending(testCase.correlationID)
 			require.True(t, done)
 			if testCase.wantErr != nil {
 				require.ErrorIs(t, err, testCase.wantErr)
@@ -1417,6 +1419,7 @@ func TestConductor_handlePublicationReady_failurePaths(t *testing.T) {
 			if testCase.wantErrString != "" {
 				require.EqualError(t, err, testCase.wantErrString)
 			}
+			require.False(t, registration.Ready)
 			require.Equal(t, 0, conductorInstance.PublicationCountForTest())
 			if testCase.seedLog != nil {
 				requireGoldenLogRefCountForTest(
@@ -1902,7 +1905,7 @@ func TestConductor_adapterWrongKindRemoveReadyViaDoWork(t *testing.T) {
 			require.True(t, done, nonAddWrongKindPollDoneReason)
 			require.NoError(t, err)
 			require.Equal(t, testCase.kind, registration.Kind)
-			require.Zero(t, registration.RegistrationID)
+			require.False(t, registration.Ready)
 		})
 	}
 }
@@ -1957,7 +1960,7 @@ func TestConductor_addPublicationPending_teardownRollsBackReadyInsert(t *testing
 		require.Equal(t, 1, conductorInstance.PublicationCountForTest())
 		require.Equal(t, 0, lifecycle.retirePublicationCalls)
 		_, ok := conductorInstance.PublicationByRegID(
-			goldenPublicationBuffersReadyEvent.RegistrationID,
+			goldenPublicationBuffersReadyEvent.CorrelationID,
 		)
 		require.True(t, ok)
 		require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
@@ -1976,7 +1979,7 @@ func TestConductor_addPublicationPending_teardownRollsBackReadyInsert(t *testing
 		require.Equal(t, 0, conductorInstance.PublicationCountForTest())
 		require.Equal(t, 1, lifecycle.retirePublicationCalls)
 		_, ok := conductorInstance.PublicationByRegID(
-			goldenPublicationBuffersReadyEvent.RegistrationID,
+			goldenPublicationBuffersReadyEvent.CorrelationID,
 		)
 		require.False(t, ok)
 	})
@@ -2065,7 +2068,7 @@ func TestConductor_rollbackAddPendingResources_retireFailure_marksClosedAndRemov
 				seedGoldenPublicationCountersForTest(tb, conductorInstance)
 				completeGoldenPublicationReadyForTest(tb, conductorInstance)
 				pub, ok := conductorInstance.PublicationByRegID(
-					goldenPublicationBuffersReadyEvent.RegistrationID,
+					goldenPublicationBuffersReadyEvent.CorrelationID,
 				)
 				require.True(tb, ok)
 				return pub
@@ -2080,7 +2083,7 @@ func TestConductor_rollbackAddPendingResources_retireFailure_marksClosedAndRemov
 			},
 			assertGone: func(tb testing.TB, conductorInstance *conductor.Conductor) {
 				_, ok := conductorInstance.PublicationByRegID(
-					goldenPublicationBuffersReadyEvent.RegistrationID,
+					goldenPublicationBuffersReadyEvent.CorrelationID,
 				)
 				require.False(tb, ok)
 			},
@@ -2091,7 +2094,7 @@ func TestConductor_rollbackAddPendingResources_retireFailure_marksClosedAndRemov
 			setup: func(tb testing.TB, conductorInstance *conductor.Conductor) any {
 				completeGoldenExclusivePublicationReadyForTest(tb, conductorInstance)
 				pub, ok := conductorInstance.PublicationByRegID(
-					goldenExclusivePublicationBuffersReadyEvent.RegistrationID,
+					goldenExclusivePublicationBuffersReadyEvent.CorrelationID,
 				)
 				require.True(tb, ok)
 				return pub
@@ -2106,7 +2109,7 @@ func TestConductor_rollbackAddPendingResources_retireFailure_marksClosedAndRemov
 			},
 			assertGone: func(tb testing.TB, conductorInstance *conductor.Conductor) {
 				_, ok := conductorInstance.PublicationByRegID(
-					goldenExclusivePublicationBuffersReadyEvent.RegistrationID,
+					goldenExclusivePublicationBuffersReadyEvent.CorrelationID,
 				)
 				require.False(tb, ok)
 			},
@@ -2187,7 +2190,7 @@ func TestConductor_removeResource_retireFailureReportsAndRemovesMap(t *testing.T
 			assertRemoved: func(tb testing.TB, conductorInstance *conductor.Conductor) {
 				require.Equal(tb, 0, conductorInstance.PublicationCountForTest())
 				_, ok := conductorInstance.PublicationByRegID(
-					goldenPublicationBuffersReadyEvent.RegistrationID,
+					goldenPublicationBuffersReadyEvent.CorrelationID,
 				)
 				require.False(tb, ok)
 			},

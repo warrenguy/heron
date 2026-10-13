@@ -119,6 +119,37 @@ func TestClientAddPublicationIsConnectedEventually(t *testing.T) {
 	md.AssertProcessAlive(t)
 }
 
+// TestClientSharedPublicationCloseFirstKeepsSecond proves a shared add offers after one closes.
+func TestClientSharedPublicationCloseFirstKeepsSecond(t *testing.T) {
+	md := harness.SharedParallel(t)
+	client, hadClientError := harness.ConnectIPCClient(t, md)
+
+	const streamID = harness.SharedPublicationCloseStreamID
+	first, sub := harness.ConnectIPCPubSubClients(t, client, client, streamID)
+	second, err := client.AddPublication(streamID, harness.IPCChannel)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "close second publication", second.Close)
+
+	require.NotEqual(t, first.RegistrationID(), second.RegistrationID())
+	require.Equal(t, first.RegistrationID(), first.OriginalRegistrationID())
+	require.Equal(t, first.OriginalRegistrationID(), second.OriginalRegistrationID())
+
+	require.NoError(t, first.Close())
+	require.True(t, first.IsClosed())
+	require.False(t, second.IsClosed())
+	got, ok := client.Publication(second.RegistrationID())
+	require.True(t, ok)
+	require.Same(t, second, got)
+
+	payload := []byte("shared publication")
+	require.Positive(t, harness.OfferWithRetry(t, second, payload))
+	require.Equal(t, [][]byte{payload}, harness.PollDelivered(t, client, sub, 1))
+
+	require.NoError(t, second.Close())
+	harness.RequirePublicationLookupMiss(t, client, second.RegistrationID())
+	finishPubSubIPCTest(t, md, hadClientError)
+}
+
 // TestClientAddExclusivePublicationIPC proves AddExclusivePublication blocks until
 // ready, inserts the handle into the client map, and ExclusivePublication(regID)
 // returns the same pointer.

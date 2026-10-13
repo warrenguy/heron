@@ -50,6 +50,7 @@ var sharedDriverStreamIDs = map[string]int32{
 	"PublicationLimitStreamID":                               PublicationLimitStreamID,
 	"RequirePublicationLookupMissStreamID":                   RequirePublicationLookupMissStreamID,
 	"RequirePublicationLookupMissTimeoutStreamID":            RequirePublicationLookupMissTimeoutStreamID,
+	"SharedPublicationCloseStreamID":                         SharedPublicationCloseStreamID,
 	"WaitForIPCLinkConnectedStreamID":                        WaitForIPCLinkConnectedStreamID,
 	"WaitForIPCLinkConnectedSubTimeoutPubStreamID":           WaitForIPCLinkConnectedSubTimeoutPubStreamID,
 	"WaitForIPCLinkConnectedSubscriptionOnlyTimeoutStreamID": WaitForIPCLinkConnectedSubscriptionOnlyTimeoutStreamID,

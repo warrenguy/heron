@@ -1099,12 +1099,15 @@ func waitForAddSubscriptionCommand(t *testing.T, fixture *testutil.ConductorFixt
 	)
 }
 
-func addPublicationHandleRegistrationID(pub any) int64 {
-	handle, ok := pub.(conductor.PublicationHandle)
+func addPublicationIDs(pub any) (registrationID, originalRegistrationID int64) {
+	handle, ok := pub.(interface {
+		RegistrationID() int64
+		OriginalRegistrationID() int64
+	})
 	if !ok {
 		panic(fmt.Sprintf("unexpected publication type %T", pub))
 	}
-	return handle.RegistrationID()
+	return handle.RegistrationID(), handle.OriginalRegistrationID()
 }
 
 func TestClient_AddPublicationKind_insertsMapOnSyntheticReady(t *testing.T) {
@@ -1142,18 +1145,16 @@ func TestClient_AddPublicationKind_insertsMapOnSyntheticReady(t *testing.T) {
 			require.NoError(t, got.err)
 			require.NotNil(t, got.value)
 			require.Equal(t, correlationID, fixture.DriverProxy.NextCorrelationID()-1)
-			require.Equal(
-				t,
-				clientAddPublicationRegistrationID,
-				addPublicationHandleRegistrationID(got.value),
-			)
-			lookup, ok := testCase.lookup(client, clientAddPublicationRegistrationID)
+			registrationID, originalRegistrationID := addPublicationIDs(got.value)
+			require.Equal(t, correlationID, registrationID)
+			require.Equal(t, clientAddPublicationRegistrationID, originalRegistrationID)
+			lookup, ok := testCase.lookup(client, correlationID)
 			require.True(t, ok)
 			require.Same(t, got.value, lookup)
 			require.Equal(t, 1, client.PublicationCountForTest())
 			requireActiveCorrelationCleared(t, fixture)
 
-			_, oppositeOK := testCase.oppositeLookup(client, clientAddPublicationRegistrationID)
+			_, oppositeOK := testCase.oppositeLookup(client, correlationID)
 			require.False(t, oppositeOK)
 		})
 	}
