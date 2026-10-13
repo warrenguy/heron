@@ -442,7 +442,10 @@ func (conductor *Conductor) addReadyRegistration(
 	wantKind PendingKind,
 ) (*PendingRegistration, bool) {
 	registration, ok := conductor.pendingForReady(correlationID)
-	if !ok || registration.Kind != wantKind || registration.Err != nil {
+	if !ok || registration.Kind != wantKind {
+		return nil, false
+	}
+	if registration.Err != nil || registration.Ready {
 		return nil, false
 	}
 	return registration, true
@@ -652,10 +655,14 @@ func (conductor *Conductor) preInsertSubscription(
 //
 // Behaviour:
 //   - A subscription enters the map when the client offers the add. A
-//     publication enters the map when its ready event arrives. A missing
-//     publication means no ready event arrived.
+//     publication enters the map when its ready event arrives.
 //   - Releases log buffer references without linger.
 //   - Does not offer REMOVE commands to the driver.
+//
+// A publication is missing from the map when:
+//   - the ready event never arrived
+//   - a bind failure retired the handle
+//   - Close retired the handle
 func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegistration) {
 	if conductor.resourceLifecycle == nil {
 		return

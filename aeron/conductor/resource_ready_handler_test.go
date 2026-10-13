@@ -580,6 +580,51 @@ func TestConductor_handlePublicationReady_insertsPublicationWithLifecycle(t *tes
 	require.Equal(t, goldenPublicationBuffersReadyEvent.CorrelationID, got.RegistrationID())
 }
 
+// A second ready event can arrive before the client polls the add. The
+// conductor ignores the duplicate. The test checks that the conductor:
+//   - builds one handle
+//   - acquires the log buffers once
+//   - keeps the first handle in the map
+func TestConductor_handlePublicationReady_duplicateReadyIgnored(t *testing.T) {
+	lifecycle := &recordingResourceLifecycle{}
+	conductorInstance := newConductorWithResourceLifecycleForTest(t, lifecycle)
+	seedGoldenPublicationLogBuffers(t, conductorInstance)
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+	registerGoldenAddPendingForTest(
+		t,
+		conductorInstance,
+		conductor.PendingKindAddPublication,
+	)
+	conductorInstance.SetActiveCorrelationID(goldenPublicationReadyCorrelationID)
+
+	for range 2 {
+		transmitConductorEvent(
+			t,
+			conductorInstance.EventsAdapterForTest(),
+			conductor.OnPublicationReady,
+			conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
+		)
+		_ = conductorInstance.DoWork()
+	}
+
+	require.Equal(t, 1, lifecycle.newPublicationCalls)
+	require.Equal(t, 1, conductorInstance.PublicationCountForTest())
+	requireGoldenPublicationKindLogRefCountForTest(
+		t,
+		registry,
+		conductor.PendingKindAddPublication,
+		2,
+	)
+
+	done, registration, err := conductorInstance.PollPending(goldenPublicationReadyCorrelationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	got, ok := conductorInstance.PublicationByRegID(goldenPublicationBuffersReadyEvent.CorrelationID)
+	require.True(t, ok)
+	require.Equal(t, registration.Publication, got)
+}
+
 func TestConductor_handleExclusivePublicationReady_insertsExclusivePublication(t *testing.T) {
 	lifecycle := &productionBindStubLifecycle{}
 	conductorInstance := newConductorWithResourceLifecycleForTest(t, lifecycle)
