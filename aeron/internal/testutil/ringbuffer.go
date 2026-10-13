@@ -1,6 +1,8 @@
 package testutil
 
 import (
+	"slices"
+
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
@@ -81,6 +83,46 @@ func drainCommittedRecords(
 	}
 }
 
+// drainCommandIDs consumes every committed ring record. It returns one id per
+// record whose type is in typeIDs, in ring order. It skips every other type.
+func drainCommandIDs(
+	t require.TestingT,
+	ring *ringbuffer.ManyToOneRingBuffer,
+	decodeID func(buffer atomicbuffer.AtomicBuffer, index, length int) (int64, error),
+	typeIDs ...int,
+) []int64 {
+	ids := make([]int64, 0, 2)
+	drainCommittedRecords(ring, func(
+		msgTypeID int,
+		buffer atomicbuffer.AtomicBuffer,
+		index, length int,
+	) {
+		if !slices.Contains(typeIDs, msgTypeID) {
+			return
+		}
+		id, err := decodeID(buffer, index, length)
+		require.NoError(t, err)
+		ids = append(ids, id)
+	})
+	return ids
+}
+
+func decodeRemovePublicationID(
+	buffer atomicbuffer.AtomicBuffer,
+	index, length int,
+) (int64, error) {
+	message, err := conductor.DecodeRemovePublicationMessage(buffer, index, length)
+	return message.RegistrationID, err
+}
+
+func decodeAddPublicationID(
+	buffer atomicbuffer.AtomicBuffer,
+	index, length int,
+) (int64, error) {
+	message, err := conductor.DecodePublicationMessage(buffer, index, length)
+	return message.CorrelationID, err
+}
+
 // RemovePublicationRegistrationIDs consumes every committed ring record and
 // returns the registration ids of REMOVE_PUBLICATION commands in order. It
 // consumes and skips every other command type.
@@ -88,20 +130,7 @@ func RemovePublicationRegistrationIDs(
 	t require.TestingT,
 	ring *ringbuffer.ManyToOneRingBuffer,
 ) []int64 {
-	registrationIDs := make([]int64, 0, 1)
-	drainCommittedRecords(ring, func(
-		msgTypeID int,
-		buffer atomicbuffer.AtomicBuffer,
-		index, length int,
-	) {
-		if msgTypeID != conductor.RemovePublication {
-			return
-		}
-		message, err := conductor.DecodeRemovePublicationMessage(buffer, index, length)
-		require.NoError(t, err)
-		registrationIDs = append(registrationIDs, message.RegistrationID)
-	})
-	return registrationIDs
+	return drainCommandIDs(t, ring, decodeRemovePublicationID, conductor.RemovePublication)
 }
 
 // AddPublicationCorrelationIDs consumes every committed ring record and
@@ -112,18 +141,11 @@ func AddPublicationCorrelationIDs(
 	t require.TestingT,
 	ring *ringbuffer.ManyToOneRingBuffer,
 ) []int64 {
-	correlationIDs := make([]int64, 0, 2)
-	drainCommittedRecords(ring, func(
-		msgTypeID int,
-		buffer atomicbuffer.AtomicBuffer,
-		index, length int,
-	) {
-		if msgTypeID != conductor.AddPublication && msgTypeID != conductor.AddExclusivePublication {
-			return
-		}
-		message, err := conductor.DecodePublicationMessage(buffer, index, length)
-		require.NoError(t, err)
-		correlationIDs = append(correlationIDs, message.CorrelationID)
-	})
-	return correlationIDs
+	return drainCommandIDs(
+		t,
+		ring,
+		decodeAddPublicationID,
+		conductor.AddPublication,
+		conductor.AddExclusivePublication,
+	)
 }
