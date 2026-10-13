@@ -85,6 +85,7 @@ func TestConductor_CloseAllResources_ordering_rapid(t *testing.T) {
 					stubPublication{registrationID: regID},
 				)
 				publicationCount++
+
 			case closeAllRapidOpInsertSubscription:
 				conductorInstance.InsertSubscriptionForTest(
 					regID,
@@ -281,6 +282,7 @@ func TestConductor_forceCloseResources_rapid(t *testing.T) {
 					stubPublication{registrationID: regID},
 				)
 				livePublications++
+
 			case forceCloseRapidOpInsertSubscription:
 				regID := drawCloseAllRapidUniqueRegID(
 					rt,
@@ -292,8 +294,10 @@ func TestConductor_forceCloseResources_rapid(t *testing.T) {
 					&stubResourceSubscription{registrationID: regID},
 				)
 				liveSubscriptions++
+
 			case forceCloseRapidOpForceClose:
 				applyForceClose()
+
 			case forceCloseRapidOpCloseAll:
 				applyCloseAll()
 			}
@@ -355,10 +359,11 @@ func registerSharedDriverPublicationReady(
 }
 
 // TestConductor_sharedDriverPublication_addClose_rapid adds publications that
-// share driver registration ids, then closes, cancels, and close-alls them in
-// random order. Each add stays keyed by its own correlation id until its own
-// Close, CancelPending rollback, or CloseAllResources. A repeat Close sends no
-// REMOVE_PUBLICATION and releases no log buffer reference.
+// share driver registration ids. It then closes them one at a time, cancels
+// them, or closes all of them, in random order. The conductor keeps each add
+// under its own correlation id until its own Close, a CancelPending rollback,
+// or CloseAllResources removes it. A repeat Close sends no REMOVE_PUBLICATION
+// and releases no log buffer reference.
 func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -448,8 +453,8 @@ func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 				require.True(rt, ok)
 				require.Equal(rt, correlationID, handle.RegistrationID())
 
-				// CancelPending skips rollback while the ready mark names this
-				// correlation id. One DoWork tick clears the mark.
+				// CancelPending skips rollback while receivedCorrelationID still
+				// names this add. One DoWork tick resets it.
 				_ = conductorInstance.DoWork()
 				conductorInstance.CancelPending(correlationID)
 
@@ -473,8 +478,8 @@ func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 				require.Equal(rt, conductor.RemovePublication, typeID)
 			}
 
-			// CloseAllResources offers REMOVE_PUBLICATION in map iteration
-			// order. Compare sorted.
+			// CloseAllResources offers one REMOVE_PUBLICATION per publication in
+			// map iteration order. Sort before comparing.
 			gotRemoveIDs := testutil.RemovePublicationRegistrationIDs(rt, ring)
 			slices.Sort(gotRemoveIDs)
 			require.Equal(rt, wantRemoveIDs, gotRemoveIDs)
@@ -490,7 +495,8 @@ func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 				require.False(rt, ok)
 			}
 
-			// Each seeded registry entry holds one reference beside each open add.
+			// Each seeded registry entry holds one reference of its own plus one
+			// per open add on that log file.
 			for _, spec := range sharedDriverPublicationRapidSpecs {
 				wantRefCount := int32(1)
 				for _, add := range open {

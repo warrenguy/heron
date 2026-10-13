@@ -82,8 +82,8 @@ func drainCommittedRecords(
 }
 
 // RemovePublicationRegistrationIDs consumes every committed ring record and
-// returns the registration ids of REMOVE_PUBLICATION commands in order. Other
-// command types are consumed and skipped.
+// returns the registration ids of REMOVE_PUBLICATION commands in order. It
+// consumes and skips every other command type.
 func RemovePublicationRegistrationIDs(
 	t require.TestingT,
 	ring *ringbuffer.ManyToOneRingBuffer,
@@ -106,8 +106,8 @@ func RemovePublicationRegistrationIDs(
 
 // AddPublicationCorrelationIDs consumes every committed ring record and
 // returns the correlation ids of ADD_PUBLICATION and
-// ADD_EXCLUSIVE_PUBLICATION commands in order. Other command types are
-// consumed and skipped.
+// ADD_EXCLUSIVE_PUBLICATION commands in order. It consumes and skips every
+// other command type.
 func AddPublicationCorrelationIDs(
 	t require.TestingT,
 	ring *ringbuffer.ManyToOneRingBuffer,

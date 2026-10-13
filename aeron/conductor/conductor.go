@@ -555,9 +555,9 @@ func (conductor *Conductor) buildAndInsertPublication(
 	return publication, buildErr
 }
 
-// checkPublicationHandle rejects a handle the resource lifecycle built wrong.
-// Insert, retire, and rollback key on one id only when the handle id matches
-// the ready correlation id.
+// checkPublicationHandle rejects a nil handle. It also rejects a handle whose
+// RegistrationID differs from the ready correlation id. Insert, retire, and
+// rollback all look the publication up by that id, so the two must match.
 func checkPublicationHandle(publication PublicationHandle, correlationID int64) error {
 	if isAbsentMapValue(publication) {
 		return errors.New("conductor: resource lifecycle returned nil publication handle")
@@ -647,12 +647,13 @@ func (conductor *Conductor) preInsertSubscription(
 	return preInsertErr
 }
 
-// RollbackAddPendingResources retires the resource keyed by
-// registration.CorrelationID for an add kind.
+// RollbackAddPendingResources retires the resource that an add kind stored
+// under registration.CorrelationID.
 //
 // Behaviour:
-//   - The add pre-inserts a subscription. The ready event inserts a
-//     publication, so a publication map miss means no ready event applied.
+//   - A subscription enters the map when the client offers the add. A
+//     publication enters the map when its ready event arrives. A missing
+//     publication means no ready event arrived.
 //   - Releases log buffer references without linger.
 //   - Does not offer REMOVE commands to the driver.
 func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegistration) {
@@ -675,6 +676,7 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 				conductor.releaseLogBuffersByKey(registryKey, 0)
 			}
 			conductor.removeSubscription(registration.CorrelationID)
+
 		case PendingKindAddPublication, PendingKindAddExclusivePublication:
 			pub, ok := conductor.publicationByRegID(registration.CorrelationID)
 			if !ok {
@@ -689,6 +691,7 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 				conductor.releaseLogBuffersByKey(registryKey, 0)
 			}
 			conductor.removePublication(registration.CorrelationID)
+
 		case PendingKindOperationSuccess,
 			PendingKindNextSessionID,
 			PendingKindRemovePublication,

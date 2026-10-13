@@ -119,7 +119,8 @@ func TestClientAddPublicationIsConnectedEventually(t *testing.T) {
 	md.AssertProcessAlive(t)
 }
 
-// TestClientSharedPublicationCloseFirstKeepsSecond proves a shared add offers after one closes.
+// TestClientSharedPublicationCloseFirstKeepsSecond closes one of two adds that
+// share a driver publication, then offers on the other.
 func TestClientSharedPublicationCloseFirstKeepsSecond(t *testing.T) {
 	md := harness.SharedParallel(t)
 	client, hadClientError := harness.ConnectIPCClient(t, md)

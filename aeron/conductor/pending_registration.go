@@ -25,8 +25,8 @@ type PendingRegistration struct {
 	StreamID   int32
 	Channel    string
 	Int32Value int32
-	// Ready is set when the driver ready event completes an add kind. Other
-	// kinds never set it.
+	// The conductor sets Ready when the driver ready event completes an add.
+	// Other kinds never set it.
 	Ready bool
 	Err   error
 	// Publication and Subscription are any to break the conductor/aeron import cycle.
@@ -110,11 +110,12 @@ type pendingExpireItem struct {
 // For activeCorrelationID or add-pending kinds (publication, exclusive
 // publication, subscription), expired entries stay in the registry.
 // ExpireBefore sets registration.Err to ErrAwaitTimeout only while the add
-// is in-flight (Ready false and Err nil). expireHandler receives
-// removed=false for those entries. The caller must complete or cancel via
-// PollPending or CancelPending. Ready-but-unpolled adds are left intact.
-// Non-add pending kinds are deleted from the registry; expireHandler receives
-// removed=true for those.
+// still waits on the driver (Ready is false and Err is nil). expireHandler
+// receives removed=false for those entries. The caller must then complete
+// or cancel the add via PollPending or CancelPending. An add that the driver
+// already completed, but the caller has not yet polled, keeps its result.
+// ExpireBefore deletes non-add pending kinds from the registry. expireHandler
+// receives removed=true for those.
 func (registry *pendingRegistry) ExpireBefore(
 	nowNs int64,
 	receivedCorrelationID int64,
@@ -289,16 +290,16 @@ func (conductor *Conductor) RegisterPendingAddWithDeadline(
 // Primary path: receivedCorrelationID matches correlationID after adapter
 // handlers mark completion during DoWork.
 //
-// Multi-pending path: when receivedCorrelationID does not match
-// because another async add completed in the same DoWork tick, PollPending still
-// checks the pending map. PollPending completes the entry when Err is non-nil or
-// Ready is set by the driver ready event. On completion PollPending:
+// Multi-pending path: receivedCorrelationID names a different add when
+// several adds complete in the same DoWork tick. PollPending then checks the
+// pending map instead. The entry is complete when Err is non-nil or when the
+// driver ready event has set Ready. On completion PollPending:
 //   - returns done=true with the registration and Err
 //   - removes the entry
 //   - applies RollbackAddPendingResources when Err is non-nil
 //
-// receivedCorrelationID is left unchanged when completion is observed via the
-// map so other completed adds remain pollable on subsequent ticks.
+// PollPending leaves receivedCorrelationID unchanged on this path. Other
+// completed adds stay available to poll on later ticks.
 //
 // Called from the client on the same goroutine as RegisterPending, after
 // doWorkLocked; not invoked from inside DoWork.

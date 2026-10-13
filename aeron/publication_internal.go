@@ -33,8 +33,9 @@ func newPublicationFromReady(
 		return nil, err
 	}
 
-	// The driver keys the publication limit counter on the driver publication
-	// id, not the add correlation id. See Publication.OriginalRegistrationID.
+	// The driver labels the publication limit counter with the driver
+	// publication id, not the add correlation id.
+	// See Publication.OriginalRegistrationID.
 	if err := requireActiveCounter(
 		counters,
 		ready.PublicationLimitCounterID,
