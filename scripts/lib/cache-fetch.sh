@@ -8,7 +8,7 @@ cache_fetch() {
 	dir="$(dirname "${dest}")"
 	mkdir -p "${dir}"
 	tmp="$(mktemp "${dir}/.cache-fetch.XXXXXX")"
-	if ! curl -fsSL -o "${tmp}" "${url}"; then
+	if ! curl -fsSL --retry 5 --retry-all-errors --connect-timeout 15 -o "${tmp}" "${url}"; then
 		rm -f "${tmp}"
 		return 1
 	fi
