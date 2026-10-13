@@ -15,6 +15,10 @@ import (
 // New* implementations must not wrap a nil concrete pointer in a returned
 // handle (a typed-nil). Production builds cannot distinguish it from a live
 // handle; testhooks builds reject it at runtime.
+//
+// NewPublication and NewExclusivePublication must return a handle whose
+// RegistrationID equals event.CorrelationID. The conductor rejects a
+// mismatched handle.
 type ResourceLifecycle interface {
 	NewPublication(
 		event PublicationBuffersReady,

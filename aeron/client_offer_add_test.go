@@ -225,19 +225,27 @@ func TestClient_AddPublication_sharedDriverPublication_closeEachAdd(t *testing.T
 			client, fixture := newClientOfferAddTestFixture(t, dir)
 			registry := conductor.LogBuffersRegistryForTest(fixture.Conductor)
 
-			var correlationIDs [2]int64
 			var publications [2]*Publication
 			for i := range publications {
 				pub := addLiveClientPublication(t, client, fixture, logPath)
 				require.NotEqual(t, clientAddPublicationRegistrationID, pub.RegistrationID())
-				correlationIDs[i] = pub.RegistrationID()
 				publications[i] = pub
 			}
+			require.Equal(
+				t,
+				[]int{conductor.AddPublication, conductor.AddPublication},
+				testutil.CommittedRecordTypeIDs(fixture.Ring),
+			)
+			correlationIDs := testutil.AddPublicationCorrelationIDs(t, fixture.Ring)
+			require.Equal(
+				t,
+				[]int64{publications[0].RegistrationID(), publications[1].RegistrationID()},
+				correlationIDs,
+			)
 			require.NotEqual(t, correlationIDs[0], correlationIDs[1])
 
 			// Phase: each add is keyed by its own correlation id.
 			for i, pub := range publications {
-				require.Equal(t, correlationIDs[i], pub.RegistrationID())
 				require.Equal(t, clientAddPublicationRegistrationID, pub.OriginalRegistrationID())
 				require.NotEqual(t, pub.OriginalRegistrationID(), pub.RegistrationID())
 				lookup, ok := client.Publication(correlationIDs[i])
@@ -248,9 +256,6 @@ func TestClient_AddPublication_sharedDriverPublication_closeEachAdd(t *testing.T
 			require.False(t, ok)
 			require.Equal(t, 2, client.PublicationCountForTest())
 			require.Equal(t, int32(2), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
-
-			// Drain the ADD commands.
-			testutil.RemovePublicationRegistrationIDs(t, fixture.Ring)
 
 			// Phase: each close retires its own add and releases one log reference.
 			for step, closeIndex := range testCase.closeOrder {
@@ -320,8 +325,12 @@ func TestClient_AddPublicationKind_closeSendsCorrelationID(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
 
-			// Drain the ADD commands.
-			testutil.RemovePublicationRegistrationIDs(t, fixture.Ring)
+			require.Equal(t, []int{testCase.addMsgType}, testutil.CommittedRecordTypeIDs(fixture.Ring))
+			require.Equal(
+				t,
+				[]int64{correlationID},
+				testutil.AddPublicationCorrelationIDs(t, fixture.Ring),
+			)
 
 			require.NoError(t, pub.Close())
 

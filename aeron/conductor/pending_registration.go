@@ -108,10 +108,11 @@ type pendingExpireItem struct {
 // receivedCorrelationID (the response just received on this conductor tick).
 //
 // For activeCorrelationID or add-pending kinds (publication, exclusive
-// publication, subscription), expired entries are retained: registration.Err is
-// set to ErrAwaitTimeout only while the add is still in-flight (no handle yet
-// and no prior error), removed is false, and the caller must complete or cancel
-// via PollPending/CancelPending. Succeeded-but-unpolled adds are left intact.
+// publication, subscription), expired entries stay in the registry.
+// ExpireBefore sets registration.Err to ErrAwaitTimeout only while the add
+// is in-flight (Ready false and Err nil). expireHandler receives
+// removed=false for those entries. The caller must complete or cancel via
+// PollPending or CancelPending. Ready-but-unpolled adds are left intact.
 // Non-add pending kinds are deleted from the registry; expireHandler receives
 // removed=true for those.
 func (registry *pendingRegistry) ExpireBefore(
@@ -290,13 +291,14 @@ func (conductor *Conductor) RegisterPendingAddWithDeadline(
 //
 // Multi-pending path: when receivedCorrelationID does not match
 // because another async add completed in the same DoWork tick, PollPending still
-// checks the pending map. If the entry exists and either (a) Err is nil with the
-// kind-appropriate handle populated (Publication, ExclusivePublication via
-// Publication, or Subscription), or (b) Err is non-nil, PollPending returns
-// done=true with the registration (including Err when set), removes the entry,
-// and applies RollbackAddPendingResources when Err is non-nil. receivedCorrelationID
-// is left unchanged when completion is observed via the map so other completed
-// adds remain pollable on subsequent ticks.
+// checks the pending map. PollPending completes the entry when Err is non-nil or
+// Ready is set by the driver ready event. On completion PollPending:
+//   - returns done=true with the registration and Err
+//   - removes the entry
+//   - applies RollbackAddPendingResources when Err is non-nil
+//
+// receivedCorrelationID is left unchanged when completion is observed via the
+// map so other completed adds remain pollable on subsequent ticks.
 //
 // Called from the client on the same goroutine as RegisterPending, after
 // doWorkLocked; not invoked from inside DoWork.

@@ -539,10 +539,8 @@ func (conductor *Conductor) buildAndInsertPublication(
 			conductor.countersReader,
 			registration.Channel,
 		)
-		if buildErr == nil && isAbsentMapValue(publication) {
-			buildErr = errors.New(
-				"conductor: resource lifecycle returned nil publication handle",
-			)
+		if buildErr == nil {
+			buildErr = checkPublicationHandle(publication, event.CorrelationID)
 		}
 		if buildErr != nil {
 			conductor.releaseLogBuffersByKey(resolvedLogFileKey, 0)
@@ -555,6 +553,24 @@ func (conductor *Conductor) buildAndInsertPublication(
 		}
 	})
 	return publication, buildErr
+}
+
+// checkPublicationHandle rejects a handle the resource lifecycle built wrong.
+// Insert, retire, and rollback key on one id only when the handle id matches
+// the ready correlation id.
+func checkPublicationHandle(publication PublicationHandle, correlationID int64) error {
+	if isAbsentMapValue(publication) {
+		return errors.New("conductor: resource lifecycle returned nil publication handle")
+	}
+	registrationID := publication.RegistrationID()
+	if registrationID != correlationID {
+		return fmt.Errorf(
+			"conductor: publication handle registration id %d, want %d",
+			registrationID,
+			correlationID,
+		)
+	}
+	return nil
 }
 
 func (conductor *Conductor) applySubscriptionReady(

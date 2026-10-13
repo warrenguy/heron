@@ -72,8 +72,10 @@ func (ep *ExclusivePublication) RegistrationID() int64 {
 // publication. Matches Java Publication.originalRegistrationId.
 //
 // Behaviour:
-//   - Each exclusive add creates its own driver publication. No other add
-//     shares it, so this id equals RegistrationID.
+//   - Each exclusive add creates its own driver publication.
+//   - The driver registers the driver publication under the add correlation
+//     id, so OriginalRegistrationID equals RegistrationID.
+//     ExclusivePublication does not check the match.
 //   - The driver keys the publication limit counter on this id.
 func (ep *ExclusivePublication) OriginalRegistrationID() int64 {
 	return ep.originalRegistrationID

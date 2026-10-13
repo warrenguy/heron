@@ -64,7 +64,9 @@ func (pub *Publication) RegistrationID() int64 {
 // publication. Matches Java Publication.originalRegistrationId.
 //
 // Behaviour:
-//   - Equals RegistrationID for the add that created the driver publication.
+//   - The driver registers the driver publication under the correlation id
+//     of the creating add, so OriginalRegistrationID equals RegistrationID
+//     on that add. Publication does not check the match.
 //   - Later adds that reuse a live driver publication return that
 //     publication's id. The creating add may belong to another client.
 //   - After every add closes, the next add creates a new driver publication
