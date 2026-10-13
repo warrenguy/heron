@@ -58,8 +58,8 @@ func discoverDimensions(span int, read dimensionReader) (layoutDimensions, error
 }
 
 func discoverDimensionsFromBuffer(data []byte) (layoutDimensions, error) {
+	meta := atomicbuffer.Wrap(data)
 	return discoverDimensions(len(data), func(candidate int) (int32, int32, bool, error) {
-		meta := atomicbuffer.Wrap(data)
 		metaStart := MetaDataOffset(candidate)
 		termLength := meta.GetInt32(metaStart + OffsetTermLength)
 		pageSize := meta.GetInt32(metaStart + OffsetPageSize)
