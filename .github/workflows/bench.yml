@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 env:
   BENCH_COUNT: 3
   BENCH_PAYLOAD_SIZES: 32,1400

@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 # GOARCH must match runner arch (see Makefile SUPPORTED_GOARCHES).
 jobs:
   lint:
