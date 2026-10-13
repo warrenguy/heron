@@ -5,7 +5,6 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
 
 env:
   BENCH_COUNT: 3
@@ -47,9 +46,7 @@ jobs:
           path: .bench
 
   bench-regression:
-    if: >-
-      github.event_name == 'pull_request'
-      && github.event.pull_request.draft == false
+    if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix: *bench-archs
@@ -99,11 +96,7 @@ jobs:
         run: make bench-regression
 
   bench-ok:
-    if: |
-      always() && (
-        github.event_name != 'pull_request' ||
-        github.event.pull_request.draft == false
-      )
+    if: always()
     needs: [bench-baseline, bench-regression]
     runs-on: ubuntu-24.04
     steps:
