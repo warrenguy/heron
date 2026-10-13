@@ -194,7 +194,7 @@ func (pub *Publication) Position() int64 {
 	}
 
 	termID := logbuffer.TermID(rawTail)
-	termOffset := logbuffer.TermOffset(rawTail, int32(pub.termBufferLength))
+	termOffset := int(logbuffer.TermOffset(rawTail, pub.termBufferLength))
 	return logbuffer.ComputePosition(
 		termID,
 		termOffset,
@@ -394,7 +394,7 @@ func (pub *Publication) offerPreludeState() (prelude offerPrelude, position, lim
 
 	rawTail := pub.meta.GetInt64Volatile(tailOffset)
 	termID := logbuffer.TermID(rawTail)
-	termOffset := int(logbuffer.TermOffset(rawTail, int32(termLength)))
+	termOffset := int(logbuffer.TermOffset(rawTail, termLength))
 
 	if termCount != logbuffer.ComputeTermCount(termID, pub.initialTermID) {
 		return offerPrelude{status: AdminAction}, 0, 0
@@ -402,7 +402,7 @@ func (pub *Publication) offerPreludeState() (prelude offerPrelude, position, lim
 
 	position = logbuffer.ComputePosition(
 		termID,
-		int32(termOffset),
+		termOffset,
 		pub.positionBitsToShift,
 		pub.initialTermID,
 	)
@@ -437,11 +437,11 @@ func (pub *Publication) reserveTailFromPrelude(
 	termLength := pub.termBufferLength
 	rawTail := pub.meta.GetAndAddInt64(prelude.tailOffset, int64(span))
 	termID := logbuffer.TermID(rawTail)
-	termOffset := int(logbuffer.TermOffset(rawTail, int32(termLength)))
+	termOffset := int(logbuffer.TermOffset(rawTail, termLength))
 	resultingOffset := termOffset + span
 	position := logbuffer.ComputePosition(
 		termID,
-		int32(resultingOffset),
+		resultingOffset,
 		pub.positionBitsToShift,
 		pub.initialTermID,
 	)
@@ -496,6 +496,7 @@ func (pub *Publication) reserveTailAfterPrelude(
 func (pub *Publication) reserveMessageSpace(messageLength int) reserveOutcome {
 	limit := pub.publicationLimit.Get()
 
+	//nolint:gosec // G115: the length is at most the MTU
 	frameLength := int32(messageLength + logbuffer.DataHeaderLength)
 	alignedLength := logbuffer.AlignFragmentChunkLength(messageLength)
 	termLength := pub.termBufferLength
@@ -507,7 +508,7 @@ func (pub *Publication) reserveMessageSpace(messageLength int) reserveOutcome {
 
 	rawTail := pub.meta.GetInt64Volatile(tailOffset)
 	termID := logbuffer.TermID(rawTail)
-	termOffset := int(logbuffer.TermOffset(rawTail, int32(termLength)))
+	termOffset := int(logbuffer.TermOffset(rawTail, termLength))
 
 	if termCount != logbuffer.ComputeTermCount(termID, pub.initialTermID) {
 		return reserveOutcome{status: AdminAction}
@@ -515,7 +516,7 @@ func (pub *Publication) reserveMessageSpace(messageLength int) reserveOutcome {
 
 	position := logbuffer.ComputePosition(
 		termID,
-		int32(termOffset),
+		termOffset,
 		pub.positionBitsToShift,
 		pub.initialTermID,
 	)
@@ -528,12 +529,12 @@ func (pub *Publication) reserveMessageSpace(messageLength int) reserveOutcome {
 
 	rawTail = pub.meta.GetAndAddInt64(tailOffset, int64(alignedLength))
 	termID = logbuffer.TermID(rawTail)
-	termOffset = int(logbuffer.TermOffset(rawTail, int32(termLength)))
+	termOffset = int(logbuffer.TermOffset(rawTail, termLength))
 
 	resultingOffset := termOffset + alignedLength
 	newPosition := logbuffer.ComputePosition(
 		termID,
-		int32(resultingOffset),
+		resultingOffset,
 		pub.positionBitsToShift,
 		pub.initialTermID,
 	)
@@ -604,6 +605,7 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 					outcome.termBuf,
 					outcome.termID,
 					frameOffset,
+					//nolint:gosec // G115: at most the reserved length
 					int32(reservationEnd-frameOffset),
 				)
 			}
@@ -689,6 +691,7 @@ func (pub *Publication) handleEndOfLog(
 	if termOffset < termLength {
 		// Term-end padding seeds session/stream and default header fields before the
 		// PAD type commit; PAD-only writes (as in Abort) would omit them.
+		//nolint:gosec // G115: the padding is below the term length
 		pub.commitTermPadding(termBuf, termID, termOffset, int32(termLength-termOffset))
 	}
 

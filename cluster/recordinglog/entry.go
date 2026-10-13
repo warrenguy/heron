@@ -102,6 +102,7 @@ func encodeEntry(e Entry) []byte {
 	buffer.PutInt32(entryTypeOffset, typeWord)
 
 	if hasEndpoint(e.Type) {
+		//nolint:gosec // G115: the endpoint is at most maxEndpointLen
 		buffer.PutInt32(endpointOffset, int32(len(endpoint)))
 		copy(buf[endpointOffset+atomicbuffer.StringASCIIHeaderLength:], endpoint)
 	}

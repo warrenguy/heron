@@ -79,7 +79,9 @@ func (t *BroadcastTransmitter) Transmit(msgTypeID int, src []byte) error {
 		atomicbuffer.ReleaseFence()
 	}
 
+	//nolint:gosec // G115: MaxDataCapacity bounds the record length
 	t.buffer.PutInt32(record.LengthOffset(recordOffset), int32(recordLength))
+	//nolint:gosec // G115: CheckTypeID bounds the type id
 	t.buffer.PutInt32(record.TypeOffset(recordOffset), int32(msgTypeID))
 	t.buffer.PutBytes(record.EncodedMsgOffset(recordOffset), src)
 
@@ -94,6 +96,7 @@ func (t *BroadcastTransmitter) signalTailIntent(newTail int64) {
 }
 
 func (t *BroadcastTransmitter) insertPaddingRecord(recordOffset, length int) {
+	//nolint:gosec // G115: MaxDataCapacity bounds the record length
 	t.buffer.PutInt32(record.LengthOffset(recordOffset), int32(length))
 	t.buffer.PutInt32(record.TypeOffset(recordOffset), PaddingMsgTypeID)
 }

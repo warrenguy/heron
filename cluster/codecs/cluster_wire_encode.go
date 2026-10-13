@@ -86,9 +86,9 @@ func EncodeNewLeadershipTermEvent(
 		clusterwire.NewLeadershipTermEventSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.NewLeadershipTermEvent
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
 			msg.SetLeadershipTermId(fields.LeadershipTermID).
 				SetLogPosition(fields.LogPosition).
 				SetTimestamp(fields.Timestamp).
@@ -108,7 +108,7 @@ func encodeWithClusterWireHeader(
 	offset int,
 	blockLength, templateID, actingVersion uint16,
 	varLens []int,
-	encodeBody func(dst []byte, bodyOffset int, blockLength, actingVersion uint16),
+	encodeBody func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16),
 ) (wireEnd int, ok bool) {
 	if offset < 0 || offset > len(buf)-messageHeaderEncodedLength {
 		return 0, false
@@ -117,8 +117,8 @@ func encodeWithClusterWireHeader(
 	if !ok {
 		return 0, false
 	}
-	bodyOffset := offset + messageHeaderEncodedLength
-	wireEnd = bodyOffset + bodyLen
+	bodyOffset := uint64(offset) + messageHeaderLayout.EncodedLength()
+	wireEnd = offset + messageHeaderEncodedLength + bodyLen
 	if wireEnd > len(buf) {
 		return 0, false
 	}
@@ -133,6 +133,7 @@ func encodeWithClusterWireHeader(
 }
 
 func clusterVarString(data []byte) string {
+	//nolint:gosec // G103: converts data to a string without copying; the SBE setter copies it
 	return unsafe.String(unsafe.SliceData(data), len(data))
 }
 
@@ -150,9 +151,9 @@ func EncodeSessionMessageHeader(
 		clusterwire.SessionMessageHeaderSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.SessionMessageHeader
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetLeadershipTermId(fields.LeadershipTermID).
 				SetClusterSessionId(fields.ClusterSessionID).
 				SetTimestamp(fields.Timestamp)
@@ -175,9 +176,9 @@ func EncodeSessionEvent(
 		clusterwire.SessionEventSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.Detail)},
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.SessionEvent
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetClusterSessionId(fields.ClusterSessionID).
 				SetCorrelationId(fields.CorrelationID).
 				SetLeadershipTermId(fields.LeadershipTermID).
@@ -220,9 +221,9 @@ func EncodeSessionConnectRequest(
 		clusterwire.SessionConnectRequestSbeTemplateID,
 		actingVersion,
 		scratch[:count],
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.SessionConnectRequest
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetCorrelationId(fields.CorrelationID).
 				SetResponseStreamId(fields.ResponseStreamID)
 			if actingVersion >= SessionConnectVersionMinVersion && fields.Version != 0 {
@@ -251,9 +252,9 @@ func EncodeSessionCloseRequest(
 		clusterwire.SessionCloseRequestSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.SessionCloseRequest
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetLeadershipTermId(fields.LeadershipTermID).
 				SetClusterSessionId(fields.ClusterSessionID)
 		},
@@ -274,9 +275,9 @@ func EncodeSessionKeepAlive(
 		clusterwire.SessionKeepAliveSbeTemplateID,
 		actingVersion,
 		nil,
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.SessionKeepAlive
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetLeadershipTermId(fields.LeadershipTermID).
 				SetClusterSessionId(fields.ClusterSessionID)
 		},
@@ -297,9 +298,9 @@ func EncodeNewLeaderEvent(
 		clusterwire.NewLeaderEventSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.IngressEndpoints)},
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.NewLeaderEvent
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetLeadershipTermId(fields.LeadershipTermID).
 				SetClusterSessionId(fields.ClusterSessionID).
 				SetLeaderMemberId(fields.LeaderMemberID)
@@ -322,9 +323,9 @@ func EncodeChallenge(
 		clusterwire.ChallengeSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.EncodedChallenge)},
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.Challenge
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetCorrelationId(fields.CorrelationID).
 				SetClusterSessionId(fields.ClusterSessionID)
 			msg.PutEncodedChallenge(clusterVarString(fields.EncodedChallenge))
@@ -346,9 +347,9 @@ func EncodeChallengeResponse(
 		clusterwire.ChallengeResponseSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.EncodedCredentials)},
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.ChallengeResponse
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetCorrelationId(fields.CorrelationID).
 				SetClusterSessionId(fields.ClusterSessionID)
 			msg.PutEncodedCredentials(clusterVarString(fields.EncodedCredentials))
@@ -370,9 +371,9 @@ func EncodeAdminRequest(
 		clusterwire.AdminRequestSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.Payload)},
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.AdminRequest
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetLeadershipTermId(fields.LeadershipTermID).
 				SetClusterSessionId(fields.ClusterSessionID).
 				SetCorrelationId(fields.CorrelationID).
@@ -396,9 +397,9 @@ func EncodeAdminResponse(
 		clusterwire.AdminResponseSbeTemplateID,
 		actingVersion,
 		[]int{len(fields.Message), len(fields.Payload)},
-		func(dst []byte, bodyOffset int, blockLength, actingVersion uint16) {
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
 			var msg clusterwire.AdminResponse
-			msg.Wrap(dst, uint64(bodyOffset), uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetClusterSessionId(fields.ClusterSessionID).
 				SetCorrelationId(fields.CorrelationID).
 				SetRequestType(fields.RequestType).

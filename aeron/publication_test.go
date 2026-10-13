@@ -942,6 +942,23 @@ func TestNewPublicationFromReadyForTest_wrongLogType(t *testing.T) {
 	require.EqualError(t, err, "aeron: expected concurrent publication log type 0, got 1")
 }
 
+func TestNewPublicationFromReadyForTest_invalidMTU(t *testing.T) {
+	log := aeron.NewTestMappedLogForTest(t, aeron.DefaultTestPublicationLogConfig())
+	t.Cleanup(func() { _ = log.Close() })
+	meta, err := log.MetaDataBuffer()
+	require.NoError(t, err)
+	meta.PutInt32(logbuffer.OffsetMTULength, logbuffer.DataHeaderLength)
+
+	counters := aeron.NewTestCountersReaderForTest(t, 1_000_000)
+	_, err = aeron.NewPublicationFromReadyForTest(
+		aeron.PublicationBuffersReadyForTest(),
+		log,
+		counters,
+		"aeron:ipc",
+	)
+	require.EqualError(t, err, "logbuffer: mtu length out of range: 32")
+}
+
 func TestNewPublicationFromReadyForTest_inactiveChannelCounter(t *testing.T) {
 	log := aeron.NewTestMappedLogForTest(t, aeron.DefaultTestPublicationLogConfig())
 	t.Cleanup(func() { _ = log.Close() })

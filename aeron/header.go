@@ -17,7 +17,7 @@ type Header struct {
 	buffer              atomicbuffer.AtomicBuffer
 	offset              int
 	initialTermID       int32
-	positionBitsToShift int32
+	positionBitsToShift int
 	context             any
 	// fragmentedFrameLen: headerFragmentedFrameNotSet (-1) uses FrameLength for
 	// term occupancy; non-negative overrides termOccupancyLength for a reassembled
@@ -63,14 +63,14 @@ func (header *Header) Offset() int {
 }
 
 func (header *Header) NextTermOffset() int32 {
-	return int32(logbuffer.AlignFrameLength(int(header.TermOffset() + header.termOccupancyLength())))
+	return logbuffer.AlignFrameLength(header.TermOffset() + header.termOccupancyLength())
 }
 
 func (header *Header) Position() int64 {
 	return logbuffer.ComputePosition(
 		header.TermID(),
-		header.NextTermOffset(),
-		int(header.positionBitsToShift),
+		int(header.NextTermOffset()),
+		header.positionBitsToShift,
 		header.initialTermID,
 	)
 }
@@ -87,7 +87,7 @@ func (header *Header) SetBuffer(buffer atomicbuffer.AtomicBuffer) {
 // 32-byte DATA frame header). Seeded by Image.Poll before FragmentHandler.
 type HeaderImageFields struct {
 	InitialTermID       int32
-	PositionBitsToShift int32
+	PositionBitsToShift int
 	Context             any
 }
 
@@ -162,6 +162,7 @@ func (header *Header) ConfigureCompletedFragment(
 	)
 
 	maxPayloadLength := int(firstFrameLength - dataHeaderLength)
+	//nolint:gosec // G115: fits in int32 for any payload up to MaxMessageLength
 	header.fragmentedFrameLen = int32(logbuffer.ComputeFragmentedFrameLength(
 		assembledPayloadLength,
 		maxPayloadLength,

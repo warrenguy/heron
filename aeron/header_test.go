@@ -109,7 +109,7 @@ func assertConfigureCompletedFragmentOracle(
 		tb,
 		logbuffer.ComputePosition(
 			completedHeader.TermID(),
-			expectedNextTermOffset,
+			int(expectedNextTermOffset),
 			shift,
 			aeron.TestPublicationInitialTermID,
 		),

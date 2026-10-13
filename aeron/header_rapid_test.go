@@ -97,7 +97,7 @@ func TestHeader_positionMath_rapid(t *testing.T) {
 			rt,
 			logbuffer.ComputePosition(
 				header.TermID(),
-				nextTermOffset,
+				int(nextTermOffset),
 				shift,
 				aeron.TestPublicationInitialTermID,
 			),

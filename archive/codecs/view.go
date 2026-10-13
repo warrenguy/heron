@@ -35,7 +35,7 @@ func ReadVarSlice(buf []byte, offset, maxLen int) (VarSlice, int, error) {
 
 	length := binary.LittleEndian.Uint32(buf[offset:prefixEnd])
 	remaining := len(buf) - prefixEnd
-	if length > uint32(remaining) {
+	if int64(length) > int64(remaining) {
 		return VarSlice{}, offset, ErrVarSliceOutOfBounds
 	}
 	if maxLen >= 0 && int(length) > maxLen {

@@ -90,7 +90,7 @@ func expectedCompletedHeaderSnapshot(
 	// Synthetic term buffers omit Image flyweight metadata; ImageFields are zero.
 	position := logbuffer.ComputePosition(
 		logbuffer.FrameTermID(termBuffer, beginOffset),
-		nextTermOffset,
+		int(nextTermOffset),
 		0,
 		0,
 	)

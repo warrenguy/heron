@@ -162,6 +162,7 @@ func (ring *ManyToOneRingBuffer) Write(
 	buffer := ring.buffer
 	recordLength := length + HeaderLength
 	buffer.PutBytesFrom(encodedOffset, srcBuffer, offset, length)
+	//nolint:gosec // G115: MaxDataCapacity bounds the record length
 	buffer.PutInt32Release(record.LengthOffset(recordIndex), int32(recordLength))
 
 	return true, nil
@@ -202,6 +203,7 @@ func (ring *ManyToOneRingBuffer) claimRecord(
 	}
 
 	beginInFlightRecord(buffer, recordIndex, recordLength)
+	//nolint:gosec // G115: CheckTypeID bounds the type id
 	buffer.PutInt32(record.TypeOffset(recordIndex), int32(msgTypeID))
 
 	return recordIndex, record.EncodedMsgOffset(recordIndex), nil
@@ -230,7 +232,7 @@ func (ring *ManyToOneRingBuffer) finishClaim(index int, abort bool) error {
 	if abort {
 		buffer.PutInt32(record.TypeOffset(recordIndex), PaddingMsgTypeID)
 	}
-	buffer.PutInt32Release(record.LengthOffset(recordIndex), int32(-recordLength))
+	buffer.PutInt32Release(record.LengthOffset(recordIndex), -recordLength)
 	return nil
 }
 
@@ -347,10 +349,10 @@ func (ring *ManyToOneRingBuffer) Unblock() bool {
 	producerIndex := int(tailPosition) & mask
 
 	unblocked := false
-	length := int(buffer.GetInt32Volatile(consumerIndex))
+	length := buffer.GetInt32Volatile(consumerIndex)
 	if length < 0 {
 		buffer.PutInt32(record.TypeOffset(consumerIndex), PaddingMsgTypeID)
-		buffer.PutInt32Release(record.LengthOffset(consumerIndex), int32(-length))
+		buffer.PutInt32Release(record.LengthOffset(consumerIndex), -length)
 		unblocked = true
 	} else if length == 0 {
 		limit := producerIndex
@@ -359,10 +361,11 @@ func (ring *ManyToOneRingBuffer) Unblock() bool {
 		}
 
 		for i := consumerIndex + Alignment; i < limit; i += Alignment {
-			length = int(buffer.GetInt32Volatile(i))
+			length = buffer.GetInt32Volatile(i)
 			if length != 0 {
 				if scanBackToConfirmStillZeroed(buffer, i, consumerIndex) {
 					buffer.PutInt32(record.TypeOffset(consumerIndex), PaddingMsgTypeID)
+					//nolint:gosec // G115: MaxDataCapacity bounds the gap
 					buffer.PutInt32Release(record.LengthOffset(consumerIndex), int32(i-consumerIndex))
 					unblocked = true
 				}
@@ -477,8 +480,11 @@ func (ring *ManyToOneRingBuffer) checkMsgLength(length int) error {
 	return nil
 }
 
-func verifyClaimedSpaceNotReleased(buffer atomicbuffer.AtomicBuffer, recordIndex int) (int, error) {
-	recordLength := int(buffer.GetInt32Volatile(record.LengthOffset(recordIndex)))
+func verifyClaimedSpaceNotReleased(
+	buffer atomicbuffer.AtomicBuffer,
+	recordIndex int,
+) (int32, error) {
+	recordLength := buffer.GetInt32Volatile(record.LengthOffset(recordIndex))
 	if recordLength < 0 {
 		return recordLength, nil
 	}
@@ -511,13 +517,16 @@ func releaseConsumedBlock(
 }
 
 func beginInFlightRecord(buffer atomicbuffer.AtomicBuffer, recordIndex, recordLength int) {
+	//nolint:gosec // G115: MaxDataCapacity bounds the record length
 	buffer.PutInt32Release(record.LengthOffset(recordIndex), int32(-recordLength))
 	atomicbuffer.ReleaseFence()
 }
 
 func publishPaddingRecord(buffer atomicbuffer.AtomicBuffer, recordIndex, length int) {
+	//nolint:gosec // G115: MaxDataCapacity bounds the padding
 	buffer.PutInt32Release(record.LengthOffset(recordIndex), int32(-length))
 	atomicbuffer.ReleaseFence()
 	buffer.PutInt32(record.TypeOffset(recordIndex), PaddingMsgTypeID)
+	//nolint:gosec // G115: MaxDataCapacity bounds the padding
 	buffer.PutInt32Release(record.LengthOffset(recordIndex), int32(length))
 }

@@ -49,8 +49,8 @@ type Metadata struct {
 	FilePageSize                 int32
 }
 
-func ComposeSemanticVersion(major, minor, patch int) int32 {
-	return int32((major << 16) | (minor << 8) | patch)
+func ComposeSemanticVersion(major, minor, patch uint8) int32 {
+	return int32(major)<<16 | int32(minor)<<8 | int32(patch)
 }
 
 func MajorVersion(version int32) int {

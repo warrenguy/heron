@@ -83,11 +83,13 @@ func (b AtomicBuffer) GetInt32(offset int) int32 {
 }
 
 func (b AtomicBuffer) Int32At(offset int) int32 {
+	//nolint:gosec // G115: reads the two's complement bit pattern
 	return int32(binary.LittleEndian.Uint32(b.buf[offset : offset+SizeInt32]))
 }
 
 func (b AtomicBuffer) PutInt32(offset int, value int32) {
 	boundsCheck(b.buf, offset, SizeInt32)
+	//nolint:gosec // G115: writes the two's complement bit pattern
 	binary.LittleEndian.PutUint32(b.buf[offset:offset+SizeInt32], uint32(value))
 }
 
@@ -110,11 +112,13 @@ func (b AtomicBuffer) GetInt64(offset int) int64 {
 }
 
 func (b AtomicBuffer) Int64At(offset int) int64 {
+	//nolint:gosec // G115: reads the two's complement bit pattern
 	return int64(binary.LittleEndian.Uint64(b.buf[offset : offset+SizeInt64]))
 }
 
 func (b AtomicBuffer) PutInt64(offset int, value int64) {
 	boundsCheck(b.buf, offset, SizeInt64)
+	//nolint:gosec // G115: writes the two's complement bit pattern
 	binary.LittleEndian.PutUint64(b.buf[offset:offset+SizeInt64], uint64(value))
 }
 

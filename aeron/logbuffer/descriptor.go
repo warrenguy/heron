@@ -48,6 +48,17 @@ func CheckPageSize(pageSize int) error {
 	return checkPowerOfTwoRange("page size", pageSize, PageMinSize, PageMaxSize)
 }
 
+// CheckMTULength mirrors Java Configuration.validateMtuLength.
+func CheckMTULength(mtuLength int) error {
+	if mtuLength <= DataHeaderLength || mtuLength > MaxUDPPayloadLength {
+		return fmt.Errorf("logbuffer: mtu length out of range: %d", mtuLength)
+	}
+	if mtuLength%FrameAlignment != 0 {
+		return fmt.Errorf("logbuffer: mtu length not frame aligned: %d", mtuLength)
+	}
+	return nil
+}
+
 func rawLogLength(termLength int) (int64, error) {
 	maxTerm := int(math.MaxInt64 / int64(PartitionCount))
 	if termLength > maxTerm {
@@ -83,6 +94,7 @@ func MetaDataOffset(termLength int) int {
 }
 
 func PositionBitsToShift(termLength int) int {
+	//nolint:gosec // G115: CheckTermLength bounds the term length
 	return atomicbuffer.NumberOfTrailingZeroes(int32(termLength))
 }
 
@@ -94,8 +106,8 @@ func ComputeMaxMessageLength(termLength int) int {
 	return MaxMessageLength
 }
 
-func AlignFrameLength(length int) int {
-	return atomicbuffer.Align(length, FrameAlignment)
+func AlignFrameLength[T ~int | ~int32 | ~int64](length T) T {
+	return (length + FrameAlignment - 1) &^ (FrameAlignment - 1)
 }
 
 // ComputeFragmentedFrameLength returns the aligned term space for a payload

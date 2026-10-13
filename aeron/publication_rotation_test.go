@@ -43,7 +43,7 @@ func requireRotatedToNextTermMeta(
 	require.NoError(tb, err)
 	wantTermID := int32(aeron.TestPublicationInitialTermID + wantTermCount)
 	require.Equal(tb, wantTermID, logbuffer.TermID(rawTail))
-	require.Equal(tb, int32(0), logbuffer.TermOffset(rawTail, int32(termLength)))
+	require.Equal(tb, int32(0), logbuffer.TermOffset(rawTail, termLength))
 	return nextIndex
 }
 

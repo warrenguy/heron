@@ -59,6 +59,18 @@ func TestMapCreate_roundtrip(t *testing.T) {
 	require.Equal(t, byte(0xCD), m2.Data[length-1])
 }
 
+func TestMapCreate_mode(t *testing.T) {
+	path := testMapPath(t, "mode.bin")
+
+	m, err := mmap.MapCreate(path, 4096)
+	require.NoError(t, err)
+	require.NoError(t, m.Close())
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}
+
 func TestMapOpenedFile_nonPositiveLengthCallerCloses(t *testing.T) {
 	path := testMapPath(t, "opened.bin")
 	require.NoError(t, os.WriteFile(path, make([]byte, 64), 0o644))

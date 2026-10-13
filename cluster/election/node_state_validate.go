@@ -4,22 +4,20 @@ import (
 	"github.com/warrenguy/heron/cluster/election/nodewire"
 )
 
-func candidateTermFramedLength() int32 {
-	var ct nodewire.CandidateTerm
-	return int32(ct.SbeBlockAndHeaderLength())
-}
-
-func nodeStateFooterFramedLength() int32 {
-	var footer nodewire.NodeStateFooter
-	return int32(footer.SbeBlockAndHeaderLength())
-}
+const (
+	messageHeaderEncodedLength = int32(nodewire.MessageHeaderEncodedLength)
+	candidateTermFramedLength  = messageHeaderEncodedLength +
+		int32(nodewire.CandidateTermSbeBlockLength)
+	nodeStateFooterFramedLength = messageHeaderEncodedLength +
+		int32(nodewire.NodeStateFooterSbeBlockLength)
+)
 
 func expectedFramedLength(templateID uint16) (int32, bool) {
 	switch templateID {
 	case nodewire.CandidateTermSbeTemplateID:
-		return candidateTermFramedLength(), true
+		return candidateTermFramedLength, true
 	case nodewire.NodeStateFooterSbeTemplateID:
-		return nodeStateFooterFramedLength(), true
+		return nodeStateFooterFramedLength, true
 	default:
 		return 0, false
 	}
@@ -37,6 +35,7 @@ func validateFramedRecord(buf []byte, headerPos int, templateID uint16) error {
 
 	bufLen := uint64(len(buf))
 	var hdr nodewire.MessageHeader
+	//nolint:gosec // G115: validateMessageHeaderBounds checks headerPos above
 	hdr.Wrap(buf, uint64(headerPos), uint64(nodewire.MessageHeaderSbeSchemaVersion), bufLen)
 
 	if hdr.TemplateId() != templateID {
@@ -70,7 +69,7 @@ func validateLoadedLayout(buf []byte, candidateHeaderPos int) error {
 		return err
 	}
 
-	footerScanStart := alignRecordOffset(candidateHeaderPos + int(candidateTermFramedLength()))
+	footerScanStart := alignRecordOffset(candidateHeaderPos + int(candidateTermFramedLength))
 
 	footerPos, ok, err := scanForTemplateOffset(
 		buf,

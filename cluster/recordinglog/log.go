@@ -2,6 +2,7 @@ package recordinglog
 
 import (
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -163,7 +164,8 @@ func (l *Log) TermRecordingID() int64 {
 // recordingID must be consistent across all terms; the first stores the shared
 // value. Returns ErrTermRecordingIDInvalid on NULL_VALUE,
 // ErrTermRecordingIDMismatch on a differing recordingID, ErrShortWrite on a
-// truncated write, or the underlying WriteAt error.
+// truncated write, or the underlying WriteAt error. Returns ErrTooManyEntries
+// when the entry index would exceed int32.
 func (l *Log) AppendTerm(
 	recordingID int64,
 	leadershipTermID int64,
@@ -214,7 +216,8 @@ func (l *Log) AppendTerm(
 // term and persists it.
 //
 // recordingID must not be NULL_VALUE; ErrInvalidRecordingID otherwise. Returns
-// ErrShortWrite on a truncated write or the underlying WriteAt error.
+// ErrShortWrite on a truncated write or the underlying WriteAt error. Returns
+// ErrTooManyEntries when the entry index would exceed int32.
 //
 // A matching invalidated snapshot (same leadershipTermId, logPosition,
 // serviceId) is re-validated in place; otherwise the snapshot appends as a fresh
@@ -248,7 +251,8 @@ func (l *Log) AppendSnapshot(
 // archiveEndpoint must be non-empty and within the maximum length;
 // ErrStandbyEndpointEmpty or ErrEndpointTooLong otherwise. recordingID must not
 // be NULL_VALUE; ErrInvalidRecordingID otherwise. Returns ErrShortWrite on a
-// truncated write or the underlying WriteAt error.
+// truncated write or the underlying WriteAt error. Returns ErrTooManyEntries
+// when the entry index would exceed int32.
 //
 // A matching invalidated standby snapshot (same leadershipTermId, logPosition,
 // serviceId) is re-validated in place; otherwise the snapshot appends as a fresh
@@ -310,6 +314,9 @@ func (l *Log) appendOrRestore(entry Entry) error {
 // The write happens before any cache mutation so a failed WriteAt leaves the
 // cache untouched.
 func (l *Log) append(entry Entry) (int32, error) {
+	if l.nextEntryIndex == math.MaxInt32 {
+		return 0, ErrTooManyEntries
+	}
 	entry.Index = l.nextEntryIndex
 	writeOffset := l.writeOffset
 	entry.Position = writeOffset
@@ -322,6 +329,7 @@ func (l *Log) append(entry Entry) (int32, error) {
 	l.writeOffset = writeOffset + int64(len(encoded))
 	l.nextEntryIndex++
 
+	//nolint:gosec // G115: append keeps the entry count below MaxInt32
 	originalLen := int32(len(l.entries))
 	insertionIndex := originalLen
 	for insertionIndex > 0 && compareEntries(entry, l.entries[insertionIndex-1]) < 0 {
@@ -412,6 +420,7 @@ func (l *Log) CommitLogPosition(leadershipTermID, logPosition int64) error {
 func (l *Log) InvalidateLatestSnapshot() (bool, error) {
 	var indices []int32
 	highLogPosition := NullPosition
+	//nolint:gosec // G115: append keeps the entry count below MaxInt32
 	for idx := int32(len(l.entries)) - 1; idx >= 0; idx-- {
 		entry := l.entries[idx]
 		if !isLiveSnapshot(entry, consensusModuleServiceID) {

@@ -30,7 +30,7 @@ func TestRotateLog_synthetic(t *testing.T) {
 	require.Equal(
 		t,
 		int32(0),
-		logbuffer.TermOffset(rawTail, int32(logbuffer.TestTermLength)),
+		logbuffer.TermOffset(rawTail, logbuffer.TestTermLength),
 	)
 
 	tail0After, err := logbuffer.GetRawTail(meta, 0)
@@ -172,7 +172,7 @@ func TestRotateLog_casRawTailRetry(t *testing.T) {
 	require.Equal(
 		t,
 		int32(0),
-		logbuffer.TermOffset(rawTail, int32(logbuffer.TestTermLength)),
+		logbuffer.TermOffset(rawTail, logbuffer.TestTermLength),
 	)
 }
 

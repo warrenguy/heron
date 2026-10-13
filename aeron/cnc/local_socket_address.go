@@ -6,8 +6,8 @@ import (
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
-var errLocalSocketAddressStringOutOfBounds = errors.New(
-	"cnc: local socket address string exceeds counter metadata bounds",
+var errLocalSocketAddressStringTooLong = errors.New(
+	"cnc: local socket address string exceeds the counter key",
 )
 
 const (
@@ -21,6 +21,7 @@ const (
 	localSocketAddressChannelStatusIDOffset = 0
 	localSocketAddressLengthOffset          = atomicbuffer.SizeInt32
 	localSocketAddressStringOffset          = localSocketAddressLengthOffset + atomicbuffer.SizeInt32
+	localSocketAddressMaxStringLength       = counterMetaMaxKeyLength - localSocketAddressStringOffset
 )
 
 // FindLocalSocketAddress returns the bind address linked to channelStatusCounterID
@@ -106,6 +107,10 @@ func WriteLocalSocketAddressCounterRecord(
 	bindAddress string,
 	value int64,
 ) error {
+	if len(bindAddress) > localSocketAddressMaxStringLength {
+		return errLocalSocketAddressStringTooLong
+	}
+
 	metaBuffer := atomicbuffer.Wrap(meta)
 	valuesBuffer := atomicbuffer.Wrap(values)
 	return writeCounterRecord(
@@ -123,14 +128,11 @@ func WriteLocalSocketAddressCounterRecord(
 			)
 			metaBuffer.PutInt32(
 				keyIndex+localSocketAddressLengthOffset,
+				//nolint:gosec // G115: checked against localSocketAddressMaxStringLength above
 				int32(len(bindAddress)),
 			)
 			stringOffset := keyIndex + localSocketAddressStringOffset
-			end := stringOffset + len(bindAddress)
-			if end > metaBuffer.Capacity() {
-				return errLocalSocketAddressStringOutOfBounds
-			}
-			copy(metaBuffer.Bytes()[stringOffset:end], bindAddress)
+			copy(metaBuffer.Bytes()[stringOffset:stringOffset+len(bindAddress)], bindAddress)
 			valuesBuffer.PutInt64(
 				valuesOffset+CounterValueRegistrationIDOffset,
 				registrationID,

@@ -29,10 +29,9 @@ type Subscription struct {
 	counters               *cnc.CountersReader
 
 	images []*Image
-	// roundRobinIndex advances each Poll/ControlledPoll for fairness. Java
-	// Subscription stores this as int; stored as uint32 here and normalized
-	// against len(images) every poll.
-	roundRobinIndex uint32
+	// roundRobinIndex is the image slot the next pollImages call starts from.
+	// pollImages reduces it modulo len(images) before use.
+	roundRobinIndex int
 
 	closed bool
 
@@ -204,15 +203,15 @@ func (subscription *Subscription) pollImages(
 		subscription.roundRobinIndex++
 		return 0
 	}
-	startingIndex := subscription.roundRobinIndex % uint32(length)
-	subscription.roundRobinIndex = (startingIndex + 1) % uint32(length)
+	startingIndex := subscription.roundRobinIndex % length
+	subscription.roundRobinIndex = (startingIndex + 1) % length
 
 	fragmentsRead := 0
 	for offset := range length {
 		if fragmentsRead >= fragmentLimit {
 			break
 		}
-		image := images[(int(startingIndex)+offset)%length]
+		image := images[(startingIndex+offset)%length]
 		if image == nil {
 			continue
 		}

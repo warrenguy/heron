@@ -1,11 +1,13 @@
 package cnc_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func seedRecordingPositionCounter(
@@ -117,4 +119,21 @@ func TestFindRecordingPositionCounter_nilReader(t *testing.T) {
 	var reader *cnc.CountersReader
 	_, ok := reader.FindRecordingPositionCounter(1, cnc.NullValue)
 	require.False(t, ok)
+}
+
+func TestWriteRecordingPositionCounterRecord_boundsSourceIdentity(t *testing.T) {
+	write := func(sourceIdentity string) ([]byte, error) {
+		meta, values := syntheticCountersBuffers(t, 1)
+		err := cnc.WriteRecordingPositionCounterRecord(
+			meta, values, 0, cnc.CounterRecordAllocated,
+			cnc.ArchiveRecordingPositionCounterTypeID, 1, 1, sourceIdentity, 1, 0,
+		)
+		return meta, err
+	}
+	_, err := write(strings.Repeat("a", 88))
+	require.NoError(t, err)
+
+	meta, err := write(strings.Repeat("a", 89))
+	require.EqualError(t, err, "cnc: recording position source identity exceeds the counter key")
+	require.Zero(t, atomicbuffer.Wrap(meta).GetInt32(cnc.CounterMetadataTypeIDOffset))
 }

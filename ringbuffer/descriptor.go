@@ -20,6 +20,7 @@ const (
 
 var (
 	errDataCapacityNotPowerOfTwo = errors.New("ringbuffer: data capacity must be power of two")
+	errDataCapacityAboveMaximum  = errors.New("ringbuffer: data capacity above maximum")
 	// errInsufficientCapacity is for bufferCapacity too small at New*. Runtime ring-full
 	// uses record.InsufficientCapacity (-2) from TryClaim/Write, not this error.
 	errInsufficientCapacity = errors.New("ringbuffer: insufficient capacity")
@@ -61,6 +62,9 @@ func CheckCapacity(bufferCapacity, minCapacity int) (int, error) {
 		}
 		if errors.Is(err, atomicbuffer.ErrDataCapacityBelowMinimum) {
 			return 0, errInsufficientCapacity
+		}
+		if errors.Is(err, atomicbuffer.ErrDataCapacityAboveMaximum) {
+			return 0, errDataCapacityAboveMaximum
 		}
 		return 0, err
 	}

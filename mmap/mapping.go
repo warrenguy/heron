@@ -22,11 +22,13 @@ func requirePositiveLength(length int) error {
 }
 
 // MapCreate truncates path to length before mmap; unsafe on live files larger than length.
+//
+// Creates the file with mode 0600 when it does not exist.
 func MapCreate(path string, length int) (*Mapping, error) {
 	if err := requirePositiveLength(length); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
 	}

@@ -30,7 +30,7 @@ func TestMetadataOffsets(t *testing.T) {
 func TestPackRawTail(t *testing.T) {
 	raw := logbuffer.PackRawTail(7, 1024)
 	require.Equal(t, int32(7), logbuffer.TermID(raw))
-	require.Equal(t, int32(1024), logbuffer.TermOffset(raw, int32(logbuffer.TestTermLength)))
+	require.Equal(t, int32(1024), logbuffer.TermOffset(raw, logbuffer.TestTermLength))
 }
 
 func TestTermOffset_clamp(t *testing.T) {
@@ -47,7 +47,7 @@ func TestTermOffset_clamp(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := logbuffer.PackRawTail(7, tc.offset)
-			require.Equal(t, tc.want, logbuffer.TermOffset(raw, termLength))
+			require.Equal(t, tc.want, logbuffer.TermOffset(raw, int(termLength)))
 		})
 	}
 }
@@ -169,4 +169,14 @@ func TestParseMetadataView_invalidPageSize(t *testing.T) {
 			logbuffer.TestPageSize,
 		),
 	)
+}
+
+func TestParseMetadataView_invalidMTU(t *testing.T) {
+	buf := make([]byte, logbuffer.MetaDataLength)
+	meta := atomicbuffer.Wrap(buf)
+	meta.PutInt32(logbuffer.OffsetTermLength, logbuffer.TestTermLength)
+	meta.PutInt32(logbuffer.OffsetPageSize, logbuffer.TestPageSize)
+
+	_, err := logbuffer.ParseMetadataView(meta)
+	require.EqualError(t, err, "logbuffer: mtu length out of range: 0")
 }

@@ -90,6 +90,7 @@ func FrameVersion(buffer atomicbuffer.AtomicBuffer, frameOffset int) int8 {
 	if !frameHeaderInBounds(buffer, frameOffset) {
 		return 0
 	}
+	//nolint:gosec // G115: the version is a signed byte on the wire
 	return int8(buffer.Bytes()[frameOffset+OffsetVersion])
 }
 
@@ -176,6 +177,7 @@ func CommittedFrameLengthVolatile(buffer atomicbuffer.AtomicBuffer, frameOffset 
 
 // frameTypeAt reads HdrType at offset+6; binary.LittleEndian matches Agrona byte order.
 func frameTypeAt(header []byte, frameOffset int) int16 {
+	//nolint:gosec // G115: the frame type is a signed int16 on the wire
 	return int16(binary.LittleEndian.Uint16(header[frameOffset+OffsetFrameType:]))
 }
 
@@ -206,6 +208,7 @@ func PutFrameType(buffer atomicbuffer.AtomicBuffer, frameOffset int, typ int16) 
 	if !frameHeaderInBounds(buffer, frameOffset) {
 		return
 	}
+	//nolint:gosec // G115: the frame type is a signed int16 on the wire
 	binary.LittleEndian.PutUint16(buffer.Bytes()[frameOffset+OffsetFrameType:], uint16(typ))
 }
 

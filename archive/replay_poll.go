@@ -26,6 +26,7 @@ func FindReplayImage(
 	if sub == nil {
 		return nil, false, errFindReplayImageNilSubscription
 	}
+	//nolint:gosec // G115: the image carries the low 32 bits of the replay session id
 	imageSessionID := int32(uint32(replaySessionID))
 	for index := 0; index < sub.ImageCount(); index++ {
 		image, ok := sub.ImageAt(index)

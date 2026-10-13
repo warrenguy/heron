@@ -4,9 +4,10 @@
 package logbuffer
 
 import (
-	"encoding/binary"
 	"fmt"
 	"os"
+
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 type layoutDimensions struct {
@@ -57,10 +58,11 @@ func discoverDimensions(span int, read dimensionReader) (layoutDimensions, error
 }
 
 func discoverDimensionsFromBuffer(data []byte) (layoutDimensions, error) {
+	meta := atomicbuffer.Wrap(data)
 	return discoverDimensions(len(data), func(candidate int) (int32, int32, bool, error) {
 		metaStart := MetaDataOffset(candidate)
-		termLength := int32(binary.LittleEndian.Uint32(data[metaStart+OffsetTermLength:]))
-		pageSize := int32(binary.LittleEndian.Uint32(data[metaStart+OffsetPageSize:]))
+		termLength := meta.GetInt32(metaStart + OffsetTermLength)
+		pageSize := meta.GetInt32(metaStart + OffsetPageSize)
 		if validateDimensions(termLength, pageSize) != nil {
 			return 0, 0, false, nil
 		}
@@ -78,8 +80,9 @@ func discoverDimensionsFromFile(
 		if _, err := file.ReadAt(dimsBuf[:], int64(metaStart+OffsetTermLength)); err != nil {
 			return 0, 0, false, fmt.Errorf("logbuffer: read dimensions: %w", err)
 		}
-		termLength := int32(binary.LittleEndian.Uint32(dimsBuf[:4]))
-		pageSize := int32(binary.LittleEndian.Uint32(dimsBuf[4:]))
+		dims := atomicbuffer.Wrap(dimsBuf[:])
+		termLength := dims.GetInt32(0)
+		pageSize := dims.GetInt32(atomicbuffer.SizeInt32)
 		if validateDimensions(termLength, pageSize) != nil {
 			return 0, 0, false, nil
 		}

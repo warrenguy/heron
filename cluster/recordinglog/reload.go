@@ -2,6 +2,7 @@ package recordinglog
 
 import (
 	"errors"
+	"math"
 	"os"
 
 	"github.com/warrenguy/heron/atomicbuffer"
@@ -16,6 +17,9 @@ var (
 
 	// ErrEndpointTooLong reports a negative or oversized standby endpoint length.
 	ErrEndpointTooLong = errors.New("recordinglog: endpoint length negative or exceeds maximum")
+
+	// ErrTooManyEntries reports a log whose entry count does not fit in int32.
+	ErrTooManyEntries = errors.New("recordinglog: entry count exceeds int32")
 
 	// ErrStandbyEndpointEmpty reports a zero-length standby snapshot endpoint.
 	ErrStandbyEndpointEmpty = errors.New("recordinglog: standby snapshot endpoint is empty")
@@ -97,6 +101,9 @@ func decodeEntriesAndCount(buf []byte) ([]Entry, int32, int64, error) {
 	termRecordingID := nullValue
 
 	for consumed+endpointOffset < len(buf) {
+		if entryOrdinal == math.MaxInt32 {
+			return nil, 0, nullValue, ErrTooManyEntries
+		}
 		rawType := buffer.GetInt32(consumed + entryTypeOffset)
 		if rawType == nullEntryType {
 			consumed += recordAlignment

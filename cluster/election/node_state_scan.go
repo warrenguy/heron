@@ -15,6 +15,7 @@ func scanForTemplateOffset(
 
 	for position+int(nodewire.MessageHeaderEncodedLength) <= len(buf) {
 		var hdr nodewire.MessageHeader
+		//nolint:gosec // G115: callers pass a non-negative start position
 		hdr.Wrap(buf, uint64(position), schemaVersion, bufLen)
 
 		templateID := hdr.TemplateId()

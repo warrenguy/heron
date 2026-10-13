@@ -62,6 +62,7 @@ func DecodePublicationError(
 		StreamID:                  buf.GetInt32(offset + PublicationErrorStreamIDOffset),
 		ReceiverID:                buf.GetInt64(offset + PublicationErrorReceiverIDOffset),
 		GroupTag:                  buf.GetInt64(offset + PublicationErrorGroupTagOffset),
+		//nolint:gosec // G115: the address type is a signed int16 on the wire
 		AddressType: int16(
 			binary.LittleEndian.Uint16(
 				buf.Slice(offset+PublicationErrorAddressTypeOffset, sizeOfUint16).Bytes(),
@@ -97,6 +98,7 @@ func EncodePublicationError(
 	buf.PutInt64(offset+PublicationErrorGroupTagOffset, event.GroupTag)
 	binary.LittleEndian.PutUint16(
 		buf.Slice(offset+PublicationErrorAddressTypeOffset, sizeOfUint16).Bytes(),
+		//nolint:gosec // G115: the address type is a signed int16 on the wire
 		uint16(event.AddressType),
 	)
 	binary.LittleEndian.PutUint16(

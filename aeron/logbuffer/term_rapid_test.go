@@ -18,7 +18,7 @@ func TestTermMath_roundtrip_rapid(t *testing.T) {
 		termLength := 1 << shift
 		initialTermID := rapid.Int32().Draw(t, "init")
 		termCount := rapid.Int32Range(0, 1<<12).Draw(t, "termCount")
-		termOffset := rapid.Int32Range(0, int32(termLength-1)).Draw(t, "off")
+		termOffset := rapid.IntRange(0, termLength-1).Draw(t, "off")
 		positionBitsToShift := logbuffer.PositionBitsToShift(termLength)
 		activeTermID := logbuffer.AddWrapI32(initialTermID, termCount)
 
@@ -36,7 +36,7 @@ func TestTermMath_roundtrip_rapid(t *testing.T) {
 		require.Equal(
 			t,
 			termOffset,
-			logbuffer.ComputeTermOffsetFromPosition(position, positionBitsToShift),
+			int(logbuffer.ComputeTermOffsetFromPosition(position, positionBitsToShift)),
 		)
 		require.Equal(
 			t,

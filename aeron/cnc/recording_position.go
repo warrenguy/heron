@@ -1,6 +1,14 @@
 package cnc
 
-import "github.com/warrenguy/heron/atomicbuffer"
+import (
+	"errors"
+
+	"github.com/warrenguy/heron/atomicbuffer"
+)
+
+var errRecordingPositionSourceIdentityTooLong = errors.New(
+	"cnc: recording position source identity exceeds the counter key",
+)
 
 const (
 	// ArchiveRecordingPositionCounterTypeID mirrors Java
@@ -17,6 +25,9 @@ const (
 	recordingPositionSessionIDKeyOffset            = 8
 	recordingPositionSourceIdentityLengthKeyOffset = 12
 	recordingPositionSourceIdentityKeyOffset       = 16
+	// The archive id follows the source identity, so both must fit in the key.
+	recordingPositionMaxSourceIdentityLength = counterMetaMaxKeyLength -
+		recordingPositionSourceIdentityKeyOffset - atomicbuffer.SizeInt64
 )
 
 // FindRecordingPositionCounter scans counters for the active recording-position counter
@@ -89,6 +100,10 @@ func WriteRecordingPositionCounterRecord(
 	archiveID int64,
 	value int64,
 ) error {
+	if len(sourceIdentity) > recordingPositionMaxSourceIdentityLength {
+		return errRecordingPositionSourceIdentityTooLong
+	}
+
 	metaBuffer := atomicbuffer.Wrap(meta)
 	valuesBuffer := atomicbuffer.Wrap(values)
 	return writeCounterRecord(
@@ -104,6 +119,7 @@ func WriteRecordingPositionCounterRecord(
 			metaBuffer.PutInt32(keyOffset+recordingPositionSessionIDKeyOffset, sessionID)
 			metaBuffer.PutInt32(
 				keyOffset+recordingPositionSourceIdentityLengthKeyOffset,
+				//nolint:gosec // G115: checked against recordingPositionMaxSourceIdentityLength above
 				int32(len(sourceIdentity)),
 			)
 			metaBuffer.PutBytes(

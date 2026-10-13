@@ -41,7 +41,7 @@ func encodeFramedCandidateTerm(
 		SetLogPosition(logPos)
 
 	hdr.Wrap(buf, uint64(offset), uint64(nodewire.MessageHeaderSbeSchemaVersion), bufLen)
-	hdr.SetFrameLength(int32(ct.SbeBlockAndHeaderLength()))
+	hdr.SetFrameLength(candidateTermFramedLength)
 
 	return nil
 }
@@ -59,7 +59,7 @@ func encodeFramedNodeStateFooter(buf []byte, offset int) error {
 	footer.WrapAndApplyHeader(buf, uint64(offset), bufLen)
 
 	hdr.Wrap(buf, uint64(offset), uint64(nodewire.MessageHeaderSbeSchemaVersion), bufLen)
-	hdr.SetFrameLength(int32(footer.SbeBlockAndHeaderLength()))
+	hdr.SetFrameLength(nodeStateFooterFramedLength)
 
 	return nil
 }
@@ -80,14 +80,14 @@ func initialiseOnCreate(
 	var nsh nodewire.NodeStateHeader
 	nsh.WrapForEncode(buf, 0, bufLen).SetVersion(version).SetPadding(0)
 
-	candidateHeaderOffset := int(nsh.SbePosition())
+	candidateHeaderOffset := int(nodewire.NodeStateHeaderSbeBlockLength)
 	if err := encodeFramedCandidateTerm(
 		buf, candidateHeaderOffset, NullValue, NullValue, NullValue,
 	); err != nil {
 		return 0, 0, err
 	}
 
-	footerOffset := alignRecordOffset(candidateHeaderOffset + int(candidateTermFramedLength()))
+	footerOffset := alignRecordOffset(candidateHeaderOffset + int(candidateTermFramedLength))
 	if err := encodeFramedNodeStateFooter(buf, footerOffset); err != nil {
 		return 0, 0, err
 	}
