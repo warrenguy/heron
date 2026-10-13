@@ -164,7 +164,8 @@ func (l *Log) TermRecordingID() int64 {
 // recordingID must be consistent across all terms; the first stores the shared
 // value. Returns ErrTermRecordingIDInvalid on NULL_VALUE,
 // ErrTermRecordingIDMismatch on a differing recordingID, ErrShortWrite on a
-// truncated write, or the underlying WriteAt error.
+// truncated write, or the underlying WriteAt error. Returns ErrTooManyEntries
+// when the entry index would exceed int32.
 func (l *Log) AppendTerm(
 	recordingID int64,
 	leadershipTermID int64,
@@ -215,7 +216,8 @@ func (l *Log) AppendTerm(
 // term and persists it.
 //
 // recordingID must not be NULL_VALUE; ErrInvalidRecordingID otherwise. Returns
-// ErrShortWrite on a truncated write or the underlying WriteAt error.
+// ErrShortWrite on a truncated write or the underlying WriteAt error. Returns
+// ErrTooManyEntries when the entry index would exceed int32.
 //
 // A matching invalidated snapshot (same leadershipTermId, logPosition,
 // serviceId) is re-validated in place; otherwise the snapshot appends as a fresh
@@ -249,7 +251,8 @@ func (l *Log) AppendSnapshot(
 // archiveEndpoint must be non-empty and within the maximum length;
 // ErrStandbyEndpointEmpty or ErrEndpointTooLong otherwise. recordingID must not
 // be NULL_VALUE; ErrInvalidRecordingID otherwise. Returns ErrShortWrite on a
-// truncated write or the underlying WriteAt error.
+// truncated write or the underlying WriteAt error. Returns ErrTooManyEntries
+// when the entry index would exceed int32.
 //
 // A matching invalidated standby snapshot (same leadershipTermId, logPosition,
 // serviceId) is re-validated in place; otherwise the snapshot appends as a fresh

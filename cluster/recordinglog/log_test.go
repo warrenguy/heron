@@ -2,6 +2,7 @@ package recordinglog_test
 
 import (
 	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -290,6 +291,54 @@ func TestAppend_roundtripEqualsReload(t *testing.T) {
 	)
 
 	requireReloadMatchesLog(t, path, log)
+}
+
+func TestAppend_rejectsEntryIndexOverflow(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		append func(*recordinglog.Log) error
+	}{
+		{
+			name: "term",
+			append: func(log *recordinglog.Log) error {
+				return log.AppendTerm(1, 0, 0, 0)
+			},
+		},
+		{
+			name: "snapshot",
+			append: func(log *recordinglog.Log) error {
+				return log.AppendSnapshot(9, 0, 0, 100, 1000, 0)
+			},
+		},
+		{
+			name: "standby snapshot",
+			append: func(log *recordinglog.Log) error {
+				return log.AppendStandbySnapshot(9, 0, 0, 100, 1000, 0, "aeron:udp?endpoint=standby:8020")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			log, path := newLog(t)
+			before, err := os.Stat(path)
+			require.NoError(t, err)
+
+			recordinglog.SetNextEntryIndexForTest(log, math.MaxInt32)
+			err = tc.append(log)
+			require.ErrorIs(t, err, recordinglog.ErrTooManyEntries)
+
+			require.Empty(t, log.Entries())
+			require.Equal(t, recordinglog.NullRecordingID, log.TermRecordingID())
+			require.Nil(t, log.FindTermEntry(0))
+			require.Equal(t, int32(math.MaxInt32), log.NextEntryIndex())
+
+			after, err := os.Stat(path)
+			require.NoError(t, err)
+			require.Equal(t, before.Size(), after.Size())
+		})
+	}
 }
 
 func TestAppendTerm_duplicateRejected(t *testing.T) {

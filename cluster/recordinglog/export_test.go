@@ -29,6 +29,12 @@ func FindLastTerm(l *Log) *Entry {
 	return l.findLastTerm()
 }
 
+// SetNextEntryIndexForTest overwrites the next entry index for black-box tests
+// that drive the int32 overflow guard in append.
+func SetNextEntryIndexForTest(l *Log, index int32) {
+	l.nextEntryIndex = index
+}
+
 // InvalidSnapshots exposes the cache slot indices of invalid snapshots for
 // black-box tests that assert the append index shift.
 func InvalidSnapshots(l *Log) []int32 {
