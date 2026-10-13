@@ -45,8 +45,12 @@ linters:
       - path: '_test\.go$'
         linters:
           - exhaustive
-      # Tests, test helpers and examples do not ship in the library.
-      - path: '(_test\.go$|^test/|^examples/|(^|/)internal/(testhook|testutil)/|/cnctest/|(^|/)test_hooks\.go$|_fixtures?(_bench)?\.go$)'
+      # Tests and test helpers handle no untrusted input.
+      - path: '(_test\.go$|^test/|(^|/)internal/(testhook|testutil)/|/cnctest/|(^|/)test_hooks\.go$|_fixtures?(_bench)?\.go$)'
+        linters:
+          - gosec
+      # Examples demonstrate the API and are not library code.
+      - path: '^examples/'
         linters:
           - gosec
       # These packages open Aeron files at paths their callers supply.
