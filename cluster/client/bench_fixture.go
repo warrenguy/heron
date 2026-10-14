@@ -1,6 +1,5 @@
 //go:build bench
 
-// Bench-only cluster client fixtures for contract benchmarks. Not for production use.
 package client
 
 import (

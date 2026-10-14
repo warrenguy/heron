@@ -1,7 +1,5 @@
 //go:build bench
 
-// Bench-only in-memory publication and image fixtures for contract benchmarks.
-// Not for production use.
 package aeron
 
 import (

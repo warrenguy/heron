@@ -1,8 +1,5 @@
 //go:build integration
 
-// Package-scoped shared media driver for harness directory tests.
-// Migrated IPC tests use harness.Shared(t).
-// Disabled via HERON_SHARED_MEDIA_DRIVER=0.
 package harness_test
 
 import (
@@ -12,8 +9,10 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// TestMain starts one aeronmd for all tests in this directory (harness and harness_test).
-// harness.Shared(t) returns it for migrated IPC and timeout-message tests.
+// TestMain starts one shared aeronmd for every test in this directory. Go
+// builds harness and harness_test into one test binary, so one TestMain serves
+// both. Tests get the driver from harness.Shared(t).
+// HERON_SHARED_MEDIA_DRIVER=0 disables the shared driver.
 func TestMain(m *testing.M) {
 	os.Exit(harness.RunTestMainWithSharedDriver(m))
 }

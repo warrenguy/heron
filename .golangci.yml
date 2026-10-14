@@ -37,7 +37,6 @@ linters:
     staticcheck:
       checks:
         - all
-        - -ST1000
         - -ST1020
         - -ST1021
   exclusions:

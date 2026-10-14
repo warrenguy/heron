@@ -1,9 +1,5 @@
 //go:build testhooks
 
-// Cross-package test hooks for conductor internals.
-//
-// Package-level functions mirror export_test.go receiver methods where both exist
-// so conductor_test can use the latter without symbol conflicts.
 package conductor
 
 import (

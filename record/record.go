@@ -1,3 +1,6 @@
+// Package record defines the Agrona record header layout. Each record starts
+// with an int32 length and an int32 message type id. The ringbuffer and
+// broadcast packages use this layout.
 package record
 
 import (

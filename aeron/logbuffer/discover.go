@@ -1,6 +1,3 @@
-// Layout discovery scans candidate term lengths at MetaDataOffset rather than
-// reading the file tail. Page-aligned driver files place padding after the
-// metadata region, so a tail peek can read zero padding and mis-parse dimensions.
 package logbuffer
 
 import (
@@ -18,10 +15,15 @@ type layoutDimensions struct {
 
 type dimensionReader func(candidate int) (termLength, pageSize int32, ok bool, err error)
 
-// Returns the first ascending power-of-two candidate that validates.
+// discoverDimensions scans power-of-two term lengths in ascending order. It
+// returns the first candidate that validates.
 //
-// Assumes driver-created Aeron-shaped files; corrupt blobs may false-match at a
-// smaller MetaDataOffset.
+// The scan reads metadata at MetaDataOffset, not at the file tail. Page-aligned
+// driver files pad after the metadata region. A tail read can see that zero
+// padding and mis-parse the dimensions.
+//
+// Assumes a driver-created Aeron log file. A corrupt file may match a smaller
+// MetaDataOffset by mistake.
 func discoverDimensions(span int, read dimensionReader) (layoutDimensions, error) {
 	maxShift := PositionBitsToShift(TermMaxLength)
 	for shift := PositionBitsToShift(TermMinLength); shift <= maxShift; shift++ {

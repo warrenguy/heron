@@ -1,11 +1,5 @@
 //go:build integration && cluster_java
 
-// Golden tables hand-synced with ClusterConstantsFailoverTest; Java ClusterConfig helpers
-// are authoritative for topology strings.
-//
-// Java ClusterConstantsFailoverTest.parameterized goldens intentionally cover a subset
-// of these constants; topology strings (members, ingress endpoints) are asserted in
-// clusterConfigHelpers_matchFailoverGoldenStrings instead of the parameterized table.
 package clusterjava_test
 
 import (
@@ -24,6 +18,13 @@ const (
 		"when IngressEndpoints is configured"
 )
 
+// TestFailoverHarnessConstants asserts the failover golden table. The table
+// hand-syncs with Java ClusterConstantsFailoverTest. Java ClusterConfig helpers
+// are authoritative for topology strings.
+//
+// The Java parameterized table covers a subset of these constants on purpose.
+// Java clusterConfigHelpers_matchFailoverGoldenStrings asserts the topology
+// strings (members, ingress endpoints).
 func TestFailoverHarnessConstants(t *testing.T) {
 	tests := []struct {
 		name string
