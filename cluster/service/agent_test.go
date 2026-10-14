@@ -289,14 +289,13 @@ func writeAgentPadding(
 	paddingLength int32,
 ) {
 	tb.Helper()
-	term := aeron.ImageTermBufferForHooks(image)
-	require.NoError(tb, logbuffer.WritePaddingFrame(
-		term,
+	aeron.WriteCommittedPaddingFrameForHooks(
+		aeron.ImageTermBufferForHooks(image),
 		frameOffset,
 		hookTermID,
 		int32(frameOffset),
-	))
-	logbuffer.PutFrameLengthOrdered(term, frameOffset, paddingLength)
+		paddingLength,
+	)
 }
 
 // replaceLogSubscription swaps the stub adder for a new image at joinPosition.

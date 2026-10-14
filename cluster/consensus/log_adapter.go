@@ -158,7 +158,8 @@ func (a *LogAdapter) IsImageClosed() bool {
 // A nil adapter or a nil image returns 0. One duty cycle is one
 // BoundedControlledPoll call.
 //
-// Returns: fragment count only. No error path.
+// Returns: fragment count only. No error path. 0 with an advanced Position
+// means the poll skipped a term-end PAD frame or slack gap.
 func (a *LogAdapter) Poll(boundPosition int64) int {
 	if a == nil || a.image == nil {
 		return 0
