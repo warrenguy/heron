@@ -577,9 +577,28 @@ func SubscriptionUnavailableImageHandlerForHooks(sub *Subscription) UnavailableI
 	return sub.unavailableImageHandler
 }
 
-// ImageTermBufferForHooks returns partition 0 term buffer for frame writes.
+// ImageTermBufferForHooks returns the term buffer at partition 0.
 func ImageTermBufferForHooks(image *Image) atomicbuffer.AtomicBuffer {
-	return image.termBuffers[0]
+	return ImageTermBufferAtForHooks(image, 0)
+}
+
+// ImageTermBufferAtForHooks returns the term buffer at partition index.
+func ImageTermBufferAtForHooks(image *Image, index int) atomicbuffer.AtomicBuffer {
+	return image.termBuffers[index]
+}
+
+// WriteCommittedPaddingFrameForHooks commits a PAD frame at frameOffset.
+// The committed frame length is paddingLength. Panics when the header
+// write fails.
+func WriteCommittedPaddingFrameForHooks(
+	termBuffer atomicbuffer.AtomicBuffer,
+	frameOffset int,
+	termID, termOffset, paddingLength int32,
+) {
+	if err := logbuffer.WritePaddingFrame(termBuffer, frameOffset, termID, termOffset); err != nil {
+		panic(err)
+	}
+	logbuffer.PutFrameLengthOrdered(termBuffer, frameOffset, paddingLength)
 }
 
 // FragmentAssemblerHasBuilderForTest reports whether assembler has a builder for sessionID.
