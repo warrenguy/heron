@@ -45,20 +45,26 @@ func (noopCloseBindLifecycle) MarkPublicationClosed(_ conductor.PublicationHandl
 func (noopCloseBindLifecycle) MarkSubscriptionClosed(_ conductor.SubscriptionHandle) {}
 
 type stubResourcePublication struct {
-	registrationID int64
-	registryKey    string
+	registrationID         int64
+	originalRegistrationID int64
+	registryKey            string
 }
 
 func (publication stubResourcePublication) RegistrationID() int64 {
 	return publication.registrationID
 }
 
+func (publication stubResourcePublication) OriginalRegistrationID() int64 {
+	return publication.originalRegistrationID
+}
+
 func stubResourcePublicationFromEvent(
 	event conductor.PublicationBuffersReady,
 ) stubResourcePublication {
 	return stubResourcePublication{
-		registrationID: event.CorrelationID,
-		registryKey:    event.LogFileName,
+		registrationID:         event.CorrelationID,
+		originalRegistrationID: event.RegistrationID,
+		registryKey:            event.LogFileName,
 	}
 }
 
@@ -799,13 +805,18 @@ func TestConductor_preInsertSubscription_idempotent(t *testing.T) {
 }
 
 type trackableStubPublication struct {
-	registrationID int64
-	registryKey    string
-	closed         bool
+	registrationID         int64
+	originalRegistrationID int64
+	registryKey            string
+	closed                 bool
 }
 
 func (publication *trackableStubPublication) RegistrationID() int64 {
 	return publication.registrationID
+}
+
+func (publication *trackableStubPublication) OriginalRegistrationID() int64 {
+	return publication.originalRegistrationID
 }
 
 type trackableStubSubscription struct {
@@ -839,8 +850,9 @@ func (lifecycle *bindFailureContractLifecycle) trackablePublicationFromEvent(
 	event conductor.PublicationBuffersReady,
 ) *trackableStubPublication {
 	lifecycle.lastPublication = &trackableStubPublication{
-		registrationID: event.CorrelationID,
-		registryKey:    event.LogFileName,
+		registrationID:         event.CorrelationID,
+		originalRegistrationID: event.RegistrationID,
+		registryKey:            event.LogFileName,
 	}
 	return lifecycle.lastPublication
 }

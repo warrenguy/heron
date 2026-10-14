@@ -2292,7 +2292,7 @@ func TestClient_ExclusivePublication_lookup_wrongTypeHandle(t *testing.T) {
 	conductor.RegisterPublicationForTest(
 		fixture.Conductor,
 		registrationID,
-		NewSubscriptionForTest(registrationID, clientAddStreamID, clientAddChannel),
+		stubPublicationForTest{registrationID: registrationID},
 	)
 
 	pub, ok := client.ExclusivePublication(registrationID)
@@ -2314,7 +2314,7 @@ func TestClient_Publication_lookup_wrongTypeHandle(t *testing.T) {
 	conductor.RegisterPublicationForTest(
 		fixture.Conductor,
 		registrationID,
-		NewSubscriptionForTest(registrationID, clientAddStreamID, clientAddChannel),
+		stubPublicationForTest{registrationID: registrationID},
 	)
 
 	pub, ok := client.Publication(registrationID)

@@ -935,6 +935,10 @@ func (publication stubPublicationForTest) RegistrationID() int64 {
 	return publication.registrationID
 }
 
+func (publication stubPublicationForTest) OriginalRegistrationID() int64 {
+	return publication.registrationID
+}
+
 func InsertPublicationForTest(
 	conductorInstance *conductor.Conductor,
 	registrationID int64,

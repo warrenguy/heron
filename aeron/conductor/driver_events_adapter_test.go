@@ -1138,11 +1138,128 @@ func TestDriverEventsAdapter_unavailableImage_decodeFailure(t *testing.T) {
 }
 
 func TestDriverEventsAdapter_publicationError(t *testing.T) {
-	conductorInstance := newConductorForTestAtWorkNano(
-		t,
-		func(error) {},
-		0,
-		0,
+	frameID := goldenPublicationErrorEvent.RegistrationID
+	const foreignID int64 = 3003
+
+	tests := []struct {
+		name         string
+		publications []stubPublication
+		nilHandler   bool
+		wantCalls    int
+	}{
+		{
+			name:      "no publications",
+			wantCalls: 0,
+		},
+		{
+			name: "foreign original id",
+			publications: []stubPublication{
+				{registrationID: 10, originalRegistrationID: foreignID},
+			},
+			wantCalls: 0,
+		},
+		{
+			name: "frame id in map key and registration id only",
+			publications: []stubPublication{
+				{registrationID: frameID, originalRegistrationID: foreignID},
+			},
+			wantCalls: 0,
+		},
+		{
+			name: "one match",
+			publications: []stubPublication{
+				{registrationID: 10, originalRegistrationID: frameID},
+			},
+			wantCalls: 1,
+		},
+		{
+			name: "two adds on one driver id plus a foreign add",
+			publications: []stubPublication{
+				{registrationID: 10, originalRegistrationID: frameID},
+				{registrationID: 11, originalRegistrationID: frameID},
+				{registrationID: 12, originalRegistrationID: foreignID},
+			},
+			wantCalls: 2,
+		},
+		{
+			name: "nil handler",
+			publications: []stubPublication{
+				{registrationID: 10, originalRegistrationID: frameID},
+			},
+			nilHandler: true,
+			wantCalls:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var frames []conductor.PublicationError
+			errorHandler, gotErrors := collectConductorErrors()
+			config := conductorTestConfig(t, errorHandler, fixedClocks{})
+			if !tt.nilHandler {
+				config.PublicationErrorFrameHandler = func(event conductor.PublicationError) {
+					frames = append(frames, event)
+				}
+			}
+			conductorInstance := newConductorForTest(t, config)
+			for _, publication := range tt.publications {
+				conductorInstance.InsertPublicationForTest(publication.registrationID, publication)
+			}
+
+			adapter := conductorInstance.EventsAdapterForTest()
+			transmitConductorEvent(
+				t,
+				adapter,
+				conductor.OnPublicationError,
+				conductor.PublicationErrorBytes(goldenPublicationErrorEvent),
+			)
+
+			count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
+			require.Equal(t, 1, count)
+			require.Zero(t, adapter.UnhandledEventCount())
+			require.Len(t, frames, tt.wantCalls)
+			for _, frame := range frames {
+				require.Equal(t, goldenPublicationErrorEvent, frame)
+			}
+			require.Equal(t, len(tt.publications), conductorInstance.PublicationCountForTest())
+			require.Empty(t, *gotErrors)
+		})
+	}
+}
+
+// TestDriverEventsAdapter_publicationError_handlerReentry closes both
+// matching publications inside the first handler call. The handler still runs
+// twice: the conductor counts matches before delivery.
+func TestDriverEventsAdapter_publicationError_handlerReentry(t *testing.T) {
+	frameID := goldenPublicationErrorEvent.RegistrationID
+	errorHandler, gotErrors := collectConductorErrors()
+	config := conductorTestConfig(t, errorHandler, fixedClocks{})
+
+	var conductorInstance *conductor.Conductor
+	var frames []conductor.PublicationError
+	var lookups []bool
+	var closeErrors []error
+	config.PublicationErrorFrameHandler = func(event conductor.PublicationError) {
+		frames = append(frames, event)
+		if len(frames) == 1 {
+			for _, registrationID := range []int64{10, 11} {
+				publication, ok := conductorInstance.PublicationByRegID(registrationID)
+				lookups = append(lookups, ok)
+				if ok {
+					closeErrors = append(closeErrors, conductorInstance.ClosePublication(publication))
+				}
+			}
+		}
+		panic("handler panic")
+	}
+	conductorInstance = newConductorForTest(t, config)
+	conductorInstance.InsertPublicationForTest(
+		10,
+		stubPublication{registrationID: 10, originalRegistrationID: frameID},
+	)
+	conductorInstance.InsertPublicationForTest(
+		11,
+		stubPublication{registrationID: 11, originalRegistrationID: frameID},
 	)
 
 	adapter := conductorInstance.EventsAdapterForTest()
@@ -1156,10 +1273,18 @@ func TestDriverEventsAdapter_publicationError(t *testing.T) {
 	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
 	require.Equal(t, 1, count)
 	require.Zero(t, adapter.UnhandledEventCount())
-
-	errors := conductor.PublicationErrorsForTest(conductorInstance)
-	require.Len(t, errors, 1)
-	require.Equal(t, goldenPublicationErrorEvent, errors[0])
+	require.Equal(t, []bool{true, true}, lookups)
+	require.Equal(t, []error{nil, nil}, closeErrors)
+	require.Equal(
+		t,
+		[]conductor.PublicationError{goldenPublicationErrorEvent, goldenPublicationErrorEvent},
+		frames,
+	)
+	require.Len(t, *gotErrors, 2)
+	for _, err := range *gotErrors {
+		require.ErrorContains(t, err, "publication error frame handler panic: handler panic")
+	}
+	require.Zero(t, conductorInstance.PublicationCountForTest())
 }
 
 func TestDriverEventsAdapter_publicationError_decodeFailure(t *testing.T) {

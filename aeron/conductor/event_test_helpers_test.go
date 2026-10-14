@@ -1,11 +1,10 @@
 package conductor_test
 
 import (
-	"testing"
-
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/broadcast"
 )
 
@@ -105,17 +104,17 @@ func goldenSubscriptionReadyWithCorrelation(
 }
 
 func transmitConductorEvent(
-	t *testing.T,
+	tb testutil.TB,
 	adapter *conductor.DriverEventsAdapter,
 	msgTypeID int,
 	payload []byte,
 ) {
-	t.Helper()
+	tb.Helper()
 
 	copyReceiver := adapter.CopyReceiverForTest()
 	buf := copyReceiver.BroadcastReceiver().Buffer()
 	tx, err := broadcast.NewBroadcastTransmitter(buf)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	err = tx.Transmit(msgTypeID, payload)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 }

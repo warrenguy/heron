@@ -15,7 +15,8 @@ func (stubSubscriptionHandle) StreamID() int32       { return 1 }
 
 type stubPublicationHandle struct{}
 
-func (stubPublicationHandle) RegistrationID() int64 { return 1 }
+func (stubPublicationHandle) RegistrationID() int64         { return 1 }
+func (stubPublicationHandle) OriginalRegistrationID() int64 { return 1 }
 
 type stubImageHandle struct{}
 
