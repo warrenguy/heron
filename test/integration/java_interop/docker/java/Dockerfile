@@ -17,6 +17,6 @@ WORKDIR /app
 COPY --from=builder \
 	/src/test/integration/java_interop/target/heron-java-interop-*.jar \
 	./heron-java-interop.jar
-COPY --chmod=+x docker/java-interop/java/entrypoint-java.sh ./entrypoint-java.sh
+COPY --chmod=+x test/integration/java_interop/docker/java/entrypoint-java.sh ./entrypoint-java.sh
 
 ENTRYPOINT ["./entrypoint-java.sh"]

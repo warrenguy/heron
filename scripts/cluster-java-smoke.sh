@@ -4,9 +4,6 @@
 # (echo offer/egress round-trip plus admin SNAPSHOT on the same session); cluster runs
 # embedded ClusteredMediaDriver.
 #
-# Go test invocation: docker/cluster_java/go/Dockerfile CMD (-test.run
-# TestCluster(Connect|Echo)Smoke, -test.timeout=300s).
-#
 # Per-run compose project (-p heron-cluster-java-$$) so concurrent smokes do not
 # share stacks. force-recreate avoids reusing a leftover one-shot go under the
 # same project if a prior trap failed. EXIT/INT/TERM run compose down for this
@@ -16,7 +13,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE="${ROOT}/docker/cluster_java/compose.yaml"
+COMPOSE="${ROOT}/test/integration/cluster_java/docker/compose.yaml"
 # Unique project per process: concurrent smokes; no shared containers/volumes.
 COMPOSE_PROJECT="heron-cluster-java-$$"
 COMPOSE_CMD=(

@@ -4,9 +4,6 @@
 # replay) and TestArchiveTruncatePath (truncate, live refusals, catalog stop);
 # archive runs standalone Archive.launch.
 #
-# Go test invocation: docker/archive_java/go/Dockerfile CMD (-test.run
-# TestArchiveRecordingLog|TestArchiveTruncatePath, -test.timeout=120s).
-#
 # Per-run compose project (-p heron-archive-java-$$) so concurrent smokes do not
 # share stacks. force-recreate avoids reusing a leftover one-shot go under the
 # same project if a prior trap failed. EXIT/INT/TERM run compose down for this
@@ -16,7 +13,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE="${ROOT}/docker/archive_java/compose.yaml"
+COMPOSE="${ROOT}/test/integration/archive_java/docker/compose.yaml"
 # Unique project per process: concurrent smokes; no shared containers/volumes.
 COMPOSE_PROJECT="heron-archive-java-$$"
 COMPOSE_CMD=(

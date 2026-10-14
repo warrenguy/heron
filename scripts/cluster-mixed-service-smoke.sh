@@ -4,9 +4,6 @@
 # Cluster runs embedded ClusteredMediaDriver with the Java service
 # container withheld. Go runs TestClusterMixedServiceSmoke.
 #
-# Go test invocation: docker/cluster_java/go/Dockerfile mixed-service-runtime
-# CMD (-test.run ^TestClusterMixedServiceSmoke$, -test.timeout=180s).
-#
 # Per-run compose project (-p heron-cluster-mixed-service-$$) so concurrent
 # smokes do not share stacks. force-recreate avoids reusing a leftover
 # one-shot go under the same project if a prior trap failed. EXIT/INT/TERM
@@ -16,10 +13,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE_BASE="${ROOT}/docker/cluster_java/compose.yaml"
-COMPOSE_OVERLAY="${ROOT}/docker/cluster_java/compose.mixed-service.yaml"
+COMPOSE_BASE="${ROOT}/test/integration/cluster_java/docker/compose.yaml"
+COMPOSE_OVERLAY="${ROOT}/test/integration/cluster_java/docker/compose.mixed-service.yaml"
 COMPOSE_PROJECT="heron-cluster-mixed-service-$$"
-# SMOKE_NAME must match Dockerfile mixed-service-runtime -test.run.
+# SMOKE_NAME must match the compose.mixed-service.yaml go command -test.run.
 SMOKE_NAME="TestClusterMixedServiceSmoke"
 COMPOSE_CMD=(
 	docker compose

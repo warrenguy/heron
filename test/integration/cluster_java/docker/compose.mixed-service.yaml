@@ -8,8 +8,6 @@ services:
       HERON_CLUSTER_EXTERNAL_SERVICE: "1"
 
   go:
-    image: cluster-java-go-mixed-service
-    build:
-      target: mixed-service-runtime
+    command: ["-test.timeout=180s", "-test.run", "^TestClusterMixedServiceSmoke$$"]
     environment:
       HERON_CLUSTER_MIXED_SERVICE_COMPOSE: "1"

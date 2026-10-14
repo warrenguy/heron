@@ -17,6 +17,6 @@ WORKDIR /app
 COPY --from=builder \
 	/src/test/integration/cluster_java/target/heron-cluster-java-*.jar \
 	./heron-cluster-java.jar
-COPY --chmod=+x docker/cluster_java/java/entrypoint-cluster.sh ./entrypoint-cluster.sh
+COPY --chmod=+x test/integration/cluster_java/docker/java/entrypoint-cluster.sh ./entrypoint-cluster.sh
 
 ENTRYPOINT ["./entrypoint-cluster.sh"]

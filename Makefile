@@ -55,7 +55,7 @@ UNIT_TEST_PKGS := $(shell go list -tags=bench,$(UNIT_TEST_TAGS) -f \
 # Non-generated files only (grep -L drops DO NOT EDIT headers); $$ defers
 # expansion to the recipe shell so the list is fresh per run.
 GO_SOURCES := $$(grep -rl --include='*.go' -L 'DO NOT EDIT' \
-	--exclude-dir=docker --exclude-dir=vendor .)
+	--exclude-dir=vendor .)
 SHELL_SCRIPTS := $$(find . -name '*.sh' -type f ! -path './.git/*' ! -path './vendor/*')
 
 # Per-package go test deadline (replaces go default 10m on hung tests).
@@ -440,7 +440,7 @@ contract-oracles: ## All four contract oracle suites (mvn + go)
 
 $(eval $(call mvn-integration-unit,golden-fixtures,$(GOLDEN_FIXTURES_POM)))
 
-bin/aeronmd: specs/versions.yaml docker/aeronmd/Dockerfile scripts/build-aeronmd.sh
+bin/aeronmd: specs/versions.yaml test/integration/docker/aeronmd/Dockerfile scripts/build-aeronmd.sh
 	./scripts/build-aeronmd.sh
 
 # Live Archive suite lives only under test/integration/cluster_archive
@@ -461,8 +461,8 @@ bin/heron-archive-java.jar: $(shell find test/integration/archive_java/src -type
 	./scripts/build-archive-jar.sh
 
 .PHONY: aeronmd-compose-image
-aeronmd-compose-image: bin/aeronmd docker/aeronmd/Dockerfile ## Package bin/aeronmd for compose smokes
-	docker build -f docker/aeronmd/Dockerfile --target runtime-bin -t java-interop-aeronmd .
+aeronmd-compose-image: bin/aeronmd test/integration/docker/aeronmd/Dockerfile ## Package bin/aeronmd for compose smokes
+	docker build -f test/integration/docker/aeronmd/Dockerfile --target runtime-bin -t java-interop-aeronmd .
 
 aeronmd: bin/aeronmd ## Build C media driver binary
 

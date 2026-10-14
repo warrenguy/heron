@@ -10,13 +10,12 @@
 # (compose.failover.yaml). force-recreate + EXIT/INT/TERM traps clean this
 # project only so concurrent smokes stay isolated.
 #
-# Outer timeout 430s: 400s test budget plus compose teardown; see Dockerfile
-# failover-runtime CMD and wait block below.
+# Outer timeout 430s: 400s test budget plus compose teardown (see wait block below).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE_BASE="${ROOT}/docker/cluster_java/compose.yaml"
-COMPOSE_FAILOVER="${ROOT}/docker/cluster_java/compose.failover.yaml"
+COMPOSE_BASE="${ROOT}/test/integration/cluster_java/docker/compose.yaml"
+COMPOSE_FAILOVER="${ROOT}/test/integration/cluster_java/docker/compose.failover.yaml"
 # Unique project per process; go kill path must match -p and compose name.
 export HERON_COMPOSE_PROJECT="heron-cluster-java-failover-$$"
 COMPOSE_CMD=(

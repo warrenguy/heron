@@ -17,6 +17,6 @@ WORKDIR /app
 COPY --from=builder \
 	/src/test/integration/archive_java/target/heron-archive-java-*.jar \
 	./heron-archive-java.jar
-COPY --chmod=+x docker/archive_java/java/entrypoint-archive.sh ./entrypoint-archive.sh
+COPY --chmod=+x test/integration/archive_java/docker/java/entrypoint-archive.sh ./entrypoint-archive.sh
 
 ENTRYPOINT ["./entrypoint-archive.sh"]

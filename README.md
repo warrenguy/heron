@@ -95,7 +95,7 @@ sessions offer and claim ingress, poll egress with fragment assembly, and
 recover across leader changes. An external cluster stack is required:
 
 - [`examples/cluster-echo-client`](examples/cluster-echo-client/) - IPC echo
-  against `docker/cluster_java`
+  against `test/integration/cluster_java/docker`
 - [`examples/cluster-auction-client`](examples/cluster-auction-client/) - UDP
   auction duty cycle against the upstream Java cluster
 
