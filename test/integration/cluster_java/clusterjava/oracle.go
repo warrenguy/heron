@@ -48,7 +48,7 @@ const (
 
 const (
 	ComposeAeronDir = "/dev/shm/aeron"
-	// ComposeDir is where failover-runtime copies compose.yaml overlays in-container.
+	// ComposeDir is where the failover-runtime stage copies the compose files.
 	ComposeDir = "/app/compose"
 	BaseDir    = "/tmp/heron-cluster-0"
 )

@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=SCRIPTDIR/lib/versions.sh
 source "${ROOT}/scripts/lib/versions.sh"
 VERSIONS="${ROOT}/specs/versions.yaml"
-DOCKERFILE="${ROOT}/docker/aeronmd/Dockerfile"
+DOCKERFILE="${ROOT}/test/integration/docker/aeronmd/Dockerfile"
 OUT="${ROOT}/bin/aeronmd"
 IMAGE="heron-aeronmd:build"
 
@@ -17,7 +17,7 @@ command -v docker >/dev/null || {
 
 require_aeron_versions "${VERSIONS}" || exit 1
 
-# Must match docker/aeronmd/Dockerfile builder stage output path.
+# Must match the builder stage output path in DOCKERFILE.
 CONTAINER_BIN="/src/aeron/cppbuild/Release/binaries/${AERON_DRIVER_ARTIFACT}"
 
 echo "heron: building aeronmd (ref ${AERON_REF})"

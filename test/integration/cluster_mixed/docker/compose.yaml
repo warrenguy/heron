@@ -91,8 +91,8 @@ services:
   cluster-0:
     image: cluster-java-cluster
     build:
-      context: ../..
-      dockerfile: docker/cluster_java/java/Dockerfile
+      context: ../../../..
+      dockerfile: test/integration/cluster_java/docker/java/Dockerfile
     user: *app-user
     hostname: cluster-0
     networks:
@@ -133,8 +133,8 @@ services:
   archive-go:
     image: archive-java-archive
     build:
-      context: ../..
-      dockerfile: docker/archive_java/java/Dockerfile
+      context: ../../../..
+      dockerfile: test/integration/archive_java/docker/java/Dockerfile
     user: *app-user
     hostname: archive-go
     environment:
@@ -155,6 +155,40 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
+
+  # Go member 2. Shares the aeronmd network namespace: the member-2 endpoints
+  # on HERON_CLUSTER_MIXED_IP2 must listen in the C driver process.
+  #
+  # Volumes stay independent. The overlay sets command, gate env, and start order.
+  go:
+    image: cluster-mixed-go
+    build:
+      context: ../../../..
+      dockerfile: test/integration/docker/go/Dockerfile
+      args:
+        - GO_VERSION
+        - SUITE=cluster_mixed
+    user: *app-user
+    network_mode: "service:aeronmd"
+    depends_on:
+      aeronmd:
+        condition: service_healthy
+      archive-go:
+        condition: service_healthy
+    environment:
+      <<: *aeron-term-env
+      AERON_DIR: /dev/shm/aeron-go
+      # Member list matches the Java peers.
+      HERON_CLUSTER_HOSTNAMES: ${HERON_CLUSTER_HOSTNAMES:-${HERON_CLUSTER_MIXED_IP0:-172.30.0.10},${HERON_CLUSTER_MIXED_IP1:-172.30.0.11},${HERON_CLUSTER_MIXED_IP2:-172.30.0.12}}
+    volumes:
+      - aeron-media:/dev/shm
+      - cluster-data-2:/tmp/heron-cluster-2
+    healthcheck:
+      interval: 1s
+      timeout: 5s
+      retries: 60
+      start_period: 5s
+      test: ["CMD-SHELL", "test -f /dev/shm/heron-mixed/member-ready"]
 
 volumes:
   aeron-media:

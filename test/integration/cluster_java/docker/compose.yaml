@@ -13,8 +13,8 @@ services:
   cluster:
     image: cluster-java-cluster
     build:
-      context: ../..
-      dockerfile: docker/cluster_java/java/Dockerfile
+      context: ../../../..
+      dockerfile: test/integration/cluster_java/docker/java/Dockerfile
     user: *app-user
     environment: *aeron-env
     volumes: *aeron-vols
@@ -29,11 +29,12 @@ services:
   go:
     image: cluster-java-go
     build:
-      context: ../..
-      dockerfile: docker/cluster_java/go/Dockerfile
-      target: runtime
+      context: ../../../..
+      dockerfile: test/integration/docker/go/Dockerfile
       args:
-        GO_VERSION: ${GO_VERSION:-1.26.4}
+        - GO_VERSION
+        - SUITE=cluster_java
+    command: ["-test.timeout=300s", "-test.run", "^TestCluster(Connect|Echo)Smoke$$"]
     user: *app-user
     depends_on:
       cluster:
@@ -44,7 +45,7 @@ services:
     volumes: *aeron-vols
 
 volumes:
-  # size=256m matches docker/java-interop at 64KiB pinned terms (3 term buffers per log).
+  # size=256m matches the java_interop compose at 64KiB pinned terms (3 term buffers per log).
   # Cluster embeds MediaDriver; term length is pinned in entrypoint/ClusterConfig, not
   # by AERON_* env alone.
   aeron-media:

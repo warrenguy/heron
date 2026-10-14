@@ -1,0 +1,18 @@
+# Every image under test/integration builds with the repo root as context.
+*
+!go.mod
+!go.sum
+!**/*.go
+# go:embed inputs.
+!**/fixtures
+!test/integration/*/pom.xml
+!test/integration/*/src
+!test/integration/*/docker/java
+!bin/aeronmd
+!test/integration/cluster_java/docker/compose.yaml
+!test/integration/cluster_java/docker/compose.failover.yaml
+# Nested checkouts and local caches would match **/*.go.
+.cache
+.claude
+vendor
+worktrees

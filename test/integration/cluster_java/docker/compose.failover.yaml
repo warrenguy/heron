@@ -54,8 +54,8 @@ services:
   cluster-0:
     <<: *cluster-member
     build:
-      context: ../..
-      dockerfile: docker/cluster_java/java/Dockerfile
+      context: ../../../..
+      dockerfile: test/integration/cluster_java/docker/java/Dockerfile
     hostname: cluster-0
     environment:
       <<: *cluster-env
@@ -115,11 +115,8 @@ services:
     <<: *failover-service
     image: cluster-java-go-failover
     build:
-      context: ../..
-      dockerfile: docker/cluster_java/go/Dockerfile
       target: failover-runtime
-      args:
-        GO_VERSION: ${GO_VERSION:-1.26.4}
+    command: ["-test.timeout=400s", "-test.run", "^TestClusterFailoverSmoke$$"]
     group_add:
       - "${DOCKER_GID:-999}"
     depends_on: !override

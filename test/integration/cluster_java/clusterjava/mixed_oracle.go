@@ -26,7 +26,7 @@ const (
 
 	// MixedSmokeNameJavaLeader is the TestClusterMixedJavaLeader function name.
 	//
-	// Dockerfile -test.run, scripts/cluster-mixed-smoke.sh SMOKE_NAME, and
+	// Compose overlay -test.run, scripts/cluster-mixed-smoke.sh SMOKE_NAME, and
 	// MixedRequiredSmoke must use this same literal. A rename that misses a site
 	// must fail the run rather than pass with no proof completed.
 	MixedSmokeNameJavaLeader = "TestClusterMixedJavaLeader"

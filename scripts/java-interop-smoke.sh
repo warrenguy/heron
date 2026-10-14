@@ -10,7 +10,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE="${ROOT}/docker/java-interop/compose.yaml"
+COMPOSE="${ROOT}/test/integration/java_interop/docker/compose.yaml"
 # Unique project per process: concurrent smokes; no shared containers/volumes.
 COMPOSE_PROJECT="heron-java-interop-$$"
 COMPOSE_CMD=(

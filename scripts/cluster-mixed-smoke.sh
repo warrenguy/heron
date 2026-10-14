@@ -21,7 +21,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE_DIR="${ROOT}/docker/cluster_mixed"
+COMPOSE_DIR="${ROOT}/test/integration/cluster_mixed/docker"
 COMPOSE_BASE="${COMPOSE_DIR}/compose.yaml"
 
 usage() {
@@ -44,14 +44,12 @@ OVERLAY_ARG="$1"
 case "${OVERLAY_ARG}" in
 java-leader)
 	OVERLAY_FILE="${COMPOSE_DIR}/compose.java-leader.yaml"
-	GO_SERVICE="go-java-leader"
 	SMOKE_NAME="TestClusterMixedJavaLeader"
 	OCTET_BASE=1
 	OCTET_SPAN=125
 	;;
 go-leader)
 	OVERLAY_FILE="${COMPOSE_DIR}/compose.go-leader.yaml"
-	GO_SERVICE="go-go-leader"
 	SMOKE_NAME="TestClusterMixedGoLeader"
 	OCTET_BASE=126
 	OCTET_SPAN=125
@@ -120,10 +118,10 @@ trap 'exit 143' TERM
 # cluster-1 reuses the cluster-0 image. aeronmd uses the pre-tagged image.
 #
 # Build stays outside the outer timeout. Image build wall clock varies.
-compose build cluster-0 archive-go "${GO_SERVICE}"
+compose build cluster-0 archive-go go
 
 smoke_logs() {
-	compose logs --no-color aeronmd archive-go cluster-0 cluster-1 "${GO_SERVICE}"
+	compose logs --no-color aeronmd archive-go cluster-0 cluster-1 go
 }
 
 # True when Docker IPAM refused the subnet because another network holds it.
@@ -158,9 +156,9 @@ run_smoke() {
 	fi
 
 	if command -v timeout >/dev/null 2>&1; then
-		timeout "${OUTER_TIMEOUT_S}" "${COMPOSE_CMD[@]}" wait "${GO_SERVICE}"
+		timeout "${OUTER_TIMEOUT_S}" "${COMPOSE_CMD[@]}" wait go
 	else
-		compose wait "${GO_SERVICE}"
+		compose wait go
 	fi
 }
 

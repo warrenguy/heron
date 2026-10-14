@@ -1,0 +1,26 @@
+# Overlay: Java appointed leader (member 0). Go member opens first.
+# Use with: docker compose -f compose.yaml -f compose.java-leader.yaml
+#
+# Start order:
+# 1. aeronmd healthy
+# 2. archive-go healthy
+# 3. go opens module and writes readiness file
+# 4. Java peers start
+# Two Java members must not canvass while the Go member is absent.
+
+services:
+  go:
+    command: ["-test.timeout=120s", "-test.run", "^TestClusterMixedJavaLeader$$"]
+    environment:
+      HERON_CLUSTER_MIXED_JAVA_LEADER_COMPOSE: "1"
+
+  # Start Java only after Go readiness. Base file has no depends_on for these.
+  cluster-0:
+    depends_on:
+      go:
+        condition: service_healthy
+
+  cluster-1:
+    depends_on:
+      go:
+        condition: service_healthy

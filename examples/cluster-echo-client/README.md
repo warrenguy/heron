@@ -2,7 +2,7 @@
 
 Minimal cluster client: `client.Connect`, ingress offer, `SpinOnce` until Java
 `EchoService` echoes the message. Default topology is IPC against a single-node
-`docker/cluster_java` cluster.
+`test/integration/cluster_java/docker` cluster.
 
 ## Prerequisites
 
@@ -32,8 +32,8 @@ From repo root:
 ```bash
 HERON_COMPOSE_UID=$(id -u) HERON_COMPOSE_GID=$(id -g) \
 docker compose \
-  -f docker/cluster_java/compose.yaml \
-  -f docker/cluster_java/compose.host.yaml \
+  -f test/integration/cluster_java/docker/compose.yaml \
+  -f test/integration/cluster_java/docker/compose.host.yaml \
   up --build -d --wait cluster
 ```
 
@@ -61,8 +61,8 @@ match the container.
 
 ```bash
 docker compose \
-  -f docker/cluster_java/compose.yaml \
-  -f docker/cluster_java/compose.host.yaml \
+  -f test/integration/cluster_java/docker/compose.yaml \
+  -f test/integration/cluster_java/docker/compose.host.yaml \
   down
 ```
 

@@ -162,7 +162,7 @@ jobs:
         id: aeronmd-cache
         with:
           path: bin/aeronmd
-          key: aeronmd-${{ env.GOARCH }}-${{ hashFiles('specs/versions.yaml', 'docker/aeronmd/Dockerfile', 'scripts/build-aeronmd.sh') }}
+          key: aeronmd-${{ env.GOARCH }}-${{ hashFiles('specs/versions.yaml', 'test/integration/docker/aeronmd/Dockerfile', 'scripts/build-aeronmd.sh') }}
 
       - &aeronmd-cache-touch-step
         name: Refresh aeronmd mtime
