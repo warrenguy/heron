@@ -13,8 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
 const (
@@ -91,6 +93,77 @@ func (h *bagCommitHost) PublishCommitPosition(commitPosition, leadershipTermID i
 	}
 }
 
+// rapidRecordingLog implements election.RecordingLogLookup over a fixed entry
+// slice.
+type rapidRecordingLog struct {
+	entries []recordinglog.Entry
+}
+
+func (l *rapidRecordingLog) FindTermEntry(leadershipTermID int64) *recordinglog.Entry {
+	for i := range l.entries {
+		if l.entries[i].LeadershipTermID == leadershipTermID {
+			return &l.entries[i]
+		}
+	}
+	return nil
+}
+
+func (l *rapidRecordingLog) truncate(leadershipTermID, logPosition int64) {
+	if entry := l.FindTermEntry(leadershipTermID); entry != nil {
+		entry.LogPosition = logPosition
+	}
+}
+
+// rapidLogHost adds a recording log and a member quorum to bagCommitHost.
+//
+// TruncateLogEntry also lowers the term entry, the prepare return and the
+// follower join position, as an archive truncation does. Quorum and leader
+// position match HostAdapter.
+type rapidLogHost struct {
+	*bagCommitHost
+	log                      *rapidRecordingLog
+	agent                    *recordingAgentHandler
+	members                  []*election.Member
+	thisMember               *election.Member
+	ranked                   []int64
+	leaderHeartbeatTimeoutNs int64
+}
+
+func (h *rapidLogHost) TruncateLogEntry(leadershipTermID, logPosition int64) error {
+	if err := h.bagCommitHost.TruncateLogEntry(leadershipTermID, logPosition); err != nil {
+		return err
+	}
+	h.log.truncate(leadershipTermID, logPosition)
+	h.agent.appendPositionReturn = min(h.agent.appendPositionReturn, logPosition)
+	h.followerLogJoinPosition = min(h.followerLogJoinPosition, logPosition)
+	return nil
+}
+
+func (h *rapidLogHost) QuorumPositionBoundedByLeaderLog(appendPosition, nowNs int64) int64 {
+	return min(
+		election.QuorumPosition(h.members, h.ranked, nowNs, h.leaderHeartbeatTimeoutNs),
+		appendPosition,
+	)
+}
+
+func (h *rapidLogHost) UpdateLeaderPosition(nowNs, appendPosition, _ int64) int {
+	h.thisMember.LogPosition = appendPosition
+	h.thisMember.TimeOfLastAppendPositionNs = nowNs
+	return 0
+}
+
+// rapidBindOption configures one node's host at bind time.
+type rapidBindOption func(*rapidBindOptions)
+
+type rapidBindOptions struct {
+	recordingLog *rapidRecordingLog
+}
+
+// withRapidRecordingLog wraps the node's host in rapidLogHost over log.
+func withRapidRecordingLog(log *rapidRecordingLog) rapidBindOption {
+	return func(o *rapidBindOptions) { o.recordingLog = log }
+}
+
 // crashSnapshot holds election log identity restored on mid-run restart.
 type crashSnapshot struct {
 	leadershipTerm    int64
@@ -106,6 +179,7 @@ type rapidNode struct {
 	maxCandidateSeen int64
 	election         *election.Election
 	host             *recordingElectionHost
+	publisher        *election.SbePublisher
 	clock            *FakeClock
 	epochClock       *FakeEpochClock
 	cfg              election.ElectionConfig
@@ -115,6 +189,8 @@ type rapidNode struct {
 	// crash alongside live=false, so a dead node always has it and restartNode
 	// dereferences without a nil guard.
 	crashSnap *crashSnapshot
+	// bindOptions carry over to restartNode.
+	bindOptions []rapidBindOption
 }
 
 type winEdgeObserver struct {
@@ -186,7 +262,8 @@ type electionRapidCluster struct {
 	// blocked[from,to]: hold-until-open at deliver (publish always enqueues).
 	blocked    map[[2]int32]bool
 	leaderWins map[int64]int32
-	// edgeFail holds the first self-win transition invariant failure.
+	// edgeFail holds the first invariant failure from a self-win transition or
+	// a NewLeadershipTerm send.
 	edgeFail string
 	// crashWeighted selects rapidActions crashWeight over weight.
 	crashWeighted bool
@@ -213,26 +290,12 @@ func newElectionRapidCluster(t *testing.T, n int) *electionRapidCluster {
 	t.Helper()
 	require.GreaterOrEqual(t, n, 2)
 
-	c := &electionRapidCluster{
-		t:          t,
-		nodes:      make([]*rapidNode, n),
-		blocked:    make(map[[2]int32]bool),
-		leaderWins: make(map[int64]int32),
-	}
-
+	c := newRapidClusterShell(t, n)
 	for id := range n {
 		c.nodes[id] = c.constructNode(int32(id), n)
 	}
 
-	cfg := c.nodes[0].cfg
-	c.clockDeltaGen = rapid.SampledFrom([]int64{
-		cfg.ElectionStatusIntervalNs,
-		cfg.ElectionTimeoutNs / 4,
-		cfg.ElectionTimeoutNs,
-		cfg.LeaderHeartbeatTimeoutNs,
-		cfg.StartupCanvassTimeoutNs,
-		cfg.LeaderHeartbeatIntervalNs,
-	})
+	c.clockDeltaGen = rapidClockDeltaGen(c.nodes[0].cfg)
 
 	// Drive every node through Init so durable candidate terms load before tracking.
 	// winEdgeObserver baselined initLoaded/maxCandidateSeen on leave-Init.
@@ -242,6 +305,27 @@ func newElectionRapidCluster(t *testing.T, n int) *electionRapidCluster {
 		require.True(t, node.initLoaded)
 	}
 	return c
+}
+
+// newRapidClusterShell returns a cluster with n empty node slots.
+func newRapidClusterShell(t *testing.T, n int) *electionRapidCluster {
+	return &electionRapidCluster{
+		t:          t,
+		nodes:      make([]*rapidNode, n),
+		blocked:    make(map[[2]int32]bool),
+		leaderWins: make(map[int64]int32),
+	}
+}
+
+func rapidClockDeltaGen(cfg election.ElectionConfig) *rapid.Generator[int64] {
+	return rapid.SampledFrom([]int64{
+		cfg.ElectionStatusIntervalNs,
+		cfg.ElectionTimeoutNs / 4,
+		cfg.ElectionTimeoutNs,
+		cfg.LeaderHeartbeatTimeoutNs,
+		cfg.StartupCanvassTimeoutNs,
+		cfg.LeaderHeartbeatIntervalNs,
+	})
 }
 
 // rapidNodeConfig is the one config shape for first boot and restart.
@@ -264,12 +348,24 @@ func rapidNodeConfig(
 
 func (c *electionRapidCluster) constructNode(id int32, n int) *rapidNode {
 	c.t.Helper()
+	cfg := rapidNodeConfig(id, true, rapidSeedTerm, rapidSeedLogPos, rapidSeedAppendPos)
+	return c.constructNodeWithConfig(id, n, cfg)
+}
+
+// constructNodeWithConfig builds a live node from cfg. The agent's prepare
+// returns cfg.AppendPosition.
+func (c *electionRapidCluster) constructNodeWithConfig(
+	id int32,
+	n int,
+	cfg election.ElectionConfig,
+	opts ...rapidBindOption,
+) *rapidNode {
+	c.t.Helper()
 
 	memberPtrs := rapidClusterMemberPtrs(n)
 	_, _, clock, epochClock, nodeState := electionDepsForMemberPtrs(
 		c.t, memberPtrs, id,
 	)
-	cfg := rapidNodeConfig(id, true, rapidSeedTerm, rapidSeedLogPos, rapidSeedAppendPos)
 
 	peerIDs := make([]int32, 0, n-1)
 	for i := range n {
@@ -287,7 +383,7 @@ func (c *electionRapidCluster) constructNode(id int32, n int) *rapidNode {
 		peerIDs:    peerIDs,
 	}
 
-	c.bindElection(c.t, node, cfg, memberPtrs, rapidSeedAppendPos)
+	c.bindElection(c.t, node, cfg, memberPtrs, cfg.AppendPosition, opts...)
 	return node
 }
 
@@ -310,7 +406,14 @@ func (c *electionRapidCluster) bindElection(
 	cfg election.ElectionConfig,
 	memberPtrs []*election.Member,
 	appendReturn int64,
+	opts ...rapidBindOption,
 ) {
+	node.bindOptions = opts
+	var options rapidBindOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
+
 	host, agent := newRecordingHostAndAgent(
 		node.clock, consensus.RoleFollower, cfg.LogPosition, appendReturn,
 	)
@@ -320,33 +423,72 @@ func (c *electionRapidCluster) bindElection(
 
 	fromID := node.id
 	pub.SentHandler = func(msg election.SentMessage) {
+		c.checkNewLeadershipTermSend(fromID, host.Role(), msg)
 		c.enqueue(fromID, msg)
 	}
 
 	thisMember := memberPtrForID(memberPtrs, node.id)
 	require.NotNil(tb, thisMember, "member id %d not in cluster", node.id)
 
+	commitHost := &bagCommitHost{
+		recordingElectionHost: host,
+		publisher:             pub,
+		leaderID:              node.id,
+		peerIDs:               node.peerIDs,
+	}
+	var electionHost election.ElectionHost = commitHost
+	var lookup election.RecordingLogLookup
+	if log := options.recordingLog; log != nil {
+		lookup = log
+		electionHost = &rapidLogHost{
+			bagCommitHost:            commitHost,
+			log:                      log,
+			agent:                    agent,
+			members:                  memberPtrs,
+			thisMember:               thisMember,
+			ranked:                   make([]int64, election.QuorumThreshold(len(memberPtrs))),
+			leaderHeartbeatTimeoutNs: cfg.LeaderHeartbeatTimeoutNs,
+		}
+	}
+
 	deps := election.ElectionDeps{
-		Handler: agent,
-		Host: &bagCommitHost{
-			recordingElectionHost: host,
-			publisher:             pub,
-			leaderID:              node.id,
-			peerIDs:               node.peerIDs,
-		},
-		Publisher:      pub,
-		NanoClock:      node.clock.TimeNs,
-		EpochClock:     node.epochClock.TimeMs,
-		NodeState:      node.nodeState,
-		Members:        memberPtrs,
-		ThisMember:     thisMember,
-		NominationRand: func() float64 { return 0 },
-		StateObserver:  obs,
+		Handler:            agent,
+		Host:               electionHost,
+		RecordingLogLookup: lookup,
+		Publisher:          pub,
+		NanoClock:          node.clock.TimeNs,
+		EpochClock:         node.epochClock.TimeMs,
+		NodeState:          node.nodeState,
+		Members:            memberPtrs,
+		ThisMember:         thisMember,
+		NominationRand:     func() float64 { return 0 },
+		StateObserver:      obs,
 	}
 
 	node.cfg = cfg
 	node.host = host
+	node.publisher = pub
 	node.election = election.NewElection(cfg, deps)
+}
+
+func (c *electionRapidCluster) checkNewLeadershipTermSend(
+	from int32,
+	role consensus.Role,
+	msg election.SentMessage,
+) {
+	if msg.TemplateID != uint16(clusterwire.NewLeadershipTermSbeTemplateID) {
+		return
+	}
+	fields := msg.Fields.(codecs.NewLeadershipTermFields)
+	if fields.LogLeadershipTermID > fields.LeadershipTermID {
+		c.noteEdgeFail(
+			"NewLeadershipTerm log term %d above leadership term %d member=%d",
+			fields.LogLeadershipTermID, fields.LeadershipTermID, from,
+		)
+	}
+	if role != consensus.RoleLeader {
+		c.noteEdgeFail("NewLeadershipTerm from role %v member=%d", role, from)
+	}
 }
 
 func (c *electionRapidCluster) enqueue(from int32, msg election.SentMessage) {
@@ -445,7 +587,7 @@ func (c *electionRapidCluster) restartNode(tb require.TestingT, n *rapidNode) {
 	cfg := rapidNodeConfig(n.id, false, snap.leadershipTerm, snap.logPosition, snap.appendPosition)
 
 	// Fresh host/agent/publisher; clocks stay forward-only on the node.
-	c.bindElection(tb, n, cfg, memberPtrs, snap.appendPosition)
+	c.bindElection(tb, n, cfg, memberPtrs, snap.appendPosition, n.bindOptions...)
 
 	// NewElection sets logLeadershipTermID = cfg.LeadershipTermID. Restore the
 	// pre-crash log term so canvass/vote CompareLog identity matches crash.
@@ -550,18 +692,28 @@ func (c *electionRapidCluster) actAdvanceClock(rt *rapid.T) {
 }
 
 func (c *electionRapidCluster) actDeliverOne(rt *rapid.T) {
-	if len(c.bag) == 0 {
-		rt.Skip("bag empty")
+	if !c.deliverDrawn(rt, "bagIdx") {
+		rt.Skip("bag empty, edge blocked or target dead")
 	}
-	idx := rapid.IntRange(0, len(c.bag)-1).Draw(rt, "bagIdx")
+}
+
+// deliverDrawn delivers the bag message at an index drawn under label.
+// Returns false when the bag is empty or the message is held.
+func (c *electionRapidCluster) deliverDrawn(rt *rapid.T, label string) bool {
+	rt.Helper()
+	if len(c.bag) == 0 {
+		return false
+	}
+	idx := rapid.IntRange(0, len(c.bag)-1).Draw(rt, label)
 	msg := c.bag[idx]
 	if c.messageHeld(msg) {
-		rt.Skip("edge blocked or target dead")
+		return false
 	}
 
 	// Remove before deliver: delivery can enqueue and evict bag[0] at cap.
 	c.bag = append(c.bag[:idx], c.bag[idx+1:]...)
 	c.deliver(msg)
+	return true
 }
 
 func (c *electionRapidCluster) actDeliverAll(rt *rapid.T) {

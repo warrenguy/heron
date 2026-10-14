@@ -109,6 +109,22 @@ type electionFixture struct {
 	cfg        election.ElectionConfig
 }
 
+// useRecordingHost sets a recording host and agent in role on deps. Positions
+// come from cfg.
+func useRecordingHost(
+	deps *election.ElectionDeps,
+	clock *FakeClock,
+	cfg election.ElectionConfig,
+	role consensus.Role,
+) {
+	deps.Host, deps.Handler = newRecordingHostAndAgent(
+		clock,
+		role,
+		cfg.LogPosition,
+		cfg.AppendPosition,
+	)
+}
+
 func newElectionFixture(t *testing.T, opts ...fixtureOption) *electionFixture {
 	t.Helper()
 

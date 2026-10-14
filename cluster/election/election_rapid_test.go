@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
@@ -50,6 +51,260 @@ func TestElectionSafety_clusterStateMachine_rapid(t *testing.T) {
 // checks candidate-term monotonicity plus durable propose-max.
 func TestElectionSafety_crashPreservesCandidateTerm_rapid(t *testing.T) {
 	runElectionSafetyPBT(t, true)
+}
+
+const (
+	rejoinLeaderID int32 = 0
+	rejoinMemberID int32 = 1
+	rejoinVoterID  int32 = 2
+)
+
+// divergentRejoin is one drawn rejoin shape. The returning member holds log
+// term missedTermID-1. Its log runs divergentTail past missedBase. The leader
+// and the voter hold the missed term from missedBase to missedBase plus
+// missedLength.
+type divergentRejoin struct {
+	missedTermID   int64
+	missedBase     int64
+	missedLength   int64
+	divergentTail  int64
+	missedTermOpen bool
+}
+
+func (d divergentRejoin) missedEnd() int64 { return d.missedBase + d.missedLength }
+
+func (d divergentRejoin) memberLogTermID() int64 { return d.missedTermID - 1 }
+
+func drawDivergentRejoin(rt *rapid.T) divergentRejoin {
+	rt.Helper()
+	zeroOrLength := rapid.OneOf(rapid.Just(int64(0)), rapid.Int64Range(1, 1<<12))
+	return divergentRejoin{
+		missedTermID:   rapid.Int64Range(1, 32).Draw(rt, "missedTermID"),
+		missedBase:     rapid.Int64Range(0, 1<<16).Draw(rt, "missedBase"),
+		missedLength:   zeroOrLength.Draw(rt, "missedLength"),
+		divergentTail:  zeroOrLength.Draw(rt, "divergentTail"),
+		missedTermOpen: rapid.Bool().Draw(rt, "missedTermOpen"),
+	}
+}
+
+// newDivergentRejoinCluster builds the leader and the voter on the missed term
+// and the returning member on the term before it. The returning member starts
+// down.
+func newDivergentRejoinCluster(
+	t *testing.T,
+	d divergentRejoin,
+) (*electionRapidCluster, *rapidRecordingLog) {
+	t.Helper()
+
+	c := newRapidClusterShell(t, rapidClusterSize)
+
+	missedEnd := d.missedEnd()
+	if d.missedTermOpen {
+		missedEnd = election.NullPosition
+	}
+	for _, id := range []int32{rejoinLeaderID, rejoinVoterID} {
+		log := &rapidRecordingLog{entries: []recordinglog.Entry{
+			{LeadershipTermID: d.memberLogTermID(), LogPosition: d.missedBase},
+			{
+				LeadershipTermID:    d.missedTermID,
+				TermBaseLogPosition: d.missedBase,
+				LogPosition:         missedEnd,
+			},
+		}}
+		cfg := rapidNodeConfig(id, false, d.missedTermID, d.missedEnd(), d.missedEnd())
+		c.nodes[id] = c.constructNodeWithConfig(
+			id,
+			rapidClusterSize,
+			cfg,
+			withRapidRecordingLog(log),
+		)
+	}
+
+	memberLog := &rapidRecordingLog{entries: []recordinglog.Entry{
+		{LeadershipTermID: d.memberLogTermID(), LogPosition: election.NullPosition},
+	}}
+	memberCfg := rapidNodeConfig(
+		rejoinMemberID,
+		false,
+		d.memberLogTermID(),
+		d.missedBase,
+		d.missedBase+d.divergentTail,
+	)
+	member := c.constructNodeWithConfig(
+		rejoinMemberID,
+		rapidClusterSize,
+		memberCfg,
+		withRapidRecordingLog(memberLog),
+	)
+	member.live = false
+	c.nodes[rejoinMemberID] = member
+
+	c.clockDeltaGen = rapidClockDeltaGen(memberCfg)
+	return c, memberLog
+}
+
+func (c *electionRapidCluster) tickUntil(
+	rt *rapid.T,
+	n *rapidNode,
+	want election.ElectionState,
+	maxTicks int,
+) {
+	rt.Helper()
+	for range maxTicks {
+		if n.election.State() == want {
+			return
+		}
+		c.tickOne(n)
+	}
+	require.Equal(rt, want, n.election.State(), "member=%d", n.id)
+}
+
+// electLeaderOnVoterThenCrashVoter drives the leader to LEADER_READY on the
+// voter's vote. The voter crashes before it learns the new term.
+func (c *electionRapidCluster) electLeaderOnVoterThenCrashVoter(rt *rapid.T) {
+	rt.Helper()
+	leader := c.nodes[rejoinLeaderID]
+	voter := c.nodes[rejoinVoterID]
+	cfg := leader.cfg
+
+	// Leave INIT, then exchange canvass positions.
+	c.tickAll()
+	c.tickAll()
+	c.deliverAllHolding()
+
+	c.advanceClock(cfg.LeaderHeartbeatTimeoutNs)
+	c.tickUntil(rt, leader, election.ElectionStateCandidateBallot, 4)
+	c.tickOne(leader)
+
+	// Deliver the RequestVote, then the vote.
+	c.deliverAllHolding()
+	require.Equal(rt, election.ElectionStateFollowerBallot, voter.election.State())
+	c.deliverAllHolding()
+	c.crashNode(voter)
+
+	c.advanceClock(cfg.ElectionTimeoutNs)
+	c.tickUntil(rt, leader, election.ElectionStateLeaderReady, 8)
+}
+
+// publishSettledAppendPositions stands in for the settled follower agent. Each
+// live follower in CLOSED sends its AppendPosition to its leader.
+func (c *electionRapidCluster) publishSettledAppendPositions() {
+	for _, n := range c.nodes {
+		if !n.live || n.election.State() != election.ElectionStateClosed {
+			continue
+		}
+		leader := n.election.Leader()
+		if leader == nil || leader.ID == n.id {
+			continue
+		}
+		n.publisher.AppendPosition(
+			election.PublicationTarget{MemberID: leader.ID},
+			codecs.AppendPositionFields{
+				LeadershipTermID: n.election.LeadershipTermID(),
+				LogPosition:      n.election.AppendPosition(),
+				FollowerMemberID: n.id,
+			},
+		)
+	}
+}
+
+func (c *electionRapidCluster) runRejoinPrefix(rt *rapid.T) {
+	rt.Helper()
+	steps := rapid.IntRange(0, 64).Draw(rt, "prefixSteps")
+	for range steps {
+		switch rapid.IntRange(0, 4).Draw(rt, "prefixAction") {
+		case 0:
+			c.tickAll()
+		case 1:
+			id := rapid.IntRange(0, len(c.nodes)-1).Draw(rt, "prefixTickNode")
+			c.tickOne(c.nodes[id])
+		case 2:
+			c.deliverDrawn(rt, "prefixBagIdx")
+		case 3:
+			c.deliverAllHolding()
+		default:
+			c.advanceClock(c.drawClockDelta(rt))
+		}
+	}
+}
+
+// TestElection_divergentExLeaderRejoin_rapid checks a member that returns on
+// an older log term to a leader waiting in LEADER_READY.
+//
+// The leader wins on one vote. The voter crashes before it joins. The member
+// returns with a drawn divergent tail past the missed term's base. A drawn
+// prefix of ticks, deliveries and clock steps runs, then a drain with no
+// partition, crash or restart.
+func TestElection_divergentExLeaderRejoin_rapid(t *testing.T) {
+	checks := 100
+	if testing.Short() {
+		checks = 20
+	}
+
+	rapidCheck(t, checks, func(rt *rapid.T) {
+		d := drawDivergentRejoin(rt)
+		c, memberLog := newDivergentRejoinCluster(t, d)
+		defer c.closeStores()
+
+		leader := c.nodes[rejoinLeaderID]
+		member := c.nodes[rejoinMemberID]
+		c.electLeaderOnVoterThenCrashVoter(rt)
+		leaderTermID := leader.election.LeadershipTermID()
+		require.Greater(rt, leaderTermID, d.missedTermID)
+
+		member.live = true
+		c.runRejoinPrefix(rt)
+
+		// The member rejoins when the missed term holds no log. Otherwise the
+		// member stops at the replication request: the host builds no
+		// LogReplication.
+		rejoins := d.missedLength == 0
+		done := func() bool {
+			if rejoins {
+				return leader.election.State() == election.ElectionStateClosed &&
+					member.election.State() == election.ElectionStateClosed
+			}
+			return len(member.host.newLogReplicationCalls) > 0
+		}
+
+		// 400 status intervals span four leader heartbeat timeouts.
+		for range 400 {
+			if done() {
+				break
+			}
+			c.publishSettledAppendPositions()
+			c.tickAll()
+			c.deliverAllHolding()
+			c.advanceClock(member.cfg.ElectionStatusIntervalNs)
+			c.checkInvariants(rt)
+		}
+		c.checkInvariants(rt)
+		require.True(rt, done(), "member state %v", member.election.State())
+
+		if d.divergentTail > 0 {
+			require.Equal(rt, []truncateCall{{
+				leadershipTermID: d.memberLogTermID(),
+				logPosition:      d.missedBase,
+			}}, member.host.truncateCalls)
+			require.Equal(
+				rt,
+				d.missedBase,
+				memberLog.FindTermEntry(d.memberLogTermID()).LogPosition,
+			)
+		} else {
+			require.Empty(rt, member.host.truncateCalls)
+		}
+		require.Equal(rt, d.missedBase, member.election.AppendPosition())
+
+		if rejoins {
+			require.Equal(rt, leaderTermID, leader.election.LeadershipTermID())
+			require.Equal(rt, leaderTermID, member.election.LeadershipTermID())
+			return
+		}
+		for _, call := range member.host.newLogReplicationCalls {
+			require.Equal(rt, d.missedEnd(), call.stopPosition)
+		}
+	})
 }
 
 // TestElectionRapidCluster_crashRestartHelpers covers crash/restart fixed paths

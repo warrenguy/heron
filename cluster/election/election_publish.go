@@ -1,6 +1,9 @@
 package election
 
-import "github.com/warrenguy/heron/cluster/codecs"
+import (
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/consensus"
+)
 
 func (e *Election) publishNewLeadershipTermOnInterval(quorumPosition, nowNs int64) int {
 	if !hasUpdateIntervalExpired(nowNs, e.timeOfLastUpdateNs, e.cfg.LeaderHeartbeatIntervalNs) {
@@ -46,18 +49,23 @@ func (e *Election) publishNewLeadershipTerm(quorumPosition, timestamp int64) {
 	}
 }
 
-// publishNewLeadershipTermToMember republishes the term to one member, keyed
-// to that member's lagging log leadership term.
-func (e *Election) publishNewLeadershipTermToMember(
+// publishNewLeadershipTermToLaggingMember republishes the term to one member
+// on an older log term. Only a leader publishes, and never to itself or
+// without a log session.
+func (e *Election) publishNewLeadershipTermToLaggingMember(
 	member *Member,
-	logLeadershipTermID, quorumPosition, timestamp int64,
+	logLeadershipTermID, nowNs int64,
 ) {
+	if e.deps.Host.Role() != consensus.RoleLeader {
+		return
+	}
 	if member.ID == e.thisMember.ID || e.logSessionID == NullMemberID {
 		return
 	}
+	quorumPosition := e.deps.Host.QuorumPositionBoundedByLeaderLog(e.appendPosition, nowNs)
 	e.deps.Publisher.NewLeadershipTerm(
 		PublicationTarget{MemberID: member.ID},
-		e.newLeadershipTermFields(logLeadershipTermID, quorumPosition, timestamp),
+		e.newLeadershipTermFields(logLeadershipTermID, quorumPosition, e.deps.EpochClock()),
 	)
 }
 
