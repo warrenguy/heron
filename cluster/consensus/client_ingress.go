@@ -74,11 +74,16 @@ func (a *Agent) SetSessionConnectHandler(handler SessionConnectHandler) {
 	a.sessionConnectHandler = handler
 }
 
-// pollClientIngress drains one batch of whole client ingress messages.
+// pollClientIngress polls one batch of whole client ingress messages.
 //
-// Fragmented frames reassemble in the subscription adapter before dispatch.
+// Skips the poll while an election is live. Frames stay in the image until the
+// agent settles. Fragmented frames reassemble in the subscription adapter
+// before dispatch.
 func (a *Agent) pollClientIngress(nowNs int64) int {
 	if a.clientIngress == nil {
+		return 0
+	}
+	if a.election != nil {
 		return 0
 	}
 	a.clientIngressPollNowNs = nowNs
@@ -89,10 +94,6 @@ func (a *Agent) handleClientIngressFragment(
 	buf []byte,
 	offset int,
 ) aeron.ControlledAction {
-	// Election live: no settled leader to accept or redirect toward.
-	if a.election != nil {
-		return aeron.ControlledContinue
-	}
 	layout, ok := codecs.ClusterMessageLayoutAt(
 		buf, offset, codecs.ClusterDecodeMaxVarLen,
 	)
@@ -132,8 +133,8 @@ func (a *Agent) handleClientIngressFragment(
 	return aeron.ControlledContinue
 }
 
-// handleSessionConnect dispatches a decoded connect. The caller checks the
-// settled state and leader-hint gate before this call.
+// handleSessionConnect dispatches a decoded connect. pollClientIngress checks
+// the settled state. handleClientIngressFragment checks the leader hint.
 //
 // Behaviour:
 //   - A non-leader queues SessionEvent REDIRECT.
