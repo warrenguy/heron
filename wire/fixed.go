@@ -1,3 +1,5 @@
+// Package wire reads and writes fixed-width little-endian fields in a byte
+// payload.
 package wire
 
 import "github.com/warrenguy/heron/atomicbuffer"

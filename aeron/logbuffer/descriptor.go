@@ -1,3 +1,8 @@
+// Package logbuffer implements the Aeron log buffer layout.
+//
+// A log holds PartitionCount term partitions followed by a metadata region.
+// MapLogFile maps a driver-created log file. MappedLogBuffer exposes the terms
+// and the metadata as AtomicBuffer views.
 package logbuffer
 
 import (

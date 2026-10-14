@@ -1,5 +1,8 @@
 //go:build integration && java_interop
 
+// Package javainterop is the Java IPC interop smoke oracle. It holds the
+// stream ids, message count, and payloads that the Go smoke tests and the Java
+// programs must agree on.
 package javainterop
 
 import (

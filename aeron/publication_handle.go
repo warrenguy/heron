@@ -1,7 +1,3 @@
-// Publication handle helpers shared by concurrent and exclusive publications.
-//
-// Close, retire, and bind resolve *Publication and *ExclusivePublication so both
-// types mark closed when a handle is already in the resource map.
 package aeron
 
 import (
@@ -12,6 +8,9 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
+// publicationHandleOps holds the steps that differ between *Publication and
+// *ExclusivePublication. The retire, bind, and mark-closed helpers resolve a
+// handle through it, so both types close the same way.
 type publicationHandleOps struct {
 	registryKey string
 	markClosed  func() error

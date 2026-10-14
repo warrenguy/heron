@@ -1,3 +1,5 @@
+// Package cnctest writes CnC files for tests. Its Assert helpers check mapped
+// buffer lengths and wired rings.
 package cnctest
 
 import (

@@ -1,3 +1,4 @@
+// Package electiontest provides no-op stubs for election wiring tests.
 package electiontest
 
 import (

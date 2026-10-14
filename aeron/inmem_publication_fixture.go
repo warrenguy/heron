@@ -1,6 +1,5 @@
 //go:build testhooks || bench
 
-// Shared in-memory publication and image fixture internals for unit tests and bench builds.
 package aeron
 
 import (

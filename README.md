@@ -1,5 +1,7 @@
 # Heron
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/warrenguy/heron.svg)](https://pkg.go.dev/github.com/warrenguy/heron)
+
 Pure Go [Aeron](https://github.com/aeron-io/aeron) transport, archive, and
 cluster clients, plus an experimental cluster consensus module and service
 container.

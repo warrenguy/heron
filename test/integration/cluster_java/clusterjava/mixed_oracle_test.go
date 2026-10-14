@@ -1,7 +1,5 @@
 //go:build integration && cluster_java
 
-// Golden tables hand-sync with ClusterConstantsMixedTest.
-// Java ClusterConfig helpers are authoritative for topology strings.
 package clusterjava_test
 
 import (
@@ -22,6 +20,9 @@ import (
 // javaDefaultAppVersion matches Java ConsensusModule.Context default appVersion.
 var javaDefaultAppVersion = cnc.ComposeSemanticVersion(0, 0, 1)
 
+// TestMixedHarnessConstants asserts the mixed golden table. The table
+// hand-syncs with Java ClusterConstantsMixedTest. Java ClusterConfig helpers
+// are authoritative for topology strings.
 func TestMixedHarnessConstants(t *testing.T) {
 	tests := []struct {
 		name string

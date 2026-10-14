@@ -1,10 +1,3 @@
-// Concurrent add tests cover three scenarios:
-// 1. Close during poll-phase await (concurrentCloseDuringPoll).
-// 2. External DoWork hammer during blocking await (concurrentDoWorkDuringBlockingAwait).
-// 3. Close during offer-phase ring backpressure (concurrentCloseDuringOfferBackpressure).
-//
-// Hammer and close-during-await paths assert doWorkLocked vs DoWork:
-// locked await/offer/drain paths must call doWorkLocked to avoid self-deadlock.
 package aeron
 
 import (
@@ -141,6 +134,12 @@ func (waiter *awaitPollSleepingWaiter) pinUnderClientLock(t *testing.T) {
 	waiter.waitForBlocked(t)
 }
 
+// doWorkHammer calls DoWorkLockedForTest in a loop from a second goroutine.
+// Each iteration takes the client lock when it is free. Tests use the hammer
+// to assert that a blocking await holds the client lock.
+//
+// Locked await, offer, and drain paths must call doWorkLocked, not DoWork.
+// DoWork under the client lock deadlocks.
 type doWorkHammer struct {
 	ticks                atomic.Int32
 	pauseTicksAtRegister int32
@@ -235,6 +234,8 @@ type addConcurrentRespondFunc func(
 	func(int64),
 ) (bool, int64)
 
+// TestClient_Add_concurrentCloseDuringPoll closes the client while an add
+// waits in the poll phase of its await.
 func TestClient_Add_concurrentCloseDuringPoll(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -319,6 +320,8 @@ func TestClient_Add_concurrentCloseDuringPoll(t *testing.T) {
 	}
 }
 
+// TestClient_Add_concurrentDoWorkDuringBlockingAwait runs a doWorkHammer
+// while an add blocks in its await.
 func TestClient_Add_concurrentDoWorkDuringBlockingAwait(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -403,6 +406,8 @@ func TestClient_Add_concurrentDoWorkDuringBlockingAwait(t *testing.T) {
 	}
 }
 
+// TestClient_Add_concurrentCloseDuringOfferBackpressure closes the client
+// while an add retries its command offer against a full to-driver ring.
 func TestClient_Add_concurrentCloseDuringOfferBackpressure(t *testing.T) {
 	tests := []struct {
 		name             string
