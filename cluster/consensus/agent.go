@@ -433,6 +433,8 @@ type Agent struct {
 	// after NewAgent.
 	timers *timerService
 
+	expiredTimerCountByCorrelationID map[int64]int64
+
 	// timerExpiryHandler is handleTimerExpiry cached once at construction so
 	// timerWork does not allocate a method value each duty cycle.
 	timerExpiryHandler func(correlationID, now int64) bool
@@ -625,6 +627,8 @@ func NewAgent(cfg AgentConfig) *Agent {
 		authenticator:             auth,
 		serviceAcks:               newServiceAckTracker(cfg.ServiceCount),
 		timers:                    newTimerService(),
+
+		expiredTimerCountByCorrelationID: make(map[int64]int64),
 	}
 	a.sessionAuthProxy.agent = a
 	a.ingressHandler = a.onIngressFragment
@@ -1318,16 +1322,20 @@ func (a *Agent) SetLogPublisher(p *LogPublisher) { a.logPublisher = p }
 
 // SetLogAdapter wires or clears the [LogAdapter] used for follower log poll.
 //
-// Behaviour: a non-nil adapter receives this agent as the session event sink.
-// Committed SessionOpenEvent and SessionCloseEvent frames then update the
-// registry. A nil adapter clears the field only. The previous adapter keeps
-// its sink.
+// Behaviour:
+//   - A non-nil adapter receives this agent as its session event sink and
+//     its timer event sink. Committed SessionOpenEvent and SessionCloseEvent
+//     frames then update the registry. Committed TimerEvent frames cancel or
+//     count their timer.
+//   - A nil adapter clears the field only. The previous adapter keeps both
+//     sinks.
 //
 // Concurrency: invoker-only. Must not race with [Agent.DoWork].
 func (a *Agent) SetLogAdapter(adapter *LogAdapter) {
 	a.logAdapter = adapter
 	if adapter != nil {
 		adapter.SetSessionEventSink(a)
+		adapter.setTimerEventSink(a)
 	}
 }
 

@@ -13,7 +13,8 @@ const DefaultLogFragmentLimit = 50
 // LogAdapterHandler receives decoded cluster log events the adapter understands.
 // A nil handler is allowed. Poll still advances Image position under the bound.
 //
-// SessionOpenEvent and SessionCloseEvent do not reach this handler.
+// SessionOpenEvent, SessionCloseEvent and TimerEvent do not reach this
+// handler.
 //
 // Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
 type LogAdapterHandler interface {
@@ -40,6 +41,10 @@ type sessionEventSink interface {
 	handleSessionCloseEvent(fields codecs.SessionCloseEventFields)
 }
 
+type timerEventSink interface {
+	handleTimerEvent(correlationID, logPosition int64)
+}
+
 // LogAdapter polls a cluster log Image under a stream-position commit bound.
 //
 // Concurrency: invoker-only. One goroutine owns Poll / SetImage (Image contract).
@@ -52,6 +57,7 @@ type LogAdapter struct {
 	logPosition   int64 // cached when image nil
 	handler       LogAdapterHandler
 	sessionSink   sessionEventSink
+	timerSink     timerEventSink
 	// assembler reassembles BEGIN, middle, and END trains before handleFragment.
 	assembler *aeron.ControlledFragmentAssembler
 	// assemblerHandler is the Handler() method value cached at construction.
@@ -127,6 +133,10 @@ func (a *LogAdapter) SetSessionEventSink(sink sessionEventSink) {
 	a.sessionSink = sink
 }
 
+func (a *LogAdapter) setTimerEventSink(sink timerEventSink) {
+	a.timerSink = sink
+}
+
 // Position returns image.Position when bound, else cached logPosition.
 //
 // Nil receiver returns 0.
@@ -167,12 +177,11 @@ func (a *LogAdapter) Poll(boundPosition int64) int {
 	return a.image.BoundedControlledPoll(a.assemblerHandler, boundPosition, a.fragmentLimit)
 }
 
-// handleFragment is the assembler delegate for BoundedControlledPoll.
+// handleFragment routes each reassembled message by template id to a sink
+// or the handler.
 //
-// Behaviour: receives whole messages only. Decode is bound to the fragment
-// span. Unknown templates and decode failure return CONTINUE so the poll
-// position still advances. A corrupt optional field must not stall the
-// follower. The transport already committed the frame.
+// Every frame returns CONTINUE so the poll position always advances. The
+// frame is already committed, so a bad field must not stall the follower.
 //
 // Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
 func (a *LogAdapter) handleFragment(
@@ -182,8 +191,9 @@ func (a *LogAdapter) handleFragment(
 	header *aeron.Header,
 ) aeron.ControlledAction {
 	sink := a.sessionSink
+	timerSink := a.timerSink
 	handler := a.handler
-	if header == nil || (sink == nil && handler == nil) {
+	if header == nil || (sink == nil && timerSink == nil && handler == nil) {
 		return aeron.ControlledContinue
 	}
 
@@ -214,6 +224,13 @@ func (a *LogAdapter) handleFragment(
 		}
 		if fields, decoded := codecs.SessionCloseEventFieldsFromLayout(frag, layout); decoded {
 			sink.handleSessionCloseEvent(fields)
+		}
+	case clusterwire.TimerEventSbeTemplateID:
+		if timerSink == nil {
+			return aeron.ControlledContinue
+		}
+		if fields, decoded := codecs.TimerEventFieldsFromLayout(frag, layout); decoded {
+			timerSink.handleTimerEvent(fields.CorrelationID, header.Position())
 		}
 	case clusterwire.SessionMessageHeaderSbeTemplateID:
 		if handler == nil {

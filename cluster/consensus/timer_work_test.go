@@ -3,11 +3,13 @@
 package consensus
 
 import (
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
@@ -49,12 +51,12 @@ func enqueueCancelTimer(t testing.TB, q *QueueConsensusIngress, correlationID in
 	}))
 }
 
-func scheduledDeadline(t testing.TB, svc *timerService, correlationID int64) int64 {
+func scheduledDeadline(t fragmentRequireT, svc *timerService, correlationID int64) int64 {
 	t.Helper()
 	timerID, ok := svc.timerIDByCorrelationID[correlationID]
-	require.True(t, ok)
+	require.True(t, ok, "id %d missing from maps", correlationID)
 	deadline, ok := svc.wheel.Deadline(timerID)
-	require.True(t, ok)
+	require.True(t, ok, "id %d timer %d missing from wheel", correlationID, timerID)
 	return deadline
 }
 
@@ -331,4 +333,483 @@ func TestElectionComplete_stampsWheelTime(t *testing.T) {
 	require.NotZero(t, expiredAt)
 	requireTimerCount(t, a.timers, 0)
 	requireTimerEventOnLog(t, pub, leadershipTermID, correlationID, expiredAt)
+}
+
+// writeTimerEventFrame returns where the written frame ends.
+func writeTimerEventFrame(
+	t testing.TB,
+	image *aeron.Image,
+	frameOffset int,
+	correlationID int64,
+) int64 {
+	t.Helper()
+	payload := encodeLogAdapterTimerEventPayload(t, codecs.TimerEventFields{
+		LeadershipTermID: 1,
+		CorrelationID:    correlationID,
+		Timestamp:        int64(frameOffset),
+	})
+	writeLogAdapterUnfragmentedFrame(t, image, frameOffset, payload)
+	return int64(frameOffset + logbuffer.AlignFragmentChunkLength(len(payload)))
+}
+
+func scheduleTimer(a *Agent, correlationID, deadline int64) {
+	a.handleScheduleTimer(codecs.ScheduleTimerFields{
+		CorrelationID: correlationID,
+		Deadline:      deadline,
+	})
+}
+
+func requireAgentTimers(
+	t fragmentRequireT,
+	a *Agent,
+	held map[int64]int64,
+	counts map[int64]int64,
+) {
+	t.Helper()
+	requireTimerCount(t, a.timers, len(held))
+	for correlationID, deadline := range held {
+		require.Equal(t, deadline, scheduledDeadline(t, a.timers, correlationID),
+			"id %d deadline", correlationID)
+	}
+	require.Equal(t, len(counts), a.ExpiredTimerCount())
+	for correlationID, count := range counts {
+		require.Positive(t, count, "want id %d holds a zero count", correlationID)
+		require.Equal(t, count, a.expiredTimerCountByCorrelationID[correlationID],
+			"id %d count", correlationID)
+	}
+}
+
+type timerOrderKind byte
+
+const (
+	orderSchedule timerOrderKind = 'S'
+	orderCancel   timerOrderKind = 'C'
+	orderEvent    timerOrderKind = 'F'
+)
+
+type timerOrderStep struct {
+	kind          timerOrderKind
+	correlationID int64
+	deadline      int64
+}
+
+func scheduleStep(correlationID, deadline int64) timerOrderStep {
+	return timerOrderStep{kind: orderSchedule, correlationID: correlationID, deadline: deadline}
+}
+
+func cancelStep(correlationID int64) timerOrderStep {
+	return timerOrderStep{kind: orderCancel, correlationID: correlationID}
+}
+
+func eventStep(correlationID int64) timerOrderStep {
+	return timerOrderStep{kind: orderEvent, correlationID: correlationID}
+}
+
+func consumeTimerEventAboveCommit(a *Agent, correlationID int64) {
+	logPosition := a.CommitPosition() + 64
+	a.handleTimerEvent(correlationID, logPosition)
+	a.ProposeMaxCommit(logPosition)
+}
+
+func applyTimerOrderSteps(t fragmentRequireT, a *Agent, steps []timerOrderStep) {
+	t.Helper()
+	for _, step := range steps {
+		switch step.kind {
+		case orderSchedule:
+			scheduleTimer(a, step.correlationID, step.deadline)
+		case orderCancel:
+			a.handleCancelTimer(codecs.CancelTimerFields{CorrelationID: step.correlationID})
+		case orderEvent:
+			consumeTimerEventAboveCommit(a, step.correlationID)
+		default:
+			require.FailNow(t, "unknown timer order step kind", "%q", step.kind)
+		}
+	}
+}
+
+func TestHandleTimerEvent_orders(t *testing.T) {
+	t.Parallel()
+
+	const id int64 = 7
+	d1 := 2 * timerWheelTickResolutionNs
+	d2 := 4 * timerWheelTickResolutionNs
+	d3 := 6 * timerWheelTickResolutionNs
+
+	const uniqueIDs = 1000
+	noService := make([]timerOrderStep, 0, uniqueIDs)
+	noServiceCounts := make(map[int64]int64, uniqueIDs)
+	for i := range int64(uniqueIDs) {
+		noService = append(noService, eventStep(100+i))
+		noServiceCounts[100+i] = 1
+	}
+
+	tests := []struct {
+		name   string
+		steps  []timerOrderStep
+		held   map[int64]int64
+		counts map[int64]int64
+	}{
+		{
+			name:  "in class: schedule then event",
+			steps: []timerOrderStep{scheduleStep(id, d1), eventStep(id)},
+		},
+		{
+			name:  "in class: event then schedule",
+			steps: []timerOrderStep{eventStep(id), scheduleStep(id, d1)},
+		},
+		{
+			name: "in class: two events then three schedules",
+			steps: []timerOrderStep{
+				eventStep(id),
+				eventStep(id),
+				scheduleStep(id, d1),
+				scheduleStep(id, d2),
+				scheduleStep(id, d3),
+			},
+			held: map[int64]int64{id: d3},
+		},
+		{
+			name: "in class: two events then two schedules",
+			steps: []timerOrderStep{
+				eventStep(id),
+				eventStep(id),
+				scheduleStep(id, d1),
+				scheduleStep(id, d2),
+			},
+		},
+		{
+			name: "in class: periodic reschedule after a late schedule",
+			steps: []timerOrderStep{
+				eventStep(id),
+				scheduleStep(id, d1),
+				scheduleStep(id, d2),
+			},
+			held: map[int64]int64{id: d2},
+		},
+		{
+			name: "in class: schedule, event, cancel with the event first",
+			steps: []timerOrderStep{
+				eventStep(id),
+				scheduleStep(id, d1),
+				cancelStep(id),
+			},
+		},
+		{
+			name:  "in class: reschedule",
+			steps: []timerOrderStep{scheduleStep(id, d1), scheduleStep(id, d2)},
+			held:  map[int64]int64{id: d2},
+		},
+		{
+			name: "race: S S F with the event first keeps a stale timer",
+			steps: []timerOrderStep{
+				eventStep(id),
+				scheduleStep(id, d1),
+				scheduleStep(id, d2),
+			},
+			held: map[int64]int64{id: d2},
+		},
+		{
+			name: "race: S S F with the event between keeps a stale timer",
+			steps: []timerOrderStep{
+				scheduleStep(id, d1),
+				eventStep(id),
+				scheduleStep(id, d2),
+			},
+			held: map[int64]int64{id: d2},
+		},
+		{
+			name: "race: S C S F with the event before the cancel keeps a stale timer",
+			steps: []timerOrderStep{
+				scheduleStep(id, d1),
+				eventStep(id),
+				cancelStep(id),
+				scheduleStep(id, d2),
+			},
+			held: map[int64]int64{id: d2},
+		},
+		{
+			name: "race: S C F with a fast service keeps count 1",
+			steps: []timerOrderStep{
+				scheduleStep(id, d1),
+				cancelStep(id),
+				eventStep(id),
+			},
+			counts: map[int64]int64{id: 1},
+		},
+		{
+			name: "race: S S F F with a fast service keeps count 1",
+			steps: []timerOrderStep{
+				scheduleStep(id, d1),
+				scheduleStep(id, d2),
+				eventStep(id),
+				eventStep(id),
+			},
+			counts: map[int64]int64{id: 1},
+		},
+		{
+			name: "race: S C F S with a fast service holds no timer",
+			steps: []timerOrderStep{
+				scheduleStep(id, d1),
+				cancelStep(id),
+				eventStep(id),
+				scheduleStep(id, d2),
+			},
+		},
+		{
+			name:   "no service: unique ids count every event",
+			steps:  noService,
+			counts: noServiceCounts,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			a := newFollowerLogPollAgent(0, nil)
+			applyTimerOrderSteps(t, a, tt.steps)
+			requireAgentTimers(t, a, tt.held, tt.counts)
+		})
+	}
+}
+
+func TestTimerEventConsume_drainPaths(t *testing.T) {
+	t.Parallel()
+
+	const (
+		correlationID int64 = 31
+		otherID       int64 = 32
+		nowNs         int64 = 5
+	)
+	d1 := 2 * timerWheelTickResolutionNs
+	d2 := 4 * timerWheelTickResolutionNs
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "catchup poll consumes before timer work",
+			run: func(t *testing.T) {
+				adapter, image := boundLogAdapter(t)
+				end := writeTimerEventFrame(t, image, 0, correlationID)
+				a := NewAgent(AgentConfig{
+					Role:       RoleFollower,
+					Commit:     new(atomic.Int64),
+					LogAdapter: adapter,
+				})
+				scheduleTimer(a, correlationID, d1)
+
+				require.Positive(t, a.CatchupPoll(end+32, nowNs))
+				require.Equal(t, end, a.CommitPosition())
+				requireAgentTimers(t, a, nil, nil)
+			},
+		},
+		{
+			name: "enter election drain consumes before timer work",
+			run: func(t *testing.T) {
+				adapter, image := boundLogAdapter(t)
+				end := writeTimerEventFrame(t, image, 0, correlationID)
+				a := newFollowerLogPollAgent(end+100, adapter)
+				a.notifiedCommitPosition = end + 32
+				a.SetElectionFactory((&recordingElectionFactory{}).factory())
+				scheduleTimer(a, correlationID, d1)
+
+				require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, nowNs))
+				require.Equal(t, end, adapter.Position())
+				require.Equal(t, int64(0), a.CommitPosition())
+				requireAgentTimers(t, a, nil, nil)
+			},
+		},
+		{
+			name: "leader election complete drain skips an event at commit",
+			run: func(t *testing.T) {
+				adapter, image := boundLogAdapter(t)
+				end := writeTimerEventFrame(t, image, 0, correlationID)
+				commit := new(atomic.Int64)
+				commit.Store(end)
+				a := NewAgent(AgentConfig{
+					Role:       RoleLeader,
+					Commit:     commit,
+					LogAdapter: adapter,
+				})
+				scheduleTimer(a, correlationID, d1)
+
+				a.ElectionComplete(nowNs)
+				require.Equal(t, end, adapter.Position())
+				requireAgentTimers(t, a, map[int64]int64{correlationID: d1}, nil)
+			},
+		},
+		{
+			name: "leader election complete drain keeps a reschedule after the commit raise",
+			run: func(t *testing.T) {
+				adapter, image := boundLogAdapter(t)
+				end := writeTimerEventFrame(t, image, 0, correlationID)
+				commit := new(atomic.Int64)
+				a := NewAgent(AgentConfig{
+					Role:       RoleLeader,
+					Commit:     commit,
+					LogAdapter: adapter,
+				})
+				scheduleTimer(a, correlationID, d1)
+
+				// Replay raises the commit past the event. The service reschedules.
+				a.ProposeMaxCommit(end)
+				scheduleTimer(a, correlationID, d2)
+
+				a.ElectionComplete(nowNs)
+				require.Equal(t, end, adapter.Position())
+				requireAgentTimers(t, a, map[int64]int64{correlationID: d2}, nil)
+			},
+		},
+		{
+			name: "bound re-join skips the tail and consumes above commit",
+			run: func(t *testing.T) {
+				const sessionID int32 = 10
+				appendV := new(atomic.Int64)
+				a, image, adapter := agentWithLogJoin(t, sessionID, 0, AgentConfig{
+					Role:                      RoleFollower,
+					Commit:                    new(atomic.Int64),
+					Egress:                    &recordingEgress{},
+					AppendSource:              &AtomicAppendPosition{V: appendV},
+					LeadershipTermID:          1,
+					LeaderHeartbeatIntervalNs: 1_000_000_000,
+					LeaderMemberID:            2,
+				})
+				adapter.SetImage(image)
+				tailEnd := writeTimerEventFrame(t, image, 0, correlationID)
+				otherEnd := writeTimerEventFrame(t, image, int(tailEnd), otherID)
+				appendV.Store(otherEnd + 100)
+				a.SetElectionFactory((&recordingElectionFactory{}).factory())
+				scheduleTimer(a, correlationID, d1)
+				scheduleTimer(a, otherID, d1)
+
+				// enterElection drains nothing: its bound sits below the first event.
+				a.notifiedCommitPosition = 0
+				require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, nowNs))
+				require.Equal(t, int64(0), adapter.Position())
+
+				_, prepared, err := a.PrepareForNewLeadership(0, nowNs)
+				require.NoError(t, err)
+				require.True(t, prepared)
+
+				// Replay raises the commit past the first event. The service
+				// reschedules.
+				a.ProposeMaxCommit(tailEnd)
+				scheduleTimer(a, correlationID, d2)
+
+				joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{
+					LogSessionID:  sessionID,
+					IsBoundRejoin: true,
+				}, nowNs)
+				require.NoError(t, err)
+				require.True(t, joined)
+				a.ElectionComplete(nowNs)
+
+				a.notifiedCommitPosition = otherEnd
+				require.Positive(t, a.followerConsensusWork(nowNs))
+				require.Equal(t, otherEnd, adapter.Position())
+				require.Equal(t, otherEnd, a.CommitPosition())
+				requireAgentTimers(t, a, map[int64]int64{correlationID: d2}, nil)
+			},
+		},
+		{
+			name: "leader enter election drain skips an old image below commit",
+			run: func(t *testing.T) {
+				adapter, image := boundLogAdapter(t)
+				end := writeTimerEventFrame(t, image, 0, correlationID)
+				commit := new(atomic.Int64)
+				commit.Store(end)
+				appendV := new(atomic.Int64)
+				appendV.Store(end + 100)
+				a := NewAgent(AgentConfig{
+					Role:         RoleLeader,
+					Commit:       commit,
+					AppendSource: &AtomicAppendPosition{V: appendV},
+					LogAdapter:   adapter,
+				})
+				a.notifiedCommitPosition = end + 32
+				a.SetElectionFactory((&recordingElectionFactory{}).factory())
+				scheduleTimer(a, correlationID, d1)
+
+				require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, nowNs))
+				require.Equal(t, end, adapter.Position())
+				requireAgentTimers(t, a, map[int64]int64{correlationID: d1}, nil)
+			},
+		},
+		{
+			name: "direct call at commit changes nothing and above commit cancels",
+			run: func(t *testing.T) {
+				const commitPosition int64 = 64
+				a := newFollowerLogPollAgent(0, nil)
+				a.ProposeMaxCommit(commitPosition)
+				scheduleTimer(a, correlationID, d1)
+
+				a.handleTimerEvent(correlationID, commitPosition)
+				a.handleTimerEvent(otherID, commitPosition)
+				requireAgentTimers(t, a, map[int64]int64{correlationID: d1}, nil)
+
+				a.handleTimerEvent(correlationID, commitPosition+1)
+				requireAgentTimers(t, a, nil, nil)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.run(t)
+		})
+	}
+}
+
+func TestTimerWork_promotedFollowerSkipsConsumedTimer(t *testing.T) {
+	t.Parallel()
+
+	const (
+		leadershipTermID int64 = 3
+		consumedID       int64 = 1
+		liveID           int64 = 2
+		lateID           int64 = 3
+	)
+	consumedDeadline := 2 * timerWheelTickResolutionNs
+	lateDeadline := 3 * timerWheelTickResolutionNs
+	liveDeadline := 5 * timerWheelTickResolutionNs
+
+	a, q, pub := leaderWithTimerIngress(t, AgentConfig{
+		LeadershipTermID: leadershipTermID,
+		Commit:           new(atomic.Int64),
+	})
+	a.RoleSet(RoleFollower)
+
+	// As follower: schedule the consumed and live timers. The late timer's
+	// event arrives before its schedule.
+	requireScheduled(t, a, q, consumedID, consumedDeadline, 1)
+	requireScheduled(t, a, q, liveID, liveDeadline, 2)
+	a.handleTimerEvent(consumedID, 64)
+	a.handleTimerEvent(lateID, 128)
+	requireAgentTimers(t, a, map[int64]int64{liveID: liveDeadline}, map[int64]int64{lateID: 1})
+
+	// Election: prepare, promote, then complete before every deadline.
+	_, prepared, err := a.PrepareForNewLeadership(0, 0)
+	require.NoError(t, err)
+	require.True(t, prepared)
+	a.RoleSet(RoleLeader)
+	a.ElectionComplete(0)
+
+	// As leader: the late schedule is ignored.
+	enqueueScheduleTimer(t, q, lateID, lateDeadline)
+	require.Equal(t, 1, a.pollServiceControl())
+	requireAgentTimers(t, a, map[int64]int64{liveID: liveDeadline}, nil)
+
+	expired := 0
+	firedAt := int64(0)
+	for tick := int64(1); tick <= 8; tick++ {
+		nowNs := tick * timerWheelTickResolutionNs
+		if n := a.timerWork(nowNs); n != 0 {
+			expired += n
+			firedAt = nowNs
+		}
+	}
+	require.Equal(t, 1, expired)
+	requireTimerCount(t, a.timers, 0)
+	requireTimerEventOnLog(t, pub, leadershipTermID, liveID, firedAt)
 }

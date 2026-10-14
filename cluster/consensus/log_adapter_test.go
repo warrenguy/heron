@@ -561,6 +561,7 @@ func TestFollowerConsensusWork_pollAndProposeMax(t *testing.T) {
 
 			a := tt.newAgent(adapter, span+100)
 			require.Same(t, adapter, a.logAdapter)
+			require.Same(t, a, adapter.timerSink)
 			a.notifiedCommitPosition = span + 32
 
 			require.Positive(t, a.followerConsensusWork(0))
@@ -621,6 +622,27 @@ func TestFollowerConsensusWork_boundUsesMinNotifyAndAppend(t *testing.T) {
 	requireHandlerIdle(t, spy)
 	// Unknown raw payload: position advanced for frame A only.
 	require.Equal(t, appendBound, a.CommitPosition())
+}
+
+func TestFollowerConsensusWork_timerEventCancelsTimer(t *testing.T) {
+	const correlationID int64 = 41
+	adapter, image := boundLogAdapter(t)
+	payload := encodeLogAdapterTimerEventPayload(t, codecs.TimerEventFields{
+		LeadershipTermID: 1,
+		CorrelationID:    correlationID,
+		Timestamp:        5,
+	})
+	span := int64(logbuffer.AlignFragmentChunkLength(len(payload)))
+	writeLogAdapterUnfragmentedFrame(t, image, 0, payload)
+
+	a := newFollowerLogPollAgent(span+100, adapter)
+	scheduleTimer(a, correlationID, timerWheelTickResolutionNs)
+	require.Equal(t, int64(1), a.ScheduledTimerCount())
+	a.notifiedCommitPosition = span + 32
+
+	require.Positive(t, a.followerConsensusWork(0))
+	require.Equal(t, span, a.CommitPosition())
+	require.Equal(t, int64(0), a.ScheduledTimerCount())
 }
 
 // logAdapterSessionSinkSpy records SessionOpenEvent and SessionCloseEvent
@@ -715,6 +737,19 @@ func encodeLogAdapterSessionClosePayload(
 	return buf[:wireEnd]
 }
 
+func encodeLogAdapterTimerEventPayload(tb testing.TB, fields codecs.TimerEventFields) []byte {
+	tb.Helper()
+	buf := make([]byte, codecs.TimerEventEncodedLen())
+	wireEnd, ok := codecs.EncodeTimerEvent(
+		buf,
+		0,
+		clusterwire.TimerEventSbeSchemaVersion,
+		fields,
+	)
+	require.True(tb, ok)
+	return buf[:wireEnd]
+}
+
 func boundLogAdapterWithSink(
 	tb testing.TB,
 ) (*LogAdapter, *aeron.Image, *logAdapterSessionSinkSpy) {
@@ -733,6 +768,35 @@ func boundLogAdapterWithSinkAndHandler(
 	handler := &logAdapterHandlerSpy{}
 	a.SetHandler(handler)
 	return a, image, sink, handler
+}
+
+type logAdapterTimerSinkSpy struct {
+	events int
+
+	lastCorrelationID int64
+	lastLogPosition   int64
+}
+
+func (s *logAdapterTimerSinkSpy) handleTimerEvent(correlationID, logPosition int64) {
+	s.events++
+	s.lastCorrelationID = correlationID
+	s.lastLogPosition = logPosition
+}
+
+func boundLogAdapterWithTimerSink(
+	tb testing.TB,
+) (
+	*LogAdapter,
+	*aeron.Image,
+	*logAdapterSessionSinkSpy,
+	*logAdapterTimerSinkSpy,
+	*logAdapterHandlerSpy,
+) {
+	tb.Helper()
+	a, image, sessionSink, handler := boundLogAdapterWithSinkAndHandler(tb)
+	timerSink := &logAdapterTimerSinkSpy{}
+	a.setTimerEventSink(timerSink)
+	return a, image, sessionSink, timerSink, handler
 }
 
 func writeLogAdapterFragmentTrain(
@@ -786,6 +850,49 @@ func TestLogAdapter_SessionOpen_reachesSink(t *testing.T) {
 	requireHandlerIdle(t, handler)
 }
 
+func TestLogAdapter_TimerEvent_reachesSink(t *testing.T) {
+	tests := []struct {
+		name          string
+		timerSinkOnly bool
+	}{
+		{name: "all_sinks"},
+		{name: "timer_sink_only", timerSinkOnly: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				a           *LogAdapter
+				image       *aeron.Image
+				sessionSink *logAdapterSessionSinkSpy
+				timerSink   *logAdapterTimerSinkSpy
+				handler     *logAdapterHandlerSpy
+			)
+			if tt.timerSinkOnly {
+				a, image = boundLogAdapter(t)
+				timerSink = &logAdapterTimerSinkSpy{}
+				a.setTimerEventSink(timerSink)
+			} else {
+				a, image, sessionSink, timerSink, handler = boundLogAdapterWithTimerSink(t)
+			}
+
+			fields := codecs.TimerEventFields{
+				LeadershipTermID: 3,
+				CorrelationID:    44,
+				Timestamp:        55,
+			}
+			span := writeAndPollOne(t, a, image, encodeLogAdapterTimerEventPayload(t, fields))
+
+			require.Equal(t, 1, timerSink.events)
+			require.Equal(t, fields.CorrelationID, timerSink.lastCorrelationID)
+			require.Equal(t, span, timerSink.lastLogPosition)
+			if !tt.timerSinkOnly {
+				requireSessionSinkIdle(t, sessionSink)
+				requireHandlerIdle(t, handler)
+			}
+		})
+	}
+}
+
 func TestLogAdapter_SessionClose_reachesSink(t *testing.T) {
 	a, image, sink, handler := boundLogAdapterWithSinkAndHandler(t)
 
@@ -799,10 +906,18 @@ func TestLogAdapter_SessionClose_reachesSink(t *testing.T) {
 	requireHandlerIdle(t, handler)
 }
 
-func TestLogAdapter_nilSinkAndHandler_sessionEventsSafe(t *testing.T) {
+func TestLogAdapter_nilSinksAndHandler_eventsSafe(t *testing.T) {
+	timerPayload := func(tb testing.TB) []byte {
+		return encodeLogAdapterTimerEventPayload(tb, codecs.TimerEventFields{
+			LeadershipTermID: 1,
+			CorrelationID:    2,
+			Timestamp:        3,
+		})
+	}
 	tests := []struct {
-		name    string
-		payload func(testing.TB) []byte
+		name                      string
+		payload                   func(testing.TB) []byte
+		withSessionSinkAndHandler bool
 	}{
 		{
 			name: "open",
@@ -816,18 +931,41 @@ func TestLogAdapter_nilSinkAndHandler_sessionEventsSafe(t *testing.T) {
 				return encodeLogAdapterSessionClosePayload(tb, sampleLogAdapterSessionCloseFields())
 			},
 		},
+		{
+			name:    "timer",
+			payload: timerPayload,
+		},
+		{
+			name:                      "timer_nil_timer_sink",
+			payload:                   timerPayload,
+			withSessionSinkAndHandler: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a, image := boundLogAdapter(t)
+			var (
+				sessionSink *logAdapterSessionSinkSpy
+				handler     *logAdapterHandlerSpy
+			)
+			if tt.withSessionSinkAndHandler {
+				sessionSink = &logAdapterSessionSinkSpy{}
+				handler = &logAdapterHandlerSpy{}
+				a.SetSessionEventSink(sessionSink)
+				a.SetHandler(handler)
+			}
 			require.NotPanics(t, func() {
 				writeAndPollOne(t, a, image, tt.payload(t))
 			})
+			if tt.withSessionSinkAndHandler {
+				requireSessionSinkIdle(t, sessionSink)
+				requireHandlerIdle(t, handler)
+			}
 		})
 	}
 }
 
-func TestLogAdapter_sessionEvents_skipped(t *testing.T) {
+func TestLogAdapter_undecodableEvents_skipped(t *testing.T) {
 	tests := []struct {
 		name    string
 		payload func(testing.TB) []byte
@@ -881,6 +1019,30 @@ func TestLogAdapter_sessionEvents_skipped(t *testing.T) {
 			},
 		},
 		{
+			name: "timer_wrong_schema",
+			payload: func(tb testing.TB) []byte {
+				return encodeLogAdapterMessageHeader(
+					tb,
+					clusterwire.TimerEventSbeBlockLength,
+					clusterwire.TimerEventSbeTemplateID,
+					112,
+					clusterwire.TimerEventSbeSchemaVersion,
+				)
+			},
+		},
+		{
+			name: "timer_header_only",
+			payload: func(tb testing.TB) []byte {
+				return encodeLogAdapterMessageHeader(
+					tb,
+					clusterwire.TimerEventSbeBlockLength,
+					clusterwire.TimerEventSbeTemplateID,
+					clusterwire.MessageHeaderSbeSchemaID,
+					clusterwire.TimerEventSbeSchemaVersion,
+				)
+			},
+		},
+		{
 			name: "short_length",
 			payload: func(tb testing.TB) []byte {
 				p := []byte{0x01, 0x02, 0x03, 0x04}
@@ -891,9 +1053,10 @@ func TestLogAdapter_sessionEvents_skipped(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a, image, sink, handler := boundLogAdapterWithSinkAndHandler(t)
+			a, image, sessionSink, timerSink, handler := boundLogAdapterWithTimerSink(t)
 			writeAndPollOne(t, a, image, tt.payload(t))
-			requireSessionSinkIdle(t, sink)
+			requireSessionSinkIdle(t, sessionSink)
+			require.Equal(t, 0, timerSink.events)
 			requireHandlerIdle(t, handler)
 		})
 	}
