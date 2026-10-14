@@ -447,13 +447,31 @@ func TestElection_HandleError_truncateAndPrepare(t *testing.T) {
 func TestOnRequestVote_branches(t *testing.T) {
 	t.Parallel()
 
+	const (
+		voteTemplate              = uint16(clusterwire.VoteSbeTemplateID)
+		newLeadershipTermTemplate = uint16(clusterwire.NewLeadershipTermSbeTemplateID)
+	)
+	aheadOfCandidate := func(candidateID int32) codecs.RequestVoteFields {
+		return codecs.RequestVoteFields{
+			CandidateTermID:     99,
+			LogLeadershipTermID: 0,
+			LogPosition:         100,
+			CandidateMemberID:   candidateID,
+		}
+	}
+
 	for _, tc := range []struct {
-		name         string
-		fields       codecs.RequestVoteFields
-		wantPropose  bool
-		wantVoteSent bool
-		wantVote     clusterwire.BooleanType
-		wantState    election.ElectionState
+		name string
+
+		// role picks the state: LEADER_READY for a leader, CANVASS otherwise.
+		role consensus.Role
+
+		hasLogSession bool
+		fields        codecs.RequestVoteFields
+		wantPropose   bool
+		wantSent      []uint16
+		wantVote      clusterwire.BooleanType
+		wantState     election.ElectionState
 	}{
 		{
 			name: "self candidate ignored",
@@ -465,17 +483,39 @@ func TestOnRequestVote_branches(t *testing.T) {
 			wantState: election.ElectionStateCanvass,
 		},
 		{
-			name: "ahead of candidate log places false vote",
-			fields: codecs.RequestVoteFields{
-				CandidateTermID:     99,
-				LogLeadershipTermID: 0,
-				LogPosition:         100,
-				CandidateMemberID:   1,
-			},
-			wantPropose:  true,
-			wantVoteSent: true,
-			wantVote:     clusterwire.BooleanType_FALSE,
-			wantState:    election.ElectionStateCanvass,
+			name:        "ahead of candidate log places false vote",
+			fields:      aheadOfCandidate(1),
+			wantPropose: true,
+			wantSent:    []uint16{voteTemplate},
+			wantVote:    clusterwire.BooleanType_FALSE,
+			wantState:   election.ElectionStateCanvass,
+		},
+		{
+			name:          "follower with log session ahead of candidate log only votes",
+			hasLogSession: true,
+			fields:        aheadOfCandidate(1),
+			wantPropose:   true,
+			wantSent:      []uint16{voteTemplate},
+			wantVote:      clusterwire.BooleanType_FALSE,
+			wantState:     election.ElectionStateCanvass,
+		},
+		{
+			name:          "leader ahead of candidate log votes then republishes",
+			role:          consensus.RoleLeader,
+			hasLogSession: true,
+			fields:        aheadOfCandidate(1),
+			wantPropose:   true,
+			wantSent:      []uint16{voteTemplate, newLeadershipTermTemplate},
+			wantVote:      clusterwire.BooleanType_FALSE,
+			wantState:     election.ElectionStateLeaderReady,
+		},
+		{
+			name:          "leader ahead of unknown candidate only proposes",
+			role:          consensus.RoleLeader,
+			hasLogSession: true,
+			fields:        aheadOfCandidate(99),
+			wantPropose:   true,
+			wantState:     election.ElectionStateLeaderReady,
 		},
 		{
 			name: "grant enters follower ballot",
@@ -485,10 +525,10 @@ func TestOnRequestVote_branches(t *testing.T) {
 				LogPosition:         900,
 				CandidateMemberID:   1,
 			},
-			wantPropose:  true,
-			wantVoteSent: true,
-			wantVote:     clusterwire.BooleanType_TRUE,
-			wantState:    election.ElectionStateFollowerBallot,
+			wantPropose: true,
+			wantSent:    []uint16{voteTemplate},
+			wantVote:    clusterwire.BooleanType_TRUE,
+			wantState:   election.ElectionStateFollowerBallot,
 		},
 		{
 			name: "stale term places false vote",
@@ -497,18 +537,26 @@ func TestOnRequestVote_branches(t *testing.T) {
 				LogPosition:       100,
 				CandidateMemberID: 1,
 			},
-			wantVoteSent: true,
-			wantVote:     clusterwire.BooleanType_FALSE,
-			wantState:    election.ElectionStateCanvass,
+			wantSent:  []uint16{voteTemplate},
+			wantVote:  clusterwire.BooleanType_FALSE,
+			wantState: election.ElectionStateCanvass,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, deps, _, epochClock, nodeState := testElectionDeps(t)
+			cfg, deps, clock, epochClock, nodeState := testElectionDeps(t)
+			useRecordingHost(&deps, clock, cfg, tc.role)
 			pub := deps.Publisher.(*election.SbePublisher)
 			e := election.NewElection(cfg, deps)
-			election.SetStateForTest(e, election.ElectionStateCanvass)
+			state := election.ElectionStateCanvass
+			if tc.role == consensus.RoleLeader {
+				state = election.ElectionStateLeaderReady
+			}
+			election.SetStateForTest(e, state)
+			if tc.hasLogSession {
+				election.SetLogSessionIDForTest(e, fixtureLogSessionID)
+			}
 
 			e.OnRequestVote(tc.fields)
 
@@ -521,15 +569,25 @@ func TestOnRequestVote_branches(t *testing.T) {
 			} else {
 				require.Empty(t, nodeState.proposeCalls)
 			}
-			if !tc.wantVoteSent {
-				require.Empty(t, pub.Sent)
+
+			var sentTemplates []uint16
+			for _, m := range pub.Sent {
+				sentTemplates = append(sentTemplates, m.TemplateID)
+				require.Equal(t, tc.fields.CandidateMemberID, m.Dst.MemberID)
+			}
+			require.Equal(t, tc.wantSent, sentTemplates)
+			if len(pub.Sent) == 0 {
 				return
 			}
-			require.Len(t, pub.Sent, 1)
-			require.Equal(t, uint16(clusterwire.VoteSbeTemplateID), pub.Sent[0].TemplateID)
 			vote := pub.Sent[0].Fields.(codecs.VoteFields)
 			require.Equal(t, tc.wantVote, vote.Vote)
 			require.Equal(t, e.AppendPosition(), vote.LogPosition)
+			if len(pub.Sent) < 2 {
+				return
+			}
+			term := pub.Sent[1].Fields.(codecs.NewLeadershipTermFields)
+			require.Equal(t, tc.fields.LogLeadershipTermID, term.LogLeadershipTermID)
+			require.Equal(t, cfg.LeadershipTermID, term.LeadershipTermID)
 		})
 	}
 }
@@ -565,6 +623,7 @@ func TestOnRequestVote_proposeErrorResetsToInit(t *testing.T) {
 
 	for _, tc := range []struct {
 		name   string
+		role   consensus.Role
 		fields codecs.RequestVoteFields
 	}{
 		{
@@ -585,15 +644,31 @@ func TestOnRequestVote_proposeErrorResetsToInit(t *testing.T) {
 				CandidateMemberID:   1,
 			},
 		},
+		{
+			name: "leader ahead of candidate log",
+			role: consensus.RoleLeader,
+			fields: codecs.RequestVoteFields{
+				CandidateTermID:     99,
+				LogLeadershipTermID: 0,
+				LogPosition:         100,
+				CandidateMemberID:   1,
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, deps, _, _, nodeState := testElectionDeps(t)
+			cfg, deps, clock, _, nodeState := testElectionDeps(t)
+			useRecordingHost(&deps, clock, cfg, tc.role)
 			deps.NodeState = &failingNodeState{store: nodeState, err: errors.New("sync failed")}
 			pub := deps.Publisher.(*election.SbePublisher)
 			e := election.NewElection(cfg, deps)
-			election.SetStateForTest(e, election.ElectionStateCanvass)
+			state := election.ElectionStateCanvass
+			if tc.role == consensus.RoleLeader {
+				state = election.ElectionStateLeaderReady
+				election.SetLogSessionIDForTest(e, fixtureLogSessionID)
+			}
+			election.SetStateForTest(e, state)
 
 			e.OnRequestVote(tc.fields)
 
@@ -810,6 +885,39 @@ func TestOnAppendPosition_leaderRepublishesToLaggingFollower(t *testing.T) {
 	fields := sent.Fields.(codecs.NewLeadershipTermFields)
 	require.Equal(t, laggingTerm, fields.LogLeadershipTermID)
 	require.Equal(t, fx.election.LeadershipTermID(), fields.LeadershipTermID)
+}
+
+func TestOnCanvassPosition_leaderRepublishesToOlderLogTerm(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		logTerm int64
+	}{
+		{"log term below the leader log term", testLeadershipTermID - 1},
+		{"log term equal to the leader log term", testLeadershipTermID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fx := leaderLogReplicationFixture(t, 0)
+			require.Greater(t, fx.election.LeadershipTermID(), tc.logTerm)
+
+			fx.injectCanvassPosition(1, tc.logTerm, 50)
+
+			require.Equal(t, tc.logTerm, fx.member(1).LeadershipTermID)
+			require.Equal(t, int64(50), fx.member(1).LogPosition)
+
+			require.Len(t, fx.publisher.Sent, 1)
+			sent := fx.publisher.Sent[0]
+			require.Equal(t, uint16(clusterwire.NewLeadershipTermSbeTemplateID), sent.TemplateID)
+			require.Equal(t, int32(1), sent.Dst.MemberID)
+			fields := sent.Fields.(codecs.NewLeadershipTermFields)
+			require.Equal(t, tc.logTerm, fields.LogLeadershipTermID)
+			require.Equal(t, fx.election.LeadershipTermID(), fields.LeadershipTermID)
+			require.Equal(t, election.ElectionStateLeaderLogReplication, fx.election.State())
+		})
+	}
 }
 
 func TestPublishCommitPositionOnInterval_quorumRegression(t *testing.T) {
@@ -2994,34 +3102,126 @@ func TestHandleCandidateBallot_requestVoteUsesAppendPosition(t *testing.T) {
 	}
 }
 
-func TestOnCanvassPosition_ignoredBranches(t *testing.T) {
+func TestOnCanvassPosition_branches(t *testing.T) {
 	t.Parallel()
 
+	const olderLogTerm int64 = testLeadershipTermID - 1
+	older := func(id int32) codecs.CanvassPositionFields {
+		return codecs.CanvassPositionFields{
+			LogLeadershipTermID: olderLogTerm,
+			LogPosition:         50,
+			LeadershipTermID:    olderLogTerm,
+			FollowerMemberID:    id,
+		}
+	}
+
 	for _, tc := range []struct {
-		name   string
-		state  election.ElectionState
-		fields codecs.CanvassPositionFields
+		name         string
+		state        election.ElectionState
+		role         consensus.Role
+		logSessionID int32
+		fields       codecs.CanvassPositionFields
+		wantSent     bool
 	}{
-		{"init", election.ElectionStateInit, codecs.CanvassPositionFields{FollowerMemberID: 1}},
 		{
-			"unknown member",
-			election.ElectionStateCanvass,
-			codecs.CanvassPositionFields{FollowerMemberID: 99},
+			name:         "init",
+			state:        election.ElectionStateInit,
+			role:         consensus.RoleLeader,
+			logSessionID: fixtureLogSessionID,
+			fields:       older(1),
 		},
-		{"self", election.ElectionStateCanvass, codecs.CanvassPositionFields{FollowerMemberID: 0}},
+		{
+			name:         "unknown member",
+			state:        election.ElectionStateLeaderReady,
+			role:         consensus.RoleLeader,
+			logSessionID: fixtureLogSessionID,
+			fields:       older(99),
+		},
+		{
+			name:         "self",
+			state:        election.ElectionStateLeaderReady,
+			role:         consensus.RoleLeader,
+			logSessionID: fixtureLogSessionID,
+			fields:       older(0),
+		},
+		{
+			name:         "older log term with follower role",
+			state:        election.ElectionStateFollowerReady,
+			role:         consensus.RoleFollower,
+			logSessionID: fixtureLogSessionID,
+			fields:       older(1),
+		},
+		{
+			name:         "older log term with candidate role",
+			state:        election.ElectionStateCandidateBallot,
+			role:         consensus.RoleCandidate,
+			logSessionID: fixtureLogSessionID,
+			fields:       older(1),
+		},
+		{
+			name:         "older log term with null log session",
+			state:        election.ElectionStateLeaderReady,
+			role:         consensus.RoleLeader,
+			logSessionID: election.NullMemberID,
+			fields:       older(1),
+		},
+		{
+			name:         "older log term with leader role",
+			state:        election.ElectionStateLeaderReady,
+			role:         consensus.RoleLeader,
+			logSessionID: fixtureLogSessionID,
+			fields:       older(1),
+			wantSent:     true,
+		},
+		{
+			name:         "log term equal to election term",
+			state:        election.ElectionStateLeaderReady,
+			role:         consensus.RoleLeader,
+			logSessionID: fixtureLogSessionID,
+			fields: codecs.CanvassPositionFields{
+				LogLeadershipTermID: testLeadershipTermID,
+				LogPosition:         50,
+				LeadershipTermID:    testLeadershipTermID,
+				FollowerMemberID:    1,
+			},
+		},
+		{
+			name:         "log term above election term in leader replay",
+			state:        election.ElectionStateLeaderReplay,
+			role:         consensus.RoleLeader,
+			logSessionID: fixtureLogSessionID,
+			fields: codecs.CanvassPositionFields{
+				LogLeadershipTermID: testLeadershipTermID + 1,
+				LogPosition:         50,
+				LeadershipTermID:    testLeadershipTermID + 1,
+				FollowerMemberID:    1,
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, deps, _, _, _ := testElectionDeps(t)
+			cfg, deps, clock, _, _ := testElectionDeps(t)
+			useRecordingHost(&deps, clock, cfg, tc.role)
 			pub := deps.Publisher.(*election.SbePublisher)
 			e := election.NewElection(cfg, deps)
 			election.SetStateForTest(e, tc.state)
+			election.SetLogSessionIDForTest(e, tc.logSessionID)
 
 			e.OnCanvassPosition(tc.fields)
 
-			require.Empty(t, pub.Sent)
 			require.Equal(t, tc.state, e.State())
+			if !tc.wantSent {
+				require.Empty(t, pub.Sent)
+				return
+			}
+			require.Len(t, pub.Sent, 1)
+			sent := pub.Sent[0]
+			require.Equal(t, uint16(clusterwire.NewLeadershipTermSbeTemplateID), sent.TemplateID)
+			require.Equal(t, tc.fields.FollowerMemberID, sent.Dst.MemberID)
+			fields := sent.Fields.(codecs.NewLeadershipTermFields)
+			require.Equal(t, olderLogTerm, fields.LogLeadershipTermID)
+			require.Equal(t, cfg.LeadershipTermID, fields.LeadershipTermID)
 		})
 	}
 }

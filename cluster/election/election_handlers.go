@@ -700,6 +700,13 @@ func (e *Election) OnCanvassPosition(fields codecs.CanvassPositionFields) {
 		return
 	}
 	e.deps.Host.UpdateMemberLogPosition(follower, fields.LogLeadershipTermID, fields.LogPosition)
+	if fields.LogLeadershipTermID < e.leadershipTermID {
+		e.publishNewLeadershipTermToLaggingMember(
+			follower,
+			fields.LogLeadershipTermID,
+			e.deps.NanoClock(),
+		)
+	}
 }
 
 func (e *Election) OnRequestVote(fields codecs.RequestVoteFields) {
@@ -722,9 +729,13 @@ func (e *Election) OnRequestVote(fields codecs.RequestVoteFields) {
 		fields.LogPosition,
 	) > 0
 	if weAreAhead {
-		// A leader-role node also publishes NewLeadershipTerm toward the candidate
-		// here; that path is not wired until log replication lands.
-		e.proposeCandidateTermAndVote(fields, false, e.deps.NanoClock())
+		nowNs := e.deps.NanoClock()
+		if !e.proposeCandidateTermAndVote(fields, false, nowNs) {
+			return
+		}
+		if candidate := e.memberByID[fields.CandidateMemberID]; candidate != nil {
+			e.publishNewLeadershipTermToLaggingMember(candidate, fields.LogLeadershipTermID, nowNs)
+		}
 		return
 	}
 
@@ -932,17 +943,13 @@ func (e *Election) OnAppendPosition(fields codecs.AppendPositionFields) {
 	}
 	e.deps.Host.TrackCatchupCompletion(follower, fields.LogPosition, fields.Flags)
 
-	// A follower still on an older term learns the current one from a leader
-	// republish; election closure stays with the LEADER_READY duty cycle.
-	if fields.LeadershipTermID < e.leadershipTermID &&
-		e.deps.Host.Role() == consensus.RoleLeader {
-		nowNs := e.deps.NanoClock()
-		quorum := e.deps.Host.QuorumPositionBoundedByLeaderLog(e.appendPosition, nowNs)
-		e.publishNewLeadershipTermToMember(
+	// A follower on an older term learns the current one from the leader.
+	// The LEADER_READY duty cycle still closes the election.
+	if fields.LeadershipTermID < e.leadershipTermID {
+		e.publishNewLeadershipTermToLaggingMember(
 			follower,
 			fields.LeadershipTermID,
-			quorum,
-			e.deps.EpochClock(),
+			e.deps.NanoClock(),
 		)
 	}
 }
