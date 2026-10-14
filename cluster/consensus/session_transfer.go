@@ -47,8 +47,8 @@ func (a *Agent) handleSessionCloseEvent(fields codecs.SessionCloseEventFields) {
 // Behaviour:
 //   - A nil or unbound adapter drains nothing.
 //   - The drain does not advance commit.
-//   - A term-end PAD frame or slack gap advances the position with no
-//     fragment. The drain continues past both.
+//   - A PAD frame or slack gap at the end of the term advances the position
+//     with no fragment. The drain continues past both.
 //   - A closed image or an image with no more data ends the drain.
 //   - Callers must set logPollNowNs before the drain so session learn stores
 //     the current duty clock.

@@ -159,7 +159,7 @@ func (a *LogAdapter) IsImageClosed() bool {
 // BoundedControlledPoll call.
 //
 // Returns: fragment count only. No error path. 0 with an advanced Position
-// means the poll skipped a term-end PAD frame or a term-end slack gap.
+// means the poll skipped a PAD frame or slack gap at the end of the term.
 func (a *LogAdapter) Poll(boundPosition int64) int {
 	if a == nil || a.image == nil {
 		return 0
