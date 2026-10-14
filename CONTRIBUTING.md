@@ -86,7 +86,7 @@ Compose-image rows above.
 ```bash
 make test                                             # unit only
 go test -race -tags=bench,testhooks ./...             # ad-hoc unit
-go test -race -tags=rapid,testhooks -run rapid ./...  # ad-hoc property
+make test-rapid                                       # property only
 ```
 
 Prefer Makefile targets over bare `go test`.

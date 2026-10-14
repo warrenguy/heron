@@ -38,20 +38,20 @@ GO_MODULE := github.com/warrenguy/heron
 GO_TEST_PKGS := ./...
 # Conductor cross-package test hooks (test_hooks.go, hook_access.go).
 export UNIT_TEST_TAGS := testhooks
-# Stress pass: packages that gain test files when the stress tag is enabled.
-STRESS_TEST_PKGS := $(shell paste \
-	<(go list -tags=$(UNIT_TEST_TAGS) -test \
-		-f '{{if not .ForTest}}{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}{{end}}' ./...) \
-	<(go list -tags=stress,$(UNIT_TEST_TAGS) -test \
-		-f '{{if not .ForTest}}{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}{{end}}' ./...) \
-	| awk 'NF && $$2+$$3 < $$5+$$6 {print $$1}')
+# Packages that gain test files when tag $(1) joins UNIT_TEST_TAGS.
+define tag-gained-pkgs
+$(shell awk 'NR == FNR {base[$$1] = $$2 + $$3; next} $$2 + $$3 > base[$$1] {print $$1}' \
+	<(go list -tags=$(UNIT_TEST_TAGS) \
+		-f '{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}' ./...) \
+	<(go list -tags=$(1),$(UNIT_TEST_TAGS) \
+		-f '{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}' ./...))
+endef
+STRESS_TEST_PKGS := $(call tag-gained-pkgs,stress)
+RAPID_TEST_PKGS := $(call tag-gained-pkgs,rapid)
 # Unit pass uses bench tag; omit test/bench root (benchmark-only; see make bench).
 UNIT_TEST_PKGS := $(shell go list -tags=bench,$(UNIT_TEST_TAGS) -f \
 	'{{if and (or .TestGoFiles .XTestGoFiles) (ne .ImportPath "$(GO_MODULE)/test/bench")}}{{\
 .ImportPath}}{{end}}' ./...)
-# Rapid pass uses rapid tag only; bench-tagged packages (e.g. test/bench/harness) are omitted.
-RAPID_TEST_PKGS := $(shell go list -tags=rapid,$(UNIT_TEST_TAGS) -f \
-	'{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
 # Non-generated files only (grep -L drops DO NOT EDIT headers); $$ defers
 # expansion to the recipe shell so the list is fresh per run.
 GO_SOURCES := $$(grep -rl --include='*.go' -L 'DO NOT EDIT' \
@@ -73,7 +73,6 @@ help: ## List Makefile targets
 	@{ grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  %-28s %s\n", $$1, $$2}'; \
 		printf '  %-28s %s\n' test 'Unit tests'; \
-		printf '  %-28s %s\n' test-rapid 'Property tests'; \
 		printf '  %-28s %s\n' test-stress 'Stress tests'; \
 	} | sort
 	@echo ""
@@ -226,8 +225,28 @@ test$(1): ## $(4)
 endef
 
 $(eval $(call go-test-target,,bench,,Unit tests,$(UNIT_TEST_PKGS)))
-$(eval $(call go-test-target,-rapid,rapid,-run rapid,Property tests,$(RAPID_TEST_PKGS)))
 $(eval $(call go-test-target,-stress,stress,-run Stress,Stress tests,$(STRESS_TEST_PKGS)))
+
+# go test has no file filter: run the names the rapid tag adds.
+# A rapid name shared with a unit test fails; -run would match both.
+.PHONY: test-rapid
+test-rapid: ## Property tests
+	@set -euo pipefail; export LC_ALL=C; \
+	files() { go list -tags="$$1" -f '{{range .TestGoFiles}}{{$$.Dir}}/{{.}}{{"\n"}}{{end}}'\
+'{{range .XTestGoFiles}}{{$$.Dir}}/{{.}}{{"\n"}}{{end}}' $(RAPID_TEST_PKGS) | awk NF | sort; }; \
+	names() { sed -nE '/^func TestMain\(/d; s/^func (Test([A-Z0-9_][A-Za-z0-9_]*)?)\(.*/\1/p' \
+		/dev/null "$$@" | sort -u; }; \
+	unit=$$(files $(UNIT_TEST_TAGS)); \
+	tagged=$$(files rapid,$(UNIT_TEST_TAGS)); \
+	gained=$$(comm -13 <(printf '%s\n' "$$unit") <(printf '%s\n' "$$tagged")); \
+	added=$$(names $$gained); \
+	[ -n "$$added" ] || { echo 'no rapid tests' >&2; exit 1; }; \
+	unit_names=$$(names $$unit); \
+	clash=$$(comm -12 <(printf '%s\n' "$$added") <(printf '%s\n' "$$unit_names")); \
+	[ -z "$$clash" ] || { echo "rapid test name shared with a unit test: $$clash" >&2; exit 1; }; \
+	go test -timeout=$(TEST_TIMEOUT) -race -tags=rapid,$(UNIT_TEST_TAGS) \
+		-count=1 -run "^($$(printf '%s\n' "$$added" | paste -sd '|'))$$" \
+		$(RAPID_TEST_PKGS) $(COVERAGE_TEST_ARGS)
 
 ELECTION_SIM_RUNS ?= 1000
 ELECTION_SIM_TIMEOUT ?= 4m
