@@ -10,19 +10,29 @@ import (
 )
 
 type rapidStubPublication struct {
-	registrationID int64
+	registrationID         int64
+	originalRegistrationID int64
 }
 
 func (publication rapidStubPublication) RegistrationID() int64 {
 	return publication.registrationID
 }
 
+func (publication rapidStubPublication) OriginalRegistrationID() int64 {
+	return publication.originalRegistrationID
+}
+
 type rapidStubPublicationPtr struct {
-	registrationID int64
+	registrationID         int64
+	originalRegistrationID int64
 }
 
 func (publication *rapidStubPublicationPtr) RegistrationID() int64 {
 	return publication.registrationID
+}
+
+func (publication *rapidStubPublicationPtr) OriginalRegistrationID() int64 {
+	return publication.originalRegistrationID
 }
 
 const (
@@ -66,8 +76,11 @@ func rapidPublicationHandleForKind(
 
 	switch kind {
 	case rapidResourceMapEntryLiveStruct:
-		registrationID := rapid.Int64().Draw(rt, "registrationID")
-		return rapidStubPublication{registrationID: registrationID}
+		return rapidStubPublication{
+			registrationID: rapid.Int64().Draw(rt, "registrationID"),
+			originalRegistrationID: rapid.Int64Range(1, 4).
+				Draw(rt, "originalRegistrationID"),
+		}
 	case rapidResourceMapEntryNilInterface:
 		return nil
 	case rapidResourceMapEntryTypedNilPtr:
@@ -154,5 +167,35 @@ func TestResourceByRegID_liveResourceCount_consistency_rapid(t *testing.T) {
 				require.True(rt, isAbsentMapValue(stored))
 			}
 		}
+	})
+}
+
+func TestCountPublicationsByOriginalRegistrationID_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		count := rapid.IntRange(0, 32).Draw(rt, "count")
+		resources, expectedAbsent := buildRapidPublicationHandleMap(
+			rt,
+			count,
+			rapidResourceMapEntryTypedNilPtr,
+		)
+		originalRegistrationID := rapid.Int64Range(0, 5).Draw(rt, "originalRegistrationID")
+
+		want := 0
+		for key, value := range resources {
+			if expectedAbsent[key] {
+				continue
+			}
+			stub, ok := value.(rapidStubPublication)
+			require.True(rt, ok, "key=%d", key)
+			if stub.originalRegistrationID == originalRegistrationID {
+				want++
+			}
+		}
+		require.Equal(
+			rt,
+			want,
+			countPublicationsByOriginalRegistrationID(resources, originalRegistrationID),
+		)
 	})
 }

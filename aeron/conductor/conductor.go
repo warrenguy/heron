@@ -77,8 +77,8 @@ type Config struct {
 	InterServiceTimeout time.Duration
 	EpochClock          EpochClock
 	NanoClock           NanoClock
-	// ErrorHandler receives conductor faults and recovered image handler panics;
-	// nil swallows those errors.
+	// ErrorHandler receives conductor faults and recovered panics from image
+	// handlers and PublicationErrorFrameHandler. Nil swallows those errors.
 	ErrorHandler func(error)
 	// SubscriberErrorHandler is optional; nil swallows subscriber-side errors.
 	SubscriberErrorHandler func(error)
@@ -91,6 +91,12 @@ type Config struct {
 	MediaDriverDir string
 	// CloseLingerNs schedules log unmap after publication or image close.
 	CloseLingerNs int64
+	// PublicationErrorFrameHandler is optional; nil drops every publication
+	// error frame. The conductor calls it once per publication whose
+	// OriginalRegistrationID equals the frame RegistrationID. The call holds
+	// no resource lock, so the handler may close publications. The handler
+	// must not call Client methods.
+	PublicationErrorFrameHandler PublicationErrorHandler
 }
 
 func ValidateConfig(config Config) error {
@@ -119,7 +125,6 @@ type Conductor struct {
 	pending                pendingRegistry
 	activeCorrelationID    int64
 	receivedCorrelationID  int64
-	publicationErrors      []PublicationError
 	// Resource maps; populated by ready handlers and subscription pre-insert.
 	publications  map[int64]PublicationHandle
 	subscriptions map[int64]SubscriptionHandle
@@ -744,7 +749,34 @@ func (conductor *Conductor) failPending(registration *PendingRegistration, err e
 }
 
 func (conductor *Conductor) handlePublicationError(event PublicationError) {
-	conductor.publicationErrors = append(conductor.publicationErrors, event)
+	handler := conductor.config.PublicationErrorFrameHandler
+	if handler == nil {
+		return
+	}
+	matchCount := withResourceRead(conductor, func() int {
+		return countPublicationsByOriginalRegistrationID(
+			conductor.publications,
+			event.RegistrationID,
+		)
+	})
+
+	// Call the handler outside the read lock. A handler that closes a
+	// publication takes resourceMu.
+	for range matchCount {
+		conductor.invokePublicationErrorFrameHandler(handler, event)
+	}
+}
+
+// invokePublicationErrorFrameHandler calls handler. A recovered panic goes to
+// ErrorHandler.
+func (conductor *Conductor) invokePublicationErrorFrameHandler(
+	handler PublicationErrorHandler,
+	event PublicationError,
+) {
+	defer func() {
+		conductor.reportHandlerPanic(recover(), "publication error frame handler")
+	}()
+	handler(event)
 }
 
 // terminateWithError records err as the termination cause and force-closes

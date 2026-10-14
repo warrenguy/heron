@@ -8,6 +8,7 @@ import (
 // publications resource map.
 type PublicationHandle interface {
 	RegistrationID() int64
+	OriginalRegistrationID() int64
 }
 
 func isAbsentMapValue[T any](value T) bool {
@@ -27,6 +28,24 @@ func liveResourceCount[T any](resources map[int64]T) int {
 	count := 0
 	for _, resource := range resources {
 		if !isAbsentMapValue(resource) {
+			count++
+		}
+	}
+	return count
+}
+
+// countPublicationsByOriginalRegistrationID returns the number of live
+// publications whose OriginalRegistrationID equals originalRegistrationID.
+func countPublicationsByOriginalRegistrationID(
+	publications map[int64]PublicationHandle,
+	originalRegistrationID int64,
+) int {
+	count := 0
+	for _, publication := range publications {
+		if isAbsentMapValue(publication) {
+			continue
+		}
+		if publication.OriginalRegistrationID() == originalRegistrationID {
 			count++
 		}
 	}

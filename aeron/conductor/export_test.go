@@ -3,7 +3,6 @@ package conductor
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -319,10 +318,6 @@ func (conductor *Conductor) SweepLingeringLogBuffersAtForTest(nowNs int64) int {
 
 func ValidateLogFileNameForTest(logFileName, mediaDriverDir string) error {
 	return validateLogFileName(logFileName, mediaDriverDir)
-}
-
-func PublicationErrorsForTest(conductor *Conductor) []PublicationError {
-	return slices.Clone(conductor.publicationErrors)
 }
 
 // InvalidCauseForTest returns the stored adapter invalidation cause, or nil.

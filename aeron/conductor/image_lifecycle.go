@@ -158,15 +158,23 @@ func (conductor *Conductor) invokeImageHandler(handler func()) {
 	conductor.inCallback = true
 	savedDepth := conductor.suspendResourceWriteLock()
 	defer func() {
-		if recovered := recover(); recovered != nil {
-			err, ok := recovered.(error)
-			if !ok {
-				err = fmt.Errorf("conductor: image handler panic: %v", recovered)
-			}
-			invokeErrorHandler(conductor.config.ErrorHandler, err)
-		}
+		conductor.reportHandlerPanic(recover(), "image handler")
 		conductor.resumeResourceWriteLock(savedDepth)
 		conductor.inCallback = false
 	}()
 	handler()
+}
+
+// reportHandlerPanic sends a recovered user handler panic to ErrorHandler.
+// label names the handler in a non-error panic value. Nil recovered is a
+// no-op.
+func (conductor *Conductor) reportHandlerPanic(recovered any, label string) {
+	if recovered == nil {
+		return
+	}
+	err, ok := recovered.(error)
+	if !ok {
+		err = fmt.Errorf("conductor: %s panic: %v", label, recovered)
+	}
+	invokeErrorHandler(conductor.config.ErrorHandler, err)
 }

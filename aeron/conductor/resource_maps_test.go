@@ -15,19 +15,29 @@ import (
 const resourceMapTestEpochMs int64 = 1_700_000_000_000
 
 type stubPublication struct {
-	registrationID int64
+	registrationID         int64
+	originalRegistrationID int64
 }
 
 func (publication stubPublication) RegistrationID() int64 {
 	return publication.registrationID
 }
 
+func (publication stubPublication) OriginalRegistrationID() int64 {
+	return publication.originalRegistrationID
+}
+
 type stubPublicationPtr struct {
-	registrationID int64
+	registrationID         int64
+	originalRegistrationID int64
 }
 
 func (publication *stubPublicationPtr) RegistrationID() int64 {
 	return publication.registrationID
+}
+
+func (publication *stubPublicationPtr) OriginalRegistrationID() int64 {
+	return publication.originalRegistrationID
 }
 
 func newBareConductorForResourceMapTest(tb testing.TB) *conductor.Conductor {
