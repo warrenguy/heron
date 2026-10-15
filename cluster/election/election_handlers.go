@@ -8,6 +8,8 @@ import (
 	"github.com/warrenguy/heron/cluster/consensus"
 )
 
+var errNewElectionFromCanvass = errors.New("election: new election detected from canvass position")
+
 // handleInit holds in INIT until PrepareForNewLeadership reports prepared.
 // The first node-startup init still skips prepare.
 func (e *Election) handleInit(nowNs int64) int {
@@ -700,13 +702,17 @@ func (e *Election) OnCanvassPosition(fields codecs.CanvassPositionFields) {
 		return
 	}
 	e.deps.Host.UpdateMemberLogPosition(follower, fields.LogLeadershipTermID, fields.LogPosition)
-	if fields.LogLeadershipTermID < e.leadershipTermID {
-		e.publishNewLeadershipTermToLaggingMember(
-			follower,
-			fields.LogLeadershipTermID,
-			e.deps.NanoClock(),
-		)
+	switch logTermID := fields.LogLeadershipTermID; {
+	case logTermID < e.leadershipTermID:
+		e.publishNewLeadershipTermToLaggingMember(follower, logTermID, e.deps.NanoClock())
+	case logTermID > e.leadershipTermID && e.isLeaderAwaitingFollowers():
+		e.HandleError(e.deps.NanoClock(), errNewElectionFromCanvass)
 	}
+}
+
+func (e *Election) isLeaderAwaitingFollowers() bool {
+	return e.electionState == ElectionStateLeaderLogReplication ||
+		e.electionState == ElectionStateLeaderReady
 }
 
 func (e *Election) OnRequestVote(fields codecs.RequestVoteFields) {

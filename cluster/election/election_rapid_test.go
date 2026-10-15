@@ -42,7 +42,9 @@ func runElectionSafetyPBT(t *testing.T, crashWeighted bool) {
 // split-brain via election state, candidate term non-decreasing after init load,
 // and durable candidate term matches the recorded write oracle. Self-win
 // transitions also check leadership term equals candidate term and quorum.
-// Crash and restart exercise durable store reuse across lives.
+// A canvass above the election term must move a leader awaiting followers out
+// of its state. Any other canvass must leave the state unchanged. Crash and
+// restart exercise durable store reuse across lives.
 func TestElectionSafety_clusterStateMachine_rapid(t *testing.T) {
 	runElectionSafetyPBT(t, false)
 }
