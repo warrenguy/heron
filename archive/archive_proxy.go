@@ -110,25 +110,27 @@ func (p *Proxy) TryCloseSession(controlSessionID int64) (int64, bool) {
 	)
 }
 
-// TryStartRecording encodes StartRecordingRequest (template 4) and offers it once.
+// TryStartRecording encodes StartRecordingRequest2 (template 63) and offers it once.
 func (p *Proxy) TryStartRecording(
 	controlSessionID int64,
 	correlationID int64,
 	streamID int32,
 	sourceLocation archivewire.SourceLocation,
+	autoStop archivewire.BooleanType,
 	channel []byte,
 ) (int64, bool) {
-	fields := codecs.StartRecordingRequestFields{
+	fields := codecs.StartRecordingRequest2Fields{
 		ControlSessionID: controlSessionID,
 		CorrelationID:    correlationID,
 		StreamID:         streamID,
 		SourceLocation:   sourceLocation,
+		AutoStop:         autoStop,
 		Channel:          channel,
 	}
 	return p.tryArchiveWireOffer(
-		archivewire.StartRecordingRequestSbeBlockLength,
+		archivewire.StartRecordingRequest2SbeBlockLength,
 		func(dst []byte, actingVersion uint16) (int, bool) {
-			return codecs.EncodeStartRecordingRequest(dst, 0, actingVersion, fields)
+			return codecs.EncodeStartRecordingRequest2(dst, 0, actingVersion, fields)
 		},
 		len(channel),
 	)

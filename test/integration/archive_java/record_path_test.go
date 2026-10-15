@@ -122,6 +122,7 @@ func recordArchiveSmoke(
 		t.Context(),
 		archivejava.RecordStreamID,
 		archivewire.SourceLocation_LOCAL,
+		false,
 		[]byte(archivejava.RecordChannel),
 	)
 	require.NoError(t, err)

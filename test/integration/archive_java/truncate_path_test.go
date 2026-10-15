@@ -82,6 +82,7 @@ func TestArchiveTruncatePath(t *testing.T) {
 		t.Context(),
 		secondStreamID,
 		archivewire.SourceLocation_LOCAL,
+		false,
 		[]byte(secondChannel),
 		startTracker,
 	)

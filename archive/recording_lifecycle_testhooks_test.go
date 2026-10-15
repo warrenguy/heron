@@ -100,7 +100,7 @@ func offeredArchiveCorrelationID(t *testing.T, wire []byte) int64 {
 	decoded, ok := codecs.TryDecodeByTemplate(wire, 0, codecs.ArchiveDecodeMaxVarLen)
 	require.True(t, ok)
 	switch fields := decoded.Fields.(type) {
-	case codecs.StartRecordingRequestFields:
+	case codecs.StartRecordingRequest2Fields:
 		return fields.CorrelationID
 	case codecs.ExtendRecordingRequest2Fields:
 		return fields.CorrelationID
@@ -491,6 +491,7 @@ func TestStartRecording_clearsPriorDemuxLatch(t *testing.T) {
 		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		archivewire.SourceLocation_LOCAL,
+		archivewire.BooleanType_FALSE,
 		[]byte(lifecycleRecordingChannel),
 	)
 	require.NoError(t, err)
@@ -514,6 +515,7 @@ func TestStartRecording_sequentialRequestsReusePoller(t *testing.T) {
 			t.Context(),
 			archiveProxyTestRecordingStreamID,
 			archivewire.SourceLocation_LOCAL,
+			archivewire.BooleanType_FALSE,
 			[]byte(lifecycleRecordingChannel),
 		)
 		require.NoError(t, err)
@@ -537,6 +539,7 @@ func TestStartRecording_awaitReturnsRecordingId(t *testing.T) {
 		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		archivewire.SourceLocation_LOCAL,
+		archivewire.BooleanType_FALSE,
 		[]byte(lifecycleRecordingChannel),
 	)
 	require.NoError(t, err)
@@ -559,6 +562,7 @@ func TestStartRecording_errorResponseReturnsError(t *testing.T) {
 		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		archivewire.SourceLocation_LOCAL,
+		archivewire.BooleanType_FALSE,
 		[]byte(lifecycleRecordingChannel),
 	)
 	require.Error(t, err)
@@ -576,6 +580,7 @@ func TestStartRecordingAwaitSignal_nilTrackerReturnsError(t *testing.T) {
 		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		archivewire.SourceLocation_LOCAL,
+		archivewire.BooleanType_FALSE,
 		[]byte(lifecycleRecordingChannel),
 		targets,
 		nil,
@@ -601,6 +606,7 @@ func TestStartRecordingAwaitSignal_errorResponseReturnsError(t *testing.T) {
 		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		archivewire.SourceLocation_LOCAL,
+		archivewire.BooleanType_FALSE,
 		[]byte(lifecycleRecordingChannel),
 		targets,
 		tracker,
@@ -629,6 +635,7 @@ func TestStartRecordingAwaitSignal_OKAloneDoesNotComplete(t *testing.T) {
 		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		archivewire.SourceLocation_LOCAL,
+		archivewire.BooleanType_FALSE,
 		[]byte(lifecycleRecordingChannel),
 		targets,
 		tracker,
@@ -812,6 +819,7 @@ func TestStartRecordingAwaitSignal_OKThenSTART(t *testing.T) {
 		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		archivewire.SourceLocation_LOCAL,
+		archivewire.BooleanType_FALSE,
 		[]byte(lifecycleRecordingChannel),
 		targets,
 		tracker,

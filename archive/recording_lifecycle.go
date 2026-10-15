@@ -49,12 +49,13 @@ func (ops archiveControlOps) offerAndAwait(
 	)
 }
 
-// startRecording offers a StartRecordingRequest and blocks until the archive replies
+// startRecording offers a StartRecordingRequest2 and blocks until the archive replies
 // with a matching ControlResponse. RelevantID semantics: see Client.StartRecording.
 func (ops archiveControlOps) startRecording(
 	ctx context.Context,
 	streamID int32,
 	sourceLocation archivewire.SourceLocation,
+	autoStop archivewire.BooleanType,
 	channel []byte,
 ) (int64, error) {
 	fields, err := ops.offerAndAwait(ctx, func(correlationID int64) (int64, bool) {
@@ -63,6 +64,7 @@ func (ops archiveControlOps) startRecording(
 			correlationID,
 			streamID,
 			sourceLocation,
+			autoStop,
 			channel,
 		)
 	})
@@ -242,6 +244,7 @@ func (ops archiveControlOps) startRecordingAwaitSignal(
 	ctx context.Context,
 	streamID int32,
 	sourceLocation archivewire.SourceLocation,
+	autoStop archivewire.BooleanType,
 	channel []byte,
 	targets ControlPollTargets,
 	tracker *StartSignalTracker,
@@ -261,6 +264,7 @@ func (ops archiveControlOps) startRecordingAwaitSignal(
 				correlationID,
 				streamID,
 				sourceLocation,
+				autoStop,
 				channel,
 			)
 		},

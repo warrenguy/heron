@@ -255,39 +255,52 @@ func TestProxy_TryChallengeResponse_fieldValuesOnWire(t *testing.T) {
 }
 
 func TestProxy_TryStartRecording_fieldValuesOnWire(t *testing.T) {
-	pub, proxy := newTestProxy(Config{})
+	cases := []struct {
+		name     string
+		autoStop archivewire.BooleanType
+	}{
+		{name: "autoStop_true", autoStop: archivewire.BooleanType_TRUE},
+		{name: "autoStop_false", autoStop: archivewire.BooleanType_FALSE},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pub, proxy := newTestProxy(Config{})
 
-	channel := []byte("aeron:udp?endpoint=localhost:9999")
-	pos, ok := proxy.TryStartRecording(
-		controlResponseTestControlSessionID,
-		archiveProxyTestCorrelationID,
-		archiveProxyTestRecordingStreamID,
-		archivewire.SourceLocation_REMOTE,
-		channel,
-	)
-	require.True(t, ok)
+			channel := []byte("aeron:udp?endpoint=localhost:9999")
+			pos, ok := proxy.TryStartRecording(
+				controlResponseTestControlSessionID,
+				archiveProxyTestCorrelationID,
+				archiveProxyTestRecordingStreamID,
+				archivewire.SourceLocation_REMOTE,
+				tc.autoStop,
+				channel,
+			)
+			require.True(t, ok)
 
-	wire := pub.lastOffer()
-	require.Equal(t, archiveProxyTestOfferPosition+int64(len(wire)), pos)
+			wire := pub.lastOffer()
+			require.Equal(t, archiveProxyTestOfferPosition+int64(len(wire)), pos)
 
-	fields := requireProxyWireFields[codecs.StartRecordingRequestFields](
-		t,
-		wire,
-		archivewire.StartRecordingRequestSbeTemplateID,
-	)
-	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
-	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
-	require.Equal(t, archiveProxyTestRecordingStreamID, fields.StreamID)
-	require.Equal(t, archivewire.SourceLocation_REMOTE, fields.SourceLocation)
-	require.Equal(t, channel, fields.Channel)
+			fields := requireProxyWireFields[codecs.StartRecordingRequest2Fields](
+				t,
+				wire,
+				archivewire.StartRecordingRequest2SbeTemplateID,
+			)
+			require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+			require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
+			require.Equal(t, archiveProxyTestRecordingStreamID, fields.StreamID)
+			require.Equal(t, archivewire.SourceLocation_REMOTE, fields.SourceLocation)
+			require.Equal(t, tc.autoStop, fields.AutoStop)
+			require.Equal(t, channel, fields.Channel)
 
-	expectedLen, lenOK := codecs.ArchiveWireMessageLen(
-		archivewire.StartRecordingRequestSbeBlockLength,
-		len(channel),
-	)
-	require.True(t, lenOK)
-	require.NotZero(t, expectedLen)
-	require.Len(t, wire, expectedLen)
+			expectedLen, lenOK := codecs.ArchiveWireMessageLen(
+				archivewire.StartRecordingRequest2SbeBlockLength,
+				len(channel),
+			)
+			require.True(t, lenOK)
+			require.NotZero(t, expectedLen)
+			require.Len(t, wire, expectedLen)
+		})
+	}
 }
 
 func TestProxy_TryExtendRecording_fieldValuesOnWire(t *testing.T) {
@@ -611,6 +624,7 @@ func TestProxy_encodePreflightFailure(t *testing.T) {
 					archiveProxyTestCorrelationID,
 					archiveProxyTestRecordingStreamID,
 					archivewire.SourceLocation_LOCAL,
+					archivewire.BooleanType_FALSE,
 					oversized,
 				)
 			},
