@@ -22,10 +22,17 @@ import (
 //
 // Poll never polls the underlying pollers directly and never calls DoWork.
 //
-// Recording signals drop until Config.RecordingSignalHandler or
-// SetRecordingSignalHandler sets a handler. That handler receives signals on
-// Poll and on every blocking control await that polls through it.
-// *AwaitSignal methods install a per-call tracker for the proof signal instead.
+// Recording signals drop while Client has no session handler and no open
+// AsyncStartRecording. Config.RecordingSignalHandler or
+// SetRecordingSignalHandler sets the session handler. The session handler
+// receives signals on Poll and on every blocking control await that polls
+// through it. *AwaitSignal methods install a per-call tracker for the proof
+// signal instead.
+//
+// Client holds at most one pending signal tracker. NewAsyncStartRecording
+// installs the tracker of its handle. Poll and ListRecording send each signal
+// to the session handler, then to that tracker. AsyncStartRecording lists the
+// caller rules.
 //
 // ListRecording uses a descriptor-mode poll so its OK response routes to the
 // descriptor poller rather than the session control-response poller.
@@ -44,6 +51,10 @@ type Client struct {
 	controlPoller    *ControlResponsePoller
 	descriptorPoller *RecordingDescriptorPoller
 	signalHandler    RecordingSignalHandler
+
+	// pendingSignalTracker receives each signal after signalHandler while an
+	// AsyncStartRecording holds the slot. Nil marks an empty slot.
+	pendingSignalTracker RecordingSignalHandler
 
 	controlSubscription *aeron.Subscription
 	controlAssembler    *FragmentAssembler
@@ -187,21 +198,23 @@ func (client *Client) IsClosed() bool {
 	return client.closed
 }
 
-// Poll performs one demux poll of the control-response subscription, dispatching control
-// responses and recording descriptors to the session pollers. Recording signals are
-// dropped until a signal handler is configured. It never calls DoWork.
+// Poll runs one demux poll of the control-response subscription. Poll sends
+// control responses and recording descriptors to the session pollers. Poll
+// sends each recording signal to the session handler, then to the pending
+// signal tracker of an open AsyncStartRecording. Poll drops signals when
+// neither exists. Poll never calls DoWork.
 func (client *Client) Poll() int {
 	return PollControlEvents(
 		client.controlSubscription,
 		DefaultControlResponseFragmentLimit,
 		client.controlAssembler,
-		client.sessionPollTargets(client.signalHandler),
+		client.sessionPollTargets(client.signalTarget()),
 	)
 }
 
 func (client *Client) listRecordingPollTargets() ControlPollTargets {
 	return ControlPollTargets{
-		SignalHandler:    client.signalHandler,
+		SignalHandler:    client.signalTarget(),
 		ControlSessionID: client.controlSessionID,
 		DescriptorPoller: client.descriptorPoller,
 	}
@@ -232,6 +245,9 @@ func (client *Client) pollRecordingSignalAwait(targets ControlPollTargets) func(
 // SetRecordingSignalHandler overrides Config.RecordingSignalHandler for Poll and
 // for blocking control awaits that poll through it. *AwaitSignal routes proof
 // signals to the per-call tracker, not this handler.
+//
+// handler does not replace the pending signal tracker of an open
+// AsyncStartRecording.
 func (client *Client) SetRecordingSignalHandler(handler RecordingSignalHandler) {
 	client.signalHandler = handler
 }

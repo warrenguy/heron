@@ -10,6 +10,7 @@ import (
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func TestNewClient_transfersOwnsAeronClient(t *testing.T) {
@@ -411,6 +412,110 @@ func TestClientStartRecordingAwaitSignal_OKThenSTART(t *testing.T) {
 			require.Equal(t, []byte(lifecycleRecordingChannel), fields.Channel)
 		})
 	}
+}
+
+// TestClientListRecording_forwardsSignalsToPendingTracker asserts the
+// ListRecording poll picks its signal target like Poll. The session handler
+// and the open handle's tracker each see START once.
+func TestClientListRecording_forwardsSignalsToPendingTracker(t *testing.T) {
+	f := newAsyncStartRecordingFixture(t)
+	var captured capturedRecordingSignal
+	f.client.SetRecordingSignalHandler(recordingSignalCapture(&captured))
+
+	listCorrelationID := f.h.client.NextCorrelationID() + 1
+	responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    listCorrelationID,
+		Code:             archivewire.ControlResponseCode_OK,
+		Version:          520,
+	})
+	descriptorWire := encodeRecordingDescriptorWire(t, codecs.RecordingDescriptorFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    listCorrelationID,
+		RecordingID:      lifecycleRecordingID,
+		StartPosition:    4096,
+		StopPosition:     8192,
+	})
+	writeUnfragmentedWireToTerm(t, f.h.termBuffer, responseWire)
+	appendUnfragmentedWireToTerm(t, f.h.termBuffer, descriptorWire)
+	appendUnfragmentedWireToTerm(t, f.h.termBuffer, f.startWire(t))
+
+	got, err := f.client.ListRecording(t.Context(), lifecycleRecordingID)
+	require.NoError(t, err)
+	require.Equal(t, lifecycleRecordingID, got.RecordingID)
+	require.Equal(t, 1, captured.calls)
+	require.Equal(t, archivewire.RecordingSignal_START, captured.signal)
+	require.True(t, f.handle.tracker.Started())
+	requirePollSignal(t, f.handle, true)
+	require.Equal(t, lifecycleRecordingID, f.handle.RecordingID())
+}
+
+// TestClientStartRecordingAwaitSignal_bypassesPendingTracker asserts a
+// blocking *AwaitSignal call routes signals to its own tracker only. The open
+// handle keeps the slot for later Poll calls.
+func TestClientStartRecordingAwaitSignal_bypassesPendingTracker(t *testing.T) {
+	f := newAsyncStartRecordingFixture(t)
+	var captured capturedRecordingSignal
+	f.client.SetRecordingSignalHandler(recordingSignalCapture(&captured))
+	awaitRecordingID := lifecycleRecordingID + 1
+
+	// Phase: the blocking call sees its own START only.
+	awaitCorrelationID := f.h.client.NextCorrelationID() + 1
+	responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    awaitCorrelationID,
+		Code:             archivewire.ControlResponseCode_OK,
+		Version:          520,
+	})
+	awaitSignalWire := encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    awaitCorrelationID,
+		RecordingID:      awaitRecordingID,
+		Signal:           archivewire.RecordingSignal_START,
+	})
+	writeUnfragmentedWireToTerm(t, f.h.termBuffer, responseWire)
+	appendUnfragmentedWireToTerm(t, f.h.termBuffer, f.startWire(t))
+	appendUnfragmentedWireToTerm(t, f.h.termBuffer, awaitSignalWire)
+
+	tracker := NewStartSignalTracker(controlResponseTestControlSessionID)
+	got, err := f.client.StartRecordingAwaitSignal(
+		t.Context(),
+		archiveProxyTestRecordingStreamID,
+		archivewire.SourceLocation_LOCAL,
+		true,
+		[]byte(lifecycleRecordingChannel),
+		tracker,
+	)
+	require.NoError(t, err)
+	require.Equal(t, awaitRecordingID, got)
+	require.Zero(t, captured.calls, "session handler must not see signals during the await")
+	require.False(t, f.handle.tracker.Started(), "open handle must not see signals during the await")
+	require.Same(t, &f.handle.tracker, f.client.pendingSignalTracker)
+
+	// Phase: Poll feeds the slot again.
+	f.deliver(t, f.startWire(t))
+	require.Equal(t, 1, captured.calls)
+	requirePollSignal(t, f.handle, true)
+	require.Equal(t, lifecycleRecordingID, f.handle.RecordingID())
+}
+
+// TestClientPoll_fullSlot_ZeroAllocs asserts Client.Poll stays zero-alloc
+// while an open handle holds the slot. The fixture holds one signal, so the
+// check measures empty polls.
+// TestHandleControlFragment_DispatchSTARTThroughFanout_ZeroAllocs covers the
+// fanout dispatch.
+func TestClientPoll_fullSlot_ZeroAllocs(t *testing.T) {
+	f := newAsyncStartRecordingFixture(t)
+	var captured capturedRecordingSignal
+	f.client.SetRecordingSignalHandler(recordingSignalCapture(&captured))
+
+	f.deliver(t, f.startWire(t))
+	require.Equal(t, 1, captured.calls)
+	require.True(t, f.handle.tracker.Started())
+
+	testutil.AssertZeroAllocs(t, "Client.Poll", 100, func() {
+		f.client.Poll()
+	})
 }
 
 // TestClientClose_releasesResourcesAndIsIdempotent proves Close offers one

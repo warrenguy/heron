@@ -91,7 +91,7 @@ func setupControlOfferRetryDoWorkRecorder(t *testing.T, client *aeron.Client) *i
 	return &count
 }
 
-func requireControlTerminal(tb testing.TB, err error, wantStatus int64) {
+func requireControlTerminal(tb requireTB, err error, wantStatus int64) {
 	tb.Helper()
 
 	var terminal *ControlTerminalError

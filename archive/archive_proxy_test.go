@@ -77,8 +77,14 @@ func (publication *stubControlPublication) lastOffer() []byte {
 	return publication.offered[len(publication.offered)-1]
 }
 
+// requireTB is the test handle *testing.T and *rapid.T both satisfy.
+type requireTB interface {
+	require.TestingT
+	Helper()
+}
+
 func requireProxyWireFields[T any](
-	t *testing.T,
+	t requireTB,
 	wire []byte,
 	wantTemplateID uint16,
 ) T {
