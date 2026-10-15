@@ -67,7 +67,7 @@ func TestPublicationError_roundtrip_nonZeroScalars(t *testing.T) {
 		StreamID:                  7,
 		ReceiverID:                4004,
 		GroupTag:                  5005,
-		AddressType:               2,
+		AddressType:               PublicationErrorAddressTypeIPv6,
 		AddressPort:               8080,
 		Address:                   address,
 		ErrorCode:                 1,
@@ -83,7 +83,7 @@ func TestPublicationError_roundtrip_nonZeroScalars(t *testing.T) {
 func TestDecodePublicationError_ipv4AddressBlock(t *testing.T) {
 	event := PublicationError{
 		RegistrationID: 1,
-		AddressType:    1,
+		AddressType:    PublicationErrorAddressTypeIPv4,
 		AddressPort:    8080,
 		ErrorMessage:   "x",
 	}
@@ -95,7 +95,7 @@ func TestDecodePublicationError_ipv4AddressBlock(t *testing.T) {
 
 	decoded, err := DecodePublicationError(atomicbuffer.Wrap(payload), 0, len(payload))
 	require.NoError(t, err)
-	require.Equal(t, int16(1), decoded.AddressType)
+	require.Equal(t, PublicationErrorAddressTypeIPv4, decoded.AddressType)
 	require.Equal(t, uint16(8080), decoded.AddressPort)
 	require.Equal(t, event.Address, decoded.Address)
 }

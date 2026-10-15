@@ -40,6 +40,9 @@ const (
 
 	ErrorCodeUnknownSubscription int32 = 2
 	ErrorCodeUnknownPublication  int32 = 3
+
+	PublicationErrorAddressTypeIPv4 int16 = 1
+	PublicationErrorAddressTypeIPv6 int16 = 2
 )
 
 var ControlProtocolVersion = cnc.ComposeSemanticVersion(1, 0, 0)

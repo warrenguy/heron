@@ -31,3 +31,31 @@ func TestConductorConnectConfig_errorHandlerWrapsMappedErrors(t *testing.T) {
 	require.NotSame(t, staleErr, received)
 	require.Equal(t, MapConductorErrorForTest(staleErr), received)
 }
+
+func TestConductorConnectConfig_publicationErrorFrameHandler(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil", func(t *testing.T) {
+		t.Parallel()
+
+		config := ConductorConnectConfigForTest(Config{}, testutil.TestClientID)
+		require.Nil(t, config.PublicationErrorFrameHandler)
+	})
+
+	t.Run("set", func(t *testing.T) {
+		t.Parallel()
+
+		var frames []PublicationErrorFrame
+		cfg := Config{
+			PublicationErrorFrameHandler: func(frame PublicationErrorFrame) {
+				frames = append(frames, frame)
+			},
+		}
+		config := ConductorConnectConfigForTest(cfg, testutil.TestClientID)
+		require.NotNil(t, config.PublicationErrorFrameHandler)
+
+		event := publicationErrorFrameTestEvent(clientAddPublicationRegistrationID)
+		config.PublicationErrorFrameHandler(event)
+		require.Equal(t, []PublicationErrorFrame{publicationErrorFrameFrom(event)}, frames)
+	})
+}

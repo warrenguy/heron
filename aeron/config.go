@@ -56,6 +56,11 @@ type Config struct {
 	// invocation contract.
 	UnavailableImageHandler UnavailableImageHandler
 
+	// PublicationErrorFrameHandler receives publication error frames for
+	// publications on the Client returned by Connect. Nil means no callback.
+	// See PublicationErrorFrameHandler for invocation contract.
+	PublicationErrorFrameHandler PublicationErrorFrameHandler
+
 	EpochClock conductor.EpochClock
 	NanoClock  conductor.NanoClock
 
