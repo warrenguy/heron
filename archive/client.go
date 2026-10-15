@@ -236,27 +236,34 @@ func (client *Client) SetRecordingSignalHandler(handler RecordingSignalHandler) 
 	client.signalHandler = handler
 }
 
-// StartRecording offers a StartRecordingRequest and blocks until the archive replies
+// StartRecording offers a StartRecordingRequest2 and blocks until the archive replies
 // with a matching ControlResponse. The returned RelevantID is the subscription
 // registration id on the wire, not the catalog recording id; await RecordingSignal_START
 // for the assigned recording id.
+//
+// autoStop true releases the recording subscription when the recording
+// session ends. autoStop false keeps the subscription until StopRecording on
+// the same channel and stream. Pass false only when the subscription must
+// outlive the recording session.
 //
 // Returns ctx.Err() when the context is done before a response is received.
 func (client *Client) StartRecording(
 	ctx context.Context,
 	streamID int32,
 	sourceLocation archivewire.SourceLocation,
+	autoStop bool,
 	channel []byte,
 ) (int64, error) {
 	return client.sessionControlOps(client.Poll).startRecording(
 		ctx,
 		streamID,
 		sourceLocation,
+		booleanTypeFromBool(autoStop),
 		channel,
 	)
 }
 
-// StartRecordingAwaitSignal offers a StartRecordingRequest and blocks until tracker
+// StartRecordingAwaitSignal offers a StartRecordingRequest2 and blocks until tracker
 // latches the correlated START RecordingSignalEvent.
 //
 // Returns the catalog recording id from that signal.
@@ -270,6 +277,8 @@ func (client *Client) StartRecording(
 //     catalog recording id
 //   - the archive sends the START signal only after an image appears on the
 //     recording subscription
+//
+// autoStop: see StartRecording.
 //
 // ControlResponseTimeout bounds the whole wait after a successful offer.
 //
@@ -288,6 +297,7 @@ func (client *Client) StartRecordingAwaitSignal(
 	ctx context.Context,
 	streamID int32,
 	sourceLocation archivewire.SourceLocation,
+	autoStop bool,
 	channel []byte,
 	tracker *StartSignalTracker,
 ) (recordingID int64, err error) {
@@ -298,6 +308,7 @@ func (client *Client) StartRecordingAwaitSignal(
 		ctx,
 		streamID,
 		sourceLocation,
+		booleanTypeFromBool(autoStop),
 		channel,
 		targets,
 		tracker,
@@ -340,7 +351,7 @@ func (client *Client) StartRecordingAwaitSignal(
 //   - the caller must release the subscription by stopping the recording on
 //     the same channel and stream
 //
-// Pass true unless the caller owns a release path it drives itself.
+// Pass false only when the subscription must outlive the recording session.
 //
 // ControlResponseTimeout bounds the whole wait after a successful offer.
 //
@@ -370,10 +381,6 @@ func (client *Client) ExtendRecordingAwaitSignal(
 	extendedRecordingID int64,
 	err error,
 ) {
-	wireAutoStop := archivewire.BooleanType_FALSE
-	if autoStop {
-		wireAutoStop = archivewire.BooleanType_TRUE
-	}
 	targets := client.sessionPollTargets(tracker)
 	err = client.sessionControlOps(
 		client.pollRecordingSignalAwait(targets),
@@ -382,7 +389,7 @@ func (client *Client) ExtendRecordingAwaitSignal(
 		recordingID,
 		streamID,
 		sourceLocation,
-		wireAutoStop,
+		booleanTypeFromBool(autoStop),
 		channel,
 		targets,
 		tracker,
@@ -391,6 +398,13 @@ func (client *Client) ExtendRecordingAwaitSignal(
 		return 0, err
 	}
 	return tracker.ExtendedRecordingID(), nil
+}
+
+func booleanTypeFromBool(value bool) archivewire.BooleanType {
+	if value {
+		return archivewire.BooleanType_TRUE
+	}
+	return archivewire.BooleanType_FALSE
 }
 
 // StopRecording offers a StopRecordingRequest and blocks until the archive replies with

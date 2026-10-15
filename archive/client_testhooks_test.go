@@ -247,28 +247,20 @@ func TestClientStopRecordingAwaitSignal_routesSTOPToTracker(t *testing.T) {
 	require.Equal(t, int64(3003), tracker.StoppedPosition())
 }
 
+var clientAutoStopCases = []struct {
+	name         string
+	autoStop     bool
+	wantAutoStop archivewire.BooleanType
+}{
+	{name: "autoStop_true", autoStop: true, wantAutoStop: archivewire.BooleanType_TRUE},
+	{name: "autoStop_false", autoStop: false, wantAutoStop: archivewire.BooleanType_FALSE},
+}
+
 // TestClientExtendRecordingAwaitSignal_OKThenEXTEND asserts the public Client
 // method maps bool autoStop to BooleanType, completes on EXTEND, and returns
 // the requested id.
 func TestClientExtendRecordingAwaitSignal_OKThenEXTEND(t *testing.T) {
-	cases := []struct {
-		name         string
-		autoStop     bool
-		wantAutoStop archivewire.BooleanType
-	}{
-		{
-			name:         "autoStop_true",
-			autoStop:     true,
-			wantAutoStop: archivewire.BooleanType_TRUE,
-		},
-		{
-			name:         "autoStop_false",
-			autoStop:     false,
-			wantAutoStop: archivewire.BooleanType_FALSE,
-		},
-	}
-
-	for _, tc := range cases {
+	for _, tc := range clientAutoStopCases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newLifecycleHarness(t)
 			client := h.newClient()
@@ -317,6 +309,102 @@ func TestClientExtendRecordingAwaitSignal_OKThenEXTEND(t *testing.T) {
 			require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
 			require.Equal(t, correlationID, fields.CorrelationID)
 			require.Equal(t, lifecycleRecordingID, fields.RecordingID)
+			require.Equal(t, archiveProxyTestRecordingStreamID, fields.StreamID)
+			require.Equal(t, archivewire.SourceLocation_LOCAL, fields.SourceLocation)
+			require.Equal(t, tc.wantAutoStop, fields.AutoStop)
+			require.Equal(t, []byte(lifecycleRecordingChannel), fields.Channel)
+		})
+	}
+}
+
+func TestClientStartRecording_OK(t *testing.T) {
+	const subscriptionID = int64(2002)
+
+	for _, tc := range clientAutoStopCases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLifecycleHarness(t)
+			client := h.newClient()
+
+			correlationID := h.client.NextCorrelationID() + 1
+			responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+				ControlSessionID: controlResponseTestControlSessionID,
+				CorrelationID:    correlationID,
+				RelevantID:       subscriptionID,
+				Code:             archivewire.ControlResponseCode_OK,
+				Version:          520,
+			})
+			writeUnfragmentedWireToTerm(t, h.termBuffer, responseWire)
+
+			got, err := client.StartRecording(
+				t.Context(),
+				archiveProxyTestRecordingStreamID,
+				archivewire.SourceLocation_LOCAL,
+				tc.autoStop,
+				[]byte(lifecycleRecordingChannel),
+			)
+			require.NoError(t, err)
+			require.Equal(t, subscriptionID, got)
+
+			fields := requireProxyWireFields[codecs.StartRecordingRequest2Fields](
+				t,
+				h.pub.lastOffer(),
+				archivewire.StartRecordingRequest2SbeTemplateID,
+			)
+			require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+			require.Equal(t, correlationID, fields.CorrelationID)
+			require.Equal(t, archiveProxyTestRecordingStreamID, fields.StreamID)
+			require.Equal(t, archivewire.SourceLocation_LOCAL, fields.SourceLocation)
+			require.Equal(t, tc.wantAutoStop, fields.AutoStop)
+			require.Equal(t, []byte(lifecycleRecordingChannel), fields.Channel)
+		})
+	}
+}
+
+func TestClientStartRecordingAwaitSignal_OKThenSTART(t *testing.T) {
+	for _, tc := range clientAutoStopCases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLifecycleHarness(t)
+			client := h.newClient()
+			tracker := NewStartSignalTracker(controlResponseTestControlSessionID)
+
+			correlationID := h.client.NextCorrelationID() + 1
+			responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+				ControlSessionID: controlResponseTestControlSessionID,
+				CorrelationID:    correlationID,
+				Code:             archivewire.ControlResponseCode_OK,
+				Version:          520,
+			})
+			signalWire := encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
+				ControlSessionID: controlResponseTestControlSessionID,
+				CorrelationID:    correlationID,
+				RecordingID:      lifecycleRecordingID,
+				SubscriptionID:   2002,
+				Position:         0,
+				Signal:           archivewire.RecordingSignal_START,
+			})
+			writeUnfragmentedWireToTerm(t, h.termBuffer, responseWire)
+			appendUnfragmentedWireToTerm(t, h.termBuffer, signalWire)
+
+			got, err := client.StartRecordingAwaitSignal(
+				t.Context(),
+				archiveProxyTestRecordingStreamID,
+				archivewire.SourceLocation_LOCAL,
+				tc.autoStop,
+				[]byte(lifecycleRecordingChannel),
+				tracker,
+			)
+			require.NoError(t, err)
+			require.Equal(t, lifecycleRecordingID, got)
+			require.True(t, tracker.Started())
+			require.Equal(t, lifecycleRecordingID, tracker.StartedRecordingID())
+
+			fields := requireProxyWireFields[codecs.StartRecordingRequest2Fields](
+				t,
+				h.pub.lastOffer(),
+				archivewire.StartRecordingRequest2SbeTemplateID,
+			)
+			require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+			require.Equal(t, correlationID, fields.CorrelationID)
 			require.Equal(t, archiveProxyTestRecordingStreamID, fields.StreamID)
 			require.Equal(t, archivewire.SourceLocation_LOCAL, fields.SourceLocation)
 			require.Equal(t, tc.wantAutoStop, fields.AutoStop)

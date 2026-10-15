@@ -63,6 +63,7 @@ func (s *recordingArchiveStub) StartRecordingAwaitSignal(
 	_ context.Context,
 	_ int32,
 	_ archivewire.SourceLocation,
+	_ bool,
 	_ []byte,
 	_ *archive.StartSignalTracker,
 ) (int64, error) {

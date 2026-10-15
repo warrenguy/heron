@@ -28,6 +28,7 @@ func TestClientLifecycle_contextDone(t *testing.T) {
 					ctx,
 					archiveProxyTestRecordingStreamID,
 					archivewire.SourceLocation_LOCAL,
+					false,
 					[]byte(lifecycleRecordingChannel),
 				)
 				return err
@@ -41,6 +42,7 @@ func TestClientLifecycle_contextDone(t *testing.T) {
 					ctx,
 					archiveProxyTestRecordingStreamID,
 					archivewire.SourceLocation_LOCAL,
+					false,
 					[]byte(lifecycleRecordingChannel),
 					tracker,
 				)
@@ -168,6 +170,7 @@ func TestClientStartRecording_contextCanceledMidLoop(t *testing.T) {
 		cancelCtx,
 		archiveProxyTestRecordingStreamID,
 		archivewire.SourceLocation_LOCAL,
+		false,
 		[]byte(lifecycleRecordingChannel),
 	)
 	require.ErrorIs(t, err, context.Canceled)

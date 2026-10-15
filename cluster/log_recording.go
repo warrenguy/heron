@@ -57,6 +57,7 @@ type logArchiveControl interface {
 		ctx context.Context,
 		streamID int32,
 		sourceLocation archivewire.SourceLocation,
+		autoStop bool,
 		channel []byte,
 		tracker *archive.StartSignalTracker,
 	) (recordingID int64, err error)
@@ -332,6 +333,7 @@ func (r *logRecording) StartLogRecording(
 			r.ctx,
 			r.logStreamID,
 			sourceLocation,
+			false,
 			channelBytes,
 			tracker,
 		)

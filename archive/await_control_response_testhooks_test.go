@@ -351,6 +351,7 @@ func TestOfferAndAwait_offerTerminal(t *testing.T) {
 		t.Context(),
 		archiveProxyTestRecordingStreamID,
 		archivewire.SourceLocation_LOCAL,
+		archivewire.BooleanType_FALSE,
 		[]byte(lifecycleRecordingChannel),
 	)
 	requireControlTerminal(t, err, aeron.NotConnected)
