@@ -433,6 +433,9 @@ type Agent struct {
 	// after NewAgent.
 	timers *timerService
 
+	// expiredTimerCountByCorrelationID counts committed TimerEvents that found
+	// no timer to cancel, per correlation id. handleScheduleTimer consumes one
+	// count per request and deletes the entry at zero. Never reset.
 	expiredTimerCountByCorrelationID map[int64]int64
 
 	// timerExpiryHandler is handleTimerExpiry cached once at construction so
