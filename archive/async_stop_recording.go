@@ -1,7 +1,5 @@
 package archive
 
-import "github.com/warrenguy/heron/aeron"
-
 // AsyncStopRecording is one non-blocking stop recording request.
 //
 // Behaviour: build the handle once. Call TryOffer and PollResponse across
@@ -54,19 +52,12 @@ func (a *AsyncStopRecording) TryOffer() (bool, error) {
 	if a == nil || a.closed {
 		return false, nil
 	}
-	pos, ok := a.client.proxy.TryStopRecording(
+	return controlOfferResult(a.client.proxy.TryStopRecording(
 		a.client.controlSessionID,
 		a.correlationID,
 		a.streamID,
 		a.channel,
-	)
-	if ok {
-		return true, nil
-	}
-	if aeron.IsIngressRetriable(pos) {
-		return false, nil
-	}
-	return false, &ControlTerminalError{Status: pos}
+	))
 }
 
 // PollResponse reports the ControlResponse outcome for the stored

@@ -3,10 +3,12 @@
 package cluster_archive_test
 
 import (
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
@@ -38,13 +40,16 @@ func TestArchiveClient_startAutoStopReleasesSubscription(t *testing.T) {
 
 	// Each case owns a stream id. The archive keys recording subscriptions on
 	// channel and stream, so a kept subscription would refuse the next case.
+	// The async case starts both recordings through AsyncStartRecording.
 	cases := []struct {
 		name     string
 		autoStop bool
+		async    bool
 		streamID int32
 	}{
 		{name: "autoStop_false", autoStop: false, streamID: 4001},
 		{name: "autoStop_true", autoStop: true, streamID: 4002},
+		{name: "autoStop_true_async", autoStop: true, async: true, streamID: 4003},
 	}
 	channel := []byte(archiveClientRecordingChannel)
 	for _, tc := range cases {
@@ -53,16 +58,15 @@ func TestArchiveClient_startAutoStopReleasesSubscription(t *testing.T) {
 			pub, err := aeronClient.AddPublication(tc.streamID, archiveClientRecordingChannel)
 			require.NoError(t, err)
 			harness.CleanupClose(t, "close first record publication", pub.Close)
-			startTracker := archive.NewStartSignalTracker(archiveClient.ControlSessionID())
-			recordingID, err := archiveClient.StartRecordingAwaitSignal(
-				t.Context(),
+			recordingID := awaitStartRecording(
+				t,
+				aeronClient,
+				hadClientError,
+				archiveClient,
 				tc.streamID,
-				archivewire.SourceLocation_LOCAL,
 				tc.autoStop,
-				channel,
-				startTracker,
+				tc.async,
 			)
-			require.NoError(t, err)
 
 			// Phase: close the publication and wait for STOP.
 			stopped := false
@@ -113,18 +117,82 @@ func TestArchiveClient_startAutoStopReleasesSubscription(t *testing.T) {
 			secondPub, err := aeronClient.AddPublication(tc.streamID, archiveClientRecordingChannel)
 			require.NoError(t, err)
 			harness.CleanupClose(t, "close second record publication", secondPub.Close)
-			secondTracker := archive.NewStartSignalTracker(archiveClient.ControlSessionID())
-			secondRecordingID, err := archiveClient.StartRecordingAwaitSignal(
-				t.Context(),
+			secondRecordingID := awaitStartRecording(
+				t,
+				aeronClient,
+				hadClientError,
+				archiveClient,
 				tc.streamID,
-				archivewire.SourceLocation_LOCAL,
 				true,
-				channel,
-				secondTracker,
+				tc.async,
 			)
-			require.NoError(t, err)
-			require.True(t, secondTracker.Started())
 			require.NotEqual(t, recordingID, secondRecordingID)
 		})
 	}
+}
+
+// awaitStartRecording starts a recording on streamID and returns the catalog
+// id from the START signal. async drives AsyncStartRecording through
+// Client.Poll. Otherwise StartRecordingAwaitSignal blocks until START.
+func awaitStartRecording(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	hadClientError *atomic.Bool,
+	archiveClient *archive.Client,
+	streamID int32,
+	autoStop bool,
+	async bool,
+) int64 {
+	t.Helper()
+
+	channel := []byte(archiveClientRecordingChannel)
+	if !async {
+		tracker := archive.NewStartSignalTracker(archiveClient.ControlSessionID())
+		recordingID, err := archiveClient.StartRecordingAwaitSignal(
+			t.Context(),
+			streamID,
+			archivewire.SourceLocation_LOCAL,
+			autoStop,
+			channel,
+			tracker,
+		)
+		require.NoError(t, err)
+		require.True(t, tracker.Started())
+		return recordingID
+	}
+
+	handle := archiveClient.NewAsyncStartRecording(
+		streamID,
+		archivewire.SourceLocation_LOCAL,
+		autoStop,
+		channel,
+	)
+	defer handle.Close()
+	offered := false
+	harness.PollClientUntilTransportClean(
+		t,
+		aeronClient,
+		hadClientError,
+		harness.ConnectedPollTimeout,
+		"client transport error during async start recording",
+		func() bool {
+			if !offered {
+				var err error
+				offered, err = handle.TryOffer()
+				require.NoError(t, err)
+				if !offered {
+					return false
+				}
+			}
+			_ = archiveClient.Poll()
+			done, err := handle.PollSignal()
+			require.NoError(t, err)
+			return done
+		},
+		func() string {
+			return "async start recording not complete within " +
+				harness.ConnectedPollTimeout.String()
+		},
+	)
+	return handle.RecordingID()
 }

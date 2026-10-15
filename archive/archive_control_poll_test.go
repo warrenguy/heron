@@ -312,6 +312,34 @@ func TestHandleControlFragment_DispatchSTART_ZeroAllocs(t *testing.T) {
 	require.Positive(t, captured.calls)
 }
 
+func TestHandleControlFragment_DispatchSTARTThroughFanout_ZeroAllocs(t *testing.T) {
+	wire := recordingSignalWire(t, archivewire.RecordingSignal_START)
+	buffer := atomicbuffer.Wrap(wire)
+	header := &aeron.Header{}
+	var captured capturedRecordingSignal
+	tracker := NewStartSignalTracker(controlResponseTestControlSessionID)
+	tracker.arm(909)
+	client := &Client{
+		controlSessionID:     controlResponseTestControlSessionID,
+		signalHandler:        recordingSignalCapture(&captured),
+		pendingSignalTracker: tracker,
+	}
+	require.IsType(t, (*recordingSignalFanout)(nil), client.signalTarget())
+
+	testutil.AssertZeroAllocs(t, "handleControlFragment", 100, func() {
+		handleControlFragment(
+			client.sessionPollTargets(client.signalTarget()),
+			buffer,
+			0,
+			len(wire),
+			header,
+		)
+	})
+	require.Positive(t, captured.calls)
+	require.True(t, tracker.Started())
+	require.Equal(t, int64(1001), tracker.StartedRecordingID())
+}
+
 func TestStopSignalTracker(t *testing.T) {
 	cases := []struct {
 		name             string
