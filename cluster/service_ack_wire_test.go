@@ -167,9 +167,13 @@ func (s *wireServiceSide) writeFrame(t testing.TB, payload []byte) {
 // deliverJoinLog enqueues a crafted JoinLog on the service control path. The
 // helper does not publish through the consensus module ServiceProxy. That
 // path would add an extra consensus module wait.
-func (s *wireServiceSide) deliverJoinLog(t testing.TB, joinPos int64) {
+func (s *wireServiceSide) deliverJoinLog(
+	t testing.TB,
+	joinPos int64,
+	role codecs.Role,
+) {
 	t.Helper()
-	s.control.Enqueue(encodeWireJoinLog(t, wireJoinLogFields(joinPos)))
+	s.control.Enqueue(encodeWireJoinLog(t, wireJoinLogFields(joinPos, role)))
 }
 
 // wireHarness holds a consensus agent and a service agent bridged in memory.
@@ -306,7 +310,7 @@ func (h *wireHarness) bridge104(t testing.TB) {
 	})
 }
 
-func wireJoinLogFields(logPosition int64) codecs.JoinLogFields {
+func wireJoinLogFields(logPosition int64, role codecs.Role) codecs.JoinLogFields {
 	return codecs.JoinLogFields{
 		LogPosition:    logPosition,
 		MaxLogPosition: math.MaxInt64,
@@ -314,7 +318,7 @@ func wireJoinLogFields(logPosition int64) codecs.JoinLogFields {
 		LogSessionID:   wireLogSessionID,
 		LogStreamID:    wireLogStreamID,
 		IsStartup:      clusterwire.BooleanType_TRUE,
-		Role:           codecs.RoleLeader.Code(),
+		Role:           role.Code(),
 		IsStandby:      clusterwire.BooleanType_FALSE,
 		LogChannel:     []byte(wireLogChannel),
 	}
@@ -391,7 +395,7 @@ func (h *wireHarness) pairJoinWait(t testing.TB, joinPos int64) {
 func (h *wireHarness) runJoinRound(t testing.TB, joinPos int64) {
 	t.Helper()
 	h.dropRequest = true
-	h.deliverJoinLog(t, joinPos)
+	h.deliverJoinLog(t, joinPos, codecs.RoleLeader)
 	h.pairJoinWait(t, joinPos)
 
 	// Bridge drops the request on the first tick after pairJoinWait.
@@ -539,7 +543,7 @@ func TestServiceAckWire_PairingViolation(t *testing.T) {
 	h.dropRequest = false
 
 	const joinPos int64 = 0
-	h.deliverJoinLog(t, joinPos)
+	h.deliverJoinLog(t, joinPos, codecs.RoleLeader)
 	h.pairJoinWait(t, joinPos)
 
 	// Complete the first wait (join ack) while the request ack is also emitted.
