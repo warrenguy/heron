@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
@@ -215,6 +216,115 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 			require.Equal(rt, a.ElectionCount()-setElectionSteps, int64(len(seeds)))
 
 			prevCount = a.ElectionCount()
+		}
+	})
+}
+
+// heldClientIngressProbe wraps a [QueueClientIngress]. Poll requires a settled
+// agent and counts delivered frames.
+type heldClientIngressProbe struct {
+	rt        *rapid.T
+	agent     *Agent
+	queue     QueueClientIngress
+	delivered int
+}
+
+func (p *heldClientIngressProbe) Poll(
+	fragmentLimit int,
+	onFragment func(buf []byte, offset int) aeron.ControlledAction,
+) int {
+	require.Nil(p.rt, p.agent.Election())
+	n := p.queue.Poll(fragmentLimit, onFragment)
+	p.delivered += n
+	return n
+}
+
+// TestClientIngress_heldWhileElectionLive_rapid asserts that no client ingress
+// frame leaves the image while an election is live. A settled tick delivers up
+// to the fragment limit.
+func TestClientIngress_heldWhileElectionLive_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		const timeoutNs = DefaultLeaderHeartbeatTimeoutNs
+		pt := &scriptedActiveQuorumTable{active: true}
+		a := NewAgent(AgentConfig{
+			Role:                     RoleFollower,
+			Positions:                pt,
+			Commit:                   new(atomic.Int64),
+			LeadershipTermID:         rapid.Int64Range(0, 20).Draw(rt, "term"),
+			LeaderMemberID:           1,
+			LeaderHeartbeatTimeoutNs: timeoutNs,
+		})
+		a.SetElectionFactory(func(ElectionSeed) ElectionRunner {
+			return &orderRunner{n: 1}
+		})
+		consensus := &QueueConsensusIngress{}
+		a.SetIngress(consensus)
+		probe := &heldClientIngressProbe{rt: rt, agent: a}
+		a.SetClientIngress(probe)
+
+		nowNs := int64(0)
+		enqueued := 0
+		tick := func() {
+			queuedBefore := probe.queue.Len()
+			deliveredBefore := probe.delivered
+			liveBefore := a.Election() != nil
+			countBefore := a.ElectionCount()
+			_ = a.DoWork(nowNs)
+			delivered := probe.delivered - deliveredBefore
+			switch {
+			case liveBefore:
+				require.Zero(rt, delivered)
+			case a.ElectionCount() > countBefore:
+				// The election installs before the client poll in the same tick.
+				require.Zero(rt, delivered)
+			default:
+				require.Equal(rt, min(queuedBefore, defaultClientIngressFragmentLimit), delivered)
+			}
+		}
+
+		n := rapid.IntRange(1, 60).Draw(rt, "n")
+		steps := []string{
+			"enqueue", "tick", "setElection", "completeElection",
+			"clearElection", "quorumLost", "higherTermFrame",
+		}
+		for range n {
+			step := rapid.SampledFrom(steps).Draw(rt, "step")
+			nowNs += rapid.Int64Range(1, timeoutNs).Draw(rt, "delta")
+
+			switch step {
+			case "enqueue":
+				count := rapid.IntRange(1, 20).Draw(rt, "count")
+				for i := range count {
+					probe.queue.Enqueue(encodeSessionKeepAliveFieldsWire(t, a.LeadershipTermID(), int64(i)))
+				}
+				enqueued += count
+			case "tick":
+				tick()
+			case "setElection":
+				a.SetElection(&orderRunner{n: 1})
+			case "completeElection":
+				if a.Election() != nil {
+					a.ElectionComplete(nowNs)
+				}
+			case "clearElection":
+				a.SetElection(nil)
+			case "quorumLost":
+				a.RoleSet(RoleLeader)
+				pt.active = false
+				tick()
+				pt.active = true
+			case "higherTermFrame":
+				consensus.Enqueue(encodeCommitPositionWire(t, codecs.CommitPositionFields{
+					LeadershipTermID: a.LeadershipTermID() + 1,
+					LogPosition:      1,
+					LeaderMemberID:   2,
+				}))
+				tick()
+			}
+
+			// Every frame is delivered or still queued.
+			require.Equal(rt, enqueued, probe.delivered+probe.queue.Len())
 		}
 	})
 }

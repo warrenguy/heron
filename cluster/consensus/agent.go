@@ -1939,8 +1939,7 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 // DoWork runs one duty-cycle tick:
 //   - slow tick
 //   - consensus ingress poll when no prepare episode is in progress
-//   - client ingress poll (always; message, keepalive, close, connect, and
-//     challenge-response live in dispatch)
+//   - client ingress poll when no election is live
 //   - service control poll (always; ServiceAck, ScheduleTimer, and CancelTimer
 //     dispatch; every role; while election is live)
 //   - service control work (always; consume first wait after poll; every role;

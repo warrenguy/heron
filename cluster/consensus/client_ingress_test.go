@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
@@ -152,6 +153,7 @@ func TestHandleSessionConnect_branchTable(t *testing.T) {
 		wantCalls      int
 		wantPending    int
 		wantRedirects  int
+		wantHeld       bool
 	}{
 		{
 			name:           "steady_leader_forwards",
@@ -187,23 +189,25 @@ func TestHandleSessionConnect_branchTable(t *testing.T) {
 			wantRedirects:  1,
 		},
 		{
-			name:           "election_live_leader_drops",
+			name:           "election_live_leader_holds",
 			role:           RoleLeader,
 			election:       &recordingRunner{},
 			leaderMemberID: nullMemberID,
 			handler:        &recordingSessionConnectHandler{},
 			wantCalls:      0,
 			wantPending:    0,
+			wantHeld:       true,
 		},
 		{
-			// Election live drops before decode even with a known leader.
-			name:           "election_live_follower_known_leader_drops",
+			// Election live skips the poll even with a known leader.
+			name:           "election_live_follower_known_leader_holds",
 			role:           RoleFollower,
 			election:       &recordingRunner{},
 			leaderMemberID: 1,
 			handler:        nil,
 			wantCalls:      0,
 			wantPending:    0,
+			wantHeld:       true,
 		},
 		{
 			name:           "nil_handler_acceptSessionConnect",
@@ -241,7 +245,12 @@ func TestHandleSessionConnect_branchTable(t *testing.T) {
 			a.SetIngressEndpoints("0=host:1")
 
 			q.Enqueue(bytes.Clone(wire))
-			require.Equal(t, 1, a.pollClientIngress(nowNs))
+			if tc.wantHeld {
+				require.Equal(t, 0, a.pollClientIngress(nowNs))
+				require.Equal(t, 1, q.Len())
+			} else {
+				require.Equal(t, 1, a.pollClientIngress(nowNs))
+			}
 			require.Equal(t, tc.wantPending, a.PendingSessionCount())
 			require.Equal(t, 0, a.OpenSessionCount())
 			require.Len(t, a.egressEvents, tc.wantRedirects)
@@ -335,11 +344,6 @@ func TestHandleClientIngressFragment_challengeResponse(t *testing.T) {
 			wireEgress: true,
 			sessionID:  1,
 		},
-		{
-			name:      "election_live_drops",
-			cfg:       AgentConfig{Role: RoleLeader, Election: &recordingRunner{}},
-			sessionID: 1,
-		},
 	}
 	for _, tc := range dropCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -361,6 +365,29 @@ func TestHandleClientIngressFragment_challengeResponse(t *testing.T) {
 			require.Empty(t, a.egressEvents)
 		})
 	}
+
+	t.Run("election_live_holds", func(t *testing.T) {
+		auth := newScriptedAuthenticator()
+		auth.enqueue(1, authAction{kind: authActionChallenge, challenge: []byte("c")})
+		p, _ := boundLogPublisher(t)
+		a := leaderWithAuth(t, auth, p, 0)
+		q := attachQueueClientIngress(a)
+		a.acceptSessionConnect(validConnectFields(1), 1)
+		require.Equal(t, 0, a.sessionWork(1))
+		require.Equal(t, sessionChallenged, a.sessions.pending[0].state)
+
+		a.SetElection(&recordingRunner{})
+		q.Enqueue(encodeChallengeResponseWire(t, codecs.ChallengeResponseFields{
+			CorrelationID:      77,
+			ClusterSessionID:   1,
+			EncodedCredentials: []byte("resp"),
+		}))
+		require.Equal(t, 0, a.pollClientIngress(nowNs))
+		require.Equal(t, 1, q.Len())
+		require.Empty(t, auth.challengeResp)
+		require.Empty(t, a.egressEvents)
+		require.Equal(t, int64(1), a.sessions.pending[0].correlationID)
+	})
 }
 
 func TestSetClientIngress_wireAndClear(t *testing.T) {
@@ -433,4 +460,139 @@ func TestPollClientIngress_fragmentLimit(t *testing.T) {
 	require.Equal(t, 1, a.pollClientIngress(1))
 	require.Len(t, handler.calls, defaultClientIngressFragmentLimit+1)
 	require.Equal(t, 0, a.pollClientIngress(1))
+}
+
+// heldIngressFixture holds one TestDoWork_electionHoldsClientIngress case.
+// log and egressPub may be nil.
+type heldIngressFixture struct {
+	agent     *Agent
+	queue     *QueueClientIngress
+	log       *LogPublisher
+	egressPub *aeron.Publication
+}
+
+// TestDoWork_electionHoldsClientIngress asserts that a frame sent while an
+// election is live stays in the image. The first settled tick dispatches it.
+func TestDoWork_electionHoldsClientIngress(t *testing.T) {
+	const (
+		electionNs   int64 = 200
+		completeNs   int64 = 300
+		settledNs    int64 = 400
+		maxLogFrames       = 8
+	)
+	payload := []byte("held-payload")
+	heldSessionMessageSetup := func(t *testing.T) heldIngressFixture {
+		a, p, _, s := openLeaderSession(t, 7, 100)
+		q := attachQueueClientIngress(a)
+		q.Enqueue(encodeSessionMessageWire(t, 7, s.id, 150, payload))
+		return heldIngressFixture{agent: a, queue: q, log: p}
+	}
+
+	cases := []struct {
+		name   string
+		setup  func(t *testing.T) heldIngressFixture
+		settle func(a *Agent)
+		check  func(t *testing.T, f heldIngressFixture)
+	}{
+		{
+			name: "connect_new_term_leader_accepts",
+			setup: func(t *testing.T) heldIngressFixture {
+				p, _ := boundLogPublisher(t)
+				a := leaderWithLogPublisher(t, p, 7)
+				q := attachQueueClientIngress(a)
+				q.Enqueue(encodeSessionConnectWire(t, validConnectFields(41)))
+				return heldIngressFixture{agent: a, queue: q, log: p}
+			},
+			settle: func(a *Agent) {
+				a.SetLeadershipTermID(8)
+				a.RoleSet(RoleLeader)
+				a.SetLeaderMemberID(a.ThisMemberID())
+			},
+			check: func(t *testing.T, f heldIngressFixture) {
+				s, ok := f.agent.sessions.sessionByID(1)
+				require.True(t, ok)
+				require.Equal(t, int64(41), s.correlationID)
+			},
+		},
+		{
+			name: "connect_follower_redirects",
+			setup: func(t *testing.T) heldIngressFixture {
+				adder, egressPub := scriptedConnectedPub(t, 0)
+				a := followerWithEgress(t, adder, nullMemberID)
+				a.SetIngressEndpoints("0=host:1,2=host:3")
+				q := attachQueueClientIngress(a)
+				q.Enqueue(encodeSessionConnectWire(t, validConnectFields(42)))
+				return heldIngressFixture{agent: a, queue: q, egressPub: egressPub}
+			},
+			settle: func(a *Agent) {
+				a.SetLeadershipTermID(8)
+				a.RoleSet(RoleFollower)
+				a.SetLeaderMemberID(2)
+			},
+			check: func(t *testing.T, f heldIngressFixture) {
+				evt, _ := decodeSessionEventAtTermOffset(t, f.egressPub, 0)
+				require.Equal(t, clusterwire.EventCode_REDIRECT, evt.Code)
+				require.Equal(t, int64(42), evt.CorrelationID)
+				require.Equal(t, int32(2), evt.LeaderMemberID)
+			},
+		},
+		{
+			name:  "session_message_same_term_appends",
+			setup: heldSessionMessageSetup,
+			settle: func(a *Agent) {
+				a.SetLeadershipTermID(7)
+				a.RoleSet(RoleLeader)
+				a.SetLeaderMemberID(a.ThisMemberID())
+			},
+			check: func(t *testing.T, f heldIngressFixture) {
+				requireSessionMessageOnLog(t, f.log.Publication(), 7, 1, settledNs, payload)
+			},
+		},
+		{
+			name:  "session_message_old_term_drops",
+			setup: heldSessionMessageSetup,
+			settle: func(a *Agent) {
+				a.SetLeadershipTermID(8)
+				a.RoleSet(RoleLeader)
+				a.SetLeaderMemberID(a.ThisMemberID())
+			},
+			check: func(t *testing.T, f heldIngressFixture) {
+				forEachTermWire(t, f.log.Publication(), maxLogFrames, func(w []byte) bool {
+					_, ok := codecs.TryDecodeSessionMessageHeaderAt(w, 0)
+					require.False(t, ok)
+					return false
+				})
+				s, ok := f.agent.sessions.sessionByID(1)
+				require.True(t, ok)
+				require.Equal(t, completeNs, s.lastActivityNs)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := tc.setup(t)
+			a := f.agent
+			var logPosition int64
+			if f.log != nil {
+				logPosition = f.log.Position()
+			}
+
+			// Election live: the tick leaves the frame in the image.
+			a.SetElection(&recordingRunner{})
+			a.DoWork(electionNs)
+			require.Equal(t, 1, f.queue.Len())
+			if f.log != nil {
+				require.Equal(t, logPosition, f.log.Position())
+			}
+
+			tc.settle(a)
+			a.ElectionComplete(completeNs)
+
+			// Settled: the tick dispatches the held frame.
+			a.DoWork(settledNs)
+			require.Equal(t, 0, f.queue.Len())
+			tc.check(t, f)
+		})
+	}
 }
