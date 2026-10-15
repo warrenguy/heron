@@ -3115,14 +3115,16 @@ func TestOnCanvassPosition_branches(t *testing.T) {
 		}
 	}
 
-	for _, tc := range []struct {
+	type canvassCase struct {
 		name         string
 		state        election.ElectionState
 		role         consensus.Role
 		logSessionID int32
 		fields       codecs.CanvassPositionFields
 		wantSent     bool
-	}{
+		wantReset    bool
+	}
+	cases := []canvassCase{
 		{
 			name:         "init",
 			state:        election.ElectionStateInit,
@@ -3185,9 +3187,11 @@ func TestOnCanvassPosition_branches(t *testing.T) {
 				FollowerMemberID:    1,
 			},
 		},
-		{
-			name:         "log term above election term in leader replay",
-			state:        election.ElectionStateLeaderReplay,
+	}
+	for state := election.ElectionStateInit; state <= election.ElectionStateClosed; state++ {
+		cases = append(cases, canvassCase{
+			name:         "log term above election term in " + state.String(),
+			state:        state,
 			role:         consensus.RoleLeader,
 			logSessionID: fixtureLogSessionID,
 			fields: codecs.CanvassPositionFields{
@@ -3196,8 +3200,12 @@ func TestOnCanvassPosition_branches(t *testing.T) {
 				LeadershipTermID:    testLeadershipTermID + 1,
 				FollowerMemberID:    1,
 			},
-		},
-	} {
+			wantReset: state == election.ElectionStateLeaderLogReplication ||
+				state == election.ElectionStateLeaderReady,
+		})
+	}
+
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -3210,7 +3218,18 @@ func TestOnCanvassPosition_branches(t *testing.T) {
 
 			e.OnCanvassPosition(tc.fields)
 
+			if tc.wantReset {
+				require.Equal(t, election.ElectionStateInit, e.State())
+				require.EqualError(
+					t,
+					e.LastError(),
+					"election: new election detected from canvass position",
+				)
+				require.Empty(t, pub.Sent)
+				return
+			}
 			require.Equal(t, tc.state, e.State())
+			require.NoError(t, e.LastError())
 			if !tc.wantSent {
 				require.Empty(t, pub.Sent)
 				return

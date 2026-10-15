@@ -33,9 +33,10 @@ type rapidAction struct {
 	run         func(*electionRapidCluster, *rapid.T)
 }
 
-// weight: default safety mix, high Tick/Advance/Deliver, medium Seed, low
-// Partition/Heal/Crash/Restart. crashWeight: crash/restart-heavy mix for
-// durable candidate-term properties.
+// Each action carries two weights:
+//   - weight: the default safety mix
+//   - crashWeight: crash and restart heavy, for the durable candidate-term
+//     properties
 var rapidActions = []rapidAction{
 	{20, 14, (*electionRapidCluster).actTickAll},
 	{14, 10, (*electionRapidCluster).actTickOne},
@@ -43,6 +44,7 @@ var rapidActions = []rapidAction{
 	{14, 12, (*electionRapidCluster).actDeliverOne},
 	{12, 10, (*electionRapidCluster).actDeliverAll},
 	{10, 6, (*electionRapidCluster).actSeedPeerLogs},
+	{4, 3, (*electionRapidCluster).actCanvassNewerLogTerm},
 	{3, 2, (*electionRapidCluster).actPartition},
 	{2, 2, (*electionRapidCluster).actHeal},
 	{3, 15, (*electionRapidCluster).actCrash},
@@ -61,6 +63,11 @@ func isSelfLeaderState(s election.ElectionState) bool {
 	default:
 		return false
 	}
+}
+
+func isLeaderAwaitingFollowers(s election.ElectionState) bool {
+	return s == election.ElectionStateLeaderLogReplication ||
+		s == election.ElectionStateLeaderReady
 }
 
 type pendingMsg struct {
@@ -262,8 +269,7 @@ type electionRapidCluster struct {
 	// blocked[from,to]: hold-until-open at deliver (publish always enqueues).
 	blocked    map[[2]int32]bool
 	leaderWins map[int64]int32
-	// edgeFail holds the first invariant failure from a self-win transition or
-	// a NewLeadershipTerm send.
+	// edgeFail holds the first invariant failure that an edge hook reports.
 	edgeFail string
 	// crashWeighted selects rapidActions crashWeight over weight.
 	crashWeighted bool
@@ -741,7 +747,52 @@ func (c *electionRapidCluster) actSeedPeerLogs(rt *rapid.T) {
 	} else {
 		logPos = rapid.Int64Range(0, 1<<20).Draw(rt, "seedLogPos")
 	}
+	c.deliverCanvassChecked(target, peerID, logTerm, logPos)
+}
+
+func (c *electionRapidCluster) actCanvassNewerLogTerm(rt *rapid.T) {
+	leaders := make([]*rapidNode, 0, len(c.nodes))
+	for _, n := range c.nodes {
+		if n.live && isLeaderAwaitingFollowers(n.election.State()) {
+			leaders = append(leaders, n)
+		}
+	}
+	if len(leaders) == 0 {
+		return
+	}
+	target := leaders[rapid.IntRange(0, len(leaders)-1).Draw(rt, "newerTermTarget")]
+	peerID := target.peerIDs[rapid.IntRange(0, len(target.peerIDs)-1).Draw(rt, "newerTermPeer")]
+	logTerm := target.election.LeadershipTermID() + rapid.Int64Range(1, 2).Draw(rt, "newerTermStep")
+	c.deliverCanvassChecked(target, peerID, logTerm, target.election.AppendPosition())
+}
+
+// deliverCanvassChecked injects a canvass into target. A log term above the
+// election term must move a leader awaiting followers out of its state. Any
+// other canvass must leave the state unchanged.
+func (c *electionRapidCluster) deliverCanvassChecked(
+	target *rapidNode,
+	peerID int32,
+	logTerm, logPos int64,
+) {
+	before := target.election.State()
+	electionTerm := target.election.LeadershipTermID()
 	injectCanvassPosition(target.election, peerID, logTerm, logPos)
+	after := target.election.State()
+	if logTerm <= electionTerm || !isLeaderAwaitingFollowers(before) {
+		if after != before {
+			c.noteEdgeFail(
+				"canvass log term %d against election term %d moved member=%d from %v to %v",
+				logTerm, electionTerm, target.id, before, after,
+			)
+		}
+		return
+	}
+	if isLeaderAwaitingFollowers(after) {
+		c.noteEdgeFail(
+			"canvass log term %d above election term %d left member=%d in %v",
+			logTerm, electionTerm, target.id, after,
+		)
+	}
 }
 
 func (c *electionRapidCluster) actPartition(rt *rapid.T) {
