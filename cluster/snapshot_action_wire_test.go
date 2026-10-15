@@ -165,7 +165,7 @@ func (h *snapshotWireHarness) bridgeLog(t testing.TB) {
 func (h *snapshotWireHarness) bindJoin(t testing.TB) {
 	t.Helper()
 	h.dropRequest = true
-	h.deliverJoinLog(t, 0)
+	h.deliverJoinLog(t, 0, codecs.RoleLeader)
 	require.NoError(t, h.cm.RequestServiceAck(0))
 	require.Equal(t, 1, h.cm.PendingServiceAckWaits())
 	require.Equal(t, int64(0), h.cm.ExpectedAckPosition())
