@@ -25,13 +25,31 @@ func (a *Agent) ScheduledTimerCount() int64 {
 	return a.timers.count()
 }
 
+// ExpiredTimerCount returns how many correlation ids have a TimerEvent on
+// record with no timer to cancel.
+//
+// Concurrency: invoker-only.
+func (a *Agent) ExpiredTimerCount() int {
+	return len(a.expiredTimerCountByCorrelationID)
+}
+
 // handleScheduleTimer schedules the wire correlation id at the wire deadline.
 // Runs on every role and while an election is live.
 //
-// A refused schedule marks timerFailure once and drops the frame. After a
-// refusal no timer remains for the correlation id.
+// If a TimerEvent for this id already arrived, the timer has fired and the
+// request is ignored. A refused schedule marks timerFailure once and drops
+// the frame. After a refusal no timer remains for the correlation id.
 func (a *Agent) handleScheduleTimer(fields codecs.ScheduleTimerFields) {
-	if a.timers.schedule(fields.CorrelationID, fields.Deadline) {
+	correlationID := fields.CorrelationID
+	if count := a.expiredTimerCountByCorrelationID[correlationID]; count > 0 {
+		if count == 1 {
+			delete(a.expiredTimerCountByCorrelationID, correlationID)
+		} else {
+			a.expiredTimerCountByCorrelationID[correlationID] = count - 1
+		}
+		return
+	}
+	if a.timers.schedule(correlationID, fields.Deadline) {
 		return
 	}
 	if a.timerFailure == nil {
@@ -42,6 +60,25 @@ func (a *Agent) handleScheduleTimer(fields codecs.ScheduleTimerFields) {
 // handleCancelTimer cancels the wire correlation id. A miss is a silent no-op.
 func (a *Agent) handleCancelTimer(fields codecs.CancelTimerFields) {
 	_ = a.timers.cancel(fields.CorrelationID)
+}
+
+// handleTimerEvent cancels the local timer named by a TimerEvent from the
+// cluster log. The frame ends at logPosition. Runs on every role.
+//
+// A frame at or below [Agent.CommitPosition] is ignored: the service may
+// already have read it and scheduled the timer again.
+//
+// A frame with no timer to cancel is still recorded. The service sends
+// ScheduleTimer only after it reads the log, so that request can arrive
+// after the TimerEvent for the same timer. handleScheduleTimer then ignores
+// the request.
+func (a *Agent) handleTimerEvent(correlationID, logPosition int64) {
+	if logPosition <= a.CommitPosition() {
+		return
+	}
+	if !a.timers.cancel(correlationID) {
+		a.expiredTimerCountByCorrelationID[correlationID]++
+	}
 }
 
 // handleTimerExpiry appends one TimerEvent for correlationID at nowNs.

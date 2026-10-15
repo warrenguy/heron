@@ -210,7 +210,7 @@ func (a *Agent) enterElection(trigger ElectionTrigger, nowNs int64) int {
 	if runner == nil {
 		return 0
 	}
-	// Drain committed session frames before the runner can unbind the image.
+	// Drain committed frames before the runner can unbind the image.
 	a.logPollNowNs = nowNs
 	a.drainLogBacklog(a.followerLogPollBound(position))
 	// Clear a superseded unpublished JoinLog at settled re-entry before the new
