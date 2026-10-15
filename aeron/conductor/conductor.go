@@ -95,7 +95,7 @@ type Config struct {
 	// error frame. The conductor calls it once per publication whose
 	// OriginalRegistrationID equals the frame RegistrationID. The call holds
 	// no resource lock, so the handler may close publications. The handler
-	// must not call Client methods.
+	// must not call a Client method that takes clientLock.
 	PublicationErrorFrameHandler PublicationErrorHandler
 }
 

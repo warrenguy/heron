@@ -129,6 +129,7 @@ func conductorFixtureConfigFromConnect(connectConfig conductor.Config) testutil.
 	config.ErrorHandler = connectConfig.ErrorHandler
 	config.SubscriberErrorHandler = connectConfig.SubscriberErrorHandler
 	config.CloseLingerNs = connectConfig.CloseLingerNs
+	config.PublicationErrorFrameHandler = connectConfig.PublicationErrorFrameHandler
 	return config
 }
 

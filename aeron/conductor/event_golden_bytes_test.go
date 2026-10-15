@@ -128,7 +128,7 @@ func TestPublicationErrorBytes_nonZeroScalars_golden(t *testing.T) {
 		StreamID:                  7,
 		ReceiverID:                4004,
 		GroupTag:                  5005,
-		AddressType:               2,
+		AddressType:               PublicationErrorAddressTypeIPv6,
 		AddressPort:               8080,
 		Address:                   address,
 		ErrorCode:                 1,

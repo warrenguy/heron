@@ -59,11 +59,12 @@ const (
 // Cold-path only: may allocate; not zero-alloc.
 //
 // Callbacks invoked from doWorkLocked (ErrorHandler, AvailableImageHandler,
-// UnavailableImageHandler) must not call DoWork, Close, Add*, OfferAdd*,
-// PollAdd*, NextAvailableSessionID, or IsTerminating. See AvailableImageHandler
-// and UnavailableImageHandler for the full invocation contract (write-lock
-// suspend, safe Client lookups, nested suppression, and Client.DoWork deadlock
-// risk).
+// UnavailableImageHandler, PublicationErrorFrameHandler) must not call DoWork,
+// Close, Add*, OfferAdd*, PollAdd*, NextAvailableSessionID, or IsTerminating.
+// See AvailableImageHandler and UnavailableImageHandler for the full invocation
+// contract (write-lock suspend, safe Client lookups, nested suppression, and
+// Client.DoWork deadlock risk). See PublicationErrorFrameHandler for its
+// contract.
 //
 // Publication Offer from other goroutines remains allowed when the caller does
 // not overlap blocking client APIs. Subscription and Image Poll stay on the
@@ -201,6 +202,11 @@ func conductorConnectConfig(cfg Config, clientID int64, client *Client) conducto
 	if handler := cfg.ErrorHandler; handler != nil {
 		config.ErrorHandler = func(err error) {
 			handler(mapConductorError(err))
+		}
+	}
+	if handler := cfg.PublicationErrorFrameHandler; handler != nil {
+		config.PublicationErrorFrameHandler = func(event conductor.PublicationError) {
+			handler(publicationErrorFrameFrom(event))
 		}
 	}
 	return config
