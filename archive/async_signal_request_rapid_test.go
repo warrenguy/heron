@@ -28,7 +28,6 @@ const (
 	asyncSignalOpClientPoll
 	asyncSignalOpPollSignal
 	asyncSignalOpClose
-	asyncSignalOpCount
 )
 
 // asyncSignalModelHandle mirrors one AsyncStartRecording.
@@ -56,10 +55,18 @@ type asyncSignalModel struct {
 	latched           bool
 	latchedFields     codecs.ControlResponseFields
 	handles           []*asyncSignalModelHandle
-	slot              int
 	pending           []asyncSignalModelEvent
 	sessionSignals    []codecs.RecordingSignalEventFields
 	hasSessionHandler bool
+}
+
+// slot returns the index of the newest build while that handle is open, else -1.
+func (m *asyncSignalModel) slot() int {
+	last := len(m.handles) - 1
+	if last >= 0 && !m.handles[last].closed {
+		return last
+	}
+	return -1
 }
 
 func (m *asyncSignalModel) applyResponse(fields codecs.ControlResponseFields) {
@@ -77,10 +84,11 @@ func (m *asyncSignalModel) applySignal(event codecs.RecordingSignalEventFields) 
 	if m.hasSessionHandler {
 		m.sessionSignals = append(m.sessionSignals, event)
 	}
-	if m.slot < 0 {
+	slot := m.slot()
+	if slot < 0 {
 		return
 	}
-	handle := m.handles[m.slot]
+	handle := m.handles[slot]
 	matches := event.Signal == archivewire.RecordingSignal_START &&
 		event.CorrelationID == handle.correlationID
 	if !matches || handle.signalLatched {
@@ -103,9 +111,8 @@ func (m *asyncSignalModel) drawCorrelationID(rt *rapid.T) int64 {
 	return m.handles[index].correlationID
 }
 
-func (m *asyncSignalModel) drawHandle(rt *rapid.T) (int, *asyncSignalModelHandle) {
-	index := rapid.IntRange(0, len(m.handles)-1).Draw(rt, "handleIndex")
-	return index, m.handles[index]
+func (m *asyncSignalModel) drawHandle(rt *rapid.T) *asyncSignalModelHandle {
+	return m.handles[rapid.IntRange(0, len(m.handles)-1).Draw(rt, "handleIndex")]
 }
 
 func requireAsyncSignalModel(
@@ -126,16 +133,10 @@ func requireAsyncSignalModel(
 		require.Equal(rt, m.latchedFields.Code, resp.Code)
 	}
 
-	// The slot holds the newest build's tracker until that handle closes.
-	wantSlot := -1
-	if last := len(m.handles) - 1; last >= 0 && !m.handles[last].closed {
-		wantSlot = last
-	}
-	require.Equal(rt, wantSlot, m.slot)
-	if m.slot < 0 {
+	if slot := m.slot(); slot < 0 {
 		require.Nil(rt, client.pendingSignalTracker)
 	} else {
-		require.Same(rt, m.handles[m.slot].handle.tracker, client.pendingSignalTracker)
+		require.Same(rt, &m.handles[slot].handle.tracker, client.pendingSignalTracker)
 	}
 
 	for _, handle := range m.handles {
@@ -172,7 +173,7 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 			controlAssembler:    NewFragmentAssembler(nil),
 			aeronClient:         aeronClient,
 		}
-		model := &asyncSignalModel{slot: -1}
+		model := &asyncSignalModel{}
 		var received []codecs.RecordingSignalEventFields
 		if rapid.Bool().Draw(rt, "sessionHandler") {
 			model.hasSessionHandler = true
@@ -185,7 +186,9 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 
 		stepCount := rapid.IntRange(1, 40).Draw(rt, "stepCount")
 		for range stepCount {
-			op := asyncSignalOp(rapid.IntRange(0, int(asyncSignalOpCount)-1).Draw(rt, "op"))
+			op := asyncSignalOp(
+				rapid.IntRange(int(asyncSignalOpBuild), int(asyncSignalOpClose)).Draw(rt, "op"),
+			)
 			if len(model.handles) == 0 {
 				op = asyncSignalOpBuild
 			}
@@ -205,10 +208,9 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 				})
 				model.latched = false
 				model.filter = handle.request.correlationID
-				model.slot = len(model.handles) - 1
 
 			case asyncSignalOpOffer:
-				_, handle := model.drawHandle(rt)
+				handle := model.drawHandle(rt)
 				status := rapid.SampledFrom([]int64{
 					0,
 					aeron.BackPressured,
@@ -225,15 +227,11 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 					break
 				}
 				require.Len(rt, pub.offered, offerCount+1)
-				decoded, ok := codecs.TryDecodeByTemplate(
+				fields := requireProxyWireFields[codecs.StartRecordingRequest2Fields](
+					rt,
 					pub.lastOffer(),
-					0,
-					codecs.ArchiveDecodeMaxVarLen,
+					archivewire.StartRecordingRequest2SbeTemplateID,
 				)
-				require.True(rt, ok)
-				require.Equal(rt, archivewire.StartRecordingRequest2SbeTemplateID, decoded.TemplateID)
-				fields, ok := decoded.Fields.(codecs.StartRecordingRequest2Fields)
-				require.True(rt, ok)
 				require.Equal(rt, handle.correlationID, fields.CorrelationID)
 				switch status {
 				case 0:
@@ -244,9 +242,7 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 					require.False(rt, offered)
 				default:
 					require.False(rt, offered)
-					var terminal *ControlTerminalError
-					require.ErrorAs(rt, err, &terminal)
-					require.Equal(rt, status, terminal.Status)
+					requireControlTerminal(rt, err, status)
 				}
 
 			case asyncSignalOpResponse:
@@ -302,7 +298,7 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 				model.pending = model.pending[batch:]
 
 			case asyncSignalOpPollSignal:
-				_, handle := model.drawHandle(rt)
+				handle := model.drawHandle(rt)
 				done, err := handle.handle.PollSignal()
 				switch {
 				case handle.closed:
@@ -331,7 +327,7 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 				}
 
 			case asyncSignalOpClose:
-				index, handle := model.drawHandle(rt)
+				handle := model.drawHandle(rt)
 				handle.handle.Close()
 				if handle.closed {
 					break
@@ -342,9 +338,6 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 				}
 				if model.filter == handle.correlationID {
 					model.filter = 0
-				}
-				if model.slot == index {
-					model.slot = -1
 				}
 			}
 

@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
@@ -39,6 +38,7 @@ func (f *asyncStartRecordingFixture) newHandle(t *testing.T) *AsyncStartRecordin
 	handle := newAsyncStartRecordingForTest(f.client)
 	require.Equal(t, prior+1, handle.request.correlationID)
 	require.Equal(t, handle.request.correlationID, f.h.poller.awaitCorrelationID)
+	require.Same(t, &handle.tracker, f.client.pendingSignalTracker)
 	return handle
 }
 
@@ -87,6 +87,11 @@ func newAsyncStartRecordingForTest(client *Client) *AsyncStartRecording {
 	)
 }
 
+func (f *asyncStartRecordingFixture) startWire(t *testing.T) []byte {
+	t.Helper()
+	return startSignalWireFor(t, f.handle, lifecycleRecordingID)
+}
+
 // startSignalWireFor encodes the START signal that completes handle.
 func startSignalWireFor(
 	t *testing.T,
@@ -116,8 +121,11 @@ func requirePollSignal(
 	require.Equal(t, wantDone, done, msgAndArgs...)
 }
 
+// TestAsyncStartRecording_PollSignal_startThroughClientPoll asserts Poll
+// feeds the open handle's tracker when Client has no session handler.
 func TestAsyncStartRecording_PollSignal_startThroughClientPoll(t *testing.T) {
 	f := newAsyncStartRecordingFixture(t)
+	require.Nil(t, f.client.signalHandler)
 	offered, err := f.handle.TryOffer()
 	require.NoError(t, err)
 	require.True(t, offered)
@@ -127,9 +135,13 @@ func TestAsyncStartRecording_PollSignal_startThroughClientPoll(t *testing.T) {
 	require.False(t, f.h.poller.IsPollComplete(), "PollSignal must consume the matching OK")
 	require.Zero(t, f.handle.RecordingID())
 
-	f.deliver(t, startSignalWireFor(t, f.handle, lifecycleRecordingID))
+	f.deliver(t, f.startWire(t))
+	require.True(t, f.handle.tracker.Started())
 	requirePollSignal(t, f.handle, true, "START must complete the handle")
 	require.Equal(t, lifecycleRecordingID, f.handle.RecordingID())
+
+	f.handle.Close()
+	require.Nil(t, f.client.signalTarget(), "empty slot and nil handler must skip the decode")
 }
 
 func (f *asyncStartRecordingFixture) requireOfferedStartRecording(
@@ -155,8 +167,8 @@ func (f *asyncStartRecordingFixture) requireOfferedStartRecording(
 func TestAsyncStartRecording_TryOffer_wireFields(t *testing.T) {
 	for _, tc := range clientAutoStopCases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newAsyncStartRecordingFixture(t)
-			f.handle.Close()
+			h := newLifecycleHarness(t)
+			f := &asyncStartRecordingFixture{h: h, client: h.newClient()}
 			handle := f.client.NewAsyncStartRecording(
 				archiveProxyTestRecordingStreamID,
 				archivewire.SourceLocation_LOCAL,
@@ -167,61 +179,8 @@ func TestAsyncStartRecording_TryOffer_wireFields(t *testing.T) {
 			offered, err := handle.TryOffer()
 			require.NoError(t, err)
 			require.True(t, offered)
-			require.Len(t, f.h.pub.offered, 1)
+			require.Len(t, h.pub.offered, 1)
 			f.requireOfferedStartRecording(t, handle, tc.wantAutoStop)
-		})
-	}
-}
-
-func TestAsyncStartRecording_TryOffer_retriableThenAccepted(t *testing.T) {
-	cases := []struct {
-		name   string
-		status int64
-	}{
-		{name: "back_pressured", status: aeron.BackPressured},
-		{name: "admin_action", status: aeron.AdminAction},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newAsyncStartRecordingFixture(t)
-			f.h.pub.offerResult = tc.status
-
-			offered, err := f.handle.TryOffer()
-			require.NoError(t, err, "retriable offer must not be terminal")
-			require.False(t, offered, "retriable offer must not report accepted")
-			require.Len(t, f.h.pub.offered, 1)
-			f.requireOfferedStartRecording(t, f.handle, archivewire.BooleanType_TRUE)
-
-			f.h.pub.offerResult = 0
-			offered, err = f.handle.TryOffer()
-			require.NoError(t, err)
-			require.True(t, offered, "accepted offer must report true")
-			require.Len(t, f.h.pub.offered, 2)
-			f.requireOfferedStartRecording(t, f.handle, archivewire.BooleanType_TRUE)
-		})
-	}
-}
-
-func TestAsyncStartRecording_TryOffer_terminal(t *testing.T) {
-	cases := []struct {
-		name   string
-		status int64
-	}{
-		{name: "closed", status: aeron.Closed},
-		{name: "max_position_exceeded", status: aeron.MaxPositionExceeded},
-		{name: "not_connected", status: aeron.NotConnected},
-		{name: "unsupported_message_length", status: aeron.UnsupportedMessageLength},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newAsyncStartRecordingFixture(t)
-			f.h.pub.offerResult = tc.status
-
-			offered, err := f.handle.TryOffer()
-			require.False(t, offered, "terminal offer must not report accepted")
-			requireControlTerminal(t, err, tc.status)
-			require.Len(t, f.h.pub.offered, 1)
-			f.requireOfferedStartRecording(t, f.handle, archivewire.BooleanType_TRUE)
 		})
 	}
 }
@@ -251,7 +210,7 @@ func TestAsyncStartRecording_PollSignal_signalOverError(t *testing.T) {
 		f.responseFor(f.handle, archivewire.ControlResponseCode_ERROR, []byte("late")),
 	)
 
-	f.deliver(t, errorWire, startSignalWireFor(t, f.handle, lifecycleRecordingID))
+	f.deliver(t, errorWire, f.startWire(t))
 	require.True(t, f.h.poller.IsPollComplete())
 
 	requirePollSignal(t, f.handle, true, "latched START must win over the matching error")
@@ -296,7 +255,7 @@ func TestAsyncStartRecording_PollSignal_discardsStaleTerminal(t *testing.T) {
 	requirePollSignal(t, f.handle, false, "OK must not complete the handle")
 	require.False(t, f.h.poller.IsPollComplete(), "PollSignal must consume the matching OK")
 
-	f.deliver(t, startSignalWireFor(t, f.handle, lifecycleRecordingID))
+	f.deliver(t, f.startWire(t))
 	requirePollSignal(t, f.handle, true)
 	require.Equal(t, lifecycleRecordingID, f.handle.RecordingID())
 }
@@ -319,7 +278,6 @@ func TestAsyncStartRecording_Close_disarmsCorrelationFilter(t *testing.T) {
 
 func TestAsyncStartRecording_Close_clearsLatchedMatchingTerminal(t *testing.T) {
 	f := newAsyncStartRecordingFixture(t)
-	require.Same(t, f.handle.tracker, f.client.pendingSignalTracker)
 	f.deliver(t, f.okWire(t, f.handle))
 	require.True(t, f.h.poller.IsPollComplete())
 
@@ -340,9 +298,8 @@ func TestAsyncStartRecording_Close_lateOKLatchesUntilResetAwait(t *testing.T) {
 	f.handle.Close()
 	require.True(t, f.h.poller.IsPollComplete(), "second Close must leave residual latch")
 
-	next := f.newHandle(t)
+	f.newHandle(t)
 	require.False(t, f.h.poller.IsPollComplete(), "next build must clear residual latch")
-	require.Same(t, next.tracker, f.client.pendingSignalTracker)
 }
 
 func TestAsyncStartRecording_Close_keepsSuccessorFilterAndSlot(t *testing.T) {
@@ -360,7 +317,7 @@ func TestAsyncStartRecording_Close_keepsSuccessorFilterAndSlot(t *testing.T) {
 	)
 	require.Same(
 		t,
-		second.tracker,
+		&second.tracker,
 		f.client.pendingSignalTracker,
 		"Close of prior handle must not empty successor slot",
 	)
@@ -395,7 +352,7 @@ func TestAsyncStartRecording_closedDoesNotOfferOrMatch(t *testing.T) {
 	require.False(t, offered, "closed TryOffer must not accept")
 	require.Empty(t, f.h.pub.offered, "closed TryOffer must not offer")
 
-	f.deliver(t, f.okWire(t, f.handle), startSignalWireFor(t, f.handle, lifecycleRecordingID))
+	f.deliver(t, f.okWire(t, f.handle), f.startWire(t))
 	require.False(t, f.handle.tracker.Started(), "closed handle tracker must not see START")
 	requirePollSignal(t, f.handle, false, "closed PollSignal must not match")
 	require.True(t, f.h.poller.IsPollComplete(), "closed PollSignal must not consume")
@@ -412,7 +369,7 @@ func TestAsyncStartRecording_Close_insideDispatch(t *testing.T) {
 		},
 	))
 
-	f.deliver(t, startSignalWireFor(t, f.handle, lifecycleRecordingID))
+	f.deliver(t, f.startWire(t))
 	require.Equal(t, 1, calls)
 	require.Nil(t, f.client.pendingSignalTracker, "Close inside the handler must empty the slot")
 	require.False(t, f.handle.tracker.Started(), "closed handle tracker must not see START")
@@ -434,7 +391,7 @@ func TestAsyncStartRecording_NewAsyncStartRecording_insideDispatch(t *testing.T)
 
 	f.deliver(t, startSignalWireFor(t, first, lifecycleRecordingID))
 	require.NotNil(t, rebuilt)
-	require.Same(t, rebuilt.tracker, f.client.pendingSignalTracker)
+	require.Same(t, &rebuilt.tracker, f.client.pendingSignalTracker)
 	require.False(t, rebuilt.tracker.Started(), "fresh correlation id must not match the signal")
 	require.False(t, first.tracker.Started(), "displaced tracker must not see START")
 	requirePollSignal(t, rebuilt, false)
@@ -448,7 +405,6 @@ func TestAsyncStartRecording_PollSignal_displacedHandle(t *testing.T) {
 	f := newAsyncStartRecordingFixture(t)
 	first := f.handle
 	second := f.newHandle(t)
-	require.Same(t, second.tracker, f.client.pendingSignalTracker)
 
 	// Phase: the displaced handle never sees its START.
 	f.deliver(t, startSignalWireFor(t, first, lifecycleRecordingID))

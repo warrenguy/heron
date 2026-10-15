@@ -48,7 +48,6 @@ type correlatedSignalTracker interface {
 // handle.
 type asyncSignalRequest struct {
 	client        *Client
-	tracker       RecordingSignalHandler
 	correlationID int64
 	proven        bool
 	closed        bool
@@ -66,7 +65,6 @@ func newAsyncSignalRequest(
 	client.pendingSignalTracker = tracker
 	return asyncSignalRequest{
 		client:        client,
-		tracker:       tracker,
 		correlationID: correlationID,
 	}
 }
@@ -93,7 +91,7 @@ func (r *asyncSignalRequest) pollSignal(latched bool) (bool, error) {
 
 // close clears a matching latched terminal. close leaves the filter and slot
 // of a newer request in place.
-func (r *asyncSignalRequest) close() {
+func (r *asyncSignalRequest) close(tracker RecordingSignalHandler) {
 	if r.closed {
 		return
 	}
@@ -102,7 +100,7 @@ func (r *asyncSignalRequest) close() {
 	poller := client.controlPoller
 	clearMatchingControlResponse(poller, client.controlSessionID, r.correlationID)
 	poller.DisarmAwait(r.correlationID)
-	if client.pendingSignalTracker == r.tracker {
+	if client.pendingSignalTracker == tracker {
 		client.pendingSignalTracker = nil
 	}
 }

@@ -36,7 +36,7 @@ import "github.com/warrenguy/heron/archive/codecs/archivewire"
 // publication, or poller.
 type AsyncStartRecording struct {
 	request        asyncSignalRequest
-	tracker        *StartSignalTracker
+	tracker        StartSignalTracker
 	streamID       int32
 	sourceLocation archivewire.SourceLocation
 	autoStop       archivewire.BooleanType
@@ -56,15 +56,15 @@ func (client *Client) NewAsyncStartRecording(
 	autoStop bool,
 	channel []byte,
 ) *AsyncStartRecording {
-	tracker := NewStartSignalTracker(client.controlSessionID)
-	return &AsyncStartRecording{
-		request:        newAsyncSignalRequest(client, tracker),
-		tracker:        tracker,
+	a := &AsyncStartRecording{
+		tracker:        StartSignalTracker{controlSessionID: client.controlSessionID},
 		streamID:       streamID,
 		sourceLocation: sourceLocation,
 		autoStop:       booleanTypeFromBool(autoStop),
 		channel:        channel,
 	}
+	a.request = newAsyncSignalRequest(client, &a.tracker)
+	return a
 }
 
 // TryOffer offers the StartRecordingRequest2 once with the stored
@@ -137,5 +137,5 @@ func (a *AsyncStartRecording) Close() {
 	if a == nil {
 		return
 	}
-	a.request.close()
+	a.request.close(&a.tracker)
 }
