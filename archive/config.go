@@ -61,7 +61,8 @@ type Config struct {
 	// control awaits that poll through Client.Poll. *AwaitSignal routes proof
 	// signals to the per-call tracker, not this handler. Nil drops signals until
 	// Client.SetRecordingSignalHandler installs a handler. An open
-	// AsyncStartRecording still receives its START signal.
+	// AsyncStartRecording or AsyncExtendRecording still receives its START or
+	// EXTEND signal.
 	RecordingSignalHandler RecordingSignalHandler
 
 	// ClientName is sent in AuthConnectRequest.clientInfo; empty defaults to

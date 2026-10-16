@@ -16,6 +16,7 @@ import (
 const (
 	asyncSignalRapidForeignCorrelationID int64 = 1 << 40
 	asyncSignalRapidMaxHandles                 = 4
+	asyncSignalRapidOtherRecordingID     int64 = 7
 )
 
 type asyncSignalOp int
@@ -30,14 +31,43 @@ const (
 	asyncSignalOpClose
 )
 
-// asyncSignalModelHandle mirrors one AsyncStartRecording.
+type asyncSignalHandleKind int
+
+const (
+	asyncSignalHandleStart asyncSignalHandleKind = iota
+	asyncSignalHandleExtend
+)
+
+type asyncSignalExtendShape int
+
+const (
+	asyncSignalExtendMatching asyncSignalExtendShape = iota
+	asyncSignalExtendOtherRecording
+	asyncSignalExtendUniform
+)
+
+// asyncSignalHandle is the method set shared by AsyncStartRecording and
+// AsyncExtendRecording.
+type asyncSignalHandle interface {
+	TryOffer() (bool, error)
+	PollSignal() (bool, error)
+	RecordingID() int64
+	Close()
+}
+
+// asyncSignalModelHandle mirrors one AsyncStartRecording or
+// AsyncExtendRecording.
 type asyncSignalModelHandle struct {
-	handle        *AsyncStartRecording
-	correlationID int64
-	closed        bool
-	signalLatched bool
-	recordingID   int64
-	proven        bool
+	kind                 asyncSignalHandleKind
+	handle               asyncSignalHandle
+	tracker              RecordingSignalHandler
+	trackerLatched       func() bool
+	correlationID        int64
+	requestedRecordingID int64
+	closed               bool
+	signalLatched        bool
+	recordingID          int64
+	proven               bool
 }
 
 // asyncSignalModelEvent is one fragment written to the term and not yet
@@ -89,13 +119,82 @@ func (m *asyncSignalModel) applySignal(event codecs.RecordingSignalEventFields) 
 		return
 	}
 	handle := m.handles[slot]
-	matches := event.Signal == archivewire.RecordingSignal_START &&
-		event.CorrelationID == handle.correlationID
-	if !matches || handle.signalLatched {
+	if !handle.isCompletedBy(event) || handle.signalLatched {
 		return
 	}
 	handle.signalLatched = true
 	handle.recordingID = event.RecordingID
+}
+
+// isCompletedBy reports whether event completes handle. START matches on the
+// correlation id. EXTEND also needs the requested recording id.
+func (handle *asyncSignalModelHandle) isCompletedBy(event codecs.RecordingSignalEventFields) bool {
+	if event.CorrelationID != handle.correlationID {
+		return false
+	}
+	switch handle.kind {
+	case asyncSignalHandleExtend:
+		return event.Signal == archivewire.RecordingSignal_EXTEND &&
+			event.RecordingID == handle.requestedRecordingID
+	default:
+		return event.Signal == archivewire.RecordingSignal_START
+	}
+}
+
+func newAsyncSignalModelHandle(
+	client *Client,
+	kind asyncSignalHandleKind,
+	requestedRecordingID int64,
+) *asyncSignalModelHandle {
+	if kind == asyncSignalHandleExtend {
+		handle := client.NewAsyncExtendRecording(
+			requestedRecordingID,
+			archiveProxyTestRecordingStreamID,
+			archivewire.SourceLocation_LOCAL,
+			true,
+			[]byte(lifecycleRecordingChannel),
+		)
+		return &asyncSignalModelHandle{
+			kind:                 kind,
+			handle:               handle,
+			tracker:              &handle.tracker,
+			trackerLatched:       handle.tracker.Extended,
+			correlationID:        handle.request.correlationID,
+			requestedRecordingID: requestedRecordingID,
+		}
+	}
+	handle := newAsyncStartRecordingForTest(client)
+	return &asyncSignalModelHandle{
+		kind:           kind,
+		handle:         handle,
+		tracker:        &handle.tracker,
+		trackerLatched: handle.tracker.Started,
+		correlationID:  handle.request.correlationID,
+	}
+}
+
+func requireOfferedRequest(rt *rapid.T, offer []byte, handle *asyncSignalModelHandle) {
+	rt.Helper()
+
+	var correlationID int64
+	switch handle.kind {
+	case asyncSignalHandleExtend:
+		fields := requireProxyWireFields[codecs.ExtendRecordingRequest2Fields](
+			rt,
+			offer,
+			archivewire.ExtendRecordingRequest2SbeTemplateID,
+		)
+		require.Equal(rt, handle.requestedRecordingID, fields.RecordingID)
+		correlationID = fields.CorrelationID
+	default:
+		fields := requireProxyWireFields[codecs.StartRecordingRequest2Fields](
+			rt,
+			offer,
+			archivewire.StartRecordingRequest2SbeTemplateID,
+		)
+		correlationID = fields.CorrelationID
+	}
+	require.Equal(rt, handle.correlationID, correlationID)
 }
 
 func (m *asyncSignalModel) latchedFor(correlationID int64) bool {
@@ -109,6 +208,70 @@ func (m *asyncSignalModel) drawCorrelationID(rt *rapid.T) int64 {
 		return asyncSignalRapidForeignCorrelationID
 	}
 	return m.handles[index].correlationID
+}
+
+// drawSignal picks a signal event. A draw at a start handle forces START half
+// the time. A draw at an extend handle forces a matching EXTEND a third of the
+// time. A third more carry EXTEND with the other recording id. Other draws
+// pick the signal and recording id uniformly.
+func (m *asyncSignalModel) drawSignal(rt *rapid.T) codecs.RecordingSignalEventFields {
+	event := codecs.RecordingSignalEventFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    asyncSignalRapidForeignCorrelationID,
+		SubscriptionID:   asyncStartRecordingTestSubscriptionID,
+	}
+	index := rapid.IntRange(0, len(m.handles)).Draw(rt, "signalCorrelationIndex")
+	if index < len(m.handles) {
+		handle := m.handles[index]
+		event.CorrelationID = handle.correlationID
+		switch handle.kind {
+		case asyncSignalHandleExtend:
+			shape := rapid.SampledFrom([]asyncSignalExtendShape{
+				asyncSignalExtendMatching,
+				asyncSignalExtendOtherRecording,
+				asyncSignalExtendUniform,
+			}).Draw(rt, "extendSignalShape")
+			switch shape {
+			case asyncSignalExtendMatching:
+				event.Signal = archivewire.RecordingSignal_EXTEND
+				event.RecordingID = handle.requestedRecordingID
+				return event
+			case asyncSignalExtendOtherRecording:
+				event.Signal = archivewire.RecordingSignal_EXTEND
+				event.RecordingID = asyncSignalRapidOtherRecordingIDFor(handle.requestedRecordingID)
+				return event
+			}
+		default:
+			if rapid.Bool().Draw(rt, "startSignalMatches") {
+				event.Signal = archivewire.RecordingSignal_START
+				event.RecordingID = rapid.SampledFrom([]int64{
+					asyncSignalRapidOtherRecordingID,
+					lifecycleRecordingID,
+				}).Draw(rt, "startRecordingID")
+				return event
+			}
+		}
+	}
+	event.RecordingID = rapid.SampledFrom([]int64{
+		0,
+		asyncSignalRapidOtherRecordingID,
+		lifecycleRecordingID,
+	}).Draw(rt, "recordingID")
+	event.Signal = rapid.SampledFrom([]archivewire.RecordingSignal{
+		archivewire.RecordingSignal_START,
+		archivewire.RecordingSignal_EXTEND,
+		archivewire.RecordingSignal_STOP,
+	}).Draw(rt, "signal")
+	return event
+}
+
+// asyncSignalRapidOtherRecordingIDFor returns the requestable recording id
+// other than recordingID.
+func asyncSignalRapidOtherRecordingIDFor(recordingID int64) int64 {
+	if recordingID == lifecycleRecordingID {
+		return asyncSignalRapidOtherRecordingID
+	}
+	return lifecycleRecordingID
 }
 
 func (m *asyncSignalModel) drawHandle(rt *rapid.T) *asyncSignalModelHandle {
@@ -136,11 +299,11 @@ func requireAsyncSignalModel(
 	if slot := m.slot(); slot < 0 {
 		require.Nil(rt, client.pendingSignalTracker)
 	} else {
-		require.Same(rt, &m.handles[slot].handle.tracker, client.pendingSignalTracker)
+		require.Same(rt, m.handles[slot].tracker, client.pendingSignalTracker)
 	}
 
 	for _, handle := range m.handles {
-		require.Equal(rt, handle.signalLatched, handle.handle.tracker.Started())
+		require.Equal(rt, handle.signalLatched, handle.trackerLatched())
 		wantRecordingID := int64(0)
 		if handle.proven {
 			wantRecordingID = handle.recordingID
@@ -151,8 +314,9 @@ func requireAsyncSignalModel(
 	require.Equal(rt, m.sessionSignals, received)
 }
 
-// TestAsyncSignalRequest_model_rapid asserts AsyncStartRecording matches a
-// reference model over random operation sequences.
+// TestAsyncSignalRequest_model_rapid asserts AsyncStartRecording and
+// AsyncExtendRecording match a reference model over random operation
+// sequences.
 func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 	aeronClient := aeron.NewAsyncConnectTestHarness(t).Client
 	sub := aeron.NewTestSubscriptionForHooks(t)
@@ -198,16 +362,24 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 				if len(model.handles) == asyncSignalRapidMaxHandles {
 					break
 				}
-				handle := newAsyncStartRecordingForTest(client)
-				for _, prior := range model.handles {
-					require.Less(rt, prior.correlationID, handle.request.correlationID)
+				kind := rapid.SampledFrom([]asyncSignalHandleKind{
+					asyncSignalHandleStart,
+					asyncSignalHandleExtend,
+				}).Draw(rt, "kind")
+				var requestedRecordingID int64
+				if kind == asyncSignalHandleExtend {
+					requestedRecordingID = rapid.SampledFrom([]int64{
+						asyncSignalRapidOtherRecordingID,
+						lifecycleRecordingID,
+					}).Draw(rt, "requestedRecordingID")
 				}
-				model.handles = append(model.handles, &asyncSignalModelHandle{
-					handle:        handle,
-					correlationID: handle.request.correlationID,
-				})
+				handle := newAsyncSignalModelHandle(client, kind, requestedRecordingID)
+				for _, prior := range model.handles {
+					require.Less(rt, prior.correlationID, handle.correlationID)
+				}
+				model.handles = append(model.handles, handle)
 				model.latched = false
-				model.filter = handle.request.correlationID
+				model.filter = handle.correlationID
 
 			case asyncSignalOpOffer:
 				handle := model.drawHandle(rt)
@@ -227,12 +399,7 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 					break
 				}
 				require.Len(rt, pub.offered, offerCount+1)
-				fields := requireProxyWireFields[codecs.StartRecordingRequest2Fields](
-					rt,
-					pub.lastOffer(),
-					archivewire.StartRecordingRequest2SbeTemplateID,
-				)
-				require.Equal(rt, handle.correlationID, fields.CorrelationID)
+				requireOfferedRequest(rt, pub.lastOffer(), handle)
 				switch status {
 				case 0:
 					require.NoError(rt, err)
@@ -264,22 +431,7 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 				model.pending = append(model.pending, asyncSignalModelEvent{response: fields})
 
 			case asyncSignalOpSignal:
-				correlationID := model.drawCorrelationID(rt)
-				recordingID := rapid.SampledFrom([]int64{
-					0,
-					7,
-					lifecycleRecordingID,
-				}).Draw(rt, "recordingID")
-				event := codecs.RecordingSignalEventFields{
-					ControlSessionID: controlResponseTestControlSessionID,
-					CorrelationID:    correlationID,
-					RecordingID:      recordingID,
-					SubscriptionID:   asyncStartRecordingTestSubscriptionID,
-					Signal: rapid.SampledFrom([]archivewire.RecordingSignal{
-						archivewire.RecordingSignal_START,
-						archivewire.RecordingSignal_STOP,
-					}).Draw(rt, "signal"),
-				}
+				event := model.drawSignal(rt)
 				appendUnfragmentedWireToTerm(t, termBuffer, encodeRecordingSignalEventWire(t, event))
 				model.pending = append(model.pending, asyncSignalModelEvent{signal: event, isSignal: true})
 
@@ -306,7 +458,7 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 					require.False(rt, done, "closed handle must not complete")
 				case handle.signalLatched:
 					require.NoError(rt, err)
-					require.True(rt, done, "latched START must complete")
+					require.True(rt, done, "latched signal must complete")
 					handle.proven = true
 					if model.latchedFor(handle.correlationID) {
 						model.latched = false

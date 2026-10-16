@@ -6,7 +6,7 @@ import "github.com/warrenguy/heron/archive/codecs/archivewire"
 //
 // Behaviour: build the handle once. Call TryOffer until the publication
 // accepts the request, then call PollSignal across ticks. Client.Poll on the
-// duty cycle feeds the session poller capture and the handle's START
+// duty cycle feeds the session poller capture and the handle's signal
 // tracker. The handle completes on the correlated START RecordingSignalEvent,
 // not on the OK ControlResponse. The handle never calls DoWork. The handle
 // never polls the subscription.
@@ -18,8 +18,8 @@ import "github.com/warrenguy/heron/archive/codecs/archivewire"
 // Caller rules:
 //   - Keep one outstanding request per Client, AsyncStopRecording included.
 //     Close the older handle before the next build. Each build re-arms the
-//     response filter. A start build also takes the pending signal tracker
-//     slot.
+//     response filter. A start or extend build also takes the pending signal
+//     tracker slot.
 //   - Do not run a blocking call while a handle is open. A blocking call can
 //     drop the handle's response or signal.
 //   - After Client.Close, TryOffer returns a terminal error. PollSignal and
@@ -32,8 +32,8 @@ import "github.com/warrenguy/heron/archive/codecs/archivewire"
 //
 // Ownership: the caller must close every handle, including after an error or
 // a deadline. An unclosed handle holds the pending signal tracker on Client
-// until the next NewAsyncStartRecording. The handle does not own the Client,
-// publication, or poller.
+// until the next NewAsyncStartRecording or NewAsyncExtendRecording. The
+// handle does not own the Client, publication, or poller.
 type AsyncStartRecording struct {
 	request        asyncSignalRequest
 	tracker        StartSignalTracker

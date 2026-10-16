@@ -23,16 +23,16 @@ import (
 // Poll never polls the underlying pollers directly and never calls DoWork.
 //
 // Recording signals drop while Client has no session handler and no open
-// AsyncStartRecording. Config.RecordingSignalHandler or
-// SetRecordingSignalHandler sets the session handler. The session handler
+// AsyncStartRecording or AsyncExtendRecording. Config.RecordingSignalHandler
+// or SetRecordingSignalHandler sets the session handler. The session handler
 // receives signals on Poll and on every blocking control await that polls
 // through it. *AwaitSignal methods install a per-call tracker for the proof
 // signal instead.
 //
-// Client holds at most one pending signal tracker. NewAsyncStartRecording
-// installs the tracker of its handle. Poll and ListRecording send each signal
-// to the session handler, then to that tracker. AsyncStartRecording lists the
-// caller rules.
+// Client holds at most one pending signal tracker. NewAsyncStartRecording and
+// NewAsyncExtendRecording install the tracker of their handle. Poll and
+// ListRecording send each signal to the session handler, then to that
+// tracker. AsyncStartRecording lists the caller rules.
 //
 // ListRecording uses a descriptor-mode poll so its OK response routes to the
 // descriptor poller rather than the session control-response poller.
@@ -53,7 +53,8 @@ type Client struct {
 	signalHandler    RecordingSignalHandler
 
 	// pendingSignalTracker receives each signal after signalHandler while an
-	// AsyncStartRecording holds the slot. Nil marks an empty slot.
+	// AsyncStartRecording or AsyncExtendRecording holds the slot. Nil marks an
+	// empty slot.
 	pendingSignalTracker RecordingSignalHandler
 
 	controlSubscription *aeron.Subscription
@@ -201,8 +202,8 @@ func (client *Client) IsClosed() bool {
 // Poll runs one demux poll of the control-response subscription. Poll sends
 // control responses and recording descriptors to the session pollers. Poll
 // sends each recording signal to the session handler, then to the pending
-// signal tracker of an open AsyncStartRecording. Poll drops signals when
-// neither exists. Poll never calls DoWork.
+// signal tracker of an open AsyncStartRecording or AsyncExtendRecording. Poll
+// drops signals when neither exists. Poll never calls DoWork.
 func (client *Client) Poll() int {
 	return PollControlEvents(
 		client.controlSubscription,
@@ -247,7 +248,7 @@ func (client *Client) pollRecordingSignalAwait(targets ControlPollTargets) func(
 // signals to the per-call tracker, not this handler.
 //
 // handler does not replace the pending signal tracker of an open
-// AsyncStartRecording.
+// AsyncStartRecording or AsyncExtendRecording.
 func (client *Client) SetRecordingSignalHandler(handler RecordingSignalHandler) {
 	client.signalHandler = handler
 }
