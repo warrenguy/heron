@@ -18,14 +18,10 @@ import (
 // flight, or after a dirty attempt that never latched START or EXTEND.
 const recordingIDUnknown int64 = -1
 
-// autoStopExtend is the autoStop value every extend request carries.
-//
-//   - matches upstream
-//   - archive releases the recording subscription after a refused extend that
-//     already replied OK
-//   - rollback stop also releases the subscription
-//   - release does not depend on that stop succeeding
-const autoStopExtend = true
+// logRecordingAutoStop is the autoStop value on every start and extend
+// request. The archive releases the recording subscription when the recorded
+// session ends, or when it refuses an extend after replying OK.
+const logRecordingAutoStop = true
 
 // TermRecordingLookup reports the recording id every TERM entry in the local
 // recording log shares.
@@ -284,7 +280,7 @@ func (r *logRecording) establishedTermRecordingID() int64 {
 //
 // Abandons a pending async stop first, then drains any prior unstopped
 // channel. No TERM recording id starts a fresh recording. An established
-// TERM id extends that recording with autoStop true.
+// TERM id extends that recording.
 //
 // Does not refuse session ids, including -1. Structural refusal is
 // [consensus.Agent.JoinLogAsLeader] only.
@@ -333,7 +329,7 @@ func (r *logRecording) StartLogRecording(
 			r.ctx,
 			r.logStreamID,
 			sourceLocation,
-			false,
+			logRecordingAutoStop,
 			channelBytes,
 			tracker,
 		)
@@ -348,14 +344,15 @@ func (r *logRecording) StartLogRecording(
 			established,
 			r.logStreamID,
 			sourceLocation,
-			autoStopExtend,
+			logRecordingAutoStop,
 			channelBytes,
 			tracker,
 		)
 	}
 	if err != nil {
 		// Armed state is the dirty stop path. Start and extend rollback share
-		// StopLogRecording with the prepare/Close drain.
+		// StopLogRecording with the prepare/Close drain. autoStop releases
+		// nothing when OK arrived without START, so this stop must run.
 		if stopErr := r.StopLogRecording(); stopErr != nil {
 			err = errors.Join(err, stopErr)
 		}

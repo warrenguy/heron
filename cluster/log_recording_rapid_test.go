@@ -91,6 +91,7 @@ func TestLogRecording_startVsExtendBranch_rapid(t *testing.T) {
 				if wantStart {
 					require.Equal(rt, "start", fake.lastBranch)
 					require.Equal(rt, fake.startID, got)
+					require.True(rt, fake.lastStartAutoStop)
 				} else {
 					require.Equal(rt, "extend", fake.lastBranch)
 					require.Equal(rt, termLog.TermRecordingID(), fake.lastExtendID)

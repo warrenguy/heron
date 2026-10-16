@@ -45,6 +45,7 @@ type recordingArchiveStub struct {
 	lastListRecordingID      int64
 	lastTruncateRecordingID  int64
 	lastTruncatePosition     int64
+	lastStartAutoStop        bool
 	lastExtendID             int64
 	lastExtendChannel        []byte
 	lastExtendAutoStop       bool
@@ -63,12 +64,13 @@ func (s *recordingArchiveStub) StartRecordingAwaitSignal(
 	_ context.Context,
 	_ int32,
 	_ archivewire.SourceLocation,
-	_ bool,
+	autoStop bool,
 	_ []byte,
 	_ *archive.StartSignalTracker,
 ) (int64, error) {
 	s.startCalls++
 	s.lastBranch = "start"
+	s.lastStartAutoStop = autoStop
 	if s.startErr != nil {
 		return 0, s.startErr
 	}
@@ -402,6 +404,7 @@ func TestLogRecording_startFailureDrainsViaStopLogRecording(t *testing.T) {
 		require.Error(t, err)
 		require.ErrorIs(t, err, startErr)
 		require.Equal(t, 1, stub.startCalls)
+		require.True(t, stub.lastStartAutoStop)
 		require.Equal(t, 1, stub.stopCalls)
 		require.Equal(t, 0, stub.stopAwaitCalls)
 		require.Equal(t, wantChannel, stub.lastStopChannel)
@@ -431,6 +434,7 @@ func TestLogRecording_startFailureDrainsViaStopLogRecording(t *testing.T) {
 		require.ErrorIs(t, err, startErr)
 		require.ErrorIs(t, err, stopErr)
 		require.Equal(t, 1, stub.startCalls)
+		require.True(t, stub.lastStartAutoStop)
 		require.Equal(t, 1, stub.stopCalls)
 		require.Equal(t, 0, stub.stopAwaitCalls)
 		require.True(t, r.needsStop())
@@ -1410,6 +1414,7 @@ func TestLogRecording_StartLogRecording_afterAdoptedStop(t *testing.T) {
 	require.Equal(t, wantChannel, r.startChannel)
 	require.True(t, r.needsStop())
 	require.Equal(t, 1, stub.startCalls)
+	require.True(t, stub.lastStartAutoStop)
 	require.Equal(t, 0, stub.stopCalls)
 	require.Equal(t, 0, stub.stopAwaitCalls)
 
