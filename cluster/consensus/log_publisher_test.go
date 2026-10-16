@@ -615,6 +615,7 @@ func TestAddLogPublication_reseedFailureReportsBoundSession(t *testing.T) {
 		publisher, _ := boundLogPublisher(t)
 		a := NewAgent(AgentConfig{})
 		a.SetLogPublisher(publisher)
+		a.SetLogRecordingID(1)
 		a.SetLogPublicationReseed(func(int64) (int32, error) {
 			publisher.SetPublication(nil)
 			return 0, errors.New("add exclusive publication failed")
@@ -627,6 +628,7 @@ func TestAddLogPublication_reseedFailureReportsBoundSession(t *testing.T) {
 		publisher, _ := boundLogPublisher(t)
 		a := NewAgent(AgentConfig{})
 		a.SetLogPublisher(publisher)
+		a.SetLogRecordingID(1)
 		a.SetLogPublicationReseed(func(int64) (int32, error) {
 			return 0, errors.New("list recording failed")
 		})
@@ -640,8 +642,85 @@ func TestAddLogPublication_reseedFailureReportsBoundSession(t *testing.T) {
 		publisher, _ := boundLogPublisher(t)
 		a := NewAgent(AgentConfig{})
 		a.SetLogPublisher(publisher)
+		a.SetLogRecordingID(1)
 		a.SetLogPublicationReseed(func(int64) (int32, error) { return reseeded, nil })
 
 		require.Equal(t, reseeded, a.AddLogPublication(100))
 	})
+}
+
+// Asserts AddLogPublication reseeds only a bound publication with a known
+// recording id and a position mismatch.
+func TestAddLogPublication_reseedsOnPositionMismatch(t *testing.T) {
+	const reseeded int32 = 4242
+
+	tests := []struct {
+		name        string
+		unbound     bool
+		recordingID int64
+		appendFirst bool
+		target      int64
+		wantReseed  bool
+	}{
+		{
+			name:        "ahead of target reseeds",
+			recordingID: 1,
+			appendFirst: true,
+			target:      0,
+			wantReseed:  true,
+		},
+		{
+			name:        "behind target reseeds",
+			recordingID: 1,
+			target:      100,
+			wantReseed:  true,
+		},
+		{
+			name:        "equal to target keeps the publication",
+			recordingID: 1,
+			target:      0,
+		},
+		{
+			name:        "negative recording id keeps the publication",
+			recordingID: nullValue,
+			appendFirst: true,
+			target:      0,
+		},
+		{
+			name:        "nil publisher returns null session",
+			unbound:     true,
+			recordingID: 1,
+			target:      100,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewAgent(AgentConfig{})
+			a.SetLogRecordingID(tt.recordingID)
+			want := int32(nullValue)
+			if !tt.unbound {
+				publisher, _ := boundLogPublisher(t)
+				if tt.appendFirst {
+					require.Positive(t, publisher.AppendMessage(1, 2, 3, []byte("entry")))
+				}
+				a.SetLogPublisher(publisher)
+				want = publisher.SessionID()
+			}
+			called := false
+			a.SetLogPublicationReseed(func(position int64) (int32, error) {
+				if !tt.wantReseed {
+					t.Fatalf("unexpected reseed at %d", position)
+				}
+				require.Equal(t, tt.target, position)
+				called = true
+				return reseeded, nil
+			})
+			if tt.wantReseed {
+				want = reseeded
+			}
+
+			require.Equal(t, want, a.AddLogPublication(tt.target))
+			require.Equal(t, tt.wantReseed, called)
+		})
+	}
 }

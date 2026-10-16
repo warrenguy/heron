@@ -273,9 +273,9 @@ func (l *LogStreams) Publication() *aeron.ExclusivePublication {
 // ReseedPublicationAt closes the exclusive log publication and opens a new one
 // at seed.Position. Rebinds the log publisher.
 //
-// Used when a follower becomes leader and the exclusive publication sits below
-// the durable append high-water. LOCAL recording extend requires the
-// publication join position to match the recording stop.
+// A new leader calls it when the publication position differs from the
+// durable append high-water. The archive extends the LOCAL recording only when
+// the publication join position equals the recording stop position.
 //
 // Concurrency: invoker-only.
 //
