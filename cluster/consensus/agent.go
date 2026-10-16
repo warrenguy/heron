@@ -325,8 +325,8 @@ type Agent struct {
 	// entry per follower. Distinct followers may catch up concurrently.
 	catchupReplays map[int32]catchupReplay
 
-	// logPublicationReseed rebuilds the exclusive log publication at a position
-	// when a follower becomes leader. Nil: JoinLogAsLeader does not reseed.
+	// logPublicationReseed rebuilds the exclusive log publication for
+	// AddLogPublication. Nil disables the reseed.
 	logPublicationReseed LogPublicationReseed
 
 	// termBaseLogPosition is the term base written into NewLeadershipTermEvent.
@@ -1352,27 +1352,24 @@ func (a *Agent) SetTermBaseLogPosition(pos int64) { a.termBaseLogPosition = pos 
 // [LogPublisher] with a publication is already injected; otherwise null
 // session id (-1).
 //
-// When a [LogPublicationReseed] is wired and the publication position is below
-// appendPosition, reseeds the publication at appendPosition first so the
-// returned session id is the one followers will join. Election captures this
-// id when entering leader log replication and publishes it in
-// NewLeadershipTerm.
+// When the publication position differs from appendPosition, reseeds the
+// publication at appendPosition first. Election publishes the returned session
+// id in NewLeadershipTerm. Without a [LogPublicationReseed] or a known
+// recording id, keeps the bound publication.
 //
 // Required inject order: [Agent.SetLogPublisher] and
 // [LogPublisher.SetPublication] before any caller that stores the returned
 // session id. A bind after this call leaves the caller with -1 while a later
 // NewLeadershipTermEvent would write a real session id.
 //
-// On reseed failure re-reads the bound session id. A reseed that unbinds the
-// publisher before failing returns null session id, never the pre-reseed id
-// that the publication no longer holds. The caller may still fail at
-// JoinLogAsLeader when LOCAL extend refuses.
+// On reseed failure returns the session id bound after the attempt, or null
+// session id when the publisher is unbound. JoinLogAsLeader then fails closed.
 func (a *Agent) AddLogPublication(appendPosition int64) int32 {
 	sessionID, bound := a.boundLogSessionID()
 	if !bound {
 		return sessionID
 	}
-	if reseeded, did, _ := a.reseedLogPublicationIfBehind(appendPosition); did {
+	if reseeded, ok := a.reseedLogPublicationAt(appendPosition); ok {
 		return reseeded
 	}
 
@@ -1393,28 +1390,29 @@ func (a *Agent) boundLogSessionID() (sessionID int32, ok bool) {
 	return a.logPublisher.SessionID(), true
 }
 
-// reseedLogPublicationIfBehind rebuilds the log publication when a reseed
-// hook is wired and the current publication position is below target.
+// reseedLogPublicationAt rebuilds the bound log publication at position when
+// its position differs. The caller checks the publisher is bound.
 //
-// Returns:
-//   - sessionID, true, nil: reseed ran and succeeded
-//   - 0, false, nil: reseed did not run (no hook, unbound publisher, or
-//     position already at or above target)
-//   - 0, false, err: reseed ran and the hook failed
-func (a *Agent) reseedLogPublicationIfBehind(
-	position int64,
-) (sessionID int32, did bool, err error) {
-	if a.logPublicationReseed == nil || a.logPublisher == nil || a.logPublisher.Publication() == nil {
-		return 0, false, nil
+// Behaviour: skips a nil hook. Skips a negative recording id: the LOCAL start
+// then opens a fresh recording at any join position.
+//
+// Returns the new session id and true when the hook succeeds. Returns false
+// otherwise.
+func (a *Agent) reseedLogPublicationAt(position int64) (sessionID int32, ok bool) {
+	if !a.canReseedLogPublication() || a.logPublisher.Position() == position {
+		return 0, false
 	}
-	if a.logPublisher.Position() >= position {
-		return 0, false, nil
-	}
-	sessionID, err = a.logPublicationReseed(position)
+	sessionID, err := a.logPublicationReseed(position)
 	if err != nil {
-		return 0, false, err
+		return 0, false
 	}
-	return sessionID, true, nil
+	return sessionID, true
+}
+
+// canReseedLogPublication reports whether a reseed hook is wired and the
+// local recording id is known.
+func (a *Agent) canReseedLogPublication() bool {
+	return a.logPublicationReseed != nil && a.localLogRecordingID >= 0
 }
 
 // AppendNewLeadershipTermEvent appends a NewLeadershipTermEvent via the wired
@@ -1638,8 +1636,8 @@ func (a *Agent) pollPrepareStop(logPosition, nowNs int64) (int64, bool, error) {
 // LogPublicationReseed rebuilds the exclusive log publication so its join
 // position matches the durable append high-water. Returns the new session id.
 //
-// Used by [Agent.JoinLogAsLeader] when a former follower becomes leader and the
-// existing exclusive publication sits below logPosition.
+// [Agent.AddLogPublication] calls it after an election win when the
+// publication position differs from the append position.
 type LogPublicationReseed func(position int64) (sessionID int32, err error)
 
 // SetLogPublicationReseed wires or clears the [LogPublicationReseed] hook.
@@ -1656,9 +1654,11 @@ func (a *Agent) SetLogPublicationReseed(f LogPublicationReseed) {
 //
 // Role and term fields write before the recording start.
 //
-// When a [LogPublicationReseed] is wired and the bound exclusive publication
-// position is below logPosition, reseeds the publication at logPosition before
-// starting the recording so LOCAL extend can match the recording stop.
+// With a [LogPublicationReseed] wired and a known recording id, the recording
+// start requires the publication at logPosition under logSessionID.
+// [Agent.AddLogPublication] reseeds it there earlier. The archive extends the
+// LOCAL recording only when the publication join position equals the recording
+// stop position.
 //
 // On success, publishes JoinLog (template 40) when a service proxy is bound.
 // Publish failure does not fail JoinLogAsLeader. Retriable outcomes store a
@@ -1671,7 +1671,7 @@ func (a *Agent) SetLogPublicationReseed(f LogPublicationReseed) {
 // Returns an error when:
 //   - a control is wired, the recording is not already active, and the log
 //     publisher or its publication is unbound
-//   - reseed fails
+//   - the publication fails the recording start check above
 //   - the start fails
 //
 // Nil control skips recording and returns nil. JoinLog still publishes on that
@@ -1701,13 +1701,17 @@ func (a *Agent) JoinLogAsLeader(
 // the log session id the leader JoinLog advertises.
 //
 // Behaviour: an active recording or a nil recordingControl skips the start and
-// returns logSessionID unchanged. When a start runs, reseeds the log publication
-// if it is behind logPosition, then adopts the LOCAL recording with an empty
-// channel so control uses the configured live log channel.
+// returns logSessionID unchanged. With a reseed hook and a known recording id,
+// the start checks the publication against logPosition and logSessionID. The
+// start adopts the LOCAL recording with an empty channel, so control uses the
+// configured live log channel.
+//
+// The check never reseeds. A reseed here changes the session id after the
+// NewLeadershipTerm fan-out, so no follower can join.
 //
 // Returns an error when:
 //   - the log publisher or its publication is unbound
-//   - reseed fails
+//   - the check finds a position or session id mismatch
 //   - the recording start fails
 func (a *Agent) startLeaderLogRecording(
 	logPosition int64,
@@ -1716,18 +1720,19 @@ func (a *Agent) startLeaderLogRecording(
 	if a.IsRecordingActive() || a.recordingControl == nil {
 		return logSessionID, nil
 	}
-	if a.logPublisher == nil || a.logPublisher.Publication() == nil {
+	sessionID, bound := a.boundLogSessionID()
+	if !bound {
 		return 0, errors.New("consensus: join log as leader: log publication is not bound")
 	}
-
-	// Reseed may already have run in AddLogPublication when entering leader log
-	// replication. Re-run only when the publication is still behind.
-	reseeded, did, err := a.reseedLogPublicationIfBehind(logPosition)
-	if err != nil {
-		return 0, err
-	}
-	if did {
-		logSessionID = reseeded
+	if a.canReseedLogPublication() {
+		position := a.logPublisher.Position()
+		mismatch := position != logPosition || sessionID != logSessionID
+		if mismatch {
+			return 0, fmt.Errorf(
+				"consensus: join log as leader: log publication %d at %d, election session %d at %d",
+				sessionID, position, logSessionID, logPosition,
+			)
+		}
 	}
 	if err := a.adoptLogRecording(archivewire.SourceLocation_LOCAL, logSessionID, ""); err != nil {
 		return 0, err
@@ -2113,6 +2118,7 @@ func (a *Agent) onSteadyStopCatchup(fields codecs.StopCatchupFields) {
 //   - on acceptance, updates the canvasser's log position
 //   - on acceptance, publishes this leader's current leadership term to the
 //     canvasser
+//   - sends the bound log session id without a reseed
 //
 // Echo and refuse:
 //   - the published term echoes the canvasser's own log leadership term
@@ -2138,6 +2144,7 @@ func (a *Agent) onSteadyCanvassPosition(fields codecs.CanvassPositionFields, now
 		fields.LogPosition,
 	)
 
+	logSessionID, _ := a.boundLogSessionID()
 	_ = a.egress.PublishNewLeadershipTerm(CanvassAnswer{
 		FollowerMemberID:    fields.FollowerMemberID,
 		LogLeadershipTermID: fields.LogLeadershipTermID,
@@ -2145,7 +2152,7 @@ func (a *Agent) onSteadyCanvassPosition(fields codecs.CanvassPositionFields, now
 		LogPosition:         a.logPublisher.Position(),
 		CommitPosition:      a.CommitPosition(),
 		LeaderRecordingID:   a.localLogRecordingID,
-		LogSessionID:        a.AddLogPublication(0),
+		LogSessionID:        logSessionID,
 	})
 }
 

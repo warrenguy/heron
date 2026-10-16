@@ -415,9 +415,8 @@ func OpenConsensusModule(
 	)
 	module.agent.SetCatchupControl(module.catchup)
 
-	// When a follower becomes leader, reseed the exclusive log publication at
-	// the durable append high-water so LOCAL recording can extend the same
-	// catalog id. TERM entries share one recording id.
+	// A new leader reseeds the log publication so LOCAL recording extends the
+	// same catalog id. TERM entries share one recording id.
 	module.reseedCtx = moduleControlContext(ctx)
 	module.agent.SetLogPublicationReseed(module.reseedLogPublication)
 
@@ -464,9 +463,8 @@ func OpenConsensusModule(
 	return module, nil
 }
 
-// reseedLogPublication rebuilds the exclusive log publication at position so a
-// former follower's LOCAL recording extend can match the recording stop. Seeds
-// term geometry from the local log recording descriptor. Returns the new
+// reseedLogPublication rebuilds the exclusive log publication at position.
+// Seeds term geometry from the local log recording descriptor. Returns the new
 // publication session id.
 func (m *ConsensusModule) reseedLogPublication(position int64) (int32, error) {
 	recordingID := m.agent.LocalLogRecordingID()

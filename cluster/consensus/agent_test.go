@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 
@@ -1411,6 +1412,94 @@ func TestAgent_logRecording_leaderJoinUnboundPublication(t *testing.T) {
 	require.Contains(t, err.Error(), "consensus: join log as leader: log publication is not bound")
 }
 
+// Asserts the leader recording start checks the publication and never
+// reseeds.
+func TestAgent_logRecording_leaderJoinChecksPublication(t *testing.T) {
+	t.Parallel()
+
+	const (
+		recordingID int64 = 7
+		matchPos    int64 = 0
+		otherPos    int64 = 100
+	)
+
+	tests := []struct {
+		name         string
+		noHook       bool
+		recordingID  int64
+		logPosition  int64
+		otherSession bool
+		wantErr      bool
+	}{
+		{
+			name:        "position differs fails closed",
+			recordingID: recordingID,
+			logPosition: otherPos,
+			wantErr:     true,
+		},
+		{
+			name:         "session differs fails closed",
+			recordingID:  recordingID,
+			logPosition:  matchPos,
+			otherSession: true,
+			wantErr:      true,
+		},
+		{
+			name:        "position and session match starts the recording",
+			recordingID: recordingID,
+			logPosition: matchPos,
+		},
+		{
+			name:        "no hook skips the check",
+			noHook:      true,
+			recordingID: recordingID,
+			logPosition: otherPos,
+		},
+		{
+			name:        "negative recording id skips the check",
+			recordingID: nullValue,
+			logPosition: otherPos,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			lp, _ := boundLogPublisher(t)
+			control := &fakeLogRecordingControl{nextRecordingID: recordingID}
+			a := NewAgent(AgentConfig{LogPublisher: lp})
+			a.SetLogRecordingControl(control)
+			a.SetLogRecordingID(tt.recordingID)
+			if !tt.noHook {
+				a.SetLogPublicationReseed(func(position int64) (int32, error) {
+					t.Fatalf("unexpected reseed at %d", position)
+					return 0, nil
+				})
+			}
+			logSessionID := lp.SessionID()
+			if tt.otherSession {
+				logSessionID++
+			}
+
+			err := a.JoinLogAsLeader(1, tt.logPosition, logSessionID, false)
+			if tt.wantErr {
+				require.EqualError(t, err, fmt.Sprintf(
+					"consensus: join log as leader: log publication %d at %d, election session %d at %d",
+					lp.SessionID(), lp.Position(), logSessionID, tt.logPosition,
+				))
+				require.Empty(t, control.startCalls)
+				require.False(t, a.IsRecordingActive())
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, control.startCalls, 1)
+			require.Equal(t, archivewire.SourceLocation_LOCAL, control.startCalls[0].sourceLocation)
+			require.Equal(t, logSessionID, control.startCalls[0].logSessionID)
+			require.True(t, a.IsRecordingActive())
+		})
+	}
+}
+
 func TestAgent_SetLogRecordingID_whileInactive(t *testing.T) {
 	t.Parallel()
 
@@ -1560,6 +1649,21 @@ func TestOnSteadyCanvassPosition_agentMatrix(t *testing.T) {
 		require.NotEqual(t, nullMemberID, ans.LogSessionID)
 		require.Equal(t, commitPos, ans.CommitPosition)
 		require.Equal(t, recordingID, ans.LeaderRecordingID)
+	})
+
+	t.Run("bound publication past zero answers without reseed", func(t *testing.T) {
+		t.Parallel()
+		lp, _ := boundLogPublisher(t)
+		require.Positive(t, lp.AppendMessage(leaderTerm, 2, 3, []byte("entry")))
+		a, _, eg := newLeaderFixture(RoleLeader, leaderTerm, lp)
+		a.SetLogPublicationReseed(func(position int64) (int32, error) {
+			t.Fatalf("unexpected reseed at %d", position)
+			return 0, nil
+		})
+		drive(a, baseCanvass)
+		require.Len(t, eg.answers, 1)
+		require.Equal(t, lp.SessionID(), eg.answers[0].LogSessionID)
+		require.Equal(t, lp.Position(), eg.answers[0].LogPosition)
 	})
 
 	t.Run("default local recording id is null", func(t *testing.T) {
