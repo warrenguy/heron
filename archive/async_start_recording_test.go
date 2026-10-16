@@ -110,7 +110,7 @@ func startSignalWireFor(
 
 func requirePollSignal(
 	t *testing.T,
-	handle *AsyncStartRecording,
+	handle interface{ PollSignal() (bool, error) },
 	wantDone bool,
 	msgAndArgs ...any,
 ) {
