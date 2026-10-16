@@ -27,9 +27,6 @@ jobs:
           - goarch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    concurrency:
-      group: bench-baseline-${{ matrix.goarch }}
-      cancel-in-progress: true
     env: &bench-per-arch-env
       GOARCH: ${{ matrix.goarch }}
     steps:
@@ -45,7 +42,7 @@ jobs:
 
       - uses: actions/cache/save@v6
         with:
-          key: bench-baseline-${{ matrix.goarch }}-main-${{ github.run_id }}
+          key: bench-baseline-${{ matrix.goarch }}-main-${{ github.sha }}
           path: .bench
 
   bench-regression:
@@ -64,10 +61,7 @@ jobs:
       - uses: actions/cache/restore@v6
         id: bench-cache
         with:
-          key: bench-baseline-${{ matrix.goarch }}-main-${{ github.sha }}
-          restore-keys: |
-            bench-baseline-${{ matrix.goarch }}-main-
-            bench-baseline-${{ matrix.goarch }}-
+          key: bench-baseline-${{ matrix.goarch }}-main-${{ github.event.pull_request.base.sha }}
           path: .bench
           fail-on-cache-miss: false
 
@@ -94,6 +88,12 @@ jobs:
             test -s .bench/baseline.txt
             grep -q '^Benchmark' .bench/baseline.txt
           fi
+
+      - uses: actions/cache/save@v6
+        if: steps.bench-cache.outputs.cache-hit != 'true'
+        with:
+          key: bench-baseline-${{ matrix.goarch }}-main-${{ github.event.pull_request.base.sha }}
+          path: .bench
 
       - name: Benchmark regression
         run: make bench-regression
