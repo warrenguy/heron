@@ -261,3 +261,55 @@ type JoinLogFields struct {
 type RequestServiceAckFields struct {
 	LogPosition int64
 }
+
+// SnapshotMarkerFields holds SnapshotMarker body fields (SBE template id 100).
+type SnapshotMarkerFields struct {
+	// TypeID is ConsensusModuleSnapshotTypeID or ServiceSnapshotTypeID. Decode
+	// does not reject other values.
+	TypeID           int64
+	LogPosition      int64
+	LeadershipTermID int64
+	Index            int32
+
+	// Mark is the raw wire value. Decode does not reject undefined values.
+	Mark clusterwire.SnapshotMark
+
+	// TimeUnit is ClusterTimeUnit_NULL_VALUE when actingVersion is below
+	// SnapshotMarkerTimeUnitMinVersion. Decode does not reject undefined values.
+	TimeUnit clusterwire.ClusterTimeUnit
+
+	// AppVersion is version_t. AppVersion is 0 when actingVersion is below
+	// SnapshotMarkerTimeUnitMinVersion.
+	AppVersion int32
+}
+
+// ClientSessionFields holds ClientSession body fields (SBE template id 102).
+type ClientSessionFields struct {
+	ClusterSessionID int64
+	ResponseStreamID int32
+	ResponseChannel  []byte
+	EncodedPrincipal []byte
+}
+
+// TimerFields holds Timer body fields (SBE template id 104).
+type TimerFields struct {
+	CorrelationID int64
+	Deadline      int64
+}
+
+// ConsensusModuleFields holds ConsensusModule body fields (SBE template id 105).
+type ConsensusModuleFields struct {
+	NextSessionID int64
+
+	// NextServiceSessionID is math.MinInt64 when actingVersion is below
+	// ConsensusModuleNextServiceSessionIDMinVersion.
+	NextServiceSessionID int64
+
+	// LogServiceSessionID is math.MinInt64 when actingVersion is below
+	// ConsensusModuleNextServiceSessionIDMinVersion.
+	LogServiceSessionID int64
+
+	// PendingMessageCapacity is capacity_t. PendingMessageCapacity is 0 when
+	// actingVersion is below ConsensusModuleNextServiceSessionIDMinVersion.
+	PendingMessageCapacity int32
+}

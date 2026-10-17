@@ -136,6 +136,28 @@ func ClusterRootBlockLengthBounds(
 	case clusterwire.RequestServiceAckSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.RequestServiceAckSbeBlockLength)
 
+	case clusterwire.SnapshotMarkerSbeTemplateID:
+		maxBlock = clusterwire.SnapshotMarkerSbeBlockLength
+		if actingVersion < SnapshotMarkerTimeUnitMinVersion {
+			// ids 1-5 only (TimeUnit sinceVersion 4).
+			return 32, maxBlock, true
+		}
+		return clusterFixedBlockLength(maxBlock)
+
+	case clusterwire.ClientSessionSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.ClientSessionSbeBlockLength)
+
+	case clusterwire.TimerSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.TimerSbeBlockLength)
+
+	case clusterwire.ConsensusModuleSbeTemplateID:
+		maxBlock = clusterwire.ConsensusModuleSbeBlockLength
+		if actingVersion < ConsensusModuleNextServiceSessionIDMinVersion {
+			// id 1 only (NextServiceSessionId sinceVersion 3).
+			return 8, maxBlock, true
+		}
+		return clusterFixedBlockLength(maxBlock)
+
 	default:
 		return 0, 0, false
 	}
@@ -167,7 +189,8 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		return 2, true
 
 	case clusterwire.AdminResponseSbeTemplateID,
-		clusterwire.SessionOpenEventSbeTemplateID:
+		clusterwire.SessionOpenEventSbeTemplateID,
+		clusterwire.ClientSessionSbeTemplateID:
 		return 2, true
 
 	case clusterwire.CanvassPositionSbeTemplateID,
@@ -183,7 +206,10 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		clusterwire.ScheduleTimerSbeTemplateID,
 		clusterwire.CancelTimerSbeTemplateID,
 		clusterwire.ServiceAckSbeTemplateID,
-		clusterwire.RequestServiceAckSbeTemplateID:
+		clusterwire.RequestServiceAckSbeTemplateID,
+		clusterwire.SnapshotMarkerSbeTemplateID,
+		clusterwire.TimerSbeTemplateID,
+		clusterwire.ConsensusModuleSbeTemplateID:
 		return 0, true
 
 	default:

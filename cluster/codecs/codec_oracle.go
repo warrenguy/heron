@@ -88,3 +88,54 @@ func JoinLogOracleFields(fields JoinLogFields, actingVersion uint16) JoinLogFiel
 var ClusterActionRequestFlagsMinVersion = uint16(
 	(&clusterwire.ClusterActionRequest{}).FlagsSinceVersion(),
 )
+
+// SnapshotMarkerTimeUnitMinVersion is the actingVersion that admits optional
+// timeUnit and appVersion on SnapshotMarker (sinceVersion 4). Derived from the
+// generated flyweight TimeUnitSinceVersion.
+var SnapshotMarkerTimeUnitMinVersion = uint16(
+	(&clusterwire.SnapshotMarker{}).TimeUnitSinceVersion(),
+)
+
+// SnapshotMarkerOracleFields applies optional-field oracle rules for
+// SnapshotMarker (template 100).
+//
+// Below SnapshotMarkerTimeUnitMinVersion the wire omits timeUnit and
+// appVersion. TimeUnit becomes NULL_VALUE and AppVersion becomes 0. At and
+// above that version fields roundtrip as-is.
+func SnapshotMarkerOracleFields(
+	fields SnapshotMarkerFields,
+	actingVersion uint16,
+) SnapshotMarkerFields {
+	if actingVersion < SnapshotMarkerTimeUnitMinVersion {
+		fields.TimeUnit = clusterwire.ClusterTimeUnit_NULL_VALUE
+		fields.AppVersion = 0
+	}
+	return fields
+}
+
+// ConsensusModuleNextServiceSessionIDMinVersion is the actingVersion that
+// admits optional nextServiceSessionId, logServiceSessionId and
+// pendingMessageCapacity on ConsensusModule (sinceVersion 3). Derived from the
+// generated flyweight NextServiceSessionIdSinceVersion.
+var ConsensusModuleNextServiceSessionIDMinVersion = uint16(
+	(&clusterwire.ConsensusModule{}).NextServiceSessionIdSinceVersion(),
+)
+
+// ConsensusModuleOracleFields applies optional-field oracle rules for
+// ConsensusModule (template 105).
+//
+// Below ConsensusModuleNextServiceSessionIDMinVersion the wire omits the
+// three optional fields. NextServiceSessionID and LogServiceSessionID become
+// math.MinInt64. PendingMessageCapacity becomes 0. At and above that version
+// fields roundtrip as-is.
+func ConsensusModuleOracleFields(
+	fields ConsensusModuleFields,
+	actingVersion uint16,
+) ConsensusModuleFields {
+	if actingVersion < ConsensusModuleNextServiceSessionIDMinVersion {
+		fields.NextServiceSessionID = math.MinInt64
+		fields.LogServiceSessionID = math.MinInt64
+		fields.PendingMessageCapacity = 0
+	}
+	return fields
+}

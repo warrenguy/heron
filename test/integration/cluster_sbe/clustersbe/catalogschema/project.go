@@ -34,6 +34,14 @@ func ProjectCatalogToFields(
 		return decodeAdminRequestFields(fields, blobs)
 	case "adminResponse":
 		return decodeAdminResponseFields(fields, blobs)
+	case "snapshotMarker":
+		return decodeSnapshotMarkerFields(fields)
+	case "clientSession":
+		return decodeClientSessionFields(fields, blobs)
+	case "timer":
+		return decodeTimerFields(fields)
+	case "consensusModule":
+		return decodeConsensusModuleFields(fields)
 	default:
 		return nil, fmt.Errorf("unknown template %q", template)
 	}
@@ -240,6 +248,86 @@ func decodeAdminResponseFields(
 	return out, err
 }
 
+func decodeSnapshotMarkerFields(fields map[string]any) (codecs.SnapshotMarkerFields, error) {
+	var out codecs.SnapshotMarkerFields
+	var err error
+
+	out.TypeID, err = requireInt64(fields, "typeId")
+	if err != nil {
+		return out, err
+	}
+	out.LogPosition, err = requireInt64(fields, "logPosition")
+	if err != nil {
+		return out, err
+	}
+	out.LeadershipTermID, err = requireInt64(fields, "leadershipTermId")
+	if err != nil {
+		return out, err
+	}
+	out.Index, err = requireInt32(fields, "index")
+	if err != nil {
+		return out, err
+	}
+	out.Mark, err = lookupEnum(fields, "mark", LookupSnapshotMark)
+	if err != nil {
+		return out, err
+	}
+	out.TimeUnit, err = optionalEnum(fields, "timeUnit", LookupClusterTimeUnit)
+	if err != nil {
+		return out, err
+	}
+	out.AppVersion, err = optionalInt32(fields, "appVersion")
+	return out, err
+}
+
+func decodeClientSessionFields(
+	fields map[string]any,
+	blobs map[string][]byte,
+) (codecs.ClientSessionFields, error) {
+	var out codecs.ClientSessionFields
+	var err error
+
+	out.ClusterSessionID, err = requireInt64(fields, "clusterSessionId")
+	if err != nil {
+		return out, err
+	}
+	out.ResponseStreamID, err = requireInt32(fields, "responseStreamId")
+	if err != nil {
+		return out, err
+	}
+	out.ResponseChannel, err = optionalCatalogStringBytes(fields, "responseChannel")
+	if err != nil {
+		return out, err
+	}
+	out.EncodedPrincipal, err = optionalBytesField(fields, blobs, "encodedPrincipal")
+	return out, err
+}
+
+func decodeTimerFields(fields map[string]any) (codecs.TimerFields, error) {
+	correlationID, deadline, err := requireInt64Pair(fields, "correlationId", "deadline")
+	return codecs.TimerFields{CorrelationID: correlationID, Deadline: deadline}, err
+}
+
+func decodeConsensusModuleFields(fields map[string]any) (codecs.ConsensusModuleFields, error) {
+	var out codecs.ConsensusModuleFields
+	var err error
+
+	out.NextSessionID, err = requireInt64(fields, "nextSessionId")
+	if err != nil {
+		return out, err
+	}
+	out.NextServiceSessionID, err = optionalInt64(fields, "nextServiceSessionId")
+	if err != nil {
+		return out, err
+	}
+	out.LogServiceSessionID, err = optionalInt64(fields, "logServiceSessionId")
+	if err != nil {
+		return out, err
+	}
+	out.PendingMessageCapacity, err = optionalInt32(fields, "pendingMessageCapacity")
+	return out, err
+}
+
 func requireInt64Pair(fields map[string]any, key1, key2 string) (int64, int64, error) {
 	v1, err := requireInt64(fields, key1)
 	if err != nil {
@@ -298,6 +386,14 @@ func optionalInt32(fields map[string]any, key string) (int32, error) {
 		return 0, nil
 	}
 	return jsonInt32(value, key)
+}
+
+func optionalInt64(fields map[string]any, key string) (int64, error) {
+	value, ok := fields[key]
+	if !ok {
+		return 0, nil
+	}
+	return jsonInt64(value, key)
 }
 
 func optionalCatalogStringBytes(fields map[string]any, key string) ([]byte, error) {
@@ -359,6 +455,20 @@ func lookupEnum[T ~int32](
 		return zero, err
 	}
 	return lookup(name)
+}
+
+// optionalEnum returns the zero value when key is absent. Otherwise
+// optionalEnum calls lookupEnum.
+func optionalEnum[T ~int32](
+	fields map[string]any,
+	key string,
+	lookup func(string) (T, error),
+) (T, error) {
+	if _, ok := fields[key]; !ok {
+		var zero T
+		return zero, nil
+	}
+	return lookupEnum(fields, key, lookup)
 }
 
 func requireEnumString(fields map[string]any, key string) (string, error) {

@@ -594,6 +594,11 @@ func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields
 		}, true
 	case clusterwire.JoinLogSbeTemplateID:
 		return templateVarFields{logChannel: raw[0]}, true
+	case clusterwire.ClientSessionSbeTemplateID:
+		return templateVarFields{
+			responseChannel:  raw[0],
+			encodedPrincipal: raw[1],
+		}, true
 	default:
 		return templateVarFields{}, false
 	}
@@ -743,6 +748,14 @@ func decodeTemplateFields(
 		}, true
 	case clusterwire.RequestServiceAckSbeTemplateID:
 		return decodeRequestServiceAckFields(buf, body, block, version, bufLen), true
+	case clusterwire.SnapshotMarkerSbeTemplateID:
+		return decodeSnapshotMarkerFields(buf, body, block, version, bufLen), true
+	case clusterwire.ClientSessionSbeTemplateID:
+		return clientSessionFields(buf, body, block, version, bufLen, vars), true
+	case clusterwire.TimerSbeTemplateID:
+		return decodeTimerFields(buf, body, block, version, bufLen), true
+	case clusterwire.ConsensusModuleSbeTemplateID:
+		return decodeConsensusModuleFields(buf, body, block, version, bufLen), true
 	default:
 		return nil, false
 	}

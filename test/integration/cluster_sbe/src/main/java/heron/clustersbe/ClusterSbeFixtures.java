@@ -6,6 +6,9 @@ import io.aeron.cluster.codecs.AdminResponseCode;
 import io.aeron.cluster.codecs.AdminResponseEncoder;
 import io.aeron.cluster.codecs.ChallengeEncoder;
 import io.aeron.cluster.codecs.ChallengeResponseEncoder;
+import io.aeron.cluster.codecs.ClientSessionEncoder;
+import io.aeron.cluster.codecs.ClusterTimeUnit;
+import io.aeron.cluster.codecs.ConsensusModuleEncoder;
 import io.aeron.cluster.codecs.EventCode;
 import io.aeron.cluster.codecs.MessageHeaderEncoder;
 import io.aeron.cluster.codecs.NewLeaderEventEncoder;
@@ -14,6 +17,9 @@ import io.aeron.cluster.codecs.SessionConnectRequestEncoder;
 import io.aeron.cluster.codecs.SessionEventEncoder;
 import io.aeron.cluster.codecs.SessionKeepAliveEncoder;
 import io.aeron.cluster.codecs.SessionMessageHeaderEncoder;
+import io.aeron.cluster.codecs.SnapshotMark;
+import io.aeron.cluster.codecs.SnapshotMarkerEncoder;
+import io.aeron.cluster.codecs.TimerEncoder;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 
@@ -313,6 +319,128 @@ public final class ClusterSbeFixtures {
             encoder.limit(),
             AdminResponseEncoder.TEMPLATE_ID,
             AdminResponseEncoder.BLOCK_LENGTH
+        );
+    }
+
+    /**
+     * Writes a SnapshotMarker with the header patched to the acting version and block length.
+     * A null {@code timeUnit} leaves the field zero.
+     */
+    static byte[] encodeSnapshotMarker(
+        final int actingVersion,
+        final int blockLength,
+        final long typeId,
+        final long logPosition,
+        final long leadershipTermId,
+        final int index,
+        final SnapshotMark mark,
+        final ClusterTimeUnit timeUnit,
+        final int appVersion
+    ) {
+        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
+        applyHeader(
+            buffer,
+            0,
+            blockLength,
+            SnapshotMarkerEncoder.TEMPLATE_ID,
+            SnapshotMarkerEncoder.SCHEMA_ID,
+            actingVersion
+        );
+        final SnapshotMarkerEncoder encoder = new SnapshotMarkerEncoder();
+        encoder.wrap(buffer, MessageHeaderEncoder.ENCODED_LENGTH);
+        encoder.typeId(typeId)
+            .logPosition(logPosition)
+            .leadershipTermId(leadershipTermId)
+            .index(index)
+            .mark(mark);
+        if (actingVersion >= SnapshotMarkerEncoder.timeUnitSinceVersion()) {
+            if (timeUnit != null) {
+                encoder.timeUnit(timeUnit);
+            }
+            encoder.appVersion(appVersion);
+        }
+        return finishWire(
+            buffer,
+            MessageHeaderEncoder.ENCODED_LENGTH + blockLength,
+            SnapshotMarkerEncoder.TEMPLATE_ID,
+            blockLength,
+            actingVersion,
+            SnapshotMarkerEncoder.SCHEMA_ID
+        );
+    }
+
+    static byte[] encodeClientSession(
+        final long clusterSessionId,
+        final int responseStreamId,
+        final String responseChannel,
+        final byte[] encodedPrincipal
+    ) {
+        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
+        final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
+        final ClientSessionEncoder encoder = new ClientSessionEncoder();
+        encoder.wrapAndApplyHeader(buffer, 0, headerEncoder)
+            .clusterSessionId(clusterSessionId)
+            .responseStreamId(responseStreamId);
+        putVarAscii(encoder::responseChannel, responseChannel);
+        putVarData(encoder::putEncodedPrincipal, encodedPrincipal);
+        return finishCurrentSchema(
+            buffer,
+            encoder.limit(),
+            ClientSessionEncoder.TEMPLATE_ID,
+            ClientSessionEncoder.BLOCK_LENGTH
+        );
+    }
+
+    static byte[] encodeTimer(final long correlationId, final long deadline) {
+        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
+        final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
+        final TimerEncoder encoder = new TimerEncoder();
+        encoder.wrapAndApplyHeader(buffer, 0, headerEncoder)
+            .correlationId(correlationId)
+            .deadline(deadline);
+        return finishCurrentSchema(
+            buffer,
+            encoder.limit(),
+            TimerEncoder.TEMPLATE_ID,
+            TimerEncoder.BLOCK_LENGTH
+        );
+    }
+
+    /**
+     * Writes a ConsensusModule with the header patched to the acting version and block length.
+     */
+    static byte[] encodeConsensusModule(
+        final int actingVersion,
+        final int blockLength,
+        final long nextSessionId,
+        final long nextServiceSessionId,
+        final long logServiceSessionId,
+        final int pendingMessageCapacity
+    ) {
+        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
+        applyHeader(
+            buffer,
+            0,
+            blockLength,
+            ConsensusModuleEncoder.TEMPLATE_ID,
+            ConsensusModuleEncoder.SCHEMA_ID,
+            actingVersion
+        );
+        final ConsensusModuleEncoder encoder = new ConsensusModuleEncoder();
+        encoder.wrap(buffer, MessageHeaderEncoder.ENCODED_LENGTH);
+        encoder.nextSessionId(nextSessionId);
+        if (actingVersion >= ConsensusModuleEncoder.nextServiceSessionIdSinceVersion()) {
+            encoder.nextServiceSessionId(nextServiceSessionId)
+                .logServiceSessionId(logServiceSessionId)
+                .pendingMessageCapacity(pendingMessageCapacity);
+        }
+        return finishWire(
+            buffer,
+            MessageHeaderEncoder.ENCODED_LENGTH + blockLength,
+            ConsensusModuleEncoder.TEMPLATE_ID,
+            blockLength,
+            actingVersion,
+            ConsensusModuleEncoder.SCHEMA_ID
         );
     }
 
