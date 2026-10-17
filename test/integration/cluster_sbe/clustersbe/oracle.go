@@ -41,12 +41,19 @@ func ReencodeWire(fixture WireFixture) ([]byte, bool) {
 	return buf[:wireEnd], true
 }
 
-// SessionEvent uses codecs.SessionEventOracleFields for heartbeat sentinel rules.
+// ExpectedDecodeFields applies the optional-field oracle rules for fixture.
+// Templates without rules return fixture.Fields as-is.
 func ExpectedDecodeFields(fixture WireFixture) any {
-	if fields, ok := fixture.Fields.(codecs.SessionEventFields); ok {
+	switch fields := fixture.Fields.(type) {
+	case codecs.SessionEventFields:
 		return codecs.SessionEventOracleFields(fields, fixture.ActingVersion)
+	case codecs.SnapshotMarkerFields:
+		return codecs.SnapshotMarkerOracleFields(fields, fixture.ActingVersion)
+	case codecs.ConsensusModuleFields:
+		return codecs.ConsensusModuleOracleFields(fields, fixture.ActingVersion)
+	default:
+		return fixture.Fields
 	}
-	return fixture.Fields
 }
 
 func oracleEncodeBufLen(fixture WireFixture) int {
@@ -93,7 +100,10 @@ func oracleVarFieldLens(fixture WireFixture) ([]int, bool) {
 	switch fixture.TemplateID {
 	case clusterwire.SessionMessageHeaderSbeTemplateID,
 		clusterwire.SessionCloseRequestSbeTemplateID,
-		clusterwire.SessionKeepAliveSbeTemplateID:
+		clusterwire.SessionKeepAliveSbeTemplateID,
+		clusterwire.SnapshotMarkerSbeTemplateID,
+		clusterwire.TimerSbeTemplateID,
+		clusterwire.ConsensusModuleSbeTemplateID:
 		return []int{}, true
 	case clusterwire.SessionEventSbeTemplateID:
 		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.SessionEventFields) []int {
@@ -129,6 +139,10 @@ func oracleVarFieldLens(fixture WireFixture) ([]int, bool) {
 	case clusterwire.AdminResponseSbeTemplateID:
 		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.AdminResponseFields) []int {
 			return []int{len(fields.Message), len(fields.Payload)}
+		})
+	case clusterwire.ClientSessionSbeTemplateID:
+		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.ClientSessionFields) []int {
+			return []int{len(fields.ResponseChannel), len(fields.EncodedPrincipal)}
 		})
 	default:
 		return nil, false
@@ -185,6 +199,14 @@ func encodeFixture(buf []byte, offset int, fixture WireFixture) (wireEnd int, ok
 		return encodeStandard(buf, offset, fixture, codecs.EncodeAdminRequest)
 	case clusterwire.AdminResponseSbeTemplateID:
 		return encodeStandard(buf, offset, fixture, codecs.EncodeAdminResponse)
+	case clusterwire.SnapshotMarkerSbeTemplateID:
+		return encodeStandard(buf, offset, fixture, codecs.EncodeSnapshotMarker)
+	case clusterwire.ClientSessionSbeTemplateID:
+		return encodeStandard(buf, offset, fixture, codecs.EncodeClientSession)
+	case clusterwire.TimerSbeTemplateID:
+		return encodeStandard(buf, offset, fixture, codecs.EncodeTimer)
+	case clusterwire.ConsensusModuleSbeTemplateID:
+		return encodeStandard(buf, offset, fixture, codecs.EncodeConsensusModule)
 	default:
 		return 0, false
 	}

@@ -239,6 +239,22 @@ func TestLookupEnums(t *testing.T) {
 	responseCode, err := catalogschema.LookupAdminResponseCode("ERROR")
 	require.NoError(t, err)
 	require.Equal(t, clusterwire.AdminResponseCode_ERROR, responseCode)
+
+	mark, err := catalogschema.LookupSnapshotMark("SECTION")
+	require.NoError(t, err)
+	require.Equal(t, clusterwire.SnapshotMark_SECTION, mark)
+
+	_, err = catalogschema.LookupSnapshotMark("NULL_VALUE")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown SnapshotMark")
+
+	timeUnit, err := catalogschema.LookupClusterTimeUnit("MICROS")
+	require.NoError(t, err)
+	require.Equal(t, clusterwire.ClusterTimeUnit_MICROS, timeUnit)
+
+	_, err = catalogschema.LookupClusterTimeUnit("NULL_VALUE")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown ClusterTimeUnit")
 }
 
 func TestValidate_errors(t *testing.T) {

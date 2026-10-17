@@ -2,6 +2,7 @@ package codecs_test
 
 import (
 	"bytes"
+	"encoding/binary"
 	"math"
 	"testing"
 
@@ -120,6 +121,113 @@ func TestTryDecodeByTemplate_rejects_newLeadershipTermEvent(t *testing.T) {
 	t.Run("wrong_template_24_into_consensus_try_decode", func(t *testing.T) {
 		_, ok := codecs.TryDecodeNewLeadershipTermAt(validEventV16Wire, 0)
 		require.False(t, ok)
+	})
+}
+
+func TestTryDecodeByTemplate_rejects_snapshot(t *testing.T) {
+	v16 := uint16(clusterwire.SnapshotMarkerSbeSchemaVersion)
+
+	markerWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeSnapshotMarker(buf, 0, v16, snapshotMarkerSampleFields())
+	})
+	sessionWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeClientSession(buf, 0, v16, clientSessionSampleFields())
+	})
+	timerWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeTimer(buf, 0, v16, timerSampleFields())
+	})
+	moduleWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeConsensusModule(buf, 0, v16, consensusModuleSampleFields())
+	})
+
+	cases := []tryDecodeRejectCase{}
+	cases = append(cases, fixedBlockRejectCases(
+		"snapshot_marker", markerWire, clusterwire.SnapshotMarkerSbeBlockLength, 39, 10,
+	)...)
+	cases = append(cases, fixedBlockRejectCases(
+		"client_session", sessionWire, clusterwire.ClientSessionSbeBlockLength, 11, 8,
+	)...)
+	cases = append(cases, fixedBlockRejectCases(
+		"timer", timerWire, clusterwire.TimerSbeBlockLength, 15, 8,
+	)...)
+	cases = append(cases, fixedBlockRejectCases(
+		"consensus_module", moduleWire, clusterwire.ConsensusModuleSbeBlockLength, 27, 10,
+	)...)
+	cases = append(
+		cases,
+		// The v3 min root is 32. The v16 suite covers above-max and truncate.
+		tryDecodeRejectCase{
+			name: rejectCaseName("snapshot_marker_v3", "block_length_below_min"),
+			buf: func() []byte {
+				return cloneMutatedWire(markerWire, func(w []byte) {
+					w[0] = 31
+					w[6], w[7] = 3, 0
+				})
+			},
+		},
+		// The v2 min root is 8. The v16 suite covers above-max and truncate.
+		tryDecodeRejectCase{
+			name: rejectCaseName("consensus_module_v2", "block_length_below_min"),
+			buf: func() []byte {
+				return cloneMutatedWire(moduleWire, func(w []byte) {
+					w[0] = 7
+					w[6], w[7] = 2, 0
+				})
+			},
+		},
+		tryDecodeRejectCase{
+			name:   "client_session_var_field_exceeds_max_var_len",
+			buf:    func() []byte { return sessionWire },
+			maxLen: 1,
+		},
+		tryDecodeRejectCase{
+			name: "client_session_truncated_var_field",
+			buf:  func() []byte { return sessionWire[:len(sessionWire)-1] },
+		},
+	)
+	cases = append(cases, wireHeaderRejectCases(markerWire)...)
+
+	runTryDecodeRejectCases(t, cases)
+
+	t.Run("client_session_try_decode_var_over_cap", func(t *testing.T) {
+		// The buffer holds the claimed payload, so ReadVarSlice hits the
+		// maxLen path, not the length-vs-remaining bounds path.
+		headerAndBlock := messageHeaderLen + int(clusterwire.ClientSessionSbeBlockLength)
+		overLen := codecs.ClusterDecodeMaxVarLen + 1
+		wire := make([]byte, headerAndBlock+2*codecs.VarLengthPrefixSize+overLen)
+		copy(wire, sessionWire[:headerAndBlock])
+		binary.LittleEndian.PutUint32(wire[headerAndBlock:], uint32(overLen))
+		_, ok := codecs.TryDecodeClientSessionAt(wire, 0)
+		require.False(t, ok)
+	})
+	t.Run("client_session_try_decode_truncated_var", func(t *testing.T) {
+		_, ok := codecs.TryDecodeClientSessionAt(sessionWire[:len(sessionWire)-1], 0)
+		require.False(t, ok)
+	})
+
+	// ScheduleTimer and Timer share a 16-byte block. Only the template-id
+	// check rejects each wire in the other typed decoder.
+	scheduleTimerWire := encodeScheduleTimerWire(t, v16, scheduleTimerSampleFields())
+	t.Run("wrong_template_31_into_timer_try_decode", func(t *testing.T) {
+		_, ok := codecs.TryDecodeTimerAt(scheduleTimerWire, 0)
+		require.False(t, ok)
+	})
+	t.Run("wrong_template_104_into_schedule_timer_try_decode", func(t *testing.T) {
+		_, ok := codecs.TryDecodeScheduleTimerAt(timerWire, 0)
+		require.False(t, ok)
+	})
+
+	t.Run("snapshot_marker_try_decode_at", func(t *testing.T) {
+		requireTryDecodeAtRejects(t, markerWire, moduleWire, codecs.TryDecodeSnapshotMarkerAt)
+	})
+	t.Run("client_session_try_decode_at", func(t *testing.T) {
+		requireTryDecodeAtRejects(t, sessionWire, timerWire, codecs.TryDecodeClientSessionAt)
+	})
+	t.Run("timer_try_decode_at", func(t *testing.T) {
+		requireTryDecodeAtRejects(t, timerWire, scheduleTimerWire, codecs.TryDecodeTimerAt)
+	})
+	t.Run("consensus_module_try_decode_at", func(t *testing.T) {
+		requireTryDecodeAtRejects(t, moduleWire, markerWire, codecs.TryDecodeConsensusModuleAt)
 	})
 }
 

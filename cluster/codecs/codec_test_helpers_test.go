@@ -261,6 +261,19 @@ func requireDecodedClusterFields(tb require.TestingT, want, got any) {
 		requireBytesEqual(tb, wantFields.LogChannel, gotFields.LogChannel)
 	case codecs.RequestServiceAckFields:
 		requireDecodedFieldsEqual[codecs.RequestServiceAckFields](tb, wantFields, got)
+	case codecs.SnapshotMarkerFields:
+		requireDecodedFieldsEqual[codecs.SnapshotMarkerFields](tb, wantFields, got)
+	case codecs.ClientSessionFields:
+		gotFields, ok := got.(codecs.ClientSessionFields)
+		require.True(tb, ok)
+		require.Equal(tb, wantFields.ClusterSessionID, gotFields.ClusterSessionID)
+		require.Equal(tb, wantFields.ResponseStreamID, gotFields.ResponseStreamID)
+		requireBytesEqual(tb, wantFields.ResponseChannel, gotFields.ResponseChannel)
+		requireBytesEqual(tb, wantFields.EncodedPrincipal, gotFields.EncodedPrincipal)
+	case codecs.TimerFields:
+		requireDecodedFieldsEqual[codecs.TimerFields](tb, wantFields, got)
+	case codecs.ConsensusModuleFields:
+		requireDecodedFieldsEqual[codecs.ConsensusModuleFields](tb, wantFields, got)
 	default:
 		require.Fail(tb, "unsupported fields type")
 	}
@@ -367,7 +380,7 @@ func requireTryDecodeAt[T any](
 func codecFuzzSeedBuffers() [][]byte {
 	const (
 		actingVersion   = clusterwire.SessionMessageHeaderSbeSchemaVersion
-		seedEncodeCount = 29
+		seedEncodeCount = 36
 	)
 	buf := make([]byte, fuzzClusterCodecMaxLen)
 	seeds := make([][]byte, 0, seedEncodeCount*(1+codecFuzzMaxOffset))
@@ -678,6 +691,66 @@ func codecFuzzSeedBuffers() [][]byte {
 	addEncoded(func(b []byte) (int, bool) {
 		return codecs.EncodeRequestServiceAck(b, 0, actingVersion, codecs.RequestServiceAckFields{
 			LogPosition: 42,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeSnapshotMarker(b, 0, actingVersion, codecs.SnapshotMarkerFields{
+			TypeID:           codecs.ConsensusModuleSnapshotTypeID,
+			LogPosition:      1024,
+			LeadershipTermID: 3,
+			Index:            0,
+			Mark:             clusterwire.SnapshotMark_BEGIN,
+			TimeUnit:         clusterwire.ClusterTimeUnit_NANOS,
+			AppVersion:       1,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeSnapshotMarker(b, 0, 3, codecs.SnapshotMarkerFields{
+			TypeID:           codecs.ServiceSnapshotTypeID,
+			LogPosition:      512,
+			LeadershipTermID: 1,
+			Index:            0,
+			Mark:             clusterwire.SnapshotMark_BEGIN,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeClientSession(b, 0, actingVersion, codecs.ClientSessionFields{
+			ClusterSessionID: 7,
+			ResponseStreamID: 102,
+			ResponseChannel:  []byte("aeron:ipc"),
+			EncodedPrincipal: []byte{0xAB, 0xCD},
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeClientSession(b, 0, actingVersion, codecs.ClientSessionFields{
+			ClusterSessionID: 8,
+			ResponseStreamID: 103,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeTimer(b, 0, actingVersion, codecs.TimerFields{
+			CorrelationID: 9,
+			Deadline:      10000,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeConsensusModule(b, 0, actingVersion, codecs.ConsensusModuleFields{
+			NextSessionID:          11,
+			NextServiceSessionID:   12,
+			LogServiceSessionID:    13,
+			PendingMessageCapacity: 14,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeConsensusModule(b, 0, 2, codecs.ConsensusModuleFields{
+			NextSessionID: 5,
 		})
 	})
 

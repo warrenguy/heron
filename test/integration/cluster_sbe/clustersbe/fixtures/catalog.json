@@ -382,6 +382,116 @@
         "requestType": "SNAPSHOT",
         "responseCode": "ERROR"
       }
+    },
+    {
+      "name": "snapshotMarker_consensusModuleBegin",
+      "template": "snapshotMarker",
+      "actingVersion": 16,
+      "hex": "280064006f00100001000000000000000004000000000000030000000000000000000000000000000200000001000000",
+      "fields": {
+        "appVersion": 1,
+        "index": 0,
+        "leadershipTermId": 3,
+        "logPosition": 1024,
+        "mark": "BEGIN",
+        "timeUnit": "NANOS",
+        "typeId": 1
+      }
+    },
+    {
+      "name": "snapshotMarker_serviceEnd",
+      "template": "snapshotMarker",
+      "actingVersion": 16,
+      "hex": "280064006f00100002000000000000000008000000000000040000000000000000000000020000000000000003020100",
+      "fields": {
+        "appVersion": 66051,
+        "index": 0,
+        "leadershipTermId": 4,
+        "logPosition": 2048,
+        "mark": "END",
+        "timeUnit": "MILLIS",
+        "typeId": 2
+      }
+    },
+    {
+      "name": "snapshotMarker_legacyV3",
+      "template": "snapshotMarker",
+      "actingVersion": 3,
+      "hex": "200064006f0003000200000000000000000200000000000001000000000000000000000000000000",
+      "fields": {
+        "index": 0,
+        "leadershipTermId": 1,
+        "logPosition": 512,
+        "mark": "BEGIN",
+        "typeId": 2
+      }
+    },
+    {
+      "name": "clientSession_typical",
+      "template": "clientSession",
+      "actingVersion": 16,
+      "hex": "0c0066006f001000070000000000000066000000090000006165726f6e3a69706302000000abcd",
+      "fields": {
+        "clusterSessionId": 7,
+        "encodedPrincipal": {
+          "hex": "abcd"
+        },
+        "responseChannel": "aeron:ipc",
+        "responseStreamId": 102
+      }
+    },
+    {
+      "name": "clientSession_emptyVars",
+      "template": "clientSession",
+      "actingVersion": 16,
+      "hex": "0c0066006f0010000800000000000000670000000000000000000000",
+      "fields": {
+        "clusterSessionId": 8,
+        "responseStreamId": 103
+      }
+    },
+    {
+      "name": "timer_typical",
+      "template": "timer",
+      "actingVersion": 16,
+      "hex": "100068006f00100009000000000000001027000000000000",
+      "fields": {
+        "correlationId": 9,
+        "deadline": 10000
+      }
+    },
+    {
+      "name": "consensusModule_noService",
+      "template": "consensusModule",
+      "actingVersion": 16,
+      "hex": "1c0069006f0010000b000000000000000000000000000000000000000000000000000000",
+      "fields": {
+        "logServiceSessionId": 0,
+        "nextServiceSessionId": 0,
+        "nextSessionId": 11,
+        "pendingMessageCapacity": 0
+      }
+    },
+    {
+      "name": "consensusModule_maxValues",
+      "template": "consensusModule",
+      "actingVersion": 16,
+      "hex": "1c0069006f001000ffffffffffffff7fffffffffffffff7fffffffffffffff7fffffff7f",
+      "fields": {
+        "logServiceSessionId": 9223372036854775807,
+        "nextServiceSessionId": 9223372036854775807,
+        "nextSessionId": 9223372036854775807,
+        "pendingMessageCapacity": 2147483647
+      }
+    },
+    {
+      "name": "consensusModule_legacyV2",
+      "template": "consensusModule",
+      "actingVersion": 2,
+      "hex": "080069006f0002000500000000000000",
+      "fields": {
+        "nextSessionId": 5
+      }
     }
   ]
 }

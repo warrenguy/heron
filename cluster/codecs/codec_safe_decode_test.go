@@ -38,6 +38,10 @@ var fastSlowDecodeParities = []func(tb require.TestingT, buf []byte, offset int)
 	requireChallengeResponseFastSlowParity,
 	requireSessionCloseRequestFastSlowParity,
 	requireSessionKeepAliveFastSlowParity,
+	requireSnapshotMarkerFastSlowParity,
+	requireClientSessionFastSlowParity,
+	requireTimerFastSlowParity,
+	requireConsensusModuleFastSlowParity,
 }
 
 func requireSessionMessageHeaderFastSlowParity(tb require.TestingT, buf []byte, offset int) {
@@ -578,4 +582,48 @@ func TestTryDecodeSessionKeepAliveAt_reject(t *testing.T) {
 			requireSessionKeepAliveFastSlowParity(t, tc.buf, tc.offset)
 		})
 	}
+}
+
+func requireSnapshotMarkerFastSlowParity(tb require.TestingT, buf []byte, offset int) {
+	requireFastSlowDecodeParity(
+		tb,
+		buf,
+		offset,
+		0,
+		clusterwire.SnapshotMarkerSbeTemplateID,
+		codecs.TryDecodeSnapshotMarkerAt,
+	)
+}
+
+func requireClientSessionFastSlowParity(tb require.TestingT, buf []byte, offset int) {
+	requireFastSlowDecodeParity(
+		tb,
+		buf,
+		offset,
+		codecs.ClusterDecodeMaxVarLen,
+		clusterwire.ClientSessionSbeTemplateID,
+		codecs.TryDecodeClientSessionAt,
+	)
+}
+
+func requireTimerFastSlowParity(tb require.TestingT, buf []byte, offset int) {
+	requireFastSlowDecodeParity(
+		tb,
+		buf,
+		offset,
+		0,
+		clusterwire.TimerSbeTemplateID,
+		codecs.TryDecodeTimerAt,
+	)
+}
+
+func requireConsensusModuleFastSlowParity(tb require.TestingT, buf []byte, offset int) {
+	requireFastSlowDecodeParity(
+		tb,
+		buf,
+		offset,
+		0,
+		clusterwire.ConsensusModuleSbeTemplateID,
+		codecs.TryDecodeConsensusModuleAt,
+	)
 }

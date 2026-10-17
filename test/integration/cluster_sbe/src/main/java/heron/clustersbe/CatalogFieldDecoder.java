@@ -2,9 +2,13 @@ package heron.clustersbe;
 
 import io.aeron.cluster.codecs.AdminRequestType;
 import io.aeron.cluster.codecs.AdminResponseCode;
+import io.aeron.cluster.codecs.ClusterTimeUnit;
+import io.aeron.cluster.codecs.ConsensusModuleEncoder;
 import io.aeron.cluster.codecs.EventCode;
 import io.aeron.cluster.codecs.SessionConnectRequestEncoder;
 import io.aeron.cluster.codecs.SessionEventEncoder;
+import io.aeron.cluster.codecs.SnapshotMark;
+import io.aeron.cluster.codecs.SnapshotMarkerEncoder;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
@@ -28,6 +32,10 @@ final class CatalogFieldDecoder {
             case "challengeResponse" -> encodeChallengeResponseFields(entry.fields(), blobs);
             case "adminRequest" -> encodeAdminRequestFields(entry.fields(), blobs);
             case "adminResponse" -> encodeAdminResponseFields(entry.fields(), blobs);
+            case "snapshotMarker" -> encodeSnapshotMarkerFields(entry);
+            case "clientSession" -> encodeClientSessionFields(entry.fields(), blobs);
+            case "timer" -> encodeTimerFields(entry.fields());
+            case "consensusModule" -> encodeConsensusModuleFields(entry);
             default -> throw new IllegalArgumentException("unknown template: " + entry.template());
         };
     }
@@ -151,6 +159,55 @@ final class CatalogFieldDecoder {
         );
     }
 
+    private static byte[] encodeSnapshotMarkerFields(final FixtureEntry entry) {
+        final Map<String, Object> fields = entry.fields();
+        final int actingVersion = entry.actingVersion();
+        final String timeUnit = optionalString(fields, "timeUnit");
+        return ClusterSbeFixtures.encodeSnapshotMarker(
+            actingVersion,
+            snapshotMarkerBlockLength(actingVersion),
+            requireInt64(fields, "typeId"),
+            requireInt64(fields, "logPosition"),
+            requireInt64(fields, "leadershipTermId"),
+            requireInt32(fields, "index"),
+            SnapshotMark.valueOf(stringField(fields, "mark")),
+            timeUnit == null ? null : ClusterTimeUnit.valueOf(timeUnit),
+            optionalInt32(fields, "appVersion")
+        );
+    }
+
+    private static byte[] encodeClientSessionFields(
+        final Map<String, Object> fields,
+        final Map<String, byte[]> blobs
+    ) {
+        return ClusterSbeFixtures.encodeClientSession(
+            requireInt64(fields, "clusterSessionId"),
+            requireInt32(fields, "responseStreamId"),
+            optionalString(fields, "responseChannel"),
+            decodeBytesField(fields.get("encodedPrincipal"), blobs)
+        );
+    }
+
+    private static byte[] encodeTimerFields(final Map<String, Object> fields) {
+        return ClusterSbeFixtures.encodeTimer(
+            requireInt64(fields, "correlationId"),
+            requireInt64(fields, "deadline")
+        );
+    }
+
+    private static byte[] encodeConsensusModuleFields(final FixtureEntry entry) {
+        final Map<String, Object> fields = entry.fields();
+        final int actingVersion = entry.actingVersion();
+        return ClusterSbeFixtures.encodeConsensusModule(
+            actingVersion,
+            consensusModuleBlockLength(actingVersion),
+            requireInt64(fields, "nextSessionId"),
+            optionalInt64(fields, "nextServiceSessionId"),
+            optionalInt64(fields, "logServiceSessionId"),
+            optionalInt32(fields, "pendingMessageCapacity")
+        );
+    }
+
     private static int sessionEventBlockLength(final int actingVersion, final Integer override) {
         if (override != null) {
             return override;
@@ -166,6 +223,18 @@ final class CatalogFieldDecoder {
 
     private static int sessionConnectRequestBlockLength(final int actingVersion) {
         return actingVersion < 2 ? 12 : SessionConnectRequestEncoder.BLOCK_LENGTH;
+    }
+
+    private static int snapshotMarkerBlockLength(final int actingVersion) {
+        return actingVersion < SnapshotMarkerEncoder.timeUnitSinceVersion()
+            ? 32
+            : SnapshotMarkerEncoder.BLOCK_LENGTH;
+    }
+
+    private static int consensusModuleBlockLength(final int actingVersion) {
+        return actingVersion < ConsensusModuleEncoder.nextServiceSessionIdSinceVersion()
+            ? 8
+            : ConsensusModuleEncoder.BLOCK_LENGTH;
     }
 
     private static long requireInt64(final Map<String, Object> fields, final String key) {
@@ -189,6 +258,13 @@ final class CatalogFieldDecoder {
             return 0;
         }
         return requireInt32(fields, key);
+    }
+
+    private static long optionalInt64(final Map<String, Object> fields, final String key) {
+        if (!fields.containsKey(key)) {
+            return 0;
+        }
+        return requireInt64(fields, key);
     }
 
     private static String optionalString(final Map<String, Object> fields, final String key) {

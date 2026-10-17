@@ -78,6 +78,56 @@ func TestSessionKeepAlive_fastSlowDecodeParity(t *testing.T) {
 	})
 }
 
+func TestSnapshotMarker_fastSlowDecodeParity(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		buf := make([]byte, offset+fuzzClusterCodecMaxLen)
+		wireEnd, ok := codecs.EncodeSnapshotMarker(
+			buf, offset, actingVersion, rapidSnapshotMarkerFields(rt),
+		)
+		require.True(rt, ok)
+		requireSnapshotMarkerFastSlowParity(rt, buf[:wireEnd], offset)
+	})
+}
+
+func TestClientSession_fastSlowDecodeParity(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		buf := make([]byte, offset+fuzzClusterCodecMaxLen)
+		wireEnd, ok := codecs.EncodeClientSession(
+			buf, offset, actingVersion, rapidClientSessionFields(rt),
+		)
+		require.True(rt, ok)
+		requireClientSessionFastSlowParity(rt, buf[:wireEnd], offset)
+	})
+}
+
+func TestTimer_fastSlowDecodeParity(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		buf := make([]byte, offset+fuzzClusterCodecMaxLen)
+		wireEnd, ok := codecs.EncodeTimer(buf, offset, actingVersion, rapidTimerFields(rt))
+		require.True(rt, ok)
+		requireTimerFastSlowParity(rt, buf[:wireEnd], offset)
+	})
+}
+
+func TestConsensusModule_fastSlowDecodeParity(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		buf := make([]byte, offset+fuzzClusterCodecMaxLen)
+		wireEnd, ok := codecs.EncodeConsensusModule(
+			buf, offset, actingVersion, rapidConsensusModuleFields(rt),
+		)
+		require.True(rt, ok)
+		requireConsensusModuleFastSlowParity(rt, buf[:wireEnd], offset)
+	})
+}
+
 func rapidSessionMessageHeaderParityWire(rt *rapid.T) (buf []byte, offset int) {
 	rt.Helper()
 	if rapid.Bool().Draw(rt, "useValidWire") {

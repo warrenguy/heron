@@ -29,11 +29,12 @@ type wireTemplateSpec struct {
 	varBytesFieldKeys []string
 }
 
-// wireTemplateCatalog lists each cluster client ingress/egress template: SBE template
-// id, catalog discriminator, and allowed JSON field keys in wire order.
+// wireTemplateCatalog lists each catalog template: SBE template id, catalog
+// discriminator, and allowed JSON field keys in wire order.
 //
-// Hand-maintained catalog for client templates only; flyweight/schema source is full
-// upstream specs/cluster-codecs-wire.xml.
+// The catalog covers the client session templates and the snapshot stream
+// templates. The flyweight source is the full upstream
+// specs/cluster-codecs-wire.xml.
 var wireTemplateCatalog = []wireTemplateSpec{
 	{
 		id:               clusterwire.SessionMessageHeaderSbeTemplateID,
@@ -109,6 +110,36 @@ var wireTemplateCatalog = []wireTemplateSpec{
 		varFieldKeys:      []string{"message", "payload"},
 		varBytesFieldKeys: []string{"payload"},
 	},
+	{
+		id:   clusterwire.SnapshotMarkerSbeTemplateID,
+		name: "snapshotMarker",
+		allowedFieldKeys: []string{
+			"typeId", "logPosition", "leadershipTermId", "index", "mark", "timeUnit",
+			"appVersion",
+		},
+	},
+	{
+		id:   clusterwire.ClientSessionSbeTemplateID,
+		name: "clientSession",
+		allowedFieldKeys: []string{
+			"clusterSessionId", "responseStreamId", "responseChannel", "encodedPrincipal",
+		},
+		varFieldKeys:      []string{"responseChannel", "encodedPrincipal"},
+		varBytesFieldKeys: []string{"encodedPrincipal"},
+	},
+	{
+		id:               clusterwire.TimerSbeTemplateID,
+		name:             "timer",
+		allowedFieldKeys: []string{"correlationId", "deadline"},
+	},
+	{
+		id:   clusterwire.ConsensusModuleSbeTemplateID,
+		name: "consensusModule",
+		allowedFieldKeys: []string{
+			"nextSessionId", "nextServiceSessionId", "logServiceSessionId",
+			"pendingMessageCapacity",
+		},
+	},
 }
 
 var (
@@ -126,6 +157,16 @@ var (
 		"OK":                  clusterwire.AdminResponseCode_OK,
 		"ERROR":               clusterwire.AdminResponseCode_ERROR,
 		"UNAUTHORISED_ACCESS": clusterwire.AdminResponseCode_UNAUTHORISED_ACCESS,
+	}
+	snapshotMarkByName = map[string]clusterwire.SnapshotMark{
+		"BEGIN":   clusterwire.SnapshotMark_BEGIN,
+		"SECTION": clusterwire.SnapshotMark_SECTION,
+		"END":     clusterwire.SnapshotMark_END,
+	}
+	clusterTimeUnitByName = map[string]clusterwire.ClusterTimeUnit{
+		"MILLIS": clusterwire.ClusterTimeUnit_MILLIS,
+		"MICROS": clusterwire.ClusterTimeUnit_MICROS,
+		"NANOS":  clusterwire.ClusterTimeUnit_NANOS,
 	}
 )
 
@@ -221,6 +262,14 @@ func LookupAdminRequestType(name string) (clusterwire.AdminRequestType, error) {
 
 func LookupAdminResponseCode(name string) (clusterwire.AdminResponseCode, error) {
 	return lookupEnumValue(name, adminResponseCodeByName, "AdminResponseCode")
+}
+
+func LookupSnapshotMark(name string) (clusterwire.SnapshotMark, error) {
+	return lookupEnumValue(name, snapshotMarkByName, "SnapshotMark")
+}
+
+func LookupClusterTimeUnit(name string) (clusterwire.ClusterTimeUnit, error) {
+	return lookupEnumValue(name, clusterTimeUnitByName, "ClusterTimeUnit")
 }
 
 // ParseJSON decodes catalog bytes preserving integer field precision.
