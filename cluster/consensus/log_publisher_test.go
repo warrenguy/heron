@@ -587,41 +587,50 @@ func TestAgent_AppendNewLeadershipTermEvent_termBaseSources(t *testing.T) {
 
 func TestAgent_AddLogPublication_inject(t *testing.T) {
 	a := NewAgent(AgentConfig{})
-	require.Equal(t, int32(-1), a.AddLogPublication(0))
+	sessionID, err := a.AddLogPublication(0)
+	require.NoError(t, err)
+	require.Equal(t, int32(-1), sessionID)
 
 	// Publisher without publication still unbound.
 	a.SetLogPublisher(NewLogPublisher())
-	require.Equal(t, int32(-1), a.AddLogPublication(0))
+	sessionID, err = a.AddLogPublication(0)
+	require.NoError(t, err)
+	require.Equal(t, int32(-1), sessionID)
 
 	lp, pub := boundLogPublisher(t)
 
 	// Required inject order: SetLogPublisher + SetPublication before call.
 	a.SetLogPublisher(lp)
-	got := a.AddLogPublication(100)
+	got, err := a.AddLogPublication(100)
+	require.NoError(t, err)
 	require.Equal(t, pub.SessionID(), got)
 	require.Equal(t, lp.SessionID(), got)
 
 	// Unbind returns to -1.
 	lp.SetPublication(nil)
-	require.Equal(t, int32(-1), a.AddLogPublication(0))
+	sessionID, err = a.AddLogPublication(0)
+	require.NoError(t, err)
+	require.Equal(t, int32(-1), sessionID)
 }
 
 // Asserts reseed failure reports the session the publisher still holds.
 // Reseed closes the old publication before opening the new one. A failure
-// after that close must not report the pre-reseed session id. Election
-// publishes the returned id in NewLeadershipTerm.
+// after that close must not report the pre-reseed session id.
 func TestAddLogPublication_reseedFailureReportsBoundSession(t *testing.T) {
 	t.Run("failure after unbind returns null session", func(t *testing.T) {
 		publisher, _ := boundLogPublisher(t)
 		a := NewAgent(AgentConfig{})
 		a.SetLogPublisher(publisher)
 		a.SetLogRecordingID(1)
+		cause := errors.New("add exclusive publication failed")
 		a.SetLogPublicationReseed(func(int64) (int32, error) {
 			publisher.SetPublication(nil)
-			return 0, errors.New("add exclusive publication failed")
+			return 0, cause
 		})
 
-		require.Equal(t, int32(nullValue), a.AddLogPublication(100))
+		sessionID, err := a.AddLogPublication(100)
+		require.ErrorIs(t, err, cause)
+		require.Equal(t, int32(nullValue), sessionID)
 	})
 
 	t.Run("failure before unbind returns the live session", func(t *testing.T) {
@@ -629,11 +638,12 @@ func TestAddLogPublication_reseedFailureReportsBoundSession(t *testing.T) {
 		a := NewAgent(AgentConfig{})
 		a.SetLogPublisher(publisher)
 		a.SetLogRecordingID(1)
-		a.SetLogPublicationReseed(func(int64) (int32, error) {
-			return 0, errors.New("list recording failed")
-		})
+		cause := errors.New("list recording failed")
+		a.SetLogPublicationReseed(func(int64) (int32, error) { return 0, cause })
 
-		require.Equal(t, publisher.SessionID(), a.AddLogPublication(100))
+		sessionID, err := a.AddLogPublication(100)
+		require.ErrorIs(t, err, cause)
+		require.Equal(t, publisher.SessionID(), sessionID)
 	})
 
 	t.Run("success returns the reseeded session", func(t *testing.T) {
@@ -645,7 +655,9 @@ func TestAddLogPublication_reseedFailureReportsBoundSession(t *testing.T) {
 		a.SetLogRecordingID(1)
 		a.SetLogPublicationReseed(func(int64) (int32, error) { return reseeded, nil })
 
-		require.Equal(t, reseeded, a.AddLogPublication(100))
+		sessionID, err := a.AddLogPublication(100)
+		require.NoError(t, err)
+		require.Equal(t, reseeded, sessionID)
 	})
 }
 
@@ -719,7 +731,9 @@ func TestAddLogPublication_reseedsOnPositionMismatch(t *testing.T) {
 				want = reseeded
 			}
 
-			require.Equal(t, want, a.AddLogPublication(tt.target))
+			sessionID, err := a.AddLogPublication(tt.target)
+			require.NoError(t, err)
+			require.Equal(t, want, sessionID)
 			require.Equal(t, tt.wantReseed, called)
 		})
 	}

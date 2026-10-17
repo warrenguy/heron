@@ -111,7 +111,9 @@ func TestClusterModule_electsOneLeaderOverLiveDrivers(t *testing.T) {
 		require.True(t, handles[i].pub.IsClosed())
 		require.True(t, handles[i].sub.IsClosed())
 		require.Nil(t, m.Agent().AppendSource())
-		require.Equal(t, int32(-1), m.Agent().AddLogPublication(0))
+		sessionID, err := m.Agent().AddLogPublication(0)
+		require.NoError(t, err)
+		require.Equal(t, int32(-1), sessionID)
 		require.True(t, archiveClients[i].IsClosed())
 		require.Nil(t, m.ArchiveClient())
 	}

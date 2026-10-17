@@ -82,7 +82,9 @@ func (NoopElectionHost) OnCatchupPosition(codecs.CatchupPositionFields) {}
 
 func (NoopElectionHost) PublishCommitPosition(int64, int64) {}
 
-func (NoopElectionHost) AddLogPublication(int64) int32 { return election.NullMemberID }
+func (NoopElectionHost) AddLogPublication(int64) (int32, error) {
+	return election.NullMemberID, nil
+}
 
 func (NoopElectionHost) AppendNewLeadershipTermEvent(int64) bool { return false }
 

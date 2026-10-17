@@ -85,7 +85,12 @@ type ElectionHost interface {
 	OnCatchupPosition(fields CatchupPositionFields)
 
 	PublishCommitPosition(commitPosition, leadershipTermID int64)
-	AddLogPublication(appendPosition int64) int32
+
+	// AddLogPublication returns the log publication session id for the new
+	// term, or null session id (-1) when the host holds no publication. The
+	// host may rebuild the publication at appendPosition first. On a rebuild
+	// error the election discards the id and resets.
+	AddLogPublication(appendPosition int64) (int32, error)
 	AppendNewLeadershipTermEvent(nowNs int64) bool
 
 	PollArchiveEvents() int

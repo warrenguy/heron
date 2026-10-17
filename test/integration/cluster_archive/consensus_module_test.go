@@ -74,7 +74,8 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	require.False(t, archiveClient.Config().OwnsAeronClient())
 
 	// Bind at open: log publication and join/append sources before first tick.
-	session := module.Agent().AddLogPublication(0)
+	session, err := module.Agent().AddLogPublication(0)
+	require.NoError(t, err)
 	require.NotEqual(t, int32(-1), session)
 	require.Equal(t, module.LogPublisher().SessionID(), session)
 	require.Equal(t, module.LogStreams().Publication().SessionID(), session)
@@ -136,7 +137,9 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	require.Nil(t, agent.Positions())
 	require.Nil(t, agent.Egress())
 	require.Nil(t, agent.Election())
-	require.Equal(t, int32(-1), agent.AddLogPublication(0))
+	sessionID, err := agent.AddLogPublication(0)
+	require.NoError(t, err)
+	require.Equal(t, int32(-1), sessionID)
 	require.Nil(t, module.LogStreams())
 	require.Nil(t, module.RecordingLog())
 	require.Nil(t, module.Client())

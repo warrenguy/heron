@@ -49,7 +49,9 @@ func TestLogStreams_openAndTeardown_rapid(t *testing.T) {
 		require.Equal(rt, []string{logChannel}, adder.lastDestHook.Adds)
 		require.Equal(rt, logChannel, agent.LiveLogDestination())
 
-		require.Equal(rt, adder.lastPub.SessionID(), agent.AddLogPublication(0))
+		sessionID, err := agent.AddLogPublication(0)
+		require.NoError(rt, err)
+		require.Equal(rt, adder.lastPub.SessionID(), sessionID)
 		require.IsType(rt, (*consensus.LogAppendPosition)(nil), agent.AppendSource())
 		require.IsType(rt, (*consensus.SubscriptionLogJoinSource)(nil), agent.LogJoinSource())
 		require.Nil(rt, logAdapter.Image())

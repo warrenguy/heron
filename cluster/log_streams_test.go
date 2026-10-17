@@ -173,7 +173,9 @@ func requireAgentLogUnbound(
 	if h, ok := t.(interface{ Helper() }); ok {
 		h.Helper()
 	}
-	require.Equal(t, int32(-1), agent.AddLogPublication(0))
+	sessionID, err := agent.AddLogPublication(0)
+	require.NoError(t, err)
+	require.Equal(t, int32(-1), sessionID)
 	require.Nil(t, agent.AppendSource())
 	require.Nil(t, agent.LogJoinSource())
 	require.Empty(t, agent.LiveLogDestination())
@@ -341,7 +343,9 @@ func TestOpenLogStreams_openOrderAndBind(t *testing.T) {
 	require.Equal(t, int64(2), adder.correlationSeq)
 
 	// Bind set complete.
-	require.Equal(t, adder.lastPub.SessionID(), agent.AddLogPublication(0))
+	sessionID, err := agent.AddLogPublication(0)
+	require.NoError(t, err)
+	require.Equal(t, adder.lastPub.SessionID(), sessionID)
 	require.IsType(t, (*consensus.LogAppendPosition)(nil), agent.AppendSource())
 	require.IsType(t, (*consensus.SubscriptionLogJoinSource)(nil), agent.LogJoinSource())
 	require.Same(t, adder.lastPub, logPublisher.Publication())
@@ -764,7 +768,9 @@ func TestLogStreams_close(t *testing.T) {
 
 	// Idempotent: second Close does not re-clear agent.
 	require.NoError(t, ls.Close())
-	require.Equal(t, int32(-1), agent.AddLogPublication(0))
+	sessionID, err := agent.AddLogPublication(0)
+	require.NoError(t, err)
+	require.Equal(t, int32(-1), sessionID)
 	require.Nil(t, agent.AppendSource())
 	require.Nil(t, ls.Publication())
 	require.Nil(t, ls.Subscription())
@@ -780,7 +786,9 @@ func TestLogStreams_closeStaleAfterRebind(t *testing.T) {
 	ls1, err := cluster.OpenLogStreams(deps)
 	require.NoError(t, err)
 	require.NoError(t, ls1.Close())
-	require.Equal(t, int32(-1), agent.AddLogPublication(0))
+	sessionID, err := agent.AddLogPublication(0)
+	require.NoError(t, err)
+	require.Equal(t, int32(-1), sessionID)
 	require.Nil(t, agent.AppendSource())
 
 	// Re-open on same agent with a fresh publisher/adapter pair.
@@ -792,7 +800,9 @@ func TestLogStreams_closeStaleAfterRebind(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ls2.Close() })
 
-	require.NotEqual(t, int32(-1), agent.AddLogPublication(0))
+	sessionID, err = agent.AddLogPublication(0)
+	require.NoError(t, err)
+	require.NotEqual(t, int32(-1), sessionID)
 	require.NotNil(t, agent.AppendSource())
 	require.NotNil(t, agent.LogJoinSource())
 	require.Same(t, adder.lastPub, logPublisher2.Publication())
@@ -803,7 +813,9 @@ func TestLogStreams_closeStaleAfterRebind(t *testing.T) {
 
 	// Stale owner must not clear rebound agent state or close new handles.
 	require.NoError(t, ls1.Close())
-	require.NotEqual(t, int32(-1), agent.AddLogPublication(0))
+	sessionID, err = agent.AddLogPublication(0)
+	require.NoError(t, err)
+	require.NotEqual(t, int32(-1), sessionID)
 	require.NotNil(t, agent.AppendSource())
 	require.NotNil(t, agent.LogJoinSource())
 	require.Same(t, pub2, ls2.Publication())
