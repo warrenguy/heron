@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
@@ -65,6 +66,10 @@ type AgentConfig struct {
 	// consumes during recovery. Nil disables the start ack. See
 	// [StartAckConfig].
 	StartAck *StartAckConfig
+
+	// Archive is the archive client DoWork polls. Nil polls none. Agent does
+	// not own Archive.
+	Archive *archive.Client
 }
 
 // Agent owns the service duty cycle: log join, bounded log consumption,
@@ -78,7 +83,7 @@ type AgentConfig struct {
 //
 // Ownership: Agent owns the BoundedLogAdapter and the log subscription. Agent
 // does not own Images the subscription holds; unbind clears the adapter Image
-// reference only.
+// reference only. Agent does not own the archive client.
 type Agent struct {
 	serviceID         int32
 	service           ClusteredService
@@ -86,6 +91,9 @@ type Agent struct {
 	subscriptions     SubscriptionAdder
 	control           ControlIngress
 	moduleProxy       *ConsensusModuleProxy
+
+	// archive is the polled archive client, or nil. Never a typed nil.
+	archive snapshotArchiveControl
 
 	adapter *BoundedLogAdapter
 
@@ -224,6 +232,9 @@ func NewAgent(cfg AgentConfig) *Agent {
 		memberID:            -1,
 		sessions:            make(map[int64]*clientSessionRecord),
 	}
+	if cfg.Archive != nil {
+		a.archive = cfg.Archive
+	}
 	if nlt, ok := cfg.Service.(NewLeadershipTermEventHandler); ok {
 		a.leadershipHandler = nlt
 	}
@@ -249,16 +260,17 @@ func NewAgent(cfg AgentConfig) *Agent {
 //  2. start work once: Service.Start(agent). A Start error marks failure
 //     once. The start entry stays unready. Success or a nil Service marks
 //     the start entry ready when one is queued.
-//  3. control work: poll control, request readiness sweep, drain at most one
+//  3. archive Poll when an archive client is wired
+//  4. control work: poll control, request readiness sweep, drain at most one
 //     ready first queued ack. An entry with a failure marks it on send or
 //     on a terminal offer code
-//  4. join work while pendingJoin is non-nil and no image is bound
-//  5. log poll when the image is bound and CommittedPosition is non-nil. The
+//  5. join work while pendingJoin is non-nil and no image is bound
+//  6. log poll when the image is bound and CommittedPosition is non-nil. The
 //     poll bound is min(committed, lowest unready request entry position)
-//  6. unbind when zero polled and (image closed or position at maxLogPosition)
+//  7. unbind when zero polled and (image closed or position at maxLogPosition)
 //
-// Returns the work count: Start, control fragments, each sent ack, each join
-// bind, and each polled fragment.
+// Returns the work count: Start, the archive Poll count, control fragments,
+// each sent ack, each join bind, and each polled fragment.
 //
 // Concurrency: invoker-only.
 func (a *Agent) DoWork(nowNs int64) int {
@@ -279,6 +291,10 @@ func (a *Agent) DoWork(nowNs int64) int {
 			}
 		}
 		a.markAckReady(ackKindStart)
+	}
+
+	if a.archive != nil {
+		work += a.archive.Poll()
 	}
 
 	work += a.controlWork()

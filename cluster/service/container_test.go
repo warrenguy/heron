@@ -4,12 +4,14 @@ package service
 
 import (
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
@@ -19,7 +21,8 @@ type transportAdd struct {
 }
 
 // fakeTransport records AddSubscription and AddPublication and returns hook
-// handles. A configured error skips handle creation for that add.
+// handles. A configured error skips handle creation for that add. An
+// exclusive publication add never completes.
 type fakeTransport struct {
 	tb testing.TB
 
@@ -69,6 +72,18 @@ func (f *fakeTransport) AddPublication(
 	return f.pub, nil
 }
 
+func (*fakeTransport) OfferAddExclusivePublication(int32, string) (int64, error) {
+	return 1, nil
+}
+
+func (*fakeTransport) PollAddExclusivePublication(
+	int64,
+) (*aeron.ExclusivePublication, bool, error) {
+	return nil, false, nil
+}
+
+func (*fakeTransport) CancelPending(int64) {}
+
 func newFakeTransport(tb testing.TB) *fakeTransport {
 	tb.Helper()
 	return &fakeTransport{tb: tb}
@@ -80,6 +95,13 @@ func openConfig(aeronClient TransportClient) Config {
 		Service:           &recordingService{},
 		CommittedPosition: func() int64 { return 0 },
 	}
+}
+
+func archiveOpenConfig(t *testing.T, archiveCfg archive.Config) Config {
+	t.Helper()
+	cfg := openConfig(newFakeTransport(t))
+	cfg.Archive = &archiveCfg
+	return cfg
 }
 
 func openContainer(t *testing.T, cfg Config) *Container {
@@ -210,6 +232,185 @@ func TestOpen_refusesInvalidConfig(t *testing.T) {
 			},
 			wantErr: "service: ServiceStreamID and ConsensusModuleStreamID must differ",
 		},
+		{
+			name: "archive with aeron set",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{Aeron: &aeron.Client{}})
+			},
+			wantErr: "service: Archive must not set Aeron",
+		},
+		{
+			name: "archive with recording signal handler",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{
+					RecordingSignalHandler: &archive.RecordingSignalHandlers{},
+				})
+			},
+			wantErr: "service: Archive must not set RecordingSignalHandler",
+		},
+		{
+			name: "archive with local control channel",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{
+					LocalControlChannel: archive.DefaultLocalControlChannel,
+				})
+			},
+			wantErr: "service: Archive must not set LocalControlChannel",
+		},
+		{
+			name: "archive with local control stream",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{
+					LocalControlStreamID: archive.DefaultLocalControlStreamID,
+				})
+			},
+			wantErr: "service: Archive must not set LocalControlStreamID",
+		},
+		{
+			name: "archive udp request channel",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{
+					ControlRequestChannel: archive.DefaultControlRequestChannel,
+				})
+			},
+			wantErr: "service: archive ControlRequestChannel must be IPC",
+		},
+		{
+			name: "archive udp response channel",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{
+					ControlResponseChannel: archive.DefaultControlResponseChannel,
+				})
+			},
+			wantErr: "service: archive ControlResponseChannel must be IPC",
+		},
+		{
+			name: "archive response stream equals request stream",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{
+					ControlResponseStreamID: archive.DefaultLocalControlStreamID,
+				})
+			},
+			wantErr: "service: archive ControlResponseStreamID and ControlRequestStreamID must differ",
+		},
+		{
+			name: "archive response stream equals explicit request stream",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{
+					ControlRequestStreamID:  300,
+					ControlResponseStreamID: 300,
+				})
+			},
+			wantErr: "service: archive ControlResponseStreamID and ControlRequestStreamID must differ",
+		},
+		{
+			name: "archive request stream equals service stream",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{
+					ControlRequestStreamID: DefaultServiceStreamID,
+				})
+			},
+			wantErr: "service: archive ControlRequestStreamID and ServiceStreamID must differ",
+		},
+		{
+			name: "archive request stream equals consensus module stream",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{
+					ControlRequestStreamID: DefaultConsensusModuleStreamID,
+				})
+			},
+			wantErr: "service: archive ControlRequestStreamID and ConsensusModuleStreamID must differ",
+		},
+		{
+			name: "archive request stream equals snapshot stream",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{
+					ControlRequestStreamID: DefaultSnapshotStreamID,
+				})
+			},
+			wantErr: "service: archive ControlRequestStreamID and SnapshotStreamID must differ",
+		},
+		{
+			name: "archive response stream equals service stream",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{
+					ControlResponseStreamID: DefaultServiceStreamID,
+				})
+			},
+			wantErr: "service: archive ControlResponseStreamID and ServiceStreamID must differ",
+		},
+		{
+			name: "archive response stream equals consensus module stream",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{
+					ControlResponseStreamID: DefaultConsensusModuleStreamID,
+				})
+			},
+			wantErr: "service: archive ControlResponseStreamID and ConsensusModuleStreamID must differ",
+		},
+		{
+			name: "archive response stream equals snapshot stream",
+			cfg: func(t *testing.T) Config {
+				return archiveOpenConfig(t, archive.Config{
+					ControlResponseStreamID: DefaultSnapshotStreamID,
+				})
+			},
+			wantErr: "service: archive ControlResponseStreamID and SnapshotStreamID must differ",
+		},
+		{
+			name: "archive derived response stream equals explicit service stream",
+			cfg: func(t *testing.T) Config {
+				cfg := archiveOpenConfig(t, archive.Config{})
+				cfg.ServiceStreamID = 121
+				return cfg
+			},
+			wantErr: "service: archive ControlResponseStreamID and ServiceStreamID must differ",
+		},
+		{
+			name: "archive zero response stream with max service id",
+			cfg: func(t *testing.T) Config {
+				cfg := archiveOpenConfig(t, archive.Config{})
+				cfg.ServiceID = math.MaxInt32
+				return cfg
+			},
+			wantErr: "service: ServiceID too large to derive archive ControlResponseStreamID",
+		},
+		{
+			name: "snapshot channel with session id",
+			cfg: func(t *testing.T) Config {
+				cfg := openConfig(newFakeTransport(t))
+				cfg.SnapshotChannel = "aeron:ipc?alias=snapshot|session-id=7"
+				return cfg
+			},
+			wantErr: "service: SnapshotChannel must not set session-id=",
+		},
+		{
+			name: "snapshot stream equals service stream",
+			cfg: func(t *testing.T) Config {
+				cfg := openConfig(newFakeTransport(t))
+				cfg.SnapshotStreamID = DefaultServiceStreamID
+				return cfg
+			},
+			wantErr: "service: SnapshotStreamID and ServiceStreamID must differ",
+		},
+		{
+			name: "snapshot stream equals consensus module stream",
+			cfg: func(t *testing.T) Config {
+				cfg := openConfig(newFakeTransport(t))
+				cfg.SnapshotStreamID = DefaultConsensusModuleStreamID
+				return cfg
+			},
+			wantErr: "service: SnapshotStreamID and ConsensusModuleStreamID must differ",
+		},
+		{
+			name: "explicit service stream equals default snapshot stream",
+			cfg: func(t *testing.T) Config {
+				cfg := openConfig(newFakeTransport(t))
+				cfg.ServiceStreamID = DefaultSnapshotStreamID
+				return cfg
+			},
+			wantErr: "service: SnapshotStreamID and ServiceStreamID must differ",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -232,28 +433,38 @@ func TestOpen_defaultsControlChannelAndStreamIDs(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		channel     string
-		serviceID   int32
-		moduleID    int32
-		wantChannel string
-		wantService int32
-		wantModule  int32
+		name                string
+		channel             string
+		serviceID           int32
+		moduleID            int32
+		snapshotChannel     string
+		snapshotStreamID    int32
+		wantChannel         string
+		wantService         int32
+		wantModule          int32
+		wantSnapshotChannel string
+		wantSnapshotStream  int32
 	}{
 		{
-			name:        "empty channel and zero ids",
-			wantChannel: DefaultControlChannel,
-			wantService: DefaultServiceStreamID,
-			wantModule:  DefaultConsensusModuleStreamID,
+			name:                "empty channel and zero ids",
+			wantChannel:         DefaultControlChannel,
+			wantService:         DefaultServiceStreamID,
+			wantModule:          DefaultConsensusModuleStreamID,
+			wantSnapshotChannel: "aeron:ipc?alias=snapshot",
+			wantSnapshotStream:  106,
 		},
 		{
-			name:        "explicit values",
-			channel:     "aeron:ipc?alias=ctrl",
-			serviceID:   200,
-			moduleID:    201,
-			wantChannel: "aeron:ipc?alias=ctrl",
-			wantService: 200,
-			wantModule:  201,
+			name:                "explicit values",
+			channel:             "aeron:ipc?alias=ctrl",
+			serviceID:           200,
+			moduleID:            201,
+			snapshotChannel:     "aeron:ipc?alias=snap",
+			snapshotStreamID:    202,
+			wantChannel:         "aeron:ipc?alias=ctrl",
+			wantService:         200,
+			wantModule:          201,
+			wantSnapshotChannel: "aeron:ipc?alias=snap",
+			wantSnapshotStream:  202,
 		},
 	}
 	for _, tt := range tests {
@@ -264,6 +475,12 @@ func TestOpen_defaultsControlChannelAndStreamIDs(t *testing.T) {
 			cfg.ControlChannel = tt.channel
 			cfg.ServiceStreamID = tt.serviceID
 			cfg.ConsensusModuleStreamID = tt.moduleID
+			cfg.SnapshotChannel = tt.snapshotChannel
+			cfg.SnapshotStreamID = tt.snapshotStreamID
+
+			defaulted := defaultConfig(cfg)
+			require.Equal(t, tt.wantSnapshotChannel, defaulted.SnapshotChannel)
+			require.Equal(t, tt.wantSnapshotStream, defaulted.SnapshotStreamID)
 
 			_ = openContainer(t, cfg)
 
@@ -290,6 +507,8 @@ func TestOpen_wiresControlIngressAndProxy(t *testing.T) {
 	require.NotNil(t, agent.moduleProxy)
 	require.Same(t, client, agent.subscriptions)
 	require.Same(t, client.pub, agent.moduleProxy.Publication())
+	require.Nil(t, c.ArchiveClient())
+	require.Equal(t, snapshotArchiveControl(nil), agent.archive)
 
 	image := aeron.NewTestImageForHooks(t, client.sub, 0)
 	require.True(t, aeron.SubscriptionAddImageForHooks(client.sub, image))
@@ -367,9 +586,11 @@ func TestOpen_addFailure(t *testing.T) {
 	tests := []struct {
 		name          string
 		setup         func(*fakeTransport)
+		archive       *archive.Config
 		wantErr       error
 		wantPubCalls  int
 		wantSubClosed bool
+		wantPubClosed bool
 	}{
 		{
 			name: "subscription add error",
@@ -403,14 +624,25 @@ func TestOpen_addFailure(t *testing.T) {
 			wantPubCalls:  1,
 			wantSubClosed: true,
 		},
+		{
+			name:          "archive on a non-client transport",
+			setup:         func(*fakeTransport) {},
+			archive:       &archive.Config{},
+			wantErr:       errArchiveTransportNotClient,
+			wantPubCalls:  1,
+			wantSubClosed: true,
+			wantPubClosed: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			client := newFakeTransport(t)
 			tt.setup(client)
+			cfg := openConfig(client)
+			cfg.Archive = tt.archive
 
-			c, err := Open(openConfig(client))
+			c, err := Open(cfg)
 			require.ErrorIs(t, err, tt.wantErr)
 			require.Nil(t, c)
 			require.Len(t, client.subCalls, 1)
@@ -421,7 +653,51 @@ func TestOpen_addFailure(t *testing.T) {
 			} else {
 				require.Nil(t, client.sub)
 			}
-			require.Nil(t, client.pub)
+			if tt.wantPubClosed {
+				require.NotNil(t, client.pub)
+				require.True(t, client.pub.IsClosed())
+			} else {
+				require.Nil(t, client.pub)
+			}
+		})
+	}
+}
+
+func TestServiceArchiveConfig_defaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		serviceID          int32
+		responseStreamID   int32
+		wantResponseStream int32
+	}{
+		{name: "service 0 derives 121", serviceID: 0, wantResponseStream: 121},
+		{name: "service 3 derives 124", serviceID: 3, wantResponseStream: 124},
+		{
+			name:               "set response stream stays",
+			serviceID:          3,
+			responseStreamID:   300,
+			wantResponseStream: 300,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := archiveOpenConfig(t, archive.Config{
+				ControlResponseStreamID: tt.responseStreamID,
+			})
+			cfg.ServiceID = tt.serviceID
+
+			got, err := serviceArchiveConfig(defaultConfig(cfg))
+			require.NoError(t, err)
+			require.Equal(t, archive.DefaultLocalControlChannel, got.ControlRequestChannel)
+			require.Equal(t, archive.DefaultLocalControlChannel, got.ControlResponseChannel)
+			require.Equal(t, archive.DefaultLocalControlStreamID, got.ControlRequestStreamID)
+			require.Equal(t, tt.wantResponseStream, got.ControlResponseStreamID)
+			require.Nil(t, got.Aeron)
+			require.Empty(t, got.Normalize().LocalControlChannel)
+			require.Empty(t, cfg.Archive.ControlRequestChannel, "caller config stays unchanged")
 		})
 	}
 }

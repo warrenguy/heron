@@ -12,6 +12,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
@@ -1479,6 +1480,52 @@ func TestAgent_NewAgent_sentinels(t *testing.T) {
 	require.Equal(t, codecs.RoleFollower, agent.Role())
 	require.False(t, agent.IsLogBound())
 	require.False(t, agent.HasPendingJoin())
+	require.NoError(t, agent.ServiceFailure())
+}
+
+// countingArchiveControl counts Poll calls. Each Poll reports pollWork.
+type countingArchiveControl struct {
+	polls    int
+	pollWork int
+}
+
+func (c *countingArchiveControl) Poll() int {
+	c.polls++
+	return c.pollWork
+}
+
+func (*countingArchiveControl) ControlSessionID() int64 { return 0 }
+
+func (*countingArchiveControl) Config() archive.Config { return archive.Config{} }
+
+func (*countingArchiveControl) SetRecordingSignalHandler(archive.RecordingSignalHandler) {}
+
+func TestAgent_DoWork_pollsArchive(t *testing.T) {
+	svc := &recordingService{}
+	agent := NewAgent(AgentConfig{Service: svc})
+	archiveControl := &countingArchiveControl{pollWork: 2}
+	agent.archive = archiveControl
+
+	// Tick 1: Start plus the archive Poll count.
+	require.Equal(t, 3, agent.DoWork(0))
+	require.Equal(t, 1, archiveControl.polls)
+
+	// Tick 2: the archive Poll count alone.
+	require.Equal(t, 2, agent.DoWork(0))
+	require.Equal(t, 2, archiveControl.polls)
+
+	// After Close: no Poll.
+	agent.Close()
+	require.Equal(t, 0, agent.DoWork(0))
+	require.Equal(t, 2, archiveControl.polls)
+}
+
+func TestAgent_NewAgent_noArchive(t *testing.T) {
+	agent := NewAgent(AgentConfig{})
+
+	// A typed-nil client in the interface field would panic in Poll.
+	require.Equal(t, snapshotArchiveControl(nil), agent.archive)
+	require.Equal(t, 1, agent.DoWork(0))
 	require.NoError(t, agent.ServiceFailure())
 }
 
