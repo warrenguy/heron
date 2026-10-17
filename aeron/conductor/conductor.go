@@ -713,7 +713,8 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 		case PendingKindOperationSuccess,
 			PendingKindNextSessionID,
 			PendingKindRemovePublication,
-			PendingKindRemoveSubscription:
+			PendingKindRemoveSubscription,
+			PendingKindAddCounter:
 		}
 	})
 }
@@ -816,7 +817,8 @@ func newPublicationForPendingKind(
 		PendingKindNextSessionID,
 		PendingKindAddSubscription,
 		PendingKindRemovePublication,
-		PendingKindRemoveSubscription:
+		PendingKindRemoveSubscription,
+		PendingKindAddCounter:
 	}
 	return nil, fmt.Errorf("conductor: pending kind %v is not a publication kind", kind)
 }

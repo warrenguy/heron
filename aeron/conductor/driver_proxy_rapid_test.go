@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	aerontestutil "github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/atomicbuffer"
@@ -25,6 +26,8 @@ const (
 	driverProxyOpRemovePublication
 	driverProxyOpRemoveSubscription
 	driverProxyOpGetNextAvailableSessionID
+	driverProxyOpAddCounter
+	driverProxyOpRemoveCounter
 )
 
 type driverProxyExpectedRecord struct {
@@ -34,7 +37,7 @@ type driverProxyExpectedRecord struct {
 
 func drawDriverProxyOp(rt *rapid.T, name string) driverProxyOp {
 	return driverProxyOp(
-		rapid.IntRange(0, int(driverProxyOpGetNextAvailableSessionID)).Draw(rt, name),
+		rapid.IntRange(0, int(driverProxyOpRemoveCounter)).Draw(rt, name),
 	)
 }
 
@@ -298,6 +301,59 @@ func TestDriverProxy_offerReadRoundtrip_rapid(t *testing.T) {
 						}, got)
 						require.Equal(t, streamID, buffer.GetInt32(index+conductor.CorrelatedMessageLength))
 						require.Equal(t, conductor.GetNextAvailableSessionIDBodyLength, length)
+					},
+				})
+			case driverProxyOpAddCounter:
+				correlationID := rapid.Int64().Draw(rt, fmt.Sprintf("counterCorr%d", i))
+				typeID := rapid.Int32().Draw(rt, fmt.Sprintf("counterType%d", i))
+				key := append([]byte{}, rapid.SliceOfN(
+					rapid.Byte(),
+					0,
+					cnc.CounterMetadataMaxKeyLength,
+				).Draw(rt, fmt.Sprintf("counterKey%d", i))...)
+				label := testutil.DrawASCIIString(
+					rt,
+					fmt.Sprintf("counterLabel%d", i),
+					cnc.CounterMetadataMaxLabelLength,
+				)
+				err := proxy.AddCounter(correlationID, typeID, key, label)
+				if returnOnInsufficientCapacity(rt, proxy, want, err) {
+					return
+				}
+				bodyLength := conductor.CounterMessageBodyLength(len(key), len(label))
+				want = append(want, driverProxyExpectedRecord{
+					msgTypeID: conductor.AddCounter,
+					verify: func(t *rapid.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
+						got, decodeErr := conductor.DecodeCounterMessage(buffer, index, length)
+						require.NoError(t, decodeErr)
+						require.Equal(t, conductor.CounterMessage{
+							ClientID:      clientID,
+							CorrelationID: correlationID,
+							TypeID:        typeID,
+							Key:           key,
+							Label:         label,
+						}, got)
+						require.Equal(t, bodyLength, length)
+					},
+				})
+			case driverProxyOpRemoveCounter:
+				correlationID := rapid.Int64().Draw(rt, fmt.Sprintf("rmCounterCorr%d", i))
+				registrationID := rapid.Int64().Draw(rt, fmt.Sprintf("rmCounterReg%d", i))
+				err := proxy.RemoveCounter(correlationID, registrationID)
+				if returnOnInsufficientCapacity(rt, proxy, want, err) {
+					return
+				}
+				want = append(want, driverProxyExpectedRecord{
+					msgTypeID: conductor.RemoveCounter,
+					verify: func(t *rapid.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
+						got, decodeErr := conductor.DecodeRemoveMessage(buffer, index, length)
+						require.NoError(t, decodeErr)
+						require.Equal(t, conductor.RemoveMessage{
+							ClientID:       clientID,
+							CorrelationID:  correlationID,
+							RegistrationID: registrationID,
+						}, got)
+						require.Equal(t, conductor.RemoveMessageBodyLength, length)
 					},
 				})
 			}

@@ -21,7 +21,8 @@ const (
 	localSocketAddressChannelStatusIDOffset = 0
 	localSocketAddressLengthOffset          = atomicbuffer.SizeInt32
 	localSocketAddressStringOffset          = localSocketAddressLengthOffset + atomicbuffer.SizeInt32
-	localSocketAddressMaxStringLength       = counterMetaMaxKeyLength - localSocketAddressStringOffset
+	localSocketAddressMaxStringLength       = CounterMetadataMaxKeyLength -
+		localSocketAddressStringOffset
 )
 
 // FindLocalSocketAddress returns the bind address linked to channelStatusCounterID

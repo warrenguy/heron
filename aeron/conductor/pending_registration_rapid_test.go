@@ -27,6 +27,7 @@ var rapidPendingKinds = []conductor.PendingKind{
 	conductor.PendingKindAddExclusivePublication,
 	conductor.PendingKindRemovePublication,
 	conductor.PendingKindRemoveSubscription,
+	conductor.PendingKindAddCounter,
 }
 
 func newConductorForRapid(t *testing.T, rt *rapid.T) *conductor.Conductor {
@@ -141,6 +142,8 @@ type pendingRapidMapEntry struct {
 	deadlineNs    int64
 	err           error
 	driverErrored bool
+	ready         bool
+	counterID     int32
 }
 
 type pendingRapidMapModel struct {
@@ -294,7 +297,7 @@ func applyPendingRapidCancel(model *pendingRapidMapModel, correlationID int64) {
 }
 
 func pendingRapidMapEntryResolved(entry pendingRapidMapEntry) bool {
-	return entry.err != nil || entry.driverErrored
+	return entry.err != nil || entry.driverErrored || entry.ready
 }
 
 func applyPendingRapidPoll(model *pendingRapidMapModel, correlationID int64) {
@@ -323,6 +326,24 @@ func applyPendingRapidMapDriverError(model *pendingRapidMapModel, correlationID 
 	model.receivedCorrelationID = correlationID
 }
 
+func applyPendingRapidCounterReady(
+	model *pendingRapidMapModel,
+	correlationID int64,
+	counterID int32,
+) bool {
+	entry, ok := model.entries[correlationID]
+	if !ok || entry.kind != conductor.PendingKindAddCounter {
+		return false
+	}
+	entry.err = nil
+	entry.driverErrored = false
+	entry.ready = true
+	entry.counterID = counterID
+	model.entries[correlationID] = entry
+	model.receivedCorrelationID = correlationID
+	return true
+}
+
 func applyPendingRapidClear(model *pendingRapidMapModel) {
 	clear(model.entries)
 	model.receivedCorrelationID = conductor.NullCorrelationID
@@ -343,6 +364,10 @@ func syncPendingRapidMapAfterDoWork(
 		entry.err = got.Err
 		var driverErr *conductor.DriverRegistrationError
 		entry.driverErrored = errors.As(got.Err, &driverErr)
+		entry.ready = got.Ready
+		if got.Ready {
+			entry.counterID = got.Int32Value
+		}
 		model.entries[correlationID] = entry
 	}
 	model.receivedCorrelationID = conductorInstance.ReceivedCorrelationID()
@@ -360,6 +385,10 @@ func assertPendingRapidMapModel(
 		require.True(rt, ok, "correlation %d should remain pending", correlationID)
 		require.Equal(rt, entry.kind, got.Kind)
 		require.Equal(rt, entry.deadlineNs, got.DeadlineNs)
+		require.Equal(rt, entry.ready, got.Ready)
+		if entry.ready {
+			require.Equal(rt, entry.counterID, got.Int32Value)
+		}
 		switch {
 		case entry.driverErrored:
 			var driverErr *conductor.DriverRegistrationError
@@ -407,6 +436,7 @@ const (
 	pendingRapidMapOpSetActive
 	pendingRapidMapOpClear
 	pendingRapidMapOpDriverError
+	pendingRapidMapOpCounterReady
 )
 
 func runPendingRapidMapOps(
@@ -426,6 +456,7 @@ func runPendingRapidMapOps(
 		pendingRapidMapOpPoll,
 		pendingRapidMapOpAdvanceExpire,
 		pendingRapidMapOpSetActive,
+		pendingRapidMapOpCounterReady,
 	}
 	if len(model.entries) > 0 {
 		ops = append(ops, pendingRapidMapOpClear, pendingRapidMapOpDriverError)
@@ -483,7 +514,7 @@ func runPendingRapidMapOps(
 			return
 		}
 		entry := model.entries[correlationID]
-		done, _, err := conductorInstance.PollPending(correlationID)
+		done, registration, err := conductorInstance.PollPending(correlationID)
 		wantDone := rapidPendingPollCompletes(
 			model.receivedCorrelationID,
 			correlationID,
@@ -510,6 +541,10 @@ func runPendingRapidMapOps(
 				require.EqualError(rt, err, "conductor: await response timeout")
 			default:
 				require.NoError(rt, err)
+			}
+			if entry.ready && !entry.driverErrored {
+				require.True(rt, registration.Ready)
+				require.Equal(rt, entry.counterID, registration.Int32Value)
 			}
 		} else {
 			require.NoError(rt, err)
@@ -557,6 +592,24 @@ func runPendingRapidMapOps(
 		ok = conductorInstance.DriverError(rapidDriverRejectedResponse(correlationID))
 		require.True(rt, ok)
 		applyPendingRapidMapDriverError(model, correlationID)
+
+	case pendingRapidMapOpCounterReady:
+		counterID := rapid.Int32().Draw(rt, fmt.Sprintf("counterID%d", step))
+		correlationID, ok := drawPendingRapidExistingCorrelationID(
+			rt,
+			*model,
+			fmt.Sprintf("counterReadyCorrelationID%d", step),
+		)
+		if !ok || rapid.Bool().Draw(rt, fmt.Sprintf("counterReadyAbsent%d", step)) {
+			correlationID = drawRapidAbsentCorrelationID(
+				rt,
+				fmt.Sprintf("counterReadyAbsentCorrelationID%d", step),
+				rapidMapContains(model.entries),
+			)
+		}
+		got := conductorInstance.CounterReady(correlationID, counterID)
+		want := applyPendingRapidCounterReady(model, correlationID, counterID)
+		require.Equal(rt, want, got)
 	}
 }
 

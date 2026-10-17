@@ -127,6 +127,16 @@ const (
 	DestinationMessageMinimumBodyLength               = destinationMessageChannelOffset + sizeOfInt32
 )
 
+// CounterMessage layout is CorrelatedMessage, then typeId, then key length
+// and key bytes. The label (length, then bytes) starts at the next 4-byte
+// boundary after the key.
+const (
+	CounterMessageTypeIDOffset      = CorrelatedMessageLength
+	CounterMessageKeyLengthOffset   = CounterMessageTypeIDOffset + sizeOfInt32
+	CounterMessageKeyOffset         = CounterMessageKeyLengthOffset + sizeOfInt32
+	CounterMessageMinimumBodyLength = CounterMessageKeyOffset + sizeOfInt32
+)
+
 const (
 	removeMessageRegistrationIDOffset = CorrelatedMessageLength
 	RemoveMessageRegistrationIDOffset = removeMessageRegistrationIDOffset

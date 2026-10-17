@@ -142,6 +142,13 @@ func TestLayout_goldenOffsets(t *testing.T) {
 			16,
 		},
 		{"RemoveMessageBodyLength", conductor.RemoveMessageBodyLength, 24},
+		{"CounterMessageTypeIDOffset", conductor.CounterMessageTypeIDOffset, 16},
+		{"CounterMessageKeyLengthOffset", conductor.CounterMessageKeyLengthOffset, 20},
+		{"CounterMessageKeyOffset", conductor.CounterMessageKeyOffset, 24},
+		{"CounterMessageMinimumBodyLength", conductor.CounterMessageMinimumBodyLength, 28},
+		{"CounterMessageLabelLengthOffset(5)", conductor.CounterMessageLabelLengthOffset(5), 32},
+		{"CounterMessageBodyLength(5, 8)", conductor.CounterMessageBodyLength(5, 8), 44},
+		{"CounterUpdateBodyLength", conductor.CounterUpdateBodyLength, 12},
 		{"RemovePublicationFlagsOffset", conductor.RemovePublicationFlagsOffset, 24},
 		{"RemovePublicationBodyLength", conductor.RemovePublicationBodyLength, 32},
 		{

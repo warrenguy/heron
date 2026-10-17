@@ -26,7 +26,7 @@ const (
 	recordingPositionSourceIdentityLengthKeyOffset = 12
 	recordingPositionSourceIdentityKeyOffset       = 16
 	// The archive id follows the source identity, so both must fit in the key.
-	recordingPositionMaxSourceIdentityLength = counterMetaMaxKeyLength -
+	recordingPositionMaxSourceIdentityLength = CounterMetadataMaxKeyLength -
 		recordingPositionSourceIdentityKeyOffset - atomicbuffer.SizeInt64
 )
 

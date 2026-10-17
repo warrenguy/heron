@@ -149,6 +149,20 @@ func TestDecodeNextAvailableSessionID_golden(t *testing.T) {
 	}, got)
 }
 
+func TestDecodeCounterUpdate_golden(t *testing.T) {
+	buffer := atomicbuffer.Wrap([]byte{
+		0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x05, 0x00, 0x00, 0x00,
+	})
+
+	got, err := conductor.DecodeCounterUpdate(buffer, 0)
+	require.NoError(t, err)
+	require.Equal(t, conductor.CorrelationAndInt32{
+		CorrelationID: 99,
+		Int32Value:    5,
+	}, got)
+}
+
 func TestCorrelationAndInt32(t *testing.T) {
 	t.Run("decode golden", func(t *testing.T) {
 		buffer := atomicbuffer.Wrap(conductor.CorrelationAndInt32Bytes(42, 12345))

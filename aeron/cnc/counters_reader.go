@@ -36,14 +36,18 @@ const (
 	// Agrona FREE_FOR_REUSE_DEADLINE at byte 8.
 	counterMetaDeadlineOffset = CounterMetadataTypeIDOffset + atomicbuffer.SizeInt32
 	counterMetaKeyOffset      = counterMetaDeadlineOffset + atomicbuffer.SizeInt64
-	// Agrona MAX_KEY_LENGTH.
-	counterMetaMaxKeyLength = 112
 	// The key holds the channel as a length-prefixed ASCII string.
-	channelStatusMaxChannelLength = counterMetaMaxKeyLength - atomicbuffer.StringASCIIHeaderLength
+	channelStatusMaxChannelLength = CounterMetadataMaxKeyLength - atomicbuffer.StringASCIIHeaderLength
 
 	CounterMetadataFreeForReuseDeadlineOffset = counterMetaDeadlineOffset
 	CounterMetadataKeyOffset                  = counterMetaKeyOffset
 	CounterValueRegistrationIDOffset          = atomicbuffer.SizeInt64
+
+	// CounterMetadataMaxKeyLength is Agrona MAX_KEY_LENGTH in bytes.
+	CounterMetadataMaxKeyLength = 112
+
+	// CounterMetadataMaxLabelLength is Agrona MAX_LABEL_LENGTH in bytes.
+	CounterMetadataMaxLabelLength = 380
 )
 
 type CountersReader struct {

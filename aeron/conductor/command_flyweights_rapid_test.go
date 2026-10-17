@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/internal/testutil"
@@ -212,6 +213,56 @@ func TestRemovePublication_roundtrip_rapid(t *testing.T) {
 		require.NoError(rt, err)
 		require.False(rt, shortGot.Revoke)
 		require.Equal(rt, got.RemoveMessage, shortGot.RemoveMessage)
+	})
+}
+
+func TestCounterMessage_roundtrip_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		want := conductor.CounterMessage{
+			ClientID:      rapid.Int64().Draw(rt, "clientID"),
+			CorrelationID: rapid.Int64().Draw(rt, "correlationID"),
+			TypeID:        rapid.Int32().Draw(rt, "typeID"),
+			Key: append([]byte{}, rapid.SliceOfN(
+				rapid.Byte(),
+				0,
+				cnc.CounterMetadataMaxKeyLength,
+			).Draw(rt, "key")...),
+			Label: testutil.DrawASCIIString(rt, "label", cnc.CounterMetadataMaxLabelLength),
+		}
+		offset := rapid.IntRange(0, 8).Draw(rt, "offset")
+		trailing := rapid.IntRange(0, 8).Draw(rt, "trailing")
+
+		keyLength := len(want.Key)
+		labelLength := len(want.Label)
+		alignedKeyLength := (keyLength + 3) &^ 3
+		bodyLength := conductor.CounterMessageBodyLength(keyLength, labelLength)
+		require.Equal(rt, 28+alignedKeyLength+labelLength, bodyLength)
+
+		labelLengthOffset := conductor.CounterMessageLabelLengthOffset(keyLength)
+		require.Zero(rt, labelLengthOffset%4)
+		require.Equal(rt, conductor.CounterMessageKeyOffset+alignedKeyLength, labelLengthOffset)
+
+		buffer := atomicbuffer.Wrap(make([]byte, offset+bodyLength+trailing))
+		require.NoError(rt, conductor.EncodeCounterMessage(
+			buffer,
+			offset,
+			want.ClientID,
+			want.CorrelationID,
+			want.TypeID,
+			want.Key,
+			want.Label,
+		))
+		require.Equal(rt, int32(labelLength), buffer.GetInt32(offset+labelLengthOffset))
+
+		got, err := conductor.DecodeCounterMessage(buffer, offset, bodyLength+trailing)
+		require.NoError(rt, err)
+		require.Equal(rt, want, got)
+
+		if bodyLength > conductor.CounterMessageMinimumBodyLength {
+			_, err = conductor.DecodeCounterMessage(buffer, offset, bodyLength-1)
+			require.ErrorIs(rt, err, conductor.ErrCounterMessageOutOfBounds)
+		}
 	})
 }
 

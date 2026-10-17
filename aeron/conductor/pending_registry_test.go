@@ -164,6 +164,51 @@ func TestPendingRegistry_ExpireBefore(t *testing.T) {
 	}
 }
 
+func TestPendingRegistry_ExpireBefore_addCounterKeepsReady(t *testing.T) {
+	const (
+		readyCorrelationID   int64 = 7
+		waitingCorrelationID int64 = 8
+		deadlineNs                 = int64(1_000)
+	)
+
+	registry := newPendingRegistry()
+	for _, seed := range []struct {
+		correlationID int64
+		ready         bool
+	}{
+		{correlationID: readyCorrelationID, ready: true},
+		{correlationID: waitingCorrelationID, ready: false},
+	} {
+		registration := pendingRegistryTestRegistration(seed.correlationID, deadlineNs)
+		registration.Kind = PendingKindAddCounter
+		registration.Ready = seed.ready
+		require.NoError(t, registry.Register(registration))
+	}
+
+	var expired []int64
+	workCount, timedOutActiveID := registry.ExpireBefore(
+		deadlineNs,
+		NullCorrelationID,
+		NullCorrelationID,
+		func(registration PendingRegistration, removed bool) {
+			require.False(t, removed)
+			expired = append(expired, registration.CorrelationID)
+		},
+	)
+	require.Equal(t, 1, workCount)
+	require.Equal(t, NullCorrelationID, timedOutActiveID)
+	require.Equal(t, []int64{waitingCorrelationID}, expired)
+
+	readyRegistration, ok := registry.Get(readyCorrelationID)
+	require.True(t, ok)
+	require.NoError(t, readyRegistration.Err)
+	require.True(t, readyRegistration.Ready)
+
+	waitingRegistration, ok := registry.Get(waitingCorrelationID)
+	require.True(t, ok)
+	require.ErrorIs(t, waitingRegistration.Err, ErrAwaitTimeout)
+}
+
 func TestPendingRegistry_ExpireBefore_activeTimeoutOnExpireOnce(t *testing.T) {
 	const (
 		activeCorrelationID int64 = 7

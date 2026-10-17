@@ -58,6 +58,7 @@ type PendingEventHandler interface {
 	OperationSucceeded(correlationID int64) bool
 	DriverError(resp ErrorResponse) bool
 	NextSessionID(correlationID int64, nextSessionID int32) bool
+	CounterReady(correlationID int64, counterID int32) bool
 }
 
 func (adapter *DriverEventsAdapter) Receive(
@@ -133,6 +134,10 @@ func (adapter *DriverEventsAdapter) handleMessage(
 		adapter.handleUnavailableImage(buffer, offset, length)
 	case OnSubscriptionReady:
 		adapter.handleSubscriptionReady(buffer, offset, length, activeCorrelationID)
+	case OnCounterReady:
+		adapter.handleCounterReady(buffer, offset, length, pending)
+	case OnUnavailableCounter:
+		adapter.handleUnavailableCounter(buffer, offset, length)
 	case OnClientTimeout:
 		adapter.handleClientTimeout(buffer, offset, length)
 	case OnPublicationError:
@@ -277,6 +282,46 @@ func (adapter *DriverEventsAdapter) handleNextAvailableSessionID(
 	)
 }
 
+// handleCounterReady completes a pending add-counter entry. The driver
+// broadcasts counter ready events to every client, so an unmatched event
+// adds no unhandled count.
+func (adapter *DriverEventsAdapter) handleCounterReady(
+	buffer atomicbuffer.AtomicBuffer,
+	offset int,
+	length int,
+	pending PendingEventHandler,
+) {
+	decoded, ok := decodeFixedLengthEvent(
+		adapter,
+		buffer,
+		offset,
+		length,
+		CounterUpdateBodyLength,
+		DecodeCounterUpdate,
+	)
+	if !ok || pending == nil {
+		return
+	}
+	pending.CounterReady(decoded.CorrelationID, decoded.Int32Value)
+}
+
+// handleUnavailableCounter decodes the event and drops it. The client has no
+// counter handlers.
+func (adapter *DriverEventsAdapter) handleUnavailableCounter(
+	buffer atomicbuffer.AtomicBuffer,
+	offset int,
+	length int,
+) {
+	decodeFixedLengthEvent(
+		adapter,
+		buffer,
+		offset,
+		length,
+		CounterUpdateBodyLength,
+		DecodeCounterUpdate,
+	)
+}
+
 func (adapter *DriverEventsAdapter) handleClientTimeout(
 	buffer atomicbuffer.AtomicBuffer,
 	offset int,
@@ -347,13 +392,15 @@ func handleFixedLengthPendingEvent[T any](
 	correlationFrom func(T) int64,
 	apply func(PendingEventHandler, T) bool,
 ) {
-	if length < minBodyLength {
-		adapter.markUnhandled()
-		return
-	}
-	decoded, err := decode(buffer, offset)
-	if err != nil {
-		adapter.markUnhandled()
+	decoded, ok := decodeFixedLengthEvent(
+		adapter,
+		buffer,
+		offset,
+		length,
+		minBodyLength,
+		decode,
+	)
+	if !ok {
 		return
 	}
 	if adapter.rejectUnlessActiveCorrelation(
@@ -366,6 +413,29 @@ func handleFixedLengthPendingEvent[T any](
 	if !apply(pending, decoded) {
 		adapter.markUnhandled()
 	}
+}
+
+// decodeFixedLengthEvent decodes a fixed-length event body. A short or
+// out-of-bounds body adds one unhandled count and returns false.
+func decodeFixedLengthEvent[T any](
+	adapter *DriverEventsAdapter,
+	buffer atomicbuffer.AtomicBuffer,
+	offset int,
+	length int,
+	minBodyLength int,
+	decode func(atomicbuffer.AtomicBuffer, int) (T, error),
+) (T, bool) {
+	var zero T
+	if length < minBodyLength {
+		adapter.markUnhandled()
+		return zero, false
+	}
+	decoded, err := decode(buffer, offset)
+	if err != nil {
+		adapter.markUnhandled()
+		return zero, false
+	}
+	return decoded, true
 }
 
 func handleDecodedEvent[T any](
