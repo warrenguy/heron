@@ -1,6 +1,8 @@
 package cnc_test
 
 import (
+	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -540,6 +542,13 @@ func TestCountersReaderNilReceiver(t *testing.T) {
 	require.Equal(t, cnc.NullCounterID, counterID)
 	require.False(t, reader.IsCounterActive(0, 1, cnc.ClientHeartbeatTypeID))
 	require.Equal(t, atomicbuffer.AtomicBuffer{}, reader.CounterValuesBuffer())
+
+	key, ok := reader.CounterKey(0)
+	require.False(t, ok)
+	require.Zero(t, key)
+	label, ok := reader.CounterLabel(0)
+	require.False(t, ok)
+	require.Empty(t, label)
 }
 
 func TestNewCounterSlot_outOfBoundsPanics(t *testing.T) {
@@ -683,4 +692,203 @@ func writeDenseCounterPrefix(meta, values []byte, counterID int32) {
 	for id := range counterID {
 		cnc.WriteCounterRecord(meta, values, id, cnc.CounterRecordReclaimed, 0, 0, 0)
 	}
+}
+
+func counterLabelLengthOffset(counterID int32) int {
+	return int(counterID)*cnc.CounterMetadataLength + cnc.CounterMetadataLabelOffset
+}
+
+func TestCountersReaderCounterKeyLabel(t *testing.T) {
+	key := []byte{9, 8, 7, 6, 5}
+	var wantKey [cnc.CounterMetadataMaxKeyLength]byte
+	copy(wantKey[:], key)
+
+	cases := []struct {
+		name      string
+		state     int32
+		counterID int32
+		wantOK    bool
+	}{
+		{"allocated", cnc.CounterRecordAllocated, 1, true},
+		{"unused", cnc.CounterRecordUnused, 1, false},
+		{"reclaimed", cnc.CounterRecordReclaimed, 1, false},
+		{"idPastMax", cnc.CounterRecordAllocated, 2, false},
+		{"negativeID", cnc.CounterRecordAllocated, -1, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			meta, values := syntheticCountersBuffers(t, 2)
+			require.NoError(t, cnc.WriteCounterRecordWithKey(
+				meta,
+				values,
+				1,
+				tc.state,
+				1001,
+				key,
+				"counter label",
+				42,
+				0,
+			))
+			reader, err := cnc.NewCountersReader(meta, values)
+			require.NoError(t, err)
+
+			gotKey, ok := reader.CounterKey(tc.counterID)
+			require.Equal(t, tc.wantOK, ok)
+			gotLabel, labelOK := reader.CounterLabel(tc.counterID)
+			require.Equal(t, tc.wantOK, labelOK)
+			if !tc.wantOK {
+				require.Zero(t, gotKey)
+				require.Empty(t, gotLabel)
+				return
+			}
+			require.Equal(t, wantKey, gotKey)
+			require.Equal(t, "counter label", gotLabel)
+		})
+	}
+
+	t.Run("labelLengthOutOfRange", func(t *testing.T) {
+		for _, labelLength := range []int32{-1, cnc.CounterMetadataMaxLabelLength + 1} {
+			t.Run(fmt.Sprintf("labelLength=%d", labelLength), func(t *testing.T) {
+				meta, values := syntheticCountersBuffers(t, 1)
+				require.NoError(t, cnc.WriteCounterRecordWithKey(
+					meta,
+					values,
+					0,
+					cnc.CounterRecordAllocated,
+					1001,
+					key,
+					"counter label",
+					42,
+					0,
+				))
+				atomicbuffer.Wrap(meta).PutInt32(counterLabelLengthOffset(0), labelLength)
+				reader, err := cnc.NewCountersReader(meta, values)
+				require.NoError(t, err)
+
+				label, ok := reader.CounterLabel(0)
+				require.False(t, ok)
+				require.Empty(t, label)
+				gotKey, ok := reader.CounterKey(0)
+				require.True(t, ok)
+				require.Equal(t, wantKey, gotKey)
+			})
+		}
+	})
+}
+
+func TestWriteCounterRecordWithKey(t *testing.T) {
+	const fill byte = 0xAA
+
+	rejects := []struct {
+		name      string
+		counterID int32
+		key       []byte
+		label     string
+		wantErr   string
+	}{
+		{
+			name:    "keyTooLong",
+			key:     make([]byte, cnc.CounterMetadataMaxKeyLength+1),
+			label:   "label",
+			wantErr: "cnc: counter key exceeds 112 bytes",
+		},
+		{
+			name:    "labelTooLong",
+			key:     []byte{1},
+			label:   strings.Repeat("a", cnc.CounterMetadataMaxLabelLength+1),
+			wantErr: "cnc: counter label exceeds 380 bytes",
+		},
+		{
+			name:    "labelNotASCII",
+			key:     []byte{1},
+			label:   "caf\xe9",
+			wantErr: atomicbuffer.ErrStringASCIINonASCII.Error(),
+		},
+		{
+			name:      "counterIDPastBuffers",
+			counterID: 1,
+			key:       []byte{1},
+			label:     "label",
+			wantErr:   "cnc: counter 1 record exceeds the counters buffers",
+		},
+		{
+			name:      "negativeCounterID",
+			counterID: -1,
+			key:       []byte{1},
+			label:     "label",
+			wantErr:   "cnc: counter -1 record exceeds the counters buffers",
+		},
+	}
+	for _, tc := range rejects {
+		t.Run(tc.name, func(t *testing.T) {
+			meta, values := syntheticCountersBuffers(t, 1)
+			for i := range meta {
+				meta[i] = fill
+			}
+			for i := range values {
+				values[i] = fill
+			}
+			wantMeta := bytes.Clone(meta)
+			wantValues := bytes.Clone(values)
+
+			err := cnc.WriteCounterRecordWithKey(
+				meta,
+				values,
+				tc.counterID,
+				cnc.CounterRecordAllocated,
+				1001,
+				tc.key,
+				tc.label,
+				42,
+				7,
+			)
+			require.EqualError(t, err, tc.wantErr)
+			require.Equal(t, wantMeta, meta)
+			require.Equal(t, wantValues, values)
+		})
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		meta, values := syntheticCountersBuffers(t, 2)
+		for i := range meta {
+			meta[i] = fill
+		}
+		key := []byte{1, 2, 3}
+		require.NoError(t, cnc.WriteCounterRecordWithKey(
+			meta,
+			values,
+			1,
+			cnc.CounterRecordAllocated,
+			cnc.DriverSendChannelStatusTypeID,
+			key,
+			"abc",
+			42,
+			7,
+		))
+
+		metaBuffer := atomicbuffer.Wrap(meta)
+		valuesBuffer := atomicbuffer.Wrap(values)
+		metaOffset := cnc.CounterMetadataLength
+		valuesOffset := cnc.CounterOffset(1)
+		require.Equal(t, cnc.CounterRecordAllocated, metaBuffer.GetInt32(metaOffset))
+		require.Equal(
+			t,
+			cnc.DriverSendChannelStatusTypeID,
+			metaBuffer.GetInt32(metaOffset+cnc.CounterMetadataTypeIDOffset),
+		)
+		keyOffset := metaOffset + cnc.CounterMetadataKeyOffset
+		wantKeyRegion := make([]byte, cnc.CounterMetadataMaxKeyLength)
+		copy(wantKeyRegion, key)
+		require.Equal(t, wantKeyRegion, meta[keyOffset:keyOffset+cnc.CounterMetadataMaxKeyLength])
+		require.Equal(t, int32(3), metaBuffer.GetInt32(counterLabelLengthOffset(1)))
+		labelOffset := counterLabelLengthOffset(1) + atomicbuffer.StringASCIIHeaderLength
+		require.Equal(t, "abc", string(meta[labelOffset:labelOffset+len("abc")]))
+		require.Equal(
+			t,
+			int64(42),
+			valuesBuffer.GetInt64(valuesOffset+cnc.CounterValueRegistrationIDOffset),
+		)
+		require.Equal(t, int64(7), valuesBuffer.GetInt64(valuesOffset))
+		require.Equal(t, bytes.Repeat([]byte{fill}, cnc.CounterMetadataLength), meta[:metaOffset])
+	})
 }

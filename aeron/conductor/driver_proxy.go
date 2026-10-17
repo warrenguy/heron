@@ -164,7 +164,7 @@ func (proxy *DriverProxy) AddCounter(
 	key []byte,
 	label string,
 ) error {
-	if err := validateCounterInput(key, label); err != nil {
+	if err := ValidateCounterInput(key, label); err != nil {
 		return err
 	}
 	return proxy.offerBody(
