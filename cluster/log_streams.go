@@ -57,8 +57,8 @@ const (
 // log. A nil seed is cold start: the publication uses Topology.LogChannel
 // unchanged.
 //
-// Applied at open only. Later election append advances do not rebuild the
-// publication channel.
+// Applied at open. [LogStreams.ReseedPublicationAt] takes a fresh seed when a
+// new leader rebuilds the publication at the election append position.
 type LogPublicationInitialPosition struct {
 	Position         int64
 	InitialTermID    int32
@@ -111,9 +111,9 @@ type LogStreamsDeps struct {
 // join source into the agent before return.
 //
 // Behaviour: the publication must be bound before any election work runs.
-// [consensus.Agent.AddLogPublication] reports the null session id until the
-// publication is bound. The transition that reads that session id also
-// publishes the new leadership term.
+// [consensus.Agent.AddLogPublication] rebuilds an unbound publication through
+// the reseed hook. Without a publisher it reports the null session id. The
+// transition that reads that session id also publishes the new leadership term.
 //
 // The subscription opens as control-mode=manual before the publication. Open
 // adds Topology.LogChannel as the first receive destination so the shared
@@ -128,8 +128,8 @@ type LogStreamsDeps struct {
 // publisher or the adapter; never closes them. Close before closing the
 // transport client when the process owns the client.
 //
-// Do not copy. Every field is a reference type. A value copy shares the same
-// handles; both values look like owners.
+// Do not copy. A value copy shares the same handles; both values look like
+// owners.
 type LogStreams struct {
 	agent             *consensus.Agent
 	logPublisher      *consensus.LogPublisher
@@ -138,6 +138,7 @@ type LogStreams struct {
 	streamID          int32
 	liveURI           string
 	nextCorrelationID func() int64
+	closed            bool
 }
 
 // OpenLogStreams registers the cluster log subscription and publication and
@@ -270,12 +271,13 @@ func (l *LogStreams) Publication() *aeron.ExclusivePublication {
 	return l.publication
 }
 
-// ReseedPublicationAt closes the exclusive log publication and opens a new one
-// at seed.Position. Rebinds the log publisher.
+// ReseedPublicationAt closes the exclusive log publication, if any, and opens a
+// new one at seed.Position. Rebinds the log publisher.
 //
-// A new leader calls it when the publication position differs from the
-// durable append high-water. The archive extends the LOCAL recording only when
-// the publication join position equals the recording stop position.
+// A new leader calls it when the publication is unbound or its position
+// differs from the durable append high-water. The archive extends the LOCAL
+// recording only when the publication join position equals the recording stop
+// position.
 //
 // Concurrency: invoker-only.
 //
@@ -284,15 +286,15 @@ func (l *LogStreams) Publication() *aeron.ExclusivePublication {
 //   - seed is invalid
 //   - the new exclusive publication cannot be added
 //
-// On add failure the previous publication is already closed and the publisher
-// is unbound. Caller must treat the log publication as unavailable.
+// On add failure the old publication is closed and the publisher is unbound.
+// The next call retries the add.
 func (l *LogStreams) ReseedPublicationAt(
 	adder ExclusivePublicationAdder,
 	channel string,
 	streamID int32,
 	seed *LogPublicationInitialPosition,
 ) error {
-	if l == nil || l.publication == nil {
+	if l.isClosed() {
 		return errors.New("cluster: log streams closed")
 	}
 	if adder == nil {
@@ -303,10 +305,12 @@ func (l *LogStreams) ReseedPublicationAt(
 		return err
 	}
 
-	// Unbind before close so offers cannot target a closed handle.
-	l.logPublisher.SetPublication(nil)
-	_ = l.publication.Close()
-	l.publication = nil
+	if l.publication != nil {
+		// Unbind before close so offers cannot target a closed handle.
+		l.logPublisher.SetPublication(nil)
+		_ = l.publication.Close()
+		l.publication = nil
+	}
 
 	pub, err := addExclusivePublicationChecked(
 		adder,
@@ -593,19 +597,18 @@ func putOrReplaceChannelParam(channel, param, value string) string {
 //   - log adapter
 //   - log publisher
 //
-// Idempotent. When both transport handles are already nil, Close returns
-// without touching the agent or the log publisher. Agent and log publisher
-// fields stay for the life of the value so the first Close can clear them
-// safely.
+// Idempotent. A second Close returns without touching the agent or the log
+// publisher.
 //
 // After Close the value is inert: both accessors return nil. Safe on a nil
 // receiver, a zero value, and after the transport client has already closed.
 //
 // Returns the joined close errors, or nil.
 func (l *LogStreams) Close() error {
-	if l == nil || (l.publication == nil && l.subscription == nil) {
+	if l.isClosed() {
 		return nil
 	}
+	l.closed = true
 
 	l.agent.SetLogJoinSource(nil)
 	l.agent.LiveLogDestinationSet("")
@@ -628,4 +631,9 @@ func (l *LogStreams) Close() error {
 	l.liveURI = ""
 	l.nextCorrelationID = nil
 	return err
+}
+
+// isClosed reports whether l is a nil receiver, a zero value, or closed.
+func (l *LogStreams) isClosed() bool {
+	return l == nil || l.closed || l.agent == nil
 }
