@@ -137,7 +137,8 @@ type Config struct {
 	//   - empty ControlRequestChannel and ControlResponseChannel take
 	//     archive.DefaultLocalControlChannel
 	//   - zero ControlRequestStreamID takes archive.DefaultLocalControlStreamID
-	//   - zero ControlResponseStreamID takes 121 + ServiceID
+	//   - zero ControlResponseStreamID takes 121 + ServiceID. A sum past
+	//     math.MaxInt32 is an error
 	//
 	// Archive must not set Aeron, RecordingSignalHandler, LocalControlChannel,
 	// or LocalControlStreamID. Both control channels must be IPC.
@@ -212,12 +213,8 @@ type StartAckConfig struct {
 //   - ServiceID is negative
 //   - StartAck is set and LogPosition is negative
 //   - the two control stream ids collide after defaulting
-//   - SnapshotChannel sets session-id=
-//   - SnapshotStreamID equals a control stream id after defaulting
-//   - Archive sets Aeron, RecordingSignalHandler, or LocalControlChannel
-//   - an archive control channel is not IPC
-//   - the archive response stream equals the request stream or a container
-//     stream id after defaulting, or overflows int32
+//   - SnapshotChannel or SnapshotStreamID breaks the rule its godoc states
+//   - Archive is set and breaks a rule the Archive godoc states
 //   - either add fails or returns no handle
 //   - Archive is set and Aeron is not an *aeron.Client
 //   - the archive connect fails
