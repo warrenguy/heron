@@ -61,7 +61,7 @@ func EncodeCounterMessage(
 	key []byte,
 	label string,
 ) error {
-	if err := validateCounterInput(key, label); err != nil {
+	if err := ValidateCounterInput(key, label); err != nil {
 		return err
 	}
 	bodyLength := CounterMessageBodyLength(len(key), len(label))
@@ -86,7 +86,14 @@ func EncodeCounterMessage(
 	return err
 }
 
-func validateCounterInput(key []byte, label string) error {
+// ValidateCounterInput checks an ADD_COUNTER key and label against the cnc
+// bounds.
+//
+// Returns an error when:
+//   - key exceeds cnc.CounterMetadataMaxKeyLength: ErrCounterKeyTooLong
+//   - label exceeds cnc.CounterMetadataMaxLabelLength: ErrCounterLabelTooLong
+//   - label holds a non-ASCII byte: atomicbuffer.ErrStringASCIINonASCII
+func ValidateCounterInput(key []byte, label string) error {
 	if len(key) > cnc.CounterMetadataMaxKeyLength {
 		return ErrCounterKeyTooLong
 	}

@@ -60,7 +60,8 @@ const (
 //
 // Callbacks invoked from doWorkLocked (ErrorHandler, AvailableImageHandler,
 // UnavailableImageHandler, PublicationErrorFrameHandler) must not call DoWork,
-// Close, Add*, OfferAdd*, PollAdd*, NextAvailableSessionID, or IsTerminating.
+// Close, Add*, OfferAdd*, PollAdd*, NextAvailableSessionID, IsTerminating, or
+// Counter.Close.
 // See AvailableImageHandler and UnavailableImageHandler for the full invocation
 // contract (write-lock suspend, safe Client lookups, nested suppression, and
 // Client.DoWork deadlock risk). See PublicationErrorFrameHandler for its

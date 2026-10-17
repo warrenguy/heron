@@ -10,9 +10,9 @@ package aeron
 // read or mutate conductor resource maps during the suspend window.
 //
 // Handlers must not block and must not call Client.DoWork, Close, Add*,
-// OfferAdd*, PollAdd*, NextAvailableSessionID, or IsTerminating on the same
-// Client. Calling Client.DoWork from a handler deadlocks because clientLock is
-// already held by the invoker goroutine inside doWorkLocked.
+// OfferAdd*, PollAdd*, NextAvailableSessionID, IsTerminating, or Counter.Close
+// on the same Client. Calling Client.DoWork from a handler deadlocks because
+// the invoker goroutine already holds clientLock inside doWorkLocked.
 //
 // The conductor may process additional driver events internally during the
 // callback when the write lock is suspended; callers must not attempt to drive
