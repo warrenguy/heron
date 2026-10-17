@@ -160,6 +160,28 @@ func (a *LogAdapter) IsImageClosed() bool {
 	return a.image.IsClosed()
 }
 
+// IsLogEndOfStream reports whether the bound image reached its end-of-stream
+// position.
+//
+// Nil adapter or nil image returns false. A closed image reports the value
+// read at close.
+//
+// Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
+func (a *LogAdapter) IsLogEndOfStream() bool {
+	return a != nil && a.image != nil && a.image.IsEndOfStream()
+}
+
+// IsLogEndOfStreamAt reports whether position equals the end-of-stream
+// position of the bound image.
+//
+// Nil adapter or nil image returns false. A closed image compares the value
+// read at close.
+//
+// Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
+func (a *LogAdapter) IsLogEndOfStreamAt(position int64) bool {
+	return a != nil && a.image != nil && position == a.image.EndOfStreamPosition()
+}
+
 // Poll delivers up to fragmentLimit DATA fragments whose start position is
 // strictly before boundPosition. Delivery uses Image.BoundedControlledPoll.
 // Fragmented trains reassemble through a ControlledFragmentAssembler bound at

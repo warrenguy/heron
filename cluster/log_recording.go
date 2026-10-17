@@ -155,6 +155,12 @@ type logRecording struct {
 	latchedRecordingID int64
 	stopPosition       int64
 
+	// stopSignalled marks a STOP signal for the live recording.
+	// ConsumeStopSignal and StartLogRecording clear the mark.
+	stopSignalled bool
+	// stopSignalPosition is the position of the marked STOP signal.
+	stopSignalPosition int64
+
 	offerRetryTimeoutNs int64
 	responseTimeoutNs   int64
 	// newStopRequest builds one in-flight stop request. Closed over the
@@ -240,8 +246,8 @@ func (r *logRecording) IsActive() bool {
 // archive.Client.Poll on the duty cycle.
 //
 // Behaviour:
-//   - STOP for the known catalog id: marks a clean stop and stores the signal
-//     position
+//   - STOP for the known catalog id: marks a clean stop, stores the signal
+//     position, sets the STOP mark
 //   - any other signal: no-op
 //   - a foreign recording id: no-op
 //   - an inactive control: no-op
@@ -258,6 +264,26 @@ func (r *logRecording) handleRecordingSignal(event codecs.RecordingSignalEventFi
 		return
 	}
 	r.markStopped(event.Position)
+	r.stopSignalled = true
+	r.stopSignalPosition = event.Position
+}
+
+// ConsumeStopSignal takes the STOP mark. The archive STOP signal for the
+// live recording sets the mark. A blocking stop sets no mark.
+//
+// Never blocks. Never calls archive Poll.
+//
+// Concurrency: invoker-only.
+//
+// Returns:
+//   - stopPosition, true: a STOP arrived since the last call
+//   - recordinglog.NullPosition, false: no STOP arrived
+func (r *logRecording) ConsumeStopSignal() (stopPosition int64, stopped bool) {
+	if !r.stopSignalled {
+		return recordinglog.NullPosition, false
+	}
+	r.stopSignalled = false
+	return r.stopSignalPosition, true
 }
 
 // isUnknownSubscription reports whether err is archive ErrorUnknownSubscription.
@@ -316,9 +342,11 @@ func (r *logRecording) StartLogRecording(
 	// Arm channel state for this attempt.
 	//
 	// Catalog id stays unknown until START or EXTEND proves so a dirty rollback
-	// cannot stop or list a stale or zero id.
+	// cannot stop or list a stale or zero id. A STOP mark names the prior
+	// recording, so the new attempt clears it.
 	r.startChannel = channelBytes
 	r.recordingID = recordingIDUnknown
+	r.stopSignalled = false
 
 	established := r.establishedTermRecordingID()
 	var operation string

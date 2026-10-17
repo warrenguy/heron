@@ -398,6 +398,100 @@ func TestLogAdapter_Poll_closedImage(t *testing.T) {
 	require.Equal(t, 0, a.Poll(1<<20))
 }
 
+// TestLogAdapter_endOfStream covers IsLogEndOfStream and IsLogEndOfStreamAt
+// on open, closed, and missing images.
+func TestLogAdapter_endOfStream(t *testing.T) {
+	const endOfStream int64 = 256
+
+	tests := []struct {
+		name string
+		// Nil adapter leaves the *LogAdapter nil.
+		adapter    func(tb testing.TB) *LogAdapter
+		atPosition int64
+		wantEOS    bool
+		wantEOSAt  bool
+	}{
+		{
+			name:       "nil adapter",
+			atPosition: endOfStream,
+		},
+		{
+			name: "nil image",
+			adapter: func(testing.TB) *LogAdapter {
+				return NewLogAdapter(0)
+			},
+			atPosition: endOfStream,
+		},
+		{
+			name: "open image below the end-of-stream word",
+			adapter: func(tb testing.TB) *LogAdapter {
+				a, image := boundLogAdapter(tb)
+				aeron.ImageSetSubscriberPositionForHooks(image, endOfStream-32)
+				aeron.ImageSetEndOfStreamPositionForHooks(image, endOfStream)
+				return a
+			},
+			atPosition: endOfStream,
+			wantEOSAt:  true,
+		},
+		{
+			name: "open image at the end-of-stream word",
+			adapter: func(tb testing.TB) *LogAdapter {
+				a, image := boundLogAdapter(tb)
+				aeron.ImageSetSubscriberPositionForHooks(image, endOfStream)
+				aeron.ImageSetEndOfStreamPositionForHooks(image, endOfStream)
+				return a
+			},
+			atPosition: endOfStream,
+			wantEOS:    true,
+			wantEOSAt:  true,
+		},
+		{
+			name: "closed image with end of stream",
+			adapter: func(tb testing.TB) *LogAdapter {
+				a, image := boundLogAdapter(tb)
+				aeron.ImageSetSubscriberPositionForHooks(image, endOfStream)
+				aeron.ImageSetEndOfStreamPositionForHooks(image, endOfStream)
+				aeron.ImageInternalCloseForHooks(image)
+				return a
+			},
+			atPosition: endOfStream,
+			wantEOS:    true,
+			wantEOSAt:  true,
+		},
+		{
+			name: "closed image without end of stream",
+			adapter: func(tb testing.TB) *LogAdapter {
+				a, image := boundLogAdapter(tb)
+				aeron.ImageSetSubscriberPositionForHooks(image, endOfStream)
+				aeron.ImageInternalCloseForHooks(image)
+				return a
+			},
+			atPosition: endOfStream,
+		},
+		{
+			name: "position unequal to the end-of-stream word",
+			adapter: func(tb testing.TB) *LogAdapter {
+				a, image := boundLogAdapter(tb)
+				aeron.ImageSetSubscriberPositionForHooks(image, endOfStream)
+				aeron.ImageSetEndOfStreamPositionForHooks(image, endOfStream)
+				return a
+			},
+			atPosition: endOfStream + 32,
+			wantEOS:    true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var a *LogAdapter
+			if tc.adapter != nil {
+				a = tc.adapter(t)
+			}
+			require.Equal(t, tc.wantEOS, a.IsLogEndOfStream())
+			require.Equal(t, tc.wantEOSAt, a.IsLogEndOfStreamAt(tc.atPosition))
+		})
+	}
+}
+
 func TestLogAdapter_SessionMessage_handler(t *testing.T) {
 	a, image, spy := boundLogAdapterWithHandler(t)
 

@@ -87,7 +87,6 @@ func requireCarriedForward(t *testing.T, base, got election.ElectionConfig) {
 	require.Equal(t, base.MemberID, got.MemberID)
 	require.Equal(t, base.AppVersion, got.AppVersion)
 	require.False(t, got.IsNodeStartup)
-	require.Equal(t, election.NullMemberID, got.GracefulClosedLeaderID)
 }
 
 func TestSettledElectionConfig_mapping(t *testing.T) {
@@ -101,17 +100,21 @@ func TestSettledElectionConfig_mapping(t *testing.T) {
 	lookupWithTerm := mapTermLookup{10: termEntry}
 
 	readySeed := consensus.ElectionSeed{
-		LeadershipTermID:    10,
-		CommitPosition:      500,
-		AppendPosition:      600,
-		AppendPositionReady: true,
+		LeadershipTermID:       10,
+		CommitPosition:         500,
+		AppendPosition:         600,
+		AppendPositionReady:    true,
+		GracefulClosedLeaderID: election.NullMemberID,
 	}
 	notReadySeed := consensus.ElectionSeed{
-		LeadershipTermID:    10,
-		CommitPosition:      500,
-		AppendPosition:      600,
-		AppendPositionReady: false,
+		LeadershipTermID:       10,
+		CommitPosition:         500,
+		AppendPosition:         600,
+		AppendPositionReady:    false,
+		GracefulClosedLeaderID: election.NullMemberID,
 	}
+	gracefulSeed := readySeed
+	gracefulSeed.GracefulClosedLeaderID = 1
 	nullAppendPlan := recordinglog.RecoveryPlan{
 		LastTermBaseLogPosition: fx.plan.LastTermBaseLogPosition,
 		AppendedLogPosition:     recordinglog.NullPosition,
@@ -181,6 +184,15 @@ func TestSettledElectionConfig_mapping(t *testing.T) {
 			},
 		},
 		{
+			name: "graceful closed leader from the seed",
+			seed: gracefulSeed,
+			look: lookupWithTerm,
+			plan: fx.plan,
+			check: func(t *testing.T, got election.ElectionConfig) {
+				require.Equal(t, int32(1), got.GracefulClosedLeaderID)
+			},
+		},
+		{
 			name: "append not ready and plan appended is the null sentinel",
 			seed: notReadySeed,
 			look: lookupWithTerm,
@@ -197,6 +209,7 @@ func TestSettledElectionConfig_mapping(t *testing.T) {
 
 			got := settledElectionConfig(fx.base, tt.seed, tt.look, tt.plan)
 			require.Equal(t, tt.seed.LeadershipTermID, got.LeadershipTermID)
+			require.Equal(t, tt.seed.GracefulClosedLeaderID, got.GracefulClosedLeaderID)
 			requireCarriedForward(t, fx.base, got)
 			tt.check(t, got)
 		})
@@ -213,10 +226,11 @@ func TestNewElectionFactory_usableAndNoPanic(t *testing.T) {
 		t.Parallel()
 
 		runner := factory(consensus.ElectionSeed{
-			LeadershipTermID:    10,
-			CommitPosition:      500,
-			AppendPosition:      600,
-			AppendPositionReady: true,
+			LeadershipTermID:       10,
+			CommitPosition:         500,
+			AppendPosition:         600,
+			AppendPositionReady:    true,
+			GracefulClosedLeaderID: election.NullMemberID,
 		})
 		require.NotNil(t, runner)
 		e, ok := runner.(*election.Election)
@@ -232,10 +246,11 @@ func TestNewElectionFactory_usableAndNoPanic(t *testing.T) {
 
 		require.NotPanics(t, func() {
 			runner := factory(consensus.ElectionSeed{
-				LeadershipTermID:    0,
-				CommitPosition:      0,
-				AppendPosition:      0,
-				AppendPositionReady: false,
+				LeadershipTermID:       0,
+				CommitPosition:         0,
+				AppendPosition:         0,
+				AppendPositionReady:    false,
+				GracefulClosedLeaderID: election.NullMemberID,
 			})
 			require.NotNil(t, runner)
 			e, ok := runner.(*election.Election)

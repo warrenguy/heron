@@ -395,10 +395,10 @@ func TestDurableCluster_restartsTheOutgoingLeader(t *testing.T) {
 	require.NoError(t, set.StopMember(leaderIndex))
 	require.Nil(t, set.Module(leaderIndex))
 
-	// Survivors install a second election after the leader heartbeat timeout.
+	// Survivors install a second election.
 	awaitReElectionAfterStop(t, set, leaderIndex, preTerm)
 
-	requireHeartbeatTimeoutTriggerSeen(t, set, leaderIndex)
+	requireLogStopTriggerSeen(t, set, leaderIndex)
 
 	// New leader records under the new term. Read id, active, and term entry
 	// in one predicate so the term is not sampled from a later state.

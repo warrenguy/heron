@@ -52,10 +52,11 @@ func TestElectionReinstall_seedMapping(t *testing.T) {
 				AppendSource:     &AtomicAppendPosition{V: storedInt64(777)},
 			},
 			want: ElectionSeed{
-				LeadershipTermID:    3,
-				CommitPosition:      55,
-				AppendPosition:      777,
-				AppendPositionReady: true,
+				LeadershipTermID:       3,
+				CommitPosition:         55,
+				AppendPosition:         777,
+				AppendPositionReady:    true,
+				GracefulClosedLeaderID: nullMemberID,
 			},
 		},
 		{
@@ -64,7 +65,10 @@ func TestElectionReinstall_seedMapping(t *testing.T) {
 				Role:             RoleFollower,
 				LeadershipTermID: 1,
 			},
-			want: ElectionSeed{LeadershipTermID: 1},
+			want: ElectionSeed{
+				LeadershipTermID:       1,
+				GracefulClosedLeaderID: nullMemberID,
+			},
 		},
 		{
 			name: "commit_seeded_from_nonzero_counter",
@@ -72,12 +76,15 @@ func TestElectionReinstall_seedMapping(t *testing.T) {
 				Role:   RoleFollower,
 				Commit: storedInt64(12345),
 			},
-			want: ElectionSeed{CommitPosition: 12345},
+			want: ElectionSeed{
+				CommitPosition:         12345,
+				GracefulClosedLeaderID: nullMemberID,
+			},
 		},
 		{
 			name: "term_zero_is_not_sentinel",
 			cfg:  AgentConfig{Role: RoleFollower},
-			want: ElectionSeed{},
+			want: ElectionSeed{GracefulClosedLeaderID: nullMemberID},
 		},
 	}
 	for _, tc := range settledSeeds {
@@ -151,7 +158,7 @@ func TestElectionReinstall_seedMapping(t *testing.T) {
 		// Second seed via enterElection after complete still leaves
 		// appendNotReadySinceNs at nullValue and AppendRankFailure unset.
 		a.ElectionComplete(timeoutNs)
-		require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, timeoutNs))
+		require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, timeoutNs))
 		require.NoError(t, a.AppendRankFailure())
 		require.Equal(t, int64(nullValue), a.appendNotReadySinceNs)
 		require.Len(t, fac.seeds, 2)

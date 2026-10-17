@@ -291,7 +291,8 @@ func OpenConsensusModule(
 
 	// Duty-cycle Poll delivers an unsolicited STOP when the recorded image
 	// closes. The handler marks a clean stop so IsActive matches the
-	// archive session.
+	// archive session. The handler also sets the STOP mark the agent
+	// consumes to enter an election.
 	module.archiveClient.SetRecordingSignalHandler(
 		archive.RecordingSignalHandlerFunc(module.logRecording.handleRecordingSignal),
 	)

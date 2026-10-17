@@ -235,9 +235,9 @@ func truncateDivergentLeader(
 			harness.RecordingCounterPosition(m, m.Agent().LocalLogRecordingID()),
 		)
 		// PrepareForNewLeadership stops the recording and returns the catalog
-		// stop. Leaves settled election state alone. Survivors re-enter via
-		// heartbeat timeout after the leader stops. Pump through stream ticks
-		// until the stop proof is held.
+		// stop. Leaves settled election state alone. Survivors re-enter an
+		// election from the STOP mark after the leader stops. Pump through
+		// stream ticks until the stop proof is held.
 		deadline := time.Now().Add(durableWorkBound)
 		var stopPos int64
 		for {

@@ -3,13 +3,14 @@ package consensus
 import "github.com/warrenguy/heron/archive/codecs/archivewire"
 
 // LogRecordingControl starts, extends, or stops this member's cluster log
-// recording. The control also resolves stop positions for prepare.
+// recording. The control also resolves stop positions for prepare and
+// reports the STOP signal of the current recording.
 //
 // Concurrency: invoker-only. StartLogRecording, StopLogRecording,
-// PollStopLogRecording, and StopPositionFor run on the [Agent.DoWork]
-// goroutine. StartLogRecording, StopLogRecording, and StopPositionFor block
-// until the archive replies or the deadline expires. PollStopLogRecording
-// never blocks. IsActive never blocks.
+// PollStopLogRecording, StopPositionFor, and ConsumeStopSignal run on the
+// [Agent.DoWork] goroutine. StartLogRecording, StopLogRecording, and
+// StopPositionFor block until the archive replies or the deadline expires.
+// PollStopLogRecording, IsActive, and ConsumeStopSignal never block.
 //
 // An implementation must:
 //   - cap every wait on StartLogRecording, StopLogRecording, and
@@ -120,6 +121,21 @@ type LogRecordingControl interface {
 	// Concurrency: invoker-only.
 	IsActive() bool
 
+	// ConsumeStopSignal takes the STOP mark. The archive STOP signal for the
+	// live recording sets the mark.
+	//
+	// Never blocks. Never calls archive Poll.
+	//
+	// Concurrency: invoker-only.
+	//
+	// Returns:
+	//   - stopPosition, true: a STOP arrived since the last call
+	//   - recordinglog.NullPosition, false: no STOP arrived
+	ConsumeStopSignal() (
+		stopPosition int64,
+		stopped bool,
+	)
+
 	// StopPositionFor returns the archive stop position recorded for
 	// recordingID.
 	//
@@ -150,18 +166,19 @@ type LogRecordingControl interface {
 }
 
 // SetLogRecordingControl wires or clears the cluster log recording control used
-// by [Agent.JoinLogAsLeader], [Agent.JoinLogAsFollower], and
-// [Agent.PrepareForNewLeadership].
+// by [Agent.JoinLogAsLeader], [Agent.JoinLogAsFollower],
+// [Agent.PrepareForNewLeadership], and the [Agent.DoWork] log stop check.
 //
 // Concurrency: invoker-only. Must not run concurrent with [Agent.DoWork].
 //
-// Nil is allowed. All three methods then skip recording.
+// Nil is allowed. The three join and prepare methods then skip recording.
 //
 // Nil control outcomes:
 //   - [Agent.JoinLogAsLeader] and [Agent.JoinLogAsFollower] return no error
 //   - [Agent.IsRecordingActive] is false
 //   - [Agent.PrepareForNewLeadership] skips stop and returns logPosition
 //     unchanged with prepared true
+//   - [Agent.DoWork] enters no election from a recording STOP
 //
 // A non-nil control makes [Agent.PrepareForNewLeadership] call
 // PollStopLogRecording so a dirty start or extend still drains.
