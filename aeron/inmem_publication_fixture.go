@@ -3,6 +3,8 @@
 package aeron
 
 import (
+	"math"
+
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
@@ -128,6 +130,7 @@ func writeInMemPublicationMetadata(buf []byte, cfg inMemPublicationLogConfig) {
 	meta.PutInt32(logbuffer.OffsetPageSize, logbuffer.PageMinSize)
 	meta.PutInt32(logbuffer.OffsetMTULength, inMemPublicationMTULength)
 	meta.PutInt32Release(logbuffer.OffsetIsConnected, cfg.IsConnected)
+	meta.PutInt64Release(logbuffer.OffsetEndOfStreamPosition, math.MaxInt64)
 	meta.Bytes()[logbuffer.OffsetLogType] = cfg.LogType
 
 	if err := logbuffer.WriteDataHeaderUnfragmented(
@@ -261,4 +264,8 @@ func inMemCountersReaderFromRecords(
 
 func setInMemImageSubscriberPosition(image *Image, position int64) {
 	image.subscriberPos.SetRelease(position)
+}
+
+func setInMemImageEndOfStreamPosition(image *Image, position int64) {
+	image.metaBuffer.PutInt64Release(logbuffer.OffsetEndOfStreamPosition, position)
 }

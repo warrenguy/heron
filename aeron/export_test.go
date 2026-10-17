@@ -1334,6 +1334,10 @@ func ImageSetSubscriberPositionForTest(image *Image, value int64) {
 	setInMemImageSubscriberPosition(image, value)
 }
 
+func ImageSetEndOfStreamPositionForTest(image *Image, position int64) {
+	setInMemImageEndOfStreamPosition(image, position)
+}
+
 func ImageTermBuffer0CapacityForTest(image *Image) int {
 	return ImageTermBufferForTest(image, 0).Capacity()
 }
