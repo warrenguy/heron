@@ -69,8 +69,11 @@ func TestNode_replicationHost_simOverrides(t *testing.T) {
 		require.NotNil(t, h)
 
 		// Session id for NLT control wire.
-		require.Equal(t, logSessionID, h.AddLogPublication(0))
-		require.Equal(t, logSessionID, h.AddLogPublication(99))
+		for _, appendPosition := range []int64{0, 99} {
+			sessionID, err := h.AddLogPublication(appendPosition)
+			require.NoError(t, err)
+			require.Equal(t, logSessionID, sessionID)
+		}
 
 		// Refuse election close; leader stays LEADER_READY under raised append.
 		require.False(t, h.AppendNewLeadershipTermEvent(0))

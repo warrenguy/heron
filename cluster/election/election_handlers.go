@@ -630,6 +630,13 @@ func (e *Election) becomeSelfLeader(nowNs int64, reason string) {
 	e.leaderMember = e.thisMember
 	e.leadershipTermID = e.candidateTermID
 	e.state(ElectionStateLeaderLogReplication, nowNs, reason)
+
+	// The entry cannot reset itself: state writes the new state after its
+	// switch. Reset here so no duty cycle runs with the failed term.
+	if err := e.logPublicationErr; err != nil {
+		e.logPublicationErr = nil
+		e.HandleError(nowNs, err)
+	}
 }
 
 // HandleConsensusMessage decodes consensus wire and dispatches to On* handlers.

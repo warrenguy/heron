@@ -528,7 +528,9 @@ func TestHostDelegate_stubsSmoke(t *testing.T) {
 	a.RoleSet(RoleCandidate)
 	require.Equal(t, RoleCandidate, a.Role())
 
-	require.Equal(t, int32(-1), a.AddLogPublication(100))
+	sessionID, err := a.AddLogPublication(100)
+	require.NoError(t, err)
+	require.Equal(t, int32(-1), sessionID)
 	require.Equal(t, int64(-1), a.LocalLogRecordingID())
 	a.SetLogRecordingID(99)
 	require.Equal(t, int64(99), a.LocalLogRecordingID())

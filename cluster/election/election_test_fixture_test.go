@@ -25,6 +25,8 @@ type fixtureParams struct {
 	appendPosition    int64
 	hostRole          consensus.Role
 	stateObserver     *recordingStateObserver
+
+	addLogPublicationErr error
 }
 
 type fixtureOption func(*fixtureParams)
@@ -63,6 +65,10 @@ func withStateObserver(o *recordingStateObserver) fixtureOption {
 
 func withAppVersion(v int32) fixtureOption {
 	return func(p *fixtureParams) { p.appVersion = v }
+}
+
+func withAddLogPublicationErr(err error) fixtureOption {
+	return func(p *fixtureParams) { p.addLogPublicationErr = err }
 }
 
 func newRecordingHostAndAgent(
@@ -156,6 +162,7 @@ func newElectionFixture(t *testing.T, opts ...fixtureOption) *electionFixture {
 	cfg.AppendPosition = p.appendPosition
 
 	host, agent := newRecordingHostAndAgent(clock, p.hostRole, p.logPosition, p.appendPosition)
+	host.addLogPublicationErr = p.addLogPublicationErr
 	deps.Host = host
 	deps.Handler = agent
 	deps.NominationRand = func() float64 { return 0 }
@@ -364,6 +371,8 @@ type recordingElectionHost struct {
 
 	catchupPollResult int
 
+	addLogPublicationErr error
+
 	addLogPublicationCalls            []int64
 	appendNewLeadershipTermEventCalls []int64
 	publishCommitPositionCalls        []publishCommitPositionCall
@@ -414,9 +423,9 @@ func (h *recordingElectionHost) Role() consensus.Role { return h.role }
 
 func (h *recordingElectionHost) RoleSet(role consensus.Role) { h.role = role }
 
-func (h *recordingElectionHost) AddLogPublication(appendPosition int64) int32 {
+func (h *recordingElectionHost) AddLogPublication(appendPosition int64) (int32, error) {
 	h.addLogPublicationCalls = append(h.addLogPublicationCalls, appendPosition)
-	return h.logSessionID
+	return h.logSessionID, h.addLogPublicationErr
 }
 
 func (h *recordingElectionHost) QuorumPositionBoundedByLeaderLog(int64, int64) int64 {

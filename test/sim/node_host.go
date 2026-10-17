@@ -40,7 +40,7 @@ func (h *simElectionHost) Role() consensus.Role { return h.role }
 
 func (h *simElectionHost) RoleSet(role consensus.Role) { h.role = role }
 
-func (h *simElectionHost) AddLogPublication(int64) int32 { return simLogSessionID }
+func (h *simElectionHost) AddLogPublication(int64) (int32, error) { return simLogSessionID, nil }
 
 func (h *simElectionHost) QuorumPositionBoundedByLeaderLog(int64, int64) int64 {
 	if len(h.quorumSequence) == 0 {

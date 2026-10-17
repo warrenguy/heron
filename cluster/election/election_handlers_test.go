@@ -786,8 +786,8 @@ func TestHandleCandidateBallot_decisionBranches(t *testing.T) {
 }
 
 // leaderLogReplicationFixture drives a 3-node election to LEADER_LOG_REPLICATION
-// with a real log session id and quorumPosition holding below the append
-// position so the state does not advance.
+// with quorumPosition holding below the append position so the state does not
+// advance.
 func leaderLogReplicationFixture(
 	t *testing.T,
 	quorumPosition int64,
@@ -827,6 +827,41 @@ func TestHandleLeaderLogReplication_publishesOnLeaderHeartbeatInterval(t *testin
 	for _, m := range fx.publisher.Sent {
 		require.Equal(t, uint16(clusterwire.NewLeadershipTermSbeTemplateID), m.TemplateID)
 	}
+}
+
+func TestBecomeSelfLeader_resetsOnLogPublicationError(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("log publication add failed")
+	observer := &recordingStateObserver{}
+	fx := newElectionFixture(t, withAddLogPublicationErr(cause), withStateObserver(observer))
+	appendPosition := fx.cfg.AppendPosition
+
+	// Phase 1: the win resets in the same duty cycle with the add error.
+	fx.canvassTo(election.ElectionStateCandidateBallot)
+	fx.injectVote(1, fx.cfg.LeadershipTermID, appendPosition, true)
+	fx.injectVote(2, fx.cfg.LeadershipTermID, appendPosition, true)
+	fx.publisher.Reset()
+	require.Equal(t, 1, fx.doWork())
+	require.Equal(t, election.ElectionStateInit, fx.election.State())
+	require.Equal(t, cause, fx.election.LastError())
+	require.Equal(t, election.NullMemberID, fx.election.LogSessionID())
+	require.Equal(t, []int64{appendPosition}, fx.host.addLogPublicationCalls)
+	require.Empty(t, fx.publisher.Sent)
+	require.Equal(t, []election.ElectionState{
+		election.ElectionStateLeaderLogReplication,
+		election.ElectionStateInit,
+	}, observer.states[len(observer.states)-2:])
+
+	// Phase 2: the next win retries the add.
+	fx.host.addLogPublicationErr = nil
+	fx.canvassTo(election.ElectionStateCandidateBallot)
+	fx.injectVote(1, fx.cfg.LeadershipTermID, appendPosition, true)
+	fx.injectVote(2, fx.cfg.LeadershipTermID, appendPosition, true)
+	fx.doWork()
+	require.Equal(t, election.ElectionStateLeaderLogReplication, fx.election.State())
+	require.Equal(t, fixtureLogSessionID, fx.election.LogSessionID())
+	require.Equal(t, []int64{appendPosition, appendPosition}, fx.host.addLogPublicationCalls)
 }
 
 func TestPublishNewLeadershipTerm_commitPositionField(t *testing.T) {

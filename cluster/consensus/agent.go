@@ -1353,31 +1353,34 @@ func (a *Agent) SetTermBaseLogPosition(pos int64) { a.termBaseLogPosition = pos 
 // session id (-1).
 //
 // When the publication position differs from appendPosition, reseeds the
-// publication at appendPosition first. Election publishes the returned session
-// id in NewLeadershipTerm. Without a [LogPublicationReseed] or a known
-// recording id, keeps the bound publication.
+// publication at appendPosition first. Without a [LogPublicationReseed] or a
+// known recording id, keeps the bound publication.
 //
 // Required inject order: [Agent.SetLogPublisher] and
 // [LogPublisher.SetPublication] before any caller that stores the returned
 // session id. A bind after this call leaves the caller with -1 while a later
 // NewLeadershipTermEvent would write a real session id.
 //
-// On reseed failure returns the session id bound after the attempt, or null
-// session id when the publisher is unbound. JoinLogAsLeader then fails closed.
-func (a *Agent) AddLogPublication(appendPosition int64) int32 {
+// Returns:
+//   - session id, nil: the bound or reseeded publication
+//   - null session id, nil: the publisher is unbound
+//   - session id the publisher holds after the attempt, err: the reseed hook
+//     failed
+func (a *Agent) AddLogPublication(appendPosition int64) (int32, error) {
 	sessionID, bound := a.boundLogSessionID()
 	if !bound {
-		return sessionID
+		return sessionID, nil
 	}
-	if reseeded, ok := a.reseedLogPublicationAt(appendPosition); ok {
-		return reseeded
+	reseeded, ok, err := a.reseedLogPublicationAt(appendPosition)
+	if ok {
+		return reseeded, nil
 	}
 
 	// A failed reseed closes the old publication before opening the new one. Use
 	// the session id the publisher holds now, not the id captured before the
 	// attempt.
 	sessionID, _ = a.boundLogSessionID()
-	return sessionID
+	return sessionID, err
 }
 
 // boundLogSessionID returns the log publication session id when a
@@ -1396,17 +1399,19 @@ func (a *Agent) boundLogSessionID() (sessionID int32, ok bool) {
 // Behaviour: skips a nil hook. Skips a negative recording id: the LOCAL start
 // then opens a fresh recording at any join position.
 //
-// Returns the new session id and true when the hook succeeds. Returns false
-// otherwise.
-func (a *Agent) reseedLogPublicationAt(position int64) (sessionID int32, ok bool) {
+// Returns:
+//   - new session id, true, nil: the hook succeeded
+//   - 0, false, nil: no reseed ran
+//   - 0, false, err: the hook failed
+func (a *Agent) reseedLogPublicationAt(position int64) (sessionID int32, ok bool, err error) {
 	if !a.canReseedLogPublication() || a.logPublisher.Position() == position {
-		return 0, false
+		return 0, false, nil
 	}
-	sessionID, err := a.logPublicationReseed(position)
+	sessionID, err = a.logPublicationReseed(position)
 	if err != nil {
-		return 0, false
+		return 0, false, err
 	}
-	return sessionID, true
+	return sessionID, true, nil
 }
 
 // canReseedLogPublication reports whether a reseed hook is wired and the

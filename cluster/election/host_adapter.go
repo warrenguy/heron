@@ -511,7 +511,7 @@ func (h *HostAdapter) OnCatchupPosition(fields codecs.CatchupPositionFields) {
 	h.agent.OnCatchupPosition(fields)
 }
 
-func (h *HostAdapter) AddLogPublication(appendPosition int64) int32 {
+func (h *HostAdapter) AddLogPublication(appendPosition int64) (int32, error) {
 	return h.agent.AddLogPublication(appendPosition)
 }
 

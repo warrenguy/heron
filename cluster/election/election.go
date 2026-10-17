@@ -42,6 +42,11 @@ type Election struct {
 	lastPublishedAppendPosition      int64
 	lastError                        error
 
+	// logPublicationErr holds the AddLogPublication error from the
+	// LEADER_LOG_REPLICATION entry. becomeSelfLeader resets on it once the
+	// entry returns.
+	logPublicationErr error
+
 	clusterMembers []*Member
 	memberByID     map[int32]*Member
 	thisMember     *Member
@@ -220,7 +225,11 @@ func (e *Election) state(next ElectionState, nowNs int64, reason string) {
 		e.deps.Host.RoleSet(consensus.RoleCandidate)
 	case ElectionStateLeaderLogReplication:
 		e.deps.Host.RoleSet(consensus.RoleLeader)
-		e.logSessionID = e.deps.Host.AddLogPublication(e.appendPosition)
+		sessionID, err := e.deps.Host.AddLogPublication(e.appendPosition)
+		if err != nil {
+			sessionID = NullMemberID
+		}
+		e.logSessionID, e.logPublicationErr = sessionID, err
 	case ElectionStateFollowerLogReplication, ElectionStateFollowerReplay:
 		e.deps.Host.RoleSet(consensus.RoleFollower)
 	case ElectionStateInit,

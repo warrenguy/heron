@@ -234,7 +234,8 @@ func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
 		connectFailMsg,
 	)
 
-	sessionID := agent0.AddLogPublication(0)
+	sessionID, err := agent0.AddLogPublication(0)
+	require.NoError(t, err)
 	require.NotEqual(t, int32(-1), sessionID)
 	require.Equal(t, streams0.Publication().SessionID(), sessionID)
 
@@ -317,5 +318,7 @@ func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
 	require.Nil(t, streams1.Publication())
 	require.Nil(t, streams1.Subscription())
 
-	require.Equal(t, int32(-1), agent0.AddLogPublication(0))
+	sessionID, err = agent0.AddLogPublication(0)
+	require.NoError(t, err)
+	require.Equal(t, int32(-1), sessionID)
 }

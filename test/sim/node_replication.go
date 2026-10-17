@@ -16,7 +16,7 @@ type simReplicationHost struct {
 }
 
 // AddLogPublication returns the sim log session id for NLT control wire.
-func (h *simReplicationHost) AddLogPublication(int64) int32 { return simLogSessionID }
+func (h *simReplicationHost) AddLogPublication(int64) (int32, error) { return simLogSessionID, nil }
 
 // AppendNewLeadershipTermEvent refuses election close so the leader stays in
 // LEADER_READY and keeps UpdateLeaderPosition live.
