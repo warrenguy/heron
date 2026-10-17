@@ -134,6 +134,9 @@ func TestLogRecording_startVsExtendBranch_rapid(t *testing.T) {
 				model.startSucceeded = false
 				// Inactive after stop.
 				require.False(rt, r.IsActive())
+				// A blocking stop sets no STOP mark.
+				_, stopped := r.ConsumeStopSignal()
+				require.False(rt, stopped)
 
 			case "imageStop":
 				if !model.startSucceeded {
@@ -153,6 +156,12 @@ func TestLogRecording_startVsExtendBranch_rapid(t *testing.T) {
 				got, posErr := r.StopPositionFor(r.latchedRecordingID)
 				require.NoError(rt, posErr)
 				require.Equal(rt, pos, got)
+				// The STOP mark reports the signal position once.
+				markPosition, stopped := r.ConsumeStopSignal()
+				require.True(rt, stopped)
+				require.Equal(rt, pos, markPosition)
+				_, stopped = r.ConsumeStopSignal()
+				require.False(rt, stopped)
 				model.startSucceeded = false
 
 			case "reopenLog":

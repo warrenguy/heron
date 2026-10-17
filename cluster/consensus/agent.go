@@ -280,7 +280,8 @@ type Agent struct {
 	// logAdapter polls the live log Image under the follower commit bound.
 	//
 	// Nil: followerConsensusWork skips poll and proposeMax from adapter
-	// (AppendPosition interval path still runs).
+	// (AppendPosition interval path still runs). Nil also skips the closed
+	// log image check.
 	//
 	// CatchupPoll uses the same adapter when an Image is bound.
 	logAdapter *LogAdapter
@@ -1948,6 +1949,8 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 // DoWork runs one duty-cycle tick:
 //   - slow tick
 //   - consensus ingress poll when no prepare episode is in progress
+//   - log stop check: a recording STOP mark or a closed non-leader log image
+//     installs an election ([Agent.logStopTick])
 //   - client ingress poll when no election is live
 //   - service control poll (always; ServiceAck, ScheduleTimer, and CancelTimer
 //     dispatch; every role; while election is live)
@@ -1975,6 +1978,8 @@ func (a *Agent) DoWork(nowNs int64) int {
 	if !a.prepareInProgress {
 		work += a.pollConsensusIngress(nowNs)
 	}
+	noteDoWorkStep("logStopTick")
+	work += a.logStopTick(nowNs)
 	noteDoWorkStep("pollClientIngress")
 	work += a.pollClientIngress(nowNs)
 	noteDoWorkStep("pollServiceControl")
@@ -2267,7 +2272,7 @@ func (a *Agent) applySteadyLeaderCommitNotify(
 // Concurrency: invoker-only.
 func (a *Agent) onUnexpectedHigherTerm(nowNs, term int64) {
 	noteUnexpectedHigherTerm(nowNs, term)
-	a.enterElection(ElectionTriggerHigherTerm, nowNs)
+	a.enterElection(ElectionTriggerHigherTerm, false, nowNs)
 }
 
 func (a *Agent) consensusWork(nowNs int64) int {

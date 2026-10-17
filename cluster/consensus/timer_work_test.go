@@ -614,7 +614,7 @@ func TestTimerEventConsume_drainPaths(t *testing.T) {
 				a.SetElectionFactory((&recordingElectionFactory{}).factory())
 				scheduleTimer(a, correlationID, d1)
 
-				require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, nowNs))
+				require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, nowNs))
 				require.Equal(t, end, adapter.Position())
 				require.Equal(t, int64(0), a.CommitPosition())
 				requireAgentTimers(t, a, nil, nil)
@@ -685,7 +685,7 @@ func TestTimerEventConsume_drainPaths(t *testing.T) {
 
 				// enterElection drains nothing: its bound sits below the first event.
 				a.notifiedCommitPosition = 0
-				require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, nowNs))
+				require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, nowNs))
 				require.Equal(t, int64(0), adapter.Position())
 
 				_, prepared, err := a.PrepareForNewLeadership(0, nowNs)
@@ -731,7 +731,7 @@ func TestTimerEventConsume_drainPaths(t *testing.T) {
 				a.SetElectionFactory((&recordingElectionFactory{}).factory())
 				scheduleTimer(a, correlationID, d1)
 
-				require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, nowNs))
+				require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, nowNs))
 				require.Equal(t, end, adapter.Position())
 				requireAgentTimers(t, a, map[int64]int64{correlationID: d1}, nil)
 			},

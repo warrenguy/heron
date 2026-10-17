@@ -102,6 +102,8 @@ func TestUpdateLeaderPosition_timeOfLastLogUpdate_monotonicOnPublish_rapid(t *te
 
 // TestElectionInstall_countMonotonicAndSingleRunner_rapid asserts install
 // count, single runner, and seed term invariants over mixed duty steps.
+//
+// An adapter with no image stands for a closed log image.
 func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -115,6 +117,8 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 			LeaderMemberID:           1,
 			LeaderHeartbeatTimeoutNs: timeoutNs,
 		})
+		control := &fakeLogRecordingControl{}
+		a.SetLogRecordingControl(control)
 		var seeds []ElectionSeed
 		var setElectionSteps int64
 		var lastRunner ElectionRunner
@@ -134,6 +138,7 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 		steps := []string{
 			"tick", "completeElection", "higherTerm",
 			"quorumLost", "quorumHeld", "setElection", "clearElection",
+			"recordingStop", "logImageClosed",
 		}
 		for range n {
 			step := rapid.SampledFrom(steps).Draw(rt, "step")
@@ -189,6 +194,26 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 				oracleTrigger = ElectionTriggerBootstrap
 			case "clearElection":
 				a.SetElection(nil)
+			case "recordingStop":
+				control.stopSignalled = true
+				control.stopSignalPosition = rapid.Int64Range(0, 1000).Draw(rt, "stopPosition")
+				installed := a.logStopTick(nowNs)
+				require.False(rt, control.stopSignalled)
+				// Any settled role installs on a STOP.
+				require.Equal(rt, !liveBefore, installed == 1)
+				if installed == 1 {
+					oracleTrigger = ElectionTriggerLogRecordingStopped
+				}
+			case "logImageClosed":
+				leaderBefore := a.Role() == RoleLeader
+				a.SetLogAdapter(NewLogAdapter(0))
+				installed := a.logStopTick(nowNs)
+				a.SetLogAdapter(nil)
+				// A settled non-leader installs. A leader ignores the image.
+				require.Equal(rt, !liveBefore && !leaderBefore, installed == 1)
+				if installed == 1 {
+					oracleTrigger = ElectionTriggerLogImageClosed
+				}
 			}
 
 			// At most one runner; it is the newest install when non-nil.
@@ -207,9 +232,11 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 			// LastElectionTrigger equals the most recent install trigger.
 			require.Equal(rt, oracleTrigger, a.LastElectionTrigger())
 
-			// Seed term equals agent term at install time.
+			// Seed term equals agent term at install time. No image reports
+			// end of stream, so every seed carries the null member id.
 			for _, seed := range seeds {
 				require.Equal(rt, a.LeadershipTermID(), seed.LeadershipTermID)
+				require.Equal(rt, nullMemberID, seed.GracefulClosedLeaderID)
 			}
 
 			// Recorded factory seeds equal count minus SetElection installs.
@@ -262,6 +289,8 @@ func TestClientIngress_heldWhileElectionLive_rapid(t *testing.T) {
 		a.SetIngress(consensus)
 		probe := &heldClientIngressProbe{rt: rt, agent: a}
 		a.SetClientIngress(probe)
+		control := &fakeLogRecordingControl{}
+		a.SetLogRecordingControl(control)
 
 		nowNs := int64(0)
 		enqueued := 0
@@ -287,6 +316,7 @@ func TestClientIngress_heldWhileElectionLive_rapid(t *testing.T) {
 		steps := []string{
 			"enqueue", "tick", "setElection", "completeElection",
 			"clearElection", "quorumLost", "higherTermFrame",
+			"recordingStop", "logImageClosed",
 		}
 		for range n {
 			step := rapid.SampledFrom(steps).Draw(rt, "step")
@@ -321,6 +351,14 @@ func TestClientIngress_heldWhileElectionLive_rapid(t *testing.T) {
 					LeaderMemberID:   2,
 				}))
 				tick()
+			case "recordingStop":
+				control.stopSignalled = true
+				control.stopSignalPosition = rapid.Int64Range(0, 1000).Draw(rt, "stopPosition")
+				tick()
+			case "logImageClosed":
+				a.SetLogAdapter(NewLogAdapter(0))
+				tick()
+				a.SetLogAdapter(nil)
 			}
 
 			// Every frame is delivered or still queued.

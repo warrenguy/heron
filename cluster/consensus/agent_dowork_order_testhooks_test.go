@@ -23,6 +23,7 @@ func TestDoWork_stepOrder(t *testing.T) {
 			wantLog: []string{
 				"slowTick",
 				"pollIngress",
+				"logStopTick",
 				"pollClientIngress",
 				"pollServiceControl",
 				"serviceControlWork",
@@ -36,6 +37,7 @@ func TestDoWork_stepOrder(t *testing.T) {
 			wantLog: []string{
 				"slowTick",
 				"pollIngress",
+				"logStopTick",
 				"pollClientIngress",
 				"pollServiceControl",
 				"serviceControlWork",

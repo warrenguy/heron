@@ -1,6 +1,10 @@
 package consensus
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/warrenguy/heron/cluster/recordinglog"
+)
 
 // DefaultLeaderHeartbeatTimeoutNs bounds the settled quiet wait before a
 // non-leader re-enters an election (10s).
@@ -47,6 +51,14 @@ const (
 	// ElectionTriggerHigherTerm is a settled member that received a leadership
 	// term above its own.
 	ElectionTriggerHigherTerm
+
+	// ElectionTriggerLogRecordingStopped is a settled member whose own log
+	// recording reported STOP.
+	ElectionTriggerLogRecordingStopped
+
+	// ElectionTriggerLogImageClosed is a non-leader whose log adapter holds a
+	// closed image or no image.
+	ElectionTriggerLogImageClosed
 )
 
 var electionTriggerNames = [...]string{
@@ -55,6 +67,8 @@ var electionTriggerNames = [...]string{
 	"LEADER_HEARTBEAT_TIMEOUT",
 	"INACTIVE_FOLLOWER_QUORUM",
 	"HIGHER_TERM",
+	"LOG_RECORDING_STOPPED",
+	"LOG_IMAGE_CLOSED",
 }
 
 // String returns the trigger name, or Trigger(n) for an unknown value.
@@ -84,6 +98,10 @@ type ElectionSeed struct {
 	// AppendPositionReady reports whether AppendPosition may be used. False
 	// means the factory must substitute its own fallback.
 	AppendPositionReady bool
+
+	// GracefulClosedLeaderID is the leader whose log reached end of stream
+	// when the trigger fired. Else the null member id.
+	GracefulClosedLeaderID int32
 }
 
 // ElectionFactory builds a fresh [ElectionRunner] from settled state.
@@ -188,24 +206,36 @@ func (a *Agent) appendPositionForSeed() (int64, bool) {
 //   - after a non-nil runner returns: drains the log adapter under
 //     followerLogPollBound, clears pendingJoinLog, sets role to follower,
 //     then installs
+//   - isLogEndOfStream seeds GracefulClosedLeaderID from leaderMemberID,
+//     else the null member id. A leader holds the null id, so a leader
+//     install seeds the null id
 //
 // Role flip order: append read first, then RoleFollower. Cluster append
 // sources are role-sensitive. A leader must report the publication
 // position. After RoleFollower, the follower image path returns 0.
 //
 // Returns: 1 when a runner was installed, else 0.
-func (a *Agent) enterElection(trigger ElectionTrigger, nowNs int64) int {
+func (a *Agent) enterElection(
+	trigger ElectionTrigger,
+	isLogEndOfStream bool,
+	nowNs int64,
+) int {
 	if a.election != nil || a.electionFactory == nil {
 		return 0
 	}
 	// Read append while still leader when role is leader: cluster append
 	// sources are role-sensitive (LogAppendPosition).
 	position, ready := a.appendPositionForSeed()
+	gracefulClosedLeaderID := nullMemberID
+	if isLogEndOfStream {
+		gracefulClosedLeaderID = a.leaderMemberID
+	}
 	runner := a.electionFactory(ElectionSeed{
-		LeadershipTermID:    a.leadershipTermID,
-		CommitPosition:      a.CommitPosition(),
-		AppendPosition:      position,
-		AppendPositionReady: ready,
+		LeadershipTermID:       a.leadershipTermID,
+		CommitPosition:         a.CommitPosition(),
+		AppendPosition:         position,
+		AppendPositionReady:    ready,
+		GracefulClosedLeaderID: gracefulClosedLeaderID,
 	})
 	if runner == nil {
 		return 0
@@ -274,7 +304,7 @@ func (a *Agent) activeQuorumTick(nowNs int64) int {
 	if a.positions.HasActiveQuorum(nowNs, a.leaderHeartbeatTimeoutNs) {
 		return 0
 	}
-	return a.enterElection(ElectionTriggerInactiveFollowerQuorum, nowNs)
+	return a.enterElection(ElectionTriggerInactiveFollowerQuorum, false, nowNs)
 }
 
 // leaderWentQuietTick re-enters election when a non-leader's settled
@@ -289,5 +319,51 @@ func (a *Agent) leaderWentQuietTick(nowNs int64) int {
 	if nowNs < a.timeOfLastLogUpdateNs+a.leaderHeartbeatTimeoutNs {
 		return 0
 	}
-	return a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, nowNs)
+	return a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, nowNs)
+}
+
+// logStopTick re-enters an election when the log recording stopped or a
+// non-leader's log image closed.
+//
+// Behaviour:
+//   - consumes the recording STOP mark on every tick. The mark drops even
+//     when no runner installs
+//   - a STOP mark installs for any role. A closed or missing image installs
+//     for a non-leader only. A STOP mark wins in the same tick
+//   - end of stream seeds GracefulClosedLeaderID: the STOP position equals
+//     the image end-of-stream position, or the image reached it
+//
+// Returns: 1 when a runner was installed, else 0.
+func (a *Agent) logStopTick(nowNs int64) int {
+	stopPosition, stopped := a.consumeLogRecordingStop()
+	if a.election != nil {
+		return 0
+	}
+	if stopped {
+		isLogEndOfStream := a.logAdapter.IsLogEndOfStreamAt(stopPosition)
+		return a.enterElection(ElectionTriggerLogRecordingStopped, isLogEndOfStream, nowNs)
+	}
+	if a.isFollowerLogImageClosed() {
+		isLogEndOfStream := a.logAdapter.IsLogEndOfStream()
+		return a.enterElection(ElectionTriggerLogImageClosed, isLogEndOfStream, nowNs)
+	}
+	return 0
+}
+
+// consumeLogRecordingStop takes the recording STOP mark. A nil recording
+// control reports no mark.
+func (a *Agent) consumeLogRecordingStop() (stopPosition int64, stopped bool) {
+	if a.recordingControl == nil {
+		return recordinglog.NullPosition, false
+	}
+	return a.recordingControl.ConsumeStopSignal()
+}
+
+// isFollowerLogImageClosed reports a non-leader whose log adapter holds a
+// closed image or no image. A nil adapter reports false.
+//
+// A leader may still hold the follower image of an earlier term, so the role
+// check comes first.
+func (a *Agent) isFollowerLogImageClosed() bool {
+	return a.role != RoleLeader && a.logAdapter != nil && a.logAdapter.IsImageClosed()
 }

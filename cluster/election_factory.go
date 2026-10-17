@@ -11,8 +11,9 @@ import (
 //
 // Behaviour:
 //   - copies base
-//   - forces non-startup and null graceful-closed leader
-//   - seeds leadership term id and commit position from the seed
+//   - forces non-startup
+//   - seeds leadership term id, commit position, and GracefulClosedLeaderID
+//     from the seed
 //   - resolves term base from deps.RecordingLogLookup with the recovery plan
 //     as fallback
 //   - sets append position from the seed when ready, else from the recovery
@@ -83,7 +84,7 @@ func settledElectionConfig(
 ) election.ElectionConfig {
 	cfg := base
 	cfg.IsNodeStartup = false
-	cfg.GracefulClosedLeaderID = election.NullMemberID
+	cfg.GracefulClosedLeaderID = seed.GracefulClosedLeaderID
 	cfg.LeadershipTermID = seed.LeadershipTermID
 	cfg.TermBaseLogPosition = termBaseFor(lookup, plan, seed.LeadershipTermID)
 	cfg.LogPosition = seed.CommitPosition

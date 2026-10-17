@@ -411,7 +411,7 @@ func TestEnterElection_drainsCommittedSessionFrames(t *testing.T) {
 	a.SetElectionFactory(fac.factory())
 
 	const nowNs int64 = 555
-	require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, nowNs))
+	require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, nowNs))
 	s := requireLearnedOpen(t, a, fields, nowNs, span)
 	require.False(t, s.newLeaderEventPending)
 	require.Equal(t, int64(10), a.sessions.nextSessionID)
@@ -533,7 +533,7 @@ func TestEnterElection_drainsPastTermEndPadding(t *testing.T) {
 	// secondEnd.
 	a.notifiedCommitPosition = secondEnd
 	const nowNs int64 = 555
-	require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, nowNs))
+	require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, nowNs))
 
 	require.Equal(t, secondEnd, adapter.Position())
 	s := requireOpenSessionAt(t, a, 12, secondEnd)
@@ -557,7 +557,7 @@ func TestEnterElection_factoryNilDoesNotDrain(t *testing.T) {
 	a.notifiedCommitPosition = span + 32
 	a.SetElectionFactory(fac.factory())
 
-	require.Zero(t, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, 1))
+	require.Zero(t, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, 1))
 	require.Equal(t, 0, a.OpenSessionCount())
 	require.Equal(t, int64(0), adapter.Position())
 }

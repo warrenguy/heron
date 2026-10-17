@@ -488,7 +488,7 @@ func TestClusterModule_reElectsAfterTheLeaderStops(t *testing.T) {
 	newLeader := awaitReElectionAfterStop(t, set, leaderIndex, preTerm)
 	newLeaderID := newLeader.ThisMemberID()
 
-	requireHeartbeatTimeoutTriggerSeen(t, set, leaderIndex)
+	requireLogStopTriggerSeen(t, set, leaderIndex)
 
 	// Append under the new term; both survivors commit.
 	postAppendPos := mustAppend(t, set, newLeader, "post-leader-stop-commit")
@@ -851,9 +851,13 @@ func awaitReElectionAfterStop(
 	return requireReElectedLeader(t, set, stoppedIndex, preTerm)
 }
 
-// requireHeartbeatTimeoutTriggerSeen requires at least one member other than
-// stoppedIndex re-entered election on leader heartbeat timeout.
-func requireHeartbeatTimeoutTriggerSeen(
+// requireLogStopTriggerSeen requires at least one member other than
+// stoppedIndex re-entered election on a log stop trigger.
+//
+// A follower's REMOTE recording ends on the archive's own log image. The
+// STOP or the closed image can reach the agent first, so either trigger
+// passes.
+func requireLogStopTriggerSeen(
 	t *testing.T,
 	set *harness.ClusterMemberSet,
 	stoppedIndex int,
@@ -864,13 +868,15 @@ func requireHeartbeatTimeoutTriggerSeen(
 		if m == nil || i == stoppedIndex {
 			continue
 		}
-		if m.Agent().LastElectionTrigger() == consensus.ElectionTriggerLeaderHeartbeatTimeout {
+		switch m.Agent().LastElectionTrigger() {
+		case consensus.ElectionTriggerLogImageClosed,
+			consensus.ElectionTriggerLogRecordingStopped:
 			return
 		}
 	}
 	require.FailNow(
 		t,
-		"no survivor reported ElectionTriggerLeaderHeartbeatTimeout",
+		"no survivor reported ElectionTriggerLogImageClosed or ElectionTriggerLogRecordingStopped",
 		"%s",
 		set.State(),
 	)

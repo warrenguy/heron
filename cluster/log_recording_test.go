@@ -350,6 +350,10 @@ func TestLogRecording_knownStopUsesAwaitSignal(t *testing.T) {
 	require.Equal(t, 0, stub.listCalls)
 	require.Equal(t, channel, stub.lastStopAwaitChannel)
 	require.False(t, r.needsStop())
+
+	// A blocking stop sets no STOP mark.
+	_, stopped := r.ConsumeStopSignal()
+	require.False(t, stopped)
 }
 
 func TestLogRecording_knownStopUnknownSubscriptionListsCatalog(t *testing.T) {
@@ -493,8 +497,8 @@ func TestLogRecording_IsActive(t *testing.T) {
 }
 
 // TestLogRecording_handleRecordingSignal_stopAdoptsCleanStop asserts an
-// unsolicited STOP for the known catalog id is a clean stop. A later
-// StopLogRecording offers nothing.
+// unsolicited STOP for the known catalog id is a clean stop. The STOP sets a
+// one-shot mark. A later StopLogRecording offers nothing.
 func TestLogRecording_handleRecordingSignal_stopAdoptsCleanStop(t *testing.T) {
 	t.Parallel()
 
@@ -528,6 +532,13 @@ func TestLogRecording_handleRecordingSignal_stopAdoptsCleanStop(t *testing.T) {
 		require.Empty(t, r.startChannel)
 		require.Equal(t, recordingID, r.latchedRecordingID)
 		require.Equal(t, stopPos, r.stopPosition)
+
+		markPosition, stopped := r.ConsumeStopSignal()
+		require.True(t, stopped)
+		require.Equal(t, stopPos, markPosition)
+		markPosition, stopped = r.ConsumeStopSignal()
+		require.False(t, stopped)
+		require.Equal(t, recordinglog.NullPosition, markPosition)
 
 		got, err := r.StopPositionFor(recordingID)
 		require.NoError(t, err)
@@ -606,6 +617,8 @@ func TestLogRecording_handleRecordingSignal_stopAdoptsCleanStop(t *testing.T) {
 			require.Equal(t, tt.wantActive, tt.r.IsActive())
 			require.Equal(t, tt.wantChannel, tt.r.startChannel)
 			require.Equal(t, tt.wantStopPos, tt.r.stopPosition)
+			_, stopped := tt.r.ConsumeStopSignal()
+			require.False(t, stopped)
 		})
 	}
 }
@@ -1406,10 +1419,15 @@ func TestLogRecording_StartLogRecording_afterAdoptedStop(t *testing.T) {
 	require.True(t, first.closed)
 	require.False(t, r.needsStop())
 	require.Nil(t, r.pendingStop)
+	require.True(t, r.stopSignalled)
 
 	got, err := r.StartLogRecording(archivewire.SourceLocation_LOCAL, logSessionID, "")
 	require.NoError(t, err)
 	require.Equal(t, newID, got)
+
+	// The restart clears the STOP mark of the prior recording.
+	_, stopped := r.ConsumeStopSignal()
+	require.False(t, stopped)
 	wantChannel := []byte(sessionScopedLogChannel(logChannel, logSessionID))
 	require.Equal(t, wantChannel, r.startChannel)
 	require.True(t, r.needsStop())

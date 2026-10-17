@@ -1153,6 +1153,9 @@ func TestAtomicAppendPosition_nilSafe(t *testing.T) {
 // scripted position. Set nextStopPositionFor explicitly when prepare reaches
 // derivation.
 //
+// stopSignalled and stopSignalPosition script one
+// [LogRecordingControl.ConsumeStopSignal] hit.
+//
 // pollStopPending scripts [LogRecordingControl.PollStopLogRecording] as not
 // done. stopErr fails both StopLogRecording and the poll. pollStopCalls
 // counts PollStopLogRecording. stopCalls counts StopLogRecording only.
@@ -1170,6 +1173,8 @@ type fakeLogRecordingControl struct {
 	stopPositionForErr   error
 	onStart              func()
 	active               bool
+	stopSignalled        bool
+	stopSignalPosition   int64
 }
 
 type fakeStartCall struct {
@@ -1224,6 +1229,14 @@ func (f *fakeLogRecordingControl) PollStopLogRecording(nowNs int64) (bool, error
 
 func (f *fakeLogRecordingControl) IsActive() bool {
 	return f.active
+}
+
+func (f *fakeLogRecordingControl) ConsumeStopSignal() (int64, bool) {
+	if !f.stopSignalled {
+		return recordinglog.NullPosition, false
+	}
+	f.stopSignalled = false
+	return f.stopSignalPosition, true
 }
 
 func (f *fakeLogRecordingControl) StopPositionFor(recordingID int64) (int64, error) {
