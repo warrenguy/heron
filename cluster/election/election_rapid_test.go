@@ -10,6 +10,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
@@ -38,13 +39,24 @@ func runElectionSafetyPBT(t *testing.T, crashWeighted bool) {
 // TestElectionSafety_clusterStateMachine_rapid exercises multi-node bag-delivered
 // election safety.
 //
-// After every action: at most one self-leader win per leadership term, no live
-// split-brain via election state, candidate term non-decreasing after init load,
-// and durable candidate term matches the recorded write oracle. Self-win
-// transitions also check leadership term equals candidate term and quorum.
-// A canvass above the election term must move a leader awaiting followers out
-// of its state. Any other canvass must leave the state unchanged. Crash and
-// restart exercise durable store reuse across lives.
+// After every action:
+//   - at most one self-leader win per leadership term
+//   - no live split-brain via election state
+//   - candidate term non-decreasing after init load
+//   - durable candidate term matches the recorded write oracle
+//   - each counted ballot vote has a ledger grant
+//
+// The send hook checks each TRUE vote:
+//   - one grant per voter per candidate term
+//   - the vote names the voter as follower
+//   - the vote answers the RequestVote in delivery
+//   - the voter log is not ahead of the request log
+//
+// A self-win also checks that leadership term equals candidate term, that
+// each counted vote has a grant, and quorum. A canvass above the election
+// term must move a leader awaiting followers out of its state. Any other
+// canvass must leave the state unchanged. Crash and restart exercise durable
+// store reuse across lives.
 func TestElectionSafety_clusterStateMachine_rapid(t *testing.T) {
 	runElectionSafetyPBT(t, false)
 }
@@ -526,4 +538,128 @@ func TestElectionRapid_handleErrorSyncsLogPosition(t *testing.T) {
 		require.Equal(rt, appendBefore, e.AppendPosition())
 		require.Equal(rt, err, e.LastError())
 	})
+}
+
+// ballotOnNodeZero ticks node 0 alone to CANDIDATE_BALLOT after one canvass
+// exchange. Returns the candidate term.
+func ballotOnNodeZero(t *testing.T, c *electionRapidCluster) int64 {
+	t.Helper()
+	candidate := c.nodes[0]
+	c.tickAll()
+	c.deliverAllHolding()
+	for range 8 {
+		if candidate.election.State() == election.ElectionStateCandidateBallot {
+			break
+		}
+		c.tickOne(candidate)
+	}
+	require.Equal(t, election.ElectionStateCandidateBallot, candidate.election.State())
+	return election.CandidateTermIDForTest(candidate.election)
+}
+
+// grantVote sends a TRUE vote from voter to candidateID at termID.
+func grantVote(voter *rapidNode, candidateID, followerID int32, termID int64) {
+	voter.publisher.PlaceVote(
+		election.PublicationTarget{MemberID: candidateID},
+		codecs.VoteFields{
+			CandidateTermID:     termID,
+			LogLeadershipTermID: election.LogLeadershipTermIDForTest(voter.election),
+			LogPosition:         voter.election.AppendPosition(),
+			CandidateMemberID:   candidateID,
+			FollowerMemberID:    followerID,
+			Vote:                clusterwire.BooleanType_TRUE,
+		},
+	)
+}
+
+// TestElectionRapidCluster_voteChecks plants one vote fault per case and
+// expects the error text of the check that the fault trips.
+func TestElectionRapidCluster_voteChecks(t *testing.T) {
+	tests := []struct {
+		name  string
+		plant func(t *testing.T, c *electionRapidCluster, termID int64)
+		want  string
+	}{
+		{
+			name: "second grant",
+			plant: func(_ *testing.T, c *electionRapidCluster, termID int64) {
+				grantVote(c.nodes[0], 1, 0, termID)
+			},
+			want: "granted term",
+		},
+		{
+			name: "wrong follower",
+			plant: func(_ *testing.T, c *electionRapidCluster, termID int64) {
+				grantVote(c.nodes[1], 0, 2, termID+10)
+			},
+			want: "names follower",
+		},
+		{
+			name: "no request",
+			plant: func(_ *testing.T, c *electionRapidCluster, termID int64) {
+				grantVote(c.nodes[1], 0, 1, termID+10)
+			},
+			want: "answers no RequestVote",
+		},
+		{
+			name: "ahead voter",
+			plant: func(t *testing.T, c *electionRapidCluster, termID int64) {
+				voter := c.nodes[1].election
+				position := voter.AppendPosition()
+				scratch := &election.SbePublisher{}
+				require.True(t, scratch.RequestVote(
+					election.PublicationTarget{MemberID: 1},
+					codecs.RequestVoteFields{
+						LogLeadershipTermID: election.LogLeadershipTermIDForTest(voter),
+						LogPosition:         position,
+						CandidateTermID:     termID + 10,
+						CandidateMemberID:   0,
+					},
+				))
+				c.inbound = &pendingMsg{from: 0, msg: scratch.Sent[0]}
+				election.SetAppendPositionForTest(voter, position+1)
+				grantVote(c.nodes[1], 0, 1, termID+10)
+			},
+			want: "ahead of candidate",
+		},
+		{
+			name: "unbacked scan",
+			plant: func(_ *testing.T, c *electionRapidCluster, termID int64) {
+				member := election.MemberForTest(c.nodes[0].election, 1)
+				member.Vote = new(true)
+				member.CandidateTermID = termID
+				c.checkVoteCounts()
+			},
+			want: "without a grant",
+		},
+		{
+			// No checkVoteCounts call: the first failure sticks, so a scan
+			// hit would mask a missing edge check.
+			name: "unbacked edge",
+			plant: func(t *testing.T, c *electionRapidCluster, termID int64) {
+				candidate := c.nodes[0]
+				member := election.MemberForTest(candidate.election, 1)
+				member.Vote = new(true)
+				member.CandidateTermID = termID
+				c.advanceClock(candidate.cfg.ElectionTimeoutNs)
+				c.tickOne(candidate)
+				require.Equal(
+					t,
+					election.ElectionStateLeaderLogReplication,
+					candidate.election.State(),
+				)
+			},
+			want: "without a grant",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newElectionRapidCluster(t, rapidClusterSize)
+			termID := ballotOnNodeZero(t, c)
+			require.Empty(t, c.edgeFail)
+
+			tt.plant(t, c, termID)
+			require.Contains(t, c.edgeFail, tt.want)
+		})
+	}
 }

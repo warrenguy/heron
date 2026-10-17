@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/election"
 )
 
@@ -96,6 +98,165 @@ func TestSafety_secondSelfLeaderForSameTerm(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "two self-leaders")
 	})
+}
+
+// voteCheckConfig returns a focus sim config on node 1. Peers are inject
+// sources.
+func voteCheckConfig() Config {
+	focus := int32(1)
+	return Config{
+		Seed:           42,
+		MemberSpec:     DefaultThreeNodeMemberSpec(),
+		ElectionConfig: DefaultElectionConfig(),
+		MaxSteps:       500,
+		FocusNodeID:    &focus,
+	}
+}
+
+// ballotOnNodeOne drives node 1 to CANDIDATE_BALLOT at NullValue+1. Returns
+// the first ballot deadline.
+func ballotOnNodeOne(t *testing.T, s *ElectionSim) int64 {
+	t.Helper()
+	el := s.Node(1).Election()
+	ecfg := s.cfg.ElectionConfig
+	canvassDeadline := s.Now() + ecfg.StartupCanvassTimeoutNs
+
+	require.NoError(t, s.AdvanceToPhase(1, s.Now()+1))
+	require.NoError(t, InjectCanvassPosition(s, 0, 1, election.NullValue, 0))
+	require.NoError(t, s.AdvanceToPhase(1, canvassDeadline+1))
+	require.Equal(t, election.ElectionStateNominate, el.State())
+	require.NoError(t, s.AdvanceToPhase(1, s.Now()+ecfg.ElectionTimeoutNs/2))
+	require.Equal(t, election.ElectionStateCandidateBallot, el.State())
+	require.Equal(t, election.NullValue+1, election.CandidateTermIDForTest(el))
+	return s.Now() + ecfg.ElectionTimeoutNs
+}
+
+// placeGrant publishes a TRUE vote from voterID to candidateID at termID. The
+// publish skips inject, so every send check runs.
+func placeGrant(s *ElectionSim, voterID, candidateID, followerID int32, termID int64) {
+	voter := s.Node(voterID)
+	voter.Publisher().PlaceVote(
+		election.PublicationTarget{MemberID: candidateID},
+		codecs.VoteFields{
+			CandidateTermID:     termID,
+			LogLeadershipTermID: election.LogLeadershipTermIDForTest(voter.election),
+			LogPosition:         voter.election.AppendPosition(),
+			CandidateMemberID:   candidateID,
+			FollowerMemberID:    followerID,
+			Vote:                clusterwire.BooleanType_TRUE,
+		},
+	)
+}
+
+// TestSafety_voteChecks plants one vote fault per case and expects the error
+// text of the check that the fault trips.
+func TestSafety_voteChecks(t *testing.T) {
+	t.Parallel()
+
+	const termID = election.NullValue + 1
+	const freshTermID = termID + 10
+	tests := []struct {
+		name  string
+		plant func(t *testing.T, s *ElectionSim, ballotDeadline int64)
+		want  string
+	}{
+		{
+			name: "second grant",
+			plant: func(_ *testing.T, s *ElectionSim, _ int64) {
+				placeGrant(s, 1, 0, 1, termID)
+			},
+			want: "granted term",
+		},
+		{
+			name: "wrong follower",
+			plant: func(_ *testing.T, s *ElectionSim, _ int64) {
+				placeGrant(s, 0, 1, 2, freshTermID)
+			},
+			want: "names follower",
+		},
+		{
+			name: "no request",
+			plant: func(_ *testing.T, s *ElectionSim, _ int64) {
+				placeGrant(s, 0, 1, 0, freshTermID)
+			},
+			want: "answers no RequestVote",
+		},
+		{
+			name: "ahead voter",
+			plant: func(t *testing.T, s *ElectionSim, _ int64) {
+				voter := s.Node(0).election
+				position := voter.AppendPosition()
+				scratch := &election.SbePublisher{}
+				require.True(t, scratch.RequestVote(
+					election.PublicationTarget{MemberID: 0},
+					codecs.RequestVoteFields{
+						LogLeadershipTermID: election.LogLeadershipTermIDForTest(voter),
+						LogPosition:         position,
+						CandidateTermID:     freshTermID,
+						CandidateMemberID:   1,
+					},
+				))
+				s.inbound = &DeliverPayload{From: 1, To: 0, Msg: scratch.Sent[0]}
+				election.SetAppendPositionForTest(voter, position+1)
+				placeGrant(s, 0, 1, 0, freshTermID)
+			},
+			want: "ahead of candidate",
+		},
+		{
+			name: "stale vote",
+			plant: func(t *testing.T, s *ElectionSim, ballotDeadline int64) {
+				el := s.Node(1).Election()
+				ecfg := s.cfg.ElectionConfig
+
+				// Node 0's FALSE vote blocks the first ballot quorum.
+				require.NoError(t, InjectVote(s, 2, 1, termID, election.NullValue, 0, true))
+				require.NoError(t, InjectVote(s, 0, 1, termID, election.NullValue, 0, false))
+				require.NoError(t, s.AdvanceToPhase(1, ballotDeadline+1))
+				require.Equal(t, election.ElectionStateCanvass, el.State())
+
+				require.NoError(t, InjectCanvassPosition(s, 0, 1, election.NullValue, 0))
+				require.NoError(t, s.AdvanceToPhase(1, s.Now()+ecfg.LeaderHeartbeatTimeoutNs))
+				require.Equal(t, election.ElectionStateNominate, el.State())
+				require.NoError(t, s.AdvanceToPhase(1, s.Now()+ecfg.ElectionTimeoutNs))
+				require.Equal(t, election.ElectionStateCandidateBallot, el.State())
+				require.Equal(t, termID+1, election.CandidateTermIDForTest(el))
+				require.NoError(t, s.SafetyErr())
+
+				// Node 2 granted only at the first ballot term.
+				member := election.MemberForTest(el, 2)
+				member.Vote = new(true)
+				member.CandidateTermID = termID + 1
+				require.Error(t, s.AdvanceToPhase(1, s.Now()))
+				require.Equal(t, election.ElectionStateCandidateBallot, el.State())
+			},
+			want: "without a grant",
+		},
+		{
+			name: "short quorum",
+			plant: func(t *testing.T, s *ElectionSim, _ int64) {
+				n := s.Node(1)
+				obs, ok := n.observer.(*safetyObserver)
+				require.True(t, ok)
+				obs.prev = election.ElectionStateCandidateBallot
+				election.SetStateForTest(n.election, election.ElectionStateLeaderLogReplication)
+				obs.OnElectionStateChange(election.ElectionStateLeaderLogReplication)
+			},
+			want: "short of quorum",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			Run(t, voteCheckConfig(), func(s *ElectionSim) {
+				ballotDeadline := ballotOnNodeOne(t, s)
+				require.NoError(t, s.SafetyErr())
+
+				tt.plant(t, s, ballotDeadline)
+				require.ErrorContains(t, s.SafetyErr(), tt.want)
+			})
+		})
+	}
 }
 
 // After each step (when enabled), the sim fails if two live elections share a

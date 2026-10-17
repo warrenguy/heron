@@ -56,7 +56,8 @@ func InjectAppendPosition(s *ElectionSim, fromID, toID int32, term, pos int64) e
 
 // InjectVote publishes a ballot vote from the voter fromID for the candidate
 // toID, enqueues delivery through the sim network, and drains the scheduler
-// until the message lands.
+// until the message lands. A TRUE vote enters the vote ledger. A second TRUE
+// vote from the same voter at the same candidate term fails the sim.
 func InjectVote(
 	s *ElectionSim,
 	fromID, toID int32,
@@ -131,8 +132,10 @@ func inject(
 		return fmt.Errorf("sim: unknown inject destination node %d", toID)
 	}
 	before := len(source.Publisher().Sent)
-	if !publish(election.PublicationTarget{MemberID: toID}) ||
-		len(source.Publisher().Sent) != before+1 {
+	s.injecting = true
+	published := publish(election.PublicationTarget{MemberID: toID})
+	s.injecting = false
+	if !published || len(source.Publisher().Sent) != before+1 {
 		return fmt.Errorf("sim: %s encode failed from %d to %d", kind, fromID, toID)
 	}
 	want := deliveredKey{from: fromID, index: before, gen: source.publishGen}
