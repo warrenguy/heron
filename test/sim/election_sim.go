@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/heron/cluster/election/electiontest"
 )
 
 const defaultMaxSteps = 100_000
@@ -129,6 +130,16 @@ type ElectionSim struct {
 	innerPolicy NetworkPolicy
 	safetyErr   error
 	leaderWins  map[int64]int32
+
+	// votes holds every vote grant under testhooks. A crash keeps it, so the
+	// one grant per term check spans restarts.
+	votes electiontest.VoteLedger
+
+	// inbound is the message in delivery, or nil outside Network.Deliver.
+	inbound *DeliverPayload
+
+	// injecting is true while inject publishes.
+	injecting bool
 
 	// lastCommitSignals tracks high-water commit signal per (memberID, term)
 	// for continuous commit safety under UseReplicationHost. Lazy-init on
@@ -271,12 +282,20 @@ func (s *ElectionSim) recordSafetyErr(err error) {
 }
 
 // continuousSafetyAfterStep is set under testhooks to run after each step:
-// candidate-term monotonicity, (unless SkipSplitBrainCheck) the live
-// two-self-leaders scan, and when UseReplicationHost && !SkipReplicationSafety
-// continuous commit safety (monotonic, floor-on-advance, single authority).
+//   - candidate-term monotonicity
+//   - the live two-self-leaders scan, unless SkipSplitBrainCheck
+//   - the ballot vote count scan
+//   - continuous commit safety (monotonic, floor-on-advance, single
+//     authority) when UseReplicationHost && !SkipReplicationSafety
 //
 // Untagged builds leave it nil.
 var continuousSafetyAfterStep func(*ElectionSim) error
+
+// publishSafetyCheck is set under testhooks to check each published message
+// before the drop policy runs.
+//
+// Untagged builds leave it nil.
+var publishSafetyCheck func(s *ElectionSim, from int32, msg election.SentMessage)
 
 // Node returns the Node for a member id, nil when unknown.
 func (s *ElectionSim) Node(id int32) *Node {

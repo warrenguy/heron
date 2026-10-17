@@ -16,6 +16,7 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/heron/cluster/election/electiontest"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
@@ -227,6 +228,12 @@ func (o *winEdgeObserver) OnElectionStateChange(s election.ElectionState) {
 		n.maxCandidateSeen = election.CandidateTermIDForTest(n.election)
 	}
 
+	c := o.cluster
+	if s == election.ElectionStateCandidateBallot {
+		c.noteEdgeErr(c.votes.AddGrant(n.id, n.id, election.CandidateTermIDForTest(n.election)))
+		return
+	}
+
 	if s != election.ElectionStateLeaderLogReplication {
 		return
 	}
@@ -235,7 +242,6 @@ func (o *winEdgeObserver) OnElectionStateChange(s election.ElectionState) {
 		return
 	}
 
-	c := o.cluster
 	term := n.election.LeadershipTermID()
 	if existing, ok := c.leaderWins[term]; ok && existing != n.id {
 		c.noteEdgeFail("two self-leaders term=%d members=%d and %d", term, existing, n.id)
@@ -251,9 +257,11 @@ func (o *winEdgeObserver) OnElectionStateChange(s election.ElectionState) {
 		c.noteEdgeFail("ballot self-win leadershipTerm=%d candidateTerm=%d member=%d", term, ct, n.id)
 	}
 
+	members := election.MembersForTest(n.election)
+	c.noteEdgeErr(c.votes.CheckCounted(n.id, ct, members))
+
 	// Ballot self-win needs quorum support; unanimous is a quorum subset when
 	// graceful-closed is NullMemberID.
-	members := election.MembersForTest(n.election)
 	if !election.IsQuorumLeader(members, ct) {
 		c.noteEdgeFail("self-win without quorum term=%d member=%d", term, n.id)
 	}
@@ -269,8 +277,13 @@ type electionRapidCluster struct {
 	// blocked[from,to]: hold-until-open at deliver (publish always enqueues).
 	blocked    map[[2]int32]bool
 	leaderWins map[int64]int32
-	// edgeFail holds the first invariant failure that an edge hook reports.
+	// edgeFail holds the first invariant failure that any check reports.
 	edgeFail string
+	// votes holds every vote grant. A crash keeps it, so the one grant per
+	// term check spans restarts.
+	votes electiontest.VoteLedger
+	// inbound is the message in delivery, or nil outside deliver.
+	inbound *pendingMsg
 	// crashWeighted selects rapidActions crashWeight over weight.
 	crashWeighted bool
 	// clockDeltaGen is fixed after construct for AdvanceClock draws.
@@ -282,6 +295,29 @@ func (c *electionRapidCluster) noteEdgeFail(format string, args ...any) {
 		return
 	}
 	c.edgeFail = fmt.Sprintf(format, args...)
+}
+
+func (c *electionRapidCluster) noteEdgeErr(err error) {
+	if err != nil {
+		c.noteEdgeFail("%v", err)
+	}
+}
+
+// checkVoteCounts notes a counted ballot vote without a ledger grant.
+func (c *electionRapidCluster) checkVoteCounts() {
+	for _, n := range c.nodes {
+		if !n.live || n.election == nil {
+			continue
+		}
+		if n.election.State() != election.ElectionStateCandidateBallot {
+			continue
+		}
+		c.noteEdgeErr(c.votes.CheckCounted(
+			n.id,
+			election.CandidateTermIDForTest(n.election),
+			election.MembersForTest(n.election),
+		))
+	}
 }
 
 func rapidClusterMemberPtrs(n int) []*election.Member {
@@ -430,6 +466,7 @@ func (c *electionRapidCluster) bindElection(
 	fromID := node.id
 	pub.SentHandler = func(msg election.SentMessage) {
 		c.checkNewLeadershipTermSend(fromID, host.Role(), msg)
+		c.checkVoteSend(node, msg)
 		c.enqueue(fromID, msg)
 	}
 
@@ -497,6 +534,34 @@ func (c *electionRapidCluster) checkNewLeadershipTermSend(
 	}
 }
 
+// checkVoteSend adds a TRUE vote to the ledger. The vote must answer the
+// RequestVote in delivery.
+func (c *electionRapidCluster) checkVoteSend(voter *rapidNode, msg election.SentMessage) {
+	if msg.TemplateID != clusterwire.VoteSbeTemplateID {
+		return
+	}
+	vote := msg.Fields.(codecs.VoteFields)
+	if vote.Vote != clusterwire.BooleanType_TRUE {
+		return
+	}
+	c.noteEdgeErr(c.votes.AddGrant(voter.id, vote.CandidateMemberID, vote.CandidateTermID))
+	c.noteEdgeErr(electiontest.CheckGrantAnswers(
+		voter.id,
+		vote,
+		c.inboundRequestTo(voter.id),
+		election.LogLeadershipTermIDForTest(voter.election),
+		voter.election.AppendPosition(),
+	))
+}
+
+// inboundRequestTo returns the RequestVote in delivery to voterID, or nil.
+func (c *electionRapidCluster) inboundRequestTo(voterID int32) *codecs.RequestVoteFields {
+	if c.inbound == nil {
+		return nil
+	}
+	return electiontest.RequestVoteTo(c.inbound.msg, voterID)
+}
+
 func (c *electionRapidCluster) enqueue(from int32, msg election.SentMessage) {
 	if len(c.bag) >= rapidBagCap {
 		c.bag = c.bag[1:]
@@ -539,6 +604,8 @@ func (c *electionRapidCluster) advanceClock(deltaNs int64) {
 }
 
 func (c *electionRapidCluster) deliver(p pendingMsg) {
+	c.inbound = &p
+	defer func() { c.inbound = nil }()
 	c.nodes[p.to()].election.HandleConsensusMessage(p.msg.Wire, 0)
 }
 
@@ -612,6 +679,7 @@ func (c *electionRapidCluster) restartNode(tb require.TestingT, n *rapidNode) {
 func (c *electionRapidCluster) checkInvariants(rt *rapid.T) {
 	rt.Helper()
 
+	c.checkVoteCounts()
 	require.Empty(rt, c.edgeFail)
 
 	liveLeaders := make(map[int64]int32, len(c.nodes))

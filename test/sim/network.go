@@ -94,7 +94,13 @@ func (n *Network) Register(node *Node) {
 }
 
 // Enqueue schedules delivery of a published message to its target member.
+//
+// The publish check runs before the drop policy, so a dropped grant still
+// enters the vote ledger.
 func (n *Network) Enqueue(from int32, msg election.SentMessage) {
+	if publishSafetyCheck != nil {
+		publishSafetyCheck(n.sim, from, msg)
+	}
 	to := msg.Dst.MemberID
 	entry := TimelineEntry{To: to, TemplateID: msg.TemplateID}
 	drop, extraLatency := n.policy.Allow(from, to, msg, n.sim.rng)
@@ -151,6 +157,8 @@ func (n *Network) Deliver(p DeliverPayload) bool {
 	// Second election entry point besides Node.Tick; sync the node clock to
 	// dispatch time so handlers read current time, not the last tick's.
 	dst.clock.Set(n.scheduler.Now())
+	n.sim.inbound = &p
+	defer func() { n.sim.inbound = nil }()
 	delivered := dst.election.HandleConsensusMessage(p.Msg.Wire, 0)
 	if delivered {
 		dst.receivedMsgKeys = append(dst.receivedMsgKeys, deliveredKey{
