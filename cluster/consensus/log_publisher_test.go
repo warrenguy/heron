@@ -615,7 +615,8 @@ func TestAgent_AddLogPublication_inject(t *testing.T) {
 
 // Asserts reseed failure reports the session the publisher still holds.
 // Reseed closes the old publication before opening the new one. A failure
-// after that close must not report the pre-reseed session id.
+// after that close must not report the pre-reseed session id. A later call
+// reseeds from the unbound state.
 func TestAddLogPublication_reseedFailureReportsBoundSession(t *testing.T) {
 	t.Run("failure after unbind returns null session", func(t *testing.T) {
 		publisher, _ := boundLogPublisher(t)
@@ -632,6 +633,48 @@ func TestAddLogPublication_reseedFailureReportsBoundSession(t *testing.T) {
 		require.ErrorIs(t, err, cause)
 		require.Equal(t, int32(nullValue), sessionID)
 	})
+
+	// The test publication sits at 0, so the first call targets 100 to reach
+	// the hook.
+	retries := []struct {
+		name   string
+		target int64
+	}{
+		{name: "retry after unbind returns the rebuilt session", target: 100},
+		{name: "retry after unbind rebuilds at target 0", target: 0},
+	}
+	for _, tt := range retries {
+		t.Run(tt.name, func(t *testing.T) {
+			const rebuilt int32 = 4242
+
+			publisher, _ := boundLogPublisher(t)
+			a := NewAgent(AgentConfig{})
+			a.SetLogPublisher(publisher)
+			a.SetLogRecordingID(1)
+			cause := errors.New("add exclusive publication failed")
+			var positions []int64
+			a.SetLogPublicationReseed(func(position int64) (int32, error) {
+				positions = append(positions, position)
+				if len(positions) == 1 {
+					publisher.SetPublication(nil)
+					return 0, cause
+				}
+				publisher.SetPublication(aeron.NewTestExclusivePublicationForHooks(t))
+				return rebuilt, nil
+			})
+
+			// Phase: the add fails after the unbind.
+			sessionID, err := a.AddLogPublication(100)
+			require.ErrorIs(t, err, cause)
+			require.Equal(t, int32(nullValue), sessionID)
+
+			// Phase: the retry rebuilds from the unbound state.
+			sessionID, err = a.AddLogPublication(tt.target)
+			require.NoError(t, err)
+			require.Equal(t, rebuilt, sessionID)
+			require.Equal(t, []int64{100, tt.target}, positions)
+		})
+	}
 
 	t.Run("failure before unbind returns the live session", func(t *testing.T) {
 		publisher, _ := boundLogPublisher(t)
@@ -661,18 +704,19 @@ func TestAddLogPublication_reseedFailureReportsBoundSession(t *testing.T) {
 	})
 }
 
-// Asserts AddLogPublication reseeds only a bound publication with a known
-// recording id and a position mismatch.
+// Asserts AddLogPublication reseeds only with a publisher and a known
+// recording id, when the publication is unbound or off target.
 func TestAddLogPublication_reseedsOnPositionMismatch(t *testing.T) {
 	const reseeded int32 = 4242
 
 	tests := []struct {
-		name        string
-		unbound     bool
-		recordingID int64
-		appendFirst bool
-		target      int64
-		wantReseed  bool
+		name          string
+		nilPublisher  bool
+		noPublication bool
+		recordingID   int64
+		appendFirst   bool
+		target        int64
+		wantReseed    bool
 	}{
 		{
 			name:        "ahead of target reseeds",
@@ -699,10 +743,17 @@ func TestAddLogPublication_reseedsOnPositionMismatch(t *testing.T) {
 			target:      0,
 		},
 		{
-			name:        "nil publisher returns null session",
-			unbound:     true,
-			recordingID: 1,
-			target:      100,
+			name:         "nil publisher returns null session",
+			nilPublisher: true,
+			recordingID:  1,
+			target:       100,
+		},
+		{
+			name:          "unbound publication reseeds at target 0",
+			noPublication: true,
+			recordingID:   1,
+			target:        0,
+			wantReseed:    true,
 		},
 	}
 	for _, tt := range tests {
@@ -710,7 +761,10 @@ func TestAddLogPublication_reseedsOnPositionMismatch(t *testing.T) {
 			a := NewAgent(AgentConfig{})
 			a.SetLogRecordingID(tt.recordingID)
 			want := int32(nullValue)
-			if !tt.unbound {
+			switch {
+			case tt.noPublication:
+				a.SetLogPublisher(NewLogPublisher())
+			case !tt.nilPublisher:
 				publisher, _ := boundLogPublisher(t)
 				if tt.appendFirst {
 					require.Positive(t, publisher.AppendMessage(1, 2, 3, []byte("entry")))

@@ -390,14 +390,9 @@ func TestOpenLogStreams_publicationInitialPosition(t *testing.T) {
 	adder := &fakeLogStreamAdder{}
 	_, _, _, deps := openLogStreamsDeps(t, topology, adder)
 
-	// Term length differs from topology default (64k) so replace is exercised.
-	seed := &cluster.LogPublicationInitialPosition{
-		Position:         128,
-		InitialTermID:    7,
-		TermBufferLength: 128 * 1024,
-		MtuLength:        1408,
-	}
-	deps.PublicationInitialPosition = seed
+	// The seed's 128 KiB terms differ from the topology default of 64 KiB, so
+	// the term-length param takes the replace path.
+	deps.PublicationInitialPosition = logPublicationSeedAt(128)
 
 	ls, err := cluster.OpenLogStreams(deps)
 	require.NoError(t, err)
@@ -737,6 +732,82 @@ func TestLogStreams_reseedSubscription_recoveryAddDestinationFailure(t *testing.
 	require.Equal(t, []string{liveURI}, adder.lastDestHook.Adds)
 }
 
+// logPublicationSeedAt returns a valid publication seed at position: initial
+// term id 7, 128 KiB terms, MTU 1408.
+func logPublicationSeedAt(position int64) *cluster.LogPublicationInitialPosition {
+	return &cluster.LogPublicationInitialPosition{
+		Position:         position,
+		InitialTermID:    7,
+		TermBufferLength: 128 * 1024,
+		MtuLength:        1408,
+	}
+}
+
+func TestLogStreams_reseedPublication_closed(t *testing.T) {
+	t.Parallel()
+
+	topology := sharedLogTopology(t, 0, "")
+	adder := &fakeLogStreamAdder{}
+	_, _, _, deps := openLogStreamsDeps(t, topology, adder)
+	closed, err := cluster.OpenLogStreams(deps)
+	require.NoError(t, err)
+	require.NoError(t, closed.Close())
+	callsAtClose := len(adder.calls)
+
+	tests := []struct {
+		name string
+		ls   *cluster.LogStreams
+	}{
+		{name: "nil receiver", ls: nil},
+		{name: "zero value", ls: &cluster.LogStreams{}},
+		{name: "closed value", ls: closed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.ls.ReseedPublicationAt(
+				adder,
+				topology.LogChannel(),
+				topology.LogStreamID(),
+				logPublicationSeedAt(0),
+			)
+			require.EqualError(t, err, "cluster: log streams closed")
+			require.Len(t, adder.calls, callsAtClose)
+		})
+	}
+}
+
+// Asserts a failed reseed add leaves the publication unbound. The next reseed
+// binds a fresh one.
+func TestLogStreams_reseedPublication_retryAfterAddFailure(t *testing.T) {
+	t.Parallel()
+
+	topology := sharedLogTopology(t, 0, "")
+	adder := &fakeLogStreamAdder{}
+	ls, _, logPublisher, _ := openLogStreamsOK(t, topology, adder)
+	oldPub := ls.Publication()
+	seed := logPublicationSeedAt(128)
+	cause := errors.New("driver refused reseed")
+	adder.failPubErr = cause
+
+	// Phase: the add fails after the old publication closes.
+	err := ls.ReseedPublicationAt(adder, topology.LogChannel(), topology.LogStreamID(), seed)
+	require.ErrorIs(t, err, cause)
+	require.True(t, oldPub.IsClosed())
+	require.Nil(t, ls.Publication())
+	require.Nil(t, logPublisher.Publication())
+
+	// Phase: the retry binds a fresh publication on the seeded channel.
+	adder.failPubErr = nil
+	err = ls.ReseedPublicationAt(adder, topology.LogChannel(), topology.LogStreamID(), seed)
+	require.NoError(t, err)
+	require.NotSame(t, oldPub, adder.lastPub)
+	require.Same(t, adder.lastPub, ls.Publication())
+	require.Same(t, adder.lastPub, logPublisher.Publication())
+	last := adder.calls[len(adder.calls)-1]
+	require.Equal(t, "publication", last.kind)
+	require.Contains(t, last.channel, "term-offset=128")
+}
+
 func TestLogStreams_close(t *testing.T) {
 	t.Parallel()
 
@@ -774,6 +845,39 @@ func TestLogStreams_close(t *testing.T) {
 	require.Nil(t, agent.AppendSource())
 	require.Nil(t, ls.Publication())
 	require.Nil(t, ls.Subscription())
+}
+
+// Asserts Close clears every agent bind after failed reseeds leave both
+// handles nil.
+func TestLogStreams_close_afterFailedReseeds(t *testing.T) {
+	t.Parallel()
+
+	topology := sharedLogTopology(t, 0, "")
+	adder := &fakeLogStreamAdder{}
+	agent, logPublisher, _, deps := openLogStreamsDeps(t, topology, adder)
+	ls, err := cluster.OpenLogStreams(deps)
+	require.NoError(t, err)
+
+	cause := errors.New("driver down")
+	adder.failPubErr = cause
+	err = ls.ReseedPublicationAt(
+		adder,
+		topology.LogChannel(),
+		topology.LogStreamID(),
+		logPublicationSeedAt(0),
+	)
+	require.ErrorIs(t, err, cause)
+	adder.failNextSubscriptionAdds(2, cause)
+	require.ErrorIs(t, ls.ReseedSubscription(adder), cause)
+	require.Nil(t, ls.Publication())
+	require.Nil(t, ls.Subscription())
+	require.NotNil(t, agent.AppendSource())
+	agent.CatchupLogDestinationSet("aeron:udp?endpoint=127.0.0.1:0")
+	require.NotEmpty(t, agent.CatchupLogDestination())
+
+	require.NoError(t, ls.Close())
+	requireAgentLogUnbound(t, agent, logPublisher)
+	require.Empty(t, agent.CatchupLogDestination())
 }
 
 func TestLogStreams_closeStaleAfterRebind(t *testing.T) {
