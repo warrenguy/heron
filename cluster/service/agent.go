@@ -177,11 +177,16 @@ const (
 //   - request: ready when the agent log position equals the entry
 //     logPosition
 //   - snapshot: ready on append
+//
+// failure holds the cause of a failed snapshot take. The drain marks it
+// once the ack sends, or on a terminal offer code. With no ack sender,
+// failSnapshotEntry marks it at once and the entry stays queued.
 type coordinationAck struct {
 	logPosition int64
 	kind        coordinationAckKind
 	ready       bool
 	relevantID  int64
+	failure     error
 }
 
 // clientSessionRecord holds open-event fields for one log-derived session. The
@@ -245,7 +250,8 @@ func NewAgent(cfg AgentConfig) *Agent {
 //     once. The start entry stays unready. Success or a nil Service marks
 //     the start entry ready when one is queued.
 //  3. control work: poll control, request readiness sweep, drain at most one
-//     ready first queued ack
+//     ready first queued ack. An entry with a failure marks it on send or
+//     on a terminal offer code
 //  4. join work while pendingJoin is non-nil and no image is bound
 //  5. log poll when the image is bound and CommittedPosition is non-nil. The
 //     poll bound is min(committed, lowest unready request entry position)
@@ -466,18 +472,31 @@ func (a *Agent) handleJoinLog(event logJoinEvent) {
 	a.pendingJoin = &event
 }
 
-// markAckReady sets ready on the first unready entry of kind. No-op when
-// the queue has no matching unready entry. At most one start entry is
-// queued (NewAgent). At most one join entry is unready (the current
-// pending join).
-func (a *Agent) markAckReady(kind coordinationAckKind) {
+// failSnapshotEntry sets the first unready snapshot entry ready with cause.
+// With no such entry, or no ack sender, it marks cause at once. Otherwise
+// the drain marks cause.
+func (a *Agent) failSnapshotEntry(cause error) {
+	e := a.markAckReady(ackKindSnapshot)
+	if e == nil || !a.canSendAck() {
+		a.markFailure(cause)
+	}
+	if e != nil {
+		e.failure = cause
+	}
+}
+
+// markAckReady sets ready on the first unready entry of kind and returns
+// it. Returns nil when no entry matches. At most one start entry is queued
+// (NewAgent). At most one join entry is unready (the current pending join).
+func (a *Agent) markAckReady(kind coordinationAckKind) *coordinationAck {
 	for i := range a.coordinationAcks {
 		e := &a.coordinationAcks[i]
 		if e.kind == kind && !e.ready {
 			e.ready = true
-			return
+			return e
 		}
 	}
+	return nil
 }
 
 // joinWork progresses a pending join when no image is bound.
@@ -679,9 +698,9 @@ func (a *Agent) handleNewLeadershipTermEvent(
 //  5. SNAPSHOT with Flags != 0 returns ControlledContinue. No hook. No
 //     entry.
 //  6. SNAPSHOT with Flags == 0 runs TakeSnapshot when a handler is cached.
-//     Hook error marks failure and returns ControlledAbort. No entry.
-//     Success or no handler appends one ready snapshot entry and returns
-//     ControlledContinue.
+//     A hook error appends one ready snapshot entry with its cause and
+//     returns ControlledBreak. Success or no handler appends one ready
+//     snapshot entry and returns ControlledContinue.
 func (a *Agent) handleClusterAction(
 	logPosition int64,
 	fields codecs.ClusterActionRequestFields,
@@ -701,7 +720,13 @@ func (a *Agent) handleClusterAction(
 		}
 		if a.snapshotHandler != nil {
 			if err := a.snapshotHandler.TakeSnapshot(a.snapshotPublication); err != nil {
-				return a.handleDispatchFailure(fmt.Errorf("%w: %w", errTakeSnapshot, err))
+				a.coordinationAcks = append(a.coordinationAcks, coordinationAck{
+					logPosition: logPosition,
+					kind:        ackKindSnapshot,
+					relevantID:  nullValue,
+				})
+				a.failSnapshotEntry(fmt.Errorf("%w: %w", errTakeSnapshot, err))
+				return aeron.ControlledBreak
 			}
 		}
 		a.coordinationAcks = append(a.coordinationAcks, coordinationAck{

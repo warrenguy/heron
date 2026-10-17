@@ -56,9 +56,13 @@ type NewLeadershipTermEventHandler interface {
 // NewAgent detects the handler once with a type assertion.
 //
 // Behaviour: publication is the snapshot write target and may be nil.
-// Implementations must nil-check before offering. A non-nil error marks
-// the service failure once and stops the duty cycle. No ServiceAck is
-// sent for that action.
+// Implementations must nil-check before offering.
+//
+// A non-nil error fails the take. The agent queues one ServiceAck with
+// RelevantID -1. The service failure marks once that ack sends. The mark
+// stops the duty cycle. With no bound ModuleProxy, the agent marks at once
+// and never sends that ack. An earlier mark or a terminal ack publish error
+// also stops the duty cycle before that ack.
 type TakeSnapshotHandler interface {
 	TakeSnapshot(publication *aeron.ExclusivePublication) error
 }
