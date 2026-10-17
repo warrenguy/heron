@@ -117,6 +117,8 @@ const (
 // run in parallel. DurableRestart and DurableRestartLeader are separate for the
 // two restart tests. DurableCatchup and DurableConcurrentCatchup are separate
 // for the single-follower and concurrent-follower catchup tests.
+// DurableDivergence and DurableExLeaderReElect are separate for the truncate
+// and ex-leader re-election tests.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -135,6 +137,8 @@ const (
 	DurableCatchupLogEndpoint           = "239.255.12.25:26904"
 	DurableDivergencePortBase           = 27200
 	DurableDivergenceLogEndpoint        = "239.255.12.27:27204"
+	DurableExLeaderReElectPortBase      = 22500
+	DurableExLeaderReElectLogEndpoint   = "239.255.12.63:22504"
 	DurableConcurrentCatchupPortBase    = 30400
 	DurableConcurrentCatchupLogEndpoint = "239.255.12.43:30404"
 )
@@ -412,6 +416,12 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    DurableDivergencePortBase,
 			memberCount: 3,
 			logEndpoint: DurableDivergenceLogEndpoint,
+		},
+		{
+			name:        "durable-ex-leader-reelect",
+			portBase:    DurableExLeaderReElectPortBase,
+			memberCount: 3,
+			logEndpoint: DurableExLeaderReElectLogEndpoint,
 		},
 		{
 			name:        "durable-concurrent-catchup",

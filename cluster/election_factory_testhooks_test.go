@@ -3,6 +3,7 @@
 package cluster
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -27,6 +28,11 @@ func TestTrackModuleElection_reentryUpdatesLatest(t *testing.T) {
 	fx.base.LeaderHeartbeatTimeoutNs = timeoutNs
 
 	openElection := election.NewElection(fx.base, fx.deps)
+	// Seed an error on the open-time machine. HandleError keeps a fresh Init
+	// machine in Init, so the forced Closed below keeps the error. Re-install
+	// must drop it with the machine.
+	openErr := errors.New("election: open-time error")
+	openElection.HandleError(0, openErr)
 	// On completion the election marks the machine Closed before the agent
 	// clears its runner. Force Closed so ElectionComplete matches that
 	// post-settle surface without driving the full state machine.
@@ -51,6 +57,8 @@ func TestTrackModuleElection_reentryUpdatesLatest(t *testing.T) {
 
 	require.True(t, module.ElectionComplete())
 	require.Equal(t, election.ElectionStateClosed, module.ElectionState())
+	require.Equal(t, openErr, module.ElectionLastError())
+	require.NoError(t, (&ConsensusModule{}).ElectionLastError())
 
 	// Settle agent runner; module keeps the Closed open-time handle until
 	// re-install.
@@ -66,6 +74,7 @@ func TestTrackModuleElection_reentryUpdatesLatest(t *testing.T) {
 	require.Equal(t, int64(2), agent.ElectionCount())
 	require.False(t, module.ElectionComplete())
 	require.NotEqual(t, election.ElectionStateClosed, module.ElectionState())
+	require.NoError(t, module.ElectionLastError())
 	require.Same(t, agent.Election(), module.election)
 	require.NotSame(t, openElection, module.election)
 
@@ -78,5 +87,6 @@ func TestTrackModuleElection_reentryUpdatesLatest(t *testing.T) {
 	require.Nil(t, agent.Election())
 	require.True(t, module.ElectionComplete())
 	require.Equal(t, election.ElectionStateClosed, module.ElectionState())
+	require.NoError(t, module.ElectionLastError())
 	require.Same(t, reinstalled, module.election)
 }
