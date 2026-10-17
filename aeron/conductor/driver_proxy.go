@@ -146,8 +146,60 @@ func (proxy *DriverProxy) RemovePublication(
 func (proxy *DriverProxy) RemoveSubscription(
 	correlationID, registrationID int64,
 ) error {
+	return proxy.offerRemoveMessage(RemoveSubscription, correlationID, registrationID)
+}
+
+// AddCounter offers ADD_COUNTER on the to-driver ring.
+//
+// Behaviour: validates the key and label before claiming a ring slot.
+//
+// Returns an error when:
+//   - key exceeds cnc.CounterMetadataMaxKeyLength: ErrCounterKeyTooLong
+//   - label exceeds cnc.CounterMetadataMaxLabelLength: ErrCounterLabelTooLong
+//   - label holds a non-ASCII byte: atomicbuffer.ErrStringASCIINonASCII
+//   - the ring is full: ErrRingInsufficientCapacity
+func (proxy *DriverProxy) AddCounter(
+	correlationID int64,
+	typeID int32,
+	key []byte,
+	label string,
+) error {
+	if err := validateCounterInput(key, label); err != nil {
+		return err
+	}
 	return proxy.offerBody(
-		RemoveSubscription,
+		AddCounter,
+		CounterMessageBodyLength(len(key), len(label)),
+		false,
+		func(encodedOffset int) error {
+			return EncodeCounterMessage(
+				proxy.ring.Buffer(),
+				encodedOffset,
+				proxy.clientID,
+				correlationID,
+				typeID,
+				key,
+				label,
+			)
+		},
+	)
+}
+
+// RemoveCounter offers REMOVE_COUNTER on the to-driver ring. registrationID
+// is the ADD_COUNTER correlation id. A full ring returns
+// ErrRingInsufficientCapacity.
+func (proxy *DriverProxy) RemoveCounter(
+	correlationID, registrationID int64,
+) error {
+	return proxy.offerRemoveMessage(RemoveCounter, correlationID, registrationID)
+}
+
+func (proxy *DriverProxy) offerRemoveMessage(
+	msgTypeID int,
+	correlationID, registrationID int64,
+) error {
+	return proxy.offerBody(
+		msgTypeID,
 		RemoveMessageBodyLength,
 		false,
 		func(encodedOffset int) error {

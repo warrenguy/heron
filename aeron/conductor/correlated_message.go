@@ -21,6 +21,7 @@ const (
 	CorrelatedMessageLength             = 2 * sizeOfInt64
 	CorrelationAndInt32BodyLength       = sizeOfInt64 + sizeOfInt32
 	NextAvailableSessionIDBodyLength    = CorrelationAndInt32BodyLength
+	CounterUpdateBodyLength             = CorrelationAndInt32BodyLength
 	GetNextAvailableSessionIDBodyLength = CorrelatedMessageLength + sizeOfInt32
 )
 
@@ -205,6 +206,17 @@ func DecodeCorrelationAndInt32(
 //
 // The caller must ensure the broadcast body length is at least NextAvailableSessionIDBodyLength.
 func DecodeNextAvailableSessionID(
+	buf atomicbuffer.AtomicBuffer,
+	offset int,
+) (CorrelationAndInt32, error) {
+	return DecodeCorrelationAndInt32(buf, offset)
+}
+
+// DecodeCounterUpdate decodes an ON_COUNTER_READY or ON_UNAVAILABLE_COUNTER
+// body. Int32Value holds the counter id.
+//
+// The caller must check that the body length is at least CounterUpdateBodyLength.
+func DecodeCounterUpdate(
 	buf atomicbuffer.AtomicBuffer,
 	offset int,
 ) (CorrelationAndInt32, error) {

@@ -20,6 +20,8 @@ func TestLayout_goldenOffsets(t *testing.T) {
 		{"CounterMetadataFreeForReuseDeadlineOffset", cnc.CounterMetadataFreeForReuseDeadlineOffset, 8},
 		{"CounterMetadataKeyOffset", cnc.CounterMetadataKeyOffset, 16},
 		{"CounterValueRegistrationIDOffset", cnc.CounterValueRegistrationIDOffset, 8},
+		{"CounterMetadataMaxKeyLength", cnc.CounterMetadataMaxKeyLength, 112},
+		{"CounterMetadataMaxLabelLength", cnc.CounterMetadataMaxLabelLength, 380},
 	}
 
 	for _, test := range tests {

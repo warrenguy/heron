@@ -14,9 +14,11 @@ import (
 const pendingRegistryRapidBaseNowNs int64 = 1_000_000_000
 
 type pendingExpireRapidEntry struct {
+	kind       PendingKind
 	deadlineNs int64
 	present    bool
 	timedOut   bool
+	ready      bool
 }
 
 func drawPendingExpireRapidCorrelationID(
@@ -78,9 +80,12 @@ func applyPendingExpireRapidExpire(
 		if nowNs < entry.deadlineNs {
 			continue
 		}
-		if correlationID == activeCorrelationID {
+		isActive := correlationID == activeCorrelationID
+		if isActive {
 			wantTimedOutActiveID = correlationID
-			if !entry.timedOut {
+		}
+		if isActive || entry.kind == PendingKindAddCounter {
+			if !entry.timedOut && !entry.ready {
 				wantWorkCount++
 				entry.timedOut = true
 				model[correlationID] = entry
@@ -107,6 +112,8 @@ func assertPendingExpireRapidRegistry(
 		got, ok := registry.Get(correlationID)
 		if entry.present {
 			require.True(rt, ok, "correlation %d should remain", correlationID)
+			require.Equal(rt, entry.kind, got.Kind)
+			require.Equal(rt, entry.ready, got.Ready)
 			if entry.timedOut {
 				require.ErrorIs(rt, got.Err, ErrAwaitTimeout)
 			} else {
@@ -161,14 +168,21 @@ func TestPendingRegistry_ExpireBefore_opSequences_rapid(t *testing.T) {
 		for len(correlationIDs) < count {
 			correlationID := drawPendingExpireRapidCorrelationID(rt, seen, "seedCorrelationID")
 			deadlineNs := rapid.Int64Range(0, 10_000_000_000).Draw(rt, "seedDeadlineNs")
-			require.NoError(
-				rt,
-				registry.Register(pendingRegistryTestRegistration(correlationID, deadlineNs)),
-			)
+			registration := pendingRegistryTestRegistration(correlationID, deadlineNs)
+			registration.Kind = rapid.SampledFrom([]PendingKind{
+				PendingKindNextSessionID,
+				PendingKindAddCounter,
+			}).Draw(rt, "seedKind")
+			if registration.Kind == PendingKindAddCounter {
+				registration.Ready = rapid.Bool().Draw(rt, "seedReady")
+			}
+			require.NoError(rt, registry.Register(registration))
 			correlationIDs = append(correlationIDs, correlationID)
 			model[correlationID] = pendingExpireRapidEntry{
+				kind:       registration.Kind,
 				deadlineNs: deadlineNs,
 				present:    true,
+				ready:      registration.Ready,
 			}
 		}
 

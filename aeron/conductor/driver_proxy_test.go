@@ -2,11 +2,13 @@ package conductor_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/atomicbuffer"
@@ -380,6 +382,62 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 			},
 		},
 		{
+			name:       "add counter",
+			wantTypeID: conductor.AddCounter,
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.AddCounter(
+					correlationID,
+					counterTestTypeID,
+					counterTestKey,
+					counterTestLabel,
+				)
+			},
+			wantBody: conductor.CounterMessageBytes(
+				clientID,
+				correlationID,
+				counterTestTypeID,
+				counterTestKey,
+				counterTestLabel,
+			),
+			bodyLength: conductor.CounterMessageBodyLength(
+				len(counterTestKey),
+				len(counterTestLabel),
+			),
+			read: func(t *testing.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
+				got, err := conductor.DecodeCounterMessage(buffer, index, length)
+				require.NoError(t, err)
+				require.Equal(t, conductor.CounterMessage{
+					ClientID:      clientID,
+					CorrelationID: correlationID,
+					TypeID:        counterTestTypeID,
+					Key:           counterTestKey,
+					Label:         counterTestLabel,
+				}, got)
+			},
+		},
+		{
+			name:       "remove counter",
+			wantTypeID: conductor.RemoveCounter,
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.RemoveCounter(correlationID, registrationID)
+			},
+			wantBody: conductor.RemoveMessageBytes(
+				clientID,
+				correlationID,
+				registrationID,
+			),
+			bodyLength: conductor.RemoveMessageBodyLength,
+			read: func(t *testing.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
+				got, err := conductor.DecodeRemoveMessage(buffer, index, length)
+				require.NoError(t, err)
+				require.Equal(t, conductor.RemoveMessage{
+					ClientID:       clientID,
+					CorrelationID:  correlationID,
+					RegistrationID: registrationID,
+				}, got)
+			},
+		},
+		{
 			name:       "add receive destination",
 			wantTypeID: conductor.AddReceiveDestination,
 			offer: func(proxy *conductor.DriverProxy) error {
@@ -484,6 +542,18 @@ func TestDriverProxy_offer_insufficientCapacity(t *testing.T) {
 			},
 		},
 		{
+			name: "add counter",
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.AddCounter(42, counterTestTypeID, counterTestKey, counterTestLabel)
+			},
+		},
+		{
+			name: "remove counter",
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.RemoveCounter(42, 9001)
+			},
+		},
+		{
 			name: "add receive destination",
 			offer: func(proxy *conductor.DriverProxy) error {
 				return proxy.AddReceiveDestination(42, 9001, driverProxyTestChannel)
@@ -566,6 +636,55 @@ func TestDriverProxy_addChannelCommands_rejectNonASCII(t *testing.T) {
 					requireZeroDriverProxyCommittedRecords(t, ring)
 				})
 			}
+		})
+	}
+}
+
+func TestDriverProxy_AddCounter_rejects(t *testing.T) {
+	tests := []struct {
+		name     string
+		key      []byte
+		label    string
+		fullRing bool
+		wantErr  error
+	}{
+		{
+			name:    "keyTooLong",
+			key:     make([]byte, cnc.CounterMetadataMaxKeyLength+1),
+			wantErr: conductor.ErrCounterKeyTooLong,
+		},
+		{
+			name:    "labelTooLong",
+			label:   strings.Repeat("l", cnc.CounterMetadataMaxLabelLength+1),
+			wantErr: conductor.ErrCounterLabelTooLong,
+		},
+		{
+			name:    "nonASCIILabel",
+			label:   "caf\xc3\xa9",
+			wantErr: atomicbuffer.ErrStringASCIINonASCII,
+		},
+		{
+			name:     "keyTooLongFullRing",
+			key:      make([]byte, cnc.CounterMetadataMaxKeyLength+1),
+			fullRing: true,
+			wantErr:  conductor.ErrCounterKeyTooLong,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ring, buffer := newDriverProxyTestRing(t)
+			if test.fullRing {
+				seedFullDriverProxyRing(t, buffer)
+			}
+			tailIndex := ringbuffer.TailIndex(driverProxyTestDataCapacity)
+			tailBefore := buffer.GetInt64Acquire(tailIndex)
+			proxy := conductor.NewDriverProxy(ring, 1)
+
+			err := proxy.AddCounter(42, counterTestTypeID, test.key, test.label)
+			require.ErrorIs(t, err, test.wantErr)
+			// Validation runs before the claim, so the tail does not move.
+			require.Equal(t, tailBefore, buffer.GetInt64Acquire(tailIndex))
+			requireZeroDriverProxyCommittedRecords(t, ring)
 		})
 	}
 }

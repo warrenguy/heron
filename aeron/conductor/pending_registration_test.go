@@ -575,6 +575,25 @@ func TestConductor_PollPending_mapCompletionWhenMarkMismatch(t *testing.T) {
 				require.True(t, registration.Ready)
 			},
 		},
+		{
+			name:         "counterReadyAndCounterReady",
+			kind:         conductor.PendingKindAddCounter,
+			correlation0: correlationID0,
+			correlation1: correlationID1,
+			complete: func(t *testing.T, conductorInstance *conductor.Conductor) {
+				require.True(t, conductorInstance.CounterReady(correlationID0, 3))
+				require.True(t, conductorInstance.CounterReady(correlationID1, 4))
+			},
+			assertFirst: func(t *testing.T, registration conductor.PendingRegistration) {
+				require.True(t, registration.Ready)
+				require.Equal(t, int32(3), registration.Int32Value)
+			},
+			assertSecond: func(t *testing.T, registration conductor.PendingRegistration, err error) {
+				require.NoError(t, err)
+				require.True(t, registration.Ready)
+				require.Equal(t, int32(4), registration.Int32Value)
+			},
+		},
 	}
 
 	for _, testCase := range tests {
@@ -812,6 +831,16 @@ func TestConductor_pendingHandler_wrongKind(t *testing.T) {
 				return false
 			},
 			wantKind: conductor.PendingKindAddExclusivePublication,
+		},
+		{
+			name: "OnCounterReady",
+			register: func(conductorInstance *conductor.Conductor) error {
+				return registerPendingForTest(conductorInstance, conductor.PendingKindNextSessionID)
+			},
+			invoke: func(conductorInstance *conductor.Conductor) bool {
+				return conductorInstance.CounterReady(pendingTestCorrelationID, 3)
+			},
+			wantKind: conductor.PendingKindNextSessionID,
 		},
 	}
 
@@ -1163,6 +1192,7 @@ func TestConductor_RegisterPendingAdd_errors(t *testing.T) {
 		{name: "nextSessionID", kind: conductor.PendingKindNextSessionID},
 		{name: "operationSuccess", kind: conductor.PendingKindOperationSuccess},
 		{name: "removeSubscription", kind: conductor.PendingKindRemoveSubscription},
+		{name: "addCounter", kind: conductor.PendingKindAddCounter},
 	}
 	for _, invalidCase := range invalidAddKindCases {
 		tests = append(tests, registerPendingAddErrorCase{

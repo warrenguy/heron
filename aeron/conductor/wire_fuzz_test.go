@@ -25,6 +25,7 @@ const (
 	fuzzCorrelated
 	fuzzCorrelationAndInt32
 	fuzzAdapterDispatch
+	fuzzCounterMessage
 	wireFuzzKindCount
 )
 
@@ -78,6 +79,13 @@ var (
 	seedOperationSuccess         = OperationSuccessBytes(7)
 	seedCorrelated               = CorrelatedMessageBytes(1, -1)
 	seedCorrelationAndInt32      = CorrelationAndInt32Bytes(99, 1001)
+	seedCounterMessage           = CounterMessageBytes(
+		1,
+		42,
+		1001,
+		[]byte{0x01, 0x02, 0x03, 0x04, 0x05},
+		"counter1",
+	)
 )
 
 type wireFuzzSeed struct {
@@ -144,6 +152,8 @@ func runWireFuzzKind(
 			NullCorrelationID,
 			nil,
 		)
+	case fuzzCounterMessage:
+		_, _ = DecodeCounterMessage(buffer, bodyOffset, bodyLen)
 	}
 }
 
@@ -165,7 +175,10 @@ func FuzzWireDecode(f *testing.F) {
 		{fuzzAdapterDispatch, 0, int32(OnError), seedErrorResponse},
 		{fuzzAdapterDispatch, 0, int32(OnPublicationReady), seedPublicationBuffersReady},
 		{fuzzAdapterDispatch, 0, int32(OnOperationSuccess), seedOperationSuccess},
+		{fuzzAdapterDispatch, 0, int32(OnCounterReady), seedCorrelationAndInt32},
+		{fuzzAdapterDispatch, 0, int32(OnUnavailableCounter), seedCorrelationAndInt32},
 		{fuzzAdapterDispatch, 0, 0x12345678, []byte{0x01, 0x02, 0x03, 0x04}},
+		{fuzzCounterMessage, 0, 0, seedCounterMessage},
 		{fuzzPublicationBuffersReady, fuzzWireMaxOffset, 0, seedPublicationBuffersReady},
 		{fuzzAdapterDispatch, fuzzWireMaxOffset, int32(OnError), seedErrorResponse},
 	}

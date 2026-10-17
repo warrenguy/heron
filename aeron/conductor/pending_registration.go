@@ -15,6 +15,7 @@ const (
 	PendingKindAddExclusivePublication
 	PendingKindRemovePublication
 	PendingKindRemoveSubscription
+	PendingKindAddCounter
 )
 
 type PendingRegistration struct {
@@ -25,8 +26,8 @@ type PendingRegistration struct {
 	StreamID   int32
 	Channel    string
 	Int32Value int32
-	// The conductor sets Ready when the driver ready event completes an add.
-	// Other kinds never set it.
+	// The conductor sets Ready when a driver ready event completes an add or
+	// add-counter entry. Other kinds never set it.
 	Ready bool
 	Err   error
 	// Publication and Subscription are any to break the conductor/aeron import cycle.
@@ -107,7 +108,7 @@ type pendingExpireItem struct {
 // ExpireBefore handles pending entries whose DeadlineNs has passed. It skips
 // receivedCorrelationID, the response received on this tick.
 //
-// Add kinds and the active correlation id stay in the registry:
+// Add kinds, add-counter, and the active correlation id stay in the registry:
 //   - still waiting on the driver: Err becomes ErrAwaitTimeout, expireHandler
 //     gets removed=false, caller finishes via PollPending or CancelPending
 //   - already resolved (Ready or Err set): untouched, no callback
@@ -136,8 +137,8 @@ func (registry *pendingRegistry) ExpireBefore(
 		if isActive {
 			timedOutActiveCorrelationID = correlationID
 		}
-		isAddPending := addPendingKind(registration.Kind)
-		if isActive || isAddPending {
+		readyCompleted := hasReadyCompletion(registration.Kind)
+		if isActive || readyCompleted {
 			inFlight := registration.Err == nil && !registration.Ready
 			if inFlight {
 				registration.Err = ErrAwaitTimeout
@@ -290,16 +291,16 @@ func (conductor *Conductor) RegisterPendingAddWithDeadline(
 // Primary path: receivedCorrelationID matches correlationID after adapter
 // handlers mark completion during DoWork.
 //
-// Multi-pending path: receivedCorrelationID names a different add when
-// several adds complete in the same DoWork tick. PollPending then checks the
-// pending map instead. The entry is complete when Err is non-nil or when the
-// driver ready event has set Ready. On completion PollPending:
+// Multi-pending path: receivedCorrelationID names a different entry when
+// several adds or counters complete in the same DoWork tick. PollPending then
+// checks the pending map instead. The entry is complete when Err is non-nil or
+// when the driver ready event has set Ready. On completion PollPending:
 //   - returns done=true with the registration and Err
 //   - removes the entry
 //   - applies RollbackAddPendingResources when Err is non-nil
 //
 // PollPending leaves receivedCorrelationID unchanged on this path. Other
-// completed adds stay available to poll on later ticks.
+// completed entries stay available to poll on later ticks.
 //
 // Called from the client on the same goroutine as RegisterPending, after
 // doWorkLocked; not invoked from inside DoWork.
@@ -439,10 +440,17 @@ func addPendingKind(kind PendingKind) bool {
 		kind == PendingKindAddSubscription
 }
 
+// hasReadyCompletion reports whether a driver ready event completes kind by
+// setting Ready. ExpireBefore keeps such entries past their deadline.
+func hasReadyCompletion(kind PendingKind) bool {
+	return addPendingKind(kind) || kind == PendingKindAddCounter
+}
+
 // OperationSucceeded completes remove and generic success pendings. Add kinds only
 // ack here; handlePublicationReady, handleExclusivePublicationReady, and
 // handleSubscriptionReady finish them. NextSessionID is completed by
-// Conductor.NextSessionID.
+// Conductor.NextSessionID. AddCounter never acks here; Conductor.CounterReady
+// completes it.
 func (conductor *Conductor) OperationSucceeded(correlationID int64) bool {
 	registration, ok := conductor.pending.Get(correlationID)
 	if !ok {
@@ -473,6 +481,23 @@ func (conductor *Conductor) NextSessionID(
 		PendingKindNextSessionID,
 		func(registration *PendingRegistration) {
 			registration.Int32Value = nextSessionID
+		},
+	)
+}
+
+// CounterReady completes a PendingKindAddCounter entry with counterID.
+//
+// Returns false when no add-counter entry holds correlationID.
+func (conductor *Conductor) CounterReady(
+	correlationID int64,
+	counterID int32,
+) bool {
+	return conductor.completePendingIfKind(
+		correlationID,
+		PendingKindAddCounter,
+		func(registration *PendingRegistration) {
+			registration.Int32Value = counterID
+			registration.Ready = true
 		},
 	)
 }
