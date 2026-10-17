@@ -29,6 +29,12 @@ class GoldenFixtureGeneratorTest {
         assertMatchesCommitted(REPO_ROOT.resolve("cluster/election/testdata/node-state"), regenerated);
     }
 
+    @Test
+    void recoveryStateKeyFixturesMatchCommitted(@TempDir final Path regenerated) throws IOException {
+        RecoveryStateKeyFixtureGenerator.main(new String[] {regenerated.toString()});
+        assertMatchesCommitted(REPO_ROOT.resolve("cluster/codecs/testdata/recovery-state-key"), regenerated);
+    }
+
     private static void assertMatchesCommitted(
         final Path committed,
         final Path regenerated) throws IOException {
