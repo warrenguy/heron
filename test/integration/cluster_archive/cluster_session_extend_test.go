@@ -359,16 +359,18 @@ func TestDurableClusterSession_reElectsUnderTrafficAndExtendsRecordings(t *testi
 	require.False(t, tr.stopped, "session stopped during baseline:\n%s", set.State())
 	require.Positive(t, baselineTarget)
 
-	// Fault mid-traffic. No recording-current await.
+	// Fault mid-traffic. No recording-current await. The survivors re-elect
+	// on the log stop, so the session follows the new leader. It stops instead
+	// when an offer lands in the ingress gap before the reconnect.
 	require.NoError(t, set.StopMember(leaderIndex))
 	require.Nil(t, set.Module(leaderIndex))
 	stopMark := len(tr.appended)
-	requireAwaitTick(t, set, "session observes leader stop", durableWorkBound, func() bool {
+	requireAwaitTick(t, set, "session observes leader change", durableWorkBound, func() bool {
 		failIfAnyLogReplication(t, set)
 		tr.pump(nil)
-		return tr.stopped
+		return tr.stopped || tr.session.LeaderMemberID() != int32(leaderIndex)
 	})
-	tr.logCounts("session observes leader stop", stopMark)
+	tr.logCounts("session observes leader change", stopMark)
 
 	requireAwaitTick(t, set, "re-elect after leader stop", durableReElectBound, func() bool {
 		failIfAnyLogReplication(t, set)
