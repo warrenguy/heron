@@ -25,8 +25,9 @@ import (
 // DescriptorPoller captures RecordingDescriptor fragments. In descriptor mode
 // (ResponsePoller nil, DescriptorPoller set) ControlResponse also routes to the
 // descriptor poller so a list-recording await does not corrupt the session
-// ResponsePoller. Steady-state duty may set both pollers: ControlResponse routes to
-// ResponsePoller and descriptors route to the idle DescriptorPoller.
+// ResponsePoller. Client.Poll sets both pollers: ControlResponse routes to
+// ResponsePoller and descriptors route to DescriptorPoller. DescriptorPoller
+// latches only the correlation id NewAsyncListRecording armed.
 //
 // A nil target drops its templates.
 type ControlPollTargets struct {

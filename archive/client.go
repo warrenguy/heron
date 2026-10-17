@@ -36,6 +36,8 @@ import (
 //
 // ListRecording uses a descriptor-mode poll so its OK response routes to the
 // descriptor poller rather than the session control-response poller.
+// NewAsyncListRecording lists one recording without blocking. Poll feeds its
+// descriptor and control response. AsyncListRecording lists the caller rules.
 //
 // One FragmentAssembler is session-owned and reused across polls.
 //

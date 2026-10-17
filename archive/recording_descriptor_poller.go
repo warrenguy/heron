@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
@@ -40,6 +41,15 @@ func (poller *RecordingDescriptorPoller) ResetAwait(correlationID int64) {
 	poller.descriptor = codecs.RecordingDescriptorFields{}
 	poller.response = codecs.ControlResponseFields{}
 	poller.hasResponse = false
+}
+
+// disarm clears the capture and the filter when the filter still holds
+// correlationID. A disarmed poller matches nothing.
+func (poller *RecordingDescriptorPoller) disarm(correlationID int64) {
+	if poller == nil || poller.awaitCorrelationID != correlationID {
+		return
+	}
+	poller.ResetAwait(conductor.NullCorrelationID)
 }
 
 // IsPollComplete reports whether a matching RecordingDescriptor was captured, or a
