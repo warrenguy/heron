@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs"
@@ -291,8 +292,9 @@ func openServiceCluster(t *testing.T) serviceCluster {
 }
 
 // startServiceCluster starts three members with one session recorder
-// container per member. Containers open and attach before the first tick. The
-// helper then awaits log images and election.
+// container per member. Each container connects its own archive client on the
+// default service streams. Containers open and attach before the first tick.
+// The helper then awaits log images and election.
 func startServiceCluster(
 	t *testing.T,
 	portBase int,
@@ -317,6 +319,7 @@ func startServiceCluster(
 			Aeron:             module.Client(),
 			Service:           rec,
 			CommittedPosition: module.CommitPosition,
+			Archive:           &archive.Config{},
 		})
 		require.NoError(t, err)
 		harness.CleanupClose(t, fmt.Sprintf("service container %d", i), container.Close)
@@ -545,4 +548,19 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 		}
 	}
 	requireNoServiceFailures(t, sc, " final")
+
+	// Container Close closes the owned archive client. The archive client does
+	// not own the transport client.
+	for i, mem := range sc.members {
+		archiveClient := mem.container.ArchiveClient()
+		require.NotNil(t, archiveClient, "member %d", i)
+		require.False(t, archiveClient.IsClosed(), "member %d", i)
+		archiveCfg := archiveClient.Config()
+		require.False(t, archiveCfg.OwnsAeronClient(), "member %d", i)
+		require.Equal(t, int32(121), archiveCfg.EffectiveControlResponseStreamID(), "member %d", i)
+
+		require.NoError(t, mem.container.Close())
+		require.True(t, archiveClient.IsClosed(), "member %d", i)
+		require.Nil(t, mem.container.ArchiveClient(), "member %d", i)
+	}
 }

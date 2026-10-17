@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs"
@@ -200,9 +201,10 @@ func requireNoMultiServiceFailures(
 }
 
 // openMultiServiceCluster starts three members with two session recorder
-// containers attached per member. The helper then awaits log images and
-// election. Containers open and attach before the first tick. Returned seats
-// are indexed [member][serviceID].
+// containers attached per member. Each container connects its own archive
+// client on response stream 121 + service id. The helper then awaits log
+// images and election. Containers open and attach before the first tick.
+// Returned seats are indexed [member][serviceID].
 func openMultiServiceCluster(t *testing.T) (*harness.ClusterMemberSet, [][]*serviceSeat) {
 	t.Helper()
 
@@ -225,12 +227,18 @@ func openMultiServiceCluster(t *testing.T) (*harness.ClusterMemberSet, [][]*serv
 				Service:           rec,
 				CommittedPosition: module.CommitPosition,
 				ServiceID:         int32(sid),
+				Archive:           &archive.Config{},
 			})
 			require.NoError(t, err)
 			harness.CleanupClose(
 				t,
 				fmt.Sprintf("service container member %d service %d", i, sid),
 				container.Close,
+			)
+			require.Equal(
+				t,
+				int32(121+sid),
+				container.ArchiveClient().Config().EffectiveControlResponseStreamID(),
 			)
 
 			agent := container.Agent()
