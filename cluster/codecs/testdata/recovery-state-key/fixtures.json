@@ -1,0 +1,35 @@
+{
+  "keyLength": 112,
+  "fixtures": [
+    {
+      "file": "snapshot-two-services.key",
+      "description": "snapshot taken with two services",
+      "leadershipTermId": 7,
+      "logPosition": 65536,
+      "timestamp": 1700000000123,
+      "clusterId": 1,
+      "serviceCount": 2,
+      "snapshotRecordingIds": [10, 11]
+    },
+    {
+      "file": "term-only.key",
+      "description": "no snapshot: ConsensusModuleAgent allocates a term with zero position and timestamp",
+      "leadershipTermId": -1,
+      "logPosition": 0,
+      "timestamp": 0,
+      "clusterId": 2,
+      "serviceCount": 0,
+      "snapshotRecordingIds": []
+    },
+    {
+      "file": "max-services.key",
+      "description": "ten services fill the key region",
+      "leadershipTermId": 42,
+      "logPosition": 9223372036854775807,
+      "timestamp": -1,
+      "clusterId": -3,
+      "serviceCount": 10,
+      "snapshotRecordingIds": [100, 101, 102, 103, 104, 105, 106, 107, 108, -1]
+    }
+  ]
+}

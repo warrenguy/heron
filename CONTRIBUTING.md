@@ -113,6 +113,7 @@ Upstream path prefixes under the matching Aeron module:
 | `make cluster-sbe-catalog-regen` | `hex` from `fields` in `test/integration/cluster_sbe/clustersbe/fixtures/catalog.json` | (none) |
 | `make node-state-fixtures-regen` | committed node-state oracle bytes | mvn + java |
 | `make recordinglog-fixtures-regen` | committed recording-log oracle bytes | mvn + java |
+| `make recovery-state-key-fixtures-regen` | committed recovery state key oracle bytes | mvn + java |
 
 Java golden fixture layout:
 [`test/integration/golden_fixtures/README.md`](test/integration/golden_fixtures/README.md).

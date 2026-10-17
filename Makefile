@@ -86,7 +86,7 @@ help: ## List Makefile targets
 	check-sbe-stale-archive \
 	check-sbe-stale-nodestate \
 	cluster-sbe-catalog-regen recordinglog-fixtures-regen \
-	node-state-fixtures-regen
+	node-state-fixtures-regen recovery-state-key-fixtures-regen
 
 check: ## Lint pins unit stress examples contract-oracles (needs java + mvn)
 	@T=$$(command -v timeout 2>/dev/null \
@@ -159,6 +159,14 @@ node-state-fixtures-regen: ## Regenerate cluster/election/testdata/node-state fr
 	}
 	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
 		mvn -q -f $(GOLDEN_FIXTURES_POM) compile exec:java@node-state
+
+recovery-state-key-fixtures-regen: ## Regenerate cluster/codecs/testdata/recovery-state-key from Java
+	@command -v mvn >/dev/null || { \
+		echo "heron: mvn required (JDK 26 per $(GOLDEN_FIXTURES_POM))" >&2; \
+		exit 1; \
+	}
+	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
+		mvn -q -f $(GOLDEN_FIXTURES_POM) compile exec:java@recovery-state-key
 
 # Regenerate SBE flyweights and fail on diff vs committed output.
 $(eval $(call sbe-stale-check,,cluster/codecs,clusterwire))
