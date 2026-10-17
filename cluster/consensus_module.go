@@ -830,6 +830,23 @@ func (m *ConsensusModule) ElectionState() election.ElectionState {
 	return m.election.State()
 }
 
+// ElectionLastError returns the error the current election machine last
+// passed to [election.Election.HandleError].
+//
+// Behaviour:
+//   - nil when no election machine is installed
+//   - nil when the machine holds no error
+//   - a settled re-install replaces the machine, so a fresh machine reports nil
+//
+// The error text may hold archive remote text and channel URIs. See
+// [election.Election.LastError].
+func (m *ConsensusModule) ElectionLastError() error {
+	if m.election == nil {
+		return nil
+	}
+	return m.election.LastError()
+}
+
 // IsColdStart reports whether recovery found no usable cluster history.
 //
 // Snapshotted at open, so it keeps its meaning after Close.

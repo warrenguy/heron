@@ -402,6 +402,9 @@ func failIfFollowerLogReplication(
 ) {
 	t.Helper()
 
+	if m == nil {
+		return
+	}
 	state := m.ElectionState()
 	if state != election.ElectionStateFollowerLogReplication {
 		return
