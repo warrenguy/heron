@@ -3,6 +3,7 @@
 package aeron
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -370,6 +371,7 @@ func initTestHookLogMetadata(meta atomicbuffer.AtomicBuffer) {
 	meta.PutInt32(logbuffer.OffsetMTULength, testHookPublicationMTULength)
 	meta.PutInt32(logbuffer.OffsetInitialTermID, testHookPublicationInitialTermID)
 	meta.PutInt32(logbuffer.OffsetDefaultFrameHeaderLength, logbuffer.DataHeaderLength)
+	meta.PutInt64Release(logbuffer.OffsetEndOfStreamPosition, math.MaxInt64)
 
 	// Default frame header template feeds the publication HeaderWriter; without
 	// it committed claims carry frame type 0 (PAD) instead of HdrTypeData.
@@ -627,6 +629,15 @@ func ImageSetSubscriberPositionForHooks(image *Image, position int64) {
 		return
 	}
 	setInMemImageSubscriberPosition(image, position)
+}
+
+// ImageSetEndOfStreamPositionForHooks writes the end-of-stream word in the
+// image metadata. Call it before Close. A write after Close panics.
+func ImageSetEndOfStreamPositionForHooks(image *Image, position int64) {
+	if image == nil {
+		return
+	}
+	setInMemImageEndOfStreamPosition(image, position)
 }
 
 // WriteCommittedDataFrameForHooks commits a DATA frame at frameOffset. Unfragmented

@@ -48,7 +48,9 @@ type Image struct {
 	header       Header
 	errorHandler func(error)
 
-	finalPosition int64
+	finalPosition       int64
+	endOfStreamPosition int64
+	isEndOfStream       bool
 
 	lastCorruptReportPosition int64
 
@@ -256,6 +258,34 @@ func (image *Image) SubscriberPositionID() int32 {
 
 func (image *Image) IsClosed() bool {
 	return image.isClosed.Load()
+}
+
+// IsEndOfStream reports whether the subscriber position has reached the
+// end-of-stream position.
+//
+// A closed image returns the value read at close.
+//
+// IsEndOfStream is not thread-safe. Same concurrency contract as
+// [Image.Poll]; see the [Image] type godoc.
+func (image *Image) IsEndOfStream() bool {
+	if image.isClosed.Load() {
+		return image.isEndOfStream
+	}
+	return image.subscriberPos.Get() >= logbuffer.EndOfStreamPositionVolatile(image.metaBuffer)
+}
+
+// EndOfStreamPosition returns the position the publisher signalled as end
+// of stream, or math.MaxInt64 before the signal.
+//
+// A closed image returns the value read at close.
+//
+// EndOfStreamPosition is not thread-safe. Same concurrency contract as
+// [Image.Poll]; see the [Image] type godoc.
+func (image *Image) EndOfStreamPosition() int64 {
+	if image.isClosed.Load() {
+		return image.endOfStreamPosition
+	}
+	return logbuffer.EndOfStreamPositionVolatile(image.metaBuffer)
 }
 
 func (image *Image) activeTermBuffer(position int64) atomicbuffer.AtomicBuffer {
@@ -527,6 +557,8 @@ func (image *Image) internalClose() {
 		return
 	}
 	image.finalPosition = image.subscriberPos.Get()
+	image.endOfStreamPosition = logbuffer.EndOfStreamPositionVolatile(image.metaBuffer)
+	image.isEndOfStream = image.finalPosition >= image.endOfStreamPosition
 	image.isClosed.Store(true)
 	image.logBuffers = nil
 	image.metaBuffer = atomicbuffer.AtomicBuffer{}

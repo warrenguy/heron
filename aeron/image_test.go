@@ -66,6 +66,107 @@ func TestImage_internalClose_closedSemantics(t *testing.T) {
 	require.Equal(t, 0, image.Poll(nil, 1))
 }
 
+func TestImage_endOfStream(t *testing.T) {
+	const noWrite int64 = -1
+
+	tests := []struct {
+		name            string
+		endOfStreamWord int64
+		position        int64
+		closed          bool
+		laterPosition   int64
+		wantEndOfStream bool
+		wantPosition    int64
+	}{
+		{
+			name:            "defaultWord",
+			endOfStreamWord: noWrite,
+			position:        256,
+			laterPosition:   noWrite,
+			wantEndOfStream: false,
+			wantPosition:    math.MaxInt64,
+		},
+		{
+			name:            "wordBelowPosition",
+			endOfStreamWord: 128,
+			position:        256,
+			laterPosition:   noWrite,
+			wantEndOfStream: true,
+			wantPosition:    128,
+		},
+		{
+			name:            "wordAtPosition",
+			endOfStreamWord: 256,
+			position:        256,
+			laterPosition:   noWrite,
+			wantEndOfStream: true,
+			wantPosition:    256,
+		},
+		{
+			name:            "wordAbovePosition",
+			endOfStreamWord: 512,
+			position:        256,
+			laterPosition:   noWrite,
+			wantEndOfStream: false,
+			wantPosition:    512,
+		},
+		{
+			name:            "positionMovesToWordWhileOpen",
+			endOfStreamWord: 256,
+			position:        128,
+			laterPosition:   256,
+			wantEndOfStream: true,
+			wantPosition:    256,
+		},
+		{
+			name:            "closedAfterPositionReachedWord",
+			endOfStreamWord: 256,
+			position:        256,
+			closed:          true,
+			laterPosition:   noWrite,
+			wantEndOfStream: true,
+			wantPosition:    256,
+		},
+		{
+			name:            "closedBeforePositionReachedWord",
+			endOfStreamWord: 512,
+			position:        256,
+			closed:          true,
+			laterPosition:   noWrite,
+			wantEndOfStream: false,
+			wantPosition:    512,
+		},
+		{
+			name:            "counterWriteAfterCloseChangesNeither",
+			endOfStreamWord: 512,
+			position:        256,
+			closed:          true,
+			laterPosition:   1024,
+			wantEndOfStream: false,
+			wantPosition:    512,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			image := aeron.NewImageForTest(t, testSubscription(t), tc.position)
+			if tc.endOfStreamWord != noWrite {
+				aeron.ImageSetEndOfStreamPositionForTest(image, tc.endOfStreamWord)
+			}
+			if tc.closed {
+				aeron.ImageInternalCloseForTest(image)
+			}
+			if tc.laterPosition != noWrite {
+				aeron.ImageSetSubscriberPositionForTest(image, tc.laterPosition)
+			}
+
+			require.Equal(t, tc.closed, image.IsClosed())
+			require.Equal(t, tc.wantEndOfStream, image.IsEndOfStream())
+			require.Equal(t, tc.wantPosition, image.EndOfStreamPosition())
+		})
+	}
+}
+
 func TestImage_internalClose_idempotent(t *testing.T) {
 	sub := testSubscription(t)
 	image := aeron.NewImageForTest(t, sub, 100)

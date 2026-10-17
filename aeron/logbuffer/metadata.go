@@ -95,6 +95,10 @@ func IsConnectedVolatile(meta atomicbuffer.AtomicBuffer) int32 {
 	return meta.GetInt32Volatile(OffsetIsConnected)
 }
 
+func EndOfStreamPositionVolatile(meta atomicbuffer.AtomicBuffer) int64 {
+	return meta.GetInt64Volatile(OffsetEndOfStreamPosition)
+}
+
 // Returns the default frame header slice from metadata. Length is clamped
 // between DataHeaderLength and DefaultFrameHeaderMaxLength.
 func DefaultFrameHeaderBuffer(meta atomicbuffer.AtomicBuffer) atomicbuffer.AtomicBuffer {
