@@ -80,11 +80,19 @@ func offerAndAwaitListRecording(
 		return codecs.RecordingDescriptorFields{}, err
 	}
 
+	return descriptorPollerOutcome(descriptorPoller)
+}
+
+// descriptorPollerOutcome maps a completed descriptor poller to its result. A
+// latched non-OK ControlResponse maps through MapControlResponse. Otherwise the
+// captured descriptor is the result.
+func descriptorPollerOutcome(
+	descriptorPoller *RecordingDescriptorPoller,
+) (codecs.RecordingDescriptorFields, error) {
 	if resp, ok := descriptorPoller.ControlResponse(); ok {
 		if err := MapControlResponse(resp); err != nil {
 			return codecs.RecordingDescriptorFields{}, err
 		}
 	}
-
 	return descriptorPoller.Descriptor(), nil
 }

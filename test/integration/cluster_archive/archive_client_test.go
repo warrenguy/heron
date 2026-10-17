@@ -19,6 +19,8 @@ const archiveClientRecordingChannel = "aeron:ipc"
 
 // TestArchiveClient_startAutoStopReleasesSubscription asserts the archive
 // releases the recording subscription after STOP only when autoStop is true.
+// After the release, AsyncStopRecording returns ErrorUnknownSubscription and
+// AsyncListRecording reports the STOP position.
 func TestArchiveClient_startAutoStopReleasesSubscription(t *testing.T) {
 	t.Parallel()
 
@@ -68,13 +70,21 @@ func TestArchiveClient_startAutoStopReleasesSubscription(t *testing.T) {
 				tc.async,
 			)
 
+			// Phase: record one message so the STOP position is above zero.
+			// Only the autoStop rows check it.
+			if tc.autoStop {
+				require.Positive(t, harness.OfferWithRetry(t, pub, []byte("recorded")))
+			}
+
 			// Phase: close the publication and wait for STOP.
 			stopped := false
+			var stopPosition int64
 			archiveClient.SetRecordingSignalHandler(archive.RecordingSignalHandlerFunc(
 				func(event codecs.RecordingSignalEventFields) {
 					if event.Signal == archivewire.RecordingSignal_STOP &&
 						event.RecordingID == recordingID {
 						stopped = true
+						stopPosition = event.Position
 					}
 				},
 			))
@@ -113,6 +123,20 @@ func TestArchiveClient_startAutoStopReleasesSubscription(t *testing.T) {
 				require.NoError(t, archiveClient.StopRecording(t.Context(), tc.streamID, channel))
 				return
 			}
+
+			// Phase: the released subscription refuses a stop. The descriptor
+			// reports the STOP position.
+			requireStopUnknownSubscription(
+				t,
+				aeronClient,
+				hadClientError,
+				archiveClient,
+				tc.streamID,
+			)
+			descriptor := awaitListRecording(t, aeronClient, hadClientError, archiveClient, recordingID)
+			require.Equal(t, recordingID, descriptor.RecordingID)
+			require.Greater(t, stopPosition, descriptor.StartPosition)
+			require.Equal(t, stopPosition, descriptor.StopPosition)
 
 			secondPub, err := aeronClient.AddPublication(tc.streamID, archiveClientRecordingChannel)
 			require.NoError(t, err)
@@ -168,31 +192,123 @@ func awaitStartRecording(
 		channel,
 	)
 	defer handle.Close()
+	pollAsyncRequest(
+		t,
+		aeronClient,
+		hadClientError,
+		archiveClient,
+		"async start recording",
+		handle.TryOffer,
+		func() bool {
+			done, err := handle.PollSignal()
+			require.NoError(t, err)
+			return done
+		},
+	)
+	return handle.RecordingID()
+}
+
+// pollAsyncRequest offers through tryOffer until accepted, then runs
+// Client.Poll and poll until poll reports done. name labels failures.
+func pollAsyncRequest(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	hadClientError *atomic.Bool,
+	archiveClient *archive.Client,
+	name string,
+	tryOffer func() (bool, error),
+	poll func() bool,
+) {
+	t.Helper()
+
 	offered := false
 	harness.PollClientUntilTransportClean(
 		t,
 		aeronClient,
 		hadClientError,
 		harness.ConnectedPollTimeout,
-		"client transport error during async start recording",
+		"client transport error during "+name,
 		func() bool {
 			if !offered {
 				var err error
-				offered, err = handle.TryOffer()
+				offered, err = tryOffer()
 				require.NoError(t, err)
 				if !offered {
 					return false
 				}
 			}
 			_ = archiveClient.Poll()
-			done, err := handle.PollSignal()
-			require.NoError(t, err)
-			return done
+			return poll()
 		},
 		func() string {
-			return "async start recording not complete within " +
+			return name + " not complete within " +
 				harness.ConnectedPollTimeout.String()
 		},
 	)
-	return handle.RecordingID()
+}
+
+// requireStopUnknownSubscription stops the recording on streamID through
+// AsyncStopRecording and requires ErrorUnknownSubscription.
+func requireStopUnknownSubscription(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	hadClientError *atomic.Bool,
+	archiveClient *archive.Client,
+	streamID int32,
+) {
+	t.Helper()
+
+	handle := archiveClient.NewAsyncStopRecording(
+		streamID,
+		[]byte(archiveClientRecordingChannel),
+	)
+	defer handle.Close()
+	var stopErr error
+	pollAsyncRequest(
+		t,
+		aeronClient,
+		hadClientError,
+		archiveClient,
+		"async stop recording",
+		handle.TryOffer,
+		func() bool {
+			var responded bool
+			responded, stopErr = handle.PollResponse()
+			return responded
+		},
+	)
+	code, ok := archive.ExceptionCode(stopErr)
+	require.True(t, ok, "stop error: %v", stopErr)
+	require.Equal(t, int32(archive.ErrorUnknownSubscription), code)
+}
+
+// awaitListRecording lists recordingID through AsyncListRecording and
+// returns its descriptor.
+func awaitListRecording(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	hadClientError *atomic.Bool,
+	archiveClient *archive.Client,
+	recordingID int64,
+) codecs.RecordingDescriptorFields {
+	t.Helper()
+
+	handle := archiveClient.NewAsyncListRecording(recordingID)
+	defer handle.Close()
+	var descriptor codecs.RecordingDescriptorFields
+	pollAsyncRequest(
+		t,
+		aeronClient,
+		hadClientError,
+		archiveClient,
+		"async list recording",
+		handle.TryOffer,
+		func() bool {
+			done, got, err := handle.PollDescriptor()
+			require.NoError(t, err)
+			descriptor = got
+			return done
+		},
+	)
+	return descriptor
 }
