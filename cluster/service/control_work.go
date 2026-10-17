@@ -131,15 +131,21 @@ func (a *Agent) sweepRequestAckReadiness() {
 	a.hasUnreadyRequestBound = found
 }
 
+// canSendAck reports whether a bound ModuleProxy publication exists.
+func (a *Agent) canSendAck() bool {
+	return a.moduleProxy != nil && a.moduleProxy.Publication() != nil
+}
+
 // drainReadyCoordinationAck publishes one ServiceAck for the ready first
 // queued entry.
 //
 // Behaviour:
-//   - No proxy, unbound publication, empty queue, or unready first entry:
-//     no send
-//   - offer result > 0: pop the first entry, advance ackID, return 1
+//   - canSendAck false, empty queue, or unready first entry: no send
+//   - offer result > 0: pop the first entry, advance ackID, mark the entry
+//     failure when set, return 1
 //   - retriable offer code: keep the first entry and ackID, return 0
-//   - terminal offer code: mark errAckPublish once, return 0
+//   - terminal offer code: mark the entry failure when set, else
+//     errAckPublish. Return 0
 //
 // Send fields:
 //   - LogPosition from the entry
@@ -149,7 +155,7 @@ func (a *Agent) sweepRequestAckReadiness() {
 //     relevant id. Join, request, and snapshot entries carry nullValue
 //   - ServiceID from config
 func (a *Agent) drainReadyCoordinationAck() int {
-	if a.moduleProxy == nil || a.moduleProxy.Publication() == nil {
+	if !a.canSendAck() {
 		return 0
 	}
 	if len(a.coordinationAcks) == 0 {
@@ -167,10 +173,17 @@ func (a *Agent) drainReadyCoordinationAck() int {
 		RelevantID:  entry.relevantID,
 		ServiceID:   a.serviceID,
 	})
-	if !a.acceptOffer(result, errAckPublish) {
+	cause := errAckPublish
+	if entry.failure != nil {
+		cause = entry.failure
+	}
+	if !a.acceptOffer(result, cause) {
 		return 0
 	}
 	a.coordinationAcks = a.coordinationAcks[1:]
 	a.ackID++
+	if entry.failure != nil {
+		a.markFailure(entry.failure)
+	}
 	return 1
 }
