@@ -21,21 +21,28 @@ func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 	harness, ac := newAsyncConnectFixture(t, func(cfg Config) Config { return cfg })
 	registerAsyncConnectClose(t, ac)
 
-	var connectWire []byte
-	var connectCorrelation int64
+	var connectWire, archiveIDWire []byte
+	var connectCorrelation, archiveIDCorrelation int64
+	captureWire := func(ac *AsyncConnect) (int64, []byte) {
+		wireLen := ac.ConnectWireLengthForTest()
+		require.Positive(t, wireLen)
+		return ac.CorrelationIDForTest(),
+			append([]byte(nil), ac.ConnectWireBufferForTest()[:wireLen]...)
+	}
 	result, err := pollAsyncConnectUntil(t, ac, harness, func(ac *AsyncConnect) {
-		if ac.State() == ConnectStatePollResponse {
-			connectCorrelation = ac.CorrelationIDForTest()
-			wireLen := ac.ConnectWireLengthForTest()
-			require.Positive(t, wireLen)
-			connectWire = append([]byte(nil), ac.ConnectWireBufferForTest()[:wireLen]...)
-			withAsyncConnectControlResponseTerm(t, ac, writeControlResponseOKForConnect)
+		switch ac.State() {
+		case ConnectStatePollResponse:
+			connectCorrelation, connectWire = captureWire(ac)
+		case ConnectStateAwaitArchiveIDResponse:
+			archiveIDCorrelation, archiveIDWire = captureWire(ac)
 		}
+		writeConnectHandshakeResponses(t, ac)
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, asyncConnectFixtureControlSessionID, result.ControlSessionID)
 	require.Equal(t, asyncConnectFixtureArchiveID, result.ArchiveID)
+	require.NotEqual(t, result.ControlSessionID, result.ArchiveID)
 	require.Equal(t, asyncConnectFixtureServerVersion, result.ServerVersion)
 	require.NotNil(t, result.Proxy)
 	require.NotNil(t, result.Poller)
@@ -51,6 +58,16 @@ func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 	authFields, ok := decoded.Fields.(codecs.AuthConnectRequestFields)
 	require.True(t, ok)
 	require.Equal(t, connectCorrelation, authFields.CorrelationID)
+
+	require.NotEmpty(t, archiveIDWire)
+	decoded, ok = codecs.TryDecodeByTemplate(archiveIDWire, 0, codecs.ArchiveDecodeMaxVarLen)
+	require.True(t, ok)
+	require.Equal(t, archivewire.ArchiveIdRequestSbeTemplateID, decoded.TemplateID)
+	archiveIDFields, ok := decoded.Fields.(codecs.ArchiveIDRequestFields)
+	require.True(t, ok)
+	require.Equal(t, asyncConnectFixtureControlSessionID, archiveIDFields.ControlSessionID)
+	require.Equal(t, archiveIDCorrelation, archiveIDFields.CorrelationID)
+	require.NotEqual(t, connectCorrelation, archiveIDCorrelation)
 
 	keepAliveCorrelation := harness.Client.NextCorrelationID()
 	cfg := result.Config
@@ -100,11 +117,12 @@ func TestAsyncConnect_happyPathIPC(t *testing.T) {
 	registerAsyncConnectClose(t, ac)
 
 	result, err := pollAsyncConnectUntil(t, ac, harness, func(ac *AsyncConnect) {
-		withAsyncConnectControlResponseTerm(t, ac, writeControlResponseOKForConnect)
+		writeConnectHandshakeResponses(t, ac)
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, asyncConnectFixtureControlSessionID, result.ControlSessionID)
+	require.Equal(t, asyncConnectFixtureArchiveID, result.ArchiveID)
 	require.NotNil(t, result.ControlPublication)
 	require.NotNil(t, result.ControlSubscription)
 	require.False(t, result.OwnsAeronClient)
@@ -112,9 +130,13 @@ func TestAsyncConnect_happyPathIPC(t *testing.T) {
 }
 
 type asyncConnectChallengeRoundTripState struct {
+	// legacyServer answers the connect with a version below 1.11.0, so the
+	// connect concludes without an archive id round trip.
+	legacyServer             bool
 	challengeWritten         bool
 	challengeResponseOffered bool
 	controlResponseWritten   bool
+	archiveIDResponseWritten bool
 }
 
 func (state *asyncConnectChallengeRoundTripState) onStep(
@@ -136,8 +158,16 @@ func (state *asyncConnectChallengeRoundTripState) onStep(
 				state.challengeWritten = true
 			case state.challengeResponseOffered && !state.controlResponseWritten &&
 				ac.State() == ConnectStatePollResponse:
-				appendControlResponseOKForConnect(t, termBuffer, correlation)
+				fields := connectControlResponseOKFields(correlation)
+				if state.legacyServer {
+					fields.Version = asyncConnectFixtureLegacyServerVersion
+				}
+				appendUnfragmentedWireToTerm(t, termBuffer, encodeControlResponseWire(t, fields))
 				state.controlResponseWritten = true
+			case state.controlResponseWritten && !state.archiveIDResponseWritten &&
+				ac.State() == ConnectStateAwaitArchiveIDResponse:
+				appendArchiveIDResponseOK(t, termBuffer, correlation)
+				state.archiveIDResponseWritten = true
 			}
 		},
 	)
@@ -162,6 +192,8 @@ func TestAsyncConnect_challengeRoundTrip(t *testing.T) {
 	require.True(t, roundTrip.challengeWritten)
 	require.True(t, roundTrip.challengeResponseOffered)
 	require.True(t, roundTrip.controlResponseWritten)
+	require.True(t, roundTrip.archiveIDResponseWritten)
+	require.Equal(t, asyncConnectFixtureArchiveID, result.ArchiveID)
 	require.Equal(t, ConnectStateDone, ac.State())
 	require.NotEqual(t, conductor.NullCorrelationID, connectCorrelation)
 }

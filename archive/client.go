@@ -158,7 +158,8 @@ func (client *Client) ControlSessionID() int64 {
 	return client.controlSessionID
 }
 
-// ArchiveID returns the archive id reported at connect.
+// ArchiveID returns the archive id reported at connect. It returns
+// cnc.NullValue when the archive protocol is older than 1.11.0.
 func (client *Client) ArchiveID() int64 {
 	return client.archiveID
 }

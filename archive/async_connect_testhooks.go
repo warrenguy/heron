@@ -99,7 +99,7 @@ func (ac *AsyncConnect) ConnectWireBufferForTest() []byte {
 	return ac.wire.buffer
 }
 
-// PollSendMessageForTest exercises pollSendMessage during connect tests.
+// PollSendMessageForTest offers the connect wire once during connect tests.
 func (ac *AsyncConnect) PollSendMessageForTest() (*ConnectResult, error) {
-	return ac.pollSendMessage()
+	return ac.offerConnectWire(ConnectStatePollResponse)
 }

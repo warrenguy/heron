@@ -173,8 +173,9 @@ var _ AppendPositionSource = (*LogAppendPosition)(nil)
 //   - does not own the counters reader
 //   - closes neither
 type RecordingPosAppendPosition struct {
-	agent    *Agent
-	counters *cnc.CountersReader
+	agent     *Agent
+	counters  *cnc.CountersReader
+	archiveID int64
 
 	// cachedCounterID is the last counter id found for cachedRecordingID, or
 	// NullCounterID when no slot is held. cachedSlot is the bound value slot for
@@ -187,15 +188,20 @@ type RecordingPosAppendPosition struct {
 // NewRecordingPosAppendPosition returns a recording-derived append high-water
 // source over the agent's recording state and the transport client's counters.
 //
+// archiveID selects the recording-position counter of the archive that
+// records the log. cnc.NullValue matches any archive.
+//
 // A nil agent or a nil counters reader is allowed. That source reports not-ready
 // forever.
 func NewRecordingPosAppendPosition(
 	agent *Agent,
 	counters *cnc.CountersReader,
+	archiveID int64,
 ) *RecordingPosAppendPosition {
 	return &RecordingPosAppendPosition{
 		agent:           agent,
 		counters:        counters,
+		archiveID:       archiveID,
 		cachedCounterID: cnc.NullCounterID,
 	}
 }
@@ -214,7 +220,8 @@ func NewRecordingPosAppendPosition(
 // Returns:
 //   - counter value, true: recording active and counter present
 //   - 0, false: nil receiver, nil agent, nil counters reader, inactive
-//     recording, null recording id, or no counter for that recording id
+//     recording, null recording id, or no counter for that recording id and
+//     archive id
 func (s *RecordingPosAppendPosition) AppendPosition() (int64, bool) {
 	if s == nil || s.agent == nil || s.counters == nil {
 		return 0, false
@@ -238,7 +245,7 @@ func (s *RecordingPosAppendPosition) AppendPosition() (int64, bool) {
 		return s.cachedSlot.Get(), true
 	}
 
-	slot, ok := s.counters.FindRecordingPositionCounter(recordingID, cnc.NullValue)
+	slot, ok := s.counters.FindRecordingPositionCounter(recordingID, s.archiveID)
 	if !ok {
 		s.cachedCounterID = cnc.NullCounterID
 		return 0, false

@@ -150,6 +150,22 @@ func TestArchiveClient_startAutoStopReleasesSubscription(t *testing.T) {
 	}
 }
 
+// TestArchiveClient_archiveIDMatchesArchive asserts ArchiveID returns the id in
+// the archive ready marker.
+func TestArchiveClient_archiveIDMatchesArchive(t *testing.T) {
+	// No t.Parallel: the Archive binds the control port that
+	// TestArchiveClient_startAutoStopReleasesSubscription also binds.
+	md := harness.Start(t)
+	node := harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
+		AeronDir:       md.Dir,
+		ControlChannel: harness.ArchiveClientControl0,
+	})
+	aeronClient, _ := harness.ConnectIPCClient(t, md)
+
+	archiveClient := connectArchiveClient(t, aeronClient)
+	require.Equal(t, node.ArchiveID, strconv.FormatInt(archiveClient.ArchiveID(), 10))
+}
+
 // TestArchiveClient_stopRecordingByIdentity asserts a new session stops an
 // orphaned recording.
 func TestArchiveClient_stopRecordingByIdentity(t *testing.T) {

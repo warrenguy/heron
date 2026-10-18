@@ -104,7 +104,7 @@ func TestAwaitArchiveConnect_idleStrategyPacing(t *testing.T) {
 			if steps < 3 {
 				return
 			}
-			withAsyncConnectControlResponseTerm(t, ac, writeControlResponseOKForConnect)
+			writeConnectHandshakeResponses(t, ac)
 		})
 
 		result, err := awaitConnect(t.Context(), ac)
@@ -145,7 +145,7 @@ func TestAwaitArchiveConnect_success(t *testing.T) {
 	t.Cleanup(func() { _ = ac.Close() })
 
 	registerConnectHarnessStepObserver(t, harness, ac, func(ac *AsyncConnect) {
-		withAsyncConnectControlResponseTerm(t, ac, writeControlResponseOKForConnect)
+		writeConnectHandshakeResponses(t, ac)
 	})
 
 	result, err := awaitConnect(t.Context(), ac)
@@ -345,10 +345,10 @@ func TestConnect_successWinsOverConcurrentCancel(t *testing.T) {
 
 	connectTestHarnessDriver(t, harness, func(ac *AsyncConnect) {
 		switch ac.State() {
-		case ConnectStatePollResponse:
-			withAsyncConnectControlResponseTerm(t, ac, writeControlResponseOKForConnect)
 		case ConnectStateConcludeConnect:
 			cancel()
+		default:
+			writeConnectHandshakeResponses(t, ac)
 		}
 	})
 

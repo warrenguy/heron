@@ -45,6 +45,12 @@ func archiveCodecFuzzSeedBuffers() [][]byte {
 				return codecs.EncodeStopRecordingByIdentityRequest(buf, offset, archiveSchemaVersion, fields)
 			},
 		),
+		mustEncodeArchiveWire(
+			codecs.ArchiveIDRequestFields{ControlSessionID: 1, CorrelationID: 2},
+			func(buf []byte, offset int, fields codecs.ArchiveIDRequestFields) (int, bool) {
+				return codecs.EncodeArchiveIDRequest(buf, offset, archiveSchemaVersion, fields)
+			},
+		),
 	}
 }
 

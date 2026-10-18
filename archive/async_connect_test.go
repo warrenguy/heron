@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/archive/codecs"
@@ -76,6 +77,28 @@ func setupAsyncConnectAtPollResponse(t *testing.T) *AsyncConnect {
 	return ac
 }
 
+// setupAsyncConnectAtArchiveIDResponse returns an AsyncConnect in
+// ConnectStateAwaitArchiveIDResponse and its control response term buffer.
+func setupAsyncConnectAtArchiveIDResponse(
+	t *testing.T,
+) (*AsyncConnect, atomicbuffer.AtomicBuffer) {
+	t.Helper()
+
+	ac := setupAsyncConnectAtPollResponse(t)
+	termBuffer := controlResponseTermBufferForAsyncConnect(t, ac)
+	writeControlResponseOKForConnect(t, termBuffer, ac.CorrelationIDForTest())
+	for _, want := range []ConnectState{
+		ConnectStateSendArchiveIDRequest,
+		ConnectStateAwaitArchiveIDResponse,
+	} {
+		result, err := ac.Poll()
+		require.NoError(t, err)
+		require.Nil(t, result)
+		require.Equal(t, want, ac.State())
+	}
+	return ac, termBuffer
+}
+
 func setupAsyncConnectPreparedSendMessage(t *testing.T) (*AsyncConnect, *stubControlPublication) {
 	t.Helper()
 
@@ -119,7 +142,7 @@ func TestAsyncConnect_pollResponse_ignoresMismatchedControlResponseCorrelation(t
 		encodeControlResponseWire(t, codecs.ControlResponseFields{
 			ControlSessionID: asyncConnectFixtureControlSessionID,
 			CorrelationID:    correlation + 999,
-			RelevantID:       asyncConnectFixtureArchiveID,
+			RelevantID:       asyncConnectFixtureControlSessionID,
 			Code:             archivewire.ControlResponseCode_OK,
 			Version:          asyncConnectFixtureServerVersion,
 		}),
@@ -132,12 +155,7 @@ func TestAsyncConnect_pollResponse_ignoresMismatchedControlResponseCorrelation(t
 	appendControlResponseOKForConnect(t, termBuffer, correlation)
 	_, err = ac.Poll()
 	require.NoError(t, err)
-	require.Equal(t, ConnectStateConcludeConnect, ac.State())
-
-	result, err = ac.Poll()
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, asyncConnectFixtureControlSessionID, result.ControlSessionID)
+	require.Equal(t, ConnectStateSendArchiveIDRequest, ac.State())
 }
 
 func TestAsyncConnect_pollResponse_ignoresMismatchedChallengeCorrelation(t *testing.T) {
@@ -177,6 +195,89 @@ func TestAsyncConnect_pollResponse_ignoresMismatchedChallengeCorrelation(t *test
 	require.Equal(t, challengeCorrelation, challengeFields.CorrelationID)
 }
 
+func TestAsyncConnect_pollResponse_ignoresMismatchedArchiveIDCorrelation(t *testing.T) {
+	t.Parallel()
+
+	ac, termBuffer := setupAsyncConnectAtArchiveIDResponse(t)
+	correlation := ac.CorrelationIDForTest()
+
+	appendArchiveIDResponseOK(t, termBuffer, correlation+999)
+	result, err := ac.Poll()
+	require.NoError(t, err)
+	require.Nil(t, result)
+	require.Equal(t, ConnectStateAwaitArchiveIDResponse, ac.State())
+
+	appendArchiveIDResponseOK(t, termBuffer, correlation)
+	_, err = ac.Poll()
+	require.NoError(t, err)
+	require.Equal(t, ConnectStateConcludeConnect, ac.State())
+
+	result, err = ac.Poll()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, asyncConnectFixtureControlSessionID, result.ControlSessionID)
+	require.Equal(t, asyncConnectFixtureArchiveID, result.ArchiveID)
+	require.Equal(t, asyncConnectFixtureServerVersion, result.ServerVersion)
+}
+
+func TestAsyncConnect_pollResponse_archiveIDResponseError(t *testing.T) {
+	t.Parallel()
+
+	ac, termBuffer := setupAsyncConnectAtArchiveIDResponse(t)
+	appendUnfragmentedWireToTerm(
+		t,
+		termBuffer,
+		encodeControlResponseWire(t, codecs.ControlResponseFields{
+			ControlSessionID: asyncConnectFixtureControlSessionID,
+			CorrelationID:    ac.CorrelationIDForTest(),
+			RelevantID:       ErrorGeneric,
+			Code:             archivewire.ControlResponseCode_ERROR,
+			ErrorMessage:     []byte("archive id unavailable"),
+		}),
+	)
+	_, err := ac.Poll()
+	require.Error(t, err)
+	var archiveErr *Exception
+	require.ErrorAs(t, err, &archiveErr)
+	require.Equal(t, int32(ErrorGeneric), archiveErr.ErrorCode)
+	require.Contains(t, archiveErr.Error(), "archive id unavailable")
+
+	pub := newStubControlPublication()
+	ac.transport.requestPublication = pub
+	require.NoError(t, ac.Close())
+	require.True(t, pub.closed)
+	require.Len(t, pub.offered, 1)
+	fields := requireProxyWireFields[codecs.CloseSessionRequestFields](
+		t,
+		pub.offered[0],
+		archivewire.CloseSessionRequestSbeTemplateID,
+	)
+	require.Equal(t, asyncConnectFixtureControlSessionID, fields.ControlSessionID)
+}
+
+func TestAsyncConnect_pollResponse_legacyServerSkipsArchiveIDRequest(t *testing.T) {
+	t.Parallel()
+
+	ac := setupAsyncConnectAtPollResponse(t)
+	fields := connectControlResponseOKFields(ac.CorrelationIDForTest())
+	fields.Version = asyncConnectFixtureLegacyServerVersion
+	writeUnfragmentedWireToTerm(
+		t,
+		controlResponseTermBufferForAsyncConnect(t, ac),
+		encodeControlResponseWire(t, fields),
+	)
+	_, err := ac.Poll()
+	require.NoError(t, err)
+	require.Equal(t, ConnectStateConcludeConnect, ac.State())
+
+	result, err := ac.Poll()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, asyncConnectFixtureControlSessionID, result.ControlSessionID)
+	require.Equal(t, cnc.NullValue, result.ArchiveID)
+	require.Equal(t, asyncConnectFixtureLegacyServerVersion, result.ServerVersion)
+}
+
 func TestAsyncConnect_pollResponse_controlResponseError(t *testing.T) {
 	t.Parallel()
 
@@ -205,6 +306,12 @@ func TestAsyncConnect_pollResponse_controlResponseError(t *testing.T) {
 	require.ErrorAs(t, err, &archiveErr)
 	require.Equal(t, int32(ErrorAuthenticationRejected), archiveErr.ErrorCode)
 	require.Contains(t, archiveErr.Error(), "authentication rejected")
+
+	pub := newStubControlPublication()
+	ac.transport.requestPublication = pub
+	require.NoError(t, ac.Close())
+	require.True(t, pub.closed)
+	require.Empty(t, pub.offered, "no session to close before the connect OK")
 }
 
 func TestAsyncConnect_prepareConnectRequest_unresolvedResponseChannel(t *testing.T) {
@@ -570,44 +677,69 @@ func TestAsyncConnect_zeroSensitiveBuffers_clearsConnectWireCapOnClose(t *testin
 	require.Nil(t, ac.ConnectWireBufferForTest())
 }
 
+// TestAsyncConnect_zeroSensitiveBuffers_clearsConnectWireCapOnSuccess plants
+// sentinels in the wire slack of the last encode before the connect concludes:
+// the archive id request on a current server, the challenge response on a
+// legacy server. Both must leave the slack cleared on success.
 func TestAsyncConnect_zeroSensitiveBuffers_clearsConnectWireCapOnSuccess(t *testing.T) {
 	t.Parallel()
 
-	harness, ac := newAsyncConnectFixtureWithCredentialLens(
-		t,
-		connectWireBufferPollHighWaterCredentialsLen,
-		connectWireBufferSlackChallengeLen,
-	)
-	registerAsyncConnectClose(t, ac)
-	setupAsyncConnectControlReady(t, harness, ac)
+	tests := []struct {
+		name         string
+		legacyServer bool
+		plantReady   func(*AsyncConnect, *asyncConnectChallengeRoundTripState) bool
+	}{
+		{
+			name: "archiveIDRequest",
+			plantReady: func(ac *AsyncConnect, _ *asyncConnectChallengeRoundTripState) bool {
+				return ac.State() == ConnectStateAwaitArchiveIDResponse
+			},
+		},
+		{
+			name:         "legacyServer",
+			legacyServer: true,
+			plantReady: func(_ *AsyncConnect, roundTrip *asyncConnectChallengeRoundTripState) bool {
+				return roundTrip.challengeWritten
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			harness, ac := newAsyncConnectFixtureWithCredentialLens(
+				t,
+				connectWireBufferPollHighWaterCredentialsLen,
+				connectWireBufferSlackChallengeLen,
+			)
+			registerAsyncConnectClose(t, ac)
+			setupAsyncConnectControlReady(t, harness, ac)
 
-	var backing []byte
-	var slackWireLen int
-	sentinelsPlanted := false
-	var roundTrip asyncConnectChallengeRoundTripState
+			var backing []byte
+			var slackWireLen int
+			sentinelsPlanted := false
+			roundTrip := asyncConnectChallengeRoundTripState{legacyServer: tt.legacyServer}
 
-	result, err := pollAsyncConnectUntil(t, ac, harness, func(ac *AsyncConnect) {
-		if capturedBacking, capturedWireLen := captureConnectWireBufferSlackOnce(
-			&sentinelsPlanted,
-			ac,
-			roundTrip.challengeWritten,
-			0xDD,
-		); capturedBacking != nil {
-			backing = capturedBacking
-			slackWireLen = capturedWireLen
-		}
-		if roundTrip.controlResponseWritten {
-			return
-		}
-		roundTrip.onStep(t, ac)
-	})
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.True(t, roundTrip.challengeWritten)
-	require.True(t, roundTrip.challengeResponseOffered)
-	require.True(t, roundTrip.controlResponseWritten)
-	require.True(t, sentinelsPlanted)
-	require.NotNil(t, backing)
-	requireConnectWireSlackCleared(t, backing, slackWireLen, "slack byte %d not cleared on success")
-	require.Nil(t, ac.ConnectWireBufferForTest())
+			result, err := pollAsyncConnectUntil(t, ac, harness, func(ac *AsyncConnect) {
+				if capturedBacking, capturedWireLen := captureConnectWireBufferSlackOnce(
+					&sentinelsPlanted,
+					ac,
+					tt.plantReady(ac, &roundTrip),
+					0xDD,
+				); capturedBacking != nil {
+					backing = capturedBacking
+					slackWireLen = capturedWireLen
+				}
+				roundTrip.onStep(t, ac)
+			})
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.True(t, roundTrip.challengeWritten)
+			require.True(t, roundTrip.challengeResponseOffered)
+			require.True(t, roundTrip.controlResponseWritten)
+			require.Equal(t, !tt.legacyServer, roundTrip.archiveIDResponseWritten)
+			require.True(t, sentinelsPlanted)
+			require.NotNil(t, backing)
+			requireConnectWireSlackCleared(t, backing, slackWireLen, "slack byte %d not cleared on success")
+			require.Nil(t, ac.ConnectWireBufferForTest())
+		})
+	}
 }

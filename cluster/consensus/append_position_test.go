@@ -207,7 +207,7 @@ func recordingAgent(
 	a.SetLogRecordingID(recordingID)
 	control := &fakeLogRecordingControl{active: active}
 	a.SetLogRecordingControl(control)
-	a.SetAppendSource(NewRecordingPosAppendPosition(a, counters))
+	a.SetAppendSource(NewRecordingPosAppendPosition(a, counters, cnc.NullValue))
 	return a
 }
 
@@ -385,7 +385,7 @@ func TestRecordingPosAppendPosition_missingCounterMatrix(t *testing.T) {
 	})
 	t.Run("nil_agent_nil_counters", func(t *testing.T) {
 		t.Parallel()
-		requireAppendNotReady(t, NewRecordingPosAppendPosition(nil, nil))
+		requireAppendNotReady(t, NewRecordingPosAppendPosition(nil, nil, cnc.NullValue))
 	})
 }
 
@@ -446,4 +446,56 @@ func TestRecordingPosAppendPosition_cachedSlotRevalidates(t *testing.T) {
 	writeCounter(1, recordingID, 300)
 	requireAppendPosition(t, 300, src)
 	require.Equal(t, int32(1), src.cachedCounterID)
+}
+
+func TestRecordingPosAppendPosition_matchesArchiveID(t *testing.T) {
+	t.Parallel()
+
+	const (
+		recordingID  int64 = 77
+		archiveID    int64 = 5
+		otherArchive int64 = 6
+	)
+
+	// Two archives on one driver hold the same recording id. Slot 2 is an
+	// unused scan stop.
+	meta := make([]byte, 3*cnc.CounterMetadataLength)
+	values := make([]byte, 3*cnc.CounterValueLength)
+	for counterID, owner := range []int64{otherArchive, archiveID} {
+		require.NoError(t, cnc.WriteRecordingPositionCounterRecord(
+			meta,
+			values,
+			int32(counterID),
+			cnc.CounterRecordAllocated,
+			cnc.ArchiveRecordingPositionCounterTypeID,
+			recordingID,
+			1, // session
+			"aeron:ipc",
+			owner,
+			100*(int64(counterID)+1),
+		))
+	}
+	reader, err := cnc.NewCountersReader(meta, values)
+	require.NoError(t, err)
+
+	cases := []struct {
+		name      string
+		archiveID int64
+		want      int64
+	}{
+		{name: "ownArchive", archiveID: archiveID, want: 200},
+		{name: "anyArchive", archiveID: cnc.NullValue, want: 100},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			a := recordingAgent(t, RoleFollower, recordingID, true, reader)
+			src := NewRecordingPosAppendPosition(a, reader, tc.archiveID)
+			requireAppendPosition(t, tc.want, src)
+		})
+	}
+
+	a := recordingAgent(t, RoleFollower, recordingID, true, reader)
+	requireAppendNotReady(t, NewRecordingPosAppendPosition(a, reader, 9))
 }

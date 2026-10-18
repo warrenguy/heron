@@ -63,10 +63,6 @@ type ArchiveNode struct {
 	Dir string
 
 	// ArchiveID is the server archive id from the ready marker, as decimal text.
-	// Use for failure dumps only.
-	//
-	// Do not equate ArchiveID with archive.Client.ArchiveID. That accessor is
-	// session-shaped and is not a dump substitute for the marker value.
 	ArchiveID string
 
 	cancel context.CancelFunc

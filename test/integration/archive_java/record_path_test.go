@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
@@ -167,9 +166,7 @@ func recordArchiveSmoke(
 		},
 	)
 
-	// STOP must not run until type-100 position reaches publication extent.
-	// NullValue = match any archive id (Client.ArchiveID() is connect RelevantID;
-	// may not match type-100 key).
+	// Send STOP only after the recording position reaches the publication extent.
 	reader, err := aeronClient.CountersReader()
 	require.NoError(t, err)
 	harness.PollClientUntilTransportClean(
@@ -179,7 +176,10 @@ func recordArchiveSmoke(
 		harness.ConnectedPollTimeout,
 		"client transport error during recording position poll",
 		func() bool {
-			slot, ok := reader.FindRecordingPositionCounter(recordingID, cnc.NullValue)
+			slot, ok := reader.FindRecordingPositionCounter(
+				recordingID,
+				archiveClient.ArchiveID(),
+			)
 			return ok && slot.Get() >= wantStopPosition
 		},
 		func() string {

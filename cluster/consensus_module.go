@@ -339,6 +339,12 @@ func OpenConsensusModule(
 		return nil, fmt.Errorf("cluster: counters reader for append rank: %w", err)
 	}
 
+	appendSource := consensus.NewRecordingPosAppendPosition(
+		module.agent,
+		counters,
+		module.archiveClient.ArchiveID(),
+	)
+
 	// Seed the exclusive log publication at the recovered append stop so a
 	// restart join can extend the established recording. Nil seed means cold
 	// start (no log term). Active-extent NullPosition floors to the committed
@@ -349,7 +355,7 @@ func OpenConsensusModule(
 		Agent:                      module.agent,
 		LogPublisher:               module.logPublisher,
 		LogAdapter:                 module.logAdapter,
-		AppendSource:               consensus.NewRecordingPosAppendPosition(module.agent, counters),
+		AppendSource:               appendSource,
 		PublicationInitialPosition: logPublicationSeedFromPlan(recovery.Plan()),
 	})
 	if err != nil {

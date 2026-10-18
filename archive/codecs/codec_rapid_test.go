@@ -422,6 +422,26 @@ func TestKeepAliveRequest_codec_rapid(t *testing.T) {
 	})
 }
 
+func TestArchiveIDRequest_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.ArchiveIDRequestFields{
+			ControlSessionID: rapid.Int64().Draw(rt, "controlSessionID"),
+			CorrelationID:    rapid.Int64().Draw(rt, "correlationID"),
+		}
+
+		runArchiveCodecRoundtripAtOffset(
+			rt,
+			archivewire.ArchiveIdRequestSbeTemplateID,
+			actingVersion,
+			offset,
+			encodeAt(actingVersion, fields, codecs.EncodeArchiveIDRequest),
+			fields,
+		)
+	})
+}
+
 func TestChallengeResponse_codec_rapid(t *testing.T) {
 	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
