@@ -18,6 +18,11 @@ const (
 	// the media driver.
 	ArchiveRecordingPositionCounterTypeID int32 = 100
 
+	// ArchiveControlSessionsCounterTypeID is the type id of the archive counter
+	// that counts active control sessions. Matches
+	// AeronCounters.ARCHIVE_CONTROL_SESSIONS_TYPE_ID.
+	ArchiveControlSessionsCounterTypeID int32 = 102
+
 	// Binary counter key layout for a recording-position counter: recordingId int64 at
 	// offset 0, sessionId int32 at 8, sourceIdentityLength int32 at 12, sourceIdentity
 	// bytes at 16, then archiveId int64 after the source identity.

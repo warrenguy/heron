@@ -39,6 +39,11 @@ import (
 // NewAsyncListRecording lists one recording without blocking. Poll feeds its
 // descriptor and control response. AsyncListRecording lists the caller rules.
 //
+// StopRecordingByIdentity stops a recording by its recording id and blocks.
+// NewAsyncStopRecordingByIdentity sends the same request without blocking.
+// Poll feeds its control response. AsyncStopRecordingByIdentity lists the
+// caller rules.
+//
 // One FragmentAssembler is session-owned and reused across polls.
 //
 // Close releases the control publication and subscription, and the Aeron client when
@@ -472,6 +477,32 @@ func (client *Client) StopRecordingAwaitSignal(
 		targets,
 		tracker,
 	)
+}
+
+// StopRecordingByIdentity offers a StopRecordingByIdentityRequest and blocks
+// until the archive replies.
+//
+// Behaviour: the archive aborts the active recording session of recordingID.
+// The STOP signal goes to the control session that started the recording, not
+// to this one. The catalog stop position appears once the archive closes the
+// recording session. That close can lag the reply.
+//
+// Returns:
+//   - true, nil: this request removed the recording subscription of an active
+//     recording
+//   - false, nil: no active recording. After an earlier stop the catalog stop
+//     position can still be null
+//   - false, err: the offer or the reply failed. ErrorUnknownRecording when
+//     the catalog holds no recordingID. ctx.Err() when the context is done
+//     first
+func (client *Client) StopRecordingByIdentity(
+	ctx context.Context,
+	recordingID int64,
+) (
+	stopped bool,
+	err error,
+) {
+	return client.sessionControlOps(client.Poll).stopRecordingByIdentity(ctx, recordingID)
 }
 
 // StartReplay offers a ReplayRequest and blocks until the archive replies with a

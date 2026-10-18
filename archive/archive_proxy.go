@@ -249,6 +249,26 @@ func (p *Proxy) TryListRecording(
 	)
 }
 
+// TryStopRecordingByIdentity encodes StopRecordingByIdentityRequest (template
+// 65) and offers it once.
+func (p *Proxy) TryStopRecordingByIdentity(
+	controlSessionID int64,
+	correlationID int64,
+	recordingID int64,
+) (int64, bool) {
+	fields := codecs.StopRecordingByIdentityRequestFields{
+		ControlSessionID: controlSessionID,
+		CorrelationID:    correlationID,
+		RecordingID:      recordingID,
+	}
+	return p.tryArchiveWireOffer(
+		archivewire.StopRecordingByIdentityRequestSbeBlockLength,
+		func(dst []byte, actingVersion uint16) (int, bool) {
+			return codecs.EncodeStopRecordingByIdentityRequest(dst, 0, actingVersion, fields)
+		},
+	)
+}
+
 // TryTruncateRecording encodes TruncateRecordingRequest (template 13) and offers
 // it once.
 func (p *Proxy) TryTruncateRecording(

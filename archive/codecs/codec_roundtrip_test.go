@@ -308,6 +308,8 @@ func requireDecodedArchiveFields(tb require.TestingT, want, got any) {
 		require.Equal(tb, w, got.(codecs.CloseSessionRequestFields))
 	case codecs.ListRecordingRequestFields:
 		require.Equal(tb, w, got.(codecs.ListRecordingRequestFields))
+	case codecs.StopRecordingByIdentityRequestFields:
+		require.Equal(tb, w, got.(codecs.StopRecordingByIdentityRequestFields))
 	case codecs.StopReplayRequestFields:
 		require.Equal(tb, w, got.(codecs.StopReplayRequestFields))
 	case codecs.TruncateRecordingRequestFields:
@@ -809,6 +811,21 @@ func TestListRecordingRequest_roundtrip(t *testing.T) {
 		archivewire.ListRecordingRequestSbeTemplateID,
 		archiveSchemaVersion,
 		encodeAt(archiveSchemaVersion, fields, codecs.EncodeListRecordingRequest),
+		fields,
+	)
+}
+
+func TestStopRecordingByIdentityRequest_roundtrip(t *testing.T) {
+	fields := codecs.StopRecordingByIdentityRequestFields{
+		ControlSessionID: 1,
+		CorrelationID:    2,
+		RecordingID:      3,
+	}
+	runArchiveCodecRoundtrip(
+		t,
+		archivewire.StopRecordingByIdentityRequestSbeTemplateID,
+		archiveSchemaVersion,
+		encodeAt(archiveSchemaVersion, fields, codecs.EncodeStopRecordingByIdentityRequest),
 		fields,
 	)
 }

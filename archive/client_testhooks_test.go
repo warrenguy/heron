@@ -260,6 +260,50 @@ func TestAsyncListRecording_PollDescriptor_throughClientPoll(t *testing.T) {
 	require.False(t, client.controlPoller.IsPollComplete(), "control poller must latch nothing")
 }
 
+// TestAsyncStopRecordingByIdentity_PollResponse_throughClientPoll asserts one
+// Client.Poll batch latches the OK for an open AsyncStopRecordingByIdentity.
+// A STOP signal from another control session in the same batch reaches no
+// handler.
+func TestAsyncStopRecordingByIdentity_PollResponse_throughClientPoll(t *testing.T) {
+	h := newLifecycleHarness(t)
+	client := h.newClient()
+	var captured capturedRecordingSignal
+	client.SetRecordingSignalHandler(recordingSignalCapture(&captured))
+
+	handle := client.NewAsyncStopRecordingByIdentity(lifecycleRecordingID)
+	defer handle.Close()
+	offered, err := handle.TryOffer()
+	require.NoError(t, err)
+	require.True(t, offered)
+
+	signalWire := encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
+		ControlSessionID: controlResponseTestControlSessionID + 1,
+		CorrelationID:    909,
+		RecordingID:      lifecycleRecordingID,
+		SubscriptionID:   2002,
+		Position:         8192,
+		Signal:           archivewire.RecordingSignal_STOP,
+	})
+	responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    handle.correlationID,
+		RelevantID:       1,
+		Code:             archivewire.ControlResponseCode_OK,
+		Version:          520,
+	})
+	writeUnfragmentedWireToTerm(t, h.termBuffer, signalWire)
+	appendUnfragmentedWireToTerm(t, h.termBuffer, responseWire)
+
+	require.Equal(t, 2, client.Poll())
+	require.Zero(t, captured.calls, "session handler must get no STOP from another session")
+
+	done, err := handle.PollResponse()
+	require.NoError(t, err)
+	require.True(t, done)
+	require.True(t, handle.IsStopped())
+	require.False(t, client.controlPoller.IsPollComplete(), "matching OK must be consumed")
+}
+
 // TestClientStopRecordingAwaitSignal_routesSTOPToTracker proves the session method
 // routes STOP signals to the per-call tracker without SetRecordingSignalHandler.
 func TestClientStopRecordingAwaitSignal_routesSTOPToTracker(t *testing.T) {

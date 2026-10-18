@@ -3,12 +3,14 @@
 package cluster_archive_test
 
 import (
+	"strconv"
 	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
@@ -31,14 +33,7 @@ func TestArchiveClient_startAutoStopReleasesSubscription(t *testing.T) {
 	})
 	aeronClient, hadClientError := harness.ConnectIPCClient(t, md)
 
-	cfg := archive.Config{
-		ControlRequestChannel:  archive.DefaultLocalControlChannel,
-		ControlResponseChannel: archive.DefaultLocalControlChannel,
-		Aeron:                  aeronClient,
-	}.WithRemoteControl().Normalize()
-	archiveClient, err := archive.Connect(t.Context(), cfg)
-	require.NoError(t, err)
-	harness.CleanupClose(t, "close archive client", archiveClient.Close)
+	archiveClient := connectArchiveClient(t, aeronClient)
 
 	// Each case owns a stream id. The archive keys recording subscriptions on
 	// channel and stream, so a kept subscription would refuse the next case.
@@ -153,6 +148,187 @@ func TestArchiveClient_startAutoStopReleasesSubscription(t *testing.T) {
 			require.NotEqual(t, recordingID, secondRecordingID)
 		})
 	}
+}
+
+// TestArchiveClient_stopRecordingByIdentity asserts a new session stops an
+// orphaned recording.
+func TestArchiveClient_stopRecordingByIdentity(t *testing.T) {
+	// No t.Parallel: the Archive binds the control port that
+	// TestArchiveClient_startAutoStopReleasesSubscription also binds.
+	const streamID int32 = 4004
+
+	md := harness.Start(t)
+	harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
+		AeronDir:       md.Dir,
+		ControlChannel: harness.ArchiveClientControl0,
+	})
+
+	// Phase: client A starts a recording with autoStop true. Wait until the
+	// recording holds one message.
+	aeronA, hadClientErrorA := harness.ConnectIPCClient(t, md)
+	archiveA := connectArchiveClient(t, aeronA)
+	pub, err := aeronA.AddPublication(streamID, archiveClientRecordingChannel)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "close record publication", pub.Close)
+	recordingID := awaitStartRecording(
+		t,
+		aeronA,
+		hadClientErrorA,
+		archiveA,
+		streamID,
+		true,
+		false,
+	)
+	recordedPosition := harness.OfferWithRetry(t, pub, []byte("recorded"))
+	require.Positive(t, recordedPosition)
+	counters, err := aeronA.CountersReader()
+	require.NoError(t, err)
+	harness.PollClientUntilTransportClean(
+		t,
+		aeronA,
+		hadClientErrorA,
+		harness.ConnectedPollTimeout,
+		"client transport error during recording position poll",
+		func() bool {
+			slot, ok := counters.FindRecordingPositionCounter(recordingID, cnc.NullValue)
+			return ok && slot.Get() >= recordedPosition
+		},
+		func() string {
+			return "recording position not at " + strconv.FormatInt(recordedPosition, 10) +
+				" within " + harness.ConnectedPollTimeout.String()
+		},
+	)
+
+	// Phase: client A closes its control session. The publication stays open.
+	// Wait until the archive drops the session.
+	sessionsCounterID, ok := counters.FindCounterOfType(cnc.ArchiveControlSessionsCounterTypeID)
+	require.True(t, ok, "archive control sessions counter not found")
+	sessionsWithA, err := counters.CounterValue(sessionsCounterID)
+	require.NoError(t, err)
+	require.Positive(t, sessionsWithA)
+	require.NoError(t, archiveA.Close())
+	harness.PollClientUntilTransportClean(
+		t,
+		aeronA,
+		hadClientErrorA,
+		harness.ConnectedPollTimeout,
+		"client transport error during control session close poll",
+		func() bool {
+			sessions, err := counters.CounterValue(sessionsCounterID)
+			require.NoError(t, err)
+			return sessions < sessionsWithA
+		},
+		func() string {
+			return "archive kept the closed control session within " +
+				harness.ConnectedPollTimeout.String()
+		},
+	)
+
+	// Phase: client B lists the recording. The stop position is null: the
+	// closed control session left the recording active.
+	aeronB, hadClientErrorB := harness.ConnectIPCClient(t, md)
+	archiveB := connectArchiveClient(t, aeronB)
+	stopSignals := 0
+	archiveB.SetRecordingSignalHandler(archive.RecordingSignalHandlerFunc(
+		func(event codecs.RecordingSignalEventFields) {
+			if event.Signal == archivewire.RecordingSignal_STOP &&
+				event.RecordingID == recordingID {
+				stopSignals++
+			}
+		},
+	))
+	descriptor := awaitListRecording(t, aeronB, hadClientErrorB, archiveB, recordingID)
+	require.Equal(t, cnc.NullValue, descriptor.StopPosition)
+
+	// Phase: client B stops the recording by identity.
+	handle := archiveB.NewAsyncStopRecordingByIdentity(recordingID)
+	pollAsyncRequest(
+		t,
+		aeronB,
+		hadClientErrorB,
+		archiveB,
+		"async stop recording by identity",
+		handle.TryOffer,
+		func() bool {
+			done, err := handle.PollResponse()
+			require.NoError(t, err)
+			return done
+		},
+	)
+	require.True(t, handle.IsStopped(), "stop must remove the active recording subscription")
+	handle.Close()
+
+	// Phase: the catalog stop appears once the archive closes the recording
+	// session. Each list request runs under the one poll deadline.
+	var list *archive.AsyncListRecording
+	t.Cleanup(func() { list.Close() })
+	listOffered := false
+	harness.PollClientUntilTransportClean(
+		t,
+		aeronB,
+		hadClientErrorB,
+		harness.ConnectedPollTimeout,
+		"client transport error during catalog stop poll",
+		func() bool {
+			if list == nil {
+				list = archiveB.NewAsyncListRecording(recordingID)
+				listOffered = false
+			}
+			if !listOffered {
+				var err error
+				listOffered, err = list.TryOffer()
+				require.NoError(t, err)
+				if !listOffered {
+					return false
+				}
+			}
+			_ = archiveB.Poll()
+			done, got, err := list.PollDescriptor()
+			require.NoError(t, err)
+			if !done {
+				return false
+			}
+			list.Close()
+			list = nil
+			descriptor = got
+			return descriptor.StopPosition != cnc.NullValue
+		},
+		func() string {
+			return "catalog stop position not set within " +
+				harness.ConnectedPollTimeout.String()
+		},
+	)
+	require.Greater(t, descriptor.StopPosition, descriptor.StartPosition)
+	require.Equal(t, recordedPosition, descriptor.StopPosition)
+	require.Zero(t, stopSignals, "the stopping session must get no STOP signal")
+
+	// Phase: a second stop finds no active recording.
+	stopped, err := archiveB.StopRecordingByIdentity(t.Context(), recordingID)
+	require.NoError(t, err)
+	require.False(t, stopped, "stopped recording must report no subscription removed")
+
+	// Phase: an unknown id fails with ErrorUnknownRecording.
+	_, err = archiveB.StopRecordingByIdentity(t.Context(), recordingID+1000)
+	code, ok := archive.ExceptionCode(err)
+	require.True(t, ok, "stop error: %v", err)
+	require.Equal(t, int32(archive.ErrorUnknownRecording), code)
+	require.Zero(t, stopSignals, "the stopping session must get no STOP signal")
+}
+
+// connectArchiveClient connects an archive client over the local control
+// channel on aeronClient. Cleanup closes the client.
+func connectArchiveClient(t *testing.T, aeronClient *aeron.Client) *archive.Client {
+	t.Helper()
+
+	cfg := archive.Config{
+		ControlRequestChannel:  archive.DefaultLocalControlChannel,
+		ControlResponseChannel: archive.DefaultLocalControlChannel,
+		Aeron:                  aeronClient,
+	}.WithRemoteControl().Normalize()
+	archiveClient, err := archive.Connect(t.Context(), cfg)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "close archive client", archiveClient.Close)
+	return archiveClient
 }
 
 // awaitStartRecording starts a recording on streamID and returns the catalog

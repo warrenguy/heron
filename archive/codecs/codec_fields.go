@@ -32,6 +32,12 @@ type StopRecordingRequestFields struct {
 	Channel          []byte
 }
 
+type StopRecordingByIdentityRequestFields struct {
+	ControlSessionID int64
+	CorrelationID    int64
+	RecordingID      int64
+}
+
 type ReplayRequestFields struct {
 	ControlSessionID int64
 	CorrelationID    int64
