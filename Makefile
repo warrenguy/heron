@@ -47,6 +47,9 @@ $(shell awk 'NR == FNR {base[$$1] = $$2 + $$3; next} $$2 + $$3 > base[$$1] {prin
 		-f '{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}' ./...))
 endef
 STRESS_TEST_PKGS := $(call tag-gained-pkgs,stress)
+# Packages that reach the amd64 release-store assembly, which -race builds skip.
+NORACE_TEST_PKGS := ./atomicbuffer/ ./ringbuffer/ ./broadcast/ ./aeron/ \
+	./aeron/cnc/ ./aeron/conductor/ ./aeron/logbuffer/
 RAPID_TEST_PKGS := $(call tag-gained-pkgs,rapid)
 # Unit pass uses bench tag; omit test/bench root (benchmark-only; see make bench).
 UNIT_TEST_PKGS := $(shell go list -tags=bench,$(UNIT_TEST_TAGS) -f \
@@ -74,6 +77,7 @@ help: ## List Makefile targets
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  %-28s %s\n", $$1, $$2}'; \
 		printf '  %-28s %s\n' test 'Unit tests'; \
 		printf '  %-28s %s\n' test-stress 'Stress tests'; \
+		printf '  %-28s %s\n' test-norace 'Release-store packages without the race detector'; \
 	} | sort
 	@echo ""
 	@echo "Contract oracles per suite: test-<name>-{unit,oracle,contract}"
@@ -88,7 +92,7 @@ help: ## List Makefile targets
 	cluster-sbe-catalog-regen recordinglog-fixtures-regen \
 	node-state-fixtures-regen recovery-state-key-fixtures-regen
 
-check: ## Lint pins unit stress examples contract-oracles (needs java + mvn)
+check: ## Lint pins unit stress norace examples contract-oracles (needs java + mvn)
 	@T=$$(command -v timeout 2>/dev/null \
 		|| command -v gtimeout 2>/dev/null); \
 	if [ -n "$$T" ]; then \
@@ -108,7 +112,7 @@ check-static-extra:
 		contract-oracles test-golden-fixtures-unit
 
 check-test:
-	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) test test-stress check-examples
+	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) test test-stress test-norace check-examples
 
 check-inner: check-static check-test
 
@@ -224,16 +228,19 @@ fuzz: ## Run all Fuzz* tests
 	done
 
 # Unit tests need -tags=testhooks,bench; use make test.
-# $(1)=target suffix, $(2)=extra tags, $(3)=test flags, $(4)=help label, $(5)=packages (default GO_TEST_PKGS)
+# $(1)=target suffix, $(2)=extra tags, $(3)=test flags, $(4)=help label,
+# $(5)=packages (default GO_TEST_PKGS), $(6)=race flag (-race or empty)
+comma := ,
 define go-test-target
 .PHONY: test$(1)
 test$(1): ## $(4)
-	go test -timeout=$(TEST_TIMEOUT) -race -tags=$(2),$(UNIT_TEST_TAGS) \
+	go test -timeout=$(TEST_TIMEOUT) $(6) -tags=$(2),$(UNIT_TEST_TAGS) \
 		-count=1 $(3) $(if $(5),$(5),$(GO_TEST_PKGS)) $(COVERAGE_TEST_ARGS)
 endef
 
-$(eval $(call go-test-target,,bench,,Unit tests,$(UNIT_TEST_PKGS)))
-$(eval $(call go-test-target,-stress,stress,-run Stress,Stress tests,$(STRESS_TEST_PKGS)))
+$(eval $(call go-test-target,,bench,,Unit tests,$(UNIT_TEST_PKGS),-race))
+$(eval $(call go-test-target,-stress,stress,-run Stress,Stress tests,$(STRESS_TEST_PKGS),-race))
+$(eval $(call go-test-target,-norace,bench$(comma)stress,,Release-store package unit and stress tests without the race detector,$(NORACE_TEST_PKGS),))
 
 # go test has no file filter: run the names the rapid tag adds.
 # A rapid name shared with a unit test fails; -run would match both.

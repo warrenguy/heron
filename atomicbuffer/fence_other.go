@@ -11,9 +11,3 @@ var fenceWord atomic.Uint32
 func AcquireFence() {
 	fenceWord.Load()
 }
-
-// ReleaseFence orders loads and stores before the call ahead of stores after
-// the call, like Java VarHandle.releaseFence. Holds on amd64 and arm64.
-func ReleaseFence() {
-	fenceWord.Store(0)
-}

@@ -271,7 +271,7 @@ func (f *NodeStateFile) UpdateCandidateTermID(
 	var ct nodewire.CandidateTerm
 	f.buf.PutInt64(bodyOff+int(ct.LogPositionEncodingOffset()), logPosition)
 	f.buf.PutInt64(bodyOff+int(ct.TimestampEncodingOffset()), timestampMs)
-	f.buf.PutInt64Release(f.candidateTermOffset, candidateTermID)
+	f.buf.PutInt64Volatile(f.candidateTermOffset, candidateTermID)
 	return f.force()
 }
 

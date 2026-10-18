@@ -192,9 +192,9 @@ func putFrameLengthRelease(buffer atomicbuffer.AtomicBuffer, frameOffset int, fr
 	buffer.PutInt32Release(frameOffset+OffsetFrameLength, frameLength)
 }
 
-// PutFrameLengthOrdered publishes committed positive frame length via release store.
-// Aeron exports Ordered and Release as separate entry points; Go has no ordered int32
-// store, so both names share one release implementation.
+// PutFrameLengthOrdered stores a committed positive frame length with release order.
+// It matches Java frameLengthOrdered. Java ordered and release stores are one store,
+// so this function and PutFrameLengthRelease share one body.
 func PutFrameLengthOrdered(buffer atomicbuffer.AtomicBuffer, frameOffset int, frameLength int32) {
 	putFrameLengthRelease(buffer, frameOffset, frameLength)
 }
