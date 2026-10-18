@@ -106,6 +106,8 @@ func offeredArchiveCorrelationID(t *testing.T, wire []byte) int64 {
 		return fields.CorrelationID
 	case codecs.StopRecordingRequestFields:
 		return fields.CorrelationID
+	case codecs.StopRecordingByIdentityRequestFields:
+		return fields.CorrelationID
 	case codecs.ListRecordingRequestFields:
 		return fields.CorrelationID
 	case codecs.ReplayRequestFields:
@@ -850,6 +852,88 @@ func TestStopRecording_awaitOK(t *testing.T) {
 		[]byte(lifecycleRecordingChannel),
 	)
 	require.NoError(t, err)
+}
+
+func TestStopRecordingByIdentity_await(t *testing.T) {
+	cases := []struct {
+		name          string
+		respond       bool
+		code          archivewire.ControlResponseCode
+		relevantID    int64
+		wantStopped   bool
+		wantErrorCode int32
+	}{
+		{
+			name:        "ok_relevant_id_1_stopped",
+			respond:     true,
+			code:        archivewire.ControlResponseCode_OK,
+			relevantID:  1,
+			wantStopped: true,
+		},
+		{
+			name:       "ok_relevant_id_0_not_stopped",
+			respond:    true,
+			code:       archivewire.ControlResponseCode_OK,
+			relevantID: 0,
+		},
+		{
+			name:          "error_unknown_recording",
+			respond:       true,
+			code:          archivewire.ControlResponseCode_ERROR,
+			relevantID:    ErrorUnknownRecording,
+			wantErrorCode: ErrorUnknownRecording,
+		},
+		{
+			name: "no_reply_times_out",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLifecycleHarness(t)
+			targets := h.responseTargets()
+			pollFn := func() int {
+				h.nowNs.Add(int64(h.cfg.ControlResponseTimeout))
+				return h.demuxPoll(targets)
+			}
+			written := false
+			if tc.respond {
+				pollFn = h.respondControlResponseOnce(
+					t,
+					tc.relevantID,
+					tc.code,
+					&written,
+					targets,
+				)
+			}
+
+			stopped, err := h.controlOps(pollFn).stopRecordingByIdentity(
+				t.Context(),
+				lifecycleRecordingID,
+			)
+			require.Equal(t, tc.wantStopped, stopped)
+
+			offered := requireProxyWireFields[codecs.StopRecordingByIdentityRequestFields](
+				t,
+				h.pub.lastOffer(),
+				archivewire.StopRecordingByIdentityRequestSbeTemplateID,
+			)
+			require.Equal(t, lifecycleRecordingID, offered.RecordingID)
+			require.Equal(t, tc.respond, written)
+
+			switch {
+			case !tc.respond:
+				var timeoutErr *ControlResponseTimeoutError
+				require.ErrorAs(t, err, &timeoutErr)
+				require.Equal(t, ControlResponseAwaitOperation, timeoutErr.Operation)
+			case tc.wantErrorCode != 0:
+				code, ok := ExceptionCode(err)
+				require.True(t, ok, "error must be an archive exception: %v", err)
+				require.Equal(t, tc.wantErrorCode, code)
+			default:
+				require.NoError(t, err)
+			}
+		})
+	}
 }
 
 func TestStopRecording_awaitSTOPSignal(t *testing.T) {

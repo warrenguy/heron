@@ -218,6 +218,31 @@ func EncodeStopRecordingRequest(
 	)
 }
 
+// EncodeStopRecordingByIdentityRequest writes an archive
+// StopRecordingByIdentityRequest at offset.
+func EncodeStopRecordingByIdentityRequest(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields StopRecordingByIdentityRequestFields,
+) (wireEnd int, ok bool) {
+	return encodeWithArchiveWireHeader(
+		buf,
+		offset,
+		archivewire.StopRecordingByIdentityRequestSbeBlockLength,
+		archivewire.StopRecordingByIdentityRequestSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
+			var msg archivewire.StopRecordingByIdentityRequest
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+				SetControlSessionId(fields.ControlSessionID).
+				SetCorrelationId(fields.CorrelationID).
+				SetRecordingId(fields.RecordingID)
+		},
+	)
+}
+
 // EncodeListRecordingRequest writes an archive ListRecordingRequest at offset.
 func EncodeListRecordingRequest(
 	buf []byte,

@@ -319,6 +319,27 @@ func TestListRecordingRequest_codec_rapid(t *testing.T) {
 	})
 }
 
+func TestStopRecordingByIdentityRequest_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.StopRecordingByIdentityRequestFields{
+			ControlSessionID: rapid.Int64().Draw(rt, "controlSessionID"),
+			CorrelationID:    rapid.Int64().Draw(rt, "correlationID"),
+			RecordingID:      rapid.Int64().Draw(rt, "recordingID"),
+		}
+
+		runArchiveCodecRoundtripAtOffset(
+			rt,
+			archivewire.StopRecordingByIdentityRequestSbeTemplateID,
+			actingVersion,
+			offset,
+			encodeAt(actingVersion, fields, codecs.EncodeStopRecordingByIdentityRequest),
+			fields,
+		)
+	})
+}
+
 func TestStopReplayRequest_codec_rapid(t *testing.T) {
 	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {

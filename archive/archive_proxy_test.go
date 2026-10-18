@@ -411,6 +411,36 @@ func TestProxy_TryListRecording_fieldValuesOnWire(t *testing.T) {
 	require.Len(t, wire, expectedLen)
 }
 
+func TestProxy_TryStopRecordingByIdentity_fieldValuesOnWire(t *testing.T) {
+	pub, proxy := newTestProxy(Config{})
+
+	pos, ok := proxy.TryStopRecordingByIdentity(
+		controlResponseTestControlSessionID,
+		archiveProxyTestCorrelationID,
+		archiveProxyTestRecordingID,
+	)
+	require.True(t, ok)
+
+	wire := pub.lastOffer()
+	require.Equal(t, archiveProxyTestOfferPosition+int64(len(wire)), pos)
+
+	fields := requireProxyWireFields[codecs.StopRecordingByIdentityRequestFields](
+		t,
+		wire,
+		archivewire.StopRecordingByIdentityRequestSbeTemplateID,
+	)
+	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
+	require.Equal(t, archiveProxyTestRecordingID, fields.RecordingID)
+
+	expectedLen, lenOK := codecs.ArchiveWireMessageLen(
+		archivewire.StopRecordingByIdentityRequestSbeBlockLength,
+	)
+	require.True(t, lenOK)
+	require.NotZero(t, expectedLen)
+	require.Len(t, wire, expectedLen)
+}
+
 func TestProxy_TryReplay_fieldValuesOnWire(t *testing.T) {
 	pub, proxy := newTestProxy(Config{})
 

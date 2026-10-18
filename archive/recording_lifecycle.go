@@ -92,6 +92,26 @@ func (ops archiveControlOps) stopRecording(
 	return err
 }
 
+// stopRecordingByIdentity offers a StopRecordingByIdentityRequest and blocks
+// until the archive replies with a matching ControlResponse. Result
+// semantics: see Client.StopRecordingByIdentity.
+func (ops archiveControlOps) stopRecordingByIdentity(
+	ctx context.Context,
+	recordingID int64,
+) (bool, error) {
+	fields, err := ops.offerAndAwait(ctx, func(correlationID int64) (int64, bool) {
+		return ops.proxy.TryStopRecordingByIdentity(
+			ops.controlSessionID,
+			correlationID,
+			recordingID,
+		)
+	})
+	if err != nil {
+		return false, err
+	}
+	return fields.RelevantID != 0, nil
+}
+
 // startReplay offers a ReplayRequest and blocks until the archive replies with a
 // matching ControlResponse.
 func (ops archiveControlOps) startReplay(

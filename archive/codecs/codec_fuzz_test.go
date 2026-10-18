@@ -31,6 +31,20 @@ func archiveCodecFuzzSeedBuffers() [][]byte {
 				return codecs.EncodeStartRecordingRequest(buf, offset, archiveSchemaVersion, fields)
 			},
 		),
+		mustEncodeArchiveWire(
+			codecs.StopRecordingByIdentityRequestFields{
+				ControlSessionID: 1,
+				CorrelationID:    2,
+				RecordingID:      3,
+			},
+			func(
+				buf []byte,
+				offset int,
+				fields codecs.StopRecordingByIdentityRequestFields,
+			) (int, bool) {
+				return codecs.EncodeStopRecordingByIdentityRequest(buf, offset, archiveSchemaVersion, fields)
+			},
+		),
 	}
 }
 
