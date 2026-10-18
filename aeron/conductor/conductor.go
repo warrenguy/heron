@@ -712,7 +712,8 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 			PendingKindNextSessionID,
 			PendingKindRemovePublication,
 			PendingKindRemoveSubscription,
-			PendingKindAddCounter:
+			PendingKindAddCounter,
+			PendingKindDestination:
 		}
 	})
 }
@@ -741,9 +742,15 @@ func (conductor *Conductor) handlePendingExpired(
 	conductor.RollbackAddPendingResources(registration)
 }
 
+// failPending rolls back add resources and sets Err on the entry. A
+// PendingKindDestination entry leaves receivedCorrelationID unchanged, so the
+// error displaces no other await's mark.
 func (conductor *Conductor) failPending(registration *PendingRegistration, err error) {
 	conductor.RollbackAddPendingResources(*registration)
 	registration.Err = err
+	if registration.Kind == PendingKindDestination {
+		return
+	}
 	conductor.receivedCorrelationID = registration.CorrelationID
 }
 
@@ -816,7 +823,8 @@ func newPublicationForPendingKind(
 		PendingKindAddSubscription,
 		PendingKindRemovePublication,
 		PendingKindRemoveSubscription,
-		PendingKindAddCounter:
+		PendingKindAddCounter,
+		PendingKindDestination:
 	}
 	return nil, fmt.Errorf("conductor: pending kind %v is not a publication kind", kind)
 }

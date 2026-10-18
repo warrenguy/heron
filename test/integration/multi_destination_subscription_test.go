@@ -3,6 +3,7 @@
 package integration_test
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -124,11 +125,23 @@ func TestMultiDestinationSubscriptionMerge(t *testing.T) {
 	finishPubSubIPCTest(t, md, hadClientError)
 }
 
+// payloadOfferer is the publication surface offerPayloads needs. Publication
+// and ExclusivePublication both satisfy it.
+type payloadOfferer interface {
+	aeron.PublicationOfferer
+	WaitUntilConnected(context.Context) error
+	OfferWithRetryObserved(
+		context.Context,
+		[]byte,
+		aeron.OfferRetriableObserver,
+	) (int64, error)
+}
+
 // offerPayloads offers each payload with retry and drives the client duty cycle.
 func offerPayloads(
 	t *testing.T,
 	client *aeron.Client,
-	pub *aeron.ExclusivePublication,
+	pub payloadOfferer,
 	payloads [][]byte,
 ) {
 	t.Helper()

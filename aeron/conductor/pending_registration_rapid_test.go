@@ -31,6 +31,7 @@ var rapidPendingKinds = []conductor.PendingKind{
 	conductor.PendingKindRemovePublication,
 	conductor.PendingKindRemoveSubscription,
 	conductor.PendingKindAddCounter,
+	conductor.PendingKindDestination,
 }
 
 func newConductorForRapid(t *testing.T, rt *rapid.T) *conductor.Conductor {
@@ -323,6 +324,9 @@ func applyPendingRapidMapDriverError(model *pendingRapidMapModel, correlationID 
 	}
 	entry.driverErrored = true
 	model.entries[correlationID] = entry
+	if entry.kind == conductor.PendingKindDestination {
+		return
+	}
 	model.receivedCorrelationID = correlationID
 }
 
@@ -370,6 +374,12 @@ func applyPendingRapidOperationSucceeded(
 		conductor.PendingKindRemoveSubscription:
 		applyPendingRapidSuccess(model, correlationID, entry)
 		return true
+	case conductor.PendingKindDestination:
+		entry.err = nil
+		entry.driverErrored = false
+		entry.ready = true
+		model.entries[correlationID] = entry
+		return true
 	default:
 		return false
 	}
@@ -397,7 +407,8 @@ func pendingRapidSucceededSurvivors(model pendingRapidMapModel) []int64 {
 		succeeded := entry.ready && entry.err == nil && !entry.driverErrored
 		survivesExpiry := correlationID == model.activeCorrelationID ||
 			conductor.AddPendingKindForTest(entry.kind) ||
-			entry.kind == conductor.PendingKindAddCounter
+			entry.kind == conductor.PendingKindAddCounter ||
+			entry.kind == conductor.PendingKindDestination
 		if succeeded && survivesExpiry {
 			ids = append(ids, correlationID)
 		}
@@ -530,6 +541,7 @@ var (
 		conductor.PendingKindAddPublication,
 		conductor.PendingKindAddExclusivePublication,
 		conductor.PendingKindAddSubscription,
+		conductor.PendingKindDestination,
 	}
 	pendingRapidNextSessionIDKinds = []conductor.PendingKind{conductor.PendingKindNextSessionID}
 )

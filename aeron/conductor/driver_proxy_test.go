@@ -212,10 +212,11 @@ func requireDriverProxyPublicationMessage(
 
 func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 	const (
-		clientID       int64 = 1
-		correlationID  int64 = 42
-		streamID       int32 = 1001
-		registrationID int64 = 9001
+		clientID                  int64 = 1
+		correlationID             int64 = 42
+		streamID                  int32 = 1001
+		registrationID            int64 = 9001
+		destinationRegistrationID int64 = 9002
 	)
 
 	publicationWant := conductor.PublicationMessage{
@@ -465,6 +466,62 @@ func TestDriverProxy_offerBody_encodeGolden(t *testing.T) {
 			bodyLength: destinationBodyLength,
 			read:       requireDestination,
 		},
+		{
+			name:       "add destination",
+			wantTypeID: conductor.AddDestination,
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.AddDestination(
+					correlationID,
+					registrationID,
+					driverProxyTestChannel,
+				)
+			},
+			wantBody:   destinationWantBody,
+			bodyLength: destinationBodyLength,
+			read:       requireDestination,
+		},
+		{
+			name:       "remove destination",
+			wantTypeID: conductor.RemoveDestination,
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.RemoveDestination(
+					correlationID,
+					registrationID,
+					driverProxyTestChannel,
+				)
+			},
+			wantBody:   destinationWantBody,
+			bodyLength: destinationBodyLength,
+			read:       requireDestination,
+		},
+		{
+			name:       "remove destination by id",
+			wantTypeID: conductor.RemoveDestinationByID,
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.RemoveDestinationByID(
+					correlationID,
+					registrationID,
+					destinationRegistrationID,
+				)
+			},
+			wantBody: conductor.DestinationByIDMessageBytes(
+				clientID,
+				correlationID,
+				registrationID,
+				destinationRegistrationID,
+			),
+			bodyLength: conductor.DestinationByIDMessageBodyLength,
+			read: func(t *testing.T, buffer atomicbuffer.AtomicBuffer, index, length int) {
+				got, err := conductor.DecodeDestinationByIDMessage(buffer, index, length)
+				require.NoError(t, err)
+				require.Equal(t, conductor.DestinationByIDMessage{
+					ClientID:                  clientID,
+					CorrelationID:             correlationID,
+					ResourceRegistrationID:    registrationID,
+					DestinationRegistrationID: destinationRegistrationID,
+				}, got)
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -565,6 +622,24 @@ func TestDriverProxy_offer_insufficientCapacity(t *testing.T) {
 				return proxy.RemoveReceiveDestination(42, 9001, driverProxyTestChannel)
 			},
 		},
+		{
+			name: "add destination",
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.AddDestination(42, 9001, driverProxyTestChannel)
+			},
+		},
+		{
+			name: "remove destination",
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.RemoveDestination(42, 9001, driverProxyTestChannel)
+			},
+		},
+		{
+			name: "remove destination by id",
+			offer: func(proxy *conductor.DriverProxy) error {
+				return proxy.RemoveDestinationByID(42, 9001, 9002)
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -622,6 +697,18 @@ func TestDriverProxy_addChannelCommands_rejectNonASCII(t *testing.T) {
 			name: "remove receive destination",
 			offer: func(proxy *conductor.DriverProxy, channel string) error {
 				return proxy.RemoveReceiveDestination(correlationID, 9001, channel)
+			},
+		},
+		{
+			name: "add destination",
+			offer: func(proxy *conductor.DriverProxy, channel string) error {
+				return proxy.AddDestination(correlationID, 9001, channel)
+			},
+		},
+		{
+			name: "remove destination",
+			offer: func(proxy *conductor.DriverProxy, channel string) error {
+				return proxy.RemoveDestination(correlationID, 9001, channel)
 			},
 		},
 	}

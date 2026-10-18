@@ -1297,6 +1297,7 @@ func TestConductor_RegisterPendingAdd_errors(t *testing.T) {
 		{name: "operationSuccess", kind: conductor.PendingKindOperationSuccess},
 		{name: "removeSubscription", kind: conductor.PendingKindRemoveSubscription},
 		{name: "addCounter", kind: conductor.PendingKindAddCounter},
+		{name: "destination", kind: conductor.PendingKindDestination},
 	}
 	for _, invalidCase := range invalidAddKindCases {
 		tests = append(tests, registerPendingAddErrorCase{
@@ -1569,6 +1570,109 @@ func TestConductor_OperationSucceeded_removeKinds(t *testing.T) {
 			require.False(t, ok)
 		})
 	}
+}
+
+func TestConductor_OperationSucceeded_destination(t *testing.T) {
+	tests := []struct {
+		name     string
+		complete func(*testing.T, *conductor.Conductor)
+		wantErr  bool
+	}{
+		{
+			name: "success",
+			complete: func(t *testing.T, conductorInstance *conductor.Conductor) {
+				require.True(t, conductorInstance.OperationSucceeded(pendingTestCorrelationID))
+			},
+		},
+		{
+			name: "driverError",
+			complete: func(t *testing.T, conductorInstance *conductor.Conductor) {
+				require.True(t, conductorInstance.DriverError(conductor.ErrorResponse{
+					OffendingCommandCorrelationID: pendingTestCorrelationID,
+					ErrorCode:                     3,
+					ErrorMessage:                  "unknown publication",
+				}))
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			conductorInstance := newConductorForTestAtWorkNano(
+				t,
+				func(error) {},
+				0,
+				0,
+			)
+			require.NoError(
+				t,
+				registerPendingForTest(conductorInstance, conductor.PendingKindDestination),
+			)
+
+			testCase.complete(t, conductorInstance)
+			require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+			registration, ok := conductorInstance.PendingResult(pendingTestCorrelationID)
+			require.True(t, ok)
+			require.Equal(t, !testCase.wantErr, registration.Ready)
+			require.Equal(t, testCase.wantErr, registration.Err != nil)
+
+			_ = conductorInstance.DoWork()
+			done, registration, err := conductorInstance.PollPending(pendingTestCorrelationID)
+			require.True(t, done)
+			require.Equal(t, conductor.PendingKindDestination, registration.Kind)
+			if testCase.wantErr {
+				var driverErr *conductor.DriverRegistrationError
+				require.ErrorAs(t, err, &driverErr)
+				require.Equal(t, int32(3), driverErr.ErrorCode)
+			} else {
+				require.NoError(t, err)
+			}
+			_, ok = conductorInstance.PendingResult(pendingTestCorrelationID)
+			require.False(t, ok)
+		})
+	}
+}
+
+// TestConductor_destinationCompletion_survivesForeignMark delivers a
+// destination success and a foreign driver error before one PollPending. One
+// DoWork reads one broadcast record, so the test calls the handlers directly.
+func TestConductor_destinationCompletion_survivesForeignMark(t *testing.T) {
+	const (
+		destinationCorrelationID int64 = 301
+		addCorrelationID         int64 = 302
+	)
+	conductorInstance := newConductorForTestAtWorkNano(
+		t,
+		func(error) {},
+		0,
+		0,
+	)
+	require.NoError(t, registerPendingKindForTest(
+		conductorInstance,
+		conductor.PendingKindDestination,
+		destinationCorrelationID,
+	))
+	require.NoError(t, registerPendingKindForTest(
+		conductorInstance,
+		conductor.PendingKindAddPublication,
+		addCorrelationID,
+	))
+	conductorInstance.SetActiveCorrelationID(destinationCorrelationID)
+
+	require.True(t, conductorInstance.OperationSucceeded(destinationCorrelationID))
+	require.True(t, conductorInstance.DriverError(conductor.ErrorResponse{
+		OffendingCommandCorrelationID: addCorrelationID,
+		ErrorCode:                     11,
+		ErrorMessage:                  "add publication rejected",
+	}))
+	require.Equal(t, addCorrelationID, conductorInstance.ReceivedCorrelationID())
+
+	done, registration, err := conductorInstance.PollPending(destinationCorrelationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	require.True(t, registration.Ready)
+	require.Equal(t, addCorrelationID, conductorInstance.ReceivedCorrelationID())
 }
 
 func TestConductor_addPending_ackThenReady(t *testing.T) {
@@ -2091,6 +2195,12 @@ func TestConductor_expirePending_kinds(t *testing.T) {
 			active:        true,
 			correlationID: pendingTestCorrelationID,
 		},
+		{
+			name:          "destination_inactive",
+			kind:          conductor.PendingKindDestination,
+			active:        false,
+			correlationID: pendingTestOtherCorrelationID,
+		},
 	}
 
 	for _, testCase := range tests {
@@ -2117,7 +2227,9 @@ func TestConductor_expirePending_kinds(t *testing.T) {
 			workCount := conductorInstance.DoWork()
 			require.Equal(t, 1, workCount)
 
-			if testCase.active || conductor.AddPendingKindForTest(testCase.kind) {
+			readyCompleted := conductor.AddPendingKindForTest(testCase.kind) ||
+				testCase.kind == conductor.PendingKindDestination
+			if testCase.active || readyCompleted {
 				requirePendingAddExpiredForTest(t, conductorInstance, testCase.correlationID)
 				return
 			}
