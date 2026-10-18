@@ -3,6 +3,7 @@ package aeron_test
 import (
 	"errors"
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -628,6 +629,7 @@ func TestImage_Poll_nilHandlerAndZeroLimit(t *testing.T) {
 func TestImage_Poll_handlerPanic(t *testing.T) {
 	const wantErr = "poll handler failed"
 	panicPayload := []byte("panic")
+	panicSpan := int64(logbuffer.AlignFragmentChunkLength(len(panicPayload)))
 	pollPanicHandler := func(atomicbuffer.AtomicBuffer, int, int, *aeron.Header) {
 		panic(errors.New(wantErr))
 	}
@@ -635,27 +637,45 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 	t.Run("firstFrameWithErrorHandler", func(t *testing.T) {
 		image, capture, handledErr := newPollImageWithErrorHandler(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
-		writePollTestDataFrame(termBuffer, 0, 0, logbuffer.Unfragmented, panicPayload)
-		nextOffset := logbuffer.AlignFragmentChunkLength(len(panicPayload))
-		writePollTestDataFrame(
-			termBuffer,
-			nextOffset,
-			int32(nextOffset),
-			logbuffer.Unfragmented,
-			[]byte("after"),
-		)
+		writePollTestPayloads(termBuffer, 0, panicPayload, []byte("after"))
 
 		fragments := image.Poll(pollPanicHandler, 10)
 
-		require.Zero(t, fragments)
-		require.Zero(t, image.Position())
+		require.Equal(t, 1, fragments)
+		require.Equal(t, panicSpan, image.Position())
 		handled := handledErr()
 		require.Error(t, handled)
 		require.Equal(t, wantErr, handled.Error())
 
 		fragments = image.Poll(capture.handler, 1)
 		require.Equal(t, 1, fragments)
-		require.Equal(t, panicPayload, capture.payloads[0])
+		require.Equal(t, []byte("after"), capture.payloads[0])
+	})
+
+	t.Run("fragmentedEndPanicDropsMessage", func(t *testing.T) {
+		image, _, handledErr := newPollImageWithErrorHandler(t, 0)
+		messageEnd := writePollTestFragmentedThenNext(aeron.ImageTermBuffer0ForTest(image))
+
+		calls := 0
+		var delivered [][]byte
+		delegate := func(buffer atomicbuffer.AtomicBuffer, offset, length int, _ *aeron.Header) {
+			calls++
+			if calls == 1 {
+				panic(errors.New(wantErr))
+			}
+			delivered = append(delivered, slices.Clone(buffer.Bytes()[offset:offset+length]))
+		}
+		handler := aeron.NewFragmentAssembler(delegate).Handler()
+
+		// Phase 1: the delegate panics on the completed message.
+		require.Equal(t, 2, image.Poll(handler, 10))
+		require.Equal(t, int64(messageEnd), image.Position())
+		require.Error(t, handledErr())
+		require.Empty(t, delivered)
+
+		// Phase 2: only the next message reaches the delegate.
+		require.Equal(t, 1, image.Poll(handler, 10))
+		require.Equal(t, [][]byte{[]byte("next")}, delivered)
 	})
 
 	t.Run("afterPaddingPartialAdvance", func(t *testing.T) {
@@ -665,8 +685,8 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 
 		fragments := image.Poll(pollPanicHandler, 10)
 
-		require.Zero(t, fragments)
-		require.Equal(t, int64(pollTestPaddingLength), image.Position())
+		require.Equal(t, 1, fragments)
+		require.Equal(t, int64(pollTestPaddingLength)+panicSpan, image.Position())
 		handled := handledErr()
 		require.Error(t, handled)
 		require.Equal(t, wantErr, handled.Error())
@@ -676,43 +696,35 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 		image, capture, handledErr := newPollImageWithErrorHandler(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
 		chainPayload := []byte("a")
-		writeDataFrameChain(t, termBuffer, 0, 2, chainPayload)
-		firstSpan := logbuffer.AlignFragmentChunkLength(len(chainPayload))
+		chainEnd := writeDataFrameChain(t, termBuffer, 0, 2, chainPayload)
 
-		attempts := 0
-		nthFramePanicHandler := func(atomicbuffer.AtomicBuffer, int, int, *aeron.Header) {
-			attempts++
-			if attempts == 2 {
-				panic(errors.New(wantErr))
-			}
-		}
+		fragments := image.Poll(nthFramePanicHandler(2, errors.New(wantErr)), 10)
 
-		fragments := image.Poll(nthFramePanicHandler, 10)
-
-		require.Equal(t, 1, fragments)
-		require.Equal(t, int64(firstSpan), image.Position())
+		require.Equal(t, 2, fragments)
+		require.Equal(t, int64(chainEnd), image.Position())
 		handled := handledErr()
 		require.Error(t, handled)
 		require.Equal(t, wantErr, handled.Error())
 
 		fragments = image.Poll(capture.handler, 1)
-		require.Equal(t, 1, fragments)
-		require.Equal(t, chainPayload, capture.payloads[0])
+		require.Zero(t, fragments)
+		require.Empty(t, capture.payloads)
 	})
 
 	t.Run("nilErrorHandler", func(t *testing.T) {
-		image := aeron.NewImageForTest(t, testSubscription(t), 0)
-		writePollTestDataFrame(
-			aeron.ImageTermBuffer0ForTest(image),
-			0,
-			0,
-			logbuffer.Unfragmented,
-			panicPayload,
-		)
+		image, capture := newPollImage(t, 0)
+		termBuffer := aeron.ImageTermBuffer0ForTest(image)
+		writePollTestPayloads(termBuffer, 0, []byte("first"), panicPayload, []byte("third"))
+		secondEnd := int64(logbuffer.AlignFragmentChunkLength(len("first"))) + panicSpan
 
-		require.Panics(t, func() {
-			_ = image.Poll(pollPanicHandler, 1)
+		require.PanicsWithError(t, wantErr, func() {
+			_ = image.Poll(nthFramePanicHandler(2, errors.New(wantErr)), 10)
 		})
+		require.Equal(t, secondEnd, image.Position())
+
+		fragments := image.Poll(capture.handler, 10)
+		require.Equal(t, 1, fragments)
+		require.Equal(t, [][]byte{[]byte("third")}, capture.payloads)
 	})
 
 	t.Run("errorHandlerPanicDoesNotEscape", func(t *testing.T) {
@@ -734,8 +746,8 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 
 		fragments := image.Poll(pollPanicHandler, 1)
 
-		require.Zero(t, fragments)
-		require.Zero(t, image.Position())
+		require.Equal(t, 1, fragments)
+		require.Equal(t, panicSpan, image.Position())
 	})
 
 	t.Run("nonErrorPanicWrap", func(t *testing.T) {
@@ -755,10 +767,30 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 
 		fragments := image.Poll(nonErrorPanicHandler, 1)
 
-		require.Zero(t, fragments)
+		require.Equal(t, 1, fragments)
+		require.Equal(t, panicSpan, image.Position())
 		handled := handledErr()
 		require.Error(t, handled)
 		require.Equal(t, "aeron: fragment handler panic: boom", handled.Error())
+	})
+
+	t.Run("closeInHandlerThenPanic", func(t *testing.T) {
+		image, _, handledErr := newPollImageWithErrorHandler(t, 0)
+		writePollTestPayloads(aeron.ImageTermBuffer0ForTest(image), 0, panicPayload)
+		before := image.Position()
+
+		closeThenPanicHandler := func(atomicbuffer.AtomicBuffer, int, int, *aeron.Header) {
+			aeron.ImageInternalCloseForTest(image)
+			panic(errors.New(wantErr))
+		}
+
+		require.Equal(t, 1, image.Poll(closeThenPanicHandler, 10))
+
+		handled := handledErr()
+		require.Error(t, handled)
+		require.Equal(t, wantErr, handled.Error())
+		require.True(t, image.IsClosed())
+		require.Equal(t, before, image.Position())
 	})
 }
 

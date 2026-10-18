@@ -166,6 +166,34 @@ func writePollTestDataFrame(
 	)
 }
 
+// writePollTestPayloads commits one unfragmented DATA frame per payload from
+// startOffset. Returns the offset past the last frame.
+func writePollTestPayloads(
+	termBuffer atomicbuffer.AtomicBuffer,
+	startOffset int,
+	payloads ...[]byte,
+) int {
+	offset := startOffset
+	for _, payload := range payloads {
+		writePollTestDataFrame(termBuffer, offset, int32(offset), logbuffer.Unfragmented, payload)
+		offset += logbuffer.AlignFragmentChunkLength(len(payload))
+	}
+	return offset
+}
+
+// writePollTestFragmentedThenNext commits BEGIN "hello-", END "world", then
+// unfragmented "next". Returns the offset past the END frame.
+func writePollTestFragmentedThenNext(termBuffer atomicbuffer.AtomicBuffer) int {
+	begin := []byte("hello-")
+	end := []byte("world")
+	writePollTestDataFrame(termBuffer, 0, 0, logbuffer.BeginFlag, begin)
+	endOffset := logbuffer.AlignFragmentChunkLength(len(begin))
+	writePollTestDataFrame(termBuffer, endOffset, int32(endOffset), logbuffer.EndFlag, end)
+	messageEnd := endOffset + logbuffer.AlignFragmentChunkLength(len(end))
+	writePollTestPayloads(termBuffer, messageEnd, []byte("next"))
+	return messageEnd
+}
+
 func writePollTestPaddingThenData(
 	termBuffer atomicbuffer.AtomicBuffer,
 	paddingLength int32,
@@ -222,6 +250,36 @@ func writeDataFrameChain(
 		offset += logbuffer.AlignFragmentChunkLength(len(payload))
 	}
 	return offset
+}
+
+// nthFramePanicHandler returns a handler that panics with err on call n.
+func nthFramePanicHandler(n int, err error) aeron.FragmentHandler {
+	attempts := 0
+	return func(atomicbuffer.AtomicBuffer, int, int, *aeron.Header) {
+		attempts++
+		if attempts == n {
+			panic(err)
+		}
+	}
+}
+
+// nthFrameControlledPanicHandler returns a handler that panics with err on
+// call n. Every other call returns action.
+func nthFrameControlledPanicHandler(
+	n int,
+	err error,
+	action aeron.ControlledAction,
+) aeron.ControlledFragmentHandler {
+	handler := nthFramePanicHandler(n, err)
+	return func(
+		buffer atomicbuffer.AtomicBuffer,
+		offset int,
+		length int,
+		header *aeron.Header,
+	) aeron.ControlledAction {
+		handler(buffer, offset, length, header)
+		return action
+	}
 }
 
 var imagePollSink int
@@ -366,8 +424,21 @@ func subscriptionPollOnFirstFragment(
 
 func setupZeroAllocPollImage(tb testing.TB) *aeron.Image {
 	tb.Helper()
+	return primeZeroAllocPollImage(tb, newTestPollImage(tb, 0))
+}
 
-	image, _ := newPollImage(tb, 0)
+func setupZeroAllocPollImageWithErrorHandler(tb testing.TB) *aeron.Image {
+	tb.Helper()
+
+	image, _ := newTestPollImageWithErrorHandler(tb, 0)
+	return primeZeroAllocPollImage(tb, image)
+}
+
+// primeZeroAllocPollImage warms the image: one committed zero-alloc frame,
+// one Poll.
+func primeZeroAllocPollImage(tb testing.TB, image *aeron.Image) *aeron.Image {
+	tb.Helper()
+
 	writeDataFrameChain(
 		tb,
 		aeron.ImageTermBuffer0ForTest(image),

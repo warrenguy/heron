@@ -10,16 +10,23 @@ import (
 )
 
 var (
-	imagePollZeroAllocImage                  *aeron.Image
-	imageControlledPollZeroAllocImage        *aeron.Image
-	imageBoundedControlledPollZeroAllocImage *aeron.Image
-	subscriptionPollZeroAllocSub             *aeron.Subscription
-	subscriptionPollZeroAllocImage0          *aeron.Image
+	imagePollZeroAllocImage                       *aeron.Image
+	imageControlledPollZeroAllocImage             *aeron.Image
+	imageBoundedControlledPollZeroAllocImage      *aeron.Image
+	imagePollErrorHandlerZeroAllocImage           *aeron.Image
+	imageControlledPollErrorHandlerZeroAllocImage *aeron.Image
+	subscriptionPollZeroAllocSub                  *aeron.Subscription
+	subscriptionPollZeroAllocImage0               *aeron.Image
 )
 
 func imagePollZeroAllocIteration() {
 	aeron.ImageSetSubscriberPositionForTest(imagePollZeroAllocImage, 0)
 	imagePollSink = imagePollZeroAllocImage.Poll(imagePollZeroAllocHandler, 1)
+}
+
+func imagePollErrorHandlerZeroAllocIteration() {
+	aeron.ImageSetSubscriberPositionForTest(imagePollErrorHandlerZeroAllocImage, 0)
+	imagePollSink = imagePollErrorHandlerZeroAllocImage.Poll(imagePollZeroAllocHandler, 1)
 }
 
 func imageControlledPollZeroAllocHandler(
@@ -35,6 +42,14 @@ func imageControlledPollZeroAllocHandler(
 func imageControlledPollZeroAllocIteration() {
 	aeron.ImageSetSubscriberPositionForTest(imageControlledPollZeroAllocImage, 0)
 	imagePollSink = imageControlledPollZeroAllocImage.ControlledPoll(
+		imageControlledPollZeroAllocHandler,
+		1,
+	)
+}
+
+func imageControlledPollErrorHandlerZeroAllocIteration() {
+	aeron.ImageSetSubscriberPositionForTest(imageControlledPollErrorHandlerZeroAllocImage, 0)
+	imagePollSink = imageControlledPollErrorHandlerZeroAllocImage.ControlledPoll(
 		imageControlledPollZeroAllocHandler,
 		1,
 	)
@@ -75,6 +90,26 @@ func TestImage_Poll_ZeroAllocs(t *testing.T) {
 func TestImage_ControlledPoll_ZeroAllocs(t *testing.T) {
 	imageControlledPollZeroAllocImage = setupZeroAllocPollImage(t)
 	testutil.AssertZeroAllocs(t, "Image.ControlledPoll", 1000, imageControlledPollZeroAllocIteration)
+}
+
+func TestImage_Poll_errorHandler_ZeroAllocs(t *testing.T) {
+	imagePollErrorHandlerZeroAllocImage = setupZeroAllocPollImageWithErrorHandler(t)
+	testutil.AssertZeroAllocs(
+		t,
+		"Image.Poll with error handler",
+		1000,
+		imagePollErrorHandlerZeroAllocIteration,
+	)
+}
+
+func TestImage_ControlledPoll_errorHandler_ZeroAllocs(t *testing.T) {
+	imageControlledPollErrorHandlerZeroAllocImage = setupZeroAllocPollImageWithErrorHandler(t)
+	testutil.AssertZeroAllocs(
+		t,
+		"Image.ControlledPoll with error handler",
+		1000,
+		imageControlledPollErrorHandlerZeroAllocIteration,
+	)
 }
 
 func TestImage_BoundedControlledPoll_ZeroAllocs(t *testing.T) {
