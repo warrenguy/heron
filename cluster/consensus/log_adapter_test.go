@@ -224,9 +224,13 @@ func writeSessionMessageAtJoin(
 // newFollowerLogPollAgent builds a follower Agent for log-poll / propose-max tests.
 // Pass logAdapter non-nil to seed AgentConfig.LogAdapter; nil leaves adapter unset.
 func newFollowerLogPollAgent(appendPos int64, logAdapter *LogAdapter) *Agent {
+	return NewAgent(followerLogPollConfig(appendPos, logAdapter))
+}
+
+func followerLogPollConfig(appendPos int64, logAdapter *LogAdapter) AgentConfig {
 	appendV := new(atomic.Int64)
 	appendV.Store(appendPos)
-	return NewAgent(AgentConfig{
+	return AgentConfig{
 		Role:                      RoleFollower,
 		Commit:                    new(atomic.Int64),
 		Egress:                    &recordingEgress{},
@@ -235,7 +239,87 @@ func newFollowerLogPollAgent(appendPos int64, logAdapter *LogAdapter) *Agent {
 		LeadershipTermID:          1,
 		LeaderHeartbeatIntervalNs: 1_000_000_000,
 		LeaderMemberID:            2,
+	}
+}
+
+// newFollowerActionAgent builds a log-poll follower with serviceCount services
+// and a queue on service ingress.
+func newFollowerActionAgent(
+	appendPos int64,
+	logAdapter *LogAdapter,
+	serviceCount int,
+) (*Agent, *QueueConsensusIngress) {
+	cfg := followerLogPollConfig(appendPos, logAdapter)
+	cfg.ServiceCount = serviceCount
+	return agentWithServiceIngressConfig(cfg)
+}
+
+// encodeLogAdapterClusterActionPayload builds ClusterActionRequest wire bytes.
+func encodeLogAdapterClusterActionPayload(
+	tb testing.TB,
+	fields codecs.ClusterActionRequestFields,
+) []byte {
+	tb.Helper()
+	buf := make([]byte, codecs.ClusterActionRequestEncodedLen())
+	wireEnd, ok := codecs.EncodeClusterActionRequest(
+		buf,
+		0,
+		clusterwire.ClusterActionRequestSbeSchemaVersion,
+		fields,
+	)
+	require.True(tb, ok)
+	return buf[:wireEnd]
+}
+
+// writeClusterActionFrame writes one ClusterActionRequest frame at
+// frameOffset. The wire LogPosition is the frame end. Returns the frame end.
+func writeClusterActionFrame(
+	tb testing.TB,
+	image *aeron.Image,
+	frameOffset int,
+	action clusterwire.ClusterAction,
+	flags int32,
+) int64 {
+	tb.Helper()
+	chunk := logbuffer.AlignFragmentChunkLength(codecs.ClusterActionRequestEncodedLen())
+	end := int64(frameOffset + chunk)
+	fields := snapshotActionFields(end)
+	fields.Action = action
+	fields.Flags = flags
+	payload := encodeLogAdapterClusterActionPayload(tb, fields)
+	writeLogAdapterUnfragmentedFrame(tb, image, frameOffset, payload)
+	return end
+}
+
+// writeSessionMessageFrame writes one SessionMessageHeader frame at
+// frameOffset. Returns the frame end.
+func writeSessionMessageFrame(
+	tb testing.TB,
+	image *aeron.Image,
+	frameOffset int,
+	clusterSessionID int64,
+) int64 {
+	tb.Helper()
+	payload := encodeLogAdapterSessionMessagePayload(tb, codecs.SessionMessageHeaderFields{
+		LeadershipTermID: 1,
+		ClusterSessionID: clusterSessionID,
+		Timestamp:        7,
 	})
+	writeLogAdapterUnfragmentedFrame(tb, image, frameOffset, payload)
+	return int64(frameOffset + logbuffer.AlignFragmentChunkLength(len(payload)))
+}
+
+// writeSnapshotActionThenMessage writes a SNAPSHOT action with flags 0 at
+// frameOffset, then a session message. Returns both frame ends.
+func writeSnapshotActionThenMessage(
+	tb testing.TB,
+	image *aeron.Image,
+	frameOffset int,
+) (actionEnd, messageEnd int64) {
+	tb.Helper()
+	actionEnd = writeClusterActionFrame(tb, image, frameOffset, clusterwire.ClusterAction_SNAPSHOT, 0)
+	messageEnd = writeSessionMessageFrame(tb, image, int(actionEnd), 9)
+	return actionEnd, messageEnd
 }
 
 func TestLogAdapter_unbound(t *testing.T) {
@@ -656,6 +740,7 @@ func TestFollowerConsensusWork_pollAndProposeMax(t *testing.T) {
 			a := tt.newAgent(adapter, span+100)
 			require.Same(t, adapter, a.logAdapter)
 			require.Same(t, a, adapter.timerSink)
+			require.Same(t, a, adapter.actionSink)
 			a.notifiedCommitPosition = span + 32
 
 			require.Positive(t, a.followerConsensusWork(0))
@@ -665,6 +750,42 @@ func TestFollowerConsensusWork_pollAndProposeMax(t *testing.T) {
 			require.Equal(t, adapter.Position(), a.CommitPosition())
 		})
 	}
+}
+
+func TestFollowerConsensusWork_holdsAtSnapshotAction(t *testing.T) {
+	adapter, image, spy := boundLogAdapterWithHandler(t)
+	actionEnd, messageEnd := writeSnapshotActionThenMessage(t, image, 0)
+	a, q := newFollowerActionAgent(messageEnd+100, adapter, 1)
+	a.notifiedCommitPosition = messageEnd + 32
+
+	// Tick 1: consume the action, queue the wait, stop the batch.
+	a.followerConsensusWork(0)
+	require.Equal(t, actionEnd, adapter.Position())
+	require.Equal(t, actionEnd, a.CommitPosition())
+	require.True(t, a.HasPendingSnapshotAction())
+	require.Equal(t, actionEnd, a.ExpectedAckPosition())
+	requireHandlerIdle(t, spy)
+
+	// Tick 2: the hold keeps the adapter at the action end.
+	a.followerConsensusWork(0)
+	require.Equal(t, actionEnd, adapter.Position())
+	require.Equal(t, actionEnd, a.CommitPosition())
+	require.Equal(t, 1, a.PendingServiceAckWaits())
+	requireHandlerIdle(t, spy)
+
+	// Release: the service ack pops the wait.
+	enqueueServiceAck(t, q, actionEnd, 0, 0)
+	require.Equal(t, 1, a.pollServiceControl())
+	require.Equal(t, 1, a.serviceControlWork())
+	require.False(t, a.HasPendingSnapshotAction())
+	require.Equal(t, 0, a.PendingServiceAckWaits())
+
+	// Tick 3: consume resumes.
+	a.followerConsensusWork(0)
+	require.Equal(t, 1, spy.sessionMessages)
+	require.Equal(t, messageEnd, adapter.Position())
+	require.Equal(t, messageEnd, a.CommitPosition())
+	require.NoError(t, a.ServiceAckFailure())
 }
 
 func TestFollowerConsensusWork_straddleProposeMaxPastNotify(t *testing.T) {
@@ -987,6 +1108,79 @@ func TestLogAdapter_TimerEvent_reachesSink(t *testing.T) {
 	}
 }
 
+// logAdapterActionSinkSpy records ClusterActionRequest deliveries from the
+// adapter sink.
+type logAdapterActionSinkSpy struct {
+	actions int
+
+	lastFields      codecs.ClusterActionRequestFields
+	lastLogPosition int64
+}
+
+func (s *logAdapterActionSinkSpy) handleClusterAction(
+	fields codecs.ClusterActionRequestFields,
+	logPosition int64,
+) {
+	s.actions++
+	s.lastFields = fields
+	s.lastLogPosition = logPosition
+}
+
+func TestLogAdapter_ClusterAction_reachesSink(t *testing.T) {
+	fields := codecs.ClusterActionRequestFields{
+		LeadershipTermID: 3,
+		LogPosition:      77,
+		Timestamp:        55,
+		Action:           clusterwire.ClusterAction_SNAPSHOT,
+		Flags:            0,
+	}
+	payload := encodeLogAdapterClusterActionPayload(t, fields)
+	tests := []struct {
+		name string
+		// write writes the action at 0. Returns the fragment count and the
+		// action end.
+		write func(t *testing.T, image *aeron.Image) (int, int64)
+	}{
+		{
+			name: "unfragmented",
+			write: func(t *testing.T, image *aeron.Image) (int, int64) {
+				writeLogAdapterUnfragmentedFrame(t, image, 0, payload)
+				return 1, int64(logbuffer.AlignFragmentChunkLength(len(payload)))
+			},
+		},
+		{
+			name: "fragment_train",
+			write: func(t *testing.T, image *aeron.Image) (int, int64) {
+				offsets, end := writeLogAdapterFragmentTrain(t, image, 0, payload, len(payload)/2+1)
+				require.Len(t, offsets, 2)
+				return len(offsets), end
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, image, handler := boundLogAdapterWithHandler(t)
+			sink := &logAdapterActionSinkSpy{}
+			a.setClusterActionSink(sink)
+			fragments, actionEnd := tt.write(t, image)
+			messageEnd := writeSessionMessageFrame(t, image, int(actionEnd), 9)
+
+			// The action ends the batch.
+			require.Equal(t, fragments, a.Poll(messageEnd+32))
+			require.Equal(t, actionEnd, a.Position())
+			require.Equal(t, 1, sink.actions)
+			require.Equal(t, fields, sink.lastFields)
+			require.Equal(t, actionEnd, sink.lastLogPosition)
+			requireHandlerIdle(t, handler)
+
+			require.Equal(t, 1, a.Poll(messageEnd+32))
+			require.Equal(t, messageEnd, a.Position())
+			require.Equal(t, 1, sink.actions)
+			require.Equal(t, 1, handler.sessionMessages)
+		})
+	}
+}
+
 func TestLogAdapter_SessionClose_reachesSink(t *testing.T) {
 	a, image, sink, handler := boundLogAdapterWithSinkAndHandler(t)
 
@@ -1008,10 +1202,21 @@ func TestLogAdapter_nilSinksAndHandler_eventsSafe(t *testing.T) {
 			Timestamp:        3,
 		})
 	}
+	actionPayload := func(tb testing.TB) []byte {
+		return encodeLogAdapterClusterActionPayload(tb, codecs.ClusterActionRequestFields{
+			LeadershipTermID: 1,
+			LogPosition:      2,
+			Timestamp:        3,
+			Action:           clusterwire.ClusterAction_SNAPSHOT,
+		})
+	}
 	tests := []struct {
 		name                      string
 		payload                   func(testing.TB) []byte
 		withSessionSinkAndHandler bool
+		// thenMessage adds a session message frame after the payload. One Poll
+		// must consume both frames.
+		thenMessage bool
 	}{
 		{
 			name: "open",
@@ -1034,6 +1239,12 @@ func TestLogAdapter_nilSinksAndHandler_eventsSafe(t *testing.T) {
 			payload:                   timerPayload,
 			withSessionSinkAndHandler: true,
 		},
+		{
+			name:                      "action_nil_action_sink",
+			payload:                   actionPayload,
+			withSessionSinkAndHandler: true,
+			thenMessage:               true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1047,6 +1258,19 @@ func TestLogAdapter_nilSinksAndHandler_eventsSafe(t *testing.T) {
 				handler = &logAdapterHandlerSpy{}
 				a.SetSessionEventSink(sessionSink)
 				a.SetHandler(handler)
+			}
+			if tt.thenMessage {
+				payload := tt.payload(t)
+				writeLogAdapterUnfragmentedFrame(t, image, 0, payload)
+				span := logbuffer.AlignFragmentChunkLength(len(payload))
+				messageEnd := writeSessionMessageFrame(t, image, span, 9)
+				require.NotPanics(t, func() {
+					require.Equal(t, 2, a.Poll(messageEnd+32))
+				})
+				require.Equal(t, messageEnd, a.Position())
+				requireSessionSinkIdle(t, sessionSink)
+				require.Equal(t, 1, handler.sessionMessages)
+				return
 			}
 			require.NotPanics(t, func() {
 				writeAndPollOne(t, a, image, tt.payload(t))
@@ -1137,6 +1361,18 @@ func TestLogAdapter_undecodableEvents_skipped(t *testing.T) {
 			},
 		},
 		{
+			name: "action_header_only",
+			payload: func(tb testing.TB) []byte {
+				return encodeLogAdapterMessageHeader(
+					tb,
+					clusterwire.ClusterActionRequestSbeBlockLength,
+					clusterwire.ClusterActionRequestSbeTemplateID,
+					clusterwire.MessageHeaderSbeSchemaID,
+					clusterwire.ClusterActionRequestSbeSchemaVersion,
+				)
+			},
+		},
+		{
 			name: "short_length",
 			payload: func(tb testing.TB) []byte {
 				p := []byte{0x01, 0x02, 0x03, 0x04}
@@ -1148,9 +1384,12 @@ func TestLogAdapter_undecodableEvents_skipped(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a, image, sessionSink, timerSink, handler := boundLogAdapterWithTimerSink(t)
+			actionSink := &logAdapterActionSinkSpy{}
+			a.setClusterActionSink(actionSink)
 			writeAndPollOne(t, a, image, tt.payload(t))
 			requireSessionSinkIdle(t, sessionSink)
 			require.Equal(t, 0, timerSink.events)
+			require.Equal(t, 0, actionSink.actions)
 			requireHandlerIdle(t, handler)
 		})
 	}

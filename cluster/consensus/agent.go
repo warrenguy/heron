@@ -403,9 +403,9 @@ type Agent struct {
 	// serviceAckID.
 	serviceAckWaits []int64
 
-	// snapshotWaitPosition is the log position of a pending snapshot action wait
-	// in the current leadership term, or 0 when none. PrepareForNewLeadership
-	// retires the wait and clears this field.
+	// snapshotWaitPosition is the log position of a pending snapshot action
+	// wait, or 0 when none. Log polls stop at this position.
+	// PrepareForNewLeadership retires the wait and clears this field.
 	snapshotWaitPosition int64
 
 	// abandonedSnapshotPositions holds snapshot wait log positions retired by
@@ -968,11 +968,12 @@ func isCatchupAppendPosition(flags uint8) bool {
 
 // CatchupPoll polls catchup/live log progress under limitPosition.
 //
-// When a [LogAdapter] Image is bound, polls with bound = limitPosition (same
-// BoundedControlledPoll substrate as followerConsensusWork) and advances
-// commit via [Agent.ProposeMaxCommit] from adapter position. Then publishes
-// the adapter position under [AppendPositionFlagCatchup] so the leader can
-// observe catchup progress.
+// When a [LogAdapter] Image is bound, polls under limitPosition (same
+// BoundedControlledPoll substrate as followerConsensusWork). A pending
+// snapshot wait or a pending follower JoinLog publish lowers the bound.
+// Advances commit via [Agent.ProposeMaxCommit] from adapter position. Then
+// publishes the adapter position under [AppendPositionFlagCatchup] so the
+// leader can observe catchup progress.
 //
 // The published position is the consumed merged-image position, not a recorded
 // append position. Heron follower recording is channel-based and does not see
@@ -1327,12 +1328,13 @@ func (a *Agent) SetLogPublisher(p *LogPublisher) { a.logPublisher = p }
 // SetLogAdapter wires or clears the [LogAdapter] used for follower log poll.
 //
 // Behaviour:
-//   - A non-nil adapter receives this agent as its session event sink and
-//     its timer event sink. Committed SessionOpenEvent and SessionCloseEvent
-//     frames then update the registry. Committed TimerEvent frames cancel or
-//     count their timer.
-//   - A nil adapter clears the field only. The previous adapter keeps both
-//     sinks.
+//   - A non-nil adapter receives this agent as its session event sink, its
+//     timer event sink and its cluster action sink. Committed
+//     SessionOpenEvent and SessionCloseEvent frames then update the registry.
+//     Committed TimerEvent frames cancel or count their timer. Committed
+//     ClusterActionRequest frames may queue a snapshot wait.
+//   - A nil adapter clears the field only. The previous adapter keeps every
+//     sink.
 //
 // Concurrency: invoker-only. Must not race with [Agent.DoWork].
 func (a *Agent) SetLogAdapter(adapter *LogAdapter) {
@@ -1340,6 +1342,7 @@ func (a *Agent) SetLogAdapter(adapter *LogAdapter) {
 	if adapter != nil {
 		adapter.SetSessionEventSink(a)
 		adapter.setTimerEventSink(a)
+		adapter.setClusterActionSink(a)
 	}
 }
 
@@ -2351,10 +2354,11 @@ func (a *Agent) followerConsensusWork(nowNs int64) int {
 }
 
 // pollLogAndProposeMax polls adapter under boundPosition and advances commit
-// from adapter position. ProposeMax runs even when poll returns 0 (position
-// may already match prior consume). Caller must pass non-nil adapter.
+// from adapter position. holdLogPollBound may lower the bound. ProposeMax runs
+// even when poll returns 0 (position may already match prior consume). Caller
+// must pass non-nil adapter.
 func (a *Agent) pollLogAndProposeMax(adapter *LogAdapter, boundPosition int64) int {
-	work := adapter.Poll(boundPosition)
+	work := adapter.Poll(a.holdLogPollBound(boundPosition))
 	_ = a.ProposeMaxCommit(adapter.Position())
 	return work
 }

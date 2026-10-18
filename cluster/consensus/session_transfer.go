@@ -45,6 +45,8 @@ func (a *Agent) handleSessionCloseEvent(fields codecs.SessionCloseEventFields) {
 // position reaches the bound or stops advancing.
 //
 // Behaviour:
+//   - Each pass calls holdLogPollBound, so a wait queued mid-drain stops the
+//     drain.
 //   - A nil or unbound adapter drains nothing.
 //   - The drain does not advance commit.
 //   - A PAD frame or slack gap at the end of the term advances the position
@@ -60,11 +62,12 @@ func (a *Agent) drainLogBacklog(boundPosition int64) {
 		return
 	}
 	for {
+		limit := a.holdLogPollBound(boundPosition)
 		position := adapter.Position()
-		if position >= boundPosition {
+		if position >= limit {
 			return
 		}
-		adapter.Poll(boundPosition)
+		adapter.Poll(limit)
 		if adapter.Position() == position {
 			return
 		}

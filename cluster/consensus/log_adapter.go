@@ -13,8 +13,8 @@ const DefaultLogFragmentLimit = 50
 // LogAdapterHandler receives decoded cluster log events the adapter understands.
 // A nil handler is allowed. Poll still advances Image position under the bound.
 //
-// SessionOpenEvent, SessionCloseEvent and TimerEvent do not reach this
-// handler.
+// SessionOpenEvent, SessionCloseEvent, TimerEvent and ClusterActionRequest
+// do not reach this handler.
 //
 // Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
 type LogAdapterHandler interface {
@@ -45,6 +45,15 @@ type timerEventSink interface {
 	handleTimerEvent(correlationID, logPosition int64)
 }
 
+// clusterActionSink receives committed ClusterActionRequest frames.
+//
+// Behaviour: the agent sets itself as the sink in [Agent.SetLogAdapter].
+//
+// Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
+type clusterActionSink interface {
+	handleClusterAction(fields codecs.ClusterActionRequestFields, logPosition int64)
+}
+
 // LogAdapter polls a cluster log Image under a stream-position commit bound.
 //
 // Concurrency: invoker-only. One goroutine owns Poll / SetImage (Image contract).
@@ -58,6 +67,7 @@ type LogAdapter struct {
 	handler       LogAdapterHandler
 	sessionSink   sessionEventSink
 	timerSink     timerEventSink
+	actionSink    clusterActionSink
 	// assembler reassembles BEGIN, middle, and END trains before handleFragment.
 	assembler *aeron.ControlledFragmentAssembler
 	// assemblerHandler is the Handler() method value cached at construction.
@@ -137,6 +147,10 @@ func (a *LogAdapter) setTimerEventSink(sink timerEventSink) {
 	a.timerSink = sink
 }
 
+func (a *LogAdapter) setClusterActionSink(sink clusterActionSink) {
+	a.actionSink = sink
+}
+
 // Position returns image.Position when bound, else cached logPosition.
 //
 // Nil receiver returns 0.
@@ -202,8 +216,11 @@ func (a *LogAdapter) Poll(boundPosition int64) int {
 // handleFragment routes each reassembled message by template id to a sink
 // or the handler.
 //
-// Every frame returns CONTINUE so the poll position always advances. The
-// frame is already committed, so a bad field must not stall the follower.
+// Behaviour:
+//   - A dispatched ClusterActionRequest returns BREAK. The poll consumes that
+//     frame, then ends the batch.
+//   - Every other frame returns CONTINUE. The frame is already committed, so
+//     a bad field must not stall the follower.
 //
 // Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
 func (a *LogAdapter) handleFragment(
@@ -214,8 +231,10 @@ func (a *LogAdapter) handleFragment(
 ) aeron.ControlledAction {
 	sink := a.sessionSink
 	timerSink := a.timerSink
+	actionSink := a.actionSink
 	handler := a.handler
-	if header == nil || (sink == nil && timerSink == nil && handler == nil) {
+	noTarget := sink == nil && timerSink == nil && actionSink == nil && handler == nil
+	if header == nil || noTarget {
 		return aeron.ControlledContinue
 	}
 
@@ -253,6 +272,14 @@ func (a *LogAdapter) handleFragment(
 		}
 		if fields, decoded := codecs.TimerEventFieldsFromLayout(frag, layout); decoded {
 			timerSink.handleTimerEvent(fields.CorrelationID, header.Position())
+		}
+	case clusterwire.ClusterActionRequestSbeTemplateID:
+		if actionSink == nil {
+			return aeron.ControlledContinue
+		}
+		if fields, decoded := codecs.ClusterActionRequestFieldsFromLayout(frag, layout); decoded {
+			actionSink.handleClusterAction(fields, header.Position())
+			return aeron.ControlledBreak
 		}
 	case clusterwire.SessionMessageHeaderSbeTemplateID:
 		if handler == nil {
