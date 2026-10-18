@@ -152,7 +152,7 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 			name:  "higher_term_commit_position",
 			nowNs: 700,
 			notify: func(a *Agent, nowNs int64) {
-				a.onSteadyCommitPosition(codecs.CommitPositionFields{
+				a.handleSteadyCommitPosition(codecs.CommitPositionFields{
 					LeadershipTermID: 9,
 					LogPosition:      999,
 					LeaderMemberID:   2,
@@ -163,7 +163,7 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 			name:  "higher_term_new_leadership_term",
 			nowNs: 800,
 			notify: func(a *Agent, nowNs int64) {
-				a.onSteadyNewLeadershipTerm(codecs.NewLeadershipTermFields{
+				a.handleSteadyNewLeadershipTerm(codecs.NewLeadershipTermFields{
 					LeadershipTermID: 9,
 					LeaderMemberID:   2,
 					CommitPosition:   999,
@@ -230,7 +230,7 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 		})
 		a.SetElectionFactory(fac.factory())
 
-		a.onSteadyCommitPosition(codecs.CommitPositionFields{
+		a.handleSteadyCommitPosition(codecs.CommitPositionFields{
 			LeadershipTermID: 2,
 			LogPosition:      40,
 			LeaderMemberID:   1,
@@ -251,7 +251,7 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 		a.notifiedCommitPosition = 20
 		a.SetElectionFactory(fac.factory())
 
-		a.onSteadyCommitPosition(codecs.CommitPositionFields{
+		a.handleSteadyCommitPosition(codecs.CommitPositionFields{
 			LeadershipTermID: 3,
 			LogPosition:      100,
 			LeaderMemberID:   1,

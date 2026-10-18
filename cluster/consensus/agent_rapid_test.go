@@ -161,7 +161,7 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 				}
 			case "higherTerm":
 				if a.Election() == nil {
-					a.onSteadyCommitPosition(codecs.CommitPositionFields{
+					a.handleSteadyCommitPosition(codecs.CommitPositionFields{
 						LeadershipTermID: a.LeadershipTermID() + 1 + rapid.Int64Range(0, 5).Draw(rt, "termBump"),
 						LogPosition:      1,
 						LeaderMemberID:   2,
@@ -442,7 +442,7 @@ func TestSettledHeartbeat_neverFiresBeforeTimeout_rapid(t *testing.T) {
 			case 0:
 				// Same-term commit from known leader pushes the stamp.
 				if a.Election() == nil && a.Role() == RoleFollower {
-					a.onSteadyCommitPosition(codecs.CommitPositionFields{
+					a.handleSteadyCommitPosition(codecs.CommitPositionFields{
 						LeadershipTermID: 1,
 						LogPosition:      10,
 						LeaderMemberID:   1,
@@ -478,7 +478,7 @@ func TestSettledHeartbeat_neverFiresBeforeTimeout_rapid(t *testing.T) {
 			// heartbeats continue. After a notify, the next tick inside the
 			// timeout window must not install.
 			if a.Election() == nil && a.Role() == RoleFollower {
-				a.onSteadyCommitPosition(codecs.CommitPositionFields{
+				a.handleSteadyCommitPosition(codecs.CommitPositionFields{
 					LeadershipTermID: 1,
 					LogPosition:      10,
 					LeaderMemberID:   1,
@@ -546,7 +546,7 @@ func TestOnSteadyCanvassPosition_guard_rapid(t *testing.T) {
 			LeadershipTermID:    canvassTerm,
 			FollowerMemberID:    followerID,
 		}
-		a.onSteadyCanvassPosition(fields, 1)
+		a.handleSteadyCanvassPosition(fields, 1)
 
 		expectSideEffects := role == RoleLeader &&
 			canvassTerm <= leaderTerm &&
