@@ -51,8 +51,6 @@ func (a *Agent) ServiceIngress() ConsensusIngress {
 //     failure mark)
 //   - [Agent.RequestServiceAck] returns [ErrServiceControlUnbound] while nil
 //   - pendingJoinLog survives nil and rebind
-//   - pendingJoinLog is cleared only by PrepareForNewLeadership, enterElection,
-//     a successful publish, or a terminal offer
 //
 // Concurrency: invoker-only. Do not call while [Agent.DoWork] runs.
 func (a *Agent) SetServiceProxy(p *ServiceProxy) {
@@ -186,6 +184,9 @@ func (a *Agent) serviceControlWork() int {
 	}
 	a.removeServiceAckHead()
 	a.serviceAckWaits = a.serviceAckWaits[1:]
+	if a.replayJoinWaitsAhead > 0 {
+		a.replayJoinWaitsAhead--
+	}
 	if head == a.snapshotWaitPosition {
 		a.snapshotWaitPosition = 0
 	}
@@ -250,6 +251,7 @@ func (a *Agent) publishJoinLog(fields *codecs.JoinLogFields) int {
 			a.serviceAckWaits = append(a.serviceAckWaits, fields.LogPosition)
 		}
 		a.pendingJoinLog = nil
+		a.markReplayJoinPublished()
 		return 1
 	}
 	if aeron.IsOfferRetriable(pos) {
@@ -263,6 +265,9 @@ func (a *Agent) publishJoinLog(fields *codecs.JoinLogFields) int {
 		)
 	}
 	a.pendingJoinLog = nil
+	if a.replayJoinWaitsAhead == replayJoinUnpublished {
+		a.replayJoinWaitsAhead = 0
+	}
 	return 0
 }
 
