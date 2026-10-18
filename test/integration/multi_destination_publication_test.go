@@ -24,7 +24,7 @@ type sendDestinationPublication interface {
 	Close() error
 }
 
-// TestMultiDestinationPublication asserts destinations receive until removed and a repeat remove is acknowledged.
+// TestMultiDestinationPublication asserts destinations receive until removed, re-remove passes.
 func TestMultiDestinationPublication(t *testing.T) {
 	md := harness.SharedParallel(t)
 	client, hadClientError := harness.ConnectIPCClient(t, md)
@@ -100,9 +100,11 @@ func TestMultiDestinationPublication(t *testing.T) {
 	finishPubSubIPCTest(t, md, hadClientError)
 }
 
-// TestMultiDestinationPublication_driverErrors asserts the driver rejects AddDestination on non-manual publications.
+// TestMultiDestinationPublication_driverErrors asserts the driver rejects a non-manual destination.
 func TestMultiDestinationPublication_driverErrors(t *testing.T) {
-	md := harness.SharedParallel(t)
+	// A rejected command lands in the driver error log, which
+	// TestClientErrorLogReadable expects empty on the shared driver.
+	md := harness.StartParallel(t)
 	client, hadClientError := harness.ConnectIPCClient(t, md)
 
 	const streamID = harness.MultiDestinationPublicationErrorsStreamID
