@@ -278,11 +278,45 @@ type pollStopModel struct {
 	latchedID   int64
 	stopPos     int64
 	pending     bool
-	offered     bool
-	deadline    int64
-	inFlight    int
-	nowNs       int64
-	proofHeld   bool
+	// listing is true during the catalog read.
+	listing   bool
+	offered   bool
+	deadline  int64
+	inFlight  int
+	nowNs     int64
+	proofHeld bool
+	// knownStop is the last known-id stop position, from an adopted STOP or
+	// a catalog stop. hasKnownStop is false until one lands. A blocking stop
+	// clears it.
+	knownStop    int64
+	hasKnownStop bool
+}
+
+// pollStopScript is the harness state one poll reads.
+type pollStopScript struct {
+	offerOK          bool
+	offerErr         error
+	responded        bool
+	responseErr      error
+	listOfferOK      bool
+	listOfferErr     error
+	listDelivered    bool
+	listStopPosition int64
+	listReplyErr     error
+}
+
+func scriptOf(h *stopRequestHarness) pollStopScript {
+	return pollStopScript{
+		offerOK:          h.offerOK,
+		offerErr:         h.offerErr,
+		responded:        h.responded,
+		responseErr:      h.responseErr,
+		listOfferOK:      h.listOfferOK,
+		listOfferErr:     h.listOfferErr,
+		listDelivered:    h.listDelivered,
+		listStopPosition: h.listStopPosition,
+		listReplyErr:     h.listReplyErr,
+	}
 }
 
 func (m *pollStopModel) isActive() bool {
@@ -294,6 +328,7 @@ func (m *pollStopModel) clearPending() {
 		m.inFlight--
 	}
 	m.pending = false
+	m.listing = false
 	m.offered = false
 }
 
@@ -307,12 +342,34 @@ func (m *pollStopModel) markStopped(pos int64) {
 	m.clearPending()
 }
 
-func (m *pollStopModel) poll(
-	offerOK bool,
-	offerErr error,
-	responded bool,
-	responseErr error,
-) (done bool, err error) {
+func (m *pollStopModel) markKnownStopped(pos int64) {
+	m.markStopped(pos)
+	m.knownStop = pos
+	m.hasKnownStop = true
+}
+
+// offerStep mirrors offerPendingStep.
+func (m *pollStopModel) offerStep(offerOK bool, offerErr error) (bool, error) {
+	if m.offered {
+		return true, nil
+	}
+	if offerErr != nil {
+		m.clearPending()
+		return false, offerErr
+	}
+	if !offerOK {
+		if m.nowNs >= m.deadline {
+			m.clearPending()
+			return false, errStopOfferTimeout
+		}
+		return false, nil
+	}
+	m.offered = true
+	m.deadline = m.nowNs + pollStopResponseTimeoutNs
+	return true, nil
+}
+
+func (m *pollStopModel) poll(script pollStopScript) (done bool, err error) {
 	if !m.needsStop {
 		return true, nil
 	}
@@ -322,31 +379,53 @@ func (m *pollStopModel) poll(
 		m.deadline = m.nowNs + pollStopOfferTimeoutNs
 		m.inFlight++
 	}
-	if !m.offered {
-		if offerErr != nil {
-			m.clearPending()
-			return false, offerErr
-		}
-		if !offerOK {
-			if m.nowNs >= m.deadline {
-				m.clearPending()
-				return false, errStopOfferTimeout
-			}
-			return false, nil
-		}
-		m.offered = true
-		m.deadline = m.nowNs + pollStopResponseTimeoutNs
+	if m.listing {
+		return m.pollCatalog(script)
+	}
+	offered, err := m.offerStep(script.offerOK, script.offerErr)
+	if err != nil || !offered {
+		return false, err
 	}
 	dirty := m.recordingID < 0
+	unknownSubscription := isUnknownSubscription(script.responseErr)
 	switch {
-	case dirty && isUnknownSubscription(responseErr):
+	case dirty && unknownSubscription:
 		m.markStopped(m.stopPos)
 		return true, nil
-	case responseErr != nil:
+	case unknownSubscription:
+		// inFlight holds: the list handle replaces the stop handle.
+		m.listing = true
+		m.offered = false
+		m.deadline = m.nowNs + pollStopOfferTimeoutNs
+		return m.pollCatalog(script)
+	case script.responseErr != nil:
 		m.clearPending()
-		return false, responseErr
-	case responded && dirty:
+		return false, script.responseErr
+	case script.responded && dirty:
 		m.markStopped(m.stopPos)
+		return true, nil
+	}
+	if m.nowNs >= m.deadline {
+		m.clearPending()
+		return false, errStopResponseTimeout
+	}
+	return false, nil
+}
+
+func (m *pollStopModel) pollCatalog(script pollStopScript) (done bool, err error) {
+	offered, err := m.offerStep(script.listOfferOK, script.listOfferErr)
+	if err != nil || !offered {
+		return false, err
+	}
+	switch {
+	case script.listReplyErr != nil:
+		m.clearPending()
+		return false, script.listReplyErr
+	case script.listDelivered && script.listStopPosition == recordinglog.NullPosition:
+		m.clearPending()
+		return false, errNoCatalogStopPosition
+	case script.listDelivered:
+		m.markKnownStopped(script.listStopPosition)
 		return true, nil
 	}
 	if m.nowNs >= m.deadline {
@@ -376,9 +455,21 @@ func requirePollStopInvariants(
 	}
 	require.Equal(rt, inFlight, model.inFlight)
 	require.Equal(rt, inFlight, h.inFlight())
+	listing := r.pendingStop != nil && r.pendingStop.list != nil
+	require.Equal(rt, model.listing, listing)
+	if listing {
+		require.True(rt, h.last().closed)
+		require.True(rt, h.lastList().stopClosedAtBuild)
+		require.False(rt, h.lastList().closed)
+		require.Equal(rt, model.recordingID, h.lastList().recordingID)
+	}
+	require.Equal(rt, 0, r.client.(*recordingArchiveStub).listCalls)
 	if done {
 		require.NoError(rt, pollErr)
 		require.False(rt, r.needsStop())
+		if model.recordingID >= 0 && model.hasKnownStop {
+			require.Equal(rt, model.knownStop, r.stopPosition)
+		}
 	}
 	if pollErr != nil {
 		require.False(rt, done)
@@ -388,8 +479,11 @@ func requirePollStopInvariants(
 	}
 }
 
-// TestLogRecording_pollStop_rapid draws poll, offer, response, signal, clock,
-// and sync-stop ops against pollStopModel.
+// errPollStopOffer is the terminal offer error the stop and list ops script.
+var errPollStopOffer = errors.New("publication closed")
+
+// TestLogRecording_pollStop_rapid draws poll, offer, response, list, signal,
+// clock, and sync-stop ops against pollStopModel.
 func TestLogRecording_pollStop_rapid(t *testing.T) {
 	t.Parallel()
 
@@ -404,7 +498,17 @@ func TestLogRecording_pollStop_rapid(t *testing.T) {
 			recordingID = recordingIDUnknown
 		}
 
-		h := &stopRequestHarness{}
+		h := &stopRequestHarness{
+			offerOK:     rapid.Bool().Draw(rt, "offerOK"),
+			listOfferOK: rapid.Bool().Draw(rt, "listOfferOK"),
+		}
+		// Starting on an unknown subscription reply reaches the catalog
+		// read in fewer ops.
+		if rapid.Bool().Draw(rt, "firstUnknownSubscription") {
+			h.responseErr = &archive.Exception{
+				ErrorCode: archive.ErrorUnknownSubscription,
+			}
+		}
 		r := newPollStopRecording(recordingID, priorPos, h)
 		if !needsStop {
 			r.startChannel = nil
@@ -422,11 +526,17 @@ func TestLogRecording_pollStop_rapid(t *testing.T) {
 		ops := []string{
 			"poll",
 			"offerAccepted",
-			"offerBackPressure",
-			"deliverOK",
 			"deliverUnknownSubscription",
+			"deliverDescriptor",
+			"listOfferAccepted",
+			"offerBackPressure",
+			"offerError",
+			"deliverOK",
 			"deliverError",
 			"deliverStopSignal",
+			"listBackPressure",
+			"listOfferError",
+			"deliverListError",
 			"advanceClock",
 			"syncStop",
 		}
@@ -445,6 +555,9 @@ func TestLogRecording_pollStop_rapid(t *testing.T) {
 			case "offerBackPressure":
 				h.offerOK = false
 				h.offerErr = nil
+			case "offerError":
+				h.offerOK = false
+				h.offerErr = errPollStopOffer
 			case "deliverOK":
 				h.responded = true
 				h.responseErr = nil
@@ -464,8 +577,27 @@ func TestLogRecording_pollStop_rapid(t *testing.T) {
 					Signal:      archivewire.RecordingSignal_STOP,
 				})
 				if model.isActive() {
-					model.markStopped(pos)
+					model.markKnownStopped(pos)
 				}
+			case "listOfferAccepted":
+				h.listOfferOK = true
+				h.listOfferErr = nil
+			case "listBackPressure":
+				h.listOfferOK = false
+				h.listOfferErr = nil
+			case "listOfferError":
+				h.listOfferOK = false
+				h.listOfferErr = errPollStopOffer
+			case "deliverDescriptor":
+				stop := recordinglog.NullPosition
+				if !rapid.Bool().Draw(rt, "nullStop"+strconv.Itoa(i)) {
+					stop = rapid.Int64Range(0, 1<<20).Draw(rt, "catalogStop"+strconv.Itoa(i))
+				}
+				h.listReplyErr = nil
+				h.deliverDescriptor(stop)
+			case "deliverListError":
+				h.listDelivered = false
+				h.listReplyErr = &archive.Exception{ErrorCode: archive.ErrorUnknownRecording}
 			case "advanceClock":
 				delta := rapid.Int64Range(1, 1500).Draw(rt, "delta"+strconv.Itoa(i))
 				model.nowNs += delta
@@ -477,30 +609,60 @@ func TestLogRecording_pollStop_rapid(t *testing.T) {
 						pos = model.stopPos
 					}
 					model.markStopped(pos)
+					model.hasKnownStop = false
 				} else {
 					model.clearPending()
 				}
 			case "poll":
-				needsStopBefore := r.needsStop()
-				builtBefore := len(h.built)
-				wantDone, wantErr := model.poll(h.offerOK, h.offerErr, h.responded, h.responseErr)
-				done, err = r.PollStopLogRecording(model.nowNs)
-				if wantErr != nil {
-					require.ErrorIs(rt, err, wantErr)
-					require.False(rt, done)
-				} else {
-					require.NoError(rt, err)
-					require.Equal(rt, wantDone, done)
-				}
-				if !needsStopBefore {
-					require.Len(rt, h.built, builtBefore)
-				}
-				if done && needsStopBefore {
-					require.True(rt, model.proofHeld)
-				}
+				done, err = requirePollStopStep(rt, r, &model, h)
 			}
 
 			requirePollStopInvariants(rt, r, &model, h, done, err)
+			// A poll after a scripting op reaches the catalog read in fewer
+			// ops.
+			if op != "poll" && rapid.Bool().Draw(rt, "pollAfter"+strconv.Itoa(i)) {
+				done, err = requirePollStopStep(rt, r, &model, h)
+				requirePollStopInvariants(rt, r, &model, h, done, err)
+			}
 		}
 	})
+}
+
+// requirePollStopStep polls the recording and the model on one harness
+// snapshot, then compares the outcomes.
+func requirePollStopStep(
+	rt *rapid.T,
+	r *logRecording,
+	model *pollStopModel,
+	h *stopRequestHarness,
+) (
+	done bool,
+	err error,
+) {
+	rt.Helper()
+
+	needsStopBefore := r.needsStop()
+	builtBefore := len(h.built)
+	script := scriptOf(h)
+	wantDone, wantErr := model.poll(script)
+	done, err = r.PollStopLogRecording(model.nowNs)
+	if wantErr != nil {
+		require.ErrorIs(rt, err, wantErr)
+		require.False(rt, done)
+	} else {
+		require.NoError(rt, err)
+		require.Equal(rt, wantDone, done)
+	}
+	if !needsStopBefore {
+		require.Len(rt, h.built, builtBefore)
+	}
+	if done && needsStopBefore {
+		require.True(rt, model.proofHeld)
+	}
+	if done && needsStopBefore && model.recordingID >= 0 {
+		require.True(rt, script.listDelivered)
+		require.Equal(rt, script.listStopPosition, r.stopPosition)
+		require.NotEqual(rt, recordinglog.NullPosition, r.stopPosition)
+	}
+	return done, err
 }

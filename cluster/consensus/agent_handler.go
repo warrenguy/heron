@@ -35,7 +35,7 @@ type AgentHandler interface {
 	// nowNs is the deadline clock for [LogRecordingControl.PollStopLogRecording].
 	//
 	// Returns:
-	//   - lastAppendPosition, prepared true, nil: stop proof is held
+	//   - lastAppendPosition, prepared true, nil: stop confirmed
 	//   - NullPosition, prepared false, nil: poll again
 	//   - NullPosition, prepared false, err: fail closed
 	//

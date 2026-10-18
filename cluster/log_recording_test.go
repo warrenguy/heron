@@ -972,6 +972,42 @@ func TestLogRecording_agentStoresReturnedRecordingID(t *testing.T) {
 	require.Same(t, image, adapter.Image())
 }
 
+func TestLogRecording_agentPrepareAfterUnknownSubscription(t *testing.T) {
+	t.Parallel()
+
+	const catalogStop = int64(4096)
+	unk := &archive.Exception{ErrorCode: archive.ErrorUnknownSubscription}
+	h := &stopRequestHarness{offerOK: true, responseErr: unk, listOfferOK: true}
+	r := newPollStopRecording(pollStopRecordingID, 0, h)
+	stub := r.client.(*recordingArchiveStub)
+
+	agent := consensus.NewAgent(consensus.AgentConfig{})
+	// Set the id first. The setter refuses while a control is active.
+	agent.SetLogRecordingID(pollStopRecordingID)
+	agent.SetLogRecordingControl(r)
+	require.True(t, agent.IsRecordingActive())
+
+	// Stop reply: the catalog read is in flight.
+	position, prepared, err := agent.PrepareForNewLeadership(0, pollStopNowNs)
+	require.NoError(t, err)
+	require.False(t, prepared)
+	require.Equal(t, recordinglog.NullPosition, position)
+	require.True(t, agent.IsPrepareInProgress())
+	require.Len(t, h.listBuilt, 1)
+	require.Equal(t, pollStopRecordingID, h.lastList().recordingID)
+
+	// Catalog reply: prepare stores the catalog stop.
+	h.deliverDescriptor(catalogStop)
+	position, prepared, err = agent.PrepareForNewLeadership(0, pollStopNowNs+1)
+	require.NoError(t, err)
+	require.True(t, prepared)
+	require.Equal(t, catalogStop, position)
+	require.False(t, agent.IsPrepareInProgress())
+	require.False(t, agent.IsRecordingActive())
+	require.Zero(t, h.inFlight())
+	require.Equal(t, 0, stub.listCalls)
+}
+
 const (
 	pollStopOfferTimeoutNs    = int64(1000)
 	pollStopResponseTimeoutNs = int64(500)
@@ -983,7 +1019,8 @@ const (
 var pollStopChannel = []byte("aeron:udp?endpoint=239.255.12.1:9004|session-id=9")
 
 // stopRequestHarness scripts TryOffer and PollResponse for one or more
-// scriptedStopRequest values built by newRequest.
+// scriptedStopRequest values built by newRequest. The list fields script
+// scriptedListRequest values built by newListRequest.
 type stopRequestHarness struct {
 	built       []*scriptedStopRequest
 	offerOK     bool
@@ -992,6 +1029,15 @@ type stopRequestHarness struct {
 	responseErr error
 	lastStream  int32
 	lastChannel []byte
+
+	listBuilt    []*scriptedListRequest
+	listOfferOK  bool
+	listOfferErr error
+	// listDelivered hands listStopPosition to the next PollDescriptor once.
+	listDelivered    bool
+	listStopPosition int64
+	// listReplyErr hands a non-OK reply to the next PollDescriptor once.
+	listReplyErr error
 }
 
 func (h *stopRequestHarness) newRequest(
@@ -1012,9 +1058,37 @@ func (h *stopRequestHarness) last() *scriptedStopRequest {
 	return h.built[len(h.built)-1]
 }
 
+func (h *stopRequestHarness) newListRequest(recordingID int64) logListRequest {
+	stop := h.last()
+	req := &scriptedListRequest{
+		h:                 h,
+		recordingID:       recordingID,
+		stopClosedAtBuild: stop != nil && stop.closed,
+	}
+	h.listBuilt = append(h.listBuilt, req)
+	return req
+}
+
+func (h *stopRequestHarness) lastList() *scriptedListRequest {
+	if len(h.listBuilt) == 0 {
+		return nil
+	}
+	return h.listBuilt[len(h.listBuilt)-1]
+}
+
+func (h *stopRequestHarness) deliverDescriptor(stopPosition int64) {
+	h.listDelivered = true
+	h.listStopPosition = stopPosition
+}
+
 func (h *stopRequestHarness) inFlight() int {
 	n := 0
 	for _, req := range h.built {
+		if !req.closed {
+			n++
+		}
+	}
+	for _, req := range h.listBuilt {
 		if !req.closed {
 			n++
 		}
@@ -1067,6 +1141,56 @@ func (s *scriptedStopRequest) Close() {
 	s.latchedOK = false
 }
 
+// scriptedListRequest is a logListRequest double. Each call reads its
+// outcome from the harness.
+type scriptedListRequest struct {
+	h           *stopRequestHarness
+	recordingID int64
+	// stopClosedAtBuild is true when newListRequest found the last stop
+	// handle closed.
+	stopClosedAtBuild bool
+	tryOfferCalls     int
+	pollCalls         int
+	closed            bool
+}
+
+func (s *scriptedListRequest) TryOffer() (bool, error) {
+	s.tryOfferCalls++
+	if s.closed {
+		return false, nil
+	}
+	return s.h.listOfferOK, s.h.listOfferErr
+}
+
+func (s *scriptedListRequest) PollDescriptor() (
+	bool,
+	codecs.RecordingDescriptorFields,
+	error,
+) {
+	s.pollCalls++
+	if s.closed {
+		return false, codecs.RecordingDescriptorFields{}, nil
+	}
+	err := s.h.listReplyErr
+	delivered := s.h.listDelivered
+	s.h.listReplyErr = nil
+	s.h.listDelivered = false
+	if err != nil {
+		return true, codecs.RecordingDescriptorFields{}, err
+	}
+	if delivered {
+		return true, codecs.RecordingDescriptorFields{
+			RecordingID:  s.recordingID,
+			StopPosition: s.h.listStopPosition,
+		}, nil
+	}
+	return false, codecs.RecordingDescriptorFields{}, nil
+}
+
+func (s *scriptedListRequest) Close() {
+	s.closed = true
+}
+
 func requireFailClosedPoll(
 	t *testing.T,
 	r *logRecording,
@@ -1115,6 +1239,7 @@ func newPollStopRecording(
 		offerRetryTimeoutNs: pollStopOfferTimeoutNs,
 		responseTimeoutNs:   pollStopResponseTimeoutNs,
 		newStopRequest:      h.newRequest,
+		newListRequest:      h.newListRequest,
 	}
 }
 
@@ -1331,17 +1456,211 @@ func TestLogRecording_PollStopLogRecording(t *testing.T) {
 		}
 	})
 
-	t.Run("known id unknown subscription without adoption fails", func(t *testing.T) {
+	t.Run("known id unknown subscription stores the catalog stop", func(t *testing.T) {
+		t.Parallel()
+
+		const catalogStop = int64(900)
+		unk := &archive.Exception{ErrorCode: archive.ErrorUnknownSubscription}
+		h := &stopRequestHarness{offerOK: true, responseErr: unk, listOfferOK: true}
+		r := newPollStopRecording(pollStopRecordingID, 0, h)
+		stub := r.client.(*recordingArchiveStub)
+
+		// Stop reply: ErrorUnknownSubscription enters the catalog read.
+		requirePollStopPending(t, r, pollStopNowNs)
+		req := h.last()
+		require.True(t, req.closed)
+		require.Len(t, h.listBuilt, 1)
+		list := h.lastList()
+		require.Equal(t, pollStopRecordingID, list.recordingID)
+		require.True(t, list.stopClosedAtBuild)
+		require.Equal(t, 1, list.tryOfferCalls)
+		require.Equal(t, 1, list.pollCalls)
+		require.False(t, list.closed)
+		require.Equal(t, 1, h.inFlight())
+		require.True(t, r.needsStop())
+
+		// Catalog reply: the descriptor carries the stop.
+		h.deliverDescriptor(catalogStop)
+		done, err := r.PollStopLogRecording(pollStopNowNs)
+		require.NoError(t, err)
+		require.True(t, done)
+		require.Equal(t, catalogStop, r.stopPosition)
+		require.Equal(t, pollStopRecordingID, r.latchedRecordingID)
+		require.False(t, r.needsStop())
+		require.True(t, req.closed)
+		require.True(t, list.closed)
+		require.Zero(t, h.inFlight())
+		require.Equal(t, 1, list.tryOfferCalls)
+		require.Len(t, h.built, 1)
+
+		got, posErr := r.StopPositionFor(pollStopRecordingID)
+		require.NoError(t, posErr)
+		require.Equal(t, catalogStop, got)
+		require.Equal(t, 0, stub.listCalls)
+		require.Equal(t, 0, stub.stopCalls)
+		require.Equal(t, 0, stub.stopAwaitCalls)
+	})
+
+	t.Run("known id list back pressured then accepted", func(t *testing.T) {
 		t.Parallel()
 
 		unk := &archive.Exception{ErrorCode: archive.ErrorUnknownSubscription}
 		h := &stopRequestHarness{offerOK: true, responseErr: unk}
 		r := newPollStopRecording(pollStopRecordingID, 0, h)
 
+		requirePollStopPending(t, r, pollStopNowNs)
+		list := h.lastList()
+		require.Equal(t, 1, list.tryOfferCalls)
+		require.Equal(t, 0, list.pollCalls)
+		require.False(t, r.pendingStop.offered)
+		require.Equal(t, pollStopNowNs+pollStopOfferTimeoutNs, r.pendingStop.deadlineNs)
+
+		requirePollStopPending(t, r, pollStopNowNs+1)
+		require.Equal(t, 2, list.tryOfferCalls)
+		require.Equal(t, 0, list.pollCalls)
+
+		h.listOfferOK = true
+		acceptAt := pollStopNowNs + 2
+		requirePollStopPending(t, r, acceptAt)
+		require.Equal(t, 3, list.tryOfferCalls)
+		require.Equal(t, 1, list.pollCalls)
+		require.True(t, r.pendingStop.offered)
+		require.Equal(t, acceptAt+pollStopResponseTimeoutNs, r.pendingStop.deadlineNs)
+		require.Len(t, h.built, 1)
+		require.Len(t, h.listBuilt, 1)
+		require.Equal(t, 1, h.last().tryOfferCalls)
+		require.Equal(t, 1, h.inFlight())
+	})
+
+	listOfferErr := errors.New("publication closed")
+	unknownRecording := &archive.Exception{ErrorCode: archive.ErrorUnknownRecording}
+	listFailureCases := []struct {
+		name string
+		// setup runs before the first poll.
+		setup func(*stopRequestHarness, *logRecording)
+		// firstPending adds one pending poll before the failing poll.
+		firstPending bool
+		// deliver runs between the pending poll and the failing poll.
+		deliver func(*stopRequestHarness)
+		failNs  int64
+		cause   error
+	}{
+		{
+			name:   "terminal list offer error",
+			setup:  func(h *stopRequestHarness, _ *logRecording) { h.listOfferErr = listOfferErr },
+			failNs: 0,
+			cause:  listOfferErr,
+		},
+		{
+			name: "list offer bound expiry",
+			setup: func(_ *stopRequestHarness, r *logRecording) {
+				r.offerRetryTimeoutNs = 10
+			},
+			firstPending: true,
+			failNs:       10,
+			cause:        errStopOfferTimeout,
+		},
+		{
+			name: "list response bound expiry",
+			setup: func(h *stopRequestHarness, r *logRecording) {
+				h.listOfferOK = true
+				r.responseTimeoutNs = 10
+			},
+			firstPending: true,
+			failNs:       10,
+			cause:        errStopResponseTimeout,
+		},
+		{
+			name:         "unknown recording reply",
+			setup:        func(h *stopRequestHarness, _ *logRecording) { h.listOfferOK = true },
+			firstPending: true,
+			deliver:      func(h *stopRequestHarness) { h.listReplyErr = unknownRecording },
+			failNs:       1,
+			cause:        unknownRecording,
+		},
+		{
+			name:         "null catalog stop",
+			setup:        func(h *stopRequestHarness, _ *logRecording) { h.listOfferOK = true },
+			firstPending: true,
+			deliver: func(h *stopRequestHarness) {
+				h.deliverDescriptor(recordinglog.NullPosition)
+			},
+			failNs: 1,
+			cause:  errNoCatalogStopPosition,
+		},
+	}
+	for _, tt := range listFailureCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			unk := &archive.Exception{ErrorCode: archive.ErrorUnknownSubscription}
+			h := &stopRequestHarness{offerOK: true, responseErr: unk}
+			r := newPollStopRecording(pollStopRecordingID, 0, h)
+			tt.setup(h, r)
+
+			if tt.firstPending {
+				requirePollStopPending(t, r, 0)
+				if tt.deliver != nil {
+					tt.deliver(h)
+				}
+			}
+			done, err := r.PollStopLogRecording(tt.failNs)
+			first := h.last()
+			requireFailClosedPoll(t, r, first, done, err, tt.cause)
+			listedID := strconv.FormatInt(pollStopRecordingID, 10)
+			require.ErrorContains(t, err, "list recording "+listedID)
+			require.Len(t, h.listBuilt, 1)
+			require.True(t, h.lastList().closed)
+			require.Zero(t, h.inFlight())
+			require.Equal(t, pollStopRecordingID, r.recordingID)
+
+			// Next attempt: a fresh stop request, no list request yet.
+			requirePollStopPending(t, r, tt.failNs)
+			require.Len(t, h.built, 2)
+			second := h.last()
+			require.NotSame(t, first, second)
+			require.False(t, second.closed)
+			require.Len(t, h.listBuilt, 1)
+		})
+	}
+
+	t.Run("stop signal during the catalog read", func(t *testing.T) {
+		t.Parallel()
+
+		const stopPos = int64(777)
+		unk := &archive.Exception{ErrorCode: archive.ErrorUnknownSubscription}
+		h := &stopRequestHarness{offerOK: true, responseErr: unk, listOfferOK: true}
+		r := newPollStopRecording(pollStopRecordingID, 0, h)
+
+		requirePollStopPending(t, r, pollStopNowNs)
+		list := h.lastList()
+		require.False(t, list.closed)
+
+		adoptPollStop(r, stopPos)
+		require.True(t, list.closed)
+		require.Nil(t, r.pendingStop)
+		require.Zero(t, h.inFlight())
+
 		done, err := r.PollStopLogRecording(pollStopNowNs)
-		req := h.last()
-		requireFailClosedPoll(t, r, req, done, err, unk)
-		require.True(t, req.closed)
+		require.NoError(t, err)
+		require.True(t, done)
+		require.Equal(t, stopPos, r.stopPosition)
+		require.Equal(t, pollStopRecordingID, r.latchedRecordingID)
+		require.Equal(t, 1, list.pollCalls)
+		require.Len(t, h.built, 1)
+		require.Len(t, h.listBuilt, 1)
+	})
+
+	t.Run("known id other error fails closed", func(t *testing.T) {
+		t.Parallel()
+
+		generic := &archive.Exception{ErrorCode: archive.ErrorGeneric}
+		h := &stopRequestHarness{offerOK: true, responseErr: generic, listOfferOK: true}
+		r := newPollStopRecording(pollStopRecordingID, 0, h)
+
+		done, err := r.PollStopLogRecording(pollStopNowNs)
+		requireFailClosedPoll(t, r, h.last(), done, err, generic)
+		require.Empty(t, h.listBuilt)
 	})
 
 	t.Run("known id adoption without ok reply is done", func(t *testing.T) {

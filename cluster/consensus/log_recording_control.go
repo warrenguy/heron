@@ -97,7 +97,7 @@ type LogRecordingControl interface {
 	// Concurrency: invoker-only.
 	//
 	// Returns:
-	//   - true, nil: stop proof is held, or nothing needed stop
+	//   - true, nil: stop confirmed, or nothing needed stop
 	//   - false, nil: poll again
 	//   - false, err: fail closed. A later poll starts a fresh attempt
 	//
