@@ -57,6 +57,20 @@ func TestControlOfferTimeoutError_Error(t *testing.T) {
 	)
 }
 
+func TestControlOfferAttemptsError_Error(t *testing.T) {
+	t.Parallel()
+
+	err := &ControlOfferAttemptsError{
+		Status:   aeron.BackPressured,
+		Attempts: 3,
+	}
+	require.Equal(
+		t,
+		"archive: control offer failed after 3 attempts: status=BackPressured",
+		err.Error(),
+	)
+}
+
 func TestControlResponseTimeoutError_Error(t *testing.T) {
 	t.Parallel()
 

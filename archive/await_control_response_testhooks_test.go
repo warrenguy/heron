@@ -343,6 +343,35 @@ func TestOfferAndAwait_offerTimeout(t *testing.T) {
 	requireControlTimeout(t, err, aeron.BackPressured, time.Millisecond)
 }
 
+func TestOfferAndAwait_offerAttemptsExhausted(t *testing.T) {
+	h := newLifecycleHarness(t)
+	h.pub.offerResult = aeron.BackPressured
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+
+	_, err := offerAndAwaitControlRequest(
+		ctx,
+		h.client,
+		h.cfg,
+		func() int { return 0 },
+		h.poller,
+		func() (int64, bool) {
+			return h.proxy.TryKeepAlive(controlResponseTestControlSessionID, 1)
+		},
+		controlResponseTestControlSessionID,
+		1,
+	)
+	require.Len(t, h.pub.offered, DefaultMessageRetryAttempts)
+
+	var attemptsErr *ControlOfferAttemptsError
+	require.ErrorAs(t, err, &attemptsErr)
+	require.Equal(t, &ControlOfferAttemptsError{
+		Status:   aeron.BackPressured,
+		Attempts: DefaultMessageRetryAttempts,
+	}, attemptsErr)
+}
+
 func TestOfferAndAwait_offerTerminal(t *testing.T) {
 	h := newLifecycleHarness(t)
 	h.pub.offerResult = aeron.NotConnected

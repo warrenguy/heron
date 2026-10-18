@@ -232,7 +232,7 @@ func TestControlOfferUntilPositive_adminActionThenSuccess(t *testing.T) {
 	require.NoError(t, err)
 	require.Positive(t, pos)
 	require.Equal(t, 2, seqPub.calls)
-	require.Zero(t, idle.totalIdleCalls)
+	require.Equal(t, 1, idle.totalIdleCalls)
 }
 
 func TestControlOfferUntilPositive_terminalNoRetry(t *testing.T) {
@@ -263,11 +263,9 @@ func TestControlOfferUntilPositive_terminalNoRetry(t *testing.T) {
 	}
 }
 
-// Connect fixtures use a fixed nanoClock that never advances; a real 1ms timeout would
-// spin forever.
-//
-// Advancing time inside offerFn after each BackPressured preserves the timeout oracle
-// while still exercising IdleStrategy pacing and defer Reset.
+// With a frozen clock the attempt cap, not the deadline, would end the loop. Each
+// offerFn call advances the clock, so the deadline ends the loop. IdleStrategy pacing
+// and defer Reset still run.
 func TestControlOfferUntilPositive_timeout(t *testing.T) {
 	t.Run("singleAdvance", func(t *testing.T) {
 		idle := &recordingControlIdleStrategy{}
@@ -315,7 +313,10 @@ func TestControlOfferUntilPositive_timeout(t *testing.T) {
 		_, err := controlOfferUntilPositive(
 			t.Context(),
 			harness.Client,
-			Config{ControlOfferRetryTimeout: timeout}.Normalize(),
+			Config{
+				ControlOfferRetryTimeout: timeout,
+				MessageRetryAttempts:     5,
+			}.Normalize(),
 			ControlOfferConfig{
 				IdleStrategy: idle,
 				NanoClock:    func() int64 { return nowNs.Load() },
@@ -328,6 +329,139 @@ func TestControlOfferUntilPositive_timeout(t *testing.T) {
 		require.Positive(t, idle.totalIdleCalls)
 		require.Equal(t, 1, idle.resetCalls)
 	})
+}
+
+// The clock steps 1 ms per offer under a 10 ms timeout. The deadline ends the loop at
+// offer 10 unless the attempt cap ends it first. A cap of 10 expires on the same
+// offer. The cap wins.
+func TestControlOfferUntilPositive_attemptsExhausted(t *testing.T) {
+	const timeout = 10 * time.Millisecond
+
+	tests := []struct {
+		name          string
+		attempts      int
+		results       []int64
+		wantOffers    int
+		wantPollCalls int
+		wantIdleCalls int
+		wantDoWork    int
+		wantPosition  int64
+		wantAttempts  *ControlOfferAttemptsError
+		wantTimeout   bool
+	}{
+		{
+			name:          "backPressuredDefaultAttempts",
+			results:       []int64{aeron.BackPressured},
+			wantOffers:    3,
+			wantPollCalls: 2,
+			wantIdleCalls: 2,
+			wantDoWork:    5,
+			wantAttempts:  &ControlOfferAttemptsError{Status: aeron.BackPressured, Attempts: 3},
+		},
+		{
+			name:          "adminActionDefaultAttempts",
+			results:       []int64{aeron.AdminAction},
+			wantOffers:    3,
+			wantPollCalls: 2,
+			wantIdleCalls: 2,
+			wantDoWork:    3,
+			wantAttempts:  &ControlOfferAttemptsError{Status: aeron.AdminAction, Attempts: 3},
+		},
+		{
+			name:         "attemptsOne",
+			attempts:     1,
+			results:      []int64{aeron.BackPressured},
+			wantOffers:   1,
+			wantDoWork:   1,
+			wantAttempts: &ControlOfferAttemptsError{Status: aeron.BackPressured, Attempts: 1},
+		},
+		{
+			name:         "attemptsNegative",
+			attempts:     -1,
+			results:      []int64{aeron.BackPressured},
+			wantOffers:   1,
+			wantDoWork:   1,
+			wantAttempts: &ControlOfferAttemptsError{Status: aeron.BackPressured, Attempts: 1},
+		},
+		{
+			name:          "successOnLastAttempt",
+			results:       []int64{aeron.BackPressured, aeron.BackPressured, 100},
+			wantOffers:    3,
+			wantPollCalls: 2,
+			wantIdleCalls: 2,
+			wantDoWork:    5,
+			wantPosition:  100,
+		},
+		{
+			name:          "deadlineBeforeAttempts",
+			attempts:      20,
+			results:       []int64{aeron.BackPressured},
+			wantOffers:    10,
+			wantPollCalls: 10,
+			wantIdleCalls: 10,
+			wantDoWork:    20,
+			wantTimeout:   true,
+		},
+		{
+			name:          "attemptsTiesDeadline",
+			attempts:      10,
+			results:       []int64{aeron.BackPressured},
+			wantOffers:    10,
+			wantPollCalls: 9,
+			wantIdleCalls: 9,
+			wantDoWork:    19,
+			wantAttempts:  &ControlOfferAttemptsError{Status: aeron.BackPressured, Attempts: 10},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			harness, nowNs := controlOfferRetryHarnessWithNanoClock(t, 5_000_000_000)
+			seqPub := newSequentialOfferResultControlPublication(t, tc.results...)
+			idle := &recordingControlIdleStrategy{}
+			doWorkCount := setupControlOfferRetryDoWorkRecorder(t, harness.Client)
+			var offerCalls, pollCalls int
+			offerFn := func() int64 {
+				offerCalls++
+				nowNs.Add(int64(time.Millisecond))
+				return seqPub.Offer(nil)
+			}
+
+			pos, err := controlOfferUntilPositive(
+				t.Context(),
+				harness.Client,
+				Config{
+					ControlOfferRetryTimeout: timeout,
+					MessageRetryAttempts:     tc.attempts,
+				},
+				ControlOfferConfig{
+					IdleStrategy: idle,
+					NanoClock:    func() int64 { return nowNs.Load() },
+					PollFn: func() int {
+						pollCalls++
+						return 0
+					},
+				},
+				offerFn,
+			)
+			require.Equal(t, tc.wantOffers, offerCalls)
+			require.Equal(t, tc.wantPollCalls, pollCalls)
+			require.Equal(t, tc.wantIdleCalls, idle.totalIdleCalls)
+			require.Equal(t, 1, idle.resetCalls)
+			require.Equal(t, tc.wantDoWork, *doWorkCount)
+			require.Equal(t, tc.wantPosition, pos)
+			switch {
+			case tc.wantAttempts != nil:
+				var attemptsErr *ControlOfferAttemptsError
+				require.ErrorAs(t, err, &attemptsErr)
+				require.Equal(t, tc.wantAttempts, attemptsErr)
+			case tc.wantTimeout:
+				requireControlTimeout(t, err, aeron.BackPressured, timeout)
+			default:
+				require.NoError(t, err)
+			}
+		})
+	}
 }
 
 func TestControlOfferUntilPositive_timeoutZeroUsesDefault(t *testing.T) {
@@ -435,6 +569,7 @@ func TestControlOfferUntilPositive_sessionConfigFallback(t *testing.T) {
 		harness.Client,
 		Config{
 			ControlOfferRetryTimeout: timeout,
+			MessageRetryAttempts:     5,
 			IdleStrategy:             sessionIdle,
 			AeronConfig: aeron.Config{
 				NanoClock: func() int64 { return nowNs.Load() },
@@ -660,7 +795,10 @@ func TestControlOfferUntilPositive_contextDeadline(t *testing.T) {
 		_, err := controlOfferUntilPositive(
 			deadlineCtx,
 			harness.Client,
-			Config{ControlOfferRetryTimeout: timeout}.Normalize(),
+			Config{
+				ControlOfferRetryTimeout: timeout,
+				MessageRetryAttempts:     5,
+			}.Normalize(),
 			ControlOfferConfig{
 				NanoClock: func() int64 { return nowNs.Load() },
 			},

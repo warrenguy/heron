@@ -45,11 +45,15 @@ type Config struct {
 	// ControlResponseTimeout bounds control RPC response awaits. Zero uses
 	// DefaultControlResponseTimeout after Normalize. Java parity: messageTimeoutNs.
 	ControlResponseTimeout time.Duration
-	// ControlOfferRetryTimeout bounds control offer retries, including
-	// [Client.ControlOfferUntilPositive]. Zero uses
-	// DefaultControlOfferRetryTimeout after Normalize.
+	// ControlOfferRetryTimeout is the outer bound on control offer retries,
+	// including [Client.ControlOfferUntilPositive]. MessageRetryAttempts ends
+	// most retries first. Zero uses DefaultControlOfferRetryTimeout after
+	// Normalize.
 	ControlOfferRetryTimeout time.Duration
-	MessageRetryAttempts     int
+	// MessageRetryAttempts caps the offers in one control offer retry, including
+	// [Client.ControlOfferUntilPositive]. Zero uses DefaultMessageRetryAttempts.
+	// ControlOfferRetryTimeout also ends the retry. Java parity: messageRetryAttempts.
+	MessageRetryAttempts int
 
 	AeronDir    string
 	Aeron       *aeron.Client
