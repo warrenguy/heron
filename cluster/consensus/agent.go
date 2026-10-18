@@ -2018,9 +2018,8 @@ func (a *Agent) onIngressFragment(buf []byte, offset int) {
 //
 // When election is live: stamp leader-update clock for NewLeadershipTerm /
 // CommitPosition (term >= current), then
-// [ElectionRunner.HandleConsensusMessage]. When election is nil: steady-state
-// AppendPosition / CommitPosition / NewLeadershipTerm / CanvassPosition
-// dispatch.
+// [ElectionRunner.HandleConsensusMessage]. When election is nil:
+// [Agent.handleSteadyConsensusFragment] dispatches the frame.
 func (a *Agent) handleConsensusFragment(buf []byte, offset int, nowNs int64) {
 	if a.election != nil {
 		a.noteLeaderUpdateClockFromFragment(buf, offset, nowNs)
@@ -2071,6 +2070,8 @@ func (a *Agent) stampLeaderUpdateClock(termID, nowNs int64) {
 	}
 }
 
+// handleSteadyConsensusFragment dispatches one consensus frame on a settled
+// member. Drops unknown templates and frames that fail to decode.
 func (a *Agent) handleSteadyConsensusFragment(buf []byte, offset int, nowNs int64) {
 	templateID, ok := consensusMessageTemplateID(buf, offset)
 	if !ok {
@@ -2102,6 +2103,24 @@ func (a *Agent) handleSteadyConsensusFragment(buf []byte, offset int, nowNs int6
 		if fields, ok := codecs.TryDecodeStopCatchupAt(buf, offset); ok {
 			a.onSteadyStopCatchup(fields)
 		}
+	case clusterwire.RequestVoteSbeTemplateID:
+		if fields, ok := codecs.TryDecodeRequestVoteAt(buf, offset); ok {
+			a.handleSteadyRequestVote(fields, nowNs)
+		}
+	}
+}
+
+// handleSteadyRequestVote enters an election when the candidate term is above
+// the leadership term. Any role enters. Stamps no clock.
+//
+// Does not forward the frame. The new election starts in INIT, which drops
+// inbound frames. The candidate's ballot times out. It canvasses again and
+// nominates at a higher term. This member answers from CANVASS or later.
+//
+// Concurrency: invoker-only; see [Agent].
+func (a *Agent) handleSteadyRequestVote(fields codecs.RequestVoteFields, nowNs int64) {
+	if fields.CandidateTermID > a.leadershipTermID {
+		a.enterElection(ElectionTriggerVoteRequest, false, nowNs)
 	}
 }
 

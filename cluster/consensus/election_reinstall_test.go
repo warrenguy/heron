@@ -469,6 +469,7 @@ func TestElectionTrigger_String(t *testing.T) {
 		{ElectionTriggerHigherTerm, "HIGHER_TERM"},
 		{ElectionTriggerLogRecordingStopped, "LOG_RECORDING_STOPPED"},
 		{ElectionTriggerLogImageClosed, "LOG_IMAGE_CLOSED"},
+		{ElectionTriggerVoteRequest, "VOTE_REQUEST"},
 		{ElectionTrigger(99), "Trigger(99)"},
 	}
 	for _, tc := range tests {
