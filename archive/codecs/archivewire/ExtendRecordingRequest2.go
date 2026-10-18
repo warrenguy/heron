@@ -25,7 +25,7 @@ type ExtendRecordingRequest2 struct {
         ExtendRecordingRequest2SbeBlockLength     uint16 = uint16(36)
         ExtendRecordingRequest2SbeTemplateID      uint16 = uint16(64)
         ExtendRecordingRequest2SbeSchemaID        uint16 = uint16(101)
-        ExtendRecordingRequest2SbeSchemaVersion   uint16 = uint16(13)
+        ExtendRecordingRequest2SbeSchemaVersion   uint16 = uint16(14)
         ExtendRecordingRequest2SbeSemanticVersion string = "5.2"
     )
 
@@ -46,7 +46,7 @@ type ExtendRecordingRequest2 struct {
     }
 
     func (m *ExtendRecordingRequest2) SbeSchemaVersion() uint16 {
-        return uint16(13)
+        return uint16(14)
     }
 
     func (m *ExtendRecordingRequest2) SbeSemanticVersion() string {

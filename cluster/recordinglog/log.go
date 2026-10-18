@@ -402,25 +402,17 @@ func (l *Log) CommitLogPosition(leadershipTermID, logPosition int64) error {
 }
 
 // InvalidateLatestSnapshot marks the newest consensus-module snapshot group
-// invalid in place and reports whether a group was found.
+// invalid in place. Reports whether it found a group.
 //
-// The group is collected by a tail-to-head scan while consensus-module
-// logPosition does not decrease; each service's contiguous snapshot run at that
-// position is invalidated. Standby snapshots in the collected group participate;
-// standbys outside the scan window stay valid because comparator-sorted
-// placement keys leadershipTermID and termBaseLogPosition before logPosition,
-// defers EntryTypeSnapshot after non-snapshot types at the same key, then
-// breaks ties by logPosition and serviceID, not global logPosition alone.
-// Each entry's type word gains
-// the invalid flag and its cache slot is recorded in invalidSnapshots so a later
-// matching append re-validates it.
+// A tail-to-head scan in sort order (see less) collects the consensus-module
+// snapshots at the highest logPosition. Each collected entry gains the invalid
+// flag, as do the contiguous service snapshots before it, service ID 0 upward.
+// Standby snapshots count as snapshots. invalidSnapshots records each slot, so
+// a later matching append re-validates it.
 //
-// Returns ErrNoMatchingTermForSnapshot when any consensus-module snapshot at
-// the highest logPosition has a leadershipTermId with no term entry; this term
-// check completes before any write, so a missing term aborts with the cache
-// untouched. A writeFieldAt failure mid-group still persists the earlier
-// members, matching the reference.
-// Propagates ErrShortWrite or the underlying WriteAt error.
+// Returns ErrNoMatchingTermForSnapshot before any write when a collected
+// snapshot has no term entry. Returns ErrShortWrite or the WriteAt error on a
+// failed write. Entries invalidated before the failure stay invalid.
 func (l *Log) InvalidateLatestSnapshot() (bool, error) {
 	var indices []int32
 	highLogPosition := NullPosition

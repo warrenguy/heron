@@ -25,7 +25,7 @@ type AdminResponse struct {
         AdminResponseSbeBlockLength     uint16 = uint16(24)
         AdminResponseSbeTemplateID      uint16 = uint16(27)
         AdminResponseSbeSchemaID        uint16 = uint16(111)
-        AdminResponseSbeSchemaVersion   uint16 = uint16(16)
+        AdminResponseSbeSchemaVersion   uint16 = uint16(17)
         AdminResponseSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type AdminResponse struct {
     }
 
     func (m *AdminResponse) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *AdminResponse) SbeSemanticVersion() string {

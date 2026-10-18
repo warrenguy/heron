@@ -26,7 +26,7 @@ type ReplayRequest struct {
         ReplayRequestSbeBlockLength     uint16 = uint16(56)
         ReplayRequestSbeTemplateID      uint16 = uint16(6)
         ReplayRequestSbeSchemaID        uint16 = uint16(101)
-        ReplayRequestSbeSchemaVersion   uint16 = uint16(13)
+        ReplayRequestSbeSchemaVersion   uint16 = uint16(14)
         ReplayRequestSbeSemanticVersion string = "5.2"
     )
 
@@ -47,7 +47,7 @@ type ReplayRequest struct {
     }
 
     func (m *ReplayRequest) SbeSchemaVersion() uint16 {
-        return uint16(13)
+        return uint16(14)
     }
 
     func (m *ReplayRequest) SbeSemanticVersion() string {

@@ -25,7 +25,7 @@ type CancelTimer struct {
         CancelTimerSbeBlockLength     uint16 = uint16(8)
         CancelTimerSbeTemplateID      uint16 = uint16(32)
         CancelTimerSbeSchemaID        uint16 = uint16(111)
-        CancelTimerSbeSchemaVersion   uint16 = uint16(16)
+        CancelTimerSbeSchemaVersion   uint16 = uint16(17)
         CancelTimerSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type CancelTimer struct {
     }
 
     func (m *CancelTimer) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *CancelTimer) SbeSemanticVersion() string {

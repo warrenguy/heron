@@ -435,7 +435,7 @@ func publisherRoundtripCases(dst election.PublicationTarget) []publisherRoundtri
 			},
 		},
 		{
-			name: "NewLeadershipTerm_v16",
+			name: "NewLeadershipTerm",
 			publish: func(p election.Publisher) {
 				p.NewLeadershipTerm(
 					dst,

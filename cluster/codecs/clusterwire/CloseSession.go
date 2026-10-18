@@ -25,7 +25,7 @@ type CloseSession struct {
         CloseSessionSbeBlockLength     uint16 = uint16(8)
         CloseSessionSbeTemplateID      uint16 = uint16(30)
         CloseSessionSbeSchemaID        uint16 = uint16(111)
-        CloseSessionSbeSchemaVersion   uint16 = uint16(16)
+        CloseSessionSbeSchemaVersion   uint16 = uint16(17)
         CloseSessionSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type CloseSession struct {
     }
 
     func (m *CloseSession) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *CloseSession) SbeSemanticVersion() string {

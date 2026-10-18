@@ -23,8 +23,6 @@ const (
 var (
 	archiveControlResponseVersionMinVersion = uint16((&archivewire.ControlResponse{}).
 						VersionSinceVersion())
-	archiveConnectRequestVersionMinVersion = uint16((&archivewire.ConnectRequest{}).
-						VersionSinceVersion())
 	authConnectRequestClientInfoMinVersion = uint16((&archivewire.AuthConnectRequest{}).
 						ClientInfoSinceVersion())
 	replayRequestFileIoMaxLengthMinVersion = uint16((&archivewire.ReplayRequest{}).
@@ -116,31 +114,6 @@ func authConnectRequestVarLensInto(
 		dst[2] = clientInfoLen
 	}
 	return need, true
-}
-
-// connectRequestBlockLength returns the ConnectRequest root block length for
-// actingVersion.
-func connectRequestBlockLength(actingVersion uint16) uint16 {
-	return ArchiveMinRootBlockLength(
-		archivewire.ConnectRequestSbeTemplateID,
-		actingVersion,
-		archivewire.ConnectRequestSbeBlockLength,
-	)
-}
-
-// ConnectRequestWireLen returns the encoded wire length of a ConnectRequest at
-// actingVersion with the given variable-field byte length.
-func ConnectRequestWireLen(
-	actingVersion uint16,
-	responseChannelLen int,
-) (int, bool) {
-	if responseChannelLen < 0 {
-		return 0, false
-	}
-	return ArchiveWireMessageLen(
-		connectRequestBlockLength(actingVersion),
-		responseChannelLen,
-	)
 }
 
 // authConnectRequestBlockLength returns the AuthConnectRequest root block length

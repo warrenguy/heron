@@ -4,8 +4,8 @@
 
 aeron:
   repository: https://github.com/aeron-io/aeron.git
-  ref: 1.52.0
+  ref: 1.53.3
   driver_artifact: aeronmd_s
 
 sbe_tool:
-  maven_coordinates: "uk.co.real-logic:sbe-all:1.38.1"
+  maven_coordinates: "uk.co.real-logic:sbe-all:1.40.2"

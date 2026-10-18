@@ -263,8 +263,8 @@ func TestReload_basic(t *testing.T) {
 	entries, err := recordinglog.Reload(path)
 	require.NoError(t, err)
 	require.Len(t, entries, 2)
-	// Same leadershipTermId and termBaseLogPosition: TERM sorts before SNAPSHOT
-	// because a snapshot follows a non-snapshot at the same key.
+	// Same leadershipTermId and termBaseLogPosition: TERM sorts before every
+	// snapshot type at the same key.
 	require.Equal(t, recordinglog.EntryTypeTerm, entries[0].Type)
 	require.Equal(t, recordinglog.EntryTypeSnapshot, entries[1].Type)
 }

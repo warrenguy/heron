@@ -26,7 +26,7 @@ type StandbySnapshot struct {
         StandbySnapshotSbeBlockLength     uint16 = uint16(16)
         StandbySnapshotSbeTemplateID      uint16 = uint16(81)
         StandbySnapshotSbeSchemaID        uint16 = uint16(111)
-        StandbySnapshotSbeSchemaVersion   uint16 = uint16(16)
+        StandbySnapshotSbeSchemaVersion   uint16 = uint16(17)
         StandbySnapshotSbeSemanticVersion string = "5.4"
     )
 
@@ -47,7 +47,7 @@ type StandbySnapshot struct {
     }
 
     func (m *StandbySnapshot) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *StandbySnapshot) SbeSemanticVersion() string {

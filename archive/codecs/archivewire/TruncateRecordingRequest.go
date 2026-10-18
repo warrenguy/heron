@@ -25,7 +25,7 @@ type TruncateRecordingRequest struct {
         TruncateRecordingRequestSbeBlockLength     uint16 = uint16(32)
         TruncateRecordingRequestSbeTemplateID      uint16 = uint16(13)
         TruncateRecordingRequestSbeSchemaID        uint16 = uint16(101)
-        TruncateRecordingRequestSbeSchemaVersion   uint16 = uint16(13)
+        TruncateRecordingRequestSbeSchemaVersion   uint16 = uint16(14)
         TruncateRecordingRequestSbeSemanticVersion string = "5.2"
     )
 
@@ -46,7 +46,7 @@ type TruncateRecordingRequest struct {
     }
 
     func (m *TruncateRecordingRequest) SbeSchemaVersion() uint16 {
-        return uint16(13)
+        return uint16(14)
     }
 
     func (m *TruncateRecordingRequest) SbeSemanticVersion() string {

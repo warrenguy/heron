@@ -25,7 +25,7 @@ type ListRecordingRequest struct {
         ListRecordingRequestSbeBlockLength     uint16 = uint16(24)
         ListRecordingRequestSbeTemplateID      uint16 = uint16(10)
         ListRecordingRequestSbeSchemaID        uint16 = uint16(101)
-        ListRecordingRequestSbeSchemaVersion   uint16 = uint16(13)
+        ListRecordingRequestSbeSchemaVersion   uint16 = uint16(14)
         ListRecordingRequestSbeSemanticVersion string = "5.2"
     )
 
@@ -46,7 +46,7 @@ type ListRecordingRequest struct {
     }
 
     func (m *ListRecordingRequest) SbeSchemaVersion() uint16 {
-        return uint16(13)
+        return uint16(14)
     }
 
     func (m *ListRecordingRequest) SbeSemanticVersion() string {

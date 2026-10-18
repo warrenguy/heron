@@ -26,7 +26,7 @@ type JoinLog struct {
         JoinLogSbeBlockLength     uint16 = uint16(40)
         JoinLogSbeTemplateID      uint16 = uint16(40)
         JoinLogSbeSchemaID        uint16 = uint16(111)
-        JoinLogSbeSchemaVersion   uint16 = uint16(16)
+        JoinLogSbeSchemaVersion   uint16 = uint16(17)
         JoinLogSbeSemanticVersion string = "5.4"
     )
 
@@ -47,7 +47,7 @@ type JoinLog struct {
     }
 
     func (m *JoinLog) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *JoinLog) SbeSemanticVersion() string {

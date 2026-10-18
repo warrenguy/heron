@@ -25,7 +25,7 @@ type ControlResponse struct {
         ControlResponseSbeBlockLength     uint16 = uint16(32)
         ControlResponseSbeTemplateID      uint16 = uint16(1)
         ControlResponseSbeSchemaID        uint16 = uint16(101)
-        ControlResponseSbeSchemaVersion   uint16 = uint16(13)
+        ControlResponseSbeSchemaVersion   uint16 = uint16(14)
         ControlResponseSbeSemanticVersion string = "5.2"
     )
 
@@ -46,7 +46,7 @@ type ControlResponse struct {
     }
 
     func (m *ControlResponse) SbeSchemaVersion() uint16 {
-        return uint16(13)
+        return uint16(14)
     }
 
     func (m *ControlResponse) SbeSemanticVersion() string {

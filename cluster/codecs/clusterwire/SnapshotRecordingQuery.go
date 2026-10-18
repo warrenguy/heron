@@ -25,7 +25,7 @@ type SnapshotRecordingQuery struct {
         SnapshotRecordingQuerySbeBlockLength     uint16 = uint16(12)
         SnapshotRecordingQuerySbeTemplateID      uint16 = uint16(72)
         SnapshotRecordingQuerySbeSchemaID        uint16 = uint16(111)
-        SnapshotRecordingQuerySbeSchemaVersion   uint16 = uint16(16)
+        SnapshotRecordingQuerySbeSchemaVersion   uint16 = uint16(17)
         SnapshotRecordingQuerySbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type SnapshotRecordingQuery struct {
     }
 
     func (m *SnapshotRecordingQuery) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *SnapshotRecordingQuery) SbeSemanticVersion() string {

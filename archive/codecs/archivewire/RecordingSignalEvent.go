@@ -25,7 +25,7 @@ type RecordingSignalEvent struct {
         RecordingSignalEventSbeBlockLength     uint16 = uint16(44)
         RecordingSignalEventSbeTemplateID      uint16 = uint16(24)
         RecordingSignalEventSbeSchemaID        uint16 = uint16(101)
-        RecordingSignalEventSbeSchemaVersion   uint16 = uint16(13)
+        RecordingSignalEventSbeSchemaVersion   uint16 = uint16(14)
         RecordingSignalEventSbeSemanticVersion string = "5.2"
     )
 
@@ -46,7 +46,7 @@ type RecordingSignalEvent struct {
     }
 
     func (m *RecordingSignalEvent) SbeSchemaVersion() uint16 {
-        return uint16(13)
+        return uint16(14)
     }
 
     func (m *RecordingSignalEvent) SbeSemanticVersion() string {

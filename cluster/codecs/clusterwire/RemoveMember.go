@@ -25,7 +25,7 @@ type RemoveMember struct {
         RemoveMemberSbeBlockLength     uint16 = uint16(8)
         RemoveMemberSbeTemplateID      uint16 = uint16(35)
         RemoveMemberSbeSchemaID        uint16 = uint16(111)
-        RemoveMemberSbeSchemaVersion   uint16 = uint16(16)
+        RemoveMemberSbeSchemaVersion   uint16 = uint16(17)
         RemoveMemberSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type RemoveMember struct {
     }
 
     func (m *RemoveMember) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *RemoveMember) SbeSemanticVersion() string {

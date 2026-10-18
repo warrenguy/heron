@@ -27,7 +27,7 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 public final class ClusterSbeFixtures {
-    private static final int SCHEMA_VERSION_16 = SessionMessageHeaderEncoder.SCHEMA_VERSION;
+    private static final int CURRENT_SCHEMA_VERSION = SessionMessageHeaderEncoder.SCHEMA_VERSION;
     private static final byte[] EMPTY_BYTES = new byte[0];
 
     private ClusterSbeFixtures() {
@@ -112,7 +112,7 @@ public final class ClusterSbeFixtures {
     ) {
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
         final boolean currentSchema =
-            actingVersion == SCHEMA_VERSION_16 && blockLength == SessionEventEncoder.BLOCK_LENGTH;
+            actingVersion == CURRENT_SCHEMA_VERSION && blockLength == SessionEventEncoder.BLOCK_LENGTH;
         final SessionEventEncoder encoder = openSessionEventEncoder(
             buffer,
             actingVersion,
@@ -495,7 +495,7 @@ public final class ClusterSbeFixtures {
             length,
             templateId,
             blockLength,
-            SCHEMA_VERSION_16,
+            CURRENT_SCHEMA_VERSION,
             SessionMessageHeaderEncoder.SCHEMA_ID
         );
     }

@@ -25,7 +25,7 @@ type NewLeaderEvent struct {
         NewLeaderEventSbeBlockLength     uint16 = uint16(20)
         NewLeaderEventSbeTemplateID      uint16 = uint16(6)
         NewLeaderEventSbeSchemaID        uint16 = uint16(111)
-        NewLeaderEventSbeSchemaVersion   uint16 = uint16(16)
+        NewLeaderEventSbeSchemaVersion   uint16 = uint16(17)
         NewLeaderEventSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type NewLeaderEvent struct {
     }
 
     func (m *NewLeaderEvent) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *NewLeaderEvent) SbeSemanticVersion() string {

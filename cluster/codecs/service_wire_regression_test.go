@@ -9,26 +9,26 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-// Golden wire bytes for service catalogue messages @ actingVersion 16.
+// Golden wire bytes for service catalogue messages at actingVersion 17.
 const (
-	goldenTimerEventHex = "180014006f001000" +
+	goldenTimerEventHex = "180014006f001100" +
 		"010000000000000002000000000000000300000000000000"
-	goldenSessionOpenEventHex = "240015006f001000" +
+	goldenSessionOpenEventHex = "240015006f001100" +
 		"0100000000000000020000000000000003000000000000000400000000000000" +
 		"66000000090000006165726f6e3a69706302000000abcd"
-	goldenSessionCloseEventHex = "1c0016006f001000" +
+	goldenSessionCloseEventHex = "1c0016006f001100" +
 		"05000000000000000600000000000000070000000000000000000000"
-	goldenClusterActionRequestHex = "200017006f001000" +
+	goldenClusterActionRequestHex = "200017006f001100" +
 		"0100000000000000020000000000000003000000000000000200000004000000"
-	goldenScheduleTimerHex = "10001f006f001000" +
+	goldenScheduleTimerHex = "10001f006f001100" +
 		"01000000000000000200000000000000"
-	goldenCancelTimerHex = "080020006f0010000100000000000000"
-	goldenServiceAckHex  = "240021006f001000" +
+	goldenCancelTimerHex = "080020006f0011000100000000000000"
+	goldenServiceAckHex  = "240021006f001100" +
 		"0a000000000000000b000000000000000c000000000000000d0000000000000001000000"
-	goldenJoinLogHex = "280028006f001000" +
+	goldenJoinLogHex = "280028006f001100" +
 		"6400000000000000c80000000000000001000000020000006400000001000000" +
 		"0100000000000000210000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a39303034"
-	goldenRequestServiceAckHex = "08006c006f0010002a00000000000000"
+	goldenRequestServiceAckHex = "08006c006f0011002a00000000000000"
 )
 
 func TestServiceWireBytes_goldenHex(t *testing.T) {
@@ -195,7 +195,7 @@ func TestServiceFlyweightConstants(t *testing.T) {
 		clusterwire.JoinLogSbeSchemaVersion,
 		clusterwire.RequestServiceAckSbeSchemaVersion,
 	} {
-		require.Equal(t, uint16(16), version)
+		require.Equal(t, uint16(17), version)
 	}
 }
 

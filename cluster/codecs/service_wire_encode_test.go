@@ -150,7 +150,7 @@ func TestClusterActionRequest_roundtrip(t *testing.T) {
 			},
 		},
 		{
-			name: "null_flags_v16",
+			name: "null_flags",
 			fields: codecs.ClusterActionRequestFields{
 				LeadershipTermID: 1, LogPosition: 2, Timestamp: 3,
 				Action: clusterwire.ClusterAction_SUSPEND, Flags: math.MinInt32,
@@ -297,11 +297,11 @@ func TestServiceAck_roundtrip(t *testing.T) {
 }
 
 func TestJoinLog_roundtrip(t *testing.T) {
-	v16 := clusterwire.JoinLogSbeSchemaVersion
+	currentVersion := clusterwire.JoinLogSbeSchemaVersion
 	fieldCases := []codecFieldsActingCase[codecs.JoinLogFields]{
 		{
-			name:      "v16_standby_false",
-			actingVer: v16,
+			name:      "current_version_standby_false",
+			actingVer: currentVersion,
 			fields: codecs.JoinLogFields{
 				LogPosition: 100, MaxLogPosition: 200, MemberID: 1, LogSessionID: 2,
 				LogStreamID: 100, IsStartup: clusterwire.BooleanType_TRUE, Role: 1,
@@ -323,9 +323,9 @@ func TestJoinLog_roundtrip(t *testing.T) {
 	runCodecRoundtripCases(
 		t,
 		clusterwire.JoinLogSbeTemplateID,
-		v16,
+		currentVersion,
 		buildActingFieldRoundtripCases(
-			v16,
+			currentVersion,
 			fieldCases,
 			func(buf []byte, offset int, actingVer uint16, fields codecs.JoinLogFields) (int, bool) {
 				return codecs.EncodeJoinLog(buf, offset, actingVer, fields)

@@ -24,21 +24,22 @@ func less(a, b Entry) bool {
 		return a.TermBaseLogPosition < b.TermBaseLogPosition
 	}
 
-	aIsSnapshot := a.Type == EntryTypeSnapshot
-	bIsSnapshot := b.Type == EntryTypeSnapshot
-	if aIsSnapshot != bIsSnapshot {
-		return !aIsSnapshot
+	aIsTerm := a.Type == EntryTypeTerm
+	bIsTerm := b.Type == EntryTypeTerm
+	if aIsTerm != bIsTerm {
+		return aIsTerm
 	}
-	if a.Type != b.Type {
-		return a.Type < b.Type
-	}
-
-	if a.Type == EntryTypeTerm {
+	if aIsTerm {
 		return a.Index < b.Index
 	}
 
+	// Snapshots at one log position sort together. The standby snapshot
+	// sorts first, then service IDs in descending order.
 	if a.LogPosition != b.LogPosition {
 		return a.LogPosition < b.LogPosition
+	}
+	if a.Type != b.Type {
+		return a.Type > b.Type
 	}
 	return a.ServiceID > b.ServiceID
 }

@@ -25,7 +25,7 @@ type RequestVote struct {
         RequestVoteSbeBlockLength     uint16 = uint16(32)
         RequestVoteSbeTemplateID      uint16 = uint16(51)
         RequestVoteSbeSchemaID        uint16 = uint16(111)
-        RequestVoteSbeSchemaVersion   uint16 = uint16(16)
+        RequestVoteSbeSchemaVersion   uint16 = uint16(17)
         RequestVoteSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type RequestVote struct {
     }
 
     func (m *RequestVote) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *RequestVote) SbeSemanticVersion() string {

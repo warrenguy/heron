@@ -25,7 +25,7 @@ type CatchupPosition struct {
         CatchupPositionSbeBlockLength     uint16 = uint16(20)
         CatchupPositionSbeTemplateID      uint16 = uint16(56)
         CatchupPositionSbeSchemaID        uint16 = uint16(111)
-        CatchupPositionSbeSchemaVersion   uint16 = uint16(16)
+        CatchupPositionSbeSchemaVersion   uint16 = uint16(17)
         CatchupPositionSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type CatchupPosition struct {
     }
 
     func (m *CatchupPosition) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *CatchupPosition) SbeSemanticVersion() string {

@@ -25,7 +25,7 @@ type PendingMessageTracker struct {
         PendingMessageTrackerSbeBlockLength     uint16 = uint16(24)
         PendingMessageTrackerSbeTemplateID      uint16 = uint16(107)
         PendingMessageTrackerSbeSchemaID        uint16 = uint16(111)
-        PendingMessageTrackerSbeSchemaVersion   uint16 = uint16(16)
+        PendingMessageTrackerSbeSchemaVersion   uint16 = uint16(17)
         PendingMessageTrackerSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type PendingMessageTracker struct {
     }
 
     func (m *PendingMessageTracker) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *PendingMessageTracker) SbeSemanticVersion() string {

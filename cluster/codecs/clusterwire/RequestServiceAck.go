@@ -25,7 +25,7 @@ type RequestServiceAck struct {
         RequestServiceAckSbeBlockLength     uint16 = uint16(8)
         RequestServiceAckSbeTemplateID      uint16 = uint16(108)
         RequestServiceAckSbeSchemaID        uint16 = uint16(111)
-        RequestServiceAckSbeSchemaVersion   uint16 = uint16(16)
+        RequestServiceAckSbeSchemaVersion   uint16 = uint16(17)
         RequestServiceAckSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type RequestServiceAck struct {
     }
 
     func (m *RequestServiceAck) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *RequestServiceAck) SbeSemanticVersion() string {

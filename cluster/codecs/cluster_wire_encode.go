@@ -45,14 +45,15 @@ var newLeadershipTermEventEncodedLen = int(
 	(&clusterwire.NewLeadershipTermEvent{}).SbeBlockAndHeaderLength(),
 )
 
-// NewLeadershipTermEventEncodedLen is MessageHeader plus full schema block
+// NewLeadershipTermEventEncodedLen is MessageHeader plus the full schema block
 // (8+48=56).
 //
-// Production tryClaim always uses schema version 16 full block, matching Java:
+// The tryClaim path always claims the full block of the current schema
+// version, as Java does:
 // MessageHeaderEncoder.ENCODED_LENGTH + NewLeadershipTermEventEncoder.BLOCK_LENGTH.
-// Encoding below NewLeadershipTermEventTimeUnitMinVersion writes a shorter wire
-// (8+40=48), so a claim sized by this length must encode at or above that
-// version or the trailing 8 claimed bytes stay unwritten.
+// An encode below NewLeadershipTermEventTimeUnitMinVersion writes a shorter
+// wire (8+40=48). A claim sized by this length must encode at or above that
+// version. Otherwise the last 8 claimed bytes stay unwritten.
 func NewLeadershipTermEventEncodedLen() int {
 	return newLeadershipTermEventEncodedLen
 }

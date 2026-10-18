@@ -26,7 +26,7 @@ type ConsensusModule struct {
         ConsensusModuleSbeBlockLength     uint16 = uint16(28)
         ConsensusModuleSbeTemplateID      uint16 = uint16(105)
         ConsensusModuleSbeSchemaID        uint16 = uint16(111)
-        ConsensusModuleSbeSchemaVersion   uint16 = uint16(16)
+        ConsensusModuleSbeSchemaVersion   uint16 = uint16(17)
         ConsensusModuleSbeSemanticVersion string = "5.4"
     )
 
@@ -47,7 +47,7 @@ type ConsensusModule struct {
     }
 
     func (m *ConsensusModule) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *ConsensusModule) SbeSemanticVersion() string {

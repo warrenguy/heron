@@ -338,12 +338,6 @@ func ArchiveRootBlockLengthBounds(
 			return 28, maxBlock, true
 		}
 		return maxBlock, maxBlock, true
-	case archivewire.ConnectRequestSbeTemplateID:
-		maxBlock = archivewire.ConnectRequestSbeBlockLength
-		if actingVersion < archiveConnectRequestVersionMinVersion {
-			return 12, maxBlock, true
-		}
-		return maxBlock, maxBlock, true
 	case archivewire.CloseSessionRequestSbeTemplateID:
 		bl := archivewire.CloseSessionRequestSbeBlockLength
 		return bl, bl, true
@@ -413,7 +407,6 @@ func ArchiveVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		archivewire.KeepAliveRequestSbeTemplateID:
 		return 0, true
 	case archivewire.ControlResponseSbeTemplateID,
-		archivewire.ConnectRequestSbeTemplateID,
 		archivewire.StartRecordingRequestSbeTemplateID,
 		archivewire.StopRecordingRequestSbeTemplateID,
 		archivewire.ReplayRequestSbeTemplateID,
@@ -536,8 +529,6 @@ func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields
 	switch templateID {
 	case archivewire.ControlResponseSbeTemplateID:
 		return templateVarFields{errorMessage: raw[0]}, true
-	case archivewire.ConnectRequestSbeTemplateID:
-		return templateVarFields{responseChannel: raw[0]}, true
 	case archivewire.StartRecordingRequestSbeTemplateID,
 		archivewire.StopRecordingRequestSbeTemplateID,
 		archivewire.StartRecordingRequest2SbeTemplateID,
@@ -589,15 +580,6 @@ func decodeTemplateFields(
 	switch layout.TemplateID {
 	case archivewire.ControlResponseSbeTemplateID:
 		return decodeControlResponseFields(buf, body, block, version, bufLen, vars.errorMessage), true
-	case archivewire.ConnectRequestSbeTemplateID:
-		var msg archivewire.ConnectRequest
-		msg.WrapForDecode(buf, body, block, version, bufLen)
-		return ConnectRequestFields{
-			CorrelationID:    msg.CorrelationId(),
-			ResponseStreamID: msg.ResponseStreamId(),
-			Version:          msg.Version(),
-			ResponseChannel:  vars.responseChannel,
-		}, true
 	case archivewire.CloseSessionRequestSbeTemplateID:
 		var msg archivewire.CloseSessionRequest
 		msg.WrapForDecode(buf, body, block, version, bufLen)

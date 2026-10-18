@@ -29,7 +29,7 @@ func TestNewLeadershipTermEvent_flyweightConstants(t *testing.T) {
 	require.Equal(t, uint16(48), clusterwire.NewLeadershipTermEventSbeBlockLength)
 	require.Equal(t, uint16(24), clusterwire.NewLeadershipTermEventSbeTemplateID)
 	require.Equal(t, uint16(111), clusterwire.NewLeadershipTermEventSbeSchemaID)
-	require.Equal(t, uint16(16), clusterwire.NewLeadershipTermEventSbeSchemaVersion)
+	require.Equal(t, uint16(17), clusterwire.NewLeadershipTermEventSbeSchemaVersion)
 
 	var msg clusterwire.NewLeadershipTermEvent
 	require.Equal(t, uint64(4), msg.TimeUnitSinceVersion())
@@ -195,13 +195,13 @@ func TestEncodeNewLeadershipTermEvent_template24_BufferBounds(t *testing.T) {
 			wantOK:    false,
 		},
 		{
-			name:      "one_byte_short_v16",
+			name:      "one_byte_short_current_version",
 			bufLen:    fullWireLen - 1,
 			actingVer: actingVersion,
 			wantOK:    false,
 		},
 		{
-			name:        "exact_fit_v16",
+			name:        "exact_fit_current_version",
 			bufLen:      fullWireLen,
 			actingVer:   actingVersion,
 			wantOK:      true,
@@ -365,13 +365,13 @@ func TestNewLeadershipTermEvent_roundtrip(t *testing.T) {
 	defaultVer := clusterwire.NewLeadershipTermEventSbeSchemaVersion
 	fieldCases := []codecFieldsActingCase[codecs.NewLeadershipTermEventFields]{
 		{
-			name:   "full_v16_nanos",
+			name:   "full_nanos",
 			fields: newLeadershipTermEventSampleFields(),
 		},
 		{
 			// Always-write-on-0 proof lives in the dirty-buffer test; a fresh
 			// zeroed roundtrip buffer cannot distinguish write from omit.
-			name: "app_version_zero_v16",
+			name: "app_version_zero",
 			fields: codecs.NewLeadershipTermEventFields{
 				LeadershipTermID:    100,
 				LogPosition:         200,
@@ -384,7 +384,7 @@ func TestNewLeadershipTermEvent_roundtrip(t *testing.T) {
 			},
 		},
 		{
-			name: "max_int_v16",
+			name: "max_int",
 			fields: codecs.NewLeadershipTermEventFields{
 				LeadershipTermID:    math.MaxInt64,
 				LogPosition:         math.MaxInt64,

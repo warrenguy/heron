@@ -27,7 +27,7 @@ type ClusterMembersExtendedResponse struct {
         ClusterMembersExtendedResponseSbeBlockLength     uint16 = uint16(24)
         ClusterMembersExtendedResponseSbeTemplateID      uint16 = uint16(43)
         ClusterMembersExtendedResponseSbeSchemaID        uint16 = uint16(111)
-        ClusterMembersExtendedResponseSbeSchemaVersion   uint16 = uint16(16)
+        ClusterMembersExtendedResponseSbeSchemaVersion   uint16 = uint16(17)
         ClusterMembersExtendedResponseSbeSemanticVersion string = "5.4"
     )
 
@@ -48,7 +48,7 @@ type ClusterMembersExtendedResponse struct {
     }
 
     func (m *ClusterMembersExtendedResponse) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *ClusterMembersExtendedResponse) SbeSemanticVersion() string {

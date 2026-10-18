@@ -25,7 +25,7 @@ type AppendPosition struct {
         AppendPositionSbeBlockLength     uint16 = uint16(21)
         AppendPositionSbeTemplateID      uint16 = uint16(54)
         AppendPositionSbeSchemaID        uint16 = uint16(111)
-        AppendPositionSbeSchemaVersion   uint16 = uint16(16)
+        AppendPositionSbeSchemaVersion   uint16 = uint16(17)
         AppendPositionSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type AppendPosition struct {
     }
 
     func (m *AppendPosition) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *AppendPosition) SbeSemanticVersion() string {

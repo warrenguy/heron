@@ -26,7 +26,7 @@ type SnapshotMarker struct {
         SnapshotMarkerSbeBlockLength     uint16 = uint16(40)
         SnapshotMarkerSbeTemplateID      uint16 = uint16(100)
         SnapshotMarkerSbeSchemaID        uint16 = uint16(111)
-        SnapshotMarkerSbeSchemaVersion   uint16 = uint16(16)
+        SnapshotMarkerSbeSchemaVersion   uint16 = uint16(17)
         SnapshotMarkerSbeSemanticVersion string = "5.4"
     )
 
@@ -47,7 +47,7 @@ type SnapshotMarker struct {
     }
 
     func (m *SnapshotMarker) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *SnapshotMarker) SbeSemanticVersion() string {

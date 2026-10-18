@@ -25,7 +25,7 @@ type ServiceAck struct {
         ServiceAckSbeBlockLength     uint16 = uint16(36)
         ServiceAckSbeTemplateID      uint16 = uint16(33)
         ServiceAckSbeSchemaID        uint16 = uint16(111)
-        ServiceAckSbeSchemaVersion   uint16 = uint16(16)
+        ServiceAckSbeSchemaVersion   uint16 = uint16(17)
         ServiceAckSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type ServiceAck struct {
     }
 
     func (m *ServiceAck) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *ServiceAck) SbeSemanticVersion() string {

@@ -25,7 +25,7 @@ type StopCatchup struct {
         StopCatchupSbeBlockLength     uint16 = uint16(12)
         StopCatchupSbeTemplateID      uint16 = uint16(57)
         StopCatchupSbeSchemaID        uint16 = uint16(111)
-        StopCatchupSbeSchemaVersion   uint16 = uint16(16)
+        StopCatchupSbeSchemaVersion   uint16 = uint16(17)
         StopCatchupSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type StopCatchup struct {
     }
 
     func (m *StopCatchup) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *StopCatchup) SbeSemanticVersion() string {
