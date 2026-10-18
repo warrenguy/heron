@@ -821,7 +821,8 @@ func TestImage_ControlledPoll_handlerPanic(t *testing.T) {
 				termBuffer := aeron.ImageTermBuffer0ForTest(image)
 				chainEnd := writeDataFrameChain(t, termBuffer, 0, 2, []byte("a"))
 
-				fragments := poll(image, nthFrameControlledPanicHandler(2, errors.New(wantErr), aeron.ControlledContinue), 10)
+				handler := nthFrameControlledPanicHandler(2, errors.New(wantErr), aeron.ControlledContinue)
+				fragments := poll(image, handler, 10)
 
 				require.Equal(t, 2, fragments)
 				require.Equal(t, int64(chainEnd), image.Position())
@@ -841,7 +842,8 @@ func TestImage_ControlledPoll_handlerPanic(t *testing.T) {
 				secondEnd := int64(logbuffer.AlignFragmentChunkLength(len("first"))) + panicSpan
 
 				require.PanicsWithError(t, wantErr, func() {
-					_ = poll(image, nthFrameControlledPanicHandler(2, errors.New(wantErr), aeron.ControlledContinue), 10)
+					handler := nthFrameControlledPanicHandler(2, errors.New(wantErr), aeron.ControlledContinue)
+					_ = poll(image, handler, 10)
 				})
 				require.Equal(t, secondEnd, image.Position())
 
@@ -922,7 +924,8 @@ func TestImage_ControlledPoll_handlerPanic(t *testing.T) {
 					termBuffer := aeron.ImageTermBuffer0ForTest(image)
 					chainEnd := writeDataFrameChain(t, termBuffer, 0, 2, chainPayload)
 
-					fragments := poll(image, nthFrameControlledPanicHandler(2, errors.New(wantErr), aeron.ControlledCommit), 10)
+					handler := nthFrameControlledPanicHandler(2, errors.New(wantErr), aeron.ControlledCommit)
+					fragments := poll(image, handler, 10)
 
 					require.Equal(t, 2, fragments)
 					require.Equal(t, int64(chainEnd), image.Position())
@@ -935,7 +938,8 @@ func TestImage_ControlledPoll_handlerPanic(t *testing.T) {
 					chainEnd := writeDataFrameChain(t, termBuffer, 0, 2, chainPayload)
 
 					require.PanicsWithError(t, wantErr, func() {
-						_ = poll(image, nthFrameControlledPanicHandler(2, errors.New(wantErr), aeron.ControlledCommit), 10)
+						handler := nthFrameControlledPanicHandler(2, errors.New(wantErr), aeron.ControlledCommit)
+						_ = poll(image, handler, 10)
 					})
 					require.Equal(t, int64(chainEnd), image.Position())
 				})
