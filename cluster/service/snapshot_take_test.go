@@ -503,6 +503,56 @@ func TestSnapshotTake_foreignStopDoesNotComplete(t *testing.T) {
 	h.requireNoPreProofAck(t)
 }
 
+func TestSnapshotTake_brokenState(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(*SnapshotTakeFake)
+		state   snapshotTakeState
+		corrupt func(*Agent)
+	}{
+		{
+			name: "unknownState",
+			setup: func(f *SnapshotTakeFake) {
+				f.startSignals = []snapshotTakeFakeStep{{}}
+			},
+			state:   takeAwaitingStart,
+			corrupt: func(a *Agent) { a.take.state = snapshotTakeState(99) },
+		},
+		{
+			name: "sessionMissing",
+			setup: func(f *SnapshotTakeFake) {
+				f.rowOffers = []int64{aeron.BackPressured}
+			},
+			state:   takeWriting,
+			corrupt: func(a *Agent) { delete(a.sessions, 7) },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newTakeHarness(t, &snapshotRecordingService{})
+			tt.setup(h.fake)
+			h.log.termEvent(t, clusterwire.ClusterTimeUnit_NANOS, 0)
+			h.log.sessionOpen(t, 7, "aeron:ipc", "p")
+			end := h.log.snapshot(t, 1)
+			h.agent.DoWork(0)
+			h.agent.DoWork(0)
+			require.NotNil(t, h.agent.take)
+			require.Equal(t, tt.state, h.agent.take.state)
+			require.Empty(t, decodeServiceAcksFromPub(t, h.pub), "acks before mark")
+
+			tt.corrupt(h.agent)
+			h.agent.DoWork(0)
+			require.ErrorIs(t, h.agent.ServiceFailure(), errSnapshotWrite)
+			acks := decodeServiceAcksFromPub(t, h.pub)
+			require.Len(t, acks, 1)
+			require.Equal(t, end, acks[0].LogPosition)
+			require.Equal(t, nullValue, acks[0].RelevantID)
+			require.Equal(t, nullValue, h.agent.LastSnapshotRecordingID())
+			requireSnapshotTakeCleanedUp(t, h.agent, h.fake, nil)
+		})
+	}
+}
+
 func TestSnapshotTake_closeDuringTake(t *testing.T) {
 	tests := []struct {
 		name          string

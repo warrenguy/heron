@@ -183,7 +183,7 @@ func (a *Agent) stepSnapshotTake(take *snapshotTake, nowNs int64) (bool, error) 
 	case takeAwaitingStop:
 		return a.awaitSnapshotStop(take, nowNs)
 	}
-	return false, nil
+	return false, fmt.Errorf("%w: unknown take state %d", errSnapshotWrite, take.state)
 }
 
 // addSnapshotPublication offers the add once, then polls it once per call.
@@ -282,10 +282,6 @@ func (a *Agent) writeSnapshot(take *snapshotTake, nowNs int64) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if row == nil {
-			take.nextRow++
-			continue
-		}
 		result := a.offerSnapshotRow(take.publication, row)
 		switch {
 		case result > 0:
@@ -362,8 +358,8 @@ func (a *Agent) offerSnapshotRow(publication *aeron.ExclusivePublication, row []
 //
 // Returns:
 //   - the encoded row
-//   - nil, nil for a session the registry no longer holds
-//   - nil, err when the encode fails
+//   - nil, err when the encode fails or the registry no longer holds the
+//     row's session
 func (a *Agent) encodeSnapshotRow(take *snapshotTake, index int) ([]byte, error) {
 	last := len(take.sessionIDs) + 1
 	if index == 0 || index == last {
@@ -371,7 +367,9 @@ func (a *Agent) encodeSnapshotRow(take *snapshotTake, index int) ([]byte, error)
 		if index == last {
 			mark = clusterwire.SnapshotMark_END
 		}
-		buf := a.snapshotScratchOf(codecs.SnapshotMarkerEncodedLen())
+		length := codecs.SnapshotMarkerEncodedLen()
+		a.snapshotScratch = slices.Grow(a.snapshotScratch[:0], length)[:length]
+		buf := a.snapshotScratch
 		end, ok := codecs.EncodeSnapshotMarker(
 			buf,
 			0,
@@ -395,7 +393,7 @@ func (a *Agent) encodeSnapshotRow(take *snapshotTake, index int) ([]byte, error)
 	sessionID := take.sessionIDs[index-1]
 	session, found := a.sessions[sessionID]
 	if !found {
-		return nil, nil
+		return nil, fmt.Errorf("%w: client session %d missing", errSnapshotWrite, sessionID)
 	}
 	length, ok := codecs.ClusterWireMessageLen(
 		clusterwire.ClientSessionSbeBlockLength,
@@ -405,7 +403,8 @@ func (a *Agent) encodeSnapshotRow(take *snapshotTake, index int) ([]byte, error)
 	if !ok {
 		return nil, fmt.Errorf("%w: client session %d too long", errSnapshotWrite, sessionID)
 	}
-	buf := a.snapshotScratchOf(length)
+	a.snapshotScratch = slices.Grow(a.snapshotScratch[:0], length)[:length]
+	buf := a.snapshotScratch
 	end, ok := codecs.EncodeClientSession(
 		buf,
 		0,
@@ -421,14 +420,6 @@ func (a *Agent) encodeSnapshotRow(take *snapshotTake, index int) ([]byte, error)
 		return nil, fmt.Errorf("%w: encode client session %d", errSnapshotWrite, sessionID)
 	}
 	return buf[:end], nil
-}
-
-// snapshotScratchOf returns the scratch buffer sliced to length bytes.
-func (a *Agent) snapshotScratchOf(length int) []byte {
-	if cap(a.snapshotScratch) < length {
-		a.snapshotScratch = make([]byte, length)
-	}
-	return a.snapshotScratch[:length]
 }
 
 // failSnapshotTake runs closeSnapshotTake, then fails the snapshot entry
