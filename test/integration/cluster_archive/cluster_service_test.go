@@ -341,22 +341,18 @@ func startServiceCluster(
 	return serviceCluster{set: set, members: members}
 }
 
-// TestClusterService_deliversCommittedLogAndAcksOnRequest asserts a committed
-// session message reaches every attached service. A requested service ack then
-// completes on every member.
-func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
-	t.Parallel()
-
-	sc := openServiceCluster(t)
-	set := sc.set
-	leader := requireSingleLeader(t, set, "")
+// requireServicesJoined ticks until every service is log bound with no
+// pending join and ack id 1, and every module expects ack id 1 with no
+// pending ack wait.
+func requireServicesJoined(t *testing.T, sc serviceCluster) {
+	t.Helper()
 
 	requireServiceAwaitTick(
 		t, sc,
 		"join settle",
 		durableWorkBound,
 		func() bool {
-			for i, m := range set.Modules() {
+			for i, m := range sc.set.Modules() {
 				agent := sc.members[i].agent
 				ca := m.Agent()
 				if !agent.IsLogBound() || agent.HasPendingJoin() || agent.NextAckID() != 1 {
@@ -369,6 +365,19 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 			return true
 		},
 	)
+}
+
+// TestClusterService_deliversCommittedLogAndAcksOnRequest asserts a committed
+// session message reaches every attached service. A requested service ack then
+// completes on every member.
+func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
+	t.Parallel()
+
+	sc := openServiceCluster(t)
+	set := sc.set
+	leader := requireSingleLeader(t, set, "")
+
+	requireServicesJoined(t, sc)
 	for i, m := range set.Modules() {
 		wantRole := codecs.RoleFollower
 		roleLabel := "follower"
