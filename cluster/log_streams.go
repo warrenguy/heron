@@ -327,7 +327,7 @@ func (l *LogStreams) ReseedPublicationAt(
 
 // Subscription returns the cluster log subscription.
 //
-// Nil after Close and on a nil receiver.
+// Nil after Close, on a nil receiver, and after a failed reseed and recovery.
 //
 // The subscription is control-mode=manual. Receive destinations (live multicast
 // and catchup unicast) feed it. Images arrive per destination and session.
@@ -354,9 +354,9 @@ func (l *LogStreams) LiveURI() string {
 	return l.liveURI
 }
 
-// ReseedSubscription closes the log subscription and opens a fresh
-// control-mode=manual subscription with new tags. Rebinds the agent log join
-// source. The fresh subscription has no destinations.
+// ReseedSubscription opens a fresh control-mode=manual log subscription with
+// new tags. Closes the bound subscription first, if any. Rebinds the agent log
+// join source. The fresh subscription has no destinations.
 //
 // Used at catchup entry so late-join images from the prior endpoint cannot
 // absorb same-session replay frames below their join position.
@@ -364,17 +364,18 @@ func (l *LogStreams) LiveURI() string {
 // Concurrency: invoker-only.
 //
 // Returns an error when:
-//   - the receiver is nil or already closed
+//   - the receiver is nil, a zero value, or closed
 //   - adder is nil
+//   - the correlation id allocator is nil
 //   - the new subscription cannot be added
 //
-// Fail-closed: the previous subscription is closed before the new add. When
-// that add fails, ReseedSubscription opens a recovery subscription with fresh
-// tags, rebinds the join source, and re-adds the live destination when liveURI
-// is set. The original add error is still returned. When recovery also fails
-// the subscription stays nil and the join source stays unbound.
+// Fail-closed: when the new add fails, ReseedSubscription opens a recovery
+// subscription with fresh tags, rebinds the join source, and re-adds the live
+// destination when liveURI is set. Returns the original add error. When
+// recovery also fails the subscription stays nil and the join source stays
+// unbound. The next call retries the add.
 func (l *LogStreams) ReseedSubscription(adder SubscriptionAdder) error {
-	if l == nil || l.subscription == nil {
+	if l.isClosed() {
 		return errors.New("cluster: log streams closed")
 	}
 	if adder == nil {
@@ -384,10 +385,12 @@ func (l *LogStreams) ReseedSubscription(adder SubscriptionAdder) error {
 		return errors.New("cluster: correlation id allocator is required")
 	}
 
-	// Unbind before close so join selection cannot target a closed handle.
-	l.agent.SetLogJoinSource(nil)
-	_ = l.subscription.Close()
-	l.subscription = nil
+	if l.subscription != nil {
+		// Unbind before close so join selection cannot target a closed handle.
+		l.agent.SetLogJoinSource(nil)
+		_ = l.subscription.Close()
+		l.subscription = nil
+	}
 
 	sub, err := l.addManualLogSubscription(adder, "cluster log subscription reseed")
 	if err != nil {
