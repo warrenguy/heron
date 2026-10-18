@@ -235,7 +235,8 @@ func TestTermAndMetaOffsets(t *testing.T) {
 		{"term0", logbuffer.SectionTermOffset(0, termLength), 0},
 		{"term1", logbuffer.SectionTermOffset(1, termLength), termLength},
 		{"term2", logbuffer.SectionTermOffset(2, termLength), 2 * termLength},
-		{"meta", logbuffer.MetaDataOffset(termLength), 3 * termLength},
+		{"meta, 4 KiB page", logbuffer.LogMetaDataOffset(logbuffer.TestComputedLength), 3 * termLength},
+		{"meta, 64 KiB page", logbuffer.LogMetaDataOffset(262144), 258048},
 	}
 	for _, tc := range cases {
 		require.Equal(t, tc.want, tc.got, tc.name)

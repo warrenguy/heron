@@ -19,12 +19,12 @@ func TestMapLogFile_restatRejectsTruncatedFile(t *testing.T) {
 
 	fileInfo, err := file.Stat()
 	require.NoError(t, err)
-	dims, err := discoverDimensionsFromFile(file, int(fileInfo.Size()))
+	dims, err := readLayoutFromFile(file, int(fileInfo.Size()))
 	require.NoError(t, err)
 
 	require.NoError(t, os.Truncate(path, int64(dims.computed-1)))
 
-	_, err = MapLogFileAfterDiscover(file, path, dims.termLength, dims.pageSize, dims.computed)
+	_, err = MapLogFileWithLayout(file, path, dims.termLength, dims.pageSize, dims.computed)
 	require.EqualError(
 		t,
 		err,

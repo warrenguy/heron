@@ -69,7 +69,7 @@ func TestParseMetadataView_roundtrip(t *testing.T) {
 	cfg := logbuffer.DefaultSyntheticMetadataConfig()
 	logbuffer.WriteSyntheticMetadata(buf, cfg)
 
-	metaStart := logbuffer.MetaDataOffset(logbuffer.TestTermLength)
+	metaStart := logbuffer.LogMetaDataOffset(len(buf))
 	metaBuf := buf[metaStart : metaStart+logbuffer.MetaDataLength]
 	view, err := logbuffer.ParseMetadataView(atomicbuffer.Wrap(metaBuf))
 	require.NoError(t, err)

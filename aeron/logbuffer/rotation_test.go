@@ -14,7 +14,7 @@ import (
 func TestRotateLog_synthetic(t *testing.T) {
 	full := make([]byte, logbuffer.TestComputedLength)
 	logbuffer.WriteSyntheticMetadata(full, logbuffer.DefaultSyntheticMetadataConfig())
-	metaStart := logbuffer.MetaDataOffset(logbuffer.TestTermLength)
+	metaStart := logbuffer.LogMetaDataOffset(len(full))
 	meta := atomicbuffer.Wrap(full[metaStart : metaStart+logbuffer.MetaDataLength])
 
 	tail0Before, err := logbuffer.GetRawTail(meta, 0)

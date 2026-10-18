@@ -361,7 +361,7 @@ func allocTestHookLogBuffer(tb testing.TB) ([]byte, atomicbuffer.AtomicBuffer) {
 	require.NoError(tb, err)
 
 	buf := make([]byte, computed)
-	metaStart := logbuffer.MetaDataOffset(logbuffer.TermMinLength)
+	metaStart := logbuffer.LogMetaDataOffset(computed)
 	return buf, atomicbuffer.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
 }
 

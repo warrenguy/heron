@@ -116,7 +116,7 @@ func newInMemExclusivePublicationFromLog(
 }
 
 func writeInMemPublicationMetadata(buf []byte, cfg inMemPublicationLogConfig) {
-	metaStart := logbuffer.MetaDataOffset(inMemPublicationTermLength)
+	metaStart := logbuffer.LogMetaDataOffset(len(buf))
 	meta := atomicbuffer.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
 
 	for partition := range logbuffer.PartitionCount {
