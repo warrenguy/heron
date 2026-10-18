@@ -599,16 +599,43 @@ func TestLogStreams_reseedSubscription(t *testing.T) {
 func TestLogStreams_reseedSubscription_closed(t *testing.T) {
 	t.Parallel()
 
-	require.EqualError(
-		t,
-		(*cluster.LogStreams)(nil).ReseedSubscription(&fakeLogStreamAdder{}),
-		"cluster: log streams closed",
-	)
-	require.EqualError(
-		t,
-		(&cluster.LogStreams{}).ReseedSubscription(&fakeLogStreamAdder{}),
-		"cluster: log streams closed",
-	)
+	adder := &fakeLogStreamAdder{}
+	cases, callsAtClose := closedLogStreamsCases(t, adder)
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.ls.ReseedSubscription(adder)
+			require.EqualError(t, err, "cluster: log streams closed")
+			require.Len(t, adder.calls, callsAtClose)
+		})
+	}
+}
+
+// closedLogStreamsCase is one receiver that every reseed must refuse.
+type closedLogStreamsCase struct {
+	name string
+	ls   *cluster.LogStreams
+}
+
+// closedLogStreamsCases opens and closes a LogStreams on adder. Returns the
+// refused receivers and the adder call count at close.
+func closedLogStreamsCases(
+	t *testing.T,
+	adder *fakeLogStreamAdder,
+) ([]closedLogStreamsCase, int) {
+	t.Helper()
+
+	topology := sharedLogTopology(t, 0, "")
+	_, _, _, deps := openLogStreamsDeps(t, topology, adder)
+	closed, err := cluster.OpenLogStreams(deps)
+	require.NoError(t, err)
+	require.NoError(t, closed.Close())
+
+	cases := []closedLogStreamsCase{
+		{name: "nil receiver", ls: nil},
+		{name: "zero value", ls: &cluster.LogStreams{}},
+		{name: "closed value", ls: closed},
+	}
+	return cases, len(adder.calls)
 }
 
 func TestLogStreams_reseedSubscription_nilAdder(t *testing.T) {
@@ -671,8 +698,9 @@ func TestLogStreams_reseedSubscription_openFailureRestoresLive(t *testing.T) {
 	require.Equal(t, 3, subCalls)
 }
 
-// Asserts total reseed and recovery failure leaves no subscription.
-func TestLogStreams_reseedSubscription_recoveryFailureLeavesNil(t *testing.T) {
+// Asserts a failed reseed and recovery leave no subscription. The next reseed
+// binds a fresh one.
+func TestLogStreams_reseedSubscription_retryAfterRecoveryFailure(t *testing.T) {
 	t.Parallel()
 
 	topology := sharedLogTopology(t, 0, "")
@@ -687,12 +715,61 @@ func TestLogStreams_reseedSubscription_recoveryFailureLeavesNil(t *testing.T) {
 	cause := errors.New("driver down")
 	adder.failNextSubscriptionAdds(2, cause)
 
+	// Phase: both adds fail.
 	err = ls.ReseedSubscription(adder)
 	require.ErrorIs(t, err, cause)
 	require.True(t, oldSub.IsClosed())
 	require.Nil(t, ls.Subscription())
 	require.Nil(t, agent.LogJoinSource())
 	require.Empty(t, agent.LiveLogDestination())
+
+	// Phase: the retry rebuilds from the nil state with one add.
+	callsBefore := len(adder.calls)
+	require.NoError(t, ls.ReseedSubscription(adder))
+	require.Same(t, adder.lastSub, ls.Subscription())
+	require.False(t, adder.lastSub.IsClosed())
+	require.IsType(t, (*consensus.SubscriptionLogJoinSource)(nil), agent.LogJoinSource())
+	require.Len(t, adder.calls, callsBefore+1)
+	retry := adder.calls[callsBefore]
+	require.Equal(t, "subscription", retry.kind)
+	requireManualLogSubscriptionChannel(t, retry.channel)
+	for _, c := range adder.calls[:callsBefore] {
+		require.NotEqual(t, c.channel, retry.channel)
+	}
+	require.Empty(t, adder.lastDestHook.Adds)
+	require.Empty(t, agent.LiveLogDestination())
+}
+
+// Asserts a reseed from the nil state still recovers when its add fails.
+func TestLogStreams_reseedSubscription_nilStateRecoveryRestoresLive(t *testing.T) {
+	t.Parallel()
+
+	topology := sharedLogTopology(t, 0, "")
+	adder := &fakeLogStreamAdder{}
+	ls, agent, _, _ := openLogStreamsOK(t, topology, adder)
+	liveURI := topology.LogChannel()
+	cause := errors.New("driver down")
+
+	// Phase: both adds fail.
+	adder.failNextSubscriptionAdds(2, cause)
+	require.ErrorIs(t, ls.ReseedSubscription(adder), cause)
+	require.Nil(t, ls.Subscription())
+
+	// Phase: the fresh add fails again. Recovery binds and re-adds live.
+	agent.LiveLogDestinationSet("")
+	adder.failNextSubscriptionAdds(1, cause)
+	callsBefore := len(adder.calls)
+	err := ls.ReseedSubscription(adder)
+	require.ErrorIs(t, err, cause)
+	require.Len(t, adder.calls, callsBefore+2)
+	for _, c := range adder.calls[callsBefore:] {
+		require.Equal(t, "subscription", c.kind)
+	}
+	require.Same(t, adder.lastSub, ls.Subscription())
+	require.False(t, adder.lastSub.IsClosed())
+	require.IsType(t, (*consensus.SubscriptionLogJoinSource)(nil), agent.LogJoinSource())
+	require.Equal(t, liveURI, agent.LiveLogDestination())
+	require.Equal(t, []string{liveURI}, adder.lastDestHook.Adds)
 }
 
 // Asserts recovery open success with live AddDestination failure. Binds the
@@ -748,21 +825,8 @@ func TestLogStreams_reseedPublication_closed(t *testing.T) {
 
 	topology := sharedLogTopology(t, 0, "")
 	adder := &fakeLogStreamAdder{}
-	_, _, _, deps := openLogStreamsDeps(t, topology, adder)
-	closed, err := cluster.OpenLogStreams(deps)
-	require.NoError(t, err)
-	require.NoError(t, closed.Close())
-	callsAtClose := len(adder.calls)
-
-	tests := []struct {
-		name string
-		ls   *cluster.LogStreams
-	}{
-		{name: "nil receiver", ls: nil},
-		{name: "zero value", ls: &cluster.LogStreams{}},
-		{name: "closed value", ls: closed},
-	}
-	for _, tt := range tests {
+	cases, callsAtClose := closedLogStreamsCases(t, adder)
+	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.ls.ReseedPublicationAt(
 				adder,

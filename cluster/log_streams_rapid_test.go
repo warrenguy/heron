@@ -154,3 +154,118 @@ func TestLogStreams_reseedPublication_rapid(t *testing.T) {
 		require.NoError(rt, ls.Close())
 	})
 }
+
+// Log subscription reseed ops for TestLogStreams_reseedSubscription_rapid.
+const (
+	reseedSubscriptionOK            = "reseed"
+	reseedSubscriptionAddFailed     = "reseed add failure"
+	reseedSubscriptionLiveFailed    = "reseed recovery destination failure"
+	reseedSubscriptionDoubleFailure = "reseed double failure"
+	reseedSubscriptionClose         = "close"
+)
+
+// TestLogStreams_reseedSubscription_rapid checks reseeds, failed reseed and
+// recovery adds, and Close over random sequences. The model tracks the bound
+// state, whether Close ran, the agent live field, and every subscription added.
+func TestLogStreams_reseedSubscription_rapid(t *testing.T) {
+	t.Parallel()
+	topology := sharedLogTopology(t, 0, "")
+	liveURI := topology.LogChannel()
+	cause := errors.New("driver refused reseed")
+	destCause := errors.New("driver refused live destination")
+	rapid.Check(t, func(rt *rapid.T) {
+		adder := &fakeLogStreamAdder{}
+		agent, _, _, deps := openLogStreamsDeps(t, topology, adder)
+		ls, err := cluster.OpenLogStreams(deps)
+		require.NoError(rt, err)
+
+		added := []*aeron.Subscription{adder.lastSub}
+		lastJoin := agent.LogJoinSource()
+		bound, closed := true, false
+		ops := rapid.SampledFrom([]string{
+			reseedSubscriptionOK,
+			reseedSubscriptionAddFailed,
+			reseedSubscriptionLiveFailed,
+			reseedSubscriptionDoubleFailure,
+			reseedSubscriptionClose,
+		})
+		opCount := rapid.IntRange(0, 32).Draw(rt, "opCount")
+		for range opCount {
+			op := ops.Draw(rt, "op")
+			callsBefore := len(adder.calls)
+			addedBefore := len(added)
+			wantLive := ""
+
+			if op == reseedSubscriptionClose {
+				require.NoError(rt, ls.Close())
+				bound, closed = false, true
+			} else {
+				// Clear live as Ensure does before each reseed.
+				agent.LiveLogDestinationSet("")
+				adder.failNextSubscriptionAdds(0, nil)
+				adder.failDestErr = nil
+				switch op {
+				case reseedSubscriptionAddFailed:
+					adder.failNextSubscriptionAdds(1, cause)
+				case reseedSubscriptionLiveFailed:
+					adder.failNextSubscriptionAdds(1, cause)
+					adder.failDestErr = destCause
+				case reseedSubscriptionDoubleFailure:
+					adder.failNextSubscriptionAdds(2, cause)
+				}
+
+				err := ls.ReseedSubscription(adder)
+				switch {
+				case closed:
+					require.EqualError(rt, err, "cluster: log streams closed")
+					require.Len(rt, adder.calls, callsBefore)
+				case op == reseedSubscriptionOK:
+					require.NoError(rt, err)
+					require.Len(rt, adder.calls, callsBefore+1)
+					added = append(added, adder.lastSub)
+					bound = true
+				default:
+					require.ErrorIs(rt, err, cause)
+					require.Len(rt, adder.calls, callsBefore+2)
+					bound = op != reseedSubscriptionDoubleFailure
+					if bound {
+						added = append(added, adder.lastSub)
+					}
+					switch op {
+					case reseedSubscriptionAddFailed:
+						wantLive = liveURI
+					case reseedSubscriptionLiveFailed:
+						require.ErrorIs(rt, err, destCause)
+					}
+				}
+				for _, c := range adder.calls[callsBefore:] {
+					require.Equal(rt, "subscription", c.kind)
+					requireManualLogSubscriptionChannel(rt, c.channel)
+				}
+			}
+
+			superseded := added
+			join := agent.LogJoinSource()
+			if bound {
+				last := added[len(added)-1]
+				require.Same(rt, last, ls.Subscription())
+				require.False(rt, last.IsClosed())
+				require.IsType(rt, (*consensus.SubscriptionLogJoinSource)(nil), join)
+				// A fresh bind rebinds the join source.
+				if len(added) > addedBefore && lastJoin != nil {
+					require.NotSame(rt, lastJoin, join)
+				}
+				superseded = added[:len(added)-1]
+			} else {
+				require.Nil(rt, ls.Subscription())
+				require.Nil(rt, join)
+			}
+			lastJoin = join
+			for _, sub := range superseded {
+				require.True(rt, sub.IsClosed())
+			}
+			require.Equal(rt, wantLive, agent.LiveLogDestination())
+		}
+		require.NoError(rt, ls.Close())
+	})
+}

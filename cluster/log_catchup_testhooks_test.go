@@ -537,6 +537,52 @@ func TestCatchupControl_ensureReseedFailureRestoresLive(t *testing.T) {
 	)
 }
 
+// Asserts a later catchup entry rebuilds the log subscription after a failed
+// reseed and recovery.
+func TestCatchupControl_ensureRetryAfterReseedRecoveryFailure(t *testing.T) {
+	t.Parallel()
+
+	fixture := openCatchupTestStreams(t)
+	c := newTestCatchupControl(t, fixture, &fakeReplayControl{})
+	openSub := fixture.streams.Subscription()
+
+	// Phase: first entry. Both adds fail.
+	fixture.adder.failNextSubscriptionAdds(2, errors.New("driver down"))
+	require.Empty(t, c.EnsureCatchupLogDestination(testCatchupEndpoint))
+	require.Nil(t, fixture.streams.Subscription())
+	require.Nil(t, fixture.agent.LogJoinSource())
+	require.Empty(t, fixture.agent.CatchupLogDestination())
+	require.Empty(t, fixture.agent.LiveLogDestination())
+	require.True(t, openSub.IsClosed())
+
+	// Phase: later entry. The reseed adds a fresh subscription and attaches
+	// catchup.
+	want := catchupDestinationURI(fixture.liveURI, testCatchupEndpoint)
+	subCallsBefore := len(fixture.adder.subCalls)
+	require.Equal(t, want, c.EnsureCatchupLogDestination(testCatchupEndpoint))
+	require.Len(t, fixture.adder.subCalls, subCallsBefore+1)
+	require.Same(t, fixture.adder.lastSub, fixture.streams.Subscription())
+	require.IsType(t, (*consensus.SubscriptionLogJoinSource)(nil), fixture.agent.LogJoinSource())
+	require.Equal(t, want, fixture.agent.CatchupLogDestination())
+	require.Empty(t, fixture.agent.LiveLogDestination())
+	require.Equal(t, []string{want}, currentDestinations(fixture.adder.lastDestHook))
+
+	// Phase: near live. Live joins catchup on the rebuilt subscription.
+	require.NoError(t, c.AddLiveLogDestination())
+	require.Equal(t, fixture.liveURI, fixture.agent.LiveLogDestination())
+	require.Equal(
+		t,
+		[]string{want, fixture.liveURI},
+		currentDestinations(fixture.adder.lastDestHook),
+	)
+
+	// Phase: stop catchup. Only live remains.
+	require.NoError(t, c.RemoveCatchupLogDestination())
+	require.Empty(t, fixture.agent.CatchupLogDestination())
+	require.Equal(t, fixture.liveURI, fixture.agent.LiveLogDestination())
+	require.Equal(t, []string{fixture.liveURI}, currentDestinations(fixture.adder.lastDestHook))
+}
+
 // Asserts RemoveDestination error keeps the catchup field for retry.
 func TestCatchupControl_removeDestinationErrorKeepsField(t *testing.T) {
 	t.Parallel()
