@@ -114,9 +114,10 @@ const (
 // (base+1 .. base+405).
 //
 // DurableRecord and DurableRank are separate so the two record/rank tests may
-// run in parallel. DurableRestart and DurableRestartLeader are separate for the
-// two restart tests. DurableCatchup and DurableConcurrentCatchup are separate
-// for the single-follower and concurrent-follower catchup tests.
+// run in parallel. DurableRestart, DurableRestartLeader, and
+// DurableRestartRunning are separate for the three restart tests.
+// DurableCatchup and DurableConcurrentCatchup are separate for the
+// single-follower and concurrent-follower catchup tests.
 // DurableDivergence and DurableExLeaderReElect are separate for the truncate
 // and ex-leader re-election tests.
 //
@@ -131,6 +132,8 @@ const (
 	DurableRestartLogEndpoint           = "239.255.12.21:26304"
 	DurableRestartLeaderPortBase        = 29700
 	DurableRestartLeaderLogEndpoint     = "239.255.12.41:29704"
+	DurableRestartRunningPortBase       = 22200
+	DurableRestartRunningLogEndpoint    = "239.255.12.65:22204"
 	DurableReElectionPortBase           = 26600
 	DurableReElectionLogEndpoint        = "239.255.12.23:26604"
 	DurableCatchupPortBase              = 26900
@@ -470,6 +473,12 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    DurableRestartLeaderPortBase,
 			memberCount: 3,
 			logEndpoint: DurableRestartLeaderLogEndpoint,
+		},
+		{
+			name:        "durable-restart-running",
+			portBase:    DurableRestartRunningPortBase,
+			memberCount: 3,
+			logEndpoint: DurableRestartRunningLogEndpoint,
 		},
 		{
 			name:        "session-smoke",

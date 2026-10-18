@@ -111,8 +111,9 @@ type ConsensusModule struct {
 // OpenConsensusModule assembles one consensus member and returns the member with
 // every transport handle and agent dependency bound before the first duty tick.
 //
-// ctx bounds the transport connect, the archive control connect, and the
-// recording-extent lookups the recovery plan makes.
+// ctx bounds the transport connect, the archive control connect, the term
+// recording stop, its catalog wait, and the recording-extent lookups the
+// recovery plan makes.
 //
 // The log recording control and the log replay helpers keep Open's context
 // values and detach cancel (context.WithoutCancel). Cancel after Open returns
@@ -126,7 +127,7 @@ type ConsensusModule struct {
 //  2. transport client
 //  3. archive control client
 //  4. recording-log archive lister
-//  5. recovery
+//  5. recovery: stops the term recording, then plans
 //  6. agent
 //  7. log recording control
 //  8. consensus publications
@@ -178,6 +179,11 @@ type ConsensusModule struct {
 // archive.DefaultConnectTimeout and by ctx. A process that opens several members
 // in sequence services no earlier member's transport client during that block.
 //
+// On a restart Open also blocks on the term recording stop and its catalog
+// wait. The stop and each catalog list run their own offer and response
+// bounds. The wait ends ControlResponseTimeout after the stop reply. The wait
+// checks that deadline only between lists. ctx bounds every step.
+//
 // Open every member's Archive before opening any member. Keep
 // Config.AeronConfig.InterServiceTimeout above the total connect cost.
 //
@@ -226,11 +232,21 @@ func OpenConsensusModule(
 	}
 	module.archiveClient = archiveClient
 
+	nanoClock, epochClock := moduleClocks(cfg)
+	module.nanoClock = nanoClock
+
 	lister := archive.NewLister(ctx, module.archiveClient)
+	stopper := newTermRecordingStop(
+		ctx,
+		module.archiveClient,
+		module.archiveClient.Config().ControlResponseTimeout.Nanoseconds(),
+		nanoClock,
+	)
 
 	recovery, err := OpenRecovery(RecoveryDeps{
-		Config:        cfg,
-		ArchiveLister: lister,
+		Config:               cfg,
+		ArchiveLister:        lister,
+		TermRecordingStopper: stopper,
 	})
 	if err != nil {
 		return nil, err
@@ -238,9 +254,6 @@ func OpenConsensusModule(
 	module.recovery = recovery
 	module.coldStart = recovery.IsColdStart()
 	electionCfg := recovery.ElectionConfig()
-
-	nanoClock, epochClock := moduleClocks(cfg)
-	module.nanoClock = nanoClock
 
 	// Seed commit from the recovery plan. ProposeMaxCommit is monotonic only,
 	// so open is the sole absolute write of a recovered position.
@@ -275,9 +288,11 @@ func OpenConsensusModule(
 	// Nothing starts a recording at Open. Election join paths call
 	// StartLogRecording. The same logRecording is the truncate control.
 	//
-	// Open seeds a concrete recovery-extent stop when the plan holds one. A later
-	// successful truncate stores that stop. Prepare cannot re-raise above the
-	// stop [LogRecordingControl.StopPositionFor] reports.
+	// Recovery stops the term recording before it plans. The extent then
+	// holds a stop unless the catalog wait expired. Open seeds a concrete
+	// recovery-extent stop when the plan holds one. A later successful truncate
+	// stores that stop. Prepare cannot re-raise above the stop
+	// [LogRecordingControl.StopPositionFor] reports.
 	module.logRecording = newLogRecording(
 		ctx,
 		module.archiveClient,

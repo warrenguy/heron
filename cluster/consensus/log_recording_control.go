@@ -86,8 +86,13 @@ type LogRecordingControl interface {
 	// On error the recording may still be running.
 	StopLogRecording() error
 
-	// PollStopLogRecording advances one pending stop of the recording
-	// StartLogRecording started. nowNs is the duty-cycle deadline clock.
+	// PollStopLogRecording advances one pending stop. The stop targets the
+	// recording StartLogRecording started, or a recovered term recording by
+	// identity. nowNs is the duty-cycle deadline clock.
+	//
+	// The identity stop runs only when no start channel needs a stop and the
+	// control stores no stop for the term recording. The poll then stores the
+	// catalog stop for that id.
 	//
 	// Never blocks. Never calls DoWork. Never calls archive Poll.
 	//
@@ -97,7 +102,8 @@ type LogRecordingControl interface {
 	// Concurrency: invoker-only.
 	//
 	// Returns:
-	//   - true, nil: stop confirmed, or nothing needed stop
+	//   - true, nil: stop confirmed, identity catalog stop stored, or nothing
+	//     needed stop
 	//   - false, nil: poll again
 	//   - false, err: fail closed. A later poll starts a fresh attempt
 	//
@@ -140,9 +146,10 @@ type LogRecordingControl interface {
 	// recordingID.
 	//
 	// Behaviour:
-	//   - same id as the control after a clean stop or a successful truncate,
-	//     and nothing pending: returns the stored stop position. No catalog
-	//     read. A later clean stop overwrites a truncate store.
+	//   - same id as the stored catalog id and nothing pending: returns the
+	//     stored stop position. No catalog read. A clean stop, a successful
+	//     truncate, an identity catalog stop, or a plan seed stores the id. A
+	//     later clean stop overwrites a truncate store.
 	//   - any other case: reads the archive catalog once. Does not store that
 	//     read.
 	//   - same id while stop still pending: takes the catalog path. Errors only
@@ -181,7 +188,8 @@ type LogRecordingControl interface {
 //   - [Agent.DoWork] enters no election from a recording STOP
 //
 // A non-nil control makes [Agent.PrepareForNewLeadership] call
-// PollStopLogRecording so a dirty start or extend still drains.
+// PollStopLogRecording so a dirty start or extend still drains. The poll also
+// stops a recovered term recording by identity.
 //
 // Clearing with nil makes [Agent.IsRecordingActive] false. The agent has no
 // control to query.

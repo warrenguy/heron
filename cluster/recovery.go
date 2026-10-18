@@ -132,6 +132,26 @@ type RecoveryDeps struct {
 	// Non-nil with an empty recording log is allowed. Recovery reads this field
 	// only. Recovery connects no archive client.
 	ArchiveLister recordinglog.ArchiveLister
+
+	// TermRecordingStopper stops the recording log's term recording before
+	// [OpenRecovery] plans recovery. Production passes the archive-backed
+	// stopper.
+	//
+	// Nil skips the stop.
+	TermRecordingStopper TermRecordingStopper
+}
+
+// TermRecordingStopper stops the recording log's term recording at open.
+//
+// Concurrency: invoker-only. [OpenRecovery] calls StopTermRecording at most
+// once, before it plans recovery.
+type TermRecordingStopper interface {
+	// StopTermRecording stops recordingID by identity when it is active.
+	//
+	// Returns an error when:
+	//   - the archive refuses the stop
+	//   - the stop or the catalog read cannot reach the archive
+	StopTermRecording(recordingID int64) error
 }
 
 // Recovery is the member's start-of-life durable state: recording log, node
@@ -173,10 +193,11 @@ type Recovery struct {
 //  3. take an exclusive lock on cluster.lock
 //  4. open the recording log
 //  5. refuse a non-empty log without a lister
-//  6. plan recovery
-//  7. refuse a plan that carries a snapshot
-//  8. seed the election configuration
-//  9. open the node state file
+//  6. stop the term recording when the log names one and a stopper exists
+//  7. plan recovery
+//  8. refuse a plan that carries a snapshot
+//  9. seed the election configuration
+//  10. open the node state file
 //
 // Directory mode is 0700 when created. An existing directory keeps its mode.
 // OpenRecovery does not chmod a directory it did not create. The lock file and
@@ -206,6 +227,8 @@ type Recovery struct {
 //   - lock cannot be taken
 //   - either data file cannot be opened
 //   - non-empty recording log without a lister
+//   - the term recording stop fails. An unknown recording id wraps
+//     recordinglog.ErrUnknownRecordingID
 //   - planning fails
 //   - plan carries a snapshot
 //
@@ -264,6 +287,20 @@ func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
 			dir,
 			len(entries),
 		)
+	}
+
+	// Stop under the directory lock: no other process owns the recording now.
+	termRecordingID := recordingLog.TermRecordingID()
+	stopper := deps.TermRecordingStopper
+	if stopper != nil && termRecordingID != recordinglog.NullRecordingID {
+		if err := stopper.StopTermRecording(termRecordingID); err != nil {
+			return nil, fmt.Errorf(
+				"cluster: stop term recording %d in %s: %w",
+				termRecordingID,
+				dir,
+				err,
+			)
+		}
 	}
 
 	plan, err := recordingLog.PlanRecovery(
