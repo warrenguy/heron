@@ -25,7 +25,7 @@ type SessionConnectRequest struct {
         SessionConnectRequestSbeBlockLength     uint16 = uint16(16)
         SessionConnectRequestSbeTemplateID      uint16 = uint16(3)
         SessionConnectRequestSbeSchemaID        uint16 = uint16(111)
-        SessionConnectRequestSbeSchemaVersion   uint16 = uint16(16)
+        SessionConnectRequestSbeSchemaVersion   uint16 = uint16(17)
         SessionConnectRequestSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type SessionConnectRequest struct {
     }
 
     func (m *SessionConnectRequest) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *SessionConnectRequest) SbeSemanticVersion() string {

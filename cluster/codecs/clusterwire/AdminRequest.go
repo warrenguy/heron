@@ -25,7 +25,7 @@ type AdminRequest struct {
         AdminRequestSbeBlockLength     uint16 = uint16(28)
         AdminRequestSbeTemplateID      uint16 = uint16(26)
         AdminRequestSbeSchemaID        uint16 = uint16(111)
-        AdminRequestSbeSchemaVersion   uint16 = uint16(16)
+        AdminRequestSbeSchemaVersion   uint16 = uint16(17)
         AdminRequestSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type AdminRequest struct {
     }
 
     func (m *AdminRequest) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *AdminRequest) SbeSemanticVersion() string {

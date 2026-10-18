@@ -5,7 +5,7 @@
   only; catalog framing, listing-with-groups, replication, segment, and legacy
   recording-events messages removed. See THIRD_PARTY_NOTICES.md.
 -->
-<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe" package="io.aeron.archive.codecs" id="101" version="13" semanticVersion="5.2" description="Message Codecs for communicating with an Aeron Archive." byteOrder="littleEndian">
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe" package="io.aeron.archive.codecs" id="101" version="14" semanticVersion="5.2" description="Message Codecs for communicating with an Aeron Archive." byteOrder="littleEndian">
     <types>
         <composite name="messageHeader" description="Message identifiers and length of message root.">
             <type name="blockLength" primitiveType="uint16" />
@@ -64,12 +64,6 @@
         <field name="code" id="4" type="ControlResponseCode" description="Code type of the response which is one of ControlResponseCode." />
         <field name="version" id="5" type="version_t" presence="optional" sinceVersion="4" description="Protocol version for the server using semantic version form." />
         <data name="errorMessage" id="6" type="varAsciiEncoding" description="Detailed error message which is provided when code is ERROR." />
-    </sbe:message>
-    <sbe:message name="ConnectRequest" id="2" description="Request a connection to an archive and provide response details for the control session.">
-        <field name="correlationId" id="1" type="int64" />
-        <field name="responseStreamId" id="2" type="int32" />
-        <field name="version" id="3" type="version_t" presence="optional" sinceVersion="2" />
-        <data name="responseChannel" id="4" type="varAsciiEncoding" />
     </sbe:message>
     <sbe:message name="CloseSessionRequest" id="3" description="Close an existing control session.">
         <field name="controlSessionId" id="1" type="int64" />

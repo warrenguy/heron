@@ -83,27 +83,28 @@ func TestTryDecodeByTemplate_rejects(t *testing.T) {
 }
 
 func TestTryDecodeByTemplate_rejects_newLeadershipTermEvent(t *testing.T) {
-	v16 := uint16(clusterwire.NewLeadershipTermEventSbeSchemaVersion)
+	currentVersion := uint16(clusterwire.NewLeadershipTermEventSbeSchemaVersion)
 
-	validEventV16Wire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+	validEventWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
 		return codecs.EncodeNewLeadershipTermEvent(
-			buf, 0, v16, newLeadershipTermEventSampleFields(),
+			buf, 0, currentVersion, newLeadershipTermEventSampleFields(),
 		)
 	})
 
 	cases := []tryDecodeRejectCase{}
 	cases = append(cases, fixedBlockRejectCases(
 		"nlt_event",
-		validEventV16Wire,
+		validEventWire,
 		clusterwire.NewLeadershipTermEventSbeBlockLength,
 		47,
 		39,
 	)...)
-	// v3 min root is 40; v16 suite already covers above-max and truncate at max block 48.
+	// The v3 min root is 40. The current-version suite covers above-max and
+	// truncate at max block 48.
 	cases = append(cases, tryDecodeRejectCase{
 		name: rejectCaseName("nlt_event_v3", "block_length_below_min"),
 		buf: func() []byte {
-			return cloneMutatedWire(validEventV16Wire, func(w []byte) {
+			return cloneMutatedWire(validEventWire, func(w []byte) {
 				w[0] = 39
 				w[6], w[7] = 3, 0
 			})
@@ -119,25 +120,25 @@ func TestTryDecodeByTemplate_rejects_newLeadershipTermEvent(t *testing.T) {
 		require.False(t, ok)
 	})
 	t.Run("wrong_template_24_into_consensus_try_decode", func(t *testing.T) {
-		_, ok := codecs.TryDecodeNewLeadershipTermAt(validEventV16Wire, 0)
+		_, ok := codecs.TryDecodeNewLeadershipTermAt(validEventWire, 0)
 		require.False(t, ok)
 	})
 }
 
 func TestTryDecodeByTemplate_rejects_snapshot(t *testing.T) {
-	v16 := uint16(clusterwire.SnapshotMarkerSbeSchemaVersion)
+	currentVersion := uint16(clusterwire.SnapshotMarkerSbeSchemaVersion)
 
 	markerWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
-		return codecs.EncodeSnapshotMarker(buf, 0, v16, snapshotMarkerSampleFields())
+		return codecs.EncodeSnapshotMarker(buf, 0, currentVersion, snapshotMarkerSampleFields())
 	})
 	sessionWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
-		return codecs.EncodeClientSession(buf, 0, v16, clientSessionSampleFields())
+		return codecs.EncodeClientSession(buf, 0, currentVersion, clientSessionSampleFields())
 	})
 	timerWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
-		return codecs.EncodeTimer(buf, 0, v16, timerSampleFields())
+		return codecs.EncodeTimer(buf, 0, currentVersion, timerSampleFields())
 	})
 	moduleWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
-		return codecs.EncodeConsensusModule(buf, 0, v16, consensusModuleSampleFields())
+		return codecs.EncodeConsensusModule(buf, 0, currentVersion, consensusModuleSampleFields())
 	})
 
 	cases := []tryDecodeRejectCase{}
@@ -155,7 +156,7 @@ func TestTryDecodeByTemplate_rejects_snapshot(t *testing.T) {
 	)...)
 	cases = append(
 		cases,
-		// The v3 min root is 32. The v16 suite covers above-max and truncate.
+		// The v3 min root is 32. The current-version suite covers above-max and truncate.
 		tryDecodeRejectCase{
 			name: rejectCaseName("snapshot_marker_v3", "block_length_below_min"),
 			buf: func() []byte {
@@ -165,7 +166,7 @@ func TestTryDecodeByTemplate_rejects_snapshot(t *testing.T) {
 				})
 			},
 		},
-		// The v2 min root is 8. The v16 suite covers above-max and truncate.
+		// The v2 min root is 8. The current-version suite covers above-max and truncate.
 		tryDecodeRejectCase{
 			name: rejectCaseName("consensus_module_v2", "block_length_below_min"),
 			buf: func() []byte {
@@ -207,7 +208,7 @@ func TestTryDecodeByTemplate_rejects_snapshot(t *testing.T) {
 
 	// ScheduleTimer and Timer share a 16-byte block. Only the template-id
 	// check rejects each wire in the other typed decoder.
-	scheduleTimerWire := encodeScheduleTimerWire(t, v16, scheduleTimerSampleFields())
+	scheduleTimerWire := encodeScheduleTimerWire(t, currentVersion, scheduleTimerSampleFields())
 	t.Run("wrong_template_31_into_timer_try_decode", func(t *testing.T) {
 		_, ok := codecs.TryDecodeTimerAt(scheduleTimerWire, 0)
 		require.False(t, ok)
@@ -256,12 +257,12 @@ func encodeNewLeadershipTermWire(t *testing.T) []byte {
 }
 
 func TestTryDecodeByTemplate_rejects_consensus(t *testing.T) {
-	v16 := uint16(clusterwire.NewLeadershipTermSbeSchemaVersion)
+	currentVersion := uint16(clusterwire.NewLeadershipTermSbeSchemaVersion)
 	v8 := uint16(8)
 	v7 := uint16(7)
 
 	validCanvassWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
-		return codecs.EncodeCanvassPosition(buf, 0, v16, codecs.CanvassPositionFields{
+		return codecs.EncodeCanvassPosition(buf, 0, currentVersion, codecs.CanvassPositionFields{
 			LogLeadershipTermID: 1,
 			LogPosition:         2,
 			LeadershipTermID:    3,
@@ -270,7 +271,7 @@ func TestTryDecodeByTemplate_rejects_consensus(t *testing.T) {
 		})
 	})
 	validRequestVoteWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
-		return codecs.EncodeRequestVote(buf, 0, v16, codecs.RequestVoteFields{
+		return codecs.EncodeRequestVote(buf, 0, currentVersion, codecs.RequestVoteFields{
 			LogLeadershipTermID: 1,
 			LogPosition:         2,
 			CandidateTermID:     3,
@@ -278,8 +279,8 @@ func TestTryDecodeByTemplate_rejects_consensus(t *testing.T) {
 			ProtocolVersion:     5,
 		})
 	})
-	validAppendV16Wire := encodeClusterWire(t, func(buf []byte) (int, bool) {
-		return codecs.EncodeAppendPosition(buf, 0, v16, codecs.AppendPositionFields{
+	validAppendWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeAppendPosition(buf, 0, currentVersion, codecs.AppendPositionFields{
 			LeadershipTermID: 1,
 			LogPosition:      2,
 			FollowerMemberID: 3,
@@ -294,7 +295,7 @@ func TestTryDecodeByTemplate_rejects_consensus(t *testing.T) {
 		})
 	})
 	validVoteWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
-		return codecs.EncodeVote(buf, 0, v16, codecs.VoteFields{
+		return codecs.EncodeVote(buf, 0, currentVersion, codecs.VoteFields{
 			CandidateTermID:     1,
 			LogLeadershipTermID: 2,
 			LogPosition:         3,
@@ -316,7 +317,7 @@ func TestTryDecodeByTemplate_rejects_consensus(t *testing.T) {
 		"request_vote", validRequestVoteWire, clusterwire.RequestVoteSbeBlockLength, 27, 10,
 	)...)
 	cases = append(cases, fixedBlockRejectCases(
-		"append_position", validAppendV16Wire, clusterwire.AppendPositionSbeBlockLength, 19, 10,
+		"append_position", validAppendWire, clusterwire.AppendPositionSbeBlockLength, 19, 10,
 	)...)
 	cases = append(cases, fixedBlockRejectAboveMaxAtVersion(
 		"append_position", validAppendV7Wire, v7, clusterwire.AppendPositionSbeBlockLength, "v7",

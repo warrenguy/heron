@@ -26,7 +26,7 @@ type ClusterActionRequest struct {
         ClusterActionRequestSbeBlockLength     uint16 = uint16(32)
         ClusterActionRequestSbeTemplateID      uint16 = uint16(23)
         ClusterActionRequestSbeSchemaID        uint16 = uint16(111)
-        ClusterActionRequestSbeSchemaVersion   uint16 = uint16(16)
+        ClusterActionRequestSbeSchemaVersion   uint16 = uint16(17)
         ClusterActionRequestSbeSemanticVersion string = "5.4"
     )
 
@@ -47,7 +47,7 @@ type ClusterActionRequest struct {
     }
 
     func (m *ClusterActionRequest) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *ClusterActionRequest) SbeSemanticVersion() string {

@@ -25,7 +25,7 @@ type JoinCluster struct {
         JoinClusterSbeBlockLength     uint16 = uint16(12)
         JoinClusterSbeTemplateID      uint16 = uint16(74)
         JoinClusterSbeSchemaID        uint16 = uint16(111)
-        JoinClusterSbeSchemaVersion   uint16 = uint16(16)
+        JoinClusterSbeSchemaVersion   uint16 = uint16(17)
         JoinClusterSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type JoinCluster struct {
     }
 
     func (m *JoinCluster) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *JoinCluster) SbeSemanticVersion() string {

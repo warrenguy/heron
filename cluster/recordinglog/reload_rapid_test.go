@@ -95,9 +95,9 @@ func TestTruncationInvariant_rapid(t *testing.T) {
 	})
 }
 
-// lessModel is an independent reference oracle for TestComparatorModel_rapid.
-// It branches on a.Type/b.Type individually rather than computing snapshot booleans,
-// so it differs structurally from the Go less and can catch their divergence.
+// lessModel restates the upstream RecordingLog comparator for
+// TestComparatorModel_rapid. It follows less branch for branch. The property
+// test catches an edit to one of the two, not a logic error both share.
 func lessModel(a, b recordinglog.Entry) bool {
 	if a.LeadershipTermID != b.LeadershipTermID {
 		return a.LeadershipTermID < b.LeadershipTermID
@@ -106,22 +106,23 @@ func lessModel(a, b recordinglog.Entry) bool {
 		return a.TermBaseLogPosition < b.TermBaseLogPosition
 	}
 	if a.Type != b.Type {
-		if a.Type == recordinglog.EntryTypeSnapshot {
-			// snapshot sorts after every other type; a does not come before b
-			return false
-		}
-		if b.Type == recordinglog.EntryTypeSnapshot {
-			// b is snapshot; a sorts before b
+		if a.Type == recordinglog.EntryTypeTerm {
+			// term sorts before every other type
 			return true
 		}
-		// natural int32 order for all non-snapshot pairs
-		return a.Type < b.Type
-	}
-	if a.Type == recordinglog.EntryTypeTerm {
+		if b.Type == recordinglog.EntryTypeTerm {
+			// b is term; a does not come before b
+			return false
+		}
+	} else if a.Type == recordinglog.EntryTypeTerm {
 		return a.Index < b.Index
 	}
 	if a.LogPosition != b.LogPosition {
 		return a.LogPosition < b.LogPosition
+	}
+	if a.Type != b.Type {
+		// reverse type order at one log position
+		return b.Type < a.Type
 	}
 	return b.ServiceID < a.ServiceID
 }

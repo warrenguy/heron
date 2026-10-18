@@ -5,6 +5,7 @@ package clusterwire
 
 import (
 "fmt"
+"math"
 "strings"
 )
 
@@ -22,15 +23,15 @@ type ServiceTerminationPosition struct {
     }
 
     const (
-        ServiceTerminationPositionSbeBlockLength     uint16 = uint16(8)
+        ServiceTerminationPositionSbeBlockLength     uint16 = uint16(12)
         ServiceTerminationPositionSbeTemplateID      uint16 = uint16(42)
         ServiceTerminationPositionSbeSchemaID        uint16 = uint16(111)
-        ServiceTerminationPositionSbeSchemaVersion   uint16 = uint16(16)
+        ServiceTerminationPositionSbeSchemaVersion   uint16 = uint16(17)
         ServiceTerminationPositionSbeSemanticVersion string = "5.4"
     )
 
     func (m *ServiceTerminationPosition) SbeBlockLength() uint16 {
-        return uint16(8)
+        return uint16(12)
     }
 
     func (m *ServiceTerminationPosition) SbeBlockAndHeaderLength() uint64 {
@@ -46,7 +47,7 @@ type ServiceTerminationPosition struct {
     }
 
     func (m *ServiceTerminationPosition) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *ServiceTerminationPosition) SbeSemanticVersion() string {
@@ -203,6 +204,55 @@ func (m *ServiceTerminationPosition) LogPositionMetaAttribute(metaAttribute stri
         return m
     }
 
+func (m *ServiceTerminationPosition) AckRequiredMetaAttribute(metaAttribute string) string {
+    switch metaAttribute {
+        case "PRESENCE": return "required"
+        default: return ""
+    }
+}
+
+    func (m *ServiceTerminationPosition) AckRequiredId() int {
+        return 2
+    }
+
+    func (m *ServiceTerminationPosition) AckRequiredSinceVersion() uint64 {
+        return 17
+    }
+
+    func (m *ServiceTerminationPosition) AckRequiredInActingVersion() bool {
+        return m.actingVersion >= m.AckRequiredSinceVersion()
+    }
+
+    func (m *ServiceTerminationPosition) AckRequiredEncodingOffset() uint {
+        return 8
+    }
+
+    func (m *ServiceTerminationPosition) AckRequiredEncodingLength() int {
+        return 4
+    }
+
+    func (m *ServiceTerminationPosition) AckRequiredRaw() int32 {
+        if m.actingVersion < 17 {
+            return math.MinInt32
+        }
+
+        return Int32LittleEndian(m.buffer[(m.offset + 8):])
+    }
+
+    func (m *ServiceTerminationPosition) AckRequired() BooleanType {
+        if m.actingVersion < 17 {
+            return BooleanType_NULL_VALUE
+        }
+
+        return BooleanType(Int32LittleEndian(m.buffer[(m.offset + 8):]))
+    }
+
+    func (m *ServiceTerminationPosition) SetAckRequired(value BooleanType) *ServiceTerminationPosition {
+        val := int32(value)
+        PutInt32LittleEndian(m.buffer[(m.offset + 8):], val)
+        return m
+    }
+
 func (writer *ServiceTerminationPosition) String() string {
     var builder strings.Builder
     builder.WriteString("{\"Name\": \"ServiceTerminationPosition\", ")
@@ -211,6 +261,10 @@ func (writer *ServiceTerminationPosition) String() string {
 
     builder.WriteString(`"logPosition": `)
     builder.WriteString(fmt.Sprintf(`"%v"`, writer.LogPosition()))
+
+    builder.WriteString(", ")
+    builder.WriteString(`"ackRequired": `)
+    builder.WriteString(fmt.Sprintf(`"%v"`, writer.AckRequired()))
 
     builder.WriteString("}")
 

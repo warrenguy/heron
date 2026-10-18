@@ -25,7 +25,7 @@ type ScheduleTimer struct {
         ScheduleTimerSbeBlockLength     uint16 = uint16(16)
         ScheduleTimerSbeTemplateID      uint16 = uint16(31)
         ScheduleTimerSbeSchemaID        uint16 = uint16(111)
-        ScheduleTimerSbeSchemaVersion   uint16 = uint16(16)
+        ScheduleTimerSbeSchemaVersion   uint16 = uint16(17)
         ScheduleTimerSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type ScheduleTimer struct {
     }
 
     func (m *ScheduleTimer) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *ScheduleTimer) SbeSemanticVersion() string {

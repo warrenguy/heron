@@ -25,7 +25,7 @@ type TerminationPosition struct {
         TerminationPositionSbeBlockLength     uint16 = uint16(16)
         TerminationPositionSbeTemplateID      uint16 = uint16(75)
         TerminationPositionSbeSchemaID        uint16 = uint16(111)
-        TerminationPositionSbeSchemaVersion   uint16 = uint16(16)
+        TerminationPositionSbeSchemaVersion   uint16 = uint16(17)
         TerminationPositionSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type TerminationPosition struct {
     }
 
     func (m *TerminationPosition) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *TerminationPosition) SbeSemanticVersion() string {

@@ -19,7 +19,7 @@ type GroupSizeEncoding struct {
     const (
         GroupSizeEncodingEncodedLength    uint64 = 4
         GroupSizeEncodingSbeSchemaID        uint16 = uint16(111)
-        GroupSizeEncodingSbeSchemaVersion   uint16 = uint16(16)
+        GroupSizeEncodingSbeSchemaVersion   uint16 = uint16(17)
     )
 
     func (m *GroupSizeEncoding) Wrap(
@@ -61,7 +61,7 @@ type GroupSizeEncoding struct {
     }
 
     func (m *GroupSizeEncoding) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
 func (m *GroupSizeEncoding) BlockLengthMetaAttribute(metaAttribute string) string {

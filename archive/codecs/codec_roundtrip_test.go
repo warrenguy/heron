@@ -23,14 +23,12 @@ var (
 	archiveSchemaVersion = archivewire.MessageHeaderSbeSchemaVersion
 
 	controlResponseVersionMinVersion = uint16((&archivewire.ControlResponse{}).VersionSinceVersion())
-	connectRequestVersionMinVersion  = uint16((&archivewire.ConnectRequest{}).VersionSinceVersion())
 	authConnectClientInfoMinVersion  = uint16((&archivewire.AuthConnectRequest{}).
 						ClientInfoSinceVersion())
 	replayFileIoMaxLengthMinVersion = uint16((&archivewire.ReplayRequest{}).
 					FileIoMaxLengthSinceVersion())
 	replayTokenMinVersion = uint16((&archivewire.ReplayRequest{}).ReplayTokenSinceVersion())
 
-	connectRequestVersionNull      = (&archivewire.ConnectRequest{}).VersionNullValue()
 	replayFileIoMaxLengthNullValue = (&archivewire.ReplayRequest{}).FileIoMaxLengthNullValue()
 	replayTokenNullValue           = (&archivewire.ReplayRequest{}).ReplayTokenNullValue()
 
@@ -107,18 +105,6 @@ var (
 		Channel:          []byte("aeron:ipc"),
 	}
 )
-
-// connectRequestOracle drops Version below the version that admits it, matching
-// EncodeConnectRequest and the generated null read.
-func connectRequestOracle(
-	fields codecs.ConnectRequestFields,
-	actingVersion uint16,
-) codecs.ConnectRequestFields {
-	if actingVersion < connectRequestVersionMinVersion {
-		fields.Version = connectRequestVersionNull
-	}
-	return fields
-}
 
 // authConnectRequestOracle drops ClientInfo below the version that admits it,
 // matching EncodeAuthConnectRequest.
@@ -264,11 +250,6 @@ func requireDecodedArchiveFields(tb require.TestingT, want, got any) {
 		g := got.(codecs.ControlResponseFields)
 		requireBytesEqual(tb, w.ErrorMessage, g.ErrorMessage)
 		w.ErrorMessage, g.ErrorMessage = nil, nil
-		require.Equal(tb, w, g)
-	case codecs.ConnectRequestFields:
-		g := got.(codecs.ConnectRequestFields)
-		requireBytesEqual(tb, w.ResponseChannel, g.ResponseChannel)
-		w.ResponseChannel, g.ResponseChannel = nil, nil
 		require.Equal(tb, w, g)
 	case codecs.StartRecordingRequestFields:
 		g := got.(codecs.StartRecordingRequestFields)
@@ -634,81 +615,6 @@ func TestRecordingDescriptor_roundtrip(t *testing.T) {
 			)
 		})
 	}
-}
-
-func TestConnectRequest_roundtrip(t *testing.T) {
-	cases := []struct {
-		name      string
-		actingVer uint16
-		fields    codecs.ConnectRequestFields
-	}{
-		{
-			name:      "current_version",
-			actingVer: archiveSchemaVersion,
-			fields: codecs.ConnectRequestFields{
-				CorrelationID:    1,
-				ResponseStreamID: 100,
-				Version:          5,
-				ResponseChannel:  []byte("aeron:udp?endpoint=localhost:40123"),
-			},
-		},
-		{
-			name:      "version_absent_pre_v2",
-			actingVer: 1,
-			fields: codecs.ConnectRequestFields{
-				CorrelationID:    2,
-				ResponseStreamID: 101,
-				Version:          7,
-				ResponseChannel:  []byte("aeron:ipc"),
-			},
-		},
-		{
-			name:      "null_version_current",
-			actingVer: archiveSchemaVersion,
-			fields: codecs.ConnectRequestFields{
-				CorrelationID:    3,
-				ResponseStreamID: 102,
-				Version:          connectRequestVersionNull,
-				ResponseChannel:  []byte("aeron:ipc"),
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runArchiveCodecRoundtrip(
-				t,
-				archivewire.ConnectRequestSbeTemplateID,
-				tc.actingVer,
-				encodeAt(tc.actingVer, tc.fields, codecs.EncodeConnectRequest),
-				connectRequestOracle(tc.fields, tc.actingVer),
-			)
-		})
-	}
-}
-
-func TestEncodeConnectRequest_nullVersion_clearsStaleBlockSlot(t *testing.T) {
-	versionOffset := messageHeaderLen + int((&archivewire.ConnectRequest{}).VersionEncodingOffset())
-
-	fields := codecs.ConnectRequestFields{
-		CorrelationID:    1,
-		ResponseStreamID: 100,
-		Version:          connectRequestVersionNull,
-		ResponseChannel:  []byte("aeron:ipc"),
-	}
-	buf := make([]byte, fuzzArchiveCodecMaxLen)
-	for i := range buf {
-		buf[i] = 0xFF
-	}
-
-	wireEnd, ok := codecs.EncodeConnectRequest(buf, 0, archiveSchemaVersion, fields)
-	require.True(t, ok)
-	require.Equal(t, []byte{0, 0, 0, 0}, buf[versionOffset:versionOffset+4])
-
-	decoded, ok := codecs.TryDecodeByTemplate(buf[:wireEnd], 0, codecTestMaxVarLen)
-	require.True(t, ok)
-	got := decoded.Fields.(codecs.ConnectRequestFields)
-	require.Equal(t, connectRequestVersionNull, got.Version)
 }
 
 func TestAuthConnectRequest_roundtrip(t *testing.T) {
@@ -1077,14 +983,6 @@ func TestArchiveRootBlockLengthBounds(t *testing.T) {
 			wantOK:     true,
 		},
 		{
-			name:       "connect_request_version_absent",
-			templateID: archivewire.ConnectRequestSbeTemplateID,
-			version:    connectRequestVersionMinVersion - 1,
-			wantMin:    12,
-			wantMax:    archivewire.ConnectRequestSbeBlockLength,
-			wantOK:     true,
-		},
-		{
 			name:       "replay_request_file_io_absent",
 			templateID: archivewire.ReplayRequestSbeTemplateID,
 			version:    replayFileIoMaxLengthMinVersion - 1,
@@ -1262,36 +1160,6 @@ func TestArchiveWireMessageLen(t *testing.T) {
 			messageHeaderLen+int(block)+codecs.VarLengthPrefixSize+codecs.ArchiveEncodeMaxVarLen,
 			got,
 		)
-	})
-}
-
-func TestConnectRequestWireLen(t *testing.T) {
-	t.Run("current_version", func(t *testing.T) {
-		got, ok := codecs.ConnectRequestWireLen(archiveSchemaVersion, 9)
-		require.True(t, ok)
-		want, ok := codecs.ArchiveWireMessageLen(
-			codecs.ArchiveMinRootBlockLength(
-				archivewire.ConnectRequestSbeTemplateID,
-				archiveSchemaVersion,
-				archivewire.ConnectRequestSbeBlockLength,
-			),
-			9,
-		)
-		require.True(t, ok)
-		require.Equal(t, want, got)
-	})
-
-	t.Run("version_absent_smaller_block", func(t *testing.T) {
-		small, ok := codecs.ConnectRequestWireLen(connectRequestVersionMinVersion-1, 9)
-		require.True(t, ok)
-		large, ok := codecs.ConnectRequestWireLen(archiveSchemaVersion, 9)
-		require.True(t, ok)
-		require.Less(t, small, large)
-	})
-
-	t.Run("negative_len_rejected", func(t *testing.T) {
-		_, ok := codecs.ConnectRequestWireLen(archiveSchemaVersion, -1)
-		require.False(t, ok)
 	})
 }
 

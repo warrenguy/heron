@@ -25,7 +25,7 @@ type CommitPosition struct {
         CommitPositionSbeBlockLength     uint16 = uint16(20)
         CommitPositionSbeTemplateID      uint16 = uint16(55)
         CommitPositionSbeSchemaID        uint16 = uint16(111)
-        CommitPositionSbeSchemaVersion   uint16 = uint16(16)
+        CommitPositionSbeSchemaVersion   uint16 = uint16(17)
         CommitPositionSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type CommitPosition struct {
     }
 
     func (m *CommitPosition) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *CommitPosition) SbeSemanticVersion() string {

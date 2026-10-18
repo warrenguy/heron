@@ -25,7 +25,7 @@ type HeartbeatResponse struct {
         HeartbeatResponseSbeBlockLength     uint16 = uint16(8)
         HeartbeatResponseSbeTemplateID      uint16 = uint16(80)
         HeartbeatResponseSbeSchemaID        uint16 = uint16(111)
-        HeartbeatResponseSbeSchemaVersion   uint16 = uint16(16)
+        HeartbeatResponseSbeSchemaVersion   uint16 = uint16(17)
         HeartbeatResponseSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type HeartbeatResponse struct {
     }
 
     func (m *HeartbeatResponse) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *HeartbeatResponse) SbeSemanticVersion() string {

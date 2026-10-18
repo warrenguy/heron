@@ -25,7 +25,7 @@ type TimerEvent struct {
         TimerEventSbeBlockLength     uint16 = uint16(24)
         TimerEventSbeTemplateID      uint16 = uint16(20)
         TimerEventSbeSchemaID        uint16 = uint16(111)
-        TimerEventSbeSchemaVersion   uint16 = uint16(16)
+        TimerEventSbeSchemaVersion   uint16 = uint16(17)
         TimerEventSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type TimerEvent struct {
     }
 
     func (m *TimerEvent) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *TimerEvent) SbeSemanticVersion() string {

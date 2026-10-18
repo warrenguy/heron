@@ -50,33 +50,6 @@ func archiveVarString(data []byte) string {
 	return unsafe.String(unsafe.SliceData(data), len(data))
 }
 
-// EncodeConnectRequest writes an archive ConnectRequest at offset.
-func EncodeConnectRequest(
-	buf []byte,
-	offset int,
-	actingVersion uint16,
-	fields ConnectRequestFields,
-) (wireEnd int, ok bool) {
-	return encodeWithArchiveWireHeader(
-		buf,
-		offset,
-		connectRequestBlockLength(actingVersion),
-		archivewire.ConnectRequestSbeTemplateID,
-		actingVersion,
-		[]int{len(fields.ResponseChannel)},
-		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
-			var msg archivewire.ConnectRequest
-			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
-				SetCorrelationId(fields.CorrelationID).
-				SetResponseStreamId(fields.ResponseStreamID)
-			if actingVersion >= archiveConnectRequestVersionMinVersion {
-				msg.SetVersion(fields.Version)
-			}
-			msg.PutResponseChannel(archiveVarString(fields.ResponseChannel))
-		},
-	)
-}
-
 // EncodeAuthConnectRequest writes an archive AuthConnectRequest at offset.
 func EncodeAuthConnectRequest(
 	buf []byte,

@@ -25,7 +25,7 @@ type AuthConnectRequest struct {
         AuthConnectRequestSbeBlockLength     uint16 = uint16(16)
         AuthConnectRequestSbeTemplateID      uint16 = uint16(58)
         AuthConnectRequestSbeSchemaID        uint16 = uint16(101)
-        AuthConnectRequestSbeSchemaVersion   uint16 = uint16(13)
+        AuthConnectRequestSbeSchemaVersion   uint16 = uint16(14)
         AuthConnectRequestSbeSemanticVersion string = "5.2"
     )
 
@@ -46,7 +46,7 @@ type AuthConnectRequest struct {
     }
 
     func (m *AuthConnectRequest) SbeSchemaVersion() uint16 {
-        return uint16(13)
+        return uint16(14)
     }
 
     func (m *AuthConnectRequest) SbeSemanticVersion() string {

@@ -13,24 +13,24 @@ import (
 // Golden wire bytes for the snapshot stream templates. Each constant equals
 // the hex of the cluster SBE catalog row with the same fields.
 const (
-	goldenSnapshotMarkerConsensusModuleBeginHex = "280064006f001000" +
+	goldenSnapshotMarkerConsensusModuleBeginHex = "280064006f001100" +
 		"0100000000000000000400000000000003000000000000000000000000000000" +
 		"0200000001000000"
-	goldenSnapshotMarkerServiceEndHex = "280064006f001000" +
+	goldenSnapshotMarkerServiceEndHex = "280064006f001100" +
 		"0200000000000000000800000000000004000000000000000000000002000000" +
 		"0000000003020100"
-	goldenClientSessionHex = "0c0066006f001000" +
+	goldenClientSessionHex = "0c0066006f001100" +
 		"070000000000000066000000" +
 		"090000006165726f6e3a69706302000000abcd"
-	goldenClientSessionEmptyVarsHex = "0c0066006f001000" +
+	goldenClientSessionEmptyVarsHex = "0c0066006f001100" +
 		"080000000000000067000000" +
 		"0000000000000000"
-	goldenTimerHex = "100068006f001000" +
+	goldenTimerHex = "100068006f001100" +
 		"09000000000000001027000000000000"
-	goldenConsensusModuleNoServiceHex = "1c0069006f001000" +
+	goldenConsensusModuleNoServiceHex = "1c0069006f001100" +
 		"0b00000000000000" +
 		"0000000000000000000000000000000000000000"
-	goldenConsensusModuleMaxHex = "1c0069006f001000" +
+	goldenConsensusModuleMaxHex = "1c0069006f001100" +
 		"ffffffffffffff7fffffffffffffff7fffffffffffffff7fffffff7f"
 	goldenSnapshotMarkerV3Hex = "200064006f000300" +
 		"0200000000000000000200000000000001000000000000000000000000000000"
@@ -189,7 +189,7 @@ func TestSnapshotFlyweightConstants(t *testing.T) {
 		clusterwire.TimerSbeSchemaVersion,
 		clusterwire.ConsensusModuleSbeSchemaVersion,
 	} {
-		require.Equal(t, uint16(16), version)
+		require.Equal(t, uint16(17), version)
 	}
 }
 

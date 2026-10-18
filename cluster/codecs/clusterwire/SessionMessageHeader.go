@@ -25,7 +25,7 @@ type SessionMessageHeader struct {
         SessionMessageHeaderSbeBlockLength     uint16 = uint16(24)
         SessionMessageHeaderSbeTemplateID      uint16 = uint16(1)
         SessionMessageHeaderSbeSchemaID        uint16 = uint16(111)
-        SessionMessageHeaderSbeSchemaVersion   uint16 = uint16(16)
+        SessionMessageHeaderSbeSchemaVersion   uint16 = uint16(17)
         SessionMessageHeaderSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type SessionMessageHeader struct {
     }
 
     func (m *SessionMessageHeader) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *SessionMessageHeader) SbeSemanticVersion() string {

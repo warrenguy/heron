@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FixtureCatalogTest {
     private static final String NESTED_PAYLOAD_HEX =
-        "1c001a006f001000040000000000000005000000000000000600000000000000000000001000000033333333333333333333333333333333";
+        "1c001a006f001100040000000000000005000000000000000600000000000000000000001000000033333333333333333333333333333333";
 
     private static List<FixtureEntry> catalogEntries;
     private static Map<String, FixtureEntry> catalogByName;

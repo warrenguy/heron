@@ -13,13 +13,6 @@ type ControlResponseFields struct {
 	ErrorMessage     []byte
 }
 
-type ConnectRequestFields struct {
-	CorrelationID    int64
-	ResponseStreamID int32
-	Version          int32
-	ResponseChannel  []byte
-}
-
 type CloseSessionRequestFields struct {
 	ControlSessionID int64
 }

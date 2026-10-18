@@ -25,7 +25,7 @@ type Challenge struct {
         ChallengeSbeBlockLength     uint16 = uint16(16)
         ChallengeSbeTemplateID      uint16 = uint16(7)
         ChallengeSbeSchemaID        uint16 = uint16(111)
-        ChallengeSbeSchemaVersion   uint16 = uint16(16)
+        ChallengeSbeSchemaVersion   uint16 = uint16(17)
         ChallengeSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type Challenge struct {
     }
 
     func (m *Challenge) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *Challenge) SbeSemanticVersion() string {

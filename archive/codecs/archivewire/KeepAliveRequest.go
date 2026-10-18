@@ -25,7 +25,7 @@ type KeepAliveRequest struct {
         KeepAliveRequestSbeBlockLength     uint16 = uint16(16)
         KeepAliveRequestSbeTemplateID      uint16 = uint16(61)
         KeepAliveRequestSbeSchemaID        uint16 = uint16(101)
-        KeepAliveRequestSbeSchemaVersion   uint16 = uint16(13)
+        KeepAliveRequestSbeSchemaVersion   uint16 = uint16(14)
         KeepAliveRequestSbeSemanticVersion string = "5.2"
     )
 
@@ -46,7 +46,7 @@ type KeepAliveRequest struct {
     }
 
     func (m *KeepAliveRequest) SbeSchemaVersion() uint16 {
-        return uint16(13)
+        return uint16(14)
     }
 
     func (m *KeepAliveRequest) SbeSemanticVersion() string {

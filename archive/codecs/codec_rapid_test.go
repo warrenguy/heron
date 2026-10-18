@@ -153,28 +153,6 @@ func rapidRecordingSignal(rt *rapid.T) archivewire.RecordingSignal {
 	return rapid.SampledFrom(archiveAllRecordingSignals).Draw(rt, "signal")
 }
 
-func TestConnectRequest_codec_rapid(t *testing.T) {
-	t.Parallel()
-	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
-		actingVersion, offset := rapidCodecContext(rt)
-		fields := codecs.ConnectRequestFields{
-			CorrelationID:    rapid.Int64().Draw(rt, "correlationID"),
-			ResponseStreamID: rapid.Int32().Draw(rt, "responseStreamID"),
-			Version:          rapid.Int32().Draw(rt, "version"),
-			ResponseChannel:  rapidVarBytes(rt, "responseChannel"),
-		}
-
-		runArchiveCodecRoundtripAtOffset(
-			rt,
-			archivewire.ConnectRequestSbeTemplateID,
-			actingVersion,
-			offset,
-			encodeAt(actingVersion, fields, codecs.EncodeConnectRequest),
-			connectRequestOracle(fields, actingVersion),
-		)
-	})
-}
-
 func TestAuthConnectRequest_codec_rapid(t *testing.T) {
 	t.Parallel()
 	rapidCheck(t, rapidChecksVarHeavy, func(rt *rapid.T) {

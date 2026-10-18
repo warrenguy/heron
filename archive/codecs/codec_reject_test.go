@@ -135,7 +135,7 @@ func TestTryDecodeAt_rejects(t *testing.T) {
 				return ok
 			},
 			hasVar:  true,
-			wrongID: archivewire.ConnectRequestSbeTemplateID,
+			wrongID: archivewire.CloseSessionRequestSbeTemplateID,
 		},
 		{
 			name: "recording_signal_event",

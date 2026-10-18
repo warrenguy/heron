@@ -20,7 +20,7 @@ type VarAsciiEncoding struct {
     const (
         VarAsciiEncodingEncodedLength    uint64 = math.MaxUint64
         VarAsciiEncodingSbeSchemaID        uint16 = uint16(111)
-        VarAsciiEncodingSbeSchemaVersion   uint16 = uint16(16)
+        VarAsciiEncodingSbeSchemaVersion   uint16 = uint16(17)
     )
 
     func (m *VarAsciiEncoding) Wrap(
@@ -62,7 +62,7 @@ type VarAsciiEncoding struct {
     }
 
     func (m *VarAsciiEncoding) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
 func (m *VarAsciiEncoding) LengthMetaAttribute(metaAttribute string) string {

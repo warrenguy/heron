@@ -25,7 +25,7 @@ type MembershipChangeEvent struct {
         MembershipChangeEventSbeBlockLength     uint16 = uint16(40)
         MembershipChangeEventSbeTemplateID      uint16 = uint16(25)
         MembershipChangeEventSbeSchemaID        uint16 = uint16(111)
-        MembershipChangeEventSbeSchemaVersion   uint16 = uint16(16)
+        MembershipChangeEventSbeSchemaVersion   uint16 = uint16(17)
         MembershipChangeEventSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type MembershipChangeEvent struct {
     }
 
     func (m *MembershipChangeEvent) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *MembershipChangeEvent) SbeSemanticVersion() string {

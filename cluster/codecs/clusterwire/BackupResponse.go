@@ -27,7 +27,7 @@ type BackupResponse struct {
         BackupResponseSbeBlockLength     uint16 = uint16(60)
         BackupResponseSbeTemplateID      uint16 = uint16(78)
         BackupResponseSbeSchemaID        uint16 = uint16(111)
-        BackupResponseSbeSchemaVersion   uint16 = uint16(16)
+        BackupResponseSbeSchemaVersion   uint16 = uint16(17)
         BackupResponseSbeSemanticVersion string = "5.4"
     )
 
@@ -48,7 +48,7 @@ type BackupResponse struct {
     }
 
     func (m *BackupResponse) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *BackupResponse) SbeSemanticVersion() string {

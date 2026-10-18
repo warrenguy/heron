@@ -25,7 +25,7 @@ type StartRecordingRequest2 struct {
         StartRecordingRequest2SbeBlockLength     uint16 = uint16(28)
         StartRecordingRequest2SbeTemplateID      uint16 = uint16(63)
         StartRecordingRequest2SbeSchemaID        uint16 = uint16(101)
-        StartRecordingRequest2SbeSchemaVersion   uint16 = uint16(13)
+        StartRecordingRequest2SbeSchemaVersion   uint16 = uint16(14)
         StartRecordingRequest2SbeSemanticVersion string = "5.2"
     )
 
@@ -46,7 +46,7 @@ type StartRecordingRequest2 struct {
     }
 
     func (m *StartRecordingRequest2) SbeSchemaVersion() uint16 {
-        return uint16(13)
+        return uint16(14)
     }
 
     func (m *StartRecordingRequest2) SbeSemanticVersion() string {

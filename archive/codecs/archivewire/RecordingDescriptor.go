@@ -25,7 +25,7 @@ type RecordingDescriptor struct {
         RecordingDescriptorSbeBlockLength     uint16 = uint16(80)
         RecordingDescriptorSbeTemplateID      uint16 = uint16(22)
         RecordingDescriptorSbeSchemaID        uint16 = uint16(101)
-        RecordingDescriptorSbeSchemaVersion   uint16 = uint16(13)
+        RecordingDescriptorSbeSchemaVersion   uint16 = uint16(14)
         RecordingDescriptorSbeSemanticVersion string = "5.2"
     )
 
@@ -46,7 +46,7 @@ type RecordingDescriptor struct {
     }
 
     func (m *RecordingDescriptor) SbeSchemaVersion() uint16 {
-        return uint16(13)
+        return uint16(14)
     }
 
     func (m *RecordingDescriptor) SbeSemanticVersion() string {

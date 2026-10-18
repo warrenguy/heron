@@ -25,7 +25,7 @@ type CanvassPosition struct {
         CanvassPositionSbeBlockLength     uint16 = uint16(32)
         CanvassPositionSbeTemplateID      uint16 = uint16(50)
         CanvassPositionSbeSchemaID        uint16 = uint16(111)
-        CanvassPositionSbeSchemaVersion   uint16 = uint16(16)
+        CanvassPositionSbeSchemaVersion   uint16 = uint16(17)
         CanvassPositionSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type CanvassPosition struct {
     }
 
     func (m *CanvassPosition) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *CanvassPosition) SbeSemanticVersion() string {

@@ -12,7 +12,7 @@ import (
 )
 
 func TestSnapshotMarker_roundtrip(t *testing.T) {
-	v16 := clusterwire.SnapshotMarkerSbeSchemaVersion
+	currentVersion := clusterwire.SnapshotMarkerSbeSchemaVersion
 	fieldCases := []codecFieldsActingCase[codecs.SnapshotMarkerFields]{
 		{name: "populated", fields: snapshotMarkerSampleFields()},
 		{name: "zero", fields: codecs.SnapshotMarkerFields{}},
@@ -49,9 +49,9 @@ func TestSnapshotMarker_roundtrip(t *testing.T) {
 	runCodecRoundtripCases(
 		t,
 		clusterwire.SnapshotMarkerSbeTemplateID,
-		v16,
+		currentVersion,
 		buildActingFieldRoundtripCases(
-			v16,
+			currentVersion,
 			fieldCases,
 			codecs.EncodeSnapshotMarker,
 			codecs.SnapshotMarkerOracleFields,
@@ -94,7 +94,7 @@ func TestTimer_roundtrip(t *testing.T) {
 }
 
 func TestConsensusModule_roundtrip(t *testing.T) {
-	v16 := clusterwire.ConsensusModuleSbeSchemaVersion
+	currentVersion := clusterwire.ConsensusModuleSbeSchemaVersion
 	fieldCases := []codecFieldsActingCase[codecs.ConsensusModuleFields]{
 		{name: "populated", fields: consensusModuleSampleFields()},
 		{name: "zero", fields: codecs.ConsensusModuleFields{}},
@@ -120,9 +120,9 @@ func TestConsensusModule_roundtrip(t *testing.T) {
 	runCodecRoundtripCases(
 		t,
 		clusterwire.ConsensusModuleSbeTemplateID,
-		v16,
+		currentVersion,
 		buildActingFieldRoundtripCases(
-			v16,
+			currentVersion,
 			fieldCases,
 			codecs.EncodeConsensusModule,
 			codecs.ConsensusModuleOracleFields,

@@ -25,7 +25,7 @@ type ClientSession struct {
         ClientSessionSbeBlockLength     uint16 = uint16(12)
         ClientSessionSbeTemplateID      uint16 = uint16(102)
         ClientSessionSbeSchemaID        uint16 = uint16(111)
-        ClientSessionSbeSchemaVersion   uint16 = uint16(16)
+        ClientSessionSbeSchemaVersion   uint16 = uint16(17)
         ClientSessionSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type ClientSession struct {
     }
 
     func (m *ClientSession) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *ClientSession) SbeSemanticVersion() string {

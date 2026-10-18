@@ -25,7 +25,7 @@ type ClusterSession struct {
         ClusterSessionSbeBlockLength     uint16 = uint16(40)
         ClusterSessionSbeTemplateID      uint16 = uint16(103)
         ClusterSessionSbeSchemaID        uint16 = uint16(111)
-        ClusterSessionSbeSchemaVersion   uint16 = uint16(16)
+        ClusterSessionSbeSchemaVersion   uint16 = uint16(17)
         ClusterSessionSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type ClusterSession struct {
     }
 
     func (m *ClusterSession) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *ClusterSession) SbeSemanticVersion() string {

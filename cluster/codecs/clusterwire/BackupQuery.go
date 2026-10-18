@@ -26,7 +26,7 @@ type BackupQuery struct {
         BackupQuerySbeBlockLength     uint16 = uint16(24)
         BackupQuerySbeTemplateID      uint16 = uint16(77)
         BackupQuerySbeSchemaID        uint16 = uint16(111)
-        BackupQuerySbeSchemaVersion   uint16 = uint16(16)
+        BackupQuerySbeSchemaVersion   uint16 = uint16(17)
         BackupQuerySbeSemanticVersion string = "5.4"
     )
 
@@ -47,7 +47,7 @@ type BackupQuery struct {
     }
 
     func (m *BackupQuery) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *BackupQuery) SbeSemanticVersion() string {

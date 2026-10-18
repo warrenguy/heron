@@ -25,7 +25,7 @@ type SessionKeepAlive struct {
         SessionKeepAliveSbeBlockLength     uint16 = uint16(16)
         SessionKeepAliveSbeTemplateID      uint16 = uint16(5)
         SessionKeepAliveSbeSchemaID        uint16 = uint16(111)
-        SessionKeepAliveSbeSchemaVersion   uint16 = uint16(16)
+        SessionKeepAliveSbeSchemaVersion   uint16 = uint16(17)
         SessionKeepAliveSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type SessionKeepAlive struct {
     }
 
     func (m *SessionKeepAlive) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *SessionKeepAlive) SbeSemanticVersion() string {

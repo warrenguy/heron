@@ -25,7 +25,7 @@ type SessionOpenEvent struct {
         SessionOpenEventSbeBlockLength     uint16 = uint16(36)
         SessionOpenEventSbeTemplateID      uint16 = uint16(21)
         SessionOpenEventSbeSchemaID        uint16 = uint16(111)
-        SessionOpenEventSbeSchemaVersion   uint16 = uint16(16)
+        SessionOpenEventSbeSchemaVersion   uint16 = uint16(17)
         SessionOpenEventSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type SessionOpenEvent struct {
     }
 
     func (m *SessionOpenEvent) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *SessionOpenEvent) SbeSemanticVersion() string {

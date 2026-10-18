@@ -25,7 +25,7 @@ type Timer struct {
         TimerSbeBlockLength     uint16 = uint16(16)
         TimerSbeTemplateID      uint16 = uint16(104)
         TimerSbeSchemaID        uint16 = uint16(111)
-        TimerSbeSchemaVersion   uint16 = uint16(16)
+        TimerSbeSchemaVersion   uint16 = uint16(17)
         TimerSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type Timer struct {
     }
 
     func (m *Timer) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *Timer) SbeSemanticVersion() string {

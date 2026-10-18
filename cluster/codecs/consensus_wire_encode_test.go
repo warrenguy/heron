@@ -56,7 +56,7 @@ func TestCanvassPosition_roundtrip(t *testing.T) {
 			},
 		},
 		{
-			name:      "protocol_version_v16",
+			name:      "current_protocol_version",
 			actingVer: clusterwire.CanvassPositionSbeSchemaVersion,
 			fields: codecs.CanvassPositionFields{
 				LogLeadershipTermID: math.MaxInt64,
@@ -106,7 +106,7 @@ func TestRequestVote_roundtrip(t *testing.T) {
 			},
 		},
 		{
-			name:      "max_int_v16",
+			name:      "max_int",
 			actingVer: clusterwire.RequestVoteSbeSchemaVersion,
 			fields: codecs.RequestVoteFields{
 				LogLeadershipTermID: math.MaxInt64,
@@ -198,7 +198,7 @@ func TestNewLeadershipTerm_roundtrip(t *testing.T) {
 	defaultVer := clusterwire.NewLeadershipTermSbeSchemaVersion
 	fieldCases := []codecFieldsActingCase[codecs.NewLeadershipTermFields]{
 		{
-			name: "full_v16",
+			name: "full",
 			fields: codecs.NewLeadershipTermFields{
 				LogLeadershipTermID: 1, NextLeadershipTermID: 2, NextTermBaseLogPosition: 3,
 				NextLogPosition: 4, LeadershipTermID: 5, TermBaseLogPosition: 6, LogPosition: 7,
@@ -217,7 +217,7 @@ func TestNewLeadershipTerm_roundtrip(t *testing.T) {
 			},
 		},
 		{
-			name: "app_version_omit_v16",
+			name: "app_version_omit",
 			fields: codecs.NewLeadershipTermFields{
 				LogLeadershipTermID: 40, NextLeadershipTermID: 41, NextTermBaseLogPosition: 42,
 				NextLogPosition: 43, LeadershipTermID: 44, TermBaseLogPosition: 45, LogPosition: 46,
@@ -226,7 +226,7 @@ func TestNewLeadershipTerm_roundtrip(t *testing.T) {
 			},
 		},
 		{
-			name: "max_int_v16",
+			name: "max_int",
 			fields: codecs.NewLeadershipTermFields{
 				LogLeadershipTermID: math.MaxInt64, NextLeadershipTermID: math.MaxInt64,
 				NextTermBaseLogPosition: math.MaxInt64, NextLogPosition: math.MaxInt64,
@@ -261,7 +261,7 @@ func TestAppendPosition_roundtrip(t *testing.T) {
 	defaultVer := clusterwire.AppendPositionSbeSchemaVersion
 	fieldCases := []codecFieldsActingCase[codecs.AppendPositionFields]{
 		{
-			name: "flags_v16",
+			name: "flags",
 			fields: codecs.AppendPositionFields{
 				LeadershipTermID: 1, LogPosition: 2, FollowerMemberID: 3, Flags: 0xAB,
 			},
@@ -274,7 +274,7 @@ func TestAppendPosition_roundtrip(t *testing.T) {
 			},
 		},
 		{
-			name: "max_int_v16",
+			name: "max_int",
 			fields: codecs.AppendPositionFields{
 				LeadershipTermID: math.MaxInt64, LogPosition: math.MaxInt64,
 				FollowerMemberID: math.MaxInt32, Flags: 0xFF,

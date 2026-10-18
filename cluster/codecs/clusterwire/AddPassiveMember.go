@@ -25,7 +25,7 @@ type AddPassiveMember struct {
         AddPassiveMemberSbeBlockLength     uint16 = uint16(8)
         AddPassiveMemberSbeTemplateID      uint16 = uint16(70)
         AddPassiveMemberSbeSchemaID        uint16 = uint16(111)
-        AddPassiveMemberSbeSchemaVersion   uint16 = uint16(16)
+        AddPassiveMemberSbeSchemaVersion   uint16 = uint16(17)
         AddPassiveMemberSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type AddPassiveMember struct {
     }
 
     func (m *AddPassiveMember) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *AddPassiveMember) SbeSemanticVersion() string {

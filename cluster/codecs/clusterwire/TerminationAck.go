@@ -25,7 +25,7 @@ type TerminationAck struct {
         TerminationAckSbeBlockLength     uint16 = uint16(20)
         TerminationAckSbeTemplateID      uint16 = uint16(76)
         TerminationAckSbeSchemaID        uint16 = uint16(111)
-        TerminationAckSbeSchemaVersion   uint16 = uint16(16)
+        TerminationAckSbeSchemaVersion   uint16 = uint16(17)
         TerminationAckSbeSemanticVersion string = "5.4"
     )
 
@@ -46,7 +46,7 @@ type TerminationAck struct {
     }
 
     func (m *TerminationAck) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *TerminationAck) SbeSemanticVersion() string {

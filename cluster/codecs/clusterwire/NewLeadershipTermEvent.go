@@ -26,7 +26,7 @@ type NewLeadershipTermEvent struct {
         NewLeadershipTermEventSbeBlockLength     uint16 = uint16(48)
         NewLeadershipTermEventSbeTemplateID      uint16 = uint16(24)
         NewLeadershipTermEventSbeSchemaID        uint16 = uint16(111)
-        NewLeadershipTermEventSbeSchemaVersion   uint16 = uint16(16)
+        NewLeadershipTermEventSbeSchemaVersion   uint16 = uint16(17)
         NewLeadershipTermEventSbeSemanticVersion string = "5.4"
     )
 
@@ -47,7 +47,7 @@ type NewLeadershipTermEvent struct {
     }
 
     func (m *NewLeadershipTermEvent) SbeSchemaVersion() uint16 {
-        return uint16(16)
+        return uint16(17)
     }
 
     func (m *NewLeadershipTermEvent) SbeSemanticVersion() string {

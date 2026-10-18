@@ -19,7 +19,7 @@ type MessageHeader struct {
     const (
         MessageHeaderEncodedLength    uint64 = 8
         MessageHeaderSbeSchemaID        uint16 = uint16(101)
-        MessageHeaderSbeSchemaVersion   uint16 = uint16(13)
+        MessageHeaderSbeSchemaVersion   uint16 = uint16(14)
     )
 
     func (m *MessageHeader) Wrap(
@@ -61,7 +61,7 @@ type MessageHeader struct {
     }
 
     func (m *MessageHeader) SbeSchemaVersion() uint16 {
-        return uint16(13)
+        return uint16(14)
     }
 
 func (m *MessageHeader) BlockLengthMetaAttribute(metaAttribute string) string {
