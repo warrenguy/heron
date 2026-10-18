@@ -103,7 +103,8 @@ func oracleVarFieldLens(fixture WireFixture) ([]int, bool) {
 		clusterwire.SessionKeepAliveSbeTemplateID,
 		clusterwire.SnapshotMarkerSbeTemplateID,
 		clusterwire.TimerSbeTemplateID,
-		clusterwire.ConsensusModuleSbeTemplateID:
+		clusterwire.ConsensusModuleSbeTemplateID,
+		clusterwire.PendingMessageTrackerSbeTemplateID:
 		return []int{}, true
 	case clusterwire.SessionEventSbeTemplateID:
 		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.SessionEventFields) []int {
@@ -143,6 +144,10 @@ func oracleVarFieldLens(fixture WireFixture) ([]int, bool) {
 	case clusterwire.ClientSessionSbeTemplateID:
 		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.ClientSessionFields) []int {
 			return []int{len(fields.ResponseChannel), len(fields.EncodedPrincipal)}
+		})
+	case clusterwire.ClusterSessionSbeTemplateID:
+		return oracleVarFieldLensFrom(fixture.Fields, func(fields codecs.ClusterSessionFields) []int {
+			return []int{len(fields.ResponseChannel)}
 		})
 	default:
 		return nil, false
@@ -207,6 +212,10 @@ func encodeFixture(buf []byte, offset int, fixture WireFixture) (wireEnd int, ok
 		return encodeStandard(buf, offset, fixture, codecs.EncodeTimer)
 	case clusterwire.ConsensusModuleSbeTemplateID:
 		return encodeStandard(buf, offset, fixture, codecs.EncodeConsensusModule)
+	case clusterwire.ClusterSessionSbeTemplateID:
+		return encodeStandard(buf, offset, fixture, codecs.EncodeClusterSession)
+	case clusterwire.PendingMessageTrackerSbeTemplateID:
+		return encodeStandard(buf, offset, fixture, codecs.EncodePendingMessageTracker)
 	default:
 		return 0, false
 	}

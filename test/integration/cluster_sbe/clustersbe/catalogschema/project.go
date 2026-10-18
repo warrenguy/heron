@@ -42,6 +42,10 @@ func ProjectCatalogToFields(
 		return decodeTimerFields(fields)
 	case "consensusModule":
 		return decodeConsensusModuleFields(fields)
+	case "clusterSession":
+		return decodeClusterSessionFields(fields)
+	case "pendingMessageTracker":
+		return decodePendingMessageTrackerFields(fields)
 	default:
 		return nil, fmt.Errorf("unknown template %q", template)
 	}
@@ -325,6 +329,60 @@ func decodeConsensusModuleFields(fields map[string]any) (codecs.ConsensusModuleF
 		return out, err
 	}
 	out.PendingMessageCapacity, err = optionalInt32(fields, "pendingMessageCapacity")
+	return out, err
+}
+
+func decodeClusterSessionFields(fields map[string]any) (codecs.ClusterSessionFields, error) {
+	var out codecs.ClusterSessionFields
+	var err error
+
+	out.ClusterSessionID, err = requireInt64(fields, "clusterSessionId")
+	if err != nil {
+		return out, err
+	}
+	out.CorrelationID, err = requireInt64(fields, "correlationId")
+	if err != nil {
+		return out, err
+	}
+	out.OpenedLogPosition, err = requireInt64(fields, "openedLogPosition")
+	if err != nil {
+		return out, err
+	}
+	out.TimeOfLastActivity, err = requireInt64(fields, "timeOfLastActivity")
+	if err != nil {
+		return out, err
+	}
+	out.CloseReason, err = lookupEnum(fields, "closeReason", LookupCloseReason)
+	if err != nil {
+		return out, err
+	}
+	out.ResponseStreamID, err = requireInt32(fields, "responseStreamId")
+	if err != nil {
+		return out, err
+	}
+	out.ResponseChannel, err = optionalCatalogStringBytes(fields, "responseChannel")
+	return out, err
+}
+
+func decodePendingMessageTrackerFields(
+	fields map[string]any,
+) (codecs.PendingMessageTrackerFields, error) {
+	var out codecs.PendingMessageTrackerFields
+	var err error
+
+	out.NextServiceSessionID, err = requireInt64(fields, "nextServiceSessionId")
+	if err != nil {
+		return out, err
+	}
+	out.LogServiceSessionID, err = requireInt64(fields, "logServiceSessionId")
+	if err != nil {
+		return out, err
+	}
+	out.PendingMessageCapacity, err = requireInt32(fields, "pendingMessageCapacity")
+	if err != nil {
+		return out, err
+	}
+	out.ServiceID, err = requireInt32(fields, "serviceId")
 	return out, err
 }
 

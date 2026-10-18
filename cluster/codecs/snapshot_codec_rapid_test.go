@@ -75,37 +75,45 @@ func TestConsensusModule_codec_rapid(t *testing.T) {
 	})
 }
 
-// rapidSnapshotMark draws a defined SnapshotMark or any raw int32. Decode
-// passes raw values through.
-func rapidSnapshotMark(rt *rapid.T, name string) clusterwire.SnapshotMark {
-	rt.Helper()
-	return rapid.OneOf(
-		rapid.SampledFrom([]clusterwire.SnapshotMark{
-			clusterwire.SnapshotMark_BEGIN,
-			clusterwire.SnapshotMark_SECTION,
-			clusterwire.SnapshotMark_END,
-			clusterwire.SnapshotMark_NULL_VALUE,
-		}),
-		rapid.Map(rapid.Int32(), func(v int32) clusterwire.SnapshotMark {
-			return clusterwire.SnapshotMark(v)
-		}),
-	).Draw(rt, name)
+func TestClusterSession_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := rapidClusterSessionFields(rt)
+		runCodecRoundtripAtOffset(
+			rt,
+			clusterwire.ClusterSessionSbeTemplateID,
+			actingVersion,
+			offset,
+			rapidEncodeAt(actingVersion, fields, codecs.EncodeClusterSession),
+			fields,
+		)
+	})
 }
 
-// rapidClusterTimeUnit draws a defined ClusterTimeUnit or any raw int32.
-// Decode passes raw values through.
-func rapidClusterTimeUnit(rt *rapid.T, name string) clusterwire.ClusterTimeUnit {
+func TestPendingMessageTracker_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := rapidPendingMessageTrackerFields(rt)
+		runCodecRoundtripAtOffset(
+			rt,
+			clusterwire.PendingMessageTrackerSbeTemplateID,
+			actingVersion,
+			offset,
+			rapidEncodeAt(actingVersion, fields, codecs.EncodePendingMessageTracker),
+			fields,
+		)
+	})
+}
+
+// rapidEnumOrRaw draws a defined enum value or any raw int32. Decode passes
+// raw values through.
+func rapidEnumOrRaw[T ~int32](rt *rapid.T, name string, defined []T) T {
 	rt.Helper()
 	return rapid.OneOf(
-		rapid.SampledFrom([]clusterwire.ClusterTimeUnit{
-			clusterwire.ClusterTimeUnit_MILLIS,
-			clusterwire.ClusterTimeUnit_MICROS,
-			clusterwire.ClusterTimeUnit_NANOS,
-			clusterwire.ClusterTimeUnit_NULL_VALUE,
-		}),
-		rapid.Map(rapid.Int32(), func(v int32) clusterwire.ClusterTimeUnit {
-			return clusterwire.ClusterTimeUnit(v)
-		}),
+		rapid.SampledFrom(defined),
+		rapid.Map(rapid.Int32(), func(v int32) T { return T(v) }),
 	).Draw(rt, name)
 }
 
@@ -116,9 +124,19 @@ func rapidSnapshotMarkerFields(rt *rapid.T) codecs.SnapshotMarkerFields {
 		LogPosition:      rapid.Int64().Draw(rt, "logPosition"),
 		LeadershipTermID: rapid.Int64().Draw(rt, "leadershipTermID"),
 		Index:            rapid.Int32().Draw(rt, "index"),
-		Mark:             rapidSnapshotMark(rt, "mark"),
-		TimeUnit:         rapidClusterTimeUnit(rt, "timeUnit"),
-		AppVersion:       rapid.Int32().Draw(rt, "appVersion"),
+		Mark: rapidEnumOrRaw(rt, "mark", []clusterwire.SnapshotMark{
+			clusterwire.SnapshotMark_BEGIN,
+			clusterwire.SnapshotMark_SECTION,
+			clusterwire.SnapshotMark_END,
+			clusterwire.SnapshotMark_NULL_VALUE,
+		}),
+		TimeUnit: rapidEnumOrRaw(rt, "timeUnit", []clusterwire.ClusterTimeUnit{
+			clusterwire.ClusterTimeUnit_MILLIS,
+			clusterwire.ClusterTimeUnit_MICROS,
+			clusterwire.ClusterTimeUnit_NANOS,
+			clusterwire.ClusterTimeUnit_NULL_VALUE,
+		}),
+		AppVersion: rapid.Int32().Draw(rt, "appVersion"),
 	}
 }
 
@@ -147,5 +165,33 @@ func rapidConsensusModuleFields(rt *rapid.T) codecs.ConsensusModuleFields {
 		NextServiceSessionID:   rapid.Int64().Draw(rt, "nextServiceSessionID"),
 		LogServiceSessionID:    rapid.Int64().Draw(rt, "logServiceSessionID"),
 		PendingMessageCapacity: rapid.Int32().Draw(rt, "pendingMessageCapacity"),
+	}
+}
+
+func rapidClusterSessionFields(rt *rapid.T) codecs.ClusterSessionFields {
+	rt.Helper()
+	return codecs.ClusterSessionFields{
+		ClusterSessionID:   rapid.Int64().Draw(rt, "clusterSessionID"),
+		CorrelationID:      rapid.Int64().Draw(rt, "correlationID"),
+		OpenedLogPosition:  rapid.Int64().Draw(rt, "openedLogPosition"),
+		TimeOfLastActivity: rapid.Int64().Draw(rt, "timeOfLastActivity"),
+		CloseReason: rapidEnumOrRaw(rt, "closeReason", []clusterwire.CloseReason{
+			clusterwire.CloseReason_CLIENT_ACTION,
+			clusterwire.CloseReason_SERVICE_ACTION,
+			clusterwire.CloseReason_TIMEOUT,
+			clusterwire.CloseReason_NULL_VALUE,
+		}),
+		ResponseStreamID: rapid.Int32().Draw(rt, "responseStreamID"),
+		ResponseChannel:  rapidASCIIBytes(rt, "responseChannel"),
+	}
+}
+
+func rapidPendingMessageTrackerFields(rt *rapid.T) codecs.PendingMessageTrackerFields {
+	rt.Helper()
+	return codecs.PendingMessageTrackerFields{
+		NextServiceSessionID:   rapid.Int64().Draw(rt, "nextServiceSessionID"),
+		LogServiceSessionID:    rapid.Int64().Draw(rt, "logServiceSessionID"),
+		PendingMessageCapacity: rapid.Int32().Draw(rt, "pendingMessageCapacity"),
+		ServiceID:              rapid.Int32().Draw(rt, "serviceID"),
 	}
 }

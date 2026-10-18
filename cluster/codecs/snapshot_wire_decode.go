@@ -82,6 +82,47 @@ func TryDecodeClientSessionAt(buf []byte, offset int) (ClientSessionFields, bool
 	)
 }
 
+// clusterSessionFields is the field mapping the fast and boxed decode paths share.
+func clusterSessionFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+	vars templateVarFields,
+) ClusterSessionFields {
+	var msg clusterwire.ClusterSession
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return ClusterSessionFields{
+		ClusterSessionID:   msg.ClusterSessionId(),
+		CorrelationID:      msg.CorrelationId(),
+		OpenedLogPosition:  msg.OpenedLogPosition(),
+		TimeOfLastActivity: msg.TimeOfLastActivity(),
+		CloseReason:        msg.CloseReason(),
+		ResponseStreamID:   msg.ResponseStreamId(),
+		ResponseChannel:    vars.responseChannel,
+	}
+}
+
+func decodeClusterSessionFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) ClusterSessionFields {
+	var vars templateVarFields
+	vars.responseChannel, _ = varFieldBytes(buf, bufLen, varFieldOffset(body, block))
+	return clusterSessionFields(buf, body, block, version, bufLen, vars)
+}
+
+// TryDecodeClusterSessionAt decodes ClusterSession (template 103) without
+// interface boxing. ClusterDecodeMaxVarLen caps the response channel length
+// before decode. ResponseChannel is a copy. Callers may retain it.
+func TryDecodeClusterSessionAt(buf []byte, offset int) (ClusterSessionFields, bool) {
+	return tryDecodeClusterAt(
+		buf,
+		offset,
+		clusterwire.ClusterSessionSbeTemplateID,
+		ClusterDecodeMaxVarLen,
+		decodeClusterSessionFields,
+	)
+}
+
 func decodeTimerFields(
 	buf []byte,
 	body, block, version, bufLen uint64,
@@ -149,5 +190,49 @@ func ConsensusModuleFieldsFromLayout(
 func TryDecodeConsensusModuleAt(buf []byte, offset int) (ConsensusModuleFields, bool) {
 	return tryDecodeClusterAt(
 		buf, offset, clusterwire.ConsensusModuleSbeTemplateID, 0, decodeConsensusModuleFields,
+	)
+}
+
+func decodePendingMessageTrackerFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) PendingMessageTrackerFields {
+	var msg clusterwire.PendingMessageTracker
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return PendingMessageTrackerFields{
+		NextServiceSessionID:   msg.NextServiceSessionId(),
+		LogServiceSessionID:    msg.LogServiceSessionId(),
+		PendingMessageCapacity: msg.PendingMessageCapacity(),
+		ServiceID:              msg.ServiceId(),
+	}
+}
+
+// PendingMessageTrackerFieldsFromLayout decodes PendingMessageTracker from a
+// parsed layout. ok is false on a template mismatch or when the fixed block
+// does not fit buf.
+func PendingMessageTrackerFieldsFromLayout(
+	buf []byte,
+	layout ClusterMessageLayout,
+) (PendingMessageTrackerFields, bool) {
+	return clusterFieldsFromLayout(
+		buf,
+		layout,
+		clusterwire.PendingMessageTrackerSbeTemplateID,
+		decodePendingMessageTrackerFields,
+	)
+}
+
+// TryDecodePendingMessageTrackerAt decodes PendingMessageTracker (template 107)
+// without interface boxing.
+func TryDecodePendingMessageTrackerAt(
+	buf []byte,
+	offset int,
+) (PendingMessageTrackerFields, bool) {
+	return tryDecodeClusterAt(
+		buf,
+		offset,
+		clusterwire.PendingMessageTrackerSbeTemplateID,
+		0,
+		decodePendingMessageTrackerFields,
 	)
 }

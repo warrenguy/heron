@@ -255,6 +255,18 @@ func TestLookupEnums(t *testing.T) {
 	_, err = catalogschema.LookupClusterTimeUnit("NULL_VALUE")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown ClusterTimeUnit")
+
+	closeReason, err := catalogschema.LookupCloseReason("TIMEOUT")
+	require.NoError(t, err)
+	require.Equal(t, clusterwire.CloseReason_TIMEOUT, closeReason)
+
+	closeReason, err = catalogschema.LookupCloseReason("NULL_VAL")
+	require.NoError(t, err)
+	require.Equal(t, clusterwire.CloseReason_NULL_VALUE, closeReason)
+
+	_, err = catalogschema.LookupCloseReason("NULL_VALUE")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown CloseReason")
 }
 
 func TestValidate_errors(t *testing.T) {

@@ -291,6 +291,23 @@ type ClientSessionFields struct {
 	EncodedPrincipal []byte
 }
 
+// ClusterSessionFields holds ClusterSession body fields (SBE template id 103).
+type ClusterSessionFields struct {
+	ClusterSessionID  int64
+	CorrelationID     int64
+	OpenedLogPosition int64
+
+	// TimeOfLastActivity is time_t.
+	TimeOfLastActivity int64
+
+	// CloseReason is CloseReason_NULL_VALUE for an open session. Decode does
+	// not reject undefined values.
+	CloseReason clusterwire.CloseReason
+
+	ResponseStreamID int32
+	ResponseChannel  []byte
+}
+
 // TimerFields holds Timer body fields (SBE template id 104).
 type TimerFields struct {
 	CorrelationID int64
@@ -312,4 +329,16 @@ type ConsensusModuleFields struct {
 	// PendingMessageCapacity is capacity_t. PendingMessageCapacity is 0 when
 	// actingVersion is below ConsensusModuleNextServiceSessionIDMinVersion.
 	PendingMessageCapacity int32
+}
+
+// PendingMessageTrackerFields holds PendingMessageTracker body fields (SBE
+// template id 107).
+type PendingMessageTrackerFields struct {
+	NextServiceSessionID int64
+	LogServiceSessionID  int64
+
+	// PendingMessageCapacity is capacity_t.
+	PendingMessageCapacity int32
+
+	ServiceID int32
 }

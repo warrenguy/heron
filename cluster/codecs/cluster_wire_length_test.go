@@ -399,6 +399,11 @@ func TestClusterWireMetadataConstants_matchTemplateExtrema(t *testing.T) {
 		{clusterwire.ClientSessionSbeTemplateID, clusterwire.ClientSessionSbeSchemaVersion},
 		{clusterwire.TimerSbeTemplateID, clusterwire.TimerSbeSchemaVersion},
 		{clusterwire.ConsensusModuleSbeTemplateID, clusterwire.ConsensusModuleSbeSchemaVersion},
+		{clusterwire.ClusterSessionSbeTemplateID, clusterwire.ClusterSessionSbeSchemaVersion},
+		{
+			clusterwire.PendingMessageTrackerSbeTemplateID,
+			clusterwire.PendingMessageTrackerSbeSchemaVersion,
+		},
 	}
 
 	var maxRoot uint16

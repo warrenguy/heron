@@ -7,11 +7,14 @@ import io.aeron.cluster.codecs.AdminResponseEncoder;
 import io.aeron.cluster.codecs.ChallengeEncoder;
 import io.aeron.cluster.codecs.ChallengeResponseEncoder;
 import io.aeron.cluster.codecs.ClientSessionEncoder;
+import io.aeron.cluster.codecs.CloseReason;
+import io.aeron.cluster.codecs.ClusterSessionEncoder;
 import io.aeron.cluster.codecs.ClusterTimeUnit;
 import io.aeron.cluster.codecs.ConsensusModuleEncoder;
 import io.aeron.cluster.codecs.EventCode;
 import io.aeron.cluster.codecs.MessageHeaderEncoder;
 import io.aeron.cluster.codecs.NewLeaderEventEncoder;
+import io.aeron.cluster.codecs.PendingMessageTrackerEncoder;
 import io.aeron.cluster.codecs.SessionCloseRequestEncoder;
 import io.aeron.cluster.codecs.SessionConnectRequestEncoder;
 import io.aeron.cluster.codecs.SessionEventEncoder;
@@ -441,6 +444,56 @@ public final class ClusterSbeFixtures {
             blockLength,
             actingVersion,
             ConsensusModuleEncoder.SCHEMA_ID
+        );
+    }
+
+    static byte[] encodeClusterSession(
+        final long clusterSessionId,
+        final long correlationId,
+        final long openedLogPosition,
+        final long timeOfLastActivity,
+        final CloseReason closeReason,
+        final int responseStreamId,
+        final String responseChannel
+    ) {
+        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
+        final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
+        final ClusterSessionEncoder encoder = new ClusterSessionEncoder();
+        encoder.wrapAndApplyHeader(buffer, 0, headerEncoder)
+            .clusterSessionId(clusterSessionId)
+            .correlationId(correlationId)
+            .openedLogPosition(openedLogPosition)
+            .timeOfLastActivity(timeOfLastActivity)
+            .closeReason(closeReason)
+            .responseStreamId(responseStreamId);
+        putVarAscii(encoder::responseChannel, responseChannel);
+        return finishCurrentSchema(
+            buffer,
+            encoder.limit(),
+            ClusterSessionEncoder.TEMPLATE_ID,
+            ClusterSessionEncoder.BLOCK_LENGTH
+        );
+    }
+
+    static byte[] encodePendingMessageTracker(
+        final long nextServiceSessionId,
+        final long logServiceSessionId,
+        final int pendingMessageCapacity,
+        final int serviceId
+    ) {
+        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
+        final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
+        final PendingMessageTrackerEncoder encoder = new PendingMessageTrackerEncoder();
+        encoder.wrapAndApplyHeader(buffer, 0, headerEncoder)
+            .nextServiceSessionId(nextServiceSessionId)
+            .logServiceSessionId(logServiceSessionId)
+            .pendingMessageCapacity(pendingMessageCapacity)
+            .serviceId(serviceId);
+        return finishCurrentSchema(
+            buffer,
+            encoder.limit(),
+            PendingMessageTrackerEncoder.TEMPLATE_ID,
+            PendingMessageTrackerEncoder.BLOCK_LENGTH
         );
     }
 
