@@ -477,7 +477,8 @@ func (c *Container) Agent() *Agent {
 // ArchiveClient returns the archive client, or nil when Archive is nil or
 // after Close.
 //
-// Ownership: the container owns the client. Callers must not close it.
+// Ownership: the container owns the client. Callers must not close it. A
+// snapshot take owns the recording signal handler and clears it at the end.
 func (c *Container) ArchiveClient() *archive.Client {
 	return c.archiveClient
 }
