@@ -1565,7 +1565,7 @@ func (a *Agent) FollowerLogJoinReady(
 // nowNs is the deadline clock for [LogRecordingControl.PollStopLogRecording].
 //
 // Returns:
-//   - lastAppendPosition, prepared true, nil: stop proof is held
+//   - lastAppendPosition, prepared true, nil: stop confirmed
 //   - [recordinglog.NullPosition], prepared false, nil: poll again
 //   - [recordinglog.NullPosition], prepared false, err: fail closed
 //

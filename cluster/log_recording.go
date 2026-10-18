@@ -86,31 +86,54 @@ type logArchiveControl interface {
 
 var _ logArchiveControl = (*archive.Client)(nil)
 
+// logOfferRequest is the offer step every in-flight archive request shares.
+type logOfferRequest interface {
+	TryOffer() (offered bool, err error)
+}
+
 // logStopRequest is one in-flight non-blocking stop request.
 //
 // *archive.AsyncStopRecording implements it. Tests substitute a double.
 type logStopRequest interface {
-	TryOffer() (offered bool, err error)
+	logOfferRequest
 	PollResponse() (responded bool, err error)
 	Close()
 }
 
 var _ logStopRequest = (*archive.AsyncStopRecording)(nil)
 
+// logListRequest is one in-flight non-blocking list recording request.
+//
+// *archive.AsyncListRecording implements it. Tests substitute a double.
+type logListRequest interface {
+	logOfferRequest
+	PollDescriptor() (
+		done bool,
+		descriptor codecs.RecordingDescriptorFields,
+		err error,
+	)
+	Close()
+}
+
+var _ logListRequest = (*archive.AsyncListRecording)(nil)
+
 // pendingStop tracks one async stop attempt across duty ticks.
 type pendingStop struct {
 	request logStopRequest
-	// offered is true after TryOffer is accepted. Later polls skip TryOffer
-	// and consume PollResponse.
+	// list is set once a known-id stop returns ErrorUnknownSubscription.
+	list logListRequest
+	// offered is true after the current step's TryOffer is accepted. Later
+	// polls skip TryOffer and poll the reply.
 	offered bool
-	// deadlineNs bounds the current phase. The field covers offer retries until
-	// TryOffer is accepted, then the OK response and STOP proof. Expiry fail-closes.
+	// deadlineNs bounds offer retries, then the reply, in each step. Expiry
+	// fail-closes.
 	deadlineNs int64
 }
 
 var (
-	errStopOfferTimeout    = errors.New("offer timed out")
-	errStopResponseTimeout = errors.New("response timed out")
+	errStopOfferTimeout      = errors.New("offer timed out")
+	errStopResponseTimeout   = errors.New("response timed out")
+	errNoCatalogStopPosition = errors.New("catalog reports no stop position")
 )
 
 // logRecording starts, stops, and truncates this member's cluster log
@@ -166,6 +189,9 @@ type logRecording struct {
 	// newStopRequest builds one in-flight stop request. Closed over the
 	// archive client at newLogRecording. Tests substitute.
 	newStopRequest func(streamID int32, channel []byte) logStopRequest
+	// newListRequest builds one in-flight list recording request. Closed over
+	// the archive client at newLogRecording. Tests substitute.
+	newListRequest func(recordingID int64) logListRequest
 	pendingStop    *pendingStop
 }
 
@@ -210,6 +236,9 @@ func newLogRecording(
 	if client != nil {
 		r.newStopRequest = func(streamID int32, channel []byte) logStopRequest {
 			return client.NewAsyncStopRecording(streamID, channel)
+		}
+		r.newListRequest = func(recordingID int64) logListRequest {
+			return client.NewAsyncListRecording(recordingID)
 		}
 	}
 	return r
@@ -459,13 +488,14 @@ func (r *logRecording) StopLogRecording() error {
 // Never calls Agent.DoWork. Never calls archive.Client.Poll.
 //
 // Known catalog id waits for STOP. Dirty finishes on OK.
-// ErrorUnknownSubscription is clean only when dirty. Known id fail-closes
-// and does not list the catalog.
+// ErrorUnknownSubscription is clean when dirty. For a known id, the method
+// closes the stop request and lists the recording. The catalog stop position
+// marks the stop. A null catalog stop position fails closed.
 //
 // Concurrency: invoker-only.
 //
 // Returns:
-//   - true, nil: stop proof is held, or nothing needed stop
+//   - true, nil: stop confirmed, or nothing needed stop
 //   - false, nil: poll again
 //   - false, err: fail closed. Pending state is cleared. startChannel stays
 func (r *logRecording) PollStopLogRecording(nowNs int64) (bool, error) {
@@ -476,26 +506,26 @@ func (r *logRecording) PollStopLogRecording(nowNs int64) (bool, error) {
 	if p == nil {
 		p = r.armPendingStop(nowNs)
 	}
-	if !p.offered {
-		offered, err := p.request.TryOffer()
-		if err != nil {
-			return false, r.failPendingStop(err)
-		}
-		if !offered {
-			if nowNs >= p.deadlineNs {
-				return false, r.failPendingStop(errStopOfferTimeout)
-			}
-			return false, nil
-		}
-		p.offered = true
-		p.deadlineNs = nowNs + r.responseTimeoutNs
+	if p.list != nil {
+		return r.pollCatalogStop(p, nowNs)
+	}
+	offered, err := r.offerPendingStep(p, p.request, nowNs)
+	if err != nil {
+		return false, r.failPendingStop(err)
+	}
+	if !offered {
+		return false, nil
 	}
 	responded, err := p.request.PollResponse()
 	dirty := r.recordingID < 0
+	unknownSubscription := isUnknownSubscription(err)
 	switch {
-	case dirty && isUnknownSubscription(err):
+	case dirty && unknownSubscription:
 		r.markStopped(r.stopPosition)
 		return true, nil
+	case unknownSubscription:
+		r.enterCatalogRead(p, nowNs)
+		return r.pollCatalogStop(p, nowNs)
 	case err != nil:
 		return false, r.failPendingStop(err)
 	case dirty && responded:
@@ -506,6 +536,81 @@ func (r *logRecording) PollStopLogRecording(nowNs int64) (bool, error) {
 		return false, r.failPendingStop(errStopResponseTimeout)
 	}
 	return false, nil
+}
+
+// offerPendingStep offers request once per poll until the archive accepts. On
+// accept it starts the reply deadline.
+//
+// Returns:
+//   - true, nil: the offer is accepted, on this call or an earlier one
+//   - false, nil: offer again on a later poll
+//   - false, err: the offer failed, or errStopOfferTimeout past the deadline
+func (r *logRecording) offerPendingStep(
+	p *pendingStop,
+	request logOfferRequest,
+	nowNs int64,
+) (
+	offered bool,
+	err error,
+) {
+	if p.offered {
+		return true, nil
+	}
+	offered, err = request.TryOffer()
+	if err != nil {
+		return false, err
+	}
+	if !offered {
+		if nowNs >= p.deadlineNs {
+			return false, errStopOfferTimeout
+		}
+		return false, nil
+	}
+	p.offered = true
+	p.deadlineNs = nowNs + r.responseTimeoutNs
+	return true, nil
+}
+
+// enterCatalogRead swaps the stop request for a list request. The stop
+// request closes first, so the client carries one outstanding request.
+func (r *logRecording) enterCatalogRead(p *pendingStop, nowNs int64) {
+	p.request.Close()
+	p.list = r.newListRequest(r.recordingID)
+	p.offered = false
+	p.deadlineNs = nowNs + r.offerRetryTimeoutNs
+}
+
+// pollCatalogStop advances the list request one step. A descriptor with a
+// stop position marks a clean stop there. Every failure fail-closes.
+func (r *logRecording) pollCatalogStop(p *pendingStop, nowNs int64) (bool, error) {
+	offered, err := r.offerPendingStep(p, p.list, nowNs)
+	if err != nil {
+		return false, r.failCatalogStop(err)
+	}
+	if !offered {
+		return false, nil
+	}
+	done, descriptor, err := p.list.PollDescriptor()
+	switch {
+	case err != nil:
+		return false, r.failCatalogStop(err)
+	case done && descriptor.StopPosition == recordinglog.NullPosition:
+		return false, r.failCatalogStop(errNoCatalogStopPosition)
+	case done:
+		r.markStopped(descriptor.StopPosition)
+		return true, nil
+	}
+	if nowNs >= p.deadlineNs {
+		return false, r.failCatalogStop(errStopResponseTimeout)
+	}
+	return false, nil
+}
+
+// failCatalogStop fail-closes with the listed recording id in the error.
+func (r *logRecording) failCatalogStop(cause error) error {
+	return r.failPendingStop(
+		fmt.Errorf("list recording %d: %w", r.recordingID, cause),
+	)
 }
 
 // armPendingStop builds one async stop request and stores it as the in-flight
@@ -519,7 +624,7 @@ func (r *logRecording) armPendingStop(nowNs int64) *pendingStop {
 	return p
 }
 
-// failPendingStop closes the in-flight request, clears pendingStop, and keeps
+// failPendingStop closes the open requests, clears pendingStop, and keeps
 // startChannel. The wrapped error names the stop operation.
 func (r *logRecording) failPendingStop(cause error) error {
 	r.clearPendingStop()
@@ -531,18 +636,21 @@ func (r *logRecording) failPendingStop(cause error) error {
 	)
 }
 
-// clearPendingStop closes the in-flight request when one is armed.
+// clearPendingStop closes the open requests when an attempt is armed.
 func (r *logRecording) clearPendingStop() {
 	p := r.pendingStop
 	if p == nil {
 		return
 	}
 	p.request.Close()
+	if p.list != nil {
+		p.list.Close()
+	}
 	r.pendingStop = nil
 }
 
-// markStopped records a clean stop. The method stores stopPosition, clears
-// the channel, and closes any in-flight async stop request.
+// markStopped marks a clean stop. The method stores stopPosition, clears the
+// channel, and closes any in-flight async stop or list request.
 //
 // When the live catalog id is known, markStopped also stores that id for
 // StopPositionFor. Dirty drains leave the prior stored id unchanged.
