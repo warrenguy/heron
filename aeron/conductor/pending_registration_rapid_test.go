@@ -3,8 +3,11 @@
 package conductor_test
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -143,7 +146,7 @@ type pendingRapidMapEntry struct {
 	err           error
 	driverErrored bool
 	ready         bool
-	counterID     int32
+	int32Value    int32
 }
 
 type pendingRapidMapModel struct {
@@ -153,12 +156,9 @@ type pendingRapidMapModel struct {
 	nowNs                 int64
 }
 
-func rapidMapKeys[K comparable, V any](values map[K]V) []K {
-	keys := make([]K, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	return keys
+// rapidMapKeys sorts the keys so a replayed draw picks the same key.
+func rapidMapKeys[K cmp.Ordered, V any](values map[K]V) []K {
+	return slices.Sorted(maps.Keys(values))
 }
 
 func rapidMapContains[K comparable, V any](values map[K]V) func(K) bool {
@@ -335,13 +335,94 @@ func applyPendingRapidCounterReady(
 	if !ok || entry.kind != conductor.PendingKindAddCounter {
 		return false
 	}
+	entry.int32Value = counterID
+	applyPendingRapidSuccess(model, correlationID, entry)
+	return true
+}
+
+func applyPendingRapidSuccess(
+	model *pendingRapidMapModel,
+	correlationID int64,
+	entry pendingRapidMapEntry,
+) {
 	entry.err = nil
 	entry.driverErrored = false
 	entry.ready = true
-	entry.counterID = counterID
 	model.entries[correlationID] = entry
 	model.receivedCorrelationID = correlationID
+}
+
+func applyPendingRapidOperationSucceeded(
+	model *pendingRapidMapModel,
+	correlationID int64,
+) bool {
+	entry, ok := model.entries[correlationID]
+	if !ok {
+		return false
+	}
+	switch entry.kind {
+	case conductor.PendingKindAddPublication,
+		conductor.PendingKindAddExclusivePublication,
+		conductor.PendingKindAddSubscription:
+		return true
+	case conductor.PendingKindOperationSuccess,
+		conductor.PendingKindRemovePublication,
+		conductor.PendingKindRemoveSubscription:
+		applyPendingRapidSuccess(model, correlationID, entry)
+		return true
+	default:
+		return false
+	}
+}
+
+func applyPendingRapidNextSessionID(
+	model *pendingRapidMapModel,
+	correlationID int64,
+	nextSessionID int32,
+) bool {
+	entry, ok := model.entries[correlationID]
+	if !ok || entry.kind != conductor.PendingKindNextSessionID {
+		return false
+	}
+	entry.int32Value = nextSessionID
+	applyPendingRapidSuccess(model, correlationID, entry)
 	return true
+}
+
+// pendingRapidSucceededSurvivors lists the succeeded entries that ExpireBefore
+// keeps past their deadline.
+func pendingRapidSucceededSurvivors(model pendingRapidMapModel) []int64 {
+	var ids []int64
+	for correlationID, entry := range model.entries {
+		succeeded := entry.ready && entry.err == nil && !entry.driverErrored
+		survivesExpiry := correlationID == model.activeCorrelationID ||
+			conductor.AddPendingKindForTest(entry.kind) ||
+			entry.kind == conductor.PendingKindAddCounter
+		if succeeded && survivesExpiry {
+			ids = append(ids, correlationID)
+		}
+	}
+	return ids
+}
+
+// requirePendingRapidSuccessSurvivesDoWork asserts each listed entry keeps
+// Ready and nil Err after DoWork. The mark may name another entry.
+func requirePendingRapidSuccessSurvivesDoWork(
+	rt *rapid.T,
+	conductorInstance *conductor.Conductor,
+	correlationIDs []int64,
+) {
+	rt.Helper()
+
+	if conductorInstance.IsTerminating() {
+		return
+	}
+	for _, correlationID := range correlationIDs {
+		got, ok := conductorInstance.PendingResult(correlationID)
+		require.True(rt, ok, "succeeded correlation %d should survive the tick", correlationID)
+		require.True(rt, got.Ready)
+		require.NoError(rt, got.Err)
+	}
 }
 
 func applyPendingRapidClear(model *pendingRapidMapModel) {
@@ -366,7 +447,7 @@ func syncPendingRapidMapAfterDoWork(
 		entry.driverErrored = errors.As(got.Err, &driverErr)
 		entry.ready = got.Ready
 		if got.Ready {
-			entry.counterID = got.Int32Value
+			entry.int32Value = got.Int32Value
 		}
 		model.entries[correlationID] = entry
 	}
@@ -387,7 +468,7 @@ func assertPendingRapidMapModel(
 		require.Equal(rt, entry.deadlineNs, got.DeadlineNs)
 		require.Equal(rt, entry.ready, got.Ready)
 		if entry.ready {
-			require.Equal(rt, entry.counterID, got.Int32Value)
+			require.Equal(rt, entry.int32Value, got.Int32Value)
 		}
 		switch {
 		case entry.driverErrored:
@@ -437,7 +518,68 @@ const (
 	pendingRapidMapOpClear
 	pendingRapidMapOpDriverError
 	pendingRapidMapOpCounterReady
+	pendingRapidMapOpOperationSucceeded
+	pendingRapidMapOpNextSessionID
 )
+
+var (
+	pendingRapidOperationSucceededKinds = []conductor.PendingKind{
+		conductor.PendingKindOperationSuccess,
+		conductor.PendingKindRemovePublication,
+		conductor.PendingKindRemoveSubscription,
+		conductor.PendingKindAddPublication,
+		conductor.PendingKindAddExclusivePublication,
+		conductor.PendingKindAddSubscription,
+	}
+	pendingRapidNextSessionIDKinds = []conductor.PendingKind{conductor.PendingKindNextSessionID}
+)
+
+func pendingRapidKeysOfKinds(
+	model pendingRapidMapModel,
+	kinds []conductor.PendingKind,
+) []int64 {
+	keys := rapidMapKeys(model.entries)
+	matched := slices.DeleteFunc(slices.Clone(keys), func(correlationID int64) bool {
+		return !slices.Contains(kinds, model.entries[correlationID].kind)
+	})
+	if len(matched) == 0 {
+		return keys
+	}
+	return matched
+}
+
+// drawPendingRapidCompletionCorrelationID draws an id for an operation success
+// or a next session id. The adapter accepts both only for the active id, so the
+// active id is its own draw source. The present draw prefers kinds.
+func drawPendingRapidCompletionCorrelationID(
+	rt *rapid.T,
+	model pendingRapidMapModel,
+	kinds []conductor.PendingKind,
+	label string,
+) int64 {
+	rt.Helper()
+
+	const (
+		sourceActive = iota
+		sourcePresent
+		sourceAbsent
+	)
+	sources := []int{sourceAbsent}
+	if model.activeCorrelationID != conductor.NullCorrelationID {
+		sources = append(sources, sourceActive)
+	}
+	if len(model.entries) > 0 {
+		sources = append(sources, sourcePresent)
+	}
+	switch rapid.SampledFrom(sources).Draw(rt, label+"Source") {
+	case sourceActive:
+		return model.activeCorrelationID
+	case sourcePresent:
+		return drawRapidInt64Key(rt, pendingRapidKeysOfKinds(model, kinds), label)
+	default:
+		return drawRapidAbsentCorrelationID(rt, label, rapidMapContains(model.entries))
+	}
+}
 
 func runPendingRapidMapOps(
 	t *testing.T,
@@ -457,6 +599,8 @@ func runPendingRapidMapOps(
 		pendingRapidMapOpAdvanceExpire,
 		pendingRapidMapOpSetActive,
 		pendingRapidMapOpCounterReady,
+		pendingRapidMapOpOperationSucceeded,
+		pendingRapidMapOpNextSessionID,
 	}
 	if len(model.entries) > 0 {
 		ops = append(ops, pendingRapidMapOpClear, pendingRapidMapOpDriverError)
@@ -544,7 +688,7 @@ func runPendingRapidMapOps(
 			}
 			if entry.ready && !entry.driverErrored {
 				require.True(rt, registration.Ready)
-				require.Equal(rt, entry.counterID, registration.Int32Value)
+				require.Equal(rt, entry.int32Value, registration.Int32Value)
 			}
 		} else {
 			require.NoError(rt, err)
@@ -554,7 +698,9 @@ func runPendingRapidMapOps(
 	case pendingRapidMapOpAdvanceExpire:
 		model.nowNs += rapid.Int64Range(0, 40_000_000).Draw(rt, fmt.Sprintf("advanceNs%d", step))
 		*nanoNs = model.nowNs
+		survivors := pendingRapidSucceededSurvivors(*model)
 		_ = conductorInstance.DoWork()
+		requirePendingRapidSuccessSurvivesDoWork(rt, conductorInstance, survivors)
 		syncPendingRapidMapAfterDoWork(conductorInstance, model)
 
 	case pendingRapidMapOpSetActive:
@@ -609,6 +755,29 @@ func runPendingRapidMapOps(
 		}
 		got := conductorInstance.CounterReady(correlationID, counterID)
 		want := applyPendingRapidCounterReady(model, correlationID, counterID)
+		require.Equal(rt, want, got)
+
+	case pendingRapidMapOpOperationSucceeded:
+		correlationID := drawPendingRapidCompletionCorrelationID(
+			rt,
+			*model,
+			pendingRapidOperationSucceededKinds,
+			fmt.Sprintf("operationSucceededCorrelationID%d", step),
+		)
+		got := conductorInstance.OperationSucceeded(correlationID)
+		want := applyPendingRapidOperationSucceeded(model, correlationID)
+		require.Equal(rt, want, got)
+
+	case pendingRapidMapOpNextSessionID:
+		nextSessionID := rapid.Int32().Draw(rt, fmt.Sprintf("nextSessionID%d", step))
+		correlationID := drawPendingRapidCompletionCorrelationID(
+			rt,
+			*model,
+			pendingRapidNextSessionIDKinds,
+			fmt.Sprintf("nextSessionIDCorrelationID%d", step),
+		)
+		got := conductorInstance.NextSessionID(correlationID, nextSessionID)
+		want := applyPendingRapidNextSessionID(model, correlationID, nextSessionID)
 		require.Equal(rt, want, got)
 	}
 }

@@ -594,6 +594,78 @@ func TestConductor_PollPending_mapCompletionWhenMarkMismatch(t *testing.T) {
 				require.Equal(t, int32(4), registration.Int32Value)
 			},
 		},
+		{
+			name:         "operationSuccessAndError",
+			kind:         conductor.PendingKindOperationSuccess,
+			correlation0: correlationIDSuccess,
+			correlation1: correlationIDFail,
+			complete: func(t *testing.T, conductorInstance *conductor.Conductor) {
+				require.True(t, conductorInstance.OperationSucceeded(correlationIDSuccess))
+				require.True(
+					t,
+					conductorInstance.DriverError(conductor.ErrorResponse{
+						OffendingCommandCorrelationID: correlationIDFail,
+						ErrorCode:                     11,
+						ErrorMessage:                  "add destination rejected",
+					}),
+				)
+			},
+			assertFirst: func(t *testing.T, registration conductor.PendingRegistration) {
+				require.True(t, registration.Ready)
+			},
+			assertSecond: func(t *testing.T, registration conductor.PendingRegistration, err error) {
+				require.False(t, registration.Ready)
+				var driverErr *conductor.DriverRegistrationError
+				require.ErrorAs(t, err, &driverErr)
+				require.Equal(t, correlationIDFail, driverErr.CorrelationID)
+				require.Equal(t, int32(11), driverErr.ErrorCode)
+			},
+		},
+		{
+			name:         "nextSessionIDAndError",
+			kind:         conductor.PendingKindNextSessionID,
+			correlation0: correlationIDSuccess,
+			correlation1: correlationIDFail,
+			complete: func(t *testing.T, conductorInstance *conductor.Conductor) {
+				require.True(t, conductorInstance.NextSessionID(correlationIDSuccess, 42))
+				require.True(
+					t,
+					conductorInstance.DriverError(conductor.ErrorResponse{
+						OffendingCommandCorrelationID: correlationIDFail,
+						ErrorCode:                     11,
+						ErrorMessage:                  "next session id rejected",
+					}),
+				)
+			},
+			assertFirst: func(t *testing.T, registration conductor.PendingRegistration) {
+				require.True(t, registration.Ready)
+				require.Equal(t, int32(42), registration.Int32Value)
+			},
+			assertSecond: func(t *testing.T, registration conductor.PendingRegistration, err error) {
+				require.False(t, registration.Ready)
+				var driverErr *conductor.DriverRegistrationError
+				require.ErrorAs(t, err, &driverErr)
+				require.Equal(t, correlationIDFail, driverErr.CorrelationID)
+				require.Equal(t, int32(11), driverErr.ErrorCode)
+			},
+		},
+		{
+			name:         "removePublicationAndSuccess",
+			kind:         conductor.PendingKindRemovePublication,
+			correlation0: correlationID0,
+			correlation1: correlationID1,
+			complete: func(t *testing.T, conductorInstance *conductor.Conductor) {
+				require.True(t, conductorInstance.OperationSucceeded(correlationID0))
+				require.True(t, conductorInstance.OperationSucceeded(correlationID1))
+			},
+			assertFirst: func(t *testing.T, registration conductor.PendingRegistration) {
+				require.True(t, registration.Ready)
+			},
+			assertSecond: func(t *testing.T, registration conductor.PendingRegistration, err error) {
+				require.NoError(t, err)
+				require.True(t, registration.Ready)
+			},
+		},
 	}
 
 	for _, testCase := range tests {
@@ -1114,6 +1186,38 @@ func TestConductor_expirePending_sameTickCompletionNotInterrupted(t *testing.T) 
 	*nanoNs = startNs + 500
 	_ = conductorInstance.DoWork()
 
+	done, registration, err := conductorInstance.PollPending(pendingTestCorrelationID)
+	require.True(t, done)
+	require.NoError(t, err)
+	require.Equal(t, nextSessionID, registration.Int32Value)
+}
+
+func TestConductor_expirePending_unpolledSuccessNotTimedOut(t *testing.T) {
+	const (
+		startNs             = int64(1_000)
+		nextSessionID int32 = 42
+	)
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(t, func(error) {}, 0)
+	*nanoNs = startNs
+	require.NoError(
+		t,
+		conductorInstance.RegisterPending(
+			conductor.PendingKindNextSessionID,
+			pendingTestCorrelationID,
+			500*time.Nanosecond,
+		),
+	)
+	conductorInstance.SetActiveCorrelationID(pendingTestCorrelationID)
+
+	// Phase 1: NextSessionID marks the active entry.
+	require.True(t, conductorInstance.NextSessionID(pendingTestCorrelationID, nextSessionID))
+	require.Equal(t, pendingTestCorrelationID, conductorInstance.ReceivedCorrelationID())
+
+	// Phase 2: the deadline tick clears the mark before ExpireBefore runs.
+	*nanoNs = startNs + 500
+	_ = conductorInstance.DoWork()
+
+	// Phase 3: PollPending still returns the success.
 	done, registration, err := conductorInstance.PollPending(pendingTestCorrelationID)
 	require.True(t, done)
 	require.NoError(t, err)

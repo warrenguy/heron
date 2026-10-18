@@ -497,7 +497,6 @@ func (conductor *Conductor) completePublicationReady(
 	}
 
 	return conductor.completePendingSuccess(registration, func(registration *PendingRegistration) {
-		registration.Ready = true
 		registration.StreamID = event.StreamID
 		registration.Publication = publication
 	})
@@ -523,7 +522,6 @@ func (conductor *Conductor) completeSubscriptionReady(event SubscriptionReady) b
 	}
 
 	return conductor.completePendingSuccess(registration, func(registration *PendingRegistration) {
-		registration.Ready = true
 		registration.Subscription = subscription
 	})
 }
