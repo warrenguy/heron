@@ -410,12 +410,12 @@ func (image *Image) invokeSubscriberErrorHandler(err error) {
 	image.errorHandler(err)
 }
 
-func (image *Image) recoverFragmentHandlerPanic(ok *bool) {
-	recovered := recover()
+// reportFragmentHandlerPanic sends a recovered fragment handler panic to the
+// subscriber error handler. Nil recovered is a no-op.
+func (image *Image) reportFragmentHandlerPanic(recovered any) {
 	if recovered == nil {
 		return
 	}
-	*ok = false
 	err, isErr := recovered.(error)
 	if !isErr {
 		err = fmt.Errorf("aeron: fragment handler panic: %v", recovered)
@@ -443,20 +443,14 @@ func (image *Image) invokeFragmentHandler(
 	frameOffset int,
 	frameLength int32,
 	header *Header,
-) (ok bool) {
+) {
 	payloadOffset, payloadLength := preparePollFragment(
 		termBuffer,
 		frameOffset,
 		frameLength,
 		header,
 	)
-	ok = true
-	if image.errorHandler != nil {
-		defer image.recoverFragmentHandlerPanic(&ok)
-	}
-
 	handler(termBuffer, payloadOffset, payloadLength, header)
-	return ok
 }
 
 // Poll scans one active log term and delivers up to fragmentLimit committed DATA
@@ -468,16 +462,20 @@ func (image *Image) invokeFragmentHandler(
 // Poll reads subscriber position with a volatile load at entry and publishes an
 // advanced position with SetRelease when bytes were consumed and the image is
 // still open. PAD-only scans with zero fragments still advance and store.
-// Handler panic does not advance past the failing DATA frame when an error
-// handler is configured. Without an error handler, handler panic propagates to
-// the caller. Term-end PAD at capacity advances by raw committed padding bytes,
-// not alignment.
-func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
+// Term-end PAD at capacity advances by raw committed padding bytes, not
+// alignment.
+//
+// A handler panic consumes the failing DATA frame. The frame counts toward
+// fragmentsRead. The scan stops. Poll stores the position past the frame
+// before it returns or the panic propagates. With [Config.ErrorHandler]
+// set, Poll reports the panic value to it as an error. Without one, the
+// panic propagates to the caller. Poll drops a panic raised by the error
+// handler.
+func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) (fragmentsRead int) {
 	if image.isClosed.Load() || handler == nil || fragmentLimit <= 0 {
 		return 0
 	}
 
-	fragmentsRead := 0
 	initialPosition := image.subscriberPos.Get()
 	initialOffset := int(initialPosition) & int(image.termLengthMask)
 	offset := initialOffset
@@ -485,6 +483,13 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 	capacity := termBuffer.Capacity()
 
 	header := &image.header
+
+	defer func() {
+		if image.errorHandler != nil {
+			image.reportFragmentHandlerPanic(recover())
+		}
+		image.publishPollConsumePosition(initialPosition, initialOffset, offset)
+	}()
 
 	for fragmentsRead < fragmentLimit && offset < capacity && !image.isClosed.Load() {
 		frameLength := logbuffer.CommittedFrameLengthVolatile(termBuffer, offset)
@@ -523,15 +528,13 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
 			break
 		}
 
-		if !image.invokeFragmentHandler(handler, termBuffer, offset, frameLength, header) {
-			break
-		}
-
+		// Move past the frame before the call, so a handler panic consumes it.
+		frameOffset := offset
 		offset = nextOffset
 		fragmentsRead++
+		image.invokeFragmentHandler(handler, termBuffer, frameOffset, frameLength, header)
 	}
 
-	image.publishPollConsumePosition(initialPosition, initialOffset, offset)
 	return fragmentsRead
 }
 

@@ -30,20 +30,14 @@ func (image *Image) invokeControlledFragmentHandler(
 	frameOffset int,
 	frameLength int32,
 	header *Header,
-) (action ControlledAction, ok bool) {
+) ControlledAction {
 	payloadOffset, payloadLength := preparePollFragment(
 		termBuffer,
 		frameOffset,
 		frameLength,
 		header,
 	)
-	ok = true
-	if image.errorHandler != nil {
-		defer image.recoverFragmentHandlerPanic(&ok)
-	}
-
-	action = handler(termBuffer, payloadOffset, payloadLength, header)
-	return action, ok
+	return handler(termBuffer, payloadOffset, payloadLength, header)
 }
 
 // ControlledPoll scans one active log term and delivers up to fragmentLimit
@@ -62,9 +56,8 @@ func (image *Image) invokeControlledFragmentHandler(
 //
 // Nil handler, closed image, or fragmentLimit <= 0 return 0.
 //
-// Handler panic does not advance past the failing DATA frame when an error
-// handler is configured. Without an error handler, handler panic propagates to
-// the caller.
+// Handler panic consumes the failing DATA frame, as [ControlledBreak] does.
+// Panic reporting and the position store match [Image.Poll].
 //
 // ControlledPoll is not thread-safe. Same concurrency contract as [Poll].
 func (image *Image) ControlledPoll(
@@ -98,7 +91,7 @@ func (image *Image) controlledPollBounded(
 	fragmentLimit int,
 	bounded bool,
 	limitPosition int64,
-) int {
+) (fragmentsRead int) {
 	if image.isClosed.Load() || handler == nil || fragmentLimit <= 0 {
 		return 0
 	}
@@ -118,7 +111,13 @@ func (image *Image) controlledPollBounded(
 	}
 
 	header := &image.header
-	fragmentsRead := 0
+
+	defer func() {
+		if image.errorHandler != nil {
+			image.reportFragmentHandlerPanic(recover())
+		}
+		image.publishPollConsumePosition(initialPosition, initialOffset, offset)
+	}()
 
 	for fragmentsRead < fragmentLimit && offset < limitOffset && !image.isClosed.Load() {
 		frameLength := logbuffer.CommittedFrameLengthVolatile(termBuffer, offset)
@@ -157,24 +156,22 @@ func (image *Image) controlledPollBounded(
 			break
 		}
 
-		action, invoked := image.invokeControlledFragmentHandler(
+		// Move past the frame before the call, so a handler panic consumes it.
+		frameOffset := offset
+		offset = nextOffset
+		fragmentsRead++
+		action := image.invokeControlledFragmentHandler(
 			handler,
 			termBuffer,
-			offset,
+			frameOffset,
 			frameLength,
 			header,
 		)
-		if !invoked {
-			break
-		}
-
 		if action == ControlledAbort {
-			// offset stays so final SetRelease excludes this frame
+			offset = frameOffset
+			fragmentsRead--
 			break
 		}
-
-		offset = nextOffset
-		fragmentsRead++
 		if action == ControlledBreak {
 			break
 		}
@@ -188,6 +185,5 @@ func (image *Image) controlledPollBounded(
 		}
 	}
 
-	image.publishPollConsumePosition(initialPosition, initialOffset, offset)
 	return fragmentsRead
 }

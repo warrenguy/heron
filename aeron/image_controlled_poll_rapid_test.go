@@ -87,14 +87,21 @@ func drawControlledPollSchedule(
 // expectedUnderActions walks the schedule under bound + fragment budget + actions.
 // starts includes every handler invocation (ABORT frame included). fragments excludes
 // ABORT. On ABORT, position is the pre-frame consume point (not past aborted start).
-// Empty actions means CONTINUE for every DATA frame.
+// Empty actions means CONTINUE for every DATA frame. A DATA frame flagged in
+// panics acts as BREAK. panicked reports that stop.
 func expectedUnderActions(
 	joinPosition int64,
 	schedule []controlledPollScheduleEntry,
 	limitPosition int64,
 	fragmentLimit int,
 	actions []aeron.ControlledAction,
-) (position int64, fragments int, starts []int64) {
+	panics []bool,
+) (
+	position int64,
+	fragments int,
+	starts []int64,
+	panicked bool,
+) {
 	position = joinPosition
 	starts = make([]int64, 0)
 	actionIndex := 0
@@ -114,21 +121,27 @@ func expectedUnderActions(
 		if actionIndex < len(actions) {
 			action = actions[actionIndex]
 		}
+		flagged := actionIndex < len(panics) && panics[actionIndex]
 		actionIndex++
+		if flagged {
+			position = int64(entry.endOffset)
+			fragments++
+			return position, fragments, starts, true
+		}
 		switch action {
 		case aeron.ControlledAbort:
-			return position, fragments, starts
+			return position, fragments, starts, false
 		case aeron.ControlledBreak:
 			position = int64(entry.endOffset)
 			fragments++
-			return position, fragments, starts
+			return position, fragments, starts, false
 		default:
 			// CONTINUE and COMMIT both advance past the frame for final position.
 			position = int64(entry.endOffset)
 			fragments++
 		}
 	}
-	return position, fragments, starts
+	return position, fragments, starts, false
 }
 
 var controlledPollActionChoices = []aeron.ControlledAction{
@@ -146,6 +159,16 @@ func drawControlledPollActions(rt *rapid.T, dataCount int) []aeron.ControlledAct
 		actions = append(actions, action)
 	}
 	return actions
+}
+
+// drawControlledPollPanics draws one handler panic flag per DATA frame.
+func drawControlledPollPanics(rt *rapid.T, dataCount int) []bool {
+	rt.Helper()
+	panics := make([]bool, 0, dataCount)
+	for range dataCount {
+		panics = append(panics, rapid.Bool().Draw(rt, "panic"))
+	}
+	return panics
 }
 
 func scheduleDataCount(schedule []controlledPollScheduleEntry) int {
@@ -170,8 +193,11 @@ func drawJoinOffset(rt *rapid.T, capacity int) int {
 	return units * logbuffer.FrameAlignment
 }
 
+// controlledPollActionHandler returns actions in DATA frame order. The handler
+// panics on a frame flagged in panics.
 func controlledPollActionHandler(
 	actions []aeron.ControlledAction,
+	panics []bool,
 	deliveredStarts *[]int64,
 ) aeron.ControlledFragmentHandler {
 	actionIndex := 0
@@ -186,9 +212,21 @@ func controlledPollActionHandler(
 		if actionIndex < len(actions) {
 			action = actions[actionIndex]
 		}
+		flagged := actionIndex < len(panics) && panics[actionIndex]
 		actionIndex++
+		if flagged {
+			panic("controlled poll handler failed")
+		}
 		return action
 	}
+}
+
+// controlledPollPanicOutcome records how one poll call surfaced a handler panic.
+// Zero value: no error handler, no panic.
+type controlledPollPanicOutcome struct {
+	errorHandlerSet bool
+	panicked        bool
+	errorCount      int
 }
 
 func requireControlledPollMatchesOracle(
@@ -202,6 +240,8 @@ func requireControlledPollMatchesOracle(
 	limitPosition int64,
 	schedule []controlledPollScheduleEntry,
 	actions []aeron.ControlledAction,
+	panics []bool,
+	outcome controlledPollPanicOutcome,
 ) {
 	rt.Helper()
 
@@ -213,16 +253,30 @@ func requireControlledPollMatchesOracle(
 		require.Less(rt, start, limitPosition)
 	}
 
-	wantPos, wantFrags, wantStarts := expectedUnderActions(
+	wantPos, wantFrags, wantStarts, wantPanicked := expectedUnderActions(
 		joinPosition,
 		schedule,
 		limitPosition,
 		fragmentLimit,
 		actions,
+		panics,
 	)
 	require.Equal(rt, wantStarts, deliveredStarts)
 	require.Equal(rt, wantPos, positionAfter)
-	require.Equal(rt, wantFrags, fragments)
+	if outcome.errorHandlerSet {
+		require.False(rt, outcome.panicked)
+		require.Equal(rt, wantFrags, fragments)
+		wantErrors := 0
+		if wantPanicked {
+			wantErrors = 1
+		}
+		require.Equal(rt, wantErrors, outcome.errorCount)
+		return
+	}
+	require.Equal(rt, wantPanicked, outcome.panicked)
+	if !outcome.panicked {
+		require.Equal(rt, wantFrags, fragments)
+	}
 }
 
 func TestImage_BoundedControlledPoll_boundStart_rapid(t *testing.T) {
@@ -266,6 +320,8 @@ func TestImage_BoundedControlledPoll_boundStart_rapid(t *testing.T) {
 			limitPosition,
 			schedule,
 			nil,
+			nil,
+			controlledPollPanicOutcome{},
 		)
 		require.Len(rt, deliveredStarts, fragments)
 	})
@@ -278,19 +334,23 @@ func TestImage_BoundedControlledPoll_actions_rapid(t *testing.T) {
 		joinOffset := drawJoinOffset(rt, capacity)
 		joinPosition := int64(joinOffset)
 
-		image, _ := newControlledPollImage(t, joinPosition)
+		errorHandlerSet := rapid.Bool().Draw(rt, "errorHandlerSet")
+		image, errorCount := newRapidPollImage(t, joinPosition, errorHandlerSet)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
 		schedule := drawControlledPollSchedule(rt, termBuffer, joinOffset)
 
 		limitPosition := rapid.Int64Range(joinPosition, int64(capacity)+64).Draw(rt, "limitPosition")
 		fragmentLimit := rapid.IntRange(1, 16).Draw(rt, "fragmentLimit")
 		actions := drawControlledPollActions(rt, scheduleDataCount(schedule))
+		panics := drawControlledPollPanics(rt, scheduleDataCount(schedule))
 
 		deliveredStarts := make([]int64, 0, fragmentLimit+1)
-		handler := controlledPollActionHandler(actions, &deliveredStarts)
+		handler := controlledPollActionHandler(actions, panics, &deliveredStarts)
 
 		positionBefore := image.Position()
-		fragments := image.BoundedControlledPoll(handler, limitPosition, fragmentLimit)
+		fragments, panicked := pollRecovering(func() int {
+			return image.BoundedControlledPoll(handler, limitPosition, fragmentLimit)
+		})
 		positionAfter := image.Position()
 
 		requireControlledPollMatchesOracle(
@@ -304,6 +364,12 @@ func TestImage_BoundedControlledPoll_actions_rapid(t *testing.T) {
 			limitPosition,
 			schedule,
 			actions,
+			panics,
+			controlledPollPanicOutcome{
+				errorHandlerSet: errorHandlerSet,
+				panicked:        panicked,
+				errorCount:      *errorCount,
+			},
 		)
 	})
 }
@@ -315,18 +381,22 @@ func TestImage_ControlledPoll_actions_rapid(t *testing.T) {
 		joinOffset := drawJoinOffset(rt, capacity)
 		joinPosition := int64(joinOffset)
 
-		image, _ := newControlledPollImage(t, joinPosition)
+		errorHandlerSet := rapid.Bool().Draw(rt, "errorHandlerSet")
+		image, errorCount := newRapidPollImage(t, joinPosition, errorHandlerSet)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
 		schedule := drawControlledPollSchedule(rt, termBuffer, joinOffset)
 
 		fragmentLimit := rapid.IntRange(1, 16).Draw(rt, "fragmentLimit")
 		actions := drawControlledPollActions(rt, scheduleDataCount(schedule))
+		panics := drawControlledPollPanics(rt, scheduleDataCount(schedule))
 
 		deliveredStarts := make([]int64, 0, fragmentLimit+1)
-		handler := controlledPollActionHandler(actions, &deliveredStarts)
+		handler := controlledPollActionHandler(actions, panics, &deliveredStarts)
 
 		positionBefore := image.Position()
-		fragments := image.ControlledPoll(handler, fragmentLimit)
+		fragments, panicked := pollRecovering(func() int {
+			return image.ControlledPoll(handler, fragmentLimit)
+		})
 		positionAfter := image.Position()
 
 		// Unbounded: model with MaxInt64 limit rather than a second loop shape.
@@ -341,6 +411,12 @@ func TestImage_ControlledPoll_actions_rapid(t *testing.T) {
 			math.MaxInt64,
 			schedule,
 			actions,
+			panics,
+			controlledPollPanicOutcome{
+				errorHandlerSet: errorHandlerSet,
+				panicked:        panicked,
+				errorCount:      *errorCount,
+			},
 		)
 	})
 }

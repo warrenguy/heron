@@ -3,6 +3,7 @@ package aeron_test
 import (
 	"errors"
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -720,6 +721,7 @@ func TestImage_ControlledPoll_corrupt(t *testing.T) {
 func TestImage_ControlledPoll_handlerPanic(t *testing.T) {
 	const wantErr = "controlled poll handler failed"
 	panicPayload := []byte("panic")
+	panicSpan := int64(logbuffer.AlignFragmentChunkLength(len(panicPayload)))
 	pollPanicHandler := func(
 		atomicbuffer.AtomicBuffer,
 		int,
@@ -729,146 +731,245 @@ func TestImage_ControlledPoll_handlerPanic(t *testing.T) {
 		panic(errors.New(wantErr))
 	}
 
-	t.Run("firstFrameWithErrorHandler", func(t *testing.T) {
-		image, capture, handledErr := newControlledPollImageWithErrorHandler(t, 0)
-		termBuffer := aeron.ImageTermBuffer0ForTest(image)
-		writePollTestDataFrame(termBuffer, 0, 0, logbuffer.Unfragmented, panicPayload)
-		nextOffset := logbuffer.AlignFragmentChunkLength(len(panicPayload))
-		writePollTestDataFrame(
-			termBuffer,
-			nextOffset,
-			int32(nextOffset),
-			logbuffer.Unfragmented,
-			[]byte("after"),
-		)
+	variants := []struct {
+		name string
+		poll func(image *aeron.Image, handler aeron.ControlledFragmentHandler, fragmentLimit int) int
+	}{
+		{
+			name: "ControlledPoll",
+			poll: func(image *aeron.Image, handler aeron.ControlledFragmentHandler, fragmentLimit int) int {
+				return image.ControlledPoll(handler, fragmentLimit)
+			},
+		},
+		{
+			name: "BoundedControlledPoll",
+			poll: func(image *aeron.Image, handler aeron.ControlledFragmentHandler, fragmentLimit int) int {
+				return image.BoundedControlledPoll(handler, math.MaxInt64, fragmentLimit)
+			},
+		},
+	}
 
-		fragments := image.ControlledPoll(pollPanicHandler, 10)
+	for _, variant := range variants {
+		poll := variant.poll
+		t.Run(variant.name, func(t *testing.T) {
+			t.Run("firstFrameWithErrorHandler", func(t *testing.T) {
+				image, capture, handledErr := newControlledPollImageWithErrorHandler(t, 0)
+				termBuffer := aeron.ImageTermBuffer0ForTest(image)
+				writePollTestPayloads(termBuffer, 0, panicPayload, []byte("after"))
 
-		require.Zero(t, fragments)
-		require.Zero(t, image.Position())
-		handled := handledErr()
-		require.Error(t, handled)
-		require.Equal(t, wantErr, handled.Error())
+				fragments := poll(image, pollPanicHandler, 10)
 
-		fragments = image.ControlledPoll(capture.handler, 1)
-		require.Equal(t, 1, fragments)
-		require.Len(t, capture.payloads, 1)
-		require.Equal(t, panicPayload, capture.payloads[0])
-	})
+				require.Equal(t, 1, fragments)
+				require.Equal(t, panicSpan, image.Position())
+				handled := handledErr()
+				require.Error(t, handled)
+				require.Equal(t, wantErr, handled.Error())
 
-	t.Run("afterPaddingPartialAdvance", func(t *testing.T) {
+				fragments = poll(image, capture.handler, 1)
+				require.Equal(t, 1, fragments)
+				require.Equal(t, [][]byte{[]byte("after")}, capture.payloads)
+			})
+
+			t.Run("fragmentedEndPanicDropsMessage", func(t *testing.T) {
+				image, _, handledErr := newControlledPollImageWithErrorHandler(t, 0)
+				messageEnd := writePollTestFragmentedThenNext(aeron.ImageTermBuffer0ForTest(image))
+
+				calls := 0
+				var delivered [][]byte
+				delegate := func(
+					buffer atomicbuffer.AtomicBuffer,
+					offset int,
+					length int,
+					_ *aeron.Header,
+				) aeron.ControlledAction {
+					calls++
+					if calls == 1 {
+						panic(errors.New(wantErr))
+					}
+					delivered = append(delivered, slices.Clone(buffer.Bytes()[offset:offset+length]))
+					return aeron.ControlledContinue
+				}
+				handler := aeron.NewControlledFragmentAssembler(delegate).Handler()
+
+				// Phase 1: the delegate panics on the completed message.
+				require.Equal(t, 2, poll(image, handler, 10))
+				require.Equal(t, int64(messageEnd), image.Position())
+				require.Error(t, handledErr())
+				require.Empty(t, delivered)
+
+				// Phase 2: only the next message reaches the delegate.
+				require.Equal(t, 1, poll(image, handler, 10))
+				require.Equal(t, [][]byte{[]byte("next")}, delivered)
+			})
+
+			t.Run("afterPaddingPartialAdvance", func(t *testing.T) {
+				image, _, handledErr := newControlledPollImageWithErrorHandler(t, 0)
+				termBuffer := aeron.ImageTermBuffer0ForTest(image)
+				writePollTestPaddingThenData(termBuffer, pollTestPaddingLength, panicPayload)
+
+				fragments := poll(image, pollPanicHandler, 10)
+
+				require.Equal(t, 1, fragments)
+				require.Equal(t, int64(pollTestPaddingLength)+panicSpan, image.Position())
+				handled := handledErr()
+				require.Error(t, handled)
+				require.Equal(t, wantErr, handled.Error())
+			})
+
+			t.Run("nthFrameAfterSuccess", func(t *testing.T) {
+				image, capture, handledErr := newControlledPollImageWithErrorHandler(t, 0)
+				termBuffer := aeron.ImageTermBuffer0ForTest(image)
+				chainEnd := writeDataFrameChain(t, termBuffer, 0, 2, []byte("a"))
+
+				fragments := poll(image, nthFrameControlledPanicHandler(2, errors.New(wantErr), aeron.ControlledContinue), 10)
+
+				require.Equal(t, 2, fragments)
+				require.Equal(t, int64(chainEnd), image.Position())
+				handled := handledErr()
+				require.Error(t, handled)
+				require.Equal(t, wantErr, handled.Error())
+
+				fragments = poll(image, capture.handler, 1)
+				require.Zero(t, fragments)
+				require.Empty(t, capture.payloads)
+			})
+
+			t.Run("nilErrorHandler", func(t *testing.T) {
+				image, capture := newControlledPollImage(t, 0)
+				termBuffer := aeron.ImageTermBuffer0ForTest(image)
+				writePollTestPayloads(termBuffer, 0, []byte("first"), panicPayload, []byte("third"))
+				secondEnd := int64(logbuffer.AlignFragmentChunkLength(len("first"))) + panicSpan
+
+				require.PanicsWithError(t, wantErr, func() {
+					_ = poll(image, nthFrameControlledPanicHandler(2, errors.New(wantErr), aeron.ControlledContinue), 10)
+				})
+				require.Equal(t, secondEnd, image.Position())
+
+				fragments := poll(image, capture.handler, 10)
+				require.Equal(t, 1, fragments)
+				require.Equal(t, [][]byte{[]byte("third")}, capture.payloads)
+			})
+
+			t.Run("errorHandlerPanicDoesNotEscape", func(t *testing.T) {
+				image := aeron.NewImageForTestWithErrorHandler(
+					t,
+					testSubscription(t),
+					0,
+					func(error) {
+						panic("error handler panic")
+					},
+				)
+				writePollTestPayloads(aeron.ImageTermBuffer0ForTest(image), 0, panicPayload)
+
+				fragments := poll(image, pollPanicHandler, 1)
+
+				require.Equal(t, 1, fragments)
+				require.Equal(t, panicSpan, image.Position())
+			})
+
+			t.Run("nonErrorPanicWrap", func(t *testing.T) {
+				const panicValue = "boom"
+				image, _, handledErr := newControlledPollImageWithErrorHandler(t, 0)
+				writePollTestPayloads(aeron.ImageTermBuffer0ForTest(image), 0, panicPayload)
+
+				nonErrorPanicHandler := func(
+					atomicbuffer.AtomicBuffer,
+					int,
+					int,
+					*aeron.Header,
+				) aeron.ControlledAction {
+					panic(panicValue)
+				}
+
+				fragments := poll(image, nonErrorPanicHandler, 1)
+
+				require.Equal(t, 1, fragments)
+				require.Equal(t, panicSpan, image.Position())
+				handled := handledErr()
+				require.Error(t, handled)
+				require.Equal(t, "aeron: fragment handler panic: boom", handled.Error())
+			})
+
+			t.Run("closeInHandlerThenPanic", func(t *testing.T) {
+				image, _, handledErr := newControlledPollImageWithErrorHandler(t, 0)
+				writePollTestPayloads(aeron.ImageTermBuffer0ForTest(image), 0, panicPayload)
+				before := image.Position()
+
+				closeThenPanicHandler := func(
+					atomicbuffer.AtomicBuffer,
+					int,
+					int,
+					*aeron.Header,
+				) aeron.ControlledAction {
+					aeron.ImageInternalCloseForTest(image)
+					panic(errors.New(wantErr))
+				}
+
+				require.Equal(t, 1, poll(image, closeThenPanicHandler, 10))
+
+				handled := handledErr()
+				require.Error(t, handled)
+				require.Equal(t, wantErr, handled.Error())
+				require.True(t, image.IsClosed())
+				require.Equal(t, before, image.Position())
+			})
+
+			t.Run("panicAfterCommit", func(t *testing.T) {
+				chainPayload := []byte("a")
+
+				t.Run("withErrorHandler", func(t *testing.T) {
+					image, _, handledErr := newControlledPollImageWithErrorHandler(t, 0)
+					termBuffer := aeron.ImageTermBuffer0ForTest(image)
+					chainEnd := writeDataFrameChain(t, termBuffer, 0, 2, chainPayload)
+
+					fragments := poll(image, nthFrameControlledPanicHandler(2, errors.New(wantErr), aeron.ControlledCommit), 10)
+
+					require.Equal(t, 2, fragments)
+					require.Equal(t, int64(chainEnd), image.Position())
+					require.Error(t, handledErr())
+				})
+
+				t.Run("nilErrorHandler", func(t *testing.T) {
+					image, _ := newControlledPollImage(t, 0)
+					termBuffer := aeron.ImageTermBuffer0ForTest(image)
+					chainEnd := writeDataFrameChain(t, termBuffer, 0, 2, chainPayload)
+
+					require.PanicsWithError(t, wantErr, func() {
+						_ = poll(image, nthFrameControlledPanicHandler(2, errors.New(wantErr), aeron.ControlledCommit), 10)
+					})
+					require.Equal(t, int64(chainEnd), image.Position())
+				})
+			})
+		})
+	}
+
+	t.Run("boundedPanicAtBound", func(t *testing.T) {
 		image, _, handledErr := newControlledPollImageWithErrorHandler(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
-		writePollTestPaddingThenData(termBuffer, pollTestPaddingLength, panicPayload)
-
-		fragments := image.ControlledPoll(pollPanicHandler, 10)
-
-		require.Zero(t, fragments)
-		require.Equal(t, int64(pollTestPaddingLength), image.Position())
-		handled := handledErr()
-		require.Error(t, handled)
-		require.Equal(t, wantErr, handled.Error())
-	})
-
-	t.Run("nthFrameAfterSuccess", func(t *testing.T) {
-		image, capture, handledErr := newControlledPollImageWithErrorHandler(t, 0)
-		termBuffer := aeron.ImageTermBuffer0ForTest(image)
 		chainPayload := []byte("a")
-		writeDataFrameChain(t, termBuffer, 0, 2, chainPayload)
-		firstSpan := logbuffer.AlignFragmentChunkLength(len(chainPayload))
+		span := logbuffer.AlignFragmentChunkLength(len(chainPayload))
+		writeDataFrameChain(t, termBuffer, 0, 3, chainPayload)
 
-		attempts := 0
-		nthFramePanicHandler := func(
-			atomicbuffer.AtomicBuffer,
-			int,
-			int,
-			*aeron.Header,
+		var seenOffsets []int
+		handler := func(
+			_ atomicbuffer.AtomicBuffer,
+			_ int,
+			_ int,
+			header *aeron.Header,
 		) aeron.ControlledAction {
-			attempts++
-			if attempts == 2 {
+			seenOffsets = append(seenOffsets, header.Offset())
+			if len(seenOffsets) == 2 {
 				panic(errors.New(wantErr))
 			}
 			return aeron.ControlledContinue
 		}
 
-		fragments := image.ControlledPoll(nthFramePanicHandler, 10)
+		fragments := image.BoundedControlledPoll(handler, int64(span+1), 10)
 
-		require.Equal(t, 1, fragments)
-		require.Equal(t, int64(firstSpan), image.Position())
-		handled := handledErr()
-		require.Error(t, handled)
-		require.Equal(t, wantErr, handled.Error())
-
-		fragments = image.ControlledPoll(capture.handler, 1)
-		require.Equal(t, 1, fragments)
-		require.Len(t, capture.payloads, 1)
-		require.Equal(t, chainPayload, capture.payloads[0])
-	})
-
-	t.Run("nilErrorHandler", func(t *testing.T) {
-		image := aeron.NewImageForTest(t, testSubscription(t), 0)
-		writePollTestDataFrame(
-			aeron.ImageTermBuffer0ForTest(image),
-			0,
-			0,
-			logbuffer.Unfragmented,
-			panicPayload,
-		)
-
-		require.Panics(t, func() {
-			_ = image.ControlledPoll(pollPanicHandler, 1)
-		})
-	})
-
-	t.Run("errorHandlerPanicDoesNotEscape", func(t *testing.T) {
-		image := aeron.NewImageForTestWithErrorHandler(
-			t,
-			testSubscription(t),
-			0,
-			func(error) {
-				panic("error handler panic")
-			},
-		)
-		writePollTestDataFrame(
-			aeron.ImageTermBuffer0ForTest(image),
-			0,
-			0,
-			logbuffer.Unfragmented,
-			panicPayload,
-		)
-
-		fragments := image.ControlledPoll(pollPanicHandler, 1)
-
-		require.Zero(t, fragments)
-		require.Zero(t, image.Position())
-	})
-
-	t.Run("nonErrorPanicWrap", func(t *testing.T) {
-		const panicValue = "boom"
-		image, _, handledErr := newControlledPollImageWithErrorHandler(t, 0)
-		writePollTestDataFrame(
-			aeron.ImageTermBuffer0ForTest(image),
-			0,
-			0,
-			logbuffer.Unfragmented,
-			panicPayload,
-		)
-
-		nonErrorPanicHandler := func(
-			atomicbuffer.AtomicBuffer,
-			int,
-			int,
-			*aeron.Header,
-		) aeron.ControlledAction {
-			panic(panicValue)
-		}
-
-		fragments := image.ControlledPoll(nonErrorPanicHandler, 1)
-
-		require.Zero(t, fragments)
-		handled := handledErr()
-		require.Error(t, handled)
-		require.Equal(t, "aeron: fragment handler panic: boom", handled.Error())
+		require.Equal(t, 2, fragments)
+		require.Equal(t, int64(2*span), image.Position())
+		require.Equal(t, []int{0, span}, seenOffsets)
+		require.Error(t, handledErr())
 	})
 }
 

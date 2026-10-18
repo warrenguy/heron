@@ -10,6 +10,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestSubscription_newSubscription_fields(t *testing.T) {
@@ -432,8 +433,48 @@ func TestSubscription_Poll_handlerPanicContinuesToNextImage(t *testing.T) {
 		panic(errors.New(wantErr))
 	})
 
-	require.Equal(t, 1, sub.Poll(handler, 2))
-	require.Zero(t, image0.Position())
+	require.Equal(t, 2, sub.Poll(handler, 2))
+	require.Equal(t, int64(logbuffer.AlignFragmentChunkLength(len("img0"))), image0.Position())
+	require.Error(t, handled)
+	require.Equal(t, wantErr, handled.Error())
+	require.Equal(t, [][]byte{[]byte("img1")}, capture.payloads)
+}
+
+func TestSubscription_ControlledPoll_handlerPanicContinuesToNextImage(t *testing.T) {
+	const wantErr = "controlled poll handler failed"
+
+	sub := testSubscription(t)
+	var handled error
+	image0 := aeron.NewImageForTestWithErrorHandler(t, sub, 0, func(err error) {
+		handled = err
+	})
+	writePollTestDataFrame(
+		aeron.ImageTermBuffer0ForTest(image0),
+		0,
+		0,
+		logbuffer.Unfragmented,
+		[]byte("img0"),
+	)
+	aeron.SubscriptionAddImageForTest(sub, image0)
+	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID+1, []byte("img1"))
+
+	capture := &controlledPollCapture{}
+	handlerCalls := 0
+	handler := func(
+		buffer atomicbuffer.AtomicBuffer,
+		offset int,
+		length int,
+		header *aeron.Header,
+	) aeron.ControlledAction {
+		handlerCalls++
+		if handlerCalls == 1 {
+			panic(errors.New(wantErr))
+		}
+		return capture.handler(buffer, offset, length, header)
+	}
+
+	require.Equal(t, 2, sub.ControlledPoll(handler, 2))
+	require.Equal(t, int64(logbuffer.AlignFragmentChunkLength(len("img0"))), image0.Position())
 	require.Error(t, handled)
 	require.Equal(t, wantErr, handled.Error())
 	require.Equal(t, [][]byte{[]byte("img1")}, capture.payloads)

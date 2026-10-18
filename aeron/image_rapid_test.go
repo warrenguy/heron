@@ -3,6 +3,7 @@
 package aeron_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -189,6 +190,115 @@ func TestImage_Poll_alignRoundtrip_rapid(t *testing.T) {
 
 		_ = image.Poll(capture.handler, frameCount)
 		require.Equal(rt, int64(offset), image.Position())
+	})
+}
+
+// newRapidPollImage builds an image at joinPosition. With errorHandlerSet, the
+// image error handler increments the returned counter.
+func newRapidPollImage(
+	t *testing.T,
+	joinPosition int64,
+	errorHandlerSet bool,
+) (*aeron.Image, *int) {
+	t.Helper()
+
+	errorCount := new(int)
+	if !errorHandlerSet {
+		return newTestPollImage(t, joinPosition), errorCount
+	}
+	image := aeron.NewImageForTestWithErrorHandler(
+		t,
+		testSubscription(t),
+		joinPosition,
+		func(error) {
+			*errorCount++
+		},
+	)
+	return image, errorCount
+}
+
+// pollRecovering recovers a panic from poll. A recovered call reports zero
+// fragments.
+func pollRecovering(poll func() int) (fragments int, panicked bool) {
+	defer func() {
+		if recover() != nil {
+			panicked = true
+		}
+	}()
+	return poll(), false
+}
+
+func TestImage_Poll_handlerPanicDrain_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		errorHandlerSet := rapid.Bool().Draw(rt, "errorHandlerSet")
+		image, errorCount := newRapidPollImage(t, 0, errorHandlerSet)
+		termBuffer := aeron.ImageTermBuffer0ForTest(image)
+		schedule := drawControlledPollSchedule(rt, termBuffer, 0)
+		panics := drawControlledPollPanics(rt, scheduleDataCount(schedule))
+		fragmentLimit := rapid.IntRange(1, 16).Draw(rt, "fragmentLimit")
+
+		flagged := make(map[int64]bool, len(panics))
+		wantStarts := make([]int64, 0, len(panics))
+		flagCount := 0
+		for _, entry := range schedule {
+			if entry.kind != controlledPollFrameData {
+				continue
+			}
+			start := int64(entry.startOffset)
+			flagged[start] = panics[len(wantStarts)]
+			if flagged[start] {
+				flagCount++
+			}
+			wantStarts = append(wantStarts, start)
+		}
+		require.NotEmpty(rt, schedule)
+		scheduleEnd := int64(schedule[len(schedule)-1].endOffset)
+
+		deliveredStarts := make([]int64, 0, len(wantStarts))
+		handler := func(_ atomicbuffer.AtomicBuffer, _, _ int, header *aeron.Header) {
+			start := int64(header.TermOffset())
+			deliveredStarts = append(deliveredStarts, start)
+			if flagged[start] {
+				panic("poll handler failed")
+			}
+		}
+
+		panicCount := 0
+		for range len(schedule) + 1 {
+			before := image.Position()
+			if before >= scheduleEnd {
+				break
+			}
+			deliveredBefore := len(deliveredStarts)
+			fragments, panicked := pollRecovering(func() int {
+				return image.Poll(handler, fragmentLimit)
+			})
+			after := image.Position()
+
+			require.Greater(rt, after, before)
+			if errorHandlerSet {
+				require.False(rt, panicked)
+				require.LessOrEqual(rt, fragments, fragmentLimit)
+				require.Equal(rt, len(deliveredStarts)-deliveredBefore, fragments)
+			} else {
+				reachedFlag := slices.ContainsFunc(deliveredStarts[deliveredBefore:], func(start int64) bool {
+					return flagged[start]
+				})
+				require.Equal(rt, reachedFlag, panicked)
+			}
+			if panicked {
+				panicCount++
+			}
+		}
+
+		require.Equal(rt, wantStarts, deliveredStarts)
+		require.Equal(rt, scheduleEnd, image.Position())
+		if errorHandlerSet {
+			require.Equal(rt, flagCount, *errorCount)
+		} else {
+			require.Equal(rt, flagCount, panicCount)
+		}
 	})
 }
 
