@@ -386,7 +386,7 @@ func newSyntheticLogBuffersForTest(tb testing.TB, logType byte) *logbuffer.LogBu
 	}
 
 	buf := make([]byte, computed)
-	metaStart := logbuffer.MetaDataOffset(termLength)
+	metaStart := logbuffer.LogMetaDataOffset(computed)
 	meta := atomicbuffer.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
 	rawTails := [logbuffer.PartitionCount]int64{
 		logbuffer.PackRawTail(initialTermID, 0),

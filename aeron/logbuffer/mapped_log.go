@@ -66,20 +66,21 @@ func MapLogFile(path string) (*MappedLogBuffer, error) {
 		return nil, errSpanTooShort("file", fileSize, MetaDataLength)
 	}
 
-	dims, err := discoverDimensionsFromFile(file, fileSize)
+	dims, err := readLayoutFromFile(file, fileSize)
 	if err != nil {
 		_ = file.Close()
 		return nil, err
 	}
 
-	return mapLogFileAfterDiscover(file, path, dims, 0)
+	return mapLogFileWithLayout(file, path, dims, 0)
 }
 
-// preValidatedFileSize 0 forces Stat before mmap (TOCTOU-safe).
+// mapLogFileWithLayout maps dims.computed bytes of file as a log.
 //
-// Non-zero skips restat and is only valid when size was validated immediately before on this
-// file descriptor; production call sites pass 0.
-func mapLogFileAfterDiscover(
+// A zero preValidatedFileSize restats file before the map. A nonzero value
+// skips the restat. Pass a nonzero value only after a size check on this
+// descriptor.
+func mapLogFileWithLayout(
 	file *os.File,
 	path string,
 	dims layoutDimensions,
@@ -119,22 +120,20 @@ func mapLogFileAfterDiscover(
 	return mapped, nil
 }
 
-// Skips PreTouch: heap copy, not mmap - no page warmup benefit.
+// mapLogBuffer maps a heap copy of data. It skips PreTouch: a heap copy gains
+// nothing from page warmup.
 func mapLogBuffer(data []byte) (*MappedLogBuffer, error) {
 	if len(data) < MetaDataLength {
 		return nil, errSpanTooShort("buffer", len(data), MetaDataLength)
 	}
 
-	dims, err := discoverDimensionsFromBuffer(data)
+	dims, err := readLayoutFromBuffer(data)
 	if err != nil {
 		return nil, err
 	}
-	if len(data) < dims.computed {
-		return nil, errSpanTooShort("buffer", len(data), dims.computed)
-	}
 
-	// Copy so MappedLogBuffer owns backing past return; caller slice may be temporary.
-	owned := append([]byte(nil), data[:dims.computed]...)
+	// Copy: the caller may reuse data after return.
+	owned := append([]byte(nil), data...)
 	return buildMappedLogBuffer(nil, "", dims, owned)
 }
 
@@ -191,11 +190,11 @@ func sliceLogRegions(
 	data []byte,
 	termLength int,
 ) (terms [PartitionCount][]byte, meta []byte, err error) {
-	metaStart := MetaDataOffset(termLength)
-	need := metaStart + MetaDataLength
+	need := PartitionCount*termLength + MetaDataLength
 	if len(data) < need {
 		return terms, nil, errSpanTooShort("buffer", len(data), need)
 	}
+	metaStart := LogMetaDataOffset(len(data))
 	for i := range PartitionCount {
 		off := SectionTermOffset(i, termLength)
 		terms[i] = data[off : off+termLength]
@@ -303,10 +302,7 @@ func (mapped *MappedLogBuffer) MetaDataBuffer() (atomicbuffer.AtomicBuffer, erro
 	return mapped.metaView, nil
 }
 
-// Bytes returns the mapped backing slice.
-//
-// When the on-disk file is page-padded beyond ComputedLength(), len(Bytes()) equals
-// the mapped length; use ComputedLength() for logical log layout bounds.
+// Bytes returns the backing slice. Its length equals ComputedLength.
 func (mapped *MappedLogBuffer) Bytes() []byte {
 	if mapped == nil || mapped.closed {
 		return nil

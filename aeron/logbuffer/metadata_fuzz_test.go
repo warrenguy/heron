@@ -27,7 +27,7 @@ func goldenSyntheticMetadataBytes() []byte {
 		cfg := logbuffer.DefaultSyntheticMetadataConfig()
 		logbuffer.WriteSyntheticMetadata(buf, cfg)
 
-		metaStart := logbuffer.MetaDataOffset(logbuffer.TestTermLength)
+		metaStart := logbuffer.LogMetaDataOffset(len(buf))
 		metaEnd := metaStart + logbuffer.MetaDataLength
 		goldenSyntheticMetadata = append([]byte(nil), buf[metaStart:metaEnd]...)
 	})

@@ -23,6 +23,8 @@ type SyntheticMetadataConfig struct {
 	CorrelationID   int64
 	IsConnected     int32
 	MTULength       int32
+	TermLength      int32
+	PageSize        int32
 	LogType         uint8
 }
 
@@ -40,12 +42,16 @@ func DefaultSyntheticMetadataConfig() SyntheticMetadataConfig {
 		CorrelationID: 3003,
 		IsConnected:   1,
 		MTULength:     TestMTULength,
+		TermLength:    TestTermLength,
+		PageSize:      TestPageSize,
 		LogType:       LogBufferTypeConcurrentPublication,
 	}
 }
 
+// WriteSyntheticMetadata writes the metadata in the last MetaDataLength bytes
+// of buf.
 func WriteSyntheticMetadata(buf []byte, cfg SyntheticMetadataConfig) {
-	metaStart := MetaDataOffset(TestTermLength)
+	metaStart := len(buf) - MetaDataLength
 	meta := atomicbuffer.Wrap(buf[metaStart : metaStart+MetaDataLength])
 
 	for i := range PartitionCount {
@@ -55,8 +61,8 @@ func WriteSyntheticMetadata(buf []byte, cfg SyntheticMetadataConfig) {
 	meta.PutInt64(OffsetCorrelationID, cfg.CorrelationID)
 	meta.PutInt32(OffsetInitialTermID, cfg.InitialTermID)
 	meta.PutInt32(OffsetDefaultFrameHeaderLength, DataHeaderLength)
-	meta.PutInt32(OffsetTermLength, TestTermLength)
-	meta.PutInt32(OffsetPageSize, TestPageSize)
+	meta.PutInt32(OffsetTermLength, cfg.TermLength)
+	meta.PutInt32(OffsetPageSize, cfg.PageSize)
 	meta.PutInt32(OffsetMTULength, cfg.MTULength)
 	meta.PutInt32(OffsetIsConnected, cfg.IsConnected)
 	meta.Bytes()[OffsetLogType] = cfg.LogType
@@ -99,14 +105,14 @@ func MapSyntheticLogBufferForTest(tb testing.TB) *MappedLogBuffer {
 	return mapped
 }
 
-func MapLogFileAfterDiscover(
+func MapLogFileWithLayout(
 	file *os.File,
 	path string,
 	termLength int32,
 	pageSize int32,
 	computed int,
 ) (*MappedLogBuffer, error) {
-	return mapLogFileAfterDiscover(file, path, layoutDimensions{
+	return mapLogFileWithLayout(file, path, layoutDimensions{
 		termLength: termLength,
 		pageSize:   pageSize,
 		computed:   computed,

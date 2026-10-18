@@ -28,6 +28,7 @@ const (
 	envTermBufferLength    = "AERON_TERM_BUFFER_LENGTH"
 	envIPCTermBufferLength = "AERON_IPC_TERM_BUFFER_LENGTH"
 	envThreadingMode       = "AERON_THREADING_MODE"
+	envFilePageSize        = "AERON_FILE_PAGE_SIZE"
 	envDir                 = "AERON_DIR"
 
 	joinExternalCncReadyTimeout = 10 * time.Second
@@ -50,6 +51,12 @@ func RolloverDriverEnv() DriverEnv {
 		envTermBufferLength:    termBufferLength,
 		envIPCTermBufferLength: termBufferLength,
 	}
+}
+
+// FilePageSizeDriverEnv returns the env override that sets AERON_FILE_PAGE_SIZE
+// to pageSize. The driver aligns each log file length to pageSize.
+func FilePageSizeDriverEnv(pageSize int) DriverEnv {
+	return DriverEnv{envFilePageSize: strconv.Itoa(pageSize)}
 }
 
 func buildDriverEnv(dir string, overrides DriverEnv) (DriverEnv, int, error) {

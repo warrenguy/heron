@@ -22,7 +22,7 @@ func WriteMinimalLogFileForTest(tb testing.TB, path string) {
 	require.NoError(tb, err)
 
 	buf := make([]byte, computed)
-	metaStart := logbuffer.MetaDataOffset(termLength)
+	metaStart := logbuffer.LogMetaDataOffset(computed)
 	meta := atomicbuffer.Wrap(buf[metaStart : metaStart+logbuffer.MetaDataLength])
 	meta.PutInt32Release(logbuffer.OffsetTermLength, termLength)
 	meta.PutInt32(logbuffer.OffsetPageSize, pageSize)

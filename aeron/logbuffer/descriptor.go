@@ -1,6 +1,8 @@
 // Package logbuffer implements the Aeron log buffer layout.
 //
-// A log holds PartitionCount term partitions followed by a metadata region.
+// A log holds PartitionCount term partitions from offset 0. The metadata fills
+// the last MetaDataLength bytes. Page alignment can pad the gap between the
+// terms and the metadata.
 // MapLogFile maps a driver-created log file. MappedLogBuffer exposes the terms
 // and the metadata as AtomicBuffer views.
 package logbuffer
@@ -94,8 +96,12 @@ func SectionTermOffset(sectionIndex, termLength int) int {
 	return sectionIndex * termLength
 }
 
-func MetaDataOffset(termLength int) int {
-	return PartitionCount * termLength
+// LogMetaDataOffset returns the offset of the metadata in a log of logLength
+// bytes.
+//
+// logLength must be at least MetaDataLength.
+func LogMetaDataOffset(logLength int) int {
+	return logLength - MetaDataLength
 }
 
 func PositionBitsToShift(termLength int) int {
