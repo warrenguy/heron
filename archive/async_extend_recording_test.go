@@ -239,21 +239,35 @@ func TestAsyncExtendRecording_PollSignal_errorAfterConsumedOK(t *testing.T) {
 	require.False(t, f.h.poller.IsPollComplete(), "Close must clear the matching error")
 }
 
-// TestAsyncExtendRecording_PollSignal_errorInOKBatch asserts the demux drops
-// an error that shares a Client.Poll batch with the latched OK.
+// TestAsyncExtendRecording_PollSignal_errorInOKBatch asserts that an error
+// appended behind the OK before the first Client.Poll reaches PollSignal once
+// PollSignal consumes the OK.
 func TestAsyncExtendRecording_PollSignal_errorInOKBatch(t *testing.T) {
 	f := newAsyncExtendRecordingFixture(t)
-	f.deliver(t, f.okWire(t, f.handle), f.errorWire(t, f.handle, "invalid extension"))
+	errorFields := f.responseFor(
+		f.handle,
+		archivewire.ControlResponseCode_ERROR,
+		[]byte("invalid extension"),
+	)
+	appendUnfragmentedWireToTerm(t, f.h.termBuffer, f.okWire(t, f.handle))
+	appendUnfragmentedWireToTerm(t, f.h.termBuffer, encodeControlResponseWire(t, errorFields))
 
+	// Poll 1 latches the OK. The error stays unread.
+	require.Equal(t, 1, f.client.Poll())
 	resp, ok := f.h.poller.Response()
 	require.True(t, ok)
-	require.Equal(t, archivewire.ControlResponseCode_OK, resp.Code, "latched OK must drop the error")
+	require.Equal(t, archivewire.ControlResponseCode_OK, resp.Code)
+	requirePollSignal(t, f.handle, false, "PollSignal must consume the OK")
+	require.False(t, f.h.poller.IsPollComplete())
 
-	for range 2 {
-		requirePollSignal(t, f.handle, false, "dropped error must not reach the handle")
-		require.False(t, f.h.poller.IsPollComplete())
-		f.deliver(t)
-	}
+	// Poll 2 latches the error.
+	require.Equal(t, 1, f.client.Poll())
+	resp, ok = f.h.poller.Response()
+	require.True(t, ok)
+	require.Equal(t, archivewire.ControlResponseCode_ERROR, resp.Code)
+	done, err := f.handle.PollSignal()
+	require.True(t, done, "held error must complete")
+	require.Equal(t, MapControlResponse(errorFields), err)
 	require.Zero(t, f.handle.RecordingID())
 }
 

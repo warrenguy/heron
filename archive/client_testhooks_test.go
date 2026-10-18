@@ -3,7 +3,9 @@
 package archive
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -136,6 +138,58 @@ func TestClientPoll_routesThroughDemux(t *testing.T) {
 	require.Equal(t, 1, captured.calls)
 	require.Equal(t, archivewire.RecordingSignal_START, captured.signal)
 	require.False(t, archive.descriptorPoller.IsPollComplete())
+}
+
+// TestClientPoll_signalsPassLatchedTerminal asserts that a recording signal
+// reaches its handler while the poller holds a latched terminal. The next
+// control response waits for a later poll.
+func TestClientPoll_signalsPassLatchedTerminal(t *testing.T) {
+	var signals []archivewire.RecordingSignal
+	handler := RecordingSignalHandlerFunc(func(event codecs.RecordingSignalEventFields) {
+		signals = append(signals, event.Signal)
+	})
+	archive, termBuffer := newClientForDemuxTest(t, handler)
+	archive.controlPoller.ArmAwait(controlResponseTestCorrelationID)
+
+	response := codecs.ControlResponseFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    controlResponseTestCorrelationID,
+		Code:             archivewire.ControlResponseCode_OK,
+		Version:          520,
+	}
+	errorResponse := response
+	errorResponse.Code = archivewire.ControlResponseCode_ERROR
+	errorResponse.RelevantID = ErrorInvalidExtension
+	errorResponse.ErrorMessage = []byte("invalid extension")
+	startWire := recordingSignalWire(t, archivewire.RecordingSignal_START)
+	stopWire := recordingSignalWire(t, archivewire.RecordingSignal_STOP)
+	writeUnfragmentedWireToTerm(t, termBuffer, encodeControlResponseWire(t, response))
+	appendUnfragmentedWireToTerm(t, termBuffer, startWire)
+	appendUnfragmentedWireToTerm(t, termBuffer, encodeControlResponseWire(t, errorResponse))
+	appendUnfragmentedWireToTerm(t, termBuffer, stopWire)
+
+	// Poll 1 latches OK, passes START, and holds ERROR.
+	require.Equal(t, 2, archive.Poll())
+	resp, ok := archive.controlPoller.Response()
+	require.True(t, ok)
+	require.Equal(t, archivewire.ControlResponseCode_OK, resp.Code)
+	require.Equal(t, []archivewire.RecordingSignal{archivewire.RecordingSignal_START}, signals)
+
+	// Poll 2 latches ERROR and passes STOP.
+	archive.controlPoller.ResetCapture()
+	require.Equal(t, 2, archive.Poll())
+	resp, ok = archive.controlPoller.Response()
+	require.True(t, ok)
+	require.Equal(t, archivewire.ControlResponseCode_ERROR, resp.Code)
+	require.Equal(t, []byte("invalid extension"), resp.ErrorMessage)
+	require.Equal(
+		t,
+		[]archivewire.RecordingSignal{
+			archivewire.RecordingSignal_START,
+			archivewire.RecordingSignal_STOP,
+		},
+		signals,
+	)
 }
 
 // TestClientListRecording_usesDescriptorMode proves the list poll routes the OK
@@ -409,6 +463,50 @@ func TestClientExtendRecordingAwaitSignal_OKThenEXTEND(t *testing.T) {
 			require.Equal(t, []byte(lifecycleRecordingChannel), fields.Channel)
 		})
 	}
+}
+
+// TestClientExtendRecordingAwaitSignal_OKThenERROR asserts that an ERROR behind
+// the OK fails the call. The await consumes the OK. The next poll latches the
+// ERROR.
+func TestClientExtendRecordingAwaitSignal_OKThenERROR(t *testing.T) {
+	h := newLifecycleHarness(t)
+	client := h.newClient()
+	tracker := NewExtendSignalTracker(controlResponseTestControlSessionID, lifecycleRecordingID)
+
+	correlationID := h.client.NextCorrelationID() + 1
+	okWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    correlationID,
+		Code:             archivewire.ControlResponseCode_OK,
+		Version:          520,
+	})
+	errorWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    correlationID,
+		RelevantID:       ErrorInvalidExtension,
+		Code:             archivewire.ControlResponseCode_ERROR,
+		Version:          520,
+		ErrorMessage:     []byte("invalid extension"),
+	})
+	writeUnfragmentedWireToTerm(t, h.termBuffer, okWire)
+	appendUnfragmentedWireToTerm(t, h.termBuffer, errorWire)
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	_, err := client.ExtendRecordingAwaitSignal(
+		ctx,
+		lifecycleRecordingID,
+		archiveProxyTestRecordingStreamID,
+		archivewire.SourceLocation_LOCAL,
+		false,
+		[]byte(lifecycleRecordingChannel),
+		tracker,
+	)
+	require.Error(t, err)
+	code, ok := ExceptionCode(err)
+	require.True(t, ok, "err=%v", err)
+	require.Equal(t, int32(ErrorInvalidExtension), code)
+	require.False(t, tracker.Extended())
 }
 
 func TestClientStartRecording_OK(t *testing.T) {

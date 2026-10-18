@@ -126,27 +126,46 @@ func TestHandleControlResponseFragment_capturedBytesSurviveWireMutation(t *testi
 			challenge: true,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			wire := tc.wire(t)
+	paths := []struct {
+		name   string
+		invoke func(t *testing.T, poller *ControlResponsePoller, wire []byte)
+	}{
+		{
+			name: "standalone",
+			invoke: func(t *testing.T, poller *ControlResponsePoller, wire []byte) {
+				invokeHandleControlResponseFragment(t, poller, wire, 0, -1)
+			},
+		},
+		{
+			name: "demux",
+			invoke: func(t *testing.T, poller *ControlResponsePoller, wire []byte) {
+				invokeHandleControlFragment(t, ControlPollTargets{ResponsePoller: poller}, wire)
+			},
+		},
+	}
+	for _, path := range paths {
+		for _, tc := range cases {
+			t.Run(path.name+"/"+tc.name, func(t *testing.T) {
+				wire := tc.wire(t)
 
-			poller := NewControlResponsePoller(nil, 1)
-			invokeHandleControlResponseFragment(t, poller, wire, 0, -1)
-			if tc.challenge {
-				require.True(t, poller.IsChallenged())
-			} else {
-				require.True(t, poller.IsPollComplete())
-			}
+				poller := NewControlResponsePoller(nil, 1)
+				path.invoke(t, poller, wire)
+				if tc.challenge {
+					require.True(t, poller.IsChallenged())
+				} else {
+					require.True(t, poller.IsPollComplete())
+				}
 
-			captured := tc.captured(poller)
-			require.Equal(t, []byte(tc.wantText), captured)
+				captured := tc.captured(poller)
+				require.Equal(t, []byte(tc.wantText), captured)
 
-			idx := bytes.Index(wire, captured)
-			require.NotEqual(t, -1, idx)
-			for i := range captured {
-				wire[idx+i] = 'X'
-			}
-			require.Equal(t, []byte(tc.wantText), tc.captured(poller))
-		})
+				idx := bytes.Index(wire, captured)
+				require.NotEqual(t, -1, idx)
+				for i := range captured {
+					wire[idx+i] = 'X'
+				}
+				require.Equal(t, []byte(tc.wantText), tc.captured(poller))
+			})
+		}
 	}
 }

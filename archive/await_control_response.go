@@ -38,8 +38,8 @@ func TryMatchControlResponse(
 // or wrong IDs).
 //
 // The session runs one outstanding request at a time, so a non-matching terminal
-// is stale. Left latched, that terminal holds the demux ready gate and the
-// awaited response is dropped (PollControlEvents never resets the poller).
+// is stale. Left latched, that terminal holds the awaited response in the image.
+// After the clear, the next poll latches the awaited response.
 //
 // Prefer ResetAwait before offer so offer-retry polls drop non-matching
 // terminals. This clear is a fallback when demux is unarmed, the terminal is
@@ -61,9 +61,9 @@ func tryMatchControlResponseDiscardStale(
 //
 // Arms the poller for correlationID so demux drops non-matching terminals without
 // latching. Session offer paths should call ResetAwait before offer so offer-retry
-// polls share that filter. Re-arm is safe when already armed. A latched terminal
-// that is not the awaited ControlResponse is cleared so it does not hold the demux
-// ready gate and drop the awaited response.
+// polls share that filter. Re-arm is safe when already armed. AwaitControlResponse
+// clears a latched terminal that is not the awaited ControlResponse. Left latched,
+// that terminal holds the awaited response in the image.
 //
 // Drives DoWork on aeronClient only for the await duration. Idle strategy paces
 // empty polls and resets on every exit path. Nil cfg.IdleStrategy uses

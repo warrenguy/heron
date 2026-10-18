@@ -2,7 +2,6 @@ package archive
 
 import (
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
 )
@@ -12,22 +11,15 @@ import (
 // SignalHandler receives RecordingSignalEvent dispatches; ControlSessionID filters
 // them (0 = all sessions).
 //
-// ResponsePoller captures ControlResponse and Challenge terminals. The demux never
-// resets it: once it latches a terminal capture, handleControlResponseFromFragment
-// drops later responses, and the poller's own Poll reset is bypassed here.
+// ResponsePoller latches ControlResponse and Challenge terminals. While it
+// holds a terminal, the demux stops the poll at the next response the
+// correlation filter accepts. That frame and every frame behind it wait in the
+// image for a later poll. See ControlResponsePoller.
 //
-// Session awaits call ResetAwait on the outstanding correlation before offer so
-// offer-retry and response polls share the filter. Session awaits discard any
-// remaining non-matching terminal between polls. Direct demux use requires an
-// unlatched poller: call ResetCapture or ResetAwait before each new demux await,
-// or supply a fresh poller.
-//
-// DescriptorPoller captures RecordingDescriptor fragments. In descriptor mode
-// (ResponsePoller nil, DescriptorPoller set) ControlResponse also routes to the
-// descriptor poller so a list-recording await does not corrupt the session
-// ResponsePoller. Client.Poll sets both pollers: ControlResponse routes to
-// ResponsePoller and descriptors route to DescriptorPoller. DescriptorPoller
-// latches only the correlation id NewAsyncListRecording armed.
+// DescriptorPoller captures RecordingDescriptor fragments. With ResponsePoller
+// nil, ControlResponse also routes to DescriptorPoller, so a list-recording
+// await does not corrupt the session poller. DescriptorPoller latches only the
+// correlation id NewAsyncListRecording armed.
 //
 // A nil target drops its templates.
 type ControlPollTargets struct {
@@ -45,12 +37,8 @@ type ControlPollTargets struct {
 // only correct poll for a post-connect session. A standalone ControlResponsePoller.Poll
 // or an isolated signal poll on the same subscription loses fragments.
 //
-// assembler must be non-nil and dedicated to the demux: use NewFragmentAssembler(nil)
-// so the reassembly delegate routes through dispatchControlFragment. Targets
-// are stored by value each poll.
-//
-// The demux does not reset targets.ResponsePoller; a reused poller that already latched
-// a terminal drops later responses. See ControlPollTargets.ResponsePoller.
+// assembler must be non-nil and built with NewFragmentAssembler(nil). A
+// non-nil delegate takes every fragment and nothing reaches targets.
 //
 // Returns 0 when subscription is nil.
 func PollControlEvents(
@@ -62,38 +50,28 @@ func PollControlEvents(
 	if subscription == nil {
 		return 0
 	}
+	targets.ResponsePoller.clearDisarmedCapture()
 	assembler.demuxTargets = targets
-	return subscription.Poll(assembler.Handler(), fragmentLimit)
-}
-
-func (assembler *FragmentAssembler) dispatchControlFragment(
-	buffer atomicbuffer.AtomicBuffer,
-	offset int,
-	length int,
-	header *aeron.Header,
-) {
-	handleControlFragment(assembler.demuxTargets, buffer, offset, length, header)
+	return subscription.ControlledPoll(assembler.controlledHandler, fragmentLimit)
 }
 
 // handleControlFragment routes one reassembled control fragment by template id.
-// Unknown or unroutable templates are ignored. Downstream typed decode validates schema
-// and bounds, so a foreign-schema fragment routed by template id is dropped there.
+// Unknown and unroutable templates drop. The typed decode downstream validates
+// schema and bounds, so a foreign-schema fragment drops there.
+//
+// Returns ControlledAbort when targets.ResponsePoller holds a latched terminal
+// and the correlation filter accepts the fragment. Returns ControlledContinue
+// otherwise.
 func handleControlFragment(
 	targets ControlPollTargets,
 	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *aeron.Header,
-) {
-	fragment, ok := controlResponseFragmentPayload(buffer, offset, length)
+) aeron.ControlledAction {
+	fragment, templateID, ok := controlFragmentTemplate(buffer, offset, length)
 	if !ok {
-		return
-	}
-	// controlResponseFragmentPayload already guarantees len(fragment) >= header size, so
-	// this decode cannot fail; the guard is defensive against future payload changes.
-	_, templateID, _, _, ok := codecs.DecodeMessageHeader(fragment, 0)
-	if !ok {
-		return
+		return aeron.ControlledContinue
 	}
 	switch templateID {
 	case archivewire.RecordingSignalEventSbeTemplateID:
@@ -105,8 +83,9 @@ func handleControlFragment(
 
 	case archivewire.ControlResponseSbeTemplateID, archivewire.ChallengeSbeTemplateID:
 		if targets.ResponsePoller != nil {
-			handleControlResponseFromFragment(targets.ResponsePoller, fragment, templateID)
-		} else if templateID == archivewire.ControlResponseSbeTemplateID &&
+			return handleControlResponseFromFragment(targets.ResponsePoller, fragment, templateID)
+		}
+		if templateID == archivewire.ControlResponseSbeTemplateID &&
 			targets.DescriptorPoller != nil {
 			handleDescriptorControlResponseFragment(targets.DescriptorPoller, fragment)
 		}
@@ -116,4 +95,5 @@ func handleControlFragment(
 			handleRecordingDescriptorFragment(targets.DescriptorPoller, fragment)
 		}
 	}
+	return aeron.ControlledContinue
 }
