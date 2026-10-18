@@ -26,8 +26,8 @@ type PendingRegistration struct {
 	StreamID   int32
 	Channel    string
 	Int32Value int32
-	// The conductor sets Ready when a driver ready event completes an add or
-	// add-counter entry. Other kinds never set it.
+	// Ready marks a success. completePendingSuccess sets it for every kind, so
+	// the PollPending map path finds a success whose mark moved.
 	Ready bool
 	Err   error
 	// Publication and Subscription are any to break the conductor/aeron import cycle.
@@ -291,10 +291,10 @@ func (conductor *Conductor) RegisterPendingAddWithDeadline(
 // Primary path: receivedCorrelationID matches correlationID after adapter
 // handlers mark completion during DoWork.
 //
-// Multi-pending path: receivedCorrelationID names a different entry when
-// several adds or counters complete in the same DoWork tick. PollPending then
-// checks the pending map instead. The entry is complete when Err is non-nil or
-// when the driver ready event has set Ready. On completion PollPending:
+// Map path: receivedCorrelationID names another entry or none. A later write
+// replaced the mark, or the next tick cleared it. PollPending then checks the
+// pending map. The entry is complete when Err is non-nil or Ready is true. On
+// completion PollPending:
 //   - returns done=true with the registration and Err
 //   - removes the entry
 //   - applies RollbackAddPendingResources when Err is non-nil
@@ -392,6 +392,8 @@ func (conductor *Conductor) SetActiveCorrelationID(correlationID int64) {
 	conductor.activeCorrelationID = correlationID
 }
 
+// completePendingSuccess marks a success for both PollPending paths: Ready for
+// the map path, receivedCorrelationID for the primary path.
 func (conductor *Conductor) completePendingSuccess(
 	registration *PendingRegistration,
 	mutate func(*PendingRegistration),
@@ -400,6 +402,7 @@ func (conductor *Conductor) completePendingSuccess(
 		mutate(registration)
 	}
 	registration.Err = nil
+	registration.Ready = true
 	conductor.receivedCorrelationID = registration.CorrelationID
 	return true
 }
@@ -440,8 +443,8 @@ func addPendingKind(kind PendingKind) bool {
 		kind == PendingKindAddSubscription
 }
 
-// hasReadyCompletion reports whether a driver ready event completes kind by
-// setting Ready. ExpireBefore keeps such entries past their deadline.
+// hasReadyCompletion reports whether a driver ready event completes kind.
+// ExpireBefore keeps such entries past their deadline.
 func hasReadyCompletion(kind PendingKind) bool {
 	return addPendingKind(kind) || kind == PendingKindAddCounter
 }
@@ -497,7 +500,6 @@ func (conductor *Conductor) CounterReady(
 		PendingKindAddCounter,
 		func(registration *PendingRegistration) {
 			registration.Int32Value = counterID
-			registration.Ready = true
 		},
 	)
 }

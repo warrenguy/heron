@@ -430,6 +430,74 @@ func TestClient_awaitResponse_deferredOfferFastResponse(t *testing.T) {
 	requireActiveCorrelationCleared(t, fixture)
 }
 
+func TestClient_awaitResponse_displacedSuccessCompletes(t *testing.T) {
+	const (
+		startNs                     = int64(1_000)
+		timeout                     = 500 * time.Nanosecond
+		addCorrelationID      int64 = clientAwaitTestCorrelationID + 1
+		addTimeout                  = time.Second
+		addRejectedCode       int32 = 11
+		wantSessionID         int32 = 42
+		addRejectedMessage          = "add publication rejected"
+		addPublicationChannel       = "aeron:ipc"
+	)
+	nanoNs := startNs
+	client, fixture := newClientAwaitFixture(
+		t,
+		func() int64 { return nanoNs },
+		time.Second,
+		time.Microsecond,
+	)
+	require.NoError(
+		t,
+		fixture.Conductor.RegisterPendingAdd(
+			conductor.PendingKindAddPublication,
+			addCorrelationID,
+			clientAwaitTestStreamID,
+			addPublicationChannel,
+			addTimeout,
+		),
+	)
+	// A missed success would spin on the fixed clock. The hook ends the await
+	// at its deadline instead.
+	client.SetAwaitPollSleepingHookForTest(func() {
+		nanoNs = startNs + int64(timeout)
+	})
+	defer client.SetAwaitPollSleepingHookForTest(nil)
+
+	// An error on the add displaces the success mark before the first poll.
+	registration, err := client.AwaitResponseForTest(
+		clientAwaitTestCorrelationID,
+		conductor.PendingKindNextSessionID,
+		timeout,
+		func() error {
+			require.True(
+				t,
+				fixture.Conductor.NextSessionID(clientAwaitTestCorrelationID, wantSessionID),
+			)
+			require.True(
+				t,
+				fixture.Conductor.DriverError(conductor.ErrorResponse{
+					OffendingCommandCorrelationID: addCorrelationID,
+					ErrorCode:                     addRejectedCode,
+					ErrorMessage:                  addRejectedMessage,
+				}),
+			)
+			return nil
+		},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, wantSessionID, registration.Int32Value)
+	requireActiveCorrelationCleared(t, fixture)
+	done, _, err := fixture.Conductor.PollPending(addCorrelationID)
+	require.True(t, done)
+	var driverErr *conductor.DriverRegistrationError
+	require.ErrorAs(t, err, &driverErr)
+	require.Equal(t, addCorrelationID, driverErr.CorrelationID)
+	require.Equal(t, addRejectedCode, driverErr.ErrorCode)
+}
+
 func TestClient_PollAwaitForTest_requiresDoWorkAfterBroadcastCompletion(t *testing.T) {
 	var nanoNs int64
 	client, fixture := newClientAwaitFixture(
