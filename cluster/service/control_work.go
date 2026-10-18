@@ -142,7 +142,8 @@ func (a *Agent) canSendAck() bool {
 // Behaviour:
 //   - canSendAck false, empty queue, or unready first entry: no send
 //   - offer result > 0: pop the first entry, advance ackID, mark the entry
-//     failure when set, return 1
+//     failure when set, return 1. A snapshot entry also stores its
+//     RelevantID in lastSnapshotRecordingID
 //   - retriable offer code: keep the first entry and ackID, return 0
 //   - terminal offer code: mark the entry failure when set, else
 //     errAckPublish. Return 0
@@ -152,7 +153,8 @@ func (a *Agent) canSendAck() bool {
 //   - Timestamp from clusterTime
 //   - AckID from ackID
 //   - RelevantID from the entry. Start entries carry the configured
-//     relevant id. Join, request, and snapshot entries carry nullValue
+//     relevant id. Snapshot entries carry the recording id, or nullValue
+//     when the take failed. Join and request entries carry nullValue
 //   - ServiceID from config
 func (a *Agent) drainReadyCoordinationAck() int {
 	if !a.canSendAck() {
@@ -182,6 +184,9 @@ func (a *Agent) drainReadyCoordinationAck() int {
 	}
 	a.coordinationAcks = a.coordinationAcks[1:]
 	a.ackID++
+	if entry.kind == ackKindSnapshot {
+		a.lastSnapshotRecordingID = entry.relevantID
+	}
 	if entry.failure != nil {
 		a.markFailure(entry.failure)
 	}

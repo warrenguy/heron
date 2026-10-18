@@ -83,12 +83,13 @@ type TransportClient interface {
 var _ TransportClient = (*aeron.Client)(nil)
 
 // Config configures [Open]. Zero-value channel and stream id fields take the
-// defaults stated per field. Open passes FragmentLimit and StartAck to
-// [NewAgent].
+// defaults stated per field. Open passes FragmentLimit, StartAck,
+// SnapshotChannel, and SnapshotStreamID to [NewAgent].
 type Config struct {
 	// Aeron is the borrowed transport client. Required. The container does not
 	// own Aeron. Open uses Aeron for the control pair. The agent uses Aeron to
-	// add the log subscription at join time.
+	// add the log subscription at join time. The agent adds snapshot
+	// publications through Aeron.
 	//
 	// With Archive set, Aeron must be an *aeron.Client. The archive client
 	// shares Aeron. Open then calls DoWork on Aeron until the archive connect
@@ -130,8 +131,8 @@ type Config struct {
 	// StartAck to [NewAgent]. See [StartAckConfig].
 	StartAck *StartAckConfig
 
-	// Archive configures the archive client. Nil connects none. Open leaves
-	// Archive unchanged.
+	// Archive configures the archive client. Nil connects none: each
+	// snapshot take then fails and acks -1. Open leaves Archive unchanged.
 	//
 	// Open applies WithRemoteControl, then these defaults:
 	//   - empty ControlRequestChannel and ControlResponseChannel take
@@ -197,7 +198,8 @@ type StartAckConfig struct {
 //  4. control publication on ConsensusModuleStreamID
 //  5. with Archive set, connect the archive client
 //  6. proxy bind
-//  7. agent build with control ingress, proxy, and archive client wired
+//  7. agent build with control ingress, proxy, and archive client wired. The
+//     transport client adds snapshot publications
 //
 // Behaviour: Open registers the two adds. With Archive set, Open then
 // connects the archive client. The connect pumps the transport client for up
@@ -278,6 +280,10 @@ func Open(cfg Config) (*Container, error) {
 			ModuleProxy:       proxy,
 			StartAck:          cfg.StartAck,
 			Archive:           archiveClient,
+
+			SnapshotPublications: cfg.Aeron,
+			SnapshotChannel:      cfg.SnapshotChannel,
+			SnapshotStreamID:     cfg.SnapshotStreamID,
 		}),
 		ingress:       ingress,
 		controlSub:    sub,
@@ -480,9 +486,10 @@ func (c *Container) ArchiveClient() *archive.Client {
 // reassembly, then closes the control subscription, then the control
 // publication.
 //
-// Behaviour: [Agent.Close] unbinds any log image and closes any owned log
-// subscription. Control ingress Clear drops reassembly builders. Control
-// handles close next.
+// Behaviour: [Agent.Close] ends any snapshot take, then unbinds any log image
+// and closes any owned log subscription. The archive client closes after the
+// agent, so take cleanup reaches an open client. Control ingress Clear drops
+// reassembly builders. Control handles close next.
 //
 // Lifetime: idempotent. After Close the agent is inert. A second Close
 // returns nil. Safe on a nil receiver.

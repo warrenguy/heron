@@ -68,13 +68,15 @@ func (s *wireRecordingService) TimerEvent(_, _ int64) {}
 //   - control ingress
 //   - module proxy on a connected 105 test publication
 //   - consensus module service ingress that bridge105 feeds
+//   - snapshot take fake for the archive and the snapshot publications
 type wireServiceSide struct {
 	serviceIngress *consensus.QueueConsensusIngress
 
-	svc     *service.Agent
-	control *service.QueueControlIngress
-	pub105  *aeron.Publication
-	off105  int
+	svc          *service.Agent
+	snapshotTake *service.SnapshotTakeFake
+	control      *service.QueueControlIngress
+	pub105       *aeron.Publication
+	off105       int
 
 	image       *aeron.Image
 	frameOffset int
@@ -133,6 +135,7 @@ func newWireServiceSideWithStartAck(
 	return wireServiceSide{
 		serviceIngress: serviceIngress,
 		svc:            svc,
+		snapshotTake:   service.InstallSnapshotTakeFakeForTest(t, svc),
 		control:        control,
 		pub105:         pub105,
 		image:          image,

@@ -699,18 +699,19 @@ func TestControlWork_TimestampAndRelevantID(t *testing.T) {
 func TestControlWork_JoinThenSnapshotDrainOrder(t *testing.T) {
 	h := newControlAgentHarness(t, 0)
 	h.bindJoin(t, 0)
+	fake := InstallSnapshotTakeFakeForTest(t, h.agent)
 
 	const timestamp int64 = 321
-	span := clusterActionFrameSpan()
-	writeClusterAction(t, h.image, h.committed, snapshotActionFields(int64(span), timestamp))
+	end := writeTermEventAndSnapshot(t, h.image, h.committed, timestamp)
 
+	// Tick 1: the join ack sends. The snapshot entry stays unready.
 	h.agent.DoWork(0)
 	require.NoError(t, h.agent.ServiceFailure())
-	require.Equal(t, int64(span), h.agent.LogPosition())
+	require.Equal(t, end, h.agent.LogPosition())
 	require.Equal(t, timestamp, h.agent.ClusterTime())
 	require.Equal(t, 1, h.agent.PendingCoordinationAcks())
 	require.Equal(t, ackKindSnapshot, h.agent.coordinationAcks[0].kind)
-	require.True(t, h.agent.coordinationAcks[0].ready)
+	require.False(t, h.agent.coordinationAcks[0].ready)
 
 	acks := decodeServiceAcksFromPub(t, h.pub)
 	require.Len(t, acks, 1)
@@ -722,14 +723,19 @@ func TestControlWork_JoinThenSnapshotDrainOrder(t *testing.T) {
 		ServiceID:   1,
 	}, acks[0])
 
+	// Tick 2: the take records. No ack before STOP.
+	h.agent.DoWork(0)
+	require.Len(t, decodeServiceAcksFromPub(t, h.pub), 1)
+
+	// Tick 3: the snapshot ack carries the recording id.
 	h.agent.DoWork(0)
 	acks = decodeServiceAcksFromPub(t, h.pub)
 	require.Len(t, acks, 2)
 	require.Equal(t, codecs.ServiceAckFields{
-		LogPosition: int64(span),
+		LogPosition: end,
 		Timestamp:   timestamp,
 		AckID:       1,
-		RelevantID:  nullValue,
+		RelevantID:  fake.RecordingID(),
 		ServiceID:   1,
 	}, acks[1])
 	require.Equal(t, 0, h.agent.PendingCoordinationAcks())

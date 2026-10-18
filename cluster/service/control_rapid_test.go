@@ -12,6 +12,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 // modelAckEntry is one pending ServiceAck in the reference model.
@@ -54,16 +55,17 @@ type pendingControlOp struct {
 // Asserts delivery-order ack pairing. The agent acks each pending ServiceAck
 // exactly once, in queue order, with ids 0..n-1. A drawn start entry is
 // index 0 exactly once. Every later ack id shifts by one. The start ack
-// carries the configured relevant id. Later acks carry nullValue. The ready
-// prefix gate never sends past the first unready entry. A passed request
-// position marks ServiceFailure and freezes.
+// carries the configured relevant id. Join, request and failed snapshot acks
+// carry nullValue. A passing snapshot ack carries the take's recording id.
+// The ready prefix gate never sends past the first unready entry. A passed
+// request position marks ServiceFailure and freezes.
 //
-// Each SNAPSHOT frame draws a hook outcome. A failed hook queues one ready
-// entry with its cause. The poll stops at that frame. The drain marks the
-// cause after the ack sends, or first on a terminal offer code. A retriable
-// code holds the entry and marks nothing. With no sender bound, the hook
-// tick marks the cause and the entry stays queued. No ack follows a failed
-// entry. An earlier cause stays first.
+// Each SNAPSHOT frame starts a take over the take fake with a drawn hook
+// outcome. The poll holds at that frame until the take resolves. A failed
+// hook readies its entry with its cause. The drain marks the cause after the
+// ack sends, or first on a terminal offer code. A retriable code holds the
+// entry and marks nothing. With no sender bound, the cause marks at once. An
+// earlier cause stays first.
 //
 // Ops: deliver RequestServiceAck; deliver JoinLog (including superseding an
 // unbound pending join); append a committed timer frame; append a committed
@@ -72,6 +74,7 @@ type pendingControlOp struct {
 // tables.
 func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 	t.Parallel()
+	termEvent := termEventPayload(t, clusterwire.ClusterTimeUnit_NANOS, 0)
 	rapid.Check(t, func(rt *rapid.T) {
 		rt.Helper()
 
@@ -106,6 +109,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			FragmentLimit:     DefaultLogFragmentLimit,
 			StartAck:          startAck,
 		})
+		InstallSnapshotTakeFakeForTest(t, agent)
 
 		var model []modelAckEntry
 		if startAck != nil {
@@ -137,6 +141,16 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			modelMark(errTakeSnapshot)
 		}
 		modelHookCalls := 0
+		type modelTakeState struct {
+			entry int
+			// ticks counts the ticks after the consume tick.
+			ticks       int
+			hookFails   bool
+			recordingID int64
+		}
+		var modelTake *modelTakeState
+		modelNextRecordingID := snapshotTakeFakeFirstRecordingID
+		termEventWritten := false
 		modelBound := false
 		frameOffset := 0
 		var frames []modelFrame
@@ -232,8 +246,36 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			}
 		}
 
+		// The hook runs on the tick after the consume tick. Returns true when
+		// a no-sender mark ends the tick.
+		modelTakeWork := func() bool {
+			if modelTake == nil {
+				return false
+			}
+			modelTake.ticks++
+			e := &model[modelTake.entry]
+			switch {
+			case modelTake.ticks == 1 && modelTake.hookFails:
+				modelHookCalls++
+				e.ready = true
+				e.failed = true
+				modelTake = nil
+				if modelSender == modelSenderNone {
+					modelMarkTake()
+					return true
+				}
+			case modelTake.ticks == 1:
+				modelHookCalls++
+			default:
+				e.ready = true
+				e.relevantID = modelTake.recordingID
+				modelTake = nil
+			}
+			return false
+		}
+
 		modelPoll := func() {
-			if modelFailed || !modelBound {
+			if modelFailed || !modelBound || modelTake != nil {
 				return
 			}
 			bound := committed
@@ -247,24 +289,21 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 					break
 				}
 				modelLogPos = f.end
+				nextFrame++
+				frags++
+				// ControlledBreak: the take holds later frames.
 				if f.snapshot {
-					modelHookCalls++
 					model = append(model, modelAckEntry{
 						logPosition: f.end,
 						kind:        ackKindSnapshot,
-						ready:       true,
 						relevantID:  nullValue,
-						failed:      f.hookFails,
 					})
-				}
-				nextFrame++
-				frags++
-				// ControlledBreak: later frames stay undelivered. No sender:
-				// the hook tick marks the cause.
-				if f.snapshot && f.hookFails {
-					if modelSender == modelSenderNone {
-						modelMarkTake()
+					modelTake = &modelTakeState{
+						entry:       len(model) - 1,
+						hookFails:   f.hookFails,
+						recordingID: modelNextRecordingID,
 					}
+					modelNextRecordingID++
 					break
 				}
 			}
@@ -290,15 +329,18 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			return false
 		}
 
-		// modelDoWork matches Agent: start-work then ready, control poll,
-		// sweep, drain, join bind, poll. Drain still runs after sweep
-		// failure. Join and poll freeze after that.
+		// modelDoWork matches Agent: start-work then ready, take work,
+		// control poll, sweep, drain, join bind, poll. Drain still runs after
+		// sweep failure. Join and poll freeze after that.
 		modelDoWork := func() {
 			if modelFailed {
 				return
 			}
 			if len(model) > 0 && model[0].kind == ackKindStart {
 				model[0].ready = true
+			}
+			if modelTakeWork() {
+				return
 			}
 			n := min(len(pending), defaultControlFragmentLimit)
 			for _, op := range pending[:n] {
@@ -370,6 +412,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			}
 			require.NoError(rt, agent.ServiceFailure())
 			require.Equal(rt, len(model)-modelDrained, agent.PendingCoordinationAcks())
+			require.Equal(rt, modelTake != nil, agent.take != nil, "take in flight")
 			require.Equal(rt, modelLogPos, agent.LogPosition())
 			require.Equal(rt, modelBound, agent.IsLogBound())
 
@@ -471,6 +514,10 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			case 4: // ClusterActionRequest SNAPSHOT flags 0
 				if !agent.IsLogBound() {
 					continue
+				}
+				if !termEventWritten {
+					appendFrame(termEvent, false, false)
+					termEventWritten = true
 				}
 				end := int64(frameOffset) + int64(clusterActionFrameSpan())
 				payload := encodeClusterAction(rt, snapshotActionFields(end, int64(len(frames)+1)))
