@@ -137,6 +137,11 @@ type KeepAliveRequestFields struct {
 	CorrelationID    int64
 }
 
+type ArchiveIDRequestFields struct {
+	ControlSessionID int64
+	CorrelationID    int64
+}
+
 type StartRecordingRequest2Fields struct {
 	ControlSessionID int64
 	CorrelationID    int64

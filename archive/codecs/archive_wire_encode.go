@@ -375,6 +375,29 @@ func EncodeChallengeResponse(
 	)
 }
 
+// EncodeArchiveIDRequest writes an archive ArchiveIdRequest at offset.
+func EncodeArchiveIDRequest(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields ArchiveIDRequestFields,
+) (wireEnd int, ok bool) {
+	return encodeWithArchiveWireHeader(
+		buf,
+		offset,
+		archivewire.ArchiveIdRequestSbeBlockLength,
+		archivewire.ArchiveIdRequestSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
+			var msg archivewire.ArchiveIdRequest
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+				SetControlSessionId(fields.ControlSessionID).
+				SetCorrelationId(fields.CorrelationID)
+		},
+	)
+}
+
 // EncodeKeepAliveRequest writes an archive KeepAliveRequest at offset.
 func EncodeKeepAliveRequest(
 	buf []byte,

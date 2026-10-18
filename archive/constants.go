@@ -65,3 +65,7 @@ const (
 func ProtocolSemanticVersion() int32 {
 	return cnc.ComposeSemanticVersion(1, 12, 0)
 }
+
+// protocolVersionWithArchiveID is the first server protocol version that
+// answers ArchiveIdRequest.
+var protocolVersionWithArchiveID = cnc.ComposeSemanticVersion(1, 11, 0)

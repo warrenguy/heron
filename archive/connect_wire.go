@@ -176,3 +176,26 @@ func (ac *AsyncConnect) prepareChallengeResponse() error {
 		},
 	)
 }
+
+// prepareArchiveIDRequest encodes ArchiveIdRequest under a fresh correlation id.
+func (ac *AsyncConnect) prepareArchiveIDRequest() error {
+	ac.session.correlationID = ac.client.NextCorrelationID()
+	wireLen, ok := codecs.ArchiveWireMessageLen(archivewire.ArchiveIdRequestSbeBlockLength)
+	return ac.encodeConnectWire(
+		wireLen,
+		ok,
+		"archive: archive id request wire length invalid",
+		"archive: failed to encode archive id request",
+		func(dst []byte) (int, bool) {
+			return codecs.EncodeArchiveIDRequest(
+				dst,
+				0,
+				archivewire.MessageHeaderSbeSchemaVersion,
+				codecs.ArchiveIDRequestFields{
+					ControlSessionID: ac.session.controlSessionID,
+					CorrelationID:    ac.session.correlationID,
+				},
+			)
+		},
+	)
+}

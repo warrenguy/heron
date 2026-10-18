@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
@@ -19,7 +20,6 @@ import (
 const (
 	asyncConnectFixtureControlSessionID int64 = 42
 	asyncConnectFixtureArchiveID        int64 = 7
-	asyncConnectFixtureServerVersion    int32 = 520
 	asyncConnectFixtureTimestamp        int64 = 1700000000123
 
 	asyncConnectPollTimeout    = 5 * time.Second
@@ -41,6 +41,11 @@ const (
 )
 
 var archiveConnectClientInfoLen = len(archiveConnectClientInfo(""))
+
+var (
+	asyncConnectFixtureServerVersion       = cnc.ComposeSemanticVersion(1, 12, 0)
+	asyncConnectFixtureLegacyServerVersion = cnc.ComposeSemanticVersion(1, 10, 0)
+)
 
 func validConnectFixtureConfig() Config {
 	return Config{
@@ -237,6 +242,16 @@ func connectControlResponseOKFields(correlationID int64) codecs.ControlResponseF
 	return codecs.ControlResponseFields{
 		ControlSessionID: asyncConnectFixtureControlSessionID,
 		CorrelationID:    correlationID,
+		RelevantID:       asyncConnectFixtureControlSessionID,
+		Code:             archivewire.ControlResponseCode_OK,
+		Version:          asyncConnectFixtureServerVersion,
+	}
+}
+
+func archiveIDResponseOKFields(correlationID int64) codecs.ControlResponseFields {
+	return codecs.ControlResponseFields{
+		ControlSessionID: asyncConnectFixtureControlSessionID,
+		CorrelationID:    correlationID,
 		RelevantID:       asyncConnectFixtureArchiveID,
 		Code:             archivewire.ControlResponseCode_OK,
 		Version:          asyncConnectFixtureServerVersion,
@@ -300,6 +315,33 @@ func appendControlResponseOKForConnect(
 		termBuffer,
 		encodeControlResponseWire(t, connectControlResponseOKFields(correlationID)),
 	)
+}
+
+func appendArchiveIDResponseOK(
+	t *testing.T,
+	termBuffer atomicbuffer.AtomicBuffer,
+	correlationID int64,
+) {
+	t.Helper()
+
+	appendUnfragmentedWireToTerm(
+		t,
+		termBuffer,
+		encodeControlResponseWire(t, archiveIDResponseOKFields(correlationID)),
+	)
+}
+
+// writeConnectHandshakeResponses writes an OK response to the connect or
+// archive id request that the current state awaits. Other states write nothing.
+func writeConnectHandshakeResponses(t *testing.T, ac *AsyncConnect) {
+	t.Helper()
+
+	switch ac.State() {
+	case ConnectStatePollResponse:
+		withAsyncConnectControlResponseTerm(t, ac, writeControlResponseOKForConnect)
+	case ConnectStateAwaitArchiveIDResponse:
+		withAsyncConnectControlResponseTerm(t, ac, appendArchiveIDResponseOK)
+	}
 }
 
 func setupAsyncConnectControlReady(
@@ -399,10 +441,10 @@ func plantConnectWireBufferSlackSentinels(backing []byte, wireLen int, sentinel 
 func captureConnectWireBufferSlackOnce(
 	planted *bool,
 	ac *AsyncConnect,
-	challengeWritten bool,
+	ready bool,
 	sentinel byte,
 ) (backing []byte, slackWireLen int) {
-	if *planted || !challengeWritten {
+	if *planted || !ready {
 		return nil, 0
 	}
 	buf := ac.ConnectWireBufferForTest()

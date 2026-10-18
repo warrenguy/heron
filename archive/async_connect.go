@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
@@ -21,6 +22,8 @@ const (
 	ConnectStateAwaitPublicationConnected
 	ConnectStateSendMessage
 	ConnectStatePollResponse
+	ConnectStateSendArchiveIDRequest
+	ConnectStateAwaitArchiveIDResponse
 	ConnectStateConcludeConnect
 	ConnectStateDone
 )
@@ -31,6 +34,8 @@ var connectStateNames = [...]string{
 	"AWAIT_PUBLICATION_CONNECTED",
 	"SEND_MESSAGE",
 	"POLL_RESPONSE",
+	"SEND_ARCHIVE_ID_REQUEST",
+	"AWAIT_ARCHIVE_ID_RESPONSE",
 	"CONCLUDE_CONNECT",
 	"DONE",
 }
@@ -59,6 +64,9 @@ type connectSession struct {
 	archiveID        int64
 	serverVersion    int32
 	correlationID    int64
+	// established is set once the archive has named a control session.
+	// Close then sends a best-effort CloseSessionRequest for it.
+	established bool
 }
 
 type connectWireState struct {
@@ -176,9 +184,11 @@ func (ac *AsyncConnect) Poll() (*ConnectResult, error) {
 	case ConnectStateAwaitPublicationConnected:
 		return ac.pollAwaitPublicationConnected()
 	case ConnectStateSendMessage:
-		return ac.pollSendMessage()
-	case ConnectStatePollResponse:
+		return ac.offerConnectWire(ConnectStatePollResponse)
+	case ConnectStatePollResponse, ConnectStateAwaitArchiveIDResponse:
 		return ac.pollPollResponse()
+	case ConnectStateSendArchiveIDRequest:
+		return ac.offerConnectWire(ConnectStateAwaitArchiveIDResponse)
 	case ConnectStateConcludeConnect:
 		return ac.pollConcludeConnect()
 	case ConnectStateDone:
@@ -189,6 +199,10 @@ func (ac *AsyncConnect) Poll() (*ConnectResult, error) {
 }
 
 // Close releases partial connect resources. Idempotent.
+//
+// Close sends one best-effort CloseSessionRequest when the archive has
+// already named a control session. A connect that fails after the
+// handshake then leaves no session behind on the archive.
 //
 // After a successful Poll returns ConnectResult, resources move to the result and
 // Close is a true no-op: closed is not set and Poll continues to report
@@ -209,8 +223,11 @@ func (ac *AsyncConnect) Close() error {
 		ac.transport.responseSubscription = nil
 	}
 	ac.transport.responsePoller = nil
-	if ac.transport.requestPublication != nil {
-		_ = ac.transport.requestPublication.Close()
+	if pub := ac.transport.requestPublication; pub != nil {
+		if ac.session.established {
+			_, _ = NewProxy(pub, ac.cfg).TryCloseSession(ac.session.controlSessionID)
+		}
+		_ = pub.Close()
 		ac.transport.requestPublication = nil
 	}
 	if ac.ownsAeronClient && ac.client != nil {
@@ -348,7 +365,9 @@ func (ac *AsyncConnect) pollAwaitPublicationConnected() (*ConnectResult, error) 
 	return nil, nil
 }
 
-func (ac *AsyncConnect) pollSendMessage() (*ConnectResult, error) {
+// offerConnectWire offers the encoded wire once. A taken offer moves the
+// state to next.
+func (ac *AsyncConnect) offerConnectWire(next ConnectState) (*ConnectResult, error) {
 	pub := ac.transport.requestPublication
 	if pub == nil {
 		return nil, errors.New("archive: control publication missing")
@@ -381,7 +400,7 @@ func (ac *AsyncConnect) pollSendMessage() (*ConnectResult, error) {
 	if result < 0 {
 		return nil, fmt.Errorf("archive: control offer failed: status=%d", result)
 	}
-	ac.state = ConnectStatePollResponse
+	ac.state = next
 	return nil, nil
 }
 
@@ -425,6 +444,7 @@ func (ac *AsyncConnect) handleConnectChallenge(
 	capture, _ := poller.Capture()
 	ac.wire.encodedChallenge = bytes.Clone(capture.EncodedChallenge)
 	ac.session.controlSessionID = capture.ControlSessionID
+	ac.session.established = true
 	ac.session.correlationID = conductor.NullCorrelationID
 	if err := ac.prepareChallengeResponse(); err != nil {
 		return nil, err
@@ -444,9 +464,25 @@ func (ac *AsyncConnect) handleConnectControlResponse(
 		return nil, MapControlResponse(resp)
 	}
 	ac.session.controlSessionID = resp.ControlSessionID
-	ac.session.archiveID = resp.RelevantID
+	ac.session.established = true
+	if ac.state == ConnectStateAwaitArchiveIDResponse {
+		ac.session.archiveID = resp.RelevantID
+		ac.state = ConnectStateConcludeConnect
+		return nil, nil
+	}
+
+	// The connect OK carries the control session id in RelevantID. The archive
+	// id needs its own request. Servers before 1.11.0 do not serve it.
 	ac.session.serverVersion = resp.Version
-	ac.state = ConnectStateConcludeConnect
+	if resp.Version < protocolVersionWithArchiveID {
+		ac.session.archiveID = cnc.NullValue
+		ac.state = ConnectStateConcludeConnect
+		return nil, nil
+	}
+	if err := ac.prepareArchiveIDRequest(); err != nil {
+		return nil, err
+	}
+	ac.state = ConnectStateSendArchiveIDRequest
 	return nil, nil
 }
 

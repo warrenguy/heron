@@ -318,6 +318,8 @@ func requireDecodedArchiveFields(tb require.TestingT, want, got any) {
 		require.Equal(tb, w, got.(codecs.RecordingSignalEventFields))
 	case codecs.KeepAliveRequestFields:
 		require.Equal(tb, w, got.(codecs.KeepAliveRequestFields))
+	case codecs.ArchiveIDRequestFields:
+		require.Equal(tb, w, got.(codecs.ArchiveIDRequestFields))
 	default:
 		require.Fail(tb, "unsupported fields type")
 	}
@@ -879,6 +881,17 @@ func TestKeepAliveRequest_roundtrip(t *testing.T) {
 		archivewire.KeepAliveRequestSbeTemplateID,
 		archiveSchemaVersion,
 		encodeAt(archiveSchemaVersion, fields, codecs.EncodeKeepAliveRequest),
+		fields,
+	)
+}
+
+func TestArchiveIDRequest_roundtrip(t *testing.T) {
+	fields := codecs.ArchiveIDRequestFields{ControlSessionID: 1, CorrelationID: 2}
+	runArchiveCodecRoundtrip(
+		t,
+		archivewire.ArchiveIdRequestSbeTemplateID,
+		archiveSchemaVersion,
+		encodeAt(archiveSchemaVersion, fields, codecs.EncodeArchiveIDRequest),
 		fields,
 	)
 }

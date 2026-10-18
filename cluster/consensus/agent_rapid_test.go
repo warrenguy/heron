@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
@@ -648,7 +649,7 @@ func TestRecordingAppendPosition_highWater_rapid(t *testing.T) {
 			counters := countersWithRecordingPosition(
 				rt, model.recordingID, model.counterValue, model.counterPresent,
 			)
-			src := NewRecordingPosAppendPosition(a, counters)
+			src := NewRecordingPosAppendPosition(a, counters, cnc.NullValue)
 			a.SetAppendSource(src)
 
 			pos, ready := src.AppendPosition()
