@@ -6,6 +6,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
+	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
@@ -58,31 +59,44 @@ type AgentConfig struct {
 	// drains nothing, same as nil.
 	ModuleProxy *ConsensusModuleProxy
 
-	// SnapshotPublication is handed to TakeSnapshot on a snapshot action.
-	// Nil is allowed. Nothing else reads the field.
-	SnapshotPublication *aeron.ExclusivePublication
-
 	// StartAck enables the spontaneous start ack a Java consensus module
 	// consumes during recovery. Nil disables the start ack. See
 	// [StartAckConfig].
 	StartAck *StartAckConfig
 
-	// Archive is the archive client DoWork polls. Nil polls none. Agent does
-	// not own Archive.
+	// Archive is the archive client DoWork polls. Snapshot takes record
+	// through Archive and install its session handler, so Archive must carry
+	// no session handler of its own. Nil polls none and fails each take. Agent
+	// does not own Archive.
 	Archive *archive.Client
+
+	// SnapshotPublications adds each snapshot publication. Nil is allowed: a
+	// snapshot action then fails the take. Agent does not own the adder.
+	SnapshotPublications SnapshotPublicationAdder
+
+	// SnapshotChannel is the snapshot publication channel. Empty takes
+	// DefaultSnapshotChannel. NewAgent does not validate it. [Open] does.
+	SnapshotChannel string
+
+	// SnapshotStreamID is the snapshot publication stream. Zero takes
+	// DefaultSnapshotStreamID. NewAgent does not validate it. [Open] does.
+	SnapshotStreamID int32
 }
 
 // Agent owns the service duty cycle: log join, bounded log consumption,
 // session registry, and the pending coordination-ack queue.
 //
 // Concurrency: invoker-only. The harness drives DoWork after runner.DoWork on
-// one goroutine. Agent does not pump aeron.Client.
+// one goroutine. Agent never calls DoWork on aeron.Client. The log
+// subscription add and the snapshot publication add poll run conductor ticks.
 //
-// Lifetime: Agent owns the log subscription it adds and closes it in Close.
-// Agent does not own the aeron.Client.
+// Lifetime: Agent closes the log subscription in Close. The take closes its
+// snapshot publication and start request when it ends. Close closes both
+// while a take runs. Agent does not own the aeron.Client.
 //
-// Ownership: Agent owns the BoundedLogAdapter and the log subscription. Agent
-// does not own Images the subscription holds; unbind clears the adapter Image
+// Ownership: Agent owns the BoundedLogAdapter, the log subscription, and the
+// snapshot publication and start request of a running take. Agent does not
+// own Images the subscription holds; unbind clears the adapter Image
 // reference only. Agent does not own the archive client.
 type Agent struct {
 	serviceID         int32
@@ -94,6 +108,33 @@ type Agent struct {
 
 	// archive is the polled archive client, or nil. Never a typed nil.
 	archive snapshotArchiveControl
+
+	// newSnapshotStart builds one start recording request. Set with archive.
+	newSnapshotStart func(streamID int32, channel []byte) snapshotStartRequest
+
+	// snapshotPublications adds each snapshot publication, or nil.
+	snapshotPublications SnapshotPublicationAdder
+	snapshotChannel      string
+	snapshotStreamID     int32
+
+	// snapshotRowOffer offers one snapshot row. Nil offers through
+	// ExclusivePublication.Offer. Tests substitute.
+	snapshotRowOffer func(publication *aeron.ExclusivePublication, row []byte) int64
+
+	// take is the snapshot take in flight, or nil.
+	take *snapshotTake
+
+	// snapshotScratch is the reused row encode buffer.
+	snapshotScratch []byte
+
+	// timeUnit and appVersion come from the last NewLeadershipTermEvent.
+	// timeUnit starts at ClusterTimeUnit_NULL_VALUE: no unit known yet.
+	timeUnit   clusterwire.ClusterTimeUnit
+	appVersion int32
+
+	// lastSnapshotRecordingID is the RelevantID of the last sent snapshot
+	// ack. Starts at nullValue.
+	lastSnapshotRecordingID int64
 
 	adapter *BoundedLogAdapter
 
@@ -116,9 +157,8 @@ type Agent struct {
 
 	logSubscription *aeron.Subscription
 
-	leadershipHandler   NewLeadershipTermEventHandler
-	snapshotHandler     TakeSnapshotHandler
-	snapshotPublication *aeron.ExclusivePublication
+	leadershipHandler NewLeadershipTermEventHandler
+	snapshotHandler   TakeSnapshotHandler
 
 	// ackID is the next ServiceAck id to send. Starts 0. Advances only on a
 	// successful drain send.
@@ -167,7 +207,7 @@ const (
 	// position.
 	ackKindRequest
 
-	// ackKindSnapshot: ready on append. No sweep rule.
+	// ackKindSnapshot: ready when the take resolves. No sweep rule.
 	ackKindSnapshot
 
 	// ackKindStart: queued at NewAgent. Ready after successful start work,
@@ -184,7 +224,7 @@ const (
 //   - join: ready at bind or supersession
 //   - request: ready when the agent log position equals the entry
 //     logPosition
-//   - snapshot: ready on append
+//   - snapshot: ready when the take resolves, on success or failure
 //
 // failure holds the cause of a failed snapshot take. The drain marks it
 // once the ack sends, or on a terminal offer code. With no ack sender,
@@ -222,18 +262,38 @@ var _ Cluster = (*Agent)(nil)
 // via type assertion on cfg.Service.
 func NewAgent(cfg AgentConfig) *Agent {
 	a := &Agent{
-		serviceID:           cfg.ServiceID,
-		service:             cfg.Service,
-		committedPosition:   cfg.CommittedPosition,
-		subscriptions:       cfg.Subscriptions,
-		control:             cfg.Control,
-		moduleProxy:         cfg.ModuleProxy,
-		snapshotPublication: cfg.SnapshotPublication,
-		memberID:            -1,
-		sessions:            make(map[int64]*clientSessionRecord),
+		serviceID:               cfg.ServiceID,
+		service:                 cfg.Service,
+		committedPosition:       cfg.CommittedPosition,
+		subscriptions:           cfg.Subscriptions,
+		control:                 cfg.Control,
+		moduleProxy:             cfg.ModuleProxy,
+		snapshotChannel:         cfg.SnapshotChannel,
+		snapshotStreamID:        cfg.SnapshotStreamID,
+		timeUnit:                clusterwire.ClusterTimeUnit_NULL_VALUE,
+		lastSnapshotRecordingID: nullValue,
+		memberID:                -1,
+		sessions:                make(map[int64]*clientSessionRecord),
 	}
-	if cfg.Archive != nil {
-		a.archive = cfg.Archive
+	if a.snapshotChannel == "" {
+		a.snapshotChannel = DefaultSnapshotChannel
+	}
+	if a.snapshotStreamID == 0 {
+		a.snapshotStreamID = DefaultSnapshotStreamID
+	}
+	if client := cfg.Archive; client != nil {
+		a.archive = client
+		a.newSnapshotStart = func(streamID int32, channel []byte) snapshotStartRequest {
+			return client.NewAsyncStartRecording(
+				streamID,
+				archivewire.SourceLocation_LOCAL,
+				true,
+				channel,
+			)
+		}
+	}
+	if !isNilOrTypedNil(cfg.SnapshotPublications) {
+		a.snapshotPublications = cfg.SnapshotPublications
 	}
 	if nlt, ok := cfg.Service.(NewLeadershipTermEventHandler); ok {
 		a.leadershipHandler = nlt
@@ -253,7 +313,10 @@ func NewAgent(cfg AgentConfig) *Agent {
 	return a
 }
 
-// DoWork runs one duty tick. nowNs is unused.
+// DoWork runs one duty tick. nowNs is the clock for the snapshot take
+// deadlines: nanoseconds from a monotonic source, such as
+// time.Now().UnixNano(). A clock that never advances fires no deadline, so
+// a lost START or STOP signal then stalls the take forever.
 //
 // Order:
 //  1. serviceFailure or closed: return 0
@@ -261,20 +324,24 @@ func NewAgent(cfg AgentConfig) *Agent {
 //     once. The start entry stays unready. Success or a nil Service marks
 //     the start entry ready when one is queued.
 //  3. archive Poll when an archive client is wired
-//  4. control work: poll control, request readiness sweep, drain at most one
+//  4. snapshot take work while a take runs
+//  5. control work: poll control, request readiness sweep, drain at most one
 //     ready first queued ack. An entry with a failure marks it on send or
 //     on a terminal offer code
-//  5. join work while pendingJoin is non-nil and no image is bound
-//  6. log poll when the image is bound and CommittedPosition is non-nil. The
-//     poll bound is min(committed, lowest unready request entry position)
-//  7. unbind when zero polled and (image closed or position at maxLogPosition)
+//  6. join work while pendingJoin is non-nil and no image is bound
+//  7. log poll when the image is bound and CommittedPosition is non-nil. The
+//     poll bound is min(committed, lowest unready request entry position).
+//     While a take runs, the bound also holds at the take action position
+//  8. unbind when zero polled and (image closed or position at maxLogPosition)
 //
-// Returns the work count: Start, the archive Poll count, control fragments,
-// each sent ack, each join bind, and each polled fragment.
+// A take that resolves in step 4 can ack in step 5 of the same tick.
+//
+// Returns the work count: Start, the archive Poll count, each completed take
+// state, control fragments, each sent ack, each join bind, and each polled
+// fragment.
 //
 // Concurrency: invoker-only.
 func (a *Agent) DoWork(nowNs int64) int {
-	_ = nowNs
 	if a.closed || a.serviceFailure != nil {
 		return 0
 	}
@@ -297,6 +364,13 @@ func (a *Agent) DoWork(nowNs int64) int {
 		work += a.archive.Poll()
 	}
 
+	if a.take != nil {
+		work += a.snapshotTakeWork(nowNs)
+		if a.serviceFailure != nil {
+			return work
+		}
+	}
+
 	work += a.controlWork()
 	if a.serviceFailure != nil {
 		return work
@@ -315,6 +389,9 @@ func (a *Agent) DoWork(nowNs int64) int {
 		if a.hasUnreadyRequestBound {
 			bound = min(bound, a.unreadyRequestBound)
 		}
+		if a.take != nil {
+			bound = min(bound, a.take.logPosition)
+		}
 		polled = a.adapter.Poll(bound)
 		work += polled
 		if a.serviceFailure != nil {
@@ -326,16 +403,19 @@ func (a *Agent) DoWork(nowNs int64) int {
 	return work
 }
 
-// Close unbinds the log image and closes the owned log subscription.
+// Close ends any snapshot take. A take that Close ends sends no ack. Close
+// then unbinds the log image and closes the owned log subscription.
 //
 // Idempotent. The Agent is inert after Close.
 //
-// Ownership: closes the log subscription Agent added. Does not close Images.
+// Ownership: closes the snapshot publication and start request of a running
+// take. Closes the log subscription Agent added. Does not close Images.
 func (a *Agent) Close() {
 	if a.closed {
 		return
 	}
 	a.closed = true
+	a.closeSnapshotTake()
 	a.adapter.SetImage(nil)
 	if a.logSubscription != nil {
 		_ = a.logSubscription.Close()
@@ -450,6 +530,13 @@ func (a *Agent) ReadyCoordinationAcks() int {
 // Advances only on a successful send, so the value equals the sent-ack count.
 func (a *Agent) NextAckID() int64 {
 	return a.ackID
+}
+
+// LastSnapshotRecordingID returns the RelevantID of the last sent snapshot
+// ack, or -1 before any snapshot ack sends. A sent ack of a failed take
+// carries -1.
+func (a *Agent) LastSnapshotRecordingID() int64 {
+	return a.lastSnapshotRecordingID
 }
 
 // ServiceFailure returns the first marked service-path failure, or nil.
@@ -687,6 +774,11 @@ func (a *Agent) handleNewLeadershipTermEvent(
 	fields codecs.NewLeadershipTermEventFields,
 ) aeron.ControlledAction {
 	a.adoptConsumed(logPosition, fields.Timestamp)
+	a.timeUnit = fields.TimeUnit
+	if a.timeUnit == clusterwire.ClusterTimeUnit_NULL_VALUE {
+		a.timeUnit = clusterwire.ClusterTimeUnit_MILLIS
+	}
+	a.appVersion = fields.AppVersion
 	if a.leadershipHandler != nil {
 		a.leadershipHandler.NewLeadershipTermEvent(
 			fields.LeadershipTermID,
@@ -713,10 +805,10 @@ func (a *Agent) handleNewLeadershipTermEvent(
 //     ControlledAbort.
 //  5. SNAPSHOT with Flags != 0 returns ControlledContinue. No hook. No
 //     entry.
-//  6. SNAPSHOT with Flags == 0 runs TakeSnapshot when a handler is cached.
-//     A hook error appends one ready snapshot entry with its cause and
-//     returns ControlledBreak. Success or no handler appends one ready
-//     snapshot entry and returns ControlledContinue.
+//  6. SNAPSHOT with Flags == 0 appends one unready snapshot entry, then
+//     starts a take. A take that cannot start fails the entry. Returns
+//     ControlledBreak. The log poll holds at the action position until the
+//     take resolves.
 func (a *Agent) handleClusterAction(
 	logPosition int64,
 	fields codecs.ClusterActionRequestFields,
@@ -734,24 +826,8 @@ func (a *Agent) handleClusterAction(
 		if fields.Flags != 0 {
 			return aeron.ControlledContinue
 		}
-		if a.snapshotHandler != nil {
-			if err := a.snapshotHandler.TakeSnapshot(a.snapshotPublication); err != nil {
-				a.coordinationAcks = append(a.coordinationAcks, coordinationAck{
-					logPosition: logPosition,
-					kind:        ackKindSnapshot,
-					relevantID:  nullValue,
-				})
-				a.failSnapshotEntry(fmt.Errorf("%w: %w", errTakeSnapshot, err))
-				return aeron.ControlledBreak
-			}
-		}
-		a.coordinationAcks = append(a.coordinationAcks, coordinationAck{
-			logPosition: logPosition,
-			kind:        ackKindSnapshot,
-			ready:       true,
-			relevantID:  nullValue,
-		})
-		return aeron.ControlledContinue
+		a.startSnapshotTake(logPosition, fields.LeadershipTermID)
+		return aeron.ControlledBreak
 	case clusterwire.ClusterAction_NULL_VALUE:
 		fallthrough
 	default:

@@ -55,14 +55,24 @@ type NewLeadershipTermEventHandler interface {
 // write snapshot state when the cluster requests a snapshot action.
 // NewAgent detects the handler once with a type assertion.
 //
-// Behaviour: publication is the snapshot write target and may be nil.
-// Implementations must nil-check before offering.
+// Behaviour: the agent records publication in the member's Archive. The
+// agent writes the begin marker, one row per open session and the end
+// marker. TakeSnapshot then offers the service state. The agent closes
+// publication after TakeSnapshot returns.
+//
+// publication is never nil. TakeSnapshot must retry BackPressured and
+// AdminAction offer codes. One Offer must not exceed
+// publication.MaxMessageLength. TakeSnapshot must not close publication.
 //
 // A non-nil error fails the take. The agent queues one ServiceAck with
 // RelevantID -1. The service failure marks once that ack sends. The mark
 // stops the duty cycle. With no bound ModuleProxy, the agent marks at once
 // and never sends that ack. An earlier mark or a terminal ack publish error
 // also stops the duty cycle before that ack.
+//
+// Concurrency: invoker-only. TakeSnapshot blocks the duty cycle. Nothing
+// pumps the transport client meanwhile. A run past the transport client's
+// InterServiceTimeout terminates that client.
 type TakeSnapshotHandler interface {
 	TakeSnapshot(publication *aeron.ExclusivePublication) error
 }

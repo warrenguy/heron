@@ -135,10 +135,11 @@ func (s *nltRecordingService) NewLeadershipTermEvent(
 // back to hookErr.
 type snapshotRecordingService struct {
 	recordingService
-	pubs     []*aeron.ExclusivePublication
-	hookErrs []error
-	hookErr  error
-	write    []byte
+	pubs             []*aeron.ExclusivePublication
+	hookErrs         []error
+	hookErr          error
+	write            []byte
+	closePublication bool
 }
 
 func (s *snapshotRecordingService) TakeSnapshot(
@@ -161,6 +162,9 @@ func (s *snapshotRecordingService) TakeSnapshot(
 		if pos := publication.Offer(s.write); pos <= 0 {
 			return fmt.Errorf("offer failed: %d", pos)
 		}
+	}
+	if s.closePublication {
+		return publication.Close()
 	}
 	return nil
 }
@@ -840,18 +844,6 @@ func TestAgent_NLT_optionalHandler(t *testing.T) {
 	})
 }
 
-func exclusiveTermPayload(
-	tb testing.TB,
-	pub *aeron.ExclusivePublication,
-	termOffset int,
-) []byte {
-	tb.Helper()
-	termBuf := pub.TermBuffer(0)
-	frameLength := int(logbuffer.FrameLengthVolatile(termBuf, termOffset))
-	require.Positive(tb, frameLength)
-	return termBuf.Bytes()[termOffset+logbuffer.OffsetFramePayload : termOffset+frameLength]
-}
-
 func writeClusterAction(
 	tb testing.TB,
 	image *aeron.Image,
@@ -896,45 +888,65 @@ func writeAlignedSnapshot(
 	return writeAlignedAction(tb, image, committed, timestamp, clusterwire.ClusterAction_SNAPSHOT, 0)
 }
 
+// writeTermEventAndSnapshot writes a NewLeadershipTermEvent with NANOS at
+// position 0, then a SNAPSHOT action. Returns the action frame end.
+func writeTermEventAndSnapshot(
+	tb testing.TB,
+	image *aeron.Image,
+	committed *int64,
+	timestamp int64,
+) int64 {
+	tb.Helper()
+	log := &takeLog{image: image, committed: committed}
+	log.termEvent(tb, clusterwire.ClusterTimeUnit_NANOS, 0)
+	return log.snapshot(tb, timestamp)
+}
+
 func TestAgent_ClusterAction_snapshotHook(t *testing.T) {
 	svc := &snapshotRecordingService{}
-	snapPub := aeron.NewTestExclusivePublicationForHooks(t)
 	proxy, pub := boundModuleProxy(t)
 	agent, image, committed := bindImage(t, AgentConfig{
-		ServiceID:           1,
-		Service:             svc,
-		ModuleProxy:         proxy,
-		SnapshotPublication: snapPub,
+		ServiceID:   1,
+		Service:     svc,
+		ModuleProxy: proxy,
 	}, 0)
+	fake := InstallSnapshotTakeFakeForTest(t, agent)
 
 	const timestamp int64 = 555
-	span := writeAlignedSnapshot(t, image, committed, timestamp)
+	end := writeTermEventAndSnapshot(t, image, committed, timestamp)
 
-	work := agent.DoWork(0)
+	// Tick 1: the action stores the take.
+	agent.DoWork(0)
 	require.NoError(t, agent.ServiceFailure())
-	require.GreaterOrEqual(t, work, 2)
-	require.Len(t, svc.pubs, 1, "hook calls")
-	require.Same(t, snapPub, svc.pubs[0])
-	require.Equal(t, int64(span), agent.LogPosition())
+	require.Empty(t, svc.pubs, "hook calls")
+	require.Equal(t, end, agent.LogPosition())
 	require.Equal(t, timestamp, agent.ClusterTime())
+	require.Equal(t, end, agent.adapter.Position(), "poll position after break")
 	require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks")
-	require.Equal(t, 1, agent.ReadyCoordinationAcks())
+	require.Equal(t, 0, agent.ReadyCoordinationAcks(), "ready acks")
 	require.Equal(t, ackKindSnapshot, agent.coordinationAcks[0].kind)
-	require.True(t, agent.coordinationAcks[0].ready)
-	require.Equal(t, int64(span), agent.coordinationAcks[0].logPosition)
-	require.Equal(t, nullValue, agent.coordinationAcks[0].relevantID)
-	require.Empty(t, decodeServiceAcksFromPub(t, pub), "no ack on hook tick")
+	require.Equal(t, end, agent.coordinationAcks[0].logPosition)
 
-	require.Equal(t, 1, agent.DoWork(0))
+	// Tick 2: the hook runs on the fake publication. The take waits for STOP.
+	agent.DoWork(0)
+	require.NoError(t, agent.ServiceFailure())
+	require.Len(t, svc.pubs, 1, "hook calls")
+	require.Same(t, fake.LastPublication(), svc.pubs[0])
+	require.Empty(t, decodeServiceAcksFromPub(t, pub), "no ack before STOP")
+
+	// Tick 3: STOP resolves the take.
+	agent.DoWork(0)
 	acks := decodeServiceAcksFromPub(t, pub)
 	require.Len(t, acks, 1)
 	require.Equal(t, codecs.ServiceAckFields{
-		LogPosition: int64(span),
+		LogPosition: end,
 		Timestamp:   timestamp,
 		AckID:       0,
-		RelevantID:  nullValue,
+		RelevantID:  fake.RecordingID(),
 		ServiceID:   1,
 	}, acks[0])
+	require.NotEqual(t, snapshotTakeFakePreProofID, acks[0].RelevantID)
+	require.Len(t, svc.pubs, 1, "hook calls after the ack")
 }
 
 func TestAgent_ClusterAction_noHandlerAcks(t *testing.T) {
@@ -945,29 +957,32 @@ func TestAgent_ClusterAction_noHandlerAcks(t *testing.T) {
 		Service:     svc,
 		ModuleProxy: proxy,
 	}, 0)
+	fake := InstallSnapshotTakeFakeForTest(t, agent)
 
 	const timestamp int64 = 444
-	span := writeAlignedSnapshot(t, image, committed, timestamp)
+	end := writeTermEventAndSnapshot(t, image, committed, timestamp)
 
+	// Tick 1: the action stores the take.
 	agent.DoWork(0)
 	require.NoError(t, agent.ServiceFailure())
-	require.Empty(t, svc.order, "hook calls")
-	require.Equal(t, int64(span), agent.LogPosition())
-	require.Equal(t, timestamp, agent.ClusterTime())
-	require.Equal(t, int64(span), agent.adapter.Position(), "poll position after continue")
-	require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks")
-	require.Equal(t, ackKindSnapshot, agent.coordinationAcks[0].kind)
-	require.True(t, agent.coordinationAcks[0].ready)
-	require.Empty(t, decodeServiceAcksFromPub(t, pub), "no ack on hook tick")
+	require.Empty(t, svc.order, "callbacks")
+	require.Equal(t, end, agent.adapter.Position(), "poll position after break")
+	require.Equal(t, 0, agent.ReadyCoordinationAcks(), "ready acks")
 
+	// Tick 2: the rows record.
+	agent.DoWork(0)
+	require.NoError(t, agent.ServiceFailure())
+	require.Empty(t, decodeServiceAcksFromPub(t, pub), "no ack before STOP")
+
+	// Tick 3: STOP resolves the take.
 	agent.DoWork(0)
 	acks := decodeServiceAcksFromPub(t, pub)
 	require.Len(t, acks, 1)
 	require.Equal(t, codecs.ServiceAckFields{
-		LogPosition: int64(span),
+		LogPosition: end,
 		Timestamp:   timestamp,
 		AckID:       0,
-		RelevantID:  nullValue,
+		RelevantID:  fake.RecordingID(),
 		ServiceID:   1,
 	}, acks[0])
 }
@@ -975,17 +990,20 @@ func TestAgent_ClusterAction_noHandlerAcks(t *testing.T) {
 func TestAgent_ClusterAction_minimalWrite(t *testing.T) {
 	body := []byte("snap-bytes")
 	svc := &snapshotRecordingService{write: body}
-	snapPub := aeron.NewTestExclusivePublicationForHooks(t)
-	agent, image, committed := bindImage(t, AgentConfig{
-		Service:             svc,
-		SnapshotPublication: snapPub,
-	}, 0)
+	agent, image, committed := bindImage(t, AgentConfig{Service: svc}, 0)
+	fake := InstallSnapshotTakeFakeForTest(t, agent)
 
-	writeAlignedSnapshot(t, image, committed, 1)
+	end := writeTermEventAndSnapshot(t, image, committed, 1)
+	agent.DoWork(0)
 	agent.DoWork(0)
 	require.NoError(t, agent.ServiceFailure())
 	require.Len(t, svc.pubs, 1, "hook calls")
-	require.Equal(t, body, exclusiveTermPayload(t, snapPub, 0))
+
+	payloads, _ := snapshotTermPayloads(t, fake.LastPublication())
+	begin, sessions, _, rest := decodeSnapshotRows(t, payloads)
+	require.Equal(t, end, begin.LogPosition)
+	require.Empty(t, sessions)
+	require.Equal(t, [][]byte{body}, rest)
 }
 
 func TestAgent_ClusterAction_hookError(t *testing.T) {
@@ -997,28 +1015,29 @@ func TestAgent_ClusterAction_hookError(t *testing.T) {
 		Service:     svc,
 		ModuleProxy: proxy,
 	}, 0)
+	InstallSnapshotTakeFakeForTest(t, agent)
 
 	const timestamp int64 = 321
-	span := writeAlignedSnapshot(t, image, committed, timestamp)
+	end := writeTermEventAndSnapshot(t, image, committed, timestamp)
 
-	// Tick 1: the hook fails. One ready entry queues, no mark.
-	work := agent.DoWork(0)
-	require.GreaterOrEqual(t, work, 1)
+	// Tick 1: the action stores the take.
+	agent.DoWork(0)
 	require.NoError(t, agent.ServiceFailure())
-	require.Len(t, svc.pubs, 1, "hook calls")
+	require.Empty(t, svc.pubs, "hook calls")
 	require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks")
-	require.Equal(t, 1, agent.ReadyCoordinationAcks(), "ready acks")
-	require.Equal(t, int64(span), agent.LogPosition())
+	require.Equal(t, 0, agent.ReadyCoordinationAcks(), "ready acks")
+	require.Equal(t, end, agent.LogPosition())
 	require.Equal(t, timestamp, agent.ClusterTime())
-	require.Equal(t, int64(span), agent.adapter.Position(), "poll position after break")
-	require.Empty(t, decodeServiceAcksFromPub(t, pub), "no ack on hook tick")
+	require.Equal(t, end, agent.adapter.Position(), "poll position after break")
+	require.Empty(t, decodeServiceAcksFromPub(t, pub), "no ack on consume tick")
 
-	// Tick 2: the -1 ack sends, then the mark follows.
-	require.Equal(t, 1, agent.DoWork(0))
+	// Tick 2: the hook fails. The -1 ack sends, then the mark follows.
+	agent.DoWork(0)
+	require.Len(t, svc.pubs, 1, "hook calls")
 	acks := decodeServiceAcksFromPub(t, pub)
 	require.Len(t, acks, 1)
 	require.Equal(t, codecs.ServiceAckFields{
-		LogPosition: int64(span),
+		LogPosition: end,
 		Timestamp:   timestamp,
 		AckID:       0,
 		RelevantID:  nullValue,
@@ -1030,7 +1049,7 @@ func TestAgent_ClusterAction_hookError(t *testing.T) {
 
 	// Tick 3: the mark freezes the duty cycle.
 	require.Equal(t, 0, agent.DoWork(0))
-	require.Equal(t, int64(span), agent.adapter.Position(), "poll position later tick")
+	require.Equal(t, end, agent.adapter.Position(), "poll position later tick")
 	require.Len(t, decodeServiceAcksFromPub(t, pub), 1, "later tick acks")
 	require.Len(t, svc.pubs, 1, "later tick hook calls")
 }
@@ -1044,19 +1063,21 @@ func TestAgent_ClusterAction_hookErrorTerminalAck(t *testing.T) {
 		Service:     svc,
 		ModuleProxy: proxy,
 	}, 0)
+	InstallSnapshotTakeFakeForTest(t, agent)
 	require.NoError(t, pub.Close())
 
-	span := writeAlignedSnapshot(t, image, committed, 321)
+	end := writeTermEventAndSnapshot(t, image, committed, 321)
 
-	// Tick 1: no mark, one ready entry.
+	// Tick 1: no mark, one unready entry.
 	agent.DoWork(0)
 	require.NoError(t, agent.ServiceFailure())
-	require.Len(t, svc.pubs, 1, "hook calls")
-	require.Equal(t, 1, agent.ReadyCoordinationAcks(), "ready acks")
-	require.Equal(t, int64(span), agent.adapter.Position(), "poll position after break")
+	require.Equal(t, 0, agent.ReadyCoordinationAcks(), "ready acks")
+	require.Equal(t, end, agent.adapter.Position(), "poll position after break")
 
-	// Tick 2: the terminal code marks the take cause first, with no send.
+	// Tick 2: the hook fails. The terminal code marks the take cause first,
+	// with no send.
 	agent.DoWork(0)
+	require.Len(t, svc.pubs, 1, "hook calls")
 	require.ErrorIs(t, agent.ServiceFailure(), errTakeSnapshot)
 	require.ErrorIs(t, agent.ServiceFailure(), hookErr)
 	require.NotErrorIs(t, agent.ServiceFailure(), errAckPublish)
@@ -1078,11 +1099,13 @@ func TestAgent_ClusterAction_hookErrorRetriableAck(t *testing.T) {
 			Service:     svc,
 			ModuleProxy: proxy,
 		}, 0)
+		InstallSnapshotTakeFakeForTest(t, agent)
 
 		const timestamp int64 = 321
-		span := writeAlignedSnapshot(t, image, committed, timestamp)
+		end := writeTermEventAndSnapshot(t, image, committed, timestamp)
 
-		// Hook tick, then retriable drain ticks: the entry stays, no mark.
+		// Consume tick, hook tick, then retriable drain ticks: the entry
+		// stays, no mark.
 		for tick := range 4 {
 			agent.DoWork(0)
 			require.NoError(t, agent.ServiceFailure(), "tick %d", tick)
@@ -1090,7 +1113,7 @@ func TestAgent_ClusterAction_hookErrorRetriableAck(t *testing.T) {
 			require.Equal(t, int64(0), agent.NextAckID(), "tick %d ack id", tick)
 		}
 		require.Len(t, svc.pubs, 1, "hook calls")
-		require.Equal(t, int64(span), agent.adapter.Position(), "poll position")
+		require.Equal(t, end, agent.adapter.Position(), "poll position")
 
 		// Connected publication: the -1 ack sends, then the mark follows.
 		connected := aeron.NewTestPublicationForHooksWithConnected(t, true)
@@ -1099,7 +1122,7 @@ func TestAgent_ClusterAction_hookErrorRetriableAck(t *testing.T) {
 		acks := decodeServiceAcksFromPub(t, connected)
 		require.Len(t, acks, 1)
 		require.Equal(t, codecs.ServiceAckFields{
-			LogPosition: int64(span),
+			LogPosition: end,
 			Timestamp:   timestamp,
 			AckID:       0,
 			RelevantID:  nullValue,
@@ -1118,22 +1141,24 @@ func TestAgent_ClusterAction_hookErrorRetriableAck(t *testing.T) {
 			Service:     svc,
 			ModuleProxy: proxy,
 		}, 0)
+		InstallSnapshotTakeFakeForTest(t, agent)
 
-		span := writeAlignedSnapshot(t, image, committed, 321)
+		end := writeTermEventAndSnapshot(t, image, committed, 321)
 		// Second SNAPSHOT frame: its LogPosition does not match its frame end.
 		payload := encodeClusterAction(t, snapshotActionFields(1, 322))
-		second := writeAgentFrame(t, image, span, payload)
-		*committed = int64(span + second)
+		second := writeAgentFrame(t, image, int(end), payload)
+		*committed = end + int64(second)
 
-		// Tick 1: one hook call, no mark. The break leaves the second frame unread.
+		// Tick 1: the take holds the log. The second frame stays unread.
 		agent.DoWork(0)
 		require.NoError(t, agent.ServiceFailure())
-		require.Len(t, svc.pubs, 1, "hook calls")
-		require.Equal(t, int64(span), agent.adapter.Position(), "poll position after break")
+		require.Empty(t, svc.pubs, "hook calls")
+		require.Equal(t, end, agent.adapter.Position(), "poll position after break")
 
-		// Tick 2: NotConnected holds the entry. The second frame marks the
-		// position mismatch.
+		// Tick 2: the hook fails. NotConnected holds the entry. The log poll
+		// resumes, so the second frame marks the position mismatch.
 		agent.DoWork(0)
+		require.Len(t, svc.pubs, 1, "hook calls")
 		require.ErrorIs(t, agent.ServiceFailure(), errActionPositionMismatch)
 
 		// A later bind sends no -1 ack.
@@ -1165,18 +1190,26 @@ func TestAgent_ClusterAction_hookErrorNoModuleProxy(t *testing.T) {
 				Service:     svc,
 				ModuleProxy: tt.proxy,
 			}, 0)
+			fake := InstallSnapshotTakeFakeForTest(t, agent)
 
-			span := writeAlignedSnapshot(t, image, committed, 321)
+			end := writeTermEventAndSnapshot(t, image, committed, 321)
 
-			// Tick 1: no sender, so the take cause marks at once.
+			// Tick 1: the action stores the take.
+			agent.DoWork(0)
+			require.NoError(t, agent.ServiceFailure())
+			require.Equal(t, end, agent.adapter.Position(), "poll position after break")
+
+			// Tick 2: the hook fails. No sender, so the take cause marks at
+			// once.
 			agent.DoWork(0)
 			require.ErrorIs(t, agent.ServiceFailure(), errTakeSnapshot)
 			require.ErrorIs(t, agent.ServiceFailure(), hookErr)
 			require.Len(t, svc.pubs, 1, "hook calls")
 			require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks")
-			require.Equal(t, int64(span), agent.adapter.Position(), "poll position after break")
+			require.True(t, fake.LastPublication().IsClosed(), "publication closed")
+			require.Nil(t, fake.handler, "session handler")
 
-			// Tick 2: the mark freezes the duty cycle.
+			// Tick 3: the mark freezes the duty cycle.
 			require.Equal(t, 0, agent.DoWork(0))
 
 			if tt.proxy == nil {
@@ -1192,7 +1225,7 @@ func TestAgent_ClusterAction_hookErrorNoModuleProxy(t *testing.T) {
 	}
 }
 
-func TestAgent_ClusterAction_nilPublication(t *testing.T) {
+func TestAgent_ClusterAction_noArchive(t *testing.T) {
 	svc := &snapshotRecordingService{}
 	proxy, pub := boundModuleProxy(t)
 	agent, image, committed := bindImage(t, AgentConfig{
@@ -1204,13 +1237,15 @@ func TestAgent_ClusterAction_nilPublication(t *testing.T) {
 	const timestamp int64 = 88
 	span := writeAlignedSnapshot(t, image, committed, timestamp)
 
+	// Tick 1: no archive fails the take on the action.
 	agent.DoWork(0)
 	require.NoError(t, agent.ServiceFailure())
-	require.Len(t, svc.pubs, 1, "hook calls")
-	require.Nil(t, svc.pubs[0])
-	require.Equal(t, int64(span), agent.adapter.Position(), "poll position after continue")
+	require.Empty(t, svc.pubs, "hook calls")
+	require.Equal(t, int64(span), agent.adapter.Position(), "poll position after break")
 	require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks")
+	require.Equal(t, 1, agent.ReadyCoordinationAcks(), "ready acks")
 
+	// Tick 2: the -1 ack sends, then the mark follows.
 	agent.DoWork(0)
 	acks := decodeServiceAcksFromPub(t, pub)
 	require.Len(t, acks, 1)
@@ -1221,6 +1256,8 @@ func TestAgent_ClusterAction_nilPublication(t *testing.T) {
 		RelevantID:  nullValue,
 		ServiceID:   1,
 	}, acks[0])
+	require.ErrorIs(t, agent.ServiceFailure(), errSnapshotNoArchive)
+	require.Equal(t, nullValue, agent.LastSnapshotRecordingID())
 }
 
 func TestAgent_ClusterAction_consumedWithoutEntry(t *testing.T) {

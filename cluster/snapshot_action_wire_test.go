@@ -56,10 +56,21 @@ type snapshotWireHarness struct {
 	rec *snapshotWireService
 }
 
+// newSnapshotWireHarness appends one NewLeadershipTermEvent at position 0,
+// so each take knows its time unit.
 func newSnapshotWireHarness(t testing.TB) *snapshotWireHarness {
 	t.Helper()
 
 	logPub, logTerm := boundTimerLogPublisher(t)
+	require.True(t, logPub.AppendNewLeadershipTermEvent(
+		snapshotWireLeadershipTermID,
+		0,
+		0,
+		0,
+		wireLogSessionID,
+		clusterwire.ClusterTimeUnit_NANOS,
+		0,
+	))
 	commit := &atomic.Int64{}
 	cm := consensus.NewAgent(consensus.AgentConfig{
 		Role:             consensus.RoleLeader,
@@ -261,8 +272,9 @@ func (h *snapshotWireHarness) runSnapshotRound(
 
 	require.Len(t, h.rec.pubs, wantHookCalls)
 	for i, pub := range h.rec.pubs {
-		require.Nil(t, pub, "hook publication %d", i)
+		require.NotNil(t, pub, "hook publication %d", i)
 	}
+	require.Same(t, h.snapshotTake.LastPublication(), h.rec.pubs[wantHookCalls-1])
 	require.Equal(t, actionPos, h.svc.LogPosition())
 	require.Equal(t, wantExpectedAckID, h.svc.NextAckID())
 	require.NoError(t, h.cm.ServiceAckFailure())
@@ -272,9 +284,10 @@ func (h *snapshotWireHarness) runSnapshotRound(
 		LogPosition: actionPos,
 		Timestamp:   nowNs,
 		AckID:       wantAckID,
-		RelevantID:  -1,
+		RelevantID:  h.snapshotTake.RecordingID(),
 		ServiceID:   0,
 	})
+	require.Equal(t, h.snapshotTake.RecordingID(), h.svc.LastSnapshotRecordingID())
 }
 
 func TestSnapshotActionWire_RoundTrip(t *testing.T) {
