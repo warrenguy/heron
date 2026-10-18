@@ -97,8 +97,8 @@ func initialiseOnCreate(
 		return 0, 0, err
 	}
 
-	// Publish candidateTermId last with release store (matches Java putLongVolatile);
-	// term id is the volatile sentinel for reads.
-	atomicbuffer.Wrap(buf).PutInt64Release(candidateTermOffset, NullValue)
+	// Store candidateTermId last with a volatile store, as Java
+	// putLongVolatile does. Readers load the term id as the sentinel.
+	atomicbuffer.Wrap(buf).PutInt64Volatile(candidateTermOffset, NullValue)
 	return candidateTermOffset, candidateTermBodyOff, nil
 }

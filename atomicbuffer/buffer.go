@@ -107,10 +107,6 @@ func (b AtomicBuffer) VolatileInt32At(offset int) int32 {
 	return atomic.LoadInt32((*int32)(addressAtUnchecked(b.buf, offset)))
 }
 
-func (b AtomicBuffer) PutInt32Release(offset int, value int32) {
-	atomic.StoreInt32((*int32)(addressAt(b.buf, offset, SizeInt32)), value)
-}
-
 func (b AtomicBuffer) GetInt64(offset int) int64 {
 	boundsCheck(b.buf, offset, SizeInt64)
 	return b.Int64At(offset)
@@ -136,7 +132,9 @@ func (b AtomicBuffer) VolatileInt64At(offset int) int64 {
 	return atomic.LoadInt64((*int64)(addressAtUnchecked(b.buf, offset)))
 }
 
-func (b AtomicBuffer) PutInt64Release(offset int, value int64) {
+// PutInt64Volatile stores value with sequential consistency, like Agrona
+// putLongVolatile. Use it where upstream orders the store before later loads.
+func (b AtomicBuffer) PutInt64Volatile(offset int, value int64) {
 	atomic.StoreInt64((*int64)(addressAt(b.buf, offset, SizeInt64)), value)
 }
 
