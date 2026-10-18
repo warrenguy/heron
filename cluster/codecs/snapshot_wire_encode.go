@@ -46,6 +46,9 @@ var (
 	consensusModuleEncodedLen = int(
 		(&clusterwire.ConsensusModule{}).SbeBlockAndHeaderLength(),
 	)
+	pendingMessageTrackerEncodedLen = int(
+		(&clusterwire.PendingMessageTracker{}).SbeBlockAndHeaderLength(),
+	)
 )
 
 // SnapshotMarkerEncodedLen is MessageHeader plus full schema block (8+40=48).
@@ -69,6 +72,12 @@ func TimerEncodedLen() int {
 // that version. Otherwise the trailing 20 claimed bytes stay unwritten.
 func ConsensusModuleEncodedLen() int {
 	return consensusModuleEncodedLen
+}
+
+// PendingMessageTrackerEncodedLen is MessageHeader plus full schema block
+// (8+24=32).
+func PendingMessageTrackerEncodedLen() int {
+	return pendingMessageTrackerEncodedLen
 }
 
 // EncodeSnapshotMarker writes a cluster SnapshotMarker (SBE template id 100)
@@ -133,6 +142,37 @@ func EncodeClientSession(
 	)
 }
 
+// EncodeClusterSession writes a cluster ClusterSession (SBE template id 103) at
+// offset. Size the claim with ClusterWireMessageLen. ok is false when
+// ResponseChannel exceeds ClusterEncodeMaxVarLen. Encode does not reject
+// undefined CloseReason values.
+func EncodeClusterSession(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields ClusterSessionFields,
+) (wireEnd int, ok bool) {
+	return encodeWithClusterWireHeader(
+		buf,
+		offset,
+		clusterwire.ClusterSessionSbeBlockLength,
+		clusterwire.ClusterSessionSbeTemplateID,
+		actingVersion,
+		[]int{len(fields.ResponseChannel)},
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
+			var msg clusterwire.ClusterSession
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+				SetClusterSessionId(fields.ClusterSessionID).
+				SetCorrelationId(fields.CorrelationID).
+				SetOpenedLogPosition(fields.OpenedLogPosition).
+				SetTimeOfLastActivity(fields.TimeOfLastActivity).
+				SetCloseReason(fields.CloseReason).
+				SetResponseStreamId(fields.ResponseStreamID)
+			msg.PutResponseChannel(clusterVarString(fields.ResponseChannel))
+		},
+	)
+}
+
 // EncodeTimer writes a cluster Timer (SBE template id 104) at offset.
 func EncodeTimer(
 	buf []byte,
@@ -185,6 +225,32 @@ func EncodeConsensusModule(
 					SetLogServiceSessionId(fields.LogServiceSessionID).
 					SetPendingMessageCapacity(fields.PendingMessageCapacity)
 			}
+		},
+	)
+}
+
+// EncodePendingMessageTracker writes a cluster PendingMessageTracker (SBE
+// template id 107) at offset.
+func EncodePendingMessageTracker(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields PendingMessageTrackerFields,
+) (wireEnd int, ok bool) {
+	return encodeWithClusterWireHeader(
+		buf,
+		offset,
+		clusterwire.PendingMessageTrackerSbeBlockLength,
+		clusterwire.PendingMessageTrackerSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
+			var msg clusterwire.PendingMessageTracker
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+				SetNextServiceSessionId(fields.NextServiceSessionID).
+				SetLogServiceSessionId(fields.LogServiceSessionID).
+				SetPendingMessageCapacity(fields.PendingMessageCapacity).
+				SetServiceId(fields.ServiceID)
 		},
 	)
 }

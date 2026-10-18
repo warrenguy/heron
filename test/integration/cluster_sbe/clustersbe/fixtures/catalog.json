@@ -492,6 +492,59 @@
       "fields": {
         "nextSessionId": 5
       }
+    },
+    {
+      "name": "clusterSession_open",
+      "template": "clusterSession",
+      "actingVersion": 17,
+      "hex": "280067006f001100070000000000000008000000000000000004000000000000ffffffffffffffff0000008066000000090000006165726f6e3a697063",
+      "fields": {
+        "closeReason": "NULL_VAL",
+        "clusterSessionId": 7,
+        "correlationId": 8,
+        "openedLogPosition": 1024,
+        "responseChannel": "aeron:ipc",
+        "responseStreamId": 102,
+        "timeOfLastActivity": -1
+      }
+    },
+    {
+      "name": "clusterSession_closingEmptyChannel",
+      "template": "clusterSession",
+      "actingVersion": 17,
+      "hex": "280067006f00110009000000000000000a000000000000000008000000000000ffffffffffffffff020000006700000000000000",
+      "fields": {
+        "closeReason": "TIMEOUT",
+        "clusterSessionId": 9,
+        "correlationId": 10,
+        "openedLogPosition": 2048,
+        "responseStreamId": 103,
+        "timeOfLastActivity": -1
+      }
+    },
+    {
+      "name": "pendingMessageTracker_service0Empty",
+      "template": "pendingMessageTracker",
+      "actingVersion": 17,
+      "hex": "18006b006f001100010000000000008000000000000000800000000000000000",
+      "fields": {
+        "logServiceSessionId": -9223372036854775808,
+        "nextServiceSessionId": -9223372036854775807,
+        "pendingMessageCapacity": 0,
+        "serviceId": 0
+      }
+    },
+    {
+      "name": "pendingMessageTracker_service1Empty",
+      "template": "pendingMessageTracker",
+      "actingVersion": 17,
+      "hex": "18006b006f001100010000000000008100000000000000810000000001000000",
+      "fields": {
+        "logServiceSessionId": -9151314442816847872,
+        "nextServiceSessionId": -9151314442816847871,
+        "pendingMessageCapacity": 0,
+        "serviceId": 1
+      }
     }
   ]
 }

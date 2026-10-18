@@ -130,6 +130,68 @@ func TestConsensusModule_roundtrip(t *testing.T) {
 	)
 }
 
+func TestClusterSession_roundtrip(t *testing.T) {
+	v := clusterwire.ClusterSessionSbeSchemaVersion
+	fieldCases := []codecFieldsActingCase[codecs.ClusterSessionFields]{
+		{name: "open", fields: clusterSessionSampleFields()},
+		{
+			name: "closing",
+			fields: codecs.ClusterSessionFields{
+				ClusterSessionID: 3, CorrelationID: 4, OpenedLogPosition: 512,
+				TimeOfLastActivity: -1, CloseReason: clusterwire.CloseReason_TIMEOUT,
+				ResponseStreamID: 102, ResponseChannel: []byte("aeron:ipc"),
+			},
+		},
+		{
+			name: "raw_close_reason",
+			fields: codecs.ClusterSessionFields{
+				ClusterSessionID: 5, CloseReason: clusterwire.CloseReason(7),
+				ResponseChannel: []byte("aeron:ipc"),
+			},
+		},
+		{name: "empty_channel", fields: codecs.ClusterSessionFields{ClusterSessionID: 1}},
+		{
+			name: "max_int",
+			fields: codecs.ClusterSessionFields{
+				ClusterSessionID: math.MaxInt64, CorrelationID: math.MaxInt64,
+				OpenedLogPosition: math.MaxInt64, TimeOfLastActivity: math.MaxInt64,
+				CloseReason:      clusterwire.CloseReason(math.MaxInt32),
+				ResponseStreamID: math.MaxInt32,
+				ResponseChannel:  []byte("aeron:udp?endpoint=localhost:40123"),
+			},
+		},
+	}
+	runCodecFieldsActingRoundtrips(
+		t, clusterwire.ClusterSessionSbeTemplateID, v, fieldCases, codecs.EncodeClusterSession,
+	)
+}
+
+func TestPendingMessageTracker_roundtrip(t *testing.T) {
+	v := clusterwire.PendingMessageTrackerSbeSchemaVersion
+	fieldCases := []codecFieldsActingCase[codecs.PendingMessageTrackerFields]{
+		{name: "populated", fields: pendingMessageTrackerSampleFields()},
+		{name: "zero", fields: codecs.PendingMessageTrackerFields{}},
+		{name: "empty_tracker_service_0", fields: goldenEmptyTrackerFields(0)},
+		{name: "empty_tracker_service_1", fields: goldenEmptyTrackerFields(1)},
+		{
+			name: "max_int",
+			fields: codecs.PendingMessageTrackerFields{
+				NextServiceSessionID:   math.MaxInt64,
+				LogServiceSessionID:    math.MaxInt64,
+				PendingMessageCapacity: math.MaxInt32,
+				ServiceID:              math.MaxInt32,
+			},
+		},
+	}
+	runCodecFieldsActingRoundtrips(
+		t,
+		clusterwire.PendingMessageTrackerSbeTemplateID,
+		v,
+		fieldCases,
+		codecs.EncodePendingMessageTracker,
+	)
+}
+
 // At the schema version, encode writes every optional field even when 0. A
 // claimed buffer may hold residual bytes.
 func TestEncodeSnapshotMarker_dirtyBufferOptionalFieldsZero(t *testing.T) {
@@ -347,6 +409,38 @@ func TestTryDecodeAt_snapshot(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, codecs.ConsensusModuleOracleFields(consensusModuleSampleFields(), 2), got)
 	})
+	t.Run("cluster_session", func(t *testing.T) {
+		fields := clusterSessionSampleFields()
+		end, ok := codecs.EncodeClusterSession(buf, 0, v, fields)
+		require.True(t, ok)
+		wire := buf[:end]
+		got, ok := codecs.TryDecodeClusterSessionAt(wire, 0)
+		require.True(t, ok)
+		require.Equal(t, fields, got)
+
+		wantChannel := bytes.Clone(fields.ResponseChannel)
+		for i := range wire {
+			wire[i] ^= 0xFF
+		}
+		require.Equal(t, wantChannel, got.ResponseChannel)
+	})
+	t.Run("cluster_session_large_channel", func(t *testing.T) {
+		requireTryDecodeAt(
+			t, buf, v,
+			codecs.ClusterSessionFields{
+				ClusterSessionID: 1, ResponseStreamID: 2,
+				CloseReason:     clusterwire.CloseReason_CLIENT_ACTION,
+				ResponseChannel: clusterLargeVarPayload,
+			},
+			codecs.EncodeClusterSession, codecs.TryDecodeClusterSessionAt,
+		)
+	})
+	t.Run("pending_message_tracker", func(t *testing.T) {
+		requireTryDecodeAt(
+			t, buf, v, pendingMessageTrackerSampleFields(),
+			codecs.EncodePendingMessageTracker, codecs.TryDecodePendingMessageTrackerAt,
+		)
+	})
 }
 
 // A wire from a newer schema version decodes when its block fits the pinned
@@ -387,6 +481,22 @@ func TestTryDecodeByTemplate_snapshotActingVersionAboveSchema(t *testing.T) {
 			},
 			consensusModuleSampleFields(),
 		},
+		{
+			"cluster_session", clusterwire.ClusterSessionSbeTemplateID,
+			func(b []byte) (int, bool) {
+				return codecs.EncodeClusterSession(b, 0, actingVersion, clusterSessionSampleFields())
+			},
+			clusterSessionSampleFields(),
+		},
+		{
+			"pending_message_tracker", clusterwire.PendingMessageTrackerSbeTemplateID,
+			func(b []byte) (int, bool) {
+				return codecs.EncodePendingMessageTracker(
+					b, 0, actingVersion, pendingMessageTrackerSampleFields(),
+				)
+			},
+			pendingMessageTrackerSampleFields(),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -415,6 +525,11 @@ func TestSnapshotEncodedLen_matchesFlyweight(t *testing.T) {
 		int((&clusterwire.ConsensusModule{}).SbeBlockAndHeaderLength()),
 		codecs.ConsensusModuleEncodedLen(),
 	)
+	require.Equal(
+		t,
+		int((&clusterwire.PendingMessageTracker{}).SbeBlockAndHeaderLength()),
+		codecs.PendingMessageTrackerEncodedLen(),
+	)
 
 	v := clusterwire.SnapshotMarkerSbeSchemaVersion
 	buf := make([]byte, 64)
@@ -427,6 +542,9 @@ func TestSnapshotEncodedLen_matchesFlyweight(t *testing.T) {
 	end, ok = codecs.EncodeConsensusModule(buf, 0, v, consensusModuleSampleFields())
 	require.True(t, ok)
 	require.Equal(t, codecs.ConsensusModuleEncodedLen(), end)
+	end, ok = codecs.EncodePendingMessageTracker(buf, 0, v, pendingMessageTrackerSampleFields())
+	require.True(t, ok)
+	require.Equal(t, codecs.PendingMessageTrackerEncodedLen(), end)
 
 	fields := clientSessionSampleFields()
 	wantLen, ok := codecs.ClusterWireMessageLen(
@@ -438,6 +556,18 @@ func TestSnapshotEncodedLen_matchesFlyweight(t *testing.T) {
 	end, ok = codecs.EncodeClientSession(buf, 0, v, fields)
 	require.True(t, ok)
 	require.Equal(t, wantLen, end)
+
+	for _, channel := range [][]byte{nil, []byte("aeron:ipc")} {
+		sessionFields := clusterSessionSampleFields()
+		sessionFields.ResponseChannel = channel
+		wantLen, ok = codecs.ClusterWireMessageLen(
+			clusterwire.ClusterSessionSbeBlockLength, len(channel),
+		)
+		require.True(t, ok)
+		end, ok = codecs.EncodeClusterSession(buf, 0, v, sessionFields)
+		require.True(t, ok)
+		require.Equal(t, wantLen, end)
+	}
 }
 
 func TestSnapshotEncode_rejects(t *testing.T) {
@@ -447,15 +577,40 @@ func TestSnapshotEncode_rejects(t *testing.T) {
 	requireEncodeRejects(t, buf, v, clientSessionSampleFields(), codecs.EncodeClientSession)
 	requireEncodeRejects(t, buf, v, timerSampleFields(), codecs.EncodeTimer)
 	requireEncodeRejects(t, buf, v, consensusModuleSampleFields(), codecs.EncodeConsensusModule)
+	requireEncodeRejects(t, buf, v, clusterSessionSampleFields(), codecs.EncodeClusterSession)
+	requireEncodeRejects(
+		t, buf, v, pendingMessageTrackerSampleFields(), codecs.EncodePendingMessageTracker,
+	)
 
 	shortByOne := make([]byte, codecs.SnapshotMarkerEncodedLen()-1)
 	end, ok := codecs.EncodeSnapshotMarker(shortByOne, 0, v, snapshotMarkerSampleFields())
 	require.False(t, ok)
 	require.Equal(t, 0, end)
 
+	trackerShortByOne := make([]byte, codecs.PendingMessageTrackerEncodedLen()-1)
+	end, ok = codecs.EncodePendingMessageTracker(
+		trackerShortByOne, 0, v, pendingMessageTrackerSampleFields(),
+	)
+	require.False(t, ok)
+	require.Equal(t, 0, end)
+
+	// The block fits, but the var-length prefix does not.
+	sessionBlockOnly := make(
+		[]byte, messageHeaderLen+int(clusterwire.ClusterSessionSbeBlockLength),
+	)
+	end, ok = codecs.EncodeClusterSession(sessionBlockOnly, 0, v, clusterSessionSampleFields())
+	require.False(t, ok)
+	require.Equal(t, 0, end)
+
 	big := make([]byte, 1024+codecs.ClusterEncodeMaxVarLen)
 	end, ok = codecs.EncodeClientSession(big, 0, v, codecs.ClientSessionFields{
 		EncodedPrincipal: make([]byte, codecs.ClusterEncodeMaxVarLen+1),
+	})
+	require.False(t, ok)
+	require.Equal(t, 0, end)
+
+	end, ok = codecs.EncodeClusterSession(big, 0, v, codecs.ClusterSessionFields{
+		ResponseChannel: make([]byte, codecs.ClusterEncodeMaxVarLen+1),
 	})
 	require.False(t, ok)
 	require.Equal(t, 0, end)
@@ -473,6 +628,9 @@ func TestSnapshotFieldsFromLayout(t *testing.T) {
 	moduleWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
 		return codecs.EncodeConsensusModule(buf, 0, v, consensusModuleSampleFields())
 	})
+	trackerWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodePendingMessageTracker(buf, 0, v, pendingMessageTrackerSampleFields())
+	})
 
 	t.Run("snapshot_marker", func(t *testing.T) {
 		requireFieldsFromLayout(
@@ -489,6 +647,12 @@ func TestSnapshotFieldsFromLayout(t *testing.T) {
 		requireFieldsFromLayout(
 			t, consensusModuleSampleFields(), moduleWire,
 			codecs.ConsensusModuleFieldsFromLayout, markerWire,
+		)
+	})
+	t.Run("pending_message_tracker", func(t *testing.T) {
+		requireFieldsFromLayout(
+			t, pendingMessageTrackerSampleFields(), trackerWire,
+			codecs.PendingMessageTrackerFieldsFromLayout, moduleWire,
 		)
 	})
 }
@@ -511,6 +675,27 @@ func clientSessionSampleFields() codecs.ClientSessionFields {
 		ResponseStreamID: 102,
 		ResponseChannel:  []byte("aeron:ipc"),
 		EncodedPrincipal: []byte{0xAB, 0xCD},
+	}
+}
+
+func clusterSessionSampleFields() codecs.ClusterSessionFields {
+	return codecs.ClusterSessionFields{
+		ClusterSessionID:   7,
+		CorrelationID:      8,
+		OpenedLogPosition:  1024,
+		TimeOfLastActivity: -1,
+		CloseReason:        clusterwire.CloseReason_NULL_VALUE,
+		ResponseStreamID:   102,
+		ResponseChannel:    []byte("aeron:ipc"),
+	}
+}
+
+func pendingMessageTrackerSampleFields() codecs.PendingMessageTrackerFields {
+	return codecs.PendingMessageTrackerFields{
+		NextServiceSessionID:   15,
+		LogServiceSessionID:    14,
+		PendingMessageCapacity: 16,
+		ServiceID:              2,
 	}
 }
 

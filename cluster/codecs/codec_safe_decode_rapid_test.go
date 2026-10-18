@@ -128,6 +128,32 @@ func TestConsensusModule_fastSlowDecodeParity(t *testing.T) {
 	})
 }
 
+func TestClusterSession_fastSlowDecodeParity(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		buf := make([]byte, offset+fuzzClusterCodecMaxLen)
+		wireEnd, ok := codecs.EncodeClusterSession(
+			buf, offset, actingVersion, rapidClusterSessionFields(rt),
+		)
+		require.True(rt, ok)
+		requireClusterSessionFastSlowParity(rt, buf[:wireEnd], offset)
+	})
+}
+
+func TestPendingMessageTracker_fastSlowDecodeParity(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		buf := make([]byte, offset+fuzzClusterCodecMaxLen)
+		wireEnd, ok := codecs.EncodePendingMessageTracker(
+			buf, offset, actingVersion, rapidPendingMessageTrackerFields(rt),
+		)
+		require.True(rt, ok)
+		requirePendingMessageTrackerFastSlowParity(rt, buf[:wireEnd], offset)
+	})
+}
+
 func rapidSessionMessageHeaderParityWire(rt *rapid.T) (buf []byte, offset int) {
 	rt.Helper()
 	if rapid.Bool().Draw(rt, "useValidWire") {

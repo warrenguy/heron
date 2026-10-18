@@ -3,6 +3,7 @@ package codecs_test
 import (
 	"bytes"
 	"encoding/hex"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -115,6 +116,15 @@ func encodeChallengeResponseWire(
 
 func requireBytesEqual(tb require.TestingT, want, got []byte) {
 	require.True(tb, bytes.Equal(want, got))
+}
+
+// emptyIfNil maps a nil slice to an empty one so a struct compare treats an
+// absent var field and an empty one alike.
+func emptyIfNil(b []byte) []byte {
+	if b == nil {
+		return []byte{}
+	}
+	return b
 }
 
 func requireDecodedFieldsEqual[T any](tb require.TestingT, want, got any) {
@@ -270,10 +280,18 @@ func requireDecodedClusterFields(tb require.TestingT, want, got any) {
 		require.Equal(tb, wantFields.ResponseStreamID, gotFields.ResponseStreamID)
 		requireBytesEqual(tb, wantFields.ResponseChannel, gotFields.ResponseChannel)
 		requireBytesEqual(tb, wantFields.EncodedPrincipal, gotFields.EncodedPrincipal)
+	case codecs.ClusterSessionFields:
+		gotFields, ok := got.(codecs.ClusterSessionFields)
+		require.True(tb, ok)
+		wantFields.ResponseChannel = emptyIfNil(wantFields.ResponseChannel)
+		gotFields.ResponseChannel = emptyIfNil(gotFields.ResponseChannel)
+		require.Equal(tb, wantFields, gotFields)
 	case codecs.TimerFields:
 		requireDecodedFieldsEqual[codecs.TimerFields](tb, wantFields, got)
 	case codecs.ConsensusModuleFields:
 		requireDecodedFieldsEqual[codecs.ConsensusModuleFields](tb, wantFields, got)
+	case codecs.PendingMessageTrackerFields:
+		requireDecodedFieldsEqual[codecs.PendingMessageTrackerFields](tb, wantFields, got)
 	default:
 		require.Fail(tb, "unsupported fields type")
 	}
@@ -320,12 +338,38 @@ type codecRoundtripCase struct {
 
 // goldenHexCase holds one encoder's committed hex wire bytes. runGoldenHexCases
 // asserts the encode output matches the hex and catches silent layout drift
-// after a schema regenerate.
+// after a schema regenerate. A case with wantFields also decodes the committed
+// hex through tryDecode and TryDecodeByTemplate back to those fields.
 type goldenHexCase struct {
 	name       string
 	wantHex    string
 	encode     func([]byte) (int, bool)
 	templateID uint16
+	wantFields any
+	tryDecode  func(wire []byte) (any, bool)
+}
+
+// goldenCodecCase builds a goldenHexCase that encodes fields at offset 0 and
+// decodes the committed hex back to them.
+func goldenCodecCase[T any](
+	name, wantHex string,
+	templateID, actingVersion uint16,
+	fields T,
+	encode func(buf []byte, offset int, actingVersion uint16, fields T) (int, bool),
+	tryDecode func(buf []byte, offset int) (T, bool),
+) goldenHexCase {
+	return goldenHexCase{
+		name:       name,
+		wantHex:    wantHex,
+		templateID: templateID,
+		encode: func(b []byte) (int, bool) {
+			return encode(b, 0, actingVersion, fields)
+		},
+		wantFields: fields,
+		tryDecode: func(wire []byte) (any, bool) {
+			return tryDecode(wire, 0)
+		},
+	}
 }
 
 func runGoldenHexCases(t *testing.T, actingVersion uint16, cases []goldenHexCase) {
@@ -337,6 +381,19 @@ func runGoldenHexCases(t *testing.T, actingVersion uint16, cases []goldenHexCase
 			require.True(t, ok)
 			require.Equal(t, tc.wantHex, hex.EncodeToString(buf[:end]))
 			requireEncodedLengthMatchesWire(t, buf, 0, end, tc.templateID, actingVersion)
+			if tc.wantFields == nil {
+				return
+			}
+			wire, err := hex.DecodeString(tc.wantHex)
+			require.NoError(t, err)
+			got, ok := tc.tryDecode(wire)
+			require.True(t, ok)
+			requireDecodedClusterFields(t, tc.wantFields, got)
+
+			decoded, ok := codecs.TryDecodeByTemplate(wire, 0, codecTestMaxVarLen)
+			require.True(t, ok)
+			require.Equal(t, tc.templateID, decoded.TemplateID)
+			requireDecodedClusterFields(t, tc.wantFields, decoded.Fields)
 		})
 	}
 }
@@ -380,7 +437,7 @@ func requireTryDecodeAt[T any](
 func codecFuzzSeedBuffers() [][]byte {
 	const (
 		actingVersion   = clusterwire.SessionMessageHeaderSbeSchemaVersion
-		seedEncodeCount = 36
+		seedEncodeCount = 39
 	)
 	buf := make([]byte, fuzzClusterCodecMaxLen)
 	seeds := make([][]byte, 0, seedEncodeCount*(1+codecFuzzMaxOffset))
@@ -752,6 +809,27 @@ func codecFuzzSeedBuffers() [][]byte {
 		return codecs.EncodeConsensusModule(b, 0, 2, codecs.ConsensusModuleFields{
 			NextSessionID: 5,
 		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeClusterSession(b, 0, actingVersion, clusterSessionSampleFields())
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeClusterSession(b, 0, actingVersion, codecs.ClusterSessionFields{
+			ClusterSessionID: 9,
+			CloseReason:      clusterwire.CloseReason_TIMEOUT,
+			ResponseStreamID: 103,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodePendingMessageTracker(
+			b, 0, actingVersion, codecs.PendingMessageTrackerFields{
+				NextServiceSessionID: math.MinInt64 + 1,
+				LogServiceSessionID:  math.MinInt64,
+			},
+		)
 	})
 
 	return seeds

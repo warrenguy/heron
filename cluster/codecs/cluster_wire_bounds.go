@@ -147,6 +147,9 @@ func ClusterRootBlockLengthBounds(
 	case clusterwire.ClientSessionSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.ClientSessionSbeBlockLength)
 
+	case clusterwire.ClusterSessionSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.ClusterSessionSbeBlockLength)
+
 	case clusterwire.TimerSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.TimerSbeBlockLength)
 
@@ -157,6 +160,9 @@ func ClusterRootBlockLengthBounds(
 			return 8, maxBlock, true
 		}
 		return clusterFixedBlockLength(maxBlock)
+
+	case clusterwire.PendingMessageTrackerSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.PendingMessageTrackerSbeBlockLength)
 
 	default:
 		return 0, 0, false
@@ -179,7 +185,8 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		clusterwire.ChallengeResponseSbeTemplateID,
 		clusterwire.AdminRequestSbeTemplateID,
 		clusterwire.CatchupPositionSbeTemplateID,
-		clusterwire.JoinLogSbeTemplateID:
+		clusterwire.JoinLogSbeTemplateID,
+		clusterwire.ClusterSessionSbeTemplateID:
 		return 1, true
 
 	case clusterwire.SessionConnectRequestSbeTemplateID:
@@ -209,7 +216,8 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		clusterwire.RequestServiceAckSbeTemplateID,
 		clusterwire.SnapshotMarkerSbeTemplateID,
 		clusterwire.TimerSbeTemplateID,
-		clusterwire.ConsensusModuleSbeTemplateID:
+		clusterwire.ConsensusModuleSbeTemplateID,
+		clusterwire.PendingMessageTrackerSbeTemplateID:
 		return 0, true
 
 	default:

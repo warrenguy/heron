@@ -140,6 +140,14 @@ func TestTryDecodeByTemplate_rejects_snapshot(t *testing.T) {
 	moduleWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
 		return codecs.EncodeConsensusModule(buf, 0, currentVersion, consensusModuleSampleFields())
 	})
+	clusterSessionWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeClusterSession(buf, 0, currentVersion, clusterSessionSampleFields())
+	})
+	trackerWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodePendingMessageTracker(
+			buf, 0, currentVersion, pendingMessageTrackerSampleFields(),
+		)
+	})
 
 	cases := []tryDecodeRejectCase{}
 	cases = append(cases, fixedBlockRejectCases(
@@ -153,6 +161,13 @@ func TestTryDecodeByTemplate_rejects_snapshot(t *testing.T) {
 	)...)
 	cases = append(cases, fixedBlockRejectCases(
 		"consensus_module", moduleWire, clusterwire.ConsensusModuleSbeBlockLength, 27, 10,
+	)...)
+	cases = append(cases, fixedBlockRejectCases(
+		"cluster_session", clusterSessionWire, clusterwire.ClusterSessionSbeBlockLength, 39, 36,
+	)...)
+	cases = append(cases, fixedBlockRejectCases(
+		"pending_message_tracker", trackerWire,
+		clusterwire.PendingMessageTrackerSbeBlockLength, 23, 20,
 	)...)
 	cases = append(
 		cases,
@@ -185,6 +200,21 @@ func TestTryDecodeByTemplate_rejects_snapshot(t *testing.T) {
 			name: "client_session_truncated_var_field",
 			buf:  func() []byte { return sessionWire[:len(sessionWire)-1] },
 		},
+		tryDecodeRejectCase{
+			name:   "cluster_session_var_field_exceeds_max_var_len",
+			buf:    func() []byte { return clusterSessionWire },
+			maxLen: 1,
+		},
+		tryDecodeRejectCase{
+			name: "cluster_session_truncated_var_field",
+			buf:  func() []byte { return clusterSessionWire[:len(clusterSessionWire)-1] },
+		},
+		tryDecodeRejectCase{
+			name: "cluster_session_missing_var_length",
+			buf: func() []byte {
+				return clusterSessionWire[:messageHeaderLen+int(clusterwire.ClusterSessionSbeBlockLength)]
+			},
+		},
 	)
 	cases = append(cases, wireHeaderRejectCases(markerWire)...)
 
@@ -203,6 +233,22 @@ func TestTryDecodeByTemplate_rejects_snapshot(t *testing.T) {
 	})
 	t.Run("client_session_try_decode_truncated_var", func(t *testing.T) {
 		_, ok := codecs.TryDecodeClientSessionAt(sessionWire[:len(sessionWire)-1], 0)
+		require.False(t, ok)
+	})
+
+	t.Run("cluster_session_try_decode_var_over_cap", func(t *testing.T) {
+		headerAndBlock := messageHeaderLen + int(clusterwire.ClusterSessionSbeBlockLength)
+		overLen := codecs.ClusterDecodeMaxVarLen + 1
+		wire := make([]byte, headerAndBlock+codecs.VarLengthPrefixSize+overLen)
+		copy(wire, clusterSessionWire[:headerAndBlock])
+		binary.LittleEndian.PutUint32(wire[headerAndBlock:], uint32(overLen))
+		_, ok := codecs.TryDecodeClusterSessionAt(wire, 0)
+		require.False(t, ok)
+	})
+	t.Run("cluster_session_try_decode_truncated_var", func(t *testing.T) {
+		_, ok := codecs.TryDecodeClusterSessionAt(
+			clusterSessionWire[:len(clusterSessionWire)-1], 0,
+		)
 		require.False(t, ok)
 	})
 
@@ -229,6 +275,18 @@ func TestTryDecodeByTemplate_rejects_snapshot(t *testing.T) {
 	})
 	t.Run("consensus_module_try_decode_at", func(t *testing.T) {
 		requireTryDecodeAtRejects(t, moduleWire, markerWire, codecs.TryDecodeConsensusModuleAt)
+	})
+	// SnapshotMarker and ClusterSession share a 40-byte block. Only the
+	// template-id check rejects the marker wire.
+	t.Run("cluster_session_try_decode_at", func(t *testing.T) {
+		requireTryDecodeAtRejects(
+			t, clusterSessionWire, markerWire, codecs.TryDecodeClusterSessionAt,
+		)
+	})
+	t.Run("pending_message_tracker_try_decode_at", func(t *testing.T) {
+		requireTryDecodeAtRejects(
+			t, trackerWire, moduleWire, codecs.TryDecodePendingMessageTrackerAt,
+		)
 	})
 }
 

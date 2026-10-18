@@ -2,6 +2,7 @@ package heron.clustersbe;
 
 import io.aeron.cluster.codecs.AdminRequestType;
 import io.aeron.cluster.codecs.AdminResponseCode;
+import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.codecs.ClusterTimeUnit;
 import io.aeron.cluster.codecs.ConsensusModuleEncoder;
 import io.aeron.cluster.codecs.EventCode;
@@ -36,6 +37,8 @@ final class CatalogFieldDecoder {
             case "clientSession" -> encodeClientSessionFields(entry.fields(), blobs);
             case "timer" -> encodeTimerFields(entry.fields());
             case "consensusModule" -> encodeConsensusModuleFields(entry);
+            case "clusterSession" -> encodeClusterSessionFields(entry.fields());
+            case "pendingMessageTracker" -> encodePendingMessageTrackerFields(entry.fields());
             default -> throw new IllegalArgumentException("unknown template: " + entry.template());
         };
     }
@@ -205,6 +208,27 @@ final class CatalogFieldDecoder {
             optionalInt64(fields, "nextServiceSessionId"),
             optionalInt64(fields, "logServiceSessionId"),
             optionalInt32(fields, "pendingMessageCapacity")
+        );
+    }
+
+    private static byte[] encodeClusterSessionFields(final Map<String, Object> fields) {
+        return ClusterSbeFixtures.encodeClusterSession(
+            requireInt64(fields, "clusterSessionId"),
+            requireInt64(fields, "correlationId"),
+            requireInt64(fields, "openedLogPosition"),
+            requireInt64(fields, "timeOfLastActivity"),
+            CloseReason.valueOf(stringField(fields, "closeReason")),
+            requireInt32(fields, "responseStreamId"),
+            optionalString(fields, "responseChannel")
+        );
+    }
+
+    private static byte[] encodePendingMessageTrackerFields(final Map<String, Object> fields) {
+        return ClusterSbeFixtures.encodePendingMessageTracker(
+            requireInt64(fields, "nextServiceSessionId"),
+            requireInt64(fields, "logServiceSessionId"),
+            requireInt32(fields, "pendingMessageCapacity"),
+            requireInt32(fields, "serviceId")
         );
     }
 

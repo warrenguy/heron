@@ -140,6 +140,22 @@ var wireTemplateCatalog = []wireTemplateSpec{
 			"pendingMessageCapacity",
 		},
 	},
+	{
+		id:   clusterwire.ClusterSessionSbeTemplateID,
+		name: "clusterSession",
+		allowedFieldKeys: []string{
+			"clusterSessionId", "correlationId", "openedLogPosition", "timeOfLastActivity",
+			"closeReason", "responseStreamId", "responseChannel",
+		},
+		varFieldKeys: []string{"responseChannel"},
+	},
+	{
+		id:   clusterwire.PendingMessageTrackerSbeTemplateID,
+		name: "pendingMessageTracker",
+		allowedFieldKeys: []string{
+			"nextServiceSessionId", "logServiceSessionId", "pendingMessageCapacity", "serviceId",
+		},
+	},
 }
 
 var (
@@ -167,6 +183,12 @@ var (
 		"MILLIS": clusterwire.ClusterTimeUnit_MILLIS,
 		"MICROS": clusterwire.ClusterTimeUnit_MICROS,
 		"NANOS":  clusterwire.ClusterTimeUnit_NANOS,
+	}
+	closeReasonByName = map[string]clusterwire.CloseReason{
+		"CLIENT_ACTION":  clusterwire.CloseReason_CLIENT_ACTION,
+		"SERVICE_ACTION": clusterwire.CloseReason_SERVICE_ACTION,
+		"TIMEOUT":        clusterwire.CloseReason_TIMEOUT,
+		"NULL_VAL":       clusterwire.CloseReason_NULL_VALUE,
 	}
 )
 
@@ -270,6 +292,10 @@ func LookupSnapshotMark(name string) (clusterwire.SnapshotMark, error) {
 
 func LookupClusterTimeUnit(name string) (clusterwire.ClusterTimeUnit, error) {
 	return lookupEnumValue(name, clusterTimeUnitByName, "ClusterTimeUnit")
+}
+
+func LookupCloseReason(name string) (clusterwire.CloseReason, error) {
+	return lookupEnumValue(name, closeReasonByName, "CloseReason")
 }
 
 // ParseJSON decodes catalog bytes preserving integer field precision.
