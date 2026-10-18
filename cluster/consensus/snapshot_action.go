@@ -4,8 +4,11 @@ import (
 	"errors"
 	"slices"
 
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
+
+var _ clusterActionSink = (*Agent)(nil)
 
 var (
 	errSnapshotNotLeader       = errors.New("cluster: snapshot action requires a settled leader")
@@ -43,13 +46,16 @@ func (a *Agent) RequestSnapshot(nowNs int64) error {
 	if !ok {
 		return errSnapshotAppend
 	}
-	a.serviceAckWaits = append(a.serviceAckWaits, pos)
-	a.snapshotWaitPosition = pos
+	a.queueSnapshotWait(pos)
 	return nil
 }
 
-// HasPendingSnapshotAction reports whether a snapshot action wait is queued
-// in the current leadership term.
+// HasPendingSnapshotAction reports whether a snapshot action wait is queued.
+//
+// Behaviour:
+//   - The leader queues the wait at append.
+//   - A follower queues the wait when its log adapter consumes the action.
+//     The action may come from an earlier leadership term.
 //
 // Concurrency: invoker-only.
 //
@@ -57,6 +63,66 @@ func (a *Agent) RequestSnapshot(nowNs int64) error {
 // wait and clears the pending report.
 func (a *Agent) HasPendingSnapshotAction() bool {
 	return a.snapshotWaitPosition != 0
+}
+
+// handleClusterAction queues a follower snapshot wait for a committed
+// ClusterActionRequest. logPosition is the frame end.
+//
+// Behaviour: the method queues one wait at logPosition. Any skip below
+// changes nothing:
+//   - Action is not SNAPSHOT, or Flags is not 0.
+//   - Wire LogPosition differs from logPosition. No service acks such a frame.
+//   - The role is leader. The leader queues its wait at append.
+//   - A snapshot wait pends. One field holds one snapshot wait.
+//   - logPosition is a retired snapshot position. PrepareForNewLeadership
+//     retired that wait.
+//   - serviceAckFailure is marked. No wait completes after the mark.
+//
+// No leadership term check. Services ack every SNAPSHOT action with flags 0,
+// whatever its term.
+//
+// Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
+func (a *Agent) handleClusterAction(
+	fields codecs.ClusterActionRequestFields,
+	logPosition int64,
+) {
+	switch {
+	case fields.Action != clusterwire.ClusterAction_SNAPSHOT || fields.Flags != 0:
+	case fields.LogPosition != logPosition:
+	case a.role == RoleLeader:
+	case a.snapshotWaitPosition != 0:
+	case slices.Contains(a.abandonedSnapshotPositions, logPosition):
+	case a.serviceAckFailure != nil:
+	default:
+		a.queueSnapshotWait(logPosition)
+	}
+}
+
+func (a *Agent) queueSnapshotWait(logPosition int64) {
+	a.serviceAckWaits = append(a.serviceAckWaits, logPosition)
+	a.snapshotWaitPosition = logPosition
+}
+
+// holdLogPollBound returns boundPosition lowered by each pending hold. Every
+// module log poll bound passes through this method.
+//
+// Behaviour:
+//   - A pending snapshot wait lowers the bound to its log position.
+//   - On a non-leader, a pending JoinLog publish lowers the bound to the
+//     JoinLog position. The poll consumes no frame past that position until
+//     the publish succeeds, so follower commit stays there.
+//
+// The JoinLog hold keeps a snapshot wait from queueing ahead of the JoinLog
+// wait. The service acks the JoinLog before any later snapshot action.
+func (a *Agent) holdLogPollBound(boundPosition int64) int64 {
+	if a.snapshotWaitPosition != 0 {
+		boundPosition = min(boundPosition, a.snapshotWaitPosition)
+	}
+	pending := a.pendingJoinLog
+	if pending != nil && a.role != RoleLeader {
+		boundPosition = min(boundPosition, pending.LogPosition)
+	}
+	return boundPosition
 }
 
 // retireSnapshotWait drops a leftover snapshot wait from the FIFO. The method

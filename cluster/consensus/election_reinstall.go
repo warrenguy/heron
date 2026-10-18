@@ -209,8 +209,8 @@ func (a *Agent) appendPositionForSeed() (int64, bool) {
 //   - refuses when the factory returns nil. Role and pendingJoinLog stay
 //     unchanged
 //   - after a non-nil runner returns: drains the log adapter under
-//     followerLogPollBound, clears pendingJoinLog, sets role to follower,
-//     then installs
+//     followerLogPollBound, lowered by holdLogPollBound, clears
+//     pendingJoinLog, sets role to follower, then installs
 //   - isLogEndOfStream seeds GracefulClosedLeaderID from leaderMemberID,
 //     else the null member id. A leader holds the null id, so a leader
 //     install seeds the null id
@@ -245,7 +245,8 @@ func (a *Agent) enterElection(
 	if runner == nil {
 		return 0
 	}
-	// Drain committed frames before the runner can unbind the image.
+	// Drain committed frames before the runner can unbind the image. The drain
+	// stops at a pending snapshot wait or a pending JoinLog publish.
 	a.logPollNowNs = nowNs
 	a.drainLogBacklog(a.followerLogPollBound(position))
 	// Clear a superseded unpublished JoinLog at settled re-entry before the new
