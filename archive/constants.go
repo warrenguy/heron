@@ -35,8 +35,9 @@ const (
 	// awaits (5 seconds).
 	DefaultControlResponseTimeout = 5 * time.Second
 
-	// DefaultControlOfferRetryTimeout bounds archive control offer retries when
-	// Config.ControlOfferRetryTimeout is zero.
+	// DefaultControlOfferRetryTimeout is the outer bound on archive control
+	// offer retries when Config.ControlOfferRetryTimeout is zero.
+	// DefaultMessageRetryAttempts ends most retries first.
 	DefaultControlOfferRetryTimeout = 10 * time.Second
 
 	// DefaultMessageRetryAttempts matches Java MESSAGE_RETRY_ATTEMPTS_DEFAULT.

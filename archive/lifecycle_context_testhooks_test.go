@@ -4,6 +4,7 @@ package archive
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -193,6 +194,10 @@ func TestNewLister_contextCanceled(t *testing.T) {
 
 func TestClientListRecording_contextDeadlineSooner(t *testing.T) {
 	h := newLifecycleHarness(t)
+
+	// The frozen harness clock never times out the retry. An unreachable
+	// cap leaves the 5 ms ctx deadline to end the retry.
+	h.cfg.MessageRetryAttempts = math.MaxInt
 	client := h.newClient()
 	h.pub.offerResult = aeron.BackPressured
 

@@ -33,6 +33,22 @@ func (err *ControlOfferTimeoutError) Error() string {
 	)
 }
 
+// ControlOfferAttemptsError reports a control offer retry that reached
+// Config.MessageRetryAttempts. Status holds the last retriable code.
+// Attempts counts the offers made.
+type ControlOfferAttemptsError struct {
+	Status   int64
+	Attempts int
+}
+
+func (err *ControlOfferAttemptsError) Error() string {
+	return fmt.Sprintf(
+		"archive: control offer failed after %d attempts: status=%s",
+		err.Attempts,
+		aeron.PositionCodeName(err.Status),
+	)
+}
+
 // ControlResponseTimeoutError reports response/descriptor await deadline expiry.
 type ControlResponseTimeoutError struct {
 	Operation     string
