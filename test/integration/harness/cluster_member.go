@@ -507,15 +507,56 @@ func (s *ClusterMemberSet) live() iter.Seq[*cluster.ConsensusModule] {
 //   - index is out of range
 //   - the module's Close reports one
 func (s *ClusterMemberSet) StopMember(index int) error {
+	m, err := s.vacateSlot(index)
+	if m == nil {
+		return err
+	}
+	return m.Close()
+}
+
+// vacateSlot nils the module and attached invokers at index.
+//
+// Returns:
+//   - the module the slot held, or nil for an empty slot
+//   - an error when index is out of range
+func (s *ClusterMemberSet) vacateSlot(index int) (*cluster.ConsensusModule, error) {
 	if index < 0 || index >= len(s.modules) {
-		return fmt.Errorf("cluster member set: index %d out of range [0, %d)", index, len(s.modules))
+		return nil, fmt.Errorf("cluster member set: index %d out of range [0, %d)", index, len(s.modules))
 	}
 	m := s.modules[index]
 	if m == nil {
-		return nil
+		return nil, nil
 	}
 	s.serviceInvokers[index] = nil
 	s.modules[index] = nil
+	return m, nil
+}
+
+// CrashMember closes the module's archive client, then the module in slot
+// index. The Archive does not stop the member's log recording, as after a
+// process exit without Close.
+//
+// Behaviour:
+//   - clears the slot as StopMember does
+//   - the recording stop in module Close fails on the closed control
+//     publication
+//   - the media driver and the Archive node stay running, as after StopMember
+//
+// ArchiveClient forbids callers to close the client. CrashMember closes it
+// anyway, as an injected fault.
+//
+// Concurrency: invoker-only. Must not run concurrently with Tick.
+//
+// Returns:
+//   - the module Close error unchanged
+//   - nil for an empty slot
+//   - an error when index is out of range
+func (s *ClusterMemberSet) CrashMember(index int) error {
+	m, err := s.vacateSlot(index)
+	if m == nil {
+		return err
+	}
+	_ = m.ArchiveClient().Close()
 	return m.Close()
 }
 
@@ -527,7 +568,7 @@ func (s *ClusterMemberSet) StopMember(index int) error {
 //     directory, media-driver directory, and Archive control channels are the
 //     previous boot's. The recovery plan is non-empty when the previous boot
 //     wrote term entries.
-//   - Invoker must call StopMember for the same index first.
+//   - Invoker must call StopMember or CrashMember for the same index first.
 //   - On an occupied slot returns an error without opening a second module. No
 //     transport connect or archive session runs for that refused open.
 //

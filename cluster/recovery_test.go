@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -800,6 +801,125 @@ func TestOpenRecovery_planRecoveryUnknownRecording(t *testing.T) {
 	require.ErrorIs(t, err, recordinglog.ErrUnknownRecordingID)
 	require.Contains(t, err.Error(), "cluster: plan recovery from")
 	require.Empty(t, fdsUnder(t, dir))
+}
+
+// recoveryCallLog holds one OpenRecovery's stop and list calls in call order.
+type recoveryCallLog struct {
+	calls []string
+}
+
+type loggingLister struct {
+	lister *fakeLister
+	log    *recoveryCallLog
+}
+
+func (l *loggingLister) ListRecording(id int64) (recordinglog.LogRecordingExtents, error) {
+	l.log.calls = append(l.log.calls, "list "+strconv.FormatInt(id, 10))
+	return l.lister.ListRecording(id)
+}
+
+type fakeTermRecordingStopper struct {
+	log *recoveryCallLog
+	err error
+}
+
+func (f *fakeTermRecordingStopper) StopTermRecording(recordingID int64) error {
+	f.log.calls = append(f.log.calls, "stop "+strconv.FormatInt(recordingID, 10))
+	return f.err
+}
+
+func TestOpenRecovery_termRecordingStopper(t *testing.T) {
+	t.Parallel()
+
+	newDeps := func(
+		t *testing.T,
+		dir string,
+		stopErr error,
+	) (cluster.RecoveryDeps, *recoveryCallLog) {
+		t.Helper()
+		log := &recoveryCallLog{}
+		return cluster.RecoveryDeps{
+			Config: recoveryConfig(t, dir),
+			ArchiveLister: &loggingLister{
+				lister: listerWith(42, extent(0, 4096)),
+				log:    log,
+			},
+			TermRecordingStopper: &fakeTermRecordingStopper{log: log, err: stopErr},
+		}, log
+	}
+
+	t.Run("term log stops the term recording before the first list", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		writeTermLog(t, dir, 2)
+		deps, log := newDeps(t, dir, nil)
+
+		recovery, err := cluster.OpenRecovery(deps)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, recovery.Close()) })
+
+		require.NotEmpty(t, log.calls)
+		require.Equal(t, "stop 42", log.calls[0])
+		for _, call := range log.calls[1:] {
+			require.Equal(t, "list 42", call)
+		}
+		require.Equal(t, int64(4096), recovery.Plan().AppendedLogPosition)
+	})
+
+	t.Run("empty log sends no stop", func(t *testing.T) {
+		t.Parallel()
+
+		deps, log := newDeps(t, t.TempDir(), nil)
+
+		recovery, err := cluster.OpenRecovery(deps)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, recovery.Close()) })
+
+		require.Empty(t, log.calls)
+		require.True(t, recovery.IsColdStart())
+	})
+
+	t.Run("nil stopper plans as before", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		writeTermLog(t, dir, 1)
+		deps, log := newDeps(t, dir, nil)
+		deps.TermRecordingStopper = nil
+
+		recovery, err := cluster.OpenRecovery(deps)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, recovery.Close()) })
+
+		require.NotEmpty(t, log.calls)
+		for _, call := range log.calls {
+			require.Equal(t, "list 42", call)
+		}
+		require.Equal(t, int64(4096), recovery.Plan().AppendedLogPosition)
+	})
+
+	t.Run("stopper error fails open and releases the lock", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		writeTermLog(t, dir, 1)
+		stopErr := errors.New("archive refused the stop")
+		deps, log := newDeps(t, dir, stopErr)
+
+		recovery, err := cluster.OpenRecovery(deps)
+		require.Nil(t, recovery)
+		require.ErrorIs(t, err, stopErr)
+		require.ErrorContains(t, err, "cluster: stop term recording 42 in "+dir)
+		require.Equal(t, []string{"stop 42"}, log.calls)
+		require.Empty(t, fdsUnder(t, dir))
+
+		// A second open takes the lock: the failed open released it.
+		deps, _ = newDeps(t, dir, nil)
+		recovery, err = cluster.OpenRecovery(deps)
+		require.NoError(t, err)
+		require.NoError(t, recovery.Close())
+	})
 }
 
 func TestOpenRecovery_negativeServiceCountValidateFirst(t *testing.T) {

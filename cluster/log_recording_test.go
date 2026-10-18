@@ -1008,6 +1008,52 @@ func TestLogRecording_agentPrepareAfterUnknownSubscription(t *testing.T) {
 	require.Equal(t, 0, stub.listCalls)
 }
 
+func TestLogRecording_agentPrepareStopsRecoveredRecording(t *testing.T) {
+	t.Parallel()
+
+	const catalogStop = int64(4096)
+	h := &stopRequestHarness{offerOK: true, listOfferOK: true}
+	r := newIdentityStopRecording(h)
+	stub := r.client.(*recordingArchiveStub)
+
+	agent := consensus.NewAgent(consensus.AgentConfig{})
+	agent.SetLogRecordingID(pollStopRecordingID)
+	agent.SetLogRecordingControl(r)
+	require.False(t, agent.IsRecordingActive())
+
+	// Identity stop offered: no reply yet.
+	position, prepared, err := agent.PrepareForNewLeadership(0, pollStopNowNs)
+	require.NoError(t, err)
+	require.False(t, prepared)
+	require.Equal(t, recordinglog.NullPosition, position)
+	require.True(t, agent.IsPrepareInProgress())
+	require.Equal(t, []int64{pollStopRecordingID}, h.identityBuilt)
+	require.Equal(t, 1, h.last().tryOfferCalls)
+	require.Empty(t, h.listBuilt)
+
+	// Identity reply: the catalog read is in flight.
+	h.responded = true
+	position, prepared, err = agent.PrepareForNewLeadership(0, pollStopNowNs+1)
+	require.NoError(t, err)
+	require.False(t, prepared)
+	require.Equal(t, recordinglog.NullPosition, position)
+	require.True(t, h.last().closed)
+	require.Len(t, h.listBuilt, 1)
+	require.Equal(t, pollStopRecordingID, h.lastList().recordingID)
+
+	// Catalog reply: prepare stores the catalog stop.
+	h.deliverDescriptor(catalogStop)
+	position, prepared, err = agent.PrepareForNewLeadership(0, pollStopNowNs+2)
+	require.NoError(t, err)
+	require.True(t, prepared)
+	require.Equal(t, catalogStop, position)
+	require.False(t, agent.IsPrepareInProgress())
+	require.False(t, agent.IsRecordingActive())
+	require.Zero(t, h.inFlight())
+	require.Len(t, h.built, 1)
+	require.Equal(t, 0, stub.listCalls)
+}
+
 const (
 	pollStopOfferTimeoutNs    = int64(1000)
 	pollStopResponseTimeoutNs = int64(500)
@@ -1019,16 +1065,19 @@ const (
 var pollStopChannel = []byte("aeron:udp?endpoint=239.255.12.1:9004|session-id=9")
 
 // stopRequestHarness scripts TryOffer and PollResponse for one or more
-// scriptedStopRequest values built by newRequest. The list fields script
-// scriptedListRequest values built by newListRequest.
+// scriptedStopRequest values built by newRequest or newIdentityRequest. The
+// list fields script scriptedListRequest values built by newListRequest.
 type stopRequestHarness struct {
-	built       []*scriptedStopRequest
-	offerOK     bool
-	offerErr    error
-	responded   bool
-	responseErr error
-	lastStream  int32
-	lastChannel []byte
+	built []*scriptedStopRequest
+	// identityBuilt holds each identity request's recording id. Identity
+	// requests also join built.
+	identityBuilt []int64
+	offerOK       bool
+	offerErr      error
+	responded     bool
+	responseErr   error
+	lastStream    int32
+	lastChannel   []byte
 
 	listBuilt    []*scriptedListRequest
 	listOfferOK  bool
@@ -1046,6 +1095,13 @@ func (h *stopRequestHarness) newRequest(
 ) logStopRequest {
 	h.lastStream = streamID
 	h.lastChannel = append([]byte(nil), channel...)
+	req := &scriptedStopRequest{h: h}
+	h.built = append(h.built, req)
+	return req
+}
+
+func (h *stopRequestHarness) newIdentityRequest(recordingID int64) logStopRequest {
+	h.identityBuilt = append(h.identityBuilt, recordingID)
 	req := &scriptedStopRequest{h: h}
 	h.built = append(h.built, req)
 	return req
@@ -1240,6 +1296,24 @@ func newPollStopRecording(
 		responseTimeoutNs:   pollStopResponseTimeoutNs,
 		newStopRequest:      h.newRequest,
 		newListRequest:      h.newListRequest,
+	}
+}
+
+// newIdentityStopRecording returns a control after a restart. The term lookup
+// names pollStopRecordingID. The control stores no stop for it. The stub's
+// ListRecording reports a null stop.
+func newIdentityStopRecording(h *stopRequestHarness) *logRecording {
+	return &logRecording{
+		client:                 &recordingArchiveStub{listStopPos: recordinglog.NullPosition},
+		terms:                  fixedTermLookup(pollStopRecordingID),
+		logStreamID:            pollStopStreamID,
+		recordingID:            recordingIDUnknown,
+		latchedRecordingID:     recordingIDUnknown,
+		offerRetryTimeoutNs:    pollStopOfferTimeoutNs,
+		responseTimeoutNs:      pollStopResponseTimeoutNs,
+		newStopRequest:         h.newRequest,
+		newListRequest:         h.newListRequest,
+		newIdentityStopRequest: h.newIdentityRequest,
 	}
 }
 
@@ -1691,6 +1765,377 @@ func TestLogRecording_PollStopLogRecording(t *testing.T) {
 		done, err := r.PollStopLogRecording(pollStopNowNs)
 		requireFailClosedPoll(t, r, h.last(), done, err, offerErr)
 	})
+
+	t.Run("identity reply stores the catalog stop", func(t *testing.T) {
+		t.Parallel()
+
+		// logStopRequest carries no IsStopped. A stopped reply and a
+		// not-active reply take the same path.
+		const catalogStop = int64(2048)
+		h := &stopRequestHarness{offerOK: true, listOfferOK: true}
+		r := newIdentityStopRecording(h)
+		stub := r.client.(*recordingArchiveStub)
+
+		// Identity stop offered: no reply yet.
+		requirePollStopPending(t, r, pollStopNowNs)
+		require.Equal(t, []int64{pollStopRecordingID}, h.identityBuilt)
+		req := h.last()
+		require.Equal(t, 1, req.tryOfferCalls)
+		require.Equal(t, 1, req.pollCalls)
+		require.Equal(t, pollStopNowNs+pollStopResponseTimeoutNs, r.pendingStop.deadlineNs)
+
+		// Identity reply: the catalog read is in flight.
+		h.responded = true
+		requirePollStopPending(t, r, pollStopNowNs+1)
+		require.True(t, req.closed)
+		require.Len(t, h.listBuilt, 1)
+		list := h.lastList()
+		require.Equal(t, pollStopRecordingID, list.recordingID)
+		require.True(t, list.stopClosedAtBuild)
+		require.Equal(t, 1, h.inFlight())
+
+		// Catalog reply: the control stores the stop for the term id.
+		h.deliverDescriptor(catalogStop)
+		done, err := r.PollStopLogRecording(pollStopNowNs + 2)
+		require.NoError(t, err)
+		require.True(t, done)
+		require.Nil(t, r.pendingStop)
+		require.Zero(t, h.inFlight())
+		require.Equal(t, pollStopRecordingID, r.latchedRecordingID)
+		require.Equal(t, catalogStop, r.stopPosition)
+		require.False(t, r.IsActive())
+		require.Equal(t, recordingIDUnknown, r.recordingID)
+
+		got, posErr := r.StopPositionFor(pollStopRecordingID)
+		require.NoError(t, posErr)
+		require.Equal(t, catalogStop, got)
+		require.Equal(t, 0, stub.listCalls)
+
+		// The stored stop ends the identity path.
+		done, err = r.PollStopLogRecording(pollStopNowNs + 3)
+		require.NoError(t, err)
+		require.True(t, done)
+		require.Len(t, h.identityBuilt, 1)
+	})
+
+	storedStopCases := []struct {
+		name  string
+		store func(*testing.T, *logRecording)
+	}{
+		{
+			name: "plan seed",
+			store: func(_ *testing.T, r *logRecording) {
+				r.seedStopPosition(pollStopRecordingID, 512)
+			},
+		},
+		{
+			name: "truncate",
+			store: func(t *testing.T, r *logRecording) {
+				_, err := r.TruncateLogRecording(pollStopRecordingID, 512)
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "clean stop",
+			store: func(_ *testing.T, r *logRecording) {
+				r.startChannel = append([]byte(nil), pollStopChannel...)
+				r.recordingID = pollStopRecordingID
+				adoptPollStop(r, 512)
+			},
+		},
+	}
+	for _, tt := range storedStopCases {
+		t.Run("identity skipped after "+tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &stopRequestHarness{offerOK: true, listOfferOK: true}
+			r := newIdentityStopRecording(h)
+			tt.store(t, r)
+
+			done, err := r.PollStopLogRecording(pollStopNowNs)
+			require.NoError(t, err)
+			require.True(t, done)
+			require.Empty(t, h.built)
+			require.Empty(t, h.listBuilt)
+		})
+	}
+
+	// Plan seed and truncate store the stop without a stop request.
+	for _, tt := range storedStopCases[:2] {
+		for _, listing := range []bool{false, true} {
+			name := "identity offer ends after " + tt.name
+			if listing {
+				name = "identity catalog read ends after " + tt.name
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				h := &stopRequestHarness{offerOK: true, listOfferOK: true}
+				r := newIdentityStopRecording(h)
+
+				requirePollStopPending(t, r, pollStopNowNs)
+				req := h.last()
+				if listing {
+					h.responded = true
+					requirePollStopPending(t, r, pollStopNowNs+1)
+					require.NotNil(t, r.pendingStop.list)
+				}
+				require.Equal(t, 1, h.inFlight())
+
+				tt.store(t, r)
+				done, err := r.PollStopLogRecording(pollStopNowNs + 2)
+				require.NoError(t, err)
+				require.True(t, done)
+				require.Nil(t, r.pendingStop)
+				require.True(t, req.closed)
+				require.Zero(t, h.inFlight())
+				require.Equal(t, []int64{pollStopRecordingID}, h.identityBuilt)
+				require.Equal(t, pollStopRecordingID, r.latchedRecordingID)
+				require.Equal(t, int64(512), r.stopPosition)
+			})
+		}
+	}
+
+	t.Run("identity skipped without a term id", func(t *testing.T) {
+		t.Parallel()
+
+		h := &stopRequestHarness{offerOK: true}
+		r := newIdentityStopRecording(h)
+		r.terms = fixedTermLookup(recordinglog.NullRecordingID)
+
+		done, err := r.PollStopLogRecording(pollStopNowNs)
+		require.NoError(t, err)
+		require.True(t, done)
+		require.Empty(t, h.built)
+	})
+
+	t.Run("start channel takes the channel attempt", func(t *testing.T) {
+		t.Parallel()
+
+		h := &stopRequestHarness{offerOK: true}
+		r := newIdentityStopRecording(h)
+		r.startChannel = append([]byte(nil), pollStopChannel...)
+		r.recordingID = pollStopRecordingID
+
+		requirePollStopPending(t, r, pollStopNowNs)
+		require.Len(t, h.built, 1)
+		require.Empty(t, h.identityBuilt)
+		require.Equal(t, pollStopChannel, h.lastChannel)
+		require.False(t, r.pendingStop.isIdentity())
+	})
+
+	identityOfferErr := errors.New("publication closed")
+	identityListErr := errors.New("list publication closed")
+	identityGeneric := &archive.Exception{ErrorCode: archive.ErrorGeneric}
+	identityUnknown := &archive.Exception{ErrorCode: archive.ErrorUnknownRecording}
+	identityFailureCases := []struct {
+		name string
+		// setup runs before the first poll.
+		setup func(*stopRequestHarness, *logRecording)
+		// firstPending adds one pending poll before the failing poll.
+		firstPending bool
+		// deliver runs between the pending poll and the failing poll.
+		deliver func(*stopRequestHarness)
+		failNs  int64
+		cause   error
+		// listed is true when the catalog read fails.
+		listed bool
+	}{
+		{
+			name:  "terminal offer",
+			setup: func(h *stopRequestHarness, _ *logRecording) { h.offerErr = identityOfferErr },
+			cause: identityOfferErr,
+		},
+		{
+			name: "offer bound expiry",
+			setup: func(h *stopRequestHarness, r *logRecording) {
+				h.offerOK = false
+				r.offerRetryTimeoutNs = 10
+			},
+			firstPending: true,
+			failNs:       10,
+			cause:        errStopOfferTimeout,
+		},
+		{
+			name:         "response bound expiry",
+			setup:        func(_ *stopRequestHarness, r *logRecording) { r.responseTimeoutNs = 10 },
+			firstPending: true,
+			failNs:       10,
+			cause:        errStopResponseTimeout,
+		},
+		{
+			name:         "unknown recording reply",
+			firstPending: true,
+			deliver:      func(h *stopRequestHarness) { h.responseErr = identityUnknown },
+			failNs:       1,
+			cause:        identityUnknown,
+		},
+		{
+			name:         "generic error reply",
+			firstPending: true,
+			deliver:      func(h *stopRequestHarness) { h.responseErr = identityGeneric },
+			failNs:       1,
+			cause:        identityGeneric,
+		},
+		{
+			name:         "list error",
+			firstPending: true,
+			deliver: func(h *stopRequestHarness) {
+				h.responded = true
+				h.listReplyErr = identityListErr
+			},
+			failNs: 1,
+			cause:  identityListErr,
+			listed: true,
+		},
+		{
+			name:         "null catalog stop",
+			firstPending: true,
+			deliver: func(h *stopRequestHarness) {
+				h.responded = true
+				h.deliverDescriptor(recordinglog.NullPosition)
+			},
+			failNs: 1,
+			cause:  errNoCatalogStopPosition,
+			listed: true,
+		},
+	}
+	for _, tt := range identityFailureCases {
+		t.Run("identity "+tt.name+" fails closed", func(t *testing.T) {
+			t.Parallel()
+
+			h := &stopRequestHarness{offerOK: true, listOfferOK: true}
+			r := newIdentityStopRecording(h)
+			if tt.setup != nil {
+				tt.setup(h, r)
+			}
+
+			if tt.firstPending {
+				requirePollStopPending(t, r, 0)
+				if tt.deliver != nil {
+					tt.deliver(h)
+				}
+			}
+			done, err := r.PollStopLogRecording(tt.failNs)
+			first := h.last()
+			require.ErrorIs(t, err, tt.cause)
+			listedID := strconv.FormatInt(pollStopRecordingID, 10)
+			require.ErrorContains(t, err, "stop log recording "+listedID+" by identity")
+			require.False(t, done)
+			require.False(t, r.needsStop())
+			require.Nil(t, r.pendingStop)
+			require.True(t, first.closed)
+			require.Zero(t, h.inFlight())
+			require.Equal(t, recordingIDUnknown, r.latchedRecordingID)
+			if tt.listed {
+				require.ErrorContains(t, err, "list recording "+listedID)
+				require.Len(t, h.listBuilt, 1)
+			} else {
+				require.Empty(t, h.listBuilt)
+			}
+
+			// Next attempt: a fresh identity request.
+			h.offerErr = nil
+			h.offerOK = true
+			requirePollStopPending(t, r, tt.failNs)
+			require.Equal(t, []int64{pollStopRecordingID, pollStopRecordingID}, h.identityBuilt)
+			second := h.last()
+			require.NotSame(t, first, second)
+			require.False(t, second.closed)
+		})
+	}
+
+	t.Run("stop signal during the identity attempt", func(t *testing.T) {
+		t.Parallel()
+
+		const catalogStop = int64(800)
+		h := &stopRequestHarness{offerOK: true, listOfferOK: true}
+		r := newIdentityStopRecording(h)
+
+		requirePollStopPending(t, r, pollStopNowNs)
+		p := r.pendingStop
+		req := h.last()
+
+		// The control is inactive. The STOP stores nothing and sets no mark.
+		adoptPollStop(r, 500)
+		require.Same(t, p, r.pendingStop)
+		require.False(t, req.closed)
+		require.Equal(t, recordingIDUnknown, r.latchedRecordingID)
+		_, stopped := r.ConsumeStopSignal()
+		require.False(t, stopped)
+
+		h.responded = true
+		h.deliverDescriptor(catalogStop)
+		done, err := r.PollStopLogRecording(pollStopNowNs + 1)
+		require.NoError(t, err)
+		require.True(t, done)
+		require.Equal(t, catalogStop, r.stopPosition)
+		require.Equal(t, pollStopRecordingID, r.latchedRecordingID)
+		_, stopped = r.ConsumeStopSignal()
+		require.False(t, stopped)
+	})
+
+	abandonCases := []struct {
+		name    string
+		abandon func(*testing.T, *logRecording)
+	}{
+		{
+			name: "StopLogRecording",
+			abandon: func(t *testing.T, r *logRecording) {
+				require.NoError(t, r.StopLogRecording())
+				require.False(t, r.needsStop())
+			},
+		},
+		{
+			name: "StartLogRecording",
+			abandon: func(t *testing.T, r *logRecording) {
+				id, err := r.StartLogRecording(
+					archivewire.SourceLocation_REMOTE,
+					9,
+					"aeron:udp?endpoint=239.255.12.1:9004",
+				)
+				require.NoError(t, err)
+				require.Equal(t, pollStopRecordingID, id)
+				require.True(t, r.IsActive())
+			},
+		},
+	}
+	for _, tt := range abandonCases {
+		for _, inCatalogRead := range []bool{false, true} {
+			name := tt.name + " abandons the identity attempt awaiting its reply"
+			if inCatalogRead {
+				name = tt.name + " abandons the identity attempt in its catalog read"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				h := &stopRequestHarness{offerOK: true, listOfferOK: true}
+				r := newIdentityStopRecording(h)
+
+				requirePollStopPending(t, r, pollStopNowNs)
+				identity := h.last()
+				require.False(t, identity.closed)
+				if inCatalogRead {
+					h.responded = true
+					requirePollStopPending(t, r, pollStopNowNs+1)
+					require.True(t, identity.closed)
+					require.False(t, h.lastList().closed)
+				}
+				require.Equal(t, 1, h.inFlight())
+
+				tt.abandon(t, r)
+				require.True(t, identity.closed)
+				if inCatalogRead {
+					require.True(t, h.lastList().closed)
+				} else {
+					require.Empty(t, h.listBuilt)
+				}
+				require.Nil(t, r.pendingStop)
+				require.Zero(t, h.inFlight())
+				require.Equal(t, recordingIDUnknown, r.latchedRecordingID)
+			})
+		}
+	}
 }
 
 func TestLogRecording_StopLogRecording_abandonsPending(t *testing.T) {

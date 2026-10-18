@@ -93,14 +93,18 @@ type logOfferRequest interface {
 
 // logStopRequest is one in-flight non-blocking stop request.
 //
-// *archive.AsyncStopRecording implements it. Tests substitute a double.
+// *archive.AsyncStopRecording and *archive.AsyncStopRecordingByIdentity
+// implement it. Tests substitute a double.
 type logStopRequest interface {
 	logOfferRequest
 	PollResponse() (responded bool, err error)
 	Close()
 }
 
-var _ logStopRequest = (*archive.AsyncStopRecording)(nil)
+var (
+	_ logStopRequest = (*archive.AsyncStopRecording)(nil)
+	_ logStopRequest = (*archive.AsyncStopRecordingByIdentity)(nil)
+)
 
 // logListRequest is one in-flight non-blocking list recording request.
 //
@@ -120,14 +124,23 @@ var _ logListRequest = (*archive.AsyncListRecording)(nil)
 // pendingStop tracks one async stop attempt across duty ticks.
 type pendingStop struct {
 	request logStopRequest
-	// list is set once a known-id stop returns ErrorUnknownSubscription.
+	// list is the catalog read. enterCatalogRead opens it after
+	// ErrorUnknownSubscription on a known-id stop, or after OK on an identity
+	// stop.
 	list logListRequest
-	// offered is true after the current step's TryOffer is accepted. Later
-	// polls skip TryOffer and poll the reply.
+	// identityRecordingID is the recording an identity attempt stops.
+	// NullRecordingID means a stop by channel.
+	identityRecordingID int64
+	// offered is true once the archive accepts the current step's TryOffer.
+	// Later polls skip TryOffer and poll the reply.
 	offered bool
 	// deadlineNs bounds offer retries, then the reply, in each step. Expiry
 	// fail-closes.
 	deadlineNs int64
+}
+
+func (p *pendingStop) isIdentity() bool {
+	return p.identityRecordingID != recordinglog.NullRecordingID
 }
 
 var (
@@ -142,6 +155,10 @@ var (
 // Holds needs-stop state in startChannel. A dirty start keeps the channel
 // until a later stop drains the channel. A re-start drains any prior
 // unstopped channel first.
+//
+// PollStopLogRecording also stops a recovered term recording by identity. The
+// identity stop runs only when no start channel needs a stop and the control
+// stores no stop for that id.
 //
 // Start, stop, and truncate block the invoker until the archive replies or
 // ControlResponseTimeout expires. PollStopLogRecording never blocks.
@@ -171,10 +188,10 @@ type logRecording struct {
 	// recordingIDUnknown while the start is unproven or after a dirty arm.
 	recordingID int64
 
-	// latchedRecordingID is the catalog id after the last clean stop or successful
-	// truncate. StopPositionFor matches this id when nothing is pending. The id
-	// survives a failed re-start that sets recordingID to unknown then drains
-	// dirty.
+	// latchedRecordingID is the catalog id after the last clean stop, successful
+	// truncate, identity catalog stop, or plan seed. StopPositionFor matches this
+	// id when nothing is pending. The id survives a failed re-start that sets
+	// recordingID to unknown then drains dirty.
 	latchedRecordingID int64
 	stopPosition       int64
 
@@ -192,7 +209,10 @@ type logRecording struct {
 	// newListRequest builds one in-flight list recording request. Closed over
 	// the archive client at newLogRecording. Tests substitute.
 	newListRequest func(recordingID int64) logListRequest
-	pendingStop    *pendingStop
+	// newIdentityStopRequest builds one in-flight stop by identity request.
+	// Closed over the archive client at newLogRecording. Tests substitute.
+	newIdentityStopRequest func(recordingID int64) logStopRequest
+	pendingStop            *pendingStop
 }
 
 var (
@@ -239,6 +259,9 @@ func newLogRecording(
 		}
 		r.newListRequest = func(recordingID int64) logListRequest {
 			return client.NewAsyncListRecording(recordingID)
+		}
+		r.newIdentityStopRequest = func(recordingID int64) logStopRequest {
+			return client.NewAsyncStopRecordingByIdentity(recordingID)
 		}
 	}
 	return r
@@ -492,15 +515,29 @@ func (r *logRecording) StopLogRecording() error {
 // closes the stop request and lists the recording. The catalog stop position
 // marks the stop. A null catalog stop position fails closed.
 //
+// Identity attempt: no start channel needs a stop and the control stores no
+// stop for the term recording id. The method stops that recording by identity.
+// An OK reply, stopped or not, closes the stop request and lists the
+// recording. The method stores the catalog stop for that id. Every error reply
+// and a null catalog stop fail closed.
+//
 // Concurrency: invoker-only.
 //
 // Returns:
-//   - true, nil: stop confirmed, or nothing needed stop
+//   - true, nil: stop confirmed, identity catalog stop stored, or nothing
+//     needed stop
 //   - false, nil: poll again
 //   - false, err: fail closed. Pending state is cleared. startChannel stays
 func (r *logRecording) PollStopLogRecording(nowNs int64) (bool, error) {
 	if !r.needsStop() {
-		return true, nil
+		recordingID := r.identityStopTarget()
+		if recordingID == recordinglog.NullRecordingID {
+			// A truncate can store the target's stop while an identity
+			// attempt runs. The attempt then has nothing left to stop.
+			r.clearPendingStop()
+			return true, nil
+		}
+		return r.pollIdentityStop(recordingID, nowNs)
 	}
 	p := r.pendingStop
 	if p == nil {
@@ -509,14 +546,7 @@ func (r *logRecording) PollStopLogRecording(nowNs int64) (bool, error) {
 	if p.list != nil {
 		return r.pollCatalogStop(p, nowNs)
 	}
-	offered, err := r.offerPendingStep(p, p.request, nowNs)
-	if err != nil {
-		return false, r.failPendingStop(err)
-	}
-	if !offered {
-		return false, nil
-	}
-	responded, err := p.request.PollResponse()
+	responded, err := r.pollStopReply(p, nowNs)
 	dirty := r.recordingID < 0
 	unknownSubscription := isUnknownSubscription(err)
 	switch {
@@ -532,8 +562,68 @@ func (r *logRecording) PollStopLogRecording(nowNs int64) (bool, error) {
 		r.markStopped(r.stopPosition)
 		return true, nil
 	}
+	return false, nil
+}
+
+// identityStopTarget returns the term recording id when the control stores
+// no stop for that id. Returns NullRecordingID otherwise. The caller checks
+// that no start channel needs a stop.
+func (r *logRecording) identityStopTarget() int64 {
+	id := r.establishedTermRecordingID()
+	if id == recordinglog.NullRecordingID || id == r.latchedRecordingID {
+		return recordinglog.NullRecordingID
+	}
+	return id
+}
+
+// pollIdentityStop advances the identity stop for recordingID one step. An OK
+// reply, stopped or not, enters the catalog read. Every failure fail-closes.
+func (r *logRecording) pollIdentityStop(recordingID, nowNs int64) (bool, error) {
+	p := r.pendingStop
+	if p == nil {
+		p = &pendingStop{
+			request:             r.newIdentityStopRequest(recordingID),
+			identityRecordingID: recordingID,
+			deadlineNs:          nowNs + r.offerRetryTimeoutNs,
+		}
+		r.pendingStop = p
+	}
+	if p.list != nil {
+		return r.pollCatalogStop(p, nowNs)
+	}
+	responded, err := r.pollStopReply(p, nowNs)
+	switch {
+	case err != nil:
+		return false, r.failPendingStop(err)
+	case responded:
+		r.enterCatalogRead(p, nowNs)
+		return r.pollCatalogStop(p, nowNs)
+	}
+	return false, nil
+}
+
+// pollStopReply offers the stop request of p until the archive accepts, then
+// polls the reply once per call. The caller maps the reply.
+//
+// Returns:
+//   - true, nil: OK reply
+//   - true, err: the archive replied with err
+//   - false, nil: poll again
+//   - false, err: the offer failed, or a bound expired
+func (r *logRecording) pollStopReply(p *pendingStop, nowNs int64) (bool, error) {
+	offered, err := r.offerPendingStep(p, p.request, nowNs)
+	if err != nil {
+		return false, err
+	}
+	if !offered {
+		return false, nil
+	}
+	responded, err := p.request.PollResponse()
+	if responded || err != nil {
+		return responded, err
+	}
 	if nowNs >= p.deadlineNs {
-		return false, r.failPendingStop(errStopResponseTimeout)
+		return false, errStopResponseTimeout
 	}
 	return false, nil
 }
@@ -575,17 +665,26 @@ func (r *logRecording) offerPendingStep(
 // request closes first, so the client carries one outstanding request.
 func (r *logRecording) enterCatalogRead(p *pendingStop, nowNs int64) {
 	p.request.Close()
-	p.list = r.newListRequest(r.recordingID)
+	p.list = r.newListRequest(r.catalogRecordingID(p))
 	p.offered = false
 	p.deadlineNs = nowNs + r.offerRetryTimeoutNs
 }
 
+// catalogRecordingID returns the recording id the catalog read of p lists:
+// the identity target, or the live catalog id for a stop by channel.
+func (r *logRecording) catalogRecordingID(p *pendingStop) int64 {
+	if p.isIdentity() {
+		return p.identityRecordingID
+	}
+	return r.recordingID
+}
+
 // pollCatalogStop advances the list request one step. A descriptor with a
-// stop position marks a clean stop there. Every failure fail-closes.
+// stop position stores that stop. Every failure fail-closes.
 func (r *logRecording) pollCatalogStop(p *pendingStop, nowNs int64) (bool, error) {
 	offered, err := r.offerPendingStep(p, p.list, nowNs)
 	if err != nil {
-		return false, r.failCatalogStop(err)
+		return false, r.failCatalogStop(p, err)
 	}
 	if !offered {
 		return false, nil
@@ -593,23 +692,35 @@ func (r *logRecording) pollCatalogStop(p *pendingStop, nowNs int64) (bool, error
 	done, descriptor, err := p.list.PollDescriptor()
 	switch {
 	case err != nil:
-		return false, r.failCatalogStop(err)
+		return false, r.failCatalogStop(p, err)
 	case done && descriptor.StopPosition == recordinglog.NullPosition:
-		return false, r.failCatalogStop(errNoCatalogStopPosition)
+		return false, r.failCatalogStop(p, errNoCatalogStopPosition)
 	case done:
-		r.markStopped(descriptor.StopPosition)
+		r.storeCatalogStop(p, descriptor.StopPosition)
 		return true, nil
 	}
 	if nowNs >= p.deadlineNs {
-		return false, r.failCatalogStop(errStopResponseTimeout)
+		return false, r.failCatalogStop(p, errStopResponseTimeout)
 	}
 	return false, nil
 }
 
+// storeCatalogStop stores the catalog stop. An identity attempt stores the
+// stop for its target id, then clears the attempt. A stop by channel marks a
+// clean stop through markStopped.
+func (r *logRecording) storeCatalogStop(p *pendingStop, stopPosition int64) {
+	if p.isIdentity() {
+		r.storeStopPosition(p.identityRecordingID, stopPosition)
+		r.clearPendingStop()
+		return
+	}
+	r.markStopped(stopPosition)
+}
+
 // failCatalogStop fail-closes with the listed recording id in the error.
-func (r *logRecording) failCatalogStop(cause error) error {
+func (r *logRecording) failCatalogStop(p *pendingStop, cause error) error {
 	return r.failPendingStop(
-		fmt.Errorf("list recording %d: %w", r.recordingID, cause),
+		fmt.Errorf("list recording %d: %w", r.catalogRecordingID(p), cause),
 	)
 }
 
@@ -617,8 +728,9 @@ func (r *logRecording) failCatalogStop(cause error) error {
 // attempt.
 func (r *logRecording) armPendingStop(nowNs int64) *pendingStop {
 	p := &pendingStop{
-		request:    r.newStopRequest(r.logStreamID, r.startChannel),
-		deadlineNs: nowNs + r.offerRetryTimeoutNs,
+		request:             r.newStopRequest(r.logStreamID, r.startChannel),
+		identityRecordingID: recordinglog.NullRecordingID,
+		deadlineNs:          nowNs + r.offerRetryTimeoutNs,
 	}
 	r.pendingStop = p
 	return p
@@ -627,7 +739,15 @@ func (r *logRecording) armPendingStop(nowNs int64) *pendingStop {
 // failPendingStop closes the open requests, clears pendingStop, and keeps
 // startChannel. The wrapped error names the stop operation.
 func (r *logRecording) failPendingStop(cause error) error {
+	p := r.pendingStop
 	r.clearPendingStop()
+	if p != nil && p.isIdentity() {
+		return fmt.Errorf(
+			"cluster: stop log recording %d by identity: %w",
+			p.identityRecordingID,
+			cause,
+		)
+	}
 	return fmt.Errorf(
 		"cluster: stop log recording for stream %d on %s: %w",
 		r.logStreamID,
@@ -708,9 +828,10 @@ func (r *logRecording) resolveStopPositionFromCatalog() error {
 // StopPositionFor returns the archive stop position recorded for recordingID.
 //
 // Behaviour:
-//   - same id as the last clean stop or successful truncate (stored catalog
-//     id) and nothing pending: returns the stored stop position. No catalog
-//     read. A later clean stop overwrites a truncate store.
+//   - same id as the stored catalog id (last clean stop, truncate, identity
+//     catalog stop, or plan seed) and nothing pending: returns the stored stop
+//     position. No catalog read. A later clean stop overwrites a truncate
+//     store.
 //   - any other case: reads the catalog once. Does not store that read.
 //   - same id while stop still pending: takes the catalog path. Errors only
 //     when the catalog read fails or reports no stop position
@@ -801,7 +922,6 @@ func (r *logRecording) TruncateLogRecording(
 }
 
 // storeStopPosition stores recordingID and position for StopPositionFor.
-// Truncate and plan seeding both call this method.
 //
 // startChannel is kept. A truncate may run while a dirty drain is pending. That
 // drain still needs the channel. While the channel is pending, StopPositionFor

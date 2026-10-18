@@ -290,6 +290,12 @@ type pollStopModel struct {
 	// clears it.
 	knownStop    int64
 	hasKnownStop bool
+	// termID is the term recording id the lookup reports.
+	termID int64
+	// identity is true while the pending attempt stops by identity.
+	identity bool
+	// stopMarked mirrors the STOP mark. Only an adopted STOP sets it.
+	stopMarked bool
 }
 
 // pollStopScript is the harness state one poll reads.
@@ -330,6 +336,23 @@ func (m *pollStopModel) clearPending() {
 	m.pending = false
 	m.listing = false
 	m.offered = false
+	m.identity = false
+}
+
+// identityTarget mirrors identityStopTarget.
+func (m *pollStopModel) identityTarget() int64 {
+	if m.needsStop || m.termID == recordinglog.NullRecordingID || m.termID == m.latchedID {
+		return recordinglog.NullRecordingID
+	}
+	return m.termID
+}
+
+// catalogID is the recording id the catalog read lists.
+func (m *pollStopModel) catalogID() int64 {
+	if m.identity {
+		return m.termID
+	}
+	return m.recordingID
 }
 
 func (m *pollStopModel) markStopped(pos int64) {
@@ -371,7 +394,11 @@ func (m *pollStopModel) offerStep(offerOK bool, offerErr error) (bool, error) {
 
 func (m *pollStopModel) poll(script pollStopScript) (done bool, err error) {
 	if !m.needsStop {
-		return true, nil
+		if m.identityTarget() == recordinglog.NullRecordingID {
+			m.clearPending()
+			return true, nil
+		}
+		return m.pollIdentity(script)
 	}
 	if !m.pending {
 		m.pending = true
@@ -412,6 +439,40 @@ func (m *pollStopModel) poll(script pollStopScript) (done bool, err error) {
 	return false, nil
 }
 
+// pollIdentity mirrors pollIdentityStop.
+func (m *pollStopModel) pollIdentity(script pollStopScript) (done bool, err error) {
+	if !m.pending {
+		m.pending = true
+		m.identity = true
+		m.offered = false
+		m.deadline = m.nowNs + pollStopOfferTimeoutNs
+		m.inFlight++
+	}
+	if m.listing {
+		return m.pollCatalog(script)
+	}
+	offered, err := m.offerStep(script.offerOK, script.offerErr)
+	if err != nil || !offered {
+		return false, err
+	}
+	switch {
+	case script.responseErr != nil:
+		m.clearPending()
+		return false, script.responseErr
+	case script.responded:
+		// Stopped and not-active replies both enter the catalog read.
+		m.listing = true
+		m.offered = false
+		m.deadline = m.nowNs + pollStopOfferTimeoutNs
+		return m.pollCatalog(script)
+	}
+	if m.nowNs >= m.deadline {
+		m.clearPending()
+		return false, errStopResponseTimeout
+	}
+	return false, nil
+}
+
 func (m *pollStopModel) pollCatalog(script pollStopScript) (done bool, err error) {
 	offered, err := m.offerStep(script.listOfferOK, script.listOfferErr)
 	if err != nil || !offered {
@@ -424,6 +485,13 @@ func (m *pollStopModel) pollCatalog(script pollStopScript) (done bool, err error
 	case script.listDelivered && script.listStopPosition == recordinglog.NullPosition:
 		m.clearPending()
 		return false, errNoCatalogStopPosition
+	case script.listDelivered && m.identity:
+		m.latchedID = m.termID
+		m.stopPos = script.listStopPosition
+		m.knownStop = script.listStopPosition
+		m.hasKnownStop = true
+		m.clearPending()
+		return true, nil
 	case script.listDelivered:
 		m.markKnownStopped(script.listStopPosition)
 		return true, nil
@@ -455,14 +523,24 @@ func requirePollStopInvariants(
 	}
 	require.Equal(rt, inFlight, model.inFlight)
 	require.Equal(rt, inFlight, h.inFlight())
+	require.LessOrEqual(rt, h.inFlight(), 1)
 	listing := r.pendingStop != nil && r.pendingStop.list != nil
 	require.Equal(rt, model.listing, listing)
 	if listing {
 		require.True(rt, h.last().closed)
 		require.True(rt, h.lastList().stopClosedAtBuild)
 		require.False(rt, h.lastList().closed)
-		require.Equal(rt, model.recordingID, h.lastList().recordingID)
+		require.Equal(rt, model.catalogID(), h.lastList().recordingID)
 	}
+	identity := r.pendingStop != nil && r.pendingStop.isIdentity()
+	require.Equal(rt, model.identity, identity)
+	if identity {
+		require.False(rt, r.needsStop())
+		require.NotEqual(rt, recordinglog.NullRecordingID, model.termID)
+		require.NotEqual(rt, model.termID, r.latchedRecordingID)
+		require.Equal(rt, model.termID, r.pendingStop.identityRecordingID)
+	}
+	require.Equal(rt, model.stopMarked, r.stopSignalled)
 	require.Equal(rt, 0, r.client.(*recordingArchiveStub).listCalls)
 	if done {
 		require.NoError(rt, pollErr)
@@ -473,8 +551,6 @@ func requirePollStopInvariants(
 	}
 	if pollErr != nil {
 		require.False(rt, done)
-		require.True(rt, r.needsStop())
-		require.NotEmpty(rt, r.startChannel)
 		require.Nil(rt, r.pendingStop)
 	}
 }
@@ -483,7 +559,8 @@ func requirePollStopInvariants(
 var errPollStopOffer = errors.New("publication closed")
 
 // TestLogRecording_pollStop_rapid draws poll, offer, response, list, signal,
-// clock, and sync-stop ops against pollStopModel.
+// clock, sync-stop, and term-stop seed ops against pollStopModel. A drawn term
+// id with no stored stop selects the identity attempt.
 func TestLogRecording_pollStop_rapid(t *testing.T) {
 	t.Parallel()
 
@@ -496,6 +573,16 @@ func TestLogRecording_pollStop_rapid(t *testing.T) {
 		recordingID := pollStopRecordingID
 		if dirty {
 			recordingID = recordingIDUnknown
+		}
+		termID := recordinglog.NullRecordingID
+		if rapid.Bool().Draw(rt, "termID") {
+			termID = pollStopRecordingID
+		}
+		storedStop := termID != recordinglog.NullRecordingID &&
+			rapid.Bool().Draw(rt, "storedStop")
+		latchedID := recordingIDUnknown
+		if storedStop {
+			latchedID = termID
 		}
 
 		h := &stopRequestHarness{
@@ -513,13 +600,17 @@ func TestLogRecording_pollStop_rapid(t *testing.T) {
 		if !needsStop {
 			r.startChannel = nil
 		}
+		r.terms = fixedTermLookup(termID)
+		r.newIdentityStopRequest = h.newIdentityRequest
+		r.latchedRecordingID = latchedID
 
 		model := pollStopModel{
 			needsStop:   needsStop,
 			recordingID: recordingID,
-			latchedID:   recordingIDUnknown,
+			latchedID:   latchedID,
 			stopPos:     priorPos,
 			proofHeld:   !needsStop,
+			termID:      termID,
 		}
 
 		n := rapid.IntRange(1, 40).Draw(rt, "n")
@@ -534,11 +625,13 @@ func TestLogRecording_pollStop_rapid(t *testing.T) {
 			"deliverOK",
 			"deliverError",
 			"deliverStopSignal",
+			"deliverTermStopSignal",
 			"listBackPressure",
 			"listOfferError",
 			"deliverListError",
 			"advanceClock",
 			"syncStop",
+			"seedTermStop",
 		}
 
 		for i := range n {
@@ -578,6 +671,20 @@ func TestLogRecording_pollStop_rapid(t *testing.T) {
 				})
 				if model.isActive() {
 					model.markKnownStopped(pos)
+					model.stopMarked = true
+				}
+			case "deliverTermStopSignal":
+				// An identity attempt runs inactive, so the control ignores this
+				// STOP. An active control with the term id as catalog id adopts it.
+				pos := rapid.Int64Range(0, 1<<20).Draw(rt, "termStopPos"+strconv.Itoa(i))
+				r.handleRecordingSignal(codecs.RecordingSignalEventFields{
+					RecordingID: termID,
+					Position:    pos,
+					Signal:      archivewire.RecordingSignal_STOP,
+				})
+				if model.isActive() && termID == model.recordingID {
+					model.markKnownStopped(pos)
+					model.stopMarked = true
 				}
 			case "listOfferAccepted":
 				h.listOfferOK = true
@@ -613,6 +720,18 @@ func TestLogRecording_pollStop_rapid(t *testing.T) {
 				} else {
 					model.clearPending()
 				}
+			case "seedTermStop":
+				// A seed or truncate stores the term stop. The next poll ends any
+				// identity attempt.
+				if model.needsStop || termID == recordinglog.NullRecordingID {
+					break
+				}
+				pos := rapid.Int64Range(0, 1<<20).Draw(rt, "seedPos"+strconv.Itoa(i))
+				r.seedStopPosition(termID, pos)
+				model.latchedID = termID
+				model.stopPos = pos
+				model.hasKnownStop = false
+				done, err = requirePollStopStep(rt, r, &model, h)
 			case "poll":
 				done, err = requirePollStopStep(rt, r, &model, h)
 			}
@@ -642,6 +761,8 @@ func requirePollStopStep(
 	rt.Helper()
 
 	needsStopBefore := r.needsStop()
+	identityBefore := model.identityTarget() != recordinglog.NullRecordingID
+	pendingBefore := r.pendingStop != nil
 	builtBefore := len(h.built)
 	script := scriptOf(h)
 	wantDone, wantErr := model.poll(script)
@@ -653,8 +774,24 @@ func requirePollStopStep(
 		require.NoError(rt, err)
 		require.Equal(rt, wantDone, done)
 	}
-	if !needsStopBefore {
+	switch {
+	case needsStopBefore:
+	case identityBefore && !pendingBefore:
+		require.Len(rt, h.built, builtBefore+1)
+		require.Equal(rt, model.termID, h.identityBuilt[len(h.identityBuilt)-1])
+	default:
 		require.Len(rt, h.built, builtBefore)
+	}
+	if done && identityBefore {
+		require.True(rt, script.listDelivered)
+		require.Equal(rt, model.termID, r.latchedRecordingID)
+		require.Equal(rt, script.listStopPosition, r.stopPosition)
+		require.NotEqual(rt, recordinglog.NullPosition, r.stopPosition)
+	}
+	if err != nil && needsStopBefore {
+		// A failed channel attempt keeps the start channel for a fresh attempt.
+		require.True(rt, r.needsStop())
+		require.NotEmpty(rt, r.startChannel)
 	}
 	if done && needsStopBefore {
 		require.True(rt, model.proofHeld)

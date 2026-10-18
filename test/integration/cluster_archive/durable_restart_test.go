@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -348,6 +349,128 @@ func TestDurableCluster_restartsAFollowerAndRejoins(t *testing.T) {
 	requireAwaitTick(t, set, "post-restart commit advance", durableWorkBound, func() bool {
 		return membersReachCommit(set, postAppendPos)
 	})
+}
+
+// TestDurableCluster_restartsAFollowerWhoseRecordingRuns asserts a crashed follower
+// stops its running recording at restart and rejoins.
+func TestDurableCluster_restartsAFollowerWhoseRecordingRuns(t *testing.T) {
+	t.Parallel()
+
+	harness.RequireArchiveRuntime(t)
+
+	set := openDurableCluster(
+		t,
+		harness.DurableRestartRunningPortBase,
+		harness.DurableRestartRunningLogEndpoint,
+	)
+
+	leader := requireSingleLeader(t, set, "")
+	leaderMemberID := leader.ThisMemberID()
+
+	appendPos := mustAppend(t, set, leader, "pre-crash-commit")
+	requireAwaitTick(t, set, "pre-crash commit floor", durableWorkBound, func() bool {
+		return membersReachCommit(set, appendPos)
+	})
+
+	followerIndex := firstNonLeaderIndex(set, leaderMemberID)
+	require.GreaterOrEqual(t, followerIndex, 0, "no follower slot:\n%s", set.State())
+	follower := set.Module(followerIndex)
+	require.NotNil(t, follower)
+	down := []int{followerIndex}
+
+	preRecordingID := follower.RecordingLog().TermRecordingID()
+	require.NotEqual(t, int64(-1), preRecordingID, "follower TermRecordingID:\n%s", set.State())
+
+	leaderPub := leader.LogPublisher().Position()
+	require.Positive(t, leaderPub, "leader publication position:\n%s", set.State())
+	requireAwaitTick(
+		t, set, "follower recording current", durableWorkBound,
+		func() bool {
+			return localRecordingAtLeast(set.Module(followerIndex), leaderPub)
+		},
+	)
+
+	// Crash the follower. The recording stop fails on the closed archive
+	// client. The Archive keeps recording the log.
+	crashErr := set.CrashMember(followerIndex)
+	var terminal *archive.ControlTerminalError
+	require.ErrorAs(t, crashErr, &terminal, "CrashMember error:\n%s", set.State())
+	require.Nil(t, set.Module(followerIndex))
+
+	midAppendPos := mustAppend(t, set, leader, "while-crashed-commit")
+	requireAwaitTick(t, set, "commit advances while follower crashed", durableWorkBound, func() bool {
+		return survivorsReachCommit(
+			set, down, leaderMemberID, leader.CommitPosition(), midAppendPos,
+		)
+	})
+
+	require.NoError(t, set.RestartMember(followerIndex))
+	requireWarmRestartOpen(t, set, followerIndex, "returning member")
+	returning := set.Module(followerIndex)
+
+	// Open stops the running recording before the first tick.
+	stopPosition := returning.LogRecordingStopPosition()
+	require.GreaterOrEqual(
+		t,
+		stopPosition,
+		leaderPub,
+		"LogRecordingStopPosition after restart:\n%s",
+		set.State(),
+	)
+
+	awaitPostRestartReady(t, set, returning.ElectionComplete)
+
+	require.Equal(
+		t,
+		preRecordingID,
+		returning.Agent().LocalLogRecordingID(),
+		"LocalLogRecordingID after rejoin:\n%s",
+		set.State(),
+	)
+	require.Equal(
+		t,
+		preRecordingID,
+		returning.RecordingLog().TermRecordingID(),
+		"TermRecordingID after rejoin:\n%s",
+		set.State(),
+	)
+	require.True(
+		t,
+		returning.Agent().IsRecordingActive(),
+		"IsRecordingActive after rejoin:\n%s",
+		set.State(),
+	)
+
+	leader = requireSingleLeader(t, set, "after rejoin")
+	postAppendPos := mustAppend(t, set, leader, "post-restart-commit")
+	requireAwaitTick(t, set, "post-restart commit advance", durableWorkBound, func() bool {
+		return membersReachCommit(set, postAppendPos)
+	})
+
+	// Stop the leader. The returner's next election polls the recording stop
+	// in prepare, then completes in a higher term.
+	leaderIndex := int(leader.ThisMemberID())
+	preTerm := leader.LeadershipTermID()
+	preElectionCount := returning.Agent().ElectionCount()
+	require.NoError(t, set.StopMember(leaderIndex))
+	requireAwaitTick(t, set, "survivors complete a higher term", durableReElectBound, func() bool {
+		for i, m := range set.Modules() {
+			if i == leaderIndex {
+				continue
+			}
+			if m == nil || !m.ElectionComplete() || m.LeadershipTermID() <= preTerm {
+				return false
+			}
+		}
+		return true
+	})
+	require.Greater(
+		t,
+		returning.Agent().ElectionCount(),
+		preElectionCount,
+		"returner ElectionCount after leader stop:\n%s",
+		set.State(),
+	)
 }
 
 // TestDurableCluster_restartsTheOutgoingLeader asserts a stopped leader's
