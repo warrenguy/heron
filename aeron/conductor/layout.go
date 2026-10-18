@@ -144,6 +144,16 @@ const (
 )
 
 const (
+	destinationByIDResourceOffset    = CorrelatedMessageLength
+	destinationByIDDestinationOffset = destinationByIDResourceOffset + sizeOfInt64
+	destinationByIDBodyLength        = destinationByIDDestinationOffset + sizeOfInt64
+
+	DestinationByIDMessageResourceRegistrationIDOffset    = destinationByIDResourceOffset
+	DestinationByIDMessageDestinationRegistrationIDOffset = destinationByIDDestinationOffset
+	DestinationByIDMessageBodyLength                      = destinationByIDBodyLength
+)
+
+const (
 	removePublicationFlagsOffset = RemoveMessageBodyLength
 	RemovePublicationFlagsOffset = removePublicationFlagsOffset
 	RemovePublicationBodyLength  = RemovePublicationFlagsOffset + sizeOfInt64

@@ -170,6 +170,40 @@ func TestRemoveMessage_roundtrip_rapid(t *testing.T) {
 	})
 }
 
+func TestDestinationByIDMessage_roundtrip_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		want := conductor.DestinationByIDMessage{
+			ClientID:                  rapid.Int64().Draw(rt, "clientID"),
+			CorrelationID:             rapid.Int64().Draw(rt, "correlationID"),
+			ResourceRegistrationID:    rapid.Int64().Draw(rt, "resourceRegistrationID"),
+			DestinationRegistrationID: rapid.Int64().Draw(rt, "destinationRegistrationID"),
+		}
+		offset := rapid.IntRange(0, 8).Draw(rt, "offset")
+
+		buffer := atomicbuffer.Wrap(
+			make([]byte, offset+conductor.DestinationByIDMessageBodyLength),
+		)
+		err := conductor.EncodeDestinationByIDMessage(
+			buffer,
+			offset,
+			want.ClientID,
+			want.CorrelationID,
+			want.ResourceRegistrationID,
+			want.DestinationRegistrationID,
+		)
+		require.NoError(rt, err)
+
+		got, err := conductor.DecodeDestinationByIDMessage(
+			buffer,
+			offset,
+			conductor.DestinationByIDMessageBodyLength,
+		)
+		require.NoError(rt, err)
+		require.Equal(rt, want, got)
+	})
+}
+
 func TestRemovePublication_roundtrip_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {

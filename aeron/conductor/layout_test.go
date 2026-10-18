@@ -142,6 +142,17 @@ func TestLayout_goldenOffsets(t *testing.T) {
 			16,
 		},
 		{"RemoveMessageBodyLength", conductor.RemoveMessageBodyLength, 24},
+		{
+			"DestinationByIDMessageResourceRegistrationIDOffset",
+			conductor.DestinationByIDMessageResourceRegistrationIDOffset,
+			16,
+		},
+		{
+			"DestinationByIDMessageDestinationRegistrationIDOffset",
+			conductor.DestinationByIDMessageDestinationRegistrationIDOffset,
+			24,
+		},
+		{"DestinationByIDMessageBodyLength", conductor.DestinationByIDMessageBodyLength, 32},
 		{"CounterMessageTypeIDOffset", conductor.CounterMessageTypeIDOffset, 16},
 		{"CounterMessageKeyLengthOffset", conductor.CounterMessageKeyLengthOffset, 20},
 		{"CounterMessageKeyOffset", conductor.CounterMessageKeyOffset, 24},

@@ -84,4 +84,10 @@ const (
 
 	// Multi-destination receive merge on live aeronmd (control-mode=manual).
 	MultiDestinationSubscriptionStreamID int32 = 8401
+
+	// Multi-destination send on live aeronmd (control-mode=manual).
+	MultiDestinationPublicationStreamID int32 = 8402
+
+	// Rejected send destination adds on live aeronmd.
+	MultiDestinationPublicationErrorsStreamID int32 = 8403
 )

@@ -84,7 +84,9 @@ func applyPendingExpireRapidExpire(
 		if isActive {
 			wantTimedOutActiveID = correlationID
 		}
-		if isActive || entry.kind == PendingKindAddCounter {
+		readyCompleted := entry.kind == PendingKindAddCounter ||
+			entry.kind == PendingKindDestination
+		if isActive || readyCompleted {
 			if !entry.timedOut && !entry.ready {
 				wantWorkCount++
 				entry.timedOut = true
@@ -172,8 +174,9 @@ func TestPendingRegistry_ExpireBefore_opSequences_rapid(t *testing.T) {
 			registration.Kind = rapid.SampledFrom([]PendingKind{
 				PendingKindNextSessionID,
 				PendingKindAddCounter,
+				PendingKindDestination,
 			}).Draw(rt, "seedKind")
-			if registration.Kind == PendingKindAddCounter {
+			if registration.Kind != PendingKindNextSessionID {
 				registration.Ready = rapid.Bool().Draw(rt, "seedReady")
 			}
 			require.NoError(rt, registry.Register(registration))

@@ -16,6 +16,7 @@ const (
 	PendingKindRemovePublication
 	PendingKindRemoveSubscription
 	PendingKindAddCounter
+	PendingKindDestination
 )
 
 type PendingRegistration struct {
@@ -26,8 +27,9 @@ type PendingRegistration struct {
 	StreamID   int32
 	Channel    string
 	Int32Value int32
-	// Ready marks a success. completePendingSuccess sets it for every kind, so
+	// Ready marks a success. completePendingSuccess sets it with the mark, so
 	// the PollPending map path finds a success whose mark moved.
+	// OperationSucceeded sets it without a mark for PendingKindDestination.
 	Ready bool
 	Err   error
 	// Publication and Subscription are any to break the conductor/aeron import cycle.
@@ -108,7 +110,8 @@ type pendingExpireItem struct {
 // ExpireBefore handles pending entries whose DeadlineNs has passed. It skips
 // receivedCorrelationID, the response received on this tick.
 //
-// Add kinds, add-counter, and the active correlation id stay in the registry:
+// Add kinds, add-counter, destination, and the active correlation id stay in
+// the registry:
 //   - still waiting on the driver: Err becomes ErrAwaitTimeout, expireHandler
 //     gets removed=false, caller finishes via PollPending or CancelPending
 //   - already resolved (Ready or Err set): untouched, no callback
@@ -293,8 +296,9 @@ func (conductor *Conductor) RegisterPendingAddWithDeadline(
 //
 // Map path: receivedCorrelationID names another entry or none. A later write
 // replaced the mark, or the next tick cleared it. PollPending then checks the
-// pending map. The entry is complete when Err is non-nil or Ready is true. On
-// completion PollPending:
+// pending map. The entry is complete when Err is non-nil or Ready is true. A
+// PendingKindDestination reply sets no mark. Its entry completes here unless
+// the active deadline marked it. On completion PollPending:
 //   - returns done=true with the registration and Err
 //   - removes the entry
 //   - applies RollbackAddPendingResources when Err is non-nil
@@ -443,17 +447,22 @@ func addPendingKind(kind PendingKind) bool {
 		kind == PendingKindAddSubscription
 }
 
-// hasReadyCompletion reports whether a driver ready event completes kind.
+// hasReadyCompletion reports whether a late success can still set Ready on kind
+// after its deadline. A driver ready event sets Ready for the add kinds and
+// add-counter. ON_OPERATION_SUCCESS sets Ready for PendingKindDestination.
 // ExpireBefore keeps such entries past their deadline.
 func hasReadyCompletion(kind PendingKind) bool {
-	return addPendingKind(kind) || kind == PendingKindAddCounter
+	return addPendingKind(kind) ||
+		kind == PendingKindAddCounter ||
+		kind == PendingKindDestination
 }
 
 // OperationSucceeded completes remove and generic success pendings. Add kinds only
 // ack here; handlePublicationReady, handleExclusivePublicationReady, and
 // handleSubscriptionReady finish them. NextSessionID is completed by
 // Conductor.NextSessionID. AddCounter never acks here; Conductor.CounterReady
-// completes it.
+// completes it. A PendingKindDestination entry gets Ready and a nil Err but no
+// mark. The reply displaces no other await's mark.
 func (conductor *Conductor) OperationSucceeded(correlationID int64) bool {
 	registration, ok := conductor.pending.Get(correlationID)
 	if !ok {
@@ -466,6 +475,10 @@ func (conductor *Conductor) OperationSucceeded(correlationID int64) bool {
 		registration.Kind == PendingKindRemovePublication,
 		registration.Kind == PendingKindRemoveSubscription:
 		return conductor.completePendingSuccess(registration, nil)
+	case registration.Kind == PendingKindDestination:
+		registration.Err = nil
+		registration.Ready = true
+		return true
 	default:
 		return false
 	}

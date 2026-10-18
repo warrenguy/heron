@@ -245,9 +245,64 @@ func (proxy *DriverProxy) RemoveReceiveDestination(
 	)
 }
 
-// offerDestinationMessage offers ADD_RCV_DESTINATION or
-// REMOVE_RCV_DESTINATION under msgTypeID. Both use the DestinationMessage
-// wire layout.
+// AddDestination offers ADD_DESTINATION on the to-driver ring.
+//
+// registrationID is the publication's original registration id. Channel must
+// be ASCII. Other bytes return atomicbuffer.ErrStringASCIINonASCII.
+func (proxy *DriverProxy) AddDestination(
+	correlationID, registrationID int64,
+	channel string,
+) error {
+	return proxy.offerDestinationMessage(
+		AddDestination,
+		correlationID,
+		registrationID,
+		channel,
+	)
+}
+
+// RemoveDestination offers REMOVE_DESTINATION on the to-driver ring.
+//
+// See AddDestination for the registration id and channel encoding.
+func (proxy *DriverProxy) RemoveDestination(
+	correlationID, registrationID int64,
+	channel string,
+) error {
+	return proxy.offerDestinationMessage(
+		RemoveDestination,
+		correlationID,
+		registrationID,
+		channel,
+	)
+}
+
+// RemoveDestinationByID offers REMOVE_DESTINATION_BY_ID on the to-driver ring.
+//
+// resourceRegistrationID is the publication's original registration id.
+// destinationRegistrationID is the correlation id of the ADD_DESTINATION
+// command. A full ring returns ErrRingInsufficientCapacity.
+func (proxy *DriverProxy) RemoveDestinationByID(
+	correlationID, resourceRegistrationID, destinationRegistrationID int64,
+) error {
+	return proxy.offerBody(
+		RemoveDestinationByID,
+		DestinationByIDMessageBodyLength,
+		false,
+		func(encodedOffset int) error {
+			return EncodeDestinationByIDMessage(
+				proxy.ring.Buffer(),
+				encodedOffset,
+				proxy.clientID,
+				correlationID,
+				resourceRegistrationID,
+				destinationRegistrationID,
+			)
+		},
+	)
+}
+
+// offerDestinationMessage offers msgTypeID with the DestinationMessage wire
+// layout. Send and receive destination commands share that layout.
 func (proxy *DriverProxy) offerDestinationMessage(
 	msgTypeID int,
 	correlationID, registrationID int64,
