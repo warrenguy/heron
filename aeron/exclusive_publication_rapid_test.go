@@ -14,7 +14,7 @@ import (
 )
 
 func newExclusivePublicationNearTermEndForRapid(t *rapid.T) (*aeron.ExclusivePublication, int) {
-	margin := rapid.IntRange(32, 256).Draw(t, "margin")
+	margin := 8 * rapid.IntRange(4, 32).Draw(t, "margin")
 	cfg := aeron.LogConfigNearTermEndForTest(aeron.DefaultTestExclusivePublicationLogConfig, margin)
 	ep := aeron.NewTestExclusivePublicationWithoutTBForRapid(cfg, int64(1)<<62)
 	return ep, margin

@@ -70,9 +70,9 @@ func TestPublication_Abort_afterCommit(t *testing.T) {
 }
 
 func TestPublication_handleEndOfLog_subHeaderPadding(t *testing.T) {
-	const margin = 65
+	const margin = 72
 	termLength := aeron.TestPublicationTermLength
-	paddingOffset := termLength - 1
+	paddingOffset := termLength - 8
 
 	pub := newTestPublicationNearTermEnd(t, margin)
 
