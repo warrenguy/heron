@@ -312,6 +312,31 @@ func TestHandleControlFragment_DispatchSTART_ZeroAllocs(t *testing.T) {
 	require.Positive(t, captured.calls)
 }
 
+// TestHandleControlFragment_LatchOK_ZeroAllocs asserts that latching an OK
+// response allocates nothing. An OK carries no error message to clone.
+func TestHandleControlFragment_LatchOK_ZeroAllocs(t *testing.T) {
+	wire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+		ControlSessionID: controlResponseTestControlSessionID,
+		CorrelationID:    controlResponseTestCorrelationID,
+		RelevantID:       7700,
+		Code:             archivewire.ControlResponseCode_OK,
+		Version:          520,
+	})
+	buffer := atomicbuffer.Wrap(wire)
+	header := &aeron.Header{}
+	poller := NewControlResponsePoller(nil, 1)
+	targets := ControlPollTargets{ResponsePoller: poller}
+
+	testutil.AssertZeroAllocs(t, "handleControlFragment", 100, func() {
+		poller.ResetCapture()
+		handleControlFragment(targets, buffer, 0, len(wire), header)
+	})
+	resp, ok := poller.Response()
+	require.True(t, ok)
+	require.Equal(t, int64(7700), resp.RelevantID)
+	require.Nil(t, resp.ErrorMessage)
+}
+
 func TestHandleControlFragment_DispatchSTARTThroughFanout_ZeroAllocs(t *testing.T) {
 	wire := recordingSignalWire(t, archivewire.RecordingSignal_START)
 	buffer := atomicbuffer.Wrap(wire)

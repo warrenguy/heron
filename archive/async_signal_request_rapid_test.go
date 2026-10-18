@@ -31,6 +31,18 @@ const (
 	asyncSignalOpClose
 )
 
+// asyncSignalRapidDisarmedPrefix builds one handle, then closes it. The close
+// disarms the filter. Each poll then clears the disarmed latch and latches the
+// next response.
+var asyncSignalRapidDisarmedPrefix = []asyncSignalOp{
+	asyncSignalOpBuild,
+	asyncSignalOpClose,
+	asyncSignalOpResponse,
+	asyncSignalOpClientPoll,
+	asyncSignalOpResponse,
+	asyncSignalOpClientPoll,
+}
+
 type asyncSignalHandleKind int
 
 const (
@@ -99,15 +111,39 @@ func (m *asyncSignalModel) slot() int {
 	return -1
 }
 
-func (m *asyncSignalModel) applyResponse(fields codecs.ControlResponseFields) {
-	if m.latched {
-		return
-	}
+// applyResponse mirrors one response delivery. The filter drops a foreign
+// response. Returns false when an earlier response still holds the latch.
+func (m *asyncSignalModel) applyResponse(fields codecs.ControlResponseFields) bool {
 	if m.filter != 0 && m.filter != fields.CorrelationID {
-		return
+		return true
+	}
+	if m.latched {
+		return false
 	}
 	m.latched = true
 	m.latchedFields = fields
+	return true
+}
+
+// poll mirrors one Client.Poll. A disarmed latch clears first. The poll reads
+// at most DefaultControlResponseFragmentLimit fragments. A held response stops
+// the read. Returns the consumed fragment count.
+func (m *asyncSignalModel) poll() int {
+	if m.latched && m.filter == 0 {
+		m.latched = false
+	}
+	consumed := 0
+	for consumed < min(len(m.pending), DefaultControlResponseFragmentLimit) {
+		event := m.pending[consumed]
+		if event.isSignal {
+			m.applySignal(event.signal)
+		} else if !m.applyResponse(event.response) {
+			break
+		}
+		consumed++
+	}
+	m.pending = m.pending[consumed:]
+	return consumed
 }
 
 func (m *asyncSignalModel) applySignal(event codecs.RecordingSignalEventFields) {
@@ -348,11 +384,20 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 			)
 		}
 
+		var prefix []asyncSignalOp
+		if rapid.Bool().Draw(rt, "disarmedPrefix") {
+			prefix = asyncSignalRapidDisarmedPrefix
+		}
 		stepCount := rapid.IntRange(1, 40).Draw(rt, "stepCount")
-		for range stepCount {
-			op := asyncSignalOp(
-				rapid.IntRange(int(asyncSignalOpBuild), int(asyncSignalOpClose)).Draw(rt, "op"),
-			)
+		for step := range len(prefix) + stepCount {
+			var op asyncSignalOp
+			if step < len(prefix) {
+				op = prefix[step]
+			} else {
+				op = asyncSignalOp(
+					rapid.IntRange(int(asyncSignalOpBuild), int(asyncSignalOpClose)).Draw(rt, "op"),
+				)
+			}
 			if len(model.handles) == 0 {
 				op = asyncSignalOpBuild
 			}
@@ -436,18 +481,7 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 				model.pending = append(model.pending, asyncSignalModelEvent{signal: event, isSignal: true})
 
 			case asyncSignalOpClientPoll:
-				// One Client.Poll reads at most DefaultControlResponseFragmentLimit
-				// fragments. The rest wait for the next poll.
-				batch := min(len(model.pending), DefaultControlResponseFragmentLimit)
-				require.Equal(rt, batch, client.Poll())
-				for _, event := range model.pending[:batch] {
-					if event.isSignal {
-						model.applySignal(event.signal)
-					} else {
-						model.applyResponse(event.response)
-					}
-				}
-				model.pending = model.pending[batch:]
+				require.Equal(rt, model.poll(), client.Poll())
 
 			case asyncSignalOpPollSignal:
 				handle := model.drawHandle(rt)

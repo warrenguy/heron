@@ -189,6 +189,21 @@ func writeFragmentedWireToTerm(
 	)
 }
 
+func appendFragmentedWireToTerm(
+	t testing.TB,
+	termBuffer atomicbuffer.AtomicBuffer,
+	wire []byte,
+) {
+	t.Helper()
+
+	writeControlResponseHookCommittedFragmentFrameSpecs(
+		t,
+		termBuffer,
+		nextControlResponseHookTermWriteOffset(termBuffer),
+		splitControlResponseWireFragmentSpecs(wire),
+	)
+}
+
 func nextControlResponseHookTermWriteOffset(termBuffer atomicbuffer.AtomicBuffer) int {
 	offset := 0
 	for {

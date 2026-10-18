@@ -1,6 +1,8 @@
 package archive
 
 import (
+	"bytes"
+
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/archive/codecs"
@@ -27,28 +29,34 @@ func (capture ControlResponseCapture) Challenged() bool {
 	return capture.TemplateID == challengeSbeTemplateID
 }
 
-// ControlResponsePoller captures archive control response events for AsyncConnect
-// and post-connect session duty cycles. Terminal templates are stored on the
-// poller until the next Poll reset.
+// ControlResponsePoller latches archive control response terminals for
+// AsyncConnect and post-connect session duty cycles. The poller holds one
+// terminal at a time.
 //
-// Not safe for concurrent use.
+// Behaviour:
+//   - While the poller holds a terminal, an accepted ControlResponse or
+//     Challenge stays in the image for a later poll
+//   - Standalone Poll clears a latch before it polls
+//   - PollControlEvents clears a latch before it polls only while the filter
+//     is disarmed. With an armed filter the latch stays until ResetCapture or
+//     ResetAwait
 //
-// Standalone Poll clones var-ascii at decode time; latched slices remain valid until
-// the next Poll that begins with a prior terminal capture reset, or until the poller is
-// discarded. Poll never calls DoWork.
+// Lifetime: a capture owns its ErrorMessage and EncodedChallenge bytes. Values
+// from Capture, Response and Challenge stay valid after later polls.
 //
-// Demux capture via PollControlEvents keeps subscription-buffer views; consume or
-// copy ErrorMessage and EncodedChallenge before the next demux poll, or call
-// ResetCapture / ResetAwait before a new outstanding request.
+// ResetAwait clears any latch. ResetAwait then arms the correlation filter for
+// a session offer+await. ArmAwait alone sets the filter without clearing. The
+// poller drops a non-matching ControlResponse or Challenge without a latch. A
+// later match in the same poll batch can still latch. Zero awaits any
+// correlation (connect and unarmed demux).
 //
-// ResetAwait clears any latch and arms the correlation filter for a session offer+await.
-// ArmAwait alone sets the filter without clearing. Non-matching ControlResponse and
-// Challenge fragments are dropped without setting ready, so a later match in the same
-// poll batch can still capture. Zero awaits any correlation (connect and unarmed demux).
+// Poll never calls DoWork.
+//
+// Concurrency: not safe for concurrent use.
 type ControlResponsePoller struct {
 	subscription  *aeron.Subscription
 	fragmentLimit int
-	assembler     *FragmentAssembler
+	handler       aeron.ControlledFragmentHandler
 
 	capture            ControlResponseCapture
 	ready              bool
@@ -72,18 +80,20 @@ func NewControlResponsePoller(
 			Code:          archivewire.ControlResponseCode_NULL_VALUE,
 		},
 	}
-	poller.assembler = NewFragmentAssembler(func(
+	assembler := aeron.NewControlledFragmentAssembler(func(
 		buffer atomicbuffer.AtomicBuffer,
 		offset int,
 		length int,
 		header *aeron.Header,
-	) {
-		handleControlResponseFragment(poller, buffer, offset, length, header)
+	) aeron.ControlledAction {
+		return handleControlResponseFragment(poller, buffer, offset, length, header)
 	})
+	poller.handler = assembler.Handler()
 	return poller
 }
 
-// FragmentLimit reports the per-poll fragment budget passed to Subscription.Poll.
+// FragmentLimit reports the per-poll fragment budget passed to
+// Subscription.ControlledPoll.
 func (poller *ControlResponsePoller) FragmentLimit() int {
 	return poller.fragmentLimit
 }
@@ -97,10 +107,7 @@ func (poller *ControlResponsePoller) Poll() int {
 	if poller.subscription == nil {
 		return 0
 	}
-	return poller.subscription.Poll(
-		poller.assembler.Handler(),
-		poller.fragmentLimit,
-	)
+	return poller.subscription.ControlledPoll(poller.handler, poller.fragmentLimit)
 }
 
 // IsPollComplete reports whether the last poll captured a terminal control template.
@@ -153,14 +160,20 @@ func (poller *ControlResponsePoller) Challenge() (codecs.ChallengeFields, bool) 
 	}, true
 }
 
-// ResetCapture clears a terminal latch so demux routing can capture the next control
-// response. Call after connect hands the poller to Client, after consuming a capture when
-// polling via PollControlEvents, and when clearing a matched terminal mid-await (for
-// example stop OK while waiting for STOP). Standalone Poll resets automatically; the
-// demux does not.
+// ResetCapture clears a terminal latch so demux routing can latch the next
+// control response. Standalone Poll clears a latch at poll start.
+// PollControlEvents clears a latch at poll start only while the filter is
+// disarmed.
 //
-// Does not clear ArmAwait. Prefer ResetAwait when starting a new outstanding request so
-// the correlation filter covers offer-retry polls as well as the response await.
+// Call ResetCapture:
+//   - after connect hands the poller to Client
+//   - after consuming a capture polled through PollControlEvents
+//   - to clear a matched terminal mid-await, for example a stop OK while
+//     waiting for STOP
+//
+// Does not disarm the correlation filter. Prefer ResetAwait for a new
+// outstanding request: the filter then covers offer-retry polls as well as
+// the response await.
 func (poller *ControlResponsePoller) ResetCapture() {
 	if poller == nil {
 		return
@@ -208,36 +221,59 @@ func (poller *ControlResponsePoller) resetCapture() {
 	}
 }
 
-func (poller *ControlResponsePoller) matchesAwaitCorrelation(correlationID int64) bool {
-	return poller.awaitCorrelationID == 0 || poller.awaitCorrelationID == correlationID
-}
-
-func (poller *ControlResponsePoller) latchControlResponse(resp codecs.ControlResponseFields) {
-	if !poller.matchesAwaitCorrelation(resp.CorrelationID) {
+// clearDisarmedCapture clears a latch when the correlation filter is
+// disarmed. Nil-safe.
+func (poller *ControlResponsePoller) clearDisarmedCapture() {
+	if poller == nil {
 		return
 	}
+	if poller.ready && !poller.isArmed() {
+		poller.resetCapture()
+	}
+}
+
+// isArmed reports whether the correlation filter holds a request id.
+func (poller *ControlResponsePoller) isArmed() bool {
+	return poller.awaitCorrelationID != 0
+}
+
+func (poller *ControlResponsePoller) matchesAwaitCorrelation(correlationID int64) bool {
+	return !poller.isArmed() || poller.awaitCorrelationID == correlationID
+}
+
+// latchControlResponse latches resp. The caller runs the correlation filter
+// first.
+func (poller *ControlResponsePoller) latchControlResponse(resp codecs.ControlResponseFields) {
 	poller.capture.ControlSessionID = resp.ControlSessionID
 	poller.capture.CorrelationID = resp.CorrelationID
 	poller.capture.RelevantID = resp.RelevantID
 	poller.capture.Code = resp.Code
 	poller.capture.Version = resp.Version
-	poller.capture.ErrorMessage = resp.ErrorMessage
+	poller.capture.ErrorMessage = cloneCaptureBytes(resp.ErrorMessage)
 	poller.capture.EncodedChallenge = nil
 	poller.capture.TemplateID = int32(archivewire.ControlResponseSbeTemplateID)
 	poller.ready = true
 }
 
+// latchChallenge latches challenge. The caller runs the correlation filter
+// first.
 func (poller *ControlResponsePoller) latchChallenge(challenge codecs.ChallengeFields) {
-	if !poller.matchesAwaitCorrelation(challenge.CorrelationID) {
-		return
-	}
 	poller.capture.ControlSessionID = challenge.ControlSessionID
 	poller.capture.CorrelationID = challenge.CorrelationID
 	poller.capture.RelevantID = conductor.NullCorrelationID
 	poller.capture.Code = archivewire.ControlResponseCode_NULL_VALUE
 	poller.capture.Version = challenge.Version
 	poller.capture.ErrorMessage = nil
-	poller.capture.EncodedChallenge = challenge.EncodedChallenge
+	poller.capture.EncodedChallenge = cloneCaptureBytes(challenge.EncodedChallenge)
 	poller.capture.TemplateID = challengeSbeTemplateID
 	poller.ready = true
+}
+
+// cloneCaptureBytes copies a var-ascii view out of the fragment. Returns nil
+// for an empty field.
+func cloneCaptureBytes(field []byte) []byte {
+	if len(field) == 0 {
+		return nil
+	}
+	return bytes.Clone(field)
 }

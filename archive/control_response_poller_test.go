@@ -291,23 +291,29 @@ func TestControlResponsePoller_Poll_resetsAfterComplete(t *testing.T) {
 	require.Equal(t, archivewire.ControlResponseCode_NULL_VALUE, capture.Code)
 }
 
-func TestControlResponsePoller_Poll_fragmentLimitTwoCapturesFirstTerminalOnly(t *testing.T) {
+func TestControlResponsePoller_Poll_fragmentLimitTwoHoldsSecondTerminal(t *testing.T) {
 	sub, termBuffer := setupControlResponsePollFixtures(t)
 
 	writeControlResponsePollerTestOKThenChallengeWires(t, termBuffer)
 
 	poller := NewControlResponsePoller(sub, 2)
 
-	require.Equal(t, 2, poller.Poll())
+	require.Equal(t, 1, poller.Poll())
 	require.True(t, poller.IsPollComplete())
 	require.False(t, poller.IsChallenged())
 	resp, ok := poller.Response()
 	require.True(t, ok)
 	require.Equal(t, controlResponseTestCorrelationID, resp.CorrelationID)
-	capture, ok := poller.Capture()
-	require.True(t, ok)
-	require.Equal(t, int32(archivewire.ControlResponseSbeTemplateID), capture.TemplateID)
 	require.Equal(t, archivewire.ControlResponseCode_OK, resp.Code)
+
+	require.Equal(t, 1, poller.Poll())
+	require.True(t, poller.IsChallenged())
+	challenge, ok := poller.Challenge()
+	require.True(t, ok)
+	require.Equal(t, int64(404), challenge.CorrelationID)
+
+	require.Zero(t, poller.Poll())
+	require.False(t, poller.IsPollComplete())
 }
 
 func TestControlResponsePoller_ArmAwait_skipsNonMatchingLatch(t *testing.T) {

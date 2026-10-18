@@ -85,10 +85,9 @@ func (a *AsyncExtendRecording) TryOffer() (bool, error) {
 //     false, nil
 //
 // The archive replies OK before it validates the joining image. A refusal
-// arrives as a later error response. The demux drops that response while the
-// OK stays latched. PollSignal returns the error only when the response
-// arrives after PollSignal consumes the OK. Otherwise the caller deadline
-// fails the request.
+// arrives as a later error response. The demux holds that response while the
+// OK stays latched. PollSignal consumes the OK. The next Client.Poll latches
+// the error. The next PollSignal returns that error.
 func (a *AsyncExtendRecording) PollSignal() (bool, error) {
 	if a == nil {
 		return false, nil
@@ -113,6 +112,10 @@ func (a *AsyncExtendRecording) RecordingID() int64 {
 //
 // The archive may still extend the recording after Close. The caller owns the
 // stop.
+//
+// Until Close, a latched terminal holds a later matching response in the
+// image, with every fragment behind it. Call Close once PollSignal returns
+// true.
 //
 // Close is idempotent.
 func (a *AsyncExtendRecording) Close() {

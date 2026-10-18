@@ -104,9 +104,9 @@ func (a *AsyncStartRecording) TryOffer() (bool, error) {
 //     non-matching terminal as stale. A nil or closed handle also returns
 //     false, nil
 //
-// The demux drops every response behind a latched terminal. An error
-// response that arrives before PollSignal consumes the OK never reaches the
-// handle. The caller deadline then fails the request.
+// A latched OK holds a later matching error response in the image. After
+// PollSignal consumes the OK, the next Client.Poll latches the error.
+// PollSignal then returns the error unless START has latched.
 func (a *AsyncStartRecording) PollSignal() (bool, error) {
 	if a == nil {
 		return false, nil
@@ -131,6 +131,10 @@ func (a *AsyncStartRecording) RecordingID() int64 {
 //
 // The archive may still start the recording after Close. The caller owns the
 // stop.
+//
+// Until Close, a latched terminal holds a later matching response in the
+// image, with every fragment behind it. Call Close once PollSignal returns
+// true.
 //
 // Close is idempotent.
 func (a *AsyncStartRecording) Close() {
