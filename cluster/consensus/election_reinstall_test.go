@@ -326,10 +326,13 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 		})
 		a.SetElectionFactory(fac.factory())
 		a.pendingJoinLog = &codecs.JoinLogFields{LogPosition: 99}
+		a.replayJoinWaitsAhead = replayJoinUnpublished
 		require.True(t, a.HasPendingJoinLog())
+		require.False(t, a.IsReplayLogJoined())
 
 		require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, 0))
 		require.False(t, a.HasPendingJoinLog())
+		require.True(t, a.IsReplayLogJoined())
 		require.Equal(t, RoleFollower, a.Role())
 		require.NotNil(t, a.Election())
 		require.Len(t, fac.seeds, 1)

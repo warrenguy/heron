@@ -393,10 +393,20 @@ type Agent struct {
 	serviceProxy *ServiceProxy
 
 	// pendingJoinLog is one JoinLog awaiting a successful publish, or nil.
-	// Stored on a retriable publish outcome. Retried by retryPendingJoinLog
-	// after the election or steady branch. Replaced by a newer join. Cleared by
-	// PrepareForNewLeadership.
+	// A retriable publish outcome stores it. retryPendingJoinLog offers it
+	// after the election or steady branch. A newer join replaces it.
+	// PrepareForNewLeadership and enterElection clear it. UnbindReplayLog
+	// clears an unpublished replay JoinLog.
 	pendingJoinLog *codecs.JoinLogFields
+
+	// replayJoinWaitsAhead counts the coordination waits up to and including
+	// the replay JoinLog wait. replayJoinUnpublished marks a replay JoinLog
+	// awaiting a successful publish. 0 means no replay JoinLog is tracked.
+	//
+	// A replay JoinLog publish sets the count. Each wait pop lowers a
+	// positive value by one. A terminal publish code, UnbindReplayLog,
+	// PrepareForNewLeadership and enterElection reset it to 0.
+	replayJoinWaitsAhead int
 
 	// serviceAckWaits holds log positions of published coordination points
 	// whose acks are not yet consumed. FIFO. The first entry pairs with
@@ -988,10 +998,19 @@ func (a *Agent) CatchupPoll(limitPosition, nowNs int64) int {
 	if adapter == nil || adapter.Image() == nil {
 		return 0
 	}
-	a.logPollNowNs = nowNs
-	work := a.pollLogAndProposeMax(adapter, limitPosition)
+	work := a.pollBoundLog(adapter, limitPosition, nowNs)
 	work += a.updateFollowerPosition(nowNs, adapter.Position(), AppendPositionFlagCatchup)
 	return work
+}
+
+// pollBoundLog stamps nowNs as the poll time, then polls adapter under
+// limitPosition and raises commit to the adapter position. Shared by the
+// catchup and replay polls.
+//
+// Returns the fragment count.
+func (a *Agent) pollBoundLog(adapter *LogAdapter, limitPosition, nowNs int64) int {
+	a.logPollNowNs = nowNs
+	return a.pollLogAndProposeMax(adapter, limitPosition)
 }
 
 // liveAddMaxWindow is ReplayMerge.LIVE_ADD_MAX_WINDOW (32 MiB). Caps the
@@ -1611,6 +1630,7 @@ func (a *Agent) teardownForNewLeadership() {
 	a.appendRankFailure = nil
 	a.appendNotReadySinceNs = nullValue
 	a.pendingJoinLog = nil
+	a.replayJoinWaitsAhead = 0
 	a.retireSnapshotWait()
 	a.StopAllCatchups()
 	a.RemoveCatchupLogDestination()

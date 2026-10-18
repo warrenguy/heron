@@ -177,3 +177,262 @@ func TestServiceControl_waitSequencing_rapid(t *testing.T) {
 		}
 	})
 }
+
+type replayJoinOpKind int
+
+const (
+	replayJoinOpRequestServiceAck replayJoinOpKind = iota
+	replayJoinOpEarlierJoinLog
+	replayJoinOpPublish
+	replayJoinOpRetry
+	replayJoinOpAckNext
+	replayJoinOpWork
+	replayJoinOpMarkFailure
+	replayJoinOpUnbind
+)
+
+type replayJoinPublishOutcome int
+
+const (
+	replayJoinPublished replayJoinPublishOutcome = iota
+	replayJoinRetriable
+	replayJoinTerminal
+)
+
+type replayJoinModelState int
+
+const (
+	replayJoinModelNone replayJoinModelState = iota
+	replayJoinModelUnpublished
+	replayJoinModelPublished
+)
+
+// replayJoinModelWait is one queued wait in the model FIFO. replay marks the
+// replay JoinLog wait.
+type replayJoinModelWait struct {
+	position int64
+	replay   bool
+}
+
+// Asserts replay JoinLog tracking against a FIFO model with ServiceCount 1.
+// The model service acks every published coordination point in publish
+// order. serviceAckFailure marks at most once, late in the run.
+//
+// Ops:
+//   - queue a RequestServiceAck wait
+//   - publish or store an earlier JoinLog
+//   - publish the replay JoinLog with a drawn outcome
+//   - retry a pending publish
+//   - ack the next point
+//   - run one serviceControlWork tick
+//   - UnbindReplayLog
+//
+// Invariants each step:
+//   - IsReplayLogJoined matches the model, or reports true after the
+//     failure mark.
+//   - Queued wait positions match the model. Positions repeat, so a
+//     position match alone does not cover the count.
+//   - HasPendingJoinLog matches the model.
+func TestReplayJoinTracking_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		rt.Helper()
+
+		a := NewAgent(AgentConfig{ServiceCount: 1})
+		q := &QueueConsensusIngress{}
+		a.SetServiceIngress(q)
+		// Outer t: rapid.T is not testing.TB (missing ArtifactDir).
+		connected, _ := boundServiceProxy(t)
+		a.SetServiceProxy(connected)
+		disconnected := boundServiceProxyWithLimit(t, 0, false)
+		// A closed publication returns a terminal code on every offer.
+		closed, closedPub := boundServiceProxy(t)
+		require.NoError(rt, closedPub.Close())
+
+		modelWaits := make([]replayJoinModelWait, 0)
+		// delivered holds every point that queued a wait, in publish order.
+		delivered := make([]int64, 0)
+		cursor := 0
+		expectedID := int64(0)
+		state := replayJoinModelNone
+		failed := false
+		// hasPending and pendingPos model any stored pending JoinLog.
+		hasPending := false
+		pendingPos := int64(0)
+
+		clearReplayMarks := func() {
+			for i := range modelWaits {
+				modelWaits[i].replay = false
+			}
+		}
+		queueWait := func(position int64, replay bool) {
+			if failed {
+				return
+			}
+			modelWaits = append(modelWaits, replayJoinModelWait{position: position, replay: replay})
+			delivered = append(delivered, position)
+		}
+		// modelPublished applies a successful replay JoinLog publish.
+		modelPublished := func(position int64) {
+			hasPending = false
+			if failed {
+				state = replayJoinModelNone
+				return
+			}
+			state = replayJoinModelPublished
+			queueWait(position, true)
+		}
+		assertInvariants := func() {
+			rt.Helper()
+			require.Equal(rt, failed, a.ServiceAckFailure() != nil)
+			require.Equal(rt, state == replayJoinModelNone || failed, a.IsReplayLogJoined())
+			positions := make([]int64, 0, len(modelWaits))
+			for _, w := range modelWaits {
+				positions = append(positions, w.position)
+			}
+			require.Equal(rt, positions, append([]int64{}, a.serviceAckWaits...))
+			require.Equal(rt, hasPending, a.HasPendingJoinLog())
+			if hasPending {
+				require.Equal(rt, pendingPos, a.pendingJoinLog.LogPosition)
+			}
+			require.Equal(rt, expectedID, a.ExpectedServiceAckID())
+		}
+
+		positions := []int64{64, 128, 192}
+		nOps := rapid.IntRange(1, 40).Draw(rt, "nOps")
+		// The failure mark holds for the rest of the run, so failAt sits in
+		// the second half. failAt == nOps marks no failure.
+		failAt := rapid.IntRange(nOps/2, nOps).Draw(rt, "failAt")
+		for i := range nOps {
+			kind := replayJoinOpMarkFailure
+			if i != failAt {
+				kind = rapid.SampledFrom([]replayJoinOpKind{
+					replayJoinOpRequestServiceAck,
+					replayJoinOpEarlierJoinLog,
+					replayJoinOpPublish,
+					replayJoinOpRetry,
+					replayJoinOpAckNext,
+					replayJoinOpWork,
+					replayJoinOpUnbind,
+				}).Draw(rt, "kind")
+			}
+
+			switch kind {
+			case replayJoinOpRequestServiceAck:
+				pos := rapid.SampledFrom(positions).Draw(rt, "requestPos")
+				a.SetServiceProxy(connected)
+				err := a.RequestServiceAck(pos)
+				if failed {
+					require.ErrorIs(rt, err, ErrServiceAckOutOfSequence)
+				} else {
+					require.NoError(rt, err)
+					queueWait(pos, false)
+				}
+
+			case replayJoinOpEarlierJoinLog:
+				// No earlier JoinLog publishes while the replay JoinLog stays
+				// unpublished.
+				if state == replayJoinModelUnpublished {
+					break
+				}
+				pos := rapid.SampledFrom(positions).Draw(rt, "joinPos")
+				stored := rapid.Bool().Draw(rt, "joinStored")
+				fields := sampleJoinLogFields()
+				fields.LogPosition = pos
+				if stored {
+					a.SetServiceProxy(disconnected)
+					require.Equal(rt, 0, a.publishOrQueueJoinLog(fields))
+					hasPending = true
+					pendingPos = pos
+					break
+				}
+				a.SetServiceProxy(connected)
+				require.Equal(rt, 1, a.publishOrQueueJoinLog(fields))
+				hasPending = false
+				queueWait(pos, false)
+
+			case replayJoinOpPublish:
+				pos := rapid.SampledFrom(positions).Draw(rt, "replayPos")
+				outcome := rapid.SampledFrom([]replayJoinPublishOutcome{
+					replayJoinPublished,
+					replayJoinRetriable,
+					replayJoinTerminal,
+				}).Draw(rt, "outcome")
+				switch outcome {
+				case replayJoinPublished:
+					a.SetServiceProxy(connected)
+				case replayJoinRetriable:
+					a.SetServiceProxy(disconnected)
+				case replayJoinTerminal:
+					a.SetServiceProxy(closed)
+				}
+				a.PublishReplayJoinLog(ReplayLogJoin{StartPosition: pos, StopPosition: pos + 4096})
+				// PublishReplayJoinLog restarts tracking. No earlier wait stays
+				// the replay JoinLog wait.
+				clearReplayMarks()
+				switch outcome {
+				case replayJoinPublished:
+					modelPublished(pos)
+				case replayJoinRetriable:
+					state = replayJoinModelUnpublished
+					hasPending = true
+					pendingPos = pos
+				case replayJoinTerminal:
+					require.Error(rt, a.ServicePublishFailure())
+					state = replayJoinModelNone
+					hasPending = false
+				}
+
+			case replayJoinOpRetry:
+				a.SetServiceProxy(connected)
+				if !hasPending {
+					require.Equal(rt, 0, a.retryPendingJoinLog())
+					break
+				}
+				require.Equal(rt, 1, a.retryPendingJoinLog())
+				if state == replayJoinModelUnpublished {
+					modelPublished(pendingPos)
+					break
+				}
+				hasPending = false
+				queueWait(pendingPos, false)
+
+			case replayJoinOpAckNext:
+				if failed || cursor >= len(delivered) {
+					break
+				}
+				enqueueServiceAck(t, q, delivered[cursor], int64(cursor), 0)
+				require.Equal(rt, 1, a.pollServiceControl())
+				cursor++
+
+			case replayJoinOpWork:
+				work := a.serviceControlWork()
+				if failed || len(modelWaits) == 0 || cursor <= int(expectedID) {
+					require.Equal(rt, 0, work)
+					break
+				}
+				require.Equal(rt, 1, work)
+				if modelWaits[0].replay {
+					state = replayJoinModelNone
+				}
+				modelWaits = modelWaits[1:]
+				expectedID++
+
+			case replayJoinOpMarkFailure:
+				a.serviceAckFailure = ErrServiceAckOutOfSequence
+				failed = true
+
+			case replayJoinOpUnbind:
+				a.UnbindReplayLog(nil)
+				// Only an unpublished replay JoinLog drops. A stored earlier
+				// JoinLog stays.
+				if state == replayJoinModelUnpublished {
+					hasPending = false
+				}
+				clearReplayMarks()
+				state = replayJoinModelNone
+			}
+			assertInvariants()
+		}
+	})
+}

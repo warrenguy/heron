@@ -249,11 +249,12 @@ func (a *Agent) enterElection(
 	// stops at a pending snapshot wait or a pending JoinLog publish.
 	a.logPollNowNs = nowNs
 	a.drainLogBacklog(a.followerLogPollBound(position))
-	// Clear a superseded unpublished JoinLog at settled re-entry before the new
-	// election runs. Clear at install. Does not wait for election Init.
-	// PrepareForNewLeadership still clears on mid-election re-Init and when a
-	// runner never reaches Prepare.
+	// Clear a superseded unpublished JoinLog and the replay join tracking at
+	// settled re-entry before the new election runs. Clear at install. Does
+	// not wait for election Init. PrepareForNewLeadership still clears on
+	// mid-election re-Init and when a runner never reaches Prepare.
 	a.pendingJoinLog = nil
+	a.replayJoinWaitsAhead = 0
 	a.RoleSet(RoleFollower)
 	a.installElection(runner, trigger)
 	return 1
