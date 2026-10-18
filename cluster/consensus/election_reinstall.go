@@ -59,6 +59,10 @@ const (
 	// ElectionTriggerLogImageClosed is a non-leader whose log adapter holds a
 	// closed image or no image.
 	ElectionTriggerLogImageClosed
+
+	// ElectionTriggerVoteRequest is a settled member that received a
+	// RequestVote with a candidate term above its own.
+	ElectionTriggerVoteRequest
 )
 
 var electionTriggerNames = [...]string{
@@ -69,6 +73,7 @@ var electionTriggerNames = [...]string{
 	"HIGHER_TERM",
 	"LOG_RECORDING_STOPPED",
 	"LOG_IMAGE_CLOSED",
+	"VOTE_REQUEST",
 }
 
 // String returns the trigger name, or Trigger(n) for an unknown value.

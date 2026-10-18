@@ -541,7 +541,7 @@ func TestSteadyAppendPosition_catchupFlag_skipsPositionUpdate(t *testing.T) {
 	startFollowerCatchup(a, memberID, catchupEndpoint)
 
 	leaderPos := publisher.Position()
-	a.onSteadyAppendPosition(codecs.AppendPositionFields{
+	a.handleSteadyAppendPosition(codecs.AppendPositionFields{
 		LeadershipTermID: 3,
 		LogPosition:      leaderPos,
 		FollowerMemberID: memberID,
@@ -573,7 +573,7 @@ func TestSteadyAppendPosition_unflagged_updatesAndCompletes(t *testing.T) {
 	startFollowerCatchup(a, memberID, catchupEndpoint)
 
 	leaderPos := publisher.Position()
-	a.onSteadyAppendPosition(codecs.AppendPositionFields{
+	a.handleSteadyAppendPosition(codecs.AppendPositionFields{
 		LeadershipTermID: 2,
 		LogPosition:      leaderPos,
 		FollowerMemberID: memberID,
@@ -604,28 +604,28 @@ func TestSteadyStopCatchup_removesDestination(t *testing.T) {
 	a.SetCatchupControl(control)
 	a.CatchupLogDestinationSet(control.destination)
 
-	a.onSteadyStopCatchup(codecs.StopCatchupFields{
+	a.handleSteadyStopCatchup(codecs.StopCatchupFields{
 		LeadershipTermID: 4,
 		FollowerMemberID: 1,
 	})
 	require.Equal(t, 1, control.removeCalls)
 
 	// Mismatched member: no second remove.
-	a.onSteadyStopCatchup(codecs.StopCatchupFields{
+	a.handleSteadyStopCatchup(codecs.StopCatchupFields{
 		LeadershipTermID: 4,
 		FollowerMemberID: 9,
 	})
 	require.Equal(t, 1, control.removeCalls)
 
 	// Mismatched term: no remove.
-	a.onSteadyStopCatchup(codecs.StopCatchupFields{
+	a.handleSteadyStopCatchup(codecs.StopCatchupFields{
 		LeadershipTermID: 5,
 		FollowerMemberID: 1,
 	})
 	require.Equal(t, 1, control.removeCalls)
 }
 
-// Asserts steady ingress dispatches StopCatchup wire to onSteadyStopCatchup.
+// Asserts steady ingress dispatches StopCatchup wire to handleSteadyStopCatchup.
 func TestSteadyStopCatchup_wireDispatch(t *testing.T) {
 	control := &fakeCatchupControl{destination: catchupUDPDestination("catchup")}
 	q := &QueueConsensusIngress{}
@@ -685,7 +685,7 @@ func TestSteadyAppendPosition_nilPositions_stillCompletes(t *testing.T) {
 	require.Len(t, a.catchupReplays, 1)
 
 	leaderPos := publisher.Position()
-	a.onSteadyAppendPosition(codecs.AppendPositionFields{
+	a.handleSteadyAppendPosition(codecs.AppendPositionFields{
 		LeadershipTermID: 2,
 		LogPosition:      leaderPos,
 		FollowerMemberID: memberID,

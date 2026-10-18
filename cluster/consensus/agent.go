@@ -178,12 +178,12 @@ type Agent struct {
 	// handler calls).
 	ingress ConsensusIngress
 
-	// ingressHandler is onIngressFragment cached once at construction so
+	// ingressHandler is handleIngressFragment cached once at construction so
 	// pollConsensusIngress does not allocate a method value each duty cycle.
 	ingressHandler func(buf []byte, offset int)
 
 	// ingressPollNowNs is the duty-cycle clock for the current
-	// pollConsensusIngress batch. Set before Poll; read by onIngressFragment
+	// pollConsensusIngress batch. Set before Poll; read by handleIngressFragment
 	// so the fragment handler is a method value (no per-poll closure).
 	ingressPollNowNs int64
 
@@ -635,7 +635,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		expiredTimerCountByCorrelationID: make(map[int64]int64),
 	}
 	a.sessionAuthProxy.agent = a
-	a.ingressHandler = a.onIngressFragment
+	a.ingressHandler = a.handleIngressFragment
 	a.clientIngressHandler = a.handleClientIngressFragment
 	a.serviceIngressHandler = a.handleServiceControlFragment
 	a.timerExpiryHandler = a.handleTimerExpiry
@@ -2010,7 +2010,7 @@ func (a *Agent) pollConsensusIngress(nowNs int64) int {
 	return a.ingress.Poll(defaultConsensusIngressFragmentLimit, a.ingressHandler)
 }
 
-func (a *Agent) onIngressFragment(buf []byte, offset int) {
+func (a *Agent) handleIngressFragment(buf []byte, offset int) {
 	a.handleConsensusFragment(buf, offset, a.ingressPollNowNs)
 }
 
@@ -2018,9 +2018,8 @@ func (a *Agent) onIngressFragment(buf []byte, offset int) {
 //
 // When election is live: stamp leader-update clock for NewLeadershipTerm /
 // CommitPosition (term >= current), then
-// [ElectionRunner.HandleConsensusMessage]. When election is nil: steady-state
-// AppendPosition / CommitPosition / NewLeadershipTerm / CanvassPosition
-// dispatch.
+// [ElectionRunner.HandleConsensusMessage]. When election is nil:
+// [Agent.handleSteadyConsensusFragment] dispatches the frame.
 func (a *Agent) handleConsensusFragment(buf []byte, offset int, nowNs int64) {
 	if a.election != nil {
 		a.noteLeaderUpdateClockFromFragment(buf, offset, nowNs)
@@ -2071,6 +2070,8 @@ func (a *Agent) stampLeaderUpdateClock(termID, nowNs int64) {
 	}
 }
 
+// handleSteadyConsensusFragment dispatches one consensus frame on a settled
+// member. Drops unknown templates and frames that fail to decode.
 func (a *Agent) handleSteadyConsensusFragment(buf []byte, offset int, nowNs int64) {
 	templateID, ok := consensusMessageTemplateID(buf, offset)
 	if !ok {
@@ -2079,19 +2080,19 @@ func (a *Agent) handleSteadyConsensusFragment(buf []byte, offset int, nowNs int6
 	switch templateID {
 	case clusterwire.AppendPositionSbeTemplateID:
 		if fields, ok := codecs.TryDecodeAppendPositionAt(buf, offset); ok {
-			a.onSteadyAppendPosition(fields, nowNs)
+			a.handleSteadyAppendPosition(fields, nowNs)
 		}
 	case clusterwire.CommitPositionSbeTemplateID:
 		if fields, ok := codecs.TryDecodeCommitPositionAt(buf, offset); ok {
-			a.onSteadyCommitPosition(fields, nowNs)
+			a.handleSteadyCommitPosition(fields, nowNs)
 		}
 	case clusterwire.NewLeadershipTermSbeTemplateID:
 		if fields, ok := codecs.TryDecodeNewLeadershipTermAt(buf, offset); ok {
-			a.onSteadyNewLeadershipTerm(fields, nowNs)
+			a.handleSteadyNewLeadershipTerm(fields, nowNs)
 		}
 	case clusterwire.CanvassPositionSbeTemplateID:
 		if fields, ok := codecs.TryDecodeCanvassPositionAt(buf, offset); ok {
-			a.onSteadyCanvassPosition(fields, nowNs)
+			a.handleSteadyCanvassPosition(fields, nowNs)
 		}
 	case clusterwire.CatchupPositionSbeTemplateID:
 		if fields, ok := codecs.TryDecodeCatchupPositionAt(buf, offset); ok {
@@ -2100,17 +2101,35 @@ func (a *Agent) handleSteadyConsensusFragment(buf []byte, offset int, nowNs int6
 		}
 	case clusterwire.StopCatchupSbeTemplateID:
 		if fields, ok := codecs.TryDecodeStopCatchupAt(buf, offset); ok {
-			a.onSteadyStopCatchup(fields)
+			a.handleSteadyStopCatchup(fields)
+		}
+	case clusterwire.RequestVoteSbeTemplateID:
+		if fields, ok := codecs.TryDecodeRequestVoteAt(buf, offset); ok {
+			a.handleSteadyRequestVote(fields, nowNs)
 		}
 	}
 }
 
-// onSteadyStopCatchup detaches the catchup receive destination after election
+// handleSteadyRequestVote enters an election when the candidate term is above
+// the leadership term. Any role enters. Stamps no clock.
+//
+// Does not forward the frame. The new election starts in INIT, which drops
+// inbound frames. The candidate's ballot times out. It canvasses again and
+// nominates at a higher term. This member answers from CANVASS or later.
+//
+// Concurrency: invoker-only; see [Agent].
+func (a *Agent) handleSteadyRequestVote(fields codecs.RequestVoteFields, nowNs int64) {
+	if fields.CandidateTermID > a.leadershipTermID {
+		a.enterElection(ElectionTriggerVoteRequest, false, nowNs)
+	}
+}
+
+// handleSteadyStopCatchup detaches the catchup receive destination after election
 // close when a leader StopCatchup arrives late.
 //
 // Same term and follower-member guard as [election.Election.OnStopCatchup].
 // Removing an already-removed destination is a no-op.
-func (a *Agent) onSteadyStopCatchup(fields codecs.StopCatchupFields) {
+func (a *Agent) handleSteadyStopCatchup(fields codecs.StopCatchupFields) {
 	if fields.LeadershipTermID != a.leadershipTermID ||
 		fields.FollowerMemberID != a.thisMemberID {
 		return
@@ -2118,7 +2137,7 @@ func (a *Agent) onSteadyStopCatchup(fields codecs.StopCatchupFields) {
 	a.RemoveCatchupLogDestination()
 }
 
-// onSteadyCanvassPosition answers a canvass from a settled leader.
+// handleSteadyCanvassPosition answers a canvass from a settled leader.
 //
 // Behaviour:
 //   - refuses unless this member is the leader
@@ -2136,7 +2155,7 @@ func (a *Agent) onSteadyStopCatchup(fields codecs.StopCatchupFields) {
 //   - a refused canvasser gets no position update and no publish
 //
 // Concurrency: invoker-only; see [Agent].
-func (a *Agent) onSteadyCanvassPosition(fields codecs.CanvassPositionFields, nowNs int64) {
+func (a *Agent) handleSteadyCanvassPosition(fields codecs.CanvassPositionFields, nowNs int64) {
 	_ = nowNs
 	if a.role != RoleLeader {
 		return
@@ -2165,7 +2184,7 @@ func (a *Agent) onSteadyCanvassPosition(fields codecs.CanvassPositionFields, now
 	})
 }
 
-// onSteadyAppendPosition applies a follower AppendPosition on the leader only.
+// handleSteadyAppendPosition applies a follower AppendPosition on the leader only.
 //
 // Behaviour:
 //   - higher-term appends are ignored (no member update)
@@ -2174,7 +2193,7 @@ func (a *Agent) onSteadyCanvassPosition(fields codecs.CanvassPositionFields, now
 //   - unflagged positions update the table when set
 //   - TrackCatchupCompletion always runs so a live map entry finishes cleanup
 //     even when positions is nil
-func (a *Agent) onSteadyAppendPosition(fields codecs.AppendPositionFields, nowNs int64) {
+func (a *Agent) handleSteadyAppendPosition(fields codecs.AppendPositionFields, nowNs int64) {
 	_ = nowNs
 	if a.role != RoleLeader {
 		return
@@ -2196,10 +2215,10 @@ func (a *Agent) onSteadyAppendPosition(fields codecs.AppendPositionFields, nowNs
 	a.TrackCatchupCompletion(fields.FollowerMemberID, fields.LogPosition, fields.Flags)
 }
 
-// onSteadyCommitPosition stamps the leader-update clock on term >= current,
+// handleSteadyCommitPosition stamps the leader-update clock on term >= current,
 // and advances follower notified commit only for same-term CommitPosition from
 // the known leader (leaderMemberID must not be null).
-func (a *Agent) onSteadyCommitPosition(fields codecs.CommitPositionFields, nowNs int64) {
+func (a *Agent) handleSteadyCommitPosition(fields codecs.CommitPositionFields, nowNs int64) {
 	a.applySteadyLeaderCommitNotify(
 		fields.LeadershipTermID,
 		fields.LeaderMemberID,
@@ -2208,12 +2227,12 @@ func (a *Agent) onSteadyCommitPosition(fields codecs.CommitPositionFields, nowNs
 	)
 }
 
-// onSteadyNewLeadershipTerm stamps the leader-update clock on term >= current.
+// handleSteadyNewLeadershipTerm stamps the leader-update clock on term >= current.
 //
 // Same-term follower notify from a known leader advances notified commit from
 // the NewLeadershipTerm commit field; higher term invokes
-// [Agent.onUnexpectedHigherTerm].
-func (a *Agent) onSteadyNewLeadershipTerm(fields codecs.NewLeadershipTermFields, nowNs int64) {
+// [Agent.handleUnexpectedHigherTerm].
+func (a *Agent) handleSteadyNewLeadershipTerm(fields codecs.NewLeadershipTermFields, nowNs int64) {
 	a.applySteadyLeaderCommitNotify(
 		fields.LeadershipTermID,
 		fields.LeaderMemberID,
@@ -2226,7 +2245,7 @@ func (a *Agent) onSteadyNewLeadershipTerm(fields codecs.NewLeadershipTermFields,
 // CommitPosition and NewLeadershipTerm:
 //
 //   - term >= current: stamp timeOfLastLeaderUpdateNs
-//   - term > current: [Agent.onUnexpectedHigherTerm], no notify
+//   - term > current: [Agent.handleUnexpectedHigherTerm], no notify
 //   - term < current: no stamp, no notify
 //   - same term: follower notify only from known leader
 //
@@ -2241,7 +2260,7 @@ func (a *Agent) applySteadyLeaderCommitNotify(
 	switch {
 	case termID > a.leadershipTermID:
 		a.stampLeaderUpdateClock(termID, nowNs)
-		a.onUnexpectedHigherTerm(nowNs, termID)
+		a.handleUnexpectedHigherTerm(nowNs, termID)
 		return
 	case termID < a.leadershipTermID:
 		return
@@ -2262,7 +2281,7 @@ func (a *Agent) applySteadyLeaderCommitNotify(
 	a.timeOfLastLogUpdateNs = nowNs
 }
 
-// onUnexpectedHigherTerm re-enters election when a settled member sees a
+// handleUnexpectedHigherTerm re-enters election when a settled member sees a
 // leadership term above its own.
 //
 // Behaviour: records the observation, then installs via
@@ -2270,7 +2289,7 @@ func (a *Agent) applySteadyLeaderCommitNotify(
 // The install return is discarded: fragment poll already counts the work.
 //
 // Concurrency: invoker-only.
-func (a *Agent) onUnexpectedHigherTerm(nowNs, term int64) {
+func (a *Agent) handleUnexpectedHigherTerm(nowNs, term int64) {
 	noteUnexpectedHigherTerm(nowNs, term)
 	a.enterElection(ElectionTriggerHigherTerm, false, nowNs)
 }

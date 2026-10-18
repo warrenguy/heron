@@ -138,7 +138,7 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 		steps := []string{
 			"tick", "completeElection", "higherTerm",
 			"quorumLost", "quorumHeld", "setElection", "clearElection",
-			"recordingStop", "logImageClosed",
+			"recordingStop", "logImageClosed", "voteRequest",
 		}
 		for range n {
 			step := rapid.SampledFrom(steps).Draw(rt, "step")
@@ -161,7 +161,7 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 				}
 			case "higherTerm":
 				if a.Election() == nil {
-					a.onSteadyCommitPosition(codecs.CommitPositionFields{
+					a.handleSteadyCommitPosition(codecs.CommitPositionFields{
 						LeadershipTermID: a.LeadershipTermID() + 1 + rapid.Int64Range(0, 5).Draw(rt, "termBump"),
 						LogPosition:      1,
 						LeaderMemberID:   2,
@@ -213,6 +213,22 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 				require.Equal(rt, !liveBefore && !leaderBefore, installed == 1)
 				if installed == 1 {
 					oracleTrigger = ElectionTriggerLogImageClosed
+				}
+			case "voteRequest":
+				term := a.LeadershipTermID()
+				termDelta := rapid.Int64Range(-2, 3).Draw(rt, "candidateTermDelta")
+				buf := encodeRequestVoteWire(t, codecs.RequestVoteFields{
+					LogLeadershipTermID: term,
+					LogPosition:         1,
+					CandidateTermID:     term + termDelta,
+					CandidateMemberID:   2,
+				})
+				a.handleSteadyConsensusFragment(buf, 0, nowNs)
+				installed := a.ElectionCount() > countBefore
+				require.Equal(rt, !liveBefore && termDelta > 0, installed)
+				if installed {
+					oracleTrigger = ElectionTriggerVoteRequest
+					require.Equal(rt, RoleFollower, a.Role())
 				}
 			}
 
@@ -316,7 +332,7 @@ func TestClientIngress_heldWhileElectionLive_rapid(t *testing.T) {
 		steps := []string{
 			"enqueue", "tick", "setElection", "completeElection",
 			"clearElection", "quorumLost", "higherTermFrame",
-			"recordingStop", "logImageClosed",
+			"recordingStop", "logImageClosed", "voteRequestFrame",
 		}
 		for range n {
 			step := rapid.SampledFrom(steps).Draw(rt, "step")
@@ -359,6 +375,25 @@ func TestClientIngress_heldWhileElectionLive_rapid(t *testing.T) {
 				a.SetLogAdapter(NewLogAdapter(0))
 				tick()
 				a.SetLogAdapter(nil)
+			case "voteRequestFrame":
+				consensus.Enqueue(encodeRequestVoteWire(t, codecs.RequestVoteFields{
+					LogLeadershipTermID: a.LeadershipTermID(),
+					LogPosition:         1,
+					CandidateTermID:     a.LeadershipTermID() + 1,
+					CandidateMemberID:   2,
+				}))
+				liveBefore := a.Election() != nil
+				countBefore := a.ElectionCount()
+				tick()
+				if !liveBefore {
+					// The heartbeat timeout may install first. The frame then
+					// goes to that runner.
+					require.Equal(rt, countBefore+1, a.ElectionCount())
+					require.Contains(rt, []ElectionTrigger{
+						ElectionTriggerVoteRequest,
+						ElectionTriggerLeaderHeartbeatTimeout,
+					}, a.LastElectionTrigger())
+				}
 			}
 
 			// Every frame is delivered or still queued.
@@ -407,7 +442,7 @@ func TestSettledHeartbeat_neverFiresBeforeTimeout_rapid(t *testing.T) {
 			case 0:
 				// Same-term commit from known leader pushes the stamp.
 				if a.Election() == nil && a.Role() == RoleFollower {
-					a.onSteadyCommitPosition(codecs.CommitPositionFields{
+					a.handleSteadyCommitPosition(codecs.CommitPositionFields{
 						LeadershipTermID: 1,
 						LogPosition:      10,
 						LeaderMemberID:   1,
@@ -443,7 +478,7 @@ func TestSettledHeartbeat_neverFiresBeforeTimeout_rapid(t *testing.T) {
 			// heartbeats continue. After a notify, the next tick inside the
 			// timeout window must not install.
 			if a.Election() == nil && a.Role() == RoleFollower {
-				a.onSteadyCommitPosition(codecs.CommitPositionFields{
+				a.handleSteadyCommitPosition(codecs.CommitPositionFields{
 					LeadershipTermID: 1,
 					LogPosition:      10,
 					LeaderMemberID:   1,
@@ -511,7 +546,7 @@ func TestOnSteadyCanvassPosition_guard_rapid(t *testing.T) {
 			LeadershipTermID:    canvassTerm,
 			FollowerMemberID:    followerID,
 		}
-		a.onSteadyCanvassPosition(fields, 1)
+		a.handleSteadyCanvassPosition(fields, 1)
 
 		expectSideEffects := role == RoleLeader &&
 			canvassTerm <= leaderTerm &&

@@ -107,6 +107,18 @@ func encodeCanvassPositionWire(t *testing.T, fields codecs.CanvassPositionFields
 	return buf[:end]
 }
 
+func encodeRequestVoteWire(t *testing.T, fields codecs.RequestVoteFields) []byte {
+	t.Helper()
+	actingVersion := uint16(clusterwire.RequestVoteSbeSchemaVersion)
+	blockLen := codecs.RequestVoteBlockLength(actingVersion)
+	wireLen, ok := codecs.ClusterWireMessageLen(blockLen)
+	require.True(t, ok)
+	buf := make([]byte, wireLen)
+	end, ok := codecs.EncodeRequestVote(buf, 0, actingVersion, fields)
+	require.True(t, ok)
+	return buf[:end]
+}
+
 func followerWithIngress(
 	leadershipTermID int64,
 	leaderMemberID int32,
@@ -470,6 +482,112 @@ func TestSteadyLeaderCommit_memberIDZero_validLeader(t *testing.T) {
 			requireSteadyPoll(t, a, 10, 42, 10, 10)
 		})
 	}
+}
+
+func TestSteadyRequestVote_higherCandidateTerm(t *testing.T) {
+	const (
+		agentTerm int64 = 4
+		nowNs     int64 = 700
+	)
+	tests := []struct {
+		name          string
+		role          Role
+		candidateTerm int64
+		noFactory     bool
+		wantInstall   bool
+	}{
+		{
+			name: "follower_higher_term", role: RoleFollower,
+			candidateTerm: agentTerm + 1, wantInstall: true,
+		},
+		{name: "leader_higher_term", role: RoleLeader, candidateTerm: agentTerm + 2, wantInstall: true},
+		{
+			name: "candidate_higher_term", role: RoleCandidate,
+			candidateTerm: agentTerm + 1, wantInstall: true,
+		},
+		{name: "equal_term", role: RoleFollower, candidateTerm: agentTerm},
+		{name: "lower_term", role: RoleFollower, candidateTerm: agentTerm - 1},
+		{name: "nil_factory", role: RoleFollower, candidateTerm: agentTerm + 1, noFactory: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var seeds []ElectionSeed
+			var runners []*recordingRunner
+			q := &QueueConsensusIngress{}
+			a := NewAgent(AgentConfig{
+				Role:             tc.role,
+				Ingress:          q,
+				ThisMemberID:     1,
+				LeadershipTermID: agentTerm,
+				LeaderMemberID:   1,
+			})
+			if !tc.noFactory {
+				a.SetElectionFactory(func(seed ElectionSeed) ElectionRunner {
+					seeds = append(seeds, seed)
+					r := &recordingRunner{}
+					runners = append(runners, r)
+					return r
+				})
+			}
+
+			q.Enqueue(encodeRequestVoteWire(t, codecs.RequestVoteFields{
+				LogLeadershipTermID: agentTerm,
+				LogPosition:         64,
+				CandidateTermID:     tc.candidateTerm,
+				CandidateMemberID:   2,
+			}))
+			require.Equal(t, 1, a.pollConsensusIngress(nowNs))
+
+			require.Zero(t, a.TimeOfLastLeaderUpdateNs())
+			require.Zero(t, a.timeOfLastLogUpdateNs)
+			if !tc.wantInstall {
+				require.Nil(t, a.Election())
+				require.Zero(t, a.ElectionCount())
+				require.Equal(t, ElectionTriggerNone, a.LastElectionTrigger())
+				require.Equal(t, tc.role, a.Role())
+				require.Empty(t, seeds)
+				return
+			}
+			require.NotNil(t, a.Election())
+			require.Equal(t, int64(1), a.ElectionCount())
+			require.Equal(t, ElectionTriggerVoteRequest, a.LastElectionTrigger())
+			require.Equal(t, RoleFollower, a.Role())
+			require.Len(t, seeds, 1)
+			require.Equal(t, agentTerm, seeds[0].LeadershipTermID)
+			require.Equal(t, nullMemberID, seeds[0].GracefulClosedLeaderID)
+			// The agent does not forward the frame to the new runner.
+			require.Empty(t, runners[0].handles)
+		})
+	}
+
+	t.Run("election_live", func(t *testing.T) {
+		fac := &recordingElectionFactory{}
+		runner := &recordingRunner{}
+		q := &QueueConsensusIngress{}
+		a := NewAgent(AgentConfig{
+			Role:             RoleFollower,
+			Ingress:          q,
+			LeadershipTermID: agentTerm,
+			LeaderMemberID:   1,
+		})
+		a.SetElection(runner)
+		a.SetElectionFactory(fac.factory())
+
+		wire := encodeRequestVoteWire(t, codecs.RequestVoteFields{
+			LogLeadershipTermID: agentTerm,
+			LogPosition:         64,
+			CandidateTermID:     agentTerm + 1,
+			CandidateMemberID:   2,
+		})
+		q.Enqueue(wire)
+		require.Equal(t, 1, a.pollConsensusIngress(nowNs))
+
+		require.Equal(t, ElectionRunner(runner), a.Election())
+		require.Equal(t, [][]byte{wire}, runner.handles)
+		require.Equal(t, int64(1), a.ElectionCount())
+		require.Equal(t, ElectionTriggerBootstrap, a.LastElectionTrigger())
+		require.Empty(t, fac.seeds)
+	})
 }
 
 func TestQueueConsensusIngress_fragmentLimit(t *testing.T) {
