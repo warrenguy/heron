@@ -11,11 +11,14 @@ import (
 
 const (
 	acquireFenceSymbol = "atomicbuffer_acquireFence"
+	releaseFenceSymbol = "atomicbuffer_releaseFence"
 	// dmbISHLD is the hex encoding of DMB ISHLD.
 	dmbISHLD = "d50339bf"
+	// dmbISH is the hex encoding of DMB ISH.
+	dmbISH = "d5033bbf"
 )
 
-func TestAcquireFenceARM64LoadBarrier(t *testing.T) {
+func TestFenceARM64Barrier(t *testing.T) {
 	goTool, err := exec.LookPath("go")
 	require.NoError(t, err)
 
@@ -30,10 +33,22 @@ func TestAcquireFenceARM64LoadBarrier(t *testing.T) {
 	out, err := build.CombinedOutput()
 	require.NoError(t, err, string(out))
 
-	objdump := exec.Command(goTool, "tool", "objdump", "-s", acquireFenceSymbol, probe)
-	out, err = objdump.CombinedOutput()
-	disassembly := string(out)
-	require.NoError(t, err, disassembly)
-	require.Contains(t, disassembly, acquireFenceSymbol)
-	require.Contains(t, disassembly, dmbISHLD)
+	tests := []struct {
+		name     string
+		symbol   string
+		encoding string
+	}{
+		{name: "AcquireFence", symbol: acquireFenceSymbol, encoding: dmbISHLD},
+		{name: "ReleaseFence", symbol: releaseFenceSymbol, encoding: dmbISH},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			objdump := exec.Command(goTool, "tool", "objdump", "-s", tt.symbol, probe)
+			out, err := objdump.CombinedOutput()
+			disassembly := string(out)
+			require.NoError(t, err, disassembly)
+			require.Contains(t, disassembly, tt.symbol)
+			require.Contains(t, disassembly, tt.encoding)
+		})
+	}
 }
