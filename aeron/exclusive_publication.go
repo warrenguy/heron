@@ -40,10 +40,8 @@ type ExclusivePublication struct {
 	termBufferLength    int
 	positionBitsToShift int
 
-	initialTermID    int32
-	maxPayloadLength int
-	// Upper bound for Offer payload length; payloads above maxPayloadLength
-	// fragment until this limit, then return MaxPositionExceeded.
+	initialTermID       int32
+	maxPayloadLength    int
 	maxMessageLength    int
 	maxPossiblePosition int64
 	headerWriter        logbuffer.HeaderWriter
@@ -103,9 +101,8 @@ func (ep *ExclusivePublication) MaxPayloadLength() int {
 	return ep.maxPayloadLength
 }
 
-// MaxMessageLength returns the largest total message length Offer accepts.
-// Longer lengths return MaxPositionExceeded. Fragmented payloads may span
-// multiple frames up to this bound.
+// MaxMessageLength returns the largest message Offer fragments. Offer returns
+// UnsupportedMessageLength for a longer message that does not fit one frame.
 func (ep *ExclusivePublication) MaxMessageLength() int {
 	return ep.maxMessageLength
 }
@@ -129,7 +126,7 @@ func (ep *ExclusivePublication) Offer(buffer []byte) int64 {
 // length <= maxPayloadLength uses a single DATA frame. Larger payloads up to
 // maxMessageLength split across BEGIN, middle, and END fragments.
 //
-// length > maxMessageLength returns MaxPositionExceeded (-5).
+// Any other length returns UnsupportedMessageLength without a limit read.
 //
 // See also PositionCodeName, IsOfferRetriable.
 func (ep *ExclusivePublication) OfferWithOffset(buffer []byte, offset, length int) int64 {
@@ -145,10 +142,10 @@ func (ep *ExclusivePublication) OfferWithOffset(buffer []byte, offset, length in
 		panic(invalidOfferSliceMessage(offset, length, len(buffer)))
 	}
 
-	if length > ep.maxMessageLength {
-		return MaxPositionExceeded
-	}
 	if length > ep.maxPayloadLength {
+		if length > ep.maxMessageLength {
+			return UnsupportedMessageLength
+		}
 		return ep.appendFragmentedMessage(buffer, offset, length)
 	}
 

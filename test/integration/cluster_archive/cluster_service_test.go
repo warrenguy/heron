@@ -65,16 +65,24 @@ type recordedMessage struct {
 
 // sessionRecorder records ClusteredService callbacks. Invoker-only. No
 // locking. Copies payload bytes. Callback slices are transient.
+//
+// With echo set, SessionMessage offers the payload back to its session and
+// records the Offer result in echoResults.
 type sessionRecorder struct {
 	startCount int
 	opens      []int64
 	messages   []recordedMessage
 	closes     []int64
 	order      []string
+
+	echo        bool
+	cluster     service.Cluster
+	echoResults []int64
 }
 
-func (s *sessionRecorder) Start(service.Cluster) error {
+func (s *sessionRecorder) Start(c service.Cluster) error {
 	s.startCount++
+	s.cluster = c
 	return nil
 }
 
@@ -91,12 +99,22 @@ func (s *sessionRecorder) SessionClose(
 	s.order = append(s.order, "close")
 }
 
+// SessionMessage records the message. With echo set, it records 0 when the
+// registry holds no session for sessionID.
 func (s *sessionRecorder) SessionMessage(sessionID, _ int64, payload []byte) {
 	s.messages = append(s.messages, recordedMessage{
 		sessionID: sessionID,
 		payload:   bytes.Clone(payload),
 	})
 	s.order = append(s.order, "message")
+	if !s.echo {
+		return
+	}
+	var result int64
+	if session, ok := s.cluster.ClientSession(sessionID); ok {
+		result = session.Offer(payload)
+	}
+	s.echoResults = append(s.echoResults, result)
 }
 
 func (s *sessionRecorder) TimerEvent(_, _ int64) {}
@@ -173,7 +191,7 @@ func serviceState(
 		"service member=%d index=%d bound=%v logPos=%d commit=%d nextAck=%d "+
 			"expectedAck=%d pendingJoin=%v pendingAcks=%d readyAcks=%d waits=%d "+
 			"ackQ0=%d role=%v start=%d opens=%v msgs=%d closes=%v "+
-			"serviceFail=%v ackFail=%v violation=%v\n",
+			"responseAdds=%d echoResults=%v serviceFail=%v ackFail=%v violation=%v\n",
 		memberID,
 		index,
 		mem.agent.IsLogBound(),
@@ -191,6 +209,8 @@ func serviceState(
 		mem.rec.opens,
 		len(mem.rec.messages),
 		mem.rec.closes,
+		mem.agent.PendingResponsePublicationAdds(),
+		mem.rec.echoResults,
 		mem.agent.ServiceFailure(),
 		ackFail,
 		mem.checked.violation,
@@ -365,7 +385,9 @@ func requireServicesJoined(t *testing.T, sc serviceCluster) {
 }
 
 // TestClusterService_deliversCommittedLogAndAcksOnRequest asserts a committed
-// session message reaches every attached service. A requested service ack then
+// session message reaches every attached service. Each service echoes the
+// message to its session. The client receives exactly one echo, from the
+// leader. Each follower echo returns MockedOffer. A requested service ack then
 // completes on every member.
 func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 	t.Parallel()
@@ -373,6 +395,9 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 	sc := openServiceCluster(t)
 	set := sc.set
 	leader := requireSingleLeader(t, set, "")
+	for _, mem := range sc.members {
+		mem.rec.echo = true
+	}
 
 	requireServicesJoined(t, sc)
 	for i, m := range set.Modules() {
@@ -395,7 +420,16 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 	}
 	requireNoServiceFailures(t, sc, "")
 
-	transport, session := connectServiceSession(t, sc, leader)
+	var echoes []recordedMessage
+	egress := &client.EgressHandlers{
+		MessageBytesFunc: func(clusterSessionID, _ int64, payload []byte, _ *aeron.Header) {
+			echoes = append(echoes, recordedMessage{
+				sessionID: clusterSessionID,
+				payload:   bytes.Clone(payload),
+			})
+		},
+	}
+	transport, session := connectServiceSessionWithEgress(t, sc, leader, egress)
 	require.GreaterOrEqual(t, session.ClusterSessionID(), int64(0))
 	wantSession := session.ClusterSessionID()
 	require.Equal(t, 1, leader.Agent().OpenSessionCount(), sc.dump())
@@ -416,6 +450,25 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 			return true
 		}),
 	)
+
+	requireServiceAwaitTick(
+		t, sc,
+		"echo received",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool { return len(echoes) > 0 }),
+	)
+	wantEcho := []recordedMessage{{sessionID: wantSession, payload: payload}}
+	require.Equal(t, wantEcho, echoes, sc.dump())
+	for i, m := range set.Modules() {
+		results := sc.members[i].rec.echoResults
+		require.Len(t, results, 1, "echo results member %d:\n%s", m.ThisMemberID(), sc.dump())
+		if m.IsLeader() {
+			require.Positive(t, results[0], "leader echo member %d:\n%s", m.ThisMemberID(), sc.dump())
+			continue
+		}
+		require.Equal(t, service.MockedOffer, results[0],
+			"follower echo member %d:\n%s", m.ThisMemberID(), sc.dump())
+	}
 
 	for i, m := range set.Modules() {
 		if got := sc.members[i].agent.NextAckID(); got != 1 {
@@ -472,6 +525,7 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 		)
 		requireNoServiceFailure(t, sc, i, " after request")
 	}
+	require.Equal(t, wantEcho, echoes, "echoes after service acks:\n%s", sc.dump())
 
 	require.NoError(t, session.Close())
 	const closeBound = 30 * time.Second
@@ -523,16 +577,31 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 
 const serviceSecondPayload = "service-second-message"
 
-// connectServiceSession connects one session to leader and awaits its open on
-// every attached service.
+// connectServiceSession is connectServiceSessionWithEgress with no egress
+// handlers.
 func connectServiceSession(
 	t *testing.T,
 	sc serviceCluster,
 	leader *cluster.ConsensusModule,
 ) (*aeron.Client, *client.AeronCluster) {
 	t.Helper()
+	return connectServiceSessionWithEgress(t, sc, leader, &client.EgressHandlers{})
+}
 
-	transport, session := openSession(t, sc.set, leader)
+// connectServiceSessionWithEgress connects one session to leader with egress
+// as the client egress handler. It awaits the open on every attached service
+// and no response publication add in flight on any service.
+//
+// Ownership: the test owns Close on the transport and the session.
+func connectServiceSessionWithEgress(
+	t *testing.T,
+	sc serviceCluster,
+	leader *cluster.ConsensusModule,
+	egress client.EgressHandler,
+) (*aeron.Client, *client.AeronCluster) {
+	t.Helper()
+
+	transport, session := openSessionWithEgress(t, sc.set, leader, egress)
 	sessionID := session.ClusterSessionID()
 
 	requireServiceAwaitTick(
@@ -541,7 +610,7 @@ func connectServiceSession(
 		durableWorkBound,
 		sessionPump(transport, session, func() bool {
 			for _, mem := range sc.members {
-				if !mem.rec.holdsOpen(sessionID) {
+				if !mem.rec.holdsOpen(sessionID) || mem.agent.PendingResponsePublicationAdds() != 0 {
 					return false
 				}
 			}

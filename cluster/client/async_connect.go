@@ -399,8 +399,8 @@ func (ac *AsyncConnect) pollSendMessage() (*ConnectResult, error) {
 	if ac.ingressPublication == nil {
 		return nil, errors.New("cluster client: ingress publication missing")
 	}
-	// Java does not pre-check against publication maxMessageLength at prepare time;
-	// MaxPositionExceeded / back-pressure from Offer is the practical connect ceiling.
+	// No length pre-check. The publication returns UnsupportedMessageLength for
+	// an oversized wire.
 	result := ac.ingressPublication.Offer(ac.connectWireBuffer[:ac.connectWireLength])
 	switch result {
 	case aeron.Closed, aeron.NotConnected:
@@ -408,11 +408,14 @@ func (ac *AsyncConnect) pollSendMessage() (*ConnectResult, error) {
 	case aeron.BackPressured, aeron.AdminAction:
 		// BackPressured retry is intentional; the connect wire is fixed size.
 		return nil, nil
-	case aeron.MaxPositionExceeded:
+	case aeron.UnsupportedMessageLength:
 		return nil, fmt.Errorf(
-			"cluster client: connect wire length %d exceeds ingress publication max message length",
+			"cluster client: connect wire length %d exceeds ingress publication max message length %d",
 			ac.connectWireLength,
+			ac.ingressPublication.MaxMessageLength(),
 		)
+	case aeron.MaxPositionExceeded:
+		return nil, errors.New("cluster client: ingress publication stream position exceeded")
 	}
 	if result < 0 {
 		return nil, fmt.Errorf("cluster client: ingress offer failed: status=%d", result)

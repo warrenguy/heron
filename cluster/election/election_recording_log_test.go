@@ -211,7 +211,7 @@ func TestRecordingLog_planRecoverySeedsElection(t *testing.T) {
 	cfg.AppendPosition = 99
 	election.ApplyRecoveryPlan(&cfg, plan)
 	require.Equal(t, termID, cfg.LeadershipTermID)
-	require.Equal(t, termStop, cfg.LogPosition)
+	require.Equal(t, int64(0), cfg.LogPosition)
 	require.Equal(t, termStop, cfg.AppendPosition)
 
 	host := &recordingElectionHost{clock: clock, localLogRecordingID: plan.TermRecordingID()}

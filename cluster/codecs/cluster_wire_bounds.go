@@ -122,6 +122,8 @@ func ClusterRootBlockLengthBounds(
 		return clusterFixedBlockLength(clusterwire.ScheduleTimerSbeBlockLength)
 	case clusterwire.CancelTimerSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.CancelTimerSbeBlockLength)
+	case clusterwire.CloseSessionSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.CloseSessionSbeBlockLength)
 	case clusterwire.ServiceAckSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.ServiceAckSbeBlockLength)
 
@@ -212,6 +214,7 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		clusterwire.ClusterActionRequestSbeTemplateID,
 		clusterwire.ScheduleTimerSbeTemplateID,
 		clusterwire.CancelTimerSbeTemplateID,
+		clusterwire.CloseSessionSbeTemplateID,
 		clusterwire.ServiceAckSbeTemplateID,
 		clusterwire.RequestServiceAckSbeTemplateID,
 		clusterwire.SnapshotMarkerSbeTemplateID,

@@ -7,7 +7,8 @@ import (
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
-// Publication return codes mirror Aeron Java Publication / ConcurrentPublication.
+// Publication return codes -1 to -5 mirror Aeron Java Publication.
+// UnsupportedMessageLength matches the C client AERON_PUBLICATION_ERROR.
 //
 //   - Values > 0: new stream position after a successful Offer or TryClaim.
 //   - NotConnected (-1): no subscriber; retry with idle strategy.
@@ -18,9 +19,11 @@ import (
 //     Closed on cold accessors (test hook).
 //     AvailableWindow propagates negative codes from PositionLimit and Position.
 //     Position maps internal read failures to Closed because it returns int64 only.
-//   - MaxPositionExceeded (-5): stream position exhausted; close and add a new publication.
-//   - UnsupportedMessageLength (-6): reserved; TryClaim returns a Go error when length
-//     exceeds maxPayloadLength. Offer fragments payloads up to maxMessageLength.
+//   - MaxPositionExceeded (-5): stream position exhausted. Close the publication and
+//     add a new one.
+//   - UnsupportedMessageLength (-6): Offer length exceeds both MaxPayloadLength and
+//     MaxMessageLength. Do not retry. Java throws IllegalArgumentException here.
+//     TryClaim returns a Go error instead.
 //
 // Offer and TryClaim read the bound publication-limit CNC slot directly after bind.
 // PositionLimit reads the same bound slot without per-call CounterValue validation.

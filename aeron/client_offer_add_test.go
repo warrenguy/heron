@@ -751,6 +751,61 @@ func TestClient_PollAdd_staleCorrelation(t *testing.T) {
 	requireActiveCorrelationCleared(t, fixture)
 }
 
+func TestClient_PollAdd_otherKindCorrelation(t *testing.T) {
+	polls := []struct {
+		name string
+		poll func(*testing.T, *Client, int64) (bool, error)
+	}{
+		{
+			name: "PollAddPublication",
+			poll: func(t *testing.T, client *Client, correlationID int64) (bool, error) {
+				pub, done, err := client.PollAddPublication(correlationID)
+				require.Nil(t, pub)
+				return done, err
+			},
+		},
+		{
+			name: "PollAddExclusivePublication",
+			poll: func(t *testing.T, client *Client, correlationID int64) (bool, error) {
+				pub, done, err := client.PollAddExclusivePublication(correlationID)
+				require.Nil(t, pub)
+				return done, err
+			},
+		},
+		{
+			name: "PollAddSubscription",
+			poll: func(t *testing.T, client *Client, correlationID int64) (bool, error) {
+				sub, done, err := client.PollAddSubscription(correlationID)
+				require.Nil(t, sub)
+				return done, err
+			},
+		},
+	}
+	for _, pollCase := range polls {
+		t.Run(pollCase.name, func(t *testing.T) {
+			client, fixture := newClientOfferAddTestFixture(t, t.TempDir())
+
+			correlationID := client.NextCorrelationID()
+			require.NoError(t, fixture.Conductor.RegisterPendingWithDeadline(
+				conductor.PendingKindDestination,
+				correlationID,
+				client.nanoClock()+time.Second.Nanoseconds(),
+			))
+
+			done, err := pollCase.poll(t, client, correlationID)
+			require.False(t, done)
+			require.EqualError(t, err, fmt.Sprintf(
+				"aeron: poll add: correlation id %d is not an add command",
+				correlationID,
+			))
+			registration, ok := fixture.Conductor.PendingResult(correlationID)
+			require.True(t, ok)
+			require.Equal(t, conductor.PendingKindDestination, registration.Kind)
+			requireActiveCorrelationCleared(t, fixture)
+		})
+	}
+}
+
 func TestClient_PollAdd_closedGuardAfterPollPending_publicationKind(t *testing.T) {
 	for _, testCase := range clientAddPublicationKindCases() {
 		t.Run(testCase.name, func(t *testing.T) {

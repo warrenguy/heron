@@ -356,8 +356,8 @@ func (a *Agent) pollServiceControl() int {
 // handleServiceControlFragment routes one service control frame.
 //
 // ServiceAck offers onto the tracker. ScheduleTimer and CancelTimer update the
-// local timer wheel. Unknown templates and undecodable bytes skip without
-// error.
+// local timer wheel. CloseSession marks the session closing. Unknown templates
+// and undecodable bytes skip without error.
 func (a *Agent) handleServiceControlFragment(buf []byte, offset int) {
 	templateID, ok := consensusMessageTemplateID(buf, offset)
 	if !ok {
@@ -375,6 +375,10 @@ func (a *Agent) handleServiceControlFragment(buf []byte, offset int) {
 	case clusterwire.CancelTimerSbeTemplateID:
 		if fields, ok := codecs.TryDecodeCancelTimerAt(buf, offset); ok {
 			a.handleCancelTimer(fields)
+		}
+	case clusterwire.CloseSessionSbeTemplateID:
+		if fields, ok := codecs.TryDecodeCloseSessionAt(buf, offset); ok {
+			a.handleServiceCloseSession(fields)
 		}
 	}
 }
@@ -417,4 +421,16 @@ func (a *Agent) handleServiceAck(fields codecs.ServiceAckFields) {
 	if err != nil && a.serviceAckFailure == nil {
 		a.serviceAckFailure = err
 	}
+}
+
+// handleServiceCloseSession marks one session closing with SERVICE_ACTION.
+//
+// Behaviour: marks on every role, during an election too, without
+// canAppendLog. The leader sweep appends the SessionCloseEvent. A follower
+// keeps the mark until the committed SessionCloseEvent removes the session or
+// the member leads. Unknown and pre-open ids change nothing.
+//
+// Concurrency: invoker-only.
+func (a *Agent) handleServiceCloseSession(fields codecs.CloseSessionFields) {
+	a.sessions.markClosing(fields.ClusterSessionID, clusterwire.CloseReason_SERVICE_ACTION)
 }

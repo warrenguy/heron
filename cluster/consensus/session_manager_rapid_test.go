@@ -370,7 +370,7 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 					clusterwire.CloseReason_SERVICE_ACTION,
 				}).Draw(rt, "closeReason")
 				e, ok := model[id]
-				wantOK := ok && e.state == sessionOpen
+				wantOK := ok && (e.state == sessionOpen || e.state == sessionClosing)
 				got := m.markClosing(id, reason)
 				require.Equal(rt, wantOK, got)
 				if wantOK {

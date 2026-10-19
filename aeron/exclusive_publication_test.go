@@ -75,7 +75,7 @@ func offerThenDecreaseExclusiveLimitBelowPosition(
 }
 
 func requireRejectedExclusiveOfferLeavesTermClean(
-	tb testing.TB,
+	tb fragmentTB,
 	ep *aeron.ExclusivePublication,
 	wantStatus int64,
 	offer func() int64,

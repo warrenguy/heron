@@ -1,6 +1,8 @@
 package aeron
 
 import (
+	"fmt"
+
 	"github.com/warrenguy/heron/aeron/conductor"
 )
 
@@ -90,6 +92,9 @@ func (client *Client) OfferAddSubscription(streamID int32, channel string) (int6
 // done or a terminal err (including *RegistrationTimeoutError from conductor expire
 // or the client deadline fallback in pollAddWith). Not safe for concurrent use with
 // other Client methods.
+//
+// An id from another kind of command, such as an async destination command,
+// returns done=false and an error. The entry stays.
 func (client *Client) PollAddPublication(
 	correlationID int64,
 ) (*Publication, bool, error) {
@@ -110,6 +115,9 @@ func (client *Client) PollAddPublication(
 // done or a terminal err (including *RegistrationTimeoutError from conductor expire
 // or the client deadline fallback in pollAddWith). Not safe for concurrent use with
 // other Client methods.
+//
+// An id from another kind of command, such as an async destination command,
+// returns done=false and an error. The entry stays.
 func (client *Client) PollAddExclusivePublication(
 	correlationID int64,
 ) (*ExclusivePublication, bool, error) {
@@ -130,6 +138,9 @@ func (client *Client) PollAddExclusivePublication(
 // done or a terminal err (including *RegistrationTimeoutError from conductor expire
 // or the client deadline fallback in pollAddWith). Not safe for concurrent use with
 // other Client methods.
+//
+// An id from another kind of command, such as an async destination command,
+// returns done=false and an error. The entry stays.
 func (client *Client) PollAddSubscription(
 	correlationID int64,
 ) (*Subscription, bool, error) {
@@ -144,7 +155,7 @@ func (client *Client) offerAdd(
 	pendingKind conductor.PendingKind,
 	streamID int32,
 	channel string,
-	offer addOfferFunc,
+	offer driverOfferFunc,
 ) (int64, error) {
 	client.lockClient()
 	defer client.unlockClient()
@@ -206,6 +217,12 @@ func pollAddWith[T any](
 		return zero, false, ErrAwaitInterrupted
 	}
 	registrationKind := registrationKindFor(pending.Kind)
+	if registrationKind == "" {
+		return zero, false, fmt.Errorf(
+			"aeron: poll add: correlation id %d is not an add command",
+			correlationID,
+		)
+	}
 
 	conductorInstance.SetActiveCorrelationID(correlationID)
 	registration, completed, err := awaitTick(

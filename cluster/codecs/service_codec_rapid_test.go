@@ -145,6 +145,24 @@ func TestCancelTimer_codec_rapid(t *testing.T) {
 	})
 }
 
+func TestCloseSession_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.CloseSessionFields{
+			ClusterSessionID: rapid.Int64().Draw(rt, "clusterSessionID"),
+		}
+		runCodecRoundtripAtOffset(
+			rt,
+			clusterwire.CloseSessionSbeTemplateID,
+			actingVersion,
+			offset,
+			rapidEncodeAt(actingVersion, fields, codecs.EncodeCloseSession),
+			fields,
+		)
+	})
+}
+
 func TestServiceAck_codec_rapid(t *testing.T) {
 	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {

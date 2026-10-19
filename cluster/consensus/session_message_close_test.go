@@ -706,6 +706,298 @@ func TestHandleSessionCloseRequest_dropGates(t *testing.T) {
 	}
 }
 
+// encodeCloseSessionWire encodes one service CloseSession frame for sessionID.
+func encodeCloseSessionWire(t *testing.T, sessionID int64) []byte {
+	t.Helper()
+	actingVersion := uint16(clusterwire.CloseSessionSbeSchemaVersion)
+	buf := make([]byte, codecs.CloseSessionEncodedLen())
+	end, ok := codecs.EncodeCloseSession(buf, 0, actingVersion, codecs.CloseSessionFields{
+		ClusterSessionID: sessionID,
+	})
+	require.True(t, ok)
+	return buf[:end]
+}
+
+// closedEventDetails returns the detail of each SessionEvent CLOSED on egress.
+func closedEventDetails(t *testing.T, egress *aeron.Publication) []string {
+	t.Helper()
+	var details []string
+	forEachTermWire(t, egress, 8, func(wire []byte) bool {
+		decoded, ok := codecs.TryDecodeByTemplate(wire, 0, codecs.ClusterDecodeMaxVarLen)
+		require.True(t, ok)
+		event, ok := decoded.Fields.(codecs.SessionEventFields)
+		require.True(t, ok)
+		if event.Code == clusterwire.EventCode_CLOSED {
+			details = append(details, string(event.Detail))
+		}
+		return false
+	})
+	return details
+}
+
+func TestHandleServiceCloseSession_leaderAppendsServiceAction(t *testing.T) {
+	const (
+		termID   int64 = 9
+		acceptNs int64 = 1
+		nowNs    int64 = 100
+	)
+	a, _, logPub, s := openLeaderSession(t, termID, acceptNs)
+	egress := s.egressPublication
+	q := attachQueueServiceIngress(a)
+
+	// Phase: the frame marks the session closing and keeps its egress.
+	q.Enqueue(encodeCloseSessionWire(t, s.id))
+	require.Equal(t, 1, a.pollServiceControl())
+	require.Equal(t, sessionClosing, s.state)
+	require.Equal(t, clusterwire.CloseReason_SERVICE_ACTION, s.closeReason)
+	require.Same(t, egress, s.egressPublication)
+	require.False(t, egress.IsClosed())
+	require.Equal(t, 1, a.ClosingSessionCount())
+	require.Equal(t, 0, a.OpenSessionCount())
+
+	// Phase: the sweep appends, sends CLOSED and removes.
+	require.Equal(t, 1, a.sessionCloseWork(nowNs))
+	requireSessionCloseEventOnLog(
+		t, logPub, termID, s.id, nowNs, clusterwire.CloseReason_SERVICE_ACTION,
+	)
+	require.Equal(t, []string{"SERVICE_ACTION"}, closedEventDetails(t, egress))
+	require.True(t, egress.IsClosed())
+	_, ok := a.sessions.sessionByID(s.id)
+	require.False(t, ok)
+	require.Equal(t, 0, a.ClosingSessionCount())
+	require.Equal(t, 0, a.OpenSessionCount())
+}
+
+func TestHandleServiceCloseSession_sameDoWork(t *testing.T) {
+	const (
+		termID   int64 = 4
+		acceptNs int64 = 1
+		nowNs    int64 = 200
+	)
+	a, _, logPub, s := openLeaderSession(t, termID, acceptNs)
+	q := attachQueueServiceIngress(a)
+	q.Enqueue(encodeCloseSessionWire(t, s.id))
+
+	a.DoWork(nowNs)
+	requireSessionCloseEventOnLog(
+		t, logPub, termID, s.id, nowNs, clusterwire.CloseReason_SERVICE_ACTION,
+	)
+	_, ok := a.sessions.sessionByID(s.id)
+	require.False(t, ok)
+	require.Equal(t, 0, a.ClosingSessionCount())
+	require.Equal(t, 0, a.OpenSessionCount())
+}
+
+func TestHandleServiceCloseSession_appendRetry(t *testing.T) {
+	const (
+		termID   int64 = 9
+		acceptNs int64 = 1
+		nowNs    int64 = 100
+	)
+	a, p, _, s := openLeaderSession(t, termID, acceptNs)
+	egress := s.egressPublication
+	blockLogPublication(t, p)
+	q := attachQueueServiceIngress(a)
+
+	// Phase: a blocked append keeps the session closing with its egress.
+	q.Enqueue(encodeCloseSessionWire(t, s.id))
+	require.Equal(t, 1, a.pollServiceControl())
+	require.Equal(t, 0, a.sessionCloseWork(nowNs))
+	require.Equal(t, sessionClosing, s.state)
+	require.Same(t, egress, s.egressPublication)
+	require.False(t, egress.IsClosed())
+	require.Equal(t, 1, a.ClosingSessionCount())
+
+	// Phase: a second frame changes nothing.
+	q.Enqueue(encodeCloseSessionWire(t, s.id))
+	require.Equal(t, 1, a.pollServiceControl())
+	require.Equal(t, sessionClosing, s.state)
+	require.Equal(t, clusterwire.CloseReason_SERVICE_ACTION, s.closeReason)
+	require.Same(t, egress, s.egressPublication)
+	require.Equal(t, 1, a.ClosingSessionCount())
+	require.Equal(t, 0, a.OpenSessionCount())
+
+	// Phase: an unblocked log appends and removes.
+	ready := aeron.NewTestExclusivePublicationForHooks(t)
+	p.SetPublication(ready)
+	require.Equal(t, 1, a.sessionCloseWork(nowNs+1))
+	requireSessionCloseEventOnLog(
+		t, ready, termID, s.id, nowNs+1, clusterwire.CloseReason_SERVICE_ACTION,
+	)
+	_, ok := a.sessions.sessionByID(s.id)
+	require.False(t, ok)
+	require.Equal(t, 0, a.ClosingSessionCount())
+}
+
+func TestHandleServiceCloseSession_marks(t *testing.T) {
+	const (
+		termID   int64 = 3
+		acceptNs int64 = 1
+		nowNs    int64 = 50
+	)
+	type markCase struct {
+		name string
+		// setup returns the agent, the frame session id, and the check run
+		// after one pollServiceControl.
+		setup func(t *testing.T) (*Agent, int64, func(t *testing.T))
+	}
+	cases := []markCase{
+		{
+			name: "unknown_id",
+			setup: func(t *testing.T) (*Agent, int64, func(t *testing.T)) {
+				a, _, _, s := openLeaderSession(t, termID, acceptNs)
+				return a, 99, func(t *testing.T) {
+					require.Equal(t, sessionOpen, s.state)
+					require.Equal(t, acceptNs, s.lastActivityNs)
+					require.Equal(t, 1, a.OpenSessionCount())
+					require.Equal(t, 0, a.ClosingSessionCount())
+					require.Equal(t, 0, a.PendingSessionCount())
+				}
+			},
+		},
+		{
+			name: "pending_session",
+			setup: func(t *testing.T) (*Agent, int64, func(t *testing.T)) {
+				a, s := pendingLeaderSession(t, termID, acceptNs)
+				return a, s.id, func(t *testing.T) {
+					require.Equal(t, sessionPending, s.state)
+					require.Equal(t, acceptNs, s.lastActivityNs)
+					require.Equal(t, 1, a.PendingSessionCount())
+					require.Equal(t, 0, a.ClosingSessionCount())
+				}
+			},
+		},
+		{
+			name: "closing_client_action",
+			setup: func(t *testing.T) (*Agent, int64, func(t *testing.T)) {
+				a, p, _, s := openLeaderSession(t, termID, acceptNs)
+				egress := s.egressPublication
+				blockLogPublication(t, p)
+				clientIngress := attachQueueClientIngress(a)
+				clientIngress.Enqueue(encodeSessionCloseRequestWire(t, termID, s.id))
+				require.Equal(t, 1, a.pollClientIngress(nowNs))
+				require.Equal(t, clusterwire.CloseReason_CLIENT_ACTION, s.closeReason)
+				require.Nil(t, s.egressPublication)
+				return a, s.id, func(t *testing.T) {
+					require.Equal(t, sessionClosing, s.state)
+					require.Equal(t, clusterwire.CloseReason_SERVICE_ACTION, s.closeReason)
+					require.Nil(t, s.egressPublication)
+					require.Equal(t, 1, a.ClosingSessionCount())
+
+					ready := aeron.NewTestExclusivePublicationForHooks(t)
+					p.SetPublication(ready)
+					require.Equal(t, 1, a.sessionCloseWork(nowNs+1))
+					requireSessionCloseEventOnLog(
+						t, ready, termID, s.id, nowNs+1, clusterwire.CloseReason_SERVICE_ACTION,
+					)
+					require.Empty(t, closedEventDetails(t, egress))
+					require.Equal(t, 0, a.ClosingSessionCount())
+				}
+			},
+		},
+		{
+			name: "closing_timeout",
+			setup: func(t *testing.T) (*Agent, int64, func(t *testing.T)) {
+				a, p, _, s := openLeaderSession(t, termID, acceptNs)
+				egress := s.egressPublication
+				blockLogPublication(t, p)
+				past := acceptNs + a.sessionTimeoutNs + 1
+				require.Equal(t, 1, a.sessionCloseWork(past))
+				require.Equal(t, clusterwire.CloseReason_TIMEOUT, s.closeReason)
+				return a, s.id, func(t *testing.T) {
+					require.Equal(t, sessionClosing, s.state)
+					require.Equal(t, clusterwire.CloseReason_SERVICE_ACTION, s.closeReason)
+					require.Same(t, egress, s.egressPublication)
+					require.Equal(t, 1, a.ClosingSessionCount())
+				}
+			},
+		},
+	}
+	for _, logCase := range unappendableLogCases() {
+		cases = append(cases, markCase{
+			name: "unappendable_log_" + logCase.name,
+			setup: func(t *testing.T) (*Agent, int64, func(t *testing.T)) {
+				a, p, _, s := openLeaderSession(t, termID, acceptNs)
+				logCase.apply(t, p)
+				return a, s.id, func(t *testing.T) {
+					require.Equal(t, sessionClosing, s.state)
+					require.Equal(t, clusterwire.CloseReason_SERVICE_ACTION, s.closeReason)
+					require.Equal(t, 1, a.ClosingSessionCount())
+					require.Equal(t, 0, a.sessionCloseWork(nowNs+1))
+					require.Equal(t, sessionClosing, s.state)
+					require.Equal(t, 1, a.ClosingSessionCount())
+					require.Equal(t, 0, a.OpenSessionCount())
+				}
+			},
+		})
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, sessionID, check := tc.setup(t)
+			q := attachQueueServiceIngress(a)
+			q.Enqueue(encodeCloseSessionWire(t, sessionID))
+			require.Equal(t, 1, a.pollServiceControl())
+			check(t)
+		})
+	}
+}
+
+func TestHandleServiceCloseSession_follower(t *testing.T) {
+	const (
+		termID  int64 = 2
+		learnNs int64 = 1
+	)
+	a, q := agentWithServiceIngress(0)
+	s := seedLearnedOpen(t, a, 1, learnNs, 8)
+
+	// Phase: the frame marks the learned session closing. Nothing appends.
+	q.Enqueue(encodeCloseSessionWire(t, s.id))
+	require.Equal(t, 1, a.pollServiceControl())
+	require.Equal(t, sessionClosing, s.state)
+	require.Equal(t, clusterwire.CloseReason_SERVICE_ACTION, s.closeReason)
+	require.Equal(t, 1, a.ClosingSessionCount())
+	require.Equal(t, 0, a.OpenSessionCount())
+
+	// Phase: the any-role sweep past the session timeout keeps the mark.
+	past := learnNs + a.sessionTimeoutNs + 1
+	require.Equal(t, 0, a.egressEventWork(past))
+	require.Equal(t, sessionClosing, s.state)
+	require.Equal(t, 1, a.ClosingSessionCount())
+
+	// Phase: the committed SessionCloseEvent removes the session.
+	a.handleSessionCloseEvent(codecs.SessionCloseEventFields{
+		LeadershipTermID: termID,
+		ClusterSessionID: s.id,
+		CloseReason:      clusterwire.CloseReason_SERVICE_ACTION,
+	})
+	_, ok := a.sessions.sessionByID(s.id)
+	require.False(t, ok)
+	require.Equal(t, 0, a.ClosingSessionCount())
+	require.Equal(t, 0, a.OpenSessionCount())
+}
+
+func TestHandleServiceCloseSession_duringElection(t *testing.T) {
+	const (
+		termID   int64 = 5
+		acceptNs int64 = 1
+		nowNs    int64 = 100
+	)
+	a, _, logPub, s := openLeaderSession(t, termID, acceptNs)
+	a.SetElection(&orderRunner{})
+	q := attachQueueServiceIngress(a)
+	q.Enqueue(encodeCloseSessionWire(t, s.id))
+
+	a.DoWork(nowNs)
+	require.Equal(t, sessionClosing, s.state)
+	require.Equal(t, clusterwire.CloseReason_SERVICE_ACTION, s.closeReason)
+	require.Equal(t, 1, a.ClosingSessionCount())
+	forEachTermWire(t, logPub, 8, func(wire []byte) bool {
+		_, ok := codecs.TryDecodeSessionCloseEventAt(wire, 0)
+		require.False(t, ok)
+		return false
+	})
+}
+
 func TestSessionCloseWork_timeout(t *testing.T) {
 	const (
 		termID   int64 = 6
@@ -731,19 +1023,7 @@ func TestSessionCloseWork_timeout(t *testing.T) {
 		t, logPub, termID, s.id, past, clusterwire.CloseReason_TIMEOUT,
 	)
 
-	// CLOSED SessionEvent on egress term buffer after the OK from open.
-	off := 0
-	foundClosed := false
-	for range 8 {
-		ev, next := decodeSessionEventAtTermOffset(t, egress, off)
-		if ev.Code == clusterwire.EventCode_CLOSED {
-			require.Equal(t, []byte("TIMEOUT"), ev.Detail)
-			foundClosed = true
-			break
-		}
-		off = next
-	}
-	require.True(t, foundClosed)
+	require.Equal(t, []string{"TIMEOUT"}, closedEventDetails(t, egress))
 }
 
 func TestSessionCloseWork_closedSendBestEffort(t *testing.T) {
@@ -888,9 +1168,9 @@ type unappendableLogCase struct {
 	apply func(t *testing.T, p *LogPublisher)
 }
 
-// unappendableLogCases returns the publisher states both close paths must
-// refuse to mark. Back-pressure is excluded. A bound open publication marks and
-// retries.
+// unappendableLogCases returns the publisher states the leader-originated
+// close paths must refuse to mark. Back-pressure is excluded. A bound open
+// publication marks and retries.
 func unappendableLogCases() []unappendableLogCase {
 	return []unappendableLogCase{
 		{

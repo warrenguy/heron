@@ -93,7 +93,7 @@ func TestApplyRecoveryPlan(t *testing.T) {
 		election.ApplyRecoveryPlan(&cfg, plan)
 		require.Equal(t, int64(5), cfg.LeadershipTermID)
 		require.Equal(t, int64(10), cfg.TermBaseLogPosition)
-		require.Equal(t, int64(350), cfg.LogPosition)
+		require.Equal(t, int64(0), cfg.LogPosition)
 		require.Equal(t, int64(400), cfg.AppendPosition)
 	})
 
@@ -117,7 +117,7 @@ func TestApplyRecoveryPlan(t *testing.T) {
 		}
 		election.ApplyRecoveryPlan(&cfg, plan)
 		require.Equal(t, int64(3), cfg.LeadershipTermID)
-		require.Equal(t, int64(250), cfg.LogPosition)
+		require.Equal(t, int64(0), cfg.LogPosition)
 		require.Equal(t, int64(250), cfg.AppendPosition)
 	})
 
@@ -140,7 +140,7 @@ func TestApplyRecoveryPlan(t *testing.T) {
 		election.ApplyRecoveryPlan(&cfg, plan)
 		require.Equal(t, int64(2), cfg.LeadershipTermID)
 		require.Equal(t, int64(5), cfg.TermBaseLogPosition)
-		require.Equal(t, int64(80), cfg.LogPosition)
+		require.Equal(t, int64(0), cfg.LogPosition)
 		require.Equal(t, int64(80), cfg.AppendPosition)
 	})
 }

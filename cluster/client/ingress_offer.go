@@ -99,10 +99,10 @@ func (ac *AeronCluster) trackIngressPublicationResult(result int64) {
 // orphan BEGIN frames (see
 // github.com/warrenguy/heron/test/integration/harness.OfferWithRetry).
 //
-// MaxPositionExceeded from ingressScratch capacity rejection is a local sizing
-// guard and does not enter PENDING_CLOSE. Publication-returned MaxPositionExceeded
-// enters PENDING_CLOSE via trackIngressPublicationResult; PollEgress completes
-// Close() via pollStateChanges.
+// Header plus payload above MaxMessageLength on a concurrent ingress returns
+// UnsupportedMessageLength without an offer or state change. Publication-returned
+// MaxPositionExceeded enters PENDING_CLOSE via trackIngressPublicationResult;
+// PollEgress completes Close() via pollStateChanges.
 //
 // For paced retry, see IngressOfferUntilPositive (ingress_retry.go).
 func (ac *AeronCluster) Offer(payload []byte) int64 {
@@ -116,7 +116,7 @@ func (ac *AeronCluster) Offer(payload []byte) int64 {
 		return aeron.UnsupportedMessageLength
 	}
 	if totalLen > len(ac.ingressScratch) {
-		return aeron.MaxPositionExceeded
+		return aeron.UnsupportedMessageLength
 	}
 	fields := ac.ingressHeaderFields()
 	if _, encErr := codecs.EncodeIngressHeaderScratch(ac.ingressScratch, fields); encErr != nil {

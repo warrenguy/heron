@@ -198,6 +198,11 @@ type CancelTimerFields struct {
 	CorrelationID int64
 }
 
+// CloseSessionFields holds CloseSession body fields (SBE template id 30).
+type CloseSessionFields struct {
+	ClusterSessionID int64
+}
+
 // SessionOpenEventFields holds SessionOpenEvent body fields (SBE template id 21).
 type SessionOpenEventFields struct {
 	LeadershipTermID int64

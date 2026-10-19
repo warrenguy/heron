@@ -241,7 +241,7 @@ func requirePublicationLimitSlotMatchesCounter(
 }
 
 func requireRejectedOfferLeavesTermClean(
-	tb testing.TB,
+	tb fragmentTB,
 	pub *aeron.Publication,
 	wantStatus int64,
 	offer func() int64,
@@ -288,10 +288,7 @@ func TestPublication_Offer_payloadLengthBoundary(t *testing.T) {
 
 	require.Positive(t, pub.Offer(make([]byte, maxPayload)))
 
-	fragmentedPayload := make([]byte, maxPayload+1)
-	for i := range fragmentedPayload {
-		fragmentedPayload[i] = byte(i)
-	}
+	fragmentedPayload := patternedPayload(maxPayload + 1)
 	fragmentedPosition := pub.Offer(fragmentedPayload)
 	require.Positive(t, fragmentedPosition)
 
@@ -308,9 +305,34 @@ func TestPublication_Offer_payloadLengthBoundary(t *testing.T) {
 
 	require.Positive(t, pub.Offer(make([]byte, maxMessage)))
 
-	beforePosition := pub.Position()
-	require.Equal(t, aeron.MaxPositionExceeded, pub.Offer(make([]byte, maxMessage+1)))
-	require.Equal(t, beforePosition, pub.Position())
+	oversized := make([]byte, maxMessage+1)
+	requireRejectedOfferLeavesTermClean(t, pub, aeron.UnsupportedMessageLength, func() int64 {
+		return pub.Offer(oversized)
+	})
+}
+
+// mtuAboveMaxMessageLength lifts MaxPayloadLength (8992) above the 64 KiB
+// term's MaxMessageLength (8192). A C driver can build such a log.
+const mtuAboveMaxMessageLength int32 = 9024
+
+func patternedPayload(length int) []byte {
+	payload := make([]byte, length)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	return payload
+}
+
+func requireUnfragmentedFrame(
+	tb fragmentTB,
+	frames []aeron.FragmentedFrameForTest,
+	payload []byte,
+) {
+	tb.Helper()
+
+	require.Len(tb, frames, 1)
+	require.Equal(tb, uint8(logbuffer.Unfragmented), frames[0].Flags)
+	require.Equal(tb, payload, frames[0].Payload)
 }
 
 func TestPublication_TryClaim_payloadLengthBoundary(t *testing.T) {
@@ -577,14 +599,89 @@ func TestPublication_FragmentedOffer_statusPaths(t *testing.T) {
 		require.Equal(t, aeron.Closed, got)
 	})
 
-	t.Run("MaxMessageLength after prelude", func(t *testing.T) {
+	t.Run("over MaxMessageLength term clean", func(t *testing.T) {
 		pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), int64(1)<<40)
-		maxMessage := pub.MaxMessageLengthForTest()
-		payload := make([]byte, maxMessage+1)
-		requireRejectedOfferLeavesTermClean(t, pub, aeron.MaxPositionExceeded, func() int64 {
-			return pub.Offer(payload)
-		})
+		requireOversizedOfferLeavesTermClean(t, pub)
 	})
+
+	t.Run("oversized while BackPressured", func(t *testing.T) {
+		pub, _ := setupPublicationWithLimitReaderAtPosition(t, 500_000, 500_000)
+		requireOversizedOfferLeavesTermClean(t, pub)
+	})
+
+	t.Run("oversized on AdminAction term mismatch", func(t *testing.T) {
+		pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), 1_000_000)
+		aeron.SetPublicationActiveTermCountForTest(pub, 1)
+		aeron.SetPublicationRawTailForTest(
+			pub,
+			logbuffer.IndexByTermCount(1),
+			logbuffer.PackRawTail(aeron.TestPublicationInitialTermID, 0),
+		)
+		requireOversizedOfferLeavesTermClean(t, pub)
+	})
+
+	t.Run("oversized near max position", func(t *testing.T) {
+		pub := aeron.NewTestPublication(t, publicationLogConfigNearMaxPosition(), int64(1)<<62)
+		requireOversizedOfferLeavesTermClean(t, pub)
+	})
+}
+
+func requireOversizedOfferLeavesTermClean(tb testing.TB, pub *aeron.Publication) {
+	tb.Helper()
+	require.Greater(tb, pub.MaxMessageLength(), pub.MaxPayloadLength())
+
+	payload := make([]byte, pub.MaxMessageLength()+1)
+	requireRejectedOfferLeavesTermClean(tb, pub, aeron.UnsupportedMessageLength, func() int64 {
+		return pub.Offer(payload)
+	})
+}
+
+type offerLimitPublication interface {
+	Offer(buffer []byte) int64
+	MaxPayloadLength() int
+	MaxMessageLength() int
+}
+
+// requireOfferLimitAtMaxPayloadLength asserts the offer limit on a log whose
+// MaxPayloadLength exceeds MaxMessageLength. A length up to MaxPayloadLength
+// goes out in one frame. One byte more returns UnsupportedMessageLength.
+func requireOfferLimitAtMaxPayloadLength(
+	tb fragmentTB,
+	pub offerLimitPublication,
+	readFrames func(position int64, length int) []aeron.FragmentedFrameForTest,
+	requireRejected func(wantStatus int64, offer func() int64),
+) {
+	tb.Helper()
+	require.Greater(tb, pub.MaxPayloadLength(), pub.MaxMessageLength())
+
+	for _, length := range []int{pub.MaxMessageLength() + 1, pub.MaxPayloadLength()} {
+		payload := patternedPayload(length)
+		position := pub.Offer(payload)
+		require.Positive(tb, position, "length=%d", length)
+		requireUnfragmentedFrame(tb, readFrames(position, length), payload)
+	}
+
+	payload := make([]byte, pub.MaxPayloadLength()+1)
+	requireRejected(aeron.UnsupportedMessageLength, func() int64 {
+		return pub.Offer(payload)
+	})
+}
+
+func TestPublication_Offer_mtuAboveMaxMessageLength(t *testing.T) {
+	cfg := aeron.DefaultTestPublicationLogConfig()
+	cfg.MTULength = mtuAboveMaxMessageLength
+	pub := aeron.NewTestPublication(t, cfg, int64(1)<<40)
+
+	requireOfferLimitAtMaxPayloadLength(
+		t,
+		pub,
+		func(position int64, length int) []aeron.FragmentedFrameForTest {
+			return readFragmentedFramesAtPosition(t, pub, position, length, pub.MaxPayloadLength())
+		},
+		func(wantStatus int64, offer func() int64) {
+			requireRejectedOfferLeavesTermClean(t, pub, wantStatus, offer)
+		},
+	)
 }
 
 func TestPublication_MaxPositionExceeded_fragmented(t *testing.T) {

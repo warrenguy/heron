@@ -47,10 +47,8 @@ type Publication struct {
 	activeTermCount *int32
 	tailCounters    [logbuffer.PartitionCount]*int64
 
-	initialTermID    int32
-	maxPayloadLength int
-	// Upper bound for Offer payload length; payloads above maxPayloadLength
-	// fragment until this limit, then return MaxPositionExceeded.
+	initialTermID         int32
+	maxPayloadLength      int
 	maxMessageLength      int
 	maxPossiblePosition   int64
 	headerWriter          logbuffer.HeaderWriter
@@ -108,8 +106,8 @@ func (pub *Publication) MaxPayloadLength() int {
 	return pub.maxPayloadLength
 }
 
-// MaxMessageLength returns the largest total message length Offer will accept
-// before returning MaxPositionExceeded (fragmented payloads may span multiple frames).
+// MaxMessageLength returns the largest message Offer fragments. Offer returns
+// UnsupportedMessageLength for a longer message that does not fit one frame.
 func (pub *Publication) MaxMessageLength() int {
 	return pub.maxMessageLength
 }
@@ -131,10 +129,7 @@ func (pub *Publication) Offer(buffer []byte) int64 {
 // length <= maxPayloadLength uses a single DATA frame; larger payloads up to
 // maxMessageLength split across BEGIN/middle/END fragments (ConcurrentPublication.offer).
 //
-// Oversized payloads run the shared prelude first. When position < limit,
-// length > maxMessageLength returns MaxPositionExceeded (-5).
-//
-// Prelude may return other negative codes (e.g. BackPressured) before that check.
+// Any other length returns UnsupportedMessageLength without a limit read.
 //
 // See also PositionCodeName, IsOfferRetriable.
 func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64 {
@@ -152,6 +147,9 @@ func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64
 	}
 
 	if length > pub.maxPayloadLength {
+		if length > pub.maxMessageLength {
+			return UnsupportedMessageLength
+		}
 		return pub.appendFragmentedMessage(buffer, offset, length)
 	}
 
@@ -638,11 +636,6 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 	termIndex, tailOffset, status := pub.runOfferPrelude(framedLength, length)
 	if status != 0 {
 		return status
-	}
-	// The length check follows the prelude and precedes the FAA. An oversized
-	// message reserves nothing.
-	if length > pub.maxMessageLength {
-		return MaxPositionExceeded
 	}
 
 	partitionMu := &pub.fragmentedPartitionMu[termIndex]
