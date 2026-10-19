@@ -32,6 +32,21 @@ type Publication struct {
 	termBufferLength    int
 	positionBitsToShift int
 
+	// activeTermCount and tailCounters address fields in meta. The constructor
+	// takes them through bounds-checked Int32Pointer and Int64Pointer calls,
+	// so the offer path loads through them with no bounds check.
+	//
+	// The offer path reads activeTermCount with a sync/atomic load and no
+	// AcquireFence, like Java getIntVolatile. The fence is not needed:
+	//   - The limit read before it, publicationLimit.Get, is a load-acquire,
+	//     so it stays ordered before the term count load.
+	//   - The term count load is a load-acquire too, so it stays ordered
+	//     before the tail load and the FAA.
+	//
+	// A load-acquire is MOVL on amd64 and an inlined LDARW on arm64.
+	activeTermCount *int32
+	tailCounters    [logbuffer.PartitionCount]*int64
+
 	initialTermID    int32
 	maxPayloadLength int
 	// Upper bound for Offer payload length; payloads above maxPayloadLength
@@ -123,15 +138,85 @@ func (pub *Publication) Offer(buffer []byte) int64 {
 //
 // See also PositionCodeName, IsOfferRetriable.
 func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64 {
+	// The unfragmented success path stays in this one function and calls no
+	// helper. reserveFrame states the read order. The tail read and the FAA
+	// must stay in one function.
 	if pub.IsClosed() {
 		return Closed
 	}
-	validateOfferSliceBounds(offset, length, len(buffer))
-	// Prelude runs inside each append path (same layout as reserveFrame).
-	if length <= pub.maxPayloadLength {
-		return pub.reserveAndAppend(buffer, offset, length)
+
+	// The unsigned compares reject negative values too. The panic stays in this
+	// function, so the compiler can drop the payload slice checks below.
+	if uint(offset) > uint(len(buffer)) || uint(length) > uint(len(buffer[offset:])) {
+		panic(invalidOfferSliceMessage(offset, length, len(buffer)))
 	}
-	return pub.appendFragmentedMessage(buffer, offset, length)
+
+	if length > pub.maxPayloadLength {
+		return pub.appendFragmentedMessage(buffer, offset, length)
+	}
+
+	limit := pub.publicationLimit.Get()
+
+	alignedLength := logbuffer.AlignFragmentChunkLength(length)
+	termLength := pub.termBufferLength
+
+	termCount := atomic.LoadInt32(pub.activeTermCount)
+	termIndex := logbuffer.IndexByTermCount(termCount)
+	tailCounter := pub.tailCounters[termIndex]
+
+	rawTail := atomic.LoadInt64(tailCounter)
+	termID := logbuffer.TermID(rawTail)
+	termOffset := int(logbuffer.TermOffset(rawTail, termLength))
+
+	if termCount != logbuffer.ComputeTermCount(termID, pub.initialTermID) {
+		return AdminAction
+	}
+
+	position := logbuffer.ComputePosition(
+		termID,
+		termOffset,
+		pub.positionBitsToShift,
+		pub.initialTermID,
+	)
+	if position >= limit {
+		return backPressureStatus(pub, position, int64(length))
+	}
+	if position+int64(alignedLength) >= pub.maxPossiblePosition {
+		return MaxPositionExceeded
+	}
+
+	rawTail = atomic.AddInt64(tailCounter, int64(alignedLength)) - int64(alignedLength)
+	termID = logbuffer.TermID(rawTail)
+	termOffset = int(logbuffer.TermOffset(rawTail, termLength))
+
+	resultingOffset := termOffset + alignedLength
+	position = logbuffer.ComputePosition(
+		termID,
+		resultingOffset,
+		pub.positionBitsToShift,
+		pub.initialTermID,
+	)
+	if resultingOffset > termLength {
+		return pub.handleEndOfLog(
+			pub.termBuffers[termIndex],
+			termLength,
+			termID,
+			termOffset,
+			position,
+		)
+	}
+
+	// One slice check covers every header and payload store below.
+	termBuf := pub.termBuffers[termIndex].Bytes()
+	payload := buffer[offset:][:length]
+	frame := termBuf[termOffset : termOffset+logbuffer.DataHeaderLength+len(payload)]
+
+	frameLength := dataFrameLength(length)
+	pub.headerWriter.WriteHeader(frame, termOffset, frameLength, termID)
+	copy(frame[logbuffer.DataHeaderLength:], payload)
+	atomicbuffer.Wrap(frame).PutInt32Release(logbuffer.OffsetFrameLength, frameLength)
+
+	return position
 }
 
 // TryClaim reserves aligned space for an unfragmented message.
@@ -303,24 +388,25 @@ func (pub *Publication) markClosed() error {
 	return nil
 }
 
-func validateOfferSliceBounds(offset, length, bufferLength int) {
+// invalidOfferSliceMessage returns the panic message for the first invalid
+// offer argument. OfferWithOffset calls it only after its bounds compare
+// fails, so one of the checks below always holds.
+func invalidOfferSliceMessage(offset, length, bufferLength int) string {
 	if length < 0 {
-		panic(fmt.Sprintf("aeron: invalid message length=%d", length))
+		return fmt.Sprintf("aeron: invalid message length=%d", length)
 	}
 	if offset < 0 {
-		panic(fmt.Sprintf("aeron: invalid offer offset=%d", offset))
+		return fmt.Sprintf("aeron: invalid offer offset=%d", offset)
 	}
 	if offset > bufferLength {
-		panic(fmt.Sprintf("aeron: invalid offer offset=%d buffer=%d", offset, bufferLength))
+		return fmt.Sprintf("aeron: invalid offer offset=%d buffer=%d", offset, bufferLength)
 	}
-	if length > bufferLength-offset {
-		panic(fmt.Sprintf(
-			"aeron: invalid offer offset=%d length=%d buffer=%d",
-			offset,
-			length,
-			bufferLength,
-		))
-	}
+	return fmt.Sprintf(
+		"aeron: invalid offer offset=%d length=%d buffer=%d",
+		offset,
+		length,
+		bufferLength,
+	)
 }
 
 func validateTermIndex(termIndex int) error {
@@ -474,16 +560,18 @@ func (pub *Publication) reserveFragmentedSpan(
 // frame header at termOffset. The caller fills the payload and commits the
 // frame length.
 //
-// Volatile read order: limit, ActiveTermCount, partition raw tail, as in Java
-// ConcurrentPublication. No yield between the tail read and GetAndAddInt64. A
+// Volatile read order: limit, active term count, partition raw tail, as in
+// Java ConcurrentPublication. No yield between the tail read and the FAA. A
 // rotation between them reserves on the wrong partition.
 //
 // Each reservation ends as DATA or PAD at termOffset. Callers retry on
 // AdminAction.
 //
 // The prelude repeats the runOfferPrelude checks inline. The tail read and the
-// FAA must stay in one function. A split adds non-inlinable calls to the
-// unfragmented hot path.
+// FAA must stay in one function.
+//
+// TryClaim calls reserveFrame. OfferWithOffset repeats the same steps inline,
+// so its success path calls no helper. A change to one must change the other.
 func (pub *Publication) reserveFrame(messageLength int) (
 	termIndex int,
 	termOffset int,
@@ -495,11 +583,11 @@ func (pub *Publication) reserveFrame(messageLength int) (
 	alignedLength := logbuffer.AlignFragmentChunkLength(messageLength)
 	termLength := pub.termBufferLength
 
-	termCount := logbuffer.ActiveTermCount(pub.meta)
+	termCount := atomic.LoadInt32(pub.activeTermCount)
 	termIndex = logbuffer.IndexByTermCount(termCount)
-	tailOffset := logbuffer.OffsetTermTailCounter(termIndex)
+	tailCounter := pub.tailCounters[termIndex]
 
-	rawTail := pub.meta.GetInt64Volatile(tailOffset)
+	rawTail := atomic.LoadInt64(tailCounter)
 	termID := logbuffer.TermID(rawTail)
 	termOffset = int(logbuffer.TermOffset(rawTail, termLength))
 
@@ -520,7 +608,7 @@ func (pub *Publication) reserveFrame(messageLength int) (
 		return 0, 0, 0, MaxPositionExceeded
 	}
 
-	rawTail = pub.meta.GetAndAddInt64(tailOffset, int64(alignedLength))
+	rawTail = atomic.AddInt64(tailCounter, int64(alignedLength)) - int64(alignedLength)
 	termID = logbuffer.TermID(rawTail)
 	termOffset = int(logbuffer.TermOffset(rawTail, termLength))
 
@@ -630,21 +718,6 @@ func (pub *Publication) commitTermPadding(
 	paddingLength int32,
 ) {
 	commitPublicationTermPadding(pub.headerWriter, termBuf, termID, fromOffset, paddingLength)
-}
-
-func (pub *Publication) reserveAndAppend(buffer []byte, srcOffset, length int) int64 {
-	termIndex, termOffset, position, status := pub.reserveFrame(length)
-	if status != 0 {
-		return status
-	}
-
-	termBuf := pub.termBuffers[termIndex]
-	termBuf.PutBytes(
-		termOffset+logbuffer.OffsetFramePayload,
-		buffer[srcOffset:srcOffset+length],
-	)
-	logbuffer.PutFrameLengthOrdered(termBuf, termOffset, dataFrameLength(length))
-	return position
 }
 
 func (pub *Publication) handleEndOfLog(

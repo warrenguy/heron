@@ -531,6 +531,13 @@ func RotateExclusivePublicationForTest(ep *ExclusivePublication) {
 	ep.rotateTerm()
 }
 
+func (ep *ExclusivePublication) RotateAtTermEndForTest(
+	startOffset int,
+	reservedPosition int64,
+) int64 {
+	return ep.rotateAtTermEnd(startOffset, reservedPosition)
+}
+
 func (ep *ExclusivePublication) HandleEndOfLogForTest(
 	termBuf atomicbuffer.AtomicBuffer,
 	termLength int,

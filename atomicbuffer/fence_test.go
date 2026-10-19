@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,58 +22,127 @@ const (
 	dmbISH = "d5033bbf"
 	// retARM64 is the hex encoding of the arm64 RET.
 	retARM64 = "d65f03c0"
-	// retAMD64 is the hex encoding of the amd64 RET.
-	retAMD64 = "c3"
 )
 
-// objdumpEncoding captures the hex encoding column of one go tool objdump
-// instruction line. Alignment padding prints a ? mnemonic and does not match.
-var objdumpEncoding = regexp.MustCompile(`(?m)^\s+\S+:\d+\t0x[0-9a-f]+\t+([0-9a-f]+)\t+[A-Z]`)
-
-// buildProbe cross-builds testdata/fenceprobe for goarch and returns the go
-// tool and the binary path.
-func buildProbe(t *testing.T, goarch string, race bool) (goTool, probe string) {
+// buildProbe cross-builds testdata/fenceprobe for linux and goarch and
+// returns the binary path. A race build needs cgo.
+func buildProbe(t *testing.T, goarch string, race bool) string {
 	t.Helper()
-	goTool, err := exec.LookPath("go")
-	require.NoError(t, err)
-
-	probe = filepath.Join(t.TempDir(), "fenceprobe")
+	probe := filepath.Join(t.TempDir(), "fenceprobe")
 	args := []string{"build", "-o", probe}
 	if race {
 		args = append(args, "-race")
 	}
-	build := exec.Command(goTool, append(args, "./testdata/fenceprobe")...)
-	build.Env = append(os.Environ(),
-		"GOOS=linux",
-		"GOARCH="+goarch,
-		"GOFLAGS=",
-	)
+
+	build := exec.Command("go", append(args, "./testdata/fenceprobe")...)
+	build.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+goarch, "GOFLAGS=")
 	if !race {
 		build.Env = append(build.Env, "CGO_ENABLED=0")
 	}
+
 	out, err := build.CombinedOutput()
 	require.NoError(t, err, string(out))
-	return goTool, probe
+	return probe
 }
 
-// symbolEncodings returns the instruction encodings of one assembly symbol in
-// probe, in order.
-func symbolEncodings(t *testing.T, goTool, probe, symbol string) []string {
+// instruction is one objdump instruction line: the file:line the compiler
+// gives it, its hex encoding, and its assembler text.
+type instruction struct {
+	source   string
+	encoding string
+	text     string
+}
+
+// objdumpSymbol returns the instructions of the symbol named exactly symbol
+// in probe, without NOP or alignment padding.
+func objdumpSymbol(t *testing.T, probe, symbol string) []instruction {
 	t.Helper()
-	objdump := exec.Command(goTool, "tool", "objdump", "-s", "^"+symbol+`\.abi0$`, probe)
-	out, err := objdump.CombinedOutput()
+	pattern := "^" + regexp.QuoteMeta(symbol) + "$"
+	out, err := exec.Command("go", "tool", "objdump", "-s", pattern, probe).CombinedOutput()
 	require.NoError(t, err, string(out))
 
-	var encodings []string
-	for _, match := range objdumpEncoding.FindAllStringSubmatch(string(out), -1) {
-		encodings = append(encodings, match[1])
+	var instructions []instruction
+	for line := range strings.SplitSeq(string(out), "\n") {
+		fields := strings.FieldsFunc(line, func(r rune) bool { return r == '\t' })
+		if len(fields) < 4 {
+			continue
+		}
+
+		text := strings.TrimSpace(fields[3])
+		if text == "?" || strings.HasPrefix(text, "NO") {
+			continue
+		}
+
+		instructions = append(instructions, instruction{
+			source:   strings.TrimSpace(fields[0]),
+			encoding: strings.TrimSpace(fields[2]),
+			text:     text,
+		})
 	}
-	return encodings
+
+	require.NotEmpty(t, instructions, symbol)
+	return instructions
+}
+
+// callTargets returns the target of every CALL in instructions.
+func callTargets(instructions []instruction) []string {
+	var targets []string
+	for _, instruction := range instructions {
+		if target, ok := strings.CutPrefix(instruction.text, "CALL "); ok {
+			targets = append(targets, strings.TrimSuffix(target, "(SB)"))
+		}
+	}
+	return targets
+}
+
+// fenceLoad matches the amd64 ReleaseFence load.
+var fenceLoad = regexp.MustCompile(`^MOVL \S+/atomicbuffer\.fenceWord\(SB\), `)
+
+// memoryStore matches a store of a register to memory.
+var memoryStore = regexp.MustCompile(`^MOV[LQ] [A-Z][A-Z0-9]*, [^(]*\(`)
+
+// requireReleaseStore asserts that instructions hold one release store with
+// its fence:
+//   - amd64: a plain store from release_amd64.go directly after a fenceWord
+//     load. A store fence also has a fenceWord load directly after it.
+//   - arm64: one STLR or STLRW. A store fence is an STLR whose next memory
+//     access is an LDARW.
+func requireReleaseStore(t *testing.T, goarch string, instructions []instruction, storeFence bool) {
+	t.Helper()
+	var stores []int
+	for i, instruction := range instructions {
+		isAMD64Store := strings.HasPrefix(instruction.source, "release_amd64.go:") &&
+			memoryStore.MatchString(instruction.text) &&
+			!strings.Contains(instruction.text, "(SP)")
+		isARM64Store := strings.HasPrefix(instruction.text, "STLR")
+		if (goarch == "amd64" && isAMD64Store) || (goarch == "arm64" && isARM64Store) {
+			stores = append(stores, i)
+		}
+	}
+
+	require.Len(t, stores, 1, "release stores")
+	store := stores[0]
+	if goarch == "amd64" {
+		require.Regexp(t, fenceLoad, instructions[store-1].text, "fence before the store")
+		if storeFence {
+			require.Regexp(t, fenceLoad, instructions[store+1].text, "fence after the store")
+		}
+		return
+	}
+
+	if storeFence {
+		next := store + 1
+		for next < len(instructions)-1 && !strings.Contains(instructions[next].text, "(R") {
+			next++
+		}
+
+		require.True(t, strings.HasPrefix(instructions[next].text, "LDARW "), instructions[next].text)
+	}
 }
 
 func TestFenceARM64Barrier(t *testing.T) {
 	t.Parallel()
-	goTool, probe := buildProbe(t, "arm64", false)
+	probe := buildProbe(t, "arm64", false)
 
 	tests := []struct {
 		name   string
@@ -84,34 +154,69 @@ func TestFenceARM64Barrier(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, symbolEncodings(t, goTool, probe, tt.symbol))
+			var encodings []string
+			for _, instruction := range objdumpSymbol(t, probe, tt.symbol+".abi0") {
+				encodings = append(encodings, instruction.encoding)
+			}
+
+			require.Equal(t, tt.want, encodings)
 		})
 	}
 }
 
-func TestReleaseAMD64Codegen(t *testing.T) {
+// TestReleaseStoreCodegen asserts that each release store inlines into its
+// probe wrapper with the fence the ordering argument needs. See
+// requireReleaseStore.
+//
+// Race builds keep sync/atomic stores so the race detector sees them.
+func TestReleaseStoreCodegen(t *testing.T) {
 	t.Parallel()
-	goTool, probe := buildProbe(t, "amd64", false)
 
-	tests := []struct {
-		name   string
-		symbol string
-		want   []string
+	const atomicbufferPrefix = "github.com/warrenguy/heron/atomicbuffer."
+	wrappers := []struct {
+		symbol     string
+		storeFence bool
+
+		// raceSymbol is the primitive behind the wrapper. raceStore is the
+		// sync/atomic store it calls in a race build.
+		raceSymbol string
+		raceStore  string
 	}{
 		{
-			name:   "PutInt32Release",
-			symbol: "atomicbuffer_storeRelease32",
-			want:   []string{"488b442408", "8b5c2410", "8918", retAMD64},
+			symbol:     "main.putInt32Release",
+			raceSymbol: atomicbufferPrefix + "AtomicBuffer.PutInt32Release",
+			raceStore:  "sync/atomic.StoreInt32",
 		},
 		{
-			name:   "PutInt64Release",
-			symbol: "atomicbuffer_storeRelease64",
-			want:   []string{"488b442408", "488b5c2410", "488918", retAMD64},
+			symbol:     "main.putInt64Release",
+			raceSymbol: atomicbufferPrefix + "AtomicBuffer.PutInt64Release",
+			raceStore:  "sync/atomic.StoreInt64",
+		},
+		{
+			symbol:     "main.storeInt64Release",
+			raceSymbol: atomicbufferPrefix + "StoreInt64Release",
+			raceStore:  "sync/atomic.StoreInt64",
+		},
+		{
+			symbol:     "main.putInt64ReleaseStoreFenceAt",
+			storeFence: true,
+			raceSymbol: atomicbufferPrefix + "AtomicBuffer.PutInt64ReleaseStoreFenceAt",
+			raceStore:  "sync/atomic.StoreInt64",
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, symbolEncodings(t, goTool, probe, tt.symbol))
+
+	for _, goarch := range []string{"amd64", "arm64"} {
+		t.Run(goarch, func(t *testing.T) {
+			probe := buildProbe(t, goarch, false)
+			for _, wrapper := range wrappers {
+				instructions := objdumpSymbol(t, probe, wrapper.symbol)
+				requireReleaseStore(t, goarch, instructions, wrapper.storeFence)
+
+				for _, target := range callTargets(instructions) {
+					isRuntime := strings.HasPrefix(target, "runtime.")
+					require.True(t, isRuntime, "%s calls %s", wrapper.symbol, target)
+				}
+			}
 		})
 	}
 
@@ -119,21 +224,30 @@ func TestReleaseAMD64Codegen(t *testing.T) {
 		if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 			t.Skip("race probe: host is not linux/amd64")
 		}
-		cgo, err := exec.Command(goTool, "env", "CGO_ENABLED").Output()
+
+		cgo, err := exec.Command("go", "env", "CGO_ENABLED").Output()
 		require.NoError(t, err)
 		if strings.TrimSpace(string(cgo)) != "1" {
 			t.Skip("race probe: cgo disabled")
 		}
-		cc, err := exec.Command(goTool, "env", "CC").Output()
+
+		cc, err := exec.Command("go", "env", "CC").Output()
 		require.NoError(t, err)
 		if _, err := exec.LookPath(strings.TrimSpace(string(cc))); err != nil {
 			t.Skip("race probe: no C compiler")
 		}
 
-		goTool, raceProbe := buildProbe(t, "amd64", true)
-		objdump := exec.Command(goTool, "tool", "objdump", "-s", "^atomicbuffer_", raceProbe)
-		out, err := objdump.CombinedOutput()
-		require.NoError(t, err, string(out))
-		require.Empty(t, string(out))
+		probe := buildProbe(t, "amd64", true)
+		for _, wrapper := range wrappers {
+			// The primitive may inline into the wrapper. Otherwise the
+			// wrapper calls it.
+			targets := callTargets(objdumpSymbol(t, probe, wrapper.symbol))
+			if !slices.Contains(targets, wrapper.raceStore) {
+				require.Contains(t, targets, wrapper.raceSymbol, wrapper.symbol)
+				targets = callTargets(objdumpSymbol(t, probe, wrapper.raceSymbol))
+			}
+
+			require.Contains(t, targets, wrapper.raceStore, wrapper.symbol)
+		}
 	})
 }

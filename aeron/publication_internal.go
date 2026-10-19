@@ -100,6 +100,13 @@ func newPublicationFromReady(
 	}
 	pub.termBuffers = termBuffers
 
+	// Int32Pointer and Int64Pointer check the bounds once. The offer path then
+	// loads through the pointers with no bounds check.
+	pub.activeTermCount = meta.Int32Pointer(logbuffer.OffsetActiveTermCount)
+	for partition := range pub.tailCounters {
+		pub.tailCounters[partition] = meta.Int64Pointer(logbuffer.OffsetTermTailCounter(partition))
+	}
+
 	pub.headerWriter = logbuffer.NewHeaderWriter(
 		logbuffer.DefaultFrameHeaderBuffer(meta),
 		ready.SessionID,

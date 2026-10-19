@@ -2,6 +2,8 @@ package aeron_test
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"sync"
 	"testing"
 
@@ -151,6 +153,39 @@ func TestExclusivePublication_Offer_SingleFrame(t *testing.T) {
 	payloadEnd := logbuffer.OffsetFramePayload + len(payload)
 	gotPayload := termBuf.Bytes()[logbuffer.OffsetFramePayload:payloadEnd]
 	require.Equal(t, payload, gotPayload)
+}
+
+func TestExclusivePublication_Offer_headerFields(t *testing.T) {
+	ep := aeron.NewTestExclusivePublication(
+		t,
+		aeron.DefaultTestExclusivePublicationLogConfig(),
+		1_000_000,
+	)
+
+	payload := []byte{0x01, 0x02, 0x03, 0x04}
+	frameLength := int32(len(payload) + logbuffer.DataHeaderLength)
+	alignedLength := logbuffer.AlignFrameLength(int(frameLength))
+	require.Equal(t, int64(alignedLength), ep.Offer(payload))
+	require.Equal(t, int64(2*alignedLength), ep.Offer(payload))
+
+	termIndex, termBuf := aeron.ExclusivePublicationActiveTermBufferForTest(ep)
+	rawTail, err := logbuffer.GetRawTail(ep.MetaDataBufferForTest(), termIndex)
+	require.NoError(t, err)
+	wantTermID := logbuffer.TermID(rawTail)
+
+	for _, frameOffset := range []int{0, alignedLength} {
+		t.Run(fmt.Sprintf("frameOffset=%d", frameOffset), func(t *testing.T) {
+			require.Equal(t, frameLength, logbuffer.FrameLengthVolatile(termBuf, frameOffset))
+			wantVersion := int8(logbuffer.FrameHeaderVersion)
+			require.Equal(t, wantVersion, logbuffer.FrameVersion(termBuf, frameOffset))
+			require.Equal(t, uint8(logbuffer.Unfragmented), logbuffer.FrameFlags(termBuf, frameOffset))
+			require.Equal(t, int16(logbuffer.HdrTypeData), logbuffer.FrameType(termBuf, frameOffset))
+			require.Equal(t, int32(frameOffset), logbuffer.FrameTermOffset(termBuf, frameOffset))
+			require.Equal(t, ep.SessionID(), logbuffer.FrameSessionID(termBuf, frameOffset))
+			require.Equal(t, ep.StreamID(), logbuffer.FrameStreamID(termBuf, frameOffset))
+			require.Equal(t, wantTermID, logbuffer.FrameTermID(termBuf, frameOffset))
+		})
+	}
 }
 
 func TestExclusivePublication_LimitCounter(t *testing.T) {
@@ -571,6 +606,14 @@ func TestExclusivePublication_OfferWithOffset_invalidBounds(t *testing.T) {
 		{"offset past buffer", 4, 1, "aeron: invalid offer offset=4 buffer=3"},
 		{"length past buffer", 0, 4, "aeron: invalid offer offset=0 length=4 buffer=3"},
 		{"negative length", 0, -1, "aeron: invalid message length=-1"},
+		{"negative offset and length", -1, -1, "aeron: invalid message length=-1"},
+		{"length past buffer at end", 3, 1, "aeron: invalid offer offset=3 length=1 buffer=3"},
+		{
+			"length wraps past buffer",
+			1,
+			math.MaxInt,
+			fmt.Sprintf("aeron: invalid offer offset=1 length=%d buffer=3", math.MaxInt),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -579,6 +622,13 @@ func TestExclusivePublication_OfferWithOffset_invalidBounds(t *testing.T) {
 			})
 		})
 	}
+
+	// An empty payload at the buffer end is in bounds. It commits a
+	// header-only frame.
+	require.Equal(t, int64(logbuffer.DataHeaderLength), ep.OfferWithOffset(buf, len(buf), 0))
+
+	_, termBuf := aeron.ExclusivePublicationActiveTermBufferForTest(ep)
+	require.Equal(t, int32(logbuffer.DataHeaderLength), logbuffer.FrameLengthVolatile(termBuf, 0))
 }
 
 func TestExclusivePublication_TryClaim_closedBeforeValidation(t *testing.T) {

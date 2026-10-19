@@ -3,6 +3,7 @@ package cnc
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/warrenguy/heron/atomicbuffer"
 )
@@ -81,10 +82,14 @@ type CountersReader struct {
 // Bind after validating the counter is active for the session.
 //
 // Get reads the value on hot paths without per-op counter ID validation.
+// NewCounterSlot checks the slot bounds once. Get then loads through the
+// cached address with no bounds check.
 type CounterSlot struct {
-	counterID    int32
-	valuesOffset int
-	values       atomicbuffer.AtomicBuffer
+	counterID int32
+
+	// value is the address of the counter value. NewCounterSlot proves it
+	// lies inside the values buffer.
+	value *int64
 }
 
 func NewCounterSlot(counterID int32, values atomicbuffer.AtomicBuffer) CounterSlot {
@@ -99,14 +104,15 @@ func NewCounterSlot(counterID int32, values atomicbuffer.AtomicBuffer) CounterSl
 		))
 	}
 	return CounterSlot{
-		counterID:    counterID,
-		valuesOffset: offset,
-		values:       values,
+		counterID: counterID,
+		value:     values.Int64Pointer(offset),
 	}
 }
 
+// Get loads the counter value with acquire order. The zero CounterSlot panics
+// with a nil pointer dereference.
 func (slot *CounterSlot) Get() int64 {
-	return slot.values.VolatileInt64At(slot.valuesOffset)
+	return atomic.LoadInt64(slot.value)
 }
 
 func (slot *CounterSlot) CounterID() int32 {
