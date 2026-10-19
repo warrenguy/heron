@@ -21,8 +21,8 @@ type Header struct {
 	context             any
 	// fragmentedFrameLen: headerFragmentedFrameNotSet (-1) uses FrameLength for
 	// term occupancy; non-negative overrides termOccupancyLength for a reassembled
-	// fragmented message (set by ConfigureCompletedFragment, cleared in
-	// invokeFragmentHandler before each delivered DATA FragmentHandler call).
+	// fragmented message (set by ConfigureCompletedFragment, cleared by
+	// ResetPollFragmentState).
 	fragmentedFrameLen int32
 }
 
@@ -106,6 +106,13 @@ func (header *Header) ImageFields() HeaderImageFields {
 // it for poll parity.
 func (header *Header) ResetPollFragmentState() {
 	header.fragmentedFrameLen = headerFragmentedFrameNotSet
+}
+
+// resetCompletedFragment returns a reassembly header to idle. It drops the
+// Image so an idle builder does not keep it reachable.
+func (header *Header) resetCompletedFragment() {
+	header.ResetPollFragmentState()
+	header.context = nil
 }
 
 // ConfigureCompletedFragment configures a dedicated reassembly header for a

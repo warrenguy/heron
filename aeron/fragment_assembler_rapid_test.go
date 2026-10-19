@@ -99,11 +99,11 @@ func drawFragmentAssemblerPayload(rt *rapid.T) []byte {
 }
 
 func drawFragmentAssemblerPayloadMin(rt *rapid.T, minLen int) []byte {
-	return rapid.SliceOfN(
-		rapid.Byte(),
-		minLen,
-		fragmentAssemblerRapidMaxPayload,
-	).Draw(rt, "payload")
+	return drawFragmentAssemblerPayloadRange(rt, minLen, fragmentAssemblerRapidMaxPayload)
+}
+
+func drawFragmentAssemblerPayloadRange(rt *rapid.T, minLen, maxLen int) []byte {
+	return rapid.SliceOfN(rapid.Byte(), minLen, maxLen).Draw(rt, "payload")
 }
 
 func drawFragmentAssemblerChunkCount(rt *rapid.T, payload []byte, minChunks, maxChunksCap int) int {
@@ -150,24 +150,4 @@ func splitPayloadIntoChunks(payload []byte, chunkCount int) [][]byte {
 	}
 	chunks[chunkCount-1] = slices.Clone(payload[start:])
 	return chunks
-}
-
-func fragmentedSpecsFromChunks(chunks [][]byte) []FragmentedFrameForTest {
-	specs := make([]FragmentedFrameForTest, len(chunks))
-	if len(chunks) == 1 {
-		specs[0] = FragmentedFrameForTest{Flags: logbuffer.Unfragmented, Payload: chunks[0]}
-		return specs
-	}
-
-	for i, chunk := range chunks {
-		var flags uint8
-		switch {
-		case i == 0:
-			flags = logbuffer.BeginFlag
-		case i == len(chunks)-1:
-			flags = logbuffer.EndFlag
-		}
-		specs[i] = FragmentedFrameForTest{Flags: flags, Payload: chunk}
-	}
-	return specs
 }

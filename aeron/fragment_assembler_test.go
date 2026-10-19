@@ -71,6 +71,96 @@ func setupFragmentAssembler(
 	return capture, assembler, termBuffer, offsets
 }
 
+func fragmentedSpecsFromChunks(chunks [][]byte) []FragmentedFrameForTest {
+	specs := make([]FragmentedFrameForTest, len(chunks))
+	if len(chunks) == 1 {
+		specs[0] = FragmentedFrameForTest{Flags: logbuffer.Unfragmented, Payload: chunks[0]}
+		return specs
+	}
+
+	for i, chunk := range chunks {
+		var flags uint8
+		switch {
+		case i == 0:
+			flags = logbuffer.BeginFlag
+		case i == len(chunks)-1:
+			flags = logbuffer.EndFlag
+		}
+		specs[i] = FragmentedFrameForTest{Flags: flags, Payload: chunk}
+	}
+	return specs
+}
+
+func patternedPayloadForTest(length, seed int) []byte {
+	payload := make([]byte, length)
+	for i := range payload {
+		payload[i] = byte((i + seed) % 251)
+	}
+	return payload
+}
+
+// requireFragmentBuilderReset asserts the session keeps an idle builder for
+// the next BEGIN.
+func requireFragmentBuilderReset(
+	t fragmentTestHelper,
+	builders map[int32]*fragmentBufferBuilder,
+	sessionID int32,
+) *fragmentBufferBuilder {
+	t.Helper()
+
+	builder := builders[sessionID]
+	require.NotNil(t, builder)
+	require.Zero(t, builder.limit)
+	require.Equal(t, fragmentBuilderIdleNextTermOffset, builder.nextTermOffset)
+	require.Zero(t, builder.firstFrameLength)
+	require.Nil(t, builder.completedHeader.context)
+	require.Equal(t, headerFragmentedFrameNotSet, builder.completedHeader.fragmentedFrameLen)
+	return builder
+}
+
+// fragmentBuilderReuse tracks one session's builder across messages.
+type fragmentBuilderReuse struct {
+	builder  *fragmentBufferBuilder
+	capacity int
+	backing  uintptr
+}
+
+// requireReused asserts the session kept the same idle builder after a
+// message of payloadLen bytes. A message that fits reuses the backing array.
+// A longer one grows it.
+func (reuse *fragmentBuilderReuse) requireReused(
+	t fragmentTestHelper,
+	builders map[int32]*fragmentBufferBuilder,
+	sessionID int32,
+	payloadLen int,
+) {
+	t.Helper()
+
+	builder := requireFragmentBuilderReset(t, builders, sessionID)
+	if reuse.builder != nil {
+		require.Same(t, reuse.builder, builder)
+	}
+	require.GreaterOrEqual(t, cap(builder.payload), payloadLen)
+	if payloadLen <= reuse.capacity {
+		require.Equal(t, reuse.capacity, cap(builder.payload))
+		require.Equal(t, reuse.backing, sliceDataPtr(builder.payload))
+	} else {
+		require.Greater(t, cap(builder.payload), reuse.capacity)
+	}
+	reuse.builder = builder
+	reuse.capacity = cap(builder.payload)
+	reuse.backing = sliceDataPtr(builder.payload)
+}
+
+// helloWorldSpecs is the two-frame message every completed-message case
+// starts from.
+func helloWorldSpecs() []FragmentedFrameForTest {
+	return []FragmentedFrameForTest{
+		{Flags: logbuffer.BeginFlag, Payload: []byte("hello-")},
+		{Flags: logbuffer.EndFlag, Payload: []byte("world")},
+	}
+}
+
 func newAssemblerWithPendingBeginFragment(t *testing.T) *FragmentAssembler {
 	t.Helper()
 
@@ -228,7 +318,7 @@ func TestFragmentAssembler_malformedAssemblyDropped(t *testing.T) {
 			deliverFragments(t, assembler, termBuffer, offsets)
 
 			require.Empty(t, capture.payloads)
-			require.NotContains(t, assembler.core.builders, TestPublicationSessionID)
+			requireFragmentBuilderReset(t, assembler.core.builders, TestPublicationSessionID)
 		})
 	}
 }
@@ -343,6 +433,11 @@ func TestFragmentAssembler_multiSessionIsolated(t *testing.T) {
 	require.Equal(t, []byte("B-B"), capture.payloads[1])
 	require.Len(t, capture.headers, 2)
 	require.NotSame(t, capture.headers[0], capture.headers[1])
+	require.NotSame(
+		t,
+		requireFragmentBuilderReset(t, assembler.core.builders, TestPublicationSessionID),
+		requireFragmentBuilderReset(t, assembler.core.builders, sessionBID),
+	)
 }
 
 func TestFragmentAssembler_multiFragmentCapacityGrowth(t *testing.T) {
@@ -350,25 +445,8 @@ func TestFragmentAssembler_multiFragmentCapacityGrowth(t *testing.T) {
 	const chunkCount = 6
 	totalLen := chunkSize * chunkCount
 
-	payload := make([]byte, totalLen)
-	for i := range payload {
-		payload[i] = byte(i % 251)
-	}
-
-	specs := make([]FragmentedFrameForTest, chunkCount)
-	for i := range chunkCount {
-		var flags uint8
-		switch i {
-		case 0:
-			flags = logbuffer.BeginFlag
-		case chunkCount - 1:
-			flags = logbuffer.EndFlag
-		}
-		specs[i] = FragmentedFrameForTest{
-			Flags:   flags,
-			Payload: payload[i*chunkSize : (i+1)*chunkSize],
-		}
-	}
+	payload := patternedPayloadForTest(totalLen, 0)
+	specs := fragmentedSpecsFromChunks(slices.Collect(slices.Chunk(payload, chunkSize)))
 
 	termBuffer := atomicbuffer.Wrap(make([]byte, CommittedDataFramesTermCapacityForTest(specs)))
 	offsets := WriteCommittedDataFramesForTest(termBuffer, 0, specs)
@@ -380,7 +458,8 @@ func TestFragmentAssembler_multiFragmentCapacityGrowth(t *testing.T) {
 	require.Len(t, capture.payloads, 1)
 	require.Equal(t, payload, capture.payloads[0])
 
-	require.NotContains(t, assembler.core.builders, TestPublicationSessionID)
+	builder := requireFragmentBuilderReset(t, assembler.core.builders, TestPublicationSessionID)
+	require.GreaterOrEqual(t, cap(builder.payload), totalLen)
 }
 
 func TestFragmentAssembler_oversizePayloadResets(t *testing.T) {

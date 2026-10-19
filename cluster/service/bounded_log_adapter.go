@@ -91,10 +91,12 @@ func NewBoundedLogAdapter(sink logEventSink, fragmentLimit int) *BoundedLogAdapt
 	return b
 }
 
-// SetImage binds or replaces the log Image.
+// SetImage binds or replaces the log Image. When replacing a non-nil image,
+// caches the previous image.Position into logPosition. Clears every session
+// builder so a later image cannot complete a prior train and no idle builder
+// outlives its image.
 //
-// When replacing a non-nil image, caches the previous image.Position into
-// logPosition. Does not close the previous Image; the caller owns lifecycle.
+// Does not close the previous Image. The caller owns the Image lifecycle.
 func (b *BoundedLogAdapter) SetImage(image *aeron.Image) {
 	if b == nil {
 		return
@@ -103,6 +105,7 @@ func (b *BoundedLogAdapter) SetImage(image *aeron.Image) {
 		b.logPosition = b.image.Position()
 	}
 	b.image = image
+	b.assembler.Clear()
 }
 
 // SetMaxLogPosition caps consumption at position (join handoff point).

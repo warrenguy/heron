@@ -195,10 +195,12 @@ func (s *SubscriptionControlIngress) handleBytes(payload []byte, _ *aeron.Header
 	s.onFragment(payload, 0)
 }
 
-// FreeSessionBuffer drops the in-progress reassembly builder for sessionID.
+// FreeSessionBuffer drops the reassembly builder for sessionID, in progress
+// or idle.
 //
 // Behaviour: returns true when a builder was present and removed. Returns false
-// when no builder existed for sessionID.
+// when no builder existed for sessionID. An idle builder keeps its payload
+// capacity until this call or Clear.
 //
 // Call FreeSessionBuffer from the unavailable-image handler for that session.
 // Session-id reuse after an image drop must not reassemble against a stale
@@ -215,7 +217,7 @@ func (s *SubscriptionControlIngress) FreeSessionBuffer(sessionID int32) bool {
 	return s.assembler.FreeSessionBuffer(sessionID)
 }
 
-// Clear drops all in-progress reassembly builders.
+// Clear drops every reassembly builder, in progress or idle.
 //
 // Behaviour: after Clear, FreeSessionBuffer returns false for every session id
 // until a new BEGIN arrives.

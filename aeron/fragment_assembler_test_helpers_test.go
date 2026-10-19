@@ -5,6 +5,9 @@ import (
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
+// fragmentDeliveryImage stands in for the polled Image on every test header.
+var fragmentDeliveryImage = &Image{}
+
 // fragmentDeliveryArgs returns the handler arguments for the committed frame at
 // frameOffset, as a poll would present them.
 func fragmentDeliveryArgs(
@@ -12,7 +15,7 @@ func fragmentDeliveryArgs(
 	frameOffset int,
 ) (payloadOffset, payloadLength int, header *Header) {
 	frameLength := logbuffer.FrameLengthVolatile(termBuffer, frameOffset)
-	header = &Header{}
+	header = &Header{context: fragmentDeliveryImage}
 	header.SetBuffer(termBuffer)
 	header.SetOffset(frameOffset)
 	header.ResetPollFragmentState()
