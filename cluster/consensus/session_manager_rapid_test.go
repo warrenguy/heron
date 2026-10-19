@@ -31,7 +31,15 @@ const (
 	sessionOpLearnClose
 	sessionOpMarkOpenSessionsNewLeader
 	sessionOpClearTermMarks
+	sessionOpTrackClose
+	sessionOpSweepCloses
 )
+
+// uncommittedCloseModel is one model entry of the uncommitted close list.
+type uncommittedCloseModel struct {
+	logPosition int64
+	sessionID   int64
+}
 
 type sessionModelEntry struct {
 	state            sessionState
@@ -48,6 +56,10 @@ type sessionModelEntry struct {
 // A learn-open of an unknown id inserts an open session. nextSessionID must
 // stay strictly above every observed id. Count identities must hold. A
 // term-mark clear drops every new-leader flag and every okPending entry.
+//
+// A tracked close holds a closing session outside byID until a sweep at or
+// above its position drops it. The close list stays in position order. Each
+// sweep clears its vacated slots and keeps the capacity.
 //
 // PBT skips the egress walk, the event queue, and authenticator consultation.
 // Publication and adder outcomes are a fixed matrix. Unit rows document those
@@ -66,6 +78,10 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 		acceptOrder := make([]int64, 0)
 		var lastIssued int64
 		issued := make(map[int64]struct{})
+		// closeModel holds the tracked closes in append order. closeTail is the
+		// last tracked position. Positions rise, as on the log.
+		closeModel := make([]uncommittedCloseModel, 0)
+		var closeTail int64
 
 		assertInvariants := func() {
 			rt.Helper()
@@ -143,6 +159,23 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				if s.newLeaderEventPending {
 					require.Equal(rt, sessionOpen, s.state)
 				}
+			}
+
+			// The close list equals the model. Each entry holds a closing
+			// session outside the registry. Slots past the length hold nil.
+			require.Len(rt, m.uncommittedCloses, len(closeModel))
+			for i, want := range closeModel {
+				entry := m.uncommittedCloses[i]
+				require.Equal(rt, want.logPosition, entry.logPosition)
+				require.NotNil(rt, entry.session)
+				require.Equal(rt, want.sessionID, entry.session.id)
+				require.Equal(rt, sessionClosing, entry.session.state)
+				// A learned open may reuse the id. The registry never holds the
+				// tracked session itself.
+				require.NotSame(rt, entry.session, m.byID[want.sessionID])
+			}
+			for _, entry := range m.uncommittedCloses[len(closeModel):cap(m.uncommittedCloses)] {
+				require.Nil(rt, entry.session)
 			}
 		}
 
@@ -236,6 +269,8 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				sessionOpLearnClose,
 				sessionOpMarkOpenSessionsNewLeader,
 				sessionOpClearTermMarks,
+				sessionOpTrackClose,
+				sessionOpSweepCloses,
 			}
 			if n := len(model); n > 0 && n < maxConcurrentSessions {
 				ops = append(ops, sessionOpAdd)
@@ -464,6 +499,39 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				for id, e := range model {
 					e.newLeaderPending = false
 					model[id] = e
+				}
+
+			case sessionOpTrackClose:
+				// Track, then remove, as appendSessionCloseAndRemove does after a
+				// close append.
+				closing := make(map[int64]struct{})
+				for id, e := range model {
+					if e.state == sessionClosing {
+						closing[id] = struct{}{}
+					}
+				}
+				if len(closing) == 0 {
+					break
+				}
+				id := pickSessionID(rt, closing, "trackCloseID")
+				closeTail += rapid.Int64Range(1, 256).Draw(rt, "trackCloseDelta")
+				s, ok := m.sessionByID(id)
+				require.True(rt, ok)
+				m.trackUncommittedClose(closeTail, s)
+				require.True(rt, m.remove(id))
+				dropLive(id)
+				closeModel = append(closeModel, uncommittedCloseModel{
+					logPosition: closeTail,
+					sessionID:   id,
+				})
+
+			case sessionOpSweepCloses:
+				position := rapid.Int64Range(0, closeTail+64).Draw(rt, "sweepPosition")
+				capBefore := cap(m.uncommittedCloses)
+				m.sweepUncommittedCloses(position)
+				require.Equal(rt, capBefore, cap(m.uncommittedCloses))
+				for len(closeModel) > 0 && closeModel[0].logPosition <= position {
+					closeModel = closeModel[1:]
 				}
 			}
 

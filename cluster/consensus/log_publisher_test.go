@@ -259,10 +259,14 @@ func TestLogPublisher_appendFailurePaths(t *testing.T) {
 			require.Equal(t, tt.wantCode, p.AppendSessionOpen(
 				1, 2, 3, 4, 5, []byte("ch"), []byte("pr"),
 			))
-			require.False(t, p.AppendSessionClose(
+			closePos, closeOK := p.AppendSessionClose(
 				1, 2, 3, clusterwire.CloseReason_CLIENT_ACTION,
-			))
-			require.False(t, p.AppendTimer(1, 2, 3))
+			)
+			require.False(t, closeOK)
+			require.Equal(t, int64(0), closePos)
+			timerPos, timerOK := p.AppendTimer(1, 2, 3)
+			require.False(t, timerOK)
+			require.Equal(t, int64(0), timerPos)
 			actionPos, actionOK := p.AppendClusterAction(
 				1, 2, clusterwire.ClusterAction_SNAPSHOT, 0,
 			)
@@ -388,7 +392,7 @@ func TestLogPublisher_AppendSessionClose_happy(t *testing.T) {
 	claimLen := codecs.SessionCloseEventEncodedLen()
 	aligned := int64(logbuffer.AlignFragmentChunkLength(claimLen))
 
-	ok := p.AppendSessionClose(leadershipTermID, clusterSessionID, timestamp, closeReason)
+	position, ok := p.AppendSessionClose(leadershipTermID, clusterSessionID, timestamp, closeReason)
 	require.True(t, ok)
 
 	wire := termStartWire(t, pub)
@@ -399,6 +403,7 @@ func TestLogPublisher_AppendSessionClose_happy(t *testing.T) {
 	require.Equal(t, timestamp, fields.Timestamp)
 	require.Equal(t, closeReason, fields.CloseReason)
 	require.Equal(t, pre+aligned, p.Position())
+	require.Equal(t, p.Position(), position)
 }
 
 func TestLogPublisher_AppendTimer_happy(t *testing.T) {
@@ -413,7 +418,7 @@ func TestLogPublisher_AppendTimer_happy(t *testing.T) {
 	claimLen := codecs.TimerEventEncodedLen()
 	aligned := int64(logbuffer.AlignFragmentChunkLength(claimLen))
 
-	ok := p.AppendTimer(leadershipTermID, correlationID, timestamp)
+	position, ok := p.AppendTimer(leadershipTermID, correlationID, timestamp)
 	require.True(t, ok)
 
 	wire := termStartWire(t, pub)
@@ -423,6 +428,7 @@ func TestLogPublisher_AppendTimer_happy(t *testing.T) {
 	require.Equal(t, correlationID, fields.CorrelationID)
 	require.Equal(t, timestamp, fields.Timestamp)
 	require.Equal(t, pre+aligned, p.Position())
+	require.Equal(t, p.Position(), position)
 }
 
 func TestLogPublisher_AppendNLT_success(t *testing.T) {

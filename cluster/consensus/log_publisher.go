@@ -247,30 +247,6 @@ func (p *LogPublisher) AppendSessionOpen(
 	return p.offerEncoded(scratch)
 }
 
-// appendClaim encodes fields into a fixed-length claim and commits.
-//
-// Returns false when the receiver or publication is nil, or when encode fails.
-// Claim retry, abort, and commit policy is [aeron.ExclusivePublication.ClaimFillCommit].
-func appendClaim[F any](
-	p *LogPublisher,
-	length int,
-	actingVersion uint16,
-	fields F,
-	encode func([]byte, int, uint16, F) (int, bool),
-) bool {
-	if p == nil {
-		return false
-	}
-	return p.publication.ClaimFillCommit(
-		length,
-		aeron.SendAttempts,
-		func(term []byte, payloadOff int, _ int64) bool {
-			wireEnd, ok := encode(term, payloadOff, actingVersion, fields)
-			return ok && wireEnd-payloadOff == length
-		},
-	)
-}
-
 // appendClaimPos encodes fields into a fixed-length claim and commits. The
 // fields callback receives the successful claim end position so LogPosition
 // can be written on the wire.
@@ -309,49 +285,57 @@ func appendClaimPos[F any](
 	return claimPos, true
 }
 
-// AppendSessionClose reserves a fixed 36-byte unfragmented claim, encodes
-// SessionCloseEvent (template 22) into the term buffer, and commits.
+// AppendSessionClose reserves a fixed 36-byte unfragmented claim. It encodes
+// SessionCloseEvent (template 22) into the term buffer, then commits.
 //
-// Returns false when the receiver or publication is nil, or when encode fails.
-// Claim retry, abort, and commit policy is [aeron.ExclusivePublication.ClaimFillCommit].
+// Returns the claim end position and true on commit. Returns 0 and false
+// when the receiver or publication is nil, encode fails, or the claim
+// budget exhausts. Claim retry, abort, and commit policy is
+// [aeron.ExclusivePublication.ClaimFillCommit].
 func (p *LogPublisher) AppendSessionClose(
 	leadershipTermID int64,
 	clusterSessionID int64,
 	timestamp int64,
 	closeReason clusterwire.CloseReason,
-) bool {
-	return appendClaim(
+) (int64, bool) {
+	return appendClaimPos(
 		p,
 		codecs.SessionCloseEventEncodedLen(),
 		uint16(clusterwire.SessionCloseEventSbeSchemaVersion),
-		codecs.SessionCloseEventFields{
-			LeadershipTermID: leadershipTermID,
-			ClusterSessionID: clusterSessionID,
-			Timestamp:        timestamp,
-			CloseReason:      closeReason,
+		func(int64) codecs.SessionCloseEventFields {
+			return codecs.SessionCloseEventFields{
+				LeadershipTermID: leadershipTermID,
+				ClusterSessionID: clusterSessionID,
+				Timestamp:        timestamp,
+				CloseReason:      closeReason,
+			}
 		},
 		codecs.EncodeSessionCloseEvent,
 	)
 }
 
-// AppendTimer reserves a fixed 32-byte unfragmented claim, encodes TimerEvent
-// (template 20) into the term buffer, and commits.
+// AppendTimer reserves a fixed 32-byte unfragmented claim. It encodes
+// TimerEvent (template 20) into the term buffer, then commits.
 //
-// Returns false when the receiver or publication is nil, or when encode fails.
-// Claim retry, abort, and commit policy is [aeron.ExclusivePublication.ClaimFillCommit].
+// Returns the claim end position and true on commit. Returns 0 and false
+// when the receiver or publication is nil, encode fails, or the claim
+// budget exhausts. Claim retry, abort, and commit policy is
+// [aeron.ExclusivePublication.ClaimFillCommit].
 func (p *LogPublisher) AppendTimer(
 	leadershipTermID int64,
 	correlationID int64,
 	timestamp int64,
-) bool {
-	return appendClaim(
+) (int64, bool) {
+	return appendClaimPos(
 		p,
 		codecs.TimerEventEncodedLen(),
 		uint16(clusterwire.TimerEventSbeSchemaVersion),
-		codecs.TimerEventFields{
-			LeadershipTermID: leadershipTermID,
-			CorrelationID:    correlationID,
-			Timestamp:        timestamp,
+		func(int64) codecs.TimerEventFields {
+			return codecs.TimerEventFields{
+				LeadershipTermID: leadershipTermID,
+				CorrelationID:    correlationID,
+				Timestamp:        timestamp,
+			}
 		},
 		codecs.EncodeTimerEvent,
 	)
