@@ -179,3 +179,77 @@ func TestSubscription_Poll_invariants_rapid(t *testing.T) {
 		requireSubscriptionPollSteps(t, rotationSub, rotationCapture, 1, rotationSteps...)
 	})
 }
+
+// subscriptionRotationModel is the reference model for round-robin polls. A
+// nil queue is a nil image slot.
+type subscriptionRotationModel struct {
+	queues          [][][]byte
+	roundRobinIndex int
+}
+
+func (model *subscriptionRotationModel) poll(limit int) [][]byte {
+	length := len(model.queues)
+	if model.roundRobinIndex >= length {
+		model.roundRobinIndex = 0
+	}
+	startingIndex := model.roundRobinIndex
+	model.roundRobinIndex = startingIndex + 1
+
+	var delivered [][]byte
+	for offset := range length {
+		slot := (startingIndex + offset) % length
+		queue := model.queues[slot]
+		if queue == nil {
+			continue
+		}
+		take := min(limit-len(delivered), len(queue))
+		delivered = append(delivered, queue[:take]...)
+		model.queues[slot] = queue[take:]
+	}
+	return delivered
+}
+
+func TestSubscription_Poll_roundRobinModel_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		sub := testSubscription(t)
+		slotCount := rapid.IntRange(0, 4).Draw(rt, "slotCount")
+		model := &subscriptionRotationModel{queues: make([][][]byte, slotCount)}
+		for slot := range slotCount {
+			if rapid.IntRange(0, 3).Draw(rt, fmt.Sprintf("nilRoll%d", slot)) == 0 {
+				continue
+			}
+			frameCount := rapid.IntRange(0, 3).Draw(rt, fmt.Sprintf("frameCount%d", slot))
+			queue := make([][]byte, frameCount)
+			for frame := range frameCount {
+				queue[frame] = fmt.Appendf(nil, "img%d-%d", slot, frame)
+			}
+			model.queues[slot] = queue
+		}
+		addSubscriptionPollSlots(t, sub, model.queues)
+
+		model.roundRobinIndex = rapid.IntRange(0, 2*slotCount+1).Draw(rt, "startIndex")
+		aeron.SubscriptionSetRoundRobinIndexForTest(sub, model.roundRobinIndex)
+
+		capture := &pollCapture{}
+		pollCount := rapid.IntRange(1, 8).Draw(rt, "pollCount")
+		for step := range pollCount {
+			limit := rapid.IntRange(0, 4).Draw(rt, fmt.Sprintf("limit%d", step))
+			want := model.poll(limit)
+
+			capture.reset()
+			require.Equal(rt, len(want), sub.Poll(capture.handler, limit), "step %d", step)
+			require.Len(rt, capture.payloads, len(want), "step %d", step)
+			for index, payload := range want {
+				require.Equal(rt, payload, capture.payloads[index], "step %d", step)
+			}
+			require.Equal(
+				rt,
+				model.roundRobinIndex,
+				aeron.SubscriptionRoundRobinIndexForTest(sub),
+				"step %d",
+				step,
+			)
+		}
+	})
+}

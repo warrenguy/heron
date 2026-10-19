@@ -160,8 +160,10 @@ func TestSubscription_Poll_closedReturnsZero(t *testing.T) {
 
 func TestSubscription_Poll_emptyImagesReturnsZero(t *testing.T) {
 	sub := testSubscription(t)
+	aeron.SubscriptionSetRoundRobinIndexForTest(sub, 5)
 
 	require.Equal(t, 0, sub.Poll(nil, 1))
+	require.Equal(t, 1, aeron.SubscriptionRoundRobinIndexForTest(sub))
 }
 
 func TestSubscription_Poll_roundRobin(t *testing.T) {
@@ -381,6 +383,85 @@ func TestSubscription_Poll_roundRobinIndexWrapAfterRemoval(t *testing.T) {
 	requireSubscriptionPoll(t, sub, capture, 1, 1, [][]byte{[]byte("img1")})
 }
 
+func TestSubscription_Poll_roundRobinIndexAtImageCount(t *testing.T) {
+	sub := testSubscription(t)
+	addTwoStandardPollImages(t, sub)
+
+	// Phase: two polls leave the index at the image count.
+	capture := &pollCapture{}
+	requireSubscriptionPollSteps(
+		t, sub, capture, 1,
+		subscriptionPollStep{want: 1, payloads: [][]byte{[]byte("img0-a")}},
+		subscriptionPollStep{want: 1, payloads: [][]byte{[]byte("img1-a")}},
+	)
+	require.Equal(t, 2, aeron.SubscriptionRoundRobinIndexForTest(sub), "index at image count")
+
+	// Phase: a third image makes the stored index valid again.
+	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID+2, []byte("img2-a"))
+
+	// Phase: the next poll starts at the new image without a fold.
+	capture.reset()
+	requireSubscriptionPoll(t, sub, capture, 1, 1, [][]byte{[]byte("img2-a")})
+	require.Equal(t, 3, aeron.SubscriptionRoundRobinIndexForTest(sub), "index after new image")
+}
+
+func TestSubscription_Poll_roundRobinStartIndex(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// slots holds the frame payloads per image. A nil entry is a nil image slot.
+		slots        [][][]byte
+		startIndex   int
+		limit        int
+		wantPayloads [][]byte
+		wantIndex    int
+	}{
+		{
+			name:         "indexAtImageCountFoldsToZero",
+			slots:        [][][]byte{{[]byte("img0")}, {[]byte("img1")}},
+			startIndex:   2,
+			limit:        1,
+			wantPayloads: [][]byte{[]byte("img0")},
+			wantIndex:    1,
+		},
+		{
+			name:         "wrapVisitsLeadingSlots",
+			slots:        [][][]byte{{[]byte("img0")}, {[]byte("img1")}, {[]byte("img2")}},
+			startIndex:   2,
+			limit:        3,
+			wantPayloads: [][]byte{[]byte("img2"), []byte("img0"), []byte("img1")},
+			wantIndex:    3,
+		},
+		{
+			name:         "nilSlotBeforeWrap",
+			slots:        [][][]byte{{[]byte("img0")}, nil, {[]byte("img2")}},
+			startIndex:   1,
+			limit:        3,
+			wantPayloads: [][]byte{[]byte("img2"), []byte("img0")},
+			wantIndex:    2,
+		},
+		{
+			name:         "nilSlotAfterWrap",
+			slots:        [][][]byte{nil, {[]byte("img1")}, {[]byte("img2")}},
+			startIndex:   1,
+			limit:        3,
+			wantPayloads: [][]byte{[]byte("img1"), []byte("img2")},
+			wantIndex:    2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sub := testSubscription(t)
+			addSubscriptionPollSlots(t, sub, tc.slots)
+			aeron.SubscriptionSetRoundRobinIndexForTest(sub, tc.startIndex)
+
+			capture := &pollCapture{}
+			requireSubscriptionPoll(
+				t, sub, capture, tc.limit, len(tc.wantPayloads), tc.wantPayloads,
+			)
+			require.Equal(t, tc.wantIndex, aeron.SubscriptionRoundRobinIndexForTest(sub))
+		})
+	}
+}
+
 func TestSubscription_Poll_emptyImageRotation(t *testing.T) {
 	sub := testSubscription(t)
 	addSubscriptionPollImage(
@@ -566,8 +647,10 @@ func TestSubscription_ControlledPoll_closedLeavesRoundRobin(t *testing.T) {
 
 func TestSubscription_ControlledPoll_emptyImagesReturnsZero(t *testing.T) {
 	sub := testSubscription(t)
+	aeron.SubscriptionSetRoundRobinIndexForTest(sub, 5)
 
 	require.Equal(t, 0, sub.ControlledPoll(nil, 1))
+	require.Equal(t, 1, aeron.SubscriptionRoundRobinIndexForTest(sub))
 }
 
 func TestSubscription_ControlledPoll_roundRobin(t *testing.T) {

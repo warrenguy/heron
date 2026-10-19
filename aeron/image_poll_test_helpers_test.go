@@ -342,6 +342,21 @@ func addTwoStandardPollImages(tb testing.TB, sub *aeron.Subscription) {
 	)
 }
 
+// addSubscriptionPollSlots fills the image slots in order. Each slot holds the
+// frame payloads for one image. A nil slot injects a nil image entry.
+func addSubscriptionPollSlots(tb testing.TB, sub *aeron.Subscription, slots [][][]byte) {
+	tb.Helper()
+
+	for index, payloads := range slots {
+		if payloads == nil {
+			aeron.SubscriptionInjectNilImageAtIndexForTest(sub, index)
+			continue
+		}
+		addSubscriptionPollImage(tb, sub, aeron.TestImageCorrelationID+int64(index), payloads...)
+	}
+	require.Equal(tb, len(slots), sub.ImageCount())
+}
+
 func requireSubscriptionPoll(
 	tb testing.TB,
 	sub *aeron.Subscription,

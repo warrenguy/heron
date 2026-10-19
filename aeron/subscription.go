@@ -29,8 +29,8 @@ type Subscription struct {
 	counters               *cnc.CountersReader
 
 	images []*Image
-	// roundRobinIndex is the image slot the next pollImages call starts from.
-	// pollImages reduces it modulo len(images) before use.
+	// roundRobinIndex is the start index for the next pollImages call.
+	// pollImages folds it to 0 when it is at or above the image count.
 	roundRobinIndex int
 
 	closed bool
@@ -187,8 +187,10 @@ func (subscription *Subscription) ControlledPoll(
 // pollImages walks a snapshot of images in round-robin order.
 //
 // Closed: returns 0 without advancing roundRobinIndex.
-// Empty: advances roundRobinIndex and returns 0.
-// Nil snapshot entries are skipped.
+//
+// Open: starts at roundRobinIndex, or at 0 when roundRobinIndex is outside
+// the image slots. Stores the start plus one in roundRobinIndex. Skips nil
+// entries.
 func (subscription *Subscription) pollImages(
 	fragmentLimit int,
 	pollImage func(image *Image, limit int) int,
@@ -198,26 +200,33 @@ func (subscription *Subscription) pollImages(
 	}
 
 	images := subscription.images
-	length := len(images)
-	if length == 0 {
-		subscription.roundRobinIndex++
-		return 0
-	}
-	startingIndex := subscription.roundRobinIndex % length
-	subscription.roundRobinIndex = (startingIndex + 1) % length
 
-	fragmentsRead := 0
-	for offset := range length {
+	startingIndex := subscription.roundRobinIndex
+	if uint(startingIndex) >= uint(len(images)) {
+		startingIndex = 0
+	}
+	subscription.roundRobinIndex = startingIndex + 1
+
+	fragmentsRead := pollImageRange(images[startingIndex:], 0, fragmentLimit, pollImage)
+	return pollImageRange(images[:startingIndex], fragmentsRead, fragmentLimit, pollImage)
+}
+
+// pollImageRange polls each non-nil image in order until fragmentsRead
+// reaches fragmentLimit. Returns the updated fragmentsRead.
+func pollImageRange(
+	images []*Image,
+	fragmentsRead int,
+	fragmentLimit int,
+	pollImage func(image *Image, limit int) int,
+) int {
+	for _, image := range images {
 		if fragmentsRead >= fragmentLimit {
 			break
 		}
-		image := images[(startingIndex+offset)%length]
-		if image == nil {
-			continue
+		if image != nil {
+			fragmentsRead += pollImage(image, fragmentLimit-fragmentsRead)
 		}
-		fragmentsRead += pollImage(image, fragmentLimit-fragmentsRead)
 	}
-
 	return fragmentsRead
 }
 
