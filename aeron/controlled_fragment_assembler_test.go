@@ -21,11 +21,31 @@ type completedHeaderSnapshot struct {
 	nextTermOffset int32
 	position       int64
 	fragmentedSpan int32
+	frameType      int32
 	flags          byte
 	sessionID      int32
 	streamID       int32
 	termID         int32
 	termOffset     int32
+	reservedValue  int64
+	context        any
+}
+
+func snapshotHeader(header *Header) completedHeaderSnapshot {
+	return completedHeaderSnapshot{
+		frameLength:    header.FrameLength(),
+		nextTermOffset: header.NextTermOffset(),
+		position:       header.Position(),
+		fragmentedSpan: HeaderFragmentedFrameLenForTest(header),
+		frameType:      header.Type(),
+		flags:          header.Flags(),
+		sessionID:      header.SessionID(),
+		streamID:       header.StreamID(),
+		termID:         header.TermID(),
+		termOffset:     header.TermOffset(),
+		reservedValue:  header.ReservedValue(),
+		context:        header.context,
+	}
 }
 
 type controlledFragmentDelegateCapture struct {
@@ -54,17 +74,7 @@ func (capture *controlledFragmentDelegateCapture) handler() ControlledFragmentHa
 				sliceDataPtr(bytes[offset:offset+length]),
 			)
 		}
-		capture.headers = append(capture.headers, completedHeaderSnapshot{
-			frameLength:    header.FrameLength(),
-			nextTermOffset: header.NextTermOffset(),
-			position:       header.Position(),
-			fragmentedSpan: HeaderFragmentedFrameLenForTest(header),
-			flags:          header.Flags(),
-			sessionID:      header.SessionID(),
-			streamID:       header.StreamID(),
-			termID:         header.TermID(),
-			termOffset:     header.TermOffset(),
-		})
+		capture.headers = append(capture.headers, snapshotHeader(header))
 
 		action := ControlledContinue
 		if capture.actionIdx < len(capture.actions) {
@@ -99,12 +109,15 @@ func expectedCompletedHeaderSnapshot(
 		nextTermOffset: nextTermOffset,
 		position:       position,
 		fragmentedSpan: span,
+		frameType:      int32(logbuffer.FrameType(termBuffer, beginOffset)),
 		flags: logbuffer.FrameFlags(termBuffer, beginOffset) |
 			logbuffer.FrameFlags(termBuffer, endOffset),
-		sessionID:  logbuffer.FrameSessionID(termBuffer, beginOffset),
-		streamID:   logbuffer.FrameStreamID(termBuffer, beginOffset),
-		termID:     logbuffer.FrameTermID(termBuffer, beginOffset),
-		termOffset: beginTermOffset,
+		sessionID:     logbuffer.FrameSessionID(termBuffer, beginOffset),
+		streamID:      logbuffer.FrameStreamID(termBuffer, beginOffset),
+		termID:        logbuffer.FrameTermID(termBuffer, beginOffset),
+		termOffset:    beginTermOffset,
+		reservedValue: logbuffer.FrameReservedValue(termBuffer, beginOffset),
+		context:       fragmentDeliveryImage,
 	}
 }
 
@@ -174,6 +187,25 @@ func newControlledAssemblerWithPendingBeginFragment(t *testing.T) *ControlledFra
 	return assembler
 }
 
+func newControlledAssemblerWithCompletedMessage(t *testing.T) *ControlledFragmentAssembler {
+	t.Helper()
+
+	capture, assembler, termBuffer, offsets := setupControlledFragmentAssembler(
+		t, 512, helloWorldSpecs(),
+	)
+	deliverControlledFragments(t, assembler, termBuffer, offsets)
+	require.Len(t, capture.payloads, 1)
+	return assembler
+}
+
+var controlledAssemblerWithBuilderCases = []struct {
+	name  string
+	setup func(*testing.T) *ControlledFragmentAssembler
+}{
+	{name: "pending_begin", setup: newControlledAssemblerWithPendingBeginFragment},
+	{name: "completed_message", setup: newControlledAssemblerWithCompletedMessage},
+}
+
 func TestControlledFragmentAssembler_unfragmentedDelegatesWithoutCopy(t *testing.T) {
 	payload := []byte("whole-message")
 	capture, assembler, termBuffer, offsets := setupControlledFragmentAssembler(
@@ -234,11 +266,8 @@ func TestControlledFragmentAssembler_reassemblesFragments(t *testing.T) {
 		{
 			name:     "begin_end",
 			termSize: 512,
-			specs: []FragmentedFrameForTest{
-				{Flags: logbuffer.BeginFlag, Payload: []byte("hello-")},
-				{Flags: logbuffer.EndFlag, Payload: []byte("world")},
-			},
-			want: []byte("hello-world"),
+			specs:    helloWorldSpecs(),
+			want:     []byte("hello-world"),
 		},
 		{
 			name:     "begin_middle_end",
@@ -274,55 +303,31 @@ func TestControlledFragmentAssembler_reassemblesFragments(t *testing.T) {
 			)
 			require.Len(t, capture.payloads, 1)
 			require.Equal(t, tc.want, capture.payloads[0])
-			require.NotContains(t, assembler.builders, TestPublicationSessionID)
+			requireFragmentBuilderReset(t, assembler.builders, TestPublicationSessionID)
 		})
 	}
 }
 
 func TestControlledFragmentAssembler_endActionMatrix(t *testing.T) {
 	cases := []struct {
-		name       string
-		action     ControlledAction
-		wantKept   bool
-		wantSecond []byte
+		name   string
+		action ControlledAction
 	}{
-		{
-			name:       "continue_drops_builder",
-			action:     ControlledContinue,
-			wantKept:   false,
-			wantSecond: nil,
-		},
-		{
-			name:       "break_drops_builder",
-			action:     ControlledBreak,
-			wantKept:   false,
-			wantSecond: nil,
-		},
-		{
-			name:       "commit_drops_builder",
-			action:     ControlledCommit,
-			wantKept:   false,
-			wantSecond: nil,
-		},
-		{
-			name:       "abort_rewinds_builder",
-			action:     ControlledAbort,
-			wantKept:   true,
-			wantSecond: []byte("hello-world"),
-		},
+		{name: "continue_resets_builder", action: ControlledContinue},
+		{name: "break_resets_builder", action: ControlledBreak},
+		{name: "commit_resets_builder", action: ControlledCommit},
+		{name: "abort_rewinds_builder", action: ControlledAbort},
 	}
+	want := []byte("hello-world")
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			capture, assembler, termBuffer, offsets := setupControlledFragmentAssembler(
-				t,
-				512,
-				[]FragmentedFrameForTest{
-					{Flags: logbuffer.BeginFlag, Payload: []byte("hello-")},
-					{Flags: logbuffer.EndFlag, Payload: []byte("world")},
-				},
+				t, 512, helloWorldSpecs(),
 			)
 			capture.actions = []ControlledAction{tc.action, ControlledContinue}
+			// Only a rewound builder yields a second payload from a redelivered END.
+			rewinds := tc.action == ControlledAbort
 
 			require.Equal(
 				t,
@@ -332,31 +337,28 @@ func TestControlledFragmentAssembler_endActionMatrix(t *testing.T) {
 			got := deliverControlledFragment(t, assembler, termBuffer, offsets[1])
 			require.Equal(t, tc.action, got)
 			require.Len(t, capture.payloads, 1)
-			require.Equal(t, []byte("hello-world"), capture.payloads[0])
-
-			_, kept := assembler.builders[TestPublicationSessionID]
-			require.Equal(t, tc.wantKept, kept)
+			require.Equal(t, want, capture.payloads[0])
+			if !rewinds {
+				requireFragmentBuilderReset(t, assembler.builders, TestPublicationSessionID)
+			}
 
 			// Redeliver END only.
 			got = deliverControlledFragment(t, assembler, termBuffer, offsets[1])
 			require.Equal(t, ControlledContinue, got)
-			if tc.wantSecond == nil {
+			if rewinds {
+				wantHeader := expectedCompletedHeaderSnapshot(
+					termBuffer, offsets[0], offsets[1], len(want),
+				)
+				require.Equal(t, [][]byte{want, want}, capture.payloads)
+				require.Equal(
+					t,
+					[]completedHeaderSnapshot{wantHeader, wantHeader},
+					capture.headers,
+				)
+			} else {
 				require.Len(t, capture.payloads, 1)
-				return
 			}
-
-			wantHeader := expectedCompletedHeaderSnapshot(
-				termBuffer,
-				offsets[0],
-				offsets[1],
-				len(tc.wantSecond),
-			)
-			require.Len(t, capture.payloads, 2)
-			require.Equal(t, tc.wantSecond, capture.payloads[1])
-			require.Len(t, capture.headers, 2)
-			require.Equal(t, wantHeader, capture.headers[0])
-			require.Equal(t, wantHeader, capture.headers[1])
-			require.NotContains(t, assembler.builders, TestPublicationSessionID)
+			requireFragmentBuilderReset(t, assembler.builders, TestPublicationSessionID)
 		})
 	}
 }
@@ -365,6 +367,7 @@ func TestControlledFragmentAssembler_malformedAssemblyDropped(t *testing.T) {
 	cases := []struct {
 		name  string
 		specs []FragmentedFrameForTest
+		want  [][]byte
 	}{
 		{
 			name: "headerOnlyBeginWithPayloadEnd",
@@ -380,12 +383,21 @@ func TestControlledFragmentAssembler_malformedAssemblyDropped(t *testing.T) {
 				{Flags: logbuffer.EndFlag, Payload: []byte{}},
 			},
 		},
+		{
+			name: "headerOnlyBeginAfterCompletedMessage",
+			specs: append(
+				helloWorldSpecs(),
+				FragmentedFrameForTest{Flags: logbuffer.BeginFlag, Payload: []byte{}},
+				FragmentedFrameForTest{Flags: logbuffer.EndFlag, Payload: []byte("end")},
+			),
+			want: [][]byte{[]byte("hello-world")},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			capture, assembler, termBuffer, offsets := setupControlledFragmentAssembler(
-				t, 256, tc.specs,
+				t, CommittedDataFramesTermCapacityForTest(tc.specs), tc.specs,
 			)
 			for _, frameOffset := range offsets {
 				require.Equal(
@@ -395,8 +407,8 @@ func TestControlledFragmentAssembler_malformedAssemblyDropped(t *testing.T) {
 				)
 			}
 
-			require.Empty(t, capture.payloads)
-			require.NotContains(t, assembler.builders, TestPublicationSessionID)
+			require.Equal(t, tc.want, capture.payloads)
+			requireFragmentBuilderReset(t, assembler.builders, TestPublicationSessionID)
 		})
 	}
 }
@@ -404,43 +416,133 @@ func TestControlledFragmentAssembler_malformedAssemblyDropped(t *testing.T) {
 func TestControlledFragmentAssembler_orphanFragmentNoDelegate(t *testing.T) {
 	cases := []struct {
 		name    string
+		prelude []FragmentedFrameForTest
 		flags   uint8
 		payload []byte
+		want    [][]byte
 	}{
 		{name: "middle", flags: 0, payload: []byte("orphan-middle")},
 		{name: "end", flags: logbuffer.EndFlag, payload: []byte("orphan-end")},
+		{
+			name:    "middle_after_completed_message",
+			prelude: helloWorldSpecs(),
+			flags:   0,
+			payload: []byte("orphan-middle"),
+			want:    [][]byte{[]byte("hello-world")},
+		},
+		{
+			name:    "end_after_completed_message",
+			prelude: helloWorldSpecs(),
+			flags:   logbuffer.EndFlag,
+			payload: []byte("orphan-end"),
+			want:    [][]byte{[]byte("hello-world")},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			specs := append(
+				slices.Clone(tc.prelude),
+				FragmentedFrameForTest{Flags: tc.flags, Payload: tc.payload},
+			)
 			capture, assembler, termBuffer, offsets := setupControlledFragmentAssembler(
 				t,
-				256,
-				[]FragmentedFrameForTest{{
-					Flags:   tc.flags,
-					Payload: tc.payload,
-				}},
+				CommittedDataFramesTermCapacityForTest(specs),
+				specs,
 			)
-			action := deliverControlledFragment(t, assembler, termBuffer, offsets[0])
+			orphanIndex := len(offsets) - 1
+			deliverControlledFragments(t, assembler, termBuffer, offsets[:orphanIndex])
+
+			action := deliverControlledFragment(t, assembler, termBuffer, offsets[orphanIndex])
 
 			require.Equal(t, ControlledContinue, action)
-			require.Empty(t, capture.payloads)
+			require.Equal(t, tc.want, capture.payloads)
+			if len(tc.prelude) == 0 {
+				require.NotContains(t, assembler.builders, TestPublicationSessionID)
+			} else {
+				requireFragmentBuilderReset(t, assembler.builders, TestPublicationSessionID)
+			}
 		})
 	}
 }
 
 func TestControlledFragmentAssembler_FreeSessionBuffer(t *testing.T) {
-	assembler := newControlledAssemblerWithPendingBeginFragment(t)
+	for _, tc := range controlledAssemblerWithBuilderCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assembler := tc.setup(t)
 
-	require.True(t, assembler.FreeSessionBuffer(TestPublicationSessionID))
-	require.False(t, assembler.FreeSessionBuffer(TestPublicationSessionID))
+			require.True(t, assembler.FreeSessionBuffer(TestPublicationSessionID))
+			require.False(t, assembler.FreeSessionBuffer(TestPublicationSessionID))
+		})
+	}
 }
 
 func TestControlledFragmentAssembler_Clear(t *testing.T) {
-	assembler := newControlledAssemblerWithPendingBeginFragment(t)
-	assembler.Clear()
+	for _, tc := range controlledAssemblerWithBuilderCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assembler := tc.setup(t)
+			require.Contains(t, assembler.builders, TestPublicationSessionID)
 
-	require.False(t, assembler.FreeSessionBuffer(TestPublicationSessionID))
+			assembler.Clear()
+			require.Empty(t, assembler.builders)
+		})
+	}
+}
+
+func TestControlledFragmentAssembler_reusesBuilderAcrossMessages(t *testing.T) {
+	const chunkSize = 2048
+	steps := []struct {
+		name         string
+		payload      []byte
+		unfragmented bool
+	}{
+		{name: "first", payload: patternedPayloadForTest(3*chunkSize, 0)},
+		{name: "unfragmented", payload: []byte("solo"), unfragmented: true},
+		{name: "shorter_excludes_previous_tail", payload: patternedPayloadForTest(2*chunkSize+100, 7)},
+		{name: "longer", payload: patternedPayloadForTest(5*chunkSize, 13)},
+	}
+
+	var specs []FragmentedFrameForTest
+	stepStarts := make([]int, len(steps)+1)
+	for i, step := range steps {
+		chunks := [][]byte{step.payload}
+		if !step.unfragmented {
+			chunks = slices.Collect(slices.Chunk(step.payload, chunkSize))
+		}
+		specs = append(specs, fragmentedSpecsFromChunks(chunks)...)
+		stepStarts[i+1] = len(specs)
+	}
+	capture, assembler, termBuffer, offsets := setupControlledFragmentAssembler(
+		t,
+		CommittedDataFramesTermCapacityForTest(specs),
+		specs,
+	)
+
+	var reuse fragmentBuilderReuse
+	for i, step := range steps {
+		stepOffsets := offsets[stepStarts[i]:stepStarts[i+1]]
+		deliverControlledFragments(t, assembler, termBuffer, stepOffsets)
+
+		require.Len(t, capture.payloads, i+1, step.name)
+		require.Equal(t, step.payload, capture.payloads[i], step.name)
+		if step.unfragmented {
+			require.Equal(t, sliceDataPtr(termBuffer.Bytes()), capture.bufferPtrs[i], step.name)
+		} else {
+			require.Equal(
+				t,
+				expectedCompletedHeaderSnapshot(
+					termBuffer,
+					stepOffsets[0],
+					stepOffsets[len(stepOffsets)-1],
+					len(step.payload),
+				),
+				capture.headers[i],
+				step.name,
+			)
+		}
+
+		reuse.requireReused(t, assembler.builders, TestPublicationSessionID, len(step.payload))
+	}
 }
 
 func TestControlledFragmentAssembler_initialBufferLength_clamped(t *testing.T) {

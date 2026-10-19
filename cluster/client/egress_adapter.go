@@ -95,7 +95,7 @@ func (adapter *EgressAdapter) Poll() int {
 	)
 }
 
-// Clear drops all in-progress egress reassembly state.
+// Clear drops every egress reassembly builder, in progress or idle.
 func (adapter *EgressAdapter) Clear() {
 	if adapter == nil || adapter.assembler == nil {
 		return

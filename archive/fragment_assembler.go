@@ -14,7 +14,9 @@ import (
 // Unfragmented frames reach the delegate without a copy.
 //
 // Lifetime: a reassembled payload arrives in an assembler-owned buffer with an
-// assembler-owned header. Both are valid only during the delegate call.
+// assembler-owned header. Both are valid only during the delegate call. Each
+// session keeps its builder, and its payload capacity, after delivery until
+// FreeSessionBuffer or Clear evicts it.
 //
 // Concurrency: not safe for concurrent use. The delegate must not poll the
 // same assembler.
@@ -74,7 +76,7 @@ func (assembler *FragmentAssembler) DirectAssemblers() bool {
 	return assembler.core.DirectAssemblers()
 }
 
-// Clear drops all in-progress reassembly state.
+// Clear drops every reassembly builder, in progress or idle.
 func (assembler *FragmentAssembler) Clear() {
 	assembler.core.Clear()
 }

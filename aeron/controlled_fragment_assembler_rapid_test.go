@@ -38,7 +38,59 @@ func TestControlledFragmentAssembler_rapid_reassembly(t *testing.T) {
 		specs := fragmentedSpecsFromChunks(splitPayloadIntoChunks(payload, chunkCount))
 
 		assembler := deliverControlledFragmentSpecsAndAssertPayload(rt, specs, payload)
-		require.NotContains(rt, assembler.builders, TestPublicationSessionID)
+		if chunkCount == 1 {
+			require.NotContains(rt, assembler.builders, TestPublicationSessionID)
+			return
+		}
+		requireFragmentBuilderReset(rt, assembler.builders, TestPublicationSessionID)
+	})
+}
+
+func TestControlledFragmentAssembler_rapid_builderReuseAcrossMessages(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		messageCount := rapid.IntRange(2, 4).Draw(rt, "message_count")
+		payloads := make([][]byte, messageCount)
+		var specs []FragmentedFrameForTest
+		messageStarts := make([]int, messageCount+1)
+		for i := range messageCount {
+			// Draw past the initial capacity so later messages can grow a reused builder.
+			payloads[i] = drawFragmentAssemblerPayloadRange(rt, 2, 3*fragmentAssemblerRapidMaxPayload)
+			chunkCount := drawFragmentAssemblerChunkCount(
+				rt,
+				payloads[i],
+				2,
+				fragmentAssemblerRapidMaxChunks,
+			)
+			specs = append(
+				specs,
+				fragmentedSpecsFromChunks(splitPayloadIntoChunks(payloads[i], chunkCount))...,
+			)
+			messageStarts[i+1] = len(specs)
+		}
+
+		assembler, termBuffer, offsets, capture := setupControlledFragmentAssemblerRapid(rt, specs)
+
+		var reuse fragmentBuilderReuse
+		for i, payload := range payloads {
+			messageOffsets := offsets[messageStarts[i]:messageStarts[i+1]]
+			deliverControlledFragments(rt, assembler, termBuffer, messageOffsets)
+
+			require.Len(rt, capture.payloads, i+1)
+			require.Equal(rt, payload, capture.payloads[i])
+			require.Equal(
+				rt,
+				expectedCompletedHeaderSnapshot(
+					termBuffer,
+					messageOffsets[0],
+					messageOffsets[len(messageOffsets)-1],
+					len(payload),
+				),
+				capture.headers[i],
+			)
+
+			reuse.requireReused(rt, assembler.builders, TestPublicationSessionID, len(payload))
+		}
 	})
 }
 
@@ -90,7 +142,7 @@ func TestControlledFragmentAssembler_rapid_abortRewindRedelivery(t *testing.T) {
 		require.Len(rt, capture.headers, 2)
 		require.Equal(rt, wantHeader, capture.headers[1])
 		require.Equal(rt, capture.headers[0], capture.headers[1])
-		require.NotContains(rt, assembler.builders, TestPublicationSessionID)
+		requireFragmentBuilderReset(rt, assembler.builders, TestPublicationSessionID)
 	})
 }
 

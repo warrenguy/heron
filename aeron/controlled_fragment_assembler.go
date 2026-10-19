@@ -17,7 +17,11 @@ import (
 // END appends, then delegates the assembled buffer and completed header.
 // Delegate [ControlledAbort] on END rewinds the builder limit to the pre-END
 // length. The builder stays so a redelivered END re-appends and re-delivers.
-// Any other action drops the builder.
+// Any other action resets the builder.
+//
+// The builder keeps its payload capacity for the next message on that session.
+// [ControlledFragmentAssembler.FreeSessionBuffer] or
+// [ControlledFragmentAssembler.Clear] evicts it.
 //
 // Reassembled delegates receive an assembler-owned buffer slice and
 // &builder.completedHeader. Both are valid only for the delegate callback.
@@ -74,7 +78,7 @@ func (assembler *ControlledFragmentAssembler) DirectAssemblers() bool {
 	return assembler.directAssemblers
 }
 
-// Clear drops all in-progress reassembly state.
+// Clear evicts every session builder, in progress or idle.
 func (assembler *ControlledFragmentAssembler) Clear() {
 	clear(assembler.builders)
 }
@@ -135,10 +139,9 @@ func (assembler *ControlledFragmentAssembler) handleFragment(
 			// firstFrameLength).
 			builder.restoreFirstFrameLength()
 			if builder.limit <= 0 || builder.firstFrameLength <= int32(logbuffer.DataHeaderLength) {
-				// Malformed END is terminal: no valid payload can be delivered.
-				// Evict the idle map entry. Transient failures (offset gap, append
-				// bounds) only reset the builder so a later BEGIN can reuse the slot.
-				delete(assembler.builders, sessionID)
+				// Malformed END delivers nothing. The builder resets and keeps
+				// its capacity for the next BEGIN on this session.
+				builder.reset()
 				return ControlledContinue
 			}
 
@@ -159,7 +162,7 @@ func (assembler *ControlledFragmentAssembler) handleFragment(
 				builder.limit = preEndLimit
 				return ControlledAbort
 			}
-			delete(assembler.builders, sessionID)
+			builder.reset()
 			return action
 		}
 	}

@@ -18,6 +18,10 @@ const fragmentBuilderInitMinCapacity = 4096
 // Reassembly runs on a ControlledFragmentAssembler core. Every delivery returns
 // ControlledContinue because FragmentHandler has no poll action.
 //
+// Each session keeps its builder, and its payload capacity, after delivery.
+// Call [FragmentAssembler.FreeSessionBuffer] when the image for that session
+// goes away, or [FragmentAssembler.Clear], to release it.
+//
 // Concurrency: not safe for concurrent use. Delegate callbacks must not poll
 // the same assembler reentrantly.
 type FragmentAssembler struct {
@@ -73,7 +77,7 @@ func (assembler *FragmentAssembler) DirectAssemblers() bool {
 	return assembler.core.DirectAssemblers()
 }
 
-// Clear drops all in-progress reassembly state.
+// Clear evicts every session builder, in progress or idle.
 func (assembler *FragmentAssembler) Clear() {
 	assembler.core.Clear()
 }
@@ -108,6 +112,7 @@ func (builder *fragmentBufferBuilder) reset() {
 	builder.limit = 0
 	builder.nextTermOffset = fragmentBuilderIdleNextTermOffset
 	builder.firstFrameLength = 0
+	builder.completedHeader.resetCompletedFragment()
 }
 
 func (builder *fragmentBufferBuilder) captureHeader(

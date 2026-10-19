@@ -504,6 +504,31 @@ func TestBoundedLogAdapter_SetImage_cachePosition(t *testing.T) {
 	require.Equal(t, image2.Position(), a.Position())
 }
 
+func TestBoundedLogAdapter_SetImage_clearsAssembler(t *testing.T) {
+	a, image, sink := boundAdapter(t)
+
+	fields := codecs.SessionMessageHeaderFields{
+		LeadershipTermID: 1,
+		ClusterSessionID: 42,
+		Timestamp:        99,
+	}
+	whole := encodeSessionMessage(t, fields, []byte("frag-payload"))
+	beginSpan, totalSpan := writeBeginEndTrain(t, image, whole)
+
+	require.Equal(t, 1, a.Poll(int64(beginSpan)))
+	requireSinkIdle(t, sink)
+
+	a.SetImage(image)
+	require.Equal(t, 1, a.Poll(totalSpan+32))
+	requireSinkIdle(t, sink)
+
+	fullSpan := int64(logbuffer.AlignFragmentChunkLength(len(whole)))
+	writeUnfragmentedFrame(t, image, int(totalSpan), whole)
+	require.Equal(t, 1, a.Poll(totalSpan+fullSpan+32))
+	require.Equal(t, 1, sink.sessionMessages)
+	require.Equal(t, fields.ClusterSessionID, sink.lastSessionID)
+}
+
 func TestBoundedLogAdapter_freshAdapter_maxPositionDefault(t *testing.T) {
 	// Fresh adapter with no SetMaxLogPosition delivers under the commit bound
 	// alone (math.MaxInt64 constructor default is not a silent zero cap).
