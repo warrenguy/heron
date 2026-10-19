@@ -343,43 +343,35 @@ func (ep *ExclusivePublication) checkPublicationLimit(reservationSpan, messageLe
 	return 0
 }
 
-type exclusiveReservation struct {
-	termBuf          atomicbuffer.AtomicBuffer
-	termID           int32
-	startOffset      int
-	resultingOffset  int
-	reservedPosition int64
-	status           int64
-}
-
-func (ep *ExclusivePublication) reserveExclusiveSpace(alignedLength int) exclusiveReservation {
+// reserveExclusiveSpace publishes a tail of alignedLength bytes past
+// ep.termOffset in the active term. On success the active partition, ep.termID
+// and ep.termOffset are unchanged. The caller writes the frame at
+// ep.termOffset, then advances ep.termOffset by alignedLength.
+func (ep *ExclusivePublication) reserveExclusiveSpace(alignedLength int) (
+	reservedPosition int64,
+	status int64,
+) {
 	termLength := ep.termBufferLength
 	tailOffset := logbuffer.OffsetTermTailCounter(ep.activePartitionIndex)
-	termBuf := ep.termBuffers[ep.activePartitionIndex]
 	termID := ep.termID
 	startOffset := ep.termOffset
 
 	resultingOffset := startOffset + alignedLength
-	//nolint:gosec // G115: the term length plus one fragmented message fits in int32
+	//nolint:gosec // G115: startOffset under TermMaxLength, 1<<30, plus a framed 16MB message
 	ep.meta.PutInt64Release(tailOffset, logbuffer.PackRawTail(termID, int32(resultingOffset)))
 
-	reservedPosition := ep.termBeginPosition + int64(resultingOffset)
+	reservedPosition = ep.termBeginPosition + int64(resultingOffset)
 	if resultingOffset > termLength {
+		termBuf := ep.termBuffers[ep.activePartitionIndex]
 		endStatus := ep.handleEndOfLog(termBuf, termLength, termID, startOffset, reservedPosition)
 		if endStatus == MaxPositionExceeded {
-			return exclusiveReservation{status: MaxPositionExceeded}
+			return 0, MaxPositionExceeded
 		}
 		ep.rotateTerm()
-		return exclusiveReservation{status: AdminAction}
+		return 0, AdminAction
 	}
 
-	return exclusiveReservation{
-		termBuf:          termBuf,
-		termID:           termID,
-		startOffset:      startOffset,
-		resultingOffset:  resultingOffset,
-		reservedPosition: reservedPosition,
-	}
+	return reservedPosition, 0
 }
 
 func (ep *ExclusivePublication) appendUnfragmentedMessage(
@@ -388,31 +380,31 @@ func (ep *ExclusivePublication) appendUnfragmentedMessage(
 	length int,
 	alignedLength int,
 ) int64 {
-	//nolint:gosec // G115: the length is at most the MTU
-	frameLength := int32(length + logbuffer.DataHeaderLength)
-
-	res := ep.reserveExclusiveSpace(alignedLength)
-	if res.status != 0 {
-		return res.status
+	reservedPosition, status := ep.reserveExclusiveSpace(alignedLength)
+	if status != 0 {
+		return status
 	}
 
-	ep.headerWriter.Write(res.termBuf, res.startOffset, frameLength, res.termID)
-	res.termBuf.PutBytes(
-		res.startOffset+logbuffer.OffsetFramePayload,
+	termBuf := ep.termBuffers[ep.activePartitionIndex]
+	startOffset := ep.termOffset
+	frameLength := dataFrameLength(length)
+
+	ep.headerWriter.Write(termBuf, startOffset, frameLength, ep.termID)
+	termBuf.PutBytes(
+		startOffset+logbuffer.OffsetFramePayload,
 		buffer[srcOffset:srcOffset+length],
 	)
-	logbuffer.PutFrameLengthOrdered(res.termBuf, res.startOffset, frameLength)
+	logbuffer.PutFrameLengthOrdered(termBuf, startOffset, frameLength)
 
-	ep.termOffset = res.resultingOffset
-	return res.reservedPosition
+	ep.termOffset += alignedLength
+	return reservedPosition
 }
 
-// appendFragmentedMessage reserves the full framed span once, then writes
-// BEGIN, middle, and END DATA frames in that block.
+// appendFragmentedMessage reserves the full framed span with one release tail
+// store. It then writes the BEGIN, middle, and END DATA frames into that span.
 //
-// Single-writer exclusive path. One release pack-tail covers the full framed
-// span. Does not use FAA. Does not recheck term ID mid-loop. The exclusive
-// writer owns the term.
+// The exclusive writer owns the term, so the loop uses no FAA and no
+// mid-loop term ID recheck.
 func (ep *ExclusivePublication) appendFragmentedMessage(
 	buffer []byte,
 	srcOffset int,
@@ -423,12 +415,14 @@ func (ep *ExclusivePublication) appendFragmentedMessage(
 		return status
 	}
 
-	res := ep.reserveExclusiveSpace(framedLength)
-	if res.status != 0 {
-		return res.status
+	reservedPosition, status := ep.reserveExclusiveSpace(framedLength)
+	if status != 0 {
+		return status
 	}
 
-	frameOffset := res.startOffset
+	termBuf := ep.termBuffers[ep.activePartitionIndex]
+	termID := ep.termID
+	frameOffset := ep.termOffset
 	remaining := length
 	fullChunkAligned := logbuffer.AlignFragmentChunkLength(ep.maxPayloadLength)
 
@@ -438,8 +432,8 @@ func (ep *ExclusivePublication) appendFragmentedMessage(
 
 		writeFragmentChunk(
 			ep.headerWriter,
-			res.termBuf,
-			res.termID,
+			termBuf,
+			termID,
 			frameOffset,
 			chunk,
 			buffer[payloadOffset:payloadOffset+chunk.bytesToWrite],
@@ -449,25 +443,24 @@ func (ep *ExclusivePublication) appendFragmentedMessage(
 		remaining -= chunk.bytesToWrite
 	}
 
-	ep.termOffset = res.resultingOffset
-	return res.reservedPosition
+	ep.termOffset += framedLength
+	return reservedPosition
 }
 
 func (ep *ExclusivePublication) claim(
 	length int,
 	alignedLength int,
 ) (termIndex, frameOffset int, position, status int64) {
-	//nolint:gosec // G115: the length is at most the MTU
-	frameLength := int32(length + logbuffer.DataHeaderLength)
-
-	res := ep.reserveExclusiveSpace(alignedLength)
-	if res.status != 0 {
-		return 0, 0, 0, res.status
+	reservedPosition, status := ep.reserveExclusiveSpace(alignedLength)
+	if status != 0 {
+		return 0, 0, 0, status
 	}
 
-	ep.headerWriter.Write(res.termBuf, res.startOffset, frameLength, res.termID)
-	ep.termOffset = res.resultingOffset
-	return ep.activePartitionIndex, res.startOffset, res.reservedPosition, 0
+	frameOffset = ep.termOffset
+	termBuf := ep.termBuffers[ep.activePartitionIndex]
+	ep.headerWriter.Write(termBuf, frameOffset, dataFrameLength(length), ep.termID)
+	ep.termOffset += alignedLength
+	return ep.activePartitionIndex, frameOffset, reservedPosition, 0
 }
 
 func (ep *ExclusivePublication) finalizeInFlightClaim(
@@ -519,7 +512,7 @@ func (ep *ExclusivePublication) handleEndOfLog(
 	reservedPosition int64,
 ) int64 {
 	if termOffset < termLength {
-		//nolint:gosec // G115: the padding is below the term length
+		//nolint:gosec // G115: CheckTermLength caps termLength at TermMaxLength, 1<<30
 		paddingLength := int32(termLength - termOffset)
 		commitPublicationTermPadding(ep.headerWriter, termBuf, termID, termOffset, paddingLength)
 	}

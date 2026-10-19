@@ -109,6 +109,15 @@ func newPublicationFromReady(
 	return pub, nil
 }
 
+// dataFrameLength returns the DATA frame length for a payload of length bytes.
+//
+// Callers cap length at maxPayloadLength, which is MTULength minus the data
+// header. CheckMTULength caps MTULength at MaxUDPPayloadLength on log load.
+func dataFrameLength(length int) int32 {
+	//nolint:gosec // G115: the sum is at most MaxUDPPayloadLength, 65504
+	return int32(length + logbuffer.DataHeaderLength)
+}
+
 // fragmentChunk is the frame shape of one BEGIN, middle, or END fragment.
 type fragmentChunk struct {
 	bytesToWrite  int
@@ -132,8 +141,7 @@ func nextFragmentChunk(
 		bytesToWrite:  min(remaining, maxPayloadLength),
 		alignedLength: fullChunkAligned,
 	}
-	//nolint:gosec // G115: the length is at most the MTU
-	chunk.frameLength = int32(chunk.bytesToWrite + logbuffer.DataHeaderLength)
+	chunk.frameLength = dataFrameLength(chunk.bytesToWrite)
 	if chunk.bytesToWrite != maxPayloadLength {
 		chunk.alignedLength = logbuffer.AlignFragmentChunkLength(chunk.bytesToWrite)
 	}
