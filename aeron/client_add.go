@@ -160,7 +160,8 @@ var nullPendingAddOfferContext = pendingAddOfferContext{
 	correlationID: conductor.NullCorrelationID,
 }
 
-type addOfferFunc func(proxy *conductor.DriverProxy, correlationID int64) error
+// driverOfferFunc offers one driver command under correlationID.
+type driverOfferFunc func(proxy *conductor.DriverProxy, correlationID int64) error
 
 type pendingAddOfferContext struct {
 	correlationID    int64
@@ -173,16 +174,21 @@ type pendingAddOfferContext struct {
 //
 // On any error the pending registration is rolled back and the returned
 // correlationID is NullCorrelationID; callers return the error directly.
+// Panics on a non-add pendingKind: every caller passes a fixed add kind.
 func (client *Client) registerAndOfferAddLocked(
 	pendingKind conductor.PendingKind,
 	streamID int32,
 	channel string,
-	offer addOfferFunc,
+	offer driverOfferFunc,
 ) (pendingAddOfferContext, error) {
 	if err := client.requireReadyWithDriverProxy(); err != nil {
 		return nullPendingAddOfferContext, err
 	}
 
+	registrationKind := registrationKindFor(pendingKind)
+	if registrationKind == "" {
+		panic(fmt.Sprintf("aeron: unsupported add pending kind %v", pendingKind))
+	}
 	driverProxy := client.driverProxy
 	cncMappedAtOfferStart := client.mapped != nil
 	conductorInstance := client.conductor
@@ -190,7 +196,7 @@ func (client *Client) registerAndOfferAddLocked(
 	offerCtx := pendingAddOfferContext{
 		correlationID:    driverProxy.NextCorrelationID(),
 		deadlineNs:       client.nanoClock() + client.driverTimeout.Nanoseconds(),
-		registrationKind: registrationKindFor(pendingKind),
+		registrationKind: registrationKind,
 	}
 	if err := conductorInstance.RegisterPendingAddWithDeadline(
 		pendingKind,
@@ -230,8 +236,10 @@ func prepareAdd(client *Client, channel string) error {
 	return validateChannel(channel)
 }
 
+// registrationKindFor returns the registration kind for an OfferAdd* pending
+// kind. Returns "" for any other kind.
 func registrationKindFor(pendingKind conductor.PendingKind) string {
-	//exhaustive:ignore panic default rejects non-add kinds
+	//exhaustive:ignore add kinds are the closed set. Other kinds fall to default
 	switch pendingKind {
 	case conductor.PendingKindAddPublication:
 		return registrationKindPublication
@@ -240,7 +248,7 @@ func registrationKindFor(pendingKind conductor.PendingKind) string {
 	case conductor.PendingKindAddSubscription:
 		return registrationKindSubscription
 	default:
-		panic(fmt.Sprintf("aeron: unsupported add pending kind %v", pendingKind))
+		return ""
 	}
 }
 
@@ -289,7 +297,7 @@ func (client *Client) awaitAdd(
 	pendingKind conductor.PendingKind,
 	streamID int32,
 	channel string,
-	offer addOfferFunc,
+	offer driverOfferFunc,
 ) (conductor.PendingRegistration, error) {
 	if client == nil {
 		return conductor.PendingRegistration{}, ErrClientNotReady
@@ -378,7 +386,7 @@ func (client *Client) offerAddCommand(
 	conductorInstance *conductor.Conductor,
 	driverProxy *conductor.DriverProxy,
 	cncMappedAtOfferStart bool,
-	offer addOfferFunc,
+	offer driverOfferFunc,
 ) error {
 	var lastOfferErr error
 	for client.nanoClock() < offerCtx.deadlineNs {

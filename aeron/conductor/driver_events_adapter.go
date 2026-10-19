@@ -172,8 +172,7 @@ func (adapter *DriverEventsAdapter) rejectUnlessActiveCorrelation(
 	correlationID int64,
 ) bool {
 	return adapter.markUnhandledIf(
-		activeCorrelationID == NullCorrelationID || pending == nil ||
-			correlationID != activeCorrelationID,
+		pending == nil || !isActiveCorrelation(activeCorrelationID, correlationID),
 	)
 }
 
@@ -187,15 +186,51 @@ func (adapter *DriverEventsAdapter) rejectUnlessCorrelated(
 	)
 }
 
+// rejectUnlessActiveOrDestination filters ON_OPERATION_SUCCESS. See
+// isOperationSuccessCorrelated.
+func (adapter *DriverEventsAdapter) rejectUnlessActiveOrDestination(
+	activeCorrelationID int64,
+	pending PendingEventHandler,
+	correlationID int64,
+) bool {
+	return adapter.markUnhandledIf(
+		pending == nil ||
+			!adapter.isOperationSuccessCorrelated(activeCorrelationID, correlationID),
+	)
+}
+
 // correlated gates async driver responses when the event correlation differs from
 // active: active await OR pending registry entry. rejectUnlessActiveCorrelation
-// still requires exact active match for operation success and next session ID.
+// requires an exact active match for next session ID. Operation success uses
+// isOperationSuccessCorrelated.
 func (adapter *DriverEventsAdapter) correlated(
 	activeCorrelationID int64,
 	correlationID int64,
 ) bool {
-	return (correlationID == activeCorrelationID && activeCorrelationID != NullCorrelationID) ||
+	return isActiveCorrelation(activeCorrelationID, correlationID) ||
 		(adapter.pendingRegistry != nil && adapter.pendingRegistry.Contains(correlationID))
+}
+
+// isActiveCorrelation reports whether correlationID is the active await id.
+func isActiveCorrelation(activeCorrelationID, correlationID int64) bool {
+	return activeCorrelationID != NullCorrelationID && correlationID == activeCorrelationID
+}
+
+// isOperationSuccessCorrelated accepts ON_OPERATION_SUCCESS for the active id
+// or for a PendingKindDestination registry entry. An async destination reply
+// arrives outside any await.
+func (adapter *DriverEventsAdapter) isOperationSuccessCorrelated(
+	activeCorrelationID int64,
+	correlationID int64,
+) bool {
+	if isActiveCorrelation(activeCorrelationID, correlationID) {
+		return true
+	}
+	if adapter.pendingRegistry == nil {
+		return false
+	}
+	registration, ok := adapter.pendingRegistry.Get(correlationID)
+	return ok && registration.Kind == PendingKindDestination
 }
 
 // Fixed flyweight: broadcast length may exceed the body;
@@ -207,18 +242,23 @@ func (adapter *DriverEventsAdapter) handleOperationSuccess(
 	activeCorrelationID int64,
 	pending PendingEventHandler,
 ) {
-	handleFixedLengthPendingEvent(
+	decoded, ok := decodeFixedLengthEvent(
 		adapter,
 		buffer,
 		offset,
 		length,
 		OperationSuccessBodyLength,
 		DecodeOperationSuccess,
-		activeCorrelationID,
-		pending,
-		operationSuccessEventCorrelationID,
-		applyOperationSuccess,
 	)
+	if !ok {
+		return
+	}
+	if adapter.rejectUnlessActiveOrDestination(activeCorrelationID, pending, decoded.CorrelationID) {
+		return
+	}
+	if !pending.OperationSucceeded(decoded.CorrelationID) {
+		adapter.markUnhandled()
+	}
 }
 
 // isUnknownRegistrationCode reports the error codes that mean the driver no
@@ -268,18 +308,23 @@ func (adapter *DriverEventsAdapter) handleNextAvailableSessionID(
 	activeCorrelationID int64,
 	pending PendingEventHandler,
 ) {
-	handleFixedLengthPendingEvent(
+	decoded, ok := decodeFixedLengthEvent(
 		adapter,
 		buffer,
 		offset,
 		length,
 		NextAvailableSessionIDBodyLength,
 		DecodeNextAvailableSessionID,
-		activeCorrelationID,
-		pending,
-		correlationAndInt32EventCorrelationID,
-		applyNextAvailableSessionID,
 	)
+	if !ok {
+		return
+	}
+	if adapter.rejectUnlessActiveCorrelation(activeCorrelationID, pending, decoded.CorrelationID) {
+		return
+	}
+	if !pending.NextSessionID(decoded.CorrelationID, decoded.Int32Value) {
+		adapter.markUnhandled()
+	}
 }
 
 // handleCounterReady completes a pending add-counter entry. The driver
@@ -353,66 +398,12 @@ func peekEventCorrelationID(
 	return buffer.GetInt64(offset), true
 }
 
-func operationSuccessEventCorrelationID(event OperationSuccess) int64 {
-	return event.CorrelationID
-}
-
-func correlationAndInt32EventCorrelationID(event CorrelationAndInt32) int64 {
-	return event.CorrelationID
-}
-
-func applyOperationSuccess(handler PendingEventHandler, event OperationSuccess) bool {
-	return handler.OperationSucceeded(event.CorrelationID)
-}
-
-func applyNextAvailableSessionID(
-	handler PendingEventHandler,
-	event CorrelationAndInt32,
-) bool {
-	return handler.NextSessionID(event.CorrelationID, event.Int32Value)
-}
-
 func publicationBuffersReadyEventCorrelationID(event PublicationBuffersReady) int64 {
 	return event.CorrelationID
 }
 
 func subscriptionReadyEventCorrelationID(event SubscriptionReady) int64 {
 	return event.CorrelationID
-}
-
-func handleFixedLengthPendingEvent[T any](
-	adapter *DriverEventsAdapter,
-	buffer atomicbuffer.AtomicBuffer,
-	offset int,
-	length int,
-	minBodyLength int,
-	decode func(atomicbuffer.AtomicBuffer, int) (T, error),
-	activeCorrelationID int64,
-	pending PendingEventHandler,
-	correlationFrom func(T) int64,
-	apply func(PendingEventHandler, T) bool,
-) {
-	decoded, ok := decodeFixedLengthEvent(
-		adapter,
-		buffer,
-		offset,
-		length,
-		minBodyLength,
-		decode,
-	)
-	if !ok {
-		return
-	}
-	if adapter.rejectUnlessActiveCorrelation(
-		activeCorrelationID,
-		pending,
-		correlationFrom(decoded),
-	) {
-		return
-	}
-	if !apply(pending, decoded) {
-		adapter.markUnhandled()
-	}
 }
 
 // decodeFixedLengthEvent decodes a fixed-length event body. A short or
