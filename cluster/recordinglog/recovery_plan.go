@@ -115,6 +115,14 @@ func (p RecoveryPlan) TermRecordingID() int64 {
 	return p.Log.Term.RecordingID
 }
 
+// SeedLogPosition returns the log position a restart replays from.
+//
+// It is 0: a restart replays the whole log. Recovery refuses a plan that
+// holds a snapshot, so no snapshot position raises it yet.
+func (p RecoveryPlan) SeedLogPosition() int64 {
+	return 0
+}
+
 // AppendedOrCommittedPosition returns the appended log position, or the
 // committed log position when the appended position is NullPosition.
 //

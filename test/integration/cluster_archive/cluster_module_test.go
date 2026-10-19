@@ -297,22 +297,9 @@ func TestClusterModule_rejoinsCommitAfterMemberRestart(t *testing.T) {
 		set.State(),
 	)
 
-	// Commit seed at open is at least the plan committed floor. Floor is the last
-	// TERM entry's LogPosition when committed. NullPosition leaves the plan
-	// floor at 0.
-	planFloor := int64(0)
-	if lp := openEntries[len(openEntries)-1].LogPosition; lp != recordinglog.NullPosition {
-		planFloor = lp
-	}
-	openCommit := returning.CommitPosition()
-	require.GreaterOrEqual(
-		t,
-		openCommit,
-		planFloor,
-		"CommitPosition at open below plan floor %d:\n%s",
-		planFloor,
-		set.State(),
-	)
+	// Commit at open is the plan replay start, 0 with no snapshot.
+	// RestartMember does not tick, so nothing has raised it yet.
+	require.Zero(t, returning.CommitPosition(), "CommitPosition at open:\n%s", set.State())
 
 	// Returning member must re-image peer log publications and finish election.
 	const imageBound = 30 * time.Second
@@ -348,8 +335,8 @@ func TestClusterModule_rejoinsCommitAfterMemberRestart(t *testing.T) {
 		set.State(),
 	)
 
-	// Drive commit past the open floor. Separates recovered position from
-	// connected participation:
+	// Drive commit past the pre-restart position. Separates replayed history
+	// from connected participation:
 	//   - returner must replicate and commit the post-restart entry
 	//   - leader must commit past its pre-restart position
 	postAppendPos := leader.LogPublisher().AppendMessage(

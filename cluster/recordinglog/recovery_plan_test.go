@@ -458,3 +458,19 @@ func TestPlanRecovery_committedLogPosition(t *testing.T) {
 		})
 	}
 }
+
+func TestRecoveryPlan_SeedLogPosition(t *testing.T) {
+	t.Parallel()
+
+	// Empty, closed term, and committed term all seed 0: a restart replays
+	// the whole log.
+	require.Equal(t, int64(0), recordinglog.RecoveryPlan{}.SeedLogPosition())
+
+	term := termEntryWith(10, 10, 666)
+	term.LogPosition = 1234
+	log, _ := openWithEntries(t, term)
+	plan, err := log.PlanRecovery(fakeArchiveWithIDs(10), recoveryPlanConfig(0))
+	require.NoError(t, err)
+	require.Equal(t, int64(1234), plan.CommittedLogPosition)
+	require.Equal(t, int64(0), plan.SeedLogPosition())
+}
