@@ -14,7 +14,12 @@ var (
 	benchPayload4000 = [4000]byte{}
 )
 
-func benchFragmentedOffer(b *testing.B, pub *aeron.Publication, payload []byte) {
+// benchOfferer is the offer surface benchOffer drives on either publication type.
+type benchOfferer interface {
+	OfferWithOffset(buffer []byte, offset, length int) int64
+}
+
+func benchOffer(b *testing.B, pub benchOfferer, payload []byte) {
 	b.Helper()
 	b.SetBytes(int64(len(payload)))
 	for b.Loop() {
@@ -29,14 +34,20 @@ func setupBenchPublication(b *testing.B) *aeron.Publication {
 	return pub
 }
 
+func BenchmarkPublication_Offer_Small(b *testing.B) {
+	pub := setupBenchPublication(b)
+	b.ReportAllocs()
+	benchOffer(b, pub, benchPayload64[:])
+}
+
 func BenchmarkPublication_Offer_Fragmented(b *testing.B) {
 	pub := setupBenchPublication(b)
 	b.ReportAllocs()
 	b.Run("1400", func(b *testing.B) {
-		benchFragmentedOffer(b, pub, benchPayload1400[:])
+		benchOffer(b, pub, benchPayload1400[:])
 	})
 	b.Run("4000", func(b *testing.B) {
-		benchFragmentedOffer(b, pub, benchPayload4000[:])
+		benchOffer(b, pub, benchPayload4000[:])
 	})
 }
 
@@ -68,10 +79,7 @@ func BenchmarkPublication_Offer_TermBoundary(b *testing.B) {
 	)
 	pub := aeron.NewTestPublication(b, cfg, int64(1)<<62)
 	b.ReportAllocs()
-	b.SetBytes(64)
-	for b.Loop() {
-		benchOfferSink = aeron.OfferRetryForTest(pub, benchPayload64[:])
-	}
+	benchOffer(b, pub, benchPayload64[:])
 }
 
 func BenchmarkPublication_Offer_Parallel(b *testing.B) {

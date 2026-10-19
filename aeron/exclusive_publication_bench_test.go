@@ -21,10 +21,7 @@ func setupBenchExclusivePublication(b *testing.B) *aeron.ExclusivePublication {
 func BenchmarkExclusivePublication_Offer_Small(b *testing.B) {
 	ep := setupBenchExclusivePublication(b)
 	b.ReportAllocs()
-	b.SetBytes(64)
-	for b.Loop() {
-		benchOfferSink = aeron.OfferRetryForTest(ep, benchPayload64[:])
-	}
+	benchOffer(b, ep, benchPayload64[:])
 }
 
 func BenchmarkExclusivePublication_TryClaim_Commit(b *testing.B) {
@@ -51,8 +48,5 @@ func BenchmarkExclusivePublication_Offer_TermBoundary(b *testing.B) {
 	cfg := aeron.LogConfigNearTermEndForTest(aeron.DefaultTestExclusivePublicationLogConfig, 128)
 	ep := aeron.NewTestExclusivePublication(b, cfg, int64(1)<<62)
 	b.ReportAllocs()
-	b.SetBytes(64)
-	for b.Loop() {
-		benchOfferSink = aeron.OfferRetryForTest(ep, benchPayload64[:])
-	}
+	benchOffer(b, ep, benchPayload64[:])
 }
