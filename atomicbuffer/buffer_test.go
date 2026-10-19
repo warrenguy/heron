@@ -1,6 +1,7 @@
 package atomicbuffer_test
 
 import (
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -91,6 +92,14 @@ func TestAtomicBuffer_ZeroAllocs(t *testing.T) {
 			atomicbuffer.Wrap(stack[:]).PutInt32Release(4, i32)
 			i32++
 		}},
+		{"PutInt64ReleaseStoreFenceAt", func() {
+			atomicBuffer.PutInt64ReleaseStoreFenceAt(8, i64)
+			i64++
+		}},
+		{"StoreInt64Release", func() {
+			atomicbuffer.StoreInt64Release(atomicBuffer.Int64Pointer(8), i64)
+			i64++
+		}},
 		{"PutInt64Volatile", func() {
 			atomicBuffer.PutInt64Volatile(0, i64)
 			i64++
@@ -146,6 +155,36 @@ func TestAtomicBuffer_TrustedAt_matchesBoundedGetters(t *testing.T) {
 		{"ByteAt", func(t *testing.T) {
 			require.Equal(t, atomicBuffer.GetByte(4), atomicBuffer.ByteAt(4))
 		}},
+		{"Int32Pointer", func(t *testing.T) {
+			ptr := atomicBuffer.Int32Pointer(0)
+			require.Equal(t, atomicBuffer.GetInt32Volatile(0), atomic.LoadInt32(ptr))
+		}},
+		{"Int64Pointer", func(t *testing.T) {
+			ptr := atomicBuffer.Int64Pointer(8)
+			require.Equal(t, atomicBuffer.GetInt64Volatile(8), atomic.LoadInt64(ptr))
+		}},
+		{"StoreInt64Release", func(t *testing.T) {
+			const value = int64(-0x0102030405060708)
+			released := newTestAtomicBuffer(t, testAtomicBufferSize)
+			released.PutInt64Release(16, value)
+
+			stored := newTestAtomicBuffer(t, testAtomicBufferSize)
+			atomicbuffer.StoreInt64Release(stored.Int64Pointer(16), value)
+
+			require.Equal(t, released.Bytes(), stored.Bytes())
+			require.Equal(t, value, stored.GetInt64(16))
+		}},
+		{"PutInt64ReleaseStoreFenceAt", func(t *testing.T) {
+			const value = int64(-0x0A0B0C0D0E0F1011)
+			released := newTestAtomicBuffer(t, testAtomicBufferSize)
+			released.PutInt64Release(8, value)
+
+			fenced := newTestAtomicBuffer(t, testAtomicBufferSize)
+			fenced.PutInt64ReleaseStoreFenceAt(8, value)
+
+			require.Equal(t, released.Bytes(), fenced.Bytes())
+			require.Equal(t, value, fenced.GetInt64(8))
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, tc.fn)
@@ -181,6 +220,10 @@ func TestAtomicBuffer_TrustedAt_outOfBoundsPanics(t *testing.T) {
 		{"VolatileInt32At on nil buffer", func() { emptyBuffer.VolatileInt32At(0) }},
 		{"VolatileInt64At on nil buffer", func() { emptyBuffer.VolatileInt64At(0) }},
 		{"ByteAt on nil buffer", func() { emptyBuffer.ByteAt(0) }},
+		{"Int32Pointer out of bounds", func() { int32Buffer.Int32Pointer(1) }},
+		{"Int64Pointer out of bounds", func() { int64Buffer.Int64Pointer(1) }},
+		{"Int64Pointer negative offset", func() { int64Buffer.Int64Pointer(-1) }},
+		{"Int64Pointer on nil buffer", func() { emptyBuffer.Int64Pointer(0) }},
 	}
 	for _, tc := range cases {
 		require.Panics(t, tc.fn, tc.name)

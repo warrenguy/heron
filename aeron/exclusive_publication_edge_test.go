@@ -250,3 +250,48 @@ func TestExclusivePublication_handleEndOfLog_reservedPositionAtMax_noRotate(t *t
 	require.Equal(t, aeron.MaxPositionExceeded, got)
 	require.Equal(t, beforeCount, aeron.ExclusivePublicationActiveTermCountForTest(ep))
 }
+
+func TestExclusivePublication_rotateAtTermEnd(t *testing.T) {
+	termLength := aeron.TestPublicationTermLength
+	startOffset := termLength - 64
+
+	t.Run("reservedPositionAtMax", func(t *testing.T) {
+		ep := aeron.NewTestExclusivePublication(
+			t,
+			aeron.DefaultTestExclusivePublicationLogConfig(),
+			1_000_000,
+		)
+		beforeCount := aeron.ExclusivePublicationActiveTermCountForTest(ep)
+
+		got := ep.RotateAtTermEndForTest(startOffset, ep.MaxPossiblePositionForTest())
+
+		require.Equal(t, aeron.MaxPositionExceeded, got)
+		require.Equal(t, beforeCount, aeron.ExclusivePublicationActiveTermCountForTest(ep))
+	})
+
+	t.Run("rotates", func(t *testing.T) {
+		ep := aeron.NewTestExclusivePublication(
+			t,
+			aeron.DefaultTestExclusivePublicationLogConfig(),
+			1_000_000,
+		)
+		beforeCount := aeron.ExclusivePublicationActiveTermCountForTest(ep)
+
+		got := ep.RotateAtTermEndForTest(startOffset, int64(termLength+64))
+
+		require.Equal(t, aeron.AdminAction, got)
+		require.Equal(t, beforeCount+1, aeron.ExclusivePublicationActiveTermCountForTest(ep))
+
+		termBuf := aeron.ExclusivePublicationTermBufferForTest(ep, 0)
+		require.Equal(t, int32(64), logbuffer.FrameLengthVolatile(termBuf, startOffset))
+		require.Equal(t, int16(logbuffer.HdrTypePad), logbuffer.FrameType(termBuf, startOffset))
+
+		// The next offer writes to the new active partition at offset 0.
+		payload := []byte{1, 2, 3}
+		require.Equal(t, int64(termLength+64), ep.Offer(payload))
+
+		nextTermBuf := aeron.ExclusivePublicationTermBufferForTest(ep, 1)
+		wantFrameLength := int32(len(payload) + logbuffer.DataHeaderLength)
+		require.Equal(t, wantFrameLength, logbuffer.FrameLengthVolatile(nextTermBuf, 0))
+	})
+}

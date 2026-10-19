@@ -47,7 +47,8 @@ $(shell awk 'NR == FNR {base[$$1] = $$2 + $$3; next} $$2 + $$3 > base[$$1] {prin
 		-f '{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}' ./...))
 endef
 STRESS_TEST_PKGS := $(call tag-gained-pkgs,stress)
-# Packages that reach the amd64 release-store assembly, which -race builds skip.
+# Packages that reach the non-race amd64 release stores, which -race builds
+# replace with sync/atomic.
 NORACE_TEST_PKGS := ./atomicbuffer/ ./ringbuffer/ ./broadcast/ ./aeron/ \
 	./aeron/cnc/ ./aeron/conductor/ ./aeron/logbuffer/
 RAPID_TEST_PKGS := $(call tag-gained-pkgs,rapid)

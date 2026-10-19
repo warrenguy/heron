@@ -103,7 +103,7 @@ func syncExclusivePublicationWriterCacheFromConfig(
 		ep.termBufferLength,
 		ep.positionBitsToShift,
 	)
-	ep.activePartitionIndex = activePartitionIndex
+	ep.bindActivePartition(activePartitionIndex)
 	ep.termID = termID
 	ep.termOffset = termOffset
 	ep.termBeginPosition = termBeginPosition

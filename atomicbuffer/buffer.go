@@ -82,6 +82,29 @@ func addressAt(buf []byte, offset, size int) unsafe.Pointer {
 	return addressAtUnchecked(buf, offset)
 }
 
+// Int32Pointer returns the address of the int32 at offset. It panics when the
+// field does not fit in the buffer.
+//
+// A hot path calls it once when it binds the buffer. Later sync/atomic loads
+// through the pointer need no bounds check, because this call made it.
+//
+// Lifetime: the pointer is valid while the backing memory stays mapped.
+func (b AtomicBuffer) Int32Pointer(offset int) *int32 {
+	return (*int32)(addressAt(b.buf, offset, SizeInt32))
+}
+
+// Int64Pointer returns the address of the int64 at offset. It panics when the
+// field does not fit in the buffer.
+//
+// A hot path calls it once when it binds the buffer. Later sync/atomic
+// operations and StoreInt64Release through the pointer need no bounds check,
+// because this call made it.
+//
+// Lifetime: the pointer is valid while the backing memory stays mapped.
+func (b AtomicBuffer) Int64Pointer(offset int) *int64 {
+	return (*int64)(addressAt(b.buf, offset, SizeInt64))
+}
+
 func (b AtomicBuffer) GetInt32(offset int) int32 {
 	boundsCheck(b.buf, offset, SizeInt32)
 	return b.Int32At(offset)

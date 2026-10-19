@@ -88,7 +88,7 @@ func newExclusivePublicationFromReady(
 		return nil, err
 	}
 
-	return &ExclusivePublication{
+	ep := &ExclusivePublication{
 		registrationID:         ready.CorrelationID,
 		originalRegistrationID: ready.RegistrationID,
 		sessionID:              ready.SessionID,
@@ -108,12 +108,14 @@ func newExclusivePublicationFromReady(
 			ready.SessionID,
 			ready.StreamID,
 		),
-		activePartitionIndex:   activePartitionIndex,
 		termID:                 termID,
 		termOffset:             termOffset,
 		termBeginPosition:      termBeginPosition,
 		counters:               counters,
 		publicationLimit:       publicationLimit,
 		channelStatusCounterID: ready.ChannelStatusCounterID,
-	}, nil
+	}
+	ep.bindActivePartition(activePartitionIndex)
+
+	return ep, nil
 }

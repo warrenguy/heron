@@ -13,3 +13,9 @@ func (b AtomicBuffer) PutInt32Release(offset int, value int32) {
 func (b AtomicBuffer) PutInt64Release(offset int, value int64) {
 	atomic.StoreInt64((*int64)(addressAt(b.buf, offset, SizeInt64)), value)
 }
+
+// StoreInt64Release stores value at ptr with release order, like Agrona
+// putLongRelease. Get ptr from Int64Pointer.
+func StoreInt64Release(ptr *int64, value int64) {
+	atomic.StoreInt64(ptr, value)
+}

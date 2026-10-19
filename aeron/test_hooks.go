@@ -260,8 +260,8 @@ func NewTestExclusivePublicationForHooksWithConnected(
 // NewTestExclusivePublicationForHooksWithLimit builds an exclusive publication
 // with caller-chosen publication-limit counter value and is-connected flag.
 //
-// Cross-package consensus tests use limit 0 to hit checkPublicationLimit at
-// position 0 (retriable NotConnected or BackPressured).
+// Cross-package consensus tests use limit 0 to hit the publication limit
+// check at position 0 (retriable NotConnected or BackPressured).
 func NewTestExclusivePublicationForHooksWithLimit(
 	tb testing.TB,
 	limitPosition int64,

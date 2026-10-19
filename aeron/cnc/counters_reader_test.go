@@ -578,6 +578,13 @@ func TestNewCounterSlot_outOfBoundsPanics(t *testing.T) {
 			})
 		})
 	}
+
+	// NewCounterSlot makes the only bounds check. The zero CounterSlot has
+	// no value address, so Get panics.
+	require.Panics(t, func() {
+		var slot cnc.CounterSlot
+		slot.Get()
+	})
 }
 
 func TestCountersReaderCounterValuesBufferAliasesAndVolatileRead(t *testing.T) {

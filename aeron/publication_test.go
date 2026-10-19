@@ -3,6 +3,7 @@ package aeron_test
 import (
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -31,23 +32,51 @@ func TestPublication_Offer_goldenHeaderBytes(t *testing.T) {
 	pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), 1_000_000)
 
 	payload := []byte{0x01, 0x02, 0x03, 0x04}
-	position := pub.Offer(payload)
-	wantPosition := int64(logbuffer.AlignFrameLength(len(payload) + logbuffer.DataHeaderLength))
-	require.Equal(t, wantPosition, position)
+	alignedLength := logbuffer.AlignFrameLength(len(payload) + logbuffer.DataHeaderLength)
+	require.Equal(t, int64(alignedLength), pub.Offer(payload))
+	require.Equal(t, int64(2*alignedLength), pub.Offer(payload))
 
 	_, termBuf := aeron.PublicationActiveTermBufferForTest(pub)
-	want := []byte{
-		0x24, 0x00, 0x00, 0x00,
-		0x00,
-		0xC0,
-		0x01, 0x00,
-		0x00, 0x00, 0x00, 0x00,
-		0xE9, 0x03, 0x00, 0x00,
-		0xD2, 0x07, 0x00, 0x00,
-		0x07, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	frames := []struct {
+		name        string
+		frameOffset int
+		want        []byte
+	}{
+		{
+			name:        "first frame",
+			frameOffset: 0,
+			want: []byte{
+				0x24, 0x00, 0x00, 0x00,
+				0x00,
+				0xC0,
+				0x01, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0xE9, 0x03, 0x00, 0x00,
+				0xD2, 0x07, 0x00, 0x00,
+				0x07, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			},
+		},
+		{
+			name:        "second frame",
+			frameOffset: alignedLength,
+			want: []byte{
+				0x24, 0x00, 0x00, 0x00,
+				0x00,
+				0xC0,
+				0x01, 0x00,
+				0x40, 0x00, 0x00, 0x00,
+				0xE9, 0x03, 0x00, 0x00,
+				0xD2, 0x07, 0x00, 0x00,
+				0x07, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			},
+		},
 	}
-	require.Equal(t, want, termBuf.Bytes()[:logbuffer.DataHeaderLength])
+	for _, frame := range frames {
+		header := termBuf.Bytes()[frame.frameOffset : frame.frameOffset+logbuffer.DataHeaderLength]
+		require.Equal(t, frame.want, header, frame.name)
+	}
 }
 
 func TestPublication_OfferWithOffset(t *testing.T) {
@@ -102,6 +131,14 @@ func TestPublication_OfferWithOffset_invalidBounds(t *testing.T) {
 		{"offset past buffer", 4, 1, "aeron: invalid offer offset=4 buffer=3"},
 		{"length past buffer", 0, 4, "aeron: invalid offer offset=0 length=4 buffer=3"},
 		{"negative length", 0, -1, "aeron: invalid message length=-1"},
+		{"negative offset and length", -1, -1, "aeron: invalid message length=-1"},
+		{"length past buffer at end", 3, 1, "aeron: invalid offer offset=3 length=1 buffer=3"},
+		{
+			"length wraps past buffer",
+			1,
+			math.MaxInt,
+			fmt.Sprintf("aeron: invalid offer offset=1 length=%d buffer=3", math.MaxInt),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,6 +147,13 @@ func TestPublication_OfferWithOffset_invalidBounds(t *testing.T) {
 			})
 		})
 	}
+
+	// An empty payload at the buffer end is in bounds. It commits a
+	// header-only frame.
+	require.Equal(t, int64(logbuffer.DataHeaderLength), pub.OfferWithOffset(buf, len(buf), 0))
+
+	_, termBuf := aeron.PublicationActiveTermBufferForTest(pub)
+	require.Equal(t, int32(logbuffer.DataHeaderLength), logbuffer.FrameLengthVolatile(termBuf, 0))
 }
 
 func injectPublicationCounterError(

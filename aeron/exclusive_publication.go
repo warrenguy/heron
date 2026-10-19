@@ -51,6 +51,11 @@ type ExclusivePublication struct {
 	termOffset           int
 	termBeginPosition    int64
 
+	// activeTermBuffer and activeTailCounter cache the active partition.
+	// bindActivePartition sets them and checks the tail counter bounds.
+	activeTermBuffer  []byte
+	activeTailCounter *int64
+
 	counters               *cnc.CountersReader
 	publicationLimit       cnc.CounterSlot
 	channelStatusCounterID int32
@@ -125,10 +130,17 @@ func (ep *ExclusivePublication) Offer(buffer []byte) int64 {
 //
 // See also PositionCodeName, IsOfferRetriable.
 func (ep *ExclusivePublication) OfferWithOffset(buffer []byte, offset, length int) int64 {
+	// The unfragmented success path stays in this one function and calls no
+	// helper.
 	if ep.IsClosed() {
 		return Closed
 	}
-	validateOfferSliceBounds(offset, length, len(buffer))
+
+	// The unsigned compares reject negative values too. The panic stays in this
+	// function, so the compiler can drop the payload slice checks below.
+	if uint(offset) > uint(len(buffer)) || uint(length) > uint(len(buffer[offset:])) {
+		panic(invalidOfferSliceMessage(offset, length, len(buffer)))
+	}
 
 	if length > ep.maxPayloadLength {
 		if length > ep.maxMessageLength {
@@ -138,10 +150,45 @@ func (ep *ExclusivePublication) OfferWithOffset(buffer []byte, offset, length in
 	}
 
 	alignedLength := logbuffer.AlignFragmentChunkLength(length)
-	if status := ep.checkPublicationLimit(alignedLength, length); status != 0 {
-		return status
+
+	limit := ep.publicationLimit.Get()
+	position := ep.termBeginPosition + int64(ep.termOffset)
+	if position >= limit {
+		return backPressureStatusForLog(
+			ep.meta,
+			ep.maxPossiblePosition,
+			position,
+			int64(alignedLength),
+		)
 	}
-	return ep.appendUnfragmentedMessage(buffer, offset, length, alignedLength)
+	if position+int64(alignedLength) >= ep.maxPossiblePosition {
+		return MaxPositionExceeded
+	}
+
+	termID := ep.termID
+	termOffset := ep.termOffset
+	resultingOffset := termOffset + alignedLength
+
+	//nolint:gosec // G115: termOffset under TermMaxLength, 1<<30, plus one aligned frame
+	rawTail := logbuffer.PackRawTail(termID, int32(resultingOffset))
+	atomicbuffer.StoreInt64Release(ep.activeTailCounter, rawTail)
+
+	position = ep.termBeginPosition + int64(resultingOffset)
+	if resultingOffset > ep.termBufferLength {
+		return ep.rotateAtTermEnd(termOffset, position)
+	}
+
+	// One slice check covers every header and payload store below.
+	payload := buffer[offset:][:length]
+	frame := ep.activeTermBuffer[termOffset : termOffset+logbuffer.DataHeaderLength+len(payload)]
+
+	frameLength := dataFrameLength(length)
+	ep.headerWriter.WriteHeader(frame, termOffset, frameLength, termID)
+	copy(frame[logbuffer.DataHeaderLength:], payload)
+	atomicbuffer.Wrap(frame).PutInt32Release(logbuffer.OffsetFrameLength, frameLength)
+
+	ep.termOffset = resultingOffset
+	return position
 }
 
 // TryClaim reserves aligned space for an unfragmented message.
@@ -324,6 +371,9 @@ func (ep *ExclusivePublication) markClosed() error {
 // position. The back-pressure span is AlignFragmentChunkLength(messageLength).
 // The max-position check uses reservationSpan only (aligned frame or full
 // framed length). Matches concurrent runOfferPrelude dual-span shape.
+//
+// The fragmented and claim paths call it. OfferWithOffset repeats the same
+// checks inline, so its success path calls no helper.
 func (ep *ExclusivePublication) checkPublicationLimit(reservationSpan, messageLength int) int64 {
 	limit := ep.publicationLimit.Get()
 	position := ep.termBeginPosition + int64(ep.termOffset)
@@ -344,57 +394,52 @@ func (ep *ExclusivePublication) checkPublicationLimit(reservationSpan, messageLe
 // ep.termOffset in the active term. On success the active partition, ep.termID
 // and ep.termOffset are unchanged. The caller writes the frame at
 // ep.termOffset, then advances ep.termOffset by alignedLength.
+//
+// The fragmented and claim paths call it. OfferWithOffset repeats the same
+// steps inline, so its success path calls no helper.
 func (ep *ExclusivePublication) reserveExclusiveSpace(alignedLength int) (
 	reservedPosition int64,
 	status int64,
 ) {
-	termLength := ep.termBufferLength
-	tailOffset := logbuffer.OffsetTermTailCounter(ep.activePartitionIndex)
-	termID := ep.termID
 	startOffset := ep.termOffset
 
 	resultingOffset := startOffset + alignedLength
 	//nolint:gosec // G115: startOffset under TermMaxLength, 1<<30, plus a framed 16MB message
-	ep.meta.PutInt64Release(tailOffset, logbuffer.PackRawTail(termID, int32(resultingOffset)))
+	rawTail := logbuffer.PackRawTail(ep.termID, int32(resultingOffset))
+	atomicbuffer.StoreInt64Release(ep.activeTailCounter, rawTail)
 
 	reservedPosition = ep.termBeginPosition + int64(resultingOffset)
-	if resultingOffset > termLength {
-		termBuf := ep.termBuffers[ep.activePartitionIndex]
-		endStatus := ep.handleEndOfLog(termBuf, termLength, termID, startOffset, reservedPosition)
-		if endStatus == MaxPositionExceeded {
-			return 0, MaxPositionExceeded
-		}
-		ep.rotateTerm()
-		return 0, AdminAction
+	if resultingOffset > ep.termBufferLength {
+		return 0, ep.rotateAtTermEnd(startOffset, reservedPosition)
 	}
 
 	return reservedPosition, 0
 }
 
-func (ep *ExclusivePublication) appendUnfragmentedMessage(
-	buffer []byte,
-	srcOffset int,
-	length int,
-	alignedLength int,
-) int64 {
-	reservedPosition, status := ep.reserveExclusiveSpace(alignedLength)
-	if status != 0 {
-		return status
+// rotateAtTermEnd pads the active term from startOffset to its end after a
+// reservation past the term end. It returns MaxPositionExceeded when
+// reservedPosition reaches the max position. Otherwise it rotates to the next
+// term and returns AdminAction.
+//
+// Every caller rejects position+span >= maxPossiblePosition first, so the
+// MaxPositionExceeded branch does not run today. It stays because Java
+// ExclusivePublication.newPosition also checks the max position before it
+// rotates.
+func (ep *ExclusivePublication) rotateAtTermEnd(startOffset int, reservedPosition int64) int64 {
+	termBuf := ep.termBuffers[ep.activePartitionIndex]
+	endStatus := ep.handleEndOfLog(
+		termBuf,
+		ep.termBufferLength,
+		ep.termID,
+		startOffset,
+		reservedPosition,
+	)
+	if endStatus == MaxPositionExceeded {
+		return MaxPositionExceeded
 	}
 
-	termBuf := ep.termBuffers[ep.activePartitionIndex]
-	startOffset := ep.termOffset
-	frameLength := dataFrameLength(length)
-
-	ep.headerWriter.Write(termBuf, startOffset, frameLength, ep.termID)
-	termBuf.PutBytes(
-		startOffset+logbuffer.OffsetFramePayload,
-		buffer[srcOffset:srcOffset+length],
-	)
-	logbuffer.PutFrameLengthOrdered(termBuf, startOffset, frameLength)
-
-	ep.termOffset += alignedLength
-	return reservedPosition
+	ep.rotateTerm()
+	return AdminAction
 }
 
 // appendFragmentedMessage reserves the full framed span with one release tail
@@ -486,12 +531,22 @@ func (ep *ExclusivePublication) loadInFlightClaim(
 	return loadInFlightClaimFrame(&ep.termBuffers, termIndex, frameOffset)
 }
 
+// bindActivePartition makes partition the active partition. It caches the
+// partition term buffer and the address of its tail counter. Int64Pointer
+// checks the tail counter bounds here, so the offer path stores through the
+// address with no bounds check.
+func (ep *ExclusivePublication) bindActivePartition(partition int) {
+	ep.activePartitionIndex = partition
+	ep.activeTermBuffer = ep.termBuffers[partition].Bytes()
+	ep.activeTailCounter = ep.meta.Int64Pointer(logbuffer.OffsetTermTailCounter(partition))
+}
+
 // rotateTerm advances the cached exclusive tail and publishes ordered meta stores.
 // Single-writer rotation avoids RotateLog's CAS loop, which is concurrent-publication semantics.
 func (ep *ExclusivePublication) rotateTerm() {
 	nextIndex := (ep.activePartitionIndex + 1) % logbuffer.PartitionCount
 	nextTermID := ep.termID + 1
-	ep.activePartitionIndex = nextIndex
+	ep.bindActivePartition(nextIndex)
 	ep.termOffset = 0
 	ep.termID = nextTermID
 	ep.termBeginPosition += int64(ep.termBufferLength)
