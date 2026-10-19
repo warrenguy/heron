@@ -91,7 +91,7 @@ func (a *Agent) handleClusterAction(
 	case fields.LogPosition != logPosition:
 	case a.role == RoleLeader:
 	case a.snapshotWaitPosition != 0:
-	case slices.Contains(a.abandonedSnapshotPositions, logPosition):
+	case a.abandonedSnapshotWaitAt(logPosition) != nil:
 	case a.serviceAckFailure != nil:
 	default:
 		a.queueSnapshotWait(logPosition)
@@ -125,50 +125,118 @@ func (a *Agent) holdLogPollBound(boundPosition int64) int64 {
 	return boundPosition
 }
 
-// retireSnapshotWait drops a leftover snapshot wait from the FIFO. The method
-// adds the wait log position to the retired positions. Earlier retired
-// positions stay. A later ServiceAck at any retired position is dropped
-// unless a new wait uses the same position.
+// abandonedSnapshotWait is one snapshot wait retired by PrepareForNewLeadership.
+type abandonedSnapshotWait struct {
+	position int64
+
+	// owedAcks has one flag per service. A set flag means the service still
+	// owes an ack at position. retireSnapshotWait sets flags. The owed ack, or
+	// a truncate below position, clears them.
+	owedAcks []bool
+}
+
+// abandonedSnapshotWaitAt returns the retired wait at logPosition, or nil.
+func (a *Agent) abandonedSnapshotWaitAt(logPosition int64) *abandonedSnapshotWait {
+	for i := range a.abandonedSnapshotWaits {
+		wait := &a.abandonedSnapshotWaits[i]
+		if wait.position == logPosition {
+			return wait
+		}
+	}
+	return nil
+}
+
+// retireSnapshotWait drops a leftover snapshot wait from the FIFO. The wait
+// joins abandonedSnapshotWaits.
 //
-// Already queued tracker entries at the retired position are dropped. Dropped
-// ack ids are noted. serviceAckID advances when every service has dropped the
-// current expected id.
+// Behaviour:
+//   - drops each tracker entry at the position
+//   - notes each dropped ack id
+//   - marks each service with no dropped entry as owing one ack at the
+//     position
+//   - advances serviceAckID once every service has dropped the current
+//     expected id
 func (a *Agent) retireSnapshotWait() {
 	pos := a.snapshotWaitPosition
 	a.snapshotWaitPosition = 0
 	if pos == 0 {
 		return
 	}
-	if !slices.Contains(a.abandonedSnapshotPositions, pos) {
-		a.abandonedSnapshotPositions = append(a.abandonedSnapshotPositions, pos)
+	retired := a.abandonedSnapshotWaitAt(pos)
+	if retired == nil {
+		a.abandonedSnapshotWaits = append(a.abandonedSnapshotWaits, abandonedSnapshotWait{
+			position: pos,
+			owedAcks: make([]bool, len(a.serviceAcks.queues)),
+		})
+		retired = &a.abandonedSnapshotWaits[len(a.abandonedSnapshotWaits)-1]
 	}
 	a.serviceAckWaits = slices.DeleteFunc(a.serviceAckWaits, func(wait int64) bool {
 		return wait == pos
 	})
+	owed := retired.owedAcks
+	for sid := range owed {
+		owed[sid] = true
+	}
 	a.serviceAcks.dropAt(pos, func(serviceID int32, ack serviceAck) {
+		owed[serviceID] = false
 		a.noteAbandonedSnapshotAckID(serviceID, ack.ackID)
 	})
 	a.advancePastAbandonedSnapshotAcks()
 }
 
-func (a *Agent) isAbandonedSnapshotAck(logPosition int64) bool {
-	if !slices.Contains(a.abandonedSnapshotPositions, logPosition) {
+// isAbandonedSnapshotAck reports whether handleServiceAck drops an ack from
+// serviceID at logPosition. Reports false at a position that is not retired.
+// At a retired position the ack drops when either holds:
+//   - serviceID owes an ack there. A queued wait at the position does not
+//     keep the ack.
+//   - No queued wait uses the position.
+//
+// Read-only. The caller clears the owed flag with clearOwedSnapshotAck.
+func (a *Agent) isAbandonedSnapshotAck(serviceID int32, logPosition int64) bool {
+	retired := a.abandonedSnapshotWaitAt(logPosition)
+	if retired == nil {
 		return false
 	}
-	if len(a.serviceAckWaits) > 0 && a.serviceAckWaits[0] == logPosition {
-		return false
+	if a.owesSnapshotAck(retired, serviceID) {
+		return true
 	}
-	return true
+	return !slices.Contains(a.serviceAckWaits, logPosition)
+}
+
+func (a *Agent) owesSnapshotAck(retired *abandonedSnapshotWait, serviceID int32) bool {
+	return a.serviceAcks.hasService(serviceID) && retired.owedAcks[serviceID]
+}
+
+// clearOwedSnapshotAck clears the owed flag of serviceID at a retired
+// logPosition. A position that is not retired, an out-of-range serviceID, or
+// a clear flag changes nothing.
+func (a *Agent) clearOwedSnapshotAck(serviceID int32, logPosition int64) {
+	retired := a.abandonedSnapshotWaitAt(logPosition)
+	if retired == nil || !a.serviceAcks.hasService(serviceID) {
+		return
+	}
+	retired.owedAcks[serviceID] = false
+}
+
+// clearOwedSnapshotAcksAbove clears the owed ack flags at retired positions
+// above logPosition. A truncate at logPosition removes those actions from the
+// log, so no service sends the owed ack.
+func (a *Agent) clearOwedSnapshotAcksAbove(logPosition int64) {
+	for i := range a.abandonedSnapshotWaits {
+		retired := &a.abandonedSnapshotWaits[i]
+		if retired.position > logPosition {
+			clear(retired.owedAcks)
+		}
+	}
 }
 
 // dropAbandonedSnapshotLeftovers removes leftover ServiceAck tracker entries
 // at a consumed abandoned snapshot position. Dropped ack ids are noted.
 // serviceAckID advances when every service has dropped the current expected id.
 //
-// A remaining wait at that position keeps the entries. The first queued wait
-// at the retired position must still accept one ack.
+// A remaining wait at that position keeps the entries.
 func (a *Agent) dropAbandonedSnapshotLeftovers(consumed int64) {
-	if !slices.Contains(a.abandonedSnapshotPositions, consumed) {
+	if a.abandonedSnapshotWaitAt(consumed) == nil {
 		return
 	}
 	if slices.Contains(a.serviceAckWaits, consumed) {

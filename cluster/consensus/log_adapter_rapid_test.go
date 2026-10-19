@@ -316,10 +316,12 @@ func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 			if len(m.waits) > 0 {
 				require.Equal(rt, m.waits, a.serviceAckWaits, step)
 			}
-			for _, position := range a.abandonedSnapshotPositions {
-				require.NotContains(rt, a.serviceAckWaits, position, step)
+			var retired []int64
+			for _, wait := range a.abandonedSnapshotWaits {
+				require.NotContains(rt, a.serviceAckWaits, wait.position, step)
+				retired = append(retired, wait.position)
 			}
-			require.Equal(rt, m.retired, a.abandonedSnapshotPositions, step)
+			require.Equal(rt, m.retired, retired, step)
 			require.Equal(rt, m.expectedAckID(), a.ExpectedServiceAckID(), step)
 			require.NoError(rt, a.ServiceAckFailure(), step)
 		}

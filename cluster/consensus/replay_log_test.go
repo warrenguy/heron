@@ -37,6 +37,29 @@ func ackAndPopWait(
 	require.Equal(t, 1, a.serviceControlWork())
 }
 
+// retiredReplayAgent returns a one-service agent with a connected service
+// proxy whose snapshot wait at position retired in PrepareForNewLeadership.
+// ackBeforePrepare queues the snapshot ack before the prepare, so the retire
+// drops the ack.
+func retiredReplayAgent(
+	t *testing.T,
+	position int64,
+	ackBeforePrepare bool,
+) (*Agent, *QueueConsensusIngress) {
+	t.Helper()
+	a, q, _ := agentWithServiceControl(t, 1)
+	a.queueSnapshotWait(position)
+	if ackBeforePrepare {
+		enqueueServiceAck(t, q, position, 0, 0)
+		require.Equal(t, 1, a.pollServiceControl())
+	}
+	_, prepared, err := a.PrepareForNewLeadership(position, 0)
+	require.NoError(t, err)
+	require.True(t, prepared)
+	require.Equal(t, 0, a.PendingServiceAckWaits())
+	return a, q
+}
+
 func TestPublishReplayJoinLog(t *testing.T) {
 	t.Parallel()
 
@@ -44,6 +67,36 @@ func TestPublishReplayJoinLog(t *testing.T) {
 		startPosition int64 = 4096
 		stopPosition  int64 = 8192
 	)
+	// retiredStartLateAck publishes at a retired start. The service sends its
+	// snapshot ack and its join ack at the start, in either order. The module
+	// sees two acks with ids in send order. Only a snapshot ack sent first can
+	// arrive before the publish. firstBeforePublish sends it there.
+	retiredStartLateAck := func(t *testing.T, firstBeforePublish bool) {
+		a, q := retiredReplayAgent(t, startPosition, false)
+		startID := a.ExpectedServiceAckID()
+		sendFirst := func() {
+			enqueueServiceAck(t, q, startPosition, startID, 0)
+			require.Equal(t, 1, a.pollServiceControl())
+		}
+		if firstBeforePublish {
+			sendFirst()
+		}
+		a.PublishReplayJoinLog(sampleReplayLogJoin(startPosition, stopPosition))
+		if !firstBeforePublish {
+			sendFirst()
+		}
+
+		// The first ack drops. The replay JoinLog wait stays.
+		require.Equal(t, 0, a.serviceControlWork())
+		require.Equal(t, 1, a.PendingServiceAckWaits())
+		require.False(t, a.IsReplayLogJoined())
+
+		// The second ack pops the replay JoinLog wait.
+		ackAndPopWait(t, a, q, startPosition, startID+1)
+		require.True(t, a.IsReplayLogJoined())
+		require.Equal(t, startID+2, a.ExpectedServiceAckID())
+		require.NoError(t, a.ServiceAckFailure())
+	}
 	tests := []struct {
 		name string
 		run  func(t *testing.T)
@@ -245,6 +298,33 @@ func TestPublishReplayJoinLog(t *testing.T) {
 				ackAndPopWait(t, a, q, startPosition, 1)
 				require.True(t, a.IsReplayLogJoined())
 				require.Equal(t, 0, a.replayJoinWaitsAhead)
+				require.NoError(t, a.ServiceAckFailure())
+			},
+		},
+		{
+			name: "retired start with the snapshot ack before the publish",
+			run: func(t *testing.T) {
+				retiredStartLateAck(t, true)
+			},
+		},
+		{
+			name: "retired start with both acks after the publish",
+			run: func(t *testing.T) {
+				retiredStartLateAck(t, false)
+			},
+		},
+		{
+			name: "retired start with the ack dropped at retire",
+			run: func(t *testing.T) {
+				a, q := retiredReplayAgent(t, startPosition, true)
+				startID := a.ExpectedServiceAckID()
+				a.PublishReplayJoinLog(sampleReplayLogJoin(startPosition, stopPosition))
+				require.False(t, a.IsReplayLogJoined())
+
+				// The join ack alone pops the replay JoinLog wait.
+				ackAndPopWait(t, a, q, startPosition, startID)
+				require.True(t, a.IsReplayLogJoined())
+				require.Equal(t, startID+1, a.ExpectedServiceAckID())
 				require.NoError(t, a.ServiceAckFailure())
 			},
 		},

@@ -418,11 +418,10 @@ type Agent struct {
 	// PrepareForNewLeadership retires the wait and clears this field.
 	snapshotWaitPosition int64
 
-	// abandonedSnapshotPositions holds snapshot wait log positions retired by
-	// PrepareForNewLeadership. The slice grows one entry per retired wait. The
-	// slice is never cleared. handleServiceAck drops a ServiceAck at a retired
-	// position unless the first queued coordination wait uses the same position.
-	abandonedSnapshotPositions []int64
+	// abandonedSnapshotWaits holds snapshot waits retired by
+	// PrepareForNewLeadership, in retire order. Never cleared.
+	// isAbandonedSnapshotAck owns the drop rule for acks at these positions.
+	abandonedSnapshotWaits []abandonedSnapshotWait
 
 	// abandonedSnapshotAckIDs stores dropped ServiceAck ids at retired snapshot
 	// positions, one slice per service. serviceAckID advances when every service
@@ -1516,6 +1515,7 @@ func (a *Agent) SetLogRecordingID(recordingID int64) {
 //     recording id is null, or logPosition is misaligned
 //   - truncates the cluster log recording through [LogTruncateControl]
 //   - unbinds the log adapter at logPosition
+//   - clears owed snapshot ack flags at retired positions above logPosition
 //   - does not write recording.log; the election lowers the term entry
 //   - does not stop a recording
 //
@@ -1533,10 +1533,10 @@ func (a *Agent) SetLogRecordingID(recordingID int64) {
 //   - logPosition is negative or is not aligned to [logbuffer.FrameAlignment]
 //   - the archive refuses the truncate or the wait times out
 //
-// On error the log adapter is untouched, the truncate control leaves the
-// recording stop position unchanged, and the caller must not lower any
-// position. Archive refuse detail, including the data-header partial-update
-// case, lives on archive.Client.TruncateRecording.
+// On error the log adapter and the owed ack flags are untouched. The truncate
+// control leaves the recording stop position unchanged. The caller must not
+// lower any position. Archive refuse detail, including the data-header
+// partial-update case, lives on archive.Client.TruncateRecording.
 func (a *Agent) TruncateLogEntry(leadershipTermID, logPosition int64) error {
 	_ = leadershipTermID
 	if a.truncateControl == nil {
@@ -1556,6 +1556,7 @@ func (a *Agent) TruncateLogEntry(leadershipTermID, logPosition int64) error {
 		return err
 	}
 	a.logAdapter.DisconnectAt(logPosition)
+	a.clearOwedSnapshotAcksAbove(logPosition)
 	return nil
 }
 

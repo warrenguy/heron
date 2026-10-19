@@ -207,6 +207,18 @@ const (
 	replayJoinModelPublished
 )
 
+// replayJoinRetiredStart selects how a snapshot wait retires before the ops.
+type replayJoinRetiredStart int
+
+const (
+	replayJoinRetiredNone replayJoinRetiredStart = iota
+	// replayJoinRetiredOwed retires the wait before the snapshot ack arrives.
+	replayJoinRetiredOwed
+	// replayJoinRetiredDropped retires the wait after the snapshot ack
+	// reached the tracker.
+	replayJoinRetiredDropped
+)
+
 // replayJoinModelWait is one queued wait in the model FIFO. replay marks the
 // replay JoinLog wait.
 type replayJoinModelWait struct {
@@ -217,6 +229,11 @@ type replayJoinModelWait struct {
 // Asserts replay JoinLog tracking against a FIFO model with ServiceCount 1.
 // The model service acks every published coordination point in publish
 // order. serviceAckFailure marks at most once, late in the run.
+//
+// The setup may retire a snapshot wait at one of the op positions before the
+// ops. The model service read that action first, so it sends its snapshot ack
+// first. That ack either reached the tracker before the retire or arrives
+// during the ops.
 //
 // Ops:
 //   - queue a RequestServiceAck wait
@@ -230,6 +247,10 @@ type replayJoinModelWait struct {
 // Invariants each step:
 //   - IsReplayLogJoined matches the model, or reports true after the
 //     failure mark.
+//   - IsReplayLogJoined stays false until the model service sends the
+//     replay JoinLog ack, unless the failure mark is set. The check uses the
+//     delivered index, not an ack id, so a skipped id at a retire does not
+//     affect it.
 //   - Queued wait positions match the model. Positions repeat, so a
 //     position match alone does not cover the count.
 //   - HasPendingJoinLog matches the model.
@@ -259,11 +280,14 @@ func TestReplayJoinTracking_rapid(t *testing.T) {
 		// hasPending and pendingPos model any stored pending JoinLog.
 		hasPending := false
 		pendingPos := int64(0)
+		// replayIndex is the delivered index of the replay JoinLog wait, or -1.
+		replayIndex := -1
 
 		clearReplayMarks := func() {
 			for i := range modelWaits {
 				modelWaits[i].replay = false
 			}
+			replayIndex = -1
 		}
 		queueWait := func(position int64, replay bool) {
 			if failed {
@@ -280,12 +304,17 @@ func TestReplayJoinTracking_rapid(t *testing.T) {
 				return
 			}
 			state = replayJoinModelPublished
+			replayIndex = len(delivered)
 			queueWait(position, true)
 		}
 		assertInvariants := func() {
 			rt.Helper()
 			require.Equal(rt, failed, a.ServiceAckFailure() != nil)
 			require.Equal(rt, state == replayJoinModelNone || failed, a.IsReplayLogJoined())
+			replayAckUnsent := replayIndex >= 0 && cursor <= replayIndex
+			if replayAckUnsent && !failed {
+				require.False(rt, a.IsReplayLogJoined())
+			}
 			positions := make([]int64, 0, len(modelWaits))
 			for _, w := range modelWaits {
 				positions = append(positions, w.position)
@@ -299,6 +328,32 @@ func TestReplayJoinTracking_rapid(t *testing.T) {
 		}
 
 		positions := []int64{64, 128, 192}
+
+		retired := rapid.SampledFrom([]replayJoinRetiredStart{
+			replayJoinRetiredNone,
+			replayJoinRetiredOwed,
+			replayJoinRetiredDropped,
+		}).Draw(rt, "retired")
+		if retired != replayJoinRetiredNone {
+			retiredPos := rapid.SampledFrom(positions).Draw(rt, "retiredPos")
+			a.queueSnapshotWait(retiredPos)
+			// The snapshot ack takes delivered index 0 and ack id 0.
+			delivered = append(delivered, retiredPos)
+			if retired == replayJoinRetiredDropped {
+				enqueueServiceAck(t, q, retiredPos, 0, 0)
+				require.Equal(rt, 1, a.pollServiceControl())
+				cursor = 1
+			}
+			_, prepared, err := a.PrepareForNewLeadership(0, 0)
+			require.NoError(rt, err)
+			require.True(rt, prepared)
+			if retired == replayJoinRetiredDropped {
+				// The retire drops the ack and skips its id.
+				expectedID = 1
+			}
+			assertInvariants()
+		}
+
 		nOps := rapid.IntRange(1, 40).Draw(rt, "nOps")
 		// The failure mark holds for the rest of the run, so failAt sits in
 		// the second half. failAt == nOps marks no failure.
@@ -403,6 +458,11 @@ func TestReplayJoinTracking_rapid(t *testing.T) {
 				}
 				enqueueServiceAck(t, q, delivered[cursor], int64(cursor), 0)
 				require.Equal(rt, 1, a.pollServiceControl())
+				if retired == replayJoinRetiredOwed && cursor == 0 {
+					// The owed snapshot ack drops, even with a wait queued at
+					// its position. The drop skips its id.
+					expectedID = 1
+				}
 				cursor++
 
 			case replayJoinOpWork:
