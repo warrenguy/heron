@@ -3,6 +3,7 @@
 package consensus
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -336,6 +337,205 @@ func TestRequestSnapshot_prepareThenWaitAtSnapshotPosition(t *testing.T) {
 	require.Equal(t, 0, a.PendingServiceAckWaits())
 	require.Equal(t, int64(3), a.ExpectedServiceAckID())
 	require.NoError(t, a.ServiceAckFailure())
+}
+
+func TestHandleServiceAck_owedRetiredAck(t *testing.T) {
+	t.Parallel()
+
+	// retiredLeader returns a leader whose snapshot wait at the returned
+	// position retired. Each service in ackedServices sends ack id 0 before
+	// the retire, so the retire drops it. Every other service owes an ack.
+	retiredLeader := func(
+		t *testing.T,
+		serviceCount int,
+		ackedServices ...int32,
+	) (*Agent, *QueueConsensusIngress, int64) {
+		t.Helper()
+		a, q, _ := settledLeaderWithControl(t, serviceCount)
+		require.NoError(t, a.RequestSnapshot(1000))
+		waitPos := a.ExpectedAckPosition()
+		for _, serviceID := range ackedServices {
+			enqueueServiceAck(t, q, waitPos, 0, serviceID)
+			require.Equal(t, 1, a.pollServiceControl())
+		}
+		_, prepared, err := a.PrepareForNewLeadership(0, 1)
+		require.NoError(t, err)
+		require.True(t, prepared)
+		require.Equal(t, 0, a.PendingServiceAckWaits())
+		return a, q, waitPos
+	}
+	// requireOwedAckDrops queues a wait at waitPos, then asserts that ack id 0
+	// from service 0 drops and the wait stays.
+	requireOwedAckDrops := func(
+		t *testing.T,
+		a *Agent,
+		q *QueueConsensusIngress,
+		waitPos int64,
+	) {
+		t.Helper()
+		require.NoError(t, a.RequestServiceAck(waitPos))
+		enqueueServiceAck(t, q, waitPos, 0, 0)
+		require.Equal(t, 1, a.pollServiceControl())
+		require.Equal(t, 0, a.serviceControlWork())
+		require.Equal(t, 1, a.PendingServiceAckWaits())
+		require.Equal(t, 0, a.ServiceAckQueueDepth(0))
+		require.Equal(t, int64(1), a.ExpectedServiceAckID())
+	}
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "owed ack with a wait at the position",
+			run: func(t *testing.T) {
+				a, q, waitPos := retiredLeader(t, 1)
+				requireOwedAckDrops(t, a, q, waitPos)
+
+				// The next ack at the position pops the wait.
+				ackAndPopWait(t, a, q, waitPos, 1)
+				require.Equal(t, 0, a.PendingServiceAckWaits())
+				require.Equal(t, int64(2), a.ExpectedServiceAckID())
+				require.NoError(t, a.ServiceAckFailure())
+			},
+		},
+		{
+			name: "ack dropped at retire",
+			run: func(t *testing.T) {
+				a, q, waitPos := retiredLeader(t, 1, 0)
+				require.Equal(t, int64(1), a.ExpectedServiceAckID())
+
+				// No owed flag. The next ack at the position pops the wait.
+				require.NoError(t, a.RequestServiceAck(waitPos))
+				ackAndPopWait(t, a, q, waitPos, 1)
+				require.Equal(t, 0, a.PendingServiceAckWaits())
+				require.Equal(t, int64(2), a.ExpectedServiceAckID())
+				require.NoError(t, a.ServiceAckFailure())
+			},
+		},
+		{
+			name: "wait at the position second in the FIFO",
+			run: func(t *testing.T) {
+				a, q, waitPos := retiredLeader(t, 1)
+				const headWaitPos int64 = 4096
+				require.NoError(t, a.RequestServiceAck(headWaitPos))
+				require.NoError(t, a.RequestServiceAck(waitPos))
+
+				// Phase 1: the owed ack drops behind the head wait.
+				enqueueServiceAck(t, q, waitPos, 0, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 0, a.ServiceAckQueueDepth(0))
+				require.Equal(t, int64(1), a.ExpectedServiceAckID())
+
+				// Phase 2: both acks arrive in one poll. Both enter the
+				// tracker.
+				enqueueServiceAck(t, q, headWaitPos, 1, 0)
+				enqueueServiceAck(t, q, waitPos, 2, 0)
+				require.Equal(t, 2, a.pollServiceControl())
+				require.Equal(t, 2, a.ServiceAckQueueDepth(0))
+				require.Equal(t, 1, a.serviceControlWork())
+				require.Equal(t, 1, a.serviceControlWork())
+				require.Equal(t, 0, a.PendingServiceAckWaits())
+				require.Equal(t, int64(3), a.ExpectedServiceAckID())
+				require.NoError(t, a.ServiceAckFailure())
+			},
+		},
+		{
+			name: "no wait at the position and no owed flag",
+			run: func(t *testing.T) {
+				a, q, waitPos := retiredLeader(t, 1)
+
+				// Phase 1: the owed ack drops and clears the flag.
+				enqueueServiceAck(t, q, waitPos, 0, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, int64(1), a.ExpectedServiceAckID())
+
+				// Phase 2: a later ack at the position with no wait drops.
+				enqueueServiceAck(t, q, waitPos, 1, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 0, a.ServiceAckQueueDepth(0))
+				require.Equal(t, int64(2), a.ExpectedServiceAckID())
+				require.NoError(t, a.ServiceAckFailure())
+			},
+		},
+		{
+			name: "two services with one owed ack",
+			run: func(t *testing.T) {
+				// Service 0's ack drops at retire. Service 1 owes.
+				a, q, waitPos := retiredLeader(t, 2, 0)
+				require.Equal(t, int64(0), a.ExpectedServiceAckID())
+				require.NoError(t, a.RequestServiceAck(waitPos))
+
+				// Service 1's owed ack drops. Every service has dropped id 0.
+				enqueueServiceAck(t, q, waitPos, 0, 1)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 0, a.ServiceAckQueueDepth(1))
+				require.Equal(t, int64(1), a.ExpectedServiceAckID())
+
+				// The acks for the wait pop it.
+				enqueueServiceAck(t, q, waitPos, 1, 0)
+				enqueueServiceAck(t, q, waitPos, 1, 1)
+				require.Equal(t, 2, a.pollServiceControl())
+				require.Equal(t, 1, a.serviceControlWork())
+				require.Equal(t, 0, a.PendingServiceAckWaits())
+				require.Equal(t, int64(2), a.ExpectedServiceAckID())
+				require.NoError(t, a.ServiceAckFailure())
+			},
+		},
+		{
+			name: "truncate below the position clears the owed flag",
+			run: func(t *testing.T) {
+				a, q, waitPos := retiredLeader(t, 1)
+				a.SetLogTruncateControl(&fakeLogTruncateControl{})
+				a.SetLogRecordingID(77)
+				require.NoError(t, a.TruncateLogEntry(0, 0))
+				require.NotNil(t, a.abandonedSnapshotWaitAt(waitPos))
+
+				// Phase 1: a new wait at the position pops on its first ack.
+				require.NoError(t, a.RequestServiceAck(waitPos))
+				ackAndPopWait(t, a, q, waitPos, 0)
+				require.Equal(t, 0, a.PendingServiceAckWaits())
+				require.Equal(t, int64(1), a.ExpectedServiceAckID())
+
+				// Phase 2: an ack at the retired position with no wait
+				// drops.
+				enqueueServiceAck(t, q, waitPos, 1, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 0, a.ServiceAckQueueDepth(0))
+				require.Equal(t, int64(2), a.ExpectedServiceAckID())
+				require.NoError(t, a.ServiceAckFailure())
+			},
+		},
+		{
+			name: "refused truncate below the position keeps the owed flag",
+			run: func(t *testing.T) {
+				a, q, waitPos := retiredLeader(t, 1)
+				a.SetLogTruncateControl(&fakeLogTruncateControl{err: errors.New("refused")})
+				a.SetLogRecordingID(77)
+				require.Error(t, a.TruncateLogEntry(0, 0))
+				requireOwedAckDrops(t, a, q, waitPos)
+				require.NoError(t, a.ServiceAckFailure())
+			},
+		},
+		{
+			name: "truncate at the position keeps the owed flag",
+			run: func(t *testing.T) {
+				a, q, waitPos := retiredLeader(t, 1)
+				a.SetLogTruncateControl(&fakeLogTruncateControl{})
+				a.SetLogRecordingID(77)
+				require.NoError(t, a.TruncateLogEntry(0, waitPos))
+				require.NotNil(t, a.abandonedSnapshotWaitAt(waitPos))
+				requireOwedAckDrops(t, a, q, waitPos)
+				require.NoError(t, a.ServiceAckFailure())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.run(t)
+		})
+	}
 }
 
 func TestRequestSnapshot_prepareDropsQueuedSnapshotAck(t *testing.T) {
@@ -705,7 +905,7 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 					f.agent.CatchupPoll(limit, nowNs)
 					requireHeld(t, f)
 					require.Less(t, f.agent.CommitPosition(), limit)
-					require.NotContains(t, f.agent.abandonedSnapshotPositions, f.actionEnd)
+					require.Nil(t, f.agent.abandonedSnapshotWaitAt(f.actionEnd))
 				}
 
 				ackAndPop(t, f, 0)
@@ -724,7 +924,7 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 
 				f.agent.ElectionComplete(nowNs)
 				require.True(t, f.agent.HasPendingSnapshotAction())
-				require.NotContains(t, f.agent.abandonedSnapshotPositions, f.actionEnd)
+				require.Nil(t, f.agent.abandonedSnapshotWaitAt(f.actionEnd))
 
 				f.agent.followerConsensusWork(nowNs)
 				requireHeld(t, f)
@@ -777,7 +977,7 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 
 				prepare(t, f.agent)
 				require.Equal(t, int64(0), f.agent.snapshotWaitPosition)
-				require.Contains(t, f.agent.abandonedSnapshotPositions, f.actionEnd)
+				require.NotNil(t, f.agent.abandonedSnapshotWaitAt(f.actionEnd))
 
 				f.agent.CatchupPoll(f.messageEnd+32, nowNs)
 				requireMessageRead(t, f)
@@ -790,7 +990,7 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 			},
 		},
 		{
-			name: "late snapshot ack pops a JoinLog wait at the action",
+			name: "late snapshot ack at a JoinLog wait at the action drops",
 			run: func(t *testing.T) {
 				f := newHoldingFollower(t)
 				proxy, _ := boundServiceProxy(t)
@@ -803,14 +1003,16 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 				require.Equal(t, []int64{f.actionEnd}, f.agent.serviceAckWaits)
 				startID := f.agent.ExpectedServiceAckID()
 
-				// The snapshot ack pops the JoinLog wait.
-				ackAndPop(t, f, startID)
-				require.Equal(t, 0, f.agent.PendingServiceAckWaits())
-
-				// The JoinLog ack drops.
-				enqueueServiceAck(t, f.queue, f.actionEnd, startID+1, 0)
+				// The owed snapshot ack drops. The JoinLog wait stays.
+				enqueueServiceAck(t, f.queue, f.actionEnd, startID, 0)
 				require.Equal(t, 1, f.agent.pollServiceControl())
+				require.Equal(t, 0, f.agent.serviceControlWork())
 				require.Equal(t, 0, f.agent.ServiceAckQueueDepth(0))
+				require.Equal(t, []int64{f.actionEnd}, f.agent.serviceAckWaits)
+
+				// The JoinLog ack pops the JoinLog wait.
+				ackAndPopWait(t, f.agent, f.queue, f.actionEnd, startID+1)
+				require.Equal(t, 0, f.agent.PendingServiceAckWaits())
 				require.Equal(t, startID+2, f.agent.ExpectedServiceAckID())
 				require.NoError(t, f.agent.ServiceAckFailure())
 			},

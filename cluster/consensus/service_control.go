@@ -380,14 +380,13 @@ func (a *Agent) handleServiceControlFragment(buf []byte, offset int) {
 }
 
 // handleServiceAck offers one decoded ServiceAck, then runs the receive-time
-// sequence check. A ServiceAck at a retired snapshot position is dropped before
-// the offer.
+// sequence check.
 //
 // Behaviour:
-//   - A ServiceAck at a snapshot position retired by PrepareForNewLeadership
-//     is dropped. The frame is not offered. The dropped AckID is noted so
-//     serviceAckID can skip that step. A new wait at the same position still
-//     accepts the frame.
+//   - A frame at a retired snapshot position drops before the offer when
+//     isAbandonedSnapshotAck reports true. The drop clears the owed flag of
+//     the sending service at that position, then notes the dropped AckID so
+//     serviceAckID can skip that step.
 //   - A refused offer (service id out of range) drops the frame and runs no
 //     check.
 //   - A successful offer calls afterOfferSequenceError for the expected
@@ -402,7 +401,8 @@ func (a *Agent) handleServiceControlFragment(buf []byte, offset int) {
 // Timestamp is decoded and not stored. Wait paths keep exact (ackID,
 // logPosition) match via hasReachedServiceAcks at the wait position.
 func (a *Agent) handleServiceAck(fields codecs.ServiceAckFields) {
-	if a.isAbandonedSnapshotAck(fields.LogPosition) {
+	if a.isAbandonedSnapshotAck(fields.ServiceID, fields.LogPosition) {
+		a.clearOwedSnapshotAck(fields.ServiceID, fields.LogPosition)
 		a.noteAbandonedSnapshotAckID(fields.ServiceID, fields.AckID)
 		a.advancePastAbandonedSnapshotAcks()
 		return
