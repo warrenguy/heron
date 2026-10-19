@@ -25,7 +25,9 @@ Partial:
   `Publication.Offer` may run from other goroutines.
 - Closing a subscription or the client does not call `UnavailableImageHandler`
   for its images.
-- Publication error frames are received but not delivered to the application.
+- `atomicbuffer.VolatileInt32At` and `VolatileInt64At` check neither bounds
+  nor alignment. An empty buffer panics. Any other out-of-range offset reads
+  outside the slice with no panic.
 
 Not implemented:
 
@@ -47,6 +49,7 @@ Works:
 - Connect with challenge/response authentication; close.
 - Start and stop recording (optionally waiting for the recording signal), extend
   recording, replay, stop replay, list a single recording, truncate.
+- Non-blocking start, extend and stop recording.
 - Recording signal dispatch.
 
 Not implemented:
@@ -105,8 +108,13 @@ Partial:
 
 - Restart replays the local log to recover position only; sessions and timers
   are not rebuilt.
-- Followers do not track committed timer events, so a new leader may fire a
-  timer again.
+- Timer races match upstream. When a service schedules or cancels a timer
+  close to its expiry, a follower may disagree with the leader about whether
+  that timer is live. After that follower becomes leader, the timer may fire
+  twice or never.
+- Reusing the id of a timer that has fired carries the same risk. A follower
+  may drop the new schedule, so the timer never fires once that follower
+  becomes leader.
 - Cluster time unit is always nanoseconds; Java members of a mixed cluster need
   a nanosecond cluster clock.
 - Mixed Java/Go clusters: only a cold start with an appointed leader is
@@ -119,7 +127,9 @@ Not implemented:
 - Snapshots: taking and loading. Startup refuses a recovery plan that contains
   snapshots.
 - Log replication between members: a member behind the new leader's term base
-  cannot rejoin.
+  cannot rejoin. A leader stopped under client traffic is at risk. Its
+  recording can end short of what it published, which leaves it behind the
+  next term base.
 - Termination and shutdown, cluster control and node control toggles, the module
   state machine.
 - Admin requests: the client snapshot request works only against a Java
@@ -142,6 +152,8 @@ Partial:
 
 - `TakeSnapshot` is called on a snapshot action, but `service.Open` passes a nil
   publication and nothing is recorded.
+- On a restarted member with a non-empty log, the service container fails its
+  first JoinLog with `service: log not contiguous`. The container then stops.
 - The caller drives `Agent.DoWork` and the transport client, and supplies the
   commit position as a function; there is no commit position counter lookup.
 

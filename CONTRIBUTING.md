@@ -81,7 +81,7 @@ Compose-image rows above.
 |------|-----------------|
 | Unit | `bench`, `testhooks` |
 | Property | `rapid` (`*_rapid_test.go`) |
-| IDE / gopls (`go.buildTags`) | `testhooks rapid stress integration example java_interop cluster_sbe cluster_java archive_java cluster_mixed bench` |
+| IDE / gopls (`go.buildTags`) | `testhooks,rapid,stress,integration,example,java_interop,cluster_sbe,cluster_java,archive_java,archive_live,cluster_mixed,electionsim,replicationsim,bench` |
 
 ```bash
 make test                                             # unit only
@@ -160,7 +160,7 @@ Optional env:
 |----------|------|----------|
 | `BENCH_COUNT` | bench iterations | Makefile: 10 |
 | `BENCH_PAYLOAD_SIZES` | comma-separated payload filter | CI: `32,1400` |
-| `BENCH_THRESHOLD` | alloc regression threshold | script: 10; CI (`bench.yml`): 30 |
+| `BENCH_THRESHOLD` | time regression threshold in percent (warning only) | script: 10; CI (`bench.yml`): 30 |
 | `SKIP_BENCH_REGRESSION` | skip alloc regression check | unset |
 
 ## Devcontainer

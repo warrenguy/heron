@@ -20,7 +20,7 @@
       "settings": {
         "go.goroot": "/usr/local/go",
         "go.toolsManagement.autoUpdate": false,
-        "go.buildTags": "testhooks,rapid,stress,integration,example,java_interop,cluster_sbe,cluster_java,archive_java,bench",
+        "go.buildTags": "testhooks,rapid,stress,integration,example,java_interop,cluster_sbe,cluster_java,archive_java,archive_live,cluster_mixed,electionsim,replicationsim,bench",
         "go.lintTool": "golangci-lint",
         "go.formatTool": "gofumpt",
         "go.formatFlags": ["-extra"],
