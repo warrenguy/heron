@@ -652,7 +652,7 @@ func TestOpenRecovery_oneTermPlan(t *testing.T) {
 	require.True(t, ec.IsNodeStartup)
 	require.Equal(t, plan.LastLeadershipTermID, ec.LeadershipTermID)
 	require.Equal(t, plan.LastTermBaseLogPosition, ec.TermBaseLogPosition)
-	require.Equal(t, plan.CommittedLogPosition, ec.LogPosition)
+	require.Equal(t, int64(0), ec.LogPosition)
 	require.Equal(t, plan.AppendedLogPosition, ec.AppendPosition)
 }
 
@@ -967,11 +967,12 @@ func TestOpenRecovery_restartNonEmptyBranch(t *testing.T) {
 	require.Equal(t, int64(42), recovery.Plan().TermRecordingID())
 }
 
-func TestOpenRecovery_restartSeedEqualsPlan(t *testing.T) {
+func TestOpenRecovery_restartSeedsFromPlan(t *testing.T) {
 	t.Parallel()
 
 	// Two terms so LeadershipTermID and TermBaseLogPosition are non-zero. Both
 	// differ from cold-start zeros. Extent stops past the committed position.
+	// LogPosition is the plan replay start, 0 on every plan.
 	recovery, committed := openFromHistory(t, 2, 4*termBaseStride)
 
 	plan := recovery.Plan()
@@ -981,10 +982,10 @@ func TestOpenRecovery_restartSeedEqualsPlan(t *testing.T) {
 	require.Equal(t, termBaseStride, plan.LastTermBaseLogPosition)
 	require.Equal(t, plan.LastLeadershipTermID, ec.LeadershipTermID)
 	require.Equal(t, plan.LastTermBaseLogPosition, ec.TermBaseLogPosition)
-	require.Equal(t, plan.CommittedLogPosition, ec.LogPosition)
+	require.Equal(t, plan.SeedLogPosition(), ec.LogPosition)
+	require.Equal(t, int64(0), ec.LogPosition)
 	require.Equal(t, plan.AppendedLogPosition, ec.AppendPosition)
 	require.Equal(t, committed, plan.CommittedLogPosition)
-	require.Equal(t, committed, ec.LogPosition)
 }
 
 func TestOpenRecovery_restartActiveExtent(t *testing.T) {
@@ -1095,7 +1096,7 @@ func TestOpenRecovery_restartCarriesConfigThrough(t *testing.T) {
 	want.IsNodeStartup = true
 	want.LeadershipTermID = plan.LastLeadershipTermID
 	want.TermBaseLogPosition = plan.LastTermBaseLogPosition
-	want.LogPosition = plan.CommittedLogPosition
+	want.LogPosition = plan.SeedLogPosition()
 	want.AppendPosition = plan.AppendedLogPosition
 	require.Equal(t, want, recovery.ElectionConfig())
 }

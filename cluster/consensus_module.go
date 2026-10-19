@@ -255,12 +255,10 @@ func OpenConsensusModule(
 	module.coldStart = recovery.IsColdStart()
 	electionCfg := recovery.ElectionConfig()
 
-	// Seed commit from the recovery plan. ProposeMaxCommit is monotonic only,
-	// so open is the sole absolute write of a recovered position.
+	// Seed commit at the plan replay start. ProposeMaxCommit only raises it,
+	// so open is the sole absolute write.
 	commit := new(atomic.Int64)
-	if seed := recovery.Plan().CommittedLogPosition; seed > 0 {
-		commit.Store(seed)
-	}
+	commit.Store(recovery.Plan().SeedLogPosition())
 
 	module.logPublisher = consensus.NewLogPublisher()
 	module.logAdapter = consensus.NewLogAdapter(consensus.DefaultLogFragmentLimit)
@@ -770,8 +768,8 @@ func (m *ConsensusModule) ThisMemberID() int32 {
 
 // CommitPosition returns the mode-1 local commit value.
 //
-// It is seeded at open from the recovery plan's committed log position and only
-// ever rises: ProposeMaxCommit is monotonic.
+// Open seeds it at the recovery plan replay start. ProposeMaxCommit only
+// raises it.
 //
 // Concurrency: safe from any goroutine. It reads an *atomic.Int64.
 func (m *ConsensusModule) CommitPosition() int64 {
