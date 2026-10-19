@@ -81,7 +81,7 @@ Compose-image rows above.
 |------|-----------------|
 | Unit | `bench`, `testhooks` |
 | Property | `rapid` (`*_rapid_test.go`) |
-| IDE / gopls (`go.buildTags`) | `testhooks rapid stress integration example java_interop cluster_sbe cluster_java archive_java archive_live cluster_mixed electionsim replicationsim bench` |
+| IDE / gopls (`go.buildTags`) | `testhooks,rapid,stress,integration,example,java_interop,cluster_sbe,cluster_java,archive_java,archive_live,cluster_mixed,electionsim,replicationsim,bench` |
 
 ```bash
 make test                                             # unit only
