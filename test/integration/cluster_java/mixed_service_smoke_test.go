@@ -41,12 +41,17 @@ func javaCommitPosition(counters *harness.DriverCounters) func() int64 {
 
 // recordingService records ClusteredService callbacks. Invoker-only. Copies
 // payload bytes. Callback slices are transient.
+//
+// SessionMessage offers each payload back to its session and records the
+// Offer result in echoResults.
 type recordingService struct {
-	startCount int
-	opens      []int64
-	messages   []recordedMessage
-	closes     []int64
-	order      []recordedEvent
+	startCount  int
+	opens       []int64
+	messages    []recordedMessage
+	closes      []int64
+	order       []recordedEvent
+	cluster     service.Cluster
+	echoResults []int64
 }
 
 type recordedMessage struct {
@@ -65,8 +70,9 @@ const (
 	eventClose   = "close"
 )
 
-func (s *recordingService) Start(service.Cluster) error {
+func (s *recordingService) Start(cluster service.Cluster) error {
 	s.startCount++
+	s.cluster = cluster
 	return nil
 }
 
@@ -83,12 +89,19 @@ func (s *recordingService) SessionClose(
 	s.order = append(s.order, recordedEvent{kind: eventClose, sessionID: sessionID})
 }
 
+// SessionMessage records the message and its echo result. The result is 0
+// when the registry holds no session for sessionID.
 func (s *recordingService) SessionMessage(sessionID, _ int64, payload []byte) {
 	s.messages = append(s.messages, recordedMessage{
 		sessionID: sessionID,
 		payload:   bytes.Clone(payload),
 	})
 	s.order = append(s.order, recordedEvent{kind: eventMessage, sessionID: sessionID})
+	var result int64
+	if session, ok := s.cluster.ClientSession(sessionID); ok {
+		result = session.Offer(payload)
+	}
+	s.echoResults = append(s.echoResults, result)
 }
 
 func (s *recordingService) TimerEvent(_, _ int64) {}
@@ -210,15 +223,18 @@ func (p mixedServiceAwait) dump() string {
 	}
 	agent := p.checked.agent
 	start, opens, msgs, closes := 0, []int64(nil), 0, []int64(nil)
+	var echoResults []int64
 	if p.recorder != nil {
 		start = p.recorder.startCount
 		opens = p.recorder.opens
 		msgs = len(p.recorder.messages)
 		closes = p.recorder.closes
+		echoResults = p.recorder.echoResults
 	}
 	return line + fmt.Sprintf(
 		" bound=%v logPos=%d nextAck=%d pendingJoin=%v"+
-			" role=%v serviceFail=%v violation=%v start=%d opens=%v msgs=%d closes=%v",
+			" role=%v serviceFail=%v violation=%v start=%d opens=%v msgs=%d closes=%v"+
+			" responseAdds=%d echoResults=%v",
 		agent.IsLogBound(),
 		agent.LogPosition(),
 		agent.NextAckID(),
@@ -230,6 +246,8 @@ func (p mixedServiceAwait) dump() string {
 		opens,
 		msgs,
 		closes,
+		agent.PendingResponsePublicationAdds(),
+		echoResults,
 	)
 }
 
@@ -345,6 +363,7 @@ func connectMixedServiceSession(
 	t *testing.T,
 	p mixedServiceAwait,
 	dir string,
+	egress client.EgressHandler,
 ) *client.AeronCluster {
 	t.Helper()
 
@@ -352,7 +371,7 @@ func connectMixedServiceSession(
 		clusterjava.HarnessConfig,
 		dir,
 		p.aeronClient,
-		&client.EgressHandlers{},
+		egress,
 		clusterjava.MixedServiceConnectBudget,
 	)
 	ac, err := client.NewAsyncConnect(t.Context(), cfg)
@@ -387,8 +406,8 @@ func connectMixedServiceSession(
 
 // TestClusterMixedServiceSmoke asserts a Go service container joins a live
 // Java consensus module and observes at least one committed session open,
-// payload, and close for the induction session. Makes no claim about Java
-// recordings.
+// payload, and close for the induction session. The service echoes each
+// payload to the Go client. Makes no claim about Java recordings.
 func TestClusterMixedServiceSmoke(t *testing.T) {
 	dir, hadClientError, aeronClient, md, _ := requireClusterComposeEnv(t, clusterComposeGate{
 		envKey:         clusterjava.MixedServiceComposeGateEnvKey,
@@ -451,13 +470,24 @@ func TestClusterMixedServiceSmoke(t *testing.T) {
 		"start ack and join settle",
 	)
 
-	session := connectMixedServiceSession(t, pump, dir)
+	var echoes []recordedMessage
+	egress := &client.EgressHandlers{
+		MessageBytesFunc: func(clusterSessionID, _ int64, payload []byte, _ *aeron.Header) {
+			echoes = append(echoes, recordedMessage{
+				sessionID: clusterSessionID,
+				payload:   bytes.Clone(payload),
+			})
+		},
+	}
+	session := connectMixedServiceSession(t, pump, dir, egress)
 	pump.session = session
 	sessionID := session.ClusterSessionID()
 
 	awaitMixedService(
 		t, pump, clusterjava.MixedServiceDeliverBudget,
-		func() bool { return recorder.holdsOpen(sessionID) },
+		func() bool {
+			return recorder.holdsOpen(sessionID) && agent.PendingResponsePublicationAdds() == 0
+		},
 		"session open delivered",
 	)
 	require.Equal(
@@ -486,6 +516,14 @@ func TestClusterMixedServiceSmoke(t *testing.T) {
 		"payload count:\n%s",
 		pump.dump(),
 	)
+
+	// The service echoes once per delivery. One offer can reach the log twice.
+	awaitMixedService(
+		t, pump, clusterjava.MixedServiceDeliverBudget,
+		func() bool { return len(echoes) > 0 },
+		"echo received",
+	)
+	requireMixedServiceEchoes(t, pump, recorder, sessionID, echoes)
 	require.GreaterOrEqual(
 		t,
 		commitFn(),
@@ -508,6 +546,7 @@ func TestClusterMixedServiceSmoke(t *testing.T) {
 		func() bool { return recorder.holdsClose(sessionID) },
 		"session close delivered",
 	)
+	requireMixedServiceEchoes(t, pump, recorder, sessionID, echoes)
 
 	require.NoError(
 		t,
@@ -531,4 +570,26 @@ func TestClusterMixedServiceSmoke(t *testing.T) {
 		commitFn(),
 		agent.NextAckID(),
 	)
+}
+
+// requireMixedServiceEchoes asserts every service echo offer succeeded. The
+// client holds no more echoes than deliveries. Each echo carries sessionID
+// and the smoke payload.
+func requireMixedServiceEchoes(
+	t *testing.T,
+	p mixedServiceAwait,
+	recorder *recordingService,
+	sessionID int64,
+	echoes []recordedMessage,
+) {
+	t.Helper()
+
+	for _, result := range recorder.echoResults {
+		require.Positive(t, result, "echo offer result:\n%s", p.dump())
+	}
+	require.LessOrEqual(t, len(echoes), recorder.messageCount(sessionID), "echo count:\n%s", p.dump())
+	for _, echo := range echoes {
+		require.Equal(t, recordedMessage{sessionID: sessionID, payload: mixedServicePayload}, echo,
+			"echo:\n%s", p.dump())
+	}
 }

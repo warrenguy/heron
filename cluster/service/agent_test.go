@@ -5,6 +5,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"iter"
 	"math"
 	"testing"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // recordingService records ClusteredService callbacks for agent unit tests.
@@ -783,19 +785,58 @@ func TestAgent_SessionRegistry(t *testing.T) {
 	require.Equal(t, int64(50), agent.ClusterTime())
 	require.Equal(t, int64(openSpan), agent.LogPosition())
 
+	session, ok := agent.ClientSession(100)
+	require.True(t, ok)
+	require.Equal(t, int64(100), session.ID())
+	require.Equal(t, int32(102), session.ResponseStreamID())
+	require.Equal(t, "aeron:ipc", session.ResponseChannel())
+	require.Equal(t, []byte{0x01}, session.EncodedPrincipal())
+
+	// Opens for 9, 2 and 5 arrive after 100. The walk sorts by id. Upstream
+	// walks in open order.
+	offset := openSpan
+	for _, id := range []int64{9, 2, 5} {
+		fields := openFields
+		fields.ClusterSessionID = id
+		offset += writeAgentFrame(t, image, offset, encodeSessionOpen(t, fields))
+	}
+	*committed = int64(offset)
+	require.Equal(t, 3, agent.DoWork(0))
+	require.NoError(t, agent.ServiceFailure())
+
+	var walked []int64
+	for session := range agent.ClientSessions() {
+		walked = append(walked, session.ID())
+	}
+	require.Equal(t, []int64{2, 5, 9, 100}, walked)
+
+	// An early break stops the walk.
+	walked = walked[:0]
+	for session := range agent.ClientSessions() {
+		walked = append(walked, session.ID())
+		if len(walked) == 2 {
+			break
+		}
+	}
+	require.Equal(t, []int64{2, 5}, walked)
+
+	session, ok = agent.ClientSession(404)
+	require.False(t, ok)
+	require.Nil(t, session)
+
 	// Clash: second open with same id marks sticky failure, aborts, no callback.
 	clashFields := openFields
 	clashFields.Timestamp = 51
 	clashPayload := encodeSessionOpen(t, clashFields)
-	clashSpan := writeAgentFrame(t, image, openSpan, clashPayload)
-	*committed = int64(openSpan + clashSpan)
+	clashSpan := writeAgentFrame(t, image, offset, clashPayload)
+	*committed = int64(offset + clashSpan)
 
 	require.Equal(t, 0, agent.DoWork(0)) // ABORT does not count fragment
 	require.ErrorIs(t, agent.ServiceFailure(), errSessionClash)
-	require.Len(t, svc.opens, 1)
-	require.Equal(t, 1, agent.SessionCount())
+	require.Len(t, svc.opens, 4)
+	require.Equal(t, 4, agent.SessionCount())
 	// Position frozen before clash frame.
-	require.Equal(t, int64(openSpan), agent.LogPosition())
+	require.Equal(t, int64(offset), agent.LogPosition())
 	require.Equal(t, 0, agent.DoWork(0))
 }
 
@@ -836,6 +877,76 @@ func TestAgent_SessionClose_knownAndUnknown(t *testing.T) {
 	require.Equal(t, int64(7), svc.closes[0].sessionID)
 	require.Equal(t, clusterwire.CloseReason_CLIENT_ACTION, svc.closes[0].reason)
 	require.Equal(t, int64(3), agent.ClusterTime())
+
+	egressTests := []struct {
+		name string
+
+		// setup scripts the add of session 7 (correlation id 1) after the
+		// open. Returns the publication the close must close, or nil. Nil
+		// leaves the add in flight.
+		setup func(t *testing.T, log *sessionLog, adder *fakeResponseAdder) *aeron.Publication
+
+		wantPolls   []int64
+		wantCancels []int64
+	}{
+		{
+			name: "held publication",
+			setup: func(t *testing.T, log *sessionLog, adder *fakeResponseAdder) *aeron.Publication {
+				pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+				adder.next(1, responsePoll{publication: pub, done: true})
+				log.agent.DoWork(0)
+				require.Equal(t, 0, log.agent.PendingResponsePublicationAdds())
+				return pub
+			},
+			wantPolls: []int64{1},
+		},
+		{
+			// The tick poll of the close DoWork stays pending. The close
+			// polls once more, then cancels.
+			name:        "add in flight stays pending",
+			wantPolls:   []int64{1, 1},
+			wantCancels: []int64{1},
+		},
+		{
+			// The tick poll stays pending. The close poll returns the ready
+			// publication, as after a conductor ready mark.
+			name: "add in flight ready at close",
+			setup: func(t *testing.T, _ *sessionLog, adder *fakeResponseAdder) *aeron.Publication {
+				pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+				adder.next(1, responsePoll{})
+				adder.next(1, responsePoll{publication: pub, done: true})
+				return pub
+			},
+			wantPolls: []int64{1, 1},
+		},
+	}
+	for _, tc := range egressTests {
+		t.Run(tc.name, func(t *testing.T) {
+			adder := newFakeResponseAdder()
+			log, svc := bindSessionAgent(t, adder, codecs.RoleLeader)
+			log.open(7, 1)
+			var pub *aeron.Publication
+			if tc.setup != nil {
+				pub = tc.setup(t, log, adder)
+			}
+			session, ok := log.agent.ClientSession(7)
+			require.True(t, ok)
+
+			log.close(7, 2)
+			require.Len(t, svc.closes, 1)
+			_, ok = log.agent.ClientSession(7)
+			require.False(t, ok)
+			require.Equal(t, aeron.NotConnected, session.Offer([]byte("late")))
+			require.Equal(t, 0, log.agent.PendingResponsePublicationAdds())
+			require.Empty(t, adder.inFlight)
+			require.Equal(t, tc.wantPolls, adder.polls)
+			require.Equal(t, tc.wantCancels, adder.cancels)
+			if pub != nil {
+				require.True(t, pub.IsClosed())
+			}
+			require.NoError(t, log.agent.ServiceFailure())
+		})
+	}
 }
 
 func TestAgent_SessionMessage_unknownSession(t *testing.T) {
@@ -859,6 +970,418 @@ func TestAgent_SessionMessage_unknownSession(t *testing.T) {
 	require.Equal(t, []byte("body"), svc.messages[0].payload)
 	require.Equal(t, int64(404), svc.messages[0].sessionID)
 	require.Equal(t, 0, agent.SessionCount())
+}
+
+// responsePoll is one scripted PollAddPublication result.
+type responsePoll struct {
+	publication *aeron.Publication
+	done        bool
+	err         error
+}
+
+// fakeResponseAdder scripts ResponsePublicationAdder results. Each poll pops
+// the first scripted result for its correlation id. An empty script polls
+// pending. inFlight holds each started add until a done poll, an error poll,
+// or a cancel.
+type fakeResponseAdder struct {
+	offers   []transportAdd
+	offerErr error
+	nextID   int64
+	script   map[int64][]responsePoll
+	inFlight map[int64]bool
+	polls    []int64
+	cancels  []int64
+}
+
+func newFakeResponseAdder() *fakeResponseAdder {
+	return &fakeResponseAdder{
+		nextID:   1,
+		script:   make(map[int64][]responsePoll),
+		inFlight: make(map[int64]bool),
+	}
+}
+
+func (f *fakeResponseAdder) OfferAddPublication(streamID int32, channel string) (int64, error) {
+	f.offers = append(f.offers, transportAdd{streamID: streamID, channel: channel})
+	if f.offerErr != nil {
+		return 0, f.offerErr
+	}
+	id := f.nextID
+	f.nextID++
+	f.inFlight[id] = true
+	return id, nil
+}
+
+func (f *fakeResponseAdder) PollAddPublication(
+	correlationID int64,
+) (*aeron.Publication, bool, error) {
+	f.polls = append(f.polls, correlationID)
+	queue := f.script[correlationID]
+	if len(queue) == 0 {
+		return nil, false, nil
+	}
+	result := queue[0]
+	f.script[correlationID] = queue[1:]
+	if result.done || result.err != nil {
+		delete(f.inFlight, correlationID)
+	}
+	return result.publication, result.done, result.err
+}
+
+func (f *fakeResponseAdder) CancelPending(correlationID int64) {
+	f.cancels = append(f.cancels, correlationID)
+	delete(f.inFlight, correlationID)
+}
+
+// next scripts the next poll result for correlationID.
+func (f *fakeResponseAdder) next(correlationID int64, result responsePoll) {
+	f.script[correlationID] = append(f.script[correlationID], result)
+}
+
+// sessionLog writes log frames to a bound agent image and delivers them.
+type sessionLog struct {
+	*takeLog
+	tb    testing.TB
+	agent *Agent
+}
+
+// bindSessionAgent binds a recording agent with adder and sets role. A nil
+// adder leaves ResponsePublications unset.
+func bindSessionAgent(
+	tb testing.TB,
+	adder ResponsePublicationAdder,
+	role codecs.Role,
+) (*sessionLog, *recordingService) {
+	tb.Helper()
+	svc := &recordingService{}
+	cfg := AgentConfig{Service: svc, ResponsePublications: adder}
+	agent, image, committed := bindImage(tb, cfg, 0)
+	agent.role = role
+	log := &sessionLog{
+		takeLog: &takeLog{image: image, committed: committed},
+		tb:      tb,
+		agent:   agent,
+	}
+	return log, svc
+}
+
+// deliver writes payload, commits it, and runs one DoWork. Returns the work
+// count.
+func (l *sessionLog) deliver(payload []byte) int {
+	l.tb.Helper()
+	l.write(l.tb, payload)
+	return l.agent.DoWork(0)
+}
+
+func (l *sessionLog) open(id, timestamp int64) {
+	l.tb.Helper()
+	l.deliver(encodeSessionOpen(l.tb, codecs.SessionOpenEventFields{
+		LeadershipTermID: 1,
+		ClusterSessionID: id,
+		Timestamp:        timestamp,
+		ResponseStreamID: testResponseStreamID,
+		ResponseChannel:  []byte(testResponseChannel),
+	}))
+	require.NoError(l.tb, l.agent.ServiceFailure())
+	require.True(l.tb, l.agent.HasSession(id))
+}
+
+func (l *sessionLog) close(id, timestamp int64) {
+	l.tb.Helper()
+	l.deliver(encodeSessionClose(l.tb, codecs.SessionCloseEventFields{
+		LeadershipTermID: 1,
+		ClusterSessionID: id,
+		Timestamp:        timestamp,
+		CloseReason:      clusterwire.CloseReason_CLIENT_ACTION,
+	}))
+	require.NoError(l.tb, l.agent.ServiceFailure())
+	require.False(l.tb, l.agent.HasSession(id))
+}
+
+const (
+	testResponseStreamID = int32(102)
+	testResponseChannel  = "aeron:udp?endpoint=localhost:20121"
+)
+
+// requireEgressFrame asserts the frame at stream position start on pub
+// decodes to want and payload.
+func requireEgressFrame(
+	tb assertTB,
+	pub *aeron.Publication,
+	start int64,
+	want codecs.SessionMessageHeaderFields,
+	payload []byte,
+) {
+	tb.Helper()
+	termLength := int64(logbuffer.TermMinLength)
+	termIndex := int((start / termLength) % logbuffer.PartitionCount)
+	termOffset := int(start % termLength)
+	termBuffer := pub.TermBuffer(termIndex)
+	frameLength := int(logbuffer.FrameLengthVolatile(termBuffer, termOffset))
+	headerLength := codecs.SessionMessageHeaderEncodedLen()
+	require.Equal(tb, logbuffer.DataHeaderLength+headerLength+len(payload), frameLength)
+	wire := termBuffer.Bytes()[termOffset+logbuffer.OffsetFramePayload : termOffset+frameLength]
+	got, ok := codecs.TryDecodeSessionMessageHeaderAt(wire, 0)
+	require.True(tb, ok)
+	require.Equal(tb, want, got)
+	require.Equal(tb, payload, wire[headerLength:])
+}
+
+func TestAgent_ClientSession_openAsLeader(t *testing.T) {
+	adder := newFakeResponseAdder()
+	log, svc := bindSessionAgent(t, adder, codecs.RoleLeader)
+	agent := log.agent
+
+	// Phase 1: the open starts one add. The session holds no publication.
+	log.open(7, 50)
+	require.Len(t, svc.opens, 1)
+	require.Equal(t, []transportAdd{{
+		streamID: testResponseStreamID,
+		channel:  testResponseChannel,
+	}}, adder.offers)
+	require.Equal(t, 1, agent.PendingResponsePublicationAdds())
+	session, ok := agent.ClientSession(7)
+	require.True(t, ok)
+	require.Equal(t, int64(7), session.ID())
+	require.Equal(t, testResponseStreamID, session.ResponseStreamID())
+	require.Equal(t, testResponseChannel, session.ResponseChannel())
+	require.Empty(t, session.EncodedPrincipal())
+	require.Equal(t, aeron.NotConnected, session.Offer([]byte("early")))
+
+	// Phase 2: one DoWork resolves the add.
+	pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+	adder.next(1, responsePoll{publication: pub, done: true})
+	require.Equal(t, 1, agent.DoWork(0))
+	require.Equal(t, 0, agent.PendingResponsePublicationAdds())
+
+	// Phase 3: the offer frames the payload behind one SessionMessageHeader.
+	payload := []byte("echo")
+	require.Positive(t, session.Offer(payload))
+	requireEgressFrame(t, pub, 0, codecs.SessionMessageHeaderFields{
+		LeadershipTermID: nullValue,
+		ClusterSessionID: 7,
+		Timestamp:        agent.ClusterTime(),
+	}, payload)
+	require.Equal(t, int64(50), agent.ClusterTime())
+	require.NoError(t, agent.ServiceFailure())
+}
+
+func TestAgent_ClientSession_openAsFollower(t *testing.T) {
+	adder := newFakeResponseAdder()
+	log, svc := bindSessionAgent(t, adder, codecs.RoleFollower)
+
+	log.open(7, 50)
+	require.Len(t, svc.opens, 1)
+	require.Empty(t, adder.offers)
+	require.Equal(t, 0, log.agent.PendingResponsePublicationAdds())
+	session, ok := log.agent.ClientSession(7)
+	require.True(t, ok)
+	require.Equal(t, MockedOffer, session.Offer([]byte("m")))
+	require.NoError(t, log.agent.ServiceFailure())
+}
+
+// TestAgent_ClientSession_offerCodes asserts each Offer result. No code
+// marks a failure or closes the session.
+func TestAgent_ClientSession_offerCodes(t *testing.T) {
+	addErr := errors.New("add publication boom")
+
+	tests := []struct {
+		name string
+		role codecs.Role
+
+		// configure returns the adder the agent gets. Nil passes the fake.
+		configure func(adder *fakeResponseAdder) ResponsePublicationAdder
+
+		// poll scripts the next poll of add 1, then runs one DoWork. Nil
+		// leaves the add in flight.
+		poll func(t *testing.T) responsePoll
+
+		closePublication bool
+		oversize         bool
+		wantPending      int
+		want             int64
+	}{
+		{name: "follower", role: codecs.RoleFollower, want: MockedOffer},
+		{
+			name:      "leader with no adder",
+			role:      codecs.RoleLeader,
+			configure: func(*fakeResponseAdder) ResponsePublicationAdder { return nil },
+			want:      aeron.NotConnected,
+		},
+		{
+			name: "leader with a typed-nil adder",
+			role: codecs.RoleLeader,
+			configure: func(*fakeResponseAdder) ResponsePublicationAdder {
+				return (*fakeResponseAdder)(nil)
+			},
+			want: aeron.NotConnected,
+		},
+		{
+			name: "add offer error",
+			role: codecs.RoleLeader,
+			configure: func(adder *fakeResponseAdder) ResponsePublicationAdder {
+				adder.offerErr = addErr
+				return adder
+			},
+			want: aeron.NotConnected,
+		},
+		{name: "add in flight", role: codecs.RoleLeader, wantPending: 1, want: aeron.NotConnected},
+		{
+			name: "terminal add",
+			role: codecs.RoleLeader,
+			poll: func(*testing.T) responsePoll {
+				return responsePoll{done: true, err: addErr}
+			},
+			want: aeron.NotConnected,
+		},
+		{
+			name: "vanished add",
+			role: codecs.RoleLeader,
+			poll: func(*testing.T) responsePoll { return responsePoll{err: addErr} },
+			want: aeron.NotConnected,
+		},
+		{
+			name: "nil publication from a done poll",
+			role: codecs.RoleLeader,
+			poll: func(*testing.T) responsePoll { return responsePoll{done: true} },
+			want: aeron.NotConnected,
+		},
+		{
+			name: "publication not connected",
+			role: codecs.RoleLeader,
+			poll: func(t *testing.T) responsePoll {
+				pub := aeron.NewTestPublicationForHooksWithLimit(t, 0, false)
+				return responsePoll{publication: pub, done: true}
+			},
+			want: aeron.NotConnected,
+		},
+		{
+			name: "back-pressured publication",
+			role: codecs.RoleLeader,
+			poll: func(t *testing.T) responsePoll {
+				pub := aeron.NewTestPublicationForHooksWithLimit(t, 0, true)
+				return responsePoll{publication: pub, done: true}
+			},
+			want: aeron.BackPressured,
+		},
+		{
+			name: "oversize",
+			role: codecs.RoleLeader,
+			poll: func(t *testing.T) responsePoll {
+				pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+				return responsePoll{publication: pub, done: true}
+			},
+			oversize: true,
+			want:     aeron.UnsupportedMessageLength,
+		},
+		{
+			name: "closed publication",
+			role: codecs.RoleLeader,
+			poll: func(t *testing.T) responsePoll {
+				pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+				return responsePoll{publication: pub, done: true}
+			},
+			closePublication: true,
+			want:             aeron.Closed,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			adder := newFakeResponseAdder()
+			var configured ResponsePublicationAdder = adder
+			if tc.configure != nil {
+				configured = tc.configure(adder)
+			}
+			log, _ := bindSessionAgent(t, configured, tc.role)
+			log.open(7, 1)
+			if tc.poll != nil {
+				adder.next(1, tc.poll(t))
+				log.agent.DoWork(0)
+			}
+			state := log.agent.sessions[7]
+			if tc.closePublication {
+				require.NoError(t, state.publication.Close())
+			}
+			payload := []byte("m")
+			if tc.oversize {
+				headerLength := codecs.SessionMessageHeaderEncodedLen()
+				payload = make([]byte, state.publication.MaxMessageLength()-headerLength+1)
+			}
+
+			session, ok := log.agent.ClientSession(7)
+			require.True(t, ok)
+			require.Equal(t, tc.want, session.Offer(payload))
+			require.Equal(t, tc.wantPending, log.agent.PendingResponsePublicationAdds())
+			require.Len(t, adder.inFlight, tc.wantPending)
+			require.NoError(t, log.agent.ServiceFailure())
+			require.True(t, log.agent.HasSession(7))
+		})
+	}
+}
+
+func TestAgent_ClientSession_connectIdempotent(t *testing.T) {
+	adder := newFakeResponseAdder()
+	log, _ := bindSessionAgent(t, adder, codecs.RoleLeader)
+	agent := log.agent
+	log.open(7, 1)
+	session := agent.sessions[7]
+	require.Len(t, adder.offers, 1)
+
+	// An add in flight starts no second add.
+	agent.connectClientSession(session)
+	require.Len(t, adder.offers, 1)
+	require.Equal(t, 1, agent.PendingResponsePublicationAdds())
+
+	// A held publication starts no add.
+	pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+	adder.next(1, responsePoll{publication: pub, done: true})
+	require.Equal(t, 1, agent.DoWork(0))
+	agent.connectClientSession(session)
+	require.Len(t, adder.offers, 1)
+	require.Equal(t, 0, agent.PendingResponsePublicationAdds())
+	require.Same(t, pub, session.publication)
+}
+
+func TestAgent_ClientSessions_zeroAllocs(t *testing.T) {
+	log, _ := bindSessionAgent(t, nil, codecs.RoleFollower)
+	for _, id := range []int64{3, 1, 2} {
+		log.open(id, 1)
+	}
+	agent := log.agent
+
+	var sequence iter.Seq[ClientSession]
+	testutil.AssertZeroAllocs(t, "ClientSessions", 100, func() {
+		sequence = agent.ClientSessions()
+	})
+
+	walked := 0
+	yield := func(ClientSession) bool {
+		walked++
+		return true
+	}
+	testutil.AssertZeroAllocs(t, "ClientSessions stored yield walk", 100, func() {
+		sequence(yield)
+	})
+	require.Positive(t, walked)
+}
+
+func TestAgent_ClientSession_offerZeroAllocs(t *testing.T) {
+	adder := newFakeResponseAdder()
+	log, _ := bindSessionAgent(t, adder, codecs.RoleLeader)
+	log.open(7, 1)
+	pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+	adder.next(1, responsePoll{publication: pub, done: true})
+	log.agent.DoWork(0)
+	session, ok := log.agent.ClientSession(7)
+	require.True(t, ok)
+
+	payload := []byte("zero-alloc")
+	require.Positive(t, session.Offer(payload))
+	testutil.AssertZeroAllocs(t, "ClientSession.Offer", 100, func() {
+		if session.Offer(payload) <= 0 {
+			t.Fatal("offer rejected")
+		}
+	})
 }
 
 func TestAgent_CallbackOrderGolden(t *testing.T) {
@@ -1648,23 +2171,39 @@ func TestAgent_Unbind_imageClosedWhileBound(t *testing.T) {
 }
 
 func TestAgent_Close_idempotent(t *testing.T) {
-	svc := &recordingService{}
-	agent, image, committed := bindAgent(t, svc, 0)
+	adder := newFakeResponseAdder()
+	log, svc := bindSessionAgent(t, adder, codecs.RoleLeader)
+	agent := log.agent
+
+	// Session 1 holds a publication. Session 2 has an add in flight.
+	log.open(1, 1)
+	pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+	adder.next(1, responsePoll{publication: pub, done: true})
+	log.open(2, 1)
+	require.Equal(t, 1, agent.PendingResponsePublicationAdds())
 
 	payload := encodeTimerEvent(t, codecs.TimerEventFields{
 		LeadershipTermID: 1,
 		CorrelationID:    1,
 		Timestamp:        1,
 	})
-	span := writeAgentFrame(t, image, 0, payload)
-	*committed = int64(span)
+	log.write(t, payload)
 
 	agent.Close()
 	require.False(t, agent.IsLogBound())
 	require.True(t, agent.logSubscription == nil || agent.logSubscription.IsClosed())
+	require.True(t, pub.IsClosed())
+	require.Equal(t, []int64{2}, adder.cancels)
+	require.Empty(t, adder.inFlight)
+	require.Equal(t, 0, agent.PendingResponsePublicationAdds())
+	require.Equal(t, 2, agent.SessionCount())
+	for session := range agent.ClientSessions() {
+		require.Equal(t, aeron.NotConnected, session.Offer([]byte("late")))
+	}
 
 	// Idempotent.
 	agent.Close()
+	require.Equal(t, []int64{2}, adder.cancels)
 
 	// Inert after close.
 	require.Equal(t, 0, agent.DoWork(0))

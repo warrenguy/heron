@@ -3,6 +3,8 @@
 package service
 
 import (
+	"iter"
+
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -117,4 +119,18 @@ type Cluster interface {
 	//   - false when a terminal publication code marks the service failure
 	//     and stops the duty cycle. Must not retry.
 	CancelTimer(correlationID int64) bool
+
+	// ClientSession returns the open session with id, or nil and false when
+	// id is not open.
+	ClientSession(id int64) (ClientSession, bool)
+
+	// ClientSessions returns the open sessions in ascending id order.
+	//
+	// Behaviour: each walk reads the live registry. The registry does not
+	// change during a callback.
+	//
+	// Allocation: the call allocates nothing. A range loop allocates its
+	// yield closure per walk. A stored yield func passed to the sequence
+	// allocates nothing.
+	ClientSessions() iter.Seq[ClientSession]
 }

@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"iter"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
@@ -81,6 +82,11 @@ type AgentConfig struct {
 	// SnapshotStreamID is the snapshot publication stream. Zero takes
 	// DefaultSnapshotStreamID. NewAgent does not validate it. [Open] does.
 	SnapshotStreamID int32
+
+	// ResponsePublications adds the response publication of each session a
+	// leader opens. Nil is allowed: ClientSession.Offer then returns
+	// aeron.NotConnected. Agent does not own the adder.
+	ResponsePublications ResponsePublicationAdder
 }
 
 // Agent owns the service duty cycle: log join, bounded log consumption,
@@ -88,16 +94,19 @@ type AgentConfig struct {
 //
 // Concurrency: invoker-only. The harness drives DoWork after runner.DoWork on
 // one goroutine. Agent never calls DoWork on aeron.Client. The log
-// subscription add and the snapshot publication add poll run conductor ticks.
+// subscription add, the snapshot publication add poll, and the response
+// publication add poll run conductor ticks.
 //
 // Lifetime: Agent closes the log subscription in Close. The take closes its
 // snapshot publication and start request when it ends. Close closes both
-// while a take runs. Agent does not own the aeron.Client.
+// while a take runs. Close ends every in-flight response add and closes
+// every response publication. Agent does not own the aeron.Client.
 //
 // Ownership: Agent owns the BoundedLogAdapter, the log subscription, and the
-// snapshot publication and start request of a running take. Agent does not
-// own Images the subscription holds; unbind clears the adapter Image
-// reference only. Agent does not own the archive client.
+// snapshot publication and start request of a running take. Agent owns the
+// response publications and their in-flight adds. Agent does not own Images
+// the subscription holds. Unbind clears the adapter Image reference only.
+// Agent does not own the archive client.
 type Agent struct {
 	serviceID         int32
 	service           ClusteredService
@@ -153,7 +162,28 @@ type Agent struct {
 	coordinationAcks []coordinationAck
 
 	// sessions is the log-derived registry keyed by cluster session id.
-	sessions map[int64]*clientSessionRecord
+	sessions map[int64]*containerClientSession
+
+	// sessionList holds the sessions of the map in ascending id order.
+	sessionList []*containerClientSession
+
+	// clientSessions is the cached ClientSessions sequence. NewAgent builds
+	// it once. ClientSessions then allocates nothing.
+	clientSessions iter.Seq[ClientSession]
+
+	// responsePublications adds each response publication, or nil. Never a
+	// typed nil.
+	responsePublications ResponsePublicationAdder
+
+	// responseAdds holds the sessions with a response add in flight.
+	responseAdds []*containerClientSession
+
+	// egressScratch is the reused egress frame buffer.
+	egressScratch []byte
+
+	// egressLeadershipTermID is the egress header leadershipTermId. Starts
+	// at nullValue.
+	egressLeadershipTermID int64
 
 	logSubscription *aeron.Subscription
 
@@ -237,17 +267,6 @@ type coordinationAck struct {
 	failure     error
 }
 
-// clientSessionRecord holds open-event fields for one log-derived session. The
-// sessions map key is the session id.
-//
-// Ownership: the decoder clones the response channel and principal out of the
-// term buffer. The record retains those slices; the slices never alias the log.
-type clientSessionRecord struct {
-	responseStreamID int32
-	responseChannel  []byte
-	encodedPrincipal []byte
-}
-
 // Compile-time assertion: Agent satisfies Cluster.
 var _ Cluster = (*Agent)(nil)
 
@@ -273,7 +292,8 @@ func NewAgent(cfg AgentConfig) *Agent {
 		timeUnit:                clusterwire.ClusterTimeUnit_NULL_VALUE,
 		lastSnapshotRecordingID: nullValue,
 		memberID:                -1,
-		sessions:                make(map[int64]*clientSessionRecord),
+		sessions:                make(map[int64]*containerClientSession),
+		egressLeadershipTermID:  nullValue,
 	}
 	if a.snapshotChannel == "" {
 		a.snapshotChannel = DefaultSnapshotChannel
@@ -295,6 +315,9 @@ func NewAgent(cfg AgentConfig) *Agent {
 	if !isNilOrTypedNil(cfg.SnapshotPublications) {
 		a.snapshotPublications = cfg.SnapshotPublications
 	}
+	if !isNilOrTypedNil(cfg.ResponsePublications) {
+		a.responsePublications = cfg.ResponsePublications
+	}
 	if nlt, ok := cfg.Service.(NewLeadershipTermEventHandler); ok {
 		a.leadershipHandler = nlt
 	}
@@ -302,6 +325,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		a.snapshotHandler = snap
 	}
 	a.controlOnFragment = a.handleControlFragment
+	a.clientSessions = a.walkClientSessions
 	a.adapter = NewBoundedLogAdapter(a, cfg.FragmentLimit)
 	if sa := cfg.StartAck; sa != nil && sa.LogPosition >= 0 {
 		a.coordinationAcks = append(a.coordinationAcks, coordinationAck{
@@ -328,17 +352,19 @@ func NewAgent(cfg AgentConfig) *Agent {
 //  5. control work: poll control, request readiness sweep, drain at most one
 //     ready first queued ack. An entry with a failure marks it on send or
 //     on a terminal offer code
-//  6. join work while pendingJoin is non-nil and no image is bound
-//  7. log poll when the image is bound and CommittedPosition is non-nil. The
+//  6. response add work while responseAdds is non-empty: poll each in-flight
+//     response publication add once
+//  7. join work while pendingJoin is non-nil and no image is bound
+//  8. log poll when the image is bound and CommittedPosition is non-nil. The
 //     poll bound is min(committed, lowest unready request entry position).
 //     While a take runs, the bound also holds at the take action position
-//  8. unbind when zero polled and (image closed or position at maxLogPosition)
+//  9. unbind when zero polled and (image closed or position at maxLogPosition)
 //
 // A take that resolves in step 4 can ack in step 5 of the same tick.
 //
 // Returns the work count: Start, the archive Poll count, each completed take
-// state, control fragments, each sent ack, each join bind, and each polled
-// fragment.
+// state, control fragments, each sent ack, each in-flight response add poll,
+// each ready response add, each join bind, and each polled fragment.
 //
 // Concurrency: invoker-only.
 func (a *Agent) DoWork(nowNs int64) int {
@@ -376,6 +402,10 @@ func (a *Agent) DoWork(nowNs int64) int {
 		return work
 	}
 
+	if len(a.responseAdds) > 0 {
+		work += a.responseAddWork()
+	}
+
 	if a.pendingJoin != nil && a.adapter.Image() == nil {
 		work += a.joinWork()
 		if a.serviceFailure != nil {
@@ -404,18 +434,22 @@ func (a *Agent) DoWork(nowNs int64) int {
 }
 
 // Close ends any snapshot take. A take that Close ends sends no ack. Close
-// then unbinds the log image and closes the owned log subscription.
+// then disconnects the egress of every session. Close then unbinds the log
+// image and closes the owned log subscription. Registry entries stay.
 //
 // Idempotent. The Agent is inert after Close.
 //
 // Ownership: closes the snapshot publication and start request of a running
-// take. Closes the log subscription Agent added. Does not close Images.
+// take. Ends every in-flight response add and closes every response
+// publication. Closes the log subscription Agent added. Does not close
+// Images.
 func (a *Agent) Close() {
 	if a.closed {
 		return
 	}
 	a.closed = true
 	a.closeSnapshotTake()
+	a.disconnectEgress()
 	a.adapter.SetImage(nil)
 	if a.logSubscription != nil {
 		_ = a.logSubscription.Close()
@@ -494,6 +528,26 @@ func (a *Agent) SessionCount() int {
 func (a *Agent) HasSession(sessionID int64) bool {
 	_, ok := a.sessions[sessionID]
 	return ok
+}
+
+// ClientSession implements [Cluster.ClientSession].
+func (a *Agent) ClientSession(id int64) (ClientSession, bool) {
+	session, ok := a.sessions[id]
+	if !ok {
+		return nil, false
+	}
+	return session, true
+}
+
+// ClientSessions implements [Cluster.ClientSessions].
+func (a *Agent) ClientSessions() iter.Seq[ClientSession] {
+	return a.clientSessions
+}
+
+// PendingResponsePublicationAdds returns the number of sessions with a
+// response publication add in flight.
+func (a *Agent) PendingResponsePublicationAdds() int {
+	return len(a.responseAdds)
 }
 
 // HasPendingJoin reports whether a JoinLog is stored and not yet bound.
@@ -726,11 +780,18 @@ func (a *Agent) handleSessionOpen(
 	}
 
 	a.adoptConsumed(logPosition, fields.Timestamp)
-	a.sessions[fields.ClusterSessionID] = &clientSessionRecord{
+	session := &containerClientSession{
+		agent:            a,
+		id:               fields.ClusterSessionID,
 		responseStreamID: fields.ResponseStreamID,
-		responseChannel:  fields.ResponseChannel,
+		responseChannel:  string(fields.ResponseChannel),
 		encodedPrincipal: fields.EncodedPrincipal,
+		addCorrelationID: nullValue,
 	}
+	if a.role == codecs.RoleLeader {
+		a.connectClientSession(session)
+	}
+	a.addClientSession(session)
 	if a.service != nil {
 		a.service.SessionOpen(fields.ClusterSessionID, fields.Timestamp)
 	}
@@ -743,11 +804,12 @@ func (a *Agent) handleSessionClose(
 ) aeron.ControlledAction {
 	a.adoptConsumed(logPosition, fields.Timestamp)
 
-	if _, ok := a.sessions[fields.ClusterSessionID]; !ok {
+	session := a.removeClientSession(fields.ClusterSessionID)
+	if session == nil {
 		// Unknown session: skip callback, continue (upstream continues).
 		return aeron.ControlledContinue
 	}
-	delete(a.sessions, fields.ClusterSessionID)
+	a.disconnectClientSession(session)
 	if a.service != nil {
 		a.service.SessionClose(
 			fields.ClusterSessionID,

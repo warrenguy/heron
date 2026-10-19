@@ -22,7 +22,7 @@ type transportAdd struct {
 
 // fakeTransport records AddSubscription and AddPublication and returns hook
 // handles. A configured error skips handle creation for that add. An
-// exclusive publication add never completes.
+// exclusive publication add and a response publication add never complete.
 type fakeTransport struct {
 	tb testing.TB
 
@@ -79,6 +79,14 @@ func (*fakeTransport) OfferAddExclusivePublication(int32, string) (int64, error)
 func (*fakeTransport) PollAddExclusivePublication(
 	int64,
 ) (*aeron.ExclusivePublication, bool, error) {
+	return nil, false, nil
+}
+
+func (*fakeTransport) OfferAddPublication(int32, string) (int64, error) {
+	return 1, nil
+}
+
+func (*fakeTransport) PollAddPublication(int64) (*aeron.Publication, bool, error) {
 	return nil, false, nil
 }
 
@@ -506,6 +514,7 @@ func TestOpen_wiresControlIngressAndProxy(t *testing.T) {
 	require.NotNil(t, agent.control)
 	require.NotNil(t, agent.moduleProxy)
 	require.Same(t, client, agent.subscriptions)
+	require.Same(t, client, agent.responsePublications)
 	require.Same(t, client.pub, agent.moduleProxy.Publication())
 	require.Nil(t, c.ArchiveClient())
 	require.Equal(t, snapshotArchiveControl(nil), agent.archive)

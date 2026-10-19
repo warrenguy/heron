@@ -493,10 +493,22 @@ func openSession(
 	leader *cluster.ConsensusModule,
 ) (*aeron.Client, *client.AeronCluster) {
 	t.Helper()
+	return openSessionWithEgress(t, set, leader, &client.EgressHandlers{})
+}
+
+// openSessionWithEgress is openSession with egress as the client egress
+// handler.
+func openSessionWithEgress(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	leader *cluster.ConsensusModule,
+	egress client.EgressHandler,
+) (*aeron.Client, *client.AeronCluster) {
+	t.Helper()
 
 	transport := startSessionClientTransport(t)
-	result, connectErr := startSessionConnect(
-		t, set, leader, transport, []byte(sessionSmokeCredentials),
+	result, connectErr := startSessionConnectWithEgress(
+		t, set, leader, transport, []byte(sessionSmokeCredentials), egress,
 	)
 	require.NoError(t, connectErr)
 	session, err := client.NewAeronCluster(result)
