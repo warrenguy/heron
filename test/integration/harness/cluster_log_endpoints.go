@@ -214,6 +214,20 @@ const (
 	ClusterServiceTransferLogEndpoint = "239.255.12.61:23404"
 )
 
+// Service restart live-scenario endpoints. Each pair reserves one three-member
+// consensus port block (base+1 .. base+205) and one shared cluster-log
+// multicast endpoint. The two scenarios are separate so they may run in
+// parallel. Bases sit below DurableRestartRunningPortBase (22200).
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterServiceRestartPortBase    = 21600
+	ClusterServiceRestartLogEndpoint = "239.255.12.67:21604"
+	ClusterServiceRebuildPortBase    = 21900
+	ClusterServiceRebuildLogEndpoint = "239.255.12.69:21904"
+)
+
 // cluster_archive one-off and smoke endpoints. Harness holds one matrix for
 // every PortBase and log multicast the cluster_archive package uses under
 // t.Parallel. Sibling packages use 9000-9205 and 23700-24605 and may run in
@@ -542,6 +556,18 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    ClusterServiceTransferPortBase,
 			memberCount: 3,
 			logEndpoint: ClusterServiceTransferLogEndpoint,
+		},
+		{
+			name:        "service-restart",
+			portBase:    ClusterServiceRestartPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterServiceRestartLogEndpoint,
+		},
+		{
+			name:        "service-rebuild",
+			portBase:    ClusterServiceRebuildPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterServiceRebuildLogEndpoint,
 		},
 		{
 			name:        "cluster-streams-multicast",

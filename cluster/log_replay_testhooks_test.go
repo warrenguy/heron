@@ -12,6 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
 )
 
@@ -101,14 +104,162 @@ const (
 	testImageAwaitNs      int64 = 1_000_000_000
 )
 
+// testReplayAgent returns a follower with a module log adapter, no image and
+// no services.
 func testReplayAgent(recordingID int64) *consensus.Agent {
 	a := consensus.NewAgent(consensus.AgentConfig{
-		Commit: new(atomic.Int64),
+		Commit:     new(atomic.Int64),
+		LogAdapter: consensus.NewLogAdapter(0),
 	})
 	if recordingID >= 0 {
 		a.SetLogRecordingID(recordingID)
 	}
 	return a
+}
+
+// writeReplayFrame commits one unfragmented cluster log frame at position
+// offset of image. Returns where the frame ends.
+func writeReplayFrame(t *testing.T, image *aeron.Image, offset int64, payload []byte) int64 {
+	t.Helper()
+	aeron.WriteCommittedDataFrameForHooks(
+		aeron.ImageTermBufferForHooks(image),
+		int(offset),
+		image.SessionID(),
+		image.StreamID(),
+		wireHookTermID,
+		int32(offset),
+		logbuffer.Unfragmented,
+		payload,
+	)
+	return offset + int64(logbuffer.AlignFragmentChunkLength(len(payload)))
+}
+
+// deliverServiceControl hands frame to agent on its service control ingress,
+// then runs one agent duty cycle. The cycle polls the frame, then pops a
+// satisfied wait.
+func deliverServiceControl(t *testing.T, agent *consensus.Agent, frame []byte) {
+	t.Helper()
+	ingress := &consensus.QueueConsensusIngress{}
+	ingress.Enqueue(frame)
+	agent.SetServiceIngress(ingress)
+	agent.DoWork(0)
+	agent.SetServiceIngress(nil)
+}
+
+// scheduleReplayTimer schedules one timer on agent through its service
+// control ingress.
+func scheduleReplayTimer(t *testing.T, agent *consensus.Agent, correlationID, deadline int64) {
+	t.Helper()
+	buf := make([]byte, codecs.ScheduleTimerEncodedLen())
+	wireEnd, ok := codecs.EncodeScheduleTimer(
+		buf,
+		0,
+		clusterwire.ScheduleTimerSbeSchemaVersion,
+		codecs.ScheduleTimerFields{CorrelationID: correlationID, Deadline: deadline},
+	)
+	require.True(t, ok)
+	deliverServiceControl(t, agent, buf[:wireEnd])
+}
+
+// ackReplayService delivers one ServiceAck from service 0 at logPosition.
+func ackReplayService(t *testing.T, agent *consensus.Agent, logPosition, ackID int64) {
+	t.Helper()
+	buf := make([]byte, codecs.ServiceAckEncodedLen())
+	wireEnd, ok := codecs.EncodeServiceAck(
+		buf,
+		0,
+		clusterwire.ServiceAckSbeSchemaVersion,
+		codecs.ServiceAckFields{LogPosition: logPosition, AckID: ackID, RelevantID: -1},
+	)
+	require.True(t, ok)
+	deliverServiceControl(t, agent, buf[:wireEnd])
+}
+
+// encodeReplaySessionOpen returns a SessionOpenEvent payload for sessionID.
+func encodeReplaySessionOpen(t *testing.T, sessionID int64) []byte {
+	t.Helper()
+	fields := codecs.SessionOpenEventFields{
+		LeadershipTermID: 1,
+		CorrelationID:    sessionID + 100,
+		ClusterSessionID: sessionID,
+		Timestamp:        5,
+		ResponseStreamID: 102,
+		ResponseChannel:  []byte("aeron:udp?endpoint=localhost:20121"),
+	}
+	length, ok := codecs.ClusterWireMessageLen(
+		clusterwire.SessionOpenEventSbeBlockLength,
+		len(fields.ResponseChannel),
+		len(fields.EncodedPrincipal),
+	)
+	require.True(t, ok)
+	buf := make([]byte, length)
+	wireEnd, ok := codecs.EncodeSessionOpenEvent(
+		buf,
+		0,
+		clusterwire.SessionOpenEventSbeSchemaVersion,
+		fields,
+	)
+	require.True(t, ok)
+	return buf[:wireEnd]
+}
+
+// encodeReplaySessionClose returns a SessionCloseEvent payload for sessionID.
+func encodeReplaySessionClose(t *testing.T, sessionID int64) []byte {
+	t.Helper()
+	buf := make([]byte, codecs.SessionCloseEventEncodedLen())
+	wireEnd, ok := codecs.EncodeSessionCloseEvent(
+		buf,
+		0,
+		clusterwire.SessionCloseEventSbeSchemaVersion,
+		codecs.SessionCloseEventFields{
+			LeadershipTermID: 1,
+			ClusterSessionID: sessionID,
+			Timestamp:        6,
+			CloseReason:      clusterwire.CloseReason_CLIENT_ACTION,
+		},
+	)
+	require.True(t, ok)
+	return buf[:wireEnd]
+}
+
+// encodeReplaySnapshotAction returns a SNAPSHOT ClusterActionRequest payload
+// with flags 0 whose frame ends at logPosition.
+func encodeReplaySnapshotAction(t *testing.T, logPosition int64) []byte {
+	t.Helper()
+	buf := make([]byte, codecs.ClusterActionRequestEncodedLen())
+	wireEnd, ok := codecs.EncodeClusterActionRequest(
+		buf,
+		0,
+		clusterwire.ClusterActionRequestSbeSchemaVersion,
+		codecs.ClusterActionRequestFields{
+			LeadershipTermID: 1,
+			LogPosition:      logPosition,
+			Timestamp:        7,
+			Action:           clusterwire.ClusterAction_SNAPSHOT,
+		},
+	)
+	require.True(t, ok)
+	return buf[:wireEnd]
+}
+
+// writeReplaySnapshotAction writes a SNAPSHOT action at offset. Returns where
+// the frame ends.
+func writeReplaySnapshotAction(t *testing.T, image *aeron.Image, offset int64) int64 {
+	t.Helper()
+	end := offset + int64(logbuffer.AlignFragmentChunkLength(codecs.ClusterActionRequestEncodedLen()))
+	require.Equal(t, end, writeReplayFrame(t, image, offset, encodeReplaySnapshotAction(t, end)))
+	return end
+}
+
+// writeReplayTimerEvent writes a TimerEvent at offset. Returns where the frame
+// ends.
+func writeReplayTimerEvent(t *testing.T, image *aeron.Image, offset, correlationID int64) int64 {
+	t.Helper()
+	return writeReplayFrame(t, image, offset, encodeWireTimerEvent(t, codecs.TimerEventFields{
+		LeadershipTermID: 1,
+		CorrelationID:    correlationID,
+		Timestamp:        5,
+	}))
 }
 
 func testReplayDeps(
@@ -122,7 +273,6 @@ func testReplayDeps(
 		Agent:          agent,
 		ReplayChannel:  testReplayChannel,
 		ReplayStreamID: testReplayStreamID,
-		FragmentLimit:  consensus.DefaultLogFragmentLimit,
 		ImageAwaitNs:   testImageAwaitNs,
 	}
 }
@@ -221,6 +371,32 @@ func TestLogReplay_terminalClassification(t *testing.T) {
 			},
 			wantPos:    testReplayStop,
 			wantReason: "",
+		},
+		{
+			name: "reboundPastBound",
+			setup: func(t *testing.T) *logReplay {
+				control := &fakeReplayControl{sessionID: testReplaySessionID}
+				sub := testReplaySubscription(t)
+				adder := &fakeSubscriptionAdder{result: sub}
+				agent := testReplayAgent(testReplayRecordingID)
+				r := newLogReplay(
+					testReplayDeps(control, adder, agent),
+					testReplayStart,
+					testReplayStop,
+				)
+				_ = attachReplayImage(t, sub, testReplaySessionID, testReplayStart)
+				require.Equal(t, 1, r.DoWork(0))
+				other := aeron.NewTestImageForHooks(t, aeron.NewTestSubscriptionForHooks(t), testReplayStop)
+				agent.BindReplayLog(other)
+				require.Equal(t, 0, r.DoWork(1))
+
+				// The other image feeds nothing and raises no commit.
+				require.Equal(t, int64(0), agent.CommitPosition())
+				require.Equal(t, testReplayStop, other.Position())
+				return r
+			},
+			wantPos:    testReplayStart,
+			wantReason: "before the bound",
 		},
 		{
 			name: "imageNeverAppears",
@@ -377,6 +553,30 @@ func TestLogReplay_terminalClassification(t *testing.T) {
 			require.Contains(t, r.reason(), tt.wantReason)
 		})
 	}
+}
+
+func TestLogReplay_cancelsTimerInReplayRange(t *testing.T) {
+	t.Parallel()
+
+	const correlationID int64 = 31
+	agent := testReplayAgent(testReplayRecordingID)
+	scheduleReplayTimer(t, agent, correlationID, 1_000_000_000)
+	require.Equal(t, int64(1), agent.ScheduledTimerCount())
+
+	var stop int64
+	r, _, _ := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
+		stop = writeReplayTimerEvent(t, image, 0, correlationID)
+		return stop
+	})
+	require.Equal(t, 1, r.DoWork(0))
+	for range 4 {
+		r.DoWork(1)
+	}
+
+	require.True(t, r.IsDone())
+	require.Empty(t, r.reason())
+	require.Equal(t, int64(0), agent.ScheduledTimerCount())
+	require.Equal(t, stop, agent.CommitPosition())
 }
 
 func TestLogReplay_replayChannel(t *testing.T) {
@@ -594,6 +794,470 @@ func TestLogReplay_close(t *testing.T) {
 		},
 	}
 
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.run(t)
+		})
+	}
+}
+
+// testServiceReplayAgent returns a follower with a module log adapter of
+// fragmentLimit, serviceCount services, no service proxy and the test
+// recording id.
+func testServiceReplayAgent(fragmentLimit, serviceCount int) *consensus.Agent {
+	a := consensus.NewAgent(consensus.AgentConfig{
+		Commit:       new(atomic.Int64),
+		LogAdapter:   consensus.NewLogAdapter(fragmentLimit),
+		ServiceCount: serviceCount,
+	})
+	a.SetLogRecordingID(testReplayRecordingID)
+	return a
+}
+
+// attachServiceProxy wires a service proxy over pub into agent.
+func attachServiceProxy(agent *consensus.Agent, pub *aeron.Publication) {
+	proxy := consensus.NewServiceProxy()
+	proxy.SetPublication(pub)
+	agent.SetServiceProxy(proxy)
+}
+
+// startArchiveReplay builds an archive mode replay of [0, stop] for agent. It
+// returns the replay, the control and the replay image, still unbound.
+func startArchiveReplay(
+	t *testing.T,
+	agent *consensus.Agent,
+	writeFrames func(image *aeron.Image) int64,
+) (*logReplay, *fakeReplayControl, *aeron.Image) {
+	t.Helper()
+	control := &fakeReplayControl{sessionID: testReplaySessionID}
+	sub := testReplaySubscription(t)
+	adder := &fakeSubscriptionAdder{result: sub}
+	image := attachReplayImage(t, sub, testReplaySessionID, 0)
+	stop := writeFrames(image)
+	r := newLogReplay(testReplayDeps(control, adder, agent), 0, stop)
+	require.False(t, r.IsDone())
+	require.Len(t, control.startCalls, 1)
+	return r, control, image
+}
+
+func TestLogReplay_dispatchesThroughModuleAdapter(t *testing.T) {
+	t.Parallel()
+
+	agent := testServiceReplayAgent(1, 0)
+	var openEnd, closeEnd, reopenEnd int64
+	r, _, _ := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
+		openEnd = writeReplayFrame(t, image, 0, encodeReplaySessionOpen(t, 11))
+		closeEnd = writeReplayFrame(t, image, openEnd, encodeReplaySessionClose(t, 11))
+		reopenEnd = writeReplayFrame(t, image, closeEnd, encodeReplaySessionOpen(t, 12))
+		return reopenEnd
+	})
+	require.Equal(t, 1, r.DoWork(0))
+
+	// Phase 1: the first batch opens session 11.
+	require.Equal(t, 1, r.DoWork(1))
+	require.Equal(t, openEnd, agent.CommitPosition())
+	require.Equal(t, 1, agent.OpenSessionCount())
+	opened, ok := agent.OpenSessionLogPositionForTest(11)
+	require.True(t, ok)
+	require.Equal(t, openEnd, opened)
+	require.Equal(t, int64(12), agent.NextSessionIDForTest())
+
+	// Phase 2: the second batch closes it.
+	require.Equal(t, 1, r.DoWork(2))
+	require.Equal(t, closeEnd, agent.CommitPosition())
+	require.Equal(t, 0, agent.OpenSessionCount())
+
+	// Phase 3: the third batch opens session 12 and reaches the stop.
+	require.Equal(t, 1, r.DoWork(3))
+	require.Equal(t, reopenEnd, agent.CommitPosition())
+	require.Equal(t, 1, agent.OpenSessionCount())
+	opened, ok = agent.OpenSessionLogPositionForTest(12)
+	require.True(t, ok)
+	require.Equal(t, reopenEnd, opened)
+	require.Equal(t, int64(13), agent.NextSessionIDForTest())
+	require.True(t, r.IsDone())
+	require.Empty(t, r.reason())
+
+	// Phase 4: Close unbinds only its own image. A rebound image survives.
+	other := aeron.NewTestImageForHooks(t, aeron.NewTestSubscriptionForHooks(t), reopenEnd)
+	agent.BindReplayLog(other)
+	r.Close()
+	require.Same(t, other, agent.LogAdapter().Image())
+}
+
+func TestLogReplay_modes(t *testing.T) {
+	t.Parallel()
+
+	const correlationID int64 = 41
+	// liveImage returns an image that holds one TimerEvent from position 0.
+	// The image sits at position.
+	liveImage := func(t *testing.T, position int64) (*aeron.Image, int64) {
+		t.Helper()
+		image := aeron.NewTestImageForHooks(t, aeron.NewTestSubscriptionForHooks(t), 0)
+		end := writeReplayTimerEvent(t, image, 0, correlationID)
+		aeron.ImageSetSubscriberPositionForHooks(image, position)
+		return image, end
+	}
+	// requireArchiveReplay runs an archive mode replay of one TimerEvent to
+	// its stop. Close then unbinds the replay image.
+	requireArchiveReplay := func(t *testing.T, agent *consensus.Agent) {
+		t.Helper()
+		r, control, image := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
+			return writeReplayTimerEvent(t, image, 0, correlationID)
+		})
+		require.Equal(t, int64(0), control.startCalls[0].position)
+		require.Equal(t, 1, r.DoWork(0))
+		require.Same(t, image, agent.LogAdapter().Image())
+		require.Equal(t, 1, r.DoWork(1))
+		require.True(t, r.IsDone())
+		require.Equal(t, int64(0), agent.ScheduledTimerCount())
+
+		r.Close()
+		require.Nil(t, agent.LogAdapter().Image())
+		require.Empty(t, control.stopCalls)
+	}
+
+	// Archive-mode rows set prepare and leave run nil. The loop builds a
+	// service replay agent with one scheduled timer, runs prepare, then
+	// requireArchiveReplay.
+	tests := []struct {
+		name    string
+		run     func(t *testing.T)
+		prepare func(t *testing.T, agent *consensus.Agent)
+	}{
+		{
+			name: "open image at the start reads that image",
+			run: func(t *testing.T) {
+				// No local recording: bound-image mode does not need one.
+				agent := testReplayAgent(-1)
+				scheduleReplayTimer(t, agent, correlationID, 1_000_000_000)
+				image, stop := liveImage(t, 0)
+				agent.LogAdapter().SetImage(image)
+				control := &fakeReplayControl{sessionID: testReplaySessionID}
+				adder := &fakeSubscriptionAdder{}
+
+				r := newLogReplay(testReplayDeps(control, adder, agent), 0, stop)
+				require.Empty(t, control.startCalls)
+				require.Empty(t, adder.calls)
+				require.Equal(t, 1, r.DoWork(0))
+				require.True(t, r.IsDone())
+				require.Empty(t, r.reason())
+				require.Equal(t, stop, agent.CommitPosition())
+				require.Equal(t, int64(0), agent.ScheduledTimerCount())
+
+				r.Close()
+				require.Same(t, image, agent.LogAdapter().Image())
+				require.Empty(t, control.stopCalls)
+			},
+		},
+		{
+			name: "open image at the start sends no replay JoinLog",
+			run: func(t *testing.T) {
+				agent := consensus.NewAgent(consensus.AgentConfig{
+					Commit:       new(atomic.Int64),
+					LogAdapter:   consensus.NewLogAdapter(0),
+					ServiceCount: 1,
+				})
+				scheduleReplayTimer(t, agent, correlationID, 1_000_000_000)
+				pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+				attachServiceProxy(agent, pub)
+				image, stop := liveImage(t, 0)
+				agent.LogAdapter().SetImage(image)
+				control := &fakeReplayControl{sessionID: testReplaySessionID}
+				adder := &fakeSubscriptionAdder{}
+
+				r := newLogReplay(testReplayDeps(control, adder, agent), 0, stop)
+				require.Equal(t, 1, r.DoWork(0))
+				require.True(t, r.IsDone())
+				require.Empty(t, r.reason())
+				require.Equal(t, stop, agent.CommitPosition())
+
+				var frames [][]byte
+				off := 0
+				bridgePub(t, pub, &off, func(msg []byte) { frames = append(frames, msg) })
+				require.Empty(t, frames)
+				require.False(t, agent.HasPendingJoinLog())
+				require.Equal(t, 0, agent.PendingServiceAckWaits())
+				require.True(t, agent.IsReplayLogJoined())
+				r.Close()
+			},
+		},
+		{
+			name: "open image at another position replays the archive",
+			prepare: func(t *testing.T, agent *consensus.Agent) {
+				image, _ := liveImage(t, 64)
+				agent.LogAdapter().SetImage(image)
+			},
+		},
+		{
+			name: "closed image replays the archive",
+			prepare: func(t *testing.T, agent *consensus.Agent) {
+				image, _ := liveImage(t, 0)
+				aeron.ImageInternalCloseForHooks(image)
+				agent.LogAdapter().SetImage(image)
+			},
+		},
+		{
+			name:    "no image replays the archive",
+			prepare: func(t *testing.T, agent *consensus.Agent) {},
+		},
+		{
+			name: "leader then replay reads the archive",
+			prepare: func(t *testing.T, agent *consensus.Agent) {
+				image, _ := liveImage(t, 0)
+				agent.LogAdapter().SetImage(image)
+				require.NoError(t, agent.JoinLogAsLeader(1, 0, 0, false))
+				require.Nil(t, agent.LogAdapter().Image())
+				agent.RoleSet(consensus.RoleFollower)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if tt.run != nil {
+				tt.run(t)
+				return
+			}
+			agent := testServiceReplayAgent(0, 0)
+			scheduleReplayTimer(t, agent, correlationID, 1_000_000_000)
+			tt.prepare(t, agent)
+			requireArchiveReplay(t, agent)
+		})
+	}
+}
+
+func TestLogReplay_holdsAtSnapshotWait(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "action mid-range",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 1)
+				var actionEnd, stop int64
+				r, _, _ := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
+					actionEnd = writeReplaySnapshotAction(t, image, 0)
+					stop = writeReplayFrame(t, image, actionEnd, encodeReplaySessionOpen(t, 3))
+					return stop
+				})
+				require.Equal(t, 1, r.DoWork(0))
+
+				// Phase 1: the drain stops at the action end.
+				for nowNs := range int64(3) {
+					r.DoWork(nowNs + 1)
+					require.Equal(t, actionEnd, r.Position())
+					require.Equal(t, actionEnd, agent.CommitPosition())
+					require.True(t, agent.HasPendingSnapshotAction())
+					require.False(t, r.IsDone())
+				}
+
+				// Phase 2: the ack pops the wait. The drain reaches the stop.
+				ackReplayService(t, agent, actionEnd, 0)
+				require.False(t, agent.HasPendingSnapshotAction())
+				require.Equal(t, 1, r.DoWork(4))
+				require.True(t, r.IsDone())
+				require.Empty(t, r.reason())
+				require.Equal(t, stop, agent.CommitPosition())
+				require.Equal(t, 1, agent.OpenSessionCount())
+			},
+		},
+		{
+			name: "action at the stop",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 1)
+				var stop int64
+				r, _, _ := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
+					openEnd := writeReplayFrame(t, image, 0, encodeReplaySessionOpen(t, 3))
+					stop = writeReplaySnapshotAction(t, image, openEnd)
+					return stop
+				})
+				require.Equal(t, 1, r.DoWork(0))
+
+				// Phase 1: the drain reaches the stop, held by the wait.
+				for nowNs := range int64(3) {
+					r.DoWork(nowNs + 1)
+					require.Equal(t, stop, r.Position())
+					require.True(t, agent.HasPendingSnapshotAction())
+					require.False(t, r.IsDone())
+				}
+
+				// Phase 2: the pop completes the replay.
+				ackReplayService(t, agent, stop, 0)
+				r.DoWork(4)
+				require.True(t, r.IsDone())
+				require.Empty(t, r.reason())
+				require.Equal(t, stop, agent.CommitPosition())
+			},
+		},
+		{
+			name: "image closed while held below the stop",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 1)
+				var actionEnd int64
+				r, _, image := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
+					actionEnd = writeReplaySnapshotAction(t, image, 0)
+					return writeReplayFrame(t, image, actionEnd, encodeReplaySessionOpen(t, 3))
+				})
+				require.Equal(t, 1, r.DoWork(0))
+				r.DoWork(1)
+				require.True(t, agent.HasPendingSnapshotAction())
+				require.False(t, r.IsDone())
+
+				aeron.ImageInternalCloseForHooks(image)
+				r.DoWork(2)
+				require.True(t, r.IsDone())
+				require.Equal(t, replayEndedShortReason, r.reason())
+				require.Equal(t, actionEnd, r.Position())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.run(t)
+		})
+	}
+}
+
+func TestLogReplay_replayJoin(t *testing.T) {
+	t.Parallel()
+
+	const correlationID int64 = 51
+	// joinedAgent returns a one-service follower with a connected service
+	// proxy and one scheduled timer. It returns the proxy publication too.
+	joinedAgent := func(t *testing.T) (*consensus.Agent, *aeron.Publication) {
+		t.Helper()
+		agent := testServiceReplayAgent(0, 1)
+		pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+		attachServiceProxy(agent, pub)
+		scheduleReplayTimer(t, agent, correlationID, 1_000_000_000)
+		return agent, pub
+	}
+	writeTimer := func(image *aeron.Image) int64 {
+		return writeReplayTimerEvent(t, image, 0, correlationID)
+	}
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "one service joins before the drain",
+			run: func(t *testing.T) {
+				agent, pub := joinedAgent(t)
+				r, _, image := startArchiveReplay(t, agent, writeTimer)
+				stop := r.progress.stopPosition
+				require.Equal(t, 1, r.DoWork(0))
+
+				var frames [][]byte
+				off := 0
+				bridgePub(t, pub, &off, func(msg []byte) { frames = append(frames, msg) })
+				require.Len(t, frames, 1)
+				join, ok := codecs.TryDecodeJoinLogAt(frames[0], 0)
+				require.True(t, ok)
+				require.Equal(t, int64(0), join.LogPosition)
+				require.Equal(t, stop, join.MaxLogPosition)
+				require.Equal(t, image.SessionID(), join.LogSessionID)
+				require.Equal(t, testReplayStreamID, join.LogStreamID)
+				require.Equal(
+					t,
+					sessionScopedLogChannel(testReplayChannel, image.SessionID()),
+					string(join.LogChannel),
+				)
+				require.Equal(t, clusterwire.BooleanType_TRUE, join.IsStartup)
+				require.Equal(t, consensus.RoleFollower.Code(), join.Role)
+				require.Equal(t, 1, agent.PendingServiceAckWaits())
+
+				// Phase 1: no drain until the replay JoinLog wait pops.
+				for nowNs := range int64(3) {
+					require.Equal(t, 0, r.DoWork(nowNs+1))
+					require.Equal(t, int64(0), agent.LogAdapter().Position())
+					require.Equal(t, int64(0), agent.CommitPosition())
+					require.Equal(t, int64(1), agent.ScheduledTimerCount())
+					require.False(t, r.IsDone())
+				}
+
+				// Phase 2: the join ack pops the wait. The drain runs.
+				ackReplayService(t, agent, 0, 0)
+				require.True(t, agent.IsReplayLogJoined())
+				require.Equal(t, 1, r.DoWork(4))
+				require.True(t, r.IsDone())
+				require.Equal(t, stop, agent.CommitPosition())
+				require.Equal(t, int64(0), agent.ScheduledTimerCount())
+			},
+		},
+		{
+			name: "no ack by the deadline",
+			run: func(t *testing.T) {
+				agent, _ := joinedAgent(t)
+				r, _, _ := startArchiveReplay(t, agent, writeTimer)
+				require.Equal(t, 1, r.DoWork(0))
+				require.Equal(t, 0, r.DoWork(testImageAwaitNs-1))
+				require.False(t, r.IsDone())
+
+				require.Equal(t, 0, r.DoWork(testImageAwaitNs))
+				require.True(t, r.IsDone())
+				require.Equal(t, servicesNotJoinedReason, r.reason())
+				require.Equal(t, int64(0), r.Position())
+				require.Equal(t, int64(0), agent.CommitPosition())
+				require.Equal(t, int64(1), agent.ScheduledTimerCount())
+
+				// Close drops the join tracking. The published wait stays.
+				r.Close()
+				require.True(t, agent.IsReplayLogJoined())
+				require.Equal(t, 1, agent.PendingServiceAckWaits())
+			},
+		},
+		{
+			name: "unpublished JoinLog after an ack failure holds to the deadline",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 1)
+				scheduleReplayTimer(t, agent, correlationID, 1_000_000_000)
+				ackReplayService(t, agent, 0, 5)
+				require.ErrorIs(t, agent.ServiceAckFailure(), consensus.ErrServiceAckOutOfSequence)
+				attachServiceProxy(agent, aeron.NewTestPublicationForHooksWithLimit(t, 0, false))
+
+				r, _, _ := startArchiveReplay(t, agent, writeTimer)
+				require.Equal(t, 1, r.DoWork(0))
+				require.True(t, agent.HasPendingJoinLog())
+				require.True(t, agent.IsReplayLogJoined())
+
+				// Phase 1: no drain while the replay JoinLog is unpublished.
+				require.Equal(t, 0, r.DoWork(testImageAwaitNs-1))
+				require.False(t, r.IsDone())
+				require.Equal(t, int64(0), agent.CommitPosition())
+
+				// Phase 2: the deadline ends the replay at its start.
+				require.Equal(t, 0, r.DoWork(testImageAwaitNs))
+				require.True(t, r.IsDone())
+				require.Equal(t, servicesNotJoinedReason, r.reason())
+				require.Equal(t, int64(0), r.Position())
+				require.Equal(t, int64(1), agent.ScheduledTimerCount())
+
+				// Phase 3: Close drops the unpublished replay JoinLog.
+				r.Close()
+				require.False(t, agent.HasPendingJoinLog())
+			},
+		},
+		{
+			name: "zero services drain on the tick after the bind",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 0)
+				r, _, _ := startArchiveReplay(t, agent, writeTimer)
+				require.Equal(t, 1, r.DoWork(0))
+				require.False(t, agent.HasPendingJoinLog())
+				require.Equal(t, 0, agent.PendingServiceAckWaits())
+
+				require.Equal(t, 1, r.DoWork(1))
+				require.True(t, r.IsDone())
+			},
+		},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

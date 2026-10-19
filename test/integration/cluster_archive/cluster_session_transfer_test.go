@@ -860,7 +860,7 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 				return false
 			}
 			for _, mem := range sc.members {
-				if !mem.rec.holdsOneMessageAfterOpen(sessionID, sessionTransferPayload) {
+				if !mem.rec.holdsMessagesAfterOpen(sessionID, sessionTransferPayload) {
 					return false
 				}
 			}

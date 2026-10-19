@@ -309,7 +309,7 @@ func TestClusterService_recordsSnapshotAndAcksRecordingID(t *testing.T) {
 		"session message delivered",
 		durableWorkBound,
 		sessionPump(transport, session, func() bool {
-			return rec.holdsOneMessageAfterOpen(wantSession, payload)
+			return rec.holdsMessagesAfterOpen(wantSession, payload)
 		}),
 	)
 

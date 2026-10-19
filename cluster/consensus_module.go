@@ -406,9 +406,9 @@ func OpenConsensusModule(
 		),
 	))
 
-	// Install after the election factory. Every election builds an archive-backed
-	// helper from the same deps, whether open-time or re-entered. The factory is
-	// a closure only. No replay starts at Open.
+	// Install after the election factory. Every election builds a replay helper
+	// from the same deps, whether open-time or re-entered. The factory is a
+	// closure only. No replay starts at Open.
 	replayDeps := logReplayDeps{
 		Ctx:            ctx,
 		Control:        module.archiveClient,

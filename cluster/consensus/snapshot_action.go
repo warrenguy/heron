@@ -54,8 +54,9 @@ func (a *Agent) RequestSnapshot(nowNs int64) error {
 //
 // Behaviour:
 //   - The leader queues the wait at append.
-//   - A follower queues the wait when its log adapter consumes the action.
-//     The action may come from an earlier leadership term.
+//   - Any role queues the wait when its log adapter consumes the action. A
+//     leader consumes only in its election replay. The action may come from
+//     an earlier leadership term.
 //
 // Concurrency: invoker-only.
 //
@@ -65,18 +66,22 @@ func (a *Agent) HasPendingSnapshotAction() bool {
 	return a.snapshotWaitPosition != 0
 }
 
-// handleClusterAction queues a follower snapshot wait for a committed
+// handleClusterAction queues a snapshot wait for a committed
 // ClusterActionRequest. logPosition is the frame end.
 //
 // Behaviour: the method queues one wait at logPosition. Any skip below
 // changes nothing:
 //   - Action is not SNAPSHOT, or Flags is not 0.
 //   - Wire LogPosition differs from logPosition. No service acks such a frame.
-//   - The role is leader. The leader queues its wait at append.
 //   - A snapshot wait pends. One field holds one snapshot wait.
 //   - logPosition is a retired snapshot position. PrepareForNewLeadership
 //     retired that wait.
 //   - serviceAckFailure is marked. No wait completes after the mark.
+//
+// No role check. A leader reads its adapter only in its election replay. Its
+// services ack each action they replay, so the leader needs the wait too. A
+// leader's own action either popped its wait at or below commit, where no
+// replay reads it, or PrepareForNewLeadership retired the wait.
 //
 // No leadership term check. Services ack every SNAPSHOT action with flags 0,
 // whatever its term.
@@ -89,7 +94,6 @@ func (a *Agent) handleClusterAction(
 	switch {
 	case fields.Action != clusterwire.ClusterAction_SNAPSHOT || fields.Flags != 0:
 	case fields.LogPosition != logPosition:
-	case a.role == RoleLeader:
 	case a.snapshotWaitPosition != 0:
 	case a.abandonedSnapshotWaitAt(logPosition) != nil:
 	case a.serviceAckFailure != nil:
@@ -184,38 +188,22 @@ func (a *Agent) retireSnapshotWait() {
 	a.advancePastAbandonedSnapshotAcks()
 }
 
-// isAbandonedSnapshotAck reports whether handleServiceAck drops an ack from
+// dropAbandonedSnapshotAck reports whether handleServiceAck drops an ack from
 // serviceID at logPosition. Reports false at a position that is not retired.
 // At a retired position the ack drops when either holds:
-//   - serviceID owes an ack there. A queued wait at the position does not
-//     keep the ack.
+//   - serviceID owes an ack there. The call clears that owed flag. A queued
+//     wait at the position does not keep the ack.
 //   - No queued wait uses the position.
-//
-// Read-only. The caller clears the owed flag with clearOwedSnapshotAck.
-func (a *Agent) isAbandonedSnapshotAck(serviceID int32, logPosition int64) bool {
+func (a *Agent) dropAbandonedSnapshotAck(serviceID int32, logPosition int64) bool {
 	retired := a.abandonedSnapshotWaitAt(logPosition)
 	if retired == nil {
 		return false
 	}
-	if a.owesSnapshotAck(retired, serviceID) {
+	if a.serviceAcks.hasService(serviceID) && retired.owedAcks[serviceID] {
+		retired.owedAcks[serviceID] = false
 		return true
 	}
 	return !slices.Contains(a.serviceAckWaits, logPosition)
-}
-
-func (a *Agent) owesSnapshotAck(retired *abandonedSnapshotWait, serviceID int32) bool {
-	return a.serviceAcks.hasService(serviceID) && retired.owedAcks[serviceID]
-}
-
-// clearOwedSnapshotAck clears the owed flag of serviceID at a retired
-// logPosition. A position that is not retired, an out-of-range serviceID, or
-// a clear flag changes nothing.
-func (a *Agent) clearOwedSnapshotAck(serviceID int32, logPosition int64) {
-	retired := a.abandonedSnapshotWaitAt(logPosition)
-	if retired == nil || !a.serviceAcks.hasService(serviceID) {
-		return
-	}
-	retired.owedAcks[serviceID] = false
 }
 
 // clearOwedSnapshotAcksAbove clears the owed ack flags at retired positions

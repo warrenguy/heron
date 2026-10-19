@@ -546,6 +546,167 @@ func TestAgent_Join_handoff(t *testing.T) {
 	require.False(t, agent.HasPendingJoin())
 }
 
+func TestAgent_Join_replayChain(t *testing.T) {
+	const (
+		replaySessionID int32 = -17
+		replayStreamID  int32 = 103
+	)
+	// replayJoinEvent is the replay JoinLog at startPosition with cap
+	// stopPosition.
+	replayJoinEvent := func(startPosition, stopPosition int64) logJoinEvent {
+		event := defaultJoinEvent(startPosition)
+		event.maxLogPosition = stopPosition
+		event.logSessionID = replaySessionID
+		event.logStreamID = replayStreamID
+		event.role = codecs.RoleFollower
+		return event
+	}
+	// bindReplay binds a fresh agent to a replay image at 0 with cap
+	// stopPosition. writeFrames fills the image and returns the stop.
+	bindReplay := func(
+		t *testing.T,
+		svc *recordingService,
+		writeFrames func(image *aeron.Image) int64,
+	) (*Agent, *int64, int64) {
+		t.Helper()
+		sub, image := newLogImage(t, replaySessionID, replayStreamID, 0)
+		stop := writeFrames(image)
+		committed := int64(0)
+		agent := NewAgent(AgentConfig{
+			Service:           svc,
+			CommittedPosition: func() int64 { return committed },
+			Subscriptions:     &stubAdder{sub: sub},
+		})
+		agent.handleJoinLog(replayJoinEvent(0, stop))
+		agent.DoWork(0)
+		require.NoError(t, agent.ServiceFailure())
+		require.True(t, agent.IsLogBound())
+		require.Equal(t, stop, agent.adapter.MaxLogPosition())
+		return agent, &committed, stop
+	}
+	message := func(t *testing.T, sessionID int64) []byte {
+		return encodeSessionMessage(
+			t,
+			codecs.SessionMessageHeaderFields{
+				LeadershipTermID: 1,
+				ClusterSessionID: sessionID,
+				Timestamp:        10,
+			},
+			[]byte("m"),
+		)
+	}
+	// requireLiveBound drives the agent until the live join at position
+	// binds.
+	requireLiveBound := func(t *testing.T, agent *Agent, position int64) {
+		t.Helper()
+		for range 4 {
+			agent.DoWork(0)
+			if agent.IsLogBound() && agent.adapter.MaxLogPosition() == math.MaxInt64 {
+				break
+			}
+		}
+		require.NoError(t, agent.ServiceFailure())
+		require.True(t, agent.IsLogBound())
+		require.False(t, agent.HasPendingJoin())
+		require.Equal(t, int64(math.MaxInt64), agent.adapter.MaxLogPosition())
+		require.Equal(t, position, agent.LogPosition())
+		require.Equal(t, codecs.RoleLeader, agent.Role())
+	}
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "replay to the cap then the live join",
+			run: func(t *testing.T) {
+				svc := &recordingService{}
+				agent, committed, stop := bindReplay(t, svc, func(image *aeron.Image) int64 {
+					first := writeAgentFrame(t, image, 0, message(t, 1))
+					second := writeAgentFrame(t, image, first, message(t, 2))
+					return int64(first + second)
+				})
+
+				// Phase 1: consume to the cap, then unbind.
+				*committed = stop
+				for range 4 {
+					agent.DoWork(0)
+				}
+				require.NoError(t, agent.ServiceFailure())
+				require.False(t, agent.IsLogBound())
+				require.Equal(t, stop, agent.LogPosition())
+				require.Len(t, svc.messages, 2)
+
+				// Phase 2: the live join at the cap binds.
+				replaceLogSubscription(t, agent, testLogSessionID, testLogStreamID, stop)
+				agent.handleJoinLog(defaultJoinEvent(stop))
+				requireLiveBound(t, agent, stop)
+			},
+		},
+		{
+			name: "live join while the replay image is below the cap",
+			run: func(t *testing.T) {
+				svc := &recordingService{}
+				var firstEnd int64
+				agent, committed, stop := bindReplay(t, svc, func(image *aeron.Image) int64 {
+					first := writeAgentFrame(t, image, 0, message(t, 1))
+					second := writeAgentFrame(t, image, first, message(t, 2))
+					firstEnd = int64(first)
+					return int64(first + second)
+				})
+
+				// Phase 1: consume below the cap.
+				*committed = firstEnd
+				agent.DoWork(0)
+				require.Equal(t, firstEnd, agent.LogPosition())
+				require.True(t, agent.IsLogBound())
+
+				// Phase 2: the live join waits as a pending join.
+				replaceLogSubscription(t, agent, testLogSessionID, testLogStreamID, stop)
+				agent.handleJoinLog(defaultJoinEvent(stop))
+				require.True(t, agent.HasPendingJoin())
+				require.Equal(t, stop, agent.adapter.MaxLogPosition())
+
+				// Phase 3: the replay image consumes to the cap, unbinds, and
+				// the live join binds.
+				*committed = stop
+				requireLiveBound(t, agent, stop)
+				require.Len(t, svc.messages, 2)
+			},
+		},
+		{
+			name: "live image at the start then the replay join",
+			run: func(t *testing.T) {
+				svc := &recordingService{}
+				agent, _, _ := bindAgent(t, svc, 0)
+				const stop int64 = 4096
+
+				replaceLogSubscription(t, agent, replaySessionID, replayStreamID, 0)
+				agent.handleJoinLog(replayJoinEvent(0, stop))
+				require.True(t, agent.HasPendingJoin())
+
+				// The live image sits at the cap. It unbinds, then the replay
+				// image binds.
+				for range 4 {
+					agent.DoWork(0)
+					if agent.IsLogBound() && !agent.HasPendingJoin() {
+						break
+					}
+				}
+				require.NoError(t, agent.ServiceFailure())
+				require.True(t, agent.IsLogBound())
+				require.False(t, agent.HasPendingJoin())
+				require.Equal(t, stop, agent.adapter.MaxLogPosition())
+				require.Equal(t, int64(0), agent.LogPosition())
+				require.Equal(t, codecs.RoleFollower, agent.Role())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
+}
+
 func TestAgent_Join_paddingHandoff(t *testing.T) {
 	svc := &recordingService{}
 	agent, image, committed := bindAgent(t, svc, 0)

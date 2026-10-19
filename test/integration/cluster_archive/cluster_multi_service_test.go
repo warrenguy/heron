@@ -507,7 +507,7 @@ func TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks(t *testing
 		sessionPump(transport, session, func() bool {
 			for _, memberSeats := range seats {
 				for _, seat := range memberSeats {
-					if !seat.recorder.holdsOneMessageAfterOpen(wantSession, payload) {
+					if !seat.recorder.holdsMessagesAfterOpen(wantSession, payload) {
 						return false
 					}
 				}

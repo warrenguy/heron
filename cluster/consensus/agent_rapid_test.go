@@ -198,7 +198,7 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 			case "recordingStop":
 				control.stopSignalled = true
 				control.stopSignalPosition = rapid.Int64Range(0, 1000).Draw(rt, "stopPosition")
-				installed := a.logStopTick(nowNs)
+				installed := a.logStopTick()
 				require.False(rt, control.stopSignalled)
 				// Any settled role installs on a STOP.
 				require.Equal(rt, !liveBefore, installed == 1)
@@ -208,7 +208,7 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 			case "logImageClosed":
 				leaderBefore := a.Role() == RoleLeader
 				a.SetLogAdapter(NewLogAdapter(0))
-				installed := a.logStopTick(nowNs)
+				installed := a.logStopTick()
 				a.SetLogAdapter(nil)
 				// A settled non-leader installs. A leader ignores the image.
 				require.Equal(rt, !liveBefore && !leaderBefore, installed == 1)

@@ -4,11 +4,13 @@ package consensus
 
 import (
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -123,6 +125,7 @@ type snapshotHoldModel struct {
 	waits        []int64
 	retired      []int64
 	popped       int64
+	maxPopped    int64 // highest popped wait position
 
 	// snapshotEnds lists every SNAPSHOT action end in log order. acked[s]
 	// counts the snapshot actions service s has acked.
@@ -161,7 +164,9 @@ func (m *snapshotHoldModel) poll(boundPosition int64) {
 	}
 }
 
-func (m *snapshotHoldModel) drain(boundPosition int64) {
+// replay mirrors a replay from the adapter position to boundPosition. Each
+// poll raises commit to the adapter position.
+func (m *snapshotHoldModel) replay(boundPosition int64) {
 	for {
 		limit := m.heldBound(boundPosition)
 		before := m.position
@@ -169,6 +174,7 @@ func (m *snapshotHoldModel) drain(boundPosition int64) {
 			return
 		}
 		m.poll(limit)
+		m.commit = max(m.commit, m.position)
 		if m.position == before {
 			return
 		}
@@ -209,6 +215,7 @@ func (m *snapshotHoldModel) controlWork() {
 		return
 	}
 	m.waits = m.waits[1:]
+	m.maxPopped = max(m.maxPopped, head)
 	if head == m.snapshotWait {
 		m.snapshotWait = 0
 	}
@@ -240,38 +247,63 @@ func (m *snapshotHoldModel) expectedAckID() int64 {
 	return id
 }
 
-// TestAgent_snapshotActionHold_rapid checks the follower snapshot hold against
-// a reference model over random logs and random poll, ack, control and
-// prepare steps. No log poll passes a pending snapshot wait. The wait FIFO,
-// commit and expected ack id match the model. A final drain pops every
-// remaining wait, so every snapshot action ends popped or retired.
+// writeSnapshotHoldFrames writes one frame per kind from position 0. Returns
+// the end of each frame.
+func writeSnapshotHoldFrames(
+	t *testing.T,
+	image *aeron.Image,
+	kinds []snapshotHoldFrame,
+) []int64 {
+	t.Helper()
+	ends := make([]int64, 0, len(kinds))
+	offset := 0
+	for i, kind := range kinds {
+		var end int64
+		switch kind {
+		case snapshotHoldMessage:
+			end = writeSessionMessageFrame(t, image, offset, int64(i+1))
+		case snapshotHoldSnapshot:
+			end = writeClusterActionFrame(t, image, offset, clusterwire.ClusterAction_SNAPSHOT, 0)
+		default:
+			end = writeClusterActionFrame(t, image, offset, clusterwire.ClusterAction_SUSPEND, 0)
+		}
+		ends = append(ends, end)
+		offset = int(end)
+	}
+	return ends
+}
+
+// TestAgent_snapshotActionHold_rapid checks the snapshot hold against a
+// reference model over random logs and random poll, replay, ack, control and
+// prepare steps. A replay binds a replay image at commit, replays to a drawn
+// stop, unbinds, then rebinds the live image at the replay end. No log poll
+// passes a pending snapshot wait, and the adapter never moves below a popped
+// action. The wait FIFO, commit and expected ack id match the model. A final
+// drain pops every remaining wait, so every snapshot action ends popped or
+// retired.
 func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		serviceCount := rapid.IntRange(0, 3).Draw(rt, "serviceCount")
 		adapter, image := boundLogAdapter(t)
+		replayImage := aeron.NewTestImageForHooks(t, aeron.NewTestSubscriptionForHooks(t), 0)
 
 		frameCount := rapid.IntRange(1, 12).Draw(rt, "frameCount")
 		m := &snapshotHoldModel{serviceCount: serviceCount, acked: make([]int, serviceCount)}
-		offset := 0
-		for i := range frameCount {
-			kind := snapshotHoldFrame(rapid.IntRange(0, 2).Draw(rt, "frameKind"))
-			var end int64
-			switch kind {
-			case snapshotHoldMessage:
-				end = writeSessionMessageFrame(t, image, offset, int64(i+1))
-			case snapshotHoldSnapshot:
-				end = writeClusterActionFrame(t, image, offset, clusterwire.ClusterAction_SNAPSHOT, 0)
-				m.snapshotEnds = append(m.snapshotEnds, end)
-			default:
-				end = writeClusterActionFrame(t, image, offset, clusterwire.ClusterAction_SUSPEND, 0)
-			}
-			m.kinds = append(m.kinds, kind)
-			m.starts = append(m.starts, int64(offset))
-			m.ends = append(m.ends, end)
-			offset = int(end)
+		for range frameCount {
+			m.kinds = append(m.kinds, snapshotHoldFrame(rapid.IntRange(0, 2).Draw(rt, "frameKind")))
 		}
-		totalEnd := int64(offset)
+		m.ends = writeSnapshotHoldFrames(t, image, m.kinds)
+		require.Equal(rt, m.ends, writeSnapshotHoldFrames(t, replayImage, m.kinds))
+		start := int64(0)
+		for i, kind := range m.kinds {
+			m.starts = append(m.starts, start)
+			start = m.ends[i]
+			if kind == snapshotHoldSnapshot {
+				m.snapshotEnds = append(m.snapshotEnds, m.ends[i])
+			}
+		}
+		totalEnd := m.ends[frameCount-1]
 
 		a, q := newFollowerActionAgent(totalEnd+100, adapter, serviceCount)
 		const nowNs int64 = 5
@@ -310,6 +342,7 @@ func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 				require.Equal(rt, 1, count, step)
 			}
 			require.Equal(rt, m.position, adapter.Position(), step)
+			require.GreaterOrEqual(rt, adapter.Position(), m.maxPopped, step)
 			require.Equal(rt, m.commit, a.CommitPosition(), step)
 			require.Equal(rt, m.snapshotWait, wait, step)
 			require.Len(rt, a.serviceAckWaits, len(m.waits), step)
@@ -326,7 +359,28 @@ func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 			require.NoError(rt, a.ServiceAckFailure(), step)
 		}
 
-		opNames := []string{"notify", "follower work", "catchup", "drain", "ack", "control", "prepare"}
+		replay := func() {
+			stop := drawPosition("replayStop")
+			commit := a.CommitPosition()
+			require.Equal(rt, commit, adapter.Position())
+			aeron.ImageSetSubscriberPositionForHooks(replayImage, commit)
+			a.BindReplayLog(replayImage)
+			for {
+				before := adapter.Position()
+				a.ReplayLogPoll(stop, nowNs)
+				if adapter.Position() == before {
+					break
+				}
+			}
+			a.UnbindReplayLog(replayImage)
+			m.replay(stop)
+
+			// The live join binds a fresh image at the replay end.
+			aeron.ImageSetSubscriberPositionForHooks(image, adapter.Position())
+			adapter.SetImage(image)
+		}
+
+		opNames := []string{"notify", "follower work", "catchup", "replay", "ack", "control", "prepare"}
 		steps := rapid.IntRange(1, 40).Draw(rt, "steps")
 		for range steps {
 			op := rapid.IntRange(0, len(opNames)-1).Draw(rt, "op")
@@ -341,10 +395,7 @@ func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 				m.poll(limit)
 				m.commit = max(m.commit, m.position)
 			case 3:
-				bound := drawPosition("drainBound")
-				a.logPollNowNs = nowNs
-				a.drainLogBacklog(bound)
-				m.drain(bound)
+				replay()
 			case 4:
 				if serviceCount > 0 {
 					ack(rapid.IntRange(0, serviceCount-1).Draw(rt, "serviceID"))
@@ -393,5 +444,175 @@ func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 			wantID += int64(len(m.retired))
 		}
 		require.Equal(rt, wantID, a.ExpectedServiceAckID())
+	})
+}
+
+// replayTimerFrame is one frame in the replay range timer property log. A
+// schedule point is a session message the service model answers with
+// ScheduleTimer.
+type replayTimerFrame struct {
+	correlationID int64
+	isEvent       bool
+	end           int64
+}
+
+// replayTimerRequest is one ScheduleTimer the service model sends after
+// delayPolls more polls.
+type replayTimerRequest struct {
+	correlationID int64
+	delayPolls    int
+}
+
+// TestTimerEventConsume_replayRange_rapid checks that a promoted follower
+// fires no timer whose TimerEvent sat in its log, steady range or election
+// replay range alike. A service model schedules one timer per schedule point
+// it reads under commit, with a drawn lag. Every id fires once in total: a
+// TimerEvent in the log counts as the fire. No service cancel or reschedule
+// runs.
+func TestTimerEventConsume_replayRange_rapid(t *testing.T) {
+	t.Parallel()
+
+	const (
+		logTermID int64 = 3
+		nowNs     int64 = 5
+	)
+	rapid.Check(t, func(rt *rapid.T) {
+		limit := rapid.IntRange(1, 3).Draw(rt, "fragmentLimit")
+		adapter, image := boundLogAdapterWithLimit(t, limit)
+		replayImage := aeron.NewTestImageForHooks(t, aeron.NewTestSubscriptionForHooks(t), 0)
+
+		// Log: each id has one schedule point. An id with an event has one
+		// TimerEvent after its schedule point.
+		idCount := rapid.IntRange(1, 12).Draw(rt, "idCount")
+		deadlines := make(map[int64]int64, idCount)
+		hasEvent := make(map[int64]bool, idCount)
+		var awaiting []int64
+		var frames []replayTimerFrame
+		next := int64(1)
+		offset := 0
+		writeFrame := func(frame replayTimerFrame) {
+			var end int64
+			if frame.isEvent {
+				end = writeTimerEventFrameInTerm(t, image, offset, frame.correlationID, logTermID)
+				require.Equal(rt, end, writeTimerEventFrameInTerm(
+					t, replayImage, offset, frame.correlationID, logTermID,
+				))
+			} else {
+				end = writeSessionMessageFrame(t, image, offset, frame.correlationID)
+				require.Equal(rt, end, writeSessionMessageFrame(
+					t, replayImage, offset, frame.correlationID,
+				))
+			}
+			frame.end = end
+			frames = append(frames, frame)
+			offset = int(end)
+		}
+		for next <= int64(idCount) || len(awaiting) > 0 {
+			addEvent := len(awaiting) > 0 &&
+				(next > int64(idCount) || rapid.Bool().Draw(rt, "eventNext"))
+			if addEvent {
+				i := rapid.IntRange(0, len(awaiting)-1).Draw(rt, "eventID")
+				id := awaiting[i]
+				awaiting = slices.Delete(awaiting, i, i+1)
+				writeFrame(replayTimerFrame{correlationID: id, isEvent: true})
+				continue
+			}
+			id := next
+			next++
+			deadlines[id] = rapid.Int64Range(1, 8).Draw(rt, "deadlineTicks") *
+				timerWheelTickResolutionNs
+			writeFrame(replayTimerFrame{correlationID: id})
+			if rapid.Bool().Draw(rt, "hasEvent") {
+				hasEvent[id] = true
+				awaiting = append(awaiting, id)
+			}
+		}
+		replayStop := frames[len(frames)-1].end
+		commitIndex := rapid.IntRange(0, len(frames)).Draw(rt, "commitFrames")
+		electionCommit := int64(0)
+		if commitIndex > 0 {
+			electionCommit = frames[commitIndex-1].end
+		}
+
+		a, q, _ := leaderWithTimerIngress(t, AgentConfig{
+			LeadershipTermID: logTermID,
+			Commit:           new(atomic.Int64),
+			LogAdapter:       adapter,
+		})
+		a.RoleSet(RoleFollower)
+		appended := make(map[int64]int)
+		a.timerExpiryHandler = func(correlationID, now int64) bool {
+			appended[correlationID]++
+			return a.handleTimerExpiry(correlationID, now)
+		}
+
+		// Service model: reads frames under commit and sends ScheduleTimer for
+		// each schedule point after a drawn lag of polls.
+		read := 0
+		var pending []replayTimerRequest
+		serviceStep := func() {
+			for read < len(frames) && frames[read].end <= a.CommitPosition() {
+				frame := frames[read]
+				read++
+				if frame.isEvent {
+					continue
+				}
+				pending = append(pending, replayTimerRequest{
+					correlationID: frame.correlationID,
+					delayPolls:    rapid.IntRange(0, 3).Draw(rt, "lag"),
+				})
+			}
+			kept := pending[:0]
+			for _, request := range pending {
+				if request.delayPolls > 0 {
+					request.delayPolls--
+					kept = append(kept, request)
+					continue
+				}
+				enqueueScheduleTimer(t, q, request.correlationID, deadlines[request.correlationID])
+				require.Equal(rt, 1, a.pollServiceControl())
+			}
+			pending = kept
+		}
+
+		// Phase 1: steady polls to the election commit.
+		a.notifiedCommitPosition = electionCommit
+		for adapter.Position() < electionCommit {
+			a.followerConsensusWork(nowNs)
+			serviceStep()
+		}
+		require.Equal(rt, electionCommit, a.CommitPosition())
+
+		// Phase 2: election replay of the range from the commit.
+		aeron.ImageSetSubscriberPositionForHooks(replayImage, electionCommit)
+		adapter.SetImage(nil)
+		a.BindReplayLog(replayImage)
+		for adapter.Position() < replayStop {
+			a.ReplayLogPoll(replayStop, nowNs)
+			serviceStep()
+		}
+		a.UnbindReplayLog(replayImage)
+		require.Equal(rt, replayStop, a.CommitPosition())
+
+		// Phase 3: promote, then run the service and the timers past every
+		// deadline.
+		require.NoError(rt, a.JoinLogAsLeader(logTermID+1, replayStop, 0, false))
+		a.ElectionComplete(0)
+		tick := int64(1)
+		for ; tick <= 12 || len(pending) > 0 || read < len(frames); tick++ {
+			serviceStep()
+			a.timerWork(tick * timerWheelTickResolutionNs)
+		}
+		a.timerWork((tick + 8) * timerWheelTickResolutionNs)
+
+		for id := int64(1); id <= int64(idCount); id++ {
+			want := 1
+			if hasEvent[id] {
+				want = 0
+			}
+			require.Equal(rt, want, appended[id], "id %d", id)
+		}
+		require.Zero(rt, a.ExpiredTimerCount())
+		require.Zero(rt, a.ScheduledTimerCount())
 	})
 }

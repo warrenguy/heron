@@ -41,39 +41,6 @@ func (a *Agent) handleSessionCloseEvent(fields codecs.SessionCloseEventFields) {
 	a.removeSessionWithResources(session)
 }
 
-// drainLogBacklog polls the log adapter under boundPosition until the adapter
-// position reaches the bound or stops advancing.
-//
-// Behaviour:
-//   - Each pass calls holdLogPollBound, so a wait queued mid-drain stops the
-//     drain.
-//   - A nil or unbound adapter drains nothing.
-//   - The drain does not advance commit.
-//   - A PAD frame or slack gap at the end of the term advances the position
-//     with no fragment. The drain continues past both.
-//   - A closed image or an image with no more data ends the drain.
-//   - Callers must set logPollNowNs before the drain so session learn stores
-//     the current duty clock.
-//
-// Concurrency: invoker-only.
-func (a *Agent) drainLogBacklog(boundPosition int64) {
-	adapter := a.logAdapter
-	if adapter == nil || adapter.Image() == nil {
-		return
-	}
-	for {
-		limit := a.holdLogPollBound(boundPosition)
-		position := adapter.Position()
-		if position >= limit {
-			return
-		}
-		adapter.Poll(limit)
-		if adapter.Position() == position {
-			return
-		}
-	}
-}
-
 // rebindOpenSessions marks every open session new-leader-pending and starts
 // an egress add when no publication and no in-flight add exist.
 //
