@@ -26,7 +26,8 @@ Partial:
 - Closing a subscription or the client does not call `UnavailableImageHandler`
   for its images.
 - `atomicbuffer.VolatileInt32At` and `VolatileInt64At` check neither bounds
-  nor alignment. An out-of-range offset is undefined behaviour, not a panic.
+  nor alignment. An empty buffer panics. Any other out-of-range offset reads
+  outside the slice with no panic.
 
 Not implemented:
 
