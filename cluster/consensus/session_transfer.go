@@ -1,6 +1,8 @@
 package consensus
 
 import (
+	"slices"
+
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
@@ -178,4 +180,28 @@ func (a *Agent) releaseSessionsForNewTerm() {
 		session.newLeaderEventPending = false
 	}
 	a.sessions.okPending = a.sessions.okPending[:0]
+}
+
+// electionCloseDetail is the SessionEvent CLOSED detail for a session that
+// clearSessionsAfter removes.
+var electionCloseDetail = []byte("election")
+
+// clearSessionsAfter removes each session with no SessionOpenEvent at or
+// below logPosition: each open or closing session with openedLogPosition
+// above logPosition, and every pre-open session. A session opened exactly at
+// logPosition stays.
+//
+// Before a remove, sends SessionEvent CLOSED with detail election when the
+// session holds an egress publication. Best effort. The REDIRECT and ERROR
+// queue and the session id allocator stay unchanged.
+//
+// Concurrency: invoker-only. [Agent.PrepareForNewLeadership] calls this.
+func (a *Agent) clearSessionsAfter(logPosition int64) {
+	// Walk backward: a remove shifts only entries already passed.
+	for _, session := range slices.Backward(a.sessions.all) {
+		logged := session.state == sessionOpen || session.state == sessionClosing
+		if !logged || session.openedLogPosition > logPosition {
+			a.removeSessionWithCloseEvent(session, a.thisMemberID, electionCloseDetail)
+		}
+	}
 }

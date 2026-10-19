@@ -565,6 +565,56 @@ func TestHandleSessionCloseRequest_happy(t *testing.T) {
 	)
 }
 
+func TestHandleSessionCloseRequest_prepareRestoresClosing(t *testing.T) {
+	const (
+		termID   int64 = 9
+		acceptNs int64 = 1
+		nowNs    int64 = 100
+	)
+	tests := []struct {
+		name         string
+		atOpen       bool
+		wantRestored bool
+	}{
+		{name: "below the close", atOpen: true, wantRestored: true},
+		{name: "below the open", wantRestored: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, _, _, s := openLeaderSession(t, termID, acceptNs)
+			q := attachQueueClientIngress(a)
+			q.Enqueue(encodeSessionCloseRequestWire(t, termID, s.id))
+			require.Equal(t, 1, a.pollClientIngress(nowNs))
+			_, ok := a.sessions.sessionByID(s.id)
+			require.False(t, ok)
+
+			prepareAt := int64(0)
+			if tt.atOpen {
+				prepareAt = s.openedLogPosition
+			}
+			_, prepared, err := a.PrepareForNewLeadership(prepareAt, nowNs)
+			require.NoError(t, err)
+			require.True(t, prepared)
+
+			wantClosing := 0
+			if tt.wantRestored {
+				wantClosing = 1
+			}
+			require.Equal(t, wantClosing, a.ClosingSessionCount())
+			require.Equal(t, 0, a.OpenSessionCount())
+			require.Empty(t, a.sessions.uncommittedCloses)
+			got, ok := a.sessions.sessionByID(s.id)
+			require.Equal(t, tt.wantRestored, ok)
+			if tt.wantRestored {
+				require.Same(t, s, got)
+				require.Equal(t, sessionClosing, got.state)
+				require.Equal(t, clusterwire.CloseReason_CLIENT_ACTION, got.closeReason)
+				require.Nil(t, got.egressPublication)
+			}
+		})
+	}
+}
+
 func TestHandleSessionCloseRequest_appendRetry(t *testing.T) {
 	const (
 		termID   int64 = 9
@@ -781,30 +831,40 @@ func TestSessionCloseWork_acceptOrder(t *testing.T) {
 	require.Equal(t, []int64{1, 2}, closeIDs)
 }
 
-func TestSessionCloseWork_nonLeaderClosingReclaim(t *testing.T) {
+func TestSessionCloseWork_nonLeaderKeepsClosing(t *testing.T) {
 	const (
 		termID   int64 = 3
 		acceptNs int64 = 10
 	)
 	a, p, _, s := openLeaderSession(t, termID, acceptNs)
-	// Mark closing with blocked append.
+	// Mark closing with blocked append. Leave a second connect pending.
 	blockLogPublication(t, p)
 	require.True(t, a.sessions.markClosing(s.id, clusterwire.CloseReason_CLIENT_ACTION))
 	a.releaseSessionEgress(s)
+	a.acceptSessionConnect(validConnectFields(2), acceptNs)
 	require.Equal(t, 1, a.ClosingSessionCount())
+	require.Equal(t, 1, a.PendingSessionCount())
 
-	// Demote: sessionCloseWork does not run on non-leader; egressEventWork
-	// reclaims closing sessions at the deadline.
+	// Phase: demoted past the deadline. The pending session goes. The closing
+	// session stays.
 	a.role = RoleFollower
-	before := s.lastActivityNs + a.sessionTimeoutNs
-	require.Equal(t, 0, a.egressEventWork(before))
-	require.Equal(t, 1, a.ClosingSessionCount())
-
-	past := s.lastActivityNs + a.sessionTimeoutNs + 1
+	past := acceptNs + a.sessionTimeoutNs + 1
 	require.Equal(t, 1, a.egressEventWork(past))
-	require.Equal(t, 0, a.ClosingSessionCount())
+	require.Equal(t, 0, a.PendingSessionCount())
+	require.Equal(t, 1, a.ClosingSessionCount())
 	_, ok := a.sessions.sessionByID(s.id)
+	require.True(t, ok)
+
+	// Phase: a committed SessionCloseEvent removes the closing session.
+	a.handleSessionCloseEvent(codecs.SessionCloseEventFields{
+		LeadershipTermID: termID,
+		ClusterSessionID: s.id,
+		CloseReason:      clusterwire.CloseReason_CLIENT_ACTION,
+	})
+	require.Equal(t, 0, a.ClosingSessionCount())
+	_, ok = a.sessions.sessionByID(s.id)
 	require.False(t, ok)
+	require.Empty(t, a.sessions.all)
 }
 
 func TestSessionCloseWork_skipsPreOpen(t *testing.T) {

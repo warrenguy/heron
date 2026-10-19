@@ -616,3 +616,104 @@ func TestTimerEventConsume_replayRange_rapid(t *testing.T) {
 		require.Zero(rt, a.ScheduledTimerCount())
 	})
 }
+
+// TestTimerEventConsume_formerLeaderReplayRange_rapid drives a leader that
+// fires up to 12 ids, some above a drawn commit C. A drawn T at or above C
+// truncates the log. The leader prepares at C and replays [C, T]. Then it
+// leads again and runs timer work past every deadline, or follows and reads
+// a new leader's TimerEvent for each truncated id.
+//
+// A re-led member fires each truncated id exactly once. Either way no timer
+// and no count remains.
+func TestTimerEventConsume_formerLeaderReplayRange_rapid(t *testing.T) {
+	t.Parallel()
+
+	const logTermID int64 = 3
+	rapid.Check(t, func(rt *rapid.T) {
+		a, q, pub := leaderWithTimerIngress(t, AgentConfig{
+			LeadershipTermID: logTermID,
+			Commit:           new(atomic.Int64),
+			LogAdapter:       NewLogAdapter(0),
+		})
+		newTermEvents := make(map[int64]int)
+		a.timerExpiryHandler = func(correlationID, now int64) bool {
+			ok := a.handleTimerExpiry(correlationID, now)
+			if ok {
+				newTermEvents[correlationID]++
+			}
+			return ok
+		}
+
+		// Phase 1: fire every id as leader.
+		idCount := rapid.IntRange(1, 12).Draw(rt, "idCount")
+		for id := int64(1); id <= int64(idCount); id++ {
+			deadline := rapid.Int64Range(1, 8).Draw(rt, "deadlineTicks") * timerWheelTickResolutionNs
+			enqueueScheduleTimer(t, q, id, deadline)
+			require.Equal(rt, 1, a.pollServiceControl())
+		}
+		tick := int64(1)
+		for ; tick <= 9; tick++ {
+			a.timerWork(tick * timerWheelTickResolutionNs)
+		}
+		require.Zero(rt, a.ScheduledTimerCount())
+		fired := slices.Clone(a.uncommittedTimers)
+		require.Len(rt, fired, idCount)
+		clear(newTermEvents)
+
+		// Phase 2: commit a drawn prefix. Truncate at or above it.
+		frameEnd := func(n int) int64 {
+			if n == 0 {
+				return 0
+			}
+			return fired[n-1].appendPosition
+		}
+		commitCount := rapid.IntRange(0, idCount).Draw(rt, "commitCount")
+		keptCount := rapid.IntRange(commitCount, idCount).Draw(rt, "keptCount")
+		commitPosition := frameEnd(commitCount)
+		keptEnd := frameEnd(keptCount)
+		tickNs := tick * timerWheelTickResolutionNs
+		if commitPosition > 0 {
+			require.Equal(rt, 1, a.UpdateLeaderPosition(tickNs, commitPosition))
+		}
+
+		// Phase 3: prepare at C, then replay the kept range from C.
+		_, prepared, err := a.PrepareForNewLeadership(commitPosition, tickNs)
+		require.NoError(rt, err)
+		require.True(rt, prepared)
+		require.Equal(rt, int64(idCount-commitCount), a.ScheduledTimerCount())
+		replayImage := aeron.NewTestImageForHooks(t, aeron.NewTestSubscriptionForHooks(t), 0)
+		copyLogFrames(t, pub, replayImage, keptEnd)
+		replayLogFrom(rt, a, replayImage, commitPosition, keptEnd, tickNs)
+		require.Equal(rt, int64(idCount-keptCount), a.ScheduledTimerCount())
+
+		if rapid.Bool().Draw(rt, "leadAgain") {
+			// Phase 4a: lead again. The wheel fires each truncated id once.
+			require.NoError(rt, a.JoinLogAsLeader(logTermID+1, keptEnd, 0, false))
+			a.ElectionComplete(tickNs)
+			for range timerWheelTicksPerWheel + 1 {
+				tickNs += timerWheelTickResolutionNs
+				a.timerWork(tickNs)
+			}
+			for i, timer := range fired {
+				want := 0
+				if i >= keptCount {
+					want = 1
+				}
+				require.Equal(rt, want, newTermEvents[timer.correlationID],
+					"id %d", timer.correlationID)
+			}
+		} else {
+			// Phase 4b: follow. The new leader appends a TimerEvent for each
+			// truncated id. The poll past the replay stop reads them.
+			offset := int(keptEnd)
+			for _, timer := range fired[keptCount:] {
+				offset = int(writeTimerEventFrameInTerm(
+					t, replayImage, offset, timer.correlationID, logTermID+1,
+				))
+			}
+			replayLogFrom(rt, a, replayImage, keptEnd, int64(offset), tickNs)
+		}
+		require.Zero(rt, a.ExpiredTimerCount())
+		require.Zero(rt, a.ScheduledTimerCount())
+	})
+}

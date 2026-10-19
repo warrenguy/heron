@@ -41,14 +41,13 @@ type sessionEventSink interface {
 	handleSessionCloseEvent(fields codecs.SessionCloseEventFields)
 }
 
-// timerEventSink receives committed TimerEvent frames with the frame's
-// leadership term.
+// timerEventSink receives committed TimerEvent frames.
 //
 // Behaviour: the agent sets itself as the sink in [Agent.SetLogAdapter].
 //
 // Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
 type timerEventSink interface {
-	handleTimerEvent(correlationID, leadershipTermID, logPosition int64)
+	handleTimerEvent(correlationID, logPosition int64)
 }
 
 // clusterActionSink receives committed ClusterActionRequest frames.
@@ -282,11 +281,7 @@ func (a *LogAdapter) handleFragment(
 			return aeron.ControlledContinue
 		}
 		if fields, decoded := codecs.TimerEventFieldsFromLayout(frag, layout); decoded {
-			timerSink.handleTimerEvent(
-				fields.CorrelationID,
-				fields.LeadershipTermID,
-				header.Position(),
-			)
+			timerSink.handleTimerEvent(fields.CorrelationID, header.Position())
 		}
 	case clusterwire.ClusterActionRequestSbeTemplateID:
 		if actionSink == nil {

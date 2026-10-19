@@ -26,14 +26,29 @@ func (a *Agent) sweepUncommittedEntriesTo(quorumPosition int64) {
 	a.sessions.sweepUncommittedCloses(quorumPosition)
 }
 
-// clearUncommittedEntries empties both lists. teardownForNewLeadership calls
-// it, so no entry of a lost term outlives the prepare.
+// restoreUncommittedEntries rolls back each tracked TimerEvent and
+// SessionCloseEvent above logPosition. Then empties both lists.
 //
-// Both clears keep the capacity. The close clear nils the vacated slots, so
-// the held sessions can be freed.
+// Behaviour:
+//   - Schedules each timer again at deadline 0. The schedule replaces a live
+//     timer for the id. A refused schedule marks timerFailure once. Leaves
+//     the expired timer counts.
+//   - Re-adds each closed session as closing (restoreUncommittedCloses).
+//     clearSessionsAfter then drops the ones opened above logPosition.
+//   - Both lists keep their capacity.
+//
+// A later log read of a surviving frame cancels the timer or removes the
+// session. When the frame is lost and this member leads next, timerWork
+// fires the timer again and sessionCloseWork appends the close. Under another
+// leader, that leader's own frame settles the entry.
 //
 // Concurrency: invoker-only.
-func (a *Agent) clearUncommittedEntries() {
+func (a *Agent) restoreUncommittedEntries(logPosition int64) {
+	for _, timer := range a.uncommittedTimers {
+		if timer.appendPosition > logPosition {
+			a.scheduleTimerOrMarkFailure(timer.correlationID, 0)
+		}
+	}
 	a.uncommittedTimers = a.uncommittedTimers[:0]
-	a.sessions.clearUncommittedCloses()
+	a.sessions.restoreUncommittedCloses(logPosition)
 }

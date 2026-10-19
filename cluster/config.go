@@ -196,9 +196,8 @@ type Config struct {
 	Authenticator consensus.Authenticator
 
 	// SessionTimeoutNs bounds pre-open session egress, queued egress events,
-	// open-session idle close, and non-leader closing reclaim. Zero takes the
-	// 10s upstream default (consensus.DefaultSessionTimeoutNs). Negative fails
-	// Validate.
+	// and open-session idle close. Zero takes the 10s upstream default
+	// (consensus.DefaultSessionTimeoutNs). Negative fails Validate.
 	SessionTimeoutNs int64
 }
 

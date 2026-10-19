@@ -988,17 +988,13 @@ func boundLogAdapterWithSinkAndHandler(
 type logAdapterTimerSinkSpy struct {
 	events int
 
-	lastCorrelationID    int64
-	lastLeadershipTermID int64
-	lastLogPosition      int64
+	lastCorrelationID int64
+	lastLogPosition   int64
 }
 
-func (s *logAdapterTimerSinkSpy) handleTimerEvent(
-	correlationID, leadershipTermID, logPosition int64,
-) {
+func (s *logAdapterTimerSinkSpy) handleTimerEvent(correlationID, logPosition int64) {
 	s.events++
 	s.lastCorrelationID = correlationID
-	s.lastLeadershipTermID = leadershipTermID
 	s.lastLogPosition = logPosition
 }
 
@@ -1103,7 +1099,6 @@ func TestLogAdapter_TimerEvent_reachesSink(t *testing.T) {
 
 			require.Equal(t, 1, timerSink.events)
 			require.Equal(t, fields.CorrelationID, timerSink.lastCorrelationID)
-			require.Equal(t, fields.LeadershipTermID, timerSink.lastLeadershipTermID)
 			require.Equal(t, span, timerSink.lastLogPosition)
 			if !tt.timerSinkOnly {
 				requireSessionSinkIdle(t, sessionSink)

@@ -28,9 +28,15 @@ type FollowerLogJoinParams struct {
 // Method semantics follow aeron ConsensusModuleAgent.
 type AgentHandler interface {
 	// PrepareForNewLeadership resets election leadership state, then polls the
-	// cluster log recording stop when a control is wired.
+	// cluster log recording stop when a control is wired. Does not reset
+	// commit.
 	//
 	// First call of an episode runs teardown. Later calls poll only.
+	//
+	// logPosition is the committed log position the election starts from. The
+	// teardown rolls back each TimerEvent and SessionCloseEvent this member
+	// appended above logPosition. The teardown also drops each session opened
+	// above logPosition and every pre-open session.
 	//
 	// nowNs is the deadline clock for [LogRecordingControl.PollStopLogRecording].
 	//

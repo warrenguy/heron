@@ -9,9 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
@@ -24,63 +21,8 @@ const (
 	uncommittedOpClientClose
 	uncommittedOpTimeoutClose
 	uncommittedOpUpdateLeader
+	uncommittedOpPrepare
 )
-
-// logEntryFrame is one TimerEvent, SessionOpenEvent or SessionCloseEvent on
-// the log, with its end position.
-type logEntryFrame struct {
-	templateID  uint16
-	endPosition int64
-	// id is the correlation id of a TimerEvent, or the session id of a
-	// session event.
-	id          int64
-	closeReason clusterwire.CloseReason
-}
-
-// scanLogEntryFrames returns every TimerEvent, SessionOpenEvent and
-// SessionCloseEvent in term 0 below end, in log order.
-func scanLogEntryFrames(
-	rt *rapid.T,
-	pub *aeron.ExclusivePublication,
-	end int64,
-) []logEntryFrame {
-	rt.Helper()
-	termBuf := pub.TermBuffer(0)
-	require.Less(rt, end, int64(termBuf.Capacity()))
-	frames := make([]logEntryFrame, 0)
-	for offset := 0; int64(offset) < end; {
-		frameLength := int(logbuffer.FrameLengthVolatile(termBuf, offset))
-		require.Positive(rt, frameLength)
-		wire := termBuf.Bytes()[offset+logbuffer.OffsetFramePayload : offset+frameLength]
-		offset += logbuffer.AlignFrameLength(frameLength)
-		frameEnd := int64(offset)
-		if fields, ok := codecs.TryDecodeTimerEventAt(wire, 0); ok {
-			frames = append(frames, logEntryFrame{
-				templateID:  clusterwire.TimerEventSbeTemplateID,
-				endPosition: frameEnd,
-				id:          fields.CorrelationID,
-			})
-			continue
-		}
-		if fields, ok := codecs.TryDecodeSessionOpenEventAt(wire, 0); ok {
-			frames = append(frames, logEntryFrame{
-				templateID:  clusterwire.SessionOpenEventSbeTemplateID,
-				endPosition: frameEnd,
-				id:          fields.ClusterSessionID,
-			})
-			continue
-		}
-		if fields, ok := codecs.TryDecodeSessionCloseEventAt(wire, 0); ok {
-			frames = append(frames, logEntryFrame{
-				templateID:  clusterwire.SessionCloseEventSbeTemplateID,
-				endPosition: frameEnd,
-				id:          fields.ClusterSessionID,
-				closeReason: fields.CloseReason,
-			})
-		}
-	}
-	return frames
-}
 
 // openSessionIDs returns the ids of every open session, in accept order.
 func openSessionIDs(a *Agent) []int64 {
@@ -93,15 +35,38 @@ func openSessionIDs(a *Agent) []int64 {
 	return ids
 }
 
+// scheduledTimerDeadlines returns the deadline of each timer on the wheel, by
+// correlation id.
+func scheduledTimerDeadlines(rt *rapid.T, a *Agent) map[int64]int64 {
+	rt.Helper()
+	deadlines := make(map[int64]int64, len(a.timers.timerIDByCorrelationID))
+	for correlationID := range a.timers.timerIDByCorrelationID {
+		deadlines[correlationID] = scheduledDeadline(rt, a.timers, correlationID)
+	}
+	return deadlines
+}
+
 // TestUncommittedEntries_rollback_rapid drives a leader through random timer
-// fires, session opens, client and timeout closes, and commit raises. A scan of
-// the log publication is the oracle.
+// fires, session connects and opens, client and timeout closes, commit
+// raises, and prepares. A scan of the log publication is the oracle. The
+// expected tracked lists hold only the frames above both commit and the
+// publication position at the last prepare.
 //
 // After each op:
-//   - uncommittedTimers equals the log TimerEvents above commit, in order.
-//   - uncommittedCloses equals the log SessionCloseEvents above commit, in
-//     order. Each entry holds the closing session outside the registry.
+//   - uncommittedTimers equals those log TimerEvents, in order.
+//   - uncommittedCloses equals those log SessionCloseEvents, in order. Each
+//     entry holds the closing session outside the registry.
 //   - Each live session holds the end position of its SessionOpenEvent.
+//
+// A prepare runs at a drawn P at or below the commit C. After the prepare:
+//   - The wheel holds the earlier timers, plus each TimerEvent id above C at
+//     deadline 0.
+//   - The closing sessions are the earlier ones plus each close above C,
+//     less each session opened above P.
+//   - No session opened above P remains. No pre-open session remains.
+//   - Both lists are empty.
+//
+// The member then leads again through JoinLogAsLeader and ElectionComplete.
 func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -116,12 +81,17 @@ func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 
 		nowNs := int64(0)
 		nextCorrelationID := int64(1)
+		termID := leadershipTermID
+		// preparedEnd is the publication position at the last prepare. That
+		// prepare emptied both lists, so no frame at or below it is tracked.
+		preparedEnd := int64(0)
 
 		assertInvariants := func() {
 			rt.Helper()
 			commitPosition := a.CommitPosition()
 			publicationPosition := a.logPublisher.Position()
 			require.LessOrEqual(rt, commitPosition, publicationPosition)
+			trackedFloor := max(commitPosition, preparedEnd)
 
 			wantTimers := make([]uncommittedTimer, 0)
 			wantCloses := make([]logEntryFrame, 0)
@@ -132,14 +102,14 @@ func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 					openEnds[frame.id] = frame.endPosition
 					continue
 				case clusterwire.TimerEventSbeTemplateID:
-					if frame.endPosition > commitPosition {
+					if frame.endPosition > trackedFloor {
 						wantTimers = append(wantTimers, uncommittedTimer{
 							appendPosition: frame.endPosition,
 							correlationID:  frame.id,
 						})
 					}
 				case clusterwire.SessionCloseEventSbeTemplateID:
-					if frame.endPosition > commitPosition {
+					if frame.endPosition > trackedFloor {
 						wantCloses = append(wantCloses, frame)
 					}
 				}
@@ -177,6 +147,7 @@ func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 			uncommittedOpTimeoutClose,
 			uncommittedOpUpdateLeader,
 			uncommittedOpUpdateLeader,
+			uncommittedOpPrepare,
 		}
 		stepCount := rapid.IntRange(1, 60).Draw(rt, "stepCount")
 		for range stepCount {
@@ -193,7 +164,10 @@ func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 			case uncommittedOpOpen:
 				a.acceptSessionConnect(validConnectFields(nextCorrelationID), nowNs)
 				nextCorrelationID++
-				a.sessionWork(nowNs)
+				// A connect left pending reaches the next prepare as pre-open.
+				if rapid.Bool().Draw(rt, "openNow") {
+					a.sessionWork(nowNs)
+				}
 
 			case uncommittedOpClientClose:
 				ids := openSessionIDs(a)
@@ -201,7 +175,7 @@ func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 					break
 				}
 				id := rapid.SampledFrom(ids).Draw(rt, "clientCloseID")
-				clientIngress.Enqueue(encodeSessionCloseRequestWire(t, leadershipTermID, id))
+				clientIngress.Enqueue(encodeSessionCloseRequestWire(t, termID, id))
 				require.Equal(rt, 1, a.pollClientIngress(nowNs))
 				_, ok := a.sessions.sessionByID(id)
 				require.False(rt, ok)
@@ -215,14 +189,71 @@ func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 				s, ok := a.sessions.sessionByID(id)
 				require.True(rt, ok)
 				s.lastActivityNs = nowNs - a.sessionTimeoutNs - 1
-				// Mark and remove: two work units.
-				require.Equal(rt, 2, a.sessionCloseWork(nowNs))
+				// Mark and remove: two work units. Each restored close also
+				// appends and removes: one work unit.
+				restoredCloses := a.ClosingSessionCount()
+				require.Equal(rt, 2+restoredCloses, a.sessionCloseWork(nowNs))
 				_, ok = a.sessions.sessionByID(id)
 				require.False(rt, ok)
 
 			case uncommittedOpUpdateLeader:
 				quorum := rapid.Int64Range(a.CommitPosition(), a.logPublisher.Position()).Draw(rt, "quorum")
 				a.UpdateLeaderPosition(nowNs, quorum)
+
+			case uncommittedOpPrepare:
+				commitPosition := a.CommitPosition()
+				prepareAt := rapid.Int64Range(0, commitPosition).Draw(rt, "prepareAt")
+				wantTimers := scheduledTimerDeadlines(rt, a)
+				for _, timer := range a.uncommittedTimers {
+					wantTimers[timer.correlationID] = 0
+				}
+				wantClosing := make([]int64, 0)
+				wantOpen := make([]int64, 0)
+				for _, s := range a.sessions.all {
+					if s.openedLogPosition > prepareAt {
+						continue
+					}
+					switch s.state {
+					case sessionOpen:
+						wantOpen = append(wantOpen, s.id)
+					case sessionClosing:
+						wantClosing = append(wantClosing, s.id)
+					}
+				}
+				for _, entry := range a.sessions.uncommittedCloses {
+					if entry.session.openedLogPosition <= prepareAt {
+						wantClosing = append(wantClosing, entry.session.id)
+					}
+				}
+
+				_, prepared, err := a.PrepareForNewLeadership(prepareAt, nowNs)
+				require.NoError(rt, err)
+				require.True(rt, prepared)
+				require.Equal(rt, commitPosition, a.CommitPosition())
+				preparedEnd = a.logPublisher.Position()
+
+				requireAgentTimers(rt, a, wantTimers, nil)
+				require.Empty(rt, a.uncommittedTimers)
+				require.Empty(rt, a.sessions.uncommittedCloses)
+				require.Empty(rt, a.sessions.pending)
+				gotClosing := make([]int64, 0)
+				gotOpen := make([]int64, 0)
+				for _, s := range a.sessions.all {
+					require.LessOrEqual(rt, s.openedLogPosition, prepareAt)
+					switch s.state {
+					case sessionOpen:
+						gotOpen = append(gotOpen, s.id)
+					case sessionClosing:
+						gotClosing = append(gotClosing, s.id)
+						require.Nil(rt, s.egressPublication)
+					}
+				}
+				require.Equal(rt, wantOpen, gotOpen)
+				require.ElementsMatch(rt, wantClosing, gotClosing)
+
+				termID++
+				require.NoError(rt, a.JoinLogAsLeader(termID, preparedEnd, 0, false))
+				a.ElectionComplete(nowNs)
 			}
 			assertInvariants()
 		}

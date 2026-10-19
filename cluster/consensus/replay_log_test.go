@@ -3,6 +3,7 @@
 package consensus
 
 import (
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -495,6 +496,192 @@ func TestJoinLogAsLeader_unbindsLogImage(t *testing.T) {
 	require.Nil(t, adapter.Image())
 	require.False(t, image.IsClosed())
 	require.Equal(t, messageEnd, adapter.Position())
-	require.Equal(t, leadershipTermID, a.lastLedLeadershipTermID)
 	require.False(t, a.isFollowerLogImageClosed())
+}
+
+// copyLogFrames writes each frame of pub below end into image at the same
+// term offset, so each frame keeps its log position.
+func copyLogFrames(t *testing.T, pub *aeron.ExclusivePublication, image *aeron.Image, end int64) {
+	t.Helper()
+	for offset := 0; int64(offset) < end; {
+		payload, next := termWireAt(t, pub, offset)
+		writeLogAdapterUnfragmentedFrame(t, image, offset, payload)
+		offset = next
+	}
+}
+
+// replayLogFrom binds image at from, replays it to stop, then unbinds it.
+func replayLogFrom(
+	t fragmentRequireT,
+	a *Agent,
+	image *aeron.Image,
+	from, stop, nowNs int64,
+) {
+	t.Helper()
+	aeron.ImageSetSubscriberPositionForHooks(image, from)
+	a.BindReplayLog(image)
+	for a.LogAdapter().Position() < stop {
+		require.Positive(t, a.ReplayLogPoll(stop, nowNs))
+	}
+	a.UnbindReplayLog(image)
+	require.Equal(t, stop, a.CommitPosition())
+}
+
+// countLogEntries counts the TimerEvents for correlationID and the
+// SessionCloseEvents for sessionID in pub that end above from and below end.
+func countLogEntries(
+	t *testing.T,
+	pub *aeron.ExclusivePublication,
+	from, end, correlationID, sessionID int64,
+) (timerEvents, sessionCloses int) {
+	t.Helper()
+	for _, frame := range scanLogEntryFrames(t, pub, end) {
+		if frame.endPosition <= from {
+			continue
+		}
+		switch frame.templateID {
+		case clusterwire.TimerEventSbeTemplateID:
+			if frame.id == correlationID {
+				timerEvents++
+			}
+		case clusterwire.SessionCloseEventSbeTemplateID:
+			if frame.id == sessionID {
+				sessionCloses++
+			}
+		}
+	}
+	return timerEvents, sessionCloses
+}
+
+func TestUncommittedEntryRollback_replay(t *testing.T) {
+	t.Parallel()
+
+	const (
+		leadershipTermID int64 = 3
+		correlationID    int64 = 21
+		closedID         int64 = 1
+		clearedID        int64 = 2
+		nowNs            int64 = 0
+	)
+
+	// formerLeader opens session 1 and commits the open. Above commit it
+	// fires a timer, closes session 1 and opens session 2. Then it prepares
+	// at commit. Returns the commit and the publication end.
+	formerLeader := func(t *testing.T) (*Agent, *aeron.ExclusivePublication, int64, int64) {
+		t.Helper()
+		a, q, pub := leaderWithTimerIngress(t, AgentConfig{
+			LeadershipTermID: leadershipTermID,
+			ThisMemberID:     1,
+			Commit:           new(atomic.Int64),
+			LogAdapter:       NewLogAdapter(0),
+		})
+		wireImmediateEgress(t, a)
+		clientIngress := attachQueueClientIngress(a)
+
+		a.acceptSessionConnect(validConnectFields(1), nowNs)
+		require.Equal(t, 2, a.sessionWork(nowNs))
+		commitPosition := pub.Position()
+		require.Equal(t, 1, a.UpdateLeaderPosition(nowNs, commitPosition))
+
+		requireScheduled(t, a, q, correlationID, nowNs, 1)
+		require.Equal(t, 1, a.timerWork(nowNs))
+		clientIngress.Enqueue(encodeSessionCloseRequestWire(t, leadershipTermID, closedID))
+		require.Equal(t, 1, a.pollClientIngress(nowNs))
+		a.acceptSessionConnect(validConnectFields(2), nowNs)
+		require.Equal(t, 2, a.sessionWork(nowNs))
+		end := pub.Position()
+
+		_, prepared, err := a.PrepareForNewLeadership(commitPosition, nowNs)
+		require.NoError(t, err)
+		require.True(t, prepared)
+		require.Equal(t, commitPosition, a.CommitPosition())
+		requireAgentTimers(t, a, map[int64]int64{correlationID: 0}, nil)
+		requireSessionIDs(t, a, closedID)
+		require.Equal(t, 1, a.ClosingSessionCount())
+		return a, pub, commitPosition, end
+	}
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "re-elected and its own frames survive",
+			run: func(t *testing.T) {
+				a, pub, commitPosition, end := formerLeader(t)
+				image := aeron.NewTestImageForHooks(t, aeron.NewTestSubscriptionForHooks(t), 0)
+				copyLogFrames(t, pub, image, end)
+
+				replayLogFrom(t, a, image, commitPosition, end, nowNs)
+				requireAgentTimers(t, a, nil, nil)
+				require.Equal(t, 0, a.ClosingSessionCount())
+				requireSessionIDs(t, a, clearedID)
+				cleared, ok := a.sessions.sessionByID(clearedID)
+				require.True(t, ok)
+				require.Equal(t, sessionOpen, cleared.state)
+			},
+		},
+		{
+			name: "re-elected after its frames were truncated",
+			run: func(t *testing.T) {
+				a, pub, commitPosition, end := formerLeader(t)
+				image := aeron.NewTestImageForHooks(t, aeron.NewTestSubscriptionForHooks(t), 0)
+				copyLogFrames(t, pub, image, commitPosition)
+
+				replayLogFrom(t, a, image, commitPosition, commitPosition, nowNs)
+				requireAgentTimers(t, a, map[int64]int64{correlationID: 0}, nil)
+				requireSessionIDs(t, a, closedID)
+				require.Equal(t, 1, a.ClosingSessionCount())
+
+				require.NoError(t, a.JoinLogAsLeader(leadershipTermID+1, commitPosition, 0, false))
+				a.ElectionComplete(nowNs)
+				for tick := int64(1); tick <= timerWheelTicksPerWheel; tick++ {
+					tickNs := nowNs + tick*timerWheelTickResolutionNs
+					a.timerWork(tickNs)
+					a.sessionWork(tickNs)
+				}
+				requireAgentTimers(t, a, nil, nil)
+				require.Equal(t, 0, a.ClosingSessionCount())
+				requireSessionIDs(t, a)
+
+				timerEvents, sessionCloses := countLogEntries(
+					t, pub, end, pub.Position(), correlationID, closedID,
+				)
+				require.Equal(t, 1, timerEvents)
+				require.Equal(t, 1, sessionCloses)
+			},
+		},
+		{
+			name: "follower reads the new leader frames",
+			run: func(t *testing.T) {
+				a, _, commitPosition, _ := formerLeader(t)
+				image := aeron.NewTestImageForHooks(t, aeron.NewTestSubscriptionForHooks(t), 0)
+				offset := int(commitPosition)
+				timerEvent := encodeLogAdapterTimerEventPayload(t, codecs.TimerEventFields{
+					LeadershipTermID: leadershipTermID + 1,
+					CorrelationID:    correlationID,
+				})
+				writeLogAdapterUnfragmentedFrame(t, image, offset, timerEvent)
+				offset += logbuffer.AlignFragmentChunkLength(len(timerEvent))
+				sessionClose := encodeLogAdapterSessionClosePayload(t, codecs.SessionCloseEventFields{
+					LeadershipTermID: leadershipTermID + 1,
+					ClusterSessionID: closedID,
+					CloseReason:      clusterwire.CloseReason_TIMEOUT,
+				})
+				writeLogAdapterUnfragmentedFrame(t, image, offset, sessionClose)
+				offset += logbuffer.AlignFragmentChunkLength(len(sessionClose))
+
+				replayLogFrom(t, a, image, commitPosition, int64(offset), nowNs)
+				requireAgentTimers(t, a, nil, nil)
+				require.Equal(t, 0, a.ClosingSessionCount())
+				requireSessionIDs(t, a)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.run(t)
+		})
+	}
 }
