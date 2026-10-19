@@ -89,6 +89,8 @@ const (
 	ClusterModuleReElectLogEndpoint      = "239.255.12.35:28804"
 	ClusterModuleFollowerStopPortBase    = 29100
 	ClusterModuleFollowerStopLogEndpoint = "239.255.12.37:29104"
+	ClusterModuleImageLossPortBase       = 21300
+	ClusterModuleImageLossLogEndpoint    = "239.255.12.73:21304"
 )
 
 // One-member cluster-log replay restart endpoints. Reserves the consensus port
@@ -484,6 +486,12 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    ClusterModuleFollowerStopPortBase,
 			memberCount: 3,
 			logEndpoint: ClusterModuleFollowerStopLogEndpoint,
+		},
+		{
+			name:        "module-image-loss",
+			portBase:    ClusterModuleImageLossPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterModuleImageLossLogEndpoint,
 		},
 		{
 			name:        "durable-rank",

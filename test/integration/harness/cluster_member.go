@@ -129,6 +129,10 @@ type ClusterMemberSetConfig struct {
 	// placeholder aeronmd path into the starter.
 	StartMediaDriver func(aeronmdPath string, overrides DriverEnv) (*MediaDriver, error)
 
+	// DriverEnv overrides the environment of every member's media driver at
+	// bootstrap. Nil means the harness defaults.
+	DriverEnv DriverEnv
+
 	// StartArchiveNode overrides Archive process start. Nil means
 	// startArchiveNodeProcess.
 	//
@@ -256,6 +260,7 @@ func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMem
 				javaPath:         javaPath,
 				jarPath:          jarPath,
 				startMediaDriver: cfg.StartMediaDriver,
+				driverEnv:        cfg.DriverEnv,
 				startArchiveNode: cfg.StartArchiveNode,
 			})
 			results[i] = memberInfra{md: md, node: node, cfg: memberCfg, err: bootErr}
@@ -330,6 +335,9 @@ type memberBootstrap struct {
 	javaPath      string
 	jarPath       string
 
+	// driverEnv overrides the media driver environment. Workers only read it.
+	driverEnv DriverEnv
+
 	// Non-nil startMediaDriver and startArchiveNode replace the real process
 	// start helpers. Nil means the real helpers. Same contract as
 	// ClusterMemberSetConfig.StartMediaDriver and StartArchiveNode.
@@ -356,7 +364,7 @@ func bootstrapMemberInfra(
 	if spec.startMediaDriver != nil {
 		startMD = spec.startMediaDriver
 	}
-	md, err := startMD(spec.aeronmdPath, nil)
+	md, err := startMD(spec.aeronmdPath, spec.driverEnv)
 	if err != nil {
 		return nil, nil, cluster.Config{}, err
 	}

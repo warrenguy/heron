@@ -512,6 +512,93 @@ func TestClusterModule_reElectsAfterTheLeaderStops(t *testing.T) {
 	})
 }
 
+// TestClusterModule_followerRejoinsAfterLogImageLoss asserts a follower whose
+// log image closes without end of stream rejoins the same leader.
+func TestClusterModule_followerRejoinsAfterLogImageLoss(t *testing.T) {
+	t.Parallel()
+
+	// A short image liveness timeout closes the follower image within the
+	// transport-only pause below, well under the leader heartbeat timeout.
+	set := openThreeNodeClusterWithConfig(t, harness.ClusterMemberSetConfig{
+		MemberCount:          3,
+		PortBase:             harness.ClusterModuleImageLossPortBase,
+		LogMulticastEndpoint: harness.ClusterModuleImageLossLogEndpoint,
+		DriverEnv:            harness.DriverEnv{"AERON_IMAGE_LIVENESS_TIMEOUT": "1s"},
+	})
+
+	leader := requireSingleLeader(t, set, "")
+	leaderIndex := int(leader.ThisMemberID())
+	follower := set.Module((leaderIndex + 1) % 3)
+	leaderTerm := leader.LeadershipTermID()
+	leaderElections := leader.Agent().ElectionCount()
+	leaderSession := leader.LogStreams().Publication().SessionID()
+	followerElections := follower.Agent().ElectionCount()
+
+	// The driver lingers an image only after every subscriber drained it.
+	requireAwaitTick(t, set, "follower commit at leader position", durableWorkBound,
+		func() bool {
+			return follower.CommitPosition() == leader.LogStreams().Publication().Position()
+		})
+
+	boundToLeader := func() bool {
+		image := follower.LogAdapter().Image()
+		return image != nil && !image.IsClosed() && image.SessionID() == leaderSession
+	}
+
+	// IsImageClosed reports true for a nil image, so the loss wait needs a
+	// bound image first.
+	require.True(t, boundToLeader(), "follower not bound to the leader session:\n%s", set.State())
+
+	// Phase: loss. No agent ticks, so the follower enters no election yet.
+	sub := follower.LogStreams().Subscription()
+	liveURI := follower.Agent().LiveLogDestination()
+	require.NotEmpty(t, liveURI)
+	require.NoError(t, sub.RemoveDestination(liveURI))
+	const lossBound = 3 * time.Second
+	require.True(
+		t,
+		set.PumpTransportUntil(lossBound, follower.LogAdapter().IsImageClosed),
+		"follower log image open after %s:\n%s",
+		lossBound,
+		set.State(),
+	)
+
+	// The endpoint receives the leader frames again and holds the leader
+	// session in cool-down.
+	require.NoError(t, sub.AddDestination(liveURI))
+
+	// Phase: rejoin.
+	rejoinBound := 3 * time.Duration(harness.IntegrationLeaderHeartbeatTimeoutNs)
+	rejoined := set.TickUntil(rejoinBound, func() bool {
+		if follower.Agent().ElectionCount() == followerElections || !follower.ElectionComplete() {
+			return false
+		}
+		return boundToLeader()
+	})
+	require.True(
+		t,
+		rejoined,
+		"follower did not rejoin after %s, election error %v:\n%s",
+		rejoinBound,
+		follower.ElectionLastError(),
+		set.State(),
+	)
+
+	require.True(t, leader.IsLeader(), "leader changed:\n%s", set.State())
+	require.Equal(t, leaderElections, leader.Agent().ElectionCount())
+	require.Equal(t, leaderTerm, leader.LeadershipTermID())
+	require.Equal(t, leaderSession, leader.LogStreams().Publication().SessionID())
+	switch trigger := follower.Agent().LastElectionTrigger(); trigger {
+	case consensus.ElectionTriggerLogImageClosed,
+		consensus.ElectionTriggerLogRecordingStopped:
+	default:
+		require.FailNow(t, "unexpected follower election trigger", "%s:\n%s", trigger, set.State())
+	}
+	requireAwaitTick(t, set, "follower commit after rejoin", durableWorkBound, func() bool {
+		return follower.CommitPosition() >= leader.LogStreams().Publication().Position()
+	})
+}
+
 // TestClusterModule_leaderReElectsWhenItsFollowersStop asserts a leader that
 // loses its active follower quorum re-enters an election. Asserts that member
 // stops being the leader.
@@ -559,12 +646,9 @@ func TestClusterModule_leaderReElectsWhenItsFollowersStop(t *testing.T) {
 	)
 }
 
-// openThreeNodeCluster starts three members on the given port block and log
-// endpoint. Waits for session-keyed log images. Ticks until every member
-// reports ElectionComplete. Caller must pass a unique PortBase per Test*.
-//
-// Optional amend becomes ClusterMemberSetConfig.AmendMemberConfig. Call sites
-// that need no amend omit the argument.
+// openThreeNodeCluster calls openThreeNodeClusterWithConfig for three members
+// on the given port block and log endpoint. Optional amend becomes
+// ClusterMemberSetConfig.AmendMemberConfig.
 func openThreeNodeCluster(
 	t *testing.T,
 	portBase int,
@@ -581,6 +665,18 @@ func openThreeNodeCluster(
 	if len(amend) > 0 {
 		cfg.AmendMemberConfig = amend[0]
 	}
+	return openThreeNodeClusterWithConfig(t, cfg)
+}
+
+// openThreeNodeClusterWithConfig starts three members from cfg. Waits for
+// session-keyed log images. Ticks until every member reports ElectionComplete.
+// Caller must pass a unique PortBase per Test*.
+func openThreeNodeClusterWithConfig(
+	t *testing.T,
+	cfg harness.ClusterMemberSetConfig,
+) *harness.ClusterMemberSet {
+	t.Helper()
+
 	set := harness.StartClusterMemberSet(t, cfg)
 	require.Len(t, set.Modules(), 3)
 

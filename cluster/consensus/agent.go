@@ -298,6 +298,10 @@ type Agent struct {
 	// Nil: FollowerLogJoinReady and JoinLogAsFollower both report not-ready.
 	joinSource LogJoinSource
 
+	// logJoinMissed marks a not-ready result from the last FollowerLogJoinReady.
+	// The next prepare teardown reads the mark and clears it.
+	logJoinMissed bool
+
 	// logReplicationFactory optional inject for [Agent.NewLogReplication].
 	//
 	// Nil: NewLogReplication returns nil.
@@ -1159,9 +1163,10 @@ func (a *Agent) IsLogJoinedForSession(logSessionID int32) bool {
 	return image != nil && image.SessionID() == logSessionID
 }
 
-// CatchupControl attaches the follower catchup feed as a receive destination
-// on the log subscription and starts leader-side archive replay for a catchup
-// request.
+// CatchupControl is the agent's handle on the log subscription for catchup:
+//   - attaches the follower catchup feed as a receive destination
+//   - reseeds the log subscription for a new term
+//   - starts leader-side archive replay for a catchup request
 //
 // Concurrency: invoker-only. Blocks for archive control, subscription reseed,
 // and destination commands.
@@ -1183,6 +1188,12 @@ type CatchupControl interface {
 	//
 	// On failure LiveLogDestination stays empty. The next tick retries.
 	AddLiveLogDestination() error
+
+	// ReseedLogSubscription replaces the log subscription with a fresh one that
+	// carries only the live destination. Clears both destination fields first.
+	//
+	// Returns the reseed error or the live destination add error.
+	ReseedLogSubscription() error
 
 	// StartCatchupReplay starts an archive replay of the local log recording
 	// from logPosition toward catchupEndpoint with logSessionID. Returns the
@@ -1578,16 +1589,20 @@ func (a *Agent) AwaitLocalSocketsClosed(registrationID int64) {}
 //
 // Returns false until a [LogJoinSource] is wired and reports an open cluster log
 // image for logSessionID. The election waits and retries while this is false,
-// and gives up on its leader heartbeat timeout.
+// and gives up on its leader heartbeat timeout. A false result sets
+// logJoinMissed for the next prepare.
 //
 // IsLeaderStartup is left false; the election sets it before joining.
 func (a *Agent) FollowerLogJoinReady(
 	logSessionID int32,
 ) (FollowerLogJoinParams, bool) {
-	if a.joinSource == nil {
-		return FollowerLogJoinParams{}, false
+	var params FollowerLogJoinParams
+	ready := false
+	if a.joinSource != nil {
+		params, ready = a.joinSource.Ready(logSessionID)
 	}
-	return a.joinSource.Ready(logSessionID)
+	a.logJoinMissed = !ready
+	return params, ready
 }
 
 // PrepareForNewLeadership resets election leadership state, then polls the
@@ -1645,7 +1660,32 @@ func (a *Agent) teardownForNewLeadership() {
 	a.retireSnapshotWait()
 	a.StopAllCatchups()
 	a.RemoveCatchupLogDestination()
+	a.reseedLogSubscriptionForNewTerm()
 	a.releaseSessionsForNewTerm()
+}
+
+// reseedLogSubscriptionForNewTerm replaces the log subscription when the log
+// adapter holds no open image or the last follower join query missed. Clears
+// the miss.
+//
+// The driver holds a session in cool-down on the old receive endpoint after
+// its image closes without end of stream. A fresh subscription opens a new
+// endpoint, so the next join can image that session again.
+//
+// An open image with no miss keeps the subscription for the bound rejoin.
+// Drops the reseed error. The next prepare or catchup entry rebuilds a
+// missing subscription.
+func (a *Agent) reseedLogSubscriptionForNewTerm() {
+	missed := a.logJoinMissed
+	a.logJoinMissed = false
+	if a.catchupControl == nil || a.logAdapter == nil {
+		return
+	}
+	if !missed && !a.logAdapter.IsImageClosed() {
+		return
+	}
+	a.logAdapter.SetImage(nil)
+	_ = a.catchupControl.ReseedLogSubscription()
 }
 
 // pollPrepareStop advances one recording stop poll for prepare. Does not write

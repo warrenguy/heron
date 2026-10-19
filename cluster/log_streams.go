@@ -359,7 +359,9 @@ func (l *LogStreams) LiveURI() string {
 // join source. The fresh subscription has no destinations.
 //
 // Used at catchup entry so late-join images from the prior endpoint cannot
-// absorb same-session replay frames below their join position.
+// absorb same-session replay frames below their join position. Used at
+// prepare for a new term so a fresh receive endpoint can image a session the
+// old endpoint holds in cool-down.
 //
 // Concurrency: invoker-only.
 //
