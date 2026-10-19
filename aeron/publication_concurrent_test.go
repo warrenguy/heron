@@ -87,10 +87,7 @@ func spinRotatePublicationLog(pub *aeron.Publication, stop <-chan struct{}) {
 
 func fragmentedStressPayload(pub *aeron.Publication) []byte {
 	maxPayload := pub.MaxPayloadLengthForTest()
-	payload := make([]byte, maxPayload+1)
-	for i := range payload {
-		payload[i] = byte(i)
-	}
+	payload := patternedPayload(maxPayload + 1)
 	return payload
 }
 

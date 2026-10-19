@@ -87,9 +87,8 @@ func (p *LogPublisher) offerEncoded(buf []byte) int64 {
 // BackPressured, AdminAction, Closed, MaxPositionExceeded,
 // UnsupportedMessageLength). Nil publication -> Closed.
 //
-// headerLen+len(payload) > MaxMessageLength -> UnsupportedMessageLength without
-// calling Offer. Keeps MaxPositionExceeded reserved for publication-position
-// exhaustion.
+// Returns UnsupportedMessageLength without an Offer when headerLen+len(payload)
+// exceeds MaxMessageLength.
 //
 // Offer retry policy is [LogPublisher.offerEncoded].
 func (p *LogPublisher) AppendMessage(

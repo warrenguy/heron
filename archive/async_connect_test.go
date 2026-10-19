@@ -511,7 +511,7 @@ func TestAsyncConnect_pollSendMessage_terminalErrors(t *testing.T) {
 		{
 			name:        "unsupportedMessageLength",
 			offerResult: aeron.UnsupportedMessageLength,
-			wantSubstr:  "max payload length",
+			wantSubstr:  "max message length",
 		},
 	}
 

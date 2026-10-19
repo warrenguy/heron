@@ -102,11 +102,7 @@ func TestExclusivePublication_FragmentedOffer_twoFrames(t *testing.T) {
 	)
 	maxPayload := ep.MaxPayloadLengthForTest()
 	length := maxPayload + 1
-
-	payload := make([]byte, length)
-	for i := range payload {
-		payload[i] = byte(i)
-	}
+	payload := patternedPayload(length)
 
 	_, frames := requireExclusiveFragmentedOffer(t, ep, payload)
 	require.Len(t, frames[0].Payload, maxPayload)
@@ -142,25 +138,13 @@ func TestExclusivePublication_FragmentedOffer_atMaxPayloadLength(t *testing.T) {
 		int64(1)<<40,
 	)
 	maxPayload := ep.MaxPayloadLengthForTest()
-	payload := make([]byte, maxPayload)
-	for i := range payload {
-		payload[i] = byte(i)
-	}
+	payload := patternedPayload(maxPayload)
 
 	position := aeron.OfferRetryForTest(ep, payload)
 	require.Positive(t, position)
 
-	termBuf, frameStart := exclusiveFragmentedMessageAtPosition(ep, position, maxPayload, maxPayload)
-
-	frameLength := int(logbuffer.FrameLengthVolatile(termBuf, frameStart))
-	require.Equal(t, maxPayload+logbuffer.DataHeaderLength, frameLength)
-	require.Equal(
-		t,
-		uint8(logbuffer.Unfragmented),
-		logbuffer.FrameFlags(termBuf, frameStart)&logbuffer.Unfragmented,
-	)
-	got := termBuf.Bytes()[frameStart+logbuffer.OffsetFramePayload : frameStart+frameLength]
-	require.Equal(t, payload, got)
+	frames := readExclusiveFragmentedFramesAtPosition(t, ep, position, maxPayload, maxPayload)
+	requireUnfragmentedFrame(t, frames, payload)
 }
 
 func TestExclusivePublication_FragmentedOffer_atMaxMessageLength(t *testing.T) {
@@ -173,11 +157,24 @@ func TestExclusivePublication_FragmentedOffer_atMaxMessageLength(t *testing.T) {
 	maxPayload := ep.MaxPayloadLengthForTest()
 	require.Greater(t, maxMessage, maxPayload)
 
-	payload := make([]byte, maxMessage)
-	for i := range payload {
-		payload[i] = byte(i)
-	}
-	requireExclusiveFragmentedOffer(t, ep, payload)
+	requireExclusiveFragmentedOffer(t, ep, patternedPayload(maxMessage))
+}
+
+func TestExclusivePublication_Offer_mtuAboveMaxMessageLength(t *testing.T) {
+	cfg := aeron.DefaultTestExclusivePublicationLogConfig()
+	cfg.MTULength = mtuAboveMaxMessageLength
+	ep := aeron.NewTestExclusivePublication(t, cfg, int64(1)<<40)
+
+	requireOfferLimitAtMaxPayloadLength(
+		t,
+		ep,
+		func(position int64, length int) []aeron.FragmentedFrameForTest {
+			return readExclusiveFragmentedFramesAtPosition(t, ep, position, length, ep.MaxPayloadLength())
+		},
+		func(wantStatus int64, offer func() int64) {
+			requireRejectedExclusiveOfferLeavesTermClean(t, ep, wantStatus, offer)
+		},
+	)
 }
 
 func TestExclusivePublication_FragmentedOffer_termRolloverRetry(t *testing.T) {
@@ -186,10 +183,7 @@ func TestExclusivePublication_FragmentedOffer_termRolloverRetry(t *testing.T) {
 	ep := newTestExclusivePublicationNearTermEnd(t, margin)
 
 	length := maxPayload + 1
-	payload := make([]byte, length)
-	for i := range payload {
-		payload[i] = byte(i & 0xFF)
-	}
+	payload := patternedPayload(length)
 
 	first := ep.Offer(payload)
 	require.Equal(t, aeron.AdminAction, first)
@@ -275,11 +269,31 @@ func TestExclusivePublication_FragmentedOffer_statusPaths(t *testing.T) {
 			aeron.DefaultTestExclusivePublicationLogConfig(),
 			int64(1)<<40,
 		)
-		maxMessage := ep.MaxMessageLengthForTest()
-		payload := make([]byte, maxMessage+1)
-		requireRejectedExclusiveOfferLeavesTermClean(t, ep, aeron.MaxPositionExceeded, func() int64 {
-			return ep.Offer(payload)
-		})
+		requireOversizedExclusiveOfferLeavesTermClean(t, ep)
+	})
+
+	t.Run("oversized while BackPressured", func(t *testing.T) {
+		ep, _ := setupExclusivePublicationWithLimitReaderAtPosition(t, 500_000, 500_000)
+		requireOversizedExclusiveOfferLeavesTermClean(t, ep)
+	})
+
+	t.Run("oversized near max position", func(t *testing.T) {
+		ep := aeron.NewTestExclusivePublication(
+			t,
+			aeron.LogConfigNearMaxPositionForTest(aeron.DefaultTestExclusivePublicationLogConfig),
+			int64(1)<<62,
+		)
+		requireOversizedExclusiveOfferLeavesTermClean(t, ep)
+	})
+}
+
+func requireOversizedExclusiveOfferLeavesTermClean(tb testing.TB, ep *aeron.ExclusivePublication) {
+	tb.Helper()
+	require.Greater(tb, ep.MaxMessageLength(), ep.MaxPayloadLength())
+
+	payload := make([]byte, ep.MaxMessageLength()+1)
+	requireRejectedExclusiveOfferLeavesTermClean(tb, ep, aeron.UnsupportedMessageLength, func() int64 {
+		return ep.Offer(payload)
 	})
 }
 

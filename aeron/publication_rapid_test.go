@@ -239,6 +239,69 @@ func TestPublication_Offer_limitGate_rapid(t *testing.T) {
 	})
 }
 
+// drawLengthRuleLogConfig draws an MTU and a publication state. Returns the
+// log config and the publication limit.
+func drawLengthRuleLogConfig(
+	t *rapid.T,
+	base func() aeron.TestPublicationLogConfig,
+) (aeron.TestPublicationLogConfig, int64) {
+	t.Helper()
+
+	var cfg aeron.TestPublicationLogConfig
+	position := aeron.PositionNearMaxPositionForTest()
+	if rapid.Bool().Draw(t, "nearMaxPosition") {
+		cfg = aeron.LogConfigNearMaxPositionForTest(base)
+	} else {
+		frameCount := rapid.Int64Range(0, 4*aeron.TestPublicationTermLength/logbuffer.FrameAlignment).
+			Draw(t, "frameCount")
+		position = frameCount * logbuffer.FrameAlignment
+		cfg = aeron.LogConfigAtPositionForTest(base, position)
+	}
+	limit := int64(1) << 62
+	if rapid.Bool().Draw(t, "atLimit") {
+		limit = position
+	}
+	if rapid.Bool().Draw(t, "disconnected") {
+		cfg.IsConnected = 0
+	}
+	cfg.MTULength = rapid.SampledFrom(
+		[]int32{aeron.TestPublicationMTULength, mtuAboveMaxMessageLength},
+	).Draw(t, "mtuLength")
+	return cfg, limit
+}
+
+// drawOfferLength draws a length in [0, 2*maxMessage] or within one byte of
+// either limit. Reports whether Offer must return UnsupportedMessageLength.
+func drawOfferLength(t *rapid.T, maxPayload, maxMessage int) (length int, oversized bool) {
+	t.Helper()
+
+	nearLimits := []int{
+		maxPayload - 1, maxPayload, maxPayload + 1,
+		maxMessage - 1, maxMessage, maxMessage + 1,
+	}
+	length = rapid.OneOf(rapid.IntRange(0, 2*maxMessage), rapid.SampledFrom(nearLimits)).
+		Draw(t, "length")
+	return length, length > max(maxPayload, maxMessage)
+}
+
+func TestPublication_Offer_lengthRule_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(t *rapid.T) {
+		cfg, limit := drawLengthRuleLogConfig(t, aeron.DefaultTestPublicationLogConfig)
+		pub := aeron.NewTestPublicationWithoutTBForRapid(cfg, limit)
+
+		length, oversized := drawOfferLength(t, pub.MaxPayloadLength(), pub.MaxMessageLength())
+		payload := make([]byte, length)
+		if oversized {
+			requireRejectedOfferLeavesTermClean(t, pub, aeron.UnsupportedMessageLength, func() int64 {
+				return pub.Offer(payload)
+			})
+			return
+		}
+		require.NotEqual(t, aeron.UnsupportedMessageLength, pub.Offer(payload), "length=%d", length)
+	})
+}
+
 func TestPublication_TryClaim_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {

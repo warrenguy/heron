@@ -340,7 +340,7 @@ func TestAeronCluster_Offer_payloadLengthBoundaries(t *testing.T) {
 		pub := ac.IngressPublication().(*aeron.Publication)
 		maxMessageLength := pub.MaxMessageLength()
 		oversizePayload := make([]byte, maxMessageLength-client.SessionHeaderLength()+1)
-		require.Equal(t, aeron.MaxPositionExceeded, ac.Offer(oversizePayload))
+		require.Equal(t, aeron.UnsupportedMessageLength, ac.Offer(oversizePayload))
 		require.Equal(t, client.SessionStateConnected, ac.SessionState())
 	})
 }

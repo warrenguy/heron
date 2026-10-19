@@ -5,11 +5,15 @@ import (
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
-// Proxy encodes archive control requests and offers them on the control
-// publication. Each Try method performs a single Offer; callers retry after DoWork
-// when the returned code is BackPressured or AdminAction. Closed, NotConnected, and
-// MaxPositionExceeded are terminal (negativeCode, false). Wire-length preflight and
-// encode failures return (0, false). Proxy is not safe for concurrent use.
+// Proxy encodes archive control requests. Proxy offers each request on the
+// control publication. Each Try method offers once. Proxy is not safe for
+// concurrent use.
+//
+// Returns:
+//   - BackPressured, AdminAction: retry after DoWork
+//   - Closed, NotConnected, MaxPositionExceeded, UnsupportedMessageLength:
+//     terminal (negativeCode, false)
+//   - wire-length preflight or encode failure: (0, false)
 type Proxy struct {
 	publication   ControlPublication
 	actingVersion uint16

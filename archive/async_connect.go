@@ -379,22 +379,12 @@ func (ac *AsyncConnect) offerConnectWire(next ConnectState) (*ConnectResult, err
 	case aeron.BackPressured, aeron.AdminAction:
 		return nil, nil
 	case aeron.UnsupportedMessageLength:
-		// Reserved status; ExclusivePublication.Offer no longer returns it for
-		// mid-band lengths (those fragment). Still mapped for injected stubs.
 		return nil, fmt.Errorf(
-			"archive: connect wire length %d rejected by control publication (max payload length %d)",
+			"archive: connect wire length %d exceeds control publication max message length %d",
 			ac.wire.length,
-			pub.MaxPayloadLength(),
+			pub.MaxMessageLength(),
 		)
 	case aeron.MaxPositionExceeded:
-		maxMessageLength := pub.MaxMessageLength()
-		if ac.wire.length > maxMessageLength {
-			return nil, fmt.Errorf(
-				"archive: connect wire length %d exceeds control publication max message length %d",
-				ac.wire.length,
-				maxMessageLength,
-			)
-		}
 		return nil, errors.New("archive: control publication stream position exceeded")
 	}
 	if result < 0 {
