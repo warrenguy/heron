@@ -33,12 +33,16 @@ const (
 	sessionOpClearTermMarks
 	sessionOpTrackClose
 	sessionOpSweepCloses
+	sessionOpRestoreCloses
 )
 
 // uncommittedCloseModel is one model entry of the uncommitted close list.
 type uncommittedCloseModel struct {
 	logPosition int64
 	sessionID   int64
+
+	// entry is the model entry of the session at track time.
+	entry sessionModelEntry
 }
 
 type sessionModelEntry struct {
@@ -59,7 +63,10 @@ type sessionModelEntry struct {
 //
 // A tracked close holds a closing session outside byID until a sweep at or
 // above its position drops it. The close list stays in position order. Each
-// sweep clears its vacated slots and keeps the capacity.
+// sweep clears its vacated slots and keeps the capacity. A restore re-adds
+// each tracked session above its position as closing, unless byID already
+// holds the id. The restored session re-enters the all list after the last
+// smaller id. The restore then empties the list.
 //
 // PBT skips the egress walk, the event queue, and authenticator consultation.
 // Publication and adder outcomes are a fixed matrix. Unit rows document those
@@ -271,6 +278,7 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				sessionOpClearTermMarks,
 				sessionOpTrackClose,
 				sessionOpSweepCloses,
+				sessionOpRestoreCloses,
 			}
 			if n := len(model); n > 0 && n < maxConcurrentSessions {
 				ops = append(ops, sessionOpAdd)
@@ -519,11 +527,12 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				require.True(rt, ok)
 				m.trackUncommittedClose(closeTail, s)
 				require.True(rt, m.remove(id))
-				dropLive(id)
 				closeModel = append(closeModel, uncommittedCloseModel{
 					logPosition: closeTail,
 					sessionID:   id,
+					entry:       model[id],
 				})
+				dropLive(id)
 
 			case sessionOpSweepCloses:
 				position := rapid.Int64Range(0, closeTail+64).Draw(rt, "sweepPosition")
@@ -533,6 +542,29 @@ func TestSessionManager_lifecycle_rapid(t *testing.T) {
 				for len(closeModel) > 0 && closeModel[0].logPosition <= position {
 					closeModel = closeModel[1:]
 				}
+
+			case sessionOpRestoreCloses:
+				position := rapid.Int64Range(0, closeTail+64).Draw(rt, "restorePosition")
+				capBefore := cap(m.uncommittedCloses)
+				m.restoreUncommittedCloses(position)
+				require.Equal(rt, capBefore, cap(m.uncommittedCloses))
+				for _, tracked := range closeModel {
+					if tracked.logPosition <= position {
+						continue
+					}
+					if _, live := model[tracked.sessionID]; live {
+						continue
+					}
+					restored := tracked.entry
+					restored.newLeaderPending = false
+					model[tracked.sessionID] = restored
+					acceptOrder = insertIDAfterSmaller(acceptOrder, tracked.sessionID)
+					s, ok := m.sessionByID(tracked.sessionID)
+					require.True(rt, ok)
+					require.Nil(rt, s.egressPublication)
+					require.Equal(rt, int64(nullValue), s.egressAddCorrelationID)
+				}
+				closeModel = closeModel[:0]
 			}
 
 			assertInvariants()
@@ -557,6 +589,16 @@ func drawSessionID(rt *rapid.T, m map[int64]sessionModelEntry, label string) int
 func pickSessionID[V any](rt *rapid.T, m map[int64]V, label string) int64 {
 	rt.Helper()
 	return rapid.SampledFrom(slices.Sorted(maps.Keys(m))).Draw(rt, label)
+}
+
+// insertIDAfterSmaller places id after the last entry of order with a
+// smaller id, as restoreUncommittedCloses places a session in all.
+func insertIDAfterSmaller(order []int64, id int64) []int64 {
+	i := len(order)
+	for i > 0 && order[i-1] > id {
+		i--
+	}
+	return slices.Insert(order, i, id)
 }
 
 func removeIDFromOrder(order []int64, id int64) []int64 {

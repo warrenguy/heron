@@ -202,8 +202,8 @@ type Agent struct {
 	// (no per-poll closure).
 	clientIngressPollNowNs int64
 
-	// sessionTimeoutNs bounds pre-open deadlines, egress-event deadlines,
-	// open-session idle close, and non-leader closing reclaim.
+	// sessionTimeoutNs bounds pre-open deadlines, egress-event deadlines, and
+	// open-session idle close.
 	sessionTimeoutNs int64
 
 	// sessionConnectHandler receives leader-accepted connects. Nil runs
@@ -450,21 +450,15 @@ type Agent struct {
 	timers *timerService
 
 	// uncommittedTimers holds each TimerEvent this member appended as leader
-	// above commit, in append order. sweepUncommittedEntriesTo drops the
-	// entries at or below the new commit. clearUncommittedEntries empties the
-	// list at prepare.
+	// above commit, in append order. handleTimerExpiry appends.
+	// sweepUncommittedEntriesTo drops the entries that commit reaches.
+	// restoreUncommittedEntries empties the list at prepare.
 	uncommittedTimers []uncommittedTimer
 
 	// expiredTimerCountByCorrelationID counts committed TimerEvents that found
-	// no timer to cancel, per correlation id. A TimerEvent of the term in
-	// lastLedLeadershipTermID adds no count. handleScheduleTimer consumes one
+	// no timer to cancel, per correlation id. handleScheduleTimer consumes one
 	// count per request and deletes the entry at zero. Never reset.
 	expiredTimerCountByCorrelationID map[int64]int64
-
-	// lastLedLeadershipTermID is the last leadership term this member joined
-	// as leader, or nullValue. JoinLogAsLeader sets it. handleTimerEvent
-	// reads it.
-	lastLedLeadershipTermID int64
 
 	// timerExpiryHandler is handleTimerExpiry cached once at construction so
 	// timerWork does not allocate a method value each duty cycle.
@@ -565,7 +559,7 @@ type AgentConfig struct {
 	// at NewAgent.
 	//
 	// One value bounds pre-open egress, queued egress events, challenge waits,
-	// open-session idle close, and non-leader closing reclaim.
+	// and open-session idle close.
 	SessionTimeoutNs int64
 
 	// ServiceCount sizes the ServiceAck tracker. Zero for a member without
@@ -660,7 +654,6 @@ func NewAgent(cfg AgentConfig) *Agent {
 		timers:                    newTimerService(),
 
 		expiredTimerCountByCorrelationID: make(map[int64]int64),
-		lastLedLeadershipTermID:          nullValue,
 	}
 	a.sessionAuthProxy.agent = a
 	a.ingressHandler = a.handleIngressFragment
@@ -1611,6 +1604,11 @@ func (a *Agent) FollowerLogJoinReady(
 //
 // First call of an episode runs teardown. Later calls poll only.
 //
+// logPosition is the committed log position the election starts from. The
+// teardown rolls back each TimerEvent and SessionCloseEvent this member
+// appended above logPosition. The teardown also drops each session opened
+// above logPosition and every pre-open session.
+//
 // nowNs is the deadline clock for [LogRecordingControl.PollStopLogRecording].
 //
 // Returns:
@@ -1629,7 +1627,7 @@ func (a *Agent) PrepareForNewLeadership(
 ) {
 	if !a.prepareInProgress {
 		a.prepareInProgress = true
-		a.teardownForNewLeadership()
+		a.teardownForNewLeadership(logPosition)
 	}
 	lastAppendPosition, prepared, err = a.pollPrepareStop(logPosition, nowNs)
 	if prepared || err != nil {
@@ -1648,7 +1646,10 @@ func (a *Agent) IsPrepareInProgress() bool {
 //
 // Catchup teardown runs here, not on the CATCHUP election exit. At the CATCHUP
 // exit the log adapter still reads the catchup image.
-func (a *Agent) teardownForNewLeadership() {
+//
+// clearSessionsAfter runs before releaseSessionsForNewTerm, so a cleared
+// session still holds its egress for the CLOSED event.
+func (a *Agent) teardownForNewLeadership(logPosition int64) {
 	a.RoleSet(RoleFollower)
 	a.SetLeaderMemberID(nullMemberID)
 	a.lastPublishedAppendPosition = 0
@@ -1662,7 +1663,8 @@ func (a *Agent) teardownForNewLeadership() {
 	a.StopAllCatchups()
 	a.RemoveCatchupLogDestination()
 	a.reseedLogSubscriptionForNewTerm()
-	a.clearUncommittedEntries()
+	a.restoreUncommittedEntries(logPosition)
+	a.clearSessionsAfter(logPosition)
 	a.releaseSessionsForNewTerm()
 }
 
@@ -1733,10 +1735,9 @@ func (a *Agent) SetLogPublicationReseed(f LogPublicationReseed) {
 // append target (leaderMemberID to nullMemberID), and starts the LOCAL cluster
 // log recording when a control is wired.
 //
-// Role and term fields write before the recording start. The join stores
-// leadershipTermID as the last led term. The join also unbinds the log
-// adapter image, so a later election replay never reads a follower image of
-// an earlier term. The image stays open.
+// Role and term fields write before the recording start. The join also
+// unbinds the log adapter image, so a later election replay never reads a
+// follower image of an earlier term. The image stays open.
 //
 // With a [LogPublicationReseed] wired and a known recording id, the recording
 // start requires the publication at logPosition under logSessionID.
@@ -1770,7 +1771,6 @@ func (a *Agent) JoinLogAsLeader(
 ) error {
 	a.RoleSet(RoleLeader)
 	a.leadershipTermID = leadershipTermID
-	a.lastLedLeadershipTermID = leadershipTermID
 	a.SetLeaderMemberID(nullMemberID)
 	a.termBaseLogPosition = logPosition
 	if a.logAdapter != nil {

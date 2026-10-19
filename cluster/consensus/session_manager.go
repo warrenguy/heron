@@ -41,10 +41,10 @@ const (
 	// the append position.
 	sessionOpen
 
-	// sessionClosing means the close reason is decided and the
-	// SessionCloseEvent append is outstanding. closeReason holds the reason.
-	// The egress publication is already closed for CLIENT_ACTION. It stays up
-	// for TIMEOUT until the CLOSED event sends.
+	// sessionClosing means closeReason holds the reason and the
+	// SessionCloseEvent append is outstanding. The egress is closed for
+	// CLIENT_ACTION. It stays up for TIMEOUT until the CLOSED event sends. A
+	// restored close holds this state with no egress.
 	sessionClosing
 )
 
@@ -66,15 +66,22 @@ func (s sessionState) String() string {
 	return sessionStateNames[s]
 }
 
-// clientSession is one client session on the leader.
+// clientSession is one client session in the registry.
 //
-// Lifetime: created at accept. Removed on any of:
+// Lifetime: created at accept, or learned from a committed SessionOpenEvent.
+// Removed on any of:
 //   - offer-add error (fail-closed)
 //   - per-session terminal append failure
 //   - egress poll terminal
 //   - pending deadline reclaim
 //   - authentication reject handoff
 //   - client close or idle timeout after SessionCloseEvent append
+//   - committed SessionCloseEvent
+//   - election clear of a session opened above the prepare position, or of
+//     a pre-open session
+//
+// Prepare re-adds a removed session as closing when its SessionCloseEvent
+// sits above the prepare position.
 type clientSession struct {
 	id                int64
 	correlationID     int64
@@ -130,7 +137,8 @@ type sessionManager struct {
 
 	// uncommittedCloses holds each SessionCloseEvent this member appended as
 	// leader above commit, in append order. Each entry owns the removed
-	// session until sweepUncommittedCloses or clearUncommittedCloses drops it.
+	// session until sweepUncommittedCloses or restoreUncommittedCloses drops
+	// it.
 	uncommittedCloses []uncommittedClose
 }
 
@@ -469,13 +477,45 @@ func (m *sessionManager) sweepUncommittedCloses(position int64) {
 	m.uncommittedCloses = slices.Delete(m.uncommittedCloses, 0, n)
 }
 
-// clearUncommittedCloses drops every uncommittedCloses entry. The clear keeps
-// the capacity and nils the vacated slots, so the held sessions can be freed.
+// restoreUncommittedCloses re-adds the session of each uncommittedCloses
+// entry above logPosition as closing. Then empties the list.
+//
+// Behaviour:
+//   - A restored session keeps its close reason and open position. It holds
+//     no egress and no new-leader mark.
+//   - A restored session re-enters all after the last session with a smaller
+//     id, so all keeps accept order.
+//   - An id already in byID keeps that entry. The restore skips the close.
+//   - The restore ignores maxConcurrentSessions.
+//   - The list keeps its capacity. The vacated slots hold nil.
 //
 // Concurrency: invoker-only.
-func (m *sessionManager) clearUncommittedCloses() {
+func (m *sessionManager) restoreUncommittedCloses(logPosition int64) {
+	for _, entry := range m.uncommittedCloses {
+		if entry.logPosition <= logPosition {
+			continue
+		}
+		s := entry.session
+		if _, live := m.byID[s.id]; live {
+			continue
+		}
+		s.state = sessionClosing
+		m.byID[s.id] = s
+		m.insertIntoAll(s)
+		m.closingCount++
+	}
 	clear(m.uncommittedCloses)
 	m.uncommittedCloses = m.uncommittedCloses[:0]
+}
+
+// insertIntoAll places s in all after the last session with a smaller id.
+// Ids rise in accept order, so the placement keeps accept order.
+func (m *sessionManager) insertIntoAll(s *clientSession) {
+	i := len(m.all)
+	for i > 0 && m.all[i-1].id > s.id {
+		i--
+	}
+	m.all = slices.Insert(m.all, i, s)
 }
 
 // deleteSessionByID drops the entry with sessionID from sessions when present.
@@ -660,18 +700,12 @@ func (a *Agent) appendSessionCloseAndRemove(session *clientSession, nowNs int64)
 		return false
 	}
 	a.sessions.trackUncommittedClose(position, session)
-	if session.egressPublication != nil {
-		// TIMEOUT path: CLOSED best effort. Client-action already released egress.
-		_ = a.sendSessionEvent(
-			session.egressPublication,
-			session.id,
-			session.correlationID,
-			a.announcedLeaderMemberID(),
-			clusterwire.EventCode_CLOSED,
-			[]byte(session.closeReason.String()),
-		)
-	}
-	a.removeSessionWithResources(session)
+	// TIMEOUT path: CLOSED best effort. Client-action already released egress.
+	a.removeSessionWithCloseEvent(
+		session,
+		a.announcedLeaderMemberID(),
+		[]byte(session.closeReason.String()),
+	)
 	return true
 }
 

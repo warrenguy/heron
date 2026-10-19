@@ -673,6 +673,8 @@ func TestPrepareForNewLeadership_releasesSessionsBeforeStop(t *testing.T) {
 	pub := attachEgressPub(t, s, true)
 	a.sessions.setOKPending(s, true)
 	a.queueSessionRedirect(validConnectFields(1), 1)
+	above := seedLearnedOpen(t, a, 2, 1, 2000)
+	abovePub := attachEgressPub(t, above, true)
 
 	got, prepared, err := a.PrepareForNewLeadership(1234, 99)
 	require.NoError(t, err)
@@ -685,6 +687,155 @@ func TestPrepareForNewLeadership_releasesSessionsBeforeStop(t *testing.T) {
 	_, ok := a.sessions.sessionByID(1)
 	require.True(t, ok)
 	require.Len(t, a.egressEvents, 1)
+
+	// The session opened above the prepare position goes with CLOSED election.
+	_, ok = a.sessions.sessionByID(2)
+	require.False(t, ok)
+	require.Equal(t, []*clientSession{s}, a.sessions.all)
+	requireElectionClosed(t, abovePub, above)
+}
+
+// requireElectionClosed asserts pub is closed and holds one SessionEvent
+// CLOSED with detail election for session, naming member 1 as leader.
+func requireElectionClosed(t *testing.T, pub *aeron.Publication, session *clientSession) {
+	t.Helper()
+	require.True(t, pub.IsClosed())
+	got, next := decodeSessionEventAtTermOffset(t, pub, 0)
+	require.Zero(t, logbuffer.FrameLengthVolatile(pub.TermBuffer(0), next))
+	require.Equal(t, clusterwire.EventCode_CLOSED, got.Code)
+	require.Equal(t, []byte("election"), got.Detail)
+	require.Equal(t, session.id, got.ClusterSessionID)
+	require.Equal(t, session.correlationID, got.CorrelationID)
+	require.Equal(t, int32(1), got.LeaderMemberID)
+}
+
+// requireSessionIDs asserts the registry holds exactly ids in all, in order,
+// and in byID.
+func requireSessionIDs(t *testing.T, a *Agent, ids ...int64) {
+	t.Helper()
+	got := make([]int64, 0, len(a.sessions.all))
+	for _, session := range a.sessions.all {
+		got = append(got, session.id)
+	}
+	require.Equal(t, append([]int64{}, ids...), got)
+	require.Len(t, a.sessions.byID, len(ids))
+	for _, id := range ids {
+		_, ok := a.sessions.byID[id]
+		require.True(t, ok)
+	}
+}
+
+func TestClearSessionsAfter(t *testing.T) {
+	const prepareAt int64 = 1000
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T, a *Agent, adder *scriptedEgressAdder)
+	}{
+		{
+			name: "open at the position stays and open above it goes",
+			run: func(t *testing.T, a *Agent, _ *scriptedEgressAdder) {
+				at := seedLearnedOpen(t, a, 1, 1, prepareAt)
+				atPub := attachEgressPub(t, at, true)
+				above := seedLearnedOpen(t, a, 2, 1, prepareAt+1)
+				abovePub := attachEgressPub(t, above, true)
+
+				a.clearSessionsAfter(prepareAt)
+				requireSessionIDs(t, a, 1)
+				require.False(t, atPub.IsClosed())
+				require.Zero(t, logbuffer.FrameLengthVolatile(atPub.TermBuffer(0), 0))
+				requireElectionClosed(t, abovePub, above)
+				require.Equal(t, 1, a.OpenSessionCount())
+			},
+		},
+		{
+			name: "closing session opened above the position goes",
+			run: func(t *testing.T, a *Agent, _ *scriptedEgressAdder) {
+				s := seedLearnedOpen(t, a, 1, 1, prepareAt+1)
+				pub := attachEgressPub(t, s, true)
+				require.True(t, a.sessions.markClosing(s.id, clusterwire.CloseReason_TIMEOUT))
+
+				a.clearSessionsAfter(prepareAt)
+				requireSessionIDs(t, a)
+				requireElectionClosed(t, pub, s)
+				require.Equal(t, 0, a.ClosingSessionCount())
+			},
+		},
+		{
+			name: "pre-open sessions go with CLOSED on each egress",
+			run: func(t *testing.T, a *Agent, _ *scriptedEgressAdder) {
+				pre := make([]*clientSession, 0, 4)
+				for id := int64(1); id <= 4; id++ {
+					s := a.sessions.addPendingConnect(id, validConnectFields(id), 0)
+					require.NotNil(t, s)
+					pre = append(pre, s)
+				}
+				require.True(t, a.sessions.markChallenged(2))
+				require.True(t, a.sessions.markAuthenticated(3, nil))
+				require.True(t, a.sessions.markRejected(4))
+				pubs := make([]*aeron.Publication, 0, len(pre))
+				for _, s := range pre {
+					pubs = append(pubs, attachEgressPub(t, s, true))
+				}
+
+				a.clearSessionsAfter(prepareAt)
+				requireSessionIDs(t, a)
+				require.Empty(t, a.sessions.pending)
+				require.Equal(t, 0, a.PendingSessionCount())
+				for i, s := range pre {
+					requireElectionClosed(t, pubs[i], s)
+				}
+			},
+		},
+		{
+			name: "clear cancels an in-flight egress add",
+			run: func(t *testing.T, a *Agent, adder *scriptedEgressAdder) {
+				s := a.sessions.addPendingConnect(1, validConnectFields(1), 0)
+				require.NotNil(t, s)
+				require.NoError(t, a.startSessionEgress(s))
+				addCorrelationID := s.egressAddCorrelationID
+				require.NotEqual(t, int64(nullValue), addCorrelationID)
+
+				a.clearSessionsAfter(prepareAt)
+				requireSessionIDs(t, a)
+				require.Equal(t, []int64{addCorrelationID}, adder.cancels)
+				require.Equal(t, int64(nullValue), s.egressAddCorrelationID)
+			},
+		},
+		{
+			name: "egress-event queue keeps its entries",
+			run: func(t *testing.T, a *Agent, adder *scriptedEgressAdder) {
+				a.queueSessionRedirect(validConnectFields(1), 0)
+				require.Len(t, a.egressEvents, 1)
+
+				a.clearSessionsAfter(prepareAt)
+				require.Len(t, a.egressEvents, 1)
+				require.Empty(t, adder.cancels)
+			},
+		},
+		{
+			name: "sessions at or below the position stay",
+			run: func(t *testing.T, a *Agent, _ *scriptedEgressAdder) {
+				seedLearnedOpen(t, a, 1, 1, 8)
+				closing := seedLearnedOpen(t, a, 2, 1, prepareAt)
+				require.True(t, a.sessions.markClosing(closing.id, clusterwire.CloseReason_TIMEOUT))
+				nextSessionID := a.sessions.nextSessionID
+
+				a.clearSessionsAfter(prepareAt)
+				requireSessionIDs(t, a, 1, 2)
+				require.Equal(t, 1, a.OpenSessionCount())
+				require.Equal(t, 1, a.ClosingSessionCount())
+				require.Equal(t, nextSessionID, a.sessions.nextSessionID)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adder := neverReadyEgressAdder()
+			a := leaderWithEgress(t, nil, 5, 1, adder)
+			tt.run(t, a, adder)
+		})
+	}
 }
 
 func TestStartSessionEgress_offerErrorOnOpenLeavesSession(t *testing.T) {

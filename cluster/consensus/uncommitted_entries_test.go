@@ -9,16 +9,72 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
+
+// logEntryFrame is one TimerEvent, SessionOpenEvent or SessionCloseEvent on
+// the log, with its end position.
+type logEntryFrame struct {
+	templateID  uint16
+	endPosition int64
+	// id is the correlation id of a TimerEvent, or the session id of a
+	// session event.
+	id          int64
+	closeReason clusterwire.CloseReason
+}
+
+// scanLogEntryFrames returns every TimerEvent, SessionOpenEvent and
+// SessionCloseEvent in term 0 below end, in log order.
+func scanLogEntryFrames(
+	t fragmentRequireT,
+	pub *aeron.ExclusivePublication,
+	end int64,
+) []logEntryFrame {
+	t.Helper()
+	termBuf := pub.TermBuffer(0)
+	require.Less(t, end, int64(termBuf.Capacity()))
+	frames := make([]logEntryFrame, 0)
+	for offset := 0; int64(offset) < end; {
+		frameLength := int(logbuffer.FrameLengthVolatile(termBuf, offset))
+		require.Positive(t, frameLength)
+		wire := termBuf.Bytes()[offset+logbuffer.OffsetFramePayload : offset+frameLength]
+		offset += logbuffer.AlignFrameLength(frameLength)
+		frameEnd := int64(offset)
+		if fields, ok := codecs.TryDecodeTimerEventAt(wire, 0); ok {
+			frames = append(frames, logEntryFrame{
+				templateID:  clusterwire.TimerEventSbeTemplateID,
+				endPosition: frameEnd,
+				id:          fields.CorrelationID,
+			})
+			continue
+		}
+		if fields, ok := codecs.TryDecodeSessionOpenEventAt(wire, 0); ok {
+			frames = append(frames, logEntryFrame{
+				templateID:  clusterwire.SessionOpenEventSbeTemplateID,
+				endPosition: frameEnd,
+				id:          fields.ClusterSessionID,
+			})
+			continue
+		}
+		if fields, ok := codecs.TryDecodeSessionCloseEventAt(wire, 0); ok {
+			frames = append(frames, logEntryFrame{
+				templateID:  clusterwire.SessionCloseEventSbeTemplateID,
+				endPosition: frameEnd,
+				id:          fields.ClusterSessionID,
+				closeReason: fields.CloseReason,
+			})
+		}
+	}
+	return frames
+}
 
 // seedUncommittedEntries tracks one timer and one close at each position, in
 // order. The close at positions[i] holds a session with id i+1.
 func seedUncommittedEntries(a *Agent, positions []int64) {
 	for i, position := range positions {
-		a.uncommittedTimers = append(a.uncommittedTimers, uncommittedTimer{
-			appendPosition: position,
-			correlationID:  int64(i + 1),
-		})
+		trackUncommittedTimer(a, position, int64(i+1))
 		a.sessions.trackUncommittedClose(position, &clientSession{id: int64(i + 1)})
 	}
 }
@@ -123,32 +179,6 @@ func TestSweepUncommittedEntriesTo(t *testing.T) {
 	}
 }
 
-func TestPrepareForNewLeadership_clearsUncommittedEntries(t *testing.T) {
-	t.Parallel()
-
-	a := NewAgent(AgentConfig{
-		Role:   RoleLeader,
-		Commit: new(atomic.Int64),
-	})
-	seedUncommittedEntries(a, []int64{100, 200})
-	timerCap := cap(a.uncommittedTimers)
-	closeCap := cap(a.sessions.uncommittedCloses)
-
-	_, prepared, err := a.PrepareForNewLeadership(50, 1)
-	require.NoError(t, err)
-	require.True(t, prepared)
-	requireUncommittedPositions(t, a, []int64{})
-	require.Equal(t, timerCap, cap(a.uncommittedTimers))
-	require.Equal(t, closeCap, cap(a.sessions.uncommittedCloses))
-	for _, entry := range a.sessions.uncommittedCloses[:closeCap] {
-		require.Nil(t, entry.session)
-	}
-
-	// A new term tracks at positions below the cleared entries.
-	seedUncommittedEntries(a, []int64{60})
-	requireUncommittedPositions(t, a, []int64{60})
-}
-
 func TestUncommittedEntries_trackAndSweepAllocs(t *testing.T) {
 	p, _ := boundLogPublisher(t)
 	a := NewAgent(AgentConfig{
@@ -208,4 +238,202 @@ func TestUncommittedEntries_trackOnlyOnAppend(t *testing.T) {
 	}}, a.sessions.uncommittedCloses)
 	_, ok := a.sessions.sessionByID(s.id)
 	require.False(t, ok)
+}
+
+// trackUncommittedTimer records one fired timer at appendPosition.
+func trackUncommittedTimer(a *Agent, appendPosition, correlationID int64) {
+	a.uncommittedTimers = append(a.uncommittedTimers, uncommittedTimer{
+		appendPosition: appendPosition,
+		correlationID:  correlationID,
+	})
+}
+
+// trackClosedSession learns session id open at openedAt, closes it with
+// reason, removes it, and records the close at closeAt.
+func trackClosedSession(
+	t *testing.T,
+	a *Agent,
+	id, openedAt, closeAt int64,
+	reason clusterwire.CloseReason,
+) *clientSession {
+	t.Helper()
+	s := seedLearnedOpen(t, a, id, 1, openedAt)
+	require.True(t, a.sessions.markClosing(id, reason))
+	a.removeSessionWithResources(s)
+	a.sessions.trackUncommittedClose(closeAt, s)
+	return s
+}
+
+func TestRestoreUncommittedEntries(t *testing.T) {
+	t.Parallel()
+
+	const prepareAt int64 = 1000
+	liveDeadline := 4 * timerWheelTickResolutionNs
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T, a *Agent)
+	}{
+		{
+			name: "timers above the position restore at deadline 0",
+			run: func(t *testing.T, a *Agent) {
+				trackUncommittedTimer(a, prepareAt-1, 1)
+				trackUncommittedTimer(a, prepareAt, 2)
+				trackUncommittedTimer(a, prepareAt+1, 3)
+				trackUncommittedTimer(a, prepareAt+2, 4)
+
+				a.restoreUncommittedEntries(prepareAt)
+				requireAgentTimers(t, a, map[int64]int64{3: 0, 4: 0}, nil)
+				require.Empty(t, a.uncommittedTimers)
+				require.NoError(t, a.TimerFailure())
+			},
+		},
+		{
+			name: "restore replaces a live timer for the id",
+			run: func(t *testing.T, a *Agent) {
+				scheduleTimer(a, 1, liveDeadline)
+				trackUncommittedTimer(a, prepareAt+1, 1)
+
+				a.restoreUncommittedEntries(prepareAt)
+				requireAgentTimers(t, a, map[int64]int64{1: 0}, nil)
+			},
+		},
+		{
+			name: "wheel refusal marks timer failure once",
+			run: func(t *testing.T, a *Agent) {
+				a.timers = newSmallTimerService(testWheelCapacity)
+				for id := int64(1); id <= 4; id++ {
+					trackUncommittedTimer(a, prepareAt+id, id)
+				}
+
+				a.restoreUncommittedEntries(prepareAt)
+				require.ErrorIs(t, a.TimerFailure(), errTimerCapacity)
+				requireAgentTimers(t, a, map[int64]int64{1: 0, 2: 0}, nil)
+				require.Empty(t, a.uncommittedTimers)
+			},
+		},
+		{
+			name: "restore leaves the expired timer counts",
+			run: func(t *testing.T, a *Agent) {
+				a.expiredTimerCountByCorrelationID[1] = 2
+				a.expiredTimerCountByCorrelationID[5] = 1
+				trackUncommittedTimer(a, prepareAt+1, 1)
+
+				a.restoreUncommittedEntries(prepareAt)
+				requireAgentTimers(t, a, map[int64]int64{1: 0}, map[int64]int64{1: 2, 5: 1})
+			},
+		},
+		{
+			name: "closes above the position return closing with their reasons",
+			run: func(t *testing.T, a *Agent) {
+				committed := trackClosedSession(t, a, 1, 8, prepareAt,
+					clusterwire.CloseReason_TIMEOUT)
+				timedOut := trackClosedSession(t, a, 2, 8, prepareAt+1,
+					clusterwire.CloseReason_TIMEOUT)
+				clientClosed := trackClosedSession(t, a, 3, 8, prepareAt+2,
+					clusterwire.CloseReason_CLIENT_ACTION)
+				require.Empty(t, a.sessions.all)
+
+				a.restoreUncommittedEntries(prepareAt)
+				requireSessionIDs(t, a, 2, 3)
+				_, ok := a.sessions.sessionByID(committed.id)
+				require.False(t, ok)
+				require.Equal(t, 2, a.ClosingSessionCount())
+				require.Equal(t, 0, a.OpenSessionCount())
+				require.Empty(t, a.sessions.pending)
+				require.Empty(t, a.sessions.okPending)
+				for _, s := range []*clientSession{timedOut, clientClosed} {
+					require.Equal(t, sessionClosing, s.state)
+					require.Equal(t, int64(8), s.openedLogPosition)
+					require.False(t, s.newLeaderEventPending)
+					require.Nil(t, s.egressPublication)
+					require.Equal(t, int64(nullValue), s.egressAddCorrelationID)
+				}
+				require.Equal(t, clusterwire.CloseReason_TIMEOUT, timedOut.closeReason)
+				require.Equal(t, clusterwire.CloseReason_CLIENT_ACTION, clientClosed.closeReason)
+				require.Empty(t, a.sessions.uncommittedCloses)
+
+				// Vacated slots hold nil, so the dropped sessions can be freed.
+				for _, entry := range a.sessions.uncommittedCloses[:3] {
+					require.Nil(t, entry.session)
+				}
+			},
+		},
+		{
+			name: "restored session re-enters the all list in accept order",
+			run: func(t *testing.T, a *Agent) {
+				seedLearnedOpen(t, a, 1, 1, 8)
+				trackClosedSession(t, a, 2, 8, prepareAt+1,
+					clusterwire.CloseReason_TIMEOUT)
+				seedLearnedOpen(t, a, 3, 1, 9)
+				requireSessionIDs(t, a, 1, 3)
+
+				a.restoreUncommittedEntries(prepareAt)
+				requireSessionIDs(t, a, 1, 2, 3)
+				require.Equal(t, 1, a.ClosingSessionCount())
+			},
+		},
+		{
+			name: "prepare drops the close of a session opened above the position",
+			run: func(t *testing.T, a *Agent) {
+				trackClosedSession(t, a, 1, prepareAt+1, prepareAt+2,
+					clusterwire.CloseReason_TIMEOUT)
+
+				_, prepared, err := a.PrepareForNewLeadership(prepareAt, 0)
+				require.NoError(t, err)
+				require.True(t, prepared)
+				requireSessionIDs(t, a)
+				require.Equal(t, 0, a.ClosingSessionCount())
+				require.Empty(t, a.sessions.uncommittedCloses)
+			},
+		},
+		{
+			name: "id already in the registry keeps its entry",
+			run: func(t *testing.T, a *Agent) {
+				closed := trackClosedSession(t, a, 1, 8, prepareAt+1,
+					clusterwire.CloseReason_TIMEOUT)
+				live := seedLearnedOpen(t, a, 1, 1, 8)
+				require.NotSame(t, closed, live)
+
+				a.restoreUncommittedEntries(prepareAt)
+				requireSessionIDs(t, a, 1)
+				got, ok := a.sessions.sessionByID(1)
+				require.True(t, ok)
+				require.Same(t, live, got)
+				require.Equal(t, sessionOpen, live.state)
+				require.Equal(t, 0, a.ClosingSessionCount())
+				require.Empty(t, a.sessions.uncommittedCloses)
+			},
+		},
+		{
+			name: "second teardown at the same position changes nothing",
+			run: func(t *testing.T, a *Agent) {
+				trackUncommittedTimer(a, prepareAt+1, 1)
+				closed := trackClosedSession(t, a, 2, 8, prepareAt+1,
+					clusterwire.CloseReason_TIMEOUT)
+
+				for range 2 {
+					_, prepared, err := a.PrepareForNewLeadership(prepareAt, 0)
+					require.NoError(t, err)
+					require.True(t, prepared)
+					requireAgentTimers(t, a, map[int64]int64{1: 0}, nil)
+					requireSessionIDs(t, a, closed.id)
+					require.Equal(t, 1, a.ClosingSessionCount())
+					require.Empty(t, a.uncommittedTimers)
+					require.Empty(t, a.sessions.uncommittedCloses)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			a := NewAgent(AgentConfig{
+				Role:   RoleLeader,
+				Commit: new(atomic.Int64),
+			})
+			tt.run(t, a)
+		})
+	}
 }

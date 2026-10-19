@@ -12,9 +12,8 @@ import (
 
 // DefaultSessionTimeoutNs is the default session timeout (10s).
 //
-// Bounds pre-open session egress, queued egress events, challenge waits,
-// open-session idle close, and non-leader closing reclaim. Zero config values
-// take this default.
+// Bounds pre-open session egress, queued egress events, challenge waits, and
+// open-session idle close. Zero config values take this default.
 const DefaultSessionTimeoutNs int64 = 10_000_000_000
 
 // maxPendingEgressEvents caps the REDIRECT and ERROR queue. Over-cap connects
@@ -178,27 +177,20 @@ func (a *Agent) enqueueEgressEvent(
 	}
 }
 
-// egressEventWork reclaims timed-out pre-open and non-leader closing sessions,
-// then drains the REDIRECT and ERROR queue. Runs on every settled member for
-// any role.
+// egressEventWork reclaims timed-out pre-open sessions, then drains the
+// REDIRECT and ERROR queue. Runs on every settled member for any role.
 //
 // Returns: work units for reclaims and successful event sends.
 func (a *Agent) egressEventWork(nowNs int64) int {
 	return a.reclaimTimedOutSessions(nowNs) + a.drainEgressEvents(nowNs)
 }
 
-// reclaimTimedOutSessions removes timed-out pre-open sessions. On a non-leader
-// the function also removes timed-out closing sessions.
+// reclaimTimedOutSessions removes each pre-open session when
+// nowNs - lastActivityNs >= sessionTimeoutNs. The exact deadline counts, as on
+// the pending and egress-event deadline paths. Runs on any role.
 //
-// Behaviour:
-//   - Pre-open list, any role: remove with resources when
-//     nowNs - lastActivityNs >= sessionTimeoutNs. Exact deadline is included.
-//     Matches pending and egress-event deadline paths.
-//   - sessionClosing on all, non-leader only: remove with resources when
-//     nowNs > lastActivityNs + sessionTimeoutNs. Exact deadline is held.
-//     Matches open idle and sessionCloseWork. Does not append SessionCloseEvent.
-//     A demoted leader cannot append that event; reclaim frees the slot.
-//   - removeSessionWithResources cancels in-flight adds and closes publications.
+// Closing sessions stay. A committed SessionCloseEvent removes one on a
+// non-leader. sessionCloseWork appends the close on a leader.
 func (a *Agent) reclaimTimedOutSessions(nowNs int64) int {
 	work := 0
 	timeout := a.sessionTimeoutNs
@@ -208,21 +200,6 @@ func (a *Agent) reclaimTimedOutSessions(nowNs int64) int {
 	for i := 0; i < len(a.sessions.pending); {
 		s := a.sessions.pending[i]
 		if nowNs-s.lastActivityNs < timeout {
-			i++
-			continue
-		}
-		a.removeSessionWithResources(s)
-		work++
-	}
-	if a.role == RoleLeader || a.sessions.closingCount == 0 {
-		return work
-	}
-	// Closing reclaim uses > timeout so the exact deadline is held. Matches open
-	// idle and sessionCloseWork. Demoted leader cannot append; remove with no
-	// log.
-	for i := 0; i < len(a.sessions.all); {
-		s := a.sessions.all[i]
-		if s.state != sessionClosing || nowNs <= s.lastActivityNs+timeout {
 			i++
 			continue
 		}
@@ -665,6 +642,27 @@ func (a *Agent) removeSessionWithResources(session *clientSession) {
 	if !a.sessions.remove(session.id) {
 		a.sessions.removeOrphan(session)
 	}
+}
+
+// removeSessionWithCloseEvent sends SessionEvent CLOSED with detail when the
+// session holds an egress publication. Best effort. Then removes the session
+// with resources.
+func (a *Agent) removeSessionWithCloseEvent(
+	session *clientSession,
+	leaderMemberID int32,
+	detail []byte,
+) {
+	if session.egressPublication != nil {
+		_ = a.sendSessionEvent(
+			session.egressPublication,
+			session.id,
+			session.correlationID,
+			leaderMemberID,
+			clusterwire.EventCode_CLOSED,
+			detail,
+		)
+	}
+	a.removeSessionWithResources(session)
 }
 
 // releaseSessionEgress cancels an in-flight add and closes the publication.
