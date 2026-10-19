@@ -4,7 +4,6 @@ package consensus
 
 import (
 	"errors"
-	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -714,6 +713,7 @@ func TestHandleClusterAction_rules(t *testing.T) {
 				a.RoleSet(RoleLeader)
 				return consumePos
 			},
+			wantWaits: func(p int64) ([]int64, int64) { return []int64{p}, p },
 		},
 		{
 			name: "follower consumes the pending position again",
@@ -739,6 +739,17 @@ func TestHandleClusterAction_rules(t *testing.T) {
 				require.NoError(t, err)
 				require.True(t, prepared)
 				require.Equal(t, RoleFollower, a.Role())
+				return p
+			},
+		},
+		{
+			name: "leader replays its own retired action",
+			setup: func(t *testing.T, a *Agent) int64 {
+				p := leaderSnapshot(t, a)
+				_, prepared, err := a.PrepareForNewLeadership(0, 1)
+				require.NoError(t, err)
+				require.True(t, prepared)
+				a.RoleSet(RoleLeader)
 				return p
 			},
 		},
@@ -932,40 +943,6 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 				ackAndPop(t, f, 0)
 				f.agent.followerConsensusWork(nowNs)
 				requireMessageRead(t, f)
-			},
-		},
-		{
-			name: "enter election drain stops at the action",
-			run: func(t *testing.T) {
-				f := newHoldingFollower(t)
-				f.agent.SetElectionFactory((&recordingElectionFactory{}).factory())
-
-				require.Equal(t, 1, f.agent.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, nowNs))
-				require.Equal(t, f.actionEnd, f.adapter.Position())
-				require.True(t, f.agent.HasPendingSnapshotAction())
-				require.Equal(t, f.actionEnd, f.agent.ExpectedAckPosition())
-				requireHandlerIdle(t, f.handler)
-			},
-		},
-		{
-			name: "leader election complete drain reads past the action",
-			run: func(t *testing.T) {
-				adapter, image, handler := boundLogAdapterWithHandler(t)
-				_, messageEnd := writeSnapshotActionThenMessage(t, image, 0)
-				commit := new(atomic.Int64)
-				commit.Store(messageEnd)
-				a := NewAgent(AgentConfig{
-					Role:         RoleLeader,
-					Commit:       commit,
-					LogAdapter:   adapter,
-					ServiceCount: 1,
-				})
-
-				a.ElectionComplete(nowNs)
-				require.Equal(t, messageEnd, adapter.Position())
-				require.Equal(t, 1, handler.sessionMessages)
-				require.False(t, a.HasPendingSnapshotAction())
-				require.Equal(t, 0, a.PendingServiceAckWaits())
 			},
 		},
 		{

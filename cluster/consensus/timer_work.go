@@ -26,7 +26,8 @@ func (a *Agent) ScheduledTimerCount() int64 {
 }
 
 // ExpiredTimerCount returns how many correlation ids have a TimerEvent on
-// record with no timer to cancel.
+// record with no timer to cancel. A TimerEvent of the term this member last
+// led adds no count.
 //
 // Concurrency: invoker-only.
 func (a *Agent) ExpiredTimerCount() int {
@@ -36,9 +37,11 @@ func (a *Agent) ExpiredTimerCount() int {
 // handleScheduleTimer schedules the wire correlation id at the wire deadline.
 // Runs on every role and while an election is live.
 //
-// If a TimerEvent for this id already arrived, the timer has fired and the
-// request is ignored. A refused schedule marks timerFailure once and drops
-// the frame. After a refusal no timer remains for the correlation id.
+// A TimerEvent for this id that left a count means the timer fired.
+// handleScheduleTimer then ignores the request. A TimerEvent of the term
+// this member last led leaves no count, so the request schedules. A refused
+// schedule marks timerFailure once and drops the frame. After a refusal no
+// timer remains for the correlation id.
 func (a *Agent) handleScheduleTimer(fields codecs.ScheduleTimerFields) {
 	correlationID := fields.CorrelationID
 	if count := a.expiredTimerCountByCorrelationID[correlationID]; count > 0 {
@@ -63,7 +66,8 @@ func (a *Agent) handleCancelTimer(fields codecs.CancelTimerFields) {
 }
 
 // handleTimerEvent cancels the local timer named by a TimerEvent from the
-// cluster log. The frame ends at logPosition. Runs on every role.
+// cluster log. The frame belongs to leadershipTermID and ends at logPosition.
+// Runs on every role.
 //
 // A frame at or below [Agent.CommitPosition] is ignored: the service may
 // already have read it and scheduled the timer again.
@@ -72,11 +76,21 @@ func (a *Agent) handleCancelTimer(fields codecs.CancelTimerFields) {
 // ScheduleTimer only after it reads the log, so that request can arrive
 // after the TimerEvent for the same timer. handleScheduleTimer then ignores
 // the request.
-func (a *Agent) handleTimerEvent(correlationID, logPosition int64) {
+//
+// A missed cancel adds no count when the frame belongs to the term this
+// member last led. This member appended that frame, and a leader fires only
+// timers its wheel holds. The schedule therefore arrived before the fire. No
+// late request is due.
+func (a *Agent) handleTimerEvent(correlationID, leadershipTermID, logPosition int64) {
 	if logPosition <= a.CommitPosition() {
 		return
 	}
-	if !a.timers.cancel(correlationID) {
+	if a.timers.cancel(correlationID) {
+		return
+	}
+	isOwnTerm := a.lastLedLeadershipTermID != nullValue &&
+		leadershipTermID == a.lastLedLeadershipTermID
+	if !isOwnTerm {
 		a.expiredTimerCountByCorrelationID[correlationID]++
 	}
 }

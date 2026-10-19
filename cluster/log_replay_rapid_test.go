@@ -11,16 +11,17 @@ import (
 
 // progressStep is one observe input drawn for the progression property.
 type progressStep struct {
-	imagePosition int64
-	closedShort   bool
+	adapterPosition int64
+	closedShort     bool
+	held            bool
 }
 
 // replayProgressModel is the pure prefix fold of the observe update rule.
-// expect recomputes position as the running max of image positions, clamped to
-// the bound, and freezes at the first step that ends the replay (bound or
-// closedShort). The fold matches [replayProgress.observe]. Invariant checks
-// pair with the model so a shared formula bug does not hide under model
-// agreement alone.
+// expect recomputes position as the running max of adapter positions,
+// clamped to the bound, and freezes at the first step that ends the replay:
+// the bound while not held, or closedShort below the bound. The fold matches
+// [replayProgress.observe]. Invariant checks pair with the model so a shared
+// formula bug does not hide under model agreement alone.
 type replayProgressModel struct {
 	startPosition int64
 	stopPosition  int64
@@ -34,8 +35,14 @@ func (m *replayProgressModel) expect(steps []progressStep, n int) (int64, bool) 
 		if i > n {
 			break
 		}
-		position = min(max(position, step.imagePosition), m.stopPosition)
-		if position >= m.stopPosition || step.closedShort {
+		position = min(max(position, step.adapterPosition), m.stopPosition)
+		if position >= m.stopPosition {
+			if !step.held {
+				return position, true
+			}
+			continue
+		}
+		if step.closedShort {
 			return position, true
 		}
 	}
@@ -43,7 +50,8 @@ func (m *replayProgressModel) expect(steps []progressStep, n int) (int64, bool) 
 }
 
 // TestReplayProgress_progression_rapid asserts position monotonicity, bound
-// clamp, stickiness, and model agreement for replayProgress.observe.
+// clamp, stickiness, the snapshot hold at the bound, and model agreement for
+// replayProgress.observe.
 func TestReplayProgress_progression_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -64,16 +72,18 @@ func TestReplayProgress_progression_rapid(t *testing.T) {
 			delta := rapid.Int64Range(0, 1<<16).Draw(rt, "delta")
 			overshoot := rapid.Bool().Draw(rt, "overshoot")
 			closedShort := rapid.Bool().Draw(rt, "closedShort")
-			imagePosition := cursor + delta
+			held := rapid.Bool().Draw(rt, "held")
+			adapterPosition := cursor + delta
 			if overshoot {
-				imagePosition = stopPosition + delta
+				adapterPosition = stopPosition + delta
 			}
 			steps[i] = progressStep{
-				imagePosition: imagePosition,
-				closedShort:   closedShort,
+				adapterPosition: adapterPosition,
+				closedShort:     closedShort,
+				held:            held,
 			}
-			if imagePosition > cursor && imagePosition <= stopPosition {
-				cursor = imagePosition
+			if adapterPosition > cursor && adapterPosition <= stopPosition {
+				cursor = adapterPosition
 			}
 		}
 
@@ -91,7 +101,8 @@ func TestReplayProgress_progression_rapid(t *testing.T) {
 		var atDone int64
 		seenDone := false
 		for i, step := range steps {
-			p.observe(step.imagePosition, step.closedShort)
+			wasDone := p.done
+			p.observe(step.adapterPosition, step.closedShort, step.held)
 
 			// 1. Position never goes backwards.
 			require.GreaterOrEqual(rt, p.position, previous)
@@ -112,12 +123,17 @@ func TestReplayProgress_progression_rapid(t *testing.T) {
 				atDone = p.position
 			}
 
-			// 6. Model and code agree at every step.
+			// 6. Done never sets at the bound while held.
+			if !wasDone && step.held && p.position >= stopPosition {
+				require.False(rt, p.done)
+			}
+
+			// 7. Model and code agree at every step.
 			wantPos, wantDone := model.expect(steps, i)
 			require.Equal(rt, wantPos, p.position)
 			require.Equal(rt, wantDone, p.done)
 
-			// 7-8. Empty reason at the bound. Short end sets the short reason.
+			// 8-9. Empty reason at the bound. Short end sets the short reason.
 			if p.position >= stopPosition {
 				require.Empty(rt, p.reason)
 			}

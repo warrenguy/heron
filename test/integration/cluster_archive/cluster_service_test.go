@@ -4,7 +4,6 @@ package cluster_archive_test
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"slices"
 	"testing"
@@ -19,7 +18,6 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/service"
-	"github.com/warrenguy/heron/idlestrategy"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
@@ -111,22 +109,23 @@ func (s *sessionRecorder) holdsClose(sessionID int64) bool {
 	return slices.Contains(s.closes, sessionID)
 }
 
-// holdsOneMessageAfterOpen reports exactly one message for sessionID with
-// payload, recorded after that session's open.
-func (s *sessionRecorder) holdsOneMessageAfterOpen(
-	sessionID int64,
-	payload []byte,
-) bool {
-	if !s.holdsOpen(sessionID) || len(s.messages) != 1 {
+// holdsMessagesAfterOpen reports the session open, then exactly one message
+// per payload in payload order, every message for sessionID.
+func (s *sessionRecorder) holdsMessagesAfterOpen(sessionID int64, payloads ...[]byte) bool {
+	if !s.holdsOpen(sessionID) || len(s.messages) != len(payloads) {
 		return false
 	}
-	msg := s.messages[0]
-	if msg.sessionID != sessionID || !bytes.Equal(msg.payload, payload) {
-		return false
+	for i, msg := range s.messages {
+		if msg.sessionID != sessionID || !bytes.Equal(msg.payload, payloads[i]) {
+			return false
+		}
 	}
-	openIdx := slices.Index(s.order, "open")
-	msgIdx := slices.Index(s.order, "message")
-	return openIdx >= 0 && msgIdx > openIdx
+	want := make([]string, 0, len(payloads)+1)
+	want = append(want, "open")
+	for range payloads {
+		want = append(want, "message")
+	}
+	return slices.Equal(s.order, want)
 }
 
 // serviceMember is one member's recorder, agent, bound-check wrapper, and
@@ -302,6 +301,23 @@ func startServiceCluster(
 	amend func(cluster.Config) cluster.Config,
 ) serviceCluster {
 	t.Helper()
+	return startWrappedServiceCluster(t, portBase, logEndpoint, amend, nil)
+}
+
+// wrapRecorder returns the clustered service a container runs around one
+// session recorder. Nil runs the recorder itself.
+type wrapRecorder func(rec *sessionRecorder) service.ClusteredService
+
+// startWrappedServiceCluster is startServiceCluster with each recorder
+// wrapped by wrap.
+func startWrappedServiceCluster(
+	t *testing.T,
+	portBase int,
+	logEndpoint string,
+	amend func(cluster.Config) cluster.Config,
+	wrap wrapRecorder,
+) serviceCluster {
+	t.Helper()
 
 	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
 		MemberCount:          3,
@@ -313,26 +329,7 @@ func startServiceCluster(
 
 	members := make([]serviceMember, 3)
 	for i := range 3 {
-		rec := &sessionRecorder{}
-		module := set.Module(i)
-		container, err := service.Open(service.Config{
-			Aeron:             module.Client(),
-			Service:           rec,
-			CommittedPosition: module.CommitPosition,
-			Archive:           &archive.Config{},
-		})
-		require.NoError(t, err)
-		harness.CleanupClose(t, fmt.Sprintf("service container %d", i), container.Close)
-
-		agent := container.Agent()
-		checked := &boundCheckedService{agent: agent, module: module}
-		members[i] = serviceMember{
-			rec:       rec,
-			agent:     agent,
-			checked:   checked,
-			container: container,
-		}
-		set.AttachService(t, i, checked)
+		members[i] = openServiceMember(t, set, i, wrap, fmt.Sprintf("service container %d", i))
 	}
 
 	requireAwait(t, set, "log image fan-in", durableImageBound, set.AwaitLogImages)
@@ -398,63 +395,13 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 	}
 	requireNoServiceFailures(t, sc, "")
 
-	transport := startSessionClientTransport(t)
-	result, connectErr := startSessionConnect(
-		t, set, leader, transport, []byte(sessionSmokeCredentials),
-	)
-	require.NoError(t, connectErr)
-	session, err := client.NewAeronCluster(result)
-	require.NoError(t, err)
-	harness.CleanupClose(t, "session", session.Close)
+	transport, session := connectServiceSession(t, sc, leader)
 	require.GreaterOrEqual(t, session.ClusterSessionID(), int64(0))
 	wantSession := session.ClusterSessionID()
-
-	requireServiceAwaitTick(
-		t, sc,
-		"session open committed",
-		durableWorkBound,
-		sessionPump(transport, session, func() bool {
-			if leader.Agent().OpenSessionCount() != 1 {
-				return false
-			}
-			for _, mem := range sc.members {
-				if !mem.rec.holdsOpen(wantSession) {
-					return false
-				}
-			}
-			return true
-		}),
-	)
+	require.Equal(t, 1, leader.Agent().OpenSessionCount(), sc.dump())
 
 	payload := []byte(serviceMessagePayload)
-	offerCtx, cancelOffer := context.WithTimeout(t.Context(), durableWorkBound)
-	defer cancelOffer()
-	lastKeepalive := time.Now()
-	pos, offerErr := session.IngressOfferUntilPositive(
-		offerCtx,
-		client.IngressOfferConfig{
-			IdleStrategy: idlestrategy.NewSleeping(aeron.DefaultIdleSleepDuration),
-		},
-		func() int64 {
-			set.Tick()
-			now := time.Now()
-			if now.Sub(lastKeepalive) >= time.Second {
-				_ = session.SendKeepAlive()
-				lastKeepalive = now
-			}
-			return session.Offer(payload)
-		},
-	)
-	if offerErr != nil {
-		require.FailNow(
-			t,
-			"session offer failed",
-			"err=%v:\n%s",
-			offerErr,
-			sc.dump(),
-		)
-	}
-	require.Positive(t, pos)
+	offerServiceMessage(t, sc, session, payload)
 
 	requireServiceAwaitTick(
 		t, sc,
@@ -462,7 +409,7 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 		durableWorkBound,
 		sessionPump(transport, session, func() bool {
 			for _, mem := range sc.members {
-				if !mem.rec.holdsOneMessageAfterOpen(wantSession, payload) {
+				if !mem.rec.holdsMessagesAfterOpen(wantSession, payload) {
 					return false
 				}
 			}
@@ -572,4 +519,284 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 		require.True(t, archiveClient.IsClosed(), "member %d", i)
 		require.Nil(t, mem.container.ArchiveClient(), "member %d", i)
 	}
+}
+
+const serviceSecondPayload = "service-second-message"
+
+// connectServiceSession connects one session to leader and awaits its open on
+// every attached service.
+func connectServiceSession(
+	t *testing.T,
+	sc serviceCluster,
+	leader *cluster.ConsensusModule,
+) (*aeron.Client, *client.AeronCluster) {
+	t.Helper()
+
+	transport, session := openSession(t, sc.set, leader)
+	sessionID := session.ClusterSessionID()
+
+	requireServiceAwaitTick(
+		t, sc,
+		"session open committed",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			for _, mem := range sc.members {
+				if !mem.rec.holdsOpen(sessionID) {
+					return false
+				}
+			}
+			return true
+		}),
+	)
+	return transport, session
+}
+
+// offerServiceMessage offers payload on session until the ingress accepts it.
+func offerServiceMessage(
+	t *testing.T,
+	sc serviceCluster,
+	session *client.AeronCluster,
+	payload []byte,
+) {
+	t.Helper()
+
+	offerTransferSessionMessage(t, sc.set, &transferPump{session: session}, payload, sc.dump)
+}
+
+// openServiceMember opens one session recorder container on the client of the
+// module at index, wrapped by wrap. It attaches the container to the set.
+func openServiceMember(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	index int,
+	wrap wrapRecorder,
+	label string,
+) serviceMember {
+	t.Helper()
+
+	rec := &sessionRecorder{}
+	var app service.ClusteredService = rec
+	if wrap != nil {
+		app = wrap(rec)
+	}
+	module := set.Module(index)
+	container, err := service.Open(service.Config{
+		Aeron:             module.Client(),
+		Service:           app,
+		CommittedPosition: module.CommitPosition,
+		Archive:           &archive.Config{},
+	})
+	require.NoError(t, err)
+	harness.CleanupClose(t, label, container.Close)
+
+	agent := container.Agent()
+	checked := &boundCheckedService{agent: agent, module: module}
+	set.AttachService(t, index, checked)
+	return serviceMember{
+		rec:       rec,
+		agent:     agent,
+		checked:   checked,
+		container: container,
+	}
+}
+
+// restartServiceMember stops the member at index and closes its service
+// container. It restarts the member, then opens and attaches a fresh session
+// recorder container, wrapped by wrap, on the new module's client.
+func restartServiceMember(t *testing.T, sc serviceCluster, index int, wrap wrapRecorder) {
+	t.Helper()
+
+	require.NoError(t, sc.set.StopMember(index))
+	closeServiceTransferContainer(t, sc, index)
+	require.NoError(t, sc.set.RestartMember(index))
+	requireWarmRestartOpen(t, sc.set, index, "restarted member")
+	sc.members[index] = openServiceMember(
+		t, sc.set, index, wrap, fmt.Sprintf("restarted service container %d", index),
+	)
+}
+
+// TestClusterService_restartedMemberServiceConsumes asserts a fresh service
+// container on a restarted follower replays the committed log, then consumes
+// a live message.
+func TestClusterService_restartedMemberServiceConsumes(t *testing.T) {
+	t.Parallel()
+
+	sc := startServiceCluster(
+		t,
+		harness.ClusterServiceRestartPortBase,
+		harness.ClusterServiceRestartLogEndpoint,
+		amendServiceMember,
+	)
+	set := sc.set
+	leader := requireSingleLeader(t, set, "")
+	requireServicesJoined(t, sc)
+
+	transport, session := connectServiceSession(t, sc, leader)
+	sessionID := session.ClusterSessionID()
+	first := []byte(serviceMessagePayload)
+	offerServiceMessage(t, sc, session, first)
+	requireServiceAwaitTick(
+		t, sc,
+		"first message delivered",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			for _, mem := range sc.members {
+				if !mem.rec.holdsMessagesAfterOpen(sessionID, first) {
+					return false
+				}
+			}
+			return true
+		}),
+	)
+
+	followerIndex := firstNonLeaderIndex(set, leader.ThisMemberID())
+	require.GreaterOrEqual(t, followerIndex, 0, "no follower slot:\n%s", sc.dump())
+	restartServiceMember(t, sc, followerIndex, nil)
+	requireServiceAwaitTick(
+		t, sc,
+		"restarted member election",
+		durableElectBound,
+		sessionPump(transport, session, func() bool {
+			requireNoServiceFailure(t, sc, followerIndex, " during restart")
+			return set.Module(followerIndex).ElectionComplete()
+		}),
+	)
+
+	second := []byte(serviceSecondPayload)
+	offerServiceMessage(t, sc, session, second)
+	restarted := set.Module(followerIndex)
+	requireServiceAwaitTick(
+		t, sc,
+		"restarted service consumes",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			requireNoServiceFailure(t, sc, followerIndex, " during restart")
+			rec := sc.members[followerIndex].rec
+			return rec.holdsMessagesAfterOpen(sessionID, first, second) &&
+				restarted.Agent().PendingServiceAckWaits() == 0
+		}),
+	)
+	requireNoServiceFailure(t, sc, followerIndex, " after restart")
+	require.NoError(t, sc.members[followerIndex].checked.violation, sc.dump())
+}
+
+const (
+	rebuildNearTimerID int64 = 1
+	rebuildFarTimerID  int64 = 2
+	rebuildNearDelay         = int64(100 * time.Millisecond)
+	rebuildFarDelay          = int64(time.Hour)
+)
+
+// timerScheduler wraps a session recorder. On its first session message it
+// schedules a near timer and a far timer from the message timestamp. It
+// stores each TimerEvent id. Invoker-only.
+type timerScheduler struct {
+	*sessionRecorder
+
+	cluster          service.Cluster
+	scheduled        bool
+	scheduleFailures int
+	timerEvents      []int64
+}
+
+func (s *timerScheduler) Start(c service.Cluster) error {
+	s.cluster = c
+	return s.sessionRecorder.Start(c)
+}
+
+func (s *timerScheduler) SessionMessage(sessionID, timestamp int64, payload []byte) {
+	s.sessionRecorder.SessionMessage(sessionID, timestamp, payload)
+	if s.scheduled {
+		return
+	}
+	s.scheduled = true
+	if !s.cluster.ScheduleTimer(rebuildNearTimerID, timestamp+rebuildNearDelay) {
+		s.scheduleFailures++
+	}
+	if !s.cluster.ScheduleTimer(rebuildFarTimerID, timestamp+rebuildFarDelay) {
+		s.scheduleFailures++
+	}
+}
+
+func (s *timerScheduler) TimerEvent(correlationID, _ int64) {
+	s.timerEvents = append(s.timerEvents, correlationID)
+}
+
+// TestClusterService_restartRebuildsModuleState asserts a restarted follower
+// rebuilds its module sessions and timers from the replayed log.
+func TestClusterService_restartRebuildsModuleState(t *testing.T) {
+	t.Parallel()
+
+	schedulers := make(map[*sessionRecorder]*timerScheduler)
+	wrap := func(rec *sessionRecorder) service.ClusteredService {
+		s := &timerScheduler{sessionRecorder: rec}
+		schedulers[rec] = s
+		return s
+	}
+	sc := startWrappedServiceCluster(
+		t,
+		harness.ClusterServiceRebuildPortBase,
+		harness.ClusterServiceRebuildLogEndpoint,
+		amendServiceMember,
+		wrap,
+	)
+	set := sc.set
+	leader := requireSingleLeader(t, set, "")
+	requireServicesJoined(t, sc)
+
+	transport, session := connectServiceSession(t, sc, leader)
+	offerServiceMessage(t, sc, session, []byte(serviceMessagePayload))
+
+	// Every service reads the near TimerEvent, so every member committed it.
+	requireServiceAwaitTick(
+		t, sc,
+		"near timer fired",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			for _, mem := range sc.members {
+				s := schedulers[mem.rec]
+				if !slices.Contains(s.timerEvents, rebuildNearTimerID) {
+					return false
+				}
+			}
+			return leader.Agent().ScheduledTimerCount() == 1
+		}),
+	)
+	for _, mem := range sc.members {
+		require.Zero(t, schedulers[mem.rec].scheduleFailures, sc.dump())
+	}
+
+	followerIndex := firstNonLeaderIndex(set, leader.ThisMemberID())
+	require.GreaterOrEqual(t, followerIndex, 0, "no follower slot:\n%s", sc.dump())
+	restartServiceMember(t, sc, followerIndex, wrap)
+	restarted := set.Module(followerIndex)
+
+	// Phase 1: the election replay learns the session.
+	requireServiceAwaitTick(
+		t, sc,
+		"restarted member election",
+		durableElectBound,
+		sessionPump(transport, session, restarted.ElectionComplete),
+	)
+	require.Equal(t, 1, restarted.Agent().OpenSessionCount(), sc.dump())
+
+	// Phase 2: the restarted service schedules both timers again. The replayed
+	// near TimerEvent leaves only the far timer.
+	target := leader.CommitPosition()
+	requireServiceAwaitTick(
+		t, sc,
+		"restarted service at leader commit",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			requireNoServiceFailure(t, sc, followerIndex, " during restart")
+			return sc.members[followerIndex].agent.LogPosition() >= target
+		}),
+	)
+	for range 3 {
+		set.Tick()
+	}
+	require.Zero(t, schedulers[sc.members[followerIndex].rec].scheduleFailures, sc.dump())
+	require.Equal(t, int64(1), restarted.Agent().ScheduledTimerCount(), sc.dump())
+	require.Zero(t, restarted.Agent().ExpiredTimerCount(), sc.dump())
+	requireNoServiceFailure(t, sc, followerIndex, " after restart")
 }

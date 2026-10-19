@@ -283,7 +283,9 @@ type Agent struct {
 	// (AppendPosition interval path still runs). Nil also skips the closed
 	// log image check.
 	//
-	// CatchupPoll uses the same adapter when an Image is bound.
+	// CatchupPoll uses the same adapter when an Image is bound. Election
+	// replay binds and polls the same adapter through BindReplayLog and
+	// ReplayLogPoll. A settled leader holds no Image after JoinLogAsLeader.
 	logAdapter *LogAdapter
 
 	// logPollNowNs is the duty-cycle clock for the current log adapter poll.
@@ -420,7 +422,7 @@ type Agent struct {
 
 	// abandonedSnapshotWaits holds snapshot waits retired by
 	// PrepareForNewLeadership, in retire order. Never cleared.
-	// isAbandonedSnapshotAck owns the drop rule for acks at these positions.
+	// dropAbandonedSnapshotAck owns the drop rule for acks at these positions.
 	abandonedSnapshotWaits []abandonedSnapshotWait
 
 	// abandonedSnapshotAckIDs stores dropped ServiceAck ids at retired snapshot
@@ -444,9 +446,15 @@ type Agent struct {
 	timers *timerService
 
 	// expiredTimerCountByCorrelationID counts committed TimerEvents that found
-	// no timer to cancel, per correlation id. handleScheduleTimer consumes one
+	// no timer to cancel, per correlation id. A TimerEvent of the term in
+	// lastLedLeadershipTermID adds no count. handleScheduleTimer consumes one
 	// count per request and deletes the entry at zero. Never reset.
 	expiredTimerCountByCorrelationID map[int64]int64
+
+	// lastLedLeadershipTermID is the last leadership term this member joined
+	// as leader, or nullValue. JoinLogAsLeader sets it. handleTimerEvent
+	// reads it.
+	lastLedLeadershipTermID int64
 
 	// timerExpiryHandler is handleTimerExpiry cached once at construction so
 	// timerWork does not allocate a method value each duty cycle.
@@ -642,6 +650,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		timers:                    newTimerService(),
 
 		expiredTimerCountByCorrelationID: make(map[int64]int64),
+		lastLedLeadershipTermID:          nullValue,
 	}
 	a.sessionAuthProxy.agent = a
 	a.ingressHandler = a.handleIngressFragment
@@ -1343,13 +1352,14 @@ func (a *Agent) OnCatchupPosition(fields codecs.CatchupPositionFields) {
 // Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
 func (a *Agent) SetLogPublisher(p *LogPublisher) { a.logPublisher = p }
 
-// SetLogAdapter wires or clears the [LogAdapter] used for follower log poll.
+// SetLogAdapter wires or clears the [LogAdapter] used for follower log poll,
+// catchup and election replay.
 //
 // Behaviour:
 //   - A non-nil adapter receives this agent as its session event sink, its
 //     timer event sink and its cluster action sink. Committed
 //     SessionOpenEvent and SessionCloseEvent frames then update the registry.
-//     Committed TimerEvent frames cancel or count their timer. Committed
+//     TimerEvent frames go to [Agent.handleTimerEvent]. Committed
 //     ClusterActionRequest frames may queue a snapshot wait.
 //   - A nil adapter clears the field only. The previous adapter keeps every
 //     sink.
@@ -1681,7 +1691,10 @@ func (a *Agent) SetLogPublicationReseed(f LogPublicationReseed) {
 // append target (leaderMemberID to nullMemberID), and starts the LOCAL cluster
 // log recording when a control is wired.
 //
-// Role and term fields write before the recording start.
+// Role and term fields write before the recording start. The join stores
+// leadershipTermID as the last led term. The join also unbinds the log
+// adapter image, so a later election replay never reads a follower image of
+// an earlier term. The image stays open.
 //
 // With a [LogPublicationReseed] wired and a known recording id, the recording
 // start requires the publication at logPosition under logSessionID.
@@ -1715,8 +1728,12 @@ func (a *Agent) JoinLogAsLeader(
 ) error {
 	a.RoleSet(RoleLeader)
 	a.leadershipTermID = leadershipTermID
+	a.lastLedLeadershipTermID = leadershipTermID
 	a.SetLeaderMemberID(nullMemberID)
 	a.termBaseLogPosition = logPosition
+	if a.logAdapter != nil {
+		a.logAdapter.SetImage(nil)
+	}
 
 	sessionID, err := a.startLeaderLogRecording(logPosition, logSessionID)
 	if err != nil {
@@ -1947,8 +1964,8 @@ func (a *Agent) adoptLogRecording(
 // Behaviour:
 //   - leader: stamps nowNs minus one heartbeat interval so the first steady
 //     tick publishes a commit heartbeat. Stamps the timer wheel current time
-//     to nowNs. Winding expires nothing. Drains the log and rebinds
-//     open-session egress
+//     to nowNs. Winding expires nothing. Rebinds open-session egress. Reads
+//     no log
 //   - any other role: stamps nowNs so the quiet-tick trigger waits one full
 //     leader heartbeat timeout. Does not touch session state
 //   - without a write to timeOfLastLogUpdateNs the field stays 0. A duty
@@ -1962,8 +1979,6 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 	if a.role == RoleLeader {
 		a.timeOfLastLogUpdateNs = nowNs - a.leaderHeartbeatIntervalNs
 		a.timers.currentTime(nowNs)
-		a.logPollNowNs = nowNs
-		a.drainLogBacklog(a.CommitPosition())
 		a.rebindOpenSessions(nowNs)
 		return
 	}
@@ -2003,7 +2018,7 @@ func (a *Agent) DoWork(nowNs int64) int {
 		work += a.pollConsensusIngress(nowNs)
 	}
 	noteDoWorkStep("logStopTick")
-	work += a.logStopTick(nowNs)
+	work += a.logStopTick()
 	noteDoWorkStep("pollClientIngress")
 	work += a.pollClientIngress(nowNs)
 	noteDoWorkStep("pollServiceControl")
@@ -2129,7 +2144,7 @@ func (a *Agent) handleSteadyConsensusFragment(buf []byte, offset int, nowNs int6
 		}
 	case clusterwire.RequestVoteSbeTemplateID:
 		if fields, ok := codecs.TryDecodeRequestVoteAt(buf, offset); ok {
-			a.handleSteadyRequestVote(fields, nowNs)
+			a.handleSteadyRequestVote(fields)
 		}
 	}
 }
@@ -2142,9 +2157,9 @@ func (a *Agent) handleSteadyConsensusFragment(buf []byte, offset int, nowNs int6
 // nominates at a higher term. This member answers from CANVASS or later.
 //
 // Concurrency: invoker-only; see [Agent].
-func (a *Agent) handleSteadyRequestVote(fields codecs.RequestVoteFields, nowNs int64) {
+func (a *Agent) handleSteadyRequestVote(fields codecs.RequestVoteFields) {
 	if fields.CandidateTermID > a.leadershipTermID {
-		a.enterElection(ElectionTriggerVoteRequest, false, nowNs)
+		a.enterElection(ElectionTriggerVoteRequest, false)
 	}
 }
 
@@ -2315,7 +2330,7 @@ func (a *Agent) applySteadyLeaderCommitNotify(
 // Concurrency: invoker-only.
 func (a *Agent) handleUnexpectedHigherTerm(nowNs, term int64) {
 	noteUnexpectedHigherTerm(nowNs, term)
-	a.enterElection(ElectionTriggerHigherTerm, false, nowNs)
+	a.enterElection(ElectionTriggerHigherTerm, false)
 }
 
 func (a *Agent) consensusWork(nowNs int64) int {

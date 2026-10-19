@@ -208,9 +208,9 @@ func (a *Agent) appendPositionForSeed() (int64, bool) {
 //   - reads the append seed while the current role still applies
 //   - refuses when the factory returns nil. Role and pendingJoinLog stay
 //     unchanged
-//   - after a non-nil runner returns: drains the log adapter under
-//     followerLogPollBound, lowered by holdLogPollBound, clears
-//     pendingJoinLog, sets role to follower, then installs
+//   - after a non-nil runner returns: clears pendingJoinLog and the replay
+//     join tracking, sets role to follower, then installs
+//   - reads no log
 //   - isLogEndOfStream seeds GracefulClosedLeaderID from leaderMemberID,
 //     else the null member id. A leader holds the null id, so a leader
 //     install seeds the null id
@@ -220,11 +220,7 @@ func (a *Agent) appendPositionForSeed() (int64, bool) {
 // position. After RoleFollower, the follower image path returns 0.
 //
 // Returns: 1 when a runner was installed, else 0.
-func (a *Agent) enterElection(
-	trigger ElectionTrigger,
-	isLogEndOfStream bool,
-	nowNs int64,
-) int {
+func (a *Agent) enterElection(trigger ElectionTrigger, isLogEndOfStream bool) int {
 	if a.election != nil || a.electionFactory == nil {
 		return 0
 	}
@@ -245,10 +241,6 @@ func (a *Agent) enterElection(
 	if runner == nil {
 		return 0
 	}
-	// Drain committed frames before the runner can unbind the image. The drain
-	// stops at a pending snapshot wait or a pending JoinLog publish.
-	a.logPollNowNs = nowNs
-	a.drainLogBacklog(a.followerLogPollBound(position))
 	// Clear a superseded unpublished JoinLog and the replay join tracking at
 	// settled re-entry before the new election runs. Clear at install. Does
 	// not wait for election Init. PrepareForNewLeadership still clears on
@@ -311,7 +303,7 @@ func (a *Agent) activeQuorumTick(nowNs int64) int {
 	if a.positions.HasActiveQuorum(nowNs, a.leaderHeartbeatTimeoutNs) {
 		return 0
 	}
-	return a.enterElection(ElectionTriggerInactiveFollowerQuorum, false, nowNs)
+	return a.enterElection(ElectionTriggerInactiveFollowerQuorum, false)
 }
 
 // leaderWentQuietTick re-enters election when a non-leader's settled
@@ -326,7 +318,7 @@ func (a *Agent) leaderWentQuietTick(nowNs int64) int {
 	if nowNs < a.timeOfLastLogUpdateNs+a.leaderHeartbeatTimeoutNs {
 		return 0
 	}
-	return a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, nowNs)
+	return a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false)
 }
 
 // logStopTick re-enters an election when the log recording stopped or a
@@ -341,18 +333,18 @@ func (a *Agent) leaderWentQuietTick(nowNs int64) int {
 //     the image end-of-stream position, or the image reached it
 //
 // Returns: 1 when a runner was installed, else 0.
-func (a *Agent) logStopTick(nowNs int64) int {
+func (a *Agent) logStopTick() int {
 	stopPosition, stopped := a.consumeLogRecordingStop()
 	if a.election != nil {
 		return 0
 	}
 	if stopped {
 		isLogEndOfStream := a.logAdapter.IsLogEndOfStreamAt(stopPosition)
-		return a.enterElection(ElectionTriggerLogRecordingStopped, isLogEndOfStream, nowNs)
+		return a.enterElection(ElectionTriggerLogRecordingStopped, isLogEndOfStream)
 	}
 	if a.isFollowerLogImageClosed() {
 		isLogEndOfStream := a.logAdapter.IsLogEndOfStream()
-		return a.enterElection(ElectionTriggerLogImageClosed, isLogEndOfStream, nowNs)
+		return a.enterElection(ElectionTriggerLogImageClosed, isLogEndOfStream)
 	}
 	return 0
 }
@@ -369,8 +361,9 @@ func (a *Agent) consumeLogRecordingStop() (stopPosition int64, stopped bool) {
 // isFollowerLogImageClosed reports a non-leader whose log adapter holds a
 // closed image or no image. A nil adapter reports false.
 //
-// A leader may still hold the follower image of an earlier term, so the role
-// check comes first.
+// After [Agent.JoinLogAsLeader] a settled leader holds no image. During an
+// election a member with the leader role may still hold the follower or replay
+// image. The role check comes first, so a leader never reports true.
 func (a *Agent) isFollowerLogImageClosed() bool {
 	return a.role != RoleLeader && a.logAdapter != nil && a.logAdapter.IsImageClosed()
 }

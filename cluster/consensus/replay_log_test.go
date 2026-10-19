@@ -479,3 +479,22 @@ func TestReplayLogPoll(t *testing.T) {
 		})
 	}
 }
+
+func TestJoinLogAsLeader_unbindsLogImage(t *testing.T) {
+	t.Parallel()
+
+	const leadershipTermID int64 = 6
+	adapter, image := boundLogAdapter(t)
+	messageEnd := writeSessionMessageFrame(t, image, 0, 9)
+	a := newFollowerLogPollAgent(messageEnd, adapter)
+	a.notifiedCommitPosition = messageEnd
+	a.followerConsensusWork(0)
+	require.Equal(t, messageEnd, adapter.Position())
+
+	require.NoError(t, a.JoinLogAsLeader(leadershipTermID, messageEnd, 0, false))
+	require.Nil(t, adapter.Image())
+	require.False(t, image.IsClosed())
+	require.Equal(t, messageEnd, adapter.Position())
+	require.Equal(t, leadershipTermID, a.lastLedLeadershipTermID)
+	require.False(t, a.isFollowerLogImageClosed())
+}

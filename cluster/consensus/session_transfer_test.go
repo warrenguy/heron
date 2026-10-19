@@ -368,12 +368,11 @@ func TestElectionComplete_followerTouchesNoSessionState(t *testing.T) {
 	require.Equal(t, sessionOpen, s.state)
 }
 
-func TestElectionComplete_leaderDrainsThenRebinds(t *testing.T) {
+func TestElectionComplete_leaderReadsNoLog(t *testing.T) {
 	fields := sampleLearnOpenFields(12)
 	adapter, span := writeSessionOpenFrame(t, fields)
 	commit := new(atomic.Int64)
 	commit.Store(span + 32)
-	adder := neverReadyEgressAdder()
 	a := NewAgent(AgentConfig{
 		Role:             RoleLeader,
 		Commit:           commit,
@@ -381,22 +380,14 @@ func TestElectionComplete_leaderDrainsThenRebinds(t *testing.T) {
 		LeadershipTermID: 7,
 	})
 	a.SetLogAdapter(adapter)
-	a.SetEgressPublicationAdder(adder)
+	a.SetEgressPublicationAdder(neverReadyEgressAdder())
 
-	const nowNs int64 = 777
-	a.ElectionComplete(nowNs)
-
-	s, ok := a.sessions.sessionByID(fields.ClusterSessionID)
-	require.True(t, ok)
-	require.Equal(t, sessionOpen, s.state)
-	require.True(t, s.newLeaderEventPending)
-	require.Equal(t, nowNs, s.lastActivityNs)
-	require.Equal(t, span, s.openedLogPosition)
-	require.Equal(t, int64(13), a.sessions.nextSessionID)
-	require.NotEqual(t, int64(nullValue), s.egressAddCorrelationID)
+	a.ElectionComplete(777)
+	require.Equal(t, int64(0), adapter.Position())
+	require.Equal(t, 0, a.OpenSessionCount())
 }
 
-func TestEnterElection_drainsCommittedSessionFrames(t *testing.T) {
+func TestEnterElection_readsNoLog(t *testing.T) {
 	fields := sampleLearnOpenFields(9)
 	adapter, span := writeSessionOpenFrame(t, fields)
 	appendV := new(atomic.Int64)
@@ -410,180 +401,11 @@ func TestEnterElection_drainsCommittedSessionFrames(t *testing.T) {
 	a.notifiedCommitPosition = span + 32
 	a.SetElectionFactory(fac.factory())
 
-	const nowNs int64 = 555
-	require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, nowNs))
-	s := requireLearnedOpen(t, a, fields, nowNs, span)
-	require.False(t, s.newLeaderEventPending)
-	require.Equal(t, int64(10), a.sessions.nextSessionID)
+	require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false))
 	require.NotNil(t, a.Election())
-}
-
-// writeSessionOpenFramesAcrossTermEnd writes first at offset 0 of the initial
-// term, a PAD frame to the term end, and second at offset 0 of the next term.
-// Returns the adapter and the end position of each event. Does not poll.
-func writeSessionOpenFramesAcrossTermEnd(
-	tb testing.TB,
-	first codecs.SessionOpenEventFields,
-	second codecs.SessionOpenEventFields,
-) (
-	adapter *LogAdapter,
-	firstEnd, secondEnd int64,
-) {
-	tb.Helper()
-	adapter, image := boundLogAdapter(tb)
-	firstPayload := encodeLogAdapterSessionOpenPayload(tb, first)
-	firstLength := logbuffer.AlignFragmentChunkLength(len(firstPayload))
-	writeLogAdapterUnfragmentedFrame(tb, image, 0, firstPayload)
-
-	term := aeron.ImageTermBufferForHooks(image)
-	termLength := term.Capacity()
-	aeron.WriteCommittedPaddingFrameForHooks(
-		term,
-		firstLength,
-		logAdapterHookTermID,
-		int32(firstLength),
-		int32(termLength-firstLength),
-	)
-
-	secondPayload := encodeLogAdapterSessionOpenPayload(tb, second)
-	secondLength := logbuffer.AlignFragmentChunkLength(len(secondPayload))
-	aeron.WriteCommittedDataFrameForHooks(
-		aeron.ImageTermBufferAtForHooks(image, 1),
-		0,
-		image.SessionID(),
-		image.StreamID(),
-		logAdapterHookTermID+1,
-		0,
-		logbuffer.Unfragmented,
-		secondPayload,
-	)
-	return adapter, int64(firstLength), int64(termLength + secondLength)
-}
-
-// requireOpenSessionAt asserts session id is open. Its openedLogPosition must
-// equal logPos. Returns the session.
-func requireOpenSessionAt(t *testing.T, a *Agent, id, logPos int64) *clientSession {
-	t.Helper()
-	s, ok := a.sessions.sessionByID(id)
-	require.True(t, ok)
-	require.Equal(t, sessionOpen, s.state)
-	require.Equal(t, logPos, s.openedLogPosition)
-	return s
-}
-
-func TestElectionComplete_leaderDrainsPastTermEndPadding(t *testing.T) {
-	adapter, firstEnd, secondEnd := writeSessionOpenFramesAcrossTermEnd(
-		t,
-		sampleLearnOpenFields(11),
-		sampleLearnOpenFields(12),
-	)
-	commit := new(atomic.Int64)
-	a := NewAgent(AgentConfig{
-		Role:             RoleLeader,
-		Commit:           commit,
-		ThisMemberID:     1,
-		LeadershipTermID: 7,
-	})
-	a.SetLogAdapter(adapter)
-	a.SetEgressPublicationAdder(neverReadyEgressAdder())
-
-	// Setup: drain to firstEnd so the position sits on the PAD frame.
-	a.logPollNowNs = 1
-	a.drainLogBacklog(firstEnd)
-	require.Equal(t, firstEnd, adapter.Position())
-	requireOpenSessionAt(t, a, 11, firstEnd)
-
-	// Drain: the PAD skip delivers no fragment. The drain must still reach
-	// secondEnd.
-	commit.Store(secondEnd)
-	const nowNs int64 = 777
-	a.ElectionComplete(nowNs)
-
-	require.Equal(t, secondEnd, adapter.Position())
-	s := requireOpenSessionAt(t, a, 12, secondEnd)
-	require.True(t, s.newLeaderEventPending)
-	require.Equal(t, nowNs, s.lastActivityNs)
-	require.NotEqual(t, int64(nullValue), s.egressAddCorrelationID)
-	require.Equal(t, int64(13), a.sessions.nextSessionID)
-}
-
-func TestEnterElection_drainsPastTermEndPadding(t *testing.T) {
-	adapter, firstEnd, secondEnd := writeSessionOpenFramesAcrossTermEnd(
-		t,
-		sampleLearnOpenFields(11),
-		sampleLearnOpenFields(12),
-	)
-	appendV := new(atomic.Int64)
-	appendV.Store(secondEnd + 100)
-	fac := &recordingElectionFactory{}
-	a := NewAgent(AgentConfig{
-		Role:         RoleFollower,
-		AppendSource: &AtomicAppendPosition{V: appendV},
-	})
-	a.SetLogAdapter(adapter)
-	a.SetElectionFactory(fac.factory())
-
-	// Setup: drain to firstEnd so the position sits on the PAD frame.
-	a.logPollNowNs = 1
-	a.drainLogBacklog(firstEnd)
-	require.Equal(t, firstEnd, adapter.Position())
-	requireOpenSessionAt(t, a, 11, firstEnd)
-
-	// Drain: the PAD skip delivers no fragment. The drain must still reach
-	// secondEnd.
-	a.notifiedCommitPosition = secondEnd
-	const nowNs int64 = 555
-	require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, nowNs))
-
-	require.Equal(t, secondEnd, adapter.Position())
-	s := requireOpenSessionAt(t, a, 12, secondEnd)
-	require.Equal(t, nowNs, s.lastActivityNs)
-	require.False(t, s.newLeaderEventPending)
-	require.Equal(t, int64(13), a.sessions.nextSessionID)
-	require.NotNil(t, a.Election())
-}
-
-func TestEnterElection_factoryNilDoesNotDrain(t *testing.T) {
-	fields := sampleLearnOpenFields(2)
-	adapter, span := writeSessionOpenFrame(t, fields)
-	appendV := new(atomic.Int64)
-	appendV.Store(span + 100)
-	fac := &recordingElectionFactory{returnNil: true}
-	a := NewAgent(AgentConfig{
-		Role:         RoleFollower,
-		AppendSource: &AtomicAppendPosition{V: appendV},
-	})
-	a.SetLogAdapter(adapter)
-	a.notifiedCommitPosition = span + 32
-	a.SetElectionFactory(fac.factory())
-
-	require.Zero(t, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false, 1))
-	require.Equal(t, 0, a.OpenSessionCount())
 	require.Equal(t, int64(0), adapter.Position())
-}
-
-func TestDrainLogBacklog_nilAndUnbound(t *testing.T) {
-	a := NewAgent(AgentConfig{Role: RoleLeader})
-	require.NotPanics(t, func() { a.drainLogBacklog(100) })
 	require.Equal(t, 0, a.OpenSessionCount())
-
-	a.SetLogAdapter(NewLogAdapter(0))
-	require.NotPanics(t, func() { a.drainLogBacklog(100) })
-	require.Equal(t, 0, a.OpenSessionCount())
-}
-
-func TestDrainLogBacklog_closedImageEndsDrain(t *testing.T) {
-	fields := sampleLearnOpenFields(5)
-	adapter, span := writeSessionOpenFrame(t, fields)
-	a := NewAgent(AgentConfig{Role: RoleLeader})
-	a.SetLogAdapter(adapter)
-	aeron.ImageInternalCloseForHooks(adapter.Image())
-	before := adapter.Position()
-
-	a.logPollNowNs = 1
-	require.NotPanics(t, func() { a.drainLogBacklog(span + 32) })
-	require.Equal(t, before, adapter.Position())
-	require.Equal(t, 0, a.OpenSessionCount())
+	require.Equal(t, int64(0), a.CommitPosition())
 }
 
 func TestNewLeaderEventWork_addInFlightHolds(t *testing.T) {
