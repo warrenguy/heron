@@ -4,6 +4,7 @@ package consensus
 
 import (
 	"errors"
+	"math"
 	"sync/atomic"
 	"testing"
 
@@ -320,6 +321,8 @@ type fakeCatchupControl struct {
 	ensureCalls int
 	removeCalls int
 	stopCalls   int
+	reseedCalls int
+	reseedErr   error
 
 	starts      []catchupReplayStart
 	singleStops []int64
@@ -342,6 +345,11 @@ func (c *fakeCatchupControl) RemoveCatchupLogDestination() error {
 
 func (c *fakeCatchupControl) AddLiveLogDestination() error {
 	return nil
+}
+
+func (c *fakeCatchupControl) ReseedLogSubscription() error {
+	c.reseedCalls++
+	return c.reseedErr
 }
 
 func (c *fakeCatchupControl) StartCatchupReplay(
@@ -851,4 +859,185 @@ func TestPrepareForNewLeadership_tearsDownCatchup(t *testing.T) {
 	a.OnCatchupPosition(fields)
 	require.Len(t, control.starts, 2)
 	require.Len(t, a.catchupReplays, 1)
+}
+
+// newReseedAgent builds a follower with adapter, a stub join source and
+// control. A nil control leaves the agent without one.
+func newReseedAgent(
+	adapter *LogAdapter,
+	control *fakeCatchupControl,
+) (*Agent, *stubLogJoinSource) {
+	a := NewAgent(AgentConfig{
+		Commit:     new(atomic.Int64),
+		LogAdapter: adapter,
+	})
+	if control != nil {
+		a.SetCatchupControl(control)
+	}
+	source := &stubLogJoinSource{}
+	a.SetLogJoinSource(source)
+	return a, source
+}
+
+// requirePrepared runs one PrepareForNewLeadership call and requires it to
+// report prepared.
+func requirePrepared(t *testing.T, a *Agent) {
+	t.Helper()
+	_, prepared, err := a.PrepareForNewLeadership(0, 0)
+	require.NoError(t, err)
+	require.True(t, prepared)
+}
+
+// Asserts prepare replaces the log subscription when the adapter holds no open
+// image or the last follower join query missed. An open image with no miss
+// keeps the subscription and the image.
+func TestPrepareForNewLeadership_reseedsLogSubscriptionForNewTerm(t *testing.T) {
+	t.Parallel()
+
+	const logSessionID int32 = 7
+
+	openImage := openLogImage(math.MaxInt64)
+	closedImage := closedLogImage(math.MaxInt64)
+
+	for _, tt := range []struct {
+		name    string
+		adapter logStopAdapter
+		// queries are the join source results, one per join query before prepare.
+		queries []bool
+		// nilSource clears the join source before the queries.
+		nilSource   bool
+		wantReseeds int
+	}{
+		{name: "no image", adapter: unboundLogImage, wantReseeds: 1},
+		{name: "closed image without end of stream", adapter: closedImage, wantReseeds: 1},
+		{
+			name:        "closed image at end of stream",
+			adapter:     closedLogImage(logStopEndOfStream),
+			wantReseeds: 1,
+		},
+		{name: "open image", adapter: openImage},
+		{name: "open image, missed query", adapter: openImage, queries: []bool{false}, wantReseeds: 1},
+		{name: "open image, missed then ready query", adapter: openImage, queries: []bool{false, true}},
+		{
+			name:        "open image, nil join source query",
+			adapter:     openImage,
+			queries:     []bool{false},
+			nilSource:   true,
+			wantReseeds: 1,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			adapter := tt.adapter(t)
+			image := adapter.Image()
+			control := &fakeCatchupControl{}
+			a, source := newReseedAgent(adapter, control)
+			if tt.nilSource {
+				a.SetLogJoinSource(nil)
+			}
+			for _, ready := range tt.queries {
+				source.readyOK = ready
+				_, ok := a.FollowerLogJoinReady(logSessionID)
+				require.Equal(t, ready, ok)
+			}
+
+			requirePrepared(t, a)
+			require.Equal(t, tt.wantReseeds, control.reseedCalls)
+			if tt.wantReseeds == 0 {
+				require.Same(t, image, adapter.Image())
+				return
+			}
+			require.Nil(t, adapter.Image())
+		})
+	}
+
+	t.Run("miss consumed", func(t *testing.T) {
+		t.Parallel()
+
+		adapter := openImage(t)
+		control := &fakeCatchupControl{}
+		a, source := newReseedAgent(adapter, control)
+		source.readyOK = false
+		_, ok := a.FollowerLogJoinReady(logSessionID)
+		require.False(t, ok)
+		requirePrepared(t, a)
+		require.Equal(t, 1, control.reseedCalls)
+
+		_, rebound := boundLogAdapter(t)
+		adapter.SetImage(rebound)
+		requirePrepared(t, a)
+		require.Equal(t, 1, control.reseedCalls)
+		require.Same(t, rebound, adapter.Image())
+	})
+
+	t.Run("nil adapter", func(t *testing.T) {
+		t.Parallel()
+
+		control := &fakeCatchupControl{}
+		a, _ := newReseedAgent(nil, control)
+		requirePrepared(t, a)
+		require.Zero(t, control.reseedCalls)
+	})
+
+	t.Run("nil control", func(t *testing.T) {
+		t.Parallel()
+
+		adapter := closedImage(t)
+		image := adapter.Image()
+		a, _ := newReseedAgent(adapter, nil)
+		requirePrepared(t, a)
+		require.Same(t, image, adapter.Image())
+	})
+
+	t.Run("reseed error", func(t *testing.T) {
+		t.Parallel()
+
+		adapter := closedImage(t)
+		control := &fakeCatchupControl{reseedErr: errors.New("driver refused")}
+		a, _ := newReseedAgent(adapter, control)
+		requirePrepared(t, a)
+		require.Equal(t, 1, control.reseedCalls)
+		require.Nil(t, adapter.Image())
+	})
+
+	t.Run("recording stop pending", func(t *testing.T) {
+		t.Parallel()
+
+		adapter := closedImage(t)
+		control := &fakeCatchupControl{}
+		a, _ := newReseedAgent(adapter, control)
+		recording := &fakeLogRecordingControl{pollStopPending: true}
+		a.SetLogRecordingControl(recording)
+
+		// Phase: first call reseeds. The stop stays pending.
+		_, prepared, err := a.PrepareForNewLeadership(0, 0)
+		require.NoError(t, err)
+		require.False(t, prepared)
+		require.Equal(t, 1, control.reseedCalls)
+
+		// Phase: re-poll. No second reseed in the same episode.
+		recording.pollStopPending = false
+		requirePrepared(t, a)
+		require.Equal(t, 1, control.reseedCalls)
+
+		// Phase: next episode. The adapter still holds no image.
+		requirePrepared(t, a)
+		require.Equal(t, 2, control.reseedCalls)
+	})
+
+	t.Run("live election", func(t *testing.T) {
+		t.Parallel()
+
+		adapter := closedImage(t)
+		control := &fakeCatchupControl{}
+		a, _ := newReseedAgent(adapter, control)
+		a.SetElection(&orderRunner{})
+		elections := a.ElectionCount()
+
+		requirePrepared(t, a)
+		require.Equal(t, 1, control.reseedCalls)
+		require.Zero(t, a.logStopTick())
+		require.Equal(t, elections, a.ElectionCount())
+	})
 }

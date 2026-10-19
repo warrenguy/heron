@@ -17,6 +17,8 @@ import (
 //     destination for the leader archive replay. Ensure clears the live
 //     destination while catchup is active. Only the catchup feed is attached
 //     until live is restored on teardown, or added when catchup is near live.
+//   - Prepare for a new term: replaces the log subscription with a fresh one
+//     that carries only the live destination.
 //   - Leader: starts an archive replay of the local cluster log recording
 //     toward the follower catchup endpoint with the log publication session id.
 //     Length is math.MaxInt64 so an active recording is followed.
@@ -106,15 +108,7 @@ func (c *catchupControl) EnsureCatchupLogDestination(catchupEndpoint string) str
 	if dest := c.agent.CatchupLogDestination(); dest != "" {
 		return dest
 	}
-
-	// Clear live before reseed so restore is never skipped for a stale real URI
-	// that no longer has a destination on the reseeded subscription.
-	c.agent.LiveLogDestinationSet("")
-
-	if err := c.streams.ReseedSubscription(c.adder); err != nil {
-		// Reseed fail-closed restores live when recovery succeeds. Cover the
-		// path where recovery opened a subscription but could not add live.
-		_ = c.restoreLiveLogDestination()
+	if err := c.reseedWithLiveCleared(); err != nil {
 		return ""
 	}
 
@@ -211,6 +205,41 @@ func (c *catchupControl) restoreLiveLogDestination() error {
 		return err
 	}
 	c.agent.LiveLogDestinationSet(liveURI)
+	return nil
+}
+
+// ReseedLogSubscription replaces the log subscription with a fresh
+// control-mode=manual subscription that carries only the live destination.
+// Clears both destination fields first: the close drops every destination of
+// the old subscription.
+//
+// A failed reseed keeps the recovery subscription. The live add then runs
+// only when recovery left the live destination unset.
+//
+// Returns the reseed error or the live destination add error.
+func (c *catchupControl) ReseedLogSubscription() error {
+	if c == nil || c.agent == nil || c.streams == nil {
+		return nil
+	}
+	c.agent.CatchupLogDestinationSet("")
+	if err := c.reseedWithLiveCleared(); err != nil {
+		return err
+	}
+	return c.restoreLiveLogDestination()
+}
+
+// reseedWithLiveCleared clears the live destination field, then replaces the
+// log subscription. The fresh subscription has no destinations.
+//
+// Clears live first so a stale URI cannot skip the restore after the reseed.
+// On a reseed error, restores live when recovery opened a subscription
+// without it. Returns the reseed error.
+func (c *catchupControl) reseedWithLiveCleared() error {
+	c.agent.LiveLogDestinationSet("")
+	if err := c.streams.ReseedSubscription(c.adder); err != nil {
+		_ = c.restoreLiveLogDestination()
+		return err
+	}
 	return nil
 }
 

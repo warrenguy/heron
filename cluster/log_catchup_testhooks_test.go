@@ -104,9 +104,11 @@ func (f *catchupLogStreamAdder) AddExclusivePublication(
 // catchupTestStreams opens LogStreams with a recording destination hook so
 // Ensure and Remove can reseed and attach destinations without a media driver.
 type catchupTestStreams struct {
+	tb       testing.TB
 	streams  *LogStreams
 	adder    *catchupLogStreamAdder
 	agent    *consensus.Agent
+	adapter  *consensus.LogAdapter
 	liveURI  string
 	streamID int32
 }
@@ -147,9 +149,11 @@ func openCatchupTestStreams(t *testing.T) *catchupTestStreams {
 	t.Cleanup(func() { _ = ls.Close() })
 
 	return &catchupTestStreams{
+		tb:       t,
 		streams:  ls,
 		adder:    adder,
 		agent:    agent,
+		adapter:  logAdapter,
 		liveURI:  tp.LogChannel(),
 		streamID: tp.LogStreamID(),
 	}
@@ -581,6 +585,268 @@ func TestCatchupControl_ensureRetryAfterReseedRecoveryFailure(t *testing.T) {
 	require.Empty(t, fixture.agent.CatchupLogDestination())
 	require.Equal(t, fixture.liveURI, fixture.agent.LiveLogDestination())
 	require.Equal(t, []string{fixture.liveURI}, currentDestinations(fixture.adder.lastDestHook))
+}
+
+// catchupTB is the testing seam the catchup helpers need. Both *testing.T and
+// *rapid.T satisfy it.
+type catchupTB interface {
+	require.TestingT
+	Helper()
+}
+
+// Asserts prepare replaces the log subscription after the bound image closes
+// without end of stream. The fresh subscription carries the live destination.
+// The next join binds the session from it.
+func TestCatchupControl_prepareReplacesSubscriptionAfterImageLoss(t *testing.T) {
+	t.Parallel()
+
+	fixture := openCatchupTestStreams(t)
+	fixture.agent.SetCatchupControl(newTestCatchupControl(t, fixture, &fakeReplayControl{}))
+	oldSub := fixture.streams.Subscription()
+
+	// Phase: bind.
+	image := joinTestLogImage(t, fixture, testCatchupLogSessionID, 1, 0)
+
+	// Phase: loss. The join query after the close misses.
+	aeron.ImageInternalCloseForHooks(image)
+	_, ready := fixture.agent.FollowerLogJoinReady(testCatchupLogSessionID)
+	require.False(t, ready)
+
+	// Phase: prepare.
+	requirePrepareReplacedSubscription(t, fixture, oldSub)
+
+	// Phase: rejoin.
+	joinTestLogImage(t, fixture, testCatchupLogSessionID, 2, testCatchupStartPosition)
+	require.True(t, fixture.agent.IsLogJoinedForSession(testCatchupLogSessionID))
+}
+
+// Asserts prepare replaces the log subscription after a missed follower join
+// query, even while the bound image of another session stays open.
+func TestCatchupControl_prepareReplacesSubscriptionAfterMissedJoin(t *testing.T) {
+	t.Parallel()
+
+	const otherSessionID int32 = testCatchupLogSessionID + 1
+
+	fixture := openCatchupTestStreams(t)
+	fixture.agent.SetCatchupControl(newTestCatchupControl(t, fixture, &fakeReplayControl{}))
+	oldSub := fixture.streams.Subscription()
+
+	// Phase: bind.
+	bound := joinTestLogImage(t, fixture, testCatchupLogSessionID, 1, 0)
+
+	// Phase: loss. The other session's image closes. The bound image stays
+	// open.
+	other := addTestLogImage(t, fixture, otherSessionID, 2, 0)
+	aeron.ImageInternalCloseForHooks(other)
+
+	// Phase: first prepare. No miss and an open image keep the subscription.
+	_, prepared, err := fixture.agent.PrepareForNewLeadership(0, 0)
+	require.NoError(t, err)
+	require.True(t, prepared)
+	require.Same(t, oldSub, fixture.streams.Subscription())
+	require.Same(t, bound, fixture.adapter.Image())
+
+	// Phase: miss.
+	_, ready := fixture.agent.FollowerLogJoinReady(otherSessionID)
+	require.False(t, ready)
+
+	// Phase: second prepare.
+	requirePrepareReplacedSubscription(t, fixture, oldSub)
+
+	// Phase: rejoin.
+	joinTestLogImage(t, fixture, otherSessionID, 3, 0)
+	require.True(t, fixture.agent.IsLogJoinedForSession(otherSessionID))
+}
+
+// requirePrepareReplacedSubscription runs one prepare and requires it to
+// replace oldSub with a fresh subscription that carries only the live
+// destination. The adapter holds no image afterwards.
+func requirePrepareReplacedSubscription(
+	t catchupTB,
+	fixture *catchupTestStreams,
+	oldSub *aeron.Subscription,
+) {
+	t.Helper()
+	_, prepared, err := fixture.agent.PrepareForNewLeadership(0, 0)
+	require.NoError(t, err)
+	require.True(t, prepared)
+	require.NotSame(t, oldSub, fixture.streams.Subscription())
+	require.True(t, oldSub.IsClosed())
+	require.Nil(t, fixture.adapter.Image())
+	requireLogStreamsReseeded(t, fixture, true)
+}
+
+// requireLogStreamsReseeded requires the streams and agent state a reseed
+// leaves. wantSub false is the double add failure: no subscription, no join
+// source, no live destination.
+func requireLogStreamsReseeded(t catchupTB, fixture *catchupTestStreams, wantSub bool) {
+	t.Helper()
+	require.Empty(t, fixture.agent.CatchupLogDestination())
+	if !wantSub {
+		require.Nil(t, fixture.streams.Subscription())
+		require.Nil(t, fixture.agent.LogJoinSource())
+		require.Empty(t, fixture.agent.LiveLogDestination())
+		return
+	}
+	require.Same(t, fixture.adder.lastSub, fixture.streams.Subscription())
+	require.False(t, fixture.adder.lastSub.IsClosed())
+	require.IsType(t, (*consensus.SubscriptionLogJoinSource)(nil), fixture.agent.LogJoinSource())
+	require.Equal(t, fixture.liveURI, fixture.agent.LiveLogDestination())
+	require.Equal(t, []string{fixture.liveURI}, currentDestinations(fixture.adder.lastDestHook))
+}
+
+// joinTestLogImage adds an open image of sessionID at joinPosition to the
+// current log subscription, then joins it through the agent. Returns the image.
+func joinTestLogImage(
+	t catchupTB,
+	fixture *catchupTestStreams,
+	sessionID int32,
+	correlationID int64,
+	joinPosition int64,
+) *aeron.Image {
+	t.Helper()
+	image := addTestLogImage(t, fixture, sessionID, correlationID, joinPosition)
+	params, ready := fixture.agent.FollowerLogJoinReady(sessionID)
+	require.True(t, ready)
+	require.Equal(t, joinPosition, params.LogJoinPosition)
+	joined, err := fixture.agent.JoinLogAsFollower(params, 0)
+	require.NoError(t, err)
+	require.True(t, joined)
+	require.Same(t, image, fixture.adapter.Image())
+	return image
+}
+
+// addTestLogImage adds an open image of sessionID at joinPosition to the
+// current log subscription. Returns the image.
+func addTestLogImage(
+	t catchupTB,
+	fixture *catchupTestStreams,
+	sessionID int32,
+	correlationID int64,
+	joinPosition int64,
+) *aeron.Image {
+	t.Helper()
+	sub := fixture.streams.Subscription()
+	require.NotNil(t, sub)
+	image := aeron.NewTestImageForSubscriptionHooksWithSessionID(
+		fixture.tb,
+		sub,
+		sessionID,
+		correlationID,
+		joinPosition,
+	)
+	require.True(t, aeron.SubscriptionAddImageForHooks(sub, image))
+	return image
+}
+
+// reseedAddOutcome scripts the subscription adds of one reseed and the state
+// the reseed leaves.
+type reseedAddOutcome struct {
+	name string
+	// arrange scripts the add failures. Nil scripts none.
+	arrange func(adder *catchupLogStreamAdder, cause error)
+	// wantAdds is the number of subscription adds the reseed makes.
+	wantAdds int
+	wantErr  bool
+	wantSub  bool
+}
+
+// reseedAddOutcomes covers every add failure shape of one reseed.
+var reseedAddOutcomes = []reseedAddOutcome{
+	{name: "adds succeed", wantAdds: 1, wantSub: true},
+	{
+		name: "fresh add fails, recovery succeeds",
+		arrange: func(adder *catchupLogStreamAdder, cause error) {
+			adder.failNextSubscriptionAdds(1, cause)
+		},
+		wantAdds: 2,
+		wantErr:  true,
+		wantSub:  true,
+	},
+	{
+		name: "recovery live add fails once",
+		arrange: func(adder *catchupLogStreamAdder, cause error) {
+			adder.failNextSubscriptionAdds(1, cause)
+			adder.failFirstDestinationOnNextSub(cause)
+		},
+		wantAdds: 2,
+		wantErr:  true,
+		wantSub:  true,
+	},
+	{
+		name: "both adds fail",
+		arrange: func(adder *catchupLogStreamAdder, cause error) {
+			adder.failNextSubscriptionAdds(2, cause)
+		},
+		wantAdds: 2,
+		wantErr:  true,
+	},
+}
+
+// Asserts ReseedLogSubscription replaces the subscription with one that holds
+// only the live destination, and the state each add failure leaves.
+func TestCatchupControl_reseedLogSubscription(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("driver refused")
+
+	for _, tt := range reseedAddOutcomes {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixture := openCatchupTestStreams(t)
+			c := newTestCatchupControl(t, fixture, &fakeReplayControl{})
+			requireReseedLogSubscription(t, fixture, c, tt, cause)
+		})
+	}
+
+	t.Run("after ensure", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := openCatchupTestStreams(t)
+		c := newTestCatchupControl(t, fixture, &fakeReplayControl{})
+		require.NotEmpty(t, c.EnsureCatchupLogDestination(testCatchupEndpoint))
+		requireReseedLogSubscription(t, fixture, c, reseedAddOutcomes[0], cause)
+	})
+
+	t.Run("closed streams", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := openCatchupTestStreams(t)
+		c := newTestCatchupControl(t, fixture, &fakeReplayControl{})
+		require.NoError(t, fixture.streams.Close())
+		addsBefore := len(fixture.adder.subCalls)
+
+		require.EqualError(t, c.ReseedLogSubscription(), "cluster: log streams closed")
+		require.Len(t, fixture.adder.subCalls, addsBefore)
+	})
+}
+
+// requireReseedLogSubscription scripts outcome, runs one ReseedLogSubscription
+// and requires the adds, error and state outcome describes.
+func requireReseedLogSubscription(
+	t *testing.T,
+	fixture *catchupTestStreams,
+	c *catchupControl,
+	outcome reseedAddOutcome,
+	cause error,
+) {
+	t.Helper()
+	if outcome.arrange != nil {
+		outcome.arrange(fixture.adder, cause)
+	}
+	oldSub := fixture.streams.Subscription()
+	addsBefore := len(fixture.adder.subCalls)
+
+	err := c.ReseedLogSubscription()
+	if outcome.wantErr {
+		require.ErrorIs(t, err, cause)
+	} else {
+		require.NoError(t, err)
+	}
+	require.Len(t, fixture.adder.subCalls, addsBefore+outcome.wantAdds)
+	require.True(t, oldSub.IsClosed())
+	requireLogStreamsReseeded(t, fixture, outcome.wantSub)
 }
 
 // Asserts RemoveDestination error keeps the catchup field for retry.
