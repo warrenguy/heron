@@ -30,6 +30,9 @@ var (
 	cancelTimerEncodedLen = int(
 		(&clusterwire.CancelTimer{}).SbeBlockAndHeaderLength(),
 	)
+	closeSessionEncodedLen = int(
+		(&clusterwire.CloseSession{}).SbeBlockAndHeaderLength(),
+	)
 	serviceAckEncodedLen = int(
 		(&clusterwire.ServiceAck{}).SbeBlockAndHeaderLength(),
 	)
@@ -61,6 +64,11 @@ func ScheduleTimerEncodedLen() int {
 // CancelTimerEncodedLen is MessageHeader plus full schema block (8+8=16).
 func CancelTimerEncodedLen() int {
 	return cancelTimerEncodedLen
+}
+
+// CloseSessionEncodedLen is MessageHeader plus full schema block (8+8=16).
+func CloseSessionEncodedLen() int {
+	return closeSessionEncodedLen
 }
 
 // ServiceAckEncodedLen is MessageHeader plus full schema block (8+36=44).
@@ -227,6 +235,29 @@ func EncodeCancelTimer(
 			var msg clusterwire.CancelTimer
 			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
 				SetCorrelationId(fields.CorrelationID)
+		},
+	)
+}
+
+// EncodeCloseSession writes a cluster CloseSession (SBE template id 30) at
+// offset. Short or mis-offset buffers return wireEnd=0, ok=false without panic.
+func EncodeCloseSession(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields CloseSessionFields,
+) (wireEnd int, ok bool) {
+	return encodeWithClusterWireHeader(
+		buf,
+		offset,
+		clusterwire.CloseSessionSbeBlockLength,
+		clusterwire.CloseSessionSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
+			var msg clusterwire.CloseSession
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+				SetClusterSessionId(fields.ClusterSessionID)
 		},
 	)
 }

@@ -275,6 +275,23 @@ func TestCancelTimer_roundtrip(t *testing.T) {
 	)
 }
 
+func TestCloseSession_roundtrip(t *testing.T) {
+	v := clusterwire.CloseSessionSbeSchemaVersion
+	runCodecFieldsActingRoundtrips(
+		t,
+		clusterwire.CloseSessionSbeTemplateID,
+		v,
+		[]codecFieldsActingCase[codecs.CloseSessionFields]{
+			{name: "sample", fields: closeSessionSampleFields()},
+			{
+				name:   "max_int",
+				fields: codecs.CloseSessionFields{ClusterSessionID: math.MaxInt64},
+			},
+		},
+		codecs.EncodeCloseSession,
+	)
+}
+
 func TestServiceAck_roundtrip(t *testing.T) {
 	v := clusterwire.ServiceAckSbeSchemaVersion
 	fields := codecs.ServiceAckFields{
@@ -391,6 +408,7 @@ func TestServiceEncode_rejects(t *testing.T) {
 	)
 	requireEncodeRejects(t, buf, v, scheduleTimerSampleFields(), codecs.EncodeScheduleTimer)
 	requireEncodeRejects(t, buf, v, cancelTimerSampleFields(), codecs.EncodeCancelTimer)
+	requireEncodeRejects(t, buf, v, closeSessionSampleFields(), codecs.EncodeCloseSession)
 	requireEncodeRejects(
 		t, buf, v, clusterActionRequestSampleFields(), codecs.EncodeClusterActionRequest,
 	)
@@ -445,6 +463,11 @@ func TestServiceTryDecode_rejects(t *testing.T) {
 		"cancel_timer",
 		encodeCancelTimerWire(t, v, cancelTimerSampleFields()),
 		clusterwire.CancelTimerSbeBlockLength, 7, 4,
+	)...)
+	cases = append(cases, fixedBlockRejectCases(
+		"close_session",
+		encodeCloseSessionWire(t, v, closeSessionSampleFields()),
+		clusterwire.CloseSessionSbeBlockLength, 7, 4,
 	)...)
 	cases = append(cases, fixedBlockRejectCases(
 		"service_ack",
@@ -601,6 +624,18 @@ func TestTryDecodeAt_serviceCatalogue(t *testing.T) {
 			codecs.TryDecodeCancelTimerAt,
 		)
 	})
+	t.Run("close_session", func(t *testing.T) {
+		requireTryDecodeAt(
+			t,
+			buf,
+			v,
+			codecs.CloseSessionFields{
+				ClusterSessionID: 1,
+			},
+			codecs.EncodeCloseSession,
+			codecs.TryDecodeCloseSessionAt,
+		)
+	})
 	t.Run("service_ack", func(t *testing.T) {
 		requireTryDecodeAt(
 			t,
@@ -669,6 +704,16 @@ func TestTryDecodeCancelTimerAt_rejects(t *testing.T) {
 		encodeCancelTimerWire(t, v, cancelTimerSampleFields()),
 		encodeScheduleTimerWire(t, v, scheduleTimerSampleFields()),
 		codecs.TryDecodeCancelTimerAt,
+	)
+}
+
+func TestTryDecodeCloseSessionAt_rejects(t *testing.T) {
+	v := clusterwire.CloseSessionSbeSchemaVersion
+	requireTryDecodeAtRejects(
+		t,
+		encodeCloseSessionWire(t, v, closeSessionSampleFields()),
+		encodeCancelTimerWire(t, v, cancelTimerSampleFields()),
+		codecs.TryDecodeCloseSessionAt,
 	)
 }
 
@@ -757,6 +802,18 @@ func TestEncodeServiceTemplates_ZeroAllocs(t *testing.T) {
 			encode: func(buf []byte) {
 				_, ok := codecs.EncodeCancelTimer(buf, 0, actingVersion, codecs.CancelTimerFields{
 					CorrelationID: 1,
+				})
+				if !ok {
+					panic("encode failed")
+				}
+			},
+		},
+		{
+			name:   "EncodeCloseSession",
+			bufLen: codecs.CloseSessionEncodedLen(),
+			encode: func(buf []byte) {
+				_, ok := codecs.EncodeCloseSession(buf, 0, actingVersion, codecs.CloseSessionFields{
+					ClusterSessionID: 1,
 				})
 				if !ok {
 					panic("encode failed")
@@ -861,6 +918,21 @@ func encodeCancelTimerWire(
 	t.Helper()
 	return encodeClusterWire(t, func(buf []byte) (int, bool) {
 		return codecs.EncodeCancelTimer(buf, 0, actingVersion, fields)
+	})
+}
+
+func closeSessionSampleFields() codecs.CloseSessionFields {
+	return codecs.CloseSessionFields{ClusterSessionID: 1}
+}
+
+func encodeCloseSessionWire(
+	t *testing.T,
+	actingVersion uint16,
+	fields codecs.CloseSessionFields,
+) []byte {
+	t.Helper()
+	return encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeCloseSession(buf, 0, actingVersion, fields)
 	})
 }
 
