@@ -112,3 +112,20 @@ func TestExclusivePublication_Offer_rapid_fragmented(t *testing.T) {
 		}
 	})
 }
+
+func TestExclusivePublication_Offer_lengthRule_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(t *rapid.T) {
+		cfg, limit := drawLengthRuleLogConfig(t, aeron.DefaultTestExclusivePublicationLogConfig)
+		ep := aeron.NewTestExclusivePublicationWithoutTBForRapid(cfg, limit)
+
+		length, oversized := drawOfferLength(t, ep.MaxPayloadLength(), ep.MaxMessageLength())
+		payload := make([]byte, length)
+		if oversized {
+			offer := func() int64 { return ep.Offer(payload) }
+			requireRejectedExclusiveOfferLeavesTermClean(t, ep, aeron.UnsupportedMessageLength, offer)
+			return
+		}
+		require.NotEqual(t, aeron.UnsupportedMessageLength, ep.Offer(payload), "length=%d", length)
+	})
+}

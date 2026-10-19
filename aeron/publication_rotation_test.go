@@ -147,10 +147,7 @@ func TestPublication_TermRotation_TwoStepNearTermEnd(t *testing.T) {
 	t.Run("Offer", func(t *testing.T) {
 		pub := newTestPublicationNearTermEnd(t, termRotationTestMargin)
 
-		firstPayload := make([]byte, 16)
-		for i := range firstPayload {
-			firstPayload[i] = byte(i)
-		}
+		firstPayload := patternedPayload(16)
 		first := pub.Offer(firstPayload)
 		require.Positive(t, first)
 		require.NotEqual(t, aeron.AdminAction, first)

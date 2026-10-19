@@ -95,13 +95,25 @@ func TestAeronCluster_trackIngress_maxPositionExceeded_pendingClose(t *testing.T
 	require.True(t, ac.IsClosed())
 }
 
+func TestAeronCluster_trackIngress_unsupportedMessageLength_staysConnected(t *testing.T) {
+	ac := newAeronClusterFromConnectFixture(t, func(result *ConnectResult) {
+		withFixedOfferResultIngress(t, result, aeron.UnsupportedMessageLength)
+	})
+
+	require.Equal(t, SessionStateConnected, ac.SessionState())
+
+	got := ac.Offer([]byte("payload"))
+	require.Equal(t, int64(aeron.UnsupportedMessageLength), got)
+	require.Equal(t, SessionStateConnected, ac.SessionState())
+}
+
 func TestAeronCluster_trackIngress_scratchOverflow_staysConnected(t *testing.T) {
 	ac := newAeronClusterFromConnectFixture(t, nil)
 
 	ac.ingressScratch = make([]byte, 1)
 
 	got := ac.Offer([]byte("payload"))
-	require.Equal(t, int64(aeron.MaxPositionExceeded), got)
+	require.Equal(t, int64(aeron.UnsupportedMessageLength), got)
 	require.Equal(t, SessionStateConnected, ac.SessionState())
 }
 

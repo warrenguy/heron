@@ -187,10 +187,7 @@ func TestPublication_FragmentedOffer_twoFrames(t *testing.T) {
 	maxPayload := pub.MaxPayloadLengthForTest()
 	length := maxPayload + 1
 
-	payload := make([]byte, length)
-	for i := range payload {
-		payload[i] = byte(i)
-	}
+	payload := patternedPayload(length)
 
 	position := aeron.OfferRetryForTest(pub, payload)
 	require.Positive(t, position)
@@ -231,10 +228,7 @@ func TestPublication_FragmentedOffer_termRolloverRetry(t *testing.T) {
 	pub := newTestPublicationNearTermEnd(t, margin)
 
 	length := maxPayload + 1
-	payload := make([]byte, length)
-	for i := range payload {
-		payload[i] = byte(i & 0xFF)
-	}
+	payload := patternedPayload(length)
 
 	first := pub.Offer(payload)
 	require.Equal(t, aeron.AdminAction, first)

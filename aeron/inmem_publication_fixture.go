@@ -52,6 +52,7 @@ type inMemPublicationLogConfig struct {
 	RawTails        [logbuffer.PartitionCount]int64
 	IsConnected     int32
 	LogType         uint8
+	MTULength       int32
 }
 
 func defaultInMemPublicationLogConfig() inMemPublicationLogConfig {
@@ -65,6 +66,7 @@ func defaultInMemPublicationLogConfig() inMemPublicationLogConfig {
 		},
 		IsConnected: 1,
 		LogType:     logbuffer.LogBufferTypeConcurrentPublication,
+		MTULength:   inMemPublicationMTULength,
 	}
 }
 
@@ -128,7 +130,7 @@ func writeInMemPublicationMetadata(buf []byte, cfg inMemPublicationLogConfig) {
 	meta.PutInt32(logbuffer.OffsetDefaultFrameHeaderLength, logbuffer.DataHeaderLength)
 	meta.PutInt32(logbuffer.OffsetTermLength, inMemPublicationTermLength)
 	meta.PutInt32(logbuffer.OffsetPageSize, logbuffer.PageMinSize)
-	meta.PutInt32(logbuffer.OffsetMTULength, inMemPublicationMTULength)
+	meta.PutInt32(logbuffer.OffsetMTULength, cfg.MTULength)
 	meta.PutInt32Release(logbuffer.OffsetIsConnected, cfg.IsConnected)
 	meta.PutInt64Release(logbuffer.OffsetEndOfStreamPosition, math.MaxInt64)
 	meta.Bytes()[logbuffer.OffsetLogType] = cfg.LogType

@@ -1615,6 +1615,50 @@ func TestAsyncConnect_pollSendMessage_oversizeWireFailsFast(t *testing.T) {
 	require.ErrorContains(t, err, "max message length")
 }
 
+func TestAsyncConnect_pollSendMessage_terminalErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		offerResult int64
+		wantSubstr  string
+	}{
+		{name: "closed", offerResult: aeron.Closed, wantSubstr: "unexpected loss of connection"},
+		{
+			name:        "notConnected",
+			offerResult: aeron.NotConnected,
+			wantSubstr:  "unexpected loss of connection",
+		},
+		{
+			name:        "maxPositionExceeded",
+			offerResult: aeron.MaxPositionExceeded,
+			wantSubstr:  "stream position exceeded",
+		},
+		{
+			name:        "unsupportedMessageLength",
+			offerResult: aeron.UnsupportedMessageLength,
+			wantSubstr:  "max message length",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness, ac := setupAsyncConnect(t, "")
+			t.Cleanup(func() { _ = ac.Close() })
+			setupAsyncConnectEgressReady(t, harness, ac)
+			require.NoError(t, ac.PrepareConnectRequestForTest())
+
+			ac.ingressPublication = newFixedOfferResultIngressPublication(t, tc.offerResult)
+			ac.state = ConnectStateSendMessage
+
+			_, err := ac.PollSendMessageForTest()
+			require.ErrorContains(t, err, tc.wantSubstr)
+		})
+	}
+}
+
 func TestAsyncConnect_prepareConnectRequest_reachesPollResponse(t *testing.T) {
 	t.Parallel()
 
