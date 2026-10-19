@@ -3,7 +3,6 @@ package service
 import (
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strconv"
 
@@ -127,7 +126,10 @@ func (a *Agent) startSnapshotTake(logPosition, leadershipTermID int64) {
 		return
 	}
 
-	sessionIDs := slices.Sorted(maps.Keys(a.sessions))
+	sessionIDs := make([]int64, len(a.sessionList))
+	for i, session := range a.sessionList {
+		sessionIDs[i] = session.id
+	}
 	cfg := a.archive.Config()
 	a.take = &snapshotTake{
 		state:               takeAddingPublication,
@@ -412,7 +414,7 @@ func (a *Agent) encodeSnapshotRow(take *snapshotTake, index int) ([]byte, error)
 		codecs.ClientSessionFields{
 			ClusterSessionID: sessionID,
 			ResponseStreamID: session.responseStreamID,
-			ResponseChannel:  session.responseChannel,
+			ResponseChannel:  []byte(session.responseChannel),
 			EncodedPrincipal: session.encodedPrincipal,
 		},
 	)

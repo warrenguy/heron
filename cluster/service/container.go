@@ -70,13 +70,14 @@ type SnapshotPublicationAdder interface {
 
 var _ SnapshotPublicationAdder = (*aeron.Client)(nil)
 
-// TransportClient registers control handles and snapshot publications on a
-// media driver.
+// TransportClient registers control handles, snapshot publications, and
+// response publications on a media driver.
 //
 // *aeron.Client satisfies this interface as-built.
 type TransportClient interface {
 	SubscriptionAdder
 	SnapshotPublicationAdder
+	ResponsePublicationAdder
 	AddPublication(streamID int32, channel string) (*aeron.Publication, error)
 }
 
@@ -89,7 +90,7 @@ type Config struct {
 	// Aeron is the borrowed transport client. Required. The container does not
 	// own Aeron. Open uses Aeron for the control pair. The agent uses Aeron to
 	// add the log subscription at join time. The agent adds snapshot
-	// publications through Aeron.
+	// publications and response publications through Aeron.
 	//
 	// With Archive set, Aeron must be an *aeron.Client. The archive client
 	// shares Aeron. Open then calls DoWork on Aeron until the archive connect
@@ -199,7 +200,7 @@ type StartAckConfig struct {
 //  5. with Archive set, connect the archive client
 //  6. proxy bind
 //  7. agent build with control ingress, proxy, and archive client wired. The
-//     transport client adds snapshot publications
+//     transport client adds snapshot and response publications
 //
 // Behaviour: Open registers the two adds. With Archive set, Open then
 // connects the archive client. The connect pumps the transport client for up
@@ -284,6 +285,7 @@ func Open(cfg Config) (*Container, error) {
 			SnapshotPublications: cfg.Aeron,
 			SnapshotChannel:      cfg.SnapshotChannel,
 			SnapshotStreamID:     cfg.SnapshotStreamID,
+			ResponsePublications: cfg.Aeron,
 		}),
 		ingress:       ingress,
 		controlSub:    sub,
@@ -487,10 +489,11 @@ func (c *Container) ArchiveClient() *archive.Client {
 // reassembly, then closes the control subscription, then the control
 // publication.
 //
-// Behaviour: [Agent.Close] ends any snapshot take, then unbinds any log image
-// and closes any owned log subscription. The archive client closes after the
-// agent, so take cleanup reaches an open client. Control ingress Clear drops
-// reassembly builders. Control handles close next.
+// Behaviour: [Agent.Close] ends any snapshot take, then disconnects session
+// egress, then unbinds any log image and closes any owned log subscription.
+// The archive client closes after the agent, so take cleanup reaches an open
+// client. Control ingress Clear drops reassembly builders. Control handles
+// close next.
 //
 // Lifetime: idempotent. After Close the agent is inert. A second Close
 // returns nil. Safe on a nil receiver.

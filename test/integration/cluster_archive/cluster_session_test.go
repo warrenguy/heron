@@ -74,6 +74,22 @@ func startSessionConnect(
 	credentials []byte,
 ) (*client.ConnectResult, error) {
 	t.Helper()
+	return startSessionConnectWithEgress(
+		t, set, leader, transport, credentials, &client.EgressHandlers{},
+	)
+}
+
+// startSessionConnectWithEgress is startSessionConnect with egress as the
+// client egress handler.
+func startSessionConnectWithEgress(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	leader *cluster.ConsensusModule,
+	transport *aeron.Client,
+	credentials []byte,
+	egress client.EgressHandler,
+) (*client.ConnectResult, error) {
+	t.Helper()
 
 	connect, err := client.NewAsyncConnect(t.Context(), client.Config{
 		IngressChannel:      cluster.DefaultIngressChannel,
@@ -83,7 +99,7 @@ func startSessionConnect(
 		MessageTimeout:      durableWorkBound,
 		IngressRetryTimeout: durableWorkBound,
 		CredentialsSupplier: fixedCredentialsSupplier{credentials: credentials},
-		EgressHandler:       &client.EgressHandlers{},
+		EgressHandler:       egress,
 	})
 	require.NoError(t, err)
 	harness.CleanupClose(t, "async connect", connect.Close)
