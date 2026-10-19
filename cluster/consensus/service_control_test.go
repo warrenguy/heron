@@ -42,10 +42,15 @@ func agentWithServiceIngress(serviceCount int) (*Agent, *QueueConsensusIngress) 
 }
 
 func agentWithServiceIngressConfig(cfg AgentConfig) (*Agent, *QueueConsensusIngress) {
-	q := &QueueConsensusIngress{}
 	a := NewAgent(cfg)
+	return a, attachQueueServiceIngress(a)
+}
+
+// attachQueueServiceIngress wires a fresh queue service ingress onto a.
+func attachQueueServiceIngress(a *Agent) *QueueConsensusIngress {
+	q := &QueueConsensusIngress{}
 	a.SetServiceIngress(q)
-	return a, q
+	return q
 }
 
 // agentWithServiceControl wires service ingress and a connected service proxy.
@@ -296,7 +301,9 @@ func TestHandleServiceControlFragment_unknownTemplate(t *testing.T) {
 func TestHandleServiceControlFragment_undecodable(t *testing.T) {
 	t.Parallel()
 
+	const sessionID int64 = 1
 	a, q := agentWithServiceIngress(1)
+	s := seedLearnedOpen(t, a, sessionID, 1, 8)
 
 	// Short buffer. Template peek fails.
 	q.Enqueue([]byte{0x01, 0x02})
@@ -314,12 +321,17 @@ func TestHandleServiceControlFragment_undecodable(t *testing.T) {
 	binary.LittleEndian.PutUint16(truncated[4:], clusterwire.MessageHeaderSbeSchemaID)
 	binary.LittleEndian.PutUint16(truncated[6:], clusterwire.ServiceAckSbeSchemaVersion)
 	q.Enqueue(truncated)
+	// CloseSession frame cut to a 4-byte body. The decode fails.
+	q.Enqueue(encodeCloseSessionWire(t, sessionID)[:codecs.MessageHeaderEncodedLen()+4])
 
 	require.NotPanics(t, func() {
-		require.Equal(t, 3, a.pollServiceControl())
+		require.Equal(t, 4, a.pollServiceControl())
 	})
 	require.Equal(t, 0, a.ServiceAckQueueDepth(0))
 	require.NoError(t, a.ServiceAckFailure())
+	require.Equal(t, sessionOpen, s.state)
+	require.Equal(t, 1, a.OpenSessionCount())
+	require.Equal(t, 0, a.ClosingSessionCount())
 }
 
 func TestHandleServiceAck_electionLive(t *testing.T) {

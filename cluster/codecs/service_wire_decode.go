@@ -218,6 +218,24 @@ func TryDecodeCancelTimerAt(buf []byte, offset int) (CancelTimerFields, bool) {
 	)
 }
 
+func decodeCloseSessionFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) CloseSessionFields {
+	var msg clusterwire.CloseSession
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return CloseSessionFields{
+		ClusterSessionID: msg.ClusterSessionId(),
+	}
+}
+
+// TryDecodeCloseSessionAt decodes CloseSession without interface boxing.
+func TryDecodeCloseSessionAt(buf []byte, offset int) (CloseSessionFields, bool) {
+	return tryDecodeClusterAt(
+		buf, offset, clusterwire.CloseSessionSbeTemplateID, 0, decodeCloseSessionFields,
+	)
+}
+
 func decodeServiceAckFields(
 	buf []byte,
 	body, block, version, bufLen uint64,

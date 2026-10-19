@@ -42,9 +42,9 @@ const (
 	sessionOpen
 
 	// sessionClosing means closeReason holds the reason and the
-	// SessionCloseEvent append is outstanding. The egress is closed for
-	// CLIENT_ACTION. It stays up for TIMEOUT until the CLOSED event sends. A
-	// restored close holds this state with no egress.
+	// SessionCloseEvent append is outstanding. Only the client close releases
+	// the egress before the append. Every other mark keeps the egress until
+	// the CLOSED event sends. A restored close holds no egress.
 	sessionClosing
 )
 
@@ -75,7 +75,8 @@ func (s sessionState) String() string {
 //   - egress poll terminal
 //   - pending deadline reclaim
 //   - authentication reject handoff
-//   - client close or idle timeout after SessionCloseEvent append
+//   - client close, idle timeout, or service close after SessionCloseEvent
+//     append
 //   - committed SessionCloseEvent
 //   - election clear of a session opened above the prepare position, or of
 //     a pre-open session
@@ -368,20 +369,29 @@ func (m *sessionManager) markNewLeaderPending(session *clientSession) {
 	session.newLeaderEventPending = true
 }
 
-// markClosing moves an open session to closing and stores the reason.
+// markClosing moves an open session to closing and stores the reason. A
+// closing session only takes the new reason.
 //
 // Behaviour: clears okPending and newLeaderEventPending for the session when
 // present. Maintains closingCount.
 //
-// Returns: false when the id is unknown or the session is not open. On false
+// Returns: false when the id is unknown or the session is pre-open. On false
 // the registry is untouched.
 func (m *sessionManager) markClosing(
 	sessionID int64,
 	reason clusterwire.CloseReason,
 ) bool {
 	s, ok := m.byID[sessionID]
-	if !ok || s.state != sessionOpen {
+	if !ok {
 		return false
+	}
+	switch s.state {
+	case sessionClosing:
+		s.closeReason = reason
+		return true
+	case sessionPending, sessionChallenged, sessionAuthenticated, sessionRejected:
+		return false
+	case sessionOpen:
 	}
 	s.state = sessionClosing
 	s.closeReason = reason
@@ -608,9 +618,10 @@ func (a *Agent) sessionWork(nowNs int64) int {
 //
 // Behaviour: returns false when the log publisher is nil, holds no publication,
 // or holds a closed publication. A bound open publication that back-pressures
-// still returns true. Close paths must call canAppendLog before marking a
-// session closing. A mark without an appendable log strands the session in
-// closing on a leader.
+// still returns true. Leader-originated close paths must call canAppendLog
+// before marking a session closing. A mark without an appendable log strands
+// the session in closing on a leader. A mark that lands on every role cannot
+// check. The sweep append or the committed SessionCloseEvent ends it.
 func (a *Agent) canAppendLog() bool {
 	publisher := a.logPublisher
 	if publisher == nil {
@@ -620,16 +631,17 @@ func (a *Agent) canAppendLog() bool {
 	return publication != nil && !publication.IsClosed()
 }
 
-// sessionCloseWork marks idle open sessions closing with TIMEOUT, retries
-// SessionCloseEvent appends for every closing session, and removes on success.
+// sessionCloseWork marks idle open sessions closing with TIMEOUT. It appends
+// the SessionCloseEvent for every closing session. It removes the session on
+// success.
 //
 // Behaviour: walks a.sessions.all front to back. Pre-open states are skipped.
 // An open session past lastActivityNs plus sessionTimeoutNs marks closing
 // TIMEOUT then appends when the log publisher is bound. When the publisher is
 // nil or unbound, the open session is left untouched so it cannot enter a
-// stuck closing state. A closing session retries the append. Append success
-// sends SessionEvent CLOSED when egress still holds (TIMEOUT path), then
-// removes the session.
+// stuck closing state. A closing session appends. Append success sends
+// SessionEvent CLOSED when the session still holds egress, then removes the
+// session.
 //
 // Returns: work units for timeout marks and successful close removes.
 //
@@ -654,7 +666,7 @@ func (a *Agent) sessionCloseWork(nowNs int64) int {
 			}
 			work++
 		case sessionClosing:
-			// Retry failed client-action and timeout appends.
+			// A failed append retries next tick.
 		case sessionPending, sessionChallenged, sessionAuthenticated, sessionRejected:
 			// Pre-open lifetimes belong to any-role deadline reclaim.
 			i++
@@ -676,9 +688,8 @@ func (a *Agent) sessionCloseWork(nowNs int64) int {
 // Behaviour:
 //   - AppendSessionClose false leaves the session closing for the next tick.
 //   - Append true: trackUncommittedClose at the claim end position.
-//   - Then, when the session still holds an egress publication (TIMEOUT
-//     path), sends SessionEvent CLOSED once with detail closeReason.String()
-//     best effort.
+//   - Then, when the session still holds an egress publication, sends
+//     SessionEvent CLOSED once with detail closeReason.String() best effort.
 //   - Then removeSessionWithResources.
 //
 // Returns: true when the session was removed.
@@ -700,7 +711,7 @@ func (a *Agent) appendSessionCloseAndRemove(session *clientSession, nowNs int64)
 		return false
 	}
 	a.sessions.trackUncommittedClose(position, session)
-	// TIMEOUT path: CLOSED best effort. Client-action already released egress.
+	// CLOSED is best effort. A client close has already released the egress.
 	a.removeSessionWithCloseEvent(
 		session,
 		a.announcedLeaderMemberID(),

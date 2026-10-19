@@ -2033,8 +2033,8 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 //   - log stop check: a recording STOP mark or a closed non-leader log image
 //     installs an election ([Agent.logStopTick])
 //   - client ingress poll when no election is live
-//   - service control poll (always; ServiceAck, ScheduleTimer, and CancelTimer
-//     dispatch; every role; while election is live)
+//   - service control poll (always; ServiceAck, ScheduleTimer, CancelTimer, and
+//     CloseSession dispatch; every role; while election is live)
 //   - service control work (always; consume first wait after poll; every role;
 //     while election is live)
 //   - [ElectionRunner.DoWork] when an election is live, else sessionWork then

@@ -486,9 +486,10 @@ func TestSessionManager_markClosing(t *testing.T) {
 	require.Empty(t, m.okPending)
 	require.Len(t, m.all, 2)
 
-	// Closing refuses second mark.
-	require.False(t, m.markClosing(open.id, clusterwire.CloseReason_CLIENT_ACTION))
-	require.Equal(t, clusterwire.CloseReason_TIMEOUT, open.closeReason)
+	// Closing takes the new reason only.
+	require.True(t, m.markClosing(open.id, clusterwire.CloseReason_CLIENT_ACTION))
+	require.Equal(t, sessionClosing, open.state)
+	require.Equal(t, clusterwire.CloseReason_CLIENT_ACTION, open.closeReason)
 	require.Equal(t, 1, m.closingSessionCount())
 
 	// remove maintains all and closingCount.
