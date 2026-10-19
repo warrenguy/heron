@@ -95,12 +95,20 @@ func (a *Agent) handleTimerEvent(correlationID, leadershipTermID, logPosition in
 	}
 }
 
-// handleTimerExpiry appends one TimerEvent for correlationID at nowNs.
+// handleTimerExpiry appends one TimerEvent for correlationID at nowNs. On
+// success, tracks the entry in uncommittedTimers.
 //
 //   - True: AppendTimer succeeded. poll consumes the timer.
 //   - False: AppendTimer failed. The timer stays scheduled. That poll stops.
 func (a *Agent) handleTimerExpiry(correlationID, nowNs int64) bool {
-	return a.logPublisher.AppendTimer(a.leadershipTermID, correlationID, nowNs)
+	position, ok := a.logPublisher.AppendTimer(a.leadershipTermID, correlationID, nowNs)
+	if ok {
+		a.uncommittedTimers = append(a.uncommittedTimers, uncommittedTimer{
+			appendPosition: position,
+			correlationID:  correlationID,
+		})
+	}
+	return ok
 }
 
 // timerWork polls the timer wheel on a settled leader. Each expiry appends one

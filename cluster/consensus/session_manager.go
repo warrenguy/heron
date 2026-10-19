@@ -127,6 +127,20 @@ type sessionManager struct {
 	// closingCount is the number of sessions in sessionClosing.
 	closingCount  int
 	nextSessionID int64
+
+	// uncommittedCloses holds each SessionCloseEvent this member appended as
+	// leader above commit, in append order. Each entry owns the removed
+	// session until sweepUncommittedCloses or clearUncommittedCloses drops it.
+	uncommittedCloses []uncommittedClose
+}
+
+// uncommittedClose is one SessionCloseEvent the leader appended above commit.
+type uncommittedClose struct {
+	// logPosition is the claim end position of the SessionCloseEvent.
+	logPosition int64
+
+	// session is the closed session. The registry no longer holds it.
+	session *clientSession
 }
 
 func newSessionManager() *sessionManager {
@@ -431,6 +445,39 @@ func (m *sessionManager) closingSessionCount() int {
 	return m.closingCount
 }
 
+// trackUncommittedClose appends session to uncommittedCloses at the claim
+// end position of its SessionCloseEvent.
+//
+// Concurrency: invoker-only.
+func (m *sessionManager) trackUncommittedClose(position int64, session *clientSession) {
+	m.uncommittedCloses = append(m.uncommittedCloses, uncommittedClose{
+		logPosition: position,
+		session:     session,
+	})
+}
+
+// sweepUncommittedCloses drops the uncommittedCloses prefix at or below
+// position. The delete keeps the capacity and clears the vacated slots, so
+// the swept sessions can be freed.
+//
+// Concurrency: invoker-only.
+func (m *sessionManager) sweepUncommittedCloses(position int64) {
+	n := 0
+	for n < len(m.uncommittedCloses) && m.uncommittedCloses[n].logPosition <= position {
+		n++
+	}
+	m.uncommittedCloses = slices.Delete(m.uncommittedCloses, 0, n)
+}
+
+// clearUncommittedCloses drops every uncommittedCloses entry. The clear keeps
+// the capacity and nils the vacated slots, so the held sessions can be freed.
+//
+// Concurrency: invoker-only.
+func (m *sessionManager) clearUncommittedCloses() {
+	clear(m.uncommittedCloses)
+	m.uncommittedCloses = m.uncommittedCloses[:0]
+}
+
 // deleteSessionByID drops the entry with sessionID from sessions when present.
 func deleteSessionByID(sessions []*clientSession, sessionID int64) []*clientSession {
 	i := slices.IndexFunc(sessions, func(s *clientSession) bool {
@@ -588,9 +635,11 @@ func (a *Agent) sessionCloseWork(nowNs int64) int {
 //
 // Behaviour:
 //   - AppendSessionClose false leaves the session closing for the next tick.
-//   - Append true: when the session still holds an egress publication (TIMEOUT
+//   - Append true: trackUncommittedClose at the claim end position.
+//   - Then, when the session still holds an egress publication (TIMEOUT
 //     path), sends SessionEvent CLOSED once with detail closeReason.String()
-//     best effort. Then removeSessionWithResources.
+//     best effort.
+//   - Then removeSessionWithResources.
 //
 // Returns: true when the session was removed.
 func (a *Agent) appendSessionCloseAndRemove(session *clientSession, nowNs int64) bool {
@@ -601,7 +650,7 @@ func (a *Agent) appendSessionCloseAndRemove(session *clientSession, nowNs int64)
 	if publisher == nil {
 		return false
 	}
-	ok := publisher.AppendSessionClose(
+	position, ok := publisher.AppendSessionClose(
 		a.leadershipTermID,
 		session.id,
 		nowNs,
@@ -610,6 +659,7 @@ func (a *Agent) appendSessionCloseAndRemove(session *clientSession, nowNs int64)
 	if !ok {
 		return false
 	}
+	a.sessions.trackUncommittedClose(position, session)
 	if session.egressPublication != nil {
 		// TIMEOUT path: CLOSED best effort. Client-action already released egress.
 		_ = a.sendSessionEvent(

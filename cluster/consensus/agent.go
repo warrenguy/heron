@@ -449,6 +449,12 @@ type Agent struct {
 	// after NewAgent.
 	timers *timerService
 
+	// uncommittedTimers holds each TimerEvent this member appended as leader
+	// above commit, in append order. sweepUncommittedEntriesTo drops the
+	// entries at or below the new commit. clearUncommittedEntries empties the
+	// list at prepare.
+	uncommittedTimers []uncommittedTimer
+
 	// expiredTimerCountByCorrelationID counts committed TimerEvents that found
 	// no timer to cancel, per correlation id. A TimerEvent of the term in
 	// lastLedLeadershipTermID adds no count. handleScheduleTimer consumes one
@@ -823,7 +829,7 @@ func (a *Agent) ProposeMaxCommit(pos int64) int64 {
 // Gate: quorumPosition > commit OR nowNs >= timeOfLastLogUpdateNs + interval.
 //
 // On pass: PublishCommitPosition(quorum, leadershipTermID), ProposeMaxCommit,
-// set timeOfLastLogUpdateNs, sweepUncommitted (no-op stub), return 1.
+// set timeOfLastLogUpdateNs, sweepUncommittedEntriesTo(quorum), return 1.
 //
 // Does NOT write timeOfLastLeaderUpdateNs (ingress only).
 //
@@ -843,11 +849,6 @@ func (a *Agent) UpdateLeaderPosition(nowNs, quorumPosition int64) int {
 	a.timeOfLastLogUpdateNs = nowNs
 	a.sweepUncommittedEntriesTo(quorumPosition)
 	return 1
-}
-
-func (a *Agent) sweepUncommittedEntriesTo(quorumPosition int64) {
-	// No-op until client sessions / uncommitted entry lists exist.
-	_ = quorumPosition
 }
 
 // TimeOfLastLeaderUpdateNs returns the last inbound leader-update clock.
@@ -1661,6 +1662,7 @@ func (a *Agent) teardownForNewLeadership() {
 	a.StopAllCatchups()
 	a.RemoveCatchupLogDestination()
 	a.reseedLogSubscriptionForNewTerm()
+	a.clearUncommittedEntries()
 	a.releaseSessionsForNewTerm()
 }
 
