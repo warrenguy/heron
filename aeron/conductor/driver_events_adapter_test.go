@@ -779,6 +779,48 @@ func TestDriverEventsAdapter_operationSuccess(t *testing.T) {
 			wantDone:             true,
 			wantPendingRemoved:   true,
 		},
+		testCase{
+			name:                 "destinationActive",
+			setActiveCorrelation: true,
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestCorrelationID,
+			pendingKind:          conductor.PendingKindDestination,
+			wantDone:             true,
+			wantPendingRemoved:   true,
+		},
+		testCase{
+			name:                 "destinationNotActive",
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestOtherCorrelationID,
+			pendingKind:          conductor.PendingKindDestination,
+			wantDone:             true,
+			wantPendingRemoved:   true,
+		},
+		testCase{
+			name:                 "destinationNoActive",
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: conductor.NullCorrelationID,
+			pendingKind:          conductor.PendingKindDestination,
+			wantDone:             true,
+			wantPendingRemoved:   true,
+		},
+		testCase{
+			name:                 "destinationNilPending",
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: conductor.NullCorrelationID,
+			pendingKind:          conductor.PendingKindDestination,
+			useNilPending:        true,
+			wantUnhandled:        1,
+			wantPendingRetained:  true,
+		},
+		testCase{
+			name:                 "operationSuccessNotActive",
+			eventCorrelationID:   pendingTestCorrelationID,
+			receiveCorrelationID: pendingTestOtherCorrelationID,
+			pendingKind:          conductor.PendingKindOperationSuccess,
+			wantUnhandled:        1,
+			wantPendingRetained:  true,
+		},
 	)
 
 	for _, testCase := range tests {

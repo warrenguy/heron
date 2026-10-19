@@ -405,7 +405,8 @@ func (client *Client) awaitCloseLingerDrain() {
 	client.conductor.DrainLingeringLogBuffers()
 }
 
-// CancelPending abandons an in-flight OfferAdd registration.
+// CancelPending abandons an in-flight OfferAdd* registration or an async
+// destination command. The driver can still apply the command after a cancel.
 //
 // Idempotent when the pending entry is absent. Not safe for concurrent use with
 // OfferAdd* on the same correlation id.

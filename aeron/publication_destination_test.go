@@ -17,7 +17,7 @@ type sendDestinationResource interface {
 type sendDestinationOp struct {
 	name       string
 	newTarget  func(*testing.T) sendDestinationResource
-	call       func(sendDestinationResource, string) error
+	call       func(sendDestinationResource, string) (int64, error)
 	hasChannel bool
 	closedErr  string
 }
@@ -36,8 +36,8 @@ var sendDestinationOps = []sendDestinationOp{
 	{
 		name:      "Publication.AddDestination",
 		newTarget: newPublicationForDestinationTest,
-		call: func(resource sendDestinationResource, channel string) error {
-			return resource.(*aeron.Publication).AddDestination(channel)
+		call: func(resource sendDestinationResource, channel string) (int64, error) {
+			return 0, resource.(*aeron.Publication).AddDestination(channel)
 		},
 		hasChannel: true,
 		closedErr:  "aeron: publication is closed",
@@ -45,8 +45,8 @@ var sendDestinationOps = []sendDestinationOp{
 	{
 		name:      "Publication.RemoveDestination",
 		newTarget: newPublicationForDestinationTest,
-		call: func(resource sendDestinationResource, channel string) error {
-			return resource.(*aeron.Publication).RemoveDestination(channel)
+		call: func(resource sendDestinationResource, channel string) (int64, error) {
+			return 0, resource.(*aeron.Publication).RemoveDestination(channel)
 		},
 		hasChannel: true,
 		closedErr:  "aeron: publication is closed",
@@ -54,8 +54,8 @@ var sendDestinationOps = []sendDestinationOp{
 	{
 		name:      "Publication.RemoveDestinationByID",
 		newTarget: newPublicationForDestinationTest,
-		call: func(resource sendDestinationResource, _ string) error {
-			return resource.(*aeron.Publication).RemoveDestinationByID(
+		call: func(resource sendDestinationResource, _ string) (int64, error) {
+			return 0, resource.(*aeron.Publication).RemoveDestinationByID(
 				sendDestinationTestDestinationID,
 			)
 		},
@@ -64,8 +64,8 @@ var sendDestinationOps = []sendDestinationOp{
 	{
 		name:      "ExclusivePublication.AddDestination",
 		newTarget: newExclusivePublicationForDestinationTest,
-		call: func(resource sendDestinationResource, channel string) error {
-			return resource.(*aeron.ExclusivePublication).AddDestination(channel)
+		call: func(resource sendDestinationResource, channel string) (int64, error) {
+			return 0, resource.(*aeron.ExclusivePublication).AddDestination(channel)
 		},
 		hasChannel: true,
 		closedErr:  "aeron: exclusive publication is closed",
@@ -73,8 +73,8 @@ var sendDestinationOps = []sendDestinationOp{
 	{
 		name:      "ExclusivePublication.RemoveDestination",
 		newTarget: newExclusivePublicationForDestinationTest,
-		call: func(resource sendDestinationResource, channel string) error {
-			return resource.(*aeron.ExclusivePublication).RemoveDestination(channel)
+		call: func(resource sendDestinationResource, channel string) (int64, error) {
+			return 0, resource.(*aeron.ExclusivePublication).RemoveDestination(channel)
 		},
 		hasChannel: true,
 		closedErr:  "aeron: exclusive publication is closed",
@@ -82,8 +82,64 @@ var sendDestinationOps = []sendDestinationOp{
 	{
 		name:      "ExclusivePublication.RemoveDestinationByID",
 		newTarget: newExclusivePublicationForDestinationTest,
-		call: func(resource sendDestinationResource, _ string) error {
-			return resource.(*aeron.ExclusivePublication).RemoveDestinationByID(
+		call: func(resource sendDestinationResource, _ string) (int64, error) {
+			return 0, resource.(*aeron.ExclusivePublication).RemoveDestinationByID(
+				sendDestinationTestDestinationID,
+			)
+		},
+		closedErr: "aeron: exclusive publication is closed",
+	},
+	{
+		name:      "Publication.AsyncAddDestination",
+		newTarget: newPublicationForDestinationTest,
+		call: func(resource sendDestinationResource, channel string) (int64, error) {
+			return resource.(*aeron.Publication).AsyncAddDestination(channel)
+		},
+		hasChannel: true,
+		closedErr:  "aeron: publication is closed",
+	},
+	{
+		name:      "Publication.AsyncRemoveDestination",
+		newTarget: newPublicationForDestinationTest,
+		call: func(resource sendDestinationResource, channel string) (int64, error) {
+			return resource.(*aeron.Publication).AsyncRemoveDestination(channel)
+		},
+		hasChannel: true,
+		closedErr:  "aeron: publication is closed",
+	},
+	{
+		name:      "Publication.AsyncRemoveDestinationByID",
+		newTarget: newPublicationForDestinationTest,
+		call: func(resource sendDestinationResource, _ string) (int64, error) {
+			return resource.(*aeron.Publication).AsyncRemoveDestinationByID(
+				sendDestinationTestDestinationID,
+			)
+		},
+		closedErr: "aeron: publication is closed",
+	},
+	{
+		name:      "ExclusivePublication.AsyncAddDestination",
+		newTarget: newExclusivePublicationForDestinationTest,
+		call: func(resource sendDestinationResource, channel string) (int64, error) {
+			return resource.(*aeron.ExclusivePublication).AsyncAddDestination(channel)
+		},
+		hasChannel: true,
+		closedErr:  "aeron: exclusive publication is closed",
+	},
+	{
+		name:      "ExclusivePublication.AsyncRemoveDestination",
+		newTarget: newExclusivePublicationForDestinationTest,
+		call: func(resource sendDestinationResource, channel string) (int64, error) {
+			return resource.(*aeron.ExclusivePublication).AsyncRemoveDestination(channel)
+		},
+		hasChannel: true,
+		closedErr:  "aeron: exclusive publication is closed",
+	},
+	{
+		name:      "ExclusivePublication.AsyncRemoveDestinationByID",
+		newTarget: newExclusivePublicationForDestinationTest,
+		call: func(resource sendDestinationResource, _ string) (int64, error) {
+			return resource.(*aeron.ExclusivePublication).AsyncRemoveDestinationByID(
 				sendDestinationTestDestinationID,
 			)
 		},
@@ -139,7 +195,8 @@ func TestPublication_sendDestination_preconditions(t *testing.T) {
 					resource := op.newTarget(t)
 					test.setup(t, resource)
 
-					err := op.call(resource, destinationTestChannel)
+					id, err := op.call(resource, destinationTestChannel)
+					require.Zero(t, id)
 					test.require(t, op, err)
 				})
 			}
@@ -157,6 +214,14 @@ func TestPublication_sendDestination_nilReceiver(t *testing.T) {
 		ep.RemoveDestinationByID(sendDestinationTestDestinationID),
 		"aeron: exclusive publication is closed",
 	)
+
+	id, err := pub.AsyncAddDestination(destinationTestChannel)
+	require.Zero(t, id)
+	require.EqualError(t, err, "aeron: publication is closed")
+
+	id, err = ep.AsyncRemoveDestinationByID(sendDestinationTestDestinationID)
+	require.Zero(t, id)
+	require.EqualError(t, err, "aeron: exclusive publication is closed")
 }
 
 func TestPublication_sendDestination_validateChannel(t *testing.T) {
@@ -181,7 +246,8 @@ func TestPublication_sendDestination_validateChannel(t *testing.T) {
 					resource := op.newTarget(t)
 					bindNotReadyClientForDestinationTest(t, resource)
 
-					err := op.call(resource, tc.channel)
+					id, err := op.call(resource, tc.channel)
+					require.Zero(t, id)
 					require.EqualError(t, err, tc.wantErr)
 				})
 			}

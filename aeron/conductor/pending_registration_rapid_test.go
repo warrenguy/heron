@@ -831,6 +831,39 @@ func wantCorrelatedForTest(
 	return pendingContains
 }
 
+// wantOperationSuccessCorrelatedForTest models the ON_OPERATION_SUCCESS check:
+// the active id, or a pending PendingKindDestination entry.
+func wantOperationSuccessCorrelatedForTest(
+	activeCorrelationID int64,
+	eventCorrelationID int64,
+	pendingKind conductor.PendingKind,
+	pendingContains bool,
+) bool {
+	return wantCorrelatedForTest(
+		activeCorrelationID,
+		eventCorrelationID,
+		pendingContains && pendingKind == conductor.PendingKindDestination,
+	)
+}
+
+// drawCorrelatedRapidEventID draws a pending id, the active id, or a fresh id.
+func drawCorrelatedRapidEventID(
+	rt *rapid.T,
+	pending map[int64]conductor.PendingKind,
+	activeCorrelationID int64,
+	step int,
+) int64 {
+	rt.Helper()
+
+	if len(pending) > 0 && rapid.Bool().Draw(rt, fmt.Sprintf("eventFromPending%d", step)) {
+		return drawRapidInt64Key(rt, rapidMapKeys(pending), fmt.Sprintf("eventIdx%d", step))
+	}
+	if rapid.Bool().Draw(rt, fmt.Sprintf("eventFromActive%d", step)) {
+		return activeCorrelationID
+	}
+	return rapid.Int64().Draw(rt, fmt.Sprintf("eventCorrelationID%d", step))
+}
+
 type correlatedRapidOpKind int
 
 const (
@@ -845,7 +878,7 @@ func TestDriverEventsAdapter_correlated_gate_rapid(t *testing.T) {
 		conductorInstance := newConductorForRapid(t, rt)
 		adapter := conductorInstance.EventsAdapterForTest()
 		seen := make(map[int64]struct{})
-		pending := make(map[int64]struct{})
+		pending := make(map[int64]conductor.PendingKind)
 
 		seedCount := rapid.IntRange(0, 8).Draw(rt, "seedCount")
 		for range seedCount {
@@ -857,7 +890,7 @@ func TestDriverEventsAdapter_correlated_gate_rapid(t *testing.T) {
 			seen[correlationID] = struct{}{}
 			kind := rapid.SampledFrom(rapidPendingKinds).Draw(rt, "seedKind")
 			require.NoError(rt, registerPendingForRapid(rt, conductorInstance, kind, correlationID, 0, ""))
-			pending[correlationID] = struct{}{}
+			pending[correlationID] = kind
 		}
 
 		steps := rapid.IntRange(1, 16).Draw(rt, "steps")
@@ -879,7 +912,7 @@ func TestDriverEventsAdapter_correlated_gate_rapid(t *testing.T) {
 					rt,
 					registerPendingForRapid(rt, conductorInstance, kind, correlationID, 0, ""),
 				)
-				pending[correlationID] = struct{}{}
+				pending[correlationID] = kind
 
 			case correlatedRapidOpCancel:
 				if len(pending) == 0 {
@@ -907,12 +940,24 @@ func TestDriverEventsAdapter_correlated_gate_rapid(t *testing.T) {
 				)
 			}
 
-			eventCorrelationID := rapid.Int64().Draw(rt, fmt.Sprintf("eventCorrelationID%d", step))
 			activeCorrelationID := conductorInstance.ActiveCorrelationID()
-			_, contains := pending[eventCorrelationID]
+			eventCorrelationID := drawCorrelatedRapidEventID(rt, pending, activeCorrelationID, step)
+			kind, contains := pending[eventCorrelationID]
 			want := wantCorrelatedForTest(activeCorrelationID, eventCorrelationID, contains)
 			got := adapter.CorrelatedForTest(activeCorrelationID, eventCorrelationID)
 			require.Equal(rt, want, got)
+			wantOperationSuccess := wantOperationSuccessCorrelatedForTest(
+				activeCorrelationID,
+				eventCorrelationID,
+				kind,
+				contains,
+			)
+			gotOperationSuccess := adapter.OperationSuccessCorrelatedForTest(
+				activeCorrelationID,
+				eventCorrelationID,
+			)
+			require.Equal(rt, wantOperationSuccess, gotOperationSuccess)
+			require.Zero(rt, adapter.UnhandledEventCount())
 		}
 	})
 }

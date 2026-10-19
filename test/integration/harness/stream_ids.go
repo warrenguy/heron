@@ -90,4 +90,7 @@ const (
 
 	// Rejected send destination adds on live aeronmd.
 	MultiDestinationPublicationErrorsStreamID int32 = 8403
+
+	// Async send destination commands on live aeronmd.
+	MultiDestinationPublicationAsyncStreamID int32 = 8404
 )

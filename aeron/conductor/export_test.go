@@ -336,6 +336,15 @@ func (adapter *DriverEventsAdapter) CorrelatedForTest(
 	return adapter.correlated(activeCorrelationID, correlationID)
 }
 
+// OperationSuccessCorrelatedForTest reports whether ON_OPERATION_SUCCESS for
+// correlationID passes the adapter check. It adds no unhandled count.
+func (adapter *DriverEventsAdapter) OperationSuccessCorrelatedForTest(
+	activeCorrelationID int64,
+	correlationID int64,
+) bool {
+	return adapter.isOperationSuccessCorrelated(activeCorrelationID, correlationID)
+}
+
 // PublicationReadyForTest completes PendingKindAddPublication.
 func (conductor *Conductor) PublicationReadyForTest(event PublicationBuffersReady) {
 	publicationReadyHook(conductor, event)
