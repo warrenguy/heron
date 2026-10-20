@@ -95,10 +95,6 @@ func (ac *AeronCluster) trackIngressPublicationResult(result int64) {
 // return UnsupportedMessageLength when header+payload exceeds maxPayloadLength;
 // concurrent publications may fragment larger totals via OfferWithOffset.
 //
-// On concurrent *aeron.Publication, fragmented Offer under AdminAction may leave
-// orphan BEGIN frames (see
-// github.com/warrenguy/heron/test/integration/harness.OfferWithRetry).
-//
 // Header plus payload above MaxMessageLength on a concurrent ingress returns
 // UnsupportedMessageLength without an offer or state change. Publication-returned
 // MaxPositionExceeded enters PENDING_CLOSE via trackIngressPublicationResult;

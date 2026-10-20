@@ -41,10 +41,6 @@ func (pub *Publication) OfferWithRetry(
 //
 // Not for cluster ingress or archive control loops ([IsIngressRetriable]).
 //
-// Concurrent fragmented [Publication] under retried AdminAction may orphan a
-// BEGIN frame; use [ExclusivePublication], single-frame offers, or a subscriber
-// [FragmentAssembler].
-//
 // Returns [ErrClientNotBound] when unbound.
 func (pub *Publication) OfferWithRetryObserved(
 	ctx context.Context,
@@ -74,8 +70,6 @@ func (ep *ExclusivePublication) OfferWithRetry(
 }
 
 // OfferWithRetryObserved matches [Publication.OfferWithRetryObserved].
-//
-// Single-writer exclusive publications have no AdminAction orphan-BEGIN risk.
 func (ep *ExclusivePublication) OfferWithRetryObserved(
 	ctx context.Context,
 	payload []byte,

@@ -4,6 +4,7 @@ package aeron_test
 
 import (
 	"fmt"
+	"runtime"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -13,7 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -74,6 +77,8 @@ func runConcurrentPublicationStress(
 	}
 }
 
+var testPublicationPositionShift = logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
+
 func spinRotatePublicationLog(pub *aeron.Publication, stop <-chan struct{}) {
 	for {
 		select {
@@ -83,6 +88,109 @@ func spinRotatePublicationLog(pub *aeron.Publication, stop <-chan struct{}) {
 			aeron.RotatePublicationLogForTest(pub, 0, aeron.TestPublicationInitialTermID)
 		}
 	}
+}
+
+// consumedPublication is a publication with a stand-in consumer. position holds
+// the consumer position. It starts at the publication position before any
+// offer.
+type consumedPublication struct {
+	pub      *aeron.Publication
+	reader   *cnc.CountersReader
+	position *atomic.Int64
+}
+
+// newConsumedTestPublication returns a publication whose limit starts half a
+// term past its initial position. spin moves the limit on. It also enables
+// fragmented write tracking. The reservation tracker reports a reservation
+// still open in a partition the consumer zeroes.
+func newConsumedTestPublication(
+	tb testing.TB,
+	logCfg aeron.TestPublicationLogConfig,
+) consumedPublication {
+	tb.Helper()
+
+	reader := aeron.NewTestCountersReaderForTest(tb, 0)
+	pub := aeron.NewTestPublicationWithCounters(tb, logCfg, reader)
+	position := new(atomic.Int64)
+	position.Store(pub.Position())
+	writeTestPublicationLimit(tb, reader, position.Load()+aeron.TestPublicationTermLength/2)
+	aeron.EnableFragmentedWriteTrackingForTest(pub)
+	tb.Cleanup(func() { aeron.DisableFragmentedWriteTrackingForTest(pub) })
+	return consumedPublication{pub: pub, reader: reader, position: position}
+}
+
+// spin stands in for a subscriber and the driver. It walks
+// committed frames from the start position and keeps the publication limit
+// half a term ahead. On entry to each term it zeroes the partition of the term
+// after it, so writers do not meet stale frames. Before the zeroing it marks
+// every reservation still open in that partition as lapped. A failed limit
+// write goes to errs.
+func (consumed consumedPublication) spin(stop <-chan struct{}, errs chan error) {
+	const termLength = aeron.TestPublicationTermLength
+	pub := consumed.pub
+	shift := testPublicationPositionShift
+	meta := pub.MetaDataBufferForTest()
+	position := consumed.position.Load()
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+
+		termCount := int32(position >> shift)
+		termIndex := logbuffer.IndexByTermCount(termCount)
+		termOffset := int(logbuffer.ComputeTermOffsetFromPosition(position, shift))
+		termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
+		frameLength := logbuffer.FrameLengthVolatile(termBuf, termOffset)
+		switch {
+		case frameLength > 0:
+			position += int64(logbuffer.AlignFrameLength(int(frameLength)))
+		case isAbandonedTermEnd(meta, termCount, termOffset):
+			position = int64(termCount+1) << shift
+		default:
+			// A writer holds this frame open. Yield so the writer can commit it
+			// when GOMAXPROCS is 1.
+			runtime.Gosched()
+			continue
+		}
+
+		if logbuffer.ComputeTermOffsetFromPosition(position, shift) == 0 {
+			nextTermIndex := logbuffer.IndexByTermCount(termCount + 2)
+			aeron.MarkFragmentedReservationsLappedForTest(pub, nextTermIndex)
+			aeron.PublicationTermBufferForTest(pub, nextTermIndex).SetBytes(0, termLength, 0)
+		}
+		consumed.position.Store(position)
+		err := consumed.reader.SetCounterValue(
+			aeron.TestPublicationLimitCounterID,
+			position+termLength/2,
+		)
+		if err != nil {
+			errs <- fmt.Errorf("publication limit write failed: %w", err)
+			return
+		}
+	}
+}
+
+// isAbandonedTermEnd reports a term that a racing rotation closed before any
+// writer reached its end. A frame never fills the rest of that term. The tail
+// also equals the consumer position when the consumer catches up with the
+// active term. The check requires a count past this term, so the consumer does
+// not skip the active term.
+func isAbandonedTermEnd(meta atomicbuffer.AtomicBuffer, termCount int32, termOffset int) bool {
+	if logbuffer.ActiveTermCount(meta) <= termCount {
+		return false
+	}
+	rawTail, err := logbuffer.GetRawTail(meta, logbuffer.IndexByTermCount(termCount))
+	if err != nil {
+		return false
+	}
+	tailTermCount := logbuffer.ComputeTermCount(
+		logbuffer.TermID(rawTail),
+		aeron.TestPublicationInitialTermID,
+	)
+	tailOffset := int(logbuffer.TermOffset(rawTail, aeron.TestPublicationTermLength))
+	return tailTermCount == termCount && tailOffset == termOffset
 }
 
 func fragmentedStressPayload(pub *aeron.Publication) []byte {
@@ -105,6 +213,12 @@ func spinOffer(
 			return
 		default:
 			position := offer()
+			if position == aeron.BackPressured {
+				// Yield so the stand-in consumer can move the limit when
+				// GOMAXPROCS is 1.
+				runtime.Gosched()
+				continue
+			}
 			if position == aeron.AdminAction {
 				continue
 			}
@@ -158,8 +272,21 @@ func spinTryClaimCommit(
 
 func requireFragmentedConcurrentOfferClean(tb testing.TB) {
 	tb.Helper()
-	require.Empty(tb, aeron.ReportFragmentedReservationTrackerForTest())
-	require.Empty(tb, aeron.ReportFragmentedWriteTrackerForTest())
+	require.Empty(
+		tb,
+		aeron.ReportFragmentedReservationsLappedForTest(),
+		"reservations still open in a partition the consumer zeroes",
+	)
+	require.Empty(
+		tb,
+		aeron.ReportFragmentedReservationTrackerForTest(),
+		"reservations share a slot or stay open",
+	)
+	require.Empty(
+		tb,
+		aeron.ReportFragmentedWriteTrackerForTest(),
+		"fragment writes share a slot or stay open",
+	)
 }
 
 func TestPublication_Offer_concurrentWithRotation(t *testing.T) {
@@ -188,25 +315,27 @@ func TestPublication_Offer_concurrentWithRotation(t *testing.T) {
 }
 
 func TestPublication_Offer_concurrentFragmented(t *testing.T) {
-	pub := aeron.NewTestPublication(t, aeron.DefaultTestPublicationLogConfig(), int64(1)<<62)
-	aeron.EnableFragmentedWriteTrackingForTest(pub)
-	t.Cleanup(func() { aeron.DisableFragmentedWriteTrackingForTest(pub) })
+	consumed := newConsumedTestPublication(t, aeron.DefaultTestPublicationLogConfig())
+	pub := consumed.pub
 
 	var successCount atomic.Int64
-	errs := make(chan error, 4)
-	workers := make([]func(stop <-chan struct{}), 4)
+	errs := make(chan error, 5)
 	payload := fragmentedStressPayload(pub)
-	for i := range workers {
-		workers[i] = func(stop <-chan struct{}) {
-			spinOffer(
-				pub, stop, errs, &successCount,
-				"fragmented offer",
-				func() int64 { return pub.Offer(payload) },
-			)
-		}
+	offer := func(stop <-chan struct{}) {
+		spinOffer(
+			pub, stop, errs, &successCount,
+			"fragmented offer",
+			func() int64 { return pub.Offer(payload) },
+		)
+	}
+	consume := func(stop <-chan struct{}) {
+		consumed.spin(stop, errs)
 	}
 
-	runConcurrentPublicationStress(t, concurrentPublicationStressDuration(), errs, workers...)
+	runConcurrentPublicationStress(
+		t, concurrentPublicationStressDuration(), errs,
+		offer, offer, offer, offer, consume,
+	)
 
 	requireConcurrentStressSuccessCount(t, successCount.Load(), concurrentPublicationMinSuccessCount)
 	requireFragmentedConcurrentOfferClean(t)
@@ -215,28 +344,30 @@ func TestPublication_Offer_concurrentFragmented(t *testing.T) {
 }
 
 func TestPublication_Offer_concurrentFragmentedWithRotation(t *testing.T) {
-	pub := aeron.NewTestPublication(t, publicationLogConfigNearTermEnd(256), int64(1)<<62)
-	aeron.EnableFragmentedWriteTrackingForTest(pub)
-	t.Cleanup(func() { aeron.DisableFragmentedWriteTrackingForTest(pub) })
+	consumed := newConsumedTestPublication(t, publicationLogConfigNearTermEnd(256))
+	pub := consumed.pub
 
 	var successCount atomic.Int64
 	errs := make(chan error, 3)
 	payload := fragmentedStressPayload(pub)
-	workers := make([]func(stop <-chan struct{}), 3)
-	for i := range 2 {
-		workers[i] = func(stop <-chan struct{}) {
-			spinOffer(
-				pub, stop, errs, &successCount,
-				"fragmented offer",
-				func() int64 { return pub.Offer(payload) },
-			)
-		}
+	offer := func(stop <-chan struct{}) {
+		spinOffer(
+			pub, stop, errs, &successCount,
+			"fragmented offer",
+			func() int64 { return pub.Offer(payload) },
+		)
 	}
-	workers[2] = func(stop <-chan struct{}) {
+	rotate := func(stop <-chan struct{}) {
 		spinRotatePublicationLog(pub, stop)
 	}
+	consume := func(stop <-chan struct{}) {
+		consumed.spin(stop, errs)
+	}
 
-	runConcurrentPublicationStress(t, concurrentPublicationStressDuration(), errs, workers...)
+	runConcurrentPublicationStress(
+		t, concurrentPublicationStressDuration(), errs,
+		offer, offer, rotate, consume,
+	)
 
 	requireConcurrentStressSuccessCount(t, successCount.Load(), concurrentPublicationMinSuccessCount)
 	requireFragmentedConcurrentOfferClean(t)

@@ -2,7 +2,6 @@ package aeron
 
 import (
 	"fmt"
-	"sync"
 	"sync/atomic"
 
 	"github.com/warrenguy/heron/aeron/cnc"
@@ -46,12 +45,11 @@ type Publication struct {
 	activeTermCount *int32
 	tailCounters    [logbuffer.PartitionCount]*int64
 
-	initialTermID         int32
-	maxPayloadLength      int
-	maxMessageLength      int
-	maxPossiblePosition   int64
-	headerWriter          logbuffer.HeaderWriter
-	fragmentedPartitionMu [logbuffer.PartitionCount]sync.Mutex
+	initialTermID       int32
+	maxPayloadLength    int
+	maxMessageLength    int
+	maxPossiblePosition int64
+	headerWriter        logbuffer.HeaderWriter
 
 	counters               *cnc.CountersReader
 	publicationLimit       cnc.CounterSlot
@@ -604,13 +602,12 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 		return status
 	}
 
-	partitionMu := &pub.fragmentedPartitionMu[termIndex]
-	// Contention returns AdminAction. The caller retries, as after a rotation.
-	if !partitionMu.TryLock() {
-		return AdminAction
-	}
-	defer partitionMu.Unlock()
-
+	// The fragment copy does not take a lock. The driver keeps the publication
+	// limit within half a term of the slowest consumer, the sender or a
+	// subscriber. A consumer stops at the first frame not yet committed. So a
+	// writer never wraps back to this partition while this reservation is
+	// open. The driver unblocks a frame left open past the publication unblock
+	// timeout. A writer that stalls that long loses this guarantee.
 	termOffset, termID, position, status := pub.reserveFragmentedSpan(
 		termIndex,
 		tailOffset,
@@ -619,38 +616,22 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 	if status != 0 {
 		return status
 	}
-	if trackFragmentedReservationBegin(pub, termIndex, termOffset) {
-		defer trackFragmentedReservationEnd(pub, termIndex, termOffset)
+	if trackFragmentedReservationBegin(pub, termID, termOffset) {
+		defer trackFragmentedReservationEnd(pub, termID, termOffset)
 	}
 
 	termBuf := pub.termBuffers[termIndex]
 	frameOffset := termOffset
-	reservationEnd := termOffset + framedLength
 	remaining := length
 	fullChunkAligned := logbuffer.AlignFragmentChunkLength(pub.maxPayloadLength)
 
 	// The FAA already advanced the tail past the full framed span. The loop
-	// must fill that span on termBuf, with frames or padding.
+	// must fill that span on termBuf.
 	for remaining > 0 {
-		// A partition recycle resets the raw tail term ID. Pad the rest of the
-		// reservation so a new publisher cannot overlap it.
-		if logbuffer.TermID(pub.meta.GetInt64Volatile(tailOffset)) != termID {
-			if frameOffset < reservationEnd {
-				pub.commitTermPadding(
-					termBuf,
-					termID,
-					frameOffset,
-					//nolint:gosec // G115: at most framedLength, a framed 16MB message, under 1<<30
-					int32(reservationEnd-frameOffset),
-				)
-			}
-			return AdminAction
-		}
-
 		chunk := nextFragmentChunk(remaining, length, pub.maxPayloadLength, fullChunkAligned)
 		payloadOffset := srcOffset + (length - remaining)
 
-		trackFragmentedWrite(pub, termIndex, frameOffset, true)
+		trackFragmentedWrite(pub, termID, frameOffset, true)
 
 		writeFragmentChunk(
 			pub.headerWriter,
@@ -661,22 +642,13 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 			buffer[payloadOffset:payloadOffset+chunk.bytesToWrite],
 		)
 
-		trackFragmentedWrite(pub, termIndex, frameOffset, false)
+		trackFragmentedWrite(pub, termID, frameOffset, false)
 
 		frameOffset += chunk.alignedLength
 		remaining -= chunk.bytesToWrite
 	}
 
 	return position
-}
-
-func (pub *Publication) commitTermPadding(
-	termBuf atomicbuffer.AtomicBuffer,
-	termID int32,
-	fromOffset int,
-	paddingLength int32,
-) {
-	commitPublicationTermPadding(pub.headerWriter, termBuf, termID, fromOffset, paddingLength)
 }
 
 func (pub *Publication) handleEndOfLog(
@@ -690,7 +662,13 @@ func (pub *Publication) handleEndOfLog(
 		// Term-end padding seeds session/stream and default header fields before the
 		// PAD type commit; PAD-only writes (as in Abort) would omit them.
 		//nolint:gosec // G115: CheckTermLength caps termLength at TermMaxLength, 1<<30
-		pub.commitTermPadding(termBuf, termID, termOffset, int32(termLength-termOffset))
+		commitPublicationTermPadding(
+			pub.headerWriter,
+			termBuf,
+			termID,
+			termOffset,
+			int32(termLength-termOffset),
+		)
 	}
 
 	if position >= pub.maxPossiblePosition {

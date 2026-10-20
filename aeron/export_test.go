@@ -3,6 +3,7 @@ package aeron
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"slices"
 	"sync"
@@ -164,21 +165,30 @@ func OfferRetryForTest(pub offerWithOffsetRetrySource, payload []byte) int64 {
 	return OfferWithOffsetRetryForTest(pub, payload, 0, len(payload))
 }
 
+// fragmentedWriteSlot keys a tracked frame by term ID and offset. A writer runs
+// its end hook after the commit. By then a later term may reuse the partition,
+// and that reuse is not an overlap. So the key does not catch a writer that
+// laps an open reservation. MarkFragmentedReservationsLappedForTest covers
+// that case from the consumer side.
 type fragmentedWriteSlot struct {
-	termIndex   int
+	termID      int32
 	frameOffset int
 }
 
+// inflightSlotTracker keeps overlapped slots and lapped slots in separate
+// sets, so a failure report names its cause.
 type inflightSlotTracker struct {
 	mu         sync.Mutex
 	inflight   map[fragmentedWriteSlot]int
 	overlapped map[fragmentedWriteSlot]struct{}
+	lapped     map[fragmentedWriteSlot]struct{}
 }
 
 func (tracker *inflightSlotTracker) reset() {
 	tracker.mu.Lock()
 	tracker.inflight = make(map[fragmentedWriteSlot]int)
 	tracker.overlapped = make(map[fragmentedWriteSlot]struct{})
+	tracker.lapped = make(map[fragmentedWriteSlot]struct{})
 	tracker.mu.Unlock()
 }
 
@@ -196,6 +206,29 @@ func (tracker *inflightSlotTracker) track(key fragmentedWriteSlot, begin bool) {
 	if tracker.inflight[key] <= 0 {
 		delete(tracker.inflight, key)
 	}
+}
+
+// markLapped records every open slot whose term lives in partition. The
+// consumer calls it before it zeroes that partition.
+func (tracker *inflightSlotTracker) markLapped(partition int, initialTermID int32) {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	for key, count := range tracker.inflight {
+		if count <= 0 {
+			continue
+		}
+		termCount := logbuffer.ComputeTermCount(key.termID, initialTermID)
+		if logbuffer.IndexByTermCount(termCount) == partition {
+			tracker.lapped[key] = struct{}{}
+		}
+	}
+}
+
+func (tracker *inflightSlotTracker) reportLapped() []fragmentedWriteSlot {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+
+	return slices.Collect(maps.Keys(tracker.lapped))
 }
 
 func (tracker *inflightSlotTracker) report() []fragmentedWriteSlot {
@@ -219,7 +252,7 @@ func (tracker *inflightSlotTracker) report() []fragmentedWriteSlot {
 }
 
 // fragmentedWriteTracker and fragmentedReservationTracker aggregate slots
-// across every enabled session. SetFragmentedWriteTrackForTest keys hooks by
+// across every enabled session. setFragmentedWriteTrackHook keys hooks by
 // *Publication. These trackers do not.
 //
 // Concurrency: one enabled session at a time. Tests that call
@@ -231,26 +264,22 @@ var (
 	fragmentedReservationTracker inflightSlotTracker
 )
 
-func trackFragmentedSlot(
-	tracker *inflightSlotTracker,
-	termIndex int,
-	frameOffset int,
-	begin bool,
-) {
-	tracker.track(
-		fragmentedWriteSlot{termIndex: termIndex, frameOffset: frameOffset},
-		begin,
-	)
-}
-
+// EnableFragmentedWriteTrackingForTest resets both trackers and sets the
+// tracking hooks on pub.
 func EnableFragmentedWriteTrackingForTest(pub *Publication) {
 	fragmentedWriteTracker.reset()
 	fragmentedReservationTracker.reset()
-	setFragmentedReservationTrackHook(pub, func(termIndex, termOffset int, begin bool) {
-		trackFragmentedSlot(&fragmentedReservationTracker, termIndex, termOffset, begin)
+	setFragmentedReservationTrackHook(pub, func(termID int32, termOffset int, begin bool) {
+		fragmentedReservationTracker.track(
+			fragmentedWriteSlot{termID: termID, frameOffset: termOffset},
+			begin,
+		)
 	})
-	setFragmentedWriteTrackHook(pub, func(termIndex, frameOffset int, begin bool) {
-		trackFragmentedSlot(&fragmentedWriteTracker, termIndex, frameOffset, begin)
+	setFragmentedWriteTrackHook(pub, func(termID int32, frameOffset int, begin bool) {
+		fragmentedWriteTracker.track(
+			fragmentedWriteSlot{termID: termID, frameOffset: frameOffset},
+			begin,
+		)
 	})
 }
 
@@ -261,19 +290,24 @@ func DisableFragmentedWriteTrackingForTest(pub *Publication) {
 	fragmentedReservationTracker.reset()
 }
 
-func SetFragmentedWriteTrackForTest(
-	pub *Publication,
-	fn func(termIndex, frameOffset int, begin bool),
-) {
-	setFragmentedWriteTrackHook(pub, fn)
-}
-
 func ReportFragmentedWriteTrackerForTest() []fragmentedWriteSlot {
 	return fragmentedWriteTracker.report()
 }
 
 func ReportFragmentedReservationTrackerForTest() []fragmentedWriteSlot {
 	return fragmentedReservationTracker.report()
+}
+
+// MarkFragmentedReservationsLappedForTest records each open reservation in
+// partition. A stand-in consumer calls it before it zeroes that partition, so
+// a reservation found there is one a writer placed past the consumer window.
+// ReportFragmentedReservationsLappedForTest reports those reservations.
+func MarkFragmentedReservationsLappedForTest(pub *Publication, partition int) {
+	fragmentedReservationTracker.markLapped(partition, pub.initialTermID)
+}
+
+func ReportFragmentedReservationsLappedForTest() []fragmentedWriteSlot {
+	return fragmentedReservationTracker.reportLapped()
 }
 
 type offerWithOffsetRetrySource interface {

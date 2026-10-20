@@ -2,8 +2,8 @@
 
 package aeron
 
-func trackFragmentedReservationBegin(*Publication, int, int) bool { return false }
+func trackFragmentedReservationBegin(*Publication, int32, int) bool { return false }
 
-func trackFragmentedReservationEnd(*Publication, int, int) {}
+func trackFragmentedReservationEnd(*Publication, int32, int) {}
 
-func trackFragmentedWrite(*Publication, int, int, bool) {}
+func trackFragmentedWrite(*Publication, int32, int, bool) {}

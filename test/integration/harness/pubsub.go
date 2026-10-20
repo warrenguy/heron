@@ -674,7 +674,7 @@ const pollReassembledDelegatedMaxBuf = 256 * 1024
 //
 // want>1 uses harness-only B/E stitch (not production FragmentAssembler):
 // single image, in-order sequential fragments only. Orphan middle/END fails
-// fast. New BEGIN resets partial assembly (AdminAction partial + retry).
+// fast. New BEGIN resets partial assembly.
 //
 // Caller must drive client DoWork on the want>1 path.
 func PollReassembled(
@@ -834,9 +834,6 @@ func pollReassembledHarnessOracleCtx(
 			received = append(received, slices.Clone(fragment))
 			pending = pending[:0]
 		case begin:
-			// OfferWithRetry mid-fragment AdminAction can commit an orphan BEGIN before
-			// padding and a full retry; see OfferWithRetry godoc and
-			// TestPublication_FragmentedOffer_midFragmentTermIDChangeAdminAction.
 			pending = slices.Clone(fragment)
 		case end:
 			if len(pending) == 0 {

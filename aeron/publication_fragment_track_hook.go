@@ -4,9 +4,9 @@ package aeron
 
 import "github.com/warrenguy/heron/internal/testhook"
 
-type fragmentedWriteTrackFn func(termIndex, frameOffset int, begin bool)
+type fragmentedWriteTrackFn func(termID int32, frameOffset int, begin bool)
 
-type fragmentedReservationTrackFn func(termIndex, termOffset int, begin bool)
+type fragmentedReservationTrackFn func(termID int32, termOffset int, begin bool)
 
 // fragmentedWriteTracks and fragmentedReservationTracks are keyed by
 // *Publication. Concurrent Offer peers must not observe another test's hook.
@@ -15,23 +15,23 @@ var (
 	fragmentedReservationTracks = testhook.NewRegistry[*Publication, fragmentedReservationTrackFn]()
 )
 
-func trackFragmentedReservationBegin(pub *Publication, termIndex, termOffset int) bool {
+func trackFragmentedReservationBegin(pub *Publication, termID int32, termOffset int) bool {
 	if fn := fragmentedReservationTracks.Load(pub); fn != nil {
-		fn(termIndex, termOffset, true)
+		fn(termID, termOffset, true)
 		return true
 	}
 	return false
 }
 
-func trackFragmentedReservationEnd(pub *Publication, termIndex, termOffset int) {
+func trackFragmentedReservationEnd(pub *Publication, termID int32, termOffset int) {
 	if fn := fragmentedReservationTracks.Load(pub); fn != nil {
-		fn(termIndex, termOffset, false)
+		fn(termID, termOffset, false)
 	}
 }
 
-func trackFragmentedWrite(pub *Publication, termIndex, frameOffset int, begin bool) {
+func trackFragmentedWrite(pub *Publication, termID int32, frameOffset int, begin bool) {
 	if fn := fragmentedWriteTracks.Load(pub); fn != nil {
-		fn(termIndex, frameOffset, begin)
+		fn(termID, frameOffset, begin)
 	}
 }
 
