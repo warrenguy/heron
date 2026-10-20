@@ -62,7 +62,8 @@ func ComputePosition(
 	initialTermID int32,
 ) int64 {
 	termCount := ComputeTermCount(activeTermID, initialTermID)
-	return (int64(termCount) << positionBitsToShift) + int64(termOffset)
+	// The mask drops the compiler's shift guard. A log never shifts by 64 or more.
+	return (int64(termCount) << (positionBitsToShift & 63)) + int64(termOffset)
 }
 
 func ComputeTermBeginPosition(

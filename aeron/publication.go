@@ -1,7 +1,6 @@
 package aeron
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -133,9 +132,12 @@ func (pub *Publication) Offer(buffer []byte) int64 {
 //
 // See also PositionCodeName, IsOfferRetriable.
 func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64 {
-	// The unfragmented success path stays in this one function and calls no
-	// helper. reserveFrame states the read order. The tail read and the FAA
-	// must stay in one function.
+	// The unfragmented success path does not call a helper.
+	//
+	// Volatile read order: limit, active term count, partition raw tail, as in
+	// Java ConcurrentPublication. The tail read and the FAA stay in one
+	// function. A yield between them lets a rotation reserve on the wrong
+	// partition.
 	if pub.IsClosed() {
 		return Closed
 	}
@@ -241,35 +243,117 @@ func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64
 func (pub *Publication) TryClaim(
 	length int,
 ) (termIndex, frameOffset int, position int64, err error) {
+	// Repeats the OfferWithOffset reservation and its read order. A change to
+	// one must change the other.
 	if pub.IsClosed() {
 		return 0, 0, Closed, nil
 	}
-	if length < 0 {
-		return 0, 0, 0, fmt.Errorf("aeron: invalid message length=%d", length)
-	}
-	if length > pub.maxPayloadLength {
-		return 0, 0, 0, fmt.Errorf(
-			"aeron: claim length %d exceeds maxPayloadLength=%d",
-			length,
-			pub.maxPayloadLength,
-		)
+
+	// The unsigned compare rejects a negative length too.
+	if uint(length) > uint(pub.maxPayloadLength) {
+		return 0, 0, 0, invalidClaimLengthError(length, pub.maxPayloadLength)
 	}
 
-	termIndex, frameOffset, position, status := pub.reserveFrame(length)
-	if status != 0 {
+	limit := pub.publicationLimit.Get()
+
+	alignedLength := logbuffer.AlignFragmentChunkLength(length)
+	termLength := pub.termBufferLength
+	positionBitsToShift := pub.positionBitsToShift
+	initialTermID := pub.initialTermID
+
+	termCount := atomic.LoadInt32(pub.activeTermCount)
+	termIndex = logbuffer.IndexByTermCount(termCount)
+	tailCounter := pub.tailCounters[termIndex]
+
+	rawTail := atomic.LoadInt64(tailCounter)
+	termID := logbuffer.TermID(rawTail)
+	termOffset := int(logbuffer.TermOffset(rawTail, termLength))
+
+	if termCount != logbuffer.ComputeTermCount(termID, initialTermID) {
+		return 0, 0, AdminAction, nil
+	}
+
+	position = logbuffer.ComputePosition(
+		termID,
+		termOffset,
+		positionBitsToShift,
+		initialTermID,
+	)
+	if position >= limit {
+		return 0, 0, backPressureStatus(pub, position, int64(length)), nil
+	}
+	if position+int64(alignedLength) >= pub.maxPossiblePosition {
+		return 0, 0, MaxPositionExceeded, nil
+	}
+
+	rawTail = atomic.AddInt64(tailCounter, int64(alignedLength)) - int64(alignedLength)
+	termID = logbuffer.TermID(rawTail)
+	termOffset = int(logbuffer.TermOffset(rawTail, termLength))
+
+	resultingOffset := termOffset + alignedLength
+	position = logbuffer.ComputePosition(
+		termID,
+		resultingOffset,
+		positionBitsToShift,
+		initialTermID,
+	)
+	if resultingOffset > termLength {
+		status := pub.handleEndOfLog(
+			pub.termBuffers[termIndex],
+			termLength,
+			termID,
+			termOffset,
+			position,
+		)
 		return 0, 0, status, nil
 	}
-	return termIndex, frameOffset, position, nil
+
+	termBuf := pub.termBuffers[termIndex].Bytes()
+	frame := termBuf[termOffset : termOffset+logbuffer.DataHeaderLength]
+	pub.headerWriter.WriteHeader(frame, termOffset, dataFrameLength(length), termID)
+
+	return termIndex, termOffset, position, nil
 }
 
 // Commit publishes an in-flight claim on the termIndex partition from TryClaim.
 func (pub *Publication) Commit(termIndex, frameOffset int) error {
-	return pub.finalizeInFlightClaim(termIndex, frameOffset, false)
+	if pub.IsClosed() {
+		return errPublicationClosed
+	}
+
+	frame, ok := claimFrame(&pub.termBuffers, termIndex, frameOffset)
+	if !ok {
+		return claimFrameError(termIndex, frameOffset)
+	}
+	header := atomicbuffer.Wrap(frame[:logbuffer.DataHeaderLength])
+
+	frameLength := header.GetInt32Volatile(logbuffer.OffsetFrameLength)
+	if frameLength >= 0 {
+		return errClaimNotInFlight
+	}
+	header.PutInt32Release(logbuffer.OffsetFrameLength, -frameLength)
+	return nil
 }
 
 // Abort retypes an in-flight claim as PAD on the termIndex partition from TryClaim.
 func (pub *Publication) Abort(termIndex, frameOffset int) error {
-	return pub.finalizeInFlightClaim(termIndex, frameOffset, true)
+	if pub.IsClosed() {
+		return errPublicationClosed
+	}
+
+	frame, ok := claimFrame(&pub.termBuffers, termIndex, frameOffset)
+	if !ok {
+		return claimFrameError(termIndex, frameOffset)
+	}
+	header := atomicbuffer.Wrap(frame[:logbuffer.DataHeaderLength])
+
+	frameLength := header.GetInt32Volatile(logbuffer.OffsetFrameLength)
+	if frameLength >= 0 {
+		return errClaimNotInFlight
+	}
+	logbuffer.PutFrameType(header, 0, logbuffer.HdrTypePad)
+	header.PutInt32Release(logbuffer.OffsetFrameLength, -frameLength)
+	return nil
 }
 
 // TermBuffer returns the log partition term buffer for in-flight TryClaim writes.
@@ -330,7 +414,7 @@ func (pub *Publication) IsConnected() bool {
 // IPC publications omit the counter; NullCounterID reports ChannelEndpointStatusActive.
 func (pub *Publication) ChannelStatus() (int64, error) {
 	if pub.IsClosed() {
-		return Closed, errors.New("aeron: publication is closed")
+		return Closed, errPublicationClosed
 	}
 	if pub.channelStatusCounterID == cnc.NullCounterID {
 		return ChannelEndpointStatusActive, nil
@@ -407,68 +491,25 @@ func invalidOfferSliceMessage(offset, length, bufferLength int) string {
 	)
 }
 
-func validateTermIndex(termIndex int) error {
-	if err := logbuffer.ValidateTermIndex(termIndex, "term index"); err != nil {
-		return fmt.Errorf("aeron: invalid term index %d", termIndex)
+// invalidClaimLengthError returns the TryClaim error for a length outside
+// [0, maxPayloadLength].
+func invalidClaimLengthError(length, maxPayloadLength int) error {
+	if length < 0 {
+		return fmt.Errorf("aeron: invalid message length=%d", length)
 	}
-	return nil
+	return fmt.Errorf(
+		"aeron: claim length %d exceeds maxPayloadLength=%d",
+		length,
+		maxPayloadLength,
+	)
 }
 
-func validateFrameOffset(termBuf atomicbuffer.AtomicBuffer, frameOffset int) error {
-	// Claim reservation guarantees the full DataHeaderLength fits before payload access.
-	if frameOffset < 0 || frameOffset+logbuffer.DataHeaderLength > termBuf.Capacity() {
-		return fmt.Errorf("aeron: invalid frame offset %d", frameOffset)
-	}
-	return nil
+func invalidTermIndexError(termIndex int) error {
+	return fmt.Errorf("aeron: invalid term index %d", termIndex)
 }
 
-func (pub *Publication) finalizeInFlightClaim(
-	termIndex int,
-	frameOffset int,
-	pad bool,
-) error {
-	termBuf, absLength, err := pub.loadInFlightClaim(termIndex, frameOffset)
-	if err != nil {
-		return err
-	}
-	if pad {
-		logbuffer.PutFrameType(termBuf, frameOffset, logbuffer.HdrTypePad)
-	}
-	logbuffer.PutFrameLengthOrdered(termBuf, frameOffset, absLength)
-	return nil
-}
-
-func (pub *Publication) loadInFlightClaim(
-	termIndex int,
-	frameOffset int,
-) (atomicbuffer.AtomicBuffer, int32, error) {
-	if pub.IsClosed() {
-		return atomicbuffer.AtomicBuffer{}, 0, errors.New("aeron: publication is closed")
-	}
-	return loadInFlightClaimFrame(&pub.termBuffers, termIndex, frameOffset)
-}
-
-// loadInFlightClaimFrame validates a claimed frame and returns its term buffer
-// and absolute frame length. Shared by concurrent and exclusive Commit/Abort;
-// the closed check stays with each caller for the type-specific error.
-func loadInFlightClaimFrame(
-	termBuffers *[logbuffer.PartitionCount]atomicbuffer.AtomicBuffer,
-	termIndex int,
-	frameOffset int,
-) (atomicbuffer.AtomicBuffer, int32, error) {
-	if err := validateTermIndex(termIndex); err != nil {
-		return atomicbuffer.AtomicBuffer{}, 0, err
-	}
-
-	termBuf := termBuffers[termIndex]
-	if err := validateFrameOffset(termBuf, frameOffset); err != nil {
-		return atomicbuffer.AtomicBuffer{}, 0, err
-	}
-	frameLength := termBuf.GetInt32Volatile(frameOffset)
-	if frameLength >= 0 {
-		return atomicbuffer.AtomicBuffer{}, 0, errors.New("aeron: claimed space not in flight")
-	}
-	return termBuf, -frameLength, nil
+func invalidFrameOffsetError(frameOffset int) error {
+	return fmt.Errorf("aeron: invalid frame offset %d", frameOffset)
 }
 
 // runOfferPrelude gates a fragmented offer as Java ConcurrentPublication.offer
@@ -551,81 +592,6 @@ func (pub *Publication) reserveFragmentedSpan(
 		return 0, 0, 0, endStatus
 	}
 	return termOffset, termID, position, 0
-}
-
-// reserveFrame checks the publication limit, reserves space with a
-// fetch-and-add on the active partition tail counter, then writes the DATA
-// frame header at termOffset. The caller fills the payload and commits the
-// frame length.
-//
-// Volatile read order: limit, active term count, partition raw tail, as in
-// Java ConcurrentPublication. No yield between the tail read and the FAA. A
-// rotation between them reserves on the wrong partition.
-//
-// Each reservation ends as DATA or PAD at termOffset. Callers retry on
-// AdminAction.
-//
-// The prelude repeats the runOfferPrelude checks inline. The tail read and the
-// FAA must stay in one function.
-//
-// TryClaim calls reserveFrame. OfferWithOffset repeats the same steps inline,
-// so its success path calls no helper. A change to one must change the other.
-func (pub *Publication) reserveFrame(messageLength int) (
-	termIndex int,
-	termOffset int,
-	position int64,
-	status int64,
-) {
-	limit := pub.publicationLimit.Get()
-
-	alignedLength := logbuffer.AlignFragmentChunkLength(messageLength)
-	termLength := pub.termBufferLength
-
-	termCount := atomic.LoadInt32(pub.activeTermCount)
-	termIndex = logbuffer.IndexByTermCount(termCount)
-	tailCounter := pub.tailCounters[termIndex]
-
-	rawTail := atomic.LoadInt64(tailCounter)
-	termID := logbuffer.TermID(rawTail)
-	termOffset = int(logbuffer.TermOffset(rawTail, termLength))
-
-	if termCount != logbuffer.ComputeTermCount(termID, pub.initialTermID) {
-		return 0, 0, 0, AdminAction
-	}
-
-	position = logbuffer.ComputePosition(
-		termID,
-		termOffset,
-		pub.positionBitsToShift,
-		pub.initialTermID,
-	)
-	if position >= limit {
-		return 0, 0, 0, backPressureStatus(pub, position, int64(messageLength))
-	}
-	if position+int64(alignedLength) >= pub.maxPossiblePosition {
-		return 0, 0, 0, MaxPositionExceeded
-	}
-
-	rawTail = atomic.AddInt64(tailCounter, int64(alignedLength)) - int64(alignedLength)
-	termID = logbuffer.TermID(rawTail)
-	termOffset = int(logbuffer.TermOffset(rawTail, termLength))
-
-	resultingOffset := termOffset + alignedLength
-	position = logbuffer.ComputePosition(
-		termID,
-		resultingOffset,
-		pub.positionBitsToShift,
-		pub.initialTermID,
-	)
-
-	termBuf := pub.termBuffers[termIndex]
-	if resultingOffset > termLength {
-		endStatus := pub.handleEndOfLog(termBuf, termLength, termID, termOffset, position)
-		return 0, 0, 0, endStatus
-	}
-
-	pub.headerWriter.Write(termBuf, termOffset, dataFrameLength(messageLength), termID)
-	return termIndex, termOffset, position, 0
 }
 
 func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length int) int64 {

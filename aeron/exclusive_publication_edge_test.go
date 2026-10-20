@@ -2,6 +2,7 @@ package aeron_test
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -84,6 +85,56 @@ func TestExclusivePublication_ClaimFinalize_errors(t *testing.T) {
 				"aeron: invalid frame offset %d",
 				aeron.TestPublicationTermLength-logbuffer.DataHeaderLength+1,
 			),
+		},
+		{
+			name:    "Abort invalid frame offset",
+			op:      func(ep *aeron.ExclusivePublication) error { return ep.Abort(0, -1) },
+			wantErr: "aeron: invalid frame offset -1",
+		},
+		{
+			name: "Abort frame offset past term",
+			op: func(ep *aeron.ExclusivePublication) error {
+				capacity := aeron.ExclusivePublicationTermBufferForTest(ep, 0).Capacity()
+				return ep.Abort(0, capacity-logbuffer.DataHeaderLength+1)
+			},
+			wantErr: fmt.Sprintf(
+				"aeron: invalid frame offset %d",
+				aeron.TestPublicationTermLength-logbuffer.DataHeaderLength+1,
+			),
+		},
+		{
+			name: "Commit frame offset not frame aligned",
+			op: func(ep *aeron.ExclusivePublication) error {
+				return ep.Commit(0, logbuffer.FrameAlignment/2)
+			},
+			wantErr: fmt.Sprintf("aeron: invalid frame offset %d", logbuffer.FrameAlignment/2),
+		},
+		{
+			name: "Abort frame offset not frame aligned",
+			op: func(ep *aeron.ExclusivePublication) error {
+				return ep.Abort(0, logbuffer.FrameAlignment/2)
+			},
+			wantErr: fmt.Sprintf("aeron: invalid frame offset %d", logbuffer.FrameAlignment/2),
+		},
+		{
+			name:    "Commit frame offset max int",
+			op:      func(ep *aeron.ExclusivePublication) error { return ep.Commit(0, math.MaxInt) },
+			wantErr: fmt.Sprintf("aeron: invalid frame offset %d", math.MaxInt),
+		},
+		{
+			name:    "Abort frame offset max int",
+			op:      func(ep *aeron.ExclusivePublication) error { return ep.Abort(0, math.MaxInt) },
+			wantErr: fmt.Sprintf("aeron: invalid frame offset %d", math.MaxInt),
+		},
+		{
+			name:    "Commit negative term index",
+			op:      func(ep *aeron.ExclusivePublication) error { return ep.Commit(-1, 0) },
+			wantErr: "aeron: invalid term index -1",
+		},
+		{
+			name:    "Abort negative term index",
+			op:      func(ep *aeron.ExclusivePublication) error { return ep.Abort(-1, 0) },
+			wantErr: "aeron: invalid term index -1",
 		},
 		{
 			name: "Commit closed",
