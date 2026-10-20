@@ -123,8 +123,8 @@ func newConsumedTestPublication(
 // committed frames from the start position and keeps the publication limit
 // half a term ahead. On entry to each term it zeroes the partition of the term
 // after it, so writers do not meet stale frames. Before the zeroing it marks
-// every reservation still open in that partition as lapped. A failed limit
-// write goes to errs.
+// every reservation still open in that term or a later one as lapped. A
+// failed limit write goes to errs.
 func (consumed consumedPublication) spin(stop <-chan struct{}, errs chan error) {
 	const termLength = aeron.TestPublicationTermLength
 	pub := consumed.pub
@@ -156,8 +156,9 @@ func (consumed consumedPublication) spin(stop <-chan struct{}, errs chan error) 
 		}
 
 		if logbuffer.ComputeTermOffsetFromPosition(position, shift) == 0 {
-			nextTermIndex := logbuffer.IndexByTermCount(termCount + 2)
-			aeron.MarkFragmentedReservationsLappedForTest(pub, nextTermIndex)
+			nextTermCount := termCount + 2
+			nextTermIndex := logbuffer.IndexByTermCount(nextTermCount)
+			aeron.MarkFragmentedReservationsLappedForTest(pub, nextTermCount)
 			aeron.PublicationTermBufferForTest(pub, nextTermIndex).SetBytes(0, termLength, 0)
 		}
 		consumed.position.Store(position)

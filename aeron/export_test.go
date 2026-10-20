@@ -208,17 +208,22 @@ func (tracker *inflightSlotTracker) track(key fragmentedWriteSlot, begin bool) {
 	}
 }
 
-// markLapped records every open slot whose term lives in partition. The
-// consumer calls it before it zeroes that partition.
-func (tracker *inflightSlotTracker) markLapped(partition int, initialTermID int32) {
+// markLapped records open slots in termCount or a later term of its
+// partition. Earlier terms there are committed frames awaiting their end
+// hook, not laps.
+func (tracker *inflightSlotTracker) markLapped(termCount, initialTermID int32) {
+	partition := logbuffer.IndexByTermCount(termCount)
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 	for key, count := range tracker.inflight {
 		if count <= 0 {
 			continue
 		}
-		termCount := logbuffer.ComputeTermCount(key.termID, initialTermID)
-		if logbuffer.IndexByTermCount(termCount) == partition {
+		slotTermCount := logbuffer.ComputeTermCount(key.termID, initialTermID)
+		if slotTermCount < termCount {
+			continue
+		}
+		if logbuffer.IndexByTermCount(slotTermCount) == partition {
 			tracker.lapped[key] = struct{}{}
 		}
 	}
@@ -299,11 +304,11 @@ func ReportFragmentedReservationTrackerForTest() []fragmentedWriteSlot {
 }
 
 // MarkFragmentedReservationsLappedForTest records each open reservation in
-// partition. A stand-in consumer calls it before it zeroes that partition, so
-// a reservation found there is one a writer placed past the consumer window.
-// ReportFragmentedReservationsLappedForTest reports those reservations.
-func MarkFragmentedReservationsLappedForTest(pub *Publication, partition int) {
-	fragmentedReservationTracker.markLapped(partition, pub.initialTermID)
+// termCount or later. A stand-in consumer calls it before it zeroes the
+// partition for termCount. ReportFragmentedReservationsLappedForTest reports
+// them.
+func MarkFragmentedReservationsLappedForTest(pub *Publication, termCount int32) {
+	fragmentedReservationTracker.markLapped(termCount, pub.initialTermID)
 }
 
 func ReportFragmentedReservationsLappedForTest() []fragmentedWriteSlot {
