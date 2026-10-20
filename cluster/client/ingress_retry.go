@@ -141,11 +141,6 @@ func ingressOfferUntilPositive(
 //   - Retry aborts on any non-retriable code, including session-guard NotConnected
 //     returned after PollEgress advances recovery or egress teardown mutates state.
 //
-//   - Concurrent ingress may return AdminAction on fragmented Offer; a mid-fragment
-//     AdminAction can commit an orphan BEGIN frame before padding and a successful
-//     full retry. See github.com/warrenguy/heron/test/integration/harness.OfferWithRetry
-//     godoc for the publication-level caveat.
-//
 //   - offerFn must use app-guarded APIs (Offer, SendKeepAlive, SendSnapshotRequest).
 //     Do not wrap recovery-bypass paths such as offerSessionKeepAlive. Single-shot
 //     methods are not modified.
