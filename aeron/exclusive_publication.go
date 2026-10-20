@@ -1,8 +1,6 @@
 package aeron
 
 import (
-	"errors"
-	"fmt"
 	"sync/atomic"
 
 	"github.com/warrenguy/heron/aeron/cnc"
@@ -130,8 +128,8 @@ func (ep *ExclusivePublication) Offer(buffer []byte) int64 {
 //
 // See also PositionCodeName, IsOfferRetriable.
 func (ep *ExclusivePublication) OfferWithOffset(buffer []byte, offset, length int) int64 {
-	// The unfragmented success path stays in this one function and calls no
-	// helper.
+	// The unfragmented success path stays in this one function and does not
+	// call a helper.
 	if ep.IsClosed() {
 		return Closed
 	}
@@ -217,40 +215,94 @@ func (ep *ExclusivePublication) OfferWithOffset(buffer []byte, offset, length in
 func (ep *ExclusivePublication) TryClaim(
 	length int,
 ) (termIndex, frameOffset int, position int64, err error) {
+	// Repeats the OfferWithOffset reservation. A change to one must change the
+	// other.
 	if ep.IsClosed() {
 		return 0, 0, Closed, nil
 	}
-	if length < 0 {
-		return 0, 0, 0, fmt.Errorf("aeron: invalid message length=%d", length)
-	}
-	if length > ep.maxPayloadLength {
-		return 0, 0, 0, fmt.Errorf(
-			"aeron: claim length %d exceeds maxPayloadLength=%d",
-			length,
-			ep.maxPayloadLength,
-		)
+
+	// The unsigned compare rejects a negative length too.
+	if uint(length) > uint(ep.maxPayloadLength) {
+		return 0, 0, 0, invalidClaimLengthError(length, ep.maxPayloadLength)
 	}
 
 	alignedLength := logbuffer.AlignFragmentChunkLength(length)
-	if status := ep.checkPublicationLimit(alignedLength, length); status != 0 {
+
+	limit := ep.publicationLimit.Get()
+	termBeginPosition := ep.termBeginPosition
+	position = termBeginPosition + int64(ep.termOffset)
+	if position >= limit {
+		status := backPressureStatusForLog(
+			ep.meta,
+			ep.maxPossiblePosition,
+			position,
+			int64(alignedLength),
+		)
 		return 0, 0, status, nil
+	}
+	if position+int64(alignedLength) >= ep.maxPossiblePosition {
+		return 0, 0, MaxPositionExceeded, nil
 	}
 
-	termIndex, frameOffset, position, status := ep.claim(length, alignedLength)
-	if status != 0 {
-		return 0, 0, status, nil
+	termID := ep.termID
+	termOffset := ep.termOffset
+	resultingOffset := termOffset + alignedLength
+
+	//nolint:gosec // G115: termOffset under TermMaxLength, 1<<30, plus one aligned frame
+	rawTail := logbuffer.PackRawTail(termID, int32(resultingOffset))
+	atomicbuffer.StoreInt64Release(ep.activeTailCounter, rawTail)
+
+	position = termBeginPosition + int64(resultingOffset)
+	if resultingOffset > ep.termBufferLength {
+		return 0, 0, ep.rotateAtTermEnd(termOffset, position), nil
 	}
-	return termIndex, frameOffset, position, nil
+
+	frame := ep.activeTermBuffer[termOffset : termOffset+logbuffer.DataHeaderLength]
+	ep.headerWriter.WriteHeader(frame, termOffset, dataFrameLength(length), termID)
+
+	ep.termOffset = resultingOffset
+	return ep.activePartitionIndex, termOffset, position, nil
 }
 
 // Commit publishes an in-flight claim on the termIndex partition from TryClaim.
 func (ep *ExclusivePublication) Commit(termIndex, frameOffset int) error {
-	return ep.finalizeInFlightClaim(termIndex, frameOffset, false)
+	if ep.IsClosed() {
+		return errExclusivePublicationClosed
+	}
+
+	frame, ok := claimFrame(&ep.termBuffers, termIndex, frameOffset)
+	if !ok {
+		return claimFrameError(termIndex, frameOffset)
+	}
+	header := atomicbuffer.Wrap(frame[:logbuffer.DataHeaderLength])
+
+	frameLength := header.GetInt32Volatile(logbuffer.OffsetFrameLength)
+	if frameLength >= 0 {
+		return errClaimNotInFlight
+	}
+	header.PutInt32Release(logbuffer.OffsetFrameLength, -frameLength)
+	return nil
 }
 
 // Abort retypes an in-flight claim as PAD on the termIndex partition from TryClaim.
 func (ep *ExclusivePublication) Abort(termIndex, frameOffset int) error {
-	return ep.finalizeInFlightClaim(termIndex, frameOffset, true)
+	if ep.IsClosed() {
+		return errExclusivePublicationClosed
+	}
+
+	frame, ok := claimFrame(&ep.termBuffers, termIndex, frameOffset)
+	if !ok {
+		return claimFrameError(termIndex, frameOffset)
+	}
+	header := atomicbuffer.Wrap(frame[:logbuffer.DataHeaderLength])
+
+	frameLength := header.GetInt32Volatile(logbuffer.OffsetFrameLength)
+	if frameLength >= 0 {
+		return errClaimNotInFlight
+	}
+	logbuffer.PutFrameType(header, 0, logbuffer.HdrTypePad)
+	header.PutInt32Release(logbuffer.OffsetFrameLength, -frameLength)
+	return nil
 }
 
 // TermBuffer returns the log partition term buffer for in-flight TryClaim writes.
@@ -311,7 +363,7 @@ func (ep *ExclusivePublication) IsConnected() bool {
 // IPC publications omit the counter; NullCounterID reports ChannelEndpointStatusActive.
 func (ep *ExclusivePublication) ChannelStatus() (int64, error) {
 	if ep.IsClosed() {
-		return Closed, errors.New("aeron: exclusive publication is closed")
+		return Closed, errExclusivePublicationClosed
 	}
 	if ep.channelStatusCounterID == cnc.NullCounterID {
 		return ChannelEndpointStatusActive, nil
@@ -372,8 +424,8 @@ func (ep *ExclusivePublication) markClosed() error {
 // The max-position check uses reservationSpan only (aligned frame or full
 // framed length). Matches concurrent runOfferPrelude dual-span shape.
 //
-// The fragmented and claim paths call it. OfferWithOffset repeats the same
-// checks inline, so its success path calls no helper.
+// The fragmented path calls it. OfferWithOffset and TryClaim repeat the same
+// checks inline, so their success paths do not call a helper.
 func (ep *ExclusivePublication) checkPublicationLimit(reservationSpan, messageLength int) int64 {
 	limit := ep.publicationLimit.Get()
 	position := ep.termBeginPosition + int64(ep.termOffset)
@@ -395,8 +447,8 @@ func (ep *ExclusivePublication) checkPublicationLimit(reservationSpan, messageLe
 // and ep.termOffset are unchanged. The caller writes the frame at
 // ep.termOffset, then advances ep.termOffset by alignedLength.
 //
-// The fragmented and claim paths call it. OfferWithOffset repeats the same
-// steps inline, so its success path calls no helper.
+// The fragmented path calls it. OfferWithOffset and TryClaim repeat the same
+// steps inline, so their success paths do not call a helper.
 func (ep *ExclusivePublication) reserveExclusiveSpace(alignedLength int) (
 	reservedPosition int64,
 	status int64,
@@ -487,48 +539,6 @@ func (ep *ExclusivePublication) appendFragmentedMessage(
 
 	ep.termOffset += framedLength
 	return reservedPosition
-}
-
-func (ep *ExclusivePublication) claim(
-	length int,
-	alignedLength int,
-) (termIndex, frameOffset int, position, status int64) {
-	reservedPosition, status := ep.reserveExclusiveSpace(alignedLength)
-	if status != 0 {
-		return 0, 0, 0, status
-	}
-
-	frameOffset = ep.termOffset
-	termBuf := ep.termBuffers[ep.activePartitionIndex]
-	ep.headerWriter.Write(termBuf, frameOffset, dataFrameLength(length), ep.termID)
-	ep.termOffset += alignedLength
-	return ep.activePartitionIndex, frameOffset, reservedPosition, 0
-}
-
-func (ep *ExclusivePublication) finalizeInFlightClaim(
-	termIndex int,
-	frameOffset int,
-	pad bool,
-) error {
-	termBuf, absLength, err := ep.loadInFlightClaim(termIndex, frameOffset)
-	if err != nil {
-		return err
-	}
-	if pad {
-		logbuffer.PutFrameType(termBuf, frameOffset, logbuffer.HdrTypePad)
-	}
-	logbuffer.PutFrameLengthOrdered(termBuf, frameOffset, absLength)
-	return nil
-}
-
-func (ep *ExclusivePublication) loadInFlightClaim(
-	termIndex int,
-	frameOffset int,
-) (atomicbuffer.AtomicBuffer, int32, error) {
-	if ep.IsClosed() {
-		return atomicbuffer.AtomicBuffer{}, 0, errors.New("aeron: exclusive publication is closed")
-	}
-	return loadInFlightClaimFrame(&ep.termBuffers, termIndex, frameOffset)
 }
 
 // bindActivePartition makes partition the active partition. It caches the

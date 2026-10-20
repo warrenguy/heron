@@ -319,8 +319,8 @@ func NewTestPublicationForHooksWithConnected(tb testing.TB, connected bool) *Pub
 // NewTestPublicationForHooksWithLimit builds a concurrent publication with a
 // caller-chosen publication-limit counter value and is-connected flag.
 //
-// Cross-package tests use limit 0 at position 0 so runOfferPrelude and
-// backPressureStatus return retriable NotConnected or BackPressured.
+// Cross-package tests use limit 0. The publication limit check at position 0
+// then returns retriable NotConnected or BackPressured.
 func NewTestPublicationForHooksWithLimit(
 	tb testing.TB,
 	limitPosition int64,

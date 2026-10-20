@@ -1,8 +1,6 @@
 package aeron
 
 import (
-	"errors"
-
 	"github.com/warrenguy/heron/aeron/conductor"
 )
 
@@ -230,7 +228,7 @@ type sendDestinationTarget struct {
 
 func (pub *Publication) sendDestinationTarget() sendDestinationTarget {
 	if pub == nil || pub.IsClosed() {
-		return sendDestinationTarget{closedErr: errors.New("aeron: publication is closed")}
+		return sendDestinationTarget{closedErr: errPublicationClosed}
 	}
 	return sendDestinationTarget{
 		client:                 pub.client,
@@ -241,7 +239,7 @@ func (pub *Publication) sendDestinationTarget() sendDestinationTarget {
 func (ep *ExclusivePublication) sendDestinationTarget() sendDestinationTarget {
 	if ep == nil || ep.IsClosed() {
 		return sendDestinationTarget{
-			closedErr: errors.New("aeron: exclusive publication is closed"),
+			closedErr: errExclusivePublicationClosed,
 		}
 	}
 	return sendDestinationTarget{

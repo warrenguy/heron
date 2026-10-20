@@ -99,8 +99,9 @@ func (writer *HeaderWriter) WriteWithFlags(
 }
 
 // WriteHeader writes the header with the template flags at the start of frame.
-// frame starts at termOffset in the term buffer. The offer path calls it on a
-// frame it has already sliced, so the header needs no second bounds check.
+// frame starts at termOffset in the term buffer. The offer and claim paths
+// call it on a frame they have already sliced, so the header does not need
+// a second bounds check.
 //
 // Store order:
 //  1. A release store of the word at OffsetFrameLength. It holds -frameLength

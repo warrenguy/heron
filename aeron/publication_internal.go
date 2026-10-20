@@ -13,7 +13,39 @@ import (
 var (
 	errPublicationLogBufferNil = errors.New("aeron: publication log buffer is nil")
 	errPublicationCountersNil  = errors.New("aeron: publication counters view is nil")
+	errPublicationClosed       = errors.New("aeron: publication is closed")
+
+	// Only an in-flight claim has a negative frame length.
+	errClaimNotInFlight = errors.New("aeron: claimed space not in flight")
 )
+
+// claimFrame returns the term bytes from frameOffset on the termIndex
+// partition. ok is false for a bad index or a bad offset. Commit and Abort
+// inline it, so their success paths do not call anything.
+func claimFrame(
+	termBuffers *[logbuffer.PartitionCount]atomicbuffer.AtomicBuffer,
+	termIndex int,
+	frameOffset int,
+) (frame []byte, ok bool) {
+	if uint(termIndex) >= logbuffer.PartitionCount {
+		return nil, false
+	}
+	termBuf := termBuffers[termIndex].Bytes()
+	// A term holds at least one header, so the subtraction stays positive.
+	if uint(frameOffset) > uint(len(termBuf)-logbuffer.DataHeaderLength) ||
+		frameOffset&(logbuffer.FrameAlignment-1) != 0 {
+		return nil, false
+	}
+	return termBuf[frameOffset:], true
+}
+
+// claimFrameError names the argument that claimFrame refused.
+func claimFrameError(termIndex, frameOffset int) error {
+	if uint(termIndex) >= logbuffer.PartitionCount {
+		return invalidTermIndexError(termIndex)
+	}
+	return invalidFrameOffsetError(frameOffset)
+}
 
 func newPublicationFromReady(
 	ready conductor.PublicationBuffersReady,

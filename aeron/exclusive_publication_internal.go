@@ -13,6 +13,7 @@ var (
 	errExclusivePublicationCountersNil  = errors.New(
 		"aeron: exclusive publication counters view is nil",
 	)
+	errExclusivePublicationClosed = errors.New("aeron: exclusive publication is closed")
 )
 
 func newExclusivePublicationFromReady(

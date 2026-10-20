@@ -868,6 +868,47 @@ func TestPublication_ClaimFinalize_errors(t *testing.T) {
 			),
 		},
 		{
+			name: "Abort frame offset past term",
+			op: func(pub *aeron.Publication) error {
+				capacity := aeron.PublicationTermBufferForTest(pub, 0).Capacity()
+				return pub.Abort(0, capacity-logbuffer.DataHeaderLength+1)
+			},
+			wantErr: fmt.Sprintf(
+				"aeron: invalid frame offset %d",
+				aeron.TestPublicationTermLength-logbuffer.DataHeaderLength+1,
+			),
+		},
+		{
+			name:    "Commit frame offset not frame aligned",
+			op:      func(pub *aeron.Publication) error { return pub.Commit(0, logbuffer.FrameAlignment/2) },
+			wantErr: fmt.Sprintf("aeron: invalid frame offset %d", logbuffer.FrameAlignment/2),
+		},
+		{
+			name:    "Abort frame offset not frame aligned",
+			op:      func(pub *aeron.Publication) error { return pub.Abort(0, logbuffer.FrameAlignment/2) },
+			wantErr: fmt.Sprintf("aeron: invalid frame offset %d", logbuffer.FrameAlignment/2),
+		},
+		{
+			name:    "Commit frame offset max int",
+			op:      func(pub *aeron.Publication) error { return pub.Commit(0, math.MaxInt) },
+			wantErr: fmt.Sprintf("aeron: invalid frame offset %d", math.MaxInt),
+		},
+		{
+			name:    "Abort frame offset max int",
+			op:      func(pub *aeron.Publication) error { return pub.Abort(0, math.MaxInt) },
+			wantErr: fmt.Sprintf("aeron: invalid frame offset %d", math.MaxInt),
+		},
+		{
+			name:    "Commit negative term index",
+			op:      func(pub *aeron.Publication) error { return pub.Commit(-1, 0) },
+			wantErr: "aeron: invalid term index -1",
+		},
+		{
+			name:    "Abort negative term index",
+			op:      func(pub *aeron.Publication) error { return pub.Abort(-1, 0) },
+			wantErr: "aeron: invalid term index -1",
+		},
+		{
 			name: "Commit closed",
 			op:   func(pub *aeron.Publication) error { return pub.Commit(0, 0) },
 			setup: func(pub *aeron.Publication) {
