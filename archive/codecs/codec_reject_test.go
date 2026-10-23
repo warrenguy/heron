@@ -295,6 +295,29 @@ func TestTryDecodeByTemplate_truncated_request_var_field(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestTryDecodeByTemplate_truncated_replicate_request_last_var_field(t *testing.T) {
+	fields := codecs.ReplicateRequest2Fields{
+		ControlSessionID:   1,
+		CorrelationID:      2,
+		SrcRecordingID:     3,
+		DstRecordingID:     -1,
+		StopPosition:       -1,
+		ChannelTagID:       -1,
+		SubscriptionTagID:  -1,
+		SrcControlStreamID: 10,
+		SrcControlChannel:  []byte("aeron:udp?endpoint=localhost:8010"),
+		SrcResponseChannel: bytes.Repeat([]byte{0x41}, 16),
+	}
+	buf := make([]byte, fuzzArchiveCodecMaxLen)
+	wireEnd, ok := codecs.EncodeReplicateRequest2(buf, 0, archiveSchemaVersion, fields)
+	require.True(t, ok)
+
+	_, ok = codecs.TryDecodeByTemplate(buf[:wireEnd], 0, codecTestMaxVarLen)
+	require.True(t, ok)
+	_, ok = codecs.TryDecodeByTemplate(buf[:wireEnd-1], 0, codecTestMaxVarLen)
+	require.False(t, ok)
+}
+
 func TestTryDecodeByTemplate_truncated_extend_request_var_field(t *testing.T) {
 	fields := codecs.ExtendRecordingRequest2Fields{
 		ControlSessionID: 1,
@@ -372,6 +395,23 @@ func TestEncodeArchiveWire_oversizeVarField(t *testing.T) {
 			codecs.VarLengthPrefixSize
 		buf := make([]byte, bufLen)
 		wireEnd, ok := codecs.EncodeStartRecordingRequest(buf, 0, archiveSchemaVersion, fields)
+		require.False(t, ok)
+		require.Zero(t, wireEnd)
+	})
+
+	t.Run("replicate_request2_rejects_src_response_channel", func(t *testing.T) {
+		fields := codecs.ReplicateRequest2Fields{
+			SrcResponseChannel: make([]byte, codecs.ArchiveEncodeMaxVarLen+1),
+		}
+		wireLen, ok := codecs.ReplicateRequest2WireLen(archiveSchemaVersion, fields)
+		require.False(t, ok)
+		require.Zero(t, wireLen)
+
+		bufLen := messageHeaderLen +
+			int(archivewire.ReplicateRequest2SbeBlockLength) +
+			codecs.VarLengthPrefixSize
+		buf := make([]byte, bufLen)
+		wireEnd, ok := codecs.EncodeReplicateRequest2(buf, 0, archiveSchemaVersion, fields)
 		require.False(t, ok)
 		require.Zero(t, wireEnd)
 	})

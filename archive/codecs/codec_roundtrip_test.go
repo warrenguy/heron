@@ -32,6 +32,20 @@ var (
 	replayFileIoMaxLengthNullValue = (&archivewire.ReplayRequest{}).FileIoMaxLengthNullValue()
 	replayTokenNullValue           = (&archivewire.ReplayRequest{}).ReplayTokenNullValue()
 
+	replicateFileIoMaxLengthMinVersion = uint16((&archivewire.ReplicateRequest2{}).
+						FileIoMaxLengthSinceVersion())
+	replicateReplicationSessionIDMinVersion = uint16((&archivewire.ReplicateRequest2{}).
+						ReplicationSessionIdSinceVersion())
+	replicateEncodedCredentialsMinVersion = uint16((&archivewire.ReplicateRequest2{}).
+						EncodedCredentialsSinceVersion())
+	replicateSrcResponseChannelMinVersion = uint16((&archivewire.ReplicateRequest2{}).
+						SrcResponseChannelSinceVersion())
+
+	replicateFileIoMaxLengthNullValue = (&archivewire.ReplicateRequest2{}).
+						FileIoMaxLengthNullValue()
+	replicateReplicationSessionIDNullValue = (&archivewire.ReplicateRequest2{}).
+						ReplicationSessionIdNullValue()
+
 	archiveAllControlResponseCodes = []archivewire.ControlResponseCode{
 		archivewire.ControlResponseCode_OK,
 		archivewire.ControlResponseCode_ERROR,
@@ -129,6 +143,27 @@ func replayRequestOracle(
 	}
 	if actingVersion < replayTokenMinVersion {
 		fields.ReplayToken = replayTokenNullValue
+	}
+	return fields
+}
+
+// replicateRequest2Oracle nulls the fixed fields and drops the var fields that
+// actingVersion does not admit.
+func replicateRequest2Oracle(
+	fields codecs.ReplicateRequest2Fields,
+	actingVersion uint16,
+) codecs.ReplicateRequest2Fields {
+	if actingVersion < replicateFileIoMaxLengthMinVersion {
+		fields.FileIoMaxLength = replicateFileIoMaxLengthNullValue
+	}
+	if actingVersion < replicateReplicationSessionIDMinVersion {
+		fields.ReplicationSessionID = replicateReplicationSessionIDNullValue
+	}
+	if actingVersion < replicateEncodedCredentialsMinVersion {
+		fields.EncodedCredentials = nil
+	}
+	if actingVersion < replicateSrcResponseChannelMinVersion {
+		fields.SrcResponseChannel = nil
 	}
 	return fields
 }
@@ -276,6 +311,19 @@ func requireDecodedArchiveFields(tb require.TestingT, want, got any) {
 		requireBytesEqual(tb, w.ReplayChannel, g.ReplayChannel)
 		w.ReplayChannel, g.ReplayChannel = nil, nil
 		require.Equal(tb, w, g)
+	case codecs.ReplicateRequest2Fields:
+		g := got.(codecs.ReplicateRequest2Fields)
+		requireBytesEqual(tb, w.SrcControlChannel, g.SrcControlChannel)
+		requireBytesEqual(tb, w.LiveDestination, g.LiveDestination)
+		requireBytesEqual(tb, w.ReplicationChannel, g.ReplicationChannel)
+		requireBytesEqual(tb, w.EncodedCredentials, g.EncodedCredentials)
+		requireBytesEqual(tb, w.SrcResponseChannel, g.SrcResponseChannel)
+		w.SrcControlChannel, g.SrcControlChannel = nil, nil
+		w.LiveDestination, g.LiveDestination = nil, nil
+		w.ReplicationChannel, g.ReplicationChannel = nil, nil
+		w.EncodedCredentials, g.EncodedCredentials = nil, nil
+		w.SrcResponseChannel, g.SrcResponseChannel = nil, nil
+		require.Equal(tb, w, g)
 	case codecs.RecordingDescriptorFields:
 		g := got.(codecs.RecordingDescriptorFields)
 		requireBytesEqual(tb, w.StrippedChannel, g.StrippedChannel)
@@ -312,6 +360,8 @@ func requireDecodedArchiveFields(tb require.TestingT, want, got any) {
 		require.Equal(tb, w, got.(codecs.StopRecordingByIdentityRequestFields))
 	case codecs.StopReplayRequestFields:
 		require.Equal(tb, w, got.(codecs.StopReplayRequestFields))
+	case codecs.StopReplicationRequestFields:
+		require.Equal(tb, w, got.(codecs.StopReplicationRequestFields))
 	case codecs.TruncateRecordingRequestFields:
 		require.Equal(tb, w, got.(codecs.TruncateRecordingRequestFields))
 	case codecs.RecordingSignalEventFields:
@@ -732,6 +782,83 @@ func TestReplayRequest_roundtrip(t *testing.T) {
 	}
 }
 
+func TestReplicateRequest2_roundtrip(t *testing.T) {
+	fields := codecs.ReplicateRequest2Fields{
+		ControlSessionID:     1,
+		CorrelationID:        2,
+		SrcRecordingID:       3,
+		DstRecordingID:       4,
+		StopPosition:         5,
+		ChannelTagID:         6,
+		SubscriptionTagID:    7,
+		SrcControlStreamID:   8,
+		FileIoMaxLength:      4096,
+		ReplicationSessionID: 9,
+		SrcControlChannel:    []byte("aeron:udp?endpoint=localhost:8010"),
+		LiveDestination:      []byte("aeron:udp?endpoint=localhost:40456"),
+		ReplicationChannel:   []byte("aeron:udp?endpoint=localhost:0"),
+		EncodedCredentials:   []byte{9, 8, 7},
+		SrcResponseChannel:   []byte("aeron:udp?control-mode=response"),
+	}
+	cases := []struct {
+		name      string
+		actingVer uint16
+	}{
+		{
+			name:      "current_version",
+			actingVer: archiveSchemaVersion,
+		},
+		{
+			name:      "file_io_absent_pre_v7",
+			actingVer: replicateFileIoMaxLengthMinVersion - 1,
+		},
+		{
+			name:      "session_id_and_credentials_absent_pre_v8",
+			actingVer: replicateReplicationSessionIDMinVersion - 1,
+		},
+		{
+			name:      "src_response_channel_absent_pre_v10",
+			actingVer: replicateSrcResponseChannelMinVersion - 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runArchiveCodecRoundtrip(
+				t,
+				archivewire.ReplicateRequest2SbeTemplateID,
+				tc.actingVer,
+				encodeAt(tc.actingVer, fields, codecs.EncodeReplicateRequest2),
+				replicateRequest2Oracle(fields, tc.actingVer),
+			)
+
+			// An exact-size buffer catches an encoder that writes a var field
+			// actingVersion does not admit.
+			wireLen, ok := codecs.ReplicateRequest2WireLen(tc.actingVer, fields)
+			require.True(t, ok)
+			buf := make([]byte, wireLen)
+			wireEnd, ok := codecs.EncodeReplicateRequest2(buf, 0, tc.actingVer, fields)
+			require.True(t, ok)
+			require.Equal(t, wireLen, wireEnd)
+		})
+	}
+}
+
+func TestStopReplicationRequest_roundtrip(t *testing.T) {
+	fields := codecs.StopReplicationRequestFields{
+		ControlSessionID: 1,
+		CorrelationID:    2,
+		ReplicationID:    3,
+	}
+	runArchiveCodecRoundtrip(
+		t,
+		archivewire.StopReplicationRequestSbeTemplateID,
+		archiveSchemaVersion,
+		encodeAt(archiveSchemaVersion, fields, codecs.EncodeStopReplicationRequest),
+		fields,
+	)
+}
+
 func TestStartRecordingRequest_roundtrip(t *testing.T) {
 	fields := codecs.StartRecordingRequestFields{
 		ControlSessionID: 1,
@@ -1037,6 +1164,38 @@ func TestArchiveRootBlockLengthBounds(t *testing.T) {
 			wantOK:     true,
 		},
 		{
+			name:       "replicate_request2_file_io_absent",
+			templateID: archivewire.ReplicateRequest2SbeTemplateID,
+			version:    replicateFileIoMaxLengthMinVersion - 1,
+			wantMin:    60,
+			wantMax:    archivewire.ReplicateRequest2SbeBlockLength,
+			wantOK:     true,
+		},
+		{
+			name:       "replicate_request2_session_id_absent",
+			templateID: archivewire.ReplicateRequest2SbeTemplateID,
+			version:    replicateReplicationSessionIDMinVersion - 1,
+			wantMin:    64,
+			wantMax:    archivewire.ReplicateRequest2SbeBlockLength,
+			wantOK:     true,
+		},
+		{
+			name:       "replicate_request2_current",
+			templateID: archivewire.ReplicateRequest2SbeTemplateID,
+			version:    archiveSchemaVersion,
+			wantMin:    archivewire.ReplicateRequest2SbeBlockLength,
+			wantMax:    archivewire.ReplicateRequest2SbeBlockLength,
+			wantOK:     true,
+		},
+		{
+			name:       "stop_replication_request_fixed",
+			templateID: archivewire.StopReplicationRequestSbeTemplateID,
+			version:    archiveSchemaVersion,
+			wantMin:    archivewire.StopReplicationRequestSbeBlockLength,
+			wantMax:    archivewire.StopReplicationRequestSbeBlockLength,
+			wantOK:     true,
+		},
+		{
 			name:       "start_recording_request_fixed",
 			templateID: archivewire.StartRecordingRequestSbeTemplateID,
 			version:    archiveSchemaVersion,
@@ -1131,6 +1290,34 @@ func TestArchiveVarFieldCount(t *testing.T) {
 			wantOK:     true,
 		},
 		{
+			name:       "replicate_request2_three_var_pre_credentials",
+			templateID: archivewire.ReplicateRequest2SbeTemplateID,
+			version:    replicateEncodedCredentialsMinVersion - 1,
+			want:       3,
+			wantOK:     true,
+		},
+		{
+			name:       "replicate_request2_four_var_with_credentials",
+			templateID: archivewire.ReplicateRequest2SbeTemplateID,
+			version:    replicateEncodedCredentialsMinVersion,
+			want:       4,
+			wantOK:     true,
+		},
+		{
+			name:       "replicate_request2_five_var_with_src_response_channel",
+			templateID: archivewire.ReplicateRequest2SbeTemplateID,
+			version:    replicateSrcResponseChannelMinVersion,
+			want:       5,
+			wantOK:     true,
+		},
+		{
+			name:       "stop_replication_request_zero_var",
+			templateID: archivewire.StopReplicationRequestSbeTemplateID,
+			version:    archiveSchemaVersion,
+			want:       0,
+			wantOK:     true,
+		},
+		{
 			name:       "unknown_template",
 			templateID: 0x7FFF,
 			version:    archiveSchemaVersion,
@@ -1209,6 +1396,74 @@ func TestReplayRequestWireLen(t *testing.T) {
 		_, ok := codecs.ReplayRequestWireLen(archiveSchemaVersion, -1)
 		require.False(t, ok)
 	})
+}
+
+func TestReplicateRequest2WireLen(t *testing.T) {
+	const (
+		srcControlChannelLen  = 9
+		liveDestinationLen    = 8
+		replicationChannelLen = 7
+		encodedCredentialsLen = 3
+		srcResponseChannelLen = 6
+	)
+	fields := codecs.ReplicateRequest2Fields{
+		SrcControlChannel:  make([]byte, srcControlChannelLen),
+		LiveDestination:    make([]byte, liveDestinationLen),
+		ReplicationChannel: make([]byte, replicationChannelLen),
+		EncodedCredentials: make([]byte, encodedCredentialsLen),
+		SrcResponseChannel: make([]byte, srcResponseChannelLen),
+	}
+	wireLen := func(t *testing.T, actingVersion uint16) int {
+		t.Helper()
+		got, ok := codecs.ReplicateRequest2WireLen(actingVersion, fields)
+		require.True(t, ok)
+		return got
+	}
+	baseVarLen := 3*codecs.VarLengthPrefixSize +
+		srcControlChannelLen + liveDestinationLen + replicationChannelLen
+	fullBlock := int(archivewire.ReplicateRequest2SbeBlockLength)
+
+	cases := []struct {
+		name          string
+		actingVersion uint16
+		want          int
+	}{
+		{
+			name:          "pre_file_io",
+			actingVersion: replicateFileIoMaxLengthMinVersion - 1,
+			want:          messageHeaderLen + 60 + baseVarLen,
+		},
+		{
+			name:          "pre_session_id",
+			actingVersion: replicateReplicationSessionIDMinVersion - 1,
+			want:          messageHeaderLen + 64 + baseVarLen,
+		},
+		{
+			name:          "pre_src_response_channel",
+			actingVersion: replicateSrcResponseChannelMinVersion - 1,
+			want: messageHeaderLen + fullBlock + baseVarLen +
+				codecs.VarLengthPrefixSize + encodedCredentialsLen,
+		},
+		{
+			name:          "with_src_response_channel",
+			actingVersion: replicateSrcResponseChannelMinVersion,
+			want: messageHeaderLen + fullBlock + baseVarLen +
+				codecs.VarLengthPrefixSize + encodedCredentialsLen +
+				codecs.VarLengthPrefixSize + srcResponseChannelLen,
+		},
+		{
+			name:          "current_version",
+			actingVersion: archiveSchemaVersion,
+			want: messageHeaderLen + fullBlock + baseVarLen +
+				codecs.VarLengthPrefixSize + encodedCredentialsLen +
+				codecs.VarLengthPrefixSize + srcResponseChannelLen,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, wireLen(t, tc.actingVersion))
+		})
+	}
 }
 
 func TestAuthConnectRequestVarLens(t *testing.T) {

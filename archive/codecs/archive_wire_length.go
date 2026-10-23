@@ -11,13 +11,17 @@ const (
 	archiveWireMaxRootBlockLength = archivewire.RecordingDescriptorSbeBlockLength
 
 	// archiveWireMaxVarFieldCount is the maximum var fields on any archive wire template
-	// (RecordingDescriptor with three varAscii, AuthConnectRequest with ClientInfo).
-	archiveWireMaxVarFieldCount = 3
+	// (ReplicateRequest2 with SrcResponseChannel).
+	archiveWireMaxVarFieldCount = 5
 
 	// authConnectRequestMaxVarFieldCount is AuthConnectRequest's own var-field
 	// cardinality at acting versions that admit ClientInfo; do not alias to
 	// archiveWireMaxVarFieldCount when another template may raise the global max.
 	authConnectRequestMaxVarFieldCount = 3
+
+	// replicateRequest2MaxVarFieldCount is the ReplicateRequest2 var-field
+	// count at acting versions that admit SrcResponseChannel.
+	replicateRequest2MaxVarFieldCount = 5
 )
 
 var (
@@ -29,6 +33,22 @@ var (
 						FileIoMaxLengthSinceVersion())
 	replayRequestReplayTokenMinVersion = uint16((&archivewire.ReplayRequest{}).
 						ReplayTokenSinceVersion())
+	replicateRequest2FileIoMaxLengthMinVersion = uint16((&archivewire.ReplicateRequest2{}).
+							FileIoMaxLengthSinceVersion())
+	replicateRequest2ReplicationSessionIDMinVersion = uint16((&archivewire.ReplicateRequest2{}).
+							ReplicationSessionIdSinceVersion())
+	replicateRequest2EncodedCredentialsMinVersion = uint16((&archivewire.ReplicateRequest2{}).
+							EncodedCredentialsSinceVersion())
+	replicateRequest2SrcResponseChannelMinVersion = uint16((&archivewire.ReplicateRequest2{}).
+							SrcResponseChannelSinceVersion())
+	replayRequestFileIoMaxLengthOffset = uint16((&archivewire.ReplayRequest{}).
+						FileIoMaxLengthEncodingOffset())
+	replayRequestReplayTokenOffset = uint16((&archivewire.ReplayRequest{}).
+					ReplayTokenEncodingOffset())
+	replicateRequest2FileIoMaxLengthOffset = uint16((&archivewire.ReplicateRequest2{}).
+						FileIoMaxLengthEncodingOffset())
+	replicateRequest2ReplicationSessionIDOffset = uint16((&archivewire.ReplicateRequest2{}).
+							ReplicationSessionIdEncodingOffset())
 )
 
 var (
@@ -172,5 +192,49 @@ func ReplayRequestWireLen(
 	return ArchiveWireMessageLen(
 		replayRequestBlockLength(actingVersion),
 		replayChannelLen,
+	)
+}
+
+// replicateRequest2VarLens returns the ReplicateRequest2 var-field lengths in
+// wire order. count is the number of fields actingVersion admits.
+func replicateRequest2VarLens(
+	actingVersion uint16,
+	fields ReplicateRequest2Fields,
+) (lens [replicateRequest2MaxVarFieldCount]int, count int, ok bool) {
+	lens = [replicateRequest2MaxVarFieldCount]int{
+		len(fields.SrcControlChannel),
+		len(fields.LiveDestination),
+		len(fields.ReplicationChannel),
+		len(fields.EncodedCredentials),
+		len(fields.SrcResponseChannel),
+	}
+	count, ok = ArchiveVarFieldCount(archivewire.ReplicateRequest2SbeTemplateID, actingVersion)
+	return lens, count, ok
+}
+
+// replicateRequest2BlockLength returns the ReplicateRequest2 root block length
+// for actingVersion.
+func replicateRequest2BlockLength(actingVersion uint16) uint16 {
+	return ArchiveMinRootBlockLength(
+		archivewire.ReplicateRequest2SbeTemplateID,
+		actingVersion,
+		archivewire.ReplicateRequest2SbeBlockLength,
+	)
+}
+
+// ReplicateRequest2WireLen returns the encoded wire length of fields at
+// actingVersion. EncodedCredentials and SrcResponseChannel count only when
+// actingVersion admits them.
+func ReplicateRequest2WireLen(
+	actingVersion uint16,
+	fields ReplicateRequest2Fields,
+) (int, bool) {
+	lens, count, ok := replicateRequest2VarLens(actingVersion, fields)
+	if !ok {
+		return 0, false
+	}
+	return ArchiveWireMessageLen(
+		replicateRequest2BlockLength(actingVersion),
+		lens[:count]...,
 	)
 }

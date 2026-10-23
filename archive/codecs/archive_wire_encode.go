@@ -325,6 +325,79 @@ func EncodeStopReplayRequest(
 	)
 }
 
+// EncodeReplicateRequest2 writes an archive ReplicateRequest2 at offset.
+func EncodeReplicateRequest2(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields ReplicateRequest2Fields,
+) (wireEnd int, ok bool) {
+	lens, count, ok := replicateRequest2VarLens(actingVersion, fields)
+	if !ok {
+		return 0, false
+	}
+	return encodeWithArchiveWireHeader(
+		buf,
+		offset,
+		replicateRequest2BlockLength(actingVersion),
+		archivewire.ReplicateRequest2SbeTemplateID,
+		actingVersion,
+		lens[:count],
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
+			var msg archivewire.ReplicateRequest2
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+				SetControlSessionId(fields.ControlSessionID).
+				SetCorrelationId(fields.CorrelationID).
+				SetSrcRecordingId(fields.SrcRecordingID).
+				SetDstRecordingId(fields.DstRecordingID).
+				SetStopPosition(fields.StopPosition).
+				SetChannelTagId(fields.ChannelTagID).
+				SetSubscriptionTagId(fields.SubscriptionTagID).
+				SetSrcControlStreamId(fields.SrcControlStreamID)
+			if actingVersion >= replicateRequest2FileIoMaxLengthMinVersion {
+				msg.SetFileIoMaxLength(fields.FileIoMaxLength)
+			}
+			if actingVersion >= replicateRequest2ReplicationSessionIDMinVersion {
+				msg.SetReplicationSessionId(fields.ReplicationSessionID)
+			}
+			msg.PutSrcControlChannel(archiveVarString(fields.SrcControlChannel))
+			msg.PutLiveDestination(archiveVarString(fields.LiveDestination))
+			msg.PutReplicationChannel(archiveVarString(fields.ReplicationChannel))
+			if actingVersion >= replicateRequest2EncodedCredentialsMinVersion {
+				msg.PutEncodedCredentials(archiveVarString(fields.EncodedCredentials))
+			}
+			if actingVersion >= replicateRequest2SrcResponseChannelMinVersion {
+				msg.PutSrcResponseChannel(archiveVarString(fields.SrcResponseChannel))
+			}
+		},
+	)
+}
+
+// EncodeStopReplicationRequest writes an archive StopReplicationRequest at
+// offset.
+func EncodeStopReplicationRequest(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields StopReplicationRequestFields,
+) (wireEnd int, ok bool) {
+	return encodeWithArchiveWireHeader(
+		buf,
+		offset,
+		archivewire.StopReplicationRequestSbeBlockLength,
+		archivewire.StopReplicationRequestSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
+			var msg archivewire.StopReplicationRequest
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+				SetControlSessionId(fields.ControlSessionID).
+				SetCorrelationId(fields.CorrelationID).
+				SetReplicationId(fields.ReplicationID)
+		},
+	)
+}
+
 // EncodeTruncateRecordingRequest writes an archive TruncateRecordingRequest at
 // offset.
 func EncodeTruncateRecordingRequest(

@@ -324,6 +324,10 @@ type templateVarFields struct {
 	encodedCredentials []byte
 	clientInfo         []byte
 	encodedChallenge   []byte
+	srcControlChannel  []byte
+	liveDestination    []byte
+	replicationChannel []byte
+	srcResponseChannel []byte
 }
 
 // ArchiveRootBlockLengthBounds returns min and max blockLength accepted for templateID
@@ -351,9 +355,9 @@ func ArchiveRootBlockLengthBounds(
 		maxBlock = archivewire.ReplayRequestSbeBlockLength
 		switch {
 		case actingVersion < replayRequestFileIoMaxLengthMinVersion:
-			return 44, maxBlock, true
+			return replayRequestFileIoMaxLengthOffset, maxBlock, true
 		case actingVersion < replayRequestReplayTokenMinVersion:
-			return 48, maxBlock, true
+			return replayRequestReplayTokenOffset, maxBlock, true
 		default:
 			return maxBlock, maxBlock, true
 		}
@@ -396,6 +400,19 @@ func ArchiveRootBlockLengthBounds(
 	case archivewire.ArchiveIdRequestSbeTemplateID:
 		bl := archivewire.ArchiveIdRequestSbeBlockLength
 		return bl, bl, true
+	case archivewire.StopReplicationRequestSbeTemplateID:
+		bl := archivewire.StopReplicationRequestSbeBlockLength
+		return bl, bl, true
+	case archivewire.ReplicateRequest2SbeTemplateID:
+		maxBlock = archivewire.ReplicateRequest2SbeBlockLength
+		switch {
+		case actingVersion < replicateRequest2FileIoMaxLengthMinVersion:
+			return replicateRequest2FileIoMaxLengthOffset, maxBlock, true
+		case actingVersion < replicateRequest2ReplicationSessionIDMinVersion:
+			return replicateRequest2ReplicationSessionIDOffset, maxBlock, true
+		default:
+			return maxBlock, maxBlock, true
+		}
 	default:
 		return 0, 0, false
 	}
@@ -412,7 +429,8 @@ func ArchiveVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		archivewire.RecordingSignalEventSbeTemplateID,
 		archivewire.KeepAliveRequestSbeTemplateID,
 		archivewire.StopRecordingByIdentityRequestSbeTemplateID,
-		archivewire.ArchiveIdRequestSbeTemplateID:
+		archivewire.ArchiveIdRequestSbeTemplateID,
+		archivewire.StopReplicationRequestSbeTemplateID:
 		return 0, true
 	case archivewire.ControlResponseSbeTemplateID,
 		archivewire.StartRecordingRequestSbeTemplateID,
@@ -430,6 +448,15 @@ func ArchiveVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 			return authConnectRequestMaxVarFieldCount, true
 		}
 		return 2, true
+	case archivewire.ReplicateRequest2SbeTemplateID:
+		switch {
+		case actingVersion < replicateRequest2EncodedCredentialsMinVersion:
+			return 3, true
+		case actingVersion < replicateRequest2SrcResponseChannelMinVersion:
+			return 4, true
+		default:
+			return replicateRequest2MaxVarFieldCount, true
+		}
 	default:
 		return 0, false
 	}
@@ -563,6 +590,19 @@ func assignTemplateVarFields(templateID uint16, raw [][]byte) (templateVarFields
 		return templateVarFields{encodedChallenge: raw[0]}, true
 	case archivewire.ChallengeResponseSbeTemplateID:
 		return templateVarFields{encodedCredentials: raw[0]}, true
+	case archivewire.ReplicateRequest2SbeTemplateID:
+		vars := templateVarFields{
+			srcControlChannel:  raw[0],
+			liveDestination:    raw[1],
+			replicationChannel: raw[2],
+		}
+		if len(raw) > 3 {
+			vars.encodedCredentials = raw[3]
+		}
+		if len(raw) > 4 {
+			vars.srcResponseChannel = raw[4]
+		}
+		return vars, true
 	default:
 		return templateVarFields{}, false
 	}
@@ -730,6 +770,34 @@ func decodeTemplateFields(
 		return ArchiveIDRequestFields{
 			ControlSessionID: msg.ControlSessionId(),
 			CorrelationID:    msg.CorrelationId(),
+		}, true
+	case archivewire.ReplicateRequest2SbeTemplateID:
+		var msg archivewire.ReplicateRequest2
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return ReplicateRequest2Fields{
+			ControlSessionID:     msg.ControlSessionId(),
+			CorrelationID:        msg.CorrelationId(),
+			SrcRecordingID:       msg.SrcRecordingId(),
+			DstRecordingID:       msg.DstRecordingId(),
+			StopPosition:         msg.StopPosition(),
+			ChannelTagID:         msg.ChannelTagId(),
+			SubscriptionTagID:    msg.SubscriptionTagId(),
+			SrcControlStreamID:   msg.SrcControlStreamId(),
+			FileIoMaxLength:      msg.FileIoMaxLength(),
+			ReplicationSessionID: msg.ReplicationSessionId(),
+			SrcControlChannel:    vars.srcControlChannel,
+			LiveDestination:      vars.liveDestination,
+			ReplicationChannel:   vars.replicationChannel,
+			EncodedCredentials:   vars.encodedCredentials,
+			SrcResponseChannel:   vars.srcResponseChannel,
+		}, true
+	case archivewire.StopReplicationRequestSbeTemplateID:
+		var msg archivewire.StopReplicationRequest
+		msg.WrapForDecode(buf, body, block, version, bufLen)
+		return StopReplicationRequestFields{
+			ControlSessionID: msg.ControlSessionId(),
+			CorrelationID:    msg.CorrelationId(),
+			ReplicationID:    msg.ReplicationId(),
 		}, true
 	default:
 		return nil, false

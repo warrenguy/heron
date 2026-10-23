@@ -58,6 +58,32 @@ type StopReplayRequestFields struct {
 	ReplaySessionID  int64
 }
 
+type ReplicateRequest2Fields struct {
+	ControlSessionID   int64
+	CorrelationID      int64
+	SrcRecordingID     int64
+	DstRecordingID     int64
+	StopPosition       int64
+	ChannelTagID       int64
+	SubscriptionTagID  int64
+	SrcControlStreamID int32
+	// FileIoMaxLength is math.MinInt32 when actingVersion < 7 (field absent).
+	FileIoMaxLength int32
+	// ReplicationSessionID is math.MinInt32 when actingVersion < 8 (field absent).
+	ReplicationSessionID int32
+	SrcControlChannel    []byte
+	LiveDestination      []byte
+	ReplicationChannel   []byte
+	EncodedCredentials   []byte
+	SrcResponseChannel   []byte
+}
+
+type StopReplicationRequestFields struct {
+	ControlSessionID int64
+	CorrelationID    int64
+	ReplicationID    int64
+}
+
 type ListRecordingRequestFields struct {
 	ControlSessionID int64
 	CorrelationID    int64

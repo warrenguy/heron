@@ -52,6 +52,9 @@ const (
 	// matches Java ControlResponsePoller.FRAGMENT_LIMIT
 	DefaultControlResponseFragmentLimit = 10
 
+	// NullPosition matches Java AeronArchive.NULL_POSITION.
+	NullPosition int64 = -1
+
 	defaultClientName = "archive-client"
 )
 

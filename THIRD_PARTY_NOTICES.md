@@ -46,9 +46,10 @@ Go flyweights generated from `specs/cluster-codecs-wire.xml` via the SBE tool
 - **Source:** `aeron-archive-codecs.xml` (aeron-archive)
 - **Changes:** subset for Heron archive client control request, response,
   descriptor, and recording-signal wire codecs; catalog framing,
-  listing-with-groups, replication, segment, and legacy recording-events
-  messages plus unused shared types removed; schema id, version, and layout of
-  retained client messages match upstream
+  listing-with-groups, legacy ReplicateRequest and TaggedReplicateRequest,
+  segment, and legacy recording-events messages plus unused shared types
+  removed; schema id, version, and layout of retained client messages match
+  upstream
 
 ## `archive/codecs/archivewire/`
 
