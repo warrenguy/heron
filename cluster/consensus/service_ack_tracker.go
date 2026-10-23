@@ -76,6 +76,18 @@ func (t *serviceAckTracker) hasReached(logPosition, ackID int64) (bool, error) {
 	return true, nil
 }
 
+// firstRelevantIDs returns each queue's first RelevantID in service-id order,
+// or nil with zero queues. Check-only: never pops.
+//
+// Call only after hasReached returned true, so every queue holds an entry.
+func (t *serviceAckTracker) firstRelevantIDs() []int64 {
+	var ids []int64
+	for _, q := range t.queues {
+		ids = append(ids, q[0].relevantID)
+	}
+	return ids
+}
+
 // removeHead pops one entry from every non-empty queue.
 //
 // Call only after hasReached returned true. Empty queues are tolerated.

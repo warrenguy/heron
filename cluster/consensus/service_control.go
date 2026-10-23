@@ -118,7 +118,8 @@ func (a *Agent) ServicePublishFailure() error {
 // Returns an error when:
 //   - no service proxy is bound ([ErrServiceControlUnbound])
 //   - serviceAckFailure is marked (returns that failure)
-//   - a snapshot action wait is pending ([errSnapshotActionPending])
+//   - a snapshot action wait or its module snapshot take is pending
+//     ([errSnapshotActionPending])
 //   - the publish returns a non-positive code after the attempt budget
 //
 // On error no wait is queued. RequestServiceAck does not store a pending
@@ -130,7 +131,7 @@ func (a *Agent) RequestServiceAck(logPosition int64) error {
 	if a.serviceAckFailure != nil {
 		return a.serviceAckFailure
 	}
-	if a.snapshotWaitPosition != 0 {
+	if a.HasPendingSnapshotAction() {
 		return errSnapshotActionPending
 	}
 	pos := a.serviceProxy.PublishRequestServiceAck(logPosition)
@@ -157,10 +158,14 @@ func (a *Agent) RequestServiceAck(logPosition int64) error {
 //
 // At most one wait completes per DoWork call.
 //
-// A consumed wait that matches snapshotWaitPosition clears
-// snapshotWaitPosition to 0. A consumed wait at a retired snapshot position
-// drops leftover tracker entries at the consumed position. A remaining wait at
-// the consumed position keeps the entries.
+// A consumed wait that matches snapshotWaitPosition builds the module snapshot
+// take before removeServiceAckHead. The take copies each service's first
+// RelevantID and the module state. The pop then clears snapshotWaitPosition.
+// [Agent.snapshotTakeWork] advances the take.
+//
+// A consumed wait at a retired snapshot position drops leftover tracker
+// entries at the consumed position. A remaining wait at the consumed position
+// keeps the entries.
 //
 // Pending JoinLog retry is [Agent.retryPendingJoinLog]. DoWork runs the retry
 // after the election or steady branch. PrepareForNewLeadership can then drop a
@@ -182,12 +187,16 @@ func (a *Agent) serviceControlWork() int {
 	if !ok {
 		return 0
 	}
+	snapshotPop := a.snapshotWaitPosition != 0 && head == a.snapshotWaitPosition
+	if snapshotPop {
+		a.buildSnapshotTake(head)
+	}
 	a.removeServiceAckHead()
 	a.serviceAckWaits = a.serviceAckWaits[1:]
 	if a.replayJoinWaitsAhead > 0 {
 		a.replayJoinWaitsAhead--
 	}
-	if head == a.snapshotWaitPosition {
+	if snapshotPop {
 		a.snapshotWaitPosition = 0
 	}
 	a.dropAbandonedSnapshotLeftovers(head)

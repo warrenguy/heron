@@ -161,15 +161,29 @@ func scheduleReplayTimer(t *testing.T, agent *consensus.Agent, correlationID, de
 	deliverServiceControl(t, agent, buf[:wireEnd])
 }
 
-// ackReplayService delivers one ServiceAck from service 0 at logPosition.
+// ackReplayService delivers one ServiceAck from service 0 at logPosition with
+// RelevantID -1.
 func ackReplayService(t *testing.T, agent *consensus.Agent, logPosition, ackID int64) {
+	t.Helper()
+	ackReplayServiceRecording(t, agent, logPosition, ackID, -1)
+}
+
+// ackReplayServiceRecording delivers one ServiceAck from service 0 at
+// logPosition with recordingID as RelevantID.
+func ackReplayServiceRecording(
+	t *testing.T,
+	agent *consensus.Agent,
+	logPosition int64,
+	ackID int64,
+	recordingID int64,
+) {
 	t.Helper()
 	buf := make([]byte, codecs.ServiceAckEncodedLen())
 	wireEnd, ok := codecs.EncodeServiceAck(
 		buf,
 		0,
 		clusterwire.ServiceAckSbeSchemaVersion,
-		codecs.ServiceAckFields{LogPosition: logPosition, AckID: ackID, RelevantID: -1},
+		codecs.ServiceAckFields{LogPosition: logPosition, AckID: ackID, RelevantID: recordingID},
 	)
 	require.True(t, ok)
 	deliverServiceControl(t, agent, buf[:wireEnd])
@@ -654,6 +668,42 @@ func TestLogReplay_close(t *testing.T) {
 		name string
 		run  func(t *testing.T)
 	}{
+		{
+			name: "closeCancelsSnapshotTakeBeforeStop",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 1)
+				snapshotAdder := &fakeSnapshotPublicationAdder{}
+				agent.SetSnapshotRecordingControl(fakeSnapshotRecordingControl{})
+				agent.SetSnapshotPublicationAdder(snapshotAdder)
+				var actionEnd int64
+				r, control, _ := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
+					actionEnd = writeReplaySnapshotAction(t, image, 0)
+					return writeReplayFrame(t, image, actionEnd, encodeReplaySessionOpen(t, 3))
+				})
+				snapshotAdder.control = control
+				require.Equal(t, 1, r.DoWork(0))
+				r.DoWork(1)
+				require.True(t, agent.HasPendingSnapshotAction())
+
+				// Phase 1: the ack pops the wait into a take held at its add.
+				ackReplayServiceRecording(t, agent, actionEnd, 0, 7)
+				agent.DoWork(2)
+				require.True(t, agent.HasPendingSnapshotAction())
+				require.Equal(t, 1, snapshotAdder.offers)
+				require.False(t, r.IsDone())
+
+				// Phase 2: close cancels the take, then stops the replay.
+				r.Close()
+				require.Equal(t, []int64{1}, snapshotAdder.cancelled)
+				require.Equal(t, []int{0}, snapshotAdder.stopsAtCancel)
+				require.Equal(t, []int64{testReplaySessionID}, control.stopCalls)
+				require.False(t, agent.HasPendingSnapshotAction())
+				_, resolved := agent.LastSnapshotTake()
+				require.False(t, resolved)
+				agent.DoWork(3)
+				require.Equal(t, 1, snapshotAdder.offers)
+			},
+		},
 		{
 			name: "closeStopsAndCloses",
 			run: func(t *testing.T) {
@@ -1264,4 +1314,55 @@ func TestLogReplay_replayJoin(t *testing.T) {
 			tt.run(t)
 		})
 	}
+}
+
+// fakeSnapshotRecordingControl is a SnapshotRecordingControl that never
+// starts a recording. A take wired to it stays at its publication add.
+type fakeSnapshotRecordingControl struct{}
+
+func (fakeSnapshotRecordingControl) NewStartRecording(
+	int32,
+	string,
+) consensus.SnapshotStartRequest {
+	return nil
+}
+
+func (fakeSnapshotRecordingControl) ControlTimeoutsNs() (
+	offerRetryTimeoutNs int64,
+	responseTimeoutNs int64,
+) {
+	return testImageAwaitNs, testImageAwaitNs
+}
+
+func (fakeSnapshotRecordingControl) WatchStop(int64) {}
+
+func (fakeSnapshotRecordingControl) StopPosition() (stopPosition int64, stopped bool) {
+	return 0, false
+}
+
+func (fakeSnapshotRecordingControl) ClearStop() {}
+
+// fakeSnapshotPublicationAdder is a SnapshotPublicationAdder whose add never
+// completes. Each cancel records how many replay stops control had sent.
+type fakeSnapshotPublicationAdder struct {
+	control       *fakeReplayControl
+	offers        int
+	cancelled     []int64
+	stopsAtCancel []int
+}
+
+func (f *fakeSnapshotPublicationAdder) OfferAddExclusivePublication(int32, string) (int64, error) {
+	f.offers++
+	return int64(f.offers), nil
+}
+
+func (f *fakeSnapshotPublicationAdder) PollAddExclusivePublication(
+	int64,
+) (consensus.SnapshotPublication, bool, error) {
+	return nil, false, nil
+}
+
+func (f *fakeSnapshotPublicationAdder) CancelPending(correlationID int64) {
+	f.cancelled = append(f.cancelled, correlationID)
+	f.stopsAtCancel = append(f.stopsAtCancel, len(f.control.stopCalls))
 }

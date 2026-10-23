@@ -114,7 +114,7 @@ func openSnapshotServiceCluster(t *testing.T) (serviceCluster, *snapshotRecorder
 }
 
 // requestSnapshotRecording requests one snapshot on leader. Ticks until the
-// leader's snapshot wait clears.
+// leader's snapshot wait clears and its module snapshot take resolves.
 //
 // Returns the action frame end and the acked recording id.
 func requestSnapshotRecording(

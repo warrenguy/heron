@@ -19,23 +19,35 @@ var (
 
 // RequestSnapshot appends one ClusterActionRequest (action SNAPSHOT, flags 0)
 // to the cluster log. nowNs is the wire Timestamp. The log publisher assigns
-// LogPosition. The method queues one coordination wait at LogPosition.
+// LogPosition. The method queues one coordination wait at LogPosition. The
+// wait stores the current leadership term and nowNs for the module snapshot
+// take.
+//
+// The leader snapshot hold starts with the wait. See [Agent.DoWork].
 //
 // Concurrency: invoker-only.
 //
 // Returns an error when:
 //   - the role is not leader
 //   - an election is live
+//   - serviceAckFailure is marked (returns that failure)
 //   - a coordination wait is outstanding
 //   - a pending JoinLog publish is outstanding
+//   - a module snapshot take is in flight ([errSnapshotActionPending])
 //   - the log publisher is nil or unbound
 //   - the append fails
 func (a *Agent) RequestSnapshot(nowNs int64) error {
 	if a.role != RoleLeader || a.election != nil {
 		return errSnapshotNotLeader
 	}
+	if a.serviceAckFailure != nil {
+		return a.serviceAckFailure
+	}
 	if len(a.serviceAckWaits) > 0 || a.pendingJoinLog != nil {
 		return errCoordinationOutstanding
+	}
+	if a.snapshotTake != nil {
+		return errSnapshotActionPending
 	}
 	pos, ok := a.logPublisher.AppendClusterAction(
 		a.leadershipTermID,
@@ -46,24 +58,28 @@ func (a *Agent) RequestSnapshot(nowNs int64) error {
 	if !ok {
 		return errSnapshotAppend
 	}
-	a.queueSnapshotWait(pos)
+	a.queueSnapshotWait(pos, a.leadershipTermID, nowNs)
 	return nil
 }
 
-// HasPendingSnapshotAction reports whether a snapshot action wait is queued.
+// HasPendingSnapshotAction reports whether a snapshot action wait is queued,
+// or whether the module snapshot take of a popped wait is unresolved.
 //
 // Behaviour:
 //   - The leader queues the wait at append.
 //   - Any role queues the wait when its log adapter consumes the action. A
 //     leader consumes only in its election replay. The action may come from
 //     an earlier leadership term.
+//   - The pop of the wait builds the module snapshot take. The report stays
+//     true until the take resolves.
 //
 // Concurrency: invoker-only.
 //
-// Returns false after the wait completes. PrepareForNewLeadership retires the
-// wait and clears the pending report.
+// Returns false once the take resolves. PrepareForNewLeadership retires the
+// wait, cancels the take and clears the pending report. An election join
+// and [Agent.CloseSnapshotTake] cancel the take too.
 func (a *Agent) HasPendingSnapshotAction() bool {
-	return a.snapshotWaitPosition != 0
+	return a.snapshotHoldPosition() != 0
 }
 
 // handleClusterAction queues a snapshot wait for a committed
@@ -75,7 +91,8 @@ func (a *Agent) HasPendingSnapshotAction() bool {
 //   - Wire LogPosition differs from logPosition. No service acks such a frame.
 //   - A snapshot wait pends. One field holds one snapshot wait.
 //   - logPosition is a retired snapshot position. PrepareForNewLeadership
-//     retired that wait.
+//     retired that wait, or a cancel ended the module snapshot take after
+//     its pop.
 //   - serviceAckFailure is marked. No wait completes after the mark.
 //
 // No role check. A leader reads its adapter only in its election replay. Its
@@ -98,20 +115,26 @@ func (a *Agent) handleClusterAction(
 	case a.abandonedSnapshotWaitAt(logPosition) != nil:
 	case a.serviceAckFailure != nil:
 	default:
-		a.queueSnapshotWait(logPosition)
+		a.queueSnapshotWait(logPosition, fields.LeadershipTermID, fields.Timestamp)
 	}
 }
 
-func (a *Agent) queueSnapshotWait(logPosition int64) {
+// queueSnapshotWait queues one snapshot wait at logPosition. The wait stores
+// the action's leadership term and wire timestamp.
+func (a *Agent) queueSnapshotWait(logPosition, leadershipTermID, timestamp int64) {
 	a.serviceAckWaits = append(a.serviceAckWaits, logPosition)
 	a.snapshotWaitPosition = logPosition
+	a.snapshotWaitLeadershipTermID = leadershipTermID
+	a.snapshotWaitTimestamp = timestamp
 }
 
 // holdLogPollBound returns boundPosition lowered by each pending hold. Every
 // module log poll bound passes through this method.
 //
 // Behaviour:
-//   - A pending snapshot wait lowers the bound to its log position.
+//   - A pending snapshot wait lowers the bound to its log position. After
+//     the pop, the module snapshot take lowers the bound to the same
+//     position until the take resolves.
 //   - On a non-leader, a pending JoinLog publish lowers the bound to the
 //     JoinLog position. The poll consumes no frame past that position until
 //     the publish succeeds, so follower commit stays there.
@@ -119,8 +142,8 @@ func (a *Agent) queueSnapshotWait(logPosition int64) {
 // The JoinLog hold keeps a snapshot wait from queueing ahead of the JoinLog
 // wait. The service acks the JoinLog before any later snapshot action.
 func (a *Agent) holdLogPollBound(boundPosition int64) int64 {
-	if a.snapshotWaitPosition != 0 {
-		boundPosition = min(boundPosition, a.snapshotWaitPosition)
+	if hold := a.snapshotHoldPosition(); hold != 0 {
+		boundPosition = min(boundPosition, hold)
 	}
 	pending := a.pendingJoinLog
 	if pending != nil && a.role != RoleLeader {
@@ -129,7 +152,9 @@ func (a *Agent) holdLogPollBound(boundPosition int64) int64 {
 	return boundPosition
 }
 
-// abandonedSnapshotWait is one snapshot wait retired by PrepareForNewLeadership.
+// abandonedSnapshotWait is one snapshot wait retired by
+// PrepareForNewLeadership, or one module snapshot take cancelled after its
+// pop.
 type abandonedSnapshotWait struct {
 	position int64
 
@@ -150,10 +175,24 @@ func (a *Agent) abandonedSnapshotWaitAt(logPosition int64) *abandonedSnapshotWai
 	return nil
 }
 
+// abandonSnapshotPosition returns the retired wait at logPosition. When the
+// position is not retired, it appends an entry that does not owe an ack.
+func (a *Agent) abandonSnapshotPosition(logPosition int64) *abandonedSnapshotWait {
+	if retired := a.abandonedSnapshotWaitAt(logPosition); retired != nil {
+		return retired
+	}
+	a.abandonedSnapshotWaits = append(a.abandonedSnapshotWaits, abandonedSnapshotWait{
+		position: logPosition,
+		owedAcks: make([]bool, len(a.serviceAcks.queues)),
+	})
+	return &a.abandonedSnapshotWaits[len(a.abandonedSnapshotWaits)-1]
+}
+
 // retireSnapshotWait drops a leftover snapshot wait from the FIFO. The wait
 // joins abandonedSnapshotWaits.
 //
 // Behaviour:
+//   - clears snapshotWaitPosition
 //   - drops each tracker entry at the position
 //   - notes each dropped ack id
 //   - marks each service with no dropped entry as owing one ack at the
@@ -166,14 +205,7 @@ func (a *Agent) retireSnapshotWait() {
 	if pos == 0 {
 		return
 	}
-	retired := a.abandonedSnapshotWaitAt(pos)
-	if retired == nil {
-		a.abandonedSnapshotWaits = append(a.abandonedSnapshotWaits, abandonedSnapshotWait{
-			position: pos,
-			owedAcks: make([]bool, len(a.serviceAcks.queues)),
-		})
-		retired = &a.abandonedSnapshotWaits[len(a.abandonedSnapshotWaits)-1]
-	}
+	retired := a.abandonSnapshotPosition(pos)
 	a.serviceAckWaits = slices.DeleteFunc(a.serviceAckWaits, func(wait int64) bool {
 		return wait == pos
 	})

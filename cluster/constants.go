@@ -55,6 +55,12 @@ const (
 	// Distinct from DefaultConsensusStreamID (108), the member-to-member consensus
 	// control stream.
 	DefaultConsensusModuleStreamID int32 = 105
+
+	// DefaultSnapshotStreamID is SNAPSHOT_STREAM_ID_DEFAULT (107) on
+	// io.aeron.cluster.ConsensusModule.Configuration. Carries the module
+	// snapshot recording. The service container default is stream 106 on the
+	// same channel.
+	DefaultSnapshotStreamID int32 = 107
 )
 
 // Port block layout. Values track io.aeron.samples.cluster.ClusterConfig:
@@ -117,6 +123,12 @@ const (
 	// DefaultServiceControlChannel is CONTROL_CHANNEL_DEFAULT on
 	// io.aeron.cluster.service.ClusteredServiceContainer.Configuration.
 	DefaultServiceControlChannel = "aeron:ipc?term-length=128k"
+
+	// DefaultSnapshotChannel is SNAPSHOT_CHANNEL_DEFAULT on
+	// io.aeron.cluster.ConsensusModule.Configuration. The module records its
+	// snapshot from this channel. The service container default is the same
+	// channel on stream 106.
+	DefaultSnapshotChannel = "aeron:ipc?alias=snapshot"
 )
 
 // MinValidPort and MaxValidPort bound every port derived from CalculatePort.

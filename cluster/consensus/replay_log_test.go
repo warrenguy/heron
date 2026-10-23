@@ -25,7 +25,9 @@ func sampleReplayLogJoin(startPosition, stopPosition int64) ReplayLogJoin {
 }
 
 // ackAndPopWait queues one ack at logPosition from service 0. It asserts that
-// the next serviceControlWork call pops a wait.
+// the next serviceControlWork call pops a wait. One snapshotTakeWork call
+// then resolves a module take that the pop built. The fixtures do not wire
+// a recording control.
 func ackAndPopWait(
 	t *testing.T,
 	a *Agent,
@@ -36,6 +38,7 @@ func ackAndPopWait(
 	enqueueServiceAck(t, q, logPosition, ackID, 0)
 	require.Equal(t, 1, a.pollServiceControl())
 	require.Equal(t, 1, a.serviceControlWork())
+	a.snapshotTakeWork(0)
 }
 
 // retiredReplayAgent returns a one-service agent with a connected service
@@ -49,7 +52,7 @@ func retiredReplayAgent(
 ) (*Agent, *QueueConsensusIngress) {
 	t.Helper()
 	a, q, _ := agentWithServiceControl(t, 1)
-	a.queueSnapshotWait(position)
+	a.queueSnapshotWait(position, 0, 0)
 	if ackBeforePrepare {
 		enqueueServiceAck(t, q, position, 0, 0)
 		require.Equal(t, 1, a.pollServiceControl())

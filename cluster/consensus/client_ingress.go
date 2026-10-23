@@ -76,14 +76,23 @@ func (a *Agent) SetSessionConnectHandler(handler SessionConnectHandler) {
 
 // pollClientIngress polls one batch of whole client ingress messages.
 //
-// Skips the poll while an election is live. Frames stay in the image until the
-// agent settles. Fragmented frames reassemble in the subscription adapter
-// before dispatch.
+// Behaviour: checks run in this order.
+//  1. An election is live: skip the poll. Frames stay in the image until the
+//     agent settles.
+//  2. The leader snapshot hold is on: skip the poll and refresh session
+//     activity. See [Agent.isLeaderSnapshotPending].
+//  3. Client ingress is not wired: skip the poll.
+//
+// Fragmented frames reassemble in the subscription adapter before dispatch.
 func (a *Agent) pollClientIngress(nowNs int64) int {
-	if a.clientIngress == nil {
+	if a.election != nil {
 		return 0
 	}
-	if a.election != nil {
+	if a.isLeaderSnapshotPending() {
+		a.refreshSessionActivity(nowNs)
+		return 0
+	}
+	if a.clientIngress == nil {
 		return 0
 	}
 	a.clientIngressPollNowNs = nowNs

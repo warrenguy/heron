@@ -288,6 +288,15 @@ func (h *snapshotWireHarness) runSnapshotRound(
 		ServiceID:   0,
 	})
 	require.Equal(t, h.snapshotTake.RecordingID(), h.svc.LastSnapshotRecordingID())
+
+	// The harness does not wire a module snapshot recording control, so the
+	// module take fails. The result still carries the service recording id.
+	result, ok := h.cm.LastSnapshotTake()
+	require.True(t, ok)
+	require.Equal(t, actionPos, result.LogPosition)
+	require.Error(t, result.Err)
+	require.Equal(t, int64(-1), result.RecordingID)
+	require.Equal(t, []int64{h.snapshotTake.RecordingID()}, result.ServiceRecordingIDs)
 }
 
 func TestSnapshotActionWire_RoundTrip(t *testing.T) {
@@ -348,4 +357,68 @@ func TestSnapshotActionWire_NoPerMessageAck(t *testing.T) {
 	require.NoError(t, h.svc.ServiceFailure())
 
 	h.runSnapshotRound(t, snapshotWireNowNsSecond, 2, 3, 2)
+}
+
+// countingSnapshotSeams is a module snapshot recording control and
+// publication adder that counts publication adds.
+type countingSnapshotSeams struct {
+	adds int
+}
+
+func (*countingSnapshotSeams) NewStartRecording(int32, string) consensus.SnapshotStartRequest {
+	return nil
+}
+
+func (*countingSnapshotSeams) ControlTimeoutsNs() (offerRetryTimeoutNs, responseTimeoutNs int64) {
+	return 1, 1
+}
+
+func (*countingSnapshotSeams) WatchStop(int64) {}
+
+func (*countingSnapshotSeams) StopPosition() (stopPosition int64, stopped bool) {
+	return 0, false
+}
+
+func (*countingSnapshotSeams) ClearStop() {}
+
+func (s *countingSnapshotSeams) OfferAddExclusivePublication(int32, string) (int64, error) {
+	s.adds++
+	return int64(s.adds), nil
+}
+
+func (*countingSnapshotSeams) PollAddExclusivePublication(
+	int64,
+) (consensus.SnapshotPublication, bool, error) {
+	return nil, false, nil
+}
+
+func (*countingSnapshotSeams) CancelPending(int64) {}
+
+func TestConsensusModule_Close_clearsSnapshotTakeSeams(t *testing.T) {
+	t.Parallel()
+
+	logPub, _ := boundTimerLogPublisher(t)
+	commit := &atomic.Int64{}
+	agent := consensus.NewAgent(consensus.AgentConfig{
+		Role:         consensus.RoleLeader,
+		LogPublisher: logPub,
+		Commit:       commit,
+	})
+	seams := &countingSnapshotSeams{}
+	agent.SetSnapshotRecordingControl(seams)
+	agent.SetSnapshotPublicationAdder(seams)
+	agent.SetSnapshotStream(DefaultSnapshotChannel, DefaultSnapshotStreamID)
+	module := &ConsensusModule{agent: agent}
+
+	require.NoError(t, agent.RequestSnapshot(snapshotWireNowNs))
+	commit.Store(agent.ExpectedAckPosition())
+	require.NoError(t, module.Close())
+	agent.DoWork(snapshotWireNowNs)
+
+	require.Zero(t, seams.adds)
+	result, ok := agent.LastSnapshotTake()
+	require.True(t, ok)
+	require.Error(t, result.Err)
+	require.Equal(t, int64(-1), result.RecordingID)
+	require.False(t, agent.HasPendingSnapshotAction())
 }

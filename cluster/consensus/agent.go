@@ -420,12 +420,38 @@ type Agent struct {
 	serviceAckWaits []int64
 
 	// snapshotWaitPosition is the log position of a pending snapshot action
-	// wait, or 0 when none. Log polls stop at this position.
+	// wait, or 0 when none. Log polls stop at this position. The pop clears
+	// the field and builds snapshotTake. The take then holds the position.
 	// PrepareForNewLeadership retires the wait and clears this field.
 	snapshotWaitPosition int64
 
+	// snapshotWaitLeadershipTermID and snapshotWaitTimestamp hold the
+	// leadership term and the wire timestamp of the pending snapshot action.
+	snapshotWaitLeadershipTermID int64
+	snapshotWaitTimestamp        int64
+
+	// snapshotTake is the module snapshot take in flight, or nil. The pop of
+	// a snapshot wait builds it.
+	snapshotTake *snapshotTake
+
+	// lastSnapshotTake is the latest resolved take. hasLastSnapshotTake is
+	// false before any take resolves.
+	lastSnapshotTake    SnapshotTakeResult
+	hasLastSnapshotTake bool
+
+	// snapshotControl and snapshotAdder are the module snapshot seams. A take
+	// that finds either nil fails.
+	snapshotControl SnapshotRecordingControl
+	snapshotAdder   SnapshotPublicationAdder
+
+	// snapshotChannel and snapshotStreamID name the module snapshot
+	// publication.
+	snapshotChannel  string
+	snapshotStreamID int32
+
 	// abandonedSnapshotWaits holds snapshot waits retired by
-	// PrepareForNewLeadership, in retire order. Never cleared.
+	// PrepareForNewLeadership, and takes cancelled after their pop, in retire
+	// order. Never cleared.
 	// dropAbandonedSnapshotAck owns the drop rule for acks at these positions.
 	abandonedSnapshotWaits []abandonedSnapshotWait
 
@@ -985,8 +1011,8 @@ func isCatchupAppendPosition(flags uint8) bool {
 // CatchupPoll polls catchup/live log progress under limitPosition.
 //
 // When a [LogAdapter] Image is bound, polls under limitPosition (same
-// BoundedControlledPoll substrate as followerConsensusWork). A pending
-// snapshot wait or a pending follower JoinLog publish lowers the bound.
+// BoundedControlledPoll substrate as followerConsensusWork). Each hold of
+// [Agent.holdLogPollBound] lowers the bound.
 // Advances commit via [Agent.ProposeMaxCommit] from adapter position. Then
 // publishes the adapter position under [AppendPositionFlagCatchup] so the
 // leader can observe catchup progress.
@@ -1649,6 +1675,9 @@ func (a *Agent) IsPrepareInProgress() bool {
 //
 // clearSessionsAfter runs before releaseSessionsForNewTerm, so a cleared
 // session still holds its egress for the CLOSED event.
+//
+// The module snapshot take cancel runs before StopAllCatchups. The take
+// closes its archive requests before the catchup stop uses the same client.
 func (a *Agent) teardownForNewLeadership(logPosition int64) {
 	a.RoleSet(RoleFollower)
 	a.SetLeaderMemberID(nullMemberID)
@@ -1660,6 +1689,7 @@ func (a *Agent) teardownForNewLeadership(logPosition int64) {
 	a.pendingJoinLog = nil
 	a.replayJoinWaitsAhead = 0
 	a.retireSnapshotWait()
+	a.cancelSnapshotTake()
 	a.StopAllCatchups()
 	a.RemoveCatchupLogDestination()
 	a.reseedLogSubscriptionForNewTerm()
@@ -1763,12 +1793,17 @@ func (a *Agent) SetLogPublicationReseed(f LogPublicationReseed) {
 // success path when a proxy is bound.
 //
 // isStartup is written into the JoinLog IsStartup field.
+//
+// The join first cancels a module snapshot take in flight. The cancel does
+// not store a result. On the leader path, a take exists only after an
+// election replay that ended short.
 func (a *Agent) JoinLogAsLeader(
 	leadershipTermID int64,
 	logPosition int64,
 	logSessionID int32,
 	isStartup bool,
 ) error {
+	a.cancelSnapshotTake()
 	a.RoleSet(RoleLeader)
 	a.leadershipTermID = leadershipTermID
 	a.SetLeaderMemberID(nullMemberID)
@@ -1858,6 +1893,10 @@ func (a *Agent) startLeaderLogRecording(
 // Clearing the known leader id would stop follower commit notification and
 // append reporting.
 //
+// The join cancels a module snapshot take in flight before any recording
+// start. The cancel does not store a result. The take and the recording
+// start share the module archive client.
+//
 // nowNs is accepted for handler-signature parity and is unused.
 func (a *Agent) JoinLogAsFollower(
 	params FollowerLogJoinParams,
@@ -1867,6 +1906,7 @@ func (a *Agent) JoinLogAsFollower(
 	err error,
 ) {
 	_ = nowNs
+	a.cancelSnapshotTake()
 	if a.joinSource == nil || a.logAdapter == nil {
 		return false, nil
 	}
@@ -2032,11 +2072,15 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 //   - consensus ingress poll when no prepare episode is in progress
 //   - log stop check: a recording STOP mark or a closed non-leader log image
 //     installs an election ([Agent.logStopTick])
-//   - client ingress poll when no election is live
+//   - client ingress poll when no election is live. A leader under the
+//     snapshot hold ([Agent.isLeaderSnapshotPending]) skips the poll and
+//     refreshes session activity
 //   - service control poll (always; ServiceAck, ScheduleTimer, CancelTimer, and
 //     CloseSession dispatch; every role; while election is live)
 //   - service control work (always; consume first wait after poll; every role;
-//     while election is live)
+//     while election is live). A popped snapshot wait builds the module
+//     snapshot take
+//   - module snapshot take work (always; every role; while election is live)
 //   - [ElectionRunner.DoWork] when an election is live, else sessionWork then
 //     timerWork then consensusWork
 //   - pending JoinLog retry after that branch so PrepareForNewLeadership can
@@ -2048,7 +2092,9 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 // election.DoWork starts a fresh episode.
 //
 // Settled sessionWork order: egressEventWork, newLeaderEventWork,
-// sessionPendingWork, sessionCloseWork, okPendingWork. See [Agent.sessionWork].
+// sessionPendingWork, sessionCloseWork, okPendingWork. The leader snapshot
+// hold skips sessionPendingWork, sessionCloseWork and timerWork. See
+// [Agent.sessionWork].
 //
 // Concurrency: invoker-only. See [Agent].
 func (a *Agent) DoWork(nowNs int64) int {
@@ -2067,6 +2113,8 @@ func (a *Agent) DoWork(nowNs int64) int {
 	work += a.pollServiceControl()
 	noteDoWorkStep("serviceControlWork")
 	work += a.serviceControlWork()
+	noteDoWorkStep("snapshotTakeWork")
+	work += a.snapshotTakeWork(nowNs)
 	if a.election != nil {
 		noteDoWorkStep("election.DoWork")
 		work += a.election.DoWork(nowNs)

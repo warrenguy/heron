@@ -49,6 +49,20 @@ func decodeClusterActionAtTermStart(
 	return fields
 }
 
+// requireTakeNotConfigured runs one snapshotTakeWork call on a take with no
+// recording control wired. The take resolves with errSnapshotNotConfigured,
+// and the pending report clears.
+func requireTakeNotConfigured(t testing.TB, a *Agent) {
+	t.Helper()
+	require.True(t, a.HasPendingSnapshotAction())
+	require.Equal(t, 1, a.snapshotTakeWork(0))
+	result, ok := a.LastSnapshotTake()
+	require.True(t, ok)
+	require.ErrorIs(t, result.Err, errSnapshotNotConfigured)
+	require.Equal(t, int64(nullValue), result.RecordingID)
+	require.False(t, a.HasPendingSnapshotAction())
+}
+
 func TestRequestSnapshot_success(t *testing.T) {
 	t.Parallel()
 
@@ -166,8 +180,9 @@ func TestRequestServiceAck_refusesPendingSnapshot(t *testing.T) {
 	enqueueServiceAck(t, q, waitPos, 0, 0)
 	require.Equal(t, 1, a.pollServiceControl())
 	require.Equal(t, 1, a.serviceControlWork())
-	require.False(t, a.HasPendingSnapshotAction())
 	require.Equal(t, 0, a.PendingServiceAckWaits())
+	require.ErrorIs(t, a.RequestServiceAck(99), errSnapshotActionPending)
+	requireTakeNotConfigured(t, a)
 
 	require.NoError(t, a.RequestServiceAck(99))
 	require.Equal(t, 1, a.PendingServiceAckWaits())
@@ -222,7 +237,7 @@ func TestRequestSnapshot_completesWait(t *testing.T) {
 	require.Equal(t, 1, a.pollServiceControl())
 	require.Equal(t, 1, a.serviceControlWork())
 	require.Equal(t, int64(0), a.snapshotWaitPosition)
-	require.False(t, a.HasPendingSnapshotAction())
+	requireTakeNotConfigured(t, a)
 	require.Equal(t, 0, a.PendingServiceAckWaits())
 	require.Equal(t, int64(1), a.ExpectedServiceAckID())
 }
@@ -614,7 +629,7 @@ func TestRequestSnapshot_zeroServicesCompletes(t *testing.T) {
 
 	// With zero services, the wait completes without a ServiceAck.
 	require.Equal(t, 1, a.serviceControlWork())
-	require.False(t, a.HasPendingSnapshotAction())
+	requireTakeNotConfigured(t, a)
 	require.Equal(t, 0, a.PendingServiceAckWaits())
 	require.Equal(t, int64(1), a.ExpectedServiceAckID())
 }
@@ -801,7 +816,7 @@ func TestHandleClusterAction_rules(t *testing.T) {
 			}
 			if tt.zeroServices {
 				require.Equal(t, 1, a.serviceControlWork())
-				require.False(t, a.HasPendingSnapshotAction())
+				requireTakeNotConfigured(t, a)
 				require.Equal(t, 0, a.PendingServiceAckWaits())
 			}
 		})
@@ -875,12 +890,15 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 		require.Equal(t, f.actionEnd, f.agent.ExpectedAckPosition())
 		requireHandlerIdle(t, f.handler)
 	}
+	// ackAndPop pops the wait, then resolves its module take. The fixture
+	// does not wire a recording control.
 	ackAndPop := func(t *testing.T, f holdingFollower, ackID int64) {
 		t.Helper()
 		enqueueServiceAck(t, f.queue, f.actionEnd, ackID, 0)
 		require.Equal(t, 1, f.agent.pollServiceControl())
 		require.Equal(t, 1, f.agent.serviceControlWork())
-		require.False(t, f.agent.HasPendingSnapshotAction())
+		require.Equal(t, f.actionEnd, f.agent.holdLogPollBound(f.messageEnd+32))
+		requireTakeNotConfigured(t, f.agent)
 	}
 	requireMessageRead := func(t *testing.T, f holdingFollower) {
 		t.Helper()

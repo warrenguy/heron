@@ -58,6 +58,8 @@ func TestNormalize_defaults(t *testing.T) {
 	require.Equal(t, cluster.DefaultIngressStreamID, cfg.IngressStreamID)
 	require.Equal(t, cluster.DefaultConsensusModuleStreamID, cfg.ConsensusModuleStreamID)
 	require.Equal(t, cluster.DefaultServiceStreamID, cfg.ServiceStreamID)
+	require.Equal(t, "aeron:ipc?alias=snapshot", cfg.SnapshotChannel)
+	require.Equal(t, int32(107), cfg.SnapshotStreamID)
 	require.NotNil(t, cfg.Idle)
 	require.Equal(t, recordinglog.FileSyncData, cfg.RecordingLogFileSyncLevel)
 	require.Equal(t, recordinglog.FileSyncData, cfg.NodeStateFileSyncLevel)
@@ -98,6 +100,7 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 		channel               = "aeron:udp?term-length=128k"
 		replayChannel         = "aeron:ipc?alias=replay"
 		serviceControlChannel = "aeron:ipc?term-length=64k"
+		snapshotChannel       = "aeron:ipc?term-length=64k|alias=snap"
 	)
 	explicitElection := election.ElectionConfig{
 		ElectionTimeoutNs:         2_000_000_000,
@@ -112,12 +115,14 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 		IngressChannel:            channel,
 		ReplayChannel:             replayChannel,
 		ServiceControlChannel:     serviceControlChannel,
+		SnapshotChannel:           snapshotChannel,
 		ConsensusStreamID:         200,
 		LogStreamID:               201,
 		ReplayStreamID:            202,
 		IngressStreamID:           203,
 		ConsensusModuleStreamID:   204,
 		ServiceStreamID:           205,
+		SnapshotStreamID:          206,
 		RecordingLogFileSyncLevel: recordinglog.FileSyncFull,
 		NodeStateFileSyncLevel:    recordinglog.FileSyncFull,
 		Election:                  explicitElection,
@@ -134,6 +139,8 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 	require.Equal(t, int32(203), cfg.IngressStreamID)
 	require.Equal(t, int32(204), cfg.ConsensusModuleStreamID)
 	require.Equal(t, int32(205), cfg.ServiceStreamID)
+	require.Equal(t, snapshotChannel, cfg.SnapshotChannel)
+	require.Equal(t, int32(206), cfg.SnapshotStreamID)
 	require.Equal(t, recordinglog.FileSyncFull, cfg.RecordingLogFileSyncLevel)
 	require.Equal(t, recordinglog.FileSyncFull, cfg.NodeStateFileSyncLevel)
 
@@ -592,6 +599,55 @@ func TestValidate_errors(t *testing.T) {
 				cfg.ReplayChannel = "aeron:ipc?session-id=1"
 			},
 			want: "cluster: ReplayChannel must not set session-id=",
+		},
+		{
+			name: "SnapshotChannel has session-id",
+			mutate: func(cfg *cluster.Config) {
+				cfg.SnapshotChannel = "aeron:ipc?alias=snapshot|session-id=7"
+			},
+			want: "cluster: SnapshotChannel must not set session-id=",
+		},
+		{
+			name: "SnapshotStreamID equals LogStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.SnapshotStreamID = cfg.LogStreamID
+			},
+			want: "cluster: SnapshotStreamID and LogStreamID must differ",
+		},
+		{
+			name: "SnapshotStreamID equals ConsensusStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.SnapshotStreamID = cfg.ConsensusStreamID
+			},
+			want: "cluster: SnapshotStreamID and ConsensusStreamID must differ",
+		},
+		{
+			name: "SnapshotStreamID equals ReplayStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.SnapshotStreamID = cfg.ReplayStreamID
+			},
+			want: "cluster: SnapshotStreamID and ReplayStreamID must differ",
+		},
+		{
+			name: "SnapshotStreamID equals IngressStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.SnapshotStreamID = cfg.IngressStreamID
+			},
+			want: "cluster: SnapshotStreamID and IngressStreamID must differ",
+		},
+		{
+			name: "SnapshotStreamID equals ConsensusModuleStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.SnapshotStreamID = cfg.ConsensusModuleStreamID
+			},
+			want: "cluster: SnapshotStreamID and ConsensusModuleStreamID must differ",
+		},
+		{
+			name: "SnapshotStreamID equals ServiceStreamID",
+			mutate: func(cfg *cluster.Config) {
+				cfg.SnapshotStreamID = cfg.ServiceStreamID
+			},
+			want: "cluster: SnapshotStreamID and ServiceStreamID must differ",
 		},
 		{
 			name: "negative ServiceCount",

@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"bytes"
+	"cmp"
 	"math"
 	"slices"
 
@@ -116,6 +117,12 @@ type clientSession struct {
 	// leader. Cleared on send, on terminal egress, on close or remove, and
 	// at PrepareForNewLeadership.
 	newLeaderEventPending bool
+}
+
+// isOpenOrClosing reports whether the session opened on the log and has not
+// yet closed.
+func (s *clientSession) isOpenOrClosing() bool {
+	return s.state == sessionOpen || s.state == sessionClosing
 }
 
 // sessionManager is the client session registry.
@@ -463,6 +470,40 @@ func (m *sessionManager) closingSessionCount() int {
 	return m.closingCount
 }
 
+// snapshotSessionRows returns one ClusterSession row per open or closing
+// session, sorted by ascending session id. The rows skip pre-open sessions.
+//
+// Behaviour:
+//   - an open session writes CloseReason NULL_VALUE
+//   - a closing session writes its close reason
+//   - every row writes TimeOfLastActivity -1
+//   - every row clones the response channel
+func (m *sessionManager) snapshotSessionRows() []codecs.ClusterSessionFields {
+	rows := make([]codecs.ClusterSessionFields, 0, len(m.all))
+	for _, s := range m.all {
+		if !s.isOpenOrClosing() {
+			continue
+		}
+		closeReason := clusterwire.CloseReason_NULL_VALUE
+		if s.state == sessionClosing {
+			closeReason = s.closeReason
+		}
+		rows = append(rows, codecs.ClusterSessionFields{
+			ClusterSessionID:   s.id,
+			CorrelationID:      s.correlationID,
+			OpenedLogPosition:  s.openedLogPosition,
+			TimeOfLastActivity: nullValue,
+			CloseReason:        closeReason,
+			ResponseStreamID:   s.responseStreamID,
+			ResponseChannel:    bytes.Clone(s.responseChannel),
+		})
+	}
+	slices.SortFunc(rows, func(x, y codecs.ClusterSessionFields) int {
+		return cmp.Compare(x.ClusterSessionID, y.ClusterSessionID)
+	})
+	return rows
+}
+
 // trackUncommittedClose appends session to uncommittedCloses at the claim
 // end position of its SessionCloseEvent.
 //
@@ -592,6 +633,11 @@ func (a *Agent) acceptSessionConnect(
 // sessionWork runs settled session duty. Event drain runs first. Queued
 // REDIRECT and ERROR events send before NewLeaderEvent.
 //
+// Behaviour: the leader snapshot hold skips sessionPendingWork and
+// sessionCloseWork. While the hold is on, a session does not open, time out
+// or close. The pending session reclaim in egressEventWork still runs. See
+// [Agent.isLeaderSnapshotPending].
+//
 // Concurrency: invoker-only. Callers must invoke sessionWork from the
 // [Agent.DoWork] election-nil branch. sessionPendingWork re-checks election
 // and role. Leader-only steps run only for the leader.
@@ -607,10 +653,23 @@ func (a *Agent) sessionWork(nowNs int64) int {
 		return work
 	}
 	work += a.newLeaderEventWork()
-	work += a.sessionPendingWork(nowNs)
-	work += a.sessionCloseWork(nowNs)
+	if !a.isLeaderSnapshotPending() {
+		work += a.sessionPendingWork(nowNs)
+		work += a.sessionCloseWork(nowNs)
+	}
 	work += a.okPendingWork()
 	return work
+}
+
+// refreshSessionActivity sets lastActivityNs to nowNs on each open or closing
+// session. The leader snapshot hold calls it in place of the client ingress
+// poll, so the session timeout counts from the end of the hold.
+func (a *Agent) refreshSessionActivity(nowNs int64) {
+	for _, s := range a.sessions.all {
+		if s.isOpenOrClosing() {
+			s.lastActivityNs = nowNs
+		}
+	}
 }
 
 // canAppendLog reports whether a bound open log publication backs the session
