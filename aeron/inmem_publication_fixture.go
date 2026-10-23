@@ -21,11 +21,12 @@ const (
 	inMemPublicationMTULength        int32 = 1408
 	inMemPublicationTermLength             = logbuffer.TermMinLength
 
-	inMemSubscriptionRegistrationID  int64 = 8001
-	inMemImageCorrelationID          int64 = 8101
-	inMemSubscriberPositionCounterID int32 = 3
-	inMemIPCChannel                        = "aeron:ipc"
-	inMemImageSourceIdentity               = inMemIPCChannel
+	inMemSubscriptionRegistrationID       int64 = 8001
+	inMemImageCorrelationID               int64 = 8101
+	inMemSubscriberPositionCounterID      int32 = 3
+	inMemLocalSocketAddressFirstCounterID int32 = 3
+	inMemIPCChannel                             = "aeron:ipc"
+	inMemImageSourceIdentity                    = inMemIPCChannel
 
 	inMemPollZeroAllocPayload = "zero-alloc"
 )
@@ -207,29 +208,72 @@ func inMemCountersReaderWithChannelStatusRegistration(
 	channelStatusRegistrationID int64,
 ) *cnc.CountersReader {
 	return inMemCountersReaderFromRecords(3, func(meta, values []byte) {
-		cnc.WriteCounterRecord(
-			meta,
-			values,
-			inMemPublicationLimitCounterID,
-			cnc.CounterRecordAllocated,
-			cnc.DriverPublisherLimitTypeID,
-			inMemPublicationRegistrationID,
-			limitPosition,
-		)
-		err := cnc.WriteChannelStatusCounterRecord(
-			meta,
-			values,
-			inMemPublicationChannelCounterID,
-			cnc.CounterRecordAllocated,
-			cnc.DriverSendChannelStatusTypeID,
-			inMemIPCChannel,
-			channelStatusRegistrationID,
-			1,
-		)
-		if err != nil {
-			panic(err)
+		writeInMemPublicationCounterRecords(meta, values, limitPosition, channelStatusRegistrationID)
+	})
+}
+
+// inMemCountersReaderWithLocalSocketAddresses adds one active LOCAL_SOCKADDR
+// record per address at inMemLocalSocketAddressFirstCounterID onward, each
+// linked to channelStatusCounterID.
+func inMemCountersReaderWithLocalSocketAddresses(
+	limitPosition int64,
+	channelStatusCounterID int32,
+	addresses ...string,
+) *cnc.CountersReader {
+	counterCount := int(inMemLocalSocketAddressFirstCounterID) + len(addresses)
+	return inMemCountersReaderFromRecords(counterCount, func(meta, values []byte) {
+		// The address scan stops at the first unused record. Counter id 0
+		// must hold an allocated record.
+		cnc.WriteCounterRecord(meta, values, 0, cnc.CounterRecordAllocated, cnc.SystemCounterTypeID, 0, 0)
+		writeInMemPublicationCounterRecords(meta, values, limitPosition, inMemPublicationRegistrationID)
+		counterID := inMemLocalSocketAddressFirstCounterID
+		for _, address := range addresses {
+			err := cnc.WriteLocalSocketAddressCounterRecord(
+				meta,
+				values,
+				counterID,
+				cnc.CounterRecordAllocated,
+				inMemPublicationRegistrationID,
+				channelStatusCounterID,
+				address,
+				cnc.ChannelEndpointStatusActive,
+			)
+			if err != nil {
+				panic(err)
+			}
+			counterID++
 		}
 	})
+}
+
+func writeInMemPublicationCounterRecords(
+	meta []byte,
+	values []byte,
+	limitPosition int64,
+	channelStatusRegistrationID int64,
+) {
+	cnc.WriteCounterRecord(
+		meta,
+		values,
+		inMemPublicationLimitCounterID,
+		cnc.CounterRecordAllocated,
+		cnc.DriverPublisherLimitTypeID,
+		inMemPublicationRegistrationID,
+		limitPosition,
+	)
+	err := cnc.WriteChannelStatusCounterRecord(
+		meta,
+		values,
+		inMemPublicationChannelCounterID,
+		cnc.CounterRecordAllocated,
+		cnc.DriverSendChannelStatusTypeID,
+		inMemIPCChannel,
+		channelStatusRegistrationID,
+		1,
+	)
+	if err != nil {
+		panic(err)
+	}
 }
 
 func inMemCountersReaderWithSubscriberPosition(

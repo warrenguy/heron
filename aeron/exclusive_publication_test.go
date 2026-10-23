@@ -893,18 +893,144 @@ func TestExclusivePublication_Position_concurrentWithOffer(t *testing.T) {
 	wg.Wait()
 }
 
-func TestExclusivePublication_nullChannelStatusCounter(t *testing.T) {
+func newIPCExclusivePublicationWithNullChannelCounter(
+	t *testing.T,
+	counters *cnc.CountersReader,
+) *aeron.ExclusivePublication {
+	t.Helper()
+
 	log := aeron.NewTestMappedLogForTest(t, aeron.DefaultTestExclusivePublicationLogConfig())
 	t.Cleanup(func() { _ = log.Close() })
 
 	ready := aeron.PublicationBuffersReadyForTest()
 	ready.ChannelStatusCounterID = cnc.NullCounterID
-	counters := aeron.NewTestCountersReaderLimitOnlyForTest(t, 1_000_000)
 
 	ep, err := aeron.NewExclusivePublicationFromReadyForTest(ready, log, counters, "aeron:ipc")
 	require.NoError(t, err)
+	return ep
+}
+
+func TestExclusivePublication_nullChannelStatusCounter(t *testing.T) {
+	ep := newIPCExclusivePublicationWithNullChannelCounter(
+		t,
+		aeron.NewTestCountersReaderLimitOnlyForTest(t, 1_000_000),
+	)
 
 	status, err := ep.ChannelStatus()
 	require.NoError(t, err)
 	require.Equal(t, aeron.ChannelEndpointStatusActive, status)
+}
+
+func TestExclusivePublication_termAndChannelAccessors(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		cfg           aeron.TestPublicationLogConfig
+		initialTermID int32
+	}{
+		{
+			name:          "default log config",
+			cfg:           aeron.DefaultTestExclusivePublicationLogConfig(),
+			initialTermID: aeron.TestPublicationInitialTermID,
+		},
+		{
+			name: "negative initial term id",
+			cfg: aeron.LogConfigWithInitialTermIDForTest(
+				aeron.DefaultTestExclusivePublicationLogConfig,
+				-5,
+			),
+			initialTermID: -5,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ep := aeron.NewTestExclusivePublication(t, tc.cfg, 1_000_000)
+
+			requireTermAndChannelAccessors(t, ep, tc.initialTermID)
+
+			// Close does not change the accessors.
+			require.NoError(t, ep.Close())
+			requireTermAndChannelAccessors(t, ep, tc.initialTermID)
+		})
+	}
+}
+
+func TestExclusivePublication_IsOriginal(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		correlationID int64
+		want          bool
+	}{
+		{
+			name:          "add created the driver publication",
+			correlationID: aeron.TestPublicationRegistrationID,
+			want:          true,
+		},
+		{
+			name:          "registration ids differ",
+			correlationID: aeron.TestPublicationRegistrationID + 1,
+			want:          false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := aeron.NewTestMappedLogForTest(t, aeron.DefaultTestExclusivePublicationLogConfig())
+			ready := aeron.PublicationBuffersReadyForTest()
+			ready.RegistrationID = aeron.TestPublicationRegistrationID
+			ready.CorrelationID = tc.correlationID
+			counters := aeron.NewTestCountersReaderForTest(t, 1_000_000)
+
+			ep, err := aeron.NewExclusivePublicationFromReadyForTest(ready, log, counters, "aeron:ipc")
+			require.NoError(t, err)
+			require.Equal(t, tc.want, ep.IsOriginal())
+
+			require.NoError(t, ep.Close())
+			require.Equal(t, tc.want, ep.IsOriginal())
+		})
+	}
+}
+
+func TestExclusivePublication_LocalSocketAddresses(t *testing.T) {
+	addresses := []string{"127.0.0.1:20111", "[::1]:20112"}
+	newExclusivePublication := func(t *testing.T) (*aeron.ExclusivePublication, *cnc.CountersReader) {
+		t.Helper()
+		reader := aeron.NewTestCountersReaderWithLocalSocketAddressesForTest(
+			t,
+			1_000_000,
+			addresses...,
+		)
+		ep := aeron.NewTestExclusivePublicationWithCounters(
+			t,
+			aeron.DefaultTestExclusivePublicationLogConfig(),
+			reader,
+		)
+		return ep, reader
+	}
+
+	t.Run("two addresses in counter id order", func(t *testing.T) {
+		ep, _ := newExclusivePublication(t)
+		require.Equal(t, addresses, ep.LocalSocketAddresses())
+	})
+
+	t.Run("inactive channel status", func(t *testing.T) {
+		ep, reader := newExclusivePublication(t)
+		require.NoError(t, reader.SetCounterValue(aeron.TestPublicationChannelCounterID, 0))
+		require.Nil(t, ep.LocalSocketAddresses())
+	})
+
+	t.Run("null channel status counter", func(t *testing.T) {
+		// A record linked to NullCounterID must not match a NullCounterID
+		// publication.
+		reader := aeron.NewTestCountersReaderWithLinkedLocalSocketAddressesForTest(
+			t,
+			1_000_000,
+			cnc.NullCounterID,
+			addresses...,
+		)
+		ep := newIPCExclusivePublicationWithNullChannelCounter(t, reader)
+		require.Nil(t, ep.LocalSocketAddresses())
+	})
+
+	t.Run("closed publication", func(t *testing.T) {
+		ep, _ := newExclusivePublication(t)
+		require.NoError(t, ep.Close())
+		require.Nil(t, ep.LocalSocketAddresses())
+	})
 }

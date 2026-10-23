@@ -53,6 +53,7 @@ var sharedDriverStreamIDs = map[string]int32{
 	"PubSubTwoClientsRoundtripStreamID":                      PubSubTwoClientsRoundtripStreamID,
 	"PublicationLimitAfterDrainStreamID":                     PublicationLimitAfterDrainStreamID,
 	"PublicationLimitStreamID":                               PublicationLimitStreamID,
+	"PublicationLocalSocketAddressesStreamID":                PublicationLocalSocketAddressesStreamID,
 	"RequirePublicationLookupMissStreamID":                   RequirePublicationLookupMissStreamID,
 	"RequirePublicationLookupMissTimeoutStreamID":            RequirePublicationLookupMissTimeoutStreamID,
 	"SharedPublicationCloseStreamID":                         SharedPublicationCloseStreamID,

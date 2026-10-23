@@ -99,6 +99,20 @@ func LogConfigNearTermEndForTest(
 	return cfg
 }
 
+func LogConfigWithInitialTermIDForTest(
+	base func() TestPublicationLogConfig,
+	initialTermID int32,
+) TestPublicationLogConfig {
+	cfg := base()
+	cfg.InitialTermID = initialTermID
+	cfg.RawTails = [logbuffer.PartitionCount]int64{
+		logbuffer.PackRawTail(initialTermID, 0),
+		logbuffer.PackRawTail(initialTermID-2, 0),
+		logbuffer.PackRawTail(initialTermID-1, 0),
+	}
+	return cfg
+}
+
 func nearMaxTermTailForTest(remaining int32) (termID int32, index int, termOffset int32) {
 	termID = logbuffer.AddWrapI32(TestPublicationInitialTermID, NearMaxTermCountForTest)
 	index = logbuffer.IndexByTermCount(NearMaxTermCountForTest)
@@ -619,6 +633,38 @@ func NewTestCountersReaderWithSubscriberPositionForTest(
 		regID = registrationID[0]
 	}
 	return newTestCountersReaderWithSubscriberPositionRegistration(joinPosition, regID)
+}
+
+// NewTestCountersReaderWithLocalSocketAddressesForTest adds one active
+// LOCAL_SOCKADDR record per address, each linked to
+// TestPublicationChannelCounterID.
+func NewTestCountersReaderWithLocalSocketAddressesForTest(
+	tb testing.TB,
+	limitPosition int64,
+	addresses ...string,
+) *cnc.CountersReader {
+	tb.Helper()
+	return inMemCountersReaderWithLocalSocketAddresses(
+		limitPosition,
+		inMemPublicationChannelCounterID,
+		addresses...,
+	)
+}
+
+// NewTestCountersReaderWithLinkedLocalSocketAddressesForTest adds one active
+// LOCAL_SOCKADDR record per address, each linked to channelStatusCounterID.
+func NewTestCountersReaderWithLinkedLocalSocketAddressesForTest(
+	tb testing.TB,
+	limitPosition int64,
+	channelStatusCounterID int32,
+	addresses ...string,
+) *cnc.CountersReader {
+	tb.Helper()
+	return inMemCountersReaderWithLocalSocketAddresses(
+		limitPosition,
+		channelStatusCounterID,
+		addresses...,
+	)
 }
 
 func NewTestCountersReaderLimitOnlyForTest(tb testing.TB, limitPosition int64) *cnc.CountersReader {

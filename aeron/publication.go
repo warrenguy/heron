@@ -79,7 +79,7 @@ func (pub *Publication) RegistrationID() int64 {
 // Behaviour:
 //   - The driver gives a new driver publication the correlation id of the
 //     add that created it. For that add, OriginalRegistrationID equals
-//     RegistrationID. Publication does not check this.
+//     RegistrationID. See IsOriginal.
 //   - A later add that joins a live driver publication returns that
 //     publication's id. The creating add may belong to another client.
 //   - After every add closes, the next add creates a new driver publication
@@ -87,6 +87,42 @@ func (pub *Publication) RegistrationID() int64 {
 //   - The driver labels the publication limit counter with this id.
 func (pub *Publication) OriginalRegistrationID() int64 {
 	return pub.originalRegistrationID
+}
+
+// IsOriginal reports whether this add created the driver publication.
+// Matches Java Publication.isOriginal.
+//
+// Returns true when OriginalRegistrationID equals RegistrationID.
+func (pub *Publication) IsOriginal() bool {
+	return pub.originalRegistrationID == pub.registrationID
+}
+
+// Channel returns the channel string passed to the add, not the driver
+// canonical form.
+func (pub *Publication) Channel() string {
+	return pub.channel
+}
+
+// InitialTermID returns the initial term id from the log metadata.
+func (pub *Publication) InitialTermID() int32 {
+	return pub.initialTermID
+}
+
+// TermBufferLength returns the length of one term buffer of the log.
+func (pub *Publication) TermBufferLength() int32 {
+	//nolint:gosec // G115: CheckTermLength bounds the term length
+	return int32(pub.termBufferLength)
+}
+
+// PositionBitsToShift returns the shift from a term count to a stream
+// position.
+func (pub *Publication) PositionBitsToShift() int {
+	return pub.positionBitsToShift
+}
+
+// MaxPossiblePosition returns the term buffer length times 2^31.
+func (pub *Publication) MaxPossiblePosition() int64 {
+	return pub.maxPossiblePosition
 }
 
 func (pub *Publication) SessionID() int32 {
@@ -418,6 +454,28 @@ func (pub *Publication) ChannelStatus() (int64, error) {
 		return ChannelEndpointStatusActive, nil
 	}
 	return pub.counterValue(pub.channelStatusCounterID)
+}
+
+// LocalSocketAddresses returns the bound local addresses of the send
+// endpoint. Matches Java Publication.localSocketAddresses.
+//
+// Returns:
+//   - One entry per active LOCAL_SOCKADDR counter linked to the channel
+//     status counter, in counter id order, as ip:port or [ip6]:port.
+//   - nil for an IPC publication or a closed publication.
+//   - nil when ChannelStatus is not ChannelEndpointStatusActive.
+//
+// Concurrency: call only before Client.Close starts. Client.Close unmaps the
+// CnC file that holds the counters.
+func (pub *Publication) LocalSocketAddresses() []string {
+	if pub.channelStatusCounterID == cnc.NullCounterID {
+		return nil
+	}
+	status, err := pub.ChannelStatus()
+	if err != nil {
+		return nil
+	}
+	return pub.counters.FindLocalSocketAddresses(status, pub.channelStatusCounterID)
 }
 
 func (pub *Publication) counterValue(counterID int32) (int64, error) {

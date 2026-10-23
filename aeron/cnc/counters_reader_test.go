@@ -686,7 +686,14 @@ func counterMetadataRegistrationKeyOffset(counterID int32) int {
 	return int(counterID)*cnc.CounterMetadataLength + cnc.CounterMetadataKeyOffset
 }
 
-func syntheticCountersBuffers(tb testing.TB, counterCount int) ([]byte, []byte) {
+// countersTB is the testing surface of the counters fixture helpers. Embeds
+// require.TestingT plus Helper, so rapid.T fits. Not full testing.TB.
+type countersTB interface {
+	Helper()
+	require.TestingT
+}
+
+func syntheticCountersBuffers(tb countersTB, counterCount int) ([]byte, []byte) {
 	tb.Helper()
 	require.Positive(tb, counterCount)
 

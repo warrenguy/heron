@@ -4,6 +4,7 @@ package integration_test
 
 import (
 	"fmt"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -70,6 +71,66 @@ func TestChannelStatusCounterIsCounterActive(t *testing.T) {
 
 	harness.WaitForToDriverRingDrained(t, toDriver, 0)
 	md.AssertProcessAlive(t)
+}
+
+// TestPublicationLocalSocketAddresses reads the bound send address of a UDP
+// publication and a UDP exclusive publication on a live driver.
+func TestPublicationLocalSocketAddresses(t *testing.T) {
+	md := harness.Shared(t)
+	client := harness.ConnectClient(t, md, aeron.Config{})
+
+	const streamID = harness.PublicationLocalSocketAddressesStreamID
+	ports := harness.FreeUDPPorts(t, 2)
+
+	pub, err := client.AddPublication(
+		streamID,
+		"aeron:udp?endpoint="+harness.LoopbackUDPEndpoint(ports[0]),
+	)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "close publication", pub.Close)
+
+	exclusive, err := client.AddExclusivePublication(
+		streamID,
+		"aeron:udp?endpoint="+harness.LoopbackUDPEndpoint(ports[1]),
+	)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "close exclusive publication", exclusive.Close)
+
+	ipc, err := client.AddPublication(streamID, harness.IPCChannel)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "close IPC publication", ipc.Close)
+
+	for _, tc := range []struct {
+		name string
+		pub  localSocketAddressPublication
+	}{
+		{name: "publication", pub: pub},
+		{name: "exclusive publication", pub: exclusive},
+	} {
+		// Active: one bound address.
+		harness.WaitForChannelStatusActive(t, client, tc.pub)
+		addresses := tc.pub.LocalSocketAddresses()
+		require.Len(t, addresses, 1, tc.name)
+		address, err := netip.ParseAddrPort(addresses[0])
+		require.NoError(t, err, tc.name)
+		require.NotZero(t, address.Port(), tc.name)
+	}
+
+	// IPC: no send endpoint.
+	require.Nil(t, ipc.LocalSocketAddresses())
+
+	// Closed: nil.
+	require.NoError(t, pub.Close())
+	require.NoError(t, exclusive.Close())
+	require.Nil(t, pub.LocalSocketAddresses())
+	require.Nil(t, exclusive.LocalSocketAddresses())
+
+	md.AssertProcessAlive(t)
+}
+
+type localSocketAddressPublication interface {
+	ChannelStatus() (int64, error)
+	LocalSocketAddresses() []string
 }
 
 func waitForPublicationReady(
