@@ -476,6 +476,47 @@ func TestAsyncConnect_timeout(t *testing.T) {
 	require.ErrorContains(t, pollErr, DefaultLocalControlChannel)
 }
 
+// TestAsyncConnect_ownedClientFaultFailsPoll asserts that a fault that
+// terminates the owned transport client fails Poll with the cause. The fault
+// check runs before the connect deadline check. A later Poll returns the
+// same error.
+func TestAsyncConnect_ownedClientFaultFailsPoll(t *testing.T) {
+	t.Parallel()
+
+	harness := aeron.NewAsyncConnectTestHarness(t)
+	cfg := ownedConnectConfigForTest(t, harness)
+	cfg.ConnectTimeout = time.Minute
+	ac, err := NewAsyncConnect(t.Context(), cfg)
+	require.NoError(t, err)
+	registerAsyncConnectClose(t, ac)
+	require.True(t, ac.OwnsAeronClient())
+
+	// Phase: the control response subscription add completes.
+	setupAsyncConnectControlReady(t, harness, ac)
+	require.Equal(t, ConnectStateCreateControlRequestPublication, ac.State())
+
+	// Phase: the client timeout terminates the owned client. The fault wins
+	// over the expired deadline.
+	transmitClientTimeout(t, harness)
+	harness.DoWork()
+	require.True(t, harness.Client.IsTerminating())
+	ac.deadlineNs = ac.nanoClock() - 1
+
+	result, err := ac.Poll()
+	require.Nil(t, result)
+	require.ErrorIs(t, err, ErrTransportTerminating)
+	require.ErrorIs(t, err, conductor.ErrClientTimeout)
+
+	// Phase: a later Poll returns the same error.
+	result, again := ac.Poll()
+	require.Nil(t, result)
+	require.Same(t, err, again)
+
+	// Phase: Close closes the owned client.
+	require.NoError(t, ac.Close())
+	require.True(t, aeron.ClientIsClosedForTest(harness.Client))
+}
+
 func TestAsyncConnect_pollSendMessage_backPressuredStaysInSendMessage(t *testing.T) {
 	t.Parallel()
 

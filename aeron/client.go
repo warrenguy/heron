@@ -200,17 +200,24 @@ func conductorConnectConfig(cfg Config, clientID int64, client *Client) conducto
 		MediaDriverDir: cfg.AeronDir,
 		CloseLingerNs:  cfg.CloseLingerDuration.Nanoseconds(),
 	}
-	if handler := cfg.ErrorHandler; handler != nil {
-		config.ErrorHandler = func(err error) {
-			handler(mapConductorError(err))
-		}
-	}
+	config.ErrorHandler = wrapConductorErrorHandler(cfg.ErrorHandler)
 	if handler := cfg.PublicationErrorFrameHandler; handler != nil {
 		config.PublicationErrorFrameHandler = func(event conductor.PublicationError) {
 			handler(publicationErrorFrameFrom(event))
 		}
 	}
 	return config
+}
+
+// wrapConductorErrorHandler maps each conductor error through
+// mapConductorError before handler sees it. A nil handler returns nil.
+func wrapConductorErrorHandler(handler func(error)) func(error) {
+	if handler == nil {
+		return nil
+	}
+	return func(err error) {
+		handler(mapConductorError(err))
+	}
 }
 
 func newConductorClient(

@@ -1,11 +1,28 @@
 package archive
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/internal/transportfault"
 )
+
+// ErrTransportTerminating reports that the connect-owned transport client has
+// terminated. Client.TransportFault and AsyncConnect.Poll wrap it with the
+// conductor cause.
+var ErrTransportTerminating = errors.New("archive: transport client is terminating")
+
+// transportTerminatingError wraps the monitor termination cause for client
+// with ErrTransportTerminating. Returns nil when the monitor reports none.
+func transportTerminatingError(monitor *transportfault.Monitor, client *aeron.Client) error {
+	cause := monitor.TerminationCause(client)
+	if cause == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrTransportTerminating, cause)
+}
 
 // ControlTerminalError reports a non-retriable control offer result from a retry loop.
 type ControlTerminalError struct {

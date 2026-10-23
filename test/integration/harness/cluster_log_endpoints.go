@@ -266,19 +266,21 @@ const (
 
 	// Archive-node launcher smoke and archive client. Single control binds;
 	// not PortBase blocks.
-	ArchiveNodeSmokeControlPort0 = 28001
-	ArchiveClientControlPort0    = 28101
-	ArchiveNodePairControlPort0  = 30001
-	ArchiveNodePairControlPort1  = 30101
+	ArchiveNodeSmokeControlPort0   = 28001
+	ArchiveClientControlPort0      = 28101
+	ArchiveClientFaultControlPort0 = 28151
+	ArchiveNodePairControlPort0    = 30001
+	ArchiveNodePairControlPort1    = 30101
 )
 
 // Archive control URIs. Each derives from a port constant above so the
 // non-overlap matrix and live binds cannot drift.
 var (
-	ArchiveNodeSmokeControl0 = ArchiveControlChannel(ArchiveNodeSmokeControlPort0)
-	ArchiveClientControl0    = ArchiveControlChannel(ArchiveClientControlPort0)
-	ArchiveNodePairControl0  = ArchiveControlChannel(ArchiveNodePairControlPort0)
-	ArchiveNodePairControl1  = ArchiveControlChannel(ArchiveNodePairControlPort1)
+	ArchiveNodeSmokeControl0   = ArchiveControlChannel(ArchiveNodeSmokeControlPort0)
+	ArchiveClientControl0      = ArchiveControlChannel(ArchiveClientControlPort0)
+	ArchiveClientFaultControl0 = ArchiveControlChannel(ArchiveClientFaultControlPort0)
+	ArchiveNodePairControl0    = ArchiveControlChannel(ArchiveNodePairControlPort0)
+	ArchiveNodePairControl1    = ArchiveControlChannel(ArchiveNodePairControlPort1)
 )
 
 // ArchiveControlChannel returns the loopback UDP Archive control URI for port.
@@ -614,6 +616,7 @@ func singlePortLedger() []portLedgerSingle {
 	return []portLedgerSingle{
 		{name: "archive-smoke-0", port: ArchiveNodeSmokeControlPort0},
 		{name: "archive-client-0", port: ArchiveClientControlPort0},
+		{name: "archive-client-fault-0", port: ArchiveClientFaultControlPort0},
 		{name: "archive-pair-0", port: ArchiveNodePairControlPort0},
 		{name: "archive-pair-1", port: ArchiveNodePairControlPort1},
 	}

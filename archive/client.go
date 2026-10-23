@@ -12,6 +12,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/heron/internal/transportfault"
 )
 
 // Client is a connected archive control session over one control-response
@@ -49,6 +50,11 @@ import (
 // Close releases the control publication and subscription, and the Aeron client when
 // Connect created it; it is idempotent.
 //
+// A fault that terminates the Connect-owned transport client closes the
+// session on the next poll. TransportFault then returns the cause. A blocking
+// call in flight returns its own offer or timeout error. A caller-supplied
+// client keeps the session open.
+//
 // Not safe for concurrent use.
 type Client struct {
 	controlSessionID int64
@@ -70,6 +76,14 @@ type Client struct {
 	ownsAeronClient     bool
 	cfg                 Config
 	closed              bool
+
+	// transportFault stores errors from the Connect-owned transport client.
+	// Nil when the caller supplied Config.Aeron.
+	transportFault *transportfault.Monitor
+
+	// transportFaultCause is the error that closed the session on a transport
+	// client fault. Nil until a fault closes the session.
+	transportFaultCause error
 }
 
 // Connect performs the blocking archive control connect handshake and returns a session
@@ -146,6 +160,7 @@ func newClient(result *ConnectResult) *Client {
 		aeronClient:         result.Aeron,
 		ownsAeronClient:     result.OwnsAeronClient,
 		cfg:                 result.Config,
+		transportFault:      result.transportFault,
 	}
 	if client.controlPoller != nil {
 		client.controlPoller.ResetCapture()
@@ -199,6 +214,28 @@ func (client *Client) Close() error {
 	return nil
 }
 
+// TransportFault returns the error that closed the session on an owned
+// transport client fault. The error wraps ErrTransportTerminating and the
+// conductor cause. Returns nil when a fault did not close the session.
+func (client *Client) TransportFault() error {
+	return client.transportFaultCause
+}
+
+// closeOnTransportFault closes the session when the owned transport client
+// has terminated. Returns true on close.
+func (client *Client) closeOnTransportFault() bool {
+	if client.closed {
+		return false
+	}
+	cause := transportTerminatingError(client.transportFault, client.aeronClient)
+	if cause == nil {
+		return false
+	}
+	client.transportFaultCause = cause
+	_ = client.Close()
+	return true
+}
+
 // IsClosed reports whether Close has been invoked.
 func (client *Client) IsClosed() bool {
 	if client == nil {
@@ -212,12 +249,28 @@ func (client *Client) IsClosed() bool {
 // sends each recording signal to the session handler, then to the pending
 // signal tracker of an open AsyncStartRecording or AsyncExtendRecording. Poll
 // drops signals when neither exists. Poll never calls DoWork.
+//
+// Poll closes the session when the owned transport client has terminated,
+// then returns 0. TransportFault returns the cause. The owned client Close
+// blocks for up to AeronConfig.CloseLingerDuration.
+//
+// Concurrency: invoker-only. Poll takes the transport client lock after an
+// owned client error. Must not run inside a transport client callback.
 func (client *Client) Poll() int {
+	return client.pollControlEvents(client.sessionPollTargets(client.signalTarget()))
+}
+
+// pollControlEvents closes the session on an owned transport client fault,
+// else runs one demux poll through targets.
+func (client *Client) pollControlEvents(targets ControlPollTargets) int {
+	if client.closeOnTransportFault() {
+		return 0
+	}
 	return PollControlEvents(
 		client.controlSubscription,
 		DefaultControlResponseFragmentLimit,
 		client.controlAssembler,
-		client.sessionPollTargets(client.signalTarget()),
+		targets,
 	)
 }
 
@@ -230,24 +283,14 @@ func (client *Client) listRecordingPollTargets() ControlPollTargets {
 }
 
 func (client *Client) pollListRecording() int {
-	return PollControlEvents(
-		client.controlSubscription,
-		DefaultControlResponseFragmentLimit,
-		client.controlAssembler,
-		client.listRecordingPollTargets(),
-	)
+	return client.pollControlEvents(client.listRecordingPollTargets())
 }
 
 // pollRecordingSignalAwait routes control-event polls through targets for the whole
 // await (offer retry and response loop).
 func (client *Client) pollRecordingSignalAwait(targets ControlPollTargets) func() int {
 	return func() int {
-		return PollControlEvents(
-			client.controlSubscription,
-			DefaultControlResponseFragmentLimit,
-			client.controlAssembler,
-			targets,
-		)
+		return client.pollControlEvents(targets)
 	}
 }
 

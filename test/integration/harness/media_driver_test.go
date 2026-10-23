@@ -3,13 +3,17 @@
 package harness_test
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/broadcast"
 	"github.com/warrenguy/heron/ringbuffer"
@@ -26,6 +30,38 @@ func TestMediaDriver_Kill(t *testing.T) {
 	require.NoError(t, md.Kill())
 
 	err = md.Kill()
+	require.ErrorIs(t, err, os.ErrProcessDone)
+	require.Contains(t, err.Error(), fmt.Sprintf("process %d not alive", pid))
+}
+
+// TestMediaDriver_Shutdown asserts that a SIGTERM shutdown terminates an
+// attached client with the driver shutdown cause.
+func TestMediaDriver_Shutdown(t *testing.T) {
+	t.Parallel()
+	md := harness.Start(t)
+
+	var clientErrs []error
+	client := harness.ConnectClient(t, md, aeron.Config{
+		ErrorHandler: func(err error) { clientErrs = append(clientErrs, err) },
+	})
+	pid, err := md.ProcessPID()
+	require.NoError(t, err)
+
+	// Phase: the client reads the shutdown heartbeat and terminates.
+	require.NoError(t, md.Shutdown())
+	terminating := harness.PollUntilBool(5*time.Second, aeron.DefaultIdleSleepDuration, func() bool {
+		client.DoWork()
+		return client.IsTerminating()
+	})
+	require.True(t, terminating, "client did not terminate within 5s")
+	require.NotEmpty(t, clientErrs)
+	cause := clientErrs[len(clientErrs)-1]
+	_, ok := errors.AsType[*aeron.DriverTimeoutError](cause)
+	require.True(t, ok, "cause: %v", cause)
+	require.ErrorIs(t, cause, conductor.ErrDriverShutdown)
+
+	// Phase: a second Shutdown finds no process.
+	err = md.Shutdown()
 	require.ErrorIs(t, err, os.ErrProcessDone)
 	require.Contains(t, err.Error(), fmt.Sprintf("process %d not alive", pid))
 }

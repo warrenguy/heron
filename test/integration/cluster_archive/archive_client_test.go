@@ -3,14 +3,17 @@
 package cluster_archive_test
 
 import (
+	"errors"
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
@@ -329,6 +332,53 @@ func TestArchiveClient_stopRecordingByIdentity(t *testing.T) {
 	require.True(t, ok, "stop error: %v", err)
 	require.Equal(t, int32(archive.ErrorUnknownRecording), code)
 	require.Zero(t, stopSignals, "the stopping session must get no STOP signal")
+}
+
+// TestArchiveClient_ownedTransportDriverShutdownClosesSession asserts that a
+// driver shutdown under a Connect-owned transport client closes the session
+// on the next Poll. The client runs on its own driver over UDP control. The
+// Archive driver keeps running.
+func TestArchiveClient_ownedTransportDriverShutdownClosesSession(t *testing.T) {
+	t.Parallel()
+
+	// Phase: start the Archive on its own driver.
+	archiveDriver := harness.Start(t)
+	harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
+		AeronDir:       archiveDriver.Dir,
+		ControlChannel: harness.ArchiveClientFaultControl0,
+	})
+
+	// Phase: connect an owned session from a second driver.
+	clientDriver := harness.Start(t)
+	cfg := archive.Config{
+		ControlRequestChannel:  harness.ArchiveClientFaultControl0,
+		ControlResponseChannel: "aeron:udp?endpoint=127.0.0.1:0",
+		AeronDir:               clientDriver.Dir,
+		AeronConfig: aeron.Config{
+			InterServiceTimeout: harness.ConnectedPollTimeout,
+			CloseLingerDuration: 250 * time.Millisecond,
+		},
+	}.WithRemoteControl().Normalize()
+	archiveClient, err := archive.Connect(t.Context(), cfg)
+	require.NoError(t, err, "connect over UDP control")
+	harness.CleanupClose(t, "close archive client", archiveClient.Close)
+	require.False(t, archiveClient.IsClosed())
+	aeronClient := archiveClient.Config().Aeron
+	require.NotNil(t, aeronClient)
+
+	// Phase: shut down the client driver. Poll closes the session.
+	require.NoError(t, clientDriver.Shutdown())
+	closed := harness.PollUntilBool(5*time.Second, aeron.DefaultIdleSleepDuration, func() bool {
+		aeronClient.DoWork()
+		archiveClient.Poll()
+		return archiveClient.IsClosed()
+	})
+	require.True(t, closed, "session did not close within 5s")
+	fault := archiveClient.TransportFault()
+	require.ErrorIs(t, fault, archive.ErrTransportTerminating)
+	_, ok := errors.AsType[*aeron.DriverTimeoutError](fault)
+	require.True(t, ok, "fault: %v", fault)
+	require.ErrorIs(t, fault, conductor.ErrDriverShutdown)
 }
 
 // connectArchiveClient connects an archive client over the local control

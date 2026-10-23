@@ -18,6 +18,10 @@ var connectConstructionHooksMap = testhook.NewRegistry[
 // SetConnectConstructionHooksForTest registers owned-client connect overrides keyed by
 // cfg.AeronDir or cfg.AeronConfig.AeronDir. Each parallel test must use a
 // distinct AeronDir such as t.TempDir().
+//
+// The factory receives a Config copy whose AeronConfig holds the effective
+// transport config, including the ErrorHandler connect installs on the owned
+// client.
 func SetConnectConstructionHooksForTest(
 	tb testing.TB,
 	aeronDir string,
@@ -38,7 +42,8 @@ func ownedConnectClientFactoryForConfig(
 	return factory, factory != nil
 }
 
-// ConcludeConfigForTest exercises concludeConfig during connect tests.
+// ConcludeConfigForTest exercises concludeConfig during connect tests. It
+// drops the owned-client monitor.
 //
 // ctx bounds owned transport attach; tests that inject Aeron or factories
 // may pass context.Background().
@@ -46,5 +51,6 @@ func ConcludeConfigForTest(
 	ctx context.Context,
 	cfg Config,
 ) (Config, *aeron.Client, bool, error) {
-	return concludeConfig(ctx, cfg)
+	concluded, client, owns, _, err := concludeConfig(ctx, cfg)
+	return concluded, client, owns, err
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/idlestrategy"
+	"github.com/warrenguy/heron/internal/transportfault"
 )
 
 // Config holds invoker-only Aeron Archive control client configuration.
@@ -55,8 +56,18 @@ type Config struct {
 	// ControlOfferRetryTimeout also ends the retry. Java parity: messageRetryAttempts.
 	MessageRetryAttempts int
 
-	AeronDir    string
-	Aeron       *aeron.Client
+	AeronDir string
+	Aeron    *aeron.Client
+
+	// AeronConfig configures the transport client that connect creates when
+	// Aeron is nil.
+	//
+	// Behaviour:
+	//   - connect wraps ErrorHandler on the owned client. The wrapper stores
+	//     each error, then calls ErrorHandler.
+	//   - A nil ErrorHandler drops errors that leave the owned client running.
+	//   - A fault that terminates the owned client closes the session on the
+	//     next poll. Client.TransportFault returns the cause.
 	AeronConfig aeron.Config
 
 	CredentialsSupplier CredentialsSupplier
@@ -250,40 +261,48 @@ func archiveAeronDir(cfg Config) string {
 //
 // ctx bounds owned transport attach via aeron.Connect only. Shared Aeron and
 // test factories ignore ctx. Do not store ctx on Config.
+//
+// Behaviour:
+//   - cfg.Aeron set: returns that client with a nil monitor.
+//   - cfg.Aeron nil: wraps AeronConfig.ErrorHandler in a new monitor for the
+//     owned client. The returned Config keeps the caller ErrorHandler.
 func concludeConfig(
 	ctx context.Context,
 	cfg Config,
-) (Config, *aeron.Client, bool, error) {
+) (
+	Config,
+	*aeron.Client,
+	bool,
+	*transportfault.Monitor,
+	error,
+) {
 	cfg = applyEffectiveChannels(cfg)
 	responseChannel, err := applyUDPRejoinFalse(cfg.effectiveControlResponseChannel)
 	if err != nil {
-		return Config{}, nil, false, err
+		return Config{}, nil, false, nil, err
 	}
 	cfg.effectiveControlResponseChannel = responseChannel
 
 	if cfg.Aeron != nil {
-		return cfg, cfg.Aeron, false, nil
+		return cfg, cfg.Aeron, false, nil, nil
 	}
 	aeronCfg := cfg.AeronConfig
 	if dir := archiveAeronDir(cfg); dir != "" {
 		aeronCfg.AeronDir = dir
 	}
-	if aeronCfg.ErrorHandler == nil {
-		aeronCfg.ErrorHandler = defaultArchiveConnectErrorHandler
-	}
+	monitor := &transportfault.Monitor{}
+	aeronCfg.ErrorHandler = monitor.Handler(aeronCfg.ErrorHandler)
 	var client *aeron.Client
 	if factory, ok := ownedConnectClientFactoryForConfig(cfg); ok {
-		client, err = factory(cfg)
+		factoryCfg := cfg
+		factoryCfg.AeronConfig = aeronCfg
+		client, err = factory(factoryCfg)
 	} else {
 		client, err = aeron.Connect(ctx, aeronCfg)
 	}
 	if err != nil {
-		return Config{}, nil, false, err
+		return Config{}, nil, false, nil, err
 	}
 	cfg.Aeron = client
-	return cfg, client, true, nil
-}
-
-func defaultArchiveConnectErrorHandler(err error) {
-	panic(err)
+	return cfg, client, true, monitor, nil
 }

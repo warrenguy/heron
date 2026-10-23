@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ const (
 	envDir                 = "AERON_DIR"
 
 	joinExternalCncReadyTimeout = 10 * time.Second
+	shutdownExitTimeout         = 10 * time.Second
 )
 
 type DriverEnv map[string]string
@@ -355,6 +357,36 @@ func (md *MediaDriver) Kill() error {
 		return nil
 	}
 	return killErr
+}
+
+// Shutdown sends SIGTERM to aeronmd and waits for the process to exit.
+//
+// Shutdown keeps Dir. An attached client reads the shutdown heartbeat that
+// aeronmd writes on close. The client then terminates with
+// conductor.ErrDriverShutdown. Stop still removes Dir.
+//
+// Returns an error wrapping os.ErrProcessDone when the process has already
+// exited. Returns an error naming the PID when the process is still running
+// 10s after SIGTERM.
+func (md *MediaDriver) Shutdown() error {
+	proc, err := md.aliveProcess()
+	if err != nil {
+		return err
+	}
+	signalErr := proc.Signal(syscall.SIGTERM)
+	if signalErr != nil && !errors.Is(signalErr, os.ErrProcessDone) {
+		return signalErr
+	}
+	select {
+	case <-md.exited:
+		return nil
+	case <-time.After(shutdownExitTimeout):
+		return fmt.Errorf(
+			"harness: aeronmd process %d still running %s after SIGTERM",
+			md.pid,
+			shutdownExitTimeout,
+		)
+	}
 }
 
 func (md *MediaDriver) Stop() {

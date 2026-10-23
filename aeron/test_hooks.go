@@ -784,10 +784,39 @@ func NewAsyncConnectTestHarness(tb testing.TB) *AsyncConnectTestHarness {
 	}
 	tb.Cleanup(func() {
 		if harness.Client != nil {
+			setDoWorkAfterHook(harness.Client, nil)
 			_ = harness.Client.Close()
 		}
 	})
 	return harness
+}
+
+// SetErrorHandler installs a conductor ErrorHandler. The handler maps each
+// error through mapConductorError, then calls handler. Nil clears it.
+func (harness *AsyncConnectTestHarness) SetErrorHandler(handler func(error)) {
+	if harness == nil || harness.fixture == nil {
+		return
+	}
+	harness.fixture.Conductor.SetErrorHandlerForTest(wrapConductorErrorHandler(handler))
+}
+
+// TransmitClientTimeout broadcasts a client timeout for the harness client.
+// The next harness client DoWork terminates the client with
+// conductor.ErrClientTimeout.
+func (harness *AsyncConnectTestHarness) TransmitClientTimeout() error {
+	return harness.fixture.Transmit(
+		conductor.OnClientTimeout,
+		testutil.ClientTimeoutPayload(harness.Client.ClientId()),
+	)
+}
+
+// SetDoWorkAfterHook runs hook after each harness client DoWork, under
+// clientLock. Nil clears it. Harness cleanup clears it.
+func (harness *AsyncConnectTestHarness) SetDoWorkAfterHook(hook func()) {
+	if harness == nil {
+		return
+	}
+	setDoWorkAfterHook(harness.Client, hook)
 }
 
 // SetCountersReaderForRegs replaces the conductor counters reader for multi-member tests.

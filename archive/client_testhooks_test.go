@@ -13,6 +13,7 @@ import (
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/internal/testutil"
+	"github.com/warrenguy/heron/internal/transportfault"
 )
 
 func TestNewClient_transfersOwnsAeronClient(t *testing.T) {
@@ -22,11 +23,15 @@ func TestNewClient_transfersOwnsAeronClient(t *testing.T) {
 		OwnsAeronClient: false,
 	})
 	require.False(t, shared.ownsAeronClient)
+	require.Nil(t, shared.transportFault)
 
+	monitor := &transportfault.Monitor{}
 	owned := newClient(&ConnectResult{
 		OwnsAeronClient: true,
+		transportFault:  monitor,
 	})
 	require.True(t, owned.ownsAeronClient)
+	require.Same(t, monitor, owned.transportFault)
 }
 
 func TestNewClient_wiresConfigRecordingSignalHandler(t *testing.T) {
@@ -707,6 +712,18 @@ func TestClientPoll_fullSlot_ZeroAllocs(t *testing.T) {
 	testutil.AssertZeroAllocs(t, "Client.Poll", 100, func() {
 		f.client.Poll()
 	})
+}
+
+// TestClientPoll_ownedTransport_ZeroAllocs asserts Client.Poll stays
+// zero-alloc with a transport fault monitor that holds no pending mark.
+func TestClientPoll_ownedTransport_ZeroAllocs(t *testing.T) {
+	client, _ := newClientForDemuxTest(t, nil)
+	client.transportFault = &transportfault.Monitor{}
+
+	testutil.AssertZeroAllocs(t, "Client.Poll", 100, func() {
+		client.Poll()
+	})
+	require.False(t, client.IsClosed())
 }
 
 // TestClientClose_releasesResourcesAndIsIdempotent proves Close offers one
