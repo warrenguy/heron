@@ -43,11 +43,11 @@ func (s *timerScriptService) Start(cluster service.Cluster) error {
 	return nil
 }
 
-func (s *timerScriptService) SessionOpen(_, _ int64) {}
+func (s *timerScriptService) SessionOpen(service.ClientSession, int64) {}
 
-func (s *timerScriptService) SessionClose(_, _ int64, _ clusterwire.CloseReason) {}
+func (s *timerScriptService) SessionClose(service.ClientSession, int64, clusterwire.CloseReason) {}
 
-func (s *timerScriptService) SessionMessage(_, _ int64, payload []byte) {
+func (s *timerScriptService) SessionMessage(_ service.ClientSession, _ int64, payload []byte) {
 	switch string(payload) {
 	case timerWireCmdSchedule:
 		_ = s.cluster.ScheduleTimer(timerWireCorrelationID, timerWireDeadline)

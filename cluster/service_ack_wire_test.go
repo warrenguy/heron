@@ -52,11 +52,16 @@ func (s *wireRecordingService) Start(_ service.Cluster) error {
 	return nil
 }
 
-func (s *wireRecordingService) SessionOpen(_, _ int64) {}
+func (s *wireRecordingService) SessionOpen(service.ClientSession, int64) {}
 
-func (s *wireRecordingService) SessionClose(_, _ int64, _ clusterwire.CloseReason) {}
+func (s *wireRecordingService) SessionClose(
+	service.ClientSession,
+	int64,
+	clusterwire.CloseReason,
+) {
+}
 
-func (s *wireRecordingService) SessionMessage(_, _ int64, _ []byte) {
+func (s *wireRecordingService) SessionMessage(service.ClientSession, int64, []byte) {
 	s.messages++
 }
 

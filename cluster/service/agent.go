@@ -763,7 +763,8 @@ func (a *Agent) handleSessionMessage(
 ) aeron.ControlledAction {
 	a.adoptConsumed(logPosition, timestamp)
 	if a.service != nil {
-		a.service.SessionMessage(sessionID, timestamp, payload)
+		session, _ := a.ClientSession(sessionID)
+		a.service.SessionMessage(session, timestamp, payload)
 	}
 	return aeron.ControlledContinue
 }
@@ -793,7 +794,7 @@ func (a *Agent) handleSessionOpen(
 	}
 	a.addClientSession(session)
 	if a.service != nil {
-		a.service.SessionOpen(fields.ClusterSessionID, fields.Timestamp)
+		a.service.SessionOpen(session, fields.Timestamp)
 	}
 	return aeron.ControlledContinue
 }
@@ -811,11 +812,7 @@ func (a *Agent) handleSessionClose(
 	}
 	a.disconnectClientSession(session)
 	if a.service != nil {
-		a.service.SessionClose(
-			fields.ClusterSessionID,
-			fields.Timestamp,
-			fields.CloseReason,
-		)
+		a.service.SessionClose(session, fields.Timestamp, fields.CloseReason)
 	}
 	return aeron.ControlledContinue
 }

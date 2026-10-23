@@ -32,18 +32,18 @@ type recordingService struct {
 }
 
 type sessionOpenRec struct {
-	sessionID int64
+	session   ClientSession
 	timestamp int64
 }
 
 type sessionCloseRec struct {
-	sessionID int64
+	session   ClientSession
 	timestamp int64
 	reason    clusterwire.CloseReason
 }
 
 type sessionMessageRec struct {
-	sessionID int64
+	session   ClientSession
 	timestamp int64
 	payload   []byte
 }
@@ -58,26 +58,31 @@ func (s *recordingService) Start(Cluster) error {
 	return s.startErr
 }
 
-func (s *recordingService) SessionOpen(sessionID, timestamp int64) {
-	s.opens = append(s.opens, sessionOpenRec{sessionID: sessionID, timestamp: timestamp})
+func (s *recordingService) SessionOpen(session ClientSession, timestamp int64) {
+	s.opens = append(s.opens, sessionOpenRec{session: session, timestamp: timestamp})
 	s.order = append(s.order, "open")
 }
 
 func (s *recordingService) SessionClose(
-	sessionID, timestamp int64,
+	session ClientSession,
+	timestamp int64,
 	reason clusterwire.CloseReason,
 ) {
 	s.closes = append(s.closes, sessionCloseRec{
-		sessionID: sessionID,
+		session:   session,
 		timestamp: timestamp,
 		reason:    reason,
 	})
 	s.order = append(s.order, "close")
 }
 
-func (s *recordingService) SessionMessage(sessionID, timestamp int64, payload []byte) {
+func (s *recordingService) SessionMessage(
+	session ClientSession,
+	timestamp int64,
+	payload []byte,
+) {
 	s.messages = append(s.messages, sessionMessageRec{
-		sessionID: sessionID,
+		session:   session,
 		timestamp: timestamp,
 		payload:   append([]byte(nil), payload...),
 	})
@@ -781,12 +786,13 @@ func TestAgent_SessionRegistry(t *testing.T) {
 	require.Equal(t, 1, agent.SessionCount())
 	require.True(t, agent.HasSession(100))
 	require.Len(t, svc.opens, 1)
-	require.Equal(t, int64(100), svc.opens[0].sessionID)
+	require.Equal(t, int64(100), svc.opens[0].session.ID())
 	require.Equal(t, int64(50), agent.ClusterTime())
 	require.Equal(t, int64(openSpan), agent.LogPosition())
 
 	session, ok := agent.ClientSession(100)
 	require.True(t, ok)
+	require.Same(t, session, svc.opens[0].session)
 	require.Equal(t, int64(100), session.ID())
 	require.Equal(t, int32(102), session.ResponseStreamID())
 	require.Equal(t, "aeron:ipc", session.ResponseChannel())
@@ -874,7 +880,7 @@ func TestAgent_SessionClose_knownAndUnknown(t *testing.T) {
 	require.Equal(t, 0, agent.SessionCount())
 	require.False(t, agent.HasSession(7))
 	require.Len(t, svc.closes, 1)
-	require.Equal(t, int64(7), svc.closes[0].sessionID)
+	require.Equal(t, int64(7), svc.closes[0].session.ID())
 	require.Equal(t, clusterwire.CloseReason_CLIENT_ACTION, svc.closes[0].reason)
 	require.Equal(t, int64(3), agent.ClusterTime())
 
@@ -934,6 +940,7 @@ func TestAgent_SessionClose_knownAndUnknown(t *testing.T) {
 
 			log.close(7, 2)
 			require.Len(t, svc.closes, 1)
+			require.Same(t, session, svc.closes[0].session)
 			_, ok = log.agent.ClientSession(7)
 			require.False(t, ok)
 			require.Equal(t, aeron.NotConnected, session.Offer([]byte("late")))
@@ -968,7 +975,8 @@ func TestAgent_SessionMessage_unknownSession(t *testing.T) {
 	require.Equal(t, 1, agent.DoWork(0))
 	require.Len(t, svc.messages, 1)
 	require.Equal(t, []byte("body"), svc.messages[0].payload)
-	require.Equal(t, int64(404), svc.messages[0].sessionID)
+	// require.Nil accepts a typed nil. Equal does not.
+	require.Equal(t, ClientSession(nil), svc.messages[0].session)
 	require.Equal(t, 0, agent.SessionCount())
 }
 
@@ -1142,6 +1150,7 @@ func TestAgent_ClientSession_openAsLeader(t *testing.T) {
 	require.Equal(t, 1, agent.PendingResponsePublicationAdds())
 	session, ok := agent.ClientSession(7)
 	require.True(t, ok)
+	require.Same(t, session, svc.opens[0].session)
 	require.Equal(t, int64(7), session.ID())
 	require.Equal(t, testResponseStreamID, session.ResponseStreamID())
 	require.Equal(t, testResponseChannel, session.ResponseChannel())

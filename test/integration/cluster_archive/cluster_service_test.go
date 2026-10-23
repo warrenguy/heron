@@ -57,6 +57,9 @@ func (b *boundCheckedService) DoWork(nowNs int64) int {
 	return n
 }
 
+// nilSessionID marks a recordedMessage whose SessionMessage session was nil.
+const nilSessionID int64 = -1
+
 // recordedMessage is one SessionMessage callback with a copied payload.
 type recordedMessage struct {
 	sessionID int64
@@ -76,32 +79,39 @@ type sessionRecorder struct {
 	order      []string
 
 	echo        bool
-	cluster     service.Cluster
 	echoResults []int64
 }
 
-func (s *sessionRecorder) Start(c service.Cluster) error {
+func (s *sessionRecorder) Start(service.Cluster) error {
 	s.startCount++
-	s.cluster = c
 	return nil
 }
 
-func (s *sessionRecorder) SessionOpen(sessionID, _ int64) {
-	s.opens = append(s.opens, sessionID)
+func (s *sessionRecorder) SessionOpen(session service.ClientSession, _ int64) {
+	s.opens = append(s.opens, session.ID())
 	s.order = append(s.order, "open")
 }
 
 func (s *sessionRecorder) SessionClose(
-	sessionID, _ int64,
+	session service.ClientSession,
+	_ int64,
 	_ clusterwire.CloseReason,
 ) {
-	s.closes = append(s.closes, sessionID)
+	s.closes = append(s.closes, session.ID())
 	s.order = append(s.order, "close")
 }
 
-// SessionMessage records the message. With echo set, it records 0 when the
-// registry holds no session for sessionID.
-func (s *sessionRecorder) SessionMessage(sessionID, _ int64, payload []byte) {
+// SessionMessage records the message. With echo set, it records echo result
+// 0 for a nil session.
+func (s *sessionRecorder) SessionMessage(
+	session service.ClientSession,
+	_ int64,
+	payload []byte,
+) {
+	sessionID := nilSessionID
+	if session != nil {
+		sessionID = session.ID()
+	}
 	s.messages = append(s.messages, recordedMessage{
 		sessionID: sessionID,
 		payload:   bytes.Clone(payload),
@@ -111,7 +121,7 @@ func (s *sessionRecorder) SessionMessage(sessionID, _ int64, payload []byte) {
 		return
 	}
 	var result int64
-	if session, ok := s.cluster.ClientSession(sessionID); ok {
+	if session != nil {
 		result = session.Offer(payload)
 	}
 	s.echoResults = append(s.echoResults, result)
@@ -773,8 +783,12 @@ func (s *timerScheduler) Start(c service.Cluster) error {
 	return s.sessionRecorder.Start(c)
 }
 
-func (s *timerScheduler) SessionMessage(sessionID, timestamp int64, payload []byte) {
-	s.sessionRecorder.SessionMessage(sessionID, timestamp, payload)
+func (s *timerScheduler) SessionMessage(
+	session service.ClientSession,
+	timestamp int64,
+	payload []byte,
+) {
+	s.sessionRecorder.SessionMessage(session, timestamp, payload)
 	if s.scheduled {
 		return
 	}
