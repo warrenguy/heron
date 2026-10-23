@@ -13,6 +13,8 @@ var sharedDriverStreamIDs = map[string]int32{
 	"ChannelStatusCounterStreamID":                           ChannelStatusCounterStreamID,
 	"ConnectedWaitPublicationTimeoutStreamID":                ConnectedWaitPublicationTimeoutStreamID,
 	"ConnectedWaitSubscriptionTimeoutStreamID":               ConnectedWaitSubscriptionTimeoutStreamID,
+	"ConsensusEgressCancelMarkedStreamID":                    ConsensusEgressCancelMarkedStreamID,
+	"ConsensusEgressCancelMovedStreamID":                     ConsensusEgressCancelMovedStreamID,
 	"ExclusivePublicationTwoClientsRoundtripStreamID":        ExclusivePublicationTwoClientsRoundtripStreamID,
 	"LogCommitAeronPublisherStreamID":                        LogCommitAeronPublisherStreamID,
 	"LogCommitAppendNLTStreamID":                             LogCommitAppendNLTStreamID,

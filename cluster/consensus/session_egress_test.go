@@ -39,12 +39,26 @@ type scriptedEgressAdder struct {
 	offerErr       error
 	offers         []egressOfferRecord
 	cancels        []int64
+	// calls records polls and cancels in order.
+	calls []egressAdderCall
 }
 
 type egressOfferRecord struct {
 	streamID int32
 	channel  string
 	corr     int64
+}
+
+type egressAdderOp int
+
+const (
+	egressAdderOpPoll egressAdderOp = iota
+	egressAdderOpCancel
+)
+
+type egressAdderCall struct {
+	op   egressAdderOp
+	corr int64
 }
 
 func newScriptedEgressAdder() *scriptedEgressAdder {
@@ -98,6 +112,7 @@ func (s *scriptedEgressAdder) OfferAddPublication(
 func (s *scriptedEgressAdder) PollAddPublication(
 	correlationID int64,
 ) (*aeron.Publication, bool, error) {
+	s.calls = append(s.calls, egressAdderCall{op: egressAdderOpPoll, corr: correlationID})
 	if n, ok := s.pendingPolls[correlationID]; ok && n > 0 {
 		s.pendingPolls[correlationID] = n - 1
 		return nil, false, nil
@@ -120,6 +135,7 @@ func (s *scriptedEgressAdder) PollAddPublication(
 }
 
 func (s *scriptedEgressAdder) CancelPending(correlationID int64) {
+	s.calls = append(s.calls, egressAdderCall{op: egressAdderOpCancel, corr: correlationID})
 	s.cancels = append(s.cancels, correlationID)
 	delete(s.pendingPolls, correlationID)
 	delete(s.pubs, correlationID)
@@ -927,6 +943,132 @@ func TestCloseSessionEgress_moduleCloseOrder(t *testing.T) {
 	require.Nil(t, a.egressAdder)
 	// Registry retained after close-order unbind.
 	require.Len(t, a.sessions.byID, 1)
+}
+
+func TestCancelEgressAdd_pollOutcomes(t *testing.T) {
+	const corr int64 = 1
+	poll := egressAdderCall{op: egressAdderOpPoll, corr: corr}
+	cancel := egressAdderCall{op: egressAdderOpCancel, corr: corr}
+
+	tests := []struct {
+		name string
+		// setup scripts the adder for corr.
+		setup      func(adder *scriptedEgressAdder, pub *aeron.Publication)
+		nilAdder   bool
+		startCorr  int64
+		wantCalls  []egressAdderCall
+		wantClosed bool
+	}{
+		{
+			name: "ready",
+			setup: func(adder *scriptedEgressAdder, pub *aeron.Publication) {
+				adder.pubs[corr] = pub
+			},
+			startCorr:  corr,
+			wantCalls:  []egressAdderCall{poll},
+			wantClosed: true,
+		},
+		{
+			name: "inFlight",
+			setup: func(adder *scriptedEgressAdder, _ *aeron.Publication) {
+				adder.pendingPolls[corr] = 5
+			},
+			startCorr: corr,
+			wantCalls: []egressAdderCall{poll, cancel},
+		},
+		{
+			name: "terminal",
+			setup: func(adder *scriptedEgressAdder, _ *aeron.Publication) {
+				adder.pollErrs[corr] = errors.New("registration failed")
+			},
+			startCorr: corr,
+			wantCalls: []egressAdderCall{poll, cancel},
+		},
+		{
+			name: "vanished",
+			setup: func(adder *scriptedEgressAdder, _ *aeron.Publication) {
+				adder.pollNotDoneErrs[corr] = aeron.ErrAwaitInterrupted
+			},
+			startCorr: corr,
+			wantCalls: []egressAdderCall{poll, cancel},
+		},
+		{
+			name:      "nilAdder",
+			nilAdder:  true,
+			startCorr: corr,
+		},
+		{
+			name:      "noAdd",
+			startCorr: nullValue,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			adder := newScriptedEgressAdder()
+			pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+			if tc.setup != nil {
+				tc.setup(adder, pub)
+			}
+			var egressAdder EgressPublicationAdder
+			if !tc.nilAdder {
+				egressAdder = adder
+			}
+			a := leaderWithEgress(t, nil, 0, 0, egressAdder)
+
+			addCorr := tc.startCorr
+			require.NotPanics(t, func() { a.cancelEgressAdd(&addCorr) })
+
+			require.Equal(t, int64(nullValue), addCorr)
+			require.Equal(t, tc.wantCalls, adder.calls)
+			require.Equal(t, tc.wantClosed, pub.IsClosed())
+		})
+	}
+}
+
+func TestSessionEgress_deadlineReleaseClosesReadyAdd(t *testing.T) {
+	const startNs int64 = 10
+
+	tests := []struct {
+		name string
+		// queue starts one add at startNs.
+		queue func(t *testing.T, adder *scriptedEgressAdder) *Agent
+	}{
+		{
+			name: "pendingSession",
+			queue: func(t *testing.T, adder *scriptedEgressAdder) *Agent {
+				// No log publisher: sessionPendingWork never polls the add.
+				a := leaderWithEgress(t, nil, 0, 0, adder)
+				a.acceptSessionConnect(validConnectFields(1), startNs)
+				require.Equal(t, 1, a.PendingSessionCount())
+				return a
+			},
+		},
+		{
+			name: "queuedEvent",
+			queue: func(t *testing.T, adder *scriptedEgressAdder) *Agent {
+				a := followerWithEgress(t, adder, 1)
+				a.queueSessionRedirect(validConnectFields(1), startNs)
+				require.Len(t, a.egressEvents, 1)
+				return a
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			adder, pub := scriptedConnectedPub(t, 0)
+			a := tc.queue(t, adder)
+			require.Len(t, adder.offers, 1)
+			require.Empty(t, adder.calls)
+
+			// The deadline release polls once. Nothing else polls.
+			require.Equal(t, 1, a.sessionWork(startNs+DefaultSessionTimeoutNs))
+			require.Equal(t, 0, a.PendingSessionCount())
+			require.Empty(t, a.sessions.byID)
+			require.Empty(t, a.egressEvents)
+			require.True(t, pub.IsClosed())
+			require.Equal(t, []egressAdderCall{{op: egressAdderOpPoll, corr: 1}}, adder.calls)
+		})
+	}
 }
 
 func TestAcceptSessionConnect_versionMismatch(t *testing.T) {
