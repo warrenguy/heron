@@ -234,6 +234,56 @@ func (p *Proxy) TryStopReplay(
 	)
 }
 
+// TryReplicate encodes ReplicateRequest2 (template 66) and offers it once.
+func (p *Proxy) TryReplicate(
+	controlSessionID int64,
+	correlationID int64,
+	sourceRecordingID int64,
+	sourceControlStreamID int32,
+	sourceControlChannel []byte,
+	params ReplicationParams,
+) (int64, bool) {
+	fields := codecs.ReplicateRequest2Fields{
+		ControlSessionID:     controlSessionID,
+		CorrelationID:        correlationID,
+		SrcRecordingID:       sourceRecordingID,
+		DstRecordingID:       params.DestinationRecordingID,
+		StopPosition:         params.StopPosition,
+		ChannelTagID:         params.ChannelTagID,
+		SubscriptionTagID:    params.SubscriptionTagID,
+		SrcControlStreamID:   sourceControlStreamID,
+		FileIoMaxLength:      params.FileIOMaxLength,
+		ReplicationSessionID: params.ReplicationSessionID,
+		SrcControlChannel:    sourceControlChannel,
+		LiveDestination:      params.LiveDestination,
+		ReplicationChannel:   params.ReplicationChannel,
+		EncodedCredentials:   params.EncodedCredentials,
+		SrcResponseChannel:   params.SourceResponseChannel,
+	}
+	wireLen, ok := codecs.ReplicateRequest2WireLen(p.actingVersion, fields)
+	return p.tryOffer(wireLen, ok, func(dst []byte) (int, bool) {
+		return codecs.EncodeReplicateRequest2(dst, 0, p.actingVersion, fields)
+	})
+}
+
+// TryStopReplication encodes StopReplicationRequest (template 51) and offers
+// it once.
+func (p *Proxy) TryStopReplication(
+	controlSessionID, correlationID, replicationID int64,
+) (int64, bool) {
+	fields := codecs.StopReplicationRequestFields{
+		ControlSessionID: controlSessionID,
+		CorrelationID:    correlationID,
+		ReplicationID:    replicationID,
+	}
+	return p.tryArchiveWireOffer(
+		archivewire.StopReplicationRequestSbeBlockLength,
+		func(dst []byte, actingVersion uint16) (int, bool) {
+			return codecs.EncodeStopReplicationRequest(dst, 0, actingVersion, fields)
+		},
+	)
+}
+
 // TryListRecording encodes ListRecordingRequest (template 10) and offers it once.
 func (p *Proxy) TryListRecording(
 	controlSessionID int64,

@@ -204,6 +204,60 @@ func TestReplayRequest_codec_rapid(t *testing.T) {
 	})
 }
 
+func TestReplicateRequest2_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksVarHeavy, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.ReplicateRequest2Fields{
+			ControlSessionID:     rapid.Int64().Draw(rt, "controlSessionID"),
+			CorrelationID:        rapid.Int64().Draw(rt, "correlationID"),
+			SrcRecordingID:       rapid.Int64().Draw(rt, "srcRecordingID"),
+			DstRecordingID:       rapid.Int64().Draw(rt, "dstRecordingID"),
+			StopPosition:         rapid.Int64().Draw(rt, "stopPosition"),
+			ChannelTagID:         rapid.Int64().Draw(rt, "channelTagID"),
+			SubscriptionTagID:    rapid.Int64().Draw(rt, "subscriptionTagID"),
+			SrcControlStreamID:   rapid.Int32().Draw(rt, "srcControlStreamID"),
+			FileIoMaxLength:      rapid.Int32().Draw(rt, "fileIoMaxLength"),
+			ReplicationSessionID: rapid.Int32().Draw(rt, "replicationSessionID"),
+			SrcControlChannel:    rapidVarBytes(rt, "srcControlChannel"),
+			LiveDestination:      rapidVarBytes(rt, "liveDestination"),
+			ReplicationChannel:   rapidVarBytes(rt, "replicationChannel"),
+			EncodedCredentials:   rapidVarBytes(rt, "encodedCredentials"),
+			SrcResponseChannel:   rapidVarBytes(rt, "srcResponseChannel"),
+		}
+
+		runArchiveCodecRoundtripAtOffset(
+			rt,
+			archivewire.ReplicateRequest2SbeTemplateID,
+			actingVersion,
+			offset,
+			encodeAt(actingVersion, fields, codecs.EncodeReplicateRequest2),
+			replicateRequest2Oracle(fields, actingVersion),
+		)
+	})
+}
+
+func TestStopReplicationRequest_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.StopReplicationRequestFields{
+			ControlSessionID: rapid.Int64().Draw(rt, "controlSessionID"),
+			CorrelationID:    rapid.Int64().Draw(rt, "correlationID"),
+			ReplicationID:    rapid.Int64().Draw(rt, "replicationID"),
+		}
+
+		runArchiveCodecRoundtripAtOffset(
+			rt,
+			archivewire.StopReplicationRequestSbeTemplateID,
+			actingVersion,
+			offset,
+			encodeAt(actingVersion, fields, codecs.EncodeStopReplicationRequest),
+			fields,
+		)
+	})
+}
+
 func TestStartRecordingRequest_codec_rapid(t *testing.T) {
 	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {

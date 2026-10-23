@@ -46,6 +46,38 @@ func archiveCodecFuzzSeedBuffers() [][]byte {
 			},
 		),
 		mustEncodeArchiveWire(
+			codecs.ReplicateRequest2Fields{
+				ControlSessionID:     1,
+				CorrelationID:        2,
+				SrcRecordingID:       3,
+				DstRecordingID:       -1,
+				StopPosition:         -1,
+				ChannelTagID:         -1,
+				SubscriptionTagID:    -1,
+				SrcControlStreamID:   10,
+				FileIoMaxLength:      -1,
+				ReplicationSessionID: -1,
+				SrcControlChannel:    []byte("aeron:udp?endpoint=localhost:8010"),
+				LiveDestination:      []byte("aeron:udp?endpoint=localhost:40456"),
+				ReplicationChannel:   []byte("aeron:udp?endpoint=localhost:0"),
+				EncodedCredentials:   []byte{1, 2, 3},
+				SrcResponseChannel:   []byte("aeron:udp?control-mode=response"),
+			},
+			func(buf []byte, offset int, fields codecs.ReplicateRequest2Fields) (int, bool) {
+				return codecs.EncodeReplicateRequest2(buf, offset, archiveSchemaVersion, fields)
+			},
+		),
+		mustEncodeArchiveWire(
+			codecs.StopReplicationRequestFields{
+				ControlSessionID: 1,
+				CorrelationID:    2,
+				ReplicationID:    3,
+			},
+			func(buf []byte, offset int, fields codecs.StopReplicationRequestFields) (int, bool) {
+				return codecs.EncodeStopReplicationRequest(buf, offset, archiveSchemaVersion, fields)
+			},
+		),
+		mustEncodeArchiveWire(
 			codecs.ArchiveIDRequestFields{ControlSessionID: 1, CorrelationID: 2},
 			func(buf []byte, offset int, fields codecs.ArchiveIDRequestFields) (int, bool) {
 				return codecs.EncodeArchiveIDRequest(buf, offset, archiveSchemaVersion, fields)

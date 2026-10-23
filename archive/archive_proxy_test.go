@@ -515,6 +515,135 @@ func TestProxy_TryStopReplay_fieldValuesOnWire(t *testing.T) {
 	require.Len(t, wire, expectedLen)
 }
 
+func TestProxy_TryReplicate_fieldValuesOnWire(t *testing.T) {
+	const (
+		sourceRecordingID     int64 = 4400
+		sourceControlStreamID int32 = 10
+	)
+	sourceControlChannel := []byte("aeron:udp?endpoint=localhost:8010")
+
+	everyField := NewReplicationParams()
+	everyField.DestinationRecordingID = archiveProxyTestRecordingID
+	everyField.StopPosition = 8192
+	everyField.LiveDestination = []byte("aeron:udp?endpoint=localhost:40456")
+	everyField.ReplicationChannel = []byte("aeron:udp?endpoint=localhost:0")
+	everyField.ChannelTagID = 21
+	everyField.SubscriptionTagID = 22
+	everyField.FileIOMaxLength = 65536
+	everyField.ReplicationSessionID = 777
+	everyField.EncodedCredentials = archiveProxyTestCredBytes(0x6B)
+	everyField.SourceResponseChannel = []byte("aeron:udp?control-mode=response")
+
+	cases := []struct {
+		name   string
+		params ReplicationParams
+		want   codecs.ReplicateRequest2Fields
+	}{
+		{
+			name:   "defaults",
+			params: NewReplicationParams(),
+			want: codecs.ReplicateRequest2Fields{
+				ControlSessionID:     controlResponseTestControlSessionID,
+				CorrelationID:        archiveProxyTestCorrelationID,
+				SrcRecordingID:       sourceRecordingID,
+				DstRecordingID:       -1,
+				StopPosition:         -1,
+				ChannelTagID:         -1,
+				SubscriptionTagID:    -1,
+				SrcControlStreamID:   sourceControlStreamID,
+				FileIoMaxLength:      -1,
+				ReplicationSessionID: -1,
+				SrcControlChannel:    sourceControlChannel,
+			},
+		},
+		{
+			name:   "every_field_set",
+			params: everyField,
+			want: codecs.ReplicateRequest2Fields{
+				ControlSessionID:     controlResponseTestControlSessionID,
+				CorrelationID:        archiveProxyTestCorrelationID,
+				SrcRecordingID:       sourceRecordingID,
+				DstRecordingID:       everyField.DestinationRecordingID,
+				StopPosition:         everyField.StopPosition,
+				ChannelTagID:         everyField.ChannelTagID,
+				SubscriptionTagID:    everyField.SubscriptionTagID,
+				SrcControlStreamID:   sourceControlStreamID,
+				FileIoMaxLength:      everyField.FileIOMaxLength,
+				ReplicationSessionID: everyField.ReplicationSessionID,
+				SrcControlChannel:    sourceControlChannel,
+				LiveDestination:      everyField.LiveDestination,
+				ReplicationChannel:   everyField.ReplicationChannel,
+				EncodedCredentials:   everyField.EncodedCredentials,
+				SrcResponseChannel:   everyField.SourceResponseChannel,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pub, proxy := newTestProxy(Config{})
+
+			pos, ok := proxy.TryReplicate(
+				controlResponseTestControlSessionID,
+				archiveProxyTestCorrelationID,
+				sourceRecordingID,
+				sourceControlStreamID,
+				sourceControlChannel,
+				tc.params,
+			)
+			require.True(t, ok)
+
+			wire := pub.lastOffer()
+			require.Equal(t, archiveProxyTestOfferPosition+int64(len(wire)), pos)
+
+			fields := requireProxyWireFields[codecs.ReplicateRequest2Fields](
+				t,
+				wire,
+				archivewire.ReplicateRequest2SbeTemplateID,
+			)
+			require.Equal(t, tc.want, fields)
+
+			expectedLen, lenOK := codecs.ReplicateRequest2WireLen(
+				archivewire.MessageHeaderSbeSchemaVersion,
+				fields,
+			)
+			require.True(t, lenOK)
+			require.NotZero(t, expectedLen)
+			require.Len(t, wire, expectedLen)
+		})
+	}
+}
+
+func TestProxy_TryStopReplication_fieldValuesOnWire(t *testing.T) {
+	pub, proxy := newTestProxy(Config{})
+
+	const replicationID int64 = 6600
+	pos, ok := proxy.TryStopReplication(
+		controlResponseTestControlSessionID,
+		archiveProxyTestCorrelationID,
+		replicationID,
+	)
+	require.True(t, ok)
+
+	wire := pub.lastOffer()
+	require.Equal(t, archiveProxyTestOfferPosition+int64(len(wire)), pos)
+
+	fields := requireProxyWireFields[codecs.StopReplicationRequestFields](
+		t,
+		wire,
+		archivewire.StopReplicationRequestSbeTemplateID,
+	)
+	require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+	require.Equal(t, archiveProxyTestCorrelationID, fields.CorrelationID)
+	require.Equal(t, replicationID, fields.ReplicationID)
+
+	expectedLen, lenOK := codecs.ArchiveWireMessageLen(
+		archivewire.StopReplicationRequestSbeBlockLength,
+	)
+	require.True(t, lenOK)
+	require.NotZero(t, expectedLen)
+	require.Len(t, wire, expectedLen)
+}
+
 func TestProxy_TryTruncateRecording_fieldValuesOnWire(t *testing.T) {
 	pub, proxy := newTestProxy(Config{})
 
@@ -701,6 +830,21 @@ func TestProxy_encodePreflightFailure(t *testing.T) {
 					8192,
 					int32(1201),
 					oversized,
+				)
+			},
+		},
+		{
+			name: "try_replicate_source_response_channel",
+			offer: func(proxy *Proxy) (int64, bool) {
+				params := NewReplicationParams()
+				params.SourceResponseChannel = oversized
+				return proxy.TryReplicate(
+					controlResponseTestControlSessionID,
+					archiveProxyTestCorrelationID,
+					archiveProxyTestRecordingID,
+					archiveProxyTestRecordingStreamID,
+					archiveProxyTestResponseChannelBytes,
+					params,
 				)
 			},
 		},
