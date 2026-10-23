@@ -100,6 +100,14 @@ type Config struct {
 	// trusted.
 	ServiceControlChannel string
 
+	// SnapshotChannel is the channel of the module snapshot publication. The
+	// local Archive records each module snapshot from it. Zero value takes
+	// DefaultSnapshotChannel.
+	//
+	// Must not set session-id=. Each take appends session-id= for its own
+	// publication.
+	SnapshotChannel string
+
 	// ConsensusStreamID zero takes DefaultConsensusStreamID. Config stream ids
 	// must be distinct.
 	ConsensusStreamID int32
@@ -124,6 +132,10 @@ type Config struct {
 	// ServiceStreamID zero takes DefaultServiceStreamID. Module-to-service
 	// control (JoinLog, RequestServiceAck). Config stream ids must be distinct.
 	ServiceStreamID int32
+
+	// SnapshotStreamID zero takes DefaultSnapshotStreamID. Module snapshot
+	// recording. Config stream ids must be distinct.
+	SnapshotStreamID int32
 
 	// ArchiveControlRequestChannel is the control request URI for this member.
 	// Required.
@@ -218,6 +230,9 @@ func (cfg Config) Normalize() Config {
 	if cfg.ServiceControlChannel == "" {
 		cfg.ServiceControlChannel = DefaultServiceControlChannel
 	}
+	if cfg.SnapshotChannel == "" {
+		cfg.SnapshotChannel = DefaultSnapshotChannel
+	}
 	if cfg.ConsensusStreamID == 0 {
 		cfg.ConsensusStreamID = DefaultConsensusStreamID
 	}
@@ -235,6 +250,9 @@ func (cfg Config) Normalize() Config {
 	}
 	if cfg.ServiceStreamID == 0 {
 		cfg.ServiceStreamID = DefaultServiceStreamID
+	}
+	if cfg.SnapshotStreamID == 0 {
+		cfg.SnapshotStreamID = DefaultSnapshotStreamID
 	}
 	if cfg.Idle == nil {
 		cfg.Idle = idlestrategy.NewDefaultBackoff()
@@ -279,7 +297,7 @@ func (cfg Config) Normalize() Config {
 //
 // Call Normalize first. Validate is safe on an unnormalized value but returns
 // the first failed rule rather than applying defaults. Equal stream id pairs
-// fail.
+// fail. A ReplayChannel or SnapshotChannel that sets session-id= fails.
 func (cfg Config) Validate() error {
 	_, _, err := cfg.validateMembers()
 	return err
@@ -340,6 +358,9 @@ func (cfg Config) validateMembers() ([]election.Member, int, error) {
 	}
 	if aeron.ChannelParamIndex(cfg.ReplayChannel, aeron.ChannelSessionIDParam, true) >= 0 {
 		return nil, 0, errors.New("cluster: ReplayChannel must not set session-id=")
+	}
+	if aeron.ChannelParamIndex(cfg.SnapshotChannel, aeron.ChannelSessionIDParam, true) >= 0 {
+		return nil, 0, errors.New("cluster: SnapshotChannel must not set session-id=")
 	}
 	if cfg.ServiceCount < 0 {
 		return nil, 0, errors.New("cluster: ServiceCount must not be negative")
@@ -477,6 +498,7 @@ func validateStreamIDsDistinct(cfg Config) error {
 		{name: "IngressStreamID", id: cfg.IngressStreamID},
 		{name: "ConsensusModuleStreamID", id: cfg.ConsensusModuleStreamID},
 		{name: "ServiceStreamID", id: cfg.ServiceStreamID},
+		{name: "SnapshotStreamID", id: cfg.SnapshotStreamID},
 	}
 
 	for i, earlier := range streams {

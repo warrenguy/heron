@@ -89,7 +89,8 @@ type logReplayDeps struct {
 //     adapter. It sends the replay JoinLog to the services. Once every
 //     service acked the JoinLog, DoWork drains one bounded batch per call.
 //   - A pending snapshot wait holds the drain at the action. The replay is
-//     not done at the bound while the wait pends.
+//     not done at the bound while the wait pends, or while the module
+//     snapshot take of the popped wait is unresolved.
 //   - Position reports how far the replay ran. IsDone is sticky.
 //
 // Concurrency: invoker-only.
@@ -317,7 +318,10 @@ func (r *logReplay) IsDone() bool {
 //     The call also drops an unpublished replay JoinLog
 //   - bound-image mode leaves the adapter image bound
 //   - issues StopReplay when a live session may remain: the session was
-//     started and the replay did not reach its bound
+//     started and the replay did not reach its bound. The stop blocks on the
+//     module archive client, so it first cancels a module snapshot take in
+//     flight through [consensus.Agent.CloseSnapshotTake]. The take shares
+//     that client and may hold an open handle
 //   - skips the stop await when a length-bounded session already delivered
 //     its full range
 //   - closes the subscription when construction retained one
@@ -341,6 +345,7 @@ func (r *logReplay) Close() {
 		return
 	}
 	if r.progress.position < r.progress.stopPosition {
+		r.deps.Agent.CloseSnapshotTake()
 		// No liveness pre-check. StopReplay on an unknown session replies OK.
 		r.closeErr = errors.Join(
 			r.closeErr,
@@ -378,7 +383,7 @@ type replayProgress struct {
 
 // observe records one drained batch. adapterPosition is the adapter position
 // after the batch. closedShort reports a closed replay image. held reports a
-// pending snapshot wait.
+// pending snapshot action, as [consensus.Agent.HasPendingSnapshotAction] does.
 //
 // Behaviour:
 //   - At the bound and not held: done.

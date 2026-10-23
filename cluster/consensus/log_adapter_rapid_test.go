@@ -122,8 +122,10 @@ type snapshotHoldModel struct {
 	position     int64 // adapter position
 	commit       int64
 	snapshotWait int64
+	take         int64 // module take position, or 0
 	waits        []int64
 	retired      []int64
+	abandoned    []int64 // retired waits and cancelled takes, in order
 	popped       int64
 	maxPopped    int64 // highest popped wait position
 
@@ -137,10 +139,14 @@ func (m *snapshotHoldModel) isRetired(position int64) bool {
 	return slices.Contains(m.retired, position)
 }
 
-// heldBound lowers boundPosition to a pending snapshot wait.
+// heldBound lowers boundPosition to a pending snapshot wait, else to the
+// module take position.
 func (m *snapshotHoldModel) heldBound(boundPosition int64) int64 {
 	if m.snapshotWait != 0 {
 		return min(boundPosition, m.snapshotWait)
+	}
+	if m.take != 0 {
+		return min(boundPosition, m.take)
 	}
 	return boundPosition
 }
@@ -156,7 +162,7 @@ func (m *snapshotHoldModel) poll(boundPosition int64) {
 		if kind == snapshotHoldMessage {
 			continue
 		}
-		if kind == snapshotHoldSnapshot && m.snapshotWait == 0 && !m.isRetired(end) {
+		if kind == snapshotHoldSnapshot && m.snapshotWait == 0 && !slices.Contains(m.abandoned, end) {
 			m.waits = append(m.waits, end)
 			m.snapshotWait = end
 		}
@@ -218,17 +224,30 @@ func (m *snapshotHoldModel) controlWork() {
 	m.maxPopped = max(m.maxPopped, head)
 	if head == m.snapshotWait {
 		m.snapshotWait = 0
+		m.take = head
 	}
 	m.popped++
 }
 
+// takeWork resolves the module take. The fixture does not wire a recording
+// control, so the take resolves on its first step.
+func (m *snapshotHoldModel) takeWork() {
+	m.take = 0
+}
+
+// retire retires a pending wait, then cancels a take. A cancelled take counts
+// as a pop: the pop already consumed its acks.
 func (m *snapshotHoldModel) retire() {
-	if m.snapshotWait == 0 {
-		return
+	if m.snapshotWait != 0 {
+		m.retired = append(m.retired, m.snapshotWait)
+		m.abandoned = append(m.abandoned, m.snapshotWait)
+		m.waits = slices.DeleteFunc(m.waits, func(wait int64) bool { return wait == m.snapshotWait })
+		m.snapshotWait = 0
 	}
-	m.retired = append(m.retired, m.snapshotWait)
-	m.waits = slices.DeleteFunc(m.waits, func(wait int64) bool { return wait == m.snapshotWait })
-	m.snapshotWait = 0
+	if m.take != 0 {
+		m.abandoned = append(m.abandoned, m.take)
+		m.take = 0
+	}
 }
 
 // expectedAckID returns the popped count plus one per retired action that
@@ -274,13 +293,14 @@ func writeSnapshotHoldFrames(
 }
 
 // TestAgent_snapshotActionHold_rapid checks the snapshot hold against a
-// reference model over random logs and random poll, replay, ack, control and
-// prepare steps. A replay binds a replay image at commit, replays to a drawn
-// stop, unbinds, then rebinds the live image at the replay end. No log poll
-// passes a pending snapshot wait, and the adapter never moves below a popped
-// action. The wait FIFO, commit and expected ack id match the model. A final
-// drain pops every remaining wait, so every snapshot action ends popped or
-// retired.
+// reference model over random logs and random poll, replay, ack, control,
+// module take and prepare steps. A replay binds a replay image at commit,
+// replays to a drawn stop, unbinds, then rebinds the live image at the replay
+// end. A log poll never passes a pending snapshot wait or an unresolved
+// module take. The adapter never moves below a popped action. The wait FIFO,
+// commit and expected ack id match the model. A final drain pops every
+// remaining wait and resolves every take, so every snapshot action ends popped
+// or retired.
 func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -331,8 +351,10 @@ func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 		requireModel := func(step string) {
 			rt.Helper()
 			wait := a.snapshotWaitPosition
+			if hold := a.snapshotHoldPosition(); hold != 0 {
+				require.LessOrEqual(rt, adapter.Position(), hold, step)
+			}
 			if wait != 0 {
-				require.LessOrEqual(rt, adapter.Position(), wait, step)
 				count := 0
 				for _, w := range a.serviceAckWaits {
 					if w == wait {
@@ -340,6 +362,10 @@ func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 					}
 				}
 				require.Equal(rt, 1, count, step)
+			}
+			require.Equal(rt, m.take != 0, a.snapshotTake != nil, step)
+			if m.take != 0 {
+				require.Equal(rt, m.take, a.snapshotTake.logPosition, step)
 			}
 			require.Equal(rt, m.position, adapter.Position(), step)
 			require.GreaterOrEqual(rt, adapter.Position(), m.maxPopped, step)
@@ -349,12 +375,12 @@ func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 			if len(m.waits) > 0 {
 				require.Equal(rt, m.waits, a.serviceAckWaits, step)
 			}
-			var retired []int64
+			var abandoned []int64
 			for _, wait := range a.abandonedSnapshotWaits {
 				require.NotContains(rt, a.serviceAckWaits, wait.position, step)
-				retired = append(retired, wait.position)
+				abandoned = append(abandoned, wait.position)
 			}
-			require.Equal(rt, m.retired, retired, step)
+			require.Equal(rt, m.abandoned, abandoned, step)
 			require.Equal(rt, m.expectedAckID(), a.ExpectedServiceAckID(), step)
 			require.NoError(rt, a.ServiceAckFailure(), step)
 		}
@@ -380,7 +406,9 @@ func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 			adapter.SetImage(image)
 		}
 
-		opNames := []string{"notify", "follower work", "catchup", "replay", "ack", "control", "prepare"}
+		opNames := []string{
+			"notify", "follower work", "catchup", "replay", "ack", "control", "take", "prepare",
+		}
 		steps := rapid.IntRange(1, 40).Draw(rt, "steps")
 		for range steps {
 			op := rapid.IntRange(0, len(opNames)-1).Draw(rt, "op")
@@ -403,6 +431,9 @@ func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 			case 5:
 				a.serviceControlWork()
 				m.controlWork()
+			case 6:
+				a.snapshotTakeWork(nowNs)
+				m.takeWork()
 			default:
 				_, prepared, err := a.PrepareForNewLeadership(0, nowNs)
 				require.NoError(rt, err)
@@ -412,11 +443,14 @@ func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 			requireModel(opNames[op])
 		}
 
-		// Final drain: every service acks every action and every remaining wait
-		// pops.
+		// Final drain: every service acks every action, every remaining wait
+		// pops and every take resolves.
 		a.notifiedCommitPosition = totalEnd
 		done := func() bool {
 			if adapter.Position() != totalEnd || len(a.serviceAckWaits) != 0 {
+				return false
+			}
+			if a.snapshotTake != nil {
 				return false
 			}
 			for _, count := range m.acked {
@@ -432,6 +466,8 @@ func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 			}
 			a.serviceControlWork()
 			m.controlWork()
+			a.snapshotTakeWork(nowNs)
+			m.takeWork()
 			followerWork()
 			requireModel("final drain")
 		}

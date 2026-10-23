@@ -1,0 +1,570 @@
+//go:build rapid && testhooks
+
+package consensus
+
+import (
+	"errors"
+	"slices"
+	"sync/atomic"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
+
+	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+)
+
+var errSnapshotTakeRapidBoom = errors.New("boom")
+
+// snapshotActionStatus is the model status of the one snapshot action.
+type snapshotActionStatus int
+
+const (
+	actionStatusWaiting snapshotActionStatus = iota
+	actionStatusTake
+	actionStatusResolved
+	actionStatusCancelled
+	actionStatusRetired
+)
+
+// snapshotTakeScript is the drawn fake archive script of one take.
+type snapshotTakeScript struct {
+	relevantIDs     []int64
+	addOutcome      int
+	addPendingPolls int
+	startOutcome    int
+	startID         int64
+	offerRetries    int
+	signalDelay     int
+	rowCodes        []int64
+	closeFails      bool
+	stopOutcome     int
+	stopAboveBy     int64
+	stopDelay       int
+}
+
+const (
+	scriptAddOK = iota
+	scriptAddOfferError
+	scriptAddPollError
+	scriptAddNoPublication
+)
+
+const (
+	scriptStartOK = iota
+	scriptStartOfferError
+	scriptStartOfferNever
+	scriptStartSignalError
+	scriptStartSignalNever
+)
+
+const (
+	scriptStopOK = iota
+	scriptStopAbove
+	scriptStopEarly
+	scriptStopShort
+	scriptStopNever
+)
+
+// outcome returns the deadline causes that may fire first under the drawn
+// clock, and the first cause the script forces, nil for a success.
+func (s snapshotTakeScript) outcome() (possible []error, certain error) {
+	if slices.Contains(s.relevantIDs, nullValue) {
+		return nil, errSnapshotServiceFailed
+	}
+	if s.addOutcome != scriptAddOK {
+		return nil, errSnapshotPublicationAdd
+	}
+	if s.offerRetries > 0 {
+		possible = append(possible, errSnapshotRecordingStart)
+	}
+	switch s.startOutcome {
+	case scriptStartOfferError, scriptStartOfferNever, scriptStartSignalError,
+		scriptStartSignalNever:
+		return possible, errSnapshotRecordingStart
+	}
+	if s.signalDelay > 0 {
+		possible = append(possible, errSnapshotRecordingStart)
+	}
+	if s.stopOutcome == scriptStopEarly {
+		return possible, errSnapshotWrite
+	}
+	for _, code := range s.rowCodes {
+		if code == fakeOfferAccept {
+			continue
+		}
+		if !aeron.IsOfferRetriable(code) {
+			return possible, errSnapshotWrite
+		}
+		possible = append(possible, errSnapshotWrite)
+	}
+	if s.closeFails {
+		return possible, errSnapshotWrite
+	}
+	switch s.stopOutcome {
+	case scriptStopShort, scriptStopNever:
+		return possible, errSnapshotRecordingStop
+	}
+	if s.stopDelay > 0 {
+		possible = append(possible, errSnapshotRecordingStop)
+	}
+	return possible, nil
+}
+
+// apply installs the script on archive.
+func (s snapshotTakeScript) apply(archive *fakeSnapshotArchive, errBoom error) {
+	switch s.addOutcome {
+	case scriptAddOfferError:
+		archive.offerAddErr = errBoom
+	case scriptAddPollError:
+		archive.pollAddErr = errBoom
+	case scriptAddNoPublication:
+		archive.nilPublication = true
+	}
+	archive.addPendingPolls = s.addPendingPolls
+	archive.startScript = func(start *fakeSnapshotStart) {
+		start.recordingID = s.startID
+		start.offerRetries = s.offerRetries
+		start.signalDelay = s.signalDelay
+		switch s.startOutcome {
+		case scriptStartOfferError:
+			start.offerErr = errBoom
+		case scriptStartOfferNever:
+			start.offerNever = true
+		case scriptStartSignalError:
+			start.signalErr = errBoom
+		case scriptStartSignalNever:
+			start.signalNever = true
+		}
+	}
+	archive.pubScript = func(pub *fakeSnapshotPublication) {
+		pub.offerCodes = slices.Clone(s.rowCodes)
+		if s.closeFails {
+			pub.closeErr = errBoom
+		}
+	}
+	archive.stopDelay = s.stopDelay
+	switch s.stopOutcome {
+	case scriptStopAbove:
+		archive.stopShortBy = -s.stopAboveBy
+	case scriptStopEarly:
+		archive.earlyStop = true
+	case scriptStopShort:
+		archive.stopShortBy = 1
+	case scriptStopNever:
+		archive.stopNever = true
+	}
+}
+
+func drawSnapshotTakeScript(rt *rapid.T, serviceCount int) snapshotTakeScript {
+	s := snapshotTakeScript{
+		addOutcome:      rapid.IntRange(scriptAddOK, scriptAddNoPublication).Draw(rt, "addOutcome"),
+		addPendingPolls: rapid.IntRange(0, 2).Draw(rt, "addPendingPolls"),
+		startOutcome:    rapid.IntRange(scriptStartOK, scriptStartSignalNever).Draw(rt, "startOutcome"),
+		// The START id never equals fakeSnapshotPreProofID.
+		startID: fakeSnapshotFirstRecordingID +
+			rapid.Int64Range(0, 1000).Draw(rt, "startIDOffset"),
+		offerRetries: rapid.IntRange(0, 2).Draw(rt, "offerRetries"),
+		signalDelay:  rapid.IntRange(0, 2).Draw(rt, "signalDelay"),
+		rowCodes: rapid.SliceOfN(rapid.SampledFrom([]int64{
+			fakeOfferAccept,
+			aeron.BackPressured,
+			aeron.AdminAction,
+			aeron.NotConnected,
+			aeron.Closed,
+		}), 0, 4).Draw(rt, "rowCodes"),
+		closeFails:  rapid.Bool().Draw(rt, "closeFails"),
+		stopOutcome: rapid.IntRange(scriptStopOK, scriptStopNever).Draw(rt, "stopOutcome"),
+		stopAboveBy: rapid.Int64Range(1, 64).Draw(rt, "stopAboveBy"),
+		stopDelay:   rapid.IntRange(0, 2).Draw(rt, "stopDelay"),
+	}
+	for i := range serviceCount {
+		id := int64(100 + i)
+		if rapid.Bool().Draw(rt, "serviceFailed") {
+			id = nullValue
+		}
+		s.relevantIDs = append(s.relevantIDs, id)
+	}
+	return s
+}
+
+// snapshotTakeAckModel mirrors the ServiceAck tracker for the one action.
+type snapshotTakeAckModel struct {
+	queues        [][]int64
+	frames        []snapshotTakeAckFrame
+	expectedAckID int64
+	marked        bool
+}
+
+type snapshotTakeAckFrame struct {
+	serviceID int
+	ackID     int64
+}
+
+// poll offers every queued frame. Each offer runs the sequence check.
+func (m *snapshotTakeAckModel) poll() {
+	for _, frame := range m.frames {
+		m.queues[frame.serviceID] = append(m.queues[frame.serviceID], frame.ackID)
+		if m.marked {
+			continue
+		}
+		for _, q := range m.queues {
+			if len(q) == 0 {
+				break
+			}
+			if q[0] != m.expectedAckID {
+				m.marked = true
+				break
+			}
+		}
+	}
+	m.frames = nil
+}
+
+// pop reports whether the wait pops. A first entry mismatch marks the
+// failure.
+func (m *snapshotTakeAckModel) pop() bool {
+	if m.marked {
+		return false
+	}
+	for _, q := range m.queues {
+		if len(q) == 0 {
+			return false
+		}
+		if q[0] != m.expectedAckID {
+			m.marked = true
+			return false
+		}
+	}
+	for i, q := range m.queues {
+		m.queues[i] = q[1:]
+	}
+	m.expectedAckID++
+	return true
+}
+
+// TestSnapshotTake_model_rapid drives one snapshot action through a drawn
+// fake archive script, drawn clock steps, cancels and out-of-sequence acks.
+// Each step checks the take, the pending report, the leader hold and the
+// session clock at a hold lift. A held leader tick must leave the client
+// ingress, the sessions and the timers alone. A resolved take must match the
+// cause the script forces, or a deadline cause the clock may fire first. A
+// successful take names the START id after a STOP at or above the close
+// position, and its rows follow the module row order.
+func TestSnapshotTake_model_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		serviceCount := rapid.IntRange(0, 3).Draw(rt, "serviceCount")
+		isLeader := rapid.Bool().Draw(rt, "isLeader")
+		script := drawSnapshotTakeScript(rt, serviceCount)
+		timeoutNs := rapid.Int64Range(20, 400).Draw(rt, "timeoutNs")
+		sessionTimeoutNs := rapid.Int64Range(50, 800).Draw(rt, "sessionTimeoutNs")
+		commitLag := rapid.Int64Range(0, 2).Draw(rt, "commitLag")
+
+		role := RoleFollower
+		if isLeader {
+			role = RoleLeader
+		}
+		commit := new(atomic.Int64)
+		a := NewAgent(AgentConfig{
+			Role:             role,
+			ServiceCount:     serviceCount,
+			Commit:           commit,
+			LeadershipTermID: 4,
+			SessionTimeoutNs: sessionTimeoutNs,
+		})
+		q := attachQueueServiceIngress(a)
+		// Outer t: rapid.T is not testing.TB (missing ArtifactDir).
+		lp, _ := boundLogPublisher(t)
+		a.SetLogPublisher(lp)
+		archive := newFakeSnapshotArchive()
+		archive.offerRetryTimeoutNs = timeoutNs
+		archive.responseTimeoutNs = timeoutNs
+		script.apply(archive, errSnapshotTakeRapidBoom)
+		a.SetSnapshotRecordingControl(archive)
+		a.SetSnapshotPublicationAdder(archive)
+		a.SetSnapshotStream(testSnapshotChannel, testSnapshotStreamID)
+
+		nowNs := int64(1000)
+		a.sessions.learnSessionOpen(codecs.SessionOpenEventFields{
+			ClusterSessionID: 1,
+			ResponseChannel:  []byte("aeron:ipc"),
+		}, 32, nowNs)
+		scheduleTimer(a, 7, 1<<60)
+		// A leader also holds an expired timer, a pending session and a queued
+		// connect frame. The hold must leave all three alone. The pre-open
+		// reclaim still removes the pending session at its timeout.
+		var ingress *QueueClientIngress
+		acceptNs := nowNs
+		timerRows := 1
+		if isLeader {
+			wireImmediateEgress(t, a)
+			ingress = &QueueClientIngress{}
+			a.SetClientIngress(ingress)
+			ingress.Enqueue(encodeSessionConnectWire(t, validConnectFields(61)))
+			a.acceptSessionConnect(validConnectFields(60), nowNs)
+			require.Equal(rt, 1, a.PendingSessionCount())
+			scheduleTimer(a, 11, 1)
+			timerRows = 2
+		}
+		requireHeldUntouched := func(step string) {
+			rt.Helper()
+			require.Equal(rt, 1, ingress.Len(), step)
+			wantPending := 1
+			if nowNs-acceptNs >= sessionTimeoutNs {
+				wantPending = 0
+			}
+			require.Equal(rt, wantPending, a.PendingSessionCount(), step)
+			require.Equal(rt, 1, a.OpenSessionCount(), step)
+			require.Equal(rt, int64(timerRows), a.ScheduledTimerCount(), step)
+		}
+
+		var position int64
+		if isLeader {
+			require.NoError(rt, a.RequestSnapshot(nowNs))
+			position = a.ExpectedAckPosition()
+		} else {
+			position = 4096
+			a.queueSnapshotWait(position, 4, nowNs)
+		}
+		commit.Store(position - commitLag)
+
+		status := actionStatusWaiting
+		acks := &snapshotTakeAckModel{queues: make([][]int64, serviceCount)}
+		acksSent := false
+		sendAcks := func() {
+			if acksSent {
+				return
+			}
+			acksSent = true
+			order := make([]int, serviceCount)
+			for i := range order {
+				order[i] = i
+			}
+			for _, serviceID := range rapid.Permutation(order).Draw(rt, "ackOrder") {
+				q.Enqueue(encodeServiceAckWire(t, codecs.ServiceAckFields{
+					LogPosition: position,
+					AckID:       0,
+					RelevantID:  script.relevantIDs[serviceID],
+					ServiceID:   int32(serviceID),
+				}))
+				acks.frames = append(acks.frames, snapshotTakeAckFrame{serviceID: serviceID})
+			}
+		}
+
+		requireModel := func(step string) {
+			rt.Helper()
+			active := status == actionStatusWaiting || status == actionStatusTake
+			require.Equal(rt, active, a.HasPendingSnapshotAction(), step)
+			require.Equal(rt, status == actionStatusTake, a.snapshotTake != nil, step)
+			if a.snapshotTake != nil {
+				require.Equal(rt, position, a.snapshotTake.logPosition, step)
+			}
+			marked := a.ServiceAckFailure() != nil
+			require.Equal(rt, acks.marked, marked, step)
+			waitCanPop := status == actionStatusWaiting && !marked
+			wantHold := a.Role() == RoleLeader && (status == actionStatusTake || waitCanPop)
+			require.Equal(rt, wantHold, a.isLeaderSnapshotPending(), step)
+
+			result, ok := a.LastSnapshotTake()
+			require.Equal(rt, status == actionStatusResolved, ok, step)
+			if ok {
+				require.NotEqual(rt, fakeSnapshotPreProofID, result.RecordingID, step)
+			}
+			if status == actionStatusResolved || status == actionStatusCancelled {
+				require.Empty(rt, archive.pending, step)
+				for _, start := range archive.starts {
+					require.Equal(rt, 1, start.closed, step)
+				}
+				require.False(rt, archive.watching, step)
+				for _, pub := range archive.pubs {
+					require.Equal(rt, 1, pub.closed, step)
+				}
+			}
+		}
+
+		tick := func(stepNs int64) {
+			rt.Helper()
+			nowNs += stepNs
+			held := a.isLeaderSnapshotPending()
+			a.DoWork(nowNs)
+
+			if status == actionStatusWaiting || status == actionStatusTake {
+				acks.poll()
+			}
+			if status == actionStatusWaiting && acks.pop() {
+				status = actionStatusTake
+			}
+			if _, ok := a.LastSnapshotTake(); ok && status == actionStatusTake {
+				status = actionStatusResolved
+				requireSnapshotTakeResult(rt, a, archive, script, position, serviceCount, timerRows)
+			}
+			if held && a.isLeaderSnapshotPending() {
+				requireHeldUntouched("held tick")
+			}
+
+			lifted := held && !a.isLeaderSnapshotPending()
+			if lifted {
+				session, ok := a.sessions.sessionByID(1)
+				require.True(rt, ok, "lift tick")
+				require.Equal(rt, sessionOpen, session.state, "lift tick")
+				require.Equal(rt, nowNs, session.lastActivityNs, "lift tick")
+			}
+		}
+
+		opNames := []string{
+			"tick", "acks", "commit", "wrong ack", "prepare", "join", "close",
+		}
+		steps := rapid.IntRange(1, 30).Draw(rt, "steps")
+		for range steps {
+			op := rapid.IntRange(0, len(opNames)-1).Draw(rt, "op")
+			active := status == actionStatusWaiting || status == actionStatusTake
+			switch op {
+			case 0:
+				tick(rapid.Int64Range(0, 2*timeoutNs).Draw(rt, "stepNs"))
+			case 1:
+				if active {
+					sendAcks()
+				}
+			case 2:
+				commit.Store(position)
+			case 3:
+				if active && serviceCount > 0 {
+					q.Enqueue(encodeServiceAckWire(t, codecs.ServiceAckFields{
+						LogPosition: position,
+						AckID:       99,
+						RelevantID:  1,
+					}))
+					acks.frames = append(acks.frames, snapshotTakeAckFrame{ackID: 99})
+				}
+			case 4:
+				_, prepared, err := a.PrepareForNewLeadership(0, nowNs)
+				require.NoError(rt, err)
+				require.True(rt, prepared)
+				switch status {
+				case actionStatusWaiting:
+					status = actionStatusRetired
+				case actionStatusTake:
+					status = actionStatusCancelled
+				}
+			default:
+				if op == 5 {
+					joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{}, nowNs)
+					require.NoError(rt, err)
+					require.False(rt, joined)
+				} else {
+					a.CloseSnapshotTake()
+				}
+				if status == actionStatusTake {
+					status = actionStatusCancelled
+				}
+			}
+			requireModel(opNames[op])
+			if status == actionStatusCancelled {
+				require.NotNil(rt, a.abandonedSnapshotWaitAt(position))
+			}
+		}
+
+		// Final drain: deliver the acks, raise commit, and step past every
+		// deadline until the action ends.
+		if status == actionStatusWaiting {
+			sendAcks()
+		}
+		commit.Store(position)
+		for range 32 {
+			if status != actionStatusWaiting && status != actionStatusTake {
+				break
+			}
+			if status == actionStatusWaiting && acks.marked {
+				break
+			}
+			tick(2 * timeoutNs)
+			requireModel("final drain")
+		}
+		if !acks.marked {
+			require.NotEqual(rt, actionStatusWaiting, status)
+			require.NotEqual(rt, actionStatusTake, status)
+		}
+	})
+}
+
+// requireSnapshotTakeResult checks a resolved take against the script.
+func requireSnapshotTakeResult(
+	rt *rapid.T,
+	a *Agent,
+	archive *fakeSnapshotArchive,
+	script snapshotTakeScript,
+	position int64,
+	serviceCount int,
+	timerRows int,
+) {
+	rt.Helper()
+	result, ok := a.LastSnapshotTake()
+	require.True(rt, ok)
+	require.Equal(rt, position, result.LogPosition)
+	require.Equal(rt, int64(4), result.LeadershipTermID)
+	require.Equal(rt, script.relevantIDs, result.ServiceRecordingIDs)
+
+	possible, certain := script.outcome()
+	if result.Err != nil {
+		require.Equal(rt, int64(nullValue), result.RecordingID)
+		matched := certain != nil && errors.Is(result.Err, certain)
+		for _, cause := range possible {
+			matched = matched || errors.Is(result.Err, cause)
+		}
+		require.True(rt, matched, "cause %v, certain %v, possible %v", result.Err, certain, possible)
+		if errors.Is(result.Err, errSnapshotServiceFailed) {
+			require.Empty(rt, archive.addOffers)
+		}
+		return
+	}
+
+	require.NoError(rt, certain)
+	require.Len(rt, archive.starts, 1)
+	start := archive.starts[0]
+	require.True(rt, start.proven)
+	require.Equal(rt, script.startID, result.RecordingID)
+	require.Equal(rt, script.startID, archive.watchedID)
+	require.Len(rt, archive.pubs, 1)
+	pub := archive.pubs[0]
+	require.Equal(rt, 1, pub.closed)
+	require.True(rt, archive.reportedStopped)
+	require.GreaterOrEqual(rt, archive.reportedStop, pub.closePosition)
+	if script.stopOutcome == scriptStopAbove {
+		require.Equal(rt, pub.closePosition+script.stopAboveBy, archive.reportedStop)
+	}
+
+	rows := decodeSnapshotRows(rt, pub.rows)
+	wantTemplates := []uint16{
+		clusterwire.SnapshotMarkerSbeTemplateID,
+		clusterwire.ConsensusModuleSbeTemplateID,
+		clusterwire.ClusterSessionSbeTemplateID,
+	}
+	for range timerRows {
+		wantTemplates = append(wantTemplates, clusterwire.TimerSbeTemplateID)
+	}
+	for range serviceCount {
+		wantTemplates = append(wantTemplates, clusterwire.PendingMessageTrackerSbeTemplateID)
+	}
+	wantTemplates = append(wantTemplates, clusterwire.SnapshotMarkerSbeTemplateID)
+	require.Len(rt, pub.rows, len(wantTemplates))
+	for i, row := range pub.rows {
+		_, templateID, _, _, ok := codecs.DecodeMessageHeader(row, 0)
+		require.True(rt, ok)
+		require.Equal(rt, wantTemplates[i], templateID, "row %d", i)
+	}
+	begin, ok := rows[0].(codecs.SnapshotMarkerFields)
+	require.True(rt, ok)
+	require.Equal(rt, clusterwire.SnapshotMark_BEGIN, begin.Mark)
+	require.Equal(rt, position, begin.LogPosition)
+	end, ok := rows[len(rows)-1].(codecs.SnapshotMarkerFields)
+	require.True(rt, ok)
+	require.Equal(rt, clusterwire.SnapshotMark_END, end.Mark)
+	for i := range serviceCount {
+		tracker, ok := rows[3+timerRows+i].(codecs.PendingMessageTrackerFields)
+		require.True(rt, ok)
+		require.Equal(rt, emptyPendingMessageTracker(i), tracker)
+	}
+}

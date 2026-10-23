@@ -110,10 +110,14 @@ func (a *Agent) handleTimerExpiry(correlationID, nowNs int64) bool {
 // TimerEvent through the log publisher. A failed append keeps the timer and
 // stops the poll until the next DoWork call.
 //
-// Returns 0 when the role is not leader, an election is live, or the log
-// publisher is nil or unbound.
+// Returns 0 when the role is not leader, an election is live, the leader
+// snapshot hold is on, or the log publisher is nil or unbound. See
+// [Agent.isLeaderSnapshotPending].
 func (a *Agent) timerWork(nowNs int64) int {
 	if a.role != RoleLeader || a.election != nil {
+		return 0
+	}
+	if a.isLeaderSnapshotPending() {
 		return 0
 	}
 	if a.logPublisher == nil || a.logPublisher.Publication() == nil {

@@ -773,10 +773,13 @@ func TestFollowerConsensusWork_holdsAtSnapshotAction(t *testing.T) {
 	require.Equal(t, 1, a.PendingServiceAckWaits())
 	requireHandlerIdle(t, spy)
 
-	// Release: the service ack pops the wait.
+	// Release: the service ack pops the wait. The fixture does not wire a
+	// recording control, so the module take resolves on its first step.
 	enqueueServiceAck(t, q, actionEnd, 0, 0)
 	require.Equal(t, 1, a.pollServiceControl())
 	require.Equal(t, 1, a.serviceControlWork())
+	require.True(t, a.HasPendingSnapshotAction())
+	a.snapshotTakeWork(0)
 	require.False(t, a.HasPendingSnapshotAction())
 	require.Equal(t, 0, a.PendingServiceAckWaits())
 

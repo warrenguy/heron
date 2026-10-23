@@ -57,7 +57,9 @@ func (a *Agent) BindReplayLog(image *aeron.Image) {
 //
 // Behaviour:
 //   - A nil adapter or an adapter with no image returns 0.
-//   - A pending snapshot wait lowers the bound to its log position.
+//   - A pending snapshot wait lowers the bound to its log position. After
+//     the pop, the module snapshot take holds the bound there until the take
+//     resolves.
 //   - On a non-leader, a pending JoinLog publish lowers the bound to the
 //     JoinLog position.
 //   - nowNs becomes the session learn time for the poll.

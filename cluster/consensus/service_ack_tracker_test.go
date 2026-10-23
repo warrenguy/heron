@@ -395,3 +395,21 @@ func TestNewAgent_serviceCountZero(t *testing.T) {
 	a.removeServiceAckHead()
 	require.Equal(t, int64(1), a.ExpectedServiceAckID())
 }
+
+func TestServiceAckTracker_firstRelevantIDs(t *testing.T) {
+	t.Parallel()
+
+	tr := newServiceAckTracker(2)
+	require.True(t, tr.offer(0, serviceAck{ackID: 0, logPosition: 64, relevantID: 7}))
+	require.True(t, tr.offer(0, serviceAck{ackID: 1, logPosition: 128, relevantID: 8}))
+	require.True(t, tr.offer(1, serviceAck{ackID: 0, logPosition: 64, relevantID: -1}))
+
+	ids := tr.firstRelevantIDs()
+	require.Equal(t, []int64{7, -1}, ids)
+	require.Equal(t, 2, tr.queueDepth(0))
+	require.Equal(t, 1, tr.queueDepth(1))
+
+	tr.removeHead()
+	require.Equal(t, []int64{7, -1}, ids)
+	require.Empty(t, newServiceAckTracker(0).firstRelevantIDs())
+}

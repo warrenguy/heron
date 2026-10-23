@@ -10,7 +10,8 @@ import "github.com/warrenguy/heron/archive/codecs/archivewire"
 //   - IsDone is sticky: once true it stays true
 //   - when IsDone is true, Position stops moving
 //   - IsDone true below the replay bound reports early end, not the bound
-//   - at the bound, IsDone stays false while a snapshot wait pends
+//   - at the bound, IsDone stays false while a snapshot wait pends, or while
+//     the module snapshot take of the popped wait is unresolved
 //
 // Concurrency: invoker-only.
 //

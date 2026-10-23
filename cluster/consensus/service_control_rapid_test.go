@@ -336,7 +336,7 @@ func TestReplayJoinTracking_rapid(t *testing.T) {
 		}).Draw(rt, "retired")
 		if retired != replayJoinRetiredNone {
 			retiredPos := rapid.SampledFrom(positions).Draw(rt, "retiredPos")
-			a.queueSnapshotWait(retiredPos)
+			a.queueSnapshotWait(retiredPos, 0, 0)
 			// The snapshot ack takes delivered index 0 and ack id 0.
 			delivered = append(delivered, retiredPos)
 			if retired == replayJoinRetiredDropped {

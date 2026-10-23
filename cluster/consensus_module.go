@@ -10,6 +10,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
+	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
@@ -129,7 +130,8 @@ type ConsensusModule struct {
 //  4. recording-log archive lister
 //  5. recovery: stops the term recording, then plans
 //  6. agent
-//  7. log recording control
+//  7. log recording control, then the module snapshot recording control,
+//     the snapshot publication adder and the snapshot stream
 //  8. consensus publications
 //  9. consensus subscription
 //  10. cluster log streams
@@ -154,6 +156,10 @@ type ConsensusModule struct {
 //   - transport and archive control connect before recovery
 //   - log recording control is wired after the agent and before the log streams.
 //     No recording starts at Open
+//   - Open wires the module snapshot seams after the log recording control.
+//     The archive session handler passes each signal to the log recording,
+//     then to the snapshot STOP watch. The snapshot publication adder uses the
+//     transport client. No snapshot starts at Open
 //   - cluster log publication and subscription open before return. The first
 //     duty tick can then win leadership and append a leadership-term event
 //   - every member opens the client ingress subscription. A settled leader
@@ -306,9 +312,20 @@ func OpenConsensusModule(
 	// closes. The handler marks a clean stop so IsActive matches the
 	// archive session. The handler also sets the STOP mark the agent
 	// consumes to enter an election.
-	module.archiveClient.SetRecordingSignalHandler(
-		archive.RecordingSignalHandlerFunc(module.logRecording.handleRecordingSignal),
-	)
+	//
+	// The snapshot STOP watch runs after the log recording handler, so the
+	// log stop mark keeps its order.
+	logRecording := module.logRecording
+	snapshotControl := newSnapshotRecording(module.archiveClient)
+	module.archiveClient.SetRecordingSignalHandler(archive.RecordingSignalHandlerFunc(
+		func(event codecs.RecordingSignalEventFields) {
+			logRecording.handleRecordingSignal(event)
+			snapshotControl.handleRecordingSignal(event)
+		},
+	))
+	module.agent.SetSnapshotRecordingControl(snapshotControl)
+	module.agent.SetSnapshotPublicationAdder(snapshotPublicationAdder{client: module.client})
+	module.agent.SetSnapshotStream(cfg.SnapshotChannel, cfg.SnapshotStreamID)
 
 	publisher := election.NewAeronPublisher()
 
@@ -529,8 +546,9 @@ func moduleClocks(cfg Config) (nanoClock, epochClock func() int64) {
 }
 
 // Close tears the member down in reverse open order:
-//  1. agent bindings (ingress unbind, service proxy clear, session egress
-//     teardown, adder clear)
+//  1. agent bindings (module snapshot take close, snapshot seam clears,
+//     ingress unbind, service proxy clear, session egress teardown, adder
+//     clear)
 //  2. catchup control
 //  3. best-effort log recording stop
 //  4. election close and retained replay helper close error
@@ -574,11 +592,18 @@ func (m *ConsensusModule) Close() error {
 	// factory before the runner so a post-Close duty tick cannot re-install
 	// against a torn-down recovery.
 	//
+	// Close the module snapshot take first, before the log recording stop and
+	// the client closes. Clear the snapshot seams next, so a late DoWork that
+	// pops a snapshot wait fails its take instead of adding a publication.
+	//
 	// Unbind client ingress before clearing the election so a late DoWork cannot
 	// accept connects when election is nil and role is still leader. Tear session
 	// egress publications after no new accepts can queue. Clear the adder before
 	// the transport client closes.
 	if m.agent != nil {
+		m.agent.CloseSnapshotTake()
+		m.agent.SetSnapshotRecordingControl(nil)
+		m.agent.SetSnapshotPublicationAdder(nil)
 		m.agent.SetClientIngress(nil)
 		m.agent.SetServiceIngress(nil)
 		m.agent.SetServiceProxy(nil)

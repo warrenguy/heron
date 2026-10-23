@@ -1030,3 +1030,48 @@ func TestSessionManager_learnSessionOpen_ignoresAcceptCap(t *testing.T) {
 	require.Equal(t, sessionOpen, s.state)
 	require.Equal(t, int64(501), m.nextSessionID)
 }
+
+func TestSessionManager_snapshotSessionRows(t *testing.T) {
+	t.Parallel()
+
+	m := newSessionManager()
+	require.Empty(t, m.snapshotSessionRows())
+	for _, id := range []int64{7, 3} {
+		m.learnSessionOpen(codecs.SessionOpenEventFields{
+			ClusterSessionID: id,
+			CorrelationID:    id + 100,
+			ResponseStreamID: 102,
+			ResponseChannel:  []byte("aeron:ipc"),
+		}, id*32, 5)
+	}
+	require.True(t, m.markClosing(7, clusterwire.CloseReason_SERVICE_ACTION))
+	addPending(m, validConnectFields(1), 5)
+
+	rows := m.snapshotSessionRows()
+	require.Equal(t, []codecs.ClusterSessionFields{
+		{
+			ClusterSessionID:   3,
+			CorrelationID:      103,
+			OpenedLogPosition:  96,
+			TimeOfLastActivity: -1,
+			CloseReason:        clusterwire.CloseReason_NULL_VALUE,
+			ResponseStreamID:   102,
+			ResponseChannel:    []byte("aeron:ipc"),
+		},
+		{
+			ClusterSessionID:   7,
+			CorrelationID:      107,
+			OpenedLogPosition:  224,
+			TimeOfLastActivity: -1,
+			CloseReason:        clusterwire.CloseReason_SERVICE_ACTION,
+			ResponseStreamID:   102,
+			ResponseChannel:    []byte("aeron:ipc"),
+		},
+	}, rows)
+
+	// The rows own their channel bytes.
+	session, ok := m.sessionByID(3)
+	require.True(t, ok)
+	session.responseChannel[0] = 'X'
+	require.Equal(t, []byte("aeron:ipc"), rows[0].ResponseChannel)
+}

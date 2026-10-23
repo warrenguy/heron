@@ -1,6 +1,12 @@
 package consensus
 
-import "github.com/warrenguy/heron/timerwheel"
+import (
+	"cmp"
+	"slices"
+
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/timerwheel"
+)
 
 // timerPollLimit caps expiries per timerService.poll call.
 const timerPollLimit = 20
@@ -167,4 +173,22 @@ func (t *timerService) currentTime(now int64) {
 
 func (t *timerService) count() int64 {
 	return t.wheel.Count()
+}
+
+// snapshotTimerRows returns one Timer row per scheduled timer, sorted by
+// ascending correlation id. Each row carries the stored wheel deadline. The
+// rows skip a timer whose deadline read fails.
+func (t *timerService) snapshotTimerRows() []codecs.TimerFields {
+	rows := make([]codecs.TimerFields, 0, len(t.timerIDByCorrelationID))
+	for correlationID, timerID := range t.timerIDByCorrelationID {
+		deadline, ok := t.wheel.Deadline(timerID)
+		if !ok {
+			continue
+		}
+		rows = append(rows, codecs.TimerFields{CorrelationID: correlationID, Deadline: deadline})
+	}
+	slices.SortFunc(rows, func(x, y codecs.TimerFields) int {
+		return cmp.Compare(x.CorrelationID, y.CorrelationID)
+	})
+	return rows
 }

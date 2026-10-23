@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/timerwheel"
 )
 
@@ -288,4 +289,22 @@ func TestTimerService_rescheduleRefusal(t *testing.T) {
 	require.Equal(t, map[int64]struct{}{2: {}, 3: {}}, fired)
 	require.NotContains(t, fired, int64(1))
 	requireTimerCount(t, svc, 0)
+}
+
+func TestTimerService_snapshotTimerRows(t *testing.T) {
+	t.Parallel()
+
+	svc := newTimerService()
+	require.Empty(t, svc.snapshotTimerRows())
+	require.True(t, svc.schedule(30, 300))
+	require.True(t, svc.schedule(-5, 500))
+	require.True(t, svc.schedule(10, timerwheel.NullDeadline))
+	require.True(t, svc.schedule(20, 200))
+	require.True(t, svc.cancel(20))
+
+	require.Equal(t, []codecs.TimerFields{
+		{CorrelationID: -5, Deadline: 500},
+		{CorrelationID: 10, Deadline: timerwheel.NullDeadline - 1},
+		{CorrelationID: 30, Deadline: 300},
+	}, svc.snapshotTimerRows())
 }
