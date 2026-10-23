@@ -140,6 +140,11 @@ func (conductor *Conductor) SetCountersReaderForTest(reader *cnc.CountersReader)
 	setCountersReaderHook(conductor, reader)
 }
 
+// SetErrorHandlerForTest replaces the conductor ErrorHandler. Nil clears it.
+func (conductor *Conductor) SetErrorHandlerForTest(handler func(error)) {
+	setErrorHandlerHook(conductor, handler)
+}
+
 func (conductor *Conductor) EventsAdapterForTest() *DriverEventsAdapter {
 	return eventsAdapterHook(conductor)
 }

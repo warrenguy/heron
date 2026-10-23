@@ -3,6 +3,7 @@
 package archive_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -45,25 +46,58 @@ func TestConcludeConfig_injectedAeron(t *testing.T) {
 }
 
 func TestConcludeConfig_ownedClientFactory(t *testing.T) {
-	aeronDir := t.TempDir()
-	owned := &aeron.Client{}
-	archive.SetConnectConstructionHooksForTest(
-		t,
-		aeronDir,
-		func(cfg archive.Config) (*aeron.Client, error) {
-			return owned, nil
-		},
-	)
+	tests := []struct {
+		name          string
+		callerHandler bool
+	}{
+		{name: "default_handler"},
+		{name: "caller_handler", callerHandler: true},
+	}
 
-	cfg := normalizedConfig(t, func(cfg *archive.Config) {
-		cfg.AeronDir = ""
-		cfg.AeronConfig = aeron.Config{AeronDir: aeronDir}
-	})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			aeronDir := t.TempDir()
+			owned := &aeron.Client{}
+			var factoryHandler func(error)
+			archive.SetConnectConstructionHooksForTest(
+				t,
+				aeronDir,
+				func(cfg archive.Config) (*aeron.Client, error) {
+					factoryHandler = cfg.AeronConfig.ErrorHandler
+					return owned, nil
+				},
+			)
 
-	concluded, clientOut, owns := concludeConfig(t, cfg)
-	require.True(t, owns)
-	require.Same(t, owned, clientOut)
-	require.Same(t, owned, concluded.Aeron)
+			var callerErrs []error
+			var callerHandler func(error)
+			if tc.callerHandler {
+				callerHandler = func(err error) { callerErrs = append(callerErrs, err) }
+			}
+			cfg := normalizedConfig(t, func(cfg *archive.Config) {
+				cfg.AeronDir = ""
+				cfg.AeronConfig = aeron.Config{
+					AeronDir:     aeronDir,
+					ErrorHandler: callerHandler,
+				}
+			})
+
+			concluded, clientOut, owns := concludeConfig(t, cfg)
+			require.True(t, owns)
+			require.Same(t, owned, clientOut)
+			require.Same(t, owned, concluded.Aeron)
+
+			// Phase: the factory sees the installed handler. The returned
+			// Config keeps the caller handler.
+			require.NotNil(t, factoryHandler)
+			require.Equal(t, tc.callerHandler, concluded.AeronConfig.ErrorHandler != nil)
+
+			fault := errors.New("fault")
+			factoryHandler(fault)
+			if tc.callerHandler {
+				require.Equal(t, []error{fault}, callerErrs)
+			}
+		})
+	}
 }
 
 func TestConcludeConfig_invalidResponseChannel(t *testing.T) {

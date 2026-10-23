@@ -4,6 +4,7 @@ package archive
 
 import (
 	"context"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/conductor"
 )
 
 // connectTestHarnessDriver registers an await-loop step observer that completes pending
@@ -66,7 +68,8 @@ func ownedConnectConfigForTest(
 	t.Helper()
 
 	aeronDir := t.TempDir()
-	SetConnectConstructionHooksForTest(t, aeronDir, func(Config) (*aeron.Client, error) {
+	SetConnectConstructionHooksForTest(t, aeronDir, func(cfg Config) (*aeron.Client, error) {
+		harness.SetErrorHandler(cfg.AeronConfig.ErrorHandler)
 		return harness.Client, nil
 	})
 	cfg := connectConfigForTest(nil)
@@ -358,4 +361,275 @@ func TestConnect_successWinsOverConcurrentCancel(t *testing.T) {
 	t.Cleanup(func() { _ = archive.Close() })
 
 	require.Equal(t, asyncConnectFixtureControlSessionID, archive.ControlSessionID())
+}
+
+func transmitClientTimeout(t *testing.T, harness *aeron.AsyncConnectTestHarness) {
+	t.Helper()
+
+	require.NoError(t, harness.TransmitClientTimeout())
+}
+
+// transmitUnmappableImage broadcasts an available image for sub whose log
+// file does not exist. The next harness client DoWork reports the map failure
+// and keeps the client running.
+func transmitUnmappableImage(
+	t *testing.T,
+	harness *aeron.AsyncConnectTestHarness,
+	sub *aeron.Subscription,
+) {
+	t.Helper()
+
+	event := conductor.AvailableImage{
+		CorrelationID:              9001,
+		SessionID:                  9002,
+		StreamID:                   sub.StreamID(),
+		SubscriptionRegistrationID: sub.RegistrationID(),
+		LogFileName:                filepath.Join(harness.MediaDriverDir, "missing.logbuffer"),
+		SourceIdentity:             "aeron:ipc",
+	}
+	require.NoError(t, harness.Fixture().Transmit(
+		conductor.OnAvailableImage,
+		conductor.AvailableImageBytes(event),
+	))
+}
+
+// connectHarnessSession runs Connect over the harness client. Cleanup closes
+// the session.
+func connectHarnessSession(
+	t *testing.T,
+	harness *aeron.AsyncConnectTestHarness,
+	cfg Config,
+) *Client {
+	t.Helper()
+
+	connectTestHarnessDriver(t, harness, func(ac *AsyncConnect) {
+		writeConnectHandshakeResponses(t, ac)
+	})
+	session, err := Connect(t.Context(), cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	return session
+}
+
+func requireTransportFaultClosed(
+	t *testing.T,
+	harness *aeron.AsyncConnectTestHarness,
+	session *Client,
+	cause error,
+) {
+	t.Helper()
+
+	require.True(t, session.IsClosed())
+	require.ErrorIs(t, session.TransportFault(), ErrTransportTerminating)
+	require.ErrorIs(t, session.TransportFault(), cause)
+	require.True(t, aeron.ClientIsClosedForTest(harness.Client))
+}
+
+func requireSessionOpen(t *testing.T, session *Client) {
+	t.Helper()
+
+	require.False(t, session.IsClosed())
+	require.NoError(t, session.TransportFault())
+}
+
+type faultFixture struct {
+	harness    *aeron.AsyncConnectTestHarness
+	session    *Client
+	callerErrs *[]error
+}
+
+// requireAwaitInFlightFault runs call with a client timeout broadcast inside
+// its await loop. call must time out and the session must close on the fault.
+func requireAwaitInFlightFault(t *testing.T, fixture faultFixture, call func() error) {
+	t.Helper()
+
+	// Phase: the offer retry runs the first DoWork. The await loop runs the
+	// second. The hook then broadcasts the timeout.
+	var doWorkCalls int
+	fixture.harness.SetDoWorkAfterHook(func() {
+		doWorkCalls++
+		if doWorkCalls == 2 {
+			transmitClientTimeout(t, fixture.harness)
+		}
+	})
+	callErr := call()
+	var timeout *ControlResponseTimeoutError
+	require.ErrorAs(t, callErr, &timeout)
+	requireTransportFaultClosed(t, fixture.harness, fixture.session, conductor.ErrClientTimeout)
+}
+
+// TestClient_ownedClientFaultClosesSession asserts that a fault that
+// terminates the connect-owned transport client closes the session on the
+// next poll. A per-resource fault and a caller-supplied client leave the
+// session open.
+func TestClient_ownedClientFaultClosesSession(t *testing.T) {
+	t.Parallel()
+
+	const stopStreamID int32 = 1001
+	stopChannel := []byte("aeron:ipc")
+
+	tests := []struct {
+		name           string
+		callerHandler  bool
+		callerSupplied bool
+		run            func(*testing.T, faultFixture)
+	}{
+		{
+			name: "default_handler_client_timeout",
+			run: func(t *testing.T, fixture faultFixture) {
+				transmitClientTimeout(t, fixture.harness)
+				fixture.harness.DoWork()
+				require.Zero(t, fixture.session.Poll())
+				requireTransportFaultClosed(t, fixture.harness, fixture.session, conductor.ErrClientTimeout)
+			},
+		},
+		{
+			name:          "caller_handler_client_timeout",
+			callerHandler: true,
+			run: func(t *testing.T, fixture faultFixture) {
+				transmitClientTimeout(t, fixture.harness)
+				fixture.harness.DoWork()
+				require.Len(t, *fixture.callerErrs, 1)
+				require.ErrorIs(t, (*fixture.callerErrs)[0], conductor.ErrClientTimeout)
+				require.Zero(t, fixture.session.Poll())
+				requireTransportFaultClosed(t, fixture.harness, fixture.session, conductor.ErrClientTimeout)
+			},
+		},
+		{
+			name: "per_resource_error_keeps_session",
+			run: func(t *testing.T, fixture faultFixture) {
+				transmitUnmappableImage(t, fixture.harness, fixture.session.controlSubscription)
+				fixture.harness.DoWork()
+				fixture.session.Poll()
+				requireSessionOpen(t, fixture.session)
+				require.False(t, fixture.harness.Client.IsTerminating())
+			},
+		},
+		{
+			name:          "per_resource_error_caller_handler_keeps_session",
+			callerHandler: true,
+			run: func(t *testing.T, fixture faultFixture) {
+				transmitUnmappableImage(t, fixture.harness, fixture.session.controlSubscription)
+				fixture.harness.DoWork()
+				require.Len(t, *fixture.callerErrs, 1)
+				require.ErrorIs(t, (*fixture.callerErrs)[0], conductor.ErrLogBufferMapFailed)
+				fixture.session.Poll()
+				requireSessionOpen(t, fixture.session)
+				require.False(t, fixture.harness.Client.IsTerminating())
+			},
+		},
+		{
+			name:           "caller_supplied_client_unchanged",
+			callerHandler:  true,
+			callerSupplied: true,
+			run: func(t *testing.T, fixture faultFixture) {
+				transmitClientTimeout(t, fixture.harness)
+				fixture.harness.DoWork()
+				require.Len(t, *fixture.callerErrs, 1)
+				fixture.session.Poll()
+				requireSessionOpen(t, fixture.session)
+				require.False(t, aeron.ClientIsClosedForTest(fixture.harness.Client))
+			},
+		},
+		{
+			name: "blocking_call_after_fault",
+			run: func(t *testing.T, fixture faultFixture) {
+				transmitClientTimeout(t, fixture.harness)
+				stopErr := fixture.session.StopRecording(t.Context(), stopStreamID, stopChannel)
+				var terminal *ControlTerminalError
+				require.ErrorAs(t, stopErr, &terminal)
+				require.False(t, fixture.session.IsClosed())
+
+				require.Zero(t, fixture.session.Poll())
+				requireTransportFaultClosed(t, fixture.harness, fixture.session, conductor.ErrClientTimeout)
+			},
+		},
+		{
+			name: "await_in_flight_fault",
+			run: func(t *testing.T, fixture faultFixture) {
+				requireAwaitInFlightFault(t, fixture, func() error {
+					return fixture.session.StopRecording(t.Context(), stopStreamID, stopChannel)
+				})
+			},
+		},
+		{
+			name: "list_recording_await_in_flight_fault",
+			run: func(t *testing.T, fixture faultFixture) {
+				requireAwaitInFlightFault(t, fixture, func() error {
+					_, err := fixture.session.ListRecording(t.Context(), 1)
+					return err
+				})
+			},
+		},
+		{
+			name: "signal_await_in_flight_fault",
+			run: func(t *testing.T, fixture faultFixture) {
+				tracker := NewStopSignalTracker(fixture.session.controlSessionID, -1)
+				requireAwaitInFlightFault(t, fixture, func() error {
+					return fixture.session.StopRecordingAwaitSignal(
+						t.Context(),
+						stopStreamID,
+						stopChannel,
+						tracker,
+					)
+				})
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness := aeron.NewAsyncConnectTestHarness(t)
+			var callerErrs []error
+			var callerHandler func(error)
+			if tc.callerHandler {
+				callerHandler = func(err error) { callerErrs = append(callerErrs, err) }
+			}
+			var cfg Config
+			if tc.callerSupplied {
+				harness.SetErrorHandler(callerHandler)
+				cfg = connectConfigForTest(harness.Client)
+			} else {
+				cfg = ownedConnectConfigForTest(t, harness)
+				cfg.AeronConfig.ErrorHandler = callerHandler
+			}
+			cfg.ConnectTimeout = time.Minute
+			cfg.ControlResponseTimeout = 100 * time.Millisecond
+			session := connectHarnessSession(t, harness, cfg)
+			requireSessionOpen(t, session)
+
+			tc.run(t, faultFixture{
+				harness:    harness,
+				session:    session,
+				callerErrs: &callerErrs,
+			})
+		})
+	}
+}
+
+// TestConnect_ownedClientFaultFailsConnect asserts that a fault during the
+// handshake fails Connect with the cause and closes the owned client.
+func TestConnect_ownedClientFaultFailsConnect(t *testing.T) {
+	t.Parallel()
+
+	harness := aeron.NewAsyncConnectTestHarness(t)
+	cfg := ownedConnectConfigForTest(t, harness)
+	cfg.ConnectTimeout = time.Minute
+
+	var steps int
+	observedAC := connectTestHarnessDriver(t, harness, func(*AsyncConnect) {
+		steps++
+		if steps == 3 {
+			transmitClientTimeout(t, harness)
+		}
+	})
+
+	session, err := Connect(t.Context(), cfg)
+	require.Nil(t, session)
+	require.ErrorIs(t, err, ErrTransportTerminating)
+	require.ErrorIs(t, err, conductor.ErrClientTimeout)
+	requireAsyncConnectClosedAfterConnectFailure(t, observedAC())
+	require.True(t, aeron.ClientIsClosedForTest(harness.Client))
 }

@@ -122,6 +122,10 @@ func setCountersReaderHook(conductor *Conductor, reader *cnc.CountersReader) {
 	conductor.countersReader = reader
 }
 
+func setErrorHandlerHook(conductor *Conductor, handler func(error)) {
+	conductor.config.ErrorHandler = handler
+}
+
 func eventsAdapterHook(conductor *Conductor) *DriverEventsAdapter {
 	return conductor.eventsAdapter
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/heron/internal/transportfault"
 )
 
 // ConnectState mirrors Java Client.AsyncConnect step values.
@@ -86,6 +87,13 @@ type AsyncConnect struct {
 	client          *aeron.Client
 	ownsAeronClient bool
 
+	// transportFault stores errors from the connect-owned transport client.
+	// Nil when the caller supplied Config.Aeron.
+	transportFault *transportfault.Monitor
+	// transportFaultErr is the first Poll error from a terminated owned
+	// client. Later Poll calls return it.
+	transportFaultErr error
+
 	state ConnectState
 
 	deadlineNs int64
@@ -110,7 +118,7 @@ func NewAsyncConnect(ctx context.Context, cfg Config) (*AsyncConnect, error) {
 	if err := cfg.ValidateForConnect(); err != nil {
 		return nil, err
 	}
-	concluded, client, owns, err := concludeConfig(ctx, cfg)
+	concluded, client, owns, monitor, err := concludeConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +127,7 @@ func NewAsyncConnect(ctx context.Context, cfg Config) (*AsyncConnect, error) {
 		cfg:             concluded,
 		client:          client,
 		ownsAeronClient: owns,
+		transportFault:  monitor,
 		state:           ConnectStateCreateControlResponseSubscription,
 		deadlineNs:      nanoClock() + concluded.ConnectTimeout.Nanoseconds(),
 		nanoClock:       nanoClock,
@@ -160,6 +169,13 @@ func (ac *AsyncConnect) OwnsAeronClient() bool {
 //
 // Returns (nil, nil) while in progress, (*ConnectResult, nil) on success, and
 // (nil, err) on terminal failure.
+//
+// A terminated connect-owned transport client fails Poll in every state,
+// before the deadline check. The error wraps ErrTransportTerminating and the
+// conductor cause. Later Poll calls return the same error.
+//
+// Concurrency: invoker-only. Poll takes the transport client lock after an
+// owned client error. Must not run inside a transport client callback.
 func (ac *AsyncConnect) Poll() (*ConnectResult, error) {
 	if ac == nil {
 		return nil, errors.New("archive: nil async connect")
@@ -170,12 +186,36 @@ func (ac *AsyncConnect) Poll() (*ConnectResult, error) {
 	if ac.state == ConnectStateDone {
 		return nil, errors.New("archive: async connect already completed")
 	}
+	if err := ac.transportFaultError(); err != nil {
+		return nil, err
+	}
 	if ac.state != ConnectStateConcludeConnect {
 		if err := ac.checkDeadline(); err != nil {
 			return nil, err
 		}
 	}
 
+	result, err := ac.pollState()
+	if err != nil {
+		if faultErr := ac.transportFaultError(); faultErr != nil {
+			return nil, faultErr
+		}
+	}
+	return result, err
+}
+
+// transportFaultError returns the first termination error of the owned
+// transport client. Later calls return the same error. Returns nil while the
+// owned client runs.
+func (ac *AsyncConnect) transportFaultError() error {
+	if ac.transportFaultErr != nil {
+		return ac.transportFaultErr
+	}
+	ac.transportFaultErr = transportTerminatingError(ac.transportFault, ac.client)
+	return ac.transportFaultErr
+}
+
+func (ac *AsyncConnect) pollState() (*ConnectResult, error) {
 	switch ac.state {
 	case ConnectStateCreateControlResponseSubscription:
 		return ac.pollCreateControlResponseSubscription()
@@ -488,6 +528,7 @@ func (ac *AsyncConnect) pollConcludeConnect() (*ConnectResult, error) {
 		Aeron:               ac.client,
 		OwnsAeronClient:     ac.ownsAeronClient,
 		Config:              ac.cfg,
+		transportFault:      ac.transportFault,
 	}
 	ac.transferConnectResourcesToResult()
 	ac.zeroSensitiveBuffers()
@@ -503,6 +544,7 @@ func (ac *AsyncConnect) transferConnectResourcesToResult() {
 	ac.transport.requestPublication = nil
 	ac.client = nil
 	ac.ownsAeronClient = false
+	ac.transportFault = nil
 }
 
 func (ac *AsyncConnect) cancelPendingRegistration(regID *int64) {
