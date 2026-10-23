@@ -50,9 +50,11 @@ type recordingService struct {
 	messages    []recordedMessage
 	closes      []int64
 	order       []recordedEvent
-	cluster     service.Cluster
 	echoResults []int64
 }
+
+// nilSessionID marks a recordedMessage whose SessionMessage session was nil.
+const nilSessionID int64 = -1
 
 type recordedMessage struct {
 	sessionID int64
@@ -70,35 +72,45 @@ const (
 	eventClose   = "close"
 )
 
-func (s *recordingService) Start(cluster service.Cluster) error {
+func (s *recordingService) Start(service.Cluster) error {
 	s.startCount++
-	s.cluster = cluster
 	return nil
 }
 
-func (s *recordingService) SessionOpen(sessionID, _ int64) {
+func (s *recordingService) SessionOpen(session service.ClientSession, _ int64) {
+	sessionID := session.ID()
 	s.opens = append(s.opens, sessionID)
 	s.order = append(s.order, recordedEvent{kind: eventOpen, sessionID: sessionID})
 }
 
 func (s *recordingService) SessionClose(
-	sessionID, _ int64,
+	session service.ClientSession,
+	_ int64,
 	_ clusterwire.CloseReason,
 ) {
+	sessionID := session.ID()
 	s.closes = append(s.closes, sessionID)
 	s.order = append(s.order, recordedEvent{kind: eventClose, sessionID: sessionID})
 }
 
 // SessionMessage records the message and its echo result. The result is 0
-// when the registry holds no session for sessionID.
-func (s *recordingService) SessionMessage(sessionID, _ int64, payload []byte) {
+// for a nil session.
+func (s *recordingService) SessionMessage(
+	session service.ClientSession,
+	_ int64,
+	payload []byte,
+) {
+	sessionID := nilSessionID
+	if session != nil {
+		sessionID = session.ID()
+	}
 	s.messages = append(s.messages, recordedMessage{
 		sessionID: sessionID,
 		payload:   bytes.Clone(payload),
 	})
 	s.order = append(s.order, recordedEvent{kind: eventMessage, sessionID: sessionID})
 	var result int64
-	if session, ok := s.cluster.ClientSession(sessionID); ok {
+	if session != nil {
 		result = session.Offer(payload)
 	}
 	s.echoResults = append(s.echoResults, result)

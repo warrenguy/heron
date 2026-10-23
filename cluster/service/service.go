@@ -31,9 +31,26 @@ type ClusteredService interface {
 	// service failure and stops the duty cycle.
 	Start(cluster Cluster) error
 
-	SessionOpen(sessionID, timestamp int64)
-	SessionClose(sessionID, timestamp int64, reason clusterwire.CloseReason)
-	SessionMessage(sessionID, timestamp int64, payload []byte)
+	// SessionOpen runs after the agent adds session to the registry.
+	//
+	// Behaviour: on the leader, session.Offer inside SessionOpen returns
+	// aeron.NotConnected. The response publication add has not completed.
+	SessionOpen(session ClientSession, timestamp int64)
+
+	// SessionClose runs after the agent removes session from the registry.
+	// The agent also closes the response publication, or cancels its add,
+	// before SessionClose runs.
+	//
+	// Behaviour: on the leader, session.Offer returns aeron.NotConnected.
+	SessionClose(session ClientSession, timestamp int64, reason clusterwire.CloseReason)
+
+	// SessionMessage delivers one session message payload.
+	//
+	// Behaviour: session is nil when the message session id is not open.
+	// Service messages arrive with a nil session. A Java module appends
+	// them under a service session id, which never names a client session.
+	SessionMessage(session ClientSession, timestamp int64, payload []byte)
+
 	TimerEvent(correlationID, timestamp int64)
 }
 

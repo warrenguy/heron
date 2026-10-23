@@ -114,11 +114,11 @@ func TestAgent_boundedConsume_rapid(t *testing.T) {
 			require.Equal(rt, wantOrder, svc.order)
 			require.Len(rt, svc.opens, len(wantOpens))
 			for i, id := range wantOpens {
-				require.Equal(rt, id, svc.opens[i].sessionID)
+				require.Equal(rt, id, svc.opens[i].session.ID())
 			}
 			require.Len(rt, svc.closes, len(wantCloses))
 			for i, id := range wantCloses {
-				require.Equal(rt, id, svc.closes[i].sessionID)
+				require.Equal(rt, id, svc.closes[i].session.ID())
 			}
 
 			// Frame-granular delivery: a frame that starts before the bound

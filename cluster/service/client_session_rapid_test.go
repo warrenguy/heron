@@ -54,6 +54,8 @@ type modelPublication struct {
 //     and Close has not run.
 //   - Offer returns the model code. A positive offer frames the model header
 //     and payload.
+//   - SessionMessage gets a nil session exactly when the id is not open.
+//     Otherwise session.ID() is the message id.
 //   - no step marks a failure.
 //
 // Ops: open a free id, close any pool id, message any pool id, set the role,
@@ -229,8 +231,17 @@ func TestAgent_clientSessions_rapid(t *testing.T) {
 			case 2:
 				id := rapid.SampledFrom(sessionPool).Draw(rt, "messageID")
 				at := nextPosition()
+				before := len(svc.messages)
 				agent.handleSessionMessage(at, id, at, []byte("m"))
-				require.Equal(rt, id, svc.messages[len(svc.messages)-1].sessionID)
+				require.Len(rt, svc.messages, before+1)
+				session := svc.messages[before].session
+				require.Equal(rt, !model[id].open, session == nil)
+				if session != nil {
+					require.Equal(rt, id, session.ID())
+					open, ok := agent.ClientSession(id)
+					require.True(rt, ok)
+					require.Same(rt, open, session)
+				}
 
 			case 3:
 				leader = rapid.Bool().Draw(rt, "leader")
