@@ -1070,7 +1070,10 @@ func TestNewPublicationFromReadyForTest_validation(t *testing.T) {
 	)
 }
 
-func newIPCPublicationWithNullChannelCounter(t *testing.T) *aeron.Publication {
+func newIPCPublicationWithNullChannelCounter(
+	t *testing.T,
+	counters *cnc.CountersReader,
+) *aeron.Publication {
 	t.Helper()
 
 	log := aeron.NewTestMappedLogForTest(t, aeron.DefaultTestPublicationLogConfig())
@@ -1078,7 +1081,6 @@ func newIPCPublicationWithNullChannelCounter(t *testing.T) *aeron.Publication {
 
 	ready := aeron.PublicationBuffersReadyForTest()
 	ready.ChannelStatusCounterID = cnc.NullCounterID
-	counters := aeron.NewTestCountersReaderLimitOnlyForTest(t, 1_000_000)
 
 	pub, err := aeron.NewPublicationFromReadyForTest(ready, log, counters, "aeron:ipc")
 	require.NoError(t, err)
@@ -1103,8 +1105,142 @@ func TestPublication_StreamIDSessionID(t *testing.T) {
 	require.Equal(t, aeron.TestPublicationSessionID, pub.SessionID())
 }
 
+type publicationTermAccessors interface {
+	InitialTermID() int32
+	TermBufferLength() int32
+	PositionBitsToShift() int
+	MaxPossiblePosition() int64
+	Channel() string
+}
+
+func requireTermAndChannelAccessors(
+	tb testing.TB,
+	pub publicationTermAccessors,
+	initialTermID int32,
+) {
+	tb.Helper()
+	require.Equal(tb, initialTermID, pub.InitialTermID())
+	require.Equal(tb, int32(aeron.TestPublicationTermLength), pub.TermBufferLength())
+	require.Equal(tb, 16, pub.PositionBitsToShift())
+	require.Equal(tb, int64(aeron.TestPublicationTermLength)<<31, pub.MaxPossiblePosition())
+	require.Equal(tb, "aeron:ipc", pub.Channel())
+}
+
+func TestPublication_termAndChannelAccessors(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		cfg           aeron.TestPublicationLogConfig
+		initialTermID int32
+	}{
+		{
+			name:          "default log config",
+			cfg:           aeron.DefaultTestPublicationLogConfig(),
+			initialTermID: aeron.TestPublicationInitialTermID,
+		},
+		{
+			name: "negative initial term id",
+			cfg: aeron.LogConfigWithInitialTermIDForTest(
+				aeron.DefaultTestPublicationLogConfig,
+				-5,
+			),
+			initialTermID: -5,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pub := aeron.NewTestPublication(t, tc.cfg, 1_000_000)
+
+			requireTermAndChannelAccessors(t, pub, tc.initialTermID)
+
+			// Close does not change the accessors.
+			require.NoError(t, pub.Close())
+			requireTermAndChannelAccessors(t, pub, tc.initialTermID)
+		})
+	}
+}
+
+func TestPublication_IsOriginal(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		correlationID int64
+		want          bool
+	}{
+		{
+			name:          "add created the driver publication",
+			correlationID: aeron.TestPublicationRegistrationID,
+			want:          true,
+		},
+		{
+			name:          "add joined the driver publication",
+			correlationID: aeron.TestPublicationRegistrationID + 1,
+			want:          false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := aeron.NewTestMappedLogForTest(t, aeron.DefaultTestPublicationLogConfig())
+			ready := aeron.PublicationBuffersReadyForTest()
+			ready.RegistrationID = aeron.TestPublicationRegistrationID
+			ready.CorrelationID = tc.correlationID
+			counters := aeron.NewTestCountersReaderForTest(t, 1_000_000)
+
+			pub, err := aeron.NewPublicationFromReadyForTest(ready, log, counters, "aeron:ipc")
+			require.NoError(t, err)
+			require.Equal(t, tc.want, pub.IsOriginal())
+
+			require.NoError(t, pub.Close())
+			require.Equal(t, tc.want, pub.IsOriginal())
+		})
+	}
+}
+
+func TestPublication_LocalSocketAddresses(t *testing.T) {
+	addresses := []string{"127.0.0.1:20111", "[::1]:20112"}
+	newPublication := func(t *testing.T) (*aeron.Publication, *cnc.CountersReader) {
+		t.Helper()
+		reader := aeron.NewTestCountersReaderWithLocalSocketAddressesForTest(
+			t,
+			1_000_000,
+			addresses...,
+		)
+		pub := aeron.NewTestPublicationWithCounters(t, aeron.DefaultTestPublicationLogConfig(), reader)
+		return pub, reader
+	}
+
+	t.Run("two addresses in counter id order", func(t *testing.T) {
+		pub, _ := newPublication(t)
+		require.Equal(t, addresses, pub.LocalSocketAddresses())
+	})
+
+	t.Run("inactive channel status", func(t *testing.T) {
+		pub, reader := newPublication(t)
+		require.NoError(t, reader.SetCounterValue(aeron.TestPublicationChannelCounterID, 0))
+		require.Nil(t, pub.LocalSocketAddresses())
+	})
+
+	t.Run("null channel status counter", func(t *testing.T) {
+		// A record linked to NullCounterID must not match a NullCounterID
+		// publication.
+		reader := aeron.NewTestCountersReaderWithLinkedLocalSocketAddressesForTest(
+			t,
+			1_000_000,
+			cnc.NullCounterID,
+			addresses...,
+		)
+		pub := newIPCPublicationWithNullChannelCounter(t, reader)
+		require.Nil(t, pub.LocalSocketAddresses())
+	})
+
+	t.Run("closed publication", func(t *testing.T) {
+		pub, _ := newPublication(t)
+		require.NoError(t, pub.Close())
+		require.Nil(t, pub.LocalSocketAddresses())
+	})
+}
+
 func TestPublication_nullChannelStatusCounter(t *testing.T) {
-	pub := newIPCPublicationWithNullChannelCounter(t)
+	pub := newIPCPublicationWithNullChannelCounter(
+		t,
+		aeron.NewTestCountersReaderLimitOnlyForTest(t, 1_000_000),
+	)
 
 	status, err := pub.ChannelStatus()
 	require.NoError(t, err)

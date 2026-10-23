@@ -238,6 +238,35 @@ func waitForSubscriptionConnectedCtx(
 	)
 }
 
+// channelStatusReporter is the method set that WaitForChannelStatusActive
+// polls.
+type channelStatusReporter interface {
+	ChannelStatus() (int64, error)
+}
+
+// WaitForChannelStatusActive polls DoWork until reporter holds
+// ChannelEndpointStatusActive.
+func WaitForChannelStatusActive(
+	t testing.TB,
+	client *aeron.Client,
+	reporter channelStatusReporter,
+) {
+	t.Helper()
+
+	pollClientUntilDynamicCtx(
+		t,
+		t.Context(),
+		client,
+		ConnectedPollTimeout,
+		func() bool {
+			status, err := reporter.ChannelStatus()
+			require.NoError(t, err)
+			return status == aeron.ChannelEndpointStatusActive
+		},
+		func() string { return "channel status never active" },
+	)
+}
+
 // WaitForIPCLinkConnected polls subscription image attach, then publication metadata.
 // Live IPC: image arrives via ON_AVAILABLE_IMAGE before pub log is_connected flips.
 func WaitForIPCLinkConnected(

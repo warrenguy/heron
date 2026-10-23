@@ -2,6 +2,7 @@ package cnc
 
 import (
 	"errors"
+	"iter"
 
 	"github.com/warrenguy/heron/atomicbuffer"
 )
@@ -25,12 +26,17 @@ const (
 		localSocketAddressStringOffset
 )
 
-// FindLocalSocketAddress returns the bind address linked to channelStatusCounterID
-// when channelStatus is ChannelEndpointStatusActive.
+// FindLocalSocketAddress returns the bind address linked to
+// channelStatusCounterID when channelStatus is ChannelEndpointStatusActive.
+// Matches Java LocalSocketAddressStatus.findAddress.
 //
-// Matches Java LocalSocketAddressStatus.findAddress: scans LOCAL_SOCKADDR counters,
-// breaks on the first record whose linked channel-status id matches, and reads raw
-// ASCII bytes at key+8 using the length at key+4 (not Agrona putStringAscii layout).
+// Behaviour:
+//   - Scans LOCAL_SOCKADDR counters from id 0. Stops at the first unused
+//     record.
+//   - Takes the first allocated record that links to channelStatusCounterID
+//     and holds ChannelEndpointStatusActive.
+//   - Returns false when that record holds no address.
+//   - Returns false for a NullCounterID link.
 func (reader *CountersReader) FindLocalSocketAddress(
 	channelStatus int64,
 	channelStatusCounterID int32,
@@ -41,59 +47,89 @@ func (reader *CountersReader) FindLocalSocketAddress(
 	if reader == nil || channelStatus != ChannelEndpointStatusActive {
 		return "", false
 	}
-
-	for counterID := int32(0); counterID <= reader.maxCounterID; counterID++ {
-		metadataOffset := counterMetadataOffset(counterID)
-		state := reader.metadata.GetInt32Volatile(metadataOffset + CounterMetadataStateOffset)
-		if state == CounterRecordUnused {
-			break
-		}
-		if state != CounterRecordAllocated {
-			continue
-		}
-		if reader.metadata.GetInt32(metadataOffset+CounterMetadataTypeIDOffset) !=
-			DriverLocalSocketAddressStatusTypeID {
-			continue
-		}
-
-		keyIndex := metadataOffset + CounterMetadataKeyOffset
-		if reader.metadata.GetInt32(keyIndex+localSocketAddressChannelStatusIDOffset) !=
-			channelStatusCounterID {
-			continue
-		}
-
-		if reader.values.VolatileInt64At(CounterOffset(counterID)) != ChannelEndpointStatusActive {
-			continue
-		}
-
-		length := reader.metadata.GetInt32(keyIndex + localSocketAddressLengthOffset)
-		address, ok := readLocalSocketAddressString(reader.metadata, keyIndex, length)
-		if ok {
-			return address, true
-		}
-		return "", false
+	for keyIndex := range reader.activeLocalSocketAddressKeys(channelStatusCounterID) {
+		return reader.readLocalSocketAddress(keyIndex)
 	}
-
 	return "", false
 }
 
-func readLocalSocketAddressString(
-	metadata atomicbuffer.AtomicBuffer,
-	keyIndex int,
-	length int32,
-) (
-	string,
-	bool,
-) {
+// FindLocalSocketAddresses returns every bind address linked to
+// channelStatusCounterID when channelStatus is ChannelEndpointStatusActive.
+// Matches Java LocalSocketAddressStatus.findAddresses.
+//
+// Behaviour:
+//   - Same scan as FindLocalSocketAddress. Takes every match, not the first.
+//   - Skips a match that holds no address.
+//   - Returns the addresses in counter id order, or nil.
+func (reader *CountersReader) FindLocalSocketAddresses(
+	channelStatus int64,
+	channelStatusCounterID int32,
+) []string {
+	if reader == nil || channelStatus != ChannelEndpointStatusActive {
+		return nil
+	}
+	var addresses []string
+	for keyIndex := range reader.activeLocalSocketAddressKeys(channelStatusCounterID) {
+		if address, ok := reader.readLocalSocketAddress(keyIndex); ok {
+			addresses = append(addresses, address)
+		}
+	}
+	return addresses
+}
+
+// activeLocalSocketAddressKeys yields the key offset of each allocated
+// LOCAL_SOCKADDR record that links to channelStatusCounterID and holds
+// ChannelEndpointStatusActive. The scan runs from counter id 0 and stops at
+// the first unused record.
+func (reader *CountersReader) activeLocalSocketAddressKeys(
+	channelStatusCounterID int32,
+) iter.Seq[int] {
+	return func(yield func(int) bool) {
+		for counterID := int32(0); counterID <= reader.maxCounterID; counterID++ {
+			metadataOffset := counterMetadataOffset(counterID)
+			state := reader.metadata.GetInt32Volatile(metadataOffset + CounterMetadataStateOffset)
+			if state == CounterRecordUnused {
+				return
+			}
+			if !reader.counterAllocatedOfTypeAt(
+				metadataOffset,
+				state,
+				DriverLocalSocketAddressStatusTypeID,
+			) {
+				continue
+			}
+
+			keyIndex := metadataOffset + CounterMetadataKeyOffset
+			if reader.metadata.GetInt32(keyIndex+localSocketAddressChannelStatusIDOffset) !=
+				channelStatusCounterID {
+				continue
+			}
+
+			if reader.values.VolatileInt64At(CounterOffset(counterID)) != ChannelEndpointStatusActive {
+				continue
+			}
+
+			if !yield(keyIndex) {
+				return
+			}
+		}
+	}
+}
+
+// readLocalSocketAddress reads the ASCII address at key+8 with the length at
+// key+4. The key does not use the Agrona putStringAscii layout. Returns false
+// for a length that is not positive or that runs past the metadata buffer.
+func (reader *CountersReader) readLocalSocketAddress(keyIndex int) (string, bool) {
+	length := reader.metadata.GetInt32(keyIndex + localSocketAddressLengthOffset)
 	if length <= 0 {
 		return "", false
 	}
 	offset := keyIndex + localSocketAddressStringOffset
 	end := offset + int(length)
-	if end > metadata.Capacity() {
+	if end > reader.metadata.Capacity() {
 		return "", false
 	}
-	return string(metadata.Bytes()[offset:end]), true
+	return string(reader.metadata.Bytes()[offset:end]), true
 }
 
 // WriteLocalSocketAddressCounterRecord seeds a LOCAL_SOCKADDR counter for tests

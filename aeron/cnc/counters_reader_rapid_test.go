@@ -180,3 +180,94 @@ func TestCountersReader_CounterKeyLabel_rapid(t *testing.T) {
 		require.False(rt, ok)
 	})
 }
+
+// localSocketAddressScan is the expected result of both Find scans.
+type localSocketAddressScan struct {
+	addresses  []string
+	first      string
+	firstFound bool
+}
+
+// localSocketAddressModel returns the expected scan of records at counter ids
+// 0 onward.
+func localSocketAddressModel(
+	records []localSocketAddressRecord,
+	channelStatusCounterID int32,
+) localSocketAddressScan {
+	var want localSocketAddressScan
+	matched := false
+	for _, record := range records {
+		if record.state == cnc.CounterRecordUnused {
+			break
+		}
+		if record.state != cnc.CounterRecordAllocated ||
+			record.typeID != cnc.DriverLocalSocketAddressStatusTypeID ||
+			record.channelStatusCounterID != channelStatusCounterID ||
+			record.value != cnc.ChannelEndpointStatusActive {
+			continue
+		}
+		if !matched {
+			matched = true
+			want.first, want.firstFound = record.address, record.address != ""
+		}
+		if record.address != "" {
+			want.addresses = append(want.addresses, record.address)
+		}
+	}
+	return want
+}
+
+func TestFindLocalSocketAddresses_rapid(t *testing.T) {
+	t.Parallel()
+	const channelStatusCounterID = localSocketAddressChannelStatusCounterID
+
+	rapid.Check(t, func(rt *rapid.T) {
+		recordCount := rapid.IntRange(1, 16).Draw(rt, "recordCount")
+		records := make([]localSocketAddressRecord, recordCount)
+		for index := range records {
+			address := fmt.Sprintf("10.0.0.%d:%d", index, 20000+index)
+			addressLength := rapid.IntRange(0, len(address)).
+				Draw(rt, fmt.Sprintf("addressLength%d", index))
+			records[index] = localSocketAddressRecord{
+				state: rapid.SampledFrom([]int32{
+					cnc.CounterRecordUnused,
+					cnc.CounterRecordAllocated,
+					cnc.CounterRecordAllocated,
+					cnc.CounterRecordReclaimed,
+				}).Draw(rt, fmt.Sprintf("state%d", index)),
+				typeID: rapid.SampledFrom([]int32{
+					cnc.DriverLocalSocketAddressStatusTypeID,
+					cnc.DriverLocalSocketAddressStatusTypeID,
+					cnc.ClientHeartbeatTypeID,
+				}).Draw(rt, fmt.Sprintf("typeID%d", index)),
+				channelStatusCounterID: rapid.SampledFrom([]int32{
+					channelStatusCounterID,
+					channelStatusCounterID,
+					channelStatusCounterID + 1,
+					cnc.NullCounterID,
+				}).Draw(rt, fmt.Sprintf("channelStatusCounterID%d", index)),
+				address: address[:addressLength],
+				value: rapid.SampledFrom([]int64{
+					cnc.ChannelEndpointStatusActive,
+					cnc.ChannelEndpointStatusActive,
+					0,
+					-1,
+				}).Draw(rt, fmt.Sprintf("value%d", index)),
+			}
+		}
+
+		want := localSocketAddressModel(records, channelStatusCounterID)
+		reader := localSocketAddressRecordsReader(rt, records...)
+		require.Equal(
+			rt,
+			want.addresses,
+			reader.FindLocalSocketAddresses(cnc.ChannelEndpointStatusActive, channelStatusCounterID),
+		)
+		first, found := reader.FindLocalSocketAddress(
+			cnc.ChannelEndpointStatusActive,
+			channelStatusCounterID,
+		)
+		require.Equal(rt, want.firstFound, found)
+		require.Equal(rt, want.first, first)
+	})
+}
