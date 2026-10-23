@@ -93,4 +93,10 @@ const (
 
 	// Async send destination commands on live aeronmd.
 	MultiDestinationPublicationAsyncStreamID int32 = 8404
+
+	// Module egress add released while the ready mark names it.
+	ConsensusEgressCancelMarkedStreamID int32 = 8501
+
+	// Module egress add released after the ready mark moved.
+	ConsensusEgressCancelMovedStreamID int32 = 8502
 )

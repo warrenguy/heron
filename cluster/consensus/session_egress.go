@@ -685,14 +685,27 @@ func (a *Agent) releaseEgressEvent(e *egressEvent) {
 	closeEgressPublication(&e.publication)
 }
 
-// cancelEgressAdd abandons an in-flight add when *addCorr is not nullValue.
-// Clears *addCorr. No-op when the adder is nil.
+// cancelEgressAdd polls the in-flight add in *addCorr once, then clears
+// *addCorr.
+//
+// Behaviour: a ready publication closes. Any other poll result cancels the
+// add. A nil adder clears *addCorr without a poll. No-op when *addCorr is
+// nullValue.
+//
+// The poll comes first because CancelPending alone leaks a ready add. While
+// the ready mark names the add, CancelPending keeps the publication in the
+// client. After the mark moves, CancelPending retires the publication in the
+// client and leaves it at the driver.
 func (a *Agent) cancelEgressAdd(addCorr *int64) {
-	if *addCorr == nullValue {
-		return
-	}
-	if a.egressAdder != nil {
-		a.egressAdder.CancelPending(*addCorr)
+	// The poll clears *addCorr on most results. Cancel with the saved id.
+	correlationID := *addCorr
+	pub, state, _ := a.pollEgressAdd(addCorr)
+	switch state {
+	case egressAddNone:
+	case egressAddReady:
+		closeEgressPublication(&pub)
+	case egressAddInFlight, egressAddTerminal, egressAddVanished:
+		a.egressAdder.CancelPending(correlationID)
 	}
 	*addCorr = nullValue
 }
