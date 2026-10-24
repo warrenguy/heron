@@ -38,7 +38,11 @@ const (
 )
 
 func amendSnapshotMember(cfg cluster.Config) cluster.Config {
-	cfg = amendServiceMember(cfg)
+	return withSnapshotAppVersion(amendServiceMember(cfg))
+}
+
+// withSnapshotAppVersion sets the non-zero marker app version on cfg.
+func withSnapshotAppVersion(cfg cluster.Config) cluster.Config {
 	cfg.Election.AppVersion = snapshotAppVersion
 	return cfg
 }
@@ -113,8 +117,44 @@ func openSnapshotServiceCluster(t *testing.T) (serviceCluster, *snapshotRecorder
 	return sc, rec
 }
 
-// requestSnapshotRecording requests one snapshot on leader. Ticks until the
+// requestSnapshotAction requests one snapshot on leader. Ticks until the
 // leader's snapshot wait clears and its module snapshot take resolves.
+//
+// Returns the request time and the action frame end.
+func requestSnapshotAction(
+	t *testing.T,
+	sc serviceCluster,
+	leader *cluster.ConsensusModule,
+	transport *aeron.Client,
+	session *client.AeronCluster,
+	label string,
+) (
+	nowNs int64,
+	actionPosition int64,
+) {
+	t.Helper()
+
+	nowNs = leader.NanoClock()()
+	if err := leader.RequestSnapshot(nowNs); err != nil {
+		require.NoError(t, err, "RequestSnapshot %s:\n%s", label, sc.dump())
+	}
+	// No tick runs between the append and this read, so Position is the
+	// action frame end.
+	actionPosition = leader.LogPublisher().Position()
+	require.True(t, leader.Agent().HasPendingSnapshotAction(), "%s:\n%s", label, sc.dump())
+
+	requireServiceAwaitTick(
+		t, sc,
+		label,
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			return !leader.Agent().HasPendingSnapshotAction()
+		}),
+	)
+	return nowNs, actionPosition
+}
+
+// requestSnapshotRecording is requestSnapshotAction plus the service ack.
 //
 // Returns the action frame end and the acked recording id.
 func requestSnapshotRecording(
@@ -132,25 +172,30 @@ func requestSnapshotRecording(
 
 	agent := sc.members[0].agent
 	ackID := agent.NextAckID()
-	if err := leader.RequestSnapshot(leader.NanoClock()()); err != nil {
-		require.NoError(t, err, "RequestSnapshot %s:\n%s", label, sc.dump())
-	}
-	// No tick runs between the append and this read, so Position is the
-	// action frame end.
-	actionPosition = leader.LogPublisher().Position()
-	require.True(t, leader.Agent().HasPendingSnapshotAction(), "%s:\n%s", label, sc.dump())
-
-	requireServiceAwaitTick(
-		t, sc,
-		label,
-		durableWorkBound,
-		sessionPump(transport, session, func() bool {
-			return !leader.Agent().HasPendingSnapshotAction()
-		}),
-	)
+	_, actionPosition = requestSnapshotAction(t, sc, leader, transport, session, label)
 	requireNoServiceFailure(t, sc, 0, " after "+label)
 	require.Equal(t, ackID+1, agent.NextAckID(), "%s:\n%s", label, sc.dump())
 	return actionPosition, agent.LastSnapshotRecordingID()
+}
+
+// requireSnapshotRecordingDescriptor lists recordingID on the leader archive.
+// Asserts the descriptor names a non-empty snapshot recording on streamID.
+func requireSnapshotRecordingDescriptor(
+	t *testing.T,
+	sc serviceCluster,
+	leader *cluster.ConsensusModule,
+	recordingID int64,
+	streamID int32,
+) archivecodecs.RecordingDescriptorFields {
+	t.Helper()
+
+	desc, err := leader.ArchiveClient().ListRecording(t.Context(), recordingID)
+	require.NoError(t, err, "ListRecording:\n%s", sc.dump())
+	require.Equal(t, recordingID, desc.RecordingID)
+	require.Equal(t, streamID, desc.StreamID)
+	require.Contains(t, string(desc.StrippedChannel), "session-id=")
+	require.Greater(t, desc.StopPosition, desc.StartPosition)
+	return desc
 }
 
 // replayRecordingPayloads replays desc on the member driver. Returns one
@@ -215,6 +260,41 @@ func replayRecordingPayloads(
 	return payloads
 }
 
+// requireSnapshotMarkers asserts payloads[0] decodes as BEGIN and
+// payloads[endRow] as END. Both markers carry typeID, actionPosition and
+// leadershipTermID.
+func requireSnapshotMarkers(
+	t *testing.T,
+	payloads [][]byte,
+	typeID int64,
+	endRow int,
+	actionPosition int64,
+	leadershipTermID int64,
+) {
+	t.Helper()
+
+	markers := []struct {
+		row  int
+		mark clusterwire.SnapshotMark
+	}{
+		{row: 0, mark: clusterwire.SnapshotMark_BEGIN},
+		{row: endRow, mark: clusterwire.SnapshotMark_END},
+	}
+	for _, want := range markers {
+		marker, ok := codecs.TryDecodeSnapshotMarkerAt(payloads[want.row], 0)
+		require.True(t, ok, "marker decode at row %d", want.row)
+		require.Equal(t, codecs.SnapshotMarkerFields{
+			TypeID:           typeID,
+			LogPosition:      actionPosition,
+			LeadershipTermID: leadershipTermID,
+			Index:            0,
+			Mark:             want.mark,
+			TimeUnit:         clusterwire.ClusterTimeUnit_NANOS,
+			AppVersion:       snapshotAppVersion,
+		}, marker, "marker at row %d", want.row)
+	}
+}
+
 // requireSnapshotReplay asserts payloads decode as BEGIN, one ClientSession
 // for sessionID, END, then snapshotServicePayload.
 func requireSnapshotReplay(
@@ -227,26 +307,9 @@ func requireSnapshotReplay(
 	t.Helper()
 
 	require.Len(t, payloads, 4, "replayed fragments")
-	markers := []struct {
-		row  int
-		mark clusterwire.SnapshotMark
-	}{
-		{row: 0, mark: clusterwire.SnapshotMark_BEGIN},
-		{row: 2, mark: clusterwire.SnapshotMark_END},
-	}
-	for _, want := range markers {
-		marker, ok := codecs.TryDecodeSnapshotMarkerAt(payloads[want.row], 0)
-		require.True(t, ok, "marker decode at row %d", want.row)
-		require.Equal(t, codecs.SnapshotMarkerFields{
-			TypeID:           codecs.ServiceSnapshotTypeID,
-			LogPosition:      actionPosition,
-			LeadershipTermID: leadershipTermID,
-			Index:            0,
-			Mark:             want.mark,
-			TimeUnit:         clusterwire.ClusterTimeUnit_NANOS,
-			AppVersion:       snapshotAppVersion,
-		}, marker, "marker at row %d", want.row)
-	}
+	requireSnapshotMarkers(
+		t, payloads, codecs.ServiceSnapshotTypeID, 2, actionPosition, leadershipTermID,
+	)
 
 	row, ok := codecs.TryDecodeClientSessionAt(payloads[1], 0)
 	require.True(t, ok, "client session decode")
@@ -324,13 +387,9 @@ func TestClusterService_recordsSnapshotAndAcksRecordingID(t *testing.T) {
 	require.NotEqual(t, logRecordingID, firstID, "log recording id:\n%s", sc.dump())
 
 	// Phase: list and replay the first recording.
-	desc, err := leader.ArchiveClient().ListRecording(t.Context(), firstID)
-	require.NoError(t, err, "ListRecording:\n%s", sc.dump())
-	require.Equal(t, firstID, desc.RecordingID)
-	require.Equal(t, service.DefaultSnapshotStreamID, desc.StreamID)
-	require.Contains(t, string(desc.StrippedChannel), "session-id=")
-	require.Greater(t, desc.StopPosition, desc.StartPosition)
-
+	desc := requireSnapshotRecordingDescriptor(
+		t, sc, leader, firstID, service.DefaultSnapshotStreamID,
+	)
 	payloads := replayRecordingPayloads(t, sc, leader, desc)
 	requireSnapshotReplay(t, payloads, firstPosition, leader.LeadershipTermID(), wantSession)
 

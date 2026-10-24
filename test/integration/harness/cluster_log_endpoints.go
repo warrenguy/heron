@@ -239,7 +239,8 @@ const (
 // cluster_archive bases must end below linuxEphemeralPortFloor.
 //
 // Member counts for reserved unicast ranges:
-//   - consensus, runner and service snapshot: one member (base+1..+5)
+//   - consensus, runner, service snapshot and module snapshot: one member
+//     (base+1..+5)
 //   - member-set smoke and restart affordance: two members (base+1..+105)
 //   - truncate: three members (base+1..+205)
 //
@@ -260,6 +261,9 @@ const (
 
 	ClusterServiceSnapshotPortBase    = 25800
 	ClusterServiceSnapshotLogEndpoint = "239.255.12.71:25804"
+
+	ClusterModuleSnapshotPortBase    = 25900
+	ClusterModuleSnapshotLogEndpoint = "239.255.12.75:25904"
 
 	ClusterTruncatePortBase    = 27500
 	ClusterTruncateLogEndpoint = "239.255.12.29:27504"
@@ -416,6 +420,12 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    ClusterServiceSnapshotPortBase,
 			memberCount: 1,
 			logEndpoint: ClusterServiceSnapshotLogEndpoint,
+		},
+		{
+			name:        "module-snapshot",
+			portBase:    ClusterModuleSnapshotPortBase,
+			memberCount: 1,
+			logEndpoint: ClusterModuleSnapshotLogEndpoint,
 		},
 		{
 			name:        "durable-record",
