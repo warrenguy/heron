@@ -89,10 +89,13 @@ type Client struct {
 // Connect performs the blocking archive control connect handshake and returns a session
 // wrapper.
 //
-// It drives DoWork on the transport client until the handshake completes,
-// ctx is canceled or its deadline is exceeded, or ConnectTimeout elapses. The await loop
-// paces via cfg.IdleStrategy.Idle(0) and calls IdleStrategy.Reset on exit so a
-// shared backoff instance is not left in PARKING before the post-connect duty cycle.
+// Connect calls DoWork on a caller-supplied transport client before each
+// AsyncConnect.Poll. Poll ticks a connect-owned client.
+//
+// Connect loops until the handshake completes, ctx is done, or ConnectTimeout
+// elapses. Each step paces with cfg.IdleStrategy.Idle(0). Connect calls
+// IdleStrategy.Reset on return so a shared backoff instance does not stay in
+// PARKING before the post-connect duty cycle.
 //
 // When cfg.Aeron is nil, ctx also bounds owned transport attach (CNC ready and
 // driver heartbeat) via NewAsyncConnect. Shared Aeron skips that wait.
@@ -133,7 +136,7 @@ func awaitConnect(ctx context.Context, connect *AsyncConnect) (*ConnectResult, e
 			return nil, err
 		}
 		notifyAwaitConnectStepObserver(connect)
-		if connect.client != nil {
+		if !connect.ownsAeronClient && connect.client != nil {
 			connect.client.DoWork()
 		}
 		result, err := connect.Poll()

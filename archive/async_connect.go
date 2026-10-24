@@ -78,10 +78,16 @@ type connectWireState struct {
 
 // AsyncConnect runs the non-blocking archive connect handshake.
 //
-// Caller must invoke client.DoWork() on the transport client between every Poll()
-// spin. Poll does not call DoWork internally.
+// Poll ticks a connect-owned transport client once per call. With
+// Config.Aeron set, the caller ticks that client between Poll calls.
+// OwnsAeronClient reports which case applies.
 //
-// Not safe for concurrent use.
+// A gap between Poll calls longer than AeronConfig.InterServiceTimeout
+// terminates a connect-owned client.
+//
+// Concurrency: Poll and Close are invoker-only. With Config.Aeron set, the
+// invoker is the duty cycle that ticks that client. Poll must not run inside
+// a callback of its transport client.
 type AsyncConnect struct {
 	cfg             Config
 	client          *aeron.Client
@@ -167,15 +173,19 @@ func (ac *AsyncConnect) OwnsAeronClient() bool {
 
 // Poll advances the connect handshake by one step.
 //
+// Poll calls DoWork once on a connect-owned transport client. The call runs
+// after the closed and done checks and before the fault check. Poll does not
+// call DoWork on a caller-supplied client.
+//
 // Returns (nil, nil) while in progress, (*ConnectResult, nil) on success, and
 // (nil, err) on terminal failure.
 //
 // A terminated connect-owned transport client fails Poll in every state,
 // before the deadline check. The error wraps ErrTransportTerminating and the
-// conductor cause. Later Poll calls return the same error.
+// conductor cause. Later Poll calls return the same error and skip the tick.
 //
-// Concurrency: invoker-only. Poll takes the transport client lock after an
-// owned client error. Must not run inside a transport client callback.
+// Concurrency: invoker-only. Poll takes the transport client lock on every
+// call with a connect-owned client.
 func (ac *AsyncConnect) Poll() (*ConnectResult, error) {
 	if ac == nil {
 		return nil, errors.New("archive: nil async connect")
@@ -185,6 +195,9 @@ func (ac *AsyncConnect) Poll() (*ConnectResult, error) {
 	}
 	if ac.state == ConnectStateDone {
 		return nil, errors.New("archive: async connect already completed")
+	}
+	if ac.transportFaultErr == nil {
+		ac.tickOwnedClient()
 	}
 	if err := ac.transportFaultError(); err != nil {
 		return nil, err
@@ -202,6 +215,12 @@ func (ac *AsyncConnect) Poll() (*ConnectResult, error) {
 		}
 	}
 	return result, err
+}
+
+func (ac *AsyncConnect) tickOwnedClient() {
+	if ac.ownsAeronClient && ac.client != nil {
+		ac.client.DoWork()
+	}
 }
 
 // transportFaultError returns the first termination error of the owned

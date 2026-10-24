@@ -15,8 +15,10 @@ import (
 //
 // Normalize before ValidateForConnect and before connect.
 //
-// During AsyncConnect.Poll and the post-connect session duty cycle, the caller
-// must invoke DoWork on the transport aeron.Client between idle or backoff steps.
+// With Aeron set, the caller must call DoWork on that client between idle or
+// backoff steps, both during AsyncConnect.Poll and after connect. With Aeron
+// nil, Poll ticks the connect-owned client until connect completes. After
+// that, the caller ticks ConnectResult.Aeron.
 //
 // There is no AgentInvoker field.
 type Config struct {

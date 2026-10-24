@@ -67,15 +67,54 @@ func ownedConnectConfigForTest(
 ) Config {
 	t.Helper()
 
+	cfg := fixtureConnectConfigForTest(t, harness, true)
+
+	// Wall-clock NanoClock so ConnectTimeout can elapse in blocking connect tests.
+	cfg.AeronConfig.NanoClock = nil
+	cfg.ConnectTimeout = time.Second
+	return cfg
+}
+
+// fixtureConnectConfigForTest returns the fixture config on the harness
+// client. With owned set, the connect owns that client and the construction
+// hook forwards the connect ErrorHandler to the harness. Otherwise
+// Config.Aeron supplies it. The fixture clock never advances, so the connect
+// deadline never expires.
+func fixtureConnectConfigForTest(
+	t *testing.T,
+	harness *aeron.AsyncConnectTestHarness,
+	owned bool,
+) Config {
+	t.Helper()
+
+	cfg := validConnectFixtureConfig()
+	if !owned {
+		cfg.Aeron = harness.Client
+		return cfg
+	}
 	aeronDir := t.TempDir()
 	SetConnectConstructionHooksForTest(t, aeronDir, func(cfg Config) (*aeron.Client, error) {
 		harness.SetErrorHandler(cfg.AeronConfig.ErrorHandler)
 		return harness.Client, nil
 	})
-	cfg := connectConfigForTest(nil)
 	cfg.AeronDir = aeronDir
-	cfg.ConnectTimeout = time.Second
 	return cfg
+}
+
+// newHarnessAsyncConnect returns a connect on the harness client. With owned
+// set, the connect owns that client.
+func newHarnessAsyncConnect(
+	t *testing.T,
+	owned bool,
+) (*aeron.AsyncConnectTestHarness, *AsyncConnect) {
+	t.Helper()
+
+	harness := aeron.NewAsyncConnectTestHarness(t)
+	ac, err := NewAsyncConnect(t.Context(), fixtureConnectConfigForTest(t, harness, owned))
+	require.NoError(t, err)
+	registerAsyncConnectClose(t, ac)
+	require.Equal(t, owned, ac.OwnsAeronClient())
+	return harness, ac
 }
 
 func requireAsyncConnectClosedAfterConnectFailure(t *testing.T, ac *AsyncConnect) {
@@ -158,6 +197,47 @@ func TestAwaitArchiveConnect_success(t *testing.T) {
 	require.True(t, result.ControlSubscription.IsConnected())
 	require.NotNil(t, result.ControlPublication)
 	require.True(t, result.ControlPublication.IsConnected())
+}
+
+// TestAwaitArchiveConnect_oneTickPerStep asserts that the transport client
+// gets one DoWork per await step. Connect ticks a caller-supplied client.
+// Poll ticks a connect-owned client.
+func TestAwaitArchiveConnect_oneTickPerStep(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		owned bool
+	}{
+		{name: "owned", owned: true},
+		{name: "caller_supplied", owned: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness, ac := newHarnessAsyncConnect(t, tc.owned)
+			var ticks int
+			harness.SetDoWorkAfterHook(func() { ticks++ })
+
+			// The observer reads the tick count before each step and cancels
+			// the loop after four steps. It never calls DoWork.
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var observed []int
+			SetAwaitConnectStepObserverForTest(t, ac, func() {
+				observed = append(observed, ticks)
+				if len(observed) == 4 {
+					cancel()
+				}
+			})
+
+			result, err := awaitConnect(ctx, ac)
+			require.ErrorIs(t, err, context.Canceled)
+			require.Nil(t, result)
+			require.Equal(t, []int{0, 1, 2, 3}, observed)
+		})
+	}
 }
 
 func TestConnect_canceled(t *testing.T) {

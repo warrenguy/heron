@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -759,6 +760,11 @@ type AsyncConnectTestHarness struct {
 	MediaDriverDir string
 
 	fixture *testutil.ConductorFixture
+	// registrationIDs holds the publication registration ids behind the
+	// conductor counters reader.
+	registrationIDs []int64
+	// imageLogCount counts the image log files TransmitAvailableImage wrote.
+	imageLogCount int
 }
 
 // NewAsyncConnectTestHarness builds a synthetic driver-backed client for connect tests.
@@ -774,7 +780,6 @@ func NewAsyncConnectTestHarness(tb testing.TB) *AsyncConnectTestHarness {
 	config.ResourceLifecycle = ConductorResourceLifecycle
 	fixture := testutil.NewConductorFixture(tb, config)
 	client := NewTestClientFromConductorFixture(tb, fixture)
-	fixture.Conductor.SetCountersReaderForTest(asyncConnectTestCountersReader(tb))
 	harness := &AsyncConnectTestHarness{
 		Client:            client,
 		LogPath:           logPath,
@@ -782,6 +787,7 @@ func NewAsyncConnectTestHarness(tb testing.TB) *AsyncConnectTestHarness {
 		MediaDriverDir:    dir,
 		fixture:           fixture,
 	}
+	harness.SetCountersReaderForRegs(tb)
 	tb.Cleanup(func() {
 		if harness.Client != nil {
 			setDoWorkAfterHook(harness.Client, nil)
@@ -827,9 +833,62 @@ func (harness *AsyncConnectTestHarness) SetCountersReaderForRegs(
 	if harness == nil || harness.fixture == nil {
 		return
 	}
+	harness.registrationIDs = slices.Clone(asyncConnectTestRegistrationIDs(registrationIDs))
 	harness.fixture.Conductor.SetCountersReaderForTest(
-		asyncConnectTestCountersReaderForRegs(tb, registrationIDs...),
+		asyncConnectTestCountersReaderForRegs(tb, harness.registrationIDs),
 	)
+}
+
+// TransmitAvailableImage transmits ON_AVAILABLE_IMAGE for sub on the
+// to-client broadcast. It writes a fresh image log file and adds a subscriber
+// position counter first. The image attaches on the next conductor tick.
+//
+// The counters reader is rebuilt from the registration ids that
+// SetCountersReaderForRegs stored. A reader installed on the fixture
+// conductor directly is replaced.
+func (harness *AsyncConnectTestHarness) TransmitAvailableImage(
+	tb testing.TB,
+	sub *Subscription,
+) {
+	tb.Helper()
+
+	require.NotNil(tb, harness)
+	require.NotNil(tb, sub)
+	// Each call gets its own file. An attached image keeps the earlier one
+	// mapped.
+	harness.imageLogCount++
+	logName := "available-image-" + strconv.Itoa(harness.imageLogCount) + ".log"
+	logPath := filepath.Join(harness.MediaDriverDir, logName)
+	writeTestHookLogFile(tb, logPath)
+
+	// The subscriber position record follows the publication records, which
+	// the rebuilt reader keeps.
+	subscriberPositionID := int32(2 * len(harness.registrationIDs))
+	reader := newTestHookCountersReaderFromRecords(
+		tb,
+		int(subscriberPositionID)+1,
+		func(meta, values []byte) {
+			writeAsyncConnectTestPublicationRecords(tb, meta, values, harness.registrationIDs)
+			writeTestHookSubscriberPositionRecord(
+				meta,
+				values,
+				subscriberPositionID,
+				sub.RegistrationID(),
+				0,
+			)
+		},
+	)
+	harness.fixture.Conductor.SetCountersReaderForTest(reader)
+
+	event := testHookAvailableImage(testHookImageCorrelationID)
+	event.SubscriptionRegistrationID = sub.RegistrationID()
+	event.StreamID = sub.StreamID()
+	event.SubscriberPositionID = subscriberPositionID
+	event.LogFileName = logPath
+	require.NoError(tb, harness.fixture.Transmit(
+		conductor.OnAvailableImage,
+		conductor.AvailableImageBytes(event),
+	))
 }
 
 // Fixture exposes the synthetic conductor fixture for driver error injection in tests.
@@ -897,9 +956,7 @@ func (harness *AsyncConnectTestHarness) RespondExclusiveAdds(
 	if harness == nil || harness.fixture == nil || len(logPaths) == 0 {
 		return
 	}
-	if len(registrationIDs) == 0 {
-		registrationIDs = []int64{asyncConnectTestIngressRegID}
-	}
+	registrationIDs = asyncConnectTestRegistrationIDs(registrationIDs)
 	pubIdx := 0
 	harness.pollRing(
 		200*time.Millisecond,
@@ -1105,24 +1162,39 @@ func (harness *AsyncConnectTestHarness) completeSubscriptionAdd(
 	return true
 }
 
-func asyncConnectTestCountersReader(tb testing.TB) *cnc.CountersReader {
-	tb.Helper()
-
-	return asyncConnectTestCountersReaderForRegs(tb, asyncConnectTestIngressRegID)
-}
-
 func asyncConnectTestCountersReaderForRegs(
 	tb testing.TB,
-	registrationIDs ...int64,
+	registrationIDs []int64,
 ) *cnc.CountersReader {
 	tb.Helper()
 
+	return newTestHookCountersReaderFromRecords(
+		tb,
+		len(registrationIDs)*2,
+		func(meta, values []byte) {
+			writeAsyncConnectTestPublicationRecords(tb, meta, values, registrationIDs)
+		},
+	)
+}
+
+// asyncConnectTestRegistrationIDs applies the single ingress default. It
+// returns the caller's slice otherwise.
+func asyncConnectTestRegistrationIDs(registrationIDs []int64) []int64 {
 	if len(registrationIDs) == 0 {
-		registrationIDs = []int64{asyncConnectTestIngressRegID}
+		return []int64{asyncConnectTestIngressRegID}
 	}
-	recordCount := len(registrationIDs) * 2
-	meta := make([]byte, cnc.CounterMetadataLength*recordCount)
-	values := make([]byte, cnc.CounterValueLength*recordCount)
+	return registrationIDs
+}
+
+// writeAsyncConnectTestPublicationRecords writes the publisher limit and send
+// channel status records for each registration id.
+func writeAsyncConnectTestPublicationRecords(
+	tb testing.TB,
+	meta, values []byte,
+	registrationIDs []int64,
+) {
+	tb.Helper()
+
 	for i, registrationID := range registrationIDs {
 		limitID := int32(i * 2)
 		statusID := int32(i*2 + 1)
@@ -1147,9 +1219,6 @@ func asyncConnectTestCountersReaderForRegs(
 		)
 		require.NoError(tb, err)
 	}
-	reader, err := cnc.NewCountersReader(meta, values)
-	require.NoError(tb, err)
-	return reader
 }
 
 func asyncConnectTestPublicationReady(
@@ -1223,15 +1292,29 @@ func newTestHookCountersReaderWithSubscriberRegistration(
 		tb,
 		int(testHookSubscriberPositionCounterID)+1,
 		func(meta, values []byte) {
-			cnc.WriteCounterRecord(
+			writeTestHookSubscriberPositionRecord(
 				meta,
 				values,
 				testHookSubscriberPositionCounterID,
-				cnc.CounterRecordAllocated,
-				cnc.DriverSubscriberPositionTypeID,
 				subscriptionRegistrationID,
 				joinPosition,
 			)
 		},
+	)
+}
+
+func writeTestHookSubscriberPositionRecord(
+	meta, values []byte,
+	counterID int32,
+	subscriptionRegistrationID, joinPosition int64,
+) {
+	cnc.WriteCounterRecord(
+		meta,
+		values,
+		counterID,
+		cnc.CounterRecordAllocated,
+		cnc.DriverSubscriberPositionTypeID,
+		subscriptionRegistrationID,
+		joinPosition,
 	)
 }

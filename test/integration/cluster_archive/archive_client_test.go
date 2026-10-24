@@ -169,6 +169,47 @@ func TestArchiveClient_archiveIDMatchesArchive(t *testing.T) {
 	require.Equal(t, node.ArchiveID, strconv.FormatInt(archiveClient.ArchiveID(), 10))
 }
 
+// TestArchiveClient_directAsyncConnectOwnedClient asserts that a direct
+// AsyncConnect with a connect-owned transport client completes on Poll alone.
+func TestArchiveClient_directAsyncConnectOwnedClient(t *testing.T) {
+	// No t.Parallel: the Archive binds the control port that
+	// TestArchiveClient_startAutoStopReleasesSubscription also binds.
+	md := harness.Start(t)
+	harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
+		AeronDir:       md.Dir,
+		ControlChannel: harness.ArchiveClientControl0,
+	})
+
+	cfg := archive.Config{
+		ControlRequestChannel:  archive.DefaultLocalControlChannel,
+		ControlResponseChannel: archive.DefaultLocalControlChannel,
+		AeronDir:               md.Dir,
+		AeronConfig: aeron.Config{
+			InterServiceTimeout: harness.ConnectedPollTimeout,
+		},
+	}.WithRemoteControl().Normalize()
+	connect, err := archive.NewAsyncConnect(t.Context(), cfg)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "close async connect", connect.Close)
+	require.True(t, connect.OwnsAeronClient())
+
+	// Phase: Poll alone drives the handshake.
+	var result *archive.ConnectResult
+	var pollErr error
+	harness.PollUntilBool(10*time.Second, time.Millisecond, func() bool {
+		result, pollErr = connect.Poll()
+		return result != nil || pollErr != nil
+	})
+	require.NoError(t, pollErr)
+	require.NotNil(t, result, "async connect did not complete in state %v", connect.State())
+	harness.CleanupClose(t, "close owned client", result.Aeron.Close)
+	harness.CleanupClose(t, "close control subscription", result.ControlSubscription.Close)
+	harness.CleanupClose(t, "close control publication", result.ControlPublication.Close)
+
+	require.True(t, result.OwnsAeronClient)
+	require.True(t, result.ControlSubscription.IsConnected())
+}
+
 // TestArchiveClient_stopRecordingByIdentity asserts a new session stops an
 // orphaned recording.
 func TestArchiveClient_stopRecordingByIdentity(t *testing.T) {

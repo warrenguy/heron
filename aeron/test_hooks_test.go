@@ -178,3 +178,58 @@ func TestNewTestPublicationForHooksWithConnected_highLimitSucceeds(t *testing.T)
 		})
 	}
 }
+
+// addThroughHarness runs one add on streamID to completion: offer, driver
+// response, poll.
+func addThroughHarness[T any](
+	t *testing.T,
+	harness *AsyncConnectTestHarness,
+	streamID int32,
+	offer func(streamID int32, channel string) (int64, error),
+	poll func(correlationID int64) (T, bool, error),
+) T {
+	t.Helper()
+
+	correlationID, err := offer(streamID, testHookIPCChannel)
+	require.NoError(t, err)
+	harness.RespondPendingAdds()
+	value, done, err := poll(correlationID)
+	require.NoError(t, err)
+	require.True(t, done)
+	return value
+}
+
+func TestAsyncConnectTestHarness_transmitAvailableImage(t *testing.T) {
+	harness := NewAsyncConnectTestHarness(t)
+	sub := addThroughHarness(
+		t,
+		harness,
+		testHookSubscriptionStreamID,
+		harness.Client.OfferAddSubscription,
+		harness.Client.PollAddSubscription,
+	)
+
+	// Phase: the transmit alone does not attach an image.
+	harness.TransmitAvailableImage(t, sub)
+	require.False(t, sub.IsConnected())
+	_, ok := sub.ImageAt(0)
+	require.False(t, ok)
+
+	// Phase: one conductor tick attaches the image.
+	harness.DoWork()
+	require.True(t, sub.IsConnected())
+	image, ok := sub.ImageAt(0)
+	require.True(t, ok)
+	require.Equal(t, testHookImageCorrelationID, image.CorrelationID())
+
+	// Phase: a publication added after the reader swap offers. Its limit
+	// counter survives the swap.
+	pub := addThroughHarness(
+		t,
+		harness,
+		testHookPublicationStreamID,
+		harness.Client.OfferAddExclusivePublication,
+		harness.Client.PollAddExclusivePublication,
+	)
+	require.Positive(t, pub.Offer([]byte{1}))
+}
