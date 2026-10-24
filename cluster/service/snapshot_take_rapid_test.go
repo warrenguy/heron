@@ -72,6 +72,14 @@ func drawTakeScript(rt *rapid.T, label string, err error) takeScript {
 	switch rapid.IntRange(0, 9).Draw(rt, label+"addOutcome") {
 	case 0:
 		s.addPolls = append(s.addPolls, snapshotTakeFakeAddPoll{err: err})
+		// The add stays pending, so cleanup polls once more: in flight, the
+		// same error, or ready from the empty queue.
+		switch rapid.IntRange(0, 2).Draw(rt, label+"cleanupPoll") {
+		case 0:
+			s.addPolls = append(s.addPolls, snapshotTakeFakeAddPoll{})
+		case 1:
+			s.addPolls = append(s.addPolls, snapshotTakeFakeAddPoll{err: err})
+		}
 	case 1:
 		s.addPolls = append(s.addPolls, snapshotTakeFakeAddPoll{
 			done: true,
@@ -158,11 +166,7 @@ func (m *takeModel) tick(nowNs int64) (bool, error) {
 				*m.nextAddID++
 				m.addPending = true
 			}
-			poll := snapshotTakeFakeAddPoll{done: true}
-			if len(m.script.addPolls) > 0 {
-				poll = m.script.addPolls[0]
-				m.script.addPolls = m.script.addPolls[1:]
-			}
+			poll := m.popAddPoll()
 			if poll.done {
 				m.addPending = false
 			}
@@ -246,13 +250,27 @@ func (m *takeModel) tick(nowNs int64) (bool, error) {
 	}
 }
 
-// fail appends a pending add id to cancelled, then resolves with cause.
+// fail polls a pending add once, then resolves with cause. A poll other
+// than ready appends the add id to cancelled.
 func (m *takeModel) fail(cause error) (bool, error) {
 	if m.addPending {
-		*m.cancelled = append(*m.cancelled, m.addID)
+		if poll := m.popAddPoll(); !poll.done || poll.err != nil {
+			*m.cancelled = append(*m.cancelled, m.addID)
+		}
 		m.addPending = false
 	}
 	return true, cause
+}
+
+// popAddPoll pops the next scripted add poll, as the fake does. An empty
+// queue reports the add ready.
+func (m *takeModel) popAddPoll() snapshotTakeFakeAddPoll {
+	if len(m.script.addPolls) == 0 {
+		return snapshotTakeFakeAddPoll{done: true}
+	}
+	poll := m.script.addPolls[0]
+	m.script.addPolls = m.script.addPolls[1:]
+	return poll
 }
 
 // Asserts the snapshot take against a reference model of its steps. Each

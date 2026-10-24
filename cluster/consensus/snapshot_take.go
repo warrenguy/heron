@@ -497,9 +497,19 @@ func (a *Agent) cancelSnapshotTake() {
 //  4. the publication. autoStop then stops a started recording.
 //
 // Cleanup does not send a stop by channel.
+//
+// Cleanup polls a pending add once before a cancel. A ready poll closes the
+// publication instead. A conductor tick outside the take can read the ready
+// reply, and CancelPending alone then leaks that publication.
 func cleanupSnapshotTake(take *snapshotTake) {
 	if take.addPending {
-		take.adder.CancelPending(take.addCorrelationID)
+		publication, done, err := take.adder.PollAddExclusivePublication(take.addCorrelationID)
+		ready := err == nil && done && publication != nil
+		if ready {
+			_ = publication.Close()
+		} else {
+			take.adder.CancelPending(take.addCorrelationID)
+		}
 		take.addPending = false
 	}
 	if take.start != nil {

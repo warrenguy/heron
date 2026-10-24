@@ -554,6 +554,7 @@ func TestSnapshotTake_brokenState(t *testing.T) {
 }
 
 func TestSnapshotTake_closeDuringTake(t *testing.T) {
+	timeoutErr := &aeron.RegistrationTimeoutError{Kind: "publication", CorrelationID: 1}
 	tests := []struct {
 		name          string
 		setup         func(*SnapshotTakeFake)
@@ -561,9 +562,33 @@ func TestSnapshotTake_closeDuringTake(t *testing.T) {
 		wantCancelled []int64
 	}{
 		{
-			name: "addingPublication",
+			name: "addingPublicationInFlight",
 			setup: func(f *SnapshotTakeFake) {
-				f.addPolls = []snapshotTakeFakeAddPoll{{}}
+				f.addPolls = []snapshotTakeFakeAddPoll{{}, {}}
+			},
+			state:         takeAddingPublication,
+			wantCancelled: []int64{1},
+		},
+		{
+			// A conductor tick outside the take read the ready reply.
+			name: "addingPublicationReady",
+			setup: func(f *SnapshotTakeFake) {
+				f.addPolls = []snapshotTakeFakeAddPoll{{}, {done: true}}
+			},
+			state: takeAddingPublication,
+		},
+		{
+			name: "addingPublicationTerminal",
+			setup: func(f *SnapshotTakeFake) {
+				f.addPolls = []snapshotTakeFakeAddPoll{{}, {done: true, err: timeoutErr}}
+			},
+			state:         takeAddingPublication,
+			wantCancelled: []int64{1},
+		},
+		{
+			name: "addingPublicationVanished",
+			setup: func(f *SnapshotTakeFake) {
+				f.addPolls = []snapshotTakeFakeAddPoll{{}, {err: aeron.ErrAwaitInterrupted}}
 			},
 			state:         takeAddingPublication,
 			wantCancelled: []int64{1},
@@ -608,6 +633,7 @@ func TestSnapshotTake_closeDuringTake(t *testing.T) {
 
 			h.agent.Close()
 			requireSnapshotTakeCleanedUp(t, h.agent, h.fake, tt.wantCancelled)
+			require.Empty(t, h.fake.addPolls, "unread add polls")
 			require.Equal(t, 0, h.agent.DoWork(0), "work after Close")
 			require.Empty(t, decodeServiceAcksFromPub(t, h.pub), "acks after Close")
 			require.NoError(t, h.agent.ServiceFailure())
@@ -720,11 +746,21 @@ func TestSnapshotTake_failures(t *testing.T) {
 		{
 			name: "addPollError",
 			setup: func(_ testing.TB, h *takeHarness) {
-				h.fake.addPolls = []snapshotTakeFakeAddPoll{{err: addErr}}
+				h.fake.addPolls = []snapshotTakeFakeAddPoll{{err: addErr}, {err: addErr}}
 			},
 			cause:         errSnapshotPublicationAdd,
 			wrapped:       addErr,
 			wantCancelled: []int64{1},
+		},
+		{
+			// The real client repeats a not-done poll error. The ready cleanup
+			// poll here checks the close branch after a failure.
+			name: "addPollErrorReadyAtCleanup",
+			setup: func(_ testing.TB, h *takeHarness) {
+				h.fake.addPolls = []snapshotTakeFakeAddPoll{{err: addErr}, {done: true}}
+			},
+			cause:   errSnapshotPublicationAdd,
+			wrapped: addErr,
 		},
 		{
 			name: "addPollTimeout",
@@ -854,6 +890,7 @@ func TestSnapshotTake_failures(t *testing.T) {
 			require.Equal(t, nullValue, h.agent.LastSnapshotRecordingID())
 
 			requireSnapshotTakeCleanedUp(t, h.agent, h.fake, tt.wantCancelled)
+			require.Empty(t, h.fake.addPolls, "unread add polls")
 			if tt.noTermEvent {
 				require.Empty(t, h.fake.addStreamIDs, "publication adds")
 			}

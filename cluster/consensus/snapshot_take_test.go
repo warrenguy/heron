@@ -264,7 +264,7 @@ func (f *fakeSnapshotArchive) PollAddExclusivePublication(
 ) (SnapshotPublication, bool, error) {
 	polls, ok := f.pending[correlationID]
 	if !ok {
-		return nil, true, nil
+		return nil, false, aeron.ErrAwaitInterrupted
 	}
 	if f.pollAddErr != nil {
 		if f.pollAddErrDone {
@@ -1210,11 +1210,13 @@ func TestSnapshotTake_completionOnDeadlineTick(t *testing.T) {
 func TestSnapshotTake_cancelAtPrepare(t *testing.T) {
 	t.Parallel()
 
+	addInFlight := func(f *takeFixture) { f.archive.addPendingPolls = 100 }
 	tests := []struct {
-		name        string
-		state       snapshotTakeState
-		script      func(f *takeFixture)
-		wantCancels []int64
+		name          string
+		state         snapshotTakeState
+		script        func(f *takeFixture)
+		beforePrepare func(f *takeFixture)
+		wantCancels   []int64
 	}{
 		{
 			name:   "checking",
@@ -1222,9 +1224,49 @@ func TestSnapshotTake_cancelAtPrepare(t *testing.T) {
 			script: func(f *takeFixture) { f.commit.Store(0) },
 		},
 		{
-			name:        "adding publication",
-			state:       takeAddingPublication,
-			script:      func(f *takeFixture) { f.archive.addPendingPolls = 100 },
+			// One not-done poll remains. A second cleanup poll would read
+			// ready and skip the cancel.
+			name:          "adding publication in flight",
+			state:         takeAddingPublication,
+			script:        addInFlight,
+			beforePrepare: func(f *takeFixture) { f.archive.pending[1] = 1 },
+			wantCancels:   []int64{1},
+		},
+		{
+			// A conductor tick outside the take read the ready reply.
+			name:          "adding publication ready",
+			state:         takeAddingPublication,
+			script:        addInFlight,
+			beforePrepare: func(f *takeFixture) { f.archive.pending[1] = 0 },
+		},
+		{
+			name:   "adding publication done without publication",
+			state:  takeAddingPublication,
+			script: addInFlight,
+			beforePrepare: func(f *takeFixture) {
+				f.archive.pending[1] = 0
+				f.archive.nilPublication = true
+			},
+			wantCancels: []int64{1},
+		},
+		{
+			name:   "adding publication terminal",
+			state:  takeAddingPublication,
+			script: addInFlight,
+			beforePrepare: func(f *takeFixture) {
+				f.archive.pollAddErr = &aeron.RegistrationTimeoutError{Kind: "exclusive publication"}
+				f.archive.pollAddErrDone = true
+			},
+			wantCancels: []int64{1},
+		},
+		{
+			name:   "adding publication vanished",
+			state:  takeAddingPublication,
+			script: addInFlight,
+			beforePrepare: func(f *takeFixture) {
+				f.archive.pollAddErr = aeron.ErrAwaitInterrupted
+				f.archive.pollAddErrDone = false
+			},
 			wantCancels: []int64{1},
 		},
 		{
@@ -1267,6 +1309,9 @@ func TestSnapshotTake_cancelAtPrepare(t *testing.T) {
 			f.agent.DoWork(101)
 			f.agent.DoWork(102)
 			require.Equal(t, tt.state, f.state(t))
+			if tt.beforePrepare != nil {
+				tt.beforePrepare(f)
+			}
 
 			_, prepared, err := f.agent.PrepareForNewLeadership(0, 103)
 			require.NoError(t, err)
@@ -1316,23 +1361,48 @@ func TestSnapshotTake_cancelAtFollowerJoin(t *testing.T) {
 	require.NotNil(t, a.abandonedSnapshotWaitAt(position))
 }
 
-func TestCloseSnapshotTake_cancelsPendingAdd(t *testing.T) {
+func TestCloseSnapshotTake_pendingAdd(t *testing.T) {
 	t.Parallel()
 
-	f := newTakeLeader(t, 1)
-	f.archive.addPendingPolls = 100
-	position := f.request(t, 100)
-	f.ack(t, position, 0, 77, 0)
-	f.agent.DoWork(101)
-	require.Equal(t, takeAddingPublication, f.state(t))
+	tests := []struct {
+		name        string
+		beforeClose func(f *takeFixture)
+		wantCancels []int64
+	}{
+		{
+			name:        "in flight",
+			beforeClose: func(f *takeFixture) { f.archive.pending[1] = 1 },
+			wantCancels: []int64{1},
+		},
+		{
+			// A conductor tick outside the take read the ready reply.
+			name:        "ready",
+			beforeClose: func(f *takeFixture) { f.archive.pending[1] = 0 },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	f.agent.CloseSnapshotTake()
-	f.agent.CloseSnapshotTake()
-	require.Equal(t, []int64{1}, f.archive.cancels)
-	f.requireCleanedUp(t)
-	_, ok := f.agent.LastSnapshotTake()
-	require.False(t, ok)
-	require.False(t, f.agent.HasPendingSnapshotAction())
+			f := newTakeLeader(t, 1)
+			f.archive.addPendingPolls = 100
+			position := f.request(t, 100)
+			f.ack(t, position, 0, 77, 0)
+			f.agent.DoWork(101)
+			require.Equal(t, takeAddingPublication, f.state(t))
+			if tt.beforeClose != nil {
+				tt.beforeClose(f)
+			}
+
+			f.agent.CloseSnapshotTake()
+			f.agent.CloseSnapshotTake()
+			require.Equal(t, tt.wantCancels, f.archive.cancels)
+			f.requireCleanedUp(t)
+			_, ok := f.agent.LastSnapshotTake()
+			require.False(t, ok)
+			require.False(t, f.agent.HasPendingSnapshotAction())
+		})
+	}
 }
 
 func TestSnapshotTake_repeatTake(t *testing.T) {

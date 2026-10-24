@@ -432,7 +432,11 @@ func (a *Agent) failSnapshotTake(cause error) {
 }
 
 // closeSnapshotTake cancels or closes everything the take owns. The archive
-// then stops a started recording through autoStop. Marks no entry.
+// then stops a started recording through autoStop. Does not mark an entry.
+//
+// closeSnapshotTake polls a pending add once before a cancel. A ready poll
+// closes the publication instead. A conductor tick outside the take can read
+// the ready reply, and CancelPending alone then leaks that publication.
 func (a *Agent) closeSnapshotTake() {
 	take := a.take
 	if take == nil {
@@ -440,7 +444,15 @@ func (a *Agent) closeSnapshotTake() {
 	}
 	a.take = nil
 	if take.addPending {
-		a.snapshotPublications.CancelPending(take.addCorrelationID)
+		publication, done, err := a.snapshotPublications.PollAddExclusivePublication(
+			take.addCorrelationID,
+		)
+		ready := err == nil && done && publication != nil
+		if ready {
+			_ = publication.Close()
+		} else {
+			a.snapshotPublications.CancelPending(take.addCorrelationID)
+		}
 	}
 	if take.start != nil {
 		take.start.Close()
