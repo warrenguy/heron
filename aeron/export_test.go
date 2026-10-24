@@ -339,12 +339,9 @@ func offerWithOffsetRetry(
 	offset int,
 	length int,
 ) int64 {
-	for {
-		position := pub.OfferWithOffset(buffer, offset, length)
-		if position != AdminAction {
-			return position
-		}
-	}
+	return RetryOnAdminActionForTest(func() int64 {
+		return pub.OfferWithOffset(buffer, offset, length)
+	})
 }
 
 func OfferWithOffsetRetryForTest(
@@ -354,6 +351,17 @@ func OfferWithOffsetRetryForTest(
 	length int,
 ) int64 {
 	return offerWithOffsetRetry(pub, buffer, offset, length)
+}
+
+// RetryOnAdminActionForTest calls offer until it returns a code other than
+// AdminAction. offer does not escape, so a closure stays on the caller stack.
+func RetryOnAdminActionForTest(offer func() int64) int64 {
+	for {
+		position := offer()
+		if position != AdminAction {
+			return position
+		}
+	}
 }
 
 type tryClaimRetrySource interface {
@@ -561,6 +569,11 @@ func ExclusivePublicationActiveTermBufferForTest(
 	return publicationActiveTermBufferForTest(ep.meta, ep.termBuffers)
 }
 
+// TermBufferForTest returns the term buffer of partition index.
+func (ep *ExclusivePublication) TermBufferForTest(index int) atomicbuffer.AtomicBuffer {
+	return publicationTermBufferForTest(ep.termBuffers, index)
+}
+
 func ExclusivePublicationTermBufferForTest(
 	ep *ExclusivePublication,
 	index int,
@@ -690,6 +703,11 @@ func NewTestCountersReaderMismatchedChannelStatusForTest(
 
 func PublicationActiveTermBufferForTest(pub *Publication) (int, atomicbuffer.AtomicBuffer) {
 	return publicationActiveTermBufferForTest(pub.meta, pub.termBuffers)
+}
+
+// TermBufferForTest returns the term buffer of partition index.
+func (pub *Publication) TermBufferForTest(index int) atomicbuffer.AtomicBuffer {
+	return publicationTermBufferForTest(pub.termBuffers, index)
 }
 
 func PublicationTermBufferForTest(pub *Publication, index int) atomicbuffer.AtomicBuffer {

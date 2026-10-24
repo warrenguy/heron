@@ -193,8 +193,8 @@ func nextFragmentChunk(
 	return chunk
 }
 
-// writeFragmentChunk writes one fragment header, payload, and ordered frame
-// length at frameOffset. payload must be exactly chunk.bytesToWrite long.
+// writeFragmentChunk writes one fragment at frameOffset: header with flags,
+// then the next chunk.bytesToWrite payload bytes through commitOfferFrame.
 //
 // The caller owns the term reservation and advances frameOffset by
 // chunk.alignedLength.
@@ -204,7 +204,8 @@ func writeFragmentChunk(
 	termID int32,
 	frameOffset int,
 	chunk fragmentChunk,
-	payload []byte,
+	payload *offerPayload,
+	supplier ReservedValueSupplier,
 ) {
 	headerWriter.WriteWithFlags(
 		termBuf,
@@ -213,8 +214,8 @@ func writeFragmentChunk(
 		termID,
 		chunk.flags,
 	)
-	termBuf.PutBytes(frameOffset+logbuffer.OffsetFramePayload, payload)
-	logbuffer.PutFrameLengthOrdered(termBuf, frameOffset, chunk.frameLength)
+	frameEnd := frameOffset + int(chunk.frameLength)
+	commitOfferFrame(termBuf.Bytes()[frameOffset:frameEnd:frameEnd], payload, supplier)
 }
 
 func commitPublicationTermPadding(

@@ -584,8 +584,8 @@ func TestExclusivePublication_OfferWithOffset_closedBeforeBounds(t *testing.T) {
 	)
 	require.NoError(t, ep.Close())
 
-	got := ep.OfferWithOffset([]byte{1}, 99, 1)
-	require.Equal(t, aeron.Closed, got)
+	require.Equal(t, aeron.Closed, ep.OfferWithOffset([]byte{1}, 99, 1))
+	require.Equal(t, aeron.Closed, ep.OfferWithReservedValue([]byte{1}, 99, 1, nil))
 }
 
 func TestExclusivePublication_OfferWithOffset_invalidBounds(t *testing.T) {
@@ -615,10 +615,17 @@ func TestExclusivePublication_OfferWithOffset_invalidBounds(t *testing.T) {
 			fmt.Sprintf("aeron: invalid offer offset=1 length=%d buffer=3", math.MaxInt),
 		},
 	}
+	supplier := func([]byte) int64 {
+		require.Fail(t, "supplier called on invalid bounds")
+		return 0
+	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			require.PanicsWithValue(t, tc.panic, func() {
 				ep.OfferWithOffset(buf, tc.offset, tc.length)
+			})
+			require.PanicsWithValue(t, tc.panic, func() {
+				ep.OfferWithReservedValue(buf, tc.offset, tc.length, supplier)
 			})
 		})
 	}

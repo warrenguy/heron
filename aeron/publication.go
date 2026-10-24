@@ -12,8 +12,9 @@ import (
 
 // Publication is a concurrent IPC publisher over a driver-mapped log buffer.
 //
-// Offer, TryClaim, Commit, Abort, and read accessors are safe for concurrent
-// use. Close is idempotent but must not be invoked concurrently from multiple
+// Offer, OfferWithOffset, OfferWithReservedValue, OfferTwoParts, OfferVector,
+// TryClaim, Commit, Abort, and read accessors are safe for concurrent use.
+// Close is idempotent but must not be invoked concurrently from multiple
 // goroutines.
 //
 // Close tears down this registration via the bound conductor when present.
@@ -156,6 +157,7 @@ func (pub *Publication) Offer(buffer []byte) int64 {
 }
 
 // OfferWithOffset publishes length bytes from buffer[offset:offset+length].
+// It is OfferWithReservedValue with a nil supplier.
 //
 // Negative length or invalid offset/length bounds panic (Java IllegalArgumentException).
 //
@@ -166,7 +168,8 @@ func (pub *Publication) Offer(buffer []byte) int64 {
 //
 // See also PositionCodeName, IsOfferRetriable.
 func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64 {
-	// The unfragmented success path does not call a helper.
+	// The unfragmented success path does not call a helper. It repeats the
+	// offerMessage reservation. A change to one must change the other.
 	//
 	// Volatile read order: limit, active term count, partition raw tail, as in
 	// Java ConcurrentPublication. The tail read and the FAA stay in one
@@ -186,7 +189,9 @@ func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64
 		if length > pub.maxMessageLength {
 			return UnsupportedMessageLength
 		}
-		return pub.appendFragmentedMessage(buffer, offset, length)
+		parts := [1][]byte{buffer[offset:][:length]}
+		payload := newOfferPayload(parts[:])
+		return pub.appendFragmentedMessage(&payload, nil)
 	}
 
 	limit := pub.publicationLimit.Get()
@@ -249,6 +254,169 @@ func (pub *Publication) OfferWithOffset(buffer []byte, offset, length int) int64
 	pub.headerWriter.WriteHeader(frame, termOffset, frameLength, termID)
 	copy(frame[logbuffer.DataHeaderLength:], payload)
 	atomicbuffer.Wrap(frame).PutInt32Release(logbuffer.OffsetFrameLength, frameLength)
+
+	return position
+}
+
+// OfferWithReservedValue publishes length bytes from
+// buffer[offset:offset+length]. A non-nil supplier sets the reserved value of
+// each DATA frame. Matches Java Publication.offer with a
+// ReservedValueSupplier.
+//
+// Behaviour:
+//   - A closed publication returns Closed and does not call the supplier.
+//   - Negative length or invalid offset/length bounds panic (Java
+//     IllegalArgumentException).
+//   - Frames, length rule and return codes match OfferWithOffset.
+//   - A nil supplier does not write the reserved value field.
+func (pub *Publication) OfferWithReservedValue(
+	buffer []byte,
+	offset int,
+	length int,
+	supplier ReservedValueSupplier,
+) int64 {
+	// The unsigned compares reject negative values too. A closed publication
+	// returns Closed before the bounds panic. offerMessage runs the closed
+	// check once the bounds pass.
+	if uint(offset) > uint(len(buffer)) || uint(length) > uint(len(buffer[offset:])) {
+		if pub.IsClosed() {
+			return Closed
+		}
+		panic(invalidOfferSliceMessage(offset, length, len(buffer)))
+	}
+
+	parts := [1][]byte{buffer[offset:][:length]}
+	payload := newOfferPayload(parts[:])
+	return pub.offerMessage(&payload, supplier)
+}
+
+// OfferTwoParts publishes first then second as one message. Matches
+// Java Publication.offer with two buffers.
+//
+// Behaviour:
+//   - A closed publication returns Closed and does not call the supplier.
+//   - Frames, length rule and return codes match OfferWithOffset of the
+//     concatenated payload.
+//   - A non-nil supplier sets the reserved value of each DATA frame. See
+//     ReservedValueSupplier.
+func (pub *Publication) OfferTwoParts(
+	first []byte,
+	second []byte,
+	supplier ReservedValueSupplier,
+) int64 {
+	parts := [2][]byte{first, second}
+	payload := newOfferPayload(parts[:])
+	return pub.offerMessage(&payload, supplier)
+}
+
+// OfferVector publishes the concatenation of vectors as one message. Matches
+// Java Publication.offer with a DirectBufferVector array.
+//
+// Behaviour:
+//   - A closed publication returns Closed and does not call the supplier.
+//   - Nil and empty entries do not add bytes. A nil or empty vectors slice
+//     offers an empty message.
+//   - Frames, length rule and return codes match OfferWithOffset of the
+//     concatenated payload.
+//   - A non-nil supplier sets the reserved value of each DATA frame. See
+//     ReservedValueSupplier.
+//
+// OfferVector does not retain vectors. A caller may pass a slice of a stack
+// array.
+func (pub *Publication) OfferVector(vectors [][]byte, supplier ReservedValueSupplier) int64 {
+	payload := newOfferPayload(vectors)
+	return pub.offerMessage(&payload, supplier)
+}
+
+// offerMessage publishes payload for OfferWithReservedValue, OfferTwoParts
+// and OfferVector. A closed publication returns Closed and does not call
+// the supplier.
+func (pub *Publication) offerMessage(payload *offerPayload, supplier ReservedValueSupplier) int64 {
+	// Repeats the OfferWithOffset reservation and its volatile read order. A
+	// change to one must change the other.
+	//
+	// The unfragmented success path calls only runtime.memmove for a frame
+	// that one part fills without a supplier. The remaining frames go
+	// through commitOfferFrame.
+	if pub.IsClosed() {
+		return Closed
+	}
+
+	length := payload.length
+	if length > pub.maxPayloadLength {
+		if length > pub.maxMessageLength {
+			return UnsupportedMessageLength
+		}
+		return pub.appendFragmentedMessage(payload, supplier)
+	}
+
+	limit := pub.publicationLimit.Get()
+
+	alignedLength := logbuffer.AlignFragmentChunkLength(length)
+	termLength := pub.termBufferLength
+
+	termCount := atomic.LoadInt32(pub.activeTermCount)
+	termIndex := logbuffer.IndexByTermCount(termCount)
+	tailCounter := pub.tailCounters[termIndex]
+
+	rawTail := atomic.LoadInt64(tailCounter)
+	termID := logbuffer.TermID(rawTail)
+	termOffset := int(logbuffer.TermOffset(rawTail, termLength))
+
+	if termCount != logbuffer.ComputeTermCount(termID, pub.initialTermID) {
+		return AdminAction
+	}
+
+	position := logbuffer.ComputePosition(
+		termID,
+		termOffset,
+		pub.positionBitsToShift,
+		pub.initialTermID,
+	)
+	if position >= limit {
+		return backPressureStatus(pub, position, int64(length))
+	}
+	if position+int64(alignedLength) >= pub.maxPossiblePosition {
+		return MaxPositionExceeded
+	}
+
+	rawTail = atomic.AddInt64(tailCounter, int64(alignedLength)) - int64(alignedLength)
+	termID = logbuffer.TermID(rawTail)
+	termOffset = int(logbuffer.TermOffset(rawTail, termLength))
+
+	resultingOffset := termOffset + alignedLength
+	position = logbuffer.ComputePosition(
+		termID,
+		resultingOffset,
+		pub.positionBitsToShift,
+		pub.initialTermID,
+	)
+	if resultingOffset > termLength {
+		return pub.handleEndOfLog(
+			pub.termBuffers[termIndex],
+			termLength,
+			termID,
+			termOffset,
+			position,
+		)
+	}
+
+	// One slice check covers every header and payload store below.
+	frameLength := dataFrameLength(length)
+	frameEnd := termOffset + int(frameLength)
+	frame := pub.termBuffers[termIndex].Bytes()[termOffset:frameEnd:frameEnd]
+
+	pub.headerWriter.WriteHeader(frame, termOffset, frameLength, termID)
+	body := frame[logbuffer.DataHeaderLength:]
+	firstPartFillsFrame := len(body) <= len(payload.first)
+	if supplier != nil || !firstPartFillsFrame {
+		commitOfferFrame(frame, payload, supplier)
+	} else {
+		// One part fills the frame without a supplier, so the commit stays
+		// inline. The message ends here, so the cursor does not advance.
+		copy(body, payload.first)
+		atomicbuffer.Wrap(frame).PutInt32Release(logbuffer.OffsetFrameLength, frameLength)
+	}
 
 	return position
 }
@@ -527,8 +695,8 @@ func (pub *Publication) markClosed() error {
 }
 
 // invalidOfferSliceMessage returns the panic message for the first invalid
-// offer argument. OfferWithOffset calls it only after its bounds compare
-// fails, so one of the checks below always holds.
+// offer argument. OfferWithOffset and OfferWithReservedValue call it only
+// after their bounds compare fails, so one of the checks below always holds.
 func invalidOfferSliceMessage(offset, length, bufferLength int) string {
 	if length < 0 {
 		return fmt.Sprintf("aeron: invalid message length=%d", length)
@@ -650,10 +818,14 @@ func (pub *Publication) reserveFragmentedSpan(
 	return termOffset, termID, position, 0
 }
 
-func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length int) int64 {
+func (pub *Publication) appendFragmentedMessage(
+	payload *offerPayload,
+	supplier ReservedValueSupplier,
+) int64 {
 	// One FAA reserves the full framed span, as in Java
 	// ConcurrentPublication.appendFragmentedMessage. The fragment writes do not
 	// touch the tail counter again.
+	length := payload.length
 	framedLength := logbuffer.ComputeFragmentedFrameLength(length, pub.maxPayloadLength)
 	termIndex, tailOffset, status := pub.runOfferPrelude(framedLength, length)
 	if status != 0 {
@@ -687,7 +859,6 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 	// must fill that span on termBuf.
 	for remaining > 0 {
 		chunk := nextFragmentChunk(remaining, length, pub.maxPayloadLength, fullChunkAligned)
-		payloadOffset := srcOffset + (length - remaining)
 
 		trackFragmentedWrite(pub, termID, frameOffset, true)
 
@@ -697,7 +868,8 @@ func (pub *Publication) appendFragmentedMessage(buffer []byte, srcOffset, length
 			termID,
 			frameOffset,
 			chunk,
-			buffer[payloadOffset:payloadOffset+chunk.bytesToWrite],
+			payload,
+			supplier,
 		)
 
 		trackFragmentedWrite(pub, termID, frameOffset, false)

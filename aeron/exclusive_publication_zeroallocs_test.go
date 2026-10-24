@@ -37,6 +37,42 @@ func TestExclusivePublication_Offer_ZeroAllocs(t *testing.T) {
 			},
 		},
 		{
+			name: "OfferWithReservedValue",
+			fn: func(ep *aeron.ExclusivePublication) {
+				exclusivePubSink = aeron.RetryOnAdminActionForTest(func() int64 {
+					return ep.OfferWithReservedValue(
+						testOfferPayload[:],
+						0,
+						len(testOfferPayload),
+						testReservedValueSupplier,
+					)
+				})
+			},
+		},
+		{
+			name: "OfferTwoParts",
+			fn: func(ep *aeron.ExclusivePublication) {
+				// payload is a stack copy. The row fails if a part escapes.
+				payload := testOfferPayload
+				exclusivePubSink = aeron.RetryOnAdminActionForTest(func() int64 {
+					return ep.OfferTwoParts(payload[:8], payload[8:], nil)
+				})
+			},
+		},
+		{
+			name: "OfferVector_fragmented",
+			fn: func(ep *aeron.ExclusivePublication) {
+				parts := [3][]byte{
+					testFragmentedOfferPayload[:8],
+					testFragmentedOfferPayload[8:1400],
+					testFragmentedOfferPayload[1400:],
+				}
+				exclusivePubSink = aeron.RetryOnAdminActionForTest(func() int64 {
+					return ep.OfferVector(parts[:], testReservedValueSupplier)
+				})
+			},
+		},
+		{
 			name: "TryClaim_Commit",
 			fn: func(ep *aeron.ExclusivePublication) {
 				termIndex, frameOffset, position, err := aeron.TryClaimRetryForTest(ep, 64)
