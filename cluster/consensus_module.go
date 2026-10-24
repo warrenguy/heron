@@ -190,8 +190,8 @@ type ConsensusModule struct {
 // bounds. The wait ends ControlResponseTimeout after the stop reply. The wait
 // checks that deadline only between lists. ctx bounds every step.
 //
-// Open every member's Archive before opening any member. Keep
-// Config.AeronConfig.InterServiceTimeout above the total connect cost.
+// Open every member's Archive before opening any member. Keep the total
+// connect cost below each member's Client.InterServiceTimeout.
 //
 // On error every handle opened so far is closed, the cluster directory lock is
 // released, and the returned value is nil.

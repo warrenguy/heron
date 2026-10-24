@@ -1203,6 +1203,10 @@ func ValidateConnectConfigForTest(cfg Config) error {
 	return validateConnectConfig(cfg)
 }
 
+func ResolveInterServiceTimeoutForTest(cfg Config, metadata cnc.Metadata) (time.Duration, error) {
+	return resolveInterServiceTimeout(cfg, metadata)
+}
+
 func (client *Client) SetCloseLingerDurationForTest(duration time.Duration) {
 	conductorInstance := client.conductorForTest()
 	if conductorInstance == nil {

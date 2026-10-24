@@ -82,8 +82,9 @@ type connectWireState struct {
 // Config.Aeron set, the caller ticks that client between Poll calls.
 // OwnsAeronClient reports which case applies.
 //
-// A gap between Poll calls longer than AeronConfig.InterServiceTimeout
-// terminates a connect-owned client.
+// A gap between Poll calls longer than the connect-owned client's resolved
+// InterServiceTimeout terminates that client. aeron.Client.InterServiceTimeout
+// reports the resolved value.
 //
 // Concurrency: Poll and Close are invoker-only. With Config.Aeron set, the
 // invoker is the duty cycle that ticks that client. Poll must not run inside

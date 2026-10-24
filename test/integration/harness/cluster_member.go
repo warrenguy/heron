@@ -420,7 +420,6 @@ func MemberClusterConfig(
 		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
 		Election:                      IntegrationElectionConfig(),
 		AeronConfig: aeron.Config{
-			InterServiceTimeout: ConnectedPollTimeout,
 			CloseLingerDuration: defaultClusterMemberCloseLinger,
 		},
 	}

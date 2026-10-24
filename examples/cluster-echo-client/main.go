@@ -46,8 +46,7 @@ func main() {
 	//
 	// ErrorHandler logs asynchronous driver faults not returned by the calls below.
 	transport, err := aeron.Connect(ctx, aeron.Config{
-		AeronDir:            aeronDir,
-		InterServiceTimeout: 10 * time.Second,
+		AeronDir: aeronDir,
 		ErrorHandler: func(err error) {
 			log.Printf("cluster-echo-client: aeron error: %v", err)
 		},

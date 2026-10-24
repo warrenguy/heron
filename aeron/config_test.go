@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 )
 
 func TestNormalizeConfig_defaults(t *testing.T) {
@@ -14,7 +15,7 @@ func TestNormalizeConfig_defaults(t *testing.T) {
 
 	require.Equal(t, 10*time.Second, normalized.DriverTimeout)
 	require.Equal(t, 500*time.Millisecond, normalized.KeepAliveInterval)
-	require.Equal(t, time.Second, normalized.InterServiceTimeout)
+	require.Zero(t, normalized.InterServiceTimeout)
 	require.Equal(t, 16*time.Millisecond, normalized.IdleSleepDuration)
 	require.Equal(t, 3*time.Second, normalized.CloseLingerDuration)
 	require.Equal(t, 10*time.Second, normalized.PollTimeout)
@@ -65,4 +66,58 @@ func TestNormalizeConfig_preservesExplicitValues(t *testing.T) {
 	require.Equal(t, epochMs, normalized.EpochClock())
 	require.Equal(t, nanoNs, normalized.NanoClock())
 	require.False(t, normalized.UseConductorInvokerEnabledForTest())
+}
+
+func TestResolveInterServiceTimeout(t *testing.T) {
+	tests := []struct {
+		name                string
+		interServiceTimeout time.Duration
+		livenessTimeout     time.Duration
+		want                time.Duration
+		wantErr             string
+	}{
+		{
+			name:            "zero takes the driver value",
+			livenessTimeout: 10 * time.Second,
+			want:            10 * time.Second,
+		},
+		{
+			name:                "explicit value wins",
+			interServiceTimeout: 2 * time.Second,
+			livenessTimeout:     10 * time.Second,
+			want:                2 * time.Second,
+		},
+		{
+			name:            "driver value equal to keepalive interval fails",
+			livenessTimeout: 500 * time.Millisecond,
+			wantErr: "aeron: driver client liveness timeout 500ms must exceed " +
+				"KeepAliveInterval 500ms",
+		},
+		{
+			name:            "zero driver value fails",
+			livenessTimeout: 0,
+			wantErr: "aeron: driver client liveness timeout 0s must exceed " +
+				"KeepAliveInterval 500ms",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg := aeron.NormalizeConfigForTest(aeron.Config{
+				AeronDir:            "unused",
+				InterServiceTimeout: testCase.interServiceTimeout,
+			})
+			metadata := cnc.Metadata{
+				ClientLivenessTimeoutNs: testCase.livenessTimeout.Nanoseconds(),
+			}
+
+			resolved, err := aeron.ResolveInterServiceTimeoutForTest(cfg, metadata)
+			if testCase.wantErr != "" {
+				require.EqualError(t, err, testCase.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, testCase.want, resolved)
+		})
+	}
 }

@@ -86,7 +86,6 @@ func buildMixedJavaLeaderConfig(t *testing.T) cluster.Config {
 		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
 		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
 		AeronConfig: aeron.Config{
-			InterServiceTimeout: harness.ConnectedPollTimeout,
 			CloseLingerDuration: mixedMemberCloseLinger,
 		},
 	}
@@ -113,7 +112,6 @@ func buildMixedGoLeaderConfig(t *testing.T) cluster.Config {
 		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
 		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
 		AeronConfig: aeron.Config{
-			InterServiceTimeout: harness.ConnectedPollTimeout,
 			CloseLingerDuration: mixedMemberCloseLinger,
 		},
 	}
