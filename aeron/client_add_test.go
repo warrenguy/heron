@@ -544,8 +544,14 @@ func decodeCorrelatedCorrelationID(
 }
 
 const (
-	clientConcurrentResultTimeout      = 2 * time.Second
-	concurrentAwaitHammerCheckDuration = 20 * time.Millisecond
+	clientConcurrentResultTimeout = 2 * time.Second
+	// clientAddReadsBeforeFirstServiceTick counts the test clock reads before an
+	// add's first conductor service tick: the conductor seed, the pending
+	// deadline, the offer deadline, the offer loop check, the client seed, then
+	// the tick. A test that advances the clock after this count knows the
+	// client seeded its service timestamps at the start value.
+	clientAddReadsBeforeFirstServiceTick = 6
+	concurrentAwaitHammerCheckDuration   = 20 * time.Millisecond
 )
 
 func requireErrClientClosed(t *testing.T, err error) {
@@ -1438,7 +1444,7 @@ func TestClient_AddPublicationKind_terminationDuringOfferRetry(t *testing.T) {
 
 			resultCh := startClientAddAsync(client, testCase.add)
 
-			waitForClientAddClockReads(t, clock, 4)
+			waitForClientAddClockReads(t, clock, clientAddReadsBeforeFirstServiceTick)
 			requireAddCommandNotOnRing(t, fixture, testCase.addMsgType)
 
 			correlationID := fixture.Conductor.ActiveCorrelationID()
@@ -1481,7 +1487,7 @@ func TestClient_AddSubscription_terminationDuringOfferRetry(t *testing.T) {
 		return client.AddSubscription(clientAddStreamID, clientAddChannel)
 	})
 
-	waitForClientAddClockReads(t, clock, 4)
+	waitForClientAddClockReads(t, clock, clientAddReadsBeforeFirstServiceTick)
 	requireAddCommandNotOnRing(t, fixture, conductor.AddSubscription)
 
 	correlationID := fixture.Conductor.ActiveCorrelationID()
