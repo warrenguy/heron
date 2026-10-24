@@ -5,8 +5,9 @@ package conductor
 // It is not reentrant on the same goroutine unless resourceMu was suspended first
 // (image handlers only); nested calls deadlock.
 //
-// Hooks and tests must run off-agent or from image handlers after
-// suspendResourceWriteLock unlocks resourceMu.
+// Hooks and tests must run off-agent, from image handlers after
+// suspendResourceWriteLock unlocks resourceMu, or from ErrorHandler, which
+// the conductor calls after the unlock.
 //
 // resourceWriteLockDepth is a held flag (0 or 1) for suspend/resume bookkeeping,
 // not a nested-scope counter; suspendResourceWriteLock saves it and unlocks,

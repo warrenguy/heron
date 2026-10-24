@@ -55,31 +55,28 @@ func (conductor *Conductor) subscriptionForImageEvent(
 }
 
 func (conductor *Conductor) handleAvailableImage(event AvailableImage) {
-	conductor.underResourceWriteLock(func() {
+	err := underResourceWriteLockResult(conductor, func() error {
 		sub, ok := conductor.subscriptionForImageEvent(event.SubscriptionRegistrationID)
 		if !ok {
-			return
+			return nil
 		}
 
 		if conductor.imageLifecycle.HasImage(sub, event.CorrelationID) {
-			return
+			return nil
 		}
 
 		if conductor.config.MediaDriverDir == "" {
-			invokeErrorHandler(conductor.config.ErrorHandler, ErrMediaDriverDirRequired)
-			return
+			return ErrMediaDriverDirRequired
 		}
 
 		resolvedLogFileKey, err := conductor.logBuffersRegistry.resolveLogFileKey(event.LogFileName)
 		if err != nil {
-			invokeErrorHandler(conductor.config.ErrorHandler, err)
-			return
+			return err
 		}
 
 		logBuffers, err := conductor.acquireLogBuffersByKey(resolvedLogFileKey)
 		if err != nil {
-			invokeErrorHandler(conductor.config.ErrorHandler, err)
-			return
+			return err
 		}
 
 		event.LogFileName = resolvedLogFileKey
@@ -91,14 +88,14 @@ func (conductor *Conductor) handleAvailableImage(event AvailableImage) {
 			conductor.config.SubscriberErrorHandler,
 		)
 		if err != nil {
-			conductor.releaseAcquiredLogBuffers(resolvedLogFileKey, err)
-			return
+			conductor.releaseLogBuffersByKey(resolvedLogFileKey, 0)
+			return err
 		}
 
 		if !conductor.imageLifecycle.AddImage(sub, image) {
 			conductor.imageLifecycle.CloseImage(image)
-			conductor.releaseAcquiredLogBuffers(resolvedLogFileKey, errImageAttachFailed)
-			return
+			conductor.releaseLogBuffersByKey(resolvedLogFileKey, 0)
+			return errImageAttachFailed
 		}
 
 		if handler := conductor.imageLifecycle.AvailableImageHandler(sub); handler != nil {
@@ -106,27 +103,28 @@ func (conductor *Conductor) handleAvailableImage(event AvailableImage) {
 				handler(image)
 			})
 		}
+		return nil
 	})
+	invokeErrorHandler(conductor.config.ErrorHandler, err)
 }
 
 func (conductor *Conductor) handleUnavailableImage(
 	correlationID, subscriptionRegistrationID int64,
 ) {
-	conductor.underResourceWriteLock(func() {
+	err := underResourceWriteLockResult(conductor, func() error {
 		sub, ok := conductor.subscriptionForImageEvent(subscriptionRegistrationID)
 		if !ok {
-			return
+			return nil
 		}
 
 		image := conductor.imageLifecycle.RemoveImage(sub, correlationID)
 		if image == nil {
-			return
+			return nil
 		}
 
 		conductor.imageLifecycle.CloseImage(image)
 		if !image.IsClosed() {
-			invokeErrorHandler(conductor.config.ErrorHandler, errImageCloseFailedBeforeRelease)
-			return
+			return errImageCloseFailedBeforeRelease
 		}
 		registryKey := image.LogFileName()
 		conductor.releaseLogBuffersByKey(registryKey, conductor.config.CloseLingerNs)
@@ -136,11 +134,8 @@ func (conductor *Conductor) handleUnavailableImage(
 				handler(image)
 			})
 		}
+		return nil
 	})
-}
-
-func (conductor *Conductor) releaseAcquiredLogBuffers(registryKey string, err error) {
-	conductor.releaseLogBuffersByKey(registryKey, 0)
 	invokeErrorHandler(conductor.config.ErrorHandler, err)
 }
 

@@ -16,23 +16,33 @@ func (conductor *Conductor) ClosePublication(publication PublicationHandle) erro
 
 // retirePublication retires the publication under the resource write lock.
 // Does not offer REMOVE_PUBLICATION. A locked-lookup miss marks the handle
-// closed. Returns whether a map entry was retired.
+// closed. Reports a retire error after the unlock. Returns whether it retired
+// a map entry.
 func (conductor *Conductor) retirePublication(publication PublicationHandle) bool {
 	if isAbsentMapValue(publication) {
 		return false
 	}
 
 	registrationID := publication.RegistrationID()
-	var retired bool
-	conductor.underResourceWriteLock(func() {
+	result := underResourceWriteLockResult(conductor, func() retireResult {
 		pub, ok := conductor.publicationByRegID(registrationID)
 		if !ok {
 			conductor.markPublicationClosed(publication)
-			return
+			return retireResult{}
 		}
-		retired = conductor.retirePublicationLocked(pub, registrationID)
+		return retireResult{
+			retired: true,
+			err:     conductor.retirePublicationLocked(pub, registrationID),
+		}
 	})
-	return retired
+	invokeErrorHandler(conductor.config.ErrorHandler, result.err)
+	return result.retired
+}
+
+// retireResult carries a locked retire outcome past the unlock.
+type retireResult struct {
+	retired bool
+	err     error
 }
 
 func (conductor *Conductor) offerDriverCommand(offer func(correlationID int64) error) {
@@ -40,9 +50,7 @@ func (conductor *Conductor) offerDriverCommand(offer func(correlationID int64) e
 		return
 	}
 	correlationID := conductor.driverProxy.NextCorrelationID()
-	if err := offer(correlationID); err != nil {
-		invokeErrorHandler(conductor.config.ErrorHandler, err)
-	}
+	invokeErrorHandler(conductor.config.ErrorHandler, offer(correlationID))
 }
 
 func (conductor *Conductor) offerRemovePublication(registrationID int64) {
@@ -51,25 +59,26 @@ func (conductor *Conductor) offerRemovePublication(registrationID int64) {
 	})
 }
 
+// retirePublicationLocked requires resourceMu write lock. A retire error
+// still marks the handle closed and removes its map entry.
 func (conductor *Conductor) retirePublicationLocked(
 	publication PublicationHandle,
 	registrationID int64,
-) bool {
+) error {
 	if conductor.resourceLifecycle == nil {
 		conductor.removePublication(registrationID)
-		return true
+		return nil
 	}
 
 	registryKey, err := conductor.resourceLifecycle.RetirePublication(publication)
 	if err != nil {
-		invokeErrorHandler(conductor.config.ErrorHandler, err)
 		conductor.resourceLifecycle.MarkPublicationClosed(publication)
 	}
 	conductor.removePublication(registrationID)
 	if registryKey != "" {
 		conductor.releaseLogBuffersByKey(registryKey, conductor.config.CloseLingerNs)
 	}
-	return true
+	return err
 }
 
 // CloseSubscription retires the subscription (mark closed, map remove, image
@@ -88,23 +97,27 @@ func (conductor *Conductor) CloseSubscription(subscription SubscriptionHandle) e
 
 // retireSubscription retires the subscription under the resource write lock.
 // Does not offer REMOVE_SUBSCRIPTION. A locked-lookup miss marks the handle
-// closed. Returns whether a map entry was retired.
+// closed. Reports a retire error after the unlock. Returns whether it retired
+// a map entry.
 func (conductor *Conductor) retireSubscription(subscription SubscriptionHandle) bool {
 	if isAbsentMapValue(subscription) {
 		return false
 	}
 
 	registrationID := subscription.RegistrationID()
-	var retired bool
-	conductor.underResourceWriteLock(func() {
+	result := underResourceWriteLockResult(conductor, func() retireResult {
 		sub, ok := conductor.subscriptionByRegID(registrationID)
 		if !ok {
 			conductor.markSubscriptionClosed(subscription)
-			return
+			return retireResult{}
 		}
-		retired = conductor.retireSubscriptionLocked(sub, registrationID)
+		return retireResult{
+			retired: true,
+			err:     conductor.retireSubscriptionLocked(sub, registrationID),
+		}
 	})
-	return retired
+	invokeErrorHandler(conductor.config.ErrorHandler, result.err)
+	return result.retired
 }
 
 func (conductor *Conductor) offerRemoveSubscription(registrationID int64) {
@@ -113,23 +126,24 @@ func (conductor *Conductor) offerRemoveSubscription(registrationID int64) {
 	})
 }
 
+// retireSubscriptionLocked requires resourceMu write lock. A retire error
+// still marks the handle closed and removes its map entry.
 func (conductor *Conductor) retireSubscriptionLocked(
 	subscription SubscriptionHandle,
 	registrationID int64,
-) bool {
+) error {
 	if conductor.resourceLifecycle == nil {
 		conductor.removeSubscription(registrationID)
-		return true
+		return nil
 	}
 
 	registryKeys, err := conductor.resourceLifecycle.RetireSubscription(subscription)
 	if err != nil {
-		invokeErrorHandler(conductor.config.ErrorHandler, err)
 		conductor.resourceLifecycle.MarkSubscriptionClosed(subscription)
 	}
 	conductor.removeSubscription(registrationID)
 	conductor.releaseLogBuffersByKeys(registryKeys, conductor.config.CloseLingerNs)
-	return true
+	return err
 }
 
 // CloseAllResources closes all publications, then all subscriptions.

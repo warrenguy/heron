@@ -9,6 +9,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
@@ -389,6 +390,74 @@ func TestConductor_handleUnavailableImage_nilLifecycleNoOp(t *testing.T) {
 	triggerGoldenUnavailableImage(t, conductorInstance)
 
 	require.Equal(t, 1, conductorInstance.DoWork())
+}
+
+func TestConductor_errorHandler_runsWithoutResourceWriteLock(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		lifecycle      *recordingImageLifecycle
+		mediaDriverDir string
+		seedLogBuffers bool
+		trigger        func(t *testing.T, conductorInstance *conductor.Conductor)
+		wantErr        string
+	}{
+		{
+			name:      "availableImage",
+			lifecycle: &recordingImageLifecycle{addImageOK: true},
+			trigger:   triggerGoldenAvailableImage,
+			wantErr:   "conductor: media driver directory is required for image lifecycle",
+		},
+		{
+			name: "unavailableImage",
+			lifecycle: &recordingImageLifecycle{
+				skipMarkImageClosed: true,
+				removedLogFileName:  goldenAvailableImageEvent.LogFileName,
+			},
+			mediaDriverDir: "/",
+			seedLogBuffers: true,
+			trigger:        triggerGoldenUnavailableImage,
+			wantErr:        "conductor: image close failed before log buffer release",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				conductorInstance *conductor.Conductor
+				gotErrors         []error
+				foundAtReport     bool
+			)
+			errorHandler := func(err error) {
+				gotErrors = append(gotErrors, err)
+				_, foundAtReport = conductorInstance.SubscriptionByRegID(
+					goldenAvailableImageEvent.SubscriptionRegistrationID,
+				)
+			}
+			config := conductorTestConfig(t, errorHandler, fixedClocks{})
+			config.ImageLifecycle = testCase.lifecycle
+			config.MediaDriverDir = testCase.mediaDriverDir
+			conductorInstance = newConductorForTest(t, config)
+			registerGoldenImageSubscription(conductorInstance)
+			if testCase.seedLogBuffers {
+				seedGoldenAvailableLogBuffers(t, conductorInstance)
+			}
+			testCase.trigger(t, conductorInstance)
+
+			var workCount int
+			testutil.RequireReturnsWithin(t, 2*time.Second, func() {
+				workCount = conductorInstance.DoWork()
+			})
+
+			require.Equal(t, 1, workCount)
+			require.Len(t, gotErrors, 1)
+			require.EqualError(t, gotErrors[0], testCase.wantErr)
+			require.True(t, foundAtReport)
+		})
+	}
 }
 
 func assertImageHandlerPanicRecoveryRestoresLock(
