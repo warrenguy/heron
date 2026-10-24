@@ -79,6 +79,8 @@ type Config struct {
 	NanoClock           NanoClock
 	// ErrorHandler receives conductor faults and recovered panics from image
 	// handlers and PublicationErrorFrameHandler. Nil swallows those errors.
+	// The conductor calls it without holding a resource lock. A retire error
+	// arrives after the conductor closes the handle and removes its map entry.
 	ErrorHandler func(error)
 	// SubscriberErrorHandler is optional; nil swallows subscriber-side errors.
 	SubscriberErrorHandler func(error)
@@ -676,37 +678,37 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 	if conductor.resourceLifecycle == nil {
 		return
 	}
-	conductor.underResourceWriteLock(func() {
+	err := underResourceWriteLockResult(conductor, func() error {
 		switch registration.Kind {
 		case PendingKindAddSubscription:
 			sub, ok := conductor.subscriptionByRegID(registration.CorrelationID)
 			if !ok {
-				return
+				return nil
 			}
 			registryKeys, err := conductor.resourceLifecycle.RetireSubscription(sub)
 			if err != nil {
-				invokeErrorHandler(conductor.config.ErrorHandler, err)
 				conductor.resourceLifecycle.MarkSubscriptionClosed(sub)
 			}
 			for _, registryKey := range registryKeys {
 				conductor.releaseLogBuffersByKey(registryKey, 0)
 			}
 			conductor.removeSubscription(registration.CorrelationID)
+			return err
 
 		case PendingKindAddPublication, PendingKindAddExclusivePublication:
 			pub, ok := conductor.publicationByRegID(registration.CorrelationID)
 			if !ok {
-				return
+				return nil
 			}
 			registryKey, err := conductor.resourceLifecycle.RetirePublication(pub)
 			if err != nil {
-				invokeErrorHandler(conductor.config.ErrorHandler, err)
 				conductor.resourceLifecycle.MarkPublicationClosed(pub)
 			}
 			if registryKey != "" {
 				conductor.releaseLogBuffersByKey(registryKey, 0)
 			}
 			conductor.removePublication(registration.CorrelationID)
+			return err
 
 		case PendingKindOperationSuccess,
 			PendingKindNextSessionID,
@@ -715,7 +717,9 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 			PendingKindAddCounter,
 			PendingKindDestination:
 		}
+		return nil
 	})
+	invokeErrorHandler(conductor.config.ErrorHandler, err)
 }
 
 func (conductor *Conductor) bindPublicationOnInsert(publication PublicationHandle) error {
@@ -829,8 +833,10 @@ func newPublicationForPendingKind(
 	return nil, fmt.Errorf("conductor: pending kind %v is not a publication kind", kind)
 }
 
+// invokeErrorHandler passes err to handler. A nil handler or nil err is a
+// no-op.
 func invokeErrorHandler(handler func(error), err error) {
-	if handler != nil {
+	if handler != nil && err != nil {
 		handler(err)
 	}
 }

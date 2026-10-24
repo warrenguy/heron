@@ -174,6 +174,20 @@ func deliverAvailableImageToClientSubscription(
 ) {
 	tb.Helper()
 
+	transmitAvailableImageToClientSubscription(tb, fixture, logPath, correlationID)
+	require.Equal(tb, 1, client.DoWork())
+}
+
+// transmitAvailableImageToClientSubscription queues an available image event
+// for correlationID. The next DoWork call delivers it.
+func transmitAvailableImageToClientSubscription(
+	tb testing.TB,
+	fixture *testutil.ConductorFixture,
+	logPath string,
+	correlationID int64,
+) {
+	tb.Helper()
+
 	fixture.Conductor.SetCountersReaderForTest(
 		NewTestCountersReaderWithSubscriberPositionForTest(
 			tb,
@@ -191,8 +205,6 @@ func deliverAvailableImageToClientSubscription(
 		conductor.OnAvailableImage,
 		conductor.AvailableImageBytes(event),
 	)
-
-	require.Equal(tb, 1, client.DoWork())
 }
 
 func deliverUnavailableImageToClientSubscription(
@@ -243,6 +255,47 @@ func TestClient_ConfigAvailableImageHandler_invoked(t *testing.T) {
 	require.True(t, sub.IsConnected())
 	require.NotNil(t, attachedImage)
 	requireAvailableImageHandlerIdentity(t, sub, attachedImage)
+}
+
+func TestClient_ErrorHandler_subscriptionLookupOnImageError(t *testing.T) {
+	t.Parallel()
+
+	_, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
+
+	var (
+		client        *Client
+		correlationID int64
+		gotErrors     []error
+		subAtReport   *Subscription
+	)
+	cfg := Config{
+		AeronDir: t.TempDir(),
+		ErrorHandler: func(err error) {
+			gotErrors = append(gotErrors, err)
+			subAtReport, _ = client.Subscription(correlationID)
+		},
+	}
+	client, fixture := newClientAddFixtureWithConfig(t, cfg)
+
+	var err error
+	correlationID, err = client.OfferAddSubscription(
+		conductorImageLifecycleGoldenAvailableImage.StreamID,
+		clientAddChannel,
+	)
+	require.NoError(t, err)
+
+	transmitAvailableImageToClientSubscription(t, fixture, logPath, correlationID)
+
+	var workCount int
+	testutil.RequireReturnsWithin(t, 2*time.Second, func() {
+		workCount = client.DoWork()
+	})
+
+	require.Equal(t, 1, workCount)
+	require.Len(t, gotErrors, 1)
+	require.ErrorIs(t, gotErrors[0], conductor.ErrLogFileOutsideMediaDriverDir)
+	require.NotNil(t, subAtReport)
+	require.Equal(t, correlationID, subAtReport.RegistrationID())
 }
 
 func TestClient_ConfigUnavailableImageHandler_invoked(t *testing.T) {

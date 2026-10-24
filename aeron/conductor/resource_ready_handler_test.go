@@ -11,6 +11,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
@@ -2128,14 +2129,14 @@ func TestConductor_rollbackAddPendingResources_retireFailure_marksClosedAndRemov
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		lifecycle  func(errRetire error) conductor.ResourceLifecycle
-		setup      func(testing.TB, *conductor.Conductor) any
-		teardown   func(*conductor.Conductor)
-		wantErr    error
-		count      func(*conductor.Conductor) int
-		isClosed   func(any) bool
-		assertGone func(testing.TB, *conductor.Conductor)
+		name      string
+		lifecycle func(errRetire error) conductor.ResourceLifecycle
+		setup     func(testing.TB, *conductor.Conductor) any
+		teardown  func(*conductor.Conductor)
+		wantErr   error
+		count     func(*conductor.Conductor) int
+		isClosed  func(any) bool
+		lookup    func(*conductor.Conductor) bool
 	}{
 		{
 			name:      "publication",
@@ -2157,11 +2158,11 @@ func TestConductor_rollbackAddPendingResources_retireFailure_marksClosedAndRemov
 			isClosed: func(handle any) bool {
 				return handle.(*aeron.Publication).IsClosed()
 			},
-			assertGone: func(tb testing.TB, conductorInstance *conductor.Conductor) {
+			lookup: func(conductorInstance *conductor.Conductor) bool {
 				_, ok := conductorInstance.PublicationByRegID(
 					goldenPublicationBuffersReadyEvent.CorrelationID,
 				)
-				require.False(tb, ok)
+				return ok
 			},
 		},
 		{
@@ -2183,11 +2184,11 @@ func TestConductor_rollbackAddPendingResources_retireFailure_marksClosedAndRemov
 			isClosed: func(handle any) bool {
 				return handle.(*aeron.ExclusivePublication).IsClosed()
 			},
-			assertGone: func(tb testing.TB, conductorInstance *conductor.Conductor) {
+			lookup: func(conductorInstance *conductor.Conductor) bool {
 				_, ok := conductorInstance.PublicationByRegID(
 					goldenExclusivePublicationBuffersReadyEvent.CorrelationID,
 				)
-				require.False(tb, ok)
+				return ok
 			},
 		},
 		{
@@ -2215,11 +2216,11 @@ func TestConductor_rollbackAddPendingResources_retireFailure_marksClosedAndRemov
 			isClosed: func(handle any) bool {
 				return handle.(*aeron.Subscription).IsClosed()
 			},
-			assertGone: func(tb testing.TB, conductorInstance *conductor.Conductor) {
+			lookup: func(conductorInstance *conductor.Conductor) bool {
 				_, ok := conductorInstance.SubscriptionByRegID(
 					goldenSubscriptionReadyCorrelationID,
 				)
-				require.False(tb, ok)
+				return ok
 			},
 		},
 	}
@@ -2228,19 +2229,34 @@ func TestConductor_rollbackAddPendingResources_retireFailure_marksClosedAndRemov
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			errorHandler, gotErrors := collectConductorErrors()
+			var (
+				conductorInstance *conductor.Conductor
+				handle            any
+				gotErrors         []error
+				foundAtReport     bool
+				closedAtReport    bool
+			)
+			errorHandler := func(err error) {
+				gotErrors = append(gotErrors, err)
+				foundAtReport = testCase.lookup(conductorInstance)
+				closedAtReport = testCase.isClosed(handle)
+			}
 			config := conductorTestConfig(t, errorHandler, fixedClocks{})
 			config.ResourceLifecycle = testCase.lifecycle(testCase.wantErr)
-			conductorInstance := newConductorForTest(t, config)
+			conductorInstance = newConductorForTest(t, config)
 
-			handle := testCase.setup(t, conductorInstance)
-			testCase.teardown(conductorInstance)
+			handle = testCase.setup(t, conductorInstance)
+			testutil.RequireReturnsWithin(t, 2*time.Second, func() {
+				testCase.teardown(conductorInstance)
+			})
 
-			require.Len(t, *gotErrors, 1)
-			require.ErrorIs(t, (*gotErrors)[0], testCase.wantErr)
+			require.Len(t, gotErrors, 1)
+			require.ErrorIs(t, gotErrors[0], testCase.wantErr)
+			require.False(t, foundAtReport)
+			require.True(t, closedAtReport)
 			require.Equal(t, 0, testCase.count(conductorInstance))
 			require.True(t, testCase.isClosed(handle))
-			testCase.assertGone(t, conductorInstance)
+			require.False(t, testCase.lookup(conductorInstance))
 		})
 	}
 }

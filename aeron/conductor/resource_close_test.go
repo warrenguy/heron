@@ -823,6 +823,11 @@ func TestConductor_CloseResource_zeroLinger_immediateUnmap(t *testing.T) {
 func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testing.T) {
 	t.Parallel()
 
+	publicationFound := func(conductorInstance *conductor.Conductor, registrationID int64) bool {
+		_, ok := conductorInstance.PublicationByRegID(registrationID)
+		return ok
+	}
+
 	tests := []struct {
 		name      string
 		errRetire error
@@ -831,6 +836,7 @@ func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testi
 		close     func(t *testing.T, conductorInstance *conductor.Conductor, handle any) error
 		count     func(conductorInstance *conductor.Conductor) int
 		isClosed  func(handle any) bool
+		lookup    func(conductorInstance *conductor.Conductor, registrationID int64) bool
 	}{
 		{
 			name:      "publication",
@@ -844,6 +850,7 @@ func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testi
 			isClosed: func(handle any) bool {
 				return handle.(*aeron.Publication).IsClosed()
 			},
+			lookup: publicationFound,
 		},
 		{
 			name:      "exclusivePublication",
@@ -857,6 +864,7 @@ func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testi
 			isClosed: func(handle any) bool {
 				return handle.(*aeron.ExclusivePublication).IsClosed()
 			},
+			lookup: publicationFound,
 		},
 		{
 			name:      "subscription",
@@ -878,6 +886,10 @@ func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testi
 			isClosed: func(handle any) bool {
 				return handle.(*aeron.Subscription).IsClosed()
 			},
+			lookup: func(conductorInstance *conductor.Conductor, registrationID int64) bool {
+				_, ok := conductorInstance.SubscriptionByRegID(registrationID)
+				return ok
+			},
 		},
 	}
 
@@ -885,16 +897,35 @@ func TestConductor_CloseResource_retireFailure_marksClosedAndRemovesMap(t *testi
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			errorHandler, gotErrors := collectConductorErrors()
+			var (
+				conductorInstance *conductor.Conductor
+				handle            any
+				registrationID    int64
+				gotErrors         []error
+				foundAtReport     bool
+				closedAtReport    bool
+			)
+			errorHandler := func(err error) {
+				gotErrors = append(gotErrors, err)
+				foundAtReport = testCase.lookup(conductorInstance, registrationID)
+				closedAtReport = testCase.isClosed(handle)
+			}
 			config := conductorTestConfig(t, errorHandler, fixedClocks{})
 			config.ResourceLifecycle = testCase.lifecycle(testCase.errRetire)
-			conductorInstance := newConductorForTest(t, config)
+			conductorInstance = newConductorForTest(t, config)
 
-			handle := testCase.insert(t, conductorInstance)
-			require.NoError(t, testCase.close(t, conductorInstance, handle))
+			handle = testCase.insert(t, conductorInstance)
+			registrationID = handle.(interface{ RegistrationID() int64 }).RegistrationID()
+			var closeErr error
+			testutil.RequireReturnsWithin(t, 2*time.Second, func() {
+				closeErr = testCase.close(t, conductorInstance, handle)
+			})
+			require.NoError(t, closeErr)
 
-			require.Len(t, *gotErrors, 1)
-			require.ErrorIs(t, (*gotErrors)[0], testCase.errRetire)
+			require.Len(t, gotErrors, 1)
+			require.ErrorIs(t, gotErrors[0], testCase.errRetire)
+			require.False(t, foundAtReport)
+			require.True(t, closedAtReport)
 			require.Equal(t, 0, testCase.count(conductorInstance))
 			require.True(t, testCase.isClosed(handle))
 		})
