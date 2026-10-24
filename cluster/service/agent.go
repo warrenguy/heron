@@ -85,8 +85,9 @@ type AgentConfig struct {
 	SnapshotStreamID int32
 
 	// ResponsePublications adds the response publication of each session a
-	// leader opens. Nil is allowed: ClientSession.Offer then returns
-	// aeron.NotConnected. Agent does not own the adder.
+	// leader opens. A leader join with isStartup false adds one for each open
+	// session that holds none. Nil is allowed: ClientSession.Offer then
+	// returns aeron.NotConnected. Agent does not own the adder.
 	ResponsePublications ResponsePublicationAdder
 }
 
@@ -101,7 +102,9 @@ type AgentConfig struct {
 // Lifetime: Agent closes the log subscription in Close. The take closes its
 // snapshot publication and start request when it ends. Close closes both
 // while a take runs. Close ends every in-flight response add and closes
-// every response publication. Agent does not own the aeron.Client.
+// every response publication. Unbind and a non-leader join close every
+// response publication. A leader join with isStartup false re-adds them.
+// Agent does not own the aeron.Client.
 //
 // Ownership: Agent owns the BoundedLogAdapter, the log subscription, and the
 // snapshot publication and start request of a running take. Agent owns the
@@ -182,8 +185,8 @@ type Agent struct {
 	// egressScratch is the reused egress frame buffer.
 	egressScratch []byte
 
-	// egressLeadershipTermID is the egress header leadershipTermId. Starts
-	// at nullValue.
+	// egressLeadershipTermID is the egress header leadershipTermId. Each
+	// NewLeadershipTermEvent writes it. Starts at nullValue.
 	egressLeadershipTermID int64
 
 	logSubscription *aeron.Subscription
@@ -355,17 +358,22 @@ func NewAgent(cfg AgentConfig) *Agent {
 //     on a terminal offer code
 //  6. response add work while responseAdds is non-empty: poll each in-flight
 //     response publication add once
-//  7. join work while pendingJoin is non-nil and no image is bound
+//  7. join work while pendingJoin is non-nil and no image is bound. A bind
+//     runs the join egress rule
 //  8. log poll when the image is bound and CommittedPosition is non-nil. The
 //     poll bound is min(committed, lowest unready request entry position).
 //     While a take runs, the bound also holds at the take action position
-//  9. unbind when zero polled and (image closed or position at maxLogPosition)
+//  9. unbind when zero polled and (image closed or position at maxLogPosition).
+//     Unbind closes every response publication. It resolves or cancels every
+//     in-flight add
 //
 // A take that resolves in step 4 can ack in step 5 of the same tick.
 //
 // Returns the work count: Start, the archive Poll count, each completed take
 // state, control fragments, each sent ack, each in-flight response add poll,
-// each ready response add, each join bind, and each polled fragment.
+// each ready response add, each join bind, and each polled fragment. An add
+// that a bind starts counts when its poll runs. The disconnect polls of an
+// unbind or a non-leader join do not count.
 //
 // Concurrency: invoker-only.
 func (a *Agent) DoWork(nowNs int64) int {
@@ -659,8 +667,8 @@ func (a *Agent) markAckReady(kind coordinationAckKind) *coordinationAck {
 
 // joinWork progresses a pending join when no image is bound.
 //
-// Behaviour: a leader bind clears the closing flag of every session. A
-// follower bind keeps it.
+// Behaviour: a bind runs the join egress rule (joinEgress) after it marks
+// the join ack ready.
 //
 // Returns 1 when the join binds; 0 otherwise. Marks sticky failure on
 // subscription add error or contiguity mismatch.
@@ -705,10 +713,8 @@ func (a *Agent) joinWork() int {
 	a.adapter.SetMaxLogPosition(event.maxLogPosition)
 	a.memberID = event.memberID
 	a.role = event.role
-	if a.role == codecs.RoleLeader {
-		a.resetClosing()
-	}
 	a.markAckReady(ackKindJoin)
+	a.joinEgress(event)
 	a.pendingJoin = nil
 	return 1
 }
@@ -717,8 +723,9 @@ func (a *Agent) joinWork() int {
 // image is closed or at the maxLogPosition cap.
 //
 // Adopts max(image.Position(), logPosition) first so padding consumed without a
-// callback still advances the contiguity position (upstream closeLog rule). Role
-// becomes [codecs.RoleFollower]. Does not close the subscription.
+// callback still advances the contiguity position (upstream closeLog rule).
+// Then disconnects the egress of every session. Role becomes
+// [codecs.RoleFollower]. Does not close the subscription.
 func (a *Agent) maybeUnbind(polled int) {
 	image := a.adapter.Image()
 	if image == nil || polled != 0 {
@@ -733,6 +740,7 @@ func (a *Agent) maybeUnbind(polled int) {
 		a.logPosition = pos
 	}
 	a.adapter.SetImage(nil)
+	a.disconnectEgress()
 	a.role = codecs.RoleFollower
 }
 
@@ -845,6 +853,7 @@ func (a *Agent) handleNewLeadershipTermEvent(
 		a.timeUnit = clusterwire.ClusterTimeUnit_MILLIS
 	}
 	a.appVersion = fields.AppVersion
+	a.egressLeadershipTermID = fields.LeadershipTermID
 	if a.leadershipHandler != nil {
 		a.leadershipHandler.NewLeadershipTermEvent(
 			fields.LeadershipTermID,

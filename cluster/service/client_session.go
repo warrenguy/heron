@@ -48,7 +48,10 @@ type ClientSession interface {
 	//
 	// Behaviour: DoWork resolves the add, not a callback. A callback that
 	// spins on aeron.NotConnected never returns. A closing session still
-	// offers until SessionClose removes it.
+	// offers until SessionClose removes it. A log unbind closes the
+	// publication. A leader join after an election re-adds it. A startup
+	// join does not. Offer returns aeron.NotConnected until that add
+	// completes.
 	Offer(payload []byte) int64
 
 	// Close asks the consensus module to close this session. Same as
@@ -159,9 +162,24 @@ func (a *Agent) CloseClientSession(id int64) bool {
 	return true
 }
 
-// resetClosing clears the closing flag of every open session.
-func (a *Agent) resetClosing() {
+// joinEgress applies the egress rule of the join that bound this tick.
+//
+// Behaviour:
+//   - A non-leader join closes every response publication. It resolves or
+//     cancels every in-flight add. It keeps each closing flag.
+//   - A leader join with isStartup false starts one response publication
+//     add for each open session that holds none.
+//   - A leader join with isStartup true does not start an add.
+//   - A leader join clears the closing flag of every open session.
+func (a *Agent) joinEgress(event *logJoinEvent) {
+	if event.role != codecs.RoleLeader {
+		a.disconnectEgress()
+		return
+	}
 	for _, session := range a.sessionList {
+		if !event.isStartup {
+			a.connectClientSession(session)
+		}
 		session.closing = false
 	}
 }
@@ -254,34 +272,58 @@ func (a *Agent) responseAddWork() int {
 
 // disconnectClientSession ends the in-flight add of session, then closes its
 // publication. Idempotent.
-//
-// The add polls once before any cancel. CancelPending leaves a ready-marked
-// add registered, so the poll collects that publication and closes it. Any
-// other poll result cancels the add.
 func (a *Agent) disconnectClientSession(session *containerClientSession) {
-	if correlationID := session.addCorrelationID; correlationID != nullValue {
-		publication, done, err := a.responsePublications.PollAddPublication(correlationID)
-		if err == nil && done && publication != nil {
-			_ = publication.Close()
-		} else {
-			a.responsePublications.CancelPending(correlationID)
-		}
-		session.addCorrelationID = nullValue
+	if session.addCorrelationID != nullValue {
+		a.endResponseAdd(session)
 		if index := slices.Index(a.responseAdds, session); index >= 0 {
 			a.responseAdds = slices.Delete(a.responseAdds, index, index+1)
 		}
 	}
+	closeResponsePublication(session)
+}
+
+// disconnectEgress ends the in-flight add and closes the response
+// publication of every open session, in id order. It then ends any add left
+// for a session outside the registry. Registry entries stay.
+func (a *Agent) disconnectEgress() {
+	for _, session := range a.sessionList {
+		if session.addCorrelationID != nullValue {
+			a.endResponseAdd(session)
+		}
+		closeResponsePublication(session)
+	}
+	for _, session := range a.responseAdds {
+		if session.addCorrelationID != nullValue {
+			a.endResponseAdd(session)
+		}
+	}
+	clear(a.responseAdds)
+	a.responseAdds = a.responseAdds[:0]
+}
+
+// endResponseAdd ends the in-flight add of session. Clears its correlation
+// id. The caller removes session from responseAdds.
+//
+// The add polls once before any cancel. CancelPending leaves a ready-marked
+// add registered, so the poll collects that publication and closes it. Any
+// other poll result cancels the add.
+func (a *Agent) endResponseAdd(session *containerClientSession) {
+	correlationID := session.addCorrelationID
+	publication, done, err := a.responsePublications.PollAddPublication(correlationID)
+	if err == nil && done && publication != nil {
+		_ = publication.Close()
+	} else {
+		a.responsePublications.CancelPending(correlationID)
+	}
+	session.addCorrelationID = nullValue
+}
+
+// closeResponsePublication closes the response publication of session, if
+// held.
+func closeResponsePublication(session *containerClientSession) {
 	if session.publication != nil {
 		_ = session.publication.Close()
 		session.publication = nil
-	}
-}
-
-// disconnectEgress runs disconnectClientSession on every open session.
-// Registry entries stay.
-func (a *Agent) disconnectEgress() {
-	for _, session := range a.sessionList {
-		a.disconnectClientSession(session)
 	}
 }
 
