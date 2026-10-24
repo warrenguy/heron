@@ -431,6 +431,8 @@ func (m *pollStopModel) poll(script pollStopScript) (done bool, err error) {
 	case script.responded && dirty:
 		m.markStopped(m.stopPos)
 		return true, nil
+	case script.responded:
+		return false, nil
 	}
 	if m.nowNs >= m.deadline {
 		m.clearPending()
