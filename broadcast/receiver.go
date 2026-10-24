@@ -30,8 +30,6 @@ type BroadcastReceiver struct {
 // NewBroadcastReceiver constructs a receiver over buffer.
 //
 // ReceiveNext is not safe for concurrent use.
-//
-// Call Validate before reading TypeID, Length, or payload via the accessors.
 func NewBroadcastReceiver(buffer atomicbuffer.AtomicBuffer) (*BroadcastReceiver, error) {
 	capacity, err := CheckCapacity(buffer.Capacity())
 	if err != nil {
@@ -155,6 +153,9 @@ func (r *BroadcastReceiver) ReceiveNext() bool {
 	return true
 }
 
+// Validate reports whether the record from ReceiveNext is still intact.
+// Read TypeID, Length, and the payload before the call. Trust the reads only
+// when Validate reports true.
 func (r *BroadcastReceiver) Validate() bool {
 	atomicbuffer.AcquireFence()
 	return r.recordValid(r.cursor, r.buffer.GetInt64Acquire(r.tailIntentIndex))

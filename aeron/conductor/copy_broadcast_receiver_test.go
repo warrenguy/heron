@@ -20,22 +20,27 @@ func TestCopyBroadcastReceiver_receiveMessage(t *testing.T) {
 	err := tx.Transmit(testBroadcastMsgTypeID, payload)
 	require.NoError(t, err)
 
-	var (
-		gotTypeID int
-		gotBytes  []byte
-	)
-	count, err := copyReceiver.Receive(func(
-		msgTypeID int,
-		buffer atomicbuffer.AtomicBuffer,
-		offset int,
-		length int,
-	) {
-		gotTypeID = msgTypeID
-		gotBytes = make([]byte, length)
-		copy(gotBytes, buffer.Bytes()[offset:offset+length])
+	gotTypeID, gotBytes := receiveOneCopied(t, copyReceiver)
+	require.Equal(t, testBroadcastMsgTypeID, gotTypeID)
+	require.Equal(t, payload, gotBytes)
+}
+
+func TestCopyBroadcastReceiver_typeIDReadBeforeCopy(t *testing.T) {
+	const lapMsgTypeID = 9
+
+	tx, rx := newCopyBroadcastPair(t)
+	copyReceiver := conductor.NewCopyBroadcastReceiver(rx)
+
+	payload := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	require.NoError(t, tx.Transmit(testBroadcastMsgTypeID, payload))
+
+	// The hook laps the ring over the first header.
+	lapPayload := []byte{90, 91, 92, 93, 94, 95, 96, 97}
+	copyReceiver.SetReceiveValidatedHookForTest(t, func() {
+		fillBroadcastUntilLap(t, tx, lapMsgTypeID, lapPayload, copyBroadcastTestCapacity)
 	})
-	require.NoError(t, err)
-	require.Equal(t, 1, count)
+
+	gotTypeID, gotBytes := receiveOneCopied(t, copyReceiver)
 	require.Equal(t, testBroadcastMsgTypeID, gotTypeID)
 	require.Equal(t, payload, gotBytes)
 }
@@ -112,6 +117,33 @@ func TestCopyBroadcastReceiver_messageTooLong(t *testing.T) {
 }
 
 const testBroadcastMsgTypeID = 7
+
+// receiveOneCopied runs one Receive. Returns the delivered type id and a copy
+// of the body.
+func receiveOneCopied(
+	tb testing.TB,
+	copyReceiver *conductor.CopyBroadcastReceiver,
+) (int, []byte) {
+	tb.Helper()
+
+	var (
+		gotTypeID int
+		gotBytes  []byte
+	)
+	count, err := copyReceiver.Receive(func(
+		msgTypeID int,
+		buffer atomicbuffer.AtomicBuffer,
+		offset int,
+		length int,
+	) {
+		gotTypeID = msgTypeID
+		gotBytes = make([]byte, length)
+		copy(gotBytes, buffer.Bytes()[offset:offset+length])
+	})
+	require.NoError(tb, err)
+	require.Equal(tb, 1, count)
+	return gotTypeID, gotBytes
+}
 
 func newCopyBroadcastBuffer(tb testing.TB) atomicbuffer.AtomicBuffer {
 	tb.Helper()

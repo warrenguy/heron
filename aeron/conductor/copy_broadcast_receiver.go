@@ -49,43 +49,50 @@ func (copyReceiver *CopyBroadcastReceiver) BroadcastReceiver() *broadcast.Broadc
 }
 
 func (copyReceiver *CopyBroadcastReceiver) Receive(handler EventMessageHandler) (int, error) {
-	length, received, err := copyReceiver.pollAndCopy()
+	msgTypeID, length, received, err := copyReceiver.pollAndCopy()
 	if err != nil || !received {
 		return 0, err
 	}
-	return copyReceiver.deliverCopied(handler, length)
+	return copyReceiver.deliverCopied(handler, msgTypeID, length)
 }
 
-func (copyReceiver *CopyBroadcastReceiver) pollAndCopy() (length int, received bool, err error) {
+func (copyReceiver *CopyBroadcastReceiver) pollAndCopy() (
+	msgTypeID, length int,
+	received bool,
+	err error,
+) {
 	receiver := copyReceiver.receiver
 	lastSeenLappedCount := receiver.LappedCount()
 
 	if !receiver.ReceiveNext() {
-		return 0, false, nil
+		return 0, 0, false, nil
 	}
 
 	if lastSeenLappedCount != receiver.LappedCount() {
-		return 0, false, ErrBroadcastLapped
+		return 0, 0, false, ErrBroadcastLapped
 	}
 
 	length = receiver.Length()
 	if length > copyReceiver.scratchLength {
-		return 0, false, ErrBroadcastMessageTooLong
+		return 0, 0, false, ErrBroadcastMessageTooLong
 	}
 
+	// Validate covers only reads that precede it. Read the type id with the body.
+	msgTypeID = receiver.TypeID()
 	copyReceiver.scratch.PutBytesFrom(0, receiver.Buffer(), receiver.Offset(), length)
-	return length, true, nil
+	return msgTypeID, length, true, nil
 }
 
 func (copyReceiver *CopyBroadcastReceiver) deliverCopied(
 	handler EventMessageHandler,
+	msgTypeID int,
 	length int,
 ) (int, error) {
 	if !copyReceiver.receiver.Validate() {
 		return 0, ErrBroadcastLapped
 	}
+	invokeReceiveValidatedHook(copyReceiver)
 
-	msgTypeID := copyReceiver.receiver.TypeID()
 	handler(msgTypeID, copyReceiver.scratch, 0, length)
 	return 1, nil
 }
