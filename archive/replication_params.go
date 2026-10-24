@@ -1,6 +1,16 @@
 package archive
 
-import "github.com/warrenguy/heron/aeron/cnc"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/warrenguy/heron/aeron/cnc"
+)
+
+// ErrInvalidReplicationParams reports ReplicationParams that the client
+// refuses to send. Replicate and AsyncReplicate.TryOffer wrap it and do not
+// offer.
+var ErrInvalidReplicationParams = errors.New("archive: invalid replication params")
 
 // ReplicationParams holds the optional fields of a replicate request.
 //
@@ -35,12 +45,14 @@ type ReplicationParams struct {
 	SubscriptionTagID int64
 
 	// FileIOMaxLength caps each file read of the source archive's replay. -1
-	// uses the source archive's default.
+	// uses the source archive's default. Replicate and AsyncReplicate.TryOffer
+	// refuse 0 and values below -1 with ErrInvalidReplicationParams.
 	FileIOMaxLength int32
 
 	// ReplicationSessionID is the session id of the destination recording.
-	// -1 keeps the session id of the source recording. The archive ignores
-	// the field when LiveDestination is set.
+	// -1 keeps the session id of the source recording. Replicate and
+	// AsyncReplicate.TryOffer refuse a value other than -1 when
+	// LiveDestination is set, with ErrInvalidReplicationParams.
 	ReplicationSessionID int32
 
 	// EncodedCredentials are the credentials the destination archive sends
@@ -64,4 +76,29 @@ func NewReplicationParams() ReplicationParams {
 		FileIOMaxLength:        -1,
 		ReplicationSessionID:   -1,
 	}
+}
+
+// validate reports params that the client refuses to send.
+//
+// Returns an error that wraps ErrInvalidReplicationParams when:
+//   - LiveDestination is set and ReplicationSessionID is not -1
+//   - FileIOMaxLength is 0 or below -1. The archive accepts such a request,
+//     then fails the replication
+func (params ReplicationParams) validate() error {
+	if len(params.LiveDestination) > 0 && params.ReplicationSessionID != -1 {
+		return fmt.Errorf(
+			"%w: live destination with replication session id %d",
+			ErrInvalidReplicationParams,
+			params.ReplicationSessionID,
+		)
+	}
+	fileIOMaxLength := params.FileIOMaxLength
+	if fileIOMaxLength <= 0 && fileIOMaxLength != -1 {
+		return fmt.Errorf(
+			"%w: file IO max length %d, want -1 or above 0",
+			ErrInvalidReplicationParams,
+			fileIOMaxLength,
+		)
+	}
+	return nil
 }

@@ -18,7 +18,7 @@ Measured against the Java stack at the Aeron release pinned in
 | Component | Package | Status | Main gaps |
 |-----------|---------|--------|-----------|
 | Transport client | `aeron` | Functional | Counters, publication MDC destinations, `Image.reject`, block and raw poll, `ChannelUri` builder |
-| Archive client | `archive` | Partial | Recording listing, position queries, replication, `ReplayMerge` |
+| Archive client | `archive` | Partial | Recording listing, position queries, `ReplayMerge` |
 | Cluster client | `cluster/client` | Functional | Controlled egress dispatch, egress listener extensions |
 | Consensus module | `cluster` | Experimental | Snapshots, log replication between members, termination, cluster control, admin requests |
 | Service container | `cluster/service` | Experimental | Egress to clients, snapshots, recovery, termination |
