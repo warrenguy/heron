@@ -747,7 +747,8 @@ func TestControlOfferUntilPositive_contextDeadline(t *testing.T) {
 	t.Run("ctxDeadlineSooner", func(t *testing.T) {
 		harness := aeron.NewAsyncConnectTestHarness(t)
 
-		deadlineCtx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
+		// A shorter deadline can expire before the first offer on a loaded runner.
+		deadlineCtx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 		defer cancel()
 
 		var offerCalls int
