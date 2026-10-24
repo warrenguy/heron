@@ -11,6 +11,7 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/internal/testhook"
 )
 
 func WriteMinimalLogFileForTest(tb testing.TB, path string) {
@@ -134,6 +135,18 @@ func LingerDeadlineNsForTest(registry *LogBuffersRegistry, logFileName string) i
 
 func (conductor *Conductor) SetLingerSweepBlockerForTest(blocker func()) {
 	setLingerSweepBlockerHook(conductor, blocker)
+}
+
+// SetReceiveValidatedHookForTest installs hook on copyReceiver.
+// deliverCopied runs hook after Validate and before the handler.
+//
+// Lifetime: the hook stays set for the rest of tb, including subtests.
+func (copyReceiver *CopyBroadcastReceiver) SetReceiveValidatedHookForTest(
+	tb testing.TB,
+	hook func(),
+) {
+	tb.Helper()
+	testhook.SetForTest(tb, receiveValidatedHooks, copyReceiver, hook)
 }
 
 func (conductor *Conductor) SetCountersReaderForTest(reader *cnc.CountersReader) {
