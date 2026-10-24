@@ -681,6 +681,11 @@ func TestMapConductorError(t *testing.T) {
 			wantSame: true,
 		},
 		{
+			name:     "broadcast lapped",
+			input:    conductor.ErrBroadcastLapped,
+			wantSame: true,
+		},
+		{
 			name:     "pass through",
 			input:    otherErr,
 			wantSame: true,

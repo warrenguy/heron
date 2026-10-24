@@ -19,3 +19,9 @@ func (r *BroadcastReceiver) PendingMessageForTest() (
 	payload = r.buffer.Bytes()[payloadOffset : payloadOffset+bodyLength]
 	return msgTypeID, payload, true
 }
+
+// NextRecordForTest returns the position of the record the next ReceiveNext
+// loads.
+func (r *BroadcastReceiver) NextRecordForTest() int64 {
+	return r.nextRecord
+}

@@ -20,8 +20,8 @@ import (
 // Add await maps registration errors via mapAddPollPendingError and
 // mapAddAwaitError.
 //
-// ErrConductorServiceTimeout, ErrClientTimeout, and HeartbeatCounterClosedError
-// pass through so callers can distinguish them.
+// ErrConductorServiceTimeout, ErrClientTimeout, HeartbeatCounterClosedError,
+// and ErrBroadcastLapped pass through so callers can distinguish them.
 func mapConductorError(err error) error {
 	if err == nil {
 		return nil

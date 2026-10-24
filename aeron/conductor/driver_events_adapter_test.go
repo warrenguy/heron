@@ -21,8 +21,7 @@ func TestDriverEventsAdapter_clientTimeout_matchingClient(t *testing.T) {
 
 	transmitConductorEvent(t, adapter, conductor.OnClientTimeout, testutil.ClientTimeoutPayload(42))
 
-	count := adapter.Receive(conductor.NullCorrelationID, nil)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, nil)
 	require.True(t, timeoutCalled)
 }
 
@@ -41,7 +40,7 @@ func TestDriverEventsAdapter_duplicateClientTimeoutIgnored_adapterLevel(t *testi
 	require.True(t, conductorInstance.IsTerminating())
 
 	transmitConductorEvent(t, adapter, conductor.OnClientTimeout, timeoutPayload)
-	require.Equal(t, 1, adapter.Receive(conductor.NullCorrelationID, nil))
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, nil)
 	require.Len(t, *gotErrors, 1)
 }
 
@@ -56,8 +55,7 @@ func TestDriverEventsAdapter_clientTimeout_otherClient(t *testing.T) {
 
 	transmitConductorEvent(t, adapter, conductor.OnClientTimeout, testutil.ClientTimeoutPayload(99))
 
-	count := adapter.Receive(conductor.NullCorrelationID, nil)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, nil)
 	require.False(t, timeoutCalled)
 }
 
@@ -385,8 +383,7 @@ func TestDriverEventsAdapter_counterReady_foreign(t *testing.T) {
 		conductor.CorrelationAndInt32Bytes(pendingTestCorrelationID, 3),
 	)
 
-	count := adapter.Receive(pendingTestOtherCorrelationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, pendingTestOtherCorrelationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 
 	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
@@ -405,8 +402,7 @@ func TestDriverEventsAdapter_clientTimeout_shortBody(t *testing.T) {
 
 	transmitConductorEvent(t, adapter, conductor.OnClientTimeout, []byte{0x01})
 
-	count := adapter.Receive(conductor.NullCorrelationID, nil)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, nil)
 	require.Equal(t, int64(1), adapter.UnhandledEventCount())
 }
 
@@ -924,8 +920,7 @@ func TestDriverEventsAdapter_publicationReady_matchingCorrelation(t *testing.T) 
 				conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
 			)
 
-			count := adapter.Receive(goldenPublicationReadyCorrelationID, conductorInstance)
-			require.Equal(t, 1, count)
+			receiveOneDriverEvent(t, adapter, goldenPublicationReadyCorrelationID, conductorInstance)
 			require.Zero(t, adapter.UnhandledEventCount())
 
 			require.Equal(
@@ -960,8 +955,7 @@ func TestDriverEventsAdapter_publicationReady_matchingCorrelation_paddedBody(t *
 	)
 	transmitConductorEvent(t, adapter, conductor.OnPublicationReady, payload)
 
-	count := adapter.Receive(goldenPublicationReadyCorrelationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, goldenPublicationReadyCorrelationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 }
 
@@ -989,8 +983,7 @@ func TestDriverEventsAdapter_publicationReady_pendingRegistryOnly(t *testing.T) 
 		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
 	)
 
-	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 
 	require.Equal(
@@ -1040,8 +1033,7 @@ func TestDriverEventsAdapter_publicationReady_unrelatedCorrelation(t *testing.T)
 		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
 	)
 
-	count := adapter.Receive(conductor.NullCorrelationID, nil)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, nil)
 	require.Zero(t, adapter.UnhandledEventCount())
 	require.False(t, handlerCalled)
 }
@@ -1070,8 +1062,7 @@ func TestDriverEventsAdapter_publicationReady_foreignPendingCorrelation(t *testi
 		conductor.PublicationBuffersReadyBytes(goldenPublicationBuffersReadyEvent),
 	)
 
-	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 
 	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
@@ -1113,8 +1104,7 @@ func TestDriverEventsAdapter_subscriptionReady_matchingCorrelation(t *testing.T)
 		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
 	)
 
-	count := adapter.Receive(goldenSubscriptionReadyCorrelationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, goldenSubscriptionReadyCorrelationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 
 	require.Equal(
@@ -1144,8 +1134,7 @@ func TestDriverEventsAdapter_subscriptionReady_unrelatedCorrelation(t *testing.T
 		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
 	)
 
-	count := adapter.Receive(conductor.NullCorrelationID, nil)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, nil)
 	require.Zero(t, adapter.UnhandledEventCount())
 	require.False(t, handlerCalled)
 }
@@ -1173,8 +1162,7 @@ func TestDriverEventsAdapter_subscriptionReady_matchingCorrelation_paddedBody(t 
 	)
 	transmitConductorEvent(t, adapter, conductor.OnSubscriptionReady, payload)
 
-	count := adapter.Receive(goldenSubscriptionReadyCorrelationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, goldenSubscriptionReadyCorrelationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 }
 
@@ -1202,8 +1190,7 @@ func TestDriverEventsAdapter_subscriptionReady_foreignPendingCorrelation(t *test
 		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
 	)
 
-	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 
 	require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
@@ -1233,8 +1220,7 @@ func TestDriverEventsAdapter_subscriptionReady_pendingRegistryOnly(t *testing.T)
 		conductor.SubscriptionReadyBytes(goldenSubscriptionReadyEvent),
 	)
 
-	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 
 	require.Equal(
@@ -1265,8 +1251,7 @@ func TestDriverEventsAdapter_availableImage(t *testing.T) {
 		conductor.AvailableImageBytes(goldenAvailableImageEvent),
 	)
 
-	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 	require.Equal(t, goldenAvailableImageEvent, lifecycle.lastEvent)
 }
@@ -1281,8 +1266,7 @@ func TestDriverEventsAdapter_availableImage_paddedBody(t *testing.T) {
 	)
 	transmitConductorEvent(t, adapter, conductor.OnAvailableImage, payload)
 
-	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 	require.Equal(t, goldenAvailableImageEvent, lifecycle.lastEvent)
 }
@@ -1310,8 +1294,7 @@ func TestDriverEventsAdapter_unavailableImage(t *testing.T) {
 		conductor.UnavailableImageBytes(goldenUnavailableImageEvent),
 	)
 
-	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 	require.True(t, lifecycle.closed)
 	require.Equal(t, goldenUnavailableImageCorrelationID, lifecycle.lastRemovedCorrelationID)
@@ -1332,8 +1315,7 @@ func TestDriverEventsAdapter_unavailableImage_paddedBody(t *testing.T) {
 	)
 	transmitConductorEvent(t, adapter, conductor.OnUnavailableImage, payload)
 
-	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 	require.True(t, lifecycle.closed)
 	require.Equal(
@@ -1431,8 +1413,7 @@ func TestDriverEventsAdapter_publicationError(t *testing.T) {
 				conductor.PublicationErrorBytes(goldenPublicationErrorEvent),
 			)
 
-			count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
-			require.Equal(t, 1, count)
+			receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, conductorInstance)
 			require.Zero(t, adapter.UnhandledEventCount())
 			require.Len(t, frames, tt.wantCalls)
 			for _, frame := range frames {
@@ -1487,8 +1468,7 @@ func TestDriverEventsAdapter_publicationError_handlerReentry(t *testing.T) {
 		conductor.PublicationErrorBytes(goldenPublicationErrorEvent),
 	)
 
-	count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 	require.Equal(t, []bool{true, true}, lookups)
 	require.Equal(t, []error{nil, nil}, closeErrors)
@@ -1524,10 +1504,9 @@ func TestDriverEventsAdapter_unhandledEvent(t *testing.T) {
 		conductor.DriverEventsAdapterHandlers{},
 	)
 
-	transmitConductorEvent(t, adapter, 0xFFFF, []byte{0x01, 0x02})
+	transmitConductorEvent(t, adapter, unknownDriverEventTypeID, []byte{0x01, 0x02})
 
-	count := adapter.Receive(conductor.NullCorrelationID, nil)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, nil)
 	require.Equal(t, int64(1), adapter.UnhandledEventCount())
 }
 
@@ -1541,15 +1520,22 @@ func TestDriverEventsAdapter_broadcastLapped(t *testing.T) {
 
 	scriptBroadcastLap(t, adapter)
 
-	count := adapter.Receive(conductor.NullCorrelationID, nil)
+	count, err := adapter.Receive(conductor.NullCorrelationID, nil)
+	require.ErrorIs(t, err, conductor.ErrBroadcastLapped)
 	require.Zero(t, count)
-	require.True(t, adapter.IsInvalid())
-	require.ErrorIs(t, adapter.InvalidCauseForTest(), conductor.ErrBroadcastLapped)
 
-	count = adapter.Receive(conductor.NullCorrelationID, nil)
-	require.Zero(t, count)
-	require.True(t, adapter.IsInvalid())
-	require.ErrorIs(t, adapter.InvalidCauseForTest(), conductor.ErrBroadcastLapped)
+	// Phase: the next Receive delivers the latest record.
+	count, err = adapter.Receive(conductor.NullCorrelationID, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	require.Equal(t, int64(1), adapter.UnhandledEventCount())
+
+	// Phase: a later transmit follows it.
+	transmitConductorEvent(t, adapter, unknownDriverEventTypeID, []byte{0x01, 0x02})
+	count, err = adapter.Receive(conductor.NullCorrelationID, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	require.Equal(t, int64(2), adapter.UnhandledEventCount())
 }
 
 func TestDriverEventsAdapter_unknownRegistrationHook(t *testing.T) {
@@ -1600,8 +1586,7 @@ func TestDriverEventsAdapter_unknownRegistrationHook(t *testing.T) {
 			}
 			transmitConductorEvent(t, adapter, conductor.OnError, payload)
 
-			count := adapter.Receive(conductor.NullCorrelationID, nil)
-			require.Equal(t, 1, count)
+			receiveOneDriverEvent(t, adapter, conductor.NullCorrelationID, nil)
 			require.Equal(t, int64(1), adapter.UnhandledEventCount())
 			if testCase.wantHook {
 				require.Equal(t, 1, hookCalls)
@@ -1651,6 +1636,19 @@ func newDriverEventsAdapterForTest(
 	)
 }
 
+// receiveOneDriverEvent runs one Receive that must dispatch one event.
+func receiveOneDriverEvent(
+	tb testutil.TB,
+	adapter *conductor.DriverEventsAdapter,
+	activeCorrelationID int64,
+	pending conductor.PendingEventHandler,
+) {
+	tb.Helper()
+	count, err := adapter.Receive(activeCorrelationID, pending)
+	require.NoError(tb, err)
+	require.Equal(tb, 1, count)
+}
+
 func receiveDriverEventForTest(
 	t *testing.T,
 	adapter *conductor.DriverEventsAdapter,
@@ -1659,10 +1657,13 @@ func receiveDriverEventForTest(
 	useNilPending bool,
 ) int {
 	t.Helper()
-	if useNilPending {
-		return adapter.Receive(receiveCorrelationID, nil)
+	var pending conductor.PendingEventHandler
+	if !useNilPending {
+		pending = conductorInstance
 	}
-	return adapter.Receive(receiveCorrelationID, conductorInstance)
+	count, err := adapter.Receive(receiveCorrelationID, pending)
+	require.NoError(t, err)
+	return count
 }
 
 func paddedEventPayload(payload []byte) []byte {
@@ -1693,8 +1694,7 @@ func testDriverEventsAdapterOnReadyWrongAddKind(
 	adapter := conductorInstance.EventsAdapterForTest()
 	transmitConductorEvent(t, adapter, msgTypeID, payload)
 
-	count := adapter.Receive(correlationID, conductorInstance)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, correlationID, conductorInstance)
 	require.Zero(t, adapter.UnhandledEventCount())
 
 	done, registration, err := conductorInstance.PollPending(correlationID)
@@ -1728,7 +1728,6 @@ func testDriverEventsAdapterEventDecodeFailure(
 
 	transmitConductorEvent(t, adapter, msgTypeID, payload)
 
-	count := adapter.Receive(receiveCorrelationID, nil)
-	require.Equal(t, 1, count)
+	receiveOneDriverEvent(t, adapter, receiveCorrelationID, nil)
 	require.Equal(t, int64(1), adapter.UnhandledEventCount())
 }

@@ -3,7 +3,9 @@
 package broadcast_test
 
 import (
+	"encoding/binary"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/broadcast"
+	"github.com/warrenguy/heron/record"
 )
 
 func TestBroadcast_rapid_transmitReceiveOrder(t *testing.T) {
@@ -279,6 +282,55 @@ func TestBroadcast_rapid_validateImpliesReadable(t *testing.T) {
 	})
 }
 
+func TestBroadcast_rapid_tornReadResync(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(t *rapid.T) {
+		capacity := rapidCapacity(t)
+		buf, tx, rx := rapidBroadcastPair(t, capacity)
+		sequence := 0
+
+		// Phase: records before the tear, received in step.
+		inStepCount := rapid.IntRange(0, 32).Draw(t, "inStepCount")
+		for range inStepCount {
+			rapidTransmitSequenced(t, tx, &sequence)
+			rapidReceiveSequenced(t, rx, sequence-1)
+		}
+
+		// Phase: ReceiveNext loads a torn header, then the slot laps.
+		tornLength := rapid.Int32().Draw(t, "tornLength")
+		tornTypeID := rapid.SampledFrom([]int32{
+			broadcast.PaddingMsgTypeID,
+			testMsgTypeID,
+			math.MaxInt32,
+		}).Draw(t, "tornTypeID")
+		rapidTransmitSequenced(t, tx, &sequence)
+		slotPosition := rx.NextRecordForTest()
+		slotOffset := int(slotPosition) & (capacity - 1)
+		buf.PutInt32(record.LengthOffset(slotOffset), tornLength)
+		buf.PutInt32(record.TypeOffset(slotOffset), tornTypeID)
+		require.True(t, rx.ReceiveNext())
+		for buf.GetInt64Volatile(broadcast.TailIntentIndex(capacity)) < slotPosition+int64(capacity) {
+			rapidTransmitSequenced(t, tx, &sequence)
+		}
+		require.False(t, rx.Validate())
+
+		// Phase: Resync resumes at the latest record.
+		lappedCount := rx.LappedCount()
+		rx.Resync()
+		require.Equal(t, lappedCount+1, rx.LappedCount())
+		latestSequence := sequence - 1
+		laterCount := rapid.IntRange(0, min(32, capacity/16-2)).Draw(t, "laterCount")
+		for range laterCount {
+			rapidTransmitSequenced(t, tx, &sequence)
+		}
+		for want := latestSequence; want < sequence; want++ {
+			rapidReceiveSequenced(t, rx, want)
+			require.Equal(t, lappedCount+1, rx.LappedCount())
+		}
+		require.False(t, rx.ReceiveNext())
+	})
+}
+
 func rapidCapacity(t *rapid.T) int {
 	t.Helper()
 	shift := rapid.IntRange(6, 12).Draw(t, "shift")
@@ -365,6 +417,21 @@ func rapidDrainQueueHead(
 		}
 	}
 	return queue, maxLen
+}
+
+// rapidTransmitSequenced transmits one record whose 8-byte body holds
+// sequence, then advances sequence.
+func rapidTransmitSequenced(t *rapid.T, tx *broadcast.BroadcastTransmitter, sequence *int) {
+	t.Helper()
+	rapidTransmit(t, tx, binary.LittleEndian.AppendUint64(nil, uint64(*sequence)))
+	*sequence++
+}
+
+// rapidReceiveSequenced receives one valid record. Requires its body to hold
+// want.
+func rapidReceiveSequenced(t *rapid.T, rx *broadcast.BroadcastReceiver, want int) {
+	t.Helper()
+	rapidReceiveAndAssertPayload(t, rx, binary.LittleEndian.AppendUint64(nil, uint64(want)), want)
 }
 
 func assertTailIntentOrdering(t *rapid.T, ab atomicbuffer.AtomicBuffer, capacity int) {

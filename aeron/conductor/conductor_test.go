@@ -12,6 +12,7 @@ import (
 	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/broadcast"
+	"github.com/warrenguy/heron/record"
 )
 
 const (
@@ -20,6 +21,9 @@ const (
 	conductorTestKeepAliveInterval         = 500 * time.Millisecond
 	conductorTestIdleSleepDuration         = 16 * time.Millisecond
 	conductorTestInterServiceTimeout       = time.Second
+	// unknownDriverEventTypeID matches no driver event, so the adapter marks
+	// the record unhandled.
+	unknownDriverEventTypeID = 0xFFFF
 )
 
 var conductorTestWorkNanoNs = (600 * time.Millisecond).Nanoseconds()
@@ -684,54 +688,81 @@ func TestConductor_duplicateClientTimeoutIgnored_conductorLevel(t *testing.T) {
 }
 
 func TestConductor_broadcastLappedDuringDoWork(t *testing.T) {
-	tests := []struct {
-		name    string
-		reclaim bool
-		wantErr error
-	}{
-		{
-			name:    "probeNegative",
-			wantErr: conductor.ErrBroadcastLapped,
-		},
-		{
-			name:    "reclaimedHeartbeatCounter",
-			reclaim: true,
-			wantErr: conductor.ErrClientTimeout,
-		},
-	}
+	errorHandler, gotErrors := collectConductorErrors()
+	conductorInstance := newConductorForTest(
+		t,
+		conductorTestConfig(t, errorHandler, fixedClocks{nanoNs: 0}),
+	)
+	scriptBroadcastLap(t, conductorInstance.EventsAdapterForTest())
 
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			errorHandler, gotErrors := collectConductorErrors()
-			var conductorInstance *conductor.Conductor
-			if testCase.reclaim {
-				conductorInstance = newConductorWithHeartbeatForProbeTest(t, errorHandler)
-				setReclaimedHeartbeatCountersReader(t, conductorInstance)
-			} else {
-				conductorInstance = newConductorForTest(
-					t,
-					conductorTestConfig(t, errorHandler, fixedClocks{nanoNs: 0}),
-				)
-			}
-			adapter := conductorInstance.EventsAdapterForTest()
-			scriptBroadcastLap(t, adapter)
+	// Phase: the lap reaches ErrorHandler and the conductor keeps running.
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.False(t, conductorInstance.IsTerminating())
+	require.Len(t, *gotErrors, 1)
+	require.Same(t, conductor.ErrBroadcastLapped, (*gotErrors)[0])
 
-			workCount := conductorInstance.DoWork()
-			require.Zero(t, workCount)
-			require.True(t, conductorInstance.IsTerminating())
-			require.Len(t, *gotErrors, 1)
-			require.ErrorIs(t, (*gotErrors)[0], testCase.wantErr)
-			require.ErrorIs(t, conductorInstance.TerminationCause(), testCase.wantErr)
-			if testCase.reclaim {
-				assertClientTimeoutProbeCause(t, (*gotErrors)[0], 0)
-			}
-			require.True(t, adapter.IsInvalid())
+	// Phase: the latest record reaches the adapter.
+	adapter := conductorInstance.EventsAdapterForTest()
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.Equal(t, int64(1), adapter.UnhandledEventCount())
 
-			require.Zero(t, conductorInstance.DoWork())
-			require.True(t, conductorInstance.IsTerminating())
-			require.Len(t, *gotErrors, 1)
-		})
-	}
+	// Phase: the next event after the lap reaches the adapter.
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnClientTimeout,
+		testutil.ClientTimeoutPayload(conductorTestClientID+1),
+	)
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.False(t, conductorInstance.IsTerminating())
+	require.Len(t, *gotErrors, 1)
+	require.Equal(t, int64(1), adapter.UnhandledEventCount())
+}
+
+func TestConductor_broadcastLappedWithReclaimedHeartbeatCounter(t *testing.T) {
+	errorHandler, gotErrors := collectConductorErrors()
+	conductorInstance := newConductorWithHeartbeatForProbeTest(t, errorHandler)
+	setReclaimedHeartbeatCountersReader(t, conductorInstance)
+	scriptBroadcastLap(t, conductorInstance.EventsAdapterForTest())
+
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.True(t, conductorInstance.IsTerminating())
+	require.Len(t, *gotErrors, 2)
+	require.Same(t, conductor.ErrBroadcastLapped, (*gotErrors)[0])
+	assertClientTimeoutProbeCause(t, (*gotErrors)[1], 0)
+	require.ErrorIs(t, conductorInstance.TerminationCause(), conductor.ErrClientTimeout)
+
+	require.Zero(t, conductorInstance.DoWork())
+	require.Len(t, *gotErrors, 2)
+}
+
+func TestConductor_broadcastMessageTooLongTerminates(t *testing.T) {
+	errorHandler, gotErrors := collectConductorErrors()
+	conductorInstance := newConductorForTest(
+		t,
+		conductorTestConfig(t, errorHandler, fixedClocks{nanoNs: 0}),
+	)
+	adapter := conductorInstance.EventsAdapterForTest()
+	transmitConductorEvent(
+		t,
+		adapter,
+		conductor.OnClientTimeout,
+		testutil.ClientTimeoutPayload(conductorTestClientID+1),
+	)
+	adapter.CopyReceiverForTest().
+		BroadcastReceiver().
+		Buffer().
+		PutInt32(record.LengthOffset(firstRecordOffset), tornRecordLength)
+
+	// Phase: a record above the broadcast bounds terminates the conductor.
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.True(t, conductorInstance.IsTerminating())
+	require.Len(t, *gotErrors, 1)
+	require.ErrorIs(t, (*gotErrors)[0], conductor.ErrBroadcastMessageTooLong)
+	require.ErrorIs(t, conductorInstance.TerminationCause(), conductor.ErrBroadcastMessageTooLong)
+
+	require.Zero(t, conductorInstance.DoWork())
+	require.Len(t, *gotErrors, 1)
 }
 
 func TestConductor_broadcastLapped_reclaimedHeartbeatCounter_timeoutChecksClaimFirst(
@@ -755,7 +786,6 @@ func TestConductor_broadcastLapped_reclaimedHeartbeatCounter_timeoutChecksClaimF
 	require.True(t, conductorInstance.IsTerminating())
 	require.Len(t, *gotErrors, 1)
 	assertClientTimeoutProbeCause(t, (*gotErrors)[0], 0)
-	require.False(t, adapter.IsInvalid())
 }
 
 func TestConductor_unknownRegistrationError_probesHeartbeatCounter(t *testing.T) {
@@ -1373,8 +1403,10 @@ func scriptBroadcastLap(tb testing.TB, adapter *conductor.DriverEventsAdapter) {
 	tx, err := broadcast.NewBroadcastTransmitter(buf)
 	require.NoError(tb, err)
 
+	// An unknown type id keeps the latest record, which the receive after
+	// the lap delivers, out of every event handler.
 	payload := []byte{1, 2, 3, 4, 5, 6, 7, 8}
-	fillBroadcastUntilLap(tb, tx, conductor.OnError, payload, capacity)
+	fillBroadcastUntilLap(tb, tx, unknownDriverEventTypeID, payload, capacity)
 	rewindBroadcastTailForLap(tb, buf, capacity)
 }
 
