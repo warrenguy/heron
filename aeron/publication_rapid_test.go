@@ -4,6 +4,7 @@ package aeron_test
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -334,6 +335,87 @@ func TestPublication_TryClaim_rapid(t *testing.T) {
 			frameLength := int(logbuffer.FrameLengthVolatile(termBuf, frameOffset))
 			got := termBuf.Bytes()[frameOffset+logbuffer.OffsetFramePayload : frameOffset+frameLength]
 			require.Equal(t, payload, got)
+		}
+	})
+}
+
+func TestOfferVariants_matchConcatenatedOffer_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(t *rapid.T) {
+		kind := offerVariantKinds[rapid.IntRange(0, len(offerVariantKinds)-1).Draw(t, "kind")]
+		frames := rapid.IntRange(0, aeron.TestPublicationTermLength/logbuffer.FrameAlignment-1).
+			Draw(t, "startFrames")
+		cfg := aeron.LogConfigAtPositionForTest(
+			kind.baseConfig,
+			int64(frames*logbuffer.FrameAlignment),
+		)
+		reference := kind.open(cfg, int64(1)<<62)
+		subject := kind.open(cfg, int64(1)<<62)
+		maxPayload := reference.MaxPayloadLength()
+		maxMessage := reference.MaxMessageLength()
+
+		messageCount := rapid.IntRange(1, 8).Draw(t, "messageCount")
+		for i := range messageCount {
+			length := rapid.IntRange(0, maxMessage+1).Draw(t, fmt.Sprintf("length%d", i))
+			cuts := rapid.SliceOfN(rapid.IntRange(0, length), 0, 6).Draw(t, fmt.Sprintf("cuts%d", i))
+			slices.Sort(cuts)
+			formIndex := rapid.IntRange(0, len(offerVariantForms)-1).Draw(t, fmt.Sprintf("form%d", i))
+			form := offerVariantForms[formIndex]
+			withSupplier := rapid.Bool().Draw(t, fmt.Sprintf("supplier%d", i))
+			seed := rapid.Byte().Draw(t, fmt.Sprintf("seed%d", i))
+
+			payload := make([]byte, length)
+			for j := range payload {
+				payload[j] = byte(j) + seed
+			}
+
+			recorder := &reservedValueRecorder{tb: t, frameCount: offerFrameCount(length, maxPayload)}
+			var supplier aeron.ReservedValueSupplier
+			if withSupplier {
+				supplier = recorder.supply
+			}
+
+			// Both publications retry AdminAction together, so a step also
+			// covers term-end padding and rotation.
+			var want int64
+			for {
+				recorder.frames = recorder.frames[:0]
+				want = reference.OfferWithOffset(payload, 0, length)
+				got := form.offer(subject, payload, cuts, supplier)
+				require.Equal(t, want, got)
+				require.Equal(t, reference.Position(), subject.Position())
+
+				if withSupplier && want > 0 {
+					require.Len(t, recorder.frames, recorder.frameCount, "supplier calls")
+				} else {
+					require.Empty(t, recorder.frames, "supplier calls")
+				}
+				// The frames of one message sit back to back in one term.
+				for frameIndex := 1; frameIndex < len(recorder.frames); frameIndex++ {
+					previous, frame := recorder.frames[frameIndex-1], recorder.frames[frameIndex]
+					require.Equal(t, previous.termID, frame.termID, "frame %d term", frameIndex)
+					require.Equal(t,
+						previous.termOffset+logbuffer.AlignFrameLength(previous.frameLength),
+						frame.termOffset,
+						"frame %d offset", frameIndex,
+					)
+				}
+				for _, frame := range recorder.frames {
+					termCount := logbuffer.ComputeTermCount(frame.termID, aeron.TestPublicationInitialTermID)
+					term := reference.TermBufferForTest(logbuffer.IndexByTermCount(termCount))
+					putExpectedReservedValue(term, frame.termOffset)
+				}
+				requireEqualTerms(t, reference, subject)
+
+				if want != aeron.AdminAction {
+					break
+				}
+			}
+			if length > maxMessage {
+				require.Equal(t, aeron.UnsupportedMessageLength, want)
+			} else {
+				require.Positive(t, want)
+			}
 		}
 	})
 }

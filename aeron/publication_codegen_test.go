@@ -12,19 +12,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPublicationCodegen asserts the calls that OfferWithOffset, TryClaim,
-// Commit, and Abort make on both publication types. The OfferWithOffset
-// success path calls only runtime.memmove. The claim success paths do not
-// call anything. Every other allowed call sits on a failure, fragmented,
-// panic, or stack-growth branch.
+// TestPublicationCodegen asserts the calls that the offer path, TryClaim,
+// Commit, and Abort make on both publication types.
+//
+// The OfferWithOffset success path calls only runtime.memmove.
+// OfferWithReservedValue calls offerMessage. The offerMessage success path
+// for one part without a supplier calls only runtime.memmove. The claim
+// success paths do not call anything. Every other allowed call sits on a
+// failure, fragmented, gather, supplier, panic, or stack-growth branch.
 func TestPublicationCodegen(t *testing.T) {
 	t.Parallel()
 
 	const aeronPrefix = "github.com/warrenguy/heron/aeron."
-	offer := []string{
-		"runtime.memmove", "runtime.gopanic", "runtime.convTstring",
-		aeronPrefix + "invalidOfferSliceMessage",
+	offerBounds := []string{
+		"runtime.gopanic", "runtime.convTstring", aeronPrefix + "invalidOfferSliceMessage",
 	}
+	offer := slices.Concat(offerBounds, []string{"runtime.memmove"})
+	offerFrame := []string{"runtime.memmove", aeronPrefix + "commitOfferFrame"}
 	claimLength := []string{aeronPrefix + "invalidClaimLengthError"}
 	claimFrame := []string{
 		aeronPrefix + "claimFrameError", aeronPrefix + "invalidTermIndexError",
@@ -51,6 +55,18 @@ func TestPublicationCodegen(t *testing.T) {
 			"(*ExclusivePublication).OfferWithOffset": slices.Concat(offer, exclusive, []string{
 				aeronPrefix + "(*ExclusivePublication).appendFragmentedMessage",
 			}),
+			"(*Publication).OfferWithReservedValue": slices.Concat(offerBounds, []string{
+				aeronPrefix + "(*Publication).offerMessage",
+			}),
+			"(*ExclusivePublication).OfferWithReservedValue": slices.Concat(offerBounds, []string{
+				aeronPrefix + "(*ExclusivePublication).offerMessage",
+			}),
+			"(*Publication).offerMessage": slices.Concat(offerFrame, concurrent, []string{
+				aeronPrefix + "(*Publication).appendFragmentedMessage",
+			}),
+			"(*ExclusivePublication).offerMessage": slices.Concat(offerFrame, exclusive, []string{
+				aeronPrefix + "(*ExclusivePublication).appendFragmentedMessage",
+			}),
 			"(*Publication).TryClaim":          slices.Concat(claimLength, concurrent),
 			"(*ExclusivePublication).TryClaim": slices.Concat(claimLength, exclusive),
 			"(*Publication).Commit":            claimFrame,
@@ -68,7 +84,9 @@ func TestPublicationCodegen(t *testing.T) {
 		for method, calls := range allowed {
 			t.Run(goarch+"/"+method, func(t *testing.T) {
 				targets := callTargets(t, probe, aeronPrefix+method)
-				if strings.HasSuffix(method, ".OfferWithOffset") {
+				copiesPayload := strings.HasSuffix(method, ".OfferWithOffset") ||
+					strings.HasSuffix(method, ".offerMessage")
+				if copiesPayload {
 					require.Contains(t, targets, "runtime.memmove", method)
 				}
 				for _, target := range targets {

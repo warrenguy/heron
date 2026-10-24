@@ -344,6 +344,73 @@ func TestPublication_Offer_concurrentFragmented(t *testing.T) {
 	aeron.VerifyPublicationLogIntegrityForTest(t, pub)
 }
 
+func TestPublication_OfferVector_concurrentFragmented(t *testing.T) {
+	consumed := newConsumedTestPublication(t, aeron.DefaultTestPublicationLogConfig())
+	pub := consumed.pub
+
+	var successCount atomic.Int64
+	errs := make(chan error, 5)
+	payload := fragmentedStressPayload(pub)
+	third := len(payload) / 3
+	vectors := [][]byte{payload[:third], payload[third : 2*third], payload[2*third:]}
+	offer := func(stop <-chan struct{}) {
+		spinOffer(
+			pub, stop, errs, &successCount,
+			"fragmented offer",
+			func() int64 { return pub.Offer(payload) },
+		)
+	}
+	offerVector := func(stop <-chan struct{}) {
+		spinOffer(
+			pub, stop, errs, &successCount,
+			"fragmented vector offer",
+			func() int64 { return pub.OfferVector(vectors, crcReservedValue) },
+		)
+	}
+	consume := func(stop <-chan struct{}) {
+		consumed.spin(stop, errs)
+	}
+
+	runConcurrentPublicationStress(
+		t, concurrentPublicationStressDuration(), errs,
+		offer, offer, offerVector, offerVector, consume,
+	)
+
+	requireConcurrentStressSuccessCount(t, successCount.Load(), concurrentPublicationMinSuccessCount)
+	requireFragmentedConcurrentOfferClean(t)
+	requireCommittedFragmentedPayloads(t, pub, payload)
+	requireCommittedReservedValues(t, pub)
+	aeron.VerifyPublicationLogIntegrityForTest(t, pub)
+}
+
+// requireCommittedReservedValues asserts the reserved value of each committed
+// DATA frame below the partition tails: 0 from an Offer worker, or
+// crcReservedValue from an OfferVector worker. At least one frame must hold
+// crcReservedValue.
+func requireCommittedReservedValues(tb testing.TB, pub *aeron.Publication) {
+	tb.Helper()
+
+	supplied := 0
+	for partition := range logbuffer.PartitionCount {
+		rawTail, err := logbuffer.GetRawTail(pub.MetaDataBufferForTest(), partition)
+		require.NoError(tb, err)
+
+		termEnd := int(logbuffer.TermOffset(rawTail, aeron.TestPublicationTermLength))
+		termBuf := aeron.PublicationTermBufferForTest(pub, partition)
+		forEachDataFrame(termBuf, termEnd, func(offset, frameLength int) {
+			reservedValue := logbuffer.FrameReservedValue(termBuf, offset)
+			if reservedValue == 0 {
+				return
+			}
+			frame := termBuf.Bytes()[offset : offset+frameLength]
+			label := fmt.Sprintf("partition %d offset %d", partition, offset)
+			require.Equal(tb, crcReservedValue(frame), reservedValue, label)
+			supplied++
+		})
+	}
+	require.Positive(tb, supplied, "frames with a supplied reserved value")
+}
+
 func TestPublication_Offer_concurrentFragmentedWithRotation(t *testing.T) {
 	consumed := newConsumedTestPublication(t, publicationLogConfigNearTermEnd(256))
 	pub := consumed.pub

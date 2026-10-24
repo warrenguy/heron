@@ -11,8 +11,9 @@ import (
 
 // ExclusivePublication is a single-writer IPC publisher over a driver-mapped log buffer.
 //
-// Offer, OfferWithOffset, TryClaim, Commit, and Abort are not thread-safe; concurrent
-// calls from multiple goroutines are undefined (Java ExclusivePublication parity).
+// Offer, OfferWithOffset, OfferWithReservedValue, OfferTwoParts, OfferVector,
+// TryClaim, Commit, and Abort are not thread-safe; concurrent calls from
+// multiple goroutines are undefined (Java ExclusivePublication parity).
 //
 // The offer hot path uses locally cached tail state (activePartitionIndex, termID,
 // termOffset, termBeginPosition) initialized at construct; no per-offer meta tail read.
@@ -152,6 +153,7 @@ func (ep *ExclusivePublication) Offer(buffer []byte) int64 {
 }
 
 // OfferWithOffset publishes length bytes from buffer[offset:offset+length].
+// It is OfferWithReservedValue with a nil supplier.
 //
 // Negative length or invalid offset/length bounds panic (Java
 // IllegalArgumentException).
@@ -164,7 +166,8 @@ func (ep *ExclusivePublication) Offer(buffer []byte) int64 {
 // See also PositionCodeName, IsOfferRetriable.
 func (ep *ExclusivePublication) OfferWithOffset(buffer []byte, offset, length int) int64 {
 	// The unfragmented success path stays in this one function and does not
-	// call a helper.
+	// call a helper. It repeats the offerMessage reservation. A change to one
+	// must change the other.
 	if ep.IsClosed() {
 		return Closed
 	}
@@ -179,7 +182,9 @@ func (ep *ExclusivePublication) OfferWithOffset(buffer []byte, offset, length in
 		if length > ep.maxMessageLength {
 			return UnsupportedMessageLength
 		}
-		return ep.appendFragmentedMessage(buffer, offset, length)
+		parts := [1][]byte{buffer[offset:][:length]}
+		payload := newOfferPayload(parts[:])
+		return ep.appendFragmentedMessage(&payload, nil)
 	}
 
 	alignedLength := logbuffer.AlignFragmentChunkLength(length)
@@ -219,6 +224,154 @@ func (ep *ExclusivePublication) OfferWithOffset(buffer []byte, offset, length in
 	ep.headerWriter.WriteHeader(frame, termOffset, frameLength, termID)
 	copy(frame[logbuffer.DataHeaderLength:], payload)
 	atomicbuffer.Wrap(frame).PutInt32Release(logbuffer.OffsetFrameLength, frameLength)
+
+	ep.termOffset = resultingOffset
+	return position
+}
+
+// OfferWithReservedValue publishes length bytes from
+// buffer[offset:offset+length]. A non-nil supplier sets the reserved value of
+// each DATA frame. Matches Java Publication.offer with a
+// ReservedValueSupplier.
+//
+// Behaviour:
+//   - A closed publication returns Closed and does not call the supplier.
+//   - Negative length or invalid offset/length bounds panic (Java
+//     IllegalArgumentException).
+//   - Frames, length rule and return codes match OfferWithOffset.
+//   - A nil supplier does not write the reserved value field.
+func (ep *ExclusivePublication) OfferWithReservedValue(
+	buffer []byte,
+	offset int,
+	length int,
+	supplier ReservedValueSupplier,
+) int64 {
+	// The unsigned compares reject negative values too. A closed publication
+	// returns Closed before the bounds panic. offerMessage runs the closed
+	// check once the bounds pass.
+	if uint(offset) > uint(len(buffer)) || uint(length) > uint(len(buffer[offset:])) {
+		if ep.IsClosed() {
+			return Closed
+		}
+		panic(invalidOfferSliceMessage(offset, length, len(buffer)))
+	}
+
+	parts := [1][]byte{buffer[offset:][:length]}
+	payload := newOfferPayload(parts[:])
+	return ep.offerMessage(&payload, supplier)
+}
+
+// OfferTwoParts publishes first then second as one message. Matches
+// Java Publication.offer with two buffers.
+//
+// Behaviour:
+//   - A closed publication returns Closed and does not call the supplier.
+//   - Frames, length rule and return codes match OfferWithOffset of the
+//     concatenated payload.
+//   - A non-nil supplier sets the reserved value of each DATA frame. See
+//     ReservedValueSupplier.
+func (ep *ExclusivePublication) OfferTwoParts(
+	first []byte,
+	second []byte,
+	supplier ReservedValueSupplier,
+) int64 {
+	parts := [2][]byte{first, second}
+	payload := newOfferPayload(parts[:])
+	return ep.offerMessage(&payload, supplier)
+}
+
+// OfferVector publishes the concatenation of vectors as one message. Matches
+// Java Publication.offer with a DirectBufferVector array.
+//
+// Behaviour:
+//   - A closed publication returns Closed and does not call the supplier.
+//   - Nil and empty entries do not add bytes. A nil or empty vectors slice
+//     offers an empty message.
+//   - Frames, length rule and return codes match OfferWithOffset of the
+//     concatenated payload.
+//   - A non-nil supplier sets the reserved value of each DATA frame. See
+//     ReservedValueSupplier.
+//
+// OfferVector does not retain vectors. A caller may pass a slice of a stack
+// array.
+func (ep *ExclusivePublication) OfferVector(
+	vectors [][]byte,
+	supplier ReservedValueSupplier,
+) int64 {
+	payload := newOfferPayload(vectors)
+	return ep.offerMessage(&payload, supplier)
+}
+
+// offerMessage publishes payload for OfferWithReservedValue, OfferTwoParts
+// and OfferVector. A closed publication returns Closed and does not call
+// the supplier.
+func (ep *ExclusivePublication) offerMessage(
+	payload *offerPayload,
+	supplier ReservedValueSupplier,
+) int64 {
+	// Repeats the OfferWithOffset reservation. A change to one must change the
+	// other.
+	//
+	// The unfragmented success path calls only runtime.memmove for a frame
+	// that one part fills without a supplier. The remaining frames go
+	// through commitOfferFrame.
+	if ep.IsClosed() {
+		return Closed
+	}
+
+	length := payload.length
+	if length > ep.maxPayloadLength {
+		if length > ep.maxMessageLength {
+			return UnsupportedMessageLength
+		}
+		return ep.appendFragmentedMessage(payload, supplier)
+	}
+
+	alignedLength := logbuffer.AlignFragmentChunkLength(length)
+
+	limit := ep.publicationLimit.Get()
+	position := ep.termBeginPosition + int64(ep.termOffset)
+	if position >= limit {
+		return backPressureStatusForLog(
+			ep.meta,
+			ep.maxPossiblePosition,
+			position,
+			int64(alignedLength),
+		)
+	}
+	if position+int64(alignedLength) >= ep.maxPossiblePosition {
+		return MaxPositionExceeded
+	}
+
+	termID := ep.termID
+	termOffset := ep.termOffset
+	resultingOffset := termOffset + alignedLength
+
+	//nolint:gosec // G115: termOffset under TermMaxLength, 1<<30, plus one aligned frame
+	rawTail := logbuffer.PackRawTail(termID, int32(resultingOffset))
+	atomicbuffer.StoreInt64Release(ep.activeTailCounter, rawTail)
+
+	position = ep.termBeginPosition + int64(resultingOffset)
+	if resultingOffset > ep.termBufferLength {
+		return ep.rotateAtTermEnd(termOffset, position)
+	}
+
+	// One slice check covers every header and payload store below.
+	frameLength := dataFrameLength(length)
+	frameEnd := termOffset + int(frameLength)
+	frame := ep.activeTermBuffer[termOffset:frameEnd:frameEnd]
+
+	ep.headerWriter.WriteHeader(frame, termOffset, frameLength, termID)
+	body := frame[logbuffer.DataHeaderLength:]
+	firstPartFillsFrame := len(body) <= len(payload.first)
+	if supplier != nil || !firstPartFillsFrame {
+		commitOfferFrame(frame, payload, supplier)
+	} else {
+		// One part fills the frame without a supplier, so the commit stays
+		// inline. The message ends here, so the cursor does not advance.
+		copy(body, payload.first)
+		atomicbuffer.Wrap(frame).PutInt32Release(logbuffer.OffsetFrameLength, frameLength)
+	}
 
 	ep.termOffset = resultingOffset
 	return position
@@ -481,8 +634,8 @@ func (ep *ExclusivePublication) markClosed() error {
 // The max-position check uses reservationSpan only (aligned frame or full
 // framed length). Matches concurrent runOfferPrelude dual-span shape.
 //
-// The fragmented path calls it. OfferWithOffset and TryClaim repeat the same
-// checks inline, so their success paths do not call a helper.
+// The fragmented path calls it. OfferWithOffset, offerMessage and TryClaim
+// repeat the same checks inline, so their success paths do not call a helper.
 func (ep *ExclusivePublication) checkPublicationLimit(reservationSpan, messageLength int) int64 {
 	limit := ep.publicationLimit.Get()
 	position := ep.termBeginPosition + int64(ep.termOffset)
@@ -504,8 +657,8 @@ func (ep *ExclusivePublication) checkPublicationLimit(reservationSpan, messageLe
 // and ep.termOffset are unchanged. The caller writes the frame at
 // ep.termOffset, then advances ep.termOffset by alignedLength.
 //
-// The fragmented path calls it. OfferWithOffset and TryClaim repeat the same
-// steps inline, so their success paths do not call a helper.
+// The fragmented path calls it. OfferWithOffset, offerMessage and TryClaim
+// repeat the same steps inline, so their success paths do not call a helper.
 func (ep *ExclusivePublication) reserveExclusiveSpace(alignedLength int) (
 	reservedPosition int64,
 	status int64,
@@ -557,10 +710,10 @@ func (ep *ExclusivePublication) rotateAtTermEnd(startOffset int, reservedPositio
 // The exclusive writer owns the term, so the loop uses no FAA and no
 // mid-loop term ID recheck.
 func (ep *ExclusivePublication) appendFragmentedMessage(
-	buffer []byte,
-	srcOffset int,
-	length int,
+	payload *offerPayload,
+	supplier ReservedValueSupplier,
 ) int64 {
+	length := payload.length
 	framedLength := logbuffer.ComputeFragmentedFrameLength(length, ep.maxPayloadLength)
 	if status := ep.checkPublicationLimit(framedLength, length); status != 0 {
 		return status
@@ -579,7 +732,6 @@ func (ep *ExclusivePublication) appendFragmentedMessage(
 
 	for remaining > 0 {
 		chunk := nextFragmentChunk(remaining, length, ep.maxPayloadLength, fullChunkAligned)
-		payloadOffset := srcOffset + (length - remaining)
 
 		writeFragmentChunk(
 			ep.headerWriter,
@@ -587,7 +739,8 @@ func (ep *ExclusivePublication) appendFragmentedMessage(
 			termID,
 			frameOffset,
 			chunk,
-			buffer[payloadOffset:payloadOffset+chunk.bytesToWrite],
+			payload,
+			supplier,
 		)
 
 		frameOffset += chunk.alignedLength

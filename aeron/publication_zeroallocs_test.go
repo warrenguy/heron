@@ -11,7 +11,14 @@ import (
 var (
 	testOfferPayload = [64]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 	pubSink          int64
+
+	// testFragmentedOfferPayload spans two frames at the fixture MTU.
+	testFragmentedOfferPayload = [2048]byte{1, 2, 3, 4, 5, 6, 7, 8}
 )
+
+func testReservedValueSupplier(frame []byte) int64 {
+	return int64(len(frame))
+}
 
 func setupZeroAllocPublication() *aeron.Publication {
 	pub := aeron.NewTestPublicationWithoutTBForRapid(
@@ -40,6 +47,45 @@ func TestPublication_Offer_ZeroAllocs(t *testing.T) {
 			setup: setupZeroAllocPublication,
 			fn: func(pub *aeron.Publication) {
 				pubSink = aeron.OfferWithOffsetRetryForTest(pub, testOfferPayload[:], 0, 64)
+			},
+		},
+		{
+			name:  "OfferWithReservedValue",
+			setup: setupZeroAllocPublication,
+			fn: func(pub *aeron.Publication) {
+				pubSink = aeron.RetryOnAdminActionForTest(func() int64 {
+					return pub.OfferWithReservedValue(
+						testOfferPayload[:],
+						0,
+						len(testOfferPayload),
+						testReservedValueSupplier,
+					)
+				})
+			},
+		},
+		{
+			name:  "OfferTwoParts",
+			setup: setupZeroAllocPublication,
+			fn: func(pub *aeron.Publication) {
+				// payload is a stack copy. The row fails if a part escapes.
+				payload := testOfferPayload
+				pubSink = aeron.RetryOnAdminActionForTest(func() int64 {
+					return pub.OfferTwoParts(payload[:8], payload[8:], nil)
+				})
+			},
+		},
+		{
+			name:  "OfferVector_fragmented",
+			setup: setupZeroAllocPublication,
+			fn: func(pub *aeron.Publication) {
+				parts := [3][]byte{
+					testFragmentedOfferPayload[:8],
+					testFragmentedOfferPayload[8:1400],
+					testFragmentedOfferPayload[1400:],
+				}
+				pubSink = aeron.RetryOnAdminActionForTest(func() int64 {
+					return pub.OfferVector(parts[:], testReservedValueSupplier)
+				})
 			},
 		},
 		{
