@@ -80,8 +80,9 @@ type ArchiveNodeConfig struct {
 	// be unique per Archive on the host.
 	//
 	// A Go control client on another media driver connects over this channel.
-	// A client on the Archive's driver uses the local IPC control channel. The
-	// server binds a UDP control channel unconditionally.
+	// A client on the Archive's driver may connect over this channel or over
+	// the local IPC control channel. The server always binds a UDP control
+	// channel.
 	ControlChannel string
 }
 

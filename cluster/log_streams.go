@@ -36,12 +36,10 @@ var _ LogStreamAdder = (*aeron.Client)(nil)
 // Manual log subscription URI params. Names match Aeron ChannelUri and
 // CommonContext.
 const (
-	channelControlModeParam = "control-mode="
-	channelTagsParam        = "tags="
-	channelRejoinParam      = "rejoin="
-	channelAliasParam       = "alias="
-	channelSoRcvbufParam    = "so-rcvbuf="
-	channelRcvWndParam      = "rcv-wnd="
+	channelTagsParam     = "tags="
+	channelAliasParam    = "alias="
+	channelSoRcvbufParam = "so-rcvbuf="
+	channelRcvWndParam   = "rcv-wnd="
 
 	logSubscriptionControlMode = "manual"
 	logSubscriptionRejoin      = "false"
@@ -470,13 +468,13 @@ func manualLogSubscriptionChannel(
 	t1 := nextCorrelationID()
 	t2 := nextCorrelationID()
 	ch := "aeron:udp"
-	ch = aeron.AppendChannelParam(ch, channelControlModeParam, logSubscriptionControlMode)
+	ch = aeron.AppendChannelParam(ch, aeron.ChannelControlModeParam, logSubscriptionControlMode)
 	ch = aeron.AppendChannelParam(
 		ch,
 		channelTagsParam,
 		strconv.FormatInt(t1, 10)+","+strconv.FormatInt(t2, 10),
 	)
-	ch = aeron.AppendChannelParam(ch, channelRejoinParam, logSubscriptionRejoin)
+	ch = aeron.AppendChannelParam(ch, aeron.ChannelRejoinParam, logSubscriptionRejoin)
 	ch = aeron.AppendChannelParam(ch, channelAliasParam, logSubscriptionAlias)
 	ch = copyChannelParamIfPresent(ch, liveURI, channelSoRcvbufParam)
 	ch = copyChannelParamIfPresent(ch, liveURI, channelRcvWndParam)
@@ -562,32 +560,22 @@ func logChannelWithInitialPosition(
 	termOffset := logbuffer.ComputeTermOffsetFromPosition(position, bitsToShift)
 
 	out := channel
-	out = putOrReplaceChannelParam(
+	out = aeron.SetChannelParam(
 		out, channelInitTermIDParam, strconv.FormatInt(int64(seed.InitialTermID), 10),
 	)
-	out = putOrReplaceChannelParam(
+	out = aeron.SetChannelParam(
 		out, channelTermIDParam, strconv.FormatInt(int64(termID), 10),
 	)
-	out = putOrReplaceChannelParam(
+	out = aeron.SetChannelParam(
 		out, channelTermOffsetParam, strconv.FormatInt(int64(termOffset), 10),
 	)
-	out = putOrReplaceChannelParam(
+	out = aeron.SetChannelParam(
 		out, channelTermLengthParam, strconv.FormatInt(int64(seed.TermBufferLength), 10),
 	)
-	out = putOrReplaceChannelParam(
+	out = aeron.SetChannelParam(
 		out, channelMTUParam, strconv.FormatInt(int64(seed.MtuLength), 10),
 	)
 	return out, nil
-}
-
-// putOrReplaceChannelParam sets param=value on channel. Appends when the param
-// is absent. Replaces the value when present.
-func putOrReplaceChannelParam(channel, param, value string) string {
-	idx := aeron.ChannelParamIndex(channel, param, true)
-	if idx < 0 {
-		return aeron.AppendChannelParam(channel, param, value)
-	}
-	return aeron.ReplaceChannelParamValue(channel, idx, param, value)
 }
 
 // Close clears agent binds, clears the publisher publication, then closes the

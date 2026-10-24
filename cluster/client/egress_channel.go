@@ -7,8 +7,6 @@ import (
 	"github.com/warrenguy/heron/aeron"
 )
 
-const rejoinParam = "rejoin="
-
 // applyUDPRejoinFalse returns egressChannel with rejoin=false on UDP media.
 //
 // Called from concludeConfig after ValidateForConnect. Idempotent when
@@ -23,10 +21,7 @@ func applyUDPRejoinFalse(egressChannel string) (string, error) {
 	if media != "udp" {
 		return egressChannel, nil
 	}
-	if idx := aeron.ChannelParamIndex(egressChannel, rejoinParam, true); idx >= 0 {
-		return aeron.ReplaceChannelParamValue(egressChannel, idx, rejoinParam, "false"), nil
-	}
-	return aeron.AppendChannelParam(egressChannel, rejoinParam, "false"), nil
+	return aeron.SetChannelParam(egressChannel, aeron.ChannelRejoinParam, "false"), nil
 }
 
 // validateClusterEgressChannel rejects egress media that cannot supply a wire

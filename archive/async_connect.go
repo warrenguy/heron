@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/warrenguy/heron/aeron"
@@ -356,6 +357,13 @@ func (ac *AsyncConnect) pollCreateControlResponseSubscription() (*ConnectResult,
 			}
 		},
 		func(sub *aeron.Subscription) {
+			if aeron.IsControlModeResponse(ac.cfg.effectiveControlResponseChannel) {
+				ac.cfg.effectiveControlRequestChannel = aeron.SetChannelParam(
+					ac.cfg.effectiveControlRequestChannel,
+					aeron.ChannelResponseCorrelationIDParam,
+					strconv.FormatInt(sub.RegistrationID(), 10),
+				)
+			}
 			ac.transport.responseSubscription = sub
 			ac.transport.responsePoller = NewControlResponsePoller(
 				sub,

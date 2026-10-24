@@ -142,6 +142,79 @@ func TestValidateIngressChannel(t *testing.T) {
 	}
 }
 
+func TestValidateResponseMode(t *testing.T) {
+	t.Run("accept", func(t *testing.T) {
+		for _, tc := range []struct {
+			name            string
+			requestChannel  string
+			responseChannel string
+		}{
+			{
+				name:            "udp response mode with control",
+				requestChannel:  "aeron:udp?endpoint=localhost:8010",
+				responseChannel: "aeron:udp?control-mode=response|control=localhost:10002",
+			},
+			{
+				name:            "ipc response mode",
+				requestChannel:  "aeron:ipc",
+				responseChannel: "aeron:ipc?control-mode=response",
+			},
+			{
+				name:            "ipc response mode on both channels",
+				requestChannel:  "aeron:ipc?control-mode=response",
+				responseChannel: "aeron:ipc?control-mode=response",
+			},
+			{
+				name:            "udp request with ipc response",
+				requestChannel:  "aeron:udp?endpoint=localhost:8010",
+				responseChannel: "aeron:ipc",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				require.NoError(t, validateResponseMode(tc.requestChannel, tc.responseChannel))
+			})
+		}
+	})
+
+	t.Run("reject", func(t *testing.T) {
+		for _, tc := range []struct {
+			name            string
+			requestChannel  string
+			responseChannel string
+			wantErr         string
+		}{
+			{
+				name:            "udp request response mode",
+				requestChannel:  "aeron:udp?endpoint=localhost:8010|control-mode=response",
+				responseChannel: "aeron:udp?endpoint=localhost:0",
+				wantErr: "archive: udp control request channel must not set control-mode=response: " +
+					"aeron:udp?endpoint=localhost:8010|control-mode=response",
+			},
+			{
+				name:            "ipc request udp response mode",
+				requestChannel:  "aeron:ipc",
+				responseChannel: "aeron:udp?control-mode=response|control=localhost:10002",
+				wantErr: "archive: control response media udp differs from request media ipc; " +
+					"control-mode=response needs one media",
+			},
+			{
+				name:            "ipcx request udp response mode",
+				requestChannel:  "aeron:ipcx?alias=request",
+				responseChannel: "aeron:udp?control-mode=response",
+				wantErr: "archive: control response media udp differs from request media ipcx; " +
+					"control-mode=response needs one media",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				err := validateResponseMode(tc.requestChannel, tc.responseChannel)
+				require.EqualError(t, err, tc.wantErr)
+			})
+		}
+	})
+}
+
 func TestApplyUDPRejoinFalse(t *testing.T) {
 	t.Run("udp", func(t *testing.T) {
 		for _, tc := range []struct {
