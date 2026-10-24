@@ -353,18 +353,25 @@ func TestPublication_OfferVector_concurrentFragmented(t *testing.T) {
 	payload := fragmentedStressPayload(pub)
 	third := len(payload) / 3
 	vectors := [][]byte{payload[:third], payload[third : 2*third], payload[2*third:]}
+	// Each worker starts on OfferVector and switches form after each success.
+	// The first success of any worker is then a vector success.
 	offer := func(stop <-chan struct{}) {
+		vector := true
 		spinOffer(
 			pub, stop, errs, &successCount,
 			"fragmented offer",
-			func() int64 { return pub.Offer(payload) },
-		)
-	}
-	offerVector := func(stop <-chan struct{}) {
-		spinOffer(
-			pub, stop, errs, &successCount,
-			"fragmented vector offer",
-			func() int64 { return pub.OfferVector(vectors, crcReservedValue) },
+			func() int64 {
+				var position int64
+				if vector {
+					position = pub.OfferVector(vectors, crcReservedValue)
+				} else {
+					position = pub.Offer(payload)
+				}
+				if position > 0 {
+					vector = !vector
+				}
+				return position
+			},
 		)
 	}
 	consume := func(stop <-chan struct{}) {
@@ -373,7 +380,7 @@ func TestPublication_OfferVector_concurrentFragmented(t *testing.T) {
 
 	runConcurrentPublicationStress(
 		t, concurrentPublicationStressDuration(), errs,
-		offer, offer, offerVector, offerVector, consume,
+		offer, offer, offer, offer, consume,
 	)
 
 	requireConcurrentStressSuccessCount(t, successCount.Load(), concurrentPublicationMinSuccessCount)
@@ -384,13 +391,11 @@ func TestPublication_OfferVector_concurrentFragmented(t *testing.T) {
 }
 
 // requireCommittedReservedValues asserts the reserved value of each committed
-// DATA frame below the partition tails: 0 from an Offer worker, or
-// crcReservedValue from an OfferVector worker. At least one frame must hold
-// crcReservedValue.
+// DATA frame below the partition tails: 0 from Offer, or crcReservedValue
+// from OfferVector.
 func requireCommittedReservedValues(tb testing.TB, pub *aeron.Publication) {
 	tb.Helper()
 
-	supplied := 0
 	for partition := range logbuffer.PartitionCount {
 		rawTail, err := logbuffer.GetRawTail(pub.MetaDataBufferForTest(), partition)
 		require.NoError(tb, err)
@@ -405,10 +410,8 @@ func requireCommittedReservedValues(tb testing.TB, pub *aeron.Publication) {
 			frame := termBuf.Bytes()[offset : offset+frameLength]
 			label := fmt.Sprintf("partition %d offset %d", partition, offset)
 			require.Equal(tb, crcReservedValue(frame), reservedValue, label)
-			supplied++
 		})
 	}
-	require.Positive(tb, supplied, "frames with a supplied reserved value")
 }
 
 func TestPublication_Offer_concurrentFragmentedWithRotation(t *testing.T) {

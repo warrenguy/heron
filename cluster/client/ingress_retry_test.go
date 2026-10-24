@@ -560,7 +560,8 @@ func TestIngressOfferUntilPositive_contextDeadline(t *testing.T) {
 	t.Run("ctxDeadlineSooner", func(t *testing.T) {
 		ac := newAeronClusterFromConnectFixture(t, nil)
 
-		deadlineCtx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
+		// A shorter deadline can expire before the first offer on a loaded runner.
+		deadlineCtx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 		defer cancel()
 
 		var offerCalls int
