@@ -47,8 +47,23 @@ type ClientSession interface {
 	//   - otherwise the publication Offer result
 	//
 	// Behaviour: DoWork resolves the add, not a callback. A callback that
-	// spins on aeron.NotConnected never returns.
+	// spins on aeron.NotConnected never returns. A closing session still
+	// offers until SessionClose removes it.
 	Offer(payload []byte) int64
+
+	// Close asks the consensus module to close this session. Same as
+	// [Cluster.CloseClientSession] with this id.
+	//
+	// Returns the [Cluster.CloseClientSession] result. A session that
+	// SessionClose removed returns false and sends nothing. Idempotent.
+	Close() bool
+
+	// IsClosing reports whether this member sent a close request for the
+	// session.
+	//
+	// Behaviour: each member keeps its own flag. A leader bind clears it.
+	// SessionClose keeps it. Services must not change replicated state on it.
+	IsClosing() bool
 }
 
 // ResponsePublicationAdder adds the concurrent response publication of a
@@ -79,6 +94,10 @@ type containerClientSession struct {
 
 	// addCorrelationID is the in-flight add, or nullValue.
 	addCorrelationID int64
+
+	// closing is true after this member sends a CloseSession frame. A leader
+	// bind clears it.
+	closing bool
 }
 
 var _ ClientSession = (*containerClientSession)(nil)
@@ -106,6 +125,45 @@ func (s *containerClientSession) EncodedPrincipal() []byte {
 // Offer implements [ClientSession.Offer].
 func (s *containerClientSession) Offer(payload []byte) int64 {
 	return s.agent.offerEgress(s, payload)
+}
+
+// Close implements [ClientSession.Close].
+func (s *containerClientSession) Close() bool {
+	return s.agent.CloseClientSession(s.id)
+}
+
+// IsClosing implements [ClientSession.IsClosing].
+func (s *containerClientSession) IsClosing() bool {
+	return s.closing
+}
+
+// CloseClientSession implements [Cluster.CloseClientSession].
+func (a *Agent) CloseClientSession(id int64) bool {
+	session, ok := a.sessions[id]
+	if !ok {
+		return false
+	}
+	if session.closing {
+		return true
+	}
+	if !a.canPublish() {
+		return false
+	}
+	result := a.moduleProxy.PublishCloseSession(codecs.CloseSessionFields{
+		ClusterSessionID: id,
+	})
+	if !a.acceptOffer(result, errCloseSessionPublish) {
+		return false
+	}
+	session.closing = true
+	return true
+}
+
+// resetClosing clears the closing flag of every open session.
+func (a *Agent) resetClosing() {
+	for _, session := range a.sessionList {
+		session.closing = false
+	}
 }
 
 // compareSessionID orders sessionList entries by id.

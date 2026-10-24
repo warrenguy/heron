@@ -22,7 +22,10 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-var mixedServicePayload = []byte("heron-mixed-service-payload")
+var (
+	mixedServicePayload      = []byte("heron-mixed-service-payload")
+	mixedServiceClosePayload = []byte("heron-mixed-service-close")
+)
 
 const mixedServicePollInterval = time.Millisecond
 
@@ -43,14 +46,21 @@ func javaCommitPosition(counters *harness.DriverCounters) func() int64 {
 // payload bytes. Callback slices are transient.
 //
 // SessionMessage offers each payload back to its session and records the
-// Offer result in echoResults.
+// Offer result in echoResults. A close message does not echo.
+//
+// With closePayload set, a message with that payload and a non-nil session
+// is a close message. It calls session.Close and records the result in
+// closeResults.
 type recordingService struct {
 	startCount  int
 	opens       []int64
 	messages    []recordedMessage
-	closes      []int64
+	closes      []recordedClose
 	order       []recordedEvent
 	echoResults []int64
+
+	closePayload []byte
+	closeResults []bool
 }
 
 // nilSessionID marks a recordedMessage whose SessionMessage session was nil.
@@ -59,6 +69,12 @@ const nilSessionID int64 = -1
 type recordedMessage struct {
 	sessionID int64
 	payload   []byte
+}
+
+// recordedClose is one SessionClose callback.
+type recordedClose struct {
+	sessionID int64
+	reason    clusterwire.CloseReason
 }
 
 type recordedEvent struct {
@@ -86,15 +102,16 @@ func (s *recordingService) SessionOpen(session service.ClientSession, _ int64) {
 func (s *recordingService) SessionClose(
 	session service.ClientSession,
 	_ int64,
-	_ clusterwire.CloseReason,
+	reason clusterwire.CloseReason,
 ) {
 	sessionID := session.ID()
-	s.closes = append(s.closes, sessionID)
+	s.closes = append(s.closes, recordedClose{sessionID: sessionID, reason: reason})
 	s.order = append(s.order, recordedEvent{kind: eventClose, sessionID: sessionID})
 }
 
-// SessionMessage records the message and its echo result. The result is 0
-// for a nil session.
+// SessionMessage records the message. A close payload then closes the
+// session. Any other payload records its echo result. The result is 0 for a
+// nil session.
 func (s *recordingService) SessionMessage(
 	session service.ClientSession,
 	_ int64,
@@ -109,6 +126,10 @@ func (s *recordingService) SessionMessage(
 		payload:   bytes.Clone(payload),
 	})
 	s.order = append(s.order, recordedEvent{kind: eventMessage, sessionID: sessionID})
+	if s.closePayload != nil && session != nil && bytes.Equal(payload, s.closePayload) {
+		s.closeResults = append(s.closeResults, session.Close())
+		return
+	}
 	var result int64
 	if session != nil {
 		result = session.Offer(payload)
@@ -123,7 +144,17 @@ func (s *recordingService) holdsOpen(sessionID int64) bool {
 }
 
 func (s *recordingService) holdsClose(sessionID int64) bool {
-	return slices.Contains(s.closes, sessionID)
+	return slices.ContainsFunc(s.closes, func(c recordedClose) bool {
+		return c.sessionID == sessionID
+	})
+}
+
+// holdsCloseWithReason reports a SessionClose for sessionID with reason.
+func (s *recordingService) holdsCloseWithReason(
+	sessionID int64,
+	reason clusterwire.CloseReason,
+) bool {
+	return slices.Contains(s.closes, recordedClose{sessionID: sessionID, reason: reason})
 }
 
 func (s *recordingService) openCount(sessionID int64) int {
@@ -234,19 +265,21 @@ func (p mixedServiceAwait) dump() string {
 		return line
 	}
 	agent := p.checked.agent
-	start, opens, msgs, closes := 0, []int64(nil), 0, []int64(nil)
+	start, opens, msgs, closes := 0, []int64(nil), 0, []recordedClose(nil)
 	var echoResults []int64
+	var closeResults []bool
 	if p.recorder != nil {
 		start = p.recorder.startCount
 		opens = p.recorder.opens
 		msgs = len(p.recorder.messages)
 		closes = p.recorder.closes
 		echoResults = p.recorder.echoResults
+		closeResults = p.recorder.closeResults
 	}
 	return line + fmt.Sprintf(
 		" bound=%v logPos=%d nextAck=%d pendingJoin=%v"+
 			" role=%v serviceFail=%v violation=%v start=%d opens=%v msgs=%d closes=%v"+
-			" responseAdds=%d echoResults=%v",
+			" responseAdds=%d echoResults=%v closeResults=%v",
 		agent.IsLogBound(),
 		agent.LogPosition(),
 		agent.NextAckID(),
@@ -260,6 +293,7 @@ func (p mixedServiceAwait) dump() string {
 		closes,
 		agent.PendingResponsePublicationAdds(),
 		echoResults,
+		closeResults,
 	)
 }
 
@@ -419,7 +453,9 @@ func connectMixedServiceSession(
 // TestClusterMixedServiceSmoke asserts a Go service container joins a live
 // Java consensus module and observes at least one committed session open,
 // payload, and close for the induction session. The service echoes each
-// payload to the Go client. Makes no claim about Java recordings.
+// payload to the Go client. The service then closes a second session. The
+// Java module appends SERVICE_ACTION and the Go client gets SessionEvent
+// CLOSED. Makes no claim about Java recordings.
 func TestClusterMixedServiceSmoke(t *testing.T) {
 	dir, hadClientError, aeronClient, md, _ := requireClusterComposeEnv(t, clusterComposeGate{
 		envKey:         clusterjava.MixedServiceComposeGateEnvKey,
@@ -560,6 +596,8 @@ func TestClusterMixedServiceSmoke(t *testing.T) {
 	)
 	requireMixedServiceEchoes(t, pump, recorder, sessionID, echoes)
 
+	requireMixedServiceClose(t, pump, dir)
+
 	require.NoError(
 		t,
 		checked.violation,
@@ -581,6 +619,74 @@ func TestClusterMixedServiceSmoke(t *testing.T) {
 		agent.LogPosition(),
 		commitFn(),
 		agent.NextAckID(),
+	)
+}
+
+// requireMixedServiceClose connects a second session and offers
+// mixedServiceClosePayload, on which the service closes that session. It
+// awaits SessionClose with SERVICE_ACTION and the client close.
+//
+// The Java leader can deliver the close payload twice. The first close
+// request must return true. A second request may return either result.
+func requireMixedServiceClose(
+	t *testing.T,
+	p mixedServiceAwait,
+	dir string,
+) {
+	t.Helper()
+
+	recorder := p.recorder
+	agent := p.checked.agent
+	recorder.closePayload = mixedServiceClosePayload
+	var closedDetails []string
+	egress := &client.EgressHandlers{
+		SessionEventFunc: func(
+			_, _, _ int64,
+			_ int32,
+			code client.EventCode,
+			detail []byte,
+		) {
+			if code == client.EventCodeClosed {
+				closedDetails = append(closedDetails, string(detail))
+			}
+		},
+	}
+	session := connectMixedServiceSession(t, p, dir, egress)
+	p.session = session
+	sessionID := session.ClusterSessionID()
+
+	awaitMixedService(
+		t, p, clusterjava.MixedServiceDeliverBudget,
+		func() bool {
+			return recorder.holdsOpen(sessionID) && agent.PendingResponsePublicationAdds() == 0
+		},
+		"close session open delivered",
+	)
+	offerMixedServiceUntilPositive(
+		t, p, clusterjava.MixedServiceDeliverBudget,
+		func() int64 { return session.Offer(mixedServiceClosePayload) },
+	)
+	awaitMixedService(
+		t, p, clusterjava.MixedServiceDeliverBudget,
+		func() bool {
+			return recorder.holdsCloseWithReason(sessionID, clusterwire.CloseReason_SERVICE_ACTION) &&
+				slices.Contains(closedDetails, "SERVICE_ACTION") &&
+				session.IsClosed()
+		},
+		"service close delivered",
+	)
+
+	results := recorder.closeResults
+	require.NotEmpty(t, results, "close results:\n%s", p.dump())
+	require.LessOrEqual(t, len(results), 2, "close results:\n%s", p.dump())
+	require.True(t, results[0], "first close result:\n%s", p.dump())
+	require.NoError(t, agent.ServiceFailure(), "ServiceFailure after close:\n%s", p.dump())
+	require.Equal(
+		t,
+		int64(2),
+		agent.NextAckID(),
+		"service close must not move ack id:\n%s",
+		p.dump(),
 	)
 }
 

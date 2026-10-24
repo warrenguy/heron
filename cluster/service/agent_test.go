@@ -553,6 +553,59 @@ func TestAgent_Join_handoff(t *testing.T) {
 	require.False(t, agent.HasPendingJoin())
 }
 
+func TestAgent_Join_leaderBindClearsClosing(t *testing.T) {
+	log, _, pub := bindCloseAgent(t, nil, codecs.RoleFollower)
+	agent := log.agent
+	ids := []int64{1, 2}
+	for _, id := range ids {
+		log.open(id, id)
+		require.True(t, agent.CloseClientSession(id))
+	}
+	position := agent.LogPosition()
+	replaceLogSubscription(t, agent, testLogSessionID, testLogStreamID, position)
+
+	// rebind caps the image at position, unbinds it, then binds a JoinLog
+	// with role.
+	rebind := func(role codecs.Role) {
+		t.Helper()
+		event := defaultJoinEvent(position)
+		event.role = role
+		agent.handleJoinLog(event)
+		agent.DoWork(0)
+		require.False(t, agent.IsLogBound())
+		agent.DoWork(0)
+		require.NoError(t, agent.ServiceFailure())
+		require.True(t, agent.IsLogBound())
+		require.Equal(t, role, agent.Role())
+	}
+	// requireClosing asserts IsClosing per id, in ids order.
+	requireClosing := func(want ...bool) {
+		t.Helper()
+		for i, id := range ids {
+			session, ok := agent.ClientSession(id)
+			require.True(t, ok)
+			require.Equal(t, want[i], session.IsClosing())
+		}
+	}
+
+	// Phase 1: a follower bind keeps both flags.
+	rebind(codecs.RoleFollower)
+	requireClosing(true, true)
+
+	// Phase 2: a leader bind clears both flags.
+	rebind(codecs.RoleLeader)
+	requireClosing(false, false)
+
+	// Phase 3: the service can repeat the close.
+	offset := int(pub.Position())
+	require.True(t, agent.CloseClientSession(1))
+	fields, ok := codecs.TryDecodeCloseSessionAt(termWireAt(t, pub, offset), 0)
+	require.True(t, ok)
+	require.Equal(t, int64(1), fields.ClusterSessionID)
+	requireClosing(true, false)
+	require.NoError(t, agent.ServiceFailure())
+}
+
 func TestAgent_Join_replayChain(t *testing.T) {
 	const (
 		replaySessionID int32 = -17
@@ -1096,11 +1149,16 @@ func (l *sessionLog) open(id, timestamp int64) {
 
 func (l *sessionLog) close(id, timestamp int64) {
 	l.tb.Helper()
+	l.closeWithReason(id, timestamp, clusterwire.CloseReason_CLIENT_ACTION)
+}
+
+func (l *sessionLog) closeWithReason(id, timestamp int64, reason clusterwire.CloseReason) {
+	l.tb.Helper()
 	l.deliver(encodeSessionClose(l.tb, codecs.SessionCloseEventFields{
 		LeadershipTermID: 1,
 		ClusterSessionID: id,
 		Timestamp:        timestamp,
-		CloseReason:      clusterwire.CloseReason_CLIENT_ACTION,
+		CloseReason:      reason,
 	}))
 	require.NoError(l.tb, l.agent.ServiceFailure())
 	require.False(l.tb, l.agent.HasSession(id))
@@ -1391,6 +1449,49 @@ func TestAgent_ClientSession_offerZeroAllocs(t *testing.T) {
 			t.Fatal("offer rejected")
 		}
 	})
+}
+
+func TestAgent_ClientSession_closeAfterSessionClose(t *testing.T) {
+	log, svc, pub := bindCloseAgent(t, nil, codecs.RoleLeader)
+	agent := log.agent
+	log.open(7, 1)
+	require.True(t, agent.CloseClientSession(7))
+	sent := pub.Position()
+
+	log.closeWithReason(7, 5, clusterwire.CloseReason_SERVICE_ACTION)
+	require.Len(t, svc.closes, 1)
+	require.Equal(t, clusterwire.CloseReason_SERVICE_ACTION, svc.closes[0].reason)
+	require.Equal(t, int64(5), svc.closes[0].timestamp)
+
+	session := svc.closes[0].session
+	require.True(t, session.IsClosing())
+	require.False(t, session.Close())
+	require.Equal(t, sent, pub.Position())
+	require.NoError(t, agent.ServiceFailure())
+}
+
+func TestAgent_ClientSession_offerWhileClosing(t *testing.T) {
+	adder := newFakeResponseAdder()
+	log, _, _ := bindCloseAgent(t, adder, codecs.RoleLeader)
+	agent := log.agent
+	log.open(7, 1)
+	response := aeron.NewTestPublicationForHooksWithConnected(t, true)
+	adder.next(1, responsePoll{publication: response, done: true})
+	require.Equal(t, 1, agent.DoWork(0))
+
+	session, ok := agent.ClientSession(7)
+	require.True(t, ok)
+	require.True(t, session.Close())
+	require.True(t, session.IsClosing())
+
+	payload := []byte("closing")
+	require.Positive(t, session.Offer(payload))
+	requireEgressFrame(t, response, 0, codecs.SessionMessageHeaderFields{
+		LeadershipTermID: nullValue,
+		ClusterSessionID: 7,
+		Timestamp:        agent.ClusterTime(),
+	}, payload)
+	require.NoError(t, agent.ServiceFailure())
 }
 
 func TestAgent_CallbackOrderGolden(t *testing.T) {
@@ -2065,34 +2166,18 @@ func TestAgent_CancelTimer(t *testing.T) {
 	requireDecodedFrame(t, pub, codecs.CancelTimerEncodedLen(), codecs.TryDecodeCancelTimerAt, fields)
 }
 
-// Asserts ScheduleTimer and CancelTimer failure mapping. Unbound and retriable
-// paths leave ServiceFailure nil. Terminal close marks errTimerPublish once. A
-// second call keeps that failure.
-func TestAgent_TimerPublish_failurePaths(t *testing.T) {
-	schedule := sampleScheduleTimerFields()
-	cancel := sampleCancelTimerFields()
-	ops := []struct {
-		name    string
-		publish func(*Agent) bool
-	}{
-		{
-			name: "schedule",
-			publish: func(a *Agent) bool {
-				return a.ScheduleTimer(schedule.CorrelationID, schedule.Deadline)
-			},
-		},
-		{
-			name: "cancel",
-			publish: func(a *Agent) bool {
-				return a.CancelTimer(cancel.CorrelationID)
-			},
-		},
-	}
-	tests := []struct {
-		name        string
-		setup       func(*testing.T) *ConsensusModuleProxy
-		wantFailure error
-	}{
+// moduleProxyFailureCase is one module proxy setup for a publish failure
+// table.
+type moduleProxyFailureCase struct {
+	name        string
+	setup       func(*testing.T) *ConsensusModuleProxy
+	wantFailure error
+}
+
+// moduleProxyFailureCases returns the shared module proxy failure setups. Only
+// the terminal setup wants terminalFailure.
+func moduleProxyFailureCases(terminalFailure error) []moduleProxyFailureCase {
+	return []moduleProxyFailureCase{
 		{
 			name:  "nilProxy",
 			setup: func(*testing.T) *ConsensusModuleProxy { return nil },
@@ -2120,11 +2205,35 @@ func TestAgent_TimerPublish_failurePaths(t *testing.T) {
 				require.NoError(t, pub.Close())
 				return proxy
 			},
-			wantFailure: errTimerPublish,
+			wantFailure: terminalFailure,
 		},
 	}
+}
 
-	for _, tc := range tests {
+// Asserts ScheduleTimer and CancelTimer failure mapping. Unbound and retriable
+// paths leave ServiceFailure nil. Terminal close marks errTimerPublish once. A
+// second call keeps that failure.
+func TestAgent_TimerPublish_failurePaths(t *testing.T) {
+	schedule := sampleScheduleTimerFields()
+	cancel := sampleCancelTimerFields()
+	ops := []struct {
+		name    string
+		publish func(*Agent) bool
+	}{
+		{
+			name: "schedule",
+			publish: func(a *Agent) bool {
+				return a.ScheduleTimer(schedule.CorrelationID, schedule.Deadline)
+			},
+		},
+		{
+			name: "cancel",
+			publish: func(a *Agent) bool {
+				return a.CancelTimer(cancel.CorrelationID)
+			},
+		},
+	}
+	for _, tc := range moduleProxyFailureCases(errTimerPublish) {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, op := range ops {
 				t.Run(op.name, func(t *testing.T) {
@@ -2141,6 +2250,103 @@ func TestAgent_TimerPublish_failurePaths(t *testing.T) {
 			}
 		})
 	}
+}
+
+// bindCloseAgent is bindSessionAgent plus a connected module proxy.
+func bindCloseAgent(
+	tb testing.TB,
+	adder ResponsePublicationAdder,
+	role codecs.Role,
+) (*sessionLog, *recordingService, *aeron.Publication) {
+	tb.Helper()
+	log, svc := bindSessionAgent(tb, adder, role)
+	proxy, pub := boundModuleProxy(tb)
+	log.agent.moduleProxy = proxy
+	return log, svc, pub
+}
+
+func TestAgent_CloseClientSession(t *testing.T) {
+	for _, role := range []codecs.Role{codecs.RoleLeader, codecs.RoleFollower} {
+		t.Run(role.String(), func(t *testing.T) {
+			log, _, pub := bindCloseAgent(t, nil, role)
+			agent := log.agent
+			fields := sampleCloseSessionFields()
+			log.open(fields.ClusterSessionID, 1)
+			session, ok := agent.ClientSession(fields.ClusterSessionID)
+			require.True(t, ok)
+			require.False(t, session.IsClosing())
+			require.False(t, agent.CloseClientSession(99))
+
+			// Phase 1: the first call sends one CloseSession frame. The
+			// unknown id above sent none.
+			require.True(t, agent.CloseClientSession(fields.ClusterSessionID))
+			requireDecodedFrame(
+				t,
+				pub,
+				codecs.CloseSessionEncodedLen(),
+				codecs.TryDecodeCloseSessionAt,
+				fields,
+			)
+			require.True(t, session.IsClosing())
+			sent := pub.Position()
+
+			// Phase 2: a second call and Close do not send a frame.
+			require.True(t, agent.CloseClientSession(fields.ClusterSessionID))
+			require.True(t, session.Close())
+			require.Equal(t, sent, pub.Position())
+			require.True(t, session.IsClosing())
+			require.True(t, agent.HasSession(fields.ClusterSessionID))
+			require.NoError(t, agent.ServiceFailure())
+		})
+	}
+}
+
+// Asserts CloseClientSession failure mapping. Each row returns false and
+// leaves IsClosing false. Only the terminal row marks
+// errCloseSessionPublish. A second call keeps that failure.
+func TestAgent_CloseClientSession_failurePaths(t *testing.T) {
+	const openID int64 = 7
+	for _, tc := range moduleProxyFailureCases(errCloseSessionPublish) {
+		t.Run(tc.name, func(t *testing.T) {
+			log, _ := bindSessionAgent(t, nil, codecs.RoleLeader)
+			agent := log.agent
+			log.open(openID, 1)
+			agent.moduleProxy = tc.setup(t)
+
+			require.False(t, agent.CloseClientSession(openID))
+			session, ok := agent.ClientSession(openID)
+			require.True(t, ok)
+			require.False(t, session.IsClosing())
+			if tc.wantFailure == nil {
+				require.NoError(t, agent.ServiceFailure())
+				return
+			}
+			require.ErrorIs(t, agent.ServiceFailure(), tc.wantFailure)
+			require.False(t, session.Close())
+			require.ErrorIs(t, agent.ServiceFailure(), tc.wantFailure)
+		})
+	}
+}
+
+// Asserts a closed Agent sends no module request. Each request returns
+// false, the session stays open with IsClosing false, and no failure marks.
+func TestAgent_Close_rejectsModuleRequests(t *testing.T) {
+	const openID int64 = 7
+	log, _, pub := bindCloseAgent(t, nil, codecs.RoleLeader)
+	agent := log.agent
+	log.open(openID, 1)
+	agent.Close()
+	sent := pub.Position()
+
+	require.False(t, agent.ScheduleTimer(1, 1))
+	require.False(t, agent.CancelTimer(1))
+	require.False(t, agent.CloseClientSession(openID))
+	session, ok := agent.ClientSession(openID)
+	require.True(t, ok)
+	require.False(t, session.Close())
+	require.False(t, session.IsClosing())
+	require.Equal(t, sent, pub.Position())
+	require.NoError(t, agent.ServiceFailure())
 }
 
 func TestAgent_NilCommittedPosition_skipsPoll(t *testing.T) {

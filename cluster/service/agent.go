@@ -18,6 +18,7 @@ var (
 	errLogNotContiguous       = errors.New("service: log not contiguous")
 	errSessionClash           = errors.New("service: session id clash")
 	errTimerPublish           = errors.New("service: timer publish failed")
+	errCloseSessionPublish    = errors.New("service: close session publish failed")
 	errTakeSnapshot           = errors.New("service: take snapshot failed")
 	errActionPositionMismatch = errors.New("service: cluster action log position mismatch")
 	errUnknownClusterAction   = errors.New("service: unknown cluster action")
@@ -55,9 +56,9 @@ type AgentConfig struct {
 	// allowed: control work polls nothing and delivers no frame.
 	Control ControlIngress
 
-	// ModuleProxy sends ServiceAck and timer-request frames (stream 105). Nil
-	// is allowed: ready acks stay queued. A proxy with no bound publication
-	// drains nothing, same as nil.
+	// ModuleProxy sends ServiceAck, timer and CloseSession frames (stream
+	// 105). Nil is allowed: ready acks stay queued. Timer and close requests
+	// return false. A proxy with no bound publication behaves as nil.
 	ModuleProxy *ConsensusModuleProxy
 
 	// StartAck enables the spontaneous start ack a Java consensus module
@@ -482,7 +483,7 @@ func (a *Agent) ClusterTime() int64 {
 
 // ScheduleTimer implements [Cluster.ScheduleTimer].
 func (a *Agent) ScheduleTimer(correlationID, deadline int64) bool {
-	if a.moduleProxy == nil || a.moduleProxy.Publication() == nil {
+	if !a.canPublish() {
 		return false
 	}
 	result := a.moduleProxy.PublishScheduleTimer(codecs.ScheduleTimerFields{
@@ -494,7 +495,7 @@ func (a *Agent) ScheduleTimer(correlationID, deadline int64) bool {
 
 // CancelTimer implements [Cluster.CancelTimer].
 func (a *Agent) CancelTimer(correlationID int64) bool {
-	if a.moduleProxy == nil || a.moduleProxy.Publication() == nil {
+	if !a.canPublish() {
 		return false
 	}
 	result := a.moduleProxy.PublishCancelTimer(codecs.CancelTimerFields{
@@ -634,7 +635,7 @@ func (a *Agent) handleJoinLog(event logJoinEvent) {
 // the drain marks cause.
 func (a *Agent) failSnapshotEntry(cause error) {
 	e := a.markAckReady(ackKindSnapshot)
-	if e == nil || !a.canSendAck() {
+	if e == nil || !a.canPublish() {
 		a.markFailure(cause)
 	}
 	if e != nil {
@@ -657,6 +658,9 @@ func (a *Agent) markAckReady(kind coordinationAckKind) *coordinationAck {
 }
 
 // joinWork progresses a pending join when no image is bound.
+//
+// Behaviour: a leader bind clears the closing flag of every session. A
+// follower bind keeps it.
 //
 // Returns 1 when the join binds; 0 otherwise. Marks sticky failure on
 // subscription add error or contiguity mismatch.
@@ -701,6 +705,9 @@ func (a *Agent) joinWork() int {
 	a.adapter.SetMaxLogPosition(event.maxLogPosition)
 	a.memberID = event.memberID
 	a.role = event.role
+	if a.role == codecs.RoleLeader {
+		a.resetClosing()
+	}
 	a.markAckReady(ackKindJoin)
 	a.pendingJoin = nil
 	return 1

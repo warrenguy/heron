@@ -9,7 +9,8 @@ import (
 
 // ConsensusModuleProxy publishes service-to-module control frames on the
 // consensus module stream (default 105). Frames are ServiceAck (template 33),
-// ScheduleTimer (template 31), and CancelTimer (template 32).
+// ScheduleTimer (template 31), CancelTimer (template 32), and CloseSession
+// (template 30).
 //
 // Publish path: encode into scratch then Offer. Fixed-length frames stay
 // within MaxPayloadLength under normal publication sizes, so the offer path
@@ -165,5 +166,22 @@ func (p *ConsensusModuleProxy) PublishCancelTimer(fields codecs.CancelTimerField
 		uint16(clusterwire.CancelTimerSbeSchemaVersion),
 		fields,
 		codecs.EncodeCancelTimer,
+	)
+}
+
+// PublishCloseSession encodes CloseSession (template 30) into scratch and
+// offers one fixed-length frame.
+//
+// Behaviour: encodes all CloseSessionFields. Does not validate field
+// semantics. Scratch-then-offer. Does not use tryClaim.
+//
+// Returns the same codes as [ConsensusModuleProxy.PublishServiceAck].
+func (p *ConsensusModuleProxy) PublishCloseSession(fields codecs.CloseSessionFields) int64 {
+	return publishFixed(
+		p,
+		codecs.CloseSessionEncodedLen(),
+		uint16(clusterwire.CloseSessionSbeSchemaVersion),
+		fields,
+		codecs.EncodeCloseSession,
 	)
 }

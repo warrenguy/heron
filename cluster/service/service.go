@@ -116,6 +116,7 @@ type Cluster interface {
 	//   - true when the request frame was sent
 	//   - false when the proxy is absent or the publication is unbound.
 	//     Retry from a later callback.
+	//   - false after the container closes. Must not retry.
 	//   - false when the offer returned a retriable code. Retry from a
 	//     later callback.
 	//   - false when a terminal publication code marks the service failure
@@ -131,11 +132,33 @@ type Cluster interface {
 	//   - true when the request frame was sent
 	//   - false when the proxy is absent or the publication is unbound.
 	//     Retry from a later callback.
+	//   - false after the container closes. Must not retry.
 	//   - false when the offer returned a retriable code. Retry from a
 	//     later callback.
 	//   - false when a terminal publication code marks the service failure
 	//     and stops the duty cycle. Must not retry.
 	CancelTimer(correlationID int64) bool
+
+	// CloseClientSession asks the consensus module to close the open session
+	// id. The leader appends the close to the log. Every service then gets
+	// SessionClose with reason SERVICE_ACTION.
+	//
+	// Behaviour: sends on every role. A follower's module marks the session
+	// closing, so a later leader still appends the close.
+	//
+	// Call from log-event callbacks or DoWork.
+	//
+	// Returns:
+	//   - true when this member sent the frame, now or on an earlier call
+	//   - false when id is not an open session. Must not retry.
+	//   - false when the proxy is absent or the publication is unbound.
+	//     Retry from a later callback.
+	//   - false after the container closes. Must not retry.
+	//   - false when the offer returned a retriable code. Retry from a
+	//     later callback.
+	//   - false when a terminal publication code marks the service failure
+	//     and stops the duty cycle. Must not retry.
+	CloseClientSession(id int64) bool
 
 	// ClientSession returns the open session with id, or nil and false when
 	// id is not open.

@@ -53,6 +53,10 @@ func sampleCancelTimerFields() codecs.CancelTimerFields {
 	return codecs.CancelTimerFields{CorrelationID: 11}
 }
 
+func sampleCloseSessionFields() codecs.CloseSessionFields {
+	return codecs.CloseSessionFields{ClusterSessionID: 7}
+}
+
 // termWireAt returns the DATA frame payload at termOffset in term 0.
 func termWireAt(t *testing.T, pub *aeron.Publication, termOffset int) []byte {
 	t.Helper()
@@ -117,20 +121,35 @@ func TestConsensusModuleProxy_PublishCancelTimer_happy(t *testing.T) {
 	requireDecodedFrame(t, pub, codecs.CancelTimerEncodedLen(), codecs.TryDecodeCancelTimerAt, fields)
 }
 
-// Asserts PublishServiceAck, PublishScheduleTimer, and PublishCancelTimer
-// against the shared failure matrix:
+func TestConsensusModuleProxy_PublishCloseSession_happy(t *testing.T) {
+	p, pub := boundModuleProxy(t)
+	fields := sampleCloseSessionFields()
+
+	require.Positive(t, p.PublishCloseSession(fields))
+	requireDecodedFrame(
+		t,
+		pub,
+		codecs.CloseSessionEncodedLen(),
+		codecs.TryDecodeCloseSessionAt,
+		fields,
+	)
+}
+
+// Asserts PublishServiceAck, PublishScheduleTimer, PublishCancelTimer, and
+// PublishCloseSession against the shared failure matrix:
 //   - nil receiver
 //   - unbound publisher
 //   - retriable exhaustion
 //   - terminal close
 //
 // A failed publish does not mutate publication state. One setup serves all
-// three calls. Test pubs lack an offer count hook. Retry budget is
+// four calls. Test pubs lack an offer count hook. Retry budget is
 // [aeron.SendAttempts].
 func TestConsensusModuleProxy_publishFailurePaths(t *testing.T) {
 	ack := sampleServiceAckFields()
 	schedule := sampleScheduleTimerFields()
 	cancel := sampleCancelTimerFields()
+	closeSession := sampleCloseSessionFields()
 	tests := []struct {
 		name     string
 		setup    func(t *testing.T) *ConsensusModuleProxy
@@ -176,6 +195,7 @@ func TestConsensusModuleProxy_publishFailurePaths(t *testing.T) {
 			require.Equal(t, tt.wantCode, p.PublishServiceAck(ack))
 			require.Equal(t, tt.wantCode, p.PublishScheduleTimer(schedule))
 			require.Equal(t, tt.wantCode, p.PublishCancelTimer(cancel))
+			require.Equal(t, tt.wantCode, p.PublishCloseSession(closeSession))
 		})
 	}
 }

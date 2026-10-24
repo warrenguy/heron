@@ -81,8 +81,19 @@ type assertTB interface {
 // decodeServiceAcksFromPub walks term 0 and decodes every DATA ServiceAck.
 func decodeServiceAcksFromPub(tb assertTB, pub *aeron.Publication) []codecs.ServiceAckFields {
 	tb.Helper()
+	return decodeFramesFromPub(tb, pub, codecs.TryDecodeServiceAckAt)
+}
+
+// decodeFramesFromPub walks term 0 and decodes every DATA frame that
+// tryDecodeAt accepts, in stream order.
+func decodeFramesFromPub[F any](
+	tb assertTB,
+	pub *aeron.Publication,
+	tryDecodeAt func([]byte, int) (F, bool),
+) []F {
+	tb.Helper()
 	termBuf := pub.TermBuffer(0)
-	var acks []codecs.ServiceAckFields
+	var frames []F
 	off := 0
 	for {
 		frameLength := int(logbuffer.FrameLengthVolatile(termBuf, off))
@@ -90,15 +101,15 @@ func decodeServiceAcksFromPub(tb assertTB, pub *aeron.Publication) []codecs.Serv
 			break
 		}
 		wire := termBuf.Bytes()[off+logbuffer.OffsetFramePayload : off+frameLength]
-		if fields, ok := codecs.TryDecodeServiceAckAt(wire, 0); ok {
-			acks = append(acks, fields)
+		if fields, ok := tryDecodeAt(wire, 0); ok {
+			frames = append(frames, fields)
 		}
 		off += logbuffer.AlignFrameLength(frameLength)
 		if off >= termBuf.Capacity() {
 			break
 		}
 	}
-	return acks
+	return frames
 }
 
 func serviceAckFields(logPosition, ackID, relevantID int64) codecs.ServiceAckFields {
