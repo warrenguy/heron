@@ -78,6 +78,7 @@ type Client struct {
 	driverProxy             *conductor.DriverProxy
 	nanoClock               conductor.NanoClock
 	driverTimeout           time.Duration
+	interServiceTimeout     time.Duration
 	pollTimeout             time.Duration
 	publicationOfferTimeout time.Duration
 	idleSleepDuration       time.Duration
@@ -123,6 +124,11 @@ func Connect(ctx context.Context, cfg Config) (*Client, error) {
 		}
 	}()
 
+	cfg.InterServiceTimeout, err = resolveInterServiceTimeout(cfg, mapped.Metadata())
+	if err != nil {
+		return nil, err
+	}
+
 	client, err := newConductorClient(ctx, cfg, mapped, rings)
 	if err != nil {
 		return nil, err
@@ -134,6 +140,19 @@ func Connect(ctx context.Context, cfg Config) (*Client, error) {
 func validateConnectConfig(cfg Config) error {
 	if cfg.AeronDir == "" {
 		return errors.New("aeron: AeronDir is required")
+	}
+	if cfg.KeepAliveInterval < 0 {
+		return errors.New("aeron: KeepAliveInterval must not be negative")
+	}
+	if cfg.InterServiceTimeout < 0 {
+		return errors.New("aeron: InterServiceTimeout must not be negative")
+	}
+	if timeout := cfg.InterServiceTimeout; timeout != 0 && timeout <= cfg.KeepAliveInterval {
+		return fmt.Errorf(
+			"aeron: InterServiceTimeout %v must exceed KeepAliveInterval %v",
+			timeout,
+			cfg.KeepAliveInterval,
+		)
 	}
 	if cfg.CloseLingerDuration < 0 {
 		return errors.New("aeron: CloseLingerDuration must not be negative")
@@ -262,6 +281,7 @@ func newConductorClient(
 		driverProxy:             driverProxy,
 		nanoClock:               cfg.NanoClock,
 		driverTimeout:           cfg.DriverTimeout,
+		interServiceTimeout:     cfg.InterServiceTimeout,
 		pollTimeout:             cfg.PollTimeout,
 		publicationOfferTimeout: cfg.PublicationOfferTimeout,
 		idleSleepDuration:       cfg.IdleSleepDuration,
@@ -642,6 +662,15 @@ func (client *Client) ClientId() int64 {
 		return 0
 	}
 	return client.clientID
+}
+
+// InterServiceTimeout returns the longest DoWork gap the Client tolerates.
+// Connect resolves a zero Config.InterServiceTimeout from the driver.
+func (client *Client) InterServiceTimeout() time.Duration {
+	if client == nil {
+		return 0
+	}
+	return client.interServiceTimeout
 }
 
 func (client *Client) CncMetadata() (cnc.Metadata, error) {

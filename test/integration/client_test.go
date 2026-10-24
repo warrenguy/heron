@@ -388,6 +388,13 @@ func TestClientStayAlive(t *testing.T) {
 		},
 	})
 	require.GreaterOrEqual(t, client.ClientId(), int64(0))
+	meta, err := client.CncMetadata()
+	require.NoError(t, err)
+	require.Equal(
+		t,
+		time.Duration(meta.ClientLivenessTimeoutNs),
+		client.InterServiceTimeout(),
+	)
 
 	deadline := time.Now().Add(clientStayAliveDuration)
 	sawProgress := false
@@ -398,6 +405,27 @@ func TestClientStayAlive(t *testing.T) {
 		time.Sleep(aeron.DefaultIdleSleepDuration)
 	}
 	require.True(t, sawProgress, "client never made progress during stay-alive")
+}
+
+// TestClientSurvivesStallBelowLivenessTimeout stalls DoWork below the driver liveness timeout.
+func TestClientSurvivesStallBelowLivenessTimeout(t *testing.T) {
+	md := harness.SharedParallel(t)
+	var hadClientError atomic.Bool
+	client := harness.ConnectClient(t, md, aeron.Config{
+		ErrorHandler: func(err error) {
+			hadClientError.Store(true)
+		},
+	})
+
+	stall := 1500 * time.Millisecond
+	require.Greater(t, client.InterServiceTimeout(), stall)
+
+	client.DoWork()
+	time.Sleep(stall)
+	client.DoWork()
+
+	require.False(t, hadClientError.Load())
+	require.False(t, client.IsTerminating())
 }
 
 // Ephemeral driver: md.Kill() must not terminate the package shared driver.
@@ -497,9 +525,8 @@ func TestTwoClientsConcurrentRingOffers(t *testing.T) {
 	// DriverTimeout and explicit DoWork pump before Close; ring drain shares that budget.
 	var hadClientError atomic.Bool
 	connectCfg := aeron.Config{
-		AeronDir:            md.Dir,
-		DriverTimeout:       harness.CommandPollDeadline,
-		InterServiceTimeout: harness.ConnectedPollTimeout,
+		AeronDir:      md.Dir,
+		DriverTimeout: harness.CommandPollDeadline,
 		ErrorHandler: func(err error) {
 			hadClientError.Store(true)
 		},

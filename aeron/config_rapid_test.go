@@ -3,6 +3,7 @@
 package aeron_test
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 )
 
 const rapidMaxDuration = time.Hour
@@ -69,14 +71,13 @@ func TestNormalizeConfig_durationFields_rapid(t *testing.T) {
 		want := aeron.NormalizeConfigForTest(aeron.Config{
 			DriverTimeout:       cfg.DriverTimeout,
 			KeepAliveInterval:   cfg.KeepAliveInterval,
-			InterServiceTimeout: cfg.InterServiceTimeout,
 			IdleSleepDuration:   cfg.IdleSleepDuration,
 			CloseLingerDuration: cfg.CloseLingerDuration,
 		})
 
 		require.Equal(t, want.DriverTimeout, normalized.DriverTimeout)
 		require.Equal(t, want.KeepAliveInterval, normalized.KeepAliveInterval)
-		require.Equal(t, want.InterServiceTimeout, normalized.InterServiceTimeout)
+		require.Equal(t, cfg.InterServiceTimeout, normalized.InterServiceTimeout)
 		require.Equal(t, want.IdleSleepDuration, normalized.IdleSleepDuration)
 		require.Equal(t, want.CloseLingerDuration, normalized.CloseLingerDuration)
 	})
@@ -149,5 +150,63 @@ func TestNormalizeConfig_idempotent_rapid(t *testing.T) {
 		once := aeron.NormalizeConfigForTest(cfg)
 		twice := aeron.NormalizeConfigForTest(once)
 		requireNormalizedConfigsEqual(t, once, twice, customEpoch, customNano, epochMs, nanoNs)
+	})
+}
+
+// drawBoundDuration returns bound on one branch so the at-or-below check sees
+// its edge.
+func drawBoundDuration(t *rapid.T, name string, bound time.Duration) time.Duration {
+	t.Helper()
+	if rapid.Bool().Draw(t, name+"_at_bound") {
+		return bound
+	}
+	return time.Duration(rapid.Int64Range(
+		int64(-time.Second),
+		int64(rapidMaxDuration),
+	).Draw(t, name))
+}
+
+func TestResolveInterServiceTimeout_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(t *rapid.T) {
+		cfg := aeron.NormalizeConfigForTest(aeron.Config{
+			AeronDir:          "unused",
+			KeepAliveInterval: drawOptionalDuration(t, "keep_alive"),
+		})
+		keepAlive := cfg.KeepAliveInterval
+		explicit := drawOptionalDuration(t, "inter_service")
+		if rapid.Bool().Draw(t, "inter_service_at_bound") {
+			explicit = keepAlive
+		}
+		cfg.InterServiceTimeout = explicit
+		livenessTimeout := drawBoundDuration(t, "liveness", keepAlive)
+
+		err := aeron.ValidateConnectConfigForTest(cfg)
+		var resolved time.Duration
+		if err == nil {
+			resolved, err = aeron.ResolveInterServiceTimeoutForTest(cfg, cnc.Metadata{
+				ClientLivenessTimeoutNs: livenessTimeout.Nanoseconds(),
+			})
+		}
+		switch {
+		case explicit != 0 && explicit <= keepAlive:
+			require.EqualError(t, err, fmt.Sprintf(
+				"aeron: InterServiceTimeout %v must exceed KeepAliveInterval %v",
+				explicit,
+				keepAlive,
+			))
+		case explicit == 0 && livenessTimeout <= keepAlive:
+			require.EqualError(t, err, fmt.Sprintf(
+				"aeron: driver client liveness timeout %v must exceed KeepAliveInterval %v",
+				livenessTimeout,
+				keepAlive,
+			))
+		case explicit != 0:
+			require.NoError(t, err)
+			require.Equal(t, explicit, resolved)
+		default:
+			require.NoError(t, err)
+			require.Equal(t, livenessTimeout, resolved)
+		}
 	})
 }

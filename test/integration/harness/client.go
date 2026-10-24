@@ -24,21 +24,11 @@ const (
 )
 
 // ConnectClient connects to md and registers client.Close on t.Cleanup.
-//
-// Sets InterServiceTimeout to ConnectedPollTimeout when the field is zero.
-// Preserves an explicit non-zero value. Shared-driver integration under -race
-// needs a larger invoker budget than the 1s default.
-//
-// Configs that reach the driver through cluster.Config.AeronConfig bypass this
-// helper and must set InterServiceTimeout themselves.
 func ConnectClient(t testing.TB, md *MediaDriver, aeronCfg aeron.Config) *aeron.Client {
 	t.Helper()
 
 	if aeronCfg.AeronDir == "" {
 		aeronCfg.AeronDir = md.Dir
-	}
-	if aeronCfg.InterServiceTimeout == 0 {
-		aeronCfg.InterServiceTimeout = ConnectedPollTimeout
 	}
 	client, err := aeron.Connect(t.Context(), aeronCfg)
 	require.NoError(t, err)

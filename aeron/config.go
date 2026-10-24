@@ -1,8 +1,10 @@
 package aeron
 
 import (
+	"fmt"
 	"time"
 
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 )
 
@@ -10,7 +12,6 @@ const (
 	defaultDriverTimeout       = 10 * time.Second
 	defaultKeepAliveInterval   = 500 * time.Millisecond
 	defaultIdleSleepDuration   = 16 * time.Millisecond
-	defaultInterServiceTimeout = time.Second
 	defaultCloseLingerDuration = 3 * time.Second
 	defaultPollTimeout         = 10 * time.Second
 
@@ -23,10 +24,19 @@ const (
 type Config struct {
 	AeronDir string
 
-	DriverTimeout       time.Duration
-	KeepAliveInterval   time.Duration
+	DriverTimeout     time.Duration
+	KeepAliveInterval time.Duration
+
+	// InterServiceTimeout bounds the gap between DoWork calls. A longer gap
+	// terminates the Client with conductor.ErrConductorServiceTimeout. When
+	// the driver removed the Client during the gap, the cause is a
+	// conductor.HeartbeatCounterClosedError instead.
+	//
+	// Zero takes the driver's client liveness timeout at Connect. Connect
+	// rejects a value at or below KeepAliveInterval.
 	InterServiceTimeout time.Duration
-	IdleSleepDuration   time.Duration
+
+	IdleSleepDuration time.Duration
 
 	// CloseLingerDuration schedules log unmap after publication or image close.
 	//
@@ -81,9 +91,6 @@ func normalizeConfig(cfg Config) Config {
 	if cfg.KeepAliveInterval == 0 {
 		cfg.KeepAliveInterval = defaultKeepAliveInterval
 	}
-	if cfg.InterServiceTimeout == 0 {
-		cfg.InterServiceTimeout = defaultInterServiceTimeout
-	}
 	if cfg.IdleSleepDuration == 0 {
 		cfg.IdleSleepDuration = defaultIdleSleepDuration
 	}
@@ -107,4 +114,22 @@ func normalizeConfig(cfg Config) Config {
 		}
 	}
 	return cfg
+}
+
+// resolveInterServiceTimeout returns InterServiceTimeout, or the driver's
+// client liveness timeout when that field is zero. Rejects a driver value at
+// or below KeepAliveInterval.
+func resolveInterServiceTimeout(cfg Config, metadata cnc.Metadata) (time.Duration, error) {
+	if cfg.InterServiceTimeout != 0 {
+		return cfg.InterServiceTimeout, nil
+	}
+	timeout := time.Duration(metadata.ClientLivenessTimeoutNs)
+	if timeout <= cfg.KeepAliveInterval {
+		return 0, fmt.Errorf(
+			"aeron: driver client liveness timeout %v must exceed KeepAliveInterval %v",
+			timeout,
+			cfg.KeepAliveInterval,
+		)
+	}
+	return timeout, nil
 }

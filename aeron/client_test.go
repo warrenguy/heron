@@ -33,6 +33,39 @@ func TestConnect_validationErrors(t *testing.T) {
 			wantErr: "aeron: CloseLingerDuration must not be negative",
 		},
 		{
+			name: "rejects negative keepalive interval",
+			cfg: aeron.Config{
+				AeronDir:          "unused",
+				KeepAliveInterval: -time.Second,
+			},
+			wantErr: "aeron: KeepAliveInterval must not be negative",
+		},
+		{
+			name: "rejects negative inter-service timeout",
+			cfg: aeron.Config{
+				AeronDir:            "unused",
+				InterServiceTimeout: -time.Second,
+			},
+			wantErr: "aeron: InterServiceTimeout must not be negative",
+		},
+		{
+			name: "rejects inter-service timeout equal to keepalive interval",
+			cfg: aeron.Config{
+				AeronDir:            "unused",
+				InterServiceTimeout: 500 * time.Millisecond,
+			},
+			wantErr: "aeron: InterServiceTimeout 500ms must exceed KeepAliveInterval 500ms",
+		},
+		{
+			name: "rejects inter-service timeout below keepalive interval",
+			cfg: aeron.Config{
+				AeronDir:            "unused",
+				KeepAliveInterval:   time.Second,
+				InterServiceTimeout: 500 * time.Millisecond,
+			},
+			wantErr: "aeron: InterServiceTimeout 500ms must exceed KeepAliveInterval 1s",
+		},
+		{
 			name: "rejects negative poll timeout",
 			cfg: aeron.Config{
 				AeronDir:    "unused",

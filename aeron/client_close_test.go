@@ -206,6 +206,7 @@ func TestClient_nilGuards(t *testing.T) {
 	require.False(t, client.IsTerminating())
 	require.NoError(t, client.Close())
 	require.Zero(t, client.ClientId())
+	require.Zero(t, client.InterServiceTimeout())
 }
 
 func TestClient_closeBehavior(t *testing.T) {
