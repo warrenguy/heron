@@ -32,6 +32,9 @@ func connectConstructionHooksFor(aeronDir string) *connectConstructionHooks {
 
 // SetConnectConstructionHooksForTest registers owned-client connect overrides keyed by
 // cfg.AeronDir. Each parallel test must use a distinct AeronDir such as t.TempDir().
+//
+// The factory receives a Config copy. Its AeronConfig holds the ErrorHandler
+// that connect installs on the owned client.
 func SetConnectConstructionHooksForTest(
 	tb testing.TB,
 	aeronDir string,

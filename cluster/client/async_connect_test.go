@@ -654,6 +654,62 @@ func TestConcludeConfig_invalidEgressChannel(t *testing.T) {
 	require.EqualError(t, err, "cluster client: invalid egress channel: not-a-channel")
 }
 
+func TestConcludeConfig_ownedClientFactory(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		callerHandler bool
+	}{
+		{name: "default_handler"},
+		{name: "caller_handler", callerHandler: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			aeronDir := t.TempDir()
+			owned := &aeron.Client{}
+			var factoryHandler func(error)
+			SetConnectConstructionHooksForTest(
+				t,
+				aeronDir,
+				func(cfg Config) (*aeron.Client, error) {
+					factoryHandler = cfg.AeronConfig.ErrorHandler
+					return owned, nil
+				},
+			)
+
+			var callerErrs []error
+			var callerHandler func(error)
+			if tc.callerHandler {
+				callerHandler = func(err error) { callerErrs = append(callerErrs, err) }
+			}
+			cfg := baseAsyncConnectConfig(nil, "")
+			cfg.AeronDir = aeronDir
+			cfg.AeronConfig = aeron.Config{ErrorHandler: callerHandler}
+
+			concluded, clientOut, owns, err := ConcludeConfigForTest(t.Context(), cfg)
+			require.NoError(t, err)
+			require.True(t, owns)
+			require.Same(t, owned, clientOut)
+			require.Same(t, owned, concluded.Aeron)
+
+			// Phase: the factory sees the installed handler. The returned
+			// Config keeps the caller handler.
+			require.NotNil(t, factoryHandler)
+			require.Equal(t, tc.callerHandler, concluded.AeronConfig.ErrorHandler != nil)
+
+			fault := errors.New("fault")
+			factoryHandler(fault)
+			if tc.callerHandler {
+				require.Equal(t, []error{fault}, callerErrs)
+			}
+		})
+	}
+}
+
 const (
 	asyncConnectUDPEgressWildcardChannel    = "aeron:udp?endpoint=localhost:0"
 	asyncConnectUDPEgressWildcardWithRejoin = asyncConnectUDPEgressWildcardChannel +
@@ -1455,6 +1511,88 @@ func TestAsyncConnect_ownedClientClosedOnMemberMapError(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorContains(t, err, "cluster client:")
 	require.True(t, aeron.ClientIsClosedForTest(harness.Client))
+}
+
+// TestAsyncConnect_ownedClientFaultFailsPoll asserts that a fault that
+// terminates the owned transport client fails Poll with the cause. The fault
+// check runs before the connect deadline check, and again after a failed
+// state step. A later Poll returns the same error.
+func TestAsyncConnect_ownedClientFaultFailsPoll(t *testing.T) {
+	t.Parallel()
+
+	const (
+		member0RegID int64 = 3101
+		member1RegID int64 = 3102
+	)
+
+	tests := []struct {
+		name             string
+		ingressEndpoints string
+		inject           func(*testing.T, *aeron.AsyncConnectTestHarness, *AsyncConnect)
+	}{
+		{
+			// DoWork terminates the client before Poll. The fault wins over
+			// the expired deadline.
+			name: "fault_before_poll",
+			inject: func(t *testing.T, harness *aeron.AsyncConnectTestHarness, ac *AsyncConnect) {
+				transmitClientTimeout(t, harness)
+				require.NotPanics(t, harness.DoWork)
+				require.True(t, harness.Client.IsTerminating())
+				ac.deadlineNs = ac.nanoClock() - 1
+			},
+		},
+		{
+			// The first ingress add terminates the client inside Poll. The
+			// second add fails, and the check after the step fires.
+			name:             "fault_inside_ingress_add",
+			ingressEndpoints: "0=host-a:20110,1=host-b:20111",
+			inject: func(t *testing.T, harness *aeron.AsyncConnectTestHarness, _ *AsyncConnect) {
+				harness.SetCountersReaderForRegs(t, member0RegID, member1RegID)
+				transmitClientTimeout(t, harness)
+				require.False(t, harness.Client.IsTerminating())
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness := aeron.NewAsyncConnectTestHarness(t)
+			cfg := ownedConnectConfigForTest(t, harness, ownedHarnessClientFactory(harness))
+			if tc.ingressEndpoints != "" {
+				cfg.IngressChannel = "aeron:udp?ttl=16"
+				cfg.IngressEndpoints = tc.ingressEndpoints
+			}
+			cfg.MessageTimeout = time.Minute
+			ac, err := NewAsyncConnect(t.Context(), cfg)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = ac.Close() })
+			require.True(t, ac.OwnsAeronClient())
+
+			// Phase: the egress subscription add completes.
+			setupAsyncConnectEgressReady(t, harness, ac)
+			require.Equal(t, ConnectStateCreateIngressPublications, ac.State())
+
+			// Phase: the client timeout terminates the owned client.
+			tc.inject(t, harness, ac)
+			var result *ConnectResult
+			require.NotPanics(t, func() { result, err = ac.Poll() })
+			require.Nil(t, result)
+			require.ErrorIs(t, err, ErrTransportTerminating)
+			require.ErrorIs(t, err, conductor.ErrClientTimeout)
+			require.True(t, harness.Client.IsTerminating())
+
+			// Phase: a later Poll returns the same error.
+			result, again := ac.Poll()
+			require.Nil(t, result)
+			require.Same(t, err, again)
+
+			// Phase: Close closes the owned client.
+			require.NoError(t, ac.Close())
+			require.True(t, aeron.ClientIsClosedForTest(harness.Client))
+		})
+	}
 }
 
 func setupAsyncConnectEgressReady(

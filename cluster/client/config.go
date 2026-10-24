@@ -38,9 +38,18 @@ type Config struct {
 
 	AeronDir string
 	Aeron    *aeron.Client
-	// AeronConfig is passed to aeron.Connect when connect creates the transport
-	// client. Transport defaults are applied by aeron.Connect, not
+	// AeronConfig configures the transport client that connect creates when
+	// Aeron is nil. aeron.Connect applies the transport defaults, not
 	// Config.Normalize.
+	//
+	// Behaviour:
+	//   - connect wraps ErrorHandler on the owned client. The wrapper stores
+	//     each error, then calls ErrorHandler.
+	//   - ErrorHandler runs under the transport client lock. It must not call
+	//     Close, PollEgress or AsyncConnect.Poll on the session.
+	//   - A nil ErrorHandler drops errors that leave the owned client running.
+	//   - A fault that terminates the owned client closes the session on the
+	//     next PollEgress. AeronCluster.TransportFault returns the cause.
 	AeronConfig aeron.Config
 
 	// IngressExclusive nil means true (Java isIngressExclusive default).

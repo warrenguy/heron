@@ -4,6 +4,7 @@ package cluster_archive_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -180,7 +182,9 @@ func (f sessionFollower) String() string {
 // credentials open a session, one session message reaches commit with
 // follower witnesses, and the leader registry drains after Close. Drain may
 // complete via SessionCloseRequest or open-session idle TIMEOUT
-// (DefaultSessionTimeoutNs).
+// (DefaultSessionTimeoutNs). A final session connects with a Connect-owned
+// transport client on its own driver. A shutdown of that driver closes the
+// session on the next SpinOnce.
 func TestClusterSession_opensSendsAndClosesOverDurableMembers(t *testing.T) {
 	t.Parallel()
 
@@ -314,6 +318,89 @@ func TestClusterSession_opensSendsAndClosesOverDurableMembers(t *testing.T) {
 			agent.PendingSessionCount() == 0 &&
 			agent.ClosingSessionCount() == 0
 	})
+
+	requireOwnedSessionClosesOnDriverShutdown(t, set, leader)
+}
+
+// ownedConnectOutcome carries the Connect result from the connect goroutine.
+type ownedConnectOutcome struct {
+	session *client.AeronCluster
+	err     error
+}
+
+// requireOwnedSessionClosesOnDriverShutdown connects a session with a
+// Connect-owned transport client on a new driver. A shutdown of that driver
+// must close the session on SpinOnce within 5s.
+func requireOwnedSessionClosesOnDriverShutdown(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	leader *cluster.ConsensusModule,
+) {
+	t.Helper()
+
+	// Phase: Connect pumps its own client on a side goroutine. The test
+	// goroutine ticks the members until the outcome arrives.
+	clientDriver := harness.Start(t)
+	cfg := client.Config{
+		IngressChannel:      cluster.DefaultIngressChannel,
+		IngressEndpoints:    leader.Topology().IngressEndpoints(),
+		EgressChannel:       "aeron:udp?endpoint=127.0.0.1:0",
+		AeronDir:            clientDriver.Dir,
+		MessageTimeout:      durableWorkBound,
+		IngressRetryTimeout: durableWorkBound,
+		CredentialsSupplier: fixedCredentialsSupplier{
+			credentials: []byte(sessionSmokeCredentials),
+		},
+		EgressHandler: &client.EgressHandlers{},
+		AeronConfig: aeron.Config{
+			InterServiceTimeout: harness.ConnectedPollTimeout,
+			CloseLingerDuration: 250 * time.Millisecond,
+		},
+	}
+	outcomes := make(chan ownedConnectOutcome, 1)
+	received := false
+	t.Cleanup(func() {
+		if received {
+			return
+		}
+		if outcome := <-outcomes; outcome.session != nil {
+			_ = outcome.session.Close()
+		}
+	})
+	go func() {
+		session, err := client.Connect(t.Context(), cfg)
+		outcomes <- ownedConnectOutcome{session: session, err: err}
+	}()
+	var outcome ownedConnectOutcome
+	received = set.TickUntil(durableWorkBound, func() bool {
+		select {
+		case outcome = <-outcomes:
+			return true
+		default:
+			return false
+		}
+	})
+	if !received {
+		require.FailNow(t, "owned connect did not resolve", "%s", set.State())
+	}
+	require.NoError(t, outcome.err, "owned connect")
+	session := outcome.session
+	harness.CleanupClose(t, "owned session", session.Close)
+	require.False(t, session.IsClosed())
+	require.NotNil(t, session.Aeron())
+
+	// Phase: shut down the client driver. SpinOnce closes the session.
+	require.NoError(t, clientDriver.Shutdown())
+	requireAwaitTick(t, set, "owned session closed on driver shutdown", 5*time.Second, func() bool {
+		session.SpinOnce()
+		return session.IsClosed()
+	})
+	require.Nil(t, session.Aeron())
+	fault := session.TransportFault()
+	require.ErrorIs(t, fault, client.ErrTransportTerminating)
+	_, ok := errors.AsType[*aeron.DriverTimeoutError](fault)
+	require.True(t, ok, "fault: %v", fault)
+	require.ErrorIs(t, fault, conductor.ErrDriverShutdown)
 }
 
 // TestClusterSession_rejectsInvalidCredentials asserts wrong credentials fail

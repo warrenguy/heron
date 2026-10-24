@@ -13,6 +13,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/internal/transportfault"
 )
 
 // ConnectState mirrors Java AsyncConnect.State step values.
@@ -58,6 +59,13 @@ type AsyncConnect struct {
 	client            *aeron.Client
 	ownsAeronClient   bool
 	newLeaderExplicit bool
+
+	// transportFault stores errors from the connect-owned transport client.
+	// Nil when the caller supplied Config.Aeron.
+	transportFault *transportfault.Monitor
+	// transportFaultErr is the first Poll error from a terminated owned
+	// client. Later Poll calls return it.
+	transportFaultErr error
 
 	state ConnectState
 
@@ -107,7 +115,7 @@ func NewAsyncConnect(
 	if err := cfg.ValidateForConnect(); err != nil {
 		return nil, err
 	}
-	concluded, client, owns, err := concludeConfig(ctx, cfg)
+	concluded, client, owns, monitor, err := concludeConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +133,7 @@ func NewAsyncConnect(
 		client:            client,
 		ownsAeronClient:   owns,
 		newLeaderExplicit: newLeaderExplicit,
+		transportFault:    monitor,
 		state:             ConnectStateCreateEgressSubscription,
 		deadlineNs:        nanoClock() + concluded.MessageTimeout.Nanoseconds(),
 		nanoClock:         nanoClock,
@@ -167,6 +176,13 @@ func (ac *AsyncConnect) OwnsAeronClient() bool {
 //
 // Returns (nil, nil) while in progress, (*ConnectResult, nil) on success, and
 // (nil, err) on terminal failure.
+//
+// A terminated connect-owned transport client fails Poll in every state,
+// before the deadline check. The error wraps ErrTransportTerminating and the
+// conductor cause. Later Poll calls return the same error.
+//
+// Concurrency: invoker-only. Poll takes the transport client lock after an
+// owned client error. Must not run inside a transport client callback.
 func (ac *AsyncConnect) Poll() (*ConnectResult, error) {
 	if ac == nil {
 		return nil, errors.New("cluster client: nil async connect")
@@ -177,12 +193,36 @@ func (ac *AsyncConnect) Poll() (*ConnectResult, error) {
 	if ac.state == ConnectStateDone {
 		return nil, errors.New("cluster client: async connect already completed")
 	}
+	if err := ac.transportFaultError(); err != nil {
+		return nil, err
+	}
 	if ac.state != ConnectStateConcludeConnect {
 		if err := ac.checkDeadline(); err != nil {
 			return nil, err
 		}
 	}
 
+	result, err := ac.pollState()
+	if err != nil {
+		if faultErr := ac.transportFaultError(); faultErr != nil {
+			return nil, faultErr
+		}
+	}
+	return result, err
+}
+
+// transportFaultError returns the first termination error of the owned
+// transport client. Later calls return the same error. Returns nil while the
+// owned client runs.
+func (ac *AsyncConnect) transportFaultError() error {
+	if ac.transportFaultErr != nil {
+		return ac.transportFaultErr
+	}
+	ac.transportFaultErr = transportTerminatingError(ac.transportFault, ac.client)
+	return ac.transportFaultErr
+}
+
+func (ac *AsyncConnect) pollState() (*ConnectResult, error) {
 	switch ac.state {
 	case ConnectStateCreateEgressSubscription:
 		return ac.pollCreateEgressSubscription()
@@ -239,45 +279,51 @@ func (ac *AsyncConnect) Close() error {
 //
 // ctx bounds owned transport attach via aeron.Connect only. Shared Aeron and
 // test factories ignore ctx. Do not store ctx on Config.
+//
+// Behaviour:
+//   - cfg.Aeron set: returns that client with a nil monitor.
+//   - cfg.Aeron nil: wraps AeronConfig.ErrorHandler in a new monitor for the
+//     owned client. The returned Config keeps the caller ErrorHandler.
 func concludeConfig(
 	ctx context.Context,
 	cfg Config,
-) (Config, *aeron.Client, bool, error) {
+) (
+	Config,
+	*aeron.Client,
+	bool,
+	*transportfault.Monitor,
+	error,
+) {
 	var (
 		err    error
 		client *aeron.Client
 	)
 	cfg.EgressChannel, err = applyUDPRejoinFalse(cfg.EgressChannel)
 	if err != nil {
-		return Config{}, nil, false, err
+		return Config{}, nil, false, nil, err
 	}
 
 	if cfg.Aeron != nil {
-		return cfg, cfg.Aeron, false, nil
+		return cfg, cfg.Aeron, false, nil, nil
 	}
 	aeronCfg := cfg.AeronConfig
 	if cfg.AeronDir != "" {
 		aeronCfg.AeronDir = cfg.AeronDir
 	}
-	if aeronCfg.ErrorHandler == nil {
-		// Owned-client connect requires an explicit ErrorHandler; default panics on
-		// driver errors to surface misconfiguration during handshake setup.
-		aeronCfg.ErrorHandler = defaultClusterConnectErrorHandler
-	}
+	monitor := &transportfault.Monitor{}
+	aeronCfg.ErrorHandler = monitor.Handler(aeronCfg.ErrorHandler)
 	if factory, ok := ownedConnectClientFactoryForConfig(cfg); ok {
-		client, err = factory(cfg)
+		factoryCfg := cfg
+		factoryCfg.AeronConfig = aeronCfg
+		client, err = factory(factoryCfg)
 	} else {
 		client, err = aeron.Connect(ctx, aeronCfg)
 	}
 	if err != nil {
-		return Config{}, nil, false, err
+		return Config{}, nil, false, nil, err
 	}
 	cfg.Aeron = client
-	return cfg, client, true, nil
-}
-
-func defaultClusterConnectErrorHandler(err error) {
-	panic(err)
+	return cfg, client, true, monitor, nil
 }
 
 func (ac *AsyncConnect) checkDeadline() error {
@@ -498,6 +544,7 @@ func (ac *AsyncConnect) transferConnectResourcesToResult() {
 	ac.memberMap = nil
 	ac.client = nil
 	ac.ownsAeronClient = false
+	ac.transportFault = nil
 }
 
 func (ac *AsyncConnect) firstConnectedIngressPublication() IngressPublication {
@@ -615,6 +662,7 @@ func (ac *AsyncConnect) concludeConnect() (*ConnectResult, error) {
 		Aeron:                    ac.client,
 		OwnsAeronClient:          ac.ownsAeronClient,
 		Config:                   cfg,
+		transportFault:           ac.transportFault,
 	}
 	return result, nil
 }

@@ -44,7 +44,8 @@ func (ac *AsyncConnect) EgressSubscriptionForTest() *aeron.Subscription {
 	return ac.egressSubscription
 }
 
-// ConcludeConfigForTest exercises concludeConfig during connect tests.
+// ConcludeConfigForTest exercises concludeConfig during connect tests. It
+// drops the owned-client monitor.
 //
 // ctx bounds owned transport attach; tests that inject Aeron or factories
 // may pass context.Background().
@@ -52,7 +53,8 @@ func ConcludeConfigForTest(
 	ctx context.Context,
 	cfg Config,
 ) (Config, *aeron.Client, bool, error) {
-	return concludeConfig(ctx, cfg)
+	concluded, client, owns, _, err := concludeConfig(ctx, cfg)
+	return concluded, client, owns, err
 }
 
 // ConfigForTest exposes the concluded cluster config during connect tests.

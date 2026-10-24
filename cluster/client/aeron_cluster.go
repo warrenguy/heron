@@ -2,13 +2,30 @@ package client
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/internal/transportfault"
 )
+
+// ErrTransportTerminating reports that the connect-owned transport client has
+// terminated. AeronCluster.TransportFault and AsyncConnect.Poll wrap it with
+// the conductor cause.
+var ErrTransportTerminating = errors.New("cluster client: transport client is terminating")
+
+// transportTerminatingError wraps the monitor termination cause for client
+// with ErrTransportTerminating. Returns nil when the monitor reports none.
+func transportTerminatingError(monitor *transportfault.Monitor, client *aeron.Client) error {
+	cause := monitor.TerminationCause(client)
+	if cause == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrTransportTerminating, cause)
+}
 
 // AeronCluster is a connected cluster client session. Not safe for concurrent use.
 //
@@ -22,6 +39,10 @@ import (
 //
 // SpinOnce does not accept context. Wrap the outer duty cycle with context.Context
 // and check ctx.Err() between SpinOnce calls.
+//
+// A fault that terminates the Connect-owned transport client closes the
+// session on the next PollEgress. TransportFault then returns the cause. A
+// caller-supplied client keeps the session open.
 //
 // Accessors, SpinOnce, and session ingress-retry helpers tolerate a nil receiver;
 // other methods require a non-nil receiver.
@@ -51,6 +72,14 @@ type AeronCluster struct {
 	stateDeadlineNs int64
 
 	egressHooks egressDispatchHooks
+
+	// transportFault stores errors from the Connect-owned transport client.
+	// Nil when the caller supplied Config.Aeron.
+	transportFault *transportfault.Monitor
+
+	// transportFaultCause is the error that closed the session on a transport
+	// client fault. Nil until a fault closes the session.
+	transportFaultCause error
 }
 
 // IngressClaim holds an in-flight TryClaim until CommitClaim or AbortClaim.
@@ -150,6 +179,7 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 		controlScratch:     make([]byte, controlScratchLen),
 		memberMap:          memberMap,
 		sessionState:       SessionStateConnected,
+		transportFault:     result.transportFault,
 	}
 
 	ac.egressAdapter = newEgressAdapterWithHandler(
@@ -183,11 +213,21 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 // run before the adapter poll so replacement-image fragments are not reassembled
 // and then discarded. Otherwise the adapter is polled first (Java parity). When
 // the tracked image closes during poll, post-poll teardown frees assembler state
-// and counts as work; pollLeaderRecovery and pollStateChanges run on every path
-// until Close.
+// and counts as work; pollLeaderRecovery and pollStateChanges run on every
+// non-fault path until Close.
+//
+// PollEgress closes the session when the owned transport client has
+// terminated, before the adapter poll. TransportFault returns the cause. The
+// owned client Close blocks for up to AeronConfig.CloseLingerDuration.
+//
+// Concurrency: invoker-only. PollEgress takes the transport client lock after
+// an owned client error. Must not run inside a transport client callback.
 func (ac *AeronCluster) PollEgress() int {
 	if ac.closed || ac.egressAdapter == nil {
 		return 0
+	}
+	if ac.enterPendingCloseOnTransportFault() {
+		return ac.pollStateChanges()
 	}
 
 	// Snapshot before teardown nils egressImage; drives handleDisconnected when reattach fails.
@@ -250,6 +290,16 @@ func (ac *AeronCluster) Close() error {
 		ac.aeron = nil
 	}
 	return nil
+}
+
+// TransportFault returns the error that closed the session on an owned
+// transport client fault. The error wraps ErrTransportTerminating and the
+// conductor cause. Returns nil when a fault did not close the session.
+func (ac *AeronCluster) TransportFault() error {
+	if ac == nil {
+		return nil
+	}
+	return ac.transportFaultCause
 }
 
 // IsClosed reports whether Close has been invoked.
