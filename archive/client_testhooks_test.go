@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
@@ -557,6 +558,138 @@ func TestClientStartRecording_OK(t *testing.T) {
 	}
 }
 
+func TestClientReplicate_OK(t *testing.T) {
+	h := newLifecycleHarness(t)
+	client := h.newClient()
+	params := NewReplicationParams()
+	params.DestinationRecordingID = lifecycleRecordingID
+	params.StopPosition = 8192
+	params.ReplicationChannel = []byte("aeron:udp?endpoint=127.0.0.1:0")
+	params.ChannelTagID = 3
+	params.SubscriptionTagID = 4
+	params.FileIOMaxLength = 4096
+	params.ReplicationSessionID = 9
+	params.EncodedCredentials = []byte("credentials")
+	params.SourceResponseChannel = []byte("aeron:udp?endpoint=127.0.0.1:0|control-mode=response")
+
+	correlationID := h.writeNextControlResponse(
+		t,
+		asyncReplicateTestReplicationID,
+		archivewire.ControlResponseCode_OK,
+	)
+
+	got, err := client.Replicate(
+		t.Context(),
+		asyncReplicateTestSourceRecordingID,
+		asyncReplicateTestSourceControlStreamID,
+		[]byte(asyncReplicateTestSourceControlChannel),
+		params,
+	)
+	require.NoError(t, err)
+	require.Equal(t, asyncReplicateTestReplicationID, got)
+	requireOfferedReplicateWire(t, h.pub.lastOffer(), correlationID, params)
+}
+
+func TestClientReplicate_errorResponse(t *testing.T) {
+	cases := []struct {
+		name string
+		code int64
+	}{
+		{name: "unknown_recording", code: ErrorUnknownRecording},
+		{name: "active_recording", code: ErrorActiveRecording},
+		{name: "generic", code: ErrorGeneric},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLifecycleHarness(t)
+			client := h.newClient()
+			h.writeNextControlResponse(t, tc.code, archivewire.ControlResponseCode_ERROR)
+
+			got, err := client.Replicate(
+				t.Context(),
+				asyncReplicateTestSourceRecordingID,
+				asyncReplicateTestSourceControlStreamID,
+				[]byte(asyncReplicateTestSourceControlChannel),
+				NewReplicationParams(),
+			)
+			require.Zero(t, got)
+			code, ok := ExceptionCode(err)
+			require.True(t, ok, "err=%v", err)
+			require.Equal(t, int32(tc.code), code)
+		})
+	}
+}
+
+func TestClientReplicate_invalidParams(t *testing.T) {
+	h := newLifecycleHarness(t)
+	client := h.newClient()
+
+	_, err := client.Replicate(
+		t.Context(),
+		asyncReplicateTestSourceRecordingID,
+		asyncReplicateTestSourceControlStreamID,
+		[]byte(asyncReplicateTestSourceControlChannel),
+		ReplicationParams{},
+	)
+	require.ErrorIs(t, err, ErrInvalidReplicationParams)
+	require.Empty(t, h.pub.offered, "invalid params must not reach the publication")
+}
+
+func TestClientStopReplication(t *testing.T) {
+	cases := []struct {
+		name        string
+		code        archivewire.ControlResponseCode
+		relevantID  int64
+		wantStopped bool
+		wantErrCode int32
+		wantErr     bool
+	}{
+		{
+			name:        "ok_relevant_id_zero",
+			code:        archivewire.ControlResponseCode_OK,
+			wantStopped: true,
+		},
+		{
+			name:       "unknown_replication",
+			code:       archivewire.ControlResponseCode_ERROR,
+			relevantID: ErrorUnknownReplication,
+		},
+		{
+			name:        "generic_error",
+			code:        archivewire.ControlResponseCode_ERROR,
+			relevantID:  ErrorGeneric,
+			wantErr:     true,
+			wantErrCode: ErrorGeneric,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLifecycleHarness(t)
+			client := h.newClient()
+			correlationID := h.writeNextControlResponse(t, tc.relevantID, tc.code)
+
+			stopped, err := client.StopReplication(t.Context(), asyncReplicateTestReplicationID)
+			require.Equal(t, tc.wantStopped, stopped)
+			if tc.wantErr {
+				code, ok := ExceptionCode(err)
+				require.True(t, ok, "err=%v", err)
+				require.Equal(t, tc.wantErrCode, code)
+			} else {
+				require.NoError(t, err)
+			}
+
+			fields := requireProxyWireFields[codecs.StopReplicationRequestFields](
+				t,
+				h.pub.lastOffer(),
+				archivewire.StopReplicationRequestSbeTemplateID,
+			)
+			require.Equal(t, controlResponseTestControlSessionID, fields.ControlSessionID)
+			require.Equal(t, correlationID, fields.CorrelationID)
+			require.Equal(t, asyncReplicateTestReplicationID, fields.ReplicationID)
+		})
+	}
+}
+
 func TestClientStartRecordingAwaitSignal_OKThenSTART(t *testing.T) {
 	for _, tc := range clientAutoStopCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -712,6 +845,77 @@ func TestClientPoll_fullSlot_ZeroAllocs(t *testing.T) {
 	testutil.AssertZeroAllocs(t, "Client.Poll", 100, func() {
 		f.client.Poll()
 	})
+}
+
+// TestClientPoll_replicateHandle_ZeroAllocs asserts Client.Poll stays
+// zero-alloc with an AsyncReplicate as session handler. Each measured poll
+// folds signals of the replication into the handle.
+func TestClientPoll_replicateHandle_ZeroAllocs(t *testing.T) {
+	const runs = 10
+	cases := []struct {
+		name       string
+		code       archivewire.ControlResponseCode
+		relevantID int64
+	}{
+		{
+			name:       "ok_latched_then_consumed",
+			code:       archivewire.ControlResponseCode_OK,
+			relevantID: asyncReplicateTestReplicationID,
+		},
+		{
+			name:       "error_latched",
+			code:       archivewire.ControlResponseCode_ERROR,
+			relevantID: ErrorGeneric,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAsyncReplicateFixture(t)
+			f.client.SetRecordingSignalHandler(f.handle)
+			offered, err := f.handle.TryOffer()
+			require.NoError(t, err)
+			require.True(t, offered)
+
+			appendUnfragmentedWireToTerm(
+				t,
+				f.h.termBuffer,
+				encodeControlResponseWire(t, f.responseFor(f.handle, tc.code, tc.relevantID)),
+			)
+			extend := encodeRecordingSignalEventWire(
+				t,
+				replicationSignal(archivewire.RecordingSignal_EXTEND),
+			)
+			signalCount := 2 * (runs + 1) * DefaultControlResponseFragmentLimit
+			for range signalCount {
+				appendUnfragmentedWireToTerm(t, f.h.termBuffer, extend)
+			}
+
+			// Phase: the response latches. Measured polls pass signals behind it.
+			require.Equal(t, DefaultControlResponseFragmentLimit, f.client.Poll())
+			require.True(t, f.h.poller.IsPollComplete())
+			testutil.AssertZeroAllocs(t, "Client.Poll with latched response", runs, func() {
+				f.client.Poll()
+				f.handle.ReplicationID()
+			})
+			require.True(t, f.h.poller.IsPollComplete(), "armed filter keeps the latch")
+
+			if tc.code == archivewire.ControlResponseCode_ERROR {
+				require.False(t, f.handle.HasExtended(), "a handle with an ERROR does not fold a signal")
+				require.Equal(t, cnc.NullValue, f.handle.ReplicationID())
+				return
+			}
+			require.True(t, f.handle.HasExtended())
+
+			// Phase: PollResponse consumes the OK. Measured polls keep folding.
+			done, err := f.handle.PollResponse()
+			require.NoError(t, err)
+			require.True(t, done)
+			testutil.AssertZeroAllocs(t, "Client.Poll after consumed OK", runs, func() {
+				f.client.Poll()
+			})
+			require.Equal(t, asyncReplicateTestReplicationID, f.handle.ReplicationID())
+		})
+	}
 }
 
 // TestClientPoll_ownedTransport_ZeroAllocs asserts Client.Poll stays

@@ -45,6 +45,12 @@ import (
 // Poll feeds its control response. AsyncStopRecordingByIdentity lists the
 // caller rules.
 //
+// Replicate starts a replication from another archive and blocks until the
+// reply. NewAsyncReplicate sends the same request without blocking. Its
+// handle folds the recording signals that the session handler routes to it.
+// StopReplication and NewAsyncStopReplication stop a replication by id.
+// AsyncReplicate lists the caller rules.
+//
 // One FragmentAssembler is session-owned and reused across polls.
 //
 // Close releases the control publication and subscription, and the Aeron client when

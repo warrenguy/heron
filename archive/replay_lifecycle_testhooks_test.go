@@ -34,21 +34,24 @@ func (h *lifecycleHarness) newClient() *Client {
 // writeNextControlResponse pre-writes a ControlResponse for the correlation id the
 // next Client method call allocates. The ring correlation counter is sequential
 // and tests are single-threaded, so the id consumed here is one below that id.
+// Returns that id.
 func (h *lifecycleHarness) writeNextControlResponse(
 	t *testing.T,
 	relevantID int64,
 	code archivewire.ControlResponseCode,
-) {
+) int64 {
 	t.Helper()
 
+	correlationID := h.client.NextCorrelationID() + 1
 	responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
 		ControlSessionID: controlResponseTestControlSessionID,
-		CorrelationID:    h.client.NextCorrelationID() + 1,
+		CorrelationID:    correlationID,
 		RelevantID:       relevantID,
 		Code:             code,
 		Version:          520,
 	})
 	writeUnfragmentedWireToTerm(t, h.termBuffer, responseWire)
+	return correlationID
 }
 
 func TestStartReplay_awaitReturnsReplaySessionId(t *testing.T) {

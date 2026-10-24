@@ -29,6 +29,9 @@ const (
 	// ErrorAuthenticationRejected matches Java AUTHENTICATION_REJECTED (code 10).
 	ErrorAuthenticationRejected = 10
 
+	// ErrorUnknownReplication matches Java UNKNOWN_REPLICATION (code 12).
+	ErrorUnknownReplication = 12
+
 	// ErrorInvalidPosition matches Java INVALID_POSITION (code 16).
 	ErrorInvalidPosition = 16
 )
