@@ -5,6 +5,7 @@ package client
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
@@ -346,6 +348,196 @@ func TestConnect_success_ownedClient(t *testing.T) {
 	require.False(t, aeron.ClientIsClosedForTest(harness.Client))
 
 	require.NoError(t, session.Close())
+	require.True(t, aeron.ClientIsClosedForTest(harness.Client))
+}
+
+// ownedHarnessClientFactory returns an owned-client factory. The factory
+// installs the connect ErrorHandler on the harness client, then returns that
+// client.
+func ownedHarnessClientFactory(
+	harness *aeron.AsyncConnectTestHarness,
+) func(Config) (*aeron.Client, error) {
+	return func(cfg Config) (*aeron.Client, error) {
+		harness.SetErrorHandler(cfg.AeronConfig.ErrorHandler)
+		return harness.Client, nil
+	}
+}
+
+func transmitClientTimeout(t *testing.T, harness *aeron.AsyncConnectTestHarness) {
+	t.Helper()
+
+	require.NoError(t, harness.TransmitClientTimeout())
+}
+
+// transmitUnmappableImage broadcasts an available image for sub whose log
+// file does not exist. The next harness client DoWork reports the map failure
+// and keeps the client running.
+func transmitUnmappableImage(
+	t *testing.T,
+	harness *aeron.AsyncConnectTestHarness,
+	sub *aeron.Subscription,
+) {
+	t.Helper()
+
+	event := conductor.AvailableImage{
+		CorrelationID:              9001,
+		SessionID:                  9002,
+		StreamID:                   sub.StreamID(),
+		SubscriptionRegistrationID: sub.RegistrationID(),
+		LogFileName:                filepath.Join(harness.MediaDriverDir, "missing.logbuffer"),
+		SourceIdentity:             "aeron:ipc",
+	}
+	require.NoError(t, harness.Fixture().Transmit(
+		conductor.OnAvailableImage,
+		conductor.AvailableImageBytes(event),
+	))
+}
+
+// connectHarnessSession runs Connect over the harness client. Cleanup closes
+// the session.
+func connectHarnessSession(
+	t *testing.T,
+	harness *aeron.AsyncConnectTestHarness,
+	cfg Config,
+) *AeronCluster {
+	t.Helper()
+
+	connectTestHarnessDriver(t, harness, func(ac *AsyncConnect) {
+		withAsyncConnectEgressTerm(t, ac, writeSessionEventForConnect)
+	})
+	session, err := Connect(t.Context(), cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	return session
+}
+
+func requireTransportFaultClosed(
+	t *testing.T,
+	harness *aeron.AsyncConnectTestHarness,
+	session *AeronCluster,
+	cause error,
+) {
+	t.Helper()
+
+	require.True(t, session.IsClosed())
+	require.ErrorIs(t, session.TransportFault(), ErrTransportTerminating)
+	require.ErrorIs(t, session.TransportFault(), cause)
+	require.Nil(t, session.Aeron())
+	require.True(t, aeron.ClientIsClosedForTest(harness.Client))
+}
+
+func requireSessionOpen(t *testing.T, session *AeronCluster) {
+	t.Helper()
+
+	require.False(t, session.IsClosed())
+	require.NoError(t, session.TransportFault())
+}
+
+// TestAeronCluster_ownedClientFaultClosesSession asserts that a fault that
+// terminates the connect-owned transport client closes the session on the
+// next PollEgress. A per-resource fault and a caller-supplied client leave the
+// session open.
+func TestAeronCluster_ownedClientFaultClosesSession(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		callerHandler  bool
+		callerSupplied bool
+		perResource    bool
+		spin           bool
+		wantClosed     bool
+	}{
+		{name: "default_handler_client_timeout", wantClosed: true},
+		{name: "caller_handler_client_timeout", callerHandler: true, wantClosed: true},
+		{name: "per_resource_error_keeps_session", perResource: true},
+		{name: "per_resource_error_caller_handler_keeps_session", callerHandler: true, perResource: true},
+		{name: "caller_supplied_client_unchanged", callerHandler: true, callerSupplied: true},
+		{name: "spin_once", spin: true, wantClosed: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness := aeron.NewAsyncConnectTestHarness(t)
+			var callerErrs []error
+			var callerHandler func(error)
+			if tc.callerHandler {
+				callerHandler = func(err error) { callerErrs = append(callerErrs, err) }
+			}
+			var cfg Config
+			if tc.callerSupplied {
+				harness.SetErrorHandler(callerHandler)
+				cfg = connectConfigForTest(harness.Client, "")
+			} else {
+				cfg = ownedConnectConfigForTest(t, harness, ownedHarnessClientFactory(harness))
+				cfg.AeronConfig.ErrorHandler = callerHandler
+			}
+			cfg.MessageTimeout = time.Minute
+			session := connectHarnessSession(t, harness, cfg)
+			requireSessionOpen(t, session)
+
+			// Phase: the fault reaches the transport client.
+			wantCause := conductor.ErrClientTimeout
+			if tc.perResource {
+				transmitUnmappableImage(t, harness, session.EgressSubscription())
+				wantCause = conductor.ErrLogBufferMapFailed
+			} else {
+				transmitClientTimeout(t, harness)
+			}
+			if tc.spin {
+				require.NotPanics(t, func() { session.SpinOnce() })
+			} else {
+				require.NotPanics(t, harness.DoWork)
+				session.PollEgress()
+			}
+			if tc.callerHandler {
+				require.Len(t, callerErrs, 1)
+				require.ErrorIs(t, callerErrs[0], wantCause)
+			}
+
+			// Phase: only a terminated owned client closes the session.
+			if tc.wantClosed {
+				requireTransportFaultClosed(t, harness, session, wantCause)
+				return
+			}
+			requireSessionOpen(t, session)
+			require.Same(t, harness.Client, session.Aeron())
+			require.False(t, aeron.ClientIsClosedForTest(harness.Client))
+			if tc.perResource {
+				require.False(t, harness.Client.IsTerminating())
+			}
+		})
+	}
+}
+
+// TestConnect_ownedClientFaultFailsConnect asserts that a fault during the
+// handshake fails Connect with the cause and closes the owned client.
+func TestConnect_ownedClientFaultFailsConnect(t *testing.T) {
+	t.Parallel()
+
+	harness := aeron.NewAsyncConnectTestHarness(t)
+	cfg := ownedConnectConfigForTest(t, harness, ownedHarnessClientFactory(harness))
+	cfg.MessageTimeout = time.Minute
+
+	var steps int
+	observedAC := connectTestHarnessDriver(t, harness, func(*AsyncConnect) {
+		steps++
+		if steps == 3 {
+			transmitClientTimeout(t, harness)
+		}
+	})
+
+	var (
+		session *AeronCluster
+		err     error
+	)
+	require.NotPanics(t, func() { session, err = Connect(t.Context(), cfg) })
+	require.Nil(t, session)
+	require.ErrorIs(t, err, ErrTransportTerminating)
+	require.ErrorIs(t, err, conductor.ErrClientTimeout)
+	requireAsyncConnectClosedAfterConnectFailure(t, observedAC())
 	require.True(t, aeron.ClientIsClosedForTest(harness.Client))
 }
 

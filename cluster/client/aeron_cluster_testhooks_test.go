@@ -13,6 +13,7 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/internal/testutil"
+	"github.com/warrenguy/heron/internal/transportfault"
 )
 
 var aeronClusterPollZeroAllocSink int64
@@ -363,6 +364,24 @@ func TestAeronCluster_PollEgress_ZeroAllocs(t *testing.T) {
 		aeron.ImageSetSubscriberPositionForHooks(image, 0)
 		aeronClusterPollZeroAllocSink = int64(ac.PollEgress())
 	})
+}
+
+// TestAeronCluster_PollEgress_ownedTransport_ZeroAllocs asserts PollEgress
+// stays zero-alloc with a transport fault monitor that holds no pending error.
+func TestAeronCluster_PollEgress_ownedTransport_ZeroAllocs(t *testing.T) {
+	sub, image, termBuffer := setupEgressPollFixtures(t)
+
+	appPayload := []byte("zero-alloc-egress")
+	writeDefaultSessionMessageToTerm(t, termBuffer, appPayload)
+
+	ac := newAeronClusterFromConnectResult(t, newConnectResultWithEgressImage(t, sub, image))
+	ac.transportFault = &transportfault.Monitor{}
+
+	testutil.AssertZeroAllocs(t, "AeronCluster_PollEgress", 1000, func() {
+		aeron.ImageSetSubscriberPositionForHooks(image, 0)
+		aeronClusterPollZeroAllocSink = int64(ac.PollEgress())
+	})
+	require.False(t, ac.IsClosed())
 }
 
 func TestAeronCluster_PollEgress_wrongSessionIgnored(t *testing.T) {

@@ -37,8 +37,10 @@ func (state SessionState) String() string {
 // IsClosed() for terminal lifecycle, not SessionState() alone. PENDING_CLOSE is
 // a pending terminal state: ingress MaxPositionExceeded or a session Closed event may
 // set it while IsClosed() is still false until PollEgress runs pollStateChanges and
-// completes Close(). After Close, sessionState is not updated; SessionState() may
-// retain any pre-close value (e.g. CONNECTED or PENDING_CLOSE).
+// completes Close(). A terminated owned transport client also sets PENDING_CLOSE.
+// That PollEgress completes Close() in the same call. After Close, sessionState is
+// not updated; SessionState() may retain any pre-close value (e.g. CONNECTED or
+// PENDING_CLOSE).
 func (ac *AeronCluster) SessionState() SessionState {
 	if ac == nil {
 		return SessionStateConnected
@@ -90,6 +92,19 @@ func (ac *AeronCluster) enterAwaitNewLeader() {
 func (ac *AeronCluster) enterPendingClose() {
 	ac.sessionState = SessionStatePendingClose
 	ac.stateDeadlineNs = 0
+}
+
+// enterPendingCloseOnTransportFault enters PENDING_CLOSE when the owned
+// transport client has terminated. Stores the cause for TransportFault.
+// Returns true on entry.
+func (ac *AeronCluster) enterPendingCloseOnTransportFault() bool {
+	cause := transportTerminatingError(ac.transportFault, ac.aeron)
+	if cause == nil {
+		return false
+	}
+	ac.transportFaultCause = cause
+	ac.enterPendingClose()
+	return true
 }
 
 // enterConnected returns to CONNECTED and clears the recovery deadline.
