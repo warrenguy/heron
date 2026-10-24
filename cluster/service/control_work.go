@@ -131,16 +131,17 @@ func (a *Agent) sweepRequestAckReadiness() {
 	a.hasUnreadyRequestBound = found
 }
 
-// canSendAck reports whether a bound ModuleProxy publication exists.
-func (a *Agent) canSendAck() bool {
-	return a.moduleProxy != nil && a.moduleProxy.Publication() != nil
+// canPublish reports whether the Agent is open and a bound ModuleProxy
+// publication exists.
+func (a *Agent) canPublish() bool {
+	return !a.closed && a.moduleProxy != nil && a.moduleProxy.Publication() != nil
 }
 
 // drainReadyCoordinationAck publishes one ServiceAck for the ready first
 // queued entry.
 //
 // Behaviour:
-//   - canSendAck false, empty queue, or unready first entry: no send
+//   - canPublish false, empty queue, or unready first entry: no send
 //   - offer result > 0: pop the first entry, advance ackID, mark the entry
 //     failure when set, return 1. A snapshot entry also stores its
 //     RelevantID in lastSnapshotRecordingID
@@ -157,7 +158,7 @@ func (a *Agent) canSendAck() bool {
 //     when the take failed. Join and request entries carry nullValue
 //   - ServiceID from config
 func (a *Agent) drainReadyCoordinationAck() int {
-	if !a.canSendAck() {
+	if !a.canPublish() {
 		return 0
 	}
 	if len(a.coordinationAcks) == 0 {

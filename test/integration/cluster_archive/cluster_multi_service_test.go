@@ -107,7 +107,8 @@ func dumpMultiService(
 				violation = seat.checked.violation
 			}
 			recStart, recMsgs := 0, 0
-			var recOpens, recCloses []int64
+			var recOpens []int64
+			var recCloses []recordedClose
 			if seat.recorder != nil {
 				recStart = seat.recorder.startCount
 				recOpens = seat.recorder.opens

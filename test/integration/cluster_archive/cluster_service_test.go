@@ -66,20 +66,33 @@ type recordedMessage struct {
 	payload   []byte
 }
 
+// recordedClose is one SessionClose callback.
+type recordedClose struct {
+	sessionID int64
+	reason    clusterwire.CloseReason
+}
+
 // sessionRecorder records ClusteredService callbacks. Invoker-only. No
 // locking. Copies payload bytes. Callback slices are transient.
 //
 // With echo set, SessionMessage offers the payload back to its session and
-// records the Offer result in echoResults.
+// records the Offer result in echoResults. A close message does not echo.
+//
+// With closePayload set, a message with that payload and a non-nil session
+// is a close message. It calls session.Close and records the result in
+// closeResults.
 type sessionRecorder struct {
 	startCount int
 	opens      []int64
 	messages   []recordedMessage
-	closes     []int64
+	closes     []recordedClose
 	order      []string
 
 	echo        bool
 	echoResults []int64
+
+	closePayload []byte
+	closeResults []bool
 }
 
 func (s *sessionRecorder) Start(service.Cluster) error {
@@ -95,14 +108,14 @@ func (s *sessionRecorder) SessionOpen(session service.ClientSession, _ int64) {
 func (s *sessionRecorder) SessionClose(
 	session service.ClientSession,
 	_ int64,
-	_ clusterwire.CloseReason,
+	reason clusterwire.CloseReason,
 ) {
-	s.closes = append(s.closes, session.ID())
+	s.closes = append(s.closes, recordedClose{sessionID: session.ID(), reason: reason})
 	s.order = append(s.order, "close")
 }
 
-// SessionMessage records the message. With echo set, it records echo result
-// 0 for a nil session.
+// SessionMessage records the message. A close payload then closes the
+// session. With echo set, it records echo result 0 for a nil session.
 func (s *sessionRecorder) SessionMessage(
 	session service.ClientSession,
 	_ int64,
@@ -117,6 +130,10 @@ func (s *sessionRecorder) SessionMessage(
 		payload:   bytes.Clone(payload),
 	})
 	s.order = append(s.order, "message")
+	if s.closePayload != nil && session != nil && bytes.Equal(payload, s.closePayload) {
+		s.closeResults = append(s.closeResults, session.Close())
+		return
+	}
 	if !s.echo {
 		return
 	}
@@ -134,7 +151,17 @@ func (s *sessionRecorder) holdsOpen(sessionID int64) bool {
 }
 
 func (s *sessionRecorder) holdsClose(sessionID int64) bool {
-	return slices.Contains(s.closes, sessionID)
+	return slices.ContainsFunc(s.closes, func(c recordedClose) bool {
+		return c.sessionID == sessionID
+	})
+}
+
+// holdsCloseWithReason reports a SessionClose for sessionID with reason.
+func (s *sessionRecorder) holdsCloseWithReason(
+	sessionID int64,
+	reason clusterwire.CloseReason,
+) bool {
+	return slices.Contains(s.closes, recordedClose{sessionID: sessionID, reason: reason})
 }
 
 // holdsMessagesAfterOpen reports the session open, then exactly one message
@@ -398,7 +425,9 @@ func requireServicesJoined(t *testing.T, sc serviceCluster) {
 // session message reaches every attached service. Each service echoes the
 // message to its session. The client receives exactly one echo, from the
 // leader. Each follower echo returns MockedOffer. A requested service ack then
-// completes on every member.
+// completes on every member. A second session then sends a message on which
+// every service closes that session. Every module and service drops the
+// session with SERVICE_ACTION. The client gets SessionEvent CLOSED.
 func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 	t.Parallel()
 
@@ -560,6 +589,8 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 		},
 	)
 
+	requireServiceCloseSession(t, sc, leader)
+
 	for i, mem := range sc.members {
 		if mem.checked.violation != nil {
 			require.NoError(t, mem.checked.violation,
@@ -585,7 +616,74 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 	}
 }
 
-const serviceSecondPayload = "service-second-message"
+const (
+	serviceSecondPayload = "service-second-message"
+	serviceClosePayload  = "service-close-session"
+)
+
+// requireServiceCloseSession connects a second session to leader. It offers
+// serviceClosePayload, on which every service closes that session. It then
+// awaits the drain on every module and service, and the client close.
+//
+// Every service close request must return true, followers included.
+func requireServiceCloseSession(
+	t *testing.T,
+	sc serviceCluster,
+	leader *cluster.ConsensusModule,
+) {
+	t.Helper()
+
+	closePayload := []byte(serviceClosePayload)
+	for _, mem := range sc.members {
+		mem.rec.closePayload = closePayload
+	}
+	var closedDetails []string
+	egress := &client.EgressHandlers{
+		SessionEventFunc: func(
+			_, _, _ int64,
+			_ int32,
+			code client.EventCode,
+			detail []byte,
+		) {
+			if code == client.EventCodeClosed {
+				closedDetails = append(closedDetails, string(detail))
+			}
+		},
+	}
+	transport, session := connectServiceSessionWithEgress(t, sc, leader, egress)
+	sessionID := session.ClusterSessionID()
+	offerServiceMessage(t, sc, session, closePayload)
+
+	wantClosed := []string{"SERVICE_ACTION"}
+	requireServiceAwaitTick(
+		t, sc,
+		"service close drained",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			for _, m := range sc.set.Modules() {
+				ca := m.Agent()
+				if ca.OpenSessionCount() != 0 ||
+					ca.PendingSessionCount() != 0 ||
+					ca.ClosingSessionCount() != 0 {
+					return false
+				}
+			}
+			for _, mem := range sc.members {
+				if !mem.rec.holdsCloseWithReason(sessionID, clusterwire.CloseReason_SERVICE_ACTION) {
+					return false
+				}
+			}
+			return slices.Equal(closedDetails, wantClosed) && session.IsClosed()
+		}),
+		func() string { return fmt.Sprintf("client closed events=%v", closedDetails) },
+	)
+
+	for i, m := range sc.set.Modules() {
+		require.Equal(t, []bool{true}, sc.members[i].rec.closeResults,
+			"close results member %d:\n%s", m.ThisMemberID(), sc.dump())
+	}
+	requireNoServiceFailures(t, sc, " after service close")
+}
 
 // connectServiceSession is connectServiceSessionWithEgress with no egress
 // handlers.

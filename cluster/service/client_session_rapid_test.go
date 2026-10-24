@@ -34,6 +34,9 @@ type modelClientSession struct {
 	addCorrelationID int64
 
 	publication *aeron.Publication
+
+	// closing mirrors IsClosing.
+	closing bool
 }
 
 // modelPublication is one publication the adder handed out.
@@ -56,12 +59,17 @@ type modelPublication struct {
 //     and payload.
 //   - SessionMessage gets a nil session exactly when the id is not open.
 //     Otherwise session.ID() is the message id.
+//   - IsClosing matches the model flag of every open session.
+//   - the connected proxy publication holds one CloseSession frame per
+//     model send, in order. A closing session does not add a frame.
+//   - a close request returns true only on a send or on a closing session.
+//     A close of an id that is not open returns false.
 //   - no step marks a failure.
 //
 // Ops: open a free id, close any pool id, message any pool id, set the role,
-// script one in-flight poll then DoWork, offer to an open id. Close is an
-// optional last op. Session-open clash is constrained out. Unit rows assert
-// the clash path.
+// script one in-flight poll then DoWork, offer to an open id, request a
+// close of any pool id. Close is an optional last op. Session-open clash is
+// constrained out. Unit rows assert the clash path and terminal proxy codes.
 func TestAgent_clientSessions_rapid(t *testing.T) {
 	t.Parallel()
 	pollErr := errors.New("poll add boom")
@@ -71,8 +79,21 @@ func TestAgent_clientSessions_rapid(t *testing.T) {
 
 		svc := &recordingService{}
 		adder := newFakeResponseAdder()
-		agent := NewAgent(AgentConfig{Service: svc, ResponsePublications: adder})
+		proxy := NewConsensusModuleProxy()
+		agent := NewAgent(AgentConfig{
+			Service:              svc,
+			ResponsePublications: adder,
+			ModuleProxy:          proxy,
+		})
 		agent.started = true
+
+		connectedProxy := aeron.NewTestPublicationForHooksWithConnected(t, true)
+		proxyPublications := []*aeron.Publication{
+			connectedProxy,
+			aeron.NewTestPublicationForHooksWithLimit(t, 0, true),
+			aeron.NewTestPublicationForHooksWithLimit(t, 0, false),
+		}
+		var wantCloseFrames []int64
 
 		sessionPool := []int64{1, 2, 3, 4, 5, 6}
 		model := make(map[int64]*modelClientSession, len(sessionPool))
@@ -166,6 +187,7 @@ func TestAgent_clientSessions_rapid(t *testing.T) {
 				require.Equal(rt, model[id].open, ok)
 				if ok {
 					require.Equal(rt, id, session.ID())
+					require.Equal(rt, model[id].closing, session.IsClosing())
 				}
 			}
 
@@ -183,12 +205,13 @@ func TestAgent_clientSessions_rapid(t *testing.T) {
 				wantOpen := !agentClosed && state.open && state.publication == handed.publication
 				require.Equal(rt, !wantOpen, handed.publication.IsClosed())
 			}
+			require.Equal(rt, wantCloseFrames, closeFrames(rt, connectedProxy))
 			require.NoError(rt, agent.ServiceFailure())
 		}
 
 		stepCount := rapid.IntRange(1, 40).Draw(rt, "stepCount")
 		for range stepCount {
-			switch rapid.IntRange(0, 5).Draw(rt, "op") {
+			switch rapid.IntRange(0, 6).Draw(rt, "op") {
 			case 0:
 				var free []int64
 				for _, id := range sessionPool {
@@ -209,6 +232,7 @@ func TestAgent_clientSessions_rapid(t *testing.T) {
 					ResponseChannel:  []byte(testResponseChannel),
 				})
 				model[id].open = true
+				model[id].closing = false
 				if leader {
 					model[id].addCorrelationID = nextCorrelationID
 					nextCorrelationID++
@@ -308,6 +332,33 @@ func TestAgent_clientSessions_rapid(t *testing.T) {
 						Timestamp:        position,
 					}, payload)
 				}
+
+			case 6:
+				id := rapid.SampledFrom(sessionPool).Draw(rt, "closeRequestID")
+				index := rapid.IntRange(0, len(proxyPublications)-1).Draw(rt, "proxyPublication")
+				proxy.SetPublication(proxyPublications[index])
+				state := model[id]
+				var sent bool
+				if state.open && rapid.Bool().Draw(rt, "sessionClose") {
+					session, ok := agent.ClientSession(id)
+					require.True(rt, ok)
+					sent = session.Close()
+				} else {
+					sent = agent.CloseClientSession(id)
+				}
+				switch {
+				case !state.open:
+					require.False(rt, sent)
+				case state.closing:
+					require.True(rt, sent)
+				case proxyPublications[index] == connectedProxy:
+					require.True(rt, sent)
+					state.closing = true
+					wantCloseFrames = append(wantCloseFrames, id)
+				default:
+					require.False(rt, sent)
+				}
+				proxy.SetPublication(connectedProxy)
 			}
 			assertInvariants()
 		}
@@ -321,4 +372,15 @@ func TestAgent_clientSessions_rapid(t *testing.T) {
 			assertInvariants()
 		}
 	})
+}
+
+// closeFrames returns the CloseSession session ids on publication in stream
+// order.
+func closeFrames(rt *rapid.T, publication *aeron.Publication) []int64 {
+	rt.Helper()
+	var ids []int64
+	for _, fields := range decodeFramesFromPub(rt, publication, codecs.TryDecodeCloseSessionAt) {
+		ids = append(ids, fields.ClusterSessionID)
+	}
+	return ids
 }
