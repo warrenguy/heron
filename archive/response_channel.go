@@ -10,7 +10,6 @@ import (
 const (
 	aeronSchemePrefix = "aeron:"
 	aeronSpyPrefix    = "aeron-spy:"
-	rejoinParam       = "rejoin="
 )
 
 // ingressChannelMedia strips aeron-spy: and returns the media token (e.g. "ipc",
@@ -45,10 +44,7 @@ func applyUDPRejoinFalse(channel string) (string, error) {
 	if media != "udp" {
 		return channel, nil
 	}
-	if idx := aeron.ChannelParamIndex(channel, rejoinParam, true); idx >= 0 {
-		return aeron.ReplaceChannelParamValue(channel, idx, rejoinParam, "false"), nil
-	}
-	return aeron.AppendChannelParam(channel, rejoinParam, "false"), nil
+	return aeron.SetChannelParam(channel, aeron.ChannelRejoinParam, "false"), nil
 }
 
 func validateArchiveIngressChannel(channel, role string) error {
@@ -64,6 +60,32 @@ func validateArchiveIngressChannel(channel, role string) error {
 		media,
 		role,
 	)
+}
+
+// validateResponseMode rejects control channel pairs that cannot connect in
+// response mode. Call it after validateArchiveIngressChannel accepts both
+// channels.
+func validateResponseMode(requestChannel, responseChannel string) error {
+	requestMedia, _ := ingressChannelMedia(requestChannel)
+	if requestMedia == "udp" && aeron.IsControlModeResponse(requestChannel) {
+		return fmt.Errorf(
+			"archive: udp control request channel must not set control-mode=response: %s",
+			requestChannel,
+		)
+	}
+	if !aeron.IsControlModeResponse(responseChannel) {
+		return nil
+	}
+	responseMedia, _ := ingressChannelMedia(responseChannel)
+	if ingressPassthroughMedia(requestMedia) != ingressPassthroughMedia(responseMedia) {
+		return fmt.Errorf(
+			"archive: control response media %s differs from request media %s; "+
+				"control-mode=response needs one media",
+			responseMedia,
+			requestMedia,
+		)
+	}
+	return nil
 }
 
 type responseChannelResolver interface {

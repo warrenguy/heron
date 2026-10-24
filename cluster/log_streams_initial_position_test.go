@@ -149,54 +149,6 @@ func TestLogChannelWithInitialPosition(t *testing.T) {
 	}
 }
 
-func TestPutOrReplaceChannelParam(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		channel string
-		param   string
-		value   string
-		want    string
-	}{
-		{
-			name:    "append to bare media",
-			channel: "aeron:udp",
-			param:   "mtu=",
-			value:   "1408",
-			want:    "aeron:udp?mtu=1408",
-		},
-		{
-			name:    "append after existing query",
-			channel: "aeron:udp?endpoint=127.0.0.1:1",
-			param:   "mtu=",
-			value:   "1408",
-			want:    "aeron:udp?endpoint=127.0.0.1:1|mtu=1408",
-		},
-		{
-			name:    "replace middle param",
-			channel: "aeron:udp?term-length=64k|endpoint=127.0.0.1:1",
-			param:   "term-length=",
-			value:   "65536",
-			want:    "aeron:udp?term-length=65536|endpoint=127.0.0.1:1",
-		},
-		{
-			name:    "replace trailing param",
-			channel: "aeron:udp?endpoint=127.0.0.1:1|mtu=1200",
-			param:   "mtu=",
-			value:   "1408",
-			want:    "aeron:udp?endpoint=127.0.0.1:1|mtu=1408",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			require.Equal(t, tc.want, putOrReplaceChannelParam(tc.channel, tc.param, tc.value))
-		})
-	}
-}
-
 func TestLogChannelWithInitialPosition_roundtripParams(t *testing.T) {
 	t.Parallel()
 

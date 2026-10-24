@@ -126,6 +126,18 @@ func TestValidateConfig_errors(t *testing.T) {
 			wantErr: "archive: unknown control response channel not supported; use ipc, ipcx, or udp",
 		},
 		{
+			name:   "response mode request channel",
+			mutate: withRemoteRequestChannel("aeron:udp?endpoint=localhost:8010|control-mode=response"),
+			wantErr: "archive: udp control request channel must not set control-mode=response: " +
+				"aeron:udp?endpoint=localhost:8010|control-mode=response",
+		},
+		{
+			name:   "response mode media mismatch",
+			mutate: withRemoteResponseChannel("aeron:ipc?control-mode=response"),
+			wantErr: "archive: control response media ipc differs from request media udp; " +
+				"control-mode=response needs one media",
+		},
+		{
 			name: "connect timeout negative",
 			mutate: func(cfg *archive.Config) {
 				cfg.ConnectTimeout = -time.Second

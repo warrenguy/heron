@@ -30,6 +30,10 @@ type Config struct {
 	// ControlResponseChannel is the subscription channel for control responses.
 	//
 	// Empty defaults to DefaultControlResponseChannel after Normalize.
+	//
+	// control-mode=response takes effect only with WithRemoteControl. Connect
+	// then adds response-correlation-id to the request channel. Both channels
+	// must share one media. ipc and ipcx count as one media.
 	ControlResponseChannel string
 
 	// LocalControlChannel is the co-located archive IPC control URI.
@@ -169,6 +173,9 @@ func (cfg Config) ValidateForConnect() error {
 			return err
 		}
 	}
+	if err := validateResponseMode(requestChannel, responseChannel); err != nil {
+		return err
+	}
 
 	if cfg.ConnectTimeout <= 0 {
 		return errors.New("archive: ConnectTimeout must be positive")
@@ -195,6 +202,8 @@ func (cfg Config) ValidateForConnect() error {
 }
 
 // EffectiveControlRequestChannel returns the request URI after IPC-first selection.
+// After a control-mode=response connect, Client.Config reports the URI with
+// response-correlation-id added.
 func (cfg Config) EffectiveControlRequestChannel() string {
 	return cfg.effectiveControlRequestChannel
 }

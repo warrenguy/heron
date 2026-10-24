@@ -422,6 +422,56 @@ func TestArchiveClient_ownedTransportDriverShutdownClosesSession(t *testing.T) {
 	require.ErrorIs(t, fault, conductor.ErrDriverShutdown)
 }
 
+// TestArchiveClient_responseChannelConnect asserts connect succeeds with a
+// control-mode=response response channel over UDP and over IPC.
+func TestArchiveClient_responseChannelConnect(t *testing.T) {
+	md := harness.StartParallel(t)
+	ports := harness.FreeUDPPorts(t, 2)
+	controlPort, responsePort := ports[0], ports[1]
+	node := harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
+		AeronDir:       md.Dir,
+		ControlChannel: harness.ArchiveControlChannel(controlPort),
+	})
+	aeronClient, _ := harness.ConnectIPCClient(t, md)
+
+	tests := []struct {
+		name            string
+		requestChannel  string
+		responseChannel string
+	}{
+		{
+			name:           "udp",
+			requestChannel: harness.ArchiveControlChannel(controlPort),
+			responseChannel: "aeron:udp?control-mode=response|control=" +
+				harness.LoopbackUDPEndpoint(responsePort),
+		},
+		{
+			name:            "ipc",
+			requestChannel:  archive.DefaultLocalControlChannel,
+			responseChannel: "aeron:ipc?control-mode=response",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := archive.Config{
+				ControlRequestChannel:  tc.requestChannel,
+				ControlResponseChannel: tc.responseChannel,
+				Aeron:                  aeronClient,
+			}.WithRemoteControl().Normalize()
+			archiveClient, err := archive.Connect(t.Context(), cfg)
+			require.NoError(t, err)
+			harness.CleanupClose(t, "close archive client", archiveClient.Close)
+
+			require.Equal(t, node.ArchiveID, strconv.FormatInt(archiveClient.ArchiveID(), 10))
+			require.Contains(
+				t,
+				archiveClient.Config().EffectiveControlRequestChannel(),
+				aeron.ChannelResponseCorrelationIDParam,
+			)
+		})
+	}
+}
+
 // connectArchiveClient connects an archive client over the local control
 // channel on aeronClient. Cleanup closes the client.
 func connectArchiveClient(t *testing.T, aeronClient *aeron.Client) *archive.Client {

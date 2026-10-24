@@ -8,6 +8,19 @@ const ChannelEndpointParam = "endpoint="
 // ChannelSessionIDParam is the session-id= URI param prefix.
 const ChannelSessionIDParam = "session-id="
 
+// ChannelRejoinParam is the rejoin= URI param prefix.
+const ChannelRejoinParam = "rejoin="
+
+// ChannelControlModeParam is the control-mode= URI param prefix.
+const ChannelControlModeParam = "control-mode="
+
+// ChannelControlModeResponse is the control-mode value for response channels.
+const ChannelControlModeResponse = "response"
+
+// ChannelResponseCorrelationIDParam is the response-correlation-id= URI param
+// prefix.
+const ChannelResponseCorrelationIDParam = "response-correlation-id="
+
 // ChannelParamIndex returns the index of param in channel, or -1 when absent.
 // A match counts only after '?'. With acceptPipeBoundary, a match after '|'
 // also counts.
@@ -82,6 +95,16 @@ func ChannelEndpointNeedsWildcardPortResolution(channel string) bool {
 	return strings.HasSuffix(ChannelParamValue(channel, paramIdx, ChannelEndpointParam), ":0")
 }
 
+// IsControlModeResponse reports whether channel sets control-mode=response.
+func IsControlModeResponse(channel string) bool {
+	paramIdx := ChannelParamIndex(channel, ChannelControlModeParam, true)
+	if paramIdx < 0 {
+		return false
+	}
+	return ChannelParamValue(channel, paramIdx, ChannelControlModeParam) ==
+		ChannelControlModeResponse
+}
+
 // ReplaceChannelEndpoint returns channel with the endpoint= value set to
 // endpoint. It returns channel unchanged when channel has no endpoint= param.
 func ReplaceChannelEndpoint(channel, endpoint string) string {
@@ -90,4 +113,14 @@ func ReplaceChannelEndpoint(channel, endpoint string) string {
 		return channel
 	}
 	return ReplaceChannelParamValue(channel, paramIdx, ChannelEndpointParam, endpoint)
+}
+
+// SetChannelParam returns channel with param set to value. It appends the
+// param when absent and replaces the value when present.
+func SetChannelParam(channel, param, value string) string {
+	paramIdx := ChannelParamIndex(channel, param, true)
+	if paramIdx < 0 {
+		return AppendChannelParam(channel, param, value)
+	}
+	return ReplaceChannelParamValue(channel, paramIdx, param, value)
 }

@@ -4,6 +4,7 @@ package archive
 
 import (
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -127,6 +128,69 @@ func TestAsyncConnect_happyPathIPC(t *testing.T) {
 	require.NotNil(t, result.ControlSubscription)
 	require.False(t, result.OwnsAeronClient)
 	require.Equal(t, ConnectStateDone, ac.State())
+}
+
+func TestAsyncConnect_responseModeRequestChannel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		requestChannel  string
+		responseChannel string
+		// localControl skips WithRemoteControl. IPC-first selection then
+		// replaces both control channels.
+		localControl bool
+		// wantRequestPrefix is the request channel up to the registration id.
+		// Empty means the request channel is unchanged.
+		wantRequestPrefix string
+	}{
+		{
+			name:              "response_mode",
+			requestChannel:    "aeron:udp?endpoint=localhost:8010",
+			responseChannel:   "aeron:udp?control-mode=response|control=localhost:10002",
+			wantRequestPrefix: "aeron:udp?endpoint=localhost:8010|response-correlation-id=",
+		},
+		{
+			name:            "default_mode_unchanged",
+			requestChannel:  "aeron:ipc",
+			responseChannel: "aeron:ipc",
+		},
+		{
+			name:            "local_control_ignores_response_mode",
+			requestChannel:  "aeron:ipc",
+			responseChannel: "aeron:ipc?control-mode=response",
+			localControl:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness, ac := newAsyncConnectFixture(t, func(cfg Config) Config {
+				if !tc.localControl {
+					cfg = cfg.WithRemoteControl()
+				}
+				cfg.ControlRequestChannel = tc.requestChannel
+				cfg.ControlResponseChannel = tc.responseChannel
+				return cfg
+			})
+			registerAsyncConnectClose(t, ac)
+
+			setupAsyncConnectControlReady(t, harness, ac)
+			require.Equal(t, ConnectStateCreateControlRequestPublication, ac.State())
+
+			wantRequestChannel := tc.requestChannel
+			if tc.localControl {
+				wantRequestChannel = DefaultLocalControlChannel
+			}
+			if tc.wantRequestPrefix != "" {
+				registrationID := ac.ControlResponseSubscriptionForTest().RegistrationID()
+				wantRequestChannel = tc.wantRequestPrefix + strconv.FormatInt(registrationID, 10)
+			}
+			require.Equal(t, wantRequestChannel, ac.ConfigForTest().EffectiveControlRequestChannel())
+		})
+	}
 }
 
 type asyncConnectChallengeRoundTripState struct {
