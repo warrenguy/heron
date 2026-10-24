@@ -82,6 +82,28 @@ func ownedConnectConfigForTest(
 	return cfg
 }
 
+// newHarnessAsyncConnect returns a connect on the harness client. With owned
+// set, the connect owns that client.
+func newHarnessAsyncConnect(
+	t *testing.T,
+	owned bool,
+) (*aeron.AsyncConnectTestHarness, *AsyncConnect) {
+	t.Helper()
+
+	harness := aeron.NewAsyncConnectTestHarness(t)
+	var cfg Config
+	if owned {
+		cfg = ownedConnectConfigForTest(t, harness, ownedHarnessClientFactory(harness))
+	} else {
+		cfg = connectConfigForTest(harness.Client, "")
+	}
+	ac, err := NewAsyncConnect(t.Context(), cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ac.Close() })
+	require.Equal(t, owned, ac.OwnsAeronClient())
+	return harness, ac
+}
+
 func connectConfigWithInvalidEndpoints(cfg Config) Config {
 	cfg.IngressChannel = "aeron:udp?ttl=16"
 	cfg.IngressEndpoints = "not-valid-endpoints"
@@ -170,6 +192,47 @@ func TestAwaitClusterConnect_success(t *testing.T) {
 	require.True(t, result.EgressSubscription.IsConnected())
 	require.NotNil(t, result.IngressPublication)
 	require.True(t, result.IngressPublication.IsConnected())
+}
+
+// TestAwaitClusterConnect_oneTickPerStep asserts that the transport client
+// gets one DoWork per await step. Connect ticks a caller-supplied client.
+// Poll ticks a connect-owned client.
+func TestAwaitClusterConnect_oneTickPerStep(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		owned bool
+	}{
+		{name: "owned", owned: true},
+		{name: "caller_supplied", owned: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness, ac := newHarnessAsyncConnect(t, tc.owned)
+			var ticks int
+			harness.SetDoWorkAfterHook(func() { ticks++ })
+
+			// The observer reads the tick count before each step. It cancels
+			// the loop after four steps.
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var observed []int
+			SetAwaitClusterConnectStepObserverForTest(t, ac, func() {
+				observed = append(observed, ticks)
+				if len(observed) == 4 {
+					cancel()
+				}
+			})
+
+			result, err := awaitClusterConnect(ctx, ac)
+			require.ErrorIs(t, err, context.Canceled)
+			require.Nil(t, result)
+			require.Equal(t, []int{0, 1, 2, 3}, observed)
+		})
+	}
 }
 
 func TestConnect_canceled(t *testing.T) {

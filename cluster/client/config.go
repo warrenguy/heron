@@ -12,9 +12,12 @@ import (
 // Config holds cluster client configuration. Normalize before Validate and
 // before connect.
 //
-// Heron transport is invoker-only: during AsyncConnect.Poll() and the session duty
-// cycle, the caller must invoke client.DoWork() on the transport *aeron.Client
-// between idle/backoff steps. There is no AgentInvoker field on Config.
+// With Aeron set, the caller must call DoWork on that client between idle
+// steps. This holds during AsyncConnect.Poll and in the session duty cycle.
+// With Aeron nil, AsyncConnect.Poll ticks the connect-owned client until
+// connect completes. After that, the caller ticks ConnectResult.Aeron.
+//
+// There is no AgentInvoker field.
 type Config struct {
 	// IngressChannel is required for cluster connect.
 	IngressChannel string

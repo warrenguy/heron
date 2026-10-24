@@ -86,8 +86,9 @@ func awaitClusterConnectStepObserverFor(ac *AsyncConnect) awaitClusterConnectSte
 	return awaitClusterConnectStepObservers.Load(ac)
 }
 
-// SetAwaitClusterConnectStepObserverForTest registers a callback invoked at the start
-// of each awaitClusterConnect loop iteration before DoWork and Poll.
+// SetAwaitClusterConnectStepObserverForTest registers a callback invoked at the
+// start of each awaitClusterConnect loop iteration, before the caller-supplied
+// client tick and before Poll.
 func SetAwaitClusterConnectStepObserverForTest(
 	tb testing.TB,
 	ac *AsyncConnect,
