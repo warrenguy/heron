@@ -3,6 +3,7 @@
 package consensus
 
 import (
+	"math"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -135,10 +136,6 @@ type snapshotHoldModel struct {
 	acked        []int
 }
 
-func (m *snapshotHoldModel) isRetired(position int64) bool {
-	return slices.Contains(m.retired, position)
-}
-
 // heldBound lowers boundPosition to a pending snapshot wait, else to the
 // module take position.
 func (m *snapshotHoldModel) heldBound(boundPosition int64) int64 {
@@ -188,19 +185,10 @@ func (m *snapshotHoldModel) replay(boundPosition int64) {
 }
 
 // canAck reports whether service serviceID may ack its next snapshot action.
-// The action end must sit at or below commit. Every service must have acked
-// each earlier retired action.
+// The action end must sit at or below commit.
 func (m *snapshotHoldModel) canAck(serviceID int) bool {
 	k := m.acked[serviceID]
-	if k >= len(m.snapshotEnds) || m.snapshotEnds[k] > m.commit {
-		return false
-	}
-	for r := range k {
-		if m.isRetired(m.snapshotEnds[r]) && !m.everyServiceAcked(r) {
-			return false
-		}
-	}
-	return true
+	return k < len(m.snapshotEnds) && m.snapshotEnds[k] <= m.commit
 }
 
 func (m *snapshotHoldModel) everyServiceAcked(index int) bool {
@@ -250,20 +238,25 @@ func (m *snapshotHoldModel) retire() {
 	}
 }
 
-// expectedAckID returns the popped count plus one per retired action that
-// every service has acked. With zero services, retired actions do not advance
-// the id.
+// expectedAckID returns the lowest expected ack id across services. The
+// expected id of a service is its acked count minus its acks for waits that
+// have not popped. Every other acked action popped or dropped at a retired
+// position. With zero services, returns the popped count.
 func (m *snapshotHoldModel) expectedAckID() int64 {
-	id := m.popped
 	if m.serviceCount == 0 {
-		return id
+		return m.popped
 	}
-	for _, position := range m.retired {
-		if m.everyServiceAcked(slices.Index(m.snapshotEnds, position)) {
-			id++
+	lowest := int64(math.MaxInt64)
+	for _, count := range m.acked {
+		next := int64(count)
+		for _, end := range m.snapshotEnds[:count] {
+			if slices.Contains(m.waits, end) {
+				next--
+			}
 		}
+		lowest = min(lowest, next)
 	}
-	return id
+	return lowest
 }
 
 // writeSnapshotHoldFrames writes one frame per kind from position 0. Returns

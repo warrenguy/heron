@@ -398,14 +398,12 @@ func (a *Agent) handleServiceControlFragment(buf []byte, offset int) {
 // Behaviour:
 //   - A frame at a retired snapshot position drops before the offer when
 //     dropAbandonedSnapshotAck reports true. The drop clears the owed flag of
-//     the sending service at that position, then notes the dropped AckID so
-//     serviceAckID can skip that step.
+//     the sending service at that position, then notes the dropped AckID
+//     through [serviceAckTracker.noteDropped].
 //   - A refused offer (service id out of range) drops the frame and runs no
 //     check.
-//   - A successful offer calls afterOfferSequenceError for the expected
-//     serviceAckID step. The check uses the first queued entry for that step,
-//     not the incoming frame position. Multiple serviceAckID steps may sit in
-//     one FIFO behind that first entry.
+//   - A successful offer calls afterOfferSequenceError. The check uses the
+//     first entry in queue 0, not the incoming frame position.
 //   - An empty lower-id queue stops the walk. Later queues are not examined.
 //     No mark in that case.
 //   - ErrServiceAckOutOfSequence marks serviceAckFailure once. The first cause
@@ -415,8 +413,7 @@ func (a *Agent) handleServiceControlFragment(buf []byte, offset int) {
 // logPosition) match via hasReachedServiceAcks at the wait position.
 func (a *Agent) handleServiceAck(fields codecs.ServiceAckFields) {
 	if a.dropAbandonedSnapshotAck(fields.ServiceID, fields.LogPosition) {
-		a.noteAbandonedSnapshotAckID(fields.ServiceID, fields.AckID)
-		a.advancePastAbandonedSnapshotAcks()
+		a.serviceAcks.noteDropped(fields.ServiceID, fields.AckID)
 		return
 	}
 	if !a.serviceAcks.offer(fields.ServiceID, serviceAck{
@@ -426,7 +423,7 @@ func (a *Agent) handleServiceAck(fields codecs.ServiceAckFields) {
 	}) {
 		return
 	}
-	err := a.serviceAcks.afterOfferSequenceError(a.serviceAckID)
+	err := a.serviceAcks.afterOfferSequenceError()
 	if err != nil && a.serviceAckFailure == nil {
 		a.serviceAckFailure = err
 	}

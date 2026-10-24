@@ -178,6 +178,287 @@ func TestServiceControl_waitSequencing_rapid(t *testing.T) {
 	})
 }
 
+type retiredAckOpKind int
+
+const (
+	retiredAckOpControl retiredAckOpKind = iota
+	retiredAckOpSnapshot
+	retiredAckOpAck
+	retiredAckOpSwap
+	retiredAckOpWork
+	retiredAckOpPrepare
+	retiredAckOpTruncate
+	retiredAckOpFault
+)
+
+type retiredAckFaultShape int
+
+const (
+	// retiredAckFaultPosition sends the next id at a position that a frame
+	// never uses.
+	retiredAckFaultPosition retiredAckFaultShape = iota
+	// retiredAckFaultPreviousID sends the previous id at the next frame
+	// position: a repeated or stale id.
+	retiredAckFaultPreviousID
+	// retiredAckFaultSkippedID sends the next id plus one at the next frame
+	// position.
+	retiredAckFaultSkippedID
+)
+
+// retiredAckFrame is one coordination frame in the retired ack model.
+type retiredAckFrame struct {
+	position int64
+	snapshot bool
+}
+
+// Asserts per-service ack ids over random control waits, snapshot waits,
+// prepares that retire the snapshot wait, and per-service delivery orders.
+// Ack id i of service s names frame order[s][i]. A late delivery swaps a
+// retired snapshot frame with the control frame after it. A swap never pairs
+// frames at one position. A control wait may reuse a retired position after
+// the retired frame. A truncate below a retired position removes every
+// unacked retired snapshot frame above it from each service's order. One
+// optional fault sends a bad ack at a non-retired position.
+//
+// Invariants each step:
+//   - Before a fault, a failure never marks.
+//   - ExpectedServiceAckID never decreases. Before a fault, it never exceeds
+//     the lowest cursor.
+//   - Each expected id is at most the cursor of its service. Each dropped id
+//     sits above the expected id of its service.
+//   - A pending snapshot wait position sits once in the FIFO.
+//
+// A final drain queues one control wait and each service acks every frame in
+// its order. Without a fault every wait pops and the expected id of each
+// service reaches its own frame count. With a fault the failure marks.
+func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		serviceCount := rapid.IntRange(1, 3).Draw(rt, "serviceCount")
+		// Outer t: rapid.T is not testing.TB (missing ArtifactDir).
+		a, q, _ := agentWithServiceControl(t, serviceCount)
+		a.SetLogTruncateControl(&fakeLogTruncateControl{})
+		a.SetLogRecordingID(77)
+
+		var frames []retiredAckFrame
+		order := make([][]int, serviceCount)
+		cursor := make([]int, serviceCount)
+		var retired []int64
+		nextPosition := int64(0)
+		faulted := false
+		lastExpectedID := int64(0)
+
+		freshPosition := func() int64 {
+			nextPosition += 64
+			return nextPosition
+		}
+		addFrame := func(frame retiredAckFrame) {
+			frames = append(frames, frame)
+			for sid := range order {
+				order[sid] = append(order[sid], len(frames)-1)
+			}
+		}
+		queueControl := func(position int64) {
+			rt.Helper()
+			fields := sampleJoinLogFields()
+			fields.LogPosition = position
+			require.Equal(rt, 1, a.publishOrQueueJoinLog(fields))
+			addFrame(retiredAckFrame{position: position})
+		}
+		isRetired := func(frame retiredAckFrame) bool {
+			return frame.snapshot && slices.Contains(retired, frame.position)
+		}
+		ack := func(sid int) {
+			rt.Helper()
+			frame := frames[order[sid][cursor[sid]]]
+			enqueueServiceAck(t, q, frame.position, int64(cursor[sid]), int32(sid))
+			require.Equal(rt, 1, a.pollServiceControl())
+			cursor[sid]++
+		}
+		requireInvariants := func(step string) {
+			rt.Helper()
+			expectedID := a.ExpectedServiceAckID()
+			require.GreaterOrEqual(rt, expectedID, lastExpectedID, step)
+			lastExpectedID = expectedID
+			if !faulted {
+				require.NoError(rt, a.ServiceAckFailure(), step)
+				require.LessOrEqual(rt, expectedID, int64(slices.Min(cursor)), step)
+			}
+			for sid := range serviceCount {
+				next := a.serviceAcks.nextAckIDs[sid]
+				require.LessOrEqual(rt, next, int64(cursor[sid]), step)
+				for _, id := range a.serviceAcks.droppedAckIDs[sid] {
+					require.Greater(rt, id, next, step)
+				}
+			}
+			if wait := a.snapshotWaitPosition; wait != 0 {
+				count := 0
+				for _, w := range a.serviceAckWaits {
+					if w == wait {
+						count++
+					}
+				}
+				require.Equal(rt, 1, count, step)
+			}
+		}
+
+		opNames := []string{"control", "snapshot", "ack", "swap", "work", "prepare", "truncate", "fault"}
+		steps := rapid.IntRange(1, 60).Draw(rt, "steps")
+		for range steps {
+			ops := []retiredAckOpKind{
+				retiredAckOpControl,
+				retiredAckOpSnapshot,
+				retiredAckOpAck,
+				retiredAckOpAck,
+				retiredAckOpAck,
+				retiredAckOpSwap,
+				retiredAckOpWork,
+				retiredAckOpPrepare,
+				retiredAckOpPrepare,
+				retiredAckOpTruncate,
+			}
+			if !faulted {
+				ops = append(ops, retiredAckOpFault)
+			}
+			op := rapid.SampledFrom(ops).Draw(rt, "op")
+			sid := rapid.IntRange(0, serviceCount-1).Draw(rt, "serviceID")
+			switch op {
+			case retiredAckOpControl:
+				position := freshPosition()
+				reuse := len(a.serviceAckWaits) == 0 && len(retired) > 0 &&
+					rapid.Bool().Draw(rt, "reuseRetired")
+				if reuse {
+					position = rapid.SampledFrom(retired).Draw(rt, "retiredPosition")
+				}
+				queueControl(position)
+
+			case retiredAckOpSnapshot:
+				// handleClusterAction does not queue a wait after the failure
+				// mark.
+				if a.snapshotWaitPosition != 0 || a.ServiceAckFailure() != nil {
+					break
+				}
+				position := freshPosition()
+				a.queueSnapshotWait(position, 0, 0)
+				addFrame(retiredAckFrame{position: position, snapshot: true})
+
+			case retiredAckOpAck:
+				if cursor[sid] < len(order[sid]) {
+					ack(sid)
+				}
+
+			case retiredAckOpSwap:
+				k := cursor[sid]
+				if k+1 >= len(order[sid]) {
+					break
+				}
+				first, second := frames[order[sid][k]], frames[order[sid][k+1]]
+				if isRetired(first) && !second.snapshot && second.position != first.position {
+					order[sid][k], order[sid][k+1] = order[sid][k+1], order[sid][k]
+				}
+
+			case retiredAckOpWork:
+				a.serviceControlWork()
+
+			case retiredAckOpPrepare:
+				if pending := a.snapshotWaitPosition; pending != 0 {
+					retired = append(retired, pending)
+				}
+				_, prepared, err := a.PrepareForNewLeadership(0, 1)
+				require.NoError(rt, err)
+				require.True(rt, prepared)
+
+			case retiredAckOpTruncate:
+				if len(retired) == 0 {
+					break
+				}
+				above := rapid.SampledFrom(retired).Draw(rt, "truncateAbove")
+				position := rapid.Int64Range(0, above/64-1).Draw(rt, "truncateSlot") * 64
+				require.NoError(rt, a.TruncateLogEntry(0, position))
+				// The service never reads a truncated frame, so it never
+				// acks one. Later ack ids of the service shift down.
+				for service := range order {
+					acked := order[service][:cursor[service]]
+					unacked := slices.DeleteFunc(
+						slices.Clone(order[service][cursor[service]:]),
+						func(frameIndex int) bool {
+							frame := frames[frameIndex]
+							return isRetired(frame) && frame.position > position
+						},
+					)
+					order[service] = slices.Concat(acked, unacked)
+				}
+
+			case retiredAckOpFault:
+				shape := rapid.SampledFrom([]retiredAckFaultShape{
+					retiredAckFaultPosition,
+					retiredAckFaultPreviousID,
+					retiredAckFaultSkippedID,
+				}).Draw(rt, "faultShape")
+				ackID := int64(cursor[sid])
+				// An odd position is never a frame position.
+				position := nextPosition + 1
+				if shape != retiredAckFaultPosition {
+					// The drop path accepts any ack at a retired position.
+					// Id faults need a control frame at a non-retired
+					// position.
+					if cursor[sid] >= len(order[sid]) {
+						break
+					}
+					frame := frames[order[sid][cursor[sid]]]
+					if frame.snapshot || slices.Contains(retired, frame.position) {
+						break
+					}
+					position = frame.position
+					if shape == retiredAckFaultPreviousID {
+						if ackID == 0 {
+							break
+						}
+						ackID--
+					} else {
+						ackID++
+					}
+				}
+				enqueueServiceAck(t, q, position, ackID, int32(sid))
+				require.Equal(rt, 1, a.pollServiceControl())
+				faulted = true
+			}
+			requireInvariants(opNames[op])
+		}
+
+		// Final drain: a closing control wait makes the walk reach any faulty
+		// entry. Each service acks every remaining frame.
+		queueControl(freshPosition())
+		for sid := range serviceCount {
+			for cursor[sid] < len(order[sid]) {
+				ack(sid)
+				a.serviceControlWork()
+				requireInvariants("final drain")
+			}
+		}
+		for range len(a.serviceAckWaits) + 1 {
+			a.serviceControlWork()
+		}
+		requireInvariants("final drain")
+
+		if faulted {
+			require.ErrorIs(rt, a.ServiceAckFailure(), ErrServiceAckOutOfSequence)
+			return
+		}
+		require.Empty(rt, a.serviceAckWaits)
+		lowestFrameCount := int64(len(order[0]))
+		for sid := range serviceCount {
+			frameCount := int64(len(order[sid]))
+			lowestFrameCount = min(lowestFrameCount, frameCount)
+			require.Equal(rt, 0, a.ServiceAckQueueDepth(int32(sid)))
+			require.Equal(rt, frameCount, a.serviceAcks.nextAckIDs[sid])
+			require.Empty(rt, a.serviceAcks.droppedAckIDs[sid])
+		}
+		require.Equal(rt, lowestFrameCount, a.ExpectedServiceAckID())
+		require.NoError(rt, a.ServiceAckFailure())
+	})
+}
+
 type replayJoinOpKind int
 
 const (

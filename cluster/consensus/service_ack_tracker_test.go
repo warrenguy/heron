@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -10,7 +11,7 @@ func TestServiceAckTracker_empty(t *testing.T) {
 	t.Parallel()
 
 	tr := newServiceAckTracker(2)
-	ok, err := tr.hasReached(100, 0)
+	ok, err := tr.hasReached(100)
 	require.False(t, ok)
 	require.NoError(t, err)
 }
@@ -24,7 +25,7 @@ func TestServiceAckTracker_walkOrder(t *testing.T) {
 		// Queue 0 empty; queue 1 first entry mismatches on ackID. Walk stops at
 		// queue 0 and does not examine queue 1.
 		require.True(t, tr.offer(1, serviceAck{ackID: 99, logPosition: 100}))
-		ok, err := tr.hasReached(100, 0)
+		ok, err := tr.hasReached(100)
 		require.False(t, ok)
 		require.NoError(t, err)
 		require.Equal(t, 0, tr.queueDepth(0))
@@ -36,7 +37,7 @@ func TestServiceAckTracker_walkOrder(t *testing.T) {
 		tr := newServiceAckTracker(2)
 		// Queue 0 first entry mismatched; queue 1 empty.
 		require.True(t, tr.offer(0, serviceAck{ackID: 99, logPosition: 100}))
-		ok, err := tr.hasReached(100, 0)
+		ok, err := tr.hasReached(100)
 		require.False(t, ok)
 		require.ErrorIs(t, err, ErrServiceAckOutOfSequence)
 	})
@@ -48,7 +49,7 @@ func TestServiceAckTracker_walkOrder(t *testing.T) {
 		// closed on 1.
 		require.True(t, tr.offer(0, serviceAck{ackID: 0, logPosition: 100}))
 		require.True(t, tr.offer(1, serviceAck{ackID: 1, logPosition: 100}))
-		ok, err := tr.hasReached(100, 0)
+		ok, err := tr.hasReached(100)
 		require.False(t, ok)
 		require.ErrorIs(t, err, ErrServiceAckOutOfSequence)
 		require.Equal(t, 1, tr.queueDepth(0))
@@ -67,7 +68,7 @@ func TestServiceAckTracker_matchCheckOnly(t *testing.T) {
 
 	// Twice: same result. Still check-only.
 	for range 2 {
-		ok, err := tr.hasReached(42, 0)
+		ok, err := tr.hasReached(42)
 		require.True(t, ok)
 		require.NoError(t, err)
 		require.Equal(t, 1, tr.queueDepth(0))
@@ -100,7 +101,7 @@ func TestServiceAckTracker_mismatchFailClosed(t *testing.T) {
 			t.Parallel()
 			tr := newServiceAckTracker(1)
 			require.True(t, tr.offer(0, tt.ack))
-			ok, err := tr.hasReached(100, 0)
+			ok, err := tr.hasReached(100)
 			require.False(t, ok)
 			require.ErrorIs(t, err, ErrServiceAckOutOfSequence)
 			require.Equal(t, 1, tr.queueDepth(0))
@@ -116,12 +117,12 @@ func TestServiceAckTracker_multiService(t *testing.T) {
 		tr := newServiceAckTracker(2)
 		require.True(t, tr.offer(0, serviceAck{ackID: 0, logPosition: 10}))
 		// Service 1 lagging: no offer yet.
-		ok, err := tr.hasReached(10, 0)
+		ok, err := tr.hasReached(10)
 		require.False(t, ok)
 		require.NoError(t, err)
 
 		require.True(t, tr.offer(1, serviceAck{ackID: 0, logPosition: 10}))
-		ok, err = tr.hasReached(10, 0)
+		ok, err = tr.hasReached(10)
 		require.True(t, ok)
 		require.NoError(t, err)
 	})
@@ -137,7 +138,7 @@ func TestServiceAckTracker_multiService(t *testing.T) {
 			require.True(t, tr.offer(id, second))
 		}
 
-		ok, err := tr.hasReached(50, 0)
+		ok, err := tr.hasReached(50)
 		require.False(t, ok)
 		require.NoError(t, err)
 		require.Equal(t, 2, tr.queueDepth(0))
@@ -145,7 +146,7 @@ func TestServiceAckTracker_multiService(t *testing.T) {
 		require.Equal(t, 0, tr.queueDepth(2))
 
 		require.True(t, tr.offer(2, first))
-		ok, err = tr.hasReached(50, 0)
+		ok, err = tr.hasReached(50)
 		require.True(t, ok)
 		require.NoError(t, err)
 	})
@@ -155,7 +156,7 @@ func TestServiceAckTracker_multiService(t *testing.T) {
 		tr := newServiceAckTracker(2)
 		require.True(t, tr.offer(1, serviceAck{ackID: 0, logPosition: 1}))
 		require.True(t, tr.offer(0, serviceAck{ackID: 0, logPosition: 1}))
-		ok, err := tr.hasReached(1, 0)
+		ok, err := tr.hasReached(1)
 		require.True(t, ok)
 		require.NoError(t, err)
 	})
@@ -166,13 +167,14 @@ func TestServiceAckTracker_serviceCountZero(t *testing.T) {
 
 	tr := newServiceAckTracker(0)
 	require.Empty(t, tr.queues)
-	ok, err := tr.hasReached(0, 0)
+	ok, err := tr.hasReached(0)
 	require.True(t, ok)
 	require.NoError(t, err)
 
-	// removeHead is a no-op with zero queues.
+	// removeHead counts the pop even with zero queues.
 	tr.removeHead()
-	ok, err = tr.hasReached(99, 7)
+	require.Equal(t, int64(1), tr.expectedAckID())
+	ok, err = tr.hasReached(99)
 	require.True(t, ok)
 	require.NoError(t, err)
 }
@@ -204,7 +206,7 @@ func TestServiceAckTracker_removeHeadFIFO(t *testing.T) {
 		require.True(t, tr.offer(id, second))
 	}
 
-	ok, err := tr.hasReached(10, 0)
+	ok, err := tr.hasReached(10)
 	require.True(t, ok)
 	require.NoError(t, err)
 
@@ -212,11 +214,13 @@ func TestServiceAckTracker_removeHeadFIFO(t *testing.T) {
 	require.Equal(t, 1, tr.queueDepth(0))
 	require.Equal(t, 1, tr.queueDepth(1))
 
-	// FIFO: next first entries are id 1 at position 20.
-	ok, err = tr.hasReached(20, 1)
+	// FIFO: next first entries are id 1 at position 20. Each expected id
+	// advanced to 1.
+	require.Equal(t, []int64{1, 1}, tr.nextAckIDs)
+	ok, err = tr.hasReached(20)
 	require.True(t, ok)
 	require.NoError(t, err)
-	ok, err = tr.hasReached(10, 0)
+	ok, err = tr.hasReached(10)
 	require.False(t, ok)
 	require.ErrorIs(t, err, ErrServiceAckOutOfSequence)
 }
@@ -229,16 +233,108 @@ func TestServiceAckTracker_dropAt(t *testing.T) {
 	require.True(t, tr.offer(0, serviceAck{ackID: 1, logPosition: 20}))
 	require.True(t, tr.offer(1, serviceAck{ackID: 0, logPosition: 10}))
 
-	var seen []int64
-	tr.dropAt(10, func(_ int32, ack serviceAck) {
-		seen = append(seen, ack.ackID)
+	var seen []int32
+	tr.dropAt(10, func(serviceID int32) {
+		seen = append(seen, serviceID)
 	})
-	require.Equal(t, []int64{0, 0}, seen)
+	require.Equal(t, []int32{0, 1}, seen)
+	require.Equal(t, []int64{1, 1}, tr.nextAckIDs)
 	require.Equal(t, 1, tr.queueDepth(0))
 	require.Equal(t, 0, tr.queueDepth(1))
-	ok, err := tr.hasReached(20, 1)
+	ok, err := tr.hasReached(20)
 	require.False(t, ok)
 	require.NoError(t, err)
+}
+
+func TestServiceAckTracker_noteDropped(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		run         func(t *testing.T, tr *serviceAckTracker)
+		wantNext    []int64
+		wantDropped [][]int64
+	}{
+		{
+			name: "expected id advances the service by one",
+			run: func(t *testing.T, tr *serviceAckTracker) {
+				tr.noteDropped(0, 0)
+			},
+			wantNext:    []int64{1, 0},
+			wantDropped: [][]int64{nil, nil},
+		},
+		{
+			name: "id above the expected id waits",
+			run: func(t *testing.T, tr *serviceAckTracker) {
+				tr.noteDropped(0, 1)
+			},
+			wantNext:    []int64{0, 0},
+			wantDropped: [][]int64{{1}, nil},
+		},
+		{
+			name: "pop that reaches a stored id skips it",
+			run: func(t *testing.T, tr *serviceAckTracker) {
+				require.True(t, tr.offer(0, serviceAck{ackID: 0, logPosition: 10}))
+				require.True(t, tr.offer(1, serviceAck{ackID: 0, logPosition: 10}))
+				tr.noteDropped(0, 1)
+				tr.removeHead()
+			},
+			wantNext:    []int64{2, 1},
+			wantDropped: [][]int64{nil, nil},
+		},
+		{
+			name: "id below the expected id changes nothing",
+			run: func(t *testing.T, tr *serviceAckTracker) {
+				tr.noteDropped(0, 0)
+				tr.noteDropped(0, 0)
+			},
+			wantNext:    []int64{1, 0},
+			wantDropped: [][]int64{nil, nil},
+		},
+		{
+			name: "repeated id changes nothing",
+			run: func(t *testing.T, tr *serviceAckTracker) {
+				tr.noteDropped(1, 2)
+				tr.noteDropped(1, 2)
+			},
+			wantNext:    []int64{0, 0},
+			wantDropped: [][]int64{nil, {2}},
+		},
+		{
+			name: "out-of-range service id changes nothing",
+			run: func(t *testing.T, tr *serviceAckTracker) {
+				tr.noteDropped(-1, 0)
+				tr.noteDropped(2, 0)
+			},
+			wantNext:    []int64{0, 0},
+			wantDropped: [][]int64{nil, nil},
+		},
+		{
+			name: "dropAt over a first and a later entry",
+			run: func(t *testing.T, tr *serviceAckTracker) {
+				require.True(t, tr.offer(0, serviceAck{ackID: 0, logPosition: 10}))
+				require.True(t, tr.offer(0, serviceAck{ackID: 1, logPosition: 20}))
+				require.True(t, tr.offer(0, serviceAck{ackID: 2, logPosition: 10}))
+				tr.dropAt(10, nil)
+				require.Equal(t, 1, tr.queueDepth(0))
+			},
+			wantNext:    []int64{1, 0},
+			wantDropped: [][]int64{{2}, nil},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tr := newServiceAckTracker(2)
+			tt.run(t, tr)
+			require.Equal(t, tt.wantNext, tr.nextAckIDs)
+			for i, want := range tt.wantDropped {
+				require.ElementsMatch(t, want, tr.droppedAckIDs[i])
+			}
+			wantExpected := slices.Min(tt.wantNext)
+			require.Equal(t, wantExpected, tr.expectedAckID())
+		})
+	}
 }
 
 func TestServiceAckTracker_removeHeadEmptyTolerance(t *testing.T) {
@@ -250,6 +346,8 @@ func TestServiceAckTracker_removeHeadEmptyTolerance(t *testing.T) {
 	tr.removeHead()
 	require.Equal(t, 0, tr.queueDepth(0))
 	require.Equal(t, 0, tr.queueDepth(1))
+	require.Equal(t, []int64{1, 0}, tr.nextAckIDs)
+	require.Equal(t, int64(0), tr.expectedAckID())
 }
 
 func TestServiceAckTracker_afterOfferSequenceError(t *testing.T) {
@@ -258,14 +356,14 @@ func TestServiceAckTracker_afterOfferSequenceError(t *testing.T) {
 	t.Run("zero services returns nil", func(t *testing.T) {
 		t.Parallel()
 		tr := newServiceAckTracker(0)
-		require.NoError(t, tr.afterOfferSequenceError(0))
+		require.NoError(t, tr.afterOfferSequenceError())
 	})
 
 	t.Run("empty queue 0 returns nil", func(t *testing.T) {
 		t.Parallel()
 		tr := newServiceAckTracker(2)
 		require.True(t, tr.offer(1, serviceAck{ackID: 99, logPosition: 10}))
-		require.NoError(t, tr.afterOfferSequenceError(0))
+		require.NoError(t, tr.afterOfferSequenceError())
 	})
 
 	t.Run("matched first entry returns nil", func(t *testing.T) {
@@ -274,7 +372,7 @@ func TestServiceAckTracker_afterOfferSequenceError(t *testing.T) {
 		ack := serviceAck{ackID: 0, logPosition: 42}
 		require.True(t, tr.offer(0, ack))
 		require.True(t, tr.offer(1, ack))
-		require.NoError(t, tr.afterOfferSequenceError(0))
+		require.NoError(t, tr.afterOfferSequenceError())
 	})
 
 	t.Run("multi-step first entry match returns nil", func(t *testing.T) {
@@ -282,16 +380,16 @@ func TestServiceAckTracker_afterOfferSequenceError(t *testing.T) {
 		tr := newServiceAckTracker(1)
 		require.True(t, tr.offer(0, serviceAck{ackID: 0, logPosition: 10}))
 		require.True(t, tr.offer(0, serviceAck{ackID: 1, logPosition: 20}))
-		// Asserts expected ack id 0 still matches while later serviceAckID steps sit
-		// behind the first entry.
-		require.NoError(t, tr.afterOfferSequenceError(0))
+		// Asserts expected ack id 0 still matches while later ack ids sit behind
+		// the first entry.
+		require.NoError(t, tr.afterOfferSequenceError())
 	})
 
 	t.Run("mismatched first entry returns out of sequence", func(t *testing.T) {
 		t.Parallel()
 		tr := newServiceAckTracker(1)
 		require.True(t, tr.offer(0, serviceAck{ackID: 1, logPosition: 10}))
-		require.ErrorIs(t, tr.afterOfferSequenceError(0), ErrServiceAckOutOfSequence)
+		require.ErrorIs(t, tr.afterOfferSequenceError(), ErrServiceAckOutOfSequence)
 	})
 }
 

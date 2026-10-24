@@ -1,6 +1,9 @@
 package consensus
 
-import "errors"
+import (
+	"errors"
+	"slices"
+)
 
 // ErrServiceAckOutOfSequence reports a non-empty first queued ServiceAck that
 // does not match the expected ack id and log position exactly.
@@ -18,20 +21,35 @@ type serviceAck struct {
 	relevantID  int64
 }
 
-// serviceAckTracker holds one FIFO queue of acks per configured service.
+// serviceAckTracker holds one FIFO queue of acks per configured service. Each
+// service has its own expected next ack id.
 //
 // Concurrency: invoker-only behind Agent.DoWork. No locks.
 type serviceAckTracker struct {
 	queues [][]serviceAck
+
+	// nextAckIDs holds the ack id each service's first queued entry must carry.
+	nextAckIDs []int64
+
+	// droppedAckIDs holds, per service, dropped ack ids above the expected id
+	// of that service.
+	droppedAckIDs [][]int64
+
+	// popCount counts removeHead calls. expectedAckID reports it with zero
+	// services.
+	popCount int64
 }
 
-// newServiceAckTracker sizes one empty queue per service.
+// newServiceAckTracker sizes one empty queue, expected id and dropped id list
+// per service.
 //
 // serviceCount must be non-negative. Callers that take AgentConfig.ServiceCount
 // must panic on a negative count before construct.
 func newServiceAckTracker(serviceCount int) *serviceAckTracker {
 	return &serviceAckTracker{
-		queues: make([][]serviceAck, serviceCount),
+		queues:        make([][]serviceAck, serviceCount),
+		nextAckIDs:    make([]int64, serviceCount),
+		droppedAckIDs: make([][]int64, serviceCount),
 	}
 }
 
@@ -52,24 +70,24 @@ func (t *serviceAckTracker) offer(serviceID int32, ack serviceAck) bool {
 	return true
 }
 
-// hasReached walks the queues in service-id order (0, 1, ...) and reports
-// whether every first queued entry matches logPosition and ackID exactly.
-// Check-only: never pops.
+// hasReached walks the queues in service-id order (0, 1, ...). It reports
+// whether every first queued entry matches logPosition and the expected id of
+// its service exactly. Check-only: never pops.
 //
 // Returns:
 //   - (false, nil) at the first empty queue; later queues are not examined
 //   - (false, ErrServiceAckOutOfSequence) at the first non-empty first entry
-//     that mismatches on ackID or logPosition
+//     that mismatches on ack id or logPosition
 //   - (true, nil) when every first entry matches
 //
 // With zero services, returns (true, nil).
-func (t *serviceAckTracker) hasReached(logPosition, ackID int64) (bool, error) {
-	for _, q := range t.queues {
+func (t *serviceAckTracker) hasReached(logPosition int64) (bool, error) {
+	for i, q := range t.queues {
 		if len(q) == 0 {
 			return false, nil
 		}
 		first := q[0]
-		if first.ackID != ackID || first.logPosition != logPosition {
+		if first.ackID != t.nextAckIDs[i] || first.logPosition != logPosition {
 			return false, ErrServiceAckOutOfSequence
 		}
 	}
@@ -88,29 +106,36 @@ func (t *serviceAckTracker) firstRelevantIDs() []int64 {
 	return ids
 }
 
-// removeHead pops one entry from every non-empty queue.
+// removeHead pops one entry from every non-empty queue. Each popped service's
+// expected id advances past the popped id, then past each id that service
+// already dropped.
 //
-// Call only after hasReached returned true. Empty queues are tolerated.
+// Call only after hasReached returned true. Empty queues are tolerated: the
+// expected id of an empty queue does not move.
 func (t *serviceAckTracker) removeHead() {
+	t.popCount++
 	for i, q := range t.queues {
-		if len(q) > 0 {
-			t.queues[i] = q[1:]
+		if len(q) == 0 {
+			continue
 		}
+		t.queues[i] = q[1:]
+		t.nextAckIDs[i]++
+		t.skipDroppedAckIDs(i)
 	}
 }
 
-// afterOfferSequenceError runs the receive-time sequence check for expectedAckID.
+// afterOfferSequenceError runs the receive-time sequence check through
+// hasReached.
 //
-// Check-only: never pops. Uses the log position of the first entry in queue 0
-// as the serviceAckID step under check. Does not take the incoming frame
-// position. Multiple serviceAckID steps may sit behind that first entry. Wait
-// paths use hasReached at the wait position instead.
+// Check-only: never pops. Uses the log position of the first entry in queue 0.
+// Does not take the incoming frame position. Later ack ids may sit behind that
+// first entry. Wait paths use hasReached at the wait position instead.
 //
 // Returns:
 //   - nil when there are zero services, or queue 0 is empty (walk cannot start)
-//   - nil when every first entry matches expectedAckID at that log position
+//   - nil when every first entry matches at that log position
 //   - ErrServiceAckOutOfSequence when a non-empty first entry mismatches
-func (t *serviceAckTracker) afterOfferSequenceError(expectedAckID int64) error {
+func (t *serviceAckTracker) afterOfferSequenceError() error {
 	if len(t.queues) == 0 {
 		return nil
 	}
@@ -118,8 +143,51 @@ func (t *serviceAckTracker) afterOfferSequenceError(expectedAckID int64) error {
 	if len(q) == 0 {
 		return nil
 	}
-	_, err := t.hasReached(q[0].logPosition, expectedAckID)
+	_, err := t.hasReached(q[0].logPosition)
 	return err
+}
+
+// noteDropped records ackID of serviceID as dropped without a wait pop. The
+// expected id of the service advances when ackID equals it. A higher id waits
+// in droppedAckIDs until the expected id reaches it. An id below the expected
+// id, a repeated id, or an out-of-range serviceID does not change the tracker.
+func (t *serviceAckTracker) noteDropped(serviceID int32, ackID int64) {
+	if !t.hasService(serviceID) {
+		return
+	}
+	t.noteDroppedAt(int(serviceID), ackID)
+}
+
+// noteDroppedAt records ackID of service i as dropped. i must index a
+// configured queue.
+func (t *serviceAckTracker) noteDroppedAt(i int, ackID int64) {
+	if ackID < t.nextAckIDs[i] || slices.Contains(t.droppedAckIDs[i], ackID) {
+		return
+	}
+	t.droppedAckIDs[i] = append(t.droppedAckIDs[i], ackID)
+	t.skipDroppedAckIDs(i)
+}
+
+// skipDroppedAckIDs advances the expected id of service i past each id that
+// service already dropped. Removes each skipped id from droppedAckIDs.
+func (t *serviceAckTracker) skipDroppedAckIDs(i int) {
+	for {
+		k := slices.Index(t.droppedAckIDs[i], t.nextAckIDs[i])
+		if k < 0 {
+			return
+		}
+		t.droppedAckIDs[i] = slices.Delete(t.droppedAckIDs[i], k, k+1)
+		t.nextAckIDs[i]++
+	}
+}
+
+// expectedAckID returns the lowest expected ack id across services. With zero
+// services, returns the removeHead count.
+func (t *serviceAckTracker) expectedAckID() int64 {
+	if len(t.nextAckIDs) == 0 {
+		return t.popCount
+	}
+	return slices.Min(t.nextAckIDs)
 }
 
 // queueDepth returns the queued ack count for serviceID, or 0 when serviceID is
@@ -131,15 +199,17 @@ func (t *serviceAckTracker) queueDepth(serviceID int32) int {
 	return len(t.queues[serviceID])
 }
 
-// dropAt removes every queued entry whose logPosition equals pos. onDrop runs
-// once per removed entry. onDrop may be nil.
-func (t *serviceAckTracker) dropAt(pos int64, onDrop func(serviceID int32, ack serviceAck)) {
+// dropAt removes every queued entry whose logPosition equals pos. It notes
+// each removed ack id as dropped. onDrop runs once per removed entry. onDrop
+// may be nil.
+func (t *serviceAckTracker) dropAt(pos int64, onDrop func(serviceID int32)) {
 	for i, q := range t.queues {
 		n := 0
 		for _, ack := range q {
 			if ack.logPosition == pos {
+				t.noteDroppedAt(i, ack.ackID)
 				if onDrop != nil {
-					onDrop(int32(i), ack)
+					onDrop(int32(i))
 				}
 				continue
 			}
@@ -150,21 +220,18 @@ func (t *serviceAckTracker) dropAt(pos int64, onDrop func(serviceID int32, ack s
 	}
 }
 
-// hasReachedServiceAcks walks first queued entries against logPosition and the
-// expected serviceAckID. Check-only. See [serviceAckTracker.hasReached].
+// hasReachedServiceAcks walks first queued entries against logPosition.
+// Check-only. See [serviceAckTracker.hasReached].
 func (a *Agent) hasReachedServiceAcks(logPosition int64) (bool, error) {
-	return a.serviceAcks.hasReached(logPosition, a.serviceAckID)
+	return a.serviceAcks.hasReached(logPosition)
 }
 
-// removeServiceAckHead pops one matched first entry from every queue and
-// advances serviceAckID by one. serviceAckID then skips any id that every
-// service has already dropped.
+// removeServiceAckHead pops one matched first entry from every queue. See
+// [serviceAckTracker.removeHead].
 //
 // Call only after hasReachedServiceAcks returned true.
 func (a *Agent) removeServiceAckHead() {
 	a.serviceAcks.removeHead()
-	a.serviceAckID++
-	a.advancePastAbandonedSnapshotAcks()
 }
 
 // ServiceAckQueueDepth returns the queued ack count for serviceID, or 0 when
@@ -175,11 +242,12 @@ func (a *Agent) ServiceAckQueueDepth(serviceID int32) int {
 	return a.serviceAcks.queueDepth(serviceID)
 }
 
-// ExpectedServiceAckID returns the expected next service ack id.
+// ExpectedServiceAckID returns the lowest expected ack id across services.
+// With zero services, returns the popped wait count.
 //
 // Concurrency: invoker-only.
 func (a *Agent) ExpectedServiceAckID() int64 {
-	return a.serviceAckID
+	return a.serviceAcks.expectedAckID()
 }
 
 // ServiceAckFailure returns the first receive-time out-of-sequence failure, or

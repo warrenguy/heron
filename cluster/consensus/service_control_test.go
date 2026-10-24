@@ -200,9 +200,10 @@ func TestHandleServiceAck_batchOrder(t *testing.T) {
 	t.Parallel()
 
 	// Multiple ServiceAcks in one poll batch. Offers keep arrival order.
-	// Receive-time checks the first queued entry for the expected
-	// serviceAckID step, not each incoming frame position. Asserts a multi-
-	// step FIFO marks no out-of-sequence failure.
+	// The receive-time check compares the first queued entry against the
+	// expected ack id of the service, not each incoming frame position.
+	// Asserts a FIFO of several ack ids does not mark an out-of-sequence
+	// failure.
 	a, q := agentWithServiceIngress(1)
 	for i := range 3 {
 		q.Enqueue(encodeServiceAckWire(t, codecs.ServiceAckFields{
@@ -224,7 +225,7 @@ func TestHandleServiceAck_batchOrder(t *testing.T) {
 func TestHandleServiceAck_multiGenRemoveBetween(t *testing.T) {
 	t.Parallel()
 
-	// Two serviceAckID steps with remove between them. Asserts receive stays
+	// Two acks with a remove between them. Asserts receive stays
 	// clean and the next queued entry matches after advance.
 	a, q := agentWithServiceIngress(1)
 	enqueueServiceAck(t, q, 10, 0, 0)
@@ -248,7 +249,7 @@ func TestHandleServiceAck_multiGenRemoveBetween(t *testing.T) {
 func TestHandleServiceAck_multiGenBufferedThenRemove(t *testing.T) {
 	t.Parallel()
 
-	// Two serviceAckID steps land before any remove. The queue holds both.
+	// Two acks land before any remove. The queue holds both.
 	// Asserts the first remove exposes the next queued entry for expected id 1.
 	a, q := agentWithServiceIngress(1)
 	enqueueServiceAck(t, q, 10, 0, 0)
@@ -779,7 +780,7 @@ func TestServiceControlWork_waitSiteMismatch(t *testing.T) {
 	require.NoError(t, a.ServiceAckFailure())
 
 	// Service 0 fills with the same (0, 20) pair. Receive-time checks
-	// hasReached(20, 0): both first entries match at 20. No receive mark.
+	// hasReached(20): both first entries match at 20. No receive mark.
 	enqueueServiceAck(t, q, 20, 0, 0)
 	require.Equal(t, 1, a.pollServiceControl())
 	require.NoError(t, a.ServiceAckFailure())

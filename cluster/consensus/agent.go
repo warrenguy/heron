@@ -375,10 +375,6 @@ type Agent struct {
 	// returns true.
 	serviceAcks *serviceAckTracker
 
-	// serviceAckID is the expected next ack id. Starts at 0. Advances only in
-	// removeServiceAckHead.
-	serviceAckID int64
-
 	// serviceAckFailure is the first marked receive-time out-of-sequence
 	// failure, or nil until marked. Full contract on [Agent.ServiceAckFailure].
 	serviceAckFailure error
@@ -415,8 +411,8 @@ type Agent struct {
 	replayJoinWaitsAhead int
 
 	// serviceAckWaits holds log positions of published coordination points
-	// whose acks are not yet consumed. FIFO. The first entry pairs with
-	// serviceAckID.
+	// whose acks are not yet consumed. FIFO. The first entry pairs with the
+	// expected ack id of each service.
 	serviceAckWaits []int64
 
 	// snapshotWaitPosition is the log position of a pending snapshot action
@@ -454,11 +450,6 @@ type Agent struct {
 	// order. Never cleared.
 	// dropAbandonedSnapshotAck owns the drop rule for acks at these positions.
 	abandonedSnapshotWaits []abandonedSnapshotWait
-
-	// abandonedSnapshotAckIDs stores dropped ServiceAck ids at retired snapshot
-	// positions, one slice per service. serviceAckID advances when every service
-	// has dropped the current expected id.
-	abandonedSnapshotAckIDs [][]int64
 
 	// servicePublishFailure is the first terminal publish failure on the stream
 	// 104 publish path, or nil. Marked once. Distinct from serviceAckFailure on

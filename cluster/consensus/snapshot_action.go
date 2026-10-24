@@ -193,12 +193,10 @@ func (a *Agent) abandonSnapshotPosition(logPosition int64) *abandonedSnapshotWai
 //
 // Behaviour:
 //   - clears snapshotWaitPosition
-//   - drops each tracker entry at the position
-//   - notes each dropped ack id
+//   - drops each tracker entry at the position through
+//     [serviceAckTracker.dropAt], which notes each dropped ack id
 //   - marks each service with no dropped entry as owing one ack at the
 //     position
-//   - advances serviceAckID once every service has dropped the current
-//     expected id
 func (a *Agent) retireSnapshotWait() {
 	pos := a.snapshotWaitPosition
 	a.snapshotWaitPosition = 0
@@ -213,11 +211,9 @@ func (a *Agent) retireSnapshotWait() {
 	for sid := range owed {
 		owed[sid] = true
 	}
-	a.serviceAcks.dropAt(pos, func(serviceID int32, ack serviceAck) {
+	a.serviceAcks.dropAt(pos, func(serviceID int32) {
 		owed[serviceID] = false
-		a.noteAbandonedSnapshotAckID(serviceID, ack.ackID)
 	})
-	a.advancePastAbandonedSnapshotAcks()
 }
 
 // dropAbandonedSnapshotAck reports whether handleServiceAck drops an ack from
@@ -251,8 +247,8 @@ func (a *Agent) clearOwedSnapshotAcksAbove(logPosition int64) {
 }
 
 // dropAbandonedSnapshotLeftovers removes leftover ServiceAck tracker entries
-// at a consumed abandoned snapshot position. Dropped ack ids are noted.
-// serviceAckID advances when every service has dropped the current expected id.
+// at a consumed abandoned snapshot position. [serviceAckTracker.dropAt] notes
+// each dropped ack id.
 //
 // A remaining wait at that position keeps the entries.
 func (a *Agent) dropAbandonedSnapshotLeftovers(consumed int64) {
@@ -262,43 +258,5 @@ func (a *Agent) dropAbandonedSnapshotLeftovers(consumed int64) {
 	if slices.Contains(a.serviceAckWaits, consumed) {
 		return
 	}
-	a.serviceAcks.dropAt(consumed, func(serviceID int32, ack serviceAck) {
-		a.noteAbandonedSnapshotAckID(serviceID, ack.ackID)
-	})
-	a.advancePastAbandonedSnapshotAcks()
-}
-
-func (a *Agent) noteAbandonedSnapshotAckID(serviceID int32, ackID int64) {
-	if !a.serviceAcks.hasService(serviceID) {
-		return
-	}
-	count := len(a.serviceAcks.queues)
-	if len(a.abandonedSnapshotAckIDs) != count {
-		a.abandonedSnapshotAckIDs = make([][]int64, count)
-	}
-	sid := int(serviceID)
-	ids := a.abandonedSnapshotAckIDs[sid]
-	if slices.Contains(ids, ackID) {
-		return
-	}
-	a.abandonedSnapshotAckIDs[sid] = append(ids, ackID)
-}
-
-func (a *Agent) advancePastAbandonedSnapshotAcks() {
-	for a.everyServiceAbandonedAckID(a.serviceAckID) {
-		a.serviceAckID++
-	}
-}
-
-func (a *Agent) everyServiceAbandonedAckID(ackID int64) bool {
-	count := len(a.serviceAcks.queues)
-	if count == 0 || len(a.abandonedSnapshotAckIDs) != count {
-		return false
-	}
-	for sid := range count {
-		if !slices.Contains(a.abandonedSnapshotAckIDs[sid], ackID) {
-			return false
-		}
-	}
-	return true
+	a.serviceAcks.dropAt(consumed, nil)
 }
