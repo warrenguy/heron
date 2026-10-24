@@ -182,9 +182,11 @@ func (f sessionFollower) String() string {
 // credentials open a session, one session message reaches commit with
 // follower witnesses, and the leader registry drains after Close. Drain may
 // complete via SessionCloseRequest or open-session idle TIMEOUT
-// (DefaultSessionTimeoutNs). A final session connects with a Connect-owned
-// transport client on its own driver. A shutdown of that driver closes the
-// session on the next SpinOnce.
+// (DefaultSessionTimeoutNs). A direct AsyncConnect with a connect-owned
+// transport client then completes on Poll alone. Its session opens on the
+// leader. A final session connects with a Connect-owned transport client on
+// its own driver. A shutdown of that driver closes the session on the next
+// SpinOnce.
 func TestClusterSession_opensSendsAndClosesOverDurableMembers(t *testing.T) {
 	t.Parallel()
 
@@ -319,7 +321,86 @@ func TestClusterSession_opensSendsAndClosesOverDurableMembers(t *testing.T) {
 			agent.ClosingSessionCount() == 0
 	})
 
+	requireDirectAsyncConnectOwnedClient(t, set, leader)
 	requireOwnedSessionClosesOnDriverShutdown(t, set, leader)
+}
+
+// requireDirectAsyncConnectOwnedClient runs a direct AsyncConnect with a
+// connect-owned transport client on a new driver. Poll alone must complete
+// the connect. The session from the result must open on the leader.
+func requireDirectAsyncConnectOwnedClient(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	leader *cluster.ConsensusModule,
+) {
+	t.Helper()
+
+	// Phase: Poll alone drives the handshake. The test does not tick the
+	// connect's client.
+	clientDriver := harness.Start(t)
+	connect, err := client.NewAsyncConnect(
+		t.Context(),
+		ownedSessionConfig(leader, clientDriver.Dir),
+	)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "direct async connect", connect.Close)
+	require.True(t, connect.OwnsAeronClient())
+
+	var result *client.ConnectResult
+	var pollErr error
+	requireAwaitTick(t, set, "direct async connect", durableWorkBound, func() bool {
+		result, pollErr = connect.Poll()
+		return result != nil || pollErr != nil
+	})
+	require.NoError(t, pollErr, "direct async connect")
+
+	// The session closes this client before this cleanup runs. A second
+	// Close returns nil.
+	harness.CleanupClose(t, "direct connect client", result.Aeron.Close)
+	require.True(t, result.OwnsAeronClient)
+	require.True(t, result.EgressSubscription.IsConnected())
+
+	// Phase: the session from the result opens on the leader.
+	session, err := client.NewAeronCluster(result)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "direct session", session.Close)
+	requireAwaitTick(t, set, "direct session open", durableWorkBound, sessionPump(
+		session.Aeron(),
+		session,
+		func() bool { return leader.Agent().OpenSessionCount() == 1 },
+	))
+
+	// Phase: Close releases the client the session owns. The leader registry
+	// drains before the next phase connects.
+	require.NoError(t, session.Close())
+	require.Nil(t, session.Aeron())
+	requireAwaitTick(t, set, "direct session registry drained", durableWorkBound, func() bool {
+		agent := leader.Agent()
+		return agent.OpenSessionCount() == 0 &&
+			agent.PendingSessionCount() == 0 &&
+			agent.ClosingSessionCount() == 0
+	})
+}
+
+// ownedSessionConfig returns a client config for a session on the leader.
+// The connect owns a transport client on the driver in aeronDir.
+func ownedSessionConfig(leader *cluster.ConsensusModule, aeronDir string) client.Config {
+	return client.Config{
+		IngressChannel:      cluster.DefaultIngressChannel,
+		IngressEndpoints:    leader.Topology().IngressEndpoints(),
+		EgressChannel:       "aeron:udp?endpoint=127.0.0.1:0",
+		AeronDir:            aeronDir,
+		MessageTimeout:      durableWorkBound,
+		IngressRetryTimeout: durableWorkBound,
+		CredentialsSupplier: fixedCredentialsSupplier{
+			credentials: []byte(sessionSmokeCredentials),
+		},
+		EgressHandler: &client.EgressHandlers{},
+		AeronConfig: aeron.Config{
+			InterServiceTimeout: harness.ConnectedPollTimeout,
+			CloseLingerDuration: 250 * time.Millisecond,
+		},
+	}
 }
 
 // ownedConnectOutcome carries the Connect result from the connect goroutine.
@@ -341,22 +422,7 @@ func requireOwnedSessionClosesOnDriverShutdown(
 	// Phase: Connect pumps its own client on a side goroutine. The test
 	// goroutine ticks the members until the outcome arrives.
 	clientDriver := harness.Start(t)
-	cfg := client.Config{
-		IngressChannel:      cluster.DefaultIngressChannel,
-		IngressEndpoints:    leader.Topology().IngressEndpoints(),
-		EgressChannel:       "aeron:udp?endpoint=127.0.0.1:0",
-		AeronDir:            clientDriver.Dir,
-		MessageTimeout:      durableWorkBound,
-		IngressRetryTimeout: durableWorkBound,
-		CredentialsSupplier: fixedCredentialsSupplier{
-			credentials: []byte(sessionSmokeCredentials),
-		},
-		EgressHandler: &client.EgressHandlers{},
-		AeronConfig: aeron.Config{
-			InterServiceTimeout: harness.ConnectedPollTimeout,
-			CloseLingerDuration: 250 * time.Millisecond,
-		},
-	}
+	cfg := ownedSessionConfig(leader, clientDriver.Dir)
 	outcomes := make(chan ownedConnectOutcome, 1)
 	received := false
 	t.Cleanup(func() {
