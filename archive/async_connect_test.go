@@ -478,43 +478,131 @@ func TestAsyncConnect_timeout(t *testing.T) {
 
 // TestAsyncConnect_ownedClientFaultFailsPoll asserts that a fault that
 // terminates the owned transport client fails Poll with the cause. The fault
-// check runs before the connect deadline check. A later Poll returns the
-// same error.
+// check runs before the connect deadline check. A fault that the Poll tick
+// processes fails that same Poll. A later Poll returns the same error.
 func TestAsyncConnect_ownedClientFaultFailsPoll(t *testing.T) {
 	t.Parallel()
 
-	harness := aeron.NewAsyncConnectTestHarness(t)
-	cfg := ownedConnectConfigForTest(t, harness)
-	cfg.ConnectTimeout = time.Minute
-	ac, err := NewAsyncConnect(t.Context(), cfg)
-	require.NoError(t, err)
-	registerAsyncConnectClose(t, ac)
-	require.True(t, ac.OwnsAeronClient())
+	tests := []struct {
+		name       string
+		callerTick bool
+	}{
+		{name: "caller_tick", callerTick: true},
+		{name: "poll_tick", callerTick: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	// Phase: the control response subscription add completes.
-	setupAsyncConnectControlReady(t, harness, ac)
-	require.Equal(t, ConnectStateCreateControlRequestPublication, ac.State())
+			harness := aeron.NewAsyncConnectTestHarness(t)
+			cfg := ownedConnectConfigForTest(t, harness)
+			cfg.ConnectTimeout = time.Minute
+			ac, err := NewAsyncConnect(t.Context(), cfg)
+			require.NoError(t, err)
+			registerAsyncConnectClose(t, ac)
+			require.True(t, ac.OwnsAeronClient())
 
-	// Phase: the client timeout terminates the owned client. The fault wins
-	// over the expired deadline.
-	transmitClientTimeout(t, harness)
-	harness.DoWork()
-	require.True(t, harness.Client.IsTerminating())
-	ac.deadlineNs = ac.nanoClock() - 1
+			// Phase: the control response subscription add completes.
+			setupAsyncConnectControlReady(t, harness, ac)
+			require.Equal(t, ConnectStateCreateControlRequestPublication, ac.State())
 
-	result, err := ac.Poll()
-	require.Nil(t, result)
-	require.ErrorIs(t, err, ErrTransportTerminating)
-	require.ErrorIs(t, err, conductor.ErrClientTimeout)
+			// Phase: the client timeout terminates the owned client. The
+			// fault wins over the expired deadline.
+			transmitClientTimeout(t, harness)
+			if tc.callerTick {
+				harness.DoWork()
+			}
+			require.Equal(t, tc.callerTick, harness.Client.IsTerminating())
+			ac.deadlineNs = ac.nanoClock() - 1
 
-	// Phase: a later Poll returns the same error.
-	result, again := ac.Poll()
-	require.Nil(t, result)
-	require.Same(t, err, again)
+			result, err := ac.Poll()
+			require.Nil(t, result)
+			require.ErrorIs(t, err, ErrTransportTerminating)
+			require.ErrorIs(t, err, conductor.ErrClientTimeout)
 
-	// Phase: Close closes the owned client.
-	require.NoError(t, ac.Close())
-	require.True(t, aeron.ClientIsClosedForTest(harness.Client))
+			// Phase: a later Poll returns the same error and skips the tick.
+			var ticks int
+			harness.SetDoWorkAfterHook(func() { ticks++ })
+			result, again := ac.Poll()
+			require.Nil(t, result)
+			require.Same(t, err, again)
+			require.Zero(t, ticks)
+
+			// Phase: Close closes the owned client.
+			require.NoError(t, ac.Close())
+			require.True(t, aeron.ClientIsClosedForTest(harness.Client))
+		})
+	}
+}
+
+// TestAsyncConnect_ownedClientCompletesWithoutCallerDoWork asserts that Poll
+// alone drives a connect-owned client to a result. The response image
+// attaches through a conductor tick inside Poll.
+func TestAsyncConnect_ownedClientCompletesWithoutCallerDoWork(t *testing.T) {
+	t.Parallel()
+
+	harness, ac := newHarnessAsyncConnect(t, true)
+
+	var result *ConnectResult
+	var err error
+	deadline := time.Now().Add(asyncConnectPollTimeout)
+	for result == nil && time.Now().Before(deadline) {
+		harness.TryRespondPendingAdds()
+
+		// The archive adds its response publication after the connect
+		// request, so the image event follows the request.
+		sub := ac.ControlResponseSubscriptionForTest()
+		switch {
+		case sub == nil:
+		case sub.IsConnected():
+			writeConnectHandshakeResponses(t, ac)
+		case ac.State() == ConnectStatePollResponse:
+			harness.TransmitAvailableImage(t, sub)
+		}
+
+		result, err = ac.Poll()
+		require.NoError(t, err)
+	}
+	if result == nil {
+		failAsyncConnectPollTimeout(t, ac)
+	}
+
+	require.True(t, result.OwnsAeronClient)
+	require.True(t, result.ControlSubscription.IsConnected())
+	require.False(t, aeron.ClientIsClosedForTest(harness.Client))
+}
+
+// TestAsyncConnect_pollTicksOwnedClientOnly asserts that Poll calls DoWork
+// once on a connect-owned client and never on a caller-supplied client.
+func TestAsyncConnect_pollTicksOwnedClientOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		owned     bool
+		wantTicks int
+	}{
+		{name: "owned", owned: true, wantTicks: 1},
+		{name: "caller_supplied", owned: false, wantTicks: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness, ac := newHarnessAsyncConnect(t, tc.owned)
+			require.Equal(t, ConnectStateCreateControlResponseSubscription, ac.State())
+
+			// The hook counts public DoWork calls. The add paths tick through
+			// doWorkLocked, which the hook does not count.
+			var ticks int
+			harness.SetDoWorkAfterHook(func() { ticks++ })
+
+			result, err := ac.Poll()
+			require.NoError(t, err)
+			require.Nil(t, result)
+			require.Equal(t, tc.wantTicks, ticks)
+		})
+	}
 }
 
 func TestAsyncConnect_pollSendMessage_backPressuredStaysInSendMessage(t *testing.T) {
