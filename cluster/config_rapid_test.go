@@ -87,18 +87,18 @@ func drawValidPartialConfig(t *rapid.T) cluster.Config {
 	cfg.IngressChannel = drawOptionalChannel(t, "ingress_channel", cluster.DefaultIngressChannel)
 
 	if rapid.Bool().Draw(t, "custom_streams") {
-		// Distinct non-zero streams so Consensus, Log, and Ingress still differ
-		// after Normalize. Log range excludes DefaultReplayStreamID,
-		// DefaultIngressStreamID, DefaultServiceStreamID, and
-		// DefaultConsensusModuleStreamID when those stay 0 and Normalize fills
-		// them. Consensus range 501..1000 cannot hit those defaults. Ingress
-		// custom range 1001..1500 cannot hit consensus, log, or those defaults.
+		// Normalize fills each zero stream id with its default. The draws keep
+		// every id distinct after that fill:
+		//   - log draws from 1..500 and skips the defaults Normalize may fill
+		//   - consensus draws from 501..1000, above every default
+		//   - custom ingress draws from 1001..1500, above consensus
 		cfg.LogStreamID = rapid.Int32Range(1, 500).
 			Filter(func(id int32) bool {
 				return id != cluster.DefaultReplayStreamID &&
 					id != cluster.DefaultIngressStreamID &&
 					id != cluster.DefaultServiceStreamID &&
-					id != cluster.DefaultConsensusModuleStreamID
+					id != cluster.DefaultConsensusModuleStreamID &&
+					id != cluster.DefaultSnapshotStreamID
 			}).
 			Draw(t, "log_stream_id")
 		cfg.ConsensusStreamID = rapid.Int32Range(501, 1000).Draw(t, "consensus_stream_id")
@@ -148,7 +148,7 @@ func TestConfigNormalize_idempotent_rapid(t *testing.T) {
 		require.NotNil(t, once.Idle)
 		require.Same(t, once.Idle, twice.Idle)
 
-		// Normalize fills every stream id and keeps the six roles distinct.
+		// Normalize fills every stream id and keeps the ids distinct.
 		streamIDs := []int32{
 			once.ConsensusStreamID,
 			once.LogStreamID,
@@ -156,6 +156,7 @@ func TestConfigNormalize_idempotent_rapid(t *testing.T) {
 			once.IngressStreamID,
 			once.ConsensusModuleStreamID,
 			once.ServiceStreamID,
+			once.SnapshotStreamID,
 		}
 		for i, id := range streamIDs {
 			require.NotZero(t, id)
