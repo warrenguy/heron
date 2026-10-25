@@ -54,6 +54,12 @@ type Config struct {
 	// Zero uses PollTimeout after Normalize.
 	PublicationOfferTimeout time.Duration
 
+	// ErrorHandler receives each conductor error after mapConductorError.
+	// Nil drops every report.
+	//
+	// A fatal error reaches the handler once, before the client terminates.
+	// A broadcast lap reaches it as conductor.ErrBroadcastLapped and the
+	// client keeps running with the driver events in the lapped range lost.
 	ErrorHandler func(error)
 
 	// AvailableImageHandler is copied to each Subscription on the Client

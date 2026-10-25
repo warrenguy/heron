@@ -516,8 +516,7 @@ func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 					conductor.OnPublicationError,
 					conductor.PublicationErrorBytes(event),
 				)
-				count := adapter.Receive(conductor.NullCorrelationID, conductorInstance)
-				require.Equal(rt, 1, count)
+				receiveOneDriverEvent(rt, adapter, conductor.NullCorrelationID, conductorInstance)
 				require.Zero(rt, adapter.UnhandledEventCount())
 				require.Len(rt, frames, wantCalls)
 				for _, frame := range frames {

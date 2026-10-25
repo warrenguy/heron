@@ -137,6 +137,30 @@ func (conductor *Conductor) SetLingerSweepBlockerForTest(blocker func()) {
 	setLingerSweepBlockerHook(conductor, blocker)
 }
 
+// SetReceiveNextHookForTest installs hook on copyReceiver.
+// pollAndCopy runs hook after ReceiveNext and before the lap check.
+//
+// Lifetime: the hook stays set for the rest of tb, including subtests.
+func (copyReceiver *CopyBroadcastReceiver) SetReceiveNextHookForTest(
+	tb testing.TB,
+	hook func(),
+) {
+	tb.Helper()
+	testhook.SetForTest(tb, receiveNextHooks, copyReceiver, hook)
+}
+
+// SetReceiveCopiedHookForTest installs hook on copyReceiver.
+// pollAndCopy runs hook after the copy and before Validate.
+//
+// Lifetime: the hook stays set for the rest of tb, including subtests.
+func (copyReceiver *CopyBroadcastReceiver) SetReceiveCopiedHookForTest(
+	tb testing.TB,
+	hook func(),
+) {
+	tb.Helper()
+	testhook.SetForTest(tb, receiveCopiedHooks, copyReceiver, hook)
+}
+
 // SetReceiveValidatedHookForTest installs hook on copyReceiver.
 // deliverCopied runs hook after Validate and before the handler.
 //
@@ -147,6 +171,14 @@ func (copyReceiver *CopyBroadcastReceiver) SetReceiveValidatedHookForTest(
 ) {
 	tb.Helper()
 	testhook.SetForTest(tb, receiveValidatedHooks, copyReceiver, hook)
+}
+
+// ClearReceiveHooksForTest removes the three receive hooks from copyReceiver.
+// The SetReceive*HookForTest cleanups then do nothing.
+func (copyReceiver *CopyBroadcastReceiver) ClearReceiveHooksForTest() {
+	receiveNextHooks.Delete(copyReceiver)
+	receiveCopiedHooks.Delete(copyReceiver)
+	receiveValidatedHooks.Delete(copyReceiver)
 }
 
 func (conductor *Conductor) SetCountersReaderForTest(reader *cnc.CountersReader) {

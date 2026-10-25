@@ -234,14 +234,18 @@ func (conductor *Conductor) service() int {
 
 	conductor.receivedCorrelationID = NullCorrelationID
 	conductor.cachedCorrelatedPending = nil
-	workCount += conductor.eventsAdapter.Receive(
+	received, receiveErr := conductor.eventsAdapter.Receive(
 		conductor.activeCorrelationID,
 		conductor,
 	)
-
-	// The check keeps the common tick to two field loads. consumeLivenessProbe
-	// re-checks both conditions.
-	if conductor.livenessProbeRequested || conductor.eventsAdapter.invalidCause != nil {
+	workCount += received
+	if receiveErr != nil {
+		// A receive error is work, so the runner does not idle while the
+		// receiver recovers.
+		conductor.handleBroadcastReceiveError(receiveErr)
+		workCount++
+	}
+	if conductor.livenessProbeRequested {
 		conductor.consumeLivenessProbe()
 	}
 	expireWorkCount, timedOutActiveCorrelationID := conductor.pending.ExpireBefore(
@@ -264,27 +268,38 @@ func (conductor *Conductor) service() int {
 	return workCount
 }
 
+// handleBroadcastReceiveError applies a Receive error from the events adapter.
+//
+// Behaviour:
+//   - ErrBroadcastLapped: requests a liveness probe. Passes the error to
+//     ErrorHandler. Does not terminate.
+//   - Any other error: terminates through terminateWithProbedCause.
+//
+// Concurrency: invoker-only.
+func (conductor *Conductor) handleBroadcastReceiveError(err error) {
+	if !errors.Is(err, ErrBroadcastLapped) {
+		conductor.terminateWithProbedCause(err)
+		return
+	}
+	conductor.livenessProbeRequested = true
+	invokeErrorHandler(conductor.config.ErrorHandler, err)
+}
+
 // consumeLivenessProbe applies a heartbeat-counter probe after Receive returns.
 //
 // Behaviour:
 //   - No-ops when already terminating.
 //   - Clears livenessProbeRequested. Dispatch has already completed.
-//   - Terminates with HeartbeatCounterClosedError when a probe or an invalid
-//     adapter finds a reclaimed heartbeat counter.
-//   - Otherwise terminates with invalidCause when the adapter is invalid.
+//   - Terminates with HeartbeatCounterClosedError when the probe finds a
+//     reclaimed heartbeat counter.
 //
 // Concurrency: invoker-only.
 func (conductor *Conductor) consumeLivenessProbe() {
 	if conductor.terminating {
 		return
 	}
-	probeRequested := conductor.livenessProbeRequested
 	conductor.livenessProbeRequested = false
-	if invalidCause := conductor.eventsAdapter.invalidCause; invalidCause != nil {
-		conductor.terminateWithProbedCause(invalidCause)
-		return
-	}
-	if probeRequested && conductor.hasReclaimedHeartbeatCounter() {
+	if conductor.hasReclaimedHeartbeatCounter() {
 		conductor.terminateHeartbeatCounterClosed()
 	}
 }

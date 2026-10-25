@@ -15,6 +15,10 @@ const testRingDataCapacity = 4096
 
 var lingerSweepBlockers = testhook.NewRegistry[*Conductor, func()]()
 
+var receiveNextHooks = testhook.NewRegistry[*CopyBroadcastReceiver, func()]()
+
+var receiveCopiedHooks = testhook.NewRegistry[*CopyBroadcastReceiver, func()]()
+
 var receiveValidatedHooks = testhook.NewRegistry[*CopyBroadcastReceiver, func()]()
 
 func registerSubscriptionHook(
@@ -117,6 +121,18 @@ func invokeLingerSweepBlocker(conductor *Conductor) {
 	blocker := lingerSweepBlockers.Load(conductor)
 	if blocker != nil {
 		blocker()
+	}
+}
+
+func invokeReceiveNextHook(copyReceiver *CopyBroadcastReceiver) {
+	if hook := receiveNextHooks.Load(copyReceiver); hook != nil {
+		hook()
+	}
+}
+
+func invokeReceiveCopiedHook(copyReceiver *CopyBroadcastReceiver) {
+	if hook := receiveCopiedHooks.Load(copyReceiver); hook != nil {
+		hook()
 	}
 }
 

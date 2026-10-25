@@ -33,9 +33,6 @@ type DriverEventsAdapter struct {
 	handlers             DriverEventsAdapterHandlers
 	pendingRegistry      *pendingRegistry
 	unhandledEventCount  int64
-	// Copy-receiver error that invalidated the adapter. Receive returns 0 after
-	// it is set.
-	invalidCause error
 }
 
 func NewDriverEventsAdapter(
@@ -61,15 +58,22 @@ type PendingEventHandler interface {
 	CounterReady(correlationID int64, counterID int32) bool
 }
 
+// Receive dispatches the next driver event to its handler.
+//
+// Returns:
+//   - 1 and nil after dispatching one event.
+//   - 0 and nil when no event is pending.
+//   - 0 and ErrBroadcastLapped after a lap or a torn read. The next call
+//     resumes at a record boundary.
+//   - 0 and ErrBroadcastMessageTooLong for a record that runs past the
+//     broadcast bounds. The caller must stop receiving.
+//
+// Concurrency: invoker-only.
 func (adapter *DriverEventsAdapter) Receive(
 	activeCorrelationID int64,
 	pending PendingEventHandler,
-) int {
-	if adapter.invalidCause != nil {
-		return 0
-	}
-
-	count, err := adapter.copyReceiver.Receive(func(
+) (int, error) {
+	return adapter.copyReceiver.Receive(func(
 		msgTypeID int,
 		buffer atomicbuffer.AtomicBuffer,
 		offset int,
@@ -77,15 +81,6 @@ func (adapter *DriverEventsAdapter) Receive(
 	) {
 		adapter.handleMessage(msgTypeID, buffer, offset, length, activeCorrelationID, pending)
 	})
-	if err != nil {
-		adapter.invalidCause = err
-		return 0
-	}
-	return count
-}
-
-func (adapter *DriverEventsAdapter) IsInvalid() bool {
-	return adapter.invalidCause != nil
 }
 
 func (adapter *DriverEventsAdapter) UnhandledEventCount() int64 {

@@ -23,6 +23,8 @@ type BroadcastReceiver struct {
 	cursor       int64
 	nextRecord   int64
 	recordOffset int
+	// lapped reports that the last ReceiveNext counted a lap.
+	lapped bool
 
 	lappedCount atomic.Int64
 }
@@ -70,12 +72,12 @@ func (r *BroadcastReceiver) Offset() int {
 	return record.EncodedMsgOffset(r.recordOffset)
 }
 
+// Length returns the body length of the record from ReceiveNext.
+//
+// A record length below HeaderLength yields a negative value. No conforming
+// transmitter writes one.
 func (r *BroadcastReceiver) Length() int {
-	raw := int(r.buffer.GetInt32Volatile(record.LengthOffset(r.recordOffset)))
-	if raw < HeaderLength {
-		return 0
-	}
-	return raw - HeaderLength
+	return int(r.buffer.GetInt32Volatile(record.LengthOffset(r.recordOffset))) - HeaderLength
 }
 
 func (r *BroadcastReceiver) Buffer() atomicbuffer.AtomicBuffer {
@@ -122,6 +124,7 @@ func (r *BroadcastReceiver) ReceiveNext() bool {
 	cursor := r.nextRecord
 
 	if tail <= cursor {
+		r.lapped = false
 		return false
 	}
 
@@ -129,7 +132,8 @@ func (r *BroadcastReceiver) ReceiveNext() bool {
 
 	recordOffset := maskedRecordOffset(cursor, r.capacity)
 
-	if !r.recordValid(cursor, r.buffer.GetInt64Volatile(r.tailIntentIndex)) {
+	lapped := !r.recordValid(cursor, r.buffer.GetInt64Volatile(r.tailIntentIndex))
+	if lapped {
 		r.lappedCount.Add(1)
 
 		cursor = r.buffer.GetInt64Volatile(r.latestIndex)
@@ -137,15 +141,16 @@ func (r *BroadcastReceiver) ReceiveNext() bool {
 		atomicbuffer.AcquireFence()
 	}
 
+	r.lapped = lapped
 	r.cursor = cursor
 	recordLength := int(r.buffer.GetInt32Volatile(record.LengthOffset(recordOffset)))
 	r.nextRecord = cursor + int64(record.AlignRecordLength(recordLength))
 
+	// cursor stays on the padding slot, so Validate covers the padding length.
 	if int(r.buffer.GetInt32Volatile(record.TypeOffset(recordOffset))) == PaddingMsgTypeID {
 		recordOffset = 0
-		r.cursor = r.nextRecord
-		paddingLength := int(r.buffer.GetInt32Volatile(record.LengthOffset(recordOffset)))
-		r.nextRecord += int64(record.AlignRecordLength(paddingLength))
+		wrappedRecordLength := int(r.buffer.GetInt32Volatile(record.LengthOffset(recordOffset)))
+		r.nextRecord += int64(record.AlignRecordLength(wrappedRecordLength))
 	}
 
 	r.recordOffset = recordOffset
@@ -156,9 +161,25 @@ func (r *BroadcastReceiver) ReceiveNext() bool {
 // Validate reports whether the record from ReceiveNext is still intact.
 // Read TypeID, Length, and the payload before the call. Trust the reads only
 // when Validate reports true.
+//
+// The check covers every length that ReceiveNext loaded, a padding length
+// included.
 func (r *BroadcastReceiver) Validate() bool {
 	atomicbuffer.AcquireFence()
 	return r.recordValid(r.cursor, r.buffer.GetInt64Acquire(r.tailIntentIndex))
+}
+
+// Resync moves the next ReceiveNext to the latest record. It counts a lap
+// unless the last ReceiveNext counted one.
+//
+// Call Resync after Validate reports false. A torn length can leave the next
+// record off a record boundary. The latest position is always a record start.
+func (r *BroadcastReceiver) Resync() {
+	if !r.lapped {
+		r.lappedCount.Add(1)
+	}
+	r.lapped = false
+	r.nextRecord = r.buffer.GetInt64Volatile(r.latestIndex)
 }
 
 func (r *BroadcastReceiver) recordValid(cursor, tailIntent int64) bool {

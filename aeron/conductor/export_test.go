@@ -320,11 +320,6 @@ func ValidateLogFileNameForTest(logFileName, mediaDriverDir string) error {
 	return validateLogFileName(logFileName, mediaDriverDir)
 }
 
-// InvalidCauseForTest returns the stored adapter invalidation cause, or nil.
-func (adapter *DriverEventsAdapter) InvalidCauseForTest() error {
-	return adapter.invalidCause
-}
-
 // CorrelatedForTest reports whether correlationID passes the async ready peek gate.
 //
 // A true result means correlationID equals activeCorrelationID (including NullCorrelationID)
