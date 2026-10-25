@@ -85,8 +85,12 @@ type asyncReplicateModel struct {
 	pending       []asyncReplicateModelEvent
 }
 
+// latchedFor reports whether the latch holds this session's response for
+// correlationID.
 func (m *asyncReplicateModel) latchedFor(correlationID int64) bool {
-	return m.latched && m.latchedFields.CorrelationID == correlationID
+	return m.latched &&
+		m.latchedFields.ControlSessionID == controlResponseTestControlSessionID &&
+		m.latchedFields.CorrelationID == correlationID
 }
 
 // resolve mirrors resolveReplicationID: an open handle with an unknown id
@@ -220,6 +224,7 @@ func requireAsyncReplicateModel(rt *rapid.T, m *asyncReplicateModel, client *Cli
 	if m.latched {
 		resp, ok := poller.Response()
 		require.True(rt, ok)
+		require.Equal(rt, m.latchedFields.ControlSessionID, resp.ControlSessionID)
 		require.Equal(rt, m.latchedFields.CorrelationID, resp.CorrelationID)
 		require.Equal(rt, m.latchedFields.Code, resp.Code)
 		require.Equal(rt, m.latchedFields.RelevantID, resp.RelevantID)
@@ -361,6 +366,11 @@ func TestAsyncReplicate_model_rapid(t *testing.T) {
 				default:
 					fields.ErrorMessage = []byte("refused")
 				}
+				// The poll latches another session's response. Handles do not
+				// match it.
+				if rapid.IntRange(0, 4).Draw(rt, "responseSessionKind") == 0 {
+					fields.ControlSessionID++
+				}
 				pendResponse(fields)
 
 			case asyncReplicateOpOKBurst:
@@ -404,8 +414,8 @@ func TestAsyncReplicate_model_rapid(t *testing.T) {
 						break
 					}
 					require.NoError(rt, err)
+					model.resolve(handle)
 					handle.responded = true
-					handle.replicationID = model.latchedFields.RelevantID
 					model.latched = false
 					if model.filter == handle.correlationID {
 						model.filter = 0
