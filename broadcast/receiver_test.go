@@ -237,6 +237,25 @@ func TestBroadcastReceiverResyncAfterLapCountsOnce(t *testing.T) {
 	require.Equal(t, int64(2), rx.LappedCount())
 }
 
+func TestBroadcastReceiverResyncAfterEmptyReceiveNextCounts(t *testing.T) {
+	buf := newTestBuffer(t)
+	tx := newTransmitter(t, buf)
+	rx := newReceiver(t, buf)
+
+	// Phase: the transmitter laps the receiver, which sits at position 0.
+	for range writesToLap(testCapacity, len(testPayload8), 1) {
+		require.NoError(t, tx.Transmit(testMsgTypeID, testPayload8))
+	}
+	require.True(t, rx.ReceiveNext())
+	require.Equal(t, int64(1), rx.LappedCount())
+	require.True(t, rx.Validate())
+
+	// Phase: an empty ReceiveNext counted no lap, so Resync counts one.
+	require.False(t, rx.ReceiveNext())
+	rx.Resync()
+	require.Equal(t, int64(2), rx.LappedCount())
+}
+
 func TestBroadcastReceiver_PendingMessageForTestAtPaddingBoundary(t *testing.T) {
 	buf := newTestBuffer(t)
 	tx := newTransmitter(t, buf)

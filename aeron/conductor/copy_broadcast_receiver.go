@@ -106,10 +106,7 @@ func (copyReceiver *CopyBroadcastReceiver) pollAndCopy() (
 	if !recordFits {
 		// A valid record outside the bounds means the buffer is not a
 		// conforming broadcast. An invalid one means a lap tore the length.
-		if !copyReceiver.resyncIfInvalid() {
-			return 0, 0, false, ErrBroadcastMessageTooLong
-		}
-		return 0, 0, false, ErrBroadcastLapped
+		return 0, 0, false, copyReceiver.resyncIfInvalid(ErrBroadcastMessageTooLong)
 	}
 	copyReceiver.growScratch(length)
 
@@ -120,14 +117,14 @@ func (copyReceiver *CopyBroadcastReceiver) pollAndCopy() (
 	return msgTypeID, length, true, nil
 }
 
-// resyncIfInvalid calls Resync when Validate reports false. Reports whether
-// it called Resync.
-func (copyReceiver *CopyBroadcastReceiver) resyncIfInvalid() bool {
+// resyncIfInvalid calls Resync when Validate reports false and returns
+// ErrBroadcastLapped. Otherwise it returns valid.
+func (copyReceiver *CopyBroadcastReceiver) resyncIfInvalid(valid error) error {
 	if copyReceiver.receiver.Validate() {
-		return false
+		return valid
 	}
 	copyReceiver.receiver.Resync()
-	return true
+	return ErrBroadcastLapped
 }
 
 // growScratch grows the scratch to maxMsgLength once length exceeds it. No
@@ -144,8 +141,8 @@ func (copyReceiver *CopyBroadcastReceiver) deliverCopied(
 	msgTypeID int,
 	length int,
 ) (int, error) {
-	if copyReceiver.resyncIfInvalid() {
-		return 0, ErrBroadcastLapped
+	if err := copyReceiver.resyncIfInvalid(nil); err != nil {
+		return 0, err
 	}
 	invokeReceiveValidatedHook(copyReceiver)
 

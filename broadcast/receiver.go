@@ -124,6 +124,7 @@ func (r *BroadcastReceiver) ReceiveNext() bool {
 	cursor := r.nextRecord
 
 	if tail <= cursor {
+		r.lapped = false
 		return false
 	}
 
