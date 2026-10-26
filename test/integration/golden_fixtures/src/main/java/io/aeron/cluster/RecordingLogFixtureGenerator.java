@@ -25,6 +25,7 @@ public final class RecordingLogFixtureGenerator
     private static final String INVALID_SNAPSHOT = "invalid-snapshot.recordinglog";
     private static final String NULL_SLOT = "null-slot.recordinglog";
     private static final String TRUNCATED_TAIL = "truncated-tail.recordinglog";
+    private static final String TIEBREAKS = "tiebreaks.recordinglog";
 
     private static final String STANDBY_ENDPOINT = "aeron:udp?endpoint=standby.example.com:8020";
 
@@ -50,6 +51,7 @@ public final class RecordingLogFixtureGenerator
         fixtures.add(writeInvalidSnapshot(outputDir));
         fixtures.add(writeNullSlot(outputDir));
         fixtures.add(writeTruncatedTail(outputDir));
+        fixtures.add(writeTiebreaks(outputDir));
 
         final String json = renderManifest(fixtures);
         Files.write(outputDir.resolve("fixtures.json"), json.getBytes(StandardCharsets.UTF_8));
@@ -123,6 +125,24 @@ public final class RecordingLogFixtureGenerator
         {
             IoUtil.delete(work.toFile(), true);
         }
+    }
+
+    private static Fixture writeTiebreaks(final Path outputDir) throws IOException
+    {
+        return writeFixture(outputDir, TIEBREAKS, "recordinglog-tiebreaks", log ->
+        {
+            log.appendTerm(1, 0, 0, 1000);
+            log.appendSnapshot(20, 0, 0, 512, 2000, -1);
+            log.appendSnapshot(21, 0, 0, 512, 2000, 0);
+            log.appendSnapshot(22, 0, 0, 512, 2000, 1);
+            log.appendStandbySnapshot(23, 0, 0, 512, 2000, 0, STANDBY_ENDPOINT);
+            log.appendSnapshot(24, 0, 0, 256, 1500, -1);
+            log.appendSnapshot(25, 0, 0, 512, 2100, 0);
+            log.appendSnapshot(30, 1, 1024, 1100, 3000, -1);
+            log.appendTerm(1, 1, 1024, 3100);
+            log.invalidateEntry(log.entries().indexOf(log.getTermEntry(1)));
+            log.appendTerm(1, 1, 1024, 3000);
+        });
     }
 
     private static Fixture writeFixture(

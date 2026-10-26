@@ -128,12 +128,17 @@ func replayManifestEntries(t *testing.T, entries []manifestEntry) []byte {
 // Go writer and asserts the bytes match exactly, proving record alignment,
 // padding, field order, and endpoint encoding agree with the reference.
 //
-// Only mixed-entries qualifies: it is append-only and fully zero-padded.
-// standby-then-term carries stale endpoint bytes inside a later record's padding
-// (an artifact of how the sample was authored, not writer output);
-// invalid-snapshot needs a term the single-entry fixture omits to invalidate
-// against; null-slot needs the deferred remove path; truncated-tail is a torn
-// sample, not clean writer output.
+// Only mixed-entries qualifies: it is append-only and fully zero-padded. The
+// others do not qualify:
+//   - standby-then-term: the Java writer reuses its buffer, so records after
+//     a standby row carry stale endpoint bytes in padding. The Go writer
+//     zero-pads.
+//   - tiebreaks: carries the same stale padding after its standby row. It
+//     also calls invalidateEntry, which the append replay lacks.
+//   - invalid-snapshot: needs a term to invalidate against. The single-entry
+//     fixture omits it.
+//   - null-slot: needs the deferred remove path.
+//   - truncated-tail: holds a torn sample, not clean writer output.
 func TestWriter_byteIdenticalToGolden(t *testing.T) {
 	t.Parallel()
 
@@ -158,6 +163,31 @@ func TestWriter_byteIdenticalToGolden(t *testing.T) {
 
 	written := replayManifestEntries(t, entries)
 	require.Equal(t, golden, written)
+}
+
+// TestReload_tiebreakFixtureOrder asserts the sorted file-index sequence of
+// the tiebreaks fixture. The manifest follows a regen. A changed comparator
+// would still pass TestReload_goldenFixtures. This expectation lives in Go.
+//
+// Each step of the sequence asserts one tiebreak:
+//   - 0 then 5: the TERM row sorts before every snapshot in its term. The
+//     module row at log position 256 sorts before the rows at 512.
+//   - 4, 3, 2, 6, 1: at position 512 the standby row sorts first by type,
+//     then service 1, then both service 0 rows in file order, then the
+//     module row.
+//   - 8, 9: two TERM rows for term 1 sort by file index, not timestamp.
+//   - 7: the term 1 module row sorts after both TERM rows.
+func TestReload_tiebreakFixtureOrder(t *testing.T) {
+	t.Parallel()
+
+	entries, err := recordinglog.Reload(filepath.Join("testdata", "tiebreaks.recordinglog"))
+	require.NoError(t, err)
+
+	indexes := make([]int32, len(entries))
+	for i, e := range entries {
+		indexes[i] = e.Index
+	}
+	require.Equal(t, []int32{0, 5, 4, 3, 2, 6, 1, 8, 9, 7}, indexes)
 }
 
 // TestPlanRecovery_fixtureExpectations asserts PlanRecovery output over
@@ -186,6 +216,15 @@ func TestPlanRecovery_fixtureExpectations(t *testing.T) {
 			snapshotCount:       0,
 			logRecordingID:      10,
 			logLeadershipTermID: 2,
+		},
+		{
+			// PlanRecovery skips the invalidated TERM row for term 1. The term 1
+			// module row forms the newest snapshot group.
+			file:                "tiebreaks.recordinglog",
+			serviceCount:        0,
+			snapshotCount:       1,
+			logRecordingID:      1,
+			logLeadershipTermID: 1,
 		},
 	}
 
