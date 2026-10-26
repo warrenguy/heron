@@ -685,20 +685,177 @@ func TestBoundedLogAdapter_unknownTemplate_skips(t *testing.T) {
 	requireSinkIdle(t, sink)
 }
 
-func TestBoundedLogAdapter_unknownTemplateID_skips(t *testing.T) {
-	a, image, sink := boundAdapter(t)
-	// Template id 99 is absent from ClusterRootBlockLengthBounds. Layout
-	// parse fails. classifyLayoutFailure returns Continue when the template
-	// is unknown.
-	payload := encodeMessageHeader(
-		t,
-		0,
-		99,
-		clusterwire.MessageHeaderSbeSchemaID,
-		0,
-	)
-	writeAndPollOne(t, a, image, payload)
-	requireSinkIdle(t, sink)
+// snapshotTemplateCase is one snapshot template in
+// ClusterRootBlockLengthBounds. encode writes a well formed frame at the
+// given acting version.
+type snapshotTemplateCase struct {
+	name       string
+	templateID uint16
+	encode     func(buf []byte, version uint16) (wireEnd int, ok bool)
+}
+
+func (c snapshotTemplateCase) encodeFrame(tb testing.TB, version uint16) []byte {
+	tb.Helper()
+	buf := make([]byte, 256)
+	wireEnd, ok := c.encode(buf, version)
+	require.True(tb, ok)
+	return buf[:wireEnd]
+}
+
+func snapshotTemplateCases() []snapshotTemplateCase {
+	clientSession := codecs.ClientSessionFields{
+		ClusterSessionID: 5,
+		ResponseStreamID: 102,
+		ResponseChannel:  []byte("aeron:ipc"),
+		EncodedPrincipal: []byte("p"),
+	}
+	clusterSession := codecs.ClusterSessionFields{
+		ClusterSessionID:   5,
+		CorrelationID:      6,
+		OpenedLogPosition:  64,
+		TimeOfLastActivity: 7,
+		CloseReason:        clusterwire.CloseReason_NULL_VALUE,
+		ResponseStreamID:   102,
+		ResponseChannel:    []byte("aeron:ipc"),
+	}
+	return []snapshotTemplateCase{
+		{
+			name:       "SnapshotMarker",
+			templateID: clusterwire.SnapshotMarkerSbeTemplateID,
+			encode: func(buf []byte, version uint16) (int, bool) {
+				return codecs.EncodeSnapshotMarker(buf, 0, version, codecs.SnapshotMarkerFields{
+					TypeID:           codecs.ServiceSnapshotTypeID,
+					LogPosition:      64,
+					LeadershipTermID: 1,
+					Index:            0,
+					Mark:             clusterwire.SnapshotMark_BEGIN,
+					TimeUnit:         clusterwire.ClusterTimeUnit_NANOS,
+					AppVersion:       1,
+				})
+			},
+		},
+		{
+			name:       "ClientSession",
+			templateID: clusterwire.ClientSessionSbeTemplateID,
+			encode: func(buf []byte, version uint16) (int, bool) {
+				return codecs.EncodeClientSession(buf, 0, version, clientSession)
+			},
+		},
+		{
+			name:       "ClusterSession",
+			templateID: clusterwire.ClusterSessionSbeTemplateID,
+			encode: func(buf []byte, version uint16) (int, bool) {
+				return codecs.EncodeClusterSession(buf, 0, version, clusterSession)
+			},
+		},
+		{
+			name:       "Timer",
+			templateID: clusterwire.TimerSbeTemplateID,
+			encode: func(buf []byte, version uint16) (int, bool) {
+				return codecs.EncodeTimer(buf, 0, version, codecs.TimerFields{
+					CorrelationID: 8,
+					Deadline:      9,
+				})
+			},
+		},
+		{
+			name:       "ConsensusModule",
+			templateID: clusterwire.ConsensusModuleSbeTemplateID,
+			encode: func(buf []byte, version uint16) (int, bool) {
+				return codecs.EncodeConsensusModule(buf, 0, version, codecs.ConsensusModuleFields{
+					NextSessionID:          10,
+					NextServiceSessionID:   11,
+					LogServiceSessionID:    12,
+					PendingMessageCapacity: 13,
+				})
+			},
+		},
+		{
+			name:       "PendingMessageTracker",
+			templateID: clusterwire.PendingMessageTrackerSbeTemplateID,
+			encode: func(buf []byte, version uint16) (int, bool) {
+				return codecs.EncodePendingMessageTracker(buf, 0, version, codecs.PendingMessageTrackerFields{
+					NextServiceSessionID:   11,
+					LogServiceSessionID:    12,
+					PendingMessageCapacity: 13,
+					ServiceID:              0,
+				})
+			},
+		},
+	}
+}
+
+// TestBoundedLogAdapter_templateOutsideDispatch asserts the adapter outcome
+// for templates it does not dispatch:
+//   - well formed frame: skips through the switch default
+//   - template absent from ClusterRootBlockLengthBounds: skips through
+//     classifyLayoutFailure
+//   - malformed frame, template known to ClusterRootBlockLengthBounds:
+//     aborts with errLogDispatchDecode
+func TestBoundedLogAdapter_templateOutsideDispatch(t *testing.T) {
+	type row struct {
+		name      string
+		payload   []byte
+		wantAbort bool
+	}
+	rows := []row{
+		{
+			name:    "id 99 header only skips",
+			payload: encodeMessageHeader(t, 0, 99, clusterwire.MessageHeaderSbeSchemaID, 0),
+		},
+	}
+	version := clusterwire.MessageHeaderSbeSchemaVersion
+	for _, tc := range snapshotTemplateCases() {
+		minBlock, maxBlock, known := codecs.ClusterRootBlockLengthBounds(tc.templateID, version)
+		require.True(t, known, tc.name)
+		require.Positive(t, minBlock, tc.name)
+		require.Less(t, maxBlock, uint16(math.MaxUint16), tc.name)
+		header := func(blockLength uint16) []byte {
+			return encodeMessageHeader(
+				t,
+				blockLength,
+				tc.templateID,
+				clusterwire.MessageHeaderSbeSchemaID,
+				version,
+			)
+		}
+		shortBlock := minBlock - 1
+		longBlock := maxBlock + 1
+		rows = append(rows,
+			row{
+				name:    tc.name + " well formed skips",
+				payload: tc.encodeFrame(t, version),
+			},
+			row{
+				name:      tc.name + " header only aborts",
+				payload:   header(minBlock),
+				wantAbort: true,
+			},
+			row{
+				name:      tc.name + " block below bound aborts",
+				payload:   append(header(shortBlock), make([]byte, shortBlock)...),
+				wantAbort: true,
+			},
+			row{
+				name:      tc.name + " block above bound aborts",
+				payload:   append(header(longBlock), make([]byte, longBlock)...),
+				wantAbort: true,
+			},
+		)
+	}
+
+	for _, tt := range rows {
+		t.Run(tt.name, func(t *testing.T) {
+			a, image, sink := boundAdapter(t)
+			if tt.wantAbort {
+				writeAndPollAbort(t, a, image, tt.payload)
+				requireOneDispatchFail(t, sink, errLogDispatchDecode)
+				return
+			}
+			writeAndPollOne(t, a, image, tt.payload)
+			requireSinkIdle(t, sink)
+		})
+	}
 }
 
 func TestBoundedLogAdapter_SessionOpen_varOverCap_aborts(t *testing.T) {
