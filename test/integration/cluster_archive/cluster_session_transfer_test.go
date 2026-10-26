@@ -62,10 +62,8 @@ func startTransferSessionConnect(
 	return connectTransferSession(t, set, leader, pump, credentials, egressPort)
 }
 
-// connectTransferSession opens one AsyncConnect on egressPort and polls the
-// connect against the live member set. Does not bind endpoint=:0.
-//
-// dump, when present, replaces set.State() on a connect-poll timeout.
+// connectTransferSession is connectTransferSessionWithEgress with no egress
+// handlers.
 func connectTransferSession(
 	t *testing.T,
 	set *harness.ClusterMemberSet,
@@ -73,6 +71,27 @@ func connectTransferSession(
 	pump *transferPump,
 	credentials []byte,
 	egressPort int,
+	dump ...func() string,
+) (*client.ConnectResult, int, error) {
+	t.Helper()
+	return connectTransferSessionWithEgress(
+		t, set, leader, pump, credentials, egressPort, &client.EgressHandlers{}, dump...,
+	)
+}
+
+// connectTransferSessionWithEgress opens one AsyncConnect on egressPort with
+// egress as the client egress handler. It polls the connect against the live
+// member set. Does not bind endpoint=:0.
+//
+// dump, when present, replaces set.State() on a connect-poll timeout.
+func connectTransferSessionWithEgress(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	leader *cluster.ConsensusModule,
+	pump *transferPump,
+	credentials []byte,
+	egressPort int,
+	egress client.EgressHandler,
 	dump ...func() string,
 ) (*client.ConnectResult, int, error) {
 	t.Helper()
@@ -87,7 +106,7 @@ func connectTransferSession(
 		NewLeaderTimeout:    transferNewLeaderTimeout,
 		IngressRetryTimeout: durableWorkBound,
 		CredentialsSupplier: fixedCredentialsSupplier{credentials: credentials},
-		EgressHandler:       &client.EgressHandlers{},
+		EgressHandler:       egress,
 	})
 	require.NoError(t, err)
 	harness.CleanupClose(t, "async connect", connect.Close)
@@ -107,6 +126,32 @@ func connectTransferSession(
 		)
 	}
 	return result, egressPort, pollErr
+}
+
+// openTransferSession opens one session to leader on egressPort. It starts the
+// client transport and keep-alive pump first. egress is the client egress
+// handler. The returned pump holds the session.
+func openTransferSession(
+	t *testing.T,
+	sc serviceCluster,
+	leader *cluster.ConsensusModule,
+	egressPort int,
+	egress client.EgressHandler,
+) (*transferPump, *client.AeronCluster) {
+	t.Helper()
+
+	transport := startSessionClientTransport(t)
+	pump := &transferPump{transport: transport}
+	startTransferClientKeepAlive(t, pump)
+	result, _, connectErr := connectTransferSessionWithEgress(
+		t, sc.set, leader, pump, []byte(sessionSmokeCredentials), egressPort, egress, sc.dump,
+	)
+	require.NoError(t, connectErr)
+	session, err := client.NewAeronCluster(result)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "session", session.Close)
+	pump.session = session
+	return pump, session
 }
 
 // transferPump serializes transport DoWork and session Poll. A keep-alive
@@ -643,6 +688,79 @@ func recorderHoldsOpenThenMessages(
 	return complete
 }
 
+// failIfSurvivorStalled fails when a live service other than stoppedIndex
+// stalled or regressed below its floor in floors.
+func failIfSurvivorStalled(t *testing.T, sc serviceCluster, stoppedIndex int, floors []int64) {
+	t.Helper()
+	failIfServiceTransferStall(t, sc, stoppedIndex)
+	failIfServiceLogRegressed(t, sc, stoppedIndex, floors)
+}
+
+// requireServicesAtCommit awaits every service log position reaching its
+// module commit position. Each tick fails on a service stall.
+func requireServicesAtCommit(t *testing.T, sc serviceCluster, pump *transferPump) {
+	t.Helper()
+
+	requireServiceAwaitTick(
+		t, sc,
+		"services at commit",
+		durableWorkBound,
+		pump.sessionPump(func() bool {
+			failIfServiceTransferStall(t, sc, -1)
+			for i, m := range sc.set.Modules() {
+				if m == nil {
+					continue
+				}
+				if sc.members[i].agent.LogPosition() < m.CommitPosition() {
+					return false
+				}
+			}
+			return true
+		}),
+	)
+}
+
+// requireTransferSessionRecovery awaits re-election after the member at
+// stoppedIndex stopped. It then awaits session recovery on the new leader.
+// Each tick fails on a survivor stall or log regression below floors. Fails
+// when the recovery commit sits below preCommit. Returns the new leader.
+func requireTransferSessionRecovery(
+	t *testing.T,
+	sc serviceCluster,
+	pump *transferPump,
+	session *client.AeronCluster,
+	stoppedIndex int,
+	preTerm, preCommit int64,
+	floors []int64,
+) *cluster.ConsensusModule {
+	t.Helper()
+
+	set := sc.set
+	awaitTransferReElection(t, set, pump, stoppedIndex, preTerm, transferReElectOpts{
+		onTick: func() { failIfSurvivorStalled(t, sc, stoppedIndex, floors) },
+		dump:   sc.dump,
+	})
+	newLeader := requireSingleLeader(t, set, "after re-elect")
+	failIfServiceTransferStall(t, sc, stoppedIndex)
+
+	sessionID := session.ClusterSessionID()
+	requireServiceAwaitTick(
+		t, sc,
+		"session recovery",
+		durableWorkBound,
+		pump.sessionPump(func() bool {
+			failIfSurvivorStalled(t, sc, stoppedIndex, floors)
+			return transferSessionRecovered(session, sessionID, preTerm, newLeader)
+		}),
+		func() string {
+			return formatSessionRecoveryState(session, sessionID, preTerm, newLeader)
+		},
+	)
+	require.GreaterOrEqual(t, newLeader.CommitPosition(), preCommit,
+		"recovery commit below pre-stop commit:\n%s", sc.dump())
+	return newLeader
+}
+
 // failIfRecorderSequenceCorrupt fails when a live recorder other than
 // skipIndex already has a close, extra open, extra message, or prefix
 // mismatch. A short correct prefix does not fail.
@@ -780,40 +898,12 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 	set := sc.set
 	leader := requireSingleLeader(t, set, "")
 
-	requireServiceAwaitTick(
-		t, sc,
-		"join settle",
-		durableWorkBound,
-		func() bool {
-			for i, m := range set.Modules() {
-				agent := sc.members[i].agent
-				ca := m.Agent()
-				if !agent.IsLogBound() || agent.HasPendingJoin() || agent.NextAckID() != 1 {
-					return false
-				}
-				if ca.ExpectedServiceAckID() != 1 || ca.PendingServiceAckWaits() != 0 {
-					return false
-				}
-			}
-			return true
-		},
-	)
+	requireServicesJoined(t, sc)
 	requireNoServiceFailures(t, sc, "")
 
-	transport := startSessionClientTransport(t)
-	pump := &transferPump{transport: transport}
-	startTransferClientKeepAlive(t, pump)
-
-	result, _, connectErr := connectTransferSession(
-		t, set, leader, pump, []byte(sessionSmokeCredentials),
-		serviceTransferEgressPort(),
-		sc.dump,
+	pump, session := openTransferSession(
+		t, sc, leader, serviceTransferEgressPort(), &client.EgressHandlers{},
 	)
-	require.NoError(t, connectErr)
-	session, err := client.NewAeronCluster(result)
-	require.NoError(t, err)
-	harness.CleanupClose(t, "session", session.Close)
-	pump.session = session
 
 	require.GreaterOrEqual(t, session.ClusterSessionID(), int64(0))
 	require.Equal(t, leader.LeadershipTermID(), session.LeadershipTermID())
@@ -871,20 +961,7 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 	requireFollowersOpenSessionCount(t, set, leader.ThisMemberID(), sc.dump)
 	requireNoServiceFailures(t, sc, " after baseline")
 
-	requireServiceAwaitTick(
-		t, sc,
-		"services at commit",
-		durableWorkBound,
-		pump.sessionPump(func() bool {
-			failIfServiceTransferStall(t, sc, -1)
-			for i, m := range set.Modules() {
-				if sc.members[i].agent.LogPosition() < m.CommitPosition() {
-					return false
-				}
-			}
-			return true
-		}),
-	)
+	requireServicesAtCommit(t, sc, pump)
 
 	preTerm := leader.LeadershipTermID()
 	preCommit := leader.CommitPosition()
@@ -895,38 +972,10 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 	require.Nil(t, set.Module(leaderIndex))
 	closeServiceTransferContainer(t, sc, leaderIndex)
 
-	awaitTransferReElection(t, set, pump, leaderIndex, preTerm, transferReElectOpts{
-		onTick: func() {
-			failIfServiceTransferStall(t, sc, leaderIndex)
-			failIfServiceLogRegressed(t, sc, leaderIndex, logFloors)
-		},
-		dump: sc.dump,
-	})
-	newLeader := requireSingleLeader(t, set, "after re-elect")
-	failIfServiceTransferStall(t, sc, leaderIndex)
-
-	requireServiceAwaitTick(
-		t, sc,
-		"session recovery",
-		durableWorkBound,
-		pump.sessionPump(func() bool {
-			failIfServiceTransferStall(t, sc, leaderIndex)
-			failIfServiceLogRegressed(t, sc, leaderIndex, logFloors)
-			return transferSessionRecovered(session, sessionID, preTerm, newLeader)
-		}),
-		func() string {
-			return formatSessionRecoveryState(session, sessionID, preTerm, newLeader)
-		},
+	newLeader := requireTransferSessionRecovery(
+		t, sc, pump, session, leaderIndex, preTerm, preCommit, logFloors,
 	)
-
 	recoveryCommit := newLeader.CommitPosition()
-	require.GreaterOrEqual(
-		t,
-		recoveryCommit,
-		preCommit,
-		"recovery commit below pre-stop commit:\n%s",
-		sc.dump(),
-	)
 
 	survivorWitness, survivorIndex := installSurvivorLogWitness(t, set, newLeader, sc.dump)
 
@@ -950,8 +999,7 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 		"post-transfer message committed",
 		durableWorkBound,
 		pump.sessionPump(func() bool {
-			failIfServiceTransferStall(t, sc, leaderIndex)
-			failIfServiceLogRegressed(t, sc, leaderIndex, logFloors)
+			failIfSurvivorStalled(t, sc, leaderIndex, logFloors)
 			failIfRecorderSequenceCorrupt(
 				t, sc, leaderIndex, sessionID,
 				continuationDump,

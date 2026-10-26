@@ -228,7 +228,8 @@ func serviceState(
 		"service member=%d index=%d bound=%v logPos=%d commit=%d nextAck=%d "+
 			"expectedAck=%d pendingJoin=%v pendingAcks=%d readyAcks=%d waits=%d "+
 			"ackQ0=%d role=%v start=%d opens=%v msgs=%d closes=%v "+
-			"responseAdds=%d echoResults=%v serviceFail=%v ackFail=%v violation=%v\n",
+			"responseAdds=%d responsePubs=%d echoResults=%v serviceFail=%v ackFail=%v "+
+			"violation=%v\n",
 		memberID,
 		index,
 		mem.agent.IsLogBound(),
@@ -247,6 +248,7 @@ func serviceState(
 		len(mem.rec.messages),
 		mem.rec.closes,
 		mem.agent.PendingResponsePublicationAdds(),
+		mem.agent.ResponsePublicationCount(),
 		mem.rec.echoResults,
 		mem.agent.ServiceFailure(),
 		ackFail,
@@ -638,18 +640,7 @@ func requireServiceCloseSession(
 		mem.rec.closePayload = closePayload
 	}
 	var closedDetails []string
-	egress := &client.EgressHandlers{
-		SessionEventFunc: func(
-			_, _, _ int64,
-			_ int32,
-			code client.EventCode,
-			detail []byte,
-		) {
-			if code == client.EventCodeClosed {
-				closedDetails = append(closedDetails, string(detail))
-			}
-		},
-	}
+	egress := &client.EgressHandlers{SessionEventFunc: closedDetailHandler(&closedDetails)}
 	transport, session := connectServiceSessionWithEgress(t, sc, leader, egress)
 	sessionID := session.ClusterSessionID()
 	offerServiceMessage(t, sc, session, closePayload)
@@ -660,20 +651,8 @@ func requireServiceCloseSession(
 		"service close drained",
 		durableWorkBound,
 		sessionPump(transport, session, func() bool {
-			for _, m := range sc.set.Modules() {
-				ca := m.Agent()
-				if ca.OpenSessionCount() != 0 ||
-					ca.PendingSessionCount() != 0 ||
-					ca.ClosingSessionCount() != 0 {
-					return false
-				}
-			}
-			for _, mem := range sc.members {
-				if !mem.rec.holdsCloseWithReason(sessionID, clusterwire.CloseReason_SERVICE_ACTION) {
-					return false
-				}
-			}
-			return slices.Equal(closedDetails, wantClosed) && session.IsClosed()
+			return servicesClosedSession(sc, -1, sessionID) &&
+				slices.Equal(closedDetails, wantClosed) && session.IsClosed()
 		}),
 		func() string { return fmt.Sprintf("client closed events=%v", closedDetails) },
 	)
@@ -683,6 +662,45 @@ func requireServiceCloseSession(
 			"close results member %d:\n%s", m.ThisMemberID(), sc.dump())
 	}
 	requireNoServiceFailures(t, sc, " after service close")
+}
+
+// closedDetailHandler returns a SessionEventFunc that appends the detail of
+// each EventCodeClosed event to details.
+func closedDetailHandler(
+	details *[]string,
+) func(int64, int64, int64, int32, client.EventCode, []byte) {
+	return func(
+		_, _, _ int64,
+		_ int32,
+		code client.EventCode,
+		detail []byte,
+	) {
+		if code == client.EventCodeClosed {
+			*details = append(*details, string(detail))
+		}
+	}
+}
+
+// servicesClosedSession reports whether every module other than skipIndex
+// drained its sessions and its service recorded a SERVICE_ACTION close of
+// sessionID.
+func servicesClosedSession(sc serviceCluster, skipIndex int, sessionID int64) bool {
+	for i, m := range sc.set.Modules() {
+		if i == skipIndex || m == nil {
+			continue
+		}
+		ca := m.Agent()
+		if ca.OpenSessionCount() != 0 ||
+			ca.PendingSessionCount() != 0 ||
+			ca.ClosingSessionCount() != 0 {
+			return false
+		}
+		rec := sc.members[i].rec
+		if !rec.holdsCloseWithReason(sessionID, clusterwire.CloseReason_SERVICE_ACTION) {
+			return false
+		}
+	}
+	return true
 }
 
 // connectServiceSession is connectServiceSessionWithEgress with no egress

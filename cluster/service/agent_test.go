@@ -1624,18 +1624,6 @@ func requireOffers(tb testing.TB, agent *Agent, want int64, ids ...int64) {
 	}
 }
 
-// responsePublicationCount returns how many open sessions hold a response
-// publication.
-func responsePublicationCount(agent *Agent) int {
-	count := 0
-	for _, session := range agent.sessionList {
-		if session.publication != nil {
-			count++
-		}
-	}
-	return count
-}
-
 // termOfferService offers payload to session offerID inside each
 // NewLeadershipTermEvent callback. It finds the session through the Cluster
 // that Start passes.
@@ -1711,7 +1699,7 @@ func TestAgent_JoinEgress_leaderChange(t *testing.T) {
 	}
 	require.Equal(t, 3, agent.DoWork(0))
 	require.Equal(t, 0, agent.PendingResponsePublicationAdds())
-	require.Equal(t, 3, responsePublicationCount(agent))
+	require.Equal(t, 3, agent.ResponsePublicationCount())
 
 	// Phase "term": the callback offer and a later offer carry term 6.
 	log.write(t, encodeNLT(t, codecs.NewLeadershipTermEventFields{
@@ -1745,7 +1733,7 @@ func TestAgent_JoinEgress_leaderChange(t *testing.T) {
 	for _, publication := range publications {
 		require.True(t, publication.IsClosed())
 	}
-	require.Equal(t, 0, responsePublicationCount(agent))
+	require.Equal(t, 0, agent.ResponsePublicationCount())
 	log.rebind()
 	require.Equal(t, codecs.RoleFollower, agent.Role())
 	require.Len(t, adder.offers, 3)
@@ -1927,7 +1915,7 @@ func TestAgent_JoinEgress_rules(t *testing.T) {
 					adder.next(int64(i+1), responsePoll{publication: publication, done: true})
 				}
 				agent.DoWork(0)
-				require.Equal(t, tc.resolve, responsePublicationCount(agent))
+				require.Equal(t, tc.resolve, agent.ResponsePublicationCount())
 				agent.adapter.SetImage(nil)
 			}
 			if tc.failID != 0 {
@@ -1954,7 +1942,7 @@ func TestAgent_JoinEgress_rules(t *testing.T) {
 			require.Equal(t, wantAdds, append([]transportAdd{}, adder.offers[offers:]...))
 			require.Equal(t, tc.wantPending, agent.PendingResponsePublicationAdds())
 			require.Len(t, adder.inFlight, tc.wantPending)
-			require.Equal(t, tc.wantPublications, responsePublicationCount(agent))
+			require.Equal(t, tc.wantPublications, agent.ResponsePublicationCount())
 			require.Equal(t, append([]int64{}, tc.wantPolls...), append([]int64{}, adder.polls[polls:]...))
 			require.Equal(t, tc.wantCancels, adder.cancels)
 			for _, publication := range publications {
@@ -2870,7 +2858,7 @@ func TestAgent_Unbind_imageClosedWhileBound(t *testing.T) {
 	adder.next(1, responsePoll{publication: held, done: true})
 	log.open(2, 1)
 	log.open(3, 1)
-	require.Equal(t, 1, responsePublicationCount(agent))
+	require.Equal(t, 1, agent.ResponsePublicationCount())
 	require.Equal(t, 2, agent.PendingResponsePublicationAdds())
 
 	// Both polls of add 2 stay pending. The add work poll of add 3 stays
@@ -2891,7 +2879,7 @@ func TestAgent_Unbind_imageClosedWhileBound(t *testing.T) {
 	require.True(t, returned.IsClosed())
 	require.Equal(t, []int64{2}, adder.cancels)
 	require.Empty(t, adder.inFlight)
-	require.Equal(t, 0, responsePublicationCount(agent))
+	require.Equal(t, 0, agent.ResponsePublicationCount())
 	require.Equal(t, 0, agent.PendingResponsePublicationAdds())
 	requireOffers(t, agent, MockedOffer, 1, 2, 3)
 	require.Equal(t, 3, agent.SessionCount())
@@ -2947,7 +2935,7 @@ func TestAgent_NewAgent_sentinels(t *testing.T) {
 	require.False(t, agent.HasPendingJoin())
 	require.NoError(t, agent.ServiceFailure())
 	require.Equal(t, nullValue, agent.egressLeadershipTermID)
-	require.Equal(t, 0, responsePublicationCount(agent))
+	require.Equal(t, 0, agent.ResponsePublicationCount())
 }
 
 // countingArchiveControl counts Poll calls. Each Poll reports pollWork.

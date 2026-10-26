@@ -230,6 +230,17 @@ const (
 	ClusterServiceRebuildLogEndpoint = "239.255.12.69:21904"
 )
 
+// Service egress leader-change endpoints. The pair reserves one three-member
+// consensus port block (base+1 .. base+205) and one shared cluster-log
+// multicast endpoint. The base sits below ClusterModuleImageLossPortBase (21300).
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterServiceEgressPortBase    = 20100
+	ClusterServiceEgressLogEndpoint = "239.255.12.77:20104"
+)
+
 // cluster_archive one-off and smoke endpoints. Harness holds one matrix for
 // every PortBase and log multicast the cluster_archive package uses under
 // t.Parallel. Sibling packages use 9000-9205 and 23700-24605 and may run in
@@ -592,6 +603,12 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    ClusterServiceRebuildPortBase,
 			memberCount: 3,
 			logEndpoint: ClusterServiceRebuildLogEndpoint,
+		},
+		{
+			name:        "service-egress",
+			portBase:    ClusterServiceEgressPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterServiceEgressLogEndpoint,
 		},
 		{
 			name:        "cluster-streams-multicast",
