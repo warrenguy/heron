@@ -72,13 +72,10 @@ func (s *stubPositionTable) QuorumPositionBoundedByLeaderLog(appendPosition, now
 
 func (s *stubPositionTable) HasActiveQuorum(nowNs, timeoutNs int64) bool { return true }
 
-func (s *stubPositionTable) RefreshMemberLiveness(memberID int32) {}
-
 // spyPositionTable records stamp/rank call order for leader consensusWork tests.
 // fixedQuorum, when set, is host-minned: min(*fixedQuorum, appendPosition).
 type spyPositionTable struct {
 	updates     []memberPositionUpdate
-	liveness    []int32
 	callOrder   []string
 	lastNowNs   int64
 	fixedQuorum *int64
@@ -95,11 +92,6 @@ func (s *spyPositionTable) UpdateMemberPosition(
 		leadershipTermID: leadershipTermID,
 		logPosition:      logPosition,
 	})
-}
-
-func (s *spyPositionTable) RefreshMemberLiveness(memberID int32) {
-	s.callOrder = append(s.callOrder, "liveness")
-	s.liveness = append(s.liveness, memberID)
 }
 
 func (s *spyPositionTable) QuorumPositionBoundedByLeaderLog(appendPosition, nowNs int64) int64 {

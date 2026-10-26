@@ -17,8 +17,7 @@ import (
 // rejoins below the leader. The follower catches up through Archive-backed log
 // replay. After catchup the set commits a post-catchup append on every member.
 //
-// Log replication has no helper. The scenario drives the follower replay path.
-// The test fails if the member is ever observed on the replication path.
+// The test fails if the follower ever enters the log-replication path.
 func TestDurableCluster_catchesUpARestartedFollower(t *testing.T) {
 	t.Parallel()
 
@@ -110,7 +109,7 @@ func TestDurableCluster_catchesUpARestartedFollower(t *testing.T) {
 	// Await adapter and notified commit at the captured publication position.
 	// The returner must stay ElectionComplete with an active recording. Progress
 	// alone can pass during LEADER_HEARTBEAT_TIMEOUT re-entry under short harness
-	// heartbeats. Fail if the member enters the nil-factory log-replication path.
+	// heartbeats. Fail if the member enters the log-replication path.
 	requireAwaitTick(
 		t, set, "archive catchup to leader publication", durableWorkBound,
 		func() bool {
@@ -257,7 +256,7 @@ func TestDurableCluster_catchesUpConcurrentFollowers(t *testing.T) {
 
 	// Latch peak CatchupReplayCount each tick. Extend every tick while the peak
 	// is below two so follow-mode StopCatchup cannot retire the first entry
-	// before the second opens. Fail on the nil-factory log-replication path.
+	// before the second opens. Fail on the log-replication path.
 	maxConcurrentReplays := 0
 	requireAwaitTick(
 		t, set, "two concurrent catchup replays live", durableWorkBound,
@@ -392,8 +391,9 @@ func localRecordingAtLeast(m *cluster.ConsensusModule, target int64) bool {
 	return recordingAtLeast(m, m.Agent().LocalLogRecordingID(), target)
 }
 
-// failIfFollowerLogReplication fails the test when m is on the nil-factory
-// follower log-replication path.
+// failIfFollowerLogReplication fails the test when m is on the follower
+// log-replication path. A scenario that calls it expects a catchup or a log
+// join instead.
 func failIfFollowerLogReplication(
 	t *testing.T,
 	set *harness.ClusterMemberSet,
@@ -411,7 +411,7 @@ func failIfFollowerLogReplication(
 	}
 	require.FailNow(
 		t,
-		"returning member entered nil-factory log-replication path",
+		"returning member entered the log-replication path",
 		"member=%d ElectionState=%v:\n%s",
 		memberIndex,
 		state,
@@ -423,7 +423,7 @@ func failIfFollowerLogReplication(
 // recording and has adapter plus notified commit at least target. Nil m is
 // false.
 //
-// Fails the test if m is on the nil-factory follower log-replication path.
+// Fails the test if m is on the follower log-replication path.
 func returnerCaughtUpTo(
 	t *testing.T,
 	set *harness.ClusterMemberSet,

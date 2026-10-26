@@ -259,15 +259,10 @@ type Agent struct {
 	// fresh not-ready run in the next term.
 	appendRankFailure error
 
-	// lastPublishedAppendPosition is the last successfully published follower
-	// unflagged append high-water (advanced path only). Catchup-flagged
-	// publishes must not raise this floor. After election close the steady path
-	// re-publishes max(recorded, lastPublished) unflagged into the quorum.
+	// lastPublishedAppendPosition is the follower append high-water from the
+	// last advancing publish, flagged or not. After election close, the steady
+	// path re-publishes max(recorded, lastPublished) unflagged.
 	lastPublishedAppendPosition int64
-
-	// lastCatchupPublishedPosition is the last catchup-flagged position
-	// published. Used for CatchupPoll cadence only and never as a steady floor.
-	lastCatchupPublishedPosition int64
 
 	// timeOfLastAppendPositionSendNs gates follower AppendPosition re-publish
 	// on the heartbeat interval.
@@ -924,6 +919,9 @@ type LogReplayFactory func(logPosition, appendPosition int64) LogReplay
 // LogReplicationFactory builds a follower [LogReplication] helper for
 // [Agent.NewLogReplication].
 //
+// The factory must not return nil. A helper that cannot start returns its
+// failure from the first [LogReplication.DoWork].
+//
 // Nil factory: NewLogReplication returns nil.
 type LogReplicationFactory func(
 	leaderArchiveEndpoint, responseArchiveEndpoint string,
@@ -961,8 +959,11 @@ func (a *Agent) NewLogReplay(logPosition, appendPosition int64) LogReplay {
 
 // NewLogReplication returns a follower [LogReplication] helper, or nil.
 //
-// When a [LogReplicationFactory] is set, returns the factory result. Otherwise
-// returns nil (full archive replicate mesh not wired).
+// Behaviour:
+//   - nil factory: returns nil. Does not unbind the log adapter image.
+//   - set factory: unbinds the log adapter image at its position, then
+//     returns the factory result. A later replay reads the replicated range
+//     from the local recording.
 func (a *Agent) NewLogReplication(
 	leaderArchiveEndpoint string,
 	responseArchiveEndpoint string,
@@ -974,6 +975,7 @@ func (a *Agent) NewLogReplication(
 	if f == nil {
 		return nil
 	}
+	a.logAdapter.DisconnectAt(a.logAdapter.Position())
 	return f(
 		leaderArchiveEndpoint,
 		responseArchiveEndpoint,
@@ -988,9 +990,9 @@ const (
 	// AppendPositionFlagNone marks a steady (non-catchup) AppendPosition.
 	AppendPositionFlagNone uint8 = 0
 
-	// AppendPositionFlagCatchup marks progress during catchup. Leaders exclude
-	// these positions from the commit quorum. Use is limited to catchup
-	// completion tracking and liveness.
+	// AppendPositionFlagCatchup marks a recorded position sent during catchup.
+	// Leaders count it in the commit quorum. Leaders also track catchup
+	// completion on it.
 	AppendPositionFlagCatchup uint8 = 1
 )
 
@@ -999,18 +1001,20 @@ func isCatchupAppendPosition(flags uint8) bool {
 	return flags&AppendPositionFlagCatchup != 0
 }
 
-// CatchupPoll polls catchup/live log progress under limitPosition.
+// CatchupPoll polls catchup/live log progress under limitPosition, then
+// publishes the recorded append position.
 //
 // When a [LogAdapter] Image is bound, polls under limitPosition (same
 // BoundedControlledPoll substrate as followerConsensusWork). Each hold of
-// [Agent.holdLogPollBound] lowers the bound.
-// Advances commit via [Agent.ProposeMaxCommit] from adapter position. Then
-// publishes the adapter position under [AppendPositionFlagCatchup] so the
-// leader can observe catchup progress.
+// [Agent.holdLogPollBound] lowers the bound. Advances commit via
+// [Agent.ProposeMaxCommit] from adapter position. Then publishes the recorded
+// position under [AppendPositionFlagCatchup].
 //
-// The published position is the consumed merged-image position, not a recorded
-// append position. Heron follower recording is channel-based and does not see
-// unicast catchup frames, so the recorded high-water stalls during catchup.
+// The recorded position does not bound the poll. A catchup recording stops
+// when the leader stops the replay. The adapter position may still trail the
+// recorded position.
+//
+// Does not publish when AppendPositionSource is nil or its read is not ready.
 //
 // Returns 0 when adapter or image is nil.
 //
@@ -1022,7 +1026,12 @@ func (a *Agent) CatchupPoll(limitPosition, nowNs int64) int {
 		return 0
 	}
 	work := a.pollBoundLog(adapter, limitPosition, nowNs)
-	work += a.updateFollowerPosition(nowNs, adapter.Position(), AppendPositionFlagCatchup)
+	if a.appendSource == nil {
+		return work
+	}
+	if recorded, ready := a.resolveAppendPosition(nowNs); ready {
+		work += a.updateFollowerPosition(nowNs, recorded, AppendPositionFlagCatchup)
+	}
 	return work
 }
 
@@ -1041,13 +1050,11 @@ func (a *Agent) pollBoundLog(adapter *LogAdapter, limitPosition, nowNs int64) in
 const liveAddMaxWindow int64 = 32 * 1024 * 1024
 
 // CatchupInitiated notes the follower append-position cadence time so catchup
-// progress publish does not wait a full heartbeat interval. Clears the catchup
-// publish high-water so the first CatchupPoll is treated as advanced.
+// progress publish does not wait a full heartbeat interval.
 //
 // Concurrency: invoker-only.
 func (a *Agent) CatchupInitiated(nowNs int64) {
 	a.timeOfLastAppendPositionSendNs = nowNs
-	a.lastCatchupPublishedPosition = 0
 }
 
 // StopAllCatchups stops every leader-side catchup replay and drains
@@ -1673,7 +1680,6 @@ func (a *Agent) teardownForNewLeadership(logPosition int64) {
 	a.RoleSet(RoleFollower)
 	a.SetLeaderMemberID(nullMemberID)
 	a.lastPublishedAppendPosition = 0
-	a.lastCatchupPublishedPosition = 0
 	a.timeOfLastAppendPositionSendNs = 0
 	a.appendRankFailure = nil
 	a.appendNotReadySinceNs = nullValue
@@ -2308,9 +2314,7 @@ func (a *Agent) handleSteadyCanvassPosition(fields codecs.CanvassPositionFields,
 //
 // Behaviour:
 //   - higher-term appends are ignored (no member update)
-//   - catchup-flagged positions skip the position-table update, refresh
-//     liveness only, and drive [Agent.TrackCatchupCompletion]
-//   - unflagged positions update the table when set
+//   - flagged and unflagged positions update the table when positions is set
 //   - TrackCatchupCompletion always runs so a live map entry finishes cleanup
 //     even when positions is nil
 func (a *Agent) handleSteadyAppendPosition(fields codecs.AppendPositionFields, nowNs int64) {
@@ -2322,15 +2326,11 @@ func (a *Agent) handleSteadyAppendPosition(fields codecs.AppendPositionFields, n
 		return
 	}
 	if a.positions != nil {
-		if isCatchupAppendPosition(fields.Flags) {
-			a.positions.RefreshMemberLiveness(fields.FollowerMemberID)
-		} else {
-			a.positions.UpdateMemberPosition(
-				fields.FollowerMemberID,
-				fields.LeadershipTermID,
-				fields.LogPosition,
-			)
-		}
+		a.positions.UpdateMemberPosition(
+			fields.FollowerMemberID,
+			fields.LeadershipTermID,
+			fields.LogPosition,
+		)
 	}
 	a.TrackCatchupCompletion(fields.FollowerMemberID, fields.LogPosition, fields.Flags)
 }
@@ -2495,17 +2495,9 @@ func (a *Agent) updateFollowerPosition(nowNs, appendPos int64, flags uint8) int 
 	if a.egress == nil {
 		return 0
 	}
-	// Steady floors on lastPublished so interval re-publish keeps the unflagged
-	// high-water. Catchup publishes the adapter position alone and cadences on
-	// lastCatchupPublishedPosition so progress does not raise the steady floor.
-	catchup := isCatchupAppendPosition(flags)
-	position := appendPos
-	lastPublished := a.lastCatchupPublishedPosition
-	if !catchup {
-		position = max(appendPos, a.lastPublishedAppendPosition)
-		lastPublished = a.lastPublishedAppendPosition
-	}
-	advanced := position > lastPublished
+	// Floors on lastPublished so interval re-publish keeps the high-water.
+	position := max(appendPos, a.lastPublishedAppendPosition)
+	advanced := position > a.lastPublishedAppendPosition
 	intervalDue := nowNs >= a.timeOfLastAppendPositionSendNs+a.leaderHeartbeatIntervalNs
 	if !advanced && !intervalDue {
 		return 0
@@ -2514,11 +2506,7 @@ func (a *Agent) updateFollowerPosition(nowNs, appendPos int64, flags uint8) int 
 		return 0
 	}
 	if advanced {
-		if catchup {
-			a.lastCatchupPublishedPosition = position
-		} else {
-			a.lastPublishedAppendPosition = position
-		}
+		a.lastPublishedAppendPosition = position
 	}
 	a.timeOfLastAppendPositionSendNs = nowNs
 	return 1

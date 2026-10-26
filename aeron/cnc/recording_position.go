@@ -59,35 +59,107 @@ func (reader *CountersReader) FindRecordingPositionCounter(
 		if state == CounterRecordUnused {
 			break
 		}
-		if !reader.counterAllocatedOfTypeAt(
-			metadataOffset,
-			state,
-			ArchiveRecordingPositionCounterTypeID,
-		) {
-			continue
+		if reader.recordingPositionCounterMatchesAt(metadataOffset, state, recordingID, archiveID) {
+			return NewCounterSlot(counterID, reader.values), true
 		}
-
-		keyOffset := metadataOffset + CounterMetadataKeyOffset
-		if reader.metadata.GetInt64(keyOffset+recordingPositionRecordingIDKeyOffset) != recordingID {
-			continue
-		}
-		if archiveID != NullValue {
-			// The CnC metadata buffer is driver-mmap'd and trusted, so the key read needs
-			// no bounds guard on sourceIdentityLength (matching upstream).
-			sourceIdentityLength := reader.metadata.GetInt32(
-				keyOffset + recordingPositionSourceIdentityLengthKeyOffset,
-			)
-			archiveIDOffset := keyOffset +
-				recordingPositionSourceIdentityKeyOffset +
-				int(sourceIdentityLength)
-			if reader.metadata.GetInt64(archiveIDOffset) != archiveID {
-				continue
-			}
-		}
-		return NewCounterSlot(counterID, reader.values), true
 	}
 
 	return CounterSlot{}, false
+}
+
+// isRecordingPositionCounter reports whether counterID is the active
+// recording-position counter of recordingID on archiveID. NullValue archiveID
+// matches any archive.
+func (reader *CountersReader) isRecordingPositionCounter(
+	counterID int32,
+	recordingID int64,
+	archiveID int64,
+) bool {
+	if reader == nil || counterID < 0 || counterID > reader.maxCounterID {
+		return false
+	}
+	metadataOffset := counterMetadataOffset(counterID)
+	state := reader.metadata.GetInt32Volatile(metadataOffset + CounterMetadataStateOffset)
+	return reader.recordingPositionCounterMatchesAt(metadataOffset, state, recordingID, archiveID)
+}
+
+// recordingPositionCounterMatchesAt reports whether the counter record at
+// metadataOffset with state is an allocated recording-position counter whose
+// key names recordingID and archiveID. NullValue archiveID matches any archive.
+func (reader *CountersReader) recordingPositionCounterMatchesAt(
+	metadataOffset int,
+	state int32,
+	recordingID int64,
+	archiveID int64,
+) bool {
+	if !reader.counterAllocatedOfTypeAt(
+		metadataOffset,
+		state,
+		ArchiveRecordingPositionCounterTypeID,
+	) {
+		return false
+	}
+
+	keyOffset := metadataOffset + CounterMetadataKeyOffset
+	if reader.metadata.GetInt64(keyOffset+recordingPositionRecordingIDKeyOffset) != recordingID {
+		return false
+	}
+	if archiveID == NullValue {
+		return true
+	}
+	// The CnC metadata buffer is driver-mmap'd and trusted, so the key read needs
+	// no bounds guard on sourceIdentityLength (matching upstream).
+	sourceIdentityLength := reader.metadata.GetInt32(
+		keyOffset + recordingPositionSourceIdentityLengthKeyOffset,
+	)
+	archiveIDOffset := keyOffset +
+		recordingPositionSourceIdentityKeyOffset +
+		int(sourceIdentityLength)
+	return reader.metadata.GetInt64(archiveIDOffset) == archiveID
+}
+
+// RecordingPositionCache reads the recording-position counter of one
+// recording on one archive.
+//
+// Behaviour: caches one counter slot. Each read first revalidates the cached
+// slot for the recording id and the archive id. A miss rescans the counters.
+//
+// Concurrency: invoker-only.
+type RecordingPositionCache struct {
+	reader    *CountersReader
+	archiveID int64
+
+	// cached reports whether cachedSlot holds the counter of
+	// cachedRecordingID.
+	cached            bool
+	cachedRecordingID int64
+	cachedSlot        CounterSlot
+}
+
+// NewRecordingPositionCache returns a cache over reader for the archive with
+// archiveID. NullValue matches any archive. With a nil reader, every read
+// misses.
+func NewRecordingPositionCache(reader *CountersReader, archiveID int64) *RecordingPositionCache {
+	return &RecordingPositionCache{reader: reader, archiveID: archiveID}
+}
+
+// RecordingPosition returns the counter value for recordingID and true. It
+// returns 0 and false when no active counter matches.
+func (c *RecordingPositionCache) RecordingPosition(recordingID int64) (int64, bool) {
+	cachedSlotLive := c.cached &&
+		c.cachedRecordingID == recordingID &&
+		c.reader.isRecordingPositionCounter(c.cachedSlot.CounterID(), recordingID, c.archiveID)
+	if cachedSlotLive {
+		return c.cachedSlot.Get(), true
+	}
+	slot, ok := c.reader.FindRecordingPositionCounter(recordingID, c.archiveID)
+	c.cached = ok
+	if !ok {
+		return 0, false
+	}
+	c.cachedRecordingID = recordingID
+	c.cachedSlot = slot
+	return slot.Get(), true
 }
 
 // WriteRecordingPositionCounterRecord seeds a recording-position counter for tests using

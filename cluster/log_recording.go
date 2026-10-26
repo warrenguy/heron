@@ -191,7 +191,8 @@ type logRecording struct {
 	// latchedRecordingID is the catalog id after the last clean stop, successful
 	// truncate, identity catalog stop, or plan seed. StopPositionFor matches this
 	// id when nothing is pending. The id survives a failed re-start that sets
-	// recordingID to unknown then drains dirty.
+	// recordingID to unknown then drains dirty. forgetStopPosition resets it
+	// to recordingIDUnknown.
 	latchedRecordingID int64
 	stopPosition       int64
 
@@ -919,6 +920,18 @@ func (r *logRecording) TruncateLogRecording(
 	}
 	r.storeStopPosition(recordingID, position)
 	return count, nil
+}
+
+// forgetStopPosition drops the stop stored for recordingID. StopPositionFor
+// then reads the catalog for that id. A prepare then stops it by identity.
+// Another id keeps the stored stop.
+//
+// Log replication calls it after it offers the replicate request.
+// The destination recording then grows past the stored stop.
+func (r *logRecording) forgetStopPosition(recordingID int64) {
+	if r.latchedRecordingID == recordingID {
+		r.latchedRecordingID = recordingIDUnknown
+	}
 }
 
 // storeStopPosition stores recordingID and position for StopPositionFor.

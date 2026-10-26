@@ -42,6 +42,11 @@ var testMemberEndpoints = [endpointSlotCount]string{
 	archiveSlot:   testArchiveEndpoint,
 }
 
+// testMembersWithArchiveResponse is the member-0 ClusterMembers string with an
+// archive response endpoint appended.
+var testMembersWithArchiveResponse = strings.TrimSuffix(memberSpec(0, testMemberEndpoints), "|") +
+	",127.0.0.1:9006|"
+
 func TestNormalize_defaults(t *testing.T) {
 	t.Parallel()
 
@@ -60,6 +65,10 @@ func TestNormalize_defaults(t *testing.T) {
 	require.Equal(t, cluster.DefaultServiceStreamID, cfg.ServiceStreamID)
 	require.Equal(t, "aeron:ipc?alias=snapshot", cfg.SnapshotChannel)
 	require.Equal(t, int32(107), cfg.SnapshotStreamID)
+	require.Equal(t, "aeron:udp?term-length=64k", cfg.LeaderArchiveControlChannel)
+	require.Equal(t, cluster.DefaultLeaderArchiveControlChannel, cfg.LeaderArchiveControlChannel)
+	// ReplicationChannel stays empty: the local Archive's own channel applies.
+	require.Empty(t, cfg.ReplicationChannel)
 	require.NotNil(t, cfg.Idle)
 	require.Equal(t, recordinglog.FileSyncData, cfg.RecordingLogFileSyncLevel)
 	require.Equal(t, recordinglog.FileSyncData, cfg.NodeStateFileSyncLevel)
@@ -110,22 +119,24 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 		StartupCanvassTimeoutNs:   120_000_000_000,
 	}
 	cfg := cluster.Config{
-		ConsensusChannel:          channel,
-		LogChannel:                channel,
-		IngressChannel:            channel,
-		ReplayChannel:             replayChannel,
-		ServiceControlChannel:     serviceControlChannel,
-		SnapshotChannel:           snapshotChannel,
-		ConsensusStreamID:         200,
-		LogStreamID:               201,
-		ReplayStreamID:            202,
-		IngressStreamID:           203,
-		ConsensusModuleStreamID:   204,
-		ServiceStreamID:           205,
-		SnapshotStreamID:          206,
-		RecordingLogFileSyncLevel: recordinglog.FileSyncFull,
-		NodeStateFileSyncLevel:    recordinglog.FileSyncFull,
-		Election:                  explicitElection,
+		ConsensusChannel:            channel,
+		LogChannel:                  channel,
+		IngressChannel:              channel,
+		ReplayChannel:               replayChannel,
+		ServiceControlChannel:       serviceControlChannel,
+		SnapshotChannel:             snapshotChannel,
+		ReplicationChannel:          channel,
+		LeaderArchiveControlChannel: channel,
+		ConsensusStreamID:           200,
+		LogStreamID:                 201,
+		ReplayStreamID:              202,
+		IngressStreamID:             203,
+		ConsensusModuleStreamID:     204,
+		ServiceStreamID:             205,
+		SnapshotStreamID:            206,
+		RecordingLogFileSyncLevel:   recordinglog.FileSyncFull,
+		NodeStateFileSyncLevel:      recordinglog.FileSyncFull,
+		Election:                    explicitElection,
 	}.Normalize()
 
 	require.Equal(t, channel, cfg.ConsensusChannel)
@@ -140,6 +151,8 @@ func TestNormalize_preservesExplicitValues(t *testing.T) {
 	require.Equal(t, int32(204), cfg.ConsensusModuleStreamID)
 	require.Equal(t, int32(205), cfg.ServiceStreamID)
 	require.Equal(t, snapshotChannel, cfg.SnapshotChannel)
+	require.Equal(t, channel, cfg.ReplicationChannel)
+	require.Equal(t, channel, cfg.LeaderArchiveControlChannel)
 	require.Equal(t, int32(206), cfg.SnapshotStreamID)
 	require.Equal(t, recordinglog.FileSyncFull, cfg.RecordingLogFileSyncLevel)
 	require.Equal(t, recordinglog.FileSyncFull, cfg.NodeStateFileSyncLevel)
@@ -282,6 +295,15 @@ func TestValidate_withoutNormalize(t *testing.T) {
 	require.EqualError(t, err, "cluster: ClusterDir is required")
 }
 
+func TestValidate_replicationChannelWithArchiveResponseEndpoint(t *testing.T) {
+	t.Parallel()
+
+	cfg := topologyConfig(0)
+	cfg.ClusterMembers = testMembersWithArchiveResponse
+	cfg.ReplicationChannel = "aeron:udp?endpoint=127.0.0.1:0"
+	require.NoError(t, cfg.Validate())
+}
+
 func TestValidate_injectedAeronClient(t *testing.T) {
 	t.Parallel()
 
@@ -410,6 +432,15 @@ func TestValidate_errors(t *testing.T) {
 			name:   "endpoint contains equals",
 			mutate: withMemberEndpoint(ingressSlot, "host=port"),
 			want:   "cluster: member 0 has an invalid ingress endpoint: host=port",
+		},
+		{
+			name: "archive response endpoint contains a delimiter",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ClusterMembers = strings.TrimSuffix(memberSpec(0, testMemberEndpoints), "|") +
+					",127.0.0.1:9006?x|"
+				cfg.ReplicationChannel = "aeron:udp?endpoint=127.0.0.1:0"
+			},
+			want: "cluster: member 0 has an invalid archive response endpoint: 127.0.0.1:9006?x",
 		},
 		{
 			name:   "consensus endpoint without port",
@@ -606,6 +637,27 @@ func TestValidate_errors(t *testing.T) {
 				cfg.SnapshotChannel = "aeron:ipc?alias=snapshot|session-id=7"
 			},
 			want: "cluster: SnapshotChannel must not set session-id=",
+		},
+		{
+			name: "ReplicationChannel not udp",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ReplicationChannel = "aeron:ipc"
+			},
+			want: "cluster: ReplicationChannel must be a udp channel",
+		},
+		{
+			name: "LeaderArchiveControlChannel not udp",
+			mutate: func(cfg *cluster.Config) {
+				cfg.LeaderArchiveControlChannel = "aeron:ipc?term-length=64k"
+			},
+			want: "cluster: LeaderArchiveControlChannel must be a udp channel",
+		},
+		{
+			name: "ReplicationChannel empty with a member archive response endpoint",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ClusterMembers = testMembersWithArchiveResponse
+			},
+			want: "cluster: ReplicationChannel is required: member 0 has an archive response endpoint",
 		},
 		{
 			name: "SnapshotStreamID equals LogStreamID",

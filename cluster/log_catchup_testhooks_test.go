@@ -128,6 +128,7 @@ func openCatchupTestStreams(t *testing.T) *catchupTestStreams {
 		ClusterDir:                    t.TempDir(),
 		AeronDir:                      t.TempDir(),
 		LogChannel:                    "aeron:udp?term-length=64k|interface=127.0.0.1|ttl=0",
+		ReplicationChannel:            testReplicationChannel,
 		ArchiveControlRequestChannel:  "aeron:ipc",
 		ArchiveControlResponseChannel: "aeron:ipc",
 	}.Normalize()

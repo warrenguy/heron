@@ -672,7 +672,7 @@ func survivorsHoldRecordings(
 }
 
 // failIfAnyLogReplication fails the test when:
-//   - an active member is on the nil-factory follower log-replication path
+//   - an active member is on the follower log-replication path
 //   - an active member has a marked AppendRankFailure
 func failIfAnyLogReplication(t *testing.T, set *harness.ClusterMemberSet) {
 	t.Helper()

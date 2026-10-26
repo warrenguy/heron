@@ -389,65 +389,6 @@ func TestRecordingPosAppendPosition_missingCounterMatrix(t *testing.T) {
 	})
 }
 
-// TestRecordingPosAppendPosition_cachedSlotRevalidates asserts the cached
-// counter slot revalidates on every read. The slot follows in-place value
-// advances and never reports a slot reused by another recording.
-func TestRecordingPosAppendPosition_cachedSlotRevalidates(t *testing.T) {
-	t.Parallel()
-
-	const recordingID int64 = 77
-
-	// Three slots: two writable, one unused scan stop.
-	meta := make([]byte, 3*cnc.CounterMetadataLength)
-	values := make([]byte, 3*cnc.CounterValueLength)
-	writeCounter := func(counterID int32, id, value int64) {
-		require.NoError(t, cnc.WriteRecordingPositionCounterRecord(
-			meta,
-			values,
-			counterID,
-			cnc.CounterRecordAllocated,
-			cnc.ArchiveRecordingPositionCounterTypeID,
-			id,
-			1, // session
-			"aeron:ipc",
-			cnc.NullValue,
-			value,
-		))
-	}
-	writeCounter(0, recordingID, 100)
-	reader, err := cnc.NewCountersReader(meta, values)
-	require.NoError(t, err)
-
-	a := recordingAgent(t, RoleFollower, recordingID, true, reader)
-	src := a.AppendSource().(*RecordingPosAppendPosition)
-
-	// First read scans and caches slot 0.
-	requireAppendPosition(t, 100, src)
-	require.Equal(t, int32(0), src.cachedCounterID)
-
-	// In-place advance: cached slot reads the new value.
-	writeCounter(0, recordingID, 150)
-	requireAppendPosition(t, 150, src)
-	require.Equal(t, int32(0), src.cachedCounterID)
-
-	// Slot 0 reused by another recording: revalidation fails; rescan finds slot 1.
-	// Stale slot value 500 is never reported.
-	writeCounter(0, recordingID+1, 500)
-	writeCounter(1, recordingID, 200)
-	requireAppendPosition(t, 200, src)
-	require.Equal(t, int32(1), src.cachedCounterID)
-
-	// No slot for the recording: not-ready; cache drops.
-	writeCounter(1, recordingID+1, 999)
-	requireAppendNotReady(t, src)
-	require.Equal(t, cnc.NullCounterID, src.cachedCounterID)
-
-	// Counter returns: fresh scan recaches.
-	writeCounter(1, recordingID, 300)
-	requireAppendPosition(t, 300, src)
-	require.Equal(t, int32(1), src.cachedCounterID)
-}
-
 func TestRecordingPosAppendPosition_matchesArchiveID(t *testing.T) {
 	t.Parallel()
 

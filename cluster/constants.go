@@ -129,6 +129,11 @@ const (
 	// snapshot from this channel. The service container default is the same
 	// channel on stream 106.
 	DefaultSnapshotChannel = "aeron:ipc?alias=snapshot"
+
+	// DefaultLeaderArchiveControlChannel is LEADER_ARCHIVE_CONTROL_CHANNEL_DEFAULT
+	// on io.aeron.cluster.ConsensusModule.Configuration. Log replication sets
+	// the leader archive endpoint on it.
+	DefaultLeaderArchiveControlChannel = "aeron:udp?term-length=64k"
 )
 
 // MinValidPort and MaxValidPort bound every port derived from CalculatePort.

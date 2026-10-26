@@ -17,14 +17,8 @@ import (
 // a udp channel, when endpoint is empty, or when endpoint contains any of the
 // URI delimiters pipe, question mark, or equals.
 func BuildChannelWithEndpoint(channel, endpoint string) (string, error) {
-	if !isUDPChannel(channel) {
-		return "", fmt.Errorf("cluster: invalid channel: %s", channel)
-	}
-	if endpoint == "" {
-		return "", errors.New("cluster: endpoint is required")
-	}
-	if strings.ContainsAny(endpoint, endpointDelimiters) {
-		return "", fmt.Errorf("cluster: invalid endpoint: %s", endpoint)
+	if err := checkChannelEndpoint(channel, endpoint); err != nil {
+		return "", fmt.Errorf("cluster: %w", err)
 	}
 	idx := aeron.ChannelEndpointParamIndex(channel)
 	if idx >= 0 {
@@ -36,6 +30,21 @@ func BuildChannelWithEndpoint(channel, endpoint string) (string, error) {
 		), nil
 	}
 	return aeron.AppendChannelParam(channel, aeron.ChannelEndpointParam, endpoint), nil
+}
+
+// checkChannelEndpoint returns an error when channel is not a udp channel,
+// endpoint is empty, or endpoint holds a pipe, question mark, or equals sign.
+func checkChannelEndpoint(channel, endpoint string) error {
+	if !isUDPChannel(channel) {
+		return fmt.Errorf("invalid channel: %s", channel)
+	}
+	if endpoint == "" {
+		return errors.New("endpoint is required")
+	}
+	if strings.ContainsAny(endpoint, endpointDelimiters) {
+		return fmt.Errorf("invalid endpoint: %s", endpoint)
+	}
+	return nil
 }
 
 // Topology is the resolved channel map for one member.

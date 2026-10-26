@@ -121,6 +121,96 @@ func TestFindRecordingPositionCounter_nilReader(t *testing.T) {
 	require.False(t, ok)
 }
 
+// TestRecordingPositionCache_revalidatesTheCachedSlot asserts the cache
+// follows in-place advances and never reports a slot another recording reuses.
+func TestRecordingPositionCache_revalidatesTheCachedSlot(t *testing.T) {
+	t.Parallel()
+
+	const recordingID int64 = 77
+
+	meta, values := syntheticCountersBuffers(t, 3)
+	writeCounter := func(counterID int32, id, value int64) {
+		seedRecordingPositionCounter(
+			t, meta, values, counterID, cnc.ArchiveRecordingPositionCounterTypeID,
+			id, 1, "aeron:ipc", cnc.NullValue, value,
+		)
+	}
+	writeCounter(0, recordingID, 100)
+	reader, err := cnc.NewCountersReader(meta, values)
+	require.NoError(t, err)
+	cache := cnc.NewRecordingPositionCache(reader, cnc.NullValue)
+
+	requireRead := func(want int64) {
+		t.Helper()
+		got, ok := cache.RecordingPosition(recordingID)
+		require.True(t, ok)
+		require.Equal(t, want, got)
+	}
+
+	// Phase: the first read scans slot 0. An in-place advance reads through.
+	requireRead(100)
+	writeCounter(0, recordingID, 150)
+	requireRead(150)
+
+	// Phase: another recording reuses slot 0. The read does not report 500.
+	writeCounter(0, recordingID+1, 500)
+	writeCounter(1, recordingID, 200)
+	requireRead(200)
+
+	// Phase: with no counter left, the read misses.
+	writeCounter(1, recordingID+1, 900)
+	_, ok := cache.RecordingPosition(recordingID)
+	require.False(t, ok)
+
+	// Phase: the counter returns. A fresh scan finds it.
+	writeCounter(1, recordingID, 300)
+	requireRead(300)
+
+	// Phase: a read through a nil reader misses.
+	_, ok = cnc.NewRecordingPositionCache(nil, cnc.NullValue).RecordingPosition(recordingID)
+	require.False(t, ok)
+}
+
+// TestRecordingPositionCache_rejectsAnotherArchivesSlot asserts a cached slot
+// that another archive reuses for the same recording id misses.
+func TestRecordingPositionCache_rejectsAnotherArchivesSlot(t *testing.T) {
+	t.Parallel()
+
+	const (
+		recordingID int64 = 77
+		archiveID   int64 = 1
+	)
+
+	meta, values := syntheticCountersBuffers(t, 3)
+	writeCounter := func(counterID int32, archive, value int64) {
+		seedRecordingPositionCounter(
+			t, meta, values, counterID, cnc.ArchiveRecordingPositionCounterTypeID,
+			recordingID, 1, "aeron:ipc", archive, value,
+		)
+	}
+	writeCounter(0, archiveID, 100)
+	reader, err := cnc.NewCountersReader(meta, values)
+	require.NoError(t, err)
+	cache := cnc.NewRecordingPositionCache(reader, archiveID)
+
+	got, ok := cache.RecordingPosition(recordingID)
+	require.True(t, ok)
+	require.Equal(t, int64(100), got)
+
+	// Phase: another archive reuses slot 0 for the same recording id. The read
+	// rescans and finds this archive's counter in slot 1.
+	writeCounter(0, archiveID+1, 500)
+	writeCounter(1, archiveID, 200)
+	got, ok = cache.RecordingPosition(recordingID)
+	require.True(t, ok)
+	require.Equal(t, int64(200), got)
+
+	// Phase: only the other archive's counter remains. The read misses.
+	writeCounter(1, archiveID+1, 900)
+	_, ok = cache.RecordingPosition(recordingID)
+	require.False(t, ok)
+}
+
 func TestWriteRecordingPositionCounterRecord_boundsSourceIdentity(t *testing.T) {
 	write := func(sourceIdentity string) ([]byte, error) {
 		meta, values := syntheticCountersBuffers(t, 1)
