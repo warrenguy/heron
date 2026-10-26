@@ -413,7 +413,7 @@ type modelJoin struct {
 //     The adder holds zero in-flight adds.
 //   - an add starts only on a leader SessionOpen or on the bind of a leader
 //     join with isStartup false. The adder offer count matches the model.
-//   - PendingResponsePublicationAdds and responsePublicationCount match the
+//   - PendingResponsePublicationAdds and ResponsePublicationCount match the
 //     model.
 //   - Offer returns the model code. A positive offer frames the model term,
 //     the session id and the payload.
@@ -527,7 +527,7 @@ func TestAgent_egressRejoin_rapid(t *testing.T) {
 			}
 			require.Equal(rt, wantInFlight, adder.inFlight)
 			require.Equal(rt, len(wantInFlight), agent.PendingResponsePublicationAdds())
-			require.Equal(rt, wantPublications, responsePublicationCount(agent))
+			require.Equal(rt, wantPublications, agent.ResponsePublicationCount())
 			require.Len(rt, adder.offers, int(nextCorrelationID-1))
 			require.Equal(rt, wantCancels, adder.cancels)
 

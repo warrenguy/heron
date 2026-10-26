@@ -559,6 +559,18 @@ func (a *Agent) PendingResponsePublicationAdds() int {
 	return len(a.responseAdds)
 }
 
+// ResponsePublicationCount returns how many sessions hold a response
+// publication. A non-leader or unbound agent returns 0.
+func (a *Agent) ResponsePublicationCount() int {
+	count := 0
+	for _, session := range a.sessionList {
+		if session.publication != nil {
+			count++
+		}
+	}
+	return count
+}
+
 // HasPendingJoin reports whether a JoinLog is stored and not yet bound.
 func (a *Agent) HasPendingJoin() bool {
 	return a.pendingJoin != nil
