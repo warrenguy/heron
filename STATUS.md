@@ -147,6 +147,11 @@ Works:
 - Session open, close and message, timer, and new leadership term callbacks;
   schedule and cancel timers.
 - Service ack protocol; several services per member.
+- Egress to clients through `ClientSession`: the leader's service replies to a
+  client session. After a leader change on a Go cluster, the new leader's
+  services reconnect egress.
+- `CloseClientSession` asks the consensus module to close a client session.
+  Every member sees the close through the log.
 
 Partial:
 
@@ -159,11 +164,9 @@ Partial:
 
 Not implemented:
 
-- Egress to clients: there is no `ClientSession`, so a service cannot reply to
-  clients.
 - Recovery: snapshot loading; a service always starts from log position 0.
 - Termination, `onRoleChange`, `onTerminate`, background work.
-- Service messages to the log, closing client sessions, mark file, counters.
+- Service messages to the log, mark file, counters.
 
 ## Out of scope
 
