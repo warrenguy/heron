@@ -96,6 +96,27 @@ type TakeSnapshotHandler interface {
 	TakeSnapshot(publication *aeron.ExclusivePublication) error
 }
 
+// LoadSnapshotHandler is the optional extension a service implements to
+// restore its state from a snapshot. Open detects the handler once with a
+// type assertion.
+//
+// Behaviour: Open calls LoadSnapshot once per snapshot load. image is the
+// archive replay of this service's snapshot recording. image sits at the
+// first byte TakeSnapshot wrote. LoadSnapshot reads the service's own
+// format to its end. image stays open for the whole call. LoadSnapshot must
+// not wait for image to close.
+//
+// LoadSnapshot must not close image. image is valid only during the call.
+// A non-nil error fails Open.
+//
+// Concurrency: LoadSnapshot runs on the goroutine that calls Open. The
+// call returns before the first DoWork, so before Start. Nothing pumps the
+// transport client meanwhile. A run past the transport client's
+// InterServiceTimeout terminates that client.
+type LoadSnapshotHandler interface {
+	LoadSnapshot(image *aeron.Image) error
+}
+
 // Cluster is the service-facing proxy into member state.
 //
 // Concurrency: invoker-only. Call from log-event callbacks and DoWork only.

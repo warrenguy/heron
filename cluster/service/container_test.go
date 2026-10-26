@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -109,6 +110,13 @@ func archiveOpenConfig(t *testing.T, archiveCfg archive.Config) Config {
 	t.Helper()
 	cfg := openConfig(newFakeTransport(t))
 	cfg.Archive = &archiveCfg
+	return cfg
+}
+
+func recoveryTransportConfig(t *testing.T, recovery RecoveryConfig) Config {
+	t.Helper()
+	cfg := openConfig(newRecoveryFakeTransport(t))
+	cfg.Recovery = &recovery
 	return cfg
 }
 
@@ -384,6 +392,24 @@ func TestOpen_refusesInvalidConfig(t *testing.T) {
 			wantErr: "service: ServiceID too large to derive archive ControlResponseStreamID",
 		},
 		{
+			name: "archive request stream equals replay stream",
+			cfg: func(t *testing.T) Config {
+				cfg := recoveryTransportConfig(t, RecoveryConfig{})
+				cfg.Archive = &archive.Config{ControlRequestStreamID: DefaultReplayStreamID}
+				return cfg
+			},
+			wantErr: "service: archive ControlRequestStreamID and ReplayStreamID must differ",
+		},
+		{
+			name: "archive response stream equals replay stream",
+			cfg: func(t *testing.T) Config {
+				cfg := recoveryTransportConfig(t, RecoveryConfig{ReplayStreamID: 300})
+				cfg.Archive = &archive.Config{ControlResponseStreamID: 300}
+				return cfg
+			},
+			wantErr: "service: archive ControlResponseStreamID and ReplayStreamID must differ",
+		},
+		{
 			name: "snapshot channel with session id",
 			cfg: func(t *testing.T) Config {
 				cfg := openConfig(newFakeTransport(t))
@@ -419,6 +445,54 @@ func TestOpen_refusesInvalidConfig(t *testing.T) {
 			},
 			wantErr: "service: SnapshotStreamID and ServiceStreamID must differ",
 		},
+		{
+			name: "start ack with recovery",
+			cfg: func(t *testing.T) Config {
+				cfg := recoveryTransportConfig(t, RecoveryConfig{})
+				cfg.StartAck = &StartAckConfig{RelevantID: 1}
+				return cfg
+			},
+			wantErr: "service: StartAck and Recovery must not both be set",
+		},
+		{
+			name: "negative recovery timeout",
+			cfg: func(t *testing.T) Config {
+				return recoveryTransportConfig(t, RecoveryConfig{Timeout: -time.Millisecond})
+			},
+			wantErr: "service: Recovery Timeout must not be negative",
+		},
+		{
+			name: "replay channel with session id",
+			cfg: func(t *testing.T) Config {
+				return recoveryTransportConfig(t, RecoveryConfig{ReplayChannel: "aeron:ipc?session-id=7"})
+			},
+			wantErr: "service: Recovery ReplayChannel must not set session-id=",
+		},
+		{
+			name: "replay stream equals service stream",
+			cfg: func(t *testing.T) Config {
+				return recoveryTransportConfig(t, RecoveryConfig{ReplayStreamID: DefaultServiceStreamID})
+			},
+			wantErr: "service: Recovery ReplayStreamID and ServiceStreamID must differ",
+		},
+		{
+			name: "replay stream equals consensus module stream",
+			cfg: func(t *testing.T) Config {
+				return recoveryTransportConfig(t, RecoveryConfig{
+					ReplayStreamID: DefaultConsensusModuleStreamID,
+				})
+			},
+			wantErr: "service: Recovery ReplayStreamID and ConsensusModuleStreamID must differ",
+		},
+		{
+			name: "recovery on a transport without the recovery surface",
+			cfg: func(t *testing.T) Config {
+				cfg := openConfig(newFakeTransport(t))
+				cfg.Recovery = &RecoveryConfig{}
+				return cfg
+			},
+			wantErr: errRecoveryTransport.Error(),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -427,7 +501,12 @@ func TestOpen_refusesInvalidConfig(t *testing.T) {
 			c, err := Open(cfg)
 			require.EqualError(t, err, tt.wantErr)
 			require.Nil(t, c)
-			if client, ok := cfg.Aeron.(*fakeTransport); ok {
+			client, _ := cfg.Aeron.(*fakeTransport)
+			if recovery, ok := cfg.Aeron.(*recoveryFakeTransport); ok {
+				require.Zero(t, recovery.pumps, "recovery pumps")
+				client = recovery.fakeTransport
+			}
+			if client != nil {
 				require.Empty(t, client.subCalls)
 				require.Empty(t, client.pubCalls)
 				require.Nil(t, client.sub)

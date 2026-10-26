@@ -371,15 +371,37 @@ func TestAgent_Start_errorMarksSticky(t *testing.T) {
 }
 
 func TestAgent_JoinLifecycle(t *testing.T) {
-	svc := &recordingService{}
-	agent, _, _ := bindAgent(t, svc, 0)
-	// Start ran. Join ack remains queued after bind (ready, not drained).
-	require.Equal(t, 1, svc.startCount)
-	require.Equal(t, 1, agent.PendingCoordinationAcks())
+	t.Run("cold start", func(t *testing.T) {
+		svc := &recordingService{}
+		agent, _, _ := bindAgent(t, svc, 0)
+		// Bind marks the join ack ready. Bind does not drain the ack.
+		require.Equal(t, 1, svc.startCount)
+		require.Equal(t, 1, agent.PendingCoordinationAcks())
+	})
+
+	t.Run("recovery seed binds at the seeded position", func(t *testing.T) {
+		const seeded int64 = 640
+		sub, _ := newLogImage(t, testLogSessionID, testLogStreamID, seeded)
+		agent := NewAgent(AgentConfig{
+			Service:       &recordingService{},
+			Subscriptions: &stubAdder{sub: sub},
+		})
+		agent.seedRecovery(codecs.RecoveryStateKeyFields{
+			LeadershipTermID: 5,
+			LogPosition:      seeded,
+		})
+		agent.handleJoinLog(defaultJoinEvent(seeded))
+
+		require.Equal(t, 2, agent.DoWork(0), "start and bind")
+		require.NoError(t, agent.ServiceFailure())
+		require.True(t, agent.IsLogBound())
+		require.Equal(t, seeded, agent.LogPosition())
+		require.Equal(t, 1, agent.ReadyCoordinationAcks())
+	})
 }
 
 // TestAgent_Join_doesNotBind asserts every path that leaves a delivered join
-// unbound: no adder, no image, closed image, both contiguity mismatches, and a
+// unbound: no adder, no image, closed image, each contiguity mismatch, and a
 // failed subscription add.
 //
 // Each row runs two ticks. The first does start work only. The second makes no
@@ -391,6 +413,7 @@ func TestAgent_Join_doesNotBind(t *testing.T) {
 		name         string
 		adder        func(tb testing.TB) SubscriptionAdder
 		joinPosition int64
+		seedPosition int64
 		wantFailure  error
 	}{
 		{
@@ -436,6 +459,15 @@ func TestAgent_Join_doesNotBind(t *testing.T) {
 			adder:       func(testing.TB) SubscriptionAdder { return &stubAdder{err: addErr} },
 			wantFailure: addErr,
 		},
+		{
+			name: "event position behind the recovery seed",
+			adder: func(tb testing.TB) SubscriptionAdder {
+				sub, _ := newLogImage(tb, testLogSessionID, testLogStreamID, 0)
+				return &stubAdder{sub: sub}
+			},
+			seedPosition: 128,
+			wantFailure:  errLogNotContiguous,
+		},
 	}
 
 	for _, tc := range tests {
@@ -445,6 +477,12 @@ func TestAgent_Join_doesNotBind(t *testing.T) {
 				Service:       svc,
 				Subscriptions: tc.adder(t),
 			})
+			if tc.seedPosition != 0 {
+				agent.seedRecovery(codecs.RecoveryStateKeyFields{
+					LeadershipTermID: nullValue,
+					LogPosition:      tc.seedPosition,
+				})
+			}
 			agent.handleJoinLog(defaultJoinEvent(tc.joinPosition))
 
 			require.Equal(t, 1, agent.DoWork(0)) // start only

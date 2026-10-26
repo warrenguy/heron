@@ -140,8 +140,9 @@ type Agent struct {
 	// snapshotScratch is the reused row encode buffer.
 	snapshotScratch []byte
 
-	// timeUnit and appVersion come from the last NewLeadershipTermEvent.
-	// timeUnit starts at ClusterTimeUnit_NULL_VALUE: no unit known yet.
+	// timeUnit and appVersion come from the last NewLeadershipTermEvent or
+	// the BEGIN marker of a loaded snapshot. timeUnit starts at
+	// ClusterTimeUnit_NULL_VALUE: no unit known yet.
 	timeUnit   clusterwire.ClusterTimeUnit
 	appVersion int32
 
@@ -185,8 +186,8 @@ type Agent struct {
 	// egressScratch is the reused egress frame buffer.
 	egressScratch []byte
 
-	// egressLeadershipTermID is the egress header leadershipTermId. Each
-	// NewLeadershipTermEvent writes it. Starts at nullValue.
+	// egressLeadershipTermID is the egress header leadershipTermId. Starts at
+	// nullValue. The recovery seed and each NewLeadershipTermEvent write it.
 	egressLeadershipTermID int64
 
 	logSubscription *aeron.Subscription
@@ -479,12 +480,13 @@ func (a *Agent) MemberID() int32 {
 }
 
 // LogPosition returns the last consumed frame-end position, including padding
-// adoption on unbind.
+// adoption on unbind. A recovery load in [Open] seeds it.
 func (a *Agent) LogPosition() int64 {
 	return a.logPosition
 }
 
-// ClusterTime returns the timestamp of the last dispatched log event.
+// ClusterTime returns the timestamp of the last dispatched log event. A
+// recovery load in [Open] seeds it.
 func (a *Agent) ClusterTime() int64 {
 	return a.clusterTime
 }
@@ -762,6 +764,14 @@ func (a *Agent) markFailure(err error) {
 	}
 }
 
+// seedRecovery runs in [Open] before the first bind. memberID and role keep
+// their values until that bind.
+func (a *Agent) seedRecovery(state codecs.RecoveryStateKeyFields) {
+	a.logPosition = state.LogPosition
+	a.clusterTime = state.Timestamp
+	a.egressLeadershipTermID = state.LeadershipTermID
+}
+
 // adoptConsumed sets logPosition to the frame end and clusterTime to the event
 // timestamp.
 func (a *Agent) adoptConsumed(logPosition, clusterTime int64) {
@@ -808,14 +818,13 @@ func (a *Agent) handleSessionOpen(
 	}
 
 	a.adoptConsumed(logPosition, fields.Timestamp)
-	session := &containerClientSession{
-		agent:            a,
-		id:               fields.ClusterSessionID,
-		responseStreamID: fields.ResponseStreamID,
-		responseChannel:  string(fields.ResponseChannel),
-		encodedPrincipal: fields.EncodedPrincipal,
-		addCorrelationID: nullValue,
-	}
+	session := newContainerClientSession(
+		a,
+		fields.ClusterSessionID,
+		fields.ResponseStreamID,
+		fields.ResponseChannel,
+		fields.EncodedPrincipal,
+	)
 	if a.role == codecs.RoleLeader {
 		a.connectClientSession(session)
 	}
@@ -860,10 +869,7 @@ func (a *Agent) handleNewLeadershipTermEvent(
 	fields codecs.NewLeadershipTermEventFields,
 ) aeron.ControlledAction {
 	a.adoptConsumed(logPosition, fields.Timestamp)
-	a.timeUnit = fields.TimeUnit
-	if a.timeUnit == clusterwire.ClusterTimeUnit_NULL_VALUE {
-		a.timeUnit = clusterwire.ClusterTimeUnit_MILLIS
-	}
+	a.timeUnit, _ = resolveTimeUnit(fields.TimeUnit)
 	a.appVersion = fields.AppVersion
 	a.egressLeadershipTermID = fields.LeadershipTermID
 	if a.leadershipHandler != nil {
@@ -879,6 +885,22 @@ func (a *Agent) handleNewLeadershipTermEvent(
 		)
 	}
 	return aeron.ControlledContinue
+}
+
+// resolveTimeUnit maps NULL_VALUE to MILLIS. Returns false for a unit outside
+// MILLIS, MICROS and NANOS.
+func resolveTimeUnit(
+	unit clusterwire.ClusterTimeUnit,
+) (clusterwire.ClusterTimeUnit, bool) {
+	switch unit {
+	case clusterwire.ClusterTimeUnit_NULL_VALUE:
+		return clusterwire.ClusterTimeUnit_MILLIS, true
+	case clusterwire.ClusterTimeUnit_MILLIS,
+		clusterwire.ClusterTimeUnit_MICROS,
+		clusterwire.ClusterTimeUnit_NANOS:
+		return unit, true
+	}
+	return unit, false
 }
 
 // handleClusterAction delivers one ClusterActionRequest from the log adapter.

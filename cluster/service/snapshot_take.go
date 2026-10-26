@@ -218,11 +218,7 @@ func (a *Agent) addSnapshotPublication(take *snapshotTake, nowNs int64) (bool, e
 	}
 
 	take.publication = publication
-	channel := aeron.AppendChannelParam(
-		a.snapshotChannel,
-		aeron.ChannelSessionIDParam,
-		strconv.FormatInt(int64(publication.SessionID()), 10),
-	)
+	channel := sessionScopedChannel(a.snapshotChannel, publication.SessionID())
 	take.start = a.newSnapshotStart(a.snapshotStreamID, []byte(channel))
 	take.deadlineNs = nowNs + take.offerRetryTimeoutNs
 	take.state = takeOfferingStart
@@ -461,4 +457,13 @@ func (a *Agent) closeSnapshotTake() {
 	if take.publication != nil {
 		_ = take.publication.Close()
 	}
+}
+
+// sessionScopedChannel appends session-id=sessionID to channel.
+func sessionScopedChannel(channel string, sessionID int32) string {
+	return aeron.AppendChannelParam(
+		channel,
+		aeron.ChannelSessionIDParam,
+		strconv.FormatInt(int64(sessionID), 10),
+	)
 }
