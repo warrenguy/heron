@@ -100,4 +100,28 @@ const (
 
 	// Module egress add released after the ready mark moved.
 	ConsensusEgressCancelMovedStreamID int32 = 8502
+
+	// Module log for a snapshot take closed while the ready mark names its add.
+	ConsensusSnapshotCancelMarkedLogStreamID int32 = 8503
+
+	// Module snapshot add closed while the ready mark names it.
+	ConsensusSnapshotCancelMarkedStreamID int32 = 8504
+
+	// Module log for a snapshot take closed after the ready mark moved.
+	ConsensusSnapshotCancelMovedLogStreamID int32 = 8505
+
+	// Module snapshot add closed after the ready mark moved.
+	ConsensusSnapshotCancelMovedStreamID int32 = 8506
+
+	// Service log for a snapshot take closed while the ready mark names its add.
+	ServiceSnapshotCancelMarkedLogStreamID int32 = 8507
+
+	// Service snapshot add closed while the ready mark names it.
+	ServiceSnapshotCancelMarkedStreamID int32 = 8508
+
+	// Service log for a snapshot take closed after the ready mark moved.
+	ServiceSnapshotCancelMovedLogStreamID int32 = 8509
+
+	// Service snapshot add closed after the ready mark moved.
+	ServiceSnapshotCancelMovedStreamID int32 = 8510
 )

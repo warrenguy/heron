@@ -3,24 +3,17 @@
 package integration_test
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
-
-// consensusEgressCancelTimeout bounds each wait on the client and the driver.
-// The driver frees an IPC publication about two timer checks after its last
-// REMOVE_PUBLICATION.
-const consensusEgressCancelTimeout = 5 * time.Second
 
 // recordingEgressAdder records the id of each add the embedded client starts.
 type recordingEgressAdder struct {
@@ -87,9 +80,6 @@ func TestConsensusEgress_cancelAfterReadyReleasesPublication(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			md := harness.SharedParallel(t)
 			client, hadClientError := harness.ConnectIPCClient(t, md)
-			counters, err := client.CountersReader()
-			require.NoError(t, err)
-
 			adder := &recordingEgressAdder{Client: client}
 
 			// No log publisher: sessionPendingWork never polls the add.
@@ -103,46 +93,20 @@ func TestConsensusEgress_cancelAfterReadyReleasesPublication(t *testing.T) {
 			agent.DoWork(time.Now().UnixNano())
 			require.Equal(t, 1, agent.PendingSessionCount())
 			require.Len(t, adder.adds, 1)
-			id := adder.adds[0]
 
-			// Phase 2: the client reads the ready reply. The agent has not polled.
-			harness.PollClientUntilTransportClean(
+			// Phase 2: release after the ready reply. The agent has not polled.
+			id := adder.adds[0]
+			requireReadyPublicationReleased(
 				t,
 				client,
 				hadClientError,
-				consensusEgressCancelTimeout,
-				"client error before ready",
+				id,
 				func() bool {
 					_, ok := client.Publication(id)
 					return ok
 				},
-				func() string { return fmt.Sprintf("publication %d not ready", id) },
-			)
-			_, found := counters.FindHeartbeatCounter(id, cnc.DriverPublisherLimitTypeID)
-			require.True(t, found, "publisher-limit counter for %d", id)
-			for range tc.extraTicks {
-				client.DoWork()
-			}
-
-			// Phase 3: release.
-			agent.CloseSessionEgress()
-
-			// Phase 4: the client and the driver drop the publication.
-			_, ok := client.Publication(id)
-			require.False(t, ok)
-			harness.PollClientUntilTransportClean(
-				t,
-				client,
-				hadClientError,
-				consensusEgressCancelTimeout,
-				"client error after release",
-				func() bool {
-					_, found := counters.FindHeartbeatCounter(id, cnc.DriverPublisherLimitTypeID)
-					return !found
-				},
-				func() string {
-					return fmt.Sprintf("driver kept publisher-limit counter for %d", id)
-				},
+				tc.extraTicks,
+				agent.CloseSessionEgress,
 			)
 			finishPubSubIPCTest(t, md, hadClientError)
 		})
