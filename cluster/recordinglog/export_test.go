@@ -16,12 +16,11 @@ var EncodeEntry = encodeEntry
 // Black-box test exports for recordinglog_test.
 
 const (
-	MaxEndpointLen           = maxEndpointLen
-	RecordAlignment          = recordAlignment
-	LogPositionOffset        = logPositionOffset
-	EntryTypeOffset          = entryTypeOffset
-	EndpointOffset           = endpointOffset
-	ConsensusModuleServiceID = consensusModuleServiceID
+	MaxEndpointLen    = maxEndpointLen
+	RecordAlignment   = recordAlignment
+	LogPositionOffset = logPositionOffset
+	EntryTypeOffset   = entryTypeOffset
+	EndpointOffset    = endpointOffset
 )
 
 // FindLastTerm exposes the internal findLastTerm helper for black-box tests.

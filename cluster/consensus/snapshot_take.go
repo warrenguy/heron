@@ -10,6 +10,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
 // Causes of a failed or skipped module snapshot take.
@@ -20,6 +21,7 @@ var (
 	errSnapshotRecordingStart = errors.New("consensus: start snapshot recording")
 	errSnapshotWrite          = errors.New("consensus: write snapshot")
 	errSnapshotRecordingStop  = errors.New("consensus: stop snapshot recording")
+	errSnapshotRecordingLog   = errors.New("consensus: write snapshot rows to recording log")
 )
 
 // SnapshotTakeResult describes one resolved module snapshot take.
@@ -41,8 +43,8 @@ type SnapshotTakeResult struct {
 	// service id.
 	ServiceRecordingIDs []int64
 
-	// Err is nil when the module recorded its snapshot. Otherwise Err names
-	// why the take skipped or failed.
+	// Err is nil when the module recorded its snapshot and wrote its
+	// recording log rows. Otherwise Err names why the take skipped or failed.
 	Err error
 }
 
@@ -97,6 +99,25 @@ type SnapshotPublicationAdder interface {
 	CancelPending(correlationID int64)
 }
 
+// SnapshotRecordingLog is the recording log the module writes its snapshot
+// rows into. *recordinglog.Log satisfies it.
+//
+// Concurrency: invoker-only.
+type SnapshotRecordingLog interface {
+	FindTermEntry(leadershipTermID int64) *recordinglog.Entry
+	AppendSnapshot(
+		recordingID int64,
+		leadershipTermID int64,
+		termBaseLogPosition int64,
+		logPosition int64,
+		timestamp int64,
+		serviceID int32,
+	) error
+	Force(level recordinglog.FileSyncLevel) error
+}
+
+var _ SnapshotRecordingLog = (*recordinglog.Log)(nil)
+
 // snapshotTakeState names the step a module take runs or waits in.
 type snapshotTakeState uint8
 
@@ -116,7 +137,8 @@ const (
 	// takeWriting offers the rows, then closes the publication.
 	takeWriting
 
-	// takeAwaitingStop waits for the autoStop STOP signal.
+	// takeAwaitingStop waits for the autoStop STOP signal, then writes the
+	// recording log rows.
 	takeAwaitingStop
 )
 
@@ -142,9 +164,12 @@ type snapshotTake struct {
 	sessionRows   []codecs.ClusterSessionFields
 	timerRows     []codecs.TimerFields
 
-	// control and adder are the agent seams copied at takeChecking.
-	control SnapshotRecordingControl
-	adder   SnapshotPublicationAdder
+	// takeChecking copies the agent seams into control, adder, recordingLog
+	// and recordingLogSyncLevel.
+	control               SnapshotRecordingControl
+	adder                 SnapshotPublicationAdder
+	recordingLog          SnapshotRecordingLog
+	recordingLogSyncLevel recordinglog.FileSyncLevel
 
 	offerRetryTimeoutNs int64
 	responseTimeoutNs   int64
@@ -181,6 +206,19 @@ func (a *Agent) SetSnapshotRecordingControl(control SnapshotRecordingControl) {
 // Concurrency: invoker-only. Do not call while [Agent.DoWork] runs.
 func (a *Agent) SetSnapshotPublicationAdder(adder SnapshotPublicationAdder) {
 	a.snapshotAdder = adder
+}
+
+// SetSnapshotRecordingLog sets or clears the recording log and the Force
+// level of the snapshot rows. A take that starts while the log is nil fails.
+// A take past takeChecking keeps the log it copied.
+//
+// Concurrency: invoker-only. Do not call while [Agent.DoWork] runs.
+func (a *Agent) SetSnapshotRecordingLog(
+	log SnapshotRecordingLog,
+	syncLevel recordinglog.FileSyncLevel,
+) {
+	a.snapshotRecordingLog = log
+	a.snapshotRecordingLogSyncLevel = syncLevel
 }
 
 // SetSnapshotStream sets the channel and stream id of the module snapshot
@@ -311,7 +349,7 @@ func (a *Agent) checkSnapshotTake(take *snapshotTake) (bool, error) {
 			return false, fmt.Errorf("%w: service %d", errSnapshotServiceFailed, serviceID)
 		}
 	}
-	if a.snapshotControl == nil || a.snapshotAdder == nil {
+	if a.snapshotControl == nil || a.snapshotAdder == nil || a.snapshotRecordingLog == nil {
 		return false, errSnapshotNotConfigured
 	}
 	if a.CommitPosition() < take.logPosition {
@@ -319,6 +357,8 @@ func (a *Agent) checkSnapshotTake(take *snapshotTake) (bool, error) {
 	}
 	take.control = a.snapshotControl
 	take.adder = a.snapshotAdder
+	take.recordingLog = a.snapshotRecordingLog
+	take.recordingLogSyncLevel = a.snapshotRecordingLogSyncLevel
 	take.offerRetryTimeoutNs, take.responseTimeoutNs = take.control.ControlTimeoutsNs()
 	take.state = takeAddingPublication
 	return true, nil
@@ -440,7 +480,8 @@ func (a *Agent) writeSnapshot(take *snapshotTake, nowNs int64) (bool, error) {
 }
 
 // awaitSnapshotStop waits for STOP. A STOP at or above the close position
-// resolves the take with the recording id.
+// writes the recording log rows, then resolves the take with the recording
+// id.
 func (a *Agent) awaitSnapshotStop(take *snapshotTake, nowNs int64) (bool, error) {
 	stopPosition, stopped := take.control.StopPosition()
 	switch {
@@ -458,8 +499,58 @@ func (a *Agent) awaitSnapshotStop(take *snapshotTake, nowNs int64) (bool, error)
 	}
 
 	take.control.ClearStop()
+	if err := take.appendRecordingLogRows(); err != nil {
+		return false, err
+	}
 	a.resolveSnapshotTake(take.result(take.recordingID, nil))
 	return true, nil
+}
+
+// appendRecordingLogRows writes the snapshot group to the recording log:
+//  1. one row per service, from the highest service id down to 0
+//  2. the module row with [recordinglog.ConsensusModuleServiceID]
+//  3. one Force at the copied level
+//
+// The module row lands last, so a partial group never anchors a recovery plan.
+//
+// Returns an error when the TERM row is missing, an append fails, or Force
+// fails. The write stops at the first error.
+func (t *snapshotTake) appendRecordingLogRows() error {
+	term := t.recordingLog.FindTermEntry(t.leadershipTermID)
+	if term == nil {
+		return fmt.Errorf(
+			"%w: no term entry for leadership term %d",
+			errSnapshotRecordingLog,
+			t.leadershipTermID,
+		)
+	}
+
+	// Copy the base first. An append can move the cached entry.
+	termBaseLogPosition := term.TermBaseLogPosition
+	appendRow := func(recordingID int64, serviceID int32) error {
+		return t.recordingLog.AppendSnapshot(
+			recordingID,
+			t.leadershipTermID,
+			termBaseLogPosition,
+			t.logPosition,
+			t.timestamp,
+			serviceID,
+		)
+	}
+	for serviceID, recordingID := range slices.Backward(t.serviceRecordingIDs) {
+		//nolint:gosec // G115: acked service ids are int32
+		wireServiceID := int32(serviceID)
+		if err := appendRow(recordingID, wireServiceID); err != nil {
+			return fmt.Errorf("%w: service %d: %w", errSnapshotRecordingLog, serviceID, err)
+		}
+	}
+	if err := appendRow(t.recordingID, recordinglog.ConsensusModuleServiceID); err != nil {
+		return fmt.Errorf("%w: module row: %w", errSnapshotRecordingLog, err)
+	}
+	if err := t.recordingLog.Force(t.recordingLogSyncLevel); err != nil {
+		return fmt.Errorf("%w: force: %w", errSnapshotRecordingLog, err)
+	}
+	return nil
 }
 
 // failSnapshotTake runs the cleanup, then resolves the take with cause.

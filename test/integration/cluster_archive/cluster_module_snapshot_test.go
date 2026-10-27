@@ -14,7 +14,6 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
@@ -83,7 +82,8 @@ func requireModuleSnapshotReplay(
 }
 
 // TestClusterModule_recordsModuleSnapshot asserts a one-member leader with
-// ServiceCount 0 records each module snapshot to a new archive recording.
+// ServiceCount 0 records each module snapshot to a new archive recording and
+// a recording log row.
 func TestClusterModule_recordsModuleSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -146,13 +146,14 @@ func TestClusterModule_recordsModuleSnapshot(t *testing.T) {
 	require.NotEqual(t, first.RecordingID, second.RecordingID, "second recording id:\n%s", sc.dump())
 	require.NotEqual(t, logRecordingID, second.RecordingID, "second recording id:\n%s", sc.dump())
 
-	// Neither take writes a SNAPSHOT entry. The TERM entry check keeps the
-	// loop from passing on an empty log.
-	recordingLog := leader.RecordingLog()
-	require.NotNil(t, recordingLog, "recording log:\n%s", sc.dump())
-	require.NotNil(t, recordingLog.FindTermEntry(leader.LeadershipTermID()),
-		"term entry:\n%s", sc.dump())
-	for _, entry := range recordingLog.Entries() {
-		require.NotEqual(t, recordinglog.EntryTypeSnapshot, entry.Type, "entry %+v", entry)
-	}
+	// Each take writes one group: the module row alone.
+	requireSnapshotGroups(t, sc, leader, first, second)
+
+	// Phase: restart. Recovery refuses a plan that holds a snapshot.
+	require.NoError(t, set.StopMember(0))
+	require.ErrorContains(
+		t,
+		set.RestartMember(0),
+		"cluster: recovery plan holds 1 snapshots and snapshot load is not implemented",
+	)
 }

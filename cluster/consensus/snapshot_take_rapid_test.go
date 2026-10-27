@@ -14,6 +14,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
 var errSnapshotTakeRapidBoom = errors.New("boom")
@@ -43,6 +44,11 @@ type snapshotTakeScript struct {
 	stopOutcome     int
 	stopAboveBy     int64
 	stopDelay       int
+	logOutcome      int
+
+	// logFailRow is the 0-based append call that fails under
+	// scriptLogAppendError.
+	logFailRow int
 }
 
 const (
@@ -66,6 +72,13 @@ const (
 	scriptStopEarly
 	scriptStopShort
 	scriptStopNever
+)
+
+const (
+	scriptLogOK = iota
+	scriptLogMissingTerm
+	scriptLogAppendError
+	scriptLogForceError
 )
 
 // outcome returns the deadline causes that may fire first under the drawn
@@ -110,11 +123,27 @@ func (s snapshotTakeScript) outcome() (possible []error, certain error) {
 	if s.stopDelay > 0 {
 		possible = append(possible, errSnapshotRecordingStop)
 	}
+	if s.logOutcome != scriptLogOK {
+		return possible, errSnapshotRecordingLog
+	}
 	return possible, nil
 }
 
-// apply installs the script on archive.
-func (s snapshotTakeScript) apply(archive *fakeSnapshotArchive, errBoom error) {
+// apply installs the script on archive and recordingLog.
+func (s snapshotTakeScript) apply(
+	archive *fakeSnapshotArchive,
+	recordingLog *fakeSnapshotRecordingLog,
+	errBoom error,
+) {
+	switch s.logOutcome {
+	case scriptLogMissingTerm:
+		recordingLog.missingTerm = true
+	case scriptLogAppendError:
+		recordingLog.appendErr = errBoom
+		recordingLog.appendErrAt = s.logFailRow
+	case scriptLogForceError:
+		recordingLog.forceErr = errBoom
+	}
 	switch s.addOutcome {
 	case scriptAddOfferError:
 		archive.offerAddErr = errBoom
@@ -159,30 +188,40 @@ func (s snapshotTakeScript) apply(archive *fakeSnapshotArchive, errBoom error) {
 }
 
 func drawSnapshotTakeScript(rt *rapid.T, serviceCount int) snapshotTakeScript {
+	// A clean script lets every service and archive step succeed. Without it,
+	// few drawn takes reach the recording log write. The clean draw comes
+	// first, so a clean script skips the step draws it would fix.
+	clean := rapid.Bool().Draw(rt, "clean")
 	s := snapshotTakeScript{
-		addOutcome:      rapid.IntRange(scriptAddOK, scriptAddNoPublication).Draw(rt, "addOutcome"),
 		addPendingPolls: rapid.IntRange(0, 2).Draw(rt, "addPendingPolls"),
-		startOutcome:    rapid.IntRange(scriptStartOK, scriptStartSignalNever).Draw(rt, "startOutcome"),
 		// The START id never equals fakeSnapshotPreProofID.
 		startID: fakeSnapshotFirstRecordingID +
 			rapid.Int64Range(0, 1000).Draw(rt, "startIDOffset"),
-		offerRetries: rapid.IntRange(0, 2).Draw(rt, "offerRetries"),
-		signalDelay:  rapid.IntRange(0, 2).Draw(rt, "signalDelay"),
-		rowCodes: rapid.SliceOfN(rapid.SampledFrom([]int64{
+		stopAboveBy: rapid.Int64Range(1, 64).Draw(rt, "stopAboveBy"),
+		stopDelay:   rapid.IntRange(0, 2).Draw(rt, "stopDelay"),
+		logOutcome:  rapid.IntRange(scriptLogOK, scriptLogForceError).Draw(rt, "logOutcome"),
+		logFailRow:  rapid.IntRange(0, serviceCount).Draw(rt, "logFailRow"),
+	}
+	if clean {
+		s.stopOutcome = rapid.SampledFrom([]int{scriptStopOK, scriptStopAbove}).Draw(rt, "stopOutcome")
+	} else {
+		s.addOutcome = rapid.IntRange(scriptAddOK, scriptAddNoPublication).Draw(rt, "addOutcome")
+		s.startOutcome = rapid.IntRange(scriptStartOK, scriptStartSignalNever).Draw(rt, "startOutcome")
+		s.offerRetries = rapid.IntRange(0, 2).Draw(rt, "offerRetries")
+		s.signalDelay = rapid.IntRange(0, 2).Draw(rt, "signalDelay")
+		s.rowCodes = rapid.SliceOfN(rapid.SampledFrom([]int64{
 			fakeOfferAccept,
 			aeron.BackPressured,
 			aeron.AdminAction,
 			aeron.NotConnected,
 			aeron.Closed,
-		}), 0, 4).Draw(rt, "rowCodes"),
-		closeFails:  rapid.Bool().Draw(rt, "closeFails"),
-		stopOutcome: rapid.IntRange(scriptStopOK, scriptStopNever).Draw(rt, "stopOutcome"),
-		stopAboveBy: rapid.Int64Range(1, 64).Draw(rt, "stopAboveBy"),
-		stopDelay:   rapid.IntRange(0, 2).Draw(rt, "stopDelay"),
+		}), 0, 4).Draw(rt, "rowCodes")
+		s.closeFails = rapid.Bool().Draw(rt, "closeFails")
+		s.stopOutcome = rapid.IntRange(scriptStopOK, scriptStopNever).Draw(rt, "stopOutcome")
 	}
 	for i := range serviceCount {
 		id := int64(100 + i)
-		if rapid.Bool().Draw(rt, "serviceFailed") {
+		if !clean && rapid.Bool().Draw(rt, "serviceFailed") {
 			id = nullValue
 		}
 		s.relevantIDs = append(s.relevantIDs, id)
@@ -252,7 +291,9 @@ func (m *snapshotTakeAckModel) pop() bool {
 // ingress, the sessions and the timers alone. A resolved take must match the
 // cause the script forces, or a deadline cause the clock may fire first. A
 // successful take names the START id after a STOP at or above the close
-// position, and its rows follow the module row order.
+// position, and its rows follow the module row order. The recording log does
+// not see a write before the take resolves, or after a cancel or a retire. A
+// successful take writes its full group, then one Force.
 func TestSnapshotTake_model_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -282,9 +323,11 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 		archive := newFakeSnapshotArchive()
 		archive.offerRetryTimeoutNs = timeoutNs
 		archive.responseTimeoutNs = timeoutNs
-		script.apply(archive, errSnapshotTakeRapidBoom)
+		recordingLog := &fakeSnapshotRecordingLog{}
+		script.apply(archive, recordingLog, errSnapshotTakeRapidBoom)
 		a.SetSnapshotRecordingControl(archive)
 		a.SetSnapshotPublicationAdder(archive)
+		a.SetSnapshotRecordingLog(recordingLog, recordinglog.FileSyncData)
 		a.SetSnapshotStream(testSnapshotChannel, testSnapshotStreamID)
 
 		nowNs := int64(1000)
@@ -332,6 +375,9 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 		commit.Store(position - commitLag)
 
 		status := actionStatusWaiting
+		// wantLog is the fake log before any write, then at resolve. Later
+		// steps must not change it.
+		wantLog := *recordingLog
 		acks := &snapshotTakeAckModel{queues: make([][]int64, serviceCount)}
 		acksSent := false
 		sendAcks := func() {
@@ -370,6 +416,7 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 
 			result, ok := a.LastSnapshotTake()
 			require.Equal(rt, status == actionStatusResolved, ok, step)
+			require.Equal(rt, wantLog, *recordingLog, step)
 			if ok {
 				require.NotEqual(rt, fakeSnapshotPreProofID, result.RecordingID, step)
 			}
@@ -399,7 +446,10 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			}
 			if _, ok := a.LastSnapshotTake(); ok && status == actionStatusTake {
 				status = actionStatusResolved
-				requireSnapshotTakeResult(rt, a, archive, script, position, serviceCount, timerRows)
+				requireSnapshotTakeResult(
+					rt, a, archive, recordingLog, script, position, serviceCount, timerRows,
+				)
+				wantLog = *recordingLog
 			}
 			if held && a.isLeaderSnapshotPending() {
 				requireHeldUntouched("held tick")
@@ -495,6 +545,7 @@ func requireSnapshotTakeResult(
 	rt *rapid.T,
 	a *Agent,
 	archive *fakeSnapshotArchive,
+	recordingLog *fakeSnapshotRecordingLog,
 	script snapshotTakeScript,
 	position int64,
 	serviceCount int,
@@ -518,10 +569,16 @@ func requireSnapshotTakeResult(
 		if errors.Is(result.Err, errSnapshotServiceFailed) {
 			require.Empty(rt, archive.addOffers)
 		}
+		requireFailedTakeRows(rt, recordingLog, script, result)
 		return
 	}
 
 	require.NoError(rt, certain)
+	group := fakeSnapshotGroup(result, script.startID)
+	require.Equal(rt, group, recordingLog.rows)
+	require.Equal(rt, []fakeSnapshotForce{
+		{level: recordinglog.FileSyncData, rows: len(group)},
+	}, recordingLog.forces)
 	require.Len(rt, archive.starts, 1)
 	start := archive.starts[0]
 	require.True(rt, start.proven)
@@ -567,4 +624,38 @@ func requireSnapshotTakeResult(
 		require.True(rt, ok)
 		require.Equal(rt, emptyPendingMessageTracker(i), tracker)
 	}
+}
+
+// requireFailedTakeRows asserts the recording log after a failed take:
+//   - append error: the rows before the failed call, without Force
+//   - Force error: the full group and one Force
+//   - any other cause: neither an append nor Force
+func requireFailedTakeRows(
+	rt *rapid.T,
+	recordingLog *fakeSnapshotRecordingLog,
+	script snapshotTakeScript,
+	result SnapshotTakeResult,
+) {
+	rt.Helper()
+	group := fakeSnapshotGroup(result, script.startID)
+	var wantRows int
+	var wantForces []fakeSnapshotForce
+	if errors.Is(result.Err, errSnapshotRecordingLog) {
+		switch script.logOutcome {
+		case scriptLogAppendError:
+			require.ErrorIs(rt, result.Err, errSnapshotTakeRapidBoom)
+			wantRows = script.logFailRow
+		case scriptLogForceError:
+			require.ErrorIs(rt, result.Err, errSnapshotTakeRapidBoom)
+			wantRows = len(group)
+			wantForces = []fakeSnapshotForce{
+				{level: recordinglog.FileSyncData, rows: len(group)},
+			}
+		}
+	}
+	require.Len(rt, recordingLog.rows, wantRows)
+	for i, row := range recordingLog.rows {
+		require.Equal(rt, group[i], row, "row %d", i)
+	}
+	require.Equal(rt, wantForces, recordingLog.forces)
 }

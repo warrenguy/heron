@@ -444,10 +444,14 @@ type Agent struct {
 	lastSnapshotTake    SnapshotTakeResult
 	hasLastSnapshotTake bool
 
-	// snapshotControl and snapshotAdder are the module snapshot seams. A take
-	// that finds either nil fails.
-	snapshotControl SnapshotRecordingControl
-	snapshotAdder   SnapshotPublicationAdder
+	// snapshotControl, snapshotAdder and snapshotRecordingLog are the module
+	// snapshot seams. A take that finds any of them nil fails.
+	snapshotControl      SnapshotRecordingControl
+	snapshotAdder        SnapshotPublicationAdder
+	snapshotRecordingLog SnapshotRecordingLog
+
+	// snapshotRecordingLogSyncLevel is the Force level of the snapshot rows.
+	snapshotRecordingLogSyncLevel recordinglog.FileSyncLevel
 
 	// snapshotChannel and snapshotStreamID name the module snapshot
 	// publication.

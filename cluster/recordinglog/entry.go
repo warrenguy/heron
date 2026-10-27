@@ -43,7 +43,7 @@ func isValidTerm(e Entry) bool {
 }
 
 func isValidConsensusModuleSnapshot(e Entry) bool {
-	return isValidSnapshot(e) && e.ServiceID == consensusModuleServiceID
+	return isValidSnapshot(e) && e.ServiceID == ConsensusModuleServiceID
 }
 
 // Entry is one decoded recording.log record.

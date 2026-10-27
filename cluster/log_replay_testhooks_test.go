@@ -16,6 +16,7 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
 // fakeReplayControl is a test double for replayControl. The fake records every
@@ -675,6 +676,7 @@ func TestLogReplay_close(t *testing.T) {
 				snapshotAdder := &fakeSnapshotPublicationAdder{}
 				agent.SetSnapshotRecordingControl(fakeSnapshotRecordingControl{})
 				agent.SetSnapshotPublicationAdder(snapshotAdder)
+				agent.SetSnapshotRecordingLog(openTermLog(t, 1, 0), recordinglog.FileSyncData)
 				var actionEnd int64
 				r, control, _ := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
 					actionEnd = writeReplaySnapshotAction(t, image, 0)
