@@ -254,9 +254,12 @@ func TestDurableCluster_catchesUpConcurrentFollowers(t *testing.T) {
 
 	requireAwait(t, set, "post-restart log images", durableImageBound, set.AwaitLogImages)
 
-	// Latch peak CatchupReplayCount each tick. Extend every tick while the peak
-	// is below two so follow-mode StopCatchup cannot retire the first entry
-	// before the second opens. Fail on the log-replication path.
+	// Track the peak CatchupReplayCount. Fail if a returner takes the
+	// log-replication path.
+	//
+	// A fast returner can retire its replay before the second opens. Hold each
+	// returner in FollowerCatchup until the peak reaches two. A returner enters
+	// that state before its first catchup poll.
 	maxConcurrentReplays := 0
 	requireAwaitTick(
 		t, set, "two concurrent catchup replays live", durableWorkBound,
@@ -267,26 +270,25 @@ func TestDurableCluster_catchesUpConcurrentFollowers(t *testing.T) {
 					return false
 				}
 				failIfFollowerLogReplication(t, set, m, idx)
+				if m.ElectionState() == election.ElectionStateFollowerCatchup {
+					set.HoldAgent(idx)
+				}
 			}
 
 			ls := set.Leaders()
 			if len(ls) != 1 {
 				return false
 			}
-			curLeader := ls[0]
-			n := curLeader.Agent().CatchupReplayCount()
+			n := ls[0].Agent().CatchupReplayCount()
 			if n > maxConcurrentReplays {
 				maxConcurrentReplays = n
 			}
-			if maxConcurrentReplays >= 2 {
-				return true
-			}
-			// Keep the publication ahead of every returner adapter so neither
-			// catchup can reach StopCatchup while we wait for the second entry.
-			mustAppend(t, set, curLeader, "extend-catchup-window")
-			return false
+			return maxConcurrentReplays >= 2
 		},
 	)
+	for _, idx := range stopped {
+		set.ReleaseAgent(idx)
+	}
 
 	require.GreaterOrEqual(
 		t,
@@ -296,9 +298,7 @@ func TestDurableCluster_catchesUpConcurrentFollowers(t *testing.T) {
 		set.State(),
 	)
 
-	// Capture the publication high-water after the concurrent window is proven.
-	// Both returners must reach at least this position once the leader stops
-	// extending.
+	// Capture the leader publication position. Both returners must reach it.
 	leader = requireSingleLeader(t, set, "during concurrent catchup")
 	leaderPublicationPosition := leader.LogPublisher().Position()
 
