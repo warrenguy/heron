@@ -121,7 +121,9 @@ const (
 // DurableCatchup and DurableConcurrentCatchup are separate for the
 // single-follower and concurrent-follower catchup tests.
 // DurableDivergence and DurableExLeaderReElect are separate for the truncate
-// and ex-leader re-election tests.
+// and ex-leader re-election tests. DurableReplicate and
+// DurableReplicateTruncate are separate for the two ex-leader replication
+// tests. Their bases sit below ClusterServiceEgressPortBase (20100).
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -144,6 +146,10 @@ const (
 	DurableDivergenceLogEndpoint        = "239.255.12.27:27204"
 	DurableExLeaderReElectPortBase      = 22500
 	DurableExLeaderReElectLogEndpoint   = "239.255.12.63:22504"
+	DurableReplicatePortBase            = 19800
+	DurableReplicateLogEndpoint         = "239.255.12.79:19804"
+	DurableReplicateTruncatePortBase    = 19500
+	DurableReplicateTruncateLogEndpoint = "239.255.12.81:19504"
 	DurableConcurrentCatchupPortBase    = 30400
 	DurableConcurrentCatchupLogEndpoint = "239.255.12.43:30404"
 )
@@ -477,6 +483,18 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    DurableExLeaderReElectPortBase,
 			memberCount: 3,
 			logEndpoint: DurableExLeaderReElectLogEndpoint,
+		},
+		{
+			name:        "durable-replicate",
+			portBase:    DurableReplicatePortBase,
+			memberCount: 3,
+			logEndpoint: DurableReplicateLogEndpoint,
+		},
+		{
+			name:        "durable-replicate-truncate",
+			portBase:    DurableReplicateTruncatePortBase,
+			memberCount: 3,
+			logEndpoint: DurableReplicateTruncateLogEndpoint,
 		},
 		{
 			name:        "durable-concurrent-catchup",

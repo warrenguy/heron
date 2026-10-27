@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -23,6 +24,7 @@ var catchupPollSessionFields = codecs.SessionMessageHeaderFields{
 	Timestamp:        3,
 }
 
+// Asserts CatchupPoll with a nil append source polls but does not publish.
 func TestCatchupPoll_pollsWhenLogAdapterImagePresent(t *testing.T) {
 	adapter, image := boundLogAdapter(t)
 	span := writeSessionMessageAtJoin(t, image, catchupPollSessionFields)
@@ -37,45 +39,31 @@ func TestCatchupPoll_pollsWhenLogAdapterImagePresent(t *testing.T) {
 		LeaderHeartbeatIntervalNs: 1000,
 		LeaderMemberID:            1,
 	})
-
-	// Seed cadence so the first publish is not delayed by interval.
 	a.CatchupInitiated(0)
 
-	work := a.CatchupPoll(span+32, 100)
+	// Both ticks sit past the heartbeat interval, so a publish would be due.
+	work := a.CatchupPoll(span+32, 2000)
 	require.Positive(t, work)
 	require.Equal(t, span, adapter.Position())
 	require.Equal(t, adapter.Position(), a.CommitPosition())
-
-	// Publishes adapter position under the catchup flag.
-	require.Equal(t, []appendPublishCall{{
-		term:  5,
-		pos:   adapter.Position(),
-		flags: AppendPositionFlagCatchup,
-	}}, eg.appends)
-
-	// Catchup must not raise the steady unflagged floor.
-	require.Equal(t, int64(0), a.lastPublishedAppendPosition)
+	require.Empty(t, eg.appends)
 
 	// work == 0 still ProposeMaxCommit from adapter position (prior consume).
-	// Interval not due and position flat: no second publish.
 	commit.Store(0)
 	require.Equal(t, int64(0), a.CommitPosition())
-	nBefore := len(eg.appends)
-	require.Equal(t, 0, a.CatchupPoll(span+32, 101))
+	require.Equal(t, 0, a.CatchupPoll(span+32, 2001))
 	require.Equal(t, adapter.Position(), a.CommitPosition())
-	require.Len(t, eg.appends, nBefore)
-	require.Equal(t, int64(0), a.lastPublishedAppendPosition)
+	require.Empty(t, eg.appends)
 }
 
-// Asserts CatchupPoll does not raise lastPublishedAppendPosition. After
-// catchup, steady unflagged publish floors on the recorded high-water only,
-// not the consumed adapter position.
-func TestCatchupPoll_doesNotRaiseLastPublishedForSteady(t *testing.T) {
+// Asserts CatchupPoll publishes the recorded position under the catchup flag,
+// not the adapter position. The steady path later re-publishes that high-water.
+func TestCatchupPoll_publishesRecordedPosition(t *testing.T) {
 	adapter, image := boundLogAdapter(t)
 	span := writeSessionMessageAtJoin(t, image, catchupPollSessionFields)
-	require.Positive(t, span)
+	const recorded int64 = 32
+	require.Greater(t, span, recorded)
 
-	const recorded int64 = 40
 	appendV := new(atomic.Int64)
 	appendV.Store(recorded)
 	eg := &recordingEgress{}
@@ -89,34 +77,58 @@ func TestCatchupPoll_doesNotRaiseLastPublishedForSteady(t *testing.T) {
 		LeaderHeartbeatIntervalNs: 1000,
 		LeaderMemberID:            1,
 	})
-
-	// Seed a prior steady floor below the adapter high-water.
-	a.lastPublishedAppendPosition = recorded
 	a.CatchupInitiated(0)
 
-	require.Positive(t, a.CatchupPoll(span+32, 10))
+	// Phase: the adapter passes the recording.
+	require.Equal(t, 2, a.CatchupPoll(span+32, 10))
 	require.Equal(t, span, adapter.Position())
-	require.Greater(t, adapter.Position(), recorded)
-	require.Equal(t, []appendPublishCall{{
-		term:  3,
-		pos:   adapter.Position(),
-		flags: AppendPositionFlagCatchup,
-	}}, eg.appends)
-
-	// Steady floor stays at the recorded high-water.
+	require.Equal(t, []appendPublishCall{
+		{term: 3, pos: recorded, flags: AppendPositionFlagCatchup},
+	}, eg.appends)
 	require.Equal(t, recorded, a.lastPublishedAppendPosition)
 
-	// Steady path after catchup: unflagged publish must not leak adapter pos.
+	// Phase: the recording reaches the adapter.
 	eg.appends = nil
+	appendV.Store(span)
+	require.Equal(t, 1, a.CatchupPoll(span+32, 11))
+	require.Equal(t, []appendPublishCall{
+		{term: 3, pos: span, flags: AppendPositionFlagCatchup},
+	}, eg.appends)
+	require.Equal(t, span, a.lastPublishedAppendPosition)
 
-	// Interval due so a flat recorded position still publishes.
-	require.Equal(t, 1, a.updateFollowerPosition(10+1000, recorded, AppendPositionFlagNone))
-	require.Equal(t, []appendPublishCall{{
-		term:  3,
-		pos:   recorded,
-		flags: AppendPositionFlagNone,
-	}}, eg.appends)
-	require.Equal(t, recorded, a.lastPublishedAppendPosition)
+	// Phase: a flat recording does not publish before the interval.
+	eg.appends = nil
+	require.Equal(t, 0, a.CatchupPoll(span+32, 12))
+	require.Empty(t, eg.appends)
+
+	// Phase: the steady path re-publishes the catchup high-water unflagged.
+	require.Equal(t, 1, a.updateFollowerPosition(11+1000, recorded, AppendPositionFlagNone))
+	require.Equal(t, []appendPublishCall{
+		{term: 3, pos: span, flags: AppendPositionFlagNone},
+	}, eg.appends)
+}
+
+// Asserts CatchupPoll with a not-ready append source polls but does not publish.
+func TestCatchupPoll_notReadyPollsWithoutPublish(t *testing.T) {
+	adapter, image := boundLogAdapter(t)
+	span := writeSessionMessageAtJoin(t, image, catchupPollSessionFields)
+
+	eg := &recordingEgress{}
+	a := NewAgent(AgentConfig{
+		Role:                      RoleFollower,
+		Commit:                    new(atomic.Int64),
+		LogAdapter:                adapter,
+		Egress:                    eg,
+		AppendSource:              notReadyAppendSource{},
+		LeadershipTermID:          3,
+		LeaderHeartbeatIntervalNs: 1000,
+		LeaderMemberID:            1,
+	})
+	a.CatchupInitiated(0)
+
+	require.Equal(t, 1, a.CatchupPoll(span+32, 2000))
+	require.Equal(t, span, adapter.Position())
+	require.Empty(t, eg.appends)
 }
 
 func TestCatchupPoll_stubWhenNoImage(t *testing.T) {
@@ -174,17 +186,60 @@ func TestNewLogReplication_syntheticHelperInject(t *testing.T) {
 	rep := a.NewLogReplication("leader-ep", "response-ep", 11, 22, 33)
 	require.NotNil(t, rep)
 	require.Equal(t, int64(99), rep.RecordingID())
+	require.Equal(t, int64(-1), rep.Position())
 	require.False(t, rep.IsDone())
 
-	require.Equal(t, 1, rep.DoWork(1))
+	requireDoWork := func(nowNs int64, want int) {
+		t.Helper()
+		work, err := rep.DoWork(nowNs)
+		require.NoError(t, err)
+		require.Equal(t, want, work)
+	}
+	requireDoWork(1, 1)
 	require.False(t, rep.IsDone())
-	require.Equal(t, 1, rep.DoWork(2))
+	requireDoWork(2, 1)
 	require.True(t, rep.IsDone())
-	require.Equal(t, 0, rep.DoWork(3))
+	requireDoWork(3, 0)
 	require.True(t, rep.IsDone())
+
+	require.False(t, rep.IsClosed())
+	rep.Close()
+	require.True(t, rep.IsClosed())
 
 	a.SetLogReplicationFactory(nil)
 	require.Nil(t, a.NewLogReplication("leader-ep", "response-ep", 11, 22, 33))
+}
+
+func TestNewLogReplication_unbindsLogAdapterImage(t *testing.T) {
+	factory := func(_, _ string, _, _, _ int64) LogReplication {
+		return newSyntheticLogReplication(syntheticLogReplicationConfig{})
+	}
+
+	t.Run("set factory unbinds the image at its position", func(t *testing.T) {
+		const joinPosition int64 = 4096
+		sub := aeron.NewTestSubscriptionForHooks(t)
+		adapter := NewLogAdapter(0)
+		adapter.SetImage(aeron.NewTestImageForHooks(t, sub, joinPosition))
+		a := NewAgent(AgentConfig{LogAdapter: adapter})
+		a.SetLogReplicationFactory(factory)
+
+		require.NotNil(t, a.NewLogReplication("leader-ep", "response-ep", 1, 2, 3))
+		require.Nil(t, adapter.Image())
+		require.Equal(t, joinPosition, adapter.Position())
+	})
+	t.Run("nil factory keeps the image", func(t *testing.T) {
+		adapter, image := boundLogAdapter(t)
+		a := NewAgent(AgentConfig{LogAdapter: adapter})
+
+		require.Nil(t, a.NewLogReplication("leader-ep", "response-ep", 1, 2, 3))
+		require.Same(t, image, adapter.Image())
+	})
+	t.Run("nil adapter", func(t *testing.T) {
+		a := NewAgent(AgentConfig{})
+		a.SetLogReplicationFactory(factory)
+
+		require.NotNil(t, a.NewLogReplication("leader-ep", "response-ep", 1, 2, 3))
+	})
 }
 
 func TestNewLogReplay_defaultDoneStub(t *testing.T) {
@@ -254,7 +309,9 @@ func TestSyntheticLogReplication_doneImmediately(t *testing.T) {
 				DoneAfterDoWork: tt.doneAfterDoWork,
 			})
 			require.True(t, rep.IsDone())
-			require.Equal(t, 0, rep.DoWork(1))
+			work, err := rep.DoWork(1)
+			require.NoError(t, err)
+			require.Equal(t, 0, work)
 			require.Equal(t, int64(7), rep.RecordingID())
 
 			// OnSignal is a no-op for the inject double.
@@ -275,10 +332,12 @@ type syntheticLogReplicationConfig struct {
 }
 
 // syntheticLogReplication is a duty-cycle inject double for [LogReplication].
-// Pre-seeded; DoWork never blocks on archive control.
+// Pre-seeded; DoWork never blocks on archive control. Position stays -1, the
+// value before EXTEND. IsClosed reports true right after Close.
 type syntheticLogReplication struct {
 	recordingID int64
 	remaining   int
+	closed      bool
 }
 
 func newSyntheticLogReplication(cfg syntheticLogReplicationConfig) LogReplication {
@@ -288,20 +347,26 @@ func newSyntheticLogReplication(cfg syntheticLogReplicationConfig) LogReplicatio
 	}
 }
 
-func (r *syntheticLogReplication) DoWork(int64) int {
+func (r *syntheticLogReplication) DoWork(int64) (int, error) {
 	if r.remaining <= 0 {
-		return 0
+		return 0, nil
 	}
 	r.remaining--
-	return 1
+	return 1, nil
 }
 
 func (r *syntheticLogReplication) RecordingID() int64 { return r.recordingID }
+
+func (r *syntheticLogReplication) Position() int64 { return -1 }
 
 func (r *syntheticLogReplication) IsDone() bool { return r.remaining <= 0 }
 
 func (r *syntheticLogReplication) OnSignal(int64, int64, int64, archivewire.RecordingSignal) {
 }
+
+func (r *syntheticLogReplication) Close() { r.closed = true }
+
+func (r *syntheticLogReplication) IsClosed() bool { return r.closed }
 
 var _ LogReplication = (*syntheticLogReplication)(nil)
 
@@ -532,72 +597,50 @@ func TestTrackCatchupCompletion_idleWithoutEntryOrFlag(t *testing.T) {
 	require.Empty(t, a.catchupReplays)
 }
 
-// Asserts catchup-flagged steady AppendPosition refreshes liveness only and
-// drives completion. Does not update the position table.
-func TestSteadyAppendPosition_catchupFlag_skipsPositionUpdate(t *testing.T) {
-	const memberID int32 = 4
-	const catchupEndpoint = "127.0.0.1:9102"
+// Asserts steady AppendPosition updates the position table, flagged or not.
+// It also drives completion when a map entry is live.
+func TestSteadyAppendPosition_updatesAndCompletes(t *testing.T) {
+	tests := []struct {
+		name  string
+		flags uint8
+	}{
+		{name: "catchup flag", flags: AppendPositionFlagCatchup},
+		{name: "unflagged", flags: AppendPositionFlagNone},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			const memberID int32 = 4
+			const catchupEndpoint = "127.0.0.1:9102"
 
-	pt := &spyPositionTable{}
-	eg := &recordingEgress{}
-	a, _, publisher := newLeaderCatchupAgent(t, AgentConfig{
-		Positions:        pt,
-		Egress:           eg,
-		LeadershipTermID: 3,
-	}, catchupUDPDestination(catchupEndpoint))
+			pt := &spyPositionTable{}
+			eg := &recordingEgress{}
+			a, _, publisher := newLeaderCatchupAgent(t, AgentConfig{
+				Positions:        pt,
+				Egress:           eg,
+				LeadershipTermID: 3,
+			}, catchupUDPDestination(catchupEndpoint))
 
-	startFollowerCatchup(a, memberID, catchupEndpoint)
+			startFollowerCatchup(a, memberID, catchupEndpoint)
 
-	leaderPos := publisher.Position()
-	a.handleSteadyAppendPosition(codecs.AppendPositionFields{
-		LeadershipTermID: 3,
-		LogPosition:      leaderPos,
-		FollowerMemberID: memberID,
-		Flags:            AppendPositionFlagCatchup,
-	}, 1)
+			leaderPos := publisher.Position()
+			a.handleSteadyAppendPosition(codecs.AppendPositionFields{
+				LeadershipTermID: 3,
+				LogPosition:      leaderPos,
+				FollowerMemberID: memberID,
+				Flags:            tc.flags,
+			}, 1)
 
-	require.Empty(t, pt.updates)
-	require.Equal(t, []int32{memberID}, pt.liveness)
-	require.Equal(t, []stopCatchupPublishCall{{
-		term: 3, followerID: memberID,
-	}}, eg.stopCatchups)
-	require.Empty(t, a.catchupReplays)
-}
-
-// Asserts unflagged steady AppendPosition updates the position table and still
-// drives completion when a map entry is live.
-func TestSteadyAppendPosition_unflagged_updatesAndCompletes(t *testing.T) {
-	const memberID int32 = 5
-	const catchupEndpoint = "127.0.0.1:9103"
-
-	pt := &spyPositionTable{}
-	eg := &recordingEgress{}
-	a, _, publisher := newLeaderCatchupAgent(t, AgentConfig{
-		Positions:        pt,
-		Egress:           eg,
-		LeadershipTermID: 2,
-	}, catchupUDPDestination(catchupEndpoint))
-
-	startFollowerCatchup(a, memberID, catchupEndpoint)
-
-	leaderPos := publisher.Position()
-	a.handleSteadyAppendPosition(codecs.AppendPositionFields{
-		LeadershipTermID: 2,
-		LogPosition:      leaderPos,
-		FollowerMemberID: memberID,
-		Flags:            AppendPositionFlagNone,
-	}, 1)
-
-	require.Equal(t, []memberPositionUpdate{{
-		memberID:         memberID,
-		leadershipTermID: 2,
-		logPosition:      leaderPos,
-	}}, pt.updates)
-	require.Empty(t, pt.liveness)
-	require.Equal(t, []stopCatchupPublishCall{{
-		term: 2, followerID: memberID,
-	}}, eg.stopCatchups)
-	require.Empty(t, a.catchupReplays)
+			require.Equal(t, []memberPositionUpdate{{
+				memberID:         memberID,
+				leadershipTermID: 3,
+				logPosition:      leaderPos,
+			}}, pt.updates)
+			require.Equal(t, []stopCatchupPublishCall{{
+				term: 3, followerID: memberID,
+			}}, eg.stopCatchups)
+			require.Empty(t, a.catchupReplays)
+		})
+	}
 }
 
 // Asserts steady StopCatchup with matching term and member removes the catchup

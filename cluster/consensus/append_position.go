@@ -174,15 +174,7 @@ var _ AppendPositionSource = (*LogAppendPosition)(nil)
 //   - closes neither
 type RecordingPosAppendPosition struct {
 	agent     *Agent
-	counters  *cnc.CountersReader
-	archiveID int64
-
-	// cachedCounterID is the last counter id found for cachedRecordingID, or
-	// NullCounterID when no slot is held. cachedSlot is the bound value slot for
-	// that id. Both are revalidated before every cached read.
-	cachedCounterID   int32
-	cachedRecordingID int64
-	cachedSlot        cnc.CounterSlot
+	positions *cnc.RecordingPositionCache
 }
 
 // NewRecordingPosAppendPosition returns a recording-derived append high-water
@@ -199,10 +191,8 @@ func NewRecordingPosAppendPosition(
 	archiveID int64,
 ) *RecordingPosAppendPosition {
 	return &RecordingPosAppendPosition{
-		agent:           agent,
-		counters:        counters,
-		archiveID:       archiveID,
-		cachedCounterID: cnc.NullCounterID,
+		agent:     agent,
+		positions: cnc.NewRecordingPositionCache(counters, archiveID),
 	}
 }
 
@@ -223,7 +213,7 @@ func NewRecordingPosAppendPosition(
 //     recording, null recording id, or no counter for that recording id and
 //     archive id
 func (s *RecordingPosAppendPosition) AppendPosition() (int64, bool) {
-	if s == nil || s.agent == nil || s.counters == nil {
+	if s == nil || s.agent == nil {
 		return 0, false
 	}
 	if !s.agent.IsRecordingActive() {
@@ -233,27 +223,7 @@ func (s *RecordingPosAppendPosition) AppendPosition() (int64, bool) {
 	if recordingID == nullValue {
 		return 0, false
 	}
-
-	cachedSlotLive := s.cachedCounterID != cnc.NullCounterID &&
-		s.cachedRecordingID == recordingID &&
-		s.counters.IsCounterActive(
-			s.cachedCounterID,
-			recordingID,
-			cnc.ArchiveRecordingPositionCounterTypeID,
-		)
-	if cachedSlotLive {
-		return s.cachedSlot.Get(), true
-	}
-
-	slot, ok := s.counters.FindRecordingPositionCounter(recordingID, s.archiveID)
-	if !ok {
-		s.cachedCounterID = cnc.NullCounterID
-		return 0, false
-	}
-	s.cachedCounterID = slot.CounterID()
-	s.cachedRecordingID = recordingID
-	s.cachedSlot = slot
-	return slot.Get(), true
+	return s.positions.RecordingPosition(recordingID)
 }
 
 var _ AppendPositionSource = (*RecordingPosAppendPosition)(nil)

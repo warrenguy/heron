@@ -271,18 +271,6 @@ func (h *HostAdapter) UpdateMemberPosition(
 	h.UpdateMemberLogPosition(h.memberByID[memberID], leadershipTermID, logPosition)
 }
 
-// RefreshMemberLiveness stamps the append-position clock for memberID without
-// changing log position or leadership term.
-//
-// Unknown member ids are a no-op.
-func (h *HostAdapter) RefreshMemberLiveness(memberID int32) {
-	member := h.memberByID[memberID]
-	if member == nil {
-		return
-	}
-	member.TimeOfLastAppendPositionNs = h.nanoClock()
-}
-
 func (h *HostAdapter) UpdateLeaderPosition(nowNs, appendPosition, quorumPosition int64) int {
 	h.thisMember.LogPosition = appendPosition
 	h.thisMember.TimeOfLastAppendPositionNs = nowNs

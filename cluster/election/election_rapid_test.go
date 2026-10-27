@@ -200,25 +200,156 @@ func (c *electionRapidCluster) electLeaderOnVoterThenCrashVoter(rt *rapid.T) {
 	c.tickUntil(rt, leader, election.ElectionStateLeaderReady, 8)
 }
 
-// publishSettledAppendPositions stands in for the settled follower agent. Each
-// live follower in CLOSED sends its AppendPosition to its leader.
-func (c *electionRapidCluster) publishSettledAppendPositions() {
+// publishSettledPositions stands in for the settled agents. Each live
+// follower in CLOSED sends its AppendPosition to its leader. Each live leader
+// in CLOSED sends CommitPosition at its election log position to each peer.
+func (c *electionRapidCluster) publishSettledPositions() {
 	for _, n := range c.nodes {
 		if !n.live || n.election.State() != election.ElectionStateClosed {
 			continue
 		}
 		leader := n.election.Leader()
-		if leader == nil || leader.ID == n.id {
+		if leader == nil {
 			continue
 		}
-		n.publisher.AppendPosition(
-			election.PublicationTarget{MemberID: leader.ID},
-			codecs.AppendPositionFields{
-				LeadershipTermID: n.election.LeadershipTermID(),
-				LogPosition:      n.election.AppendPosition(),
-				FollowerMemberID: n.id,
-			},
-		)
+		if leader.ID != n.id {
+			n.publisher.AppendPosition(
+				election.PublicationTarget{MemberID: leader.ID},
+				codecs.AppendPositionFields{
+					LeadershipTermID: n.election.LeadershipTermID(),
+					LogPosition:      n.election.AppendPosition(),
+					FollowerMemberID: n.id,
+				},
+			)
+			continue
+		}
+		for _, peerID := range n.peerIDs {
+			n.publisher.CommitPosition(
+				election.PublicationTarget{MemberID: peerID},
+				codecs.CommitPositionFields{
+					LeadershipTermID: n.election.LeadershipTermID(),
+					LogPosition:      n.election.LogPosition(),
+					LeaderMemberID:   n.id,
+				},
+			)
+		}
+	}
+}
+
+// rapidReplication is the model LogReplication of the rejoin property. Each
+// DoWork moves Position to the next drawn step. The last step reports done,
+// or the drawn failure.
+type rapidReplication struct {
+	member   *rapidNode
+	steps    []int64
+	position int64
+	failErr  error
+	done     bool
+	closed   bool
+}
+
+func (r *rapidReplication) DoWork(int64) (int, error) {
+	if r.closed || len(r.steps) == 0 {
+		return 0, nil
+	}
+	r.position, r.steps = r.steps[0], r.steps[1:]
+	if len(r.steps) > 0 {
+		return 1, nil
+	}
+
+	// The catalog read in prepare finds the copied stop.
+	r.member.agent.appendPositionReturn = r.position
+	if r.failErr != nil {
+		r.closed = true
+		return 0, r.failErr
+	}
+	r.done = true
+
+	// The leader's live log image joins at the stop.
+	r.member.host.followerLogJoinPosition = r.position
+	return 1, nil
+}
+
+func (r *rapidReplication) RecordingID() int64 { return election.NullValue }
+func (r *rapidReplication) Position() int64    { return r.position }
+func (r *rapidReplication) IsDone() bool       { return r.done }
+func (r *rapidReplication) Close()             { r.closed = true }
+func (r *rapidReplication) IsClosed() bool     { return r.closed }
+
+func (r *rapidReplication) OnSignal(int64, int64, int64, election.RecordingSignal) {}
+
+// replicationSteps returns k rising positions from base to target. The span
+// is at least k, so each step rises.
+func replicationSteps(rt *rapid.T, base, target int64) []int64 {
+	rt.Helper()
+	span := target - base
+	k := rapid.Int64Range(1, min(8, span)).Draw(rt, "replicationSteps")
+	steps := make([]int64, 0, k)
+	for i := int64(1); i <= k; i++ {
+		steps = append(steps, base+span*i/k)
+	}
+	return steps
+}
+
+// installRapidReplication sets the member host factory to build model
+// helpers for d. A drawn failure fails the first helper at a drawn position.
+// current yields the last helper built, or nil before the first build.
+// failing reports whether the first helper fails.
+func installRapidReplication(
+	rt *rapid.T,
+	member *rapidNode,
+	d divergentRejoin,
+) (current func() *rapidReplication, failing bool) {
+	rt.Helper()
+
+	var failAt int64
+	failing = d.missedLength >= 2 && rapid.Bool().Draw(rt, "failReplication")
+	if failing {
+		failAt = rapid.Int64Range(d.missedBase+1, d.missedEnd()-1).Draw(rt, "failPosition")
+	}
+	var latest *rapidReplication
+	member.host.newLogReplication = func(
+		_, _ string,
+		_, stopPosition, _ int64,
+	) election.LogReplication {
+		target := stopPosition
+		var failErr error
+		if failing && latest == nil {
+			target = failAt
+			failErr = errors.New("rapid: replication failed")
+		}
+		latest = &rapidReplication{
+			member:   member,
+			steps:    replicationSteps(rt, d.missedBase, target),
+			position: d.missedBase,
+			failErr:  failErr,
+		}
+		return latest
+	}
+	return func() *rapidReplication { return latest }, failing
+}
+
+// checkReplicationSends fails the cluster when the member sends an
+// AppendPosition in FOLLOWER_LOG_REPLICATION above the helper position.
+func (c *electionRapidCluster) checkReplicationSends(
+	member *rapidNode,
+	current func() *rapidReplication,
+) {
+	next := member.publisher.SentHandler
+	member.publisher.SentHandler = func(msg election.SentMessage) {
+		inState := member.election != nil &&
+			member.election.State() == election.ElectionStateFollowerLogReplication
+		if inState && msg.TemplateID == clusterwire.AppendPositionSbeTemplateID {
+			fields := msg.Fields.(codecs.AppendPositionFields)
+			rep := current()
+			if rep == nil || fields.LogPosition > rep.position {
+				c.noteEdgeFail(
+					"replication AppendPosition %d above helper position member=%d",
+					fields.LogPosition, member.id,
+				)
+			}
+		}
+		next(msg)
 	}
 }
 
@@ -248,7 +379,9 @@ func (c *electionRapidCluster) runRejoinPrefix(rt *rapid.T) {
 // The leader wins on one vote. The voter crashes before it joins. The member
 // returns with a drawn divergent tail past the missed term's base. A drawn
 // prefix of ticks, deliveries and clock steps runs, then a drain with no
-// partition, crash or restart.
+// partition, crash or restart. A missed term with log routes the member
+// through FOLLOWER_LOG_REPLICATION over model helpers. A drawn failure fails
+// the first helper part way.
 func TestElection_divergentExLeaderRejoin_rapid(t *testing.T) {
 	checks := 100
 	if testing.Short() {
@@ -262,6 +395,8 @@ func TestElection_divergentExLeaderRejoin_rapid(t *testing.T) {
 
 		leader := c.nodes[rejoinLeaderID]
 		member := c.nodes[rejoinMemberID]
+		current, failing := installRapidReplication(rt, member, d)
+		c.checkReplicationSends(member, current)
 		c.electLeaderOnVoterThenCrashVoter(rt)
 		leaderTermID := leader.election.LeadershipTermID()
 		require.Greater(rt, leaderTermID, d.missedTermID)
@@ -269,16 +404,9 @@ func TestElection_divergentExLeaderRejoin_rapid(t *testing.T) {
 		member.live = true
 		c.runRejoinPrefix(rt)
 
-		// The member rejoins when the missed term holds no log. Otherwise the
-		// member stops at the replication request: the host builds no
-		// LogReplication.
-		rejoins := d.missedLength == 0
 		done := func() bool {
-			if rejoins {
-				return leader.election.State() == election.ElectionStateClosed &&
-					member.election.State() == election.ElectionStateClosed
-			}
-			return len(member.host.newLogReplicationCalls) > 0
+			return leader.election.State() == election.ElectionStateClosed &&
+				member.election.State() == election.ElectionStateClosed
 		}
 
 		// 400 status intervals span four leader heartbeat timeouts.
@@ -286,37 +414,52 @@ func TestElection_divergentExLeaderRejoin_rapid(t *testing.T) {
 			if done() {
 				break
 			}
-			c.publishSettledAppendPositions()
+			c.publishSettledPositions()
 			c.tickAll()
 			c.deliverAllHolding()
 			c.advanceClock(member.cfg.ElectionStatusIntervalNs)
 			c.checkInvariants(rt)
 		}
 		c.checkInvariants(rt)
-		require.True(rt, done(), "member state %v", member.election.State())
+		require.True(
+			rt,
+			done(),
+			"leader state %v member state %v",
+			leader.election.State(),
+			member.election.State(),
+		)
+		require.Equal(rt, leaderTermID, leader.election.LeadershipTermID())
+		require.Equal(rt, leaderTermID, member.election.LeadershipTermID())
+		require.Equal(rt, d.missedEnd(), member.election.AppendPosition())
 
+		resets := member.replicationResets
+		truncate := truncateCall{leadershipTermID: d.memberLogTermID(), logPosition: d.missedBase}
+		wantTruncates := resets
 		if d.divergentTail > 0 {
-			require.Equal(rt, []truncateCall{{
-				leadershipTermID: d.memberLogTermID(),
-				logPosition:      d.missedBase,
-			}}, member.host.truncateCalls)
+			wantTruncates++
 			require.Equal(
 				rt,
 				d.missedBase,
 				memberLog.FindTermEntry(d.memberLogTermID()).LogPosition,
 			)
-		} else {
-			require.Empty(rt, member.host.truncateCalls)
 		}
-		require.Equal(rt, d.missedBase, member.election.AppendPosition())
+		require.Len(rt, member.host.truncateCalls, wantTruncates)
+		for _, call := range member.host.truncateCalls {
+			require.Equal(rt, truncate, call)
+		}
 
-		if rejoins {
-			require.Equal(rt, leaderTermID, leader.election.LeadershipTermID())
-			require.Equal(rt, leaderTermID, member.election.LeadershipTermID())
+		if d.missedLength == 0 {
+			require.Zero(rt, resets)
+			require.Empty(rt, member.host.newLogReplicationCalls)
 			return
 		}
+		require.Equal(rt, leaderTermID, election.LogLeadershipTermIDForTest(member.election))
+		require.Len(rt, member.host.newLogReplicationCalls, 1+resets)
 		for _, call := range member.host.newLogReplicationCalls {
 			require.Equal(rt, d.missedEnd(), call.stopPosition)
+		}
+		if failing {
+			require.GreaterOrEqual(rt, resets, 1)
 		}
 	})
 }

@@ -40,9 +40,9 @@ const defaultClusterMemberCloseLinger = 250 * time.Millisecond
 //
 // The timeout carries margin over duty-cycle stalls under race-detector load.
 // A 1s timeout fired on such stalls and re-entered elections mid-test.
-// Re-entry across a term boundary cannot recover while the log replication
-// factory defaults to nil, so spurious re-entries must stay rare. 5s at the
-// 100ms interval matches the production 50-interval miss tolerance.
+// Each re-entry across a term boundary costs a log replication, so spurious
+// re-entries must stay rare. 5s at the 100ms interval matches the production
+// 50-interval miss tolerance.
 const (
 	IntegrationLeaderHeartbeatTimeoutNs  int64 = 5_000_000_000 // 5s
 	IntegrationLeaderHeartbeatIntervalNs int64 = 100_000_000   // 100ms
@@ -399,11 +399,16 @@ func bootstrapMemberInfra(
 	return md, node, cfg, nil
 }
 
+// MemberReplicationChannel is the log replication channel for harness members.
+// The Java Archive default names localhost. The harness names 127.0.0.1 with a
+// driver-assigned port, so replication stays on the loopback interface.
+const MemberReplicationChannel = "aeron:udp?endpoint=127.0.0.1:0"
+
 // MemberClusterConfig builds the cluster.Config for one harness member open.
 //
-// Behaviour: sets Election to IntegrationElectionConfig and caps close linger
-// below the 3s client default. Other zero fields take cluster.Config.Normalize
-// defaults at open.
+// Behaviour: sets Election to IntegrationElectionConfig and ReplicationChannel
+// to MemberReplicationChannel. Caps close linger below the 3s client default.
+// Other zero fields take cluster.Config.Normalize defaults at open.
 func MemberClusterConfig(
 	memberID int32,
 	membersString string,
@@ -416,6 +421,7 @@ func MemberClusterConfig(
 		ClusterDir:                    clusterDir,
 		AeronDir:                      aeronDir,
 		LogChannel:                    ClusterLogChannelTemplate,
+		ReplicationChannel:            MemberReplicationChannel,
 		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
 		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
 		Election:                      IntegrationElectionConfig(),

@@ -5,10 +5,12 @@ import (
 
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/consensus"
 )
 
-var errNewElectionFromCanvass = errors.New("election: new election detected from canvass position")
+var (
+	errNewElectionFromCanvass = errors.New("election: new election detected from canvass position")
+	errCommitPositionTimeout  = errors.New("election: timeout awaiting commit position")
+)
 
 // handleInit holds in INIT until PrepareForNewLeadership reports prepared.
 // The first node-startup init still skips prepare.
@@ -18,7 +20,9 @@ func (e *Election) handleInit(nowNs int64) int {
 		e.isFirstInit = false
 		skipPrepare = e.isNodeStartup
 	} else {
-		e.clearLogReplication()
+		if work, stopping := e.stopLogReplication(nowNs); stopping {
+			return work
+		}
 		e.logSessionID = NullMemberID
 		e.stopReplay()
 
@@ -262,67 +266,90 @@ func (e *Election) handleLeaderReady(nowNs int64) int {
 	return workCount
 }
 
-// handleFollowerLogReplication installs a host LogReplication helper while
-// lagging, runs its duty cycle, and keeps the caught-up and timeout exits.
+// handleFollowerLogReplication runs the installed LogReplication helper. It
+// sends the helper position to the leader each tick.
 //
-// IsDone does not advance appendPosition and is not a Canvass path. Canvass
-// still requires appendPosition at the stop position.
-//
-// A nil host factory re-calls each tick (cheap no-op). A finished helper stays
-// installed so it is not rebuilt while still lagging. Idle ticks skip its duty
-// cycle. Exit paths clear the pointer. The done check runs on the install tick
-// regardless, so a helper that is done at construction still publishes its
-// recording id exactly once.
-//
-// The install that enters this state sets replicationDeadlineNs. Later leader
-// NewLeadershipTerm and CommitPosition traffic refresh that deadline only while
-// a helper is installed. Lag with a nil factory still hits the leader heartbeat
-// timeout.
+// Behaviour:
+//   - no helper: startFollowerLogReplication runs instead
+//   - a DoWork error enters Init. The helper stays installed for Init to stop
+//   - done, notified commit at or above the append position: the append
+//     position takes the helper position. The helper closes. The replicated
+//     term commits
+//   - done, notified commit below the append position: enters Init at the
+//     deadline. Leader NewLeadershipTerm and CommitPosition traffic refresh
+//     the deadline while a helper is installed
 func (e *Election) handleFollowerLogReplication(nowNs int64) int {
-	workCount := 0
-
-	installed := false
-	if e.logReplication == nil {
-		e.logReplication = e.newFollowerLogReplication(nowNs)
-		installed = e.logReplication != nil
-		if installed {
-			workCount++
-		}
+	rep := e.logReplication
+	if rep == nil {
+		return e.startFollowerLogReplication(nowNs)
 	}
-
-	if rep := e.logReplication; rep != nil && (installed || !rep.IsDone()) {
-		workCount += rep.DoWork(nowNs)
-		if rep.IsDone() {
-			e.deps.Host.SetLogRecordingID(rep.RecordingID())
-			workCount++
-		}
+	workCount, err := rep.DoWork(nowNs)
+	if err != nil {
+		e.HandleError(nowNs, err)
+		return 1
 	}
-
-	// A NullPosition stop position means the state was entered without an
-	// install (test or simulation injection); fall through to the deadline
-	// reset instead of committing a sentinel term.
-	caughtUp := e.replicationStopPosition != NullPosition &&
-		e.appendPosition >= e.replicationStopPosition
-	if caughtUp {
-		e.clearLogReplication()
-		err := e.commitRecordingLogTerm(
-			e.replicationLeadershipTermID,
-			e.replicationTermBaseLogPosition,
-			e.replicationStopPosition,
-		)
-		if err != nil {
-			e.HandleError(nowNs, err)
-			return 1
-		}
-		e.state(ElectionStateCanvass, nowNs, "")
+	done := rep.IsDone()
+	position := rep.Position()
+	workCount += e.publishFollowerReplicationPosition(position, nowNs)
+	if !done {
 		return workCount
 	}
-	if nowNs >= e.replicationDeadlineNs {
+	if e.notifiedCommitPosition >= e.appendPosition {
+		e.appendPosition = position
+		e.storeReplicationRecordingID(rep)
+		rep.Close()
 		e.clearLogReplication()
-		e.HandleError(nowNs, errors.New("election: timeout awaiting commit position"))
+		return workCount + 1 + e.commitReplicatedTerm(nowNs)
+	}
+	if nowNs >= e.replicationDeadlineNs {
+		e.HandleError(nowNs, errCommitPositionTimeout)
 		return 1
 	}
 	return workCount
+}
+
+// startFollowerLogReplication runs the state without a helper.
+//
+// Behaviour:
+//   - append position at a known stop position: commits the replicated term
+//   - NullPosition stop position: an injected state. Does not build a helper
+//   - otherwise asks the host for a helper. A new helper sets the deadline one
+//     heartbeat timeout out. A nil helper, from a nil factory or a missing
+//     leader, keeps the install deadline
+//   - at the deadline without a helper: enters Init
+func (e *Election) startFollowerLogReplication(nowNs int64) int {
+	stopPosition := e.replicationStopPosition
+	if stopPosition != NullPosition {
+		if e.appendPosition >= stopPosition {
+			return e.commitReplicatedTerm(nowNs)
+		}
+		if rep := e.newFollowerLogReplication(nowNs); rep != nil {
+			e.logReplication = rep
+			e.replicationDeadlineNs = nowNs + e.cfg.LeaderHeartbeatTimeoutNs
+			return 1
+		}
+	}
+	if nowNs >= e.replicationDeadlineNs {
+		e.HandleError(nowNs, errCommitPositionTimeout)
+		return 1
+	}
+	return 0
+}
+
+// commitReplicatedTerm writes the replicated term entry, then enters Canvass.
+// Returns 1 when a write error enters Init, else 0.
+func (e *Election) commitReplicatedTerm(nowNs int64) int {
+	err := e.commitRecordingLogTerm(
+		e.replicationLeadershipTermID,
+		e.replicationTermBaseLogPosition,
+		e.replicationStopPosition,
+	)
+	if err != nil {
+		e.HandleError(nowNs, err)
+		return 1
+	}
+	e.state(ElectionStateCanvass, nowNs, "")
+	return 0
 }
 
 // newFollowerLogReplication asks the host for a replication helper. Returns nil
@@ -341,8 +368,45 @@ func (e *Election) newFollowerLogReplication(nowNs int64) LogReplication {
 	)
 }
 
+// storeReplicationRecordingID passes the helper's destination recording id to
+// the host. It skips a NullValue id, which the helper reports before EXTEND.
+func (e *Election) storeReplicationRecordingID(rep LogReplication) {
+	if id := rep.RecordingID(); id != NullValue {
+		e.deps.Host.SetLogRecordingID(id)
+	}
+}
+
+// stopLogReplication closes the installed helper and drives its stop.
+//
+// Returns:
+//   - 0, false: no helper, or the stop finished on this call.
+//     clearLogReplication has run
+//   - work, true: the stop is still running. The caller holds its state
+//
+// HandleError receives a stop error. The error closes the helper, so the same
+// call clears it.
+func (e *Election) stopLogReplication(nowNs int64) (int, bool) {
+	if rep := e.logReplication; rep != nil {
+		rep.Close()
+		workCount, err := rep.DoWork(nowNs)
+		if err != nil {
+			e.HandleError(nowNs, err)
+		}
+		if !rep.IsClosed() {
+			return workCount, true
+		}
+	}
+	e.clearLogReplication()
+	return 0, false
+}
+
+// clearLogReplication drops the helper reference. It resets the replication
+// deadline and the last published commit position. It does not close the
+// helper.
 func (e *Election) clearLogReplication() {
 	e.logReplication = nil
+	e.replicationDeadlineNs = 0
+	e.lastPublishedCommitPosition = 0
 }
 
 // refreshReplicationDeadline extends the log-replication timeout on matching
@@ -945,15 +1009,9 @@ func (e *Election) OnAppendPosition(fields codecs.AppendPositionFields) {
 		return
 	}
 
-	// Catchup-flagged positions are progress, not durability. Skip the position
-	// table update so they never enter the commit quorum. Refresh liveness so
-	// the member stays active. Pass the wire log position: member.LogPosition
-	// stays stale under the exclusion rule.
-	if fields.Flags&consensus.AppendPositionFlagCatchup != 0 {
-		follower.TimeOfLastAppendPositionNs = e.deps.NanoClock()
-	} else {
-		e.deps.Host.UpdateMemberLogPosition(follower, fields.LeadershipTermID, fields.LogPosition)
-	}
+	// A catchup-flagged position is a recorded position. It enters the commit
+	// quorum like an unflagged one.
+	e.deps.Host.UpdateMemberLogPosition(follower, fields.LeadershipTermID, fields.LogPosition)
 	e.deps.Host.TrackCatchupCompletion(follower, fields.LogPosition, fields.Flags)
 
 	// A follower on an older term learns the current one from the leader.
@@ -1019,8 +1077,13 @@ func (e *Election) OnCatchupPosition(fields codecs.CatchupPositionFields) {
 	e.deps.Host.OnCatchupPosition(fields)
 }
 
-// OnRecordingSignal forwards archive recording signals to the installed
-// LogReplication helper when present and publishes its recording id to the host.
+// OnRecordingSignal forwards one archive recording signal to the installed
+// LogReplication helper. It then passes the helper's recording id to the host
+// when the id is known.
+//
+// Behaviour: drops the signal in Init or without a helper.
+//
+// Concurrency: invoker-only. The archive session handler calls it.
 func (e *Election) OnRecordingSignal(
 	correlationID, recordingID, position int64,
 	signal RecordingSignal,
@@ -1033,7 +1096,7 @@ func (e *Election) OnRecordingSignal(
 		return
 	}
 	rep.OnSignal(correlationID, recordingID, position, signal)
-	e.deps.Host.SetLogRecordingID(rep.RecordingID())
+	e.storeReplicationRecordingID(rep)
 }
 
 // HandleError records err, syncs log position from Host.CommitPosition, and

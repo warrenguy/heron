@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/cluster/consensus"
@@ -100,6 +101,14 @@ type ConsensusModule struct {
 	// that exits a replay state closes the helper first.
 	logReplay *logReplay
 
+	// logReplication is the most recently built log replication helper.
+	// Close stops it and clears it.
+	logReplication *logReplication
+
+	// unresolvedReplications holds replaced helpers whose stop did not resolve
+	// before the election built the next helper. Close stops each one.
+	unresolvedReplications []*logReplication
+
 	// catchup is the follower catchup destination on the log subscription and
 	// leader catchup replay control. Nil until wired after log streams open.
 	catchup *catchupControl
@@ -138,7 +147,7 @@ type ConsensusModule struct {
 //  11. host adapter
 //  12. election
 //  13. election factory
-//  14. log replay factory
+//  14. log replay factory, then log replication factory
 //  15. catchup control
 //  16. log publication reseed
 //  17. client ingress subscription (all members; accept and redirect in
@@ -158,8 +167,8 @@ type ConsensusModule struct {
 //     No recording starts at Open
 //   - Open wires the module snapshot seams after the log recording control.
 //     The archive session handler passes each signal to the log recording,
-//     then to the snapshot STOP watch. The snapshot publication adder uses the
-//     transport client. No snapshot starts at Open
+//     then to the snapshot STOP watch, then to the election. The snapshot
+//     publication adder uses the transport client. No snapshot starts at Open
 //   - cluster log publication and subscription open before return. The first
 //     duty tick can then win leadership and append a leadership-term event
 //   - every member opens the client ingress subscription. A settled leader
@@ -314,13 +323,15 @@ func OpenConsensusModule(
 	// consumes to enter an election.
 	//
 	// The snapshot STOP watch runs after the log recording handler, so the
-	// log stop mark keeps its order.
+	// log stop mark keeps its order. The election runs last. The election
+	// passes the signal to its log replication helper.
 	logRecording := module.logRecording
 	snapshotControl := newSnapshotRecording(module.archiveClient)
 	module.archiveClient.SetRecordingSignalHandler(archive.RecordingSignalHandlerFunc(
 		func(event codecs.RecordingSignalEventFields) {
 			logRecording.handleRecordingSignal(event)
 			snapshotControl.handleRecordingSignal(event)
+			module.handleElectionRecordingSignal(event)
 		},
 	))
 	module.agent.SetSnapshotRecordingControl(snapshotControl)
@@ -439,6 +450,41 @@ func OpenConsensusModule(
 		return r
 	})
 
+	// Every election builds a replication helper from these deps. Open does
+	// not start a replication.
+	archiveConfig := module.archiveClient.Config()
+	archiveID := module.archiveClient.ArchiveID()
+	replicationDeps := logReplicationDeps{
+		Ctx:                         ctx,
+		Control:                     archiveReplicationControl{client: module.archiveClient},
+		Positions:                   cnc.NewRecordingPositionCache(counters, archiveID),
+		NextCorrelationID:           module.client.NextCorrelationID,
+		Agent:                       module.agent,
+		Recording:                   module.logRecording,
+		ReplicationChannel:          cfg.ReplicationChannel,
+		LeaderArchiveControlChannel: cfg.LeaderArchiveControlChannel,
+		ControlRequestStreamID:      archiveConfig.ControlRequestStreamID,
+		ProgressCheckIntervalNs:     electionCfg.LeaderHeartbeatIntervalNs,
+		ProgressTimeoutNs:           electionCfg.LeaderHeartbeatTimeoutNs,
+		OfferTimeoutNs:              archiveConfig.ControlOfferRetryTimeout.Nanoseconds(),
+		ResponseTimeoutNs:           archiveConfig.ControlResponseTimeout.Nanoseconds(),
+	}
+	module.agent.SetLogReplicationFactory(func(
+		leaderArchiveEndpoint, responseArchiveEndpoint string,
+		leaderRecordingID, stopPosition, nowNs int64,
+	) consensus.LogReplication {
+		r := newLogReplication(
+			replicationDeps,
+			leaderArchiveEndpoint,
+			responseArchiveEndpoint,
+			leaderRecordingID,
+			stopPosition,
+			nowNs,
+		)
+		module.trackLogReplication(r)
+		return r
+	})
+
 	// Catchup control: follower catchup destination on the log subscription,
 	// and leader archive replay of the local log recording.
 	module.catchup = newCatchupControl(
@@ -545,13 +591,26 @@ func moduleClocks(cfg Config) (nanoClock, epochClock func() int64) {
 	return nanoClock, epochClock
 }
 
+// trackLogReplication records r as the current log replication helper. The
+// helper it replaces joins unresolvedReplications when the archive may still
+// run its replication.
+//
+// Concurrency: invoker-only. The election factory calls it on the duty cycle.
+func (m *ConsensusModule) trackLogReplication(r *logReplication) {
+	if prior := m.logReplication; prior != nil && prior.hasUnresolvedStop() {
+		m.unresolvedReplications = append(m.unresolvedReplications, prior)
+	}
+	m.logReplication = r
+}
+
 // Close tears the member down in reverse open order:
 //  1. agent bindings (module snapshot take close, snapshot seam clears,
 //     ingress unbind, service proxy clear, session egress teardown, adder
 //     clear)
 //  2. catchup control
 //  3. best-effort log recording stop
-//  4. election close and retained replay helper close error
+//  4. election close, log replication stop, and retained replay helper
+//     close error
 //  5. service control subscription
 //  6. service control publication
 //  7. client ingress subscription
@@ -564,9 +623,10 @@ func moduleClocks(cfg Config) (nanoClock, epochClock func() int64) {
 //
 // The archive control client closes before the transport client. The archive
 // control publication and subscription belong to that transport client.
-// StopReplay must reach the archive while the archive client is still
-// connected. Election and helper teardown therefore run before the archive
-// close.
+// StopReplay and StopReplication must reach the archive while the archive
+// client is still connected. Election and helper teardown therefore run
+// before the archive close. The log replication stop blocks until the
+// archive replies.
 //
 // The log recording stop abandons a pending async stop. The blocking drain
 // runs only when a start channel is still kept.
@@ -615,6 +675,7 @@ func (m *ConsensusModule) Close() error {
 		m.agent.SetPositions(nil)
 		m.agent.SetEgress(nil)
 		m.agent.SetLogReplayFactory(nil)
+		m.agent.SetLogReplicationFactory(nil)
 		m.agent.SetCatchupControl(nil)
 		m.agent.SetLogPublicationReseed(nil)
 	}
@@ -639,6 +700,14 @@ func (m *ConsensusModule) Close() error {
 	}
 	if m.election != nil {
 		m.election.Close()
+	}
+	for _, rep := range m.unresolvedReplications {
+		err = errors.Join(err, rep.stopReplication())
+	}
+	m.unresolvedReplications = nil
+	if m.logReplication != nil {
+		err = errors.Join(err, m.logReplication.stopReplication())
+		m.logReplication = nil
 	}
 	if m.logReplay != nil {
 		// Join the residual close error once, then clear it. Keep the residual
@@ -890,6 +959,22 @@ func (m *ConsensusModule) ElectionLastError() error {
 		return nil
 	}
 	return m.election.LastError()
+}
+
+// handleElectionRecordingSignal passes one archive recording signal to the
+// current election. Drops the signal when the election is nil.
+//
+// Concurrency: invoker-only. archive.Client.Poll calls it.
+func (m *ConsensusModule) handleElectionRecordingSignal(event codecs.RecordingSignalEventFields) {
+	if m.election == nil {
+		return
+	}
+	m.election.OnRecordingSignal(
+		event.CorrelationID,
+		event.RecordingID,
+		event.Position,
+		event.Signal,
+	)
 }
 
 // IsColdStart reports whether recovery found no usable cluster history.

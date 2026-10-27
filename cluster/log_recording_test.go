@@ -644,6 +644,61 @@ func TestNewLogRecording_seedsUnknownRecordingID(t *testing.T) {
 	require.Equal(t, recordingIDUnknown, r.latchedRecordingID)
 }
 
+func TestLogRecording_forgetStopPosition(t *testing.T) {
+	t.Parallel()
+
+	const (
+		termRecordingID int64 = 42
+		storedStop      int64 = 1001
+		catalogStop     int64 = 7000
+	)
+	tests := []struct {
+		name             string
+		forgetID         int64
+		wantStop         int64
+		wantListCalls    int
+		wantIdentityStop int64
+	}{
+		{
+			name:             "matching id reads the catalog and stops by identity",
+			forgetID:         termRecordingID,
+			wantStop:         catalogStop,
+			wantListCalls:    1,
+			wantIdentityStop: termRecordingID,
+		},
+		{
+			name:             "foreign id keeps the stored stop",
+			forgetID:         termRecordingID + 1,
+			wantStop:         storedStop,
+			wantIdentityStop: recordinglog.NullRecordingID,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stub := &recordingArchiveStub{listStopPos: catalogStop}
+			r := &logRecording{
+				client:             stub,
+				terms:              fixedTermLookup(termRecordingID),
+				recordingID:        recordingIDUnknown,
+				latchedRecordingID: recordingIDUnknown,
+			}
+			r.storeStopPosition(termRecordingID, storedStop)
+			require.Equal(t, recordinglog.NullRecordingID, r.identityStopTarget())
+
+			r.forgetStopPosition(tt.forgetID)
+
+			got, err := r.StopPositionFor(termRecordingID)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantStop, got)
+			require.Equal(t, tt.wantListCalls, stub.listCalls)
+			require.Equal(t, tt.wantIdentityStop, r.identityStopTarget())
+		})
+	}
+}
+
 func TestLogRecording_StopPositionFor(t *testing.T) {
 	t.Parallel()
 

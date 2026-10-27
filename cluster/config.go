@@ -108,6 +108,22 @@ type Config struct {
 	// publication.
 	SnapshotChannel string
 
+	// ReplicationChannel is the channel the local Archive receives a log
+	// replication on. Empty uses the Archive's own replication channel. Must
+	// be a udp channel when set.
+	//
+	// Required when a member in ClusterMembers has an archive response
+	// endpoint. The replication then rewrites the channel to the response
+	// endpoint.
+	ReplicationChannel string
+
+	// LeaderArchiveControlChannel is the template of the leader archive
+	// control request channel for a log replication. Only its media and
+	// interface= reach the request. The endpoint comes from ClusterMembers.
+	// Must be a udp channel. Zero value takes
+	// DefaultLeaderArchiveControlChannel.
+	LeaderArchiveControlChannel string
+
 	// ConsensusStreamID zero takes DefaultConsensusStreamID. Config stream ids
 	// must be distinct.
 	ConsensusStreamID int32
@@ -232,6 +248,9 @@ func (cfg Config) Normalize() Config {
 	}
 	if cfg.SnapshotChannel == "" {
 		cfg.SnapshotChannel = DefaultSnapshotChannel
+	}
+	if cfg.LeaderArchiveControlChannel == "" {
+		cfg.LeaderArchiveControlChannel = DefaultLeaderArchiveControlChannel
 	}
 	if cfg.ConsensusStreamID == 0 {
 		cfg.ConsensusStreamID = DefaultConsensusStreamID
@@ -362,6 +381,9 @@ func (cfg Config) validateMembers() ([]election.Member, int, error) {
 	if aeron.ChannelParamIndex(cfg.SnapshotChannel, aeron.ChannelSessionIDParam, true) >= 0 {
 		return nil, 0, errors.New("cluster: SnapshotChannel must not set session-id=")
 	}
+	if err := validateReplicationChannels(cfg, members); err != nil {
+		return nil, 0, err
+	}
 	if cfg.ServiceCount < 0 {
 		return nil, 0, errors.New("cluster: ServiceCount must not be negative")
 	}
@@ -428,6 +450,26 @@ func (cfg Config) validateMembers() ([]election.Member, int, error) {
 		return nil, 0, err
 	}
 	return members, thisIndex, nil
+}
+
+// validateReplicationChannels checks the two log replication channels.
+func validateReplicationChannels(cfg Config, members []election.Member) error {
+	if cfg.ReplicationChannel == "" {
+		for _, m := range members {
+			if m.ArchiveResponseEndpoint != "" {
+				return fmt.Errorf(
+					"cluster: ReplicationChannel is required: member %d has an archive response endpoint",
+					m.ID,
+				)
+			}
+		}
+	} else if !isUDPChannel(cfg.ReplicationChannel) {
+		return errors.New("cluster: ReplicationChannel must be a udp channel")
+	}
+	if !isUDPChannel(cfg.LeaderArchiveControlChannel) {
+		return errors.New("cluster: LeaderArchiveControlChannel must be a udp channel")
+	}
+	return nil
 }
 
 // optionalMemberID maps a nil Config leader pointer to election.NullMemberID.
@@ -560,6 +602,16 @@ func validateMemberEndpoints(m election.Member) error {
 				return err
 			}
 		}
+	}
+	// The archive response endpoint is optional. A delimiter in it would split
+	// the replication response channel at substitution.
+	responseEndpoint := m.ArchiveResponseEndpoint
+	if responseEndpoint != "" && strings.ContainsAny(responseEndpoint, endpointDelimiters) {
+		return fmt.Errorf(
+			"cluster: member %d has an invalid archive response endpoint: %s",
+			m.ID,
+			responseEndpoint,
+		)
 	}
 	return nil
 }

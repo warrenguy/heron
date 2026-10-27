@@ -12,13 +12,6 @@ type PositionTable interface {
 	UpdateMemberPosition(memberID int32, leadershipTermID, logPosition int64)
 	QuorumPositionBoundedByLeaderLog(appendPosition, nowNs int64) int64
 
-	// RefreshMemberLiveness stamps TimeOfLastAppendPositionNs for memberID
-	// without changing that member's log position or leadership term.
-	//
-	// Catchup-flagged AppendPosition uses this so a catching-up follower stays
-	// in IsActive while its position is excluded from the commit quorum.
-	RefreshMemberLiveness(memberID int32)
-
 	// HasActiveQuorum reports whether a quorum of members reported an append
 	// position within timeoutNs of nowNs. This member counts toward the
 	// quorum. A settled leader keeps its own entry fresh every tick. A

@@ -129,12 +129,17 @@ func (l *rapidRecordingLog) truncate(leadershipTermID, logPosition int64) {
 // position match HostAdapter.
 type rapidLogHost struct {
 	*bagCommitHost
-	log                      *rapidRecordingLog
-	agent                    *recordingAgentHandler
-	members                  []*election.Member
-	thisMember               *election.Member
-	ranked                   []int64
-	leaderHeartbeatTimeoutNs int64
+	log                       *rapidRecordingLog
+	agent                     *recordingAgentHandler
+	members                   []*election.Member
+	thisMember                *election.Member
+	ranked                    []int64
+	leaderHeartbeatTimeoutNs  int64
+	leaderHeartbeatIntervalNs int64
+
+	// lastPublishedCommitPosition holds the highest CommitPosition published.
+	lastPublishedCommitPosition int64
+	timeOfLastCommitPublishNs   int64
 }
 
 func (h *rapidLogHost) TruncateLogEntry(leadershipTermID, logPosition int64) error {
@@ -154,10 +159,21 @@ func (h *rapidLogHost) QuorumPositionBoundedByLeaderLog(appendPosition, nowNs in
 	)
 }
 
-func (h *rapidLogHost) UpdateLeaderPosition(nowNs, appendPosition, _ int64) int {
+// UpdateLeaderPosition records the append position on this member. It
+// publishes CommitPosition when quorumPosition rises or the heartbeat interval
+// elapses, as Agent.UpdateLeaderPosition does.
+func (h *rapidLogHost) UpdateLeaderPosition(nowNs, appendPosition, quorumPosition int64) int {
 	h.thisMember.LogPosition = appendPosition
 	h.thisMember.TimeOfLastAppendPositionNs = nowNs
-	return 0
+	risen := quorumPosition > h.lastPublishedCommitPosition
+	intervalDue := nowNs >= h.timeOfLastCommitPublishNs+h.leaderHeartbeatIntervalNs
+	if !risen && !intervalDue {
+		return 0
+	}
+	h.PublishCommitPosition(quorumPosition, h.thisMember.LeadershipTermID)
+	h.lastPublishedCommitPosition = max(h.lastPublishedCommitPosition, quorumPosition)
+	h.timeOfLastCommitPublishNs = nowNs
+	return 1
 }
 
 // rapidBindOption configures one node's host at bind time.
@@ -187,6 +203,7 @@ type rapidNode struct {
 	maxCandidateSeen int64
 	election         *election.Election
 	host             *recordingElectionHost
+	agent            *recordingAgentHandler
 	publisher        *election.SbePublisher
 	clock            *FakeClock
 	epochClock       *FakeEpochClock
@@ -199,6 +216,8 @@ type rapidNode struct {
 	crashSnap *crashSnapshot
 	// bindOptions carry over to restartNode.
 	bindOptions []rapidBindOption
+	// replicationResets counts FOLLOWER_LOG_REPLICATION to INIT edges.
+	replicationResets int
 }
 
 type winEdgeObserver struct {
@@ -212,6 +231,9 @@ func (o *winEdgeObserver) OnElectionStateChange(s election.ElectionState) {
 	o.prev = s
 
 	n := o.node
+	if prev == election.ElectionStateFollowerLogReplication && s == election.ElectionStateInit {
+		n.replicationResets++
+	}
 	if !n.live || n.election == nil {
 		return
 	}
@@ -484,13 +506,14 @@ func (c *electionRapidCluster) bindElection(
 	if log := options.recordingLog; log != nil {
 		lookup = log
 		electionHost = &rapidLogHost{
-			bagCommitHost:            commitHost,
-			log:                      log,
-			agent:                    agent,
-			members:                  memberPtrs,
-			thisMember:               thisMember,
-			ranked:                   make([]int64, election.QuorumThreshold(len(memberPtrs))),
-			leaderHeartbeatTimeoutNs: cfg.LeaderHeartbeatTimeoutNs,
+			bagCommitHost:             commitHost,
+			log:                       log,
+			agent:                     agent,
+			members:                   memberPtrs,
+			thisMember:                thisMember,
+			ranked:                    make([]int64, election.QuorumThreshold(len(memberPtrs))),
+			leaderHeartbeatTimeoutNs:  cfg.LeaderHeartbeatTimeoutNs,
+			leaderHeartbeatIntervalNs: cfg.LeaderHeartbeatIntervalNs,
 		}
 	}
 
@@ -510,6 +533,7 @@ func (c *electionRapidCluster) bindElection(
 
 	node.cfg = cfg
 	node.host = host
+	node.agent = agent
 	node.publisher = pub
 	node.election = election.NewElection(cfg, deps)
 }

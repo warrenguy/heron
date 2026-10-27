@@ -727,29 +727,6 @@ func TestHostAdapter_UpdateMemberPosition_miss(t *testing.T) {
 	require.Equal(t, int64(0), members[2].LogPosition)
 }
 
-// Asserts RefreshMemberLiveness stamps the clock without changing log position
-// or term.
-func TestHostAdapter_RefreshMemberLiveness(t *testing.T) {
-	t.Parallel()
-
-	members := hostAdapterMembers(3)
-	host, _, _, clock := newTestHostAdapter(t, members, 0)
-	members[1].LeadershipTermID = 5
-	members[1].LogPosition = 200
-	members[1].TimeOfLastAppendPositionNs = 1
-	clock.nowNs = 9_000
-
-	host.RefreshMemberLiveness(1)
-	require.Equal(t, int64(5), members[1].LeadershipTermID)
-	require.Equal(t, int64(200), members[1].LogPosition)
-	require.Equal(t, int64(9_000), members[1].TimeOfLastAppendPositionNs)
-
-	// Unknown member: no panic.
-	require.NotPanics(t, func() {
-		host.RefreshMemberLiveness(99)
-	})
-}
-
 // Asserts PublishStopCatchup encodes StopCatchup to the named follower.
 func TestHostAdapter_PublishStopCatchup(t *testing.T) {
 	t.Parallel()

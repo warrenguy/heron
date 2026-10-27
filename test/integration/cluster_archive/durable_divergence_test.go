@@ -174,33 +174,39 @@ const exLeaderMinTail int64 = 16 << 10
 // off the leader's term base.
 const logJoinPositionMismatch = "election: log join position mismatch"
 
-// truncatedExLeader holds the outcome of truncateDivergentLeader.
-type truncatedExLeader struct {
+// divergedLeader holds the outcome of divergeAndReElect.
+type divergedLeader struct {
 	// index is the slot of the divergent ex-leader.
 	index int
+
+	// newTerm is the survivors' leadership term.
+	newTerm int64
 
 	// newTermBase is the survivors' term base and the ex-leader's truncate
 	// position.
 	newTermBase int64
+}
+
+// truncatedExLeader holds the outcome of truncateRestartedLeader.
+type truncatedExLeader struct {
+	divergedLeader
 
 	// planAppended is the ex-leader's catalog stop before the truncate. The
 	// first restart opens the ex-leader log publication there.
 	planAppended int64
 }
 
-// truncateDivergentLeader builds a leader-only log tail, re-elects the
-// survivors, and restarts the ex-leader once. Returns after the ex-leader
-// truncates to the new term base in process.
+// divergeAndReElect stops the leader after it builds a leader-only log tail.
+// The ex-leader slot stays empty.
 //
 // Behaviour:
 //   - the leader records at least minTail bytes past the follower floor
 //   - the survivors re-elect under a term base below that tail
-//   - the restarted ex-leader truncates its recording and recording log
-func truncateDivergentLeader(
+func divergeAndReElect(
 	t *testing.T,
 	set *harness.ClusterMemberSet,
 	minTail int64,
-) truncatedExLeader {
+) divergedLeader {
 	t.Helper()
 
 	leader := requireSingleLeader(t, set, "")
@@ -343,9 +349,24 @@ func truncateDivergentLeader(
 		divergentHighWater,
 		set.State(),
 	)
+	return divergedLeader{
+		index:       leaderIndex,
+		newTerm:     newTerm,
+		newTermBase: newTermBase,
+	}
+}
 
-	// Restart the divergent member. Plan high-water must still sit above the
-	// new term base before truncate closes the gap.
+// restartDivergedLeader restarts the ex-leader once. Returns its catalog stop.
+// Fails the test unless that stop sits above the new term base.
+func restartDivergedLeader(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	diverged divergedLeader,
+) int64 {
+	t.Helper()
+
+	leaderIndex := diverged.index
+	newTermBase := diverged.newTermBase
 	require.NoError(t, set.RestartMember(leaderIndex))
 	returning := set.Module(leaderIndex)
 	require.NotNil(t, returning, "RestartMember left slot empty:\n%s", set.State())
@@ -382,6 +403,21 @@ func truncateDivergentLeader(
 		newTermBase,
 		recordingID,
 	)
+	return planAppended
+}
+
+// truncateRestartedLeader restarts the ex-leader once. Returns after the
+// ex-leader truncates to the new term base in process.
+func truncateRestartedLeader(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	diverged divergedLeader,
+) truncatedExLeader {
+	t.Helper()
+
+	leaderIndex := diverged.index
+	newTermBase := diverged.newTermBase
+	planAppended := restartDivergedLeader(t, set, diverged)
 
 	requireAwait(t, set, "post-restart log images", durableImageBound, set.AwaitLogImages)
 
@@ -410,9 +446,8 @@ func truncateDivergentLeader(
 	})
 
 	return truncatedExLeader{
-		index:        leaderIndex,
-		newTermBase:  newTermBase,
-		planAppended: planAppended,
+		divergedLeader: diverged,
+		planAppended:   planAppended,
 	}
 }
 
@@ -579,7 +614,7 @@ func TestDurableCluster_truncatesADivergentMemberAndCommits(t *testing.T) {
 	)
 
 	// One frame past the follower floor is enough for a truncate.
-	exLeader := truncateDivergentLeader(t, set, 1)
+	exLeader := truncateRestartedLeader(t, set, divergeAndReElect(t, set, 1))
 	leaderIndex := exLeader.index
 	newTermBase := exLeader.newTermBase
 
@@ -602,8 +637,7 @@ func TestDurableCluster_truncatesADivergentMemberAndCommits(t *testing.T) {
 
 	// Fan in peer log images with transport only, then tick until election
 	// completes. Agent DoWork before fan-in can enter FOLLOWER_LOG_REPLICATION
-	// without peer log images. Leader heartbeats refresh the replication
-	// deadline and the wait does not complete.
+	// without peer log images.
 	awaitPostRestartReady(t, set, func() bool {
 		m := set.Module(leaderIndex)
 		if m == nil {
@@ -650,7 +684,7 @@ func TestDurableCluster_reElectsATruncatedExLeader(t *testing.T) {
 		harness.DurableExLeaderReElectLogEndpoint,
 	)
 
-	exLeader := truncateDivergentLeader(t, set, exLeaderMinTail)
+	exLeader := truncateRestartedLeader(t, set, divergeAndReElect(t, set, exLeaderMinTail))
 	exIndex := exLeader.index
 	planAppended := exLeader.planAppended
 

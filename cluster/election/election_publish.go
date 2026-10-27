@@ -110,11 +110,25 @@ func (e *Election) newLeadershipTermFields(
 	}
 }
 
-func (e *Election) publishFollowerAppendPosition(nowNs int64) int {
-	leader := e.leaderMember
-	if leader == nil {
+// publishFollowerReplicationPosition sends position to the leader in an
+// AppendPosition with Flags 0. It sends when position rises above the append
+// position. It resends the same position after each heartbeat interval. A sent
+// position becomes the append position.
+func (e *Election) publishFollowerReplicationPosition(position, nowNs int64) int {
+	risen := position > e.appendPosition
+	intervalDue := position == e.appendPosition &&
+		hasUpdateIntervalExpired(nowNs, e.timeOfLastUpdateNs, e.cfg.LeaderHeartbeatIntervalNs)
+	if !risen && !intervalDue {
 		return 0
 	}
+	if !e.sendFollowerAppendPosition(position, nowNs) {
+		return 0
+	}
+	e.appendPosition = position
+	return 1
+}
+
+func (e *Election) publishFollowerAppendPosition(nowNs int64) int {
 	positionChanged := e.lastPublishedAppendPosition != e.appendPosition
 	intervalDue := hasUpdateIntervalExpired(
 		nowNs,
@@ -124,18 +138,32 @@ func (e *Election) publishFollowerAppendPosition(nowNs int64) int {
 	if !positionChanged && !intervalDue {
 		return 0
 	}
+	if !e.sendFollowerAppendPosition(e.appendPosition, nowNs) {
+		return 0
+	}
+	e.lastPublishedAppendPosition = e.appendPosition
+	return 1
+}
+
+// sendFollowerAppendPosition sends position to the leader in an
+// AppendPosition. A send moves timeOfLastUpdateNs to nowNs.
+//
+// Returns false when the leader is nil or the publisher refuses the send.
+func (e *Election) sendFollowerAppendPosition(position, nowNs int64) bool {
+	leader := e.leaderMember
+	if leader == nil {
+		return false
+	}
 	published := e.deps.Publisher.AppendPosition(
 		PublicationTarget{MemberID: leader.ID},
 		codecs.AppendPositionFields{
 			LeadershipTermID: e.leadershipTermID,
-			LogPosition:      e.appendPosition,
+			LogPosition:      position,
 			FollowerMemberID: e.thisMember.ID,
 		},
 	)
-	if !published {
-		return 0
+	if published {
+		e.timeOfLastUpdateNs = nowNs
 	}
-	e.lastPublishedAppendPosition = e.appendPosition
-	e.timeOfLastUpdateNs = nowNs
-	return 1
+	return published
 }
