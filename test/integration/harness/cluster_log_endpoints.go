@@ -379,31 +379,15 @@ func FreeUDPPorts(t testing.TB, n int) []int {
 	require.NoError(t, err)
 
 	ports := make([]int, 0, n)
-	held := make([]*os.File, 0, n)
-	t.Cleanup(func() {
-		for _, f := range held {
-			_ = f.Close()
-		}
-	})
-
 	for attempts := 0; len(ports) < n && attempts < freeUDPWidth; attempts++ {
 		port := nextFreeUDPCandidate()
 		ephemeralPort := port >= ephemeral.first && port <= ephemeral.last
 		if ephemeralPort || isReservedUDPPort(port) {
 			continue
 		}
-		claim, ok := lockFreeUDPPort(t, port)
-		if !ok {
-			continue
+		if claimFreeUDPPort(t, freeUDPClaimDir, port) {
+			ports = append(ports, port)
 		}
-		conn, err := net.ListenPacket("udp4", LoopbackUDPEndpoint(port))
-		if err != nil {
-			_ = claim.Close()
-			continue
-		}
-		_ = conn.Close()
-		held = append(held, claim)
-		ports = append(ports, port)
 	}
 	if len(ports) < n {
 		require.FailNow(t, fmt.Sprintf(
@@ -466,12 +450,31 @@ func nextFreeUDPCandidate() int {
 	return port
 }
 
-// lockFreeUDPPort takes a non-blocking exclusive flock on the claim file.
-// The caller closes the file to drop the claim. Returns false when another
-// caller holds the port.
-func lockFreeUDPPort(t testing.TB, port int) (*os.File, bool) {
+// claimFreeUDPPort locks the claim file for port under dir. It then probes a
+// loopback bind. The claim lasts until t finishes. Returns false when another
+// caller holds the port or the bind fails.
+func claimFreeUDPPort(t testing.TB, dir string, port int) bool {
 	t.Helper()
-	path := filepath.Join(freeUDPClaimDir, strconv.Itoa(port))
+	claim, ok := lockFreeUDPPort(t, dir, port)
+	if !ok {
+		return false
+	}
+	conn, err := net.ListenPacket("udp4", LoopbackUDPEndpoint(port))
+	if err != nil {
+		_ = claim.Close()
+		return false
+	}
+	_ = conn.Close()
+	t.Cleanup(func() { _ = claim.Close() })
+	return true
+}
+
+// lockFreeUDPPort takes a non-blocking exclusive flock on the claim file for
+// port under dir. The caller closes the file to drop the claim. Returns false
+// when another caller holds the port.
+func lockFreeUDPPort(t testing.TB, dir string, port int) (*os.File, bool) {
+	t.Helper()
+	path := filepath.Join(dir, strconv.Itoa(port))
 	claim, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	require.NoError(t, err)
 	err = unix.Flock(int(claim.Fd()), unix.LOCK_EX|unix.LOCK_NB)

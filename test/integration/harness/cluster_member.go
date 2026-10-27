@@ -103,6 +103,9 @@ type ClusterMemberSet struct {
 	configs         []cluster.Config
 	membersString   string
 	portBase        int
+
+	// heldAgents marks the slots whose agent Tick skips.
+	heldAgents map[int]bool
 }
 
 // ClusterMemberSetConfig holds the port block and multicast log endpoint the
@@ -481,9 +484,10 @@ func (s *ClusterMemberSet) MembersString() string {
 // live returns every non-empty module in member-id order. Set iterations that
 // must skip stopped slots range over live. The skip rule lives in one place.
 //
-// State and Close walk all slots on purpose:
+// These loops walk all slots on purpose:
 //   - State renders nil slots
 //   - Close uses the module's nil-safe Close in LIFO order
+//   - The Tick agent and invoker loops read state keyed by member id
 func (s *ClusterMemberSet) live() iter.Seq[*cluster.ConsensusModule] {
 	return func(yield func(*cluster.ConsensusModule) bool) {
 		for _, m := range s.modules {
@@ -543,6 +547,21 @@ func (s *ClusterMemberSet) vacateSlot(index int) (*cluster.ConsensusModule, erro
 	s.serviceInvokers[index] = nil
 	s.modules[index] = nil
 	return m, nil
+}
+
+// HoldAgent makes Tick skip the agent in slot index. The transport client,
+// the archive control poll and attached service invokers still run.
+// ReleaseAgent and RestartMember end the hold.
+func (s *ClusterMemberSet) HoldAgent(index int) {
+	if s.heldAgents == nil {
+		s.heldAgents = make(map[int]bool)
+	}
+	s.heldAgents[index] = true
+}
+
+// ReleaseAgent ends a [ClusterMemberSet.HoldAgent] hold on slot index.
+func (s *ClusterMemberSet) ReleaseAgent(index int) {
+	delete(s.heldAgents, index)
 }
 
 // CrashMember closes the module's archive client, then the module in slot
@@ -617,6 +636,7 @@ func (s *ClusterMemberSet) RestartMember(index int) error {
 		return wrapRestartOpenError(index, cfg.ClusterDir, err)
 	}
 	s.modules[index] = module
+	delete(s.heldAgents, index)
 	return nil
 }
 
@@ -721,7 +741,8 @@ func (s *ClusterMemberSet) AttachService(t testing.TB, index int, svc ServiceInv
 // Tick runs one duty cycle over every non-empty member. Three loops:
 //
 //  1. Every transport client and that member's archive control poll.
-//  2. Every agent at that member's NanoClock.
+//  2. Every agent without a [ClusterMemberSet.HoldAgent] hold, at that
+//     member's NanoClock.
 //  3. Every attached service invoker at that member's NanoClock, in attach
 //     order.
 //
@@ -742,7 +763,11 @@ func (s *ClusterMemberSet) Tick() {
 		m.Client().DoWork()
 		m.ArchiveClient().Poll()
 	}
-	for m := range s.live() {
+	// Index walk, not live(): holds stay keyed by member id.
+	for i, m := range s.modules {
+		if m == nil || s.heldAgents[i] {
+			continue
+		}
 		m.Agent().DoWork(m.NanoClock()())
 	}
 
@@ -847,10 +872,14 @@ func (s *ClusterMemberSet) AwaitElection(bound time.Duration) bool {
 
 // State returns a one-line-per-member dump for failure messages.
 //
-// Safe after Close. Closed handles report as sentinel values.
+// Safe after Close. Closed handles report as sentinel values. A held slot's
+// line starts with "held ".
 func (s *ClusterMemberSet) State() string {
 	var b strings.Builder
-	for _, m := range s.modules {
+	for i, m := range s.modules {
+		if s.heldAgents[i] {
+			b.WriteString("held ")
+		}
 		b.WriteString(ClusterMemberState(m))
 	}
 	return b.String()

@@ -220,15 +220,20 @@ func TestFreeUDPPorts_skipReservedRanges(t *testing.T) {
 func TestFreeUDPPorts_claimExcludesOtherHolders(t *testing.T) {
 	t.Parallel()
 
-	var port int
+	// FreeUDPPort keeps other test binaries off port. The subtests claim port
+	// again under a private dir that no other binary opens.
+	port := FreeUDPPort(t)
+	_, ok := lockFreeUDPPort(t, freeUDPClaimDir, port)
+	require.False(t, ok)
+	dir := t.TempDir()
 	t.Run("held", func(t *testing.T) {
-		port = FreeUDPPort(t)
-		claim, ok := lockFreeUDPPort(t, port)
+		require.True(t, claimFreeUDPPort(t, dir, port))
+		claim, ok := lockFreeUDPPort(t, dir, port)
 		require.False(t, ok)
 		require.Nil(t, claim)
 	})
 	t.Run("released", func(t *testing.T) {
-		claim, ok := lockFreeUDPPort(t, port)
+		claim, ok := lockFreeUDPPort(t, dir, port)
 		require.True(t, ok)
 		require.NoError(t, claim.Close())
 	})
