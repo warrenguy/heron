@@ -263,14 +263,19 @@ func TestCatchupPoll_boundsPollBySource(t *testing.T) {
 }
 
 // Asserts CatchupPoll fails when a poll of a closed image reads no fragments,
-// with a nil source and with a not-ready source over an active recording.
+// and when the adapter holds no image. Covers a nil source and a not-ready
+// source over an active recording.
 func TestCatchupPoll_failsOnImageClose(t *testing.T) {
 	tests := []struct {
 		name   string
 		source AppendPositionSource
+		// unbind drops the image from the adapter instead of closing it.
+		unbind bool
 	}{
 		{name: "nil source"},
 		{name: "not-ready source", source: notReadyAppendSource{}},
+		{name: "nil source without image", unbind: true},
+		{name: "not-ready source without image", source: notReadyAppendSource{}, unbind: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -286,7 +291,11 @@ func TestCatchupPoll_failsOnImageClose(t *testing.T) {
 			a.SetLogRecordingID(7)
 			a.SetLogRecordingControl(&fakeLogRecordingControl{active: true})
 			a.CatchupInitiated(0)
-			aeron.ImageInternalCloseForHooks(image)
+			if tt.unbind {
+				adapter.SetImage(nil)
+			} else {
+				aeron.ImageInternalCloseForHooks(image)
+			}
 
 			work, err := a.CatchupPoll(ends[1], 1)
 			require.ErrorIs(t, err, errCatchupImageClosed)
@@ -338,21 +347,10 @@ func TestCatchupPoll_failsWithoutProgress(t *testing.T) {
 	require.Equal(t, ends[2], a.CommitPosition())
 }
 
-func TestCatchupPoll_stubWhenNoImage(t *testing.T) {
-	t.Run("nil adapter", func(t *testing.T) {
-		a := NewAgent(AgentConfig{Commit: new(atomic.Int64)})
-		require.Equal(t, 0, catchupPoll(t, a, 1<<20, 1))
-		require.Equal(t, int64(0), a.CommitPosition())
-	})
-	t.Run("adapter without image", func(t *testing.T) {
-		a := NewAgent(AgentConfig{
-			Commit:     new(atomic.Int64),
-			LogAdapter: NewLogAdapter(0),
-		})
-		require.Nil(t, a.logAdapter.Image())
-		require.Equal(t, 0, catchupPoll(t, a, 1<<20, 1))
-		require.Equal(t, int64(0), a.CommitPosition())
-	})
+func TestCatchupPoll_stubWhenNoAdapter(t *testing.T) {
+	a := NewAgent(AgentConfig{Commit: new(atomic.Int64)})
+	require.Equal(t, 0, catchupPoll(t, a, 1<<20, 1))
+	require.Equal(t, int64(0), a.CommitPosition())
 }
 
 // Bound 0: frame start is not strictly before bound; no work, commit stays.

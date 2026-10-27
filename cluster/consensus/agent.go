@@ -1035,18 +1035,22 @@ func isCatchupAppendPosition(flags uint8) bool {
 // Returns an error when:
 //   - the local log recording stopped. The recording follows the merged
 //     catchup and live image, so a stop means the image ended
+//   - the adapter holds no image
 //   - a poll reads no fragments and the image is closed
 //   - with a source, the published append position has not advanced for one
 //     leader heartbeat timeout
 //
-// Returns 0 and a nil error when adapter or image is nil.
+// Returns 0 and a nil error when adapter is nil.
 //
 // Concurrency: invoker-only. Election-live catchup is the sole consumer while
 // an election runner is set. Steady followerConsensusWork does not run then.
 func (a *Agent) CatchupPoll(limitPosition, nowNs int64) (int, error) {
 	adapter := a.logAdapter
-	if adapter == nil || adapter.Image() == nil {
+	if adapter == nil {
 		return 0, nil
+	}
+	if adapter.Image() == nil {
+		return 0, fmt.Errorf("%w: image=nil position=%d", errCatchupImageClosed, adapter.Position())
 	}
 	if a.appendSource == nil {
 		return a.pollCatchupBound(adapter, limitPosition, nowNs)
