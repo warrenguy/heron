@@ -153,9 +153,11 @@ func (a *Agent) canPublish() bool {
 //   - LogPosition from the entry
 //   - Timestamp from clusterTime
 //   - AckID from ackID
-//   - RelevantID from the entry. Start entries carry the configured
-//     relevant id. Snapshot entries carry the recording id, or nullValue
-//     when the take failed. Join and request entries carry nullValue
+//   - RelevantID from the entry. A start entry carries the configured
+//     relevant id. After a Start error, the start entry carries nullValue.
+//     A snapshot entry carries the recording id. After a failed take, the
+//     snapshot entry carries nullValue. Join and request entries carry
+//     nullValue
 //   - ServiceID from config
 func (a *Agent) drainReadyCoordinationAck() int {
 	if !a.canPublish() {

@@ -4,7 +4,10 @@ package service
 
 import (
 	"errors"
+	"math"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -137,8 +140,8 @@ func newControlAgentHarness(tb testing.TB, joinPosition int64) *controlAgentHarn
 	return newControlAgentHarnessWithStartAck(tb, joinPosition, nil)
 }
 
-// newControlAgentHarnessWithStartAck builds the control harness with StartAck
-// set on the agent. A nil startAck disables the start ack.
+// newControlAgentHarnessWithStartAck builds the control harness. A nil
+// startAck does not queue a start ack.
 func newControlAgentHarnessWithStartAck(
 	tb testing.TB,
 	joinPosition int64,
@@ -938,40 +941,211 @@ func TestControlWork_StartAckRetriableNotConnected(t *testing.T) {
 	}, decodeServiceAcksFromPub(t, connected))
 }
 
-func TestControlWork_StartAckStartErrorDoesNotSend(t *testing.T) {
+func TestControlWork_StartAckStartErrorRetriableMarksFailure(t *testing.T) {
+	const startPos int64 = 64
 	startErr := errors.New("start boom")
 	svc := &recordingService{startErr: startErr}
-	proxy, pub := boundModuleProxy(t)
+	proxy := boundModuleProxyWithLimit(t, 0, false)
+	control := &QueueControlIngress{}
 	agent := NewAgent(AgentConfig{
 		ServiceID:   1,
 		Service:     svc,
+		Control:     control,
 		ModuleProxy: proxy,
 		StartAck: &StartAckConfig{
-			LogPosition: 0,
+			LogPosition: startPos,
 			RelevantID:  42,
 		},
 	})
+	failedEntry := []coordinationAck{{
+		logPosition: startPos,
+		kind:        ackKindStart,
+		ready:       true,
+		relevantID:  nullValue,
+		failure:     startErr,
+	}}
 
-	require.Equal(t, 1, agent.PendingCoordinationAcks())
-	require.Equal(t, 0, agent.ReadyCoordinationAcks())
-
+	// Phase 1: the module stream is not connected. The ack stays queued.
+	// The agent does not mark the Start error.
 	require.Equal(t, 1, agent.DoWork(0))
-	require.ErrorIs(t, agent.ServiceFailure(), startErr)
+	require.NoError(t, agent.ServiceFailure())
 	require.Equal(t, 1, svc.startCount)
 	require.Equal(t, int64(0), agent.NextAckID())
-	require.Equal(t, 1, agent.PendingCoordinationAcks())
-	require.Equal(t, 0, agent.ReadyCoordinationAcks())
-	require.Len(t, agent.coordinationAcks, 1)
-	require.Equal(t, ackKindStart, agent.coordinationAcks[0].kind)
-	require.False(t, agent.coordinationAcks[0].ready)
-	require.Equal(t, int64(0), agent.coordinationAcks[0].logPosition)
-	require.Equal(t, int64(42), agent.coordinationAcks[0].relevantID)
-	require.Empty(t, decodeServiceAcksFromPub(t, pub))
+	require.Equal(t, failedEntry, agent.coordinationAcks)
 
-	require.Equal(t, 0, agent.DoWork(0))
+	// Phase 2: later ticks drain only the start entry. The agent does not
+	// poll control.
+	control.Enqueue(encodeRequestServiceAckControl(t, 0))
+	require.Equal(t, 0, agent.DoWork(1))
+	require.NoError(t, agent.ServiceFailure())
+	require.Equal(t, 1, svc.startCount)
+	require.Equal(t, failedEntry, agent.coordinationAcks)
+
+	// Phase 3: the stream connects. The tick sends one NULL_VALUE ack.
+	// The tick then marks the Start error.
+	connected := aeron.NewTestPublicationForHooksWithConnected(t, true)
+	proxy.SetPublication(connected)
+	require.Equal(t, 1, agent.DoWork(2))
+	require.ErrorIs(t, agent.ServiceFailure(), startErr)
+	require.Equal(t, int64(1), agent.NextAckID())
+	require.Empty(t, agent.coordinationAcks)
+	require.Equal(t, []codecs.ServiceAckFields{
+		serviceAckFields(startPos, 0, nullValue),
+	}, decodeServiceAcksFromPub(t, connected))
+
+	// Phase 4: the marked failure stops the agent.
+	require.Equal(t, 0, agent.DoWork(3))
+	require.Len(t, decodeServiceAcksFromPub(t, connected), 1)
+}
+
+func TestControlWork_StartAckStartErrorTimeoutMarksFailure(t *testing.T) {
+	// The Start tick reads clock 0. Start then runs past every timeout, so
+	// the first later tick reads startNs.
+	const startNs = 2 * int64(DefaultRecoveryTimeout)
+	tests := []struct {
+		name       string
+		timeout    time.Duration
+		wantWaitNs int64
+	}{
+		{name: "set timeout", timeout: 10 * time.Nanosecond, wantWaitNs: 10},
+		{name: "zero timeout", wantWaitNs: DefaultRecoveryTimeout.Nanoseconds()},
+		{name: "negative timeout", timeout: -1, wantWaitNs: DefaultRecoveryTimeout.Nanoseconds()},
+		{name: "saturated deadline", timeout: math.MaxInt64, wantWaitNs: math.MaxInt64 - startNs},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			startErr := errors.New("start boom")
+			proxy := boundModuleProxyWithLimit(t, 0, false)
+			agent := NewAgent(AgentConfig{
+				ServiceID:   1,
+				Service:     &recordingService{startErr: startErr},
+				ModuleProxy: proxy,
+				StartAck: &StartAckConfig{
+					LogPosition: 0,
+					RelevantID:  42,
+					Timeout:     tt.timeout,
+				},
+			})
+
+			// Phase 1: the wait begins at the first tick after Start. A slow
+			// Start does not use up the wait. Before the deadline the agent
+			// does not mark the Start error.
+			require.Equal(t, 1, agent.DoWork(0))
+			require.Equal(t, 0, agent.DoWork(startNs))
+			require.NoError(t, agent.ServiceFailure())
+			require.Equal(t, 0, agent.DoWork(startNs+tt.wantWaitNs-1))
+			require.NoError(t, agent.ServiceFailure())
+
+			// Phase 2: at the deadline the tick marks the Start error. The ack
+			// stays queued. The ack does not send.
+			require.Equal(t, 0, agent.DoWork(startNs+tt.wantWaitNs))
+			require.ErrorIs(t, agent.ServiceFailure(), startErr)
+			require.Equal(t, int64(0), agent.NextAckID())
+			require.Equal(t, 1, agent.PendingCoordinationAcks())
+
+			connected := aeron.NewTestPublicationForHooksWithConnected(t, true)
+			proxy.SetPublication(connected)
+			require.Equal(t, 0, agent.DoWork(startNs+tt.wantWaitNs))
+			require.Empty(t, decodeServiceAcksFromPub(t, connected))
+		})
+	}
+}
+
+func TestControlWork_StartAckStartErrorClosedMarksFailure(t *testing.T) {
+	startErr := errors.New("start boom")
+	closed := aeron.NewTestPublicationForHooksWithConnected(t, true)
+	require.NoError(t, closed.Close())
+	proxy := NewConsensusModuleProxy()
+	proxy.SetPublication(closed)
+	agent := NewAgent(AgentConfig{
+		ServiceID:   1,
+		Service:     &recordingService{startErr: startErr},
+		ModuleProxy: proxy,
+		StartAck:    &StartAckConfig{LogPosition: 0, RelevantID: 42},
+	})
+
+	require.Equal(t, 1, agent.DoWork(0))
+	failure := agent.ServiceFailure()
+	require.ErrorIs(t, failure, startErr)
+	require.ErrorContains(t, failure, strconv.FormatInt(aeron.Closed, 10))
 	require.Equal(t, int64(0), agent.NextAckID())
-	require.False(t, agent.coordinationAcks[0].ready)
-	require.Empty(t, decodeServiceAcksFromPub(t, pub))
+	require.Equal(t, 1, agent.PendingCoordinationAcks())
+}
+
+func TestControlWork_StartAckStartErrorAgentCloseMarksFailure(t *testing.T) {
+	startErr := errors.New("start boom")
+	proxy := boundModuleProxyWithLimit(t, 0, false)
+	agent := NewAgent(AgentConfig{
+		ServiceID:   1,
+		Service:     &recordingService{startErr: startErr},
+		ModuleProxy: proxy,
+		StartAck:    &StartAckConfig{LogPosition: 0, RelevantID: 42},
+	})
+
+	// Phase 1: the stream is not connected. The agent does not mark the
+	// Start error.
+	require.Equal(t, 1, agent.DoWork(0))
+	require.NoError(t, agent.ServiceFailure())
+
+	// Phase 2: Close marks the Start error. The ack does not send.
+	agent.Close()
+	require.ErrorIs(t, agent.ServiceFailure(), startErr)
+	require.Equal(t, int64(0), agent.NextAckID())
+
+	connected := aeron.NewTestPublicationForHooksWithConnected(t, true)
+	proxy.SetPublication(connected)
+	require.Equal(t, 0, agent.DoWork(1))
+	require.Empty(t, decodeServiceAcksFromPub(t, connected))
+}
+
+func TestControlWork_StartAckStartErrorSendsInTheSameTick(t *testing.T) {
+	startErr := errors.New("start boom")
+	proxy, pub := boundModuleProxy(t)
+	agent := NewAgent(AgentConfig{
+		ServiceID:   1,
+		Service:     &recordingService{startErr: startErr},
+		ModuleProxy: proxy,
+		StartAck:    &StartAckConfig{LogPosition: 0, RelevantID: 42},
+	})
+
+	require.Equal(t, 2, agent.DoWork(0), "Start + start drain")
+	require.ErrorIs(t, agent.ServiceFailure(), startErr)
+	require.Equal(t, []codecs.ServiceAckFields{
+		serviceAckFields(0, 0, nullValue),
+	}, decodeServiceAcksFromPub(t, pub))
+}
+
+func TestControlWork_StartErrorWithoutAckSenderMarksAtOnce(t *testing.T) {
+	startErr := errors.New("start boom")
+	tests := []struct {
+		name     string
+		bound    bool
+		startAck *StartAckConfig
+	}{
+		{name: "no start ack", bound: true},
+		{
+			name:     "no bound publication",
+			startAck: &StartAckConfig{LogPosition: 0, RelevantID: 42},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxy := NewConsensusModuleProxy()
+			if tt.bound {
+				proxy, _ = boundModuleProxy(t)
+			}
+			agent := NewAgent(AgentConfig{
+				ServiceID:   1,
+				Service:     &recordingService{startErr: startErr},
+				ModuleProxy: proxy,
+				StartAck:    tt.startAck,
+			})
+			require.Equal(t, 1, agent.DoWork(0))
+			require.ErrorIs(t, agent.ServiceFailure(), startErr)
+			require.Equal(t, int64(0), agent.NextAckID())
+			require.Equal(t, 0, agent.DoWork(0))
+		})
+	}
 }
 
 func TestControlWork_StartAckNegativeLogPositionQueuesNothing(t *testing.T) {

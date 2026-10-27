@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
@@ -209,6 +210,17 @@ type Agent struct {
 	unreadyRequestBound    int64
 	hasUnreadyRequestBound bool
 
+	// startAckDeadlineNs is the nowNs value that ends the wait for a failed
+	// start ack. The first tick after a failed Start sets it, and sets
+	// startAckDeadlineArmed. Until the agent marks the Start error, DoWork
+	// drains only the start entry.
+	startAckDeadlineNs    int64
+	startAckDeadlineArmed bool
+
+	// startAckTimeoutNs is the failed-start wait. NewAgent copies
+	// StartAck.Timeout. Zero or negative takes DefaultRecoveryTimeout.
+	startAckTimeoutNs int64
+
 	started bool
 	closed  bool
 
@@ -245,8 +257,8 @@ const (
 	// ackKindSnapshot: ready when the take resolves. No sweep rule.
 	ackKindSnapshot
 
-	// ackKindStart: queued at NewAgent. Ready after successful start work,
-	// or when Service is nil. A Start error leaves the entry unready.
+	// ackKindStart: queued at NewAgent. Ready after start work, on success
+	// or failure.
 	ackKindStart
 )
 
@@ -254,16 +266,19 @@ const (
 // ready first queued entry may send.
 //
 // Readiness:
-//   - start: queued at NewAgent. Ready after successful start work, or when
-//     Service is nil. A Start error leaves the start entry unready.
+//   - start: queued at NewAgent. Ready after start work, on success or
+//     failure. A nil Service counts as success. After a Start error,
+//     RelevantID on the start entry is NULL_VALUE.
 //   - join: ready at bind or supersession
 //   - request: ready when the agent log position equals the entry
 //     logPosition
 //   - snapshot: ready when the take resolves, on success or failure
 //
-// failure holds the cause of a failed snapshot take. The drain marks it
-// once the ack sends, or on a terminal offer code. With no ack sender,
-// failSnapshotEntry marks it at once and the entry stays queued.
+// failure stores the cause of a failed Start or a failed snapshot take.
+// The drain marks the cause once the ack sends. The drain also marks
+// the cause on a terminal offer code. The agent marks a Start error when
+// startAckDeadlineNs passes. With no ack sender, failAckEntry marks the
+// cause at once. With no ack sender, the entry stays queued.
 type coordinationAck struct {
 	logPosition int64
 	kind        coordinationAckKind
@@ -338,20 +353,28 @@ func NewAgent(cfg AgentConfig) *Agent {
 			kind:        ackKindStart,
 			relevantID:  sa.RelevantID,
 		})
+		a.startAckTimeoutNs = sa.Timeout.Nanoseconds()
+		if a.startAckTimeoutNs <= 0 {
+			a.startAckTimeoutNs = DefaultRecoveryTimeout.Nanoseconds()
+		}
 	}
 	return a
 }
 
-// DoWork runs one duty tick. nowNs is the clock for the snapshot take
-// deadlines: nanoseconds from a monotonic source, such as
-// time.Now().UnixNano(). A clock that never advances fires no deadline, so
-// a lost START or STOP signal then stalls the take forever.
+// DoWork runs one duty tick. nowNs is a monotonic time in nanoseconds,
+// such as time.Now().UnixNano(). Take deadlines and the start ack deadline
+// use nowNs. A clock that never advances does not fire a deadline. A lost
+// START or STOP signal then stalls the take forever. A Start error on a
+// stream that never connects keeps DoWork in the start ack drain.
 //
 // Order:
 //  1. serviceFailure or closed: return 0
-//  2. start work once: Service.Start(agent). A Start error marks failure
-//     once. The start entry stays unready. Success or a nil Service marks
-//     the start entry ready when one is queued.
+//  2. start work once: Service.Start(agent). The agent marks the queued
+//     start entry ready when Service is nil or Start returns nil. A Start
+//     error fails the start entry with RelevantID NULL_VALUE. Until the
+//     agent marks the Start error, each tick drains only the start entry.
+//     The tick then returns. The start ack wait begins at the first tick
+//     after Start. See failedStartAckWork.
 //  3. archive Poll when an archive client is wired
 //  4. snapshot take work while a take runs
 //  5. control work: poll control, request readiness sweep, drain at most one
@@ -389,11 +412,17 @@ func (a *Agent) DoWork(nowNs int64) int {
 		work++
 		if a.service != nil {
 			if err := a.service.Start(a); err != nil {
-				a.markFailure(err)
-				return work
+				a.failAckEntry(ackKindStart, err)
+				if a.serviceFailure != nil {
+					return work
+				}
+				return work + a.drainReadyCoordinationAck()
 			}
 		}
 		a.markAckReady(ackKindStart)
+	}
+	if a.pendingStartFailure() != nil {
+		return work + a.failedStartAckWork(nowNs)
 	}
 
 	if a.archive != nil {
@@ -443,9 +472,11 @@ func (a *Agent) DoWork(nowNs int64) int {
 	return work
 }
 
-// Close ends any snapshot take. A take that Close ends sends no ack. Close
-// then disconnects the egress of every session. Close then unbinds the log
-// image and closes the owned log subscription. Registry entries stay.
+// Close marks a Start error that still waits for its start ack. That ack
+// does not send. Close then ends any snapshot take. A take that Close ends
+// does not send an ack. Close then disconnects the egress of every session.
+// Close then unbinds the log image. Close then closes the owned log
+// subscription. Registry entries stay.
 //
 // Idempotent. The Agent is inert after Close.
 //
@@ -456,6 +487,9 @@ func (a *Agent) DoWork(nowNs int64) int {
 func (a *Agent) Close() {
 	if a.closed {
 		return
+	}
+	if err := a.pendingStartFailure(); err != nil {
+		a.markFailure(err)
 	}
 	a.closed = true
 	a.closeSnapshotTake()
@@ -652,15 +686,52 @@ func (a *Agent) handleJoinLog(event logJoinEvent) {
 	a.pendingJoin = &event
 }
 
-// failSnapshotEntry sets the first unready snapshot entry ready with cause.
-// With no such entry, or no ack sender, it marks cause at once. Otherwise
-// the drain marks cause.
-func (a *Agent) failSnapshotEntry(cause error) {
-	e := a.markAckReady(ackKindSnapshot)
+func (a *Agent) pendingStartFailure() error {
+	if len(a.coordinationAcks) == 0 {
+		return nil
+	}
+	e := a.coordinationAcks[0]
+	if e.kind != ackKindStart {
+		return nil
+	}
+	return e.failure
+}
+
+// failedStartAckWork drains the failed start entry. The first call sets
+// startAckDeadlineNs to nowNs plus startAckTimeoutNs. The sum stops at
+// math.MaxInt64. A slow Start therefore does not use up the wait. At
+// startAckDeadlineNs, failedStartAckWork marks the Start error without
+// the ack.
+//
+// Returns 1 when the ack sends. Returns 0 otherwise.
+func (a *Agent) failedStartAckWork(nowNs int64) int {
+	if !a.startAckDeadlineArmed {
+		a.startAckDeadlineArmed = true
+		a.startAckDeadlineNs = nowNs + a.startAckTimeoutNs
+		if nowNs > 0 && a.startAckTimeoutNs > math.MaxInt64-nowNs {
+			a.startAckDeadlineNs = math.MaxInt64
+		}
+	}
+	work := a.drainReadyCoordinationAck()
+	if a.serviceFailure == nil && nowNs >= a.startAckDeadlineNs {
+		if err := a.pendingStartFailure(); err != nil {
+			a.markFailure(err)
+		}
+	}
+	return work
+}
+
+// failAckEntry sets the first unready entry of kind ready. failAckEntry
+// stores cause on a matched entry. failAckEntry sets RelevantID to
+// NULL_VALUE on the matched entry. With no such entry, or no ack sender,
+// failAckEntry marks cause at once. Otherwise the drain marks cause.
+func (a *Agent) failAckEntry(kind coordinationAckKind, cause error) {
+	e := a.markAckReady(kind)
 	if e == nil || !a.canPublish() {
 		a.markFailure(cause)
 	}
 	if e != nil {
+		e.relevantID = nullValue
 		e.failure = cause
 	}
 }

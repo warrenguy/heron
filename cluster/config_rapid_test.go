@@ -10,6 +10,7 @@ import (
 
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
@@ -79,7 +80,7 @@ func drawValidPartialConfig(t *rapid.T) cluster.Config {
 		ClusterMembers: goldenClusterMembersSharedLog,
 		ClusterDir:     "/tmp/cluster-" + rapid.StringMatching(`[a-z]{1,8}`).Draw(t, "cluster_dir"),
 		AeronDir:       "/tmp/aeron-" + rapid.StringMatching(`[a-z]{1,8}`).Draw(t, "aeron_dir"),
-		ServiceCount:   rapid.IntRange(0, 16).Draw(t, "service_count"),
+		ServiceCount:   rapid.IntRange(0, codecs.RecoveryStateMaxServiceCount).Draw(t, "service_count"),
 	}
 
 	cfg.ConsensusChannel = drawOptionalChannel(t, "consensus_channel", cluster.DefaultConsensusChannel)

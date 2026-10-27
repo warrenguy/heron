@@ -118,11 +118,11 @@ func (a *Agent) startSnapshotTake(logPosition, leadershipTermID int64) {
 		relevantID:  nullValue,
 	})
 	if a.archive == nil || a.newSnapshotStart == nil || a.snapshotPublications == nil {
-		a.failSnapshotEntry(errSnapshotNoArchive)
+		a.failAckEntry(ackKindSnapshot, errSnapshotNoArchive)
 		return
 	}
 	if a.timeUnit == clusterwire.ClusterTimeUnit_NULL_VALUE {
-		a.failSnapshotEntry(errSnapshotTimeUnitUnknown)
+		a.failAckEntry(ackKindSnapshot, errSnapshotTimeUnitUnknown)
 		return
 	}
 
@@ -424,7 +424,7 @@ func (a *Agent) encodeSnapshotRow(take *snapshotTake, index int) ([]byte, error)
 // with cause.
 func (a *Agent) failSnapshotTake(cause error) {
 	a.closeSnapshotTake()
-	a.failSnapshotEntry(cause)
+	a.failAckEntry(ackKindSnapshot, cause)
 }
 
 // closeSnapshotTake cancels or closes everything the take owns. The archive

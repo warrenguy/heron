@@ -4,7 +4,6 @@ package service
 
 import (
 	"errors"
-	"math"
 	"testing"
 	"time"
 
@@ -22,8 +21,9 @@ type transportAdd struct {
 }
 
 // fakeTransport records AddSubscription and AddPublication and returns hook
-// handles. A configured error skips handle creation for that add. An
-// exclusive publication add and a response publication add never complete.
+// handles. A configured error skips handle creation for that add. A
+// positive pubErrAdds limits pubErr to the first pubErrAdds publication adds.
+// An exclusive publication add and a response publication add never complete.
 type fakeTransport struct {
 	tb testing.TB
 
@@ -34,6 +34,8 @@ type fakeTransport struct {
 	pub    *aeron.Publication
 	subErr error
 	pubErr error
+
+	pubErrAdds int
 
 	returnNilSub bool
 	returnNilPub bool
@@ -61,7 +63,8 @@ func (f *fakeTransport) AddPublication(
 	channel string,
 ) (*aeron.Publication, error) {
 	f.pubCalls = append(f.pubCalls, transportAdd{streamID: streamID, channel: channel})
-	if f.pubErr != nil {
+	failing := f.pubErrAdds == 0 || len(f.pubCalls) <= f.pubErrAdds
+	if f.pubErr != nil && failing {
 		return nil, f.pubErr
 	}
 	if f.returnNilPub {
@@ -210,6 +213,15 @@ func TestOpen_refusesInvalidConfig(t *testing.T) {
 				return cfg
 			},
 			wantErr: "service: service id must not be negative",
+		},
+		{
+			name: "service id above the max",
+			cfg: func(t *testing.T) Config {
+				cfg := openConfig(newFakeTransport(t))
+				cfg.ServiceID = 10
+				return cfg
+			},
+			wantErr: "service: service id must not exceed 9",
 		},
 		{
 			name: "negative start ack log position",
@@ -381,15 +393,6 @@ func TestOpen_refusesInvalidConfig(t *testing.T) {
 				return cfg
 			},
 			wantErr: "service: archive ControlResponseStreamID and ServiceStreamID must differ",
-		},
-		{
-			name: "archive zero response stream with max service id",
-			cfg: func(t *testing.T) Config {
-				cfg := archiveOpenConfig(t, archive.Config{})
-				cfg.ServiceID = math.MaxInt32
-				return cfg
-			},
-			wantErr: "service: ServiceID too large to derive archive ControlResponseStreamID",
 		},
 		{
 			name: "archive request stream equals replay stream",
@@ -665,6 +668,15 @@ func TestOpen_StartAckPassthrough(t *testing.T) {
 	}
 }
 
+func TestOpen_acceptsMaxServiceID(t *testing.T) {
+	t.Parallel()
+
+	cfg := openConfig(newFakeTransport(t))
+	cfg.ServiceID = 9
+	c := openContainer(t, cfg)
+	require.Equal(t, int32(9), c.Agent().serviceID)
+}
+
 func TestOpen_addFailure(t *testing.T) {
 	t.Parallel()
 
@@ -762,6 +774,7 @@ func TestServiceArchiveConfig_defaults(t *testing.T) {
 	}{
 		{name: "service 0 derives 121", serviceID: 0, wantResponseStream: 121},
 		{name: "service 3 derives 124", serviceID: 3, wantResponseStream: 124},
+		{name: "service 9 derives 130", serviceID: 9, wantResponseStream: 130},
 		{
 			name:               "set response stream stays",
 			serviceID:          3,
