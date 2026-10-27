@@ -4,6 +4,8 @@ package harness
 
 import (
 	"errors"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -200,13 +202,54 @@ func TestFreeUDPPorts_skipReservedRanges(t *testing.T) {
 	t.Parallel()
 
 	const n = 8
-	ports := FreeUDPPorts(t, n)
-	require.Len(t, ports, n)
-	seen := make(map[int]struct{}, n)
+	first := FreeUDPPorts(t, n)
+	require.Len(t, first, n)
+	// t still holds the first claim, so the second call returns other ports.
+	ports := append(first, FreeUDPPorts(t, n)...)
+	floor, ceil, err := liveEphemeralPortRange()
+	require.NoError(t, err)
+	seen := make(map[int]struct{}, len(ports))
 	for _, port := range ports {
 		require.False(t, isReservedUDPPort(port), port)
+		require.True(t, port < floor || port > ceil, port)
 		require.NotContains(t, seen, port)
 		seen[port] = struct{}{}
+	}
+}
+
+func TestFreeUDPPorts_claimExcludesOtherHolders(t *testing.T) {
+	t.Parallel()
+
+	var port int
+	t.Run("held", func(t *testing.T) {
+		port = FreeUDPPort(t)
+		claim, ok := lockFreeUDPPort(t, port)
+		require.False(t, ok)
+		require.Nil(t, claim)
+	})
+	t.Run("released", func(t *testing.T) {
+		claim, ok := lockFreeUDPPort(t, port)
+		require.True(t, ok)
+		require.NoError(t, claim.Close())
+	})
+}
+
+func TestFreeUDPPorts_parallelDisjoint(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	seen := make(map[int]struct{})
+	for i := range 8 {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			t.Parallel()
+			ports := FreeUDPPorts(t, 3)
+			mu.Lock()
+			defer mu.Unlock()
+			for _, port := range ports {
+				require.NotContains(t, seen, port)
+				seen[port] = struct{}{}
+			}
+		})
 	}
 }
 

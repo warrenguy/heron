@@ -3,12 +3,17 @@
 package harness
 
 import (
+	"errors"
+	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 
 	"github.com/warrenguy/heron/cluster"
 )
@@ -324,9 +329,22 @@ const (
 	// end below this floor.
 	linuxEphemeralPortFloor = 32768
 
-	// freeUDPPortAttempts is the per-port ListenPacket budget when the kernel
-	// returns a reserved port.
-	freeUDPPortAttempts = 64
+	// ianaDynamicPortFloor is the first IANA dynamic port. Hosts without
+	// the Linux sysctl default to 49152-65535.
+	ianaDynamicPortFloor = 49152
+
+	maxUDPPort = 65535
+
+	// freeUDPFirst sits above the 9000-9205 sibling block. The ledger does
+	// not hold that block.
+	freeUDPFirst = 16000
+
+	freeUDPWidth = maxUDPPort - freeUDPFirst + 1
+
+	// freeUDPClaimDir holds one flock file per claimed port. Ports are
+	// host-wide, so every go test binary shares one fixed path. Files stay
+	// after unlock so the next opener locks the same inode.
+	freeUDPClaimDir = "/tmp/heron-udp-claim"
 )
 
 // ClientEgressOffset is the unused slot after the last topology offset.
@@ -340,48 +358,131 @@ func ClientEgressPort(portBase int) int {
 	return portBase + ClientEgressOffset
 }
 
-// FreeUDPPort returns one unused loopback UDP port outside reserved harness
-// blocks. A later listen may still fail.
+// FreeUDPPort returns one loopback UDP port. See FreeUDPPorts.
 func FreeUDPPort(t testing.TB) int {
 	t.Helper()
 	return FreeUDPPorts(t, 1)[0]
 }
 
-// FreeUDPPorts returns n distinct unused loopback UDP ports. Skips reserved
-// harness ports. Probe sockets close before return.
+// FreeUDPPorts returns n distinct loopback UDP ports for live UDP channels.
+//
+// Candidates sit at or above 16000 and outside the live kernel ephemeral
+// range, so a port-0 bind never takes one. An exclusive flock under
+// /tmp/heron-udp-claim holds each port until t finishes. Parallel tests,
+// including other go test binaries, skip a held port. The probe socket
+// closes before return so the media driver can bind.
 func FreeUDPPorts(t testing.TB, n int) []int {
 	t.Helper()
 	require.Positive(t, n)
 
-	conns := make([]net.PacketConn, 0, n)
+	ephemeral, err := freeUDPEphemeralRange()
+	require.NoError(t, err)
+
 	ports := make([]int, 0, n)
-
-	// Close every probe socket before return so each port is free to bind.
-	defer func() {
-		for _, c := range conns {
-			_ = c.Close()
+	held := make([]*os.File, 0, n)
+	t.Cleanup(func() {
+		for _, f := range held {
+			_ = f.Close()
 		}
-	}()
+	})
 
-	limit := n * freeUDPPortAttempts
-	for len(ports) < n {
-		if len(conns) >= limit {
-			require.FailNow(t, "FreeUDPPorts: exhausted attempts without an unreserved port")
-		}
-
-		c, err := net.ListenPacket("udp", "127.0.0.1:0")
-		require.NoError(t, err)
-		conns = append(conns, c)
-		addr, ok := c.LocalAddr().(*net.UDPAddr)
-		require.True(t, ok, "ListenPacket LocalAddr must be *net.UDPAddr")
-		require.Positive(t, addr.Port)
-		if isReservedUDPPort(addr.Port) {
+	for attempts := 0; len(ports) < n && attempts < freeUDPWidth; attempts++ {
+		port := nextFreeUDPCandidate()
+		ephemeralPort := port >= ephemeral.first && port <= ephemeral.last
+		if ephemeralPort || isReservedUDPPort(port) {
 			continue
 		}
-		ports = append(ports, addr.Port)
+		claim, ok := lockFreeUDPPort(t, port)
+		if !ok {
+			continue
+		}
+		conn, err := net.ListenPacket("udp4", LoopbackUDPEndpoint(port))
+		if err != nil {
+			_ = claim.Close()
+			continue
+		}
+		_ = conn.Close()
+		held = append(held, claim)
+		ports = append(ports, port)
 	}
-
+	if len(ports) < n {
+		require.FailNow(t, fmt.Sprintf(
+			"FreeUDPPorts: claimed %d of %d ports in %d-%d",
+			len(ports), n, freeUDPFirst, maxUDPPort,
+		))
+	}
 	return ports
+}
+
+// freeUDPEphemeralRange reads the live ephemeral range once and creates
+// freeUDPClaimDir. Returns an error when the range covers every candidate.
+var freeUDPEphemeralRange = sync.OnceValues(func() (portRange, error) {
+	if err := os.MkdirAll(freeUDPClaimDir, 0o755); err != nil {
+		return portRange{}, fmt.Errorf("FreeUDPPorts: claim dir: %w", err)
+	}
+	floor, ceil, err := liveEphemeralPortRange()
+	if err != nil {
+		return portRange{}, fmt.Errorf("FreeUDPPorts: read ip_local_port_range: %w", err)
+	}
+	if floor <= freeUDPFirst && ceil >= maxUDPPort {
+		return portRange{}, fmt.Errorf(
+			"FreeUDPPorts: ephemeral range %d-%d covers %d-%d",
+			floor, ceil, freeUDPFirst, maxUDPPort,
+		)
+	}
+	return portRange{first: floor, last: ceil}, nil
+})
+
+// liveEphemeralPortRange reads net.ipv4.ip_local_port_range. A missing
+// sysctl returns the IANA dynamic range.
+func liveEphemeralPortRange() (int, int, error) {
+	data, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
+	if errors.Is(err, os.ErrNotExist) {
+		return ianaDynamicPortFloor, maxUDPPort, nil
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	var floor, ceil int
+	if _, err := fmt.Sscanf(string(data), "%d %d", &floor, &ceil); err != nil {
+		return 0, 0, fmt.Errorf("parse %q: %w", data, err)
+	}
+	if floor <= 0 || ceil < floor || ceil > maxUDPPort {
+		return 0, 0, fmt.Errorf("invalid range %d-%d", floor, ceil)
+	}
+	return floor, ceil, nil
+}
+
+var (
+	freeUDPMu     sync.Mutex
+	freeUDPCursor = os.Getpid()
+)
+
+func nextFreeUDPCandidate() int {
+	freeUDPMu.Lock()
+	defer freeUDPMu.Unlock()
+	port := freeUDPFirst + freeUDPCursor%freeUDPWidth
+	freeUDPCursor++
+	return port
+}
+
+// lockFreeUDPPort takes a non-blocking exclusive flock on the claim file.
+// The caller closes the file to drop the claim. Returns false when another
+// caller holds the port.
+func lockFreeUDPPort(t testing.TB, port int) (*os.File, bool) {
+	t.Helper()
+	path := filepath.Join(freeUDPClaimDir, strconv.Itoa(port))
+	claim, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	require.NoError(t, err)
+	err = unix.Flock(int(claim.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+	if err != nil {
+		_ = claim.Close()
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return nil, false
+		}
+		require.FailNow(t, fmt.Sprintf("FreeUDPPorts: flock %s: %v", path, err))
+	}
+	return claim, true
 }
 
 type portLedgerBlock struct {
