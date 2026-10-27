@@ -4,6 +4,7 @@ package cluster_archive_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive"
 	archivecodecs "github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/atomicbuffer"
@@ -35,6 +37,22 @@ const (
 
 	// snapshotAppVersion is non-zero so a marker with app version 0 fails.
 	snapshotAppVersion int32 = 7
+
+	// snapshotLoadServiceStreamID keeps load container control ingress off
+	// the module service stream.
+	snapshotLoadServiceStreamID int32 = 9104
+
+	// snapshotLoadModuleStreamID keeps load container control egress off
+	// the module stream. The module never reads the load container start ack.
+	snapshotLoadModuleStreamID int32 = 9105
+
+	snapshotLoadReplayStreamID int32 = 9103
+
+	snapshotLoadResponseStreamID int32 = 9121
+
+	snapshotLoadTimestamp int64 = 987_654_321
+
+	snapshotUnknownRecordingID int64 = 1_000_000
 )
 
 func amendSnapshotMember(cfg cluster.Config) cluster.Config {
@@ -322,9 +340,136 @@ func requireSnapshotReplay(
 	require.Equal(t, snapshotServicePayload, string(payloads[3]))
 }
 
-// TestClusterService_recordsSnapshotAndAcksRecordingID asserts each live
-// snapshot records a new archive recording and acks its id.
-func TestClusterService_recordsSnapshotAndAcksRecordingID(t *testing.T) {
+// snapshotLoadRecorder adds LoadSnapshot to sessionRecorder. LoadSnapshot
+// reads one user payload.
+type snapshotLoadRecorder struct {
+	*sessionRecorder
+	loaded []string
+}
+
+var _ service.LoadSnapshotHandler = (*snapshotLoadRecorder)(nil)
+
+func (s *snapshotLoadRecorder) Start(cluster service.Cluster) error {
+	s.order = append(s.order, "start")
+	return s.sessionRecorder.Start(cluster)
+}
+
+func (s *snapshotLoadRecorder) LoadSnapshot(image *aeron.Image) error {
+	s.order = append(s.order, "load")
+	var payload []byte
+	read := pollUntil(snapshotOfferBound, func() bool {
+		image.Poll(func(buffer atomicbuffer.AtomicBuffer, offset, length int, _ *aeron.Header) {
+			payload = slices.Clone(buffer.Bytes()[offset : offset+length])
+		}, 1)
+		return payload != nil
+	})
+	if !read {
+		return errors.New("read snapshot payload: timed out")
+	}
+	s.loaded = append(s.loaded, string(payload))
+	return nil
+}
+
+// openLoadContainer opens a second container on module with Recovery set.
+func openLoadContainer(
+	module *cluster.ConsensusModule,
+	svc service.ClusteredService,
+) (*service.Container, error) {
+	return service.Open(service.Config{
+		Aeron:                   module.Client(),
+		Service:                 svc,
+		CommittedPosition:       module.CommitPosition,
+		ServiceStreamID:         snapshotLoadServiceStreamID,
+		ConsensusModuleStreamID: snapshotLoadModuleStreamID,
+		Archive:                 &archive.Config{ControlResponseStreamID: snapshotLoadResponseStreamID},
+		Recovery:                &service.RecoveryConfig{ReplayStreamID: snapshotLoadReplayStreamID},
+	})
+}
+
+// allocateRecoveryState allocates a recovery state counter on module with
+// fields as its key. The returned func closes the counter. The func then
+// waits until the driver frees the counter.
+func allocateRecoveryState(
+	t *testing.T,
+	sc serviceCluster,
+	module *cluster.ConsensusModule,
+	fields codecs.RecoveryStateKeyFields,
+) func() {
+	t.Helper()
+
+	key := make([]byte, cnc.CounterMetadataMaxKeyLength)
+	end, ok := codecs.EncodeRecoveryStateKey(key, 0, fields)
+	require.True(t, ok)
+	counter, err := module.Client().AddCounter(
+		codecs.RecoveryStateCounterTypeID, key[:end], "recovery state",
+	)
+	require.NoError(t, err, "AddCounter:\n%s", sc.dump())
+	counterID := counter.CounterID()
+	return func() {
+		t.Helper()
+		require.NoError(t, counter.Close())
+		reader, err := module.Client().CountersReader()
+		require.NoError(t, err)
+		requireServiceAwaitTick(
+			t, sc,
+			"recovery state counter freed",
+			durableWorkBound,
+			func() bool {
+				return !reader.IsCounterAllocatedOfType(
+					counterID, codecs.RecoveryStateCounterTypeID,
+				)
+			},
+		)
+	}
+}
+
+func archiveControlSessions(t *testing.T, module *cluster.ConsensusModule) int64 {
+	t.Helper()
+
+	reader, err := module.Client().CountersReader()
+	require.NoError(t, err)
+	counterID, ok := reader.FindCounterOfType(cnc.ArchiveControlSessionsCounterTypeID)
+	require.True(t, ok, "archive control sessions counter not found")
+	sessions, err := reader.CounterValue(counterID)
+	require.NoError(t, err)
+	return sessions
+}
+
+// requireLoadRefused opens a load container against fields. Asserts Open
+// returns a nil container and a load error that names wantCause. Asserts
+// the archive drops the load container control session.
+func requireLoadRefused(
+	t *testing.T,
+	sc serviceCluster,
+	module *cluster.ConsensusModule,
+	fields codecs.RecoveryStateKeyFields,
+	wantCause, label string,
+) {
+	t.Helper()
+
+	release := allocateRecoveryState(t, sc, module, fields)
+	defer release()
+	sessionsBefore := archiveControlSessions(t, module)
+	svc := &snapshotLoadRecorder{sessionRecorder: &sessionRecorder{}}
+
+	container, err := openLoadContainer(module, svc)
+	require.Nil(t, container, label)
+	require.ErrorContains(t, err, "service: load snapshot", label)
+	require.ErrorContains(t, err, wantCause, label)
+	require.Empty(t, svc.loaded, label)
+	requireServiceAwaitTick(
+		t, sc,
+		label+": archive drops the load control session",
+		durableWorkBound,
+		func() bool {
+			return archiveControlSessions(t, module) == sessionsBefore
+		},
+	)
+}
+
+// TestClusterService_recordsAndLoadsSnapshot asserts live snapshots record
+// to the archive and load into a Recovery container.
+func TestClusterService_recordsAndLoadsSnapshot(t *testing.T) {
 	t.Parallel()
 
 	sc, rec := openSnapshotServiceCluster(t)
@@ -392,6 +537,49 @@ func TestClusterService_recordsSnapshotAndAcksRecordingID(t *testing.T) {
 	)
 	payloads := replayRecordingPayloads(t, sc, leader, desc)
 	requireSnapshotReplay(t, payloads, firstPosition, leader.LeadershipTermID(), wantSession)
+	recordedRow, ok := codecs.TryDecodeClientSessionAt(payloads[1], 0)
+	require.True(t, ok, "client session decode")
+
+	// Phase: unknown recording. The replay start fails.
+	recoveryState := codecs.RecoveryStateKeyFields{
+		LeadershipTermID:     leader.LeadershipTermID(),
+		LogPosition:          firstPosition,
+		Timestamp:            snapshotLoadTimestamp,
+		SnapshotRecordingIDs: []int64{snapshotUnknownRecordingID},
+	}
+	requireLoadRefused(t, sc, leader, recoveryState, "start replay", "unknown recording")
+
+	// Phase: corrupt recording. The module log recording is still active.
+	// The replay follows the recording until the load stops the replay. The
+	// loader rejects the first log frame.
+	recoveryState.SnapshotRecordingIDs = []int64{logRecordingID}
+	requireLoadRefused(
+		t, sc, leader, recoveryState, "before the begin marker", "corrupt recording",
+	)
+
+	// Phase: load the first recording.
+	recoveryState.SnapshotRecordingIDs = []int64{firstID}
+	release := allocateRecoveryState(t, sc, leader, recoveryState)
+	loadRec := &snapshotLoadRecorder{sessionRecorder: &sessionRecorder{}}
+	loadContainer, err := openLoadContainer(leader, loadRec)
+	require.NoError(t, err, "load Open:\n%s", sc.dump())
+	harness.CleanupClose(t, "load container", loadContainer.Close)
+	require.Equal(t, []string{snapshotServicePayload}, loadRec.loaded)
+	loadAgent := loadContainer.Agent()
+	restored, ok := loadAgent.ClientSession(wantSession)
+	require.True(t, ok, "restored session")
+	require.Equal(t, client.DefaultEgressStreamID, restored.ResponseStreamID())
+	require.Equal(t, string(recordedRow.ResponseChannel), restored.ResponseChannel())
+	require.Equal(t, sessionSmokePrincipal, string(restored.EncodedPrincipal()))
+	require.Empty(t, loadRec.opens, "SessionOpen calls")
+	require.Equal(t, firstPosition, loadAgent.LogPosition())
+	require.Equal(t, snapshotLoadTimestamp, loadAgent.ClusterTime())
+	loadAgent.DoWork(leader.NanoClock()())
+	require.NoError(t, loadAgent.ServiceFailure())
+	require.Equal(t, []string{"load", "start"}, loadRec.order)
+	require.Equal(t, 1, loadAgent.ReadyCoordinationAcks(), "start entry ready")
+	require.NoError(t, loadContainer.Close())
+	release()
 
 	// Phase: second snapshot records a new recording.
 	_, secondID := requestSnapshotRecording(

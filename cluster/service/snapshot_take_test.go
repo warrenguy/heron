@@ -648,6 +648,7 @@ func TestSnapshotTake_termEventFields(t *testing.T) {
 	}
 	tests := []struct {
 		name        string
+		load        *termEvent
 		events      []termEvent
 		wantUnit    clusterwire.ClusterTimeUnit
 		wantVersion int32
@@ -688,10 +689,19 @@ func TestSnapshotTake_termEventFields(t *testing.T) {
 			wantUnit:    clusterwire.ClusterTimeUnit_MILLIS,
 			wantVersion: 4,
 		},
+		{
+			name:        "loadWithoutTermEvent",
+			load:        &termEvent{clusterwire.ClusterTimeUnit_MICROS, 4},
+			wantUnit:    clusterwire.ClusterTimeUnit_MICROS,
+			wantVersion: 4,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newTakeHarness(t, &snapshotRecordingService{})
+			if tt.load != nil {
+				loadSnapshotMarkers(t, h.agent, tt.load.timeUnit, tt.load.appVersion)
+			}
 			for _, event := range tt.events {
 				h.log.termEvent(t, event.timeUnit, event.appVersion)
 			}
@@ -896,4 +906,23 @@ func TestSnapshotTake_failures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// loadSnapshotMarkers loads a snapshot of one BEGIN and one END marker into
+// agent. Both markers carry timeUnit and appVersion.
+func loadSnapshotMarkers(
+	t *testing.T,
+	agent *Agent,
+	timeUnit clusterwire.ClusterTimeUnit,
+	appVersion int32,
+) {
+	t.Helper()
+	loaded := serviceMarkerFields(0, clusterwire.SnapshotMark_BEGIN)
+	loaded.TimeUnit = timeUnit
+	loaded.AppVersion = appVersion
+	loader := newServiceSnapshotLoader(agent, 0)
+	require.Equal(t, aeron.ControlledContinue, loader.dispatch(encodeSnapshotMarkerFrame(t, loaded)))
+	loaded.Mark = clusterwire.SnapshotMark_END
+	require.Equal(t, aeron.ControlledBreak, loader.dispatch(encodeSnapshotMarkerFrame(t, loaded)))
+	require.NoError(t, loader.err)
 }

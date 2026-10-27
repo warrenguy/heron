@@ -17,9 +17,10 @@ const MockedOffer int64 = 1
 //
 // Concurrency: invoker-only.
 //
-// Lifetime: the agent builds a session on SessionOpen. The session leaves
-// the registry on SessionClose. A session held past SessionClose stays safe
-// to call.
+// Lifetime: the agent builds a session on SessionOpen. A snapshot load in
+// [Open] also restores sessions. The load does not call SessionOpen. The
+// session leaves the registry on SessionClose. A session held past
+// SessionClose stays safe to call.
 type ClientSession interface {
 	// ID returns the cluster session id.
 	ID() int64
@@ -189,12 +190,47 @@ func compareSessionID(session *containerClientSession, id int64) int {
 	return cmp.Compare(session.id, id)
 }
 
+func newContainerClientSession(
+	a *Agent,
+	id int64,
+	responseStreamID int32,
+	responseChannel, encodedPrincipal []byte,
+) *containerClientSession {
+	return &containerClientSession{
+		agent:            a,
+		id:               id,
+		responseStreamID: responseStreamID,
+		responseChannel:  string(responseChannel),
+		encodedPrincipal: encodedPrincipal,
+		addCorrelationID: nullValue,
+	}
+}
+
 // addClientSession inserts session into the map and into sessionList in id
 // order. The caller rejects a clash first.
 func (a *Agent) addClientSession(session *containerClientSession) {
 	a.sessions[session.id] = session
 	index, _ := slices.BinarySearchFunc(a.sessionList, session.id, compareSessionID)
 	a.sessionList = slices.Insert(a.sessionList, index, session)
+}
+
+// restoreClientSession adds one snapshot session to the registry.
+//
+// Behaviour: does not start a response add. Matches upstream addSession.
+//
+// Returns errSessionClash when the id is already open.
+func (a *Agent) restoreClientSession(fields codecs.ClientSessionFields) error {
+	if _, exists := a.sessions[fields.ClusterSessionID]; exists {
+		return errSessionClash
+	}
+	a.addClientSession(newContainerClientSession(
+		a,
+		fields.ClusterSessionID,
+		fields.ResponseStreamID,
+		fields.ResponseChannel,
+		fields.EncodedPrincipal,
+	))
+	return nil
 }
 
 // removeClientSession deletes id from the map and from sessionList.

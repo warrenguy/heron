@@ -94,7 +94,8 @@ type Config struct {
 	//
 	// With Archive set, Aeron must be an *aeron.Client. The archive client
 	// shares Aeron. Open then calls DoWork on Aeron until the archive connect
-	// completes. Call Open on the invoker goroutine.
+	// completes. With Recovery set, Open also calls DoWork on Aeron during
+	// each recovery wait. Call Open on the invoker goroutine.
 	Aeron TransportClient
 
 	// Service receives log-event callbacks. Required for [Open]. A nil-service
@@ -129,8 +130,13 @@ type Config struct {
 
 	// StartAck enables the spontaneous start ack a Java consensus module
 	// consumes during recovery. Nil disables the start ack. Open passes
-	// StartAck to [NewAgent]. See [StartAckConfig].
+	// StartAck to [NewAgent]. See [StartAckConfig]. Must be nil with
+	// Recovery set.
 	StartAck *StartAckConfig
+
+	// Recovery enables recovery in Open. Nil keeps the cold start at log
+	// position 0. Open leaves Recovery unchanged. See [RecoveryConfig].
+	Recovery *RecoveryConfig
 
 	// Archive configures the archive client. Nil connects none: each
 	// snapshot take then fails and acks -1. Open leaves Archive unchanged.
@@ -195,17 +201,24 @@ type StartAckConfig struct {
 // Open order:
 //  1. default the config
 //  2. validate the config. With Archive set, build the archive config
-//  3. control subscription on ServiceStreamID
-//  4. control publication on ConsensusModuleStreamID
-//  5. with Archive set, connect the archive client
-//  6. proxy bind
-//  7. agent build with control ingress, proxy, and archive client wired. The
+//  3. with Recovery set, await the recovery state
+//  4. control subscription on ServiceStreamID
+//  5. control publication on ConsensusModuleStreamID
+//  6. with Archive set, connect the archive client
+//  7. proxy bind
+//  8. agent build with control ingress, proxy, and archive client wired. The
 //     transport client adds snapshot and response publications
+//  9. with a snapshot recording in the recovery state, load the snapshot
 //
 // Behaviour: Open registers the two adds. With Archive set, Open then
 // connects the archive client. The connect pumps the transport client for up
-// to the archive ConnectTimeout. Open does not wait for a consensus module.
-// An unavailable image frees that session's reassembly builder.
+// to the archive ConnectTimeout. Without Recovery, Open does not wait for a
+// consensus module. An unavailable image frees that session's reassembly
+// builder.
+//
+// The snapshot load restores the client sessions, the time unit, and the app
+// version. The load then calls [LoadSnapshotHandler.LoadSnapshot] when the
+// service implements it.
 //
 // Ownership: the container owns the control subscription, the control
 // publication, and the archive client. The container does not own the
@@ -217,14 +230,47 @@ type StartAckConfig struct {
 //   - StartAck is set and LogPosition is negative
 //   - the two control stream ids collide after defaulting
 //   - SnapshotChannel or SnapshotStreamID breaks the rule its godoc states
+//   - StartAck and Recovery are both set
+//   - Recovery breaks a rule the [RecoveryConfig] godoc states
+//   - Recovery is set and Aeron lacks CountersReader, DoWork or ClientId
 //   - Archive is set and breaks a rule the Archive godoc states
+//   - an archive control stream id equals Recovery.ReplayStreamID
+//   - the recovery wait fails or exceeds Recovery.Timeout
+//   - the recovery state key is invalid
+//   - the key names a snapshot recording and Archive is nil
 //   - either add fails or returns no handle
 //   - Archive is set and Aeron is not an *aeron.Client
 //   - the archive connect fails
+//   - the snapshot load fails
 //
 // On error nothing stays open. A failed step closes the handles opened
 // before it.
 func Open(cfg Config) (*Container, error) {
+	return openWithArchiveConnect(cfg, connectContainerArchive)
+}
+
+// archiveConnector connects the archive client and returns its replay
+// surface.
+type archiveConnector func(
+	transport TransportClient,
+	archiveCfg archive.Config,
+) (*archive.Client, snapshotReplayControl, error)
+
+// connectContainerArchive is the [archiveConnector] for [Open].
+func connectContainerArchive(
+	transport TransportClient,
+	archiveCfg archive.Config,
+) (*archive.Client, snapshotReplayControl, error) {
+	client, err := connectServiceArchive(transport, archiveCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return client, client, nil
+}
+
+// openWithArchiveConnect is the body of [Open]. connect runs step 6 when
+// Archive is set.
+func openWithArchiveConnect(cfg Config, connect archiveConnector) (*Container, error) {
 	cfg = defaultConfig(cfg)
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
@@ -235,6 +281,21 @@ func Open(cfg Config) (*Container, error) {
 		archiveCfg, err = serviceArchiveConfig(cfg)
 		if err != nil {
 			return nil, err
+		}
+	}
+
+	// validateConfig checked the recovery surface.
+	transport, _ := cfg.Aeron.(recoveryTransport)
+	var recovery recoveryPath
+	if cfg.Recovery != nil {
+		var err error
+		recovery, err = awaitRecoveryPath(cfg, transport)
+		if err != nil {
+			return nil, err
+		}
+		cfg.StartAck = &StartAckConfig{
+			LogPosition: recovery.state.LogPosition,
+			RelevantID:  transport.ClientId(),
 		}
 	}
 
@@ -251,9 +312,12 @@ func Open(cfg Config) (*Container, error) {
 		return nil, err
 	}
 
-	var archiveClient *archive.Client
+	var (
+		archiveClient *archive.Client
+		replay        snapshotReplayControl
+	)
 	if cfg.Archive != nil {
-		archiveClient, err = connectServiceArchive(cfg.Aeron, archiveCfg)
+		archiveClient, replay, err = connect(cfg.Aeron, archiveCfg)
 		if err != nil {
 			_ = pub.Close()
 			_ = sub.Close()
@@ -270,28 +334,52 @@ func Open(cfg Config) (*Container, error) {
 		}
 	})
 
-	return &Container{
-		agent: NewAgent(AgentConfig{
-			ServiceID:         cfg.ServiceID,
-			Service:           cfg.Service,
-			CommittedPosition: cfg.CommittedPosition,
-			Subscriptions:     cfg.Aeron,
-			FragmentLimit:     cfg.FragmentLimit,
-			Control:           ingress,
-			ModuleProxy:       proxy,
-			StartAck:          cfg.StartAck,
-			Archive:           archiveClient,
+	agent := NewAgent(AgentConfig{
+		ServiceID:         cfg.ServiceID,
+		Service:           cfg.Service,
+		CommittedPosition: cfg.CommittedPosition,
+		Subscriptions:     cfg.Aeron,
+		FragmentLimit:     cfg.FragmentLimit,
+		Control:           ingress,
+		ModuleProxy:       proxy,
+		StartAck:          cfg.StartAck,
+		Archive:           archiveClient,
 
-			SnapshotPublications: cfg.Aeron,
-			SnapshotChannel:      cfg.SnapshotChannel,
-			SnapshotStreamID:     cfg.SnapshotStreamID,
-			ResponsePublications: cfg.Aeron,
-		}),
+		SnapshotPublications: cfg.Aeron,
+		SnapshotChannel:      cfg.SnapshotChannel,
+		SnapshotStreamID:     cfg.SnapshotStreamID,
+		ResponsePublications: cfg.Aeron,
+	})
+	container := &Container{
+		agent:         agent,
 		ingress:       ingress,
 		controlSub:    sub,
 		controlPub:    pub,
 		archiveClient: archiveClient,
-	}, nil
+	}
+	if cfg.Recovery == nil {
+		return container, nil
+	}
+
+	agent.seedRecovery(recovery.state)
+	if !recovery.isLoad() {
+		return container, nil
+	}
+	handler, _ := cfg.Service.(LoadSnapshotHandler)
+	load := snapshotLoad{
+		control:       replay,
+		subscriptions: cfg.Aeron,
+		pump:          transport.DoWork,
+		channel:       cfg.Recovery.ReplayChannel,
+		streamID:      cfg.Recovery.ReplayStreamID,
+		timeout:       cfg.Recovery.Timeout,
+		handler:       handler,
+	}
+	if err := load.run(agent, recovery.recordingID, recovery.state.LogPosition); err != nil {
+		_ = container.Close()
+		return nil, err
+	}
+	return container, nil
 }
 
 // serviceArchiveConfig builds the archive connect config from a copy of
@@ -351,6 +439,10 @@ func serviceArchiveConfig(cfg Config) (archive.Config, error) {
 		return archive.Config{}, errors.New(
 			"service: archive ControlRequestStreamID and SnapshotStreamID must differ",
 		)
+	case cfg.Recovery != nil && requestStreamID == cfg.Recovery.ReplayStreamID:
+		return archive.Config{}, errors.New(
+			"service: archive ControlRequestStreamID and ReplayStreamID must differ",
+		)
 	case responseStreamID == cfg.ServiceStreamID:
 		return archive.Config{}, errors.New(
 			"service: archive ControlResponseStreamID and ServiceStreamID must differ",
@@ -362,6 +454,10 @@ func serviceArchiveConfig(cfg Config) (archive.Config, error) {
 	case responseStreamID == cfg.SnapshotStreamID:
 		return archive.Config{}, errors.New(
 			"service: archive ControlResponseStreamID and SnapshotStreamID must differ",
+		)
+	case cfg.Recovery != nil && responseStreamID == cfg.Recovery.ReplayStreamID:
+		return archive.Config{}, errors.New(
+			"service: archive ControlResponseStreamID and ReplayStreamID must differ",
 		)
 	}
 	return archiveCfg, nil
@@ -410,6 +506,9 @@ func defaultConfig(cfg Config) Config {
 	if cfg.SnapshotStreamID == 0 {
 		cfg.SnapshotStreamID = DefaultSnapshotStreamID
 	}
+	if cfg.Recovery != nil {
+		cfg.Recovery = defaultRecoveryConfig(*cfg.Recovery)
+	}
 	return cfg
 }
 
@@ -433,6 +532,9 @@ func validateConfig(cfg Config) error {
 		return errors.New("service: SnapshotStreamID and ServiceStreamID must differ")
 	case cfg.SnapshotStreamID == cfg.ConsensusModuleStreamID:
 		return errors.New("service: SnapshotStreamID and ConsensusModuleStreamID must differ")
+	}
+	if cfg.Recovery != nil {
+		return validateRecoveryConfig(cfg)
 	}
 	return nil
 }
