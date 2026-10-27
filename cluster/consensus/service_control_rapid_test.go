@@ -217,8 +217,10 @@ type retiredAckFrame struct {
 // retired snapshot frame with the control frame after it. A swap never pairs
 // frames at one position. A control wait may reuse a retired position after
 // the retired frame. A truncate below a retired position removes every
-// unacked retired snapshot frame above it from each service's order. One
-// optional fault sends a bad ack at a non-retired position.
+// unacked retired snapshot frame above it from each service's order. The
+// truncate cancels the pending take before removing retired positions. A
+// snapshot action reuses a freed position when one exists. One optional fault
+// sends a bad ack at a non-retired position.
 //
 // Invariants each step:
 //   - Before a fault, a failure never marks.
@@ -227,6 +229,9 @@ type retiredAckFrame struct {
 //   - Each expected id is at most the cursor of its service. Each dropped id
 //     sits above the expected id of its service.
 //   - A pending snapshot wait position sits once in the FIFO.
+//   - The retired entries match the model in retire order. Each entry is
+//     one retired wait or one cancelled take.
+//   - Each truncate removes the retired entries above the truncate position.
 //
 // A final drain queues one control wait and each service acks every frame in
 // its order. Without a fault every wait pops and the expected id of each
@@ -244,9 +249,32 @@ func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
 		order := make([][]int, serviceCount)
 		cursor := make([]int, serviceCount)
 		var retired []int64
+		// abandoned stores retired waits and cancelled takes in retire order.
+		// freed stores each position a truncate removes from abandoned.
+		// The model drops a position from freed when a snapshot action reuses
+		// the position.
+		abandoned := []int64{}
+		var freed []int64
 		nextPosition := int64(0)
 		faulted := false
 		lastExpectedID := int64(0)
+
+		takePosition := func() int64 {
+			if a.snapshotTake == nil {
+				return 0
+			}
+			return a.snapshotTake.logPosition
+		}
+		// A snapshot pop cancels the previous take inside serviceControlWork.
+		// Append the take position before serviceControlWork.
+		work := func() {
+			cancelled := takePosition()
+			pending := a.snapshotWaitPosition
+			a.serviceControlWork()
+			if cancelled != 0 && pending != 0 && a.snapshotWaitPosition == 0 {
+				abandoned = append(abandoned, cancelled)
+			}
+		}
 
 		freshPosition := func() int64 {
 			nextPosition += 64
@@ -300,6 +328,11 @@ func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
 				}
 				require.Equal(rt, 1, count, step)
 			}
+			positions := []int64{}
+			for _, wait := range a.abandonedSnapshotWaits {
+				positions = append(positions, wait.position)
+			}
+			require.Equal(rt, abandoned, positions, step)
 		}
 
 		opNames := []string{"control", "snapshot", "ack", "swap", "work", "prepare", "truncate", "fault"}
@@ -338,8 +371,25 @@ func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
 				if a.snapshotWaitPosition != 0 || a.ServiceAckFailure() != nil {
 					break
 				}
-				position := freshPosition()
-				a.queueSnapshotWait(position, 0, 0)
+				// A control wait may still sit at a freed position.
+				var reusable []int64
+				for _, position := range freed {
+					if !slices.Contains(a.serviceAckWaits, position) {
+						reusable = append(reusable, position)
+					}
+				}
+				var position int64
+				if len(reusable) == 0 {
+					position = freshPosition()
+					a.queueSnapshotWait(position, 0, 0)
+				} else {
+					position = rapid.SampledFrom(reusable).Draw(rt, "freedPosition")
+					freed = slices.DeleteFunc(freed, func(freedPosition int64) bool {
+						return freedPosition == position
+					})
+					a.handleClusterAction(snapshotActionFields(position), position)
+					require.Equal(rt, position, a.snapshotWaitPosition)
+				}
 				addFrame(retiredAckFrame{position: position, snapshot: true})
 
 			case retiredAckOpAck:
@@ -358,11 +408,15 @@ func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
 				}
 
 			case retiredAckOpWork:
-				a.serviceControlWork()
+				work()
 
 			case retiredAckOpPrepare:
 				if pending := a.snapshotWaitPosition; pending != 0 {
 					retired = append(retired, pending)
+					abandoned = append(abandoned, pending)
+				}
+				if pos := takePosition(); pos != 0 {
+					abandoned = append(abandoned, pos)
 				}
 				_, prepared, err := a.PrepareForNewLeadership(0, 1)
 				require.NoError(rt, err)
@@ -374,6 +428,11 @@ func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
 				}
 				above := rapid.SampledFrom(retired).Draw(rt, "truncateAbove")
 				position := rapid.Int64Range(0, above/64-1).Draw(rt, "truncateSlot") * 64
+				// An election cancels the take before the truncate.
+				if pos := takePosition(); pos != 0 {
+					abandoned = append(abandoned, pos)
+				}
+				a.CloseSnapshotTake()
 				require.NoError(rt, a.TruncateLogEntry(0, position))
 				// The service never reads a truncated frame, so it never
 				// acks one. Later ack ids of the service shift down.
@@ -388,6 +447,16 @@ func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
 					)
 					order[service] = slices.Concat(acked, unacked)
 				}
+				aboveTruncate := func(retiredPosition int64) bool {
+					return retiredPosition > position
+				}
+				retired = slices.DeleteFunc(retired, aboveTruncate)
+				for _, retiredPosition := range abandoned {
+					if aboveTruncate(retiredPosition) && !slices.Contains(freed, retiredPosition) {
+						freed = append(freed, retiredPosition)
+					}
+				}
+				abandoned = slices.DeleteFunc(abandoned, aboveTruncate)
 
 			case retiredAckOpFault:
 				shape := rapid.SampledFrom([]retiredAckFaultShape{
@@ -432,12 +501,12 @@ func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
 		for sid := range serviceCount {
 			for cursor[sid] < len(order[sid]) {
 				ack(sid)
-				a.serviceControlWork()
+				work()
 				requireInvariants("final drain")
 			}
 		}
 		for range len(a.serviceAckWaits) + 1 {
-			a.serviceControlWork()
+			work()
 		}
 		requireInvariants("final drain")
 

@@ -91,8 +91,8 @@ func (a *Agent) HasPendingSnapshotAction() bool {
 //   - Wire LogPosition differs from logPosition. No service acks such a frame.
 //   - A snapshot wait pends. One field holds one snapshot wait.
 //   - logPosition is a retired snapshot position. PrepareForNewLeadership
-//     retired that wait, or a cancel ended the module snapshot take after
-//     its pop.
+//     retires the wait. A cancel after the pop retires the take.
+//     TruncateLogEntry at a lower position removes the entry.
 //   - serviceAckFailure is marked. No wait completes after the mark.
 //
 // No role check. A leader reads its adapter only in its election replay. Its
@@ -159,8 +159,8 @@ type abandonedSnapshotWait struct {
 	position int64
 
 	// owedAcks has one flag per service. A set flag means the service still
-	// owes an ack at position. retireSnapshotWait sets flags. The owed ack, or
-	// a truncate below position, clears them.
+	// owes an ack at position. retireSnapshotWait sets the flags. The owed
+	// ack clears its flag.
 	owedAcks []bool
 }
 
@@ -234,16 +234,17 @@ func (a *Agent) dropAbandonedSnapshotAck(serviceID int32, logPosition int64) boo
 	return !slices.Contains(a.serviceAckWaits, logPosition)
 }
 
-// clearOwedSnapshotAcksAbove clears the owed ack flags at retired positions
-// above logPosition. A truncate at logPosition removes those actions from the
-// log, so no service sends the owed ack.
-func (a *Agent) clearOwedSnapshotAcksAbove(logPosition int64) {
-	for i := range a.abandonedSnapshotWaits {
-		retired := &a.abandonedSnapshotWaits[i]
-		if retired.position > logPosition {
-			clear(retired.owedAcks)
-		}
-	}
+// removeAbandonedSnapshotWaitsAbove removes retired waits above logPosition.
+// TruncateLogEntry calls removeAbandonedSnapshotWaitsAbove after the archive
+// drops the actions above logPosition. A later snapshot action at a removed
+// position queues a wait.
+func (a *Agent) removeAbandonedSnapshotWaitsAbove(logPosition int64) {
+	a.abandonedSnapshotWaits = slices.DeleteFunc(
+		a.abandonedSnapshotWaits,
+		func(retired abandonedSnapshotWait) bool {
+			return retired.position > logPosition
+		},
+	)
 }
 
 // dropAbandonedSnapshotLeftovers removes leftover ServiceAck tracker entries

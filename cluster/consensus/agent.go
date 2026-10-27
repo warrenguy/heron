@@ -458,10 +458,9 @@ type Agent struct {
 	snapshotChannel  string
 	snapshotStreamID int32
 
-	// abandonedSnapshotWaits holds snapshot waits retired by
-	// PrepareForNewLeadership, and takes cancelled after their pop, in retire
-	// order. Never cleared.
-	// dropAbandonedSnapshotAck owns the drop rule for acks at these positions.
+	// abandonedSnapshotWaits stores retired snapshot waits and cancelled takes
+	// in retire order. TruncateLogEntry removes entries above the truncate
+	// position.
 	abandonedSnapshotWaits []abandonedSnapshotWait
 
 	// servicePublishFailure is the first terminal publish failure on the stream
@@ -1623,7 +1622,7 @@ func (a *Agent) SetLogRecordingID(recordingID int64) {
 //     recording id is null, or logPosition is misaligned
 //   - truncates the cluster log recording through [LogTruncateControl]
 //   - unbinds the log adapter at logPosition
-//   - clears owed snapshot ack flags at retired positions above logPosition
+//   - removes the retired snapshot waits above logPosition
 //   - does not write recording.log; the election lowers the term entry
 //   - does not stop a recording
 //
@@ -1641,10 +1640,12 @@ func (a *Agent) SetLogRecordingID(recordingID int64) {
 //   - logPosition is negative or is not aligned to [logbuffer.FrameAlignment]
 //   - the archive refuses the truncate or the wait times out
 //
-// On error the log adapter and the owed ack flags are untouched. The truncate
-// control leaves the recording stop position unchanged. The caller must not
-// lower any position. Archive refuse detail, including the data-header
-// partial-update case, lives on archive.Client.TruncateRecording.
+// On error TruncateLogEntry leaves the log adapter and the retired snapshot
+// waits untouched. The truncate control leaves the recording stop position
+// unchanged. The caller must not lower any position.
+//
+// archive.Client.TruncateRecording documents a refused truncate, including
+// the data-header partial-update case.
 func (a *Agent) TruncateLogEntry(leadershipTermID, logPosition int64) error {
 	_ = leadershipTermID
 	if a.truncateControl == nil {
@@ -1664,7 +1665,7 @@ func (a *Agent) TruncateLogEntry(leadershipTermID, logPosition int64) error {
 		return err
 	}
 	a.logAdapter.DisconnectAt(logPosition)
-	a.clearOwedSnapshotAcksAbove(logPosition)
+	a.removeAbandonedSnapshotWaitsAbove(logPosition)
 	return nil
 }
 
