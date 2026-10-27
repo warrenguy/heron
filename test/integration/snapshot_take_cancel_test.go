@@ -16,6 +16,7 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/cluster/service"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -197,6 +198,10 @@ func TestConsensusSnapshotTake_closeAfterReadyReleasesPublication(t *testing.T) 
 			agent.SetSnapshotStream(harness.IPCChannel, tc.snapshotStreamID)
 			control := &idleSnapshotControl{t: t}
 			agent.SetSnapshotRecordingControl(control)
+			recordingLog, err := recordinglog.Open(t.TempDir(), true)
+			require.NoError(t, err)
+			harness.CleanupClose(t, "recording log", recordingLog.Close)
+			agent.SetSnapshotRecordingLog(recordingLog, recordinglog.FileSyncData)
 
 			// Phase 1: RequestSnapshot appends to the subscribed log. One DoWork
 			// pops the snapshot wait and starts the add.

@@ -12,6 +12,7 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
 const (
@@ -407,9 +408,11 @@ func TestConsensusModule_Close_clearsSnapshotTakeSeams(t *testing.T) {
 	seams := &countingSnapshotSeams{}
 	agent.SetSnapshotRecordingControl(seams)
 	agent.SetSnapshotPublicationAdder(seams)
+	agent.SetSnapshotRecordingLog(openTermLog(t, 1, 0), recordinglog.FileSyncData)
 	agent.SetSnapshotStream(DefaultSnapshotChannel, DefaultSnapshotStreamID)
 	module := &ConsensusModule{agent: agent}
 
+	// Phase 1: Close clears every seam, so the take fails before the add.
 	require.NoError(t, agent.RequestSnapshot(snapshotWireNowNs))
 	commit.Store(agent.ExpectedAckPosition())
 	require.NoError(t, module.Close())
@@ -417,6 +420,21 @@ func TestConsensusModule_Close_clearsSnapshotTakeSeams(t *testing.T) {
 
 	require.Zero(t, seams.adds)
 	result, ok := agent.LastSnapshotTake()
+	require.True(t, ok)
+	require.Error(t, result.Err)
+	require.Equal(t, int64(-1), result.RecordingID)
+	require.False(t, agent.HasPendingSnapshotAction())
+
+	// Phase 2: with the control and the adder back, the cleared recording
+	// log alone still fails the take before the add.
+	agent.SetSnapshotRecordingControl(seams)
+	agent.SetSnapshotPublicationAdder(seams)
+	require.NoError(t, agent.RequestSnapshot(snapshotWireNowNs))
+	commit.Store(agent.ExpectedAckPosition())
+	agent.DoWork(snapshotWireNowNs)
+
+	require.Zero(t, seams.adds)
+	result, ok = agent.LastSnapshotTake()
 	require.True(t, ok)
 	require.Error(t, result.Err)
 	require.Equal(t, int64(-1), result.RecordingID)

@@ -22,6 +22,8 @@ import (
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/cluster/service"
 	"github.com/warrenguy/heron/idlestrategy"
 	"github.com/warrenguy/heron/test/integration/harness"
@@ -172,9 +174,10 @@ func requestSnapshotAction(
 	return nowNs, actionPosition
 }
 
-// requestSnapshotRecording is requestSnapshotAction plus the service ack.
+// requestSnapshotRecording is requestModuleSnapshot plus the service ack.
+// The take holds the acked recording id as its service 0 row.
 //
-// Returns the action frame end and the acked recording id.
+// Returns the resolved take and the acked recording id.
 func requestSnapshotRecording(
 	t *testing.T,
 	sc serviceCluster,
@@ -183,17 +186,19 @@ func requestSnapshotRecording(
 	session *client.AeronCluster,
 	label string,
 ) (
-	actionPosition int64,
+	take consensus.SnapshotTakeResult,
 	recordingID int64,
 ) {
 	t.Helper()
 
 	agent := sc.members[0].agent
 	ackID := agent.NextAckID()
-	_, actionPosition = requestSnapshotAction(t, sc, leader, transport, session, label)
+	take = requestModuleSnapshot(t, sc, leader, transport, session, label)
 	requireNoServiceFailure(t, sc, 0, " after "+label)
 	require.Equal(t, ackID+1, agent.NextAckID(), "%s:\n%s", label, sc.dump())
-	return actionPosition, agent.LastSnapshotRecordingID()
+	recordingID = agent.LastSnapshotRecordingID()
+	require.Equal(t, []int64{recordingID}, take.ServiceRecordingIDs, label)
+	return take, recordingID
 }
 
 // requireSnapshotRecordingDescriptor lists recordingID on the leader archive.
@@ -214,6 +219,53 @@ func requireSnapshotRecordingDescriptor(
 	require.Contains(t, string(desc.StrippedChannel), "session-id=")
 	require.Greater(t, desc.StopPosition, desc.StartPosition)
 	return desc
+}
+
+// requireSnapshotGroups asserts the leader recording log holds one snapshot
+// group per take, in take order. A group holds the service rows from the
+// highest service id down to 0, then the module row.
+func requireSnapshotGroups(
+	t *testing.T,
+	sc serviceCluster,
+	leader *cluster.ConsensusModule,
+	takes ...consensus.SnapshotTakeResult,
+) {
+	t.Helper()
+
+	recordingLog := leader.RecordingLog()
+	require.NotNil(t, recordingLog, "recording log:\n%s", sc.dump())
+	var want []recordinglog.Entry
+	for _, take := range takes {
+		term := recordingLog.FindTermEntry(take.LeadershipTermID)
+		require.NotNil(t, term, "term entry %d:\n%s", take.LeadershipTermID, sc.dump())
+		row := recordinglog.Entry{
+			LeadershipTermID:    take.LeadershipTermID,
+			TermBaseLogPosition: term.TermBaseLogPosition,
+			LogPosition:         take.LogPosition,
+			Timestamp:           take.Timestamp,
+			Type:                recordinglog.EntryTypeSnapshot,
+			Valid:               true,
+		}
+		for serviceID, recordingID := range slices.Backward(take.ServiceRecordingIDs) {
+			row.RecordingID = recordingID
+			row.ServiceID = int32(serviceID)
+			want = append(want, row)
+		}
+		row.RecordingID = take.RecordingID
+		row.ServiceID = recordinglog.ConsensusModuleServiceID
+		want = append(want, row)
+	}
+
+	var got []recordinglog.Entry
+	for _, entry := range recordingLog.Entries() {
+		if entry.Type != recordinglog.EntryTypeSnapshot {
+			continue
+		}
+		entry.Position = 0
+		entry.Index = 0
+		got = append(got, entry)
+	}
+	require.Equal(t, want, got, "snapshot entries:\n%s", sc.dump())
 }
 
 // replayRecordingPayloads replays desc on the member driver. Returns one
@@ -468,7 +520,7 @@ func requireLoadRefused(
 }
 
 // TestClusterService_recordsAndLoadsSnapshot asserts live snapshots record
-// to the archive and load into a Recovery container.
+// to the archive and the recording log, and load into a Recovery container.
 func TestClusterService_recordsAndLoadsSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -522,9 +574,10 @@ func TestClusterService_recordsAndLoadsSnapshot(t *testing.T) {
 	)
 
 	// Phase: first snapshot.
-	firstPosition, firstID := requestSnapshotRecording(
+	firstTake, firstID := requestSnapshotRecording(
 		t, sc, leader, transport, session, "first snapshot",
 	)
+	firstPosition := firstTake.LogPosition
 	require.Equal(t, 1, rec.takes)
 	logRecordingID := leader.Agent().LocalLogRecordingID()
 	require.GreaterOrEqual(t, logRecordingID, int64(0), "log recording id:\n%s", sc.dump())
@@ -582,13 +635,30 @@ func TestClusterService_recordsAndLoadsSnapshot(t *testing.T) {
 	release()
 
 	// Phase: second snapshot records a new recording.
-	_, secondID := requestSnapshotRecording(
+	secondTake, secondID := requestSnapshotRecording(
 		t, sc, leader, transport, session, "second snapshot",
 	)
 	require.Equal(t, 2, rec.takes)
 	require.GreaterOrEqual(t, secondID, int64(0), "second recording id:\n%s", sc.dump())
 	require.NotEqual(t, firstID, secondID, "second recording id:\n%s", sc.dump())
 	require.NotEqual(t, logRecordingID, secondID, "second recording id:\n%s", sc.dump())
+
+	// Phase: the recording log holds one group per take. The recovery plan
+	// picks the second group, module row first.
+	requireSnapshotGroups(t, sc, leader, firstTake, secondTake)
+	plan, err := leader.RecordingLog().PlanRecovery(
+		archive.NewLister(t.Context(), leader.ArchiveClient()),
+		recordinglog.NewRecoveryPlanConfig(1),
+	)
+	require.NoError(t, err, "PlanRecovery:\n%s", sc.dump())
+	require.Len(t, plan.Snapshots, 2, "plan snapshots:\n%s", sc.dump())
+	require.Equal(t, recordinglog.ConsensusModuleServiceID, plan.Snapshots[0].ServiceID)
+	require.Equal(t, secondTake.RecordingID, plan.Snapshots[0].RecordingID)
+	require.Equal(t, int32(0), plan.Snapshots[1].ServiceID)
+	require.Equal(t, secondID, plan.Snapshots[1].RecordingID)
+	requireSnapshotRecordingDescriptor(
+		t, sc, leader, secondTake.RecordingID, cluster.DefaultSnapshotStreamID,
+	)
 
 	require.NoError(t, sc.members[0].checked.violation, "commit bound:\n%s", sc.dump())
 	requireNoServiceFailure(t, sc, 0, " final")

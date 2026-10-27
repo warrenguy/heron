@@ -140,7 +140,8 @@ type ConsensusModule struct {
 //  5. recovery: stops the term recording, then plans
 //  6. agent
 //  7. log recording control, then the module snapshot recording control,
-//     the snapshot publication adder and the snapshot stream
+//     the snapshot publication adder, the snapshot recording log and the
+//     snapshot stream
 //  8. consensus publications
 //  9. consensus subscription
 //  10. cluster log streams
@@ -168,7 +169,9 @@ type ConsensusModule struct {
 //   - Open wires the module snapshot seams after the log recording control.
 //     The archive session handler passes each signal to the log recording,
 //     then to the snapshot STOP watch, then to the election. The snapshot
-//     publication adder uses the transport client. No snapshot starts at Open
+//     publication adder uses the transport client. The snapshot rows go to
+//     the recovery recording log at RecordingLogFileSyncLevel. No snapshot
+//     starts at Open
 //   - cluster log publication and subscription open before return. The first
 //     duty tick can then win leadership and append a leadership-term event
 //   - every member opens the client ingress subscription. A settled leader
@@ -336,6 +339,7 @@ func OpenConsensusModule(
 	))
 	module.agent.SetSnapshotRecordingControl(snapshotControl)
 	module.agent.SetSnapshotPublicationAdder(snapshotPublicationAdder{client: module.client})
+	module.agent.SetSnapshotRecordingLog(recovery.RecordingLog(), cfg.RecordingLogFileSyncLevel)
 	module.agent.SetSnapshotStream(cfg.SnapshotChannel, cfg.SnapshotStreamID)
 
 	publisher := election.NewAeronPublisher()
@@ -664,6 +668,7 @@ func (m *ConsensusModule) Close() error {
 		m.agent.CloseSnapshotTake()
 		m.agent.SetSnapshotRecordingControl(nil)
 		m.agent.SetSnapshotPublicationAdder(nil)
+		m.agent.SetSnapshotRecordingLog(nil, recordinglog.FileSyncNone)
 		m.agent.SetClientIngress(nil)
 		m.agent.SetServiceIngress(nil)
 		m.agent.SetServiceProxy(nil)

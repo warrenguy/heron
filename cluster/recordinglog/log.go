@@ -382,11 +382,13 @@ func (l *Log) writeAt(b []byte, position int64) error {
 	return nil
 }
 
-// consensusModuleServiceID is the service id the consensus module writes its own
-// snapshots under. InvalidateLatestSnapshot keys the newest snapshot group on it
-// and walks the per-service entries that precede it. It shares the value -1 with
-// the NULL_VALUE sentinel; the meaning differs, so it keeps its own name.
-const consensusModuleServiceID int32 = -1
+// ConsensusModuleServiceID is the service id of the consensus module snapshot
+// row. The module row closes each snapshot group. InvalidateLatestSnapshot and
+// PlanRecovery key a group on that row.
+//
+// The value -1 equals the NULL_VALUE sentinel. The meaning differs, so the
+// constant keeps its own name.
+const ConsensusModuleServiceID int32 = -1
 
 // CommitLogPosition records logPosition for the term leadershipTermID in place.
 //
@@ -419,7 +421,7 @@ func (l *Log) InvalidateLatestSnapshot() (bool, error) {
 	//nolint:gosec // G115: append keeps the entry count below MaxInt32
 	for idx := int32(len(l.entries)) - 1; idx >= 0; idx-- {
 		entry := l.entries[idx]
-		if !isLiveSnapshot(entry, consensusModuleServiceID) {
+		if !isLiveSnapshot(entry, ConsensusModuleServiceID) {
 			continue
 		}
 		if entry.LogPosition < highLogPosition {
@@ -437,7 +439,7 @@ func (l *Log) InvalidateLatestSnapshot() (bool, error) {
 
 	found := len(indices) > 0
 	for _, idx := range slices.Backward(indices) {
-		serviceID := consensusModuleServiceID
+		serviceID := ConsensusModuleServiceID
 		for ; idx >= 0; idx-- {
 			entry := l.entries[idx]
 			if !isLiveSnapshot(entry, serviceID) {

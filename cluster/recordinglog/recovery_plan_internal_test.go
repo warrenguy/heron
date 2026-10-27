@@ -62,7 +62,7 @@ func TestRecoveryPredicates(t *testing.T) {
 			entry: Entry{
 				Valid:     true,
 				Type:      EntryTypeSnapshot,
-				ServiceID: consensusModuleServiceID,
+				ServiceID: ConsensusModuleServiceID,
 			},
 			want: true,
 			fn:   isValidConsensusModuleSnapshot,
@@ -72,7 +72,7 @@ func TestRecoveryPredicates(t *testing.T) {
 			entry: Entry{
 				Valid:     true,
 				Type:      EntryTypeStandbySnapshot,
-				ServiceID: consensusModuleServiceID,
+				ServiceID: ConsensusModuleServiceID,
 			},
 			want: false,
 			fn:   isValidConsensusModuleSnapshot,
@@ -132,14 +132,14 @@ func TestSelectRecoveryAnchor_ordersSnapshotsByServiceID(t *testing.T) {
 		snapshotEntry(4, 1, 1440, 2880, 2),
 		snapshotEntry(5, 1, 1440, 2880, 1),
 		snapshotEntry(6, 1, 1440, 2880, 0),
-		snapshotEntry(7, 1, 1440, 2880, consensusModuleServiceID),
+		snapshotEntry(7, 1, 1440, 2880, ConsensusModuleServiceID),
 	}
 
 	sel, err := selectRecoveryAnchor(entries, 3)
 	require.NoError(t, err)
 	require.True(t, sel.hasSnapshot)
 	require.Len(t, sel.snapshots, 4)
-	require.Equal(t, consensusModuleServiceID, sel.snapshots[0].ServiceID)
+	require.Equal(t, ConsensusModuleServiceID, sel.snapshots[0].ServiceID)
 	require.Equal(t, int32(0), sel.snapshots[1].ServiceID)
 	require.Equal(t, int32(1), sel.snapshots[2].ServiceID)
 	require.Equal(t, int32(2), sel.snapshots[3].ServiceID)
@@ -152,14 +152,14 @@ func TestSelectRecoveryAnchor_allowsPartialSnapshotGroup(t *testing.T) {
 		termEntryForAddSnapshots(0),
 		snapshotEntry(5, 1, 1440, 2880, 1),
 		snapshotEntry(6, 1, 1440, 2880, 0),
-		snapshotEntry(7, 1, 1440, 2880, consensusModuleServiceID),
+		snapshotEntry(7, 1, 1440, 2880, ConsensusModuleServiceID),
 	}
 
 	sel, err := selectRecoveryAnchor(entries, 3)
 	require.NoError(t, err)
 	require.True(t, sel.hasSnapshot)
 	require.Len(t, sel.snapshots, 3)
-	require.Equal(t, consensusModuleServiceID, sel.snapshots[0].ServiceID)
+	require.Equal(t, ConsensusModuleServiceID, sel.snapshots[0].ServiceID)
 	require.Equal(t, int32(0), sel.snapshots[1].ServiceID)
 	require.Equal(t, int32(1), sel.snapshots[2].ServiceID)
 }
@@ -167,7 +167,7 @@ func TestSelectRecoveryAnchor_allowsPartialSnapshotGroup(t *testing.T) {
 func TestMatchesConsensusModuleSnapshotGroup(t *testing.T) {
 	t.Parallel()
 
-	cm := snapshotFromEntry(snapshotEntry(7, 1, 1440, 2880, consensusModuleServiceID))
+	cm := snapshotFromEntry(snapshotEntry(7, 1, 1440, 2880, ConsensusModuleServiceID))
 	service := snapshotEntry(6, 1, 1440, 2880, 0)
 
 	require.True(t, matchesConsensusModuleSnapshotGroup(service, cm))
@@ -187,7 +187,7 @@ func TestSelectRecoveryAnchor_rejectsOutOfRangeServiceID(t *testing.T) {
 		termEntryForAddSnapshots(0),
 		snapshotEntry(4, 1, 1440, 2880, 2),
 		snapshotEntry(5, 1, 1440, 2880, 0),
-		snapshotEntry(7, 1, 1440, 2880, consensusModuleServiceID),
+		snapshotEntry(7, 1, 1440, 2880, ConsensusModuleServiceID),
 	}
 
 	_, err := selectRecoveryAnchor(entries, 2)
@@ -203,7 +203,7 @@ func TestSelectRecoveryAnchor_missingServiceSnapshot(t *testing.T) {
 	t.Parallel()
 
 	entries := []Entry{
-		snapshotEntry(7, 1, 1440, 2880, consensusModuleServiceID),
+		snapshotEntry(7, 1, 1440, 2880, ConsensusModuleServiceID),
 	}
 
 	_, err := selectRecoveryAnchor(entries, 1)
