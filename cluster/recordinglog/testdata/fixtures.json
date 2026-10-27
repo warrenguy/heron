@@ -33,6 +33,21 @@
       "entries": [
         {"recordingId": 4, "leadershipTermId": 2, "termBaseLogPosition": 0, "logPosition": -1, "timestamp": 5000, "serviceId": -1, "type": 0, "valid": true, "archiveEndpoint": "", "position": 0, "index": 0}
       ]
+    },
+    {
+      "file": "tiebreaks.recordinglog",
+      "entries": [
+        {"recordingId": 1, "leadershipTermId": 0, "termBaseLogPosition": 0, "logPosition": 1024, "timestamp": 1000, "serviceId": -1, "type": 0, "valid": true, "archiveEndpoint": "", "position": 0, "index": 0},
+        {"recordingId": 24, "leadershipTermId": 0, "termBaseLogPosition": 0, "logPosition": 256, "timestamp": 1500, "serviceId": -1, "type": 1, "valid": true, "archiveEndpoint": "", "position": 384, "index": 5},
+        {"recordingId": 23, "leadershipTermId": 0, "termBaseLogPosition": 0, "logPosition": 512, "timestamp": 2000, "serviceId": 0, "type": 2, "valid": true, "archiveEndpoint": "aeron:udp?endpoint=standby.example.com:8020", "position": 256, "index": 4},
+        {"recordingId": 22, "leadershipTermId": 0, "termBaseLogPosition": 0, "logPosition": 512, "timestamp": 2000, "serviceId": 1, "type": 1, "valid": true, "archiveEndpoint": "", "position": 192, "index": 3},
+        {"recordingId": 21, "leadershipTermId": 0, "termBaseLogPosition": 0, "logPosition": 512, "timestamp": 2000, "serviceId": 0, "type": 1, "valid": true, "archiveEndpoint": "", "position": 128, "index": 2},
+        {"recordingId": 25, "leadershipTermId": 0, "termBaseLogPosition": 0, "logPosition": 512, "timestamp": 2100, "serviceId": 0, "type": 1, "valid": true, "archiveEndpoint": "", "position": 448, "index": 6},
+        {"recordingId": 20, "leadershipTermId": 0, "termBaseLogPosition": 0, "logPosition": 512, "timestamp": 2000, "serviceId": -1, "type": 1, "valid": true, "archiveEndpoint": "", "position": 64, "index": 1},
+        {"recordingId": 1, "leadershipTermId": 1, "termBaseLogPosition": 1024, "logPosition": -1, "timestamp": 3100, "serviceId": -1, "type": 0, "valid": false, "archiveEndpoint": "", "position": 576, "index": 8},
+        {"recordingId": 1, "leadershipTermId": 1, "termBaseLogPosition": 1024, "logPosition": -1, "timestamp": 3000, "serviceId": -1, "type": 0, "valid": true, "archiveEndpoint": "", "position": 640, "index": 9},
+        {"recordingId": 30, "leadershipTermId": 1, "termBaseLogPosition": 1024, "logPosition": 1100, "timestamp": 3000, "serviceId": -1, "type": 1, "valid": true, "archiveEndpoint": "", "position": 512, "index": 7}
+      ]
     }
   ]
 }

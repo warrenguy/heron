@@ -156,6 +156,147 @@ func TestAppendInsertionOrder_rapid(t *testing.T) {
 	})
 }
 
+func TestSnapshotGroupAppendOrder_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		log, path := newLog(t)
+		defer func() { require.NoError(rt, log.Close()) }()
+
+		const (
+			termRecordingID = 1
+			termRange       = 512
+			// termServiceID is the NULL_VALUE service id of a TERM row.
+			termServiceID int32 = -1
+		)
+		serviceCount := rapid.IntRange(0, 3).Draw(rt, "serviceCount")
+
+		var model []recordinglog.Entry
+		// termRows holds the model index of each TERM row, by term id.
+		var termRows []int
+		// groups holds each complete snapshot group, rows in file order.
+		var groups [][]recordinglog.Entry
+		usedPositions := make(map[int64]bool)
+		nextRecordingID := int64(100)
+
+		appendTerm := func(base, timestamp int64) {
+			rt.Helper()
+			termID := int64(len(termRows))
+			require.NoError(rt, log.AppendTerm(termRecordingID, termID, base, timestamp))
+			if len(termRows) > 0 {
+				model[termRows[len(termRows)-1]].LogPosition = base
+			}
+			termRows = append(termRows, len(model))
+			model = append(model, recordinglog.Entry{
+				RecordingID:         termRecordingID,
+				LeadershipTermID:    termID,
+				TermBaseLogPosition: base,
+				LogPosition:         recordinglog.NullPosition,
+				Timestamp:           timestamp,
+				ServiceID:           termServiceID,
+				Type:                recordinglog.EntryTypeTerm,
+				Valid:               true,
+				Position:            int64(len(model)) * recordinglog.RecordAlignment,
+				Index:               int32(len(model)),
+			})
+		}
+
+		appendGroup := func(name string) {
+			rt.Helper()
+			termID := rapid.IntRange(0, len(termRows)-1).Draw(rt, "groupTerm"+name)
+			base := model[termRows[termID]].TermBaseLogPosition
+			position := rapid.Int64Range(base, base+termRange-1).
+				Filter(func(p int64) bool { return !usedPositions[p] }).
+				Draw(rt, "groupPosition"+name)
+			usedPositions[position] = true
+			timestamp := rapid.Int64Range(0, 999999).Draw(rt, "groupTimestamp"+name)
+			rowCount := rapid.IntRange(0, serviceCount+1).Draw(rt, "rowCount"+name)
+
+			var rows []recordinglog.Entry
+			for row := range rowCount {
+				// Service ids count down from the highest. The row after
+				// service 0 lands on ConsensusModuleServiceID, -1.
+				serviceID := int32(serviceCount - 1 - row)
+				require.NoError(rt, log.AppendSnapshot(
+					nextRecordingID, int64(termID), base, position, timestamp, serviceID,
+				))
+				entry := recordinglog.Entry{
+					RecordingID:         nextRecordingID,
+					LeadershipTermID:    int64(termID),
+					TermBaseLogPosition: base,
+					LogPosition:         position,
+					Timestamp:           timestamp,
+					ServiceID:           serviceID,
+					Type:                recordinglog.EntryTypeSnapshot,
+					Valid:               true,
+					Position:            int64(len(model)) * recordinglog.RecordAlignment,
+					Index:               int32(len(model)),
+				}
+				nextRecordingID++
+				model = append(model, entry)
+				rows = append(rows, entry)
+			}
+			if rowCount == serviceCount+1 {
+				groups = append(groups, rows)
+			}
+		}
+
+		appendTerm(0, rapid.Int64Range(0, 999999).Draw(rt, "termTimestamp"))
+
+		n := rapid.IntRange(0, 12).Draw(rt, "n")
+		for i := range n {
+			name := strconv.Itoa(i)
+			if rapid.Bool().Draw(rt, "term"+name) {
+				base := model[termRows[len(termRows)-1]].TermBaseLogPosition + termRange +
+					rapid.Int64Range(0, 1024).Draw(rt, "baseStep"+name)
+				appendTerm(base, rapid.Int64Range(0, 999999).Draw(rt, "termTimestamp"+name))
+			} else {
+				appendGroup(name)
+			}
+
+			requireReloadMatchesLogRapid(rt, path, log)
+			entries := log.Entries()
+			want := slices.Clone(model)
+			slices.SortStableFunc(want, recordinglog.CompareEntries)
+			require.Equal(rt, want, entries)
+
+			var newest []recordinglog.Entry
+			for _, rows := range groups {
+				// Service rows sit directly before the module row, highest id first.
+				moduleRecordingID := rows[serviceCount].RecordingID
+				moduleIndex := slices.IndexFunc(entries, func(e recordinglog.Entry) bool {
+					return e.Type == recordinglog.EntryTypeSnapshot && e.RecordingID == moduleRecordingID
+				})
+				require.GreaterOrEqual(rt, moduleIndex, serviceCount)
+				for k, row := range rows {
+					require.Equal(rt, row.RecordingID, entries[moduleIndex-serviceCount+k].RecordingID)
+				}
+				if newest == nil || recordinglog.Less(newest[serviceCount], rows[serviceCount]) {
+					newest = rows
+				}
+			}
+
+			plan, err := log.PlanRecovery(fakeArchiveForEntries(entries), recoveryPlanConfig(serviceCount))
+			require.NoError(rt, err)
+			if newest == nil {
+				require.Empty(rt, plan.Snapshots)
+				continue
+			}
+			wantSnapshots := make([]recordinglog.Snapshot, 0, serviceCount+1)
+			for _, row := range slices.Backward(newest) {
+				wantSnapshots = append(wantSnapshots, recordinglog.Snapshot{
+					RecordingID:         row.RecordingID,
+					LeadershipTermID:    row.LeadershipTermID,
+					TermBaseLogPosition: row.TermBaseLogPosition,
+					LogPosition:         row.LogPosition,
+					Timestamp:           row.Timestamp,
+					ServiceID:           row.ServiceID,
+				})
+			}
+			require.Equal(rt, wantSnapshots, plan.Snapshots)
+		}
+	})
+}
+
 func TestTermRecordingID_matchesEveryTermEntry_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
