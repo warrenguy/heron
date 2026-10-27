@@ -292,9 +292,9 @@ type Agent struct {
 	// (AppendPosition interval path still runs). Nil also skips the closed
 	// log image check.
 	//
-	// CatchupPoll uses the same adapter when an Image is bound. Election
-	// replay binds and polls the same adapter through BindReplayLog and
-	// ReplayLogPoll. A settled leader holds no Image after JoinLogAsLeader.
+	// CatchupPoll polls the same adapter and fails when it holds no Image.
+	// Election replay binds and polls the same adapter through BindReplayLog
+	// and ReplayLogPoll. A settled leader holds no Image after JoinLogAsLeader.
 	logAdapter *LogAdapter
 
 	// logPollNowNs is the duty-cycle clock for the current log adapter poll.
@@ -1035,17 +1035,17 @@ func isCatchupAppendPosition(flags uint8) bool {
 // Returns an error when:
 //   - the local log recording stopped. The recording follows the merged
 //     catchup and live image, so a stop means the image ended
-//   - a poll reads no fragments and the image is closed
+//   - a poll reads no fragments and the image is closed or missing
 //   - with a source, the published append position has not advanced for one
 //     leader heartbeat timeout
 //
-// Returns 0 and a nil error when adapter or image is nil.
+// Returns 0 and a nil error when adapter is nil.
 //
 // Concurrency: invoker-only. Election-live catchup is the sole consumer while
 // an election runner is set. Steady followerConsensusWork does not run then.
 func (a *Agent) CatchupPoll(limitPosition, nowNs int64) (int, error) {
 	adapter := a.logAdapter
-	if adapter == nil || adapter.Image() == nil {
+	if adapter == nil {
 		return 0, nil
 	}
 	if a.appendSource == nil {
