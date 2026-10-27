@@ -541,7 +541,7 @@ func TestHostDelegate_stubsSmoke(t *testing.T) {
 	require.Equal(t, 0, replay.DoWork(1))
 
 	require.Nil(t, a.NewLogReplication("leader", "response", 1, 2, 3))
-	require.Equal(t, 0, a.CatchupPoll(0, 0))
+	require.Equal(t, 0, catchupPoll(t, a, 0, 0))
 	a.CatchupInitiated(0)
 	a.StopAllCatchups()
 	require.False(t, a.IsCatchupNearLive(0))

@@ -370,6 +370,7 @@ type recordingElectionHost struct {
 	newLogReplay func(logPosition, appendPosition int64) election.LogReplay
 
 	catchupPollResult int
+	catchupPollErr    error
 
 	addLogPublicationErr error
 
@@ -523,12 +524,12 @@ func (h *recordingElectionHost) CatchupInitiated(nowNs int64) {
 	h.catchupInitiatedCalls = append(h.catchupInitiatedCalls, nowNs)
 }
 
-func (h *recordingElectionHost) CatchupPoll(limitPosition, nowNs int64) int {
+func (h *recordingElectionHost) CatchupPoll(limitPosition, nowNs int64) (int, error) {
 	h.catchupPollCalls = append(h.catchupPollCalls, catchupPollCall{
 		limitPosition: limitPosition,
 		nowNs:         nowNs,
 	})
-	return h.catchupPollResult
+	return h.catchupPollResult, h.catchupPollErr
 }
 
 func (h *recordingElectionHost) EnsureCatchupLogDestination(string) string {

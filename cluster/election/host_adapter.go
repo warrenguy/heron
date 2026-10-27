@@ -435,7 +435,7 @@ func (h *HostAdapter) NewLogReplication(
 	)
 }
 
-func (h *HostAdapter) CatchupPoll(limitPosition, nowNs int64) int {
+func (h *HostAdapter) CatchupPoll(limitPosition, nowNs int64) (int, error) {
 	return h.agent.CatchupPoll(limitPosition, nowNs)
 }
 

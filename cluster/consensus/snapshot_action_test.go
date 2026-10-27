@@ -1194,7 +1194,7 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 			name: "catchup poll stops at the action",
 			run: func(t *testing.T) {
 				f := newHoldingFollower(t)
-				f.agent.CatchupPoll(f.messageEnd+32, nowNs)
+				catchupPoll(t, f.agent, f.messageEnd+32, nowNs)
 				requireHeld(t, f)
 			},
 		},
@@ -1204,14 +1204,14 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 				f := newHoldingFollower(t)
 				limit := f.messageEnd + 32
 				for range 3 {
-					f.agent.CatchupPoll(limit, nowNs)
+					catchupPoll(t, f.agent, limit, nowNs)
 					requireHeld(t, f)
 					require.Less(t, f.agent.CommitPosition(), limit)
 					require.Nil(t, f.agent.abandonedSnapshotWaitAt(f.actionEnd))
 				}
 
 				ackAndPop(t, f, 0)
-				f.agent.CatchupPoll(limit, nowNs)
+				catchupPoll(t, f.agent, limit, nowNs)
 				requireMessageRead(t, f)
 			},
 		},
@@ -1220,7 +1220,7 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 			run: func(t *testing.T) {
 				f := newHoldingFollower(t)
 				for range 2 {
-					f.agent.CatchupPoll(f.actionEnd, nowNs)
+					catchupPoll(t, f.agent, f.actionEnd, nowNs)
 					requireHeld(t, f)
 				}
 
@@ -1247,7 +1247,7 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 				require.Equal(t, int64(0), f.agent.snapshotWaitPosition)
 				require.NotNil(t, f.agent.abandonedSnapshotWaitAt(f.actionEnd))
 
-				f.agent.CatchupPoll(f.messageEnd+32, nowNs)
+				catchupPoll(t, f.agent, f.messageEnd+32, nowNs)
 				requireMessageRead(t, f)
 
 				enqueueServiceAck(t, f.queue, f.actionEnd, 0, 0)
@@ -1313,7 +1313,7 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 				require.True(t, f.agent.HasPendingJoinLog())
 
 				f.agent.followerConsensusWork(nowNs)
-				f.agent.CatchupPoll(f.messageEnd+32, nowNs)
+				catchupPoll(t, f.agent, f.messageEnd+32, nowNs)
 				require.Equal(t, int64(0), f.adapter.Position())
 				require.False(t, f.agent.HasPendingSnapshotAction())
 				require.Equal(t, 0, f.agent.PendingServiceAckWaits())

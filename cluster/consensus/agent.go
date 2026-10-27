@@ -18,6 +18,13 @@ import (
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
+// Catchup poll failures. The election restarts on each.
+var (
+	errCatchupRecordingStopped = errors.New("consensus: unexpected recording stop during catchup")
+	errCatchupImageClosed      = errors.New("consensus: unexpected image close during catchup")
+	errCatchupNoProgress       = errors.New("consensus: no catchup progress")
+)
+
 // Package-level truncate refusals. Identity-comparable with errors.Is.
 var (
 	errNoLogTruncateControl = errors.New(
@@ -239,8 +246,9 @@ type Agent struct {
 	// short-lived egress publication.
 	egressEvents []*egressEvent
 
-	// appendSource supplies local log append high-water for leader rank and
-	// follower AppendPosition publish. Nil: leader consensusWork returns 0.
+	// appendSource supplies local log append high-water for leader rank,
+	// follower AppendPosition publish, and the catchup poll bound. Nil: leader
+	// consensusWork returns 0.
 	appendSource AppendPositionSource
 
 	// appendNotReadySinceNs is the first tick of the open not-ready run from
@@ -267,6 +275,12 @@ type Agent struct {
 	// timeOfLastAppendPositionSendNs gates follower AppendPosition re-publish
 	// on the heartbeat interval.
 	timeOfLastAppendPositionSendNs int64
+
+	// timeOfLastAppendPositionUpdateNs is the time of the last advancing
+	// follower AppendPosition publish, or of the catchup start, log join or
+	// new-leadership teardown. CatchupPoll fails when it is older than one
+	// leader heartbeat timeout.
+	timeOfLastAppendPositionUpdateNs int64
 
 	// logPublisher appends leadership-term and session frames on the exclusive
 	// log publication. Nil until wired via config or [Agent.SetLogPublisher].
@@ -536,8 +550,9 @@ type AgentConfig struct {
 	// [QueueConsensusIngress].
 	Ingress ConsensusIngress
 
-	// AppendSource optional mode-1 inject for leader rank and follower
-	// AppendPosition publish. Nil until wired via config or [Agent.SetAppendSource].
+	// AppendSource optional mode-1 inject for leader rank, follower
+	// AppendPosition publish, and the catchup poll bound. Nil until wired via
+	// config or [Agent.SetAppendSource].
 	AppendSource AppendPositionSource
 
 	// LogPublisher optional inject for log append and NewLeadershipTermEvent.
@@ -1001,38 +1016,86 @@ func isCatchupAppendPosition(flags uint8) bool {
 	return flags&AppendPositionFlagCatchup != 0
 }
 
-// CatchupPoll polls catchup/live log progress under limitPosition, then
-// publishes the recorded append position.
+// CatchupPoll polls the catchup and live log, then publishes a ready recorded
+// position.
 //
-// When a [LogAdapter] Image is bound, polls under limitPosition (same
-// BoundedControlledPoll substrate as followerConsensusWork). Each hold of
-// [Agent.holdLogPollBound] lowers the bound. Advances commit via
-// [Agent.ProposeMaxCommit] from adapter position. Then publishes the recorded
-// position under [AppendPositionFlagCatchup].
+// Reads the append source once, before the poll. The read sets the poll bound:
+//   - nil source: limitPosition. Does not publish
+//   - ready: min(limitPosition, recorded). Publishes recorded under
+//     [AppendPositionFlagCatchup]
+//   - not ready: the adapter position. Does not publish
 //
-// The recorded position does not bound the poll. A catchup recording stops
-// when the leader stops the replay. The adapter position may still trail the
-// recorded position.
+// Each hold of [Agent.holdLogPollBound] lowers the bound. Advances commit via
+// [Agent.ProposeMaxCommit] from the adapter position.
 //
-// Does not publish when AppendPositionSource is nil or its read is not ready.
+// Returns an error when:
+//   - the local log recording stopped. The recording follows the merged
+//     catchup and live image, so a stop means the image ended
+//   - a poll reads no fragments and the image is closed
+//   - with a source, the published append position has not advanced for one
+//     leader heartbeat timeout
 //
-// Returns 0 when adapter or image is nil.
+// Returns 0 and a nil error when adapter or image is nil.
 //
 // Concurrency: invoker-only. Election-live catchup is the sole consumer while
 // an election runner is set. Steady followerConsensusWork does not run then.
-func (a *Agent) CatchupPoll(limitPosition, nowNs int64) int {
+func (a *Agent) CatchupPoll(limitPosition, nowNs int64) (int, error) {
 	adapter := a.logAdapter
 	if adapter == nil || adapter.Image() == nil {
-		return 0
+		return 0, nil
 	}
-	work := a.pollBoundLog(adapter, limitPosition, nowNs)
 	if a.appendSource == nil {
-		return work
+		return a.pollCatchupBound(adapter, limitPosition, nowNs)
 	}
-	if recorded, ready := a.resolveAppendPosition(nowNs); ready {
+	recorded, ready := a.resolveAppendPosition(nowNs)
+	bound := adapter.Position()
+	switch {
+	case ready:
+		bound = min(limitPosition, recorded)
+	case a.hasStoppedLogRecording():
+		return 0, fmt.Errorf("%w: position=%d", errCatchupRecordingStopped, bound)
+	}
+	work, err := a.pollCatchupBound(adapter, bound, nowNs)
+	if err != nil {
+		return work, err
+	}
+	if ready {
 		work += a.updateFollowerPosition(nowNs, recorded, AppendPositionFlagCatchup)
 	}
-	return work
+	if nowNs > a.timeOfLastAppendPositionUpdateNs+a.leaderHeartbeatTimeoutNs {
+		return work, fmt.Errorf(
+			"%w: commit=%d limit=%d last_append=%d position=%d",
+			errCatchupNoProgress,
+			a.CommitPosition(),
+			limitPosition,
+			a.lastPublishedAppendPosition,
+			adapter.Position(),
+		)
+	}
+	return work, nil
+}
+
+// pollCatchupBound polls adapter under boundPosition.
+//
+// Returns an error when the poll reads no fragments and the image is closed.
+func (a *Agent) pollCatchupBound(
+	adapter *LogAdapter,
+	boundPosition int64,
+	nowNs int64,
+) (int, error) {
+	fragments := a.pollBoundLog(adapter, boundPosition, nowNs)
+	if fragments == 0 && adapter.IsImageClosed() {
+		return 0, fmt.Errorf("%w: position=%d", errCatchupImageClosed, adapter.Position())
+	}
+	return fragments, nil
+}
+
+// hasStoppedLogRecording reports whether the local log recording started and
+// then stopped.
+func (a *Agent) hasStoppedLogRecording() bool {
+	return a.recordingControl != nil &&
+		a.localLogRecordingID >= 0 &&
+		!a.IsRecordingActive()
 }
 
 // pollBoundLog stamps nowNs as the poll time, then polls adapter under
@@ -1050,11 +1113,13 @@ func (a *Agent) pollBoundLog(adapter *LogAdapter, limitPosition, nowNs int64) in
 const liveAddMaxWindow int64 = 32 * 1024 * 1024
 
 // CatchupInitiated notes the follower append-position cadence time so catchup
-// progress publish does not wait a full heartbeat interval.
+// progress publish does not wait a full heartbeat interval. Starts the
+// [Agent.CatchupPoll] progress timeout.
 //
 // Concurrency: invoker-only.
 func (a *Agent) CatchupInitiated(nowNs int64) {
 	a.timeOfLastAppendPositionSendNs = nowNs
+	a.timeOfLastAppendPositionUpdateNs = nowNs
 }
 
 // StopAllCatchups stops every leader-side catchup replay and drains
@@ -1651,7 +1716,7 @@ func (a *Agent) PrepareForNewLeadership(
 ) {
 	if !a.prepareInProgress {
 		a.prepareInProgress = true
-		a.teardownForNewLeadership(logPosition)
+		a.teardownForNewLeadership(logPosition, nowNs)
 	}
 	lastAppendPosition, prepared, err = a.pollPrepareStop(logPosition, nowNs)
 	if prepared || err != nil {
@@ -1676,11 +1741,12 @@ func (a *Agent) IsPrepareInProgress() bool {
 //
 // The module snapshot take cancel runs before StopAllCatchups. The take
 // closes its archive requests before the catchup stop uses the same client.
-func (a *Agent) teardownForNewLeadership(logPosition int64) {
+func (a *Agent) teardownForNewLeadership(logPosition, nowNs int64) {
 	a.RoleSet(RoleFollower)
 	a.SetLeaderMemberID(nullMemberID)
 	a.lastPublishedAppendPosition = 0
 	a.timeOfLastAppendPositionSendNs = 0
+	a.timeOfLastAppendPositionUpdateNs = nowNs
 	a.appendRankFailure = nil
 	a.appendNotReadySinceNs = nullValue
 	a.pendingJoinLog = nil
@@ -1894,7 +1960,7 @@ func (a *Agent) startLeaderLogRecording(
 // start. The cancel does not store a result. The take and the recording
 // start share the module archive client.
 //
-// nowNs is accepted for handler-signature parity and is unused.
+// A new join restarts the [Agent.CatchupPoll] progress timeout at nowNs.
 func (a *Agent) JoinLogAsFollower(
 	params FollowerLogJoinParams,
 	nowNs int64,
@@ -1902,7 +1968,6 @@ func (a *Agent) JoinLogAsFollower(
 	joined bool,
 	err error,
 ) {
-	_ = nowNs
 	a.cancelSnapshotTake()
 	if a.joinSource == nil || a.logAdapter == nil {
 		return false, nil
@@ -1927,6 +1992,7 @@ func (a *Agent) JoinLogAsFollower(
 	}
 
 	a.logAdapter.SetImage(image)
+	a.timeOfLastAppendPositionUpdateNs = nowNs
 	a.RoleSet(RoleFollower)
 	a.publishFollowerJoinLog(params)
 	return true, nil
@@ -2507,6 +2573,7 @@ func (a *Agent) updateFollowerPosition(nowNs, appendPos int64, flags uint8) int 
 	}
 	if advanced {
 		a.lastPublishedAppendPosition = position
+		a.timeOfLastAppendPositionUpdateNs = nowNs
 	}
 	a.timeOfLastAppendPositionSendNs = nowNs
 	return 1

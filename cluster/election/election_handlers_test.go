@@ -1746,6 +1746,28 @@ func TestHandleFollowerCatchup_noImageReturnsZero(t *testing.T) {
 	require.Equal(t, int64(election.NullPosition), host.catchupPollCalls[0].limitPosition)
 }
 
+// A CatchupPoll error restarts the election at INIT and skips the live add.
+func TestHandleFollowerCatchup_pollErrorRestartsElection(t *testing.T) {
+	t.Parallel()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	pollErr := errors.New("test: catchup poll failed")
+	host := &recordingElectionHost{
+		clock:             clock,
+		catchupPollResult: 2,
+		catchupPollErr:    pollErr,
+		catchupNearLive:   true,
+	}
+	deps.Host = host
+	e, _ := forceFollowerCatchup(t, cfg, deps, 150, 200)
+
+	// Poll (2) + error (1).
+	require.Equal(t, 3, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateInit, e.State())
+	require.Equal(t, pollErr, e.LastError())
+	require.Zero(t, host.addLiveLogDestinationCalls)
+}
+
 // Near-live catchup adds the live destination once and counts the attempt as work.
 // A second tick with live already set does not re-add.
 func TestHandleFollowerCatchup_addsLiveWhenNearLive(t *testing.T) {
