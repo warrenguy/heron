@@ -1756,6 +1756,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 			run: func(t *testing.T) {
 				f, result := resolveTakeWithServices(t, 3, nil)
 				require.NoError(t, result.Err)
+				require.NoError(t, result.ForceErr)
 				require.Equal(t, fakeSnapshotFirstRecordingID, result.RecordingID)
 				require.Equal(t, int64(5), result.LeadershipTermID)
 				require.Equal(t, int64(100), result.Timestamp)
@@ -1791,6 +1792,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 					f.recordingLog.missingTerm = true
 				})
 				require.ErrorIs(t, result.Err, errSnapshotRecordingLog)
+				require.NoError(t, result.ForceErr)
 				require.Equal(t, int64(nullValue), result.RecordingID)
 				require.Len(t, f.archive.starts, 1)
 				require.False(t, f.agent.HasPendingSnapshotAction())
@@ -1810,6 +1812,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 						})
 						require.ErrorIs(t, result.Err, errSnapshotRecordingLog)
 						require.ErrorIs(t, result.Err, errBoom)
+						require.NoError(t, result.ForceErr)
 						require.Equal(t, int64(nullValue), result.RecordingID)
 						group := fakeSnapshotGroup(result, fakeSnapshotFirstRecordingID)
 						require.Len(t, f.recordingLog.rows, failAt)
@@ -1823,46 +1826,51 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 			},
 		},
 		{
-			name: "force error",
+			name: "force error keeps the snapshot",
 			run: func(t *testing.T) {
 				f, result := resolveTakeWithServices(t, 2, func(f *takeFixture) {
 					f.recordingLog.forceErr = errBoom
 				})
-				require.ErrorIs(t, result.Err, errSnapshotRecordingLog)
-				require.ErrorIs(t, result.Err, errBoom)
-				require.Equal(t, int64(nullValue), result.RecordingID)
+				require.NoError(t, result.Err)
+				require.Equal(t, fakeSnapshotFirstRecordingID, result.RecordingID)
+				require.ErrorIs(t, result.ForceErr, errSnapshotRecordingLog)
+				require.ErrorIs(t, result.ForceErr, errBoom)
+				require.Equal(t, []int64{77, 78}, result.ServiceRecordingIDs)
 				require.Equal(t, fakeSnapshotGroup(result, fakeSnapshotFirstRecordingID), f.recordingLog.rows)
 				require.Equal(t, syncData(3), f.recordingLog.forces)
+				require.False(t, f.agent.HasPendingSnapshotAction())
 				f.requireCleanedUp(t)
 			},
 		},
 		{
 			name: "retake after a failed write",
 			run: func(t *testing.T) {
-				// Phase 1: Force fails the first take after its full group.
+				// Phase 1: appending the module row fails the first take. The
+				// service row stays.
 				f, first := resolveTakeWithServices(t, 1, func(f *takeFixture) {
-					f.recordingLog.forceErr = errBoom
+					f.recordingLog.appendErr = errBoom
+					f.recordingLog.appendErrAt = 1
 				})
 				require.ErrorIs(t, first.Err, errSnapshotRecordingLog)
-				firstGroup := fakeSnapshotGroup(first, fakeSnapshotFirstRecordingID)
-				require.Equal(t, firstGroup, f.recordingLog.rows)
+				firstRows := fakeSnapshotGroup(first, fakeSnapshotFirstRecordingID)[:1]
+				require.Equal(t, firstRows, f.recordingLog.rows)
 
 				// Phase 2: a second action writes a full group at its own
 				// position.
-				f.recordingLog.forceErr = nil
+				f.recordingLog.appendErr = nil
 				second := f.request(t, 200)
 				require.Greater(t, second, first.LogPosition)
 				f.ack(t, second, 1, 88, 0)
 				result, _ := f.tickUntilResolved(t, 200, 1)
 				require.NoError(t, result.Err)
+				require.NoError(t, result.ForceErr)
 				require.Equal(t, second, result.LogPosition)
 				require.Equal(t, slices.Concat(
-					firstGroup,
+					firstRows,
 					fakeSnapshotGroup(result, fakeSnapshotFirstRecordingID+1),
 				), f.recordingLog.rows)
 				require.Equal(t, []fakeSnapshotForce{
-					{level: recordinglog.FileSyncData, rows: 2},
-					{level: recordinglog.FileSyncData, rows: 4},
+					{level: recordinglog.FileSyncData, rows: 3},
 				}, f.recordingLog.forces)
 			},
 		},
