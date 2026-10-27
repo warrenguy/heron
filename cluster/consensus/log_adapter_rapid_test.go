@@ -412,7 +412,8 @@ func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 				followerWork()
 			case 2:
 				limit := drawPosition("catchupLimit")
-				a.CatchupPoll(limit, nowNs)
+				_, err := a.CatchupPoll(limit, nowNs)
+				require.NoError(rt, err)
 				m.poll(limit)
 				m.commit = max(m.commit, m.position)
 			case 3:

@@ -269,7 +269,7 @@ func TestCatchupPoll_learnsOpenFromLog(t *testing.T) {
 	a := NewAgent(AgentConfig{LogAdapter: adapter})
 
 	const nowNs int64 = 888
-	require.Positive(t, a.CatchupPoll(span+32, nowNs))
+	require.Positive(t, catchupPoll(t, a, span+32, nowNs))
 	requireLearnedOpen(t, a, fields, nowNs, span)
 }
 

@@ -46,7 +46,7 @@ type ElectionHost interface {
 		leaderRecordingID, stopPosition, nowNs int64,
 	) LogReplication
 
-	CatchupPoll(limitPosition, nowNs int64) int
+	CatchupPoll(limitPosition, nowNs int64) (int, error)
 	CatchupInitiated(nowNs int64)
 	IsCatchupNearLive(position int64) bool
 

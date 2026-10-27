@@ -659,7 +659,7 @@ func TestTimerEventConsume_consumePaths(t *testing.T) {
 				})
 				scheduleTimer(a, correlationID, d1)
 
-				require.Positive(t, a.CatchupPoll(end+32, nowNs))
+				require.Positive(t, catchupPoll(t, a, end+32, nowNs))
 				require.Equal(t, end, a.CommitPosition())
 				requireAgentTimers(t, a, nil, nil)
 			},

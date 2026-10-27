@@ -559,13 +559,19 @@ func (e *Election) handleFollowerCatchupAwait(nowNs int64) int {
 //   - live destination attached
 //
 // Then advances append and log position and moves to LOG_INIT.
+//
+// A CatchupPoll error restarts the election through [Election.HandleError].
 func (e *Election) handleFollowerCatchup(nowNs int64) int {
 	host := e.deps.Host
 	limit := e.notifiedCommitPosition
 	if limit == 0 {
 		limit = e.catchupJoinPosition
 	}
-	workCount := host.CatchupPoll(limit, nowNs)
+	workCount, err := host.CatchupPoll(limit, nowNs)
+	if err != nil {
+		e.HandleError(nowNs, err)
+		return workCount + 1
+	}
 
 	// Near live: attach the live destination. Frames merge with the catchup image.
 	// Failure leaves LiveLogDestination empty. The next tick retries.
@@ -576,7 +582,8 @@ func (e *Election) handleFollowerCatchup(nowNs int64) int {
 	}
 
 	// Complete only when install set a join bound. Injected CATCHUP without a
-	// join position polls forever (tests and sim).
+	// join position never completes here (tests and sim). A host with an
+	// append source fails the poll at the progress timeout instead.
 	join := e.catchupJoinPosition
 	if join == NullPosition {
 		return workCount

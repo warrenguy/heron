@@ -75,9 +75,9 @@ func (h *simElectionHost) UpdateMemberLogPosition(
 
 func (h *simElectionHost) AppendNewLeadershipTermEvent(int64) bool { return true }
 
-func (h *simElectionHost) CatchupPoll(int64, int64) int {
+func (h *simElectionHost) CatchupPoll(int64, int64) (int, error) {
 	h.catchupPollCalls++
-	return 0
+	return 0, nil
 }
 
 func (h *simElectionHost) IsCatchupNearLive(int64) bool { return h.catchupNearLive }

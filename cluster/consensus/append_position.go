@@ -20,7 +20,8 @@ import (
 // Returns:
 //   - position, true: local append high-water
 //   - 0, false: no reportable high-water; [Agent] skips leader rank and follower
-//     publish for that tick
+//     publish for that tick. [Agent.CatchupPoll] holds the adapter, or fails
+//     after a local recording stop
 type AppendPositionSource interface {
 	AppendPosition() (position int64, ready bool)
 }
@@ -39,8 +40,8 @@ func (s *AtomicAppendPosition) AppendPosition() (int64, bool) {
 	return s.V.Load(), true
 }
 
-// SetAppendSource wires the append high-water source for leader rank and
-// follower AppendPosition publish.
+// SetAppendSource wires the append high-water source for leader rank,
+// follower AppendPosition publish, and the catchup poll bound.
 //
 // Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
 //
@@ -133,9 +134,9 @@ var _ AppendPositionSource = (*LogAppendPosition)(nil)
 //
 // Never reports a position from a recording that has stopped.
 //
-// Steady-state only: drives leader quorum rank and follower AppendPosition
-// publish. Does not drive the election append position. The election seeds that
-// value at construction and rewrites it from
+// Drives leader quorum rank, follower AppendPosition publish, and the catchup
+// poll bound. Does not drive the election append position. The election
+// seeds that value at construction and rewrites it from
 // [AgentHandler.PrepareForNewLeadership]. NewLeadershipTerm fields and the
 // election divergence test read the election value, not this source.
 //

@@ -58,7 +58,7 @@ func (NoopElectionHost) NewLogReplication(
 	return nil
 }
 
-func (NoopElectionHost) CatchupPoll(int64, int64) int { return 0 }
+func (NoopElectionHost) CatchupPoll(int64, int64) (int, error) { return 0, nil }
 
 func (NoopElectionHost) CatchupInitiated(int64) {}
 

@@ -892,7 +892,9 @@ func TestHostAdapter_forwardSmoke(t *testing.T) {
 	require.Equal(t, int64(42), agent.LocalLogRecordingID())
 
 	require.Equal(t, int64(0), host.TimeOfLastLeaderUpdateNs())
-	require.Equal(t, 0, host.CatchupPoll(0, 0))
+	work, err := host.CatchupPoll(0, 0)
+	require.NoError(t, err)
+	require.Equal(t, 0, work)
 	require.False(t, host.IsCatchupNearLive(0))
 	require.Empty(t, host.LiveLogDestination())
 	require.NotPanics(t, host.AddLiveLogDestination)
