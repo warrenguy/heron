@@ -803,6 +803,62 @@ func TestHandleServiceAck_owedRetiredAck(t *testing.T) {
 			},
 		},
 		{
+			name: "truncate below a cancelled take removes the retired entry",
+			run: func(t *testing.T) {
+				// Phase 1: the wait pops and the take cancels.
+				a, q, _ := settledLeaderWithControl(t, 1)
+				require.NoError(t, a.RequestSnapshot(1000))
+				waitPos := a.ExpectedAckPosition()
+				enqueueServiceAck(t, q, waitPos, 0, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 1, a.serviceControlWork())
+				require.True(t, a.HasPendingSnapshotAction())
+				a.CloseSnapshotTake()
+				require.NotNil(t, a.abandonedSnapshotWaitAt(waitPos))
+
+				// Phase 2: TruncateLogEntry removes the cancelled take.
+				a.SetLogTruncateControl(&fakeLogTruncateControl{})
+				a.SetLogRecordingID(77)
+				require.NoError(t, a.TruncateLogEntry(0, 0))
+				require.Nil(t, a.abandonedSnapshotWaitAt(waitPos))
+
+				// Phase 3: a snapshot action at the position queues and pops.
+				a.handleClusterAction(snapshotActionFields(waitPos), waitPos)
+				require.Equal(t, waitPos, a.snapshotWaitPosition)
+				enqueueServiceAck(t, q, waitPos, 1, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 1, a.serviceControlWork())
+				require.Equal(t, int64(2), a.ExpectedServiceAckID())
+				require.NoError(t, a.ServiceAckFailure())
+				requireTakeNotConfigured(t, a)
+			},
+		},
+		{
+			name: "truncate below an open take leaves the take for a later cancel",
+			run: func(t *testing.T) {
+				// Phase 1: the wait pops and the take stays open.
+				a, q, _ := settledLeaderWithControl(t, 1)
+				require.NoError(t, a.RequestSnapshot(1000))
+				waitPos := a.ExpectedAckPosition()
+				enqueueServiceAck(t, q, waitPos, 0, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 1, a.serviceControlWork())
+				require.True(t, a.HasPendingSnapshotAction())
+
+				// Phase 2: TruncateLogEntry does not cancel the open take.
+				a.SetLogTruncateControl(&fakeLogTruncateControl{})
+				a.SetLogRecordingID(77)
+				require.NoError(t, a.TruncateLogEntry(0, 0))
+				require.Nil(t, a.abandonedSnapshotWaitAt(waitPos))
+				require.True(t, a.HasPendingSnapshotAction())
+
+				// Phase 3: the cancel retires the take position.
+				a.CloseSnapshotTake()
+				require.NotNil(t, a.abandonedSnapshotWaitAt(waitPos))
+				require.False(t, a.HasPendingSnapshotAction())
+			},
+		},
+		{
 			name: "second retire at the position after a truncate makes one entry",
 			run: func(t *testing.T) {
 				// Phase 1: both services owe an ack after the first retire.

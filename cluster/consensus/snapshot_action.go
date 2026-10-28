@@ -238,6 +238,10 @@ func (a *Agent) dropAbandonedSnapshotAck(serviceID int32, logPosition int64) boo
 // above logPosition. TruncateLogEntry calls removeAbandonedSnapshotWaitsAbove
 // after the archive drops the actions above logPosition. A later snapshot
 // action at a removed position queues a wait.
+//
+// An election truncate never drops a committed frame. A service reads only
+// committed frames, so no service acks a removed action. handleServiceAck
+// offers an ack at a removed position and does not drop it.
 func (a *Agent) removeAbandonedSnapshotWaitsAbove(logPosition int64) {
 	a.abandonedSnapshotWaits = slices.DeleteFunc(
 		a.abandonedSnapshotWaits,
