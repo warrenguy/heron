@@ -1747,6 +1747,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 			run: func(t *testing.T) {
 				f, result := resolveTakeWithServices(t, 0, nil)
 				require.NoError(t, result.Err)
+				require.NoError(t, result.ForceErr)
 				require.Equal(t, fakeSnapshotGroup(result, fakeSnapshotFirstRecordingID), f.recordingLog.rows)
 				require.Equal(t, syncData(1), f.recordingLog.forces)
 			},
@@ -1780,6 +1781,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 					f.agent.SetSnapshotRecordingLog(f.recordingLog, recordinglog.FileSyncFull)
 				})
 				require.NoError(t, result.Err)
+				require.NoError(t, result.ForceErr)
 				require.Equal(t, []fakeSnapshotForce{
 					{level: recordinglog.FileSyncFull, rows: 3},
 				}, f.recordingLog.forces)
@@ -1833,7 +1835,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 				})
 				require.NoError(t, result.Err)
 				require.Equal(t, fakeSnapshotFirstRecordingID, result.RecordingID)
-				require.ErrorIs(t, result.ForceErr, errSnapshotRecordingLog)
+				require.ErrorIs(t, result.ForceErr, errSnapshotRecordingLogForce)
 				require.ErrorIs(t, result.ForceErr, errBoom)
 				require.Equal(t, []int64{77, 78}, result.ServiceRecordingIDs)
 				require.Equal(t, fakeSnapshotGroup(result, fakeSnapshotFirstRecordingID), f.recordingLog.rows)
@@ -1871,6 +1873,39 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 				), f.recordingLog.rows)
 				require.Equal(t, []fakeSnapshotForce{
 					{level: recordinglog.FileSyncData, rows: 3},
+				}, f.recordingLog.forces)
+			},
+		},
+		{
+			name: "retake after a force error",
+			run: func(t *testing.T) {
+				// Phase 1: Force fails the first take after its full group.
+				// The take keeps the group.
+				f, first := resolveTakeWithServices(t, 1, func(f *takeFixture) {
+					f.recordingLog.forceErr = errBoom
+				})
+				require.NoError(t, first.Err)
+				require.ErrorIs(t, first.ForceErr, errSnapshotRecordingLogForce)
+				firstGroup := fakeSnapshotGroup(first, fakeSnapshotFirstRecordingID)
+				require.Equal(t, firstGroup, f.recordingLog.rows)
+
+				// Phase 2: a second action appends a full group behind the
+				// first, then forces the log again.
+				f.recordingLog.forceErr = nil
+				second := f.request(t, 200)
+				require.Greater(t, second, first.LogPosition)
+				f.ack(t, second, 1, 88, 0)
+				result, _ := f.tickUntilResolved(t, 200, 1)
+				require.NoError(t, result.Err)
+				require.NoError(t, result.ForceErr)
+				require.Equal(t, second, result.LogPosition)
+				require.Equal(t, slices.Concat(
+					firstGroup,
+					fakeSnapshotGroup(result, fakeSnapshotFirstRecordingID+1),
+				), f.recordingLog.rows)
+				require.Equal(t, []fakeSnapshotForce{
+					{level: recordinglog.FileSyncData, rows: 2},
+					{level: recordinglog.FileSyncData, rows: 4},
 				}, f.recordingLog.forces)
 			},
 		},

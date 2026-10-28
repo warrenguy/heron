@@ -578,7 +578,7 @@ func requireSnapshotTakeResult(
 
 	require.NoError(rt, certain)
 	if script.logOutcome == scriptLogForceError {
-		require.ErrorIs(rt, result.ForceErr, errSnapshotRecordingLog)
+		require.ErrorIs(rt, result.ForceErr, errSnapshotRecordingLogForce)
 		require.ErrorIs(rt, result.ForceErr, errSnapshotTakeRapidBoom)
 	} else {
 		require.NoError(rt, result.ForceErr)
