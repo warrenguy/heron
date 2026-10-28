@@ -580,8 +580,9 @@ func (a *Agent) resolveSnapshotTake(result SnapshotTakeResult) {
 
 // cancelSnapshotTake drops a take in flight and runs its cleanup. It does not
 // store a result. The take position joins abandonedSnapshotWaits, so a
-// redelivered action there does not queue a wait. The pop consumed every ack
-// at the position, so the retired entry does not owe an ack.
+// redelivered action there does not queue a wait. A later truncate below the
+// position removes the entry. The pop consumed every ack at the position, so
+// the retired entry does not owe an ack.
 func (a *Agent) cancelSnapshotTake() {
 	take := a.snapshotTake
 	if take == nil {

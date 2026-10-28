@@ -217,8 +217,9 @@ type retiredAckFrame struct {
 // retired snapshot frame with the control frame after it. A swap never pairs
 // frames at one position. A control wait may reuse a retired position after
 // the retired frame. A truncate below a retired position removes every
-// unacked retired snapshot frame above it from each service's order. One
-// optional fault sends a bad ack at a non-retired position.
+// unacked retired snapshot frame above it from each service's order. A
+// truncate may reuse one removed position for a snapshot action. One optional
+// fault sends a bad ack at a non-retired position.
 //
 // Invariants each step:
 //   - Before a fault, a failure never marks.
@@ -227,6 +228,9 @@ type retiredAckFrame struct {
 //   - Each expected id is at most the cursor of its service. Each dropped id
 //     sits above the expected id of its service.
 //   - A pending snapshot wait position sits once in the FIFO.
+//   - Each truncate keeps exactly the retired entries at or below the
+//     truncate position, owed flags unchanged.
+//   - A snapshot action at a removed position queues a wait.
 //
 // A final drain queues one control wait and each service acks every frame in
 // its order. Without a fault every wait pops and the expected id of each
@@ -264,6 +268,12 @@ func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
 			fields.LogPosition = position
 			require.Equal(rt, 1, a.publishOrQueueJoinLog(fields))
 			addFrame(retiredAckFrame{position: position})
+		}
+		queueSnapshot := func(position int64) {
+			rt.Helper()
+			a.handleClusterAction(snapshotActionFields(position), position)
+			require.Equal(rt, position, a.snapshotWaitPosition)
+			addFrame(retiredAckFrame{position: position, snapshot: true})
 		}
 		isRetired := func(frame retiredAckFrame) bool {
 			return frame.snapshot && slices.Contains(retired, frame.position)
@@ -338,9 +348,7 @@ func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
 				if a.snapshotWaitPosition != 0 || a.ServiceAckFailure() != nil {
 					break
 				}
-				position := freshPosition()
-				a.queueSnapshotWait(position, 0, 0)
-				addFrame(retiredAckFrame{position: position, snapshot: true})
+				queueSnapshot(freshPosition())
 
 			case retiredAckOpAck:
 				if cursor[sid] < len(order[sid]) {
@@ -369,12 +377,27 @@ func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
 				require.True(rt, prepared)
 
 			case retiredAckOpTruncate:
-				if len(retired) == 0 {
+				// The model truncates only with no pending snapshot wait.
+				if len(retired) == 0 || a.snapshotWaitPosition != 0 {
 					break
 				}
 				above := rapid.SampledFrom(retired).Draw(rt, "truncateAbove")
 				position := rapid.Int64Range(0, above/64-1).Draw(rt, "truncateSlot") * 64
+				aboveTruncate := func(retiredPosition int64) bool {
+					return retiredPosition > position
+				}
+				var before []abandonedSnapshotWait
+				for _, wait := range a.abandonedSnapshotWaits {
+					before = append(before, abandonedSnapshotWait{
+						position: wait.position,
+						owedAcks: slices.Clone(wait.owedAcks),
+					})
+				}
 				require.NoError(rt, a.TruncateLogEntry(0, position))
+				kept := slices.DeleteFunc(slices.Clone(before), func(wait abandonedSnapshotWait) bool {
+					return aboveTruncate(wait.position)
+				})
+				require.Equal(rt, kept, a.abandonedSnapshotWaits)
 				// The service never reads a truncated frame, so it never
 				// acks one. Later ack ids of the service shift down.
 				for service := range order {
@@ -387,6 +410,19 @@ func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
 						},
 					)
 					order[service] = slices.Concat(acked, unacked)
+				}
+				retired = slices.DeleteFunc(retired, aboveTruncate)
+
+				// A control wait may still sit at a removed position.
+				var removed []int64
+				for _, wait := range before {
+					if aboveTruncate(wait.position) && !slices.Contains(a.serviceAckWaits, wait.position) {
+						removed = append(removed, wait.position)
+					}
+				}
+				if len(removed) > 0 && a.ServiceAckFailure() == nil &&
+					rapid.Bool().Draw(rt, "reuseRemoved") {
+					queueSnapshot(rapid.SampledFrom(removed).Draw(rt, "removedPosition"))
 				}
 
 			case retiredAckOpFault:

@@ -63,8 +63,9 @@ func retiredLeader(
 	return a, q, waitPos
 }
 
-// truncatedRetiredLeader is retiredLeader followed by a log truncate to
-// position 0, which clears every owed ack flag at the retired position.
+// truncatedRetiredLeader calls retiredLeader. TruncateLogEntry then
+// truncates the log to position 0. TruncateLogEntry removes the retired
+// entry at the returned position.
 func truncatedRetiredLeader(
 	t testing.TB,
 	serviceCount int,
@@ -607,8 +608,8 @@ func TestHandleServiceAck_owedRetiredAck(t *testing.T) {
 	// service 0 and ack id 0 from service 1.
 	twoServicesPoppedAfterTruncate := func(t *testing.T) (*Agent, *QueueConsensusIngress) {
 		t.Helper()
-		// Service 0's ack drops at retire. The truncate clears service 1's
-		// owed flag, so service 1 never acks the retired action.
+		// The retire drops service 0's ack. TruncateLogEntry removes the action.
+		// Service 1 never acks the removed action.
 		a, q, waitPos := truncatedRetiredLeader(t, 2, 0)
 		require.NoError(t, a.RequestServiceAck(waitPos))
 		enqueueServiceAck(t, q, waitPos, 1, 0)
@@ -740,28 +741,20 @@ func TestHandleServiceAck_owedRetiredAck(t *testing.T) {
 			},
 		},
 		{
-			name: "truncate below the position clears the owed flag",
+			name: "truncate below the position removes the retired entry",
 			run: func(t *testing.T) {
 				a, q, waitPos := truncatedRetiredLeader(t, 1)
-				require.NotNil(t, a.abandonedSnapshotWaitAt(waitPos))
+				require.Nil(t, a.abandonedSnapshotWaitAt(waitPos))
 
-				// Phase 1: a new wait at the position pops on its first ack.
 				require.NoError(t, a.RequestServiceAck(waitPos))
 				ackAndPopWait(t, a, q, waitPos, 0)
 				require.Equal(t, 0, a.PendingServiceAckWaits())
 				require.Equal(t, int64(1), a.ExpectedServiceAckID())
-
-				// Phase 2: an ack at the retired position with no wait
-				// drops.
-				enqueueServiceAck(t, q, waitPos, 1, 0)
-				require.Equal(t, 1, a.pollServiceControl())
-				require.Equal(t, 0, a.ServiceAckQueueDepth(0))
-				require.Equal(t, int64(2), a.ExpectedServiceAckID())
 				require.NoError(t, a.ServiceAckFailure())
 			},
 		},
 		{
-			name: "two services, wait at the retired position after a truncate",
+			name: "two services, wait at the freed position after a truncate",
 			run: func(t *testing.T) {
 				a, q := twoServicesPoppedAfterTruncate(t)
 
@@ -789,6 +782,107 @@ func TestHandleServiceAck_owedRetiredAck(t *testing.T) {
 				enqueueServiceAck(t, q, laterPos, 1, 0)
 				require.Equal(t, 1, a.pollServiceControl())
 				require.ErrorIs(t, a.ServiceAckFailure(), ErrServiceAckOutOfSequence)
+			},
+		},
+		{
+			name: "snapshot action at the position after a truncate queues a wait",
+			run: func(t *testing.T) {
+				a, q, waitPos := truncatedRetiredLeader(t, 1)
+
+				a.handleClusterAction(snapshotActionFields(waitPos), waitPos)
+				require.Equal(t, []int64{waitPos}, a.serviceAckWaits)
+				require.Equal(t, waitPos, a.snapshotWaitPosition)
+
+				enqueueServiceAck(t, q, waitPos, 0, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 1, a.serviceControlWork())
+				require.Equal(t, 0, a.PendingServiceAckWaits())
+				require.Equal(t, int64(1), a.ExpectedServiceAckID())
+				require.NoError(t, a.ServiceAckFailure())
+				requireTakeNotConfigured(t, a)
+			},
+		},
+		{
+			name: "truncate below a cancelled take removes the retired entry",
+			run: func(t *testing.T) {
+				// Phase 1: the wait pops and the take cancels.
+				a, q, _ := settledLeaderWithControl(t, 1)
+				require.NoError(t, a.RequestSnapshot(1000))
+				waitPos := a.ExpectedAckPosition()
+				enqueueServiceAck(t, q, waitPos, 0, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 1, a.serviceControlWork())
+				require.True(t, a.HasPendingSnapshotAction())
+				a.CloseSnapshotTake()
+				require.NotNil(t, a.abandonedSnapshotWaitAt(waitPos))
+
+				// Phase 2: TruncateLogEntry removes the cancelled take.
+				a.SetLogTruncateControl(&fakeLogTruncateControl{})
+				a.SetLogRecordingID(77)
+				require.NoError(t, a.TruncateLogEntry(0, 0))
+				require.Nil(t, a.abandonedSnapshotWaitAt(waitPos))
+
+				// Phase 3: a snapshot action at the position queues and pops.
+				a.handleClusterAction(snapshotActionFields(waitPos), waitPos)
+				require.Equal(t, waitPos, a.snapshotWaitPosition)
+				enqueueServiceAck(t, q, waitPos, 1, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 1, a.serviceControlWork())
+				require.Equal(t, int64(2), a.ExpectedServiceAckID())
+				require.NoError(t, a.ServiceAckFailure())
+				requireTakeNotConfigured(t, a)
+			},
+		},
+		{
+			name: "truncate below an open take leaves the take for a later cancel",
+			run: func(t *testing.T) {
+				// Phase 1: the wait pops and the take stays open.
+				a, q, _ := settledLeaderWithControl(t, 1)
+				require.NoError(t, a.RequestSnapshot(1000))
+				waitPos := a.ExpectedAckPosition()
+				enqueueServiceAck(t, q, waitPos, 0, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 1, a.serviceControlWork())
+				require.True(t, a.HasPendingSnapshotAction())
+
+				// Phase 2: TruncateLogEntry does not cancel the open take.
+				a.SetLogTruncateControl(&fakeLogTruncateControl{})
+				a.SetLogRecordingID(77)
+				require.NoError(t, a.TruncateLogEntry(0, 0))
+				require.Nil(t, a.abandonedSnapshotWaitAt(waitPos))
+				require.True(t, a.HasPendingSnapshotAction())
+
+				// Phase 3: the cancel retires the take position.
+				a.CloseSnapshotTake()
+				require.NotNil(t, a.abandonedSnapshotWaitAt(waitPos))
+				require.False(t, a.HasPendingSnapshotAction())
+			},
+		},
+		{
+			name: "second retire at the position after a truncate makes one entry",
+			run: func(t *testing.T) {
+				// Phase 1: both services owe an ack after the first retire.
+				// TruncateLogEntry removes the retired action.
+				a, q, waitPos := truncatedRetiredLeader(t, 2)
+
+				// Phase 2: service 0 acks the new wait before the second retire.
+				a.handleClusterAction(snapshotActionFields(waitPos), waitPos)
+				require.Equal(t, waitPos, a.snapshotWaitPosition)
+				enqueueServiceAck(t, q, waitPos, 0, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				_, prepared, err := a.PrepareForNewLeadership(0, 2)
+				require.NoError(t, err)
+				require.True(t, prepared)
+
+				require.Equal(t, []abandonedSnapshotWait{
+					{position: waitPos, owedAcks: []bool{false, true}},
+				}, a.abandonedSnapshotWaits)
+
+				enqueueServiceAck(t, q, waitPos, 0, 1)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 0, a.ServiceAckQueueDepth(1))
+				require.Equal(t, int64(1), a.ExpectedServiceAckID())
+				require.NoError(t, a.ServiceAckFailure())
 			},
 		},
 		{
