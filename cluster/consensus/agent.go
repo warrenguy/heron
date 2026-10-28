@@ -1622,7 +1622,8 @@ func (a *Agent) SetLogRecordingID(recordingID int64) {
 //     recording id is null, or logPosition is misaligned
 //   - truncates the cluster log recording through [LogTruncateControl]
 //   - unbinds the log adapter at logPosition
-//   - removes the retired snapshot waits above logPosition
+//   - removes the retired snapshot waits and cancelled takes above
+//     logPosition
 //   - does not write recording.log; the election lowers the term entry
 //   - does not stop a recording
 //

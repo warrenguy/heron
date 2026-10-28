@@ -234,10 +234,10 @@ func (a *Agent) dropAbandonedSnapshotAck(serviceID int32, logPosition int64) boo
 	return !slices.Contains(a.serviceAckWaits, logPosition)
 }
 
-// removeAbandonedSnapshotWaitsAbove removes retired waits above logPosition.
-// TruncateLogEntry calls removeAbandonedSnapshotWaitsAbove after the archive
-// drops the actions above logPosition. A later snapshot action at a removed
-// position queues a wait.
+// removeAbandonedSnapshotWaitsAbove removes retired waits and cancelled takes
+// above logPosition. TruncateLogEntry calls removeAbandonedSnapshotWaitsAbove
+// after the archive drops the actions above logPosition. A later snapshot
+// action at a removed position queues a wait.
 func (a *Agent) removeAbandonedSnapshotWaitsAbove(logPosition int64) {
 	a.abandonedSnapshotWaits = slices.DeleteFunc(
 		a.abandonedSnapshotWaits,

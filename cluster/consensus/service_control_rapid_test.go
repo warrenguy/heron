@@ -218,9 +218,10 @@ type retiredAckFrame struct {
 // frames at one position. A control wait may reuse a retired position after
 // the retired frame. A truncate below a retired position removes every
 // unacked retired snapshot frame above it from each service's order. The
-// truncate cancels the pending take before removing retired positions. A
-// snapshot action reuses a freed position when one exists. One optional fault
-// sends a bad ack at a non-retired position.
+// truncate runs only when no snapshot wait pends. The truncate cancels the
+// pending take before removing retired positions. A snapshot action reuses a
+// freed position when one exists. One optional fault sends a bad ack at a
+// non-retired position.
 //
 // Invariants each step:
 //   - Before a fault, a failure never marks.
@@ -423,7 +424,8 @@ func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
 				require.True(rt, prepared)
 
 			case retiredAckOpTruncate:
-				if len(retired) == 0 {
+				// Prepare retires the pending wait before an election truncates.
+				if len(retired) == 0 || a.snapshotWaitPosition != 0 {
 					break
 				}
 				above := rapid.SampledFrom(retired).Draw(rt, "truncateAbove")
