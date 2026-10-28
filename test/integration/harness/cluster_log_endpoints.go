@@ -767,6 +767,7 @@ func unicastPortLedger() []portLedgerBlock {
 // singlePortLedger returns reserved single UDP listen ports.
 func singlePortLedger() []portLedgerSingle {
 	return []portLedgerSingle{
+		{name: "cluster-streams-multicast-log", port: ClusterLogNLTMulticastPort},
 		{name: "archive-smoke-0", port: ArchiveNodeSmokeControlPort0},
 		{name: "archive-client-0", port: ArchiveClientControlPort0},
 		{name: "archive-replicate-source", port: ArchiveReplicateSourceControlPort},
