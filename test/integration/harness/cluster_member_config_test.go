@@ -4,6 +4,7 @@ package harness
 
 import (
 	"errors"
+	"net"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -95,10 +96,13 @@ func TestMemberClusterConfig_storesIntegrationElection(t *testing.T) {
 	require.Equal(t, ClusterLogChannelTemplate, cfg.LogChannel)
 }
 
-// TestClusterPortBlocks_doNotOverlap asserts every reserved PortBase the live
-// suite binds stays disjoint on the unicast range. Each block uses the correct
-// memberCount. Log multicast endpoints must be pairwise unique. Unicast-only
-// reservations carry no shared endpoint and skip that compare.
+// TestClusterPortBlocks_doNotOverlap asserts the port ledger:
+//   - Block ranges do not overlap.
+//   - Each range ends before the ephemeral floor.
+//   - Log multicast endpoints differ.
+//   - The ledger reserves each log multicast port.
+//   - A unicast block keeps an empty log endpoint.
+//   - The endpoint comparison skips a unicast block.
 func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 	t.Parallel()
 
@@ -112,6 +116,11 @@ func TestClusterPortBlocks_doNotOverlap(t *testing.T) {
 	singles := singlePortLedger()
 	for _, b := range multicast {
 		require.NotEmpty(t, b.logEndpoint, b.name)
+		_, portText, err := net.SplitHostPort(b.logEndpoint)
+		require.NoError(t, err, b.name)
+		port, err := strconv.Atoi(portText)
+		require.NoError(t, err, b.name)
+		require.True(t, isReservedUDPPort(port), "%s log port %d", b.name, port)
 	}
 	for _, b := range unicast {
 		require.Empty(t, b.logEndpoint, b.name)
@@ -220,17 +229,22 @@ func TestFreeUDPPorts_skipReservedRanges(t *testing.T) {
 func TestFreeUDPPorts_claimExcludesOtherHolders(t *testing.T) {
 	t.Parallel()
 
-	// FreeUDPPort keeps other test binaries off port. The subtests claim port
-	// again under a private dir that no other binary opens.
+	// The flock in freeUDPClaimDir keeps other binaries off this port. The
+	// held and released subtests lock a private directory. A peer binary
+	// does not open the private directory. The held and released subtests
+	// do not bind.
 	port := FreeUDPPort(t)
 	_, ok := lockFreeUDPPort(t, freeUDPClaimDir, port)
 	require.False(t, ok)
 	dir := t.TempDir()
 	t.Run("held", func(t *testing.T) {
-		require.True(t, claimFreeUDPPort(t, dir, port))
 		claim, ok := lockFreeUDPPort(t, dir, port)
+		require.True(t, ok)
+		t.Cleanup(func() { _ = claim.Close() })
+
+		again, ok := lockFreeUDPPort(t, dir, port)
 		require.False(t, ok)
-		require.Nil(t, claim)
+		require.Nil(t, again)
 	})
 	t.Run("released", func(t *testing.T) {
 		claim, ok := lockFreeUDPPort(t, dir, port)
