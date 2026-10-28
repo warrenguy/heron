@@ -123,7 +123,8 @@ func (s snapshotTakeScript) outcome() (possible []error, certain error) {
 	if s.stopDelay > 0 {
 		possible = append(possible, errSnapshotRecordingStop)
 	}
-	if s.logOutcome != scriptLogOK {
+	switch s.logOutcome {
+	case scriptLogMissingTerm, scriptLogAppendError:
 		return possible, errSnapshotRecordingLog
 	}
 	return possible, nil
@@ -293,7 +294,8 @@ func (m *snapshotTakeAckModel) pop() bool {
 // successful take names the START id after a STOP at or above the close
 // position, and its rows follow the module row order. The recording log does
 // not see a write before the take resolves, or after a cancel or a retire. A
-// successful take writes its full group, then one Force.
+// successful take writes its full group, then one Force. A Force error sets
+// ForceErr. The take still succeeds.
 func TestSnapshotTake_model_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -560,6 +562,7 @@ func requireSnapshotTakeResult(
 
 	possible, certain := script.outcome()
 	if result.Err != nil {
+		require.NoError(rt, result.ForceErr)
 		require.Equal(rt, int64(nullValue), result.RecordingID)
 		matched := certain != nil && errors.Is(result.Err, certain)
 		for _, cause := range possible {
@@ -574,6 +577,12 @@ func requireSnapshotTakeResult(
 	}
 
 	require.NoError(rt, certain)
+	if script.logOutcome == scriptLogForceError {
+		require.ErrorIs(rt, result.ForceErr, errSnapshotRecordingLogForce)
+		require.ErrorIs(rt, result.ForceErr, errSnapshotTakeRapidBoom)
+	} else {
+		require.NoError(rt, result.ForceErr)
+	}
 	group := fakeSnapshotGroup(result, script.startID)
 	require.Equal(rt, group, recordingLog.rows)
 	require.Equal(rt, []fakeSnapshotForce{
@@ -627,9 +636,10 @@ func requireSnapshotTakeResult(
 }
 
 // requireFailedTakeRows asserts the recording log after a failed take:
-//   - append error: the rows before the failed call, without Force
-//   - Force error: the full group and one Force
-//   - any other cause: neither an append nor Force
+//   - an append error keeps the rows before the failed call
+//   - any other cause does not append
+//
+// The failed take does not call Force.
 func requireFailedTakeRows(
 	rt *rapid.T,
 	recordingLog *fakeSnapshotRecordingLog,
@@ -639,23 +649,15 @@ func requireFailedTakeRows(
 	rt.Helper()
 	group := fakeSnapshotGroup(result, script.startID)
 	var wantRows int
-	var wantForces []fakeSnapshotForce
-	if errors.Is(result.Err, errSnapshotRecordingLog) {
-		switch script.logOutcome {
-		case scriptLogAppendError:
-			require.ErrorIs(rt, result.Err, errSnapshotTakeRapidBoom)
-			wantRows = script.logFailRow
-		case scriptLogForceError:
-			require.ErrorIs(rt, result.Err, errSnapshotTakeRapidBoom)
-			wantRows = len(group)
-			wantForces = []fakeSnapshotForce{
-				{level: recordinglog.FileSyncData, rows: len(group)},
-			}
-		}
+	appendFailed := errors.Is(result.Err, errSnapshotRecordingLog) &&
+		script.logOutcome == scriptLogAppendError
+	if appendFailed {
+		require.ErrorIs(rt, result.Err, errSnapshotTakeRapidBoom)
+		wantRows = script.logFailRow
 	}
 	require.Len(rt, recordingLog.rows, wantRows)
 	for i, row := range recordingLog.rows {
 		require.Equal(rt, group[i], row, "row %d", i)
 	}
-	require.Equal(rt, wantForces, recordingLog.forces)
+	require.Empty(rt, recordingLog.forces)
 }

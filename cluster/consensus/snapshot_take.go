@@ -24,6 +24,9 @@ var (
 	errSnapshotRecordingLog   = errors.New("consensus: write snapshot rows to recording log")
 )
 
+// errSnapshotRecordingLogForce is the cause of SnapshotTakeResult.ForceErr.
+var errSnapshotRecordingLogForce = errors.New("consensus: force snapshot rows to recording log")
+
 // SnapshotTakeResult describes one resolved module snapshot take.
 type SnapshotTakeResult struct {
 	// LogPosition is the snapshot action position.
@@ -46,6 +49,10 @@ type SnapshotTakeResult struct {
 	// Err is nil when the module recorded its snapshot and wrote its
 	// recording log rows. Otherwise Err names why the take skipped or failed.
 	Err error
+
+	// ForceErr is the recording log Force error after the module row is in
+	// the log. The rows stay in the log. Err stays nil.
+	ForceErr error
 }
 
 // SnapshotStartRequest is one non-blocking start of the module snapshot
@@ -138,7 +145,7 @@ const (
 	takeWriting
 
 	// takeAwaitingStop waits for the autoStop STOP signal, then writes the
-	// recording log rows.
+	// recording log rows and forces the log.
 	takeAwaitingStop
 )
 
@@ -480,8 +487,8 @@ func (a *Agent) writeSnapshot(take *snapshotTake, nowNs int64) (bool, error) {
 }
 
 // awaitSnapshotStop waits for STOP. A STOP at or above the close position
-// writes the recording log rows, then resolves the take with the recording
-// id.
+// writes the recording log rows, forces the log, then resolves the take
+// with the recording id. A Force error does not fail the take.
 func (a *Agent) awaitSnapshotStop(take *snapshotTake, nowNs int64) (bool, error) {
 	stopPosition, stopped := take.control.StopPosition()
 	switch {
@@ -502,19 +509,26 @@ func (a *Agent) awaitSnapshotStop(take *snapshotTake, nowNs int64) (bool, error)
 	if err := take.appendRecordingLogRows(); err != nil {
 		return false, err
 	}
-	a.resolveSnapshotTake(take.result(take.recordingID, nil))
+	result := take.result(take.recordingID, nil)
+	if err := take.recordingLog.Force(take.recordingLogSyncLevel); err != nil {
+		result.ForceErr = fmt.Errorf("%w: %w", errSnapshotRecordingLogForce, err)
+	}
+	a.resolveSnapshotTake(result)
 	return true, nil
 }
 
-// appendRecordingLogRows writes the snapshot group to the recording log:
+// appendRecordingLogRows appends the snapshot group to the recording log:
 //  1. one row per service, from the highest service id down to 0
 //  2. the module row with [recordinglog.ConsensusModuleServiceID]
-//  3. one Force at the copied level
 //
-// The module row lands last, so a partial group never anchors a recovery plan.
+// The module row closes the group. PlanRecovery keys a group on the
+// module row.
 //
-// Returns an error when the TERM row is missing, an append fails, or Force
-// fails. The write stops at the first error.
+// Returns an error when:
+//   - the TERM row is missing
+//   - an append fails
+//
+// The write stops at the first error.
 func (t *snapshotTake) appendRecordingLogRows() error {
 	term := t.recordingLog.FindTermEntry(t.leadershipTermID)
 	if term == nil {
@@ -546,9 +560,6 @@ func (t *snapshotTake) appendRecordingLogRows() error {
 	}
 	if err := appendRow(t.recordingID, recordinglog.ConsensusModuleServiceID); err != nil {
 		return fmt.Errorf("%w: module row: %w", errSnapshotRecordingLog, err)
-	}
-	if err := t.recordingLog.Force(t.recordingLogSyncLevel); err != nil {
-		return fmt.Errorf("%w: force: %w", errSnapshotRecordingLog, err)
 	}
 	return nil
 }
