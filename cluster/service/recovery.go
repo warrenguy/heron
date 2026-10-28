@@ -46,10 +46,14 @@ var (
 //
 // Open builds the start ack from the key: ack id 0, the key log position,
 // and the transport client id as RelevantID. The consensus module must
-// consume that ack.
+// consume the start ack. [Open] names the later failures that send
+// RelevantID NULL_VALUE. [Open] names the failures that do not send an
+// ack. The agent sends RelevantID NULL_VALUE after a Start error.
 type RecoveryConfig struct {
-	// Timeout caps each recovery wait: the counter, the replay image, and
-	// each loader gap between fragments. Zero takes DefaultRecoveryTimeout.
+	// Timeout caps each recovery wait: the counter, the replay image, each
+	// loader gap between fragments, and the failed start ack offer. Open
+	// also sets [StartAckConfig.Timeout] to Timeout. Zero takes
+	// DefaultRecoveryTimeout.
 	// Must not be negative.
 	//
 	// The module must allocate the recovery state counter within Timeout
@@ -178,18 +182,40 @@ type recoveryPath struct {
 	recordingID int64 // nullValue on the term-only path
 }
 
-// isLoad reports whether the path loads a snapshot recording.
+// isLoad reports a load when the key leadership term differs from NULL_VALUE.
 func (p recoveryPath) isLoad() bool {
-	return p.recordingID != nullValue
+	return p.state.LeadershipTermID != nullValue
+}
+
+// checkLoad returns nil on the term-only path.
+//
+// Returns an error when:
+//   - the snapshot recording id is negative
+//   - Archive is nil
+func (p recoveryPath) checkLoad(cfg Config) error {
+	switch {
+	case !p.isLoad():
+		return nil
+	case p.recordingID < 0:
+		return fmt.Errorf(
+			"%w: snapshot recording id %d", errRecoveryStateInvalid, p.recordingID,
+		)
+	case cfg.Archive == nil:
+		return fmt.Errorf(
+			"%w: recording %d needs Archive", errSnapshotLoad, p.recordingID,
+		)
+	}
+	return nil
 }
 
 // resolveRecoveryPath picks the recovery path for serviceID.
 //
 // Returns:
 //   - the term-only path when the key term is NULL_VALUE
-//   - the load path with the key recording id for serviceID otherwise
+//   - the load path with the key recording id for serviceID otherwise.
+//     The recording id may be negative. [recoveryPath.checkLoad] refuses
+//     a negative id
 //   - an error when the key does not hold a recording id for serviceID
-//   - an error when that recording id is negative
 func resolveRecoveryPath(
 	state codecs.RecoveryStateKeyFields,
 	serviceID int32,
@@ -206,30 +232,70 @@ func resolveRecoveryPath(
 			len(state.SnapshotRecordingIDs),
 		)
 	}
-	if recordingID < 0 {
-		return recoveryPath{}, fmt.Errorf(
-			"%w: snapshot recording id %d", errRecoveryStateInvalid, recordingID,
-		)
-	}
 	return recoveryPath{state: state, recordingID: recordingID}, nil
 }
 
-// awaitRecoveryPath waits for the recovery state counter on transport. It
-// then resolves the path for cfg.ServiceID. cfg must hold its defaults and
-// pass validateConfig. A load path also needs cfg.Archive.
+// awaitRecoveryPath waits for the recovery state counter on transport.
+// awaitRecoveryPath then resolves the path for cfg.ServiceID. cfg must
+// hold its defaults and pass validateConfig.
 func awaitRecoveryPath(cfg Config, transport recoveryTransport) (recoveryPath, error) {
 	state, err := awaitRecoveryState(transport, cfg.Recovery.Timeout)
 	if err != nil {
 		return recoveryPath{}, err
 	}
-	path, err := resolveRecoveryPath(state, cfg.ServiceID)
-	if err != nil {
-		return recoveryPath{}, err
+	return resolveRecoveryPath(state, cfg.ServiceID)
+}
+
+// sendFailedStartAck offers the start ack of a failed recovery. The ack
+// id is 0. The log position is the key log position. RelevantID is
+// NULL_VALUE. The module that allocated the recovery state counter waits
+// on the start ack. sendFailedStartAck returns without an offer when
+// cfg.Recovery is nil.
+//
+// Behaviour: sendFailedStartAck adds the control publication when pub is
+// nil. A failed add does not send the ack. Each PublishServiceAck call
+// retries under [aeron.OfferAttempts]. sendFailedStartAck repeats a
+// retriable offer until cfg.Recovery.Timeout passes. sendFailedStartAck
+// pumps transport between offers. The pump lets a new publication
+// connect. sendFailedStartAck does not send the ack on a terminal code.
+// sendFailedStartAck does not send the ack when the timeout passes.
+//
+// Ownership: closes the publication added here. The caller owns a non-nil
+// pub.
+func sendFailedStartAck(
+	cfg Config,
+	transport recoveryTransport,
+	state codecs.RecoveryStateKeyFields,
+	pub *aeron.Publication,
+) {
+	if cfg.Recovery == nil {
+		return
 	}
-	if path.isLoad() && cfg.Archive == nil {
-		return recoveryPath{}, fmt.Errorf(
-			"%w: recording %d needs Archive", errSnapshotLoad, path.recordingID,
-		)
+	if pub == nil {
+		added, err := cfg.Aeron.AddPublication(cfg.ConsensusModuleStreamID, cfg.ControlChannel)
+		added, err = addedHandle(added, err, errAdderReturnedNoPublication)
+		if err != nil {
+			return
+		}
+		defer func() { _ = added.Close() }()
+		pub = added
 	}
-	return path, nil
+	proxy := NewConsensusModuleProxy()
+	proxy.SetPublication(pub)
+	fields := codecs.ServiceAckFields{
+		LogPosition: state.LogPosition,
+		Timestamp:   state.Timestamp,
+		AckID:       0,
+		RelevantID:  nullValue,
+		ServiceID:   cfg.ServiceID,
+	}
+	deadline := time.Now().Add(cfg.Recovery.Timeout)
+	idle := idlestrategy.NewDefaultBackoff()
+	for {
+		result := proxy.PublishServiceAck(fields)
+		if result > 0 || !aeron.IsOfferRetriable(result) || !time.Now().Before(deadline) {
+			return
+		}
+		idle.Idle(transport.DoWork())
+	}
 }

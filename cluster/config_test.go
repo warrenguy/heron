@@ -287,6 +287,14 @@ func TestValidate_happyPath(t *testing.T) {
 	require.NoError(t, topologyConfig(0).Validate())
 }
 
+func TestValidate_serviceCountAtMax(t *testing.T) {
+	t.Parallel()
+
+	cfg := topologyConfig(0)
+	cfg.ServiceCount = 10
+	require.NoError(t, cfg.Validate())
+}
+
 func TestValidate_withoutNormalize(t *testing.T) {
 	t.Parallel()
 
@@ -707,6 +715,13 @@ func TestValidate_errors(t *testing.T) {
 				cfg.ServiceCount = -1
 			},
 			want: "cluster: ServiceCount must not be negative",
+		},
+		{
+			name: "ServiceCount above the max",
+			mutate: func(cfg *cluster.Config) {
+				cfg.ServiceCount = 11
+			},
+			want: "cluster: ServiceCount must not exceed 10",
 		},
 		{
 			name: "negative SessionTimeoutNs",

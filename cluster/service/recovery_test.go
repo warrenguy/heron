@@ -124,8 +124,8 @@ func (f *recoveryFakeTransport) writeRecoveryState(
 	f.writeRecoveryCounter(tb, 0, cnc.CounterRecordAllocated, encodeRecoveryKey(tb, fields))
 }
 
-// recoveryKeyPastMaxServiceCount encodes a key without recording ids. It then
-// sets the service count one past codecs.RecoveryStateMaxServiceCount.
+// recoveryKeyPastMaxServiceCount encodes a key whose recording-id list is
+// empty. The service count is codecs.RecoveryStateMaxServiceCount plus one.
 func recoveryKeyPastMaxServiceCount(tb testing.TB) []byte {
 	tb.Helper()
 	key := encodeRecoveryKey(tb, codecs.RecoveryStateKeyFields{LeadershipTermID: 1})
@@ -327,12 +327,12 @@ func TestResolveRecoveryPath(t *testing.T) {
 			wantText:  "service: recovery state invalid: service id 3 outside service count 2",
 		},
 		{
-			name: "negative recording id",
+			name: "negative recording id takes the load path",
 			state: codecs.RecoveryStateKeyFields{
 				LeadershipTermID:     2,
 				SnapshotRecordingIDs: []int64{-1},
 			},
-			wantText: "service: recovery state invalid: snapshot recording id -1",
+			want: -1,
 		},
 	}
 	for _, tt := range tests {
@@ -521,27 +521,6 @@ func TestOpen_recovery(t *testing.T) {
 				archive:   &archive.Config{},
 				wantErr:   errRecoveryStateInvalid,
 			},
-			{
-				name: "negative recording id",
-				setup: func(t *testing.T, client *recoveryFakeTransport) {
-					client.writeRecoveryState(t, codecs.RecoveryStateKeyFields{
-						LeadershipTermID:     5,
-						SnapshotRecordingIDs: []int64{-5},
-					})
-				},
-				archive: &archive.Config{},
-				wantErr: errRecoveryStateInvalid,
-			},
-			{
-				name: "load path without Archive",
-				setup: func(t *testing.T, client *recoveryFakeTransport) {
-					client.writeRecoveryState(t, codecs.RecoveryStateKeyFields{
-						LeadershipTermID:     5,
-						SnapshotRecordingIDs: []int64{42},
-					})
-				},
-				wantErr: errSnapshotLoad,
-			},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
@@ -559,6 +538,177 @@ func TestOpen_recovery(t *testing.T) {
 				require.Empty(t, client.subCalls)
 				require.Empty(t, client.pubCalls)
 				require.Empty(t, client.replay.calls)
+			})
+		}
+	})
+
+	t.Run("failed start ack", func(t *testing.T) {
+		t.Parallel()
+		errConnect := errors.New("archive connect boom")
+		errSubscription := errors.New("subscription add boom")
+		loadState := codecs.RecoveryStateKeyFields{
+			LeadershipTermID:     5,
+			LogPosition:          640,
+			Timestamp:            9,
+			SnapshotRecordingIDs: []int64{42},
+		}
+		termOnlyState := codecs.RecoveryStateKeyFields{
+			LeadershipTermID: nullValue,
+			LogPosition:      640,
+			Timestamp:        9,
+		}
+		// notConnected rows offer on a stream that never connects. The offer
+		// retries until Recovery.Timeout. Open pumps between offers. The
+		// row does not send an ack.
+		tests := []struct {
+			name         string
+			state        codecs.RecoveryStateKeyFields
+			archive      *archive.Config
+			subErr       error
+			connectErr   error
+			notConnected bool
+			wantErr      error
+			wantSubCalls int
+		}{
+			{
+				name: "negative recording id",
+				state: codecs.RecoveryStateKeyFields{
+					LeadershipTermID:     5,
+					LogPosition:          640,
+					Timestamp:            9,
+					SnapshotRecordingIDs: []int64{-5},
+				},
+				archive: &archive.Config{},
+				wantErr: errRecoveryStateInvalid,
+			},
+			{
+				name:    "load path without Archive",
+				state:   loadState,
+				wantErr: errSnapshotLoad,
+			},
+			{
+				name:         "control subscription add",
+				state:        termOnlyState,
+				subErr:       errSubscription,
+				wantErr:      errSubscription,
+				wantSubCalls: 1,
+			},
+			{
+				name:         "control subscription add on a stream that never connects",
+				state:        termOnlyState,
+				subErr:       errSubscription,
+				notConnected: true,
+				wantErr:      errSubscription,
+				wantSubCalls: 1,
+			},
+			{
+				name:         "archive connect",
+				state:        loadState,
+				archive:      &archive.Config{},
+				connectErr:   errConnect,
+				wantErr:      errConnect,
+				wantSubCalls: 1,
+			},
+			{
+				name:         "archive connect on a stream that never connects",
+				state:        loadState,
+				archive:      &archive.Config{},
+				connectErr:   errConnect,
+				notConnected: true,
+				wantErr:      errConnect,
+				wantSubCalls: 1,
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				client := newRecoveryFakeTransport(t)
+				client.writeRecoveryState(t, tt.state)
+				client.subErr = tt.subErr
+				if tt.notConnected {
+					client.pub = aeron.NewTestPublicationForHooksWithLimit(t, 0, false)
+				}
+				cfg := recoveryOpenConfig(client, &recordingService{})
+				cfg.Archive = tt.archive
+				cfg.Recovery.Timeout = 10 * time.Millisecond
+
+				c, err := openWithArchiveConnect(cfg, func(
+					TransportClient,
+					archive.Config,
+				) (*archive.Client, snapshotReplayControl, error) {
+					return nil, nil, tt.connectErr
+				})
+				require.ErrorIs(t, err, tt.wantErr)
+				require.Nil(t, c)
+				require.Len(t, client.subCalls, tt.wantSubCalls)
+				if tt.wantSubCalls > 0 && tt.subErr == nil {
+					require.True(t, client.sub.IsClosed(), "control subscription closed")
+				}
+				require.Equal(t, []transportAdd{{
+					streamID: DefaultConsensusModuleStreamID,
+					channel:  DefaultControlChannel,
+				}}, client.pubCalls)
+				require.True(t, client.pub.IsClosed(), "control publication closed")
+				require.Empty(t, client.replay.calls)
+				if tt.notConnected {
+					require.Positive(t, client.pumps, "pumps between offers")
+					require.Empty(t, decodeServiceAcksFromPub(t, client.pub))
+					return
+				}
+				require.Zero(t, client.pumps, "pumps before the first offer")
+				require.Equal(t, []codecs.ServiceAckFields{{
+					LogPosition: 640,
+					Timestamp:   9,
+					AckID:       0,
+					RelevantID:  nullValue,
+					ServiceID:   0,
+				}}, decodeServiceAcksFromPub(t, client.pub))
+			})
+		}
+	})
+
+	t.Run("control publication add", func(t *testing.T) {
+		t.Parallel()
+		// The failed start ack adds the control publication again. A second
+		// add failure does not send the ack.
+		tests := []struct {
+			name       string
+			pubErrAdds int
+			wantAck    bool
+		}{
+			{name: "transient error sends the ack", pubErrAdds: 1, wantAck: true},
+			{name: "persistent error sends nothing"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				errPublication := errors.New("publication add boom")
+				client := newRecoveryFakeTransport(t)
+				client.writeRecoveryState(t, codecs.RecoveryStateKeyFields{
+					LeadershipTermID: nullValue,
+					LogPosition:      640,
+					Timestamp:        9,
+				})
+				client.pubErr = errPublication
+				client.pubErrAdds = tt.pubErrAdds
+
+				c, err := Open(recoveryOpenConfig(client, &recordingService{}))
+				require.ErrorIs(t, err, errPublication)
+				require.Nil(t, c)
+				require.Len(t, client.pubCalls, 2)
+				require.True(t, client.sub.IsClosed(), "control subscription closed")
+				if !tt.wantAck {
+					require.Nil(t, client.pub)
+					return
+				}
+				require.True(t, client.pub.IsClosed(), "control publication closed")
+				require.Equal(t, []codecs.ServiceAckFields{{
+					LogPosition: 640,
+					Timestamp:   9,
+					AckID:       0,
+					RelevantID:  nullValue,
+					ServiceID:   0,
+				}}, decodeServiceAcksFromPub(t, client.pub))
 			})
 		}
 	})
@@ -600,6 +750,31 @@ func TestOpen_recovery(t *testing.T) {
 		}}, decodeServiceAcksFromPub(t, client.pub))
 	})
 
+	t.Run("term-only Start error", func(t *testing.T) {
+		t.Parallel()
+		startErr := errors.New("start boom")
+		client := newRecoveryFakeTransport(t)
+		client.writeRecoveryState(t, codecs.RecoveryStateKeyFields{
+			LeadershipTermID: nullValue,
+			LogPosition:      640,
+			Timestamp:        9,
+		})
+		cfg := recoveryOpenConfig(client, &recordingService{startErr: startErr})
+		cfg.Recovery.Timeout = 7 * time.Second
+		agent := openContainer(t, cfg).Agent()
+		require.Equal(t, cfg.Recovery.Timeout.Nanoseconds(), agent.startAckTimeoutNs)
+
+		require.Equal(t, 2, agent.DoWork(0), "Start + start drain")
+		require.ErrorIs(t, agent.ServiceFailure(), startErr)
+		require.Equal(t, []codecs.ServiceAckFields{{
+			LogPosition: 640,
+			Timestamp:   9,
+			AckID:       0,
+			RelevantID:  nullValue,
+			ServiceID:   0,
+		}}, decodeServiceAcksFromPub(t, client.pub))
+	})
+
 	t.Run("load failure", func(t *testing.T) {
 		t.Parallel()
 		f := newRecoveryLoadFixture(t, [][]byte{
@@ -613,6 +788,13 @@ func TestOpen_recovery(t *testing.T) {
 		require.Nil(t, c)
 		require.True(t, f.client.sub.IsClosed(), "control subscription closed")
 		require.True(t, f.client.pub.IsClosed(), "control publication closed")
+		require.Equal(t, []codecs.ServiceAckFields{{
+			LogPosition: recoveryLoadLogPosition,
+			Timestamp:   9,
+			AckID:       0,
+			RelevantID:  nullValue,
+			ServiceID:   0,
+		}}, decodeServiceAcksFromPub(t, f.client.pub))
 		f.requireReplayStopped(t)
 		require.Empty(t, svc.loadPositions, "LoadSnapshot calls")
 		require.Equal(t, 0, svc.startCount)

@@ -27,8 +27,13 @@ var _ SubscriptionAdder = (*aeron.Client)(nil)
 //
 // Concurrency: invoker-only. Every method runs on the Agent.DoWork goroutine.
 type ClusteredService interface {
-	// Start runs once, before any log event. A non-nil error marks the sticky
-	// service failure and stops the duty cycle.
+	// Start runs once, before any log event. A non-nil error sets the
+	// queued start ack ready with RelevantID NULL_VALUE. The agent retries
+	// the start ack each tick until the ack sends, a terminal offer code
+	// returns, or [StartAckConfig.Timeout] passes. The agent then marks
+	// the service failure. With no queued start ack, or no bound control
+	// publication, the agent marks the service failure at once. The duty
+	// cycle stops.
 	Start(cluster Cluster) error
 
 	// SessionOpen runs after the agent adds session to the registry.

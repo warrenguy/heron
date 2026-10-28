@@ -3,12 +3,14 @@ package service
 import (
 	"context"
 	"errors"
-	"math"
+	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
+	"github.com/warrenguy/heron/cluster/codecs"
 )
 
 const (
@@ -31,6 +33,11 @@ const (
 	// DefaultSnapshotStreamID is the snapshot publication stream.
 	// Matches upstream SNAPSHOT_STREAM_ID_DEFAULT (106).
 	DefaultSnapshotStreamID int32 = 106
+
+	// MaxServiceCount is the most services one cluster member runs. Matches
+	// upstream MAX_SERVICE_COUNT (10). The recovery state counter key holds
+	// one snapshot recording id per service.
+	MaxServiceCount = codecs.RecoveryStateMaxServiceCount
 
 	// archiveResponseStreamBase is the upstream service archive response
 	// stream for service 0 at cluster id 0: 100 + 20 + 1.
@@ -106,8 +113,8 @@ type Config struct {
 	// as safe for application consumption. Required.
 	CommittedPosition func() int64
 
-	// ServiceID is this container's service id. Must not be negative. Zero
-	// matches upstream SERVICE_ID_DEFAULT.
+	// ServiceID is this container's service id. Must not be negative. Must
+	// be below MaxServiceCount. Zero matches upstream SERVICE_ID_DEFAULT.
 	ServiceID int32
 
 	// ControlChannel is the shared control channel for the service stream and
@@ -145,8 +152,7 @@ type Config struct {
 	//   - empty ControlRequestChannel and ControlResponseChannel take
 	//     archive.DefaultLocalControlChannel
 	//   - zero ControlRequestStreamID takes archive.DefaultLocalControlStreamID
-	//   - zero ControlResponseStreamID takes 121 + ServiceID. A sum past
-	//     math.MaxInt32 is an error
+	//   - zero ControlResponseStreamID takes 121 + ServiceID
 	//
 	// Archive must not set Aeron, RecordingSignalHandler, LocalControlChannel,
 	// or LocalControlStreamID. Both control channels must be IPC.
@@ -172,8 +178,13 @@ type Config struct {
 // frame.
 //
 // Readiness:
-//   - successful start work, or a nil Service: the start entry becomes ready
-//   - Start error: the start entry stays unready. Drain does not send it
+//   - successful start work, or a nil Service: the agent sets the start
+//     entry ready
+//   - Start error: the agent sets the start entry ready with RelevantID
+//     NULL_VALUE. The agent retries the start ack each tick until the ack
+//     sends, a terminal offer code returns, or Timeout passes. The agent
+//     then marks the Start error. With no bound control publication, the
+//     agent marks the Start error at once.
 //
 // When the start entry is ready, drain sends it as ack id 0. Every later ack
 // id shifts up by one. That is the Java numbering.
@@ -191,9 +202,16 @@ type StartAckConfig struct {
 	// RelevantID carries the transport client id on the member's media driver
 	// ([aeron.Client.ClientId]). The Java consensus module stores RelevantID
 	// for service liveness tracking. The Java consensus module aborts recovery
-	// when any start ack carries the -1 sentinel. RelevantID is the caller-set
-	// value. Heron does not rewrite RelevantID to the sentinel.
+	// when any start ack carries the -1 sentinel. The agent sends the
+	// caller-set value after a successful start. The agent sends -1 after
+	// a Start error.
 	RelevantID int64
+
+	// Timeout caps the retry of the start ack after a Start error, on the
+	// DoWork clock. The wait begins at the first tick after Start. Zero or
+	// negative takes DefaultRecoveryTimeout. With Recovery set, Open takes
+	// Recovery.Timeout.
+	Timeout time.Duration
 }
 
 // Open assembles one service container against a transport client.
@@ -220,13 +238,32 @@ type StartAckConfig struct {
 // version. The load then calls [LoadSnapshotHandler.LoadSnapshot] when the
 // service implements it.
 //
+// With Recovery set, the module awaits one start ack once Open reads the
+// recovery state. Open sends the start ack with RelevantID NULL_VALUE when a
+// later step fails:
+//   - the snapshot recording id for ServiceID is negative
+//   - the load path has a nil Archive
+//   - the control subscription add fails
+//   - the control publication add fails
+//   - the archive connect fails
+//   - the snapshot load fails
+//
+// Open repeats the offer while the offer code is retriable, up to
+// Recovery.Timeout. Open pumps the transport client between offers. Open
+// then tears down. Open does not send the ack when:
+//   - the recovery wait fails
+//   - the key does not decode
+//   - the cluster id check fails
+//   - the log position check fails
+//   - the service id check fails
+//
 // Ownership: the container owns the control subscription, the control
 // publication, and the archive client. The container does not own the
 // transport client.
 //
 // Returns an error when:
 //   - Aeron, Service, or CommittedPosition is nil
-//   - ServiceID is negative
+//   - ServiceID is negative or reaches MaxServiceCount
 //   - StartAck is set and LogPosition is negative
 //   - the two control stream ids collide after defaulting
 //   - SnapshotChannel or SnapshotStreamID breaks the rule its godoc states
@@ -293,21 +330,28 @@ func openWithArchiveConnect(cfg Config, connect archiveConnector) (*Container, e
 		if err != nil {
 			return nil, err
 		}
+		if err := recovery.checkLoad(cfg); err != nil {
+			sendFailedStartAck(cfg, transport, recovery.state, nil)
+			return nil, err
+		}
 		cfg.StartAck = &StartAckConfig{
 			LogPosition: recovery.state.LogPosition,
 			RelevantID:  transport.ClientId(),
+			Timeout:     cfg.Recovery.Timeout,
 		}
 	}
 
 	sub, err := cfg.Aeron.AddSubscription(cfg.ServiceStreamID, cfg.ControlChannel)
 	sub, err = addedHandle(sub, err, errAdderReturnedNoSubscription)
 	if err != nil {
+		sendFailedStartAck(cfg, transport, recovery.state, nil)
 		return nil, err
 	}
 
 	pub, err := cfg.Aeron.AddPublication(cfg.ConsensusModuleStreamID, cfg.ControlChannel)
 	pub, err = addedHandle(pub, err, errAdderReturnedNoPublication)
 	if err != nil {
+		sendFailedStartAck(cfg, transport, recovery.state, nil)
 		_ = sub.Close()
 		return nil, err
 	}
@@ -319,6 +363,7 @@ func openWithArchiveConnect(cfg Config, connect archiveConnector) (*Container, e
 	if cfg.Archive != nil {
 		archiveClient, replay, err = connect(cfg.Aeron, archiveCfg)
 		if err != nil {
+			sendFailedStartAck(cfg, transport, recovery.state, pub)
 			_ = pub.Close()
 			_ = sub.Close()
 			return nil, err
@@ -376,6 +421,7 @@ func openWithArchiveConnect(cfg Config, connect archiveConnector) (*Container, e
 		handler:       handler,
 	}
 	if err := load.run(agent, recovery.recordingID, recovery.state.LogPosition); err != nil {
+		sendFailedStartAck(cfg, transport, recovery.state, pub)
 		_ = container.Close()
 		return nil, err
 	}
@@ -408,11 +454,6 @@ func serviceArchiveConfig(cfg Config) (archive.Config, error) {
 		archiveCfg.ControlRequestStreamID = archive.DefaultLocalControlStreamID
 	}
 	if archiveCfg.ControlResponseStreamID == 0 {
-		if cfg.ServiceID > math.MaxInt32-archiveResponseStreamBase {
-			return archive.Config{}, errors.New(
-				"service: ServiceID too large to derive archive ControlResponseStreamID",
-			)
-		}
 		archiveCfg.ControlResponseStreamID = archiveResponseStreamBase + cfg.ServiceID
 	}
 
@@ -522,6 +563,8 @@ func validateConfig(cfg Config) error {
 		return errors.New("service: committed position is required")
 	case cfg.ServiceID < 0:
 		return errors.New("service: service id must not be negative")
+	case int(cfg.ServiceID) >= MaxServiceCount:
+		return fmt.Errorf("service: service id must not exceed %d", MaxServiceCount-1)
 	case cfg.StartAck != nil && cfg.StartAck.LogPosition < 0:
 		return errors.New("service: start ack log position must not be negative")
 	case cfg.ServiceStreamID == cfg.ConsensusModuleStreamID:

@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
@@ -173,7 +174,8 @@ type Config struct {
 	ArchiveControlResponseChannel string
 
 	// ServiceCount feeds recordinglog.NewRecoveryPlanConfig. Zero for a member
-	// without clustered services. Must not be negative.
+	// without clustered services. Must not be negative. Must not exceed
+	// codecs.RecoveryStateMaxServiceCount.
 	ServiceCount int
 
 	// Election seeds the election state machine. Zero timeout fields take
@@ -386,6 +388,11 @@ func (cfg Config) validateMembers() ([]election.Member, int, error) {
 	}
 	if cfg.ServiceCount < 0 {
 		return nil, 0, errors.New("cluster: ServiceCount must not be negative")
+	}
+	if cfg.ServiceCount > codecs.RecoveryStateMaxServiceCount {
+		return nil, 0, fmt.Errorf(
+			"cluster: ServiceCount must not exceed %d", codecs.RecoveryStateMaxServiceCount,
+		)
 	}
 	if cfg.SessionTimeoutNs < 0 {
 		return nil, 0, errors.New("cluster: SessionTimeoutNs must not be negative")

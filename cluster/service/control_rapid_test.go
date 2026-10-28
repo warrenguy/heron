@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
@@ -67,6 +68,14 @@ type pendingControlOp struct {
 // entry and marks nothing. With no sender bound, the cause marks at once. An
 // earlier cause stays first.
 //
+// A drawn Start error sets the start entry ready. The model sets
+// RelevantID to NULL_VALUE. Each later tick drains only the start entry.
+// Each tick advances the clock by a drawn step. The first tick after Start
+// sets the start ack deadline. At the deadline the model marks the error,
+// and the ack stays queued. With no start entry, or with no sender on the
+// first tick, the model marks the error at once. The first tick runs on a
+// drawn sender.
+//
 // Ops: deliver RequestServiceAck; deliver JoinLog (including superseding an
 // unbound pending join); append a committed timer frame; append a committed
 // ClusterActionRequest SNAPSHOT with a drawn hook outcome; rebind the ack
@@ -79,7 +88,12 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 		rt.Helper()
 
 		hookErr := errors.New("rapid hook failure")
+		startErr := errors.New("rapid start failure")
 		svc := &snapshotRecordingService{}
+		startFails := rapid.IntRange(0, 3).Draw(rt, "startOutcome") == 0
+		if startFails {
+			svc.startErr = startErr
+		}
 		// Setup hooks need *testing.T (full testing.TB). Property body uses rt.
 		sub, image := newLogImage(t, testLogSessionID, testLogStreamID, 0)
 		committed := int64(0)
@@ -96,6 +110,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			startAck = &StartAckConfig{
 				LogPosition: int64(rapid.IntRange(0, 1_000_000).Draw(rt, "startAckLogPosition")),
 				RelevantID:  rapid.Int64().Draw(rt, "startAckRelevantID"),
+				Timeout:     time.Duration(rapid.Int64Range(1, 6).Draw(rt, "startAckTimeoutNs")),
 			}
 		}
 
@@ -140,6 +155,18 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			}
 			modelMark(errTakeSnapshot)
 		}
+		markFailedEntry := func(e modelAckEntry) {
+			if e.kind == ackKindStart {
+				modelMark(startErr)
+				return
+			}
+			modelMarkTake()
+		}
+		modelStarted := false
+		// nowNs is the DoWork clock. tick advances it by a drawn step.
+		nowNs := int64(0)
+		modelStartDeadlineArmed := false
+		modelStartDeadlineNs := int64(0)
 		modelHookCalls := 0
 		type modelTakeState struct {
 			entry int
@@ -230,16 +257,16 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			if modelDrained >= len(model) || !model[modelDrained].ready {
 				return
 			}
-			failed := model[modelDrained].failed
+			entry := model[modelDrained]
 			switch modelSender {
 			case modelSenderAccept:
 				modelDrained++
-				if failed {
-					modelMarkTake()
+				if entry.failed {
+					markFailedEntry(entry)
 				}
 			case modelSenderClosed:
-				if failed {
-					modelMarkTake()
+				if entry.failed {
+					markFailedEntry(entry)
 				} else {
 					modelMark(errAckPublish)
 				}
@@ -331,11 +358,43 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 
 		// modelDoWork matches Agent: start-work then ready, take work,
 		// control poll, sweep, drain, join bind, poll. Drain still runs after
-		// sweep failure. Join and poll freeze after that.
+		// a sweep failure. Join and poll freeze after a sweep failure. After
+		// a Start error, each tick drains only the start entry. The first tick
+		// after Start sets the start ack deadline.
 		modelDoWork := func() {
 			if modelFailed {
 				return
 			}
+			if !modelStarted && startFails {
+				modelStarted = true
+				if startAck == nil || modelSender == modelSenderNone {
+					modelMark(startErr)
+				}
+				if startAck != nil {
+					model[0].ready = true
+					model[0].failed = true
+					model[0].relevantID = nullValue
+				}
+				if !modelFailed {
+					modelDrain()
+				}
+				return
+			}
+			startPending := modelDrained < len(model) &&
+				model[modelDrained].kind == ackKindStart &&
+				model[modelDrained].failed
+			if startPending {
+				if !modelStartDeadlineArmed {
+					modelStartDeadlineArmed = true
+					modelStartDeadlineNs = nowNs + startAck.Timeout.Nanoseconds()
+				}
+				modelDrain()
+				if !modelFailed && nowNs >= modelStartDeadlineNs {
+					modelMark(startErr)
+				}
+				return
+			}
+			modelStarted = true
 			if len(model) > 0 && model[0].kind == ackKindStart {
 				model[0].ready = true
 			}
@@ -431,10 +490,18 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 		checkAfterMark := func() {
 			rt.Helper()
 			for range 2 {
-				require.Zero(rt, agent.DoWork(0), "work after failure mark")
+				require.Zero(rt, agent.DoWork(nowNs), "work after failure mark")
 				modelDoWork()
 				checkInvariants()
 			}
+		}
+
+		// tick advances the clock by a drawn step, then runs one DoWork on
+		// the agent and the model.
+		tick := func() {
+			nowNs += int64(rapid.IntRange(0, 3).Draw(rt, "clockStep"))
+			agent.DoWork(nowNs)
+			modelDoWork()
 		}
 
 		appendFrame := func(payload []byte, snapshot, hookFails bool) {
@@ -451,10 +518,23 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			committed = end
 		}
 
-		// Start work. A drawn StartAck becomes ready and drains on this
-		// tick. Joins are drawn ops, including supersession.
-		agent.DoWork(0)
-		modelDoWork()
+		rebind := func(sender int) {
+			modelSender = sender
+			switch modelSender {
+			case modelSenderAccept:
+				proxy.SetPublication(pub)
+			case modelSenderNotConnected:
+				proxy.SetPublication(notConnectedPub)
+			case modelSenderClosed:
+				proxy.SetPublication(closedPub)
+			case modelSenderNone:
+				proxy.SetPublication(nil)
+			}
+		}
+
+		// First tick: start work on a drawn sender.
+		rebind(rapid.IntRange(modelSenderAccept, modelSenderNone).Draw(rt, "firstSender"))
+		tick()
 		checkInvariants()
 
 		nOps := rapid.IntRange(1, 40).Draw(rt, "nOps")
@@ -495,8 +575,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				appendFrame(payload, false, false)
 
 			case 2: // DoWork
-				agent.DoWork(0)
-				modelDoWork()
+				tick()
 				checkInvariants()
 
 			case 3: // JoinLog (unbound supersession path; handoff is unit-only)
@@ -530,17 +609,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				appendFrame(payload, true, hookFails)
 
 			case 5: // Rebind the ack sender
-				modelSender = rapid.IntRange(modelSenderAccept, modelSenderNone).Draw(rt, "sender")
-				switch modelSender {
-				case modelSenderAccept:
-					proxy.SetPublication(pub)
-				case modelSenderNotConnected:
-					proxy.SetPublication(notConnectedPub)
-				case modelSenderClosed:
-					proxy.SetPublication(closedPub)
-				case modelSenderNone:
-					proxy.SetPublication(nil)
-				}
+				rebind(rapid.IntRange(modelSenderAccept, modelSenderNone).Draw(rt, "sender"))
 			}
 		}
 
@@ -552,8 +621,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			if len(frames) > 0 {
 				committed = frames[len(frames)-1].end
 			}
-			agent.DoWork(0)
-			modelDoWork()
+			tick()
 			checkInvariants()
 			if agent.PendingCoordinationAcks() == 0 &&
 				len(pending) == 0 &&
