@@ -51,6 +51,8 @@ Works:
   recording, replay, stop replay, list a single recording, truncate.
 - Non-blocking start, extend and stop recording.
 - Recording signal dispatch.
+- Start and stop replication of a recording from another archive, blocking or
+  non-blocking, with all upstream replication options.
 
 Not implemented:
 
@@ -59,7 +61,7 @@ Not implemented:
 - Position queries: recording, start, stop and max recorded position.
 - Bounded replay, `ReplayParams`, `stopAllReplays`, `ReplayMerge`,
   `PersistentSubscription`.
-- Replication, purge, segment operations, archive id request.
+- Purge, segment operations, archive id request.
 - Automatic control session keepalive: the proxy has `TryKeepAlive`, but the
   client never sends it.
 
@@ -100,6 +102,8 @@ Works:
 - Leader commit and quorum; log publication; log recording on every member.
 - Follower catchup by archive replay within a term; divergent log truncation;
   member restart and rejoin.
+- Log replication: a member behind the new leader's term base copies the
+  missing log from the leader's archive, then rejoins.
 - Client sessions: connect, authentication, messages, keepalive, timeout, close,
   and transfer to a new leader.
 - Service ack coordination with Go service containers; cluster timers.
@@ -126,10 +130,6 @@ Not implemented:
 
 - Snapshots: taking and loading. Startup refuses a recovery plan that contains
   snapshots.
-- Log replication between members: a member behind the new leader's term base
-  cannot rejoin. A leader stopped under client traffic is at risk. Its
-  recording can end short of what it published, which leaves it behind the
-  next term base.
 - Termination and shutdown, cluster control and node control toggles, the module
   state machine.
 - Admin requests: the client snapshot request works only against a Java
