@@ -308,9 +308,13 @@ func TestArchiveClient_replicate(t *testing.T) {
 		)
 		return replicateErr
 	})
+	// STOP can arrive on a later poll than REPLICATE_END.
+	var stop codecs.RecordingSignalEventFields
 	env.pollUntil(t, "first replication end", func() bool {
 		_, ended := signals.eventFor(firstID, archivewire.RecordingSignal_REPLICATE_END)
-		return ended
+		var stopped bool
+		stop, stopped = signals.eventFor(firstID, archivewire.RecordingSignal_STOP)
+		return ended && stopped
 	})
 	firstSignals := signals.signalsFor(firstID)
 	replicateAt := slices.Index(firstSignals, archivewire.RecordingSignal_REPLICATE)
@@ -320,8 +324,6 @@ func TestArchiveClient_replicate(t *testing.T) {
 	stopAt := slices.Index(firstSignals, archivewire.RecordingSignal_STOP)
 	require.Greater(t, stopAt, extendAt, "signals: %v", firstSignals)
 	require.NotContains(t, firstSignals, archivewire.RecordingSignal_SYNC)
-	stop, ok := signals.eventFor(firstID, archivewire.RecordingSignal_STOP)
-	require.True(t, ok, "signals: %v", firstSignals)
 	require.Equal(t, p1, stop.Position)
 	destinationRecordingID := stop.RecordingID
 	descriptor := env.listRecording(t, destinationRecordingID)
