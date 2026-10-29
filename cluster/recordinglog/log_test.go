@@ -1888,7 +1888,6 @@ func TestLog_Compact(t *testing.T) {
 		require.NoError(t, err)
 		written, err := os.ReadFile(path)
 		require.NoError(t, err)
-		require.NotContains(t, written, []byte("stale-bytes"))
 		require.Empty(t, written)
 		requireFileAbsent(t, recordingLogTemp(dir))
 	})
