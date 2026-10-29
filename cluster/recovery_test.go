@@ -2,6 +2,7 @@ package cluster_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -570,20 +571,89 @@ func TestOpenRecovery_snapshotLogPrefersListerMessage(t *testing.T) {
 	require.Empty(t, fdsUnder(t, dir))
 }
 
-func TestOpenRecovery_snapshotPlanRefused(t *testing.T) {
+func TestOpenRecovery_snapshotGroupChecks(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	writeSnapshotLog(t, dir)
+	const (
+		snapshotTerm int64 = 3
+		snapshotPos  int64 = 128
+	)
+	openTermAndGroup := func(
+		t *testing.T,
+		serviceCount int,
+		serviceIDs ...int32,
+	) (string, *cluster.Recovery, error) {
+		t.Helper()
+		dir := t.TempDir()
+		writeCommittedTermLog(t, dir, 42, 1)
+		log, err := recordinglog.Open(dir, true)
+		require.NoError(t, err)
+		for _, id := range serviceIDs {
+			require.NoError(t, log.AppendSnapshot(55, snapshotTerm, 0, snapshotPos, 1000, id))
+		}
+		require.NoError(t, log.AppendSnapshot(
+			55, snapshotTerm, 0, snapshotPos, 1000, recordinglog.ConsensusModuleServiceID,
+		))
+		require.NoError(t, log.Close())
+		cfg := recoveryConfig(t, dir)
+		cfg.ServiceCount = serviceCount
+		recovery, err := cluster.OpenRecovery(cluster.RecoveryDeps{
+			Config:        cfg,
+			ArchiveLister: listerWith(42, extent(0, termBaseStride)),
+		})
+		return dir, recovery, err
+	}
 
-	recovery, err := cluster.OpenRecovery(cluster.RecoveryDeps{
-		Config:        recoveryConfig(t, dir),
-		ArchiveLister: &fakeLister{extents: map[int64]recordinglog.LogRecordingExtents{}},
+	for _, tc := range []struct {
+		name        string
+		serviceIDs  []int32
+		wantMissing int
+	}{
+		{name: "names the lowest missing service", serviceIDs: []int32{1}, wantMissing: 0},
+		{name: "duplicate service row hides the other id", serviceIDs: []int32{0, 0}, wantMissing: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, recovery, err := openTermAndGroup(t, 2, tc.serviceIDs...)
+			require.Nil(t, recovery)
+			require.EqualError(t, err, fmt.Sprintf(
+				"cluster: recovery plan snapshot group at log position 128 in term 3 lacks service %d",
+				tc.wantMissing,
+			))
+			require.Empty(t, fdsUnder(t, dir))
+		})
+	}
+
+	t.Run("snapshot without a log term", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeSnapshotLog(t, dir)
+		cfg := recoveryConfig(t, dir)
+		cfg.ServiceCount = 0
+		recovery, err := cluster.OpenRecovery(cluster.RecoveryDeps{
+			Config:        cfg,
+			ArchiveLister: &fakeLister{extents: map[int64]recordinglog.LogRecordingExtents{}},
+		})
+		require.Nil(t, recovery)
+		require.EqualError(t, err,
+			"cluster: recovery plan holds a snapshot at log position 128 and no log term")
+		require.Empty(t, fdsUnder(t, dir))
 	})
-	require.Nil(t, recovery)
-	require.EqualError(t, err,
-		"cluster: recovery plan holds 1 snapshots and snapshot load is not implemented")
-	require.Empty(t, fdsUnder(t, dir))
+
+	t.Run("full group seeds the snapshot log position", func(t *testing.T) {
+		t.Parallel()
+		dir, recovery, err := openTermAndGroup(t, 2, 1, 0)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, recovery.Close()) })
+		plan := recovery.Plan()
+		electionCfg := recovery.ElectionConfig()
+		require.Equal(t, snapshotPos, plan.SeedLogPosition())
+		require.Equal(t, snapshotPos, electionCfg.LogPosition)
+		require.Equal(t, termBaseStride, plan.AppendedOrCommittedPosition())
+		require.Equal(t, termBaseStride, electionCfg.AppendPosition)
+		require.NoError(t, recovery.Close())
+		require.Empty(t, fdsUnder(t, dir))
+	})
 }
 
 func TestOpenRecovery_serviceCountPassThrough(t *testing.T) {
@@ -1156,7 +1226,7 @@ func TestOpenRecovery_restartOrderingRule(t *testing.T) {
 	require.False(t, reopened.IsColdStart())
 }
 
-func TestOpenRecovery_restartSnapshotBesideTermsRefused(t *testing.T) {
+func TestOpenRecovery_restartSnapshotBesideTermsSeeds(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -1170,9 +1240,16 @@ func TestOpenRecovery_restartSnapshotBesideTermsRefused(t *testing.T) {
 		Config:        recoveryConfig(t, dir),
 		ArchiveLister: listerWith(42, extent(0, termBaseStride)),
 	})
-	require.Nil(t, recovery)
-	require.EqualError(t, err,
-		"cluster: recovery plan holds 1 snapshots and snapshot load is not implemented")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, recovery.Close()) })
+
+	plan := recovery.Plan()
+	electionCfg := recovery.ElectionConfig()
+	require.Equal(t, plan.SeedLogPosition(), electionCfg.LogPosition)
+	require.Equal(t, plan.AppendedOrCommittedPosition(), electionCfg.AppendPosition)
+	require.Equal(t, termBaseStride, electionCfg.LogPosition)
+	require.Equal(t, termBaseStride, electionCfg.AppendPosition)
+	require.NoError(t, recovery.Close())
 	require.Empty(t, fdsUnder(t, dir))
 }
 

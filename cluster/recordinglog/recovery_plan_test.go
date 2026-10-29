@@ -462,8 +462,6 @@ func TestPlanRecovery_committedLogPosition(t *testing.T) {
 func TestRecoveryPlan_SeedLogPosition(t *testing.T) {
 	t.Parallel()
 
-	// Empty, closed term, and committed term all seed 0: a restart replays
-	// the whole log.
 	require.Equal(t, int64(0), recordinglog.RecoveryPlan{}.SeedLogPosition())
 
 	term := termEntryWith(10, 10, 666)
@@ -473,4 +471,12 @@ func TestRecoveryPlan_SeedLogPosition(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1234), plan.CommittedLogPosition)
 	require.Equal(t, int64(0), plan.SeedLogPosition())
+
+	snapshot := recordinglog.RecoveryPlan{
+		Snapshots: []recordinglog.Snapshot{{
+			LogPosition: 777,
+			ServiceID:   recordinglog.ConsensusModuleServiceID,
+		}},
+	}
+	require.Equal(t, int64(777), snapshot.SeedLogPosition())
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/warrenguy/heron/aeron"
@@ -28,6 +29,10 @@ const ipcChannelMedia = "aeron:ipc"
 var ErrServiceControlUnbound = errors.New(
 	"consensus: service control publication is not bound",
 )
+
+// ErrServiceStartFailed reports a service start ack whose RelevantID is
+// NULL_VALUE.
+var ErrServiceStartFailed = errors.New("consensus: service start failed")
 
 // SetServiceIngress replaces the service control poller (stream 105).
 //
@@ -145,6 +150,25 @@ func (a *Agent) RequestServiceAck(logPosition int64) error {
 	return nil
 }
 
+// AwaitServiceStart queues the service start wait at logPosition as the
+// first coordination wait. startHandler runs once when the wait pops.
+//
+// Returns an error when startHandler is nil or a wait is already queued. The
+// start wait must sit first in the FIFO.
+//
+// Concurrency: invoker-only.
+func (a *Agent) AwaitServiceStart(logPosition int64, startHandler func()) error {
+	if startHandler == nil {
+		return errors.New("consensus: service start handler is nil")
+	}
+	if len(a.serviceAckWaits) > 0 {
+		return errors.New("consensus: service start wait is already queued")
+	}
+	a.serviceAckWaits = append(a.serviceAckWaits, logPosition)
+	a.serviceStartHandler = startHandler
+	return nil
+}
+
 // serviceControlWork consumes the first coordination wait when every service's
 // first queued entry has reached the wait position.
 //
@@ -162,6 +186,11 @@ func (a *Agent) RequestServiceAck(logPosition int64) error {
 // take before removeServiceAckHead. The take copies each service's first
 // RelevantID and the module state. The pop then clears snapshotWaitPosition.
 // [Agent.snapshotTakeWork] advances the take.
+//
+// A leading service start wait reads each service's first RelevantID before
+// the pop. The pop runs the start handler once and clears it. A NULL_VALUE
+// RelevantID then marks [ErrServiceStartFailed] with the lowest such service
+// id. The handler still runs.
 //
 // A consumed wait at a retired snapshot position drops leftover tracker
 // entries at the consumed position. A remaining wait at the consumed position
@@ -187,6 +216,11 @@ func (a *Agent) serviceControlWork() int {
 	if !ok {
 		return 0
 	}
+	startHandler := a.serviceStartHandler
+	nullServiceID := -1
+	if startHandler != nil {
+		nullServiceID = slices.Index(a.serviceAcks.firstRelevantIDs(), nullValue)
+	}
 	snapshotPop := a.snapshotWaitPosition != 0 && head == a.snapshotWaitPosition
 	if snapshotPop {
 		a.buildSnapshotTake(head)
@@ -198,6 +232,17 @@ func (a *Agent) serviceControlWork() int {
 	}
 	if snapshotPop {
 		a.snapshotWaitPosition = 0
+	}
+	if startHandler != nil {
+		a.serviceStartHandler = nil
+		startHandler()
+		if nullServiceID >= 0 {
+			a.serviceAckFailure = fmt.Errorf(
+				"%w: service %d acked NULL_VALUE",
+				ErrServiceStartFailed,
+				nullServiceID,
+			)
+		}
 	}
 	a.dropAbandonedSnapshotLeftovers(head)
 	return 1

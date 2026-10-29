@@ -250,8 +250,9 @@ func (a *Agent) ExpectedServiceAckID() int64 {
 	return a.serviceAcks.expectedAckID()
 }
 
-// ServiceAckFailure returns the first receive-time out-of-sequence failure, or
-// nil.
+// ServiceAckFailure returns the first marked failure, or nil. An
+// out-of-sequence ack or a service start ack with RelevantID NULL_VALUE
+// marks the failure.
 //
 // Behaviour:
 //   - marks once: first cause kept; later mismatches do not replace the cause

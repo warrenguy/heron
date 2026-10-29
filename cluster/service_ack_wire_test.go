@@ -647,3 +647,37 @@ func TestServiceAckWire_StartAckMarksConsensusFailure(t *testing.T) {
 	require.Equal(t, int64(0), h.cm.ExpectedServiceAckID())
 	require.Equal(t, 1, h.cm.ServiceAckQueueDepth(0))
 }
+
+func TestServiceAckWire_StartAckPopsStartWait(t *testing.T) {
+	t.Parallel()
+
+	h := newWireHarnessWithStartAck(t, &service.StartAckConfig{})
+	h.dropRequest = false
+	runs := 0
+	require.NoError(t, h.cm.AwaitServiceStart(0, func() { runs++ }))
+
+	ok := h.tickUntil(t, 600, 8, func() bool {
+		return runs == 1 &&
+			h.cm.PendingServiceAckWaits() == 0 &&
+			h.cm.ExpectedServiceAckID() == 1
+	})
+	require.True(t, ok, "start wait did not pop: runs=%d waits=%d expected=%d failure=%v",
+		runs, h.cm.PendingServiceAckWaits(), h.cm.ExpectedServiceAckID(), h.cm.ServiceAckFailure())
+	require.NoError(t, h.cm.ServiceAckFailure())
+	require.Equal(t, 1, runs)
+
+	require.NoError(t, h.cm.RequestServiceAck(0))
+	ok = h.tickUntil(t, 620, 8, func() bool {
+		return h.cm.PendingServiceAckWaits() == 0 && h.cm.ExpectedServiceAckID() == 2
+	})
+	require.True(t, ok, "request ack did not complete: waits=%d expected=%d next=%d failure=%v",
+		h.cm.PendingServiceAckWaits(),
+		h.cm.ExpectedServiceAckID(),
+		h.svc.NextAckID(),
+		h.cm.ServiceAckFailure(),
+	)
+	require.NoError(t, h.cm.ServiceAckFailure())
+	require.Equal(t, int64(2), h.cm.ExpectedServiceAckID())
+	require.Equal(t, 0, h.cm.PendingServiceAckWaits())
+	require.Equal(t, 1, runs)
+}

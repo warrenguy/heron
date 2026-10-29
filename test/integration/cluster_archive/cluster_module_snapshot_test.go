@@ -9,11 +9,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
@@ -149,11 +151,69 @@ func TestClusterModule_recordsModuleSnapshot(t *testing.T) {
 	// Each take writes one group: the module row alone.
 	requireSnapshotGroups(t, sc, leader, first, second)
 
-	// Phase: restart. Recovery refuses a plan that holds a snapshot.
+	controlSessions := archiveControlSessions(t, leader)
 	require.NoError(t, set.StopMember(0))
-	require.ErrorContains(
-		t,
-		set.RestartMember(0),
-		"cluster: recovery plan holds 1 snapshots and snapshot load is not implemented",
+	dir := set.ClusterDir(0)
+	const missingRecordingID int64 = 8_000_000_001
+
+	withRecordingLog(t, dir, func(log *recordinglog.Log) {
+		require.NoError(t, log.AppendSnapshot(
+			missingRecordingID,
+			second.LeadershipTermID,
+			0,
+			second.LogPosition+64,
+			second.Timestamp+1,
+			recordinglog.ConsensusModuleServiceID,
+		))
+	})
+	unknownErr := set.RestartMember(0)
+	require.ErrorContains(t, unknownErr, "cluster: load module snapshot recording")
+	code, ok := archive.ExceptionCode(unknownErr)
+	require.True(t, ok, "%v", unknownErr)
+	require.Equal(t, int32(archive.ErrorUnknownRecording), code)
+
+	withRecordingLog(t, dir, func(log *recordinglog.Log) {
+		found, err := log.InvalidateLatestSnapshot()
+		require.NoError(t, err)
+		require.True(t, found)
+		require.NoError(t, log.AppendSnapshot(
+			logRecordingID,
+			second.LeadershipTermID,
+			0,
+			second.LogPosition+128,
+			second.Timestamp+2,
+			recordinglog.ConsensusModuleServiceID,
+		))
+	})
+	corruptErr := set.RestartMember(0)
+	require.ErrorContains(t, corruptErr, "cluster: load module snapshot")
+	require.ErrorContains(t, corruptErr, "consensus: load snapshot")
+
+	withRecordingLog(t, dir, func(log *recordinglog.Log) {
+		found, err := log.InvalidateLatestSnapshot()
+		require.NoError(t, err)
+		require.True(t, found)
+	})
+	require.NoError(t, set.RestartMember(0))
+	restarted := set.Module(0)
+	require.Equal(t, second.LogPosition, restarted.CommitPosition())
+	require.Equal(t, 1, restarted.Agent().OpenSessionCount())
+	requireServiceAwaitTick(
+		t, sc,
+		"archive control sessions",
+		durableWorkBound,
+		func() bool {
+			return archiveControlSessions(t, restarted) == controlSessions
+		},
 	)
+}
+
+func withRecordingLog(t *testing.T, dir string, fn func(*recordinglog.Log)) {
+	t.Helper()
+	log, err := recordinglog.Open(dir, true)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, log.Close())
+	}()
+	fn(log)
 }

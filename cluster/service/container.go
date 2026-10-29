@@ -136,13 +136,15 @@ type Config struct {
 	FragmentLimit int
 
 	// StartAck enables the spontaneous start ack a Java consensus module
-	// consumes during recovery. Nil disables the start ack. Open passes
-	// StartAck to [NewAgent]. See [StartAckConfig]. Must be nil with
-	// Recovery set.
+	// consumes during recovery. See [StartAckConfig]. Must be nil with
+	// Recovery set. Open passes this StartAck to [NewAgent] only when
+	// Recovery is nil. Open refuses a config that sets neither.
 	StartAck *StartAckConfig
 
 	// Recovery enables recovery in Open. Nil keeps the cold start at log
-	// position 0. Open leaves Recovery unchanged. See [RecoveryConfig].
+	// position 0 when StartAck is set. Open refuses a config that sets
+	// neither Recovery nor StartAck. Open leaves Recovery unchanged. See
+	// [RecoveryConfig].
 	Recovery *RecoveryConfig
 
 	// Archive configures the archive client. Nil connects none: each
@@ -189,9 +191,10 @@ type Config struct {
 // When the start entry is ready, drain sends it as ack id 0. Every later ack
 // id shifts up by one. That is the Java numbering.
 //
-// Nil disables the start ack. StartAck must not be set against a consensus
-// module that pairs acks only with published frames. An unpaired first queued
-// entry marks ServiceAckFailure.
+// Nil disables the start ack in [NewAgent]. Open refuses a config that
+// sets neither StartAck nor Recovery. StartAck must not be set against a
+// consensus module that pairs acks only with published frames. An unpaired
+// first queued entry marks ServiceAckFailure.
 type StartAckConfig struct {
 	// LogPosition is the recovered log position the start ack carries. Must
 	// equal the consensus module's expected ack position. A cold-start Java
@@ -267,6 +270,7 @@ type StartAckConfig struct {
 //   - StartAck is set and LogPosition is negative
 //   - the two control stream ids collide after defaulting
 //   - SnapshotChannel or SnapshotStreamID breaks the rule its godoc states
+//   - Recovery and StartAck are both nil
 //   - StartAck and Recovery are both set
 //   - Recovery breaks a rule the [RecoveryConfig] godoc states
 //   - Recovery is set and Aeron lacks CountersReader, DoWork or ClientId
@@ -575,6 +579,8 @@ func validateConfig(cfg Config) error {
 		return errors.New("service: SnapshotStreamID and ServiceStreamID must differ")
 	case cfg.SnapshotStreamID == cfg.ConsensusModuleStreamID:
 		return errors.New("service: SnapshotStreamID and ConsensusModuleStreamID must differ")
+	case cfg.Recovery == nil && cfg.StartAck == nil:
+		return errors.New("service: Open needs Recovery or StartAck")
 	}
 	if cfg.Recovery != nil {
 		return validateRecoveryConfig(cfg)

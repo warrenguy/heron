@@ -195,7 +195,7 @@ type Recovery struct {
 //  5. refuse a non-empty log without a lister
 //  6. stop the term recording when the log names one and a stopper exists
 //  7. plan recovery
-//  8. refuse a plan that carries a snapshot
+//  8. check the snapshot group
 //  9. seed the election configuration
 //  10. open the node state file
 //
@@ -230,7 +230,8 @@ type Recovery struct {
 //   - the term recording stop fails. An unknown recording id wraps
 //     recordinglog.ErrUnknownRecordingID
 //   - planning fails
-//   - plan carries a snapshot
+//   - the snapshot group lacks a service snapshot
+//   - the plan holds a snapshot and no log term
 //
 // On error nothing stays open. The lock is released. The returned value is nil.
 func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
@@ -312,10 +313,21 @@ func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
 	}
 
 	if len(plan.Snapshots) > 0 {
-		return nil, fmt.Errorf(
-			"cluster: recovery plan holds %d snapshots and snapshot load is not implemented",
-			len(plan.Snapshots),
-		)
+		head := plan.Snapshots[0]
+		if plan.Log == nil {
+			return nil, fmt.Errorf(
+				"cluster: recovery plan holds a snapshot at log position %d and no log term",
+				head.LogPosition,
+			)
+		}
+		if id, missing := missingServiceSnapshot(plan, deps.Config.ServiceCount); missing {
+			return nil, fmt.Errorf(
+				"cluster: recovery plan snapshot group at log position %d in term %d lacks service %d",
+				head.LogPosition,
+				head.LeadershipTermID,
+				id,
+			)
+		}
 	}
 
 	electionConfig := deps.Config.Election
@@ -345,10 +357,8 @@ func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
 //
 // The zero plan on a nil receiver.
 //
-// RecoveryPlan.Snapshots is always empty on a plan OpenRecovery returned:
-// a plan carrying a snapshot is refused, because nothing in this tree loads one.
-// RecoveryPlan.Log is a pointer into Recovery state, so treat it as read-only;
-// nothing in Recovery mutates the plan after OpenRecovery returns.
+// RecoveryPlan.Log is a pointer into Recovery state. Treat RecoveryPlan.Log
+// as read-only. Recovery does not mutate the plan after OpenRecovery returns.
 func (r *Recovery) Plan() recordinglog.RecoveryPlan {
 	if r == nil {
 		return recordinglog.RecoveryPlan{}
@@ -369,6 +379,25 @@ func (r *Recovery) ElectionConfig() election.ElectionConfig {
 		return election.ElectionConfig{}
 	}
 	return r.electionConfig
+}
+
+// missingServiceSnapshot returns the lowest service id, from 0 through
+// serviceCount-1, that does not have a row after the module snapshot.
+// The module row is plan.Snapshots[0]. The planner keeps the later rows
+// unique, in range and in service id order.
+//
+// Returns 0, false when every id has a row.
+func missingServiceSnapshot(plan recordinglog.RecoveryPlan, serviceCount int) (int, bool) {
+	services := plan.Snapshots[1:]
+	for id, row := range services {
+		if int(row.ServiceID) != id {
+			return id, true
+		}
+	}
+	if len(services) < serviceCount {
+		return len(services), true
+	}
+	return 0, false
 }
 
 // RecordingLog returns the open recording log.
